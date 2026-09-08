@@ -6,8 +6,9 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-add_executable(syscall-test-clock-settime src/main.c)
+add_executable(syscall-test-clock-settime src/main.c src/wait.c)
 target_compile_options(syscall-test-clock-settime PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(syscall-test-clock-settime PRIVATE pthread)
 target_link_options(syscall-test-clock-settime PRIVATE -static)
 
 install(

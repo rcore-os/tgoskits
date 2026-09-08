@@ -8,30 +8,9 @@ repository = "https://github.com/Starry-OS/axpoll"
 documentation = "https://docs.rs/axpoll"
 license = "Apache-2.0"
 
-[features]
-default = []
-host-test = ["ax-sync/host-test"]
-
 [dependencies]
-ax-sync = { workspace = true }
-ax-lazyinit.workspace = true
 bitflags = { version = "2.10", default-features = false }
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
 ] }
-
-[dev-dependencies]
-ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
-tokio = { version = "1.37", features = [
-    "rt-multi-thread",
-    "macros",
-    "time",
-    "sync",
-] }
-futures = "0.3"
-
-[[test]]
-name = "std"
-path = "tests/std.rs"
-required-features = ["host-test"]

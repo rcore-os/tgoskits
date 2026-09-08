@@ -5,20 +5,23 @@ use ostool::run::qemu::QemuConfig;
 use sha2::{Digest, Sha256};
 
 use super::{
-    shell::{make_executable, shell_single_quote, write_executable_script},
-    types::{GroupedCaseRunnerConfig, TestQemuCase},
+    shell::{shell_single_quote, write_executable_script},
+    types::{GroupedCaseExecution, GroupedCaseRunnerConfig, TestQemuCase},
 };
 
 pub(crate) fn apply_grouped_qemu_config(
     qemu: &mut QemuConfig,
     case: &TestQemuCase,
-    config: &GroupedCaseRunnerConfig,
+    execution: &GroupedCaseExecution,
 ) {
     if !case.is_grouped() {
         return;
     }
 
-    if config.autorun_profile_script.is_none() {
+    let Some(config) = execution.runner() else {
+        return;
+    };
+    if matches!(execution, GroupedCaseExecution::ShellCommand(_)) {
         qemu.shell_init_cmd = Some(grouped_runner_shell_init_cmd(config));
     }
     qemu.success_regex = vec![config.success_regex.clone()];
@@ -35,11 +38,14 @@ fn grouped_runner_shell_init_cmd(config: &GroupedCaseRunnerConfig) -> String {
     format!("exec {}", config.runner_path)
 }
 
-pub(crate) fn write_grouped_case_runner_script(
+pub(crate) fn write_grouped_case_runner(
     overlay_dir: &Path,
     test_commands: &[String],
-    config: &GroupedCaseRunnerConfig,
+    execution: &GroupedCaseExecution,
 ) -> anyhow::Result<()> {
+    let Some(config) = execution.runner() else {
+        return Ok(());
+    };
     ensure!(
         !test_commands.is_empty(),
         "grouped qemu case has no test commands"
@@ -80,35 +86,7 @@ pub(crate) fn write_grouped_case_runner_script(
     ));
 
     write_executable_script(&runner_path, &body)?;
-    if let Some(script_name) = &config.autorun_profile_script {
-        write_grouped_case_autorun_profile_script(overlay_dir, script_name, &config.runner_path)?;
-    }
     Ok(())
-}
-
-fn write_grouped_case_autorun_profile_script(
-    overlay_dir: &Path,
-    script_name: &str,
-    runner_path: &str,
-) -> anyhow::Result<()> {
-    ensure!(
-        !script_name.is_empty() && !script_name.contains('/') && script_name.ends_with(".sh"),
-        "invalid grouped qemu autorun profile script name `{script_name}`"
-    );
-
-    let dest_dir = overlay_dir.join("etc/profile.d");
-    fs::create_dir_all(&dest_dir)
-        .with_context(|| format!("failed to create {}", dest_dir.display()))?;
-    let script_path = dest_dir.join(script_name);
-    let runner = shell_single_quote(runner_path);
-    let body = format!(
-        "if [ \"${{AXBUILD_GROUPED_AUTORUN_DONE:-0}}\" = \"1\" ]; then\n\treturn 0 2>/dev/null || \
-         exit 0\nfi\nexport AXBUILD_GROUPED_AUTORUN_DONE=1\n\nif [ -x {runner} ]; \
-         then\n\t{runner}\nfi\n"
-    );
-    fs::write(&script_path, body)
-        .with_context(|| format!("failed to write {}", script_path.display()))?;
-    make_executable(&script_path)
 }
 
 fn grouped_command_label(command: &str) -> String {

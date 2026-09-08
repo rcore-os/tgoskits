@@ -14,26 +14,24 @@ use ax_runtime::hal::{
     paging::{MappingFlags, PageTable, PagingError},
 };
 
+#[cfg(all(test, axtest))]
+use super::super::PageOrder;
+#[cfg(all(test, axtest))]
+use super::super::{AddrSpace, HugePageAdvice, MappingPermissions};
 use super::{
+    super::{
+        AddressSpaceId,
+        objects::{FrameLease, PageId, PageObject},
+        vma::{
+            AnonymousSource, FileSource, MappingId, MappingSource, PageOffset, PageSizePolicy,
+            VmaDescriptor, allocate_mapping_id,
+        },
+    },
     FaultFallback, FaultMaterialization, FaultPteSnapshot, MappingExecution, MappingFileInfo,
     MappingOperation, PopulateRequest, PreparedPteOwner, ProviderPublication, PteMaterialization,
     RssKind, alloc_frame, occupied_leaf_ranges, pages_in, validate_occupied_leaf_range,
 };
-#[cfg(all(test, axtest))]
-use super::super::{AddrSpace, HugePageAdvice, MappingPermissions};
-#[cfg(all(test, axtest))]
-use super::super::PageOrder;
-use super::super::vma::{
-    AnonymousSource, FileSource, MappingId, MappingSource, PageOffset, PageSizePolicy,
-    VmaDescriptor, allocate_mapping_id,
-};
-use super::super::AddressSpaceId;
-use crate::{
-    StarryError, StarryResult,
-    sync::IrqMutex,
-};
-
-use super::super::objects::{FrameLease, PageId, PageObject};
+use crate::{StarryError, StarryResult, sync::IrqMutex};
 
 /// Non-owning lookup state scoped to one logical anonymous mapping source.
 ///
@@ -189,15 +187,13 @@ impl CowPageIndex {
         reservation: &mut CowPageIndexReservation,
     ) -> Result<(), CowPageIndexInsertError> {
         let live = self.pages.iter().filter(|entry| entry.is_live()).count();
-        let required = live.checked_add(1).ok_or_else(|| {
-            CowPageIndexInsertError::Invalid(StarryError::BadState)
-        })?;
+        let required = live
+            .checked_add(1)
+            .ok_or_else(|| CowPageIndexInsertError::Invalid(StarryError::BadState))?;
         if live == self.pages.len() && self.pages.capacity() >= required {
             return Ok(());
         }
-        if !reservation.replacement.is_empty()
-            || reservation.replacement.capacity() < required
-        {
+        if !reservation.replacement.is_empty() || reservation.replacement.capacity() < required {
             return Err(CowPageIndexInsertError::StaleReservation);
         }
 
@@ -373,7 +369,6 @@ impl CowPageIndex {
         drop(reservation);
         result
     }
-
 }
 
 #[cfg(all(test, axtest))]
@@ -403,18 +398,14 @@ fn cow_page_index_rejects_overlapping_frame_owners_for_test() -> bool {
 
 #[cfg(all(test, axtest))]
 fn cow_page_index_moves_expired_weak_storage_to_reservation_for_test() -> bool {
-    let Some(first_lease) = FrameLease::borrowed(
-        PhysAddr::from_usize(0x50_0000),
-        PAGE_SIZE_4K,
-        None,
-    ) else {
+    let Some(first_lease) =
+        FrameLease::borrowed(PhysAddr::from_usize(0x50_0000), PAGE_SIZE_4K, None)
+    else {
         return false;
     };
-    let Some(second_lease) = FrameLease::borrowed(
-        PhysAddr::from_usize(0x60_0000),
-        PAGE_SIZE_4K,
-        None,
-    ) else {
+    let Some(second_lease) =
+        FrameLease::borrowed(PhysAddr::from_usize(0x60_0000), PAGE_SIZE_4K, None)
+    else {
         return false;
     };
     let first = PageObject::new_present(PageId::new(0x102), first_lease);
@@ -451,11 +442,8 @@ fn cow_page_index_moves_expired_weak_storage_to_reservation_for_test() -> bool {
 
 #[cfg(all(test, axtest))]
 fn cow_page_index_restores_missing_published_identity_for_test() -> bool {
-    let Some(lease) = FrameLease::borrowed(
-        PhysAddr::from_usize(0x70_0000),
-        PAGE_SIZE_4K,
-        None,
-    ) else {
+    let Some(lease) = FrameLease::borrowed(PhysAddr::from_usize(0x70_0000), PAGE_SIZE_4K, None)
+    else {
         return false;
     };
     let page = PageObject::new_present(PageId::new(0x104), lease);
@@ -645,11 +633,7 @@ impl CowBackend {
         Ok(self.clone())
     }
 
-    fn validate_materialized_leaf_range(
-        &self,
-        range: VirtAddrRange,
-        pt: &PageTable,
-    ) -> bool {
+    fn validate_materialized_leaf_range(&self, range: VirtAddrRange, pt: &PageTable) -> bool {
         validate_occupied_leaf_range(range, None, pt)
     }
 
@@ -820,9 +804,8 @@ impl CowBackend {
         let frame = page.frame().paddr();
 
         if let Some((file, file_vaddr_base, file_start, file_end)) = &self.file {
-            let buf = unsafe {
-                slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), leaf_size)
-            };
+            let buf =
+                unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), leaf_size) };
             // vaddr can be smaller than file_vaddr_base (at most 1 page) due to
             // non-aligned mappings; compute page-internal write offset accordingly.
             // The mapping invariant is: a virtual address `V` corresponds to
@@ -835,35 +818,28 @@ impl CowBackend {
             // subtract the gap here — doing so reads the segment's bytes from
             // the wrong offset and corrupts e.g. the dynamic linker's
             // .dynamic/GOT, making ld-musl jump to a null pointer.
-            let start = file_vaddr_base
-                .as_usize()
-                .saturating_sub(vaddr.as_usize());
+            let start = file_vaddr_base.as_usize().saturating_sub(vaddr.as_usize());
             if start >= leaf_size {
                 self.discard_pending_page(&page);
                 return Err(StarryError::InvalidInput);
             }
 
-            let relative = vaddr
-                .as_usize()
-                .saturating_sub(file_vaddr_base.as_usize());
-            let file_read_offset = (*file_start)
-                .checked_add(relative as u64)
-                .ok_or_else(|| {
-                    self.discard_pending_page(&page);
-                    StarryError::InvalidInput
-                })?;
+            let relative = vaddr.as_usize().saturating_sub(file_vaddr_base.as_usize());
+            let file_read_offset = (*file_start).checked_add(relative as u64).ok_or_else(|| {
+                self.discard_pending_page(&page);
+                StarryError::InvalidInput
+            })?;
             let available = buf
                 .len()
                 .checked_sub(start)
                 .ok_or(StarryError::InvalidInput)?;
-            let max_read =
-                match cow_file_max_read(file, *file_end, file_read_offset, available) {
-                    Ok(max_read) => max_read,
-                    Err(err) => {
-                        self.discard_pending_page(&page);
-                        return Err(err);
-                    }
-                };
+            let max_read = match cow_file_max_read(file, *file_end, file_read_offset, available) {
+                Ok(max_read) => max_read,
+                Err(err) => {
+                    self.discard_pending_page(&page);
+                    return Err(err);
+                }
+            };
 
             if let Err(err) = file.read_at(&mut &mut buf[start..start + max_read], file_read_offset)
             {
@@ -874,18 +850,15 @@ impl CowBackend {
         Ok(page)
     }
 
-    fn rollback_new_pages(
-        &self,
-        pages: &mut Vec<(VirtAddr, Arc<PageObject>)>,
-        pt: &mut PageTable,
-    ) {
+    fn rollback_new_pages(&self, pages: &mut Vec<(VirtAddr, Arc<PageObject>)>, pt: &mut PageTable) {
         for (vaddr, page) in pages.drain(..).rev() {
             let frame = page.frame().paddr();
             match pt.unmap_page(vaddr) {
                 Ok((mapped, _, page_size)) if mapped == frame => {
                     if let Err(error) = crate::mm::flush_tlb_range_sync(vaddr, page_size) {
                         warn!(
-                            "COW rollback could not invalidate {vaddr:?} before releasing {frame:?}: {error}"
+                            "COW rollback could not invalidate {vaddr:?} before releasing \
+                             {frame:?}: {error}"
                         );
                         // Deliberately leak the registry reference rather than
                         // freeing a frame that a remote TLB may still reach.
@@ -893,9 +866,9 @@ impl CowBackend {
                     }
                     self.discard_pending_page(&page)
                 }
-                Ok((mapped, _, _)) => warn!(
-                    "COW rollback found frame {mapped:?} instead of {frame:?} at {vaddr:?}"
-                ),
+                Ok((mapped, ..)) => {
+                    warn!("COW rollback found frame {mapped:?} instead of {frame:?} at {vaddr:?}")
+                }
                 Err(PagingError::NotMapped) => self.discard_pending_page(&page),
                 Err(error) => warn!("COW rollback could not unmap {vaddr:?}: {error}"),
             }
@@ -967,9 +940,7 @@ impl CowBackend {
             return Ok(materialization);
         }
         let n = run.len();
-        let total = n
-            .checked_mul(ps)
-            .ok_or(StarryError::InvalidInput)?;
+        let total = n.checked_mul(ps).ok_or(StarryError::InvalidInput)?;
         let file_read_offset = file_start
             .checked_add((v0.as_usize() - file_vaddr_base.as_usize()) as u64)
             .ok_or(StarryError::InvalidInput)?;
@@ -1039,9 +1010,7 @@ impl CowBackend {
         let owner = self.prepare_cow_fault(space_id, vaddr, paddr, leaf_size, vma_flags)?;
         let apply_result = match owner.transition {
             super::PteOwnerTransition::Updated => pt.protect_page(vaddr, vma_flags),
-            super::PteOwnerTransition::Replaced => {
-                pt.remap_page(vaddr, owner.paddr, vma_flags)
-            }
+            super::PteOwnerTransition::Replaced => pt.remap_page(vaddr, owner.paddr, vma_flags),
             super::PteOwnerTransition::Installed => return Err(StarryError::BadState),
         };
         match apply_result {
@@ -1161,9 +1130,7 @@ impl CowBackend {
         let source = self
             .file
             .as_ref()
-            .map(|(file, file_vaddr_base, file_start, ..)| {
-                (file, *file_vaddr_base, *file_start)
-            });
+            .map(|(file, file_vaddr_base, file_start, ..)| (file, *file_vaddr_base, *file_start));
         if let Some((file, file_vaddr_base, file_start)) = source {
             // Same invariant as `alloc_new_at`: a virtual address maps to
             // `file_start + (vaddr - file_vaddr_base)`, clamped to file_start
@@ -1175,9 +1142,9 @@ impl CowBackend {
             let offset = file_start
                 .checked_add(relative)
                 .ok_or(StarryError::InvalidInput)?;
-            let offset = align_down_4k(
-                usize::try_from(offset).map_err(|_| StarryError::InvalidInput)?,
-            ) as u64;
+            let offset =
+                align_down_4k(usize::try_from(offset).map_err(|_| StarryError::InvalidInput)?)
+                    as u64;
             return super::file::mapping_file_info(file.location(), offset, self.shared);
         }
         if let Some(name) = &self.name {
@@ -1255,9 +1222,7 @@ impl Drop for CowChildCloneTransaction<'_> {
             // MappingSlot keeps the PageObject alive while this child PTE is
             // cleared and synchronously invalidated.
             if !self.rollback.rollback_page(vaddr, page_size) {
-                warn!(
-                    "could not confirm COW child rollback for frame {paddr:?} at {vaddr:?}"
-                );
+                warn!("could not confirm COW child rollback for frame {paddr:?} at {vaddr:?}");
             }
         }
     }
@@ -1279,7 +1244,8 @@ impl PageTableCowCloneRollback<'_> {
         };
         if page_size != expected_size {
             warn!(
-                "COW rollback encountered page size {page_size} (expected {expected_size}) at {vaddr:?}"
+                "COW rollback encountered page size {page_size} (expected {expected_size}) at \
+                 {vaddr:?}"
             );
             return false;
         }
@@ -1288,9 +1254,7 @@ impl PageTableCowCloneRollback<'_> {
             return false;
         }
         if let Err(err) = crate::mm::flush_tlb_range_sync(vaddr, page_size) {
-            warn!(
-                "failed to invalidate cloned COW page {vaddr:?} during rollback: {err}"
-            );
+            warn!("failed to invalidate cloned COW page {vaddr:?} during rollback: {err}");
             return false;
         }
         true
@@ -1304,12 +1268,8 @@ impl MappingExecution for CowBackend {
 
     fn vma_descriptor(&self, area_start: VirtAddr) -> VmaDescriptor {
         let (source, source_offset) = if let Some((file, base, file_start, _)) = &self.file {
-            let relative = area_start
-                .as_usize()
-                .saturating_sub(base.as_usize());
-            let offset = file_start
-                .checked_add(relative as u64)
-                .unwrap_or(u64::MAX);
+            let relative = area_start.as_usize().saturating_sub(base.as_usize());
+            let offset = file_start.checked_add(relative as u64).unwrap_or(u64::MAX);
             // `inode` is a stable VFS identity and, unlike an `Arc` address,
             // remains meaningful after a mapping is cloned or relocated.  A
             // mount-specific epoch can be added by the filesystem adapter
@@ -1322,16 +1282,11 @@ impl MappingExecution for CowBackend {
                     shared: false,
                 }),
                 PageOffset::new(
-                    usize::try_from(offset)
-                        .unwrap_or(usize::MAX)
-                        & !(PAGE_SIZE_4K - 1),
+                    usize::try_from(offset).unwrap_or(usize::MAX) & !(PAGE_SIZE_4K - 1),
                 ),
             )
         } else {
-            (
-                MappingSource::Anonymous(AnonymousSource),
-                PageOffset::ZERO,
-            )
+            (MappingSource::Anonymous(AnonymousSource), PageOffset::ZERO)
         };
         VmaDescriptor {
             mapping: self.mapping_id,
@@ -1363,10 +1318,7 @@ impl MappingExecution for CowBackend {
         // Validate the currently empty materialized view at PTE granularity so
         // a partial mremap can publish a 4 KiB VMA that still prefers THP for
         // future fully aligned, completely empty policy units.
-        if range.is_empty()
-            || !range.start.is_aligned_4k()
-            || !range.end.is_aligned_4k()
-        {
+        if range.is_empty() || !range.start.is_aligned_4k() || !range.end.is_aligned_4k() {
             return false;
         }
         pt.walk_occupied_range(range.start, range.end)
@@ -1392,11 +1344,7 @@ impl MappingExecution for CowBackend {
         self.validate_materialized_leaf_range(range, pt)
     }
 
-    fn unmap(
-        &self,
-        range: VirtAddrRange,
-        pt: &mut PageTable,
-    ) -> StarryResult {
+    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTable) -> StarryResult {
         debug!("Cow::unmap: {range:?}");
         for (leaf_start, _) in occupied_leaf_ranges(range, pt)? {
             self.unmap_page(leaf_start, pt)?;
@@ -1424,10 +1372,7 @@ impl MappingExecution for CowBackend {
         let split_base_fault = self.page_size > PAGE_SIZE_4K
             && preferred_leaf_size == PAGE_SIZE_4K
             && range.size() == PAGE_SIZE_4K;
-        if preferred_leaf_size != self.page_size
-            && !transparent_huge_fault
-            && !split_base_fault
-        {
+        if preferred_leaf_size != self.page_size && !transparent_huge_fault && !split_base_fault {
             return Err(StarryError::OperationNotSupported);
         }
 
@@ -1443,13 +1388,8 @@ impl MappingExecution for CowBackend {
                 if access_flags.contains(MappingFlags::WRITE)
                     && !page_flags.contains(MappingFlags::WRITE)
                 {
-                    let owner = self.prepare_cow_fault(
-                        space_id,
-                        range.start,
-                        paddr,
-                        page_size,
-                        flags,
-                    )?;
+                    let owner =
+                        self.prepare_cow_fault(space_id, range.start, paddr, page_size, flags)?;
                     Ok(FaultMaterialization::with_owner(1, owner, flags))
                 } else {
                     Ok(FaultMaterialization::satisfied(usize::from(
@@ -1473,11 +1413,8 @@ impl MappingExecution for CowBackend {
                         },
                     )?
                 } else {
-                    let page = self.prepare_new_at_sized(
-                        range.start,
-                        preferred_leaf_size,
-                        access_flags,
-                    )?;
+                    let page =
+                        self.prepare_new_at_sized(range.start, preferred_leaf_size, access_flags)?;
                     (range.start, preferred_leaf_size, page)
                 };
                 let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
@@ -1514,10 +1451,7 @@ impl MappingExecution for CowBackend {
         let split_base_fault = self.page_size > PAGE_SIZE_4K
             && preferred_leaf_size == PAGE_SIZE_4K
             && range.size() == PAGE_SIZE_4K;
-        if preferred_leaf_size != self.page_size
-            && !transparent_huge_fault
-            && !split_base_fault
-        {
+        if preferred_leaf_size != self.page_size && !transparent_huge_fault && !split_base_fault {
             return Err(StarryError::OperationNotSupported);
         }
 
@@ -1543,20 +1477,14 @@ impl MappingExecution for CowBackend {
                         )?);
                         materialization.set_satisfied_pages(1);
                     } else {
-                        materialization.set_satisfied_pages(usize::from(
-                            page_flags.contains(access_flags),
-                        ));
+                        materialization
+                            .set_satisfied_pages(usize::from(page_flags.contains(access_flags)));
                     }
                     Ok(materialization)
                 }
                 Err(PagingError::NotMapped) => {
-                    let page = self.alloc_new_at_sized(
-                        addr,
-                        PAGE_SIZE_4K,
-                        flags,
-                        access_flags,
-                        pt,
-                    )?;
+                    let page =
+                        self.alloc_new_at_sized(addr, PAGE_SIZE_4K, flags, access_flags, pt)?;
                     let mut materialization = PteMaterialization::with_capacity(1)?;
                     materialization.push(PreparedPteOwner::installed(
                         addr,
@@ -1574,8 +1502,7 @@ impl MappingExecution for CowBackend {
             };
         }
         // Batch consecutive not-mapped FILE-backed pages into one readahead read.
-        let addrs: alloc::vec::Vec<VirtAddr> =
-            pages_in(range, preferred_leaf_size)?.collect();
+        let addrs: alloc::vec::Vec<VirtAddr> = pages_in(range, preferred_leaf_size)?.collect();
         let mut materialization = PteMaterialization::with_capacity(addrs.len())?;
         let mut i = 0;
         while i < addrs.len() {
@@ -1588,14 +1515,9 @@ impl MappingExecution for CowBackend {
                     if access_flags.contains(MappingFlags::WRITE)
                         && !page_flags.contains(MappingFlags::WRITE)
                     {
-                        materialization.push(self.handle_cow_fault(
-                            space_id,
-                            addr,
-                            paddr,
-                            page_size,
-                            flags,
-                            pt,
-                        )?);
+                        materialization.push(
+                            self.handle_cow_fault(space_id, addr, paddr, page_size, flags, pt)?,
+                        );
                         materialization.increment_satisfied(1)?;
                     } else if page_flags.contains(access_flags) {
                         materialization.increment_satisfied(1)?;
@@ -1705,10 +1627,7 @@ impl MappingExecution for CowBackend {
             materialization.increment_satisfied(page_size / PAGE_SIZE_4K)?;
         }
         transaction.commit();
-        Ok((
-            MappingOperation::from_cow(self.clone()),
-            materialization,
-        ))
+        Ok((MappingOperation::from_cow(self.clone()), materialization))
     }
 
     fn split(&mut self, align_diff: usize) -> Option<MappingOperation> {
@@ -1960,8 +1879,8 @@ fn cow_try_clone_publishes_parent_and_child_for_test() -> bool {
             )
             && child.mapping_slots.len() == 1
             && page.mapping_refs() == 2;
-        let child_cleared = child.reset_uninstalled_for_loader().is_ok()
-            && page.mapping_refs() == 1;
+        let child_cleared =
+            child.reset_uninstalled_for_loader().is_ok() && page.mapping_refs() == 1;
         (published, child_cleared)
     };
     let parent_cleared = parent.reset_uninstalled_for_loader().is_ok() && page.mapping_refs() == 0;
@@ -1993,8 +1912,7 @@ fn cow_fault_unpublished_commit_failure_rolls_back_for_test() -> bool {
     aspace.mutation_gate.fail_next_commit_before_publish();
     let first = aspace.handle_page_fault_result(
         start,
-        ax_runtime::hal::trap::PageFaultFlags::READ
-            | ax_runtime::hal::trap::PageFaultFlags::USER,
+        ax_runtime::hal::trap::PageFaultFlags::READ | ax_runtime::hal::trap::PageFaultFlags::USER,
     );
     let rolled_back = matches!(first, super::super::FaultResult::Retry)
         && matches!(aspace.pt.query(start), Err(PagingError::NotMapped))
@@ -2255,7 +2173,7 @@ fn munmap_unpublished_commit_restores_mapping_preimage_for_test() -> bool {
     {
         return false;
     }
-    let Ok((paddr, _, _)) = aspace.pt.query(start) else {
+    let Ok((paddr, ..)) = aspace.pt.query(start) else {
         let _ = aspace.reset_uninstalled_for_loader();
         return false;
     };
@@ -2343,7 +2261,7 @@ fn discard_unpublished_commit_restores_resident_page_for_test() -> bool {
     {
         return false;
     }
-    let Ok((paddr, _, _)) = aspace.pt.query(start) else {
+    let Ok((paddr, ..)) = aspace.pt.query(start) else {
         let _ = aspace.reset_uninstalled_for_loader();
         return false;
     };
@@ -2395,7 +2313,10 @@ fn extend_unpublished_commit_restores_vma_end_for_test() -> bool {
             .lookup(start)
             .is_some_and(|vma| vma.range.end == start + PAGE_SIZE_4K)
         && aspace.vma_root.lookup(start + PAGE_SIZE_4K).is_none()
-        && matches!(aspace.pt.query(start + PAGE_SIZE_4K), Err(PagingError::NotMapped));
+        && matches!(
+            aspace.pt.query(start + PAGE_SIZE_4K),
+            Err(PagingError::NotMapped)
+        );
     let cleared = aspace.reset_uninstalled_for_loader().is_ok();
     restored && cleared
 }
@@ -2426,7 +2347,7 @@ fn mremap_move_uses_one_receipt_and_preserves_max_rights_for_test() -> bool {
     {
         return false;
     }
-    let Ok((frame, _, _)) = aspace.pt.query(src) else {
+    let Ok((frame, ..)) = aspace.pt.query(src) else {
         let _ = aspace.reset_uninstalled_for_loader();
         return false;
     };
@@ -2458,9 +2379,10 @@ fn mremap_move_uses_one_receipt_and_preserves_max_rights_for_test() -> bool {
                 moved_frame == frame && flags == current && size == PAGE_SIZE_4K
             })
         && aspace.vma_root.lookup(src).is_none()
-        && aspace.vma_root.lookup(target).is_some_and(|vma| {
-            vma.rights == current && vma.max_rights == maximum
-        })
+        && aspace
+            .vma_root
+            .lookup(target)
+            .is_some_and(|vma| vma.rights == current && vma.max_rights == maximum)
         && aspace.mapping_slots.len() == 1;
     let cleared = aspace.reset_uninstalled_for_loader().is_ok();
     moved && cleared
@@ -2487,7 +2409,7 @@ fn mremap_unpublished_commit_restores_both_ranges_for_test() -> bool {
     {
         return false;
     }
-    let Ok((frame, _, _)) = aspace.pt.query(src) else {
+    let Ok((frame, ..)) = aspace.pt.query(src) else {
         let _ = aspace.reset_uninstalled_for_loader();
         return false;
     };
@@ -2577,10 +2499,7 @@ fn partial_thp_mremap_moves_one_subpage_without_copy_for_test() -> bool {
         let _ = aspace.reset_uninstalled_for_loader();
         return false;
     };
-    let Some(mapping_id) = aspace
-        .find_area_snapshot(start)
-        .map(|vma| vma.group.id)
-    else {
+    let Some(mapping_id) = aspace.find_area_snapshot(start).map(|vma| vma.group.id) else {
         let _ = aspace.reset_uninstalled_for_loader();
         return false;
     };
@@ -2631,8 +2550,7 @@ fn partial_thp_mremap_moves_one_subpage_without_copy_for_test() -> bool {
             .vma_root
             .lookup(target)
             .is_some_and(|vma| vma.group.id == mapping_id);
-    let cleared = aspace.reset_uninstalled_for_loader().is_ok()
-        && page.mapping_refs() == 0;
+    let cleared = aspace.reset_uninstalled_for_loader().is_ok() && page.mapping_refs() == 0;
     graph_moved && cleared
 }
 
@@ -2662,9 +2580,7 @@ fn huge_mapping_publishes_a_bound_split_deposit_for_test() -> bool {
     let deposited = aspace
         .mapping_slots
         .get(&key)
-        .is_some_and(|slot| {
-            slot.page_order == PageOrder::new(9) && slot.has_huge_split_deposit()
-        });
+        .is_some_and(|slot| slot.page_order == PageOrder::new(9) && slot.has_huge_split_deposit());
     let cleared = aspace.reset_uninstalled_for_loader().is_ok();
     deposited && cleared
 }
@@ -2733,24 +2649,19 @@ fn transparent_huge_allocation_falls_back_to_faulting_base_page_for_test() -> bo
     .expect("valid transparent-huge fault request");
     let narrowed_request = preferred_request.into_base_page_fallback();
     let mut attempts = Vec::new();
-    let outcome = allocate_transparent_fault_with(
-        preferred_start,
-        fault,
-        PAGE_SIZE_2M,
-        |address, size| {
+    let outcome =
+        allocate_transparent_fault_with(preferred_start, fault, PAGE_SIZE_2M, |address, size| {
             attempts.push((address, size));
             if size == PAGE_SIZE_2M {
                 Err(StarryError::NoMemory)
             } else {
                 Ok(0x5a_u8)
             }
-        },
-    );
+        });
     outcome.is_ok_and(|(address, size, value)| {
         address == fault.align_down_4k() && size == PAGE_SIZE_4K && value == 0x5a
     }) && narrowed_request.is_some_and(|request| {
-        request.range()
-            == VirtAddrRange::from_start_size(fault.align_down_4k(), PAGE_SIZE_4K)
+        request.range() == VirtAddrRange::from_start_size(fault.align_down_4k(), PAGE_SIZE_4K)
             && request.preferred_leaf_size() == PAGE_SIZE_4K
             && request.fault_address() == Some(fault)
             && request.fallback() == FaultFallback::Forbidden
@@ -2793,9 +2704,7 @@ fn unpublished_huge_unmap_restores_its_split_deposit_for_test() -> bool {
         && aspace
             .pt
             .query(start)
-            .is_ok_and(|(_, restored_flags, size)| {
-                restored_flags == flags && size == PAGE_SIZE_2M
-            })
+            .is_ok_and(|(_, restored_flags, size)| restored_flags == flags && size == PAGE_SIZE_2M)
         && aspace
             .mapping_slots
             .get(&key)
@@ -2826,9 +2735,7 @@ fn partial_huge_mprotect_splits_slots_without_copying_the_page_for_test() -> boo
         return false;
     }
 
-    let changed = aspace
-        .protect(protected, PAGE_SIZE_4K, read_only)
-        .is_ok();
+    let changed = aspace.protect(protected, PAGE_SIZE_4K, read_only).is_ok();
     let protected_query = aspace.pt.query(protected);
     let neighbor_query = aspace.pt.query(start);
     let ptes_split = protected_query
@@ -2863,7 +2770,11 @@ fn partial_huge_mprotect_unpublished_commit_restores_huge_leaf_for_test() -> boo
             PAGE_SIZE_2M,
             writable,
             true,
-            MappingOperation::new_alloc(start, PAGE_SIZE_2M, "[partial-huge-mprotect-rollback-test]"),
+            MappingOperation::new_alloc(
+                start,
+                PAGE_SIZE_2M,
+                "[partial-huge-mprotect-rollback-test]",
+            ),
         )
         .is_err()
     {
@@ -2885,20 +2796,15 @@ fn partial_huge_mprotect_unpublished_commit_restores_huge_leaf_for_test() -> boo
     let original_epoch = aspace.vm_epoch();
 
     aspace.mutation_gate.fail_next_commit_before_publish();
-    let rejected = aspace
-        .protect(protected, PAGE_SIZE_4K, readonly)
-        .is_err();
+    let rejected = aspace.protect(protected, PAGE_SIZE_4K, readonly).is_err();
     let restored_slot = aspace.mapping_slots.get(&key);
     let restored = rejected
         && original_size == PAGE_SIZE_2M
         && aspace.vm_epoch() == original_epoch
         && !aspace.mutation_gate.needs_repair()
-        && aspace
-            .pt
-            .query(start)
-            .is_ok_and(|(paddr, flags, size)| {
-                paddr == original_paddr && flags == writable && size == PAGE_SIZE_2M
-            })
+        && aspace.pt.query(start).is_ok_and(|(paddr, flags, size)| {
+            paddr == original_paddr && flags == writable && size == PAGE_SIZE_2M
+        })
         && aspace
             .find_area_snapshot(protected)
             .is_some_and(|vma| vma.rights == writable && vma.range.size() == PAGE_SIZE_2M)
@@ -2993,7 +2899,7 @@ fn partial_huge_munmap_unpublished_commit_restores_huge_leaf_for_test() -> bool 
         let _ = aspace.reset_uninstalled_for_loader();
         return false;
     };
-    let Ok((original_paddr, _, _)) = aspace.pt.query(start) else {
+    let Ok((original_paddr, ..)) = aspace.pt.query(start) else {
         let _ = aspace.reset_uninstalled_for_loader();
         return false;
     };
@@ -3074,14 +2980,9 @@ fn split_exclusive_thp_write_reuses_subpage_without_copy_for_test() -> bool {
     let reused = handled
         && original_size == PAGE_SIZE_4K
         && !original_flags.contains(MappingFlags::WRITE)
-        && aspace
-            .pt
-            .query(target)
-            .is_ok_and(|(paddr, flags, size)| {
-                paddr == original_paddr
-                    && flags.contains(MappingFlags::WRITE)
-                    && size == PAGE_SIZE_4K
-            })
+        && aspace.pt.query(target).is_ok_and(|(paddr, flags, size)| {
+            paddr == original_paddr && flags.contains(MappingFlags::WRITE) && size == PAGE_SIZE_4K
+        })
         && aspace.mapping_slots.len() == PAGE_SIZE_2M / PAGE_SIZE_4K
         && aspace.mapping_slots.get(&target_key).is_some_and(|slot| {
             Arc::ptr_eq(slot, &original_slot)
@@ -3112,9 +3013,7 @@ fn forked_split_thp_write_copies_only_faulting_subpage_for_test() -> bool {
             MappingOperation::new_alloc(start, PAGE_SIZE_2M, "[forked-split-thp-write-test]"),
         )
         .is_err()
-        || parent
-            .protect(protected, PAGE_SIZE_4K, readonly)
-            .is_err()
+        || parent.protect(protected, PAGE_SIZE_4K, readonly).is_err()
     {
         let _ = parent.reset_uninstalled_for_loader();
         return false;
@@ -3154,22 +3053,12 @@ fn forked_split_thp_write_copies_only_faulting_subpage_for_test() -> bool {
             && child.mapping_slots.len() == PAGE_SIZE_2M / PAGE_SIZE_4K
             && shared_page.mapping_refs() == (2 * PAGE_SIZE_2M / PAGE_SIZE_4K) as u32
             && shared_page.rmap.snapshot().len() == 2 * PAGE_SIZE_2M / PAGE_SIZE_4K
-            && parent
-                .pt
-                .query(written)
-                .is_ok_and(|(paddr, flags, size)| {
-                    paddr == old_paddr
-                        && !flags.contains(MappingFlags::WRITE)
-                        && size == PAGE_SIZE_4K
-                })
-            && child
-                .pt
-                .query(written)
-                .is_ok_and(|(paddr, flags, size)| {
-                    paddr == old_paddr
-                        && !flags.contains(MappingFlags::WRITE)
-                        && size == PAGE_SIZE_4K
-                });
+            && parent.pt.query(written).is_ok_and(|(paddr, flags, size)| {
+                paddr == old_paddr && !flags.contains(MappingFlags::WRITE) && size == PAGE_SIZE_4K
+            })
+            && child.pt.query(written).is_ok_and(|(paddr, flags, size)| {
+                paddr == old_paddr && !flags.contains(MappingFlags::WRITE) && size == PAGE_SIZE_4K
+            });
         let handled = cloned_graph
             && matches!(
                 child.handle_page_fault_result(
@@ -3210,8 +3099,8 @@ fn forked_split_thp_write_copies_only_faulting_subpage_for_test() -> bool {
             && shared_page.mapping_refs() == (PAGE_SIZE_2M / PAGE_SIZE_4K) as u32;
         (copied_one_subpage, child_cleared)
     };
-    let parent_cleared = parent.reset_uninstalled_for_loader().is_ok()
-        && shared_page.mapping_refs() == 0;
+    let parent_cleared =
+        parent.reset_uninstalled_for_loader().is_ok() && shared_page.mapping_refs() == 0;
     copied_one_subpage && child_cleared && parent_cleared
 }
 
@@ -3234,9 +3123,7 @@ fn discarded_split_thp_refaults_only_one_base_page_for_test() -> bool {
             MappingOperation::new_alloc(start, PAGE_SIZE_2M, "[discarded-split-thp-test]"),
         )
         .is_err()
-        || aspace
-            .protect(protected, PAGE_SIZE_4K, readonly)
-            .is_err()
+        || aspace.protect(protected, PAGE_SIZE_4K, readonly).is_err()
     {
         let _ = aspace.reset_uninstalled_for_loader();
         return false;
@@ -3250,10 +3137,7 @@ fn discarded_split_thp_refaults_only_one_base_page_for_test() -> bool {
         let _ = aspace.reset_uninstalled_for_loader();
         return false;
     };
-    let Some(mapping_id) = aspace
-        .find_area_snapshot(discarded)
-        .map(|vma| vma.group.id)
-    else {
+    let Some(mapping_id) = aspace.find_area_snapshot(discarded).map(|vma| vma.group.id) else {
         let _ = aspace.reset_uninstalled_for_loader();
         return false;
     };
@@ -3282,14 +3166,11 @@ fn discarded_split_thp_refaults_only_one_base_page_for_test() -> bool {
         return false;
     };
     let refaulted_one = handled
-        && aspace
-            .pt
-            .query(discarded)
-            .is_ok_and(|(paddr, _, size)| {
-                paddr != old_paddr
-                    && size == PAGE_SIZE_4K
-                    && unsafe { phys_to_virt(paddr).as_ptr().read_volatile() } == 0
-            })
+        && aspace.pt.query(discarded).is_ok_and(|(paddr, _, size)| {
+            paddr != old_paddr
+                && size == PAGE_SIZE_4K
+                && unsafe { phys_to_virt(paddr).as_ptr().read_volatile() } == 0
+        })
         && new_slot.mapping == mapping_id
         && new_slot.page.frame().size() == PAGE_SIZE_4K
         && new_slot.page.mapping_refs() == 1
@@ -3403,8 +3284,7 @@ fn stale_prepared_fault_cannot_reinstall_unmapped_page_for_test() -> bool {
     }
     let plan = match aspace.plan_page_fault(
         start,
-        ax_runtime::hal::trap::PageFaultFlags::READ
-            | ax_runtime::hal::trap::PageFaultFlags::USER,
+        ax_runtime::hal::trap::PageFaultFlags::READ | ax_runtime::hal::trap::PageFaultFlags::USER,
         super::super::TransparentHugePageMode::default(),
     ) {
         Ok(plan) => plan,
@@ -3477,7 +3357,8 @@ mod tests {
         assert_eq!(
             super::cow_page_index_reservation_capacity(0, 1, 4).unwrap(),
             4,
-            "compacting one tombstone must size storage from live entries, not double retired capacity",
+            "compacting one tombstone must size storage from live entries, not double retired \
+             capacity",
         );
         assert_eq!(
             super::cow_page_index_reservation_capacity(4, 4, 4).unwrap(),
@@ -3633,9 +3514,7 @@ mod tests {
     #[cfg(all(test, axtest))]
     #[axtest::axtest]
     fn transparent_huge_allocation_falls_back_to_faulting_base_page() {
-        assert!(
-            super::transparent_huge_allocation_falls_back_to_faulting_base_page_for_test()
-        );
+        assert!(super::transparent_huge_allocation_falls_back_to_faulting_base_page_for_test());
     }
 
     #[cfg(all(test, axtest))]
@@ -3659,9 +3538,7 @@ mod tests {
     #[cfg(all(test, axtest))]
     #[axtest::axtest]
     fn partial_huge_mprotect_unpublished_commit_restores_huge_leaf() {
-        assert!(
-            super::partial_huge_mprotect_unpublished_commit_restores_huge_leaf_for_test()
-        );
+        assert!(super::partial_huge_mprotect_unpublished_commit_restores_huge_leaf_for_test());
     }
 
     #[cfg(all(test, axtest))]
@@ -3673,9 +3550,7 @@ mod tests {
     #[cfg(all(test, axtest))]
     #[axtest::axtest]
     fn partial_huge_munmap_unpublished_commit_restores_huge_leaf() {
-        assert!(
-            super::partial_huge_munmap_unpublished_commit_restores_huge_leaf_for_test()
-        );
+        assert!(super::partial_huge_munmap_unpublished_commit_restores_huge_leaf_for_test());
     }
 
     #[cfg(all(test, axtest))]

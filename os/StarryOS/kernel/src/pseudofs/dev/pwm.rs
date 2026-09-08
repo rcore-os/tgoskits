@@ -8,7 +8,7 @@ use crate::{
         DirMaker, DirectRwFsFileOps, NodeOpsMux, RwFile, SimpleDir, SimpleDirOps, SimpleFile,
         SimpleFileOperation, SimpleFileOps, SimpleFs, SpecialFsFile,
     },
-    sync::Mutex,
+    sync::PiMutex,
 };
 
 mod platform;
@@ -61,8 +61,8 @@ impl PwmSysfsState {
     }
 }
 
-static PWM_SYSFS_STATE: LazyLock<Mutex<PwmSysfsState>> =
-    LazyLock::new(|| Mutex::new(PwmSysfsState::new()));
+static PWM_SYSFS_STATE: LazyLock<PiMutex<PwmSysfsState>> =
+    LazyLock::new(|| PiMutex::new(PwmSysfsState::new()));
 
 impl PwmAttrFile {
     fn new(ops: impl SimpleFileOps) -> Self {

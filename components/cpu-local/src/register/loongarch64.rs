@@ -5,6 +5,10 @@ pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentMo
     unikernel_tls: CurrentContextSource::RuntimeAnchor,
 };
 
+pub(super) struct Backend;
+
+impl ArchitectureRegisterBackend for Backend {}
+
 pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
     Ok(())
 }

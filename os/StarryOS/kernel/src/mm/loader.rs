@@ -6,7 +6,7 @@ use core::{ffi::CStr, iter, mem::size_of};
 use ax_fs_ng::vfs::{CachedFile, FileBackend};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, paging::MappingFlags};
-use axfs_ng_vfs::Location;
+use axfs_ng_vfs::{Location, NodeType};
 use kernel_elf_parser::{AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser};
 use ouroboros::self_referencing;
 use uluru::LRUCache;
@@ -19,6 +19,7 @@ use crate::{
         aspace::{AddrSpace, AddressSpaceId, MappingOperation, VmEpoch},
     },
     sync::Mutex,
+    task::Cred,
 };
 
 /// Largest argv/envp stack image accepted by execve.
@@ -147,7 +148,7 @@ pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> StarryResult {
         // SAFETY: the global kernel address space outlives every user address
         // space, whose managed regions are restricted to user-space addresses.
         unsafe { _aspace.share_kernel_root_entries_from(kspace.root_entry_share()) }
-        .map_err(|_| StarryError::BadState)?;
+            .map_err(|_| StarryError::BadState)?;
     }
     Ok(())
 }
@@ -394,8 +395,7 @@ fn executable_data_layout(elf: &ELFParser<'_>) -> StarryResult<(usize, usize)> {
             .ok_or(StarryError::MalformedExecutable)?;
         let file_end = segment_start
             .checked_add(
-                usize::try_from(header.file_size)
-                    .map_err(|_| StarryError::MalformedExecutable)?,
+                usize::try_from(header.file_size).map_err(|_| StarryError::MalformedExecutable)?,
             )
             .ok_or(StarryError::MalformedExecutable)?;
         start_data = start_data.max(segment_start);
@@ -691,7 +691,12 @@ impl ElfLoader {
         Self(LRUCache::new())
     }
 
-    fn load(&mut self, uspace: &mut AddrSpace, loc: Location) -> StarryResult<LoadResult> {
+    fn load(
+        &mut self,
+        uspace: &mut AddrSpace,
+        loc: Location,
+        cred: &Cred,
+    ) -> StarryResult<LoadResult> {
         if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
             match ElfCacheEntry::load(loc)? {
                 Ok(e) => {
@@ -741,6 +746,7 @@ impl ElfLoader {
 
         let (elf, ldso) = if let Some(ldso) = ldso {
             let loc = ax_fs_ng::vfs::current_fs_context().lock().resolve(ldso)?;
+            check_executable_access(&loc, cred)?;
             if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
                 let e = ElfCacheEntry::load(loc)?.map_err(|_| StarryError::InvalidInput)?;
                 self.0.insert(e);
@@ -842,9 +848,10 @@ pub fn load_user_app(
     path: &str,
     args: &[String],
     envs: &[String],
+    cred: &Cred,
 ) -> StarryResult<LoadedUserImage> {
     let result = validate_exec_arg_size(args, envs).and_then(|()| {
-        load_user_app_with_depth(&mut builder.aspace, loc, path, args, envs, 0)
+        load_user_app_with_depth(&mut builder.aspace, loc, path, args, envs, cred, 0)
     });
     match result {
         Ok((entry, stack, auxv)) => Ok(LoadedUserImage {
@@ -863,12 +870,37 @@ pub fn load_user_app(
                 Ok(()) => Err(load_error),
                 Err(abort_error) => {
                     warn!(
-                        "failed to abort unpublished user image after load error {load_error}: {abort_error}"
+                        "failed to abort unpublished user image after load error {load_error}: \
+                         {abort_error}"
                     );
                     Err(abort_error)
                 }
             }
         }
+    }
+}
+
+/// Checks each executable and interpreter even when its ELF image is cached.
+fn check_executable_access(loc: &Location, cred: &Cred) -> StarryResult<()> {
+    let metadata = loc.metadata()?;
+    if metadata.node_type != NodeType::RegularFile
+        || loc.mountpoint().mount_flags() & linux_raw_sys::general::MS_NOEXEC != 0
+    {
+        return Err(StarryError::PermissionDenied);
+    }
+    let mode = metadata.mode.bits();
+    let selected = if cred.fsuid == metadata.uid {
+        mode >> 6
+    } else if cred.fsgid == metadata.gid || cred.groups.contains(&metadata.gid) {
+        mode >> 3
+    } else {
+        mode
+    };
+    // CAP_DAC_OVERRIDE may bypass DAC only if some execute bit is set.
+    if selected & 1 != 0 || (mode & 0o111 != 0 && cred.has_cap_dac_override()) {
+        Ok(())
+    } else {
+        Err(StarryError::PermissionDenied)
     }
 }
 
@@ -878,32 +910,12 @@ fn load_user_app_with_depth(
     path: &str,
     args: &[String],
     envs: &[String],
+    cred: &Cred,
     interpreter_depth: usize,
 ) -> StarryResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
-    // `/proc/self/exe` is available in procfs; busybox can `readlink` it
-    // to re-exec itself as a shell on ENOEXEC, provided the busybox build
-    // includes that fallback (Alpine's prebuilt binary may not).
-    if path.ends_with(".sh") {
-        if interpreter_depth >= MAX_INTERPRETER_RECURSION {
-            return Err(StarryError::FilesystemLoop);
-        }
-        let new_args: Vec<String> = iter::once("/bin/sh".to_owned())
-            .chain(args.iter().cloned())
-            .collect();
-        let sh = ax_fs_ng::vfs::current_fs_context()
-            .lock()
-            .resolve("/bin/sh")?;
-        return load_user_app_with_depth(
-            uspace,
-            sh,
-            "/bin/sh",
-            &new_args,
-            envs,
-            interpreter_depth + 1,
-        );
-    }
+    check_executable_access(&loc, cred)?;
 
-    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc)? } {
+    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc, cred)? } {
         Ok((entry, auxv)) => (entry, auxv),
         Err(data) => {
             if data.starts_with(b"#!") {
@@ -933,6 +945,7 @@ fn load_user_app_with_depth(
                     &new_args[0],
                     &new_args,
                     envs,
+                    cred,
                     interpreter_depth + 1,
                 );
             }

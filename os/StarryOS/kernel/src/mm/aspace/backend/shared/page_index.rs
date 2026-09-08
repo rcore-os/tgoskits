@@ -150,7 +150,10 @@ mod tests {
         let mut first_path = SharedPagePath::prepare(0x10, index.missing_level(0x10)).unwrap();
         let mut stale_path = SharedPagePath::prepare(0x20, index.missing_level(0x20)).unwrap();
         assert!(index.insert(0x10, first.clone(), &mut first_path).is_ok());
-        let returned = index.insert(0x20, sibling.clone(), &mut stale_path).err().unwrap();
+        let returned = index
+            .insert(0x20, sibling.clone(), &mut stale_path)
+            .err()
+            .unwrap();
         assert!(Arc::ptr_eq(&returned, &sibling));
         assert!(index.get(0x20).is_none());
         assert!(Arc::ptr_eq(index.get(0x10).unwrap(), &first));
@@ -168,7 +171,10 @@ mod tests {
         let mut first_path = SharedPagePath::prepare(0xff, index.missing_level(0xff)).unwrap();
         let mut stale_path = SharedPagePath::prepare(0xff, index.missing_level(0xff)).unwrap();
         assert!(index.insert(0xff, winner.clone(), &mut first_path).is_ok());
-        let selected = index.insert(0xff, loser.clone(), &mut stale_path).ok().unwrap();
+        let selected = index
+            .insert(0xff, loser.clone(), &mut stale_path)
+            .ok()
+            .unwrap();
         assert!(Arc::ptr_eq(&selected.winner, &winner));
         assert!(Arc::ptr_eq(selected.loser.as_ref().unwrap(), &loser));
         assert!(Arc::ptr_eq(index.get(0xff).unwrap(), &winner));

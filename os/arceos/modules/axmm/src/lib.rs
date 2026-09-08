@@ -12,6 +12,7 @@ mod aspace;
 mod backend;
 mod error;
 mod kernel_alloc;
+mod tlb;
 
 use ax_hal::{
     mem::{IomapAttrs, IomapDecision, IomapError, MemRegionFlags, phys_to_virt},
@@ -25,7 +26,6 @@ use ax_sync::SpinLock;
 pub use self::aspace::RootEntryShare;
 pub use self::{
     aspace::AddrSpace,
-    backend::{Backend, KernelVirtualAllocationState},
     error::{MmError, MmResult},
     kernel_alloc::{
         KernelVirtualAllocation, KernelVirtualAllocationLayout, KernelVirtualQuarantineRetry,

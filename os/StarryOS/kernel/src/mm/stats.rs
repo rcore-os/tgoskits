@@ -75,12 +75,7 @@ fn is_named_anon(path: &str) -> bool {
     path == STACK_VMA_NAME || path == HEAP_VMA_NAME
 }
 
-fn classify_vma(
-    path: &str,
-    flags: MappingFlags,
-    start: VirtAddr,
-    stack_top: usize,
-) -> VmaClass {
+fn classify_vma(path: &str, flags: MappingFlags, start: VirtAddr, stack_top: usize) -> VmaClass {
     if is_stack_vma(path, start, stack_top) {
         return VmaClass::Stack;
     }
@@ -379,9 +374,7 @@ mod tests {
             STACK_VMA_NAME,
             MappingFlags::READ | MappingFlags::WRITE,
             VirtAddrRange::new(
-                VirtAddr::from(
-                    crate::config::USER_STACK_TOP_MAX - crate::config::USER_STACK_SIZE,
-                ),
+                VirtAddr::from(crate::config::USER_STACK_TOP_MAX - crate::config::USER_STACK_SIZE),
                 VirtAddr::from(crate::config::USER_STACK_TOP_MAX),
             ),
             false,

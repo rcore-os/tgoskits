@@ -96,7 +96,13 @@ impl SignalAction {
         match self.disposition {
             SignalDisposition::Ignore => true,
             SignalDisposition::Default => {
-                matches!(signo.default_action(), DefaultSignalAction::Ignore)
+                // SIGCONT resumes the process at send time, including when
+                // blocked or ignored. Its default disposition must not also
+                // interrupt a running thread's syscall for user delivery.
+                matches!(
+                    signo.default_action(),
+                    DefaultSignalAction::Ignore | DefaultSignalAction::Continue
+                )
             }
             SignalDisposition::Handler(_) => false,
         }

@@ -2,15 +2,14 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
     any::Any,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    task::Context,
     time::Duration,
 };
 use std::sync::Mutex as StdMutex;
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, FileNodeOps, FileRangeOperation, Filesystem, FilesystemOps, FsIoEvents,
-    FsPollable, Metadata, MetadataUpdate, Mountpoint, NodeFlags, NodeOps, NodePermission, NodeType,
-    PreallocationMode, Reference, StatFs,
+    DeviceId, DirEntry, FileNodeOps, FileRangeOperation, Filesystem, FilesystemOps, Metadata,
+    MetadataUpdate, Mountpoint, NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode,
+    Reference, StatFs,
 };
 
 use super::*;
@@ -177,12 +176,17 @@ impl NodeOps for CacheTestFile {
     }
 }
 
-impl FsPollable for CacheTestFile {
-    fn poll(&self) -> FsIoEvents {
-        FsIoEvents::IN | FsIoEvents::OUT
+impl axpoll::Pollable for CacheTestFile {
+    fn poll(&self) -> axpoll::IoEvents {
+        axpoll::IoEvents::IN | axpoll::IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: axpoll::IoEvents,
+    ) {
+    }
 }
 
 impl FileNodeOps for CacheTestFile {

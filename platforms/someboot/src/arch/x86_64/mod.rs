@@ -17,6 +17,19 @@ pub(crate) use entry::_secondary_entry;
 pub use paging::Entry;
 pub use relocate::relocate;
 
+/// Control-register state installed before a CPU enters the kernel runtime.
+///
+/// This matches Linux's x86 `CR0_STATE`: paging and protected mode are active,
+/// supervisor writes honor read-only PTEs, alignment checking is available,
+/// and reset-time cache-disable state is not inherited by secondary CPUs.
+pub(super) const KERNEL_CR0_STATE: usize = x86::controlregs::Cr0::CR0_ENABLE_PAGING.bits()
+    | x86::controlregs::Cr0::CR0_ALIGNMENT_MASK.bits()
+    | x86::controlregs::Cr0::CR0_WRITE_PROTECT.bits()
+    | x86::controlregs::Cr0::CR0_NUMERIC_ERROR.bits()
+    | x86::controlregs::Cr0::CR0_EXTENSION_TYPE.bits()
+    | x86::controlregs::Cr0::CR0_MONITOR_COPROCESSOR.bits()
+    | x86::controlregs::Cr0::CR0_PROTECTED_MODE.bits();
+
 use crate::{
     ArchTrait, DCacheOp,
     mem::{self, PageTableInfo},

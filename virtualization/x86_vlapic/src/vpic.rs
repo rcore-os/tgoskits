@@ -316,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn firmware_can_reprogram_and_service_pit_irq0() {
+    fn eoi_releases_an_already_latched_pit_irq0() {
         let pic = EmulatedPic::new();
         write(&pic, MASTER_COMMAND, 0x11);
         write(&pic, MASTER_DATA, 0x68);

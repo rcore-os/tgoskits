@@ -16,11 +16,27 @@ pub struct UserVirtualAddressLayout {
     stack_top: VirtAddr,
 }
 
+// Platform address widths and the Starry ABI ceiling are immutable after
+// boot. Cache their validated intersection without allocating or retaining
+// any MM owner; each new address space still captures its own layout value.
+static PLATFORM_USER_LAYOUT: ax_lazyinit::LazyInit<UserVirtualAddressLayout> =
+    ax_lazyinit::LazyInit::new();
+
 impl UserVirtualAddressLayout {
     /// Derives the default Starry ABI layout from the platform capability.
+    #[inline]
     pub fn platform_default() -> StarryResult<Self> {
-        let platform = ax_runtime::hal::mem::virtual_address_space()
-            .map_err(|_| StarryError::Unsupported)?;
+        if let Some(layout) = PLATFORM_USER_LAYOUT.get() {
+            return Ok(*layout);
+        }
+        PLATFORM_USER_LAYOUT
+            .get_or_try_init(Self::derive_platform_default)
+            .copied()
+    }
+
+    fn derive_platform_default() -> StarryResult<Self> {
+        let platform =
+            ax_runtime::hal::mem::virtual_address_space().map_err(|_| StarryError::Unsupported)?;
         Self::from_platform_range(platform.user())
     }
 
@@ -28,10 +44,7 @@ impl UserVirtualAddressLayout {
         let policy_end = config::USER_SPACE_BASE
             .checked_add(config::USER_SPACE_MAX_SIZE)
             .ok_or(StarryError::BadState)?;
-        let start = platform
-            .start
-            .as_usize()
-            .max(config::USER_SPACE_BASE);
+        let start = platform.start.as_usize().max(config::USER_SPACE_BASE);
         let end = platform.end.as_usize().min(policy_end);
         let range = VirtAddrRange::try_new(VirtAddr::from(start), VirtAddr::from(end))
             .filter(|range| !range.is_empty())
@@ -40,9 +53,7 @@ impl UserVirtualAddressLayout {
         let minimum_fixed_end = config::SIGNAL_TRAMPOLINE
             .checked_add(PAGE_SIZE_4K)
             .ok_or(StarryError::BadState)?;
-        if stack_top < start.saturating_add(config::USER_STACK_SIZE)
-            || minimum_fixed_end > end
-        {
+        if stack_top < start.saturating_add(config::USER_STACK_SIZE) || minimum_fixed_end > end {
             return Err(StarryError::Unsupported);
         }
         Ok(Self {
@@ -94,6 +105,9 @@ mod tests {
 
         assert_eq!(layout.task_size(), hardware_end);
         assert_eq!(layout.stack_top(), hardware_end);
-        assert_eq!(layout.range().start, VirtAddr::from(config::USER_SPACE_BASE));
+        assert_eq!(
+            layout.range().start,
+            VirtAddr::from(config::USER_SPACE_BASE)
+        );
     }
 }

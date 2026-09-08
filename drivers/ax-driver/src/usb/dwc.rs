@@ -24,7 +24,7 @@ use rdrive::{
     register::{FdtInfo, ProbeFdt},
 };
 
-use super::{ProbeFdtUsbHost, usb_kernel};
+use super::{ProbeFdtUsbHost, usb_device_dma, usb_runtime};
 use crate::mmio::iomap;
 
 const DRIVER_NAME: &str = "usb-dwc-xhci";
@@ -96,6 +96,7 @@ struct DwcResources {
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let info = probe.info();
+    let dma = usb_device_dma(crate::binding_resolver::dma_coherency_from_fdt(info));
     match prop_str(info.node.as_node(), "dr_mode") {
         Some("host") => {}
         Some(mode) => {
@@ -151,7 +152,8 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         },
         rst_list: &resources.ctrl_resets,
         params: resources.params,
-        kernel: usb_kernel(),
+        dma,
+        kernel: usb_runtime(),
     })
     .map_err(|err| {
         OnProbeError::other(format!(

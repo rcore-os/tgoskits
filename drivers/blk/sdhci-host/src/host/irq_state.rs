@@ -74,37 +74,31 @@ impl IrqState {
         }
     }
 
-    pub(crate) fn take_error_all(&self) -> u16 {
+    /// Takes the error bits owned by one request phase.
+    ///
+    /// `NORMAL_INT_ERROR` summarizes all error-status bits. Keep it pending
+    /// while another phase still owns an unconsumed error, and clear it in the
+    /// same atomic update after the last error is taken.
+    pub(crate) fn take_error(&self, mask: u16) -> u16 {
         let mut cur = self.mailbox.load(Ordering::Acquire);
         loop {
             let error = mailbox_error(cur);
-            if error == 0 {
+            let taken = error & mask;
+            if taken == 0 {
                 return 0;
             }
-            let next = pack_mailbox(mailbox_generation(cur), mailbox_normal(cur), 0);
+            let remaining = error & !mask;
+            let normal = if remaining == 0 {
+                mailbox_normal(cur) & !NORMAL_INT_ERROR
+            } else {
+                mailbox_normal(cur)
+            };
+            let next = pack_mailbox(mailbox_generation(cur), normal, remaining);
             match self
                 .mailbox
                 .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
             {
-                Ok(_) => return error,
-                Err(observed) => cur = observed,
-            }
-        }
-    }
-
-    pub(crate) fn clear_normal(&self, mask: u16) {
-        let mut cur = self.mailbox.load(Ordering::Acquire);
-        loop {
-            let next = pack_mailbox(
-                mailbox_generation(cur),
-                mailbox_normal(cur) & !mask,
-                mailbox_error(cur),
-            );
-            match self
-                .mailbox
-                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return,
+                Ok(_) => return taken,
                 Err(observed) => cur = observed,
             }
         }

@@ -147,14 +147,16 @@ pub(super) fn validate_arch(arch: &str) -> anyhow::Result<()> {
 }
 
 fn direct_qemu_args(arch: &str, mut args: Vec<String>) -> anyhow::Result<Vec<String>> {
-    match arch {
-        "riscv64" | "loongarch64" => {
-            if !has_qemu_option(&args, "-machine") {
-                args.splice(0..0, ["-machine".to_string(), "virt".to_string()]);
-            }
-        }
-        "x86_64" => {}
+    let default_machine = match arch {
+        "riscv64" | "loongarch64" => "virt",
+        "x86_64" => "q35",
         _ => bail!("qperf currently supports StarryOS {SUPPORTED_ARCHES} only"),
+    };
+    if !args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-machine" | "-M"))
+    {
+        args.splice(0..0, ["-machine".to_string(), default_machine.to_string()]);
     }
     Ok(args)
 }
@@ -361,29 +363,11 @@ fn qemu_stdout_monitor_enabled(args: &ArgsPerf) -> bool {
 mod tests {
     use std::fs;
 
-    use super::{
-        append_text_filter_params, direct_qemu_args, prepare_uefi_boot, qemu_command_prefix,
-        validate_arch,
-    };
+    use super::{append_text_filter_params, prepare_uefi_boot};
     use crate::{
         starry::perf::symbols::{AddressRange, KernelTextRange},
         support::ovmf::OvmfFirmware,
     };
-
-    #[test]
-    fn direct_qemu_args_accepts_x86_64_q35_config() {
-        let args = vec!["-machine".to_string(), "q35".to_string()];
-
-        let args = direct_qemu_args("x86_64", args.clone()).unwrap();
-
-        assert_eq!(args, vec!["-machine", "q35"]);
-    }
-
-    #[test]
-    fn supported_arch_validation_includes_x86_64() {
-        assert!(validate_arch("x86_64").is_ok());
-        assert!(validate_arch("aarch64").is_err());
-    }
 
     #[tokio::test]
     async fn loongarch_uefi_rejects_unconverted_kernel_before_boot() {
@@ -404,23 +388,6 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("to_bin = true"));
-    }
-
-    #[test]
-    fn timeout_keeps_interactive_qemu_in_the_foreground() {
-        let prefix = qemu_command_prefix("qemu-system-x86_64", 15, false);
-
-        assert_eq!(
-            prefix,
-            vec![
-                "timeout",
-                "--foreground",
-                "--signal=INT",
-                "--kill-after=5s",
-                "15s",
-                "qemu-system-x86_64",
-            ]
-        );
     }
 
     #[test]

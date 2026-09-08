@@ -225,10 +225,6 @@ mod tests {
             self.notifications.fetch_add(1, Ordering::Relaxed);
         }
 
-        fn notify_from_irq(&self) {
-            self.notify();
-        }
-
         #[track_caller]
         fn wait(&self) {
             unreachable!("the completion publisher test does not block")

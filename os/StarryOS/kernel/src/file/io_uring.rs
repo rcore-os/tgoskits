@@ -1,17 +1,18 @@
 use alloc::{borrow::Cow, sync::Arc};
-use core::{mem::size_of, task::Context};
+use core::mem::size_of;
 
 use ax_alloc::{UsageKind, global_allocator};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, align_up_4k};
 use ax_runtime::hal::mem::virt_to_phys;
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use linux_raw_sys::io_uring::{
     IORING_FEAT_RW_CUR_POS, IORING_FEAT_SUBMIT_STABLE, IORING_OFF_CQ_RING, IORING_OFF_SQ_RING,
     IORING_OFF_SQES, io_uring_params,
 };
 
 use super::FileLike;
-use crate::{StarryError, StarryResult, pseudofs::DeviceMmap, sync::Mutex};
+use crate::{StarryError, StarryResult, pseudofs::DeviceMmap, sync::PiMutex};
 
 const SQ_HEAD_OFFSET: usize = 0;
 const SQ_TAIL_OFFSET: usize = 4;
@@ -178,7 +179,7 @@ impl IoUringRings {
 
 pub struct IoUring {
     rings: Arc<IoUringRings>,
-    submit_lock: Mutex<()>,
+    submit_lock: PiMutex<()>,
     poll_cq: PollSet,
 }
 
@@ -186,7 +187,7 @@ impl IoUring {
     pub fn new(entries: u32, cq_entries: u32) -> StarryResult<Self> {
         Ok(Self {
             rings: Arc::new(IoUringRings::new(entries, cq_entries)?),
-            submit_lock: Mutex::new(()),
+            submit_lock: PiMutex::new(()),
             poll_cq: PollSet::new(),
         })
     }
@@ -310,10 +311,23 @@ impl Pollable for IoUring {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
-            // Registration happens from file poll task context.
-            unsafe { self.poll_cq.register(context.waker(), IoEvents::IN) };
+            unsafe { sink.register_shared(&self.poll_cq, IoEvents::IN) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { sink.register_exclusive(&self.poll_cq, IoEvents::IN) };
         }
     }
 }

@@ -515,7 +515,7 @@ pub struct VmxExitInfo {
 }
 
 /// VM-Entry/VM-Exit Interruption-Information Field. (SDM Vol. 3C, Section 24.8.3, 24.9.2)
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VmxInterruptInfo {
     /// Vector of interrupt or exception.
     pub vector: u8,
@@ -737,6 +737,56 @@ pub fn interrupt_exit_info() -> X86VcpuResult<VmxInterruptInfo> {
     })
 }
 
+/// Information about an event whose delivery was interrupted by a VM exit.
+pub fn idt_vectoring_info() -> X86VcpuResult<VmxInterruptInfo> {
+    let info = VmcsReadOnly32::IDT_VECTORING_INFO.read()?;
+    if !info.get_bit(31) {
+        return decode_idt_vectoring_info(info, None);
+    }
+    decode_idt_vectoring_info(
+        info,
+        info.get_bit(11)
+            .then(|| VmcsReadOnly32::IDT_VECTORING_ERR_CODE.read())
+            .transpose()?,
+    )
+}
+
+fn decode_idt_vectoring_info(
+    info: u32,
+    error_code: Option<u32>,
+) -> X86VcpuResult<VmxInterruptInfo> {
+    if !info.get_bit(31) {
+        return Ok(VmxInterruptInfo {
+            vector: 0,
+            int_type: VmxInterruptionType::External,
+            err_code: None,
+            valid: false,
+        });
+    }
+    Ok(VmxInterruptInfo {
+        vector: info.get_bits(0..8) as u8,
+        int_type: VmxInterruptionType::try_from(info.get_bits(8..11) as u8).unwrap(),
+        err_code: info.get_bit(11).then_some(error_code).flatten(),
+        valid: info.get_bit(31),
+    })
+}
+
+/// Write an already classified event into the VM-entry injection fields.
+pub fn inject_interrupt_info(
+    int_info: VmxInterruptInfo,
+    instruction_len: Option<u32>,
+) -> X86VcpuResult {
+    if let Some(err_code) = int_info.err_code {
+        VmcsControl32::VMENTRY_EXCEPTION_ERR_CODE.write(err_code)?;
+    }
+    if int_info.int_type.is_soft() {
+        VmcsControl32::VMENTRY_INSTRUCTION_LEN
+            .write(instruction_len.unwrap_or(VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN.read()?))?;
+    }
+    VmcsControl32::VMENTRY_INTERRUPTION_INFO_FIELD.write(int_info.bits())?;
+    Ok(())
+}
+
 pub fn inject_event(vector: u8, err_code: Option<u32>) -> X86VcpuResult {
     // SDM Vol. 3C, Section 24.8.3
     let err_code = if VmxInterruptionType::vector_has_error_code(vector) {
@@ -744,16 +794,7 @@ pub fn inject_event(vector: u8, err_code: Option<u32>) -> X86VcpuResult {
     } else {
         None
     };
-    let int_info = VmxInterruptInfo::from(vector, err_code);
-    if let Some(err_code) = int_info.err_code {
-        VmcsControl32::VMENTRY_EXCEPTION_ERR_CODE.write(err_code)?;
-    }
-    if int_info.int_type.is_soft() {
-        VmcsControl32::VMENTRY_INSTRUCTION_LEN
-            .write(VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN.read()?)?;
-    }
-    VmcsControl32::VMENTRY_INTERRUPTION_INFO_FIELD.write(int_info.bits())?;
-    Ok(())
+    inject_interrupt_info(VmxInterruptInfo::from(vector, err_code), None)
 }
 
 pub fn io_exit_info() -> X86VcpuResult<VmxIoExitInfo> {
@@ -845,4 +886,24 @@ pub fn apic_access_exit_info() -> X86VcpuResult<ApicAccessExitInfo> {
         access_type: ApicAccessExitType::try_from(qualification.get_bits(12..16) as u8).unwrap(),
         non_event_delivery_asynchronous: qualification.get_bit(16),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_idt_vectoring_info_ignores_undefined_payload_bits() {
+        let raw = 0xaa | ((VmxInterruptionType::Other as u32) << 8) | (1 << 11);
+
+        assert_eq!(
+            decode_idt_vectoring_info(raw, Some(0xdead_beef)).unwrap(),
+            VmxInterruptInfo {
+                vector: 0,
+                int_type: VmxInterruptionType::External,
+                err_code: None,
+                valid: false,
+            }
+        );
+    }
 }

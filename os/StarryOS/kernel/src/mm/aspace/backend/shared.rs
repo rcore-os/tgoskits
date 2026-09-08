@@ -5,14 +5,16 @@ use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange
 use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 
 use super::{
+    super::{
+        objects::{FrameLease, PageId, PageObject},
+        vma::{
+            AnonymousSource, ExternalSource, MappingId, MappingSource, PageOffset, PageSizePolicy,
+            VmaDescriptor, allocate_mapping_id,
+        },
+    },
     FaultMaterialization, FaultPteSnapshot, MappingExecution, MappingOperation, PreparedPteOwner,
     ProviderPublication, PteMaterialization, RssKind, SharedFutexIdentity, alloc_frame,
     divide_page, occupied_leaf_ranges, pages_in,
-};
-use super::super::objects::{FrameLease, PageId, PageObject};
-use super::super::vma::{
-    AnonymousSource, ExternalSource, MappingId, MappingSource, PageOffset, PageSizePolicy,
-    VmaDescriptor, allocate_mapping_id,
 };
 use crate::{StarryResult, sync::IrqMutex};
 
@@ -102,13 +104,17 @@ impl SharedMemoryObject {
             return Err(crate::StarryError::InvalidInput);
         }
         let page_count = phys_pages.len();
-        page_count.checked_mul(page_size).ok_or(crate::StarryError::InvalidInput)?;
+        page_count
+            .checked_mul(page_size)
+            .ok_or(crate::StarryError::InvalidInput)?;
         let mut pages = SharedPageIndex::new(page_count);
         for (index, paddr) in phys_pages.into_iter().enumerate() {
             let lease = FrameLease::borrowed(paddr, page_size, retain.clone())
                 .ok_or(crate::StarryError::InvalidInput)?;
             let page = PageObject::new_present_with_resident_kind(
-                PageId::allocate(), lease, Some(RssKind::Shmem),
+                PageId::allocate(),
+                lease,
+                Some(RssKind::Shmem),
             );
             let mut path = SharedPagePath::prepare(index, pages.missing_level(index))?;
             if pages.insert(index, page, &mut path).is_err() {
@@ -142,7 +148,9 @@ impl SharedMemoryObject {
     }
 
     fn resident_page(&self, index: usize) -> Option<Arc<PageObject>> {
-        if index >= self.page_count { return None; }
+        if index >= self.page_count {
+            return None;
+        }
         self.pages.lock().get(index).cloned()
     }
 
@@ -151,7 +159,9 @@ impl SharedMemoryObject {
         index: usize,
         candidate: Arc<PageObject>,
     ) -> StarryResult<Arc<PageObject>> {
-        if index >= self.page_count { return Err(crate::StarryError::InvalidInput); }
+        if index >= self.page_count {
+            return Err(crate::StarryError::InvalidInput);
+        }
         let mut candidate = candidate;
         loop {
             let missing = self.pages.lock().missing_level(index);
@@ -211,21 +221,17 @@ fn shared_fault_defers_loser_drop_for_test() -> bool {
 
     impl Drop for LockProbe {
         fn drop(&mut self) {
-            self.dropped_after_unlock.store(
-                self.object.pages.try_lock().is_some(),
-                Ordering::Release,
-            );
+            self.dropped_after_unlock
+                .store(self.object.pages.try_lock().is_some(), Ordering::Release);
         }
     }
 
     let Ok(object) = SharedMemoryObject::allocate(PAGE_SIZE_4K, PAGE_SIZE_4K).map(Arc::new) else {
         return false;
     };
-    let Some(winner_lease) = FrameLease::borrowed(
-        PhysAddr::from_usize(0x90_0000),
-        PAGE_SIZE_4K,
-        None,
-    ) else {
+    let Some(winner_lease) =
+        FrameLease::borrowed(PhysAddr::from_usize(0x90_0000), PAGE_SIZE_4K, None)
+    else {
         return false;
     };
     let winner = PageObject::new_present(PageId::new(0x200), winner_lease);
@@ -239,11 +245,9 @@ fn shared_fault_defers_loser_drop_for_test() -> bool {
         object: object.clone(),
         dropped_after_unlock: dropped_after_unlock.clone(),
     });
-    let Some(loser_lease) = FrameLease::borrowed(
-        PhysAddr::from_usize(0x91_0000),
-        PAGE_SIZE_4K,
-        Some(anchor),
-    ) else {
+    let Some(loser_lease) =
+        FrameLease::borrowed(PhysAddr::from_usize(0x91_0000), PAGE_SIZE_4K, Some(anchor))
+    else {
         return false;
     };
     let loser = PageObject::new_present(PageId::new(0x201), loser_lease);
@@ -387,15 +391,11 @@ impl SharedBackend {
         self.object.page_size
     }
 
-    pub(super) fn shared_futex_identity(
-        &self,
-        address: VirtAddr,
-    ) -> Option<SharedFutexIdentity> {
+    pub(super) fn shared_futex_identity(&self, address: VirtAddr) -> Option<SharedFutexIdentity> {
         let source_offset = self.object_offset_at(address)?;
         let source_len = self.object.capacity_bytes()?;
-        (source_offset < source_len).then(|| {
-            SharedFutexIdentity::shared_memory(self.object.mapping_id(), source_offset)
-        })
+        (source_offset < source_len)
+            .then(|| SharedFutexIdentity::shared_memory(self.object.mapping_id(), source_offset))
     }
 }
 
@@ -422,9 +422,7 @@ impl MappingExecution for SharedBackend {
     ) -> StarryResult<PteMaterialization> {
         debug!("Shared::map: {:?} {:?}", range, flags);
         self.validate_range(range)?;
-        if !range.start.is_aligned(self.leaf_size)
-            || !range.size().is_multiple_of(self.leaf_size)
-        {
+        if !range.start.is_aligned(self.leaf_size) || !range.size().is_multiple_of(self.leaf_size) {
             return Err(crate::StarryError::InvalidInput);
         }
 
@@ -595,11 +593,7 @@ impl MappingExecution for SharedBackend {
         self.validate_materialized_range(range, pt)
     }
 
-    fn unmap(
-        &self,
-        range: VirtAddrRange,
-        pt: &mut PageTable,
-    ) -> StarryResult {
+    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTable) -> StarryResult {
         debug!("Shared::unmap: {:?}", range);
         self.validate_range(range)?;
         if !self.validate_materialized_range(range, pt) {
@@ -640,9 +634,7 @@ impl MappingExecution for SharedBackend {
             if installed_size != leaf_size || self.mapped_paddr_at(va, leaf_size) != Some(paddr) {
                 return Err(crate::StarryError::BadState);
             }
-            let (page_index, _) = self
-                .page_location(va)
-                .ok_or(crate::StarryError::BadState)?;
+            let (page_index, _) = self.page_location(va).ok_or(crate::StarryError::BadState)?;
             let page = self
                 .object
                 .resident_page(page_index)
@@ -664,16 +656,11 @@ impl MappingExecution for SharedBackend {
             ));
             materialization.increment_satisfied(leaf_size / PAGE_SIZE_4K)?;
         }
-        Ok((
-            MappingOperation::from_shared(self.clone()),
-            materialization,
-        ))
+        Ok((MappingOperation::from_shared(self.clone()), materialization))
     }
 
     fn split(&mut self, align_diff: usize) -> Option<MappingOperation> {
-        if align_diff == 0
-            || !align_diff.is_multiple_of(PAGE_SIZE_4K)
-        {
+        if align_diff == 0 || !align_diff.is_multiple_of(PAGE_SIZE_4K) {
             return None;
         }
         let start = self.start.checked_add(align_diff)?;
@@ -745,10 +732,8 @@ impl MappingOperation {
 fn shared_partial_unmap_keeps_one_page_object_for_test() -> bool {
     let start = VirtAddr::from_usize(0x7000_0000);
     let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
-    let Ok(object) = SharedMemoryObject::allocate(
-        ax_memory_addr::PAGE_SIZE_4K,
-        ax_memory_addr::PAGE_SIZE_4K,
-    )
+    let Ok(object) =
+        SharedMemoryObject::allocate(ax_memory_addr::PAGE_SIZE_4K, ax_memory_addr::PAGE_SIZE_4K)
     else {
         return false;
     };
@@ -792,21 +777,29 @@ fn shared_partial_unmap_keeps_one_page_object_for_test() -> bool {
         return false;
     }
 
-    let Some(first_page) = first.mapping_slots.values().next().map(|slot| slot.page.clone()) else {
+    let Some(first_page) = first
+        .mapping_slots
+        .values()
+        .next()
+        .map(|slot| slot.page.clone())
+    else {
         return false;
     };
-    let Some(second_page) = second.mapping_slots.values().next().map(|slot| slot.page.clone()) else {
+    let Some(second_page) = second
+        .mapping_slots
+        .values()
+        .next()
+        .map(|slot| slot.page.clone())
+    else {
         return false;
     };
     let shared_owner = Arc::ptr_eq(&first_page, &second_page) && first_page.mapping_refs() == 2;
-    let partial_unmap = first
-        .unmap(start, ax_memory_addr::PAGE_SIZE_4K)
-        .is_ok()
+    let partial_unmap = first.unmap(start, ax_memory_addr::PAGE_SIZE_4K).is_ok()
         && first.mapping_slots.is_empty()
         && second.pt.query(start).is_ok()
         && first_page.mapping_refs() == 1;
-    let second_cleared = second.reset_uninstalled_for_loader().is_ok()
-        && second_page.mapping_refs() == 0;
+    let second_cleared =
+        second.reset_uninstalled_for_loader().is_ok() && second_page.mapping_refs() == 0;
     let first_cleared = first.reset_uninstalled_for_loader().is_ok();
     shared_owner && partial_unmap && second_cleared && first_cleared
 }
@@ -815,10 +808,9 @@ fn shared_partial_unmap_keeps_one_page_object_for_test() -> bool {
 fn shared_fork_materializes_child_pte_for_test() -> bool {
     let start = VirtAddr::from_usize(0x7100_0000);
     let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
-    let Ok(object) = SharedMemoryObject::allocate(
-        ax_memory_addr::PAGE_SIZE_4K,
-        ax_memory_addr::PAGE_SIZE_4K,
-    ) else {
+    let Ok(object) =
+        SharedMemoryObject::allocate(ax_memory_addr::PAGE_SIZE_4K, ax_memory_addr::PAGE_SIZE_4K)
+    else {
         return false;
     };
     let Ok(mut parent) = super::super::AddrSpace::new_empty(start, ax_memory_addr::PAGE_SIZE_4K)
@@ -850,16 +842,16 @@ fn shared_fork_materializes_child_pte_for_test() -> bool {
     };
     let mut child = child.lock();
     let shared_leaf = parent.pt.query(start).ok().zip(child.pt.query(start).ok());
-    let mapped_same_page = shared_leaf.is_some_and(
-        |((parent_pa, _, parent_size), (child_pa, _, child_size))| {
+    let mapped_same_page =
+        shared_leaf.is_some_and(|((parent_pa, _, parent_size), (child_pa, _, child_size))| {
             parent_pa == child_pa
                 && parent_size == ax_memory_addr::PAGE_SIZE_4K
                 && child_size == ax_memory_addr::PAGE_SIZE_4K
-        },
-    );
-    let child_has_slot = child.mapping_slots.values().next().is_some_and(|slot| {
-        slot.page.mapping_refs() == 2 && slot.page.rmap.snapshot().len() == 2
-    });
+        });
+    let child_has_slot =
+        child.mapping_slots.values().next().is_some_and(|slot| {
+            slot.page.mapping_refs() == 2 && slot.page.rmap.snapshot().len() == 2
+        });
     let child_cleared = child.reset_uninstalled_for_loader().is_ok();
     drop(child);
     let parent_cleared = parent.reset_uninstalled_for_loader().is_ok();
@@ -872,20 +864,17 @@ fn shared_huge_partial_unmap_keeps_the_other_mapping_for_test() -> bool {
     let removed = start + ax_memory_addr::PAGE_SIZE_4K;
     let retained = removed + ax_memory_addr::PAGE_SIZE_4K;
     let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
-    let Ok(object) = SharedMemoryObject::allocate(
-        ax_memory_addr::PAGE_SIZE_2M,
-        ax_memory_addr::PAGE_SIZE_2M,
-    ) else {
-        return false;
-    };
-    let object = Arc::new(object);
-    let Ok(mut first) =
-        super::super::AddrSpace::new_empty(start, ax_memory_addr::PAGE_SIZE_2M)
+    let Ok(object) =
+        SharedMemoryObject::allocate(ax_memory_addr::PAGE_SIZE_2M, ax_memory_addr::PAGE_SIZE_2M)
     else {
         return false;
     };
-    let Ok(mut second) =
-        super::super::AddrSpace::new_empty(start, ax_memory_addr::PAGE_SIZE_2M)
+    let object = Arc::new(object);
+    let Ok(mut first) = super::super::AddrSpace::new_empty(start, ax_memory_addr::PAGE_SIZE_2M)
+    else {
+        return false;
+    };
+    let Ok(mut second) = super::super::AddrSpace::new_empty(start, ax_memory_addr::PAGE_SIZE_2M)
     else {
         return false;
     };
@@ -924,7 +913,11 @@ fn shared_huge_partial_unmap_keeps_the_other_mapping_for_test() -> bool {
         return false;
     }
 
-    let shared_page = first.mapping_slots.values().next().map(|slot| slot.page.clone());
+    let shared_page = first
+        .mapping_slots
+        .values()
+        .next()
+        .map(|slot| slot.page.clone());
     let unmapped = first.unmap(removed, ax_memory_addr::PAGE_SIZE_4K).is_ok();
     let retained_paddr = first.pt.query(retained).ok().map(|entry| entry.0);
     let peer_paddr = second.pt.query(retained).ok().map(|entry| entry.0);
@@ -1003,8 +996,9 @@ mod tests {
     #[cfg(axtest)]
     #[axtest::axtest]
     fn shared_object_metadata_tracks_materialized_pages() {
-        use super::{SharedMemoryObject, PAGE_SIZE_4K};
         use alloc::sync::Arc;
+
+        use super::{PAGE_SIZE_4K, SharedMemoryObject};
 
         // The logical object may be much larger than physical RAM. Creating
         // it must not allocate one metadata slot per still-unfaulted page.

@@ -1,0 +1,15 @@
+[package]
+name = "arceos-scheduler-latency-bench"
+version = "0.1.0"
+edition.workspace = true
+authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
+publish = false
+
+[features]
+default = ["arceos"]
+arceos = ["dep:ax-std", "ax-std/arceos"]
+qperf-metrics = ["ax-std/qperf-metrics", "ax-task/qperf-metrics"]
+
+[dependencies]
+ax-std = { workspace = true, optional = true, features = ["default"] }
+ax-task = { workspace = true }

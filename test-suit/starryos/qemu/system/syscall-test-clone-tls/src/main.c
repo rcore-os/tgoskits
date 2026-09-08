@@ -253,6 +253,33 @@ static int test_pidfd_parent_settid_einval(void)
     TEST_DONE();
 }
 
+static int test_pidfd_copyout_rollback(void)
+{
+    TEST_START("G. CLONE_PIDFD copyout failure rolls back before child activation");
+    errno = 0;
+    long child = syscall(SYS_clone, CLONE_PIDFD | SIGCHLD, 0, (int *)-1, 0, 0);
+    if (child == 0) _exit(42);
+    int error = errno;
+    CHECK(child == -1 && error == EFAULT, "invalid pidfd output returns EFAULT");
+    if (child > 0) waitpid((pid_t)child, NULL, 0);
+    errno = 0;
+    CHECK(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD,
+          "failed clone publishes no waitable child");
+
+    int pidfd = -1;
+    child = syscall(SYS_clone, CLONE_PIDFD | SIGCHLD, 0, &pidfd, 0, 0);
+    if (child == 0) _exit(42);
+    CHECK(child > 0 && pidfd >= 0, "clone with valid pidfd succeeds after rollback");
+    if (child > 0) {
+        int status = 0;
+        CHECK(waitpid((pid_t)child, &status, 0) == child
+              && WIFEXITED(status) && WEXITSTATUS(status) == 42,
+              "only the committed child executes and becomes waitable");
+    }
+    if (pidfd >= 0) close(pidfd);
+    TEST_DONE();
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -265,6 +292,7 @@ int main(void)
     fail |= test_pthread_join();
     fail |= test_pthread_tls();
     fail |= test_pidfd_parent_settid_einval();
+    fail |= test_pidfd_copyout_rollback();
     printf("\n==== test-clone-tls 汇总: %s ====\n", fail ? "FAIL" : "PASS");
     return fail;
 }

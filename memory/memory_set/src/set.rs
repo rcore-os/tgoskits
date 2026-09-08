@@ -1,6 +1,4 @@
-use alloc::collections::BTreeMap;
-#[allow(unused_imports)] // this is a weird false alarm
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::fmt;
 
 use ax_memory_addr::{AddrRange, MemoryAddr};
@@ -15,6 +13,7 @@ use crate::{MappingBackend, MappingError, MappingResult, MemoryArea};
 fn restore_overlapped_mappings<B: MappingBackend>(
     old: &BTreeMap<B::Addr, MemoryArea<B>>,
     range: AddrRange<B::Addr>,
+    context: &mut B::MutationContext,
     page_table: &mut B::PageTable,
 ) -> bool {
     for area in old.values() {
@@ -29,10 +28,13 @@ fn restore_overlapped_mappings<B: MappingBackend>(
         let Some(fragment) = AddrRange::try_new(start, end) else {
             return false;
         };
-        if !area
-            .backend()
-            .map(fragment.start, fragment.size(), area.flags(), page_table)
-        {
+        if !area.backend().map(
+            fragment.start,
+            fragment.size(),
+            area.flags(),
+            context,
+            page_table,
+        ) {
             return false;
         }
     }
@@ -182,6 +184,7 @@ impl<B: MappingBackend> MemorySet<B> {
         &mut self,
         addr: B::Addr,
         additional_size: usize,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
         if additional_size == 0 {
@@ -211,7 +214,7 @@ impl<B: MappingBackend> MemorySet<B> {
         self.areas
             .get_mut(&area_start)
             .ok_or(MappingError::BadState)?
-            .grow_right(additional_size, page_table)?;
+            .grow_right(additional_size, context, page_table)?;
         Ok(())
     }
 
@@ -224,6 +227,7 @@ impl<B: MappingBackend> MemorySet<B> {
         &mut self,
         addr: B::Addr,
         additional_size: usize,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
         if additional_size == 0 {
@@ -248,7 +252,7 @@ impl<B: MappingBackend> MemorySet<B> {
         if !backend.validate_unmap(suffix_start, additional_size, page_table) {
             return Err(MappingError::BadState);
         }
-        if !backend.unmap(suffix_start, additional_size, page_table) {
+        if !backend.unmap(suffix_start, additional_size, context, page_table) {
             return Err(MappingError::NeedsRepair);
         }
         let area = self
@@ -270,6 +274,7 @@ impl<B: MappingBackend> MemorySet<B> {
     pub fn map(
         &mut self,
         area: MemoryArea<B>,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
         unmap_overlap: bool,
     ) -> MappingResult {
@@ -281,7 +286,7 @@ impl<B: MappingBackend> MemorySet<B> {
         let backup = overlaps.then(|| self.areas.clone());
         if overlaps {
             if unmap_overlap {
-                self.unmap(area.start(), area.size(), page_table)?;
+                self.unmap(area.start(), area.size(), context, page_table)?;
             } else {
                 return Err(MappingError::AlreadyExists);
             }
@@ -296,15 +301,15 @@ impl<B: MappingBackend> MemorySet<B> {
         let area_start = area.start();
         let area_size = area.size();
         let area_backend = area.backend().clone();
-        if let Err(error) = area.map_area(page_table) {
+        if let Err(error) = area.map_area(context, page_table) {
             // `map` is allowed to fail after writing a prefix.  Try the
             // backend's inverse first; if that cannot prove a complete
             // rollback, preserve the explicit NeedsRepair state instead of
             // returning an ordinary error with a dangling PTE.
-            let reverted_new = area_backend.unmap(area_start, area_size, page_table);
-            let restored_old = backup
-                .as_ref()
-                .is_none_or(|old| restore_overlapped_mappings(old, area.va_range(), page_table));
+            let reverted_new = area_backend.unmap(area_start, area_size, context, page_table);
+            let restored_old = backup.as_ref().is_none_or(|old| {
+                restore_overlapped_mappings(old, area.va_range(), context, page_table)
+            });
             if !reverted_new || !restored_old {
                 if let Some(old) = backup {
                     self.areas = old;
@@ -322,11 +327,12 @@ impl<B: MappingBackend> MemorySet<B> {
             // an assertion in a recovery path.  Restore both the newly mapped
             // range and the old metadata if an allocator/tree invariant is
             // violated.
-            let reverted_new = area_backend.unmap(area_start, area_size, page_table);
+            let reverted_new = area_backend.unmap(area_start, area_size, context, page_table);
             let restored_old = backup.as_ref().is_none_or(|old| {
                 restore_overlapped_mappings(
                     old,
                     AddrRange::from_start_size(area_start, area_size),
+                    context,
                     page_table,
                 )
             });
@@ -342,8 +348,11 @@ impl<B: MappingBackend> MemorySet<B> {
         Ok(())
     }
 
-    /// Publishes metadata for an area whose backend/PTE apply phase has
-    /// already completed in an unpublished address space.
+    /// Publishes metadata without invoking the backend's mapping operation.
+    ///
+    /// The caller either owns an unpublished address space with prepared PTEs,
+    /// or retains a reservation token that retires partially installed leaves
+    /// if the subsequent page-table apply fails.
     ///
     /// This is intentionally separate from [`Self::map`]: replaying `map`
     /// after a fork clone has installed child PTEs would reject those exact
@@ -391,30 +400,29 @@ impl<B: MappingBackend> MemorySet<B> {
     ///
     /// The exact form is useful in allocation-free retire paths whose owner
     /// already proved that the mapping cannot be split. Metadata is removed
-    /// only after the backend has detached every materialized entry.
+    /// only after the backend has detached every materialized entry. The
+    /// returned owner lets the caller release resources outside its lock.
     pub fn unmap_exact(
         &mut self,
         start: B::Addr,
         size: usize,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
-    ) -> MappingResult {
+    ) -> MappingResult<MemoryArea<B>> {
         let end = start.checked_add(size).ok_or(MappingError::InvalidParam)?;
         let area = self
             .areas
             .get(&start)
             .filter(|area| area.end() == end)
             .ok_or(MappingError::InvalidParam)?;
-        if area.validate_unmap(page_table).is_err() {
+        if area.validate_unmap_range(start, size, page_table).is_err() {
             return Err(MappingError::BadState);
         }
         let backend = area.backend().clone();
-        if !backend.unmap(start, size, page_table) {
+        if !backend.unmap(start, size, context, page_table) {
             return Err(MappingError::BadState);
         }
-        self.areas
-            .remove(&start)
-            .map(|_| ())
-            .ok_or(MappingError::BadState)
+        self.areas.remove(&start).ok_or(MappingError::BadState)
     }
 
     /// Remove memory mappings within the given address range.
@@ -427,6 +435,7 @@ impl<B: MappingBackend> MemorySet<B> {
         &mut self,
         start: B::Addr,
         size: usize,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
         let range =
@@ -435,52 +444,69 @@ impl<B: MappingBackend> MemorySet<B> {
             return Ok(());
         }
 
-        let end = range.end;
+        self.validate_unmap(start, size, page_table)?;
+        let prepared = self.prepare_unmap_metadata(range)?;
 
-        // First detach every affected PTE while the metadata tree is still
-        // untouched.  This is the prepare/apply split used by AddrSpace's
-        // mutation receipt: a backend failure leaves the old VMA topology
-        // observable instead of exposing a half-split tree.  The backend is
-        // cloned into the operation list so no `MemoryArea` borrow survives a
-        // potentially blocking page-table call.
-        let mut operations = Vec::new();
+        // Publish every backend transition before changing any owner metadata.
+        // A later backend may still report resource pressure after an earlier
+        // one removed PTEs. Keeping the complete VMA set makes that state
+        // retryable and, more importantly, retains every backend until the
+        // caller's invalidation transaction has confirmed stale translations.
+        self.for_each_intersecting_area(range, |area, unmap_start, unmap_size| {
+            area.unmap_range(unmap_start, unmap_size, context, page_table)
+        })?;
+
+        // All fallible metadata surgery completed before the first PTE
+        // mutation. Publish the prepared ownership tree only after every
+        // backend accepted the detach.
+        self.areas = prepared;
+        Ok(())
+    }
+
+    /// Preflights every backend touched by an unmap without changing state.
+    pub fn validate_unmap(
+        &self,
+        start: B::Addr,
+        size: usize,
+        page_table: &B::PageTable,
+    ) -> MappingResult {
+        let range =
+            AddrRange::try_from_start_size(start, size).ok_or(MappingError::InvalidParam)?;
+        if range.is_empty() {
+            return Ok(());
+        }
+
+        // Reject predictable mapping-shape and ownership failures before the
+        // first PTE is removed. Commit still retains every backend owner until
+        // all disjoint subranges complete or the caller quarantines a partial
+        // published mutation.
+        self.for_each_intersecting_area(range, |area, unmap_start, unmap_size| {
+            area.validate_unmap_range(unmap_start, unmap_size, page_table)
+        })
+    }
+
+    /// Visits each VMA intersecting `range` with its clipped unmap interval.
+    ///
+    /// Keeping the range clipping in one place is important because both the
+    /// fallible preflight and the backend commit must describe exactly the same
+    /// subranges. The callback may fail; no metadata is changed by this helper.
+    fn for_each_intersecting_area(
+        &self,
+        range: AddrRange<B::Addr>,
+        mut visit: impl FnMut(&MemoryArea<B>, B::Addr, usize) -> MappingResult,
+    ) -> MappingResult {
         for area in self.areas.values() {
-            if area.start() >= end {
+            if area.start() >= range.end {
                 break;
             }
-            if area.end() <= start {
+            if area.end() <= range.start {
                 continue;
             }
-            let fragment_start = area.start().max(start);
-            let fragment_end = area.end().min(end);
-            let fragment = AddrRange::try_new(fragment_start, fragment_end)
-                .ok_or(MappingError::InvalidParam)?;
-            if !area
-                .backend()
-                .validate_unmap(fragment.start, fragment.size(), page_table)
-            {
-                return Err(MappingError::BadState);
-            }
-            operations.push((area.backend().clone(), fragment));
+            let unmap_start = area.start().max(range.start);
+            let unmap_end = area.end().min(range.end);
+            visit(area, unmap_start, unmap_end.sub_addr(unmap_start))?;
         }
-        for (index, (backend, fragment)) in operations.iter().enumerate() {
-            if !backend.unmap(fragment.start, fragment.size(), page_table) {
-                // There is no generic inverse for a backend unmap: a COW or
-                // file backend may have released the original frame.  Once a
-                // prefix was applied we therefore report an indeterminate
-                // materialized state instead of claiming rollback succeeded.
-                return Err(if index == 0 {
-                    MappingError::BadState
-                } else {
-                    MappingError::NeedsRepair
-                });
-            }
-        }
-
-        // All fallible backend work has completed.  Metadata-only surgery can
-        // now be applied as one operation; it performs the same split/shrink
-        // shape without touching PTEs a second time.
-        self.unmap_metadata(start, size)
+        Ok(())
     }
 
     /// Remove memory area metadata without calling the backend's unmap hook.
@@ -494,58 +520,56 @@ impl<B: MappingBackend> MemorySet<B> {
             return Ok(());
         }
 
-        // Metadata surgery is fallible (backend split and checked address
-        // arithmetic). Keep a preimage so an error cannot expose a partially
-        // removed VMA tree. The page-table-facing `unmap` performs all backend
-        // work before entering this function, so restoring this map is enough
-        // for its no-side-effect guarantee.
-        let backup = self.areas.clone();
-        let result = (|| {
-            let end = range.end;
-
-            self.areas
-                .retain(|_, area| !area.va_range().contained_in(range));
-
-            if let Some((&before_start, before)) = self.areas.range_mut(..start).last() {
-                let before_end = before.end();
-                if before_end > start {
-                    if before_end <= end {
-                        before.shrink_right_metadata(start.sub_addr(before_start))?;
-                    } else {
-                        let right_part = before.split(end)?.ok_or(MappingError::BadState)?;
-                        before.shrink_right_metadata(start.sub_addr(before_start))?;
-                        if right_part.start().into() != Into::<usize>::into(end) {
-                            return Err(MappingError::BadState);
-                        }
-                        self.areas.insert(end, right_part);
-                    }
-                }
-            }
-
-            if let Some((&after_start, _)) = self.areas.range(start..).next()
-                && after_start < end
-            {
-                let Some(mut new_area) = self.areas.remove(&after_start) else {
-                    return Err(MappingError::BadState);
-                };
-                let after_end = new_area.end();
-                new_area.shrink_left_metadata(after_end.sub_addr(end))?;
-                if new_area.start().into() != Into::<usize>::into(end) {
-                    return Err(MappingError::BadState);
-                }
-                self.areas.insert(end, new_area);
-            }
-
-            Ok(())
-        })();
-        if result.is_err() {
-            self.areas = backup;
-        }
-        result
+        self.areas = self.prepare_unmap_metadata(range)?;
+        Ok(())
     }
 
-    /// Replaces area metadata without touching page-table entries.
-    pub fn replace_area_metadata(&mut self, area: MemoryArea<B>) -> MappingResult {
+    /// Stages fallible splits in an unpublished tree, retaining the complete
+    /// preimage until the page-table operation has committed.
+    fn prepare_unmap_metadata(
+        &self,
+        range: AddrRange<B::Addr>,
+    ) -> MappingResult<BTreeMap<B::Addr, MemoryArea<B>>> {
+        let mut areas = self.areas.clone();
+        let start = range.start;
+        let end = range.end;
+        areas.retain(|_, area| !area.va_range().contained_in(range));
+
+        if let Some((&before_start, before)) = areas.range_mut(..start).last() {
+            let before_end = before.end();
+            if before_end > start {
+                if before_end <= end {
+                    before.shrink_right_metadata(start.sub_addr(before_start))?;
+                } else {
+                    let right_part = before.split(end)?.ok_or(MappingError::BadState)?;
+                    before.shrink_right_metadata(start.sub_addr(before_start))?;
+                    if right_part.start() != end {
+                        return Err(MappingError::BadState);
+                    }
+                    areas.insert(end, right_part);
+                }
+            }
+        }
+
+        if let Some((&after_start, _)) = areas.range(start..).next()
+            && after_start < end
+        {
+            let mut new_area = areas.remove(&after_start).ok_or(MappingError::BadState)?;
+            let after_end = new_area.end();
+            new_area.shrink_left_metadata(after_end.sub_addr(end))?;
+            if new_area.start() != end {
+                return Err(MappingError::BadState);
+            }
+            areas.insert(end, new_area);
+        }
+        Ok(areas)
+    }
+
+    /// Finds the existing area that contains the replacement range.
+    fn containing_area_for_metadata_replacement(
+        &self,
+        area: &MemoryArea<B>,
+    ) -> MappingResult<B::Addr> {
         if area.va_range().is_empty() {
             return Err(MappingError::InvalidParam);
         }
@@ -553,13 +577,25 @@ impl<B: MappingBackend> MemorySet<B> {
         let start = area.start();
         let end = area.end();
 
-        let old_start = self
-            .areas
+        self.areas
             .range(..=start)
             .last()
             .filter(|(_, old)| old.start() <= start && end <= old.end())
             .map(|(&old_start, _)| old_start)
-            .ok_or(MappingError::InvalidParam)?;
+            .ok_or(MappingError::InvalidParam)
+    }
+
+    /// Validates that `area` can replace one contained metadata range.
+    pub fn validate_area_metadata_replacement(&self, area: &MemoryArea<B>) -> MappingResult {
+        self.containing_area_for_metadata_replacement(area)
+            .map(|_| ())
+    }
+
+    /// Replaces area metadata without touching page-table entries.
+    pub fn replace_area_metadata(&mut self, area: MemoryArea<B>) -> MappingResult {
+        let start = area.start();
+        let end = area.end();
+        let old_start = self.containing_area_for_metadata_replacement(&area)?;
 
         let backup = self.areas.clone();
         let result = (|| {
@@ -587,12 +623,16 @@ impl<B: MappingBackend> MemorySet<B> {
     }
 
     /// Remove all memory areas and the underlying mappings.
-    pub fn clear(&mut self, page_table: &mut B::PageTable) -> MappingResult {
+    pub fn clear(
+        &mut self,
+        context: &mut B::MutationContext,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
         for area in self.areas.values() {
-            area.validate_unmap(page_table)?;
+            area.validate_unmap_range(area.start(), area.size(), page_table)?;
         }
         for (index, area) in self.areas.values().enumerate() {
-            if let Err(error) = area.unmap_area(page_table) {
+            if let Err(error) = area.unmap_area(context, page_table) {
                 return Err(if index == 0 {
                     error
                 } else {
@@ -618,12 +658,14 @@ impl<B: MappingBackend> MemorySet<B> {
         start: B::Addr,
         size: usize,
         update_flags: impl Fn(B::Flags) -> Option<B::Flags>,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
         self.protect_with_reported_flags(
             start,
             size,
             |flags, _reported_flags| update_flags(flags).map(|new_flags| (new_flags, new_flags)),
+            context,
             page_table,
         )
     }
@@ -634,102 +676,100 @@ impl<B: MappingBackend> MemorySet<B> {
         start: B::Addr,
         size: usize,
         update_flags: impl Fn(B::Flags, B::Flags) -> Option<(B::Flags, B::Flags)>,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
         let end = start.checked_add(size).ok_or(MappingError::InvalidParam)?;
-        let mut to_insert = Vec::new();
-
-        // Validate every affected backend before the first PTE is changed.
-        // This is the protection analogue of the unmap prepare phase.  It
-        // makes a structural page-table failure observable as an unchanged
-        // VMA/PTE set instead of a prefix of the range with new permissions.
-        for area in self.areas.values() {
-            if area.end() <= start || area.start() >= end {
+        if size == 0 {
+            return Ok(());
+        }
+        let mut operations = Vec::new();
+        for (&area_start, area) in &self.areas {
+            let area_end = area.end();
+            if area_start >= end {
+                break;
+            }
+            if area_end <= start {
                 continue;
             }
-            if let Some((new_flags, _)) = update_flags(area.flags(), area.reported_flags()) {
-                let fragment_start = area.start().max(start);
-                let fragment_end = area.end().min(end);
-                if !area.backend().validate_protect(
-                    fragment_start,
-                    fragment_end
-                        .checked_sub_addr(fragment_start)
-                        .ok_or(MappingError::InvalidParam)?,
+            if let Some((new_flags, new_reported_flags)) =
+                update_flags(area.flags(), area.reported_flags())
+            {
+                let protect_start = area_start.max(start);
+                let protect_end = area_end.min(end);
+                operations.push((
+                    area_start,
+                    protect_start,
+                    protect_end,
+                    area.flags(),
                     new_flags,
-                    page_table,
-                ) {
-                    return Err(MappingError::BadState);
-                }
+                    new_reported_flags,
+                ));
             }
         }
 
-        let backup = self.areas.clone();
-        let mut pte_applied = false;
-        let result = (|| {
-            for (&area_start, area) in self.areas.iter_mut() {
-                let area_end = area.end();
+        // Splitting a backend is fallible. Prepare the complete metadata tree
+        // before publishing any PTE, retaining the original owners for rollback.
+        let mut prepared = self.areas.clone();
+        for &(area_start, protect_start, protect_end, _, new_flags, new_reported_flags) in
+            &operations
+        {
+            let original = &self.areas[&area_start];
+            if !original.backend().validate_protect(
+                protect_start,
+                protect_end.sub_addr(protect_start),
+                new_flags,
+                page_table,
+            ) {
+                return Err(MappingError::BadState);
+            }
+            let mut middle = prepared.remove(&area_start).ok_or(MappingError::BadState)?;
+            if area_start < protect_start {
+                let right = middle.split(protect_start)?.ok_or(MappingError::BadState)?;
+                prepared.insert(area_start, middle);
+                middle = right;
+            }
+            if protect_end < middle.end() {
+                let right = middle.split(protect_end)?.ok_or(MappingError::BadState)?;
+                prepared.insert(right.start(), right);
+            }
+            middle.set_flags_with_reported_flags(new_flags, new_reported_flags);
+            prepared.insert(middle.start(), middle);
+        }
 
-                if let Some((new_flags, new_reported_flags)) =
-                    update_flags(area.flags(), area.reported_flags())
+        for (index, &(area_start, protect_start, protect_end, _, new_flags, _)) in
+            operations.iter().enumerate()
+        {
+            let result = self.areas[&area_start].protect_range(
+                protect_start,
+                protect_end.sub_addr(protect_start),
+                new_flags,
+                context,
+                page_table,
+            );
+            if let Err(error) = result {
+                let mut restored = true;
+                for &(rollback_area_start, rollback_start, rollback_end, old_flags, ..) in
+                    operations[..=index].iter().rev()
                 {
-                    if area_start >= end {
-                        // [ prot ]
-                        //          [ area ]
-                        break;
-                    } else if area_end <= start {
-                        //          [ prot ]
-                        // [ area ]
-                        // Do nothing
-                    } else if area_start >= start && area_end <= end {
-                        // [   prot   ]
-                        //   [ area ]
-                        pte_applied = true;
-                        area.protect_area(new_flags, page_table)?;
-                        area.set_flags_with_reported_flags(new_flags, new_reported_flags);
-                    } else if area_start < start && area_end > end {
-                        //        [ prot ]
-                        // [ left | area | right ]
-                        let mut middle_part = area.split(start)?.ok_or(MappingError::BadState)?;
-                        let right_part = middle_part.split(end)?.ok_or(MappingError::BadState)?;
-
-                        pte_applied = true;
-                        middle_part.protect_area(new_flags, page_table)?;
-                        middle_part.set_flags_with_reported_flags(new_flags, new_reported_flags);
-
-                        to_insert.push((right_part.start(), right_part));
-                        to_insert.push((middle_part.start(), middle_part));
-                    } else if area_end > end {
-                        // [    prot ]
-                        //   [  area | right ]
-                        let right_part = area.split(end)?.ok_or(MappingError::BadState)?;
-                        pte_applied = true;
-                        area.protect_area(new_flags, page_table)?;
-                        area.set_flags_with_reported_flags(new_flags, new_reported_flags);
-
-                        to_insert.push((right_part.start(), right_part));
-                    } else {
-                        //        [ prot    ]
-                        // [ left |  area ]
-                        let mut right_part = area.split(start)?.ok_or(MappingError::BadState)?;
-                        pte_applied = true;
-                        right_part.protect_area(new_flags, page_table)?;
-                        right_part.set_flags_with_reported_flags(new_flags, new_reported_flags);
-
-                        to_insert.push((right_part.start(), right_part));
-                    }
+                    restored &= self.areas[&rollback_area_start]
+                        .protect_range(
+                            rollback_start,
+                            rollback_end.sub_addr(rollback_start),
+                            old_flags,
+                            context,
+                            page_table,
+                        )
+                        .is_ok();
                 }
+                return Err(if restored {
+                    error
+                } else {
+                    MappingError::NeedsRepair
+                });
             }
-            self.areas.extend(to_insert);
-            Ok(())
-        })();
-        if let Err(error) = result {
-            self.areas = backup;
-            return Err(if pte_applied {
-                MappingError::NeedsRepair
-            } else {
-                error
-            });
         }
+        self.areas = prepared;
         Ok(())
     }
 }

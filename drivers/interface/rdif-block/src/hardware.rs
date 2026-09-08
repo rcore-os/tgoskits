@@ -220,16 +220,24 @@ pub enum ControllerState {
 /// IRQ endpoint emitted by a controller transition.
 pub struct IrqEndpoint {
     source_id: usize,
-    queue_bits: u64,
+    queue_mask: crate::IrqQueueMask,
     handler: Box<dyn HardIrqHandler>,
 }
 
 impl IrqEndpoint {
-    /// Creates an endpoint whose boxed handler is owned by one IRQ token.
-    pub fn new(source_id: usize, queue_bits: u64, handler: Box<dyn HardIrqHandler>) -> Self {
+    /// Creates a complete routing snapshot for one physical IRQ source.
+    ///
+    /// Emitting the same `source_id` again replaces its installed endpoint.
+    /// The driver must keep that source masked until the runtime advances
+    /// [`ControllerEvent::Rearm`] after publishing the replacement.
+    pub fn new(
+        source_id: usize,
+        queue_mask: crate::IrqQueueMask,
+        handler: Box<dyn HardIrqHandler>,
+    ) -> Self {
         Self {
             source_id,
-            queue_bits,
+            queue_mask,
             handler,
         }
     }
@@ -240,8 +248,8 @@ impl IrqEndpoint {
     }
 
     /// Returns the hardware queues activated by this fixed endpoint.
-    pub const fn queue_bits(&self) -> u64 {
-        self.queue_bits
+    pub const fn queue_mask(&self) -> crate::IrqQueueMask {
+        self.queue_mask
     }
 
     /// Transfers the handler into the runtime IRQ registration token.
@@ -403,7 +411,7 @@ mod tests {
     #[test]
     fn controller_update_transfers_move_only_queue_and_handler_ownership() {
         let queue: BHardwareQueue = Box::new(NoopQueue);
-        let endpoint = IrqEndpoint::new(7, 1 << 3, Box::new(QueueIrq));
+        let endpoint = IrqEndpoint::new(7, IrqQueueMask::from_queue(3), Box::new(QueueIrq));
         let mut update =
             ControllerUpdate::with_resources(ControllerState::Ready, vec![queue], vec![endpoint]);
 
@@ -411,6 +419,7 @@ mod tests {
         let mut endpoints = update.take_irq_endpoints();
         assert_eq!(queues[0].id(), 3);
         assert_eq!(endpoints[0].source_id(), 7);
+        assert_eq!(endpoints[0].queue_mask(), IrqQueueMask::from_queue(3));
 
         let request = OwnedRequest {
             op: RequestOp::Flush,

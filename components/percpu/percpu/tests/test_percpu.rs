@@ -229,6 +229,7 @@ fn exercise_current_area(pin: &CpuPin<'_>, cpu0: PerCpuArea) {
         cpu_local::host_test::RegisterReadCounts {
             cpu_base: 1,
             current_context: 0,
+            binding_observations: 0,
             initialized_area_validations: 0,
         },
         "current CPU-area access must not read current context or rebuild the installed area",
@@ -248,6 +249,7 @@ fn exercise_current_area(pin: &CpuPin<'_>, cpu0: PerCpuArea) {
         cpu_local::host_test::RegisterReadCounts {
             cpu_base: 1,
             current_context: 0,
+            binding_observations: 0,
             initialized_area_validations: 0,
         },
         "shared current CPU-area access must use the same direct boundary",

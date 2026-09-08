@@ -2,13 +2,13 @@
 
 use core::marker::PhantomData;
 
-use crate::interface::{CONTEXT_IRQSAVE, CONTEXT_PREEMPT, CONTEXT_PREEMPT_IRQSAVE, CONTEXT_RAW};
+use crate::interface::{CONTEXT_IRQSAVE, CONTEXT_PREEMPT, CONTEXT_PREEMPT_IRQSAVE, ContextState};
 
 /// Saves the local interrupt state and disables local interrupts.
 #[doc(hidden)]
 #[inline(always)]
 pub fn irq_save_and_disable() -> usize {
-    crate::interface::context_enter(CONTEXT_IRQSAVE)
+    crate::interface::context_enter(CONTEXT_IRQSAVE).irq()
 }
 
 /// Restores a local interrupt state returned by [`irq_save_and_disable`].
@@ -20,7 +20,7 @@ pub fn irq_save_and_disable() -> usize {
 #[doc(hidden)]
 #[inline(always)]
 pub unsafe fn irq_restore(state: usize) {
-    crate::interface::context_exit(CONTEXT_IRQSAVE, state);
+    crate::interface::context_exit(CONTEXT_IRQSAVE, ContextState::new(0, state));
 }
 
 /// Internal critical-section contract retained for low-level adapters.
@@ -53,19 +53,15 @@ pub struct IrqSaveState;
 pub struct PreemptIrqSaveState;
 
 impl GuardState for RawState {
-    type State = usize;
+    type State = ();
 
-    fn acquire() -> Self::State {
-        crate::interface::context_enter(CONTEXT_RAW)
-    }
+    fn acquire() -> Self::State {}
 
-    fn release(state: Self::State) {
-        crate::interface::context_exit(CONTEXT_RAW, state);
-    }
+    fn release(_state: Self::State) {}
 }
 
 impl GuardState for PreemptState {
-    type State = usize;
+    type State = ContextState;
 
     fn acquire() -> Self::State {
         crate::interface::context_enter(CONTEXT_PREEMPT)
@@ -77,7 +73,7 @@ impl GuardState for PreemptState {
 }
 
 impl GuardState for IrqSaveState {
-    type State = usize;
+    type State = ContextState;
 
     fn acquire() -> Self::State {
         crate::interface::context_enter(CONTEXT_IRQSAVE)
@@ -89,7 +85,7 @@ impl GuardState for IrqSaveState {
 }
 
 impl GuardState for PreemptIrqSaveState {
-    type State = usize;
+    type State = ContextState;
 
     fn acquire() -> Self::State {
         crate::interface::context_enter(CONTEXT_PREEMPT_IRQSAVE)
@@ -107,7 +103,7 @@ impl GuardState for PreemptIrqSaveState {
 /// require_send::<ax_sync::PreemptGuard>();
 /// ```
 pub struct PreemptGuard {
-    state: Option<usize>,
+    state: ContextState,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -115,19 +111,9 @@ impl PreemptGuard {
     /// Disables preemption until the returned guard is dropped.
     pub fn new() -> Self {
         Self {
-            state: Some(PreemptState::acquire()),
+            state: PreemptState::acquire(),
             _not_send: PhantomData,
         }
-    }
-
-    /// Finishes this preemption scope at the final IRQ-return boundary.
-    #[doc(hidden)]
-    pub fn finish_irq_return(mut self) {
-        let state = self
-            .state
-            .take()
-            .expect("IRQ-return preemption state must be present");
-        crate::interface::preempt_exit_from_irq_return(state);
     }
 }
 
@@ -139,9 +125,7 @@ impl Default for PreemptGuard {
 
 impl Drop for PreemptGuard {
     fn drop(&mut self) {
-        if let Some(state) = self.state.take() {
-            PreemptState::release(state);
-        }
+        PreemptState::release(self.state);
     }
 }
 
@@ -152,7 +136,7 @@ impl Drop for PreemptGuard {
 /// require_send::<ax_sync::IrqSaveGuard>();
 /// ```
 pub struct IrqSaveGuard {
-    state: usize,
+    state: ContextState,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -164,6 +148,39 @@ impl IrqSaveGuard {
             _not_send: PhantomData,
         }
     }
+
+    /// Disables preemption for work completed by a hard-IRQ return epilogue.
+    pub fn disable_preempt_for_irq_return(&mut self) -> IrqReturnPreemptGuard<'_> {
+        IrqReturnPreemptGuard {
+            state: crate::interface::irq_return_preempt_enter(),
+            _irq_guard: PhantomData,
+            _not_send: PhantomData,
+        }
+    }
+}
+
+/// A preemption guard whose final release is an IRQ-return boundary.
+#[must_use = "dropping the guard completes IRQ-return preemption exit"]
+pub struct IrqReturnPreemptGuard<'irq> {
+    state: usize,
+    _irq_guard: PhantomData<&'irq mut IrqSaveGuard>,
+    _not_send: PhantomData<*mut ()>,
+}
+
+impl Drop for IrqReturnPreemptGuard<'_> {
+    fn drop(&mut self) {
+        crate::interface::irq_return_preempt_exit(self.state);
+    }
+}
+
+/// Publishes entry into the runtime hard-interrupt lifecycle.
+pub fn hardirq_enter() {
+    crate::interface::hardirq_enter();
+}
+
+/// Publishes exit from the runtime hard-interrupt lifecycle.
+pub fn hardirq_exit() {
+    crate::interface::hardirq_exit();
 }
 
 impl Default for IrqSaveGuard {
@@ -188,7 +205,7 @@ impl Drop for IrqSaveGuard {
 /// require_send::<ax_sync::PreemptIrqSaveGuard>();
 /// ```
 pub struct PreemptIrqSaveGuard {
-    state: usize,
+    state: ContextState,
     _not_send: PhantomData<*mut ()>,
 }
 

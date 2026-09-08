@@ -86,6 +86,7 @@ pub fn current_area(pin: &CpuPin<'_>) -> Result<PerCpuArea, PerCpuError> {
 }
 
 /// Returns the logical CPU index carried by a validated pin.
+#[inline(always)]
 pub const fn current_cpu_index(pin: &CpuPin<'_>) -> CpuIndex {
     pin.area().cpu_index()
 }

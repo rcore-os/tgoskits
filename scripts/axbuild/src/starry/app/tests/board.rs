@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, process::Command};
 
 use tempfile::tempdir;
 
@@ -82,18 +82,19 @@ fn explicit_relative_board_config_can_resolve_inside_case() {
 }
 
 #[test]
-fn board_shell_prelude_is_injected_before_the_shared_init_script() {
-    assert_eq!(
-        merge_board_init_command(
-            "echo hello",
-            Some(
-                "export BLOCK_RW_BENCH_CONTROLLER='custom-controller'\nexport \
-                 BLOCK_RW_BENCH_SUCCESS_MARKER='CUSTOM_BLOCK_RW_BENCH_PASSED'"
-            )
-        ),
-        "export BLOCK_RW_BENCH_CONTROLLER='custom-controller'\nexport \
-         BLOCK_RW_BENCH_SUCCESS_MARKER='CUSTOM_BLOCK_RW_BENCH_PASSED'\necho hello"
+fn board_and_app_init_execute_as_one_serial_shell_command() {
+    let command = merge_board_init_command(
+        "printf \"app:%s\\n\" \"$APP_BOARD_VALUE\"",
+        Some("export APP_BOARD_VALUE='board value'\nprintf \"prelude\\n\""),
     );
+
+    assert!(
+        !command.contains('\n'),
+        "interactive shell command must not expose script line boundaries"
+    );
+    let output = Command::new("sh").arg("-c").arg(command).output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"prelude\napp:board value\n");
 }
 
 #[test]

@@ -9,7 +9,7 @@ use core::fmt::{self, Write};
 
 use ax_lazyinit::OnceLock;
 use ax_sync::Mutex;
-use axpoll::PollSet;
+use axpoll_set::PollSet;
 
 pub use crate::serial::RxItem;
 use crate::{

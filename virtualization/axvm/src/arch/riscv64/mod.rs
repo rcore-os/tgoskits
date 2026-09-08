@@ -7,7 +7,10 @@ use riscv_vcpu::{GprIndex as RiscvGprIndex, *};
 use super::*;
 use crate::{
     AxVmResult, StopReason,
-    architecture::cpu_up::{self, CpuUpExit, CpuUpOps},
+    architecture::{
+        cpu_up::{self, CpuUpExit, CpuUpOps},
+        ops::*,
+    },
     host::*,
 };
 
@@ -72,7 +75,7 @@ impl ArchOps for Riscv64Arch {
         vcpu.inject_interrupt_with_trigger(vector, interrupt.trigger)
     }
 
-    fn handle_vcpu_exit_bound(
+    fn handle_vcpu_exit_unbound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
@@ -191,6 +194,10 @@ impl ArchOps for Riscv64Arch {
             resets_vm: false,
             exits_vcpu: false,
         })
+    }
+
+    fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
+        Self::exit_runtime(vm)
     }
 }
 

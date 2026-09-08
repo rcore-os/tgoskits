@@ -3,6 +3,8 @@ use core::{
     ptr::{self, NonNull},
     slice,
 };
+#[cfg(target_arch = "loongarch64")]
+use std::os::arceos::api::modules::ax_hal::mem::{phys_to_virt, virtual_address_space};
 use std::{
     collections::BTreeMap,
     format,
@@ -291,7 +293,26 @@ fn test_cross_cpu_free() {
     println!("memtest: cross CPU free OK");
 }
 
+#[cfg(target_arch = "loongarch64")]
+fn test_kernel_page_table_window_excludes_direct_map() {
+    let kernel_range = virtual_address_space()
+        .expect("platform virtual-address layout must be initialized")
+        .kernel();
+    let base = kernel_range.start.as_usize();
+    let end = kernel_range.end.as_usize();
+    let direct_map = phys_to_virt(0usize.into()).as_usize();
+
+    assert!(
+        direct_map < base || direct_map >= end,
+        "LoongArch DMW address {direct_map:#x} must stay outside the page-table-backed kernel \
+         window {base:#x}..{end:#x}"
+    );
+    println!("memtest: LoongArch page-table window excludes DMW OK");
+}
+
 pub fn run() -> crate::TestResult {
+    #[cfg(target_arch = "loongarch64")]
+    test_kernel_page_table_window_excludes_direct_map();
     // A fallible standard-library request must report allocation failure to
     // the caller, and leave the allocator usable for subsequent requests.
     let mut fallible = Vec::<u8>::new();

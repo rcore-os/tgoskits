@@ -10,7 +10,7 @@ pub use someboot::timer::{
 };
 use someboot::{SystimerArch, arch::Arch};
 
-/// Brings the system timer into its enabled state.
+/// Prepares the system timer in a masked, non-firing state.
 pub fn enable() {
     Arch::systimer_enable();
 }
@@ -20,9 +20,24 @@ pub fn irq_enable() {
     Arch::systimer_irq_enable();
 }
 
-/// Arms a one-shot deadline `ticks` from now.
-pub fn set_next_event_in_ticks(ticks: usize) {
-    Arch::set_next_event_in_ticks(ticks);
+/// Returns whether IRQ claim must stop the source before controller EOI.
+pub fn requires_irq_quiesce() -> bool {
+    Arch::systimer_requires_irq_quiesce()
+}
+
+/// Cancels the active one-shot and discards its comparator state.
+pub fn cancel_oneshot() {
+    Arch::systimer_cancel_oneshot();
+}
+
+/// Restores a cancelled one-shot at an absolute counter deadline.
+pub fn resume_oneshot_at_ticks(deadline_ticks: u64) {
+    Arch::systimer_resume_oneshot(deadline_ticks);
+}
+
+/// Arms a one-shot at an absolute counter deadline.
+pub fn set_next_event_at_ticks(deadline_ticks: u64) {
+    Arch::set_next_event_at_ticks(deadline_ticks);
 }
 
 /// Acknowledge and clear the timer interrupt.

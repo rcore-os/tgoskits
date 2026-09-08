@@ -65,6 +65,7 @@ fn flush_tlb_asid(asid: u16) {
 /// must remain alive for the complete activation lease.
 #[cfg(feature = "uspace")]
 pub unsafe fn install_user_address_space(address_space: InstalledAddressSpace) {
+    address_space.validate_architecture_support();
     // The allocator issues `Tagged` only after the BSP SATP write/readback
     // probe passes Linux's ASID-count threshold. RISC-V requires secondary
     // harts to expose a compatible SATP format.
@@ -111,6 +112,18 @@ pub fn irqs_enabled() -> bool {
 #[inline]
 pub fn wait_for_irqs() {
     riscv::asm::wfi()
+}
+
+/// Waits for an interrupt after the caller masks local IRQ delivery.
+///
+/// RISC-V `WFI` may resume for a locally enabled pending interrupt regardless
+/// of global `SIE`. Keeping `SIE` clear through `WFI` closes the scheduler
+/// wake-loss window. The function returns with local IRQs enabled.
+#[inline]
+pub fn wait_for_irqs_disabled() {
+    debug_assert!(!irqs_enabled());
+    riscv::asm::wfi();
+    enable_irqs();
 }
 
 /// Halt the current CPU.

@@ -1,24 +1,32 @@
 #[track_caller]
 pub fn ax_sleep_until(deadline: crate::time::AxTimeValue) {
-    ax_task::sleep_until(deadline);
+    ax_runtime::task::sleep_until(
+        u64::try_from(deadline.as_nanos())
+            .ok()
+            .and_then(ax_runtime::task::MonotonicDeadline::from_nanos)
+            .expect("absolute sleep deadline exceeds the kernel monotonic time domain"),
+    );
 }
 
 #[track_caller]
 pub fn ax_yield_now() {
-    ax_task::yield_now();
+    if let Err(error) = ax_runtime::task::yield_current_cpu() {
+        panic!("ax_yield_now failed at a scheduler safe point: {error}");
+    }
 }
 
 #[track_caller]
 pub fn ax_exit(exit_code: i32) -> ! {
-    ax_task::exit(exit_code);
+    ax_runtime::task::exit_current(exit_code);
 }
 
 cfg_task! {
     use core::time::Duration;
+    use ax_runtime::task::{CpuId, CpuSet};
 
     /// A handle to a task.
     pub struct AxTaskHandle {
-        inner: ax_task::AxTaskRef,
+        inner: ax_runtime::task::ThreadHandle,
         id: u64,
     }
 
@@ -30,7 +38,7 @@ cfg_task! {
     }
 
     /// A mask to specify the CPU affinity.
-    pub use ax_task::AxCpuMask;
+    pub type AxCpuMask = ax_cpumask::CpuMask<{ ax_runtime::CPU_CAPACITY }>;
 
     pub use ax_runtime::sync::RawMutex as AxRawMutex;
 
@@ -38,12 +46,12 @@ cfg_task! {
     ///
     /// A wait queue is used to store sleeping tasks waiting for a certain event
     /// to happen.
-    pub struct AxWaitQueueHandle(ax_task::WaitQueue);
+    pub struct AxWaitQueueHandle(ax_runtime::task::WaitQueue);
 
     impl AxWaitQueueHandle {
         /// Creates a new empty wait queue.
         pub const fn new() -> Self {
-            Self(ax_task::WaitQueue::new())
+            Self(ax_runtime::task::WaitQueue::new())
         }
     }
 
@@ -54,14 +62,17 @@ cfg_task! {
     }
 
     pub fn ax_current_task_id() -> u64 {
-        ax_task::current().id().as_u64()
+        ax_runtime::task::current_thread_id()
+            .unwrap_or_else(|error| panic!("current task is unavailable: {error}"))
+            .as_u64()
     }
 
     pub fn ax_spawn<F>(f: F, name: alloc::string::String, stack_size: usize) -> AxTaskHandle
     where
         F: FnOnce() + Send + 'static,
     {
-        let inner = ax_task::spawn_raw(f, name, stack_size);
+        let inner = ax_runtime::task::spawn_raw(f, name, stack_size)
+            .unwrap_or_else(|error| panic!("failed to spawn task: {error}"));
         AxTaskHandle {
             id: inner.id().as_u64(),
             inner,
@@ -70,24 +81,45 @@ cfg_task! {
 
     #[track_caller]
     pub fn ax_wait_for_exit(task: AxTaskHandle) -> i32 {
-        task.inner.join()
+        ax_runtime::task::join_thread(task.inner)
+            .unwrap_or_else(|error| panic!("failed to join task: {error}"))
     }
 
     pub fn ax_set_current_priority(prio: isize) -> crate::ApiResult {
-        if ax_task::set_priority(prio) {
-            Ok(())
-        } else {
-            Err(crate::ApiError::PriorityUpdateFailed)
-        }
+        use ax_runtime::task::{Nice, SchedulePolicy};
+
+        let nice = i8::try_from(prio)
+            .ok()
+            .and_then(|value| Nice::new(value).ok())
+            .ok_or(crate::ApiError::InvalidInput)?;
+        let thread = task_result(
+            ax_runtime::task::current_thread_id(),
+            "read current task identity",
+        )?;
+        let policy = task_result(
+            ax_runtime::task::thread_policy(thread),
+            "read current scheduling policy",
+        )?;
+        let SchedulePolicy::Fair { mode, .. } = policy else {
+            return Err(crate::ApiError::OperationNotSupported);
+        };
+        task_result(
+            ax_runtime::task::set_thread_policy(thread, SchedulePolicy::fair(nice, mode)),
+            "set current task priority",
+        )
     }
 
     #[track_caller]
     pub fn ax_set_current_affinity(cpumask: AxCpuMask) -> crate::ApiResult {
-        if ax_task::set_current_affinity(cpumask) {
-            Ok(())
-        } else {
-            Err(crate::ApiError::AffinityUpdateFailed)
-        }
+        let topology_len = task_result(
+            ax_runtime::task::cpu_topology_len(),
+            "read task CPU topology",
+        )?;
+        let affinity = cpu_set_from_mask(cpumask, topology_len)?;
+        task_result(
+            ax_runtime::task::set_current_thread_affinity(affinity),
+            "set current task affinity",
+        )
     }
 
     #[track_caller]
@@ -95,6 +127,7 @@ cfg_task! {
         if let Some(dur) = timeout {
             return wq.0.wait_timeout(dur);
         }
+
         wq.0.wait();
         false
     }
@@ -108,27 +141,118 @@ cfg_task! {
         if let Some(dur) = timeout {
             return wq.0.wait_timeout_until(dur, until_condition);
         }
+
         wq.0.wait_until(until_condition);
         false
     }
 
-    pub fn ax_wait_queue_wake(wq: &AxWaitQueueHandle, count: u32) {
-        if count == u32::MAX {
-            wq.0.notify_all(true);
-        } else {
-            for _ in 0..count {
-                if !wq.0.notify_one(true) {
-                    break;
-                }
-            }
-        }
+    /// Blocks until `until_condition` becomes true or the absolute monotonic
+    /// `deadline` elapses.
+    ///
+    /// Returns `true` only when the deadline wins.
+    #[track_caller]
+    pub fn ax_wait_queue_wait_until_deadline(
+        wq: &AxWaitQueueHandle,
+        deadline: Duration,
+        until_condition: impl Fn() -> bool,
+    ) -> bool {
+        wq.0.wait_until_deadline(
+            u64::try_from(deadline.as_nanos())
+                .ok()
+                .and_then(ax_runtime::task::MonotonicDeadline::from_nanos)
+                .expect("wait deadline exceeds the kernel monotonic time domain"),
+            until_condition,
+        )
     }
 
-    pub fn ax_wait_queue_wake_one_with<F>(wq: &AxWaitQueueHandle, func: F)
-    where
-        F: Fn(u64),
-    {
-        wq.0.notify_one_with(true, func);
+    pub fn ax_wait_queue_wake(wq: &AxWaitQueueHandle, count: u32) -> usize {
+        let mut woken = 0;
+        if count == u32::MAX {
+            while wq.0.notify_one() {
+                woken += 1;
+            }
+        } else {
+            for _ in 0..count {
+                if !wq.0.notify_one() {
+                    break;
+                }
+                woken += 1;
+            }
+        }
+        woken
+    }
+
+    fn task_result<T>(
+        result: Result<T, ax_runtime::task::TaskError>,
+        operation: &'static str,
+    ) -> crate::ApiResult<T> {
+        result.map_err(|error| {
+            ax_log::warn!("{operation} failed: {error}");
+            error.into()
+        })
+    }
+
+    fn cpu_set_from_mask(cpumask: AxCpuMask, topology_len: usize) -> crate::ApiResult<CpuSet> {
+        if cpumask.is_empty() {
+            return Err(crate::ApiError::InvalidInput);
+        }
+        let mut affinity = CpuSet::empty(topology_len);
+        for cpu_index in &cpumask {
+            let cpu_index =
+                u32::try_from(cpu_index).map_err(|_| crate::ApiError::InvalidInput)?;
+            if !affinity.insert(CpuId::new(cpu_index)) {
+                return Err(crate::ApiError::InvalidInput);
+            }
+        }
+        Ok(affinity)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn cpu_mask_conversion_preserves_allowed_cpu() {
+            let affinity = cpu_set_from_mask(AxCpuMask::one_shot(0), 1).unwrap();
+
+            assert!(affinity.contains(CpuId::new(0)));
+        }
+
+        #[test]
+        fn cpu_mask_conversion_rejects_empty_mask() {
+            assert_eq!(
+                cpu_set_from_mask(AxCpuMask::new(), 1),
+                Err(crate::ApiError::InvalidInput)
+            );
+        }
+
+        #[test]
+        fn cpu_mask_conversion_rejects_cpu_outside_topology() {
+            assert_eq!(
+                cpu_set_from_mask(AxCpuMask::one_shot(0), 0),
+                Err(crate::ApiError::InvalidInput)
+            );
+        }
+
+        #[test]
+        fn pi_chain_limit_maps_to_bad_state() {
+            assert_eq!(
+                ax_io::IoError::from(crate::ApiError::from(
+                    ax_runtime::task::TaskError::PiChainLimit { limit: 8 }
+                )),
+                ax_io::IoError::BadState
+            );
+        }
+
+        #[test]
+        fn thread_capacity_maps_to_linux_eagain() {
+            assert_eq!(
+                ax_io::IoError::from(crate::ApiError::from(
+                    ax_runtime::task::TaskError::ThreadCapacity
+                )),
+                ax_io::IoError::WouldBlock
+            );
+        }
     }
 
 }

@@ -1,6 +1,5 @@
 use core::{fmt, ptr::NonNull};
 
-use ax_alloc::UsageKind;
 #[cfg(feature = "copy")]
 use ax_hal::paging::PagingError;
 use ax_hal::{
@@ -19,6 +18,7 @@ use crate::{
         Backend, KernelVirtualAllocationBackend, KernelVirtualAllocationId,
         KernelVirtualAllocationState, alloc::kernel_virtual_mapped_range,
     },
+    tlb::{TlbGather, TlbQuarantine},
 };
 
 #[derive(Clone, Copy)]
@@ -36,6 +36,7 @@ pub struct AddrSpace {
     va_range: VirtAddrRange,
     areas: MemorySet<Backend>,
     pt: PageTable,
+    tlb_quarantine: TlbQuarantine,
 }
 
 /// Borrowed capability for installing a bounded set of root page-table
@@ -98,6 +99,14 @@ impl AddrSpace {
             .map_err(|_| MmError::BadAddress)
     }
 
+    /// Returns flags and leaf size without exposing page-table ownership.
+    pub fn mapping_attributes(&self, vaddr: VirtAddr) -> MmResult<(MappingFlags, usize)> {
+        self.pt
+            .query(vaddr)
+            .map(|(_, flags, size)| (flags, size))
+            .map_err(|_| MmError::BadAddress)
+    }
+
     pub(crate) const fn page_table_mut(&mut self) -> &mut PageTable {
         &mut self.pt
     }
@@ -119,7 +128,43 @@ impl AddrSpace {
             va_range: VirtAddrRange::from_start_size(base, size),
             areas: MemorySet::new(),
             pt: PageTable::new(PagingAllocator).map_err(|_| MmError::NoMemory)?,
+            tlb_quarantine: TlbQuarantine::new(),
         })
+    }
+
+    fn retry_tlb_quarantine(&mut self) -> MmResult {
+        self.tlb_quarantine.retry().map_err(MmError::TlbShootdown)
+    }
+
+    fn finish_tlb_mutation<R>(
+        &mut self,
+        gather: TlbGather,
+        operation_result: MmResult<R>,
+    ) -> MmResult<R> {
+        crate::tlb::resolve_published_mutation(
+            operation_result,
+            self.tlb_quarantine
+                .commit(gather)
+                .map_err(MmError::TlbShootdown),
+        )
+    }
+
+    fn finish_confirmed_tlb_mutation<R>(
+        &mut self,
+        gather: TlbGather,
+        operation_result: MmResult<R>,
+    ) -> MmResult<R> {
+        crate::tlb::resolve_confirmed_mutation(
+            operation_result,
+            self.tlb_quarantine
+                .commit(gather)
+                .map_err(MmError::TlbShootdown),
+        )
+    }
+
+    /// Retries every resource release quarantined by an earlier shootdown.
+    pub fn retry_quarantined_tlb_reclaims(&mut self) -> MmResult {
+        self.retry_tlb_quarantine()
     }
 
     #[cfg(feature = "copy")]
@@ -157,7 +202,18 @@ impl AddrSpace {
         size: usize,
         limit: VirtAddrRange,
     ) -> Option<VirtAddr> {
-        self.areas.find_free_area(hint, size, limit, PAGE_SIZE_4K)
+        self.find_free_area_aligned(hint, size, limit, PAGE_SIZE_4K)
+    }
+
+    /// Finds a range whose start and size satisfy the requested alignment.
+    pub(crate) fn find_free_area_aligned(
+        &self,
+        hint: VirtAddr,
+        size: usize,
+        limit: VirtAddrRange,
+        alignment: usize,
+    ) -> Option<VirtAddr> {
+        self.areas.find_free_area(hint, size, limit, alignment)
     }
 
     /// Add a new linear mapping.
@@ -177,6 +233,7 @@ impl AddrSpace {
         unmap_overlap: bool,
         kind: LinearMappingKind,
     ) -> MmResult {
+        self.retry_tlb_quarantine()?;
         if !self.contains_range(start_vaddr, size) {
             return Err(MmError::InvalidInput(
                 "mapping range is outside address space",
@@ -186,13 +243,30 @@ impl AddrSpace {
             return Err(MmError::InvalidInput("mapping range is not page aligned"));
         }
 
+        if unmap_overlap
+            && self
+                .areas
+                .overlaps(VirtAddrRange::from_start_size(start_vaddr, size))
+        {
+            // Complete invalidation before installing a replacement into the
+            // same VA, so no CPU can use a stale translation after reuse.
+            self.unmap(start_vaddr, size)?;
+            self.retry_tlb_quarantine()?;
+        }
+
         let backend = match kind {
             LinearMappingKind::Mutable => Backend::new_linear(start_vaddr, start_paddr),
             LinearMappingKind::Boot => Backend::new_boot_linear(start_vaddr, start_paddr),
         };
         let area = MemoryArea::new(start_vaddr, size, flags, backend);
-        self.areas.map(area, &mut self.pt, unmap_overlap)?;
-        Ok(())
+        let mut gather = TlbGather::new();
+        let mapping = self
+            .areas
+            .map(area, &mut gather, &mut self.pt, false)
+            .map_err(Into::into);
+        // A fresh VA has no translation to invalidate. Only a failed backend
+        // map can populate this gather by rolling published PTEs back.
+        self.finish_tlb_mutation(gather, mapping)
     }
 
     pub(crate) fn map_boot_linear(
@@ -227,6 +301,77 @@ impl AddrSpace {
             false,
             LinearMappingKind::Mutable,
         )
+    }
+
+    /// Maps a physical page list into one contiguous virtual range.
+    ///
+    /// All page-sized areas are committed through one TLB gather. If a later
+    /// page cannot be mapped, the published prefix is removed before the
+    /// original error is returned.
+    pub fn map_linear_pages(
+        &mut self,
+        start: VirtAddr,
+        pages: &[PhysAddr],
+        flags: MappingFlags,
+    ) -> MmResult {
+        self.retry_tlb_quarantine()?;
+        let size = pages
+            .len()
+            .checked_mul(PAGE_SIZE_4K)
+            .filter(|size| *size != 0)
+            .ok_or(MmError::InvalidInput(
+                "physical page list is empty or overflows",
+            ))?;
+        if !self.contains_range(start, size) || !start.is_aligned_4k() {
+            return Err(MmError::InvalidInput("page-list mapping range is invalid"));
+        }
+        if pages.iter().any(|page| !page.is_aligned_4k()) {
+            return Err(MmError::InvalidInput(
+                "physical page list contains an unaligned frame",
+            ));
+        }
+
+        let mut gather = TlbGather::new();
+        let mut mapped_size = 0usize;
+        let mapping = (|| {
+            for page in pages {
+                let vaddr = start + mapped_size;
+                let area = MemoryArea::new(
+                    vaddr,
+                    PAGE_SIZE_4K,
+                    flags,
+                    Backend::new_linear(vaddr, *page),
+                );
+                self.areas
+                    .map(area, &mut gather, &mut self.pt, false)
+                    .map_err(MmError::from)?;
+                mapped_size += PAGE_SIZE_4K;
+            }
+            Ok(())
+        })();
+        let mapping = match mapping {
+            Ok(()) => Ok(()),
+            Err(mapping_error) if mapped_size == 0 => Err(mapping_error),
+            Err(mapping_error) => {
+                match self
+                    .areas
+                    .unmap(start, mapped_size, &mut gather, &mut self.pt)
+                {
+                    Ok(()) => Err(mapping_error),
+                    Err(rollback_error) => {
+                        error!(
+                            "page-list mapping rollback failed: start={start:?}, \
+                             mapped_size={mapped_size:#x}, mapping_error={mapping_error}, \
+                             rollback_error={rollback_error:?}"
+                        );
+                        Err(MmError::BadState(
+                            "failed to roll back a partial page-list mapping",
+                        ))
+                    }
+                }
+            }
+        };
+        self.finish_tlb_mutation(gather, mapping)
     }
 
     /// Maps contiguous pages through a new uncached kernel alias.
@@ -268,7 +413,23 @@ impl AddrSpace {
 
     /// Removes a DMA-coherent alias without releasing its physical pages.
     pub fn unmap_dma_coherent_alias(&mut self, alias: NonNull<u8>, size: usize) -> MmResult {
-        self.unmap(VirtAddr::from_usize(alias.as_ptr() as usize), size)
+        let start = VirtAddr::from_usize(alias.as_ptr() as usize);
+        self.retry_tlb_quarantine()?;
+        if !self.contains_range(start, size) {
+            return Err(MmError::InvalidInput(
+                "DMA alias range is outside address space",
+            ));
+        }
+        if !start.is_aligned_4k() || !is_aligned_4k(size) {
+            return Err(MmError::InvalidInput("DMA alias range is not page aligned"));
+        }
+
+        let mut gather = TlbGather::new();
+        let operation = self
+            .areas
+            .unmap(start, size, &mut gather, &mut self.pt)
+            .map_err(Into::into);
+        self.finish_confirmed_tlb_mutation(gather, operation)
     }
 
     /// Add or replace a linear mapping.
@@ -307,6 +468,7 @@ impl AddrSpace {
         flags: MappingFlags,
         populate: bool,
     ) -> MmResult {
+        self.retry_tlb_quarantine()?;
         if !self.contains_range(start, size) {
             return Err(MmError::InvalidInput(
                 "mapping range is outside address space",
@@ -317,58 +479,47 @@ impl AddrSpace {
         }
 
         let area = MemoryArea::new(start, size, flags, Backend::new_alloc(populate));
-        self.areas.map(area, &mut self.pt, false)?;
-        Ok(())
+        let mut gather = TlbGather::new();
+        let mapping = self
+            .areas
+            .map(area, &mut gather, &mut self.pt, false)
+            .map_err(Into::into);
+        // Successful fresh mappings cannot race an old translation: reuse is
+        // admitted only after the prior unmap transaction completes. A failed
+        // populate may instead leave rollback frames in the gather.
+        self.finish_tlb_mutation(gather, mapping)
     }
 
-    pub(crate) fn map_kernel_virtual_allocation(
+    pub(crate) fn reserve_kernel_virtual_allocation(
         &mut self,
         start: VirtAddr,
         size: usize,
         flags: MappingFlags,
-        usage: UsageKind,
-        leading_guard_pages: usize,
-    ) -> MmResult<KernelVirtualAllocationId> {
-        if !self.contains_range(start, size) {
+        allocation: &KernelVirtualAllocationBackend,
+    ) -> MmResult {
+        if !self.contains_range(start, size) || !start.is_aligned_4k() || !is_aligned_4k(size) {
+            return Err(MmError::InvalidInput("invalid kernel virtual reservation"));
+        }
+        let (_, mapped_size) =
+            kernel_virtual_mapped_range(start, size, allocation.leading_guard_pages()).ok_or(
+                MmError::InvalidInput("kernel virtual reservation has no usable pages"),
+            )?;
+        if mapped_size / PAGE_SIZE_4K != allocation.frame_count() {
             return Err(MmError::InvalidInput(
-                "kernel virtual allocation is outside address space",
+                "kernel virtual reservation frame count differs",
             ));
         }
-        if !start.is_aligned_4k() || !is_aligned_4k(size) {
-            return Err(MmError::InvalidInput(
-                "kernel virtual allocation is not page aligned",
-            ));
-        }
-        let (_, mapped_size) = kernel_virtual_mapped_range(start, size, leading_guard_pages)
-            .ok_or(MmError::InvalidInput(
-                "kernel virtual allocation has no usable pages",
-            ))?;
-
-        let backend = Backend::new_kernel_virtual_allocation(
-            usage,
-            leading_guard_pages,
-            mapped_size / PAGE_SIZE_4K,
-        )
-        .ok_or(MmError::NoMemory)?;
-        let id = backend
-            .kernel_virtual_allocation()
-            .ok_or(MmError::BadState(
-                "kernel virtual allocation backend lost its identity",
-            ))?
-            .id();
-
-        let area = MemoryArea::new(start, size, flags, backend);
+        // Reserve the VA and its frame owner before installing any PTE. The
+        // caller retains a second owner across insertion failure and arms a
+        // retire token before the fallible, lock-external page-table prepare.
         self.areas
-            .map(area, &mut self.pt, false)
-            .map_err(|error| match error {
-                // This backend installs a fresh, metadata-nonoverlapping range.
-                // Its backing frames were reserved by the builder; this apply
-                // phase can fail only while reserving a page-table node or
-                // installing one of those preallocated leaves.
-                ax_memory_set::MappingError::BadState => MmError::NoMemory,
-                other => other.into(),
-            })?;
-        Ok(id)
+            .insert_prepared_area(MemoryArea::new(
+                start,
+                size,
+                flags,
+                Backend::KernelVirtualAllocation(allocation.clone()),
+            ))
+            .map_err(Into::into)
     }
 
     fn exact_kernel_virtual_allocation(
@@ -445,14 +596,17 @@ impl AddrSpace {
             KernelVirtualAllocationState::Quarantined => {}
         }
 
-        // Retain each physical address in a non-present leaf. The backend and
-        // metadata remain published, so neither the VA nor the frame owner can
-        // be reused until a synchronous shootdown acknowledges this transition.
-        self.pt
-            .protect_region(mapped_start, mapped_size, MappingFlags::empty())
-            .map_err(|_| {
-                MmError::BadState("failed to quarantine kernel virtual allocation leaves")
-            })?;
+        // Clear only matching leaves and retain directory pages for reuse,
+        // as Linux vunmap_pte_range does. This also accepts the holes left by
+        // a failed allocation. The metadata still owns every data frame until
+        // the later shootdown acknowledges the entire usable range.
+        if !Backend::KernelVirtualAllocation(allocation).unmap_kernel_virtual_allocation(
+            start,
+            size,
+            &mut self.pt,
+        ) {
+            return Err(MmError::BadState("failed to detach kernel virtual leaves"));
+        }
         Ok(VirtAddrRange::from_start_size(mapped_start, mapped_size))
     }
 
@@ -461,15 +615,17 @@ impl AddrSpace {
         id: KernelVirtualAllocationId,
         start: VirtAddr,
         size: usize,
-    ) -> MmResult {
+    ) -> MmResult<MemoryArea<Backend>> {
         let allocation = self.exact_kernel_virtual_allocation(id, start, size)?;
         if allocation.state() != KernelVirtualAllocationState::Quarantined {
             return Err(MmError::BadState(
                 "kernel virtual allocation was not quarantined",
             ));
         }
-        self.areas.unmap_exact(start, size, &mut self.pt)?;
-        Ok(())
+        let mut gather = TlbGather::new();
+        self.areas
+            .unmap_exact(start, size, &mut gather, &mut self.pt)
+            .map_err(Into::into)
     }
 
     pub(crate) fn next_kernel_virtual_retire_after(
@@ -494,6 +650,7 @@ impl AddrSpace {
     /// Returns an error if the address range is out of the address space or not
     /// aligned.
     pub fn unmap(&mut self, start: VirtAddr, size: usize) -> MmResult {
+        self.retry_tlb_quarantine()?;
         if !self.contains_range(start, size) {
             return Err(MmError::InvalidInput(
                 "unmap range is outside address space",
@@ -503,8 +660,12 @@ impl AddrSpace {
             return Err(MmError::InvalidInput("unmap range is not page aligned"));
         }
 
-        self.areas.unmap(start, size, &mut self.pt)?;
-        Ok(())
+        let mut gather = TlbGather::new();
+        let operation = self
+            .areas
+            .unmap(start, size, &mut gather, &mut self.pt)
+            .map_err(Into::into);
+        self.finish_tlb_mutation(gather, operation)
     }
 
     /// To process data in this area with the given function.
@@ -572,6 +733,7 @@ impl AddrSpace {
     /// Returns an error if the address range is out of the address space or not
     /// aligned.
     pub fn protect(&mut self, start: VirtAddr, size: usize, flags: MappingFlags) -> MmResult {
+        self.retry_tlb_quarantine()?;
         if !self.contains_range(start, size) {
             return Err(MmError::InvalidInput(
                 "protect range is outside address space",
@@ -581,16 +743,23 @@ impl AddrSpace {
             return Err(MmError::InvalidInput("protect range is not page aligned"));
         }
 
-        // TODO
-        self.pt
-            .protect_region(start, size, flags)
-            .map_err(|_| MmError::BadState("failed to update page-table permissions"))?;
-        Ok(())
+        let mut gather = TlbGather::new();
+        let operation = self
+            .areas
+            .protect(start, size, |_| Some(flags), &mut gather, &mut self.pt)
+            .map_err(Into::into);
+        self.finish_tlb_mutation(gather, operation)
     }
 
     /// Removes all mappings in the address space.
-    pub fn clear(&mut self) {
-        self.areas.clear(&mut self.pt).unwrap();
+    pub fn clear(&mut self) -> MmResult {
+        self.retry_tlb_quarantine()?;
+        let mut gather = TlbGather::new();
+        let operation = self
+            .areas
+            .clear(&mut gather, &mut self.pt)
+            .map_err(Into::into);
+        self.finish_tlb_mutation(gather, operation)
     }
 
     /// Checks whether an access to the specified memory region is valid.
@@ -633,6 +802,9 @@ impl AddrSpace {
     /// Returns `true` if the page fault is handled successfully (not a real
     /// fault).
     pub fn handle_page_fault(&mut self, vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
+        if self.retry_tlb_quarantine().is_err() {
+            return false;
+        }
         if !self.va_range.contains(vaddr) {
             return false;
         }
@@ -640,13 +812,18 @@ impl AddrSpace {
         if let Some(area) = self.areas.find(vaddr) {
             let orig_flags = area.flags();
             if orig_flags.contains(access_flags) {
-                let handled = area
-                    .backend()
-                    .handle_page_fault(vaddr, orig_flags, &mut self.pt);
-                if handled {
-                    ax_hal::cache::update_mmu_cache(vaddr);
+                let mut gather = TlbGather::new();
+                let handled =
+                    area.backend()
+                        .handle_page_fault(vaddr, orig_flags, &mut gather, &mut self.pt);
+                let handled = self
+                    .finish_tlb_mutation(gather, Ok(handled))
+                    .expect("page-fault TLB completion preserves the operation result");
+                if !handled {
+                    return false;
                 }
-                return handled;
+                ax_hal::cache::update_mmu_cache(vaddr);
+                return true;
             }
         }
         false
@@ -665,7 +842,28 @@ impl fmt::Debug for AddrSpace {
 
 impl Drop for AddrSpace {
     fn drop(&mut self) {
-        self.clear();
+        if let Err(error) = self.clear() {
+            error!(
+                "address-space teardown retained quarantined TLB resources: root={:#x}, \
+                 pending={}, failures={}, last_error={:?}, error={error}",
+                self.page_table_root(),
+                self.tlb_quarantine.pending_count(),
+                self.tlb_quarantine.failures(),
+                self.tlb_quarantine.last_error(),
+            );
+            panic!("address-space teardown cannot release an unconfirmed page-table owner");
+        }
+        if let Err(error) = self.retry_tlb_quarantine() {
+            error!(
+                "address-space teardown could not confirm its final TLB gather: root={:#x}, \
+                 pending={}, failures={}, last_error={:?}, error={error}",
+                self.page_table_root(),
+                self.tlb_quarantine.pending_count(),
+                self.tlb_quarantine.failures(),
+                self.tlb_quarantine.last_error(),
+            );
+            panic!("address-space teardown cannot release its final quarantined owner");
+        }
     }
 }
 

@@ -6,10 +6,8 @@ use alloc::{
 
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{paging::MappingFlags, time::monotonic_time_nanos};
-use ax_task::current;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::*;
-use starry_vm::{VmMutPtr, VmPtr};
 
 use super::{
     IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, SHM_INFO,
@@ -18,10 +16,11 @@ use super::{
 use crate::{
     StarryError, StarryResult,
     mm::{
-        AddressSpaceMutationOutcome, MappingOperation, MmPin, SharedMemoryObject,
+        AddressSpaceMutationOutcome, MappingOperation, MmPin, SharedMemoryObject, UserPtr,
+        VmMutPtr, VmPtr,
     },
-    sync::Mutex,
-    task::{AsThread, PidIdentityId, PidNamespaceId, PidSnapshot},
+    sync::PiMutex,
+    task::{PidIdentityId, PidNamespaceId, PidSnapshot},
 };
 
 bitflags::bitflags! {
@@ -39,7 +38,7 @@ bitflags::bitflags! {
 
 /// Data structure describing a shared memory segment.
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
 pub struct ShmidDs {
     /// operation permission struct
     shm_perm: IpcPerm,
@@ -87,6 +86,7 @@ impl ShmidDs {
                 mode,
                 seq: 0,
                 pad: 0,
+                alignment_pad: 0,
                 unused0: 0,
                 unused1: 0,
             },
@@ -105,7 +105,7 @@ impl ShmidDs {
 
 /// System-wide shared memory info returned by IPC_INFO.
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
 struct ShmInfo64 {
     shmmax: u64,
     shmmin: u64,
@@ -116,7 +116,7 @@ struct ShmInfo64 {
 
 /// Shared memory usage info returned by SHM_INFO.
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
 struct ShmInfo {
     used_ids: i32,
     _pad: i32,
@@ -370,7 +370,7 @@ pub struct ShmManager {
     /// (key, ns_id) <-> shm_id
     key_shmid: BiBTreeMap<(i32, u64), i32>,
     /// shm_id -> shm_inner
-    shmid_inner: BTreeMap<i32, Arc<Mutex<ShmInner>>>,
+    shmid_inner: BTreeMap<i32, Arc<PiMutex<ShmInner>>>,
     /// process generation -> vaddr -> shm_id
     pid_shmid_vaddr: BTreeMap<PidIdentityId, BTreeMap<VirtAddr, i32>>,
 }
@@ -393,7 +393,7 @@ impl ShmManager {
     /// Returns the shared memory inner structure [`ShmInner`] associated with
     /// the given shared memory ID, validating that it belongs to the specified
     /// IPC namespace.
-    pub fn get_inner_by_shmid(&self, shmid: i32, ns_id: u64) -> Option<Arc<Mutex<ShmInner>>> {
+    pub fn get_inner_by_shmid(&self, shmid: i32, ns_id: u64) -> Option<Arc<PiMutex<ShmInner>>> {
         self.shmid_inner
             .get(&shmid)
             .filter(|inner| inner.lock().ns_id == ns_id)
@@ -403,7 +403,7 @@ impl ShmManager {
     /// Lookup a shm_inner by shmid without namespace validation. Only for
     /// internal cleanup paths (process exit) where the caller has already
     /// scoped the lookup by pid.
-    fn get_inner_by_shmid_unchecked(&self, shmid: i32) -> Option<Arc<Mutex<ShmInner>>> {
+    fn get_inner_by_shmid_unchecked(&self, shmid: i32) -> Option<Arc<PiMutex<ShmInner>>> {
         self.shmid_inner.get(&shmid).cloned()
     }
 
@@ -432,7 +432,7 @@ impl ShmManager {
 
     /// Inserts a mapping from a shared memory ID to its inner
     /// structure [`ShmInner`].
-    pub fn insert_shmid_inner(&mut self, shmid: i32, shm_inner: Arc<Mutex<ShmInner>>) {
+    pub fn insert_shmid_inner(&mut self, shmid: i32, shm_inner: Arc<PiMutex<ShmInner>>) {
         self.shmid_inner.insert(shmid, shm_inner);
     }
 
@@ -480,7 +480,7 @@ impl ShmManager {
 ///
 /// Lock ordering: SHM_MANAGER before ShmInner before aspace (per-process).
 /// All code paths must acquire locks in this order to prevent deadlock.
-pub static SHM_MANAGER: Mutex<ShmManager> = Mutex::new(ShmManager::new());
+pub static SHM_MANAGER: PiMutex<ShmManager> = PiMutex::new(ShmManager::new());
 
 /// Clear all shared memory segments for a process on exit.
 ///
@@ -489,7 +489,7 @@ pub static SHM_MANAGER: Mutex<ShmManager> = Mutex::new(ShmManager::new());
 /// lock ordering consistent with sys_shmget (SHM_MANAGER then ShmInner).
 pub fn clear_proc_shm(owner: PidIdentityId, operator: PidSnapshot, aspace: &MmPin) {
     // Collect segments attached to this process.
-    let segments: Vec<(i32, Arc<Mutex<ShmInner>>)> = {
+    let segments: Vec<(i32, Arc<PiMutex<ShmInner>>)> = {
         let shm_manager = SHM_MANAGER.lock();
         let shmids = match shm_manager.get_shmids_by_pid(owner) {
             Some(ids) => ids,
@@ -555,12 +555,17 @@ pub fn clear_proc_shm(owner: PidIdentityId, operator: PidSnapshot, aspace: &MmPi
     shm_manager.remove_pid(owner);
 }
 
-pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> StarryResult<isize> {
-    let curr = current();
+pub fn sys_shmget(
+    current: &crate::task::UserTaskRef,
+    key: i32,
+    size: usize,
+    shmflg: usize,
+) -> crate::StarryResult<isize> {
+    let curr = current;
     let thread = curr.as_thread();
     let operator = thread.proc_data.identity().snapshot();
     let cred = thread.cred();
-    let ns_id = thread.proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
+    let ns_id = thread.proc_data.namespace_snapshot().ipc_ns.lock().ns_id;
     let mut shm_manager = SHM_MANAGER.lock();
 
     if key != IPC_PRIVATE {
@@ -593,7 +598,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> StarryResult<isize> {
 
     // Create a new shm_inner
     let shmid = next_ipc_id();
-    let shm_inner = Arc::new(Mutex::new(ShmInner::new(
+    let shm_inner = Arc::new(PiMutex::new(ShmInner::new(
         key, shmid, size, shmflg, operator, cred.euid, cred.egid, ns_id,
     )));
     shm_manager.insert_key_shmid(key, ns_id, shmid);
@@ -602,10 +607,15 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> StarryResult<isize> {
     Ok(shmid as isize)
 }
 
-pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> StarryResult<isize> {
+pub fn sys_shmat(
+    current: &crate::task::UserTaskRef,
+    shmid: i32,
+    addr: usize,
+    shmflg: u32,
+) -> crate::StarryResult<isize> {
     let shm_flg = ShmAtFlags::from_bits_truncate(shmflg);
 
-    let curr = current();
+    let curr = current;
     let proc_data = &curr.as_thread().proc_data;
     let pid = proc_data.proc.pid();
     let owner = proc_data.identity().id();
@@ -617,7 +627,7 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> StarryResult<isize> {
     // mapping work to avoid holding the global lock across aspace ops.
     let shm_inner_arc = {
         let shm_manager = SHM_MANAGER.lock();
-        let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
+        let ns_id = proc_data.namespace_snapshot().ipc_ns.lock().ns_id;
         shm_manager
             .get_inner_by_shmid(shmid, ns_id)
             .ok_or(StarryError::InvalidInput)?
@@ -707,10 +717,15 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> StarryResult<isize> {
     }
 }
 
-pub fn sys_shmctl(shmid: i32, cmd: u32, buf: *mut ShmidDs) -> StarryResult<isize> {
+pub fn sys_shmctl(
+    current: &crate::task::UserTaskRef,
+    shmid: i32,
+    cmd: u32,
+    buf: UserPtr<ShmidDs>,
+) -> crate::StarryResult<isize> {
     let cmd = cmd as i32;
 
-    let curr = current();
+    let curr = current;
     let thread = curr.as_thread();
     let cred = thread.cred();
     let ns_id = thread.proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
@@ -731,8 +746,8 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: *mut ShmidDs) -> StarryResult<isize
             shmseg: 4096,
             shmall: usize::MAX as u64 / PAGE_SIZE_4K as u64,
         };
-        let ptr = buf.cast::<ShmInfo64>();
-        ptr.vm_write(info)?;
+        let ptr = buf.as_ptr() as *mut ShmInfo64;
+        ptr.vm_write(current, info)?;
         let max_idx = ns_count.saturating_sub(1) as isize;
         return Ok(max_idx);
     }
@@ -761,8 +776,8 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: *mut ShmidDs) -> StarryResult<isize
             swap_attempts: 0,
             swap_successes: 0,
         };
-        let ptr = buf.cast::<ShmInfo>();
-        ptr.vm_write(info)?;
+        let ptr = buf.as_ptr() as *mut ShmInfo;
+        ptr.vm_write(current, info)?;
         let max_idx = used_ids.saturating_sub(1) as isize;
         return Ok(max_idx);
     }
@@ -784,7 +799,7 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: *mut ShmidDs) -> StarryResult<isize
             }
             (*actual_shmid, guard.status(pid_observer))
         };
-        buf.vm_write(shmid_ds)?;
+        buf.as_ptr().vm_write(current, shmid_ds)?;
         return Ok(actual_shmid as isize);
     }
 
@@ -816,7 +831,7 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: *mut ShmidDs) -> StarryResult<isize
     // Copy IPC_SET input before taking shared-memory metadata locks. User
     // memory access can fault and sleep, so it must not retain these locks.
     let requested = if cmd == IPC_SET {
-        Some((buf as *const ShmidDs).vm_read()?)
+        Some((buf.as_ptr() as *const ShmidDs).vm_read(current)?)
     } else {
         None
     };
@@ -845,7 +860,7 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: *mut ShmidDs) -> StarryResult<isize
     let output = (!buf.is_null()).then(|| shm_inner.status(pid_observer));
     drop(shm_inner);
     if let Some(output) = output {
-        buf.vm_write(output)?;
+        buf.as_ptr().vm_write(current, output)?;
     }
     Ok(0)
 }
@@ -864,10 +879,10 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: *mut ShmidDs) -> StarryResult<isize
 
 // Note: all the below delete functions only delete the mapping between the
 // shm_id and the shm_inner,   but the shm_inner is not deleted or modifyed!
-pub fn sys_shmdt(shmaddr: usize) -> StarryResult<isize> {
+pub fn sys_shmdt(current: &crate::task::UserTaskRef, shmaddr: usize) -> crate::StarryResult<isize> {
     let shmaddr = VirtAddr::from(shmaddr);
 
-    let curr = current();
+    let curr = current;
     let proc_data = &curr.as_thread().proc_data;
     let pid = proc_data.proc.pid();
     let owner = proc_data.identity().id();
@@ -878,7 +893,7 @@ pub fn sys_shmdt(shmaddr: usize) -> StarryResult<isize> {
     // Look up shmid and grab the inner Arc while holding SHM_MANAGER.
     let (shmid, shm_inner_arc) = {
         let shm_manager = SHM_MANAGER.lock();
-        let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
+        let ns_id = proc_data.namespace_snapshot().ipc_ns.lock().ns_id;
         let shmid = shm_manager
             .get_shmid_by_vaddr(owner, shmaddr)
             .ok_or(StarryError::InvalidInput)?;

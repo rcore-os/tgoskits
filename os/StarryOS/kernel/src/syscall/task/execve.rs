@@ -6,29 +6,36 @@ use alloc::{
 };
 use core::{
     ffi::{c_char, c_int},
-    future::poll_fn,
-    iter,
     mem::size_of,
-    task::Poll,
 };
 
+use ax_fs_ng::vfs::current_fs_context;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_task::{current, future::block_on, yield_now};
 use axfs_ng_vfs::Location;
 use kernel_elf_parser::AuxType;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
-use starry_vm::{VmError, vm_load_until_nul};
+use starry_vm::VmError;
 
 use crate::{
     StarryError, StarryResult,
     file::{ResolveAtResult, memfd::Memfd, resolve_at},
     mm::{
         MAX_EXEC_ARG_BYTES, MmHandle, load_user_app, new_user_image_builder,
-        validate_exec_arg_size, vm_load_string,
+        validate_exec_arg_size, vm_load_string, vm_load_until_nul,
     },
-    sync::Mutex,
-    task::{AsThread, Tid, TidNumber, zap_thread},
+    sync::{InterruptibleMutexExt, PiMutex},
+    task::{TidNumber, future::block_on, zap_thread},
 };
+
+fn commit_address_space_handoff<OldAddressSpace>(
+    publish_new: impl FnOnce() -> OldAddressSpace,
+    install_new: impl FnOnce(),
+    release_old: impl FnOnce(OldAddressSpace),
+) {
+    let old_address_space = publish_new();
+    install_new();
+    release_old(old_address_space);
+}
 
 fn charge_exec_arg_bytes(total: &mut usize, bytes: usize) -> StarryResult {
     *total = total
@@ -48,12 +55,16 @@ fn exec_arg_vm_error(error: VmError) -> StarryError {
 }
 
 /// Copy one user-provided argv or envp vector while enforcing a shared budget.
-fn load_exec_vec(ptr: *const *const c_char, total: &mut usize) -> StarryResult<Vec<String>> {
+fn load_exec_vec(
+    current: &crate::task::UserTaskRef,
+    ptr: *const *const c_char,
+    total: &mut usize,
+) -> StarryResult<Vec<String>> {
     if ptr.is_null() {
         return Ok(Vec::new());
     }
 
-    let pointers = vm_load_until_nul(ptr).map_err(exec_arg_vm_error)?;
+    let pointers = vm_load_until_nul(current, ptr).map_err(exec_arg_vm_error)?;
     let pointer_bytes = pointers
         .len()
         .checked_add(1)
@@ -63,7 +74,7 @@ fn load_exec_vec(ptr: *const *const c_char, total: &mut usize) -> StarryResult<V
 
     let mut values = Vec::with_capacity(pointers.len());
     for ptr in pointers {
-        let value = vm_load_string(ptr).map_err(|error| match error {
+        let value = vm_load_string(current, ptr).map_err(|error| match error {
             StarryError::Vm(error) => exec_arg_vm_error(error),
             error => error,
         })?;
@@ -78,12 +89,13 @@ fn load_exec_vec(ptr: *const *const c_char, total: &mut usize) -> StarryResult<V
 }
 
 pub fn sys_execve(
+    current: &crate::task::UserTaskRef,
     uctx: &mut UserContext,
     path: *const c_char,
     argv: *const *const c_char,
     envp: *const *const c_char,
-) -> StarryResult<isize> {
-    let path = vm_load_string(path)?;
+) -> crate::StarryResult<isize> {
+    let path = vm_load_string(current, path)?;
     let loc = if let Some(fd) = self_fd_number(&path) {
         match resolve_at(fd, Some(""), AT_EMPTY_PATH)? {
             ResolveAtResult::File(loc) => loc,
@@ -96,9 +108,9 @@ pub fn sys_execve(
                 .clone(),
         }
     } else {
-        ax_fs_ng::vfs::current_fs_context().lock().resolve(&path)?
+        current_fs_context().lock().resolve(&path)?
     };
-    do_execve(uctx, loc, path, argv, envp)
+    do_execve(current, uctx, loc, path, argv, envp)
 }
 
 fn self_fd_number(path: &str) -> Option<c_int> {
@@ -113,6 +125,7 @@ fn self_fd_number(path: &str) -> Option<c_int> {
 /// `path` (resolved relative to `dirfd`), or by `dirfd` alone when
 /// `AT_EMPTY_PATH` is set and `path` is empty.
 pub fn sys_execveat(
+    current: &crate::task::UserTaskRef,
     uctx: &mut UserContext,
     dirfd: c_int,
     path: *const c_char,
@@ -124,7 +137,7 @@ pub fn sys_execveat(
         return Err(StarryError::InvalidInput);
     }
 
-    let path = vm_load_string(path)?;
+    let path = vm_load_string(current, path)?;
 
     // Resolve dirfd + path to the `Location` the loader reads from. A regular
     // file yields its filesystem path as the display name; an anonymous memfd
@@ -147,15 +160,16 @@ pub fn sys_execveat(
         }
     };
 
-    do_execve(uctx, loc, disp_path, argv, envp)
+    do_execve(current, uctx, loc, disp_path, argv, envp)
 }
 
 /// Shared execve core (Linux's `do_execveat_common` equivalent): both
 /// `sys_execve` and `sys_execveat` resolve the program to a `Location`, then
 /// funnel it plus the raw `argv` / `envp` user pointers here to be loaded once.
 /// `path` is the display name (used for argv0-independent `comm`/`exe_path` and
-/// the loader's `.sh`/shebang handling), not re-resolved against the FS.
+/// the loader's shebang handling), not re-resolved against the FS.
 fn do_execve(
+    current: &crate::task::UserTaskRef,
     uctx: &mut UserContext,
     loc: Location,
     path: String,
@@ -172,8 +186,8 @@ fn do_execve(
     // `count_strings_kernel` short-circuits NULL to an empty list rather
     // than returning EFAULT.
     let mut arg_bytes = 0;
-    let mut args = load_exec_vec(argv, &mut arg_bytes)?;
-    let envs = load_exec_vec(envp, &mut arg_bytes)?;
+    let mut args = load_exec_vec(current, argv, &mut arg_bytes)?;
+    let envs = load_exec_vec(current, envp, &mut arg_bytes)?;
 
     // Linux still supplies an empty string as argv[0] to the new image, so
     // normalize an empty argv here.
@@ -185,7 +199,7 @@ fn do_execve(
 
     debug!("do_execve <= path: {path:?}, args: {args:?}, envs: {envs:?}");
 
-    let curr = current();
+    let curr = current;
     let thr = curr.as_thread();
     let proc_data = &thr.proc_data;
     let my_tid = thr.tid_number();
@@ -202,35 +216,25 @@ fn do_execve(
     // the holder has crossed into irreversible teardown — which we observe
     // by `zap_thread` setting our `exit_request`.
     //
-    // We can't use `Mutex::lock` directly: it sleeps on
-    // `WaitQueue::wait_until`, which is not awakened by zap's
-    // `task.interrupt()`, and (worse) on release the loser would acquire
-    // the mutex and proceed with execve on top of the holder's already-
-    // committed new image. Busy-yield with an `exit_request` probe gives
-    // us:
-    //   - fall-through to acquisition if the holder fails before commit,
-    //   - cooperative exit (EINTR → user-return → `do_exit(0, false)`) if
-    //     the holder zaps us during its sibling-teardown loop,
-    // without consuming any flag the user-return `check_signals` needs.
+    // PREEMPT_RT turns this mutex into an rtmutex. Its wait loop first tries
+    // to take a published ownerless handoff, then checks the kill condition,
+    // and removes a cancelled waiter together with its PI donation. The
+    // Starry kill condition is the persistent sibling `exit_request`: generic
+    // signal wakeups must not abort this serialization boundary.
     //
     // Note: we deliberately do *not* abort on generic `task.interrupt()`
     // (signal wakeups). Linux's execve is killable but not arbitrarily
     // signal-interruptible while it serializes through `cred_guard_mutex`.
-    let _exec_guard = loop {
-        if let Some(g) = proc_data.exec_lock.try_lock() {
-            break g;
-        }
-        if thr.has_exit_request() {
-            return Err(StarryError::Interrupted);
-        }
-        yield_now();
-    };
+    let _exec_guard = proc_data
+        .exec_lock()
+        .lock_interruptible(|| thr.has_exit_request())
+        .map_err(|_| crate::StarryError::Interrupted)?;
 
     // Collect metadata from the already-resolved location before touching
     // anything. An anonymous memfd has no filesystem path, so fall back to the
     // caller-supplied display name (e.g. `/memfd:<name> (deleted)`).
-    let mut new_name = loc.name().to_string();
-    let mut new_exe_path = loc
+    let new_name = loc.name().to_string();
+    let new_exe_path = loc
         .absolute_path()
         .map(|p| p.to_string())
         .unwrap_or_else(|_| path.clone());
@@ -244,36 +248,22 @@ fn do_execve(
     // pinned now, so the post-teardown commit phase doesn't re-resolve
     // the pathname (the FS could change while siblings are being reaped).
     let mut image_builder = new_user_image_builder()?;
-    let loaded_image = match load_user_app(&mut image_builder, loc, &path, &args, &envs) {
-        Ok(image) => image,
-        Err(error) => match error {
-                StarryError::InvalidExecutable => {
-                // ENOEXEC fallback: retry via /bin/sh.
-                // In Linux this retry is done by user-space (execvp / busybox),
-                // not by the kernel. This is a pragmatic workaround until
-                // musl's execvp or busybox's ENOEXEC handling is available.
-                let shell_path = "/bin/sh";
-                let shell_loc = ax_fs_ng::vfs::current_fs_context()
-                    .lock()
-                    .resolve(shell_path)?;
-                new_name = shell_loc.name().to_string();
-                new_exe_path = shell_loc.absolute_path()?.to_string();
-                args = iter::once(String::from(shell_path))
-                    .chain(args.iter().cloned())
-                    .collect();
-                    load_user_app(
-                        &mut image_builder,
-                        shell_loc,
-                        shell_path,
-                        &args,
-                        &envs,
-                    )?
-                }
-                error => return Err(error),
-            },
-    };
+    let loaded_image = load_user_app(&mut image_builder, loc, &path, &args, &envs, &thr.cred())?;
     let prepared_image = image_builder.finish(loaded_image)?;
     let (new_aspace, entry_point, user_stack_base, auxv) = prepared_image.into_parts();
+
+    // Registration, runtime ownership and process metadata must all be ready
+    // before the first sibling is killed, which is already irreversible.
+    let inherited_thp_mode = proc_data.transparent_huge_page_mode();
+    let newaspace_arc = Arc::new(PiMutex::new(new_aspace));
+    let new_mm = MmHandle::from_arc(newaspace_arc).map_err(|_| StarryError::BadState)?;
+    new_mm.set_transparent_huge_page_mode(inherited_thp_mode);
+
+    let scheduler_address_space =
+        crate::task::scheduler_address_space(&new_mm).map_err(|_| StarryError::BadState)?;
+    let prepared_memory = crate::task::PreparedProcessMemory::new(new_mm);
+    let new_cmdline = Arc::new(args);
+    let new_envp = Arc::new(envs);
 
     // ----------------------------------------------------------------
     // Sibling teardown (multi-thread only).
@@ -298,7 +288,9 @@ fn do_execve(
             .into_iter()
             .filter(|tid| *tid != my_tid)
             .collect();
-        if siblings.is_empty() {
+        let leader_exit_complete =
+            my_tid == leader_tid || proc_data.retired_leader_transfer_ready();
+        if siblings.is_empty() && leader_exit_complete {
             break;
         }
 
@@ -311,54 +303,33 @@ fn do_execve(
             let _ = zap_thread(*tid);
         }
 
-        block_on(poll_fn(|cx| {
-            let remaining = proc_data
-                .proc
-                .threads()
-                .into_iter()
-                .filter(|tid| *tid != my_tid)
-                .count();
-            if remaining == 0 {
-                return Poll::Ready(());
-            }
-            unsafe {
-                proc_data
-                    .thread_exit_event
-                    .register(cx.waker(), axpoll::IoEvents::IN)
-            };
-            // Re-check after registering: a sibling could have exited
-            // between the first check and the register, and the wake
-            // that fired then would have found an empty waker set.
-            let remaining = proc_data
-                .proc
-                .threads()
-                .into_iter()
-                .filter(|tid| *tid != my_tid)
-                .count();
-            if remaining == 0 {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        }));
+        block_on(crate::task::wait_on_pollset(
+            proc_data.thread_exit_event(),
+            || {
+                let remaining = proc_data
+                    .proc
+                    .threads()
+                    .into_iter()
+                    .filter(|tid| *tid != my_tid)
+                    .count();
+                let leader_exit_complete =
+                    my_tid == leader_tid || proc_data.retired_leader_transfer_ready();
+                (remaining == 0 && leader_exit_complete).then_some(())
+            },
+        ));
     }
-
-    // Finish constructing and registering the replacement MM before the
-    // process transaction crosses its point of no return.
-    let inherited_thp_mode = proc_data.transparent_huge_page_mode();
-    let newaspace_arc = Arc::new(Mutex::new(new_aspace));
-    let new_mm = MmHandle::from_arc(newaspace_arc).map_err(|_| StarryError::BadState)?;
-    new_mm.set_transparent_huge_page_mode(inherited_thp_mode);
 
     // ----------------------------------------------------------------
     // Phase 2: point of no return — commit all changes.
     // Nothing below may fail; errors here would leave the process broken.
     // ----------------------------------------------------------------
 
-    // Replace only this process's typed MM owner. A CLONE_VM peer keeps its
-    // original MmHandle, pin and activation; the old root cannot retire until
-    // all of those independent capabilities have been released.
-    proc_data.replace_current_aspace(&curr, new_mm);
+    // Publish only this process's new MM. CLONE_VM peers keep their owner.
+    commit_address_space_handoff(
+        || proc_data.stage_memory_replacement(prepared_memory),
+        || curr.switch_address_space(scheduler_address_space),
+        |old_memory| old_memory.retire(),
+    );
 
     // PR_SET_KEEPCAPS is deliberately not inherited by a new executable
     // image. Do this only after crossing the point of no return so a failed
@@ -371,12 +342,12 @@ fn do_execve(
     }
 
     curr.set_name(&new_name);
-    *proc_data.exe_path.write() = new_exe_path;
-    *proc_data.cmdline.write() = Arc::new(args);
-    *proc_data.envp.write() = Arc::new(envs);
+    proc_data.set_exe_path(new_exe_path);
+    proc_data.set_cmdline(new_cmdline);
+    proc_data.set_envp(new_envp);
     let auxv_len = auxv.len();
     let has_ldso = auxv.iter().any(|e| e.get_type() == AuxType::BASE);
-    *proc_data.auxv.write() = auxv;
+    proc_data.set_auxv(auxv);
 
     // Reset signal state for the new image, per POSIX/Linux semantics
     // (see `flush_signal_handlers` + `do_execveat_common` in Linux):
@@ -393,8 +364,8 @@ fn do_execve(
     //     reset, since its `ss_sp` pointed into the old aspace which is
     //     no longer mapped.
     proc_data.signal.reset_actions_for_exec();
-    thr.signal.reset_stack();
-    proc_data.posix_timers.clear();
+    thr.signal().reset_stack();
+    proc_data.posix_timers().clear();
 
     // Pointers cached in the thread that referenced user memory in the
     // OLD aspace are now dangling. Clear them so subsequent syscalls and
@@ -403,43 +374,25 @@ fn do_execve(
     thr.set_robust_list_head(0);
     thr.clear_rseq_state();
 
-    // Collect and remove CLOEXEC fds after sibling teardown. Snapshotting
-    // before teardown would miss any fd a sibling promoted to CLOEXEC (via
-    // `open(... O_CLOEXEC)`, `fcntl(F_SETFD)`, or `close_range(..., CLOEXEC)`)
-    // between our snapshot and its own exit. The scan and removal share one
-    // short write critical section, but that guard must not span the address
-    // space and signal commit above: `FD_TABLE` uses a preempt-disabling lock,
-    // while those operations may acquire sleeping mutexes.
-    //
-    // Defer the actual
-    // `release_locks_on_close` (POSIX-lock release, OFD waker wakes,
-    // FileDescriptor drop) until after we've dropped the table write
-    // lock. The wakers fire on the global advisory-lock waiter queues
-    // and may immediately drive woken tasks back through `FD_TABLE`;
-    // running them under the write guard would risk lock re-entry and
-    // also expand the critical section across arbitrary destructor work.
-    // Linux's `do_close_on_exec` drops `files->file_lock` around each
-    // `filp_close` call for the same reason. We close the entire batch
-    // after the lock is released, which is equivalent: no new fd can
-    // appear in the slots we just emptied because nothing else in this
-    // process is running yet (siblings reaped, new image not started).
-    let closing = {
-        let current_fd_table = crate::file::current_fd_table();
-        let mut fd_table = current_fd_table.write();
-        let cloexec_fds: Vec<_> = fd_table
-            .ids()
-            .filter(|it| fd_table.get(*it).unwrap().cloexec)
-            .collect();
-        let mut closing = Vec::with_capacity(cloexec_fds.len());
-        for fd in cloexec_fds {
-            if let Some(f) = fd_table.remove(fd) {
-                closing.push(f);
-            }
-        }
-        closing
-    };
-    for f in closing {
-        crate::file::release_locks_on_close(f);
+    // Scan after sibling teardown so their final CLOEXEC changes are visible.
+    // As in Linux do_close_on_exec, detach one owner under the table lock and
+    // perform filp_close-equivalent callbacks after unlocking. No temporary
+    // Vec allocation or last descriptor drop occurs under the table guard.
+    let fd_table_owner = crate::file::current_fd_table();
+    let mut cursor = 0;
+    loop {
+        let closing = {
+            let mut table = fd_table_owner.write();
+            let next = table
+                .ids()
+                .find(|fd| *fd >= cursor && table.get(*fd).is_some_and(|entry| entry.cloexec));
+            next.and_then(|fd| table.remove(fd).map(|descriptor| (fd, descriptor)))
+        };
+        let Some((fd, descriptor)) = closing else {
+            break;
+        };
+        cursor = fd + 1;
+        crate::file::release_locks_on_close(descriptor);
     }
 
     // de_thread leader transfer (non-leader caller only).
@@ -456,17 +409,16 @@ fn do_execve(
     // caller, then updating signal and thread-group indexes that use TIDs.
     //
     // The original leader was zapped above (it's a sibling from `curr`'s
-    // viewpoint), did its `do_exit(0, false)`, and is no longer in the
-    // task table or thread group, so the destination TID is free.
+    // viewpoint), did its `do_exit(0, false)`, and transferred its TID role to
+    // the process. Taking that exact lease preserves the generation instead of
+    // releasing and reacquiring a numeric slot.
     if my_tid != leader_tid {
         let old_task_identity = thr.pid_identity();
         let leader_identity = proc_data.identity();
-        crate::cgroup::rename_task(&leader_identity, &old_task_identity, &leader_identity)
+        crate::cgroup::rename_task(proc_data, &old_task_identity, &leader_identity)
             .expect("de-threaded task must own the process's sole cgroup charge");
-        let leader_tid_lease = leader_identity
-            .acquire_role::<Tid>()
-            .expect("exited exec leader retained its TID role");
-        thr.transfer_pid_identity(&curr, leader_identity, leader_tid_lease);
+        let (_, leader_tid_lease) = proc_data.take_retired_leader_for_exec();
+        thr.transfer_pid_identity(curr, leader_identity, leader_tid_lease);
         proc_data
             .signal
             .rename_child(my_tid.get(), leader_tid.get());
@@ -483,6 +435,8 @@ fn do_execve(
     // init process — the only state the new image legitimately
     // inherits is the address space and the kernel/scheduler bits we
     // explicitly preserved above.
+    ax_runtime::task::reset_current_user_fp_state()
+        .unwrap_or_else(|error| panic!("exec committed without a resettable FPU owner: {error}"));
     *uctx = UserContext::new(entry_point.as_usize(), user_stack_base, 0);
 
     debug!(
@@ -519,4 +473,31 @@ fn do_execve(
     proc_data.notify_vfork_done();
 
     Ok(0)
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use alloc::vec;
+    use core::cell::RefCell;
+
+    use super::commit_address_space_handoff;
+
+    #[test]
+    fn address_space_handoff_installs_before_releasing_old() {
+        let events = RefCell::new(vec![]);
+
+        commit_address_space_handoff(
+            || {
+                events.borrow_mut().push("publish");
+                "old"
+            },
+            || events.borrow_mut().push("install"),
+            |old| {
+                assert_eq!(old, "old");
+                events.borrow_mut().push("release");
+            },
+        );
+
+        assert_eq!(*events.borrow(), ["publish", "install", "release"]);
+    }
 }

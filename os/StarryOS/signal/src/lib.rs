@@ -4,6 +4,9 @@
 extern crate log;
 extern crate alloc;
 
+#[cfg(test)]
+mod allocation_audit;
+
 pub mod api;
 pub mod arch;
 

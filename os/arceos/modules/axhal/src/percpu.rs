@@ -9,7 +9,8 @@ pub use ax_plat::percpu::{
 };
 pub use cpu_local::{
     ContextSwitchError, CpuAreaRef, CpuLocalError, CpuPin, ExclusiveCpu, ExecutionContextHeader,
-    PreparedContextSwitch, PreviousContextBinding, with_cpu_pin, with_exclusive_cpu,
+    PreemptionSnapshot, PreparedContextSwitch, PreviousContextBinding, current_context_unpinned,
+    is_permanent_boot_context, preemption_snapshot, with_cpu_pin, with_exclusive_cpu,
 };
 
 /// Returns the direct current CPU-area base under an explicit pin.
@@ -26,26 +27,6 @@ pub const fn current_cpu_area(pin: &CpuPin<'_>) -> CpuAreaRef {
 /// Returns the pinned current execution-context header.
 pub fn current_context(pin: &CpuPin<'_>) -> Result<NonNull<ExecutionContextHeader>, CpuLocalError> {
     cpu_local::current_context(pin)
-}
-
-/// Reads the current context before constructing a migration guard.
-///
-/// # Safety
-///
-/// The caller must keep the owning execution context alive and must not
-/// dereference the result after a context switch.
-pub unsafe fn current_context_raw() -> *const ExecutionContextHeader {
-    unsafe { cpu_local::current_context_unpinned() }
-        .map_or(core::ptr::null(), |pointer| pointer.as_ptr().cast_const())
-}
-
-/// Reports whether a raw context is the permanent pre-runtime boot context.
-///
-/// Returns `false` for a null or invalid pointer. Callers must still satisfy
-/// the lifetime requirements of [`current_context_raw`].
-#[doc(hidden)]
-pub fn is_permanent_boot_context(context: NonNull<ExecutionContextHeader>) -> bool {
-    cpu_local::is_permanent_boot_context(context).unwrap_or(false)
 }
 
 /// Prepares a complete execution-context switch transaction.

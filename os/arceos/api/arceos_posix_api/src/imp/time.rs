@@ -76,8 +76,7 @@ pub unsafe fn sys_nanosleep(req: *const ctypes::timespec, rem: *mut ctypes::time
         };
 
         let now = ax_hal::time::monotonic_time();
-
-        ax_task::sleep(dur);
+        ax_runtime::task::sleep(dur);
 
         let after = ax_hal::time::monotonic_time();
         let actual = after - now;

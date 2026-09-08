@@ -23,8 +23,6 @@ pub(crate) use qemu_discovery::{
     direct_starry_qemu_case_exists, discover_qemu_cases, parse_starry_qemu_case_selection,
     parse_test_target,
 };
-#[cfg(test)]
-pub(crate) use suite::render_qemu_case_summary;
 pub(crate) use suite::{
     discover_all_qemu_cases_with_archs, discover_board_test_groups, finalize_qemu_case_run,
     require_test_suite_dir,

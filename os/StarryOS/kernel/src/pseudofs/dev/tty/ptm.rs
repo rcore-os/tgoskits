@@ -43,7 +43,12 @@ impl DeviceOps for Ptmx {
         unreachable!()
     }
 
-    fn ioctl(&self, _cmd: u32, _arg: usize) -> VfsResult<usize> {
+    fn ioctl(
+        &self,
+        _current: &crate::task::UserTaskRef,
+        _cmd: u32,
+        _arg: usize,
+    ) -> VfsResult<usize> {
         unreachable!()
     }
 

@@ -6,8 +6,8 @@ use core::{
 };
 
 use crate::{
-    CpuId, IrqAffinity, IrqContext, IrqError, IrqExecution, IrqHandle, IrqId, IrqOps, IrqOutcome,
-    IrqRequest, IrqReturn, IrqScope, IrqStatus,
+    CpuId, IrqAffinity, IrqContext, IrqError, IrqExecution, IrqHandle, IrqId, IrqOps, IrqOrigin,
+    IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus,
     action::Action,
     descriptor::{Descriptor, action_matches_cpu, recompute_scope_line_desired},
     lock::MetadataLock,
@@ -204,7 +204,7 @@ impl<O: IrqOps> Registry<O> {
     }
 
     /// Dispatches an IRQ on the given CPU.
-    pub fn dispatch(&self, irq: IrqId, cpu: CpuId) -> IrqOutcome {
+    pub fn dispatch(&self, irq: IrqId, cpu: CpuId, origin: IrqOrigin) -> IrqOutcome {
         let Some(head) = self.begin_dispatch(irq) else {
             return IrqOutcome::default();
         };
@@ -214,7 +214,7 @@ impl<O: IrqOps> Registry<O> {
         };
 
         let mut outcome = IrqOutcome::default();
-        let ctx = IrqContext { irq, cpu };
+        let ctx = IrqContext { irq, cpu, origin };
         let mut next = head;
         while !next.is_null() {
             let action = unsafe { &*next };

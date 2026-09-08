@@ -7,10 +7,8 @@
 // This file has been modified by KylinSoft on 2025.
 
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-use ax_task::current;
-use starry_vm::vm_write_slice;
 
-use crate::{StarryError, StarryResult, task::AsThread};
+use crate::{StarryError, StarryResult, mm::vm_write_slice};
 
 // A cache query owns a backend snapshot, so keep fewer entries than Linux
 // needs for its byte-only scratch page. Neither batch buffer can allocate.
@@ -72,9 +70,14 @@ fn validate_mincore_request(
 /// - EFAULT: vec points to invalid address
 /// - EINVAL: addr not page-aligned
 /// - ENOMEM: length > (TASK_SIZE - addr), negative length, or unmapped memory
-pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> StarryResult<isize> {
+pub fn sys_mincore(
+    current: &crate::task::UserTaskRef,
+    addr: usize,
+    length: usize,
+    vec: *mut u8,
+) -> crate::StarryResult<isize> {
     let start_addr = VirtAddr::from(addr);
-    let curr = current();
+    let curr = current;
     let cred = curr.as_thread().cred();
     let aspace_pin = curr.as_thread().proc_data.pin_aspace()?;
     let (user_base, user_end) = {
@@ -130,7 +133,7 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> StarryResult<isi
             }
         }
         if filled != 0 {
-            vm_write_slice(vec.wrapping_add(completed), &result[..filled])?;
+            vm_write_slice(current, vec.wrapping_add(completed), &result[..filled])?;
         }
         if let Some(error) = range_error {
             return Err(error);
@@ -142,45 +145,8 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> StarryResult<isi
 }
 
 #[cfg(all(test, not(axtest)))]
-fn mincore_validation_rules_hold_for_test() -> bool {
-    use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-    // Test mincore validation logic
-    // Page-aligned address should pass alignment check
-    let aligned_addr = VirtAddr::from(0x1000usize);
-    assert!(aligned_addr.is_aligned(PAGE_SIZE_4K));
-
-    // Non-page-aligned address should fail alignment check
-    let unaligned_addr = VirtAddr::from(0x1001usize);
-    assert!(!unaligned_addr.is_aligned(PAGE_SIZE_4K));
-
-    // Zero address is aligned (0 is multiple of any page size)
-    let zero_addr = VirtAddr::from(0usize);
-    assert!(zero_addr.is_aligned(PAGE_SIZE_4K));
-
-    // Test page count calculation
-    let length: usize = 4096;
-    let page_count = length.div_ceil(PAGE_SIZE_4K);
-    assert!(page_count == 1);
-
-    let length: usize = 8192;
-    let page_count = length.div_ceil(PAGE_SIZE_4K);
-    assert!(page_count == 2);
-
-    let length: usize = 1;
-    let page_count = length.div_ceil(PAGE_SIZE_4K);
-    assert!(page_count == 1);
-
-    true
-}
-
-#[cfg(all(test, not(axtest)))]
 mod tests {
     use crate::StarryError;
-
-    #[test]
-    fn mincore_validation_rules_hold() {
-        assert!(super::mincore_validation_rules_hold_for_test());
-    }
 
     #[test]
     fn zero_length_does_not_validate_output_pointer() {

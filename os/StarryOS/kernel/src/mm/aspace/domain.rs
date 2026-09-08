@@ -50,10 +50,7 @@ impl PageTableDomain {
     }
 
     /// Computes the ordered, de-duplicated stripes touched by a range.
-    pub fn stripe_indices(
-        &self,
-        range: VirtAddrRange,
-    ) -> InlineVec<usize, PTE_STRIPE_COUNT> {
+    pub fn stripe_indices(&self, range: VirtAddrRange) -> InlineVec<usize, PTE_STRIPE_COUNT> {
         let probe_count = Self::stripe_probe_count(range);
         if probe_count == 0 {
             return InlineVec::new();
@@ -158,10 +155,12 @@ mod tests {
         let domain = PageTableDomain::new();
         let range = VirtAddrRange::from_start_size(VirtAddr::from_usize(0x1000), 0x20_0000);
         let cursor = domain.lock_range(range);
-        assert!(cursor
-            .stripe_indices()
-            .windows(2)
-            .all(|pair| pair[0] < pair[1]));
+        assert!(
+            cursor
+                .stripe_indices()
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+        );
         assert!(!cursor.stripe_indices().is_empty());
     }
 
@@ -184,11 +183,13 @@ mod tests {
         );
 
         let domain = PageTableDomain::new();
-        assert!(domain
-            .stripe_indices(range)
-            .iter()
-            .copied()
-            .eq(0..PTE_STRIPE_COUNT));
+        assert!(
+            domain
+                .stripe_indices(range)
+                .iter()
+                .copied()
+                .eq(0..PTE_STRIPE_COUNT)
+        );
     }
 
     #[test]

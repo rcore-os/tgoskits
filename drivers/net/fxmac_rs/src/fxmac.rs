@@ -3,8 +3,10 @@
 //! This module provides the main data structures and functions for controlling
 //! the FXMAC Ethernet MAC controller.
 
-use alloc::boxed::Box;
-use core::sync::atomic::Ordering;
+use alloc::sync::Arc;
+
+use dma_api::{DeviceDma, DmaError};
+use mmio_api::Mmio;
 
 use crate::{fxmac_const::*, fxmac_dma::*, fxmac_intr::*, fxmac_phy::*, utils::*};
 
@@ -26,12 +28,9 @@ pub const FXMAC_LINKUP: u32 = 1;
 /// Link status: negotiating.
 pub const FXMAC_NEGOTIATING: u32 = 2;
 
-/// FXMAC0 peripheral clock frequency in Hz.
-pub const FXMAC0_PCLK: u32 = 50000000;
-/// FXMAC0 hotplug IRQ number.
-pub const FXMAC0_HOTPLUG_IRQ_NUM: u32 = 53 + 30;
-/// Maximum number of hardware queues supported.
-pub const FXMAC_QUEUE_MAX_NUM: u32 = 4;
+const FXMAC_MODE_SEL_OFFSET: u64 = 0x1c00;
+const FXMAC_LOOPBACK_SEL_OFFSET: u64 = 0x1c04;
+const FXMAC_DEFAULT_QUEUE_COUNT: u32 = 4;
 
 /// Mask for upper 32 bits of 64-bit address.
 pub const ULONG64_HI_MASK: u64 = 0xFFFFFFFF00000000;
@@ -43,10 +42,8 @@ pub const FT_COMPONENT_IS_READY: u32 = 0x11111111;
 /// Component is started.
 pub const FT_COMPONENT_IS_STARTED: u32 = 0x22222222;
 
-/// Memory page size in bytes.
-pub const PAGE_SIZE: usize = 4096;
-/// Base address of FXMAC0 controller.
-pub(crate) const FXMAC_IOBASE: u64 = 0x3200c000;
+/// Minimum register aperture required by the controller core and clock block.
+pub const FXMAC_MMIO_REQUIRED_SIZE: usize = 0x2000;
 
 /// Snapshot of the controller interrupt status read by the IRQ endpoint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,115 +73,122 @@ impl FXmacIrqStatus {
     }
 }
 
+/// Owned hard-IRQ endpoint for one FXMAC controller.
+///
+/// The endpoint owns a reference to the register mapping, but none of the DMA
+/// rings or mutable controller state. Hard IRQ context can therefore snapshot,
+/// mask, and acknowledge the source without taking the task-side device lock.
+pub struct FxmacIrqEndpoint {
+    _mmio: Arc<Mmio>,
+    base_address: u64,
+    clear_on_write: bool,
+    mask: u32,
+}
+
+/// Result of constructing the task-side controller owner and its hard-IRQ
+/// endpoint as one indivisible device capability.
+pub type FxmacInitResult = Result<(FXmac, FxmacIrqEndpoint), FxmacInitError>;
+
+impl FxmacIrqEndpoint {
+    /// Snapshots the pending IRQ bits and masks the controller until the
+    /// deferred owner has consumed the snapshot.
+    pub fn snapshot_and_mask(&mut self) -> FXmacIrqStatus {
+        snapshot_and_mask_irq(self.base_address, self.clear_on_write, self.mask)
+    }
+}
+
 /// Main FXMAC Ethernet controller instance.
 ///
 /// This structure holds all state information for an FXMAC controller instance,
 /// including configuration, DMA queues, and runtime status.
 ///
-/// # Thread Safety
-///
-/// This structure implements `Send` and `Sync` for use across threads, but
-/// external synchronization is required for concurrent access to mutable state.
-///
 /// # Example
 ///
 /// ```ignore
-/// let hwaddr: [u8; 6] = [0x55, 0x44, 0x33, 0x22, 0x11, 0x00];
-/// let fxmac: &'static mut FXmac = xmac_init(&hwaddr);
+/// let (fxmac, irq_endpoint) = xmac_init(device_dma, mmio, hardware)?;
 ///
 /// // Check link status
-/// if fxmac.link_status == FXMAC_LINKUP {
+/// if fxmac.is_link_up() {
 ///     println!("Network link is up!");
 /// }
 /// ```
 pub struct FXmac {
-    /// Hardware configuration settings.
-    pub config: FXmacConfig,
-    /// Device initialization state (FT_COMPONENT_IS_READY when initialized).
-    pub is_ready: u32,
-    /// Device running state (FT_COMPONENT_IS_STARTED when active).
-    pub is_started: u32,
-    /// Current link status (FXMAC_LINKUP, FXMAC_LINKDOWN, or FXMAC_NEGOTIATING).
-    pub link_status: u32,
-    /// Currently enabled MAC options.
-    pub options: u32,
-    /// Interrupt mask for enabled interrupts.
-    pub mask: u32,
-    /// Capability mask bits.
-    pub caps: u32,
-    /// Network buffer management (lwIP port compatibility).
-    pub lwipport: FXmacLwipPort,
-    /// Transmit buffer descriptor queue.
-    pub tx_bd_queue: FXmacQueue,
-    /// Receive buffer descriptor queue.
-    pub rx_bd_queue: FXmacQueue,
-    /// Hardware module identification number.
-    pub moudle_id: u32,
-    /// Maximum transmission unit size.
-    pub max_mtu_size: u32,
-    /// Maximum frame size including headers.
-    pub max_frame_size: u32,
-    /// PHY address on the MDIO bus.
-    pub phy_address: u32,
-    /// Receive buffer mask for speed settings.
-    pub rxbuf_mask: u32,
+    _mmio: Arc<Mmio>,
+    pub(crate) config: FXmacConfig,
+    pub(crate) is_ready: u32,
+    pub(crate) is_started: u32,
+    pub(crate) link_status: u32,
+    pub(crate) options: u32,
+    pub(crate) mask: u32,
+    pub(crate) caps: u32,
+    pub(crate) lwipport: FXmacLwipPort,
+    pub(crate) tx_bd_queue: FXmacQueue,
+    pub(crate) rx_bd_queue: FXmacQueue,
+    pub(crate) moudle_id: u32,
+    pub(crate) max_mtu_size: u32,
+    pub(crate) max_frame_size: u32,
+    pub(crate) phy_address: u32,
+    pub(crate) rxbuf_mask: u32,
 }
 
-// SAFETY: FXmac can be sent between threads as long as proper synchronization
-// is used for concurrent access.
-unsafe impl Send for FXmac {}
-// SAFETY: FXmac can be shared between threads with external synchronization.
-unsafe impl Sync for FXmac {}
+/// Firmware-provided hardware properties that are not encoded in the register
+/// aperture itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FxmacHardwareConfig {
+    peripheral_clock_hz: core::num::NonZeroU32,
+}
+
+impl FxmacHardwareConfig {
+    pub const fn new(peripheral_clock_hz: core::num::NonZeroU32) -> Self {
+        Self {
+            peripheral_clock_hz,
+        }
+    }
+}
 
 /// Hardware configuration for the FXMAC controller.
 ///
 /// This structure contains all hardware-level configuration parameters
 /// required to initialize and operate the FXMAC Ethernet controller.
-pub struct FXmacConfig {
-    /// Instance identifier for multi-controller setups.
-    pub instance_id: u32,
+pub(crate) struct FXmacConfig {
     /// Base address of the MAC controller registers.
-    pub base_address: u64,
+    pub(crate) base_address: u64,
     /// Base address for extended mode configuration.
-    pub extral_mode_base: u64,
+    pub(crate) extral_mode_base: u64,
     /// Base address for loopback configuration.
-    pub extral_loopback_base: u64,
+    pub(crate) extral_loopback_base: u64,
     /// PHY interface type (SGMII, RGMII, etc.).
-    pub interface: FXmacPhyInterface,
+    pub(crate) interface: FXmacPhyInterface,
     /// Link speed in Mbps (10, 100, 1000, etc.).
-    pub speed: u32,
+    pub(crate) speed: u32,
     /// Duplex mode: 1 for full-duplex, 0 for half-duplex.
-    pub duplex: u32,
+    pub(crate) duplex: u32,
     /// Auto-negotiation enable: 1 to enable, 0 to disable.
-    pub auto_neg: u32,
+    pub(crate) auto_neg: u32,
     /// Peripheral clock frequency in Hz.
-    pub pclk_hz: u32,
+    pub(crate) pclk_hz: u32,
     /// Maximum number of hardware queues.
-    pub max_queue_num: u32,
-    /// TX queue index (0 to FXMAC_QUEUE_MAX_NUM-1).
-    pub tx_queue_id: u32,
-    /// RX queue index (0 to FXMAC_QUEUE_MAX_NUM-1).
-    pub rx_queue_id: u32,
-    /// Hotplug IRQ number.
-    pub hotplug_irq_num: u32,
+    pub(crate) max_queue_num: u32,
+    /// TX queue index within `max_queue_num`.
+    pub(crate) tx_queue_id: u32,
+    /// RX queue index within `max_queue_num`.
+    pub(crate) rx_queue_id: u32,
     /// DMA burst length setting.
-    pub dma_brust_length: u32,
+    pub(crate) dma_brust_length: u32,
     /// Default network configuration options.
-    pub network_default_config: u32,
-    /// IRQ numbers for each hardware queue.
-    pub queue_irq_num: [u32; FXMAC_QUEUE_MAX_NUM as usize],
+    pub(crate) network_default_config: u32,
     /// Capability flags (e.g., tail pointer support).
-    pub caps: u32,
+    pub(crate) caps: u32,
     /// MAC address (6 bytes).
-    pub mac: [u8; 6],
+    pub(crate) mac: [u8; 6],
 }
 
 /// Hardware queue structure for TX/RX operations.
-pub struct FXmacQueue {
+pub(crate) struct FXmacQueue {
     /// Queue identifier.
-    pub queue_id: u32,
+    pub(crate) queue_id: u32,
     /// Buffer descriptor ring for this queue.
-    pub bdring: FXmacBdRing,
+    pub(crate) bdring: FXmacBdRing,
 }
 
 /// PHY interface mode definitions.
@@ -209,29 +213,60 @@ pub enum FXmacPhyInterface {
     FXMAC_PHY_INTERFACE_MODE_2500BASEX = 6,
 }
 
-/// Reads a memory-mapped register via a physical address.
-///
-/// The address is translated using the platform's [`KernelFunc::phys_to_virt`]
-/// implementation before a volatile read is performed.
-pub fn read_reg<T>(src: *const T) -> T {
-    unsafe {
-        core::ptr::read_volatile(ax_crate_interface::call_interface!(
-            crate::KernelFunc::phys_to_virt(src as usize)
-        ) as *const T)
+/// Reads a register from the CPU-visible mapping owned by [`FXmac`].
+pub(crate) fn read_reg<T>(src: *const T) -> T {
+    unsafe { core::ptr::read_volatile(src) }
+}
+
+/// Writes a register in the CPU-visible mapping owned by [`FXmac`].
+pub(crate) fn write_reg<T>(dst: *mut T, value: T) {
+    unsafe { core::ptr::write_volatile(dst, value) }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FxmacInitError {
+    #[error(transparent)]
+    Dma(#[from] DmaError),
+    #[error("FXMAC MMIO aperture is too small: {actual:#x} < {required:#x}")]
+    MmioTooSmall { actual: usize, required: usize },
+    #[error("FXMAC initialization failed during {stage} with status {status}")]
+    Hardware { stage: FxmacInitStage, status: u32 },
+    #[error("FXMAC RX descriptor allocation returned a null descriptor")]
+    NullRxDescriptor,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FxmacInitStage {
+    ProgramMacAddress,
+    InitializePhy,
+    CreateRxRing,
+    CloneRxRing,
+    CreateTxRing,
+    CloneTxRing,
+    AllocateRxDescriptor,
+    SubmitRxDescriptor,
+}
+
+impl core::fmt::Display for FxmacInitStage {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::ProgramMacAddress => "MAC address programming",
+            Self::InitializePhy => "PHY initialization",
+            Self::CreateRxRing => "RX ring creation",
+            Self::CloneRxRing => "RX ring initialization",
+            Self::CreateTxRing => "TX ring creation",
+            Self::CloneTxRing => "TX ring initialization",
+            Self::AllocateRxDescriptor => "RX descriptor allocation",
+            Self::SubmitRxDescriptor => "RX descriptor submission",
+        })
     }
 }
 
-/// Writes a value to a memory-mapped register via a physical address.
-///
-/// The address is translated using the platform's [`KernelFunc::phys_to_virt`]
-/// implementation before a volatile write is performed.
-pub fn write_reg<T>(dst: *mut T, value: T) {
-    unsafe {
-        core::ptr::write_volatile(
-            ax_crate_interface::call_interface!(crate::KernelFunc::phys_to_virt(dst as usize))
-                as *mut T,
-            value,
-        );
+pub(crate) fn init_status(stage: FxmacInitStage, status: u32) -> Result<(), FxmacInitError> {
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(FxmacInitError::Hardware { stage, status })
     }
 }
 
@@ -247,81 +282,67 @@ pub fn write_reg<T>(dst: *mut T, value: T) {
 ///
 /// # Arguments
 ///
-/// * `hwaddr` - A 6-byte MAC address to assign to the controller.
+/// * `dma` - Device-scoped DMA allocation capability.
+/// * `mmio` - Owned mapping for the complete controller register aperture.
+/// * `hardware` - Firmware-resolved clock properties for this controller.
 ///
 /// # Returns
 ///
-/// A static mutable reference to the initialized [`FXmac`] instance.
-///
-/// # Panics
-///
-/// This function may panic if:
-/// - PHY initialization fails
-/// - DMA memory allocation fails
+/// An owned initialized [`FXmac`] instance and its unique hard-IRQ endpoint.
 ///
 /// # Example
 ///
 /// ```ignore
-/// // Define the MAC address
-/// let hwaddr: [u8; 6] = [0x55, 0x44, 0x33, 0x22, 0x11, 0x00];
-///
 /// // Initialize the controller
-/// let fxmac = xmac_init(&hwaddr);
+/// let (fxmac, irq_endpoint) = xmac_init(dma, mmio, hardware)?;
 ///
-/// // The controller is now ready for packet transmission and reception
-/// assert_eq!(fxmac.is_started, FT_COMPONENT_IS_STARTED);
+/// // The controller is configured but remains stopped until its IRQ endpoint
+/// // is registered and enabled by the OS runtime.
 /// ```
 ///
 /// # Note
 ///
-/// The returned reference has `'static` lifetime and is stored in a global
-/// atomic pointer. Only one instance should be active at a time.
-pub fn xmac_init(hwaddr: &[u8; 6]) -> &'static mut FXmac {
-    // FXmacConfig mac_config:
-    // mac_config.instance_id=0,
-    // mac_config.base_address=0x3200c000,
-    // mac_config.extral_mode_base=0x3200dc00,
-    // mac_config.extral_loopback_base=0x3200dc04,
-    // mac_config.interface=0,
-    // mac_config.speed=100,
-    // mac_config.duplex=1,
-    // mac_config.auto_neg=0,
-    // mac_config.pclk_hz=50000000,
-    // mac_config.max_queue_num=4,
-    // mac_config.tx_queue_id=0,
-    // mac_config.rx_queue_id=0
-    // mac_config.hotplug_irq_num=83,
-    // mac_config.dma_brust_length=16,
-    // mac_config.network_default_config=0x37f0,
-    // mac_config.queue_irq_num[0]=87,
-    // mac_config.caps=0
+/// The caller owns the controller, MMIO mapping, and DMA buffers as one
+/// lifetime-bound device object.
+pub fn xmac_init(dma: DeviceDma, mmio: Mmio, hardware: FxmacHardwareConfig) -> FxmacInitResult {
+    if mmio.size() < FXMAC_MMIO_REQUIRED_SIZE {
+        return Err(FxmacInitError::MmioTooSmall {
+            actual: mmio.size(),
+            required: FXMAC_MMIO_REQUIRED_SIZE,
+        });
+    }
+    let mmio = Arc::new(mmio);
+    let base_address = mmio.as_ptr() as u64;
+    let hwaddr = read_mac_address(base_address, 0);
+
     let mut mac_config: FXmacConfig = FXmacConfig {
-        instance_id: FXMAC0_ID,
-        base_address: FXMAC0_BASE_ADDR as u64,
-        extral_mode_base: FXMAC0_MODE_SEL_BASE_ADDR as u64,
-        extral_loopback_base: FXMAC0_LOOPBACK_SEL_BASE_ADDR as u64,
+        base_address,
+        extral_mode_base: base_address + FXMAC_MODE_SEL_OFFSET,
+        extral_loopback_base: base_address + FXMAC_LOOPBACK_SEL_OFFSET,
         interface: FXmacPhyInterface::FXMAC_PHY_INTERFACE_MODE_SGMII,
         speed: 100,
         duplex: 1,
         auto_neg: 0,
-        pclk_hz: FXMAC0_PCLK,
-        max_queue_num: 4, // .max_queue_num = 16
+        pclk_hz: hardware.peripheral_clock_hz.get(),
+        max_queue_num: FXMAC_DEFAULT_QUEUE_COUNT,
         tx_queue_id: 0,
         rx_queue_id: 0,
-        hotplug_irq_num: FXMAC0_HOTPLUG_IRQ_NUM,
         dma_brust_length: 16,
         network_default_config: FXMAC_DEFAULT_OPTIONS,
-        queue_irq_num: [
-            FXMAC0_QUEUE0_IRQ_NUM,
-            FXMAC0_QUEUE1_IRQ_NUM,
-            FXMAC0_QUEUE2_IRQ_NUM,
-            FXMAC0_QUEUE3_IRQ_NUM,
-        ],
         caps: 0,
-        mac: *hwaddr,
+        mac: hwaddr,
     };
 
+    let feature = FXMAC_LWIP_PORT_CONFIG_MULTICAST_ADDRESS_FILITER;
+    let frame_size = if (feature & FXMAC_LWIP_PORT_CONFIG_JUMBO) != 0 {
+        FXMAC_MAX_FRAME_SIZE_JUMBO as usize
+    } else {
+        FXMAC_MAX_FRAME_SIZE as usize
+    };
+    let buffer = FXmacNetifBuffer::new(&dma, frame_size)?;
+
     let mut xmac = FXmac {
+        _mmio: Arc::clone(&mmio),
         config: mac_config,
         is_ready: FT_COMPONENT_IS_READY,
         is_started: 0,
@@ -330,9 +351,9 @@ pub fn xmac_init(hwaddr: &[u8; 6]) -> &'static mut FXmac {
         mask: 0,
         caps: 0,
         lwipport: FXmacLwipPort {
-            buffer: FXmacNetifBuffer::default(),
-            feature: FXMAC_LWIP_PORT_CONFIG_MULTICAST_ADDRESS_FILITER,
-            hwaddr: *hwaddr,
+            buffer,
+            feature,
+            hwaddr,
             recv_flg: 0,
         },
         tx_bd_queue: FXmacQueue {
@@ -366,8 +387,6 @@ pub fn xmac_init(hwaddr: &[u8; 6]) -> &'static mut FXmac {
     // step 7: initialize interrupt
     // step 8: start mac
 
-    let mut status: u32 = 0;
-
     // Reset the hardware and set default options
     // xmac.link_status = FXMAC_LINKDOWN;
     // xmac.is_ready = FT_COMPONENT_IS_READY;
@@ -389,16 +408,19 @@ pub fn xmac_init(hwaddr: &[u8; 6]) -> &'static mut FXmac {
     // xmac.lwipport.feature = LWIP_PORT_MODE_MULTICAST_ADDRESS_FILITER;
     FxmacFeatureSetOptions(xmac.lwipport.feature, &mut xmac);
 
-    status = FXmacSetMacAddress(&xmac.lwipport.hwaddr, 0);
+    init_status(
+        FxmacInitStage::ProgramMacAddress,
+        FXmacSetMacAddress(&mut xmac, &hwaddr, 0),
+    )?;
 
     // mac_config.interface = FXMAC_PHY_INTERFACE_MODE_SGMII;
 
     if xmac.config.interface != FXmacPhyInterface::FXMAC_PHY_INTERFACE_MODE_USXGMII {
         // initialize phy
-        status = FXmacPhyInit(&mut xmac, XMAC_PHY_RESET_ENABLE);
-        if status != 0 {
-            warn!("FXmacPhyInit is error");
-        }
+        init_status(
+            FxmacInitStage::InitializePhy,
+            FXmacPhyInit(&mut xmac, XMAC_PHY_RESET_ENABLE),
+        )?;
     } else {
         info!("interface == FXMAC_PHY_INTERFACE_MODE_USXGMII");
     }
@@ -415,13 +437,13 @@ pub fn xmac_init(hwaddr: &[u8; 6]) -> &'static mut FXmac {
         dmacrreg,
     );
 
-    FXmacInitDma(&mut xmac);
+    FXmacInitDma(&mut xmac)?;
 
     // end of FXmacLwipPortInit()
 
     if (xmac.lwipport.feature & FXMAC_LWIP_PORT_CONFIG_UNICAST_ADDRESS_FILITER) != 0 {
         debug!("Set unicast hash table");
-        FXmac_SetHash(&mut xmac, hwaddr);
+        FXmac_SetHash(&mut xmac, &hwaddr);
     }
 
     // 注册了 lwip_port->ops:
@@ -431,48 +453,88 @@ pub fn xmac_init(hwaddr: &[u8; 6]) -> &'static mut FXmac {
     // ethernetif_start() -> FXmacLwipPortStart() -> FXmacStart()
     // ethernetif_debug()
 
-    // ethernetif_start()
-    // start mac
-    FXmacStart(&mut xmac);
-
     // 开始发包的函数：FXmacLwipPortTx()->FXmacSgsend() -> FXmacSendHandler() -> FXmacProcessSentBds()
-    // 触发中断函数：FXmacIntrHandler()
+    // 触发中断函数：FXmacIntrHandlerWithStatus()
     // 收包handle: FXmacRecvIsrHandler()->FXmacRecvHandler
 
-    // XMAC.store(Box::into_raw(Box::new(xmac)), Ordering::Relaxed);
-
-    // Box::leak方法，它可以将一个变量从内存中泄漏, 将其变为'static生命周期，因此可以赋值给全局静态变量
-    let xmac_ref = Box::leak(Box::new(xmac));
-    XMAC.store(xmac_ref as *mut FXmac, Ordering::Relaxed);
-
-    xmac_ref
+    let irq_endpoint = FxmacIrqEndpoint {
+        _mmio: mmio,
+        base_address: xmac.config.base_address,
+        clear_on_write: (xmac.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0,
+        mask: xmac.mask,
+    };
+    Ok((xmac, irq_endpoint))
 }
 
 impl FXmac {
-    /// Returns the controller-local hardware IRQ line for queue 0.
-    pub fn irq_hwirq(&self) -> u32 {
-        self.config.queue_irq_num[0]
+    /// Returns the MAC address read from the controller during initialization.
+    pub fn mac_address(&self) -> [u8; 6] {
+        self.lwipport.hwaddr
+    }
+
+    pub fn is_link_up(&self) -> bool {
+        self.link_status == FXMAC_LINKUP
     }
 
     /// Handles a queue interrupt from the OS-registered IRQ callback.
     pub fn handle_irq(&mut self) -> FXmacIrqStatus {
-        let status = FXmacIrqStatus::from_raw(read_reg(
-            (self.config.base_address + FXMAC_ISR_OFFSET) as *const u32,
-        ));
-        if !status.is_empty() {
-            crate::fxmac_intr::FXmacIntrHandlerWithStatus(self.irq_hwirq() as i32, self, status);
+        snapshot_and_mask_irq(
+            self.config.base_address,
+            (self.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0,
+            self.mask,
+        )
+    }
+
+    /// Consumes a hard-IRQ snapshot in task or deferred context.
+    ///
+    /// Interrupt rearming is deliberately owned by the queue runtime. Keeping
+    /// this operation masked lets the poll owner drain descriptors before the
+    /// final `enable_irq`/pending check closes the NAPI rearm window.
+    pub fn process_irq_snapshot(&mut self, status: FXmacIrqStatus) {
+        if status.is_empty() {
+            return;
         }
-        status
+        crate::fxmac_intr::FXmacIntrHandlerWithStatus(self, status);
     }
 
     /// Enables queue 0 interrupts after the OS has registered an IRQ handler.
     pub fn enable_irq(&mut self) {
-        FXmacQueueIrqEnable(self, 0, FXMAC_IXR_ALL_MASK);
+        if self.is_started == FT_COMPONENT_IS_STARTED {
+            FXmacQueueIrqEnable(self, 0, self.mask);
+        } else {
+            FXmacStart(self);
+        }
     }
 
     /// Disables queue 0 interrupts while the OS mutates shared device state.
     pub fn disable_irq(&mut self) {
-        FXmacQueueIrqDisable(self, 0, FXMAC_IXR_ALL_MASK);
+        FXmacQueueIrqDisable(self, 0, self.mask);
+    }
+}
+
+fn snapshot_and_mask_irq(base_address: u64, clear_on_write: bool, mask: u32) -> FXmacIrqStatus {
+    let status =
+        FXmacIrqStatus::from_raw(read_reg((base_address + FXMAC_ISR_OFFSET) as *const u32));
+    if status.is_empty() {
+        return status;
+    }
+
+    write_reg(
+        (base_address + FXMAC_IDR_OFFSET) as *mut u32,
+        mask & FXMAC_IXR_ALL_MASK,
+    );
+    if clear_on_write {
+        write_reg((base_address + FXMAC_ISR_OFFSET) as *mut u32, status.raw());
+    }
+    DSB();
+    status
+}
+
+impl Drop for FXmac {
+    fn drop(&mut self) {
+        if self.is_ready == FT_COMPONENT_IS_READY {
+            FXmacStop(self);
+        }
     }
 }
 
@@ -484,7 +546,7 @@ impl FXmac {
 /// # Panics
 ///
 /// Panics if the instance is not in the ready state.
-pub fn FXmacStart(instance_p: &mut FXmac) {
+fn FXmacStart(instance_p: &mut FXmac) {
     assert!(instance_p.is_ready == FT_COMPONENT_IS_READY);
 
     // clear any existed int status
@@ -536,33 +598,6 @@ pub fn FXmacStart(instance_p: &mut FXmac) {
     instance_p.is_started = FT_COMPONENT_IS_STARTED;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn irq_status_ignores_non_queue_interrupts() {
-        let empty = FXmacIrqStatus::from_raw(0);
-        assert!(!empty.tx_ready());
-        assert!(!empty.rx_ready());
-
-        let link_only = FXmacIrqStatus::from_raw(FXMAC_IXR_LINKCHANGE_MASK);
-        assert!(!link_only.tx_ready());
-        assert!(!link_only.rx_ready());
-    }
-
-    #[test]
-    fn irq_status_reports_queue_interrupts() {
-        let tx = FXmacIrqStatus::from_raw(FXMAC_IXR_TXCOMPL_MASK);
-        assert!(tx.tx_ready());
-        assert!(!tx.rx_ready());
-
-        let rx = FXmacIrqStatus::from_raw(FXMAC_IXR_RXCOMPL_MASK);
-        assert!(!rx.tx_ready());
-        assert!(rx.rx_ready());
-    }
-}
-
 /// Gracefully stops the Ethernet MAC.
 ///
 /// This disables interrupts, stops DMA channels, and shuts down TX/RX paths.
@@ -570,7 +605,7 @@ mod tests {
 /// # Panics
 ///
 /// Panics if the instance is not in the ready state.
-pub fn FXmacStop(instance_p: &mut FXmac) {
+fn FXmacStop(instance_p: &mut FXmac) {
     assert!(instance_p.is_ready == FT_COMPONENT_IS_READY);
     // Disable all interrupts
     write_reg(
@@ -587,6 +622,7 @@ pub fn FXmacStop(instance_p: &mut FXmac) {
         (instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *mut u32,
         reg_val,
     );
+    DSB();
 
     // Mark as stopped
     instance_p.is_started = 0;
@@ -607,13 +643,14 @@ pub fn FXmacStop(instance_p: &mut FXmac) {
 
 fn FXmacReset(instance_p: &mut FXmac) {
     let mut mac_addr: [u8; 6] = [0; 6];
+    let base = instance_p.config.base_address;
 
     // Stop the device and reset hardware
     FXmacStop(instance_p);
 
     // Module identification number
     // instance_p->moudle_id = 12
-    instance_p.moudle_id = (read_reg((FXMAC_IOBASE + FXMAC_REVISION_REG_OFFSET) as *const u32)
+    instance_p.moudle_id = (read_reg((base + FXMAC_REVISION_REG_OFFSET) as *const u32)
         & FXMAC_IDENTIFICATION_MASK)
         >> 16;
     info!(
@@ -627,54 +664,43 @@ fn FXmacReset(instance_p: &mut FXmac) {
     instance_p.config.dma_brust_length = 16;
     instance_p.config.network_default_config = FXMAC_DEFAULT_OPTIONS;
 
-    instance_p.config.pclk_hz = FXMAC0_PCLK; // 50000000
-
     let netctrl =
         (FXMAC_NWCTRL_STATCLR_MASK & !FXMAC_NWCTRL_LOOPBACK_LOCAL_MASK) | FXMAC_NWCTRL_MDEN_MASK;
-    write_reg((FXMAC_IOBASE + FXMAC_NWCTRL_OFFSET) as *mut u32, netctrl);
+    write_reg((base + FXMAC_NWCTRL_OFFSET) as *mut u32, netctrl);
 
     FXmacConfigureCaps(instance_p);
 
     // mdio clock division
     let mut w_reg: u32 = FXmacClkDivGet(instance_p);
     // DMA bus width, DMA位宽为128
-    w_reg |= FXmacDmaWidth(instance_p.moudle_id);
-    write_reg((FXMAC_IOBASE + FXMAC_NWCFG_OFFSET) as *mut u32, w_reg);
+    w_reg |= FXmacDmaWidth(instance_p);
+    write_reg((base + FXMAC_NWCFG_OFFSET) as *mut u32, w_reg);
 
     FXmacDmaReset(instance_p);
 
     // This register, when read provides details of the status of the receive path.
-    write_reg(
-        (FXMAC_IOBASE + FXMAC_RXSR_OFFSET) as *mut u32,
-        FXMAC_SR_ALL_MASK,
-    );
+    write_reg((base + FXMAC_RXSR_OFFSET) as *mut u32, FXMAC_SR_ALL_MASK);
 
     // write 1 ro the relavant bit location disable that particular interrupt
-    write_reg(
-        (FXMAC_IOBASE + FXMAC_IDR_OFFSET) as *mut u32,
-        FXMAC_IXR_ALL_MASK,
-    );
+    write_reg((base + FXMAC_IDR_OFFSET) as *mut u32, FXMAC_IXR_ALL_MASK);
 
-    let reg_val: u32 = read_reg((FXMAC_IOBASE + FXMAC_ISR_OFFSET) as *const u32);
-    write_reg((FXMAC_IOBASE + FXMAC_ISR_OFFSET) as *mut u32, reg_val);
+    let reg_val: u32 = read_reg((base + FXMAC_ISR_OFFSET) as *const u32);
+    write_reg((base + FXMAC_ISR_OFFSET) as *mut u32, reg_val);
 
-    write_reg(
-        (FXMAC_IOBASE + FXMAC_TXSR_OFFSET) as *mut u32,
-        FXMAC_SR_ALL_MASK,
-    );
+    write_reg((base + FXMAC_TXSR_OFFSET) as *mut u32, FXMAC_SR_ALL_MASK);
 
-    FXmacClearHash();
+    FXmacClearHash(instance_p);
 
     // set default mac address
     for i in 0..4 {
-        FXmacSetMacAddress(&mac_addr, i);
-        FXmacGetMacAddress(&mut mac_addr, i);
-        FXmacSetTypeIdCheck(0, i);
+        FXmacSetMacAddress(instance_p, &mac_addr, i);
+        FXmacGetMacAddress(instance_p, &mut mac_addr, i);
+        FXmacSetTypeIdCheck(instance_p, 0, i);
     }
 
     // clear all counters
     for i in 0..((FXMAC_LAST_OFFSET - FXMAC_OCTTXL_OFFSET) / 4) {
-        read_reg((FXMAC_IOBASE + FXMAC_OCTTXL_OFFSET + (i * 4)) as *mut u32);
+        read_reg((base + FXMAC_OCTTXL_OFFSET + (i * 4)) as *mut u32);
     }
 
     // Sync default options with hardware but leave receiver and
@@ -707,12 +733,13 @@ fn FXmacDmaReset(instance_p: &mut FXmac) {
             dmacfg = 0;
 
             // 设置发包/收包 buffer队列的基地址
-            FXmacSetQueuePtr(0, queue as u8, FXMAC_SEND);
-            FXmacSetQueuePtr(0, queue as u8, FXMAC_RECV);
+            FXmacSetQueuePtr(instance_p, 0, queue as u8, FXMAC_SEND);
+            FXmacSetQueuePtr(instance_p, 0, queue as u8, FXMAC_RECV);
 
             if queue != 0 {
                 write_reg(
-                    (FXMAC_IOBASE + FXMAC_RXBUFQX_SIZE_OFFSET(queue as u64)) as *mut u32,
+                    (instance_p.config.base_address + FXMAC_RXBUFQX_SIZE_OFFSET(queue as u64))
+                        as *mut u32,
                     rx_buf_size,
                 );
             } else
@@ -737,8 +764,8 @@ fn FXmacDmaReset(instance_p: &mut FXmac) {
 
         dmacfg |= FXMAC_DMACR_ADDR_WIDTH_64; // Just for aarch64
     } else {
-        FXmacSetQueuePtr(0, 0, FXMAC_SEND);
-        FXmacSetQueuePtr(0, 0, FXMAC_RECV);
+        FXmacSetQueuePtr(instance_p, 0, 0, FXMAC_SEND);
+        FXmacSetQueuePtr(instance_p, 0, 0, FXMAC_RECV);
         dmacfg |= (FXMAC_DMACR_RXBUF_MASK & (rx_buf_size << FXMAC_DMACR_RXBUF_SHIFT));
         dmacfg |= (instance_p.config.dma_brust_length & FXMAC_DMACR_BLENGTH_MASK);
 
@@ -755,15 +782,19 @@ fn FXmacDmaReset(instance_p: &mut FXmac) {
         dmacfg |= FXMAC_DMACR_ADDR_WIDTH_64; // Just for aarch64
     }
 
-    write_reg((FXMAC_IOBASE + FXMAC_DMACR_OFFSET) as *mut u32, dmacfg);
+    write_reg(
+        (instance_p.config.base_address + FXMAC_DMACR_OFFSET) as *mut u32,
+        dmacfg,
+    );
 }
 
-fn FXmacDmaWidth(moudle_id: u32) -> u32 {
-    if moudle_id < 2 {
+fn FXmacDmaWidth(instance_p: &FXmac) -> u32 {
+    if instance_p.moudle_id < 2 {
         return FXMAC_NWCFG_BUS_WIDTH_32_MASK;
     }
 
-    let read_regs = read_reg((FXMAC_IOBASE + FXMAC_DESIGNCFG_DEBUG1_OFFSET) as *const u32);
+    let read_regs =
+        read_reg((instance_p.config.base_address + FXMAC_DESIGNCFG_DEBUG1_OFFSET) as *const u32);
     match ((read_regs & FXMAC_DESIGNCFG_DEBUG1_BUS_WIDTH_MASK) >> 25) {
         4 => {
             info!("bus width is 128");
@@ -822,7 +853,7 @@ fn FxmacFeatureSetOptions(feature: u32, xmac_p: &mut FXmac) {
 /// # Note
 ///
 /// The buffer queue address must be configured before calling [`FXmacStart`].
-pub fn FXmacSetQueuePtr(queue_p: u64, queue_num: u8, direction: u32) {
+pub fn FXmacSetQueuePtr(instance_p: &mut FXmac, queue_p: u64, queue_num: u8, direction: u32) {
     // assert!(instance_p.is_ready == FT_COMPONENT_IS_READY);
     // If already started, then just return
 
@@ -834,25 +865,27 @@ pub fn FXmacSetQueuePtr(queue_p: u64, queue_num: u8, direction: u32) {
         if direction == FXMAC_SEND {
             // set base start address of TX buffer queue (tx buffer descriptor list)
             write_reg(
-                (FXMAC_IOBASE + FXMAC_TXQBASE_OFFSET) as *mut u32,
+                (instance_p.config.base_address + FXMAC_TXQBASE_OFFSET) as *mut u32,
                 ((queue_p & ULONG64_LO_MASK) | flag_queue_p) as u32,
             );
         } else {
             // set base start address of RX buffer queue (rx buffer descriptor list)
             write_reg(
-                (FXMAC_IOBASE + FXMAC_RXQBASE_OFFSET) as *mut u32,
+                (instance_p.config.base_address + FXMAC_RXQBASE_OFFSET) as *mut u32,
                 ((queue_p & ULONG64_LO_MASK) | flag_queue_p) as u32,
             );
         }
     } else if direction == FXMAC_SEND {
         write_reg(
-            (FXMAC_IOBASE + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_TXQ1BASE_OFFSET, queue_num as u64))
+            (instance_p.config.base_address
+                + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_TXQ1BASE_OFFSET, queue_num as u64))
                 as *mut u32,
             ((queue_p & ULONG64_LO_MASK) | flag_queue_p) as u32,
         );
     } else {
         write_reg(
-            (FXMAC_IOBASE + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_RXQ1BASE_OFFSET, queue_num as u64))
+            (instance_p.config.base_address
+                + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_RXQ1BASE_OFFSET, queue_num as u64))
                 as *mut u32,
             ((queue_p & ULONG64_LO_MASK) | flag_queue_p) as u32,
         );
@@ -863,13 +896,13 @@ pub fn FXmacSetQueuePtr(queue_p: u64, queue_num: u8, direction: u32) {
     {
         // Set the MSB of TX Queue start address
         write_reg(
-            (FXMAC_IOBASE + FXMAC_MSBBUF_TXQBASE_OFFSET) as *mut u32,
+            (instance_p.config.base_address + FXMAC_MSBBUF_TXQBASE_OFFSET) as *mut u32,
             ((queue_p & ULONG64_HI_MASK) >> 32) as u32,
         );
     } else {
         // Set the MSB of RX Queue start address
         write_reg(
-            (FXMAC_IOBASE + FXMAC_MSBBUF_RXQBASE_OFFSET) as *mut u32,
+            (instance_p.config.base_address + FXMAC_MSBBUF_RXQBASE_OFFSET) as *mut u32,
             ((queue_p & ULONG64_HI_MASK) >> 32) as u32,
         );
     }
@@ -877,7 +910,8 @@ pub fn FXmacSetQueuePtr(queue_p: u64, queue_num: u8, direction: u32) {
 
 fn FXmacConfigureCaps(instance_p: &mut FXmac) {
     instance_p.caps = 0;
-    let read_regs = read_reg((FXMAC_IOBASE + FXMAC_DESIGNCFG_DEBUG1_OFFSET) as *const u32);
+    let read_regs =
+        read_reg((instance_p.config.base_address + FXMAC_DESIGNCFG_DEBUG1_OFFSET) as *const u32);
     if (read_regs & FXMAC_DESIGNCFG_DEBUG1_BUS_IRQCOR_MASK) == 0 {
         instance_p.caps |= FXMAC_CAPS_ISR_CLEAR_ON_WRITE;
         info!(
@@ -889,8 +923,7 @@ fn FXmacConfigureCaps(instance_p: &mut FXmac) {
 
 fn FXmacClkDivGet(instance_p: &mut FXmac) -> u32 {
     // moudle_id=12
-    // let pclk_hz = 50000000;
-    let pclk_hz = instance_p.config.pclk_hz; // FXMAC0_PCLK;
+    let pclk_hz = instance_p.config.pclk_hz;
 
     if (pclk_hz <= 20000000) {
         FXMAC_NWCFG_CLOCK_DIV8_MASK
@@ -918,6 +951,7 @@ fn FXmacClkDivGet(instance_p: &mut FXmac) -> u32 {
 /// Set options for the driver/device. The driver should be stopped with
 /// FXmacStop() before changing options.
 fn FXmacSetOptions(instance_p: &mut FXmac, options: u32, queue_num: u32) -> u32 {
+    let FXMAC_IOBASE = instance_p.config.base_address;
     let mut reg: u32 = 0; /* Generic register contents */
     let mut reg_netcfg: u32 = 0; /* Reflects original contents of NET_CONFIG */
     let mut reg_new_netcfg: u32 = 0; /* Reflects new contents of NET_CONFIG */
@@ -1105,6 +1139,7 @@ fn FXmacSetOptions(instance_p: &mut FXmac, options: u32, queue_num: u32) -> u32 
 
 /// Clear options for the driver/device
 fn FXmacClearOptions(instance_p: &mut FXmac, options: u32, queue_num: u32) -> u32 {
+    let FXMAC_IOBASE = instance_p.config.base_address;
     let mut reg: u32 = 0; /* Generic */
     let mut reg_net_cfg: u32 = 0; /* Reflects original contents of NET_CONFIG */
     let mut reg_new_net_cfg: u32 = 0; /* Reflects new contents of NET_CONFIG */
@@ -1282,7 +1317,8 @@ fn FXmacClearOptions(instance_p: &mut FXmac, options: u32, queue_num: u32) -> u3
 }
 
 ///  Clear the Hash registers for the mac address pointed by address_ptr.
-fn FXmacClearHash() {
+fn FXmacClearHash(instance_p: &mut FXmac) {
+    let FXMAC_IOBASE = instance_p.config.base_address;
     write_reg((FXMAC_IOBASE + FXMAC_HASHL_OFFSET) as *mut u32, 0);
 
     // write bits [63:32] in TOP
@@ -1301,7 +1337,8 @@ fn FXmacClearHash() {
 /// # Panics
 ///
 /// Panics if `index` is out of range.
-pub fn FXmacSetMacAddress(address_ptr: &[u8; 6], index: u8) -> u32 {
+pub fn FXmacSetMacAddress(instance_p: &mut FXmac, address_ptr: &[u8; 6], index: u8) -> u32 {
+    let FXMAC_IOBASE = instance_p.config.base_address;
     let mut mac_addr: u32 = 0;
     let aptr = address_ptr;
     let index_loc: u8 = index;
@@ -1312,9 +1349,8 @@ pub fn FXmacSetMacAddress(address_ptr: &[u8; 6], index: u8) -> u32 {
         FXMAC_MAX_MAC_ADDR
     );
 
-    let is_started = 0;
     // Be sure device has been stopped
-    if is_started == FT_COMPONENT_IS_STARTED {
+    if instance_p.is_started == FT_COMPONENT_IS_STARTED {
         // status = FXMAC_ERR_MAC_IS_PROCESSING;
         status = 9;
         error!("FXMAC is processing when calling FXmacSetMacAddress function");
@@ -1358,19 +1394,25 @@ pub fn FXmacSetMacAddress(address_ptr: &[u8; 6], index: u8) -> u32 {
 /// # Panics
 ///
 /// Panics if `index` is out of range.
-pub fn FXmacGetMacAddress(address_ptr: &mut [u8; 6], index: u8) {
+pub fn FXmacGetMacAddress(instance_p: &FXmac, address_ptr: &mut [u8; 6], index: u8) {
+    *address_ptr = read_mac_address(instance_p.config.base_address, index);
+}
+
+fn read_mac_address(base_address: u64, index: u8) -> [u8; 6] {
     assert!((index as u32) < FXMAC_MAX_MAC_ADDR);
 
+    let mut address = [0; 6];
     let mut reg_value: u32 =
-        read_reg((FXMAC_IOBASE + FXMAC_GEM_SA1B as u64 + (index as u64 * 8)) as *const u32);
-    address_ptr[0] = reg_value as u8;
-    address_ptr[1] = (reg_value >> 8) as u8;
-    address_ptr[2] = (reg_value >> 16) as u8;
-    address_ptr[3] = (reg_value >> 24) as u8;
+        read_reg((base_address + FXMAC_GEM_SA1B as u64 + (index as u64 * 8)) as *const u32);
+    address[0] = reg_value as u8;
+    address[1] = (reg_value >> 8) as u8;
+    address[2] = (reg_value >> 16) as u8;
+    address[3] = (reg_value >> 24) as u8;
 
-    reg_value = read_reg((FXMAC_IOBASE + FXMAC_GEM_SA1T as u64 + (index as u64 * 8)) as *const u32);
-    address_ptr[4] = (reg_value) as u8;
-    address_ptr[5] = (reg_value >> 8) as u8;
+    reg_value = read_reg((base_address + FXMAC_GEM_SA1T as u64 + (index as u64 * 8)) as *const u32);
+    address[4] = reg_value as u8;
+    address[5] = (reg_value >> 8) as u8;
+    address
 }
 
 /// Sets a 48-bit MAC address entry in the hash table.
@@ -1508,7 +1550,8 @@ pub fn FXmac_DeleteHash(intance_p: &mut FXmac, mac_address: &[u8; 6]) -> u32 {
 
 /// Set the Type ID match for this driver/device.  The register is a 32-bit value.
 /// The device must be stopped before calling this function.
-fn FXmacSetTypeIdCheck(id_check: u32, index: u8) -> u32 {
+fn FXmacSetTypeIdCheck(instance_p: &mut FXmac, id_check: u32, index: u8) -> u32 {
+    let FXMAC_IOBASE = instance_p.config.base_address;
     let mut status: u32 = 0;
     assert!(
         (index < FXMAC_MAX_TYPE_ID as u8),
@@ -1516,9 +1559,8 @@ fn FXmacSetTypeIdCheck(id_check: u32, index: u8) -> u32 {
         FXMAC_MAX_TYPE_ID
     );
 
-    let is_started = 0;
     // Be sure device has been stopped
-    if is_started == FT_COMPONENT_IS_STARTED {
+    if instance_p.is_started == FT_COMPONENT_IS_STARTED {
         status = 9; //FXMAC_ERR_MAC_IS_PROCESSING
         error!("FXMAC is processing when calling FXmacSetTypeIdCheck function");
     } else {
@@ -1771,6 +1813,7 @@ fn FXmacSelectClk(instance_p: &mut FXmac) {
 }
 
 fn FXmacHighSpeedConfiguration(instance_p: &mut FXmac, speed: u32) {
+    let FXMAC_IOBASE = instance_p.config.base_address;
     let mut reg_value: u32 = 0;
     let mut set_speed: i32 = 0;
     match speed {
@@ -1811,6 +1854,7 @@ fn FXmacHighSpeedConfiguration(instance_p: &mut FXmac, speed: u32) {
 /// FXmacInitInterface
 /// Initialize the MAC controller configuration based on the PHY interface type
 fn FXmacInitInterface(instance_p: &mut FXmac) {
+    let FXMAC_IOBASE = instance_p.config.base_address;
     let mut config: u32 = 0;
     let mut control: u32 = 0;
 
@@ -1997,5 +2041,53 @@ fn FXmacInitInterface(instance_p: &mut FXmac) {
         control = read_reg((FXMAC_IOBASE + FXMAC_NWCTRL_OFFSET) as *const u32);
         control &= !FXMAC_NWCTRL_ENABLE_HS_MAC_MASK; /* Use high speed MAC */
         write_reg((FXMAC_IOBASE + FXMAC_NWCTRL_OFFSET) as *mut u32, control);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialization_requires_an_owned_mmio_mapping() {
+        fn assert_constructor(
+            _constructor: fn(DeviceDma, mmio_api::Mmio, FxmacHardwareConfig) -> FxmacInitResult,
+        ) {
+        }
+
+        assert_constructor(xmac_init);
+    }
+
+    #[test]
+    fn initialization_preserves_the_failing_hardware_stage() {
+        assert!(matches!(
+            init_status(FxmacInitStage::InitializePhy, 7),
+            Err(FxmacInitError::Hardware {
+                stage: FxmacInitStage::InitializePhy,
+                status: 7,
+            })
+        ));
+    }
+
+    #[test]
+    fn irq_status_ignores_non_queue_interrupts() {
+        let empty = FXmacIrqStatus::from_raw(0);
+        assert!(!empty.tx_ready());
+        assert!(!empty.rx_ready());
+
+        let link_only = FXmacIrqStatus::from_raw(FXMAC_IXR_LINKCHANGE_MASK);
+        assert!(!link_only.tx_ready());
+        assert!(!link_only.rx_ready());
+    }
+
+    #[test]
+    fn irq_status_reports_queue_interrupts() {
+        let tx = FXmacIrqStatus::from_raw(FXMAC_IXR_TXCOMPL_MASK);
+        assert!(tx.tx_ready());
+        assert!(!tx.rx_ready());
+
+        let rx = FXmacIrqStatus::from_raw(FXMAC_IXR_RXCOMPL_MASK);
+        assert!(!rx.tx_ready());
+        assert!(rx.rx_ready());
     }
 }

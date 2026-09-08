@@ -11,6 +11,7 @@ version = "0.11.0"
 
 [features]
 default = []
+host-test = ["ax-sync/host-test"]
 libusb = ["umod"]
 umod = ["libusb1-sys"]
 

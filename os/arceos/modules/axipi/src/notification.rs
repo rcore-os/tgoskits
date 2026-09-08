@@ -15,7 +15,8 @@ const EPOCH_STEP: usize = STATE_MASK + 1;
 pub enum IpiNotification {
     /// This publication sent a physical IPI.
     Sent,
-    /// An already armed physical IPI covers this publication.
+    /// An already armed physical IPI or in-flight controller send covers this
+    /// publication.
     ///
     /// This does not mean that the publisher's logical work has completed.
     Coalesced,
@@ -79,10 +80,12 @@ impl DeliveryEdge {
                         Err(actual) => observed = actual,
                     }
                 }
-                STATE_SENDING => {
-                    core::hint::spin_loop();
-                    observed = state.load(Ordering::Acquire);
-                }
+                // Linux publishes the logical pending bit before its
+                // architecture IPI send and never waits behind another sender.
+                // Treat an in-flight controller operation as the same physical
+                // edge: this caller may be an IRQ which preempted that sender,
+                // so spinning here would prevent the owner from ever finishing.
+                STATE_SENDING => return Ok(IpiNotification::Coalesced),
                 STATE_ARMED => return Ok(IpiNotification::Coalesced),
                 _ => unreachable!("invalid IPI delivery edge state"),
             }

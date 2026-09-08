@@ -1,3 +1,4 @@
+// Host tests must link the external lock/task provider.
 use std::{
     cell::{Cell, RefCell},
     fs::{self, File, OpenOptions},

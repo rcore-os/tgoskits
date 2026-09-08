@@ -29,13 +29,12 @@ use core::{
     mem::size_of,
     net::Ipv4Addr,
     sync::atomic::{AtomicBool, Ordering},
-    task::Context,
 };
 
 use ax_lazyinit::LazyLock;
 use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
-use ax_task::future::{block_on, poll_io};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
     net::AF_NETLINK,
@@ -44,10 +43,12 @@ use linux_raw_sys::{
 
 use crate::{
     Errno, StarryError, StarryResult,
-    file::{FileLike, IoDst, IoSrc},
-    sync::IrqMutex as Mutex,
-    syscall::in_root_net_ns,
-    task::AsThread,
+    file::{FileLike, IoDst, IoSrc, net::in_root_net_ns},
+    sync::Mutex,
+    task::{
+        current_user_task,
+        future::{block_on_user, poll_io},
+    },
 };
 
 /// Maximum number of queued receive messages per socket.  Matches
@@ -366,7 +367,7 @@ impl NetlinkSocket {
         match state.addr {
             Some(addr) if addr.nl_pid != 0 => addr.nl_pid,
             _ => {
-                let task = ax_task::current();
+                let task = crate::task::current_user_task();
                 let thread = task.as_thread();
                 let pid = crate::task::current_pid_view()
                     .visible_number(&thread.proc_data.identity())
@@ -629,26 +630,41 @@ impl NetlinkSocket {
         dontwait: bool,
     ) -> StarryResult<(usize, bool)> {
         let non_blocking = self.nonblocking() || dontwait;
-        block_on(poll_io(self, IoEvents::IN, non_blocking, || {
-            self.read_one(dst, peek, truncate)
-        }))
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io(self, IoEvents::IN, non_blocking, || {
+                self.read_one(dst, peek, truncate)
+            }),
+        )
+        .into_result()?
     }
 }
 
 impl FileLike for NetlinkSocket {
-    fn ioctl(&self, cmd: u32, arg: usize) -> StarryResult<usize> {
+    fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> crate::StarryResult<usize> {
         // Device ioctls (SIOCGIF*) are family-agnostic in Linux sock_ioctl, so a
         // netlink socket answers them too rather than returning ENOTTY.
-        if let Some(result) = crate::file::net::device_ioctl(cmd, arg) {
+        if let Some(result) = crate::file::net::device_ioctl(current, cmd, arg) {
             return result;
         }
         Err(StarryError::NotATty)
     }
 
-    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            self.read_one(dst, false, false)
-        }))
+    fn read(&self, dst: &mut IoDst) -> crate::StarryResult<usize> {
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io(self, IoEvents::IN, self.nonblocking(), || {
+                self.read_one(dst, false, false)
+            }),
+        )
+        .into_result()?
         .map(|(len, _)| len)
     }
 
@@ -722,10 +738,23 @@ impl Pollable for NetlinkSocket {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
-            // Registration happens from socket poll task context.
-            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
+            unsafe { sink.register_shared(&self.poll_rx, IoEvents::IN) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { sink.register_exclusive(&self.poll_rx, IoEvents::IN) };
         }
     }
 }

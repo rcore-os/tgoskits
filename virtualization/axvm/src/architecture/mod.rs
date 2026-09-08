@@ -22,7 +22,9 @@ pub(crate) use exit::{handle_hypercall, handle_mmio_read, handle_mmio_write};
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 pub(crate) use exit::{try_handle_mmio_read, try_handle_mmio_write};
 pub(crate) use ops::ArchOps;
-pub(crate) use types::{BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+pub(crate) use types::{
+    BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction, VcpuRunOutcome,
+};
 
 /// Complete compile-time contract implemented by every selected guest architecture.
 ///
@@ -32,13 +34,4 @@ pub(crate) use types::{BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit
 pub(crate) trait Architecture:
     ArchOps + MachinePlatform + GuestBootPlatform + BootImagePlatform
 {
-    fn run_vcpu(
-        vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-    ) -> crate::AxVmResult<VcpuRunAction>
-    where
-        Self: Sized,
-    {
-        ops::run_vcpu::<Self>(vm, vcpu)
-    }
 }

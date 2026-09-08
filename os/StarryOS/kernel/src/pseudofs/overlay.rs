@@ -16,15 +16,16 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use core::{any::Any, task::Context};
+use core::any::Any;
 
 use ax_fs_ng::vfs::OpenOptions;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FileNodeOps,
-    FileRangeOperation, Filesystem, FilesystemOps, FsIoEvents, FsPollable, Location, Metadata,
-    MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference, RenameOptions, StatFs,
-    VfsError, VfsResult, WeakDirEntry,
+    FileRangeOperation, Filesystem, FilesystemOps, Location, Metadata, MetadataUpdate, NodeFlags,
+    NodeOps, NodePermission, NodeType, Reference, RenameOptions, StatFs, VfsError, VfsResult,
+    WeakDirEntry,
 };
+use axpoll::{IoEvents, Pollable};
 
 use crate::{
     pseudofs::dummy_stat_fs,
@@ -930,15 +931,29 @@ impl FileNodeOps for OverlayFile {
     }
 }
 
-impl FsPollable for OverlayFile {
-    fn poll(&self) -> FsIoEvents {
+impl Pollable for OverlayFile {
+    fn poll(&self) -> IoEvents {
         self.current()
-            .map_or(FsIoEvents::ERR, |loc| loc.entry().poll())
+            .map_or(IoEvents::ERR, |loc| loc.entry().poll())
     }
 
-    fn register(&self, context: &mut Context<'_>, events: FsIoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if let Ok(loc) = self.current() {
-            loc.entry().register(context, events);
+            unsafe { loc.entry().register_shared(sink, events) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if let Ok(loc) = self.current() {
+            unsafe { loc.entry().register_exclusive(sink, events) };
         }
     }
 }

@@ -18,7 +18,6 @@ bytemuck = { version = "1.24", features = [
     "const_zeroed",
     "zeroable_maybe_uninit",
 ] }
-extern-trait = { workspace = true }
 thiserror.workspace = true
 
 [dev-dependencies]

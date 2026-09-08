@@ -3,7 +3,7 @@
 use std::{
     boxed::Box,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
@@ -19,7 +19,7 @@ use crate::{
     host::{HostCpu, HostHardTimerAction, HostTime, HostTimer, default_host},
 };
 
-type KernelTimerHandle = <crate::host::arceos::ArceOsHost as crate::host::HostTimer>::TimerHandle;
+type KernelTimerHandle = <crate::host::arceos::ArceOsHost as HostTimer>::TimerHandle;
 
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 
@@ -33,60 +33,56 @@ struct HostTimerActivation {
 struct ScheduledWaitTimer {
     handle: KernelTimerHandle,
     owner_cpu: usize,
+    owner_thread: crate::host::task::ThreadId,
     epoch: u64,
+}
+
+fn wait_timer_owner_matches(
+    owner_cpu: usize,
+    owner_thread: crate::host::task::ThreadId,
+    current_cpu: usize,
+    current_thread: crate::host::task::ThreadId,
+) -> bool {
+    owner_cpu == current_cpu && owner_thread == current_thread
 }
 
 pub(in crate::arch::aarch64) type Aarch64TimerWaitToken = crate::vm::VcpuTimerWaitToken;
 
-#[derive(Clone, Copy)]
-struct ArmedTimerWait {
-    token: Aarch64TimerWaitToken,
-    deadline_counter: u64,
-    timer_epoch: u64,
-}
-
 struct Aarch64TimerWaitState {
     completion: crate::vm::VcpuTimerWaitGeneration,
-    armed_timer: IrqSafeMutex<Option<ArmedTimerWait>>,
+    deadline_counter: AtomicU64,
+    armed_timer_epoch: AtomicU64,
     next_timer_epoch: AtomicU64,
     active_timer_epoch: AtomicU64,
-    wake: OnceLock<crate::vm::VcpuTimerWakeHandle>,
 }
 
 impl Aarch64TimerWaitState {
     const fn new() -> Self {
         Self {
             completion: crate::vm::VcpuTimerWaitGeneration::new(),
-            armed_timer: IrqSafeMutex::new(None),
+            deadline_counter: AtomicU64::new(0),
+            armed_timer_epoch: AtomicU64::new(0),
             next_timer_epoch: AtomicU64::new(0),
             active_timer_epoch: AtomicU64::new(0),
-            wake: OnceLock::new(),
         }
     }
 
-    fn bind_wake(&self, runtime: &crate::vm::VmRuntimeHandle, vcpu: GicVcpuId) {
-        self.wake
-            .get_or_init(|| runtime.vcpu_timer_wake_handle(vcpu.raw()));
-    }
-
-    fn arm_for_current_thread(
-        &self,
-        deadline_counter: u64,
-        timer_epoch: u64,
-    ) -> Aarch64TimerWaitToken {
-        let mut armed_timer = self.armed_timer.lock();
-        let token = self.completion.arm();
-        *armed_timer = Some(ArmedTimerWait {
-            token,
-            deadline_counter,
-            timer_epoch,
-        });
-        token
+    fn arm(&self, deadline_counter: u64, timer_epoch: u64) -> Aarch64TimerWaitToken {
+        self.deadline_counter
+            .store(deadline_counter, Ordering::Relaxed);
+        self.armed_timer_epoch.store(timer_epoch, Ordering::Relaxed);
+        self.completion.arm()
     }
 
     fn armed_deadline_for_epoch(&self, timer_epoch: u64) -> Option<(Aarch64TimerWaitToken, u64)> {
-        let armed = (*self.armed_timer.lock())?;
-        (armed.timer_epoch == timer_epoch).then_some((armed.token, armed.deadline_counter))
+        loop {
+            let token = self.completion.armed_token()?;
+            let deadline_counter = self.deadline_counter.load(Ordering::Relaxed);
+            let armed_timer_epoch = self.armed_timer_epoch.load(Ordering::Relaxed);
+            if self.completion.armed_token() == Some(token) {
+                return (armed_timer_epoch == timer_epoch).then_some((token, deadline_counter));
+            }
+        }
     }
 
     fn begin_timer_epoch(&self) -> u64 {
@@ -113,22 +109,16 @@ impl Aarch64TimerWaitState {
     }
 
     fn publish_completion_for_epoch(&self, timer_epoch: u64, token: Aarch64TimerWaitToken) -> bool {
-        let mut armed_timer = self.armed_timer.lock();
-        if !armed_timer
-            .is_some_and(|armed| armed.timer_epoch == timer_epoch && armed.token == token)
-            || !self.completion.complete(token)
-        {
+        if self.armed_timer_epoch.load(Ordering::Acquire) != timer_epoch {
             return false;
         }
-        *armed_timer = None;
-        true
+        // The completed generation is the Linux kvm_vcpu_check_block-style
+        // condition. Publish it before the direct wake so a wake-before-park
+        // interleaving cannot merely wake and then re-enter the wait loop.
+        self.completion.complete(token)
     }
 
     fn cancel_arm(&self, token: Aarch64TimerWaitToken) {
-        let mut armed_timer = self.armed_timer.lock();
-        if armed_timer.is_some_and(|armed| armed.token == token) {
-            *armed_timer = None;
-        }
         self.completion.cancel(token);
     }
 
@@ -137,21 +127,7 @@ impl Aarch64TimerWaitState {
     }
 
     fn invalidate(&self) -> bool {
-        *self.armed_timer.lock() = None;
         self.completion.invalidate()
-    }
-
-    fn wake_from_hard_timer(&self) {
-        if let Some(wake) = self.wake.get() {
-            wake.wake_from_irq();
-        }
-    }
-
-    fn wait_until(&self, condition: &dyn Fn() -> bool) {
-        self.wake
-            .get()
-            .expect("a blocked-vCPU timer wake must be bound before waiting")
-            .wait_until(condition);
     }
 }
 
@@ -263,11 +239,9 @@ impl Aarch64TimerBinding {
     /// Re-evaluates both timers and arms the earliest wakeup for guest WFI.
     pub(in crate::arch::aarch64) fn arm_wait(
         &self,
-        runtime: &crate::vm::VmRuntimeHandle,
         snapshot: ArmTimerSnapshot,
     ) -> VgicResult<Option<Aarch64TimerWaitToken>> {
         self.invalidate_wait();
-        self.wait_state.bind_wake(runtime, self.vcpu);
         let now_counter = physical_counter();
         if self.publish_levels(snapshot, now_counter)? {
             return Ok(None);
@@ -279,13 +253,18 @@ impl Aarch64TimerBinding {
         let deadline_ns = host_deadline_ns(deadline_counter, now_counter, self.frequency);
         let deadline = Duration::from_nanos(deadline_ns);
         let current_cpu = default_host().this_cpu_id();
+        let current_thread = crate::host::task::current_thread();
+        let owner_thread = current_thread.id();
         let existing = *self.scheduled.lock();
         if let Some(existing) = existing
-            && existing.owner_cpu == current_cpu
+            && wait_timer_owner_matches(
+                existing.owner_cpu,
+                existing.owner_thread,
+                current_cpu,
+                owner_thread,
+            )
         {
-            let wait_token = self
-                .wait_state
-                .arm_for_current_thread(deadline_counter, existing.epoch);
+            let wait_token = self.wait_state.arm(deadline_counter, existing.epoch);
             default_host()
                 .arm_hard_timer(existing.handle, deadline)
                 .map_err(|error| {
@@ -303,16 +282,15 @@ impl Aarch64TimerBinding {
             cancel_wait_timer(previous.handle);
         }
         let epoch = self.wait_state.begin_timer_epoch();
-        let wait_token = self
-            .wait_state
-            .arm_for_current_thread(deadline_counter, epoch);
+        let wait_token = self.wait_state.arm(deadline_counter, epoch);
         let frequency = self.frequency;
         let wait_state = Arc::clone(&self.wait_state);
+        let wake = current_thread.wake_handle();
         let registration = unsafe {
             // SAFETY: the stable callback reads only the architectural counter
-            // and claims a bounded IRQ-safe arm-state lock, then invokes the
-            // prebound hard-IRQ-safe wait-queue capability. It does not
-            // allocate, free, sleep, log, or acquire VGIC/runtime locks.
+            // and atomically published arm state, then invokes the prebound
+            // hard-IRQ-safe ThreadWakeHandle. It does not allocate, free,
+            // sleep, log, or acquire AxVM/VGIC/runtime locks.
             default_host().register_hard_restartable_timer(
                 deadline,
                 Box::new(move |_| {
@@ -331,7 +309,7 @@ impl Aarch64TimerBinding {
                         return HostHardTimerAction::Rearm(Duration::from_nanos(deadline_ns));
                     }
                     if wait_state.publish_completion_for_epoch(epoch, wait_token) {
-                        wait_state.wake_from_hard_timer();
+                        let _result = wake.wake();
                     }
                     HostHardTimerAction::Disarm
                 }),
@@ -348,6 +326,7 @@ impl Aarch64TimerBinding {
         *self.scheduled.lock() = Some(ScheduledWaitTimer {
             handle,
             owner_cpu: current_cpu,
+            owner_thread,
             epoch,
         });
         Ok(Some(wait_token))
@@ -358,10 +337,6 @@ impl Aarch64TimerBinding {
         token: Aarch64TimerWaitToken,
     ) -> bool {
         self.wait_state.is_completed(token)
-    }
-
-    pub(in crate::arch::aarch64) fn wait_until(&self, condition: &dyn Fn() -> bool) {
-        self.wait_state.wait_until(condition);
     }
 
     /// Invalidates and remotely cancels any scheduled wait callback.
@@ -439,17 +414,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wait_timer_reuse_requires_the_same_cpu_and_thread_generation() {
+        let owner = crate::host::task::ThreadId::from_parts(3, 7);
+
+        assert!(wait_timer_owner_matches(2, owner, 2, owner));
+        assert!(!wait_timer_owner_matches(
+            2,
+            owner,
+            2,
+            crate::host::task::ThreadId::from_parts(3, 8)
+        ));
+        assert!(!wait_timer_owner_matches(2, owner, 1, owner));
+    }
+
+    #[test]
     fn stale_timer_epoch_cannot_complete_rearmed_wait() {
         let state = Aarch64TimerWaitState::new();
         let old_epoch = state.begin_timer_epoch();
-        let old_token = state.arm_for_current_thread(10, old_epoch);
+        let old_token = state.arm(10, old_epoch);
 
-        // Model an old hard callback that has already crossed its first epoch
-        // check when migration invalidates and re-registers the timer.
+        // Model an old hard callback that crossed its first epoch check before
+        // migration invalidated the registration and armed a new wait.
         assert!(state.timer_epoch_is_active(old_epoch));
         assert!(state.invalidate());
         let new_epoch = state.begin_timer_epoch();
-        let new_token = state.arm_for_current_thread(20, new_epoch);
+        let new_token = state.arm(20, new_epoch);
         assert_ne!(old_token, new_token);
         assert_ne!(old_epoch, new_epoch);
 

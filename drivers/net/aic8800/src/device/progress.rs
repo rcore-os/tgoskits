@@ -270,10 +270,6 @@ impl AicDevice {
         self.profile.mailbox_flow()
     }
 
-    pub(super) const fn data_tx_flow_policy(&self) -> crate::profile::DataTxFlowPolicy {
-        self.profile.data_tx_flow()
-    }
-
     pub(super) const fn startup_function(&self, index: usize) -> Option<u8> {
         self.profile.function(index)
     }

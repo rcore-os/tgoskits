@@ -5,7 +5,7 @@
 
 use core::arch::naked_asm;
 
-use loongArch64::register::{MemoryAccessType, crmd, pgdh, pgdl, pwch::*, pwcl::*, stlbps};
+use loongArch64::register::MemoryAccessType;
 use num_align::NumAlign;
 use page_table_generic::{MapConfig, TableMeta, VirtAddr};
 
@@ -29,6 +29,9 @@ const PS: u64 = 0x0e;
 /// 页内偏移位数
 pub const PAGE_SHIFT: usize = PAGE_SIZE.trailing_zeros() as usize;
 
+const PWCL_VALUE: usize = 12 | (9 << 5) | (21 << 10) | (9 << 15) | (30 << 20) | (9 << 25);
+const PWCH_VALUE: usize = 39 | (9 << 6);
+
 // ============================================================================
 // 页表层级配置
 // ============================================================================
@@ -38,6 +41,7 @@ pub const PTE_INDEX_BITS: usize = PAGE_SHIFT - 3;
 
 /// 无效化所有 TLB 条目
 #[inline(always)]
+#[cfg_attr(axtest_coverage, coverage(off))]
 pub fn local_flush_tlb_all() {
     unsafe {
         core::arch::asm!("dbar 0; tlbflush", options(nomem, nostack));
@@ -84,20 +88,37 @@ pub fn local_flush_tlb_page(vaddr: usize) {
 //     }
 // }
 
-/// 简化的页表初始化 (仅设置页大小和遍历器)
-pub fn setup() {
-    stlbps::set_ps(PS);
-
-    set_dir3_base(12 + 9 + 9 + 9);
-    set_dir3_width(9);
-    set_dir2_base(12 + 9 + 9);
-    set_dir2_width(9);
-    set_dir1_base(12 + 9);
-    set_dir1_width(9);
-    set_ptbase(12);
-    set_ptwidth(9);
-    set_pte_width(8); // 64 bits -> 8 bytes
-
+/// Installs the kernel page table and page-walker geometry.
+///
+/// This function is also used before a secondary CPU can address the final
+/// kernel image. Keep it self-contained and free of calls into instrumented
+/// register-access crates: coverage counters live at final kernel addresses.
+#[cfg_attr(axtest_coverage, coverage(off))]
+fn setup(root_paddr: usize) {
+    assert_eq!(root_paddr & (PAGE_SIZE - 1), 0);
+    unsafe {
+        core::arch::asm!(
+            "csrrd {stlbps}, {csr_stlbps}",
+            "bstrins.d {stlbps}, {ps}, 5, 0",
+            "csrwr {root}, {csr_pgdh}",
+            "csrwr {root}, {csr_pgdl}",
+            "dbar 0",
+            "csrwr {stlbps}, {csr_stlbps}",
+            "csrwr {pwcl}, {csr_pwcl}",
+            "csrwr {pwch}, {csr_pwch}",
+            stlbps = out(reg) _,
+            ps = in(reg) PS,
+            root = in(reg) root_paddr,
+            pwcl = in(reg) PWCL_VALUE,
+            pwch = in(reg) PWCH_VALUE,
+            csr_pgdl = const 0x19,
+            csr_pgdh = const 0x1a,
+            csr_pwcl = const 0x1c,
+            csr_pwch = const 0x1d,
+            csr_stlbps = const 0x1e,
+            options(nostack),
+        );
+    }
     local_flush_tlb_all();
 }
 
@@ -197,17 +218,9 @@ pub fn relocate_kernel_to_vm_code() -> ! {
 
     println!("Setting up page table...");
 
-    pgdh::set_base(tb.addr as _);
-    pgdl::set_base(tb.addr as _);
-
-    // 添加数据同步屏障，确保页表写入完成
-    unsafe {
-        core::arch::asm!("dbar 0", options(nomem, nostack));
-    }
-
     println!("Enabling MMU...");
     // 配置页大小并启用 MMU
-    setup();
+    setup(tb.addr);
 
     println!("MMU enabled, jumping to {v_entry:#x}, sp={v_sp:#x}");
 
@@ -225,17 +238,20 @@ pub fn relocate_kernel_to_vm_code() -> ! {
     unreachable!()
 }
 
+#[cfg_attr(axtest_coverage, coverage(off))]
 pub fn enable_mmu_secondary(cpu_meta_paddr: usize) -> ! {
     let meta = unsafe {
-        let meta_va = super::addrspace::to_cache(cpu_meta_paddr);
+        let phys_mask = (1usize << super::addrspace::PABITS) - 1;
+        let meta_va = (cpu_meta_paddr & phys_mask) | super::addrspace::CACHE_BASE;
         &*(meta_va as *const PerCpuMeta)
     };
-    pgdh::set_base(meta.boot_table_paddr);
-    pgdl::set_base(meta.boot_table_paddr);
-    setup();
+    setup(meta.boot_table_paddr);
     super::trap::init_entries_for_secondary();
 
-    let mut crmd_bits = crmd::read().raw();
+    let mut crmd_bits: usize;
+    unsafe {
+        core::arch::asm!("csrrd {}, {}", out(reg) crmd_bits, const 0x0);
+    }
     crmd_bits &= !(1 << 3);
     crmd_bits |= 1 << 4;
     crmd_bits &= !(0b11 << 5);

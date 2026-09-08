@@ -491,6 +491,14 @@ impl HardIrqHandler for QueueZeroControlIrq {
     }
 }
 
+fn queue_zero_action_with_handler(hctx: &Hctx, handler: Box<dyn HardIrqHandler>) -> BlockIrqAction {
+    BlockIrqAction::new(handler, vec![hctx.irq_target(0)])
+}
+
+fn queue_zero_action(hctx: &Hctx) -> BlockIrqAction {
+    queue_zero_action_with_handler(hctx, Box::new(QueueZeroIrq))
+}
+
 fn test_queue_info(depth: usize) -> QueueInfo {
     let mut limits = QueueLimits::simple(
         512,

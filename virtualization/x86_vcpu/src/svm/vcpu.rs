@@ -81,6 +81,35 @@ const SVM_INT_CTL_V_IRQ_INJECTION_BITS: u32 =
     SVM_INT_CTL_V_IRQ | SVM_INT_CTL_V_INTR_PRIO_MASK | SVM_INT_CTL_V_IGN_TPR;
 const SVM_INT_STATE_INTERRUPT_SHADOW: u32 = 1 << 0;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SvmInjectionEvent {
+    event: PendingEvent,
+    reinjected: bool,
+}
+
+impl SvmInjectionEvent {
+    fn needs_apic_accept(self) -> bool {
+        self.event.vector >= 32 && !self.reinjected
+    }
+}
+
+fn select_svm_injection(
+    reinjection: Option<PendingEvent>,
+    pending: Option<PendingEvent>,
+) -> Option<SvmInjectionEvent> {
+    if let Some(event) = reinjection {
+        Some(SvmInjectionEvent {
+            event,
+            reinjected: true,
+        })
+    } else {
+        pending.map(|event| SvmInjectionEvent {
+            event,
+            reinjected: false,
+        })
+    }
+}
+
 macro_rules! save_regs_no_rax {
     () => {
         "
@@ -271,7 +300,11 @@ pub struct SvmVcpu<H: X86HostOps> {
     /// Pending events to be injected to the guest.
     pending_events: VecDeque<PendingEvent>,
     /// Event handed to EVENTINJ for the current VMRUN and awaiting completion.
-    injecting_event: Option<PendingEvent>,
+    injecting_event: Option<SvmInjectionEvent>,
+    /// Event whose delivery was interrupted by the previous VMRUN.
+    reinjection_event: Option<PendingEvent>,
+    /// Guest Global Interrupt Flag when hardware virtual GIF is not enabled.
+    guest_gif: bool,
     /// Emulated Local APIC for x2APIC MSR accesses.
     vlapic: EmulatedLocalApic<H>,
     /// The XState of the VCpu. Both host and guest.
@@ -293,6 +326,8 @@ impl<H: X86HostOps> SvmVcpu<H> {
             msrpm: MSRPm::<H>::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
             injecting_event: None,
+            reinjection_event: None,
+            guest_gif: true,
             vlapic: EmulatedLocalApic::<H>::new(vm_id, vcpu_id),
             xstate: XState::new(),
         };
@@ -628,6 +663,9 @@ impl<H: X86HostOps> SvmVcpu<H> {
         &mut self,
         exit_info: &super::vmcb::SvmExitInfo,
     ) -> Option<X86VcpuResult> {
+        if let Some(guest_gif) = svm_guest_gif_after_exit(exit_info.exit_code) {
+            return Some(self.handle_guest_gif_exit(guest_gif));
+        }
         match exit_info.exit_code {
             Ok(SvmExitCode::CPUID) => Some(self.handle_cpuid()),
             Ok(SvmExitCode::XSETBV) => Some(self.handle_xsetbv()),
@@ -651,6 +689,20 @@ impl<H: X86HostOps> SvmVcpu<H> {
             }
             _ => None,
         }
+    }
+
+    fn handle_guest_gif_exit(&mut self, guest_gif: bool) -> X86VcpuResult {
+        const VM_EXIT_INSTR_LEN_GIF: u8 = 3;
+
+        self.advance_rip(VM_EXIT_INSTR_LEN_GIF)?;
+        self.guest_gif = guest_gif;
+        if !guest_gif {
+            // KVM clears VINTR when software GIF closes. STGI remains
+            // intercepted, so reopening GIF reaches this owner before the
+            // guest can execute past the newly opened interrupt window.
+            self.set_interrupt_window(false);
+        }
+        Ok(())
     }
 
     fn handle_cr_write(
@@ -1128,7 +1180,11 @@ impl<H: X86HostOps> SvmVcpu<H> {
 
     fn allow_external_interrupt(&self) -> bool {
         let vmcb = unsafe { self.vmcb.as_vmcb_ref() };
-        svm_external_interrupt_allowed(vmcb.state.rflags.get(), vmcb.control.int_state.get())
+        svm_external_interrupt_allowed(
+            vmcb.state.rflags.get(),
+            vmcb.control.int_state.get(),
+            self.guest_gif,
+        )
     }
 
     fn set_interrupt_window(&mut self, enable: bool) {
@@ -1137,23 +1193,39 @@ impl<H: X86HostOps> SvmVcpu<H> {
     }
 
     fn inject_pending_events(&mut self) -> X86VcpuResult {
+        if let Some(vector) = self.vlapic.take_pending_timer_interrupt() {
+            self.queue_event(vector, None);
+        }
         if self.injecting_event.is_some() {
             return Ok(());
         }
 
-        let Some(event) = self.pending_events.front().copied() else {
+        let Some(injection) =
+            select_svm_injection(self.reinjection_event, self.pending_events.front().copied())
+        else {
             return Ok(());
         };
+        let event = injection.event;
 
         if event.vector >= 32 {
-            if self.allow_external_interrupt() {
+            if injection.reinjected || self.allow_external_interrupt() {
                 self.set_interrupt_window(false);
-                inject_external_interrupt_control(
-                    unsafe { &mut self.vmcb.as_vmcb().control },
-                    event,
-                );
-                self.injecting_event = Some(event);
-                self.pending_events.pop_front();
+                if injection.needs_apic_accept() {
+                    let vlapic = &self.vlapic;
+                    prepare_external_interrupt_injection(
+                        unsafe { &mut self.vmcb.as_vmcb().control },
+                        event,
+                        |event| {
+                            vlapic.accept_interrupt(event.vector, event.level_triggered);
+                        },
+                    );
+                } else {
+                    inject_external_interrupt_control(
+                        unsafe { &mut self.vmcb.as_vmcb().control },
+                        event,
+                    );
+                }
+                self.commit_svm_injection(injection);
             } else {
                 self.set_interrupt_window(true);
             }
@@ -1161,9 +1233,17 @@ impl<H: X86HostOps> SvmVcpu<H> {
         }
 
         self.inject_event(event.vector, event.err_code)?;
-        self.injecting_event = Some(event);
-        self.pending_events.pop_front();
+        self.commit_svm_injection(injection);
         Ok(())
+    }
+
+    fn commit_svm_injection(&mut self, injection: SvmInjectionEvent) {
+        self.injecting_event = Some(injection);
+        if injection.reinjected {
+            self.reinjection_event = None;
+        } else {
+            self.pending_events.pop_front();
+        }
     }
 
     fn complete_event_injection(&mut self) {
@@ -1176,18 +1256,12 @@ impl<H: X86HostOps> SvmVcpu<H> {
         let exit_int_info_err = vmcb.control.exit_int_info_err.get();
 
         if let Some(interrupted) =
-            interrupted_injected_event(exit_int_info, exit_int_info_err, injected)
+            interrupted_injected_event(exit_int_info, exit_int_info_err, injected.event)
         {
-            self.pending_events.push_front(interrupted);
+            self.reinjection_event = Some(interrupted);
             vmcb.control.exit_int_info.set(0);
             vmcb.control.exit_int_info_err.set(0);
             vmcb.control.clean_bits.set(0);
-            return;
-        }
-
-        if injected.vector >= 32 {
-            self.vlapic
-                .accept_interrupt(injected.vector, injected.level_triggered);
         }
     }
 
@@ -1718,8 +1792,22 @@ fn inject_external_interrupt_control(
     control.clean_bits.set(0);
 }
 
-fn svm_external_interrupt_allowed(rflags: u64, int_state: u32) -> bool {
-    rflags & RFlags::INTERRUPT_FLAG.bits() != 0 && int_state & SVM_INT_STATE_INTERRUPT_SHADOW == 0
+fn prepare_external_interrupt_injection(
+    control: &mut super::vmcb::VmcbControlArea,
+    event: PendingEvent,
+    accept_interrupt: impl FnOnce(PendingEvent),
+) {
+    // Match KVM's kvm_cpu_get_interrupt(): move the vector into APIC
+    // in-service state before handing it to SVM's EVENTINJ field. The guest
+    // may execute its EOI before the next VM exit.
+    accept_interrupt(event);
+    inject_external_interrupt_control(control, event);
+}
+
+fn svm_external_interrupt_allowed(rflags: u64, int_state: u32, guest_gif: bool) -> bool {
+    guest_gif
+        && rflags & RFlags::INTERRUPT_FLAG.bits() != 0
+        && int_state & SVM_INT_STATE_INTERRUPT_SHADOW == 0
 }
 
 fn svm_external_interrupt_exit_vector(info: u32) -> Option<u8> {
@@ -1771,6 +1859,18 @@ fn svm_intr_exit_reason(_vector: Option<u8>) -> X86VmExit {
     // exits, VMCB exit_int_info is not a reliable dispatch key for the host
     // IRQ framework, so the caller must let the host consume the pending IRQ.
     X86VmExit::PreemptionTimer
+}
+
+fn svm_hlt_exit_reason() -> X86VmExit {
+    X86VmExit::Halt
+}
+
+fn svm_guest_gif_after_exit(exit_code: Result<SvmExitCode, u64>) -> Option<bool> {
+    match exit_code {
+        Ok(SvmExitCode::CLGI) => Some(false),
+        Ok(SvmExitCode::STGI) => Some(true),
+        _ => None,
+    }
 }
 
 fn svm_mmio_register_write_opcode(write: bool, opcode: u8, local_apic: bool) -> bool {
@@ -1934,12 +2034,12 @@ impl<H: X86HostOps> SvmVcpu<H> {
                     // as a periodic VMM poll point after first letting the
                     // host consume the pending physical IRQ.
                     let vector = self.external_interrupt_exit_vector();
-                    H::poll_host_interrupt();
+                    H::service_pending_host_interrupt();
                     svm_intr_exit_reason(vector)
                 }
                 SvmExitCode::HLT => {
                     self.advance_rip(1)?;
-                    X86VmExit::PreemptionTimer
+                    svm_hlt_exit_reason()
                 }
                 SvmExitCode::PAUSE => {
                     self.advance_rip(2)?;
@@ -2005,6 +2105,13 @@ impl<H: X86HostOps> SvmVcpu<H> {
         Ok(())
     }
 
+    pub fn has_pending_event(&self) -> bool {
+        self.injecting_event.is_some()
+            || self.reinjection_event.is_some()
+            || !self.pending_events.is_empty()
+            || self.vlapic.has_pending_timer_interrupt()
+    }
+
     pub fn handle_eoi(&mut self) -> Option<u8> {
         self.handle_local_apic_eoi()
     }
@@ -2016,17 +2123,19 @@ impl<H: X86HostOps> SvmVcpu<H> {
 
 #[cfg(test)]
 mod tests {
-    use core::mem::MaybeUninit;
+    use core::{cell::Cell, mem::MaybeUninit};
 
     use tock_registers::interfaces::{Readable, Writeable};
     use x86_64::registers::rflags::RFlags;
 
     use super::{
         PendingEvent, SVM_INT_CTL_V_INTR_MASKING, SVM_INT_CTL_V_INTR_PRIO_SHIFT, SVM_INT_CTL_V_IRQ,
-        SVM_INT_CTL_V_IRQ_INJECTION_BITS, SVM_INT_STATE_INTERRUPT_SHADOW,
+        SVM_INT_CTL_V_IRQ_INJECTION_BITS, SVM_INT_STATE_INTERRUPT_SHADOW, SvmExitCode,
         enable_virtual_interrupt_masking_control, inject_external_interrupt_control,
-        interrupted_injected_event, set_interrupt_window_control, svm_external_interrupt_allowed,
-        svm_external_interrupt_exit_vector, svm_intr_exit_reason, svm_mmio_register_write_opcode,
+        interrupted_injected_event, prepare_external_interrupt_injection, select_svm_injection,
+        set_interrupt_window_control, svm_external_interrupt_allowed,
+        svm_external_interrupt_exit_vector, svm_guest_gif_after_exit, svm_hlt_exit_reason,
+        svm_intr_exit_reason, svm_mmio_register_write_opcode,
     };
     use crate::{
         X86VmExit,
@@ -2059,6 +2168,24 @@ mod tests {
     }
 
     #[test]
+    fn svm_external_irq_is_accepted_before_guest_entry() {
+        let mut control = unsafe { MaybeUninit::<VmcbControlArea>::zeroed().assume_init() };
+        let accepted = Cell::new(false);
+        let event = PendingEvent {
+            vector: 0x51,
+            err_code: None,
+            level_triggered: true,
+        };
+
+        prepare_external_interrupt_injection(&mut control, event, |accepted_event| {
+            assert_eq!(accepted_event, event);
+            accepted.set(true);
+        });
+
+        assert!(accepted.get());
+    }
+
+    #[test]
     fn svm_control_enables_virtual_interrupt_masking() {
         let mut control = unsafe { MaybeUninit::<VmcbControlArea>::zeroed().assume_init() };
         control.int_control.set(0);
@@ -2075,12 +2202,20 @@ mod tests {
     fn svm_external_irq_waits_for_guest_interrupt_window() {
         let if_enabled = RFlags::INTERRUPT_FLAG.bits();
 
-        assert!(svm_external_interrupt_allowed(if_enabled, 0));
-        assert!(!svm_external_interrupt_allowed(0, 0));
+        assert!(svm_external_interrupt_allowed(if_enabled, 0, true));
+        assert!(!svm_external_interrupt_allowed(0, 0, true));
         assert!(!svm_external_interrupt_allowed(
             if_enabled,
-            SVM_INT_STATE_INTERRUPT_SHADOW
+            SVM_INT_STATE_INTERRUPT_SHADOW,
+            true,
         ));
+    }
+
+    #[test]
+    fn svm_external_irq_waits_for_guest_gif() {
+        let if_enabled = RFlags::INTERRUPT_FLAG.bits();
+
+        assert!(!svm_external_interrupt_allowed(if_enabled, 0, false));
     }
 
     #[test]
@@ -2136,6 +2271,17 @@ mod tests {
     }
 
     #[test]
+    fn svm_hlt_blocks_until_a_vcpu_event() {
+        assert!(matches!(svm_hlt_exit_reason(), X86VmExit::Halt));
+    }
+
+    #[test]
+    fn svm_clgi_and_stgi_update_guest_gif() {
+        assert_eq!(svm_guest_gif_after_exit(Ok(SvmExitCode::CLGI)), Some(false));
+        assert_eq!(svm_guest_gif_after_exit(Ok(SvmExitCode::STGI)), Some(true));
+    }
+
+    #[test]
     fn svm_requeues_interrupted_event_injection() {
         let injected = PendingEvent {
             vector: 0x51,
@@ -2148,6 +2294,20 @@ mod tests {
             interrupted_injected_event(info, 0, injected),
             Some(injected)
         );
+    }
+
+    #[test]
+    fn svm_reinjected_external_irq_skips_a_second_apic_accept() {
+        let interrupted = PendingEvent {
+            vector: 0x51,
+            err_code: None,
+            level_triggered: true,
+        };
+
+        let selected = select_svm_injection(Some(interrupted), None).unwrap();
+
+        assert_eq!(selected.event, interrupted);
+        assert!(!selected.needs_apic_accept());
     }
 
     #[test]

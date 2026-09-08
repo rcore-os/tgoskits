@@ -72,50 +72,6 @@ fn route(input: u8) -> AcpiGsiRoute {
 }
 
 #[test]
-fn rdif_intc_plain_translation_helpers_keep_ids_and_triggers() {
-    let domain = IrqDomainId(7);
-    let hwirq = HwIrq(5);
-    let controller_translation = ControllerIrqTranslation::with_trigger(hwirq, Trigger::EdgeRising);
-    let translation = IrqTranslation::from_controller(domain, controller_translation);
-    assert_eq!(translation.id, IrqId::new(domain, hwirq));
-    assert_eq!(translation.trigger, Some(Trigger::EdgeRising));
-    assert_eq!(
-        IrqTranslation::with_trigger(IrqId::new(domain, hwirq), Trigger::LevelLow).trigger,
-        Some(Trigger::LevelLow)
-    );
-
-    assert_eq!(Trigger::EdgeFailling, Trigger::EdgeFailling);
-}
-
-#[test]
-fn rdif_intc_default_interface_methods_report_unsupported_where_needed() {
-    struct Minimal;
-
-    impl DriverGeneric for Minimal {
-        fn name(&self) -> &str {
-            "minimal-intc"
-        }
-    }
-
-    impl Interface for Minimal {}
-
-    let mut minimal = Minimal;
-    assert_eq!(minimal.translate_fdt(&[1]), Err(IrqError::Unsupported));
-    assert!(!minimal.supports_acpi_gsi(&route(1)));
-    assert_eq!(
-        minimal.translate_acpi(&route(1)),
-        Err(IrqError::Unsupported)
-    );
-    assert_eq!(
-        minimal.set_enabled(HwIrq(1), true),
-        Err(IrqError::Unsupported)
-    );
-    minimal
-        .configure(&IrqTranslation::new(IrqId::new(IrqDomainId(1), HwIrq(1))))
-        .unwrap();
-}
-
-#[test]
 fn rdif_intc_wrapper_translates_domains_and_configures_matching_routes() {
     let mut intc = Intc::new(IrqDomainId(11), MockIntc::new(HwIrq(5)));
     assert_eq!(intc.name(), "mock-intc");

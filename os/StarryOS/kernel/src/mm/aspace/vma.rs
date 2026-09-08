@@ -1,7 +1,10 @@
 //! Immutable VMA descriptions and persistent snapshots.
 
 use alloc::{sync::Arc, vec::Vec};
-use core::{fmt, sync::atomic::{AtomicU64, Ordering}};
+use core::{
+    fmt,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::MappingFlags;
@@ -36,6 +39,10 @@ pub enum FaultResult {
     /// Resolution was blocked by an in-flight eviction or shootdown.  The
     /// instruction may be retried after the owner releases its lease.
     Retry,
+    /// Allocation failed after the backend's reclaim or base-page fallback.
+    /// Kernel user copies must terminate instead of waiting on a transaction
+    /// owner that does not exist.
+    NoMemory,
     Sigbus(BusCode),
 }
 
@@ -177,8 +184,8 @@ pub enum HugePageAdvice {
 #[repr(u8)]
 pub enum TransparentHugePageMode {
     #[default]
-    Enabled = 0,
-    Disabled = 1,
+    Enabled       = 0,
+    Disabled      = 1,
     ExceptAdvised = 3,
 }
 
@@ -585,10 +592,7 @@ impl VmaSnapshot {
             && self.huge_page_advice == next.huge_page_advice
             && self.lock_mode == next.lock_mode
             && self.advice_policy == next.advice_policy
-            && self
-                .source_offset
-                .get()
-                .checked_add(self.range.size())
+            && self.source_offset.get().checked_add(self.range.size())
                 == Some(next.source_offset.get())
     }
 
@@ -610,12 +614,7 @@ impl VmaSnapshot {
         })
     }
 
-    pub(crate) fn fragment(
-        &self,
-        start: VirtAddr,
-        end: VirtAddr,
-        id: VmaId,
-    ) -> Option<Self> {
+    pub(crate) fn fragment(&self, start: VirtAddr, end: VirtAddr, id: VmaId) -> Option<Self> {
         if start >= end || start < self.range.start || end > self.range.end {
             return None;
         }
@@ -866,7 +865,11 @@ fn rotate_left(node: Arc<VmaNode>) -> Arc<VmaNode> {
 fn rebalance(node: Arc<VmaNode>) -> Arc<VmaNode> {
     let balance = balance_factor(&node);
     if balance > 1 {
-        if node.left.as_ref().is_some_and(|left| balance_factor(left) < 0) {
+        if node
+            .left
+            .as_ref()
+            .is_some_and(|left| balance_factor(left) < 0)
+        {
             let left = node.left.as_ref().map(|left| rotate_left(left.clone()));
             return rotate_right(VmaNode::with_children(
                 node.entry.clone(),
@@ -877,7 +880,11 @@ fn rebalance(node: Arc<VmaNode>) -> Arc<VmaNode> {
         return rotate_right(node);
     }
     if balance < -1 {
-        if node.right.as_ref().is_some_and(|right| balance_factor(right) > 0) {
+        if node
+            .right
+            .as_ref()
+            .is_some_and(|right| balance_factor(right) > 0)
+        {
             let right = node.right.as_ref().map(|right| rotate_right(right.clone()));
             return rotate_left(VmaNode::with_children(
                 node.entry.clone(),
@@ -890,10 +897,7 @@ fn rebalance(node: Arc<VmaNode>) -> Arc<VmaNode> {
     node
 }
 
-fn insert_node(
-    node: Option<Arc<VmaNode>>,
-    entry: Arc<VmaEntry>,
-) -> Result<Arc<VmaNode>, ()> {
+fn insert_node(node: Option<Arc<VmaNode>>, entry: Arc<VmaEntry>) -> Result<Arc<VmaNode>, ()> {
     let Some(current) = node else {
         return Ok(VmaNode::new(entry));
     };
@@ -1207,10 +1211,7 @@ impl VmaMap {
             let mut body_snapshot = (*body.snapshot).clone();
             body_snapshot.rights = rights;
             body_snapshot.reported_rights = reported_rights;
-            updated = updated.insert_entry(VmaEntry::new(
-                body_snapshot,
-                body.operation.clone(),
-            ))?;
+            updated = updated.insert_entry(VmaEntry::new(body_snapshot, body.operation.clone()))?;
 
             if intersection.end < source.snapshot.range.end {
                 let tail = source.fragment(
@@ -1270,10 +1271,7 @@ impl VmaMap {
             )?;
             let mut body_snapshot = (*body.snapshot).clone();
             body_snapshot.lock_mode = lock_mode;
-            updated = updated.insert_entry(VmaEntry::new(
-                body_snapshot,
-                body.operation.clone(),
-            ))?;
+            updated = updated.insert_entry(VmaEntry::new(body_snapshot, body.operation.clone()))?;
 
             if intersection.end < source.snapshot.range.end {
                 let tail = source.fragment(
@@ -1331,10 +1329,7 @@ impl VmaMap {
             )?;
             let mut body_snapshot = (*body.snapshot).clone();
             body_snapshot.advice_policy = body_snapshot.advice_policy.apply(update);
-            updated = updated.insert_entry(VmaEntry::new(
-                body_snapshot,
-                body.operation.clone(),
-            ))?;
+            updated = updated.insert_entry(VmaEntry::new(body_snapshot, body.operation.clone()))?;
 
             if intersection.end < source.snapshot.range.end {
                 let tail = source.fragment(
@@ -1376,10 +1371,8 @@ impl VmaMap {
                 let merged = ordered[first]
                     .snapshot
                     .merge_through(ordered[index].snapshot.as_ref())?;
-                updated = updated.insert_with_operation(
-                    merged,
-                    ordered[first].operation.clone(),
-                )?;
+                updated =
+                    updated.insert_with_operation(merged, ordered[first].operation.clone())?;
             }
             index += 1;
         }
@@ -1411,9 +1404,7 @@ impl VmaMap {
                 && ordered[first].snapshot.range.start <= changed.end
             {
                 let mut starts = Vec::new();
-                starts
-                    .try_reserve(index - first + 1)
-                    .ok()?;
+                starts.try_reserve(index - first + 1).ok()?;
                 starts.extend(
                     ordered[first..=index]
                         .iter()
@@ -1502,8 +1493,12 @@ impl VmaMap {
             }
             if vma.range.start > candidate
                 && candidate >= limit.start
-                && candidate.checked_add(size).is_some_and(|end| end <= vma.range.start)
-                && candidate.checked_add(size).is_some_and(|end| end <= limit.end)
+                && candidate
+                    .checked_add(size)
+                    .is_some_and(|end| end <= vma.range.start)
+                && candidate
+                    .checked_add(size)
+                    .is_some_and(|end| end <= limit.end)
             {
                 return Some(candidate);
             }
@@ -1574,11 +1569,7 @@ impl VmaMap {
 
     /// Prepares the complete metadata successor for a fresh mapping or a
     /// `MAP_FIXED` replacement. No PTE or externally visible root is changed.
-    pub(super) fn with_mapping_entry(
-        &self,
-        entry: Arc<VmaEntry>,
-        replace: bool,
-    ) -> Option<Self> {
+    pub(super) fn with_mapping_entry(&self, entry: Arc<VmaEntry>, replace: bool) -> Option<Self> {
         let range = entry.range();
         let base = if self.overlaps(range) {
             if !replace {
@@ -1695,22 +1686,25 @@ mod tests {
         let start = VirtAddr::from_usize(start);
         let operation =
             MappingOperation::new_alloc(start, ax_memory_addr::PAGE_SIZE_4K, "vma-test");
-        (VmaSnapshot {
-            id: allocate_vma_id(),
-            range: VirtAddrRange::from_start_size(start, size),
-            rights: MappingFlags::READ,
-            reported_rights: MappingFlags::READ,
-            max_rights: MappingFlags::READ,
-            group: MappingGroup::new(
-                MappingId::new(1),
-                MappingSource::Anonymous(AnonymousSource),
-                PageSizePolicy::Base,
-            ),
-            source_offset: PageOffset::ZERO,
-            huge_page_advice: HugePageAdvice::Default,
-            lock_mode: VmaLockMode::Unlocked,
-            advice_policy: VmaAdvicePolicy::default(),
-        }, operation)
+        (
+            VmaSnapshot {
+                id: allocate_vma_id(),
+                range: VirtAddrRange::from_start_size(start, size),
+                rights: MappingFlags::READ,
+                reported_rights: MappingFlags::READ,
+                max_rights: MappingFlags::READ,
+                group: MappingGroup::new(
+                    MappingId::new(1),
+                    MappingSource::Anonymous(AnonymousSource),
+                    PageSizePolicy::Base,
+                ),
+                source_offset: PageOffset::ZERO,
+                huge_page_advice: HugePageAdvice::Default,
+                lock_mode: VmaLockMode::Unlocked,
+                advice_policy: VmaAdvicePolicy::default(),
+            },
+            operation,
+        )
     }
 
     fn insert(map: &VmaMap, start: usize, size: usize) -> Option<VmaMap> {
@@ -1749,19 +1743,31 @@ mod tests {
         assert_eq!(original.len(), 1);
         assert_eq!(locked.len(), 3);
         assert_eq!(
-            original.lookup(VirtAddr::from_usize(0x2000)).unwrap().lock_mode,
+            original
+                .lookup(VirtAddr::from_usize(0x2000))
+                .unwrap()
+                .lock_mode,
             VmaLockMode::Unlocked
         );
         assert_eq!(
-            locked.lookup(VirtAddr::from_usize(0x1000)).unwrap().lock_mode,
+            locked
+                .lookup(VirtAddr::from_usize(0x1000))
+                .unwrap()
+                .lock_mode,
             VmaLockMode::Unlocked
         );
         assert_eq!(
-            locked.lookup(VirtAddr::from_usize(0x2000)).unwrap().lock_mode,
+            locked
+                .lookup(VirtAddr::from_usize(0x2000))
+                .unwrap()
+                .lock_mode,
             VmaLockMode::LockOnFault
         );
         assert_eq!(
-            locked.lookup(VirtAddr::from_usize(0x3000)).unwrap().lock_mode,
+            locked
+                .lookup(VirtAddr::from_usize(0x3000))
+                .unwrap()
+                .lock_mode,
             VmaLockMode::Unlocked
         );
 
@@ -1789,9 +1795,15 @@ mod tests {
         assert_eq!(successor.len(), 2);
         let head = successor.lookup(VirtAddr::from_usize(0x1000)).unwrap();
         let tail = successor.lookup(VirtAddr::from_usize(0x4000)).unwrap();
-        assert_eq!(head.range, VirtAddrRange::from_start_size(VirtAddr::from_usize(0x1000), 0x1000));
+        assert_eq!(
+            head.range,
+            VirtAddrRange::from_start_size(VirtAddr::from_usize(0x1000), 0x1000)
+        );
         assert_eq!(head.source_offset, PageOffset::ZERO);
-        assert_eq!(tail.range, VirtAddrRange::from_start_size(VirtAddr::from_usize(0x4000), 0x1000));
+        assert_eq!(
+            tail.range,
+            VirtAddrRange::from_start_size(VirtAddr::from_usize(0x4000), 0x1000)
+        );
         assert_eq!(tail.source_offset, PageOffset::new(0x3000));
         assert!(successor.lookup(VirtAddr::from_usize(0x2000)).is_none());
     }
@@ -1810,14 +1822,20 @@ mod tests {
         assert_eq!(original.len(), 1);
         assert_eq!(successor.len(), 3);
         assert_eq!(
-            successor.lookup(VirtAddr::from_usize(0x1000)).unwrap().rights,
+            successor
+                .lookup(VirtAddr::from_usize(0x1000))
+                .unwrap()
+                .rights,
             MappingFlags::READ
         );
         let body = successor.lookup(VirtAddr::from_usize(0x2000)).unwrap();
         assert_eq!(body.rights, MappingFlags::READ | MappingFlags::WRITE);
         assert_eq!(body.reported_rights, MappingFlags::READ);
         assert_eq!(
-            successor.lookup(VirtAddr::from_usize(0x3000)).unwrap().rights,
+            successor
+                .lookup(VirtAddr::from_usize(0x3000))
+                .unwrap()
+                .rights,
             MappingFlags::READ
         );
         assert_eq!(original.len(), 1);
@@ -1878,10 +1896,8 @@ mod tests {
 
     fn process_thp_disable_overrides_vma_preference_for_test() {
         assert_eq!(
-            PageSizePolicy::TRANSPARENT_2M.fault_leaf_size(
-                HugePageAdvice::Prefer,
-                TransparentHugePageMode::Disabled,
-            ),
+            PageSizePolicy::TRANSPARENT_2M
+                .fault_leaf_size(HugePageAdvice::Prefer, TransparentHugePageMode::Disabled,),
             Some(ax_memory_addr::PAGE_SIZE_4K)
         );
         assert_eq!(
@@ -1910,7 +1926,6 @@ mod tests {
     fn huge_page_advice_is_vma_local_and_path_copied() {
         huge_page_advice_is_vma_local_and_path_copied_for_test();
     }
-
 
     #[cfg(all(test, axtest))]
     #[axtest::axtest]

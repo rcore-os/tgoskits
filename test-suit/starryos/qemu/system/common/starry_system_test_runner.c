@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #define TEST_DIRECTORY "/usr/bin/starry-test-suit"
+#define LTP_SYSCALLS_PREFIX "ltp-syscalls-"
 #define DEFAULT_CASE_TIMEOUT_SECONDS 120
 #define EXT4_INODE_UNIQUE_TIMEOUT_SECONDS 240
 #define PAGECACHE_CAP_TIMEOUT_SECONDS 240
@@ -30,6 +31,12 @@
 struct case_args {
     const char *path;
     const char *output_path;
+};
+
+enum test_phase {
+    TEST_PHASE_NONE,
+    TEST_PHASE_NATIVE_C,
+    TEST_PHASE_LTP_SYSCALLS,
 };
 
 static int exit_status_from_wait_status(int status);
@@ -242,7 +249,36 @@ static int compare_names(const void *left, const void *right)
 {
     const char *const *left_name = left;
     const char *const *right_name = right;
+
+    int left_is_ltp = strncmp(*left_name, LTP_SYSCALLS_PREFIX,
+                              strlen(LTP_SYSCALLS_PREFIX)) == 0;
+    int right_is_ltp = strncmp(*right_name, LTP_SYSCALLS_PREFIX,
+                               strlen(LTP_SYSCALLS_PREFIX)) == 0;
+    if (left_is_ltp != right_is_ltp) {
+        return left_is_ltp - right_is_ltp;
+    }
     return strcmp(*left_name, *right_name);
+}
+
+static enum test_phase test_phase_for_name(const char *name)
+{
+    if (strncmp(name, LTP_SYSCALLS_PREFIX, strlen(LTP_SYSCALLS_PREFIX)) == 0) {
+        return TEST_PHASE_LTP_SYSCALLS;
+    }
+    return TEST_PHASE_NATIVE_C;
+}
+
+static const char *test_phase_name(enum test_phase phase)
+{
+    switch (phase) {
+    case TEST_PHASE_NATIVE_C:
+        return "native-c";
+    case TEST_PHASE_LTP_SYSCALLS:
+        return "ltp-syscalls";
+    case TEST_PHASE_NONE:
+        break;
+    }
+    return "none";
 }
 
 static void free_test_names(char **names, size_t count)
@@ -391,6 +427,7 @@ int main(int argc, char **argv)
     int total = 0;
     int passed = 0;
     int failed = 0;
+    enum test_phase current_phase = TEST_PHASE_NONE;
     struct timespec suite_start = monotonic_now();
 
     for (size_t index = 0; index < name_count; ++index) {
@@ -409,6 +446,18 @@ int main(int argc, char **argv)
             access(path, X_OK) != 0) {
             free(names[index]);
             continue;
+        }
+
+        enum test_phase next_phase = test_phase_for_name(names[index]);
+        if (next_phase != current_phase) {
+            if (current_phase != TEST_PHASE_NONE) {
+                printf("STARRY_SYSTEM_PHASE_END: %s\n",
+                       test_phase_name(current_phase));
+            }
+            current_phase = next_phase;
+            printf("STARRY_SYSTEM_PHASE_BEGIN: %s\n",
+                   test_phase_name(current_phase));
+            fflush(stdout);
         }
 
         total += 1;
@@ -443,6 +492,9 @@ int main(int argc, char **argv)
         }
     }
     free(names);
+    if (current_phase != TEST_PHASE_NONE) {
+        printf("STARRY_SYSTEM_PHASE_END: %s\n", test_phase_name(current_phase));
+    }
     if (capture_failures != 0) {
         (void)unlink(output_path);
     }

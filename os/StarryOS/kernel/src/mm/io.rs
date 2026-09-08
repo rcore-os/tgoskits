@@ -2,33 +2,34 @@ use alloc::vec::Vec;
 use core::mem::{self, MaybeUninit};
 
 use ax_io::{IoError, IoResult, prelude::*};
-use bytemuck::AnyBitPattern;
-use starry_vm::{VmError, VmPtr, vm_read_slice, vm_write_slice};
+use bytemuck::{AnyBitPattern, NoUninit};
+use starry_vm::VmError;
 
-use super::check_access;
-use crate::{StarryError, StarryResult};
+use super::{VmPtr, check_access, vm_read_slice, vm_write_slice};
+use crate::{StarryError, StarryResult, task::UserTaskRef};
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AnyBitPattern)]
+#[derive(Debug, Copy, Clone, AnyBitPattern, NoUninit)]
 pub struct IoVec {
     pub iov_base: *mut u8,
     pub iov_len: isize,
 }
 
-#[derive(Default)]
-pub struct IoVectorBuf {
+pub struct IoVectorBuf<'task> {
+    task: &'task UserTaskRef,
     iovs: Vec<IoVec>,
     len: usize,
 }
 
-impl IoVectorBuf {
-    pub fn new(iovs: *const IoVec, iovcnt: usize) -> StarryResult<Self> {
-        Self::new_with_len_validator(iovs, iovcnt, |_| Ok(()))
+impl<'task> IoVectorBuf<'task> {
+    pub fn new(task: &'task UserTaskRef, iovs: *const IoVec, iovcnt: usize) -> StarryResult<Self> {
+        Self::new_with_len_validator(task, iovs, iovcnt, |_| Ok(()))
     }
 
     /// Imports one stable descriptor snapshot. Descriptor-specific length
     /// checks run before payload address checks, as required by eventfd writes.
     pub(crate) fn new_with_len_validator(
+        task: &'task UserTaskRef,
         iovs: *const IoVec,
         iovcnt: usize,
         validate_len: impl FnOnce(usize) -> StarryResult,
@@ -36,10 +37,13 @@ impl IoVectorBuf {
         if iovcnt > 1024 {
             return Err(StarryError::InvalidInput);
         }
-        let mut owned_iovs = Vec::with_capacity(iovcnt);
+        let mut owned_iovs = Vec::new();
+        owned_iovs
+            .try_reserve_exact(iovcnt)
+            .map_err(|_| StarryError::NoMemory)?;
         let mut len = 0usize;
         for i in 0..iovcnt {
-            let iov = iovs.wrapping_add(i).vm_read()?;
+            let iov = iovs.wrapping_add(i).vm_read(task)?;
             if iov.iov_len < 0 {
                 return Err(StarryError::InvalidInput);
             }
@@ -58,6 +62,7 @@ impl IoVectorBuf {
             }
         }
         Ok(Self {
+            task,
             iovs: owned_iovs,
             len,
         })
@@ -72,13 +77,13 @@ impl IoVectorBuf {
     pub(crate) fn prepare_read(&self) -> StarryResult {
         for iov in &self.iovs {
             if iov.iov_len != 0 {
-                super::prepare_user_read(iov.iov_base as usize, iov.iov_len as usize)?;
+                super::prepare_user_read(self.task, iov.iov_base as usize, iov.iov_len as usize)?;
             }
         }
         Ok(())
     }
 
-    pub fn into_io(self) -> IoVectorBufIo {
+    pub fn into_io(self) -> IoVectorBufIo<'task> {
         IoVectorBufIo {
             inner: self,
             start: 0,
@@ -87,13 +92,13 @@ impl IoVectorBuf {
     }
 }
 
-pub struct IoVectorBufIo {
-    inner: IoVectorBuf,
+pub struct IoVectorBufIo<'task> {
+    inner: IoVectorBuf<'task>,
     start: usize,
     offset: usize,
 }
 
-impl IoVectorBufIo {
+impl IoVectorBufIo<'_> {
     fn skip_empty(&mut self) -> IoResult<()> {
         while self.start < self.inner.iovs.len() {
             let iov = self.inner.iovs[self.start];
@@ -107,7 +112,7 @@ impl IoVectorBufIo {
     }
 }
 
-impl Read for IoVectorBufIo {
+impl Read for IoVectorBufIo<'_> {
     fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
         let mut count = 0;
         loop {
@@ -120,9 +125,15 @@ impl Read for IoVectorBufIo {
             if len == 0 {
                 break;
             }
-            vm_read_slice(iov.iov_base.wrapping_add(self.offset), unsafe {
-                mem::transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(&mut buf[count..count + len])
-            })
+            vm_read_slice(
+                self.inner.task,
+                iov.iov_base.wrapping_add(self.offset),
+                unsafe {
+                    mem::transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(
+                        &mut buf[count..count + len],
+                    )
+                },
+            )
             .map_err(vm_error_to_io_error)?;
             self.offset += len;
             self.inner.len -= len;
@@ -132,7 +143,7 @@ impl Read for IoVectorBufIo {
     }
 }
 
-impl Write for IoVectorBufIo {
+impl Write for IoVectorBufIo<'_> {
     fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
         let mut count = 0;
         loop {
@@ -146,6 +157,7 @@ impl Write for IoVectorBufIo {
                 break;
             }
             vm_write_slice(
+                self.inner.task,
                 iov.iov_base.wrapping_add(self.offset),
                 &buf[count..count + len],
             )
@@ -162,20 +174,20 @@ impl Write for IoVectorBufIo {
     }
 }
 
-fn vm_error_to_io_error(error: VmError) -> IoError {
+pub(super) fn vm_error_to_io_error(error: VmError) -> IoError {
     match error {
         VmError::BadAddress | VmError::AccessDenied => IoError::BadAddress,
         VmError::TooLong => IoError::NameTooLong,
     }
 }
 
-impl IoBuf for IoVectorBufIo {
+impl IoBuf for IoVectorBufIo<'_> {
     fn remaining(&self) -> usize {
         self.inner.len
     }
 }
 
-impl IoBufMut for IoVectorBufIo {
+impl IoBufMut for IoVectorBufIo<'_> {
     fn remaining_mut(&self) -> usize {
         self.inner.len
     }

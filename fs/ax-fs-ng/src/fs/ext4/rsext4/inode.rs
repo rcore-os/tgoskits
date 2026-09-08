@@ -5,11 +5,12 @@ use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor as VfsDirectoryCursor,
     DirectoryReadState, FileExtent as VfsFileExtent, FileExtentMap as VfsFileExtentMap,
     FileExtentState as VfsFileExtentState, FileExtentTarget as VfsFileExtentTarget, FileNode,
-    FileNodeOps, FileRangeOperation as VfsRangeOperation, FilesystemOps, FsIoEvents, FsPollable,
-    Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
-    PreallocationMode as VfsPreallocationMode, Reference, RenameOptions as VfsRenameOptions,
-    VfsError, VfsResult, WeakDirEntry, XattrOps, XattrSetMode as VfsXattrSetMode,
+    FileNodeOps, FileRangeOperation as VfsRangeOperation, FilesystemOps, Metadata, MetadataUpdate,
+    NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode as VfsPreallocationMode,
+    Reference, RenameOptions as VfsRenameOptions, VfsError, VfsResult, WeakDirEntry, XattrOps,
+    XattrSetMode as VfsXattrSetMode,
 };
+use axpoll::{IoEvents, Pollable};
 use rsext4::{
     DeviceNumber, DirectoryCursor, Ext4Timestamp, FileName, FilePermissions, InodeFlags,
     InodeMetadataUpdate, InodeNumber, MutationContext, PreallocationOptions, RangeOperation,
@@ -418,12 +419,17 @@ impl FileNodeOps for Inode {
     }
 }
 
-impl FsPollable for Inode {
-    fn poll(&self) -> FsIoEvents {
-        FsIoEvents::IN | FsIoEvents::OUT
+impl Pollable for Inode {
+    fn poll(&self) -> IoEvents {
+        IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut core::task::Context<'_>, _events: FsIoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
 
 impl DirNodeOps for Inode {

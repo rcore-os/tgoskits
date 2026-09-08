@@ -56,6 +56,46 @@ const X86_LOCAL_APIC_EOI_OFFSET: usize = 0xb0;
 const X86_IOAPIC_BASE: usize = 0xfec0_0000;
 const X86_IOAPIC_SIZE: usize = 0x1000;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VmxInjectionEvent {
+    event: PendingEvent,
+    int_type: VmxInterruptionType,
+    instruction_len: Option<u32>,
+}
+
+impl VmxInjectionEvent {
+    fn pending(event: PendingEvent) -> Self {
+        Self {
+            event,
+            int_type: VmxInterruptionType::from_vector(event.vector),
+            instruction_len: None,
+        }
+    }
+}
+
+fn interrupted_vmx_event(
+    info: VmxInterruptInfo,
+    exit_instruction_len: u32,
+    injected: Option<VmxInjectionEvent>,
+) -> Option<VmxInjectionEvent> {
+    if !info.valid {
+        return None;
+    }
+
+    let level_triggered = injected
+        .filter(|event| event.event.vector == info.vector && event.int_type == info.int_type)
+        .is_some_and(|event| event.event.level_triggered);
+    Some(VmxInjectionEvent {
+        event: PendingEvent {
+            vector: info.vector,
+            err_code: info.err_code,
+            level_triggered,
+        },
+        int_type: info.int_type,
+        instruction_len: info.int_type.is_soft().then_some(exit_instruction_len),
+    })
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct VmxSyscallMsrState {
     star: u64,
@@ -147,6 +187,22 @@ fn secondary_control_bits_allowed(bits: u32) -> bool {
     ((Msr::IA32_VMX_PROCBASED_CTLS2.read() >> 32) as u32 & bits) == bits
 }
 
+fn supported_apic_virtualization_controls(
+    allowed: impl Fn(u32) -> bool,
+) -> vmcs::controls::SecondaryControls {
+    use vmcs::controls::SecondaryControls;
+
+    let mut controls = SecondaryControls::empty();
+    if allowed(SecondaryControls::VIRTUALIZE_APIC.bits()) {
+        controls |= SecondaryControls::VIRTUALIZE_APIC;
+    }
+    // This backend injects interrupts through VM-entry fields and maintains
+    // the software vLAPIC ISR itself. Virtual-interrupt delivery would require
+    // keeping VMCS GUEST_INTR_STATUS (RVI/SVI) synchronized like KVM's APICv
+    // path; enabling it without that state machine mixes two IRQ owners.
+    controls
+}
+
 /// A virtual CPU within a guest.
 #[repr(C)]
 pub struct VmxVcpu<H: X86HostOps> {
@@ -186,6 +242,10 @@ pub struct VmxVcpu<H: X86HostOps> {
     // Interrupt-related fields
     /// Pending events to be injected to the guest.
     pending_events: VecDeque<PendingEvent>,
+    /// Event written for the current VM-entry attempt.
+    injecting_event: Option<VmxInjectionEvent>,
+    /// Event whose delivery was interrupted by the previous VM exit.
+    reinjection_event: Option<VmxInjectionEvent>,
     /// Emulated Local APIC.
     vlapic: EmulatedLocalApic<H>,
     /// Guest CR2 is not saved or restored by VMX hardware.
@@ -222,6 +282,8 @@ impl<H: X86HostOps> VmxVcpu<H> {
             io_bitmap: IOBitmap::<H>::guest_owned()?,
             msr_bitmap: MsrBitmap::<H>::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
+            injecting_event: None,
+            reinjection_event: None,
             vlapic: EmulatedLocalApic::<H>::new(vm_id, vcpu_id),
             guest_cr2: 0,
             guest_syscall_msrs: VmxSyscallMsrState::default(),
@@ -285,7 +347,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
     }
 
     /// Run the guest. It returns when a vm-exit happens and returns the vm-exit if it cannot be handled by this [`VmxVcpu`] itself.
-    pub fn inner_run(&mut self) -> X86VcpuResult<Option<VmxExitInfo>> {
+    fn inner_run(&mut self) -> X86VcpuResult<Option<VmxExitInfo>> {
         self.inject_pending_events()?;
 
         // Run guest
@@ -340,8 +402,13 @@ impl<H: X86HostOps> VmxVcpu<H> {
             self.guest_regs_exiting = self.guest_regs;
         }
 
-        // Handle vm-exits
+        // Handle vm-exits. On a successful VM entry, Intel clears the valid bit
+        // in the VM-entry interruption field. IDT-vectoring state is therefore
+        // the sole owner of an event whose delivery was interrupted.
         let exit_info = self.exit_info().unwrap();
+        if !exit_info.entry_failure {
+            self.complete_event_injection(&exit_info)?;
+        }
         // debug!("VM exit: {:#x?}", exit_info);
 
         match self.builtin_vmexit_handler(&exit_info) {
@@ -362,11 +429,6 @@ impl<H: X86HostOps> VmxVcpu<H> {
     /// Basic information about VM exits.
     pub fn exit_info(&self) -> X86VcpuResult<vmcs::VmxExitInfo> {
         vmcs::exit_info()
-    }
-
-    /// Information for VM exits due to external interrupts.
-    pub fn interrupt_exit_info(&self) -> X86VcpuResult<vmcs::VmxInterruptInfo> {
-        vmcs::interrupt_exit_info()
     }
 
     /// Information for VM exits due to I/O instructions.
@@ -662,15 +724,9 @@ impl<H: X86HostOps> VmxVcpu<H> {
 
         // Enable EPT, RDTSCP, INVPCID, and unrestricted guest.
         use SecondaryControls as CpuCtrl2;
-        let mut val = CpuCtrl2::ENABLE_EPT | CpuCtrl2::UNRESTRICTED_GUEST;
-        for feature in [
-            CpuCtrl2::VIRTUALIZE_APIC,
-            CpuCtrl2::VIRTUAL_INTERRUPT_DELIVERY,
-        ] {
-            if secondary_control_bits_allowed(feature.bits()) {
-                val |= feature;
-            }
-        }
+        let mut val = CpuCtrl2::ENABLE_EPT
+            | CpuCtrl2::UNRESTRICTED_GUEST
+            | supported_apic_virtualization_controls(secondary_control_bits_allowed);
         if let Some(features) = raw_cpuid.get_extended_processor_and_feature_identifiers()
             && features.has_rdtscp()
             && secondary_control_bits_allowed(CpuCtrl2::ENABLE_RDTSCP.bits())
@@ -910,13 +966,37 @@ impl<H: X86HostOps> VmxVcpu<H> {
     fn allow_interrupt(&self) -> bool {
         let rflags = VmcsGuestNW::RFLAGS.read().unwrap();
         let block_state = VmcsGuest32::INTERRUPTIBILITY_STATE.read().unwrap();
-        rflags as u64 & x86_64::registers::rflags::RFlags::INTERRUPT_FLAG.bits() != 0
-            && block_state == 0
+        vmx_external_interrupt_allowed(rflags as u64, block_state)
     }
 
     /// Try to inject a pending event before next VM entry.
     fn inject_pending_events(&mut self) -> X86VcpuResult {
-        if let Some(event) = self.pending_events.front() {
+        if let Some(vector) = self.vlapic.take_pending_timer_interrupt() {
+            self.queue_event(vector, None);
+        }
+        if self.injecting_event.is_some() {
+            return Ok(());
+        }
+
+        if let Some(event) = self.reinjection_event {
+            if event.int_type == VmxInterruptionType::External {
+                self.set_interrupt_window(false)?;
+            }
+            vmcs::inject_interrupt_info(
+                VmxInterruptInfo {
+                    vector: event.event.vector,
+                    int_type: event.int_type,
+                    err_code: event.event.err_code,
+                    valid: true,
+                },
+                event.instruction_len,
+            )?;
+            self.injecting_event = Some(event);
+            self.reinjection_event = None;
+            return Ok(());
+        }
+
+        if let Some(event) = self.pending_events.front().copied() {
             // trace!(
             //     "pending event vector {:#x} allow_int {}",
             //     event.vector,
@@ -929,12 +1009,24 @@ impl<H: X86HostOps> VmxVcpu<H> {
                     self.vlapic
                         .accept_interrupt(event.vector, event.level_triggered);
                 }
+                self.injecting_event = Some(VmxInjectionEvent::pending(event));
                 self.pending_events.pop_front();
             } else {
                 // interrupts are blocked, enable interrupt-window exiting.
                 self.set_interrupt_window(true)?;
             }
         }
+        Ok(())
+    }
+
+    fn complete_event_injection(&mut self, exit_info: &VmxExitInfo) -> X86VcpuResult {
+        let vectoring = vmcs::idt_vectoring_info()?;
+        self.reinjection_event = interrupted_vmx_event(
+            vectoring,
+            exit_info.exit_instruction_length,
+            self.injecting_event,
+        );
+        self.injecting_event = None;
         Ok(())
     }
 
@@ -1794,6 +1886,33 @@ impl<H: X86HostOps> VmxVcpu<H> {
     }
 }
 
+fn vmx_external_interrupt_allowed(rflags: u64, block_state: u32) -> bool {
+    const BLOCKING_BY_STI: u32 = 1 << 0;
+    const BLOCKING_BY_MOV_SS: u32 = 1 << 1;
+
+    rflags & x86_64::registers::rflags::RFlags::INTERRUPT_FLAG.bits() != 0
+        && block_state & (BLOCKING_BY_STI | BLOCKING_BY_MOV_SS) == 0
+}
+
+/// Transfers the IRQ vector acknowledged by VMX to the embedding host.
+///
+/// `ACK_INTERRUPT_ON_EXIT` consumes the physical interrupt and records its
+/// vector in `VMEXIT_INTERRUPTION_INFO`. Enabling host IRQs cannot recreate
+/// that interrupt, so the vector must remain explicit until the host performs
+/// action dispatch and LAPIC EOI, matching Linux KVM's
+/// `handle_external_interrupt_irqoff()` ownership transfer.
+fn handle_vmx_external_interrupt_exit<H: X86HostOps>() -> X86VcpuResult<X86VmExit> {
+    vmx_external_interrupt_exit::<H>(vmcs::interrupt_exit_info()?)
+}
+
+fn vmx_external_interrupt_exit<H: X86HostOps>(info: VmxInterruptInfo) -> X86VcpuResult<X86VmExit> {
+    if !info.valid || info.int_type != VmxInterruptionType::External {
+        return Err(X86VcpuError::InvalidData);
+    }
+    H::dispatch_acknowledged_host_interrupt(info.vector);
+    Ok(X86VmExit::Nothing)
+}
+
 impl<H: X86HostOps> Drop for VmxVcpu<H> {
     fn drop(&mut self) {
         unsafe { vmx::vmclear(self.vmcs.phys_addr().as_usize() as u64).unwrap() };
@@ -2029,13 +2148,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
                         self.io_exit_info()?,
                         exit_info.exit_instruction_length as u8,
                     )?,
-                    VmxExitReason::EXTERNAL_INTERRUPT => {
-                        let int_info = self.interrupt_exit_info()?;
-                        assert!(int_info.valid);
-                        X86VmExit::ExternalInterrupt {
-                            vector: int_info.vector as _,
-                        }
-                    }
+                    VmxExitReason::EXTERNAL_INTERRUPT => handle_vmx_external_interrupt_exit::<H>()?,
                     VmxExitReason::PREEMPTION_TIMER => {
                         self.handle_vmx_preemption_timer()?;
                         X86VmExit::PreemptionTimer
@@ -2174,6 +2287,13 @@ impl<H: X86HostOps> VmxVcpu<H> {
         Ok(())
     }
 
+    pub fn has_pending_event(&self) -> bool {
+        self.injecting_event.is_some()
+            || self.reinjection_event.is_some()
+            || !self.pending_events.is_empty()
+            || self.vlapic.has_pending_timer_interrupt()
+    }
+
     pub fn handle_eoi(&mut self) -> Option<u8> {
         self.vlapic.handle_eoi()
     }
@@ -2250,5 +2370,85 @@ mod tests {
         assert_eq!(cpu_2.current, guest_after_cpu_1);
         unsafe { leave_guest_syscall_msrs(&mut guest, saved_host_cpu_2, &mut cpu_2) };
         assert_eq!(cpu_2.current, host_cpu_2);
+    }
+
+    #[test]
+    fn vmx_requeues_interrupted_external_irq_injection() {
+        let pending = PendingEvent {
+            vector: 0x51,
+            err_code: None,
+            level_triggered: true,
+        };
+        let injected = VmxInjectionEvent::pending(pending);
+        let vectoring = VmxInterruptInfo {
+            vector: pending.vector,
+            int_type: VmxInterruptionType::External,
+            err_code: None,
+            valid: true,
+        };
+
+        assert_eq!(
+            interrupted_vmx_event(vectoring, 0, Some(injected)),
+            Some(injected)
+        );
+    }
+
+    #[test]
+    fn vmx_external_irq_ignores_nmi_blocking() {
+        let if_enabled = x86_64::registers::rflags::RFlags::INTERRUPT_FLAG.bits();
+        let nmi_blocked = 1 << 3;
+
+        assert!(vmx_external_interrupt_allowed(if_enabled, nmi_blocked));
+    }
+
+    #[test]
+    fn vmx_external_irq_is_dispatched_before_returning_to_the_vmm() {
+        crate::test_utils::mock::MockMmHal::run_test(|| {
+            let exit = vmx_external_interrupt_exit::<crate::test_utils::mock::MockMmHal>(
+                VmxInterruptInfo {
+                    vector: 0x20,
+                    int_type: VmxInterruptionType::External,
+                    err_code: None,
+                    valid: true,
+                },
+            )
+            .unwrap();
+
+            assert!(matches!(exit, X86VmExit::Nothing));
+            assert_eq!(
+                crate::test_utils::mock::MockMmHal::acknowledged_host_interrupt(),
+                Some(0x20)
+            );
+        });
+    }
+
+    #[test]
+    fn invalid_vmx_external_irq_is_rejected_before_host_dispatch() {
+        crate::test_utils::mock::MockMmHal::run_test(|| {
+            let result = vmx_external_interrupt_exit::<crate::test_utils::mock::MockMmHal>(
+                VmxInterruptInfo {
+                    vector: 0x20,
+                    int_type: VmxInterruptionType::NMI,
+                    err_code: None,
+                    valid: true,
+                },
+            );
+
+            assert!(matches!(result, Err(X86VcpuError::InvalidData)));
+            assert_eq!(
+                crate::test_utils::mock::MockMmHal::acknowledged_host_interrupt(),
+                None
+            );
+        });
+    }
+
+    #[test]
+    fn explicit_irq_injection_does_not_enable_virtual_interrupt_delivery() {
+        use vmcs::controls::SecondaryControls;
+
+        let controls = supported_apic_virtualization_controls(|_| true);
+
+        assert!(controls.contains(SecondaryControls::VIRTUALIZE_APIC));
+        assert!(!controls.contains(SecondaryControls::VIRTUAL_INTERRUPT_DELIVERY));
     }
 }

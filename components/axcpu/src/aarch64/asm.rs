@@ -57,6 +57,7 @@ fn flush_tlb_asid(asid: u16) {
 /// must remain alive for the complete activation lease.
 #[cfg(feature = "uspace")]
 pub unsafe fn install_user_address_space(address_space: InstalledAddressSpace) {
+    address_space.validate_architecture_support();
     #[cfg(not(feature = "arm-el2"))]
     if matches!(address_space.mode(), InstalledAddressSpaceMode::Tagged) {
         let capacity = address_space_tag_capacity(1);
@@ -104,6 +105,19 @@ pub fn irqs_enabled() -> bool {
 #[inline]
 pub fn wait_for_irqs() {
     aarch64_cpu::asm::wfi();
+}
+
+/// Waits for an interrupt after the caller masks local IRQ delivery.
+///
+/// AArch64 `WFI` observes enabled pending interrupt sources even while
+/// `DAIF.I` masks delivery. Keeping delivery masked through `WFI` closes the
+/// scheduler wake-loss window. The function returns with local IRQs enabled.
+#[inline]
+pub fn wait_for_irqs_disabled() {
+    debug_assert!(!irqs_enabled());
+    barrier::dsb(barrier::SY);
+    aarch64_cpu::asm::wfi();
+    enable_irqs();
 }
 
 /// Halt the current CPU.
@@ -184,7 +198,17 @@ pub unsafe fn write_user_page_table(root_paddr: PhysAddr) {
     TTBR0_EL1.set(root_paddr.as_usize() as _);
 }
 
-/// Flushes the TLB.
+/// Makes page-table writes visible to the inner-shareable domain.
+///
+/// Cross-CPU shootdown must execute this before sending any IPI. A barrier on
+/// the remote CPU cannot order page-table writes performed by the initiating
+/// CPU.
+#[inline]
+pub fn synchronize_page_table_writes() {
+    unsafe { asm!("dsb ishst") };
+}
+
+/// Flushes the local TLB.
 ///
 /// If `vaddr` is [`None`], flushes the entire TLB. Otherwise, flushes the TLB
 /// entry that maps the given virtual address.
@@ -196,29 +220,27 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
 
         #[cfg(not(feature = "arm-el2"))]
         unsafe {
-            // SAFETY: this runs at EL1. Complete the preceding descriptor
-            // stores before invalidating walk caches, then wait for completion
-            // before any retired frame can be reused.
-            asm!("dsb ishst; tlbi vaae1is, {}; dsb sy; isb", in(reg) operand)
+            // TLB Invalidate by VA, All ASID, EL1, local PE. The runtime owns
+            // cross-CPU targeting and invokes this function on every selected
+            // CPU only after the initiator publishes its page-table writes.
+            asm!("dsb nshst; tlbi vaae1, {}; dsb nsh; isb", in(reg) operand)
         }
         #[cfg(feature = "arm-el2")]
         unsafe {
-            // SAFETY: this build owns the EL2 translation regime. The store
-            // barrier and completion barrier surround the EL2 invalidation.
-            asm!("dsb ishst; tlbi vae2is, {}; dsb sy; isb", in(reg) operand)
+            // TLB Invalidate by VA, EL2, local PE.
+            asm!("dsb nshst; tlbi vae2, {}; dsb nsh; isb", in(reg) operand)
         }
     } else {
         // flush the entire TLB
         #[cfg(not(feature = "arm-el2"))]
         unsafe {
-            // TLB Invalidate by VMID, All at stage 1, EL1
-            asm!("dsb sy; isb; tlbi vmalle1; dsb sy; isb")
+            // TLB Invalidate by VMID, All at stage 1, EL1, local PE.
+            asm!("dsb nshst; tlbi vmalle1; dsb nsh; isb")
         }
         #[cfg(feature = "arm-el2")]
         unsafe {
-            // SAFETY: this build owns the EL2 translation regime. The HAL
-            // targets every required CPU and waits for its local completion.
-            asm!("dsb sy; tlbi alle2; dsb sy; isb")
+            // TLB Invalidate All, EL2, local PE.
+            asm!("dsb nshst; tlbi alle2; dsb nsh; isb")
         }
     }
 }
@@ -226,9 +248,9 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
 /// Makes a page-table entry installed by the local page-fault handler visible
 /// before retrying the faulting instruction.
 ///
-/// AArch64 page-table updates are coherent with the hardware walker. A rare
-/// spurious refault is safe to handle again, so no unconditional barrier is
-/// needed on the minor-fault fast path.
+/// AArch64 page-table updates are coherent with the hardware walker. As in
+/// Linux, avoiding an unconditional barrier here keeps the minor-fault fast
+/// path cheap; a rare spurious refault is safe to handle again.
 #[inline]
 pub fn update_mmu_cache(_vaddr: VirtAddr) {}
 

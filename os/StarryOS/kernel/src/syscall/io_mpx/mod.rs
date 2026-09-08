@@ -3,9 +3,8 @@ mod poll;
 mod select;
 
 use alloc::{sync::Arc, vec::Vec};
-use core::task::Context;
 
-use axpoll::{IoEvents, Pollable};
+use axpoll::{IoEvents, Pollable, SharedRegistrationSink};
 
 pub use self::{epoll::*, poll::*, select::*};
 use crate::file::FileLike;
@@ -16,9 +15,9 @@ impl Pollable for FdPollSet {
         unreachable!()
     }
 
-    fn register(&self, context: &mut Context<'_>, _events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, _events: IoEvents) {
         for (file, events) in &self.0 {
-            file.register(context, *events);
+            unsafe { file.register_shared(sink, *events) };
         }
     }
 }

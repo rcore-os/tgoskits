@@ -12,16 +12,27 @@ const EXT_LINKER_SCRIPT_NAME: &str = "runtime.x";
 const BUILD_INFO_NAME: &str = "build_info.rs";
 const AXTEST_COVERAGE_RUNTIME_SECTIONS_PLACEHOLDER: &str = "%AXTEST_COVERAGE_RUNTIME_SECTIONS%";
 const AXTEST_COVERAGE_OUTPUT_SECTIONS_PLACEHOLDER: &str = "%AXTEST_COVERAGE_OUTPUT_SECTIONS%";
+const HOST_TEST_LINKER_SCRIPT_NAME: &str = "host-test.ld";
 const DEFAULT_CPU_CAPACITY: usize = 16;
 const DEFAULT_TASK_STACK_SIZE: usize = 0x40000;
-const DEFAULT_TICKS_PER_SEC: usize = 100;
+const DEFAULT_SCHEDULER_TICK_MS: u64 = 10;
+const NANOS_PER_MILLISECOND: u64 = 1_000_000;
 
 fn main() -> Result<()> {
     println!("cargo:rerun-if-changed={LINKER_TEMPLATE_NAME}");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_EXT_LD");
     println!("cargo:rerun-if-env-changed=SMP");
+    println!("cargo:rerun-if-env-changed=AX_SCHEDULER_TICK_MS");
     println!("cargo:rerun-if-env-changed=DWARF");
     println!("cargo:rerun-if-env-changed=AXTEST_COVERAGE");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_HOST_TEST");
+
+    if cfg!(target_os = "linux") && env::var_os("CARGO_FEATURE_HOST_TEST").is_some() {
+        let host_linker_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join(HOST_TEST_LINKER_SCRIPT_NAME);
+        println!("cargo:rerun-if-changed={}", host_linker_path.display());
+        println!("cargo:rustc-link-arg=-T{}", host_linker_path.display());
+    }
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let ld_content = fs::read_to_string(LINKER_TEMPLATE_NAME)?
@@ -109,7 +120,7 @@ fn build_info_source() -> Result<String> {
 fn build_info_source_from(arch: &str, target: &str, mode: &str, config: RuntimeConfig) -> String {
     let cpu_capacity = config.cpu_capacity;
     let task_stack_size = config.task_stack_size;
-    let ticks_per_sec = config.ticks_per_sec;
+    let scheduler_tick_interval_nanos = config.scheduler_tick_interval_nanos;
 
     quote! {
         pub const ARCH: &str = #arch;
@@ -121,8 +132,7 @@ fn build_info_source_from(arch: &str, target: &str, mode: &str, config: RuntimeC
 
         #[cfg(feature = "fs")]
         pub const TASK_STACK_SIZE: usize = #task_stack_size;
-
-        pub const TICKS_PER_SEC: usize = #ticks_per_sec;
+        pub const SCHEDULER_TICK_INTERVAL_NANOS: u64 = #scheduler_tick_interval_nanos;
     }
     .to_string()
 }
@@ -131,7 +141,7 @@ fn build_info_source_from(arch: &str, target: &str, mode: &str, config: RuntimeC
 struct RuntimeConfig {
     cpu_capacity: usize,
     task_stack_size: usize,
-    ticks_per_sec: usize,
+    scheduler_tick_interval_nanos: u64,
 }
 
 impl RuntimeConfig {
@@ -139,22 +149,54 @@ impl RuntimeConfig {
         let mut config = Self {
             cpu_capacity: DEFAULT_CPU_CAPACITY,
             task_stack_size: DEFAULT_TASK_STACK_SIZE,
-            ticks_per_sec: DEFAULT_TICKS_PER_SEC,
+            scheduler_tick_interval_nanos: scheduler_tick_interval_nanos(
+                DEFAULT_SCHEDULER_TICK_MS,
+            )?,
         };
 
         if let Ok(smp) = env::var("SMP") {
             config.cpu_capacity = parse_usize(&smp)
                 .map_err(|err| invalid_data(format!("failed to parse SMP value `{smp}`: {err}")))?;
         }
+        if let Ok(milliseconds) = env::var("AX_SCHEDULER_TICK_MS") {
+            let milliseconds = parse_u64(&milliseconds).map_err(|err| {
+                invalid_data(format!(
+                    "failed to parse AX_SCHEDULER_TICK_MS value `{milliseconds}`: {err}"
+                ))
+            })?;
+            config.scheduler_tick_interval_nanos = scheduler_tick_interval_nanos(milliseconds)?;
+        }
 
         Ok(config)
     }
+}
+
+fn scheduler_tick_interval_nanos(milliseconds: u64) -> Result<u64> {
+    if milliseconds == 0 {
+        return Err(invalid_data("AX_SCHEDULER_TICK_MS must be non-zero"));
+    }
+    let interval = milliseconds
+        .checked_mul(NANOS_PER_MILLISECOND)
+        .filter(|interval| *interval <= i64::MAX as u64)
+        .ok_or_else(|| {
+            invalid_data("AX_SCHEDULER_TICK_MS exceeds the finite monotonic clock domain")
+        })?;
+    Ok(interval)
 }
 
 fn parse_usize(value: &str) -> std::result::Result<usize, std::num::ParseIntError> {
     let value = value.replace('_', "");
     if let Some(hex) = value.strip_prefix("0x") {
         usize::from_str_radix(hex, 16)
+    } else {
+        value.parse()
+    }
+}
+
+fn parse_u64(value: &str) -> std::result::Result<u64, std::num::ParseIntError> {
+    let value = value.replace('_', "");
+    if let Some(hex) = value.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16)
     } else {
         value.parse()
     }
@@ -211,7 +253,10 @@ mod tests {
                 RuntimeConfig {
                     cpu_capacity: DEFAULT_CPU_CAPACITY,
                     task_stack_size: DEFAULT_TASK_STACK_SIZE,
-                    ticks_per_sec: DEFAULT_TICKS_PER_SEC,
+                    scheduler_tick_interval_nanos: scheduler_tick_interval_nanos(
+                        DEFAULT_SCHEDULER_TICK_MS,
+                    )
+                    .unwrap(),
                 },
             )),
             semantic_source(concat!(
@@ -222,7 +267,7 @@ mod tests {
                 "pub const CPU_CAPACITY: usize = 16usize;\n",
                 "#[cfg(feature = \"fs\")]\n",
                 "pub const TASK_STACK_SIZE: usize = 262144usize;\n",
-                "pub const TICKS_PER_SEC: usize = 100usize;\n",
+                "pub const SCHEDULER_TICK_INTERVAL_NANOS: u64 = 10000000u64;\n",
             ))
         );
     }

@@ -21,15 +21,13 @@ pub(crate) mod dgram;
 pub mod namespace;
 pub(crate) mod stream;
 
-use alloc::{boxed::Box, sync::Arc};
-use core::task::Context;
+use alloc::sync::Arc;
 
-use async_trait::async_trait;
 use ax_io::{IoBuf, Read, Write};
 use ax_lazyinit::LazyLock;
-use ax_sync::Mutex;
-use ax_task::future::{block_on, poll_io};
-use axpoll::{IoEvents, PollSet, Pollable};
+use ax_sync::SpinLock;
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 use enum_dispatch::enum_dispatch;
 use hashbrown::HashMap;
 
@@ -39,7 +37,8 @@ pub use self::{
     stream::StreamTransport,
 };
 use crate::{
-    NetError, NetResult, RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
+    ConnectStatus, NetError, NetResult, RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx,
+    SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
 
@@ -56,7 +55,6 @@ pub enum UnixSocketAddr {
 }
 
 /// Abstract transport trait for Unix sockets.
-#[async_trait]
 #[enum_dispatch]
 pub trait TransportOps: Configurable + Pollable + Send + Sync {
     /// Bind the transport to the given address.
@@ -79,18 +77,15 @@ pub trait TransportOps: Configurable + Pollable + Send + Sync {
         false
     }
 
-    /// Accept an incoming connection, returning the new transport and peer address.
-    async fn accept(&self) -> NetResult<(Transport, UnixSocketAddr)>;
-
     /// Non-blocking accept: returns `WouldBlock` immediately when no connection is pending.
     fn try_accept(&self) -> NetResult<(Transport, UnixSocketAddr)> {
         Err(NetError::WouldBlock)
     }
 
     /// Send data through the transport.
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize>;
+    fn try_send(&self, src: impl Read + IoBuf, options: &mut SendOptions) -> NetResult<usize>;
     /// Receive data from the transport.
-    fn recv(&self, dst: impl Write, options: RecvOptions<'_>) -> NetResult<usize>;
+    fn try_recv(&self, dst: impl Write, options: &mut RecvOptions<'_>) -> NetResult<usize>;
 
     /// Shutdown the transport.
     fn shutdown(&self, _how: Shutdown) -> NetResult {
@@ -127,10 +122,21 @@ impl Pollable for Transport {
         }
     }
 
-    fn register(&self, context: &mut core::task::Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
         match self {
-            Transport::Stream(stream) => stream.register(context, events),
-            Transport::Dgram(dgram) => dgram.register(context, events),
+            Transport::Stream(stream) => unsafe { stream.register_shared(sink, events) },
+            Transport::Dgram(dgram) => unsafe { dgram.register_shared(sink, events) },
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        match self {
+            Transport::Stream(stream) => unsafe { stream.register_exclusive(sink, events) },
+            Transport::Dgram(dgram) => unsafe { dgram.register_exclusive(sink, events) },
         }
     }
 }
@@ -139,17 +145,17 @@ impl Pollable for Transport {
 #[derive(Default)]
 pub struct BindSlot {
     /// Stream listener bound at this address.
-    stream: Mutex<Option<stream::Bind>>,
+    stream: SpinLock<Option<stream::Bind>>,
     /// Datagram endpoint bound at this address.
-    dgram: Mutex<Option<dgram::Bind>>,
+    dgram: SpinLock<Option<dgram::Bind>>,
     /// Seqpacket listener bound at this address. Seqpacket is connection
     /// oriented (like stream) but preserves message boundaries (like dgram),
     /// so it carries its own connection-request queue.
-    seqpacket: Mutex<Option<dgram::SeqBind>>,
+    seqpacket: SpinLock<Option<dgram::SeqBind>>,
 }
 
-static ABSTRACT_BINDS: LazyLock<Mutex<HashMap<Arc<[u8]>, BindSlot>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static ABSTRACT_BINDS: LazyLock<SpinLock<HashMap<Arc<[u8]>, BindSlot>>> =
+    LazyLock::new(|| SpinLock::new(HashMap::new()));
 
 /// Resolves an existing bind slot and runs `f` with it.
 pub(crate) fn with_slot<R>(
@@ -195,17 +201,17 @@ pub struct UnixSocket {
     /// Concrete stream or datagram transport.
     transport: Transport,
     /// Public local Unix address.
-    local_addr: Mutex<UnixSocketAddr>,
+    local_addr: SpinLock<UnixSocketAddr>,
     /// Public remote Unix address.
-    remote_addr: Mutex<UnixSocketAddr>,
+    remote_addr: SpinLock<UnixSocketAddr>,
 }
 impl UnixSocket {
     /// Create a new Unix socket with the given transport.
     pub fn new(transport: impl Into<Transport>) -> Self {
         Self {
             transport: transport.into(),
-            local_addr: Mutex::new(UnixSocketAddr::Unnamed),
-            remote_addr: Mutex::new(UnixSocketAddr::Unnamed),
+            local_addr: SpinLock::new(UnixSocketAddr::Unnamed),
+            remote_addr: SpinLock::new(UnixSocketAddr::Unnamed),
         }
     }
 }
@@ -231,7 +237,7 @@ impl SocketOps for UnixSocket {
         Ok(())
     }
 
-    fn connect(&self, remote_addr: SocketAddrEx) -> NetResult {
+    fn start_connect(&self, remote_addr: SocketAddrEx) -> NetResult<ConnectStatus> {
         let remote_addr = remote_addr.into_unix()?;
         let local_addr = self.local_addr.lock().clone();
         let accept_poll = {
@@ -246,7 +252,7 @@ impl SocketOps for UnixSocket {
             accept_poll
         };
         self.transport.finish_connect(accept_poll);
-        Ok(())
+        Ok(ConnectStatus::Connected)
     }
 
     fn listen(&self, _backlog: usize) -> NetResult {
@@ -257,29 +263,22 @@ impl SocketOps for UnixSocket {
         self.transport.is_listening()
     }
 
-    fn accept(&self) -> NetResult<Socket> {
-        let mut nonblocking = false;
-        let _ = self
-            .transport
-            .get_option_inner(&mut GetSocketOption::NonBlocking(&mut nonblocking));
-        let (transport, peer_addr) =
-            block_on(poll_io(&self.transport, IoEvents::IN, nonblocking, || {
-                self.transport.try_accept()
-            }))?;
+    fn try_accept(&self) -> NetResult<Socket> {
+        let (transport, peer_addr) = self.transport.try_accept()?;
         Ok(Self {
             transport,
-            local_addr: Mutex::new(self.local_addr.lock().clone()),
-            remote_addr: Mutex::new(peer_addr),
+            local_addr: SpinLock::new(self.local_addr.lock().clone()),
+            remote_addr: SpinLock::new(peer_addr),
         }
         .into())
     }
 
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize> {
-        self.transport.send(src, options)
+    fn try_send(&self, src: impl Read + IoBuf, options: &mut SendOptions) -> NetResult<usize> {
+        self.transport.try_send(src, options)
     }
 
-    fn recv(&self, dst: impl Write, options: RecvOptions<'_>) -> NetResult<usize> {
-        self.transport.recv(dst, options)
+    fn try_recv(&self, dst: impl Write, options: &mut RecvOptions<'_>) -> NetResult<usize> {
+        self.transport.try_recv(dst, options)
     }
 
     fn local_addr(&self) -> NetResult<SocketAddrEx> {
@@ -300,7 +299,15 @@ impl Pollable for UnixSocket {
         self.transport.poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.transport.register(context, events);
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        unsafe { self.transport.register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.transport.register_exclusive(sink, events) };
     }
 }

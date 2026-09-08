@@ -94,6 +94,10 @@ alloc_pages
 
 锁内不能调用虚拟文件系统、页缓存回收、缺页处理或任何可能再次分配的 callback。当前 `ax-alloc` 在 page allocation 失败后会释放 allocator 锁，再调用已注册的 page reclaim callback 并重试；因此新增 reclaim 代码必须维持“锁外执行、重试有界”的约束。
 
+回收回调还必须限制临时强引用的析构能力。块缓存 registry 为普通 sync 保留设备树的 `Weak<BlockCacheShared>`，另为 allocator pressure 发布同一树的数据状态弱引用。压力回收只升级 `Arc<SleepMutex<BlockAddressSpace>>` 并 `try_lock()`；该引用的最后一次释放只能归还缓存存储，不能运行设备端点的 IO、同步或关闭析构。`BlockCacheShared` 的设备端点仍由普通消费者和 sync 路径拥有，没有第二套缓存树。
+
+页缓存的压力入口跳过已映射页，不调用 rmap listener。需要撤销用户映射的 eviction 属于普通任务中的 MM 事务，不能从 `Box`、`Vec` 或 `Arc` 分配触发的 allocator 回调反向进入 VMA 锁。
+
 ### 3.2 每 CPU Slab 与禁止抢占
 
 字节分配在 `ax-alloc/src/buddy_slab.rs` 中通过 `ax_percpu::with_cpu_pin` 获取当前 CPU 的 Slab 指针，并由 per-CPU Slab 内部 `SpinLock` 串行化本 CPU cache。具体 allocation 代码只在[运行时页与堆分配器](./runtime-allocator.md#33-页所有权)展示；本章只定义并发条件：CPU-local 指针的获取和使用必须处在有效 pinning/IRQ-safe allocator 调用边界内，避免任务持有 CPU-local 指针时迁移。
@@ -155,7 +159,7 @@ sequenceDiagram
 7. 全部确认后退休 receipt，才允许释放旧 owner 或复用 frame。
 ```
 
-AArch64 的地址级 `tlbi vaae1is` 提供 inner-shareable 硬件广播（全量 `vmalle1` 仅本核）。x86_64、RISC-V 和 LoongArch64 的 `TableMeta::flush()` 只处理本 CPU；多 CPU consumer 解除共享内核映射时必须使用 `ax_hal::cache::flush_tlb_range_all_cpus()` 一类的软件 shootdown（基于 `axipi` 的 ready 状态机）。缺少有效 shootdown 时不能把本地失效当作系统完成。
+四架构的 `TableMeta::flush()` 都只处理本 CPU。多 CPU consumer 解除共享内核映射时必须使用 `ax_hal::cache::flush_tlb_range_all_cpus()` 一类的软件 shootdown（基于 `axipi` 的 ready 状态机）。AArch64 发起 CPU 在发送任何 IPI 前执行 `dsb ishst` 发布 PTE 写入，目标 CPU 再执行 `dsb nshst → TLBI → dsb nsh → isb`；仅在远端 CPU 上补屏障不能排序发起 CPU 的写入。缺少有效 shootdown 或写入发布边时，确认返回也不能作为 frame/VA 回收依据。
 
 ## 5. StarryOS 并发
 

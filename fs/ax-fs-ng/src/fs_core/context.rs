@@ -37,12 +37,11 @@ pub static ROOT_FS_CONTEXT: OnceLock<FsContext> = OnceLock::new();
 /// Registry of all live `FsContext` instances (weak references).
 ///
 /// Each time a task-local [`FS_CONTEXT`] is created, it registers its
-/// `Arc<Mutex<FsContext>>` here via [`register_fs_context`].  This allows
+/// `Arc<Mutex<FsContext>>` here via [`register_fs_context`]. This allows
 /// [`FsContext::propagate_pivot_root`] to iterate over every task's
 /// filesystem context and apply the same root / cwd fixup that Linux
 /// performs in `chroot_fs_refs()` after `pivot_root(2)`.
 static FS_REGISTRY: IrqMutex<Vec<Weak<Mutex<FsContext>>>> = IrqMutex::new(Vec::new());
-
 #[cfg(feature = "vfs")]
 static MOUNT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -145,8 +144,8 @@ scope_local::scope_local! {
 
 /// Returns an owned reference to the filesystem context of the active scope.
 ///
-/// CPU pinning ends after the `Arc` clone, before callers acquire the
-/// potentially sleepable filesystem lock.
+/// CPU pinning only covers the `Arc` clone. Callers may therefore acquire the
+/// sleepable filesystem lock after preemption has been restored.
 pub fn current_fs_context() -> Arc<Mutex<FsContext>> {
     FS_CONTEXT.clone_current()
 }
@@ -635,7 +634,7 @@ impl FsContext {
         new_root: &Location,
     ) {
         // 1. Collect strong references while holding the registry lock, then
-        //    release it so we never nest two Mutex guards.
+        //    release it so we never nest two PI mutex guards.
         let refs: Vec<Arc<Mutex<FsContext>>> = {
             let mut registry = FS_REGISTRY.lock();
             registry.retain(|weak| weak.upgrade().is_some());

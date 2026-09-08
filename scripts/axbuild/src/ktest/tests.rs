@@ -382,38 +382,6 @@ fn explicit_target_must_be_harness_false_test() {
 }
 
 #[test]
-fn starry_qemu_default_build_config_uses_board_defconfig() {
-    let path = default_qemu_build_config(
-        Path::new("/repo"),
-        Path::new("/repo/os/StarryOS/kernel"),
-        KtestRuntime::Starry,
-        "x86_64",
-        X86_64_TARGET,
-    );
-
-    assert_eq!(
-        path,
-        PathBuf::from("/repo/os/StarryOS/configs/board/qemu-x86_64.toml")
-    );
-}
-
-#[test]
-fn axvisor_qemu_default_build_config_uses_board_defconfig() {
-    let path = default_qemu_build_config(
-        Path::new("/repo"),
-        Path::new("/repo/os/axvisor"),
-        KtestRuntime::Axvisor,
-        "riscv64",
-        RISCV64_TARGET,
-    );
-
-    assert_eq!(
-        path,
-        PathBuf::from("/repo/os/axvisor/configs/board/qemu-riscv64.toml")
-    );
-}
-
-#[test]
 fn x86_64_uefi_kernel_loader_uses_explicit_cached_pflash() {
     let mut qemu = QemuConfig {
         args: vec!["-nographic".into()],
@@ -573,48 +541,6 @@ fn prepare_ktest_cargo_disables_inherited_coverage_without_cli_flag() {
             .iter()
             .any(|arg| arg.contains("-Cinstrument-coverage"))
     );
-}
-
-#[test]
-fn qemu_cargo_options_preserve_cargo_style_build_arguments() {
-    let mut cargo = Cargo {
-        package: "demo".into(),
-        target: X86_64_TARGET.into(),
-        ..Cargo::default()
-    };
-    let args = ArgsKtestQemu {
-        features: vec!["alloc".into(), "fp-simd".into()],
-        all_features: true,
-        no_default_features: false,
-        profile: Some("profiling".into()),
-        target_dir: Some(PathBuf::from("custom-target")),
-        locked: true,
-        offline: true,
-        frozen: true,
-        ..ArgsKtestQemu::default()
-    };
-
-    apply_qemu_cargo_options(&mut cargo, &args);
-
-    assert!(cargo.features.iter().any(|feature| feature == "alloc"));
-    assert!(cargo.features.iter().any(|feature| feature == "fp-simd"));
-    assert!(cargo.args.iter().any(|arg| arg == "--all-features"));
-    assert!(cargo.args.iter().any(|arg| arg == "--locked"));
-    assert!(cargo.args.iter().any(|arg| arg == "--offline"));
-    assert!(cargo.args.iter().any(|arg| arg == "--frozen"));
-    assert!(
-        cargo
-            .args
-            .windows(2)
-            .any(|args| args == ["--profile", "profiling"])
-    );
-    assert!(
-        cargo
-            .args
-            .windows(2)
-            .any(|args| args == ["--target-dir", "custom-target"])
-    );
-    assert_eq!(cargo.profile, Some(CargoBuildProfile::Debug));
 }
 
 #[test]

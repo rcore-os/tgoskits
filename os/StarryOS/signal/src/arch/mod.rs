@@ -16,6 +16,13 @@ cfg_if::cfg_if! {
     }
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+#[derive(Default)]
+pub struct SignalFpState;
+
+#[cfg(not(target_arch = "x86_64"))]
+pub type SignalFpRestore = ();
+
 pub fn signal_trampoline_address() -> usize {
     unsafe extern "C" {
         safe static signal_trampoline: [u8; 0];

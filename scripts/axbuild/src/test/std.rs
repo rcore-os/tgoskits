@@ -32,59 +32,6 @@ struct PackageFeatureProfile {
     expected_tests: &'static [&'static str],
 }
 
-const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
-    PackageFeatureProfile {
-        name: "host-test-api",
-        no_default_features: false,
-        features: &["host-test"],
-        name_filter: Some("api::"),
-        expected_tests: &[
-            "api::std_tests::axtask_api_constants_hold",
-            "api::std_tests::axtask_api_scheduler_name_hold",
-            "api::std_tests::axtask_api_task_registry_functions_exist_hold",
-            "api::std_tests::axtask_api_type_aliases_hold",
-            "api::tests::task_initialization_precedes_scheduling",
-        ],
-    },
-    PackageFeatureProfile {
-        name: "host-test-timer-model",
-        no_default_features: false,
-        features: &["host-test"],
-        name_filter: Some("future::time::timer_regression_tests::"),
-        expected_tests: &[
-            "future::time::timer_regression_tests::due_future_work_is_not_republished_as_a_clockevent_deadline",
-            "future::time::timer_regression_tests::future_deadline_is_republished_after_the_due_pass_finishes",
-            "future::time::timer_regression_tests::future_timer_drop_cancels_the_registration_cpu_after_migration",
-            "future::time::timer_regression_tests::future_timer_poll_uses_the_registration_cpu_after_migration",
-            "future::time::timer_regression_tests::wall_deadline_conversion_preserves_only_the_remaining_interval",
-        ],
-    },
-    PackageFeatureProfile {
-        name: "host-test-lock-contract",
-        no_default_features: false,
-        features: &["host-test"],
-        name_filter: Some("sync::mutex::tests::"),
-        expected_tests: &[
-            "sync::mutex::tests::leaked_guard_can_be_released_by_owner_wrapper",
-            "sync::mutex::tests::lock_rejects_preemption_disabled_context",
-            "sync::mutex::tests::lock_reports_the_external_call_site_to_the_runtime",
-            "sync::mutex::tests::try_lock_is_nonblocking",
-            "sync::mutex::tests::wrong_owner_force_unlock_is_rejected",
-        ],
-    },
-    PackageFeatureProfile {
-        name: "host-test-remote-reschedule",
-        no_default_features: false,
-        features: &["host-test", "smp", "ipi"],
-        name_filter: Some("run_queue::tests::"),
-        expected_tests: &[
-            "run_queue::tests::forced_remote_reschedule_bypasses_stale_pending",
-            "run_queue::tests::remote_reschedule_request_is_coalesced",
-            "run_queue::tests::remote_reschedule_send_failure_is_reported_and_keeps_pending",
-        ],
-    },
-];
-
 const AX_HAL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "host-test",
     no_default_features: false,
@@ -99,10 +46,8 @@ const AX_HAL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfil
         "cache::tests::large_tlb_ranges_switch_to_one_full_invalidation",
         "cache::tests::local_mmu_cache_update_aligns_the_fault_address_once",
         "cache::tests::selected_offline_cpu_cannot_be_silently_acknowledged",
-        "cache::tests::targeted_tlb_shootdown_rejects_selected_offline_cpu",
         "cache::tests::targeted_tlb_shootdown_skips_unselected_remote_and_local_cpus",
-        "irq::tests::irq_entry_preserves_disabled_caller_state",
-        "irq::tests::irq_entry_preserves_enabled_caller_state",
+        "irq::tests::acknowledged_irq_completion_precedes_preempt_release",
         "topology::tests::dummy_topology_only_maps_the_boot_cpu",
     ],
 }];
@@ -169,11 +114,11 @@ const FS_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
 
 const AX_FS_NG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     PackageFeatureProfile {
-        name: "host-test+vfs",
+        name: "host-test+vfs+fat+ext4",
         no_default_features: false,
-        features: &["host-test", "vfs"],
+        features: &["host-test", "vfs", "fat", "ext4"],
         name_filter: None,
-        expected_tests: &[],
+        expected_tests: &["block::cache::registry::tests::reclaim_capability_does_not_defer_last_endpoint_drop"],
     },
     PackageFeatureProfile {
         name: "host-test-resource-rollback-discovery",
@@ -562,14 +507,12 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "ax-runtime"
         | "ax-api"
         | "rdrive"
-        | "axpoll"
         | "ax-net"
         | "dma-api"
         | "buddy-slab-allocator" => Some(HOST_TEST_FEATURE_PROFILES),
         "ax-fs-ng" => Some(AX_FS_NG_FEATURE_PROFILES),
         "ax-io" | "axbacktrace" => Some(ALLOC_FEATURE_PROFILES),
         "ax-hal" => Some(AX_HAL_FEATURE_PROFILES),
-        "ax-task" => Some(AX_TASK_FEATURE_PROFILES),
         "ax-driver" => Some(AX_DRIVER_FEATURE_PROFILES),
         "nvme-driver" => Some(NVME_FEATURE_PROFILES),
         "sdmmc-protocol" => Some(SDMMC_RDIF_FEATURE_PROFILES),
@@ -767,13 +710,6 @@ mod tests {
                     stdout: render_test_list(tests),
                 },
             );
-            self
-        }
-
-        fn with_ax_task_discovery(mut self) -> Self {
-            for profile in AX_TASK_FEATURE_PROFILES {
-                self = self.with_listing("ax-task", profile, profile.expected_tests);
-            }
             self
         }
 
@@ -1046,24 +982,23 @@ mod tests {
     #[test]
     fn profile_discovery_mismatch_fails_without_running_that_profile() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["ax-task".to_string()];
-        let profile = &AX_TASK_FEATURE_PROFILES[0];
+        let packages = vec!["ax-hal".to_string()];
+        let profile = &AX_HAL_FEATURE_PROFILES[0];
         let mut runner = FakeCargoRunner::succeeding()
-            .with_ax_task_discovery()
-            .with_listing("ax-task", profile, &["api::std_tests::unexpected"]);
+            .with_ax_hal_discovery()
+            .with_listing("ax-hal", profile, &["unexpected_test"]);
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
-        assert_eq!(failed, vec!["ax-task"]);
+        assert_eq!(failed, vec!["ax-hal"]);
         assert!(!runner.invocations.iter().any(|(_, invocation)| {
-            invocation
-                == &CargoTestInvocation::for_profile("ax-task", profile, CargoTestAction::Run)
+            invocation == &CargoTestInvocation::for_profile("ax-hal", profile, CargoTestAction::Run)
         }));
     }
 
     #[test]
     fn profile_discovery_rejects_zero_tests() {
-        let err = validate_discovered_tests(&AX_TASK_FEATURE_PROFILES[0], "0 tests, 0 benchmarks")
+        let err = validate_discovered_tests(&AX_HAL_FEATURE_PROFILES[0], "0 tests, 0 benchmarks")
             .unwrap_err();
 
         assert!(err.to_string().contains("discovered 0 tests"));
@@ -1094,12 +1029,12 @@ mod tests {
     #[test]
     fn cargo_execution_failures_are_aggregated_across_profiles_and_packages() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["ax-task".to_string(), "ax-api".to_string()];
-        let failed_profile = &AX_TASK_FEATURE_PROFILES[0];
+        let packages = vec!["ax-fs-ng".to_string(), "ax-api".to_string()];
+        let failed_profile = &AX_FS_NG_FEATURE_PROFILES[0];
         let mut runner = FakeCargoRunner::succeeding()
-            .with_ax_task_discovery()
+            .with_profile_discovery("ax-fs-ng", AX_FS_NG_FEATURE_PROFILES)
             .with_status(
-                CargoTestInvocation::for_profile("ax-task", failed_profile, CargoTestAction::Run),
+                CargoTestInvocation::for_profile("ax-fs-ng", failed_profile, CargoTestAction::Run),
                 false,
             )
             .with_status(
@@ -1113,6 +1048,6 @@ mod tests {
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
-        assert_eq!(failed, vec!["ax-task", "ax-api"]);
+        assert_eq!(failed, vec!["ax-fs-ng", "ax-api"]);
     }
 }

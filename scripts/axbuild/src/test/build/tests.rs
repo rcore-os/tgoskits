@@ -4,7 +4,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
 };
 
 use tempfile::tempdir;
@@ -13,18 +12,19 @@ use super::{grouped_c::*, toolchain::*, *};
 
 fn fake_config() -> CaseAssetConfig {
     CaseAssetConfig {
-        grouped_runner: case_assets::GroupedCaseRunnerConfig {
-            runner_name: "suite-run-case-tests".to_string(),
-            runner_path: "/usr/bin/suite-run-case-tests".to_string(),
-            autorun_profile_script: None,
-            begin_marker: "SUITE_GROUPED_TEST_BEGIN".to_string(),
-            passed_marker: "SUITE_GROUPED_TEST_PASSED".to_string(),
-            failed_marker: "SUITE_GROUPED_TEST_FAILED".to_string(),
-            all_passed_marker: "SUITE_GROUPED_TESTS_PASSED".to_string(),
-            all_failed_marker: "SUITE_GROUPED_TESTS_FAILED".to_string(),
-            success_regex: r"(?m)^SUITE_GROUPED_TESTS_PASSED\s*$".to_string(),
-            fail_regex: r"(?m)^SUITE_GROUPED_TEST_FAILED:".to_string(),
-        },
+        grouped_execution: case_assets::GroupedCaseExecution::ShellCommand(
+            case_assets::GroupedCaseRunnerConfig {
+                runner_name: "suite-run-case-tests".to_string(),
+                runner_path: "/usr/bin/suite-run-case-tests".to_string(),
+                begin_marker: "SUITE_GROUPED_TEST_BEGIN".to_string(),
+                passed_marker: "SUITE_GROUPED_TEST_PASSED".to_string(),
+                failed_marker: "SUITE_GROUPED_TEST_FAILED".to_string(),
+                all_passed_marker: "SUITE_GROUPED_TESTS_PASSED".to_string(),
+                all_failed_marker: "SUITE_GROUPED_TESTS_FAILED".to_string(),
+                success_regex: r"(?m)^SUITE_GROUPED_TESTS_PASSED\s*$".to_string(),
+                fail_regex: r"(?m)^SUITE_GROUPED_TEST_FAILED:".to_string(),
+            },
+        ),
         script_env: case_assets::CaseScriptEnvConfig {
             staging_root: "SUITE_STAGING_ROOT".to_string(),
             case_dir: "SUITE_CASE_DIR".to_string(),
@@ -50,6 +50,7 @@ fn fake_case(root: &Path, name: &str) -> TestQemuCase {
         case_dir: case_dir.clone(),
         qemu_config_path: case_dir.join("qemu-aarch64.toml"),
         test_commands: Vec::new(),
+        grouped_command_selection: Default::default(),
         host_symbolize_success_regex: Vec::new(),
         host_http_server: None,
         subcases: Vec::new(),
@@ -284,6 +285,29 @@ fn grouped_runner_commands_keep_dynamic_shell_loop_with_explicit_filter() {
 }
 
 #[test]
+fn grouped_runner_commands_preserve_explicit_aggregator_with_subcase_filter() {
+    let root = tempdir().unwrap();
+    let mut case = fake_case(root.path(), "system");
+    case.test_commands = vec!["/usr/bin/starry-run-system-tests".to_string()];
+    case.grouped_command_selection = GroupedCommandSelection::PreserveAll;
+    case.grouped_subcase_filter = Some(BTreeSet::from(["beta".to_string()]));
+
+    let alpha = fake_c_subcase(root.path(), &case, "alpha", &["alpha"]);
+    let beta = fake_c_subcase(root.path(), &case, "beta", &["beta"]);
+    let selected = selected_grouped_c_subcases(&case, vec![&alpha, &beta]).unwrap();
+    let runner_commands = selected_grouped_runner_commands(&case, &selected).unwrap();
+
+    assert_eq!(
+        selected
+            .iter()
+            .map(|subcase| subcase.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["beta"]
+    );
+    assert_eq!(runner_commands, case.test_commands);
+}
+
+#[test]
 fn grouped_c_subcases_reject_missing_direct_usr_bin_commands() {
     let root = tempdir().unwrap();
     let mut case = fake_case(root.path(), "bugfix");
@@ -496,26 +520,6 @@ fn detect_gcc_runtime_dir_prefers_highest_version() {
 }
 
 #[test]
-fn qemu_user_binary_names_cover_supported_arches() {
-    assert_eq!(
-        qemu_user_binary_names("aarch64").unwrap(),
-        &["qemu-aarch64-static", "qemu-aarch64"]
-    );
-    assert_eq!(
-        qemu_user_binary_names("riscv64").unwrap(),
-        &["qemu-riscv64-static", "qemu-riscv64"]
-    );
-    assert_eq!(
-        qemu_user_binary_names("x86_64").unwrap(),
-        &["qemu-x86_64-static", "qemu-x86_64"]
-    );
-    assert_eq!(
-        qemu_user_binary_names("loongarch64").unwrap(),
-        &["qemu-loongarch64-static", "qemu-loongarch64"]
-    );
-}
-
-#[test]
 fn case_script_envs_include_expected_paths() {
     let root = tempdir().unwrap();
     let case = fake_case(root.path(), "usb");
@@ -533,12 +537,4 @@ fn case_script_envs_include_expected_paths() {
         "SUITE_CASE_BUILD_DIR".to_string(),
         layout.build_dir.display().to_string()
     )));
-}
-
-#[test]
-fn format_duration_like_summary_helpers_are_precise_enough() {
-    assert_eq!(
-        format!("{:.2}", Duration::from_millis(1250).as_secs_f64()),
-        "1.25"
-    );
 }

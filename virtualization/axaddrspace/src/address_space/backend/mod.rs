@@ -70,9 +70,17 @@ impl<Npt: NestedPageTableOps> Clone for Backend<Npt> {
 impl<Npt: NestedPageTableOps> MappingBackend for Backend<Npt> {
     type Addr = GuestPhysAddr;
     type Flags = MappingFlags;
+    type MutationContext = ();
     type PageTable = Npt;
 
-    fn map(&self, start: GuestPhysAddr, size: usize, flags: MappingFlags, pt: &mut Npt) -> bool {
+    fn map(
+        &self,
+        start: GuestPhysAddr,
+        size: usize,
+        flags: MappingFlags,
+        _context: &mut (),
+        pt: &mut Npt,
+    ) -> bool {
         match *self {
             Self::Linear { pa_to_va_delta } => {
                 self.map_linear(start, size, flags, pt, pa_to_va_delta)
@@ -81,7 +89,7 @@ impl<Npt: NestedPageTableOps> MappingBackend for Backend<Npt> {
         }
     }
 
-    fn unmap(&self, start: GuestPhysAddr, size: usize, pt: &mut Npt) -> bool {
+    fn unmap(&self, start: GuestPhysAddr, size: usize, _context: &mut (), pt: &mut Npt) -> bool {
         match *self {
             Self::Linear { pa_to_va_delta } => self.unmap_linear(start, size, pt, pa_to_va_delta),
             Self::Alloc { populate, .. } => self.unmap_alloc(start, size, pt, populate),
@@ -93,6 +101,7 @@ impl<Npt: NestedPageTableOps> MappingBackend for Backend<Npt> {
         start: GuestPhysAddr,
         size: usize,
         new_flags: MappingFlags,
+        _context: &mut (),
         page_table: &mut Npt,
     ) -> bool {
         page_table.protect_region(start, size, new_flags)

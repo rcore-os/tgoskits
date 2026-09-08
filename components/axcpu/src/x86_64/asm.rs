@@ -1,31 +1,40 @@
 //! Wrapper functions for assembly instructions.
 
-use core::arch::{
-    asm,
-    x86_64::{__cpuid, __cpuid_count},
-};
+use core::arch::asm;
+#[cfg(not(feature = "host-test"))]
+use core::arch::x86_64::{__cpuid, __cpuid_count};
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+use core::cell::Cell;
+#[cfg(feature = "host-test")]
+use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
+#[cfg(not(feature = "host-test"))]
+use ax_memory_addr::MemoryAddr;
+use ax_memory_addr::{PhysAddr, VirtAddr};
 #[cfg(feature = "tls")]
 use x86::msr;
+#[cfg(not(feature = "host-test"))]
 use x86::{controlregs, tlb};
-#[cfg(feature = "uspace")]
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+use x86_64::instructions::interrupts;
+#[cfg(all(feature = "uspace", not(feature = "host-test")))]
 use x86_64::instructions::tlb::Pcid;
-use x86_64::instructions::{
-    interrupts,
-    tlb::{InvPcidCommand, flush_pcid},
-};
+#[cfg(not(feature = "host-test"))]
+use x86_64::instructions::tlb::{InvPcidCommand, flush_pcid};
 
+#[cfg(feature = "uspace")]
+use crate::InstalledAddressSpace;
+#[cfg(all(feature = "uspace", not(feature = "host-test")))]
+use crate::InstalledAddressSpaceMode;
 #[cfg(feature = "tls")]
 use crate::KernelTlsBase;
-#[cfg(feature = "uspace")]
-use crate::{InstalledAddressSpace, InstalledAddressSpaceMode};
 
-#[cfg(any(not(feature = "host-test"), feature = "uspace"))]
+#[cfg(not(feature = "host-test"))]
 const PCID_CAPACITY: u32 = 1 << 12;
-#[cfg(feature = "uspace")]
+#[cfg(all(feature = "uspace", not(feature = "host-test")))]
 const CR3_NOFLUSH: u64 = 1 << 63;
 
+#[cfg(not(feature = "host-test"))]
 fn pcid_invpcid_supported() -> bool {
     let basic = __cpuid(1);
     let maximum = __cpuid(0).eax;
@@ -33,12 +42,13 @@ fn pcid_invpcid_supported() -> bool {
     basic.ecx & (1 << 17) != 0 && extended.is_some_and(|features| features.ebx & (1 << 10) != 0)
 }
 
+#[cfg(not(feature = "host-test"))]
 fn pcid_enabled() -> bool {
     // SAFETY: this backend executes at CPL0.
     unsafe { controlregs::cr4() }.contains(controlregs::Cr4::CR4_ENABLE_PCID)
 }
 
-#[cfg(feature = "uspace")]
+#[cfg(all(feature = "uspace", not(feature = "host-test")))]
 fn ensure_pcid_enabled() -> bool {
     if !pcid_invpcid_supported() {
         return false;
@@ -97,49 +107,72 @@ pub fn address_space_tag_capacity(_cpu_count: usize) -> u32 {
 /// must remain alive for the complete activation lease.
 #[cfg(feature = "uspace")]
 pub unsafe fn install_user_address_space(address_space: InstalledAddressSpace) {
-    let root = address_space.root().as_usize() as u64;
-    let tagged = matches!(address_space.mode(), InstalledAddressSpaceMode::Tagged)
-        && u32::from(address_space.hardware_tag()) < PCID_CAPACITY
-        && ensure_pcid_enabled();
-    if tagged {
-        let Ok(pcid) = Pcid::new(address_space.hardware_tag()) else {
-            // Constructor validation and the capacity check make this branch
-            // unreachable, but the fallback keeps an injected identity safe.
+    address_space.validate_architecture_support();
+    #[cfg(feature = "host-test")]
+    HOST_PAGE_TABLE_ROOT.store(address_space.root().as_usize(), Ordering::Release);
+    #[cfg(not(feature = "host-test"))]
+    {
+        let root = address_space.root().as_usize() as u64;
+        let tagged = matches!(address_space.mode(), InstalledAddressSpaceMode::Tagged)
+            && u32::from(address_space.hardware_tag()) < PCID_CAPACITY
+            && ensure_pcid_enabled();
+        if tagged {
+            let Ok(pcid) = Pcid::new(address_space.hardware_tag()) else {
+                // Constructor validation and the capacity check make this branch
+                // unreachable, but the fallback keeps an injected identity safe.
+                unsafe { controlregs::cr3_write(root) };
+                return;
+            };
+            // SAFETY: `ensure_pcid_enabled` confirmed INVPCID and CR4.PCIDE.
+            unsafe { flush_pcid(InvPcidCommand::Single(pcid)) };
+            // SAFETY: the root is aligned, PCID is 12-bit, and CR4.PCIDE is set.
+            unsafe {
+                controlregs::cr3_write(root | u64::from(address_space.hardware_tag()) | CR3_NOFLUSH)
+            };
+        } else {
+            if pcid_enabled() && pcid_invpcid_supported() {
+                // SAFETY: CPUID confirmed INVPCID; this also discharges CPU-offline
+                // and generation-rollover obligations for inactive PCIDs.
+                unsafe { flush_pcid(InvPcidCommand::All) };
+            }
+            // SAFETY: a zero-PCID CR3 write installs the validated aligned root.
             unsafe { controlregs::cr3_write(root) };
-            return;
-        };
-        // SAFETY: `ensure_pcid_enabled` confirmed INVPCID and CR4.PCIDE.
-        unsafe { flush_pcid(InvPcidCommand::Single(pcid)) };
-        // SAFETY: the root is aligned, PCID is 12-bit, and CR4.PCIDE is set.
-        unsafe {
-            controlregs::cr3_write(root | u64::from(address_space.hardware_tag()) | CR3_NOFLUSH)
-        };
-    } else {
-        if pcid_enabled() && pcid_invpcid_supported() {
-            // SAFETY: CPUID confirmed INVPCID; this also discharges CPU-offline
-            // and generation-rollover obligations for inactive PCIDs.
-            unsafe { flush_pcid(InvPcidCommand::All) };
         }
-        // SAFETY: a zero-PCID CR3 write installs the validated aligned root.
-        unsafe { controlregs::cr3_write(root) };
     }
+}
+
+#[cfg(feature = "host-test")]
+static HOST_PAGE_TABLE_ROOT: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+std::thread_local! {
+    static HOST_IRQS_ENABLED: Cell<bool> = const { Cell::new(true) };
 }
 
 /// Allows the current CPU to respond to interrupts.
 #[inline]
 pub fn enable_irqs() {
-    interrupts::enable()
+    #[cfg(all(feature = "host-test", not(target_os = "none")))]
+    HOST_IRQS_ENABLED.set(true);
+    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+    interrupts::enable();
 }
 
 /// Makes the current CPU to ignore interrupts.
 #[inline]
 pub fn disable_irqs() {
-    interrupts::disable()
+    #[cfg(all(feature = "host-test", not(target_os = "none")))]
+    HOST_IRQS_ENABLED.set(false);
+    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+    interrupts::disable();
 }
 
 /// Returns whether the current CPU is allowed to respond to interrupts.
 #[inline]
 pub fn irqs_enabled() -> bool {
+    #[cfg(all(feature = "host-test", not(target_os = "none")))]
+    return HOST_IRQS_ENABLED.get();
+    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     interrupts::are_enabled()
 }
 
@@ -149,6 +182,17 @@ pub fn irqs_enabled() -> bool {
 #[inline]
 pub fn wait_for_irqs() {
     unsafe { asm!("hlt") }
+}
+
+/// Waits for an interrupt after the caller masks local IRQ delivery.
+///
+/// `STI` delays recognition of maskable interrupts until after the following
+/// `HLT`, so a pending wake cannot be consumed between enabling IRQs and
+/// entering the idle state. The function returns with local IRQs enabled.
+#[inline]
+pub fn wait_for_irqs_disabled() {
+    debug_assert!(!irqs_enabled());
+    unsafe { asm!("sti; hlt", options(nostack)) }
 }
 
 /// Halt the current CPU.
@@ -166,6 +210,10 @@ pub fn halt() {
 /// Returns the physical address of the page table root.
 #[inline]
 pub fn read_user_page_table() -> PhysAddr {
+    #[cfg(feature = "host-test")]
+    return PhysAddr::from(HOST_PAGE_TABLE_ROOT.load(Ordering::Acquire));
+
+    #[cfg(not(feature = "host-test"))]
     pa!(unsafe { controlregs::cr3() } as usize).align_down_4k()
 }
 
@@ -193,7 +241,14 @@ pub fn read_kernel_page_table() -> PhysAddr {
 /// This function is unsafe as it changes the virtual memory address space.
 #[inline]
 pub unsafe fn write_user_page_table(root_paddr: PhysAddr) {
-    unsafe { controlregs::cr3_write(root_paddr.as_usize() as _) }
+    #[cfg(feature = "host-test")]
+    {
+        HOST_PAGE_TABLE_ROOT.store(root_paddr.as_usize(), Ordering::Release);
+    }
+    #[cfg(not(feature = "host-test"))]
+    unsafe {
+        controlregs::cr3_write(root_paddr.as_usize() as _)
+    }
 }
 
 /// Writes the register to update the current page table root for kernel space
@@ -222,10 +277,13 @@ pub fn flush_icache_all() {}
 /// entry that maps the given virtual address.
 #[inline]
 pub fn flush_tlb(vaddr: Option<VirtAddr>) {
-    if let Some(vaddr) = vaddr {
-        unsafe { tlb::flush(vaddr.into()) }
-    } else {
-        if pcid_enabled() && pcid_invpcid_supported() {
+    #[cfg(feature = "host-test")]
+    let _ = vaddr;
+    #[cfg(not(feature = "host-test"))]
+    {
+        if let Some(vaddr) = vaddr {
+            unsafe { tlb::flush(vaddr.into()) }
+        } else if pcid_enabled() && pcid_invpcid_supported() {
             // SAFETY: CPUID confirmed INVPCID and CR4.PCIDE is enabled.
             unsafe { flush_pcid(InvPcidCommand::All) }
         } else {
@@ -293,4 +351,30 @@ unsafe extern "C" {
 #[inline]
 pub unsafe fn user_access_ok_page(_vaddr: usize, _access: crate::UserAccessType) -> bool {
     false
+}
+
+#[cfg(all(test, feature = "host-test"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_irq_mask_is_isolated_per_execution_thread() {
+        assert!(irqs_enabled());
+        disable_irqs();
+        assert!(!irqs_enabled());
+
+        std::thread::spawn(|| {
+            assert!(irqs_enabled());
+            disable_irqs();
+            assert!(!irqs_enabled());
+            enable_irqs();
+            assert!(irqs_enabled());
+        })
+        .join()
+        .unwrap();
+
+        assert!(!irqs_enabled());
+        enable_irqs();
+        assert!(irqs_enabled());
+    }
 }

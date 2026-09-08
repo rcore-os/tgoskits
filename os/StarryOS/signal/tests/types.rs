@@ -69,15 +69,6 @@ fn signalinfo_new_user() {
     let si = SignalInfo::new_user(Signo::SIGINT, 9, 9, 0);
     assert_eq!(si.signo(), Signo::SIGINT);
     assert_eq!(si.code(), 9);
-    assert_eq!(
-        unsafe {
-            si.0.__bindgen_anon_1
-                .__bindgen_anon_1
-                ._sifields
-                ._sigchld
-                ._pid
-        },
-        9
-    );
+    assert_eq!(si.pid(), 9);
     assert_eq!(si.errno(), 0);
 }

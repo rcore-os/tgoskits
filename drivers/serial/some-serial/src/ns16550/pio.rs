@@ -38,6 +38,7 @@ impl Ns16550<Port> {
             base,
             clock_freq,
             saved_lsr: super::registers::LineStatusFlags::empty(),
+            tx_load_size: 1,
         }
     }
 }

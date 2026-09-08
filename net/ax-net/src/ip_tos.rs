@@ -9,7 +9,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_lazyinit::LazyLock;
-use ax_sync::Mutex;
+use ax_sync::SpinLock;
 use hashbrown::HashMap;
 use smoltcp::wire::{
     IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpVersion, Ipv4Packet, Ipv6Packet,
@@ -58,14 +58,14 @@ impl EgressIpTosKey {
 }
 
 struct EgressIpTosPolicies {
-    table: Mutex<HashMap<EgressIpTosKey, u8>>,
+    table: SpinLock<HashMap<EgressIpTosKey, u8>>,
     active: AtomicBool,
 }
 
 impl EgressIpTosPolicies {
     fn new() -> Self {
         Self {
-            table: Mutex::new(HashMap::new()),
+            table: SpinLock::new(HashMap::new()),
             active: AtomicBool::new(false),
         }
     }

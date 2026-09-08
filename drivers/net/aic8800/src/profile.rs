@@ -32,12 +32,6 @@ pub(crate) enum MailboxFlowPolicy {
     CreditGated,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DataTxFlowPolicy {
-    Direct,
-    CreditGated,
-}
-
 pub(crate) struct ChipProfile {
     variant: ChipVariant,
     registers: RegisterMap,
@@ -46,7 +40,6 @@ pub(crate) struct ChipProfile {
     transport: TransportGeneration,
     transport_header: TransportHeader,
     mailbox_flow: MailboxFlowPolicy,
-    data_tx_flow: DataTxFlowPolicy,
     firmware: FirmwareProfile,
     functions: &'static [u8],
 }
@@ -95,10 +88,6 @@ impl ChipProfile {
         self.mailbox_flow
     }
 
-    pub(crate) const fn data_tx_flow(&self) -> DataTxFlowPolicy {
-        self.data_tx_flow
-    }
-
     pub(crate) const fn function(&self, index: usize) -> Option<u8> {
         if index < self.functions.len() {
             Some(self.functions[index])
@@ -119,7 +108,6 @@ static AIC8800DC_PROFILE: ChipProfile = ChipProfile {
     transport: TransportGeneration::V1,
     transport_header: TransportHeader::Zero,
     mailbox_flow: MailboxFlowPolicy::Direct,
-    data_tx_flow: DataTxFlowPolicy::Direct,
     firmware: FirmwareProfile::Aic8800Dc,
     functions: DC_FUNCTIONS,
 };
@@ -132,7 +120,6 @@ static AIC8800D80_PROFILE: ChipProfile = ChipProfile {
     transport: TransportGeneration::V3,
     transport_header: TransportHeader::Crc8,
     mailbox_flow: MailboxFlowPolicy::CreditGated,
-    data_tx_flow: DataTxFlowPolicy::CreditGated,
     firmware: FirmwareProfile::Aic8800D80,
     functions: D80_FUNCTIONS,
 };

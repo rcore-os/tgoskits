@@ -20,7 +20,7 @@ ipi = ["dep:ax-ipi"]
 alloc = ["dep:ax-alloc"]
 paging = ["dep:ax-mm"]
 fs = ["dep:ax-fs-ng"]
-net = ["dep:ax-net"]
+net = ["dep:ax-net", "ax-runtime/net"]
 display = ["dep:ax-display"]
 
 
@@ -29,6 +29,7 @@ dummy-if-not-enabled = []
 
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
+ax-cpumask.workspace = true
 ax-display = { workspace = true, optional = true }
 ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true

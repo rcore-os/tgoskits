@@ -154,7 +154,7 @@ impl BlockController for RejectedResourceUpdateController {
                 vec![Box::new(self.emitted_queue.take().ok_or(BlkError::Io)?)],
                 vec![IrqEndpoint::new(
                     1,
-                    1 << 1,
+                    IrqQueueMask::from_queue(1),
                     Box::new(self.emitted_handler.take().ok_or(BlkError::Io)?),
                 )],
             )

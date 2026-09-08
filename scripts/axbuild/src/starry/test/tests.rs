@@ -2,15 +2,14 @@ mod board_tests;
 
 mod host_http_tests;
 
+#[cfg(unix)]
+mod ltp_wrapper_tests;
+
 mod nixos_tests;
 
 mod qemu_discovery_tests;
 
 mod qemu_run_tests;
-
-mod summary_tests;
-
-mod system_case_tests;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -19,7 +18,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
 };
 
 use ostool::run::qemu::QemuConfig;
@@ -203,6 +201,7 @@ fn grouped_host_http_test_case(
         case_dir: case_dir.to_path_buf(),
         qemu_config_path: case_dir.join("qemu-x86_64.toml"),
         test_commands: Vec::new(),
+        grouped_command_selection: Default::default(),
         host_symbolize_success_regex: Vec::new(),
         host_http_server: Some(crate::test::case::HostHttpServerConfig {
             bind: "127.0.0.1".to_string(),
@@ -234,6 +233,7 @@ fn prepared_qemu_case(name: &str, build_config_path: PathBuf) -> PreparedStarryQ
             case_dir: PathBuf::from(format!("/tmp/{name}")),
             qemu_config_path: PathBuf::from(format!("/tmp/{name}/qemu-x86_64.toml")),
             test_commands: Vec::new(),
+            grouped_command_selection: Default::default(),
             host_symbolize_success_regex: Vec::new(),
             host_http_server: None,
             subcases: Vec::new(),

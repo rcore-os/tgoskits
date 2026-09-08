@@ -43,6 +43,7 @@ impl PosixError {
     pub const EOPNOTSUPP: Self = Self::Errno(Errno::EOPNOTSUPP);
     pub const EPERM: Self = Self::Errno(Errno::EPERM);
     pub const ERANGE: Self = Self::Errno(Errno::ERANGE);
+    pub const ESRCH: Self = Self::Errno(Errno::ESRCH);
 
     /// Returns the Linux errno exposed at the C ABI boundary.
     pub fn errno(self) -> Errno {

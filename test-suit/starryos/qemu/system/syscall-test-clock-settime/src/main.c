@@ -423,6 +423,8 @@ static int restore_realtime(const struct timespec *original_realtime,
     return 0;
 }
 
+void check_clock_step_waits(void);
+
 int main(void)
 {
     if (check_ignored_cancel_on_set_combinations()) {
@@ -516,6 +518,9 @@ int main(void)
     }
     close_posix_timer_probe(&posix_probe);
     close_timerfd_probes(&probes);
+    if (result == 0) {
+        check_clock_step_waits();
+    }
     int restore_result = restore_realtime(&original_realtime,
                                           &original_monotonic);
     if (result != 0 || restore_result != 0) {

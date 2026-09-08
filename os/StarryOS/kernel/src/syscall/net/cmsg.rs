@@ -1,11 +1,12 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 
 use linux_raw_sys::net::{SCM_RIGHTS, SOL_SOCKET, cmsghdr};
-use starry_vm::vm_write_slice;
 
 use crate::{
     StarryError, StarryResult,
     file::{FileLike, get_file_like, prepare_file_like},
+    mm::{UserPtr, vm_write_slice},
+    task::UserTaskRef,
 };
 
 pub fn cmsg_space(len: usize) -> Option<usize> {
@@ -56,16 +57,18 @@ impl CMsg {
     }
 }
 
-pub struct CMsgBuilder<'a> {
+pub struct CMsgBuilder<'task, 'a> {
+    current: &'task UserTaskRef,
     user_buffer: *mut u8,
     len: &'a mut usize,
     capacity: usize,
     written: usize,
 }
-impl<'a> CMsgBuilder<'a> {
-    pub fn new(msg: *mut cmsghdr, len: &'a mut usize) -> Self {
+impl<'task, 'a> CMsgBuilder<'task, 'a> {
+    pub fn new(current: &'task UserTaskRef, msg: UserPtr<cmsghdr>, len: &'a mut usize) -> Self {
         Self {
-            user_buffer: msg.cast(),
+            current,
+            user_buffer: msg.as_ptr().cast(),
             capacity: *len,
             len,
             written: 0,
@@ -102,7 +105,7 @@ impl<'a> CMsgBuilder<'a> {
         bytes[..word].copy_from_slice(&length.to_ne_bytes());
         bytes[word..word + 4].copy_from_slice(&level.to_ne_bytes());
         bytes[word + 4..word + 8].copy_from_slice(&ty.to_ne_bytes());
-        vm_write_slice(self.user_address(self.written)?, &bytes)?;
+        vm_write_slice(self.current, self.user_address(self.written)?, &bytes)?;
         Ok(())
     }
 
@@ -133,7 +136,7 @@ impl<'a> CMsgBuilder<'a> {
             let Some(pointer) = offset.and_then(|offset| self.user_address(offset).ok()) else {
                 break;
             };
-            if vm_write_slice(pointer, &prepared.fd().to_ne_bytes()).is_err() {
+            if vm_write_slice(self.current, pointer, &prepared.fd().to_ne_bytes()).is_err() {
                 break;
             }
             prepared.install();
@@ -172,7 +175,7 @@ impl<'a> CMsgBuilder<'a> {
             .written
             .checked_add(size_of::<cmsghdr>())
             .ok_or(StarryError::BadAddress)?;
-        vm_write_slice(self.user_address(offset)?, &bytes)?;
+        vm_write_slice(self.current, self.user_address(offset)?, &bytes)?;
         self.advance(body_len)?;
         Ok(true)
     }

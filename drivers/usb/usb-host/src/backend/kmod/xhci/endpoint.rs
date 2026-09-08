@@ -1062,7 +1062,7 @@ mod tests {
         sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
     };
 
-    use ax_sync::{SpinLock as Mutex, SpinRwLock as RwLock};
+    use ax_sync::SpinRwLock as RwLock;
     use dma_api::{DmaAllocHandle, DmaConstraints, DmaError, DmaMapHandle, DmaOp};
     use usb_if::{endpoint::TransferRequest, err::TransferError};
 
@@ -1153,10 +1153,13 @@ mod tests {
 
     fn test_kernel() -> Kernel {
         Kernel::new(
-            dma_api::DmaDeviceInfo::new(
-                dma_api::DmaDomainId::Direct,
-                dma_api::DmaCoherency::NonCoherent,
-                dma_api::DmaConstraints::new(u64::MAX),
+            dma_api::DeviceDma::new(
+                dma_api::DmaDeviceInfo::new(
+                    dma_api::DmaDomainId::Direct,
+                    dma_api::DmaCoherency::NonCoherent,
+                    dma_api::DmaConstraints::new(u64::MAX),
+                ),
+                &TEST_KERNEL,
             ),
             &TEST_KERNEL,
         )

@@ -4,8 +4,8 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_lazyinit::OnceLock;
-use ax_task::WaitQueue;
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 
 use crate::{
     RuntimeError, RuntimeResult,
@@ -14,17 +14,19 @@ use crate::{
         spsc::{Consumer as SpscConsumer, Producer as SpscProducer},
     },
     sync::SpinLock,
+    task::{CpuId, CpuSet, FixedIrqWorkerSignal, WaitQueue},
 };
 
 const RAW_RX_CAPACITY: usize = 4_096;
 
-static RAW_INPUT: OnceLock<Arc<RawInputRuntime>> = OnceLock::new();
+static RAW_INPUT: OnceLock<RuntimeResult<Arc<RawInputRuntime>>> = OnceLock::new();
 
 struct RawInputRuntime {
     available: SpinLock<Option<SpscConsumer<RxItem>>>,
     overflow: AtomicBool,
     progress: WaitQueue,
     poll_source: Arc<PollSet>,
+    worker_signal: FixedIrqWorkerSignal,
     irq_handle: OnceLock<ax_hal::irq::IrqHandle>,
 }
 
@@ -35,7 +37,7 @@ pub(crate) struct RawConsoleInput {
 }
 
 pub(crate) fn take_input() -> RuntimeResult<RawConsoleInput> {
-    let runtime = RAW_INPUT.get_or_try_init(init_raw_input)?.clone();
+    let runtime = get_or_initialize_result(&RAW_INPUT, init_raw_input)?.clone();
     let consumer = runtime
         .available
         .lock_irqsave()
@@ -47,8 +49,25 @@ pub(crate) fn take_input() -> RuntimeResult<RawConsoleInput> {
     })
 }
 
+fn get_or_initialize_result<T, E: Clone>(
+    cell: &OnceLock<Result<T, E>>,
+    initialize: impl FnOnce() -> Result<T, E>,
+) -> Result<&T, E> {
+    match cell.call_once(initialize) {
+        Ok(value) => Ok(value),
+        Err(error) => Err(error.clone()),
+    }
+}
+
 fn init_raw_input() -> RuntimeResult<Arc<RawInputRuntime>> {
     let irq = ax_hal::console::irq_num().ok_or(RuntimeError::OperationNotSupported)?;
+    let owner_cpu = ax_hal::percpu::this_cpu_id();
+    let task_cpu =
+        u32::try_from(owner_cpu).map_err(|_| RuntimeError::InvalidCpu { cpu: owner_cpu })?;
+    let mut affinity = CpuSet::empty(ax_hal::cpu_num());
+    if !affinity.insert(CpuId::new(task_cpu)) {
+        return Err(RuntimeError::InvalidCpu { cpu: owner_cpu });
+    }
     ax_hal::console::set_input_irq_enabled(false);
     let (mut producer, consumer) = crate::serial::spsc::channel(RAW_RX_CAPACITY);
     let runtime = Arc::new(RawInputRuntime {
@@ -56,18 +75,23 @@ fn init_raw_input() -> RuntimeResult<Arc<RawInputRuntime>> {
         overflow: AtomicBool::new(false),
         progress: WaitQueue::new(),
         poll_source: Arc::new(PollSet::new()),
+        worker_signal: FixedIrqWorkerSignal::new(),
         irq_handle: OnceLock::new(),
     });
     let irq_runtime = runtime.clone();
     let request =
         ax_hal::irq::IrqRequest::new(move |_| handle_raw_input_irq(&mut producer, &irq_runtime))
             .share_mode(ax_hal::irq::ShareMode::Shared)
+            .affinity(ax_hal::irq::IrqAffinity::Fixed(ax_hal::irq::CpuId(
+                owner_cpu,
+            )))
             .auto_enable(ax_hal::irq::AutoEnable::No);
     let handle = match ax_hal::irq::request_irq(irq, request) {
         Ok(handle) => handle,
         Err(error) => {
             // Leave the device source masked: no handler owns this IRQ yet.
-            // `get_or_try_init` permits a later caller to retry registration.
+            // The cached initialization result makes this failure terminal;
+            // no second IRQ owner may be registered over uncertain rollback.
             ax_hal::console::set_input_irq_enabled(false);
             return Err(error.into());
         }
@@ -80,8 +104,40 @@ fn init_raw_input() -> RuntimeResult<Arc<RawInputRuntime>> {
         }
         return Err(error.into());
     }
+    let worker_runtime = runtime.clone();
+    if let Err(error) = crate::task::spawn_raw_with_affinity(
+        move || run_raw_input_worker(worker_runtime),
+        alloc::format!("raw-console-{owner_cpu}-rx"),
+        crate::task::default_task_stack_size(),
+        affinity,
+    ) {
+        ax_hal::console::set_input_irq_enabled(false);
+        if let Err(disable_error) = ax_hal::irq::disable_irq(handle) {
+            warn!(
+                "failed to disable raw console IRQ after worker spawn failure: {disable_error:?}"
+            );
+        }
+        if let Err(free_error) = ax_hal::irq::free_irq(handle) {
+            warn!("failed to release raw console IRQ after worker spawn failure: {free_error:?}");
+        }
+        return Err(error.into());
+    }
     runtime.irq_handle.call_once(|| handle);
     Ok(runtime)
+}
+
+fn run_raw_input_worker(runtime: Arc<RawInputRuntime>) -> ! {
+    loop {
+        runtime
+            .worker_signal
+            .wait()
+            .unwrap_or_else(|error| panic!("raw console IRQ waiter could not quiesce: {error}"));
+        runtime.progress.notify_all();
+        // SAFETY: the IRQ endpoint publishes queue and overflow state before
+        // ringing the fixed worker. Readiness fanout runs here in task context
+        // without holding a lock that a registered waker can re-enter.
+        unsafe { runtime.poll_source.wake(IoEvents::IN) };
+    }
 }
 
 fn handle_raw_input_irq(
@@ -101,8 +157,7 @@ fn handle_raw_input_irq(
     published |= drain_raw_input(producer, runtime, ax_hal::console::read_bytes);
 
     if published || runtime.overflow.load(Ordering::Acquire) {
-        runtime.progress.notify_all_from_irq();
-        runtime.poll_source.wake_from_irq(IoEvents::IN);
+        runtime.worker_signal.notify();
     }
     ax_hal::irq::IrqReturn::Handled
 }
@@ -208,7 +263,25 @@ impl Drop for RawConsoleInput {
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::AtomicUsize;
+
     use super::*;
+
+    #[test]
+    fn raw_input_initialization_failure_is_terminal() {
+        let attempts = AtomicUsize::new(0);
+        let cell = OnceLock::new();
+        for _ in 0..2 {
+            assert_eq!(
+                get_or_initialize_result(&cell, || {
+                    attempts.fetch_add(1, Ordering::Relaxed);
+                    Err::<(), _>(RuntimeError::OperationNotSupported)
+                }),
+                Err(RuntimeError::OperationNotSupported)
+            );
+        }
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn raw_irq_queue_preserves_bytes_and_reports_overflow() {
@@ -218,6 +291,7 @@ mod tests {
             overflow: AtomicBool::new(false),
             progress: WaitQueue::new(),
             poll_source: Arc::new(PollSet::new()),
+            worker_signal: FixedIrqWorkerSignal::new(),
             irq_handle: OnceLock::new(),
         });
         let input = RawConsoleInput {
@@ -251,6 +325,7 @@ mod tests {
             overflow: AtomicBool::new(false),
             progress: WaitQueue::new(),
             poll_source: Arc::new(PollSet::new()),
+            worker_signal: FixedIrqWorkerSignal::new(),
             irq_handle: OnceLock::new(),
         };
         let mut remaining = source_bytes;

@@ -21,11 +21,11 @@ TGOSKits 在 x86_64、AArch64、RISC-V 64 和 LoongArch64 上共享内存图、�
 | 启动物理到虚拟 | 重定位前恒等，重定位后加 `PHYS_VIRT_OFFSET` | 加 `PAGE_OFFSET` | 加 `PAGE_OFFSET` | RAM 加 `PAGE_OFFSET`，输入输出内存使用 `IO_BASE` |
 | 第一阶段页表 | 4 级，48 位虚拟地址 | 4 级，48 位虚拟地址 | 仅 Sv39（3 级）；Sv48x4 只用于第二阶段 | 4 级，48 位虚拟地址 |
 | 页表根 | `CR3` | `TTBRx_EL1` 或 EL2 对应寄存器 | `satp` | 内核 `PGDH`、用户 `PGDL` |
-| 本地页失效 | `invlpg`/全量刷新 | 单地址 `tlbi vaae1is`（IS 广播）/全量 `tlbi vmalle1`（本核） | `sfence.vma` | `invtlb` |
+| 本地页失效 | `invlpg`/全量刷新 | 单地址 `tlbi vaae1`/`vae2`，全量 `tlbi vmalle1`/`alle2` | `sfence.vma` | `invtlb` |
 | 设备内存属性 | 禁用缓存和写穿透页表位 | `MAIR_ELx` + `AttrIndx` | 标准页表位；玄铁扩展提供缓存/强序属性 | `MAT` 编码 |
 | DMA 缓存维护 | 无缓存维护，执行 `mfence` 序列化屏障 | 显式 clean/invalidate 与屏障 | 由平台能力决定 | 当前以数据屏障保证顺序 |
 
-失效经 `TableMeta::flush()` 进入各架构本 CPU 指令；公共层没有 Local/HardwareBroadcast 一类的范围声明类型。多 CPU 地址空间在发布页表修改前，必须由操作系统通过处理器间中断或架构提供的远程 fence 覆盖其他 CPU（`ax_hal::cache::flush_tlb_range_all_cpus()`）；AArch64 的地址级 `tlbi vaae1is` 在 inner-shareable 域硬件广播，但其全量 `tlbi vmalle1` 只作用于本核。
+失效经 `TableMeta::flush()` 进入各架构本 CPU 指令；公共层没有 Local/HardwareBroadcast 一类的范围声明类型。多 CPU 地址空间在发布页表修改前，必须由操作系统通过处理器间中断或架构提供的远程 fence 覆盖其他 CPU（`ax_hal::cache::flush_tlb_range_all_cpus()`）。AArch64 也使用软件 CPU mask 和确认协议：发起 CPU 先发布页表写入，每个目标 CPU 再执行不带 `IS` 后缀的本地 TLBI。
 
 ### 1.2 源码坐标
 
@@ -80,7 +80,7 @@ AArch64 同时存在异常级别和内存属性寄存器差异。启动页表和
 
 `components/axcpu/src/aarch64/paging.rs` 中的私有 `A64MemAttr` 枚举与 `pub(super) const MAIR_VALUE` 是页表项 `AttrIndx` 和 `MAIR_ELx` 的运行时事实来源。当前槽位为 Device-nGnRE、Normal write-back 和 Normal non-cacheable；`MAIR_VALUE` 由 `MAIR_EL1::Attr0/1/2` 字段值在 const 块中计算，结果为 `0x44ff04`。启动侧额外写入第四个 WriteThrough transient 槽位（见[页表分层](./page-table.md#5-aarch64-内存属性)）。
 
-第一阶段按地址失效使用 `tlbi vaae1is`，全量失效使用 `tlbi vmalle1`（无 IS 后缀，仅本核），两者都跟随 DSB/ISB。`vaae1is` 的 `IS` 后缀在 inner-shareable 域广播，因此地址级失效可覆盖共享域内的其他 CPU；全量失效仍需软件 shootdown 配合。
+第一阶段按地址失效在 EL1 使用 `tlbi vaae1`、在 EL2 使用 `tlbi vae2`；全量失效分别使用 `tlbi vmalle1` 和 `tlbi alle2`。这些指令都只处理目标 CPU，并以 `dsb nshst`、`dsb nsh` 和 `isb` 包住本地失效。跨 CPU 路径由发起 CPU 的 `dsb ishst` 先发布页表写入，再通过软件 shootdown mask 让每个目标 CPU 执行本地序列并等待确认；不能把地址级硬件广播和软件确认混用为两个所有者。
 
 DMA 从缓存内存切换为非缓存映射前，平台执行 clean/invalidate 和全系统数据同步屏障，防止旧缓存行在属性切换后回写覆盖设备数据。
 

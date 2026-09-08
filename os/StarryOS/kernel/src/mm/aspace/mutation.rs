@@ -6,9 +6,8 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use ax_memory_addr::{VirtAddr, VirtAddrRange};
 use heapless::Vec as InlineVec;
 
-use crate::sync::{IrqMutex, try_push_irq_vec, try_reserve_irq_vec};
-
 use super::{AddressSpaceId, VmEpoch, objects::FrameLease};
+use crate::sync::{IrqMutex, try_push_irq_vec, try_reserve_irq_vec};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationState {
@@ -142,11 +141,7 @@ impl TlbQuarantine {
     /// cannot reserve storage.  Dropping a frame on this path would release
     /// physical memory while an old translation may still be live, so there
     /// is deliberately no infallible or fire-and-forget variant of this API.
-    pub fn defer(
-        &self,
-        frame: FrameLease,
-        request: TlbRequest,
-    ) -> Result<(), QuarantineFailure> {
+    pub fn defer(&self, frame: FrameLease, request: TlbRequest) -> Result<(), QuarantineFailure> {
         self.try_defer(frame, request)
     }
 
@@ -202,9 +197,10 @@ impl TlbQuarantine {
     }
 
     pub fn contains_request(&self, space_id: AddressSpaceId, epoch: VmEpoch) -> bool {
-        self.entries.lock().iter().any(|entry| {
-            entry.request.space_id == space_id && entry.request.epoch == epoch
-        })
+        self.entries
+            .lock()
+            .iter()
+            .any(|entry| entry.request.space_id == space_id && entry.request.epoch == epoch)
     }
 
     /// Removes entries whose obligations were already satisfied by a local
@@ -348,12 +344,9 @@ impl TlbRequest {
         if self.ranges.is_empty() || other.ranges.is_empty() {
             return true;
         }
-        self.ranges.iter().any(|left| {
-            other
-                .ranges
-                .iter()
-                .any(|right| left.overlaps(*right))
-        })
+        self.ranges
+            .iter()
+            .any(|left| other.ranges.iter().any(|right| left.overlaps(*right)))
     }
 }
 
@@ -485,15 +478,22 @@ impl MutationGate {
     /// Copies one blocking request into inline storage. The fault owner can
     /// cancel its unpublished candidate, leave all MM locks, and service this
     /// older obligation before retrying; no heap snapshot is required.
-    pub(super) fn pending_overlap_request(&self, mutation: &PreparedMutation) -> Option<TlbRequest> {
+    pub(super) fn pending_overlap_request(
+        &self,
+        mutation: &PreparedMutation,
+    ) -> Option<TlbRequest> {
         if mutation.precondition != MutationPrecondition::NoPendingTlbOverlap {
             return None;
         }
-        self.pending.lock().iter().find(|pending| {
+        self.pending
+            .lock()
+            .iter()
+            .find(|pending| {
                 pending
                     .tlb_obligation
                     .overlaps(&mutation.receipt.tlb_obligation)
-            }).map(|pending| pending.tlb_obligation.clone())
+            })
+            .map(|pending| pending.tlb_obligation.clone())
     }
 
     /// Begins a mutation whose final shootdown targets are frozen at commit.
@@ -507,11 +507,7 @@ impl MutationGate {
         space_id: AddressSpaceId,
         active_targets: Arc<AtomicUsize>,
     ) -> PreparedMutation {
-        PreparedMutation::new_with_active_targets(
-            space_id,
-            self.current_epoch(),
-            active_targets,
-        )
+        PreparedMutation::new_with_active_targets(space_id, self.current_epoch(), active_targets)
     }
 
     /// Publishes a fully applied transaction and advances the epoch.
@@ -520,10 +516,7 @@ impl MutationGate {
     /// the receipt and complete the acknowledgements before reclaiming old
     /// mappings.  `AddrSpace` uses a zero-target request for its current local
     /// page-table path and therefore takes this fast path synchronously.
-    pub fn commit(
-        &self,
-        mut mutation: PreparedMutation,
-    ) -> Result<MutationReceipt, MutationError> {
+    pub fn commit(&self, mut mutation: PreparedMutation) -> Result<MutationReceipt, MutationError> {
         #[cfg(test)]
         if self
             .fail_next_commit_before_publish
@@ -617,11 +610,7 @@ impl MutationGate {
             if pending.len() > requests.capacity() {
                 continue;
             }
-            requests.extend(
-                pending
-                    .iter()
-                    .map(|receipt| receipt.tlb_obligation.clone()),
-            );
+            requests.extend(pending.iter().map(|receipt| receipt.tlb_obligation.clone()));
             return Ok(requests);
         }
     }
@@ -629,11 +618,7 @@ impl MutationGate {
     /// Returns one immutable shootdown request without exposing the pending
     /// receipt or its mutation state.  The address-space owner uses this to
     /// hand the obligation to the architecture TLB service after publication.
-    pub fn pending_request(
-        &self,
-        space_id: AddressSpaceId,
-        epoch: VmEpoch,
-    ) -> Option<TlbRequest> {
+    pub fn pending_request(&self, space_id: AddressSpaceId, epoch: VmEpoch) -> Option<TlbRequest> {
         self.pending
             .lock()
             .iter()
@@ -653,8 +638,7 @@ impl MutationGate {
     ) -> Result<Option<MutationReceipt>, MutationError> {
         let mut pending = self.pending.lock();
         let Some(index) = pending.iter().position(|receipt| {
-            receipt.tlb_obligation.space_id == space_id
-                && receipt.new_epoch == epoch
+            receipt.tlb_obligation.space_id == space_id && receipt.new_epoch == epoch
         }) else {
             return Err(MutationError::WrongState);
         };
@@ -669,10 +653,7 @@ impl MutationGate {
         receipt.state = MutationState::Retired;
         receipt
             .events
-            .push(PublishEvent::MappingRetired {
-                space_id,
-                epoch,
-            })
+            .push(PublishEvent::MappingRetired { space_id, epoch })
             .expect("a receipt emits one retirement event");
         #[cfg(test)]
         {
@@ -680,7 +661,6 @@ impl MutationGate {
         }
         Ok(Some(receipt))
     }
-
 }
 
 #[derive(Debug, Clone)]
@@ -943,18 +923,25 @@ mod tests {
         let epoch = VmEpoch::new(3);
         let request = TlbRequest::new(space_id, epoch, 0b11);
         let quarantine = TlbQuarantine::default();
-        quarantine.defer(
-            FrameLease::new(ax_memory_addr::PhysAddr::from_usize(0x2000)),
-            request,
-        ).expect("quarantine insertion must retain frame ownership");
+        quarantine
+            .defer(
+                FrameLease::new(ax_memory_addr::PhysAddr::from_usize(0x2000)),
+                request,
+            )
+            .expect("quarantine insertion must retain frame ownership");
         assert_eq!(quarantine.pending(), 1);
-        assert!(quarantine
-            .acknowledge(space_id, epoch, 0)
-            .unwrap()
-            .is_empty());
+        assert!(
+            quarantine
+                .acknowledge(space_id, epoch, 0)
+                .unwrap()
+                .is_empty()
+        );
         let released = quarantine.acknowledge(space_id, epoch, 1).unwrap();
         assert_eq!(released.len(), 1);
-        assert_eq!(released[0].paddr(), ax_memory_addr::PhysAddr::from_usize(0x2000));
+        assert_eq!(
+            released[0].paddr(),
+            ax_memory_addr::PhysAddr::from_usize(0x2000)
+        );
         assert_eq!(quarantine.pending(), 0);
     }
 
@@ -962,10 +949,12 @@ mod tests {
     #[cfg_attr(not(axtest), test)]
     fn quarantine_does_not_retain_local_flushes() {
         let quarantine = TlbQuarantine::default();
-        quarantine.defer(
-            FrameLease::new(ax_memory_addr::PhysAddr::from_usize(0x3000)),
-            TlbRequest::new(AddressSpaceId::allocate(), VmEpoch::new(1), 0),
-        ).expect("completed local flush needs no queue allocation");
+        quarantine
+            .defer(
+                FrameLease::new(ax_memory_addr::PhysAddr::from_usize(0x3000)),
+                TlbRequest::new(AddressSpaceId::allocate(), VmEpoch::new(1), 0),
+            )
+            .expect("completed local flush needs no queue allocation");
         assert_eq!(quarantine.pending(), 0);
         assert!(quarantine.requests().unwrap().is_empty());
     }
@@ -976,12 +965,12 @@ mod tests {
         let gate = MutationGate::new();
         let id = AddressSpaceId::allocate();
         let mutation = gate.begin(id, 0b11);
-        assert_eq!(gate.commit(mutation).unwrap_err(), MutationError::TlbPending);
+        assert_eq!(
+            gate.commit(mutation).unwrap_err(),
+            MutationError::TlbPending
+        );
         assert_eq!(gate.pending_count(), 1);
-        assert!(gate
-            .acknowledge(id, VmEpoch::new(1), 0)
-            .unwrap()
-            .is_none());
+        assert!(gate.acknowledge(id, VmEpoch::new(1), 0).unwrap().is_none());
         let receipt = gate
             .acknowledge(id, VmEpoch::new(1), 1)
             .unwrap()
@@ -1002,7 +991,10 @@ mod tests {
         // applying. The old prepare-time snapshot omitted it.
         active_targets.fetch_or(0b0100, Ordering::Release);
 
-        assert_eq!(gate.commit(mutation).unwrap_err(), MutationError::TlbPending);
+        assert_eq!(
+            gate.commit(mutation).unwrap_err(),
+            MutationError::TlbPending
+        );
         let request = gate
             .pending_request(id, VmEpoch::new(1))
             .expect("published mutation retains its shootdown request");
@@ -1021,7 +1013,10 @@ mod tests {
             );
         }
 
-        assert_eq!(gate.commit(mutation).unwrap_err(), MutationError::TlbPending);
+        assert_eq!(
+            gate.commit(mutation).unwrap_err(),
+            MutationError::TlbPending
+        );
         let request = gate
             .pending_request(id, VmEpoch::new(1))
             .expect("published mutation retains its shootdown request");
@@ -1064,20 +1059,26 @@ mod tests {
         let space_id = AddressSpaceId::allocate();
         let epoch = VmEpoch::new(9);
         let quarantine = TlbQuarantine::default();
-        quarantine.defer(
-            FrameLease::new(ax_memory_addr::PhysAddr::from_usize(0x4000)),
-            TlbRequest::new(space_id, epoch, 1usize << 3),
-        ).expect("quarantine insertion must retain frame ownership");
+        quarantine
+            .defer(
+                FrameLease::new(ax_memory_addr::PhysAddr::from_usize(0x4000)),
+                TlbRequest::new(space_id, epoch, 1usize << 3),
+            )
+            .expect("quarantine insertion must retain frame ownership");
 
-        assert!(quarantine
-            .acknowledge(space_id, epoch, 2)
-            .unwrap()
-            .is_empty());
+        assert!(
+            quarantine
+                .acknowledge(space_id, epoch, 2)
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(quarantine.pending(), 1);
-        assert!(quarantine
-            .acknowledge(space_id, VmEpoch::new(10), 3)
-            .unwrap()
-            .is_empty());
+        assert!(
+            quarantine
+                .acknowledge(space_id, VmEpoch::new(10), 3)
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(quarantine.pending(), 1);
 
         let released = quarantine.acknowledge(space_id, epoch, 3).unwrap();

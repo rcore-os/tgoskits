@@ -13,7 +13,6 @@ pub(crate) struct CpuBindingEpoch(usize);
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CurrentCpuBinding {
     pub(crate) area: CpuAreaRef,
-    pub(crate) epoch: CpuBindingEpoch,
 }
 
 const CPU_PHASE_MASK: usize = 0b11;
@@ -22,8 +21,15 @@ const CPU_BINDING: usize = 0b01;
 const CPU_BOUND: usize = 0b10;
 const CPU_UNBINDING: usize = 0b11;
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExecutionContextKind {
+    Owned,
+    PermanentBoot,
+}
+
 const fn execution_context_reserved_size() -> usize {
-    64 - 4 * size_of::<usize>() - size_of::<PreemptionState>()
+    64 - 4 * size_of::<usize>() - size_of::<PreemptionState>() - size_of::<ExecutionContextKind>()
 }
 
 /// Pinned architecture header for one execution context.
@@ -37,6 +43,7 @@ pub struct ExecutionContextHeader {
     binding_epoch: AtomicUsize,
     architecture_state: [AtomicUsize; 2],
     preemption_state: PreemptionState,
+    kind: ExecutionContextKind,
     reserved: [u8; execution_context_reserved_size()],
 }
 
@@ -48,6 +55,7 @@ impl ExecutionContextHeader {
             binding_epoch: AtomicUsize::new(CPU_UNBOUND),
             architecture_state: [const { AtomicUsize::new(0) }; 2],
             preemption_state: PreemptionState::new(),
+            kind: ExecutionContextKind::Owned,
             reserved: [0; execution_context_reserved_size()],
         }
     }
@@ -58,6 +66,7 @@ impl ExecutionContextHeader {
             binding_epoch: AtomicUsize::new(CPU_BOUND),
             architecture_state: [const { AtomicUsize::new(0) }; 2],
             preemption_state: PreemptionState::bootstrap_disabled(),
+            kind: ExecutionContextKind::PermanentBoot,
             reserved: [0; execution_context_reserved_size()],
         }
     }
@@ -73,8 +82,19 @@ impl ExecutionContextHeader {
             binding_epoch: AtomicUsize::new(CPU_UNBOUND),
             architecture_state: [const { AtomicUsize::new(0) }; 2],
             preemption_state: PreemptionState::bootstrap_disabled(),
+            kind: ExecutionContextKind::Owned,
             reserved: [0; execution_context_reserved_size()],
         }
+    }
+
+    /// Reports whether this is a CPU area's permanent pre-runtime placeholder.
+    ///
+    /// The kind is immutable after construction, so a current-context reader
+    /// may classify its already-live header without sampling CPU-local state.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub const fn is_permanent_boot_context(&self) -> bool {
+        matches!(self.kind, ExecutionContextKind::PermanentBoot)
     }
 
     /// Returns the stable CPU area while this header is fully bound.
@@ -129,14 +149,27 @@ impl ExecutionContextHeader {
     }
 
     pub(crate) fn cpu_binding(&self) -> Option<CurrentCpuBinding> {
-        let (area_base, epoch) = self.raw_cpu_binding()?;
+        let (area_base, _) = self.raw_cpu_binding()?;
         // SAFETY: only bind_cpu can publish this field, and it accepts an
         // already validated shutdown-lifetime CpuAreaRef.
         let area = unsafe { CpuAreaRef::from_initialized_base(area_base) }.ok()?;
-        Some(CurrentCpuBinding { area, epoch })
+        Some(CurrentCpuBinding { area })
+    }
+
+    pub(crate) fn is_bound_to(&self, area: CpuAreaRef) -> bool {
+        self.binding_epoch_for_area(area).is_some()
+    }
+
+    pub(crate) fn binding_epoch_for_area(&self, area: CpuAreaRef) -> Option<CpuBindingEpoch> {
+        // The caller already owns a validated CpuAreaRef. Preserve the stable
+        // epoch observation without reconstructing the same area identity.
+        self.raw_cpu_binding()
+            .and_then(|(area_base, epoch)| (area_base == area.base()).then_some(epoch))
     }
 
     pub(crate) fn raw_cpu_binding(&self) -> Option<(usize, CpuBindingEpoch)> {
+        #[cfg(feature = "host-test")]
+        crate::register::host_test::record_binding_observation();
         loop {
             let before = self.binding_epoch.load(Ordering::Acquire);
             if before & CPU_PHASE_MASK != CPU_BOUND {
@@ -156,7 +189,6 @@ impl ExecutionContextHeader {
         NonNull::from(self.get_ref())
     }
 
-    #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
     pub(crate) const fn preemption_state(&self) -> &PreemptionState {
         &self.preemption_state
     }
@@ -184,10 +216,39 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
+    use core::mem::MaybeUninit;
+
     use super::*;
+    use crate::{CpuAreaPrefix, CpuIndex};
+
+    fn modeled_area(cpu_index: usize) -> CpuAreaRef {
+        let storage = Box::leak(Box::new(MaybeUninit::<CpuAreaPrefix>::uninit()));
+        let base = storage.as_mut_ptr() as usize;
+        storage.write(
+            CpuAreaPrefix::initialize(CpuIndex::try_from(cpu_index).unwrap(), base).unwrap(),
+        );
+        // SAFETY: the initialized fixture is leaked for the process lifetime.
+        unsafe { CpuAreaRef::from_initialized_base(base) }.unwrap()
+    }
 
     #[test]
     fn execution_context_header_starts_with_cpu_binding() {
         assert_eq!(EXECUTION_CONTEXT_CPU_BASE_OFFSET, 0);
+    }
+
+    #[test]
+    fn stable_binding_matches_only_the_published_area() {
+        let first = modeled_area(0);
+        let second = modeled_area(1);
+        let header = Box::pin(ExecutionContextHeader::new());
+
+        // SAFETY: the pinned fixture is unbound and this test owns it.
+        let epoch = unsafe { header.as_ref().bind_cpu(first) }.unwrap();
+        assert!(header.is_bound_to(first));
+        assert!(!header.is_bound_to(second));
+
+        // SAFETY: the test owns the same live binding epoch.
+        unsafe { header.as_ref().unbind_cpu(epoch) }.unwrap();
+        assert!(!header.is_bound_to(first));
     }
 }

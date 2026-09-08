@@ -12,8 +12,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RssKind {
-    Anon = 1,
-    File = 2,
+    Anon  = 1,
+    File  = 2,
     Shmem = 3,
 }
 

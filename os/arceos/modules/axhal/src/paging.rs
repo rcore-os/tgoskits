@@ -44,6 +44,8 @@ impl FrameAllocator for PagingAllocator {
 pub type PageTable = page_table_generic::PageTable<ArchPagingMeta, PagingAllocator>;
 /// A non-owning reference to an architecture-specific page table.
 pub type PageTableRef = page_table_generic::PageTableRef<ArchPagingMeta, PagingAllocator>;
+/// Detached intermediate table frames awaiting stage-1 TLB confirmation.
+pub type DeferredPageTableFrames = page_table_generic::DeferredPageTableFrames<PagingAllocator>;
 /// Allocation-free plan for preparing one architecture-specific page-table leaf.
 pub type PageTableMapPlan = page_table_generic::PageTableMapPlan<ArchPagingMeta, PagingAllocator>;
 /// Move-only, preallocated page-table suffix for one exact leaf.

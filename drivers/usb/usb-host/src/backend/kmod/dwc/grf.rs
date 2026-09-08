@@ -504,7 +504,7 @@ mod tests {
         // 测试 USB3OTG_CFG 位字段
         let value =
             USB3OTG_CFG::PIPE_ENABLE::Enable.value + USB3OTG_CFG::U3_PORT_DISABLE::Enable.value;
-        assert_eq!(value, (1 << 15) | (0 << 8));
+        assert_eq!(value, 1 << 15);
     }
 
     #[test]

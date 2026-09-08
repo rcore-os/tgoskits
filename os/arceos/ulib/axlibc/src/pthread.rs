@@ -2,7 +2,11 @@ use core::ffi::{c_int, c_void};
 
 use ax_posix_api as api;
 
-use crate::{ctypes, utils::e};
+use crate::ctypes;
+
+fn pthread_result(ret: c_int) -> c_int {
+    if ret < 0 { -ret } else { ret }
+}
 
 /// Returns the `pthread` struct of current thread.
 #[unsafe(no_mangle)]
@@ -21,7 +25,7 @@ pub unsafe extern "C" fn pthread_create(
     start_routine: extern "C" fn(arg: *mut c_void) -> *mut c_void,
     arg: *mut c_void,
 ) -> c_int {
-    unsafe { e(api::sys_pthread_create(res, attr, start_routine, arg)) }
+    unsafe { pthread_result(api::sys_pthread_create(res, attr, start_routine, arg)) }
 }
 
 /// Exits the current thread. The value `retval` will be returned to the joiner.
@@ -36,7 +40,13 @@ pub unsafe extern "C" fn pthread_join(
     thread: ctypes::pthread_t,
     retval: *mut *mut c_void,
 ) -> c_int {
-    unsafe { e(api::sys_pthread_join(thread, retval)) }
+    unsafe { pthread_result(api::sys_pthread_join(thread, retval)) }
+}
+
+/// Marks a joinable thread detached so it is reclaimed automatically.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pthread_detach(thread: ctypes::pthread_t) -> c_int {
+    pthread_result(api::sys_pthread_detach(thread))
 }
 
 /// Initialize a mutex.
@@ -45,29 +55,29 @@ pub unsafe extern "C" fn pthread_mutex_init(
     mutex: *mut ctypes::pthread_mutex_t,
     attr: *const ctypes::pthread_mutexattr_t,
 ) -> c_int {
-    e(api::sys_pthread_mutex_init(mutex, attr))
+    pthread_result(api::sys_pthread_mutex_init(mutex, attr))
 }
 
 /// Lock the given mutex.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pthread_mutex_lock(mutex: *mut ctypes::pthread_mutex_t) -> c_int {
-    e(api::sys_pthread_mutex_lock(mutex))
+    pthread_result(api::sys_pthread_mutex_lock(mutex))
 }
 
 /// Try locking the given mutex.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pthread_mutex_trylock(mutex: *mut ctypes::pthread_mutex_t) -> c_int {
-    e(api::sys_pthread_mutex_trylock(mutex))
+    pthread_result(api::sys_pthread_mutex_trylock(mutex))
 }
 
 /// Unlock the given mutex.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pthread_mutex_unlock(mutex: *mut ctypes::pthread_mutex_t) -> c_int {
-    e(api::sys_pthread_mutex_unlock(mutex))
+    pthread_result(api::sys_pthread_mutex_unlock(mutex))
 }
 
 /// Destroy the given mutex.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pthread_mutex_destroy(mutex: *mut ctypes::pthread_mutex_t) -> c_int {
-    e(api::sys_pthread_mutex_destroy(mutex))
+    pthread_result(api::sys_pthread_mutex_destroy(mutex))
 }

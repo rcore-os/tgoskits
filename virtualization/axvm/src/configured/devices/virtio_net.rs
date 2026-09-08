@@ -255,12 +255,12 @@ struct AxvmWakeTarget {
 
 impl WakeTarget for AxvmWakeTarget {
     fn notify(&self) {
-        // Wake only; vCPU0 polls DMA devices at the top of its next run-loop
-        // iteration. Polling synchronously from the sender's device access
-        // would let two VM device runtimes re-enter each other.
-        if let Err(error) = crate::notify_vm_vcpu(self.vm_id, 0) {
+        // Publish the poll request before kicking vCPU0. Polling synchronously
+        // from the sender's device access would let two VM device runtimes
+        // re-enter each other.
+        if let Err(error) = crate::runtime::notify_vm(self.vm_id) {
             warn!(
-                "failed to notify VM[{}] for virtio-net RX: {error:#}",
+                "failed to kick VM[{}] for virtio-net RX: {error:#}",
                 self.vm_id
             );
         }

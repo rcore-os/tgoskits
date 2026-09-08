@@ -94,7 +94,11 @@ impl BlockController for LateRollbackController {
                 Ok(ControllerUpdate::with_resources(
                     ControllerState::Ready,
                     vec![self.late_queue.take().ok_or(BlkError::Io)?],
-                    vec![IrqEndpoint::new(0, 1 << 1, Box::new(SpuriousHandler))],
+                    vec![IrqEndpoint::new(
+                        0,
+                        IrqQueueMask::from_queue(1),
+                        Box::new(SpuriousHandler),
+                    )],
                 ))
             }
             ControllerEvent::Shutdown => Ok(ControllerUpdate::state(ControllerState::Shutdown)),

@@ -1,10 +1,11 @@
-use core::{future::poll_fn, task::Poll};
-
-use ax_task::future::{block_on, interruptible};
 use axfs_ng_vfs::{VfsError, VfsResult};
 
 use super::IdentityTraceBuffer;
-use crate::{pseudofs::DirectRwFsFileOps, sync::Mutex};
+use crate::{
+    pseudofs::DirectRwFsFileOps,
+    sync::PiMutex,
+    task::{current_user_task, future::block_on_user},
+};
 
 /// File representing the trace pipe.
 ///
@@ -14,12 +15,12 @@ use crate::{pseudofs::DirectRwFsFileOps, sync::Mutex};
 /// this node cannot faithfully reserve and release a reader slot yet. Keep the
 /// limitation documented here until tracefs files can move their read state to
 /// open-file private data.
-pub struct TracePipeFile(Mutex<super::TextDrain>);
+pub struct TracePipeFile(PiMutex<super::TextDrain>);
 
 impl TracePipeFile {
     /// Creates a new `TracePipeFile` instance.
     pub const fn new() -> Self {
-        Self(Mutex::new(super::TextDrain::new()))
+        Self(PiMutex::new(super::TextDrain::new()))
     }
 
     fn readable(&self) -> bool {
@@ -45,23 +46,15 @@ impl DirectRwFsFileOps for TracePipeFile {
             }
 
             // wait for new data
-            let _result = block_on(interruptible(poll_fn(|cx| match self.readable() {
-                true => Poll::Ready(true),
-                false => {
-                    // Registration happens from trace_pipe read task context.
-                    unsafe {
-                        super::TRACE_STATE
-                            .pipe_event
-                            .register(cx.waker(), axpoll::IoEvents::IN)
-                    };
-                    if self.readable() {
-                        Poll::Ready(true)
-                    } else {
-                        Poll::Pending
-                    }
-                }
-            })))
-            .map_err(|_| VfsError::Interrupted)?;
+            let task = current_user_task();
+            let _result = block_on_user(
+                &task,
+                crate::task::wait_on_pollset(&super::TRACE_STATE.pipe_event, || {
+                    self.readable().then_some(true)
+                }),
+            )
+            .into_result()
+            .map_err(|error| VfsError::from(crate::StarryError::from(error)))?;
         };
         Ok(read_len)
     }

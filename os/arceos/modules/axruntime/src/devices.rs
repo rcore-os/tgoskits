@@ -79,23 +79,16 @@ pub(crate) fn init_net() {
     let config = parse_network_config();
 
     if !rdrive::is_initialized() {
-        ax_net::init_network(None, alloc::vec::Vec::new(), config);
-        return;
+        panic!("network initialization requires the platform device registry");
     }
-
     let devices = collect_net_devices();
-    if devices.is_empty() {
-        ax_net::init_network(None, alloc::vec::Vec::new(), config);
-        return;
-    }
-    let (runtime, ports) = ax_net::NetworkRuntimeBuilder::new(
-        devices,
-        &crate::irq::NET_IRQ_REGISTRAR,
-        ax_hal::cpu_num(),
-    )
-    .build()
-    .unwrap_or_else(|error| panic!("failed to initialize network queue runtime: {error}"));
-    ax_net::init_network(Some(runtime), ports, config);
+    let active_cpus = crate::task::active_cpu_set()
+        .expect("network initialization requires an online scheduler CPU");
+    let (runtime, ports) =
+        ax_net::NetworkRuntimeBuilder::new(devices, &crate::irq::NET_IRQ_REGISTRAR, active_cpus)
+            .build()
+            .unwrap_or_else(|error| panic!("failed to initialize network queue runtime: {error}"));
+    ax_net::init_network(runtime, ports, config);
 }
 
 #[cfg(all(feature = "net", feature = "fs"))]
@@ -153,10 +146,27 @@ fn collect_net_devices() -> alloc::vec::Vec<ax_net::NetworkDeviceInput> {
 #[cfg(feature = "vsock")]
 pub(crate) fn init_vsock() {
     if !rdrive::is_initialized() {
-        ax_net::init_vsock(alloc::vec::Vec::new());
-        return;
+        panic!("vsock initialization requires the platform device registry");
     }
     let devices = ax_driver::vsock::take_vsock_devices()
         .unwrap_or_else(|err| panic!("failed to open vsock devices: {err:?}"));
-    ax_net::init_vsock(devices);
+    let mut inputs = alloc::vec::Vec::with_capacity(devices.len());
+    for device in devices {
+        let irq = crate::irq::resolve_binding_irq(device.irq).unwrap_or_else(|error| {
+            panic!(
+                "failed to resolve vsock device {} IRQ binding: {error:?}",
+                device.name
+            )
+        });
+        inputs.push(ax_net::VsockDeviceInput {
+            name: device.name,
+            device: device.device,
+            irq,
+            endpoints: device.endpoints,
+        });
+    }
+    let active_cpus = crate::task::active_cpu_set()
+        .expect("vsock initialization requires an online scheduler CPU");
+    ax_net::init_vsock(inputs, &crate::irq::NET_IRQ_REGISTRAR, active_cpus)
+        .unwrap_or_else(|error| panic!("failed to initialize vsock IRQ runtime: {error}"));
 }

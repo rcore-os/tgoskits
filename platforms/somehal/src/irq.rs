@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 
 use ax_sync::{RawSpinLockGuard, SpinLock, SpinLockIrqSaveGuard};
 pub use rdif_intc;
@@ -84,6 +84,32 @@ impl IrqRouteLock {
 }
 
 static IRQ_ROUTES: IrqRouteLock = IrqRouteLock::new();
+const ROUTED_PARENT_DOMAIN_WORDS: usize = (u16::MAX as usize + 1) / usize::BITS as usize;
+static ROUTED_PARENT_DOMAINS: [AtomicUsize; ROUTED_PARENT_DOMAIN_WORDS] =
+    [const { AtomicUsize::new(0) }; ROUTED_PARENT_DOMAIN_WORDS];
+
+fn routed_parent_domain_slot(domain: IrqDomainId) -> (&'static AtomicUsize, usize) {
+    let domain = usize::from(domain.0);
+    (
+        &ROUTED_PARENT_DOMAINS[domain / usize::BITS as usize],
+        1usize << (domain % usize::BITS as usize),
+    )
+}
+
+fn domain_has_irq_routes(domain: IrqDomainId) -> bool {
+    let (word, mask) = routed_parent_domain_slot(domain);
+    word.load(Ordering::Acquire) & mask != 0
+}
+
+fn publish_routed_parent_domain(domain: IrqDomainId) {
+    let (word, mask) = routed_parent_domain_slot(domain);
+    word.fetch_or(mask, Ordering::Release);
+}
+
+fn withdraw_routed_parent_domain(domain: IrqDomainId) {
+    let (word, mask) = routed_parent_domain_slot(domain);
+    word.fetch_and(!mask, Ordering::Release);
+}
 
 fn irq_domains() -> RawSpinLockGuard<'static, Vec<IrqDomain>> {
     // SAFETY: callers preserve the legacy raw-lock contract and exclude local
@@ -287,6 +313,16 @@ impl ActiveIrq {
         resolve_irq_route(Plat::active_irq_id(&self.inner))
     }
 
+    /// Acknowledges the controller state that must be cleared before an IPI
+    /// handler may make its logical delivery edge reusable.
+    ///
+    /// The remaining controller completion, if any, is still owned by this
+    /// token and is performed when it is dropped.
+    pub fn acknowledge_ipi(&mut self) {
+        debug_assert_eq!(self.id(), ipi_irq());
+        Plat::acknowledge_ipi(&mut self.inner);
+    }
+
     /// Detaches one RISC-V PLIC completion from this trap transaction.
     ///
     /// The returned claim captures the PLIC context that performed the claim;
@@ -356,6 +392,7 @@ pub fn map_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
         return Err(IrqError::Busy);
     }
     routes.push(IrqRoute { parent, leaf });
+    publish_routed_parent_domain(parent.domain);
     Ok(())
 }
 
@@ -392,6 +429,12 @@ pub fn unmap_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
         return Err(IrqError::InvalidIrq);
     };
     routes.swap_remove(index);
+    if routes
+        .iter()
+        .all(|route| route.parent.domain != parent.domain)
+    {
+        withdraw_routed_parent_domain(parent.domain);
+    }
     Ok(())
 }
 
@@ -401,16 +444,17 @@ pub fn unmap_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
 /// masked or before it is enabled. The interrupt path only reads the stable
 /// mapping and never performs rdrive lookup, allocation, or free.
 pub fn resolve_irq_route(parent: IrqId) -> IrqId {
-    IRQ_ROUTES
-        .lock()
+    if !domain_has_irq_routes(parent.domain) {
+        return parent;
+    }
+    irq_routes()
         .iter()
         .find(|route| route.parent == parent)
         .map_or(parent, |route| route.leaf)
 }
 
 pub fn parent_irq_for_leaf(leaf: IrqId) -> Option<IrqId> {
-    IRQ_ROUTES
-        .lock()
+    irq_routes()
         .iter()
         .find(|route| route.leaf == leaf)
         .map(|route| route.parent)

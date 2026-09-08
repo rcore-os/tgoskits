@@ -5,11 +5,10 @@ use core::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
     panic::Location,
-    ptr,
-    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
+    sync::atomic::AtomicU64,
 };
 
-use crate::interface::LockMetadata;
+use crate::interface::{LockMetadata, PiMutexStorage};
 
 /// A lockdep subclass identifier.
 pub type LockSubclass = u32;
@@ -17,8 +16,8 @@ pub type LockSubclass = u32;
 /// Raw ownership and opaque wait-queue storage for a [`Mutex`].
 #[repr(C)]
 pub struct RawMutex {
-    wait_queue: AtomicPtr<()>,
-    owner_id: AtomicU64,
+    storage: PiMutexStorage,
+    next_waiter_sequence: AtomicU64,
     metadata: LockMetadata,
 }
 
@@ -27,8 +26,8 @@ impl RawMutex {
     #[track_caller]
     pub const fn new() -> Self {
         Self {
-            wait_queue: AtomicPtr::new(ptr::null_mut()),
-            owner_id: AtomicU64::new(0),
+            storage: PiMutexStorage::new(),
+            next_waiter_sequence: AtomicU64::new(0),
             metadata: LockMetadata::new(),
         }
     }
@@ -40,14 +39,26 @@ impl RawMutex {
 
     #[inline(always)]
     #[track_caller]
-    fn acquire(&self, subclass: u32, is_try: bool) -> bool {
+    fn acquire(&self, subclass: u32) {
         crate::interface::mutex_acquire(
-            &self.wait_queue,
-            &self.owner_id,
+            &self.storage,
+            &self.next_waiter_sequence,
             &self.metadata,
             self.addr(),
             subclass,
-            is_try,
+            Location::caller(),
+        );
+    }
+
+    #[inline(always)]
+    #[track_caller]
+    fn try_acquire(&self, subclass: u32) -> bool {
+        crate::interface::mutex_try_acquire(
+            &self.storage,
+            &self.next_waiter_sequence,
+            &self.metadata,
+            self.addr(),
+            subclass,
             Location::caller(),
         )
     }
@@ -55,45 +66,34 @@ impl RawMutex {
     #[inline(always)]
     #[track_caller]
     fn lock(&self) {
-        assert!(
-            self.acquire(0, false),
-            "blocking mutex acquisition returned failure"
-        );
+        self.acquire(0);
     }
 
     #[inline(always)]
     #[track_caller]
     fn lock_nested(&self, subclass: u32) {
-        assert!(
-            self.acquire(subclass, false),
-            "blocking nested mutex acquisition returned failure"
-        );
+        self.acquire(subclass);
     }
 
     #[inline(always)]
     #[track_caller]
     fn try_lock(&self) -> bool {
-        self.acquire(0, true)
+        self.try_acquire(0)
     }
 
     #[inline(always)]
     unsafe fn unlock(&self) {
-        crate::interface::mutex_release(&self.wait_queue, &self.owner_id, self.addr());
+        crate::interface::mutex_release(&self.storage, self.addr());
     }
 
     /// Returns whether the current task owns this mutex.
     pub fn is_owned_by_current(&self) -> bool {
-        crate::interface::mutex_is_owned_by_current(&self.owner_id)
+        crate::interface::mutex_is_owned_by_current(&self.storage)
     }
 
     /// Returns whether some task owns this mutex.
     pub fn is_locked(&self) -> bool {
-        crate::interface::mutex_is_locked(&self.owner_id)
-    }
-
-    #[cfg(all(test, feature = "host-test", not(target_os = "none")))]
-    pub(crate) fn host_wait_queue_installed(&self) -> bool {
-        !self.wait_queue.load(Ordering::Acquire).is_null()
+        crate::interface::mutex_is_locked(&self.storage)
     }
 
     /// Releases a deliberately leaked guard.
@@ -104,7 +104,7 @@ impl RawMutex {
     /// derived from it may remain live.
     #[doc(hidden)]
     pub unsafe fn force_unlock(&self) {
-        crate::interface::mutex_force_release(&self.wait_queue, &self.owner_id, self.addr());
+        crate::interface::mutex_force_release(&self.storage, self.addr());
     }
 }
 
@@ -117,10 +117,7 @@ impl Default for RawMutex {
 impl Drop for RawMutex {
     fn drop(&mut self) {
         assert!(!self.is_locked(), "dropping a locked mutex");
-        let wait_queue = self.wait_queue.swap(ptr::null_mut(), Ordering::AcqRel);
-        if !wait_queue.is_null() {
-            crate::interface::mutex_drop_wait_queue(wait_queue);
-        }
+        crate::interface::mutex_destroy(&mut self.storage);
     }
 }
 

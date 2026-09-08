@@ -1,6 +1,9 @@
 extern crate alloc;
 extern crate ax_runtime;
 
+#[cfg(all(test, not(axtest)))]
+extern crate std;
+
 #[macro_use]
 extern crate ax_log;
 
@@ -52,18 +55,16 @@ pub use error::{DmaOperation, StarryError, StarryResult};
 // compatibility facade.
 pub use mm::{
     ActivationError, ActivationLease, AddressSpaceCpuState, AddressSpaceId, AddressSpaceTag,
-    AppliedMutation,
-    CloneUserRefError, CpuMask, EvictionError, EvictionLease, EvictionResult, FrameLease,
-    InstalledAddressSpace, InstalledPageTableRoot, MappingGroup, MappingPermissions,
-    AnonymousSource, ExternalSource, FileSource, LinearSource, MappingId, MappingSlot,
-    MappingSlotKey, MappingSource, MappingDelta, MmHandle, MmPin, MmState,
-    MutationError, MutationGate, MutationReceipt, MutationState, PageId, PageObject, PageOrder,
-    PageOffset, PageSizePolicy, PageState, PinError, PreparedMutation, PublishEvent, PublishedMutation,
-    PublishedPendingTlb, PteDelta, ReclaimError, ResidentDelta, RetirePermit, RmapSet, SlotState,
-    TagMode, TlbQuarantine, TlbRange, TlbRequest, QuarantineError, QuarantineFailure,
-    UnsupportedSwap, VmaDelta, VmaId, VmaMap,
-    Vma, VmaSnapshot, MappingRights, SwapError, SwapProvider, SwapToken, WritebackError,
-    WritebackLease, allocate_vma_id,
-    RepairPermit, take_repair_candidates, request_repair_retry,
+    AnonymousSource, AppliedMutation, CloneUserRefError, CpuMask, EvictionError, EvictionLease,
+    EvictionResult, ExternalSource, FileSource, FrameLease, InstalledAddressSpace,
+    InstalledPageTableRoot, LinearSource, MappingDelta, MappingGroup, MappingId,
+    MappingPermissions, MappingRights, MappingSlot, MappingSlotKey, MappingSource, MmHandle, MmPin,
+    MmState, MutationError, MutationGate, MutationReceipt, MutationState, PageId, PageObject,
+    PageOffset, PageOrder, PageSizePolicy, PageState, PinError, PreparedMutation, PteDelta,
+    PublishEvent, PublishedMutation, PublishedPendingTlb, QuarantineError, QuarantineFailure,
+    ReclaimError, RepairPermit, ResidentDelta, RetirePermit, RmapSet, SlotState, SwapError,
+    SwapProvider, SwapToken, TagMode, TlbQuarantine, TlbRange, TlbRequest, UnsupportedSwap, Vma,
+    VmaDelta, VmaId, VmaMap, VmaSnapshot, WritebackError, WritebackLease, allocate_vma_id,
+    request_repair_retry, take_repair_candidates,
 };
 pub use syscalls::Errno;

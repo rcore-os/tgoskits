@@ -3,16 +3,24 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_alloc::UsageKind;
-use ax_hal::{cache::TlbShootdownError, paging::MappingFlags};
-use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
+use ax_hal::{
+    cache::TlbShootdownError,
+    paging::{MappingFlags, PagingError},
+};
+use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 
-use crate::{MmError, MmResult, backend::KernelVirtualAllocationId, kernel_aspace};
+use crate::{
+    MmError, MmResult,
+    backend::{KernelVirtualAllocationBackend, KernelVirtualAllocationId},
+    kernel_aspace,
+};
 
 /// Validated layout of a virtually contiguous kernel allocation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KernelVirtualAllocationLayout {
     usable_size: usize,
     leading_guard_pages: usize,
+    alignment: usize,
     flags: MappingFlags,
     usage: UsageKind,
 }
@@ -33,6 +41,7 @@ impl KernelVirtualAllocationLayout {
         Ok(Self {
             usable_size,
             leading_guard_pages: 0,
+            alignment: PAGE_SIZE_4K,
             flags,
             usage,
         })
@@ -47,7 +56,31 @@ impl KernelVirtualAllocationLayout {
                 "kernel virtual allocation layout overflows",
             ))?;
         self.leading_guard_pages = pages;
+        self.validate_alignment(self.alignment)?;
         Ok(self)
+    }
+
+    /// Aligns the reservation and usable range. Both the usable size and
+    /// leading guard size must be multiples of this power-of-two alignment.
+    pub fn with_alignment(mut self, alignment: usize) -> MmResult<Self> {
+        self.validate_alignment(alignment)?;
+        self.alignment = alignment;
+        Ok(self)
+    }
+
+    fn validate_alignment(self, alignment: usize) -> MmResult {
+        if alignment < PAGE_SIZE_4K
+            || !alignment.is_power_of_two()
+            || !self.usable_size.is_multiple_of(alignment)
+            || !self
+                .leading_guard_pages
+                .is_multiple_of(alignment / PAGE_SIZE_4K)
+        {
+            return Err(MmError::InvalidInput(
+                "kernel virtual allocation alignment is invalid",
+            ));
+        }
+        Ok(())
     }
 
     fn total_size(self) -> MmResult<usize> {
@@ -120,30 +153,46 @@ impl KernelVirtualAllocation {
                 .ok_or(MmError::InvalidInput(
                     "kernel virtual allocation guard overflows",
                 ))?;
-        let mut aspace = kernel_aspace().lock();
-        let limit = VirtAddrRange::new(aspace.base(), aspace.end());
-        let reservation_start = aspace
-            .find_free_area(aspace.base(), total_size, limit)
-            .ok_or(MmError::NoMemory)?;
-        let id = aspace.map_kernel_virtual_allocation(
-            reservation_start,
-            total_size,
-            layout.flags,
+        // All data frames and their Arc/Vec owner are prepared before taking
+        // the kernel address-space lock. Allocation pressure can therefore
+        // reclaim caches without reentering that lock.
+        let allocation = KernelVirtualAllocationBackend::allocate(
             layout.usage,
             layout.leading_guard_pages,
-        )?;
-        let usable_start =
-            reservation_start
-                .checked_add(guard_size)
-                .ok_or(MmError::InvalidInput(
-                    "kernel virtual allocation start overflows",
-                ))?;
-        Ok(Self {
-            id,
+            layout.usable_size / PAGE_SIZE_4K,
+        )
+        .ok_or(MmError::NoMemory)?;
+        let reservation_start = {
+            let mut aspace = kernel_aspace().lock();
+            let limit = VirtAddrRange::new(aspace.base(), aspace.end());
+            let start = aspace
+                .find_free_area_aligned(aspace.base(), total_size, limit, layout.alignment)
+                .ok_or(MmError::NoMemory)?;
+            aspace.reserve_kernel_virtual_allocation(
+                start,
+                total_size,
+                layout.flags,
+                &allocation,
+            )?;
+            start
+        };
+        let usable_start = reservation_start + guard_size;
+        let token = Self {
+            id: allocation.id(),
             reservation: VirtAddrRange::from_start_size(reservation_start, total_size),
             usable: VirtAddrRange::from_start_size(usable_start, layout.usable_size),
             active: true,
-        })
+        };
+        // From this point every error queues the reserved owner for retirement,
+        // including a partially installed prefix. No mapped frame can escape
+        // through the local builder's Drop.
+        for index in 0..allocation.frame_count() {
+            let frame = allocation.expected_frame(index).ok_or(MmError::BadState(
+                "kernel virtual allocation lost a reserved frame",
+            ))?;
+            install_kernel_virtual_page(usable_start + index * PAGE_SIZE_4K, frame, layout.flags)?;
+        }
+        Ok(token)
     }
 
     /// Returns the usable range, excluding guard pages.
@@ -182,18 +231,71 @@ impl KernelVirtualAllocation {
         )?;
 
         ax_hal::cache::flush_tlb_range_all_cpus(mapped.start, mapped.size())?;
-        let mut aspace = kernel_aspace().lock();
-        aspace.retire_kernel_virtual_allocation(
-            self.id,
-            self.reservation.start,
-            self.reservation.size(),
-        )?;
+        let retired = {
+            kernel_aspace().lock().retire_kernel_virtual_allocation(
+                self.id,
+                self.reservation.start,
+                self.reservation.size(),
+            )?
+        };
+        drop(retired);
         Ok(())
     }
 
     /// Explicitly releases the mapping and reports any quarantine condition.
     pub fn release(mut self) -> Result<(), KernelVirtualReleaseError> {
         self.release_inner()
+    }
+}
+
+fn install_kernel_virtual_page(
+    address: VirtAddr,
+    frame: ax_memory_addr::PhysAddr,
+    flags: MappingFlags,
+) -> MmResult {
+    // Concurrent disjoint allocations may fill a shared directory after the
+    // snapshot. Each retry prepares a new suffix outside the lock, and a
+    // bounded failure leaves the caller's retire token owning the full range.
+    for _ in 0..8 {
+        let plan = kernel_aspace()
+            .lock()
+            .page_table_mut()
+            .plan_map_page(address, PAGE_SIZE_4K)
+            .map_err(kernel_virtual_paging_error)?;
+        let deposit = plan
+            .prepare(frame, flags)
+            .map_err(kernel_virtual_paging_error)?;
+        let applied = {
+            kernel_aspace()
+                .lock()
+                .page_table_mut()
+                .try_map_page_with(deposit)
+        };
+        match applied {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                let stale = matches!(error.error(), PagingError::StaleMapDeposit { .. });
+                let cause = kernel_virtual_paging_error(error.error().clone());
+                // Failed deposits own unpublished page-table pages. Release
+                // those pages only after the page-table guard has gone away.
+                drop(error);
+                if !stale {
+                    return Err(cause);
+                }
+            }
+        }
+    }
+    Err(MmError::BadState(
+        "kernel virtual page-table plan remained contended",
+    ))
+}
+
+fn kernel_virtual_paging_error(error: PagingError) -> MmError {
+    match error {
+        PagingError::NoMemory => MmError::NoMemory,
+        PagingError::MappingConflict { .. } => MmError::AlreadyExists,
+        PagingError::NotMapped => MmError::BadAddress,
+        _ => MmError::BadState("kernel virtual page-table operation failed"),
     }
 }
 
@@ -287,9 +389,12 @@ fn retry_kernel_virtual_quarantine(
         .lock()
         .prepare_kernel_virtual_release(id, start, size)?;
     ax_hal::cache::flush_tlb_range_all_cpus(mapped.start, mapped.size())?;
-    kernel_aspace()
-        .lock()
-        .retire_kernel_virtual_allocation(id, start, size)?;
+    let retired = {
+        kernel_aspace()
+            .lock()
+            .retire_kernel_virtual_allocation(id, start, size)?
+    };
+    drop(retired);
     Ok(())
 }
 

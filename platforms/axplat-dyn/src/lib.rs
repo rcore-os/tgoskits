@@ -26,10 +26,6 @@ mod power;
 
 pub use boot::{boot_entropy, boot_stack_bounds, bootargs};
 pub use generic_timer::try_init_epoch_offset;
-
-pub fn enable_timer_irq() {
-    somehal::timer::irq_enable();
-}
 pub fn ipi_irq() -> ax_plat::irq::IrqId {
     somehal::irq::ipi_irq()
 }

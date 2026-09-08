@@ -3,14 +3,12 @@ use alloc::{
     collections::btree_map::BTreeMap,
     sync::{Arc, Weak},
 };
-use core::{
-    sync::atomic::{AtomicU64, Ordering},
-    task::Context,
-};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, MountNamespace};
 use ax_lazyinit::OnceLock;
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 
 use super::{File, FileLike, IoDst, IoSrc, Kstat};
 use crate::{StarryResult, sync::IrqMutex};
@@ -73,16 +71,16 @@ impl MountNamespaceEvent {
         }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         let interests = events & MOUNT_CHANGE_EVENTS;
         if interests.is_empty() {
             return;
         }
-        // SAFETY: poll registration runs in task context without mount or
-        // registry locks held.
-        unsafe {
-            self.waiters.register(context.waker(), interests);
-        }
+        unsafe { sink.register_shared(&self.waiters, interests) };
     }
 }
 
@@ -130,8 +128,13 @@ impl FileLike for MountTableFile {
         self.file.file_mmap()
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> StarryResult<usize> {
-        self.file.ioctl(cmd, arg)
+    fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> crate::StarryResult<usize> {
+        self.file.ioctl(current, cmd, arg)
     }
 
     fn open_flags(&self) -> u32 {
@@ -171,8 +174,25 @@ impl Pollable for MountTableFile {
         self.file.poll() | changed
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.event.register(context, events);
-        self.file.register(context, events);
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe {
+            self.event.register_shared(sink, events);
+            self.file.register_shared(sink, events);
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe {
+            self.event.register_shared(sink.as_shared(), events);
+            self.file.register_exclusive(sink, events);
+        }
     }
 }

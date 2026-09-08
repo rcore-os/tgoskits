@@ -29,9 +29,8 @@ arceos = ["paging", "std-compat", "smp"]
 host-test = [
     "ax-api/host-test",
     "ax-hal/host-test",
-
     "ax-percpu/host-test",
-    "ax-task/host-test",
+    "ax-runtime/host-test",
 ]
 
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
@@ -41,7 +40,7 @@ std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
 smp = ["ax-runtime/smp", "ax-posix-api/smp"]
 
 # Floating point/SIMD
-fp-simd = ["ax-hal/fp-simd"]
+fp-simd = ["ax-hal/fp-simd", "ax-runtime/fp-simd"]
 
 # User space support
 uspace = ["ax-runtime/uspace"]
@@ -61,11 +60,10 @@ paging = ["alloc", "ax-runtime/paging"]
 tls = ["ax-runtime/tls"]
 
 # Scheduler configuration
-lockdep = ["ax-posix-api/lockdep", "ax-runtime/lockdep",]
-task-ext = ["ax-task/task-ext"]
-tracepoint-hooks = ["ax-task/tracepoint-hooks"]
-sched-rr = ["ax-task/sched-rr"]
-sched-cfs = ["ax-task/sched-cfs"]
+lockdep = ["ax-posix-api/lockdep", "ax-runtime/lockdep"]
+qperf-metrics = ["ax-runtime/qperf-metrics"]
+task-ext = []
+tracepoint-hooks = []
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 
@@ -133,7 +131,6 @@ ax-lazyinit.workspace = true
 ax-percpu.workspace = true
 ax-posix-api.workspace = true
 ax-runtime.workspace = true
-ax-task.workspace = true
 libc.workspace = true
 syscalls.workspace = true
 thiserror.workspace = true

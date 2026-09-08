@@ -10,12 +10,12 @@ use sg2002_tpu::ion::{
     IonHeapManager, IonHeapQuery, IonHeapType, MAX_HEAP_NAME,
     ioctl::{ION_IOC_ALLOC, ION_IOC_FREE, ION_IOC_HEAP_QUERY, ION_IOC_IMPORT},
 };
-use starry_vm::{VmMutPtr, VmPtr};
 
 use super::global_ion_buffer_manager;
 use crate::{
     StarryError, StarryResult,
     file::{add_file_like, ion::IonBufferFile},
+    mm::{VmMutPtr, VmPtr},
     pseudofs::{DeviceMmap, DeviceOps},
 };
 
@@ -37,13 +37,17 @@ impl IonDevice {
     }
 
     /// 处理 ION_IOC_ALLOC 命令
-    fn handle_alloc(&self, user_ptr: usize) -> StarryResult<usize> {
+    fn handle_alloc(
+        &self,
+        current: &crate::task::UserTaskRef,
+        user_ptr: usize,
+    ) -> StarryResult<usize> {
         debug!("Processing ION_IOC_ALLOC");
 
         // 从用户空间读取分配数据
         let alloc_data = unsafe {
             (user_ptr as *const IonAllocData)
-                .vm_read_uninit()?
+                .vm_read_uninit(current)?
                 .assume_init()
         };
 
@@ -88,7 +92,7 @@ impl IonDevice {
         result_data.fd = fd as u32;
         result_data.paddr = phys_addr as u64;
 
-        (user_ptr as *mut IonAllocData).vm_write(result_data)?;
+        (user_ptr as *mut IonAllocData).vm_write(current, result_data)?;
 
         info!(
             "Allocated Ion buffer: fd={}, handle={}, phys_addr=0x{:x}, size={}",
@@ -99,17 +103,27 @@ impl IonDevice {
     }
 
     /// 处理 ION_IOC_FREE 命令
-    fn handle_free(&self, user_ptr: usize) -> StarryResult<usize> {
+    fn handle_free(
+        &self,
+        current: &crate::task::UserTaskRef,
+        user_ptr: usize,
+    ) -> StarryResult<usize> {
         debug!("Processing ION_IOC_FREE");
 
         // 从用户空间读取句柄数据
         let handle_data = unsafe {
             (user_ptr as *const IonHandleData)
-                .vm_read_uninit()?
+                .vm_read_uninit(current)?
                 .assume_init()
         };
 
-        let handle = IonHandle(handle_data.handle);
+        self.release_handle(handle_data.handle);
+        Ok(0)
+    }
+
+    /// Releases the global ownership of a buffer without interpreting a user pointer.
+    pub(crate) fn release_handle(&self, handle_value: u32) {
+        let handle = IonHandle(handle_value);
         debug!("Releasing buffer with handle: {:?}", handle);
 
         // 仅从全局表中移除强引用；物理页的释放交给最后一个
@@ -117,26 +131,29 @@ impl IonDevice {
         // 允许 "未找到"，因为 IonBufferFile::Drop 也会调用 FREE，会出现重复释放。
         match self.buffer_manager.unregister_buffer(handle) {
             Ok(_buffer) => {
-                info!("Unregistered Ion buffer: handle={}", handle_data.handle);
+                info!("Unregistered Ion buffer: handle={}", handle_value);
             }
             Err(err) => {
                 debug!(
                     "ION_IOC_FREE: handle {} not in global table ({:?})",
-                    handle_data.handle, err
+                    handle_value, err
                 );
             }
         }
-        Ok(0)
     }
 
     /// 处理 ION_IOC_IMPORT 命令
-    fn handle_import(&self, user_ptr: usize) -> StarryResult<usize> {
+    fn handle_import(
+        &self,
+        current: &crate::task::UserTaskRef,
+        user_ptr: usize,
+    ) -> StarryResult<usize> {
         debug!("Processing ION_IOC_IMPORT");
 
         // 从用户空间读取 FD 数据
         let fd_data = unsafe {
             (user_ptr as *const IonFdData)
-                .vm_read_uninit()?
+                .vm_read_uninit(current)?
                 .assume_init()
         };
 
@@ -149,7 +166,7 @@ impl IonDevice {
         let mut result_data = fd_data;
         result_data.handle = handle.0;
 
-        (user_ptr as *mut IonFdData).vm_write(result_data)?;
+        (user_ptr as *mut IonFdData).vm_write(current, result_data)?;
 
         info!(
             "Imported Ion buffer: fd={}, handle={}",
@@ -159,13 +176,17 @@ impl IonDevice {
     }
 
     /// 处理 ION_IOC_HEAP_QUERY 命令
-    fn handle_heap_query(&self, user_ptr: usize) -> StarryResult<usize> {
+    fn handle_heap_query(
+        &self,
+        current: &crate::task::UserTaskRef,
+        user_ptr: usize,
+    ) -> StarryResult<usize> {
         debug!("Processing ION_IOC_HEAP_QUERY");
 
         // 从用户空间读取查询数据
         let mut heap_query = unsafe {
             (user_ptr as *const IonHeapQuery)
-                .vm_read_uninit()?
+                .vm_read_uninit(current)?
                 .assume_init()
         };
 
@@ -209,7 +230,7 @@ impl IonDevice {
 
                 // 写入堆数据
                 let item_ptr = unsafe { heap_data_ptr.add(i) };
-                item_ptr.vm_write(heap_data)?;
+                item_ptr.vm_write(current, heap_data)?;
 
                 info!(
                     "Added heap {}: type={}, heap_id={}, name={}",
@@ -222,7 +243,7 @@ impl IonDevice {
         heap_query.cnt = available_heap_count;
 
         // 写回结果
-        (user_ptr as *mut IonHeapQuery).vm_write(heap_query)?;
+        (user_ptr as *mut IonHeapQuery).vm_write(current, heap_query)?;
 
         info!(
             "Heap query completed: {} heaps available, {} requested",
@@ -249,18 +270,18 @@ impl DeviceOps for IonDevice {
         Ok(0)
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
+    fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
         let result = match cmd {
-            ION_IOC_HEAP_QUERY => self.handle_heap_query(arg),
-            ION_IOC_ALLOC => self.handle_alloc(arg),
-            ION_IOC_FREE => self.handle_free(arg),
-            ION_IOC_IMPORT => self.handle_import(arg),
+            ION_IOC_HEAP_QUERY => self.handle_heap_query(current, arg),
+            ION_IOC_ALLOC => self.handle_alloc(current, arg),
+            ION_IOC_FREE => self.handle_free(current, arg),
+            ION_IOC_IMPORT => self.handle_import(current, arg),
             _ => {
                 warn!("Unsupported Ion ioctl command: 0x{:x}", cmd);
                 return Err(VfsError::Unsupported);
             }
         };
-        Ok(result?)
+        result.map_err(Into::into)
     }
 
     fn as_any(&self) -> &dyn Any {

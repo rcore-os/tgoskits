@@ -149,26 +149,23 @@ monotonic waits. The implementation therefore makes clock domains explicit:
 | POSIX message queues | not applicable | realtime |
 | AIO, I/O multiplexing, socket, and USB timeouts | monotonic | not applicable |
 
-`axtask::timeout_at_wall` listens for a clock-change generation event. It pins
-the underlying future once, then rebuilds only its monotonic timer whenever the
-published realtime clock changes. A generation check around listener
-registration prevents a missed wakeup.
+Starry 的 `task::future::timeout_at_wall` 通过 `ClockChangeListener` 监听
+共享 `PollSet` 及改时钟代际，固定底层 future 后只重建单调时钟 timer。
+登记前后检查代际，通知先发布代际再在队列锁外唤醒；FIFO 等待者可以立即
+抢占通知者，不会自旋等待被抢占的通知者释放内部锁。`ClockDeadline` 统一保存 timerfd、睡眠、futex
+和进程 alarm 的期限域。`FUTEX_WAIT_BITSET` 使用 `WallClockWaiter`，在桶锁及
+调度 park 之前完成通知资源准备；改时钟后保留已发布的 futex 等待节点，只重设
+调度期限，避免重读已变化的用户字后误返回 `EAGAIN`。
 
-Starry's alarm dispatcher stores tagged monotonic/realtime deadlines. Because
-values from different clock domains cannot be ordered by their raw timestamp,
-the dispatcher selects the entry with the smallest current remaining duration
-and sleeps against a monotonic deadline. A clock-change event wakes it to
-re-evaluate realtime entries.
+进程 alarm 队列按 `ClockSnapshot` 把不同域的期限转换到本轮的单调时钟视图，
+选择当前最早到期项；`ALARM_EPOCH` 和固定 worker 的等待队列同时接收排队更新
+与改时钟通知。相对 `ITIMER_REAL` 始终使用单调时钟。
 
-Dequeuing an alarm does not commit a POSIX timer expiration: another CPU can
-move realtime backwards before the process timer table is locked. The
-dispatcher therefore passes the consumed deadline to the timer poll. If an
-active timer still has that deadline but is no longer due, the poll restores
-one registration while holding the timer-table lock. Shared deadlines do not
-multiply registrations, and reset or deleted timers do not revive stale
-deadlines. Polls on syscall return consume no registration and do not add one.
-The lock order remains timer table then alarm list; the dispatcher releases
-the alarm-list lock before calling the process timer poll.
+出队不代表 POSIX timer 已完成到期提交。`AlarmSlot` 为每次设置生成
+`AlarmToken`，进程 timer 表在锁内检查当前代际及实际期限，构造 `AlarmChange`，
+再在锁外提交 alarm 队列。回拨导致当前代际尚未到期时重新登记；旧代际的到期、
+取消和延后提交不能覆盖新设置。计时器表与 alarm 队列不嵌套持锁，信号发布及
+worker 通知也在元数据锁外执行。
 
 When a periodic POSIX realtime timer becomes overdue after a wall-clock step,
 one expiration poll computes the full lag in units of the timer interval. It
@@ -269,6 +266,9 @@ The deterministic regression is
 - a periodic absolute realtime POSIX timer survives a 120-second forward step
   by queuing one signal, reporting the merged count through `si_overrun`, and
   publishing a next deadline in the future;
+- FIFO 优先级和相同 CPU 固定等待者先入睡，回拨保持等待，前拨使原绝对期限
+  到期；已入队 futex 即使用户字发生变化也返回 `ETIMEDOUT`，绝对
+  `clock_nanosleep` 正常完成；
 - the original clock is restored using monotonic elapsed time.
 
 Before implementation, the AArch64 run failed deterministically with

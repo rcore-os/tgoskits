@@ -404,11 +404,6 @@ pub enum X86VmExit {
         /// Access flags.
         access_flags: X86AccessFlags,
     },
-    /// A physical host interrupt should be handled by the embedding VMM.
-    ExternalInterrupt {
-        /// Host vector reported by the backend.
-        vector: u8,
-    },
     /// The preemption timer expired or the backend wants the VMM to poll timers.
     PreemptionTimer,
     /// A guest EOI completed.

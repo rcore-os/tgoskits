@@ -14,7 +14,7 @@ pub(crate) fn default_host() -> &'static arceos::ArceOsHost {
 }
 
 pub(crate) use paging::PagingHandler;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub(crate) use traits::HostHardTimerAction;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use traits::HostTimerAction;

@@ -6,7 +6,7 @@
 //! (becomes readable when `expire_count > 0`).
 //!
 //! Implementation model: each `Timerfd::new` spawns exactly one long-lived
-//! background task (via `ax_task::spawn_raw`) that owns a weak reference to
+//! background task (via the Starry task facade) that owns a weak reference to
 //! the Timerfd. The task loops, reading the current deadline under the state
 //! lock, then parks on whichever fires first: the clock-domain deadline or an
 //! "arm event" poked by rearming operations / `Drop`. One task
@@ -23,21 +23,25 @@ use alloc::{
 };
 use core::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    task::Context,
     time::Duration,
 };
 
 use ax_lazyinit::LazyLock;
-use ax_runtime::hal::time::{TimeValue, monotonic_time, wall_time};
-use ax_task::future::{block_on, poll_io, timeout_at, timeout_at_wall};
-use axpoll::{IoEvents, PollSet, Pollable};
+use ax_runtime::hal::time::monotonic_time;
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use event_listener::{Event, listener};
 use syscalls::Errno;
 
 use crate::{
     StarryError, StarryResult,
     file::{FileLike, IoDst, IoSrc},
-    sync::Mutex,
+    sync::PiMutex,
+    task::{
+        current_user_task,
+        future::{block_on, block_on_user, poll_io, timeout_at, timeout_at_wall},
+    },
+    time::ClockDeadline,
 };
 
 /// `clockid_t` values recognized by `timerfd_create`. Kept narrow for now —
@@ -74,54 +78,12 @@ impl TimerfdSetMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TimerDeadline {
-    Monotonic(TimeValue),
-    Realtime(TimeValue),
-}
-
-impl TimerDeadline {
-    fn now(self) -> TimeValue {
-        match self {
-            Self::Monotonic(_) => monotonic_time(),
-            Self::Realtime(_) => wall_time(),
-        }
-    }
-
-    fn value(self) -> TimeValue {
-        match self {
-            Self::Monotonic(value) | Self::Realtime(value) => value,
-        }
-    }
-
-    fn remaining(self) -> Duration {
-        self.value()
-            .checked_sub(self.now())
-            .unwrap_or(Duration::ZERO)
-    }
-
-    fn lag(self) -> Option<Duration> {
-        self.now().checked_sub(self.value())
-    }
-
-    fn saturating_add(self, duration: Duration) -> Self {
-        match self {
-            Self::Monotonic(value) => Self::Monotonic(value.saturating_add(duration)),
-            Self::Realtime(value) => Self::Realtime(value.saturating_add(duration)),
-        }
-    }
-
-    fn is_realtime(self) -> bool {
-        matches!(self, Self::Realtime(_))
-    }
-}
-
 /// Internal, mutex-protected state of a timerfd.
 #[derive(Default)]
 struct State {
     /// Armed deadline, or the last fired deadline while `expired` is set.
     /// `None` means disarmed with no expiration to rearm.
-    next_deadline: Option<TimerDeadline>,
+    next_deadline: Option<ClockDeadline>,
     /// The task fired once and is waiting for read/gettime before rearming.
     expired: bool,
     /// Interval for periodic firing. `Duration::ZERO` means one-shot.
@@ -166,15 +128,15 @@ impl State {
     }
 }
 
-static TIMERFD_INSTANCES: LazyLock<Mutex<Vec<Weak<Timerfd>>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+static TIMERFD_INSTANCES: LazyLock<PiMutex<Vec<Weak<Timerfd>>>> =
+    LazyLock::new(|| PiMutex::new(Vec::new()));
 
 /// A timerfd. Held behind `Arc` and referenced both from the fd table and
 /// from the background timer task (as a `Weak<Timerfd>`).
 pub struct Timerfd {
     /// The clock domain the user passed to `timerfd_create`.
     clockid: u32,
-    state: Mutex<State>,
+    state: PiMutex<State>,
     expire_count: AtomicU64,
     poll_rx: PollSet,
     non_blocking: AtomicBool,
@@ -196,7 +158,7 @@ impl Timerfd {
         }
         let this = Arc::new(Self {
             clockid,
-            state: Mutex::new(State::default()),
+            state: PiMutex::new(State::default()),
             expire_count: AtomicU64::new(0),
             poll_rx: PollSet::new(),
             non_blocking: AtomicBool::new(false),
@@ -206,10 +168,10 @@ impl Timerfd {
         // Hand a weak reference to the task so the Timerfd can be freed
         // (and the task told to exit) when userspace closes the fd.
         let weak = Arc::downgrade(&this);
-        ax_task::spawn_raw(
+        crate::task::spawn_kernel_thread_with_stack(
             move || block_on(run_timer(weak)),
             "timerfd".to_owned(),
-            ax_task::default_task_stack_size(),
+            crate::task::default_task_stack_size(),
         );
         Ok(this)
     }
@@ -226,7 +188,7 @@ impl Timerfd {
         let old_interval = state.interval;
         let old_remaining = state
             .next_deadline
-            .map(TimerDeadline::remaining)
+            .map(ClockDeadline::remaining)
             .unwrap_or(Duration::ZERO);
 
         if new_value.is_zero() {
@@ -236,11 +198,11 @@ impl Timerfd {
         } else {
             let deadline = if mode.is_absolute() {
                 match self.clockid {
-                    CLOCK_REALTIME | CLOCK_REALTIME_ALARM => TimerDeadline::Realtime(new_value),
-                    _ => TimerDeadline::Monotonic(new_value),
+                    CLOCK_REALTIME | CLOCK_REALTIME_ALARM => ClockDeadline::Realtime(new_value),
+                    _ => ClockDeadline::Monotonic(new_value),
                 }
             } else {
-                TimerDeadline::Monotonic(monotonic_time().saturating_add(new_value))
+                ClockDeadline::Monotonic(monotonic_time().saturating_add(new_value))
             };
             state.next_deadline = Some(deadline);
             state.interval = new_interval;
@@ -277,7 +239,7 @@ impl Timerfd {
             state.interval,
             state
                 .next_deadline
-                .map(TimerDeadline::remaining)
+                .map(ClockDeadline::remaining)
                 .unwrap_or(Duration::ZERO),
         );
         drop(state);
@@ -419,10 +381,10 @@ async fn run_timer(weak: alloc::sync::Weak<Timerfd>) {
                 // monotonic domain; only absolute realtime timers are rebuilt
                 // after a wall-clock step.
                 let fired_timer = match dl {
-                    TimerDeadline::Monotonic(deadline) => {
+                    ClockDeadline::Monotonic(deadline) => {
                         timeout_at(Some(deadline), listener).await.is_err()
                     }
-                    TimerDeadline::Realtime(deadline) => {
+                    ClockDeadline::Realtime(deadline) => {
                         timeout_at_wall(Some(deadline), listener).await.is_err()
                     }
                 };
@@ -457,21 +419,26 @@ impl FileLike for Timerfd {
         if dst.remaining_mut() < core::mem::size_of::<u64>() {
             return Err(StarryError::InvalidInput);
         }
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let n = self.take_expirations()?;
-            // Linux's timerfd_read(2): a failed read does not discard
-            // expirations. Restore the claimed count on copyout failure,
-            // and re-wake `poll_rx` so any reader or poller that
-            // entered its wait between claiming the count and this restore
-            // notices the fd is readable again.
-            if let Err(e) = dst.write(&n.to_ne_bytes()) {
-                self.expire_count.fetch_add(n, Ordering::AcqRel);
-                // Restored expire_count is visible before re-waking readers.
-                unsafe { self.poll_rx.wake(IoEvents::IN) };
-                return Err(e.into());
-            }
-            Ok(core::mem::size_of::<u64>())
-        }))
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io(self, IoEvents::IN, self.nonblocking(), || {
+                let n = self.take_expirations()?;
+                // Linux's timerfd_read(2): a failed read does not discard
+                // expirations. Restore the claimed count on copyout failure,
+                // and re-wake `poll_rx` so any reader or poller that
+                // entered its wait between claiming the count and this restore
+                // notices the fd is readable again.
+                if let Err(e) = dst.write(&n.to_ne_bytes()) {
+                    self.expire_count.fetch_add(n, Ordering::AcqRel);
+                    // Restored expire_count is visible before re-waking readers.
+                    unsafe { self.poll_rx.wake(IoEvents::IN) };
+                    return Err(e.into());
+                }
+                Ok(core::mem::size_of::<u64>())
+            }),
+        )
+        .into_result()?
     }
 
     fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
@@ -499,22 +466,35 @@ impl Pollable for Timerfd {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
-            // Registration happens from file poll task context.
-            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
+            unsafe { sink.register_shared(&self.poll_rx, IoEvents::IN) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { sink.register_exclusive(&self.poll_rx, IoEvents::IN) };
         }
     }
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(all(test, axtest))]
 mod tests {
     use super::*;
 
     fn unspawned_timerfd() -> Arc<Timerfd> {
         Arc::new(Timerfd {
             clockid: CLOCK_REALTIME,
-            state: Mutex::new(State::default()),
+            state: PiMutex::new(State::default()),
             expire_count: AtomicU64::new(0),
             poll_rx: PollSet::new(),
             non_blocking: AtomicBool::new(false),
@@ -522,52 +502,7 @@ mod tests {
         })
     }
 
-    #[test]
-    fn canceled_expiration_is_consumed_without_rearming() {
-        let timerfd = unspawned_timerfd();
-        {
-            let mut state = timerfd.state.lock();
-            state.next_deadline = Some(TimerDeadline::Realtime(Duration::from_secs(10)));
-            state.interval = Duration::from_millis(10);
-            state.expired = true;
-            state.canceled = true;
-        }
-        timerfd.expire_count.store(2, Ordering::Release);
-
-        assert!(matches!(
-            timerfd.take_expirations(),
-            Err(StarryError::Errno(Errno::ECANCELED))
-        ));
-        assert!(matches!(
-            timerfd.take_expirations(),
-            Err(StarryError::WouldBlock)
-        ));
-        let state = timerfd.state.lock();
-        assert_eq!(state.next_deadline, None);
-        assert!(!state.expired);
-        assert!(!state.canceled);
-        assert_eq!(state.interval, Duration::from_millis(10));
-    }
-
-    #[test]
-    fn cancellation_read_preserves_an_unexpired_timer() {
-        let timerfd = unspawned_timerfd();
-        let deadline = TimerDeadline::Realtime(Duration::from_secs(600));
-        {
-            let mut state = timerfd.state.lock();
-            state.next_deadline = Some(deadline);
-            state.canceled = true;
-        }
-        timerfd.expire_count.store(1, Ordering::Release);
-
-        assert!(matches!(
-            timerfd.take_expirations(),
-            Err(StarryError::Errno(Errno::ECANCELED))
-        ));
-        assert_eq!(timerfd.state.lock().next_deadline, Some(deadline));
-    }
-
-    #[test]
+    #[axtest::axtest]
     fn dropping_timerfd_unregisters_clock_change_observer() {
         let timerfd = unspawned_timerfd();
         let timerfd_ptr = Arc::as_ptr(&timerfd);

@@ -112,18 +112,33 @@ pub fn is_support_icc() -> bool {
 pub struct ActiveIrq {
     irq: rdrive::IrqId,
     ack: IntId,
+    priority_drop_pending: bool,
+    two_step_eoi: bool,
 }
 
 impl ActiveIrq {
     pub fn id(&self) -> rdrive::IrqId {
         self.irq
     }
+
+    pub fn acknowledge_ipi(&mut self) {
+        if self.two_step_eoi {
+            self.drop_priority();
+        }
+    }
+
+    fn drop_priority(&mut self) {
+        if self.priority_drop_pending {
+            eoi1(self.ack);
+            self.priority_drop_pending = false;
+        }
+    }
 }
 
 impl Drop for ActiveIrq {
     fn drop(&mut self) {
-        eoi1(self.ack);
-        if eoi_mode() {
+        self.drop_priority();
+        if self.two_step_eoi {
             dir(self.ack);
         }
     }
@@ -138,6 +153,8 @@ pub fn begin_irq() -> Option<ActiveIrq> {
     Some(ActiveIrq {
         irq: (ack.to_u32() as usize).into(),
         ack,
+        priority_drop_pending: true,
+        two_step_eoi: eoi_mode(),
     })
 }
 

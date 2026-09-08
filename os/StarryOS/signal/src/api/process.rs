@@ -4,13 +4,14 @@ use alloc::{
 };
 use core::{
     array,
+    mem::{offset_of, size_of},
     ops::{Index, IndexMut},
     sync::atomic::{AtomicBool, Ordering},
 };
 
 use ax_runtime::sync::SpinLock;
 use linux_raw_sys::general::kernel_sigaction;
-use starry_vm::{VmMutPtr, VmPtr};
+use starry_vm::{VmIo, VmPtr, vm_write_slice};
 
 use crate::{
     PendingSignals, SignalAction, SignalInfo, SignalResult, SignalSet, Signo,
@@ -84,6 +85,70 @@ impl ProcessSignalManager {
         self.actions_slot.lock_irqsave().clone()
     }
 
+    pub(crate) fn register_child(&self, tid: u32, child: Weak<ThreadSignalManager>) {
+        let mut replacement = Vec::new();
+        loop {
+            let required = self.children.lock().len().saturating_add(1);
+            reserve_empty_child_slots(&mut replacement, required);
+
+            let mut children = self.children.lock();
+            if replacement.capacity() < children.len().saturating_add(1) {
+                drop(children);
+                continue;
+            }
+            replacement.append(&mut children);
+            replacement.push((tid, child));
+            core::mem::swap(&mut *children, &mut replacement);
+            drop(children);
+            // The replaced allocation is empty and is released after the
+            // IRQ-disabled registry guard has gone away.
+            drop(replacement);
+            return;
+        }
+    }
+
+    fn children_snapshot(&self) -> Vec<(u32, Arc<ThreadSignalManager>)> {
+        let mut snapshot = Vec::new();
+        loop {
+            let child_count = self.children.lock().len();
+            reserve_empty_child_slots(&mut snapshot, child_count);
+            let children = self.children.lock();
+            if snapshot.capacity() < children.len() {
+                drop(children);
+                continue;
+            }
+            snapshot.extend(children.iter().cloned());
+            break;
+        }
+        // Retain live targets before taking the action lock. Upgrading a Weak
+        // temporarily and dropping its last Arc while inspecting dispositions
+        // could otherwise run the target destructor inside that critical section.
+        let mut live = Vec::with_capacity(snapshot.len());
+        for (tid, weak) in snapshot {
+            if let Some(thread) = weak.upgrade() {
+                live.push((tid, thread));
+            } else {
+                self.remove_dead_child(tid, &weak);
+            }
+        }
+        live
+    }
+
+    fn remove_dead_child(&self, tid: u32, dead: &Weak<ThreadSignalManager>) {
+        let removed = {
+            let mut children = self.children.lock();
+            children
+                .iter()
+                .position(|(registered_tid, child)| {
+                    *registered_tid == tid && Weak::ptr_eq(child, dead)
+                })
+                .map(|index| children.swap_remove(index))
+        };
+        // A final Weak drop may release the allocation. Keep it out of the
+        // non-sleeping registry lock.
+        drop(removed);
+    }
+
     pub(crate) fn dequeue_signal(&self, mask: &SignalSet) -> Option<SignalInfo> {
         let mut guard = self.pending.lock_irqsave();
         let result = guard.dequeue_signal(mask);
@@ -114,6 +179,9 @@ impl ProcessSignalManager {
     #[must_use]
     pub fn send_signal(&self, sig: SignalInfo) -> Option<u32> {
         let signo = sig.signo();
+        // Declare the retained targets first so early returns release the action
+        // guard before either the target allocations or the snapshot buffer.
+        let children = self.children_snapshot();
 
         // Lock by `actions`. The swappable slot lets `execve` detach the
         // shared inner `Arc<SignalActions>` (with `CLONE_SIGHAND`) without
@@ -126,44 +194,36 @@ impl ProcessSignalManager {
         // POSIX requires that a signal is queued as pending when:
         //   (a) it is blocked in all threads (sigwaitinfo may dequeue it), OR
         //   (b) a thread is specifically waiting for this signal via
-        //       rt_sigtimedwait/sigwaitinfo (sigwait_set contains signo).
+        //       rt_sigtimedwait/sigwaitinfo (its sigwait state contains signo).
         // In both cases, applying is_ignore() would silently drop the signal
         // and leave sigwaitinfo sleeping forever.
-        let (all_blocked, any_sigwait_for_this) = {
-            let children = self.children.lock_irqsave();
-            let all = !children.is_empty()
-                && children
-                    .iter()
-                    .all(|(_, thread)| thread.upgrade().is_none_or(|t| t.signal_blocked(signo)));
-            let any = children.iter().any(|(_, thread)| {
-                thread
-                    .upgrade()
-                    .is_some_and(|t| t.sigwait_set.lock_irqsave().is_some_and(|s| s.has(signo)))
-            });
-            (all, any)
-        };
+        let all_blocked = !children.is_empty()
+            && children
+                .iter()
+                .all(|(_, thread)| thread.signal_blocked(signo));
+        let any_sigwait_for_this = children
+            .iter()
+            .any(|(_, thread)| thread.is_sigwait_for(signo));
         if !all_blocked && !any_sigwait_for_this && actions[signo].is_ignore(signo) {
             return None;
         }
-        // Drop `actions` before acquiring `self.pending` to maintain a
-        // consistent lock ordering (actions → children → pending) and avoid
-        // potential deadlocks.
+        // Pending publication and wake callbacks do not hold the action lock.
         drop(actions);
 
         if self.pending.lock_irqsave().put_signal(sig) {
             self.possibly_has_signal.store(true, Ordering::Release);
         }
-        let mut result = None;
-        self.children.lock_irqsave().retain(|(tid, thread)| {
-            if let Some(thread) = thread.upgrade() {
-                if result.is_none() && !thread.signal_blocked(signo) {
-                    result = Some(*tid);
-                }
-                true
-            } else {
-                false
+        let result = children
+            .iter()
+            .find(|(_, thread)| !thread.signal_blocked(signo))
+            .map(|(tid, _)| *tid);
+        if result.is_none() {
+            // The future waker is an arbitrary task-context callback. Invoke it
+            // only after dropping the process child registry lock.
+            for (_, thread) in &children {
+                thread.wake_sigwait(signo);
             }
-        });
+        }
         result
     }
 
@@ -214,14 +274,17 @@ impl ProcessSignalManager {
                 *action = SignalAction::default();
             }
         }
-        *self.actions_slot.lock_irqsave() = Arc::new(SpinLock::new(new_actions));
+        let replacement = Arc::new(SpinLock::new(new_actions));
+        let previous = core::mem::replace(&mut *self.actions_slot.lock_irqsave(), replacement);
+        // The old Arc may own the final allocation reference.
+        drop(previous);
     }
 
     /// Updates a thread's TID in the children registration. Called by
     /// `execve`'s de_thread step so signals targeting the inherited leader
     /// TID resolve to the (renamed) caller thread.
     pub fn rename_child(&self, old_tid: u32, new_tid: u32) {
-        let mut children = self.children.lock_irqsave();
+        let mut children = self.children.lock();
         for entry in children.iter_mut() {
             if entry.0 == old_tid {
                 entry.0 = new_tid;
@@ -231,14 +294,15 @@ impl ProcessSignalManager {
     }
 
     /// Registers a new action and returns the old one.
-    pub fn set_action(
+    pub fn set_action<I: VmIo>(
         &self,
+        vm: &mut I,
         signo: Signo,
         act: *const kernel_sigaction,
         oldact: *mut kernel_sigaction,
     ) -> SignalResult<isize> {
         let new_action = if let Some(act) = act.nullable() {
-            let act = unsafe { act.vm_read_uninit()?.assume_init() }.into();
+            let act = unsafe { act.vm_read_uninit(vm)?.assume_init() }.into();
             debug!("sys_rt_sigaction <= signo: {signo:?}, act: {act:?}");
             Some(act)
         } else {
@@ -256,8 +320,143 @@ impl ProcessSignalManager {
         };
 
         if let Some(oldact) = oldact.nullable() {
-            oldact.vm_write(old_action.into())?;
+            write_kernel_sigaction(vm, oldact, old_action)?;
         }
         Ok(0)
+    }
+}
+
+fn write_kernel_sigaction<I: VmIo>(
+    vm: &mut I,
+    oldact: *mut kernel_sigaction,
+    action: SignalAction,
+) -> SignalResult<()> {
+    let action: kernel_sigaction = action.into();
+    vm_write_slice(vm, oldact.cast::<usize>(), &kernel_sigaction_words(action))?;
+    Ok(())
+}
+
+#[cfg(sa_restorer)]
+fn kernel_sigaction_words(action: kernel_sigaction) -> [usize; 4] {
+    [
+        action
+            .sa_handler_kernel
+            .map_or(0, |handler| handler as usize),
+        action.sa_flags as usize,
+        action.sa_restorer.map_or(0, |restorer| restorer as usize),
+        action.sa_mask.sig[0] as usize,
+    ]
+}
+
+#[cfg(not(sa_restorer))]
+fn kernel_sigaction_words(action: kernel_sigaction) -> [usize; 3] {
+    [
+        action
+            .sa_handler_kernel
+            .map_or(0, |handler| handler as usize),
+        action.sa_flags as usize,
+        action.sa_mask.sig[0] as usize,
+    ]
+}
+
+#[cfg(sa_restorer)]
+const _: () = {
+    assert!(size_of::<kernel_sigaction>() == 4 * size_of::<usize>());
+    assert!(offset_of!(kernel_sigaction, sa_handler_kernel) == 0);
+    assert!(offset_of!(kernel_sigaction, sa_flags) == size_of::<usize>());
+    assert!(offset_of!(kernel_sigaction, sa_restorer) == 2 * size_of::<usize>());
+    assert!(offset_of!(kernel_sigaction, sa_mask) == 3 * size_of::<usize>());
+};
+
+#[cfg(not(sa_restorer))]
+const _: () = {
+    assert!(size_of::<kernel_sigaction>() == 3 * size_of::<usize>());
+    assert!(offset_of!(kernel_sigaction, sa_handler_kernel) == 0);
+    assert!(offset_of!(kernel_sigaction, sa_flags) == size_of::<usize>());
+    assert!(offset_of!(kernel_sigaction, sa_mask) == 2 * size_of::<usize>());
+};
+
+fn reserve_empty_child_slots(slots: &mut Vec<(u32, Weak<ThreadSignalManager>)>, required: usize) {
+    debug_assert!(slots.is_empty());
+    if slots.capacity() < required {
+        // reserve_exact counts additional elements from len, which is zero
+        // throughout a retry, rather than from the existing capacity.
+        slots.reserve_exact(required);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{sync::Arc, task::Wake};
+    use core::{
+        sync::atomic::{AtomicUsize, Ordering},
+        task::Waker,
+    };
+
+    use super::*;
+
+    struct CountWake(AtomicUsize);
+
+    impl Wake for CountWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn blocked_process_signal_wakes_the_matching_sigwait_future() {
+        let actions = Arc::new(SpinLock::new(SignalActions::default()));
+        let process = Arc::new(ProcessSignalManager::new(actions, 0));
+        let mut blocked = SignalSet::default();
+        blocked.add(Signo::SIGCHLD);
+        let thread = ThreadSignalManager::new_with_blocked(1, Arc::clone(&process), blocked);
+        let counter = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+
+        thread.begin_sigwait(blocked);
+        thread.register_sigwait_waker(&waker);
+
+        assert_eq!(
+            process.send_signal(SignalInfo::new_kernel(Signo::SIGCHLD)),
+            None
+        );
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn process_signal_prepares_and_releases_targets_outside_action_lock() {
+        let actions = Arc::new(SpinLock::new(SignalActions::default()));
+        let process = Arc::new(ProcessSignalManager::new(Arc::clone(&actions), 0));
+        let thread = ThreadSignalManager::new(1, Arc::clone(&process));
+        let retired = ThreadSignalManager::new(2, Arc::clone(&process));
+        drop(retired);
+
+        let ((ignored, selected), locked_heap_operations) =
+            crate::allocation_audit::with_action_lock(&actions, || {
+                (
+                    process.send_signal(SignalInfo::new_kernel(Signo::SIGCHLD)),
+                    process.send_signal(SignalInfo::new_kernel(Signo::SIGUSR1)),
+                )
+            });
+
+        assert_eq!(ignored, None);
+        assert_eq!(selected, Some(1));
+        assert!(thread.pending().has(Signo::SIGUSR1));
+        assert_eq!(
+            locked_heap_operations, 0,
+            "signal target allocation or final release held the action lock"
+        );
+    }
+
+    #[test]
+    fn registry_growth_retry_reserves_the_complete_slot_count() {
+        let mut slots = Vec::with_capacity(2);
+        let required = slots.capacity() + 1;
+        reserve_empty_child_slots(&mut slots, required);
+        assert!(
+            slots.capacity() >= required,
+            "registry growth retry made no progress"
+        );
+        assert!(slots.is_empty());
     }
 }

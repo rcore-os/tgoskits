@@ -52,15 +52,6 @@ pub(crate) fn discover_all_qemu_cases_with_archs(
     qemu_test::discover_all_qemu_cases_with_archs(&test_suite_dir, selected_case, "Starry", "qemu")
 }
 
-#[cfg(test)]
-pub(crate) fn render_qemu_case_summary(report: &StarryQemuRunReport) -> String {
-    starry_qemu_summary(report).render(
-        &starry_qemu_suite_name(report),
-        "case",
-        Some(&format_duration(report.total_duration)),
-    )
-}
-
 fn starry_qemu_summary(report: &StarryQemuRunReport) -> qemu_test::QemuTestSummary {
     let mut summary = qemu_test::QemuTestSummary::default();
     for case in &report.cases {

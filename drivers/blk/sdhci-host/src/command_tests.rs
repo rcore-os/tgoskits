@@ -80,6 +80,28 @@ fn issued_command_keeps_irq_generation_active_for_completion_cache() {
 }
 
 #[test]
+fn command_completion_does_not_consume_a_concurrent_adma_error() {
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.irq.state.begin_request();
+    let generation = host.irq.state.generation();
+    host.irq.state.cache_if_current(
+        generation,
+        NORMAL_INT_CMD_COMPLETE | NORMAL_INT_ERROR,
+        ERROR_INT_ADMA,
+    );
+
+    let (command_normal, command_error) = host.take_command_irq_status();
+    assert_eq!(command_normal, NORMAL_INT_CMD_COMPLETE);
+    assert_eq!(command_error, 0);
+
+    let (data_normal, data_error) = host.take_data_irq_status();
+    assert_eq!(data_normal, NORMAL_INT_ERROR);
+    assert_eq!(data_error, ERROR_INT_ADMA);
+}
+
+#[test]
 fn task_side_does_not_harvest_unacknowledged_raw_command_status() {
     let mut regs = FakeRegs([0; 0x100]);
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();

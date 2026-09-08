@@ -103,8 +103,8 @@ pub use self::{
     io::{read, writev},
     mktime::mktime,
     pthread::{
-        pthread_create, pthread_exit, pthread_join, pthread_mutex_init, pthread_mutex_lock,
-        pthread_mutex_unlock, pthread_self,
+        pthread_create, pthread_detach, pthread_exit, pthread_join, pthread_mutex_init,
+        pthread_mutex_lock, pthread_mutex_unlock, pthread_self,
     },
     rand::{rand, random, srand},
     resource::{getrlimit, setrlimit},

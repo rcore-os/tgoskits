@@ -206,12 +206,37 @@ impl<H: X86VlapicHostOps> TimerRegistration<H> {
     pub(crate) fn register(
         self: &Arc<Self>,
         deadline_ns: u64,
+        callback: X86TimerCallback,
+    ) -> X86VlapicResult {
+        self.register_with(deadline_ns, callback, host::register_timer::<H>)
+    }
+
+    /// Registers a callback through the host hard-timer capability.
+    ///
+    /// # Safety
+    ///
+    /// `callback` and the registration state transitions executed around it
+    /// must remain bounded and valid in hard IRQ context.
+    pub(crate) unsafe fn register_hard(
+        self: &Arc<Self>,
+        deadline_ns: u64,
+        callback: X86TimerCallback,
+    ) -> X86VlapicResult {
+        self.register_with(deadline_ns, callback, |deadline_ns, callback| unsafe {
+            host::register_hard_timer::<H>(deadline_ns, callback)
+        })
+    }
+
+    fn register_with(
+        self: &Arc<Self>,
+        deadline_ns: u64,
         mut callback: X86TimerCallback,
+        register: impl FnOnce(u64, X86TimerCallback) -> X86VlapicResult<H::TimerHandle>,
     ) -> X86VlapicResult {
         let arm = self.begin_arm()?;
         let callback_arm = Arc::clone(&arm);
         let callback_registration = Arc::clone(self);
-        let handle = match host::register_timer::<H>(
+        let handle = match register(
             deadline_ns,
             alloc::boxed::Box::new(move |now_ns| {
                 if !callback_arm.begin_fire() {

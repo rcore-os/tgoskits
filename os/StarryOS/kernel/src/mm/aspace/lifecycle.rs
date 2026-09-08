@@ -12,16 +12,18 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    ops::{Bound::Excluded, Bound::Unbounded, Deref},
+    ops::{
+        Bound::{Excluded, Unbounded},
+        Deref,
+    },
     sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
 };
 
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_runtime::hal::trap::PageFaultFlags;
 
-use crate::sync::{IrqMutex, Mutex};
-
 use super::{AddrSpace, FaultResult, PageFaultApplyOutcome, TransparentHugePageMode};
+use crate::sync::{IrqMutex, Mutex};
 
 mod work_queue;
 use work_queue::{MmWorkLink, MmWorkQueue};
@@ -221,9 +223,7 @@ static TAG_ALLOCATOR: IrqMutex<Option<AddressSpaceTagAllocator>> = IrqMutex::new
 fn allocate_default_tag(epoch: u64) -> AddressSpaceTag {
     let mut allocator_slot = TAG_ALLOCATOR.lock();
     let allocator = allocator_slot.get_or_insert_with(|| {
-        AddressSpaceTagAllocator::new(
-            ax_runtime::hal::cache::freeze_address_space_tag_capacity(),
-        )
+        AddressSpaceTagAllocator::new(ax_runtime::hal::cache::freeze_address_space_tag_capacity())
     });
     let mode = allocator.mode();
     let capacity = allocator.capacity();
@@ -302,11 +302,11 @@ pub type InstalledAddressSpace = InstalledPageTableRoot;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MmState {
-    Live = 0,
-    Retiring = 1,
-    Retired = 2,
-    Reclaiming = 3,
-    Freed = 4,
+    Live        = 0,
+    Retiring    = 1,
+    Retired     = 2,
+    Reclaiming  = 3,
+    Freed       = 4,
     NeedsRepair = 5,
 }
 
@@ -340,6 +340,7 @@ struct MmInner {
     kernel_pins: AtomicUsize,
     active_count: AtomicUsize,
     active_mask: Arc<AtomicUsize>,
+    runtime_cpu_state: Arc<ax_runtime::task::AddressSpaceCpuState>,
     /// Per-CPU counts are needed while an outgoing and incoming task briefly
     /// overlap during a context switch. A bit alone cannot represent that
     /// state without leaving stale active bits behind.
@@ -475,9 +476,7 @@ impl MmInner {
         }
         let bit = 1usize << cpu;
         let cpu_refs = &inner.active_per_cpu[cpu];
-        if matches!(mode, ActivationMode::Exclusive)
-            && cpu_refs.load(Ordering::Relaxed) != 0
-        {
+        if matches!(mode, ActivationMode::Exclusive) && cpu_refs.load(Ordering::Relaxed) != 0 {
             return Err(ActivationError::AlreadyActive);
         }
         let previous_cpu = cpu_refs.load(Ordering::Relaxed);
@@ -598,10 +597,7 @@ fn register_mm(inner: &Arc<MmInner>) -> Result<(), MmCreateError> {
 
 fn unregister_mm(inner: &Arc<MmInner>) {
     let removed = remove_registered_mm(inner.id);
-    debug_assert!(
-        removed,
-        "address-space identity was not registered"
-    );
+    debug_assert!(removed, "address-space identity was not registered");
 }
 
 fn remove_registered_mm(id: AddressSpaceId) -> bool {
@@ -704,15 +700,19 @@ impl MmHandle {
                 root: AtomicUsize::new(root),
                 epoch: epoch_source,
                 tag,
-                transparent_huge_page_mode: AtomicU8::new(
-                    TransparentHugePageMode::Enabled as u8,
-                ),
+                transparent_huge_page_mode: AtomicU8::new(TransparentHugePageMode::Enabled as u8),
                 install_seq: AtomicU64::new(0),
                 lifecycle_gate: IrqMutex::new(()),
                 state: AtomicU8::new(MmState::Live as u8),
                 user_refs: AtomicUsize::new(1),
                 kernel_pins: AtomicUsize::new(0),
                 active_count: AtomicUsize::new(0),
+                runtime_cpu_state: Arc::new(
+                    ax_runtime::task::AddressSpaceCpuState::with_mm_active_mask(
+                        PhysAddr::from_usize(root),
+                        active_mask.clone(),
+                    ),
+                ),
                 active_mask,
                 active_per_cpu: core::array::from_fn(|_| AtomicUsize::new(0)),
                 retire_queued: AtomicBool::new(false),
@@ -782,6 +782,9 @@ impl MmHandle {
     /// Refreshes the software view after a page-table root replacement.
     pub fn refresh_installation(&self) {
         let guard = self.inner.aspace.lock();
+        // A switch can read the descriptor in IRQ context. Exclude that reader
+        // while the sequence is odd, including on a preemptible RT kernel.
+        let _gate = self.inner.lifecycle_gate.lock();
         self.inner.install_seq.fetch_add(1, Ordering::AcqRel);
         self.inner
             .root
@@ -818,23 +821,6 @@ impl MmHandle {
             &self.inner,
             cpu,
             ActivationMode::Exclusive,
-            ActivationAuthority::UserOwner(&self.owner),
-        )
-    }
-
-    /// Acquires a lease for a scheduler hand-off.  During a context switch the
-    /// incoming task is entered before the outgoing task's post-switch hook can
-    /// drop its lease; allowing this short overlap avoids a false
-    /// `AlreadyActive` result when two threads share one MM.  The ordinary
-    /// [`Self::activation`] API remains exclusive for explicit callers.
-    pub(crate) fn activation_for_switch(
-        &self,
-        cpu: usize,
-    ) -> Result<ActivationLease, ActivationError> {
-        MmInner::acquire_activation(
-            &self.inner,
-            cpu,
-            ActivationMode::SchedulerHandoff,
             ActivationAuthority::UserOwner(&self.owner),
         )
     }
@@ -962,7 +948,8 @@ impl MmPin {
                 // also lock-external; merely returning Retry would strand it
                 // and make every subsequent refault hit the same blocker.
                 if attempt.cancel().is_ok()
-                    && AddrSpace::flush_tlb_requests(core::slice::from_ref(&request), &targets).is_ok()
+                    && AddrSpace::flush_tlb_requests(core::slice::from_ref(&request), &targets)
+                        .is_ok()
                 {
                     let aspace = self.0.aspace.lock();
                     let _ = aspace.acknowledge_tlb_requests(core::slice::from_ref(&request));
@@ -994,10 +981,17 @@ impl MmPin {
 
     /// Resolves a fault for a kernel faultable user-copy scope.
     pub fn handle_page_fault(&self, vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
-        matches!(
-            self.handle_page_fault_result(vaddr, access_flags),
-            FaultResult::Handled
-        )
+        loop {
+            match self.handle_page_fault_result(vaddr, access_flags) {
+                FaultResult::Handled => return true,
+                // The failed transaction has released its metadata guard and
+                // cancelled its candidate owners. Reacquire a fresh VMA/PTE
+                // snapshot after allowing the competing publisher to progress;
+                // a transient conflict must not take the copy's EFAULT fixup.
+                FaultResult::Retry => crate::task::yield_now(),
+                _ => return false,
+            }
+        }
     }
 
     /// Acquires scheduler activation for an already-pinned kernel
@@ -1055,11 +1049,14 @@ impl ActivationLease {
         self.cpu
     }
 
-    /// Moves the acquired activation into inline scheduler storage. Unsizing
-    /// this existing Arc changes only its pointer metadata, not its allocation.
-    pub(crate) fn into_scheduler_activation(mut self) -> ax_task::SchedulerAddressSpaceActivation {
-        let activation = ax_task::SchedulerAddressSpaceActivation::new(
-            task_address_space(self.installed), self.cpu, self.inner.clone(),
+    /// Transfers a pre-acquired lease into the runtime's inline switch storage.
+    pub(crate) fn into_scheduler_activation(
+        mut self,
+    ) -> ax_runtime::task::SchedulerAddressSpaceActivation {
+        let activation = ax_runtime::task::SchedulerAddressSpaceActivation::new(
+            task_address_space(self.installed),
+            self.cpu,
+            self.inner.clone(),
         );
         self.released = true;
         activation
@@ -1094,9 +1091,15 @@ impl Drop for ActivationLease {
 fn abandon_activation(inner: Arc<MmInner>, cpu: usize) {
     {
         let _gate = inner.lifecycle_gate.lock();
-        inner.state.store(MmState::NeedsRepair as u8, Ordering::Release);
+        inner
+            .state
+            .store(MmState::NeedsRepair as u8, Ordering::Release);
     }
-    warn!("address-space activation for mm {} cpu {} dropped before root-switch proof", inner.id.get(), cpu);
+    warn!(
+        "address-space activation for mm {} cpu {} dropped before root-switch proof",
+        inner.id.get(),
+        cpu
+    );
     enqueue_repair_candidate(inner);
 }
 
@@ -1105,9 +1108,7 @@ fn release_activation_accounting(inner: &Arc<MmInner>, cpu: usize) {
         let _gate = inner.lifecycle_gate.lock();
         let previous = inner.active_count.load(Ordering::Relaxed);
         debug_assert!(previous > 0, "ActivationLease reference underflow");
-        inner
-            .active_count
-            .store(previous - 1, Ordering::Release);
+        inner.active_count.store(previous - 1, Ordering::Release);
         if cpu < usize::BITS as usize {
             let cpu_refs = &inner.active_per_cpu[cpu];
             let previous_cpu = cpu_refs.load(Ordering::Relaxed);
@@ -1124,13 +1125,16 @@ fn release_activation_accounting(inner: &Arc<MmInner>, cpu: usize) {
     queue_if_retired(inner);
 }
 
-impl ax_task::SchedulerAddressSpaceOwner for MmInner {
-    fn release_after_root_switch(self: Arc<Self>, proof: ax_task::AddressSpaceSwitchProof) {
+impl ax_runtime::task::SchedulerAddressSpaceOwner for MmInner {
+    fn release_after_root_switch(
+        self: Arc<Self>,
+        proof: ax_runtime::task::AddressSpaceSwitchProof,
+    ) {
         release_activation_accounting(&self, proof.cpu());
     }
 
-    fn release_after_kernel_switch(self: Arc<Self>, proof: ax_task::CpuOfflineRootSwitchProof) {
-        release_activation_accounting(&self, proof.cpu());
+    fn cancel_before_install(self: Arc<Self>, cpu: usize) {
+        release_activation_accounting(&self, cpu);
     }
 
     fn abandon(self: Arc<Self>, cpu: usize) {
@@ -1138,21 +1142,71 @@ impl ax_task::SchedulerAddressSpaceOwner for MmInner {
     }
 }
 
-fn task_address_space(installed: InstalledAddressSpace) -> ax_task::TaskAddressSpace {
-    ax_task::TaskAddressSpace::user(
+fn task_address_space(installed: InstalledAddressSpace) -> ax_hal::context::InstalledAddressSpace {
+    ax_hal::context::InstalledAddressSpace::user(
         installed.space_id().get(),
         installed.root(),
         installed.tag().hardware_tag,
         installed.tag().generation,
         installed.epoch().get(),
         match installed.tag().mode {
-            TagMode::Tagged => ax_task::TaskAddressSpaceMode::Tagged,
-            TagMode::FullFlush => ax_task::TaskAddressSpaceMode::FullFlush,
+            TagMode::Tagged => ax_hal::context::InstalledAddressSpaceMode::Tagged,
+            TagMode::FullFlush => ax_hal::context::InstalledAddressSpaceMode::FullFlush,
         },
     )
     .expect("typed Starry address-space installation must remain valid")
 }
 
+/// Task ownership can end before the CPU releases its lazy MM. The independent
+/// inner Arc anchors callback storage until the runtime reaps its owning token.
+struct RuntimeMmOwner {
+    _inner: Arc<MmInner>,
+    pin: IrqMutex<Option<MmPin>>,
+}
+
+// SAFETY: the pin permits activations of Live/Retiring MM state. Each activation
+// publishes the shared TLB target bit under the lifecycle gate. `inner` remains
+// owned by the runtime token until all CPU leases have drained, so the IRQ-off
+// release callbacks cannot drop the final page-table or MM-shell allocation.
+unsafe impl ax_runtime::task::UserAddressSpaceOwner for RuntimeMmOwner {
+    fn prepare_activation(
+        &self,
+        cpu: usize,
+    ) -> Result<ax_runtime::task::SchedulerAddressSpaceActivation, ax_runtime::task::TaskError>
+    {
+        self.pin
+            .lock()
+            .as_ref()
+            .ok_or(ax_runtime::task::TaskError::InvalidRuntimeHandle)?
+            .activation_for_switch(cpu)
+            .map(ActivationLease::into_scheduler_activation)
+            .map_err(|_| ax_runtime::task::TaskError::InvalidRuntimeHandle)
+    }
+
+    fn detach_from_task(&self) {
+        let pin = self.pin.lock().take();
+        drop(pin);
+    }
+}
+
+impl MmHandle {
+    /// Prepares task-scoped MM ownership before publishing a runnable task.
+    pub(crate) fn scheduler_address_space(
+        &self,
+    ) -> Result<ax_runtime::task::TaskAddressSpace, ax_runtime::task::TaskError> {
+        let pin = self
+            .pin()
+            .map_err(|_| ax_runtime::task::TaskError::InvalidRuntimeHandle)?;
+        ax_runtime::task::TaskAddressSpace::new_managed(
+            self.installed().root(),
+            self.inner.runtime_cpu_state.clone(),
+            RuntimeMmOwner {
+                _inner: self.inner.clone(),
+                pin: IrqMutex::new(Some(pin)),
+            },
+        )
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivationError {
@@ -1399,25 +1453,26 @@ pub fn spawn_reclaimer_task() {
     {
         return;
     }
-    ax_task::spawn_raw(
-        || loop {
-            let _ = ax_mm::retry_kernel_virtual_quarantines(16);
-            let _ = LAZY_FREE_RECLAIM.run_one_batch(16, reclaim_live_lazy_free_pages);
-            let _ = reap_retired(16);
-            if REPAIR_RETRY_REQUESTED.swap(false, Ordering::AcqRel) {
-                // A repair coordinator explicitly requested this pass after
-                // proving the failed precondition is fixed.  Without that
-                // request the queue remains untouched and `NeedsRepair` is
-                // never silently treated as success.
-                for permit in take_repair_candidates(16) {
-                    let _ = permit.retry();
+    ax_std::thread::Builder::new()
+        .name("starry-mm-reclaimer".to_owned())
+        .spawn(|| {
+            loop {
+                let _ = ax_mm::retry_kernel_virtual_quarantines(16);
+                let _ = LAZY_FREE_RECLAIM.run_one_batch(16, reclaim_live_lazy_free_pages);
+                let _ = reap_retired(16);
+                if REPAIR_RETRY_REQUESTED.swap(false, Ordering::AcqRel) {
+                    // A repair coordinator explicitly requested this pass after
+                    // proving the failed precondition is fixed.  Without that
+                    // request the queue remains untouched and `NeedsRepair` is
+                    // never silently treated as success.
+                    for permit in take_repair_candidates(16) {
+                        let _ = permit.retry();
+                    }
                 }
+                ax_std::thread::sleep(core::time::Duration::from_millis(10));
             }
-            ax_task::sleep(core::time::Duration::from_millis(10));
-        },
-        "starry-mm-reclaimer".to_owned(),
-        ax_task::default_task_stack_size(),
-    );
+        })
+        .expect("MM reclaimer thread must start before userspace");
 }
 
 impl RetirePermit {
@@ -1528,11 +1583,18 @@ mod tests {
         ));
         let handle = MmHandle::from_arc(aspace).unwrap();
         let weak = Arc::downgrade(&handle.inner);
-        handle.inner.aspace.lock().mutation_gate.fail_next_commit_before_publish();
+        handle
+            .inner
+            .aspace
+            .lock()
+            .mutation_gate
+            .fail_next_commit_before_publish();
         let permit = handle.release_user_ref().unwrap();
         drop(handle);
         assert_eq!(permit.reclaim(), Err(ReclaimError::Backend));
-        let inner = weak.upgrade().expect("failed reclaim must retain its MM for repair");
+        let inner = weak
+            .upgrade()
+            .expect("failed reclaim must retain its MM for repair");
         assert_eq!(inner.state(), MmState::NeedsRepair);
         // Taking and abandoning a repair token must not silently discard it.
         drop(take_repair_candidates(usize::MAX));
@@ -1550,8 +1612,9 @@ mod tests {
 
     #[axtest::axtest]
     fn mm_pin_services_blocking_discard_before_refault_retry() {
-        use super::super::{MutationError, TlbRange};
         use ax_runtime::hal::paging::MappingFlags;
+
+        use super::super::{MutationError, TlbRange};
 
         let start = VirtAddr::from(0x7500_0000);
         let aspace = Arc::new(Mutex::new(AddrSpace::new_empty(start, 0x1000).unwrap()));
@@ -1559,23 +1622,98 @@ mod tests {
         let pin = handle.pin().unwrap();
         {
             let mut aspace = pin.lock();
-            aspace.map(
-                start, 0x1000, MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
-                true, MappingOperation::new_alloc(start, 0x1000, "[pin-refault]"),
-            ).unwrap();
+            aspace
+                .map(
+                    start,
+                    0x1000,
+                    MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+                    true,
+                    MappingOperation::new_alloc(start, 0x1000, "[pin-refault]"),
+                )
+                .unwrap();
             aspace.discard_range(start, 0x1000).unwrap();
             let mut discard = aspace.mutation_gate.begin(aspace.id, 1);
             discard.add_tlb_range(TlbRange::new(start, 0x1000).unwrap());
-            assert_eq!(aspace.mutation_gate.commit(discard).unwrap_err(), MutationError::TlbPending);
+            assert_eq!(
+                aspace.mutation_gate.commit(discard).unwrap_err(),
+                MutationError::TlbPending
+            );
         }
         let access = PageFaultFlags::READ | PageFaultFlags::USER;
-        assert!(matches!(pin.handle_page_fault_result(start, access), FaultResult::Retry));
+        assert!(matches!(
+            pin.handle_page_fault_result(start, access),
+            FaultResult::Retry
+        ));
         assert_eq!(pin.lock().pending_tlb_obligations(), 0);
-        assert!(matches!(pin.handle_page_fault_result(start, access), FaultResult::Handled));
+        assert!(matches!(
+            pin.handle_page_fault_result(start, access),
+            FaultResult::Handled
+        ));
         drop(pin);
         let permit = handle.release_user_ref().unwrap();
         drop(handle);
         permit.reclaim().unwrap();
+    }
+
+    #[axtest::axtest]
+    fn faultable_user_copy_retries_pending_tlb_before_reporting_success() {
+        use ax_runtime::hal::paging::MappingFlags;
+
+        use super::super::{MutationError, TlbRange};
+
+        let start = VirtAddr::from(0x7600_0000);
+        let aspace = Arc::new(Mutex::new(AddrSpace::new_empty(start, 0x1000).unwrap()));
+        let handle = MmHandle::from_arc(aspace).unwrap();
+        let pin = handle.pin().unwrap();
+        {
+            let mut aspace = pin.lock();
+            aspace
+                .map(
+                    start,
+                    0x1000,
+                    MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+                    true,
+                    MappingOperation::new_alloc(start, 0x1000, "[copy-refault]"),
+                )
+                .unwrap();
+            aspace.discard_range(start, 0x1000).unwrap();
+            let mut discard = aspace.mutation_gate.begin(aspace.id, 1);
+            discard.add_tlb_range(TlbRange::new(start, 0x1000).unwrap());
+            assert_eq!(
+                aspace.mutation_gate.commit(discard).unwrap_err(),
+                MutationError::TlbPending
+            );
+        }
+        // A kernel copy faults without USER, unlike a userspace instruction.
+        // The old discard receipt forces the first attempt to return Retry.
+        assert!(pin.handle_page_fault(start, PageFaultFlags::WRITE));
+        assert_eq!(pin.lock().pending_tlb_obligations(), 0);
+        assert!(
+            pin.lock()
+                .pt
+                .query(start)
+                .is_ok_and(|(_, flags, _)| flags.contains(MappingFlags::WRITE))
+        );
+        assert!(!pin.handle_page_fault(start, PageFaultFlags::EXECUTE));
+        assert!(!pin.handle_page_fault(start + 0x1000, PageFaultFlags::WRITE));
+        let exhausted = AddrSpace::classify_fault_error(false, crate::StarryError::NoMemory);
+        pin.lock().mutation_gate.mark_needs_repair();
+        let quarantined = pin.handle_page_fault_result(start, PageFaultFlags::WRITE);
+        // This test did not damage any PTE; release its synthetic quarantine.
+        pin.lock().mutation_gate.clear_repair();
+        drop(pin);
+        let permit = handle.release_user_ref().unwrap();
+        drop(handle);
+        permit.reclaim().unwrap();
+        assert!(
+            exhausted != FaultResult::Retry && matches!(quarantined, FaultResult::Sigbus(_)),
+            "allocation failure and repair quarantine are terminal: {exhausted:?}, {quarantined:?}"
+        );
+        assert_eq!(exhausted, FaultResult::NoMemory);
+        assert_eq!(
+            quarantined,
+            FaultResult::Sigbus(super::super::BusCode::ObjErr)
+        );
     }
 
     #[axtest::axtest]
@@ -1591,7 +1729,10 @@ mod tests {
         drop(handle);
         drop(activation);
         let retained = weak.upgrade();
-        assert!(retained.is_some(), "an unproved active root must stay owned by repair quarantine");
+        assert!(
+            retained.is_some(),
+            "an unproved active root must stay owned by repair quarantine"
+        );
         let inner = retained.unwrap();
         assert_eq!(inner.state(), MmState::NeedsRepair);
         assert_eq!(inner.active_count.load(Ordering::Acquire), 1);
@@ -1816,10 +1957,7 @@ mod tests {
         let pin = handle.pin().unwrap();
         let activation = handle.activation(2).unwrap();
         assert_eq!(
-            pin.handle_page_fault_result(
-                start,
-                PageFaultFlags::READ | PageFaultFlags::USER,
-            ),
+            pin.handle_page_fault_result(start, PageFaultFlags::READ | PageFaultFlags::USER,),
             FaultResult::Handled
         );
         {

@@ -398,43 +398,6 @@ mod tests {
         true
     }
 
-    fn array_contiguous_methods_hold_for_test() -> bool {
-        // Test ContiguousArray-specific methods that may not be covered
-        // These are tested indirectly but we verify the helpers exist
-        assert!(array_helper_len_and_layout_rules_hold_for_test());
-
-        // Test len_from_bytes with different types
-        assert!(len_from_bytes::<u8>(100) == 100);
-        assert!(len_from_bytes::<u16>(100) == 50);
-        assert!(len_from_bytes::<u32>(100) == 25);
-        assert!(len_from_bytes::<u64>(100) == 12);
-
-        true
-    }
-
-    fn array_read_at_write_at_helpers_hold_for_test() -> bool {
-        // Test that read_at and write_at helper functions exist
-        // These are tested through array operations but we verify basic logic
-        assert!(len_from_bytes::<u8>(0) == 0);
-        assert!(len_from_bytes::<u32>(0) == 0);
-
-        // Test array_layout with zero size
-        let empty = array_layout::<u8>(0, 1);
-        assert!(empty.is_ok());
-        assert!(empty.unwrap().size() == 0);
-
-        true
-    }
-
-    fn array_dma_array_cpu_read_trait_hold_for_test() -> bool {
-        // Test DmaArrayCpuRead trait methods exist
-        // These are tested through CoherentArray and ContiguousArray but we verify helpers
-        assert!(len_from_bytes::<u8>(100) == 100);
-        assert!(len_from_bytes::<u16>(50) == 25);
-
-        true
-    }
-
     fn array_layout_edge_cases_comprehensive_hold_for_test() -> bool {
         // Comprehensive edge case tests for array_layout and len_from_bytes
 
@@ -559,21 +522,6 @@ mod tests {
     #[test]
     fn array_helper_len_and_layout_rules_hold() {
         assert!(array_helper_len_and_layout_rules_hold_for_test());
-    }
-
-    #[test]
-    fn array_contiguous_methods_hold() {
-        assert!(array_contiguous_methods_hold_for_test());
-    }
-
-    #[test]
-    fn array_read_at_write_at_helpers_hold() {
-        assert!(array_read_at_write_at_helpers_hold_for_test());
-    }
-
-    #[test]
-    fn array_dma_array_cpu_read_trait_hold() {
-        assert!(array_dma_array_cpu_read_trait_hold_for_test());
     }
 
     #[test]

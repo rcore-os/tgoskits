@@ -1,12 +1,11 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
 use core::{
+    cell::Cell,
     future::poll_fn,
     sync::atomic::{AtomicU64, Ordering},
     task::{Context, Poll},
 };
 
-use ax_runtime::hal::irq::IrqId;
-use ax_task::IrqNotify;
 use crab_usb::{
     Device, DeviceInfo, EndpointHandle, InterfaceSession, ProbeChanges,
     usb_if::{
@@ -18,7 +17,6 @@ use crab_usb::{
 };
 use event_listener::Event as NotifyEvent;
 use rdrive::DeviceId as RDriveDeviceId;
-use starry_vm::{VmMutPtr, vm_load, vm_write_slice};
 
 use super::{
     descriptor::{
@@ -30,10 +28,13 @@ use super::{
         root_hub_snapshot, snapshot_probed_device,
     },
     irq::{self, PendingUsbIrqSlot},
+    refresh::{HostRefreshCursor, HostRefreshState, RefreshRetryBackoff},
 };
 use crate::{
     Errno, StarryError, StarryResult,
-    sync::{IrqMutex as Mutex, Mutex as BlockingMutex},
+    mm::{VmMutPtr, vm_load, vm_write_slice},
+    sync::{IrqMutex as Mutex, Mutex as BlockingMutex, PiMutex},
+    task::future::IrqNotify,
 };
 
 const ROOT_HUB_STABLE_DEVICE_ID: usize = usize::MAX;
@@ -41,21 +42,29 @@ const USB_REQ_GET_DESCRIPTOR: u8 = 0x06;
 const USB_REQ_GET_CONFIGURATION: u8 = 0x08;
 const USB_DT_DEVICE: u16 = 0x01;
 const USB_DT_CONFIG: u16 = 0x02;
+const USBFS_REFRESH_BATCH_LIMIT: usize = 64;
 
 pub(super) struct UsbHostState {
     pub(super) device_id: RDriveDeviceId,
     pub(super) bus_num: u8,
-    pub(super) irq: Option<IrqId>,
     pub(super) root_hub_speed: Speed,
-    pub(super) needs_probe: bool,
+    pub(super) refresh: HostRefreshState,
     pub(super) next_device_num: u8,
     pub(super) stable_id_to_device_num: BTreeMap<usize, u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RefreshBatchOutcome {
+    Idle,
+    More,
+    Retry,
 }
 
 #[derive(Default)]
 struct UsbFsState {
     hosts: Vec<UsbHostState>,
     devices: BTreeMap<UsbStableId, UsbDeviceRecord>,
+    refresh_cursor: HostRefreshCursor,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -211,7 +220,7 @@ fn wait_endpoint(
     request: TransferRequest,
 ) -> StarryResult<TransferCompletion> {
     let request_id = endpoint.submit(request).map_err(map_transfer_error)?;
-    ax_task::future::block_on(poll_fn(|cx| match endpoint.poll_request(request_id, cx) {
+    crate::task::future::block_on(poll_fn(|cx| match endpoint.poll_request(request_id, cx) {
         Poll::Ready(result) => Poll::Ready(result.map_err(map_transfer_error)),
         Poll::Pending => Poll::Pending,
     }))
@@ -227,7 +236,7 @@ fn wait_control(
         .ctrl_ep_mut()
         .submit(request)
         .map_err(map_transfer_error)?;
-    ax_task::future::block_on(poll_fn(|cx| {
+    crate::task::future::block_on(poll_fn(|cx| {
         match live_device
             .device
             .lock()
@@ -242,7 +251,7 @@ fn wait_control(
 
 pub(super) struct UsbFsManager {
     state: Mutex<UsbFsState>,
-    open_lock: BlockingMutex<()>,
+    open_lock: PiMutex<()>,
     usb_activity: UsbActivity,
     irq_notify: IrqNotify,
 }
@@ -268,8 +277,14 @@ pub(super) struct UsbDeviceLease {
 }
 
 impl UsbDeviceLease {
-    pub(super) fn ioctl(&self, cmd: u32, arg: usize) -> StarryResult<usize> {
-        self.manager.opened_device_ioctl(self.stable_id, cmd, arg)
+    pub(super) fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> crate::StarryResult<usize> {
+        self.manager
+            .opened_device_ioctl(current, self.stable_id, cmd, arg)
     }
 
     pub(super) fn claim_interface(&self, interface: u8, alternate: u8) -> StarryResult<()> {
@@ -414,8 +429,12 @@ impl UsbFsManager {
         }
 
         Self {
-            state: Mutex::new(UsbFsState { hosts, devices }),
-            open_lock: BlockingMutex::new(()),
+            state: Mutex::new(UsbFsState {
+                hosts,
+                devices,
+                refresh_cursor: HostRefreshCursor::default(),
+            }),
+            open_lock: PiMutex::new(()),
             usb_activity: UsbActivity::new(),
             irq_notify: IrqNotify::new(),
         }
@@ -423,10 +442,6 @@ impl UsbFsManager {
 
     pub(super) fn notify_usb_activity_from_irq(&self) {
         self.usb_activity.seq.fetch_add(1, Ordering::AcqRel);
-        self.irq_notify.notify_irq();
-    }
-
-    pub(super) fn notify_topology_from_irq(&self) {
         self.irq_notify.notify_irq();
     }
 
@@ -443,34 +458,163 @@ impl UsbFsManager {
     }
 
     pub(super) fn has_hosts(&self) -> bool {
-        !self.state.lock().hosts.is_empty()
+        self.state
+            .lock()
+            .hosts
+            .iter()
+            .any(|host| host.refresh.is_enabled())
     }
 
-    pub(super) fn refresh_dirty_hosts(&self) {
-        let pending_hosts = {
-            let mut state = self.state.lock();
-            let open_hosts = state
-                .devices
-                .values()
-                .filter(|record| record.open_count > 0)
-                .map(|record| record.host_device_id)
-                .collect::<Vec<_>>();
-            let mut pending = Vec::new();
-            for host in &mut state.hosts {
-                let irq_dirty = host.irq.map(irq::take_dirty).unwrap_or(false);
-                if open_hosts.contains(&host.device_id) {
-                    host.needs_probe |= irq_dirty;
-                    continue;
-                }
-                if host.needs_probe || irq_dirty {
-                    host.needs_probe = false;
-                    pending.push((host.device_id, host.bus_num));
-                }
+    fn fold_pending_topology_events(&self) {
+        let mut state = self.state.lock();
+        for host in &mut state.hosts {
+            if irq::take_dirty_for_device(host.device_id) {
+                host.refresh.mark_dirty();
             }
-            pending
-        };
+        }
+    }
 
-        for (device_id, bus_num) in pending_hosts {
+    fn take_refresh_candidate(&self) -> Option<(RDriveDeviceId, u8)> {
+        let mut state = self.state.lock();
+        let UsbFsState {
+            hosts,
+            devices,
+            refresh_cursor,
+        } = &mut *state;
+        let host_index = refresh_cursor.claim_next(hosts.len(), |host_index| {
+            let device_id = hosts[host_index].device_id;
+            let host_is_open = devices
+                .values()
+                .any(|record| record.host_device_id == device_id && record.open_count > 0);
+            if host_is_open {
+                return false;
+            }
+            hosts[host_index].refresh.begin_probe()
+        })?;
+        let host = &hosts[host_index];
+        Some((host.device_id, host.bus_num))
+    }
+
+    fn defer_host_refresh(&self, device_id: RDriveDeviceId) {
+        let mut state = self.state.lock();
+        if let Some(host) = state
+            .hosts
+            .iter_mut()
+            .find(|host| host.device_id == device_id)
+        {
+            host.refresh.defer_probe();
+        }
+    }
+
+    fn finish_host_refresh(&self, device_id: RDriveDeviceId) {
+        let dirty_after_probe = irq::take_dirty_for_device(device_id);
+        let mut state = self.state.lock();
+        let Some(host) = state
+            .hosts
+            .iter_mut()
+            .find(|host| host.device_id == device_id)
+        else {
+            return;
+        };
+        if dirty_after_probe {
+            host.refresh.mark_dirty();
+        }
+        host.refresh.finish_probe();
+    }
+
+    fn disable_missing_host(&self, device_id: RDriveDeviceId) {
+        let mut state = self.state.lock();
+        if let Some(host) = state
+            .hosts
+            .iter_mut()
+            .find(|host| host.device_id == device_id)
+        {
+            host.refresh.disable();
+        }
+
+        for record in state
+            .devices
+            .values_mut()
+            .filter(|record| record.host_device_id == device_id)
+        {
+            record.present = false;
+            record.openable = false;
+            record.unopened_info = None;
+        }
+        state
+            .devices
+            .retain(|_, record| record.host_device_id != device_id || record.open_count != 0);
+    }
+
+    fn has_runnable_refresh(&self) -> bool {
+        let state = self.state.lock();
+        state.hosts.iter().any(|host| {
+            host.refresh.is_queued()
+                && !state
+                    .devices
+                    .values()
+                    .any(|record| record.host_device_id == host.device_id && record.open_count > 0)
+        })
+    }
+
+    fn queue_host_refresh(&self, device_id: RDriveDeviceId) {
+        {
+            let mut state = self.state.lock();
+            let Some(host) = state
+                .hosts
+                .iter_mut()
+                .find(|host| host.device_id == device_id)
+            else {
+                return;
+            };
+            host.refresh.mark_dirty();
+        }
+        self.notify_refresh();
+    }
+
+    fn begin_initial_probe(&self, device_id: RDriveDeviceId) {
+        // The first probe is unconditional, so notifications observed before
+        // it starts are covered by that probe rather than scheduling a second
+        // pass.
+        irq::take_dirty_for_device(device_id);
+        let mut state = self.state.lock();
+        if let Some(host) = state
+            .hosts
+            .iter_mut()
+            .find(|host| host.device_id == device_id)
+        {
+            debug_assert!(host.refresh.begin_probe());
+        }
+    }
+
+    fn finish_initial_probe(&self, device_id: RDriveDeviceId) {
+        let dirty_during_probe = irq::take_dirty_for_device(device_id);
+        let mut state = self.state.lock();
+        if let Some(host) = state
+            .hosts
+            .iter_mut()
+            .find(|host| host.device_id == device_id)
+        {
+            if dirty_during_probe {
+                host.refresh.mark_dirty();
+            }
+            host.refresh.finish_initial_probe();
+        }
+    }
+
+    fn service_refresh_batch(&self) -> RefreshBatchOutcome {
+        self.fold_pending_topology_events();
+
+        for _ in 0..USBFS_REFRESH_BATCH_LIMIT {
+            // Device opens and topology probes mutate the same host controller
+            // state. This sleeping mutex serializes those USBFS operations,
+            // while try_lock below avoids spinning behind an external owner.
+            let _host_access = self.open_lock.lock();
+            self.fold_pending_topology_events();
+            let Some((device_id, bus_num)) = self.take_refresh_candidate() else {
+                return RefreshBatchOutcome::Idle;
+            };
+
             let host = match rdrive::get::<ax_driver::usb::PlatformUsbHost>(device_id) {
                 Ok(host) => host,
                 Err(err) => {
@@ -478,37 +622,63 @@ impl UsbFsManager {
                         "usbfs: failed to reacquire USB host {:?}: {err:?}",
                         device_id
                     );
+                    irq::disable_device(device_id);
+                    self.disable_missing_host(device_id);
+                    irq::free_device_irq(device_id);
                     continue;
                 }
             };
-
-            let mut guard = match host.lock() {
+            let mut guard = match host.try_lock() {
                 Ok(guard) => guard,
+                Err(
+                    rdrive::GetDeviceError::UsedByOthers(_) | rdrive::GetDeviceError::UsedByUnknown,
+                ) => {
+                    self.defer_host_refresh(device_id);
+                    return RefreshBatchOutcome::Retry;
+                }
                 Err(err) => {
                     warn!("usbfs: failed to lock USB host {:?}: {err:?}", device_id);
+                    irq::disable_device(device_id);
+                    self.disable_missing_host(device_id);
+                    irq::free_device_irq(device_id);
                     continue;
                 }
             };
 
-            let devices = match ax_task::future::block_on(guard.host_mut().probe_devices()) {
-                Ok(devices) => devices,
+            let probe_result = crate::task::future::block_on(guard.host_mut().probe_devices());
+            drop(guard);
+            match probe_result {
+                Ok(devices) => {
+                    self.apply_probe_results(device_id, bus_num, devices);
+                    self.finish_host_refresh(device_id);
+                }
                 Err(err) => {
                     warn!("usbfs: refresh probe failed on bus {bus_num}: {err:?}");
-                    continue;
+                    self.defer_host_refresh(device_id);
+                    return RefreshBatchOutcome::Retry;
                 }
-            };
-            drop(guard);
-            self.apply_probe_results(device_id, bus_num, devices);
+            }
+        }
+
+        self.fold_pending_topology_events();
+        if self.has_runnable_refresh() {
+            RefreshBatchOutcome::More
+        } else {
+            RefreshBatchOutcome::Idle
         }
     }
 
     pub(super) fn bus_numbers(&self) -> Vec<u8> {
         let state = self.state.lock();
-        state.hosts.iter().map(|host| host.bus_num).collect()
+        state
+            .hosts
+            .iter()
+            .filter(|host| host.refresh.is_enabled())
+            .map(|host| host.bus_num)
+            .collect()
     }
 
     pub(super) fn device_numbers(&self, bus_num: u8) -> Vec<u8> {
-        self.refresh_dirty_hosts();
         let state = self.state.lock();
         state
             .devices
@@ -519,7 +689,6 @@ impl UsbFsManager {
     }
 
     pub(super) fn device_snapshot(&self, bus_num: u8, device_num: u8) -> Option<UsbDeviceSnapshot> {
-        self.refresh_dirty_hosts();
         self.state.lock().devices.values().find_map(|record| {
             (record.present
                 && record.snapshot.bus_num == bus_num
@@ -567,35 +736,39 @@ impl UsbFsManager {
 
     fn opened_device_ioctl(
         &self,
+        current: &crate::task::UserTaskRef,
         stable_id: UsbStableId,
         cmd: u32,
         arg: usize,
-    ) -> StarryResult<usize> {
+    ) -> crate::StarryResult<usize> {
         match cmd {
-            USBDEVFS_CONTROL => self.handle_control(stable_id, arg),
+            USBDEVFS_CONTROL => self.handle_control(current, stable_id, arg),
             USBDEVFS_CONNECTINFO => {
                 let snapshot = self.snapshot_by_id(stable_id)?;
-                (arg as *mut UsbdevfsConnectInfo).vm_write(UsbdevfsConnectInfo {
-                    devnum: snapshot.device_num as u32,
-                    slow: 0,
-                    _padding: [0; 3],
-                })?;
+                (arg as *mut UsbdevfsConnectInfo).vm_write(
+                    current,
+                    UsbdevfsConnectInfo {
+                        devnum: snapshot.device_num as u32,
+                        slow: 0,
+                        _padding: [0; 3],
+                    },
+                )?;
                 Ok(0)
             }
             USBDEVFS_GET_CAPABILITIES => {
-                (arg as *mut u32).vm_write(USBDEVFS_CAP_BULK_CONTINUATION)?;
+                (arg as *mut u32).vm_write(current, USBDEVFS_CAP_BULK_CONTINUATION)?;
                 Ok(0)
             }
             USBDEVFS_CLAIMINTERFACE | USBDEVFS_RELEASEINTERFACE => {
-                let _ = read_usbdevfs_u32(arg)?;
-                Err(StarryError::Unsupported)
+                let _ = read_usbdevfs_u32(current, arg)?;
+                Err(crate::StarryError::Unsupported)
             }
             USBDEVFS_SETINTERFACE => {
-                let _ = read_usbdevfs_setinterface(arg)?;
-                Err(StarryError::Unsupported)
+                let _ = read_usbdevfs_setinterface(current, arg)?;
+                Err(crate::StarryError::Unsupported)
             }
             USBDEVFS_BULK => {
-                let bulk = read_usbdevfs_bulktransfer(arg)?;
+                let bulk = read_usbdevfs_bulktransfer(current, arg)?;
                 let len = bulk.len as usize;
                 if len > 0 {
                     crate::mm::check_access(bulk.data as usize, len)?;
@@ -603,8 +776,8 @@ impl UsbFsManager {
                 Err(StarryError::Unsupported)
             }
             USBDEVFS_SETCONFIGURATION | USBDEVFS_CLEAR_HALT => {
-                let _ = read_usbdevfs_u32(arg)?;
-                Err(StarryError::Unsupported)
+                let _ = read_usbdevfs_u32(current, arg)?;
+                Err(crate::StarryError::Unsupported)
             }
             USBDEVFS_RESET => Err(StarryError::Unsupported),
             _ => Err(StarryError::Unsupported),
@@ -613,6 +786,7 @@ impl UsbFsManager {
 
     pub(super) fn snapshot_device_ioctl(
         &self,
+        current: &crate::task::UserTaskRef,
         bus_num: u8,
         device_num: u8,
         cmd: u32,
@@ -622,17 +796,20 @@ impl UsbFsManager {
             .device_snapshot(bus_num, device_num)
             .ok_or(StarryError::NotFound)?;
         match cmd {
-            USBDEVFS_CONTROL => snapshot_control_ioctl(&snapshot, arg),
+            USBDEVFS_CONTROL => snapshot_control_ioctl(current, &snapshot, arg),
             USBDEVFS_CONNECTINFO => {
-                (arg as *mut UsbdevfsConnectInfo).vm_write(UsbdevfsConnectInfo {
-                    devnum: snapshot.device_num as u32,
-                    slow: 0,
-                    _padding: [0; 3],
-                })?;
+                (arg as *mut UsbdevfsConnectInfo).vm_write(
+                    current,
+                    UsbdevfsConnectInfo {
+                        devnum: snapshot.device_num as u32,
+                        slow: 0,
+                        _padding: [0; 3],
+                    },
+                )?;
                 Ok(0)
             }
             USBDEVFS_GET_CAPABILITIES => {
-                (arg as *mut u32).vm_write(USBDEVFS_CAP_BULK_CONTINUATION)?;
+                (arg as *mut u32).vm_write(current, USBDEVFS_CAP_BULK_CONTINUATION)?;
                 Ok(0)
             }
             _ => Err(StarryError::Unsupported),
@@ -713,75 +890,81 @@ impl UsbFsManager {
 
         for live_device in disconnected_devices {
             let mut device = live_device.device.lock();
-            if let Err(err) = ax_task::future::block_on(device.disconnect()) {
+            if let Err(err) = crate::task::future::block_on(device.disconnect()) {
                 warn!("usbfs: failed to quiesce disconnected USB device: {err:?}");
             }
         }
     }
 
-    fn ensure_live_device(&self, stable_id: UsbStableId) -> StarryResult<()> {
-        loop {
-            enum OpenAction {
-                Ready,
-                Open {
-                    host_device_id: RDriveDeviceId,
-                    info: DeviceInfo,
-                },
-                Refresh {
-                    host_device_id: RDriveDeviceId,
-                    bus_num: u8,
-                },
-            }
+    fn ensure_live_device(&self, stable_id: UsbStableId) -> crate::StarryResult<()> {
+        enum OpenAction {
+            Ready,
+            Open {
+                host_device_id: RDriveDeviceId,
+                info: DeviceInfo,
+            },
+            QueueRefresh {
+                host_device_id: RDriveDeviceId,
+            },
+        }
 
-            let action = {
+        let action = {
+            let mut state = self.state.lock();
+            let record = state
+                .devices
+                .get_mut(&stable_id)
+                .ok_or(crate::StarryError::NotFound)?;
+            if record.live_device.is_some() {
+                OpenAction::Ready
+            } else if let Some(info) = record.unopened_info.take() {
+                OpenAction::Open {
+                    host_device_id: record.host_device_id,
+                    info,
+                }
+            } else if record.synthetic || !record.openable {
+                return Err(crate::StarryError::Unsupported);
+            } else if record.present {
+                OpenAction::QueueRefresh {
+                    host_device_id: record.host_device_id,
+                }
+            } else {
+                return Err(crate::StarryError::NoSuchDevice);
+            }
+        };
+
+        match action {
+            OpenAction::Ready => Ok(()),
+            OpenAction::Open {
+                host_device_id,
+                info,
+            } => {
+                let live_device = match self.open_device(host_device_id, &info) {
+                    Ok(device) => device,
+                    Err(err) => {
+                        let mut state = self.state.lock();
+                        if let Some(record) = state.devices.get_mut(&stable_id)
+                            && record.live_device.is_none()
+                            && record.unopened_info.is_none()
+                        {
+                            record.unopened_info = Some(info);
+                        }
+                        return Err(err);
+                    }
+                };
                 let mut state = self.state.lock();
                 let record = state
                     .devices
                     .get_mut(&stable_id)
-                    .ok_or(StarryError::NotFound)?;
-                if record.live_device.is_some() {
-                    OpenAction::Ready
-                } else if let Some(info) = record.unopened_info.take() {
-                    OpenAction::Open {
-                        host_device_id: record.host_device_id,
-                        info,
-                    }
-                } else if record.synthetic || !record.openable {
-                    return Err(StarryError::Unsupported);
-                } else if record.present {
-                    OpenAction::Refresh {
-                        host_device_id: record.host_device_id,
-                        bus_num: record.snapshot.bus_num,
-                    }
-                } else {
-                    return Err(StarryError::NoSuchDevice);
-                }
-            };
-
-            match action {
-                OpenAction::Ready => return Ok(()),
-                OpenAction::Open {
-                    host_device_id,
-                    info,
-                } => {
-                    let live_device = self.open_device(host_device_id, &info)?;
-                    let mut state = self.state.lock();
-                    let record = state
-                        .devices
-                        .get_mut(&stable_id)
-                        .ok_or(StarryError::NotFound)?;
-                    record.live_device = Some(Arc::new(LiveDeviceState {
-                        device: BlockingMutex::new(live_device),
-                        interfaces: BlockingMutex::new(BTreeMap::new()),
-                    }));
-                    return Ok(());
-                }
-                OpenAction::Refresh {
-                    host_device_id,
-                    bus_num,
-                } => {
-                    self.refresh_host(host_device_id, bus_num)?;
-                }
+                    .ok_or(crate::StarryError::NotFound)?;
+                record.live_device = Some(Arc::new(LiveDeviceState {
+                    device: BlockingMutex::new(live_device),
+                    interfaces: BlockingMutex::new(BTreeMap::new()),
+                }));
+                Ok(())
+            }
+            OpenAction::QueueRefresh { host_device_id } => {
+                self.queue_host_refresh(host_device_id);
+                Err(crate::StarryError::WouldBlock)
             }
         }
     }
@@ -792,9 +975,17 @@ impl UsbFsManager {
         info: &DeviceInfo,
     ) -> StarryResult<Device> {
         let host = rdrive::get::<ax_driver::usb::PlatformUsbHost>(host_device_id)
-            .map_err(|_| StarryError::NoSuchDevice)?;
-        let mut guard = host.lock().map_err(|_| StarryError::ResourceBusy)?;
-        ax_task::future::block_on(guard.host_mut().open_device(info)).map_err(|err| {
+            .map_err(|_| crate::StarryError::NoSuchDevice)?;
+        let mut guard = host.try_lock().map_err(|err| match err {
+            rdrive::GetDeviceError::UsedByOthers(_) | rdrive::GetDeviceError::UsedByUnknown => {
+                crate::StarryError::WouldBlock
+            }
+            rdrive::GetDeviceError::DeviceReleased | rdrive::GetDeviceError::NotFound => {
+                crate::StarryError::NoSuchDevice
+            }
+            rdrive::GetDeviceError::TypeNotMatch => crate::StarryError::BadState,
+        })?;
+        crate::task::future::block_on(guard.host_mut().open_device(info)).map_err(|err| {
             warn!(
                 "usbfs: failed to open live device on host {:?} for USB device id {}: {:?}",
                 host_device_id,
@@ -805,18 +996,7 @@ impl UsbFsManager {
         })
     }
 
-    fn refresh_host(&self, host_device_id: RDriveDeviceId, bus_num: u8) -> StarryResult<()> {
-        let host = rdrive::get::<ax_driver::usb::PlatformUsbHost>(host_device_id)
-            .map_err(|_| StarryError::NoSuchDevice)?;
-        let mut guard = host.lock().map_err(|_| StarryError::ResourceBusy)?;
-        let devices =
-            ax_task::future::block_on(guard.host_mut().probe_devices()).map_err(map_usb_error)?;
-        drop(guard);
-        self.apply_probe_results(host_device_id, bus_num, devices);
-        Ok(())
-    }
-
-    fn snapshot_by_id(&self, stable_id: UsbStableId) -> StarryResult<UsbDeviceSnapshot> {
+    fn snapshot_by_id(&self, stable_id: UsbStableId) -> crate::StarryResult<UsbDeviceSnapshot> {
         self.state
             .lock()
             .devices
@@ -890,7 +1070,7 @@ impl UsbFsManager {
             },
             || {
                 let reset = endpoint_handle.reset();
-                ax_task::future::block_on(reset).map_err(map_transfer_error)
+                crate::task::future::block_on(reset).map_err(map_transfer_error)
             },
         )
     }
@@ -910,12 +1090,12 @@ impl UsbFsManager {
             if claimed.owner != session_id {
                 return Err(StarryError::ResourceBusy);
             }
-            return ax_task::future::block_on(
+            return crate::task::future::block_on(
                 claimed.session.set_alternate(&mut device, alternate),
             )
             .map_err(map_usb_error);
         }
-        let session = ax_task::future::block_on(device.claim_interface(interface, alternate))
+        let session = crate::task::future::block_on(device.claim_interface(interface, alternate))
             .map_err(map_usb_error)?;
         interfaces.insert(
             interface,
@@ -930,7 +1110,7 @@ impl UsbFsManager {
     fn live_ensure_configured(&self, stable_id: UsbStableId) -> StarryResult<()> {
         let live_device = self.live_device_by_id(stable_id)?;
         let mut device = live_device.device.lock();
-        if ax_task::future::block_on(device.current_configuration_descriptor()).is_ok() {
+        if crate::task::future::block_on(device.current_configuration_descriptor()).is_ok() {
             return Ok(());
         }
 
@@ -938,8 +1118,8 @@ impl UsbFsManager {
             .configurations()
             .first()
             .map(|config| config.configuration_value)
-            .ok_or(StarryError::NotFound)?;
-        ax_task::future::block_on(device.set_configuration(configuration_value))
+            .ok_or(crate::StarryError::NotFound)?;
+        crate::task::future::block_on(device.set_configuration(configuration_value))
             .map_err(map_usb_error)
     }
 
@@ -951,7 +1131,7 @@ impl UsbFsManager {
         let live_device = self.live_device_by_id(stable_id)?;
         let mut interfaces = live_device.interfaces.lock();
         let mut device = live_device.device.lock();
-        ax_task::future::block_on(device.set_configuration(configuration))
+        crate::task::future::block_on(device.set_configuration(configuration))
             .map_err(map_usb_error)?;
         interfaces.clear();
         Ok(())
@@ -1087,13 +1267,19 @@ impl UsbFsManager {
         if claimed.owner != session_id {
             return Err(StarryError::ResourceBusy);
         }
-        ax_task::future::block_on(claimed.session.release(&mut device)).map_err(map_usb_error)?;
+        crate::task::future::block_on(claimed.session.release(&mut device))
+            .map_err(map_usb_error)?;
         interfaces.remove(&interface);
         Ok(())
     }
 
-    fn handle_control(&self, stable_id: UsbStableId, arg: usize) -> StarryResult<usize> {
-        let ctrl = read_usbdevfs_ctrltransfer(arg)?;
+    fn handle_control(
+        &self,
+        current: &crate::task::UserTaskRef,
+        stable_id: UsbStableId,
+        arg: usize,
+    ) -> crate::StarryResult<usize> {
+        let ctrl = read_usbdevfs_ctrltransfer(current, arg)?;
         match direction_from_raw(ctrl.b_request_type) {
             Direction::In => {
                 let mut data = vec![0; ctrl.w_length as usize];
@@ -1105,11 +1291,11 @@ impl UsbFsManager {
                     ctrl.w_index,
                     &mut data,
                 )?;
-                vm_write_slice(ctrl.data, &data[..actual])?;
+                vm_write_slice(current, ctrl.data, &data[..actual])?;
                 Ok(actual)
             }
             Direction::Out => {
-                let mut data = vm_load(ctrl.data as *const u8, ctrl.w_length as usize)?;
+                let mut data = vm_load(current, ctrl.data as *const u8, ctrl.w_length as usize)?;
                 self.live_control_transfer(
                     stable_id,
                     ctrl.b_request_type,
@@ -1123,23 +1309,33 @@ impl UsbFsManager {
     }
 
     fn release_device(&self, stable_id: UsbStableId) {
-        let _open_guard = self.open_lock.lock();
-        let mut state = self.state.lock();
-        let Some(record) = state.devices.get_mut(&stable_id) else {
-            return;
+        let should_notify_refresh = {
+            let _open_guard = self.open_lock.lock();
+            let mut state = self.state.lock();
+            let Some(record) = state.devices.get_mut(&stable_id) else {
+                return;
+            };
+            if record.open_count > 0 {
+                record.open_count -= 1;
+            }
+            let last_lease_released = record.open_count == 0;
+            let remove_absent_record = last_lease_released && !record.present;
+            if remove_absent_record {
+                state.devices.remove(&stable_id);
+            }
+            last_lease_released
         };
-        if record.open_count > 0 {
-            record.open_count -= 1;
+        if should_notify_refresh {
+            self.notify_refresh();
         }
-        if record.open_count != 0 || record.present {
-            return;
-        }
-        state.devices.remove(&stable_id);
     }
 }
 
-pub(super) fn is_snapshot_control_ioctl(arg: usize) -> StarryResult<bool> {
-    let ctrl = read_usbdevfs_ctrltransfer(arg)?;
+pub(super) fn is_snapshot_control_ioctl(
+    current: &crate::task::UserTaskRef,
+    arg: usize,
+) -> crate::StarryResult<bool> {
+    let ctrl = read_usbdevfs_ctrltransfer(current, arg)?;
     Ok(matches!(
         (ctrl.b_request_type, ctrl.b_request, ctrl.w_value >> 8),
         (0x80, USB_REQ_GET_DESCRIPTOR, USB_DT_DEVICE)
@@ -1148,37 +1344,46 @@ pub(super) fn is_snapshot_control_ioctl(arg: usize) -> StarryResult<bool> {
     ))
 }
 
-fn snapshot_control_ioctl(snapshot: &UsbDeviceSnapshot, arg: usize) -> StarryResult<usize> {
-    let ctrl = read_usbdevfs_ctrltransfer(arg)?;
+fn snapshot_control_ioctl(
+    current: &crate::task::UserTaskRef,
+    snapshot: &UsbDeviceSnapshot,
+    arg: usize,
+) -> crate::StarryResult<usize> {
+    let ctrl = read_usbdevfs_ctrltransfer(current, arg)?;
     match (ctrl.b_request_type, ctrl.b_request, ctrl.w_value >> 8) {
         (0x80, USB_REQ_GET_DESCRIPTOR, USB_DT_DEVICE) => {
             let descriptor = &snapshot.descriptor_blob[..snapshot.descriptor_blob.len().min(18)];
-            write_control_data(ctrl.data, ctrl.w_length as usize, descriptor)
+            write_control_data(current, ctrl.data, ctrl.w_length as usize, descriptor)
         }
         (0x80, USB_REQ_GET_DESCRIPTOR, USB_DT_CONFIG) => {
             let config_index = (ctrl.w_value & 0xff) as usize;
-            let config =
-                snapshot_config_blob(snapshot, config_index).ok_or(StarryError::Unsupported)?;
-            write_control_data(ctrl.data, ctrl.w_length as usize, config)
+            let config = snapshot_config_blob(snapshot, config_index)
+                .ok_or(crate::StarryError::Unsupported)?;
+            write_control_data(current, ctrl.data, ctrl.w_length as usize, config)
         }
         (0x80, USB_REQ_GET_CONFIGURATION, _) => {
             if ctrl.w_length == 0 {
                 return Ok(0);
             }
             ctrl.data
-                .vm_write(snapshot_active_configuration(snapshot))?;
+                .vm_write(current, snapshot_active_configuration(snapshot))?;
             Ok(1)
         }
         _ => Err(StarryError::Unsupported),
     }
 }
 
-fn write_control_data(data: *mut u8, requested_len: usize, source: &[u8]) -> StarryResult<usize> {
+fn write_control_data(
+    current: &crate::task::UserTaskRef,
+    data: *mut u8,
+    requested_len: usize,
+    source: &[u8],
+) -> crate::StarryResult<usize> {
     let len = source.len().min(requested_len);
     if len == 0 {
         return Ok(0);
     }
-    vm_write_slice(data, &source[..len])?;
+    vm_write_slice(current, data, &source[..len])?;
     Ok(len)
 }
 
@@ -1224,27 +1429,91 @@ fn snapshot_config_blob(snapshot: &UsbDeviceSnapshot, index: usize) -> Option<&[
 }
 
 pub(super) fn usbfs_refresh_task(manager: Arc<UsbFsManager>) {
+    let mut retry_backoff = RefreshRetryBackoff::default();
     loop {
         manager.irq_notify.wait();
         manager.usb_activity.event.notify(usize::MAX);
-        manager.refresh_dirty_hosts();
+        loop {
+            match manager.service_refresh_batch() {
+                RefreshBatchOutcome::Idle => {
+                    retry_backoff.reset();
+                    break;
+                }
+                RefreshBatchOutcome::More => {
+                    retry_backoff.reset();
+                    crate::task::yield_now();
+                }
+                RefreshBatchOutcome::Retry => {
+                    crate::task::sleep(retry_backoff.next_delay());
+                }
+            }
+        }
     }
 }
 
-pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
+fn run_host_initialization<C, D>(
+    context: &mut C,
+    enable_framework_action: impl FnOnce(&mut C) -> bool,
+    initialize_controller: impl FnOnce(&mut C) -> bool,
+    bootstrap_events: impl FnOnce(&mut C),
+    probe_devices: impl FnOnce(&mut C) -> Option<D>,
+    rollback_controller: impl Fn(&mut C),
+    rollback_framework_action: impl Fn(&mut C),
+) -> Option<D> {
+    if !enable_framework_action(context) {
+        return None;
+    }
+    if !initialize_controller(context) {
+        rollback_framework_action(context);
+        return None;
+    }
+
+    bootstrap_events(context);
+    let devices = probe_devices(context);
+    if devices.is_none() {
+        rollback_controller(context);
+        rollback_framework_action(context);
+    }
+    devices
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum UsbHostInitFailureStage {
+    Reacquire,
+    Lock,
+    FrameworkAction,
+    ControllerInit,
+    InitialProbe,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct UsbHostInitFailure {
+    pub(super) device_id: RDriveDeviceId,
+    pub(super) bus_num: u8,
+    pub(super) stage: UsbHostInitFailureStage,
+}
+
+#[derive(Debug)]
+pub(super) struct UsbHostInitReport {
+    pub(super) initialized: usize,
+    pub(super) failures: Vec<UsbHostInitFailure>,
+}
+
+pub(super) fn initialize_hosts(manager: &UsbFsManager) -> UsbHostInitReport {
     let hosts = {
         let state = manager.state.lock();
         state
             .hosts
             .iter()
-            .map(|host| (host.device_id, host.bus_num, host.irq))
+            .map(|host| (host.device_id, host.bus_num))
             .collect::<Vec<_>>()
     };
 
     let mut initialized = 0usize;
     let mut failed_device_ids = Vec::new();
+    let mut failures = Vec::new();
 
-    for (device_id, bus_num, host_irq) in hosts {
+    for (device_id, bus_num) in hosts {
         let host = match rdrive::get::<ax_driver::usb::PlatformUsbHost>(device_id) {
             Ok(host) => host,
             Err(err) => {
@@ -1252,7 +1521,12 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
                     "usbfs: failed to reacquire USB host {:?} for init: {err:?}",
                     device_id
                 );
-                failed_device_ids.push((device_id, host_irq));
+                failed_device_ids.push(device_id);
+                failures.push(UsbHostInitFailure {
+                    device_id,
+                    bus_num,
+                    stage: UsbHostInitFailureStage::Reacquire,
+                });
                 continue;
             }
         };
@@ -1264,77 +1538,88 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
                     "usbfs: failed to lock USB host {:?} for init: {err:?}",
                     device_id
                 );
-                failed_device_ids.push((device_id, host_irq));
+                failed_device_ids.push(device_id);
+                failures.push(UsbHostInitFailure {
+                    device_id,
+                    bus_num,
+                    stage: UsbHostInitFailureStage::Lock,
+                });
                 continue;
             }
         };
 
         info!("usbfs: initializing host on bus {}", bus_num);
-        if let Err(err) = ax_task::future::block_on(guard.host_mut().init()) {
-            warn!("usbfs: failed to initialize USB host on bus {bus_num}: {err:?}");
-            failed_device_ids.push((device_id, host_irq));
-            continue;
-        }
-
-        if let Some(host_irq) = host_irq {
-            // DWC2 internal-DMA transfers complete through host-channel IRQs.
-            // Enable both the controller interrupt mask and the framework
-            // callback before the initial probe, because enumeration itself
-            // issues control transfers that wait for IRQ completions.
-            if let Err(err) = guard.enable_irq() {
-                warn!("usbfs: failed to enable host IRQ on bus {bus_num}: {err:?}");
-                failed_device_ids.push((device_id, Some(host_irq)));
-                continue;
-            }
-            if !irq::enable_irq(host_irq) {
-                warn!("usbfs: failed to enable framework IRQ for bus {bus_num}");
+        let failure_stage = Cell::new(None);
+        let devices = run_host_initialization(
+            &mut guard,
+            |_| {
+                let enabled = irq::enable_device_irq(device_id);
+                if !enabled {
+                    warn!("usbfs: failed to enable framework IRQ for bus {bus_num}");
+                    failure_stage.set(Some(UsbHostInitFailureStage::FrameworkAction));
+                }
+                enabled
+            },
+            |guard| match crate::task::future::block_on(guard.host_mut().init()) {
+                Ok(()) => true,
+                Err(err) => {
+                    warn!("usbfs: failed to initialize USB host on bus {bus_num}: {err:?}");
+                    failure_stage.set(Some(UsbHostInitFailureStage::ControllerInit));
+                    false
+                }
+            },
+            |_| {
+                irq::bootstrap_device(device_id);
+                manager.begin_initial_probe(device_id);
+            },
+            |guard| match crate::task::future::block_on(guard.host_mut().probe_devices()) {
+                Ok(devices) => Some(devices),
+                Err(err) => {
+                    warn!("usbfs: initial probe failed on bus {bus_num}: {err:?}");
+                    failure_stage.set(Some(UsbHostInitFailureStage::InitialProbe));
+                    None
+                }
+            },
+            |guard| {
                 if let Err(err) = guard.disable_irq() {
                     warn!("usbfs: failed to roll back host IRQ on bus {bus_num}: {err:?}");
                 }
-                failed_device_ids.push((device_id, Some(host_irq)));
-                continue;
-            }
-            irq::bootstrap_irq(host_irq);
-        }
-
-        let devices = match ax_task::future::block_on(guard.host_mut().probe_devices()) {
-            Ok(devices) => devices,
-            Err(err) => {
-                warn!("usbfs: initial probe failed on bus {bus_num}: {err:?}");
-                if host_irq.is_some()
-                    && let Err(disable_err) = guard.disable_irq()
-                {
-                    warn!(
-                        "usbfs: failed to disable host IRQ after probe failure on bus {bus_num}: \
-                         {disable_err:?}"
-                    );
-                }
-                failed_device_ids.push((device_id, host_irq));
-                continue;
-            }
+            },
+            |_| irq::disable_device(device_id),
+        );
+        let Some(devices) = devices else {
+            failed_device_ids.push(device_id);
+            failures.push(UsbHostInitFailure {
+                device_id,
+                bus_num,
+                stage: failure_stage
+                    .get()
+                    .expect("failed host initialization must publish its stage"),
+            });
+            continue;
         };
         info!("usbfs: host on bus {} initialized", bus_num);
         initialized += 1;
         manager.apply_probe_results(device_id, bus_num, devices);
+        manager.finish_initial_probe(device_id);
     }
 
     if !failed_device_ids.is_empty() {
         let mut state = manager.state.lock();
-        state.hosts.retain(|host| {
-            !failed_device_ids
-                .iter()
-                .any(|(failed_device_id, _)| *failed_device_id == host.device_id)
-        });
+        state
+            .hosts
+            .retain(|host| !failed_device_ids.contains(&host.device_id));
     }
 
-    for (_, host_irq) in failed_device_ids {
-        if let Some(host_irq) = host_irq {
-            irq::free_irq(host_irq);
-        }
+    for device_id in failed_device_ids {
+        irq::free_device_irq(device_id);
     }
 
     info!("usbfs: {} host(s) ready", initialized);
-    initialized
+    UsbHostInitReport {
+        initialized,
+        failures,
+    }
 }
 
 fn map_transfer_error(err: TransferError) -> StarryError {
@@ -1444,40 +1729,34 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
             }
         };
 
-        let host_irq =
-            guard.irq_cloned().and_then(|irq| {
-                match ax_runtime::irq::resolve_binding_irq(irq.clone()) {
-                    Ok(id) => Some(id),
-                    Err(err) => {
-                        warn!(
-                            "usbfs: failed to resolve IRQ binding {irq:?} for {device_id:?}: \
-                             {err:?}"
-                        );
-                        None
-                    }
-                }
-            });
+        let Some((binding, handler)) = guard.take_binding_irq_handler() else {
+            warn!("usbfs: USB host {device_id:?} has no interrupt endpoint");
+            continue;
+        };
+        let host_irq = match ax_runtime::irq::resolve_binding_irq(binding.clone()) {
+            Ok(id) => id,
+            Err(err) => {
+                warn!(
+                    "usbfs: failed to resolve IRQ binding {binding:?} for {device_id:?}: {err:?}"
+                );
+                continue;
+            }
+        };
         let root_hub_speed = guard.root_hub_speed();
-        let irq_handler = guard
-            .take_event_handler()
-            .map(|handler| (host_irq, handler));
         drop(guard);
 
-        if let Some((slot_irq, handler)) = irq_handler {
-            irq_slots.push(PendingUsbIrqSlot {
-                irq: slot_irq,
-                device_id,
-                bus_num,
-                handler,
-            });
-        }
+        irq_slots.push(PendingUsbIrqSlot {
+            irq: host_irq,
+            device_id,
+            bus_num,
+            handler,
+        });
 
         initialized_hosts.push(UsbHostState {
             device_id,
             bus_num,
-            irq: host_irq,
             root_hub_speed,
-            needs_probe: true,
+            refresh: HostRefreshState::Queued,
             next_device_num: 1,
             stable_id_to_device_num: BTreeMap::new(),
         });
@@ -1489,9 +1768,59 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
 
 #[cfg(all(test, not(axtest)))]
 mod tests {
-    use core::cell::Cell;
+    use core::cell::{Cell, RefCell};
 
     use super::*;
+
+    #[test]
+    fn framework_action_is_ready_before_controller_initialization() {
+        let calls = RefCell::new(Vec::new());
+        let mut context = ();
+
+        let result = run_host_initialization(
+            &mut context,
+            |_| {
+                calls.borrow_mut().push("framework-enable");
+                true
+            },
+            |_| {
+                calls.borrow_mut().push("host-init");
+                true
+            },
+            |_| calls.borrow_mut().push("bootstrap"),
+            |_| {
+                calls.borrow_mut().push("probe");
+                Some(())
+            },
+            |_| calls.borrow_mut().push("controller-disable"),
+            |_| calls.borrow_mut().push("framework-disable"),
+        );
+
+        assert_eq!(result, Some(()));
+        assert_eq!(
+            *calls.borrow(),
+            ["framework-enable", "host-init", "bootstrap", "probe"]
+        );
+    }
+
+    #[test]
+    fn probe_failure_rolls_back_controller_before_framework_action() {
+        let calls = RefCell::new(Vec::new());
+        let mut context = ();
+
+        let result = run_host_initialization(
+            &mut context,
+            |_| true,
+            |_| true,
+            |_| {},
+            |_| None::<()>,
+            |_| calls.borrow_mut().push("controller-disable"),
+            |_| calls.borrow_mut().push("framework-disable"),
+        );
+
+        assert_eq!(result, None);
+        assert_eq!(*calls.borrow(), ["controller-disable", "framework-disable"]);
+    }
 
     #[test]
     fn clear_halt_uses_standard_endpoint_clear_feature_request() {

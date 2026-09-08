@@ -43,10 +43,7 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     )
     .map_err(|err| OnProbeError::other(alloc::format!("failed to create e1000: {err:?}")))?;
 
-    let irq = probe.register_net(DRIVER_NAME, dev, PciIrqRequirement::Required)?;
-    debug!(
-        "intel e1000 PCI device registered successfully at {} with irq {:?}",
-        address, irq
-    );
+    probe.register_net(DRIVER_NAME, dev, PciIrqRequirement::Required)?;
+    debug!("intel e1000 PCI device registered successfully at {address}");
     Ok(())
 }

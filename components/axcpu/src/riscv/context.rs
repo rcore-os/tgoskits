@@ -8,8 +8,6 @@ use ax_memory_addr::VirtAddr;
 use cpu_local::{ExecutionContextHeader, PreparedContextSwitch};
 use riscv::register::sstatus::{self, FS};
 
-#[cfg(feature = "uspace")]
-use crate::InstalledAddressSpace;
 use crate::{KernelTlsBase, TaskLocalState};
 
 /// General registers of RISC-V.
@@ -314,9 +312,6 @@ pub struct TaskContext {
     pub s11: usize,
     /// Architecture-neutral current-header and kernel-TLS switch state.
     task_local: TaskLocalState,
-    /// Complete identity projected to `satp` at the architecture boundary.
-    #[cfg(feature = "uspace")]
-    address_space: InstalledAddressSpace,
     #[cfg(feature = "fp-simd")]
     pub fp_state: FpState,
 }
@@ -361,35 +356,11 @@ impl TaskContext {
         self.task_local.context_header()
     }
 
-    /// Changes the complete address space restored for this task.
-    #[cfg(feature = "uspace")]
-    pub fn set_address_space(&mut self, address_space: InstalledAddressSpace) {
-        self.address_space = address_space;
-    }
-
-    /// Writes this context's materialized userspace root immediately.
-    ///
-    /// # Safety
-    ///
-    /// The caller must own the current CPU context and prevent a concurrent
-    /// scheduler switch while the hardware root is being replaced.
-    #[cfg(feature = "uspace")]
-    pub unsafe fn activate_address_space(&self) {
-        self.address_space.validate_architecture_support();
-        unsafe { crate::asm::install_user_address_space(self.address_space) };
-    }
-
     /// Completes FP/SIMD work before current-context publication.
     pub fn prepare_switch_to(&mut self, _next_ctx: &Self) {
         #[cfg(feature = "fp-simd")]
         {
             self.fp_state.switch_to(&_next_ctx.fp_state);
-        }
-        #[cfg(feature = "uspace")]
-        if self.address_space != _next_ctx.address_space {
-            _next_ctx.address_space.validate_architecture_support();
-            // SAFETY: the scheduler owns both contexts with IRQs disabled.
-            unsafe { crate::asm::install_user_address_space(_next_ctx.address_space) };
         }
     }
 
@@ -405,11 +376,6 @@ impl TaskContext {
         next_ctx: &Self,
         prepared: PreparedContextSwitch<'_>,
     ) {
-        assert_eq!(
-            next_ctx.context_header(),
-            Some(prepared.next_header()),
-            "prepared switch token must belong to the next task context",
-        );
         unsafe { prepared.commit() };
         unsafe { context_switch_raw(self, next_ctx) }
     }

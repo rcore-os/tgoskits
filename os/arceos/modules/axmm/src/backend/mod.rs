@@ -1,12 +1,14 @@
 //! Memory mapping backends.
 
-use ax_hal::paging::{MappingFlags, PageTable};
-use ax_memory_addr::VirtAddr;
+use ax_hal::paging::{MappingFlags, PageTable, PagingError};
+use ax_memory_addr::{PageIter4K, VirtAddr};
 use ax_memory_set::MappingBackend;
 
+use crate::tlb::TlbGather;
 pub(crate) mod alloc;
 mod linear;
 
+pub(crate) use alloc::dealloc_frame;
 pub use alloc::{KernelVirtualAllocationBackend, KernelVirtualAllocationId};
 
 /// A unified enum type for different memory mapping backends.
@@ -25,7 +27,7 @@ pub use alloc::{KernelVirtualAllocationBackend, KernelVirtualAllocationId};
 ///   Live -> Retiring -> Quarantined state keeps frame ownership attached to
 ///   the mapping until a TLB acknowledgement.
 #[derive(Clone)]
-pub enum Backend {
+pub(crate) enum Backend {
     /// Linear mapping backend.
     ///
     /// The signed delta from physical to virtual addresses is constant. The
@@ -64,8 +66,16 @@ pub enum KernelVirtualAllocationState {
 impl MappingBackend for Backend {
     type Addr = VirtAddr;
     type Flags = MappingFlags;
+    type MutationContext = TlbGather;
     type PageTable = PageTable;
-    fn map(&self, start: VirtAddr, size: usize, flags: MappingFlags, pt: &mut PageTable) -> bool {
+    fn map(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        flags: MappingFlags,
+        context: &mut TlbGather,
+        pt: &mut PageTable,
+    ) -> bool {
         match *self {
             Self::Linear { pa_to_va_delta } => {
                 self.map_linear(start, size, flags, pt, pa_to_va_delta, false)
@@ -73,19 +83,25 @@ impl MappingBackend for Backend {
             Self::BootLinear { pa_to_va_delta } => {
                 self.map_linear(start, size, flags, pt, pa_to_va_delta, true)
             }
-            Self::Alloc { populate } => self.map_alloc(start, size, flags, pt, populate),
-            Self::KernelVirtualAllocation(_) => {
-                self.map_kernel_virtual_allocation(start, size, flags, pt)
-            }
+            Self::Alloc { populate } => self.map_alloc(start, size, flags, context, pt, populate),
+            // Virtual allocations reserve metadata first and install prepared
+            // page-table deposits outside the generic map path.
+            Self::KernelVirtualAllocation(_) => false,
         }
     }
 
-    fn unmap(&self, start: VirtAddr, size: usize, pt: &mut PageTable) -> bool {
+    fn unmap(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        context: &mut TlbGather,
+        pt: &mut PageTable,
+    ) -> bool {
         match *self {
             Self::Linear { pa_to_va_delta } | Self::BootLinear { pa_to_va_delta } => {
-                self.unmap_linear(start, size, pt, pa_to_va_delta)
+                self.unmap_linear(start, size, context, pt, pa_to_va_delta)
             }
-            Self::Alloc { populate } => self.unmap_alloc(start, size, pt, populate),
+            Self::Alloc { populate } => self.unmap_alloc(start, size, context, pt, populate),
             Self::KernelVirtualAllocation(_) => {
                 self.unmap_kernel_virtual_allocation(start, size, pt)
             }
@@ -94,10 +110,21 @@ impl MappingBackend for Backend {
 
     fn validate_unmap(&self, start: VirtAddr, size: usize, pt: &PageTable) -> bool {
         match self {
+            Self::Linear { .. } | Self::BootLinear { .. } => {
+                self.validate_linear_unmap(start, size, pt)
+            }
+            Self::Alloc { .. } => {
+                for addr in PageIter4K::new(start, start + size).unwrap() {
+                    match pt.query_occupied(addr) {
+                        Ok((_, 1)) | Err(PagingError::NotMapped) => {}
+                        Ok(_) | Err(_) => return false,
+                    }
+                }
+                true
+            }
             Self::KernelVirtualAllocation(_) => {
                 self.validate_kernel_virtual_allocation(start, size, pt)
             }
-            _ => true,
         }
     }
 
@@ -106,9 +133,14 @@ impl MappingBackend for Backend {
         start: Self::Addr,
         size: usize,
         new_flags: Self::Flags,
+        context: &mut TlbGather,
         page_table: &mut Self::PageTable,
     ) -> bool {
-        page_table.protect_region(start, size, new_flags).is_ok()
+        if page_table.protect_region(start, size, new_flags).is_err() {
+            return false;
+        }
+        context.invalidate(start, size);
+        true
     }
 
     fn split(&mut self, _align_diff: usize) -> Option<Self> {
@@ -133,24 +165,16 @@ impl Backend {
         &self,
         vaddr: VirtAddr,
         orig_flags: MappingFlags,
+        gather: &mut TlbGather,
         page_table: &mut PageTable,
     ) -> bool {
         match *self {
             Self::Linear { .. } | Self::BootLinear { .. } => false,
             Self::Alloc { populate } => {
-                self.handle_page_fault_alloc(vaddr, orig_flags, page_table, populate)
+                self.handle_page_fault_alloc(vaddr, orig_flags, gather, page_table, populate)
             }
             Self::KernelVirtualAllocation(_) => false,
         }
-    }
-
-    pub(crate) fn new_kernel_virtual_allocation(
-        usage: ax_alloc::UsageKind,
-        leading_guard_pages: usize,
-        page_count: usize,
-    ) -> Option<Self> {
-        KernelVirtualAllocationBackend::allocate(usage, leading_guard_pages, page_count)
-            .map(Self::KernelVirtualAllocation)
     }
 
     pub(crate) const fn kernel_virtual_allocation(

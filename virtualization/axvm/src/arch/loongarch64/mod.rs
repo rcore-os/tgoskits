@@ -32,61 +32,47 @@ impl ArchOps for LoongArch64Arch {
         loongarch_vcpu::has_hardware_support()
     }
 
-    fn inject_pending_interrupt(
-        vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        interrupt: crate::vm::PendingInterrupt,
+    fn inject_arch_interrupt(
+        vm_id: usize,
+        vcpu: &crate::vcpu::AxVCpu<Self::VCpu>,
+        interrupt: crate::runtime::QueuedVcpuInterrupt,
     ) {
-        match interrupt {
-            crate::vm::PendingInterrupt::Normal(vector) => {
-                trace!(
-                    "Injecting queued interrupt {vector:#x} into VM[{}] VCpu[{}]",
-                    vcpu.vm_id(),
-                    vcpu.id()
-                );
-                if let Err(err) = vcpu.inject_interrupt(vector) {
-                    warn!(
-                        "Failed to inject queued interrupt {vector:#x} into VM[{}] VCpu[{}]: \
-                         {err:?}",
-                        vcpu.vm_id(),
-                        vcpu.id()
-                    );
-                }
-            }
-            crate::vm::PendingInterrupt::External {
-                vector,
-                physical_irq,
-            } => {
-                let Some(vector) = loongarch_external_irq_vector(vm, vector, physical_irq) else {
-                    trace!(
-                        "Queued LoongArch external interrupt physical_irq={physical_irq:#x} is \
-                         masked in VM[{}]",
-                        vm.id()
-                    );
-                    return;
-                };
-                trace!(
-                    "Injecting queued LoongArch external interrupt vector={vector:#x}, \
-                     physical_irq={physical_irq:#x} into VM[{}] VCpu[{}]",
-                    vm.id(),
-                    vcpu.id()
-                );
-                if let Err(err) = vcpu
-                    .get_arch_vcpu()
-                    .inject_external_interrupt(vector, physical_irq)
-                {
-                    warn!(
-                        "Failed to inject queued LoongArch external interrupt vector={vector:#x}, \
-                         physical_irq={physical_irq:#x} into VM[{}] VCpu[{}]: {err:?}",
-                        vm.id(),
-                        vcpu.id()
-                    );
-                }
-            }
+        let crate::runtime::QueuedVcpuInterrupt::Physical {
+            vector,
+            physical_irq,
+        } = interrupt
+        else {
+            unreachable!("virtual interrupts are consumed by the common injection path")
+        };
+        let Some(vm) = crate::get_vm_by_id(vm_id) else {
+            warn!("VM[{vm_id}] disappeared before physical interrupt injection");
+            return;
+        };
+        let Some(vector) = loongarch_external_irq_vector(&vm, vector, physical_irq) else {
+            trace!(
+                "Queued LoongArch external interrupt physical_irq={physical_irq:#x} is masked in \
+                 VM[{vm_id}]"
+            );
+            return;
+        };
+        trace!(
+            "Injecting queued LoongArch external interrupt vector={vector:#x}, \
+             physical_irq={physical_irq:#x} into VM[{vm_id}] VCpu[{}]",
+            vcpu.id()
+        );
+        if let Err(err) = vcpu
+            .get_arch_vcpu()
+            .inject_external_interrupt(vector, physical_irq)
+        {
+            warn!(
+                "Failed to inject queued LoongArch external interrupt vector={vector:#x}, \
+                 physical_irq={physical_irq:#x} into VM[{vm_id}] VCpu[{}]: {err:?}",
+                vcpu.id()
+            );
         }
     }
 
-    fn handle_vcpu_exit_bound(
+    fn handle_vcpu_exit_unbound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
@@ -173,7 +159,7 @@ impl ArchOps for LoongArch64Arch {
     ) -> AxVmResult<VcpuRunAction> {
         match work {
             LoongArchDeferredRunWork::ExternalInterrupt { vector } => {
-                crate::architecture::exit::finish_external_interrupt(vector);
+                crate::host::arceos::dispatch_host_irq(vector);
             }
         }
         Ok(VcpuRunAction {
@@ -194,10 +180,23 @@ impl ArchOps for LoongArch64Arch {
             runtime,
             &wait_snapshot,
             || vm.running(),
-            || vcpu.get_arch_vcpu().has_enabled_pending_interrupt(),
+            || {
+                runtime.has_pending_interrupt(vcpu.id())
+                    || vcpu.get_arch_vcpu().has_enabled_pending_interrupt()
+            },
             |condition| runtime.wait_until(condition),
         );
     }
+}
+
+fn handle_loongarch_mmio_write(
+    vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>,
+    exit: MmioWriteExit,
+) -> AxVmResult<BoundVcpuExit<LoongArchDeferredRunWork>> {
+    let result = super::handle_mmio_write(vm, vcpu, exit)?;
+    drain_loongarch_pch_pic_events(vm);
+    Ok(result)
 }
 
 fn handle_loongarch_nested_page_fault(
@@ -262,6 +261,18 @@ fn handle_loongarch_nested_page_fault(
     }
 }
 
+fn try_handle_loongarch_mmio_write(
+    vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>,
+    exit: MmioWriteExit,
+) -> AxVmResult<bool> {
+    let handled = super::try_handle_mmio_write(vm, vcpu, exit)?;
+    if handled {
+        drain_loongarch_pch_pic_events(vm);
+    }
+    Ok(handled)
+}
+
 fn loongarch_external_irq_vector(
     vm: &crate::AxVMRef,
     fallback_vector: usize,
@@ -275,6 +286,49 @@ fn loongarch_external_irq_vector(
         .map_or(Some(fallback_vector), |port| {
             port.set_input_level(fallback_vector, true)
         })
+}
+
+fn drain_loongarch_pch_pic_events(vm: &crate::AxVMRef) {
+    let Ok(devices) = vm.get_devices() else {
+        return;
+    };
+    let Ok(port) = devices
+        .services()
+        .require::<axdevice::PchPicOutputPortKey>()
+    else {
+        return;
+    };
+    while let Some(event) = port.take_output_event() {
+        if !event.asserted {
+            trace!(
+                "LoongArch VM[{}] PCH-PIC deassert event for EIOINTC vector {}",
+                vm.id(),
+                event.vector
+            );
+            continue;
+        }
+        if let Err(err) = inject_vm_vcpu_interrupt(vm.id(), 0, event.vector) {
+            warn!(
+                "failed to inject LoongArch VM[{}] PCH-PIC output vector {}: {err:?}",
+                vm.id(),
+                event.vector
+            );
+        }
+    }
+}
+
+fn inject_vm_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
+    use crate::AsVCpuTask;
+
+    let current = crate::host::task::current_thread();
+    if let Some(task) = current.try_as_vcpu_task()
+        && task.vm().id() == vm_id
+        && task.vcpu.id() == vcpu_id
+    {
+        return task.vcpu.inject_interrupt(vector);
+    }
+
+    crate::manager::inject_interrupt(vm_id, vcpu_id, vector)
 }
 
 struct AxvmLoongArchHostOps;

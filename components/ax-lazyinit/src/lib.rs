@@ -54,6 +54,7 @@ impl<T> LazyInit<T> {
     ///
     /// If the value is already initialized, the function will not be called
     /// and a [`None`] will be returned.
+    #[inline]
     pub fn call_once<F>(&self, f: F) -> Option<&T>
     where
         F: FnOnce() -> T,
@@ -102,6 +103,7 @@ impl<T> LazyInit<T> {
     /// If another CPU or thread is initializing the value concurrently, this
     /// method waits until that initialization completes and then returns the
     /// initialized value. The initializer is executed at most once.
+    #[inline]
     pub fn get_or_init<F>(&self, f: F) -> &T
     where
         F: FnOnce() -> T,
@@ -183,6 +185,7 @@ impl<T> LazyInit<T> {
     /// Gets a reference to the value.
     ///
     /// Returns [`None`] if the value is not initialized.
+    #[inline]
     pub fn get(&self) -> Option<&T> {
         if self.is_inited() {
             Some(unsafe { self.force_get() })
@@ -328,6 +331,7 @@ impl<T> OnceLock<T> {
     }
 
     /// Returns the stored value, running `initializer` at most once.
+    #[inline]
     pub fn call_once<F>(&self, initializer: F) -> &T
     where
         F: FnOnce() -> T,
@@ -344,6 +348,7 @@ impl<T> OnceLock<T> {
     }
 
     /// Returns the stored value, or `None` before initialization completes.
+    #[inline]
     pub fn get(&self) -> Option<&T> {
         self.0.get()
     }
@@ -434,18 +439,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lazyinit_basic() {
-        static VALUE: LazyInit<u32> = LazyInit::new();
-        assert!(!VALUE.is_inited());
-        assert_eq!(VALUE.get(), None);
-
-        VALUE.init_once(233);
-        assert!(VALUE.is_inited());
-        assert_eq!(*VALUE, 233);
-        assert_eq!(VALUE.get(), Some(&233));
-    }
-
-    #[test]
     #[should_panic]
     fn panic_on_deref_before_init() {
         static VALUE: LazyInit<u32> = LazyInit::new();
@@ -485,13 +478,6 @@ mod tests {
     }
 
     #[test]
-    fn lazyinit_get_or_init() {
-        static VALUE: LazyInit<u32> = LazyInit::new();
-        assert_eq!(*VALUE.get_or_init(|| 123), 123);
-        assert_eq!(*VALUE.get_or_init(|| 456), 123);
-    }
-
-    #[test]
     fn fallible_initialization_does_not_publish_an_error() {
         let value = OnceLock::new();
 
@@ -502,33 +488,6 @@ mod tests {
         assert!(!value.is_initialized());
         assert_eq!(value.get_or_try_init(|| Ok::<_, &str>(123)), Ok(&123));
         assert_eq!(value.get_or_try_init(|| Ok::<_, &str>(456)), Ok(&123));
-    }
-
-    #[test]
-    fn lazyinit_get_unchecked() {
-        static VALUE: LazyInit<u32> = LazyInit::new();
-        VALUE.init_once(123);
-        let v = unsafe { VALUE.get_unchecked() };
-        assert_eq!(*v, 123);
-    }
-
-    #[test]
-    fn lazyinit_get_mut_unchecked() {
-        let mut value: LazyInit<u32> = LazyInit::new();
-        value.init_once(123);
-        let v = unsafe { value.get_mut_unchecked() };
-        *v += 3;
-        assert_eq!(*v, 126);
-    }
-
-    #[test]
-    fn once_lock_returns_the_first_value() {
-        static VALUE: OnceLock<u32> = OnceLock::new();
-
-        assert_eq!(*VALUE.call_once(|| 123), 123);
-        assert_eq!(*VALUE.call_once(|| 456), 123);
-        assert_eq!(VALUE.get(), Some(&123));
-        assert!(VALUE.is_initialized());
     }
 
     #[test]

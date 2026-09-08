@@ -305,7 +305,11 @@ impl BlockController for BatchingReadController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().unwrap())],
-                vec![IrqEndpoint::new(0, 1, Box::new(QueueZeroHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(QueueZeroHandler),
+                )],
             )),
             ControllerEvent::Shutdown | ControllerEvent::Watchdog { .. } => {
                 Ok(ControllerUpdate::state(ControllerState::Shutdown))
@@ -368,7 +372,11 @@ impl BlockController for TerminalBeforeShutdownController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().unwrap())],
-                vec![IrqEndpoint::new(0, 1, Box::new(SpuriousHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(SpuriousHandler),
+                )],
             )),
             ControllerEvent::Watchdog { .. } => {
                 self.terminal = true;
@@ -431,7 +439,11 @@ impl BlockController for QuiesceFailureController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().ok_or(BlkError::Io)?)],
-                vec![IrqEndpoint::new(0, 1, Box::new(SpuriousHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(SpuriousHandler),
+                )],
             )),
             ControllerEvent::QuiesceIrqs => Err(BlkError::Io),
             ControllerEvent::Shutdown => Ok(ControllerUpdate::state(ControllerState::Shutdown)),
@@ -552,7 +564,11 @@ impl BlockController for LifecycleController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().unwrap())],
-                vec![IrqEndpoint::new(0, 1, Box::new(SpuriousHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(SpuriousHandler),
+                )],
             )),
             ControllerEvent::QuiesceIrqs => {
                 self.log.lock().unwrap().push("controller_quiesce");
@@ -723,7 +739,11 @@ impl BlockController for WaitingForIrqController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::WaitingForIrq,
                 Vec::new(),
-                vec![IrqEndpoint::new(0, 0, Box::new(SpuriousHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::none(),
+                    Box::new(SpuriousHandler),
+                )],
             )),
             ControllerEvent::Rearm { .. } => {
                 Ok(ControllerUpdate::state(ControllerState::WaitingForIrq))
@@ -764,7 +784,11 @@ impl BlockController for EndpointFirstController {
                     retry_after: Duration::from_millis(30),
                 },
                 Vec::new(),
-                vec![IrqEndpoint::new(0, 0, Box::new(SpuriousHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::none(),
+                    Box::new(SpuriousHandler),
+                )],
             )),
             ControllerEvent::RegisterRetry => {
                 self.register_retries.fetch_add(1, Ordering::Relaxed);
@@ -814,6 +838,22 @@ fn lock_test_irq_registrar() -> std::sync::MutexGuard<'static, ()> {
     TEST_IRQ_REGISTRAR_SERIAL
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn configure_test_irq_registrar(log: Arc<StdMutex<Vec<&'static str>>>) {
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(log);
+    *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
+    TEST_IRQ_REGISTRAR
+        .fail_registration
+        .store(false, Ordering::Release);
+    TEST_IRQ_REGISTRAR
+        .next_registration
+        .store(0, Ordering::Release);
+    TEST_IRQ_REGISTRAR
+        .fail_enable_at
+        .store(usize::MAX, Ordering::Release);
+    TEST_IRQ_FAIL_SYNCHRONIZE.store(false, Ordering::Release);
+    set_irq_registrar(&TEST_IRQ_REGISTRAR);
 }
 
 fn wait_for_device_teardown(device: &DeviceInner) {

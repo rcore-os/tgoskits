@@ -263,6 +263,8 @@ static void check_errno_filter(void)
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR_OFF),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_getpid, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EACCES),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_getppid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EINTR),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
 
@@ -279,8 +281,15 @@ static void check_errno_filter(void)
     expect_syscall_ret(syscall(SYS_getpid), -1, EACCES,
                        "filter returns configured errno for getpid");
 
+    /* This is a configured result, not a signal-interrupted blocking call. */
+    puts("checking seccomp EINTR is returned without restarting");
+    fflush(stdout);
     errno = 0;
-    long ret = syscall(SYS_getppid);
+    expect_syscall_ret(syscall(SYS_getppid), -1, EINTR,
+                       "filter returns EINTR without restarting getppid");
+
+    errno = 0;
+    long ret = syscall(SYS_gettid);
     expect_true(ret > 0 && errno == 0, "filter allows unrelated syscall");
 }
 

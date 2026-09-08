@@ -2,14 +2,10 @@ use alloc::{borrow::Cow, sync::Arc};
 use core::{
     mem,
     sync::atomic::{AtomicBool, Ordering},
-    task::Context,
 };
 
-use ax_task::{
-    current,
-    future::{block_on, poll_io},
-};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use starry_signal::{SignalInfo, SignalSet};
 use zerocopy::{Immutable, IntoBytes};
 
@@ -17,7 +13,10 @@ use crate::{
     StarryError, StarryResult,
     file::{FileLike, IoDst, IoSrc},
     sync::IrqMutex,
-    task::AsThread,
+    task::{
+        current_user_task,
+        future::{block_on_user, poll_io},
+    },
 };
 
 /// The size of signalfd_siginfo structure (128 bytes as per Linux
@@ -111,8 +110,8 @@ impl Signalfd {
     /// Check if there are any pending signals matching the mask
     fn has_pending_signals(&self) -> bool {
         let mask = self.mask();
-        let curr = current();
-        let signal = &curr.as_thread().signal;
+        let curr = current_user_task();
+        let signal = curr.as_thread().signal();
         let pending = signal.pending();
         !(pending & mask).is_empty()
     }
@@ -120,8 +119,8 @@ impl Signalfd {
     /// Dequeue a signal matching the mask
     fn dequeue_signal(&self) -> Option<SignalInfo> {
         let mask = self.mask();
-        let curr = current();
-        let signal = &curr.as_thread().signal;
+        let curr = current_user_task();
+        let signal = curr.as_thread().signal();
         signal.dequeue_signal(&mask)
     }
 }
@@ -132,26 +131,31 @@ impl FileLike for Signalfd {
             return Err(StarryError::InvalidInput);
         }
 
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            if let Some(sig_info) = self.dequeue_signal() {
-                // Convert SignalInfo to SignalfdSiginfo
-                let sfd_info = SignalfdSiginfo::from_signal_info(&sig_info);
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io(self, IoEvents::IN, self.nonblocking(), || {
+                if let Some(sig_info) = self.dequeue_signal() {
+                    // Convert SignalInfo to SignalfdSiginfo
+                    let sfd_info = SignalfdSiginfo::from_signal_info(&sig_info);
 
-                // Write the structure to the destination buffer
-                let bytes = sfd_info.as_bytes();
-                dst.write(bytes)?;
+                    // Write the structure to the destination buffer
+                    let bytes = sfd_info.as_bytes();
+                    dst.write(bytes)?;
 
-                // Wake up other waiters if there are more signals pending
-                if self.has_pending_signals() {
-                    // Remaining pending signals are visible before re-wake.
-                    unsafe { self.poll_rx.wake(IoEvents::IN) };
+                    // Wake up other waiters if there are more signals pending
+                    if self.has_pending_signals() {
+                        // Remaining pending signals are visible before re-wake.
+                        unsafe { self.poll_rx.wake(IoEvents::IN) };
+                    }
+
+                    Ok(SIGNALFD_SIGINFO_SIZE)
+                } else {
+                    Err(crate::StarryError::WouldBlock)
                 }
-
-                Ok(SIGNALFD_SIGINFO_SIZE)
-            } else {
-                Err(StarryError::WouldBlock)
-            }
-        }))
+            }),
+        )
+        .into_result()?
     }
 
     fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
@@ -180,18 +184,38 @@ impl Pollable for Signalfd {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
             // The private poll set covers mask updates and additional queued
             // signals. New signal delivery wakes the current thread's shared
             // signalfd poll set, so an already-blocked epoll waiter must be
             // registered with both sources.
             unsafe {
-                self.poll_rx.register(context.waker(), IoEvents::IN);
-                current()
-                    .as_thread()
-                    .signalfd_waker
-                    .register(context.waker(), IoEvents::IN);
+                sink.register_shared(&self.poll_rx, IoEvents::IN);
+                sink.register_shared(
+                    current_user_task().as_thread().signalfd_poll_source(),
+                    IoEvents::IN,
+                );
+            }
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe {
+                sink.register_exclusive(&self.poll_rx, IoEvents::IN);
+                sink.register_exclusive(
+                    current_user_task().as_thread().signalfd_poll_source(),
+                    IoEvents::IN,
+                );
             }
         }
     }

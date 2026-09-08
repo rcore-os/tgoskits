@@ -1,15 +1,13 @@
-use ax_task::current;
 use linux_raw_sys::general::RLIMIT_DATA;
 
 use crate::{
     StarryError, StarryResult,
     config::{USER_HEAP_SIZE, USER_HEAP_SIZE_MAX},
     mm::AddressSpaceMutationOutcome,
-    task::AsThread,
 };
 
-pub fn sys_brk(addr: usize) -> StarryResult<isize> {
-    let curr = current();
+pub fn sys_brk(current: &crate::task::UserTaskRef, addr: usize) -> StarryResult<isize> {
+    let curr = current;
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
 
@@ -18,18 +16,18 @@ pub fn sys_brk(addr: usize) -> StarryResult<isize> {
     // `mm->brk` under `mmap_lock`; this outer lock only prevents selecting the
     // old MM while exec publishes a replacement.
     let _mm_transaction = loop {
-        if let Some(guard) = proc_data.exec_lock.try_lock() {
+        if let Some(guard) = proc_data.exec_lock().try_lock() {
             break guard;
         }
         if thread.has_exit_request() {
             return Err(StarryError::Interrupted);
         }
-        ax_task::yield_now();
+        crate::task::yield_now();
     };
 
     // Read process policy before taking the address-space lock. No MM path
     // takes rlim after entering an opposite lock order.
-    let rlimit_data = proc_data.rlim.read()[RLIMIT_DATA].current;
+    let rlimit_data = proc_data.rlimit_current(RLIMIT_DATA);
     let aspace_pin = proc_data.pin_aspace()?;
     let mut aspace = aspace_pin.lock();
     let current_top = aspace.heap_break();

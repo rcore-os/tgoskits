@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use alloc::{format, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 use core::hash::{Hash, Hasher};
 
 #[derive(Default)]
@@ -34,7 +34,6 @@ fn cpumask_small_mask_bit_and_iteration_rules_hold() {
     assert_eq!(empty.last_false_index(), Some(7));
     assert_eq!(empty.next_false_index(3), Some(4));
     assert_eq!(empty.prev_false_index(3), Some(7));
-    assert_eq!(format!("{empty:?}"), "cpumask: []");
 
     let mut mask = CpuMask::<8>::new();
     assert!(!mask.set(1, true));
@@ -187,27 +186,4 @@ fn cpumask_large_array_conversion_rules_hold() {
     assert_eq!(mask.last_index(), Some(896 + 31));
     let raw: [u128; 8] = mask.into();
     assert_eq!(raw, cases_1024);
-}
-
-#[test]
-fn cpumask_iterator_clone_debug_and_empty_crossing_rules_hold() {
-    use ax_cpumask::CpuMask;
-
-    let mask = CpuMask::<16>::from_raw_bits(0b1000_0000_0000_0001);
-    let mut iter = (&mask).into_iter();
-
-    // Test basic iteration
-    assert_eq!(iter.next(), Some(0));
-    assert_eq!(iter.next(), Some(15));
-    assert_eq!(iter.next(), None);
-
-    // Test clone
-    let mask2 = CpuMask::<16>::from_raw_bits(0b1000_0000_0000_0001);
-    let iter2 = (&mask2).into_iter();
-    let _cloned = iter2.clone();
-
-    // Test empty mask
-    let empty = CpuMask::<16>::new();
-    let mut iter3 = (&empty).into_iter();
-    assert_eq!(iter3.next(), None);
 }

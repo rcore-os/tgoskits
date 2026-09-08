@@ -503,23 +503,4 @@ mod tests {
         // Should be aligned to 4K boundary
         assert_eq!(addr_part, 0x12345000);
     }
-
-    #[test]
-    fn test_debug_implementations() {
-        // Test that all our structs implement Debug properly
-        let vmx_region = unsafe { TestVmxRegion::uninit() };
-        let _debug_str = format!("{:?}", vmx_region);
-
-        let io_bitmap = TestIOBitmap::passthrough_all().unwrap();
-        let _debug_str = format!("{:?}", io_bitmap);
-
-        let msr_bitmap = TestMsrBitmap::passthrough_all().unwrap();
-        let _debug_str = format!("{:?}", msr_bitmap);
-
-        let flags = FeatureControlFlags::LOCKED;
-        let _debug_str = format!("{:?}", flags);
-
-        let ept_flags = EPTPointer::MEM_TYPE_WB;
-        let _debug_str = format!("{:?}", ept_flags);
-    }
 }

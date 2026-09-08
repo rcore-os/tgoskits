@@ -28,8 +28,7 @@ fn out_of_order_irq_completions_reach_the_right_subscriptions() {
     wait_for_commits(&counters, 1);
     assert_eq!(counters.committed.load(Ordering::Acquire), 1);
 
-    let target = hctx.irq_target(0);
-    let mut action = BlockIrqAction::new(Box::new(QueueZeroIrq), vec![target]);
+    let mut action = queue_zero_action(&hctx);
     assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
 
     assert_eq!(usize::from(first.recv().unwrap().id), 1);
@@ -67,8 +66,7 @@ fn dropped_subscription_does_not_cancel_hardware_ownership() {
     wait_for_submissions(&counters, 1);
     drop(subscription);
 
-    let target = hctx.irq_target(0);
-    let mut action = BlockIrqAction::new(Box::new(QueueZeroIrq), vec![target]);
+    let mut action = queue_zero_action(&hctx);
     assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
     let deadline = Instant::now() + Duration::from_secs(1);
     while observer.completed.load(Ordering::Acquire) != 1 {
@@ -111,8 +109,7 @@ fn partial_batch_is_committed_and_remaining_request_is_retried_after_irq() {
     wait_for_commits(&counters, 1);
     assert_eq!(counters.submitted.load(Ordering::Acquire), 1);
 
-    let target = hctx.irq_target(0);
-    let mut action = BlockIrqAction::new(Box::new(QueueZeroIrq), vec![target]);
+    let mut action = queue_zero_action(&hctx);
     assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
     wait_for_submissions(&counters, 2);
     wait_for_commits(&counters, 2);
@@ -290,8 +287,7 @@ fn unexpected_completion_fails_hctx_and_preserves_pending_ownership() {
     assert!(channel.send(submission, false).is_ok());
     wait_for_submissions(&counters, 1);
 
-    let target = hctx.irq_target(0);
-    let mut action = BlockIrqAction::new(Box::new(QueueZeroIrq), vec![target]);
+    let mut action = queue_zero_action(&hctx);
     assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
 
     assert_eq!(subscription.recv().unwrap().result, Err(BlkError::Io));

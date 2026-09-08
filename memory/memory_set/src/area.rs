@@ -189,9 +189,13 @@ impl<B: MappingBackend> MemoryArea<B> {
     }
 
     /// Maps the whole memory area in the page table.
-    pub(crate) fn map_area(&self, page_table: &mut B::PageTable) -> MappingResult {
+    pub(crate) fn map_area(
+        &self,
+        context: &mut B::MutationContext,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
         self.backend
-            .map(self.start(), self.size(), self.flags, page_table)
+            .map(self.start(), self.size(), self.flags, context, page_table)
             .then_some(())
             .ok_or(MappingError::BadState)
     }
@@ -204,28 +208,67 @@ impl<B: MappingBackend> MemoryArea<B> {
     }
 
     /// Unmaps the whole memory area in the page table.
-    pub(crate) fn unmap_area(&self, page_table: &mut B::PageTable) -> MappingResult {
-        self.backend
-            .unmap(self.start(), self.size(), page_table)
-            .then_some(())
-            .ok_or(MappingError::BadState)
-    }
-
-    pub(crate) fn validate_unmap(&self, page_table: &B::PageTable) -> MappingResult {
-        self.backend
-            .validate_unmap(self.start(), self.size(), page_table)
-            .then_some(())
-            .ok_or(MappingError::BadState)
-    }
-
-    /// Changes the flags in the page table.
-    pub(crate) fn protect_area(
-        &mut self,
-        new_flags: B::Flags,
+    pub(crate) fn unmap_area(
+        &self,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
+        self.unmap_range(self.start(), self.size(), context, page_table)
+    }
+
+    /// Unmaps a sub-range without changing this area's metadata.
+    ///
+    /// Callers use this to complete the fallible backend transition before
+    /// committing a split or key change in the containing memory set.
+    pub(crate) fn unmap_range(
+        &self,
+        start: B::Addr,
+        size: usize,
+        context: &mut B::MutationContext,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
+        debug_assert!(
+            self.va_range
+                .contains_range(AddrRange::from_start_size(start, size))
+        );
         self.backend
-            .protect(self.start(), self.size(), new_flags, page_table)
+            .unmap(start, size, context, page_table)
+            .then_some(())
+            .ok_or(MappingError::BadState)
+    }
+
+    /// Preflights an unmap sub-range without changing page-table or metadata.
+    pub(crate) fn validate_unmap_range(
+        &self,
+        start: B::Addr,
+        size: usize,
+        page_table: &B::PageTable,
+    ) -> MappingResult {
+        debug_assert!(
+            self.va_range
+                .contains_range(AddrRange::from_start_size(start, size))
+        );
+        self.backend
+            .validate_unmap(start, size, page_table)
+            .then_some(())
+            .ok_or(MappingError::BadState)
+    }
+
+    /// Changes page-table flags for a sub-range without changing metadata.
+    pub(crate) fn protect_range(
+        &self,
+        start: B::Addr,
+        size: usize,
+        new_flags: B::Flags,
+        context: &mut B::MutationContext,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
+        debug_assert!(
+            self.va_range
+                .contains_range(AddrRange::from_start_size(start, size))
+        );
+        self.backend
+            .protect(start, size, new_flags, context, page_table)
             .then_some(())
             .ok_or(MappingError::BadState)
     }
@@ -277,6 +320,7 @@ impl<B: MappingBackend> MemoryArea<B> {
     pub(crate) fn grow_right(
         &mut self,
         additional_size: usize,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
         if additional_size == 0
@@ -299,14 +343,17 @@ impl<B: MappingBackend> MemoryArea<B> {
         }
         if !self
             .backend
-            .map(map_start, additional_size, self.flags, page_table)
+            .map(map_start, additional_size, self.flags, context, page_table)
         {
             // A backend is allowed to materialize a prefix before reporting
             // failure.  Use its inverse while the original metadata is still
             // intact; if that inverse cannot prove a full cleanup, expose the
             // indeterminate state instead of returning a recoverable error.
             return Err(
-                if self.backend.unmap(map_start, additional_size, page_table) {
+                if self
+                    .backend
+                    .unmap(map_start, additional_size, context, page_table)
+                {
                     MappingError::BadState
                 } else {
                     MappingError::NeedsRepair

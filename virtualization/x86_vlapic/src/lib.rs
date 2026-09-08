@@ -132,6 +132,16 @@ impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {
             .accept_interrupt(vector, level_triggered);
     }
 
+    /// Returns whether the local APIC timer has an edge awaiting vCPU entry.
+    pub fn has_pending_timer_interrupt(&self) -> bool {
+        self.get_vlapic_regs().has_pending_timer_interrupt()
+    }
+
+    /// Coalesces expired local APIC timer periods into one pending vector.
+    pub fn take_pending_timer_interrupt(&self) -> Option<u8> {
+        self.get_vlapic_regs().take_pending_timer_interrupt()
+    }
+
     /// Process a guest EOI and return the vector that needs an IO APIC EOI broadcast.
     pub fn handle_eoi(&self) -> Option<u8> {
         self.get_mut_vlapic_regs().handle_eoi()

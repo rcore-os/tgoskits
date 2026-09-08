@@ -12,11 +12,12 @@ use alloc::sync::Arc;
 use core::any::Any;
 
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
+use bytemuck::{AnyBitPattern, NoUninit};
 use linux_raw_sys::general::O_CLOEXEC;
-use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     file::{add_file_like, close_file_like, dmabuf::DmaBufFile},
+    mm::{UserConstPtr, UserPtr},
     pseudofs::DeviceOps,
 };
 
@@ -45,7 +46,7 @@ const DMA_HEAP_IOCTL_ALLOC: u32 = 0xC018_4800;
 
 /// `struct dma_heap_allocation_data` (Linux dma-buf heaps UAPI).
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, AnyBitPattern, NoUninit)]
 struct DmaHeapAllocData {
     len: u64,
     fd: u32,
@@ -69,7 +70,7 @@ impl DeviceOps for DmaHeap {
         self
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
+    fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
         if cmd != DMA_HEAP_IOCTL_ALLOC {
             return Err(VfsError::NotATty);
         }
@@ -77,8 +78,7 @@ impl DeviceOps for DmaHeap {
             return Err(VfsError::InvalidInput);
         }
 
-        let mut data = DmaHeapAllocData::default();
-        copy_in(&mut data, arg)?;
+        let mut data = copy_in(current, arg)?;
 
         // Linux dma-heap rejects a zero-length allocation with EINVAL.
         if data.len == 0 {
@@ -92,7 +92,7 @@ impl DeviceOps for DmaHeap {
         let fd = add_file_like(Arc::new(buf), cloexec)?;
 
         data.fd = fd as u32;
-        if let Err(e) = copy_out(&data, arg) {
+        if let Err(e) = copy_out(current, &data, arg) {
             // Userspace never learns this fd, so close it here; otherwise the fd
             // slot and its contiguous DMA buffer leak for the process lifetime.
             let _ = close_file_like(fd);
@@ -102,15 +102,18 @@ impl DeviceOps for DmaHeap {
     }
 }
 
-fn copy_in(dst: &mut DmaHeapAllocData, uaddr: usize) -> VfsResult<()> {
-    // SAFETY: the dma-heap ABI record consists only of integer fields.
-    *dst = unsafe { (uaddr as *const DmaHeapAllocData).vm_read_any() }
-        .map_err(|_| VfsError::InvalidData)?;
-    Ok(())
+fn copy_in(current: &crate::task::UserTaskRef, uaddr: usize) -> VfsResult<DmaHeapAllocData> {
+    UserConstPtr::<DmaHeapAllocData>::from(uaddr)
+        .read(current)
+        .map_err(|_| VfsError::InvalidData)
 }
 
-fn copy_out(src: &DmaHeapAllocData, uaddr: usize) -> VfsResult<()> {
-    (uaddr as *mut DmaHeapAllocData)
-        .vm_write(*src)
+fn copy_out(
+    current: &crate::task::UserTaskRef,
+    src: &DmaHeapAllocData,
+    uaddr: usize,
+) -> VfsResult<()> {
+    UserPtr::<DmaHeapAllocData>::from(uaddr)
+        .write(current, *src)
         .map_err(|_| VfsError::InvalidData)
 }

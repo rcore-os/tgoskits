@@ -210,8 +210,7 @@ fn irq_drain_refreshes_hctx_queue_capabilities() {
     assert!(!initial.limits.supports_flush);
     assert_eq!(initial.limits.max_blocks_per_request, 256);
 
-    let target = hctx.irq_target(0);
-    let mut action = BlockIrqAction::new(Box::new(QueueZeroIrq), vec![target]);
+    let mut action = queue_zero_action(&hctx);
     assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
     let deadline = Instant::now() + Duration::from_secs(1);
     while !hctx.info().limits.supports_flush {
@@ -254,8 +253,7 @@ fn terminal_irq_drain_failure_does_not_advance_controller_or_rearm() {
     )
     .unwrap();
 
-    let target = hctx.irq_target(0);
-    let mut action = BlockIrqAction::new(Box::new(QueueZeroControlIrq), vec![target]);
+    let mut action = queue_zero_action_with_handler(&hctx, Box::new(QueueZeroControlIrq));
     assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
 
     let deadline = Instant::now() + Duration::from_secs(1);

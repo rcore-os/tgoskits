@@ -8,6 +8,13 @@ const NUM_INT: usize = 256;
 
 static IDT: LazyInit<InterruptDescriptorTable> = LazyInit::new();
 
+const fn exception_ist_index(vector: usize) -> Option<u16> {
+    match vector {
+        8 => Some(super::gdt::DOUBLE_FAULT_IST_INDEX),
+        _ => None,
+    }
+}
+
 /// Initializes the global IDT and loads it into the current CPU.
 pub(super) fn init() {
     IDT.call_once(|| {
@@ -26,6 +33,13 @@ pub(super) fn init() {
             let offset = unsafe { *ENTRIES.as_ptr().add(i) } as isize;
             let handler = VirtAddr::new((base + offset) as u64);
             let opt = unsafe { entry.set_handler_addr(handler) };
+            if let Some(index) = exception_ist_index(i) {
+                unsafe {
+                    // SAFETY: the matching per-CPU TSS entry is initialized
+                    // before this IDT is loaded on each CPU.
+                    opt.set_stack_index(index);
+                }
+            }
             if i == 0x3 || i == 0x80 {
                 // enable user space breakpoints and legacy int 0x80 syscall
                 opt.set_privilege_level(x86_64::PrivilegeLevel::Ring3);
@@ -35,4 +49,14 @@ pub(super) fn init() {
         table
     });
     IDT.load();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exception_ist_index;
+
+    #[test]
+    fn double_fault_uses_a_dedicated_interrupt_stack() {
+        assert_eq!(exception_ist_index(8), Some(0));
+    }
 }

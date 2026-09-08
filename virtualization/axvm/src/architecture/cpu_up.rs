@@ -186,7 +186,7 @@ mod tests {
             true
         }
 
-        fn handle_vcpu_exit_bound(
+        fn handle_vcpu_exit_unbound(
             _vm: &crate::AxVMRef,
             _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
             _exit: <Self::VCpu as VmArchVcpuOps>::Exit,

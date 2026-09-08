@@ -19,8 +19,57 @@ impl Drop for ReclaimGuard {
     }
 }
 
-static GLOBAL_CACHED_FILES: ax_sync::SpinRwLock<AllocVec<Arc<CachedFileShared>>> =
-    ax_sync::SpinRwLock::new(AllocVec::new());
+struct CachedFileRegistry {
+    files: ax_sync::SpinRwLock<AllocVec<Arc<CachedFileShared>>>,
+}
+
+impl CachedFileRegistry {
+    const fn new() -> Self {
+        Self {
+            files: ax_sync::SpinRwLock::new(AllocVec::new()),
+        }
+    }
+
+    #[cfg(feature = "ext4")]
+    fn release_unlinked(&self, file: &Arc<CachedFileShared>) {
+        let removed = {
+            let mut registry = self.files.write();
+            registry
+                .iter()
+                .position(|cached| Arc::ptr_eq(cached, file))
+                .map(|index| registry.remove(index))
+        };
+        drop(removed);
+    }
+
+    fn prune(&self) {
+        self.prune_with(|| {});
+    }
+
+    fn prune_with(&self, before_restore: impl FnOnce()) {
+        // Cached-file destruction can take a sleepable filesystem lock.
+        let mut files = {
+            let mut registry = self.files.write();
+            mem::take(&mut *registry)
+        };
+        files.retain(|cached| Arc::strong_count(cached) > 1 || cached.has_dirty_pages());
+        before_restore();
+        for file in files {
+            let mut registry = self.files.write();
+            // Unlink publishes this flag before taking the registry lock.
+            // Recheck under that same lock: either restoration observes it,
+            // or unlink subsequently removes the restored registration.
+            if file.unlinked.load(Ordering::Acquire) {
+                drop(registry);
+                drop(file);
+            } else {
+                registry.push(file);
+            }
+        }
+    }
+}
+
+static GLOBAL_CACHED_FILES: CachedFileRegistry = CachedFileRegistry::new();
 static RECLAIM_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 fn visit_registered_cached_file<R>(
@@ -30,7 +79,7 @@ fn visit_registered_cached_file<R>(
     // Retain registry read ownership instead of cloning an Arc that could
     // become the last file owner during concurrent pruning. The visitor only
     // uses try-lock clean eviction and never allocates or invokes callbacks.
-    let registry = GLOBAL_CACHED_FILES.try_read()?;
+    let registry = GLOBAL_CACHED_FILES.files.try_read()?;
     registry.get(index).map(visit)
 }
 
@@ -46,14 +95,14 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
     let target = num_pages.max(16).saturating_mul(2);
     let mut visited_files = 0;
     let scan_len = {
-        let Some(registry) = GLOBAL_CACHED_FILES.try_read() else {
+        let Some(registry) = GLOBAL_CACHED_FILES.files.try_read() else {
             return 0;
         };
         registry.len()
     };
 
-    // Clone one Arc at a time so file locks are taken after the registry spin
-    // guard is released, without allocating a second Vec under memory pressure.
+    // Borrow each registry owner while trying the file locks; pressure reclaim
+    // cannot become a cached file's final owner or allocate a snapshot Vec.
     // Concurrent pruning may move an entry between indices; reclaim is a
     // best-effort scan, so a later allocator retry can revisit a skipped entry.
     for index in 0..scan_len {
@@ -91,7 +140,7 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
 
 pub(super) fn register_cached_file(file: &Arc<CachedFileShared>) {
     prune_cached_files();
-    GLOBAL_CACHED_FILES.write().push(file.clone());
+    GLOBAL_CACHED_FILES.files.write().push(file.clone());
 }
 
 /// Drops the reclaim registry's ownership after the backing inode is reaped.
@@ -100,18 +149,11 @@ pub(super) fn register_cached_file(file: &Arc<CachedFileShared>) {
 /// destroying a cached file can take its sleepable page-cache lock.
 #[cfg(feature = "ext4")]
 pub(super) fn release_unlinked_cached_file(file: &Arc<CachedFileShared>) {
-    let removed = {
-        let mut registry = GLOBAL_CACHED_FILES.write();
-        registry
-            .iter()
-            .position(|cached| Arc::ptr_eq(cached, file))
-            .map(|index| registry.remove(index))
-    };
-    drop(removed);
+    GLOBAL_CACHED_FILES.release_unlinked(file);
 }
 
 pub fn sync_all_cached_files(_data_only: bool) -> VfsResult<()> {
-    let files = GLOBAL_CACHED_FILES.read().clone();
+    let files = GLOBAL_CACHED_FILES.files.read().clone();
     let mut first_error = None;
     for file in &files {
         if let Err(error) = file.writeback_dirty_for_global_sync()
@@ -127,15 +169,7 @@ pub fn sync_all_cached_files(_data_only: bool) -> VfsResult<()> {
 }
 
 fn prune_cached_files() {
-    // Cached-file destruction can reach a sleepable filesystem lock. Move the
-    // registry contents out under the spin lock, prune them after releasing
-    // it, then merge survivors with registrations that arrived meanwhile.
-    let mut files = {
-        let mut registry = GLOBAL_CACHED_FILES.write();
-        mem::take(&mut *registry)
-    };
-    files.retain(|cached| Arc::strong_count(cached) > 1 || cached.has_dirty_pages());
-    GLOBAL_CACHED_FILES.write().append(&mut files);
+    GLOBAL_CACHED_FILES.prune();
 }
 
 impl CachedFileShared {
@@ -309,18 +343,22 @@ mod tests {
 
     #[cfg(feature = "ext4")]
     #[test]
-    fn global_registry_does_not_keep_unlinked_cached_file_alive() {
+    fn registry_does_not_restore_unlinked_cached_file_after_pruning() {
+        // Use an isolated registry: concurrent global sync may legitimately
+        // retain a temporary owner after unlink has removed the registration.
+        let registry = CachedFileRegistry::new();
         let cached = Arc::new(CachedFileShared::new_unbounded(0));
         let lifetime = Arc::downgrade(&cached);
-        register_cached_file(&cached);
-        cached.mark_unlinked();
-        release_unlinked_cached_file(&cached);
+        registry.files.write().push(cached.clone());
+        registry.prune_with(|| {
+            cached.mark_unlinked();
+            registry.release_unlinked(&cached);
+        });
         drop(cached);
 
         assert!(
             lifetime.upgrade().is_none(),
-            "the reclaim registry must not own the inode page cache"
+            "pruning must not restore an unlinked inode's cache ownership"
         );
-        prune_cached_files();
     }
 }

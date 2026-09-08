@@ -8,7 +8,11 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use ax_std::os::arceos::sync::NoPreemptMutex;
+use ax_std::os::arceos::{
+    api::task::{AxCpuMask, ax_set_current_affinity},
+    modules::ax_runtime::task::{IrqWaitCell, IrqWorkerWaiter, current_thread_handle},
+    sync::NoPreemptMutex,
+};
 use axvisor::console_mux::HostOutputQueue;
 use axvm::VMId;
 
@@ -16,7 +20,7 @@ mod layout;
 
 mod delivery;
 
-use delivery::{BlockingSignal, DeliveryFrame, DeliveryQueue};
+use delivery::{DeliveryFrame, DeliveryQueue};
 use layout::{ConsoleLane, Endpoint, plan_endpoints};
 
 const CONSOLE_LANE_COUNT: usize = ConsoleLane::COUNT;
@@ -27,6 +31,7 @@ const OUTPUT_DELIVERY_QUEUE_CAPACITY: usize = 64 * 1024;
 const OUTPUT_DELIVERY_BATCH_CAPACITY: usize = 4096;
 const OUTPUT_COALESCE_WINDOW: Duration = Duration::from_millis(10);
 const MANAGEMENT_LINE_CAPACITY: usize = 256;
+const MANAGEMENT_CPU_ID: usize = 0;
 
 static OUTPUT_HUB: NetworkOutputHub = NetworkOutputHub::new();
 static ENDPOINTS: OnceLock<Vec<Endpoint>> = OnceLock::new();
@@ -39,13 +44,13 @@ struct NetworkOutputLane {
     queue: NoPreemptMutex<HostOutputQueue<OUTPUT_QUEUE_CAPACITY>>,
     connected: AtomicBool,
     session: AtomicUsize,
-    ready: BlockingSignal,
+    ready: IrqWaitCell,
 }
 
 struct BrowserOutputDelivery {
     queue: NoPreemptMutex<DeliveryQueue<OUTPUT_DELIVERY_QUEUE_CAPACITY>>,
     closed: AtomicBool,
-    ready: BlockingSignal,
+    ready: IrqWaitCell,
 }
 
 impl NetworkOutputHub {
@@ -76,8 +81,13 @@ impl NetworkOutputHub {
         self.lanes[lane.index()].end_session(session);
     }
 
-    fn receive(&self, lane: ConsoleLane, session: usize) -> Option<NetworkOutputBatch> {
-        self.lanes[lane.index()].receive(session)
+    fn receive(
+        &self,
+        lane: ConsoleLane,
+        session: usize,
+        waiter: &IrqWorkerWaiter,
+    ) -> Result<Option<NetworkOutputBatch>> {
+        self.lanes[lane.index()].receive(session, waiter)
     }
 
     fn take_batch(&self, lane: ConsoleLane, session: usize) -> Option<NetworkOutputBatch> {
@@ -91,7 +101,7 @@ impl NetworkOutputLane {
             queue: NoPreemptMutex::new(HostOutputQueue::new()),
             connected: AtomicBool::new(false),
             session: AtomicUsize::new(0),
-            ready: BlockingSignal::new(),
+            ready: IrqWaitCell::new(),
         }
     }
 
@@ -109,7 +119,7 @@ impl NetworkOutputLane {
             }
         };
         if submitted {
-            self.ready.notify_irq();
+            let _result = self.ready.notify();
         }
     }
 
@@ -119,7 +129,6 @@ impl NetworkOutputLane {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()?;
         *queue = HostOutputQueue::new();
-        self.ready.drain();
         Some(self.session.fetch_add(1, Ordering::AcqRel).wrapping_add(1))
     }
 
@@ -129,7 +138,7 @@ impl NetworkOutputLane {
             self.connected.store(false, Ordering::Release);
             *queue = HostOutputQueue::new();
             drop(queue);
-            self.ready.notify();
+            let _result = self.ready.notify();
         }
     }
 
@@ -146,17 +155,23 @@ impl NetworkOutputLane {
         (!batch.is_empty()).then_some(batch)
     }
 
-    fn receive(&self, session: usize) -> Option<NetworkOutputBatch> {
+    fn receive(
+        &self,
+        session: usize,
+        waiter: &IrqWorkerWaiter,
+    ) -> Result<Option<NetworkOutputBatch>> {
         loop {
             if let Some(batch) = self.take_batch(session) {
-                return Some(batch);
+                return Ok(Some(batch));
             }
             if !self.connected.load(Ordering::Acquire)
                 || self.session.load(Ordering::Acquire) != session
             {
-                return None;
+                return Ok(None);
             }
-            self.ready.wait();
+            waiter
+                .wait(&self.ready)
+                .context("failed to wait for browser console output")?;
         }
     }
 }
@@ -166,7 +181,7 @@ impl BrowserOutputDelivery {
         Self {
             queue: NoPreemptMutex::new(DeliveryQueue::new()),
             closed: AtomicBool::new(false),
-            ready: BlockingSignal::new(),
+            ready: IrqWaitCell::new(),
         }
     }
 
@@ -184,28 +199,30 @@ impl BrowserOutputDelivery {
             }
         };
         if submitted {
-            self.ready.notify();
+            let _result = self.ready.notify();
         }
     }
 
     fn close(&self) {
         self.closed.store(true, Ordering::Release);
-        self.ready.notify();
+        let _result = self.ready.notify();
     }
 
-    fn receive(&self) -> Option<Vec<u8>> {
+    fn receive(&self, waiter: &IrqWorkerWaiter) -> Result<Option<Vec<u8>>> {
         loop {
             let mut bytes = [0; OUTPUT_DELIVERY_BATCH_CAPACITY];
             let (len, dropped_bytes) = self.queue.lock().dequeue(&mut bytes);
             if len != 0 || dropped_bytes != 0 {
                 let mut frame = DeliveryFrame::with_capacity(len + 96);
                 frame.append(&bytes[..len], dropped_bytes);
-                return Some(frame.into_bytes());
+                return Ok(Some(frame.into_bytes()));
             }
             if self.closed.load(Ordering::Acquire) {
-                return None;
+                return Ok(None);
             }
-            self.ready.wait();
+            waiter
+                .wait(&self.ready)
+                .context("failed to wait for browser console delivery")?;
         }
     }
 }
@@ -283,6 +300,12 @@ fn lane_name(lane: ConsoleLane) -> String {
         .unwrap_or_else(|| format!("console lane {}", lane.index()))
 }
 
+/// Pins one web-console service task to the management CPU.
+pub(crate) fn pin_current_task() {
+    ax_set_current_affinity(AxCpuMask::one_shot(MANAGEMENT_CPU_ID))
+        .expect("web console management CPU affinity must be valid");
+}
+
 /// Returns whether the startup snapshot exposed this browser route.
 pub(crate) fn has_console_route(route: &str) -> bool {
     endpoint_for_route(route).is_some()
@@ -347,7 +370,10 @@ pub(crate) fn open_browser_console(
             editor: ManagementLineEditor::new(),
             _active_session: active_session,
         },
-        BrowserConsoleOutput { delivery },
+        BrowserConsoleOutput {
+            delivery,
+            waiter: None,
+        },
     ))
 }
 
@@ -358,22 +384,41 @@ fn start_output_dispatcher(
     let delivery = Arc::new(BrowserOutputDelivery::new());
     let dispatcher_delivery = Arc::clone(&delivery);
     let task_name = format!("{}-browser-console-dispatcher", lane_name(lane));
+    let worker_name = task_name.clone();
     std::thread::Builder::new()
         .name(task_name.clone())
-        .spawn(move || run_output_dispatcher(lane, session, dispatcher_delivery))
+        .spawn(move || {
+            if let Err(error) = run_output_dispatcher(lane, session, &dispatcher_delivery) {
+                warn!("{worker_name} stopped: {error:#}");
+            }
+            dispatcher_delivery.close();
+        })
         .with_context(|| format!("failed to start {task_name}"))?;
     Ok(delivery)
 }
 
-fn run_output_dispatcher(lane: ConsoleLane, session: usize, delivery: Arc<BrowserOutputDelivery>) {
-    while let Some(frame) = receive_output_frame(lane, session) {
+fn run_output_dispatcher(
+    lane: ConsoleLane,
+    session: usize,
+    delivery: &BrowserOutputDelivery,
+) -> Result<()> {
+    let current = current_thread_handle()
+        .context("failed to bind browser console dispatcher to its worker")?;
+    let waiter = IrqWorkerWaiter::new(current.wake_handle());
+    while let Some(frame) = receive_output_frame(lane, session, &waiter)? {
         delivery.enqueue(&frame);
     }
-    delivery.close();
+    Ok(())
 }
 
-fn receive_output_frame(lane: ConsoleLane, session: usize) -> Option<Vec<u8>> {
-    let first = OUTPUT_HUB.receive(lane, session)?;
+fn receive_output_frame(
+    lane: ConsoleLane,
+    session: usize,
+    waiter: &IrqWorkerWaiter,
+) -> Result<Option<Vec<u8>>> {
+    let Some(first) = OUTPUT_HUB.receive(lane, session, waiter)? else {
+        return Ok(None);
+    };
     let mut frame = DeliveryFrame::with_capacity(OUTPUT_FRAME_TARGET_CAPACITY);
     frame.append(&first.bytes[..first.len], first.dropped_bytes);
 
@@ -387,7 +432,7 @@ fn receive_output_frame(lane: ConsoleLane, session: usize) -> Option<Vec<u8>> {
         };
         frame.append(&batch.bytes[..batch.len], batch.dropped_bytes);
     }
-    Some(frame.into_bytes())
+    Ok(Some(frame.into_bytes()))
 }
 
 /// Input half of a board-hosted browser console session.
@@ -424,12 +469,22 @@ impl BrowserConsoleInput {
 /// Blocking output half fed by the lane's fixed-capacity delivery queue.
 pub(crate) struct BrowserConsoleOutput {
     delivery: Arc<BrowserOutputDelivery>,
+    waiter: Option<IrqWorkerWaiter>,
 }
 
 impl BrowserConsoleOutput {
     /// Waits for one coalesced frame or session closure.
-    pub(crate) fn receive(&mut self) -> Option<Vec<u8>> {
-        self.delivery.receive()
+    pub(crate) fn receive(&mut self) -> Result<Option<Vec<u8>>> {
+        if self.waiter.is_none() {
+            let current = current_thread_handle()
+                .context("failed to bind browser console output to its worker")?;
+            self.waiter = Some(IrqWorkerWaiter::new(current.wake_handle()));
+        }
+        let waiter = self
+            .waiter
+            .as_ref()
+            .expect("browser console waiter was initialized above");
+        self.delivery.receive(waiter)
     }
 }
 

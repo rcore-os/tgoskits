@@ -102,7 +102,7 @@ fn rx_allocation_failure_recovers_without_disabling_tx() {
     let (recycle, rx_recycle) = spsc_ring(2);
     let (mut transmit, tx_ready) = spsc_ring(2);
     let (tx_free, _free) = spsc_ring(2);
-    let shared = Arc::new(PollGroupState::new(0, Arc::new(ax_task::IrqNotify::new())));
+    let shared = Arc::new(PollGroupState::new(0, Arc::new(QueueNotification::new())));
     shared.activate(false);
     let mut executor = QueueGroupExecutor {
         group,
@@ -366,7 +366,7 @@ fn missing_device_startup_is_cancelled_without_publishing_queues() {
         let (rx_recycle, recycle) = spsc_ring(2);
         let (tx_free, mut protocol_tx_free) = spsc_ring(2);
         let (_protocol_tx, tx_ready) = spsc_ring(2);
-        let shared = Arc::new(PollGroupState::new(0, Arc::new(ax_task::IrqNotify::new())));
+        let shared = Arc::new(PollGroupState::new(0, Arc::new(QueueNotification::new())));
         let mut executor = QueueGroupExecutor {
             group,
             rx_ready,
@@ -384,7 +384,7 @@ fn missing_device_startup_is_cancelled_without_publishing_queues() {
             shared: Arc::clone(&shared),
         };
 
-        let result = executor.initialize();
+        let result = executor.initialize(|| panic!("absent device startup must not wait"));
         if cancel_fails {
             assert!(matches!(result, Err(NetError::InvalidParts)));
         } else {
@@ -420,7 +420,7 @@ fn rx_refill_retry_drains_completions_and_preserves_tx_flush() {
     let (recycle, rx_recycle) = spsc_ring(2);
     let (mut transmit, tx_ready) = spsc_ring(2);
     let (tx_free, _free) = spsc_ring(2);
-    let shared = Arc::new(PollGroupState::new(0, Arc::new(ax_task::IrqNotify::new())));
+    let shared = Arc::new(PollGroupState::new(0, Arc::new(QueueNotification::new())));
     shared.activate(false);
     let buffer = group.tx_pool.allocate(60).unwrap();
     assert!(
@@ -546,7 +546,7 @@ fn tx_backpressure_allows_rx_delivery_before_tx_resumes() {
     let (recycle, rx_recycle) = spsc_ring(2);
     let (mut transmit, tx_ready) = spsc_ring(2);
     let (tx_free, _free) = spsc_ring(2);
-    let shared = Arc::new(PollGroupState::new(0, Arc::new(ax_task::IrqNotify::new())));
+    let shared = Arc::new(PollGroupState::new(0, Arc::new(QueueNotification::new())));
     shared.activate(false);
     for byte in [0xa5, 0x5a] {
         let mut buffer = group.tx_pool.allocate(60).unwrap();

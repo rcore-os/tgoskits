@@ -29,7 +29,9 @@ use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::SleepMutex}
 pub(crate) struct BlockCacheShared {
     device_key: usize,
     consumers: AtomicUsize,
-    state: SleepMutex<BlockAddressSpace>,
+    // Allocator reclaim may retain this data without retaining the device
+    // endpoint, whose final drop can wait for IO or scheduler work.
+    state: Arc<SleepMutex<BlockAddressSpace>>,
     endpoint: SleepMutex<Box<dyn FsBlockDevice>>,
 }
 
@@ -42,7 +44,7 @@ impl BlockCacheShared {
         Self {
             device_key,
             consumers: AtomicUsize::new(0),
-            state: SleepMutex::new(BlockAddressSpace::new(geometry)),
+            state: Arc::new(SleepMutex::new(BlockAddressSpace::new(geometry))),
             endpoint: SleepMutex::new(endpoint),
         }
     }
@@ -88,15 +90,11 @@ impl BlockCacheShared {
         self.sync_to_device_with(&mut **self.endpoint.lock())
     }
 
-    /// Drops up to `target` clean folios from the LRU end; see
-    /// [`super::registry::reclaim_clean_folios`] for the clean-only
-    /// contract.
+    /// Publishes a data-only capability for allocator reclaim. Its last
+    /// release frees cache storage without running a device destructor.
     #[cfg(feature = "vfs")]
-    pub(crate) fn try_reclaim_clean_folios(&self, target: usize) -> usize {
-        let Some(mut state) = self.state.try_lock() else {
-            return 0;
-        };
-        state.reclaim_clean_folios(target)
+    pub(super) fn reclaim_state(&self) -> alloc::sync::Weak<SleepMutex<BlockAddressSpace>> {
+        Arc::downgrade(&self.state)
     }
 }
 

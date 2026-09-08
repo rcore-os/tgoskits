@@ -4,13 +4,15 @@ use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange
 use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 
 use super::{
-    MappingExecution, MappingOperation, PreparedPteOwner, ProviderPublication,
-    PteMaterialization, occupied_leaf_ranges, pages_in,
-};
-use super::super::objects::{FrameLease, PageId, PageObject};
-use super::super::vma::{
-    LinearSource, MappingId, MappingSource, PageOffset, PageSizePolicy, VmaDescriptor,
-    allocate_mapping_id,
+    super::{
+        objects::{FrameLease, PageId, PageObject},
+        vma::{
+            LinearSource, MappingId, MappingSource, PageOffset, PageSizePolicy, VmaDescriptor,
+            allocate_mapping_id,
+        },
+    },
+    MappingExecution, MappingOperation, PreparedPteOwner, ProviderPublication, PteMaterialization,
+    occupied_leaf_ranges, pages_in,
 };
 use crate::{StarryError, StarryResult, sync::Mutex};
 
@@ -77,9 +79,7 @@ impl LinearBackend {
 
     fn prepared_owner(&self, va: VirtAddr) -> StarryResult<PreparedPteOwner> {
         let paddr = self.pa(va).ok_or(StarryError::InvalidInput)?;
-        let page = self
-            .page_owner_at(va)
-            .ok_or(StarryError::BadState)?;
+        let page = self.page_owner_at(va).ok_or(StarryError::BadState)?;
         Ok(PreparedPteOwner::installed(
             va,
             paddr,
@@ -97,9 +97,7 @@ impl MappingExecution for LinearBackend {
     }
 
     fn vma_descriptor(&self, area_start: VirtAddr) -> VmaDescriptor {
-        let offset = area_start
-            .checked_sub_addr(self.start)
-            .unwrap_or_default();
+        let offset = area_start.checked_sub_addr(self.start).unwrap_or_default();
         VmaDescriptor {
             // The physical origin is stable across a VMA split and does not
             // expose a pointer or allocator address as an identity.
@@ -147,11 +145,7 @@ impl MappingExecution for LinearBackend {
         Ok(materialization)
     }
 
-    fn unmap(
-        &self,
-        range: VirtAddrRange,
-        pt: &mut PageTable,
-    ) -> StarryResult {
+    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTable) -> StarryResult {
         let pa_start = self.pa(range.start).ok_or(StarryError::InvalidInput)?;
         let pa_range = ax_memory_addr::PhysAddrRange::try_from_start_size(pa_start, range.size())
             .ok_or(StarryError::InvalidInput)?;
@@ -181,10 +175,7 @@ impl MappingExecution for LinearBackend {
         // page table.  Install the complete child view before publishing its
         // address space; `map` rolls back any prefix if a later leaf fails.
         let materialization = self.map(range, flags, new_pt)?;
-        Ok((
-            MappingOperation::from_linear(self.clone()),
-            materialization,
-        ))
+        Ok((MappingOperation::from_linear(self.clone()), materialization))
     }
 
     fn split(&mut self, align_diff: usize) -> Option<MappingOperation> {

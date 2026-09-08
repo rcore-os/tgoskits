@@ -21,7 +21,11 @@ pub(super) struct MmWorkQueue {
 
 impl MmWorkQueue {
     pub(super) const fn new() -> Self {
-        Self { head: None, tail: None, len: 0 }
+        Self {
+            head: None,
+            tail: None,
+            len: 0,
+        }
     }
 
     pub(super) const fn len(&self) -> usize {

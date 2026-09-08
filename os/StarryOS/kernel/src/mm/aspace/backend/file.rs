@@ -5,6 +5,7 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
+
 use ax_fs_ng::{
     file::{
         CacheMappingEndpoint, CacheMappingEvent, CacheMappingResult, CachePageIdentity,
@@ -18,18 +19,18 @@ use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 use axfs_ng_vfs::Location;
 
 use super::{
+    super::{
+        EvictMappingOutcome,
+        lifecycle::{RmapMmLookupError, pin_mm_for_rmap},
+        objects::{EvictionError, FrameLease, PageId, PageObject, PageState},
+        vma::{
+            FileSource, MappingId, MappingSource, PageOffset, PageSizePolicy, VmaDescriptor,
+            allocate_mapping_id,
+        },
+    },
     FaultMaterialization, FaultPteSnapshot, MappingExecution, MappingFileInfo, MappingOperation,
     PopulateRequest, PreparedPteOwner, ProviderPublication, PteMaterialization, RssKind,
     occupied_leaf_ranges, pages_in,
-};
-use super::super::{
-    EvictMappingOutcome,
-    lifecycle::{RmapMmLookupError, pin_mm_for_rmap},
-    objects::{EvictionError, FrameLease, PageId, PageObject, PageState},
-};
-use super::super::vma::{
-    FileSource, MappingId, MappingSource, PageOffset, PageSizePolicy, VmaDescriptor,
-    allocate_mapping_id,
 };
 use crate::{StarryError, StarryResult, mm::flush_tlb_range_sync, sync::Mutex};
 
@@ -67,9 +68,7 @@ enum FilePageEntry {
 impl FilePageEntry {
     const fn file_epoch(&self) -> u64 {
         match self {
-            Self::Publishing { file_epoch, .. } | Self::Published { file_epoch, .. } => {
-                *file_epoch
-            }
+            Self::Publishing { file_epoch, .. } | Self::Published { file_epoch, .. } => *file_epoch,
         }
     }
 
@@ -142,8 +141,7 @@ impl FilePageIndex {
             return Ok(page);
         }
 
-        let frame = FrameLease::borrowed(paddr, PAGE_SIZE_4K, None)
-            .ok_or(StarryError::BadState)?;
+        let frame = FrameLease::borrowed(paddr, PAGE_SIZE_4K, None).ok_or(StarryError::BadState)?;
         let page = PageObject::new_present_with_resident_kind(
             PageId::allocate(),
             frame,
@@ -344,9 +342,7 @@ impl FilePageDomain {
         page_number: u32,
         paddr: PhysAddr,
     ) -> StarryResult<Option<Arc<PageObject>>> {
-        self.pages
-            .lock()
-            .resolve(file_epoch, page_number, paddr)
+        self.pages.lock().resolve(file_epoch, page_number, paddr)
     }
 
     fn finish_page_publication(
@@ -355,20 +351,15 @@ impl FilePageDomain {
         page_number: u32,
         page: &Arc<PageObject>,
     ) -> StarryResult {
-        let pin = self.pages.lock().finish_publication(
-            file_epoch,
-            page_number,
-            page,
-        )?;
+        let pin = self
+            .pages
+            .lock()
+            .finish_publication(file_epoch, page_number, page)?;
         drop(pin);
         Ok(())
     }
 
-    fn cancel_page_publication(
-        &self,
-        page_number: u32,
-        page: &Arc<PageObject>,
-    ) -> StarryResult {
+    fn cancel_page_publication(&self, page_number: u32, page: &Arc<PageObject>) -> StarryResult {
         let pin = self.pages.lock().cancel_publication(page_number, page)?;
         drop(pin);
         Ok(())
@@ -385,10 +376,7 @@ impl FilePageDomain {
             .ensure_identity(file_epoch, page_number, page)
     }
 
-    fn page_for_event(
-        &self,
-        identity: CachePageIdentity,
-    ) -> StarryResult<Option<Arc<PageObject>>> {
+    fn page_for_event(&self, identity: CachePageIdentity) -> StarryResult<Option<Arc<PageObject>>> {
         if identity.file() != self.identity {
             return Err(StarryError::BadState);
         }
@@ -576,11 +564,8 @@ impl FileBackendInner {
 
     fn finish_page_publication(&self, va: VirtAddr, page: &Arc<PageObject>) -> StarryResult {
         let page_number = self.page_number_at(va).ok_or(StarryError::BadState)?;
-        self.page_domain.finish_page_publication(
-            self.cache.mapping_epoch(),
-            page_number,
-            page,
-        )
+        self.page_domain
+            .finish_page_publication(self.cache.mapping_epoch(), page_number, page)
     }
 
     pub(super) fn cancel_page_publication(
@@ -589,17 +574,13 @@ impl FileBackendInner {
         page: &Arc<PageObject>,
     ) -> StarryResult {
         let page_number = self.page_number_at(va).ok_or(StarryError::BadState)?;
-        self.page_domain
-            .cancel_page_publication(page_number, page)
+        self.page_domain.cancel_page_publication(page_number, page)
     }
 
     fn ensure_page_identity(&self, va: VirtAddr, page: &Arc<PageObject>) -> StarryResult {
         let page_number = self.page_number_at(va).ok_or(StarryError::BadState)?;
-        self.page_domain.ensure_page_identity(
-            self.cache.mapping_epoch(),
-            page_number,
-            page,
-        )
+        self.page_domain
+            .ensure_page_identity(self.cache.mapping_epoch(), page_number, page)
     }
 
     fn mapping_source(&self) -> MappingSource {
@@ -726,10 +707,7 @@ impl FileBackend {
         va: VirtAddr,
         paddr: PhysAddr,
     ) -> StarryResult<CachedPagePin> {
-        let page_number = self
-            .0
-            .page_number_at(va)
-            .ok_or(StarryError::BadState)?;
+        let page_number = self.0.page_number_at(va).ok_or(StarryError::BadState)?;
         let pin = self.0.cache.pin_cached_page(page_number)?;
         if pin.paddr() != paddr.as_usize() {
             return Err(StarryError::BadState);
@@ -780,8 +758,8 @@ impl FileBackend {
             .as_usize()
             .checked_sub(mapping_start.as_usize())
             .ok_or(StarryError::InvalidInput)?;
-        let start_page = u32::try_from(local_start / PAGE_SIZE_4K)
-            .map_err(|_| StarryError::InvalidInput)?;
+        let start_page =
+            u32::try_from(local_start / PAGE_SIZE_4K).map_err(|_| StarryError::InvalidInput)?;
         let end_page = u32::try_from(local_end.div_ceil(PAGE_SIZE_4K))
             .map_err(|_| StarryError::InvalidInput)?;
         let start_pn = offset_page
@@ -874,7 +852,11 @@ impl MappingExecution for FileBackend {
     fn vma_descriptor(&self, area_start: VirtAddr) -> VmaDescriptor {
         let offset = (self.0.offset_page as usize)
             .saturating_mul(PAGE_SIZE_4K)
-            .saturating_add(area_start.as_usize().saturating_sub(self.0.start.as_usize()));
+            .saturating_add(
+                area_start
+                    .as_usize()
+                    .saturating_sub(self.0.start.as_usize()),
+            );
         VmaDescriptor {
             mapping: self.mapping_id(),
             source: self.mapping_source(),
@@ -893,11 +875,7 @@ impl MappingExecution for FileBackend {
         Ok(PteMaterialization::empty())
     }
 
-    fn unmap(
-        &self,
-        range: VirtAddrRange,
-        pt: &mut PageTable,
-    ) -> StarryResult {
+    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTable) -> StarryResult {
         let provider_rollback = !super::tlb_retire_is_deferred();
         for (addr, expected_size) in occupied_leaf_ranges(range, pt)? {
             if expected_size != PAGE_SIZE_4K {
@@ -988,8 +966,8 @@ impl MappingExecution for FileBackend {
         if !local_offset.is_multiple_of(PAGE_SIZE_4K) {
             return Err(StarryError::BadState);
         }
-        let page_delta = u32::try_from(local_offset / PAGE_SIZE_4K)
-            .map_err(|_| StarryError::InvalidInput)?;
+        let page_delta =
+            u32::try_from(local_offset / PAGE_SIZE_4K).map_err(|_| StarryError::InvalidInput)?;
         let page_number = self
             .0
             .offset_page
@@ -1078,8 +1056,8 @@ impl MappingExecution for FileBackend {
         if !local_offset.is_multiple_of(PAGE_SIZE_4K) {
             return Err(StarryError::BadState);
         }
-        let page_delta = u32::try_from(local_offset / PAGE_SIZE_4K)
-            .map_err(|_| StarryError::InvalidInput)?;
+        let page_delta =
+            u32::try_from(local_offset / PAGE_SIZE_4K).map_err(|_| StarryError::InvalidInput)?;
         let start_page = offset_page
             .checked_add(page_delta)
             .ok_or(StarryError::InvalidInput)?;
@@ -1242,29 +1220,14 @@ fn independent_file_backends_share_page_object_for_test() -> bool {
         0,
         0,
     );
-    let cache = CachedFile::get_or_create(Location::new(
-        Mountpoint::new_root(&filesystem),
-        entry,
-    ))
-    .unwrap();
+    let cache =
+        CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry)).unwrap();
     let first_start = VirtAddr::from_usize(0x4000_0000);
     let second_start = VirtAddr::from_usize(0x5000_0000);
-    let first_operation = MappingOperation::new_file(
-        first_start,
-        cache.clone(),
-        FileFlags::READ,
-        0,
-        false,
-    )
-    .unwrap();
-    let second_operation = MappingOperation::new_file(
-        second_start,
-        cache.clone(),
-        FileFlags::READ,
-        0,
-        false,
-    )
-    .unwrap();
+    let first_operation =
+        MappingOperation::new_file(first_start, cache.clone(), FileFlags::READ, 0, false).unwrap();
+    let second_operation =
+        MappingOperation::new_file(second_start, cache.clone(), FileFlags::READ, 0, false).unwrap();
     let super::MappingOperationKind::File(first) = &first_operation.kind else {
         unreachable!();
     };
@@ -1274,13 +1237,9 @@ fn independent_file_backends_share_page_object_for_test() -> bool {
     let first_pin = cache.pin_page_or_insert(0).unwrap();
     let second_pin = cache.pin_page_or_insert(0).unwrap();
     let first_page = first.0.get_or_create_page_object(0, first_pin).unwrap();
-    let second_page = second
-        .0
-        .get_or_create_page_object(0, second_pin)
-        .unwrap();
+    let second_page = second.0.get_or_create_page_object(0, second_pin).unwrap();
 
-    first.cache().identity() == second.cache().identity()
-        && Arc::ptr_eq(&first_page, &second_page)
+    first.cache().identity() == second.cache().identity() && Arc::ptr_eq(&first_page, &second_page)
 }
 
 #[cfg(all(axtest, test))]
@@ -1294,11 +1253,8 @@ fn evicting_file_page_rejects_publication_as_retry_for_test() -> bool {
         0,
         0,
     );
-    let cache = CachedFile::get_or_create(Location::new(
-        Mountpoint::new_root(&filesystem),
-        entry,
-    ))
-    .unwrap();
+    let cache =
+        CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry)).unwrap();
     let operation = MappingOperation::new_file(
         VirtAddr::from_usize(0x6000_0000),
         cache.clone(),
@@ -1311,16 +1267,14 @@ fn evicting_file_page_rejects_publication_as_retry_for_test() -> bool {
         unreachable!();
     };
     let initial_pin = cache.pin_page_or_insert(0).unwrap();
-    let page = file
-        .0
-        .get_or_create_page_object(0, initial_pin)
-        .unwrap();
+    let page = file.0.get_or_create_page_object(0, initial_pin).unwrap();
     let eviction = page.eviction_lease().unwrap();
     let racing_pin = cache.pin_page_or_insert(0).unwrap();
     let result = file.0.get_or_create_page_object(0, racing_pin);
     let retry = matches!(result, Err(StarryError::ResourceBusy));
     let _ = eviction.cancel();
-    file.0.cancel_page_publication(VirtAddr::from_usize(0x6000_0000), &page)
+    file.0
+        .cancel_page_publication(VirtAddr::from_usize(0x6000_0000), &page)
         .unwrap();
     retry
 }

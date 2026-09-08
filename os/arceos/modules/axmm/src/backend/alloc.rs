@@ -12,6 +12,7 @@ use ax_hal::{
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PageIter4K, PhysAddr, VirtAddr};
 
 use super::Backend;
+use crate::tlb::TlbGather;
 
 static NEXT_KERNEL_VIRTUAL_ALLOCATION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -47,7 +48,7 @@ struct KernelVirtualFrameSet {
 impl Drop for KernelVirtualFrameSet {
     fn drop(&mut self) {
         for frame in self.frames.drain(..) {
-            dealloc_frame(frame, self.usage);
+            dealloc_frame_with_usage(frame, self.usage);
         }
     }
 }
@@ -79,7 +80,7 @@ impl KernelVirtualFrameBuilder {
 impl Drop for KernelVirtualFrameBuilder {
     fn drop(&mut self) {
         for frame in self.frames.drain(..) {
-            dealloc_frame(frame, self.usage);
+            dealloc_frame_with_usage(frame, self.usage);
         }
     }
 }
@@ -110,7 +111,7 @@ impl fmt::Debug for KernelVirtualAllocationBackend {
 }
 
 impl KernelVirtualAllocationBackend {
-    pub(super) fn allocate(
+    pub(crate) fn allocate(
         usage: UsageKind,
         leading_guard_pages: usize,
         page_count: usize,
@@ -149,11 +150,11 @@ impl KernelVirtualAllocationBackend {
         }
     }
 
-    fn expected_frame(&self, page_index: usize) -> Option<PhysAddr> {
+    pub(crate) fn expected_frame(&self, page_index: usize) -> Option<PhysAddr> {
         self.frames.frames.get(page_index).copied()
     }
 
-    fn frame_count(&self) -> usize {
+    pub(crate) fn frame_count(&self) -> usize {
         self.frames.frames.len()
     }
 }
@@ -171,7 +172,11 @@ fn alloc_frame(zeroed: bool, usage: UsageKind) -> Option<PhysAddr> {
     Some(paddr)
 }
 
-fn dealloc_frame(frame: PhysAddr, usage: UsageKind) {
+pub(crate) fn dealloc_frame(frame: PhysAddr) {
+    dealloc_frame_with_usage(frame, UsageKind::VirtMem);
+}
+
+fn dealloc_frame_with_usage(frame: PhysAddr, usage: UsageKind) {
     let vaddr = phys_to_virt(frame);
     global_allocator().dealloc_pages(vaddr.as_usize(), 1, usage);
 }
@@ -187,6 +192,7 @@ impl Backend {
         start: VirtAddr,
         size: usize,
         flags: MappingFlags,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
         populate: bool,
     ) -> bool {
@@ -198,9 +204,16 @@ impl Backend {
             populate
         );
         if populate {
+            let page_count = size / PAGE_SIZE_4K;
+            if gather.prepare_deferred_frames(page_count).is_err()
+                || gather.prepare_page_table_reclaims(page_count).is_err()
+            {
+                return false;
+            }
             let mut populate = PageTablePopulate {
                 page_table: pt,
                 flags,
+                gather,
                 usage: UsageKind::VirtMem,
             };
             populate_pages(&mut populate, start, size)
@@ -215,22 +228,43 @@ impl Backend {
         &self,
         start: VirtAddr,
         size: usize,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
-        _populate: bool,
+        populate: bool,
     ) -> bool {
         debug!("unmap_alloc: [{:#x}, {:#x})", start, start + size);
+        let mut mapped = alloc::vec::Vec::new();
         for addr in PageIter4K::new(start, start + size).unwrap() {
-            if let Ok((frame, _, page_size)) = pt.unmap_page(addr) {
-                // Deallocate the physical frame if there is a mapping in the
-                // page table.
-                if page_size > PAGE_SIZE_4K {
-                    return false;
+            match pt.query_occupied(addr) {
+                Ok((entry, 1)) => {
+                    let frame = entry.paddr(false);
+                    let owns_frame = populate || frame.as_usize() != 0;
+                    mapped.push((addr, frame, owns_frame));
                 }
-                dealloc_frame(frame, UsageKind::VirtMem);
-            } else {
-                // Deallocation is needn't if the page is not mapped.
+                Ok(_) => return false,
+                Err(PagingError::NotMapped) => {}
+                Err(_) => return false,
             }
         }
+        let owned_frames = mapped
+            .iter()
+            .filter(|(_, _, owns_frame)| *owns_frame)
+            .count();
+        if gather.prepare_deferred_frames(owned_frames).is_err()
+            || gather.prepare_page_table_reclaims(mapped.len()).is_err()
+        {
+            return false;
+        }
+        for (addr, frame, owns_frame) in mapped {
+            let (_, _, _, deferred_page_tables) = pt
+                .unmap_page_deferred(addr)
+                .expect("a preflighted allocated page must remain mapped under the aspace lock");
+            gather.defer_page_tables(deferred_page_tables);
+            if owns_frame {
+                gather.defer_frame(frame);
+            }
+        }
+        gather.invalidate(start, size);
         true
     }
 
@@ -238,6 +272,7 @@ impl Backend {
         &self,
         vaddr: VirtAddr,
         orig_flags: MappingFlags,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
         populate: bool,
     ) -> bool {
@@ -248,30 +283,10 @@ impl Backend {
             remap_frame_or_dealloc(
                 alloc_frame(true, UsageKind::VirtMem),
                 |frame| pt.remap_page(vaddr, frame, orig_flags).is_ok(),
-                |frame| dealloc_frame(frame, UsageKind::VirtMem),
+                dealloc_frame,
+                |_| gather.invalidate(vaddr.align_down_4k(), PAGE_SIZE_4K),
             )
         }
-    }
-
-    pub(crate) fn map_kernel_virtual_allocation(
-        &self,
-        start: VirtAddr,
-        size: usize,
-        flags: MappingFlags,
-        pt: &mut PageTable,
-    ) -> bool {
-        let Some(allocation) = self.kernel_virtual_allocation() else {
-            return false;
-        };
-        if allocation.state() != super::KernelVirtualAllocationState::Live {
-            return false;
-        }
-        let Some((mapped_start, mapped_size)) =
-            kernel_virtual_mapped_range(start, size, allocation.leading_guard_pages())
-        else {
-            return false;
-        };
-        map_kernel_virtual_frames(allocation, mapped_start, mapped_size, flags, pt)
     }
 
     pub(crate) fn unmap_kernel_virtual_allocation(
@@ -341,33 +356,6 @@ pub(crate) fn kernel_virtual_mapped_range(
     Some((start.checked_add(guard_size)?, mapped_size))
 }
 
-fn map_kernel_virtual_frames(
-    allocation: &KernelVirtualAllocationBackend,
-    start: VirtAddr,
-    size: usize,
-    flags: MappingFlags,
-    pt: &mut PageTable,
-) -> bool {
-    let Some(end) = start.checked_add(size) else {
-        return false;
-    };
-    let Some(pages) = PageIter4K::new(start, end) else {
-        return false;
-    };
-    if size / PAGE_SIZE_4K != allocation.frame_count() {
-        return false;
-    }
-    for (index, addr) in pages.into_iter().enumerate() {
-        let Some(frame) = allocation.expected_frame(index) else {
-            return false;
-        };
-        if pt.map_page(addr, frame, PAGE_SIZE_4K, flags).is_err() {
-            return false;
-        }
-    }
-    true
-}
-
 fn detach_kernel_virtual_frames(
     allocation: &KernelVirtualAllocationBackend,
     start: VirtAddr,
@@ -392,7 +380,10 @@ fn detach_kernel_virtual_frames(
         };
         match pt.query_occupied(addr) {
             Ok((pte, level)) if level == 1 && pte.paddr(false) == expected => {
-                match pt.unmap_page(addr) {
+                match pt
+                    .plan_unmap_page(addr)
+                    .and_then(|plan| pt.try_unmap_page_with(plan))
+                {
                     Ok((detached, _, page_size))
                         if detached == expected && page_size == PAGE_SIZE_4K => {}
                     _ => complete = false,
@@ -409,11 +400,13 @@ fn remap_frame_or_dealloc(
     frame: Option<PhysAddr>,
     remap_frame: impl FnOnce(PhysAddr) -> bool,
     dealloc_frame: impl FnOnce(PhysAddr),
+    publish_frame: impl FnOnce(PhysAddr),
 ) -> bool {
     let Some(frame) = frame else {
         return false;
     };
     if remap_frame(frame) {
+        publish_frame(frame);
         true
     } else {
         dealloc_frame(frame);
@@ -428,12 +421,20 @@ trait PopulatePageOps {
 
     fn unmap_frame(&mut self, addr: VirtAddr) -> Option<PhysAddr>;
 
-    fn dealloc_frame(&mut self, frame: PhysAddr);
+    /// Releases a frame that was never reachable through a published PTE.
+    fn release_unmapped_frame(&mut self, frame: PhysAddr);
+
+    /// Retains a frame removed from a PTE until shootdown confirmation.
+    fn defer_unmapped_frame(&mut self, frame: PhysAddr);
+
+    /// Records the published prefix removed by a failed populate operation.
+    fn invalidate_published_range(&mut self, _start: VirtAddr, _size: usize) {}
 }
 
 struct PageTablePopulate<'a> {
     page_table: &'a mut PageTable,
     flags: MappingFlags,
+    gather: &'a mut TlbGather,
     usage: UsageKind,
 }
 
@@ -449,12 +450,26 @@ impl PopulatePageOps for PageTablePopulate<'_> {
     }
 
     fn unmap_frame(&mut self, addr: VirtAddr) -> Option<PhysAddr> {
-        let (frame, _, page_size) = self.page_table.unmap_page(addr).ok()?;
-        (page_size == PAGE_SIZE_4K).then_some(frame)
+        let (frame, _, page_size, deferred_page_tables) =
+            self.page_table.unmap_page_deferred(addr).ok()?;
+        self.gather.defer_page_tables(deferred_page_tables);
+        assert_eq!(
+            page_size, PAGE_SIZE_4K,
+            "a populated 4K mapping must be rolled back as a 4K page"
+        );
+        Some(frame)
     }
 
-    fn dealloc_frame(&mut self, frame: PhysAddr) {
-        dealloc_frame(frame, self.usage);
+    fn release_unmapped_frame(&mut self, frame: PhysAddr) {
+        dealloc_frame(frame);
+    }
+
+    fn defer_unmapped_frame(&mut self, frame: PhysAddr) {
+        self.gather.defer_frame(frame);
+    }
+
+    fn invalidate_published_range(&mut self, start: VirtAddr, size: usize) {
+        self.gather.invalidate(start, size);
     }
 }
 
@@ -471,7 +486,7 @@ fn populate_pages(ops: &mut impl PopulatePageOps, start: VirtAddr, size: usize) 
             return false;
         };
         if !ops.map_frame(addr, frame) {
-            ops.dealloc_frame(frame);
+            ops.release_unmapped_frame(frame);
             rollback_populated_pages(ops, start, addr);
             return false;
         }
@@ -490,10 +505,13 @@ fn rollback_populated_pages(
     let mut complete = true;
     for addr in pages {
         if let Some(frame) = ops.unmap_frame(addr) {
-            ops.dealloc_frame(frame);
+            ops.defer_unmapped_frame(frame);
         } else {
             complete = false;
         }
+    }
+    if mapped_end > start {
+        ops.invalidate_published_range(start, mapped_end - start);
     }
     complete
 }
@@ -517,6 +535,7 @@ mod tests {
         assert_eq!(ops.deallocated.len(), 2);
         assert!(ops.deallocated.contains(&PhysAddr::from(PAGE_SIZE_4K)));
         assert!(ops.deallocated.contains(&PhysAddr::from(2 * PAGE_SIZE_4K)));
+        assert_eq!(ops.invalidated, [(start, PAGE_SIZE_4K)]);
     }
 
     #[test]
@@ -527,6 +546,7 @@ mod tests {
         assert!(!populate_pages(&mut ops, start, 3 * PAGE_SIZE_4K));
         assert!(ops.mapped.is_empty());
         assert_eq!(ops.deallocated, [PhysAddr::from(PAGE_SIZE_4K)]);
+        assert_eq!(ops.invalidated, [(start, PAGE_SIZE_4K)]);
     }
 
     #[test]
@@ -550,13 +570,16 @@ mod tests {
     fn keeps_lazy_frame_when_remap_succeeds() {
         let frame = PhysAddr::from(PAGE_SIZE_4K);
         let deallocated = Cell::new(None);
+        let published = Cell::new(None);
 
         assert!(remap_frame_or_dealloc(
             Some(frame),
             |_| true,
             |frame| deallocated.set(Some(frame)),
+            |frame| published.set(Some(frame)),
         ));
         assert_eq!(deallocated.get(), None);
+        assert_eq!(published.get(), Some(frame));
     }
 
     #[test]
@@ -568,6 +591,7 @@ mod tests {
             Some(frame),
             |_| false,
             |frame| deallocated.set(Some(frame)),
+            |_| unreachable!("failed remap must not publish its frame"),
         ));
         assert_eq!(deallocated.get(), Some(frame));
     }
@@ -579,6 +603,7 @@ mod tests {
         unmap_failure: Option<VirtAddr>,
         mapped: Vec<(VirtAddr, PhysAddr)>,
         deallocated: Vec<PhysAddr>,
+        invalidated: Vec<(VirtAddr, usize)>,
     }
 
     impl MockPopulatePageOps {
@@ -590,6 +615,7 @@ mod tests {
                 unmap_failure: None,
                 mapped: Vec::new(),
                 deallocated: Vec::new(),
+                invalidated: Vec::new(),
             }
         }
 
@@ -612,6 +638,7 @@ mod tests {
                 unmap_failure: Some(addr),
                 mapped: Vec::new(),
                 deallocated: Vec::new(),
+                invalidated: Vec::new(),
             }
         }
     }
@@ -644,8 +671,16 @@ mod tests {
             Some(self.mapped.remove(index).1)
         }
 
-        fn dealloc_frame(&mut self, frame: PhysAddr) {
+        fn release_unmapped_frame(&mut self, frame: PhysAddr) {
             self.deallocated.push(frame);
+        }
+
+        fn defer_unmapped_frame(&mut self, frame: PhysAddr) {
+            self.deallocated.push(frame);
+        }
+
+        fn invalidate_published_range(&mut self, start: VirtAddr, size: usize) {
+            self.invalidated.push((start, size));
         }
     }
 }

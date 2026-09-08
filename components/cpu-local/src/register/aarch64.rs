@@ -5,6 +5,10 @@ pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentMo
     unikernel_tls: CurrentContextSource::ArchitectureRegister,
 };
 
+pub(super) struct Backend;
+
+impl ArchitectureRegisterBackend for Backend {}
+
 fn current_el() -> Result<usize, CpuLocalError> {
     let current_el: usize;
     unsafe { core::arch::asm!("mrs {value}, CurrentEL", value = out(reg) current_el) };

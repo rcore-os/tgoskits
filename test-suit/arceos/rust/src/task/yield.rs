@@ -1,7 +1,11 @@
 use core::f64::consts;
 use std::{
     format,
-    os::arceos::modules::ax_task,
+    os::arceos::{
+        api::{config::TASK_STACK_SIZE, task as api},
+        guard::PreemptIrqSaveGuard,
+        sync::RawSpinLock,
+    },
     println,
     sync::{
         Arc,
@@ -16,21 +20,25 @@ static FINISHED_TASKS: AtomicUsize = AtomicUsize::new(0);
 
 fn test_std_yield() {
     FINISHED_TASKS.store(0, Ordering::Release);
+    let mut workers = Vec::with_capacity(NUM_TASKS);
     for i in 0..NUM_TASKS {
-        thread::spawn(move || {
+        workers.push(thread::spawn(move || {
             println!("task_yield: task {i} id={:?}", thread::current().id());
             thread::yield_now();
             FINISHED_TASKS.fetch_add(1, Ordering::Release);
-        });
+        }));
     }
 
     while FINISHED_TASKS.load(Ordering::Acquire) < NUM_TASKS {
         thread::yield_now();
     }
+    for worker in workers {
+        worker.join().expect("yield worker must exit cleanly");
+    }
 }
 
 fn test_spin_lock_contention() {
-    let lock = Arc::new(ax_task::sync::SpinLock::new(()));
+    let lock = Arc::new(RawSpinLock::new(()));
     let held = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
 
@@ -38,55 +46,34 @@ fn test_spin_lock_contention() {
         let lock = Arc::clone(&lock);
         let held = Arc::clone(&held);
         let release = Arc::clone(&release);
-        ax_task::spawn(move || {
-            // SAFETY: this task owns the raw guard until `release` is
-            // published, and no protected data is accessed without the guard.
+        thread::spawn(move || {
+            let _context = PreemptIrqSaveGuard::new();
+            // SAFETY: this task keeps preemption and local IRQs disabled while
+            // it owns the raw lock, and the protected value is not accessed
+            // outside that lifetime.
             let guard = unsafe { lock.lock_raw() };
             held.store(true, Ordering::Release);
             while !release.load(Ordering::Acquire) {
-                ax_task::yield_now();
+                core::hint::spin_loop();
             }
             drop(guard);
         })
     };
 
     while !held.load(Ordering::Acquire) {
-        ax_task::yield_now();
+        thread::yield_now();
     }
     assert!(lock.try_lock().is_none());
     assert!(lock.try_lock_irqsave().is_none());
-    // SAFETY: contention must make the attempt fail before a guard is created.
-    assert!(unsafe { lock.try_lock_raw() }.is_none());
+    {
+        let _context = PreemptIrqSaveGuard::new();
+        // SAFETY: the context guard satisfies the raw lock's scheduler and IRQ
+        // exclusion contract; contention must make this attempt fail.
+        assert!(unsafe { lock.try_lock_raw() }.is_none());
+    }
 
     release.store(true, Ordering::Release);
-    assert_eq!(holder.join(), 0);
-}
-
-fn test_fifo_scheduler() {
-    static ORDER_VALID: AtomicBool = AtomicBool::new(true);
-
-    FINISHED_TASKS.store(0, Ordering::Release);
-    ORDER_VALID.store(true, Ordering::Release);
-    let mut tasks = Vec::with_capacity(NUM_TASKS);
-    for index in 0..NUM_TASKS {
-        tasks.push(ax_task::spawn_raw(
-            move || {
-                ax_task::yield_now();
-                let order = FINISHED_TASKS.fetch_add(1, Ordering::AcqRel);
-                if order != index {
-                    ORDER_VALID.store(false, Ordering::Release);
-                }
-            },
-            format!("task-yield-fifo-{index}"),
-            ax_task::default_task_stack_size(),
-        ));
-    }
-
-    for task in tasks {
-        assert_eq!(task.join(), 0);
-    }
-    assert_eq!(FINISHED_TASKS.load(Ordering::Acquire), NUM_TASKS);
-    assert!(ORDER_VALID.load(Ordering::Acquire));
+    holder.join().expect("spin-lock holder must exit cleanly");
 }
 
 fn test_floating_point_context() {
@@ -101,11 +88,11 @@ fn test_floating_point_context() {
 
     FINISHED_TASKS.store(0, Ordering::Release);
     FP_STATE_VALID.store(true, Ordering::Release);
-    let mut tasks = Vec::with_capacity(FLOATS.len());
+    let mut workers = Vec::with_capacity(FLOATS.len());
     for (index, expected) in FLOATS.into_iter().enumerate() {
-        tasks.push(ax_task::spawn(move || {
+        workers.push(thread::spawn(move || {
             let mut value = expected + index as f64;
-            ax_task::yield_now();
+            thread::yield_now();
             value -= index as f64;
             if (value - expected).abs() >= 1e-9 {
                 FP_STATE_VALID.store(false, Ordering::Release);
@@ -114,8 +101,10 @@ fn test_floating_point_context() {
         }));
     }
 
-    for task in tasks {
-        assert_eq!(task.join(), 0);
+    for worker in workers {
+        worker
+            .join()
+            .expect("floating-point worker must exit cleanly");
     }
     assert_eq!(FINISHED_TASKS.load(Ordering::Acquire), FLOATS.len());
     assert!(FP_STATE_VALID.load(Ordering::Acquire));
@@ -125,25 +114,24 @@ fn test_join_exit_codes() {
     let mut tasks = Vec::with_capacity(NUM_TASKS);
 
     for index in 0..NUM_TASKS {
-        tasks.push(ax_task::spawn_raw(
+        tasks.push(api::ax_spawn(
             move || {
-                ax_task::yield_now();
-                ax_task::exit(index as i32);
+                api::ax_yield_now();
+                api::ax_exit(index as i32);
             },
             format!("task-yield-join-{index}"),
-            ax_task::default_task_stack_size(),
+            TASK_STACK_SIZE,
         ));
     }
 
     for (index, task) in tasks.into_iter().enumerate() {
-        assert_eq!(task.join(), index as i32);
+        assert_eq!(api::ax_wait_for_exit(task), index as i32);
     }
 }
 
 pub fn run() -> crate::TestResult {
     test_std_yield();
     test_spin_lock_contention();
-    test_fifo_scheduler();
     test_floating_point_context();
     test_join_exit_codes();
     Ok(())

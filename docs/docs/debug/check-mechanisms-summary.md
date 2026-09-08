@@ -33,12 +33,12 @@ sidebar_label: "检查机制总览"
 
 典型覆盖路径包括：
 
-- `ax_task::yield_now`
+- `ax_task::yield_current_cpu`
 - `ax_task::sleep_until`
-- `ax_task::exit`
+- `ax_task::exit_current_thread`
 - `WaitQueue::wait*`
-- `TaskInner::join`
-- `future::block_on`
+- `ax_runtime::task::join_thread`
+- `ax_runtime::task::block_on`
 - `ax-sync::Mutex::lock`
 - Starry 用户内存访问和 page fault slow path
 
@@ -46,9 +46,11 @@ sidebar_label: "检查机制总览"
 
 主要入口：
 
-- `os/arceos/modules/axtask/src/api.rs`
-- `os/arceos/modules/axtask/src/wait_queue.rs`
-- `os/arceos/modules/axtask/src/future/mod.rs`
+- `components/ax-task/src/facade.rs`
+- `components/ax-task/src/wait_queue.rs`
+- `components/ax-task/src/runtime.rs`
+- `os/arceos/modules/axruntime/src/guard.rs`
+- `os/arceos/modules/axruntime/src/task.rs`
 - `os/arceos/modules/axsync/src/mutex.rs`
 - `os/arceos/modules/axhal/src/irq.rs`
 - `platforms/ax-plat/src/irq.rs`
@@ -153,8 +155,8 @@ guard：x86_64、riscv64、aarch64 可结合各自 percpu / thread pointer /
 
 主要入口：
 
-- `os/arceos/modules/axtask/src/task.rs`
-- `os/arceos/modules/axtask/src/run_queue.rs`
+- `os/arceos/modules/axruntime/src/task.rs`
+- `components/ax-task/src/system/task_system.rs`
 - `os/arceos/modules/axruntime/src/mp.rs`
 - `platforms/axplat-dyn/src/boot.rs`
 
@@ -234,11 +236,12 @@ held-lock stack。lock class 与 lock instance 仍分别表示锁顺序关系和
 
 主要入口：
 
-- `os/arceos/modules/axsync/src/lockdep_core.rs`
-- `os/arceos/modules/axsync/src/lockdep_state.rs`
-- `os/arceos/modules/axsync/src/spin_lockdep.rs`
-- `os/arceos/modules/axsync/src/mutex_lockdep.rs`
-- `os/arceos/modules/axtask/src/api.rs`
+- `components/lockdep/src/state.rs`
+- `components/lockdep/src/trace.rs`
+- `components/kspin/src/lockdep.rs`
+- `os/arceos/modules/axsync/src/lockdep.rs`
+- `components/ax-task/src/facade.rs`
+- `os/arceos/modules/axruntime/src/guard.rs`
 - [`test-suit/arceos/rust/task/lockdep/`](https://github.com/rcore-os/tgoskits/tree/dev/test-suit/arceos/rust/task/lockdep)
 
 后续改进方向：

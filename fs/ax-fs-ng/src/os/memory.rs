@@ -1,3 +1,5 @@
+#[cfg(test)]
+use core::sync::atomic::AtomicU64;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_lazyinit::OnceLock;
@@ -14,6 +16,8 @@ pub trait FsPageProvider: Send + Sync {
 #[derive(Debug)]
 pub struct FsPage {
     addr: usize,
+    #[cfg(test)]
+    generation: u64,
 }
 
 impl FsPage {
@@ -22,7 +26,11 @@ impl FsPage {
     /// `addr` must point to one writable, page-sized, page-aligned kernel
     /// mapping owned by the returned `FsPage`.
     pub const unsafe fn from_raw(addr: usize) -> Self {
-        Self { addr }
+        Self {
+            addr,
+            #[cfg(test)]
+            generation: 0,
+        }
     }
 
     pub const fn addr(&self) -> usize {
@@ -75,7 +83,6 @@ pub mod test_support {
     use core::sync::atomic::AtomicUsize;
     use std::{
         alloc::{Layout, alloc_zeroed, dealloc},
-        collections::BTreeMap,
         ptr::NonNull,
         sync::Mutex,
     };
@@ -84,23 +91,18 @@ pub mod test_support {
 
     pub struct TestPageProvider {
         translate: AtomicBool,
-        // Cached-file registries may retain a page beyond one test scope. Keep
-        // its allocation generation so delayed destruction is attributed to
-        // the scope that allocated it instead of whichever test runs next.
-        generation: AtomicUsize,
+        generation: AtomicU64,
         alloc_count: AtomicUsize,
         dealloc_count: AtomicUsize,
-        allocation_generations: Mutex<BTreeMap<usize, usize>>,
     }
 
     impl TestPageProvider {
         const fn new() -> Self {
             Self {
                 translate: AtomicBool::new(true),
-                generation: AtomicUsize::new(0),
+                generation: AtomicU64::new(0),
                 alloc_count: AtomicUsize::new(0),
                 dealloc_count: AtomicUsize::new(0),
-                allocation_generations: Mutex::new(BTreeMap::new()),
             }
         }
 
@@ -127,30 +129,20 @@ pub mod test_support {
             // returned allocation is owned by `FsPage` and released with the
             // identical layout in `dealloc_page`.
             let page = NonNull::new(unsafe { alloc_zeroed(layout) }).ok_or(VfsError::NoMemory)?;
-            let addr = page.as_ptr() as usize;
-            let generation = self.generation.load(Ordering::Acquire);
-            let replaced = self
-                .allocation_generations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .insert(addr, generation);
-            assert!(replaced.is_none(), "test page address is still owned");
             self.alloc_count.fetch_add(1, Ordering::AcqRel);
-            Ok(unsafe { FsPage::from_raw(addr) })
+            Ok(FsPage {
+                addr: page.as_ptr() as usize,
+                generation: self.generation.load(Ordering::Acquire),
+            })
         }
 
         fn dealloc_page(&self, mut page: FsPage) {
-            let allocation_generation = self
-                .allocation_generations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&page.addr())
-                .expect("test page must have a matching allocation");
             let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
+            let generation = page.generation;
             // SAFETY: `page` was allocated by `alloc_page` with this exact
-            // layout and is transferred here exactly once by `FsPage::drop`.
+            // layout and is transferred here exactly once by `dealloc_page`.
             unsafe { dealloc(page.as_mut_ptr(), layout) };
-            if allocation_generation == self.generation.load(Ordering::Acquire) {
+            if generation == self.generation.load(Ordering::Acquire) {
                 self.dealloc_count.fetch_add(1, Ordering::AcqRel);
             }
         }
@@ -206,6 +198,16 @@ mod tests {
     fn page_provider_reports_missing_physical_address() {
         with_test_page_provider(false, |_| {
             assert_eq!(virt_to_phys(0x1000), None);
+        });
+    }
+
+    #[test]
+    fn page_provider_counters_ignore_pages_from_previous_epoch() {
+        let stale_page = with_test_page_provider(true, |_| alloc_page().unwrap());
+
+        with_test_page_provider(true, |provider| {
+            dealloc_page(stale_page);
+            assert_eq!(provider.dealloc_count(), 0);
         });
     }
 }

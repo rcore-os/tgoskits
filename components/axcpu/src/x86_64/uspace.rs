@@ -35,9 +35,14 @@ pub struct UserContext {
     pub gs_base: u64,
     /// Kernel continuation stack saved while this context executes in ring 3.
     kernel_stack_pointer: u64,
-    /// Explicitly initialized tail required by the 16-byte ABI alignment.
+    /// Explicitly initializes the tail bytes required by the 16-byte ABI alignment.
     _reserved: u64,
 }
+
+// SAFETY: `TrapFrame` and every following field are integer-only, the explicit
+// tail word consumes the alignment padding, and the offset assertions below
+// pin that layout.
+unsafe impl bytemuck::NoUninit for UserContext {}
 
 const _: () = {
     // A privilege transition may align TSS.RSP0 down to 16 bytes before
@@ -113,21 +118,57 @@ impl UserContext {
         self.fs_base = tls_area as _;
     }
 
-    /// Enters user space.
+    /// Returns whether this register image can be restored as an interruptible
+    /// ring-3 context.
+    pub fn has_interruptible_user_return_mode(&self) -> bool {
+        let forbidden =
+            RFlags::IOPL_LOW | RFlags::IOPL_HIGH | RFlags::NESTED_TASK | RFlags::VIRTUAL_8086_MODE;
+        let flags = RFlags::from_bits_retain(self.tf.rflags);
+        self.tf.cs == gdt::UCODE64.0 as u64
+            && self.tf.ss == gdt::UDATA.0 as u64
+            && flags.contains(RFlags::INTERRUPT_FLAG)
+            && !flags.intersects(forbidden)
+    }
+
+    /// Enters user space without validating the runtime transition.
     ///
     /// It restores the user registers and jumps to the user entry point
     /// (saved in `rip`).
     ///
     /// This function returns when an exception or syscall occurs.
-    pub fn run(&mut self) -> ReturnReason {
+    ///
+    /// # Safety
+    ///
+    /// The caller must be the runtime's prepared user-entry boundary for the
+    /// current scheduler task. Its context-switch tail must be complete, no
+    /// IRQ/preemption guard or hard interrupt may be active, and local IRQs
+    /// must remain disabled after the final scheduler-work check. The active
+    /// logical address space, hardware root and CPU footprint must match this
+    /// task and keep every user address referenced by `self` valid. The saved
+    /// selectors and RFLAGS must describe an interruptible ring-3 return. No
+    /// code may run between those validations and this call.
+    ///
+    /// Safe code cannot invoke this raw boundary:
+    ///
+    /// ```compile_fail
+    /// fn bypass_runtime(context: &mut ax_cpu::uspace::UserContext) {
+    ///     context.run_unchecked();
+    /// }
+    /// ```
+    pub unsafe fn run_unchecked(&mut self) -> ReturnReason {
         unsafe extern "C" {
             fn enter_user(uctx: &mut UserContext);
         }
 
-        assert_eq!(self.cs, gdt::UCODE64.0 as _);
-        assert_eq!(self.ss, gdt::UDATA.0 as _);
+        assert!(
+            self.has_interruptible_user_return_mode(),
+            "raw user entry requires an interruptible ring-3 register image"
+        );
 
-        crate::asm::disable_irqs();
+        assert!(
+            !crate::asm::irqs_enabled(),
+            "raw user entry requires the prepared IRQ-off boundary"
+        );
         super::local_state::install_current_user_tls(self.fs_base as _, self.gs_base as _);
 
         unsafe { enter_user(self) };
@@ -142,7 +183,7 @@ impl UserContext {
             }
             (LEGACY_SYSCALL_VECTOR, _) => ReturnReason::Syscall,
             (IRQ_VECTOR_START..=IRQ_VECTOR_END, _) => {
-                crate::trap::dispatch_irq(vector as _);
+                crate::trap::dispatch_irq(vector as _, crate::trap::TrapOrigin::User);
                 ReturnReason::Interrupt
             }
             _ => ReturnReason::Exception(ExceptionInfo {
@@ -156,6 +197,8 @@ impl UserContext {
         ret
     }
 }
+
+const _: unsafe fn(&mut UserContext) -> ReturnReason = UserContext::run_unchecked;
 
 impl Deref for UserContext {
     type Target = TrapFrame;
