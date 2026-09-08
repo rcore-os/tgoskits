@@ -2633,7 +2633,8 @@ fn replay_checksum_journal_from_debugfs(checksum_version: u8) {
         );
 
         mkdir(&mut dev, &mut fs, "/after-replay").expect("write after journal replay");
-        fs.sync_filesystem(&mut dev).expect("sync post-replay metadata");
+        fs.sync_filesystem(&mut dev)
+            .expect("sync post-replay metadata");
         // Snapshot only persisted bytes, without clean unmount or checkpointing.
         // Linux must recover the new transaction without interactive repair.
         let crash_image = temp_dir.join("after-replay-crash.img");
