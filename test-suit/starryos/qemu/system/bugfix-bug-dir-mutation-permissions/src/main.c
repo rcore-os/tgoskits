@@ -31,6 +31,13 @@ static const char *const source = "/tmp/bug-dir-mutation-permissions/source";
 static const char *const protected_file = "/tmp/bug-dir-mutation-permissions/protected/file";
 static const char *const protected_new_file =
     "/tmp/bug-dir-mutation-permissions/protected/created-by-symlink";
+static const char *const public_dir = "/tmp/bug-dir-mutation-permissions/public";
+static const char *const protected_link =
+    "/tmp/bug-dir-mutation-permissions/protected/public-link";
+static const char *const public_link_new =
+    "/tmp/bug-dir-mutation-permissions/public/new-through-link";
+static const char *const protected_link_new =
+    "/tmp/bug-dir-mutation-permissions/protected/public-link/new";
 static const char *const dangling_link =
     "/tmp/bug-dir-mutation-permissions/dangling-link";
 static const char *const sticky_file = "/tmp/bug-dir-mutation-permissions/sticky/root-file";
@@ -134,6 +141,19 @@ static int run_unprivileged_checks(void)
     if (fd >= 0) {
         close(fd);
     }
+
+    errno = 0;
+    int through_link = syscall(SYS_openat, AT_FDCWD, protected_link_new,
+                               O_WRONLY | O_CREAT | O_EXCL, 0600);
+    check(through_link < 0 && errno == EACCES,
+          "openat checks an inaccessible directory before following a symlink");
+    if (through_link >= 0) {
+        close(through_link);
+        unlink(public_link_new);
+    }
+    errno = 0;
+    check(access(public_link_new, F_OK) < 0 && errno == ENOENT,
+          "symlink permission failure leaves the resolved target unchanged");
 
     errno = 0;
     check(rmdir("/tmp/bug-dir-mutation-permissions/sticky/root-dir") < 0
@@ -275,8 +295,12 @@ int main(void)
     remove_if_present(base);
     check(mkdir(base, 0755) == 0, "create test root");
     check(mkdir(protected_dir, 0700) == 0, "create protected directory");
+    check(mkdir(public_dir, 0777) == 0, "create public directory");
+    check(chmod(public_dir, 0777) == 0, "make public directory writable");
     check(create_file(source) == 0, "create hard-link source");
     check(create_file(protected_file) == 0, "create protected victim");
+    check(symlink(public_dir, protected_link) == 0,
+          "create symlink through protected directory");
     check(symlink(protected_new_file, dangling_link) == 0, "create dangling symlink");
     check(mkdir(sticky_dir, 01777) == 0, "create sticky directory");
     check(chmod(sticky_dir, 01777) == 0, "restore sticky directory permissions");
@@ -325,7 +349,10 @@ int main(void)
     remove_if_present(dangling_link);
     remove_if_present(protected_new_file);
     remove_if_present(protected_file);
+    remove_if_present(public_link_new);
+    remove_if_present(protected_link);
     remove_if_present(protected_dir);
+    remove_if_present(public_dir);
     remove_if_present(source);
     if (dirfd >= 0) {
         close(dirfd);

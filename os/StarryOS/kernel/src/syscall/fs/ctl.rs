@@ -587,7 +587,8 @@ pub fn sys_linkat(
 
     let cred = current.as_thread().cred();
     let mutation_cred = mutation_credentials(&cred);
-    let (old, old_boundary) = resolve_at_with_boundary(old_dirfd, old_path.as_deref(), resolve_flags)?;
+    let (old, old_boundary, old_search) =
+        resolve_at_with_boundary(old_dirfd, old_path.as_deref(), resolve_flags)?;
     let old = old
         .into_file()
         .ok_or(StarryError::BadFileDescriptor)?;
@@ -596,17 +597,21 @@ pub fn sys_linkat(
     } else {
         new_dirfd
     };
-    let (new_dir, new_name, new_boundary) = with_fs(new_dirfd, |fs| {
-        let (new_dir, new_name) = fs.resolve_parent(Path::new(&new_path))?;
-        Ok((new_dir, new_name, fs.permission_boundary().cloned()))
+    let (new_dir, new_name, new_boundary, new_search) = with_fs(new_dirfd, |fs| {
+        let (new_dir, new_name, searched) =
+            fs.resolve_parent_with_search(Path::new(&new_path))?;
+        Ok((
+            new_dir,
+            new_name,
+            fs.permission_boundary().cloned(),
+            searched,
+        ))
     })?;
     with_fs(AT_FDCWD, |fs| {
-        fs.link_locations_with_boundaries(
-            &old,
-            &new_dir,
-            &new_name,
-            old_boundary.as_ref(),
-            new_boundary.as_ref(),
+        fs.link_locations_with_boundaries_and_search(
+            (&old, &old_search),
+            (&new_dir, &new_name, &new_search),
+            (old_boundary.as_ref(), new_boundary.as_ref()),
             &mutation_cred,
         )?;
         Ok(())
@@ -1154,24 +1159,37 @@ pub fn sys_renameat2(
     } else {
         new_dirfd
     };
-    let (old_dir, old_name, old_boundary) = with_fs(old_dirfd, |fs| {
-        let (old_dir, old_name) = fs.resolve_parent(Path::new(&old_path))?;
-        Ok((old_dir, old_name, fs.permission_boundary().cloned()))
+    let (old_dir, old_name, old_boundary, old_search) = with_fs(old_dirfd, |fs| {
+        let (old_dir, old_name, searched) =
+            fs.resolve_parent_with_search(Path::new(&old_path))?;
+        Ok((
+            old_dir,
+            old_name,
+            fs.permission_boundary().cloned(),
+            searched,
+        ))
     })?;
-    let (new_dir, new_name, new_boundary) = with_fs(new_dirfd, |fs| {
-        let (new_dir, new_name) = fs.resolve_parent(Path::new(&new_path))?;
-        Ok((new_dir, new_name, fs.permission_boundary().cloned()))
+    let (new_dir, new_name, new_boundary, new_search) = with_fs(new_dirfd, |fs| {
+        let (new_dir, new_name, searched) =
+            fs.resolve_parent_with_search(Path::new(&new_path))?;
+        Ok((
+            new_dir,
+            new_name,
+            fs.permission_boundary().cloned(),
+            searched,
+        ))
     })?;
 
     // Propagate the filesystem errno directly to match renameat2 callers.
     let cred = current.as_thread().cred();
     let mutation_cred = mutation_credentials(&cred);
     with_fs(AT_FDCWD, |fs| {
-        Ok(fs.rename_locations_with_boundaries(
+        Ok(fs.rename_locations_with_boundaries_and_search(
             (&old_dir, &old_name),
             (&new_dir, &new_name),
             options,
             (old_boundary.as_ref(), new_boundary.as_ref()),
+            (&old_search, &new_search),
             &mutation_cred,
         )?)
     })?;

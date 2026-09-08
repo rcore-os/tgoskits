@@ -301,8 +301,8 @@ impl OpenOptions {
         // it. Fixes bug-open-trailing-slash.
         let must_be_dir = path.as_ref().has_trailing_slash();
 
-        let loc = match context.resolve_parent(path.as_ref()) {
-            Ok((parent, name)) => {
+        let loc = match context.resolve_parent_with_search(path.as_ref()) {
+            Ok((parent, name, searched)) => {
                 // If the path ends with '/', Linux never creates regular
                 // files via O_CREAT here — the path explicitly requests a
                 // directory, and open() cannot create directories. Suppress
@@ -315,7 +315,11 @@ impl OpenOptions {
                     match parent.lookup_no_follow(&name) {
                         Ok(_) => {}
                         Err(VfsError::NotFound) => {
-                            context.check_mutation_parent(&parent, credentials)?;
+                            context.check_mutation_parent_with_search(
+                                &parent,
+                                &searched,
+                                credentials,
+                            )?;
                         }
                         Err(error) => return Err(error),
                     }

@@ -90,7 +90,7 @@ pub fn resolve_at_checked(
     check_search: impl Fn(&Location) -> VfsResult<()>,
 ) -> StarryResult<ResolveAtResult> {
     resolve_at_with_search(dirfd, path, flags, Some(&check_search))
-        .map(|(result, _)| result)
+        .map(|(result, _, _)| result)
 }
 
 type SearchCheck<'a> = Option<&'a dyn Fn(&Location) -> VfsResult<()>>;
@@ -100,7 +100,7 @@ fn resolve_at_with_search(
     path: Option<&str>,
     flags: u32,
     search: SearchCheck<'_>,
-) -> StarryResult<(ResolveAtResult, Option<Location>)> {
+) -> StarryResult<(ResolveAtResult, Option<Location>, Vec<Location>)> {
     match path {
         Some("") | None => {
             if flags & AT_EMPTY_PATH == 0 {
@@ -108,10 +108,10 @@ fn resolve_at_with_search(
             }
             if dirfd == AT_FDCWD {
                 return with_fs(dirfd, |fs| {
-                    Ok((ResolveAtResult::File(fs.current_dir().clone()), None))
+                    Ok((ResolveAtResult::File(fs.current_dir().clone()), None, Vec::new()))
                 });
             }
-            Ok((resolve_fd(dirfd)?, None))
+            Ok((resolve_fd(dirfd)?, None, Vec::new()))
         }
         Some(path) => {
             let dirfd = if path.starts_with('/') {
@@ -121,13 +121,20 @@ fn resolve_at_with_search(
             };
             with_fs(dirfd, |fs| {
                 let boundary = fs.permission_boundary().cloned();
-                let location = match (search, flags & AT_SYMLINK_NOFOLLOW != 0) {
-                    (Some(check), true) => fs.resolve_no_follow_checked(path, check),
-                    (Some(check), false) => fs.resolve_checked(path, check),
-                    (None, true) => fs.resolve_no_follow(path),
-                    (None, false) => fs.resolve(path),
+                if let Some(check) = search {
+                    let location = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+                        fs.resolve_no_follow_checked(path, check)
+                    } else {
+                        fs.resolve_checked(path, check)
+                    }?;
+                    return Ok((ResolveAtResult::File(location), boundary, Vec::new()));
+                }
+                let (location, searched) = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+                    fs.resolve_no_follow_with_search(path)
+                } else {
+                    fs.resolve_with_search(path)
                 }?;
-                Ok((ResolveAtResult::File(location), boundary))
+                Ok((ResolveAtResult::File(location), boundary, searched))
             })
         }
     }
@@ -139,6 +146,7 @@ pub fn resolve_at_with_boundary(
     flags: u32,
 ) -> StarryResult<(ResolveAtResult, Option<Location>)> {
     resolve_at_with_search(dirfd, path, flags, None)
+        .map(|(result, boundary, _)| (result, boundary))
 }
 
 pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> StarryResult<ResolveAtResult> {
