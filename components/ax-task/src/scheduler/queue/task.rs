@@ -180,7 +180,8 @@ impl QueuedThreadSnapshot {
 ///
 /// Class selection and `rq->curr` share this reference instead of copying the
 /// task metadata. The boxed class node keeps its address stable until the owner
-/// rq converts current back to owned state immediately before unlinking it.
+/// rq withdraws the current borrow before unlinking it, either by retaining
+/// owned current state or by consuming the completed dispatch record.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LinkedRqTaskRef(NonNull<QueuedThread>);
 

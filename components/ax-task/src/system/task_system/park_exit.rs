@@ -502,10 +502,16 @@ impl TaskSystem {
                     task_runtime::fatal_invariant(0x504b_1117, previous_core.id().as_u64() as usize)
                 });
                 if outgoing.thread() != previous_core.id() || outgoing.into_active().is_some() {
-                    task_runtime::fatal_invariant(0x504b_1117, previous_core.id().as_u64() as usize);
+                    task_runtime::fatal_invariant(
+                        0x504b_1117,
+                        previous_core.id().as_u64() as usize,
+                    );
                 }
-                let QueuedThread { active, core: runtime_owner, .. } =
-                    transaction.deactivate_task(previous_core.id());
+                let QueuedThread {
+                    active,
+                    core: runtime_owner,
+                    ..
+                } = transaction.deactivate_task(previous_core.id());
                 placement.block_current(owner);
                 // Publish the detached owner only after `on_rq = NONE`.
                 publication.finish(active);
