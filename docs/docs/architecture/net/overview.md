@@ -6,37 +6,7 @@ sidebar_label: "概览"
 # 网络栈概览
 TGOSKits 的网络能力收敛在 `net/ax-net`。ArceOS 和 StarryOS 直接复用这一实现；Axvisor 仅在启用依赖 `ax-std/net` 的管理服务功能时通过 ArceOS 间接使用。它向上提供 TCP、UDP、raw/ICMP socket、Unix domain socket、可选 vsock、DNS、DHCP、ARP、接口查询、网卡统计和 readiness/poll 能力，向下消费 `rd_net::PreparedNetDevice`：设备一次性拆成 poll group、move-only DMA queue、hard IRQ、task rearm 与 control endpoint。
 
-## 1. 源码边界
-源码位于 `net/ax-net/src/`，入口 `lib.rs`。Socket backend 包括 IP 类（`tcp.rs`、`udp.rs`、`raw.rs`，基于 smoltcp）、`unix/`（自包含 stream/dgram，不经 smoltcp）和可选的 `vsock/`（基于 `rdif-vsock` 驱动，含 connection manager 与 ring buffer）。
-
-| 模块 | 角色 | 关键类型 |
-| --- | --- | --- |
-| `lib.rs` | public facade，初始化唯一 protocol executor、导出 API | `init_network`, `request_poll`, `reconfigure_wifi` |
-| `poll_runtime.rs` | protocol generation 与唯一 poll owner | `ProtocolPollRuntime`, `PollGeneration` |
-| `queue_runtime/` | affinity domain、fixed-CPU queue executor、SPSC、IRQ 生命周期 | `NetworkRuntimeBuilder`, `NetworkQueueRuntime`, `PollGroupState` |
-| `config.rs` | 配置与接口信息类型 | `InterfaceId`, `NetworkConfig`, `InterfaceInfo`, `DeviceBinding` |
-| `service.rs` | 控制面 + 协议核心调度 | `Service`, `NetControl`, `DhcpState` |
-| `router.rs` | 路由表、RX 元数据、网卡统计、smoltcp `Device` 适配 | `Router`, `RouteTable`, `RxMetadata`, `NetDevStats` |
-| `wrapper.rs` | 全局 `SocketSet` 包装与端口冲突仲裁 | `SocketSetWrapper` |
-| `socket.rs` | 统一 socket 抽象 | `SocketOps`, `Socket`, `SocketAddrEx` |
-| `addr.rs` | 共享地址 helper：临时端口分配（0xc000–0xffff）、listen 地址冲突判定 | `allocate_ephemeral_port`, `listen_addrs_conflict` |
-| `ip_tos.rs` | per-socket egress IP_TOS/traffic-class：smoltcp 不暴露 TOS 设置，在 Router 边界改写发出的 IP 包头 | `EgressIpTosKey` |
-| `rx_meta.rs` | 利用 smoltcp `PacketMeta` id 携带接收侧 QoS 元数据，供 recvmsg cmsg 上报 | `ReceivedTrafficClass` |
-| `options.rs` | socket 选项与 `Configurable` trait | `GetSocketOption`, `SetSocketOption`, `TcpInfo` |
-| `general.rs` | 通用 socket 选项、非阻塞/超时/poll helper | `GeneralOptions` |
-| `state.rs` | socket 状态机锁 | `StateLock`, `StateGuard` |
-| `listen_table.rs` | TCP listen/accept 表与 SYN 预创建 | `ListenTable` |
-| `tcp.rs` / `udp.rs` / `raw.rs` | IP socket 实现 | `TcpSocket`, `UdpSocket`, `RawSocket` |
-| `orphan.rs` | TCP orphan socket 回收（RFC 793 TIME_WAIT） | `add_orphan`, `reap_orphans` |
-| `dhcp_server.rs` | 最简 DHCP 服务器（SoftAP 模式） | `DhcpServer` |
-| `unix/` | Unix domain socket | `UnixSocket`, `Transport` |
-| `vsock/` | 可选 vsock 支持（`vsock` feature） | `VsockSocket`, `VsockStreamTransport` |
-| `device/` | loopback、Ethernet frame 与 vsock 设备适配 | `Device`, `EthernetDevice`, `EthernetFramePort` |
-| `consts.rs` | 缓冲区大小等常量 | `STANDARD_MTU`, `SOCKET_BUFFER_SIZE` |
-
-源码边界表显示核心状态集中在 `ax-net`，而 runtime 与 StarryOS 只承担设备接入和 ABI 适配。能力矩阵将基于这些真实所有者区分主路径与限制，避免从依赖名称推断尚未接入的功能。
-
-## 2. 能力矩阵
+## 1. 能力矩阵
 
 能力矩阵区分当前主路径、受限能力和仅由特定 transport 提供的功能，避免把 smoltcp 编译 feature 等同于完整 OS 支持。每一项都对应 `Service`、具体 socket backend、设备层或 StarryOS ABI 的代码锚点，扩展能力时应同步更新实现状态和限制说明。
 
@@ -54,7 +24,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。ArceOS 和 StarryOS 直接复�
 | 多 NIC 路由 | `RouteTable` 最长前缀匹配 + metric 排序 + per-interface 替换 | 完整 |
 | IRQ 感知 | `PinnedNetIrqRegistrar` + `NetHardIrqEndpoint` + group-local schedule | fixed affinity 必需；能力不足时物理网络初始化失败 |
 | Loopback | 零状态 `LoopbackDevice` + `Router::dispatch()` 快速路径 inline 注入 `rx_buffer`，不经硬件 queue domain 和 DMA ring | 完整 |
-| TCP orphan 回收 | `orphan.rs`：Drop 后保留 smoltcp socket 直到 FIN/TIME_WAIT 完成，RFC 793 合规 | 完整 |
+| TCP orphan 回收 | `orphan.rs`：Drop 后保留 smoltcp socket 直到 FIN/TIME_WAIT 完成（smoltcp 超时推进，60s 硬上限，池上限 1024） | 完整 |
 | DHCP 服务器（SoftAP） | `dhcp_server.rs`：最简单的单客户端 DHCP 服务器，仅支持 Discover→Offer、Request→Ack 交换，不维护租约数据库、不做冲突检测，仅回复配置接口收到的 DHCP 包 | 基础完成 |
 | Queue-level NAPI | group-local `IDLE/SCHEDULED/POLLING/MISSED/DISABLED`、4×64 子预算、每 CPU 256 总预算、原子 rearm | 主路径；有线与 AIC/SDHCI 共用 |
 | 动态设备注册 | 启动后新增/删除物理 NIC | 不支持；所有设备由 builder 一次性消费并原子发布 |
@@ -66,7 +36,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。ArceOS 和 StarryOS 直接复�
 
 矩阵中的“支持”意味着存在可用实现路径，“受限”则需要结合后文章节理解范围。设计原则说明这些取舍为何围绕单协议核心、多设备 Router 和有界资源展开。
 
-## 3. 设计原则
+## 2. 设计原则
 
 `ax-net` 的设计原则围绕单协议核心、多设备适配和明确所有权展开，目标是在保留普通多宿主 socket 语义的同时隔离可能阻塞的设备 I/O。以下原则分别落实到 `Service`、`Router`、`NetControl`、poll-group SPSC 和 `ProtocolPollRuntime`，是评审结构变更时的基本约束。
 
@@ -79,7 +49,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。ArceOS 和 StarryOS 直接复�
 
 原则列表把状态所有权、队列和轮询请求放在同一个设计框架中，任何局部优化都不能破坏这些边界。线程锁模型进一步说明哪些部分实际并行，哪些部分仍必须串行推进。
 
-### 3.1 线程锁模型
+### 2.1 线程锁模型
 
 `ax-net` 使用多 CPU queue I/O 和串行协议推进的两级流水线：每个 IRQ affinity domain 由 fixed-CPU queue executor 拥有，而 smoltcp `Interface` 与全局 `SocketSet` 只由一个 protocol executor 访问。这个边界把 DMA/队列并行性留在设备层，同时避免协议状态机并发进入。
 
@@ -97,7 +67,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。ArceOS 和 StarryOS 直接复�
 
 运行时图把普通唤醒与 UDP 同步 flush 区分开，并显示设备 I/O 不持有协议核心。锁顺序章节将在相同所有权边界上给出具体嵌套规则。
 
-### 3.2 全局锁顺序
+### 2.2 全局锁顺序
 
 全局锁顺序从 `SERVICE`、`SocketSet` 向控制面和局部 side table 单向展开，queue executor 则独占硬件 queue endpoint。维护代码时需要检查任何新回调是否反向进入上层锁，尤其不能在 hard IRQ 或 queue ownership 内等待协议核心。
 
@@ -117,6 +87,37 @@ SERVICE (Mutex<Service>)
 - `ListenTable` 条目锁在 `SOCKET_SET` 锁内获取，保证 accept/snoop 的一致性。
 - queue endpoint 只由其 owner executor 持有，不需要和 protocol core 共享 queue mutex；hard IRQ 只访问 endpoint-owned snapshot/atomic state。
 更细的控制面、Router、socket、Unix 和 vsock 锁划分见[锁与并发](locks.md)。
+
+## 3. 源码边界
+
+前两节的能力状态与设计约束最终都落到具体模块所有者上。源码位于 `net/ax-net/src/`，入口 `lib.rs`。Socket backend 包括 IP 类（`tcp.rs`、`udp.rs`、`raw.rs`，基于 smoltcp）、`unix/`（自包含 stream/dgram，不经 smoltcp）和可选的 `vsock/`（基于 `rdif-vsock` 驱动，含 connection manager 与 ring buffer）。
+
+| 模块 | 角色 | 关键类型 |
+| --- | --- | --- |
+| `lib.rs` | public facade，初始化唯一 protocol executor、导出 API | `init_network`, `request_poll`, `reconfigure_wifi` |
+| `poll_runtime.rs` | protocol generation 与唯一 poll owner | `ProtocolPollRuntime`, `PollGeneration` |
+| `queue_runtime/` | affinity domain、fixed-CPU queue executor、SPSC、IRQ 生命周期 | `NetworkRuntimeBuilder`, `NetworkQueueRuntime`, `PollGroupState` |
+| `config.rs` | 配置与接口信息类型 | `InterfaceId`, `NetworkConfig`, `InterfaceInfo`, `DeviceBinding` |
+| `service.rs` | 控制面 + 协议核心调度 | `Service`, `NetControl`, `DhcpState` |
+| `router.rs` | 路由表、RX 元数据、网卡统计、smoltcp `Device` 适配 | `Router`, `RouteTable`, `RxMetadata`, `NetDevStats` |
+| `wrapper.rs` | 全局 `SocketSet` 包装与端口冲突仲裁 | `SocketSetWrapper` |
+| `socket.rs` | 统一 socket 抽象 | `SocketOps`, `Socket`, `SocketAddrEx` |
+| `addr.rs` | 共享地址 helper：临时端口分配（0xc000–0xffff）、listen 地址冲突判定 | `allocate_ephemeral_port`, `listen_addrs_conflict` |
+| `ip_tos.rs` | per-socket egress IP_TOS/traffic-class：smoltcp 不暴露 TOS 设置，在 Router 边界改写发出的 IP 包头 | `EgressIpTosKey` |
+| `rx_meta.rs` | 利用 smoltcp `PacketMeta` id 携带接收侧 QoS 元数据，供 recvmsg cmsg 上报 | `ReceivedTrafficClass` |
+| `options.rs` | socket 选项与 `Configurable` trait | `GetSocketOption`, `SetSocketOption`, `TcpInfo` |
+| `general.rs` | 通用 socket 选项、非阻塞/超时/poll helper | `GeneralOptions` |
+| `state.rs` | socket 状态机锁 | `StateLock`, `StateGuard` |
+| `listen_table.rs` | TCP listen/accept 表与 SYN 预创建 | `ListenTable` |
+| `tcp.rs` / `udp.rs` / `raw.rs` | IP socket 实现 | `TcpSocket`, `UdpSocket`, `RawSocket` |
+| `orphan.rs` | TCP orphan socket 回收（FIN/TIME_WAIT 推进，60s 硬上限） | `add_orphan`, `reap_orphans` |
+| `dhcp_server.rs` | 最简 DHCP 服务器（SoftAP 模式） | `DhcpServer` |
+| `unix/` | Unix domain socket | `UnixSocket`, `Transport` |
+| `vsock/` | 可选 vsock 支持（`vsock` feature） | `VsockSocket`, `VsockStreamTransport` |
+| `device/` | loopback、Ethernet frame 与 vsock 设备适配 | `Device`, `EthernetDevice`, `EthernetFramePort` |
+| `consts.rs` | 缓冲区大小等常量 | `STANDARD_MTU`, `SOCKET_BUFFER_SIZE` |
+
+源码边界表显示核心状态集中在 `ax-net`，而 runtime 与 StarryOS 只承担设备接入和 ABI 适配；前文能力矩阵的实现状态与限制均以这些真实所有者为准，不从依赖名称推断尚未接入的功能。各模块的详细行为见后续专题章节。
 
 ## 4. 核心方案
 

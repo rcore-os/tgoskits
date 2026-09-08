@@ -199,10 +199,10 @@ pub struct StaticIpConfig {
 
 未显式匹配 `InterfaceConfig` 的 Ethernet 设备会落入确定的默认策略，而不是被忽略或猜测静态地址。该策略由初始化配置逻辑统一生成，保证新增普通 NIC 至少能以 DHCP 角色进入接口 registry，并具有可预测的名字和 metric。
 
-- 名称为 `eth{order}`。
+- 名称为 `eth{order}`；Wi-Fi 能力设备例外，改用驱动注册名（例如 `wlan0`）。
 - `InterfaceId = order + 2`。
 - metric 为 `100`。
-- 默认启用 DHCP。
+- 未显式配置时，普通 Ethernet 默认启用 DHCP；带 startup link policy 的 Wi-Fi 设备使用该策略的静态地址（SoftAP 场景不启用 DHCP client）。
 - 无静态接口级 DNS。
 
 loopback：
@@ -317,15 +317,15 @@ StarryOS 的 `RTM_NEWADDR` / `RTM_DELADDR` 直接映射到这两个入口。
 `SOCKET_BUFFER_SIZE` 影响 Router 协议侧 packet buffer 以及多个 socket 后端的默认容量，是内存预算和吞吐之间的全局权衡。修改该常量时需要区分字节流缓冲区与 packet metadata 容量，不能仅根据 MTU 线性推断所有队列占用。
 
 ```rust
-pub const TCP_RX_BUF_LEN: usize = 64 * 1024;
-pub const TCP_TX_BUF_LEN: usize = 64 * 1024;
+pub const TCP_RX_BUF_LEN: usize = 256 * 1024;
+pub const TCP_TX_BUF_LEN: usize = 256 * 1024;
 pub const UDP_RX_BUF_LEN: usize = 64 * 1024;
 pub const UDP_TX_BUF_LEN: usize = 64 * 1024;
 pub const RAW_RX_BUF_LEN: usize = 64 * 1024;
 pub const RAW_TX_BUF_LEN: usize = 64 * 1024;
 ```
 
-这些是每个 socket 的默认协议缓冲区大小。
+这些是每个 socket 的默认协议缓冲区大小；TCP 每方向 256 KiB，其余协议为 64 KiB。
 
 ### 7.2 设备队列
 

@@ -21,7 +21,7 @@ pub use self::{
         NetQueueStats, NetworkDeviceInput, NetworkQueueRuntime,
         NetworkRuntimeBuilder, NetworkRuntimeError, PinnedNetIrqAction,
         PinnedNetIrqError, PinnedNetIrqOutcome, PinnedNetIrqRegistrar,
-        PinnedNetIrqRegistration, ResolvedNetIrqSource,
+        PinnedNetIrqRegistration, ResolvedNetIrqSource, TxQueueDiscipline,
     },
     socket::{
         CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions,
@@ -141,13 +141,14 @@ pub fn request_poll();
 
 ```rust
 pub fn request_poll() {
-    publish_poll_request(&NET_POLL_REQUESTED, || {
-        NET_POLL_WAKE.notify_one(true);
-    });
+    let _ = PROTOCOL_POLL.request();
 }
 ```
 
-`publish_poll_request()` 使用 `swap(false→true)` 合并重复请求：只有从未 pending 变为 pending 的第一次调用会真正 `notify_one()`。这样 socket 热路径可以频繁请求协议推进，而不会在 worker 尚未消费请求时制造重复唤醒。
+`ProtocolPollRuntime::request()` 先对 `requested` generation 做 `fetch_add`，再由
+`schedule()` 用 `swap(false→true)` 合并重复请求：只有从未 scheduled 变为 scheduled
+的第一次调用会真正唤醒固定 CPU 的 protocol executor。这样 socket 热路径可以频繁请求
+协议推进，而不会在 worker 尚未消费请求时制造重复唤醒。
 
 ### 2.4 Vsock 初始化
 
@@ -661,8 +662,8 @@ backlog；`Fifo` 的 `max_frames` 是 packet limit，存储只在第一次 busy 
 该接口当前按设备生效，不是 per-hardware-queue 配置。
 
 `NetworkRuntimeBuilder` 一次性消费全部设备，构造 shared-IRQ affinity domain，等待
-worker pin-ready，再以 fixed owner CPU 注册 disabled IRQ。owner startup、initial
-refill/rearm、IRQ enable 与 startup transaction 任一步失败都会反向回滚；没有运行时
+worker pin-ready，再以 fixed owner CPU 注册 disabled IRQ 并 enable。owner startup、
+initial refill/rearm 与 startup transaction 任一步失败都会反向回滚；没有运行时
 新增/删除物理 NIC 的公共入口。
 
 ### 7.4 Wi-Fi 控制
@@ -709,7 +710,7 @@ cfg80211 WEXT backend 的兼容承诺。passphrase 到 PMK 的 PBKDF2 属于产�
 Unix path socket 需要外部文件系统 namespace provider：
 
 ```rust
-pub fn register_unix_namespace(ns: impl UnixNamespace + 'static);
+ax_net::unix::register_unix_namespace(ns: impl UnixNamespace + 'static);
 ```
 
 abstract Unix socket 使用 `ax-net` 内部内存 namespace；path socket 通过注册的 `UnixNamespace` 完成路径绑定和解析。
