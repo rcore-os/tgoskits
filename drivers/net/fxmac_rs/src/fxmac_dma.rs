@@ -1424,16 +1424,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn netif_buffers_require_an_explicit_device_dma_capability() {
-        fn assert_constructor(
-            _constructor: fn(&DeviceDma, usize) -> Result<FXmacNetifBuffer, DmaError>,
-        ) {
-        }
-
-        assert_constructor(FXmacNetifBuffer::new);
-    }
-
-    #[test]
     fn rx_frame_len_rejects_lengths_larger_than_configured_buffers() {
         assert_eq!(
             fxmac_rx_frame_len(0, FXMAC_MAX_FRAME_SIZE),

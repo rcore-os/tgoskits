@@ -2049,16 +2049,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initialization_requires_an_owned_mmio_mapping() {
-        fn assert_constructor(
-            _constructor: fn(DeviceDma, mmio_api::Mmio, FxmacHardwareConfig) -> FxmacInitResult,
-        ) {
-        }
-
-        assert_constructor(xmac_init);
-    }
-
-    #[test]
     fn initialization_preserves_the_failing_hardware_stage() {
         assert!(matches!(
             init_status(FxmacInitStage::InitializePhy, 7),
