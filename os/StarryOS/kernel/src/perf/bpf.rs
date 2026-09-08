@@ -162,6 +162,8 @@ pub struct BpfPerfEventWrapper {
     poll_alive: Arc<AtomicBool>,
     #[cfg(target_arch = "aarch64")]
     sideband: Option<Arc<SystemSidebandSource>>,
+    #[cfg(target_arch = "aarch64")]
+    inert_tracking_output: bool,
 }
 
 impl BpfPerfEventWrapper {
@@ -182,6 +184,8 @@ impl BpfPerfEventWrapper {
             poll_alive,
             #[cfg(target_arch = "aarch64")]
             sideband: None,
+            #[cfg(target_arch = "aarch64")]
+            inert_tracking_output: false,
         }
     }
 
@@ -195,6 +199,12 @@ impl BpfPerfEventWrapper {
             attr.mmap2() != 0 || attr.mmap() != 0,
             attr.task() != 0,
         );
+        self
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn with_inert_tracking_output(mut self) -> Self {
+        self.inert_tracking_output = true;
         self
     }
 
@@ -291,9 +301,19 @@ impl PerfEventOps for BpfPerfEventWrapper {
 
     #[cfg(target_arch = "aarch64")]
     fn detach_output(&mut self) -> StarryResult<()> {
-        let source = self.sideband.as_ref().ok_or(StarryError::InvalidInput)?;
+        let Some(source) = self.sideband.as_ref() else {
+            return self
+                .inert_tracking_output
+                .then_some(())
+                .ok_or(StarryError::InvalidInput);
+        };
         source.set_redirect(None);
         Ok(())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn accepts_output_noop(&mut self) -> bool {
+        self.inert_tracking_output
     }
 
     fn device_mmap(&mut self, len: usize) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
@@ -397,8 +417,11 @@ pub fn perf_event_open_tracking(
     if let AuthorizedPerfTarget::Cpu(cpu) = target {
         return wrapper.with_system_sideband(cpu.as_usize(), attr);
     }
+    #[cfg(target_arch = "aarch64")]
+    return wrapper.with_inert_tracking_output();
     #[cfg(not(target_arch = "aarch64"))]
     let _ = (attr, target);
+    #[cfg(not(target_arch = "aarch64"))]
     wrapper
 }
 

@@ -161,6 +161,34 @@ pub fn perf_sched_out(thr: &Thread) {
     thr.perf_context().with_counters(perf_sched_out_counters);
 }
 
+/// Advances flexible task events even when the sampled task stays current.
+///
+/// Scheduler-tick work runs later in ordinary task context and is not pinned
+/// to the CPU that observed the tick. It therefore must not touch CPU-local PMU
+/// state directly. Queueing one synchronization command on the target task's
+/// owner CPU makes that CPU cross the existing sched-out/sched-in boundary,
+/// which accounts and releases the current slice before the next rotation
+/// cursor is selected.
+pub fn perf_sched_tick(thr: &Thread) {
+    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let counter = thr.perf_context().with_counters(|counters| {
+        let mut enabled_flexible = 0usize;
+        let mut synchronizer = None;
+        for counter in counters {
+            if counter.flexible && counter.enabled.load(Ordering::Acquire) {
+                enabled_flexible += 1;
+                synchronizer.get_or_insert_with(|| Arc::clone(counter));
+            }
+        }
+        (enabled_flexible > 1).then_some(synchronizer).flatten()
+    });
+    if let Some(counter) = counter {
+        let _ = counter.synchronize_context();
+    }
+}
+
 fn perf_sched_out_counters(counters: &[Arc<PerTaskCounter>]) {
     if counters.is_empty() {
         return;

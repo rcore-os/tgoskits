@@ -248,6 +248,13 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     fn detach_output(&mut self) -> StarryResult<()> {
         Err(StarryError::InvalidInput)
     }
+
+    /// Whether `PERF_EVENT_IOC_SET_OUTPUT` is an accepted no-op for a source
+    /// that deliberately emits no records of its own.
+    #[cfg(target_arch = "aarch64")]
+    fn accepts_output_noop(&mut self) -> bool {
+        false
+    }
 }
 
 /// `read_format` bit selecting `time_enabled` in `read(perf_fd)`.
@@ -499,6 +506,9 @@ impl PerfEvent {
 
         #[cfg(target_arch = "aarch64")]
         {
+            if self.context != target.context {
+                return Err(crate::StarryError::InvalidInput);
+            }
             let target_control = target
                 .control
                 .as_ref()
@@ -519,9 +529,12 @@ impl PerfEvent {
                 control.redirect_output(output)?;
             } else {
                 let mut source = self.event.lock();
-                let source_scope = source
-                    .output_scope()
-                    .ok_or(crate::StarryError::InvalidInput)?;
+                let Some(source_scope) = source.output_scope() else {
+                    return source
+                        .accepts_output_noop()
+                        .then_some(())
+                        .ok_or(crate::StarryError::InvalidInput);
+                };
                 validate_output_redirect(self.id, target.id, source_scope, target_scope)
                     .map_err(|_| crate::StarryError::InvalidInput)?;
                 source.redirect_output(output)?;
@@ -833,7 +846,7 @@ pub fn perf_event_open(
         if let Some(leader) = &group_leader
             && (direct_system_sampling || !leader.event.lock().supports_group_link())
         {
-            return Err(crate::StarryError::Unsupported);
+            return Err(crate::StarryError::OperationNotSupported);
         }
         // Hardware-PMU events (`PERF_TYPE_HARDWARE` / `PERF_TYPE_RAW`, plus
         // the dynamic ARM PMUv3 type `hw::ARMV8_PMUV3_PERF_TYPE`) bypass

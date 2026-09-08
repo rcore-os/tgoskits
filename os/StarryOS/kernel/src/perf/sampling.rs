@@ -527,8 +527,9 @@ fn service_overflowed_slots(
 ) -> u32 {
     let current = try_current_user_irq_view();
 
-    // Bits we have serviced; cleared (write-1-to-clear) only after every slot
-    // has been inspected, so re-arming one counter cannot drop another event.
+    // Bits serviced from the overflow snapshot captured and cleared before
+    // this function runs. A counter that overflows again while being serviced
+    // sets a fresh status bit that remains pending after this IRQ returns.
     let mut handled = 0;
 
     for n in 0..=MAX_COUNTER {
@@ -662,6 +663,11 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         return IrqReturn::Unhandled;
     }
 
+    // Match Linux arm_pmuv3: acknowledge the complete overflow snapshot before
+    // reprogramming any counter. QEMU's PMU model also requires this order to
+    // schedule subsequent overflows from a newly preloaded value.
+    ax_cpu::pmu::overflow::clear(ovf);
+
     let misc = if is_user {
         PERF_RECORD_MISC_USER
     } else {
@@ -670,15 +676,14 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
 
     // SAFETY: the handler runs with local IRQs masked on its current CPU, so
     // the registry cannot be re-entered or observed after migration.
-    let handled =
+    let _handled =
         unsafe {
             with_registry_mut(|registry| {
                 service_overflowed_slots(registry, ovf, misc, interrupted, ip, is_user)
             })
         };
 
-    // Clear exactly the overflow bits we serviced.
-    ax_cpu::pmu::overflow::clear(handled);
+    debug_assert_eq!(_handled & !ovf, 0);
     IrqReturn::Handled
 }
 

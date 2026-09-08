@@ -111,4 +111,4 @@ pub use model::PerTaskCounter;
 pub(crate) use model::SamplingAnchors;
 pub(crate) use read::{read_counter, read_task_on_owner};
 pub(crate) use scheduling::stop_requested_on_owner;
-pub use scheduling::{perf_sched_in, perf_sched_out};
+pub use scheduling::{perf_sched_in, perf_sched_out, perf_sched_tick};
