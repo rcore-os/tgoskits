@@ -1,7 +1,7 @@
 source,program,status,ltp_cases,covered,coverage_loss,validation,commit_subject
 test-suit/starryos/board-aka-00-sg2002/usb2-libuvc-init/c,sg2002-libuvc-init,待审计,,,,,
 test-suit/starryos/qemu/system/affinity-bug-proc-status-affinity,test_proc_status_affinity,部分替代并清理,sched_getaffinity01,默认亲和性掩码非空且不超过配置CPU数；补充EFAULT/EINVAL/ESRCH,固定四核默认掩码；设置CPU1后的掩码；procfs Cpus_allowed/Cpus_allowed_list精确文本及cpuinfo计数；sysfs online/possible/present范围,x86_64/aarch64/riscv64/loongarch64各4项TPASS；LTP阶段全通过；generate-common.sh与cmp通过；loongarch64日志缺失先红后绿,test(starry): migrate proc affinity checks to LTP
-test-suit/starryos/qemu/system/affinity-bug-sched-affinity-migrate,bug-sched-affinity-migrate,待验证,getcpu01,当前任务设置亲和性后的执行CPU（候选）,父进程修改正在运行子进程的亲和性；/proc/self/stat processor字段；跨任务迁移握手,已比对固定LTP getcpu01源码；未运行,
+test-suit/starryos/qemu/system/affinity-bug-sched-affinity-migrate,bug-sched-affinity-migrate,部分替代并清理,getcpu01,当前任务设置亲和性后的执行CPU与NUMA节点,父进程修改正在运行子进程的亲和性；/proc/self/stat processor字段；跨任务迁移握手,四架构getcpu01各1项TPASS：CPU3/node0；定向QEMU及共同集生成通过,test(starry): migrate affinity placement checks to LTP
 test-suit/starryos/qemu/system/apk-curl-equivalence,待核实安装程序,待审计,,,,,
 test-suit/starryos/qemu/system/block-io-bench,block-io-bench,待审计,,,,,
 test-suit/starryos/qemu/system/block-io-smoke,block-io-smoke,待审计,,,,,

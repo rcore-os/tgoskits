@@ -18,6 +18,7 @@ futex_wait02
 futex_wait03
 futex_wait04
 futex_wait_bitset01
+getcpu01
 getpgid01
 getpgid02
 getsid01
