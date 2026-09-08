@@ -501,7 +501,8 @@ impl QueueGroupExecutor {
         if self.shared.is_disabled() {
             return GroupPollOutcome::Failed;
         }
-        if self.group.irq_control.quiesce().is_err() {
+        if let Err(error) = self.group.irq_control.quiesce() {
+            warn!("network queue {:?}: quiesce failed: {error}", self.group.id);
             self.shared.disable();
             return GroupPollOutcome::Failed;
         }
@@ -549,6 +550,14 @@ impl QueueGroupExecutor {
                 Err(error) => {
                     let (buffer, reason) = error.into_parts();
                     if waits_for_hardware_event(&reason) {
+                        static REPORTED_TX_RETRY: core::sync::atomic::AtomicBool =
+                            core::sync::atomic::AtomicBool::new(false);
+                        if !REPORTED_TX_RETRY.swap(true, Ordering::Relaxed) {
+                            warn!(
+                                "network queue {:?}: TX waiting for hardware: {reason}",
+                                self.group.id
+                            );
+                        }
                         self.pending_tx = Some(TxRequest {
                             buffer,
                             options: request.options,
@@ -695,7 +704,10 @@ impl QueueGroupExecutor {
             Ok(NetRearmResult::RetryAt { deadline_nanos }) => {
                 self.retry_at = Some(deadline_nanos);
             }
-            Err(_) => self.shared.disable(),
+            Err(error) => {
+                warn!("network queue {:?}: rearm failed: {error}", self.group.id);
+                self.shared.disable();
+            }
         }
     }
 
