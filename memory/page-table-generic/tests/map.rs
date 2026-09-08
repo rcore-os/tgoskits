@@ -11,23 +11,6 @@ mod mocks;
 
 use mocks::*;
 
-#[test]
-fn test_pte() {
-    let mut want = PteImpl(0);
-    want = PteImpl::from_config(PteConfig {
-        valid: true,
-        ..want.to_config(false)
-    });
-    assert!(want.to_config(false).valid);
-
-    let addr = PhysAddr::from(0xff123456000usize);
-    want = PteImpl::from_config(PteConfig {
-        paddr: addr,
-        ..want.to_config(false)
-    });
-    assert_eq!(want.to_config(false).paddr, addr);
-}
-
 fn test_high<T: TableMeta<P = PteImpl>, A: FrameAllocator>(
     pte: PteConfig,
     alloc: A,

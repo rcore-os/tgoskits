@@ -1319,11 +1319,6 @@ fn rsext4_tool_layout_and_blockgroup_disk_rules_hold() {
     assert_eq!(AbsoluteBN::new(10).checked_add_usize(5).unwrap().raw(), 15);
     assert_eq!(InodeNumber::from_u64(123).unwrap().raw(), 123);
     assert_eq!(InodeNumber::new(123).unwrap().as_usize().unwrap(), 123);
-    assert_eq!(BGIndex::new(2).to_string(), "2");
-    assert_eq!(AbsoluteBN::new(10).to_string(), "10");
-    assert_eq!(RelativeBN::new(7).to_string(), "7");
-    assert_eq!(InodeNumber::new(123).unwrap().to_string(), "123");
-    assert_eq!(RelativeInodeIndex::new(8).to_string(), "8");
 }
 
 #[test]

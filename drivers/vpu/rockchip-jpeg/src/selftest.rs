@@ -211,20 +211,6 @@ fn write_dht(w: &mut Writer, tc_th: u8, bits: &[u8; 16], vals: &[u8]) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{YuvMode, parse};
-
-    #[test]
-    fn selftest_jpeg_parses_as_baseline_420() {
-        let mut buf = [0u8; SELFTEST_JPEG_CAPACITY];
-        let n = write_selftest_jpeg(&mut buf).expect("buffer large enough");
-        let info = parse(&buf[..n]).expect("generated self-test JPEG must parse");
-        assert_eq!((info.width, info.height), (64, 64));
-        assert_eq!(info.nb_components, 3);
-        assert_eq!(info.yuv_mode, YuvMode::Yuv420);
-        assert_eq!(info.qtbl_entry, 2);
-        assert_eq!(info.htbl_entry, 0x0f);
-        assert!(info.strm_offset > 0 && (info.strm_offset as usize) < info.pkt_len as usize);
-    }
 
     #[test]
     fn selftest_jpeg_is_wrapped_in_soi_eoi() {

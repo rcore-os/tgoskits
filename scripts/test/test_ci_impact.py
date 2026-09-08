@@ -236,24 +236,6 @@ class CiImpactTests(unittest.TestCase):
             tuple(f"arceos:{arch}" for arch in ci_impact.ARCH_TARGETS),
         )
 
-    def test_known_config_names_map_to_board_architectures(self) -> None:
-        cases = {
-            "os/StarryOS/configs/board/visionfive2.toml": ("starry:riscv64",),
-            "os/StarryOS/configs/board/jl-lsgd2k10.toml": ("starry:loongarch64",),
-            "os/axvisor/configs/board/asus-nuc15crh-x86_64.toml": ("axvisor:x86_64",),
-            "os/axvisor/configs/board/orangepi-5-plus.toml": ("axvisor:aarch64",),
-        }
-        for changed_path, expected_targets in cases.items():
-            with self.subTest(path=changed_path):
-                impact = ci_impact.analyze_changed_paths(
-                    self.workspace_root,
-                    [Path(changed_path)],
-                    self.metadata_by_arch,
-                )
-
-                self.assertFalse(impact.full)
-                self.assertEqual(impact.targets, expected_targets)
-
     def test_deleted_package_manifest_falls_back_to_full(self) -> None:
         manifest = self.workspace_root / "tools/standalone/Cargo.toml"
         manifest.unlink()

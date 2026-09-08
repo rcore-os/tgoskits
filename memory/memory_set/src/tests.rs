@@ -353,17 +353,6 @@ macro_rules! assert_err {
     };
 }
 
-fn dump_memory_set(set: &MockMemorySet) {
-    use std::sync::Mutex;
-    static DUMP_LOCK: Mutex<()> = Mutex::new(());
-
-    let _lock = DUMP_LOCK.lock().unwrap();
-    println!("Number of areas: {}", set.len());
-    for area in set.iter() {
-        println!("{:?}", area);
-    }
-}
-
 #[test]
 fn test_map_unmap() {
     let mut set = MockMemorySet::new();
@@ -387,7 +376,6 @@ fn test_map_unmap() {
             false,
         ));
     }
-    dump_memory_set(&set);
     assert_eq!(set.len(), 16);
     for &e in &pt[0..MAX_ADDR] {
         assert!(e == 1 || e == 2);
@@ -417,7 +405,6 @@ fn test_map_unmap() {
         &mut pt,
         true
     ));
-    dump_memory_set(&set);
     assert_eq!(set.len(), 13);
 
     // Found [0x4000, 0x8000), flags = 3.
@@ -584,7 +571,6 @@ fn test_unmap_split() {
     for start in (0..MAX_ADDR).step_by(0x2000) {
         assert_ok!(set.unmap((start + 0xc00).into(), 0x1800, &mut (), &mut pt));
     }
-    dump_memory_set(&set);
     assert_eq!(set.len(), 8);
 
     for area in set.iter() {
@@ -605,7 +591,6 @@ fn test_unmap_split() {
     for start in (0..MAX_ADDR).step_by(0x2000) {
         assert_ok!(set.unmap((start + 0x800).into(), 0x100, &mut (), &mut pt));
     }
-    dump_memory_set(&set);
     assert_eq!(set.len(), 16);
 
     for area in set.iter() {
@@ -771,7 +756,6 @@ fn test_protect() {
             &mut pt
         ));
     }
-    dump_memory_set(&set);
     assert_eq!(set.len(), 23);
 
     for area in set.iter() {
@@ -802,7 +786,6 @@ fn test_protect() {
             &mut pt
         ));
     }
-    dump_memory_set(&set);
     assert_eq!(set.len(), 39);
 
     for area in set.iter() {

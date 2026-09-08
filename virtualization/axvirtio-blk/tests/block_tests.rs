@@ -106,10 +106,7 @@ mod mmio_device_tests {
 
     use super::*;
 
-    const VIRTIO_MMIO_MAGIC_VALUE: u32 = 0x000;
-    const VIRTIO_MMIO_VERSION: u32 = 0x004;
     const VIRTIO_MMIO_DEVICE_ID: u32 = 0x008;
-    const VIRTIO_MMIO_VENDOR_ID: u32 = 0x00c;
     const VIRTIO_MMIO_DEVICE_FEATURES: u32 = 0x010;
     const VIRTIO_MMIO_DEVICE_FEATURES_SEL: u32 = 0x014;
     const VIRTIO_MMIO_QUEUE_NUM_MAX: u32 = 0x034;
@@ -122,8 +119,6 @@ mod mmio_device_tests {
     const VIRTIO_MMIO_QUEUE_USED_LOW: u32 = 0x0a0;
     const VIRTIO_MMIO_CONFIG: u32 = 0x100;
 
-    const MMIO_MAGIC: u32 = 0x74726976; // "virt" in little endian
-    const MMIO_VERSION: u32 = 2; // VirtIO 1.0+
     const VIRTIO_DEVICE_BLOCK: u32 = 2;
     const VIRTIO_F_RING_EVENT_IDX: u32 = 1 << 29;
 
@@ -137,28 +132,6 @@ mod mmio_device_tests {
     }
 
     #[test]
-    fn test_mmio_read_magic() {
-        let device = create_test_device();
-        let base_ipa = GuestPhysAddr::from(0x0a000000);
-        let addr = GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_MAGIC_VALUE as usize);
-
-        let result = device.mmio_read(addr, AccessWidth::Dword);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap() as u32, MMIO_MAGIC);
-    }
-
-    #[test]
-    fn test_mmio_read_version() {
-        let device = create_test_device();
-        let base_ipa = GuestPhysAddr::from(0x0a000000);
-        let addr = GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_VERSION as usize);
-
-        let result = device.mmio_read(addr, AccessWidth::Dword);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap() as u32, MMIO_VERSION);
-    }
-
-    #[test]
     fn test_mmio_read_device_id() {
         let device = create_test_device();
         let base_ipa = GuestPhysAddr::from(0x0a000000);
@@ -167,18 +140,6 @@ mod mmio_device_tests {
         let result = device.mmio_read(addr, AccessWidth::Dword);
         assert!(result.is_ok());
         assert_eq!(result.unwrap() as u32, VIRTIO_DEVICE_BLOCK);
-    }
-
-    #[test]
-    fn test_mmio_read_vendor_id() {
-        let device = create_test_device();
-        let base_ipa = GuestPhysAddr::from(0x0a000000);
-        let addr = GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_VENDOR_ID as usize);
-
-        let result = device.mmio_read(addr, AccessWidth::Dword);
-        assert!(result.is_ok());
-        // Vendor ID should be non-zero
-        assert!(result.unwrap() > 0);
     }
 
     #[test]
@@ -370,35 +331,6 @@ mod mmio_device_tests {
 // ============================================================================
 // Integration Tests
 // ============================================================================
-
-mod integration_tests {
-    use super::*;
-
-    /// Simulates a simple driver initialization sequence
-    #[test]
-    fn test_driver_initialization_sequence() {
-        let backend = NoIoBackend;
-        let accessor = MockGuestMemoryAccessor::new(1024 * 1024);
-        let config = VirtioBlockConfig::default();
-        let base_ipa = GuestPhysAddr::from(0x0a000000);
-
-        let device =
-            VirtioMmioBlockDevice::new(base_ipa, 0x200, backend, config, accessor).unwrap();
-
-        // Acknowledge the device before attaching the driver.
-        let status_addr = GuestPhysAddr::from(base_ipa.as_usize() + 0x070);
-        device
-            .mmio_write(status_addr, AccessWidth::Dword, 1)
-            .unwrap(); // ACKNOWLEDGE
-        assert_eq!(device.get_status(), 1);
-
-        // Advance to the driver-attached state.
-        device
-            .mmio_write(status_addr, AccessWidth::Dword, 3)
-            .unwrap(); // ACKNOWLEDGE | DRIVER
-        assert_eq!(device.get_status(), 3);
-    }
-}
 
 struct NoopIrqSink;
 

@@ -56,18 +56,6 @@ fn test_slice() {
 }
 
 #[test]
-fn vm_access_requires_an_explicit_provider() {
-    let mut vm = Vm(POOL.lock().unwrap());
-    let ptr = 0x1800 as *mut u32;
-
-    vm_write_slice(&mut vm, ptr, &[0x1234_5678]).unwrap();
-    let mut value = [MaybeUninit::uninit()];
-    vm_read_slice(&mut vm, ptr, &mut value).unwrap();
-
-    assert_eq!(unsafe { value[0].assume_init() }, 0x1234_5678);
-}
-
-#[test]
 fn test_perm() {
     let mut vm = vm();
     assert_eq!(

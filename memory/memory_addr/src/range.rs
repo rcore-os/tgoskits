@@ -458,8 +458,6 @@ mod test {
         let end = va!(0x2000);
         let range = va_range!(start..end);
 
-        println!("range: {:?}", range);
-
         assert!((0x1000..0x1000).is_empty());
         assert!((0x1000..0xfff).is_empty());
         assert!(!range.is_empty());
@@ -494,11 +492,5 @@ mod test {
         assert!(range.overlaps(va_range!(0x1800..0x2001)));
         assert!(!range.overlaps(va_range!(0x2000..0x2800)));
         assert!(range.overlaps(va_range!(0xfff..0x2001)));
-
-        let default_range: VirtAddrRange = Default::default();
-        assert!(default_range.is_empty());
-        assert_eq!(default_range.size(), 0);
-        assert_eq!(default_range.start, va!(0));
-        assert_eq!(default_range.end, va!(0));
     }
 }

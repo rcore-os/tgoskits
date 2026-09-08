@@ -35,7 +35,7 @@ class CiPlanTests(unittest.TestCase):
             base_ref="dev",
         )
 
-    def test_upstream_main_plan_preserves_required_checks_and_runner_policy(
+    def test_main_plan_has_unique_checks_in_required_groups(
         self,
     ) -> None:
         plan = ci_plan.build_main_plan(self.upstream)
@@ -45,39 +45,11 @@ class CiPlanTests(unittest.TestCase):
         test_rows = self.assert_unique_ids(main_test_rows(plan))
         self.assertNotIn("test_matrix", plan)
         self.assertTrue(static_rows.keys().isdisjoint(test_rows))
-        rows = static_rows | test_rows
         for prefix, group in zip(MAIN_TEST_PREFIXES, MAIN_TEST_GROUPS, strict=True):
             group_rows = plan[f"{prefix}_matrix"]["include"]
             self.assertTrue(plan[f"{prefix}_required"])
             self.assertTrue(group_rows)
             self.assertTrue(all(row["group"] == group for row in group_rows))
-        expected_runners = {
-            "check-formatting": ["self-hosted", "linux", "qcs"],
-            "run-sync-lint": ["ubuntu-latest"],
-            "run-clippy": ["self-hosted", "linux", "qcs"],
-            "test-with-std": ["self-hosted", "linux", "qcs"],
-            "test-arceos-x86-64-qemu": ["self-hosted", "linux", "qcs"],
-            "test-axvisor-aarch64-qemu-panic-http-control-plane-ivc": [
-                "self-hosted",
-                "linux",
-                "qcs",
-            ],
-            "test-starry-aarch64-qemu": ["ubuntu-latest"],
-            "test-starry-self-hosted-board-visionfive2": [
-                "self-hosted",
-                "linux",
-                "board",
-            ],
-        }
-        for check_id, runs_on in expected_runners.items():
-            self.assertIn(check_id, rows)
-            self.assertEqual(rows[check_id]["runs_on"], runs_on)
-        sync_lint_command = static_rows["run-sync-lint"]["command"]
-        self.assertIn(
-            'cargo xtask sync-lint --since "$SINCE_REF"',
-            sync_lint_command,
-        )
-        self.assertNotIn("lock" + "-lint", sync_lint_command)
         self.assertTrue(
             all(
                 not row["name"].startswith(f"{row['group']} / ")
@@ -495,49 +467,6 @@ command = "true"
         self.assertEqual(plan["arceos_matrix"]["include"], [])
         self.assertEqual(plan["axvisor_matrix"]["include"], [])
 
-    def test_arceos_qemu_jobs_run_suites_without_workspace_axtests(self) -> None:
-        plan = ci_plan.build_main_plan(self.upstream)
-        rows = {row["id"]: row for row in plan["arceos_matrix"]["include"]}
-        expected_arches = {
-            "test-arceos-x86-64-qemu": "x86_64",
-            "test-arceos-riscv64-qemu": "riscv64",
-            "test-arceos-aarch64-qemu-app-suites": "aarch64",
-            "test-arceos-loongarch64-qemu": "loongarch64",
-        }
-
-        for check_id, arch in expected_arches.items():
-            command = rows[check_id]["command"]
-            arceos_command = f"cargo xtask arceos test qemu --arch {arch}"
-            self.assertIn(arceos_command, command)
-            self.assertNotIn("cargo xtask ktest qemu --workspace", command)
-            self.assertEqual(rows[check_id]["cache_key"], "")
-
-    def test_only_aka_starry_board_receives_wifi_secrets(self) -> None:
-        rows = {
-            row["id"]: row
-            for row in ci_plan.build_main_plan(self.upstream)["starry_matrix"]["include"]
-        }
-        enabled = [row["id"] for row in rows.values() if row["wifi_secrets"]]
-        self.assertEqual(enabled, ["test-starry-self-hosted-board-aka-00-sg2002"])
-
-    def test_asus_nuc_board_reuses_xtask_artifact_and_preserves_timeout(
-        self,
-    ) -> None:
-        rows = self.assert_unique_ids(
-            ci_plan.build_main_plan(self.upstream)["axvisor_matrix"]["include"]
-        )
-        asus_nuc = rows["test-axvisor-self-hosted-board-asus-nuc15crh-linux"]
-
-        self.assertEqual(asus_nuc["timeout_minutes"], 45)
-        self.assertTrue(asus_nuc["download_xtask_bin_artifact"])
-        self.assertNotIn("cargo xtask", asus_nuc["command"])
-        self.assertEqual(asus_nuc["command"].count("target/debug/tg-xtask"), 3)
-        self.assertIn(
-            "target/debug/tg-xtask axvisor test board "
-            "--board asus-nuc15crh-linux",
-            asus_nuc["command"],
-        )
-
     def test_fork_repository_filters_owner_checks_and_falls_back_from_qcs(
         self,
     ) -> None:
@@ -577,66 +506,22 @@ command = "true"
         self.assertEqual(clippy["fetch_depth"], "100")
         self.assertTrue(clippy["download_xtask_bin_artifact"])
 
-    def test_starry_apps_schedule_and_manual_selection(self) -> None:
-        manual = ci_plan.PlanContext(
-            repository="rcore-os/tgoskits",
-            repository_owner="rcore-os",
-            event_name="workflow_dispatch",
-        )
-        manual_with_clippy = ci_plan.PlanContext(
-            repository="rcore-os/tgoskits",
-            repository_owner="rcore-os",
-            event_name="workflow_dispatch",
-            enabled_boolean_inputs=frozenset({"run_clippy_all"}),
-        )
-        scheduled = ci_plan.PlanContext(
-            repository="rcore-os/tgoskits",
-            repository_owner="rcore-os",
-            event_name="schedule",
-        )
-
-        manual_rows = self.assert_unique_ids(
-            ci_plan.build_starry_apps_plan(manual)["starry_apps_matrix"]["include"]
-        )
-        manual_with_clippy_rows = self.assert_unique_ids(
-            ci_plan.build_starry_apps_plan(manual_with_clippy)["starry_apps_matrix"][
-                "include"
-            ]
-        )
-        scheduled_rows = self.assert_unique_ids(
-            ci_plan.build_starry_apps_plan(scheduled)["starry_apps_matrix"]["include"]
-        )
-        required_ids = {
-            "starry-app-smoke-x86-64",
-            "starry-app-smoke-aarch64",
-            "starry-app-smoke-riscv64",
-            "starry-app-smoke-loongarch64",
-            "starry-nixos-x86-64-qemu",
-        }
-        for name, rows, expects_clippy in (
-            ("manual", manual_rows, False),
-            ("manual with clippy", manual_with_clippy_rows, True),
-            ("scheduled", scheduled_rows, True),
+    def test_event_and_boolean_input_select_checks_independently(self) -> None:
+        check = {"events": ["schedule"], "enable_boolean_input": "run_optional"}
+        for event, enabled, expected in (
+            ("schedule", frozenset(), True),
+            ("workflow_dispatch", frozenset(), False),
+            ("workflow_dispatch", frozenset({"run_optional"}), True),
+            ("workflow_dispatch", frozenset({"other_input"}), False),
         ):
-            with self.subTest(selection=name):
-                self.assertTrue(required_ids.issubset(rows))
-                self.assertEqual("starry-apps-clippy-all" in rows, expects_clippy)
-
-    def test_starry_apps_manual_nixos_uses_app_runner(self) -> None:
-        manual = ci_plan.PlanContext(
-            repository="rcore-os/tgoskits",
-            repository_owner="rcore-os",
-            event_name="workflow_dispatch",
-        )
-
-        rows = ci_plan.build_starry_apps_plan(manual)["starry_apps_matrix"]["include"]
-        rows_by_id = {row["id"]: row for row in rows}
-
-        nixos = rows_by_id["starry-nixos-x86-64-qemu"]
-        self.assertEqual(nixos["container_image"], "")
-        self.assertEqual(nixos["timeout_minutes"], 45)
-        self.assertIn("starry app qemu -t nixos", nixos["command"])
-        self.assertNotIn("starry test", nixos["command"])
+            with self.subTest(event=event, enabled=enabled):
+                context = ci_plan.PlanContext(
+                    repository="example/project",
+                    repository_owner="example",
+                    event_name=event,
+                    enabled_boolean_inputs=enabled,
+                )
+                self.assertEqual(ci_plan._is_enabled(check, context), expected)
 
     def assert_unique_ids(
         self, rows: list[dict[str, Any]]

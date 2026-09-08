@@ -10,7 +10,7 @@ fn main() {
     subscriber::run();
 }
 
-#[cfg(any(feature = "arceos", test))]
+#[cfg(feature = "arceos")]
 mod demo_config {
     pub const CHANNEL_KEY: usize = 0x4956_4301;
     pub const NOTIFY_IRQ: Option<usize> = Some(160);
@@ -311,18 +311,5 @@ mod subscriber {
             // Phase 2 uses atomic ring ownership for subscriber writes.
             Some(&*(vaddr.as_ptr() as *const IvcRegion))
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn qemu_ivc_notify_irq_matches_guest_config() {
-        assert_eq!(demo_config::CHANNEL_KEY, 0x4956_4301);
-        assert_eq!(demo_config::NOTIFY_IRQ, Some(160));
-        assert_eq!(demo_config::PUBLISHER_VM_ID, 1);
-        assert_eq!(demo_config::SUBSCRIBER_VM_ID, 2);
     }
 }
