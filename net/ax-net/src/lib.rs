@@ -103,7 +103,7 @@ use self::{
     addr::mask_from_prefix,
     device::{EthernetDevice, LoopbackDevice},
     listen_table::ListenTable,
-    poll_runtime::ProtocolPollRuntime,
+    poll_runtime::{ProtocolPollBudget, ProtocolPollRuntime},
     router::{RouteTable, Router, Rule, SharedRouteTable},
     service::{NetControl, NetInterface, Service},
     wrapper::SocketSetWrapper,
@@ -688,9 +688,17 @@ pub fn init_vsock(
     device::init_vsock_device(vsock_devs, registrar, owner_cpu, active_cpus.topology_len())
 }
 
-fn poll_protocol_until_idle() {
+fn poll_protocol_until_idle(budget: &mut ProtocolPollBudget) {
     loop {
-        if !get_service().poll(&mut SOCKET_SET.inner.lock()) {
+        let more = get_service().poll(&mut SOCKET_SET.inner.lock());
+        if budget.consume(ax_hal::time::monotonic_time_nanos()) {
+            // Device owners share this CPU with the protocol executor. Deliver
+            // readiness and release CPU ownership with all network locks dropped.
+            drain_deferred_poll_wakes();
+            yield_network_thread();
+            budget.reset(ax_hal::time::monotonic_time_nanos());
+        }
+        if !more {
             return;
         }
     }
@@ -852,6 +860,7 @@ fn start_protocol_executor(owner_cpu: usize) {
 }
 
 fn protocol_executor_main() {
+    let mut budget = ProtocolPollBudget::new(ax_hal::time::monotonic_time_nanos());
     loop {
         if let Some(delay) = next_poll_delay() {
             let _ = PROTOCOL_POLL.wait_timeout(delay);
@@ -860,7 +869,7 @@ fn protocol_executor_main() {
         }
         drain_deferred_poll_wakes();
         let completed = PROTOCOL_POLL.requested_generation();
-        poll_protocol_until_idle();
+        poll_protocol_until_idle(&mut budget);
         PROTOCOL_POLL.complete(completed);
         drain_deferred_poll_wakes();
         if PROTOCOL_POLL.finish_cycle(|| DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)) {
