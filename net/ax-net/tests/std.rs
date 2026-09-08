@@ -4,11 +4,11 @@ use alloc::boxed::Box;
 use core::{cell::Cell, time::Duration};
 
 use ax_io::IoError;
-use ax_runtime as _;
 use ax_net::{
     InterfaceId, NetError, NetResult,
     options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
 };
+use ax_runtime as _;
 
 #[test]
 fn ax_net_interface_ids_validate_linux_ifindices() {

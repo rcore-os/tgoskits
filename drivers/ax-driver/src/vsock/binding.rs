@@ -275,7 +275,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn platform_vsock_device_without_irq_cannot_transfer_runtime_ownership() {
         let mut device = PlatformVsockDevice::new(

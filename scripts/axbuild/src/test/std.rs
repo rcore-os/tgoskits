@@ -46,7 +46,6 @@ const AX_HAL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfil
         "cache::tests::selected_offline_cpu_cannot_be_silently_acknowledged",
         "cache::tests::targeted_tlb_shootdown_skips_unselected_remote_and_local_cpus",
         "irq::tests::acknowledged_irq_completion_precedes_preempt_release",
-        "topology::tests::dummy_topology_only_maps_the_boot_cpu",
     ],
 }];
 

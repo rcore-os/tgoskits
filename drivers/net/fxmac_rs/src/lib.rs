@@ -108,4 +108,3 @@ pub use fxmac::*;
 pub use fxmac_dma::*;
 // Re-exports for PHY interface
 pub use fxmac_phy::{FXmacPhyInit, FXmacPhyRead, FXmacPhyWrite};
-

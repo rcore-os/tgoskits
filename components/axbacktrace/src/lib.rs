@@ -527,7 +527,7 @@ impl fmt::Debug for Backtrace {
 
 #[cfg(all(test, feature = "alloc"))]
 mod tests {
-    use alloc::{boxed::Box, vec::Vec};
+    use alloc::{boxed::Box, format, vec::Vec};
 
     use super::*;
 

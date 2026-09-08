@@ -369,7 +369,6 @@ fn resolve_block_irq(irq: ax_driver::BindingIrq) -> Option<irq_framework::IrqId>
 mod tests {
     use super::*;
 
-
     #[test]
     fn block_worker_thread_capacity_matches_linux_kthread_enomem() {
         assert_eq!(

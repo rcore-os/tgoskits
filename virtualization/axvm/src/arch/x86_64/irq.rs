@@ -969,7 +969,6 @@ mod tests {
         X86InterruptDomain::new(1, Arc::new(FakeIoApic))
     }
 
-
     #[test]
     fn local_apic_timer_reuses_the_vm_owned_deferred_kick_publisher() {
         let domain = new_domain();
