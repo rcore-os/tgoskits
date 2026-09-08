@@ -634,8 +634,14 @@ impl FileLike for PerfEvent {
         // the default and return `Unsupported`.
         const PERF_EVENT_IOC_RESET: u32 = 0x2403;
         if cmd == PERF_EVENT_IOC_RESET {
+            const PERF_IOC_FLAG_GROUP: usize = 1;
+            if arg & !PERF_IOC_FLAG_GROUP != 0 {
+                return Err(StarryError::InvalidInput);
+            }
             self.reset_one()?;
-            self.reset_members()?;
+            if arg & PERF_IOC_FLAG_GROUP != 0 {
+                self.reset_members()?;
+            }
             return Ok(0);
         }
         let req = PerfEventIoc::try_from(cmd).map_err(|_| StarryError::InvalidInput)?;

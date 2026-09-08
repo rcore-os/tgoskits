@@ -651,11 +651,11 @@ unsafe fn per_task_sample_read_irq(
     if !account_source
         && running.is_some_and(|lease| lease.owner().as_usize() == ax_hal::percpu::this_cpu_id())
     {
-        value = value.saturating_add(if counter.programmable_index() == source_slot {
-            0
-        } else {
-            counter.counter.read()
-        });
+        let live = match counter.counter {
+            Counter::Programmable(index) if index == source_slot => 0,
+            Counter::Cycle | Counter::Programmable(_) => counter.counter.read(),
+        };
+        value = value.saturating_add(live);
     }
     let mut time_enabled = counter.time_enabled_ns.load(Ordering::Acquire);
     let mut time_running = counter.time_running_ns.load(Ordering::Acquire);
