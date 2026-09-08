@@ -7,7 +7,6 @@ repository = "https://github.com/rcore-os/tgoskits"
 authors = ["Youjie Zheng <Azure_stars@126.com>"]
 keywords = ["arceos", "constructor", "no_std"]
 categories = ["development-tools::procedural-macro-helpers", "no-std"]
-readme = "README.md"
 license = "Apache-2.0"
 
 [dependencies]

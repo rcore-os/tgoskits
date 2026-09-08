@@ -360,7 +360,7 @@ Root Hub Port = 0x2
 
 ```bash
 # 运行 UVC 相机测试（会捕获 30 秒视频）
-cargo run -p test_libusb_uvc
+cargo run -p test-libusb-uvc
 
 # 输出位置
 # - JPEG 帧: target/output/images/frame_*.jpg

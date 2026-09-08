@@ -329,7 +329,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-arce_agent"
+name = "arceos-arce-agent"
 version = "0.2.0"
 dependencies = [
  "ax-std",
@@ -377,7 +377,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-io_test"
+name = "arceos-io-test"
 version = "0.1.0"
 dependencies = [
  "ax-std",
@@ -438,14 +438,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-thread_test"
+name = "arceos-thread-test"
 version = "0.1.0"
 dependencies = [
  "ax-std",
 ]
 
 [[package]]
-name = "arceos-tokio_test"
+name = "arceos-tokio-test"
 version = "0.1.0"
 dependencies = [
  "ax-std",
@@ -8320,6 +8320,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-libusb-uvc"
+version = "0.1.1"
+dependencies = [
+ "crab-usb",
+ "crab-uvc",
+ "env_logger",
+ "ffmpeg-next",
+ "image",
+ "log",
+ "tokio",
+ "uvc-frame-parser",
+]
+
+[[package]]
 name = "test-simple"
 version = "0.3.4"
 dependencies = [
@@ -8363,20 +8377,6 @@ dependencies = [
  "env_logger",
  "log",
  "tokio",
-]
-
-[[package]]
-name = "test_libusb_uvc"
-version = "0.1.1"
-dependencies = [
- "crab-usb",
- "crab-uvc",
- "env_logger",
- "ffmpeg-next",
- "image",
- "log",
- "tokio",
- "uvc-frame-parser",
 ]
 
 [[package]]

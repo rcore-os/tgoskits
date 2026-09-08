@@ -2,14 +2,12 @@
 name = "axdevice"
 version = "0.6.2"
 description = "A reusable, OS-agnostic device abstraction layer designed for virtual machines."
-homepage = "https://github.com/arceos-hypervisor/axdevice"
 repository = "https://github.com/arceos-hypervisor/axdevice"
 keywords = ["hypervisor"]
 authors = ["Su Mingxian <aarkegz@gmail.com>"]
 documentation = "https://docs.rs/axdevice"
 categories = ["virtualization"]
 edition.workspace = true
-readme = "README.md"
 license = "Apache-2.0"
 
 [features]

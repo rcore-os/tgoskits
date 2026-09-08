@@ -1,5 +1,5 @@
 [package]
-name = "arceos-tokio_test"
+name = "arceos-tokio-test"
 version = "0.1.0"
 edition.workspace = true
 publish = false
