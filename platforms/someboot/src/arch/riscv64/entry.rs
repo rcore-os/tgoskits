@@ -49,6 +49,16 @@ pub unsafe extern "C" fn kernel_entry(_hart_id: usize, _fdt_addr: usize) -> ! {
     naked_asm!(
         ".option push",
         ".option norelax",
+        // Some SBI firmware (e.g. RustSBI Prototyper) leaves the FPU
+        // state off for S-mode, while someboot's own early code (memory
+        // map formatting) uses FP. OpenSBI sets FS itself, so this is a
+        // no-op there but fixes the first FP trap on such firmware. This
+        // runs in `kernel_entry` rather than `_head` because the RISC-V
+        // Image header reserves the first 8 bytes of `_head`.
+        "csrr t0, sstatus",
+        "li t1, 0x6000",
+        "or t0, t0, t1",
+        "csrw sstatus, t0",
         "lla gp, __global_pointer$",
         ".option pop",
         "mv t2, a1",

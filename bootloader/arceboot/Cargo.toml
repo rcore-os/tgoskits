@@ -1,0 +1,61 @@
+[package]
+name = "arceboot"
+version = "0.0.1"
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+authors = ["Zhihang Shao <dio_ro@outlook.com>", "Jingxuan Wei <jensenwei007@gmail.com>"]
+description = "Cross-platform operating system bootloader built from tgoskits components"
+publish = false
+
+# ArceBoot is a riscv64 bare-metal bootloader (it uses RISC-V inline asm via
+# sbi-rt), so `cargo xtask clippy` must check it for the riscv64 target rather
+# than the host.
+[package.metadata.docs.rs]
+targets = ["riscv64gc-unknown-none-elf"]
+
+[features]
+default = ["alloc", "paging", "ramdisk_cpio"]
+
+# Features are additive on a common base: `paging` needs the allocator, the
+# device subsystems need the full mapping base, and the ramdisk medium needs
+# the allocator for its parsers. The per-feature clippy gate compiles each
+# feature standalone, so these dependencies must reflect what the gated code
+# actually requires.
+alloc = ["dep:ax-alloc"]
+paging = ["alloc", "ax-hal/paging", "dep:ax-mm"]
+net = ["alloc", "paging", "dep:ax-driver", "dep:rdrive", "ax-driver/net"]
+display = [
+    "alloc",
+    "paging",
+    "dep:ax-driver",
+    "dep:ax-display",
+    "dep:rdrive",
+    "ax-driver/display",
+]
+
+# Boot Media
+ramdisk_cpio = ["alloc", "dep:arceboot-cpio"]
+
+[dependencies]
+arceboot-cpio = { path = "cpio", optional = true }
+ax-hal = { workspace = true }
+ax-log = { workspace = true }
+ax-sync = { workspace = true, features = ["sleep"] }
+ax-alloc = { workspace = true, optional = true }
+ax-mm = { workspace = true, optional = true }
+ax-driver = { workspace = true, optional = true }
+ax-display = { workspace = true, optional = true }
+ax-plat = { workspace = true }
+ax-io = { workspace = true, features = ["alloc"] }
+ax-memory-addr = { workspace = true }
+ax-crate-interface = { workspace = true }
+ax-ctor-bare = { workspace = true }
+ax-lazyinit = { workspace = true }
+axklib = { workspace = true, features = ["buddy-slab"] }
+rdrive = { workspace = true, optional = true }
+sbi-rt = { workspace = true, features = ["legacy"] }
+
+cfg-if = "1.0.1"
+object = { version = "0.38", default-features = false, features = ["read", "pe"] }
+uefi-raw = "0.14.0"

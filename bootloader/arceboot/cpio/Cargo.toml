@@ -1,0 +1,11 @@
+[package]
+name = "arceboot-cpio"
+version = "0.1.0"
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+authors = ["Zhihang Shao <dio_ro@outlook.com>", "Jingxuan Wei <jensenwei007@gmail.com>"]
+description = "Byte-bounded newc CPIO archive parser for ArceBoot"
+publish = false
+
+[dependencies]

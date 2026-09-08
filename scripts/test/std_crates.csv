@@ -1,4 +1,5 @@
 package
+arceboot-cpio
 aarch64_sysreg
 ax-arm-pl031
 arm_vgic

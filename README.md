@@ -24,6 +24,9 @@ TGOSKits brings multiple standalone subprojects into the root repository through
 
 ```text
 tgoskits/
+├── bootloader/
+│   ├── arceboot/              # ArceBoot cross-platform bootloader (migrated from rustsbi)
+│   └── axloader/              # ArceOS kernel image loader stage
 ├── components/                # reusable component crates
 ├── os/
 │   ├── arceos/                # ArceOS modular kernel

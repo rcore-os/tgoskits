@@ -1,0 +1,150 @@
+name: ArceBoot
+
+on:
+  pull_request:
+    paths:
+      - "bootloader/arceboot/**"
+      - "scripts/build-arceboot.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/arceboot.yml"
+  push:
+    branches: ["main", "dev"]
+    paths:
+      - "bootloader/arceboot/**"
+      - "scripts/build-arceboot.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/arceboot.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-clippy:
+    name: Build and clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-15
+          components: rustfmt, clippy, rust-src, llvm-tools
+          targets: riscv64gc-unknown-none-elf
+
+      - name: Add llvm-tools to PATH
+        run: |
+          echo "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin" >> "$GITHUB_PATH"
+
+      - name: Check format
+        run: cargo fmt --check -p arceboot
+
+      - name: Build ArceBoot
+        run: scripts/build-arceboot.sh
+
+      - name: Run clippy
+        run: cargo clippy -p arceboot --target riscv64gc-unknown-none-elf -- -D warnings
+
+  integration-test:
+    name: QEMU integration (${{ matrix.bios_name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bios_name: qemu-default
+            bios_path: default
+            bios_banner: OpenSBI
+          - bios_name: rustsbi-v0.4.1
+            bios_path: firmware/rustsbi-v0.4.1/target/riscv64gc-unknown-none-elf/release/rustsbi-prototyper-dynamic.elf
+            bios_banner: "[RustSBI]"
+    env:
+      QEMU_BIOS: ${{ matrix.bios_path }}
+      BIOS_BANNER: ${{ matrix.bios_banner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Checkout pinned RustSBI v0.4.1
+        if: matrix.bios_name == 'rustsbi-v0.4.1'
+        uses: actions/checkout@v6
+        with:
+          repository: rustsbi/rustsbi
+          ref: 1e10645e9a3cc6230988b037df506f97310555b7
+          path: firmware/rustsbi-v0.4.1
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-15
+          components: rust-src, llvm-tools
+          targets: riscv64gc-unknown-none-elf
+
+      - name: Add llvm-tools to PATH
+        run: |
+          echo "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin" >> "$GITHUB_PATH"
+
+      - name: Install test dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y qemu-system-misc gcc-riscv64-unknown-elf cpio
+
+      - name: Build ArceBoot
+        env:
+          AX_USE_RAMDISK: "1"
+        run: scripts/build-arceboot.sh
+
+      - name: Build pinned RustSBI dynamic firmware
+        if: matrix.bios_name == 'rustsbi-v0.4.1'
+        working-directory: firmware/rustsbi-v0.4.1
+        run: |
+          cargo prototyper --target riscv64gc-unknown-none-elf
+          test -s target/riscv64gc-unknown-none-elf/release/rustsbi-prototyper-dynamic.elf
+
+      - name: Build hello UEFI app and ramdisk
+        run: bash bootloader/arceboot/scripts/test/build_hello_efi.sh
+
+      - name: Run QEMU
+        run: |
+          set +e
+          timeout 60 qemu-system-riscv64 \
+            -m 256M -nographic -machine virt \
+            -bios "$QEMU_BIOS" \
+            -kernel target/riscv64gc-unknown-none-elf/release/arceboot.bin \
+            -device loader,file=bootloader/arceboot/tests/hello-efi/ramdisk.cpio,addr=0x84000000 \
+            > qemu-hello-efi.log 2>&1
+          rc=$?
+          set -e
+          # ArceBoot powers the machine off after the payload returns, so the
+          # expected exit code is 0. A timeout (124) is tolerated for firmware
+          # without SBI system_off support, but the log checks below must
+          # still pass in that case. Any other exit code means the boot chain
+          # crashed and must fail the job.
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+            echo "QEMU exited with $rc (expected 0 or 124)" >&2
+            exit 1
+          fi
+
+      - name: Upload QEMU log
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: log-${{ matrix.bios_name }}-hello-efi
+          path: qemu-hello-efi.log
+          if-no-files-found: ignore
+
+      - name: Check BIOS identity
+        run: grep -aqF "$BIOS_BANNER" qemu-hello-efi.log
+
+      - name: Check UEFI app output
+        run: bash bootloader/arceboot/scripts/test/check_hello_efi.sh qemu-hello-efi.log
