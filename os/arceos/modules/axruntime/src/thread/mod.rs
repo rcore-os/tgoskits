@@ -38,13 +38,6 @@ use ax_task::{
         current::{current_thread_extension, current_thread_handle, current_thread_id},
     },
 };
-#[cfg(axtest)]
-use {
-    ax_task::diagnostics::PiScheduleTestProbeSnapshot,
-    ax_task::diagnostics::begin_pi_schedule_test_probe,
-    ax_task::diagnostics::end_pi_schedule_test_probe,
-    ax_task::diagnostics::pi_schedule_test_probe_snapshot,
-};
 
 mod address_space;
 mod mm_activation;
@@ -151,7 +144,7 @@ pub fn kernel_thread_retains_active_mm_membarrier_state_for_test() -> bool {
     let active_mm_state =
         unsafe { ax_task::runtime::resource::AddressSpaceMembarrierState::new(identity, 0) };
 
-    ax_task::runtime::switch::scheduled_membarrier_state_for_test(
+    ax_task::runtime::resource::scheduled_membarrier_state_for_test(
         active_mm_state,
         ax_task::runtime::resource::AddressSpaceMembarrierState::NONE,
     ) == active_mm_state
