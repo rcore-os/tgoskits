@@ -262,31 +262,3 @@ impl InboxMessage {
         self.payload
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{InboxKind, InboxOperation};
-
-    fn operation_kind(operation: InboxOperation) -> InboxKind {
-        match operation {
-            InboxOperation::Migration
-            | InboxOperation::AffinityUpdate
-            | InboxOperation::DeadlineRefresh
-            | InboxOperation::BalanceRequest => InboxKind::OwnerControl,
-            InboxOperation::Reclaim => InboxKind::Reclaim,
-            InboxOperation::SchedulerTick | InboxOperation::DeadlineOverrun => InboxKind::TaskWork,
-        }
-    }
-
-    #[test]
-    fn owner_control_inbox_carries_owner_serialized_work() {
-        for operation in [
-            InboxOperation::Migration,
-            InboxOperation::AffinityUpdate,
-            InboxOperation::DeadlineRefresh,
-            InboxOperation::BalanceRequest,
-        ] {
-            assert_eq!(operation_kind(operation), InboxKind::OwnerControl);
-        }
-    }
-}

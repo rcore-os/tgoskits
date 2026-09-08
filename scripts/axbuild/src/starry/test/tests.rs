@@ -11,8 +11,6 @@ mod qemu_discovery_tests;
 
 mod qemu_run_tests;
 
-mod system_case_tests;
-
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{

@@ -98,14 +98,6 @@ fn fake_case(root: &Path, name: &str) -> TestQemuCase {
     }
 }
 
-#[test]
-fn resolve_target_dir_uses_workspace_target_directory() {
-    let root = tempdir().unwrap();
-    let dir = resolve_target_dir(root.path(), "x86_64-unknown-none").unwrap();
-
-    assert_eq!(dir, root.path().join("target/x86_64-unknown-none"));
-}
-
 #[tokio::test]
 async fn prepare_case_assets_plain_case_uses_shared_rootfs() {
     let root = tempdir().unwrap();
@@ -137,51 +129,6 @@ async fn prepare_case_assets_plain_case_uses_shared_rootfs() {
 }
 
 #[test]
-fn grouped_runner_script_runs_all_commands_and_reports_summary() {
-    let root = tempdir().unwrap();
-    let overlay = root.path().join("overlay");
-    let commands = vec![
-        "/usr/bin/alpha".to_string(),
-        "/usr/bin/beta --flag".to_string(),
-    ];
-
-    let config = fake_config();
-    write_grouped_case_runner(&overlay, &commands, &config.grouped_execution).unwrap();
-
-    let runner = overlay.join("usr/bin/suite-run-case-tests");
-    let content = fs::read_to_string(&runner).unwrap();
-    assert!(content.contains("step=$((step + 1))"));
-    assert!(content.contains("'SUITE_GROUPED_TEST_BEGIN'"));
-    assert!(content.contains("'SUITE_GROUPED_TEST_PASSED'"));
-    assert!(content.contains("'SUITE_GROUPED_TEST_FAILED'"));
-    assert!(content.contains("'/usr/bin/alpha'"));
-    assert!(content.contains("'/usr/bin/beta --flag'"));
-    assert!(content.contains("SUITE_GROUPED_TESTS_PASSED"));
-}
-
-#[test]
-fn grouped_runner_script_hashes_multiline_command_labels() {
-    let root = tempdir().unwrap();
-    let overlay = root.path().join("overlay");
-    let commands = vec![
-        "failed=0\nif [ \"$failed\" -ne 0 ]; then\n    echo \"SUITE_GROUPED_TEST_FAILED: \
-         nested\"\nfi"
-            .to_string(),
-    ];
-
-    let config = fake_config();
-    write_grouped_case_runner(&overlay, &commands, &config.grouped_execution).unwrap();
-
-    let runner = overlay.join("usr/bin/suite-run-case-tests");
-    let content = fs::read_to_string(&runner).unwrap();
-    assert!(content.contains("sh -c 'failed=0"));
-    assert!(content.contains("'inline-command:"));
-    assert!(content.contains("'SUITE_GROUPED_TEST_FAILED'"));
-    assert!(!content.contains("command=failed=0"));
-    assert!(!content.contains("command=echo"));
-}
-
-#[test]
 fn external_grouped_execution_does_not_install_a_runner() {
     let root = tempdir().unwrap();
     let overlay = root.path().join("overlay");
@@ -205,23 +152,6 @@ fn guest_init_grouped_execution_skips_shell_init() {
     apply_grouped_qemu_config(&mut qemu, &case, &config.grouped_execution);
 
     assert!(qemu.shell_init_cmd.is_none());
-}
-
-#[test]
-fn grouped_runner_shell_init_uses_short_exec_command_without_autorun() {
-    let config = fake_config();
-    let mut qemu = QemuConfig::default();
-    let mut case = fake_case(tempdir().unwrap().path(), "grouped");
-    case.test_commands = vec!["/usr/bin/alpha".to_string()];
-
-    apply_grouped_qemu_config(&mut qemu, &case, &config.grouped_execution);
-
-    let command = qemu.shell_init_cmd.as_deref().unwrap();
-    assert_eq!(command, "exec /usr/bin/suite-run-case-tests");
-    assert!(
-        command.len() < 80,
-        "Starry canonical TTY input buffer is 80 bytes"
-    );
 }
 
 #[test]

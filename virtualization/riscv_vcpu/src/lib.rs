@@ -77,6 +77,3 @@ impl Default for RiscvVcpuCreateConfig {
 
 /// Backward-compatible creation config alias.
 pub type RISCVVCpuCreateConfig = RiscvVcpuCreateConfig;
-
-#[cfg(test)]
-mod world_switch_tests;

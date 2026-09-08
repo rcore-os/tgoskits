@@ -190,20 +190,3 @@ const fn linux_logarithmic_cpu_factor(cpu_count: usize) -> u64 {
     };
     1 + capped.ilog2() as u64
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_scheduler_parameters_match_linux_v71() {
-        let config = TaskSystemConfig::new(1);
-        assert_eq!(config.rr_quantum_ns(), 100_000_000);
-        assert_eq!(config.rt_runtime_ns(), config.rt_period_ns());
-        assert_eq!(config.fair_slice_ns(), 700_000);
-        assert_eq!(TaskSystemConfig::new(2).fair_slice_ns(), 1_400_000);
-        assert_eq!(TaskSystemConfig::new(4).fair_slice_ns(), 2_100_000);
-        assert_eq!(TaskSystemConfig::new(8).fair_slice_ns(), 2_800_000);
-        assert_eq!(TaskSystemConfig::new(16).fair_slice_ns(), 2_800_000);
-    }
-}

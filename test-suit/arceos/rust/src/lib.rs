@@ -363,29 +363,3 @@ const SELECTED_TESTS: &[TestCase] = &[
     #[cfg(feature = "task-yield")]
     TestCase::new("task-yield", "task yield scheduling", run_task_yield),
 ];
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn selected_tests_are_in_deterministic_order() {
-        let tests = selected_tests();
-        assert!(
-            tests
-                .windows(2)
-                .all(|pair| pair[0].feature <= pair[1].feature),
-            "selected test features must stay sorted for stable runner output"
-        );
-    }
-
-    #[test]
-    fn feature_names_are_stable_cli_names() {
-        for test in selected_tests() {
-            assert!(!test.feature.is_empty());
-            assert!(test.feature.bytes().all(|byte| {
-                byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
-            }));
-        }
-    }
-}

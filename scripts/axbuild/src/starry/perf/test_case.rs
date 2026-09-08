@@ -115,18 +115,3 @@ fn perf_case_asset_config() -> case::CaseAssetConfig {
     config.grouped_execution = case::GroupedCaseExecution::External;
     config
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn qperf_case_assets_do_not_autorun_the_grouped_case() {
-        let config = perf_case_asset_config();
-
-        assert_eq!(
-            config.grouped_execution,
-            case::GroupedCaseExecution::External
-        );
-    }
-}

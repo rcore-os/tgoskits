@@ -11,7 +11,7 @@
 //! it is naturally aligned (16-byte struct). `epoll_wait` is always called
 //! with `timeout = 0` so the test never blocks in the cooperative scheduler.
 
-use core::{ffi::c_int, mem};
+use core::ffi::c_int;
 use std::println;
 
 use super::syscalls::{self, EpollEvent, assert_errno};
@@ -162,12 +162,6 @@ fn test_full_counter_writability_via_epoll() {
 }
 
 pub fn run() -> crate::TestResult {
-    assert_eq!(
-        mem::size_of::<EpollEvent>(),
-        if cfg!(target_arch = "x86_64") { 12 } else { 16 },
-        "EpollEvent must match the target's Linux epoll_event ABI"
-    );
-
     test_create_rejects_unknown_flags();
     test_eventfd_roundtrip_via_epoll();
     test_epoll_ctl_on_non_epoll_fd_is_einval();

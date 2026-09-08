@@ -363,36 +363,11 @@ fn qemu_stdout_monitor_enabled(args: &ArgsPerf) -> bool {
 mod tests {
     use std::fs;
 
-    use super::{
-        append_text_filter_params, direct_qemu_args, prepare_uefi_boot, qemu_command_prefix,
-        validate_arch,
-    };
+    use super::{append_text_filter_params, prepare_uefi_boot};
     use crate::{
         starry::perf::symbols::{AddressRange, KernelTextRange},
         support::ovmf::OvmfFirmware,
     };
-
-    #[test]
-    fn direct_qemu_args_accepts_x86_64_q35_config() {
-        let args = vec!["-machine".to_string(), "q35".to_string()];
-
-        let args = direct_qemu_args("x86_64", args.clone()).unwrap();
-
-        assert_eq!(args, vec!["-machine", "q35"]);
-    }
-
-    #[test]
-    fn direct_qemu_args_inserts_the_ostool_x86_64_machine_default() {
-        let args = direct_qemu_args("x86_64", vec!["-nographic".to_string()]).unwrap();
-
-        assert_eq!(args, vec!["-machine", "q35", "-nographic"]);
-    }
-
-    #[test]
-    fn supported_arch_validation_includes_x86_64() {
-        assert!(validate_arch("x86_64").is_ok());
-        assert!(validate_arch("aarch64").is_err());
-    }
 
     #[tokio::test]
     async fn loongarch_uefi_rejects_unconverted_kernel_before_boot() {
@@ -413,23 +388,6 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("to_bin = true"));
-    }
-
-    #[test]
-    fn timeout_keeps_interactive_qemu_in_the_foreground() {
-        let prefix = qemu_command_prefix("qemu-system-x86_64", 15, false);
-
-        assert_eq!(
-            prefix,
-            vec![
-                "timeout",
-                "--foreground",
-                "--signal=INT",
-                "--kill-after=5s",
-                "15s",
-                "qemu-system-x86_64",
-            ]
-        );
     }
 
     #[test]

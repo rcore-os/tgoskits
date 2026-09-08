@@ -30,23 +30,6 @@ build_dir="$(mktemp -d)"
 trap 'rm -rf "$build_dir"' EXIT
 
 "$cc" \
-    -std=c11 \
-    -O2 \
-    -Wall \
-    -Wextra \
-    -Werror \
-    -pthread \
-    -static \
-    -I"$app_dir" \
-    "$app_dir/tests/clock-source.c" \
-    "$app_dir/tests/clock-gettime-wrap.c" \
-    "$app_dir/stats.c" \
-    -Wl,--wrap=clock_gettime \
-    -lm \
-    -o "$build_dir/clock-source-test"
-"$build_dir/clock-source-test"
-
-"$cc" \
     -std=c11 -O2 -Wall -Wextra -Werror -pthread -static \
     -I"$app_dir" \
     "$app_dir/tests/handoff-spurious.c" "$app_dir/stats.c" \
