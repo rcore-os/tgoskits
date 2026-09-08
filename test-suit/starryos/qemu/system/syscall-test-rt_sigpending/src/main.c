@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <stddef.h>
+#include <string.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -151,12 +152,62 @@ static void test_invalid_pending_pointer(void)
           "rt_sigpending invalid sigset pointer returns EFAULT");
 }
 
+static void test_short_sigset_sizes(void)
+{
+    unsigned char pending[LTP_SIGSET_SIZE];
+    sigset_t expected;
+    sigset_t mask;
+    sigset_t oldmask;
+    struct sigaction old_usr1;
+    struct sigaction old_usr2;
+
+    CHECK_RET(raw_rt_sigpending(NULL, 0), 0,
+              "rt_sigpending accepts a null pointer for a zero-length set");
+
+    handler_count = 0;
+    sigemptyset(&mask);
+    CHECK_RET(sigaddset(&mask, SIGUSR1), 0, "add SIGUSR1 to short-size mask");
+    CHECK_RET(sigaddset(&mask, SIGUSR2), 0, "add SIGUSR2 to short-size mask");
+    CHECK_RET(sigprocmask(SIG_SETMASK, &mask, &oldmask), 0,
+              "block SIGUSR1 and SIGUSR2 for short-size test");
+    install_usr_handlers(&old_usr1, &old_usr2);
+    CHECK_RET(kill(getpid(), SIGUSR1), 0, "send blocked SIGUSR1 for short-size test");
+    CHECK_RET(kill(getpid(), SIGUSR2), 0, "send blocked SIGUSR2 for short-size test");
+    usleep(10000);
+    CHECK(handler_count == 0, "short-size test signals remain pending while blocked");
+
+    sigemptyset(&expected);
+    CHECK_RET(sigaddset(&expected, SIGUSR1), 0, "record pending SIGUSR1 bit");
+    CHECK_RET(sigaddset(&expected, SIGUSR2), 0, "record pending SIGUSR2 bit");
+    memset(pending, 0xa5, sizeof(pending));
+    CHECK_RET(raw_rt_sigpending((sigset_t *)pending, LTP_SIGSET_SIZE - 1), 0,
+              "rt_sigpending accepts a short signal set");
+    CHECK(memcmp(pending, &expected, LTP_SIGSET_SIZE - 1) == 0,
+          "rt_sigpending writes the pending-mask prefix for a short signal set");
+    CHECK(pending[LTP_SIGSET_SIZE - 1] == 0xa5,
+          "rt_sigpending writes only the requested signal-set prefix");
+
+    CHECK_RET(sigprocmask(SIG_SETMASK, &oldmask, NULL), 0,
+              "restore original mask after short-size test");
+    wait_for_handler_count(2);
+    CHECK(handler_count == 2, "short-size test unblocks both pending signals");
+    CHECK_RET(sigaction(SIGUSR1, &old_usr1, NULL), 0,
+              "restore SIGUSR1 handler after short-size test");
+    CHECK_RET(sigaction(SIGUSR2, &old_usr2, NULL), 0,
+              "restore SIGUSR2 handler after short-size test");
+
+    CHECK(raw_rt_sigpending((sigset_t *)pending, LTP_SIGSET_SIZE + 1) == -1 &&
+              errno == EINVAL,
+          "rt_sigpending rejects a signal set larger than the kernel size");
+}
+
 int main(void)
 {
     TEST_START("rt_sigpending syscall semantics");
 
     test_pending_masked_usr_signals();
     test_invalid_pending_pointer();
+    test_short_sigset_sizes();
 
     TEST_DONE();
 }
