@@ -55,6 +55,7 @@ ax-input
 ax-ipi
 ax-log
 ax-net
+aic8800
 ax-runtime
 ax-api
 rockchip-jpeg

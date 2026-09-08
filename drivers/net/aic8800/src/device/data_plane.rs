@@ -654,6 +654,90 @@ mod tests {
     }
 
     #[test]
+    fn startup_connect_indications_cannot_publish_or_fail_a_new_connection() {
+        for status in [1u16, 0] {
+            let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+            device.start(MonotonicTime::default()).unwrap();
+            let mut payload = [0; 11];
+            payload[..2].copy_from_slice(&status.to_le_bytes());
+            payload[2..8].copy_from_slice(&[2, 1, 2, 3, 4, 5]);
+            payload[10] = 7;
+            device.io.pending = Some(PendingIo {
+                id: 1,
+                purpose: IoPurpose::ReceiveData(RxPath::Command),
+            });
+
+            let action = device.advance(AicInput {
+                now: MonotonicTime::from_nanos(1),
+                event: Some(AicInputEvent::Sdio(SdioCompletion {
+                    request_id: 1,
+                    result: Ok(SdioResponse::Data(indication_fifo(
+                        SM_CONNECT_IND,
+                        &payload,
+                    ))),
+                })),
+            });
+
+            assert!(
+                matches!(action, AicAction::SubmitSdio(_)),
+                "startup must continue draining the FIFO after an unowned connect indication with \
+                 status {status}: {action:?}"
+            );
+            assert_eq!(device.state(), AicState::Starting);
+            assert_eq!(device.data.link.peer(), None);
+            assert!(device.lifecycle.control.is_none());
+            assert!(device.data.events.is_empty());
+        }
+    }
+
+    #[test]
+    fn active_connect_indication_rejection_remains_a_terminal_failure() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        let mut control = super::super::control::build(
+            ControlRequest::Connect {
+                ssid: b"network".to_vec(),
+                pmk: None,
+                entropy: None,
+            },
+            [2, 0, 0, 0, 0, 1],
+            Some(0),
+        )
+        .unwrap();
+        if let super::super::control::ControlOperation::Connect(connect) = &mut control.operation {
+            connect.phase = super::super::control::ConnectPhase::AwaitIndication;
+        }
+        control.commands.clear();
+        device.lifecycle.control = Some(control);
+        device.io.pending = Some(PendingIo {
+            id: 1,
+            purpose: IoPurpose::ReceiveData(RxPath::Command),
+        });
+        let mut payload = [0; 11];
+        payload[..2].copy_from_slice(&1u16.to_le_bytes());
+
+        let action = device.advance(AicInput {
+            now: MonotonicTime::from_nanos(1),
+            event: Some(AicInputEvent::Sdio(SdioCompletion {
+                request_id: 1,
+                result: Ok(SdioResponse::Data(indication_fifo(
+                    SM_CONNECT_IND,
+                    &payload,
+                ))),
+            })),
+        });
+
+        assert!(matches!(
+            action,
+            AicAction::Event(AicEvent::Failed(AicError::FirmwareRejected {
+                message_id: SM_CONNECT_IND,
+                status: 1,
+            }))
+        ));
+        assert_eq!(device.state(), AicState::Failed);
+    }
+
+    #[test]
     fn asynchronous_disconnect_clears_the_learned_peer() {
         let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
         device.lifecycle.state = AicState::Ready;

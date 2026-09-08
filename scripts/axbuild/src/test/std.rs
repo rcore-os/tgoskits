@@ -151,6 +151,19 @@ const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeaturePro
     expected_tests: &[],
 }];
 
+const AIC8800_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "host-test+rdif",
+    no_default_features: false,
+    features: &["host-test", "rdif"],
+    name_filter: None,
+    expected_tests: &[
+        "device::data_plane::tests::startup_connect_indications_cannot_publish_or_fail_a_new_connection",
+        "device::data_plane::tests::active_connect_indication_rejection_remains_a_terminal_failure",
+        "public_startup_api_owns_the_sdio_function_lifecycle",
+        "public_options_preserve_bounded_startup_policy",
+    ],
+}];
+
 const ALLOC_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "alloc",
     no_default_features: false,
@@ -556,6 +569,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "ax-net"
         | "dma-api"
         | "buddy-slab-allocator" => Some(HOST_TEST_FEATURE_PROFILES),
+        "aic8800" => Some(AIC8800_FEATURE_PROFILES),
         "ax-fs-ng" => Some(AX_FS_NG_FEATURE_PROFILES),
         "ax-io" | "axbacktrace" => Some(ALLOC_FEATURE_PROFILES),
         "ax-hal" => Some(AX_HAL_FEATURE_PROFILES),
@@ -990,6 +1004,7 @@ mod tests {
             "nvme-driver",
             "rdif-block",
             "sdmmc-protocol",
+            "aic8800",
             "axbuild",
         ]
         .map(str::to_string)
@@ -998,6 +1013,7 @@ mod tests {
             .with_profile_discovery("ax-fs-ng", AX_FS_NG_FEATURE_PROFILES)
             .with_profile_discovery("nvme-driver", NVME_FEATURE_PROFILES)
             .with_profile_discovery("sdmmc-protocol", SDMMC_RDIF_FEATURE_PROFILES)
+            .with_profile_discovery("aic8800", AIC8800_FEATURE_PROFILES)
             .with_profile_discovery("axbuild", AXBUILD_FEATURE_PROFILES);
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
@@ -1023,6 +1039,11 @@ mod tests {
         assert!(invocations.contains(&&CargoTestInvocation::for_profile(
             "sdmmc-protocol",
             &SDMMC_RDIF_FEATURE_PROFILES[0],
+            CargoTestAction::Run,
+        )));
+        assert!(invocations.contains(&&CargoTestInvocation::for_profile(
+            "aic8800",
+            &AIC8800_FEATURE_PROFILES[0],
             CargoTestAction::Run,
         )));
         assert!(invocations.contains(&&CargoTestInvocation::for_profile(
