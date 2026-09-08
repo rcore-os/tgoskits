@@ -7,7 +7,7 @@ use sg200x_jpu::{
     FrameLayout, FrameLayoutError, JpuCreateError, JpuDecodeError, JpuDecoder, JpuMmio, JpuScale,
 };
 
-use crate::{StarryError, StarryResult, mm::vm_write_slice, sync::PiMutex, task::UserTaskRef};
+use crate::{StarryError, StarryResult, mm::vm_write_slice, sync::Mutex, task::UserTaskRef};
 
 const JPU_REG_BASE: usize = 0x0b00_0000;
 const VC_REG_BASE: usize = 0x0b03_0000;
@@ -37,13 +37,13 @@ impl JpuState {
 
 /// Serializes the one SG2002 JPU between the legacy camera ioctl and VDEC.
 pub(super) struct CviJpu {
-    state: PiMutex<JpuState>,
+    state: Mutex<JpuState>,
 }
 
 impl CviJpu {
     pub const fn new() -> Self {
         Self {
-            state: PiMutex::new(JpuState {
+            state: Mutex::new(JpuState {
                 decoder: None,
                 vdec_owned: false,
             }),

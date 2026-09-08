@@ -1,4 +1,4 @@
-#[path = "../src/scheduler/rt_priority.rs"]
+#[path = "../src/sched/algorithm/rt_priority.rs"]
 mod rt_priority;
 
 use rt_priority::{

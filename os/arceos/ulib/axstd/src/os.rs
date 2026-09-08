@@ -14,7 +14,7 @@ pub mod arceos {
 
     /// Guards for ArceOS interrupt and preemption contexts.
     pub mod guard {
-        pub use ax_runtime::sync::{IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard};
+        pub use ax_runtime::task::sync::{IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard};
     }
 
     /// Lower-level ArceOS module facade for system components.
@@ -29,17 +29,17 @@ pub mod arceos {
 
     /// Non-sleeping synchronization for ArceOS kernel contexts.
     pub mod sync {
-        pub use ax_runtime::sync::*;
+        pub use ax_runtime::task::sync::*;
 
         /// A mutex that disables preemption and local interrupts while held.
         #[repr(transparent)]
-        pub struct IrqSafeMutex<T: ?Sized>(ax_runtime::sync::SpinLock<T>);
+        pub struct IrqSafeMutex<T: ?Sized>(ax_runtime::task::sync::SpinLock<T>);
 
         impl<T> IrqSafeMutex<T> {
             /// Creates an unlocked IRQ-safe mutex.
             #[track_caller]
             pub const fn new(value: T) -> Self {
-                Self(ax_runtime::sync::SpinLock::new(value))
+                Self(ax_runtime::task::sync::SpinLock::new(value))
             }
 
             /// Acquires the lock after saving and disabling local interrupts.
@@ -68,28 +68,26 @@ pub mod arceos {
         }
 
         /// A guard returned by [`IrqSafeMutex::lock`].
-        pub type IrqSafeMutexGuard<'a, T> = ax_runtime::sync::SpinLockIrqSaveGuard<'a, T>;
+        pub type IrqSafeMutexGuard<'a, T> = ax_runtime::task::sync::SpinLockIrqSaveGuard<'a, T>;
 
         /// A mutex that disables preemption while held.
         ///
         /// Callers must ensure the lock is not used by an interrupt handler.
-        pub type NoPreemptMutex<T> = ax_runtime::sync::SpinLock<T>;
+        pub type NoPreemptMutex<T> = ax_runtime::task::sync::SpinLock<T>;
         /// A guard returned by [`NoPreemptMutex::lock`].
-        pub type NoPreemptMutexGuard<'a, T> = ax_runtime::sync::SpinLockGuard<'a, T>;
+        pub type NoPreemptMutexGuard<'a, T> = ax_runtime::task::sync::SpinLockGuard<'a, T>;
 
         /// A raw spin lock that does not alter interrupt or preemption state.
         ///
         /// Callers must disable preemption and local interrupts before taking
         /// this lock, or prove that interrupt handlers never acquire it.
-        pub type RawSpinLock<T> = ax_runtime::sync::SpinLock<T>;
+        pub type RawSpinLock<T> = ax_runtime::task::sync::SpinLock<T>;
         /// A guard returned by [`RawSpinLock::lock_raw`].
-        pub type RawSpinLockGuard<'a, T> = ax_runtime::sync::RawSpinLockGuard<'a, T>;
+        pub type RawSpinLockGuard<'a, T> = ax_runtime::task::sync::RawSpinLockGuard<'a, T>;
     }
 
     /// OS-independent task scheduler types and ArceOS runtime operations.
-    pub mod task {
-        pub use ax_runtime::task::*;
-    }
+    pub use ax_runtime::{diagnostics, irq, task, thread};
 }
 
 #[cfg(feature = "std-compat")]

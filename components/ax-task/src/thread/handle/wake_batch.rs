@@ -81,7 +81,7 @@ impl ThreadWakeBatch {
     pub fn wake_all(mut self) -> usize {
         let count = self.len;
         while let Some(wake) = self.pop() {
-            let _result = wake.wake_from_task();
+            let _result = wake.wake();
         }
         count
     }

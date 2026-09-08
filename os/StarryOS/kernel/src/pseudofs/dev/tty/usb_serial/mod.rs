@@ -19,7 +19,7 @@ use super::{
 use crate::{
     StarryError, StarryResult,
     pseudofs::usbfs::{self, UsbDeviceHandle},
-    sync::{IrqMutex, PiMutex},
+    sync::{IrqMutex, Mutex},
 };
 
 pub type UsbSerialTtyDriver = Tty<UsbSerialReader, UsbSerialWriter>;
@@ -49,7 +49,7 @@ struct UsbSerialBackendState {
     // Owns the usbfs lease and claimed interface. Keeping this behind the tty
     // backend, instead of per open file, matches the current static devfs node
     // model and lets the RX/TX workers share one hardware session.
-    session: PiMutex<Option<Arc<UsbSerialSession>>>,
+    session: Mutex<Option<Arc<UsbSerialSession>>>,
     baudrate: AtomicU32,
     started: AtomicBool,
     session_closing: AtomicBool,
@@ -60,7 +60,7 @@ struct UsbSerialBackendState {
     dropped_rx: AtomicUsize,
     input_source: Arc<PollSet>,
     output_source: Arc<PollSet>,
-    output_lock: PiMutex<()>,
+    output_lock: Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -86,7 +86,7 @@ impl UsbSerialTtyDriver {
 fn new_usb_serial_tty(index: usize) -> Arc<UsbSerialTtyDriver> {
     let backend = Arc::new(UsbSerialBackendState {
         index,
-        session: PiMutex::new(None),
+        session: Mutex::new(None),
         baudrate: AtomicU32::new(USB_SERIAL_DEFAULT_BAUDRATE),
         started: AtomicBool::new(false),
         session_closing: AtomicBool::new(false),
@@ -97,7 +97,7 @@ fn new_usb_serial_tty(index: usize) -> Arc<UsbSerialTtyDriver> {
         dropped_rx: AtomicUsize::new(0),
         input_source: Arc::new(PollSet::new()),
         output_source: Arc::new(PollSet::new()),
-        output_lock: PiMutex::new(()),
+        output_lock: Mutex::new(()),
     });
 
     let terminal = Arc::new(Terminal::default());

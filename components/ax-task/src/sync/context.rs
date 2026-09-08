@@ -3,7 +3,9 @@
 use core::marker::PhantomData;
 
 use crate::runtime::{
-    LocalIrqState, PreemptGuardSource, PreemptGuardToken, enter_preempt_guard, task_runtime,
+    PreemptGuardSource,
+    cpu::{LocalIrqState, PreemptGuardToken},
+    enter_preempt_guard, task_runtime,
 };
 
 pub(crate) trait ContextBackend {

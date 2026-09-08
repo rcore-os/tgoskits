@@ -64,7 +64,7 @@ use super::{
     sampling_lifecycle::SampleRegistration,
 };
 #[cfg(target_arch = "aarch64")]
-use crate::sync::PiMutex;
+use crate::sync::Mutex;
 
 /// Dynamically-assigned `perf_event_attr.type` for the ARM PMUv3 CPU PMU,
 /// exposed at `/sys/bus/event_source/devices/armv8_pmuv3_0/type`.
@@ -485,7 +485,7 @@ impl HwPerfEventState {
 /// Sleepable control plane for one ARM PMU perf event.
 #[cfg(target_arch = "aarch64")]
 struct HwPerfControl {
-    state: PiMutex<HwPerfEventState>,
+    state: Mutex<HwPerfEventState>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -646,7 +646,7 @@ impl HwPerfEvent {
     fn new(state: HwPerfEventState, enable_at_open: bool) -> Self {
         Self {
             control: Arc::new(HwPerfControl {
-                state: PiMutex::new(state),
+                state: Mutex::new(state),
             }),
             enable_at_open,
         }

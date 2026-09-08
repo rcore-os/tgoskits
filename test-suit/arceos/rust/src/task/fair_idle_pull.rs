@@ -2,7 +2,11 @@ use std::{
     os::arceos::{
         api::task::{AxCpuMask, ax_set_current_affinity},
         modules::ax_hal::percpu::this_cpu_id,
-        task::{self as scheduler, CpuId, CpuSet, set_current_thread_affinity},
+        task as scheduler,
+        task::{
+            sched::{CpuId, CpuSet},
+            thread::current::set_current_thread_affinity,
+        },
     },
     string::String,
     sync::{
@@ -24,7 +28,7 @@ struct CooperativeWorkers {
     stop: Arc<AtomicBool>,
     ready: Arc<AtomicUsize>,
     worker_count: usize,
-    handles: Vec<scheduler::ThreadHandle>,
+    handles: Vec<scheduler::thread::ThreadHandle>,
 }
 
 impl CooperativeWorkers {
@@ -45,7 +49,7 @@ impl CooperativeWorkers {
             let mut affinity = CpuSet::empty(cpu_count);
             assert!(affinity.insert(CpuId::new(cpu as u32)));
             handles.push(
-                scheduler::spawn_raw_with_affinity(
+                std::os::arceos::thread::spawn_raw_with_affinity(
                     move || {
                         assert_eq!(
                             this_cpu_id(),
@@ -87,7 +91,8 @@ impl CooperativeWorkers {
     fn stop_and_join(mut self) {
         self.stop.store(true, Ordering::Release);
         for handle in self.handles.drain(..) {
-            scheduler::join_thread(handle).expect("cooperative Fair worker must exit");
+            std::os::arceos::thread::join_thread(handle)
+                .expect("cooperative Fair worker must exit");
         }
     }
 }

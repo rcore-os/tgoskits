@@ -5,7 +5,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 mod entry;
 #[cfg(feature = "lockdep")]
 pub(in crate::sync) mod lockdep;
-#[path = "core.rs"]
 mod pi_core;
 
 use self::entry::{
@@ -140,16 +139,20 @@ impl<'lock> PiMutexAlgorithm<'lock> {
 
     #[inline(always)]
     fn current_task_id() -> PiTaskId {
-        task_result(crate::current_thread_id(), "capture current PI mutex task").into()
+        task_result(
+            crate::thread::current::current_thread_id(),
+            "capture current PI mutex task",
+        )
+        .into()
     }
 
     pub(in crate::sync) fn lock_pi(&self) {
         #[cfg(feature = "qperf-metrics")]
-        crate::metrics::record_pi_mutex_lock_attempt();
+        crate::diagnostics::counters::record_pi_mutex_lock_attempt();
         match capture_current_and_prepare_slow(
             || {
                 task_result(
-                    crate::current_thread_token(),
+                    crate::thread::current::current_thread_token(),
                     "capture current PI mutex task",
                 )
             },
@@ -159,18 +162,18 @@ impl<'lock> PiMutexAlgorithm<'lock> {
                 // schedules and must remain usable during single-threaded
                 // boot.
                 task_result(
-                    crate::validate_blocking_context(),
+                    crate::thread::current::validate_blocking_context(),
                     "validate PI mutex blocking context",
                 );
             },
         ) {
             LockEntry::Acquired => {
                 #[cfg(feature = "qperf-metrics")]
-                crate::metrics::record_pi_mutex_fast_acquisition();
+                crate::diagnostics::counters::record_pi_mutex_fast_acquisition();
             }
             LockEntry::Contended(current) => {
                 #[cfg(feature = "qperf-metrics")]
-                crate::metrics::record_pi_mutex_slow_entry();
+                crate::diagnostics::counters::record_pi_mutex_slow_entry();
                 self.lock_contended(current);
             }
         }
@@ -183,14 +186,14 @@ impl<'lock> PiMutexAlgorithm<'lock> {
         match capture_current_and_prepare_slow(
             || {
                 task_result(
-                    crate::current_thread_token(),
+                    crate::thread::current::current_thread_token(),
                     "capture current PI mutex task",
                 )
             },
             |current| self.try_or_observe_current_token(current.id().into()),
             || {
                 task_result(
-                    crate::validate_blocking_context(),
+                    crate::thread::current::validate_blocking_context(),
                     "validate PI mutex blocking context",
                 );
             },
@@ -204,22 +207,22 @@ impl<'lock> PiMutexAlgorithm<'lock> {
 
     #[cold]
     #[inline(never)]
-    fn lock_contended(&self, current: crate::CurrentThreadToken) {
+    fn lock_contended(&self, current: crate::thread::CurrentThreadToken) {
         let current_id = current.id().into();
         let sequence = self.next_waiter_sequence.fetch_add(1, Ordering::Relaxed);
         let lock = core_result(self.core.mutex_ref(), "borrow PI mutex identity");
         let token = match task_result(
-            crate::pi_mutex_lock_slow(lock, &current, sequence),
+            crate::runtime::sync::pi_mutex_lock_slow(lock, &current, sequence),
             "register PI mutex waiter",
         ) {
             PiMutexLockResult::Acquired => {
                 #[cfg(feature = "qperf-metrics")]
-                crate::metrics::record_pi_mutex_slow_race_acquisition();
+                crate::diagnostics::counters::record_pi_mutex_slow_race_acquisition();
                 return;
             }
             PiMutexLockResult::Waiting(token) => {
                 #[cfg(feature = "qperf-metrics")]
-                crate::metrics::record_pi_mutex_waiter_registration();
+                crate::diagnostics::counters::record_pi_mutex_waiter_registration();
                 token
             }
         };
@@ -234,14 +237,14 @@ impl<'lock> PiMutexAlgorithm<'lock> {
     #[inline(never)]
     fn lock_contended_interruptible(
         &self,
-        current: crate::CurrentThreadToken,
+        current: crate::thread::CurrentThreadToken,
         should_interrupt: &mut impl FnMut() -> bool,
     ) -> Result<(), PiMutexLockInterrupted> {
         let current_id = current.id().into();
         let sequence = self.next_waiter_sequence.fetch_add(1, Ordering::Relaxed);
         let lock = core_result(self.core.mutex_ref(), "borrow PI mutex identity");
         let token = match task_result(
-            crate::pi_mutex_lock_slow(lock, &current, sequence),
+            crate::runtime::sync::pi_mutex_lock_slow(lock, &current, sequence),
             "register interruptible PI mutex waiter",
         ) {
             PiMutexLockResult::Acquired => return Ok(()),
@@ -255,12 +258,12 @@ impl<'lock> PiMutexAlgorithm<'lock> {
             }
             if should_interrupt() {
                 match task_result(
-                    crate::pi_wait_try_cancel(&token),
+                    crate::runtime::sync::pi_wait_try_cancel(&token),
                     "cancel interruptible PI mutex waiter",
                 ) {
                     PiWaitCancelOutcome::Cancelled => {
                         task_result(
-                            crate::cancel_prepared_pi_park(&token),
+                            crate::runtime::sync::pi::cancel_prepared_pi_park(&token),
                             "cancel prepared interruptible PI mutex park",
                         );
                         return Err(PiMutexLockInterrupted);
@@ -270,22 +273,25 @@ impl<'lock> PiMutexAlgorithm<'lock> {
             }
             if !token.can_claim() && !self.spin_on_owner(&token) {
                 task_result(
-                    crate::pi_park_current_once(&token),
+                    crate::runtime::sync::pi_park_current_once(&token),
                     "park interruptible PI mutex waiter",
                 );
             }
         }
     }
 
-    fn wait_for_handoff(&self, token: PiWaitToken, current: &crate::CurrentThreadToken) {
+    fn wait_for_handoff(&self, token: PiWaitToken, current: &crate::thread::CurrentThreadToken) {
         loop {
             if self.try_claim_waiter(&token, current) {
                 break;
             }
             if !token.can_claim() && !self.spin_on_owner(&token) {
                 #[cfg(feature = "qperf-metrics")]
-                crate::metrics::record_pi_mutex_waiter_park();
-                task_result(crate::pi_park_current_once(&token), "park PI mutex waiter");
+                crate::diagnostics::counters::record_pi_mutex_waiter_park();
+                task_result(
+                    crate::runtime::sync::pi_park_current_once(&token),
+                    "park PI mutex waiter",
+                );
             }
         }
         assert!(
@@ -303,7 +309,10 @@ impl<'lock> PiMutexAlgorithm<'lock> {
         let Some(owner) = token.initial_owner() else {
             return token.can_claim() || token.is_granted();
         };
-        let cpu_count = task_result(crate::cpu_topology_len(), "capture PI mutex CPU topology");
+        let cpu_count = task_result(
+            crate::sched::cpu_topology_len(),
+            "capture PI mutex CPU topology",
+        );
 
         loop {
             if token.can_claim() || token.is_granted() {
@@ -342,10 +351,14 @@ impl<'lock> PiMutexAlgorithm<'lock> {
         }
     }
 
-    fn try_claim_waiter(&self, token: &PiWaitToken, current: &crate::CurrentThreadToken) -> bool {
+    fn try_claim_waiter(
+        &self,
+        token: &PiWaitToken,
+        current: &crate::thread::CurrentThreadToken,
+    ) -> bool {
         if token.is_granted() {
             task_result(
-                crate::cancel_prepared_pi_park(token),
+                crate::runtime::sync::pi::cancel_prepared_pi_park(token),
                 "cancel prepared PI mutex park after handoff",
             );
             return true;
@@ -354,7 +367,7 @@ impl<'lock> PiMutexAlgorithm<'lock> {
             return false;
         }
         let claimed = match task_result(
-            crate::pi_mutex_claim(token, current),
+            crate::runtime::sync::pi_mutex_claim(token, current),
             "claim ownerless PI mutex handoff",
         ) {
             PiMutexClaimOutcome::Claimed => true,
@@ -362,7 +375,7 @@ impl<'lock> PiMutexAlgorithm<'lock> {
         };
         if claimed {
             task_result(
-                crate::cancel_prepared_pi_park(token),
+                crate::runtime::sync::pi::cancel_prepared_pi_park(token),
                 "cancel prepared PI mutex park after claim",
             );
         }
@@ -387,7 +400,7 @@ impl<'lock> PiMutexAlgorithm<'lock> {
             PiMutexOwnedRelease::Released => {}
             PiMutexOwnedRelease::Contended(owner) => {
                 #[cfg(feature = "qperf-metrics")]
-                crate::metrics::record_pi_mutex_contended_release();
+                crate::diagnostics::counters::record_pi_mutex_contended_release();
                 // SAFETY: `owner` came from this core's owner-authorized release
                 // result and the raw-mutex contract remains active.
                 unsafe { Self::unlock_contended(core, owner) };
@@ -401,7 +414,7 @@ impl<'lock> PiMutexAlgorithm<'lock> {
             unsafe {
                 // SAFETY: `owner` came from this core's owner-authorized
                 // release transition, and the raw-mutex contract remains held.
-                crate::pi_mutex_release_owned(lock, owner.into())
+                crate::runtime::sync::pi_mutex_release_owned(lock, owner.into())
             },
             "release contended PI mutex",
         );
@@ -539,12 +552,6 @@ where
 pub type Mutex<T> = lock_api::Mutex<RawMutex, T>;
 /// A non-send guard returned by [`Mutex`].
 pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, RawMutex, T>;
-/// Explicit name for the scheduler-owned priority-inheritance mutex.
-pub type PiMutex<T> = Mutex<T>;
-/// Explicit guard name for [`PiMutex`].
-pub type PiMutexGuard<'a, T> = MutexGuard<'a, T>;
-/// Raw priority-inheritance mutex used by [`PiMutex`].
-pub type RawPiMutex = RawMutex;
 
 impl<T: ?Sized> InterruptibleMutexExt<T> for Mutex<T> {
     #[track_caller]

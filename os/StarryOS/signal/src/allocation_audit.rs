@@ -6,7 +6,7 @@ use alloc::sync::{Arc, Weak};
 use core::cell::{Cell, RefCell};
 use std::alloc::{GlobalAlloc, Layout, System};
 
-use ax_runtime::sync::SpinLock;
+use ax_runtime::task::sync::SpinLock;
 
 use crate::api::SignalActions;
 

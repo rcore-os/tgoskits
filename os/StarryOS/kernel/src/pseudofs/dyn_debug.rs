@@ -7,19 +7,19 @@ use super::SimpleFs;
 use crate::{
     dyn_debug::{DynamicDebugOps, dynamic_debug_init},
     pseudofs::{DirectRwFsFileOps, SpecialFsFile},
-    sync::PiMutex,
+    sync::Mutex,
 };
 
 pub struct DynDebugControlObj {
-    control: PiMutex<ControlFile<DynamicDebugOps>>,
-    snapshot: PiMutex<Option<Vec<u8>>>,
+    control: Mutex<ControlFile<DynamicDebugOps>>,
+    snapshot: Mutex<Option<Vec<u8>>>,
 }
 
 impl DynDebugControlObj {
     fn new(control: ControlFile<DynamicDebugOps>) -> Self {
         Self {
-            control: PiMutex::new(control),
-            snapshot: PiMutex::new(None),
+            control: Mutex::new(control),
+            snapshot: Mutex::new(None),
         }
     }
 

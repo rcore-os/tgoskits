@@ -55,6 +55,10 @@ impl ThreadCore {
         self.scheduler_inbox_deliveries.load(Ordering::Acquire)
     }
 
+    pub(crate) fn affinity_completion(&self) -> &crate::sched::affinity::ThreadAffinityCompletion {
+        &self.affinity_completion
+    }
+
     pub(crate) fn publish_affinity_completion(&self, generation: u64) -> bool {
         self.affinity_completion.publish(generation)
     }

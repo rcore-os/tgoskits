@@ -11,7 +11,7 @@ use core::{
 };
 
 use ax_lazyinit::LazyLock;
-use ax_runtime::sync::SpinLock as Mutex;
+use ax_runtime::task::sync::SpinLock as Mutex;
 use syscalls::Errno;
 
 #[cfg(feature = "fs")]

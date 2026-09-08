@@ -36,8 +36,11 @@ use self::{
 };
 use crate::{
     RuntimeError, RuntimeResult,
-    sync::{PiMutex, SpinLock},
-    task::{CpuId, CpuSet, FairMode, FixedIrqWorkerSignal, Nice, SchedulePolicy, WaitQueue},
+    irq::FixedIrqWorkerSignal,
+    task::{
+        sched::{CpuId, CpuSet, FairMode, Nice, SchedulePolicy},
+        sync::{Mutex, SpinLock, WaitQueue},
+    },
 };
 
 const NO_ACTIVE_CONSOLE: usize = usize::MAX;
@@ -231,7 +234,7 @@ struct RuntimeShared {
     rx_progress: WaitQueue,
     console_progress: WaitQueue,
     tx_progress: WaitQueue,
-    tty_output_lock: PiMutex<()>,
+    tty_output_lock: Mutex<()>,
     log_barriers: AtomicUsize,
     lifecycle: RuntimeLifecycle,
     irq_handle: OnceLock<ax_hal::irq::IrqHandle>,
@@ -344,7 +347,7 @@ impl SerialRuntimeHandle {
         self.shared.lifecycle.ensure_available().ok()?;
         let consumer = self.shared.rx_subscription.lock_irqsave().take()?;
         Some(SerialRxSubscription {
-            consumer: PiMutex::new(Some(consumer)),
+            consumer: Mutex::new(Some(consumer)),
             shared: self.shared.clone(),
         })
     }
@@ -594,7 +597,7 @@ impl Drop for SerialOutputBarrier {
 
 /// The unique RX consumer for one UART runtime.
 pub struct SerialRxSubscription {
-    consumer: PiMutex<Option<SpscConsumer<RxItem>>>,
+    consumer: Mutex<Option<SpscConsumer<RxItem>>>,
     shared: Arc<RuntimeShared>,
 }
 
@@ -917,7 +920,7 @@ fn build_runtime(
         rx_progress: WaitQueue::new(),
         console_progress: WaitQueue::new(),
         tx_progress: WaitQueue::new(),
-        tty_output_lock: PiMutex::new(()),
+        tty_output_lock: Mutex::new(()),
         log_barriers: AtomicUsize::new(0),
         lifecycle: RuntimeLifecycle::new(),
         irq_handle: OnceLock::new(),
@@ -987,10 +990,10 @@ fn build_runtime(
         ));
     }
 
-    crate::task::spawn_raw_with_policy_and_affinity(
+    crate::thread::spawn_raw_with_policy_and_affinity(
         move || worker.run(),
         alloc::format!("serial{index}-maint"),
-        crate::task::default_task_stack_size(),
+        crate::thread::default_task_stack_size(),
         serial_worker_policy(),
         affinity,
     )
@@ -1070,7 +1073,7 @@ pub(crate) fn try_publish_record(
     let (outcome, log_wake_ready) = unsafe {
         ax_hal::percpu::with_cpu_pin(|pin| {
             let cpu_id = ax_hal::percpu::this_cpu_id_pinned(pin);
-            let task_id = crate::task::current_thread_id()
+            let task_id = crate::task::thread::current::current_thread_id()
                 .ok()
                 .map(|thread| thread.as_u64());
             let timestamp_nanos = ax_hal::time::monotonic_time().as_nanos() as u64;

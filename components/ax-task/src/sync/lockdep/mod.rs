@@ -58,3 +58,5 @@ impl Lockdep {
         trace::trace_unlock(kind, addr, detail);
     }
 }
+
+pub(crate) mod current;

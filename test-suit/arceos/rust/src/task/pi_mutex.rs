@@ -1,10 +1,13 @@
 use std::{
     os::arceos::{
-        api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+        api::{
+            task as api,
+            task::{AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+        },
         modules::ax_hal::percpu::this_cpu_id,
         task::{
-            FairMode, Nice, RtPriority, SchedulePolicy, ThreadId, current_thread_id,
-            set_thread_policy, thread_handle,
+            sched::{FairMode, Nice, RtPriority, SchedulePolicy},
+            thread::{ThreadId, current::current_thread_id},
         },
     },
     sync::{
@@ -63,10 +66,14 @@ fn ownerless_lock_rekey_wakes_new_top() {
         let ack = Arc::clone(&probe_ack);
         thread::spawn(move || {
             pin_current_to_cpu(0);
-            set_thread_policy(
+            std::os::arceos::task::thread::ThreadHandle::lookup(
                 current_thread_id().expect("the PI probe must have an identity"),
-                SchedulePolicy::fifo(RtPriority::new(1).expect("priority 1 is valid")),
             )
+            .and_then(|thread| {
+                thread.set_policy(SchedulePolicy::fifo(
+                    RtPriority::new(1).expect("priority 1 is valid"),
+                ))
+            })
             .expect("the PI probe must accept its policy");
             ready.store(true, Ordering::Release);
             for expected in 1..=2 {
@@ -88,10 +95,14 @@ fn ownerless_lock_rekey_wakes_new_top() {
         let ready = Arc::clone(&lock_l_ready);
         thread::spawn(move || {
             pin_current_to_cpu(0);
-            set_thread_policy(
+            std::os::arceos::task::thread::ThreadHandle::lookup(
                 current_thread_id().expect("the PI owner must have an identity"),
-                SchedulePolicy::fifo(RtPriority::new(90).expect("priority 90 is valid")),
             )
+            .and_then(|thread| {
+                thread.set_policy(SchedulePolicy::fifo(
+                    RtPriority::new(90).expect("priority 90 is valid"),
+                ))
+            })
             .expect("the PI owner must accept its policy");
             let lock_l = lock_l.lock();
             ready.store(true, Ordering::Release);
@@ -109,10 +120,14 @@ fn ownerless_lock_rekey_wakes_new_top() {
         let done = Arc::clone(&selected_done);
         thread::spawn(move || {
             pin_current_to_cpu(0);
-            set_thread_policy(
+            std::os::arceos::task::thread::ThreadHandle::lookup(
                 current_thread_id().expect("the selected PI waiter must have an identity"),
-                SchedulePolicy::fifo(RtPriority::new(30).expect("priority 30 is valid")),
             )
+            .and_then(|thread| {
+                thread.set_policy(SchedulePolicy::fifo(
+                    RtPriority::new(30).expect("priority 30 is valid"),
+                ))
+            })
             .expect("the selected PI waiter must accept its policy");
             ready.store(true, Ordering::Release);
             api::ax_wait_queue_wait_until(gate.as_ref(), || run.load(Ordering::Acquire), None);
@@ -131,10 +146,14 @@ fn ownerless_lock_rekey_wakes_new_top() {
         let done = Arc::clone(&boosted_done);
         thread::spawn(move || {
             pin_current_to_cpu(0);
-            set_thread_policy(
+            std::os::arceos::task::thread::ThreadHandle::lookup(
                 current_thread_id().expect("the boosted PI waiter must have an identity"),
-                SchedulePolicy::fifo(RtPriority::new(10).expect("priority 10 is valid")),
             )
+            .and_then(|thread| {
+                thread.set_policy(SchedulePolicy::fifo(
+                    RtPriority::new(10).expect("priority 10 is valid"),
+                ))
+            })
             .expect("the boosted PI waiter must accept its policy");
             let lock_m = lock_m.lock();
             lock_ready.store(true, Ordering::Release);
@@ -238,7 +257,10 @@ pub fn run() -> crate::TestResult {
         thread::spawn(move || {
             pin_current_to_cpu(0);
             let current = current_thread_id().expect("PI owner must have a thread identity");
-            set_thread_policy(current, SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
+            std::os::arceos::task::thread::ThreadHandle::lookup(current)
+                .and_then(|thread| {
+                    thread.set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
+                })
                 .expect("PI owner must enter the idle Fair class");
             let guard = mutex.lock();
             owner_locked.store(true, Ordering::Release);
@@ -265,7 +287,10 @@ pub fn run() -> crate::TestResult {
         thread::spawn(move || {
             pin_current_to_cpu(0);
             let current = current_thread_id().expect("PI competitor must have a thread identity");
-            set_thread_policy(current, SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
+            std::os::arceos::task::thread::ThreadHandle::lookup(current)
+                .and_then(|thread| {
+                    thread.set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
+                })
                 .expect("PI competitor must enter the normal Fair class");
             ready.store(true, Ordering::Release);
             while !stop.load(Ordering::Acquire) {
@@ -289,11 +314,13 @@ pub fn run() -> crate::TestResult {
         thread::spawn(move || {
             pin_current_to_cpu(1);
             let current = current_thread_id().expect("PI waiter must have a thread identity");
-            set_thread_policy(
-                current,
-                SchedulePolicy::fifo(RtPriority::new(80).expect("priority 80 must be valid")),
-            )
-            .expect("PI waiter must enter FIFO policy");
+            std::os::arceos::task::thread::ThreadHandle::lookup(current)
+                .and_then(|thread| {
+                    thread.set_policy(SchedulePolicy::fifo(
+                        RtPriority::new(80).expect("priority 80 must be valid"),
+                    ))
+                })
+                .expect("PI waiter must enter FIFO policy");
             started.store(true, Ordering::Release);
             drop(mutex.lock());
             acquired.store(true, Ordering::Release);
@@ -306,7 +333,10 @@ pub fn run() -> crate::TestResult {
     );
     let donated_policy = SchedulePolicy::fifo(RtPriority::new(80).expect("priority 80 is valid"));
     wait_until(
-        || thread_handle(owner_id).is_ok_and(|owner| owner.effective_policy() == donated_policy),
+        || {
+            std::os::arceos::task::thread::ThreadHandle::lookup(owner_id)
+                .is_ok_and(|owner| owner.effective_policy() == donated_policy)
+        },
         "PI waiter did not donate FIFO priority to the owner",
     );
 

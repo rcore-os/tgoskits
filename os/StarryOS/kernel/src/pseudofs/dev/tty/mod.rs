@@ -38,7 +38,7 @@ use crate::{
     StarryError, StarryResult,
     mm::{VmMutPtr, VmPtr},
     pseudofs::{Device, DeviceOps},
-    sync::{IrqMutex, Mutex, PiMutex},
+    sync::{IrqMutex, Mutex},
     task::{
         PgidNumber, Process, current_user_task, get_process_group_by_number,
         send_signal_to_process_group,
@@ -89,7 +89,7 @@ pub(crate) fn terminal_device(term: &(dyn Any + Send + Sync)) -> Option<Terminal
 pub struct Tty<R, W> {
     this: Weak<Self>,
     terminal: Arc<Terminal>,
-    ldisc: PiMutex<LineDiscipline<R, W>>,
+    ldisc: Mutex<LineDiscipline<R, W>>,
     writer: W,
     termios_update: Mutex<()>,
     is_ptm: bool,
@@ -101,7 +101,7 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
     fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Arc<Self> {
         let writer = config.writer.clone();
         let is_ptm = matches!(&config.process_mode, ProcessMode::Passive(_));
-        let ldisc = PiMutex::new(LineDiscipline::new(terminal.clone(), config));
+        let ldisc = Mutex::new(LineDiscipline::new(terminal.clone(), config));
         Arc::new_cyclic(|this| Self {
             this: this.clone(),
             terminal,

@@ -1,6 +1,8 @@
 use core::{
-    fmt::{self, Write},
-    ptr::{self, addr_of, addr_of_mut},
+    fmt,
+    fmt::Write,
+    ptr,
+    ptr::{addr_of, addr_of_mut},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 

@@ -3,7 +3,7 @@ use axfs_ng_vfs::{VfsError, VfsResult};
 
 use crate::{
     pseudofs::DirectRwFsFileOps,
-    sync::PiMutex,
+    sync::Mutex,
     tracepoint::{KernelExtTracePoint, KernelTraceAux},
 };
 
@@ -58,7 +58,7 @@ impl DirectRwFsFileOps for EventEnableObj {
 
 /// File representing the `filter` attribute of a tracepoint event.
 pub struct EventFilterObj {
-    file: PiMutex<TraceFilterFile>,
+    file: Mutex<TraceFilterFile>,
     ext_tp: KernelExtTracePoint,
 }
 
@@ -66,7 +66,7 @@ impl EventFilterObj {
     /// Create a new `EventFilterObj` instance.
     pub fn new(ext_tp: KernelExtTracePoint) -> Self {
         EventFilterObj {
-            file: PiMutex::new(TraceFilterFile::new()),
+            file: Mutex::new(TraceFilterFile::new()),
             ext_tp,
         }
     }

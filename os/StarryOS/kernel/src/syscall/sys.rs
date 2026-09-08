@@ -18,7 +18,7 @@ use ringbuf::{
 use crate::{
     Errno, StarryError, StarryResult,
     mm::{UserPtr, VmMutPtr, VmPtr, vm_read_slice, vm_write_slice},
-    sync::PiMutex,
+    sync::Mutex,
     task::{SockFilter, SockFprog, get_task_by_number, processes},
 };
 
@@ -133,8 +133,8 @@ impl SyslogState {
     }
 }
 
-static SYSLOG_STATE: LazyLock<PiMutex<SyslogState>> =
-    LazyLock::new(|| PiMutex::new(SyslogState::new()));
+static SYSLOG_STATE: LazyLock<Mutex<SyslogState>> =
+    LazyLock::new(|| Mutex::new(SyslogState::new()));
 
 pub fn sys_reboot(
     current: &crate::task::UserTaskRef,

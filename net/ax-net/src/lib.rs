@@ -670,7 +670,7 @@ fn find_interface_config(
 pub fn init_vsock(
     vsock_devs: device::VsockDeviceList,
     registrar: &dyn PinnedNetIrqRegistrar,
-    active_cpus: ax_task::CpuSet,
+    active_cpus: ax_task::sched::CpuSet,
 ) -> Result<(), VsockRuntimeError> {
     info!("Initialize vsock subsystem...");
     if vsock_devs.is_empty() {
@@ -682,7 +682,7 @@ pub fn init_vsock(
         .expect("vsock initialization requires the network queue runtime")
         .lock()
         .protocol_owner_cpu();
-    if !active_cpus.contains(ax_task::CpuId::new(owner_cpu as u32)) {
+    if !active_cpus.contains(ax_task::sched::CpuId::new(owner_cpu as u32)) {
         return Err(VsockRuntimeError::InvalidTopology);
     }
     device::init_vsock_device(vsock_devs, registrar, owner_cpu, active_cpus.topology_len())
@@ -831,12 +831,12 @@ fn next_poll_delay() -> Option<Duration> {
 
 fn start_protocol_executor(owner_cpu: usize) {
     PROTOCOL_AFFINITY_STATUS.store(0, Ordering::Release);
-    let mut affinity = ax_task::CpuSet::empty(ax_hal::cpu_num());
+    let mut affinity = ax_task::sched::CpuSet::empty(ax_hal::cpu_num());
     assert!(
-        affinity.insert(ax_task::CpuId::new(owner_cpu as u32)),
+        affinity.insert(ax_task::sched::CpuId::new(owner_cpu as u32)),
         "network protocol owner CPU {owner_cpu} is outside the runtime topology"
     );
-    let worker = ax_task::ThreadBuilder::new("net-protocol".to_owned())
+    let worker = ax_task::thread::ThreadBuilder::new("net-protocol".to_owned())
         .affinity(affinity)
         .spawn(move || {
             if ax_hal::percpu::this_cpu_id() != owner_cpu {
@@ -970,7 +970,7 @@ impl DnsSocketGuard {
 }
 
 pub(crate) fn yield_network_thread() {
-    ax_task::yield_current_cpu()
+    ax_task::thread::current::yield_current_cpu()
         .unwrap_or_else(|error| panic!("network executor could not yield: {error}"));
 }
 

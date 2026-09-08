@@ -64,6 +64,7 @@ pub mod net;
         feature = "task-ipi",
         feature = "task-irq",
         feature = "task-kernel-timer",
+        feature = "task-executor",
         feature = "task-mutex",
         feature = "task-parallel",
         feature = "task-pi-mutex",
@@ -153,6 +154,7 @@ test_runner!(
     run_task_kernel_timer,
     task::kernel_timer::run
 );
+test_runner!("task-executor", run_task_executor, task::executor::run);
 test_runner!("task-mutex", run_task_mutex, task::mutex::run);
 test_runner!("task-parallel", run_task_parallel, task::parallel::run);
 test_runner!("task-pi-mutex", run_task_pi_mutex, task::pi_mutex::run);
@@ -289,6 +291,8 @@ const SELECTED_TESTS: &[TestCase] = &[
     TestCase::new("task-ipi", "IPI wake and hard-call delivery", run_task_ipi),
     #[cfg(feature = "task-irq")]
     TestCase::new("task-irq", "task IRQ state", run_task_irq),
+    #[cfg(feature = "task-executor")]
+    TestCase::new("task-executor", "Task executor", run_task_executor),
     #[cfg(feature = "task-kernel-timer")]
     TestCase::new(
         "task-kernel-timer",

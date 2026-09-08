@@ -22,7 +22,7 @@ use crate::{
         },
         overlay::OverlayOptions,
     },
-    sync::PiMutex,
+    sync::Mutex,
     task::tasks,
 };
 
@@ -214,14 +214,14 @@ struct MountContextState {
 
 struct MountContext {
     kind: MountContextKind,
-    state: PiMutex<MountContextState>,
+    state: Mutex<MountContextState>,
 }
 
 impl MountContext {
     fn new(kind: MountContextKind) -> Self {
         Self {
             kind,
-            state: PiMutex::new(MountContextState {
+            state: Mutex::new(MountContextState {
                 filesystem: None,
                 source: None,
                 root_mode: NodePermission::from_bits_truncate(0o755),

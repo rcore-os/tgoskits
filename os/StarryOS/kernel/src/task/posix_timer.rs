@@ -21,7 +21,7 @@ use starry_signal::{SignalInfo, Signo};
 #[cfg(axtest)]
 use super::PidIdentity;
 use super::timer::{AlarmChange, AlarmSlot, AlarmTarget, AlarmToken};
-use crate::{StarryError, StarryResult, sync::PiMutex, time::ClockDeadline};
+use crate::{StarryError, StarryResult, sync::Mutex, time::ClockDeadline};
 
 const EXPIRY_SCAN_BATCH_SIZE: usize = 16;
 const MAX_TIMER_NANOS: u64 = i64::MAX as u64;
@@ -196,7 +196,7 @@ pub struct TimerSpec {
 pub struct PosixTimerTable {
     next_id: AtomicI32,
     armed: AtomicBool,
-    timers: PiMutex<BTreeMap<i32, PosixTimer>>,
+    timers: Mutex<BTreeMap<i32, PosixTimer>>,
 }
 
 impl Default for PosixTimerTable {
@@ -204,7 +204,7 @@ impl Default for PosixTimerTable {
         Self {
             next_id: AtomicI32::new(0),
             armed: AtomicBool::new(false),
-            timers: PiMutex::new(BTreeMap::new()),
+            timers: Mutex::new(BTreeMap::new()),
         }
     }
 }

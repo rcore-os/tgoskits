@@ -1,6 +1,6 @@
 //! Task-context completion for one fixed hard-IRQ service waiter.
 
-use ax_std::os::arceos::task::{self as scheduler, IrqRegisterResult, IrqWaitToken, TaskError};
+use {ax_std::os::arceos::task as scheduler, ax_std::os::arceos::task::sync::irq::IrqRegisterResult, ax_std::os::arceos::task::sync::irq::IrqWaitToken, ax_std::os::arceos::task::thread::TaskError};
 
 /// Completes one register/park/fan-out cycle without exposing IRQ-owned
 /// registration storage to a device implementation.
@@ -24,7 +24,7 @@ where
         }
         IrqRegisterResult::Registered(token) | IrqRegisterResult::NotificationInFlight(token) => {
             park(&token);
-            scheduler::quiesce_irq_wait(token)?;
+            scheduler::sync::irq::quiesce_irq_wait(token)?;
             fanout();
             Ok(true)
         }

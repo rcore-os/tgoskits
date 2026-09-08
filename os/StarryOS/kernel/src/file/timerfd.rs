@@ -36,7 +36,7 @@ use syscalls::Errno;
 use crate::{
     StarryError, StarryResult,
     file::{FileLike, IoDst, IoSrc},
-    sync::PiMutex,
+    sync::Mutex,
     task::{
         current_user_task,
         future::{block_on, block_on_user, poll_io, timeout_at, timeout_at_wall},
@@ -128,15 +128,15 @@ impl State {
     }
 }
 
-static TIMERFD_INSTANCES: LazyLock<PiMutex<Vec<Weak<Timerfd>>>> =
-    LazyLock::new(|| PiMutex::new(Vec::new()));
+static TIMERFD_INSTANCES: LazyLock<Mutex<Vec<Weak<Timerfd>>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// A timerfd. Held behind `Arc` and referenced both from the fd table and
 /// from the background timer task (as a `Weak<Timerfd>`).
 pub struct Timerfd {
     /// The clock domain the user passed to `timerfd_create`.
     clockid: u32,
-    state: PiMutex<State>,
+    state: Mutex<State>,
     expire_count: AtomicU64,
     poll_rx: PollSet,
     non_blocking: AtomicBool,
@@ -158,7 +158,7 @@ impl Timerfd {
         }
         let this = Arc::new(Self {
             clockid,
-            state: PiMutex::new(State::default()),
+            state: Mutex::new(State::default()),
             expire_count: AtomicU64::new(0),
             poll_rx: PollSet::new(),
             non_blocking: AtomicBool::new(false),
@@ -494,7 +494,7 @@ mod tests {
     fn unspawned_timerfd() -> Arc<Timerfd> {
         Arc::new(Timerfd {
             clockid: CLOCK_REALTIME,
-            state: PiMutex::new(State::default()),
+            state: Mutex::new(State::default()),
             expire_count: AtomicU64::new(0),
             poll_rx: PollSet::new(),
             non_blocking: AtomicBool::new(false),

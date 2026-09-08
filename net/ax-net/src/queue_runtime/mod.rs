@@ -18,7 +18,7 @@ use core::{
 };
 
 use ax_sync::SpinLock;
-use ax_task::{CpuSet, WaitQueue};
+use ax_task::{sched::CpuSet, sync::WaitQueue};
 use irq_framework::IrqId;
 use rd_net::{
     NetError, NetHardIrqEndpoint, NetHardIrqResult, NetIrqSourceId, PreparedNetDevice,
@@ -171,7 +171,7 @@ pub enum NetworkRuntimeError {
     WorkerSpawn {
         cpu: usize,
         #[source]
-        source: ax_task::TaskError,
+        source: ax_task::thread::TaskError,
     },
     #[error("network queue initialization failed: {0}")]
     QueueInit(NetError),
@@ -353,7 +353,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
         let active_cpus = self
             .active_cpus
             .iter()
-            .map(ax_task::CpuId::as_usize)
+            .map(ax_task::sched::CpuId::as_usize)
             .collect::<Vec<_>>();
         if topology_len == 0 || active_cpus.is_empty() {
             // No owner context exists in which a driver can prove DMA has
@@ -522,24 +522,25 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 notify: Arc::clone(&cpu_notifies[owner_cpu]),
             });
             let mut affinity = CpuSet::empty(topology_len);
-            if !affinity.insert(ax_task::CpuId::new(owner_cpu as u32)) {
+            if !affinity.insert(ax_task::sched::CpuId::new(owner_cpu as u32)) {
                 stop_executors(&mut executors, true);
                 return Err(NetworkRuntimeError::InvalidTopology);
             }
             let task_control = Arc::clone(&control);
-            let task = match ax_task::ThreadBuilder::new(format!("net-queue-cpu{owner_cpu}"))
-                .affinity(affinity)
-                .spawn(move || queue_executor_main(groups, wifi, task_control))
-            {
-                Ok(task) => task,
-                Err(source) => {
-                    stop_executors(&mut executors, true);
-                    return Err(NetworkRuntimeError::WorkerSpawn {
-                        cpu: owner_cpu,
-                        source,
-                    });
-                }
-            };
+            let task =
+                match ax_task::thread::ThreadBuilder::new(format!("net-queue-cpu{owner_cpu}"))
+                    .affinity(affinity)
+                    .spawn(move || queue_executor_main(groups, wifi, task_control))
+                {
+                    Ok(task) => task,
+                    Err(source) => {
+                        stop_executors(&mut executors, true);
+                        return Err(NetworkRuntimeError::WorkerSpawn {
+                            cpu: owner_cpu,
+                            source,
+                        });
+                    }
+                };
             executors.push(ExecutorLease { control, task });
         }
         let failed_owner = executors.iter().find_map(|executor| {

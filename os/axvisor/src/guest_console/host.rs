@@ -8,13 +8,14 @@ use ax_std::os::arceos::modules::ax_runtime::console::{
     self, ConsoleLogDropReport, ConsoleLogRecord, ConsoleLogSubscription, TaskConsoleInput,
     TaskConsoleOutput,
 };
-use ax_std::os::arceos::{
-    modules::ax_runtime::{
-        RuntimeError, RuntimeResult, emergency_console, task::FixedIrqWorkerSignal,
-    },
-    sync::NoPreemptMutex,
-};
 use std::sync::{Mutex, OnceLock};
+use {
+    ax_std::os::arceos::modules::ax_runtime::RuntimeError,
+    ax_std::os::arceos::modules::ax_runtime::RuntimeResult,
+    ax_std::os::arceos::modules::ax_runtime::emergency_console,
+    ax_std::os::arceos::modules::ax_runtime::irq::FixedIrqWorkerSignal,
+    ax_std::os::arceos::sync::NoPreemptMutex,
+};
 
 use axvisor::console_mux::HostOutputQueue;
 
@@ -139,8 +140,8 @@ pub(crate) fn wait_for_host_event() {
 }
 
 fn park_console_task() -> ! {
-    static STOPPED: ax_std::os::arceos::modules::ax_task::WaitQueue =
-        ax_std::os::arceos::modules::ax_task::WaitQueue::new();
+    static STOPPED: ax_std::os::arceos::modules::ax_task::sync::WaitQueue =
+        ax_std::os::arceos::modules::ax_task::sync::WaitQueue::new();
     loop {
         STOPPED.wait();
     }

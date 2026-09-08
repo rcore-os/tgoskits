@@ -1,6 +1,6 @@
 //! Typed conversion between Linux scheduling attributes and scheduler policies.
 
-use ax_std::os::arceos::task::{
+use ax_std::os::arceos::task::sched::{
     DeadlineFlags, DeadlinePolicy, FairMode, Nice, RtPriority, SchedulePolicy,
 };
 use bytemuck::{Pod, Zeroable};
@@ -548,7 +548,9 @@ impl SchedAttr {
 
 #[cfg(all(test, not(axtest)))]
 mod tests {
-    use ax_std::os::arceos::task::{DeadlineFlags, FairMode, Nice, RtPriority, SchedulePolicy};
+    use ax_std::os::arceos::task::sched::{
+        DeadlineFlags, FairMode, Nice, RtPriority, SchedulePolicy,
+    };
     use linux_raw_sys::general::{
         SCHED_BATCH, SCHED_DEADLINE, SCHED_FIFO, SCHED_FLAG_DL_OVERRUN, SCHED_FLAG_KEEP_PARAMS,
         SCHED_FLAG_KEEP_POLICY, SCHED_FLAG_RECLAIM, SCHED_FLAG_RESET_ON_FORK,

@@ -2,11 +2,16 @@ use std::{
     boxed::Box,
     os::arceos::{
         api::time::ax_monotonic_time,
-        task::{
-            HardKernelTimerAction, HardKernelTimerCallback, KernelTimerAction,
-            KernelTimerCancelOutcome, MonotonicDeadline, arm_hard_kernel_timer,
-            cancel_kernel_timer, register_hard_restartable_kernel_timer, register_kernel_timer,
-            register_restartable_kernel_timer,
+        task::time::{
+            MonotonicDeadline,
+            hard_timer::{
+                HardKernelTimerAction, HardKernelTimerCallback, arm_hard_kernel_timer,
+                register_hard_restartable_kernel_timer,
+            },
+            timer::{
+                KernelTimerAction, KernelTimerCancelOutcome, cancel_kernel_timer,
+                register_kernel_timer, register_restartable_kernel_timer,
+            },
         },
     },
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -156,7 +161,7 @@ pub fn run() -> crate::TestResult {
 }
 
 fn cancel_in_flight_callback() -> crate::TestResult {
-    use std::os::arceos::task::WaitQueue;
+    use std::os::arceos::task::sync::WaitQueue;
 
     static ENTERED: AtomicBool = AtomicBool::new(false);
     static RELEASE: AtomicBool = AtomicBool::new(false);

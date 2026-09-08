@@ -39,7 +39,7 @@ use crate::{
         AddrSpace, AddressSpaceId, MappingOperation, SharedFileMappingLease, SharedFileVmaRecord,
         is_address_space_live,
     },
-    sync::PiMutex,
+    sync::Mutex,
 };
 
 pub const F_SEAL_SEAL: u32 = 0x0001;
@@ -72,14 +72,14 @@ pub struct Memfd {
     /// frames are asynchronously reclaimed.  This mirrors Linux `exit_mmap()`
     /// without making a CPU activation or a temporary kernel pin look like a
     /// userspace mapping owner.
-    shared_writable_mmaps: PiMutex<BTreeMap<AddressSpaceId, u32>>,
+    shared_writable_mmaps: Mutex<BTreeMap<AddressSpaceId, u32>>,
     /// Userspace-visible name (the `name` arg to `memfd_create`). Included
     /// in the reported path so `/proc/*/fd/*` matches Linux's
     /// `/memfd:<name>` convention.
     name: String,
     /// Serializes seal-check-and-truncate to close the TOCTOU window
     /// between `check_truncate` and the underlying `set_len`.
-    truncate_mtx: PiMutex<()>,
+    truncate_mtx: Mutex<()>,
 }
 
 impl Memfd {
@@ -93,9 +93,9 @@ impl Memfd {
         Arc::new(Self {
             inner,
             seals: AtomicU32::new(initial),
-            shared_writable_mmaps: PiMutex::new(BTreeMap::new()),
+            shared_writable_mmaps: Mutex::new(BTreeMap::new()),
             name,
-            truncate_mtx: PiMutex::new(()),
+            truncate_mtx: Mutex::new(()),
         })
     }
 

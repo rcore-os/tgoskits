@@ -19,7 +19,7 @@ use crate::{
         AddressSpaceMutationOutcome, MappingOperation, MmPin, SharedMemoryObject, UserPtr,
         VmMutPtr, VmPtr,
     },
-    sync::PiMutex,
+    sync::Mutex,
     task::{PidIdentityId, PidNamespaceId, PidSnapshot},
 };
 
@@ -370,7 +370,7 @@ pub struct ShmManager {
     /// (key, ns_id) <-> shm_id
     key_shmid: BiBTreeMap<(i32, u64), i32>,
     /// shm_id -> shm_inner
-    shmid_inner: BTreeMap<i32, Arc<PiMutex<ShmInner>>>,
+    shmid_inner: BTreeMap<i32, Arc<Mutex<ShmInner>>>,
     /// process generation -> vaddr -> shm_id
     pid_shmid_vaddr: BTreeMap<PidIdentityId, BTreeMap<VirtAddr, i32>>,
 }
@@ -393,7 +393,7 @@ impl ShmManager {
     /// Returns the shared memory inner structure [`ShmInner`] associated with
     /// the given shared memory ID, validating that it belongs to the specified
     /// IPC namespace.
-    pub fn get_inner_by_shmid(&self, shmid: i32, ns_id: u64) -> Option<Arc<PiMutex<ShmInner>>> {
+    pub fn get_inner_by_shmid(&self, shmid: i32, ns_id: u64) -> Option<Arc<Mutex<ShmInner>>> {
         self.shmid_inner
             .get(&shmid)
             .filter(|inner| inner.lock().ns_id == ns_id)
@@ -403,7 +403,7 @@ impl ShmManager {
     /// Lookup a shm_inner by shmid without namespace validation. Only for
     /// internal cleanup paths (process exit) where the caller has already
     /// scoped the lookup by pid.
-    fn get_inner_by_shmid_unchecked(&self, shmid: i32) -> Option<Arc<PiMutex<ShmInner>>> {
+    fn get_inner_by_shmid_unchecked(&self, shmid: i32) -> Option<Arc<Mutex<ShmInner>>> {
         self.shmid_inner.get(&shmid).cloned()
     }
 
@@ -432,7 +432,7 @@ impl ShmManager {
 
     /// Inserts a mapping from a shared memory ID to its inner
     /// structure [`ShmInner`].
-    pub fn insert_shmid_inner(&mut self, shmid: i32, shm_inner: Arc<PiMutex<ShmInner>>) {
+    pub fn insert_shmid_inner(&mut self, shmid: i32, shm_inner: Arc<Mutex<ShmInner>>) {
         self.shmid_inner.insert(shmid, shm_inner);
     }
 
@@ -480,7 +480,7 @@ impl ShmManager {
 ///
 /// Lock ordering: SHM_MANAGER before ShmInner before aspace (per-process).
 /// All code paths must acquire locks in this order to prevent deadlock.
-pub static SHM_MANAGER: PiMutex<ShmManager> = PiMutex::new(ShmManager::new());
+pub static SHM_MANAGER: Mutex<ShmManager> = Mutex::new(ShmManager::new());
 
 /// Clear all shared memory segments for a process on exit.
 ///
@@ -489,7 +489,7 @@ pub static SHM_MANAGER: PiMutex<ShmManager> = PiMutex::new(ShmManager::new());
 /// lock ordering consistent with sys_shmget (SHM_MANAGER then ShmInner).
 pub fn clear_proc_shm(owner: PidIdentityId, operator: PidSnapshot, aspace: &MmPin) {
     // Collect segments attached to this process.
-    let segments: Vec<(i32, Arc<PiMutex<ShmInner>>)> = {
+    let segments: Vec<(i32, Arc<Mutex<ShmInner>>)> = {
         let shm_manager = SHM_MANAGER.lock();
         let shmids = match shm_manager.get_shmids_by_pid(owner) {
             Some(ids) => ids,
@@ -598,7 +598,7 @@ pub fn sys_shmget(
 
     // Create a new shm_inner
     let shmid = next_ipc_id();
-    let shm_inner = Arc::new(PiMutex::new(ShmInner::new(
+    let shm_inner = Arc::new(Mutex::new(ShmInner::new(
         key, shmid, size, shmflg, operator, cred.euid, cred.egid, ns_id,
     )));
     shm_manager.insert_key_shmid(key, ns_id, shmid);

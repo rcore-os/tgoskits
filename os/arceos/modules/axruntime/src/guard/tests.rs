@@ -6,7 +6,7 @@ static HOST_CPU_GUARD_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(feature = "host-test")]
 #[test]
 fn host_spin_guard_before_runtime_bootstrap_is_noop() {
-    let lock = crate::sync::SpinLock::new(());
+    let lock = crate::task::sync::SpinLock::new(());
     let _guard = lock.lock_irqsave();
 }
 
@@ -52,8 +52,9 @@ fn scheduler_entry_state_reuses_one_cpu_pin() {
             .expect("modeled task must release bootstrap preemption");
         cpu_local::host_test::reset_register_read_counts();
 
-        let capabilities = claim_scheduler_cpu_state(ax_task::runtime::RuntimeSchedulerEntry::Task)
-            .expect("modeled task must claim one scheduler-frame capability snapshot");
+        let capabilities =
+            claim_scheduler_cpu_state(ax_task::runtime::switch::RuntimeSchedulerEntry::Task)
+                .expect("modeled task must claim one scheduler-frame capability snapshot");
         assert_eq!(
             capabilities.status(),
             ax_task::runtime::RuntimeStatus::Success,

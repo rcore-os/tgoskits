@@ -19,7 +19,7 @@ use super::{
         PERF_TASK_ACTIVE, PerTaskCounter, SamplingAnchors, attach, detach_unpublished, free_hw,
     },
 };
-use crate::{sync::PiMutex, task::Thread};
+use crate::{sync::Mutex, task::Thread};
 
 const MAX_FAMILY_MEMBERS: usize = 32;
 
@@ -68,8 +68,8 @@ impl FamilyState {
 /// while publishing intent or snapshotting bounded member references; owner-CPU
 /// worker waits always happen after `state` is released.
 pub(crate) struct PerfInheritanceFamily {
-    control: PiMutex<()>,
-    state: PiMutex<FamilyState>,
+    control: Mutex<()>,
+    state: Mutex<FamilyState>,
 }
 
 impl core::fmt::Debug for PerfInheritanceFamily {
@@ -91,8 +91,8 @@ impl PerfInheritanceFamily {
             .push(Arc::clone(&root))
             .expect("a new perf family always has room for its root");
         let family = Arc::new(Self {
-            control: PiMutex::new(()),
-            state: PiMutex::new(FamilyState {
+            control: Mutex::new(()),
+            state: Mutex::new(FamilyState {
                 lifecycle: PerfInheritanceLifecycle::new(enabled),
                 members,
                 retired: RetiredTotals::default(),

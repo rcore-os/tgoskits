@@ -7,7 +7,7 @@ use core::{
 };
 
 use ax_cpu::uspace::UserContext;
-use ax_runtime::sync::SpinLock;
+use ax_runtime::task::sync::SpinLock;
 use starry_vm::{VmIo, VmMutPtr, VmPtr};
 
 use super::ProcessSignalManager;

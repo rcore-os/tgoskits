@@ -17,7 +17,7 @@ use crate::{
     raw_console::RawConsoleInput,
     serial,
     structured_log::{RuntimeLogContext, write_record},
-    sync::SpinLock,
+    task::sync::SpinLock,
 };
 
 static ACTIVATION: OnceLock<ConsoleActivation> = OnceLock::new();

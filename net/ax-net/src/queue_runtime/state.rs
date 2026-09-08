@@ -129,13 +129,13 @@ impl PollGroupState {
         }
     }
 
-    pub(super) fn wait_startup_irq(&self, waiter: &ax_task::IrqWorkerWaiter) {
+    pub(super) fn wait_startup_irq(&self, waiter: &ax_task::sync::irq::IrqWorkerWaiter) {
         self.notify.wait(waiter);
     }
 
     pub(super) fn wait_startup_deadline(
         &self,
-        waiter: &ax_task::IrqWorkerWaiter,
+        waiter: &ax_task::sync::irq::IrqWorkerWaiter,
         deadline_nanos: u64,
     ) {
         let now = ax_hal::time::monotonic_time_nanos();

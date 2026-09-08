@@ -7,14 +7,15 @@ use core::{
     sync::atomic::{AtomicU8, AtomicU64},
 };
 
+#[cfg(feature = "lockdep")]
+use {
+    crate::sync::lockdep::LockdepMapView, crate::sync::mutex::lockdep::LockdepAcquire,
+    crate::sync::mutex::lockdep::LockdepAcquireRequest,
+};
+
 use super::lockdep::LockClass;
 use crate::sync::mutex::{
     PI_MUTEX_WAIT_STORAGE_WORDS, PiMutexAlgorithm, PiMutexCoreView, destroy_pi_mutex_storage,
-};
-#[cfg(feature = "lockdep")]
-use crate::sync::{
-    lockdep::LockdepMapView,
-    mutex::lockdep::{LockdepAcquire, LockdepAcquireRequest},
 };
 
 /// Borrowed fixed storage for one external PI mutex.

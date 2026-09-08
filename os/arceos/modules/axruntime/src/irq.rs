@@ -198,3 +198,27 @@ impl ax_net::PinnedNetIrqRegistrar for RuntimeNetIrqRegistrar {
         }))
     }
 }
+
+/// Arms the shared physical IPI delivery edge for one CPU.
+///
+/// Callers must publish their logical pending state before this doorbell. The
+/// shared edge coalesces repeated notifications until the target CPU claims
+/// the physical interrupt; logical owners remain responsible for draining
+/// their own state.
+pub fn notify_cpu(cpu_id: usize) -> Result<(), ax_hal::irq::IrqError> {
+    #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
+    {
+        if cpu_id >= ax_hal::cpu_num() {
+            return Err(ax_hal::irq::IrqError::InvalidCpu);
+        }
+        ax_ipi::notify_cpu(ax_hal::irq::CpuId(cpu_id)).map(|_| ())
+    }
+    #[cfg(not(any(feature = "ipi", feature = "wake-ipi")))]
+    {
+        let _ = cpu_id;
+        Err(ax_hal::irq::IrqError::Unsupported)
+    }
+}
+
+mod worker;
+pub use worker::FixedIrqWorkerSignal;

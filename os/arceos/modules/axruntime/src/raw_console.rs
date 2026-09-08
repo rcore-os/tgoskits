@@ -9,12 +9,15 @@ use axpoll_set::PollSet;
 
 use crate::{
     RuntimeError, RuntimeResult,
+    irq::FixedIrqWorkerSignal,
     serial::{
         RxFlag, RxItem,
         spsc::{Consumer as SpscConsumer, Producer as SpscProducer},
     },
-    sync::SpinLock,
-    task::{CpuId, CpuSet, FixedIrqWorkerSignal, WaitQueue},
+    task::{
+        sched::{CpuId, CpuSet},
+        sync::{SpinLock, WaitQueue},
+    },
 };
 
 const RAW_RX_CAPACITY: usize = 4_096;
@@ -105,10 +108,10 @@ fn init_raw_input() -> RuntimeResult<Arc<RawInputRuntime>> {
         return Err(error.into());
     }
     let worker_runtime = runtime.clone();
-    if let Err(error) = crate::task::spawn_raw_with_affinity(
+    if let Err(error) = crate::thread::spawn_raw_with_affinity(
         move || run_raw_input_worker(worker_runtime),
         alloc::format!("raw-console-{owner_cpu}-rx"),
-        crate::task::default_task_stack_size(),
+        crate::thread::default_task_stack_size(),
         affinity,
     ) {
         ax_hal::console::set_input_irq_enabled(false);

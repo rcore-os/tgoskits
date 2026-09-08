@@ -11,7 +11,7 @@ use super::{
 use crate::{
     Errno, StarryError, StarryResult,
     mm::{VmMutPtr, VmPtr, vm_load, vm_write_slice},
-    sync::PiMutex,
+    sync::Mutex,
     task::{PidNamespaceId, PidSnapshot, WaitQueue as MsgWaitQueue},
 };
 
@@ -305,7 +305,7 @@ pub struct MsgManager {
     /// (key, ns_id) -> msqid mapping
     key_msqid: BTreeMap<(i32, u64), i32>,
     /// msqid -> message queue structure
-    msqid_queues: BTreeMap<i32, Arc<PiMutex<MessageQueue>>>,
+    msqid_queues: BTreeMap<i32, Arc<Mutex<MessageQueue>>>,
 }
 
 impl MsgManager {
@@ -317,12 +317,12 @@ impl MsgManager {
     }
 
     /// Returns an iterator over all message queues
-    pub fn iter_msg_queues(&self) -> impl Iterator<Item = (i32, &Arc<PiMutex<MessageQueue>>)> {
+    pub fn iter_msg_queues(&self) -> impl Iterator<Item = (i32, &Arc<Mutex<MessageQueue>>)> {
         self.msqid_queues.iter().map(|(&k, v)| (k, v))
     }
 
     /// Returns an iterator over all message queues, filtering out removed ones
-    pub fn iter_active_queues(&self) -> impl Iterator<Item = (i32, &Arc<PiMutex<MessageQueue>>)> {
+    pub fn iter_active_queues(&self) -> impl Iterator<Item = (i32, &Arc<Mutex<MessageQueue>>)> {
         self.iter_msg_queues().filter(|(_, queue)| {
             let guard = queue.lock();
             !guard.mark_removed
@@ -336,7 +336,7 @@ impl MsgManager {
 
     /// Returns the message queue associated with the given ID, validating
     /// that it belongs to the specified IPC namespace.
-    pub fn get_queue_by_msqid(&self, msqid: i32, ns_id: u64) -> Option<Arc<PiMutex<MessageQueue>>> {
+    pub fn get_queue_by_msqid(&self, msqid: i32, ns_id: u64) -> Option<Arc<Mutex<MessageQueue>>> {
         self.msqid_queues
             .get(&msqid)
             .filter(|q| q.lock().ns_id == ns_id)
@@ -349,7 +349,7 @@ impl MsgManager {
     }
 
     /// Inserts a mapping from a message queue ID to its queue.
-    pub fn insert_msqid_queues(&mut self, msqid: i32, msg_queue: Arc<PiMutex<MessageQueue>>) {
+    pub fn insert_msqid_queues(&mut self, msqid: i32, msg_queue: Arc<Mutex<MessageQueue>>) {
         self.msqid_queues.insert(msqid, msg_queue);
     }
 
@@ -374,7 +374,7 @@ pub const MSGMNB: usize = 16384;
 pub const MSGMAX: usize = 8192;
 
 /// Global message queue manager
-pub static MSG_MANAGER: PiMutex<MsgManager> = PiMutex::new(MsgManager::new());
+pub static MSG_MANAGER: Mutex<MsgManager> = Mutex::new(MsgManager::new());
 
 bitflags::bitflags! {
     /// Flags for msgrcv
@@ -429,7 +429,7 @@ pub fn sys_msgget(
     // Handle IPC_PRIVATE (always create new queue)
     if key == IPC_PRIVATE {
         let msqid = next_ipc_id();
-        let msg_queue = Arc::new(PiMutex::new(MessageQueue::new(
+        let msg_queue = Arc::new(Mutex::new(MessageQueue::new(
             key,
             (msgflg & 0o777) as _,
             current_uid,
@@ -478,7 +478,7 @@ pub fn sys_msgget(
     }
 
     let msqid = next_ipc_id();
-    let msg_queue = Arc::new(PiMutex::new(MessageQueue::new(
+    let msg_queue = Arc::new(Mutex::new(MessageQueue::new(
         key,
         (msgflg & 0o777) as _,
         current_uid,

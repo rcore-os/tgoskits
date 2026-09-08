@@ -2,14 +2,15 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-pub use crate::sync::{
-    PI_MUTEX_WAIT_STORAGE_WORDS, PiMutexAcquire, PiMutexClaimOutcome, PiMutexCore, PiMutexCoreView,
-    PiMutexId, PiMutexLockResult, PiMutexOwnedRelease, PiMutexOwnerSnapshot, PiMutexRaw,
-    PiMutexRef, PiMutexStateError, PiTaskId, PiWaitCancelOutcome, PiWaitToken,
-};
 use crate::{
-    PiWaitStateError, PiWaitTree, TaskError, ThreadId,
-    lock::{RawTicketGuard, RawTicketLock},
+    runtime::{
+        lock::{RawTicketGuard, RawTicketLock},
+        sync::{
+            PI_MUTEX_WAIT_STORAGE_WORDS, PiMutexCoreView, PiMutexRaw, PiMutexRef,
+            PiMutexStateError, PiTaskId, PiWaitStateError,
+        },
+    },
+    thread::{PiWaitTree, TaskError, ThreadId},
 };
 
 impl From<ThreadId> for PiTaskId {
@@ -44,7 +45,7 @@ impl From<PiMutexStateError> for TaskError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PiWaitRegistration {
     pub(crate) lock: PiMutexRaw,
-    pub(crate) key: crate::PiWaitKey,
+    pub(crate) key: crate::thread::PiWaitKey,
     pub(crate) generation: u64,
 }
 

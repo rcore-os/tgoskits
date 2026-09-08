@@ -4,8 +4,7 @@ use rdif_serial::Config;
 
 use crate::{
     RuntimeError, RuntimeResult,
-    sync::{PiMutex, SpinLock},
-    task::WaitQueue,
+    task::sync::{Mutex, SpinLock, WaitQueue},
 };
 
 pub(super) const CONTROL_QUEUE_CAPACITY: usize = 32;
@@ -97,14 +96,14 @@ impl ControlQueue {
 }
 
 struct CommandCompletion {
-    result: PiMutex<Option<RuntimeResult>>,
+    result: Mutex<Option<RuntimeResult>>,
     wait: WaitQueue,
 }
 
 impl CommandCompletion {
     fn new() -> Self {
         Self {
-            result: PiMutex::new(None),
+            result: Mutex::new(None),
             wait: WaitQueue::new(),
         }
     }

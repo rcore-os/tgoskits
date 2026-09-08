@@ -1,11 +1,5 @@
 use ax_memory_addr::VirtAddr;
-use ax_runtime::{
-    hal::cpu::{
-        trap::PageFaultFlags,
-        uspace::{ExceptionKind, ReturnReason, UserContext},
-    },
-    task::UserExecutionContext,
-};
+use {ax_runtime::hal::cpu::trap::PageFaultFlags, ax_runtime::hal::cpu::uspace::ExceptionKind, ax_runtime::hal::cpu::uspace::ReturnReason, ax_runtime::hal::cpu::uspace::UserContext, ax_runtime::thread::UserExecutionContext};
 use starry_signal::{FPE_INTDIV, SEGV_ACCERR, SEGV_MAPERR, SignalInfo, Signo};
 use syscalls::Sysno;
 

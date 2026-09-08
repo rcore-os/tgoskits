@@ -11,7 +11,7 @@ type Pid = PidNumber;
 // Relationship transactions run in task context and may block behind another
 // task holding several ordered relationship locks, so they use one PI-backed
 // lock path in every Starry build.
-pub(crate) type RelationLock<T> = crate::sync::PiMutex<T>;
+pub(crate) type RelationLock<T> = crate::sync::Mutex<T>;
 
 // Relationship writers use one order:
 // process group binding -> parent child sets (ascending PID) -> child parent

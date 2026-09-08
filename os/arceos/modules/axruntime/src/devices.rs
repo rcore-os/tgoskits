@@ -82,7 +82,7 @@ pub(crate) fn init_net() {
         panic!("network initialization requires the platform device registry");
     }
     let devices = collect_net_devices();
-    let active_cpus = crate::task::active_cpu_set()
+    let active_cpus = crate::task::sched::active_cpu_set()
         .expect("network initialization requires an online scheduler CPU");
     let (runtime, ports) =
         ax_net::NetworkRuntimeBuilder::new(devices, &crate::irq::NET_IRQ_REGISTRAR, active_cpus)
@@ -165,7 +165,7 @@ pub(crate) fn init_vsock() {
             endpoints: device.endpoints,
         });
     }
-    let active_cpus = crate::task::active_cpu_set()
+    let active_cpus = crate::task::sched::active_cpu_set()
         .expect("vsock initialization requires an online scheduler CPU");
     ax_net::init_vsock(inputs, &crate::irq::NET_IRQ_REGISTRAR, active_cpus)
         .unwrap_or_else(|error| panic!("failed to initialize vsock IRQ runtime: {error}"));

@@ -33,7 +33,7 @@ use super::{
 use crate::{
     Errno, StarryError, StarryResult,
     mm::{VmMutPtr, vm_load, vm_write_slice},
-    sync::{IrqMutex as Mutex, Mutex as BlockingMutex, PiMutex},
+    sync::{IrqMutex, Mutex as BlockingMutex, Mutex},
     task::future::IrqNotify,
 };
 
@@ -250,8 +250,8 @@ fn wait_control(
 }
 
 pub(super) struct UsbFsManager {
-    state: Mutex<UsbFsState>,
-    open_lock: PiMutex<()>,
+    state: IrqMutex<UsbFsState>,
+    open_lock: Mutex<()>,
     usb_activity: UsbActivity,
     irq_notify: IrqNotify,
 }
@@ -429,12 +429,12 @@ impl UsbFsManager {
         }
 
         Self {
-            state: Mutex::new(UsbFsState {
+            state: IrqMutex::new(UsbFsState {
                 hosts,
                 devices,
                 refresh_cursor: HostRefreshCursor::default(),
             }),
-            open_lock: PiMutex::new(()),
+            open_lock: Mutex::new(()),
             usb_activity: UsbActivity::new(),
             irq_notify: IrqNotify::new(),
         }

@@ -39,3 +39,6 @@ pub mod wait_queue_remote_wake;
 #[cfg(feature = "task-yield")]
 #[path = "yield.rs"]
 pub mod yield_now;
+
+#[cfg(feature = "task-executor")]
+pub mod executor;

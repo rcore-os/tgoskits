@@ -22,7 +22,7 @@ use crate::{
     Errno, StarryError, StarryResult,
     file::{IoDst, IoSrc, get_file_like},
     mm::{vm_read_slice, vm_write_slice},
-    sync::PiMutex,
+    sync::Mutex,
     task::{
         current_user_task,
         future::{block_on_user, poll_io},
@@ -111,7 +111,7 @@ struct PacketSocketState {
 }
 
 pub struct PacketSocket {
-    state: PiMutex<PacketSocketState>,
+    state: Mutex<PacketSocketState>,
     non_blocking: AtomicBool,
     poll_rx: PollSet,
 }
@@ -123,7 +123,7 @@ impl PacketSocket {
         }
         let info = first_visible_ethernet()?;
         Ok(Self {
-            state: PiMutex::new(PacketSocketState {
+            state: Mutex::new(PacketSocketState {
                 bound: SockAddrLl::from_interface(&info, protocol)?,
                 pending: None,
             }),

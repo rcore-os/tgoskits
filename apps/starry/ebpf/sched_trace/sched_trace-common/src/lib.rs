@@ -12,7 +12,7 @@ pub struct SchedSwitchEvent {
     pub prev_tid: u64,
     /// Scheduler task id of the task switched in.
     pub next_tid: u64,
-    /// `ax_task::ThreadState` discriminant of `prev` sampled before the
+    /// `ax_task::thread::ThreadState` discriminant of `prev` sampled before the
     /// architectural switch: 0=New, 1=Ready, 2=Running, 3=Parking,
     /// 4=Blocked, 5=Waking, 6=Exited.
     pub prev_state: u32,

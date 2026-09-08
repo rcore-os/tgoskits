@@ -3,7 +3,7 @@ use axfs_ng_vfs::{VfsError, VfsResult};
 use super::IdentityTraceBuffer;
 use crate::{
     pseudofs::DirectRwFsFileOps,
-    sync::PiMutex,
+    sync::Mutex,
     task::{current_user_task, future::block_on_user},
 };
 
@@ -15,12 +15,12 @@ use crate::{
 /// this node cannot faithfully reserve and release a reader slot yet. Keep the
 /// limitation documented here until tracefs files can move their read state to
 /// open-file private data.
-pub struct TracePipeFile(PiMutex<super::TextDrain>);
+pub struct TracePipeFile(Mutex<super::TextDrain>);
 
 impl TracePipeFile {
     /// Creates a new `TracePipeFile` instance.
     pub const fn new() -> Self {
-        Self(PiMutex::new(super::TextDrain::new()))
+        Self(Mutex::new(super::TextDrain::new()))
     }
 
     fn readable(&self) -> bool {

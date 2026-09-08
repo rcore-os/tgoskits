@@ -756,7 +756,7 @@ const _: fn(&UserTaskRef, &str, usize, usize, MappingFlags) -> VmResult = prepar
 
 pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
     #[cfg(feature = "stack-guard-page")]
-    if ax_runtime::task::diagnose_current_stack_guard_page_fault(vaddr) {
+    if ax_runtime::diagnostics::diagnose_current_stack_guard_page_fault(vaddr) {
         return false;
     }
 
@@ -806,14 +806,14 @@ pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -
 }
 
 fn resolve_page_fault_user_task(
-    lookup: Result<Option<UserTaskRef>, ax_std::os::arceos::task::TaskError>,
-) -> Result<Option<UserTaskRef>, ax_std::os::arceos::task::TaskError> {
+    lookup: Result<Option<UserTaskRef>, ax_std::os::arceos::task::thread::TaskError>,
+) -> Result<Option<UserTaskRef>, ax_std::os::arceos::task::thread::TaskError> {
     match lookup {
         Ok(task) => Ok(task),
         Err(
-            ax_std::os::arceos::task::TaskError::NotInitialized
-            | ax_std::os::arceos::task::TaskError::NoRunnableThread
-            | ax_std::os::arceos::task::TaskError::CpuOwnerBorrowed,
+            ax_std::os::arceos::task::thread::TaskError::NotInitialized
+            | ax_std::os::arceos::task::thread::TaskError::NoRunnableThread
+            | ax_std::os::arceos::task::thread::TaskError::CpuOwnerBorrowed,
         ) => Ok(None),
         Err(error) => Err(error),
     }

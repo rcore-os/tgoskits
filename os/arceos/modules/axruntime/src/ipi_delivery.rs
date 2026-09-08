@@ -23,11 +23,11 @@ fn dispatch_scheduler_doorbell(
 
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
 fn local_scheduler_work_pending() -> bool {
-    let pending = crate::task::current_cpu_needs_resched()
+    let pending = crate::task::runtime::cpu::current_cpu_needs_resched()
         .expect("IPI delivery requires an online scheduler CPU");
     #[cfg(feature = "qperf-metrics")]
     if pending {
-        crate::task::record_scheduler_ipi_consume();
+        crate::thread::record_scheduler_ipi_consume();
     }
     pending
 }

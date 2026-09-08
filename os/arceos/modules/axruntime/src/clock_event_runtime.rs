@@ -7,8 +7,8 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-pub(crate) fn monotonic_now() -> ax_task::runtime::MonotonicInstant {
-    ax_task::runtime::MonotonicInstant::from_nanos(ax_hal::time::monotonic_time_nanos())
+pub(crate) fn monotonic_now() -> ax_task::time::MonotonicInstant {
+    ax_task::time::MonotonicInstant::from_nanos(ax_hal::time::monotonic_time_nanos())
         .expect("platform monotonic clock exceeded the signed ktime domain")
 }
 fn periodic_interval_nanos() -> u64 {
@@ -97,7 +97,7 @@ fn apply_clock_event_action(action: crate::clock_event::ClockEventAction) {
 }
 pub(crate) fn take_current_clock_event_offline() {
     run_clock_event_transaction(
-        crate::sync::IrqSaveGuard::new,
+        crate::task::sync::IrqSaveGuard::new,
         || {
             (
                 (),
@@ -135,12 +135,12 @@ fn commit_local_clock_event<R>(
     ) -> (R, crate::clock_event::ClockEventAction),
 ) -> R {
     run_clock_event_transaction(
-        crate::sync::IrqSaveGuard::new,
+        crate::task::sync::IrqSaveGuard::new,
         || with_local_clock_event_mut(operation),
         apply_clock_event_action,
     )
 }
-pub(crate) fn enable_irqs_after_scheduler_online(_online: crate::task::PublishedCpuOnline) {
+pub(crate) fn enable_irqs_after_scheduler_online(_online: crate::thread::PublishedCpuOnline) {
     ax_hal::asm::enable_irqs();
 }
 #[must_use = "a claimed clockevent firing transaction must be finished"]
@@ -150,7 +150,7 @@ struct ClockEventFiringTransaction {
 }
 impl ClockEventFiringTransaction {
     fn begin(
-        now: ax_task::runtime::MonotonicInstant,
+        now: ax_task::time::MonotonicInstant,
     ) -> Result<Self, crate::clock_event::ClockEventAction> {
         let device_quiesce_required = ax_hal::time::oneshot_timer_requires_irq_quiesce();
         let claim = with_local_clock_event_mut(|clockevent| {
@@ -178,7 +178,7 @@ impl ClockEventFiringTransaction {
         })
     }
 
-    fn finish(self, outcome: ax_task::TaskClockEventOutcome) {
+    fn finish(self, outcome: ax_task::runtime::service::TaskClockEventOutcome) {
         let token = self.token;
         let runtime_deadline = outcome
             .runtime_deadline()
@@ -219,9 +219,7 @@ const fn scheduler_service_required(
 ) -> bool {
     periodic_tick_elapsed || logical_deadline_elapsed
 }
-pub(crate) fn local_clock_event_has_immediate_work(
-    now: ax_task::runtime::MonotonicInstant,
-) -> bool {
+pub(crate) fn local_clock_event_has_immediate_work(now: ax_task::time::MonotonicInstant) -> bool {
     commit_local_clock_event(|clockevent| {
         (
             clockevent.has_immediate_work(now),
@@ -232,7 +230,7 @@ pub(crate) fn local_clock_event_has_immediate_work(
 pub(crate) fn stop_current_scheduler_tick_for_idle() {
     commit_local_clock_event(|clockevent| ((), clockevent.stop_scheduler_tick_for_idle()));
 }
-pub(crate) fn restart_current_scheduler_tick_after_idle(now: ax_task::runtime::MonotonicInstant) {
+pub(crate) fn restart_current_scheduler_tick_after_idle(now: ax_task::time::MonotonicInstant) {
     commit_local_clock_event(|clockevent| {
         (
             (),
@@ -240,7 +238,9 @@ pub(crate) fn restart_current_scheduler_tick_after_idle(now: ax_task::runtime::M
         )
     });
 }
-pub(crate) fn publish_local_scheduler_deadline(update: ax_task::runtime::SchedulerDeadlineUpdate) {
+pub(crate) fn publish_local_scheduler_deadline(
+    update: ax_task::runtime::cpu::SchedulerDeadlineUpdate,
+) {
     commit_local_clock_event(|clockevent| {
         (
             (),
@@ -250,21 +250,21 @@ pub(crate) fn publish_local_scheduler_deadline(update: ax_task::runtime::Schedul
 }
 
 fn resolve_scheduler_runtime_deadline(
-    update: ax_task::runtime::SchedulerRuntimeDeadline,
-) -> Option<ax_task::runtime::MonotonicDeadline> {
+    update: ax_task::runtime::cpu::SchedulerRuntimeDeadline,
+) -> Option<ax_task::time::MonotonicDeadline> {
     match update {
-        ax_task::runtime::SchedulerRuntimeDeadline::Disarmed => None,
-        ax_task::runtime::SchedulerRuntimeDeadline::Due => {
-            Some(ax_task::runtime::MonotonicDeadline::ORIGIN)
+        ax_task::runtime::cpu::SchedulerRuntimeDeadline::Disarmed => None,
+        ax_task::runtime::cpu::SchedulerRuntimeDeadline::Due => {
+            Some(ax_task::time::MonotonicDeadline::ORIGIN)
         }
-        ax_task::runtime::SchedulerRuntimeDeadline::After(delay) => {
+        ax_task::runtime::cpu::SchedulerRuntimeDeadline::After(delay) => {
             Some(monotonic_now().deadline_after(delay))
         }
     }
 }
 
 pub(crate) fn publish_local_scheduler_runtime_deadline(
-    update: ax_task::runtime::SchedulerRuntimeDeadline,
+    update: ax_task::runtime::cpu::SchedulerRuntimeDeadline,
 ) {
     assert!(
         !ax_hal::asm::irqs_enabled(),
@@ -306,7 +306,7 @@ pub(crate) fn finish_deferred_rearm_pinned(pin: &cpu_local::CpuPin<'_>) {
 }
 pub(crate) fn init_timer() {
     run_clock_event_transaction(
-        crate::sync::IrqSaveGuard::new,
+        crate::task::sync::IrqSaveGuard::new,
         || {
             let now = monotonic_now();
             let periodic = initial_periodic_deadline(now, periodic_interval_nanos());
@@ -317,7 +317,7 @@ pub(crate) fn init_timer() {
     );
 }
 pub(crate) fn initial_periodic_deadline(
-    now: ax_task::runtime::MonotonicInstant,
+    now: ax_task::time::MonotonicInstant,
     interval_ns: u64,
 ) -> crate::clock_event::ClockDeadline {
     assert_ne!(
@@ -333,7 +333,7 @@ pub(crate) fn initial_periodic_deadline(
 }
 pub(crate) fn next_periodic_deadline(
     deadline: crate::clock_event::ClockDeadline,
-    now: ax_task::runtime::MonotonicInstant,
+    now: ax_task::time::MonotonicInstant,
     interval_ns: u64,
 ) -> crate::clock_event::ClockDeadline {
     assert_ne!(
@@ -363,8 +363,8 @@ pub(crate) fn next_periodic_deadline(
 pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     debug_assert!(!ax_hal::asm::irqs_enabled());
     let tick_mode = match ctx.origin {
-        ax_hal::irq::IrqOrigin::Kernel => ax_task::SchedulerTickMode::System,
-        ax_hal::irq::IrqOrigin::User => ax_task::SchedulerTickMode::User,
+        ax_hal::irq::IrqOrigin::Kernel => ax_task::runtime::service::SchedulerTickMode::System,
+        ax_hal::irq::IrqOrigin::User => ax_task::runtime::service::SchedulerTickMode::User,
     };
     // The IRQ entry owner already holds the single local-IRQ exclusion window
     // through controller completion and IRQ-return scheduling. Re-entering an
@@ -392,13 +392,13 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
         core::num::NonZeroU64::new(periodic_interval_nanos())
             .expect("scheduler tick interval was validated as nonzero")
     });
-    let scheduler_event = ax_task::ClaimedSchedulerDeadlines::new(
+    let scheduler_event = ax_task::runtime::service::ClaimedSchedulerDeadlines::new(
         periodic_tick_ns,
         firing.scheduler_deadline_elapsed(),
     );
-    let outcome = crate::task::on_clock_event(now, scheduler_event);
+    let outcome = crate::thread::on_clock_event(now, scheduler_event);
     if let Some(tick_ns) = periodic_tick_ns {
-        crate::task::publish_scheduler_tick(
+        crate::thread::publish_scheduler_tick(
             outcome.scheduler_tick_stamp(),
             tick_mode,
             tick_ns.get(),
@@ -412,8 +412,8 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
 mod tests {
     use core::cell::Cell;
 
-    fn instant(nanos: u64) -> ax_task::runtime::MonotonicInstant {
-        ax_task::runtime::MonotonicInstant::from_nanos(nanos).unwrap()
+    fn instant(nanos: u64) -> ax_task::time::MonotonicInstant {
+        ax_task::time::MonotonicInstant::from_nanos(nanos).unwrap()
     }
 
     fn deadline(nanos: u64) -> crate::clock_event::ClockDeadline {
@@ -543,14 +543,14 @@ mod tests {
 
     #[test]
     fn initial_periodic_deadline_saturates_at_the_finite_monotonic_limit() {
-        let now = instant(ax_task::runtime::KTIME_MAX_NANOS - 1);
+        let now = instant(ax_task::time::KTIME_MAX_NANOS - 1);
         assert_eq!(
             super::initial_periodic_deadline(now, 2),
-            deadline(ax_task::runtime::KTIME_MAX_NANOS)
+            deadline(ax_task::time::KTIME_MAX_NANOS)
         );
         assert_eq!(
             super::initial_periodic_deadline(now, 1),
-            deadline(ax_task::runtime::KTIME_MAX_NANOS)
+            deadline(ax_task::time::KTIME_MAX_NANOS)
         );
     }
 
@@ -558,8 +558,8 @@ mod tests {
     #[should_panic(expected = "finite monotonic clock domain")]
     fn periodic_deadline_overflow_is_a_fatal_clock_domain_violation() {
         let _ = super::next_periodic_deadline(
-            deadline(ax_task::runtime::KTIME_MAX_NANOS - 2),
-            instant(ax_task::runtime::KTIME_MAX_NANOS - 1),
+            deadline(ax_task::time::KTIME_MAX_NANOS - 2),
+            instant(ax_task::time::KTIME_MAX_NANOS - 1),
             1_000_000_000,
         );
     }

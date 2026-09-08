@@ -8,13 +8,16 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use ax_std::os::arceos::{
-    api::task::{AxCpuMask, ax_set_current_affinity},
-    modules::ax_runtime::task::{IrqWaitCell, IrqWorkerWaiter, current_thread_handle},
-    sync::NoPreemptMutex,
-};
 use axvisor::console_mux::HostOutputQueue;
 use axvm::VMId;
+use {
+    ax_std::os::arceos::api::task::AxCpuMask,
+    ax_std::os::arceos::api::task::ax_set_current_affinity,
+    ax_std::os::arceos::modules::ax_runtime::task::sync::irq::IrqWaitCell,
+    ax_std::os::arceos::modules::ax_runtime::task::sync::irq::IrqWorkerWaiter,
+    ax_std::os::arceos::modules::ax_runtime::task::thread::current::current_thread_handle,
+    ax_std::os::arceos::sync::NoPreemptMutex,
+};
 
 mod layout;
 

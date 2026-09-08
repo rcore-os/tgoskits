@@ -25,7 +25,7 @@ use crate::{
     StarryError, StarryResult,
     mm::{VmMutPtr, vm_write_slice},
     pseudofs::DeviceOps,
-    sync::PiMutex,
+    sync::Mutex,
 };
 
 const IOBLK_G1_USB_VBUS_DET_OFF: usize = 0x020;
@@ -83,7 +83,7 @@ struct UsbCameraState {
 }
 
 pub struct CviCamera {
-    state: PiMutex<UsbCameraState>,
+    state: Mutex<UsbCameraState>,
     jpu: Arc<CviJpu>,
 }
 
@@ -331,7 +331,7 @@ impl UsbCameraState {
 impl CviCamera {
     pub fn new(jpu: Arc<CviJpu>) -> Self {
         Self {
-            state: PiMutex::new(UsbCameraState::default()),
+            state: Mutex::new(UsbCameraState::default()),
             jpu,
         }
     }

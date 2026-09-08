@@ -146,6 +146,8 @@ deadline-base lock 或 owner CPU 裸指针。注册失败必须返回可匹配�
 
 ### 调度接口完成条件
 
+公开接口按领域组织，ArceOS 通过 `ax_runtime::task` 原样重导出 ax-task；资源装配与线程创建使用 `ax_runtime::thread`。完整边界见[命名空间与所有权](ax-task-namespaces.md)。
+
 `register_hard_restartable_kernel_timer` 返回 `HardKernelTimerHandle`，只有该能力可以调用
 `arm_hard_kernel_timer` 和 `disarm_hard_kernel_timer`。它可单向转换为普通
 `KernelTimerHandle` 进行取消；普通句柄不能升级成 hard 能力。执行中的 hard callback
@@ -154,10 +156,10 @@ deadline-base lock 或 owner CPU 裸指针。注册失败必须返回可匹配�
 
 `TaskRuntime::allocate_kernel_tls()` 只分配运行时固定内核模板的 TLS，模板、初始化大小和
 对齐由运行时拥有，不再接收无法兑现的通用 TLS 请求。线程策略查询明确使用
-`thread_base_policy` / `ThreadHandle::base_policy`，PI 后的策略使用 `effective_policy`。
+`ThreadHandle::base_policy`，PI 后的策略使用 `effective_policy`。
 
-`request_thread_affinity` 返回 `ThreadAffinityChange`：丢弃对象表示允许异步完成，调用
-`wait()` 才等待 owner-rq 排序；当前线程迁移和 `set_thread_affinity_and_wait` 保留同步完成
+`ThreadHandle::request_affinity` 返回 `ThreadAffinityChange`：丢弃对象表示允许异步完成，调用
+`wait()` 才等待 owner-rq 排序；当前线程迁移和 `ThreadHandle::set_affinity_and_wait` 保留同步完成
 保证。`TaskSystem::start_thread` 合并 New 状态检查、调度准入和本地入队或远端投递，移除
 公开的 `make_ready` / `place_ready` 两步入口。所有可恢复错误发生在准入提交之前，提交后
 时钟发布失败按运行时不变量处理，不能回收已经入队的线程。上层 `PreparedThread::stage`

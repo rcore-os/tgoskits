@@ -55,7 +55,7 @@ use core::{
 use ax_lazyinit::OnceLock;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsError, VfsResult};
 
-use crate::sync::PiMutex;
+use crate::sync::Mutex;
 
 #[cfg(feature = "sg2002")]
 pub static ION_DEVICE: OnceLock<Arc<ion::IonDevice>> = OnceLock::new();
@@ -202,20 +202,20 @@ impl DeviceOps for Zero {
 }
 
 struct Random {
-    state: PiMutex<RandomState>,
+    state: Mutex<RandomState>,
 }
 
 impl Random {
     pub fn new() -> Self {
         Self {
-            state: PiMutex::new(RandomState::new(random_seed())),
+            state: Mutex::new(RandomState::new(random_seed())),
         }
     }
 
     #[cfg(all(test, axtest))]
     fn new_with_seed_for_test(seed: [u8; 32]) -> Self {
         Self {
-            state: PiMutex::new(RandomState::new(seed)),
+            state: Mutex::new(RandomState::new(seed)),
         }
     }
 }

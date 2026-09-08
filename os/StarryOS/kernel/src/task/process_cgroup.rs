@@ -8,12 +8,12 @@ use ax_cgroup::{
 };
 
 use super::{PidIdentity, ThreadExit};
-use crate::sync::PiMutex;
+use crate::sync::Mutex;
 
 /// Serializes migration and final exit for one stable process generation.
 pub(super) struct ProcessCgroupState {
     process: ProcessId,
-    membership: PiMutex<ProcessMembership>,
+    membership: Mutex<ProcessMembership>,
 }
 
 impl ProcessCgroupState {
@@ -21,7 +21,7 @@ impl ProcessCgroupState {
         Self {
             process: ProcessId::new(identity.id().get())
                 .expect("PID identity generation must be non-zero"),
-            membership: PiMutex::new(ProcessMembership::new(node)),
+            membership: Mutex::new(ProcessMembership::new(node)),
         }
     }
 
@@ -80,7 +80,7 @@ fn task_exit_transaction_holds_membership_lock_for_test() -> bool {
 
     let state = ProcessCgroupState {
         process: ProcessId::new(1).expect("test process generation must be non-zero"),
-        membership: PiMutex::new(ProcessMembership::new(crate::cgroup::root())),
+        membership: Mutex::new(ProcessMembership::new(crate::cgroup::root())),
     };
     let lock_is_held = Cell::new(false);
     let (thread_exit, result) = state.finish_thread_exit(

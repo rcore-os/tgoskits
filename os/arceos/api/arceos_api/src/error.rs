@@ -3,7 +3,7 @@ use ax_fs_ng::VfsError;
 use ax_io::IoError;
 #[cfg(feature = "net")]
 use ax_net::NetError;
-use ax_runtime::{RuntimeError, task::TaskError};
+use ax_runtime::{RuntimeError, task::thread::TaskError};
 
 /// Errors owned by the public ArceOS API facade.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

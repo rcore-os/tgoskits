@@ -22,7 +22,7 @@ use crate::{
     file::dmabuf::resolve_contiguous_dmabuf,
     mm::{UserConstPtr, UserPtr},
     pseudofs::DeviceOps,
-    sync::PiMutex,
+    sync::Mutex,
 };
 
 /// Char-device id for `/dev/mpp_service` (opened by path; id is informational).
@@ -40,14 +40,14 @@ struct TaskState {
 
 /// The `/dev/mpp_service` device.
 pub struct MppService {
-    state: PiMutex<TaskState>,
+    state: Mutex<TaskState>,
 }
 
 impl MppService {
     /// Create the device (one global session; MPP serializes one decode at a time).
     pub fn new() -> Self {
         Self {
-            state: PiMutex::new(TaskState {
+            state: Mutex::new(TaskState {
                 session: mpp::MppSession::new(),
                 read_dst: 0,
             }),

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ax_runtime::sync::SpinLock;
+use ax_runtime::task::sync::SpinLock;
 use starry_signal::{
     SignalActionFlags, SignalDisposition, SignalInfo, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},

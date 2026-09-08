@@ -55,7 +55,7 @@ fn debugfs_builder(fs: Arc<SimpleFs>) -> DirMaker {
 fn render_scheduler_metrics() -> alloc::string::String {
     use core::fmt::Write;
 
-    let metrics = ax_runtime::task::qperf_runtime_scheduler_metrics_snapshot();
+    let metrics = ax_runtime::diagnostics::qperf_runtime_scheduler_metrics_snapshot();
     let task = metrics.task;
     let pipe = crate::file::pipe_qperf_metrics_snapshot();
     let mut output = alloc::string::String::new();

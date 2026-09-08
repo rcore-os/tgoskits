@@ -1,7 +1,4 @@
-use ax_runtime::task::{
-    MembarrierCommand, MembarrierError, MembarrierRegistration, TaskError, membarrier,
-    register_current_membarrier,
-};
+use {ax_runtime::task::sync::membarrier::MembarrierCommand, ax_runtime::task::sync::membarrier::MembarrierError, ax_runtime::task::runtime::resource::MembarrierRegistration, ax_runtime::task::thread::TaskError, ax_runtime::task::sync::membarrier::membarrier, ax_runtime::task::sync::membarrier::register_current_membarrier};
 use linux_raw_sys::general::membarrier_cmd;
 
 use crate::StarryError;

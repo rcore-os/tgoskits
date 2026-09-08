@@ -8,7 +8,7 @@ pub(crate) type ThreadWakeHandle = arceos::ArceOsThreadWakeHandle;
 pub(crate) type WakeResult = arceos::ArceOsWakeResult;
 pub(crate) type IrqNotification = arceos::ArceOsIrqNotification;
 pub(crate) type ThreadExtensionBorrow<'thread> =
-    ax_std::os::arceos::task::ThreadOsExtensionBorrow<'thread>;
+    ax_std::os::arceos::thread::ThreadOsExtensionBorrow<'thread>;
 pub(crate) type WaitQueue = arceos::ArceOsWaitQueue;
 pub(crate) type WaitQueueHandle = arceos::ArceOsWaitQueueHandle;
 pub(crate) use arceos::{

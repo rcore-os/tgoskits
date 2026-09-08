@@ -1,6 +1,6 @@
 //! Fixed-owner notification for one network queue executor.
 
-use ax_task::{IrqWaitCell, IrqWorkerWaiter};
+use ax_task::sync::irq::{IrqWaitCell, IrqWorkerWaiter};
 
 /// Sticky hard-IRQ event consumed by one CPU-pinned queue executor.
 pub(super) struct QueueNotification {

@@ -19,7 +19,7 @@ fn runtime_page_fault_handler(
     flags: ax_hal::trap::PageFaultFlags,
 ) -> bool {
     #[cfg(feature = "stack-guard-page")]
-    if crate::task::diagnose_current_stack_guard_page_fault(addr) {
+    if crate::diagnostics::diagnose_current_stack_guard_page_fault(addr) {
         return false;
     }
 
@@ -115,7 +115,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     crate::panic_output::install_std_hook();
 
     #[cfg(feature = "tls")]
-    crate::task::initialize_early_bootstrap_tls()
+    crate::thread::initialize_early_bootstrap_tls()
         .expect("failed to initialize primary bootstrap TLS");
 
     let layout = ax_hal::mem::virtual_address_space()
@@ -157,7 +157,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
         ax_hal::trap::set_page_fault_handler(runtime_page_fault_handler);
     }
     initialize_scheduler_before_platform(
-        || crate::task::initialize_primary(cpu_id),
+        || crate::thread::initialize_primary(cpu_id),
         || initialize_primary_platform(cpu_id, arg),
     )
     .expect("failed to initialize primary task scheduler");
@@ -182,15 +182,15 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     // physical self-doorbell, including the bootstrap scheduling pass below.
     #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
     ax_ipi::mark_current_cpu_ready();
-    let online_cpu =
-        crate::task::publish_current_cpu_online().expect("failed to publish primary scheduler CPU");
-    crate::task::start_current_ktimer_service().expect("failed to create primary ktimer service");
+    let online_cpu = crate::thread::publish_current_cpu_online()
+        .expect("failed to publish primary scheduler CPU");
+    crate::thread::start_current_ktimer_service().expect("failed to create primary ktimer service");
     crate::clock_event_runtime::enable_irqs_after_scheduler_online(online_cpu);
     #[cfg(feature = "paging")]
     ax_hal::cache::publish_current_cpu_tlb_ready(tlb_preparation)
         .expect("primary CPU failed to publish TLB readiness");
     crate::guard::release_bootstrap_preemption();
-    crate::task::start_deferred_task_work_service()
+    crate::thread::start_deferred_task_work_service()
         .expect("failed to start deferred scheduler task-work service");
 
     crate::devices::probe_all_devices();

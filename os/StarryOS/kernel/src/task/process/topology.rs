@@ -13,11 +13,11 @@ use super::{
     ChildRelations, GroupMoveScope, ProcessGroup, ProcessRelationTxn, RelationLock, Session,
 };
 use crate::{
-    sync::PiMutex,
+    sync::Mutex,
     task::{PidIdentity, TgidNumber, TidNumber},
 };
 
-type ThreadGroupLock<T> = PiMutex<T>;
+type ThreadGroupLock<T> = Mutex<T>;
 
 #[derive(Default)]
 pub(crate) struct ThreadGroup {
@@ -621,7 +621,7 @@ mod tests {
 
     #[axtest::axtest]
     fn thread_group_uses_a_sleepable_pi_lock() {
-        fn assert_pi_mutex<T>(_: &crate::sync::PiMutex<T>) {}
+        fn assert_pi_mutex<T>(_: &crate::sync::Mutex<T>) {}
 
         let mut fixture = TestProcessFixture::new();
         let process = fixture.init();

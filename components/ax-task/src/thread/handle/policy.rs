@@ -16,11 +16,11 @@ impl ThreadCore {
     pub(crate) fn publish_effective_schedule(
         &self,
         policy: SchedulePolicy,
-        entity: &crate::SchedulingEntity,
+        entity: &crate::sched::algorithm::SchedulingEntity,
     ) {
         let absolute_deadline_ns = entity
             .deadline()
-            .and_then(crate::DeadlineEntity::absolute_deadline_ns);
+            .and_then(crate::thread::DeadlineEntity::absolute_deadline_ns);
         if self.effective_schedule_matches(policy, absolute_deadline_ns) {
             return;
         }

@@ -8,9 +8,7 @@ use core::{
 
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
-use ax_std::os::arceos::task::{
-    self as scheduler, IrqWaitCell, IrqWaitRegistration, ThreadId, WaitQueue,
-};
+use {ax_std::os::arceos::task as scheduler, ax_std::os::arceos::task::sync::irq::IrqWaitCell, ax_std::os::arceos::task::sync::irq::IrqWaitRegistration, ax_std::os::arceos::task::thread::ThreadId, ax_std::os::arceos::task::sync::WaitQueue};
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use bytemuck::NoUninit;
 use k230_kpu::{
@@ -523,7 +521,7 @@ fn start_kpu_irq_service() -> bool {
 }
 
 fn kpu_irq_service() {
-    let current = scheduler::current_thread_handle()
+    let current = scheduler::thread::current::current_thread_handle()
         .unwrap_or_else(|error| panic!("KPU IRQ service has no scheduler thread: {error}"));
     let waiter = KPU_SERVICE_WAITER.get_or_init(|| create_kpu_service_waiter(&current));
     assert_eq!(
@@ -546,7 +544,7 @@ fn kpu_irq_service() {
     }
 }
 
-fn create_kpu_service_waiter(current: &scheduler::ThreadHandle) -> KpuServiceWaiter {
+fn create_kpu_service_waiter(current: &scheduler::thread::ThreadHandle) -> KpuServiceWaiter {
     KpuServiceWaiter {
         owner: current.id(),
         registration: IrqWaitRegistration::new(current.wake_handle()),

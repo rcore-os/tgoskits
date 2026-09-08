@@ -33,7 +33,7 @@ use crate::{
     file::{File as KernelFile, FileLike, IoDst, IoSrc, Kstat},
     mm::{VmMutPtr, VmPtr, vm_load, vm_write_slice},
     pseudofs::{SimpleDir, SimpleFs},
-    sync::{IrqMutex as Mutex, PiMutex},
+    sync::{IrqMutex, Mutex},
 };
 
 fn create_filesystem(manager: Arc<UsbFsManager>) -> Filesystem {
@@ -67,7 +67,7 @@ pub(crate) fn new_usbfs() -> StarryResult<Option<Filesystem>> {
     // Controller initialization may await command completions delivered by it.
     irq::start_event_pump();
 
-    let init_result = Arc::new(Mutex::new(None));
+    let init_result = Arc::new(IrqMutex::new(None));
     let worker_result = init_result.clone();
     let worker_manager = manager.clone();
     let init_worker = crate::task::spawn_kernel_thread(
@@ -208,11 +208,11 @@ pub(crate) fn open_usbfs_file(
         bus_num: ops.bus_num,
         device_num: ops.device_num,
         snapshot,
-        lease: PiMutex::new(None),
-        lifecycle_lock: PiMutex::new(()),
-        claimed_interfaces: Mutex::new(Default::default()),
-        submitted_urbs: Arc::new(PiMutex::new(VecDeque::new())),
-        pending_urbs: Arc::new(Mutex::new(VecDeque::new())),
+        lease: Mutex::new(None),
+        lifecycle_lock: Mutex::new(()),
+        claimed_interfaces: IrqMutex::new(Default::default()),
+        submitted_urbs: Arc::new(Mutex::new(VecDeque::new())),
+        pending_urbs: Arc::new(IrqMutex::new(VecDeque::new())),
         poll_urbs: Arc::new(PollSet::new()),
         urb_worker: Arc::new(UrbWorker::new()),
     }))
@@ -227,11 +227,11 @@ struct UsbDeviceFile {
     bus_num: u8,
     device_num: u8,
     snapshot: descriptor::UsbDeviceSnapshot,
-    lease: PiMutex<Option<Arc<manager::UsbDeviceLease>>>,
-    lifecycle_lock: PiMutex<()>,
-    claimed_interfaces: Mutex<alloc::collections::BTreeMap<u8, u8>>,
-    submitted_urbs: Arc<PiMutex<VecDeque<SubmittedUrb>>>,
-    pending_urbs: Arc<Mutex<VecDeque<CompletedUrb>>>,
+    lease: Mutex<Option<Arc<manager::UsbDeviceLease>>>,
+    lifecycle_lock: Mutex<()>,
+    claimed_interfaces: IrqMutex<alloc::collections::BTreeMap<u8, u8>>,
+    submitted_urbs: Arc<Mutex<VecDeque<SubmittedUrb>>>,
+    pending_urbs: Arc<IrqMutex<VecDeque<CompletedUrb>>>,
     poll_urbs: Arc<PollSet>,
     urb_worker: Arc<UrbWorker>,
 }
@@ -1534,7 +1534,7 @@ impl Drop for UsbDeviceFile {
 }
 
 fn complete_urb(
-    pending_urbs: &Arc<Mutex<VecDeque<CompletedUrb>>>,
+    pending_urbs: &Arc<IrqMutex<VecDeque<CompletedUrb>>>,
     poll_urbs: &Arc<PollSet>,
     completed: CompletedUrb,
 ) {
