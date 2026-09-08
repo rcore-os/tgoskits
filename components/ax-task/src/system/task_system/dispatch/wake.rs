@@ -887,6 +887,10 @@ impl TaskSystem {
         // PREEMPT_RT disables TTWU_QUEUE. The waker therefore retains the task
         // lock, pairs this acquire wait with `finish_task()`'s release-clear of
         // `on_cpu`, then activates the task under its selected rq lock.
+        // Only a Blocked-to-Waking transition reaches this wait. Both park
+        // paths install a local handoff whose tail clears on_cpu without the
+        // task lock. A migration handoff retains Running until its tail has
+        // cleared on_cpu, so its lock-taking tail cannot be this wait's peer.
 
         let (sched, irq_owner) = sched_guard.split_irq_owner();
         sched.placement.wait_until_not_on_cpu();

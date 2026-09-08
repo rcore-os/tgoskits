@@ -20,6 +20,8 @@ const BROWSER_INPUT_CAPACITY: usize = 4096;
 pub(super) fn router() -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/assets/xterm.js", get(xterm_javascript))
+        .route("/assets/xterm.css", get(xterm_stylesheet))
         .route("/api/consoles", get(console_descriptions))
         .route("/ws/{endpoint}", get(upgrade_console))
 }
@@ -30,11 +32,33 @@ async fn index() -> impl IntoResponse {
             (header::CACHE_CONTROL, "no-store"),
             (
                 header::CONTENT_SECURITY_POLICY,
-                "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
             ),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         ],
         Html(page::INDEX_HTML),
+    )
+}
+
+async fn xterm_javascript() -> impl IntoResponse {
+    (
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        page::XTERM_JAVASCRIPT,
+    )
+}
+
+async fn xterm_stylesheet() -> impl IntoResponse {
+    (
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        page::XTERM_STYLESHEET,
     )
 }
 

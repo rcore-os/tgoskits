@@ -89,10 +89,7 @@ fn rx_allocation_failure_recovers_without_disabling_tx() {
         &DMA,
     );
     let mut device = rd_net::prepare_device(
-        Box::new(TestDevice {
-            trace: Arc::clone(&trace),
-            tx_retry: false,
-        }),
+        Box::new(TestDevice(Arc::clone(&trace), TestTx(Arc::clone(&trace)))),
         dma,
     )
     .unwrap();
@@ -105,10 +102,7 @@ fn rx_allocation_failure_recovers_without_disabling_tx() {
     let (recycle, rx_recycle) = spsc_ring(2);
     let (mut transmit, tx_ready) = spsc_ring(2);
     let (tx_free, _free) = spsc_ring(2);
-    let shared = Arc::new(PollGroupState::new(
-        0,
-        Arc::new(crate::queue_runtime::QueueNotification::new()),
-    ));
+    let shared = Arc::new(PollGroupState::new(0, Arc::new(QueueNotification::new())));
     shared.activate(false);
     let mut executor = QueueGroupExecutor {
         group,
@@ -205,10 +199,7 @@ fn queue_config() -> QueueConfig {
     }
 }
 
-struct TestTx {
-    trace: Trace,
-    retry: bool,
-}
+struct TestTx(Trace);
 
 impl ITxQueue for TestTx {
     fn id(&self) -> NetQueueId {
@@ -217,16 +208,12 @@ impl ITxQueue for TestTx {
     fn config(&self) -> QueueConfig {
         queue_config()
     }
-    fn submit(&mut self, buffer: DmaBuffer) -> Result<(), SubmitError> {
-        if self.retry {
-            self.trace.lock().unwrap().push("tx_retry");
-            return Err(SubmitError::new(buffer, NetError::Retry));
-        }
-        self.trace.lock().unwrap().push("tx");
+    fn submit(&mut self, _buffer: DmaBuffer) -> Result<(), SubmitError> {
+        self.0.lock().unwrap().push("tx");
         Ok(())
     }
     fn flush(&mut self) {
-        self.trace.lock().unwrap().push("flush");
+        self.0.lock().unwrap().push("flush");
     }
     fn reclaim(&mut self) -> Option<DmaBuffer> {
         None
@@ -294,16 +281,13 @@ impl NetPollIrqControl for TestIrq {
     }
 }
 
-struct TestDevice {
-    trace: Trace,
-    tx_retry: bool,
-}
-impl rd_net::DriverGeneric for TestDevice {
+struct TestDevice<T>(Trace, T);
+impl<T: ITxQueue> rd_net::DriverGeneric for TestDevice<T> {
     fn name(&self) -> &str {
         "test"
     }
 }
-impl NetDevice for TestDevice {
+impl<T: ITxQueue + 'static> NetDevice for TestDevice<T> {
     fn into_parts(self: Box<Self>) -> Result<NetDeviceParts, NetError> {
         Ok(NetDeviceParts {
             info: NetDeviceInfo::new("test", [0; 6]),
@@ -312,12 +296,9 @@ impl NetDevice for TestDevice {
             poll_groups: vec![NetPollGroupParts {
                 id: NetPollGroupId::new(0),
                 queues: NetQueuePairParts {
-                    tx: Box::new(TestTx {
-                        trace: Arc::clone(&self.trace),
-                        retry: self.tx_retry,
-                    }),
+                    tx: Box::new(self.1),
                     rx: Box::new(TestRx {
-                        trace: self.trace,
+                        trace: self.0,
                         completions: VecDeque::new(),
                         initial: 2,
                         reclaimed: 0,
@@ -347,10 +328,7 @@ fn rx_refill_retry_drains_completions_and_preserves_tx_flush() {
         &TEST_DMA,
     );
     let mut device = rd_net::prepare_device(
-        Box::new(TestDevice {
-            trace: Arc::clone(&trace),
-            tx_retry: false,
-        }),
+        Box::new(TestDevice(Arc::clone(&trace), TestTx(Arc::clone(&trace)))),
         dma,
     )
     .unwrap();
@@ -360,10 +338,7 @@ fn rx_refill_retry_drains_completions_and_preserves_tx_flush() {
     let (recycle, rx_recycle) = spsc_ring(2);
     let (mut transmit, tx_ready) = spsc_ring(2);
     let (tx_free, _free) = spsc_ring(2);
-    let shared = Arc::new(PollGroupState::new(
-        0,
-        Arc::new(crate::queue_runtime::QueueNotification::new()),
-    ));
+    let shared = Arc::new(PollGroupState::new(0, Arc::new(QueueNotification::new())));
     shared.activate(false);
     let buffer = group.tx_pool.allocate(60).unwrap();
     assert!(
@@ -430,9 +405,40 @@ fn rx_refill_retry_drains_completions_and_preserves_tx_flush() {
     );
 }
 
+struct GatedTx {
+    blocked: Arc<AtomicBool>,
+    packets: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+impl ITxQueue for GatedTx {
+    fn id(&self) -> NetQueueId {
+        NetQueueId::new(0)
+    }
+
+    fn config(&self) -> QueueConfig {
+        queue_config()
+    }
+
+    fn submit(&mut self, buffer: DmaBuffer) -> Result<(), SubmitError> {
+        if self.blocked.load(Ordering::Relaxed) {
+            return Err(SubmitError::new(buffer, NetError::Retry));
+        }
+        buffer.read_with_cpu(buffer.len(), |packet| {
+            self.packets.lock().unwrap().push(packet.to_vec());
+        });
+        Ok(())
+    }
+
+    fn reclaim(&mut self) -> Option<DmaBuffer> {
+        None
+    }
+}
+
 #[test]
-fn tx_backpressure_does_not_starve_rx_completions() {
+fn tx_backpressure_allows_rx_delivery_before_tx_resumes() {
     let trace = Arc::new(Mutex::new(Vec::new()));
+    let blocked = Arc::new(AtomicBool::new(true));
+    let packets = Arc::new(Mutex::new(Vec::new()));
     let dma = DeviceDma::new(
         DmaDeviceInfo::new(
             DmaDomainId::Direct,
@@ -442,28 +448,36 @@ fn tx_backpressure_does_not_starve_rx_completions() {
         &TEST_DMA,
     );
     let mut device = rd_net::prepare_device(
-        Box::new(TestDevice {
-            trace: Arc::clone(&trace),
-            tx_retry: true,
-        }),
+        Box::new(TestDevice(
+            trace,
+            GatedTx {
+                blocked: Arc::clone(&blocked),
+                packets: Arc::clone(&packets),
+            },
+        )),
         dma,
     )
     .unwrap();
     let mut group = device.poll_groups.pop().unwrap();
     group.rx.initial_refill(2).unwrap();
-    let buffer = group.tx_pool.allocate(60).unwrap();
     let (rx_ready, mut received) = spsc_ring(2);
     let (recycle, rx_recycle) = spsc_ring(2);
     let (mut transmit, tx_ready) = spsc_ring(2);
     let (tx_free, _free) = spsc_ring(2);
-    transmit
-        .push(TxRequest {
-            buffer,
-            options: TxSubmitOptions::default(),
-        })
-        .unwrap_or_else(|_| panic!("the empty TX ring must accept one request"));
     let shared = Arc::new(PollGroupState::new(0, Arc::new(QueueNotification::new())));
     shared.activate(false);
+    for byte in [0xa5, 0x5a] {
+        let mut buffer = group.tx_pool.allocate(60).unwrap();
+        buffer.write_with_cpu(|packet| packet.fill(byte));
+        assert!(
+            transmit
+                .push(TxRequest {
+                    buffer,
+                    options: TxSubmitOptions::default(),
+                })
+                .is_ok()
+        );
+    }
     let mut executor = QueueGroupExecutor {
         group,
         rx_ready,
@@ -480,19 +494,29 @@ fn tx_backpressure_does_not_starve_rx_completions() {
         retry_at: None,
         shared,
     };
-
-    let _ = executor.poll(256);
+    // A software-backed NIC may need its completed RX slots drained before
+    // the common owner can finish outstanding TX. Keep TX blocked until RX
+    // delivery is proven, rather than relying on an IRQ or a timed retry.
+    executor.poll(256);
+    executor.poll(256);
+    for byte in [1, 0] {
+        let completion = received
+            .pop()
+            .expect("TX Retry starved a completed RX packet");
+        completion
+            .buffer
+            .read_with_cpu(60, |packet| assert_eq!(packet, &[byte; 60]));
+    }
+    assert!(packets.lock().unwrap().is_empty());
     assert!(
-        trace.lock().unwrap().contains(&"rx"),
-        "a retained busy TX request must not prevent consuming RX completions"
+        matches!(executor.poll(256), GroupPollOutcome::Idle(_)),
+        "a still-blocked TX must rearm instead of busy-polling"
     );
-    let _ = executor.poll(256);
-    assert!(
-        executor.pending_tx.is_some(),
-        "TX ownership must be retained"
+    blocked.store(false, Ordering::Relaxed);
+    executor.poll(256);
+    executor.poll(256);
+    assert_eq!(
+        *packets.lock().unwrap(),
+        vec![vec![0xa5; 60], vec![0x5a; 60]]
     );
-    assert!(received.pop().is_some());
-    assert!(received.pop().is_some());
-    assert!(received.pop().is_none());
-    assert!(matches!(executor.poll(256), GroupPollOutcome::Idle(0)));
 }

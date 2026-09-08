@@ -8,6 +8,5 @@ repository.workspace = true
 keywords = ["hypervisor", "ivc", "shared-memory", "no-std"]
 categories = ["virtualization", "no-std"]
 description = "Shared-memory protocol helpers for AxVisor inter-VM communication"
-readme = "README.md"
 
 [dependencies]

@@ -21,3 +21,16 @@ cargo xtask test
 pull_request_command = '''
 cargo xtask test --since "$SINCE_REF"
 '''
+
+[[check]]
+id = "test-qperf"
+name = "qperf QEMU 11.1.1 ABI and sampling"
+runner = "ubuntu-base"
+timeout_minutes = 10
+command = '''
+apps/qperf/prebuild.sh cargo build --release -p qperf -p qperf-analyzer --target-dir tools/qperf/target
+apps/qperf/prebuild.sh cargo test -p qperf --test reg
+python3 tools/qperf/tests/prebuild.py
+python3 tools/qperf/tests/qemu_load.py tools/qperf/target/release/libqperf.so
+python3 tools/qperf/tests/qemu_sample.py tools/qperf/target/release/libqperf.so tools/qperf/target/release/qperf-analyzer
+'''

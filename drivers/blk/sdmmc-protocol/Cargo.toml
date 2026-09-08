@@ -5,7 +5,6 @@ edition = "2024"
 license = "Apache-2.0"
 description = "no_std SD/MMC protocol building blocks for embedded systems"
 documentation = "https://docs.rs/sdmmc-protocol"
-readme = "README.md"
 keywords = ["sd", "mmc", "sdio", "embedded", "no_std"]
 categories = ["embedded", "no-std", "hardware-support"]
 

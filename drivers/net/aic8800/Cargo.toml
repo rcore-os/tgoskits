@@ -4,7 +4,6 @@ version = "0.2.9"
 edition = "2024"
 license = "Apache-2.0"
 repository.workspace = true
-readme = "README.md"
 description = "OS-independent AIC8800 Wi-Fi driver core"
 # Vendor firmware blobs are not vendored into git or the package tarball; the
 # build script provisions them into OUT_DIR (from $AIC8800_FIRMWARE_DIR, the

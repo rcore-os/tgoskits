@@ -6,7 +6,6 @@ authors.workspace = true
 license = "MIT"
 repository.workspace = true
 documentation = "https://docs.rs/ax-tracepoint"
-readme = "README.md"
 keywords = ["tracepoint", "kernel", "tracing", "no-std"]
 description = "A Rust crate for implementing tracepoints in operating systems."
 build = "build.rs"
