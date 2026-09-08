@@ -2,28 +2,38 @@
 
 #[path = "../src/perf/cpu_id.rs"]
 mod cpu_id;
+mod hw_owner {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(super) enum Counter {
+        Cycle,
+        Programmable(usize),
+    }
+}
 #[path = "../src/perf/sampling_lifecycle.rs"]
 mod sampling_lifecycle;
 
 use cpu_id::PerfCpuId;
+use hw_owner::Counter;
 use sampling_lifecycle::{PmuCloseAction, PmuRunState, PmuStopClaim, SampleRegistration};
+
+const TEST_COUNTER: Counter = Counter::Programmable(2);
 
 #[test]
 fn cancelled_arm_returns_to_the_detached_state() {
     let cpu = PerfCpuId::new(0);
     let mut state = PmuRunState::new();
-    let arm = state.begin_arm(cpu).unwrap();
+    let arm = state.begin_arm(cpu, TEST_COUNTER).unwrap();
 
     state.cancel_arm(arm);
 
-    assert!(state.begin_arm(cpu).is_some());
+    assert!(state.begin_arm(cpu, TEST_COUNTER).is_some());
 }
 
 #[test]
 fn close_after_registry_publish_must_disarm_before_reclaim() {
     let cpu = PerfCpuId::new(1);
     let mut state = PmuRunState::new();
-    let arm = state.begin_arm(cpu).unwrap();
+    let arm = state.begin_arm(cpu, TEST_COUNTER).unwrap();
     let registration = SampleRegistration::new(cpu, 3, 17);
     state.publish_registration(arm, registration);
 
@@ -31,6 +41,7 @@ fn close_after_registry_publish_must_disarm_before_reclaim() {
         panic!("a slot is IRQ-reachable before the legacy running flag is published");
     };
     assert_eq!(lease.owner(), cpu);
+    assert_eq!(lease.counter(), TEST_COUNTER);
     assert_eq!(lease.registration(), Some(registration));
 }
 
@@ -38,7 +49,7 @@ fn close_after_registry_publish_must_disarm_before_reclaim() {
 fn fully_running_generation_is_disarmed_on_its_owner_cpu() {
     let cpu = PerfCpuId::new(2);
     let mut state = PmuRunState::new();
-    let arm = state.begin_arm(cpu).unwrap();
+    let arm = state.begin_arm(cpu, TEST_COUNTER).unwrap();
     let registration = SampleRegistration::new(cpu, 4, 23);
     state.publish_registration(arm, registration);
     state.finish_arm(arm);
@@ -56,7 +67,7 @@ fn fully_running_generation_is_disarmed_on_its_owner_cpu() {
 fn close_request_remains_visible_to_the_switch_out_owner() {
     let cpu = PerfCpuId::new(3);
     let mut state = PmuRunState::new();
-    let arm = state.begin_arm(cpu).unwrap();
+    let arm = state.begin_arm(cpu, TEST_COUNTER).unwrap();
     state.finish_arm(arm);
 
     let PmuCloseAction::Stop(lease) = state.begin_close() else {
@@ -81,7 +92,7 @@ fn close_request_remains_visible_to_the_switch_out_owner() {
 fn disable_stops_one_generation_without_closing_the_event() {
     let cpu = PerfCpuId::new(1);
     let mut state = PmuRunState::new();
-    let arm = state.begin_arm(cpu).unwrap();
+    let arm = state.begin_arm(cpu, TEST_COUNTER).unwrap();
     state.finish_arm(arm);
 
     let PmuCloseAction::Stop(lease) = state.begin_disable() else {
@@ -94,7 +105,7 @@ fn disable_stops_one_generation_without_closing_the_event() {
     state.finish_owner_stop(lease);
     assert!(!state.is_stopping());
     assert!(
-        state.begin_arm(cpu).is_some(),
+        state.begin_arm(cpu, TEST_COUNTER).is_some(),
         "disable must permit re-enable"
     );
 }
@@ -103,7 +114,7 @@ fn disable_stops_one_generation_without_closing_the_event() {
 fn failed_owner_stop_can_be_claimed_again() {
     let cpu = PerfCpuId::new(2);
     let mut state = PmuRunState::new();
-    let arm = state.begin_arm(cpu).unwrap();
+    let arm = state.begin_arm(cpu, TEST_COUNTER).unwrap();
     state.finish_arm(arm);
 
     let PmuCloseAction::Stop(lease) = state.begin_close() else {
@@ -128,7 +139,7 @@ fn failed_owner_stop_can_be_claimed_again() {
 fn close_upgrades_an_in_flight_disable_to_permanent_teardown() {
     let cpu = PerfCpuId::new(4);
     let mut state = PmuRunState::new();
-    let arm = state.begin_arm(cpu).unwrap();
+    let arm = state.begin_arm(cpu, TEST_COUNTER).unwrap();
     state.finish_arm(arm);
 
     let PmuCloseAction::Stop(lease) = state.begin_disable() else {
@@ -149,7 +160,7 @@ fn close_upgrades_an_in_flight_disable_to_permanent_teardown() {
 fn a_stale_lease_cannot_stop_the_next_arm_generation() {
     let cpu = PerfCpuId::new(5);
     let mut state = PmuRunState::new();
-    let first_arm = state.begin_arm(cpu).unwrap();
+    let first_arm = state.begin_arm(cpu, TEST_COUNTER).unwrap();
     state.finish_arm(first_arm);
     let PmuCloseAction::Stop(first) = state.begin_disable() else {
         panic!("first disable must return its lease");
@@ -160,7 +171,7 @@ fn a_stale_lease_cannot_stop_the_next_arm_generation() {
     );
     state.finish_owner_stop(first);
 
-    let second_arm = state.begin_arm(cpu).unwrap();
+    let second_arm = state.begin_arm(cpu, TEST_COUNTER).unwrap();
     state.finish_arm(second_arm);
     assert_eq!(state.claim_requested_stop(first), PmuStopClaim::Stale);
 }
