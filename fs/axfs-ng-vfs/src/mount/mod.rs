@@ -1211,13 +1211,13 @@ impl Location {
         assert!(self.entry.ptr_eq(&self.mountpoint.root));
 
         let plan = self.mountpoint.plan_unmount(UnmountKind::Normal)?;
-        self.filesystem().flush()?;
-        self.mountpoint.commit_normal_after_flush(plan)?;
-        self.finish_unmount();
-        Ok(())
+        self.commit_unmount(plan)
     }
 
-    /// Flushes this mount once and commits an already admitted unmount plan.
+    /// Flushes this mount once and commits an already admitted normal unmount.
+    ///
+    /// The original attachments and complete propagation set must still match
+    /// admission. Unrelated namespace mutations do not invalidate the plan.
     pub fn commit_unmount(&self, plan: UnmountPlan) -> VfsResult<()> {
         if !self.is_root_of_mount()
             || !plan
@@ -1227,7 +1227,7 @@ impl Location {
             return Err(VfsError::InvalidInput);
         }
         self.filesystem().flush()?;
-        plan.commit()?;
+        self.mountpoint.commit_normal_after_flush(plan)?;
         self.finish_unmount();
         Ok(())
     }

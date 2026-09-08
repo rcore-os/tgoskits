@@ -26,6 +26,9 @@ use crate::{
     task::tasks,
 };
 
+#[cfg(all(test, axtest))]
+mod tests;
+
 const MNT_FORCE: i32 = 1;
 const MNT_DETACH: i32 = 2;
 const MNT_EXPIRE: i32 = 4;
