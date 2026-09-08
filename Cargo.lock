@@ -6119,30 +6119,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d8f70e07b9c3962945a74e59ca1c511bba65b6419468acc217c457d93f3c740"
 
 [[package]]
-name = "qemu-plugin"
-version = "10.1.0-v2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19df903439a896a96aec394ca3e1b6e0fdbd92b8112aec484cd9a56c9453e806"
-dependencies = [
- "anyhow",
- "lazy_static",
- "libc",
- "libloading",
- "qemu-plugin-sys",
- "thiserror 2.0.20",
- "windows",
-]
-
-[[package]]
-name = "qemu-plugin-sys"
-version = "10.1.0-v2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "626809b8b33148371d3e2754834b68e27ff0bf5a5b326a67d83fccd4e1699cab"
-dependencies = [
- "anyhow",
-]
-
-[[package]]
 name = "qoi"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6158,7 +6134,6 @@ dependencies = [
  "anyhow",
  "bincode",
  "crossbeam-channel",
- "qemu-plugin",
  "zerocopy",
 ]
 

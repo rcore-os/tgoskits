@@ -649,7 +649,11 @@ impl Ext4FileSystem {
                             &recovered_journal_blocks,
                         )?;
                         fs.clear_recovery_state();
-                    } else if !options.readonly && block_dev.is_use_journal() {
+                    }
+                    // Replay finishes the previous mount's recovery. A writable
+                    // journal owner must advertise recovery again before it can
+                    // commit new transactions, including on this replay path.
+                    if !options.readonly && block_dev.is_use_journal() {
                         fs.set_recovery_state();
                     }
                 }

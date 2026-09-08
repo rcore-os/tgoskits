@@ -2624,8 +2624,33 @@ fn replay_checksum_journal_from_debugfs(checksum_version: u8) {
     {
         let dev = FileBlockDevice::open(image.clone());
         let mut dev = Jbd2Dev::initial_jbd2dev(0, dev, true);
-        let fs =
+        let mut fs =
             Ext4FileSystem::mount(&mut dev).expect("mount image with pending checksummed journal");
+        let mounted_header = dumpe2fs_header(&image, "writable mount after journal replay");
+        assert!(
+            mounted_header.contains("needs_recovery"),
+            "writable replay must persist needs_recovery before returning\n{mounted_header}"
+        );
+
+        mkdir(&mut dev, &mut fs, "/after-replay").expect("write after journal replay");
+        fs.sync_filesystem(&mut dev)
+            .expect("sync post-replay metadata");
+        // Snapshot only persisted bytes, without clean unmount or checkpointing.
+        // Linux must recover the new transaction without interactive repair.
+        let crash_image = temp_dir.join("after-replay-crash.img");
+        std::fs::copy(&image, &crash_image).expect("snapshot synced writable mount");
+        let output = Command::new("e2fsck")
+            .arg("-p")
+            .arg(&crash_image)
+            .output()
+            .expect("automatically recover post-replay snapshot");
+        assert!(
+            e2fsck_status_ok(&output, true),
+            "post-replay sync must allow automatic recovery\n{}",
+            command_text(&output)
+        );
+        assert_debugfs_path_exists(&crash_image, "/after-replay");
+        e2fsck_readonly_clean(&crash_image, "post-replay crash recovery");
         umount(fs, &mut dev).expect("umount image after replay");
     }
 

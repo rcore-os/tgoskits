@@ -120,6 +120,10 @@ impl ProtocolGroupPort {
             self.rx_recycler.recycle(completion.buffer);
             return Err(NetDeviceError::Io);
         }
+        // Freeing an RX-ready slot can unblock the queue owner independently
+        // of recycling this DMA token. The protocol may retain the frame while
+        // waiting for TX space, which itself requires that owner to run.
+        self.shared.schedule_task();
         Ok(ProtocolRxFrame::new(
             completion,
             Arc::clone(&self.rx_recycler) as Arc<dyn RxBufferRecycler>,
@@ -566,10 +570,10 @@ impl QueueGroupExecutor {
                             buffer,
                             options: request.options,
                         });
-                        if submitted > 0 {
-                            self.group.tx.flush();
-                        }
-                        return hardware_retry_outcome(work);
+                        // RX completion slots may hold up a software-backed
+                        // device's shared owner. Preserve the TX request, but
+                        // still drain RX before rearming this poll group.
+                        break;
                     }
                     if let Err(buffer) = self.tx_free.push(buffer) {
                         self.pending_tx_free = Some(buffer);
