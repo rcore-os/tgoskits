@@ -30,7 +30,7 @@ MMIO 与 PCI feature 要分开表达，例如 `virtio-gpu-mmio` 与 `virtio-gpu-
 | feature | 启用 |
 | --- | --- |
 | `block` | `rdif-block`、block OS glue |
-| `net` | `rd-net`、net OS glue |
+| `net` | `ax-sync`、`rd-net` 与 `PlatformNetDevice` 注册适配，不单独创建协议或队列任务 |
 | `display` | `rdif-display`、display OS glue |
 | `input` | `rdif-input`、input OS glue |
 | `vsock` | `rdif-vsock`、vsock OS glue |
@@ -59,7 +59,8 @@ VirtIO feature 组合能力边界和 PCI transport：
 | `fxmac` | `fxmac_rs` |
 | `intel-net` | `eth-intel` |
 | `realtek-rtl8125` | `realtek-rtl8125` |
-| `aic8800-wifi` | `aic8800/rdif` + `cv181x-sdhci` + `sdmmc-host` + `sdmmc-protocol` |
+| `ls2k1000-gmac` | `ax-driver::net::loongson_gmac`，启用 `net` 与 `ax-sync` |
+| `aic8800-wifi` | `net` + `aic8800/rdif` + `cv181x-sdhci` + `sdmmc-host` + `pbkdf2` + `sha1` |
 | `rknpu` | `rockchip-npu` |
 | `rga` | `rockchip-rga` |
 | `jpeg` | `rockchip-jpeg` |
@@ -76,6 +77,8 @@ SDHCI 以及其他尚未迁移或尚无完整硬件验证的 driver core 可以�
 | `xhci-mmio` / `xhci-pci` | `crab-usb` + MMIO/PCI transport |
 
 ## 配置原则
+
+`aic8800-wifi` 的 `cv181x-sdhci` 项是可选软件包依赖，不是同名块设备 feature；`sdmmc-protocol/sdio` 由 `aic8800` 的依赖引入。`drivers/ax-driver/Cargo.toml` 选择 probe 和驱动链接，`os/arceos/modules/axruntime/src/devices.rs` 在系统启用网络时建立队列运行时。硬件 feature 可链接不代表目标提供固定 IRQ 路由或所有硬件组合均已验证，初始化仍需满足[网络驱动](network.md)的亲和与所有权契约。
 
 - **能力边界优先**：feature 应先表达领域能力（`block`/`net`/`display`/...），再表达具体硬件（`nvme`/`fxmac`/...）。
 - **transport 分离**：MMIO 和 PCI transport 独立 feature，避免隐式耦合。

@@ -5,7 +5,7 @@ sidebar_label: "能力边界"
 
 # 能力边界 rdif
 
-`rdif-*` 是能力边界（capability boundary），只定义某类设备向上暴露什么能力，不负责设备发现、iomap、IRQ 注册、任务调度或系统启动顺序。块设备不新增 runtime crate：`rdif-block` 承载 owned-DMA controller/queue/IRQ 合同，`ax-fs-ng::block::runtime` 负责 channel、hctx 维护线程、阻塞订阅和 teardown。其它领域如网络仍可按需保留 runtime wrapper，负责 waker、poll、blocking API、buffer pool 等运行时行为。
+`rdif-*` 是能力边界（capability boundary），定义设备能力、资源所有权和操作前置条件，不负责设备发现、iomap、HAL IRQ 注册或任务调度。块设备由 `rdif-block` 承载 owned-DMA controller/queue/IRQ 合同，`ax-fs-ng::block::runtime` 负责 channel、hctx 维护线程、阻塞订阅和 teardown。网络由 `rdif-eth` 定义消费式部件交付，`rd-net` 准备 DMA 池和队列包装，`ax-net::queue_runtime` 执行固定 CPU 队列工作。
 
 所有 `rdif-*` crate 位于 `drivers/interface/`，公共基础是 `rdif-base`。
 
@@ -14,7 +14,7 @@ sidebar_label: "能力边界"
 | 能力 | interface crate | runtime crate | 上层消费 |
 | --- | --- | --- | --- |
 | 块设备 | `rdif-block` | `ax-fs-ng::block::runtime`（现有 crate 内模块） | block volume service、FS |
-| 网络设备 | `rdif-eth` | `rd-net` | net interface service、NET/NET-NG |
+| 网络设备 | `rdif-eth` | `rd-net` 准备层、`ax-net::queue_runtime` 执行层 | `EthernetFramePort`、`ax-net::Service` |
 | 显示 | `rdif-display` | `rd-display` | display service、Starry fb |
 | 输入 | `rdif-input` | `rd-input` | input service、Starry input |
 | vsock | `rdif-vsock` | `rd-vsock` | vsock service |
@@ -31,7 +31,15 @@ pub trait DriverGeneric: Send + Any {
 }
 ```
 
-每个 `rdif-*::Interface` trait 都继承 `DriverGeneric`，并定义该领域能力契约。设备实现 trait 后通过 `PlatformDevice::register()` 注册到 `rdrive`，上层通过 `Device<T>` 弱引用查询。
+领域能力不统一命名为 `Interface`。网络 `NetDevice` 继承 `DriverGeneric`，其 `into_parts(self: Box<Self>)` 消费完整设备；拆分后的 `ITxQueue`、`IRxQueue` 和 IRQ 端点拥有各自的小接口。`ax-driver` 注册的是携带平台元数据的 `PlatformNetDevice`，上层通过 `Device<PlatformNetDevice>` 取出待交付设备。
+
+## 网络部件
+
+`drivers/interface/rdif-eth/src/lib.rs` 的 `NetDeviceParts` 包含 `NetDeviceInfo`、`NetControlEndpoint`、可选 `WifiControl` 和全部 `NetPollGroupParts`。每个组独占一对 RX/TX 队列、任务侧 `NetPollIrqControl`、可选 `NetOwnerStartup` 和一个或多个 `NetHardIrqEndpoint`。完整网卡在拆分成功后不再作为共享对象参与收发。
+
+`DmaBuffer` 和 `SubmitError` 保持只能移动；成功提交转移令牌，拒绝提交返回原令牌及错误。`NetPollIrqControl::rearm_and_check(now_nanos)` 区分 `Idle`、`WorkPending` 和有绝对期限的 `RetryAt`。`shutdown()` 只有在硬件停止访问 DMA 后才能成功，调用者必须先禁用并同步相关 IRQ。
+
+能力接口不携带平台 `IrqId`，`NetIrqSourceId` 只在设备内标识中断来源。平台通过 `BindingInfo` 映射到物理 IRQ，运行时据此建立共享 IRQ 的 CPU 亲和域。完整字段、令牌路径和状态机位于[网络驱动](network.md)。
 
 ## rdif-block
 

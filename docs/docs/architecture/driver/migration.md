@@ -28,10 +28,16 @@ sidebar_label: "迁移记录"
 - 产出 `BlockVolume` 和裁剪后的 block reader。
 - `ax-fs` / `ax-fs-ng` 只消费 volume 和 FS block trait。
 
-### Phase 4: NET / NET-NG 硬切
+### Phase 4: 统一网络运行时
 
-- `ax-net` / `ax-net` 从 `AxNetDevice` 切到 `rd-net` 或 net service。
-- DHCP/static IP policy 留在 net service 或 NET/NET-NG，不回到 platform glue。
+旧 `AxNetDevice` 交付路径已替换为 `PlatformNetDevice` 的一次性移交。当前统一使用 `ax-net`，`rd-net` 是 DMA 准备和队列包装层，不是独立协议栈或 HAL IRQ 运行时。
+
+- `NetDevice::into_parts()` 交付控制端点、队列轮询组、可选 owner startup 和硬中断端点。
+- `ax-runtime::collect_net_devices()` 枚举 `rdrive`，准备 DMA 并解析完整 IRQ source 映射。
+- `NetworkRuntimeBuilder` 建立固定 CPU 队列执行器和 `EthernetFramePort`，`PinnedNetIrqRegistrar` 提供平台注册边界。
+- DHCP/static IP、路由和 DNS 保留在 `ax-net` 控制面，唯一协议执行器推进 smoltcp。
+
+运行期通过 SPSC 管道移动 DMA 令牌，不再锁住完整网卡对象调用协议收发；启动和停止的所有权约束由[网络驱动](network.md)定义。
 
 ### Phase 5: display / input / vsock 硬切
 

@@ -12,7 +12,7 @@ sidebar_label: "领域服务"
 | 领域 | 新 service 职责 | 上层边界 |
 | --- | --- | --- |
 | block | 枚举 disk，扫描 partition，生成 `BlockVolume`，根据 bootargs 选择 root candidate | FS 只拿 volume / FS block trait |
-| net | 枚举 `rd-net`，建立 interface，处理 DHCP/static IP policy | NET/NET-NG 只拿 net interface |
+| net | `ax-runtime` 枚举并移交设备；`ax-net` 建立队列运行时、协议接口与 DHCP/static IP 状态 | 协议层通过 `EthernetFramePort` 收发；socket 层消费统一协议状态 |
 | display | 枚举 `rdif-display` / `rd-display`，选择 primary display | display 模块和 Starry fb 只拿 display handle |
 | input | 枚举 `rdif-input` / `rd-input`，建立 event stream | input 模块和 Starry input 只拿 event source |
 | vsock | 枚举 `rdif-vsock` / `rd-vsock`，维护 connection/event API | vsock socket 层只拿 vsock device |
@@ -22,13 +22,15 @@ sidebar_label: "领域服务"
 ```mermaid
 flowchart TB
     Rdrive["rdrive typed registry"] --> BlockSvc["block volume service"]
-    Rdrive --> NetSvc["net interface service"]
+    Rdrive --> NetTake["ax-runtime: take_net_device"]
+    NetTake --> NetPrepare["rd-net: prepare_device"]
+    NetPrepare --> NetSvc["ax-net: queue_runtime / EthernetFramePort"]
     Rdrive --> DispSvc["display service"]
     Rdrive --> InSvc["input service"]
     Rdrive --> VsSvc["vsock service"]
 
     BlockSvc --> Fs["ax-fs / ax-fs-ng"]
-    NetSvc --> AxNet["ax-net"]
+    NetSvc --> AxNet["ax-net: Service / Router / socket"]
     DispSvc --> Display["display module / Starry fb"]
     InSvc --> Input["input module / Starry input"]
     VsSvc --> Vsock["vsock socket layer"]
@@ -71,9 +73,13 @@ FS 不再 import `ax_driver::{AxBlockDevice, AxDeviceContainer, PartitionInfo, P
 
 ## 网络设备消费
 
-`ax-net` 通过 `EthernetDriver` trait 对接网卡驱动，不直接依赖 FDT、PCI、MMIO、DMA 或平台 IRQ ABI。网络 service 从 `rd-net` 枚举设备，建立 interface，处理 DHCP/static IP policy。
+`os/arceos/modules/axruntime/src/devices.rs` 的 `collect_net_devices()` 从 `rdrive` 枚举 `PlatformNetDevice`，调用 `take_net_device()` 一次性取走网卡、DMA 能力和 IRQ 映射。`rd_net::prepare_device()` 准备队列及 DMA 池；`ax_net::NetworkRuntimeBuilder::build()` 成功后交付 `NetworkQueueRuntime` 和 `EthernetFramePortList`。`rd-net` 不承担设备枚举、任务创建或 HAL IRQ 注册。
 
-详细网络消费模型见[网络栈 - 系统集成](../net/integration.md)。
+`net/ax-net/src/device/driver.rs` 的 `EthernetFramePort` 是协议层收发边界，隐藏设备寄存器、描述符和传输实现。`ax-net::queue_runtime` 本身使用 DMA 令牌与 `IrqId`，负责固定 CPU 队列推进；HAL 注册形态由 `ax-runtime::RuntimeNetIrqRegistrar` 实现，不能把帧接口的隔离范围扩大到整个 `ax-net` crate。
+
+`ax_net::init_network()` 建立逻辑接口、路由、DHCP 和 DNS 状态。`Service` 持有单个 smoltcp `Interface`，`Router` 汇聚多设备，唯一协议执行器通过 `ProtocolPollRuntime` 的代际请求推进全局 `SocketSet`。`NetControl` 返回控制面快照，系统调用或应用层不另建一份设备、路由和地址登记表。
+
+驱动令牌和执行域由[网络驱动](network.md)定义；协议配置及系统接口由[网络栈系统集成](../net/integration.md)定义。Unix socket 与 vsock 使用独立传输，不能套用物理网卡 DMA 队列路径。
 
 ## 平台设备消费
 

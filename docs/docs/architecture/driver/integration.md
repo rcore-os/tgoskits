@@ -16,7 +16,10 @@ flowchart TB
     Rdrive --> Registry["typed device registry"]
 
     Registry --> BlockSvc["block volume service"]
-    Registry --> NetSvc["net interface service"]
+    Registry --> NetTake["ax-runtime: collect_net_devices"]
+    NetTake --> NetPrepare["rd-net: prepare_device"]
+    NetPrepare --> NetQueue["ax-net: NetworkRuntimeBuilder"]
+    NetQueue --> NetSvc["ax-net: EthernetFramePort + Service"]
     Registry --> DispSvc["display service"]
     Registry --> InSvc["input service"]
     Registry --> VsSvc["vsock service"]
@@ -64,9 +67,15 @@ ArceOS 的 `ax-runtime` 是驱动框架的主要消费者：
 | `ax-runtime` devices init | 调用 `rdrive::probe_all(false)`，初始化领域 service |
 | `ax-runtime` IRQ | 将 platform IRQ 注册能力适配为仅接受固定 CPU 的 `ax_net::PinnedNetIrqRegistrar`，并由网络 builder 原子注册/回滚所有 queue source |
 | `ax-fs` / `ax-fs-ng` | 通过 block volume service 消费块设备 |
-| `ax-net` | 通过 net interface service 消费网卡 |
+| `ax-net` | `NetworkRuntimeBuilder` 消费准备后的设备，`init_network()` 用帧端口建立协议服务 |
 
 `ax-runtime` 不再拆 `AllDevices.block/net/display/input/vsock` 后逐个传给模块，只触发 probe 和领域 service 初始化。
+
+网络启动由 `os/arceos/modules/axruntime/src/devices.rs` 的 `init_net()` 组织。`collect_net_devices()` 取走 `PlatformNetDevice` 后先调用 `rd_net::prepare_device()`，再逐项解析 `TakenNetDevice::irq_sources`，构造含 TX 策略的 `NetworkDeviceInput`。当前集成为每个设备选择 `TxQueueDiscipline::Fifo { max_frames: 64 }`；代码使用 `NonZeroUsize` 表达非零容量。
+
+`NetworkRuntimeBuilder::build()` 确认 worker 固定 CPU、完整 IRQ 映射及禁用状态注册后，使能全部 action，再执行队列启动、初始 refill/rearm 和配置的无线启动事务。只有成功返回才调用 `ax_net::init_network(Some(runtime), ports, config)`。无已注册物理网卡时使用 `init_network(None, Vec::new(), config)` 建立协议服务，不为缺少 IRQ 的物理网卡增加轮询后备路径。
+
+`parse_network_config()` 当前返回 `NetworkConfig::default()`，不解析系统配置文件。默认地址策略与协议状态由 `ax-net` 控制；固定亲和注册、DMA 令牌与失败隔离流程位于[网络驱动](network.md)。
 
 ## StarryOS 集成
 

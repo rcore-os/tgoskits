@@ -31,7 +31,7 @@ flowchart TB
 
     subgraph Capability["Capability Boundary"]
         RdifBlock["rdif-block"]
-        RdifEth["rdif-eth + rd-net"]
+        RdifEth["rdif-eth: NetDeviceParts"]
         RdifDisplay["rdif-display"]
         RdifInput["rdif-input"]
         RdifVsock["rdif-vsock"]
@@ -40,7 +40,7 @@ flowchart TB
 
     subgraph Services["领域 service"]
         BlockVolume["block volume / partition"]
-        NetService["net interface service"]
+        NetService["ax-net: queue_runtime + Service"]
         UiService["display / input service"]
         VsockService["vsock service"]
     end
@@ -60,7 +60,12 @@ flowchart TB
     DriverCore --> Capability
     Capability --> Manager
     Runtime --> Backends
-    Manager --> Services
+    Manager --> BlockVolume
+    Manager --> UiService
+    Manager --> VsockService
+    Manager --> NetTake["ax-runtime: take_net_device"]
+    NetTake --> NetPrepare["rd-net: prepare_device / DMA pools"]
+    NetPrepare --> NetService
     Services --> Fs
     Services --> Net
     Services --> Starry
@@ -68,6 +73,8 @@ flowchart TB
 ```
 
 `rdrive::Manager` 只保存 `DriverRegister` 和类型化设备 registry。Static、FDT、ACPI、PCI 各自拥有独立 `probe::*::{System, Info, FnOnProbe}`，不把平台状态合并成一个大 `System`。
+
+网络分支的 registry 对象是 `PlatformNetDevice`，不是运行期共享网卡。`ax-runtime` 取出设备和 IRQ 映射，`rd-net` 消费 `NetDevice::into_parts()` 并准备 DMA 池，`ax-net::NetworkRuntimeBuilder` 再构造队列执行器和 `EthernetFramePort`。图中的领域 service 表示职责分组；网络 `Service` 与队列运行时实际位于 `net/ax-net` 同一 crate 内，具体执行域见[网络驱动](network.md)。
 
 ## 数据流方向
 
@@ -102,10 +109,10 @@ flowchart TB
 旧的 `AllDevices` 模型把 block/net/display/input/vsock 设备塞进一个全局结构体，runtime 启动时拆包逐个传给模块。这种设计的问题：
 
 - 新增设备类别需要修改全局容器和 runtime 拆包逻辑。
-- 设备数量固定，无法支持运行期动态注册（如 Wi-Fi AP、USB 热插拔）。
+- 全局设备交付与领域消费绑定在启动拆包流程中，动态注册需要额外修改消费路径。
 - 上层模块被迫依赖整个容器类型，耦合扩散。
 
-`rdrive + rdif` 改用类型化 registry：每个设备按 `DeviceId` 注册为 `DeviceOwner`（持有 `Box<dyn DriverGeneric>`），上层通过 `Device<T>` 弱引用按领域能力 trait 查询。设备数量和类别可在运行期增长。
+`rdrive + rdif` 改用类型化 registry：每个设备按 `DeviceId` 注册为 `DeviceOwner`（持有 `Box<dyn DriverGeneric>`），上层通过 `Device<T>` 弱引用按领域能力 trait 查询。registry 的动态注册能力与领域运行时的设备接入能力分别定义；当前物理网络在启动时一次性交付，Wi-Fi 控制事务不等于动态注册一块新网卡。
 
 ### 为什么 Capability Boundary 独立
 

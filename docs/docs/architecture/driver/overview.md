@@ -20,7 +20,8 @@ TGOSKits 的宿主物理设备能力收敛在 `rdrive + rdif` 驱动框架。它
 | `drivers/interface/rdif-*/` | 能力边界 | `rdif-block`、`rdif-eth`、`rdif-display`、`rdif-input`、`rdif-vsock`、`rdif-intc`、`rdif-pinctrl`、`rdif-pcie`、`rdif-clk`、`rdif-timer`、`rdif-systick`、`rdif-serial`、`rdif-pwm`、`rdif-power` |
 | `drivers/ax-driver/` | OS glue / ArceOS 适配 | VirtIO、PCI、SoC、USB、serial、block/net/display/input/vsock binding |
 | `drivers/blk/` | 块设备 driver core | `nvme-driver`、`sdhci-host`、`dwmmc-host`、`sdmmc-protocol`、`phytium-mci-host`、`ramdisk`；core 存在不代表 `ax-driver` 已公开注册 |
-| `drivers/net/` | 网卡 driver core | `rd-net`、`fxmac_rs`、`eth-intel`、`realtek-rtl8125` |
+| `drivers/net/` | 网卡核心与可移植队列准备 | `fxmac_rs`、`eth-intel`、`realtek-rtl8125`、`aic8800`；`rd-net` 负责 DMA 池和队列包装 |
+| `net/ax-net/` | 网络队列运行时与协议栈 | `queue_runtime` 管理固定 CPU 队列执行；`poll_runtime` 协调唯一协议执行器 |
 | `drivers/gpu/` | 显示/加速 driver core | `rockchip-rga` |
 | `drivers/intc/` | 中断控制器 driver core | `arm-gic-driver`、`riscv_plic` |
 | `drivers/pci/` | PCIe driver core | `pcie`、`rk3588-pci` |
@@ -39,7 +40,7 @@ TGOSKits 的宿主物理设备能力收敛在 `rdrive + rdif` 驱动框架。它
 | 能力 | interface crate | runtime crate | 上层消费 | 状态 |
 | --- | --- | --- | --- | --- |
 | 块设备 | `rdif-block` | 已删除，直接消费 submit/poll 边界 | block volume service、FS | 完整 |
-| 网络设备 | `rdif-eth` | `rd-net` | net interface service、ax-net | 完整 |
+| 网络设备 | `rdif-eth` | `rd-net` 准备队列；`ax-net::queue_runtime` 执行队列 | `EthernetFramePort`、`ax-net::Service` | 消费式部件交付、固定 CPU IRQ 与队列执行 |
 | 显示 | `rdif-display` | `rd-display` | display service、Starry fb | 完整 |
 | 输入 | `rdif-input` | `rd-input` | input service、Starry input | 完整 |
 | vsock | `rdif-vsock` | `rd-vsock` | vsock service、ax-net vsock | 完整 |
@@ -53,6 +54,8 @@ TGOSKits 的宿主物理设备能力收敛在 `rdrive + rdif` 驱动框架。它
 | 电源 | `rdif-power` | 按需 | SoC glue | 基础 |
 
 ## 设计原则
+
+物理网络由 `ax-runtime::collect_net_devices()` 从 `rdrive` 一次性取走 `PlatformNetDevice`，经 `rd_net::prepare_device()` 和 `NetworkRuntimeBuilder::build()` 交付协议端口。`rd-net` 不承担设备枚举或 HAL IRQ 注册；[网络驱动](network.md) 定义轮询组、DMA 所有权和失败清理边界。
 
 - **分层隔离**：Driver Core 只推进硬件状态机，不调用 `iomap`、IRQ 注册或任务调度；Capability Boundary 只定义能力契约；OS Glue 负责平台发现与注册；Runtime 负责上层运行时封装。
 - **能力边界优先**：设备通过 `rdif-*` trait 向上暴露领域能力，上层模块不直接接触硬件寄存器、DMA、MMIO 或平台 IRQ ABI。
