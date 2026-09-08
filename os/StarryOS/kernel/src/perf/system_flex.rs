@@ -6,7 +6,7 @@ use core::{
     time::Duration,
 };
 
-use ax_runtime::task::{CpuId, CpuSet};
+use ax_runtime::task::sched::{CpuId, CpuSet};
 
 use super::{hw_owner::Counter, target::PerfCpuId};
 use crate::sync::{IrqMutex, NoPreemptIrqSave};
