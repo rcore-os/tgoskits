@@ -4,3 +4,9 @@
 execve03 6
 # sched_getaffinity01.c: one mask check and three errno checks.
 sched_getaffinity01 4
+# alarm02.c: three settings, each with arm and cancel assertions.
+alarm02 6
+# alarm05.c: arm, replace, and delivered signal count.
+alarm05 3
+# alarm06.c: remaining seconds and no signal after cancellation.
+alarm06 2

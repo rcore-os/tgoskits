@@ -212,11 +212,18 @@ pub fn sys_alarm(current: &crate::task::UserTaskRef, seconds: u32) -> crate::Sta
         alloc::sync::Arc::downgrade(&proc_data.identity()),
     ));
 
+    Ok(alarm_remaining_seconds(old_remaining) as isize)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn alarm_remaining_seconds(old_remaining: TimeValue) -> u64 {
     let mut old_seconds = old_remaining.as_secs();
-    if old_remaining.subsec_nanos() != 0 {
+    let fraction = old_remaining.subsec_nanos();
+    // Linux rounds at half a second, but never reports a pending alarm as zero.
+    if (old_seconds == 0 && fraction != 0) || fraction >= 500_000_000 {
         old_seconds = old_seconds.saturating_add(1);
     }
-    Ok(old_seconds as isize)
+    old_seconds
 }
 
 pub fn sys_clock_getres(
@@ -473,5 +480,34 @@ pub fn sys_timer_delete(
         Ok(0)
     } else {
         Err(StarryError::InvalidInput)
+    }
+}
+
+#[cfg(all(test, not(axtest), target_arch = "x86_64"))]
+mod tests {
+    use super::{TimeValue, alarm_remaining_seconds};
+
+    #[test]
+    fn alarm_remaining_seconds_matches_linux_half_second_rounding() {
+        for (seconds, nanos, expected) in [
+            (0, 0, 0),
+            (0, 1, 1),
+            (0, 499_999_999, 1),
+            (0, 500_000_000, 1),
+            (0, 999_999_999, 1),
+            (1, 0, 1),
+            (1, 1, 1),
+            (1, 250_000_000, 1),
+            (1, 499_999_999, 1),
+            (1, 500_000_000, 2),
+            (1, 999_999_999, 2),
+            (2, 0, 2),
+        ] {
+            assert_eq!(
+                alarm_remaining_seconds(TimeValue::new(seconds, nanos)),
+                expected,
+                "remaining={seconds}s+{nanos}ns"
+            );
+        }
     }
 }

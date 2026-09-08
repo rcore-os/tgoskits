@@ -219,3 +219,8 @@ memfd_create04
 perf_event_open01
 perf_event_open02
 perf_event_open03
+
+# Alarm migration candidates.
+alarm02
+alarm05
+alarm06

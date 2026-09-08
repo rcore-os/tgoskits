@@ -1,4 +1,7 @@
 # LTP 20260529 cases returning zero without TCONF/TBROK/TFAIL on all four architectures.
+alarm02
+alarm05
+alarm06
 clock_nanosleep04
 clone01
 clone02
