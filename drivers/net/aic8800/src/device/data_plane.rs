@@ -242,6 +242,12 @@ impl AicDevice {
                     message_id: SM_CONNECT_IND,
                     payload,
                 } => {
+                    // Startup has not accepted a host connection request. Firmware can
+                    // retain indications across a warm reset; they cannot complete or
+                    // reject a connection owned by this device lifecycle.
+                    if self.lifecycle.state == AicState::Starting {
+                        continue;
+                    }
                     let indication = parse_connect_indication(&payload)?;
                     log::info!(
                         "[wifi] association complete; learned firmware vif={} station={}",
@@ -284,6 +290,14 @@ impl AicDevice {
                             super::control::ControlOperation::Connect(connect)
                                 if connect.phase == super::control::ConnectPhase::Resetting)
                     });
+                    if !resetting {
+                        log::warn!(
+                            "[wifi] station disconnected: reason={} vif={} state={:?}",
+                            indication.reason_code,
+                            indication.interface_index,
+                            self.lifecycle.state
+                        );
+                    }
                     if !resetting && self.lifecycle.control.take().is_some() {
                         self.data.events.push_back(AicEvent::ControlFailed(
                             AicError::Disconnected {
