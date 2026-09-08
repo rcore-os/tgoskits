@@ -6,7 +6,7 @@ mod cpu_id;
 mod target;
 
 use cpu_id::PerfCpuId;
-use target::{PerfOpenFlags, PerfTarget, PerfTargetError, PerfTargetKind, PerfTaskTarget};
+use target::{PerfTarget, PerfTargetError, PerfTargetKind, PerfTaskTarget};
 
 #[test]
 fn linux_perf_target_matrix_distinguishes_task_and_cpu_contexts() {
@@ -47,17 +47,4 @@ fn linux_perf_target_matrix_rejects_invalid_tuples() {
         };
         assert_eq!(cpu.resolve_optional(4), Err(PerfTargetError::InvalidTuple));
     }
-}
-
-#[test]
-fn linux_perf_open_flags_reject_unknown_bits_without_truncation() {
-    let supported = (PerfOpenFlags::FD_NO_GROUP
-        | PerfOpenFlags::FD_OUTPUT
-        | PerfOpenFlags::PID_CGROUP
-        | PerfOpenFlags::FD_CLOEXEC) as u64;
-    let flags = PerfOpenFlags::parse(supported).unwrap();
-    assert_eq!(flags.bits(), 0xf);
-    assert!(flags.contains(PerfOpenFlags::PID_CGROUP));
-    assert!(PerfOpenFlags::parse(1 << 4).is_err());
-    assert!(PerfOpenFlags::parse(1 << 32).is_err());
 }

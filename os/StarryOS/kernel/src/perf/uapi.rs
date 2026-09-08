@@ -263,6 +263,15 @@ mod tests {
 
     #[test]
     fn unknown_open_flags_are_rejected_without_truncation() {
+        let supported = (PerfOpenFlags::FD_NO_GROUP
+            | PerfOpenFlags::FD_OUTPUT
+            | PerfOpenFlags::PID_CGROUP
+            | PerfOpenFlags::FD_CLOEXEC) as u64;
+        let flags = PerfOpenFlags::parse(supported).unwrap();
+        assert_eq!(flags.bits(), 0xf);
+        assert!(flags.contains(PerfOpenFlags::PID_CGROUP));
+        assert!(PerfOpenFlags::parse(1 << 4).is_err());
+        assert!(PerfOpenFlags::parse(1 << 32).is_err());
         assert!(PerfOpenFlags::parse(1u64 << 48).is_err());
         assert!(PerfOpenFlags::parse(PerfOpenFlags::FD_CLOEXEC as u64).is_ok());
     }
