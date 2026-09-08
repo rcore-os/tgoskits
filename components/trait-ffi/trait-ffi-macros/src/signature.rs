@@ -204,6 +204,10 @@ impl VisitMut for BorrowLifetimes {
 }
 
 pub fn caller_signature(sig: &Signature) -> Signature {
+    named_signature(sig, 1)
+}
+
+pub fn named_signature(sig: &Signature, depth: usize) -> Signature {
     let mut sig = sig.clone();
     for (index, input) in sig.inputs.iter_mut().enumerate() {
         if let FnArg::Typed(input) = input {
@@ -211,7 +215,9 @@ pub fn caller_signature(sig: &Signature) -> Signature {
             *input.pat = parse_quote!(#name);
         }
     }
-    DefinitionPaths { depth: 1 }.visit_signature_mut(&mut sig);
+    if depth != 0 {
+        DefinitionPaths { depth }.visit_signature_mut(&mut sig);
+    }
     sig
 }
 

@@ -12,7 +12,7 @@
 
 ### 1.2 签名与导出
 
-`signature::validate` 限定受支持的关联函数；`signature::export_signature` 保留类型和借用关系。`definition::expand` 在定义包中选择条件编译分支，生成作用于唯一提供者的实现宏。
+`signature::validate` 限定受支持的关联函数；`signature::export_signature` 保留类型和借用关系。`definition::expand` 通过 `attributes::availability` 在定义包中选择 cfg/cfg_attr 分支，生成作用于唯一提供者的实现宏。`implementation::expand` 与 `call::expand` 从 trait 路径找到同一入口，不重新推导 ABI 或符号名。`weak::expand` 只为显式选择弱默认的安全 trait 生成无提供者时的默认导出。
 
 ## 2. 验证入口
 

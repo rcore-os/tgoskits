@@ -11,6 +11,9 @@ pub struct Args {
     pub mod_path: Option<Path>,
     pub namespace: Option<LitStr>,
     pub impl_macro: Option<Ident>,
+    pub module: Option<Ident>,
+    pub gen_caller: bool,
+    pub weak_default: bool,
 }
 
 impl Parse for Args {
@@ -20,6 +23,9 @@ impl Parse for Args {
             mod_path: None,
             namespace: None,
             impl_macro: None,
+            module: None,
+            gen_caller: false,
+            weak_default: false,
         };
         let mut seen = std::collections::HashSet::new();
         while !input.is_empty() {
@@ -27,8 +33,24 @@ impl Parse for Args {
             if !seen.insert(key.to_string()) {
                 return Err(syn::Error::new_spanned(key, "duplicate trait-ffi option"));
             }
+            if key == "gen_caller" || key == "weak_default" {
+                if key == "gen_caller" {
+                    args.gen_caller = true;
+                } else {
+                    args.weak_default = true;
+                }
+                if !input.is_empty() {
+                    input.parse::<Token![,]>()?;
+                }
+                continue;
+            }
             input.parse::<Token![=]>()?;
-            let value: LitStr = input.parse()?;
+            let value: LitStr = if key == "namespace" && !input.peek(LitStr) {
+                let namespace: Ident = input.parse()?;
+                LitStr::new(&namespace.to_string(), namespace.span())
+            } else {
+                input.parse()?
+            };
             match key.to_string().as_str() {
                 "abi" => {
                     let abi = match value.value().as_str() {
@@ -61,10 +83,12 @@ impl Parse for Args {
                     args.namespace = Some(value);
                 }
                 "impl_macro" => args.impl_macro = Some(value.parse()?),
+                "module" => args.module = Some(value.parse()?),
                 _ => {
                     return Err(syn::Error::new_spanned(
                         key,
-                        "unknown trait-ffi option; expected abi, mod_path, namespace or impl_macro",
+                        "unknown trait-ffi option; expected abi, mod_path, namespace, module, \
+                         impl_macro, gen_caller or weak_default",
                     ));
                 }
             }

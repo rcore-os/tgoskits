@@ -3,11 +3,11 @@
 use convert_case::{Case, Casing};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Attribute, ItemTrait, Meta, Result, TraitItem};
+use syn::{ItemTrait, Result, TraitItem};
 
 use crate::{
     args::{Args, link_prefix},
-    signature,
+    attributes, signature, weak,
 };
 
 pub fn expand(args: Args, input: ItemTrait) -> Result<TokenStream> {
@@ -24,18 +24,26 @@ pub fn expand(args: Args, input: ItemTrait) -> Result<TokenStream> {
     let name = &input.ident;
     let vis = &input.vis;
     let unsafety = &input.unsafety;
-    let module = format_ident!(
-        "{}",
-        name.to_string()
+    let module = if let Some(module) = &args.module {
+        module.clone()
+    } else {
+        let derived = name
+            .to_string()
             .trim_start_matches("r#")
-            .to_case(Case::Snake)
-    );
+            .to_case(Case::Snake);
+        syn::parse_str::<syn::Ident>(&derived)
+            .or_else(|_| syn::parse_str(&format!("r#{derived}")))
+            .map_err(|_| {
+                syn::Error::new_spanned(name, "specify module = \"name\" for this interface name")
+            })?
+    };
     let prefix = link_prefix(&args, name)?;
+    let trait_cfg = attributes::availability(&input.attrs)?;
     let impl_macro = format_ident!("{prefix}_impl");
     let public_alias = args
         .impl_macro
         .as_ref()
-        .map(|alias| quote!(pub use #impl_macro as #alias;));
+        .map(|alias| quote!(#[cfg(all(#(#trait_cfg),*))] pub use #impl_macro as #alias;));
     let owner = args
         .mod_path
         .as_ref()
@@ -48,7 +56,7 @@ pub fn expand(args: Args, input: ItemTrait) -> Result<TokenStream> {
     let mut methods = Vec::new();
     let mut exports = Vec::new();
     let mut helper_aliases = Vec::new();
-    let trait_cfg = cfg_predicates(&input.attrs)?;
+    let mut callers = Vec::new();
 
     for (index, item) in input.items.iter().enumerate() {
         let TraitItem::Fn(method) = item else {
@@ -60,8 +68,12 @@ pub fn expand(args: Args, input: ItemTrait) -> Result<TokenStream> {
         method.modifiers.require_empty()?;
         signature::validate(&method.sig)?;
         let mut predicates = trait_cfg.clone();
-        predicates.extend(cfg_predicates(&method.attrs)?);
+        predicates.extend(attributes::availability(&method.attrs)?);
         let enabled = quote!(all(#(#predicates),*));
+        if args.gen_caller {
+            let method_name = &method.sig.ident;
+            callers.push(quote!(#[cfg(#enabled)] #vis use self::#module::#method_name;));
+        }
         let method_name = &method.sig.ident;
         let symbol = format!("{prefix}_{method_name}");
         let helper = format_ident!("{prefix}_export_{index}");
@@ -143,8 +155,11 @@ pub fn expand(args: Args, input: ItemTrait) -> Result<TokenStream> {
         });
     }
 
+    let weak_defaults = weak::expand(&args, &input, &module, &prefix)?;
     Ok(quote! {
         #input
+        #weak_defaults
+        #(#callers)*
         #(#helpers)*
         #public_alias
         #[doc(hidden)]
@@ -153,9 +168,16 @@ pub fn expand(args: Args, input: ItemTrait) -> Result<TokenStream> {
         macro_rules! #impl_macro {
             (#unsafety impl #name for $provider:ty { $($body:tt)* }) => {
                 #unsafety impl #owner::#name for $provider { $($body)* }
-                #(#exports)*
+                #owner::#module::impl_trait!(@bind $provider);
+            };
+            (@bind $provider:ty) => { #(#exports)* };
+            (@call $method:ident ($($arguments:expr),* $(,)?)) => {
+                #owner::#module::$method($($arguments),*)
             };
         }
+        #[doc(hidden)]
+        #[cfg(all(#(#trait_cfg),*))]
+        #vis use #impl_macro as #name;
         #[cfg(all(#(#trait_cfg),*))]
         #vis mod #module {
             use super::*;
@@ -168,25 +190,4 @@ pub fn expand(args: Args, input: ItemTrait) -> Result<TokenStream> {
             #(#methods)*
         }
     })
-}
-
-fn cfg_predicates(attrs: &[Attribute]) -> Result<Vec<TokenStream>> {
-    attrs
-        .iter()
-        .filter_map(|attr| {
-            if attr.path().is_ident("cfg_attr") {
-                return Some(Err(syn::Error::new_spanned(
-                    attr,
-                    "trait-ffi requires direct cfg attributes; cfg_attr is not supported",
-                )));
-            }
-            if attr.path().is_ident("cfg") {
-                return Some(match &attr.meta {
-                    Meta::List(list) => Ok(list.tokens.clone()),
-                    _ => Err(syn::Error::new_spanned(attr, "expected cfg(predicate)")),
-                });
-            }
-            None
-        })
-        .collect()
 }
