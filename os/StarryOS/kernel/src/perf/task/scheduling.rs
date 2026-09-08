@@ -200,7 +200,7 @@ fn perf_sched_out_counters(counters: &[Arc<PerTaskCounter>]) {
         let Some(lease) = ptc.run_state.lock().claim_schedule_out() else {
             continue;
         };
-        stop_hardware_on_owner(ptc, lease)
+        stop_hardware_on_owner(ptc, lease, now)
             .unwrap_or_else(|error| panic!("scheduler PMU stop failed: {error}"));
         ptc.run_state.lock().finish_owner_stop(lease);
     }
@@ -211,7 +211,11 @@ fn perf_sched_out_counters(counters: &[Arc<PerTaskCounter>]) {
 /// The sampling order is mask → stop → clear pending overflow → generation
 /// unregister. Local IRQ exclusion in the registry removal is the grace period
 /// before its owned ring/notification references can be released.
-fn stop_hardware_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) -> crate::StarryResult<()> {
+fn stop_hardware_on_owner(
+    ptc: &PerTaskCounter,
+    lease: PmuRunLease,
+    now: u64,
+) -> crate::StarryResult<()> {
     if lease.owner().as_usize() != ax_hal::percpu::this_cpu_id() {
         return Err(crate::StarryError::BadState);
     }
@@ -245,7 +249,6 @@ fn stop_hardware_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) -> crate::St
         );
     }
 
-    let now = now_ns();
     ptc.finish_enabled_context(now);
     let dt = now.saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
     ptc.time_running_ns.fetch_add(dt, Ordering::AcqRel);
@@ -269,7 +272,7 @@ pub(crate) fn stop_requested_on_owner(
     let claim = ptc.run_state.lock().claim_requested_stop(lease);
     match claim {
         PmuStopClaim::Claimed(claimed) => {
-            if let Err(error) = stop_hardware_on_owner(ptc, claimed) {
+            if let Err(error) = stop_hardware_on_owner(ptc, claimed, now_ns()) {
                 ptc.run_state.lock().abort_owner_stop(claimed);
                 return Err(error);
             }
