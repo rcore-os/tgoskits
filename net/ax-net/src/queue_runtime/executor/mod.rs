@@ -550,14 +550,6 @@ impl QueueGroupExecutor {
                 Err(error) => {
                     let (buffer, reason) = error.into_parts();
                     if waits_for_hardware_event(&reason) {
-                        static REPORTED_TX_RETRY: core::sync::atomic::AtomicBool =
-                            core::sync::atomic::AtomicBool::new(false);
-                        if !REPORTED_TX_RETRY.swap(true, Ordering::Relaxed) {
-                            warn!(
-                                "network queue {:?}: TX waiting for hardware: {reason}",
-                                self.group.id
-                            );
-                        }
                         self.pending_tx = Some(TxRequest {
                             buffer,
                             options: request.options,
