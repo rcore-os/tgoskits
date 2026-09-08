@@ -10,3 +10,9 @@ alarm02 6
 alarm05 3
 # alarm06.c: remaining seconds and no signal after cancellation.
 alarm06 2
+# epoll_create01/02.c: two inputs in both raw and libc variants.
+epoll_create01 4
+epoll_create02 4
+# epoll_ctl02.c: nine errno cases; epoll_wait01.c: OUT, IN, and combined IO.
+epoll_ctl02 9
+epoll_wait01 3

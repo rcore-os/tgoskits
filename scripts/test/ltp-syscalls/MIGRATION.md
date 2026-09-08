@@ -44,6 +44,8 @@ LTP 固定为 `20260529`，提交为 `3a64d78f58bdceba93ed321e91215fb969a047ed`�
 
 上游替代用例 `alarm02`、`alarm05`、`alarm06` 分别验证设置与取消返回值、替换和信号交付、取消后不交付信号，源码完成数量分别为 6、3、2。它们不验证兄弟线程共享计时器、创建线程退出后的交付或 `setitimer` 的小数秒互操作；原C测试已清理，这些系统级断言不再由本项保留。四架构三个LTP用例分别完成6、3、2项TPASS，定向QEMU及共同集生成通过；纯取整算法回归保留在内核单元测试。
 
+CI补充发现：七提交版本的x86_64用户态完整套件通过，但随后裸机`axtest_kernel`编译因alarm宿主单元测试的未使用导入失败。该纯算法测试现在明确`not(axtest)`，不把普通`#[test]`编入自定义裸机测试入口；同一`cargo xtask ktest qemu -p starry-kernel --arch x86_64`入口已通过170项，0失败、0跳过。该修正归入alarm迁移提交。
+
 ### 2.5 目录描述符锁
 
 `bug-advisory-lock-dir` 的独特行为全部依赖 `O_RDONLY | O_DIRECTORY` 描述符：flock共享/排他锁及释放、不同OFD间读锁可见、写记录锁返回EBADF。固定LTP的flock/fcntl家族未建立目录描述符场景，`flock01`只在普通O_RDWR文件上检查操作成功，不能承担这一回归。按本轮无等效项清理规则移除原程序及CMake，未新增LTP项，也不再宣称这些目录断言被覆盖。静态确认没有遗留运行入口。
@@ -59,6 +61,12 @@ LTP 固定为 `20260529`，提交为 `3a64d78f58bdceba93ed321e91215fb969a047ed`�
 ### 2.8 删除中的目录游标
 
 `bug-dir-cookie-unlink-rmdir` 使用80字节getdents64缓冲区，读取一批后删除该批条目，继续同一目录游标直至EOF并要求rmdir成功；另覆盖64项跨目录rename后删除，均在tmpfs与rootfs执行。LTP getdents01/readdir01静态枚举以及getdents02/readdir21已删除目录FD错误检查都不覆盖这种读删交错。本项按无等效规则移除，目录cookie稳定性、rename后cookie唯一性和最终目录为空的断言不再由此程序提供。
+
+### 2.9 旧 epoll 入口
+
+`bug-epoll-compat-entrypoints` 包含旧epoll_create成功/非法size、raw旧epoll_wait就绪结果、自身epoll_ctl拒绝。固定LTP epoll_create01/02各有raw和libc两个变体，只有x86_64具有这里使用的旧raw入口，因此单独放入`cases-x86_64.txt`；共同候选epoll_ctl02与epoll_wait01分别覆盖九项错误和三种读写就绪组合。后者使用libc入口，不宣称替代原raw epoll_wait直接调用断言。
+
+CMake读取`CMAKE_C_COMPILER_TARGET`的架构前缀，将可选的`cases-<arch>.txt`与共同清单合并并去重。配置回归先确认旧实现不生成epoll_create01 wrapper，再确认新实现仅在x86_64生成；其他三架构不会生成这些入口。实际x86_64运行发现`epoll_ctl02`将目录FD加入epoll时意外成功（应为EPERM），该用例失败而其他三个候选通过。修复在FileLike增加`supports_epoll`能力查询，Directory明确返回false，EntryKey在ADD/MOD/DEL路径创建前拒绝此类对象；目录自身的同步poll结果不变。修复后四架构LTP运行全部通过，epoll_ctl02完成9项、epoll_wait01完成3项，x86_64额外两个create用例各完成4项；共同集生成及每架构实际用例集合检查通过。`cargo xtask test --since origin/dev`通过，定向clippy共92项全部通过，x86_64裸机axtest共170项全部通过。原程序及CMake已清理；四架构日志保存于实施机器`/tmp/starry-ltp-migration-evidence/08-epoll-<arch>-green.log`。
 
 ## 3. 系统调用兼容性对照
 
@@ -80,3 +88,9 @@ LTP 固定为 `20260529`，提交为 `3a64d78f58bdceba93ed321e91215fb969a047ed`�
 | fork / x86_64:57 | [Linux v7.1 fork.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L2802) | 复制进程并维护共享页生命周期；本项原风险为大量同时存活的COW共享者 | `sys_fork` → `sys_clone` → `CloneArgs::do_clone` → 地址空间复制与进程发布 | 无法确认 | 300子进程COW引用计数回归已清理；普通LTP fork不证明该边界 |
 | clone(fork的libc后端) / aarch64、riscv64、loongarch64:220 | [Linux v7.1 fork.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 不带CLONE_VM的进程复制维护共享页生命周期 | `sys_clone` → `CloneArgs::do_clone` → 地址空间复制与进程发布 | 无法确认 | 清理原libc fork程序；该三架构无raw fork入口，未新增300共享者回归 |
 | getdents64(删除交错) / x86_64:217；aarch64、riscv64、loongarch64:61 | [Linux v7.1 readdir.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/readdir.c) | 目录条目删除及rename后继续同一遍历游标，不因计数型offset跳过仍存活条目 | `sys_getdents64` → Directory迭代游标 → 文件系统目录cookie → DirBuffer写回 | 无法确认 | 原读删交错回归已清理，未增加静态枚举LTP来冒充等效 |
+| epoll_create / x86_64:213 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 正size创建无CLOEXEC的epoll FD；非正size返回EINVAL | `sys_epoll_create` → size校验 → `sys_epoll_create1(0)` → `Epoll::new`及FD表 | 正确 | x86_64 epoll_create01/02 raw与libc变体各4项TPASS；其他架构不存在此raw入口 |
+| epoll_ctl(目录ADD) / x86_64:233；aarch64、riscv64、loongarch64:21 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c#L2256) | 目标目录没有poll操作，拒绝注册并返回EPERM | `sys_epoll_ctl` → `Epoll::add` → `EntryKey::new` → Directory `supports_epoll=false`，未发布interest | 正确 | LTP epoll_ctl02 x86_64先失败后通过，四架构各9项TPASS；结论限这些输入 |
+| epoll_ctl(目录MOD) / x86_64:233；aarch64、riscv64、loongarch64:21 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c#L2256) | 目录目标在interest查找前返回EPERM | `sys_epoll_ctl` → `Epoll::modify` → `EntryKey::new`能力检查 | 无法确认 | 修改路径也使用该能力检查；epoll_ctl02目录用例只覆盖ADD，未声称其他路径已实测 |
+| epoll_ctl(目录DEL) / x86_64:233；aarch64、riscv64、loongarch64:21 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c#L2256) | 目录目标在interest查找前返回EPERM | `sys_epoll_ctl` → `Epoll::delete` → `EntryKey::new`能力检查 | 无法确认 | 删除路径也使用该能力检查；epoll_ctl02目录用例只覆盖ADD，未声称其他路径已实测 |
+| epoll_wait / x86_64:232 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 返回就绪事件数量、事件位与user data | `sys_epoll_wait` → `sys_epoll_pwait` → `do_epoll_wait` → Epoll `poll_events_with`与用户写回 | 无法确认 | epoll_wait01使用libc；不能仅凭该结果宣称原直接SYS_epoll_wait断言被保留 |
+| epoll_pwait / x86_64:281；aarch64、riscv64、loongarch64:22 | [Linux v7.1 eventpoll.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | libc epoll_wait后端的读/写/组合就绪语义；此处不涉及非空sigmask | `sys_epoll_pwait` → `do_epoll_wait` → `with_blocked_signals`、`poll_io`、Epoll事件消费和写回 | 无法确认 | epoll_wait01四架构各3项TPASS；具体libc后端未逐架构反汇编 |

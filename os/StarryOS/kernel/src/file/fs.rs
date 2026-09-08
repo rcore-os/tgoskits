@@ -381,6 +381,10 @@ impl Directory {
 }
 
 impl FileLike for Directory {
+    fn supports_epoll(&self) -> bool {
+        false
+    }
+
     fn read(&self, _dst: &mut IoDst) -> StarryResult<usize> {
         Err(StarryError::IsADirectory)
     }

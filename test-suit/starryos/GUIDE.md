@@ -169,6 +169,10 @@ wrapper 在 guest 内依次确认 `/opt/ltp/Version`、`runtest/syscalls` 的唯
 六个 errno 用例，不能把“前四项通过后进程被错误替换、随后退出 0”当成成功。
 `CMakeLists.txt` 把该门槛写入每个 wrapper，兼容新旧 LTP 输出中 `TPASS` 的空格差异。
 这些门槛不从历史绿色日志推导，也不随共同集重新生成而丢失。
+仅特定体系结构存在的 syscall 用 `cases-<arch>.txt` 补充共同清单，CMake 根据
+`CMAKE_C_COMPILER_TARGET` 的架构前缀加载。`cases-x86_64.txt` 中旧 `epoll_create`
+入口用例只在 x86_64 执行，不能把其他架构不存在该入口的 `TCONF` 放行。
+体系结构专有项分别核对对应目标的原始日志，不参加四架构共同集求交。
 system runner 即使使用 `--capture-failures`，也会回放 LTP 阶段成功用例的输出，
 使四架构共同集生成器能够核对 `TPASS` 完成数量；原生 C 阶段仍只回放失败输出。
 

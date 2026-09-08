@@ -132,6 +132,9 @@ struct EntryKey {
 impl EntryKey {
     fn new(fd: i32) -> StarryResult<Self> {
         let file = get_file_like(fd)?;
+        if !file.supports_epoll() {
+            return Err(StarryError::OperationNotPermitted);
+        }
         Ok(Self {
             fd,
             file: Arc::downgrade(&file),

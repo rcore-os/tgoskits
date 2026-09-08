@@ -5,6 +5,17 @@ set(LTP_SYSCALLS_CASES_FILE "${CMAKE_CURRENT_LIST_DIR}/cases.txt")
 file(STRINGS "${LTP_SYSCALLS_CASES_FILE}" LTP_SYSCALLS_CASES
     REGEX "^[A-Za-z0-9_]+$")
 
+# Legacy syscall numbers are only meaningful on architectures exposing them.
+string(REGEX MATCH "^[^-]+" LTP_TARGET_ARCH "${CMAKE_C_COMPILER_TARGET}")
+set(LTP_ARCH_CASES_FILE "${CMAKE_CURRENT_LIST_DIR}/cases-${LTP_TARGET_ARCH}.txt")
+if(EXISTS "${LTP_ARCH_CASES_FILE}")
+    file(STRINGS "${LTP_ARCH_CASES_FILE}" LTP_ARCH_CASES
+        REGEX "^[A-Za-z0-9_]+$")
+    list(APPEND LTP_SYSCALLS_CASES ${LTP_ARCH_CASES})
+    list(REMOVE_DUPLICATES LTP_SYSCALLS_CASES)
+    list(SORT LTP_SYSCALLS_CASES)
+endif()
+
 if(NOT LTP_SYSCALLS_CASES)
     message(FATAL_ERROR "the frozen PR #1775 LTP manifest is empty")
 endif()

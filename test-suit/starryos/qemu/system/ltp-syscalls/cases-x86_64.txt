@@ -1,0 +1,3 @@
+# LTP 20260529 cases requiring legacy x86_64 syscall entrypoints.
+epoll_create01
+epoll_create02

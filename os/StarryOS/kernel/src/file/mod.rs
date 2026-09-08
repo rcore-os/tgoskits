@@ -181,6 +181,15 @@ pub type IoSrc<'a> = dyn ReadBuf + 'a;
 
 #[allow(dead_code)]
 pub trait FileLike: Pollable + DowncastSync {
+    /// Whether this file supports epoll interest registration.
+    ///
+    /// A file may provide synchronous poll readiness without supporting epoll
+    /// registration. Such file types must opt out here so epoll_ctl returns
+    /// EPERM before creating or looking up an interest.
+    fn supports_epoll(&self) -> bool {
+        true
+    }
+
     /// Validate a scalar write length before importing the user buffer.
     ///
     /// File types with count errors that take precedence over `EFAULT` can
