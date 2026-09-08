@@ -7,6 +7,7 @@ pub use crate::sync::lockdep::*;
 #[derive(Clone, Copy)]
 pub(crate) struct Lockdep {
     addr: usize,
+    class_key: usize,
     inner: crate::sync::lockdep::Lockdep,
     prepared: Option<crate::sync::lockdep::PreparedAcquire>,
 }
@@ -51,6 +52,7 @@ impl Lockdep {
         subclass: crate::sync::lockdep::LockSubclass,
         task_mode: Option<HeldLockMode>,
     ) -> Self {
+        let caller = Location::caller();
         let prepared = task_mode
             .filter(|mode| tracks_task_locks::<G>(*mode))
             .map(|mode| {
@@ -58,7 +60,7 @@ impl Lockdep {
                     map,
                     lock_kind,
                     addr,
-                    Location::caller(),
+                    caller,
                     crate::sync::lockdep::current_task_held_lock_snapshot(),
                     subclass,
                     mode,
@@ -66,6 +68,7 @@ impl Lockdep {
             });
         Self {
             addr,
+            class_key: map.class_key(),
             inner: crate::sync::lockdep::Lockdep::prepare(
                 trace_kind,
                 addr,
@@ -87,6 +90,19 @@ impl Lockdep {
     #[inline(always)]
     pub(crate) fn lock_addr(&self) -> usize {
         self.addr
+    }
+
+    #[inline(always)]
+    #[track_caller]
+    pub(crate) fn observe_irqsave<G: GuardState>(&self, kind: &'static str) {
+        if G::irqsave_enabled() {
+            crate::sync::lockdep::observe_irqsave_lock_acquire(
+                kind,
+                self.addr,
+                self.class_key,
+                Location::caller(),
+            );
+        }
     }
 }
 

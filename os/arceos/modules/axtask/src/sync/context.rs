@@ -40,6 +40,11 @@ pub trait GuardState {
     fn lockdep_enabled() -> bool {
         false
     }
+
+    /// Returns whether this guard state saves and disables local IRQs.
+    fn irqsave_enabled() -> bool {
+        false
+    }
 }
 
 /// Owns an entered critical section until a lock guard takes it over.
@@ -138,6 +143,10 @@ impl GuardState for IrqSaveState {
     fn release(state: Self::State) {
         imp::irq_restore(state);
     }
+
+    fn irqsave_enabled() -> bool {
+        true
+    }
 }
 
 impl GuardState for PreemptIrqSaveState {
@@ -157,6 +166,10 @@ impl GuardState for PreemptIrqSaveState {
     }
 
     fn lockdep_enabled() -> bool {
+        true
+    }
+
+    fn irqsave_enabled() -> bool {
         true
     }
 }
