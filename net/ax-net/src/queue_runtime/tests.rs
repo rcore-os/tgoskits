@@ -170,7 +170,6 @@ fn tx_test_port(
         tx_free,
         tx_spares: Vec::new(),
         shared,
-        checksum_capabilities: rd_net::TxChecksumCapabilities::NONE,
     };
     (
         QueueFramePort {
@@ -501,6 +500,36 @@ fn absent_startup_group_synchronizes_only_its_irq_registration() {
 }
 
 #[test]
+fn absent_irq_sync_failure_rejects_publication_and_releases_other_registrations() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let order = Arc::new(StdMutex::new(Vec::new()));
+    let absent = Arc::new(group_state(STATE_DISABLED));
+    absent.mark_startup_absent();
+    let registrations = vec![
+        RegisteredEndpoint {
+            registration: Box::new(RecordingRegistration {
+                id: 0,
+                order: Arc::clone(&order),
+            }),
+            shared: Arc::new(group_state(STATE_IDLE)),
+        },
+        RegisteredEndpoint {
+            registration: Box::new(FailingRegistration {
+                drops: Arc::clone(&drops),
+            }),
+            shared: absent,
+        },
+    ];
+
+    assert!(matches!(
+        prune_absent_irq_registrations(registrations),
+        Err(PinnedNetIrqError::Other)
+    ));
+    assert_eq!(*order.lock().unwrap(), vec![0]);
+    assert_eq!(drops.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn unsynchronized_irq_registration_is_quarantined() {
     let drops = Arc::new(AtomicUsize::new(0));
     let registrations = vec![Box::new(FailingRegistration {
@@ -626,7 +655,6 @@ fn oversized_rx_frame_recycles_token_and_next_frame_remains_receivable() {
         tx_free: tx_free_rx,
         tx_spares: Vec::new(),
         shared,
-        checksum_capabilities: rd_net::TxChecksumCapabilities::NONE,
     };
 
     assert!(matches!(port.receive(), Err(NetDeviceError::InvalidParam)));
@@ -682,7 +710,6 @@ fn direct_rx_consumes_dma_backing_before_recycling_the_token() {
         tx_free: tx_free_rx,
         tx_spares: Vec::new(),
         shared,
-        checksum_capabilities: rd_net::TxChecksumCapabilities::NONE,
     };
     let consumed = port
         .receive_with(&mut |packet| {
@@ -720,7 +747,6 @@ fn detached_rx_releases_ring_backpressure_before_recycling_dma() {
         tx_free: tx_free_rx,
         tx_spares: Vec::new(),
         shared: Arc::clone(&shared),
-        checksum_capabilities: rd_net::TxChecksumCapabilities::NONE,
     };
     // A full RX-ready ring parked the owner with its interrupt masked.
     let frame = port
@@ -755,7 +781,6 @@ fn direct_tx_fills_dma_and_preserves_submission_options() {
         tx_free: tx_free_rx,
         tx_spares: Vec::new(),
         shared,
-        checksum_capabilities: rd_net::TxChecksumCapabilities::NONE,
     };
     let options = TxSubmitOptions::deferred(Some(rd_net::TxChecksumOffload {
         network: TxNetworkProtocol::Ipv4,

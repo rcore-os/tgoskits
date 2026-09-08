@@ -110,7 +110,6 @@ pub(super) struct ProtocolGroupPort {
     pub(super) tx_free: SpscConsumer<DmaBuffer>,
     pub(super) tx_spares: Vec<DmaBuffer>,
     pub(super) shared: Arc<PollGroupState>,
-    pub(super) checksum_capabilities: rd_net::TxChecksumCapabilities,
 }
 
 impl ProtocolGroupPort {
@@ -319,12 +318,6 @@ impl EthernetFramePort for QueueFramePort {
 impl QueueFramePort {
     pub(super) fn retain_started_groups(&mut self) -> bool {
         self.groups.retain(|group| !group.shared.startup_absent());
-        self.checksum_capabilities = self
-            .groups
-            .iter()
-            .map(|group| group.checksum_capabilities)
-            .reduce(TxChecksumCapabilities::intersection)
-            .unwrap_or(TxChecksumCapabilities::NONE);
         !self.groups.is_empty()
     }
 

@@ -451,7 +451,6 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                     tx_free: tx_free_rx,
                     tx_spares: Vec::with_capacity(group.tx.capacity()),
                     shared: Arc::clone(&shared),
-                    checksum_capabilities: group.tx.checksum_capabilities(),
                 });
                 groups_by_cpu[owner_cpu].push(QueueGroupExecutor {
                     group,

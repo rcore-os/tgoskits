@@ -270,7 +270,10 @@ impl NetHardIrqHandler for TestIrq {
     }
 }
 
-struct MissingDeviceStartup(Arc<AtomicBool>);
+struct MissingDeviceStartup {
+    cancel_attempted: Arc<AtomicBool>,
+    cancel_fails: bool,
+}
 
 impl NetOwnerStartup for MissingDeviceStartup {
     fn start(&mut self, _now_nanos: u64) -> Result<NetOwnerStartupProgress, NetError> {
@@ -282,8 +285,12 @@ impl NetOwnerStartup for MissingDeviceStartup {
     }
 
     fn cancel(&mut self) -> Result<(), NetError> {
-        self.0.store(true, Ordering::Release);
-        Ok(())
+        self.cancel_attempted.store(true, Ordering::Release);
+        if self.cancel_fails {
+            Err(NetError::InvalidParts)
+        } else {
+            Ok(())
+        }
     }
 }
 impl NetPollIrqControl for TestIrq {
@@ -335,48 +342,60 @@ impl<T: ITxQueue + 'static> NetDevice for TestDevice<T> {
 
 #[test]
 fn missing_device_startup_is_cancelled_without_publishing_queues() {
-    let trace = Arc::new(Mutex::new(Vec::new()));
-    let dma = DeviceDma::new(
-        DmaDeviceInfo::new(
-            DmaDomainId::Direct,
-            DmaCoherency::Coherent,
-            DmaConstraints::new(u64::MAX),
-        ),
-        &TEST_DMA,
-    );
-    let mut device =
-        rd_net::prepare_device(Box::new(TestDevice(Arc::clone(&trace), TestTx(trace))), dma)
-            .unwrap();
-    let mut group = device.poll_groups.pop().unwrap();
-    let cancelled = Arc::new(AtomicBool::new(false));
-    group.owner_startup = Some(Box::new(MissingDeviceStartup(Arc::clone(&cancelled))));
+    for cancel_fails in [false, true] {
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let dma = DeviceDma::new(
+            DmaDeviceInfo::new(
+                DmaDomainId::Direct,
+                DmaCoherency::Coherent,
+                DmaConstraints::new(u64::MAX),
+            ),
+            &TEST_DMA,
+        );
+        let mut device =
+            rd_net::prepare_device(Box::new(TestDevice(Arc::clone(&trace), TestTx(trace))), dma)
+                .unwrap();
+        let mut group = device.poll_groups.pop().unwrap();
+        let cancel_attempted = Arc::new(AtomicBool::new(false));
+        group.owner_startup = Some(Box::new(MissingDeviceStartup {
+            cancel_attempted: Arc::clone(&cancel_attempted),
+            cancel_fails,
+        }));
 
-    let (rx_ready, _protocol_rx) = spsc_ring(2);
-    let (rx_recycle, recycle) = spsc_ring(2);
-    let (tx_free, _protocol_tx_free) = spsc_ring(2);
-    let (_protocol_tx, tx_ready) = spsc_ring(2);
-    let shared = Arc::new(PollGroupState::new(0, Arc::new(ax_task::IrqNotify::new())));
-    let mut executor = QueueGroupExecutor {
-        group,
-        rx_ready,
-        rx_recycle: recycle,
-        rx_recycler: Arc::new(RxRecycler::new(rx_recycle, Arc::clone(&shared), 2)),
-        rx_spares: Vec::new(),
-        rx_extra_buffers: 0,
-        tx_ready,
-        tx_free,
-        pending_rx: None,
-        pending_rx_refill: VecDeque::with_capacity(2),
-        pending_tx: None,
-        pending_tx_free: None,
-        retry_at: None,
-        shared: Arc::clone(&shared),
-    };
+        let (rx_ready, _protocol_rx) = spsc_ring(2);
+        let (rx_recycle, recycle) = spsc_ring(2);
+        let (tx_free, mut protocol_tx_free) = spsc_ring(2);
+        let (_protocol_tx, tx_ready) = spsc_ring(2);
+        let shared = Arc::new(PollGroupState::new(0, Arc::new(ax_task::IrqNotify::new())));
+        let mut executor = QueueGroupExecutor {
+            group,
+            rx_ready,
+            rx_recycle: recycle,
+            rx_recycler: Arc::new(RxRecycler::new(rx_recycle, Arc::clone(&shared), 2)),
+            rx_spares: Vec::new(),
+            rx_extra_buffers: 0,
+            tx_ready,
+            tx_free,
+            pending_rx: None,
+            pending_rx_refill: VecDeque::with_capacity(2),
+            pending_tx: None,
+            pending_tx_free: None,
+            retry_at: None,
+            shared: Arc::clone(&shared),
+        };
 
-    assert!(executor.initialize().is_ok());
-    assert!(cancelled.load(Ordering::Acquire));
-    assert!(shared.startup_absent());
-    assert_eq!(executor.group.rx.posted(), 0);
+        let result = executor.initialize();
+        if cancel_fails {
+            assert!(matches!(result, Err(NetError::InvalidParts)));
+        } else {
+            assert!(result.is_ok());
+        }
+        assert!(cancel_attempted.load(Ordering::Acquire));
+        assert_eq!(shared.startup_absent(), !cancel_fails);
+        assert!(shared.is_disabled());
+        assert_eq!(executor.group.rx.posted(), 0);
+        assert!(protocol_tx_free.pop().is_none());
+    }
 }
 
 #[test]

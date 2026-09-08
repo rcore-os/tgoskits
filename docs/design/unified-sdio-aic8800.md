@@ -99,6 +99,11 @@ signal-enable 字段始终通过单次 32-bit MMIO 访问；不能拆成两次
 
 ## 启动、等待和回滚
 
+`NetworkRuntimeBuilder` 撤销的是延后识别后发现不适用的候选网络接口；平台
+probe 仍会先登记候选设备。该流程避免非网络设备中止网络初始化，不负责把同一
+控制器重新绑定到块驱动，也不保证该控制器上的存储卡可用。已有独立块设备的
+探测与初始化流程保持不变。
+
 1. ax-driver 映射 MMIO、执行 SDIO1 SoC 设置并注册 portable device；reset
    settle 以绝对 deadline 交给 owner，不在驱动中 sleep。
 2. ax-net 固定 owner CPU，注册并启用硬 IRQ；poll group 仍保持 disabled，
@@ -115,6 +120,10 @@ signal-enable 字段始终通过单次 32-bit MMIO 访问；不能拆成两次
    Wi-Fi 控制同样使用 `start/advance/cancel`。
 6. 其他失败先 disable+synchronize IRQ，再 cancel/abort；证明 host DMA 停止后
    释放队列，无法证明时隔离整个 ownership domain。
+
+剔除 group 后，`QueueFramePort` 保留构建时所有 group 的 checksum 能力交集，
+不提升剩余队列对外宣告的能力。该交集仍是剩余 group 支持能力的保守子集；AIC
+只有一个 group，缺失时整个端口被剔除，不需要为此增加逐 group 的能力副本。
 
 等待原因必须由类型区分，不能再用一个 `rearm_ready` 布尔值同时表示定时器和
 设备中断：
