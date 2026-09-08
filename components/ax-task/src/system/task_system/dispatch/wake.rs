@@ -1103,7 +1103,7 @@ impl TaskSystem {
                 EnqueueReason::Wake,
             )
             .unwrap_or_else(|_| {
-                task_runtime::fatal_invariant(0x5251_1211, core.id().as_u64() as usize)
+                task_runtime::fatal_invariant(0x5354_0002, core.id().as_u64() as usize)
             });
         let completed = Self::complete_affinity_if_satisfied_locked(&core, sched);
         drop(guard);

@@ -289,7 +289,7 @@ impl TaskSystem {
         }
         self.program_local_timer(cpu.as_mut(), SchedulerDeadlineDerivationSource::Placement)
             .unwrap_or_else(|_| {
-                task_runtime::fatal_invariant(0x5251_1210, thread.as_u64() as usize)
+                task_runtime::fatal_invariant(0x5354_0001, thread.as_u64() as usize)
             });
         Ok(())
     }
