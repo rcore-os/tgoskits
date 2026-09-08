@@ -363,7 +363,7 @@ pub struct NetPollGroupParts {
 - queue ID 与 group ID 使用 typed newtype。
 - 当前生产后端全部提供一个 queue-0 group；接口允许多个 group，但本次不启用 virtio/fxmac 硬件多队列。
 - 只有拥有独立 IRQ source 和独立 `rearm_and_check()` 域的硬件队列才能拆成多个 group。
-- `NetOwnerStartup` 是 move-only one-shot endpoint，只能由已固定 CPU 的 group worker 在 IRQ 注册并 enable 之后、initial refill 与队列发布之前执行。AIC 卡识别、固件和 FDRV 初始化经此边界延后，probe 不执行 SDIO 协议 I/O。若它返回 `NetError::DeviceNotPresent`，runtime 只在 `cancel()` 成功并 disable+synchronize 对应 IRQ callback 后剔除该 group；其他错误仍使 builder 回滚。
+- `NetOwnerStartup` 是 move-only one-shot endpoint，只能由已固定 CPU 的 group worker 在 IRQ 注册并 enable 之后、initial refill 与队列发布之前执行。它允许驱动在同一 owner 上完成传输层初始化、身份确认和固件启动；runtime 只处理进度与等待，不接管设备协议。若它返回 `NetError::DeviceNotPresent`，runtime 只在 `cancel()` 成功并 disable+synchronize 对应 IRQ callback 后剔除该 group；取消失败不发布 absent 状态，其他错误仍使 builder 回滚。
 - `NetPollIrqControl` 暴露 `quiesce()`、`shutdown()` 和 `rearm_and_check()`；`shutdown()` 只有在硬件已不能访问 descriptor/token backing 时才能成功，否则 runtime 必须隔离整个 group。
 - hard endpoint 是 move-only owned callback，不保存 queue 或 control 的反向引用。
 
@@ -516,6 +516,10 @@ AP/STA confirmation 已由同一 owner executor 中的 command/RX 有限状态�
 
 ### 14.6 AIC8800/SDIO
 
+固定硬件拓扑通过板级配置选择 AIC，`AicRdifDevice` 是尚待身份确认的候选设备。
+`AicOwnerStartup` 在现有 group owner 上调用 SDIO 协议组件并启动芯片，这种
+分阶段初始化不要求独立总线线程；只有启动成功的设备才进入可用网络接口集合。
+
 - SDHCI controller IRQ 是 nested source，由 unified runtime 选择 CPU 后注册。
 - probe 只封装 host parts 和 move-only CARD_INT source；卡类型、chip variant、固件下载与 FDRV/bus 创建由 `NetOwnerStartup` 在 group owner CPU 上完成。CMD5 没有 I/O Function 时，AIC 报告 `DeviceNotPresent`，同步撤销该 group 后不发布 `wlan0`。
 - top half 只 mask `CARD_INT` signal、发布 pending/snapshot 并激活本地 group。
@@ -528,7 +532,7 @@ AP/STA confirmation 已由同一 owner executor 中的 command/RX 有限状态�
 - SDHCI rearm 是一个 task-context 原子操作：unmask CARD_INT 后立即读 controller status，若 level 已经挂起则重新 mask 并返回 `WorkPending`，不依赖重新产生 edge。
 - shutdown 在 owner CPU 先 mask CARD_INT，按 variant 清除 chip interrupt-enable register，再禁用 SDHCI interrupt signal；任一步无法确认时整个 executor graph 进入隔离。
 - D80/DC 都不提供 kicker 或 polling fallback；缺少对应 profile、固件或 CIS 身份证据
-  的变体在 probe 阶段明确失败。
+  的变体在 owner startup 阶段明确失败，不与 `NoIoFunctions` 一起降级。
 - SDHCI 的 PIO command/data completion 仍是 host transaction 语义，不能误当成 network queue IRQ。
 
 ## 15. 公共错误与失败策略

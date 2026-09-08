@@ -99,10 +99,16 @@ signal-enable 字段始终通过单次 32-bit MMIO 访问；不能拆成两次
 
 ## 启动、等待和回滚
 
-`NetworkRuntimeBuilder` 撤销的是延后识别后发现不适用的候选网络接口；平台
-probe 仍会先登记候选设备。该流程避免非网络设备中止网络初始化，不负责把同一
-控制器重新绑定到块驱动，也不保证该控制器上的存储卡可用。已有独立块设备的
-探测与初始化流程保持不变。
+固定硬件拓扑采用板级绑定、owner 延后确认的启动方式。板级 feature 和设备树
+选择 AIC 平台适配，`AicRdifDevice` 持有准备好的 host；平台登记的 `wlan0` 是
+候选设备，不代表网络接口已经可用。`AicOwnerStartup` 复用 group owner，调用
+`sdmmc-protocol` 完成卡识别，再初始化 AIC 固件与数据面。`NetworkRuntimeBuilder`
+只管理 `NetOwnerStartup` 的进度、等待和资源生命周期，不解释 SDIO 命令或卡身份。
+
+初始化与数据面沿用同一 owner 的硬件访问约束，不为卡识别另建总线线程或请求
+转发层。静态绑定决定尝试哪个驱动，运行时身份检查确认该假设是否成立；两者
+不要求独立的动态总线枚举框架。是否需要 host 仲裁、动态匹配或重新绑定，应由
+实际共享和插拔需求决定，不从软件分层推导出额外线程。
 
 1. ax-driver 映射 MMIO、执行 SDIO1 SoC 设置并注册 portable device；reset
    settle 以绝对 deadline 交给 owner，不在驱动中 sleep。
@@ -115,11 +121,17 @@ probe 仍会先登记候选设备。该流程避免非网络设备中止网络�
 4. `DeviceNotPresent` 分支先在 owner CPU 执行 `cancel()`；确认取消成功后，
    `NetworkRuntimeBuilder` 才 disable+synchronize 对应 IRQ registration，并从
    protocol port 中剔除该 poll group。该设备没有剩余 group 时不发布网络接口，
-   其他网络设备继续初始化。
+   其他网络设备继续初始化。取消失败仍返回错误，不发布 absent 状态；IRQ 同步
+   失败时拒绝发布，并隔离无法证明安全的资源。
 5. 成功后才 refill RX、rearm 并 publish 队列，再执行可选启动 transaction。
    Wi-Fi 控制同样使用 `start/advance/cancel`。
-6. 其他失败先 disable+synchronize IRQ，再 cancel/abort；证明 host DMA 停止后
-   释放队列，无法证明时隔离整个 ownership domain。
+6. 其他 owner startup 错误先由 owner 尝试 `cancel()`，随后 builder
+   disable+synchronize IRQ 并停止 executor。只有确认 IRQ 已同步且 host DMA
+   已停止才能释放队列，无法证明时隔离整个 ownership domain。
+
+`DeviceNotPresent` 补齐候选设备不适用时的终止路径，不把固件、DMA 或超时错误
+一起忽略。撤销发生在网络接口发布前，不负责将同一控制器重新绑定到块驱动，也
+不保证该控制器上的存储卡可用；已有独立块设备的探测与初始化流程保持不变。
 
 剔除 group 后，`QueueFramePort` 保留构建时所有 group 的 checksum 能力交集，
 不提升剩余队列对外宣告的能力。该交集仍是剩余 group 支持能力的保守子集；AIC
