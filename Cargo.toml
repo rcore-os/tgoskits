@@ -240,7 +240,6 @@ scope-local = { version = "0.5", path = "components/scope-local" }
 sdmmc-host = { version = "0.1", path = "drivers/blk/sdmmc-host" }
 aic8800 = { version = "0.2", path = "drivers/net/aic8800" }
 crab-usb = { version = "0.11", path = "drivers/usb/usb-host" }
-crab-uvc = { version = "0.1", path = "drivers/usb/usb-device/uvc" }
 usb-if = { version = "0.8", path = "drivers/usb/usb-if" }
 usb-serial = { version = "0.1", path = "drivers/usb/usb-serial" }
 dwmmc-host = { version = "0.4", path = "drivers/blk/dwmmc-host", default-features = false }

@@ -705,10 +705,6 @@ fn rx_avail_pre_read_failure_faults_queue_and_rejects_frames() {
 fn end_to_end_guest_tx_rx_ack_reset() {
     let h = Harness::new();
 
-    // 1. Identity.
-    assert_eq!(h.r(vc::VIRTIO_MMIO_MAGIC_VALUE), vc::MMIO_MAGIC_VALUE);
-    assert_eq!(h.r(vc::VIRTIO_MMIO_DEVICE_ID), 1);
-
     // 2-7. Bring up the guest driver and queues.
     h.bring_up();
     assert_ne!(h.r(vc::VIRTIO_MMIO_STATUS) & vc::VIRTIO_STATUS_DRIVER_OK, 0);

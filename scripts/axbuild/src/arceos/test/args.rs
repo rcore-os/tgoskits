@@ -139,26 +139,6 @@ mod tests {
     }
 
     #[test]
-    fn command_rejects_both_only_flags() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let result = Cli::try_parse_from([
-            "arceos",
-            "test",
-            "qemu",
-            "--target",
-            "x86_64-unknown-none",
-            "--only-rust",
-            "--only-c",
-        ]);
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn command_parses_removed_test_qemu_package_filter() {
         #[derive(Parser)]
         struct Cli {

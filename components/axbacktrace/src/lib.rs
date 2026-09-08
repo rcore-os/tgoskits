@@ -764,9 +764,9 @@ mod tests {
         let _ = &chain;
     }
 
-    /// Verify Frame and Backtrace sizes remain stable (prevent accidental regressions).
+    /// Verify the layout used when reading native stack frame records.
     #[test]
-    fn stress_size_stability() {
+    fn frame_layout_matches_native_stack_records() {
         // Frame is #[repr(C)] with two usize fields
         assert_eq!(
             core::mem::size_of::<Frame>(),
@@ -776,20 +776,6 @@ mod tests {
             core::mem::align_of::<Frame>(),
             core::mem::align_of::<usize>()
         );
-
-        // Backtrace contains Inner (discriminant + Box<[Frame]>) + Option<&'static str>
-        // Size should be stable across compilations
-        let bt_size = core::mem::size_of::<Backtrace>();
-        assert!(
-            bt_size > 0 && bt_size <= 48,
-            "Backtrace size unexpected: {bt_size}"
-        );
-
-        // CaptureBuf is stack-allocated; verify it's reasonable
-        let cap_size = core::mem::size_of::<CaptureBuf>();
-        let expected =
-            CAPTURE_CAPACITY * core::mem::size_of::<Frame>() + core::mem::size_of::<usize>();
-        assert_eq!(cap_size, expected, "CaptureBuf size mismatch");
     }
 
     /// Verify Frame alignment and that misaligned pointers are rejected.

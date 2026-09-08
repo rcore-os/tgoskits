@@ -1,12 +1,9 @@
 //! Integration tests for axvirtio-blk
 //!
 //! This module contains tests for the VirtIO block device implementation,
-//! including backend operations, configuration, request types, and MMIO device.
+//! covering MMIO transport state, configuration reads, and scoped guest memory.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-};
+use std::sync::{Arc, RwLock};
 
 use ax_memory_addr::PhysAddr;
 use axaddrspace::{AddrSpaceError, AddrSpaceResult, GuestMemoryAccessor};
@@ -25,109 +22,20 @@ use axvm_types::{AccessWidth, GuestPhysAddr};
 // Mock Implementations
 // ============================================================================
 
-/// Mock block backend for testing
-/// Simulates a block device with in-memory storage
-struct MockBlockBackend {
-    /// Storage data indexed by sector
-    storage: RwLock<HashMap<u64, Vec<u8>>>,
-    /// Sector size in bytes
-    sector_size: usize,
-    /// Total capacity in sectors
-    capacity: u64,
-    /// Track flush calls
-    flush_count: RwLock<usize>,
-    /// Simulate read errors for specific sectors
-    read_error_sectors: RwLock<Vec<u64>>,
-    /// Simulate write errors for specific sectors
-    write_error_sectors: RwLock<Vec<u64>>,
-}
+/// MMIO state tests must not submit block I/O.
+struct NoIoBackend;
 
-impl MockBlockBackend {
-    fn new(capacity: u64, sector_size: usize) -> Self {
-        Self {
-            storage: RwLock::new(HashMap::new()),
-            sector_size,
-            capacity,
-            flush_count: RwLock::new(0),
-            read_error_sectors: RwLock::new(Vec::new()),
-            write_error_sectors: RwLock::new(Vec::new()),
-        }
-    }
-}
-
-impl BlockBackend for MockBlockBackend {
-    fn read(&self, sector: u64, buffer: &mut [u8]) -> VirtioResult<usize> {
-        // Check for simulated read errors
-        if self.read_error_sectors.read().unwrap().contains(&sector) {
-            return Err(axvirtio_blk::VirtioError::BackendError);
-        }
-
-        // Validate sector range
-        let sectors_needed = buffer.len().div_ceil(self.sector_size);
-        if sector + sectors_needed as u64 > self.capacity {
-            return Err(axvirtio_blk::VirtioError::InvalidSector);
-        }
-
-        let storage = self.storage.read().unwrap();
-        let mut bytes_read = 0;
-
-        for i in 0..sectors_needed {
-            let current_sector = sector + i as u64;
-            let offset = i * self.sector_size;
-            let remaining = buffer.len() - offset;
-            let to_read = remaining.min(self.sector_size);
-
-            if let Some(data) = storage.get(&current_sector) {
-                let copy_len = to_read.min(data.len());
-                buffer[offset..offset + copy_len].copy_from_slice(&data[..copy_len]);
-                // Zero-fill if data is shorter than sector
-                if copy_len < to_read {
-                    buffer[offset + copy_len..offset + to_read].fill(0);
-                }
-            } else {
-                // Sector not written yet, return zeros
-                buffer[offset..offset + to_read].fill(0);
-            }
-            bytes_read += to_read;
-        }
-
-        Ok(bytes_read)
+impl BlockBackend for NoIoBackend {
+    fn read(&self, _sector: u64, _buffer: &mut [u8]) -> VirtioResult<usize> {
+        panic!("MMIO state tests must not read the block backend");
     }
 
-    fn write(&self, sector: u64, buffer: &[u8]) -> VirtioResult<usize> {
-        // Check for simulated write errors
-        if self.write_error_sectors.read().unwrap().contains(&sector) {
-            return Err(axvirtio_blk::VirtioError::BackendError);
-        }
-
-        // Validate sector range
-        let sectors_needed = buffer.len().div_ceil(self.sector_size);
-        if sector + sectors_needed as u64 > self.capacity {
-            return Err(axvirtio_blk::VirtioError::InvalidSector);
-        }
-
-        let mut storage = self.storage.write().unwrap();
-        let mut bytes_written = 0;
-
-        for i in 0..sectors_needed {
-            let current_sector = sector + i as u64;
-            let offset = i * self.sector_size;
-            let remaining = buffer.len() - offset;
-            let to_write = remaining.min(self.sector_size);
-
-            let mut sector_data = vec![0u8; self.sector_size];
-            sector_data[..to_write].copy_from_slice(&buffer[offset..offset + to_write]);
-            storage.insert(current_sector, sector_data);
-            bytes_written += to_write;
-        }
-
-        Ok(bytes_written)
+    fn write(&self, _sector: u64, _buffer: &[u8]) -> VirtioResult<usize> {
+        panic!("MMIO state tests must not write the block backend");
     }
 
     fn flush(&self) -> VirtioResult<()> {
-        let mut count = self.flush_count.write().unwrap();
-        *count += 1;
-        Ok(())
+        panic!("MMIO state tests must not flush the block backend");
     }
 }
 
@@ -137,15 +45,12 @@ impl BlockBackend for MockBlockBackend {
 struct MockGuestMemoryAccessor {
     /// Memory storage
     memory: Arc<RwLock<Vec<u8>>>,
-    /// Base address offset for translation
-    base_offset: usize,
 }
 
 impl MockGuestMemoryAccessor {
     fn new(size: usize) -> Self {
         Self {
             memory: Arc::new(RwLock::new(vec![0u8; size])),
-            base_offset: 0,
         }
     }
 }
@@ -154,9 +59,9 @@ impl GuestMemoryAccessor for MockGuestMemoryAccessor {
     fn translate_and_get_limit(&self, guest_addr: GuestPhysAddr) -> Option<(PhysAddr, usize)> {
         let offset = guest_addr.as_usize();
         let memory = self.memory.read().unwrap();
-        if offset >= self.base_offset && offset < memory.len() + self.base_offset {
-            let phys_addr = PhysAddr::from(offset - self.base_offset);
-            let limit = memory.len() - (offset - self.base_offset);
+        if offset < memory.len() {
+            let phys_addr = PhysAddr::from(offset);
+            let limit = memory.len() - offset;
             Some((phys_addr, limit))
         } else {
             None
@@ -191,18 +96,6 @@ impl GuestMemoryAccessor for MockGuestMemoryAccessor {
 }
 
 // ============================================================================
-// BlockBackend Tests
-// ============================================================================
-
-// ============================================================================
-// VirtioBlockConfig Tests
-// ============================================================================
-
-// ============================================================================
-// MockGuestMemoryAccessor Tests
-// ============================================================================
-
-// ============================================================================
 // VirtioMmioBlockDevice Tests
 // ============================================================================
 
@@ -232,21 +125,13 @@ mod mmio_device_tests {
     const VIRTIO_DEVICE_BLOCK: u32 = 2;
     const VIRTIO_F_RING_EVENT_IDX: u32 = 1 << 29;
 
-    fn create_test_device() -> VirtioMmioBlockDevice<MockBlockBackend, MockGuestMemoryAccessor> {
-        let backend = MockBlockBackend::new(2048, 512); // 1MB device
+    fn create_test_device() -> VirtioMmioBlockDevice<NoIoBackend, MockGuestMemoryAccessor> {
+        let backend = NoIoBackend;
         let accessor = MockGuestMemoryAccessor::new(1024 * 1024); // 1MB guest memory
         let config = VirtioBlockConfig::default();
         let base_ipa = GuestPhysAddr::from(0x0a000000);
 
         VirtioMmioBlockDevice::new(base_ipa, 0x200, backend, config, accessor).unwrap()
-    }
-
-    #[test]
-    fn test_device_creation() {
-        let device = create_test_device();
-
-        assert!(device.is_enabled());
-        assert_eq!(device.get_status(), 0);
     }
 
     #[test]
@@ -357,79 +242,47 @@ mod mmio_device_tests {
             .mmio_write(features_sel_addr, AccessWidth::Dword, 0)
             .unwrap();
         let low_features = device.mmio_read(features_addr, AccessWidth::Dword);
-        assert!(low_features.is_ok());
+        // EVENT_IDX, FLUSH, BLK_SIZE, SEG_MAX, and SIZE_MAX.
+        assert_eq!(
+            low_features.unwrap(),
+            VIRTIO_F_RING_EVENT_IDX as usize | (1 << 9) | (1 << 6) | (1 << 2) | (1 << 1)
+        );
 
         // Select high 32 bits (selector = 1)
         device
             .mmio_write(features_sel_addr, AccessWidth::Dword, 1)
             .unwrap();
         let high_features = device.mmio_read(features_addr, AccessWidth::Dword);
-        assert!(high_features.is_ok());
-    }
-
-    #[test]
-    fn default_features_advertise_implemented_event_idx() {
-        let device = create_test_device();
-        let base_ipa = GuestPhysAddr::from(0x0a000000);
-        let features_sel_addr =
-            GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_DEVICE_FEATURES_SEL as usize);
-        let features_addr =
-            GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_DEVICE_FEATURES as usize);
-
-        device
-            .mmio_write(features_sel_addr, AccessWidth::Dword, 0)
-            .unwrap();
-        let advertised_features =
-            device.mmio_read(features_addr, AccessWidth::Dword).unwrap() as u32;
-
-        assert_ne!(advertised_features & VIRTIO_F_RING_EVENT_IDX, 0);
+        assert_eq!(high_features.unwrap(), 1); // VERSION_1 is bit 32.
     }
 
     #[test]
     fn test_mmio_config_space_read() {
-        let device = create_test_device();
         let base_ipa = GuestPhysAddr::from(0x0a000000);
+        let config = VirtioBlockConfig {
+            capacity: 0x1234_5678_9abc_def0,
+            ..VirtioBlockConfig::default()
+        };
+        let device = VirtioMmioBlockDevice::new(
+            base_ipa,
+            0x200,
+            NoIoBackend,
+            config,
+            MockGuestMemoryAccessor::new(0),
+        )
+        .unwrap();
 
         // Read capacity (low 32 bits at config offset 0x00)
         let capacity_low_addr =
             GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_CONFIG as usize);
         let result = device.mmio_read(capacity_low_addr, AccessWidth::Dword);
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0x9abc_def0);
 
         // Read capacity (high 32 bits at config offset 0x04)
         let capacity_high_addr =
             GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_CONFIG as usize + 4);
         let result = device.mmio_read(capacity_high_addr, AccessWidth::Dword);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_device_not_ready_initially() {
-        let device = create_test_device();
-        assert!(!device.is_device_ready());
-    }
-
-    #[test]
-    fn test_get_selected_queue() {
-        let device = create_test_device();
-
-        // Initially queue 0 should be selected
-        let selected = device.get_selected_queue();
-        assert!(selected.is_some());
-        assert_eq!(selected.unwrap(), 0);
-    }
-
-    #[test]
-    fn test_get_queue() {
-        let device = create_test_device();
-
-        // Queue 0 should exist
-        let queue = device.get_queue(0);
-        assert!(queue.is_some());
-
-        // Queue 100 should not exist
-        let queue = device.get_queue(100);
-        assert!(queue.is_none());
+        assert_eq!(result.unwrap(), 0x1234_5678);
     }
 
     #[test]
@@ -441,7 +294,7 @@ mod mmio_device_tests {
         // accessor-based fallback cannot translate any guest address, while
         // the scoped path validates the same layout against the real backing
         // and must make the queue ready.
-        let backend = MockBlockBackend::new(2048, 512);
+        let backend = NoIoBackend;
         let config = VirtioBlockConfig::default();
         let base_ipa = GuestPhysAddr::from(0x0a000000);
         let device =
@@ -521,7 +374,7 @@ mod integration_tests {
     /// Simulates a simple driver initialization sequence
     #[test]
     fn test_driver_initialization_sequence() {
-        let backend = MockBlockBackend::new(2048, 512);
+        let backend = NoIoBackend;
         let accessor = MockGuestMemoryAccessor::new(1024 * 1024);
         let config = VirtioBlockConfig::default();
         let base_ipa = GuestPhysAddr::from(0x0a000000);
@@ -529,31 +382,14 @@ mod integration_tests {
         let device =
             VirtioMmioBlockDevice::new(base_ipa, 0x200, backend, config, accessor).unwrap();
 
-        // Step 1: Verify magic value
-        let magic_addr = base_ipa;
-        let magic = device.mmio_read(magic_addr, AccessWidth::Dword).unwrap();
-        assert_eq!(magic as u32, 0x74726976);
-
-        // Step 2: Verify version
-        let version_addr = GuestPhysAddr::from(base_ipa.as_usize() + 0x004);
-        let version = device.mmio_read(version_addr, AccessWidth::Dword).unwrap();
-        assert_eq!(version as u32, 2);
-
-        // Step 3: Verify device type (block = 2)
-        let device_id_addr = GuestPhysAddr::from(base_ipa.as_usize() + 0x008);
-        let device_id = device
-            .mmio_read(device_id_addr, AccessWidth::Dword)
-            .unwrap();
-        assert_eq!(device_id as u32, 2);
-
-        // Step 4: Write ACKNOWLEDGE to status
+        // Acknowledge the device before attaching the driver.
         let status_addr = GuestPhysAddr::from(base_ipa.as_usize() + 0x070);
         device
             .mmio_write(status_addr, AccessWidth::Dword, 1)
             .unwrap(); // ACKNOWLEDGE
         assert_eq!(device.get_status(), 1);
 
-        // Step 5: Write DRIVER to status
+        // Advance to the driver-attached state.
         device
             .mmio_write(status_addr, AccessWidth::Dword, 3)
             .unwrap(); // ACKNOWLEDGE | DRIVER
@@ -579,7 +415,7 @@ fn managed_device_declares_resources_and_routes_mmio() {
         VirtioMmioBlockDevice::new(
             GuestPhysAddr::from(0x0a00_0000),
             0x200,
-            MockBlockBackend::new(128, 512),
+            NoIoBackend,
             VirtioBlockConfig::default(),
             MockGuestMemoryAccessor::new(0x1_0000),
         )

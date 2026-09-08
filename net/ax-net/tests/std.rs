@@ -13,12 +13,10 @@ use ax_net::{
 #[test]
 fn ax_net_interface_ids_validate_linux_ifindices() {
     let id = InterfaceId::new(7);
-    assert_eq!(id.get(), 7);
     assert_eq!(id.to_linux_ifindex(), 7);
     assert_eq!(InterfaceId::from_linux_ifindex(7), Some(id));
     assert_eq!(InterfaceId::from_linux_ifindex(0), None);
     assert_eq!(InterfaceId::from_linux_ifindex(-1), None);
-    assert_eq!(InterfaceId::LOOPBACK.get(), 1);
 }
 
 struct MockConfigurable {

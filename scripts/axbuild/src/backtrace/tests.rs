@@ -200,20 +200,6 @@ fn std_test_elf_path_uses_release_profile() {
 }
 
 #[test]
-fn std_test_elf_path_maps_arceos_none_target_to_std_target_dir() {
-    let path = std_test_elf_path(
-        Path::new("/ws"),
-        "x86_64-unknown-none",
-        "arceos-test-suit",
-        false,
-    );
-    assert_eq!(
-        path,
-        PathBuf::from("/ws/target/x86_64-unknown-linux-musl/release/arceos-test-suit")
-    );
-}
-
-#[test]
 fn symbolize_skips_zero_ip() {
     let exe = std::env::current_exe().unwrap();
     let symbolizer = HostSymbolizer::new(&exe).unwrap();

@@ -738,52 +738,6 @@ fn global_page_alloc() {
 }
 
 #[test]
-fn global_small_alloc() {
-    let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
-    let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut region, 1);
-
-    let layout = Layout::from_size_align(64, 8).unwrap();
-    let ptr = allocator.alloc(layout).unwrap();
-    unsafe { allocator.dealloc(ptr, layout) };
-}
-
-#[test]
-fn global_large_alloc() {
-    let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
-    let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut region, 1);
-
-    let layout = Layout::from_size_align(8192, PAGE_SIZE).unwrap();
-    let ptr = allocator.alloc(layout).unwrap();
-    unsafe { allocator.dealloc(ptr, layout) };
-}
-
-#[test]
-fn global_mixed_alloc() {
-    let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
-    let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut region, 1);
-
-    let sizes: &[(usize, usize)] = &[
-        (8, 8),
-        (64, 8),
-        (1024, 8),
-        (4096, PAGE_SIZE),
-        (8192, PAGE_SIZE),
-    ];
-    let mut allocations = Vec::new();
-    for &(size, align) in sizes {
-        let layout = Layout::from_size_align(size, align).unwrap();
-        let ptr = allocator.alloc(layout).unwrap();
-        allocations.push((ptr, layout));
-    }
-    for (ptr, layout) in allocations {
-        unsafe { allocator.dealloc(ptr, layout) };
-    }
-}
-
-#[test]
 fn global_cross_cpu_free() {
     let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();

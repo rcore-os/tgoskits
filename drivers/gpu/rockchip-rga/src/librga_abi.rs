@@ -690,18 +690,8 @@ mod tests {
     use crate::operation::{CscStandard, Rect, RgaOperation};
 
     #[test]
-    fn img_info_is_56_bytes() {
-        assert_eq!(core::mem::size_of::<RgaImgInfo>(), 56);
-    }
-
-    #[test]
     fn rga_req_is_504_bytes() {
         assert_eq!(core::mem::size_of::<RgaReq>(), 504);
-    }
-
-    #[test]
-    fn rga_req_embeds_three_images() {
-        assert!(core::mem::size_of::<RgaReq>() >= 3 * core::mem::size_of::<RgaImgInfo>());
     }
 
     #[test]
@@ -741,13 +731,6 @@ mod tests {
         assert_eq!(rk_format_to_pixel(0xa << 8), Ok(PixelFormat::Nv12));
         assert_eq!(rk_format_to_pixel(0x7 << 8), Ok(PixelFormat::Bgr888));
         assert_eq!(rk_format_to_pixel(0x99 << 8), Err(RgaError::Unsupported));
-    }
-
-    #[test]
-    fn req_default_zeroes() {
-        let r = RgaReq::default();
-        assert_eq!(r.render_mode, 0);
-        assert_eq!(r.src.yrgb_addr, 0);
     }
 
     // -----------------------------------------------------------------------

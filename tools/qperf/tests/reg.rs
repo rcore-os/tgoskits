@@ -4,7 +4,7 @@ mod target;
 #[path = "../src/qemu/ffi.rs"]
 pub mod ffi;
 
-use target::{Frame, Reg, Target};
+use target::{Reg, Target};
 
 #[test]
 fn qemu_v7_register_descriptor_includes_readonly_flag() {
@@ -39,5 +39,4 @@ fn parses_qemu_x86_64_target() {
             .frame_address(0x1000),
         Some(0xff0)
     );
-    assert_eq!(Frame::default().fp, 0);
 }

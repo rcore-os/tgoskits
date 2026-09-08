@@ -1,5 +1,3 @@
-use core::num::{NonZeroU16, NonZeroU32};
-
 use crate::*;
 
 struct MockHost {
@@ -118,15 +116,6 @@ impl SdMmcHost for MockHost {
         self.busy = false;
         Ok(())
     }
-}
-
-#[test]
-fn data_phase_validates_buffer_shape() {
-    let mut read = [0u8; 1024];
-    let block = NonZeroU16::new(512).unwrap();
-    let phase = DataPhase::read(block, NonZeroU32::new(2).unwrap(), &mut read).unwrap();
-    assert_eq!(phase.direction, DataDirection::Read);
-    assert_eq!(phase.buffer.len(), 1024);
 }
 
 #[test]

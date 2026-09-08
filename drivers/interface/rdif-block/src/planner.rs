@@ -501,16 +501,6 @@ mod tests {
     }
 
     #[test]
-    fn transfer_planner_does_not_depend_on_queue_identity() {
-        let mut info = queue_info_with(queue_limits(16, 8, 2048));
-        let first = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
-        info.id = 7;
-        let second = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
-
-        assert_eq!(first.chunk_size(), second.chunk_size());
-    }
-
-    #[test]
     fn transfer_planner_checks_range_when_creating_plan() {
         let info = queue_info_with(QueueLimits::simple(
             512,

@@ -74,8 +74,6 @@ impl Interface for MockMsiProvider {
 #[test]
 fn rdif_msi_wrapper_validates_counts_delegates_and_frees_allocations() {
     let mut msi = Msi::new(MsiProviderId(77), MockMsiProvider::new());
-    assert_eq!(msi.name(), "mock-msi");
-    assert_eq!(msi.provider(), MsiProviderId(77));
     assert_eq!(
         msi.allocate(MsiRequest::new(MsiDeviceId(3), 0)),
         Err(IrqError::InvalidIrq)

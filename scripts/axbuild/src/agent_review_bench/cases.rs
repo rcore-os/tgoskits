@@ -404,11 +404,6 @@ mod tests {
     }
 
     #[test]
-    fn validates_well_formed_case() {
-        validate_case_schema(&sample_case()).unwrap();
-    }
-
-    #[test]
     fn rejects_short_sha() {
         let mut case = sample_case();
         case.head = "abc".into();

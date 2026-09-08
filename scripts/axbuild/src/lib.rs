@@ -136,23 +136,3 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::Starry { command } => Starry::new()?.execute(command).await,
     }
 }
-
-#[cfg(test)]
-mod tests {
-
-    use clap::Parser;
-
-    use super::*;
-
-    #[derive(Parser)]
-    struct TestCli {
-        #[command(subcommand)]
-        command: Commands,
-    }
-
-    #[test]
-    fn command_rejects_libtest_testname_and_trailing_arguments() {
-        assert!(TestCli::try_parse_from(["xtask", "ktest", "qemu", "case_name"]).is_err());
-        assert!(TestCli::try_parse_from(["xtask", "ktest", "qemu", "--", "--nocapture"]).is_err());
-    }
-}

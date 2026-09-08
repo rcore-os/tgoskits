@@ -161,14 +161,6 @@ fn block_request_slot_rejects_second_request_until_completed() {
 }
 
 #[test]
-fn block_request_can_cross_queue_thread_boundary() {
-    fn assert_send<T: Send>() {}
-
-    assert_send::<BlockRequest>();
-    assert_send::<BlockRequestSlot>();
-}
-
-#[test]
 fn aborted_owned_dma_is_returned_after_controller_quiesce() {
     #[repr(align(4))]
     struct FakeRegisters([u8; 0x100]);

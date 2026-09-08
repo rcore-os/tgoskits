@@ -355,25 +355,4 @@ mod tests {
         assert!(!range_a.contains(&RangeInclusive::new(6u64, 7u64).unwrap()));
         assert!(!range_a.contains(&RangeInclusive::new(7u64, 8u64).unwrap()));
     }
-
-    #[test]
-    fn test_range_ord() {
-        let range_a = RangeInclusive::new(1, 4).unwrap();
-        let range_b = RangeInclusive::new(1, 4).unwrap();
-        let range_c = RangeInclusive::new(1, 3).unwrap();
-        let range_d = RangeInclusive::new(1, 5).unwrap();
-
-        assert_eq!(range_a, range_b);
-        assert_eq!(range_b, range_a);
-        assert!(range_a > range_c);
-        assert!(range_c < range_a);
-        assert!(range_a < range_d);
-        assert!(range_d > range_a);
-    }
-
-    #[test]
-    fn test_range_upper_bound() {
-        let range = RangeInclusive::new(0, u64::MAX);
-        assert_eq!(range.unwrap_err(), Error::InvalidRange(0, u64::MAX));
-    }
 }

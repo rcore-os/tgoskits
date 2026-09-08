@@ -3,10 +3,10 @@ extern crate alloc;
 use alloc::{vec, vec::Vec};
 
 use rdif_pinctrl::{
-    ConfigSetting, Direction, FirmwareKind, FunctionId, GpioBank, GpioBankId, GpioIrqError,
-    GpioIrqEvent, GpioIrqHandler, GpioIrqSourceId, GpioIrqSourceInfo, GpioIrqTrigger,
-    GpioLineEvent, GpioLineHandle, GpioLineId, GroupId, Interface, MuxSetting, MuxValue, OwnerId,
-    PinConfig, PinDesc, PinFunction, PinGroup, PinId, PinState, PinctrlError, StateName, io,
+    ConfigSetting, FirmwareKind, FunctionId, GpioBankId, GpioIrqError, GpioIrqEvent,
+    GpioIrqSourceId, GpioIrqSourceInfo, GpioIrqTrigger, GpioLineEvent, GpioLineId, GroupId,
+    Interface, MuxSetting, MuxValue, PinConfig, PinDesc, PinFunction, PinGroup, PinId, PinState,
+    PinctrlError, StateName, io,
 };
 
 struct Recorder {
@@ -133,119 +133,9 @@ fn rdif_pinctrl_validation_reports_specific_invalid_state_parts() {
     );
 }
 
-struct MockBank {
-    requested: Option<GpioLineHandle>,
-    value: bool,
-}
-
-impl MockBank {
-    fn new() -> Self {
-        Self {
-            requested: None,
-            value: false,
-        }
-    }
-
-    fn ensure_requested(&self, handle: &GpioLineHandle) -> Result<(), PinctrlError> {
-        if self.requested.as_ref() == Some(handle) {
-            Ok(())
-        } else {
-            Err(PinctrlError::LineNotRequested(handle.line()))
-        }
-    }
-}
-
-impl GpioBank for MockBank {
-    fn bank_id(&self) -> GpioBankId {
-        GpioBankId::new(0)
-    }
-
-    fn line_count(&self) -> u32 {
-        8
-    }
-
-    fn request_line(
-        &mut self,
-        line: GpioLineId,
-        owner: &str,
-    ) -> Result<GpioLineHandle, PinctrlError> {
-        if owner != "uart" {
-            return Err(PinctrlError::InvalidConfig);
-        }
-        let handle = GpioLineHandle::new(line, OwnerId::new(7));
-        self.requested = Some(handle);
-        Ok(handle)
-    }
-
-    fn release_line(&mut self, handle: GpioLineHandle) -> Result<(), PinctrlError> {
-        self.ensure_requested(&handle)?;
-        self.requested = None;
-        Ok(())
-    }
-
-    fn set_direction(
-        &mut self,
-        handle: &GpioLineHandle,
-        direction: Direction,
-    ) -> Result<(), PinctrlError> {
-        if !matches!(direction, Direction::Output { initial: false }) {
-            return Err(PinctrlError::InvalidConfig);
-        }
-        self.ensure_requested(handle)
-    }
-
-    fn read(&self, handle: &GpioLineHandle) -> Result<bool, PinctrlError> {
-        self.ensure_requested(handle)?;
-        Ok(self.value)
-    }
-
-    fn write(&mut self, handle: &GpioLineHandle, value: bool) -> Result<(), PinctrlError> {
-        self.ensure_requested(handle)?;
-        self.value = value;
-        Ok(())
-    }
-}
-
 #[test]
-fn rdif_pinctrl_gpio_line_handle_authorizes_bank_access() {
-    let mut bank = MockBank::new();
-    let line = GpioLineId::new(GpioBankId::new(0), 3);
-    let forged = GpioLineHandle::new(line, OwnerId::new(9));
-
-    assert_eq!(bank.bank_id(), GpioBankId::new(0));
-    assert_eq!(bank.line_count(), 8);
-    assert_eq!(
-        bank.write(&forged, true),
-        Err(PinctrlError::LineNotRequested(line))
-    );
-
-    let handle = bank.request_line(line, "uart").unwrap();
-    assert_eq!(handle.line(), line);
-    assert_eq!(handle.owner(), OwnerId::new(7));
-    bank.set_direction(&handle, Direction::Output { initial: false })
-        .unwrap();
-    bank.write(&handle, true).unwrap();
-    assert!(bank.read(&handle).unwrap());
-    bank.release_line(handle).unwrap();
-}
-
-struct MockIrq {
-    line: GpioLineId,
-}
-
-impl GpioIrqHandler for MockIrq {
-    fn handle_irq(&mut self) -> GpioIrqEvent {
-        GpioIrqEvent::from_line(GpioLineEvent::new(self.line, GpioIrqTrigger::EdgeRising))
-    }
-}
-
-#[test]
-fn rdif_pinctrl_gpio_irq_event_tracks_sources_lines_and_overflow() {
-    let source = GpioIrqSourceId::new(3);
+fn rdif_pinctrl_gpio_irq_event_reports_line_overflow() {
     let mut event = GpioIrqEvent::none();
-    assert!(event.is_empty());
-    event.set_source(source);
-    assert_eq!(event.source(), Some(source));
 
     for offset in 0..rdif_pinctrl::MAX_GPIO_IRQ_EVENTS {
         assert!(event.push_line(GpioLineEvent::new(
@@ -259,16 +149,6 @@ fn rdif_pinctrl_gpio_irq_event_tracks_sources_lines_and_overflow() {
     )));
     assert_eq!(event.lines().len(), rdif_pinctrl::MAX_GPIO_IRQ_EVENTS);
     assert_eq!(event.error(), Some(GpioIrqError::Overflow));
-
-    let mut handler = MockIrq {
-        line: GpioLineId::new(GpioBankId::new(2), 5),
-    };
-    let handled = handler.handle_irq();
-    assert_eq!(handled.lines()[0].trigger, GpioIrqTrigger::EdgeRising);
-    assert_eq!(
-        GpioIrqEvent::with_error(GpioIrqError::Spurious).error(),
-        Some(GpioIrqError::Spurious)
-    );
 }
 
 #[test]

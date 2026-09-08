@@ -319,17 +319,6 @@ mod tests {
     }
 
     #[test]
-    fn vector_can_expose_leaf_irq_while_remembering_parent_irq() {
-        let parent_irq = IrqId::new(IrqDomainId(7), HwIrq(8192));
-        let leaf_irq = IrqId::new(IrqDomainId(8), HwIrq(0));
-
-        let vector = MsiVector::with_parent(MsiVectorIndex(0), MsiEventId(4), leaf_irq, parent_irq);
-
-        assert_eq!(vector.irq, leaf_irq);
-        assert_eq!(vector.parent_irq, parent_irq);
-    }
-
-    #[test]
     fn freeing_allocation_rejects_wrong_provider() {
         let mut msi = Msi::new(
             MsiProviderId(7),

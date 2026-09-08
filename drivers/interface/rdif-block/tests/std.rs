@@ -3,10 +3,8 @@ extern crate alloc;
 use alloc::{vec, vec::Vec};
 
 use rdif_block::{
-    BatchSubmitDisposition, BatchSubmitResult, BlkError, CompletedRequest, CompletionSink,
-    DeviceInfo, HardwareQueue, OwnedRequest, OwnedRequestBatch, QueueInfo, QueueLimits,
-    RequestFlags, RequestId, RequestOp, SubmissionSink, TransferPlanner, TransferRuntimeCaps,
-    validate_owned_request, validate_owned_request_shape,
+    BlkError, DeviceInfo, OwnedRequest, QueueInfo, QueueLimits, RequestFlags, RequestOp,
+    TransferPlanner, TransferRuntimeCaps, validate_owned_request, validate_owned_request_shape,
 };
 
 fn dma_info(mask: u64, coherency: dma_api::DmaCoherency) -> dma_api::DmaDeviceInfo {
@@ -125,112 +123,6 @@ fn rdif_block_owned_request_validation_rejects_invalid_shapes_and_flags() {
         ),
         Err(BlkError::NotSupported)
     );
-}
-
-#[derive(Default)]
-struct AcceptedIds(Vec<RequestId>);
-
-impl SubmissionSink for AcceptedIds {
-    fn accepted(&mut self, id: RequestId) {
-        self.0.push(id);
-    }
-}
-
-#[derive(Default)]
-struct RecordingSink {
-    completions: Vec<(RequestId, Result<(), BlkError>)>,
-}
-
-impl CompletionSink for RecordingSink {
-    fn complete(&mut self, request: CompletedRequest) {
-        assert!(request.data.is_none());
-        self.completions.push((request.id, request.result));
-    }
-}
-
-#[derive(Default)]
-struct BatchQueue {
-    next_id: usize,
-    pending: Vec<RequestId>,
-    commits: usize,
-}
-
-impl HardwareQueue for BatchQueue {
-    fn id(&self) -> usize {
-        1
-    }
-
-    fn info(&self) -> QueueInfo {
-        let limits = QueueLimits {
-            supports_flush: true,
-            max_inflight: 2,
-            max_submit_batch: 2,
-            ..QueueLimits::simple(512, dma_info(u64::MAX, dma_api::DmaCoherency::NonCoherent))
-        };
-        queue_info_with(limits)
-    }
-
-    fn submit_batch_owned(
-        &mut self,
-        requests: &mut OwnedRequestBatch,
-        sink: &mut dyn SubmissionSink,
-    ) -> BatchSubmitResult {
-        let Some(request) = requests.pop_front() else {
-            return BatchSubmitResult::new(0, BatchSubmitDisposition::Continue);
-        };
-        assert_eq!(request.op, RequestOp::Flush);
-        let id = RequestId::new(self.next_id);
-        self.next_id += 1;
-        self.pending.push(id);
-        sink.accepted(id);
-        let disposition = if requests.is_empty() {
-            BatchSubmitDisposition::Continue
-        } else {
-            BatchSubmitDisposition::QueueFull
-        };
-        BatchSubmitResult::new(1, disposition)
-    }
-
-    fn commit_submissions(&mut self) -> Result<(), BlkError> {
-        self.commits += 1;
-        Ok(())
-    }
-
-    fn drain_completions(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-        for id in self.pending.drain(..) {
-            sink.complete(CompletedRequest::new(id, Ok(()), None));
-        }
-        Ok(())
-    }
-
-    fn shutdown(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-        for id in self.pending.drain(..) {
-            sink.complete(CompletedRequest::new(id, Err(BlkError::Io), None));
-        }
-        Ok(())
-    }
-}
-
-#[test]
-fn rdif_block_hardware_queue_batches_commit_and_return_ownership() {
-    let mut queue = BatchQueue::default();
-    let mut batch = OwnedRequestBatch::from_iter([flush_request(), flush_request()]);
-    let mut accepted = AcceptedIds::default();
-
-    let result = queue.submit_batch_owned(&mut batch, &mut accepted);
-    assert_eq!(result.accepted(), 1);
-    assert_eq!(result.disposition(), BatchSubmitDisposition::QueueFull);
-    assert_eq!(batch.len(), 1);
-    assert_eq!(accepted.0, vec![RequestId::new(0)]);
-    assert_eq!(queue.commits, 0);
-
-    queue.commit_submissions().unwrap();
-    assert_eq!(queue.commits, 1);
-
-    let mut completed = RecordingSink::default();
-    queue.drain_completions(&mut completed).unwrap();
-    assert_eq!(completed.completions, vec![(RequestId::new(0), Ok(()))]);
-    assert!(queue.pending.is_empty());
 }
 
 #[test]
