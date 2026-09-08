@@ -56,15 +56,14 @@ impl ProcessData {
             & CPU_INTERVAL_TIMER_MASK
             != 0;
         let has_rttime_watchdog = self.rlimit_current(RLIMIT_RTTIME) != u64::MAX;
-        let mut enabled = has_cpu_interval_timer || has_rttime_watchdog;
+        let enabled = has_cpu_interval_timer || has_rttime_watchdog;
         #[cfg(target_arch = "aarch64")]
-        {
-            enabled |= self
+        let enabled = enabled
+            || self
                 .accounting
                 .perf_scheduler_tick_users
                 .load(Ordering::Acquire)
                 != 0;
-        }
         self.accounting
             .scheduler_tick_gate
             .set_enabled(enabled);
