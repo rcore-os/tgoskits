@@ -582,7 +582,7 @@ fn display_optional_path(path: Option<&Path>) -> String {
         .unwrap_or_else(|| "<default>".to_string())
 }
 
-fn cargo_bin_path_for_elf(elf_path: &Path) -> PathBuf {
+pub(crate) fn cargo_bin_path_for_elf(elf_path: &Path) -> PathBuf {
     elf_path.with_extension("bin")
 }
 

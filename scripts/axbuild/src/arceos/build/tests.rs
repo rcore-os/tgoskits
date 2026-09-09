@@ -129,6 +129,25 @@ fn rust_build_config_to_bin_is_passed_to_cargo_config() {
 }
 
 #[test]
+fn app_c_build_config_to_bin_is_passed_to_cargo_config() {
+    let root = tempdir().unwrap();
+    let source_dir = root.path().join("c");
+    fs::create_dir_all(&source_dir).unwrap();
+    fs::write(source_dir.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+    let path = root.path().join("build-x86_64-unknown-none.toml");
+    fs::write(
+        &path,
+        "app-c = \"c\"\nfeatures = []\nlog = \"Warn\"\nto_bin = true\n",
+    )
+    .unwrap();
+    let request = request("ax-libc", "x86_64-unknown-none", path);
+
+    let cargo = load_c_app_cargo_config(&request).unwrap();
+
+    assert!(cargo.to_bin);
+}
+
+#[test]
 fn app_c_build_config_resolves_source_dir_relative_to_config() {
     let root = tempdir().unwrap();
     let case_dir = root.path().join("case");
