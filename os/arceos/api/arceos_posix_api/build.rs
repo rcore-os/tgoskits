@@ -56,6 +56,8 @@ typedef struct {{
 
         let allow_types = [
             "stat",
+            "tm",
+            "jmp_buf",
             "size_t",
             "ssize_t",
             "off_t",

@@ -18,6 +18,7 @@ import tempfile
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument("--target", help="Rust target for generated binding ABI checks")
     args = parser.parse_args()
     root = args.workspace.resolve()
     source = root / "os/arceos/api/arceos_posix_api"
@@ -54,10 +55,20 @@ def main():
         ).split()[0]
         for features, words in [("", 5), ("smp", 6), ("lockdep", 9), ("smp,lockdep", 10)]:
             (fixture / "src/lib.rs").write_text(
+                '#![no_std]\n'
                 'include!(concat!(env!("OUT_DIR"), "/ctypes_gen.rs"));\n'
+                'const _: () = assert!(core::mem::size_of::<tm>() == 56);\n'
+                'const _: () = assert!(core::mem::offset_of!(tm, __tm_gmtoff) == 40);\n'
+                'const _: () = assert!(core::mem::offset_of!(__jmp_buf_tag, __fl) == core::mem::size_of::<__jmp_buf>());\n'
+                '#[cfg(target_arch="x86_64")] const _: () = assert!(core::mem::size_of::<__jmp_buf>() == 8 * 8);\n'
+                '#[cfg(target_arch="aarch64")] const _: () = assert!(core::mem::size_of::<__jmp_buf>() == 22 * 8);\n'
+                '#[cfg(target_arch="riscv64")] const _: () = assert!(core::mem::size_of::<__jmp_buf>() == 26 * 8);\n'
+                '#[cfg(target_arch="loongarch64")] const _: () = assert!(core::mem::size_of::<__jmp_buf>() == 21 * 8);\n'
                 f'const _: () = assert!(core::mem::size_of::<pthread_mutex_t>() == {words} * core::mem::size_of::<core::ffi::c_long>());\n'
             )
             command = ["cargo", "check", "--manifest-path", str(fixture / "Cargo.toml")]
+            if args.target:
+                command += ["--target", args.target]
             if features:
                 command += ["--features", features]
             subprocess.run(command, env=env, check=True)

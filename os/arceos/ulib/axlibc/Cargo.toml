@@ -58,6 +58,3 @@ ax-posix-api.workspace = true
 ax-io.workspace = true
 ax-runtime.workspace = true
 syscalls.workspace = true
-
-[build-dependencies]
-bindgen.workspace = true
