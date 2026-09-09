@@ -33,6 +33,11 @@ pub enum DeviceMmap {
     /// This is for file descriptors whose mmap offset is a selector rather than
     /// a byte offset into a linear device, such as io_uring ring offsets.
     PhysicalResolved(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
+    /// Maps to an already offset-resolved cacheable physical address range.
+    ///
+    /// This is the cacheable counterpart of [`Self::PhysicalResolved`].
+    #[cfg(feature = "rknpu")]
+    PhysicalCachedResolved(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
     /// Maps to an explicit physical page list for this exact mmap request.
     /// The producer has already applied the requested offset and length, so
     /// mmap callers must map these pages in order without adding the offset

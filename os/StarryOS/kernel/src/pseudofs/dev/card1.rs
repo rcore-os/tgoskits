@@ -506,7 +506,7 @@ impl FileLike for Card1File {
     fn device_mmap(&self, offset: u64, _length: u64) -> StarryResult<DeviceMmap> {
         let _operation = self.operation.lock();
         let handle = map_handle_from_offset(offset).ok_or(StarryError::InvalidInput)?;
-        Ok(self.exported_gem_buffer(handle)?.device_mmap_kind())
+        Ok(self.exported_gem_buffer(handle)?.device_mmap_kind_resolved())
     }
 
     fn open_flags(&self) -> u32 {
@@ -719,6 +719,21 @@ impl ExportedGemBuffer {
             // non-cacheable instead of accidentally upgrading it to cached.
             GemCachePolicy::NonCacheable | GemCachePolicy::WriteCombine => {
                 DeviceMmap::Physical(self.range, anchor)
+            }
+        }
+    }
+
+    /// Returns a mapping whose physical range has already been selected by the
+    /// GEM handle encoded in the file offset. The mmap layer must not add that
+    /// selector offset to the physical address a second time.
+    fn device_mmap_kind_resolved(&self) -> DeviceMmap {
+        let anchor = Some(self.retainer.clone());
+        match self.cache_policy {
+            GemCachePolicy::Cacheable => {
+                DeviceMmap::PhysicalCachedResolved(self.range, anchor)
+            }
+            GemCachePolicy::NonCacheable | GemCachePolicy::WriteCombine => {
+                DeviceMmap::PhysicalResolved(self.range, anchor)
             }
         }
     }
@@ -1013,6 +1028,17 @@ mod tests {
         assert!(
             matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, Some(_)) if actual == range)
         );
+    }
+
+    #[test]
+    fn card1_selector_mmap_resolves_the_range_without_shifting_it() {
+        let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::Cacheable, Arc::new(()));
+
+        assert!(matches!(
+            exported.device_mmap_kind_resolved(),
+            DeviceMmap::PhysicalCachedResolved(actual, Some(_)) if actual == range
+        ));
     }
 
     #[test]
