@@ -1,42 +1,40 @@
 use std::{
     hint,
-    os::arceos::{
-        api::task::{AxCpuMask, ax_set_current_affinity},
-        modules::{
-            ax_hal,
-            ax_runtime::{
-                diagnostics::qperf_runtime_scheduler_metrics_snapshot,
-                task::{
-                    runtime::config::DEFAULT_BATCH_LIMIT,
-                    sched::{
-                        CpuId, CpuSet, FairMode, Nice, RtPriority, SchedulePolicy, cpu_topology_len,
-                    },
-                    thread::{ThreadId, ThreadState, current::current_thread_id},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+    vec::Vec,
+};
+
+use ax_std::os::arceos::{
+    api::task::{AxCpuMask, ax_set_current_affinity},
+    modules::{
+        ax_hal,
+        ax_runtime::{
+            diagnostics::qperf_runtime_scheduler_metrics_snapshot,
+            task::{
+                runtime::config::DEFAULT_BATCH_LIMIT,
+                sched::{
+                    CpuId, CpuSet, FairMode, Nice, RtPriority, SchedulePolicy, cpu_topology_len,
                 },
+                thread::{ThreadState, current::current_thread_id},
             },
         },
     },
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-    },
-    thread,
-    time::{Duration, Instant},
-    vec::Vec,
+    thread::{default_task_stack_size, join_thread, spawn_raw_with_affinity},
 };
 
 const OWNER_BACKLOG: usize = DEFAULT_BATCH_LIMIT + 1;
 const PROGRESS_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn thread_id_from_raw(raw: u64) -> ThreadId {
-    ThreadId::from_parts(raw as u32, (raw >> 32) as u32)
-}
-
 fn wait_until(mut condition: impl FnMut() -> bool, message: &'static str) {
     let started = Instant::now();
     while !condition() {
         assert!(started.elapsed() < PROGRESS_TIMEOUT, "{message}");
-        thread::yield_now();
+        ax_std::os::arceos::task::thread::current::yield_current_cpu()
+            .expect("kernel probe must be able to yield");
     }
 }
 
@@ -45,40 +43,41 @@ pub fn run() -> crate::TestResult {
     assert!(cpu_count >= 2, "IRQ-window regression requires SMP");
     assert!(ax_set_current_affinity(AxCpuMask::one_shot(0)).is_ok());
 
+    let current = current_thread_id().expect("controller must have a scheduler identity");
+    let controller_handle = ax_std::os::arceos::task::thread::ThreadHandle::lookup(current)
+        .expect("controller must remain registered");
+    controller_handle
+        .set_policy(SchedulePolicy::fifo(RtPriority::new(90).unwrap()))
+        .expect("CPU0 controller must enter FIFO policy");
+
+    let mut cpu0 = CpuSet::empty(cpu_count);
+    assert!(cpu0.insert(CpuId::new(0)));
+    let mut cpu1 = CpuSet::empty(cpu_count);
+    assert!(cpu1.insert(CpuId::new(1)));
     let stop_workers = Arc::new(AtomicBool::new(false));
-    let ready_workers = Arc::new(AtomicUsize::new(0));
-    let worker_ids = Arc::new(
-        (0..OWNER_BACKLOG)
-            .map(|_| AtomicU64::new(0))
-            .collect::<Vec<_>>(),
-    );
     let mut workers = Vec::with_capacity(OWNER_BACKLOG);
+    // Keep the Fair backlog runnable on CPU0 without waiting for every worker
+    // to get an initial timeslice. The FIFO controller owns the setup phase.
     for index in 0..OWNER_BACKLOG {
         let stop_workers = Arc::clone(&stop_workers);
-        let ready_workers = Arc::clone(&ready_workers);
-        let worker_ids = Arc::clone(&worker_ids);
-        workers.push(thread::spawn(move || {
-            assert!(ax_set_current_affinity(AxCpuMask::one_shot(0)).is_ok());
-            let current = current_thread_id().expect("worker must have a scheduler identity");
-            worker_ids[index].store(current.as_u64(), Ordering::Release);
-            ready_workers.fetch_add(1, Ordering::Release);
-            while !stop_workers.load(Ordering::Acquire) {
-                hint::spin_loop();
-            }
-        }));
+        workers.push(
+            spawn_raw_with_affinity(
+                move || {
+                    while !stop_workers.load(Ordering::Acquire) {
+                        hint::spin_loop();
+                    }
+                },
+                format!("irq-window-worker-{index}"),
+                default_task_stack_size(),
+                cpu0.clone(),
+            )
+            .expect("failed to publish the kernel scheduler backlog"),
+        );
     }
-
-    wait_until(
-        || ready_workers.load(Ordering::Acquire) == OWNER_BACKLOG,
-        "CPU0 workers did not all become runnable",
-    );
-    let worker_ids = worker_ids
-        .iter()
-        .map(|raw| thread_id_from_raw(raw.load(Ordering::Acquire)))
-        .collect::<Vec<_>>();
+    let worker_ids = workers.iter().map(|worker| worker.id()).collect::<Vec<_>>();
     assert!(worker_ids.iter().all(|thread| {
         matches!(
-            std::os::arceos::task::thread::ThreadHandle::lookup(*thread)
+            ax_std::os::arceos::task::thread::ThreadHandle::lookup(*thread)
                 .map(|handle| handle.state()),
             Ok(ThreadState::Running)
         )
@@ -91,40 +90,37 @@ pub fn run() -> crate::TestResult {
         let controller_ready = Arc::clone(&controller_ready);
         let publish_owner_work = Arc::clone(&publish_owner_work);
         let owner_work_published = Arc::clone(&owner_work_published);
-        thread::spawn(move || {
-            assert!(ax_set_current_affinity(AxCpuMask::one_shot(1)).is_ok());
-            let mut cpu1 = CpuSet::empty(cpu_count);
-            assert!(cpu1.insert(CpuId::new(1)));
-            controller_ready.store(true, Ordering::Release);
-            while !publish_owner_work.load(Ordering::Acquire) {
-                hint::spin_loop();
-            }
-            for worker in worker_ids {
-                // This case deliberately leaves reconciliation to IRQ return.
-                drop(
-                    std::os::arceos::modules::ax_runtime::task::thread::ThreadHandle::lookup(
+        spawn_raw_with_affinity(
+            move || {
+                let mut cpu1 = CpuSet::empty(cpu_count);
+                assert!(cpu1.insert(CpuId::new(1)));
+                controller_ready.store(true, Ordering::Release);
+                while !publish_owner_work.load(Ordering::Acquire) {
+                    hint::spin_loop();
+                }
+                for worker in worker_ids {
+                    // This case deliberately leaves reconciliation to IRQ return.
+                    drop(
+                    ax_std::os::arceos::modules::ax_runtime::task::thread::ThreadHandle::lookup(
                         worker,
                     )
                     .and_then(|thread| thread.request_affinity(cpu1.clone()))
                     .expect("remote affinity update must publish owner work"),
                 );
-            }
-            owner_work_published.store(true, Ordering::Release);
-        })
+                }
+                owner_work_published.store(true, Ordering::Release);
+            },
+            "irq-window-controller".into(),
+            default_task_stack_size(),
+            cpu1,
+        )
+        .expect("failed to create the kernel affinity controller")
     };
     wait_until(
         || controller_ready.load(Ordering::Acquire),
         "CPU1 affinity controller did not become ready",
     );
 
-    let current = current_thread_id().expect("controller must have a scheduler identity");
-    std::os::arceos::modules::ax_runtime::task::thread::ThreadHandle::lookup(current)
-        .and_then(|thread| {
-            thread.set_policy(SchedulePolicy::fifo(
-                RtPriority::new(90).expect("priority 90 must be valid"),
-            ))
-        })
-        .expect("CPU0 controller must enter FIFO policy");
     let before = qperf_runtime_scheduler_metrics_snapshot();
 
     assert!(ax_hal::asm::irqs_enabled());
@@ -154,15 +150,13 @@ pub fn run() -> crate::TestResult {
         "an IRQ-return continuation must open interrupts between scheduler passes"
     );
 
-    std::os::arceos::modules::ax_runtime::task::thread::ThreadHandle::lookup(current)
-        .and_then(|thread| thread.set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Normal)))
-        .expect("CPU0 controller must restore Fair policy");
     stop_workers.store(true, Ordering::Release);
-    controller
-        .join()
-        .expect("affinity controller must exit cleanly");
+    controller_handle
+        .set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
+        .expect("CPU0 controller must restore Fair policy");
+    join_thread(controller).expect("affinity controller must exit cleanly");
     for worker in workers {
-        worker.join().expect("CPU0 worker must exit cleanly");
+        join_thread(worker).expect("CPU0 worker must exit cleanly");
     }
     Ok(())
 }

@@ -146,16 +146,19 @@ impl CpuRunQueueState {
         if self.queue.is_linked_current(thread) {
             return self.queue.update_affinity(thread, affinity);
         }
-        let current_updated = self
+        if let Some(current) = self
             .queue
             .current_mut()
             .filter(|current| current.thread() == thread)
-            .map(|current| current.update_affinity(affinity))
-            .is_some();
-        if current_updated {
+        {
+            current.update_affinity(affinity);
             self.queue.mark_publication_dirty();
+            return true;
         }
-        current_updated
+        // A runnable non-current task retains its affinity in the class queue.
+        // Like Linux's queued-task affinity update, change that metadata under
+        // the owner rq transaction before detaching it for migration.
+        self.queue.update_affinity(thread, affinity)
     }
 
     pub(crate) fn detach_current_schedule(
