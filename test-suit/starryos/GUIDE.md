@@ -224,6 +224,11 @@ scripts/test/ltp-syscalls/generate-common.sh \
 自定义断言不再保留，也不再宣称仍被覆盖。ArceOS C 测试仍由 ArceOS 自己的测试入口维护。
 性能基准 `apps/starry/wakeup-latency-bench` 作为独立 Starry app 保留，供后续调优使用。
 
+逐项 syscall 迁移以 `scripts/test/ltp-syscalls/migration.csv` 为账本。按当前工作约定，
+候选 LTP 出错时保留原测试，记录候选、失败架构、错误输出及证据路径后暂缓，先处理
+无需修复且四架构通过的替换。暂缓不是通过，不删除失败候选，也不放宽 wrapper 的失败
+传播或完成数量检查。已完成替换仍须逐项记录未承接的断言。
+
 子测例 CMake 产物应安装到：
 
 ```cmake

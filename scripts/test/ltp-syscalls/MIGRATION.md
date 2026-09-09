@@ -10,7 +10,9 @@ LTP 固定为 `20260529`，提交为 `3a64d78f58bdceba93ed321e91215fb969a047ed`�
 
 ### 1.2 提交与证据
 
-每个原程序单独提交，提交主题记录在 `migration.csv` 中，可用 `git log --fixed-strings --grep='<主题>'` 定位提交。完整替代、部分替代后清理、无等效项清理必须分别记录；删除未承接的断言是本轮明确接受的覆盖收缩，不能称为等效覆盖。发现内核缺陷时保留同一回归在错误实现失败、修复后通过的证据。
+每个原程序单独提交，提交主题记录在 `migration.csv` 中，可用 `git log --fixed-strings --grep='<主题>'` 定位提交。完整替代、部分替代后清理、无等效项清理必须分别记录；删除未承接的断言是本轮明确接受的覆盖收缩，不能称为等效覆盖。已提交修复保留原有红绿证据。2026-09-09起按用户调整后的规则，候选LTP执行出错时记录输入、失败结果、体系结构和日志，保留原测试并暂缓该项，不继续修复；优先完成无需修复的替换。暂缓项继续保留在候选清单，不计入迁移完成数，实际执行清单只接入已完成验证的替换。
+
+本 PR 范围随后按用户要求冻结为当前已完成的13项（9项部分替代、4项无等效清理）。其余候选保留现状，不继续迁移；IPv6不接入。后续只修复本 PR 持续集成问题并验证最终提交。
 
 ## 2. 逐项语义
 
@@ -363,3 +365,19 @@ noexec配套回归使用同一0777文件的普通挂载和只读/noexec bind别�
 十三项提交已重基到`dev 4d784aed24`。唯一冲突为loop旧`PiMutex`命名与新统一`Mutex`接口，采用上游命名并保留`LoopState`单锁所有权；其他十二项range-diff内容相同。没有手工合并Cargo.lock，也没有增加兼容别名。
 
 `13-rebase-<arch>.log`四架构累计集合全部通过，实际程序数量仍为78/76/76/76；逐程序集合、重复检查、五项ext4阶段与共同集逐字比较通过。`13-rebase-std.log`为58包通过，`13-rebase-ktest-x86_64.log`为174通过、0失败、0跳过；`13-rebase-clippy-<package>.log`为VFS三项、ax-fs-ng六项、starry-kernel九十二项全部通过。分支所有修改Rust文件的rustfmt检查通过。当前推送的CI仍需取得自己的终态；本地通过不代表全轮迁移或最终完整system已经完成。
+
+## 6. 暂缓项
+
+暂缓记录保留已发现的问题，不把未接入的候选视为通过。恢复处理前应重新核对对应版本及失败条件。
+
+### 6.1 IPv6 端点
+
+`bug-af-inet6-v4mapped`保留原程序。固定LTP的`bind04/05`只有普通IPv6通信部分覆盖，`connect02`还要求`IPV6_ADDRFORM`，`in6_01`主要验证结构和宏；尚未完成候选实际运行。原测试把V6ONLY写1读0、bind(::1)后返回mapped IPv4当成正确结果，与Linux基准冲突。新增独立诊断在Linux宿主通过，在Starry x86_64失败，证据为`/tmp/starry-ltp-migration-evidence/14-ipv6-transfer-baseline-x86_64.log`；这不是LTP失败日志。
+
+### 6.2 待修复边界
+
+诊断暴露V6ONLY getter硬编码、绑定后选项仍可修改、mapped连接未拒绝及原生地址转换问题。smoltcp 0.13.1的UDP wildcard尚无逐socket地址族约束，未决定依赖扩展方案。按新规则停止本项修复；未提交改动和诊断源码保存在实施机器`/tmp/starry-ltp-migration-evidence/14-ipv6-deferred`，已从当前工作树撤出。既有13项提交保持不变。
+
+### 6.3 范围冻结前的候选试跑
+
+x86_64试跑日志`15-green-first-probe-x86_64.log`实际执行8个程序，6通过、2失败：`fallocate04`在SEEK_HOLE返回EINVAL后TBROK；`fchmodat2_01`在O_PATH目录的AT_EMPTY_PATH返回EBADF后TBROK。两项原测试均保留，不修复。`fchmodat2_02`与`getcwd01`仅取得单架构通过，未完成四架构验证，也未迁移。候选继续登记在`probe-cases.txt`，正式`cases.txt`恢复原74个共同用例；本 PR 不再推进这些候选。

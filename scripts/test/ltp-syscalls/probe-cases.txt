@@ -234,3 +234,9 @@ rename07
 rmdir01
 rmdir02
 access04
+
+# Deferred or incomplete probes; not admitted to the execution manifest.
+fallocate04
+fchmodat2_01
+fchmodat2_02
+getcwd01
