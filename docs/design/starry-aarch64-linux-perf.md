@@ -84,6 +84,10 @@ stateDiagram-v2
 
 software inherit 使用“每线程 slice + 共享 aggregate”结构。child 的调度起点、last CPU 和 enable-on-exec 独立，累计值通过 `Arc<SwAggregate>` 汇入根事件；根 fd 关闭后，仍运行的 descendants 由自身 `Arc` 保持 aggregate 生命周期，不能引用已释放 event。
 
+`PerfEvent::control_group()` 从实际 leader 执行 GROUP ioctl；不带 GROUP 的操作保留 siblings 各自的启用意图。`read_group()` 从实际 leader 取值，但编码格式采用被读取 fd 的 `read_format`。新 member 先以 disabled 状态建立 backend 和组关系，再按原始 attr 启用，避免 link 前独立计数。`perf_sched_in_counters()` 先为整个启用组保留槽，`prepare_counter()` 完成全部寄存器和 IRQ registry 准备后才启动硬件；准备失败回滚整组。
+
+硬件 inherited child 使用独立的 flexible 资源，在每个 slice 从执行 CPU 取得物理槽，不复制 parent 的固定槽。`on_clone_inherit()` 在发布 child 前重建其 leader/sibling 关系。硬件与软件 binding 的 `enable_on_exec` 使用一次性原子状态；首次 exec 消费标志，后续 disable 不会被第二次 exec 撤销。fork 在 family ioctl 串行化边界内读取 parent 的实际启用状态，以保留 exec 对单个 binding 的影响。
+
 per-task sampling group 由 `PerTaskCounter` 统一调度并预构建 `PERF_SAMPLE_READ` 表。fixed-CPU flexible hardware event 目前各自拥有 `SystemFlexCounter` worker，mixed software/hardware group 也没有 Linux 的 PMU-context migration coordinator；这两类组合与 direct system-wide sampling group 都在创建 member backend 前返回 `EOPNOTSUPP`。这项显式拒绝防止“文件层已成组、硬件层却各自运行”的静默错误，也保证失败路径不残留 PMU 槽、worker 或调度注册。后续若补齐 fixed-CPU group，必须用同一个 coordinator 事务式取得全部槽并生成一次 leader-first read snapshot，不能恢复当前被拒绝的 no-op link。
 
 ## 3. 中断与采样
@@ -105,6 +109,8 @@ ring 无空间或 producer gate 竞争时增加 event 的 pending lost 数。下
 ### 3.3 读取快照
 
 `PERF_SAMPLE_READ` 在 arm 前构建有容量上限的 `[SampleReadEntry; MAX_SAMPLE_READ_EVENTS]` 并存入 `SampleSlot`。数组按 leader-first 保存稳定 callback context 和 event ID，IRQ 只做 owner-local PMU/原子读取与定长编码，不遍历可变 group 列表，也不进行分配。`build_sample()` 按 Linux 顺序先编码 `ID/STREAM_ID/CPU/PERIOD/READ`，再编码 callchain 和 `REGS_USER` ABI word；`SAMPLE_RECORD_MAX_LEN` 为每个支持字段保留固定上界。group member 保留自己的 `attr.disabled` 状态；仅 leader disabled、member enabled 的常见 perf 模式会在 leader 启用时整体装载。
+
+task 的 `SampleReadEntry::owned()` 强持有回调对象，直到注册代被撤销。`ThreadPerfContext::attach()` 保留仍被 sampling slot 引用的已关闭 counter，使 scheduler 撤销 slot 时不会执行 counter 的最后析构；后续 task-context attach 或线程释放完成回收。非 GROUP 采样只读取 source；GROUP 采样保持 leader-first 顺序，并通过 source event ID 决定哪个 counter 累加本次 overflow，不能把数组首项一律当作中断来源。
 
 ## 4. 事件语义
 

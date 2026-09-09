@@ -205,11 +205,12 @@ pub struct SampleReadValue {
 
 type SampleReadCallback = unsafe fn(*const (), usize, u64, u32, bool) -> SampleReadValue;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct SampleReadEntry {
     context: *const (),
     callback: Option<SampleReadCallback>,
     pub id: u64,
+    _owner: Option<Arc<dyn core::any::Any + Send + Sync>>,
 }
 
 // SAFETY: entries are invoked only while the generation-owned SampleSlot is
@@ -223,26 +224,39 @@ impl SampleReadEntry {
         context: core::ptr::null(),
         callback: None,
         id: 0,
+        _owner: None,
     };
 
-    pub fn new(
-        context: *const (),
-        callback: SampleReadCallback,
-        id: u64,
-    ) -> Self {
+    pub fn new(context: *const (), callback: SampleReadCallback, id: u64) -> Self {
         Self {
             context,
             callback: Some(callback),
             id,
+            _owner: None,
         }
     }
 
-    fn read(self, slot: usize, now: u64, period: u32, account_source: bool) -> SampleReadValue {
-        self.callback.map_or_else(SampleReadValue::default, |callback| {
-            // SAFETY: the slot owner retains the callback context until
-            // generation-checked unregister completes.
-            unsafe { callback(self.context, slot, now, period, account_source) }
-        })
+    /// Retains the callback's task object for this entire registry generation.
+    pub(crate) fn owned<T: core::any::Any + Send + Sync>(
+        owner: Arc<T>,
+        callback: SampleReadCallback,
+        id: u64,
+    ) -> Self {
+        Self {
+            context: Arc::as_ptr(&owner).cast(),
+            callback: Some(callback),
+            id,
+            _owner: Some(owner),
+        }
+    }
+
+    fn read(&self, slot: usize, now: u64, period: u32, account_source: bool) -> SampleReadValue {
+        self.callback
+            .map_or_else(SampleReadValue::default, |callback| {
+                // SAFETY: the slot owner retains the callback context until
+                // generation-checked unregister completes.
+                unsafe { callback(self.context, slot, now, period, account_source) }
+            })
     }
 }
 
@@ -448,9 +462,7 @@ pub(super) fn register_counting(
         })
         .expect("PMU counting registration generation exhausted");
     let _guard = NoPreemptIrqSave::new();
-    unsafe {
-        with_counting_registry_mut(|registry| registry.register(n, generation, state))
-    }?;
+    unsafe { with_counting_registry_mut(|registry| registry.register(n, generation, state)) }?;
     Ok(SampleRegistration::new(owner, n, generation))
 }
 
@@ -530,7 +542,7 @@ pub fn replace_output(
                     sample_type: slot.sample_type,
                     id: slot.id,
                     read_format: slot.read_format,
-                    read_entries: slot.read_entries,
+                    read_entries: slot.read_entries.clone(),
                     read_len: slot.read_len,
                     observer: slot.observer,
                     owner_ids: slot.owner_ids,
@@ -612,17 +624,10 @@ fn service_overflowed_slots(
         let cpu = ax_hal::percpu::this_cpu_id() as u32;
         let read_len = usize::from(slot.read_len).min(MAX_SAMPLE_READ_EVENTS);
         let mut read_values = [SampleReadValue::default(); MAX_SAMPLE_READ_EVENTS];
-        if read_len != 0 {
-            read_values[0] = slot.read_entries[0].read(n, time, cur_period, true);
-            if sample_type & PERF_SAMPLE_READ != 0 {
-                for (index, value) in read_values
-                    .iter_mut()
-                    .enumerate()
-                    .take(read_len)
-                    .skip(1)
-                {
-                    *value = slot.read_entries[index].read(n, time, cur_period, false);
-                }
+        for (entry, value) in slot.read_entries[..read_len].iter().zip(&mut read_values) {
+            let source = entry.id == id;
+            if source || sample_type & PERF_SAMPLE_READ != 0 {
+                *value = entry.read(n, time, cur_period, source);
             }
         }
         let (pid, tid) = slot.owner_ids.map_or_else(
@@ -751,12 +756,11 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
 
     // SAFETY: the handler runs with local IRQs masked on its current CPU, so
     // the registry cannot be re-entered or observed after migration.
-    let _handled =
-        unsafe {
-            with_registry_mut(|registry| {
-                service_overflowed_slots(registry, ovf, misc, interrupted, ip, is_user)
-            })
-        };
+    let _handled = unsafe {
+        with_registry_mut(|registry| {
+            service_overflowed_slots(registry, ovf, misc, interrupted, ip, is_user)
+        })
+    };
 
     debug_assert_eq!(_handled & !ovf, 0);
     IrqReturn::Handled
@@ -771,7 +775,11 @@ fn build_callchain(
     let Some((marker, frames)) = chain.split_first_mut() else {
         return 0;
     };
-    *marker = if is_user { (-512i64) as u64 } else { (-128i64) as u64 };
+    *marker = if is_user {
+        (-512i64) as u64
+    } else {
+        (-128i64) as u64
+    };
     let count = match interrupted {
         Some(context) if is_user => {
             super::unwind::user_callchain(ip, context.fp, context.sp, frames)
@@ -1073,6 +1081,43 @@ pub(crate) unsafe fn ring_write_process(ring: &PerfRingOutput, record: &[u8]) {
 
 #[cfg(all(test, axtest))]
 mod tests {
+    #[axtest::axtest]
+    fn read_snapshot_retains_callback_until_registry_removal() {
+        use super::*;
+
+        unsafe fn read_value(
+            context: *const (),
+            _slot: usize,
+            _now: u64,
+            _period: u32,
+            _source: bool,
+        ) -> SampleReadValue {
+            // SAFETY: the entry owns the AtomicU64 used as callback context.
+            let value = unsafe { &*context.cast::<AtomicU64>() }.load(Ordering::Acquire);
+            SampleReadValue {
+                value,
+                ..SampleReadValue::default()
+            }
+        }
+
+        let owner = Arc::new(AtomicU64::new(17));
+        let weak = Arc::downgrade(&owner);
+        let entry = SampleReadEntry::owned(Arc::clone(&owner), read_value, 1);
+        let mut registry = SamplingRegistry::new();
+        assert!(registry.register(0, 1, entry).is_ok());
+        drop(owner);
+        assert!(
+            weak.upgrade().is_some(),
+            "closing the fd must retain IRQ callback state"
+        );
+        assert_eq!(registry.get_mut(0).unwrap().read(0, 0, 0, false).value, 17);
+        drop(registry.unregister(0, 1).unwrap());
+        assert!(
+            weak.upgrade().is_none(),
+            "unregister must release its callback ownership"
+        );
+    }
+
     #[cfg(all(test, axtest, target_arch = "aarch64"))]
     #[axtest::axtest]
     fn kernel_task_sample_ids_are_empty() {
@@ -1083,7 +1128,7 @@ mod tests {
     fn maximum_sample_record_fits_irq_stack_buffer() {
         use super::*;
 
-        let entries = [SampleReadEntry::EMPTY; MAX_SAMPLE_READ_EVENTS];
+        let entries = [const { SampleReadEntry::EMPTY }; MAX_SAMPLE_READ_EVENTS];
         let values = [SampleReadValue::default(); MAX_SAMPLE_READ_EVENTS];
         let callchain = [0u64; MAX_CALLCHAIN_ENTRIES];
         let data = SampleData {

@@ -39,7 +39,7 @@ pub struct PerTaskCounter {
     pub(super) read_format: u64,
     /// `attr.enable_on_exec`: start counting only when the attached task
     /// `execve`s a new image (consumed by [`on_exec`]).
-    pub(super) enable_on_exec: bool,
+    pub(super) enable_on_exec: AtomicBool,
     /// Optional Linux task-event CPU constraint (`cpu >= 0`).
     pub(super) cpu_filter: Option<PerfCpuId>,
     /// PMU cluster selected by a cluster-specific sysfs event source.
@@ -254,7 +254,7 @@ impl PerTaskCounter {
             exclude_user: cfg.exclude_user,
             exclude_kernel: cfg.exclude_kernel,
             read_format: cfg.read_format,
-            enable_on_exec: cfg.enable_on_exec,
+            enable_on_exec: AtomicBool::new(cfg.enable_on_exec),
             cpu_filter: cfg.cpu_filter,
             required_cluster: cfg.required_cluster,
             enabled: AtomicBool::new(cfg.enabled),
@@ -323,7 +323,9 @@ impl PerTaskCounter {
         PerTaskConfig {
             scheduler_id,
             counter,
-            flexible: self.flexible,
+            // Every inherited copy obtains its own per-CPU reservation. The
+            // parent's fixed cycle/programmable reservation cannot be shared.
+            flexible: true,
             scheduler_tick_lease,
             event: self.event,
             exclude_user: self.exclude_user,
@@ -332,7 +334,7 @@ impl PerTaskCounter {
             // Registration under the family relation lock publishes the current
             // root-fd control intent before the child becomes schedulable.
             enabled: false,
-            enable_on_exec: false,
+            enable_on_exec: self.enable_on_exec.load(Ordering::Acquire),
             cpu_filter: self.cpu_filter,
             required_cluster: self.required_cluster,
             sample_period: self.sample_period,
@@ -449,12 +451,9 @@ impl PerTaskCounter {
     }
 
     pub(super) fn begin_enabled_context(&self, now: u64) {
-        let _ = self.context_in_ns.compare_exchange(
-            0,
-            now,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+        let _ = self
+            .context_in_ns
+            .compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire);
     }
 
     pub(super) fn finish_enabled_context(&self, now: u64) {
@@ -539,6 +538,10 @@ impl PerTaskCounter {
         self.inherit && !self.run_state.lock().is_stopping()
     }
 
+    pub(in crate::perf) fn enabled_for_inheritance(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
+
     pub(in crate::perf) fn sample_id(&self) -> u64 {
         self.sample_id.load(Ordering::Relaxed)
     }
@@ -547,19 +550,18 @@ impl PerTaskCounter {
         self.loss.total()
     }
 
-    fn sample_read_entry(&self) -> SampleReadEntry {
-        SampleReadEntry::new(
-            core::ptr::from_ref(self).cast(),
-            per_task_sample_read_irq,
-            self.sample_id(),
-        )
+    fn sample_read_entry(self: &Arc<Self>) -> SampleReadEntry {
+        SampleReadEntry::owned(Arc::clone(self), per_task_sample_read_irq, self.sample_id())
     }
 
     pub(in crate::perf) fn link_group(
         leader: &Arc<Self>,
         member: &Arc<Self>,
     ) -> crate::StarryResult<()> {
-        if leader.scheduler_id != member.scheduler_id || leader.cpu_filter != member.cpu_filter {
+        if leader.scheduler_id != member.scheduler_id
+            || leader.cpu_filter != member.cpu_filter
+            || leader.required_cluster != member.required_cluster
+        {
             return Err(crate::StarryError::InvalidInput);
         }
         let mut members = leader.group_members.lock();
@@ -572,19 +574,30 @@ impl PerTaskCounter {
         Ok(())
     }
 
-    pub(super) fn sample_read_entries(
-        &self,
-    ) -> ([SampleReadEntry; MAX_SAMPLE_READ_EVENTS], u8) {
-        let leader = self
-            .group_leader
+    pub(in crate::perf) fn live_group_leader(&self) -> Option<Arc<Self>> {
+        self.group_leader
             .lock()
             .as_ref()
-            .and_then(Weak::upgrade);
-        let leader = leader.as_deref().unwrap_or(self);
-        let mut entries = [SampleReadEntry::EMPTY; MAX_SAMPLE_READ_EVENTS];
+            .and_then(Weak::upgrade)
+            .filter(|leader| !leader.resources_released())
+    }
+
+    pub(super) fn sample_read_entries(
+        self: &Arc<Self>,
+    ) -> ([SampleReadEntry; MAX_SAMPLE_READ_EVENTS], u8) {
+        let mut entries = [const { SampleReadEntry::EMPTY }; MAX_SAMPLE_READ_EVENTS];
+        if self.read_format & super::super::PERF_FORMAT_GROUP == 0 {
+            entries[0] = self.sample_read_entry();
+            return (entries, 1);
+        }
+        let leader = self.live_group_leader();
+        let leader = leader.as_ref().unwrap_or(self);
         entries[0] = leader.sample_read_entry();
         let mut len = 1;
         for member in leader.group_members.lock().iter().filter_map(Weak::upgrade) {
+            if member.resources_released() {
+                continue;
+            }
             if len == MAX_SAMPLE_READ_EVENTS {
                 break;
             }
@@ -666,7 +679,11 @@ impl PerTaskCounter {
                 .as_ref()
                 .map(|anchors| Arc::clone(&anchors.notify))
         };
-        Some(SampleOutput::new(Some(ring), notify, Arc::clone(&self.loss)))
+        Some(SampleOutput::new(
+            Some(ring),
+            notify,
+            Arc::clone(&self.loss),
+        ))
     }
 
     /// Readiness for `poll(perf_fd)`: `true` when the ring has unread bytes.
@@ -720,11 +737,14 @@ unsafe fn per_task_sample_read_irq(
     // registration has been synchronously removed.
     let counter = unsafe { &*context.cast::<PerTaskCounter>() };
     if account_source {
-        counter.accumulated.fetch_add(period as u64, Ordering::AcqRel);
+        counter
+            .accumulated
+            .fetch_add(period as u64, Ordering::AcqRel);
     }
     let mut value = counter.accumulated.load(Ordering::Acquire);
     let running = counter.run_state.lock().running();
     if !account_source
+        && !counter.is_sampling
         && let Some(lease) = running
         && lease.owner().as_usize() == ax_hal::percpu::this_cpu_id()
     {

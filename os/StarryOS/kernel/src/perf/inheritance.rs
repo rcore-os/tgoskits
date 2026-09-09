@@ -126,6 +126,7 @@ impl PerfInheritanceFamily {
     /// reachable from the family.
     pub(crate) fn register_child(
         self: &Arc<Self>,
+        parent: &PerTaskCounter,
         child: &Arc<PerTaskCounter>,
     ) -> crate::StarryResult<()> {
         // Match Linux's child_mutex boundary: inheritance cannot enter midway
@@ -133,7 +134,7 @@ impl PerfInheritanceFamily {
         let _control = self.control.lock();
         child.bind_family(Arc::downgrade(self), false);
         let mut state = self.state.lock();
-        let join = state
+        state
             .lifecycle
             .register_member(MAX_FAMILY_MEMBERS)
             .ok_or_else(|| {
@@ -143,7 +144,9 @@ impl PerfInheritanceFamily {
                     crate::StarryError::NoMemory
                 }
             })?;
-        child.set_enabled_state(join.enabled);
+        // Exec can enable one binding without changing its siblings. The
+        // parent's actual state, serialized with family ioctls, is inherited.
+        child.set_enabled_state(parent.enabled_for_inheritance());
         if let Some((output, anchors)) = state.effective_output() {
             child.install_family_output(output, anchors);
         }
@@ -424,6 +427,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
     let Some(parents) = parent_thr.perf_context().snapshot_for_inherit() else {
         return;
     };
+    let mut children = alloc::vec::Vec::with_capacity(parents.len());
     for parent in &parents {
         if !parent.inheritable() {
             continue;
@@ -452,9 +456,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
         let child = Arc::new(PerTaskCounter::new(parent.inherited_config(
             scheduler_id,
             Counter::Programmable(0),
-            parent
-                .is_flexible()
-                .then(|| child_thr.proc_data.acquire_perf_scheduler_tick()),
+            Some(child_thr.proc_data.acquire_perf_scheduler_tick()),
             owner_ids,
         )));
         child.set_sample_id(parent.sample_id());
@@ -471,7 +473,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
             }
             continue;
         }
-        if let Err(error) = family.register_child(&child) {
+        if let Err(error) = family.register_child(parent, &child) {
             detach_unpublished(child_thr, &child);
             free_hw(&child).expect("unpublished inherited counter must roll back locally");
             if !matches!(error, crate::StarryError::BadState) {
@@ -480,6 +482,21 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
                     child_thr.tid()
                 );
             }
+        } else {
+            children.push((Arc::clone(parent), child));
+        }
+    }
+    // Rebuild sibling relations before the child becomes runnable. Each
+    // parent family still owns its aggregate, but scheduling is child-group
+    // local and sample read entries must reference that same child group.
+    for (parent, child) in &children {
+        if let Some(parent_leader) = parent.live_group_leader()
+            && let Some((_, child_leader)) = children
+                .iter()
+                .find(|(candidate, _)| Arc::ptr_eq(candidate, &parent_leader))
+        {
+            PerTaskCounter::link_group(child_leader, child)
+                .expect("inherited group preserves validated context and capacity");
         }
     }
 }

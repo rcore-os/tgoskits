@@ -49,6 +49,8 @@ use super::PerfReadValues;
 use super::control::PerfControl;
 #[cfg(target_arch = "aarch64")]
 use super::target::PerfCpuId;
+#[cfg(target_arch = "aarch64")]
+use super::task::PerTaskCounter;
 #[cfg(not(target_arch = "aarch64"))]
 use super::{access::AuthorizedPerfTarget, hw::ValidatedHwOpen};
 #[cfg(target_arch = "aarch64")]
@@ -66,8 +68,6 @@ use super::{
     },
     sampling_lifecycle::SampleRegistration,
 };
-#[cfg(target_arch = "aarch64")]
-use super::task::PerTaskCounter;
 #[cfg(target_arch = "aarch64")]
 use crate::sync::Mutex;
 
@@ -339,7 +339,7 @@ impl HwPerfEventState {
                 return Err(crate::StarryError::BadState);
             };
             let period = sampling.period;
-            let mut read_entries = [SampleReadEntry::EMPTY; MAX_SAMPLE_READ_EVENTS];
+            let mut read_entries = [const { SampleReadEntry::EMPTY }; MAX_SAMPLE_READ_EVENTS];
             read_entries[0] = self.system_sample_read_entry();
             sampling.enabled_at_ns.store(
                 ax_runtime::hal::time::monotonic_time_nanos(),
@@ -414,8 +414,12 @@ impl HwPerfEventState {
             let since = sampling.enabled_at_ns.swap(0, Ordering::AcqRel);
             if since != 0 {
                 let elapsed = stopped.stopped_at.saturating_sub(since);
-                sampling.time_enabled_ns.fetch_add(elapsed, Ordering::AcqRel);
-                sampling.time_running_ns.fetch_add(elapsed, Ordering::AcqRel);
+                sampling
+                    .time_enabled_ns
+                    .fetch_add(elapsed, Ordering::AcqRel);
+                sampling
+                    .time_running_ns
+                    .fetch_add(elapsed, Ordering::AcqRel);
             }
         }
         self.rdpmc
@@ -475,10 +479,8 @@ impl HwPerfEventState {
         }
         let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         if let Some(sampling) = &self.sampling {
-            let snapshot = system_sampling_snapshot(
-                sampling,
-                ax_runtime::hal::time::monotonic_time_nanos(),
-            );
+            let snapshot =
+                system_sampling_snapshot(sampling, ax_runtime::hal::time::monotonic_time_nanos());
             return Ok(PerfReadValues {
                 value: snapshot.value,
                 time_enabled: snapshot.time_enabled,
@@ -503,7 +505,10 @@ impl HwPerfEventState {
             value: snapshot.value,
             time_enabled,
             time_running,
-            lost: self.sampling.as_ref().map_or(0, |sampling| sampling.loss.total()),
+            lost: self
+                .sampling
+                .as_ref()
+                .map_or(0, |sampling| sampling.loss.total()),
             read_format: self.read_format,
         })
     }

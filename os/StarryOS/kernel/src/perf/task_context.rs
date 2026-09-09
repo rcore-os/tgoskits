@@ -37,7 +37,10 @@ impl ThreadPerfContext {
         let mut state = self.state.lock();
         // Closed events may remain family-owned for aggregate reads. Reclaim
         // their list slots in task context before admitting a new live event.
-        state.retain(|counter| !counter.resources_released());
+        // A sampling sibling may retain this closed counter until its current
+        // slot is unregistered. Keep a task-context owner so that unregister
+        // never performs the last counter destruction in scheduler context.
+        state.retain(|counter| !counter.resources_released() || Arc::strong_count(counter) > 1);
         state
             .attach(Arc::clone(&counter))
             .map_err(|error| match error {

@@ -123,7 +123,7 @@ pub struct SwPerTaskCounter {
     owner: PidIdentityId,
     cpu_filter: Option<usize>,
     enabled: AtomicBool,
-    enable_on_exec: bool,
+    enable_on_exec: AtomicBool,
     retired: AtomicBool,
     enabled_since_ns: AtomicU64,
     run_since_ns: AtomicU64,
@@ -150,7 +150,7 @@ impl SwPerTaskCounter {
             owner,
             cpu_filter,
             enabled: AtomicBool::new(enabled),
-            enable_on_exec,
+            enable_on_exec: AtomicBool::new(enable_on_exec),
             retired: AtomicBool::new(false),
             enabled_since_ns: AtomicU64::new(if enabled { now } else { 0 }),
             run_since_ns: AtomicU64::new(0),
@@ -165,7 +165,7 @@ impl SwPerTaskCounter {
             child.pid_identity().id(),
             self.cpu_filter,
             self.enabled.load(Ordering::Acquire),
-            self.enable_on_exec,
+            self.enable_on_exec.load(Ordering::Acquire),
         ))
     }
 
@@ -869,7 +869,7 @@ pub fn on_exec(thread: &Thread) {
     }
     let counters = thread.perf_sw_counters.lock();
     for counter in counters.iter() {
-        if counter.enable_on_exec {
+        if counter.enable_on_exec.swap(false, Ordering::AcqRel) {
             counter.set_enabled();
         }
     }

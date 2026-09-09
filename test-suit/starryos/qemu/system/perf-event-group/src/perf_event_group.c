@@ -91,14 +91,19 @@ static int open_system_raw_sampling(int group_fd) {
     return (int)syscall(SYS_PERF_EVENT_OPEN, &attr, -1, 0, group_fd, 0ul);
 }
 
-static int open_task_raw(uint64_t flags) {
+static int open_task_raw_group(uint64_t flags, uint64_t format, int group) {
     struct perf_event_attr_v0 attr = {
         .type = PERF_TYPE_RAW,
         .size = sizeof(attr),
         .config = 0x11,
+        .read_format = format,
         .flags = flags,
     };
-    return (int)syscall(SYS_PERF_EVENT_OPEN, &attr, 0, -1, -1, 0ul);
+    return (int)syscall(SYS_PERF_EVENT_OPEN, &attr, 0, -1, group, 0ul);
+}
+
+static int open_task_raw(uint64_t flags) {
+    return open_task_raw_group(flags, 0, -1);
 }
 
 static void work(void) {
@@ -113,6 +118,91 @@ int main(void) {
     puts("STARRY_PERF_EVENT_GROUP_OK");
     return 0;
 #else
+    /* Reading/control through a sibling still addresses the canonical group.
+     * A disabled sibling must retain its own OFF state on leader-only enable. */
+    const uint64_t sibling_format = PERF_FORMAT_GROUP | PERF_FORMAT_ID;
+    int control_leader = open_sw(PERF_COUNT_SW_TASK_CLOCK, 0, -1);
+    int control_member = open_sw(PERF_COUNT_SW_CPU_CLOCK, sibling_format,
+                                 control_leader);
+    uint64_t control_ids[2] = {0};
+    uint64_t control_values[5] = {0};
+    if (control_leader < 0 || control_member < 0 ||
+        ioctl(control_leader, PERF_IOC_ID, &control_ids[0]) != 0 ||
+        ioctl(control_member, PERF_IOC_ID, &control_ids[1]) != 0 ||
+        read(control_member, control_values, sizeof(control_values)) !=
+            (ssize_t)sizeof(control_values) || control_values[0] != 2 ||
+        control_values[2] != control_ids[0] ||
+        control_values[4] != control_ids[1]) {
+        puts("perf-event-group FAILED: sibling group read order");
+        return 1;
+    }
+    if (ioctl(control_leader, PERF_IOC_ENABLE, 0) != 0) return 1;
+    work();
+    if (ioctl(control_leader, PERF_IOC_DISABLE, 0) != 0 ||
+        read(control_member, control_values, sizeof(control_values)) !=
+            (ssize_t)sizeof(control_values) || control_values[1] == 0 ||
+        control_values[3] != 0) {
+        puts("perf-event-group FAILED: leader enabled disabled sibling");
+        return 1;
+    }
+    if (ioctl(control_member, PERF_IOC_ENABLE, PERF_IOC_FLAG_GROUP) != 0) return 1;
+    work();
+    if (ioctl(control_member, PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP) != 0 ||
+        read(control_member, control_values, sizeof(control_values)) !=
+            (ssize_t)sizeof(control_values) || control_values[3] == 0 ||
+        ioctl(control_member, PERF_IOC_RESET, PERF_IOC_FLAG_GROUP) != 0 ||
+        read(control_member, control_values, sizeof(control_values)) !=
+            (ssize_t)sizeof(control_values) || control_values[1] != 0 ||
+        control_values[3] != 0) {
+        puts("perf-event-group FAILED: sibling GROUP control");
+        return 1;
+    }
+    close(control_member);
+    close(control_leader);
+
+    /* Reserve all programmable slots, then leave exactly one free. A two
+     * member task group must wait as a unit, then run once capacity returns. */
+    cpu_set_t group_cpu;
+    CPU_ZERO(&group_cpu);
+    CPU_SET(0, &group_cpu);
+    if (sched_setaffinity(0, sizeof(group_cpu), &group_cpu) != 0) return 1;
+    int reservations[32];
+    int reserved = 0;
+    for (; reserved < 32; ++reserved) {
+        reservations[reserved] = open_system_raw_sampling(-1);
+        if (reservations[reserved] < 0) break;
+    }
+    if (reserved < 2 || reserved == 32 ||
+        (errno != ENOMEM && errno != EBUSY)) {
+        puts("perf-event-group FAILED: slot reservation setup");
+        return 1;
+    }
+    close(reservations[--reserved]);
+    control_leader = open_task_raw_group(PERF_ATTR_DISABLED, sibling_format, -1);
+    control_member = open_task_raw_group(PERF_ATTR_DISABLED, 0, control_leader);
+    if (control_leader < 0 || control_member < 0 ||
+        ioctl(control_leader, PERF_IOC_ENABLE, PERF_IOC_FLAG_GROUP) != 0) return 1;
+    work();
+    if (ioctl(control_leader, PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP) != 0 ||
+        read(control_leader, control_values, sizeof(control_values)) !=
+            (ssize_t)sizeof(control_values) || control_values[1] != 0 ||
+        control_values[3] != 0) {
+        puts("perf-event-group FAILED: hardware group ran partially");
+        return 1;
+    }
+    while (reserved != 0) close(reservations[--reserved]);
+    if (ioctl(control_leader, PERF_IOC_ENABLE, PERF_IOC_FLAG_GROUP) != 0) return 1;
+    work();
+    if (ioctl(control_leader, PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP) != 0 ||
+        read(control_leader, control_values, sizeof(control_values)) !=
+            (ssize_t)sizeof(control_values) || control_values[1] == 0 ||
+        control_values[3] == 0) {
+        puts("perf-event-group FAILED: hardware group did not resume");
+        return 1;
+    }
+    close(control_member);
+    close(control_leader);
+
     /* An enabled sibling inherits the disabled leader's effective OFF state.
      * Enabling only the sibling cannot bypass that gate; enabling the leader
      * alone then schedules every sibling whose own state is enabled. */

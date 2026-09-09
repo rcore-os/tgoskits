@@ -170,6 +170,43 @@ static int test_inherit(void) {
     return result;
 }
 
+static int test_inherited_exec(void) {
+#if defined(__aarch64__)
+    /* Two preferred-cycle parents exercise dedicated and fallback resources.
+     * Only their inherited children enable at exec, so parent reads contain
+     * exclusively child work and both physical reservations must be distinct. */
+    struct perf_event_attr attr = {
+        .type = 0,
+        .size = sizeof(attr),
+        .config = 0,
+        .flags = ATTR_DISABLED | ATTR_INHERIT | ATTR_ENABLE_ON_EXEC,
+    };
+    int fds[2];
+    for (int i = 0; i < 2; ++i) {
+        fds[i] = (int)syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0ul);
+        if (fds[i] < 0) return -1;
+    }
+    pid_t child = fork();
+    if (child == 0) {
+        char *args[] = {(char *)"/proc/self/exe", (char *)"--child-work", NULL};
+        execve(args[0], args, environ);
+        _exit(7);
+    }
+    int status = 0;
+    if (child < 0 || waitpid(child, &status, 0) != child ||
+        !WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
+    for (int i = 0; i < 2; ++i) {
+        uint64_t value = 0;
+        if (read_value(fds[i], &value) != 0 || value == 0) {
+            puts("perf-sw-counters FAILED: inherited hardware exec/counting");
+            return -1;
+        }
+        close(fds[i]);
+    }
+#endif
+    return 0;
+}
+
 static int test_systemwide(void) {
     int fd = open_cpu_clock(0);
     if (fd < 0 || ioctl(fd, PERF_EVENT_IOC_ENABLE, 0) != 0) {
@@ -190,11 +227,29 @@ static int test_systemwide(void) {
 }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "--child-work") == 0) {
+        workload();
+        return 0;
+    }
     if (argc == 3 && strcmp(argv[1], "--exec") == 0) {
         int fd = atoi(argv[2]);
         uint64_t after = 0;
         cpu_work();
-        return read_value(fd, &after) == 0 && after > 0 ? 0 : 4;
+        if (read_value(fd, &after) != 0 || after == 0 ||
+            ioctl(fd, PERF_EVENT_IOC_DISABLE, 0) != 0 ||
+            ioctl(fd, PERF_EVENT_IOC_RESET, 0) != 0) return 4;
+        char *next[] = {argv[0], (char *)"--exec-again", argv[2], NULL};
+        execve("/proc/self/exe", next, environ);
+        return 5;
+    }
+    if (argc == 3 && strcmp(argv[1], "--exec-again") == 0) {
+        uint64_t after = 1;
+        cpu_work();
+        if (read_value(atoi(argv[2]), &after) != 0 || after != 0) {
+            puts("perf-sw-counters FAILED: enable_on_exec was not consumed");
+            return 6;
+        }
+        return 0;
     }
 
     const uint64_t ids[] = {PERF_COUNT_SW_CPU_CLOCK,
@@ -228,7 +283,7 @@ int main(int argc, char **argv) {
         close(fds[i]);
     }
     if (test_counting_sample_type() != 0 || test_enable_on_exec() != 0 ||
-        test_inherit() != 0 ||
+        test_inherit() != 0 || test_inherited_exec() != 0 ||
         test_systemwide() != 0) {
         printf("perf-sw-counters FAILED: exec/inherit/systemwide\n");
         return 1;

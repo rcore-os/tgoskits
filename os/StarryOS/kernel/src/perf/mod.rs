@@ -31,9 +31,9 @@ mod inheritance;
 mod inheritance_lifecycle;
 pub mod kprobe;
 #[cfg(target_arch = "aarch64")]
-mod output;
-#[cfg(target_arch = "aarch64")]
 mod nofault;
+#[cfg(target_arch = "aarch64")]
+mod output;
 #[cfg(target_arch = "aarch64")]
 pub mod percpu;
 pub mod raw_tracepoint;
@@ -49,8 +49,6 @@ pub mod sampling;
 mod sampling_lifecycle;
 #[cfg(target_arch = "aarch64")]
 mod sampling_registry;
-#[cfg(target_arch = "aarch64")]
-mod system_flex;
 /// Side-band records (`PERF_RECORD_COMM`/`MMAP2`/`FORK`/`EXIT`) for `perf report`
 /// symbolization. Writes into the sampling ring from process context, so it is
 /// gated like `sampling`.
@@ -58,6 +56,8 @@ mod system_flex;
 pub mod sideband;
 /// Linux core `PERF_TYPE_SOFTWARE` counting events.
 pub mod sw;
+#[cfg(target_arch = "aarch64")]
+mod system_flex;
 mod target;
 /// Per-task hardware-PMU counting (`perf stat -- cmd`, M3). ARM PMUv3 only; the
 /// scheduler hooks call into CPU PMU register helpers, so it is gated like
@@ -292,6 +292,7 @@ pub(crate) const PERF_FORMAT_ID: u64 = 1 << 2;
 pub(crate) const PERF_FORMAT_GROUP: u64 = 1 << 3;
 /// `read_format` bit selecting a per-event lost-sample count.
 pub(crate) const PERF_FORMAT_LOST: u64 = 1 << 4;
+const PERF_IOC_FLAG_GROUP: usize = 1;
 
 /// Counter snapshot returned by [`PerfEventOps::read_values`].
 ///
@@ -484,11 +485,47 @@ impl PerfEvent {
         Ok(())
     }
 
+    fn live_group_leader(&self) -> Option<Arc<Self>> {
+        self.group_leader.lock().as_ref().and_then(Weak::upgrade)
+    }
+
+    fn control_group(&self, enable: Option<bool>) -> StarryResult<()> {
+        let leader = self.live_group_leader();
+        let leader = leader.as_deref().unwrap_or(self);
+        match enable {
+            Some(true) => {
+                #[cfg(target_arch = "aarch64")]
+                leader.validate_pinned_group_capacity()?;
+                leader.propagate_members(true)?;
+                if let Err(error) = leader.set_enabled(true) {
+                    let _ = leader.propagate_members(false);
+                    return Err(error);
+                }
+                Ok(())
+            }
+            Some(false) => {
+                leader.set_enabled(false)?;
+                leader.propagate_members(false)
+            }
+            None => {
+                leader.reset_one()?;
+                leader.reset_members()
+            }
+        }
+    }
+
     fn read_group(
         &self,
         dst: &mut crate::file::IoDst,
         leader: &PerfReadValues,
     ) -> StarryResult<usize> {
+        if let Some(group_leader) = self.live_group_leader() {
+            let mut values = group_leader.read_values()?;
+            // Linux uses the addressed fd's read_format, even when the values
+            // and ordering come from its group leader.
+            values.read_format = leader.read_format;
+            return group_leader.read_group(dst, &values);
+        }
         let members = self.live_members();
         let mut fields = Vec::with_capacity(4 + members.len() * 2);
         fields.push(1 + members.len() as u64);
@@ -742,30 +779,31 @@ impl FileLike for PerfEvent {
         // the default and return `Unsupported`.
         const PERF_EVENT_IOC_RESET: u32 = 0x2403;
         if cmd == PERF_EVENT_IOC_RESET {
-            const PERF_IOC_FLAG_GROUP: usize = 1;
             if arg & !PERF_IOC_FLAG_GROUP != 0 {
                 return Err(StarryError::InvalidInput);
             }
-            self.reset_one()?;
             if arg & PERF_IOC_FLAG_GROUP != 0 {
-                self.reset_members()?;
+                self.control_group(None)?;
+            } else {
+                self.reset_one()?;
             }
             return Ok(0);
         }
         let req = PerfEventIoc::try_from(cmd).map_err(|_| StarryError::InvalidInput)?;
         match req {
             PerfEventIoc::Enable => {
-                #[cfg(target_arch = "aarch64")]
-                self.validate_pinned_group_capacity()?;
-                self.propagate_members(true)?;
-                if let Err(error) = self.set_enabled(true) {
-                    let _ = self.propagate_members(false);
-                    return Err(error);
+                if arg & PERF_IOC_FLAG_GROUP != 0 {
+                    self.control_group(Some(true))?;
+                } else {
+                    self.set_enabled(true)?;
                 }
             }
             PerfEventIoc::Disable => {
-                self.set_enabled(false)?;
-                self.propagate_members(false)?;
+                if arg & PERF_IOC_FLAG_GROUP != 0 {
+                    self.control_group(Some(false))?;
+                } else {
+                    self.set_enabled(false)?;
+                }
             }
             PerfEventIoc::SetBpf => {
                 let bpf_prog_fd = arg as i32;
@@ -957,9 +995,15 @@ pub fn perf_event_open(
         // Hardware-PMU events (`PERF_TYPE_HARDWARE` / `PERF_TYPE_RAW`, plus
         // the dynamic ARM PMUv3 type `hw::ARMV8_PMUV3_PERF_TYPE`) bypass
         // `PerfProbeArgs`, which maps non-probe configs through `perf_sw_ids`.
+        let enable_member = group_leader.is_some() && attr.disabled() == 0;
+        let mut backend_attr = *attr;
+        if group_leader.is_some() {
+            // Publish the relation before an eager member can count.
+            backend_attr.set_disabled(1);
+        }
         let event: Box<dyn PerfEventOps> = if is_hardware {
             Box::new(hw::perf_event_open_hw(
-                attr,
+                &backend_attr,
                 target,
                 validated_hw.expect("hardware perf open has validated attributes"),
             )?)
@@ -969,7 +1013,7 @@ pub fn perf_event_open(
                 PerfTypeId::PERF_TYPE_KPROBE => Box::new(kprobe::perf_event_open_kprobe(args)?),
                 PerfTypeId::PERF_TYPE_SOFTWARE => match args.config {
                     PerfProbeConfig::PerfSwIds(sw_id) if sw::is_counting_sw(sw_id) => {
-                        Box::new(sw::perf_event_open_sw(attr, sw_id, &target)?)
+                        Box::new(sw::perf_event_open_sw(&backend_attr, sw_id, &target)?)
                     }
                     PerfProbeConfig::PerfSwIds(sw_id) if sw::is_tracking_dummy(sw_id) => {
                         Box::new(bpf::perf_event_open_tracking(args, attr, &target))
@@ -1007,13 +1051,15 @@ pub fn perf_event_open(
                 let mut leader_backend = leader.event.lock();
                 let mut member_backend = perf_event.event.lock();
                 member_backend.link_group(&mut **leader_backend)?;
-                member_backend.disable()?;
             }
             *perf_event.group_leader.lock() = Some(Arc::downgrade(&leader));
             leader.members.lock().push(Arc::downgrade(&perf_event));
         }
         if let Some(output) = output_event {
             perf_event.set_output_target(&output)?;
+        }
+        if enable_member {
+            perf_event.set_enabled(true)?;
         }
         let event_arc: Arc<dyn FileLike> = perf_event;
         // Honour PERF_FLAG_FD_CLOEXEC: Linux opens the perf fd with O_CLOEXEC

@@ -10,12 +10,14 @@ pub fn on_exec(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
+    let _guard = crate::sync::NoPreemptIrqSave::new();
+    perf_sched_out(thr);
     thr.perf_context().with_counters(|counters| {
         for ptc in counters.iter() {
             if ptc.run_state.lock().is_stopping() {
                 continue;
             }
-            if ptc.enable_on_exec {
+            if ptc.enable_on_exec.swap(false, Ordering::AcqRel) {
                 ptc.enabled.store(true, Ordering::Release);
             }
         }
