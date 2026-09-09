@@ -303,6 +303,11 @@ impl OpenOptions {
 
         let loc = match context.resolve_parent_with_search(path.as_ref()) {
             Ok((parent, name, searched)) => {
+                context.check_search_trace(
+                    &searched,
+                    context.permission_boundary(),
+                    credentials,
+                )?;
                 // If the path ends with '/', Linux never creates regular
                 // files via O_CREAT here — the path explicitly requests a
                 // directory, and open() cannot create directories. Suppress

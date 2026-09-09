@@ -11,8 +11,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sched.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -26,6 +28,23 @@
 #ifndef AT_EMPTY_PATH
 #define AT_EMPTY_PATH 0x1000
 #endif
+#ifndef PR_SET_KEEPCAPS
+#define PR_SET_KEEPCAPS 8
+#endif
+
+#define LINUX_CAPABILITY_VERSION_3 0x20080522U
+#define CAP_DAC_READ_SEARCH 2
+
+struct capability_header {
+    uint32_t version;
+    int32_t pid;
+};
+
+struct capability_data {
+    uint32_t effective;
+    uint32_t permitted;
+    uint32_t inheritable;
+};
 
 static const char *const base = "/tmp/bug-dir-mutation-permissions";
 static const char *const protected_dir = "/tmp/bug-dir-mutation-permissions/protected";
@@ -121,6 +140,18 @@ static int run_unprivileged_checks(void)
         perror("setuid");
         return 1;
     }
+
+    errno = 0;
+    int inaccessible = open(protected_file, O_RDONLY | O_CREAT, 0600);
+    check(inaccessible < 0 && errno == EACCES,
+          "open O_CREAT checks an inaccessible parent before opening an existing target");
+    if (inaccessible >= 0) {
+        close(inaccessible);
+    }
+
+    errno = 0;
+    check(mkdir(protected_file, 0700) < 0 && errno == EACCES,
+          "mkdir checks an inaccessible parent before an existing target");
 
     errno = 0;
     check(mkdirat(AT_FDCWD, "/tmp/bug-dir-mutation-permissions/protected/new", 0700) < 0
@@ -225,12 +256,20 @@ static int run_unprivileged_checks(void)
     check(unlink(sticky_child) == 0, "file owner can unlink its own sticky entry");
 
     errno = 0;
-    check(symlink("target", protected_file) < 0 && errno == EEXIST,
-          "symlink reports an existing target before parent permissions");
+    check(symlink("target", sticky_file) < 0 && errno == EEXIST,
+          "symlink reports an existing target in a searchable parent");
 
     errno = 0;
-    check(mknodat(AT_FDCWD, protected_file, S_IFREG | 0600, 0) < 0 && errno == EEXIST,
-          "mknodat reports an existing target before parent permissions");
+    check(symlink("target", protected_file) < 0 && errno == EACCES,
+          "symlink checks an inaccessible parent before an existing target");
+
+    errno = 0;
+    check(mknodat(AT_FDCWD, sticky_file, S_IFREG | 0600, 0) < 0 && errno == EEXIST,
+          "mknodat reports an existing target in a searchable parent");
+
+    errno = 0;
+    check(mknodat(AT_FDCWD, protected_file, S_IFREG | 0600, 0) < 0 && errno == EACCES,
+          "mknodat checks an inaccessible parent before an existing target");
 
     if (dirfd >= 0) {
         int opened = openat(dirfd, "existing", O_RDONLY);
@@ -259,6 +298,57 @@ static int run_unprivileged_checks(void)
         errno = 0;
         check(syscall(SYS_renameat2, dirfd, "rename-source", dirfd, "rename-target", 0) == 0,
               "renameat2 does not recheck the dirfd parent");
+    }
+
+    return failures == 0 ? 0 : 1;
+}
+
+static int run_dac_read_search_checks(void)
+{
+    struct capability_header header = {
+        .version = LINUX_CAPABILITY_VERSION_3,
+        .pid = 0,
+    };
+    struct capability_data data[2] = {0};
+
+    if (syscall(SYS_prctl, PR_SET_KEEPCAPS, 1, 0, 0, 0) != 0) {
+        perror("PR_SET_KEEPCAPS");
+        return 1;
+    }
+    if (setuid(1000) != 0) {
+        perror("setuid");
+        return 1;
+    }
+
+    data[0].effective = 1U << CAP_DAC_READ_SEARCH;
+    data[0].permitted = 1U << CAP_DAC_READ_SEARCH;
+    if (syscall(SYS_capset, &header, data) != 0) {
+        perror("capset(CAP_DAC_READ_SEARCH)");
+        return 1;
+    }
+
+    errno = 0;
+    int fd = open(protected_file, O_RDONLY);
+    check(fd >= 0,
+          "CAP_DAC_READ_SEARCH permits reading through an unsearchable parent");
+    if (fd >= 0) {
+        close(fd);
+    }
+
+    errno = 0;
+    check(mkdir(protected_new_file, 0700) < 0 && errno == EACCES,
+          "CAP_DAC_READ_SEARCH does not grant parent write permission");
+
+    errno = 0;
+    check(mkdir(protected_file, 0700) < 0 && errno == EEXIST,
+          "CAP_DAC_READ_SEARCH keeps existing-target precedence");
+
+    errno = 0;
+    fd = open(dangling_link, O_WRONLY | O_CREAT, 0600);
+    check(fd < 0 && errno == EACCES,
+          "CAP_DAC_READ_SEARCH cannot create through a dangling link without write access");
+    if (fd >= 0) {
+        close(fd);
     }
 
     return failures == 0 ? 0 : 1;
@@ -344,6 +434,8 @@ int main(void)
     empty_path_source_fd = open(empty_path_source, O_RDONLY);
     check(empty_path_source_fd >= 0, "open AT_EMPTY_PATH source before dropping privileges");
     check(create_file(protected_file) == 0, "create protected victim");
+    check(chmod(protected_file, 0644) == 0,
+          "make protected victim readable after setup");
     check(symlink(public_dir, protected_link) == 0,
           "create symlink through protected directory");
     check(symlink(protected_new_file, dangling_link) == 0, "create dangling symlink");
@@ -384,6 +476,22 @@ int main(void)
           "all unprivileged mutations are rejected or authorized");
     if (waited == child && WIFSIGNALED(status)) {
         printf("FAIL: unprivileged child terminated by signal %d\n", WTERMSIG(status));
+    }
+
+    child = fork();
+    check(child >= 0, "fork CAP_DAC_READ_SEARCH test process");
+    if (child == 0) {
+        int result = run_dac_read_search_checks();
+        fflush(stdout);
+        _exit(result);
+    }
+    status = 0;
+    waited = waitpid(child, &status, 0);
+    check(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "CAP_DAC_READ_SEARCH bypasses only read/search checks");
+    if (waited == child && WIFSIGNALED(status)) {
+        printf("FAIL: CAP_DAC_READ_SEARCH child terminated by signal %d\n",
+               WTERMSIG(status));
     }
 
     remove_if_present("/tmp/bug-dir-mutation-permissions/sticky/new-dir");

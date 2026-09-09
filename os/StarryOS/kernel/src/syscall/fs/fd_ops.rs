@@ -7,7 +7,6 @@ use core::{
 
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenResult};
 use ax_memory_addr::PAGE_SIZE_4K;
-<<<<<<< HEAD
 use axfs_ng_vfs::{
     DirEntry, FileNode, Location, MutationCredentials, NodeOps, NodeType, Reference, VfsError,
 };
