@@ -229,7 +229,7 @@ scripts/test/ltp-syscalls/generate-common.sh \
 性能基准 `apps/starry/wakeup-latency-bench` 作为独立 Starry app 保留，供后续调优使用。
 
 逐项 syscall 迁移以 `scripts/test/ltp-syscalls/migration.csv` 为账本。按当前工作约定，
-候选 LTP 出错时保留原测试，记录候选、失败架构、错误输出及证据路径后暂缓，先处理
+候选 LTP 出错时保留原测试，记录候选、失败架构、错误输出、证据路径及独立 issue 后暂缓，先处理
 无需修复且四架构通过的替换。暂缓不是通过，不删除失败候选，也不放宽 wrapper 的失败
 传播或完成数量检查。已完成替换仍须逐项记录未承接的断言。续迁批次遵循同一规则，测试失败时
 不修改内核、上游逻辑、完成数量或超时来接入候选。停机同步对照本机 Linux v7.1 PREEMPT_RT 的命令锁、禁止抢占及阶段确认

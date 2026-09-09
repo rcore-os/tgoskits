@@ -86,6 +86,21 @@
 
 `bug-fcntl-fd-mode-ebadf`、`bug-fcntl-len-negative`、`bug-fcntl-ofd-pid-einval`、`bug-fcntl-posix-exit-release`、`bug-flock-failed-upgrade` 没有在本批建立完整等效映射，保留原程序和具体输入。普通 fcntl 无效 FD、正长度区间或 flock 排他冲突，不能分别证明读写模式不匹配、负长度归一化、非零 OFD PID、退出自动释放或失败升级丢弃原共享锁。
 
+### 3.3 独立问题跟踪
+
+每个暂缓问题单独跟踪，共用失败候选关联同一议题，避免为两个原程序重复建单。IPv6 的选项状态与原生地址身份属于不同问题，分别登记；历史问题的议题明确注明尚未在最新 dev 复验。
+
+| 问题 | 议题 | 保留的原程序 |
+| --- | --- | --- |
+| fcntl14 超时未完成 | [#2341](https://github.com/rcore-os/tgoskits/issues/2341) | bug-fcntl-posix-lock、bug-fcntl-whence |
+| fcntl16 无 TPASS 完成报告 | [#2342](https://github.com/rcore-os/tgoskits/issues/2342) | bug-fcntl-partial-wake、bug-fcntl-setlkw-blocks |
+| ext4 SEEK_HOLE 返回 EINVAL | [#2343](https://github.com/rcore-os/tgoskits/issues/2343) | bug-fallocate-zero-punch |
+| fchmodat2 O_PATH 空路径返回 EBADF | [#2344](https://github.com/rcore-os/tgoskits/issues/2344) | bug-fchmodat2-flags |
+| IPV6_V6ONLY 状态与绑定约束 | [#2345](https://github.com/rcore-os/tgoskits/issues/2345) | bug-af-inet6-v4mapped |
+| 原生 ::1 端点身份丢失 | [#2346](https://github.com/rcore-os/tgoskits/issues/2346) | bug-af-inet6-v4mapped |
+
+这些议题尚未修复，本批迁移不关闭它们。后续新增暂缓项也应记录复现输入、失败证据与对应议题，不以原程序保留代替问题跟踪。
+
 ## 4. 验证与兼容性
 
 本批只替换测试，不改变 Rust 实现。兼容性结论限定到新接入用例实际证明的输入；原程序未被承接的断言不因其他用例同名 syscall 就视为继续覆盖。
