@@ -137,8 +137,20 @@ fn spin_two_task_abba() {
     let thread_stage = stage.clone();
 
     let handle = thread::spawn(move || {
-        let _guard_a = thread_lock_a.lock();
-        let _guard_b = thread_lock_b.lock();
+        {
+            let _guard_a = thread_lock_a.lock();
+            let _guard_b = thread_lock_b.lock();
+        }
+        // The peer cannot touch either lock until stage 1 is published. Check
+        // this precondition here so early publication fails deterministically.
+        assert!(
+            thread_lock_a.try_lock().is_some(),
+            "stage 1 requires spin lock A to be released"
+        );
+        assert!(
+            thread_lock_b.try_lock().is_some(),
+            "stage 1 requires spin lock B to be released"
+        );
         thread_stage.store(1, Ordering::Release);
     });
 
