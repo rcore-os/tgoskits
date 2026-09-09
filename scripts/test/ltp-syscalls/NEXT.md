@@ -23,3 +23,11 @@
 未承接：原两进程单字节区间；拒绝死锁后显式解锁使另一等待者成功获得锁的后置断言。本项是部分替代，原程序及专属 CMake 清理。
 
 四架构03-candidates-<arch>.log实际通过；fcntl17=1 TPASS；未修改内核或上游测试；最终累计集合另验。提交主题为 `test(starry): migrate POSIX lock deadlock regression to LTP`。
+
+### 2.2 OFD 锁竞争
+
+`bug-fcntl-ofd-lock` 替换为 [fcntl34.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/fcntl/fcntl34.c), [fcntl36.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/fcntl/fcntl36.c)。承接行为：不同open形成独立OFD，F_OFD_SETLKW串行化线程写入；七种OFD/POSIX读写组合保证块内容一致。
+
+未承接：非阻塞冲突精确EAGAIN/EACCES、F_OFD_GETLK类型报告、非重叠区间即时成功、close(dup)保留锁、最后close释放锁。本项是部分替代，原程序及专属 CMake 清理。
+
+四架构03-candidates-<arch>.log实际通过；fcntl34=1 TPASS,fcntl36=7 TPASS；未修改内核或上游测试；最终累计集合另验。提交主题为 `test(starry): migrate OFD lock contention regression to LTP`。

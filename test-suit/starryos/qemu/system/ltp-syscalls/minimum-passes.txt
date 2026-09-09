@@ -32,3 +32,6 @@ access04 12
 epoll_create1_02 2
 # LTP 20260529 source-derived lock testcase completion counts.
 fcntl17 1
+# LTP 20260529 source-derived lock testcase completion counts.
+fcntl34 1
+fcntl36 7
