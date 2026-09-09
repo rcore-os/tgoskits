@@ -93,5 +93,11 @@ fn append_web_console_endpoint(
         IpAddr::V4(ip) if ip.is_unspecified() => assigned_address.to_string(),
         ip => ip.to_string(),
     };
-    let _ = write!(banner, "  web_console = http://{host}:{}/\r\n", bind.port());
+    let _ = write!(
+        banner,
+        "  web_console = http://{}:{}{}\r\n",
+        host,
+        bind.port(),
+        crate::http::browser_console::PAGE_PATH
+    );
 }
