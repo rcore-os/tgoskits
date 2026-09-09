@@ -209,8 +209,8 @@ fn test_wake_before_admission() {
     assert_eq!(handle.state(), ThreadState::New);
     handle.wake_handle().wake();
     assert_eq!(handle.state(), ThreadState::New);
-    // Keep the start gate from parking before activation, which would consume
-    // the stale notification and hide the admission defect.
+    // Pin the probe so the old gate-based implementation cannot consume an
+    // early notification before this admission-state assertion.
     let published = {
         let _guard = PreemptGuard::new();
         let staged = prepared.stage().unwrap();
@@ -222,12 +222,13 @@ fn test_wake_before_admission() {
         handle.wake_handle().wake();
         assert_eq!(handle.state(), ThreadState::New);
         handle.set_policy(handle.base_policy()).unwrap();
-        handle.request_affinity(handle.affinity().unwrap()).unwrap();
+        // Activation will consume the updated reservation; do not block under this guard.
+        drop(handle.request_affinity(handle.affinity().unwrap()).unwrap());
         assert_eq!(handle.state(), ThreadState::New);
         staged.activate()
     };
     drop(handle);
-    assert_eq!((published).join().unwrap(), 0);
+    assert_eq!(published.join().unwrap(), 0);
     std::os::arceos::task::thread::current::set_current_thread_affinity(old_affinity).unwrap();
     println!("task_wait_queue: pre-admission wake isolation OK");
 }

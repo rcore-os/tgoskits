@@ -18,7 +18,9 @@ pub(super) fn run() {
     test_execution_reclamation_with_live_handle();
     test_cancel_unpublished_threads();
     test_common_exit_result();
-    test_direct_extension_lifetime();
+    test_creation_failure_rollback();
+    test_direct_extension_lifetime(false);
+    test_direct_extension_lifetime(true);
 }
 
 fn test_execution_reclamation_with_live_handle() {
@@ -88,6 +90,34 @@ fn test_common_exit_result() {
     println!("task_wait_queue: common exit result and self-join rejection OK");
 }
 
+fn test_creation_failure_rollback() {
+    for fail_before_allocation in [true, false] {
+        let counters = Arc::new(ExtensionProbe::default());
+        let data = Box::into_raw(Box::new(Arc::clone(&counters))) as usize;
+        // SAFETY: the extension uniquely owns this boxed Arc through PROBE_OPS.
+        let extension = unsafe { ThreadExtension::new(data, &PROBE_OPS) };
+        let builder =
+            std::os::arceos::thread::builder("failed-creation".into()).extension(extension);
+        let builder = if fail_before_allocation {
+            builder.stack_size(0)
+        } else {
+            // A mismatched topology fails after the real context/TLS/stack constructor.
+            builder.affinity(std::os::arceos::task::sched::CpuSet::empty(
+                ax_hal::cpu_num() + 1,
+            ))
+        };
+        assert!(
+            builder
+                .prepare(|| panic!("failed creation must not run"))
+                .is_err()
+        );
+        assert_eq!(counters.switched_in.load(Ordering::Acquire), 0);
+        assert_eq!(counters.exited.load(Ordering::Acquire), 0);
+        assert_eq!(counters.dropped.load(Ordering::Acquire), 1);
+    }
+    println!("task_wait_queue: creation failure releases unpublished extension once OK");
+}
+
 #[derive(Default)]
 struct ExtensionProbe {
     switched_in: AtomicUsize,
@@ -138,7 +168,7 @@ fn wait_for(condition: impl Fn() -> bool) {
     }
     assert!(condition(), "thread lifetime event must complete");
 }
-fn test_direct_extension_lifetime() {
+fn test_direct_extension_lifetime(drop_in_sensitive_context: bool) {
     let counters = Arc::new(ExtensionProbe::default());
     let data = Box::into_raw(Box::new(Arc::clone(&counters))) as usize;
     // SAFETY: the callbacks use this boxed Arc until their unique drop callback.
@@ -157,7 +187,12 @@ fn test_direct_extension_lifetime() {
         .extension()
         .expect("direct OS extension remains available");
     assert_eq!(borrowed.data(), data);
-    handle.join().unwrap();
+    if drop_in_sensitive_context {
+        let _guard = std::os::arceos::guard::PreemptIrqSaveGuard::new();
+        drop(handle);
+    } else {
+        handle.join().unwrap();
+    }
     wait_for(|| counters.dropped.load(Ordering::Acquire) == 1);
     println!("task_wait_queue: direct extension switch/exit/drop lifetime OK");
 }
