@@ -1,4 +1,71 @@
 [workspace]
 dependencies_update = true
 publish_no_verify = true
-release_always = true
+# Publish the coordinated versions and dependency requirements from the release
+# PR, rather than publishing new crates before their dependencies are released.
+release_always = false
+
+# This driver requires an AArch64 target; release-plz does not expose the
+# cargo-semver-checks --target option. Review its target-specific API manually.
+[[package]]
+name = "arm-gic-driver"
+semver_check = false
+
+# These crates expose mutually exclusive kernel TLS and Linux userspace modes.
+# release-plz does not expose cargo-semver-checks feature selection, so its
+# default feature union is not a supported build. Check valid modes separately
+# and use set-version for breaking releases; keep the compile-time guard intact.
+[[package]]
+name = "ax-cpu"
+semver_check = false
+
+[[package]]
+name = "ax-hal"
+semver_check = false
+
+[[package]]
+name = "axplat-dyn"
+semver_check = false
+
+[[package]]
+name = "ax-runtime"
+semver_check = false
+
+[[package]]
+name = "ax-std"
+semver_check = false
+
+# The published ax-posix-api 0.5.34 omits src/ctypes_gen.rs and cannot build
+# outside the repository's axlibc headers. These baselines depend on it.
+# Re-enable checks after a self-contained baseline is published; review ABI
+# changes manually in the meantime.
+[[package]]
+name = "ax-posix-api"
+semver_check = false
+
+[[package]]
+name = "ax-libc"
+semver_check = false
+
+[[package]]
+name = "axvm"
+semver_check = false
+
+# axbuild 0.5.3 references review-bench assets outside its published package.
+# Axvisor's host entry depends on it. Re-enable after a self-contained baseline
+# is published; review the build-tool API and CLI changes manually meanwhile.
+[[package]]
+name = "axbuild"
+semver_check = false
+
+[[package]]
+name = "axvisor"
+semver_check = false
+
+[[package]]
+name = "x86_vcpu"
+# cargo-semver-checks 0.50 includes private items and cannot parse the deeply
+# nested FieldValueEnumTypes generated for the private VMCB implementation.
+# These register types are not exposed by the public API. Review API changes
+# and set breaking versions manually until its parser supports these types.
+semver_check = false

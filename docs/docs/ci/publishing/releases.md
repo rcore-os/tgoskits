@@ -21,7 +21,7 @@ job 条件允许手动事件，或 ref 名称为 `dev`。手动事件并未进�
 
 concurrency group 为 `release-plz-${{ github.ref }}`，配置 `queue: max`。同 ref 的发布工作流按自己的队列运行，不与主 CI 的 concurrency group 共用队列。
 
-工作流设置 `RUSTUP_TOOLCHAIN=stable`，两个 job 都通过 `dtolnay/rust-toolchain@stable` 准备工具链。这个发布流程是显式的 stable 环境，不能据此更改项目日常构建和格式化使用的固定 nightly 工具链。
+`release-plz-release` 设置 `RUSTUP_TOOLCHAIN=stable`，通过 `dtolnay/rust-toolchain@stable` 准备发布工具链。`release-plz-pr` 使用 `rustup show active-toolchain` 安装并选择 `rust-toolchain.toml` 固定的 nightly，再通过 `GITHUB_ENV` 设置 `RUSTUP_TOOLCHAIN`，使仓库外的临时基线构建也使用同一工具链。API 检查会编译依赖，不能统一强制使用 stable；例如 `x86_64` 的 nightly 功能依赖较新的 `Step` 接口。
 
 ## 2. 发布任务
 
@@ -31,17 +31,17 @@ concurrency group 为 `release-plz-${{ github.ref }}`，配置 `queue: max`。�
 
 `release-plz-release` 以完整 Git 历史 checkout，并设置 `persist-credentials=false`。随后先执行 `cargo publish --workspace --dry-run --no-verify`，再通过 `release-plz/action@v0.5` 运行 `command: release`。
 
-前置命令只做发布预检，不真正上传软件包，也不验证软件包构建。真正的发布由后续 Release-plz 步骤处理；能否发布以及哪些软件包需要发布，仍受软件包配置、版本和 registry 状态影响。
+前置命令只做发布预检，不真正上传软件包，也不验证软件包构建。真正的发布由后续 Release-plz 步骤处理；`release_always=false` 要求当前提交关联发布 PR，普通开发提交不会直接触发上传。这样可以先由发布 PR 协调软件包版本和依赖约束，避免新增软件包先于其依赖所需的新接口发布。
 
 ### 2.2 发布 PR
 
-`release-plz-pr` 复用相同的 checkout 和 stable 安装步骤，直接执行 `command: release-pr`，用于创建或更新版本及发布相关改动的 PR。该 job 没有实际发布 job 中的 `Preflight workspace packages` 步骤。
+`release-plz-pr` 复用 checkout，准备仓库固定的 nightly 后执行 `command: release-pr`，用于创建或更新版本及发布相关改动的 PR。该 job 没有实际发布 job 中的 `Preflight workspace packages` 步骤。
 
 发布 PR 创建成功不等于软件包已经上传；实际发布 job 成功也不等于另一个 job 已创建所需 PR。二者的日志、输出和外部状态分别构成结果证据。
 
 ## 3. 配置与权限
 
-根目录 `release-plz.toml` 只设置 workspace 级选项。未在仓库中显式覆盖的行为由所用 Release-plz 版本解释，不应把工具默认值当作工作流中已经写明的约束。
+根目录 `release-plz.toml` 设置 workspace 级选项，并通过 `[[package]]` 为无法使用默认自动 API 检查的软件包定义例外。未显式覆盖的行为由所用 Release-plz 版本解释。
 
 ### 3.1 workspace 选项
 
@@ -51,11 +51,25 @@ concurrency group 为 `release-plz-${{ github.ref }}`，配置 `queue: max`。�
 | --- | --- | --- |
 | `dependencies_update` | `true` | 在发布准备中启用依赖更新 |
 | `publish_no_verify` | `true` | 发布时不执行 Cargo 的软件包构建验证 |
-| `release_always` | `true` | 发布检查不局限于合并 Release-plz 发布 PR 的场景 |
+| `release_always` | `false` | 仅在当前提交关联发布 PR 时尝试发布 |
 
-`release_always` 不表示每个 push 都一定产生一个新版本。配置和预检也没有执行主 CI 的 Rust 静态检查、std 测试、QEMU 或板卡测试，不能用发布成功代替这些验证。
+Release-plz 通过关联 PR 的分支前缀识别发布 PR，仓库使用默认的 `release-plz-` 前缀。手动触发工作流也不绕过这一条件。配置和预检没有执行主 CI 的 Rust 静态检查、std 测试、QEMU 或板卡测试，不能用发布成功代替这些验证。字段语义见 [Release-plz 官方配置](https://release-plz.dev/docs/config#the-release_always-field)。
 
-### 3.2 外部写入
+### 3.2 API 检查边界
+
+其余软件包继续使用默认的自动 semver 检查。`release-plz.toml` 中的包级 `semver_check=false` 只处理已确认的工具或基线限制，不表示这些软件包已经通过兼容性检查。维护者需要核对公开接口，并在有破坏性变化时使用 `release-plz set-version <package>@<version>` 修正版本及依赖约束。
+
+| 例外软件包 | 默认检查无法运行的原因 |
+| --- | --- |
+| `arm-gic-driver` | 需要 AArch64，Release-plz 未提供包级 `--target` 配置 |
+| `ax-cpu`、`ax-hal`、`axplat-dyn`、`ax-runtime`、`ax-std` | 默认功能并集同时启用互斥的 `tls` 和 `uspace`；应分别检查合法组合 |
+| `x86_vcpu` | 检查器收集私有实现后，VMCB 宏生成的深层 `FieldValueEnumTypes` 超过 `cargo-semver-checks 0.50` 的 JSON 解析能力；这些寄存器类型未通过公开 API 暴露 |
+| `ax-posix-api`、`ax-libc`、`axvm` | 已发布的 `ax-posix-api 0.5.34` 缺少仓库外构建所需的 `src/ctypes_gen.rs` |
+| `axbuild`、`axvisor` | 已发布的 `axbuild 0.5.3` 引用了包外的 review-bench 素材，Axvisor 宿主入口依赖它 |
+
+包级覆盖使用 [Release-plz 官方支持的配置](https://release-plz.dev/docs/config#the-semver_check-field)。历史包缺失文件并未因此得到修复；发布可独立构建的基线后，应重新启用相应检查。目标架构、互斥功能和解析器限制也应在工具支持后重新评估。
+
+### 3.3 外部写入
 
 两个 job 的 GitHub 权限不同。发布使用的 registry token 通过环境传入，不应写入仓库或诊断日志。
 

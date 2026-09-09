@@ -11,7 +11,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTUP_TOOLCHAIN: stable
 
 concurrency:
   group: release-plz-${{ github.ref }}
@@ -20,6 +19,8 @@ concurrency:
 jobs:
   release-plz-release:
     name: Release-plz release
+    env:
+      RUSTUP_TOOLCHAIN: stable
     if: >-
       github.repository == 'rcore-os/tgoskits' &&
       (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev')
@@ -35,8 +36,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - &install-rust
-        name: Install Rust toolchain
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Preflight workspace packages
@@ -62,7 +62,11 @@ jobs:
       pull-requests: write
     steps:
       - *checkout
-      - *install-rust
+      - name: Install workspace Rust toolchain
+        run: |
+          toolchain="$(rustup show active-toolchain)"
+          # Apply the repository toolchain to temporary registry baseline builds too.
+          echo "RUSTUP_TOOLCHAIN=${toolchain%% *}" >> "$GITHUB_ENV"
 
       - name: Run release-plz
         uses: release-plz/action@v0.5
