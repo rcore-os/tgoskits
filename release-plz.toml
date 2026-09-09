@@ -5,8 +5,9 @@ publish_no_verify = true
 # PR, rather than publishing new crates before their dependencies are released.
 release_always = false
 
-# This driver requires an AArch64 target; release-plz does not expose the
-# cargo-semver-checks --target option. Review its target-specific API manually.
+# 0.18.1 exposes the same API on host targets with internal architecture stubs.
+# The published 0.17.13 baseline still fails host rustdoc. Re-enable after the
+# fixed baseline is published; retain AArch64 validation for hardware behavior.
 [[package]]
 name = "arm-gic-driver"
 semver_check = false
@@ -35,8 +36,8 @@ semver_check = false
 name = "ax-std"
 semver_check = false
 
-# The published ax-posix-api 0.5.34 omits src/ctypes_gen.rs and cannot build
-# outside the repository's axlibc headers. These baselines depend on it.
+# ax-posix-api 0.6.1 packages its C headers and generates bindings in OUT_DIR.
+# The published 0.5.34 baseline still lacks those inputs. These crates use it.
 # Re-enable checks after a self-contained baseline is published; review ABI
 # changes manually in the meantime.
 [[package]]
@@ -51,7 +52,7 @@ semver_check = false
 name = "axvm"
 semver_check = false
 
-# axbuild 0.5.3 references review-bench assets outside its published package.
+# axbuild 0.6.1 packages its review-bench assets; published 0.5.3 does not.
 # Axvisor's host entry depends on it. Re-enable after a self-contained baseline
 # is published; review the build-tool API and CLI changes manually meanwhile.
 [[package]]
@@ -64,8 +65,7 @@ semver_check = false
 
 [[package]]
 name = "x86_vcpu"
-# cargo-semver-checks 0.50 includes private items and cannot parse the deeply
-# nested FieldValueEnumTypes generated for the private VMCB implementation.
-# These register types are not exposed by the public API. Review API changes
-# and set breaking versions manually until its parser supports these types.
+# 0.7.1 uses flat bitflags for instruction/event interception. The published
+# 0.6.2 baseline still has recursive tock debug types that the JSON parser
+# cannot load. Re-enable after publishing the fixed baseline (or a parser fix).
 semver_check = false

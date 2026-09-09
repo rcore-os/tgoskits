@@ -25,7 +25,7 @@ const GRADE_PROMPT: &str =
      issue does not match. Return exactly one match object per known finding ID. \
      `finding_indices` are zero-based indices in `candidate_findings.json` and must contain every \
      candidate used to support the match, or be empty when missed. Do not inspect any other paths.";
-const GRADE_SCHEMA: &str = include_str!("../../../agent-review-bench/schemas/grade.schema.json");
+const GRADE_SCHEMA: &str = include_str!("assets/grade.schema.json");
 
 const CLAUDE_COMMON_ARGS: &[&str] = &[
     "-p",

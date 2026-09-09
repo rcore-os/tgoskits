@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "arm-gic-driver"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "bitflags 2.13.1",
@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1282,7 +1282,7 @@ dependencies = [
 
 [[package]]
 name = "axbuild"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "addr2line 0.26.1",
  "anyhow",
@@ -9835,7 +9835,7 @@ dependencies = [
 
 [[package]]
 name = "x86_vcpu"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "bit_field",
  "bitflags 2.13.1",

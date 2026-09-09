@@ -1,10 +1,9 @@
 use core::hint::spin_loop;
 
-use aarch64_cpu::asm::barrier;
 use tock_registers::{interfaces::*, register_bitfields, register_structs, registers::*};
 
 use crate::{
-    IntId,
+    IntId, arch,
     define::{SPI_RANGE, Trigger},
     v3::Affinity,
 };
@@ -108,6 +107,9 @@ fn reg8_addr(base: *const DistributorReg, offset: usize, index: usize) -> *mut u
 
 #[inline(always)]
 fn mmio_write32(addr: *mut u32, value: u32) {
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = (addr, value);
+    #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!(
             "str {value:w}, [{addr}]",
@@ -120,6 +122,9 @@ fn mmio_write32(addr: *mut u32, value: u32) {
 
 #[inline(always)]
 fn mmio_write8(addr: *mut u8, value: u8) {
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = (addr, value);
+    #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!(
             "strb {value:w}, [{addr}]",
@@ -556,7 +561,7 @@ impl DistributorReg {
                 return Err("GICv3 Distributor CTLR RWP wait timeout.");
             }
         }
-        barrier::isb(barrier::SY);
+        arch::isb();
         Ok(())
     }
 }

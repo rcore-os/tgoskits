@@ -12,13 +12,13 @@
 //! - **GICv3 support**: Only available on 64-bit ARM (AArch64) platforms
 //! - **System Register access**: Only available on AArch64 platforms
 //!
-//! ### Platform-Specific Modules
-//!
-//! - The [`v3`] module is **only available on AArch64** (`target_arch = "aarch64"`)
-//!
-//! If you're working on a non-ARM platform, most of this driver's functionality
-//! will not be available at compile time.
+//! All public interfaces are available on every target for documentation and
+//! API compatibility checks. On non-AArch64 targets, system-register reads
+//! return zero and writes and architecture barriers are no-ops. These stubs do
+//! not emulate a GIC and must not be used to drive hardware. MMIO objects still
+//! require valid mapped memory according to their constructor contracts.
 
+mod arch;
 pub(crate) mod define;
 pub mod sys_reg;
 

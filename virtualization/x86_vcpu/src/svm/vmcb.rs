@@ -2,7 +2,7 @@
 #![allow(non_snake_case)]
 
 use tock_registers::{
-    interfaces::{ReadWriteable, Readable, Writeable},
+    interfaces::{Readable, Writeable},
     register_bitfields, register_structs,
     registers::ReadWrite,
 };
@@ -12,6 +12,77 @@ use super::{
     structs::VmcbFrame,
 };
 use crate::{X86HostOps, X86VcpuResult};
+
+bitflags::bitflags! {
+    /// Independent instruction and event interception controls.
+    struct InterceptVec3: u32 {
+        const INTR = 1 << 0;
+        const NMI = 1 << 1;
+        const SMI = 1 << 2;
+        const INIT = 1 << 3;
+        const VINTR = 1 << 4;
+        const CR0_SEL_WRITE = 1 << 5;
+        const IDTR_READ = 1 << 6;
+        const GDTR_READ = 1 << 7;
+        const LDTR_READ = 1 << 8;
+        const TR_READ = 1 << 9;
+        const IDTR_WRITE = 1 << 10;
+        const GDTR_WRITE = 1 << 11;
+        const LDTR_WRITE = 1 << 12;
+        const TR_WRITE = 1 << 13;
+        const RDTSC = 1 << 14;
+        const RDPMC = 1 << 15;
+        const PUSHF = 1 << 16;
+        const POPF = 1 << 17;
+        const CPUID = 1 << 18;
+        const RSM = 1 << 19;
+        const IRET = 1 << 20;
+        const SWINT = 1 << 21;
+        const INVD = 1 << 22;
+        const PAUSE = 1 << 23;
+        const HLT = 1 << 24;
+        const INVLPG = 1 << 25;
+        const INVLPGA = 1 << 26;
+        const IOIO_PROT = 1 << 27;
+        const MSR_PROT = 1 << 28;
+        const TASK_SWITCH = 1 << 29;
+        const FERR_FREEZE = 1 << 30;
+        const SHUTDOWN = 1 << 31;
+    }
+}
+
+bitflags::bitflags! {
+    /// Independent instruction and event interception controls.
+    struct InterceptVec4: u32 {
+        const VMRUN = 1 << 0;
+        const VMMCALL = 1 << 1;
+        const VMLOAD = 1 << 2;
+        const VMSAVE = 1 << 3;
+        const STGI = 1 << 4;
+        const CLGI = 1 << 5;
+        const SKINIT = 1 << 6;
+        const RDTSCP = 1 << 7;
+        const ICEBP = 1 << 8;
+        const WBINVD = 1 << 9;
+        const MONITOR = 1 << 10;
+        const MWAIT = 1 << 11;
+        const MWAIT_CONDITIONAL = 1 << 12;
+        const XSETBV = 1 << 13;
+        const RDPRU = 1 << 14;
+        const EFER_WRITE_TRAP = 1 << 15;
+    }
+}
+
+bitflags::bitflags! {
+    /// Independent instruction and event interception controls.
+    struct InterceptVec5: u32 {
+        const INVLPGB = 1 << 0;
+        const INVLPGB_ILLEGAL = 1 << 1;
+        const INVPCID = 1 << 2;
+        const MCOMMIT = 1 << 3;
+        const TLBSYNC = 1 << 4;
+    }
+}
 
 register_bitfields![u32,
     pub InterceptCrRw [
@@ -24,23 +95,6 @@ register_bitfields![u32,
     ],
     pub InterceptExceptions [
         DE 0, DB 1, BP 3, OF 4, UD 6, DF 8, GP 13, PF 14, MC 18,
-    ],
-    pub InterceptVec3 [
-        INTR 0, NMI 1, SMI 2, INIT 3, VINTR 4, CR0_SEL_WRITE 5,
-        IDTR_READ 6, GDTR_READ 7, LDTR_READ 8, TR_READ 9,
-        IDTR_WRITE 10, GDTR_WRITE 11, LDTR_WRITE 12, TR_WRITE 13,
-        RDTSC 14, RDPMC 15, PUSHF 16, POPF 17, CPUID 18, RSM 19,
-        IRET 20, SWINT 21, INVD 22, PAUSE 23, HLT 24, INVLPG 25,
-        INVLPGA 26, IOIO_PROT 27, MSR_PROT 28, TASK_SWITCH 29,
-        FERR_FREEZE 30, SHUTDOWN 31,
-    ],
-    pub InterceptVec4 [
-        VMRUN 0, VMMCALL 1, VMLOAD 2, VMSAVE 3, STGI 4, CLGI 5,
-        SKINIT 6, RDTSCP 7, ICEBP 8, WBINVD 9, MONITOR 10, MWAIT 11,
-        MWAIT_CONDITIONAL 12, XSETBV 13, RDPRU 14, EFER_WRITE_TRAP 15,
-    ],
-    pub InterceptVec5 [
-        INVLPGB 0, INVLPGB_ILLEGAL 1, INVPCID 2, MCOMMIT 3, TLBSYNC 4,
     ],
     pub VmcbCleanBits [
         INTERCEPTS 0, IOPM 1, ASID 2, TPR 3, NP 4, CRx 5, DRx 6,
@@ -71,9 +125,9 @@ register_structs![
         (0x0000 => pub intercept_cr: ReadWrite<u32, InterceptCrRw::Register>),
         (0x0004 => pub intercept_dr: ReadWrite<u32, InterceptDrRw::Register>),
         (0x0008 => pub intercept_exceptions: ReadWrite<u32, InterceptExceptions::Register>),
-        (0x000c => pub intercept_vector3: ReadWrite<u32, InterceptVec3::Register>),
-        (0x0010 => pub intercept_vector4: ReadWrite<u32, InterceptVec4::Register>),
-        (0x0014 => pub intercept_vector5: ReadWrite<u32, InterceptVec5::Register>),
+        (0x000c => pub(super) intercept_vector3: ReadWrite<u32>),
+        (0x0010 => pub(super) intercept_vector4: ReadWrite<u32>),
+        (0x0014 => pub(super) intercept_vector5: ReadWrite<u32>),
         (0x0018 => _reserved_0018),
         (0x003c => pub pause_filter_thresh: ReadWrite<u16>),
         (0x003e => pub pause_filter_count: ReadWrite<u16>),
@@ -231,80 +285,78 @@ pub fn set_vmcb_segment(seg: &mut VmcbSegment, selector: u16, attr: u16) {
 }
 
 impl VmcbControlArea {
-    pub fn set_intercept(&mut self, intc: SvmIntercept) {
+    /// Enable or disable one interception without changing other controls.
+    pub fn set_intercept(&mut self, intercept: SvmIntercept, enabled: bool) {
+        let (register, mask) = self.intercept_register(intercept);
+        let bits = register.get();
+        register.set(if enabled { bits | mask } else { bits & !mask });
+    }
+
+    fn intercept_register(&self, intercept: SvmIntercept) -> (&ReadWrite<u32>, u32) {
         use super::definitions::SvmIntercept::*;
-        match intc {
-            INTR => self.intercept_vector3.modify(InterceptVec3::INTR::SET),
-            NMI => self.intercept_vector3.modify(InterceptVec3::NMI::SET),
-            SMI => self.intercept_vector3.modify(InterceptVec3::SMI::SET),
-            INIT => self.intercept_vector3.modify(InterceptVec3::INIT::SET),
-            VINTR => self.intercept_vector3.modify(InterceptVec3::VINTR::SET),
-            CR0_SEL_WRITE => self
-                .intercept_vector3
-                .modify(InterceptVec3::CR0_SEL_WRITE::SET),
-            IDTR_READ => self.intercept_vector3.modify(InterceptVec3::IDTR_READ::SET),
-            GDTR_READ => self.intercept_vector3.modify(InterceptVec3::GDTR_READ::SET),
-            LDTR_READ => self.intercept_vector3.modify(InterceptVec3::LDTR_READ::SET),
-            TR_READ => self.intercept_vector3.modify(InterceptVec3::TR_READ::SET),
-            IDTR_WRITE => self
-                .intercept_vector3
-                .modify(InterceptVec3::IDTR_WRITE::SET),
-            GDTR_WRITE => self
-                .intercept_vector3
-                .modify(InterceptVec3::GDTR_WRITE::SET),
-            LDTR_WRITE => self
-                .intercept_vector3
-                .modify(InterceptVec3::LDTR_WRITE::SET),
-            TR_WRITE => self.intercept_vector3.modify(InterceptVec3::TR_WRITE::SET),
-            RDTSC => self.intercept_vector3.modify(InterceptVec3::RDTSC::SET),
-            RDPMC => self.intercept_vector3.modify(InterceptVec3::RDPMC::SET),
-            PUSHF => self.intercept_vector3.modify(InterceptVec3::PUSHF::SET),
-            POPF => self.intercept_vector3.modify(InterceptVec3::POPF::SET),
-            CPUID => self.intercept_vector3.modify(InterceptVec3::CPUID::SET),
-            RSM => self.intercept_vector3.modify(InterceptVec3::RSM::SET),
-            IRET => self.intercept_vector3.modify(InterceptVec3::IRET::SET),
-            SWINT => self.intercept_vector3.modify(InterceptVec3::SWINT::SET),
-            INVD => self.intercept_vector3.modify(InterceptVec3::INVD::SET),
-            PAUSE => self.intercept_vector3.modify(InterceptVec3::PAUSE::SET),
-            HLT => self.intercept_vector3.modify(InterceptVec3::HLT::SET),
-            INVLPG => self.intercept_vector3.modify(InterceptVec3::INVLPG::SET),
-            INVLPGA => self.intercept_vector3.modify(InterceptVec3::INVLPGA::SET),
-            IOIO_PROT => self.intercept_vector3.modify(InterceptVec3::IOIO_PROT::SET),
-            MSR_PROT => self.intercept_vector3.modify(InterceptVec3::MSR_PROT::SET),
-            TASK_SWITCH => self
-                .intercept_vector3
-                .modify(InterceptVec3::TASK_SWITCH::SET),
-            FERR_FREEZE => self
-                .intercept_vector3
-                .modify(InterceptVec3::FERR_FREEZE::SET),
-            SHUTDOWN => self.intercept_vector3.modify(InterceptVec3::SHUTDOWN::SET),
-            VMRUN => self.intercept_vector4.modify(InterceptVec4::VMRUN::SET),
-            VMMCALL => self.intercept_vector4.modify(InterceptVec4::VMMCALL::SET),
-            VMLOAD => self.intercept_vector4.modify(InterceptVec4::VMLOAD::SET),
-            VMSAVE => self.intercept_vector4.modify(InterceptVec4::VMSAVE::SET),
-            STGI => self.intercept_vector4.modify(InterceptVec4::STGI::SET),
-            CLGI => self.intercept_vector4.modify(InterceptVec4::CLGI::SET),
-            SKINIT => self.intercept_vector4.modify(InterceptVec4::SKINIT::SET),
-            RDTSCP => self.intercept_vector4.modify(InterceptVec4::RDTSCP::SET),
-            ICEBP => self.intercept_vector4.modify(InterceptVec4::ICEBP::SET),
-            WBINVD => self.intercept_vector4.modify(InterceptVec4::WBINVD::SET),
-            MONITOR => self.intercept_vector4.modify(InterceptVec4::MONITOR::SET),
-            MWAIT => self.intercept_vector4.modify(InterceptVec4::MWAIT::SET),
-            MWAIT_CONDITIONAL => self
-                .intercept_vector4
-                .modify(InterceptVec4::MWAIT_CONDITIONAL::SET),
-            XSETBV => self.intercept_vector4.modify(InterceptVec4::XSETBV::SET),
-            RDPRU => self.intercept_vector4.modify(InterceptVec4::RDPRU::SET),
-            EFER_WRITE_TRAP => self
-                .intercept_vector4
-                .modify(InterceptVec4::EFER_WRITE_TRAP::SET),
-            INVLPGB => self.intercept_vector5.modify(InterceptVec5::INVLPGB::SET),
-            INVLPGB_ILLEGAL => self
-                .intercept_vector5
-                .modify(InterceptVec5::INVLPGB_ILLEGAL::SET),
-            INVPCID => self.intercept_vector5.modify(InterceptVec5::INVPCID::SET),
-            MCOMMIT => self.intercept_vector5.modify(InterceptVec5::MCOMMIT::SET),
-            TLBSYNC => self.intercept_vector5.modify(InterceptVec5::TLBSYNC::SET),
+        match intercept {
+            INTR => (&self.intercept_vector3, InterceptVec3::INTR.bits()),
+            NMI => (&self.intercept_vector3, InterceptVec3::NMI.bits()),
+            SMI => (&self.intercept_vector3, InterceptVec3::SMI.bits()),
+            INIT => (&self.intercept_vector3, InterceptVec3::INIT.bits()),
+            VINTR => (&self.intercept_vector3, InterceptVec3::VINTR.bits()),
+            CR0_SEL_WRITE => (&self.intercept_vector3, InterceptVec3::CR0_SEL_WRITE.bits()),
+            IDTR_READ => (&self.intercept_vector3, InterceptVec3::IDTR_READ.bits()),
+            GDTR_READ => (&self.intercept_vector3, InterceptVec3::GDTR_READ.bits()),
+            LDTR_READ => (&self.intercept_vector3, InterceptVec3::LDTR_READ.bits()),
+            TR_READ => (&self.intercept_vector3, InterceptVec3::TR_READ.bits()),
+            IDTR_WRITE => (&self.intercept_vector3, InterceptVec3::IDTR_WRITE.bits()),
+            GDTR_WRITE => (&self.intercept_vector3, InterceptVec3::GDTR_WRITE.bits()),
+            LDTR_WRITE => (&self.intercept_vector3, InterceptVec3::LDTR_WRITE.bits()),
+            TR_WRITE => (&self.intercept_vector3, InterceptVec3::TR_WRITE.bits()),
+            RDTSC => (&self.intercept_vector3, InterceptVec3::RDTSC.bits()),
+            RDPMC => (&self.intercept_vector3, InterceptVec3::RDPMC.bits()),
+            PUSHF => (&self.intercept_vector3, InterceptVec3::PUSHF.bits()),
+            POPF => (&self.intercept_vector3, InterceptVec3::POPF.bits()),
+            CPUID => (&self.intercept_vector3, InterceptVec3::CPUID.bits()),
+            RSM => (&self.intercept_vector3, InterceptVec3::RSM.bits()),
+            IRET => (&self.intercept_vector3, InterceptVec3::IRET.bits()),
+            SWINT => (&self.intercept_vector3, InterceptVec3::SWINT.bits()),
+            INVD => (&self.intercept_vector3, InterceptVec3::INVD.bits()),
+            PAUSE => (&self.intercept_vector3, InterceptVec3::PAUSE.bits()),
+            HLT => (&self.intercept_vector3, InterceptVec3::HLT.bits()),
+            INVLPG => (&self.intercept_vector3, InterceptVec3::INVLPG.bits()),
+            INVLPGA => (&self.intercept_vector3, InterceptVec3::INVLPGA.bits()),
+            IOIO_PROT => (&self.intercept_vector3, InterceptVec3::IOIO_PROT.bits()),
+            MSR_PROT => (&self.intercept_vector3, InterceptVec3::MSR_PROT.bits()),
+            TASK_SWITCH => (&self.intercept_vector3, InterceptVec3::TASK_SWITCH.bits()),
+            FERR_FREEZE => (&self.intercept_vector3, InterceptVec3::FERR_FREEZE.bits()),
+            SHUTDOWN => (&self.intercept_vector3, InterceptVec3::SHUTDOWN.bits()),
+            VMRUN => (&self.intercept_vector4, InterceptVec4::VMRUN.bits()),
+            VMMCALL => (&self.intercept_vector4, InterceptVec4::VMMCALL.bits()),
+            VMLOAD => (&self.intercept_vector4, InterceptVec4::VMLOAD.bits()),
+            VMSAVE => (&self.intercept_vector4, InterceptVec4::VMSAVE.bits()),
+            STGI => (&self.intercept_vector4, InterceptVec4::STGI.bits()),
+            CLGI => (&self.intercept_vector4, InterceptVec4::CLGI.bits()),
+            SKINIT => (&self.intercept_vector4, InterceptVec4::SKINIT.bits()),
+            RDTSCP => (&self.intercept_vector4, InterceptVec4::RDTSCP.bits()),
+            ICEBP => (&self.intercept_vector4, InterceptVec4::ICEBP.bits()),
+            WBINVD => (&self.intercept_vector4, InterceptVec4::WBINVD.bits()),
+            MONITOR => (&self.intercept_vector4, InterceptVec4::MONITOR.bits()),
+            MWAIT => (&self.intercept_vector4, InterceptVec4::MWAIT.bits()),
+            MWAIT_CONDITIONAL => (
+                &self.intercept_vector4,
+                InterceptVec4::MWAIT_CONDITIONAL.bits(),
+            ),
+            XSETBV => (&self.intercept_vector4, InterceptVec4::XSETBV.bits()),
+            RDPRU => (&self.intercept_vector4, InterceptVec4::RDPRU.bits()),
+            EFER_WRITE_TRAP => (
+                &self.intercept_vector4,
+                InterceptVec4::EFER_WRITE_TRAP.bits(),
+            ),
+            INVLPGB => (&self.intercept_vector5, InterceptVec5::INVLPGB.bits()),
+            INVLPGB_ILLEGAL => (
+                &self.intercept_vector5,
+                InterceptVec5::INVLPGB_ILLEGAL.bits(),
+            ),
+            INVPCID => (&self.intercept_vector5, InterceptVec5::INVPCID.bits()),
+            MCOMMIT => (&self.intercept_vector5, InterceptVec5::MCOMMIT.bits()),
+            TLBSYNC => (&self.intercept_vector5, InterceptVec5::TLBSYNC.bits()),
         }
     }
 }
@@ -321,6 +373,36 @@ pub struct SvmExitInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn intercept_updates_preserve_other_vectors_and_reserved_bits() {
+        // Every field in the hardware image accepts zero; no references or
+        // nonzero-only values are present in the VMCB control area.
+        let mut control: VmcbControlArea = unsafe { core::mem::zeroed() };
+        control.intercept_vector4.set(1 << 31);
+        for (intercept, vector, mask) in [
+            (SvmIntercept::INTR, 3, 1),
+            (SvmIntercept::SHUTDOWN, 3, 1 << 31),
+            (SvmIntercept::VMRUN, 4, 1),
+            (SvmIntercept::EFER_WRITE_TRAP, 4, 1 << 15),
+            (SvmIntercept::INVLPGB, 5, 1),
+            (SvmIntercept::TLBSYNC, 5, 1 << 4),
+        ] {
+            control.set_intercept(intercept, true);
+            let words = [
+                control.intercept_vector3.get(),
+                control.intercept_vector4.get(),
+                control.intercept_vector5.get(),
+            ];
+            let mut expected = [0, 1 << 31, 0];
+            expected[vector - 3] |= mask;
+            assert_eq!(words, expected);
+            control.set_intercept(intercept, false);
+            assert_eq!(control.intercept_vector3.get(), 0);
+            assert_eq!(control.intercept_vector4.get(), 1 << 31);
+            assert_eq!(control.intercept_vector5.get(), 0);
+        }
+    }
 
     #[test]
     fn vmcb_size_check() {

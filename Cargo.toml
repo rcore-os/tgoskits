@@ -164,7 +164,7 @@ ax-percpu = { version = "0.4", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4", path = "components/percpu/percpu_macros" }
 ax-plat = { version = "0.14", path = "platforms/ax-plat" }
 ax-plat-macros = { version = "0.3", path = "platforms/ax-plat-macros" }
-ax-posix-api = { version = "0.6", path = "os/arceos/api/arceos_posix_api" }
+ax-posix-api = { version = "0.6.1", path = "os/arceos/api/arceos_posix_api" }
 ax-riscv-plic = { version = "0.4", path = "drivers/intc/riscv_plic" }
 ax-runtime = { version = "0.12", path = "os/arceos/modules/axruntime" }
 ax-std = { version = "0.6", path = "os/arceos/ulib/axstd", default-features = false }
@@ -176,7 +176,7 @@ axtest-macros = { version = "0.5", path = "components/axtest/axtest_macros" }
 xcover = { version = "0.1.3", default-features = false, features = ["alloc"] }
 axaddrspace = { version = "0.6", path = "virtualization/axaddrspace" }
 axbacktrace = { version = "0.4", path = "components/axbacktrace" }
-axbuild = { version = "0.6", path = "scripts/axbuild" }
+axbuild = { version = "0.6.1", path = "scripts/axbuild" }
 axdevice = { version = "0.7", path = "virtualization/axdevice" }
 axdevice_base = { version = "0.7", path = "virtualization/axdevice_base" }
 axfs-ng-vfs = { version = "0.7", path = "fs/axfs-ng-vfs" }
@@ -199,7 +199,7 @@ fxmac_rs = { version = "0.7", path = "drivers/net/fxmac_rs" }
 impl-simple-traits = { version = "0.3", path = "components/crate_interface/test_crates/impl-simple-traits" }
 impl-weak-partial = { version = "0.3", path = "components/crate_interface/test_crates/impl-weak-partial" }
 impl-weak-traits = { version = "0.3", path = "components/crate_interface/test_crates/impl-weak-traits" }
-arm-gic-driver = { version = "0.18", path = "drivers/intc/arm-gic-driver" }
+arm-gic-driver = { version = "0.18.1", path = "drivers/intc/arm-gic-driver" }
 loongarch-intc-driver = { version = "0.1", path = "drivers/intc/loongarch-intc-driver" }
 x86-apic-driver = { version = "0.2", path = "drivers/intc/x86-apic-driver" }
 eth-intel = { version = "0.2", path = "drivers/net/eth-intel" }
@@ -256,7 +256,7 @@ starry-kernel = { version = "0.9", path = "os/StarryOS/kernel" }
 starry-signal = { version = "0.9", path = "os/StarryOS/signal" }
 starry-vm = { version = "0.6", path = "os/StarryOS/vm" }
 httpboot-protocol = { version = "0.1.0", default-features = false }
-x86_vcpu = { version = "0.7", path = "virtualization/x86_vcpu", default-features = false }
+x86_vcpu = { version = "0.7.1", path = "virtualization/x86_vcpu", default-features = false }
 x86_vlapic = { version = "0.5", path = "virtualization/x86_vlapic" }
 page-table-generic = { version = "0.9", path = "memory/page-table-generic" }
 someboot = { version = "0.5", path = "platforms/someboot" }
