@@ -98,22 +98,26 @@ async fn download_file_does_not_retry_permanent_http_status() {
 }
 
 #[tokio::test]
-async fn verified_download_rejects_existing_file_with_unknown_digest() {
-    let server = TestServer::start_with_failures(
-        b"replacement".to_vec(),
-        vec![StatusCode::SERVICE_UNAVAILABLE],
-    )
-    .await;
+async fn verified_download_rejects_archive_when_registry_digest_mismatches() {
+    let server = TestServer::start_with_range_support(b"replacement".to_vec(), false).await;
     let workspace = tempdir().unwrap();
     let output_path = workspace.path().join("rootfs.img.tar.gz");
     fs::write(&output_path, b"untrusted-local-archive").unwrap();
 
     let client = http_client().unwrap();
-    let _ = download_file_verified_sha256(&client, &server.url(), &output_path, "expected")
-        .await
-        .unwrap_err();
+    let err = download_file_verified_sha256(
+        &client,
+        &server.url(),
+        &output_path,
+        "0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .await
+    .unwrap_err()
+    .to_string();
 
-    assert!(server.request_count() >= 1);
+    assert!(err.contains("downloaded file checksum mismatch"));
+    assert!(err.contains("95713e9cbdd1dfcb2d4080c2537f418d43ca0da25f0d7d6631f4f7c97b89dc47"));
+    assert_eq!(server.request_count(), 1);
     assert!(!output_path.exists());
 }
 
