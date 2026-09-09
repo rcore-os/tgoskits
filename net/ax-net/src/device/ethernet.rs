@@ -20,7 +20,7 @@
 //! and does not inspect TCP/UDP socket state. Route selection is performed by
 //! the router before Ethernet sees the packet.
 
-use alloc::{boxed::Box, string::String, vec, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, string::String, vec, vec::Vec};
 
 use hashbrown::HashMap;
 use smoltcp::{
@@ -59,6 +59,9 @@ pub struct EthernetDevice {
     ip: Option<Ipv4Cidr>,
 
     pending_packets: PacketBuffer<'static, IpAddress>,
+    /// Replies owned by the protocol executor until TX space is available.
+    /// A full data queue must not prevent a peer from resolving our address.
+    pending_arp_replies: VecDeque<(EthernetAddress, ArpRepr)>,
     /// Individual L2 frame lengths of packets transmitted on a side path
     /// during ARP resolution (inside `recv()`/`process_arp()`). Drained by
     /// the protocol executor via [`Device::drain_deferred_tx`].
@@ -115,6 +118,7 @@ impl EthernetDevice {
             ip,
 
             pending_packets,
+            pending_arp_replies: VecDeque::new(),
             deferred_tx_frame_lens: Vec::new(),
             deferred_rx_frame_lens: Vec::new(),
             deferred_tx_errors: 0,
@@ -134,6 +138,9 @@ impl EthernetDevice {
         destination: EthernetAddress,
         packet: &[u8],
     ) -> NetDeviceResult<usize> {
+        if !self.flush_arp_replies() {
+            return Err(NetDeviceError::Again);
+        }
         let protocol = match IpVersion::of_packet(packet) {
             Ok(IpVersion::Ipv4) => EthernetProtocol::Ipv4,
             Ok(IpVersion::Ipv6) => EthernetProtocol::Ipv6,
@@ -214,6 +221,27 @@ impl EthernetDevice {
             &mut fill,
         )?;
         Ok(wire_len)
+    }
+
+    fn flush_arp_replies(&mut self) -> bool {
+        while let Some((destination, reply)) = self.pending_arp_replies.front().copied() {
+            match Self::send_to(
+                &mut *self.inner,
+                destination,
+                reply.buffer_len(),
+                |buffer| reply.emit(&mut ArpPacket::new_unchecked(buffer)),
+                EthernetProtocol::Arp,
+            ) {
+                Ok(frame_len) => self.deferred_tx_frame_lens.push(frame_len),
+                Err(NetDeviceError::Again) => return false,
+                Err(error) => {
+                    warn!("{}: failed to send ARP reply: {error:?}", self.name);
+                    self.deferred_tx_errors += 1;
+                }
+            }
+            self.pending_arp_replies.pop_front();
+        }
+        true
     }
 
     /// Parses and handles a single Ethernet frame.
@@ -401,23 +429,17 @@ impl EthernetDevice {
                     target_protocol_addr: source_protocol_addr,
                 };
 
-                let arp_frame_len = Self::send_to(
-                    &mut *self.inner,
-                    source_hardware_addr,
-                    response.buffer_len(),
-                    |buf| response.emit(&mut ArpPacket::new_unchecked(buf)),
-                    EthernetProtocol::Arp,
-                );
-                // ARP replies are successfully transmitted L2 frames — record
-                // their length so the protocol executor can count them in TX stats.
-                match arp_frame_len {
-                    Ok(frame_len) => self.deferred_tx_frame_lens.push(frame_len),
-                    Err(NetDeviceError::Again) => self.deferred_tx_drops += 1,
-                    Err(err) => {
-                        warn!("{}: failed to send ARP reply: {err:?}", self.name);
-                        self.deferred_tx_errors += 1;
+                // Coalesce repeated probes while blocked, and bound storage
+                // independently of the number of peers sending requests.
+                let reply = (source_hardware_addr, response);
+                if !self.pending_arp_replies.contains(&reply) {
+                    if self.pending_arp_replies.len() < ETHERNET_MAX_PENDING_PACKETS {
+                        self.pending_arp_replies.push_back(reply);
+                    } else {
+                        self.deferred_tx_drops += 1;
                     }
                 }
+                self.flush_arp_replies();
             }
 
             // Drain every entry in the pending queue and either send it (if
@@ -514,6 +536,9 @@ impl Device for EthernetDevice {
         timestamp: Instant,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> usize {
+        // TX completions already wake the protocol executor. Retry control
+        // traffic on that poll even if no new RX packet or IP send arrives.
+        self.flush_arp_replies();
         loop {
             let rx_buf = match self.inner.receive() {
                 Ok(buf) => buf,
@@ -540,6 +565,7 @@ impl Device for EthernetDevice {
     }
 
     fn poll_owned_rx(&mut self, timestamp: Instant) -> DeviceRxPoll {
+        self.flush_arp_replies();
         loop {
             let frame = match self.inner.receive_owned() {
                 Ok(Some(frame)) => frame,
@@ -605,6 +631,7 @@ impl Device for EthernetDevice {
         deliver: &mut dyn FnMut(&[u8]) -> bool,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> Option<usize> {
+        self.flush_arp_replies();
         loop {
             let hardware_address = self.hardware_address();
             let mut side_frame = None;
@@ -775,6 +802,8 @@ impl Device for EthernetDevice {
         self.ip = addr;
         self.neighbors.clear();
         self.pending_neighbors.clear();
+        self.deferred_tx_drops += self.pending_arp_replies.len() as u64;
+        self.pending_arp_replies.clear();
         // The deferred TX/RX frame-length accumulators are deliberately left
         // intact. They hold L2 frames that were already successfully
         // transmitted to or received from the device before this call; those
@@ -882,6 +911,8 @@ mod ethernet_counter_tests {
     struct TxProbe {
         requests: SpinLock<Vec<(Vec<u8>, TxSubmitOptions)>>,
         failure: SpinLock<Option<NetDeviceError>>,
+        rx_frames: SpinLock<VecDeque<Vec<u8>>>,
+        blocked: SpinLock<bool>,
     }
 
     struct RecordingFramePort {
@@ -903,6 +934,9 @@ mod ethernet_counter_tests {
         }
 
         fn transmit(&mut self, frame: &ProtocolEthernetFrame) -> NetDeviceResult {
+            if *self.probe.blocked.lock_irqsave() {
+                return Err(NetDeviceError::Again);
+            }
             if let Some(error) = self.probe.failure.lock_irqsave().take() {
                 return Err(error);
             }
@@ -919,6 +953,9 @@ mod ethernet_counter_tests {
             options: TxSubmitOptions,
             fill: &mut dyn FnMut(&mut [u8]),
         ) -> NetDeviceResult {
+            if *self.probe.blocked.lock_irqsave() {
+                return Err(NetDeviceError::Again);
+            }
             if let Some(error) = self.probe.failure.lock_irqsave().take() {
                 return Err(error);
             }
@@ -929,7 +966,12 @@ mod ethernet_counter_tests {
         }
 
         fn receive(&mut self) -> NetDeviceResult<ProtocolEthernetFrame> {
-            Err(NetDeviceError::Again)
+            self.probe
+                .rx_frames
+                .lock_irqsave()
+                .pop_front()
+                .map(|packet| ProtocolEthernetFrame::copy_from_slice(&packet).unwrap())
+                .ok_or(NetDeviceError::Again)
         }
     }
 
@@ -1148,6 +1190,132 @@ mod ethernet_counter_tests {
         assert_eq!(tx_lens.len(), 1); // ARP reply TX
         // ARP reply over Ethernet: 14 (eth hdr) + 28 (ARP) = 42 → padded to 60.
         assert_eq!(tx_lens[0], 60);
+    }
+
+    #[test]
+    fn arp_reply_survives_tx_backpressure_and_precedes_bulk_ip() {
+        let (mut device, probe) = make_recording_device(TxChecksumCapabilities::NONE);
+        probe.rx_frames.lock_irqsave().push_back(build_arp_frame(
+            ArpOperation::Request,
+            REMOTE_MAC,
+            DEV_MAC,
+            REMOTE_IP,
+            DEV_IP,
+            EMPTY_MAC.0,
+        ));
+        *probe.failure.lock_irqsave() = Some(NetDeviceError::Again);
+        device.recv(
+            InterfaceId::new(1),
+            &mut test_packet_buffer(),
+            Instant::ZERO,
+            &mut |_| {},
+        );
+
+        let packet = raw_tcp_packet();
+        device
+            .try_send(IpAddress::Ipv4(REMOTE_IP), &packet, Instant::ZERO)
+            .unwrap();
+
+        let requests = probe.requests.lock_irqsave();
+        assert_eq!(requests.len(), 2, "queue pressure lost the ARP reply");
+        let reply = EthernetFrame::new_checked(&requests[0].0).unwrap();
+        assert_eq!(reply.ethertype(), EthernetProtocol::Arp);
+        assert_eq!(reply.dst_addr(), EthernetAddress(REMOTE_MAC));
+        assert_eq!(
+            ArpRepr::parse(&ArpPacket::new_checked(reply.payload()).unwrap()).unwrap(),
+            ArpRepr::EthernetIpv4 {
+                operation: ArpOperation::Reply,
+                source_hardware_addr: EthernetAddress(DEV_MAC),
+                source_protocol_addr: DEV_IP,
+                target_hardware_addr: EthernetAddress(REMOTE_MAC),
+                target_protocol_addr: REMOTE_IP,
+            }
+        );
+        assert_eq!(requests[0].1.notify, TxNotify::Immediate);
+        assert_eq!(&requests[1].0[14..], &packet);
+        drop(requests);
+        assert_eq!(device.drain_deferred_tx(), vec![ETH_ZLEN]);
+        assert_eq!(device.drain_deferred_tx_drops(), 0);
+    }
+
+    #[test]
+    fn arp_reply_retries_on_tx_completion_poll_without_new_rx() {
+        for receive_path in 0..3 {
+            let (mut device, probe) = make_recording_device(TxChecksumCapabilities::NONE);
+            *probe.blocked.lock_irqsave() = true;
+            for _ in 0..3 {
+                probe.rx_frames.lock_irqsave().push_back(build_arp_frame(
+                    ArpOperation::Request,
+                    REMOTE_MAC,
+                    DEV_MAC,
+                    REMOTE_IP,
+                    DEV_IP,
+                    EMPTY_MAC.0,
+                ));
+            }
+            let mut buffer = test_packet_buffer();
+            device.recv(InterfaceId::new(1), &mut buffer, Instant::ZERO, &mut |_| {});
+            *probe.blocked.lock_irqsave() = false;
+
+            match receive_path {
+                0 => {
+                    device.recv(InterfaceId::new(1), &mut buffer, Instant::ZERO, &mut |_| {});
+                }
+                1 => {
+                    let _ = device.poll_owned_rx(Instant::ZERO);
+                }
+                _ => {
+                    let _ = device.recv_direct(Instant::ZERO, &mut |_| false, &mut |_| {});
+                }
+            }
+
+            let requests = probe.requests.lock_irqsave();
+            assert_eq!(
+                requests.len(),
+                1,
+                "poll path {receive_path} lost or duplicated the reply"
+            );
+            let frame = EthernetFrame::new_checked(&requests[0].0).unwrap();
+            assert_eq!(frame.ethertype(), EthernetProtocol::Arp);
+            assert_eq!(frame.dst_addr(), EthernetAddress(REMOTE_MAC));
+            drop(requests);
+            assert_eq!(device.drain_deferred_tx(), vec![ETH_ZLEN]);
+            assert_eq!(device.drain_deferred_tx_drops(), 0);
+        }
+    }
+
+    #[test]
+    fn pending_arp_replies_are_bounded_and_cancelled_on_address_change() {
+        let (mut device, probe) = make_recording_device(TxChecksumCapabilities::NONE);
+        *probe.blocked.lock_irqsave() = true;
+        for index in 0..=ETHERNET_MAX_PENDING_PACKETS {
+            probe.rx_frames.lock_irqsave().push_back(build_arp_frame(
+                ArpOperation::Request,
+                REMOTE_MAC,
+                DEV_MAC,
+                Ipv4Address::from((0x0a00_0101 + index as u32).to_be_bytes()),
+                DEV_IP,
+                EMPTY_MAC.0,
+            ));
+        }
+        device.recv(
+            InterfaceId::new(1),
+            &mut test_packet_buffer(),
+            Instant::ZERO,
+            &mut |_| {},
+        );
+        assert_eq!(device.drain_deferred_tx_drops(), 1);
+        device.set_ipv4_addr(None);
+        *probe.blocked.lock_irqsave() = false;
+        let _ = device.poll_owned_rx(Instant::ZERO);
+        assert!(
+            probe.requests.lock_irqsave().is_empty(),
+            "sent replies for a removed address"
+        );
+        assert_eq!(
+            device.drain_deferred_tx_drops(),
+            ETHERNET_MAX_PENDING_PACKETS as u64
+        );
     }
 
     #[test]

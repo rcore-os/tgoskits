@@ -365,10 +365,12 @@ impl AicDevice {
                 }
                 self.lifecycle.startup = None;
                 self.lifecycle.state = AicState::Ready;
-                self.data
-                    .events
-                    .push_back(AicEvent::Started { mac_address });
-                AicAction::Event(self.data.events.pop_front().unwrap())
+                let _ = self.data.push_event(AicEvent::Started { mac_address });
+                AicAction::Event(
+                    self.data
+                        .pop_event()
+                        .expect("startup always publishes a Started event"),
+                )
             }
         }
     }

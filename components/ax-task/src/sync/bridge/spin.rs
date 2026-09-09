@@ -5,17 +5,17 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize},
 };
 
+#[cfg(feature = "lockdep")]
+use {
+    crate::sync::context::IrqSaveGuard, crate::sync::lockdep::LockdepMapView,
+    crate::sync::spin::lockdep, crate::sync::spin::lockdep::LockdepAcquireRequest,
+};
+
 use super::{
     context::{ContextOperations, ContextState, context_enter, context_exit},
     lockdep::LockClass,
 };
 use crate::sync::spin::atomic;
-#[cfg(feature = "lockdep")]
-use crate::sync::{
-    context::IrqSaveGuard,
-    lockdep::LockdepMapView,
-    spin::lockdep::{self, LockdepAcquireRequest},
-};
 
 const LOCK_MODE_READ: u8 = 1;
 const LOCK_MODE_WRITE: u8 = 2;

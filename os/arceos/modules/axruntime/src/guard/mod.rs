@@ -52,7 +52,7 @@ pub(crate) fn release_bootstrap_preemption() {
         ax_hal::asm::irqs_enabled(),
         "multitask bootstrap must publish IRQ delivery before releasing PREEMPT_DISABLED"
     );
-    ax_task::schedule_current_cpu()
+    ax_task::runtime::switch::schedule_current_cpu()
         .unwrap_or_else(|error| panic!("bootstrap scheduler entry failed: {error}"));
 }
 
@@ -62,10 +62,10 @@ pub(crate) fn release_bootstrap_preemption() {
 /// immediately. Its architecture return instruction restores the saved user
 /// IRQ state, matching Linux's final IRQ-off `exit_to_user_mode_loop()` check.
 #[cfg(feature = "uspace")]
-pub(crate) fn prepare_user_return() -> Result<(), ax_task::TaskError> {
+pub(crate) fn prepare_user_return() -> Result<(), ax_task::thread::TaskError> {
     loop {
         if !ax_hal::asm::irqs_enabled() {
-            return Err(ax_task::TaskError::UnsafeContext);
+            return Err(ax_task::thread::TaskError::UnsafeContext);
         }
         ax_hal::asm::disable_irqs();
         let pending = with_current_cpu_pin(|pin| {
@@ -75,9 +75,9 @@ pub(crate) fn prepare_user_return() -> Result<(), ax_task::TaskError> {
                 || current_preempt_depth_pinned(pin) != 0
                 || in_hard_irq_on(pin)
             {
-                return Err(ax_task::TaskError::UnsafeContext);
+                return Err(ax_task::thread::TaskError::UnsafeContext);
             }
-            crate::task::current_cpu_needs_reschedule_pinned(pin)
+            crate::thread::current_cpu_needs_reschedule_pinned(pin)
         });
         let pending = match pending {
             Ok(pending) => pending,
@@ -96,13 +96,13 @@ pub(crate) fn prepare_user_return() -> Result<(), ax_task::TaskError> {
         ax_hal::asm::enable_irqs();
         // The ordinary task entry consumes both request classes. Recheck with
         // IRQs disabled after it returns, like exit_to_user_mode_loop().
-        ax_task::schedule_current_cpu()?;
+        ax_task::runtime::switch::schedule_current_cpu()?;
     }
 }
 
 /// Validates a public scheduler entry before it can publish task state.
 pub(crate) fn validate_schedule_context(
-    _origin: ax_task::runtime::RuntimeScheduleOrigin,
+    _origin: ax_task::runtime::switch::RuntimeScheduleOrigin,
 ) -> ax_task::runtime::RuntimeStatus {
     use ax_task::runtime::RuntimeStatus;
 
@@ -198,11 +198,12 @@ pub(crate) fn exit_irq(owner: &'static str) {
                 // query observes the current CpuRemote's sticky request. The
                 // closure is reached only at the final schedulable IRQ boundary;
                 // nested irqsave guards leave the decision to preempt-enable.
-                let needs_reschedule =
-                    unsafe { ax_task::current_needs_immediate_scheduler_work_pinned() }
-                        .unwrap_or_else(|error| {
-                            panic!("IRQ guard exit lost the current scheduler owner: {error:?}")
-                        });
+                let needs_reschedule = unsafe {
+                    ax_task::runtime::cpu::current_needs_immediate_scheduler_work_pinned()
+                }
+                .unwrap_or_else(|error| {
+                    panic!("IRQ guard exit lost the current scheduler owner: {error:?}")
+                });
                 if needs_reschedule {
                     publish_preemption_pending_pinned(pin, true);
                 }
@@ -218,7 +219,9 @@ pub(crate) fn exit_irq(owner: &'static str) {
     if must_schedule {
         // SAFETY: the final task-context IRQ guard and raw IRQ exclusion stay
         // live until scheduler-frame entry atomically consumes that depth.
-        if let Err(error) = unsafe { ax_task::schedule_current_cpu_from_irq_guard_exit() } {
+        if let Err(error) =
+            unsafe { ax_task::runtime::switch::schedule_current_cpu_from_irq_guard_exit() }
+        {
             panic!("IRQ-guard-exit scheduler entry failed: {error}");
         }
         return;
@@ -260,11 +263,11 @@ pub(crate) fn finish_initial_context_switch() {
     let needs_reschedule = {
         // SAFETY: the transferred scheduler baton and raw IRQ exclusion retain
         // this CPU until its initial switch tail has been consumed.
-        unsafe { ax_task::current_needs_immediate_scheduler_work_pinned() }
+        unsafe { ax_task::runtime::cpu::current_needs_immediate_scheduler_work_pinned() }
             .unwrap_or_else(|error| panic!("initial scheduler tail lost its owner: {error:?}"))
     };
     let _task_context_safe = exit_scheduler_frame_guard_inner(
-        ax_task::runtime::RuntimeSchedulerReturn::Task,
+        ax_task::runtime::switch::RuntimeSchedulerReturn::Task,
         needs_reschedule,
         "initial scheduler frame",
     );
@@ -308,7 +311,7 @@ fn exit_lock_preempt(origin: PreemptExitOrigin, token: cpu_local::PreemptionToke
     pending.release();
 
     if must_schedule {
-        use ax_task::runtime::RuntimeSchedulerEntry;
+        use ax_task::runtime::switch::RuntimeSchedulerEntry;
 
         let entry = match origin {
             PreemptExitOrigin::Task => RuntimeSchedulerEntry::PreemptExit,
@@ -316,7 +319,9 @@ fn exit_lock_preempt(origin: PreemptExitOrigin, token: cpu_local::PreemptionToke
         };
         // SAFETY: the preclaimed CPU-local baton and raw IRQ exclusion replace
         // the exact final preemption depth without exposing a preemptible gap.
-        if let Err(error) = unsafe { ax_task::schedule_current_cpu_from_preempt_exit(entry) } {
+        if let Err(error) =
+            unsafe { ax_task::runtime::switch::schedule_current_cpu_from_preempt_exit(entry) }
+        {
             panic!("preemption-exit scheduler entry failed: {error}");
         }
         assert_eq!(
@@ -428,10 +433,10 @@ fn irq_guard_exit_needs_schedule(
         && needs_reschedule()
 }
 pub(crate) fn enter_scheduler_frame_guard(
-    _origin: ax_task::runtime::RuntimeScheduleOrigin,
-    entry: ax_task::runtime::RuntimeSchedulerEntry,
-) -> ax_task::runtime::RuntimeSchedulerFrameEnterResult {
-    use ax_task::runtime::{RuntimeSchedulerEntry, RuntimeSchedulerFrameEnterResult};
+    _origin: ax_task::runtime::switch::RuntimeScheduleOrigin,
+    entry: ax_task::runtime::switch::RuntimeSchedulerEntry,
+) -> ax_task::runtime::switch::RuntimeSchedulerFrameEnterResult {
+    use ax_task::runtime::switch::{RuntimeSchedulerEntry, RuntimeSchedulerFrameEnterResult};
 
     let irqs_enabled = ax_hal::asm::irqs_enabled();
     if entry == RuntimeSchedulerEntry::IrqReturnContinuation {
@@ -439,11 +444,11 @@ pub(crate) fn enter_scheduler_frame_guard(
             return RuntimeSchedulerFrameEnterResult::failure();
         }
         #[cfg(feature = "qperf-metrics")]
-        crate::task::record_irq_return_scheduler_continuation();
+        crate::thread::record_irq_return_scheduler_continuation();
         if !enter_irq_return_continuation_scheduler() {
             return RuntimeSchedulerFrameEnterResult::failure();
         }
-        return with_current_cpu_pin(crate::task::scheduler_frame_capabilities);
+        return with_current_cpu_pin(crate::thread::scheduler_frame_capabilities);
     }
     let raw_state_valid = match entry {
         RuntimeSchedulerEntry::Task => irqs_enabled,
@@ -487,7 +492,7 @@ fn enter_irq_return_continuation_scheduler() -> bool {
     core::hint::spin_loop();
     ax_hal::asm::disable_irqs();
     #[cfg(feature = "qperf-metrics")]
-    crate::task::record_irq_return_scheduler_window();
+    crate::thread::record_irq_return_scheduler_window();
 
     let cpu_local::PreemptionExit::Pending(pending) = cpu_local::finish_preemption(token) else {
         panic!("IRQ-return continuation lost its pending scheduler request");
@@ -500,9 +505,9 @@ fn enter_irq_return_continuation_scheduler() -> bool {
 }
 
 fn claim_scheduler_cpu_state(
-    entry: ax_task::runtime::RuntimeSchedulerEntry,
-) -> Option<ax_task::runtime::RuntimeSchedulerFrameEnterResult> {
-    use ax_task::runtime::RuntimeSchedulerEntry;
+    entry: ax_task::runtime::switch::RuntimeSchedulerEntry,
+) -> Option<ax_task::runtime::switch::RuntimeSchedulerFrameEnterResult> {
+    use ax_task::runtime::switch::RuntimeSchedulerEntry;
 
     with_current_cpu_pin(|pin| {
         if in_hard_irq_on(pin) {
@@ -517,21 +522,21 @@ fn claim_scheduler_cpu_state(
             RuntimeSchedulerEntry::IrqReturnContinuation => unreachable!(),
             RuntimeSchedulerEntry::IrqGuardExit => state.claim_irq_exit_scheduler(preempt_depth),
         });
-        claimed.then(|| crate::task::scheduler_frame_capabilities(pin))
+        claimed.then(|| crate::thread::scheduler_frame_capabilities(pin))
     })
 }
 pub(crate) fn exit_scheduler_frame_guard(
-    return_to: ax_task::runtime::RuntimeSchedulerReturn,
+    return_to: ax_task::runtime::switch::RuntimeSchedulerReturn,
     needs_reschedule: bool,
 ) -> bool {
     exit_scheduler_frame_guard_inner(return_to, needs_reschedule, "resumed scheduler frame")
 }
 fn exit_scheduler_frame_guard_inner(
-    return_to: ax_task::runtime::RuntimeSchedulerReturn,
+    return_to: ax_task::runtime::switch::RuntimeSchedulerReturn,
     needs_reschedule: bool,
     owner: &'static str,
 ) -> bool {
-    use ax_task::runtime::RuntimeSchedulerReturn;
+    use ax_task::runtime::switch::RuntimeSchedulerReturn;
 
     assert!(
         !ax_hal::asm::irqs_enabled(),

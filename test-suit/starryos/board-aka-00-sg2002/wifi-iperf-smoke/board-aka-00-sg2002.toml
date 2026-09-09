@@ -3,25 +3,26 @@ dtb_file = "os/StarryOS/configs/board/aka-00-sg2002.dtb"
 kernel_load_addr = "0x80200000"
 fit_load_addr = "0x82200000"
 bootm_addr = "0x82200000"
-session_files = ["iperf-smoke.sh"]
 shell_prefix = "root@starry:"
 shell_init_cmd = '''
-script=/tmp/iperf-smoke.sh
-download=/tmp/iperf-smoke.sh.part
+marker=STARRY_AKA_WIFI_IPERF_SMOKE
 ready=0
-rm -f "$script" "$download"
 attempt=1
 while [ "$attempt" -le 30 ]; do
   if command -v curl >/dev/null 2>&1; then
-    curl --connect-timeout 2 --max-time 5 -fsSL '${sessionFile:iperf-smoke.sh}' -o "$download" || true
+    curl --connect-timeout 2 --max-time 5 -fsSL '${sessionFile:share/iperf2.tar.gz}' -o /tmp/iperf2.tar.gz && ready=1
   elif command -v wget >/dev/null 2>&1; then
-    wget -T 5 -O "$download" '${sessionFile:iperf-smoke.sh}' || true
+    wget -T 5 -O /tmp/iperf2.tar.gz '${sessionFile:share/iperf2.tar.gz}' && ready=1
   fi
-  if [ -s "$download" ] && mv "$download" "$script" && chmod +x "$script"; then ready=1; break; fi
+  if [ "$ready" = 1 ]; then break; fi
   sleep 1
   attempt=$((attempt + 1))
 done
-if [ "$ready" = 1 ]; then "$script" '${boardServerIp}'; else echo STARRY_AKA_WIFI_IPERF_SMOKE_FAILED; fi
+if [ "$ready" = 1 ] && mkdir -p /tmp/iperf2 && tar -xzf /tmp/iperf2.tar.gz -C /tmp/iperf2; then
+  PATH="/tmp/iperf2:$PATH" /tmp/iperf2/board-smoke.sh '${boardServerIp}'
+else
+  echo "${marker}_FAILED"
+fi
 '''
 success_regex = ['(?m)^STARRY_AKA_WIFI_IPERF_SMOKE_PASSED\s*$']
 fail_regex = [
@@ -29,7 +30,7 @@ fail_regex = [
   '(?i)segmentation fault|SIGSEGV',
   '(?m)^STARRY_AKA_WIFI_DHCP_FAILED\s*$',
   '(?m)^STARRY_AKA_WIFI_IPERF_SMOKE_FAILED\s*$',
-  '(?i)(iperf3|curl|wget|chmod|ip|grep|sh): .*not found',
+  '(?i)(iperf|curl|wget|chmod|ip|grep|sh): .*not found',
   '(?i)WPA2 .*failed|AIC .*failed|DHCP .*failed',
 ]
 timeout = 600

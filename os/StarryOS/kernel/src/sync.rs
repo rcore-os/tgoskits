@@ -6,21 +6,21 @@
 use alloc::vec::Vec;
 
 pub(crate) use ax_fs_ng::os::sync::SleepMutex as FsMutex;
-pub(crate) use ax_runtime::sync::{
-    InterruptibleMutexExt, LockdepMutexExt, Mutex, PiMutex, PiMutexGuard, PreemptGuard,
+pub(crate) use ax_runtime::task::sync::{
+    InterruptibleMutexExt, LockdepMutexExt, Mutex, MutexGuard, PreemptGuard,
     PreemptIrqSaveGuard as NoPreemptIrqSave, RawIrqSaveMutex, SpinLock, SpinLockGuard, SpinRwLock,
 };
 
 /// An IRQ-save spin mutex for state reachable from interrupt context.
 #[repr(transparent)]
-pub(crate) struct IrqMutex<T: ?Sized>(ax_runtime::sync::SpinLock<T>);
+pub(crate) struct IrqMutex<T: ?Sized>(ax_runtime::task::sync::SpinLock<T>);
 
-pub(crate) type IrqMutexGuard<'a, T> = ax_runtime::sync::SpinLockIrqSaveGuard<'a, T>;
+pub(crate) type IrqMutexGuard<'a, T> = ax_runtime::task::sync::SpinLockIrqSaveGuard<'a, T>;
 
 impl<T> IrqMutex<T> {
     #[track_caller]
     pub(crate) const fn new(value: T) -> Self {
-        Self(ax_runtime::sync::SpinLock::new(value))
+        Self(ax_runtime::task::sync::SpinLock::new(value))
     }
 
     #[track_caller]

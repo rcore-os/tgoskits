@@ -1,0 +1,16 @@
+[package]
+name = "trait-ffi"
+version = "0.3.0"
+edition.workspace = true
+authors = ["周睿 <zrufo747@outlook.com>"]
+license = "MIT"
+repository.workspace = true
+description = "Statically linked cross-crate Rust interfaces"
+
+[dependencies]
+trait-ffi-macros.workspace = true
+
+[dev-dependencies]
+trait-ffi-test-interface = { path = "../test_crates/interface" }
+trait-ffi-test-provider = { path = "../test_crates/provider" }
+trybuild = "1.0"

@@ -8,8 +8,8 @@ use core::{
 
 use ax_driver::register::DriverRegister;
 use axklib::{
-    BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId, Klib, KlibError,
-    KlibResult, PhysAddr, VirtAddr, impl_trait,
+    BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId, KlibError,
+    KlibResult, PhysAddr, VirtAddr, klib::impl_trait,
 };
 use fdt_edit::{Fdt, Node, Phandle, Property};
 use rdrive::{

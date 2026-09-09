@@ -31,7 +31,7 @@ use crate::{
     StarryError, StarryResult,
     mm::{VmMutPtr, VmPtr, vm_read_slice},
     pseudofs::DeviceOps,
-    sync::PiMutex,
+    sync::Mutex,
 };
 
 const MAX_STREAM_BYTES: usize = 16 * 1024 * 1024;
@@ -255,14 +255,14 @@ impl VdecState {
 }
 
 pub(super) struct CviVdec {
-    state: PiMutex<VdecState>,
+    state: Mutex<VdecState>,
     jpu: Arc<CviJpu>,
 }
 
 impl CviVdec {
     pub fn new(jpu: Arc<CviJpu>) -> Self {
         Self {
-            state: PiMutex::new(VdecState::default()),
+            state: Mutex::new(VdecState::default()),
             jpu,
         }
     }

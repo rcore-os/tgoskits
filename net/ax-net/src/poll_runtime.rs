@@ -5,7 +5,7 @@ use core::{
     time::Duration,
 };
 
-use ax_task::WaitQueue;
+use ax_task::sync::WaitQueue;
 
 /// Bounds consecutive protocol polls across immediately runnable generations.
 /// The limits follow Linux's softirq restart/time budget; neither a pending

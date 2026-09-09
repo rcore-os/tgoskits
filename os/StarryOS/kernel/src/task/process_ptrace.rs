@@ -9,7 +9,7 @@ use axpoll_set::PollSet;
 use starry_signal::{SignalInfo, Signo};
 
 use super::{PidIdentity, PidSnapshot, PidView, ProcessData, TidNumber};
-use crate::sync::PiMutex;
+use crate::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SyscallTraceState {
@@ -129,14 +129,14 @@ struct PtracePendingEvent {
 /// exact thread.
 struct PtracePendingEvents {
     present: AtomicBool,
-    events: PiMutex<BTreeMap<TidNumber, PtracePendingEvent>>,
+    events: Mutex<BTreeMap<TidNumber, PtracePendingEvent>>,
 }
 
 impl PtracePendingEvents {
     fn new() -> Self {
         Self {
             present: AtomicBool::new(false),
-            events: PiMutex::new(BTreeMap::new()),
+            events: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -184,41 +184,41 @@ impl PtracePendingEvents {
 
 /// Ptrace state owned by one process generation.
 pub(super) struct ProcessPtraceState {
-    tracer_identity: PiMutex<Option<Arc<PidIdentity>>>,
+    tracer_identity: Mutex<Option<Arc<PidIdentity>>>,
     traceme: AtomicBool,
-    stops: PiMutex<BTreeMap<TidNumber, PtraceStopRecord>>,
+    stops: Mutex<BTreeMap<TidNumber, PtraceStopRecord>>,
     selected_tid: AtomicU32,
     stop_event: Arc<PollSet>,
-    resume_signo: PiMutex<BTreeMap<TidNumber, u32>>,
-    resume_signal_bypass: PiMutex<BTreeMap<TidNumber, u32>>,
-    exec_stop_pending: PiMutex<Option<PidSnapshot>>,
+    resume_signo: Mutex<BTreeMap<TidNumber, u32>>,
+    resume_signal_bypass: Mutex<BTreeMap<TidNumber, u32>>,
+    exec_stop_pending: Mutex<Option<PidSnapshot>>,
     attach_mode: AtomicU8,
     singlestep_tid: AtomicU32,
-    syscall_trace: PiMutex<BTreeMap<TidNumber, SyscallTraceState>>,
+    syscall_trace: Mutex<BTreeMap<TidNumber, SyscallTraceState>>,
     options: AtomicUsize,
     pending_events: PtracePendingEvents,
-    ss_saved_insn: PiMutex<BTreeMap<TidNumber, (usize, usize)>>,
-    stop_fp_data: PiMutex<BTreeMap<TidNumber, PtraceStopFpData>>,
+    ss_saved_insn: Mutex<BTreeMap<TidNumber, (usize, usize)>>,
+    stop_fp_data: Mutex<BTreeMap<TidNumber, PtraceStopFpData>>,
 }
 
 impl ProcessPtraceState {
     pub(super) fn new() -> Self {
         Self {
-            tracer_identity: PiMutex::new(None),
+            tracer_identity: Mutex::new(None),
             traceme: AtomicBool::new(false),
-            stops: PiMutex::new(BTreeMap::new()),
+            stops: Mutex::new(BTreeMap::new()),
             selected_tid: AtomicU32::new(0),
             stop_event: Arc::default(),
-            resume_signo: PiMutex::new(BTreeMap::new()),
-            resume_signal_bypass: PiMutex::new(BTreeMap::new()),
-            exec_stop_pending: PiMutex::new(None),
+            resume_signo: Mutex::new(BTreeMap::new()),
+            resume_signal_bypass: Mutex::new(BTreeMap::new()),
+            exec_stop_pending: Mutex::new(None),
             attach_mode: AtomicU8::new(PtraceAttachMode::None as u8),
             singlestep_tid: AtomicU32::new(0),
-            syscall_trace: PiMutex::new(BTreeMap::new()),
+            syscall_trace: Mutex::new(BTreeMap::new()),
             options: AtomicUsize::new(0),
             pending_events: PtracePendingEvents::new(),
-            ss_saved_insn: PiMutex::new(BTreeMap::new()),
-            stop_fp_data: PiMutex::new(BTreeMap::new()),
+            ss_saved_insn: Mutex::new(BTreeMap::new()),
+            stop_fp_data: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -274,7 +274,7 @@ fn inactive_ptrace_pending_event_gate_is_nonblocking_for_test() -> bool {
     let state = ProcessPtraceState::new();
     let tid = TidNumber::try_from(1).unwrap();
     // Both inactive queries must complete while this task owns the real map
-    // lock. A regression takes the same nonrecursive PiMutex again instead of
+    // lock. A regression takes the same nonrecursive Mutex again instead of
     // relying on another CPU to run within an arbitrary number of yields.
     let _pending_events = state.pending_events.events.lock();
     !state.has_pending_event_for(tid) && state.pending_events.is_empty()
@@ -815,7 +815,7 @@ impl ProcessData {
 
     #[cfg(target_arch = "x86_64")]
     pub fn save_current_fp_for_ptrace(&self, tid: TidNumber) {
-        let state = ax_runtime::task::capture_current_user_fp_state()
+        let state = ax_runtime::thread::capture_current_user_fp_state()
             .expect("ptrace stop must snapshot FPU state from ordinary current task context");
         self.ptrace
             .stop_fp_data
@@ -888,7 +888,7 @@ impl ProcessData {
         let Some(PtraceStopFpData(state)) = self.ptrace.stop_fp_data.lock().remove(&tid) else {
             return;
         };
-        ax_runtime::task::replace_current_user_fp_state(state)
+        ax_runtime::thread::replace_current_user_fp_state(state)
             .expect("ptrace resume must restore FPU state in ordinary current task context");
     }
 
@@ -904,11 +904,11 @@ impl ProcessData {
 #[cfg(all(test, not(axtest)))]
 mod tests {
     use super::ProcessPtraceState;
-    use crate::sync::PiMutex;
+    use crate::sync::Mutex;
 
     #[test]
     fn ptrace_heap_registries_use_sleepable_pi_locks() {
-        fn assert_pi_mutex<T>(_: &PiMutex<T>) {}
+        fn assert_pi_mutex<T>(_: &Mutex<T>) {}
         fn assert_ptrace_lock_types(state: &ProcessPtraceState) {
             assert_pi_mutex(&state.stops);
             assert_pi_mutex(&state.resume_signo);

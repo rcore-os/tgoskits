@@ -65,7 +65,7 @@ pub(crate) fn notify_wall_clock_changed() {
     unsafe { WALL_CLOCK_CHANGE_EVENT.wake(IoEvents::IN) };
 }
 
-struct ClockChangeWake(scheduler::ThreadWakeHandle);
+struct ClockChangeWake(scheduler::thread::ThreadWakeHandle);
 
 impl Wake for ClockChangeWake {
     fn wake(self: Arc<Self>) {

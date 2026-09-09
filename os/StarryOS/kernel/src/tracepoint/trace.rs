@@ -3,10 +3,10 @@ use core::sync::atomic::Ordering;
 use ax_tracepoint::TraceCmdLineCacheSnapshot;
 use axfs_ng_vfs::VfsResult;
 
-use crate::{pseudofs::DirectRwFsFileOps, sync::PiMutex};
+use crate::{pseudofs::DirectRwFsFileOps, sync::Mutex};
 
 /// File representing the trace content.
-pub struct TraceFile(PiMutex<TraceFileState>);
+pub struct TraceFile(Mutex<TraceFileState>);
 
 struct TraceFileState {
     snapshot: Option<super::IdentityTraceSnapshot>,
@@ -30,7 +30,7 @@ impl TraceFileState {
 impl TraceFile {
     /// Creates a new `TraceFile` instance.
     pub const fn new() -> Self {
-        TraceFile(PiMutex::new(TraceFileState::new()))
+        TraceFile(Mutex::new(TraceFileState::new()))
     }
 }
 
@@ -69,7 +69,7 @@ impl DirectRwFsFileOps for TraceFile {
 }
 
 /// File representing the trace command line cache.
-pub struct TraceCmdLineFile(PiMutex<TraceCmdLineFileState>);
+pub struct TraceCmdLineFile(Mutex<TraceCmdLineFileState>);
 
 struct TraceCmdLineFileState {
     snapshot: Option<TraceCmdLineCacheSnapshot>,
@@ -93,7 +93,7 @@ impl TraceCmdLineFileState {
 impl TraceCmdLineFile {
     /// Creates a new `TraceCmdLineFile` instance.
     pub const fn new() -> Self {
-        TraceCmdLineFile(PiMutex::new(TraceCmdLineFileState::new()))
+        TraceCmdLineFile(Mutex::new(TraceCmdLineFileState::new()))
     }
 }
 

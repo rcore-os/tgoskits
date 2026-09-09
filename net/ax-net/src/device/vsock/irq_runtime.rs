@@ -4,7 +4,10 @@ use alloc::{boxed::Box, format, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use ax_sync::Mutex;
-use ax_task::{CpuId, CpuSet, IrqWaitCell, IrqWorkerWaiter};
+use ax_task::{
+    sched::{CpuId, CpuSet},
+    sync::irq::{IrqWaitCell, IrqWorkerWaiter},
+};
 use rdif_vsock::{
     VsockConnId, VsockError, VsockEvent, VsockHardIrqResult, VsockPollIrqControl, VsockRearmResult,
 };
@@ -43,7 +46,7 @@ pub enum VsockRuntimeError {
     WorkerSpawn {
         cpu: usize,
         #[source]
-        source: ax_task::TaskError,
+        source: ax_task::thread::TaskError,
     },
     #[error("vsock IRQ worker initialization failed")]
     WorkerStartup,
@@ -54,7 +57,7 @@ pub enum VsockRuntimeError {
 /// Live device, IRQ registration, and fixed worker ownership.
 pub(super) struct VsockIrqRuntime {
     registration: Option<Box<dyn PinnedNetIrqRegistration>>,
-    worker: Option<ax_task::KernelThreadHandle>,
+    worker: Option<ax_task::thread::KernelThreadHandle>,
     control: Arc<VsockWorkerControl>,
     device: Arc<Mutex<VsockDevice>>,
 }
@@ -86,7 +89,7 @@ impl VsockIrqRuntime {
         }
         let worker_control = Arc::clone(&control);
         let worker_device = Arc::clone(&device);
-        let worker = ax_task::ThreadBuilder::new(format!("vsock-irq-cpu{owner_cpu}"))
+        let worker = ax_task::thread::ThreadBuilder::new(format!("vsock-irq-cpu{owner_cpu}"))
             .affinity(affinity)
             .spawn(move || vsock_worker_main(worker_device, irq_control, worker_control))
             .map_err(|source| VsockRuntimeError::WorkerSpawn {
@@ -237,7 +240,7 @@ fn vsock_worker_main(
     mut irq_control: Box<dyn VsockPollIrqControl>,
     control: Arc<VsockWorkerControl>,
 ) {
-    let current = ax_task::current_thread_handle()
+    let current = ax_task::thread::current::current_thread_handle()
         .unwrap_or_else(|error| panic!("vsock IRQ worker has no scheduler thread: {error}"));
     let waiter = IrqWorkerWaiter::new(current.wake_handle());
     if ax_hal::percpu::this_cpu_id() != control.owner_cpu {
@@ -341,7 +344,7 @@ fn release_registration(registration: Box<dyn PinnedNetIrqRegistration>) -> bool
 
 fn stop_worker(
     control: &VsockWorkerControl,
-    worker: ax_task::KernelThreadHandle,
+    worker: ax_task::thread::KernelThreadHandle,
     irq_synchronized: bool,
 ) {
     control.command.store(

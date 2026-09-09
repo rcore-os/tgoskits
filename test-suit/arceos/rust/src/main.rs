@@ -4,16 +4,18 @@
 #[cfg(feature = "ax-std")]
 extern crate ax_std as std;
 
-#[cfg(feature = "task-runtime")]
-use std::os::arceos::task::{
-    CpuSet, SchedulePolicy, ThreadId, current_thread_id, set_current_thread_affinity,
-    set_thread_policy, thread_affinity, thread_policy,
-};
 #[cfg(feature = "ax-std")]
 use std::{println, time::Instant};
 
 #[cfg(feature = "ax-std")]
 use arceos_test_suit::selected_tests;
+#[cfg(feature = "task-runtime")]
+use {
+    std::os::arceos::task::sched::CpuSet, std::os::arceos::task::sched::SchedulePolicy,
+    std::os::arceos::task::thread::ThreadId,
+    std::os::arceos::task::thread::current::current_thread_id,
+    std::os::arceos::task::thread::current::set_current_thread_affinity,
+};
 
 #[cfg(feature = "task-runtime")]
 struct RunnerTaskState {
@@ -26,8 +28,12 @@ struct RunnerTaskState {
 impl RunnerTaskState {
     fn capture() -> Self {
         let thread = current_thread_id().expect("test runner must have a task identity");
-        let affinity = thread_affinity(thread).expect("test runner must have CPU affinity");
-        let policy = thread_policy(thread).expect("test runner must have a scheduling policy");
+        let affinity = std::os::arceos::task::thread::ThreadHandle::lookup(thread)
+            .and_then(|thread| thread.affinity())
+            .expect("test runner must have CPU affinity");
+        let policy = std::os::arceos::task::thread::ThreadHandle::lookup(thread)
+            .map(|thread| thread.base_policy())
+            .expect("test runner must have a scheduling policy");
         Self {
             thread,
             affinity,
@@ -41,21 +47,30 @@ impl RunnerTaskState {
             Ok(self.thread),
             "an ArceOS test must not replace the shared runner task"
         );
-        if thread_policy(self.thread) != Ok(self.policy) {
-            set_thread_policy(self.thread, self.policy)
+        if std::os::arceos::task::thread::ThreadHandle::lookup(self.thread)
+            .map(|thread| thread.base_policy())
+            != Ok(self.policy)
+        {
+            std::os::arceos::task::thread::ThreadHandle::lookup(self.thread)
+                .and_then(|thread| thread.set_policy(self.policy))
                 .expect("failed to restore the test runner scheduling policy");
         }
-        if thread_affinity(self.thread) != Ok(self.affinity.clone()) {
+        if std::os::arceos::task::thread::ThreadHandle::lookup(self.thread)
+            .and_then(|thread| thread.affinity())
+            != Ok(self.affinity.clone())
+        {
             set_current_thread_affinity(self.affinity.clone())
                 .expect("failed to restore the test runner CPU affinity");
         }
         assert_eq!(
-            thread_affinity(self.thread),
+            std::os::arceos::task::thread::ThreadHandle::lookup(self.thread)
+                .and_then(|thread| thread.affinity()),
             Ok(self.affinity.clone()),
             "an ArceOS test must not leak runner CPU affinity"
         );
         assert_eq!(
-            thread_policy(self.thread),
+            std::os::arceos::task::thread::ThreadHandle::lookup(self.thread)
+                .map(|thread| thread.base_policy()),
             Ok(self.policy),
             "an ArceOS test must not leak runner scheduling policy"
         );

@@ -1,0 +1,5 @@
+error: expected an interface method path such as Clock::ticks
+ --> tests/ui/call_path.rs:1:40
+  |
+1 | fn call() { trait_ffi::call_interface!(Interface); }
+  |                                        ^^^^^^^^^

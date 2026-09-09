@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 use linux_raw_sys::general::RLIM_NLIMITS;
 
 use super::{ProcessData, Rlimit, Rlimits};
-use crate::sync::{PiMutex, PiMutexGuard};
+use crate::sync::{Mutex, MutexGuard};
 
 struct AtomicRlimit {
     current: AtomicU64,
@@ -36,7 +36,7 @@ impl AtomicRlimit {
 }
 
 struct ProcessResourceLimits {
-    writer: PiMutex<()>,
+    writer: Mutex<()>,
     entries: [AtomicRlimit; RLIM_NLIMITS as usize],
 }
 
@@ -44,7 +44,7 @@ impl ProcessResourceLimits {
     fn new() -> Self {
         let defaults = Rlimits::default();
         Self {
-            writer: PiMutex::new(()),
+            writer: Mutex::new(()),
             entries: core::array::from_fn(|index| AtomicRlimit::new(defaults[index as u32])),
         }
     }
@@ -69,7 +69,7 @@ impl ProcessResourceLimits {
 
 pub(crate) struct ResourceLimitUpdate<'a> {
     entry: &'a AtomicRlimit,
-    _guard: PiMutexGuard<'a, ()>,
+    _guard: MutexGuard<'a, ()>,
 }
 
 impl ResourceLimitUpdate<'_> {
@@ -200,11 +200,11 @@ mod axtests {
 #[cfg(all(test, not(axtest)))]
 mod tests {
     use super::ProcessPolicyState;
-    use crate::sync::PiMutex;
+    use crate::sync::Mutex;
 
     #[test]
     fn resource_limits_use_a_sleepable_pi_lock() {
-        fn assert_pi_mutex<T>(_: &PiMutex<T>) {}
+        fn assert_pi_mutex<T>(_: &Mutex<T>) {}
         fn assert_policy_lock_types(policy: &ProcessPolicyState) {
             assert_pi_mutex(&policy.rlimits.writer);
         }

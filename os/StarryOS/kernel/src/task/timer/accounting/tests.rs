@@ -6,7 +6,7 @@ mod tests {
     #[test]
     fn running_policy_update_waits_for_realtime_state_writer() {
         use std::{
-            sync::{mpsc, Arc},
+            sync::{Arc, mpsc},
             thread,
             time::Duration as StdDuration,
         };
@@ -32,10 +32,7 @@ mod tests {
         );
 
         drop(execution_writer);
-        assert_eq!(
-            completed_rx.recv_timeout(StdDuration::from_secs(1)),
-            Ok(())
-        );
+        assert_eq!(completed_rx.recv_timeout(StdDuration::from_secs(1)), Ok(()));
         assert_eq!(
             accounting.unpublished_delta(10).runtime_ns,
             10,
@@ -48,28 +45,25 @@ mod tests {
     fn preemption_and_yield_preserve_rttime_but_block_resets_it() {
         let accounting = CpuTimeAccounting::new();
         accounting.scheduler_switch_in_at(true, 0);
-        accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 500_000);
-        assert_eq!(
-            accounting.snapshot(500_000).realtime_continuous_ns,
-            500_000
-        );
+        accounting.scheduler_switch_out_at(scheduler::thread::SwitchReason::Preempted, 500_000);
+        assert_eq!(accounting.snapshot(500_000).realtime_continuous_ns, 500_000);
 
         accounting.scheduler_switch_in_at(true, 500_000);
-        accounting.scheduler_switch_out_at(scheduler::SwitchReason::Yield, 1_000_000);
+        accounting.scheduler_switch_out_at(scheduler::thread::SwitchReason::Yield, 1_000_000);
         assert_eq!(
             accounting.snapshot(1_000_000).realtime_continuous_ns,
             1_000_000
         );
 
         accounting.scheduler_switch_in_at(true, 1_000_000);
-        accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 1_500_000);
+        accounting.scheduler_switch_out_at(scheduler::thread::SwitchReason::Preempted, 1_500_000);
         assert_eq!(
             accounting.snapshot(1_500_000).realtime_continuous_ns,
             1_500_000
         );
 
         accounting.scheduler_switch_in_at(true, 1_500_000);
-        accounting.scheduler_switch_out_at(scheduler::SwitchReason::Blocked, 2_000_000);
+        accounting.scheduler_switch_out_at(scheduler::thread::SwitchReason::Blocked, 2_000_000);
         let blocked = accounting.snapshot(2_000_000);
         assert_eq!(blocked.realtime_continuous_ns, 0);
         assert_eq!(blocked.realtime_reset_generation, 1);
@@ -80,7 +74,7 @@ mod tests {
         let accounting = CpuTimeAccounting::new();
         accounting.scheduler_switch_in_at(false, 0);
 
-        accounting.scheduler_switch_out_at(scheduler::SwitchReason::Blocked, 10);
+        accounting.scheduler_switch_out_at(scheduler::thread::SwitchReason::Blocked, 10);
 
         assert_eq!(
             accounting.unpublished_delta(10),

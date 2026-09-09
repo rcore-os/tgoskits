@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use ax_runtime::{hal::time::TimeValue, task::SchedulerTickGate};
+use ax_runtime::{hal::time::TimeValue, task::runtime::service::SchedulerTickGate};
 use linux_raw_sys::general::RLIMIT_RTTIME;
 
 use super::{
@@ -11,7 +11,7 @@ use super::{
     PosixTimerTable, ProcessCpuTimeAccounting, ProcessCpuTimeSnapshot, ProcessData,
     ProcessTimerManager, SetITimerOutcome, get_task_by_number,
 };
-use crate::sync::{IrqMutex, PiMutex};
+use crate::sync::{IrqMutex, Mutex};
 
 const CPU_INTERVAL_TIMER_MASK: u8 =
     (1 << ITimerType::Virtual as usize) | (1 << ITimerType::Prof as usize);
@@ -20,7 +20,7 @@ const CPU_INTERVAL_TIMER_MASK: u8 =
 pub(super) struct ProcessAccountingState {
     children_cpu_time: IrqMutex<(TimeValue, TimeValue)>,
     process_cpu_time: ProcessCpuTimeAccounting,
-    interval_timers: PiMutex<ProcessTimerManager>,
+    interval_timers: Mutex<ProcessTimerManager>,
     active_interval_timers: AtomicU8,
     scheduler_tick_gate: Arc<SchedulerTickGate>,
     posix_timers: Arc<PosixTimerTable>,
@@ -31,7 +31,7 @@ impl ProcessAccountingState {
         Self {
             children_cpu_time: IrqMutex::new((TimeValue::ZERO, TimeValue::ZERO)),
             process_cpu_time: ProcessCpuTimeAccounting::new(),
-            interval_timers: PiMutex::new(ProcessTimerManager::new()),
+            interval_timers: Mutex::new(ProcessTimerManager::new()),
             active_interval_timers: AtomicU8::new(0),
             scheduler_tick_gate: Arc::new(SchedulerTickGate::new()),
             posix_timers: Arc::new(PosixTimerTable::default()),

@@ -6,7 +6,7 @@ use core::mem;
 use kernel_elf_parser::AuxEntry;
 
 use super::ProcessData;
-use crate::sync::PiMutex;
+use crate::sync::Mutex;
 
 /// Metadata supplied when a process image is created.
 pub struct ProcessImage {
@@ -40,32 +40,32 @@ impl ProcessImage {
 
 /// Independently synchronized image metadata shared by a thread group.
 pub(super) struct ProcessImageState {
-    exe_path: PiMutex<Arc<String>>,
-    cmdline: PiMutex<Arc<Vec<String>>>,
-    envp: PiMutex<Arc<Vec<String>>>,
-    auxv: PiMutex<Arc<Vec<AuxEntry>>>,
-    root_path: PiMutex<Arc<String>>,
-    cwd_path: PiMutex<Arc<String>>,
+    exe_path: Mutex<Arc<String>>,
+    cmdline: Mutex<Arc<Vec<String>>>,
+    envp: Mutex<Arc<Vec<String>>>,
+    auxv: Mutex<Arc<Vec<AuxEntry>>>,
+    root_path: Mutex<Arc<String>>,
+    cwd_path: Mutex<Arc<String>>,
 }
 
 impl ProcessImageState {
     pub(super) fn new(image: ProcessImage) -> Self {
         Self {
-            exe_path: PiMutex::new(Arc::new(image.exe_path)),
-            cmdline: PiMutex::new(image.cmdline),
-            envp: PiMutex::new(image.envp),
-            auxv: PiMutex::new(Arc::new(image.auxv)),
-            root_path: PiMutex::new(Arc::new(image.root_path)),
-            cwd_path: PiMutex::new(Arc::new(image.cwd_path)),
+            exe_path: Mutex::new(Arc::new(image.exe_path)),
+            cmdline: Mutex::new(image.cmdline),
+            envp: Mutex::new(image.envp),
+            auxv: Mutex::new(Arc::new(image.auxv)),
+            root_path: Mutex::new(Arc::new(image.root_path)),
+            cwd_path: Mutex::new(Arc::new(image.cwd_path)),
         }
     }
 }
 
-fn snapshot<T>(slot: &PiMutex<Arc<T>>) -> Arc<T> {
+fn snapshot<T>(slot: &Mutex<Arc<T>>) -> Arc<T> {
     slot.lock().clone()
 }
 
-fn replace_snapshot<T>(slot: &PiMutex<Arc<T>>, replacement: Arc<T>) {
+fn replace_snapshot<T>(slot: &Mutex<Arc<T>>, replacement: Arc<T>) {
     let previous = {
         let mut current = slot.lock();
         mem::replace(&mut *current, replacement)
@@ -127,11 +127,11 @@ impl ProcessData {
 #[cfg(all(test, not(axtest)))]
 mod tests {
     use super::ProcessImageState;
-    use crate::sync::PiMutex;
+    use crate::sync::Mutex;
 
     #[test]
     fn process_image_heap_fields_use_sleepable_pi_locks() {
-        fn assert_pi_mutex<T>(_: &PiMutex<T>) {}
+        fn assert_pi_mutex<T>(_: &Mutex<T>) {}
         fn assert_image_lock_types(image: &ProcessImageState) {
             assert_pi_mutex(&image.exe_path);
             assert_pi_mutex(&image.cmdline);

@@ -34,8 +34,15 @@ use core::{
 
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::PhysAddr;
-use ax_std::os::arceos::task::{
-    self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, ThreadId, WaitQueue,
+use ax_std::os::arceos::{
+    task as scheduler,
+    task::{
+        sync::{
+            WaitQueue,
+            irq::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration},
+        },
+        thread::ThreadId,
+    },
 };
 use sg2002_tpu::{
     ion::IonBuffer,
@@ -257,7 +264,7 @@ fn tpu_wait_irq(timeout_us: u64) -> bool {
     let hw = unsafe { &*hw };
     // IrqWaitCell 的 pending/register handshake 覆盖 IRQ-before-register；
     // WaitQueue 的 park generation 再覆盖 wake-before-park。
-    let current = scheduler::current_thread_handle()
+    let current = scheduler::thread::current::current_thread_handle()
         .unwrap_or_else(|error| panic!("TPU worker has no scheduler thread: {error}"));
     let waiter = TPU_IRQ_WAITER.get_or_init(|| create_tpu_irq_waiter(&current));
     assert_eq!(
@@ -272,7 +279,7 @@ fn tpu_wait_irq(timeout_us: u64) -> bool {
                 .wait_timeout_until(Duration::from_micros(timeout_us), || {
                     !token.is_attached() || hw.irq_pending()
                 });
-            scheduler::quiesce_irq_wait(token)
+            scheduler::sync::irq::quiesce_irq_wait(token)
                 .unwrap_or_else(|error| panic!("TPU IRQ waiter could not quiesce: {error}"));
             hw.irq_pending()
         }
@@ -285,7 +292,7 @@ struct TpuIrqWaiter {
     registration: IrqWaitRegistration,
 }
 
-fn create_tpu_irq_waiter(current: &scheduler::ThreadHandle) -> TpuIrqWaiter {
+fn create_tpu_irq_waiter(current: &scheduler::thread::ThreadHandle) -> TpuIrqWaiter {
     TpuIrqWaiter {
         owner: current.id(),
         registration: IrqWaitRegistration::new(current.wake_handle()),

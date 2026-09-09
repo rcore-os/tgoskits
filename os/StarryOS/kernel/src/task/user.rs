@@ -4,7 +4,7 @@ use ax_runtime::{
         trap::PageFaultFlags,
         uspace::{ExceptionKind, ReturnReason, UserContext},
     },
-    task::UserExecutionContext,
+    thread::UserExecutionContext,
 };
 use starry_signal::{FPE_INTDIV, SEGV_ACCERR, SEGV_MAPERR, SignalInfo, Signo};
 use syscalls::Sysno;

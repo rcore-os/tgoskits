@@ -25,7 +25,7 @@ use crate::{
     StarryError, StarryResult,
     file::{FileLike, IoDst, IoSrc},
     mm::VmMutPtr,
-    sync::PiMutex,
+    sync::Mutex,
     task::{
         current_user_task,
         future::{block_on_user, poll_io},
@@ -50,18 +50,18 @@ struct InotifyState {
 
 pub struct Inotify {
     non_blocking: AtomicBool,
-    state: PiMutex<InotifyState>,
+    state: Mutex<InotifyState>,
     poll_rx: PollSet,
 }
 
-static INOTIFY_INSTANCES: LazyLock<PiMutex<Vec<Weak<Inotify>>>> =
-    LazyLock::new(|| PiMutex::new(Vec::new()));
+static INOTIFY_INSTANCES: LazyLock<Mutex<Vec<Weak<Inotify>>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 impl Inotify {
     pub fn new() -> Arc<Self> {
         let inotify = Arc::new(Self {
             non_blocking: AtomicBool::new(false),
-            state: PiMutex::new(InotifyState {
+            state: Mutex::new(InotifyState {
                 next_wd: 1,
                 ..InotifyState::default()
             }),

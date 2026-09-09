@@ -164,38 +164,47 @@ fn test_wake_before_admission() {
     use std::os::arceos::{
         guard::PreemptGuard,
         modules::ax_runtime::task::{
-            self as scheduler, CpuId, CpuSet, CurrentParkStart, ThreadState,
+            sched::{CpuId, CpuSet},
+            thread::{ThreadState, current::CurrentParkStart},
         },
     };
 
-    let owner = scheduler::current_thread_id().unwrap();
-    let old_affinity = scheduler::thread_affinity(owner).unwrap();
-    let mut cpu0 = CpuSet::empty(scheduler::cpu_topology_len().unwrap());
+    let owner = std::os::arceos::task::thread::current::current_thread_id().unwrap();
+    let old_affinity = std::os::arceos::task::thread::ThreadHandle::lookup(owner)
+        .and_then(|thread| thread.affinity())
+        .unwrap();
+    let mut cpu0 = CpuSet::empty(std::os::arceos::task::sched::cpu_topology_len().unwrap());
     assert!(cpu0.insert(CpuId::new(0)));
-    scheduler::set_current_thread_affinity(cpu0.clone()).unwrap();
-    let prepared = scheduler::prepare_raw(
+    std::os::arceos::task::thread::current::set_current_thread_affinity(cpu0.clone()).unwrap();
+    let prepared = std::os::arceos::thread::prepare_raw(
         || {
-            let CurrentParkStart::Prepared(park) = scheduler::begin_current_park().unwrap() else {
+            let CurrentParkStart::Prepared(park) =
+                std::os::arceos::task::thread::current::begin_current_park().unwrap()
+            else {
                 panic!("a New-state wake must not notify the first admitted park");
             };
             park.cancel().unwrap();
             // Admission must clear only earlier wakes: a Running-state wake
             // still interrupts the next park through the public facade.
-            scheduler::current_thread_handle()
+            std::os::arceos::task::thread::current::current_thread_handle()
                 .unwrap()
                 .wake_handle()
                 .wake();
             assert!(matches!(
-                scheduler::begin_current_park().unwrap(),
+                std::os::arceos::task::thread::current::begin_current_park().unwrap(),
                 CurrentParkStart::Notified
             ));
         },
         "admission-wake".into(),
-        scheduler::default_task_stack_size(),
+        std::os::arceos::thread::default_task_stack_size(),
     )
     .unwrap();
     let handle = prepared.thread_handle();
-    scheduler::set_thread_affinity(handle.id(), cpu0).unwrap();
+    std::os::arceos::task::thread::ThreadHandle::lookup(handle.id())
+        .and_then(|thread| thread.request_affinity(cpu0))
+        .unwrap()
+        .wait()
+        .unwrap();
     assert_eq!(handle.state(), ThreadState::New);
     handle.wake_handle().wake();
     assert_eq!(handle.state(), ThreadState::New);
@@ -206,7 +215,7 @@ fn test_wake_before_admission() {
         prepared.publish().unwrap()
     };
     drop(handle);
-    assert_eq!(scheduler::join_thread(published).unwrap(), 0);
-    scheduler::set_current_thread_affinity(old_affinity).unwrap();
+    assert_eq!(std::os::arceos::thread::join_thread(published).unwrap(), 0);
+    std::os::arceos::task::thread::current::set_current_thread_affinity(old_affinity).unwrap();
     println!("task_wait_queue: pre-admission wake isolation OK");
 }

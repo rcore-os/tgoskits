@@ -167,7 +167,7 @@ impl SerialWorker {
             if drain_waiting_for_hardware {
                 yield_after_worker_budget();
             } else if self.shared.polling {
-                crate::task::sleep(Duration::from_millis(1));
+                crate::task::thread::current::sleep(Duration::from_millis(1));
             } else {
                 self.shared.bridge.wait();
             }
@@ -810,7 +810,7 @@ const fn worker_budget_requires_yield(budget_exhausted: bool) -> bool {
 }
 
 fn yield_after_worker_budget() {
-    crate::task::yield_current_cpu().unwrap_or_else(|error| {
+    crate::task::thread::current::yield_current_cpu().unwrap_or_else(|error| {
         panic!("serial worker budget yield must run in schedulable task context: {error:?}")
     });
 }

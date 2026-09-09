@@ -96,7 +96,7 @@ use crate::{
     file::{FileLike, Kstat, add_file_like, get_file_like},
     mm::{VmBytes, VmBytesMut},
     pseudofs::DeviceMmap,
-    sync::{IrqMutex, PiMutex},
+    sync::{IrqMutex, Mutex},
 };
 
 /// Monotonic source of per-event `perf` ids (`PERF_EVENT_IOC_ID`,
@@ -222,7 +222,7 @@ pub struct PerfReadValues {
 /// Software BPF output has a separate non-sleeping capability containing only
 /// the bounded ring-write state needed by trace/IRQ producers.
 pub struct PerfEvent {
-    event: PiMutex<Box<dyn PerfEventOps>>,
+    event: Mutex<Box<dyn PerfEventOps>>,
     /// Sleepable control plane, kept separate from IRQ/BPF output access.
     control: Option<Arc<dyn PerfControl>>,
     /// Bounded non-sleeping output endpoint for software BPF events.
@@ -267,7 +267,7 @@ impl PerfEvent {
             .downcast_mut::<BpfPerfEventWrapper>()
             .map(|event| event.poll_handle());
         Ok(PerfEvent {
-            event: PiMutex::new(event),
+            event: Mutex::new(event),
             control,
             irq_output,
             bpf_poll,
@@ -709,7 +709,7 @@ fn control_callback_runs_preemptible_for_test() -> bool {
     impl PerfEventOps for YieldingControl {
         fn enable(&mut self) -> crate::StarryResult<()> {
             self.preemptible.store(
-                ax_runtime::task::yield_current_cpu().is_ok(),
+                ax_runtime::task::thread::current::yield_current_cpu().is_ok(),
                 Ordering::Release,
             );
             Ok(())

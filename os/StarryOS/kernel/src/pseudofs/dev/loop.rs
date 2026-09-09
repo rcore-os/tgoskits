@@ -22,7 +22,7 @@ use crate::{
     file::{FileLike, get_file_like},
     mm::{UserPtr, VmMutPtr, VmPtr},
     pseudofs::{DeviceMmap, DeviceOps},
-    sync::PiMutex,
+    sync::Mutex,
 };
 
 fn vm_error_to_vfs(error: starry_vm::VmError) -> VfsError {
@@ -38,13 +38,13 @@ pub struct LoopDevice {
     number: u32,
     dev_id: DeviceId,
     /// Underlying file for the loop device, if any.
-    pub file: PiMutex<Option<FileBackend>>,
+    pub file: Mutex<Option<FileBackend>>,
     /// Read-only flag for the loop device.
     pub ro: AtomicBool,
     /// Read-ahead size for the loop device, in bytes.
     pub ra: AtomicU32,
     /// Backing file name for the loop device.
-    file_name: PiMutex<[u8; 64]>,
+    file_name: Mutex<[u8; 64]>,
     /// Bit mask of `LO_FLAGS_*` (READ_ONLY, AUTOCLEAR, PARTSCAN, DIRECT_IO).
     flags: AtomicU32,
     /// Whether the device is opened exclusively (O_EXCL).
@@ -56,10 +56,10 @@ impl LoopDevice {
         Self {
             number,
             dev_id,
-            file: PiMutex::new(None),
+            file: Mutex::new(None),
             ro: AtomicBool::new(false),
             ra: AtomicU32::new(512),
-            file_name: PiMutex::new([0u8; 64]),
+            file_name: Mutex::new([0u8; 64]),
             flags: AtomicU32::new(0),
             exclusive: AtomicBool::new(false),
         }

@@ -252,11 +252,19 @@ pub(crate) fn patch_qemu_rootfs(
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
     let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
-    patch_qemu_rootfs_path(
-        config,
-        &rootfs_path,
-        rootfs::qemu::RootfsWritePolicy::Persist,
-    )
+    let global_snapshot = config.args.iter().any(|argument| argument == "-snapshot");
+    let write_policy = if global_snapshot {
+        rootfs::qemu::RootfsWritePolicy::Discard
+    } else {
+        rootfs::qemu::RootfsWritePolicy::Persist
+    };
+    patch_qemu_rootfs_path(config, &rootfs_path, write_policy)?;
+    // The shared rootfs patcher narrows Discard to the selected drive. Axvisor
+    // must also retain the user's global protection for all other drives.
+    if global_snapshot {
+        config.args.push("-snapshot".into());
+    }
+    Ok(())
 }
 
 /// Resolves the rootfs path selected for an Axvisor QEMU request.
@@ -585,6 +593,39 @@ kernel_path = "{}"
                 .iter()
                 .any(|arg| { arg.contains(&format!("file={}", rootfs.display())) })
         );
+    }
+
+    #[test]
+    fn patch_qemu_rootfs_preserves_global_snapshot_for_other_disks() {
+        let root = tempdir().unwrap();
+        write_test_image_config(root.path());
+        let rootfs = managed_rootfs_path_for_test(root.path(), "rootfs-aarch64-alpine.img");
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-snapshot".to_string(),
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/old/tmp/rootfs.img".to_string(),
+                "-drive".to_string(),
+                "id=data,if=none,format=raw,file=/tmp/data.img".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        patch_qemu_rootfs(&mut qemu, &request(root.path(), vec![]), root.path(), None).unwrap();
+
+        assert!(qemu.args.iter().any(|argument| argument == "-snapshot"));
+        assert!(
+            qemu.args
+                .iter()
+                .any(|argument| argument == "id=data,if=none,format=raw,file=/tmp/data.img")
+        );
+        assert!(qemu.args.iter().any(|argument| {
+            argument
+                == &format!(
+                    "id=disk0,if=none,format=raw,file={},snapshot=on",
+                    rootfs.display()
+                )
+        }));
     }
 
     #[test]

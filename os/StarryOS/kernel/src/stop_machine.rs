@@ -7,12 +7,15 @@ use core::{
 use ax_lazyinit::LazyInit;
 use ax_runtime::{
     hal::{cpu_num, percpu::this_cpu_id},
-    task::{CpuId, CpuSet, SchedulePolicy, WaitQueue},
+    task::{
+        sched::{CpuId, CpuSet, SchedulePolicy},
+        sync::WaitQueue,
+    },
 };
 
-use crate::sync::{NoPreemptIrqSave, PiMutex};
+use crate::sync::{Mutex, NoPreemptIrqSave};
 
-static STOP_MACHINE_LOCK: PiMutex<()> = PiMutex::new(());
+static STOP_MACHINE_LOCK: Mutex<()> = Mutex::new(());
 static CPU_STOPPERS: LazyInit<Vec<Arc<CpuStopper>>> = LazyInit::new();
 
 const STAGE_PARKED: u8 = 0;
@@ -42,14 +45,14 @@ impl StopMachineState {
 }
 
 struct CpuStopper {
-    command: PiMutex<Option<Arc<StopMachineState>>>,
+    command: Mutex<Option<Arc<StopMachineState>>>,
     ready: WaitQueue,
 }
 
 impl CpuStopper {
     const fn new() -> Self {
         Self {
-            command: PiMutex::new(None),
+            command: Mutex::new(None),
             ready: WaitQueue::new(),
         }
     }

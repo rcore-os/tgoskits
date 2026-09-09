@@ -19,7 +19,13 @@ pub fn input_device_count() -> u32 {
 use ax_input::{ErasedInputDevice, Event, EventType, InputDevice, InputDeviceId, InputError};
 use ax_lazyinit::OnceLock;
 use ax_runtime::hal::{irq::IrqId, time::wall_time};
-use ax_std::os::arceos::task::{self as scheduler, IrqWaitCell, IrqWaitRegistration, WaitQueue};
+use ax_std::os::arceos::{
+    task as scheduler,
+    task::sync::{
+        WaitQueue,
+        irq::{IrqWaitCell, IrqWaitRegistration},
+    },
+};
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsError, VfsResult};
 use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
 use axpoll_set::PollSet;
@@ -304,7 +310,7 @@ impl EventDev {
     }
 
     fn run_irq_service(self: Arc<Self>) {
-        let current = scheduler::current_thread_handle()
+        let current = scheduler::thread::current::current_thread_handle()
             .unwrap_or_else(|error| panic!("evdev IRQ service has no scheduler thread: {error}"));
         let waiter = EventIrqWaiter::new(&current);
 
@@ -355,7 +361,7 @@ struct EventIrqWaiter {
 }
 
 impl EventIrqWaiter {
-    fn new(current: &scheduler::ThreadHandle) -> Self {
+    fn new(current: &scheduler::thread::ThreadHandle) -> Self {
         Self {
             registration: IrqWaitRegistration::new(current.wake_handle()),
         }

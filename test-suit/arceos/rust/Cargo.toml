@@ -24,6 +24,7 @@ task-wait-queue-remote-wake = ["task-runtime", "ax-std/ipi"]
 task-ipi = ["task-runtime", "ax-std/alloc", "ax-std/ipi"]
 task-irq = ["task-runtime"]
 task-kernel-timer = ["task-runtime"]
+task-executor = ["task-runtime"]
 task-tls = ["task-runtime", "ax-std/tls", "ax-std/alloc"]
 task-parallel = ["task-runtime", "dep:rand", "ax-std/alloc"]
 task-pi-mutex = ["task-runtime"]
@@ -67,6 +68,7 @@ all = [
     "task-wait-queue-remote-wake",
     "task-ipi",
     "task-kernel-timer",
+    "task-executor",
     "task-mutex",
     "task-tls",
     "task-parallel",

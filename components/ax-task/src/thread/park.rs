@@ -3,8 +3,9 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::{
-    ScheduleDecision, ThreadId,
-    timer::{TaskDeadlineRegistration, TaskDeadlineToken},
+    runtime::switch::ScheduleDecision,
+    thread::ThreadId,
+    time::queue::{TaskDeadlineRegistration, TaskDeadlineToken},
 };
 
 const WAIT_WAKE_QUEUED: u8 = 0;
@@ -165,7 +166,7 @@ pub(crate) enum WaitWakeDelivery {
 /// Move-only ownership of one park attempt and its optional timeout deadline.
 ///
 /// ```compile_fail
-/// # use ax_task::ParkTicket;
+/// # use ax_task::thread::ParkTicket;
 /// fn duplicate(ticket: ParkTicket) {
 ///     let first = ticket;
 ///     let second = ticket;

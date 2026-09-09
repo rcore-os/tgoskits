@@ -85,11 +85,11 @@ pub mod irq;
 mod raw_console;
 mod registers;
 pub mod serial;
-pub mod sync;
+mod sync_provider;
 
-/// Task-backed synchronization primitives used by ArceOS runtime consumers.
-pub use sync::{Mutex, MutexGuard, PiMutex, PiMutexGuard, SpinLock, SpinRwLock};
-pub mod task;
+/// OS-independent scheduler capabilities.
+pub use ax_task as task;
+pub mod thread;
 
 #[cfg(all(feature = "net", feature = "fs"))]
 mod unix_ns;
@@ -211,3 +211,5 @@ mod tests {
         crate::fs::init(Some("root=/dev/nvme0n1"));
     }
 }
+
+pub mod diagnostics;

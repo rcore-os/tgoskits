@@ -292,9 +292,11 @@ impl CloneArgs {
             return Err(StarryError::OperationNotPermitted);
         }
         let (child_policy, child_reset_on_fork) =
-            fork_schedule_policy(curr.policy(), curr.reset_on_fork())?;
+            fork_schedule_policy(curr.base_policy(), curr.reset_on_fork())?;
         let child_nice = match child_policy {
-            ax_std::os::arceos::task::SchedulePolicy::Fair { nice, .. } => i32::from(nice.get()),
+            ax_std::os::arceos::task::sched::SchedulePolicy::Fair { nice, .. } => {
+                i32::from(nice.get())
+            }
             _ => curr_thread.nice(),
         };
         let child_scheduler_state = UserThreadInitialSchedulerState::new(
@@ -669,8 +671,8 @@ impl CloneArgs {
     }
 }
 
-fn map_task_creation_error(error: ax_std::os::arceos::task::TaskError) -> StarryError {
-    use ax_std::os::arceos::task::TaskError;
+fn map_task_creation_error(error: ax_std::os::arceos::task::thread::TaskError) -> StarryError {
+    use ax_std::os::arceos::task::thread::TaskError;
 
     match error {
         TaskError::TimerCapacity | TaskError::RuntimeFailure(_) => StarryError::NoMemory,

@@ -19,7 +19,7 @@ use super::*;
 #[derive(Debug)]
 pub struct PerTaskCounter {
     /// Generation-bearing scheduler identity of the task context.
-    scheduler_id: ax_runtime::task::ThreadId,
+    scheduler_id: ax_runtime::task::thread::ThreadId,
     /// Physical counter reservation used while this task is scheduled.
     pub(super) counter: Counter,
     /// ARM PMUv3 event number. It is programmed only for a programmable
@@ -170,7 +170,7 @@ impl core::fmt::Debug for SamplingAnchors {
 /// `PERF_SAMPLE_IP`.
 pub(in crate::perf) struct PerTaskConfig {
     /// Generation-bearing scheduler identity of the target task.
-    pub(in crate::perf) scheduler_id: ax_runtime::task::ThreadId,
+    pub(in crate::perf) scheduler_id: ax_runtime::task::thread::ThreadId,
     /// Reserved physical PMU counter.
     pub(in crate::perf) counter: Counter,
     /// ARM PMUv3 event number.
@@ -268,7 +268,7 @@ impl PerTaskCounter {
 
     pub(in crate::perf) fn inherited_config(
         &self,
-        scheduler_id: ax_runtime::task::ThreadId,
+        scheduler_id: ax_runtime::task::thread::ThreadId,
         counter: Counter,
     ) -> PerTaskConfig {
         PerTaskConfig {
@@ -313,15 +313,15 @@ impl PerTaskCounter {
     /// worker wake makes it cross sched-out/sched-in; if it was not running,
     /// its first future sched-in observes the published counter directly.
     pub(in crate::perf) fn synchronize_context(&self) -> crate::StarryResult<()> {
-        let handle = match ax_runtime::task::thread_handle(self.scheduler_id) {
+        let handle = match ax_runtime::task::thread::ThreadHandle::lookup(self.scheduler_id) {
             Ok(handle) => handle,
             // Linux treats a tombstoned perf task context as already detached:
             // no owner CPU remains to synchronize, and fd-side aggregate
             // control remains a successful no-op.
-            Err(ax_runtime::task::TaskError::StaleThreadId) => return Ok(()),
+            Err(ax_runtime::task::thread::TaskError::StaleThreadId) => return Ok(()),
             Err(_) => return Err(crate::StarryError::BadState),
         };
-        if handle.state() == ax_runtime::task::ThreadState::Exited {
+        if handle.state() == ax_runtime::task::thread::ThreadState::Exited {
             return Ok(());
         }
         let Some(cpu) = handle.scheduler_fence_cpu() else {

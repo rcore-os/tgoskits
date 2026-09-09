@@ -2,11 +2,16 @@ use std::{
     boxed::Box,
     os::arceos::{
         api::time::ax_monotonic_time,
-        task::{
-            HardKernelTimerAction, HardKernelTimerCallback, KernelTimerAction,
-            KernelTimerCancelOutcome, MonotonicDeadline, arm_hard_kernel_timer,
-            cancel_kernel_timer, register_hard_restartable_kernel_timer, register_kernel_timer,
-            register_restartable_kernel_timer,
+        task::time::{
+            MonotonicDeadline,
+            hard_timer::{
+                HardKernelTimerAction, HardKernelTimerCallback, arm_hard_kernel_timer,
+                register_hard_restartable_kernel_timer,
+            },
+            timer::{
+                KernelTimerAction, KernelTimerCancelOutcome, cancel_kernel_timer,
+                register_kernel_timer, register_restartable_kernel_timer,
+            },
         },
     },
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -144,13 +149,58 @@ pub fn run() -> crate::TestResult {
         "stable hard kernel timer did not rearm",
     )?;
     assert_eq!(
-        cancel_kernel_timer(stable_hard_timer),
+        cancel_kernel_timer(stable_hard_timer.into()),
         Ok(KernelTimerCancelOutcome::Cancelled)
     );
     assert_eq!(
         cancel_kernel_timer(restartable)
             .map_err(|_| "failed to inspect completed restartable kernel timer")?,
-        KernelTimerCancelOutcome::NotCancelled
+        KernelTimerCancelOutcome::AlreadyCompleted
+    );
+    cancel_in_flight_callback()
+}
+
+fn cancel_in_flight_callback() -> crate::TestResult {
+    use std::os::arceos::task::sync::WaitQueue;
+
+    static ENTERED: AtomicBool = AtomicBool::new(false);
+    static RELEASE: AtomicBool = AtomicBool::new(false);
+    static RECLAIMED: AtomicBool = AtomicBool::new(false);
+    static EVENT: WaitQueue = WaitQueue::new();
+    struct CallbackPayload;
+    impl Drop for CallbackPayload {
+        fn drop(&mut self) {
+            RECLAIMED.store(true, Ordering::Release);
+            EVENT.notify_all();
+        }
+    }
+    ENTERED.store(false, Ordering::Release);
+    RELEASE.store(false, Ordering::Release);
+    RECLAIMED.store(false, Ordering::Release);
+    let payload = CallbackPayload;
+    let handle = register_restartable_kernel_timer(
+        MonotonicDeadline::from_duration(ax_monotonic_time() + Duration::from_millis(1)),
+        Box::new(move |_| {
+            let _keep_alive = &payload;
+            ENTERED.store(true, Ordering::Release);
+            EVENT.notify_all();
+            EVENT.wait_until(|| RELEASE.load(Ordering::Acquire));
+            KernelTimerAction::Rearm(MonotonicDeadline::from_duration(ax_monotonic_time()))
+        }),
+    )
+    .map_err(|_| "failed to register in-flight cancellation callback")?;
+    EVENT.wait_until(|| ENTERED.load(Ordering::Acquire));
+    assert_eq!(
+        cancel_kernel_timer(handle),
+        Ok(KernelTimerCancelOutcome::CancellationDeferred)
+    );
+    assert!(!RECLAIMED.load(Ordering::Acquire));
+    RELEASE.store(true, Ordering::Release);
+    EVENT.notify_all();
+    EVENT.wait_until(|| RECLAIMED.load(Ordering::Acquire));
+    assert_eq!(
+        cancel_kernel_timer(handle),
+        Ok(KernelTimerCancelOutcome::AlreadyCompleted)
     );
     Ok(())
 }

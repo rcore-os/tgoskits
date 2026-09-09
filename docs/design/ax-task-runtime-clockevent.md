@@ -129,8 +129,9 @@ hard: Queued -----------> Executing -> Requeued | ReapPending -> Completed
   调用 capability。`Rearm` 复用原 identity；完成或 cancel-race 只转为 `ReapPending`，由
   worker 在任务上下文取得并析构 payload；
 - cancel 与 expiry/claim 在 owner deadline lock 下决定唯一 winner。成功取消 active 或
-  expired entry 后，ownership 移出 lock 再析构；已经 `Executing` 或 terminal 时返回明确的
-  non-cancelled 结果，不等待 callback；
+  expired entry 后，ownership 移出 lock 再析构；已经 `Executing` 时接受销毁请求并阻止 callback rearm，返回
+  `CancellationDeferred`；hard payload 等待任务上下文回收时也返回该状态。只有登记已经不存在
+  才返回 `AlreadyCompleted`；取消操作不等待 callback，延后结果不是资源释放屏障；
 - handle 保存 owner CPU 和不可复用的 identity/generation。跨 CPU cancel 可以锁定原 owner
   base，但只在当前 owner CPU 取消时重新发布物理 deadline；remote cancel 允许保留一个
   conservative stale hardware edge，由 firing transaction 重新计算，不跨 CPU 修改物理
@@ -142,6 +143,27 @@ callback API 只暴露绝对 monotonic deadline、typed handle、cancel outcome 
 `FnOnce(MonotonicInstant) + Send + 'static`。不得暴露 `LocalClockEvent`、硬件 comparator、
 deadline-base lock 或 owner CPU 裸指针。注册失败必须返回可匹配的 capacity/generation/context
 错误，不能静默退回 AxVM 私有 worker。
+
+### 调度接口完成条件
+
+公开接口按领域组织，ArceOS 通过 `ax_runtime::task` 原样重导出 ax-task；资源装配与线程创建使用 `ax_runtime::thread`。完整边界见[命名空间与所有权](ax-task-namespaces.md)。
+
+`register_hard_restartable_kernel_timer` 返回 `HardKernelTimerHandle`，只有该能力可以调用
+`arm_hard_kernel_timer` 和 `disarm_hard_kernel_timer`。它可单向转换为普通
+`KernelTimerHandle` 进行取消；普通句柄不能升级成 hard 能力。执行中的 hard callback
+可接受下一次 arm，该请求优先于 callback 返回的 action；已经排队的登记需要先 disarm。
+队列内部同时核验执行记录的 hard 类别，错误类别不得改变 soft timer 的重启行为。
+
+`TaskRuntime::allocate_kernel_tls()` 只分配运行时固定内核模板的 TLS，模板、初始化大小和
+对齐由运行时拥有，不再接收无法兑现的通用 TLS 请求。线程策略查询明确使用
+`ThreadHandle::base_policy`，PI 后的策略使用 `effective_policy`。
+
+`ThreadHandle::request_affinity` 返回 `ThreadAffinityChange`：丢弃对象表示允许异步完成，调用
+`wait()` 才等待 owner-rq 排序；当前线程迁移和 `ThreadHandle::set_affinity_and_wait` 保留同步完成
+保证。`TaskSystem::start_thread` 合并 New 状态检查、调度准入和本地入队或远端投递，移除
+公开的 `make_ready` / `place_ready` 两步入口。所有可恢复错误发生在准入提交之前，提交后
+时钟发布失败按运行时不变量处理，不能回收已经入队的线程。上层 `PreparedThread::stage`
+仍保留 start gate，只有 `StagedThread::activate` 才允许进入调用者入口，OS 身份发布顺序不变。
 
 ### ParkTicket
 

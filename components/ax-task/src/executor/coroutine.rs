@@ -15,7 +15,10 @@ use core::{
 };
 
 use super::SharedExecutor;
-use crate::{ThreadId, WakeIntent, inbox::InboxNode, runtime::task_runtime};
+use crate::{
+    runtime::{delivery::inbox::InboxNode, task_runtime},
+    thread::{ThreadId, WakeIntent},
+};
 
 pub(super) const RUN_QUEUED: usize = 1 << 0;
 pub(super) const POLLING: usize = 1 << 1;
@@ -193,7 +196,7 @@ where
     pub(super) fn new(id: CoroutineId, executor: Arc<SharedExecutor>, future: F) -> Self {
         Self {
             header: CoroutineHeader {
-                reclaim: InboxNode::new(crate::inbox::InboxKind::Reclaim),
+                reclaim: InboxNode::new(crate::runtime::delivery::inbox::InboxKind::Reclaim),
                 id,
                 state: AtomicUsize::new(0),
                 references: AtomicUsize::new(1),
@@ -337,7 +340,7 @@ pub(super) unsafe fn release_reference(header: *mut CoroutineHeader) {
         // task-system consumer detaches this header and frees it.
         Pin::new_unchecked(header_ref)
     };
-    crate::facade::publish_deferred_coroutine_reclaim(header);
+    crate::runtime::service::reclaim::publish_deferred_coroutine_reclaim(header);
 }
 
 /// Polls the concrete future behind a type-erased header.

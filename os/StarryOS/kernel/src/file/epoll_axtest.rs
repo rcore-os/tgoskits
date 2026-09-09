@@ -388,6 +388,27 @@ fn epoll_requeues_readiness_observed_during_rearm_for_test() -> bool {
         })
 }
 
+#[cfg(all(test, not(axtest)))]
+fn callback_batch_covers_only_the_ready_file_for_test() -> bool {
+    const FILES: i32 = 64;
+    const SOURCE_FD: i32 = 7;
+
+    let epoll = Epoll::new();
+    let mut files: Vec<Arc<dyn FileLike>> = Vec::new();
+    for fd in 0..FILES {
+        let file_like: Arc<dyn FileLike> = ReadyFile::new();
+        if epoll
+            .add_file_for_test(fd, file_like.clone(), fd as u64, EpollFlags::empty())
+            .is_err()
+        {
+            return false;
+        }
+        files.push(file_like);
+    }
+
+    epoll.callback_batch_len_for_test(SOURCE_FD, &files[SOURCE_FD as usize]) == Some(1)
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(all(test, axtest))]
@@ -424,5 +445,11 @@ mod tests {
     #[test]
     fn requeues_readiness_observed_during_rearm() {
         assert!(super::epoll_requeues_readiness_observed_during_rearm_for_test());
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn callback_batch_covers_only_the_ready_file() {
+        assert!(super::callback_batch_covers_only_the_ready_file_for_test());
     }
 }

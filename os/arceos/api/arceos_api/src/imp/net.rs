@@ -259,7 +259,7 @@ where
     F: FnMut() -> ax_net::NetResult<T>,
 {
     if policy.nonblocking {
-        return Ok(ax_runtime::task::block_on(poll_socket_io(
+        return Ok(ax_runtime::task::executor::block_on(poll_socket_io(
             pollable,
             events,
             true,
@@ -267,14 +267,14 @@ where
         ))?);
     }
     match policy.timeout {
-        Some(timeout) => match ax_runtime::task::block_on_timeout(
+        Some(timeout) => match ax_runtime::task::executor::block_on_timeout(
             timeout,
             poll_socket_io(pollable, events, false, &mut operation),
         ) {
             Ok(result) => Ok(result?),
             Err(_) => Err(timeout_error.into()),
         },
-        None => Ok(ax_runtime::task::block_on(poll_socket_io(
+        None => Ok(ax_runtime::task::executor::block_on(poll_socket_io(
             pollable,
             events,
             false,

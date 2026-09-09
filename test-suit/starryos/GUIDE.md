@@ -547,13 +547,37 @@ cargo xtask starry app board -t iperf3 -b OrangePi-5-Plus
 ```
 
 `native-hardware-smoke` 在一次启动中依次验证启动、PCIe、USB2、PWM 和 NPU。
-`native-network-smoke` 只执行一条短 TCP TX 命令，随后在 `eth1` 上验证 rtnetlink
+`native-network-smoke` 执行一条短 TCP 双向命令，随后在 `eth1` 上验证 rtnetlink
 地址增删，适合作为 CI 连通性检查。完整吞吐测试位于 `apps/starry/iperf3`，直接通过
 上面的 `cargo xtask starry app board` 命令启动板测；ostool server 持续提供 iperf3
 服务，board 配置的 `shell_init_cmd` 通过活动 session 的 `${boardServerIp}` 和
 `${sessionFile:iperf-bench.sh}` 获取实际地址；app 的 `init.sh` 会按现有 xtask 流程合并
 到该命令中，下载并启动测试脚本，不依赖固定网卡、固定 IP、固定网段或额外的板测
 启动脚本。
+
+真板卡 CI 的 AKA WiFi 与 OrangePi 网络冒烟统一使用 iperf2，共享 TCP 5001
+服务端口；iperf2 服务进程接受多个独立客户端。`board-common/iperf2` 提供公共脚本
+和打包规则，各 case 的 `c/prebuild.sh` 在 Alpine 暂存环境安装 `iperf`，CMake 将
+客户端、musl 加载器及匹配的 C++ 运行库打包为 `share/iperf2.tar.gz`。板卡通过
+`${sessionFile:share/iperf2.tar.gz}` 下载到 `/tmp`，不要求预装客户端或修改持久根文件系统。
+
+`iperf2-smoke` 使用 `--full-duplex` 同时收发，按 iperf2 的普通线程 ID 和带 `*`
+的接收线程 ID 分别检查进展。AKA 运行 22 秒，其中前 2 秒预热；OrangePi 运行
+4 秒，其中前 1 秒预热。任一方向在预热后连续 3 秒无进展、缺少接收报告、最终
+报告提前结束或命令非零退出均失败。最终汇总不能覆盖中间停滞。完整 iperf3
+benchmark 应用仍可手工运行，不属于这两个 CI 冒烟入口。
+
+在 runner 服务器安装并启用共享 iperf2 服务：
+
+```bash
+sudo apt-get install -y iperf
+sudo install -m 644 .github/ci/iperf2.service /etc/systemd/system/iperf2.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now iperf2.service
+```
+
+模板使用 systemd 动态用户，服务器防火墙需要允许板卡访问 TCP 5001。服务端和
+板端必须都是 iperf2；iperf3 不兼容该协议。无需为每块板分配独立的 iperf3 实例。
 
 完整 benchmark 固定执行 T01--T07：单流 TX、单流 RX、单流双向、2/4/8 流 TX 和
 4 流 RX。每个场景使用 `-t 10 -O 2 -l 128K` 运行 3 次，每个连接结束后固定冷却

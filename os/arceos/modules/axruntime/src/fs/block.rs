@@ -16,9 +16,13 @@ use ax_fs_ng::{
 use ax_lazyinit::LazyInit;
 use ax_task::runtime::RuntimeStatus;
 
-use crate::{
-    sync::SpinLock,
-    task::{CpuId, CpuSet, IrqWaitCell, IrqWorkerWaiter, TaskError, ThreadHandle, ThreadId},
+use crate::task::{
+    sched::{CpuId, CpuSet},
+    sync::{
+        SpinLock,
+        irq::{IrqWaitCell, IrqWorkerWaiter},
+    },
+    thread::{TaskError, ThreadHandle, ThreadId},
 };
 
 struct RuntimeTimeProvider;
@@ -75,7 +79,7 @@ impl RuntimeNotification {
     }
 
     fn wait_inner(&self, timeout: Option<Duration>) -> bool {
-        let current = crate::task::current_thread_handle()
+        let current = crate::task::thread::current::current_thread_handle()
             .unwrap_or_else(|error| panic!("block notification has no scheduler thread: {error}"));
         let waiter = self.waiter.get_or_init(|| RuntimeNotificationWaiter {
             owner: current.id(),
@@ -132,7 +136,7 @@ impl BlockThread for RuntimeBlockThread {
         let Some(task) = self.task.lock().take() else {
             return;
         };
-        crate::task::join_thread(task)
+        crate::thread::join_thread(task)
             .unwrap_or_else(|error| panic!("failed to join block maintenance thread: {error}"));
     }
 }
@@ -151,7 +155,8 @@ impl BlockRuntimeOps for RuntimeTaskOps {
     }
 
     fn can_block(&self) -> bool {
-        crate::task::current_thread_id().is_ok() && !crate::guard::in_atomic_context()
+        crate::task::thread::current::current_thread_id().is_ok()
+            && !crate::guard::in_atomic_context()
     }
 
     fn notification(&self) -> Arc<dyn BlockNotification> {
@@ -172,7 +177,7 @@ impl BlockRuntimeOps for RuntimeTaskOps {
         if !affinity.insert(CpuId::new(cpu)) {
             return Err(BlockError::InvalidRequest);
         }
-        let task = crate::task::spawn_raw_with_affinity(
+        let task = crate::thread::spawn_raw_with_affinity(
             entry,
             name,
             crate::runtime_default_task_stack_size(),

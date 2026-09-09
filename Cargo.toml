@@ -35,6 +35,9 @@ members = [
     "components/axsched",
     "components/cpumask",
     "components/crate_interface",
+    "components/trait-ffi/trait-ffi",
+    "components/trait-ffi/trait-ffi-macros",
+    "components/trait-ffi/test_crates/*",
     "components/irq-framework",
     "components/kasm-aarch64",
     "components/kernutil",
@@ -309,6 +312,8 @@ uefi = "0.37.0"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
+trait-ffi = { version = "0.3.0", path = "components/trait-ffi/trait-ffi" }
+trait-ffi-macros = { version = "=0.3.0", path = "components/trait-ffi/trait-ffi-macros" }
 tock-registers = "0.10"
 zeroize = { version = "1.9.0", default-features = false }
 sg200x-bsp = { version = "0.7.1", default-features = false }

@@ -93,7 +93,7 @@ impl MonotonicDeadline {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct RqClockSample {
-    clock: crate::SchedulerTimestamp,
+    clock: crate::sched::SchedulerTimestamp,
     hardirq_time_ns: Option<u64>,
     frequency_capacity: u32,
     cpu_capacity: u32,
@@ -101,7 +101,7 @@ pub struct RqClockSample {
 
 impl RqClockSample {
     /// Creates one coherent runqueue-clock observation.
-    pub const fn new(clock: crate::SchedulerTimestamp, hardirq_time_ns: u64) -> Self {
+    pub const fn new(clock: crate::sched::SchedulerTimestamp, hardirq_time_ns: u64) -> Self {
         Self {
             clock,
             hardirq_time_ns: Some(hardirq_time_ns),
@@ -111,7 +111,7 @@ impl RqClockSample {
     }
 
     /// Creates a sample from a runtime without IRQ time accounting authority.
-    pub const fn without_irq_time_accounting(clock: crate::SchedulerTimestamp) -> Self {
+    pub const fn without_irq_time_accounting(clock: crate::sched::SchedulerTimestamp) -> Self {
         Self {
             clock,
             hardirq_time_ns: None,
@@ -127,7 +127,7 @@ impl RqClockSample {
     /// systems; a platform with frequency invariance can publish narrower
     /// values through this constructor.
     pub const fn with_capacity_scales(
-        clock: crate::SchedulerTimestamp,
+        clock: crate::sched::SchedulerTimestamp,
         hardirq_time_ns: u64,
         frequency_capacity: u32,
         cpu_capacity: u32,
@@ -148,7 +148,7 @@ impl RqClockSample {
     }
 
     /// Returns the corrected scheduler-clock value.
-    pub const fn clock(self) -> crate::SchedulerTimestamp {
+    pub const fn clock(self) -> crate::sched::SchedulerTimestamp {
         self.clock
     }
 
@@ -165,35 +165,6 @@ impl RqClockSample {
     /// Returns Linux `arch_scale_cpu_capacity()` units.
     pub const fn cpu_capacity(self) -> u32 {
         self.cpu_capacity
-    }
-}
-
-#[cfg(test)]
-mod monotonic_time_tests {
-    use super::*;
-
-    #[test]
-    fn monotonic_time_matches_linux_ktime_boundaries() {
-        let deadline = MonotonicDeadline::from_nanos(0).unwrap();
-        assert_eq!(deadline, MonotonicDeadline::ORIGIN);
-        assert!(MonotonicInstant::from_nanos(1).unwrap().reached(deadline));
-        assert!(MonotonicInstant::from_nanos(KTIME_MAX_NANOS - 1).is_some());
-        assert!(MonotonicDeadline::from_nanos(KTIME_MAX_NANOS - 1).is_some());
-        assert!(MonotonicInstant::from_nanos(KTIME_MAX_NANOS).is_some());
-        assert_eq!(
-            MonotonicDeadline::from_nanos(KTIME_MAX_NANOS),
-            Some(MonotonicDeadline(KTIME_MAX_NANOS))
-        );
-        assert!(MonotonicDeadline::from_nanos(KTIME_MAX_NANOS + 1).is_none());
-        assert_eq!(
-            MonotonicDeadline::from_duration(core::time::Duration::MAX),
-            MonotonicDeadline::from_nanos(KTIME_MAX_NANOS).unwrap()
-        );
-        let now = MonotonicInstant::from_nanos(KTIME_MAX_NANOS - 2).unwrap();
-        assert_eq!(
-            now.deadline_after(core::time::Duration::from_nanos(2)),
-            MonotonicDeadline::from_nanos(KTIME_MAX_NANOS).unwrap()
-        );
     }
 }
 
@@ -239,4 +210,33 @@ pub enum SchedulerRuntimeDeadline {
     Disarmed,
     Due,
     After(core::time::Duration),
+}
+
+#[cfg(test)]
+mod monotonic_time_tests {
+    use super::*;
+
+    #[test]
+    fn monotonic_time_matches_linux_ktime_boundaries() {
+        let deadline = MonotonicDeadline::from_nanos(0).unwrap();
+        assert_eq!(deadline, MonotonicDeadline::ORIGIN);
+        assert!(MonotonicInstant::from_nanos(1).unwrap().reached(deadline));
+        assert!(MonotonicInstant::from_nanos(KTIME_MAX_NANOS - 1).is_some());
+        assert!(MonotonicDeadline::from_nanos(KTIME_MAX_NANOS - 1).is_some());
+        assert!(MonotonicInstant::from_nanos(KTIME_MAX_NANOS).is_some());
+        assert_eq!(
+            MonotonicDeadline::from_nanos(KTIME_MAX_NANOS),
+            Some(MonotonicDeadline(KTIME_MAX_NANOS))
+        );
+        assert!(MonotonicDeadline::from_nanos(KTIME_MAX_NANOS + 1).is_none());
+        assert_eq!(
+            MonotonicDeadline::from_duration(core::time::Duration::MAX),
+            MonotonicDeadline::from_nanos(KTIME_MAX_NANOS).unwrap()
+        );
+        let now = MonotonicInstant::from_nanos(KTIME_MAX_NANOS - 2).unwrap();
+        assert_eq!(
+            now.deadline_after(core::time::Duration::from_nanos(2)),
+            MonotonicDeadline::from_nanos(KTIME_MAX_NANOS).unwrap()
+        );
+    }
 }

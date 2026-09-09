@@ -1,0 +1,7 @@
+error[E0133]: call to unsafe function `interface::read` is unsafe and requires unsafe block
+ --> tests/ui/unsafe_call.rs:7:13
+  |
+7 | fn call() { interface::read(&1); }
+  |             ^^^^^^^^^^^^^^^^^^^ call to unsafe function
+  |
+  = note: consult the function's documentation for information on how to avoid undefined behavior

@@ -414,6 +414,7 @@ impl X86VlapicHostOps for AxvmX86HostOps {
                 }),
             )
         }
+        .map(Into::into)
         .map_err(|_| X86VlapicError::TimerUnavailable)
     }
 

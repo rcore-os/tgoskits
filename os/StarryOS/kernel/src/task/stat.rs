@@ -1,6 +1,6 @@
 use alloc::{borrow::ToOwned, fmt, string::String};
 
-use ax_std::os::arceos::task::ThreadState;
+use ax_std::os::arceos::task::thread::ThreadState;
 use starry_signal::Signo;
 
 use crate::{

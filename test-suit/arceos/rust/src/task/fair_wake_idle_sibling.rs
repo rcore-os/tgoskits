@@ -1,10 +1,16 @@
 use std::{
     os::arceos::{
-        api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+        api::{
+            task as api,
+            task::{AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+        },
         modules::ax_hal::percpu::this_cpu_id,
         task::{
-            self as scheduler, CpuSet, FairMode, Nice, SchedulePolicy, ThreadState,
-            current_thread_id, set_current_thread_affinity, set_thread_policy,
+            sched::{CpuSet, FairMode, Nice, SchedulePolicy},
+            thread::{
+                ThreadState,
+                current::{current_thread_id, set_current_thread_affinity},
+            },
         },
     },
     string::String,
@@ -65,10 +71,10 @@ fn sched_idle_makes_progress_against_normal_current() {
 
     let idle = thread::spawn(|| {
         pin_current_to_cpu(0);
-        set_thread_policy(
+        std::os::arceos::task::thread::ThreadHandle::lookup(
             current_thread_id().expect("the SCHED_IDLE worker must have an identity"),
-            SchedulePolicy::fair(Nice::ZERO, FairMode::Idle),
         )
+        .and_then(|thread| thread.set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)))
         .expect("the SCHED_IDLE worker must accept its policy");
         IDLE_READY.store(true, Ordering::Release);
         api::ax_wait_queue_wait_until(&IDLE_WAIT, || RUN_IDLE.load(Ordering::Acquire), None);
@@ -139,13 +145,13 @@ fn sched_batch_wake_uses_fair_hrtick() {
     NORMAL_READY.store(false, Ordering::Release);
     STOP_NORMAL.store(false, Ordering::Release);
 
-    let batch = scheduler::spawn_raw(
+    let batch = std::os::arceos::thread::spawn_raw(
         || {
             pin_current_to_cpu(0);
-            set_thread_policy(
+            std::os::arceos::task::thread::ThreadHandle::lookup(
                 current_thread_id().expect("the SCHED_BATCH worker must have an identity"),
-                SchedulePolicy::fair(Nice::ZERO, FairMode::Batch),
             )
+            .and_then(|thread| thread.set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Batch)))
             .expect("the SCHED_BATCH worker must accept its policy");
             BATCH_READY.store(true, Ordering::Release);
             api::ax_wait_queue_wait_until(&BATCH_WAIT, || RUN_BATCH.load(Ordering::Acquire), None);
@@ -203,7 +209,7 @@ fn sched_batch_wake_uses_fair_hrtick() {
     normal
         .join()
         .expect("the normal Fair occupier must exit normally");
-    scheduler::join_thread(batch).expect("the SCHED_BATCH worker must exit normally");
+    std::os::arceos::thread::join_thread(batch).expect("the SCHED_BATCH worker must exit normally");
     assert!(
         made_progress,
         "SCHED_BATCH wakee did not run before the periodic scheduler tick fallback"

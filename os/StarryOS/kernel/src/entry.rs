@@ -11,7 +11,7 @@ use crate::{
     mm::{MmHandle, load_user_app, new_user_image_builder},
     namespace::NsProxy,
     pseudofs::{self, dev::tty},
-    sync::{PiMutex, RwLock},
+    sync::{Mutex, RwLock},
     task::{
         PidReservation, PidReservationKind, Process, ProcessData, ProcessDataInit, ProcessImage,
         ROOT_PID_NS, Tgid, Thread, Tid, TidNumber, join_kernel_thread, new_user_task,
@@ -121,7 +121,7 @@ pub fn init(args: &[String], envs: &[String]) {
                 "/".to_string(),
                 "/".to_string(),
             ),
-            MmHandle::from_arc(Arc::new(PiMutex::new(uspace)))
+            MmHandle::from_arc(Arc::new(Mutex::new(uspace)))
                 .expect("init MM identity must be unique"),
             Arc::default(),
             NsProxy::new_root(),
@@ -195,11 +195,11 @@ pub fn init(args: &[String], envs: &[String]) {
 fn run_opp_calibration() {
     info!("cpufreq: running OPP calibration sweep (governor disabled this boot)");
     for &(cluster_idx, cpu) in &[(0usize, 0usize), (1, 4), (2, 6)] {
-        let mut affinity = ax_runtime::task::CpuSet::empty(ax_runtime::hal::cpu_num());
+        let mut affinity = ax_runtime::task::sched::CpuSet::empty(ax_runtime::hal::cpu_num());
         let cpu_id =
             u32::try_from(cpu).unwrap_or_else(|_| panic!("cpufreq CPU id {cpu} is out of range"));
         assert!(
-            affinity.insert(ax_runtime::task::CpuId::new(cpu_id)),
+            affinity.insert(ax_runtime::task::sched::CpuId::new(cpu_id)),
             "cpufreq calibration CPU {cpu} is outside the runtime topology"
         );
         let task = spawn_kernel_thread_with_affinity(
@@ -245,8 +245,10 @@ fn cpufreq_governor_loop() {
         // zero runtime and therefore reads as idle.
         let mut busy = [0u64; 8];
         for (cpu, slot) in busy.iter_mut().enumerate() {
-            *slot = ax_runtime::task::cpu_busy_runtime_ns(ax_runtime::task::CpuId::new(cpu as u32))
-                .unwrap_or(0);
+            *slot = ax_runtime::task::sched::cpu_busy_runtime_ns(
+                ax_runtime::task::sched::CpuId::new(cpu as u32),
+            )
+            .unwrap_or(0);
         }
         ax_driver::cpufreq::governor_poll(&busy);
     }

@@ -6,7 +6,7 @@ use core::{
 };
 
 use ax_lazyinit::LazyLock;
-use ax_runtime::task::ThreadHandle;
+use ax_runtime::task::thread::ThreadHandle;
 
 use crate::{PosixError, PosixResult, ctypes, sync::Mutex};
 
@@ -15,7 +15,7 @@ pub mod mutex;
 static TID_TO_PTHREAD: LazyLock<Mutex<BTreeMap<u64, ForceSendSync<ctypes::pthread_t>>>> =
     LazyLock::new(|| {
         let mut map = BTreeMap::new();
-        let main_task = ax_runtime::task::current_thread_handle()
+        let main_task = ax_runtime::task::thread::current::current_thread_handle()
             .unwrap_or_else(|error| panic!("main pthread task is unavailable: {error}"));
         let main_tid = main_task.id().as_u64();
         let main_thread = Pthread {
@@ -102,7 +102,7 @@ impl Pthread {
 
         let main = move || {
             while !child_registered.load(Ordering::Acquire) {
-                if let Err(error) = ax_runtime::task::yield_current_cpu() {
+                if let Err(error) = ax_runtime::task::thread::current::yield_current_cpu() {
                     panic!("pthread registration yield failed: {error}");
                 }
             }
@@ -116,7 +116,7 @@ impl Pthread {
         };
 
         let task_inner =
-            spawn_pthread_with(options, main, ax_runtime::task::spawn_raw).map_err(|error| {
+            spawn_pthread_with(options, main, ax_runtime::thread::spawn_raw).map_err(|error| {
                 warn!("failed to spawn pthread scheduler task: {error}");
                 PosixError::EAGAIN
             })?;
@@ -133,7 +133,7 @@ impl Pthread {
     }
 
     fn current_ptr() -> *mut Pthread {
-        let tid = ax_runtime::task::current_thread_id()
+        let tid = ax_runtime::task::thread::current::current_thread_id()
             .unwrap_or_else(|error| panic!("current pthread task is unavailable: {error}"))
             .as_u64();
         match TID_TO_PTHREAD.lock().get(&tid) {
@@ -154,7 +154,7 @@ impl Pthread {
         if join_state.complete() {
             Self::reap_current_detached();
         }
-        ax_runtime::task::exit_current(0)
+        ax_runtime::thread::exit_current(0)
     }
 
     #[track_caller]
@@ -164,7 +164,7 @@ impl Pthread {
         }
 
         let thread = Self::claim_join(ptr)?;
-        let scheduler_exit_code = match ax_runtime::task::wait_thread(&thread.inner) {
+        let scheduler_exit_code = match ax_runtime::thread::wait_thread(&thread.inner) {
             Ok(exit_code) => exit_code,
             Err(error) => {
                 thread.join_state.release_join();
@@ -198,7 +198,7 @@ impl Pthread {
         // access the allocation after ownership is reconstructed here.
         let thread = unsafe { Box::from_raw(ptr as *mut Pthread) };
         let Pthread { inner, .. } = *thread;
-        let reaped_exit_code = ax_runtime::task::join_thread(inner)
+        let reaped_exit_code = ax_runtime::thread::join_thread(inner)
             .unwrap_or_else(|error| panic!("failed to reap an exited pthread: {error}"));
         assert_eq!(
             reaped_exit_code, scheduler_exit_code,
@@ -244,7 +244,7 @@ impl Pthread {
     }
 
     fn reap_current_detached() {
-        let tid = ax_runtime::task::current_thread_id()
+        let tid = ax_runtime::task::thread::current::current_thread_id()
             .unwrap_or_else(|error| panic!("current pthread task is unavailable: {error}"))
             .as_u64();
         let ptr = TID_TO_PTHREAD

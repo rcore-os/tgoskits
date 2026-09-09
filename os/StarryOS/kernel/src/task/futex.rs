@@ -9,14 +9,20 @@ use core::{
 
 use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::time::monotonic_time;
-use ax_std::os::arceos::task::{
-    self as scheduler, CurrentParkDisposition, CurrentParkStart, MonotonicDeadline,
-    MonotonicInstant, ThreadWakeBatch,
+use ax_std::os::arceos::{
+    task as scheduler,
+    task::{
+        thread::{
+            ThreadWakeBatch,
+            current::{CurrentParkDisposition, CurrentParkStart},
+        },
+        time::{MonotonicDeadline, MonotonicInstant},
+    },
 };
 
 use crate::{
     mm::{AddrSpace, SharedFutexIdentity, SharedFutexRegion},
-    sync::{LockdepMutexExt, PiMutex, SpinLock},
+    sync::{LockdepMutexExt, Mutex, SpinLock},
     task::{ProcessData, UserTaskRef, future::WallClockWaiter, process_memory::ProcessMemoryShare},
     time::{ClockDeadline, ClockSnapshot},
 };
@@ -106,10 +112,10 @@ impl From<crate::StarryError> for FutexAccessError {
     }
 }
 
-fn map_park_error(error: scheduler::TaskError) -> FutexAccessError {
+fn map_park_error(error: scheduler::thread::TaskError) -> FutexAccessError {
     let error = match error {
-        scheduler::TaskError::TimerCapacity => crate::StarryError::NoMemory,
-        scheduler::TaskError::UnsafeContext => crate::StarryError::OperationNotPermitted,
+        scheduler::thread::TaskError::TimerCapacity => crate::StarryError::NoMemory,
+        scheduler::thread::TaskError::UnsafeContext => crate::StarryError::OperationNotPermitted,
         _ => crate::StarryError::BadState,
     };
     error.into()
@@ -121,7 +127,7 @@ pub struct WaitQueue {
     // Queue mutation allocates and cancellation may enter the task scheduler.
     // User-memory conditions are nofault while this sleeping PI mutex is held;
     // page faults are resolved only after the guard is released.
-    inner: PiMutex<WaitQueueInner>,
+    inner: Mutex<WaitQueueInner>,
 }
 
 #[derive(Default)]
@@ -131,7 +137,7 @@ struct WaitQueueInner {
 
 struct Waiter {
     task: UserTaskRef,
-    wake: scheduler::ThreadWakeHandle,
+    wake: scheduler::thread::ThreadWakeHandle,
     bitset: u32,
     generation: u64,
 }
@@ -390,21 +396,22 @@ impl WaitQueue {
                 return Ok(false);
             }
             let task = task();
-            let park = match scheduler::begin_current_park().map_err(map_park_error)? {
-                CurrentParkStart::Notified => {
-                    let deadline_expired = deadline
-                        .is_some_and(|deadline| scheduler_monotonic_now().reached(deadline));
-                    return match classify_park_notification(
-                        task.take_interrupt(),
-                        deadline_expired,
-                    )? {
-                        ParkNotificationAction::RecheckCondition => {
-                            Err(FutexWaitError::SchedulerNotification)
-                        }
-                    };
-                }
-                CurrentParkStart::Prepared(park) => park,
-            };
+            let park =
+                match scheduler::thread::current::begin_current_park().map_err(map_park_error)? {
+                    CurrentParkStart::Notified => {
+                        let deadline_expired = deadline
+                            .is_some_and(|deadline| scheduler_monotonic_now().reached(deadline));
+                        return match classify_park_notification(
+                            task.take_interrupt(),
+                            deadline_expired,
+                        )? {
+                            ParkNotificationAction::RecheckCondition => {
+                                Err(FutexWaitError::SchedulerNotification)
+                            }
+                        };
+                    }
+                    CurrentParkStart::Prepared(park) => park,
+                };
             let generation = match task.as_thread().wait_state().begin(cleanup) {
                 Ok(generation) => generation,
                 Err(error) => {
@@ -496,13 +503,13 @@ impl WaitQueue {
         task: &UserTaskRef,
         generation: u64,
     ) -> Result<CurrentParkStart, FutexAccessError> {
-        Self::begin_repark_with(scheduler::begin_current_park, || {
+        Self::begin_repark_with(scheduler::thread::current::begin_current_park, || {
             Self::cancel_waiter(self, task, generation);
         })
     }
 
     fn begin_repark_with(
-        begin: impl FnOnce() -> Result<CurrentParkStart, scheduler::TaskError>,
+        begin: impl FnOnce() -> Result<CurrentParkStart, scheduler::thread::TaskError>,
         cleanup: impl FnOnce(),
     ) -> Result<CurrentParkStart, FutexAccessError> {
         match begin() {
@@ -643,7 +650,7 @@ struct FutexBucketWaiter {
 }
 
 struct FutexBucket {
-    waiters: PiMutex<VecDeque<FutexBucketWaiter>>,
+    waiters: Mutex<VecDeque<FutexBucketWaiter>>,
     // Linux's futex hash bucket keeps a lockless waiter hint so wakeups can
     // avoid taking the bucket lock when no waiter can be present. The hint is
     // deliberately bucket-wide (not key-specific), and is only a fast-path
@@ -654,7 +661,7 @@ struct FutexBucket {
 impl FutexBucket {
     const fn new() -> Self {
         Self {
-            waiters: PiMutex::new(VecDeque::new()),
+            waiters: Mutex::new(VecDeque::new()),
             pending: AtomicUsize::new(0),
         }
     }
@@ -904,21 +911,22 @@ impl ResolvedFutex {
             if !condition()? {
                 return Ok(false);
             }
-            let park = match scheduler::begin_current_park().map_err(map_park_error)? {
-                CurrentParkStart::Notified => {
-                    let deadline_expired =
-                        deadline.is_some_and(|deadline| deadline.lag().is_some());
-                    return match classify_park_notification(
-                        task.take_interrupt(),
-                        deadline_expired,
-                    )? {
-                        ParkNotificationAction::RecheckCondition => {
-                            Err(FutexWaitError::SchedulerNotification)
-                        }
-                    };
-                }
-                CurrentParkStart::Prepared(park) => park,
-            };
+            let park =
+                match scheduler::thread::current::begin_current_park().map_err(map_park_error)? {
+                    CurrentParkStart::Notified => {
+                        let deadline_expired =
+                            deadline.is_some_and(|deadline| deadline.lag().is_some());
+                        return match classify_park_notification(
+                            task.take_interrupt(),
+                            deadline_expired,
+                        )? {
+                            ParkNotificationAction::RecheckCondition => {
+                                Err(FutexWaitError::SchedulerNotification)
+                            }
+                        };
+                    }
+                    CurrentParkStart::Prepared(park) => park,
+                };
             let generation = match task.as_thread().wait_state().begin(Some(self.cleanup())) {
                 Ok(generation) => generation,
                 Err(error) => {
@@ -984,7 +992,7 @@ impl ResolvedFutex {
             }
 
             park = loop {
-                match scheduler::begin_current_park() {
+                match scheduler::thread::current::begin_current_park() {
                     Ok(CurrentParkStart::Notified)
                         if task.as_thread().wait_state().is_woken(generation) =>
                     {
@@ -1478,7 +1486,7 @@ fn false_wait_condition_short_circuits_for_test() -> bool {
 fn park_prepare_error_cleans_waiter_for_test() -> bool {
     let linked = AtomicUsize::new(1);
     let result = WaitQueue::begin_repark_with(
-        || Err(scheduler::TaskError::RuntimeFailure(0x4655_5458)),
+        || Err(scheduler::thread::TaskError::RuntimeFailure(0x4655_5458)),
         || {
             linked.store(0, AtomicOrdering::Release);
         },

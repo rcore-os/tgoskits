@@ -1,7 +1,7 @@
 //! Runqueue-owned runtime accounting and scheduler tick work publication.
 
 use super::*;
-use crate::SchedulerTickMode;
+use crate::runtime::service::SchedulerTickMode;
 
 impl ThreadCore {
     pub(crate) fn commit_runtime_interval(&self, runtime_ns: u64) {

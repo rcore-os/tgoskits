@@ -106,14 +106,14 @@ pub struct NetControl {
 
 struct DhcpBootstrap {
     configured: AtomicBool,
-    waiters: ax_task::WaitQueue,
+    waiters: ax_task::sync::WaitQueue,
 }
 
 impl DhcpBootstrap {
     const fn new() -> Self {
         Self {
             configured: AtomicBool::new(false),
-            waiters: ax_task::WaitQueue::new(),
+            waiters: ax_task::sync::WaitQueue::new(),
         }
     }
 

@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use ax_std::os::arceos::task::ThreadId;
+use ax_std::os::arceos::task::thread::ThreadId;
 
 /// A scheduler identity that may be published exactly once.
 ///

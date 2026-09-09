@@ -162,8 +162,8 @@ impl<T> AlarmQueue<T> {
     }
 }
 
-static ALARM_LIST: LazyLock<PiMutex<AlarmQueue<AlarmTarget>>> =
-    LazyLock::new(|| PiMutex::new(AlarmQueue::new()));
+static ALARM_LIST: LazyLock<Mutex<AlarmQueue<AlarmTarget>>> =
+    LazyLock::new(|| Mutex::new(AlarmQueue::new()));
 static ALARM_WAIT: WaitQueue = WaitQueue::new();
 static ALARM_EPOCH: AtomicU64 = AtomicU64::new(0);
 

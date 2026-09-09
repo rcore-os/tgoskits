@@ -62,7 +62,7 @@ pub(crate) use self::{
 use crate::{
     mm::MmHandle,
     namespace::NsProxy,
-    sync::{IrqMutex, PiMutex, PiMutexGuard, SpinLock},
+    sync::{IrqMutex, Mutex, MutexGuard, SpinLock},
 };
 
 /// Resources shared by every thread in one Linux process generation.
@@ -82,11 +82,11 @@ pub struct ProcessData {
     /// Per-process uprobe manager.
     pub uprobe_manager: crate::kprobe::KprobeManager,
     /// Per-process uprobe point list.
-    pub uprobe_point_list: PiMutex<crate::kprobe::KprobePointList>,
+    pub uprobe_point_list: Mutex<crate::kprobe::KprobePointList>,
     /// Immutable namespace snapshot published under a short IRQ-safe lock.
     pub(crate) nsproxy: IrqMutex<Arc<NsProxy>>,
     /// Sleepable writer transaction gate for namespace replacement.
-    namespace_update: PiMutex<()>,
+    namespace_update: Mutex<()>,
     /// Authoritative cgroup membership and exit serialization.
     cgroup: ProcessCgroupState,
     /// Resource limits and process-wide compatibility policy.
@@ -178,7 +178,7 @@ impl ProcessData {
             memory: ProcessMemoryState::new(aspace, shared_memory),
             wait,
             uprobe_manager: crate::kprobe::KprobeManager::new(),
-            uprobe_point_list: PiMutex::new(crate::kprobe::KprobePointList::new()),
+            uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
             policy: ProcessPolicyState::new(),
             accounting: ProcessAccountingState::new(),
             signal: Arc::new(ProcessSignalManager::new(
@@ -186,7 +186,7 @@ impl ProcessData {
                 crate::config::SIGNAL_TRAMPOLINE,
             )),
             nsproxy: IrqMutex::new(Arc::new(nsproxy)),
-            namespace_update: PiMutex::new(()),
+            namespace_update: Mutex::new(()),
             cgroup: ProcessCgroupState::new(&identity, cgroup),
             ptrace: ProcessPtraceState::new(),
             job_control: ProcessJobControl::new(),
@@ -279,7 +279,7 @@ impl Drop for ProcessData {
 /// Serialized copy-on-write namespace publication.
 pub(crate) struct ProcessNamespaceUpdate<'a> {
     publication: &'a IrqMutex<Arc<NsProxy>>,
-    _guard: PiMutexGuard<'a, ()>,
+    _guard: MutexGuard<'a, ()>,
 }
 
 impl ProcessNamespaceUpdate<'_> {
@@ -317,7 +317,7 @@ pub(crate) fn new_test_process_data(
                 Default::default(),
                 Default::default(),
             ),
-            MmHandle::from_arc(Arc::new(PiMutex::new(
+            MmHandle::from_arc(Arc::new(Mutex::new(
                 crate::mm::AddrSpace::new_empty(0x10000.into(), 0x10000).unwrap(),
             )))
             .unwrap(),

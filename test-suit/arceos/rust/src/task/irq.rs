@@ -1,7 +1,11 @@
 use std::{
     os::arceos::{
         modules::ax_hal,
-        task::{self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, WaitQueue},
+        task as scheduler,
+        task::sync::{
+            WaitQueue,
+            irq::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration},
+        },
     },
     sync::{
         Arc,
@@ -64,7 +68,7 @@ fn test_irq_wait_cell() {
         let registered = Arc::clone(&registered);
         let finished = Arc::clone(&finished);
         thread::spawn(move || {
-            let current = scheduler::current_thread_handle()
+            let current = scheduler::thread::current::current_thread_handle()
                 .expect("IRQ wait worker must have a scheduler handle");
             let registration = IrqWaitRegistration::new(current.wake_handle());
             let token = match cell.register(&registration) {
@@ -82,7 +86,7 @@ fn test_irq_wait_cell() {
 
             let park = WaitQueue::new();
             park.wait_until(|| !token.is_attached());
-            scheduler::quiesce_irq_wait(token)
+            scheduler::sync::irq::quiesce_irq_wait(token)
                 .expect("IRQ wait registration must quiesce in task context");
             finished.store(true, Ordering::Release);
         })
@@ -96,7 +100,7 @@ fn test_irq_wait_cell() {
 
     let _result = cell.notify();
     assert!(cell.is_pending());
-    let current = scheduler::current_thread_handle()
+    let current = scheduler::thread::current::current_thread_handle()
         .expect("IRQ pending test must run as a scheduler thread");
     let registration = IrqWaitRegistration::new(current.wake_handle());
     assert!(matches!(

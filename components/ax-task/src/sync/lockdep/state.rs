@@ -647,15 +647,15 @@ fn class_key_to_location(class_key: *const Location<'static>) -> &'static Locati
 }
 
 fn collect_current_task_held_locks(snapshot: &mut HeldLockSnapshot) {
-    crate::facade::collect_current_task_held_locks(snapshot);
+    crate::sync::lockdep::current::collect_current_task_held_locks(snapshot);
 }
 
 fn push_current_task_held_lock(held: HeldLock) {
-    crate::facade::push_current_task_held_lock(held);
+    crate::sync::lockdep::current::push_current_task_held_lock(held);
 }
 
 fn pop_current_task_held_lock(lock_addr: usize) {
-    crate::facade::pop_current_task_held_lock(lock_addr);
+    crate::sync::lockdep::current::pop_current_task_held_lock(lock_addr);
 }
 
 #[cfg(all(

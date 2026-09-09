@@ -17,23 +17,30 @@ use core::{
 
 use ax_lazyinit::OnceLock;
 use ax_runtime::hal::time::{TimeValue, monotonic_time};
-pub use ax_runtime::task::block_on;
-use ax_std::os::arceos::task::{
-    self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, LocalExecutor,
-    MonotonicDeadline, MonotonicInstant, WaitQueue,
+pub use ax_runtime::task::executor::block_on;
+use ax_std::os::arceos::{
+    task as scheduler,
+    task::{
+        executor::LocalExecutor,
+        sync::{
+            WaitQueue,
+            irq::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration},
+        },
+        time::{MonotonicDeadline, MonotonicInstant},
+    },
 };
 use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar, Pollable, SharedObserver};
 
 pub use super::user_wait::{UserWaitError, UserWaitOutcome};
 use super::{UserTaskRef, user_wait::resolve_user_wait};
-use crate::sync::PiMutex;
+use crate::sync::Mutex;
 
 mod clock;
 pub use clock::timeout_at_wall;
 pub(crate) use clock::{WallClockWaiter, notify_wall_clock_changed};
 
 static TIMER_WAIT: WaitQueue = WaitQueue::new();
-static TIMER_RUNTIME: PiMutex<TimerRuntime> = PiMutex::new(TimerRuntime::new());
+static TIMER_RUNTIME: Mutex<TimerRuntime> = Mutex::new(TimerRuntime::new());
 static TIMER_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 static TIMER_EPOCH: AtomicU64 = AtomicU64::new(0);
 static NEXT_TIMER_KEY: AtomicU64 = AtomicU64::new(1);
@@ -174,7 +181,7 @@ pub struct IrqNotify {
 }
 
 struct IrqNotifyWaiter {
-    owner: scheduler::ThreadId,
+    owner: scheduler::thread::ThreadId,
     registration: IrqWaitRegistration,
 }
 
@@ -210,7 +217,7 @@ impl IrqNotify {
             IrqRegisterResult::Registered(token)
             | IrqRegisterResult::NotificationInFlight(token) => {
                 self.park.wait_until(|| !token.is_attached());
-                scheduler::quiesce_irq_wait(token)
+                scheduler::sync::irq::quiesce_irq_wait(token)
                     .unwrap_or_else(|error| panic!("Starry IRQ waiter could not quiesce: {error}"));
             }
             IrqRegisterResult::Occupied => {
@@ -220,7 +227,7 @@ impl IrqNotify {
     }
 
     fn current_registration(&self) -> &IrqWaitRegistration {
-        let current = scheduler::current_thread_handle()
+        let current = scheduler::thread::current::current_thread_handle()
             .unwrap_or_else(|error| panic!("IRQ service has no scheduler thread: {error}"));
         let current_id = current.id();
         let waiter = self.waiter.call_once(|| {

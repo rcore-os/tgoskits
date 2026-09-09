@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 use ax_runtime::hal::cpu::uspace::UserContext;
 use syscalls::Sysno;
 
-use crate::{StarryError, StarryResult, sync::PiMutex};
+use crate::{StarryError, StarryResult, sync::Mutex};
 
 const BPF_MAXINSNS: usize = 4096;
 const BPF_MEMWORDS: usize = 16;
@@ -130,7 +130,7 @@ pub struct SeccompState {
 /// snapshot without locking or reference-count traffic.
 pub(crate) struct SeccompStateStore {
     current: AtomicPtr<SeccompState>,
-    snapshots: PiMutex<Vec<Arc<SeccompState>>>,
+    snapshots: Mutex<Vec<Arc<SeccompState>>>,
 }
 
 impl SeccompStateStore {
@@ -139,7 +139,7 @@ impl SeccompStateStore {
         let current = Arc::as_ptr(&initial).cast_mut();
         Self {
             current: AtomicPtr::new(current),
-            snapshots: PiMutex::new(vec![initial]),
+            snapshots: Mutex::new(vec![initial]),
         }
     }
 
@@ -805,5 +805,4 @@ mod tests {
     fn seccomp_action_and_precedence_rules_hold() {
         assert!(super::seccomp_action_and_precedence_rules_hold_for_test());
     }
-
 }

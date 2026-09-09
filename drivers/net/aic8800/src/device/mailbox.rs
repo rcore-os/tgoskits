@@ -75,6 +75,12 @@ impl AicDevice {
         })
     }
 
+    pub(super) fn mailbox_confirmation_id(&self) -> Option<u16> {
+        self.lifecycle.mailbox.as_ref().and_then(|mailbox| {
+            (mailbox.phase == MailboxPhase::Confirmation).then_some(mailbox.expected_message_id)
+        })
+    }
+
     pub(super) fn mailbox_timed_out(&self, now: MonotonicTime) -> bool {
         self.lifecycle.mailbox.as_ref().is_some_and(|mailbox| {
             mailbox.phase != MailboxPhase::Complete && now >= mailbox.deadline
@@ -248,7 +254,7 @@ impl AicDevice {
                     if connect.phase == ConnectPhase::Resetting) =>
             {
                 crate::lmac::require_empty(SM_DISCONNECT_CFM, &result)?;
-                control.commands.pop_front();
+                control.pop_command();
                 let ControlOperation::Connect(connect) = &mut control.operation else {
                     return Err(AicError::CompletionMismatch);
                 };
@@ -267,7 +273,7 @@ impl AicDevice {
                     return Err(AicError::CompletionMismatch);
                 }
                 connect.phase = ConnectPhase::AwaitIndication;
-                control.commands.pop_front();
+                control.pop_command();
             }
             ME_SET_CONTROL_PORT_CFM => {
                 crate::lmac::require_empty(ME_SET_CONTROL_PORT_CFM, &result)?;
@@ -277,24 +283,24 @@ impl AicDevice {
                 if connect.phase != ConnectPhase::AwaitControlPort {
                     return Err(AicError::CompletionMismatch);
                 }
-                control.commands.pop_front();
+                control.pop_command();
                 open_control_port = true;
                 finish = true;
                 log::info!("[wifi] WPA2 keys installed and control port enabled");
             }
             MM_KEY_ADD_CFM => {
                 crate::lmac::parse_key_add_confirmation(&result)?;
-                control.commands.pop_front();
+                control.pop_command();
                 m4 = control.accept_key_confirmation()?;
             }
             SM_DISCONNECT_CFM => {
                 crate::lmac::require_empty(SM_DISCONNECT_CFM, &result)?;
-                control.commands.pop_front();
+                control.pop_command();
                 self.data.link.clear_peer();
                 finish = true;
             }
             _ => {
-                control.commands.pop_front();
+                control.pop_command();
                 finish = control.commands.is_empty();
             }
         }
@@ -306,7 +312,7 @@ impl AicDevice {
         }
         if finish {
             self.lifecycle.control = None;
-            self.data.events.push_back(AicEvent::ControlComplete);
+            self.data.push_event(AicEvent::ControlComplete)?;
         }
         Ok(())
     }

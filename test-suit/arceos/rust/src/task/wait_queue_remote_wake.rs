@@ -1,11 +1,14 @@
 use core::sync::atomic::AtomicUsize;
 use std::{
     os::arceos::{
-        api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+        api::{
+            task as api,
+            task::{AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+        },
         modules::ax_hal::percpu::this_cpu_id,
         task::{
-            self as scheduler, CpuId, CpuSet, SchedulePolicy, SwitchReason, ThreadExtension,
-            ThreadExtensionOps, ThreadId,
+            sched::{CpuId, CpuSet, SchedulePolicy},
+            thread::{SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadId},
         },
     },
     println,
@@ -148,7 +151,7 @@ pub fn run() -> crate::TestResult {
     // SAFETY: this call transfers the extension's unique logical ownership and
     // installs the affinity before publishing the scheduler thread.
     let sleeper = unsafe {
-        scheduler::spawn_raw_with_extension_and_affinity(
+        std::os::arceos::thread::spawn_raw_with_extension_and_affinity(
             move || {
                 assert_eq!(this_cpu_id(), sleeper_cpu);
                 SLEEPER_CPU.store(this_cpu_id(), Ordering::Release);
@@ -202,6 +205,6 @@ pub fn run() -> crate::TestResult {
         ),
         "remote wait-queue wakeup did not make bounded progress"
     );
-    scheduler::join_thread(sleeper).expect("remote sleeper must exit cleanly");
+    std::os::arceos::thread::join_thread(sleeper).expect("remote sleeper must exit cleanly");
     Ok(())
 }

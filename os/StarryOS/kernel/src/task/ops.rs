@@ -119,12 +119,19 @@ mod axtests {
     use alloc::{string::ToString, sync::Arc};
     use core::sync::atomic::{AtomicBool, Ordering};
 
-    use ax_runtime::task::{
-        WaitQueue, begin_pi_schedule_test_probe, current_thread_id, end_pi_schedule_test_probe,
-        join_thread, pi_schedule_test_probe_snapshot, spawn_raw,
+    use ax_runtime::{
+        task::{
+            diagnostics::{
+                begin_pi_schedule_test_probe, end_pi_schedule_test_probe,
+                pi_schedule_test_probe_snapshot,
+            },
+            sync::WaitQueue,
+            thread::current::current_thread_id,
+        },
+        thread::{join_thread, spawn_raw},
     };
 
-    use crate::sync::PiMutex;
+    use crate::sync::Mutex;
 
     fn wait_for(mut condition: impl FnMut() -> bool, message: &str) {
         for _ in 0..1_000_000 {
@@ -139,14 +146,14 @@ mod axtests {
     #[axtest::axtest]
     fn kernel_thread_retains_active_mm_membarrier_state() {
         assert!(
-            ax_runtime::task::kernel_thread_retains_active_mm_membarrier_state_for_test(),
+            ax_runtime::thread::kernel_thread_retains_active_mm_membarrier_state_for_test(),
             "a kernel thread borrows the CPU's active mm and must retain its rq membarrier state",
         );
     }
 
     #[axtest::axtest]
     fn unchanged_pi_schedule_returns_before_the_owner_rq_transaction() {
-        let mutex = Arc::new(PiMutex::new(()));
+        let mutex = Arc::new(Mutex::new(()));
         let owner_wait = Arc::new(WaitQueue::new());
         let owner_locked = Arc::new(AtomicBool::new(false));
         let release_owner = Arc::new(AtomicBool::new(false));
@@ -488,7 +495,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // before it retires from the thread group. Consequently ThreadExit::Last
     // proves that all scheduler address-space slots are detached before the
     // process slot is released and the zombie becomes waitable.
-    ax_runtime::task::detach_current_address_space()
+    ax_runtime::thread::detach_current_address_space()
         .unwrap_or_else(|error| panic!("failed to detach exiting task address space: {error}"));
 
     // Use the user-visible TID (`thr.tid()`), not the scheduler ID. After

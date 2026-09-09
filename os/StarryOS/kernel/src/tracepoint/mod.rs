@@ -33,7 +33,7 @@ use registry::TracepointReclaimer;
 use crate::{
     StarryError, StarryResult,
     pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFs, SpecialFsFile},
-    sync::PiMutex,
+    sync::Mutex,
     task::{PidIdentityId, future::IrqNotify, try_current_user_irq_view},
 };
 
@@ -229,14 +229,14 @@ impl<const CAPACITY: usize> TraceIngressRing<CAPACITY> {
 
 struct TraceState {
     point_map: LazyInit<TracePointMap<KernelTraceAux>>,
-    raw_pipe: PiMutex<IdentityTracePipe>,
+    raw_pipe: Mutex<IdentityTracePipe>,
     raw_epoch: AtomicU64,
     ingress: TraceIngressRing<TRACE_INGRESS_CAPACITY>,
     pipe_event: PollSet,
     pipe_notify: IrqNotify,
     sched_notify: IrqNotify,
     reclaimer: TracepointReclaimer,
-    cmdline_cache: LazyInit<PiMutex<TraceCmdLineCache>>,
+    cmdline_cache: LazyInit<Mutex<TraceCmdLineCache>>,
     ext_tracepoints: LazyInit<BTreeMap<u32, KernelExtTracePoint>>,
 }
 
@@ -244,7 +244,7 @@ impl TraceState {
     const fn new() -> Self {
         Self {
             point_map: LazyInit::new(),
-            raw_pipe: PiMutex::new(IdentityTracePipe::new(TRACE_RAW_PIPE_CAPACITY)),
+            raw_pipe: Mutex::new(IdentityTracePipe::new(TRACE_RAW_PIPE_CAPACITY)),
             raw_epoch: AtomicU64::new(0),
             ingress: TraceIngressRing::new(),
             pipe_event: PollSet::new(),
@@ -460,8 +460,9 @@ impl KernelTraceOps for KernelTraceAux {
 fn callbacks_run_without_raw_guard_for_test() -> bool {
     let tracepoint =
         KernelExtTracePoint::new(sched::tracepoint_state_for_test(), &TRACE_STATE.reclaimer);
-    let read_result = tracepoint.read(|_| ax_runtime::task::yield_current_cpu());
-    let write_result = tracepoint.update(|_| ax_runtime::task::yield_current_cpu());
+    let read_result = tracepoint.read(|_| ax_runtime::task::thread::current::yield_current_cpu());
+    let write_result =
+        tracepoint.update(|_| ax_runtime::task::thread::current::yield_current_cpu());
     let blocked_retirement = tracepoint.read(|_| {
         // Cross both reader-counter epochs while the first epoch is still
         // leased. Neither generation sharing that counter may be reclaimed.
@@ -540,7 +541,7 @@ fn drain_trace_ingress(limit: usize) -> TraceIngressDrain {
     }
 }
 
-fn start_trace_pipe_notify_worker() -> ax_runtime::task::ThreadHandle {
+fn start_trace_pipe_notify_worker() -> ax_runtime::task::thread::ThreadHandle {
     if TRACE_PIPE_NOTIFY_WORKER.swap(true, Ordering::AcqRel) {
         panic!("trace pipe notify worker started twice");
     }
@@ -557,9 +558,9 @@ fn start_trace_pipe_notify_worker() -> ax_runtime::task::ThreadHandle {
                     if !drain.pending {
                         break;
                     }
-                    ax_runtime::task::yield_current_cpu().unwrap_or_else(|error| {
-                        panic!("trace ingress worker failed to yield: {error}")
-                    });
+                    ax_runtime::task::thread::current::yield_current_cpu().unwrap_or_else(
+                        |error| panic!("trace ingress worker failed to yield: {error}"),
+                    );
                 }
             }
         },
@@ -567,7 +568,11 @@ fn start_trace_pipe_notify_worker() -> ax_runtime::task::ThreadHandle {
     )
 }
 
-fn publish_trace_worker_id(slot: &AtomicU64, worker: &ax_runtime::task::ThreadHandle, name: &str) {
+fn publish_trace_worker_id(
+    slot: &AtomicU64,
+    worker: &ax_runtime::task::thread::ThreadHandle,
+    name: &str,
+) {
     let worker_id = worker.id().as_u64();
     assert_ne!(worker_id, 0, "{name} has an invalid scheduler identity");
     slot.compare_exchange(0, worker_id, Ordering::Release, Ordering::Relaxed)
@@ -711,7 +716,7 @@ pub fn tracepoint_init() -> StarryResult<()> {
     TRACE_STATE.ext_tracepoints.init_once(ext_tps);
     TRACE_STATE
         .cmdline_cache
-        .init_once(PiMutex::new(TraceCmdLineCache::new(
+        .init_once(Mutex::new(TraceCmdLineCache::new(
             NonZero::new(TRACE_CMDLINE_CACHE_SIZE).unwrap(),
         )));
     let sched_worker = sched::start_worker();

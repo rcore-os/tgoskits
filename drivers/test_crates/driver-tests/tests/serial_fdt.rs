@@ -5,8 +5,8 @@ use core::{
 };
 
 use axklib::{
-    BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId, Klib, KlibError,
-    KlibResult, PhysAddr, VirtAddr, impl_trait,
+    BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId, KlibError,
+    KlibResult, PhysAddr, VirtAddr, klib::impl_trait,
 };
 use fdt_edit::{Fdt, Node, Property};
 use rdrive::{Platform, register::DriverRegister};

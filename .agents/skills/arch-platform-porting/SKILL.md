@@ -88,7 +88,7 @@ description: 为 ArceOS、StarryOS、Axvisor、someboot、动态统一可扩展�
 - **固件地址与设备映射**：固件表暴露 LoongArch 直接映射窗口等处理器可见别名时，在体系结构边界规范化后再交给扁平设备树内存、早期控制台或设备映射后端。不得把体系结构掩码藏入通用 `mem` 或 `common`，也不得在驱动重复。`phys_to_virt` 与 `virt_to_phys` 只用于内存直接映射；设备资源通过 `ax-mm::iomap()`，由 `ax_hal::mem::prepare_iomap()` 先给出体系结构或平台决定，再退到页表设备映射。LoongArch 非缓存窗口放在 `someboot::ArchTrait::ioremap_device()` 后面。
 - **驱动与根文件系统**：检查外围部件互连总线命令位、设备映射、直接内存访问宽度、非易失性存储消息信号扩展中断或传统中断路由、块设备可见性、根文件系统修补和控制台或输入功能。QEMU 宿主根磁盘使用非易失性存储，不能静默退回 `virtio-blk`；绕过宿主块运行时的客户机虚拟设备二进制接口属于另一范围。
 - **StarryNixOS x86_64 诊断**：从 `apps/starry/nixos/flake.lock` 原生构建应用所有映像，再运行 `cargo xtask starry app qemu -t nixos --arch x86_64`。只有相邻清单通过锁文件、闭包、目标、ext4 和映像散列检查的已发布映像才能设置 `STARRY_NIXOS_REUSE_ROOTFS=1`。不得重建或切换宿主 NixOS，也不得在 `.ci-cache/{cargo,rustup,tmp}` 外创建仓库本地缓存。按有序阶段定位最早分歧，并在改变系统调用、procfs、挂载或文件系统语义前添加定向 `qemu/system/<behavior>`；后续 systemd 连锁错误不是第一根因。
-- **操作系统配置与测试用例**：只为已验证体系结构更新 ArceOS、StarryOS 和 Axvisor 配置。`qemu-<arch>.toml` 运行配置与 `build-*.toml` 构建配置分离。Starry 应用板卡用例默认使用匹配的 `os/StarryOS/configs/board/<board>.toml`；只有共享同一目标的全部板卡都能安全使用相同处理器、内存管理单元和片上系统功能集时，才加入应用局部 `build-<target>.toml`。
+- **操作系统配置与测试用例**：只为已验证体系结构更新 ArceOS、StarryOS 和 Axvisor 配置。`qemu-<arch>.toml` 运行配置与 `build-*.toml` 构建配置分离。Starry 应用板卡用例默认使用匹配的 `os/StarryOS/configs/board/<board>.toml`；只有共享同一目标的全部板卡都能安全使用相同处理器、内存管理单元和片上系统功能集时，才加入应用局部 `build-<target>.toml`。板卡需要扫描输出桌面（card0/fb0 链路）时，构建特性必须同时包含 `ax-runtime/display` 与 `ax-driver/virtio-gpu`：`ax_runtime::devices::init_display` 由 `ax-runtime/display` 特性门控，缺配时 ax_display 永不初始化——`/dev/fb0` 不创建、card0 连接器模式回退 640x480、`present_fb` 静默空操作，用户态合成器整条管线正常但屏幕恒黑；对齐 `qemu-riscv64` 板卡与同目标 clippy 配置的特性集即可。
 
 ## someboot 必备条件
 

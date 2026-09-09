@@ -1,4 +1,4 @@
-#[path = "../src/system/task_system/root_domain/fair_nohz_state.rs"]
+#[path = "../src/sched/system/task_system/root_domain/fair_nohz_state.rs"]
 mod fair_nohz_state;
 
 use fair_nohz_state::{FairNoHzClaim, FairNoHzPhase, FairNoHzState, FairNoHzTransition};

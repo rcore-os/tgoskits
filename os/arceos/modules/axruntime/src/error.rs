@@ -10,7 +10,7 @@ use axfs_ng_vfs::VfsError;
 use axklib::KlibError;
 use rdif_serial::ConfigError;
 
-use crate::task::TaskError;
+use crate::task::thread::TaskError;
 
 /// Errors owned by the ArceOS runtime layer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

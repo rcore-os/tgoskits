@@ -1,9 +1,15 @@
 use std::{
     os::arceos::{
-        api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+        api::{
+            task as api,
+            task::{AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+        },
         guard::PreemptGuard,
         modules::ax_hal,
-        task::{CpuSet, RtPriority, SchedulePolicy, current_thread_id, set_thread_policy},
+        task::{
+            sched::{CpuSet, RtPriority, SchedulePolicy},
+            thread::current::current_thread_id,
+        },
     },
     sync::atomic::{AtomicBool, Ordering},
     thread,
@@ -35,11 +41,13 @@ pub fn run() -> crate::TestResult {
     let worker = thread::spawn(|| {
         assert!(ax_set_current_affinity(AxCpuMask::one_shot(0)).is_ok());
         let current = current_thread_id().expect("preempt worker must have an identity");
-        set_thread_policy(
-            current,
-            SchedulePolicy::fifo(RtPriority::new(80).expect("priority 80 must be valid")),
-        )
-        .expect("preempt worker must enter FIFO policy");
+        std::os::arceos::task::thread::ThreadHandle::lookup(current)
+            .and_then(|thread| {
+                thread.set_policy(SchedulePolicy::fifo(
+                    RtPriority::new(80).expect("priority 80 must be valid"),
+                ))
+            })
+            .expect("preempt worker must enter FIFO policy");
         READY.store(true, Ordering::Release);
         api::ax_wait_queue_wait_until(&WAIT_QUEUE, || GO.load(Ordering::Acquire), None);
         RAN.store(true, Ordering::Release);
@@ -70,7 +78,7 @@ pub fn run() -> crate::TestResult {
         "final preempt guard exit did not schedule the ready RT worker",
     );
     worker.join().expect("preempt worker must exit normally");
-    std::os::arceos::task::set_current_thread_affinity(CpuSet::all(
+    std::os::arceos::task::thread::current::set_current_thread_affinity(CpuSet::all(
         thread::available_parallelism().unwrap().get(),
     ))
     .expect("test owner must restore full affinity");

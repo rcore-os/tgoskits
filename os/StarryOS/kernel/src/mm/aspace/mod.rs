@@ -1810,6 +1810,51 @@ impl AddrSpace {
     /// materialized mapping in `range` is detached.  This runs before the PTE
     /// mutation, so allocation or cache-identity failure leaves the published
     /// state untouched.
+    /// Records one VMA's backend, and the file-cache pins its shared lease
+    /// keeps alive, into the retired-mapping owners.
+    fn collect_retired_mapping_owner(
+        &self,
+        entry: &Arc<VmaEntry>,
+        range: VirtAddrRange,
+        owners: &mut RetiredMappingOwners,
+    ) -> StarryResult {
+        owners
+            .backends
+            .try_reserve(1)
+            .map_err(|_| StarryError::NoMemory)?;
+        let backend = entry.operation_clone();
+
+        if backend.shared_file_lease().is_some() {
+            let start = entry.start().max(range.start).align_down_4k();
+            let end = entry.end().min(range.end);
+            let file_range = VirtAddrRange::new(start, end);
+            let count = self.mapping_slots_overlapping(file_range).count();
+            owners
+                .cache_pins
+                .try_reserve(count)
+                .map_err(|_| StarryError::NoMemory)?;
+            for (_, slot) in self.mapping_slots_overlapping(file_range) {
+                if slot.state() != SlotState::Present
+                    || slot.mapping != backend.mapping_id()
+                    || slot.page_order != PageOrder::BASE
+                {
+                    return Err(StarryError::BadState);
+                }
+                let paddr = slot.mapped_paddr().ok_or(StarryError::BadState)?;
+                let (installed, _, page_size) = self.pt.query(slot.va)?;
+                if installed != paddr || page_size != PAGE_SIZE_4K {
+                    return Err(StarryError::BadState);
+                }
+                let pin = backend
+                    .pin_file_cache_owner_for_mapping(slot.va, paddr)?
+                    .ok_or(StarryError::BadState)?;
+                owners.cache_pins.push(pin);
+            }
+        }
+        owners.backends.push(backend);
+        Ok(())
+    }
+
     fn prepare_retired_mapping_owners(
         &self,
         range: VirtAddrRange,
@@ -1817,47 +1862,21 @@ impl AddrSpace {
         try_reserve_irq_vec(&self.retired_mapping_batches, 1).map_err(|_| StarryError::NoMemory)?;
 
         let mut owners = RetiredMappingOwners::default();
-        for entry in self.vma_root.iter_entries() {
-            if entry.start() >= range.end {
-                break;
-            }
-            if entry.end() <= range.start {
-                continue;
-            }
-            owners
-                .backends
-                .try_reserve(1)
-                .map_err(|_| StarryError::NoMemory)?;
-            let backend = entry.operation_clone();
-
-            if backend.shared_file_lease().is_some() {
-                let start = entry.start().max(range.start).align_down_4k();
-                let end = entry.end().min(range.end);
-                let file_range = VirtAddrRange::new(start, end);
-                let count = self.mapping_slots_overlapping(file_range).count();
-                owners
-                    .cache_pins
-                    .try_reserve(count)
-                    .map_err(|_| StarryError::NoMemory)?;
-                for (_, slot) in self.mapping_slots_overlapping(file_range) {
-                    if slot.state() != SlotState::Present
-                        || slot.mapping != backend.mapping_id()
-                        || slot.page_order != PageOrder::BASE
-                    {
-                        return Err(StarryError::BadState);
-                    }
-                    let paddr = slot.mapped_paddr().ok_or(StarryError::BadState)?;
-                    let (installed, _, page_size) = self.pt.query(slot.va)?;
-                    if installed != paddr || page_size != PAGE_SIZE_4K {
-                        return Err(StarryError::BadState);
-                    }
-                    let pin = backend
-                        .pin_file_cache_owner_for_mapping(slot.va, paddr)?
-                        .ok_or(StarryError::BadState)?;
-                    owners.cache_pins.push(pin);
+        // Only the VMAs the range covers matter here. Breaking out of a
+        // full-map iteration saved nothing: `iter_entries` builds the entire
+        // vector before the loop reads its first entry.
+        let mut failure = None;
+        self.vma_root.for_each_overlapping_entry(range, |entry| {
+            match self.collect_retired_mapping_owner(entry, range, &mut owners) {
+                Ok(()) => true,
+                Err(err) => {
+                    failure = Some(err);
+                    false
                 }
             }
-            owners.backends.push(backend);
+        });
+        if let Some(err) = failure {
+            return Err(err);
         }
 
         let matching_slots = self.mapping_slots_overlapping(range).count();
@@ -5326,17 +5345,20 @@ impl AddrSpace {
         // any PTE or VMA fragment.  This is intentionally done here (rather
         // than in one backend) because a range can span several fragments and
         // the envelope belongs to the VMA record itself.
-        let end = start.checked_add(size).ok_or(StarryError::InvalidInput)?;
-        for entry in self.vma_root.iter_entries() {
-            if entry.end() <= start {
-                continue;
+        start.checked_add(size).ok_or(StarryError::InvalidInput)?;
+        // The bounds check reads only the VMAs the range covers. Walking the
+        // whole map and breaking out of it saved nothing: `iter_entries` builds
+        // the entire vector before the loop gets to look at the first entry.
+        let mut denied = false;
+        self.vma_root.for_each_overlapping_entry(range, |entry| {
+            if entry.max_rights().contains(flags) {
+                return true;
             }
-            if entry.start() >= end {
-                break;
-            }
-            if !entry.max_rights().contains(flags) {
-                return Err(StarryError::PermissionDenied);
-            }
+            denied = true;
+            false
+        });
+        if denied {
+            return Err(StarryError::PermissionDenied);
         }
 
         let vma_preimage = self.vma_root.clone();
@@ -5606,20 +5628,26 @@ impl AddrSpace {
         if range.is_empty() {
             return false;
         }
+        // This sits under every user-pointer check, so it must not allocate or
+        // touch a reference count per VMA: an ordinary `clock_gettime` writing
+        // one `timespec` was flattening the whole VMA tree.
         let mut cursor = range.start;
-        for vma in self.vma_root.lookup_range(range) {
+        let mut permitted = false;
+        self.vma_root.for_each_overlapping(range, |vma| {
             if vma.range.end <= cursor {
-                continue;
+                return true;
             }
             if vma.range.start > cursor || !vma.rights.contains(access_flags) {
                 return false;
             }
             cursor = vma.range.end.min(range.end);
             if cursor >= range.end {
-                return true;
+                permitted = true;
+                return false;
             }
-        }
-        false
+            true
+        });
+        permitted
     }
 
     /// Chooses the materialized leaf size for one fault without changing the

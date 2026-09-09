@@ -23,7 +23,7 @@ use crate::{
         MAX_EXEC_ARG_BYTES, MmHandle, load_user_app, new_user_image_builder,
         validate_exec_arg_size, vm_load_string, vm_load_until_nul,
     },
-    sync::{InterruptibleMutexExt, PiMutex},
+    sync::{InterruptibleMutexExt, Mutex},
     task::{TidNumber, future::block_on, zap_thread},
 };
 
@@ -255,7 +255,7 @@ fn do_execve(
     // Registration, runtime ownership and process metadata must all be ready
     // before the first sibling is killed, which is already irreversible.
     let inherited_thp_mode = proc_data.transparent_huge_page_mode();
-    let newaspace_arc = Arc::new(PiMutex::new(new_aspace));
+    let newaspace_arc = Arc::new(Mutex::new(new_aspace));
     let new_mm = MmHandle::from_arc(newaspace_arc).map_err(|_| StarryError::BadState)?;
     new_mm.set_transparent_huge_page_mode(inherited_thp_mode);
 
@@ -435,7 +435,7 @@ fn do_execve(
     // init process — the only state the new image legitimately
     // inherits is the address space and the kernel/scheduler bits we
     // explicitly preserved above.
-    ax_runtime::task::reset_current_user_fp_state()
+    ax_runtime::thread::reset_current_user_fp_state()
         .unwrap_or_else(|error| panic!("exec committed without a resettable FPU owner: {error}"));
     *uctx = UserContext::new(entry_point.as_usize(), user_stack_base, 0);
 

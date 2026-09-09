@@ -6,7 +6,7 @@ pub use alloc::sync::{Arc, Weak};
 #[doc(no_inline)]
 pub use core::sync::atomic;
 
-pub use ax_runtime::sync::{dump_lockdep_trace, set_lockdep_trace_enabled};
+pub use ax_runtime::task::sync::{dump_lockdep_trace, set_lockdep_trace_enabled};
 
 mod mutex;
 

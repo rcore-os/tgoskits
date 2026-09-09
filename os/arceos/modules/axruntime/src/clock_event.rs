@@ -1,4 +1,4 @@
-use ax_task::runtime::{MonotonicDeadline, MonotonicInstant};
+use ax_task::time::{MonotonicDeadline, MonotonicInstant};
 
 /// Absolute finite deadline accepted by the physical clockevent.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -462,7 +462,7 @@ impl LocalClockEvent {
 
 #[cfg(test)]
 mod single_task_tests {
-    use ax_task::runtime::MonotonicInstant;
+    use ax_task::time::MonotonicInstant;
 
     use super::{
         ClockDeadline, ClockEventAction, ClockEventIrqClaim, ClockEventPhase, ClockEventRearm,
@@ -515,7 +515,7 @@ mod single_task_tests {
 
 #[cfg(test)]
 mod tests {
-    use ax_task::runtime::{MonotonicDeadline, MonotonicInstant};
+    use ax_task::time::{MonotonicDeadline, MonotonicInstant};
 
     use super::{
         ClockDeadline, ClockEventAction, ClockEventDeviceState, ClockEventFiringToken,
@@ -545,8 +545,8 @@ mod tests {
     fn values_outside_linux_ktime_are_not_physical_deadlines() {
         assert_eq!(ClockDeadline::from_nanos(u64::MAX), None);
         assert_eq!(
-            ClockDeadline::from_nanos(ax_task::runtime::KTIME_MAX_NANOS),
-            Some(deadline(ax_task::runtime::KTIME_MAX_NANOS))
+            ClockDeadline::from_nanos(ax_task::time::KTIME_MAX_NANOS),
+            Some(deadline(ax_task::time::KTIME_MAX_NANOS))
         );
     }
 
@@ -689,11 +689,11 @@ mod tests {
     fn periodic_overflow_is_a_fatal_clock_domain_violation() {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
-            event.online(deadline(ax_task::runtime::KTIME_MAX_NANOS - 5)),
-            ClockEventAction::Resume(deadline(ax_task::runtime::KTIME_MAX_NANOS - 5))
+            event.online(deadline(ax_task::time::KTIME_MAX_NANOS - 5)),
+            ClockEventAction::Resume(deadline(ax_task::time::KTIME_MAX_NANOS - 5))
         );
-        let _firing = fire_due(&mut event, ax_task::runtime::KTIME_MAX_NANOS - 1);
-        assert!(event.advance_periodic(instant(ax_task::runtime::KTIME_MAX_NANOS - 1), 10));
+        let _firing = fire_due(&mut event, ax_task::time::KTIME_MAX_NANOS - 1);
+        assert!(event.advance_periodic(instant(ax_task::time::KTIME_MAX_NANOS - 1), 10));
     }
 
     #[test]

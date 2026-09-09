@@ -34,7 +34,7 @@ use starry_signal::{SignalInfo, Signo};
 use crate::{
     Errno, StarryError, StarryResult,
     file::{FileLike, IoDst, IoSrc, Kstat},
-    sync::{IrqMutex, PiMutex, SpinLock},
+    sync::{IrqMutex, Mutex, SpinLock},
     task::{
         PidIdentity, PidIdentityId, PidNumber, current_pid_view, current_user_task,
         future::{UserWaitOutcome, block_on_user_until_wall, poll_io},
@@ -396,7 +396,7 @@ struct Inner {
 pub struct MessageQueue {
     /// Sleepable task-context state. Hard IRQ paths never inspect POSIX
     /// message queues; they publish into their own bounded endpoints instead.
-    inner: PiMutex<Inner>,
+    inner: Mutex<Inner>,
     /// Owner uid, captured from `current_fsuid` at creation and checked against
     /// the caller on a later `mq_open`. Linux keeps it in the mqueue inode.
     uid: u32,
@@ -433,7 +433,7 @@ impl MessageQueue {
         MQ_QUEUES_COUNT.fetch_add(1, Ordering::Relaxed);
         let now = wall_time();
         Arc::new(Self {
-            inner: PiMutex::new(Inner {
+            inner: Mutex::new(Inner {
                 buckets: BTreeMap::new(),
                 len: 0,
                 max_msg,
@@ -1085,7 +1085,7 @@ pub struct MqDescriptor {
     /// The status-file read offset carried by this open file description. Linux
     /// backs `mqd_t` with an mqueuefs file, whose `read(2)` and `lseek(2)` share
     /// `file->f_pos`; sibling `mq_open` descriptors must not share it.
-    read_offset: PiMutex<u64>,
+    read_offset: Mutex<u64>,
 }
 
 impl MqDescriptor {
@@ -1093,7 +1093,7 @@ impl MqDescriptor {
         Self {
             queue,
             flags: AtomicU32::new(flags),
-            read_offset: PiMutex::new(0),
+            read_offset: Mutex::new(0),
         }
     }
 
@@ -1240,8 +1240,7 @@ impl Pollable for MqDescriptor {
 /// removes the binding while descriptors keep the `Arc` alive. Name lookup and
 /// mutation only run from syscall/VFS task context, so contention may sleep
 /// instead of extending an IRQ-disabled critical section.
-pub static MQ_REGISTRY: PiMutex<BTreeMap<String, Arc<MessageQueue>>> =
-    PiMutex::new(BTreeMap::new());
+pub static MQ_REGISTRY: Mutex<BTreeMap<String, Arc<MessageQueue>>> = Mutex::new(BTreeMap::new());
 
 /// Validate a POSIX message-queue name.
 ///

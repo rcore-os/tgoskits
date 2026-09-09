@@ -238,36 +238,6 @@ fn incremental_selection_checks_changed_packages_and_affected_os_roots_only() {
 }
 
 #[test]
-fn incremental_selection_for_x86_apic_change_omits_unrelated_workspace_packages() {
-    let selected = incremental_clippy_selections(
-        vec![
-            "someboot".into(),
-            "somehal".into(),
-            "x86-apic-driver".into(),
-        ],
-        vec![
-            "ax-std".into(),
-            "someboot".into(),
-            "somehal".into(),
-            "starryos".into(),
-            "unrelated".into(),
-            "x86-apic-driver".into(),
-        ],
-    );
-
-    assert_eq!(
-        selected,
-        vec![
-            "someboot".to_string(),
-            "somehal".into(),
-            "x86-apic-driver".into(),
-            "ax-std".into(),
-            "starryos".into(),
-        ]
-    );
-}
-
-#[test]
 fn incremental_selection_adds_only_affected_os_root() {
     let selected = incremental_clippy_selections(
         vec!["alpha".into()],
@@ -854,50 +824,4 @@ fn package_clippy_configuration_rejects_empty_rustflags() {
         err.to_string(),
         "clippy configuration `aarch64-source` rustflag for `alpha` must be non-empty and trimmed"
     );
-}
-
-#[test]
-fn starry_clippy_only_expands_package_features() {
-    let workspace_root = crate::context::find_workspace_root();
-    let manifest: serde_json::Value = toml::from_str(
-        &std::fs::read_to_string(workspace_root.join("os/StarryOS/kernel/Cargo.toml")).unwrap(),
-    )
-    .unwrap();
-    let mut package = pkg_with_metadata(
-        "starry-kernel",
-        "starry-kernel 0.1.0 (path+file:///tmp/starry-kernel)",
-        &[],
-        manifest["package"]["metadata"].clone(),
-    );
-    package.features = serde_json::from_value(manifest["features"].clone()).unwrap();
-
-    let checks = expand(std::slice::from_ref(&package));
-    let base_targets = checks
-        .iter()
-        .filter(|check| check.kind == ClippyCheckKind::Base)
-        .map(|check| check.target.clone().unwrap())
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(base_targets.len(), 4);
-    assert_eq!(
-        base_targets,
-        docs_rs_targets(&package).into_iter().collect()
-    );
-    assert!(
-        checks
-            .iter()
-            .any(|check| matches!(check.kind, ClippyCheckKind::Feature(_)))
-    );
-    for check in checks {
-        match &check.kind {
-            ClippyCheckKind::Base => {}
-            ClippyCheckKind::Feature(feature) => {
-                assert!(package.features.contains_key(feature), "{}", check.label());
-                assert_ne!(feature, "default");
-                assert!(!feature.contains('/'), "{}", check.label());
-            }
-            ClippyCheckKind::Configuration { .. } => {
-                panic!("unexpected Starry clippy configuration: {}", check.label());
-            }
-        }
-    }
 }

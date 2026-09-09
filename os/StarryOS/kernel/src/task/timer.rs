@@ -11,13 +11,13 @@ use core::{
 
 use ax_lazyinit::LazyLock;
 use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos};
-use ax_std::os::arceos::task::{self as scheduler, WaitQueue};
+use ax_std::os::arceos::{task as scheduler, task::sync::WaitQueue};
 use starry_signal::Signo;
 use strum::FromRepr;
 
 use super::PidIdentity;
 use crate::{
-    sync::{PiMutex, SpinLock},
+    sync::{Mutex, SpinLock},
     task::poll_process_timer_for_alarm,
 };
 

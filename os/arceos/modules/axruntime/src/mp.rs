@@ -64,7 +64,7 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     ax_hal::init_early_secondary(cpu_id);
 
     #[cfg(feature = "tls")]
-    crate::task::initialize_early_bootstrap_tls()
+    crate::thread::initialize_early_bootstrap_tls()
         .expect("failed to initialize secondary bootstrap TLS");
 
     ENTERED_CPUS.fetch_add(1, Ordering::Release);
@@ -73,7 +73,7 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     #[cfg(feature = "paging")]
     ax_mm::init_memory_management_secondary();
     super::bootstrap::initialize_scheduler_before_platform(
-        || crate::task::initialize_secondary(cpu_id),
+        || crate::thread::initialize_secondary(cpu_id),
         || ax_hal::init_later_secondary(cpu_id),
     )
     .expect("failed to initialize secondary task scheduler");
@@ -97,9 +97,10 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     {
         ax_ipi::mark_current_cpu_ready();
     }
-    let online_cpu = crate::task::publish_current_cpu_online()
+    let online_cpu = crate::thread::publish_current_cpu_online()
         .expect("failed to publish secondary scheduler CPU");
-    crate::task::start_current_ktimer_service().expect("failed to create secondary ktimer service");
+    crate::thread::start_current_ktimer_service()
+        .expect("failed to create secondary ktimer service");
     super::clock_event_runtime::enable_irqs_after_scheduler_online(online_cpu);
     #[cfg(feature = "paging")]
     ax_hal::cache::publish_current_cpu_tlb_ready(tlb_preparation)
@@ -118,7 +119,7 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     while !super::is_init_ok() {
         core::hint::spin_loop();
     }
-    crate::task::run_idle();
+    crate::thread::run_idle();
 }
 
 #[cfg(test)]

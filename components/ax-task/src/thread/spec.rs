@@ -3,12 +3,18 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 
 use crate::{
-    CpuId, SchedulePolicy, SchedulerTickCpuTime, SchedulerTickGate, SchedulerTickTaskWork,
-    SchedulerTickWork, SchedulerTickWorkDisposition, TaskError, ThreadHandle, ThreadId,
     runtime::{
-        AddressSpaceHandle, AddressSpaceToken, ExecutionContextHandle, StackHandle, TlsHandle,
+        resource::{
+            AddressSpaceHandle, AddressSpaceToken, ExecutionContextHandle, StackHandle, TlsHandle,
+        },
+        service::{
+            SchedulerTickCpuTime, SchedulerTickGate, SchedulerTickTaskWork,
+            SchedulerTickWorkDisposition,
+        },
         task_runtime,
     },
+    sched::{CpuId, SchedulePolicy},
+    thread::{SchedulerTickWork, TaskError, ThreadHandle, ThreadId},
 };
 
 /// Runtime-owned resources whose lifetime follows one thread.
@@ -127,7 +133,7 @@ pub enum SwitchReason {
     Migrated  = 5,
 }
 
-/// CPU affinity expressed against one [`crate::TaskSystem`] topology.
+/// CPU affinity expressed against one [`crate::runtime::TaskSystem`] topology.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CpuSet {
     words: Vec<usize>,

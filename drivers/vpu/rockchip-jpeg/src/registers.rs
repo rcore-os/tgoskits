@@ -127,5 +127,9 @@ pub const OUT_FMT_NV12: u32 = 3;
 pub const OUT_FMT_YUYV: u32 = 4;
 /// Bit position of `yuv_out_format` within `SWREG2`.
 pub const OUT_FMT_SHIFT: u32 = 27;
+/// Fill the decoded output down to a 16-line boundary.
+pub const SYS_FILL_DOWN: u32 = 1 << 24;
+/// Tiled output sequence bit within `SWREG2`; the MPP node only accepts raster output.
+pub const SYS_OUT_SEQ: u32 = 1 << 26;
 /// `cbcr_swap` bit within `SWREG2` (selects NV21 vs NV12 ordering).
 pub const SYS_CBCR_SWAP: u32 = 1 << 9;

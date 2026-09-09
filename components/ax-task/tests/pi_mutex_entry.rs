@@ -1,6 +1,6 @@
 #[path = "../src/sync/mutex/entry.rs"]
 mod entry;
-#[path = "../src/system/task_system/pi/transition.rs"]
+#[path = "../src/sched/system/task_system/pi/transition.rs"]
 mod transition;
 
 use core::{

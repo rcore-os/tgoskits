@@ -1,4 +1,4 @@
-#[path = "../src/scheduler/hrtick.rs"]
+#[path = "../src/sched/algorithm/hrtick.rs"]
 mod hrtick;
 
 use hrtick::finish_hrtick_delta_ns;

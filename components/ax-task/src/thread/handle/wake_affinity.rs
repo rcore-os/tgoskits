@@ -2,7 +2,10 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use crate::{ThreadCore, ThreadId, runtime::MonotonicInstant};
+use crate::{
+    thread::{ThreadCore, ThreadId},
+    time::MonotonicInstant,
+};
 
 const NO_WAKEE: u64 = u64::MAX;
 const WAKEE_FLIP_DECAY_NS: u64 = 1_000_000_000;
@@ -82,7 +85,7 @@ impl ThreadCore {
 #[cfg(test)]
 mod tests {
     use super::{WAKEE_FLIP_DECAY_NS, WakeAffinityState, is_wide_wake_relationship};
-    use crate::{ThreadId, runtime::MonotonicInstant};
+    use crate::{thread::ThreadId, time::MonotonicInstant};
 
     #[test]
     fn linux_wake_wide_requires_both_partner_thresholds() {

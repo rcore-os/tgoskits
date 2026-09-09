@@ -2,8 +2,8 @@ use std::{
     os::arceos::{
         api::task::ax_set_current_priority,
         task::{
-            FairMode, Nice, RtPriority, SchedulePolicy, current_thread_id, set_thread_policy,
-            thread_policy,
+            sched::{FairMode, Nice, RtPriority, SchedulePolicy},
+            thread::current::current_thread_id,
         },
     },
     sync::Arc,
@@ -38,11 +38,15 @@ impl SchedulerCase {
             Self::PriorityApi => {
                 ax_set_current_priority(nice).expect("failed to set test thread priority")
             }
-            Self::Fair | Self::RoundRobin => set_thread_policy(current, expected)
-                .expect("failed to set test thread scheduling policy"),
+            Self::Fair | Self::RoundRobin => {
+                std::os::arceos::task::thread::ThreadHandle::lookup(current)
+                    .and_then(|thread| thread.set_policy(expected))
+                    .expect("failed to set test thread scheduling policy")
+            }
         }
         assert_eq!(
-            thread_policy(current),
+            std::os::arceos::task::thread::ThreadHandle::lookup(current)
+                .map(|thread| thread.base_policy()),
             Ok(expected),
             "test thread did not enter the selected scheduling policy"
         );

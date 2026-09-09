@@ -1024,13 +1024,77 @@ impl VmaMap {
         candidate.filter(|entry| entry.snapshot.contains(address))
     }
 
+    /// Visits every VMA intersecting `range` in ascending order, stopping as
+    /// soon as `visit` returns `false`.
+    ///
+    /// VMAs never overlap, so each subtree covers one contiguous stretch of
+    /// address space and two facts prune the descent: a left subtree ends at
+    /// or before its parent's start, so it can only reach `range` when the
+    /// parent starts after `range.start`; a right subtree starts at or after
+    /// its parent's end, so it holds nothing once `range` ends there. What is
+    /// left is the search path plus the matches, without materialising the
+    /// tree or touching a single reference count for a VMA that does not
+    /// intersect.
+    pub fn for_each_overlapping(
+        &self,
+        range: VirtAddrRange,
+        mut visit: impl FnMut(&Arc<VmaSnapshot>) -> bool,
+    ) {
+        self.for_each_overlapping_entry(range, |entry| visit(&entry.snapshot));
+    }
+
+    /// [`Self::for_each_overlapping`] over the entries, for the callers that
+    /// need the mapping operation and not just the snapshot.
+    pub(super) fn for_each_overlapping_entry(
+        &self,
+        range: VirtAddrRange,
+        mut visit: impl FnMut(&Arc<VmaEntry>) -> bool,
+    ) {
+        let mut visited = 0;
+        Self::visit_overlapping(&self.root, range, &mut visited, &mut visit);
+    }
+
+    /// `for_each_overlapping` with the node count the descent paid, which is
+    /// what the regression test asserts on: the result of a range lookup is
+    /// the same whether or not the tree was walked in full, so only the cost
+    /// distinguishes them.
+    fn visit_overlapping(
+        node: &Option<Arc<VmaNode>>,
+        range: VirtAddrRange,
+        visited: &mut usize,
+        visit: &mut impl FnMut(&Arc<VmaEntry>) -> bool,
+    ) -> bool {
+        let Some(current) = node else {
+            return true;
+        };
+        *visited += 1;
+        let vma = current.entry.snapshot.range;
+        if range.start < vma.start
+            && !Self::visit_overlapping(&current.left, range, visited, visit)
+        {
+            return false;
+        }
+        if vma.overlaps(range) && !visit(&current.entry) {
+            return false;
+        }
+        if range.end > vma.end
+            && !Self::visit_overlapping(&current.right, range, visited, visit)
+        {
+            return false;
+        }
+        true
+    }
+
     /// Looks up every VMA intersecting a checked range.  Returned snapshots
     /// own their metadata and can safely be used after the publication lock is
     /// released or while a backend performs I/O.
     pub fn lookup_range(&self, range: VirtAddrRange) -> Vec<Arc<VmaSnapshot>> {
-        self.iter()
-            .filter(|vma| vma.range.overlaps(range))
-            .collect()
+        let mut found = Vec::new();
+        self.for_each_overlapping(range, |vma| {
+            found.push(vma.clone());
+            true
+        });
+        found
     }
 
     pub fn contains_range(&self, start: VirtAddr, size: usize) -> bool {
@@ -1041,9 +1105,10 @@ impl VmaMap {
             return false;
         }
         let mut cursor = request.start;
-        for vma in self.iter() {
+        let mut covered = false;
+        self.for_each_overlapping(request, |vma| {
             if vma.range.end <= cursor {
-                continue;
+                return true;
             }
             if vma.range.start > cursor {
                 return false;
@@ -1053,10 +1118,12 @@ impl VmaMap {
             // `AddrRange` whose start is greater than its end.
             cursor = vma.range.end.min(request.end);
             if cursor >= request.end {
-                return true;
+                covered = true;
+                return false;
             }
-        }
-        false
+            true
+        });
+        covered
     }
 
     fn fragment_with_huge_page_advice(
@@ -1710,6 +1777,77 @@ mod tests {
     fn insert(map: &VmaMap, start: usize, size: usize) -> Option<VmaMap> {
         let (snapshot, operation) = snapshot(start, size);
         map.insert_with_operation(snapshot, operation)
+    }
+
+    /// One VMA per 0x2000, so VMA `i` covers `[0x1000 + i * 0x2000, +0x1000)`.
+    #[cfg(all(test, not(axtest)))]
+    fn map_of(count: usize) -> VmaMap {
+        let mut map = VmaMap::default();
+        for i in 0..count {
+            map = insert(&map, 0x1000 + i * 0x2000, 0x1000).unwrap();
+        }
+        map
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn a_range_lookup_walks_the_search_path_not_the_whole_tree() {
+        let map = map_of(256);
+        let target = 0x1000 + 128 * 0x2000;
+        let range = VirtAddrRange::from_start_size(VirtAddr::from_usize(target), 0x1000);
+
+        let mut visited = 0;
+        let mut found = 0;
+        let mut first = None;
+        VmaMap::visit_overlapping(&map.root, range, &mut visited, &mut |entry| {
+            found += 1;
+            first.get_or_insert(entry.snapshot.range.start);
+            true
+        });
+
+        assert_eq!(found, 1);
+        assert_eq!(first, Some(VirtAddr::from_usize(target)));
+        assert!(
+            visited <= 24,
+            "a one-VMA lookup walked {visited} nodes of a 256-VMA tree",
+        );
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn a_spanning_lookup_returns_every_intersecting_vma_in_order() {
+        let map = map_of(64);
+        let start = 0x1000 + 10 * 0x2000;
+        let end = 0x1000 + 20 * 0x2000;
+        let range = VirtAddrRange::from_start_size(VirtAddr::from_usize(start), end - start);
+
+        let found = map.lookup_range(range);
+
+        assert_eq!(found.len(), 10);
+        for (offset, vma) in found.iter().enumerate() {
+            assert_eq!(
+                vma.range.start,
+                VirtAddr::from_usize(0x1000 + (10 + offset) * 0x2000),
+            );
+        }
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn a_lookup_starting_inside_a_vma_still_reaches_its_predecessor() {
+        let map = map_of(32);
+        // Start halfway through VMA 7 so the match lies to the left of the
+        // node the descent lands on.
+        let start = 0x1000 + 7 * 0x2000 + 0x800;
+        let range = VirtAddrRange::from_start_size(VirtAddr::from_usize(start), 0x400);
+
+        let found = map.lookup_range(range);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].range.start,
+            VirtAddr::from_usize(0x1000 + 7 * 0x2000),
+        );
     }
 
     #[test]

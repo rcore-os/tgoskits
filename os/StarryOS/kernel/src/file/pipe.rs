@@ -7,8 +7,10 @@ use core::{
 
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_std::os::arceos::task::{
-    WaitQueueRegistration, WaitQueueWakeOutcome, WaitQueueWakeToken, wait_until_registered,
-    wake_waker_sync,
+    executor::wake_waker_sync,
+    sync::{
+        WaitQueueRegistration, WaitQueueWakeOutcome, WaitQueueWakeToken, wait_until_registered,
+    },
 };
 use axpoll::{IoEvents, PollRegistration, PollSource, Pollable, RegistrationMode};
 use linux_raw_sys::{
@@ -26,7 +28,7 @@ use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc},
     mm::VmMutPtr,
-    sync::PiMutex,
+    sync::Mutex,
     task::{current_user_task, send_signal_to_process},
 };
 
@@ -148,7 +150,7 @@ struct PipeWaitSet {
     // Linux wait_queue_head::lock becomes an rtmutex-backed spinlock under
     // PREEMPT_RT. Pipe wait-set callers are task-only, and callbacks run after
     // this guard is released, so use the same schedulable PI lock semantics.
-    state: Arc<PiMutex<PipeWaitState>>,
+    state: Arc<Mutex<PipeWaitState>>,
 }
 
 struct PipeWaitState {
@@ -174,7 +176,7 @@ enum PipeWaitTarget {
 }
 
 struct PipeWaitRegistration {
-    state: Arc<PiMutex<PipeWaitState>>,
+    state: Arc<Mutex<PipeWaitState>>,
     id: u64,
     notified: Option<Arc<AtomicBool>>,
 }
@@ -187,7 +189,7 @@ struct PipeWakeSelection {
 impl PipeWaitSet {
     fn new() -> Self {
         Self {
-            state: Arc::new(PiMutex::new(PipeWaitState {
+            state: Arc::new(Mutex::new(PipeWaitState {
                 waiters: VecDeque::new(),
                 next_id: 0,
                 notification_generation: 0,
@@ -533,7 +535,7 @@ impl Drop for PipeWaitSet {
 }
 
 struct Shared {
-    state: PiMutex<PipeState>,
+    state: Mutex<PipeState>,
     // One coherent Linux-style READ_ONCE view of data, capacity, and peers.
     readiness: AtomicU64,
     wait_rx: PipeWaitSet,
@@ -599,7 +601,7 @@ impl Shared {
     fn new(state: PipeState) -> Self {
         let readiness = state.readiness();
         Self {
-            state: PiMutex::new(state),
+            state: Mutex::new(state),
             readiness: AtomicU64::new(readiness.0),
             wait_rx: PipeWaitSet::new(),
             wait_tx: PipeWaitSet::new(),
@@ -1430,9 +1432,12 @@ mod tests {
         task::Waker,
     };
 
-    use ax_std::os::arceos::task::{
-        self as scheduler, SchedulePolicy, SwitchReason, ThreadExtension, ThreadExtensionOps,
-        ThreadHandle, ThreadId,
+    use ax_std::os::arceos::{
+        task as scheduler,
+        task::{
+            sched::SchedulePolicy,
+            thread::{SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadHandle, ThreadId},
+        },
     };
     use axpoll::{ExclusiveConsumer, PollRegistrar, PollSource, Pollable, RegistrationMode};
     use ringbuf::traits::Consumer;
@@ -1522,7 +1527,7 @@ mod tests {
         let extension = unsafe { ThreadExtension::new(0, &BLOCK_OBSERVER_OPS) };
         // SAFETY: unique ownership of `extension` is transferred exactly once.
         let direct = unsafe {
-            scheduler::spawn_raw_with_extension(
+            ax_std::os::arceos::thread::spawn_raw_with_extension(
                 move || {
                     DIRECT_WAIT_ARMED.store(true, Ordering::Release);
                     waiters.wait_until(|| DIRECT_READY.load(Ordering::Acquire));
@@ -1627,7 +1632,8 @@ mod tests {
         DIRECT_READY.store(true, Ordering::Release);
         wake_pipe_waiter_sync(waiters.as_ref(), IoEvents::IN);
         wait_for(&DIRECT_WOKEN, "direct pipe waiter was not selected");
-        scheduler::join_thread(direct).expect("direct pipe waiter must exit cleanly");
+        ax_std::os::arceos::thread::join_thread(direct)
+            .expect("direct pipe waiter must exit cleanly");
         drop(registration);
 
         assert_eq!(
@@ -1718,7 +1724,8 @@ mod tests {
 
         wake_pipe_waiter_sync(waiters.as_ref(), IoEvents::IN);
         wait_for(&DIRECT_WOKEN, "second wake did not select direct waiter");
-        scheduler::join_thread(direct).expect("direct pipe waiter must exit cleanly");
+        ax_std::os::arceos::thread::join_thread(direct)
+            .expect("direct pipe waiter must exit cleanly");
         drop(registration);
     }
 
@@ -1762,16 +1769,18 @@ mod tests {
 
     #[axtest::axtest]
     fn pipe_wait_set_lock_remains_schedulable_like_linux_rt() {
-        let current = scheduler::current_thread_id().expect("axtest must run in task context");
-        let original_affinity =
-            scheduler::thread_affinity(current).expect("current affinity must be available");
-        let cpu = scheduler::CpuId::new(
+        let current = scheduler::thread::current::current_thread_id()
+            .expect("axtest must run in task context");
+        let original_affinity = scheduler::thread::ThreadHandle::lookup(current)
+            .and_then(|thread| thread.affinity())
+            .expect("current affinity must be available");
+        let cpu = scheduler::sched::CpuId::new(
             u32::try_from(ax_runtime::hal::percpu::this_cpu_id())
                 .expect("logical CPU ID must fit the scheduler ABI"),
         );
-        let mut affinity = scheduler::CpuSet::empty(ax_runtime::hal::cpu_num());
+        let mut affinity = scheduler::sched::CpuSet::empty(ax_runtime::hal::cpu_num());
         assert!(affinity.insert(cpu));
-        scheduler::set_current_thread_affinity(affinity.clone())
+        scheduler::thread::current::set_current_thread_affinity(affinity.clone())
             .expect("test task must remain on its current CPU");
 
         let waiters = Arc::new(PipeWaitSet::new());
@@ -1786,7 +1795,7 @@ mod tests {
         let contender_state = Arc::clone(&waiters.state);
         let contender_attempted = Arc::clone(&attempted);
         let contender_acquired = Arc::clone(&acquired);
-        let contender = scheduler::spawn_raw_with_affinity(
+        let contender = ax_std::os::arceos::thread::spawn_raw_with_affinity(
             move || {
                 contender_attempted.store(true, Ordering::Release);
                 let _state = contender_state.lock();
@@ -1799,7 +1808,7 @@ mod tests {
         .expect("failed to spawn pipe wait-set lock contender");
 
         for _ in 0..32 {
-            scheduler::yield_current_cpu()
+            scheduler::thread::current::yield_current_cpu()
                 .expect("Linux RT waitqueue lock must remain schedulable while held");
             if attempted.load(Ordering::Acquire) {
                 break;
@@ -1815,24 +1824,27 @@ mod tests {
         );
         drop(state);
 
-        scheduler::join_thread(contender).expect("pipe wait-set lock contender must exit");
-        scheduler::set_current_thread_affinity(original_affinity)
+        ax_std::os::arceos::thread::join_thread(contender)
+            .expect("pipe wait-set lock contender must exit");
+        scheduler::thread::current::set_current_thread_affinity(original_affinity)
             .expect("test task affinity must be restored");
         assert!(acquired.load(Ordering::Acquire));
     }
 
     #[axtest::axtest]
     fn pipe_wait_registration_locks_before_publishing_parking() {
-        let current = scheduler::current_thread_id().expect("axtest must run in task context");
-        let original_affinity =
-            scheduler::thread_affinity(current).expect("current affinity must be available");
-        let cpu = scheduler::CpuId::new(
+        let current = scheduler::thread::current::current_thread_id()
+            .expect("axtest must run in task context");
+        let original_affinity = scheduler::thread::ThreadHandle::lookup(current)
+            .and_then(|thread| thread.affinity())
+            .expect("current affinity must be available");
+        let cpu = scheduler::sched::CpuId::new(
             u32::try_from(ax_runtime::hal::percpu::this_cpu_id())
                 .expect("logical CPU ID must fit the scheduler ABI"),
         );
-        let mut affinity = scheduler::CpuSet::empty(ax_runtime::hal::cpu_num());
+        let mut affinity = scheduler::sched::CpuSet::empty(ax_runtime::hal::cpu_num());
         assert!(affinity.insert(cpu));
-        scheduler::set_current_thread_affinity(affinity.clone())
+        scheduler::thread::current::set_current_thread_affinity(affinity.clone())
             .expect("test task must remain on its current CPU");
 
         let waiters = Arc::new(PipeWaitSet::new());
@@ -1844,7 +1856,7 @@ mod tests {
         let waiter_started_flag = Arc::clone(&waiter_started);
         let waiter_ready = Arc::clone(&ready);
         let waiter_completed_flag = Arc::clone(&waiter_completed);
-        let waiter = scheduler::spawn_raw_with_affinity(
+        let waiter = ax_std::os::arceos::thread::spawn_raw_with_affinity(
             move || {
                 waiter_started_flag.store(true, Ordering::Release);
                 waiter_set.wait_until(|| waiter_ready.load(Ordering::Acquire));
@@ -1857,7 +1869,8 @@ mod tests {
         .expect("failed to spawn pipe wait registration task");
 
         for _ in 0..32 {
-            scheduler::yield_current_cpu().expect("wait-set lock owner must remain schedulable");
+            scheduler::thread::current::yield_current_cpu()
+                .expect("wait-set lock owner must remain schedulable");
             if waiter_started.load(Ordering::Acquire) {
                 break;
             }
@@ -1870,8 +1883,9 @@ mod tests {
         ready.store(true, Ordering::Release);
         waiters.wake_all(IoEvents::IN);
 
-        scheduler::join_thread(waiter).expect("pipe wait registration task must exit");
-        scheduler::set_current_thread_affinity(original_affinity)
+        ax_std::os::arceos::thread::join_thread(waiter)
+            .expect("pipe wait registration task must exit");
+        scheduler::thread::current::set_current_thread_affinity(original_affinity)
             .expect("test task affinity must be restored");
         assert!(waiter_completed.load(Ordering::Acquire));
     }

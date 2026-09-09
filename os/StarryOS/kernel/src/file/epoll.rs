@@ -539,7 +539,7 @@ impl EpollInner {
     }
 
     fn publish_ready_for_file(&self, source: &Arc<EpollInterest>) {
-        let interests = match self.snapshot_interests() {
+        let interests = match self.snapshot_callback_batch(source) {
             Ok(interests) => interests,
             Err(_) => {
                 // Allocation failure must not lose the callback that reached
@@ -609,6 +609,57 @@ impl EpollInner {
                 txlist.push_back(entry);
             }
             return Ok(txlist);
+        }
+    }
+
+    /// Whether a readiness callback that reached `source` may publish
+    /// `interest`: the source itself, or a descriptor registered on the same
+    /// file.
+    fn in_callback_batch(interest: &Arc<EpollInterest>, source: &Arc<EpollInterest>) -> bool {
+        Arc::ptr_eq(interest, source) || Weak::ptr_eq(&interest.key.file, &source.key.file)
+    }
+
+    /// The interests one readiness callback can publish.
+    ///
+    /// A file becoming ready can only publish the interests registered on that
+    /// file, and that is almost always one. Taking the whole epoll set to find
+    /// them charged every callback a reference count per registered
+    /// descriptor and a sort of the entire set, so the candidates are picked
+    /// out by pointer identity first. Pointer identity is also all that may be
+    /// tested here: it takes no further lock, which is what lets it run while
+    /// the interests lock is held.
+    fn snapshot_callback_batch(
+        &self,
+        source: &Arc<EpollInterest>,
+    ) -> StarryResult<Vec<Arc<EpollInterest>>> {
+        loop {
+            let len = self
+                .interests
+                .lock()
+                .values()
+                .filter(|interest| Self::in_callback_batch(interest, source))
+                .count();
+            let mut batch = Vec::new();
+            batch.try_reserve(len).map_err(|_| StarryError::NoMemory)?;
+
+            let interests = self.interests.lock();
+            let mut matched = 0;
+            for interest in interests.values() {
+                if !Self::in_callback_batch(interest, source) {
+                    continue;
+                }
+                matched += 1;
+                if matched > batch.capacity() {
+                    break;
+                }
+                batch.push(Arc::clone(interest));
+            }
+            // An alias registered while the count was not held sends this
+            // round back rather than growing the vector under the lock.
+            if matched > batch.capacity() {
+                continue;
+            }
+            return Ok(batch);
         }
     }
 
@@ -847,6 +898,29 @@ impl Epoll {
             },
             flags,
         )
+    }
+
+    /// How many interests one readiness callback on `fd` would snapshot.
+    ///
+    /// What the callback publishes is the same either way, so the size of the
+    /// snapshot is the only thing that separates a per-file batch from a copy
+    /// of the whole epoll set.
+    #[cfg(all(test, not(axtest)))]
+    pub(super) fn callback_batch_len_for_test(
+        &self,
+        fd: i32,
+        file: &Arc<dyn FileLike>,
+    ) -> Option<usize> {
+        let source = self
+            .inner
+            .interests
+            .lock()
+            .get(&EntryKey::for_test(fd, file))
+            .cloned()?;
+        self.inner
+            .snapshot_callback_batch(&source)
+            .ok()
+            .map(|batch| batch.len())
     }
 
     pub fn modify(&self, fd: i32, event: EpollEvent, flags: EpollFlags) -> StarryResult<()> {

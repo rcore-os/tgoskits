@@ -81,7 +81,7 @@ use crate::{
     file::{FileLike, add_file_like},
     mm::{VmMutPtr, VmPtr, vm_load, vm_write_slice},
     pseudofs::{DeviceMmap, DeviceOps},
-    sync::PiMutex,
+    sync::Mutex,
 };
 
 pub const DRIVER_NAME: &str = "starry-simpledrm";
@@ -324,23 +324,23 @@ struct ModesetState {
 
 pub struct Card0 {
     /// Queue of pending DRM events waiting to be delivered via `read()`.
-    events: PiMutex<VecDeque<DrmEventVblank>>,
+    events: Mutex<VecDeque<DrmEventVblank>>,
     /// Wakes up `poll`-waiters blocked on `read()` when a new event
     /// arrives.
     poll_rx: PollSet,
     /// Monotonically-increasing vblank sequence.
     sequence: AtomicU32,
     /// Current values of all atomic-tunable properties.
-    state: PiMutex<ModesetState>,
+    state: Mutex<ModesetState>,
     /// Legacy `SETCRTC` binding readable via `GETCRTC`. Atomic commits
     /// don't update this — userspace that mixes legacy and atomic gets
     /// the well-defined "legacy state reflects the last SETCRTC"
     /// behavior libdrm expects.
-    legacy_crtc: PiMutex<LegacyCrtcState>,
+    legacy_crtc: Mutex<LegacyCrtcState>,
     /// `CREATE_DUMB`-allocated buffers keyed by handle. Dropping an
     /// entry releases Card0's strong ref on the backing pages; user
     /// mappings hold their own refs via `LinearBackend::retain`.
-    dumbs: PiMutex<BTreeMap<u32, DumbBuffer>>,
+    dumbs: Mutex<BTreeMap<u32, DumbBuffer>>,
     /// Next dumb handle to hand out.
     next_dumb_handle: AtomicU32,
     /// Monotonic counter for the mmap-offset key each `MAP_DUMB`
@@ -349,7 +349,7 @@ pub struct Card0 {
     next_offset: AtomicU64,
     /// `ADDFB2`-registered framebuffer ids, mapped to the dumb handle
     /// they were built over. Cleared on `RMFB`.
-    fbs: PiMutex<BTreeMap<u32, Framebuffer>>,
+    fbs: Mutex<BTreeMap<u32, Framebuffer>>,
     /// Next fb id to hand out.
     next_fb_id: AtomicU32,
     /// User-created `CREATEPROPBLOB` blobs keyed by their blob_id.
@@ -357,27 +357,27 @@ pub struct Card0 {
     /// kernel-owned blobs (e.g. `IN_FORMATS`). Stored behind `Arc`
     /// so committed modeset state (see [`Self::mode_id_blob_ref`]) can
     /// hold its own backing reference past a user `DESTROYPROPBLOB`.
-    blobs: PiMutex<BTreeMap<u32, Arc<Vec<u8>>>>,
+    blobs: Mutex<BTreeMap<u32, Arc<Vec<u8>>>>,
     /// Strong reference to the blob backing the currently-committed
     /// `MODE_ID` property. Linux DRM pins the mode blob from the CRTC
     /// state, so a user `DESTROYPROPBLOB` on the publish handle only
     /// drops the user's reference — `GETPROPBLOB` on the same id keeps
     /// working until a later atomic commit replaces or clears
     /// `MODE_ID`. Cleared/replaced atomically with `state.crtc_mode_id`.
-    mode_id_blob_ref: PiMutex<Option<Arc<Vec<u8>>>>,
+    mode_id_blob_ref: Mutex<Option<Arc<Vec<u8>>>>,
     /// Next blob id to hand out.
     next_blob_id: AtomicU32,
     /// Kernel-owned immutable blobs (e.g. plane `IN_FORMATS`) keyed by
     /// blob_id. Read-only after publish; never freed; DESTROY_BLOB
     /// refuses to remove ids in this table.
-    system_blobs: PiMutex<BTreeMap<u32, Arc<Vec<u8>>>>,
+    system_blobs: Mutex<BTreeMap<u32, Arc<Vec<u8>>>>,
     /// Cached blob_id for the `IN_FORMATS` property. Allocated once
     /// under `system_blobs_init` so concurrent first-callers cannot
     /// each leak their own copy into `system_blobs`.
     in_formats_blob: AtomicU32,
     /// Serializes the lazy initialization of `in_formats_blob` so
     /// only one allocation lands in `system_blobs`.
-    system_blobs_init: PiMutex<()>,
+    system_blobs_init: Mutex<()>,
     /// Registered virtio-gpu IRQ action, when the display backend advertises one.
     irq_handle: ax_lazyinit::OnceLock<ax_runtime::hal::irq::IrqHandle>,
 }
@@ -385,25 +385,25 @@ pub struct Card0 {
 impl Card0 {
     pub fn new() -> Arc<Self> {
         let card = Arc::new(Self {
-            events: PiMutex::new(VecDeque::with_capacity(MAX_EVENTS)),
+            events: Mutex::new(VecDeque::with_capacity(MAX_EVENTS)),
             poll_rx: PollSet::new(),
             sequence: AtomicU32::new(0),
-            state: PiMutex::new(ModesetState::default()),
-            legacy_crtc: PiMutex::new(LegacyCrtcState::default()),
-            dumbs: PiMutex::new(BTreeMap::new()),
+            state: Mutex::new(ModesetState::default()),
+            legacy_crtc: Mutex::new(LegacyCrtcState::default()),
+            dumbs: Mutex::new(BTreeMap::new()),
             next_dumb_handle: AtomicU32::new(FIRST_DUMB_HANDLE),
             // Start at STRIDE rather than 0 so a zero `offset` argument
             // on `mmap` is unambiguous (it means "hasn't called
             // MAP_DUMB yet").
             next_offset: AtomicU64::new(DUMB_BUFFER_OFFSET_STRIDE),
-            fbs: PiMutex::new(BTreeMap::new()),
+            fbs: Mutex::new(BTreeMap::new()),
             next_fb_id: AtomicU32::new(FIRST_FB_ID),
-            blobs: PiMutex::new(BTreeMap::new()),
-            mode_id_blob_ref: PiMutex::new(None),
+            blobs: Mutex::new(BTreeMap::new()),
+            mode_id_blob_ref: Mutex::new(None),
             next_blob_id: AtomicU32::new(FIRST_BLOB_ID),
-            system_blobs: PiMutex::new(BTreeMap::new()),
+            system_blobs: Mutex::new(BTreeMap::new()),
             in_formats_blob: AtomicU32::new(0),
-            system_blobs_init: PiMutex::new(()),
+            system_blobs_init: Mutex::new(()),
             irq_handle: ax_lazyinit::OnceLock::new(),
         });
         card.register_irq();

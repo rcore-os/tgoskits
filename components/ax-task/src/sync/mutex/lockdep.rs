@@ -1,7 +1,8 @@
 use core::panic::Location;
 
 use crate::sync::{
-    lockdep::{self as common, HeldLockSnapshot, LockSubclass, LockdepMapView, PreparedAcquire},
+    lockdep as common,
+    lockdep::{HeldLockSnapshot, LockSubclass, LockdepMapView, PreparedAcquire},
     mutex::RawMutex,
 };
 

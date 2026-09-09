@@ -33,7 +33,7 @@ nb = "1.1"
 num_enum = {version = "0.7", default-features = false}
 thiserror = {workspace = true}
 tock-registers.workspace = true
-trait-ffi = "0.2.4"
+trait-ffi.workspace = true
 usb-if = {workspace = true}
 xhci = "0.9"
 libusb1-sys = {version = "0.7", optional = true}

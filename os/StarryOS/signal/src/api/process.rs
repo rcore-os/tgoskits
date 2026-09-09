@@ -9,7 +9,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_runtime::sync::SpinLock;
+use ax_runtime::task::sync::SpinLock;
 use linux_raw_sys::general::kernel_sigaction;
 use starry_vm::{VmIo, VmPtr, vm_write_slice};
 

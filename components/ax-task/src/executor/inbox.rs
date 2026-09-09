@@ -3,7 +3,7 @@
 use core::{ptr, sync::atomic::Ordering};
 
 use super::CoroutineHeader;
-use crate::epoch_mpsc::EpochMpscQueue;
+use crate::runtime::delivery::epoch::EpochMpscQueue;
 
 #[derive(Clone, Copy)]
 pub(super) enum InboxKind {

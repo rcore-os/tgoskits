@@ -479,7 +479,7 @@ impl QueueGroupExecutor {
 
     fn initialize<'waiter>(
         &mut self,
-        waiter: impl Fn() -> &'waiter ax_task::IrqWorkerWaiter,
+        waiter: impl Fn() -> &'waiter ax_task::sync::irq::IrqWorkerWaiter,
     ) -> Result<(), NetError> {
         if let Some(mut startup) = self.group.owner_startup.take() {
             let mut progress = startup.start(ax_hal::time::monotonic_time_nanos());
@@ -764,7 +764,7 @@ pub(super) struct ExecutorControl {
 
 pub(super) struct ExecutorLease {
     pub(super) control: Arc<ExecutorControl>,
-    pub(super) task: ax_task::KernelThreadHandle,
+    pub(super) task: ax_task::thread::KernelThreadHandle,
 }
 
 impl ExecutorLease {
@@ -795,9 +795,9 @@ pub(super) fn queue_executor_main(
     mut wifi: Vec<WifiExecutorSlot>,
     control: Arc<ExecutorControl>,
 ) {
-    let current = ax_task::current_thread_handle()
+    let current = ax_task::thread::current::current_thread_handle()
         .unwrap_or_else(|error| panic!("network queue executor has no scheduler thread: {error}"));
-    let waiter = ax_task::IrqWorkerWaiter::new(current.wake_handle());
+    let waiter = ax_task::sync::irq::IrqWorkerWaiter::new(current.wake_handle());
     if ax_hal::percpu::this_cpu_id() != control.owner_cpu {
         control
             .affinity_status
@@ -977,7 +977,10 @@ fn retain_started_executor_groups(
     })
 }
 
-fn wait_for_cleanup_command(control: &ExecutorControl, waiter: &ax_task::IrqWorkerWaiter) -> bool {
+fn wait_for_cleanup_command(
+    control: &ExecutorControl,
+    waiter: &ax_task::sync::irq::IrqWorkerWaiter,
+) -> bool {
     loop {
         if let Some(irq_synchronized) =
             requested_irq_synchronization(control.command.load(Ordering::Acquire))

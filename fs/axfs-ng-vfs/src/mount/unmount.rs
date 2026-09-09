@@ -48,12 +48,13 @@ impl UnmountPlan {
             .any(|target| !target.mountpoint.children.lock().is_empty())
     }
 
-    fn has_same_targets(&self, expected: &[Arc<Mountpoint>]) -> bool {
-        self.targets.len() == expected.len()
+    fn has_same_targets(&self, expected: &Self) -> bool {
+        self.targets.len() == expected.targets.len()
             && self.targets.iter().all(|target| {
                 expected
+                    .targets
                     .iter()
-                    .any(|mountpoint| Arc::ptr_eq(&target.mountpoint, mountpoint))
+                    .any(|other| Arc::ptr_eq(&target.mountpoint, &other.mountpoint))
             })
     }
 
@@ -122,25 +123,25 @@ impl UnmountPlan {
 impl Mountpoint {
     /// Commits a normal unmount after filesystem callbacks have completed.
     ///
-    /// A callback may overlap an unrelated mount-tree mutation. Replan under
-    /// the topology guard in that case, but commit only when the complete
-    /// target set is unchanged. A new target may belong to an unflushed
-    /// filesystem and therefore cannot join the current transaction.
+    /// Like Linux's locked checks in `do_umount`, admission is about the
+    /// affected mounts, not activity in an unrelated namespace. Validate the
+    /// original attachment points and propagation set under one topology
+    /// guard before detaching anything. Callbacks run before this guard.
     pub(super) fn commit_normal_after_flush(self: &Arc<Self>, plan: UnmountPlan) -> VfsResult<()> {
-        debug_assert_eq!(plan.kind, UnmountKind::Normal);
-        let planned_targets: Vec<_> = plan.targets().cloned().collect();
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        match plan.commit_locked() {
-            Ok(()) => Ok(()),
-            Err(UnmountCommitError::TopologyChanged) => {
-                let current_plan = self.plan_unmount_locked(UnmountKind::Normal)?;
-                if !current_plan.has_same_targets(&planned_targets) {
-                    return Err(UnmountCommitError::TopologyChanged.into());
-                }
-                current_plan.commit_current_locked().map_err(VfsError::from)
-            }
-            Err(error) => Err(error.into()),
+        if plan.kind != UnmountKind::Normal {
+            return Err(VfsError::InvalidInput);
         }
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        plan.revalidate_targets_locked()?;
+        if MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire) != plan.topology_version {
+            let current_plan = self.plan_unmount_locked(UnmountKind::Normal)?;
+            // A changed propagation set has not passed the caller's busy
+            // checks and cannot join (or leave) this admitted transaction.
+            if !current_plan.has_same_targets(&plan) {
+                return Err(UnmountCommitError::TopologyChanged.into());
+            }
+        }
+        plan.detach_targets_locked().map_err(VfsError::from)
     }
 
     pub fn plan_unmount(self: &Arc<Self>, kind: UnmountKind) -> VfsResult<UnmountPlan> {

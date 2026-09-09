@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use crate::TaskError;
+use crate::thread::TaskError;
 
 const STATE_MASK: u8 = 0b111;
 const WAKE_PENDING: u8 = 1 << 3;

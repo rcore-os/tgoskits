@@ -40,7 +40,7 @@ use core::{
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions, current_fs_context};
 use ax_io::prelude::*;
-use ax_std::os::arceos::task::ThreadState;
+use ax_std::os::arceos::task::thread::ThreadState;
 use axfs_ng_vfs::DeviceId;
 use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};

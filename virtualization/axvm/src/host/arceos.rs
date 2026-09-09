@@ -93,15 +93,16 @@ impl HostTime for ArceOsHost {
 }
 
 impl HostTimer for ArceOsHost {
-    type TimerHandle = runtime_task::KernelTimerHandle;
+    type TimerHandle = runtime_task::time::timer::KernelTimerHandle;
+    type HardTimerHandle = runtime_task::time::hard_timer::HardKernelTimerHandle;
 
     fn register_timer(
         &self,
         deadline: Duration,
         callback: Box<dyn FnOnce(Duration) + Send + 'static>,
     ) -> AxVmResult<Self::TimerHandle> {
-        let deadline = runtime_task::MonotonicDeadline::from_duration(deadline);
-        runtime_task::register_kernel_timer(
+        let deadline = runtime_task::time::MonotonicDeadline::from_duration(deadline);
+        runtime_task::time::timer::register_kernel_timer(
             deadline,
             Box::new(move |now| callback(Duration::from_nanos(now.as_nanos()))),
         )
@@ -114,15 +115,19 @@ impl HostTimer for ArceOsHost {
         deadline: Duration,
         mut callback: Box<dyn FnMut(Duration) -> HostTimerAction + Send + 'static>,
     ) -> AxVmResult<Self::TimerHandle> {
-        let deadline = runtime_task::MonotonicDeadline::from_duration(deadline);
-        runtime_task::register_restartable_kernel_timer(
+        let deadline = runtime_task::time::MonotonicDeadline::from_duration(deadline);
+        runtime_task::time::timer::register_restartable_kernel_timer(
             deadline,
             Box::new(
                 move |now| match callback(Duration::from_nanos(now.as_nanos())) {
-                    HostTimerAction::Complete => runtime_task::KernelTimerAction::Complete,
-                    HostTimerAction::Rearm(deadline) => runtime_task::KernelTimerAction::Rearm(
-                        runtime_task::MonotonicDeadline::from_duration(deadline),
-                    ),
+                    HostTimerAction::Complete => {
+                        runtime_task::time::timer::KernelTimerAction::Complete
+                    }
+                    HostTimerAction::Rearm(deadline) => {
+                        runtime_task::time::timer::KernelTimerAction::Rearm(
+                            runtime_task::time::MonotonicDeadline::from_duration(deadline),
+                        )
+                    }
                 },
             ),
         )
@@ -134,44 +139,58 @@ impl HostTimer for ArceOsHost {
         &self,
         deadline: Duration,
         mut callback: Box<dyn FnMut(Duration) -> HostHardTimerAction + Send + 'static>,
-    ) -> AxVmResult<Self::TimerHandle> {
-        let deadline = runtime_task::MonotonicDeadline::from_duration(deadline);
+    ) -> AxVmResult<Self::HardTimerHandle> {
+        let deadline = runtime_task::time::MonotonicDeadline::from_duration(deadline);
         let callback = unsafe {
             // SAFETY: the caller owns the callback's hard-IRQ proof. This
             // adapter changes only timestamp and action representations.
-            runtime_task::HardKernelTimerCallback::new(Box::new(move |now| {
+            runtime_task::time::hard_timer::HardKernelTimerCallback::new(Box::new(move |now| {
                 match callback(Duration::from_nanos(now.as_nanos())) {
-                    HostHardTimerAction::Complete => runtime_task::HardKernelTimerAction::Complete,
+                    HostHardTimerAction::Complete => {
+                        runtime_task::time::hard_timer::HardKernelTimerAction::Complete
+                    }
                     #[cfg(target_arch = "aarch64")]
-                    HostHardTimerAction::Disarm => runtime_task::HardKernelTimerAction::Disarm,
+                    HostHardTimerAction::Disarm => {
+                        runtime_task::time::hard_timer::HardKernelTimerAction::Disarm
+                    }
                     HostHardTimerAction::Rearm(deadline) => {
-                        runtime_task::HardKernelTimerAction::Rearm(
-                            runtime_task::MonotonicDeadline::from_duration(deadline),
+                        runtime_task::time::hard_timer::HardKernelTimerAction::Rearm(
+                            runtime_task::time::MonotonicDeadline::from_duration(deadline),
                         )
                     }
                 }
             }))
         };
-        runtime_task::register_hard_restartable_kernel_timer(deadline, callback)
+        runtime_task::time::hard_timer::register_hard_restartable_kernel_timer(deadline, callback)
             .map_err(|error| crate::AxVmError::host("register hard host timer", error))
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn arm_hard_timer(&self, handle: Self::TimerHandle, deadline: Duration) -> AxVmResult {
-        let deadline = runtime_task::MonotonicDeadline::from_duration(deadline);
-        runtime_task::arm_hard_kernel_timer(handle, deadline)
+    fn arm_hard_timer(&self, handle: Self::HardTimerHandle, deadline: Duration) -> AxVmResult {
+        let deadline = runtime_task::time::MonotonicDeadline::from_duration(deadline);
+        runtime_task::time::hard_timer::arm_hard_kernel_timer(handle, deadline)
             .map_err(|error| crate::AxVmError::host("arm hard host timer", error))
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn disarm_hard_timer(&self, handle: Self::TimerHandle) -> AxVmResult {
-        runtime_task::disarm_hard_kernel_timer(handle)
+    fn disarm_hard_timer(&self, handle: Self::HardTimerHandle) -> AxVmResult {
+        runtime_task::time::hard_timer::disarm_hard_kernel_timer(handle)
             .map_err(|error| crate::AxVmError::host("disarm hard host timer", error))
     }
 
-    fn cancel_timer(&self, handle: Self::TimerHandle) -> AxVmResult<bool> {
-        runtime_task::cancel_kernel_timer(handle)
-            .map(|outcome| matches!(outcome, runtime_task::KernelTimerCancelOutcome::Cancelled))
+    fn cancel_timer(&self, handle: Self::TimerHandle) -> AxVmResult<super::HostTimerCancelOutcome> {
+        runtime_task::time::timer::cancel_kernel_timer(handle)
+            .map(|outcome| match outcome {
+                runtime_task::time::timer::KernelTimerCancelOutcome::Cancelled => {
+                    super::HostTimerCancelOutcome::Cancelled
+                }
+                runtime_task::time::timer::KernelTimerCancelOutcome::CancellationDeferred => {
+                    super::HostTimerCancelOutcome::CancellationDeferred
+                }
+                runtime_task::time::timer::KernelTimerCancelOutcome::AlreadyCompleted => {
+                    super::HostTimerCancelOutcome::AlreadyCompleted
+                }
+            })
             .map_err(|error| crate::AxVmError::host("cancel host timer", error))
     }
 }
@@ -197,37 +216,40 @@ impl HostCpu for ArceOsHost {
     }
 }
 
-pub(crate) type ArceOsThreadHandle = runtime_task::ThreadHandle;
-pub(crate) type ArceOsThreadWakeHandle = runtime_task::ThreadWakeHandle;
+pub(crate) type ArceOsThreadHandle = runtime_task::thread::ThreadHandle;
+pub(crate) type ArceOsThreadWakeHandle = runtime_task::thread::ThreadWakeHandle;
 #[cfg(target_arch = "x86_64")]
-pub(crate) type ArceOsWakeResult = runtime_task::WakeResult;
-pub(crate) type ArceOsWaitQueue = runtime_task::WaitQueue;
+pub(crate) type ArceOsWakeResult = runtime_task::thread::WakeResult;
+pub(crate) type ArceOsWaitQueue = runtime_task::sync::WaitQueue;
 #[cfg(target_arch = "aarch64")]
 pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
 pub(crate) use runtime_task::{
-    CpuId as ArceOsCpuId, CpuSet as ArceOsCpuSet, MonotonicDeadline as ArceOsMonotonicDeadline,
-    SchedulePolicy as ArceOsSchedulePolicy, SwitchReason as ArceOsSwitchReason,
-    TaskError as ArceOsTaskError, ThreadExtension as ArceOsThreadExtension,
-    ThreadExtensionOps as ArceOsThreadExtensionOps, ThreadId as ArceOsThreadId,
+    sched::{CpuId as ArceOsCpuId, CpuSet as ArceOsCpuSet, SchedulePolicy as ArceOsSchedulePolicy},
+    thread::{
+        SwitchReason as ArceOsSwitchReason, TaskError as ArceOsTaskError,
+        ThreadExtension as ArceOsThreadExtension, ThreadExtensionOps as ArceOsThreadExtensionOps,
+        ThreadId as ArceOsThreadId,
+    },
+    time::MonotonicDeadline as ArceOsMonotonicDeadline,
 };
 
 /// Hard-IRQ-safe event consumed by one fixed ArceOS service thread.
 pub(crate) struct ArceOsIrqNotification {
-    event: runtime_task::IrqWaitCell,
+    event: runtime_task::sync::irq::IrqWaitCell,
     waiter: OnceLock<ArceOsIrqWaiter>,
 }
 
 struct ArceOsIrqWaiter {
     owner: ArceOsThreadId,
-    registration: runtime_task::IrqWaitRegistration,
-    park: runtime_task::WaitQueue,
+    registration: runtime_task::sync::irq::IrqWaitRegistration,
+    park: runtime_task::sync::WaitQueue,
 }
 
 impl ArceOsIrqNotification {
     pub(crate) const fn new() -> Self {
         Self {
-            event: runtime_task::IrqWaitCell::new(),
+            event: runtime_task::sync::irq::IrqWaitCell::new(),
             waiter: OnceLock::new(),
         }
     }
@@ -247,8 +269,8 @@ impl ArceOsIrqNotification {
         let current = current_thread();
         let waiter = self.waiter.get_or_init(|| ArceOsIrqWaiter {
             owner: current.id(),
-            registration: runtime_task::IrqWaitRegistration::new(current.wake_handle()),
-            park: runtime_task::WaitQueue::new(),
+            registration: runtime_task::sync::irq::IrqWaitRegistration::new(current.wake_handle()),
+            park: runtime_task::sync::WaitQueue::new(),
         });
         assert_eq!(
             waiter.owner,
@@ -257,9 +279,9 @@ impl ArceOsIrqNotification {
         );
 
         match self.event.register(&waiter.registration) {
-            runtime_task::IrqRegisterResult::ConsumedPending => false,
-            runtime_task::IrqRegisterResult::Registered(token)
-            | runtime_task::IrqRegisterResult::NotificationInFlight(token) => {
+            runtime_task::sync::irq::IrqRegisterResult::ConsumedPending => false,
+            runtime_task::sync::irq::IrqRegisterResult::Registered(token)
+            | runtime_task::sync::irq::IrqRegisterResult::NotificationInFlight(token) => {
                 let timed_out = match deadline {
                     Some(deadline) => waiter
                         .park
@@ -269,12 +291,12 @@ impl ArceOsIrqNotification {
                         false
                     }
                 };
-                runtime_task::quiesce_irq_wait(token).unwrap_or_else(|error| {
+                runtime_task::sync::irq::quiesce_irq_wait(token).unwrap_or_else(|error| {
                     panic!("AxVM IRQ notification could not quiesce: {error}")
                 });
                 timed_out
             }
-            runtime_task::IrqRegisterResult::Occupied => {
+            runtime_task::sync::irq::IrqRegisterResult::Occupied => {
                 panic!("AxVM IRQ notification waiter was registered concurrently")
             }
         }
@@ -282,7 +304,7 @@ impl ArceOsIrqNotification {
 }
 
 pub(crate) fn current_thread() -> ArceOsThreadHandle {
-    runtime_task::current_thread_handle()
+    runtime_task::thread::current::current_thread_handle()
         .unwrap_or_else(|error| panic!("AxVM requires a current scheduler thread: {error}"))
 }
 
@@ -299,20 +321,20 @@ where
     // SAFETY: the caller transfers unique ownership of `extension`; this
     // adapter forwards it exactly once to the ArceOS runtime.
     unsafe {
-        runtime_task::spawn_raw_with_extension_and_affinity(
+        ax_std::os::arceos::thread::spawn_raw_with_extension_and_affinity(
             entry, name, stack_size, extension, affinity,
         )
     }
 }
 
 pub(crate) fn join_thread(thread: ArceOsThreadHandle) -> Result<i32, ArceOsTaskError> {
-    runtime_task::join_thread(thread)
+    ax_std::os::arceos::thread::join_thread(thread)
 }
 
 pub(crate) fn thread_extension(
     thread: &ArceOsThreadHandle,
-) -> Result<Option<runtime_task::ThreadOsExtensionBorrow<'_>>, ArceOsTaskError> {
-    runtime_task::thread_os_extension(thread)
+) -> Result<Option<ax_std::os::arceos::thread::ThreadOsExtensionBorrow<'_>>, ArceOsTaskError> {
+    ax_std::os::arceos::thread::thread_os_extension(thread)
 }
 
 pub(crate) fn cpu_set_from_raw_bits(bits: usize) -> ArceOsCpuSet {
@@ -358,7 +380,7 @@ pub(crate) fn send_ipi(cpu_id: usize) {
     if modules::ax_hal::percpu::this_cpu_id() == cpu_id {
         return;
     }
-    runtime_task::notify_cpu(cpu_id)
+    ax_std::os::arceos::irq::notify_cpu(cpu_id)
         .unwrap_or_else(|err| panic!("failed to deliver AxVM IPI to CPU {cpu_id}: {err:?}"));
 }
 

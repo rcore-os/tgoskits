@@ -1,11 +1,17 @@
 use std::{
     hint,
     os::arceos::{
-        api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+        api::{
+            task as api,
+            task::{AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+        },
         modules::ax_hal::percpu::this_cpu_id,
         task::{
-            CpuSet, FairMode, Nice, RtPriority, SchedulePolicy, ThreadId, current_thread_id,
-            set_current_thread_affinity, set_thread_policy, thread_policy,
+            sched::{CpuSet, FairMode, Nice, RtPriority, SchedulePolicy},
+            thread::{
+                ThreadId,
+                current::{current_thread_id, set_current_thread_affinity},
+            },
         },
     },
     sync::{
@@ -60,11 +66,13 @@ fn higher_priority_wake_preempts_current() {
     let worker = thread::spawn(|| {
         assert!(ax_set_current_affinity(AxCpuMask::one_shot(0)).is_ok());
         let current = current_thread_id().expect("RT wakee must have a thread identity");
-        set_thread_policy(
-            current,
-            SchedulePolicy::fifo(RtPriority::new(80).expect("priority 80 must be valid")),
-        )
-        .expect("RT wakee must enter FIFO policy");
+        std::os::arceos::task::thread::ThreadHandle::lookup(current)
+            .and_then(|thread| {
+                thread.set_policy(SchedulePolicy::fifo(
+                    RtPriority::new(80).expect("priority 80 must be valid"),
+                ))
+            })
+            .expect("RT wakee must enter FIFO policy");
         WAKE_READY.store(true, Ordering::Release);
         api::ax_wait_queue_wait_until(&WAKE_WAIT, || WAKE_GO.load(Ordering::Acquire), None);
         WAKE_RAN.store(true, Ordering::Release);
@@ -82,11 +90,13 @@ fn higher_priority_wake_preempts_current() {
     );
 
     let current = current_thread_id().expect("RT controller must have a thread identity");
-    set_thread_policy(
-        current,
-        SchedulePolicy::fifo(RtPriority::new(10).expect("priority 10 must be valid")),
-    )
-    .expect("RT controller must enter lower-priority FIFO policy");
+    std::os::arceos::task::thread::ThreadHandle::lookup(current)
+        .and_then(|thread| {
+            thread.set_policy(SchedulePolicy::fifo(
+                RtPriority::new(10).expect("priority 10 must be valid"),
+            ))
+        })
+        .expect("RT controller must enter lower-priority FIFO policy");
     WAKE_GO.store(true, Ordering::Release);
     wait_until(
         || api::ax_wait_queue_wake(&WAKE_WAIT, 1) == 1,
@@ -97,7 +107,8 @@ fn higher_priority_wake_preempts_current() {
         "a higher-priority FIFO wakee did not preempt a runnable lower-priority FIFO task"
     );
 
-    set_thread_policy(current, SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
+    std::os::arceos::task::thread::ThreadHandle::lookup(current)
+        .and_then(|thread| thread.set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Normal)))
         .expect("RT controller must restore Fair policy");
     worker.join().expect("RT wakee must exit normally");
 }
@@ -118,11 +129,13 @@ fn preempted_rt_donor_is_pushed_to_a_lower_priority_cpu(cpu_count: usize) {
     let wakee = thread::spawn(|| {
         assert!(ax_set_current_affinity(AxCpuMask::one_shot(1)).is_ok());
         let current = current_thread_id().expect("the FIFO 90 wakee must have an identity");
-        set_thread_policy(
-            current,
-            SchedulePolicy::fifo(RtPriority::new(90).expect("priority 90 must be valid")),
-        )
-        .expect("the FIFO 90 wakee must accept its policy");
+        std::os::arceos::task::thread::ThreadHandle::lookup(current)
+            .and_then(|thread| {
+                thread.set_policy(SchedulePolicy::fifo(
+                    RtPriority::new(90).expect("priority 90 must be valid"),
+                ))
+            })
+            .expect("the FIFO 90 wakee must accept its policy");
         PUSH_WAKE_READY.store(true, Ordering::Release);
         api::ax_wait_queue_wait_until(&PUSH_WAIT, || PUSH_WAKE_GO.load(Ordering::Acquire), None);
     });
@@ -138,11 +151,13 @@ fn preempted_rt_donor_is_pushed_to_a_lower_priority_cpu(cpu_count: usize) {
     let guard = thread::spawn(|| {
         assert!(ax_set_current_affinity(AxCpuMask::one_shot(2)).is_ok());
         let current = current_thread_id().expect("the FIFO 20 guard must have an identity");
-        set_thread_policy(
-            current,
-            SchedulePolicy::fifo(RtPriority::new(20).expect("priority 20 must be valid")),
-        )
-        .expect("the FIFO 20 guard must accept its policy");
+        std::os::arceos::task::thread::ThreadHandle::lookup(current)
+            .and_then(|thread| {
+                thread.set_policy(SchedulePolicy::fifo(
+                    RtPriority::new(20).expect("priority 20 must be valid"),
+                ))
+            })
+            .expect("the FIFO 20 guard must accept its policy");
         PUSH_GUARD_READY.store(true, Ordering::Release);
         while !PUSH_STOP.load(Ordering::Acquire) {
             hint::spin_loop();
@@ -156,11 +171,13 @@ fn preempted_rt_donor_is_pushed_to_a_lower_priority_cpu(cpu_count: usize) {
     let donor = thread::spawn(|| {
         assert!(ax_set_current_affinity(AxCpuMask::one_shot(1)).is_ok());
         let current = current_thread_id().expect("the FIFO 40 donor must have an identity");
-        set_thread_policy(
-            current,
-            SchedulePolicy::fifo(RtPriority::new(40).expect("priority 40 must be valid")),
-        )
-        .expect("the FIFO 40 donor must accept its policy");
+        std::os::arceos::task::thread::ThreadHandle::lookup(current)
+            .and_then(|thread| {
+                thread.set_policy(SchedulePolicy::fifo(
+                    RtPriority::new(40).expect("priority 40 must be valid"),
+                ))
+            })
+            .expect("the FIFO 40 donor must accept its policy");
         assert!(ax_set_current_affinity(AxCpuMask::from_raw_bits(0b110)).is_ok());
         assert_eq!(
             this_cpu_id(),
@@ -219,9 +236,15 @@ fn promoted_fifo_keeps_running_after_one_period() -> crate::TestResult {
             worker_id.store(current.as_u64(), Ordering::Release);
             let fifo =
                 SchedulePolicy::fifo(RtPriority::new(20).expect("priority 20 must be valid"));
-            if thread_policy(current) != Ok(SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
-                || set_thread_policy(current, fifo).is_err()
-                || thread_policy(current) != Ok(fifo)
+            if std::os::arceos::task::thread::ThreadHandle::lookup(current)
+                .map(|thread| thread.base_policy())
+                != Ok(SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
+                || std::os::arceos::task::thread::ThreadHandle::lookup(current)
+                    .and_then(|thread| thread.set_policy(fifo))
+                    .is_err()
+                || std::os::arceos::task::thread::ThreadHandle::lookup(current)
+                    .map(|thread| thread.base_policy())
+                    != Ok(fifo)
             {
                 promotion_failed.store(true, Ordering::Release);
                 return;
@@ -245,10 +268,11 @@ fn promoted_fifo_keeps_running_after_one_period() -> crate::TestResult {
             stop.store(true, Ordering::Release);
             let raw = worker_id.load(Ordering::Acquire);
             if raw != 0 {
-                let _ = set_thread_policy(
-                    thread_id_from_raw(raw),
-                    SchedulePolicy::fair(Nice::ZERO, FairMode::Normal),
-                );
+                let _ =
+                    std::os::arceos::task::thread::ThreadHandle::lookup(thread_id_from_raw(raw))
+                        .and_then(|thread| {
+                            thread.set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
+                        });
             }
             worker
                 .join()
@@ -269,10 +293,10 @@ fn promoted_fifo_keeps_running_after_one_period() -> crate::TestResult {
     if stalled {
         let raw = worker_id.load(Ordering::Acquire);
         if raw != 0 {
-            let _ = set_thread_policy(
-                thread_id_from_raw(raw),
-                SchedulePolicy::fair(Nice::ZERO, FairMode::Normal),
-            );
+            let _ = std::os::arceos::task::thread::ThreadHandle::lookup(thread_id_from_raw(raw))
+                .and_then(|thread| {
+                    thread.set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
+                });
         }
     }
     worker.join().expect("RT worker must exit normally");

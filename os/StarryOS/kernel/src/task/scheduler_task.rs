@@ -15,7 +15,7 @@ use ax_std::os::arceos::task as scheduler;
 use super::{PidIdentity, PidSnapshot, Thread};
 #[cfg(target_arch = "aarch64")]
 use super::{PidNamespaceId, TgidNumber, TidNumber};
-use crate::sync::{NoPreemptIrqSave, PiMutex};
+use crate::sync::{Mutex, NoPreemptIrqSave};
 
 const TASK_COMM_LEN: usize = 16;
 
@@ -27,7 +27,7 @@ static CURRENT_USER_VIEW_FAILURES: AtomicU64 = AtomicU64::new(0);
 /// Strong Starry user-task reference backed by a checked scheduler handle.
 #[derive(Clone, Debug)]
 pub struct UserTaskRef {
-    scheduler: scheduler::ThreadHandle,
+    scheduler: scheduler::thread::ThreadHandle,
     extension_data: usize,
 }
 
@@ -36,14 +36,14 @@ pub struct UserTaskRef {
 /// Clone and pthread creation use this transaction token to finish all private
 /// resources before fallible scheduler staging.
 pub struct PreparedUserTask {
-    scheduler: scheduler::PreparedThread,
+    scheduler: ax_std::os::arceos::thread::PreparedThread,
     extension_data: usize,
 }
 
 /// Starry task whose fallible scheduler placement has completed while its
 /// caller-owned user entry remains blocked at the runtime start gate.
 pub struct StagedUserTask {
-    scheduler: scheduler::StagedThread,
+    scheduler: ax_std::os::arceos::thread::StagedThread,
     extension_data: usize,
 }
 
@@ -60,7 +60,7 @@ impl PreparedUserTask {
     }
 
     /// Completes fallible scheduler placement while keeping user entry gated.
-    pub fn stage(self) -> Result<StagedUserTask, scheduler::TaskError> {
+    pub fn stage(self) -> Result<StagedUserTask, scheduler::thread::TaskError> {
         Ok(StagedUserTask {
             scheduler: self.scheduler.stage()?,
             extension_data: self.extension_data,
@@ -92,8 +92,8 @@ impl UserTaskRef {
     /// error; matching Starry operations with malformed data are a runtime-
     /// handle error.
     pub fn try_from_scheduler(
-        handle: scheduler::ThreadHandle,
-    ) -> Result<Option<Self>, scheduler::TaskError> {
+        handle: scheduler::thread::ThreadHandle,
+    ) -> Result<Option<Self>, scheduler::thread::TaskError> {
         let Some(extension_data) = try_extension_data(&handle)? else {
             return Ok(None);
         };
@@ -103,7 +103,7 @@ impl UserTaskRef {
         let data = unsafe { extension_data_from_raw(extension_data) };
         data.thread
             .validate_scheduler_id(handle.id())
-            .map_err(|_| scheduler::TaskError::InvalidRuntimeHandle)?;
+            .map_err(|_| scheduler::thread::TaskError::InvalidRuntimeHandle)?;
         Ok(Some(Self {
             scheduler: handle,
             extension_data,
@@ -111,7 +111,7 @@ impl UserTaskRef {
     }
 
     /// Returns the generation-bearing scheduler identity.
-    pub fn id(&self) -> scheduler::ThreadId {
+    pub fn id(&self) -> scheduler::thread::ThreadId {
         self.scheduler.id()
     }
 
@@ -166,14 +166,17 @@ impl UserTaskRef {
     }
 
     /// Commits an exec-time address-space replacement for the running thread.
-    pub fn switch_address_space(&self, address_space: scheduler::TaskAddressSpace) {
+    pub fn switch_address_space(
+        &self,
+        address_space: ax_std::os::arceos::thread::TaskAddressSpace,
+    ) {
         assert_eq!(
             self.id(),
-            scheduler::current_thread_id()
+            scheduler::thread::current::current_thread_id()
                 .unwrap_or_else(|error| panic!("page-table switch has no current task: {error}")),
             "only the running task may replace its page table"
         );
-        ax_runtime::task::switch_current_address_space(address_space)
+        ax_runtime::thread::switch_current_address_space(address_space)
             .unwrap_or_else(|error| panic!("failed to replace current address space: {error}"));
     }
 
@@ -185,12 +188,12 @@ impl UserTaskRef {
     }
 
     /// Creates a stable direct-wake handle for IRQ or remote producers.
-    pub fn wake_handle(&self) -> scheduler::ThreadWakeHandle {
+    pub fn wake_handle(&self) -> scheduler::thread::ThreadWakeHandle {
         self.scheduler.wake_handle()
     }
 
     /// Returns the scheduler lifecycle snapshot.
-    pub fn state(&self) -> scheduler::ThreadState {
+    pub fn state(&self) -> scheduler::thread::ThreadState {
         self.scheduler.state()
     }
 
@@ -202,13 +205,14 @@ impl UserTaskRef {
     }
 
     /// Returns the base scheduling policy.
-    pub fn policy(&self) -> scheduler::SchedulePolicy {
-        self.scheduler.policy()
+    pub fn base_policy(&self) -> scheduler::sched::SchedulePolicy {
+        self.scheduler.base_policy()
     }
 
     /// Returns the scheduler affinity snapshot.
-    pub fn affinity(&self) -> scheduler::CpuSet {
-        scheduler::thread_affinity(self.id())
+    pub fn affinity(&self) -> scheduler::sched::CpuSet {
+        self.scheduler
+            .affinity()
             .unwrap_or_else(|error| panic!("failed to read Starry task affinity: {error}"))
     }
 
@@ -239,7 +243,7 @@ impl UserTaskRef {
 
     /// Waits for exit and reaps the scheduler-owned runtime resources.
     pub fn join(self) -> i32 {
-        scheduler::join_thread(self.scheduler)
+        ax_std::os::arceos::thread::join_thread(self.scheduler)
             .unwrap_or_else(|error| panic!("failed to join Starry task: {error}"))
     }
 
@@ -262,14 +266,15 @@ impl Eq for UserTaskRef {}
 /// Non-owning Starry task reference that cannot alias a reused registry slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WeakUserTaskRef {
-    scheduler_id: scheduler::ThreadId,
+    scheduler_id: scheduler::thread::ThreadId,
 }
 
 impl WeakUserTaskRef {
     /// Upgrades the reference only while the same slot generation is live.
-    pub fn upgrade(self) -> Result<Option<UserTaskRef>, scheduler::TaskError> {
-        let Some(handle) =
-            resolve_weak_scheduler_handle(scheduler::thread_handle(self.scheduler_id))?
+    pub fn upgrade(self) -> Result<Option<UserTaskRef>, scheduler::thread::TaskError> {
+        let Some(handle) = resolve_weak_scheduler_handle(scheduler::thread::ThreadHandle::lookup(
+            self.scheduler_id,
+        ))?
         else {
             return Ok(None);
         };
@@ -278,18 +283,18 @@ impl WeakUserTaskRef {
 }
 
 fn resolve_weak_scheduler_handle(
-    lookup: Result<scheduler::ThreadHandle, scheduler::TaskError>,
-) -> Result<Option<scheduler::ThreadHandle>, scheduler::TaskError> {
+    lookup: Result<scheduler::thread::ThreadHandle, scheduler::thread::TaskError>,
+) -> Result<Option<scheduler::thread::ThreadHandle>, scheduler::thread::TaskError> {
     match lookup {
         Ok(handle) => Ok(Some(handle)),
-        Err(scheduler::TaskError::StaleThreadId) => Ok(None),
+        Err(scheduler::thread::TaskError::StaleThreadId) => Ok(None),
         Err(error) => Err(error),
     }
 }
 
 /// Tries to recover a Starry user task for the calling scheduler thread.
-pub fn try_current_user_task() -> Result<Option<UserTaskRef>, scheduler::TaskError> {
-    UserTaskRef::try_from_scheduler(scheduler::current_thread_handle()?)
+pub fn try_current_user_task() -> Result<Option<UserTaskRef>, scheduler::thread::TaskError> {
+    UserTaskRef::try_from_scheduler(scheduler::thread::current::current_thread_handle()?)
 }
 
 /// Returns the calling Starry user task.
@@ -407,7 +412,7 @@ pub(crate) fn try_current_user_irq_view() -> Option<UserTaskIrqView> {
 }
 
 /// Spawns a kernel worker without installing a Starry user-task extension.
-pub fn spawn_kernel_thread<F>(entry: F, name: String) -> scheduler::ThreadHandle
+pub fn spawn_kernel_thread<F>(entry: F, name: String) -> scheduler::thread::ThreadHandle
 where
     F: FnOnce() + Send + 'static,
 {
@@ -420,7 +425,7 @@ pub fn spawn_kernel_thread_with_stack<F>(
     entry: F,
     name: String,
     stack_size: usize,
-) -> scheduler::ThreadHandle
+) -> scheduler::thread::ThreadHandle
 where
     F: FnOnce() + Send + 'static,
 {
@@ -432,13 +437,18 @@ where
 pub fn spawn_kernel_thread_with_affinity<F>(
     entry: F,
     name: String,
-    affinity: scheduler::CpuSet,
-) -> scheduler::ThreadHandle
+    affinity: scheduler::sched::CpuSet,
+) -> scheduler::thread::ThreadHandle
 where
     F: FnOnce() + Send + 'static,
 {
-    scheduler::spawn_raw_with_affinity(entry, name, crate::config::KERNEL_STACK_SIZE, affinity)
-        .unwrap_or_else(|error| panic!("failed to spawn affine kernel thread: {error}"))
+    ax_std::os::arceos::thread::spawn_raw_with_affinity(
+        entry,
+        name,
+        crate::config::KERNEL_STACK_SIZE,
+        affinity,
+    )
+    .unwrap_or_else(|error| panic!("failed to spawn affine kernel thread: {error}"))
 }
 
 /// Spawns a fixed per-CPU kernel service with its scheduler policy committed
@@ -446,13 +456,13 @@ where
 pub fn spawn_kernel_thread_with_policy_and_affinity<F>(
     entry: F,
     name: String,
-    policy: scheduler::SchedulePolicy,
-    affinity: scheduler::CpuSet,
-) -> scheduler::ThreadHandle
+    policy: scheduler::sched::SchedulePolicy,
+    affinity: scheduler::sched::CpuSet,
+) -> scheduler::thread::ThreadHandle
 where
     F: FnOnce() + Send + 'static,
 {
-    scheduler::spawn_raw_with_policy_and_affinity(
+    ax_std::os::arceos::thread::spawn_raw_with_policy_and_affinity(
         entry,
         name,
         crate::config::KERNEL_STACK_SIZE,
@@ -463,8 +473,8 @@ where
 }
 
 /// Waits for a kernel worker and releases its scheduler-owned resources.
-pub fn join_kernel_thread(thread: scheduler::ThreadHandle) -> i32 {
-    scheduler::join_thread(thread)
+pub fn join_kernel_thread(thread: scheduler::thread::ThreadHandle) -> i32 {
+    ax_std::os::arceos::thread::join_thread(thread)
         .unwrap_or_else(|error| panic!("failed to join kernel thread: {error}"))
 }
 
@@ -472,7 +482,7 @@ pub fn join_kernel_thread(thread: scheduler::ThreadHandle) -> i32 {
 pub fn try_spawn_kernel_thread<F>(
     entry: F,
     name: String,
-) -> Result<scheduler::ThreadHandle, scheduler::TaskError>
+) -> Result<scheduler::thread::ThreadHandle, scheduler::thread::TaskError>
 where
     F: FnOnce() + Send + 'static,
 {
@@ -484,11 +494,11 @@ pub fn try_spawn_kernel_thread_with_stack<F>(
     entry: F,
     name: String,
     stack_size: usize,
-) -> Result<scheduler::ThreadHandle, scheduler::TaskError>
+) -> Result<scheduler::thread::ThreadHandle, scheduler::thread::TaskError>
 where
     F: FnOnce() + Send + 'static,
 {
-    scheduler::spawn_raw(entry, name, stack_size)
+    ax_std::os::arceos::thread::spawn_raw(entry, name, stack_size)
 }
 
 /// Returns Starry's default kernel stack size.
@@ -500,7 +510,7 @@ pub const fn default_task_stack_size() -> usize {
 pub fn yield_now() {
     #[cfg(axtest)]
     YIELD_NOW_CALLS.fetch_add(1, Ordering::Relaxed);
-    scheduler::yield_current_cpu()
+    scheduler::thread::current::yield_current_cpu()
         .unwrap_or_else(|error| panic!("failed to yield current scheduler thread: {error}"));
 }
 
@@ -519,7 +529,7 @@ pub(crate) fn yield_now_calls_for_test() -> usize {
 
 /// Sleeps the calling scheduler thread for at least `duration`.
 pub fn sleep(duration: Duration) {
-    scheduler::sleep(duration);
+    scheduler::thread::current::sleep(duration);
 }
 
 /// Diagnoses an invalid attempt to sleep from hard-IRQ context.
@@ -540,7 +550,7 @@ pub fn prepare_user_thread<F>(
     name: String,
     stack_size: usize,
     thread: Box<Thread>,
-) -> Result<PreparedUserTask, scheduler::TaskError>
+) -> Result<PreparedUserTask, scheduler::thread::TaskError>
 where
     F: FnOnce() + Send + 'static,
 {
@@ -556,16 +566,16 @@ where
 
 /// Scheduling attributes committed atomically during user-thread creation.
 pub struct UserThreadInitialSchedulerState {
-    policy: scheduler::SchedulePolicy,
-    affinity: scheduler::CpuSet,
+    policy: scheduler::sched::SchedulePolicy,
+    affinity: scheduler::sched::CpuSet,
     reset_on_fork: bool,
 }
 
 impl UserThreadInitialSchedulerState {
     /// Captures the scheduling attributes inherited by an unpublished child.
     pub fn new(
-        policy: scheduler::SchedulePolicy,
-        affinity: scheduler::CpuSet,
+        policy: scheduler::sched::SchedulePolicy,
+        affinity: scheduler::sched::CpuSet,
         reset_on_fork: bool,
     ) -> Self {
         Self {
@@ -577,8 +587,8 @@ impl UserThreadInitialSchedulerState {
 
     fn default_user() -> Self {
         Self::new(
-            scheduler::SchedulePolicy::default(),
-            scheduler::CpuSet::all(ax_runtime::hal::cpu_num()),
+            scheduler::sched::SchedulePolicy::default(),
+            scheduler::sched::CpuSet::all(ax_runtime::hal::cpu_num()),
             false,
         )
     }
@@ -592,7 +602,7 @@ pub fn prepare_user_thread_with_scheduler_state<F>(
     stack_size: usize,
     thread: Box<Thread>,
     scheduler_state: UserThreadInitialSchedulerState,
-) -> Result<PreparedUserTask, scheduler::TaskError>
+) -> Result<PreparedUserTask, scheduler::thread::TaskError>
 where
     F: FnOnce() + Send + 'static,
 {
@@ -615,7 +625,7 @@ pub fn prepare_user_thread_with_fp_scheduler_state<F>(
     fp_state: ax_cpu::FpState,
     thread: Box<Thread>,
     scheduler_state: UserThreadInitialSchedulerState,
-) -> Result<PreparedUserTask, scheduler::TaskError>
+) -> Result<PreparedUserTask, scheduler::thread::TaskError>
 where
     F: FnOnce() + Send + 'static,
 {
@@ -641,7 +651,7 @@ pub fn prepare_user_thread_inheriting_fp_scheduler_state<F>(
     stack_size: usize,
     thread: Box<Thread>,
     scheduler_state: UserThreadInitialSchedulerState,
-) -> Result<PreparedUserTask, scheduler::TaskError>
+) -> Result<PreparedUserTask, scheduler::thread::TaskError>
 where
     F: FnOnce() + Send + 'static,
 {
@@ -662,7 +672,7 @@ enum X86FpInitialization {
 }
 
 struct StarryContextState {
-    address_space: Option<scheduler::TaskAddressSpace>,
+    address_space: Option<ax_std::os::arceos::thread::TaskAddressSpace>,
     #[cfg(target_arch = "riscv64")]
     fp_state: Option<ax_cpu::FpState>,
     #[cfg(target_arch = "x86_64")]
@@ -671,7 +681,7 @@ struct StarryContextState {
 }
 
 impl StarryContextState {
-    fn user(address_space: scheduler::TaskAddressSpace) -> Self {
+    fn user(address_space: ax_std::os::arceos::thread::TaskAddressSpace) -> Self {
         Self {
             address_space: Some(address_space),
             #[cfg(target_arch = "riscv64")]
@@ -684,7 +694,7 @@ impl StarryContextState {
 
     #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
     fn user_with_scheduler_state(
-        address_space: scheduler::TaskAddressSpace,
+        address_space: ax_std::os::arceos::thread::TaskAddressSpace,
         scheduler_state: UserThreadInitialSchedulerState,
     ) -> Self {
         Self {
@@ -695,7 +705,7 @@ impl StarryContextState {
 
     #[cfg(target_arch = "x86_64")]
     fn user_inheriting_current_fp_state(
-        address_space: scheduler::TaskAddressSpace,
+        address_space: ax_std::os::arceos::thread::TaskAddressSpace,
         scheduler_state: UserThreadInitialSchedulerState,
     ) -> Self {
         Self {
@@ -712,7 +722,7 @@ fn prepare_user_thread_inner<F>(
     stack_size: usize,
     thread: Box<Thread>,
     context_state: StarryContextState,
-) -> Result<PreparedUserTask, scheduler::TaskError>
+) -> Result<PreparedUserTask, scheduler::thread::TaskError>
 where
     F: FnOnce() + Send + 'static,
 {
@@ -721,7 +731,7 @@ where
     let irq_identity = IrqTaskIdentity::new(&thread, &name);
     let data = Box::into_raw(Box::new(StarryUserTaskExtension {
         thread,
-        name: PiMutex::new(Arc::from(name.as_str())),
+        name: Mutex::new(Arc::from(name.as_str())),
         irq_identity,
         reset_on_fork: AtomicBool::new(context_state.scheduler_state.reset_on_fork),
     })) as usize;
@@ -729,14 +739,14 @@ where
     // runtime takes that ownership even when scheduler creation fails and
     // invokes `starry_user_task_drop` exactly once from task/reaper context.
     let extension = unsafe {
-        scheduler::ThreadExtension::new(data, &STARRY_USER_TASK_EXTENSION_OPS)
+        scheduler::thread::ThreadExtension::new(data, &STARRY_USER_TASK_EXTENSION_OPS)
             .with_scheduler_tick_cpu_time(scheduler_tick_cpu_time)
             .with_running_policy_applied_hook(starry_user_task_policy_applied)
             .with_scheduler_tick_work(scheduler_tick_gate, starry_user_task_scheduler_tick)
     };
     let Some(address_space) = context_state.address_space else {
         drop(extension);
-        return Err(scheduler::TaskError::InvalidRuntimeHandle);
+        return Err(scheduler::thread::TaskError::InvalidRuntimeHandle);
     };
     // SAFETY: the extension above transfers its unique callback-data ownership
     // to the runtime and is never used or dropped again by this function.
@@ -744,7 +754,7 @@ where
     let prepared = unsafe {
         match context_state.fp_state {
             Some(fp_state) => {
-                scheduler::prepare_raw_with_extension_in_address_space_and_fp_scheduler_state(
+                ax_std::os::arceos::thread::prepare_raw_with_extension_in_address_space_and_fp_scheduler_state(
                     entry,
                     name,
                     stack_size,
@@ -755,7 +765,7 @@ where
                     context_state.scheduler_state.affinity,
                 )?
             }
-            None => scheduler::prepare_raw_with_extension_in_address_space_and_scheduler_state(
+            None => ax_std::os::arceos::thread::prepare_raw_with_extension_in_address_space_and_scheduler_state(
                 entry,
                 name,
                 stack_size,
@@ -769,7 +779,7 @@ where
     #[cfg(target_arch = "x86_64")]
     let prepared = unsafe {
         match context_state.x86_fp {
-            X86FpInitialization::InheritCurrent => scheduler::prepare_raw_with_extension_in_address_space_and_inherited_fp_scheduler_state(
+            X86FpInitialization::InheritCurrent => ax_std::os::arceos::thread::prepare_raw_with_extension_in_address_space_and_inherited_fp_scheduler_state(
                 entry,
                 name,
                 stack_size,
@@ -778,7 +788,7 @@ where
                 context_state.scheduler_state.policy,
                 context_state.scheduler_state.affinity,
             )?,
-            X86FpInitialization::Default => scheduler::prepare_raw_with_extension_in_address_space_and_scheduler_state(
+            X86FpInitialization::Default => ax_std::os::arceos::thread::prepare_raw_with_extension_in_address_space_and_scheduler_state(
                 entry,
                 name,
                 stack_size,
@@ -791,7 +801,7 @@ where
     };
     #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
     let prepared = unsafe {
-        scheduler::prepare_raw_with_extension_in_address_space_and_scheduler_state(
+        ax_std::os::arceos::thread::prepare_raw_with_extension_in_address_space_and_scheduler_state(
             entry,
             name,
             stack_size,
@@ -808,14 +818,14 @@ where
     extension_data
         .thread
         .bind_scheduler_id(scheduler_id)
-        .map_err(|_| scheduler::TaskError::InvalidRuntimeHandle)?;
+        .map_err(|_| scheduler::thread::TaskError::InvalidRuntimeHandle)?;
     Ok(PreparedUserTask {
         scheduler: prepared,
         extension_data: data,
     })
 }
 
-fn finish_published_user_thread(handle: scheduler::ThreadHandle) -> UserTaskRef {
+fn finish_published_user_thread(handle: scheduler::thread::ThreadHandle) -> UserTaskRef {
     match UserTaskRef::try_from_scheduler(handle) {
         Ok(Some(task)) => task,
         Ok(None) => panic!("published Starry user thread lost its user extension"),
@@ -825,7 +835,7 @@ fn finish_published_user_thread(handle: scheduler::ThreadHandle) -> UserTaskRef 
 
 struct StarryUserTaskExtension {
     thread: Box<Thread>,
-    name: PiMutex<Arc<str>>,
+    name: Mutex<Arc<str>>,
     irq_identity: IrqTaskIdentity,
     reset_on_fork: AtomicBool,
 }
@@ -902,8 +912,8 @@ impl IrqTaskIdentity {
     }
 }
 
-static STARRY_USER_TASK_EXTENSION_OPS: scheduler::ThreadExtensionOps =
-    scheduler::ThreadExtensionOps {
+static STARRY_USER_TASK_EXTENSION_OPS: scheduler::thread::ThreadExtensionOps =
+    scheduler::thread::ThreadExtensionOps {
         on_switch_in: starry_user_task_switch_in,
         on_switch_out: starry_user_task_switch_out,
         on_exit: starry_user_task_exit,
@@ -913,8 +923,8 @@ static STARRY_USER_TASK_EXTENSION_OPS: scheduler::ThreadExtensionOps =
 
 unsafe extern "Rust" fn starry_user_task_policy_applied(
     data: usize,
-    _thread: scheduler::ThreadId,
-    base_policy: scheduler::SchedulePolicy,
+    _thread: scheduler::thread::ThreadId,
+    base_policy: scheduler::sched::SchedulePolicy,
     observed_ns: u64,
 ) {
     let extension = unsafe { extension_data_from_raw(data) };
@@ -926,8 +936,8 @@ unsafe extern "Rust" fn starry_user_task_policy_applied(
 
 unsafe extern "Rust" fn starry_user_task_switch_in(
     data: usize,
-    thread: scheduler::ThreadId,
-    base_policy: scheduler::SchedulePolicy,
+    thread: scheduler::thread::ThreadId,
+    base_policy: scheduler::sched::SchedulePolicy,
     charged_runtime_ns: u64,
 ) {
     let extension = unsafe { extension_data_from_raw(data) };
@@ -949,8 +959,8 @@ unsafe extern "Rust" fn starry_user_task_switch_in(
 
 unsafe extern "Rust" fn starry_user_task_switch_out(
     data: usize,
-    _thread: scheduler::ThreadId,
-    reason: scheduler::SwitchReason,
+    _thread: scheduler::thread::ThreadId,
+    reason: scheduler::thread::SwitchReason,
 ) {
     let extension = unsafe { extension_data_from_raw(data) };
     // SAFETY: scheduler extension hooks run with local IRQs disabled from the
@@ -968,7 +978,7 @@ unsafe extern "Rust" fn starry_user_task_switch_out(
     }
 }
 
-unsafe extern "Rust" fn starry_user_task_exit(_data: usize, _thread: scheduler::ThreadId) {
+unsafe extern "Rust" fn starry_user_task_exit(_data: usize, _thread: scheduler::thread::ThreadId) {
     // Normal Linux task exit already released these counters before fd
     // teardown. This idempotent scheduler-lifetime fence also covers a
     // prepared thread whose publication failed after perf inheritance.
@@ -981,7 +991,7 @@ unsafe extern "Rust" fn starry_user_task_exit(_data: usize, _thread: scheduler::
 
 unsafe extern "Rust" fn starry_user_task_deadline_overrun(
     data: usize,
-    _thread: scheduler::ThreadId,
+    _thread: scheduler::thread::ThreadId,
 ) {
     let data = unsafe { extension_data_from_raw(data) };
     data.thread.publish_deadline_overrun();
@@ -989,14 +999,14 @@ unsafe extern "Rust" fn starry_user_task_deadline_overrun(
 
 unsafe extern "Rust" fn starry_user_task_scheduler_tick(
     data: usize,
-    _thread: scheduler::ThreadId,
+    _thread: scheduler::thread::ThreadId,
     observed_ns: u64,
-) -> scheduler::SchedulerTickWorkDisposition {
+) -> scheduler::runtime::service::SchedulerTickWorkDisposition {
     let extension = unsafe { extension_data_from_raw(data) };
     extension.thread.sample_scheduler_tick_cpu_time(observed_ns);
     super::signal::queue_rttime_limit_signal_from_scheduler_tick(&extension.thread, observed_ns);
     super::poll_process_cpu_timers_from_scheduler_tick(&extension.thread.proc_data);
-    scheduler::SchedulerTickWorkDisposition::Complete
+    scheduler::runtime::service::SchedulerTickWorkDisposition::Complete
 }
 
 unsafe extern "Rust" fn starry_user_task_drop(data: usize) {
@@ -1006,9 +1016,9 @@ unsafe extern "Rust" fn starry_user_task_drop(data: usize) {
 }
 
 fn try_extension_data(
-    scheduler: &scheduler::ThreadHandle,
-) -> Result<Option<usize>, scheduler::TaskError> {
-    let extension = scheduler::thread_os_extension(scheduler)?;
+    scheduler: &scheduler::thread::ThreadHandle,
+) -> Result<Option<usize>, scheduler::thread::TaskError> {
+    let extension = ax_std::os::arceos::thread::thread_os_extension(scheduler)?;
     let StarryExtensionKind::User = classify_starry_extension(
         extension.as_ref().map(|extension| extension.ops()),
         extension.as_ref().map_or(0, |extension| extension.data()),
@@ -1029,9 +1039,9 @@ enum StarryExtensionKind {
 }
 
 fn classify_starry_extension(
-    ops: Option<&'static scheduler::ThreadExtensionOps>,
+    ops: Option<&'static scheduler::thread::ThreadExtensionOps>,
     data: usize,
-) -> Result<StarryExtensionKind, scheduler::TaskError> {
+) -> Result<StarryExtensionKind, scheduler::thread::TaskError> {
     let Some(ops) = ops else {
         return Ok(StarryExtensionKind::MissingOrForeign);
     };
@@ -1039,19 +1049,20 @@ fn classify_starry_extension(
         return Ok(StarryExtensionKind::MissingOrForeign);
     }
     if data == 0 || !data.is_multiple_of(core::mem::align_of::<StarryUserTaskExtension>()) {
-        return Err(scheduler::TaskError::InvalidRuntimeHandle);
+        return Err(scheduler::thread::TaskError::InvalidRuntimeHandle);
     }
     Ok(StarryExtensionKind::User)
 }
 
-fn is_starry_thread_extension(ops: &'static scheduler::ThreadExtensionOps) -> bool {
+fn is_starry_thread_extension(ops: &'static scheduler::thread::ThreadExtensionOps) -> bool {
     ptr::eq(ops, &STARRY_USER_TASK_EXTENSION_OPS)
 }
 
-const fn is_realtime_policy(policy: scheduler::SchedulePolicy) -> bool {
+const fn is_realtime_policy(policy: scheduler::sched::SchedulePolicy) -> bool {
     matches!(
         policy,
-        scheduler::SchedulePolicy::Fifo { .. } | scheduler::SchedulePolicy::RoundRobin { .. }
+        scheduler::sched::SchedulePolicy::Fifo { .. }
+            | scheduler::sched::SchedulePolicy::RoundRobin { .. }
     )
 }
 
@@ -1065,13 +1076,14 @@ unsafe fn extension_data_from_raw(data: usize) -> &'static StarryUserTaskExtensi
 mod tests {
     use super::*;
 
-    static FOREIGN_EXTENSION_OPS: scheduler::ThreadExtensionOps = scheduler::ThreadExtensionOps {
-        on_switch_in: foreign_thread_switch_in,
-        on_switch_out: foreign_thread_switch_out,
-        on_exit: foreign_thread_hook,
-        on_deadline_overrun: foreign_thread_hook,
-        drop: foreign_thread_drop,
-    };
+    static FOREIGN_EXTENSION_OPS: scheduler::thread::ThreadExtensionOps =
+        scheduler::thread::ThreadExtensionOps {
+            on_switch_in: foreign_thread_switch_in,
+            on_switch_out: foreign_thread_switch_out,
+            on_exit: foreign_thread_hook,
+            on_deadline_overrun: foreign_thread_hook,
+            drop: foreign_thread_drop,
+        };
 
     #[test]
     fn accepts_only_starry_extension_ops_identity() {
@@ -1081,7 +1093,7 @@ mod tests {
 
     #[test]
     fn task_name_uses_a_sleepable_snapshot_lock() {
-        fn assert_name_lock(_: &crate::sync::PiMutex<alloc::sync::Arc<str>>) {}
+        fn assert_name_lock(_: &crate::sync::Mutex<alloc::sync::Arc<str>>) {}
         fn assert_extension_name_lock(extension: &StarryUserTaskExtension) {
             assert_name_lock(&extension.name);
         }
@@ -1105,62 +1117,68 @@ mod tests {
     fn matching_ops_reject_malformed_extension_data() {
         assert_eq!(
             classify_starry_extension(Some(&STARRY_USER_TASK_EXTENSION_OPS), 0),
-            Err(scheduler::TaskError::InvalidRuntimeHandle)
+            Err(scheduler::thread::TaskError::InvalidRuntimeHandle)
         );
         assert_eq!(
             classify_starry_extension(Some(&STARRY_USER_TASK_EXTENSION_OPS), 1),
-            Err(scheduler::TaskError::InvalidRuntimeHandle)
+            Err(scheduler::thread::TaskError::InvalidRuntimeHandle)
         );
     }
 
     #[test]
     fn weak_generation_reuse_is_not_upgraded() {
         assert!(matches!(
-            resolve_weak_scheduler_handle(Err(scheduler::TaskError::StaleThreadId)),
+            resolve_weak_scheduler_handle(Err(scheduler::thread::TaskError::StaleThreadId)),
             Ok(None)
         ));
         assert!(matches!(
-            resolve_weak_scheduler_handle(Err(scheduler::TaskError::NotInitialized)),
-            Err(scheduler::TaskError::NotInitialized)
+            resolve_weak_scheduler_handle(Err(scheduler::thread::TaskError::NotInitialized)),
+            Err(scheduler::thread::TaskError::NotInitialized)
         ));
     }
 
     #[test]
     fn rttime_classification_includes_only_fifo_and_round_robin() {
-        let priority = scheduler::RtPriority::new(1).unwrap();
-        assert!(is_realtime_policy(scheduler::SchedulePolicy::fifo(
+        let priority = scheduler::sched::RtPriority::new(1).unwrap();
+        assert!(is_realtime_policy(scheduler::sched::SchedulePolicy::fifo(
             priority
         )));
-        assert!(is_realtime_policy(scheduler::SchedulePolicy::round_robin(
-            priority
-        )));
-        assert!(!is_realtime_policy(scheduler::SchedulePolicy::default()));
-        let deadline = scheduler::DeadlinePolicy::new(
+        assert!(is_realtime_policy(
+            scheduler::sched::SchedulePolicy::round_robin(priority)
+        ));
+        assert!(!is_realtime_policy(
+            scheduler::sched::SchedulePolicy::default()
+        ));
+        let deadline = scheduler::sched::DeadlinePolicy::new(
             1_000_000,
             2_000_000,
             3_000_000,
-            scheduler::DeadlineFlags::NONE,
+            scheduler::sched::DeadlineFlags::NONE,
         )
         .unwrap();
-        assert!(!is_realtime_policy(scheduler::SchedulePolicy::Deadline(
-            deadline,
-        )));
+        assert!(!is_realtime_policy(
+            scheduler::sched::SchedulePolicy::Deadline(deadline,)
+        ));
     }
 
-    unsafe extern "Rust" fn foreign_thread_hook(_data: usize, _thread: scheduler::ThreadId) {}
+    unsafe extern "Rust" fn foreign_thread_hook(
+        _data: usize,
+        _thread: scheduler::thread::ThreadId,
+    ) {
+    }
 
     unsafe extern "Rust" fn foreign_thread_switch_in(
         _data: usize,
-        _thread: scheduler::ThreadId,
-        _policy: scheduler::SchedulePolicy,
+        _thread: scheduler::thread::ThreadId,
+        _policy: scheduler::sched::SchedulePolicy,
         _charged_runtime_ns: u64,
     ) {
     }
 
     unsafe extern "Rust" fn foreign_thread_switch_out(
         _data: usize,
-        _thread: scheduler::ThreadId,
-        _reason: scheduler::SwitchReason,
+        _thread: scheduler::thread::ThreadId,
+        _reason: scheduler::thread::SwitchReason,
     ) {
     }
 

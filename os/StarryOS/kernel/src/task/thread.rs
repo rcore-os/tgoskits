@@ -22,7 +22,7 @@ use super::{
     scheduler_identity::SchedulerIdentity,
     user_memory_access::{UserMemoryAccessDepth, UserMemoryAccessGuard},
 };
-use crate::sync::{IrqMutex, NoPreemptIrqSave, PiMutex};
+use crate::sync::{IrqMutex, Mutex, NoPreemptIrqSave};
 
 const KRETPROBE_STACK_CAPACITY: usize = 16;
 const SYSCALL_WORK_SECCOMP: u32 = 1 << 0;
@@ -54,7 +54,7 @@ struct ThreadPidOwnership {
 /// Scope-local resources and their task-context serialization.
 struct ThreadScope {
     scope: UnsafeCell<Scope>,
-    access: PiMutex<()>,
+    access: Mutex<()>,
 }
 
 // SAFETY: immutable active-task and remote reads may overlap because every
@@ -67,7 +67,7 @@ impl ThreadScope {
     fn new(scope: Scope) -> Self {
         Self {
             scope: UnsafeCell::new(scope),
-            access: PiMutex::new(()),
+            access: Mutex::new(()),
         }
     }
 
@@ -126,14 +126,14 @@ impl ThreadScope {
 /// Runtime accounting that follows scheduler switch callbacks.
 struct ThreadAccounting {
     cpu_time: CpuTimeAccounting,
-    rttime: PiMutex<RttimeWatchdog>,
+    rttime: Mutex<RttimeWatchdog>,
 }
 
 impl ThreadAccounting {
     fn new() -> Self {
         Self {
             cpu_time: CpuTimeAccounting::new(),
-            rttime: PiMutex::new(RttimeWatchdog::new()),
+            rttime: Mutex::new(RttimeWatchdog::new()),
         }
     }
 }
@@ -215,7 +215,7 @@ struct ThreadSecurity {
     pdeathsig: AtomicU32,
     no_new_privs: AtomicBool,
     seccomp: SeccompStateStore,
-    cred: PiMutex<Arc<Cred>>,
+    cred: Mutex<Arc<Cred>>,
     uid_map_written: AtomicBool,
     gid_map_written: AtomicBool,
     setgroups_deny: AtomicBool,
@@ -228,7 +228,7 @@ impl ThreadSecurity {
             pdeathsig: AtomicU32::new(0),
             no_new_privs: AtomicBool::new(false),
             seccomp: SeccompStateStore::new(),
-            cred: PiMutex::new(parent_cred.unwrap_or_else(|| Arc::new(Cred::root()))),
+            cred: Mutex::new(parent_cred.unwrap_or_else(|| Arc::new(Cred::root()))),
             uid_map_written: AtomicBool::new(false),
             gid_map_written: AtomicBool::new(false),
             setgroups_deny: AtomicBool::new(false),
@@ -509,7 +509,7 @@ impl Thread {
 
     /// Returns the generation-bearing scheduler identity, if bound.
     #[cfg(target_arch = "aarch64")]
-    pub fn scheduler_id(&self) -> Option<ax_std::os::arceos::task::ThreadId> {
+    pub fn scheduler_id(&self) -> Option<ax_std::os::arceos::task::thread::ThreadId> {
         self.identity.scheduler.get()
     }
 
@@ -517,7 +517,11 @@ impl Thread {
         self.identity
             .scheduler
             .get()
-            .and_then(|id| ax_runtime::task::thread_runtime(id).ok())
+            .and_then(|id| {
+                ax_runtime::task::thread::ThreadHandle::lookup(id)
+                    .and_then(|thread| thread.runtime())
+                    .ok()
+            })
             .map(|snapshot| snapshot.charged_runtime_ns())
             .unwrap_or_else(|| self.accounting.cpu_time.published_runtime_ns())
     }
@@ -525,21 +529,21 @@ impl Thread {
     /// Binds the scheduler identity exactly once.
     pub(crate) fn bind_scheduler_id(
         &self,
-        id: ax_std::os::arceos::task::ThreadId,
+        id: ax_std::os::arceos::task::thread::ThreadId,
     ) -> crate::StarryResult<()> {
         self.identity.scheduler.bind(id)
     }
 
     pub(crate) fn validate_scheduler_id(
         &self,
-        id: ax_std::os::arceos::task::ThreadId,
+        id: ax_std::os::arceos::task::thread::ThreadId,
     ) -> crate::StarryResult<()> {
         self.identity.scheduler.validate_bound(id)
     }
 
     pub(super) fn scheduler_switch_in(
         &self,
-        id: ax_std::os::arceos::task::ThreadId,
+        id: ax_std::os::arceos::task::thread::ThreadId,
         realtime_policy: bool,
         charged_runtime_ns: u64,
         cpu_pin: &CpuPin<'_>,
@@ -557,7 +561,7 @@ impl Thread {
 
     pub(super) fn scheduler_switch_out(
         &self,
-        reason: ax_std::os::arceos::task::SwitchReason,
+        reason: ax_std::os::arceos::task::thread::SwitchReason,
         cpu_pin: &CpuPin<'_>,
     ) {
         #[cfg(target_arch = "aarch64")]
@@ -596,7 +600,7 @@ impl Thread {
         &self.accounting.cpu_time
     }
 
-    pub(crate) fn rttime(&self) -> &PiMutex<RttimeWatchdog> {
+    pub(crate) fn rttime(&self) -> &Mutex<RttimeWatchdog> {
         &self.accounting.rttime
     }
 
@@ -1032,11 +1036,11 @@ mod tests {
     use core::sync::atomic::{AtomicBool, Ordering};
 
     use super::{NextSignalCheckBlock, ThreadSecurity};
-    use crate::{sync::PiMutex, task::SeccompStateStore};
+    use crate::{sync::Mutex, task::SeccompStateStore};
 
     #[test]
     fn seccomp_reads_use_an_immutable_snapshot_store() {
-        fn assert_pi_mutex<T>(_: &PiMutex<T>) {}
+        fn assert_pi_mutex<T>(_: &Mutex<T>) {}
         fn assert_seccomp_store(_: &SeccompStateStore) {}
         fn assert_security_lock_types(security: &ThreadSecurity) {
             assert_seccomp_store(&security.seccomp);

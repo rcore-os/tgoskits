@@ -8,8 +8,8 @@ publish = false
 [features]
 default = ["arceos"]
 arceos = ["dep:ax-std", "ax-std/arceos"]
-qperf-metrics = ["ax-std/qperf-metrics", "ax-task/qperf-metrics"]
+qperf-metrics = ["ax-std/qperf-metrics", "ax-runtime/qperf-metrics"]
 
 [dependencies]
 ax-std = { workspace = true, optional = true, features = ["default"] }
-ax-task = { workspace = true }
+ax-runtime = { workspace = true }

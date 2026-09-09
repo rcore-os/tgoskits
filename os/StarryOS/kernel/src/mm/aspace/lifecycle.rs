@@ -340,7 +340,7 @@ struct MmInner {
     kernel_pins: AtomicUsize,
     active_count: AtomicUsize,
     active_mask: Arc<AtomicUsize>,
-    runtime_cpu_state: Arc<ax_runtime::task::AddressSpaceCpuState>,
+    runtime_cpu_state: Arc<ax_runtime::thread::AddressSpaceCpuState>,
     /// Per-CPU counts are needed while an outgoing and incoming task briefly
     /// overlap during a context switch. A bit alone cannot represent that
     /// state without leaving stale active bits behind.
@@ -708,7 +708,7 @@ impl MmHandle {
                 kernel_pins: AtomicUsize::new(0),
                 active_count: AtomicUsize::new(0),
                 runtime_cpu_state: Arc::new(
-                    ax_runtime::task::AddressSpaceCpuState::with_mm_active_mask(
+                    ax_runtime::thread::AddressSpaceCpuState::with_mm_active_mask(
                         PhysAddr::from_usize(root),
                         active_mask.clone(),
                     ),
@@ -1052,8 +1052,8 @@ impl ActivationLease {
     /// Transfers a pre-acquired lease into the runtime's inline switch storage.
     pub(crate) fn into_scheduler_activation(
         mut self,
-    ) -> ax_runtime::task::SchedulerAddressSpaceActivation {
-        let activation = ax_runtime::task::SchedulerAddressSpaceActivation::new(
+    ) -> ax_runtime::thread::SchedulerAddressSpaceActivation {
+        let activation = ax_runtime::thread::SchedulerAddressSpaceActivation::new(
             task_address_space(self.installed),
             self.cpu,
             self.inner.clone(),
@@ -1125,10 +1125,10 @@ fn release_activation_accounting(inner: &Arc<MmInner>, cpu: usize) {
     queue_if_retired(inner);
 }
 
-impl ax_runtime::task::SchedulerAddressSpaceOwner for MmInner {
+impl ax_runtime::thread::SchedulerAddressSpaceOwner for MmInner {
     fn release_after_root_switch(
         self: Arc<Self>,
-        proof: ax_runtime::task::AddressSpaceSwitchProof,
+        proof: ax_runtime::thread::AddressSpaceSwitchProof,
     ) {
         release_activation_accounting(&self, proof.cpu());
     }
@@ -1168,19 +1168,21 @@ struct RuntimeMmOwner {
 // publishes the shared TLB target bit under the lifecycle gate. `inner` remains
 // owned by the runtime token until all CPU leases have drained, so the IRQ-off
 // release callbacks cannot drop the final page-table or MM-shell allocation.
-unsafe impl ax_runtime::task::UserAddressSpaceOwner for RuntimeMmOwner {
+unsafe impl ax_runtime::thread::UserAddressSpaceOwner for RuntimeMmOwner {
     fn prepare_activation(
         &self,
         cpu: usize,
-    ) -> Result<ax_runtime::task::SchedulerAddressSpaceActivation, ax_runtime::task::TaskError>
-    {
+    ) -> Result<
+        ax_runtime::thread::SchedulerAddressSpaceActivation,
+        ax_runtime::task::thread::TaskError,
+    > {
         self.pin
             .lock()
             .as_ref()
-            .ok_or(ax_runtime::task::TaskError::InvalidRuntimeHandle)?
+            .ok_or(ax_runtime::task::thread::TaskError::InvalidRuntimeHandle)?
             .activation_for_switch(cpu)
             .map(ActivationLease::into_scheduler_activation)
-            .map_err(|_| ax_runtime::task::TaskError::InvalidRuntimeHandle)
+            .map_err(|_| ax_runtime::task::thread::TaskError::InvalidRuntimeHandle)
     }
 
     fn detach_from_task(&self) {
@@ -1193,11 +1195,11 @@ impl MmHandle {
     /// Prepares task-scoped MM ownership before publishing a runnable task.
     pub(crate) fn scheduler_address_space(
         &self,
-    ) -> Result<ax_runtime::task::TaskAddressSpace, ax_runtime::task::TaskError> {
+    ) -> Result<ax_runtime::thread::TaskAddressSpace, ax_runtime::task::thread::TaskError> {
         let pin = self
             .pin()
-            .map_err(|_| ax_runtime::task::TaskError::InvalidRuntimeHandle)?;
-        ax_runtime::task::TaskAddressSpace::new_managed(
+            .map_err(|_| ax_runtime::task::thread::TaskError::InvalidRuntimeHandle)?;
+        ax_runtime::thread::TaskAddressSpace::new_managed(
             self.installed().root(),
             self.inner.runtime_cpu_state.clone(),
             RuntimeMmOwner {

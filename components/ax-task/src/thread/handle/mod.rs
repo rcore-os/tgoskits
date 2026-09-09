@@ -13,15 +13,26 @@ mod wake_batch;
 pub use wake_batch::ThreadWakeBatch;
 
 use crate::{
-    CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, ParkPublication, PiWaitNodeStorage,
-    PiWaitState, RtPriority, RunQueueNodeStorage, SchedulePolicy, SchedulerTickCpuTime,
-    SchedulerTickWork, SchedulerTickWorkClaim, SchedulingKey, SchedulingUrgency, TaskError,
-    ThreadAffinityCompletion, ThreadExtensionView, ThreadId, ThreadLifecycle, ThreadSchedCell,
-    ThreadState, WakePublication,
-    inbox::{InboxKind, InboxNode},
-    runtime::{AddressSpaceMembarrierId, PreemptGuardToken, task_runtime},
-    task_work::TaskWorkDoorbell,
-    timer::TaskDeadlineNode,
+    runtime::{
+        cpu::PreemptGuardToken,
+        delivery::{
+            inbox::{InboxKind, InboxNode},
+            work::TaskWorkDoorbell,
+        },
+        resource::AddressSpaceMembarrierId,
+        service::SchedulerTickCpuTime,
+        task_runtime,
+    },
+    sched::{
+        CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, RtPriority, SchedulePolicy,
+        algorithm::RunQueueNodeStorage, system::ThreadSchedCell,
+    },
+    thread::{
+        ParkPublication, PiWaitNodeStorage, PiWaitState, SchedulerTickWork, SchedulerTickWorkClaim,
+        SchedulingKey, SchedulingUrgency, TaskError, ThreadAffinityCompletion, ThreadExtensionView,
+        ThreadId, ThreadLifecycle, ThreadState, WakePublication,
+    },
+    time::queue::TaskDeadlineNode,
 };
 
 const REAP_CLAIMED: usize = 1 << (usize::BITS - 1);
@@ -109,8 +120,8 @@ impl ThreadHandle {
     /// Returns the immutable runtime publication for this live scheduler
     /// thread.
     #[doc(hidden)]
-    pub fn runtime_publication(&self) -> crate::runtime::CurrentThreadPublication {
-        crate::runtime::CurrentThreadPublication::from_core(self.id(), &self.core)
+    pub fn runtime_publication(&self) -> crate::runtime::switch::CurrentThreadPublication {
+        crate::runtime::switch::CurrentThreadPublication::from_core(self.id(), &self.core)
     }
 
     pub(crate) fn runtime_core_arc(&self) -> &Arc<ThreadCore> {
@@ -123,7 +134,7 @@ impl ThreadHandle {
     }
 
     /// Returns the thread's base scheduling policy.
-    pub fn policy(&self) -> SchedulePolicy {
+    pub fn base_policy(&self) -> SchedulePolicy {
         self.core.base_policy.load()
     }
 
@@ -170,7 +181,7 @@ impl ThreadHandle {
         self.core.assigned_cpu()
     }
 
-    pub(crate) fn extension_view(&self) -> Option<crate::ThreadExtensionView> {
+    pub(crate) fn extension_view(&self) -> Option<crate::thread::ThreadExtensionView> {
         self.core.extension_view()
     }
 }
@@ -263,17 +274,12 @@ impl ThreadWakeHandle {
         self.core.wake(WakeIntent::Sync)
     }
 
-    /// Wakes from ordinary task context.
-    pub fn wake_from_task(&self) -> WakeResult {
-        self.core.wake(WakeIntent::Normal)
-    }
-
     pub(crate) fn deliver_wait_claim_from_task(
         &self,
-        claim: &crate::WaitWakeClaim,
+        claim: &crate::thread::WaitWakeClaim,
         intent: WakeIntent,
-    ) -> crate::WaitWakeDelivery {
-        crate::facade::wake_wait_claim_from_task(&self.core, claim, intent)
+    ) -> crate::thread::WaitWakeDelivery {
+        crate::runtime::context::wake_wait_claim_from_task(&self.core, claim, intent)
     }
 
     /// Returns the thread that owns this wake header.
@@ -284,7 +290,7 @@ impl ThreadWakeHandle {
 
 impl ThreadCore {
     fn wake(self: &Arc<Self>, intent: WakeIntent) -> WakeResult {
-        crate::facade::wake_thread_from_current_cpu(self, intent)
+        crate::runtime::context::wake_thread_from_current_cpu(self, intent)
     }
 }
 
@@ -600,3 +606,5 @@ mod wake_state;
 
 use policy::AtomicPolicy;
 use wake_affinity::WakeAffinityState;
+
+mod control;

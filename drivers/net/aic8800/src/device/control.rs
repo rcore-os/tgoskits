@@ -11,6 +11,8 @@ use crate::{
 };
 
 const MAX_SSID_LENGTH: usize = 32;
+const CONTROL_COMMAND_CAPACITY: usize = 8;
+const CONTROL_COMMAND_BYTE_CAPACITY: usize = 4 * 1024;
 
 pub(super) struct ControlCommand {
     pub message_id: u16,
@@ -21,6 +23,7 @@ pub(super) struct ControlCommand {
 
 pub(super) struct ControlState {
     pub commands: VecDeque<ControlCommand>,
+    pub command_bytes: usize,
     pub operation: ControlOperation,
 }
 
@@ -58,28 +61,64 @@ pub(super) enum ControlEffect {
 }
 
 impl ControlState {
+    fn has_command_capacity(&self, additional_items: usize, additional_bytes: usize) -> bool {
+        self.commands
+            .len()
+            .checked_add(additional_items)
+            .is_some_and(|items| items <= CONTROL_COMMAND_CAPACITY)
+            && self
+                .command_bytes
+                .checked_add(additional_bytes)
+                .is_some_and(|bytes| bytes <= CONTROL_COMMAND_BYTE_CAPACITY)
+    }
+
+    fn push_command(&mut self, command: ControlCommand) -> Result<(), AicError> {
+        let command_bytes = command.payload.len();
+        if !self.has_command_capacity(1, command_bytes) {
+            return Err(AicError::ControlQueueFull);
+        }
+        self.command_bytes += command_bytes;
+        self.commands.push_back(command);
+        Ok(())
+    }
+
+    pub(super) fn pop_command(&mut self) -> Option<ControlCommand> {
+        let command = self.commands.pop_front()?;
+        self.command_bytes -= command.payload.len();
+        Some(command)
+    }
+
     pub(super) fn accept_connect_indication(
         &mut self,
         station_index: u8,
         bssid: [u8; 6],
         local_mac: [u8; 6],
     ) -> Result<(), AicError> {
-        let ControlOperation::Connect(connect) = &mut self.operation else {
+        let ControlOperation::Connect(connect) = &self.operation else {
             return Err(AicError::CompletionMismatch);
         };
         if connect.phase != ConnectPhase::AwaitIndication {
             return Err(AicError::CompletionMismatch);
         }
         if connect.pmk.is_none() {
-            self.commands.push_back(ControlCommand {
+            if !self.has_command_capacity(1, 2) {
+                return Err(AicError::ControlQueueFull);
+            }
+            self.push_command(ControlCommand {
                 message_id: ME_SET_CONTROL_PORT_REQ,
                 destination: TASK_ME,
                 expected_message_id: ME_SET_CONTROL_PORT_CFM,
                 payload: control_port_payload(station_index, true).to_vec(),
-            });
+            })?;
+            let ControlOperation::Connect(connect) = &mut self.operation else {
+                return Err(AicError::CompletionMismatch);
+            };
             connect.phase = ConnectPhase::AwaitControlPort;
             Ok(())
         } else {
+            let ControlOperation::Connect(connect) = &mut self.operation else {
+                return Err(AicError::CompletionMismatch);
+            };
             let entropy = connect.entropy.take().ok_or(AicError::EntropyUnavailable)?;
             let pmk = connect.pmk.take().ok_or(AicError::WpaProtocol)?;
             connect.handshake = Some(Wpa2Handshake::new(
@@ -99,23 +138,28 @@ impl ControlState {
         station_index: u8,
         eapol: &[u8],
     ) -> Result<ControlEffect, AicError> {
-        let ControlOperation::Connect(connect) = &mut self.operation else {
-            return Err(AicError::CompletionMismatch);
+        let action = {
+            let ControlOperation::Connect(connect) = &mut self.operation else {
+                return Err(AicError::CompletionMismatch);
+            };
+            if connect.phase != ConnectPhase::AwaitHandshake {
+                return Err(AicError::WpaProtocol);
+            }
+            log::info!("[wifi] WPA2 EAPOL frame consumed by handshake state machine");
+            connect
+                .handshake
+                .as_mut()
+                .ok_or(AicError::WpaProtocol)?
+                .process(eapol)
+                .map_err(map_wpa_error)?
         };
-        if connect.phase != ConnectPhase::AwaitHandshake {
-            return Err(AicError::WpaProtocol);
-        }
-        log::info!("[wifi] WPA2 EAPOL frame consumed by handshake state machine");
-        let action = connect
-            .handshake
-            .as_mut()
-            .ok_or(AicError::WpaProtocol)?
-            .process(eapol)
-            .map_err(map_wpa_error)?;
         match action {
             HandshakeAction::SendM2(frame) => Ok(ControlEffect::TransmitEapol(frame)),
             HandshakeAction::InstallKeys(keys) => {
-                self.commands.push_back(ControlCommand {
+                if !self.has_command_capacity(2, 88) {
+                    return Err(AicError::ControlQueueFull);
+                }
+                self.push_command(ControlCommand {
                     message_id: MM_KEY_ADD_REQ,
                     destination: TASK_MM,
                     expected_message_id: MM_KEY_ADD_CFM,
@@ -127,8 +171,8 @@ impl ControlState {
                         &keys.temporal_key,
                     )?
                     .to_vec(),
-                });
-                self.commands.push_back(ControlCommand {
+                })?;
+                self.push_command(ControlCommand {
                     message_id: MM_KEY_ADD_REQ,
                     destination: TASK_MM,
                     expected_message_id: MM_KEY_ADD_CFM,
@@ -140,7 +184,10 @@ impl ControlState {
                         &keys.group_key,
                     )?
                     .to_vec(),
-                });
+                })?;
+                let ControlOperation::Connect(connect) = &mut self.operation else {
+                    return Err(AicError::CompletionMismatch);
+                };
                 connect.pending_m4 = Some(keys.m4.clone());
                 connect.phase = ConnectPhase::InstallingKeys(2);
                 Ok(ControlEffect::None)
@@ -169,18 +216,24 @@ impl ControlState {
     }
 
     pub(super) fn accept_m4_transmit(&mut self, station_index: u8) -> Result<(), AicError> {
-        let ControlOperation::Connect(connect) = &mut self.operation else {
+        let ControlOperation::Connect(connect) = &self.operation else {
             return Err(AicError::CompletionMismatch);
         };
         if connect.phase != ConnectPhase::AwaitM4Transmit {
             return Err(AicError::CompletionMismatch);
         }
-        self.commands.push_back(ControlCommand {
+        if !self.has_command_capacity(1, 2) {
+            return Err(AicError::ControlQueueFull);
+        }
+        self.push_command(ControlCommand {
             message_id: ME_SET_CONTROL_PORT_REQ,
             destination: TASK_ME,
             expected_message_id: ME_SET_CONTROL_PORT_CFM,
             payload: control_port_payload(station_index, true).to_vec(),
-        });
+        })?;
+        let ControlOperation::Connect(connect) = &mut self.operation else {
+            return Err(AicError::CompletionMismatch);
+        };
         connect.phase = ConnectPhase::AwaitControlPort;
         Ok(())
     }
@@ -270,8 +323,13 @@ pub(super) fn build(
             return Err(AicError::InvalidControlRequest);
         }
     };
+    let command_bytes = commands.iter().map(|command| command.payload.len()).sum();
+    if commands.len() > CONTROL_COMMAND_CAPACITY || command_bytes > CONTROL_COMMAND_BYTE_CAPACITY {
+        return Err(AicError::ControlQueueFull);
+    }
     Ok(ControlState {
         commands,
+        command_bytes,
         operation,
     })
 }

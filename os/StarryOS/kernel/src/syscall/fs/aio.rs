@@ -15,7 +15,7 @@ use core::{
 use ax_fs_ng::vfs::FileFlags;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_runtime::hal::{paging::MappingFlags, time::monotonic_time};
-use ax_std::os::arceos::task::WaitQueue;
+use ax_std::os::arceos::task::sync::WaitQueue;
 use axpoll::IoEvents;
 use axpoll_set::PollSet;
 use linux_raw_sys::general::timespec;
@@ -25,7 +25,7 @@ use crate::{
     Errno, StarryError, StarryResult,
     file::{Directory, File, FileLike, event::EventFd, get_file_like, memfd::Memfd},
     mm::{AddrSpace, IoVec, MappingOperation, MmPin, VmMutPtr, VmPtr},
-    sync::{PiMutex, RwLock},
+    sync::{Mutex, RwLock},
     syscall::signal::check_sigset_size,
     task::{
         PidIdentityId,
@@ -181,14 +181,14 @@ struct AioContext {
     ring_size: usize,
     ring_events: u32,
     ring_tail: AtomicUsize,
-    ring_lock: PiMutex<()>,
+    ring_lock: Mutex<()>,
     ready_count: AtomicUsize,
     queued_count: AtomicUsize,
     destroying: AtomicBool,
     work_wq: WaitQueue,
     inflight_wq: WaitQueue,
     completion_wakers: PollSet,
-    inner: PiMutex<AioContextInner>,
+    inner: Mutex<AioContextInner>,
 }
 
 impl AioContext {
@@ -209,14 +209,14 @@ impl AioContext {
             ring_size,
             ring_events,
             ring_tail: AtomicUsize::new(0),
-            ring_lock: PiMutex::new(()),
+            ring_lock: Mutex::new(()),
             ready_count: AtomicUsize::new(0),
             queued_count: AtomicUsize::new(0),
             destroying: AtomicBool::new(false),
             work_wq: WaitQueue::new(),
             inflight_wq: WaitQueue::new(),
             completion_wakers: PollSet::new(),
-            inner: PiMutex::new(AioContextInner {
+            inner: Mutex::new(AioContextInner {
                 inflight: 0,
                 queue: VecDeque::new(),
                 pending: BTreeMap::new(),

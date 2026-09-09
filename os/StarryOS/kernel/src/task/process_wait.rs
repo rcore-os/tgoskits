@@ -8,7 +8,7 @@ use axpoll_set::PollSet;
 use starry_signal::Signo;
 
 use super::{PidRoleLease, ProcessData, Tid, TidNumber, current_user_task, future};
-use crate::sync::{IrqMutex, PiMutex};
+use crate::sync::{IrqMutex, Mutex};
 
 struct VforkDone {
     done: bool,
@@ -31,7 +31,7 @@ pub(super) struct ProcessWaitState {
     child_exit_event: Arc<PollSet>,
     exit_event: Arc<PollSet>,
     thread_exit_event: Arc<PollSet>,
-    exec_lock: PiMutex<()>,
+    exec_lock: Mutex<()>,
     exit_signal: Option<Signo>,
     wait_parent_tid: TidNumber,
     retired_leader: IrqMutex<Option<RetiredLeader>>,
@@ -44,7 +44,7 @@ impl ProcessWaitState {
             child_exit_event: Arc::default(),
             exit_event: Arc::default(),
             thread_exit_event: Arc::default(),
-            exec_lock: PiMutex::new(()),
+            exec_lock: Mutex::new(()),
             exit_signal,
             wait_parent_tid,
             retired_leader: IrqMutex::new(None),
@@ -79,7 +79,7 @@ impl ProcessData {
         &self.wait.thread_exit_event
     }
 
-    pub fn exec_lock(&self) -> &PiMutex<()> {
+    pub fn exec_lock(&self) -> &Mutex<()> {
         &self.wait.exec_lock
     }
 

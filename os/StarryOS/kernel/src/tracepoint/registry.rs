@@ -9,7 +9,7 @@ use ax_tracepoint::{ExtTracePoint, TracePoint};
 
 use super::KernelTraceAux;
 use crate::{
-    sync::{IrqMutex, PiMutex},
+    sync::{IrqMutex, Mutex},
     task::future::IrqNotify,
 };
 
@@ -24,7 +24,7 @@ struct TracepointSnapshotState {
 struct KernelExtTracePointState {
     snapshot: IrqMutex<TracepointSnapshotState>,
     readers: [AtomicUsize; 2],
-    update: PiMutex<()>,
+    update: Mutex<()>,
     reclaimer: &'static TracepointReclaimer,
 }
 
@@ -87,7 +87,7 @@ impl KernelExtTracePoint {
                     epoch: 0,
                 }),
                 readers: [AtomicUsize::new(0), AtomicUsize::new(0)],
-                update: PiMutex::new(()),
+                update: Mutex::new(()),
                 reclaimer,
             }),
         }
@@ -115,7 +115,7 @@ impl KernelExtTracePoint {
 
     /// Applies a task-context update and publishes it as one new generation.
     pub fn update<R>(&self, operation: impl FnOnce(&mut ExtTracePoint<KernelTraceAux>) -> R) -> R {
-        ax_runtime::task::validate_blocking_context()
+        ax_runtime::task::thread::current::validate_blocking_context()
             .expect("tracepoint updates require a preemptible task context");
         let _update = self.state.update.lock();
         let current = {
@@ -170,7 +170,7 @@ struct TracepointReclaimDrain {
 }
 
 pub(super) struct TracepointReclaimer {
-    queue: PiMutex<VecDeque<RetiredTracepoint>>,
+    queue: Mutex<VecDeque<RetiredTracepoint>>,
     notify: IrqNotify,
     started: AtomicBool,
 }
@@ -178,7 +178,7 @@ pub(super) struct TracepointReclaimer {
 impl TracepointReclaimer {
     pub(super) const fn new() -> Self {
         Self {
-            queue: PiMutex::new(VecDeque::new()),
+            queue: Mutex::new(VecDeque::new()),
             notify: IrqNotify::new(),
             started: AtomicBool::new(false),
         }
@@ -214,7 +214,7 @@ impl TracepointReclaimer {
         }
     }
 
-    pub(super) fn start_worker(&'static self) -> ax_runtime::task::ThreadHandle {
+    pub(super) fn start_worker(&'static self) -> ax_runtime::task::thread::ThreadHandle {
         if self.started.swap(true, Ordering::AcqRel) {
             panic!("tracepoint reclaim worker started twice");
         }
@@ -226,9 +226,9 @@ impl TracepointReclaimer {
                     if !drain.pending || !drain.runnable {
                         break;
                     }
-                    ax_runtime::task::yield_current_cpu().unwrap_or_else(|error| {
-                        panic!("tracepoint reclaim worker failed to yield: {error}")
-                    });
+                    ax_runtime::task::thread::current::yield_current_cpu().unwrap_or_else(
+                        |error| panic!("tracepoint reclaim worker failed to yield: {error}"),
+                    );
                 }
             },
             "tracepoint-reclaim".into(),

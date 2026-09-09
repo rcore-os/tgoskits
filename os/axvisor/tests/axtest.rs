@@ -149,8 +149,10 @@ mod tests {
         use core::sync::atomic::{AtomicBool, Ordering};
         use std::{sync::Arc, thread, time::Duration};
 
-        use ax_std::os::arceos::modules::ax_runtime::task::{
-            IrqWaitCell, IrqWorkerWaiter, current_thread_handle,
+        use {
+            ax_std::os::arceos::modules::ax_runtime::task::sync::irq::IrqWaitCell,
+            ax_std::os::arceos::modules::ax_runtime::task::sync::irq::IrqWorkerWaiter,
+            ax_std::os::arceos::modules::ax_runtime::task::thread::current::current_thread_handle,
         };
 
         let signal = Arc::new(IrqWaitCell::new());

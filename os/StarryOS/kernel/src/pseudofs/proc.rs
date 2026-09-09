@@ -18,7 +18,10 @@ use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
 };
-use ax_std::os::arceos::task::{CpuId, CpuSet, ThreadState};
+use ax_std::os::arceos::task::{
+    sched::{CpuId, CpuSet},
+    thread::ThreadState,
+};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use kernel_elf_parser::{AuxEntry, AuxType};
 use ksym::KallsymsMapped;
@@ -357,7 +360,7 @@ fn render_stat() -> VfsResult<String> {
     let per_cpu_sys = sys_jiffies / cpu_count;
     let per_cpu_idle = idle_jiffies / cpu_count;
 
-    let irq_total = ax_runtime::task::timer_irq_count();
+    let irq_total = ax_runtime::diagnostics::timer_irq_count();
 
     let mut buf = format!("cpu  {user_jiffies} 0 {sys_jiffies} {idle_jiffies} 0 0 0 0 0 0\n");
     for i in 0..cpu_count {
@@ -1993,7 +1996,7 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
     root.add(
         "interrupts",
         SimpleFile::new_regular(fs.clone(), || {
-            Ok(format!("0: {}", ax_runtime::task::timer_irq_count()))
+            Ok(format!("0: {}", ax_runtime::diagnostics::timer_irq_count()))
         }),
     );
 

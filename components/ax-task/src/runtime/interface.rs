@@ -2,7 +2,28 @@
 
 use trait_ffi::def_extern_trait;
 
-use super::*;
+use crate::{
+    runtime::{
+        RuntimeHandleResult, RuntimeStatus, TaskSystemHandle,
+        cpu::{
+            CpuRemoteHandle, CurrentCpuOwnerHandles, IrqGuardToken, LocalIrqState,
+            PreemptGuardToken, RqClockSample, RuntimeCpuId, SchedulerDeadlineUpdate,
+            SchedulerRuntimeDeadline,
+        },
+        resource::{
+            AddressSpaceDestroyOutcome, AddressSpaceHandle, AddressSpaceMembarrierState,
+            AddressSpaceReclaimArmOutcome, ExecutionContextHandle, KernelContextRequest,
+            MembarrierRegistration, MembarrierRegistrationPhase, RuntimeMembarrierAction,
+            StackHandle, StackRequest, TlsHandle, UserContextRequest,
+        },
+        switch::{
+            ContextThreadBinding, CurrentThreadPublication, RuntimeScheduleOrigin,
+            RuntimeSchedulerEntry, RuntimeSchedulerFrameEnterResult, RuntimeSchedulerReturn,
+            RuntimeSwitchPlan, SchedSwitchRecord, ThreadIdentityV1,
+        },
+    },
+    time::MonotonicInstant,
+};
 
 /// OS capabilities needed by the scheduling core.
 ///
@@ -14,7 +35,7 @@ pub trait TaskRuntime {
     ///
     /// # Safety
     ///
-    /// A non-`NONE` result must identify a pinned [`crate::TaskSystem`] that
+    /// A non-`NONE` result must identify a pinned [`crate::runtime::TaskSystem`] that
     /// remains live until shutdown. The linked runtime provider is the trust
     /// root for this raw handle; callers cannot validate it dynamically.
     unsafe fn task_system_handle() -> TaskSystemHandle;
@@ -27,8 +48,8 @@ pub trait TaskRuntime {
     ///
     /// # Safety
     ///
-    /// The returned identity, owner-only [`crate::CpuLocal`] handle and
-    /// Arc-backed [`crate::CpuRemote`] handle must all describe the same calling
+    /// The returned identity, owner-only [`crate::runtime::cpu::CpuLocal`] handle and
+    /// Arc-backed [`crate::runtime::cpu::CpuRemote`] handle must all describe the same calling
     /// CPU and remain live until shutdown. The local address must originate
     /// from the allocation's mutable owner capability, not from a shared
     /// `CpuLocal` borrow. Before reconstructing a reference, the caller must
@@ -36,7 +57,7 @@ pub trait TaskRuntime {
     /// claim and its CPU pin for the complete derived-borrow lifetime.
     unsafe fn current_cpu_owner_handles() -> CurrentCpuOwnerHandles;
 
-    /// Returns the Arc-backed [`crate::CpuRemote`] endpoint for the calling CPU.
+    /// Returns the Arc-backed [`crate::runtime::cpu::CpuRemote`] endpoint for the calling CPU.
     ///
     /// This is the scheduler-adjacent current-CPU fast path. Unlike
     /// [`Self::cpu_remote_handle`], it must not derive a CPU identifier and
@@ -46,8 +67,8 @@ pub trait TaskRuntime {
     ///
     /// The caller must prevent migration until it has finished every read
     /// through the returned endpoint. A non-`NONE` result must identify the
-    /// calling CPU's Arc-backed [`crate::CpuRemote`] and remain live until
-    /// shutdown. It must not identify a [`crate::CpuLocal`] or any other
+    /// calling CPU's Arc-backed [`crate::runtime::cpu::CpuRemote`] and remain live until
+    /// shutdown. It must not identify a [`crate::runtime::cpu::CpuLocal`] or any other
     /// allocation.
     unsafe fn current_cpu_remote_handle() -> CpuRemoteHandle;
 
@@ -86,17 +107,17 @@ pub trait TaskRuntime {
     /// only a snapshot.
     fn current_preemption_pending() -> bool;
 
-    /// Returns the Arc-backed [`crate::CpuRemote`] endpoint for `cpu`.
+    /// Returns the Arc-backed [`crate::runtime::cpu::CpuRemote`] endpoint for `cpu`.
     ///
     /// Unlike [`Self::current_cpu_local_handle`], this handle must never point
-    /// at [`crate::CpuLocal`]. Remote producers may retain and dereference the
+    /// at [`crate::runtime::cpu::CpuLocal`]. Remote producers may retain and dereference the
     /// endpoint without aliasing the owner CPU's mutable runqueue borrow.
     ///
     /// # Safety
     ///
-    /// A non-`NONE` result must identify the Arc-backed [`crate::CpuRemote`]
+    /// A non-`NONE` result must identify the Arc-backed [`crate::runtime::cpu::CpuRemote`]
     /// endpoint for `cpu` and remain live until shutdown. It must not identify
-    /// a [`crate::CpuLocal`] or any other allocation.
+    /// a [`crate::runtime::cpu::CpuLocal`] or any other allocation.
     unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle;
 
     /// Returns the calling CPU's logical identifier under an existing pin.
@@ -286,7 +307,7 @@ pub trait TaskRuntime {
     /// pinned by an ordinary IRQ guard or owns an active scheduler baton.
     /// Unlike [`Self::validate_schedule_context`], a completely unguarded task
     /// context is invalid here: an interrupt-return scheduler entry could
-    /// otherwise re-enter over a live mutable [`crate::CpuLocal`] borrow.
+    /// otherwise re-enter over a live mutable [`crate::runtime::cpu::CpuLocal`] borrow.
     fn validate_owner_cpu_context() -> RuntimeStatus;
 
     /// Returns one sample from the finite monotonic `ktime` domain.
@@ -376,11 +397,14 @@ pub trait TaskRuntime {
     /// polling retry protocol.
     fn deallocate_stack(stack: StackHandle);
 
-    /// Allocates a TLS area satisfying `request`.
+    /// Allocates TLS for the runtime's fixed kernel-image template.
+    ///
+    /// Template layout, initialization, and alignment belong to the runtime.
+    /// This operation does not allocate arbitrary application TLS.
     ///
     /// On success, `handle` must be non-zero and uniquely identify a live TLS
     /// allocation accepted by [`Self::deallocate_tls`] until ownership moves.
-    fn allocate_tls(request: TlsRequest) -> RuntimeHandleResult;
+    fn allocate_kernel_tls() -> RuntimeHandleResult;
 
     /// Releases a TLS area after its execution context has been destroyed.
     ///
@@ -435,7 +459,7 @@ pub trait TaskRuntime {
     /// returns [`AddressSpaceReclaimArmOutcome::Ready`] if no CPU lease remains,
     /// or records an allocation-free notification obligation and returns
     /// [`AddressSpaceReclaimArmOutcome::Armed`]. The CPU that drops the last
-    /// lease must then call [`crate::notify_address_space_reclaim`]. An invalid
+    /// lease must then call [`crate::runtime::resource::notify_address_space_reclaim`]. An invalid
     /// handle is a fatal provider invariant.
     fn arm_address_space_reclaim(
         address_space: AddressSpaceHandle,

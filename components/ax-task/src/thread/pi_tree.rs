@@ -6,7 +6,10 @@ use alloc::{
 };
 use core::{cell::UnsafeCell, cmp::Ordering, fmt, ptr::NonNull};
 
-use crate::{SchedulePolicy, SchedulingUrgency, ThreadCore, ThreadId};
+use crate::{
+    sched::SchedulePolicy,
+    thread::{SchedulingUrgency, ThreadCore, ThreadId},
+};
 
 /// Effective donation cloned into an rtmutex waiter node.
 ///
@@ -468,7 +471,7 @@ fn find_first_excluding(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FairMode, Nice};
+    use crate::sched::{FairMode, Nice};
 
     fn donation(generation: u64) -> PiDonation {
         PiDonation {

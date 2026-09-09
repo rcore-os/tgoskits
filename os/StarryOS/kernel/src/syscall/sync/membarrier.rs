@@ -1,6 +1,9 @@
 use ax_runtime::task::{
-    MembarrierCommand, MembarrierError, MembarrierRegistration, TaskError, membarrier,
-    register_current_membarrier,
+    runtime::resource::MembarrierRegistration,
+    sync::membarrier::{
+        MembarrierCommand, MembarrierError, membarrier, register_current_membarrier,
+    },
+    thread::TaskError,
 };
 use linux_raw_sys::general::membarrier_cmd;
 

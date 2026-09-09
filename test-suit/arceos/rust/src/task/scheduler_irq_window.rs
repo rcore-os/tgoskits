@@ -4,11 +4,15 @@ use std::{
         api::task::{AxCpuMask, ax_set_current_affinity},
         modules::{
             ax_hal,
-            ax_runtime::task::{
-                CpuId, CpuSet, DEFAULT_BATCH_LIMIT, FairMode, Nice, RtPriority, SchedulePolicy,
-                ThreadId, ThreadState, cpu_topology_len, current_thread_id,
-                qperf_runtime_scheduler_metrics_snapshot, set_thread_affinity, set_thread_policy,
-                thread_handle,
+            ax_runtime::{
+                diagnostics::qperf_runtime_scheduler_metrics_snapshot,
+                task::{
+                    runtime::config::DEFAULT_BATCH_LIMIT,
+                    sched::{
+                        CpuId, CpuSet, FairMode, Nice, RtPriority, SchedulePolicy, cpu_topology_len,
+                    },
+                    thread::{ThreadId, ThreadState, current::current_thread_id},
+                },
             },
         },
     },
@@ -74,7 +78,8 @@ pub fn run() -> crate::TestResult {
         .collect::<Vec<_>>();
     assert!(worker_ids.iter().all(|thread| {
         matches!(
-            thread_handle(*thread).map(|handle| handle.state()),
+            std::os::arceos::task::thread::ThreadHandle::lookup(*thread)
+                .map(|handle| handle.state()),
             Ok(ThreadState::Running)
         )
     }));
@@ -95,8 +100,14 @@ pub fn run() -> crate::TestResult {
                 hint::spin_loop();
             }
             for worker in worker_ids {
-                set_thread_affinity(worker, cpu1.clone())
-                    .expect("remote affinity update must publish owner work");
+                // This case deliberately leaves reconciliation to IRQ return.
+                drop(
+                    std::os::arceos::modules::ax_runtime::task::thread::ThreadHandle::lookup(
+                        worker,
+                    )
+                    .and_then(|thread| thread.request_affinity(cpu1.clone()))
+                    .expect("remote affinity update must publish owner work"),
+                );
             }
             owner_work_published.store(true, Ordering::Release);
         })
@@ -107,11 +118,13 @@ pub fn run() -> crate::TestResult {
     );
 
     let current = current_thread_id().expect("controller must have a scheduler identity");
-    set_thread_policy(
-        current,
-        SchedulePolicy::fifo(RtPriority::new(90).expect("priority 90 must be valid")),
-    )
-    .expect("CPU0 controller must enter FIFO policy");
+    std::os::arceos::modules::ax_runtime::task::thread::ThreadHandle::lookup(current)
+        .and_then(|thread| {
+            thread.set_policy(SchedulePolicy::fifo(
+                RtPriority::new(90).expect("priority 90 must be valid"),
+            ))
+        })
+        .expect("CPU0 controller must enter FIFO policy");
     let before = qperf_runtime_scheduler_metrics_snapshot();
 
     assert!(ax_hal::asm::irqs_enabled());
@@ -141,7 +154,8 @@ pub fn run() -> crate::TestResult {
         "an IRQ-return continuation must open interrupts between scheduler passes"
     );
 
-    set_thread_policy(current, SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
+    std::os::arceos::modules::ax_runtime::task::thread::ThreadHandle::lookup(current)
+        .and_then(|thread| thread.set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Normal)))
         .expect("CPU0 controller must restore Fair policy");
     stop_workers.store(true, Ordering::Release);
     controller

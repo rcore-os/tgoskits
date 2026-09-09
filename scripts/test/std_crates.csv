@@ -25,6 +25,7 @@ realtek-rtl8125
 aic8800
 ax-sched
 axvm
+axvirtio-blk
 virtualization-tests
 axvmconfig
 ax-cpumask
@@ -56,3 +57,4 @@ sdmmc-protocol
 axbuild
 ax-fs-ng
 some-serial
+trait-ffi

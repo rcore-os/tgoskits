@@ -7,7 +7,7 @@ use super::*;
 /// accounting is disabled. This object therefore never opens a second precise
 /// runtime interval from context-switch callbacks.
 pub struct CpuTimeAccounting {
-    scheduler_tick_cpu_time: Arc<scheduler::SchedulerTickCpuTime>,
+    scheduler_tick_cpu_time: Arc<scheduler::runtime::service::SchedulerTickCpuTime>,
     published_user_ns: AtomicU64,
     published_system_ns: AtomicU64,
     published_runtime_ns: AtomicU64,
@@ -35,7 +35,8 @@ impl Default for CpuTimeAccounting {
 
 impl CpuTimeAccounting {
     pub(crate) fn new() -> Self {
-        let scheduler_tick_cpu_time = Arc::new(scheduler::SchedulerTickCpuTime::new());
+        let scheduler_tick_cpu_time =
+            Arc::new(scheduler::runtime::service::SchedulerTickCpuTime::new());
         Self {
             scheduler_tick_cpu_time,
             published_user_ns: AtomicU64::new(0),
@@ -67,7 +68,9 @@ impl CpuTimeAccounting {
         )
     }
 
-    pub(crate) fn scheduler_tick_cpu_time(&self) -> Arc<scheduler::SchedulerTickCpuTime> {
+    pub(crate) fn scheduler_tick_cpu_time(
+        &self,
+    ) -> Arc<scheduler::runtime::service::SchedulerTickCpuTime> {
         Arc::clone(&self.scheduler_tick_cpu_time)
     }
 
@@ -88,8 +91,8 @@ impl CpuTimeAccounting {
         self.realtime_state.store(stable_state, Ordering::Release);
     }
 
-    pub(crate) fn scheduler_switch_out(&self, reason: scheduler::SwitchReason) {
-        if reason == scheduler::SwitchReason::Blocked
+    pub(crate) fn scheduler_switch_out(&self, reason: scheduler::thread::SwitchReason) {
+        if reason == scheduler::thread::SwitchReason::Blocked
             && self.realtime_state.load(Ordering::Acquire) & REALTIME_POLICY_ACTIVE != 0
         {
             self.reset_realtime_continuous();
@@ -116,7 +119,7 @@ impl CpuTimeAccounting {
     }
 
     #[cfg(any(test, axtest))]
-    fn scheduler_switch_out_at(&self, reason: scheduler::SwitchReason, runtime_ns: u64) {
+    fn scheduler_switch_out_at(&self, reason: scheduler::thread::SwitchReason, runtime_ns: u64) {
         self.scheduler_switch_out(reason);
         let _ = self.snapshot(runtime_ns);
     }
@@ -450,7 +453,7 @@ pub(super) fn process_cpu_high_water_preserves_runtime_total_for_test() -> bool 
 
     let first =
         process.snapshot_at_with_live(10, &mut |runtime| accounting.unpublished_delta(runtime));
-    accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 15);
+    accounting.scheduler_switch_out_at(scheduler::thread::SwitchReason::Preempted, 15);
     process.record_transition(|| accounting.publish_committed_delta(15));
     let second = process.snapshot_committed_at(15);
 

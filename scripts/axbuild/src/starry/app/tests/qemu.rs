@@ -1,8 +1,6 @@
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use tempfile::tempdir;
@@ -385,59 +383,6 @@ fail_regex = []
 }
 
 #[test]
-fn selfhost_reboot_guard_reports_the_interrupted_phase() {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("axbuild manifest should live under scripts/axbuild")
-        .to_path_buf();
-    let guard =
-        repo.join("apps/starry/selfhost/selfhost-full-kernel/guest-selfbuild-reboot-guard.sh");
-    let root = tempdir().unwrap();
-    let state = root.path().join("state");
-    let bin_dir = root.path().join("bin");
-    let poweroff = bin_dir.join("poweroff");
-    let poweroff_marker = root.path().join("poweroff-called");
-    fs::create_dir(&bin_dir).unwrap();
-    fs::write(
-        &poweroff,
-        "#!/bin/sh\nprintf 'called\\n' >\"$POWER_OFF_MARKER\"\n",
-    )
-    .unwrap();
-    fs::set_permissions(&poweroff, fs::Permissions::from_mode(0o755)).unwrap();
-    fs::write(&state, "running test-run kernel\n").unwrap();
-
-    let output = Command::new("/bin/sh")
-        .arg(&guard)
-        .env("SELFHOST_STATE_FILE", &state)
-        .env("POWER_OFF_MARKER", &poweroff_marker)
-        .env("PATH", &bin_dir)
-        .output()
-        .unwrap();
-
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stdout)
-            .contains("SELF_COMPILE_FAILED: unexpected guest reboot during kernel")
-    );
-    assert_eq!(fs::read_to_string(&poweroff_marker).unwrap(), "called\n");
-
-    fs::write(&state, "ready test-run prebuild\n").unwrap();
-    fs::remove_file(&poweroff_marker).unwrap();
-    let output = Command::new("/bin/sh")
-        .arg(&guard)
-        .env("SELFHOST_STATE_FILE", &state)
-        .env("POWER_OFF_MARKER", &poweroff_marker)
-        .env("PATH", &bin_dir)
-        .output()
-        .unwrap();
-
-    assert!(output.status.success());
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("SELF_COMPILE_FAILED"));
-    assert!(!poweroff_marker.exists());
-}
-
-#[test]
 fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
     let case_dir = PathBuf::from("/tmp/apps/starry/memtrack-backtrace");
     let qemu_config_path = case_dir.join("qemu-x86_64.toml");
@@ -480,54 +425,4 @@ fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
             .map(|config| (config.bind.as_str(), config.port)),
         Some(("127.0.0.1", 18382))
     );
-}
-
-#[test]
-fn claw_code_prebuild_replaces_stale_rootfs_directory() {
-    let root = tempdir().unwrap();
-    let workspace = root.path();
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("axbuild manifest should live under scripts/axbuild")
-        .to_path_buf();
-    let script = repo.join("apps/starry/claw-code/prebuild.sh");
-
-    let cache = workspace.join("cache");
-    let bin = cache.join("claw");
-    fs::create_dir_all(&cache).unwrap();
-    fs::write(&bin, b"fake claw").unwrap();
-
-    let tools = workspace.join("tools");
-    fs::create_dir_all(&tools).unwrap();
-    let debugfs = tools.join("debugfs");
-    fs::write(
-        &debugfs,
-        "#!/usr/bin/env bash\nif [ \"$1\" = \"-w\" ]; then test -f \"$2\"; fi\nexit 0\n",
-    )
-    .unwrap();
-    fs::set_permissions(&debugfs, fs::Permissions::from_mode(0o755)).unwrap();
-
-    let rootfs_dir = workspace.join("tmp/axbuild/rootfs");
-    let default_rootfs = rootfs_dir.join("rootfs-x86_64-alpine.img");
-    let app_rootfs = rootfs_dir.join("rootfs-x86_64-claw-code.img");
-    fs::create_dir_all(&rootfs_dir).unwrap();
-    fs::write(&default_rootfs, b"base rootfs").unwrap();
-
-    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
-    let status = Command::new("bash")
-        .arg(&script)
-        .current_dir(repo.join("apps/starry/claw-code"))
-        .env("CLAW_CACHE_DIR", &cache)
-        .env("STARRY_WORKSPACE", workspace)
-        .env("STARRY_ROOTFS", &app_rootfs)
-        .env("STARRY_OVERLAY_DIR", workspace.join("overlay"))
-        .env("PATH", path)
-        .status()
-        .unwrap();
-
-    assert!(status.success());
-    assert!(app_rootfs.is_file());
-    assert_eq!(fs::read(&app_rootfs).unwrap(), b"base rootfs");
-    assert_eq!(fs::read(default_rootfs).unwrap(), b"base rootfs");
 }

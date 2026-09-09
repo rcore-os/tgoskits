@@ -162,7 +162,7 @@ impl ProcessMemoryShare {
 
 pub(crate) fn scheduler_address_space(
     mm: &MmHandle,
-) -> Result<ax_runtime::task::TaskAddressSpace, ax_runtime::task::TaskError> {
+) -> Result<ax_runtime::thread::TaskAddressSpace, ax_runtime::task::thread::TaskError> {
     mm.scheduler_address_space()
 }
 
@@ -233,7 +233,7 @@ impl ProcessData {
 
     pub(crate) fn scheduler_address_space(
         &self,
-    ) -> Result<ax_runtime::task::TaskAddressSpace, ax_runtime::task::TaskError> {
+    ) -> Result<ax_runtime::thread::TaskAddressSpace, ax_runtime::task::thread::TaskError> {
         self.memory.owner.snapshot().mm.scheduler_address_space()
     }
 
@@ -257,16 +257,16 @@ fn memory_owner_snapshot_avoids_irq_lock_for_test() -> bool {
 
 #[cfg(axtest)]
 fn memory_owner_replacement_preserves_pinned_snapshot_for_test() -> bool {
-    let Ok(cpu_count) = ax_runtime::task::cpu_topology_len() else {
+    let Ok(cpu_count) = ax_runtime::task::sched::cpu_topology_len() else {
         return false;
     };
     if cpu_count < 2 {
         return false;
     }
-    let mut reader_affinity = ax_runtime::task::CpuSet::empty(cpu_count);
-    reader_affinity.insert(ax_runtime::task::CpuId::new(1));
-    let mut writer_affinity = ax_runtime::task::CpuSet::empty(cpu_count);
-    writer_affinity.insert(ax_runtime::task::CpuId::new(0));
+    let mut reader_affinity = ax_runtime::task::sched::CpuSet::empty(cpu_count);
+    reader_affinity.insert(ax_runtime::task::sched::CpuId::new(1));
+    let mut writer_affinity = ax_runtime::task::sched::CpuSet::empty(cpu_count);
+    writer_affinity.insert(ax_runtime::task::sched::CpuId::new(0));
 
     let owner = Arc::new(ProcessMemoryOwnerCell::new(Arc::new(7usize)));
     let reader_loaded = Arc::new(AtomicBool::new(false));
@@ -280,7 +280,7 @@ fn memory_owner_replacement_preserves_pinned_snapshot_for_test() -> bool {
         let writer_published = writer_published.clone();
         let reader_value = reader_value.clone();
         ax_std::thread::spawn(move || {
-            ax_runtime::task::set_current_thread_affinity(reader_affinity)
+            ax_runtime::task::thread::current::set_current_thread_affinity(reader_affinity)
                 .expect("the snapshot reader must be pinned to its test CPU");
             let snapshot = owner.snapshot_after_load(|| {
                 reader_loaded.store(true, Ordering::Release);
@@ -300,7 +300,7 @@ fn memory_owner_replacement_preserves_pinned_snapshot_for_test() -> bool {
         let writer_published = writer_published.clone();
         let previous_value = previous_value.clone();
         ax_std::thread::spawn(move || {
-            ax_runtime::task::set_current_thread_affinity(writer_affinity)
+            ax_runtime::task::thread::current::set_current_thread_affinity(writer_affinity)
                 .expect("the replacement writer must be pinned to its test CPU");
             let previous = owner.replace_after_publish(Arc::new(9), || {
                 writer_published.store(true, Ordering::Release);
@@ -331,7 +331,7 @@ fn thread_page_table_lease_follows_task_lifetime_for_test() -> bool {
         return false;
     }
 
-    let mm = MmHandle::from_arc(Arc::new(crate::sync::PiMutex::new(aspace))).unwrap();
+    let mm = MmHandle::from_arc(Arc::new(crate::sync::Mutex::new(aspace))).unwrap();
     let task_aspace = match scheduler_address_space(&mm) {
         Ok(task_aspace) => task_aspace,
         Err(_) => return false,

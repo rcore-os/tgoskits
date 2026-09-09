@@ -6,6 +6,7 @@ use std::{
     time::Instant,
 };
 
+use ax_runtime::task;
 #[cfg(any(feature = "arceos", feature = "qperf-metrics"))]
 use ax_std as _;
 
@@ -20,25 +21,28 @@ fn metric_average(total: u64, count: u64) -> u64 {
     total.checked_div(count).unwrap_or(0)
 }
 
-fn fifo_policy() -> ax_task::SchedulePolicy {
-    ax_task::SchedulePolicy::fifo(
-        ax_task::RtPriority::new(FIFO_PRIORITY).expect("benchmark FIFO priority must be valid"),
+fn fifo_policy() -> task::sched::SchedulePolicy {
+    task::sched::SchedulePolicy::fifo(
+        task::sched::RtPriority::new(FIFO_PRIORITY).expect("benchmark FIFO priority must be valid"),
     )
 }
 
-fn cpu0_affinity() -> ax_task::CpuSet {
-    let mut affinity = ax_task::CpuSet::empty(1);
-    assert!(affinity.insert(ax_task::CpuId::new(0)));
+fn cpu0_affinity() -> task::sched::CpuSet {
+    let mut affinity = task::sched::CpuSet::empty(1);
+    assert!(affinity.insert(task::sched::CpuId::new(0)));
     affinity
 }
 
 #[inline(always)]
 fn scheduler_yield() {
-    ax_task::yield_current_cpu().expect("kernel scheduler yield failed");
+    task::thread::current::yield_current_cpu().expect("kernel scheduler yield failed");
 }
 
-fn spawn_fifo(name: &str, entry: impl FnOnce() + Send + 'static) -> ax_task::KernelThreadHandle {
-    ax_task::ThreadBuilder::new(name.into())
+fn spawn_fifo(
+    name: &str,
+    entry: impl FnOnce() + Send + 'static,
+) -> task::thread::KernelThreadHandle {
+    task::thread::ThreadBuilder::new(name.into())
         .policy(fifo_policy())
         .affinity(cpu0_affinity())
         .spawn(entry)
@@ -132,7 +136,7 @@ fn main() {
     println!("kernel_thread_yield_no_switch p50_ns={no_switch_median}");
 
     #[cfg(feature = "qperf-metrics")]
-    let metrics_before = ax_task::qperf_scheduler_metrics_snapshot();
+    let metrics_before = task::diagnostics::qperf_scheduler_metrics_snapshot();
     let mut samples = Vec::with_capacity(ROUNDS);
     for round in 0..ROUNDS {
         let nanoseconds = run_round();
@@ -145,7 +149,7 @@ fn main() {
     samples.sort_unstable();
     let median = samples[ROUNDS / 2];
     #[cfg(feature = "qperf-metrics")]
-    let metrics_after = ax_task::qperf_scheduler_metrics_snapshot();
+    let metrics_after = task::diagnostics::qperf_scheduler_metrics_snapshot();
     println!("kernel_thread_switch p50_ns={median}");
     println!(
         "kernel_thread_switch_increment p50_ns={}",

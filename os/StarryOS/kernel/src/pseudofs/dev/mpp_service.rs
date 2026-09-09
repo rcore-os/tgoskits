@@ -12,16 +12,17 @@
 //! → physical-address resolution (via the /dev/dma_heap DmaBufFile), and the
 //! hardware run.
 
+use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, ffi::c_int, mem::size_of};
 
-use ax_driver::jpeg::{self, mpp, registers};
+use ax_driver::jpeg::{self, ResolvedDmaBuf, mpp, registers};
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
 
 use crate::{
     file::dmabuf::resolve_contiguous_dmabuf,
     mm::{UserConstPtr, UserPtr},
     pseudofs::DeviceOps,
-    sync::PiMutex,
+    sync::Mutex,
 };
 
 /// Char-device id for `/dev/mpp_service` (opened by path; id is informational).
@@ -39,14 +40,14 @@ struct TaskState {
 
 /// The `/dev/mpp_service` device.
 pub struct MppService {
-    state: PiMutex<TaskState>,
+    state: Mutex<TaskState>,
 }
 
 impl MppService {
     /// Create the device (one global session; MPP serializes one decode at a time).
     pub fn new() -> Self {
         Self {
-            state: PiMutex::new(TaskState {
+            state: Mutex::new(TaskState {
                 session: mpp::MppSession::new(),
                 read_dst: 0,
             }),
@@ -180,9 +181,13 @@ fn handle_request(
 }
 
 fn run_decode(current: &crate::task::UserTaskRef, state: &mut TaskState) -> VfsResult<()> {
+    // Keep every imported allocation alive until the synchronous hardware run
+    // has completed. Resolving only to a physical number would allow a concurrent
+    // close of the dma-buf fd to free pages while the JPEG block still owns them.
+    let mut imported = Vec::with_capacity(registers::ADDR_REG_INDICES.len());
     state
         .session
-        .resolve_addresses(resolve_fd)
+        .resolve_addresses(|fd| resolve_fd(fd, &mut imported))
         .map_err(|_| VfsError::InvalidInput)?;
 
     let mut readback = [0u32; registers::REG_COUNT];
@@ -205,7 +210,10 @@ fn run_decode(current: &crate::task::UserTaskRef, state: &mut TaskState) -> VfsR
 /// Resolve a dma-buf fd (as MPP places it in an address register) to the
 /// physical base of its contiguous buffer. MPP allocates these from our
 /// `/dev/dma_heap` ([`DmaBufFile`]).
-fn resolve_fd(fd: u32) -> Option<u32> {
+fn resolve_fd(
+    fd: u32,
+    imported: &mut Vec<Arc<crate::file::dmabuf::DmaBufFile>>,
+) -> Option<ResolvedDmaBuf> {
     let Some(buf) = resolve_contiguous_dmabuf(fd as c_int) else {
         warn!("mpp_service: register fd {fd} is not a resolvable dma-buf");
         return None;
@@ -215,7 +223,11 @@ fn resolve_fd(fd: u32) -> Option<u32> {
     // are allocated below 4 GiB (dma32), so this should not trigger.
     let phys = buf.phys_base();
     match u32::try_from(phys) {
-        Ok(addr) => Some(addr),
+        Ok(address) => {
+            let size = buf.size();
+            imported.push(buf);
+            Some(ResolvedDmaBuf { address, size })
+        }
         Err(_) => {
             warn!("mpp_service: dma-buf fd {fd} phys {phys:#x} exceeds 32-bit JPU range");
             None

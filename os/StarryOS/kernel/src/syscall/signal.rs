@@ -391,12 +391,12 @@ pub fn sys_rt_sigreturn(
     {
         let restored = current.as_thread().signal().restore(&mut user_memory, uctx);
         if restored.is_err() {
-            ax_runtime::task::reset_current_user_fp_state()
+            ax_runtime::thread::reset_current_user_fp_state()
                 .expect("invalid sigreturn frame must reset current task FPU state");
         }
         match restored? {
-            Some(state) => ax_runtime::task::replace_current_user_fp_state(state)?,
-            None => ax_runtime::task::reset_current_user_fp_state()?,
+            Some(state) => ax_runtime::thread::replace_current_user_fp_state(state)?,
+            None => ax_runtime::thread::reset_current_user_fp_state()?,
         }
     }
     #[cfg(not(target_arch = "x86_64"))]
