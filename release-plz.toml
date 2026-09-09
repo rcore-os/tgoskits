@@ -5,13 +5,6 @@ publish_no_verify = true
 # PR, rather than publishing new crates before their dependencies are released.
 release_always = false
 
-# 0.18.1 exposes the same API on host targets with internal architecture stubs.
-# The published 0.17.13 baseline still fails host rustdoc. Re-enable after the
-# fixed baseline is published; retain AArch64 validation for hardware behavior.
-[[package]]
-name = "arm-gic-driver"
-semver_check = false
-
 # These crates expose mutually exclusive kernel TLS and Linux userspace modes.
 # release-plz does not expose cargo-semver-checks feature selection, so its
 # default feature union is not a supported build. Check valid modes separately
@@ -36,36 +29,8 @@ semver_check = false
 name = "ax-std"
 semver_check = false
 
-# ax-posix-api 0.6.1 packages its C headers and generates bindings in OUT_DIR.
-# The published 0.5.34 baseline still lacks those inputs. These crates use it.
-# Re-enable checks after a self-contained baseline is published; review ABI
-# changes manually in the meantime.
-[[package]]
-name = "ax-posix-api"
-semver_check = false
-
-[[package]]
-name = "ax-libc"
-semver_check = false
-
-[[package]]
-name = "axvm"
-semver_check = false
-
-# axbuild 0.6.1 packages its review-bench assets; published 0.5.3 does not.
-# Axvisor's host entry depends on it. Re-enable after a self-contained baseline
-# is published; review the build-tool API and CLI changes manually meanwhile.
-[[package]]
-name = "axbuild"
-semver_check = false
-
+# The published axvisor 0.7.0 omits linker.ld, which build.rs embeds.
+# Re-enable after the complete 0.7.1 package is published and checked.
 [[package]]
 name = "axvisor"
-semver_check = false
-
-[[package]]
-name = "x86_vcpu"
-# 0.7.1 uses flat bitflags for instruction/event interception. The published
-# 0.6.2 baseline still has recursive tock debug types that the JSON parser
-# cannot load. Re-enable after publishing the fixed baseline (or a parser fix).
 semver_check = false
