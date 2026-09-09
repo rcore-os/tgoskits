@@ -240,3 +240,4 @@ fallocate04
 fchmodat2_01
 fchmodat2_02
 getcwd01
+fcntl17

@@ -25,6 +25,7 @@ execve06
 execveat01
 faccessat201
 faccessat202
+fcntl17
 futex_wait01
 futex_wait02
 futex_wait03
