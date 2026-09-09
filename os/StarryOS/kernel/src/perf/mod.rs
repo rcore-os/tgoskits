@@ -10,6 +10,8 @@ mod access;
 mod access_policy;
 pub mod bpf;
 mod control;
+#[cfg(target_arch = "aarch64")]
+mod counting;
 mod cpu_id;
 #[cfg(target_arch = "aarch64")]
 mod cpu_worker;
@@ -864,6 +866,7 @@ pub fn perf_event_open(
     })?;
     let target = ResolvedPerfTarget::resolve(target, ax_runtime::hal::cpu_num())?;
     let target_kind = target.kind();
+    let target_cpu = target.cpu_constraint();
 
     // Starry does not yet deliver synchronous perf SIGTRAP notifications.
     // Reject the capability explicitly instead of accepting an event whose
@@ -880,7 +883,7 @@ pub fn perf_event_open(
         || attr.type_ == hw::ARMV8_CORTEX_A55_PERF_TYPE
         || attr.type_ == hw::ARMV8_CORTEX_A76_PERF_TYPE;
     let validated_hw = is_hardware
-        .then(|| hw::validate_perf_event_open_hw(attr, target_kind))
+        .then(|| hw::validate_perf_event_open_hw(attr, target_kind, target_cpu))
         .transpose()?;
     #[cfg(target_arch = "aarch64")]
     let direct_system_sampling = validated_hw

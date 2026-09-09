@@ -43,6 +43,16 @@ impl ResolvedPerfTarget {
         }
     }
 
+    /// Returns the CPU whose PMU must accept this event, when the target is
+    /// CPU-affine. An unconstrained task is validated against every PMU class
+    /// it may migrate onto.
+    pub(super) const fn cpu_constraint(&self) -> Option<PerfCpuId> {
+        match self {
+            Self::Task { cpu, .. } => *cpu,
+            Self::Cpu(cpu) => Some(*cpu),
+        }
+    }
+
     /// Resolves task identity before validating its CPU filter.
     pub(super) fn resolve(target: PerfTarget, cpu_count: usize) -> crate::StarryResult<Self> {
         match target {

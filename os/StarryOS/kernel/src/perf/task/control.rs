@@ -33,6 +33,7 @@ pub(crate) fn reset_counter(ptc: &Arc<PerTaskCounter>) -> crate::StarryResult<()
     }
     ptc.accumulated.store(0, Ordering::Release);
     ptc.sample_read_floor.store(0, Ordering::Release);
+    ptc.counting_extender.lock().reset();
     ptc.publish_rdpmc_inactive();
     if was_enabled && !ptc.resources_released() {
         ptc.set_enabled();

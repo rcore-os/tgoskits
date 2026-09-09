@@ -13,6 +13,12 @@ use crate::sync::{IrqMutex, NoPreemptIrqSave};
 
 const SLICE: Duration = Duration::from_millis(2);
 
+struct ActiveSlice {
+    counter: Counter,
+    started_at: u64,
+    registration: super::sampling_lifecycle::SampleRegistration,
+}
+
 /// One logical fixed-CPU event whose physical slot changes between slices.
 pub(super) struct SystemFlexCounter {
     owner: PerfCpuId,
@@ -25,7 +31,8 @@ pub(super) struct SystemFlexCounter {
     accumulated: AtomicU64,
     time_enabled: AtomicU64,
     time_running: AtomicU64,
-    active: IrqMutex<Option<(Counter, u64)>>,
+    extender: Arc<IrqMutex<super::counting::CounterExtender>>,
+    active: IrqMutex<Option<ActiveSlice>>,
 }
 
 impl core::fmt::Debug for SystemFlexCounter {
@@ -56,6 +63,7 @@ impl SystemFlexCounter {
             accumulated: AtomicU64::new(0),
             time_enabled: AtomicU64::new(0),
             time_running: AtomicU64::new(0),
+            extender: Arc::new(IrqMutex::new(super::counting::CounterExtender::new())),
             active: IrqMutex::new(None),
         });
         let worker_counter = Arc::clone(&counter);
@@ -81,9 +89,26 @@ impl SystemFlexCounter {
                     counter
                         .configure(Some(self.event), self.exclude_user, self.exclude_kernel)
                         .expect("validated flexible system PMU event");
-                    counter.enable();
-                    *active = Some((counter, now_ns()));
-                    true
+                    self.extender.lock().reset();
+                    ax_cpu::pmu::overflow::clear(1 << slot);
+                    if super::sampling::enable_local_pmu_irq().is_err() {
+                        super::percpu::free_current_programmable(slot);
+                        false
+                    } else {
+                        let registration = super::sampling::register_counting(
+                            slot,
+                            Arc::clone(&self.extender),
+                        )
+                        .expect("reserved system PMU slot must have an empty overflow registry");
+                        ax_cpu::pmu::overflow::enable_irq(slot);
+                        counter.enable();
+                        *active = Some(ActiveSlice {
+                            counter,
+                            started_at: now_ns(),
+                            registration,
+                        });
+                        true
+                    }
                 } else {
                     false
                 }
@@ -102,16 +127,22 @@ impl SystemFlexCounter {
 
     fn finish_slice(&self) {
         let _guard = NoPreemptIrqSave::new();
-        let Some((counter, started_at)) = self.active.lock().take() else {
+        let Some(active) = self.active.lock().take() else {
             return;
         };
-        counter.disable();
-        self.accumulated.fetch_add(counter.read(), Ordering::AcqRel);
+        let slot = active
+            .counter
+            .programmable_index()
+            .expect("flexible programmable slot");
+        ax_cpu::pmu::overflow::disable_irq(slot);
+        active.counter.disable();
+        let value = self.read_active_counter(active.counter);
+        super::sampling::unregister(active.registration)
+            .expect("system PMU overflow registration must match its active slice");
+        self.accumulated.fetch_add(value, Ordering::AcqRel);
         self.time_running
-            .fetch_add(now_ns().saturating_sub(started_at), Ordering::AcqRel);
-        super::percpu::free_current_programmable(
-            counter.programmable_index().expect("flexible programmable slot"),
-        );
+            .fetch_add(now_ns().saturating_sub(active.started_at), Ordering::AcqRel);
+        super::percpu::free_current_programmable(slot);
     }
 
     pub(super) const fn owner(&self) -> PerfCpuId {
@@ -144,6 +175,7 @@ impl SystemFlexCounter {
         self.accumulated.store(0, Ordering::Release);
         self.time_enabled.store(0, Ordering::Release);
         self.time_running.store(0, Ordering::Release);
+        self.extender.lock().reset();
         if enabled {
             self.enable();
         }
@@ -173,9 +205,9 @@ impl SystemFlexCounter {
         }
         let mut value = self.accumulated.load(Ordering::Acquire);
         let mut running = self.time_running.load(Ordering::Acquire);
-        if let Some((counter, started_at)) = *active {
-            value = value.saturating_add(counter.read());
-            running = running.saturating_add(observed_at.saturating_sub(started_at));
+        if let Some(active) = active.as_ref() {
+            value = value.saturating_add(self.read_active_counter(active.counter));
+            running = running.saturating_add(observed_at.saturating_sub(active.started_at));
         }
         (value, enabled, running)
     }
@@ -183,6 +215,20 @@ impl SystemFlexCounter {
     pub(super) fn close(&self) {
         self.disable();
         self.closed.store(true, Ordering::Release);
+    }
+
+    fn read_active_counter(&self, counter: Counter) -> u64 {
+        let mut extender = self.extender.lock();
+        let slot = counter
+            .programmable_index()
+            .expect("flexible programmable slot");
+        let bit = 1 << slot;
+        if ax_cpu::pmu::overflow::status() & bit != 0 {
+            ax_cpu::pmu::overflow::clear(bit);
+            extender.record_overflow();
+        }
+        let (_, width) = counter.mmap_metadata();
+        extender.value(counter.read(), width)
     }
 }
 

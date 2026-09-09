@@ -38,6 +38,14 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
         if ptc.cpu_filter.is_some_and(|cpu| cpu != current_cpu) {
             continue;
         }
+        if ptc.required_cluster.is_some_and(|cluster| {
+            super::super::percpu::cpu_info(current_cpu.as_usize()).is_none_or(|info| {
+                ax_cpu::pmu::classify_midr(info.midr) != cluster
+                    || !info.event_supported(ptc.event)
+            })
+        }) {
+            continue;
+        }
         ptc.begin_enabled_context(now);
         let sample_output = if ptc.is_sampling {
             let Some(output) = ptc.sample_output() else {
@@ -130,6 +138,40 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
             counter
                 .configure(ptc.programmed_event(counter), ptc.exclude_user, ptc.exclude_kernel)
                 .expect("validated task PMU counter/event pairing");
+            ptc.reset_counting_slice(counter);
+            if let Some(n) = counter.programmable_index() {
+                if let Err(error) = sampling::enable_local_pmu_irq() {
+                    run_state.cancel_arm(ticket);
+                    if ptc.flexible {
+                        super::super::percpu::free_current_programmable(n);
+                    }
+                    warn!(
+                        "perf: failed to enable counting PMU IRQ on CPU {}: {error:?}",
+                        current_cpu.as_usize()
+                    );
+                    continue;
+                }
+                let registration = match sampling::register_counting(
+                    n,
+                    Arc::clone(&ptc.counting_extender),
+                ) {
+                    Ok(registration) => registration,
+                    Err(error) => {
+                        run_state.cancel_arm(ticket);
+                        if ptc.flexible {
+                            super::super::percpu::free_current_programmable(n);
+                        }
+                        warn!(
+                            "perf: failed to register counting counter {} on CPU {}: {error:?}",
+                            n,
+                            current_cpu.as_usize()
+                        );
+                        continue;
+                    }
+                };
+                run_state.publish_registration(ticket, registration);
+                ax_cpu::pmu::overflow::enable_irq(n);
+            }
             counter.enable();
         }
         ptc.last_in_ns.store(now, Ordering::Release);
@@ -219,7 +261,8 @@ fn stop_hardware_on_owner(
     if lease.owner().as_usize() != ax_hal::percpu::this_cpu_id() {
         return Err(crate::StarryError::BadState);
     }
-    if let Some(registration) = lease.registration() {
+    if ptc.is_sampling {
+        let registration = lease.registration().ok_or(crate::StarryError::BadState)?;
         let counter = lease.counter();
         let n = counter
             .programmable_index()
@@ -235,8 +278,14 @@ fn stop_hardware_on_owner(
         // Freeze the physical slice before sampling its terminal value. Reading
         // first would lose the events retired between the read and disable.
         let counter = lease.counter();
+        if let Some(n) = counter.programmable_index() {
+            ax_cpu::pmu::overflow::disable_irq(n);
+        }
         counter.disable();
-        let delta = counter.read();
+        let delta = ptc.read_counting_slice(counter);
+        if let Some(registration) = lease.registration() {
+            sampling::unregister(registration).map_err(|_| crate::StarryError::BadState)?;
+        }
         ptc.accumulated.fetch_add(delta, Ordering::AcqRel);
     }
 

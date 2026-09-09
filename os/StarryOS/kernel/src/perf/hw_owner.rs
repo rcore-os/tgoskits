@@ -133,7 +133,6 @@ pub(super) struct SystemPmuReplaceOutput {
 
 /// Configures one reserved counter on the current owner CPU.
 pub(super) fn configure_system_on_owner(request: SystemPmuConfigure) -> crate::StarryResult<()> {
-    ax_cpu::pmu::init_cpu();
     request
         .counter
         .configure(request.event, request.exclude_user, request.exclude_kernel)

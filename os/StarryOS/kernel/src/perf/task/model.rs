@@ -42,6 +42,8 @@ pub struct PerTaskCounter {
     pub(super) enable_on_exec: bool,
     /// Optional Linux task-event CPU constraint (`cpu >= 0`).
     pub(super) cpu_filter: Option<PerfCpuId>,
+    /// PMU cluster selected by a cluster-specific sysfs event source.
+    pub(super) required_cluster: Option<ax_cpu::pmu::ClusterId>,
 
     /// Userspace wants this event counting (see the struct-level state machine).
     pub(super) enabled: AtomicBool,
@@ -56,6 +58,8 @@ pub struct PerTaskCounter {
     /// across a multiplex boundary, as Linux perf event counts never move
     /// backwards between samples unless userspace explicitly resets the event.
     pub(super) sample_read_floor: AtomicU64,
+    /// Owner-CPU state extending the current finite-width hardware slice.
+    pub(super) counting_extender: Arc<IrqMutex<super::super::counting::CounterExtender>>,
     /// Accumulated enabled time across past windows (ns).
     pub(super) time_enabled_ns: AtomicU64,
     /// Accumulated running time across past windows (ns). Equal to
@@ -207,6 +211,8 @@ pub(in crate::perf) struct PerTaskConfig {
     pub(in crate::perf) enable_on_exec: bool,
     /// Optional CPU on which this task event is eligible to run.
     pub(in crate::perf) cpu_filter: Option<PerfCpuId>,
+    /// PMU cluster selected by a cluster-specific sysfs event source.
+    pub(in crate::perf) required_cluster: Option<ax_cpu::pmu::ClusterId>,
     /// Sampling period (`> 0` ⇒ sampling event); `0` ⇒ counting event. In
     /// frequency mode this is the initial estimate the overflow handler adapts.
     pub(in crate::perf) sample_period: u32,
@@ -250,10 +256,14 @@ impl PerTaskCounter {
             read_format: cfg.read_format,
             enable_on_exec: cfg.enable_on_exec,
             cpu_filter: cfg.cpu_filter,
+            required_cluster: cfg.required_cluster,
             enabled: AtomicBool::new(cfg.enabled),
             run_state: IrqMutex::new(PmuRunState::new()),
             accumulated: AtomicU64::new(0),
             sample_read_floor: AtomicU64::new(0),
+            counting_extender: Arc::new(IrqMutex::new(
+                super::super::counting::CounterExtender::new(),
+            )),
             time_enabled_ns: AtomicU64::new(0),
             time_running_ns: AtomicU64::new(0),
             last_in_ns: AtomicU64::new(0),
@@ -324,6 +334,7 @@ impl PerTaskCounter {
             enabled: false,
             enable_on_exec: false,
             cpu_filter: self.cpu_filter,
+            required_cluster: self.required_cluster,
             sample_period: self.sample_period,
             sample_type: self.sample_type,
             freq: self.freq,
@@ -340,6 +351,26 @@ impl PerTaskCounter {
 
     pub(super) fn programmed_event(&self, counter: Counter) -> Option<u16> {
         counter.programmable_index().map(|_| self.event)
+    }
+
+    pub(super) fn reset_counting_slice(&self, counter: Counter) {
+        self.counting_extender.lock().reset();
+        if let Some(index) = counter.programmable_index() {
+            ax_cpu::pmu::overflow::clear(1 << index);
+        }
+    }
+
+    pub(super) fn read_counting_slice(&self, counter: Counter) -> u64 {
+        let mut extender = self.counting_extender.lock();
+        if let Some(index) = counter.programmable_index() {
+            let bit = 1 << index;
+            if ax_cpu::pmu::overflow::status() & bit != 0 {
+                ax_cpu::pmu::overflow::clear(bit);
+                extender.record_overflow();
+            }
+        }
+        let (_, width) = counter.mmap_metadata();
+        extender.value(counter.read(), width)
     }
 
     /// Joins event publication with the target CPU's scheduler order.
@@ -700,7 +731,7 @@ unsafe fn per_task_sample_read_irq(
         let physical = lease.counter();
         let live = match physical {
             Counter::Programmable(index) if index == source_slot => 0,
-            Counter::Cycle | Counter::Programmable(_) => physical.read(),
+            Counter::Cycle | Counter::Programmable(_) => counter.read_counting_slice(physical),
         };
         value = value.saturating_add(live);
     }

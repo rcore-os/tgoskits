@@ -106,6 +106,55 @@ pub fn cpu_info(cpu: usize) -> Option<PmuInfo> {
     CPU_STATES.lock().get(cpu).and_then(|state| state.info)
 }
 
+fn target_infos(
+    cpu: Option<usize>,
+    cluster: Option<ClusterId>,
+) -> impl Iterator<Item = PmuInfo> {
+    let states = CPU_STATES.lock();
+    let infos: Vec<_> = states
+        .iter()
+        .enumerate()
+        .take(ax_runtime::hal::cpu_num())
+        .filter(|(index, _)| cpu.is_none_or(|cpu| cpu == *index))
+        .filter_map(|(_, state)| state.info)
+        .filter(|info| cluster.is_none_or(|cluster| pmu::classify_midr(info.midr) == cluster))
+        .collect();
+    infos.into_iter()
+}
+
+/// Maps one generic event consistently across every PMU the target may use.
+pub(super) fn generic_event_for_target(
+    cpu: Option<usize>,
+    cluster: Option<ClusterId>,
+    hw_id: u32,
+) -> Option<u16> {
+    let mut infos = target_infos(cpu, cluster);
+    let event = pmu::hw_event_to_arm_with(infos.next()?, hw_id)?;
+    infos
+        .all(|info| pmu::hw_event_to_arm_with(info, hw_id) == Some(event))
+        .then_some(event)
+}
+
+/// Checks one event against every PMU the target may use.
+pub(super) fn event_supported_for_target(
+    cpu: Option<usize>,
+    cluster: Option<ClusterId>,
+    event: u16,
+) -> bool {
+    let mut infos = target_infos(cpu, cluster).peekable();
+    infos.peek().is_some() && infos.all(|info| info.event_supported(event))
+}
+
+/// Returns the smallest programmable-counter capacity in a target PMU set.
+pub(super) fn counter_count_for_target(
+    cpu: Option<usize>,
+    cluster: Option<ClusterId>,
+) -> Option<usize> {
+    target_infos(cpu, cluster)
+        .map(|info| info.num_counters)
+        .min()
+}
+
 /// Returns whether at least one initialized PMU belongs to `cluster`.
 pub fn has_cluster(cluster: ClusterId) -> bool {
     CPU_STATES.lock().iter().any(|state| {
