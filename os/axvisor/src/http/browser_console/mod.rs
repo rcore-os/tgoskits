@@ -18,10 +18,23 @@ mod page;
 const BROWSER_INPUT_CAPACITY: usize = 4096;
 /// Browser-console routes served by Axvisor's optional HTTP listener.
 pub(super) fn router() -> Router {
+    // The React dashboard owns `/` and `/assets/*` once `web-ui` is enabled, so
+    // this whole subtree — page and its bundled xterm assets — moves under
+    // `/console/`. Discovery and stream routes are absolute inside the page and
+    // stay where they are.
+    #[cfg(not(feature = "web-ui"))]
+    let (index_path, script_path, style_path) = ("/", "/assets/xterm.js", "/assets/xterm.css");
+    #[cfg(feature = "web-ui")]
+    let (index_path, script_path, style_path) = (
+        "/console/",
+        "/console/assets/xterm.js",
+        "/console/assets/xterm.css",
+    );
+
     Router::new()
-        .route("/", get(index))
-        .route("/assets/xterm.js", get(xterm_javascript))
-        .route("/assets/xterm.css", get(xterm_stylesheet))
+        .route(index_path, get(index))
+        .route(script_path, get(xterm_javascript))
+        .route(style_path, get(xterm_stylesheet))
         .route("/api/consoles", get(console_descriptions))
         .route("/ws/{endpoint}", get(upgrade_console))
 }
