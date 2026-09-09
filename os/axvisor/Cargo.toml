@@ -72,6 +72,13 @@ browser-console = [
   "dep:serde_json",
   "dep:tokio",
 ]
+# React dashboard served from the same listener. Assets are compiled in with
+# `include_bytes!` and served from memory — cargo never invokes npm, so
+# `os/axvisor/web-ui/dist` must be produced by hand before enabling this.
+# Enabling `web-ui` alone selects the dashboard URL ownership (the console page
+# yields `/` and `/assets/*`); the UI router itself stays empty until the
+# dashboard assets land.
+web-ui = ["http-axum"]
 # Do not auto-boot the default VMs at startup; the HTTP control plane starts
 # and stops them on demand (VMs are created and stay in `Ready`).
 no-auto-start = []
