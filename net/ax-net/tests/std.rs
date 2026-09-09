@@ -99,13 +99,11 @@ fn ax_net_socket_options_dispatch_supported_and_unsupported_results() {
         supported: false,
         set_calls: Cell::new(0),
     };
-    assert!(
-        matches!(
-            unsupported.set_option(SetSocketOption::NoDelay(&true)),
-            Err(NetError::Unsupported)
-        ) || unsupported
+    assert_eq!(
+        unsupported
             .set_option(SetSocketOption::NoDelay(&true))
-            .is_err()
+            .unwrap_err(),
+        NetError::ProtocolOptionUnsupported
     );
     let mut reuse = false;
     assert_eq!(
