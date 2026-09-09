@@ -3,15 +3,22 @@
 # StarryOS.
 #
 # higress standalone = the official Envoy release driven by a static bootstrap
-# (no xDS control plane). Envoy ships prebuilt ONLY for glibc x86_64 + aarch64
-# (github.com/envoyproxy/envoy/releases); there is no riscv64 / loongarch64 port
-# upstream, so this app is x86_64 + aarch64 only (see README.md).
+# (no xDS control plane). Envoy ships prebuilt ELFs only for glibc x86_64 +
+# aarch64 (github.com/envoyproxy/envoy/releases), so those two run the stock
+# release binary directly. There is no upstream riscv64 / loongarch64 build, so
+# for those two this script source-builds Envoy 1.38.3 from pinned sources with
+# clang-18 against a musl cross sysroot (assets/build-envoy-rvloong.sh, linked
+# with lld), producing a musl-dynamic ELF whose interpreter /lib/ld-musl-<arch>.so.1
+# the Alpine base rootfs already provides. The source build is cached under
+# HIGRESS_CACHE so it runs once.
 #
-# StarryOS runs the stock glibc-dynamic Envoy ELF directly. This script is fully
-# self-contained: it never relies on in-guest networking (apk) at runtime. It
-# stages, into the overlay:
-#   - the Envoy binary + the exact glibc runtime its ELF header asks for
-#     (readelf-driven, same technique as apps/starry/glibc-dynamic-smoke);
+# The script is fully self-contained: it never relies on in-guest networking (apk)
+# at runtime. It stages, into the overlay:
+#   - the Envoy binary + the exact runtime libraries its ELF header asks for
+#     (readelf-driven): the glibc loader + libs from the arch's <arch>-linux-gnu
+#     cross sysroot for x86_64/aarch64, or libstdc++.so.6 + libgcc_s.so.1 from the
+#     musl cross sysroot for riscv64/loongarch64 (musl libc + loader come from the
+#     Alpine base);
 #   - `echod`, a tiny static-musl HTTP echo backend cross-compiled from source
 #     (the Alpine base busybox has no `httpd` applet);
 #   - the `openssl` CLI (+ libssl/libcrypto), pulled from the matching Alpine
@@ -29,6 +36,8 @@ cache_root="${HIGRESS_CACHE:-${HOME:-/root}/.cache/starry-higress-carpet}"
 ENVOY_VER=1.38.3
 ALPINE_BRANCH=v3.23
 ALPINE_MIRROR=https://dl-cdn.alpinelinux.org/alpine
+
+envoy_source_build=0
 case "$arch" in
     x86_64)
         envoy_asset="x86_64"
@@ -44,59 +53,108 @@ case "$arch" in
         alpine_arch="aarch64"
         envoy_sha=eff9766ce1a7af71c38a6d4587367621753049ae3df1bde5b6b9e695752f3167
         ;;
+    riscv64)
+        envoy_source_build=1
+        musl_triple="riscv64-linux-musl"
+        musl_cc="riscv64-linux-musl-gcc"
+        alpine_arch="riscv64"
+        ;;
+    loongarch64)
+        envoy_source_build=1
+        musl_triple="loongarch64-linux-musl"
+        musl_cc="loongarch64-linux-musl-gcc"
+        alpine_arch="loongarch64"
+        ;;
     *)
-        echo "prebuild: higress ships x86_64 + aarch64 only; upstream Envoy has no $arch build" >&2
+        echo "prebuild: unsupported arch $arch" >&2
         exit 1
         ;;
 esac
 
-command -v "${gcc_prefix}-gcc" >/dev/null 2>&1 || { echo "prebuild: ${gcc_prefix}-gcc not found" >&2; exit 1; }
 command -v "$musl_cc" >/dev/null 2>&1 || { echo "prebuild: $musl_cc not found (source .starry-env.sh)" >&2; exit 1; }
 command -v readelf >/dev/null 2>&1 || { echo "prebuild: readelf not found" >&2; exit 1; }
 command -v openssl >/dev/null 2>&1 || { echo "prebuild: openssl not found" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "prebuild: curl not found" >&2; exit 1; }
 
-# --- 1. fetch the official Envoy binary (reproducible: pinned version + sha256) ---
-envoy_bin="$cache_root/envoy-${ENVOY_VER}-linux-${envoy_asset}"
-verify_sha() { echo "${envoy_sha}  ${envoy_bin}" | sha256sum -c - >/dev/null 2>&1; }
-if [[ ! -f "$envoy_bin" ]] || ! verify_sha; then
-    mkdir -p "$cache_root"
-    url="https://github.com/envoyproxy/envoy/releases/download/v${ENVOY_VER}/envoy-${ENVOY_VER}-linux-${envoy_asset}"
-    echo "prebuild: fetching $url ..."
-    curl -fsSL --retry 3 "$url" -o "$envoy_bin"
-    verify_sha || { echo "prebuild: Envoy SHA256 mismatch for $envoy_bin" >&2; exit 1; }
+# --- 1. obtain the Envoy binary + install it into the overlay ---
+if [[ "$envoy_source_build" == "1" ]]; then
+    # riscv64 / loongarch64: no upstream build - source-build from pinned Envoy
+    # sources (clang-18 + musl cross, lld), cached under $cache_root. See
+    # assets/build-envoy-rvloong.sh and README.md.
+    command -v "${musl_triple}-gcc" >/dev/null 2>&1 || { echo "prebuild: ${musl_triple}-gcc not found (source .starry-env.sh)" >&2; exit 1; }
+    musl_root=$(dirname "$(dirname "$(command -v "${musl_triple}-gcc")")")
+    envoy_bin="$cache_root/envoy-${ENVOY_VER}-linux-${arch}"
+    if [[ ! -x "$envoy_bin" ]]; then
+        echo "prebuild: no cached $arch Envoy; source-building (one-time, long)..."
+        mkdir -p "$cache_root"
+        MUSL_CROSS="$musl_root" bash "$app_dir/assets/build-envoy-rvloong.sh" "$arch" "$cache_root"
+    fi
+    [[ -x "$envoy_bin" ]] || { echo "prebuild: source build did not produce $envoy_bin" >&2; exit 1; }
+    # The bazel output keeps debug info (~380MB); strip it for the rootfs image.
+    "${musl_triple}-strip" -s "$envoy_bin" -o "$cache_root/envoy-stripped-$arch"
+    install -Dm0755 "$cache_root/envoy-stripped-$arch" "$overlay_dir/usr/bin/envoy"
+else
+    envoy_bin="$cache_root/envoy-${ENVOY_VER}-linux-${envoy_asset}"
+    verify_sha() { echo "${envoy_sha}  ${envoy_bin}" | sha256sum -c - >/dev/null 2>&1; }
+    if [[ ! -f "$envoy_bin" ]] || ! verify_sha; then
+        mkdir -p "$cache_root"
+        url="https://github.com/envoyproxy/envoy/releases/download/v${ENVOY_VER}/envoy-${ENVOY_VER}-linux-${envoy_asset}"
+        echo "prebuild: fetching $url ..."
+        curl -fsSL --retry 3 "$url" -o "$envoy_bin"
+        verify_sha || { echo "prebuild: Envoy SHA256 mismatch for $envoy_bin" >&2; exit 1; }
+    fi
+    install -Dm0755 "$envoy_bin" "$overlay_dir/usr/bin/envoy"
 fi
-install -Dm0755 "$envoy_bin" "$overlay_dir/usr/bin/envoy"
 
-# --- 2. stage the glibc runtime the Envoy ELF asks for ---
-# Read the interpreter + NEEDED sonames straight from the Envoy binary so the
-# overlay carries exactly what it loads (libc/libm/librt/libdl/libpthread + ld).
-interp=$(readelf -l "$envoy_bin" | sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p')
+# --- 2. stage the runtime libraries the Envoy ELF asks for ---
+# Read the interpreter + NEEDED sonames straight from the installed binary so the
+# overlay carries exactly what it loads.
+interp=$(readelf -l "$overlay_dir/usr/bin/envoy" | sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p')
 [[ -n "$interp" ]] || { echo "prebuild: no PT_INTERP in Envoy binary" >&2; exit 1; }
 echo "prebuild: Envoy interpreter: $interp"
-
 ld_soname=$(basename "$interp")
-sysroot=$("${gcc_prefix}-gcc" -print-sysroot)
 
-# The loader itself lands at its ELF-declared interpreter path. -print-file-name
-# resolves it out of the cross sysroot (a native $sysroot$interp only exists when
-# building for the host arch).
-ld_path=$("${gcc_prefix}-gcc" -print-file-name="$ld_soname")
-[[ -f "$ld_path" ]] || ld_path="$sysroot$interp"
-[[ -f "$ld_path" ]] || { echo "prebuild: loader $ld_soname not found" >&2; exit 1; }
-install -Dm0755 "$(readlink -f "$ld_path")" "$overlay_dir$interp"
-
-# Every other NEEDED soname lands in /lib (the runner also exports LD_LIBRARY_PATH).
-readelf -d "$envoy_bin" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | while read -r soname; do
-    [[ "$soname" == "$ld_soname" ]] && continue
-    src=$("${gcc_prefix}-gcc" -print-file-name="$soname")
-    [[ -f "$src" ]] || { echo "prebuild: NEEDED lib $soname not found in $gcc_prefix sysroot" >&2; exit 1; }
-    # -print-file-name may hand back a linker script or a versioned real file;
-    # copy the resolved regular file under its soname.
-    real=$(readlink -f "$src")
-    install -Dm0755 "$real" "$overlay_dir/lib/$soname"
-    echo "prebuild: staged $soname <- $real"
-done
+if [[ "$envoy_source_build" == "1" ]]; then
+    # musl-dynamic: the interpreter /lib/ld-musl-<arch>.so.1 and libc.so are the
+    # Alpine base musl itself; only the C++ runtime the binary pulls in
+    # (libstdc++.so.6 and, transitively, libgcc_s.so.1) has to be staged, resolved
+    # from the musl cross sysroot.
+    stage_musl_lib() { # soname
+        local soname="$1" real dreal dep
+        case "$soname" in libc.so|"$ld_soname") return 0 ;; esac
+        [[ -e "$overlay_dir/usr/lib/$soname" ]] && return 0
+        real=$(readlink -f "$("${musl_triple}-gcc" -print-file-name="$soname")")
+        [[ -f "$real" ]] || { echo "prebuild: NEEDED lib $soname not found in musl cross sysroot" >&2; exit 1; }
+        install -Dm0755 "$real" "$overlay_dir/usr/lib/$soname"
+        echo "prebuild: staged $soname <- $real"
+        # follow the soname's own NEEDED (libstdc++ -> libgcc_s); one level suffices
+        readelf -d "$real" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | while read -r dep; do
+            case "$dep" in libc.so|"$ld_soname"|"$soname") continue ;; esac
+            [[ -e "$overlay_dir/usr/lib/$dep" ]] && continue
+            dreal=$(readlink -f "$("${musl_triple}-gcc" -print-file-name="$dep")")
+            [[ -f "$dreal" ]] && { install -Dm0755 "$dreal" "$overlay_dir/usr/lib/$dep"; echo "prebuild: staged $dep <- $dreal"; }
+        done
+    }
+    readelf -d "$overlay_dir/usr/bin/envoy" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | while read -r soname; do
+        stage_musl_lib "$soname"
+    done
+else
+    # glibc: stage the declared loader plus every NEEDED soname from the arch's
+    # <arch>-linux-gnu cross sysroot.
+    sysroot=$("${gcc_prefix}-gcc" -print-sysroot)
+    ld_path=$("${gcc_prefix}-gcc" -print-file-name="$ld_soname")
+    [[ -f "$ld_path" ]] || ld_path="$sysroot$interp"
+    [[ -f "$ld_path" ]] || { echo "prebuild: loader $ld_soname not found" >&2; exit 1; }
+    install -Dm0755 "$(readlink -f "$ld_path")" "$overlay_dir$interp"
+    readelf -d "$overlay_dir/usr/bin/envoy" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | while read -r soname; do
+        [[ "$soname" == "$ld_soname" ]] && continue
+        src=$("${gcc_prefix}-gcc" -print-file-name="$soname")
+        [[ -f "$src" ]] || { echo "prebuild: NEEDED lib $soname not found in $gcc_prefix sysroot" >&2; exit 1; }
+        real=$(readlink -f "$src")
+        install -Dm0755 "$real" "$overlay_dir/lib/$soname"
+        echo "prebuild: staged $soname <- $real"
+    done
+fi
 
 # --- 3. cross-compile the static-musl echo backend ---
 "$musl_cc" -static -O2 -o "$cache_root/echod-$arch" "$app_dir/backend/echod.c"
@@ -148,4 +206,4 @@ chmod 0644 "$cert_dir"/*.key "$cert_dir"/*.crt
 # --- 7. carpet runner ---
 install -Dm0755 "$app_dir/programs/run-higress.sh" "$overlay_dir/usr/bin/run-higress.sh"
 
-echo "prebuild: higress ready for $arch (Envoy ${ENVOY_VER}, glibc from $gcc_prefix sysroot, echod + openssl staged)"
+echo "prebuild: higress ready for $arch (Envoy ${ENVOY_VER}, echod + openssl staged)"
