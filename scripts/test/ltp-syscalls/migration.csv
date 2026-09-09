@@ -35,7 +35,7 @@ test-suit/starryos/qemu/system/bugfix-bug-flock,bug-flock,部分替代并清理,
 test-suit/starryos/qemu/system/bugfix-bug-flock-blocks,bug-flock-blocks,部分替代并清理,flock02 flock07,LOCK_NB排他冲突EWOULDBLOCK；无SA_RESTART处理函数中断阻塞LOCK_EX返回EINTR,父进程显式解锁后阻塞者成功获得锁；至少50ms阻塞及非阻塞最多50ms的耗时断言；LTP信号场景仍使用上游一秒睡眠,"四架构03-candidates-<arch>.log实际通过；flock02=4 TPASS,flock07=2 TPASS；未修改内核或上游测试；最终累计集合另验",test(starry): migrate interruptible flock regression to LTP
 test-suit/starryos/qemu/system/bugfix-bug-flock-failed-upgrade,bug-flock-failed-upgrade,待审计,,,,,
 test-suit/starryos/qemu/system/bugfix-bug-futex-wait-wake,bug-futex-wait-wake,部分替代并清理,futex_wait03,线程私有FUTEX_WAIT返回0，FUTEX_WAKE准确唤醒一个等待者；LTP先观察主线程睡眠状态,传入5秒相对超时及唤醒前把futex字从0写为1的输入；两者均未单独验证用户页缺页情形,四架构03-candidates-<arch>.log实际通过；futex_wait03=1 TPASS；未修改内核或上游测试；最终累计集合另验,test(starry): migrate private futex wake regression to LTP
-test-suit/starryos/qemu/system/bugfix-bug-getcwd-syscall-return,bug-getcwd-syscall-return,待审计,,,,,
+test-suit/starryos/qemu/system/bugfix-bug-getcwd-syscall-return,bug-getcwd-syscall-return,部分替代并清理,getcwd01 getcwd02,raw getcwd坏地址EFAULT、零/短缓冲ERANGE、NULL短缓冲的ERANGE优先；libc getcwd返回当前路径,raw成功返回strlen(path)+1的精确数值；固定/tmp返回路径及长度恰好为strlen(/tmp)的NULL短缓冲输入,"四架构03-candidates-<arch>.log实际通过；getcwd01=5 TPASS,getcwd02=3 TPASS；未修改内核或上游测试；最终累计集合另验",test(starry): migrate getcwd buffer regression to LTP
 test-suit/starryos/qemu/system/bugfix-bug-ip-mtu-discover-udp-flush,bug-ip-mtu-discover-udp-flush,待审计,,,,,
 test-suit/starryos/qemu/system/bugfix-bug-linkat-flags-symlink,bug-linkat-flags-symlink,待审计,,,,,
 test-suit/starryos/qemu/system/bugfix-bug-loongarch-dtb-ram,test-loongarch-dtb-ram,待审计,,,,,

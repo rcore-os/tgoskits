@@ -45,3 +45,6 @@ flock06 4
 flock07 2
 # LTP 20260529 source-derived lock testcase completion counts.
 futex_wait03 1
+# LTP 20260529 source-derived lock testcase completion counts.
+getcwd01 5
+getcwd02 3
