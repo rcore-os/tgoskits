@@ -15,13 +15,16 @@ pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Resul
             request.build_info_path.display()
         );
     }
-    let build_info = config.build_info;
-
-    build_info.into_prepared_std_cargo_config_with_metadata(
-        &request.package,
-        &request.target,
-        metadata,
-    )
+    let to_bin = config.to_bin;
+    let mut cargo = config
+        .build_info
+        .into_prepared_std_cargo_config_with_metadata(
+            &request.package,
+            &request.target,
+            metadata,
+        )?;
+    cargo.to_bin = to_bin;
+    Ok(cargo)
 }
 
 pub(crate) fn load_c_app_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {

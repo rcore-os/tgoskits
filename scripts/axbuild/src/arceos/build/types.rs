@@ -11,6 +11,8 @@ pub type ArceosBuildInfo = BuildInfo;
 pub(crate) struct ArceosBuildConfig {
     #[serde(flatten, default)]
     pub(crate) build_info: ArceosBuildInfo,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) to_bin: bool,
     #[serde(rename = "app-c", skip_serializing_if = "Option::is_none")]
     pub(crate) app_c: Option<PathBuf>,
 }
@@ -19,9 +21,14 @@ impl ArceosBuildConfig {
     pub(super) fn default_config() -> Self {
         Self {
             build_info: ArceosBuildInfo::default(),
+            to_bin: false,
             app_c: None,
         }
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
