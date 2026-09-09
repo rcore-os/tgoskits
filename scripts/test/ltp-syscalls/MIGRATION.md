@@ -381,3 +381,62 @@ noexec配套回归使用同一0777文件的普通挂载和只读/noexec bind别�
 ### 6.3 范围冻结前的候选试跑
 
 x86_64试跑日志`15-green-first-probe-x86_64.log`实际执行8个程序，6通过、2失败：`fallocate04`在SEEK_HOLE返回EINVAL后TBROK；`fchmodat2_01`在O_PATH目录的AT_EMPTY_PATH返回EBADF后TBROK。两项原测试均保留，不修复。`fchmodat2_02`与`getcwd01`仅取得单架构通过，未完成四架构验证，也未迁移。候选继续登记在`probe-cases.txt`，正式`cases.txt`恢复原74个共同用例；本 PR 不再推进这些候选。
+
+## 7. 停机同步
+
+CI 运行 `34263755768` 的 aarch64 内核测试在 `stop_machine::tests::runs_action_and_sync_on_each_cpu` 中挂起，300 秒后超时。用户态套件此前已经通过。本节记录本次定位、Linux RT 对照和实际修复；CI 日志没有 CPU 调用栈，不能仅凭超时证明唯一根因。
+
+### 7.1 协调线程的位置
+
+`stop_machine` 选定当前 CPU 后，只向其他 CPU 的 `CpuStopper` 发送命令。协调线程负责执行 `action`，然后发布允许远端继续执行的阶段。旧实现通过 `WaitQueue` 等待远端到齐，协调线程可能在睡眠后迁移到一个已由 stopper 占用的 CPU。该 stopper 禁止抢占并等待协调线程推进，两者因此可能相互等待。
+
+本地原实现的 175 项 aarch64 内核测试曾全部通过，不能据此排除竞争。随后在目标 CPU 选择完成、命令发布之前检查真实调度上下文，原实现确定性触发 `stop-machine coordinator can sleep after selecting the excluded CPU`。修复使用 `PreemptGuard` 覆盖 CPU 选择、派发和整个停机协议，消除这段可睡眠、可迁移窗口。
+
+### 7.2 Linux RT 基准
+
+对照源码为本机 `~/linux-src` 的 Linux v7.1，固定提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。PREEMPT_RT 下，普通 `spinlock_t` 映射到可睡眠的 rt_mutex；stopper 命令队列明确使用 `raw_spinlock_t`，并在批量排队期间禁止抢占。不能只因名称包含 spinlock，就认为某把锁可以用于停机阶段。
+
+| Linux 固定源码 | 关键行为 | Starry 对应边界 |
+| --- | --- | --- |
+| [spinlock_types.h](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/spinlock_types.h)、[spinlock_rt.h](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/spinlock_rt.h) | RT 普通 spinlock 可以睡眠，raw 锁保持不可睡眠 | `CpuStopper.command` 使用 `IrqMutex`，其底层 `SpinLock::lock_irqsave` 是原子自旋锁 |
+| [cpu_stop_queue_work](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/stop_machine.c#L91) | raw IRQ 锁内登记命令，锁外唤醒 stopper | `CpuStopper::submit` 先释放命令槽锁，再调用 `ready.notify_one` |
+| [queue_stop_cpus_work](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/stop_machine.c#L392) | 整个批次禁止抢占，避免派发者被 stopper 抢占后无法唤醒剩余 CPU | 协调线程先完成分配，再以抢占守卫覆盖所有 `submit` |
+| [multi_cpu_stop](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/stop_machine.c#L196) | 所有参与者先到齐，再关中断；阶段确认后执行，全部完成后退出 | `prepared`、`parked`、`finished` 分别确认准备、关中断和同步完成 |
+| [cpu_stopper_thread](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/stop_machine.c#L486)、[stop_task.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/stop_task.c) | stopper 使用最高调度类，不迁移，回调期间禁止睡眠 | 初始化时使用 `kernel_stop` 策略和单 CPU affinity，回调持有 `PreemptGuard` |
+
+Starry 没有把普通 Linux 入口原样搬入。现有接口允许协调线程执行借用的 `FnOnce` 并返回结果，因此保留协调线程作为固定 CPU 的本地参与者，避免引入跨线程传递借用闭包的 unsafe 所有权。Linux 的 [stop_machine_from_inactive_cpu](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/stop_machine.c#L680)也采用本地参与、自旋等待的形式；这只是协议形式的参照，不代表 Starry 实现了该入口的 CPU 热插拔契约。
+
+### 7.3 阶段与所有权
+
+`STOP_MACHINE_LOCK` 仍是可睡眠的外层串行锁。状态对象和 CPU 列表容量在取得抢占守卫之前分配。随后协调线程和远端 stopper 按下图推进；准备阶段保留中断响应，避免部分 CPU 过早关中断。
+
+```mermaid
+stateDiagram-v2
+    [*] --> PREPARE: 固定协调 CPU 并派发命令
+    PREPARE --> DISABLE_IRQ: 所有远端 prepared
+    DISABLE_IRQ --> ACTION: 所有远端 parked
+    ACTION --> SYNC: 本地 action 与本地同步完成
+    SYNC --> EXIT: 所有远端 finished
+    EXIT --> [*]: 恢复中断与抢占
+```
+
+`ACTION` 是协调线程的本地步骤，不是单独的共享状态值。各远端以 Release 更新计数，协调线程以 Acquire 观察；协调线程以 Release 发布阶段，远端以 Acquire 读取。远端在 `SYNC` 完成自己的指令状态同步后，仍等待 `EXIT`，不会提前恢复普通执行。`ready` 等待队列只负责唤醒空闲 stopper，不再承担停机阶段的进度等待。
+
+状态对象由协调线程和各命令的 `Arc` 共同持有。命令槽只保存已发布的单次工作；外层锁禁止重叠操作。抢占守卫在状态分配之后创建，因此先恢复抢占，再销毁协调线程的分配并释放外层锁。回调仍须遵守不睡眠、不触发缺页、只取得 IRQ 安全锁的原有契约。本次不增加公共 Rust API，也不改变在线 CPU 集合的管理方式。
+
+调用链为 `kprobe` 或 `dyn_debug` 的文本修改，经 `mm::patch_kernel_text` 进入 `stop_machine`。内核地址空间锁在停止后的 action 内取得，不能跨越此前可睡眠的串行化与分配步骤。
+
+### 7.4 验证证据
+
+日志保存在实施机器 `/tmp/starry-ltp-migration-evidence/`。修复前后的比较使用项目入口 `cargo xtask ktest qemu -p starry-kernel --arch aarch64`，没有延长超时或增加重试。
+
+| 日志 | 已取得的结果 |
+| --- | --- |
+| `16-stop-machine-aarch64-baseline.log` | 原实现偶然通过 175 项，不作为排除竞争的证据 |
+| `16-stop-machine-context-red.log` | 原实现确定性触发协调线程仍允许睡眠的断言，入口非零退出 |
+| `16-stop-machine-context-green.log` | 固定协调线程后，同一检查及 175 项内核测试通过 |
+| `16-stop-machine-rt-aarch64.log` | 补齐 Linux RT 阶段顺序后，175 项内核测试通过 |
+
+`cargo xtask clippy --package starry-kernel` 的四架构92项组合已通过，日志为 `16-stop-machine-clippy-final.log`。`cargo xtask test` 的58个软件包全部通过，日志为 `16-stop-machine-std-final.log`。随后无冲突重基到 `dev bfd64c640a`；停机同步源码与已验证版本一致。重基后的 aarch64 内核175项及最新59包标准库测试通过，日志为 `17-rebase-aarch64.log`、`17-rebase-std.log`。最终推送对应的 CI 和完整系统复验仍需完成，不以这些局部结果宣称全绿。
+
+推送前再次同步 `dev 34f9043485` 的重复测试清理，仍无冲突，停机同步实现与上述验证版本一致。上游删除了部分旧测试，最终数量以此基线的实际日志为准。

@@ -13,19 +13,21 @@ use ax_runtime::{
     },
 };
 
-use crate::sync::{Mutex, NoPreemptIrqSave};
+use crate::sync::{IrqMutex, Mutex, NoPreemptIrqSave, PreemptGuard};
 
 static STOP_MACHINE_LOCK: Mutex<()> = Mutex::new(());
 static CPU_STOPPERS: LazyInit<Vec<Arc<CpuStopper>>> = LazyInit::new();
 
-const STAGE_PARKED: u8 = 0;
-const STAGE_SYNC: u8 = 1;
+const STAGE_PREPARE: u8 = 0;
+const STAGE_DISABLE_IRQ: u8 = 1;
+const STAGE_SYNC: u8 = 2;
+const STAGE_EXIT: u8 = 3;
 
 struct StopMachineState {
     stage: AtomicU8,
+    prepared: AtomicUsize,
     parked: AtomicUsize,
     finished: AtomicUsize,
-    progress: WaitQueue,
     per_cpu_sync: Box<dyn Fn() + Send + Sync>,
 }
 
@@ -35,24 +37,24 @@ impl StopMachineState {
         F: Fn() + Send + Sync + 'static,
     {
         Self {
-            stage: AtomicU8::new(STAGE_PARKED),
+            stage: AtomicU8::new(STAGE_PREPARE),
+            prepared: AtomicUsize::new(0),
             parked: AtomicUsize::new(0),
             finished: AtomicUsize::new(0),
-            progress: WaitQueue::new(),
             per_cpu_sync: Box::new(per_cpu_sync),
         }
     }
 }
 
 struct CpuStopper {
-    command: Mutex<Option<Arc<StopMachineState>>>,
+    command: IrqMutex<Option<Arc<StopMachineState>>>,
     ready: WaitQueue,
 }
 
 impl CpuStopper {
     const fn new() -> Self {
         Self {
-            command: Mutex::new(None),
+            command: IrqMutex::new(None),
             ready: WaitQueue::new(),
         }
     }
@@ -80,19 +82,27 @@ impl CpuStopper {
 }
 
 fn park_remote_cpu(state: &StopMachineState) {
-    {
-        let _guard = NoPreemptIrqSave::new();
-
-        state.parked.fetch_add(1, Ordering::SeqCst);
-        state.progress.notify_one();
-        while state.stage.load(Ordering::Acquire) == STAGE_PARKED {
-            spin_loop();
-        }
-
-        (state.per_cpu_sync.as_ref())();
-        state.finished.fetch_add(1, Ordering::Release);
+    let _preempt = PreemptGuard::new();
+    // Like Linux MULTI_STOP_PREPARE, remain interruptible until every
+    // participant has entered the stop callback and dispatch has completed.
+    state.prepared.fetch_add(1, Ordering::Release);
+    while state.stage.load(Ordering::Acquire) == STAGE_PREPARE {
+        spin_loop();
     }
-    state.progress.notify_one();
+
+    let _guard = NoPreemptIrqSave::new();
+    state.parked.fetch_add(1, Ordering::Release);
+    while state.stage.load(Ordering::Acquire) == STAGE_DISABLE_IRQ {
+        spin_loop();
+    }
+
+    (state.per_cpu_sync.as_ref())();
+    state.finished.fetch_add(1, Ordering::Release);
+    // The coordinator publishes exit only after all instruction-state
+    // callbacks complete, so no participant resumes ordinary execution early.
+    while state.stage.load(Ordering::Acquire) == STAGE_SYNC {
+        spin_loop();
+    }
 }
 
 /// Starts one persistent stopper task per online logical CPU.
@@ -135,34 +145,50 @@ where
         return result;
     }
 
-    let current_cpu = this_cpu_id();
-    let remote_cpus: Vec<_> = (0..total_cpus)
-        .filter(|&cpu| cpu != current_cpu && ax_runtime::hal::irq::is_cpu_online(cpu))
-        .collect();
-    let remote_cpu_count = remote_cpus.len();
+    // Allocate before pinning the coordinator. After selecting the excluded
+    // CPU, neither dispatch nor the barriers may sleep: resuming on a stopped
+    // CPU would strand the only task able to release the remote stoppers.
+    let mut remote_cpus = Vec::with_capacity(total_cpus);
     let state = Arc::new(StopMachineState::new(per_cpu_sync));
+    let _coordinator = PreemptGuard::new();
+    let current_cpu = this_cpu_id();
+    remote_cpus.extend(
+        (0..total_cpus)
+            .filter(|&cpu| cpu != current_cpu && ax_runtime::hal::irq::is_cpu_online(cpu)),
+    );
+    let remote_cpu_count = remote_cpus.len();
+
+    // Exercise the real scheduler context at the publication boundary. Sleeping
+    // here can resume the coordinator on a CPU whose stopper is about to park.
+    #[cfg(all(test, axtest))]
+    assert!(
+        ax_runtime::task::thread::current::validate_blocking_context().is_err(),
+        "stop-machine coordinator can sleep after selecting the excluded CPU"
+    );
 
     for &cpu_id in &remote_cpus {
         CPU_STOPPERS[cpu_id].submit(Arc::clone(&state));
     }
 
-    state
-        .progress
-        .wait_until(|| state.parked.load(Ordering::Acquire) == remote_cpu_count);
+    while state.prepared.load(Ordering::Acquire) != remote_cpu_count {
+        spin_loop();
+    }
 
-    let result = {
+    {
         let _local_stop = NoPreemptIrqSave::new();
+        state.stage.store(STAGE_DISABLE_IRQ, Ordering::Release);
+        while state.parked.load(Ordering::Acquire) != remote_cpu_count {
+            spin_loop();
+        }
         let result = action();
         (state.per_cpu_sync.as_ref())();
         state.stage.store(STAGE_SYNC, Ordering::Release);
+        while state.finished.load(Ordering::Acquire) != remote_cpu_count {
+            spin_loop();
+        }
+        state.stage.store(STAGE_EXIT, Ordering::Release);
         result
-    };
-
-    state
-        .progress
-        .wait_until(|| state.finished.load(Ordering::Acquire) == remote_cpu_count);
-
-    result
+    }
 }
 
 #[cfg(all(test, axtest))]
