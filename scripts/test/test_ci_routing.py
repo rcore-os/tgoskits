@@ -36,7 +36,7 @@ class RunnerTrustTests(unittest.TestCase):
         )
         self.assertNotIn("steps.route.outputs.should_run", cleanup)
 
-    def test_cross_repository_pr_is_rejected_before_planning_or_matrix_allocation(
+    def test_cross_repository_pr_can_enter_planning_and_matrix_allocation(
         self,
     ) -> None:
         for workflow_path, job_name, scheduled in (
@@ -51,8 +51,7 @@ class RunnerTrustTests(unittest.TestCase):
                     "github.event_name == 'push' || "
                     "github.event_name == 'workflow_dispatch' || "
                     + ("github.event_name == 'schedule' || " if scheduled else "")
-                    + "(github.event_name == 'pull_request' && "
-                    "github.event.pull_request.head.repo.full_name == github.repository)"
+                    + "github.event_name == 'pull_request'"
                 )
                 self.assertEqual(" ".join(condition.split()), expected)
 
