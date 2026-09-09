@@ -559,6 +559,14 @@ impl FairRunQueue {
     }
 
     pub(super) fn update_virtual_time(&mut self, current: Option<FairEntity>) -> u64 {
+        if self.total_weight == 0 {
+            // With no queued entity, the weighted mean is exactly current's
+            // vruntime. No queued lag needs rebasing in this case.
+            if let Some(current) = current {
+                self.zero_vruntime = current.vruntime();
+            }
+            return self.zero_vruntime;
+        }
         let mut sum_weighted_delta = self.sum_weighted_delta;
         let mut total_weight = self.total_weight;
         if let Some(current) = current {
