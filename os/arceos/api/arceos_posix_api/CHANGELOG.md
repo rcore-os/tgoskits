@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.34...ax-posix-api-v0.6.1) - 2026-09-09
+
+### Fixed
+
+- *(release)* make package baselines and CI inputs reproducible ([#2331](https://github.com/rcore-os/tgoskits/pull/2331))
+- *(starry-kernel)* support setting the realtime clock ([#2237](https://github.com/rcore-os/tgoskits/pull/2237))
+- *(ax-posix-api)* deliver EPOLLIN/EPOLLOUT edges via direction-split readiness versions ([#2235](https://github.com/rcore-os/tgoskits/pull/2235))
+
+### Other
+
+- release ([#2210](https://github.com/rcore-os/tgoskits/pull/2210))
+- *(ax-task)* [**breaking**] organize scheduler namespaces and unify runtime APIs ([#2313](https://github.com/rcore-os/tgoskits/pull/2313))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(rsext4)* [**breaking**] align ext4 semantics with Linux 7.1 ([#1957](https://github.com/rcore-os/tgoskits/pull/1957))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.34...ax-posix-api-v0.6.0) - 2026-09-09
 
 ### Fixed

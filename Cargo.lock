@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ng"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "ax-io",
  "ax-lazyinit",
@@ -964,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "ax-io"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "heapless",
  "memchr",
@@ -1366,7 +1366,7 @@ dependencies = [
 
 [[package]]
 name = "axfs-ng-vfs"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "ax-sync",
  "axpoll",

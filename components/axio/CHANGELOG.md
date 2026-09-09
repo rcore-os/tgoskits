@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/ax-io-v0.7.0...ax-io-v0.7.1) - 2026-09-09
+
+### Other
+
+- *(starry)* migrate syscall regressions to LTP ([#2322](https://github.com/rcore-os/tgoskits/pull/2322))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-io-v0.6.5...ax-io-v0.7.0) - 2026-09-09
 
 ### Fixed
