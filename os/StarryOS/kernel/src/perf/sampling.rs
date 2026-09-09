@@ -317,11 +317,6 @@ pub struct SampleSlot {
     pub last_time: u64,
 }
 
-enum OverflowSlot {
-    Sampling(SampleSlot),
-    Counting(Arc<IrqMutex<CounterExtender>>),
-}
-
 /// Immutable attributes copied into one owner-CPU sampling slot.
 pub struct SampleSlotConfig {
     pub period: u32,
@@ -362,7 +357,12 @@ impl SampleSlot {
 /// Index `n` (`0..=30`) holds the slot for `PMEVCNTRn_EL0`. `None` means no
 /// sampling event currently owns that counter on this CPU.
 #[ax_percpu::def_percpu]
-static REGISTRY: SamplingRegistry<OverflowSlot> = SamplingRegistry::new();
+static REGISTRY: SamplingRegistry<SampleSlot> = SamplingRegistry::new();
+
+/// Per-CPU wrap state for non-sampling programmable counters.
+#[ax_percpu::def_percpu]
+static COUNTING_REGISTRY: SamplingRegistry<Arc<IrqMutex<CounterExtender>>> =
+    SamplingRegistry::new();
 
 /// Globally unique registry generation. Counter slots may be reused, but an old
 /// teardown token can never match the next event that occupies the same index.
@@ -384,7 +384,7 @@ static REGISTERED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBo
 /// [`NoPreemptIrqSave`]; the overflow handler already runs with local IRQs
 /// masked on the CPU that owns the registry.
 unsafe fn with_registry_mut<R>(
-    operation: impl for<'value> FnOnce(&'value mut SamplingRegistry<OverflowSlot>) -> R,
+    operation: impl for<'value> FnOnce(&'value mut SamplingRegistry<SampleSlot>) -> R,
 ) -> R {
     // SAFETY: the caller establishes the migration and exclusion contract.
     unsafe {
@@ -395,6 +395,21 @@ unsafe fn with_registry_mut<R>(
         })
     }
     .unwrap_or_else(|error| panic!("perf sampling CPU-local state is invalid: {error}"))
+}
+
+unsafe fn with_counting_registry_mut<R>(
+    operation: impl for<'value> FnOnce(
+        &'value mut SamplingRegistry<Arc<IrqMutex<CounterExtender>>>,
+    ) -> R,
+) -> R {
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            ax_percpu::with_exclusive_cpu(pin, |exclusive| {
+                COUNTING_REGISTRY.with_current_mut(exclusive, operation)
+            })
+        })
+    }
+    .unwrap_or_else(|error| panic!("perf counting CPU-local state is invalid: {error}"))
 }
 
 /// Registers `slot` for programmable counter `n` on the current CPU.
@@ -414,16 +429,12 @@ pub fn register(n: usize, slot: SampleSlot) -> Result<SampleRegistration, Regist
         .expect("PMU sampling registration generation exhausted");
     let _guard = NoPreemptIrqSave::new();
     // SAFETY: the guard prevents migration and local IRQ reentry.
-    unsafe {
-        with_registry_mut(|registry| {
-            registry.register(n, generation, OverflowSlot::Sampling(slot))
-        })
-    }?;
+    unsafe { with_registry_mut(|registry| registry.register(n, generation, slot)) }?;
     Ok(SampleRegistration::new(owner, n, generation))
 }
 
 /// Registers one counting event's wrap state on the current owner CPU.
-pub fn register_counting(
+pub(super) fn register_counting(
     n: usize,
     state: Arc<IrqMutex<CounterExtender>>,
 ) -> Result<SampleRegistration, RegisterError> {
@@ -438,11 +449,29 @@ pub fn register_counting(
         .expect("PMU counting registration generation exhausted");
     let _guard = NoPreemptIrqSave::new();
     unsafe {
-        with_registry_mut(|registry| {
-            registry.register(n, generation, OverflowSlot::Counting(state))
-        })
+        with_counting_registry_mut(|registry| registry.register(n, generation, state))
     }?;
     Ok(SampleRegistration::new(owner, n, generation))
+}
+
+/// Clears one exact counting generation on its owner CPU.
+pub(super) fn unregister_counting(
+    registration: SampleRegistration,
+) -> Result<(), SamplingUnregisterError> {
+    if registration.owner().as_usize() != ax_hal::percpu::this_cpu_id() {
+        return Err(SamplingUnregisterError::WrongCpu);
+    }
+    let removed = {
+        let _guard = NoPreemptIrqSave::new();
+        unsafe {
+            with_counting_registry_mut(|registry| {
+                registry.unregister(registration.counter(), registration.generation())
+            })
+        }
+        .map_err(SamplingUnregisterError::Registry)?
+    };
+    drop(removed);
+    Ok(())
 }
 
 /// Failure to remove an owner-CPU sampling registration.
@@ -496,9 +525,6 @@ pub fn replace_output(
                 let slot = registry
                     .get_mut(registration.counter())
                     .ok_or(UnregisterError::Stale)?;
-                let OverflowSlot::Sampling(slot) = slot else {
-                    return Err(UnregisterError::Stale);
-                };
                 let config = SampleSlotConfig {
                     period: slot.period,
                     sample_type: slot.sample_type,
@@ -515,7 +541,7 @@ pub fn replace_output(
                 registry.replace(
                     registration.counter(),
                     registration.generation(),
-                    OverflowSlot::Sampling(SampleSlot::new(output, config)),
+                    SampleSlot::new(output, config),
                 )
             })
         }
@@ -555,24 +581,13 @@ pub fn enable_local_pmu_irq() -> Result<(), ax_hal::irq::IrqError> {
 }
 
 fn service_overflowed_slots(
-    registry: &mut SamplingRegistry<OverflowSlot>,
+    registry: &mut SamplingRegistry<SampleSlot>,
     overflow: u32,
     misc: u16,
     interrupted: Option<ax_cpu::pmu::InterruptedContext>,
     ip: usize,
     is_user: bool,
 ) -> u32 {
-    // Publish counting wraps before any sampling slot snapshots a grouped
-    // counting member. The architectural overflow snapshot was already
-    // acknowledged, so a later raw read cannot rediscover these wraps.
-    for n in 0..=MAX_COUNTER {
-        if overflow & (1 << n) == 0 {
-            continue;
-        }
-        if let Some(OverflowSlot::Counting(state)) = registry.get_mut(n) {
-            state.lock().record_overflow();
-        }
-    }
     let current = try_current_user_irq_view();
 
     // Bits serviced from the overflow snapshot captured and cleared before
@@ -589,11 +604,6 @@ fn service_overflowed_slots(
         let Some(slot) = registry.get_mut(n) else {
             continue;
         };
-        let slot = match slot {
-            OverflowSlot::Sampling(slot) => slot,
-            OverflowSlot::Counting(_) => continue,
-        };
-
         let sample_type = slot.sample_type;
         let id = slot.id;
         let cur_period = slot.period;
@@ -722,6 +732,21 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         PERF_RECORD_MISC_USER
     } else {
         PERF_RECORD_MISC_KERNEL
+    };
+
+    // Publish counting wraps before any sampling slot snapshots a grouped
+    // counting member. The overflow snapshot was already acknowledged, so a
+    // later raw read cannot rediscover these wraps.
+    unsafe {
+        with_counting_registry_mut(|registry| {
+            for n in 0..=MAX_COUNTER {
+                if ovf & (1 << n) != 0
+                    && let Some(state) = registry.get_mut(n)
+                {
+                    state.lock().record_overflow();
+                }
+            }
+        })
     };
 
     // SAFETY: the handler runs with local IRQs masked on its current CPU, so

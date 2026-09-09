@@ -284,7 +284,8 @@ fn stop_hardware_on_owner(
         counter.disable();
         let delta = ptc.read_counting_slice(counter);
         if let Some(registration) = lease.registration() {
-            sampling::unregister(registration).map_err(|_| crate::StarryError::BadState)?;
+            sampling::unregister_counting(registration)
+                .map_err(|_| crate::StarryError::BadState)?;
         }
         ptc.accumulated.fetch_add(delta, Ordering::AcqRel);
     }

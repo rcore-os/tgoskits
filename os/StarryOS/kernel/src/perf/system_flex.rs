@@ -137,7 +137,7 @@ impl SystemFlexCounter {
         ax_cpu::pmu::overflow::disable_irq(slot);
         active.counter.disable();
         let value = self.read_active_counter(active.counter);
-        super::sampling::unregister(active.registration)
+        super::sampling::unregister_counting(active.registration)
             .expect("system PMU overflow registration must match its active slice");
         self.accumulated.fetch_add(value, Ordering::AcqRel);
         self.time_running
