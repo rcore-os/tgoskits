@@ -39,6 +39,7 @@ fn mutation_credentials(cred: &crate::task::Cred) -> MutationCredentials<'_> {
         fsgid: cred.fsgid,
         supplementary_gids: &cred.groups,
         cap_dac_override: cred.has_cap_dac_override(),
+        cap_dac_read_search: cred.has_cap_dac_read_search(),
         cap_fowner: cred.has_cap_fowner(),
     }
 }
@@ -587,6 +588,13 @@ pub fn sys_linkat(
 
     let cred = current.as_thread().cred();
     let mutation_cred = mutation_credentials(&cred);
+    if flags & AT_EMPTY_PATH != 0 {
+        // Linux requires CAP_DAC_READ_SEARCH for AT_EMPTY_PATH and reports
+        // ENOENT when the caller does not have it.
+        if !mutation_cred.cap_dac_read_search {
+            return Err(StarryError::NotFound);
+        }
+    }
     let (old, old_boundary, old_search) =
         resolve_at_with_boundary(old_dirfd, old_path.as_deref(), resolve_flags)?;
     let old = old
