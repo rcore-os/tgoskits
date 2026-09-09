@@ -305,6 +305,17 @@ impl FsContext {
         self.try_resolve_symlink_using(loc, follow_count, None)
     }
 
+    /// Resolves a symlink while checking every directory reached by its
+    /// target before lookup.
+    pub fn try_resolve_symlink_checked(
+        &self,
+        loc: Location,
+        follow_count: &mut usize,
+        check_search: impl Fn(&Location) -> VfsResult<()>,
+    ) -> VfsResult<Location> {
+        self.try_resolve_symlink_using(loc, follow_count, Some(&check_search))
+    }
+
     fn try_resolve_symlink_using(
         &self,
         loc: Location,
@@ -451,6 +462,7 @@ impl FsContext {
         loc: Location,
         follow_count: &mut usize,
         searched: &mut Vec<Location>,
+        search: SearchCheck<'_>,
     ) -> VfsResult<Location> {
         if loc.node_type() != NodeType::Symlink {
             return Ok(loc);
@@ -467,6 +479,7 @@ impl FsContext {
             PathBuf::from(target).components(),
             follow_count,
             searched,
+            search,
         )
     }
 
@@ -476,11 +489,13 @@ impl FsContext {
         name: &str,
         follow_count: &mut usize,
         searched: &mut Vec<Location>,
+        search: SearchCheck<'_>,
     ) -> VfsResult<Location> {
         searched.push(dir.clone());
+        Self::check_search(dir, search)?;
         let loc = dir.lookup_no_follow(name)?;
         self.with_current_dir(dir.clone())?
-            .try_resolve_symlink_with_trace(loc, follow_count, searched)
+            .try_resolve_symlink_with_trace(loc, follow_count, searched, search)
     }
 
     fn resolve_components_with_trace(
@@ -488,6 +503,7 @@ impl FsContext {
         components: Components,
         follow_count: &mut usize,
         searched: &mut Vec<Location>,
+        search: SearchCheck<'_>,
     ) -> VfsResult<Location> {
         let mut dir = self.current_dir.clone();
         for comp in components {
@@ -495,6 +511,7 @@ impl FsContext {
                 Component::CurDir => {}
                 Component::ParentDir => {
                     searched.push(dir.clone());
+                    Self::check_search(&dir, search)?;
                     if !dir.ptr_eq(&self.root_dir) {
                         dir = dir.parent().unwrap_or_else(|| self.root_dir.clone());
                     }
@@ -503,7 +520,7 @@ impl FsContext {
                     dir = self.root_dir.clone();
                 }
                 Component::Normal(name) => {
-                    dir = self.lookup_with_trace(&dir, name, follow_count, searched)?;
+                    dir = self.lookup_with_trace(&dir, name, follow_count, searched, search)?;
                 }
             }
         }
@@ -515,15 +532,17 @@ impl FsContext {
         path: &'a Path,
         follow_count: &mut usize,
         searched: &mut Vec<Location>,
+        search: SearchCheck<'_>,
     ) -> VfsResult<(Location, Option<&'a str>)> {
         let entry_name = path.file_name();
         let mut components = path.components();
         if entry_name.is_some() {
             components.next_back();
         }
-        let dir = self.resolve_components_with_trace(components, follow_count, searched)?;
+        let dir = self.resolve_components_with_trace(components, follow_count, searched, search)?;
         dir.check_is_dir()?;
         searched.push(dir.clone());
+        Self::check_search(&dir, search)?;
         Ok((dir, entry_name))
     }
 
@@ -535,9 +554,11 @@ impl FsContext {
         let mut searched = Vec::new();
         let mut follow_count = 0;
         let (dir, name) =
-            self.resolve_inner_with_trace(path.as_ref(), &mut follow_count, &mut searched)?;
+            self.resolve_inner_with_trace(path.as_ref(), &mut follow_count, &mut searched, None)?;
         let location = match name {
-            Some(name) => self.lookup_with_trace(&dir, name, &mut follow_count, &mut searched)?,
+            Some(name) => {
+                self.lookup_with_trace(&dir, name, &mut follow_count, &mut searched, None)?
+            }
             None => dir,
         };
         Ok((location, searched))
@@ -550,7 +571,8 @@ impl FsContext {
         path: impl AsRef<Path>,
     ) -> VfsResult<(Location, Vec<Location>)> {
         let mut searched = Vec::new();
-        let (dir, name) = self.resolve_inner_with_trace(path.as_ref(), &mut 0, &mut searched)?;
+        let (dir, name) =
+            self.resolve_inner_with_trace(path.as_ref(), &mut 0, &mut searched, None)?;
         let location = match name {
             Some(name) => dir.lookup_no_follow(name)?,
             None => dir,
@@ -564,8 +586,20 @@ impl FsContext {
         &self,
         path: &'a Path,
     ) -> VfsResult<(Location, Cow<'a, str>, Vec<Location>)> {
+        self.resolve_parent_with_search_checked(path, |_| Ok(()))
+    }
+
+    /// Resolves a path's parent while checking each directory immediately
+    /// before it is searched. The trace is still returned for callers that
+    /// must enforce a separate dirfd boundary after resolution.
+    pub fn resolve_parent_with_search_checked<'a>(
+        &self,
+        path: &'a Path,
+        check_search: impl Fn(&Location) -> VfsResult<()>,
+    ) -> VfsResult<(Location, Cow<'a, str>, Vec<Location>)> {
         let mut searched = Vec::new();
-        let (dir, name) = self.resolve_inner_with_trace(path, &mut 0, &mut searched)?;
+        let (dir, name) =
+            self.resolve_inner_with_trace(path, &mut 0, &mut searched, Some(&check_search))?;
         if let Some(name) = name {
             Ok((dir, Cow::Borrowed(name), searched))
         } else if dir.ptr_eq(&self.root_dir) {
@@ -576,6 +610,59 @@ impl FsContext {
         } else {
             Err(VfsError::InvalidInput)
         }
+    }
+
+    /// Resolves a path and records every searched directory while checking
+    /// each one before lookup, including directories reached through
+    /// intermediate symlinks.
+    pub fn resolve_with_search_checked(
+        &self,
+        path: impl AsRef<Path>,
+        check_search: impl Fn(&Location) -> VfsResult<()>,
+    ) -> VfsResult<(Location, Vec<Location>)> {
+        let mut searched = Vec::new();
+        let mut follow_count = 0;
+        let (dir, name) = self.resolve_inner_with_trace(
+            path.as_ref(),
+            &mut follow_count,
+            &mut searched,
+            Some(&check_search),
+        )?;
+        let location = match name {
+            Some(name) => self.lookup_with_trace(
+                &dir,
+                name,
+                &mut follow_count,
+                &mut searched,
+                Some(&check_search),
+            )?,
+            None => dir,
+        };
+        Ok((location, searched))
+    }
+
+    /// Resolves a path without following its final symlink, checking each
+    /// directory before lookup and retaining the search trace.
+    pub fn resolve_no_follow_with_search_checked(
+        &self,
+        path: impl AsRef<Path>,
+        check_search: impl Fn(&Location) -> VfsResult<()>,
+    ) -> VfsResult<(Location, Vec<Location>)> {
+        let mut searched = Vec::new();
+        let (dir, name) = self.resolve_inner_with_trace(
+            path.as_ref(),
+            &mut 0,
+            &mut searched,
+            Some(&check_search),
+        )?;
+        let location = match name {
+            Some(name) => {
+                Self::check_search(&dir, Some(&check_search))?;
+                dir.lookup_no_follow(name)?
+            }
+            None => dir,
+        };
+        Ok((location, searched))
     }
 
     /// Resolves a path, checking each searched directory before traversal.
@@ -607,6 +694,18 @@ impl FsContext {
         &self,
         path: &'a Path,
     ) -> VfsResult<(Location, Cow<'a, str>)> {
+        self.resolve_parent_beneath_no_symlinks_checked(path, |_| Ok(()))
+    }
+
+    /// Resolves the parent for `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` while
+    /// checking search permission before every directory lookup. The
+    /// no-symlink and beneath guarantees are identical to the unchecked
+    /// variant; the callback only supplies the caller's DAC policy.
+    pub fn resolve_parent_beneath_no_symlinks_checked<'a>(
+        &self,
+        path: &'a Path,
+        check_search: impl Fn(&Location) -> VfsResult<()>,
+    ) -> VfsResult<(Location, Cow<'a, str>)> {
         let mut components = path.components().peekable();
         let mut dir = self.current_dir.clone();
         let mut depth = 0usize;
@@ -616,6 +715,7 @@ impl FsContext {
             match component {
                 Component::RootDir => return Err(VfsError::CrossesDevices),
                 Component::CurDir if is_last => {
+                    check_search(&dir)?;
                     if let Some(parent) = dir.parent() {
                         return Ok((parent, dir.name().into_owned().into()));
                     }
@@ -626,6 +726,7 @@ impl FsContext {
                     if depth == 0 {
                         return Err(VfsError::CrossesDevices);
                     }
+                    check_search(&dir)?;
                     dir = dir.parent().ok_or(VfsError::CrossesDevices)?;
                     depth -= 1;
                     if is_last {
@@ -635,8 +736,12 @@ impl FsContext {
                         return Ok((dir, Cow::Borrowed(".")));
                     }
                 }
-                Component::Normal(name) if is_last => return Ok((dir, Cow::Borrowed(name))),
+                Component::Normal(name) if is_last => {
+                    check_search(&dir)?;
+                    return Ok((dir, Cow::Borrowed(name)));
+                }
                 Component::Normal(name) => {
+                    check_search(&dir)?;
                     let next = dir.lookup_no_follow(name)?;
                     if next.node_type() == NodeType::Symlink {
                         return Err(VfsError::FilesystemLoop);
@@ -773,7 +878,7 @@ impl FsContext {
     }
 
     /// Check execute/search permission up to the selected path boundary.
-    fn check_search_path(
+    pub fn check_search_path(
         &self,
         directory: &Location,
         boundary: Option<&Location>,
@@ -868,7 +973,10 @@ impl FsContext {
         path: impl AsRef<Path>,
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<()> {
-        let (entry, searched) = self.resolve_no_follow_with_search(path.as_ref())?;
+        let (entry, searched) =
+            self.resolve_no_follow_with_search_checked(path.as_ref(), |directory| {
+                self.check_search_path(directory, self.permission_root.as_ref(), credentials)
+            })?;
         if entry.ptr_eq(&self.root_dir) {
             return Err(VfsError::IsADirectory);
         }
@@ -903,7 +1011,9 @@ impl FsContext {
             });
         }
 
-        let (entry, searched) = self.resolve_no_follow_with_search(path)?;
+        let (entry, searched) = self.resolve_no_follow_with_search_checked(path, |directory| {
+            self.check_search_path(directory, self.permission_root.as_ref(), credentials)
+        })?;
         if entry.ptr_eq(&self.root_dir) || entry.is_root_of_mount() {
             return Err(VfsError::ResourceBusy);
         }
@@ -936,8 +1046,14 @@ impl FsContext {
         options: RenameOptions,
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<()> {
-        let (src_dir, src_name, src_searched) = self.resolve_parent_with_search(from.as_ref())?;
-        let (dst_dir, dst_name, dst_searched) = self.resolve_parent_with_search(to.as_ref())?;
+        let (src_dir, src_name, src_searched) =
+            self.resolve_parent_with_search_checked(from.as_ref(), |directory| {
+                self.check_search_path(directory, self.permission_root.as_ref(), credentials)
+            })?;
+        let (dst_dir, dst_name, dst_searched) =
+            self.resolve_parent_with_search_checked(to.as_ref(), |directory| {
+                self.check_search_path(directory, self.permission_root.as_ref(), credentials)
+            })?;
         self.rename_locations_with_boundaries_and_search(
             (&src_dir, &src_name),
             (&dst_dir, &dst_name),
@@ -1059,8 +1175,9 @@ impl FsContext {
         if path.as_str().is_empty() {
             return Err(VfsError::NotFound);
         }
-        let (dir, name, searched) = self.resolve_parent_with_search(path)?;
-        self.check_search_trace(&searched, self.permission_root.as_ref(), credentials)?;
+        let (dir, name, searched) = self.resolve_parent_with_search_checked(path, |directory| {
+            self.check_search_path(directory, self.permission_root.as_ref(), credentials)
+        })?;
         match dir.lookup_no_follow(&name) {
             Ok(_) => return Err(VfsError::AlreadyExists),
             Err(VfsError::NotFound) => {}
@@ -1077,9 +1194,14 @@ impl FsContext {
         new_path: impl AsRef<Path>,
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<Location> {
-        let (old, old_searched) = self.resolve_with_search(old_path.as_ref())?;
+        let (old, old_searched) =
+            self.resolve_with_search_checked(old_path.as_ref(), |directory| {
+                self.check_search_path(directory, self.permission_root.as_ref(), credentials)
+            })?;
         let (new_dir, new_name, new_searched) =
-            self.resolve_parent_with_search(new_path.as_ref())?;
+            self.resolve_parent_with_search_checked(new_path.as_ref(), |directory| {
+                self.check_search_path(directory, self.permission_root.as_ref(), credentials)
+            })?;
         self.link_locations_with_boundaries_and_search(
             (&old, &old_searched),
             (&new_dir, &new_name, &new_searched),
@@ -1162,8 +1284,10 @@ impl FsContext {
         gid: u32,
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<Location> {
-        let (dir, name, searched) = self.resolve_parent_with_search(link_path.as_ref())?;
-        self.check_search_trace(&searched, self.permission_root.as_ref(), credentials)?;
+        let (dir, name, searched) =
+            self.resolve_parent_with_search_checked(link_path.as_ref(), |directory| {
+                self.check_search_path(directory, self.permission_root.as_ref(), credentials)
+            })?;
         match dir.lookup_no_follow(&name) {
             Ok(_) => return Err(VfsError::AlreadyExists),
             Err(VfsError::NotFound) => {}
@@ -1183,8 +1307,10 @@ impl FsContext {
         gid: u32,
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<Location> {
-        let (dir, name, searched) = self.resolve_parent_with_search(path.as_ref())?;
-        self.check_search_trace(&searched, self.permission_root.as_ref(), credentials)?;
+        let (dir, name, searched) =
+            self.resolve_parent_with_search_checked(path.as_ref(), |directory| {
+                self.check_search_path(directory, self.permission_root.as_ref(), credentials)
+            })?;
         match dir.lookup_no_follow(&name) {
             Ok(_) => return Err(VfsError::AlreadyExists),
             Err(VfsError::NotFound) => {}

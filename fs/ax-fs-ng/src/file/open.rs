@@ -301,7 +301,9 @@ impl OpenOptions {
         // it. Fixes bug-open-trailing-slash.
         let must_be_dir = path.as_ref().has_trailing_slash();
 
-        let loc = match context.resolve_parent_with_search(path.as_ref()) {
+        let loc = match context.resolve_parent_with_search_checked(path.as_ref(), |directory| {
+            context.check_search_path(directory, context.permission_boundary(), credentials)
+        }) {
             Ok((parent, name, searched)) => {
                 context.check_search_trace(
                     &searched,
@@ -351,8 +353,13 @@ impl OpenOptions {
                     let parent_for_resolve = parent.clone();
                     match context
                         .with_current_dir(parent_for_resolve)?
-                        .try_resolve_symlink(loc, &mut 0)
-                    {
+                        .try_resolve_symlink_checked(loc, &mut 0, |directory| {
+                            context.check_search_path(
+                                directory,
+                                context.permission_boundary(),
+                                credentials,
+                            )
+                        }) {
                         Ok(resolved) => loc = resolved,
                         Err(VfsError::NotFound) if self.create && symlink_target.is_some() => {
                             // O_CREAT on a dangling symlink: man — Linux follows

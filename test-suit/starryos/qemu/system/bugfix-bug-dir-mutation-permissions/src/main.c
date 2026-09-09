@@ -28,6 +28,15 @@
 #ifndef AT_EMPTY_PATH
 #define AT_EMPTY_PATH 0x1000
 #endif
+#ifndef SYS_openat2
+#define SYS_openat2 437
+#endif
+#ifndef RESOLVE_NO_SYMLINKS
+#define RESOLVE_NO_SYMLINKS 0x04
+#endif
+#ifndef RESOLVE_BENEATH
+#define RESOLVE_BENEATH 0x08
+#endif
 #ifndef PR_SET_KEEPCAPS
 #define PR_SET_KEEPCAPS 8
 #endif
@@ -46,11 +55,21 @@ struct capability_data {
     uint32_t inheritable;
 };
 
+struct open_how {
+    uint64_t flags;
+    uint64_t mode;
+    uint64_t resolve;
+};
+
 static const char *const base = "/tmp/bug-dir-mutation-permissions";
 static const char *const protected_dir = "/tmp/bug-dir-mutation-permissions/protected";
 static const char *const sticky_dir = "/tmp/bug-dir-mutation-permissions/sticky";
 static const char *const source = "/tmp/bug-dir-mutation-permissions/source";
 static const char *const protected_file = "/tmp/bug-dir-mutation-permissions/protected/file";
+static const char *const protected_dangling_middle =
+    "/tmp/bug-dir-mutation-permissions/protected/dangling-middle";
+static const char *const protected_dangling_path =
+    "/tmp/bug-dir-mutation-permissions/protected/dangling-middle/leaf";
 static const char *const protected_new_file =
     "/tmp/bug-dir-mutation-permissions/protected/created-by-symlink";
 static const char *const public_dir = "/tmp/bug-dir-mutation-permissions/public";
@@ -147,6 +166,45 @@ static int run_unprivileged_checks(void)
           "open O_CREAT checks an inaccessible parent before opening an existing target");
     if (inaccessible >= 0) {
         close(inaccessible);
+    }
+
+    errno = 0;
+    check(unlink("/tmp/bug-dir-mutation-permissions/protected/missing") < 0
+              && errno == EACCES,
+          "unlink checks an unsearchable parent before a missing final entry");
+
+    errno = 0;
+    check(rmdir("/tmp/bug-dir-mutation-permissions/protected/missing-dir") < 0
+              && errno == EACCES,
+          "rmdir checks an unsearchable parent before a missing final entry");
+
+    errno = 0;
+    int dangling_middle = open(protected_dangling_path, O_RDONLY);
+    check(dangling_middle < 0 && errno == EACCES,
+          "an unsearchable parent beats ENOENT from a dangling intermediate symlink");
+    if (dangling_middle >= 0) {
+        close(dangling_middle);
+    }
+
+    errno = 0;
+    const struct open_how openat2_how = {
+        .flags = O_RDONLY,
+        .mode = 0,
+        .resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS,
+    };
+    int openat2_root = open(base, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int openat2_missing = openat2_root < 0
+                              ? -1
+                              : (int)syscall(SYS_openat2, openat2_root,
+                                             "protected/openat2-missing",
+                                             &openat2_how, sizeof(openat2_how));
+    check(openat2_missing < 0 && errno == EACCES,
+          "openat2 checks an unsearchable parent before a missing final entry");
+    if (openat2_missing >= 0) {
+        close(openat2_missing);
+    }
+    if (openat2_root >= 0) {
+        close(openat2_root);
     }
 
     errno = 0;
@@ -438,6 +496,8 @@ int main(void)
           "make protected victim readable after setup");
     check(symlink(public_dir, protected_link) == 0,
           "create symlink through protected directory");
+    check(symlink("missing-target", protected_dangling_middle) == 0,
+          "create dangling intermediate symlink in protected directory");
     check(symlink(protected_new_file, dangling_link) == 0, "create dangling symlink");
     check(mkdir(sticky_dir, 01777) == 0, "create sticky directory");
     check(chmod(sticky_dir, 01777) == 0, "restore sticky directory permissions");
@@ -500,6 +560,7 @@ int main(void)
     remove_if_present(sticky_file);
     remove_if_present(sticky_dir);
     remove_if_present(dangling_link);
+    remove_if_present(protected_dangling_middle);
     remove_if_present(protected_new_file);
     remove_if_present(protected_file);
     remove_if_present(public_link_new);

@@ -638,7 +638,10 @@ pub fn sys_openat2(
     };
     let mut options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     let result = with_fs(dirfd, |fs| {
-        let (parent, name) = fs.resolve_parent_beneath_no_symlinks(path.as_ref())?;
+        let (parent, name) = fs.resolve_parent_beneath_no_symlinks_checked(
+            path.as_ref(),
+            |directory| fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred),
+        )?;
         match parent.lookup_no_follow(name.as_ref()) {
             Ok(location) if location.node_type() == NodeType::Symlink => {
                 return Err(StarryError::FilesystemLoop);
