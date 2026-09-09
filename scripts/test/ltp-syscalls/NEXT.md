@@ -55,3 +55,11 @@
 未承接：父进程显式解锁后阻塞者成功获得锁；至少50ms阻塞及非阻塞最多50ms的耗时断言；LTP信号场景仍使用上游一秒睡眠。本项是部分替代，原程序及专属 CMake 清理。
 
 四架构03-candidates-<arch>.log实际通过；flock02=4 TPASS,flock07=2 TPASS；未修改内核或上游测试；最终累计集合另验。提交主题为 `test(starry): migrate interruptible flock regression to LTP`。
+
+### 2.6 私有 futex 等待唤醒
+
+`bug-futex-wait-wake` 替换为 [futex_wait03.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/futex/futex_wait03.c)。承接行为：线程私有FUTEX_WAIT返回0，FUTEX_WAKE准确唤醒一个等待者；LTP先观察主线程睡眠状态。
+
+未承接：传入5秒相对超时及唤醒前把futex字从0写为1的输入；两者均未单独验证用户页缺页情形。本项是部分替代，原程序及专属 CMake 清理。
+
+四架构03-candidates-<arch>.log实际通过；futex_wait03=1 TPASS；未修改内核或上游测试；最终累计集合另验。提交主题为 `test(starry): migrate private futex wake regression to LTP`。
