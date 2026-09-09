@@ -244,3 +244,6 @@ fcntl17
 fcntl34
 fcntl36
 fcntl15
+flock02
+flock04
+flock06

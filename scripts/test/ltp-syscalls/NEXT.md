@@ -39,3 +39,11 @@
 未承接：关闭从未参与加锁的同inode FD这一精确输入；原同进程GETLK和再次加锁本身不能区分锁释放与自有锁。本项是部分替代，原程序及专属 CMake 清理。
 
 四架构03-candidates-<arch>.log实际通过；fcntl15=12 TPASS；未修改内核或上游测试；最终累计集合另验。提交主题为 `test(starry): migrate POSIX close-release regression to LTP`。
+
+### 2.4 flock 共享与排他
+
+`bug-flock` 替换为 [flock02.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/flock/flock02.c), [flock04.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/flock/flock04.c), [flock06.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/flock/flock06.c)。承接行为：同进程不同open的排他冲突及解锁后成功；跨进程共享/排他组合；排他冲突EWOULDBLOCK及错误参数。
+
+未承接：同进程两OFD的共享锁组合；共享锁阻止排他时精确EWOULDBLOCK（flock04只检查失败返回）。本项是部分替代，原程序及专属 CMake 清理。
+
+四架构03-candidates-<arch>.log实际通过；flock02=4 TPASS,flock04=6 TPASS,flock06=4 TPASS；未修改内核或上游测试；最终累计集合另验。提交主题为 `test(starry): migrate flock exclusion regression to LTP`。
