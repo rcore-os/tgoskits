@@ -21,7 +21,7 @@ args = [
     "-device",
     "virtio-tablet-pci",
     "-device",
-    "qemu-xhci,id=xhci,msi=off,msix=off",
+    "nec-usb-xhci,id=xhci,msi=off,msix=off",
     "-audiodev",
     "none,id=audio0",
     "-device",

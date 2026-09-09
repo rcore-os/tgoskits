@@ -1,4 +1,4 @@
-use alloc::{borrow::Cow, boxed::Box, string::ToString, sync::Arc};
+use alloc::{borrow::Cow, boxed::Box, string::ToString, sync::Arc, vec::Vec};
 use core::{
     ffi::c_int,
     hint::likely,
@@ -144,13 +144,12 @@ pub fn resolve_at_with_boundary(
     dirfd: c_int,
     path: Option<&str>,
     flags: u32,
-) -> StarryResult<(ResolveAtResult, Option<Location>)> {
+) -> StarryResult<(ResolveAtResult, Option<Location>, Vec<Location>)> {
     resolve_at_with_search(dirfd, path, flags, None)
-        .map(|(result, boundary, _)| (result, boundary))
 }
 
 pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> StarryResult<ResolveAtResult> {
-    resolve_at_with_boundary(dirfd, path, flags).map(|(result, _)| result)
+    resolve_at_with_boundary(dirfd, path, flags).map(|(result, _, _)| result)
 }
 
 pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {

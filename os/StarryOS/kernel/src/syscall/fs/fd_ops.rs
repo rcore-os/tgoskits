@@ -8,7 +8,7 @@ use core::{
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenResult};
 use ax_memory_addr::PAGE_SIZE_4K;
 use axfs_ng_vfs::{
-    DirEntry, FileNode, Location, MutationCredentials, NodeOps, NodeType, Reference, VfsError,
+    DirEntry, FileNode, Location, MutationCredentials, NodeType, Reference, VfsError,
 };
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
