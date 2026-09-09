@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.6.0...ax-std-v0.6.1) - 2026-09-09
+
+### Fixed
+
+- *(runtime)* prefer userspace over kernel TLS through build cfg ([#2339](https://github.com/rcore-os/tgoskits/pull/2339))
+- *(arceos)* exercise real std and repair queued task affinity ([#2332](https://github.com/rcore-os/tgoskits/pull/2332))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.5.33...ax-std-v0.6.0) - 2026-09-09
 
 ### Added

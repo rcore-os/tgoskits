@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.6.1...ax-posix-api-v0.6.2) - 2026-09-09
+
+### Fixed
+
+- *(arceos)* exercise real std and repair queued task affinity ([#2332](https://github.com/rcore-os/tgoskits/pull/2332))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.34...ax-posix-api-v0.6.1) - 2026-09-09
 
 ### Fixed

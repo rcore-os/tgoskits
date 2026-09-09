@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.9.0...ax-cpu-v0.9.1) - 2026-09-09
+
+### Fixed
+
+- *(runtime)* prefer userspace over kernel TLS through build cfg ([#2339](https://github.com/rcore-os/tgoskits/pull/2339))
+
 ## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.8...ax-cpu-v0.9.0) - 2026-09-09
 
 ### Added

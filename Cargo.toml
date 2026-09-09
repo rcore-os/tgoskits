@@ -164,7 +164,7 @@ ax-percpu = { version = "0.4", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4", path = "components/percpu/percpu_macros" }
 ax-plat = { version = "0.14", path = "platforms/ax-plat" }
 ax-plat-macros = { version = "0.3", path = "platforms/ax-plat-macros" }
-ax-posix-api = { version = "0.6.1", path = "os/arceos/api/arceos_posix_api" }
+ax-posix-api = { version = "0.6.2", path = "os/arceos/api/arceos_posix_api" }
 ax-riscv-plic = { version = "0.4", path = "drivers/intc/riscv_plic" }
 ax-runtime = { version = "0.12.1", path = "os/arceos/modules/axruntime" }
 ax-std = { version = "0.6.1", path = "os/arceos/ulib/axstd", default-features = false }
@@ -215,7 +215,7 @@ rdif-block = { version = "0.13", path = "drivers/interface/rdif-block" }
 rdif-clk = { version = "0.5", path = "drivers/interface/rdif-clk" }
 rdif-def = { version = "0.4", path = "drivers/interface/rdif-def" }
 rdif-display = { version = "0.3", path = "drivers/interface/rdif-display" }
-rdif-eth = { version = "0.5", path = "drivers/interface/rdif-eth" }
+rdif-eth = { version = "0.6", path = "drivers/interface/rdif-eth" }
 rdif-input = { version = "0.3", path = "drivers/interface/rdif-input" }
 rdif-intc = { version = "0.16", path = "drivers/interface/rdif-intc" }
 rdif-msi = { version = "0.3", path = "drivers/interface/rdif-msi" }
