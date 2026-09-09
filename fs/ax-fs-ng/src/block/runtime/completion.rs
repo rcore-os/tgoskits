@@ -295,7 +295,7 @@ mod tests {
         CpuDmaBuffer, DeviceDma, DmaAddr, DmaAllocHandle, DmaCoherency, DmaConstraints,
         DmaDeviceInfo, DmaDirection, DmaDomainId, DmaError, DmaMapHandle, DmaOp,
     };
-    use rdif_block::{CompletedRequest, RequestId};
+    use rdif_block::{BlkError, CompletedRequest, RequestId};
 
     use super::{
         BlockNotification, CompletionCell, CompletionGroup, CompletionSender,
@@ -572,6 +572,45 @@ mod tests {
         };
         assert_eq!(completed.id, RequestId::new(7));
         assert_eq!(completed.result, Ok(()));
+    }
+
+    #[test]
+    fn async_completion_composes_in_nonblocking_context_where_sync_receive_rejects() {
+        crate::os::task::install_test_runtime_ops();
+        let _can_block = crate::os::task::test_can_block(false);
+
+        let (sync_subscription, _sync_sender) = pair();
+        assert!(matches!(
+            sync_subscription.recv(),
+            Err(BlkError::Other(
+                "block completion receive requires a sleepable task"
+            ))
+        ));
+
+        let (subscription, sender) = pair();
+        let async_progress = Arc::new(AtomicUsize::new(0));
+        let mut completion = Box::pin(subscription.recv_async());
+        let progress_count = Arc::clone(&async_progress);
+        let mut progress = Box::pin(core::future::poll_fn(move |_| {
+            progress_count.fetch_add(1, Ordering::AcqRel);
+            Poll::Ready(())
+        }));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            completion.as_mut().poll(&mut context),
+            Poll::Pending
+        ));
+
+        assert!(matches!(
+            progress.as_mut().poll(&mut context),
+            Poll::Ready(())
+        ));
+        assert_eq!(async_progress.load(Ordering::Acquire), 1);
+        sender.complete(completed(7));
+        assert!(matches!(
+            completion.as_mut().poll(&mut context),
+            Poll::Ready(completed) if completed.id == RequestId::new(7)
+        ));
     }
 
     #[test]
