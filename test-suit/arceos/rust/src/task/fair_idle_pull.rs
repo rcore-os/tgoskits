@@ -1,13 +1,4 @@
 use std::{
-    os::arceos::{
-        api::task::{AxCpuMask, ax_set_current_affinity},
-        modules::ax_hal::percpu::this_cpu_id,
-        task as scheduler,
-        task::{
-            sched::{CpuId, CpuSet},
-            thread::current::set_current_thread_affinity,
-        },
-    },
     string::String,
     sync::{
         Arc,
@@ -16,6 +7,16 @@ use std::{
     thread,
     time::{Duration, Instant},
     vec::Vec,
+};
+
+use ax_std::os::arceos::{
+    api::task::{AxCpuMask, ax_set_current_affinity},
+    modules::ax_hal::percpu::this_cpu_id,
+    task as scheduler,
+    task::{
+        sched::{CpuId, CpuSet},
+        thread::current::set_current_thread_affinity,
+    },
 };
 
 const SOURCE_WORKERS: usize = 4;
@@ -49,7 +50,7 @@ impl CooperativeWorkers {
             let mut affinity = CpuSet::empty(cpu_count);
             assert!(affinity.insert(CpuId::new(cpu as u32)));
             handles.push(
-                std::os::arceos::thread::spawn_raw_with_affinity(
+                ax_std::os::arceos::thread::spawn_raw_with_affinity(
                     move || {
                         assert_eq!(
                             this_cpu_id(),
@@ -91,7 +92,7 @@ impl CooperativeWorkers {
     fn stop_and_join(mut self) {
         self.stop.store(true, Ordering::Release);
         for handle in self.handles.drain(..) {
-            std::os::arceos::thread::join_thread(handle)
+            ax_std::os::arceos::thread::join_thread(handle)
                 .expect("cooperative Fair worker must exit");
         }
     }
@@ -106,7 +107,7 @@ fn wait_until(mut condition: impl FnMut() -> bool, message: &'static str) {
 }
 
 pub fn run() -> crate::TestResult {
-    let cpu_count = thread::available_parallelism().unwrap().get();
+    let cpu_count = ax_std::os::arceos::task::sched::cpu_topology_len().unwrap();
     assert!(
         cpu_count >= 2,
         "task-fair-idle-pull requires SMP >= 2, got {cpu_count}"

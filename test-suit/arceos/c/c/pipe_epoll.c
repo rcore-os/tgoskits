@@ -1,6 +1,7 @@
 #include "test.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -81,6 +82,17 @@ int arceos_c_test_pipe(char *reason, size_t reason_len)
     CHECK_RET(close(fd[1]), 0);
     CHECK_RET(read(fd[0], buf, sizeof(buf)), 0);
     CHECK_RET(close(fd[0]), 0);
+    CHECK_RET(pipe2(fd, O_CLOEXEC), 0);
+    CHECK_RET(fcntl(fd[0], F_GETFD), FD_CLOEXEC);
+    CHECK_RET(fcntl(fd[1], F_GETFD), FD_CLOEXEC);
+    CHECK_RET(close(fd[0]), 0);
+    CHECK_RET(close(fd[1]), 0);
+    fd[0] = fd[1] = -1;
+    errno = 0;
+    CHECK_RET(pipe2(fd, -1), -1);
+    CHECK_RET(errno, EINVAL);
+    CHECK_RET(fd[0], -1);
+    CHECK_RET(fd[1], -1);
     puts("pipe: pipe APIs OK");
     return 0;
 }

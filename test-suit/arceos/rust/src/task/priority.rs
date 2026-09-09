@@ -1,14 +1,11 @@
-use std::{
-    os::arceos::{
-        api::task::ax_set_current_priority,
-        task::{
-            sched::{FairMode, Nice, RtPriority, SchedulePolicy},
-            thread::current::current_thread_id,
-        },
+use std::{sync::Arc, thread, time, vec, vec::Vec};
+
+use ax_std::os::arceos::{
+    api::task::ax_set_current_priority,
+    task::{
+        sched::{FairMode, Nice, RtPriority, SchedulePolicy},
+        thread::current::current_thread_id,
     },
-    sync::Arc,
-    thread, time, vec,
-    vec::Vec,
 };
 
 #[derive(Clone, Copy)]
@@ -39,13 +36,13 @@ impl SchedulerCase {
                 ax_set_current_priority(nice).expect("failed to set test thread priority")
             }
             Self::Fair | Self::RoundRobin => {
-                std::os::arceos::task::thread::ThreadHandle::lookup(current)
+                ax_std::os::arceos::task::thread::ThreadHandle::lookup(current)
                     .and_then(|thread| thread.set_policy(expected))
                     .expect("failed to set test thread scheduling policy")
             }
         }
         assert_eq!(
-            std::os::arceos::task::thread::ThreadHandle::lookup(current)
+            ax_std::os::arceos::task::thread::ThreadHandle::lookup(current)
                 .map(|thread| thread.base_policy()),
             Ok(expected),
             "test thread did not enter the selected scheduling policy"
@@ -125,7 +122,9 @@ fn run_workload(case: SchedulerCase) -> crate::TestResult {
         tasks.into_iter().map(|task| task.join().unwrap()).unzip();
     let actual = results.iter().sum::<u64>();
 
-    if matches!(case, SchedulerCase::Fair) && thread::available_parallelism().unwrap().get() == 1 {
+    if matches!(case, SchedulerCase::Fair)
+        && ax_std::os::arceos::task::sched::cpu_topology_len().unwrap() == 1
+    {
         assert!(
             leave_times[0] > leave_times[1]
                 && leave_times[1] > leave_times[2]

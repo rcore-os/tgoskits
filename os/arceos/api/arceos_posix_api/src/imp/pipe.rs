@@ -3,7 +3,7 @@ use core::ffi::c_int;
 
 use ax_io::PollState;
 
-use super::fd_ops::{FileLike, add_file_like, close_file_like};
+use super::fd_ops::{FileLike, add_file_like_pair};
 use crate::{PosixError, PosixResult, ctypes, sync::Mutex};
 
 #[derive(Copy, Clone, PartialEq)]
@@ -245,20 +245,33 @@ impl FileLike for Pipe {
 ///
 /// Return 0 if succeed
 pub fn sys_pipe(fds: &mut [c_int]) -> c_int {
-    debug!("sys_pipe <= {:#x}", fds.as_ptr() as usize);
-    syscall_body!(sys_pipe, {
+    sys_pipe2(fds, 0)
+}
+
+/// Creates a blocking byte-stream pipe, optionally marking both fds close-on-exec.
+///
+/// Packet, notification and nonblocking pipe modes are not supported.
+/// Outputs and the descriptor table remain unchanged on failure.
+pub fn sys_pipe2(fds: &mut [c_int], flags: c_int) -> c_int {
+    debug!(
+        "sys_pipe2 <= {:#x}, flags: {flags:#x}",
+        fds.as_ptr() as usize
+    );
+    syscall_body!(sys_pipe2, {
+        if flags as u32 & !ctypes::O_CLOEXEC != 0 {
+            return Err(PosixError::EINVAL);
+        }
         if fds.len() != 2 {
             return Err(PosixError::EFAULT);
         }
 
         let (read_end, write_end) = Pipe::new();
-        let read_fd = add_file_like(Arc::new(read_end))?;
-        let write_fd = add_file_like(Arc::new(write_end)).inspect_err(|_| {
-            close_file_like(read_fd).ok();
-        })?;
-
-        fds[0] = read_fd as c_int;
-        fds[1] = write_fd as c_int;
+        let endpoints = add_file_like_pair(
+            Arc::new(read_end),
+            Arc::new(write_end),
+            flags as u32 & ctypes::O_CLOEXEC != 0,
+        )?;
+        fds.copy_from_slice(&endpoints);
 
         Ok(0)
     })

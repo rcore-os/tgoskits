@@ -2,14 +2,14 @@ use core::any::Any;
 use std::{
     string::ToString,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     vec::Vec,
 };
 
-use ax_std::os::arceos::sync::SpinLock;
+use ax_std::os::arceos::sync::{Mutex, SpinLock};
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FilesystemOps,
     Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference,

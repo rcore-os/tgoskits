@@ -40,7 +40,7 @@ pub fn run() -> crate::TestResult {
 
     env::set_current_dir(DIR).expect("failed to change into fs smoke directory");
     let current_dir = env::current_dir().expect("failed to read changed current dir");
-    assert_eq!(normalize_dir_path(&current_dir), DIR);
+    assert_eq!(current_dir, std::path::Path::new(DIR));
     assert_eq!(
         fs::read_to_string("basic.txt").expect("failed to read relative fs smoke file"),
         CONTENT
@@ -61,16 +61,10 @@ fn sorted_dir_entries(path: &str) -> Vec<String> {
             entry
                 .expect("failed to read fs smoke directory entry")
                 .file_name()
+                .into_string()
+                .expect("test entry name must be UTF-8")
         })
         .collect::<Vec<_>>();
     entries.sort();
     entries
-}
-
-fn normalize_dir_path(path: &str) -> &str {
-    if path == "/" {
-        path
-    } else {
-        path.trim_end_matches('/')
-    }
 }

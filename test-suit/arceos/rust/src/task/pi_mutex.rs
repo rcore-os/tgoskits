@@ -1,21 +1,23 @@
 use std::{
-    os::arceos::{
-        api::{
-            task as api,
-            task::{AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
-        },
-        modules::ax_hal::percpu::this_cpu_id,
-        task::{
-            sched::{FairMode, Nice, RtPriority, SchedulePolicy},
-            thread::{ThreadId, current::current_thread_id},
-        },
-    },
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     thread,
     time::{Duration, Instant},
+};
+
+use ax_std::os::arceos::{
+    api::{
+        task as api,
+        task::{AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+    },
+    modules::ax_hal::percpu::this_cpu_id,
+    sync::Mutex,
+    task::{
+        sched::{FairMode, Nice, RtPriority, SchedulePolicy},
+        thread::{ThreadId, current::current_thread_id},
+    },
 };
 
 const PROGRESS_TIMEOUT: Duration = Duration::from_secs(2);
@@ -66,7 +68,7 @@ fn ownerless_lock_rekey_wakes_new_top() {
         let ack = Arc::clone(&probe_ack);
         thread::spawn(move || {
             pin_current_to_cpu(0);
-            std::os::arceos::task::thread::ThreadHandle::lookup(
+            ax_std::os::arceos::task::thread::ThreadHandle::lookup(
                 current_thread_id().expect("the PI probe must have an identity"),
             )
             .and_then(|thread| {
@@ -95,7 +97,7 @@ fn ownerless_lock_rekey_wakes_new_top() {
         let ready = Arc::clone(&lock_l_ready);
         thread::spawn(move || {
             pin_current_to_cpu(0);
-            std::os::arceos::task::thread::ThreadHandle::lookup(
+            ax_std::os::arceos::task::thread::ThreadHandle::lookup(
                 current_thread_id().expect("the PI owner must have an identity"),
             )
             .and_then(|thread| {
@@ -120,7 +122,7 @@ fn ownerless_lock_rekey_wakes_new_top() {
         let done = Arc::clone(&selected_done);
         thread::spawn(move || {
             pin_current_to_cpu(0);
-            std::os::arceos::task::thread::ThreadHandle::lookup(
+            ax_std::os::arceos::task::thread::ThreadHandle::lookup(
                 current_thread_id().expect("the selected PI waiter must have an identity"),
             )
             .and_then(|thread| {
@@ -146,7 +148,7 @@ fn ownerless_lock_rekey_wakes_new_top() {
         let done = Arc::clone(&boosted_done);
         thread::spawn(move || {
             pin_current_to_cpu(0);
-            std::os::arceos::task::thread::ThreadHandle::lookup(
+            ax_std::os::arceos::task::thread::ThreadHandle::lookup(
                 current_thread_id().expect("the boosted PI waiter must have an identity"),
             )
             .and_then(|thread| {
@@ -240,7 +242,7 @@ fn ownerless_lock_rekey_wakes_new_top() {
 
 pub fn run() -> crate::TestResult {
     assert!(
-        thread::available_parallelism().unwrap().get() >= 3,
+        ax_std::os::arceos::task::sched::cpu_topology_len().unwrap() >= 3,
         "task-pi-mutex requires at least three CPUs"
     );
     pin_current_to_cpu(2);
@@ -249,20 +251,23 @@ pub fn run() -> crate::TestResult {
 
     let mutex = Arc::new(Mutex::new(()));
     let owner_locked = Arc::new(AtomicBool::new(false));
+    let owner_identity = Arc::new(AtomicU64::new(0));
     let release_owner = Arc::new(AtomicBool::new(false));
     let owner = {
         let mutex = Arc::clone(&mutex);
         let owner_locked = Arc::clone(&owner_locked);
+        let owner_identity = Arc::clone(&owner_identity);
         let release_owner = Arc::clone(&release_owner);
         thread::spawn(move || {
             pin_current_to_cpu(0);
             let current = current_thread_id().expect("PI owner must have a thread identity");
-            std::os::arceos::task::thread::ThreadHandle::lookup(current)
+            ax_std::os::arceos::task::thread::ThreadHandle::lookup(current)
                 .and_then(|thread| {
                     thread.set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
                 })
                 .expect("PI owner must enter the idle Fair class");
             let guard = mutex.lock();
+            owner_identity.store(current.as_u64(), Ordering::Relaxed);
             owner_locked.store(true, Ordering::Release);
             while !release_owner.load(Ordering::Acquire) {
                 core::hint::spin_loop();
@@ -270,12 +275,13 @@ pub fn run() -> crate::TestResult {
             drop(guard);
         })
     };
-    let owner_id = owner.thread().id().as_u64().get();
-    let owner_id = ThreadId::from_parts(owner_id as u32, (owner_id >> 32) as u32);
     wait_until(
         || owner_locked.load(Ordering::Acquire),
         "PI mutex owner did not acquire the lock",
     );
+    // The release/acquire on owner_locked publishes the kernel identity.
+    let owner_id = owner_identity.load(Ordering::Relaxed);
+    let owner_id = ThreadId::from_parts(owner_id as u32, (owner_id >> 32) as u32);
 
     // Keep normal Fair work runnable on the owner's CPU. Without PI donation,
     // the SCHED_IDLE owner cannot run again to release the mutex.
@@ -287,7 +293,7 @@ pub fn run() -> crate::TestResult {
         thread::spawn(move || {
             pin_current_to_cpu(0);
             let current = current_thread_id().expect("PI competitor must have a thread identity");
-            std::os::arceos::task::thread::ThreadHandle::lookup(current)
+            ax_std::os::arceos::task::thread::ThreadHandle::lookup(current)
                 .and_then(|thread| {
                     thread.set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
                 })
@@ -314,7 +320,7 @@ pub fn run() -> crate::TestResult {
         thread::spawn(move || {
             pin_current_to_cpu(1);
             let current = current_thread_id().expect("PI waiter must have a thread identity");
-            std::os::arceos::task::thread::ThreadHandle::lookup(current)
+            ax_std::os::arceos::task::thread::ThreadHandle::lookup(current)
                 .and_then(|thread| {
                     thread.set_policy(SchedulePolicy::fifo(
                         RtPriority::new(80).expect("priority 80 must be valid"),
@@ -334,7 +340,7 @@ pub fn run() -> crate::TestResult {
     let donated_policy = SchedulePolicy::fifo(RtPriority::new(80).expect("priority 80 is valid"));
     wait_until(
         || {
-            std::os::arceos::task::thread::ThreadHandle::lookup(owner_id)
+            ax_std::os::arceos::task::thread::ThreadHandle::lookup(owner_id)
                 .is_ok_and(|owner| owner.effective_policy() == donated_policy)
         },
         "PI waiter did not donate FIFO priority to the owner",

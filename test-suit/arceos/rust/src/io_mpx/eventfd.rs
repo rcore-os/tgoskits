@@ -1,4 +1,4 @@
-//! `eventfd` unit tests.
+//! `eventfd` ABI tests.
 //!
 //! These exercise the Linux `eventfd(2)` semantics implemented by
 //! `ax-posix-api`'s `EventFd`:
@@ -17,38 +17,25 @@
 //! All fds are created nonblocking where an empty-counter read is expected, so
 //! no test ever blocks in the cooperative scheduler.
 
-use core::ffi::c_int;
-use std::println;
+use std::{os::fd::AsRawFd, println};
+
+use libc::{EAGAIN, EFD_CLOEXEC, EFD_NONBLOCK, EFD_SEMAPHORE, EINVAL};
 
 use super::syscalls::{self, EpollEvent, assert_errno};
 
-/// `EFD_SEMAPHORE` = 1.
-const EFD_SEMAPHORE: c_int = 1;
-/// `EFD_CLOEXEC` = `O_CLOEXEC` = 02000000 octal = 0x80000.
-const EFD_CLOEXEC: c_int = 0o2000000;
-/// `EFD_NONBLOCK` = `O_NONBLOCK` = 04000 octal = 0x800.
-const EFD_NONBLOCK: c_int = 0o4000;
-
-const EINVAL: c_int = 22;
-const EAGAIN: c_int = 11;
-
-/// `EPOLLIN` = 0x001.
-const EPOLLIN: u32 = 0x001;
-/// `EPOLLOUT` = 0x004.
-const EPOLLOUT: u32 = 0x004;
-/// `EPOLLET` = `1 << 31`, requesting edge-triggered delivery.
-const EPOLLET: u32 = 1 << 31;
-/// `EPOLL_CTL_ADD` = 1.
-const EPOLL_CTL_ADD: c_int = 1;
+const EPOLLIN: u32 = libc::EPOLLIN as u32;
+const EPOLLOUT: u32 = libc::EPOLLOUT as u32;
+const EPOLLET: u32 = libc::EPOLLET as u32;
+use libc::EPOLL_CTL_ADD;
 
 fn test_create_and_flag_validation() {
     let fd = syscalls::eventfd(0, 0).expect("eventfd(0, 0) failed");
-    assert!(fd.as_raw() >= 0, "eventfd(0, 0) returned an invalid fd");
+    assert!(fd.as_raw_fd() >= 0, "eventfd(0, 0) returned an invalid fd");
 
     let fd = syscalls::eventfd(0, EFD_SEMAPHORE | EFD_CLOEXEC | EFD_NONBLOCK)
         .expect("eventfd with all supported flags failed");
     assert!(
-        fd.as_raw() >= 0,
+        fd.as_raw_fd() >= 0,
         "eventfd with all supported flags returned an invalid fd"
     );
 
@@ -206,12 +193,12 @@ fn test_every_write_is_a_readiness_edge() {
 
     let mut interest = EpollEvent {
         events: EPOLLIN | EPOLLET,
-        data: 0,
+        u64: 0,
     };
     syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
         .expect("epoll_ctl ADD failed");
 
-    let mut ready = [EpollEvent::default(); 4];
+    let mut ready = [EpollEvent { events: 0, u64: 0 }; 4];
 
     // First write: the counter goes 0 -> 1, so the fd becomes readable. This
     // edge is reported whether or not readiness tracks the readability flip.
@@ -268,7 +255,7 @@ fn test_saturated_read_is_a_writable_edge() {
 
     let mut interest = EpollEvent {
         events: EPOLLOUT | EPOLLET,
-        data: 0,
+        u64: 0,
     };
     syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
         .expect("epoll_ctl ADD failed");
@@ -280,7 +267,7 @@ fn test_saturated_read_is_a_writable_edge() {
         8,
         "write must return 8"
     );
-    let mut ready = [EpollEvent::default(); 4];
+    let mut ready = [EpollEvent { events: 0, u64: 0 }; 4];
     assert_eq!(
         syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         0,
@@ -323,14 +310,14 @@ fn test_write_does_not_spoof_writable_edge() {
 
     let mut interest = EpollEvent {
         events: EPOLLOUT | EPOLLET,
-        data: 0,
+        u64: 0,
     };
     syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
         .expect("epoll_ctl ADD failed");
 
     // The freshly created counter is writable (0 < u64::MAX - 1), so the
     // initial writable edge is reported and consumed.
-    let mut ready = [EpollEvent::default(); 4];
+    let mut ready = [EpollEvent { events: 0, u64: 0 }; 4];
     assert_eq!(
         syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         1,
@@ -374,13 +361,13 @@ fn test_writable_edge_between_waits_is_reported() {
 
     let mut interest = EpollEvent {
         events: EPOLLOUT | EPOLLET,
-        data: 0,
+        u64: 0,
     };
     syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
         .expect("epoll_ctl ADD failed");
 
     // The counter starts writable, so the initial edge is reported and consumed.
-    let mut ready = [EpollEvent::default(); 4];
+    let mut ready = [EpollEvent { events: 0, u64: 0 }; 4];
     assert_eq!(
         syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         1,
@@ -434,12 +421,12 @@ fn test_write_stream_delivers_every_wake() {
 
     let mut interest = EpollEvent {
         events: EPOLLIN | EPOLLET,
-        data: 0,
+        u64: 0,
     };
     syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
         .expect("epoll_ctl ADD failed");
 
-    let mut ready = [EpollEvent::default(); 4];
+    let mut ready = [EpollEvent { events: 0, u64: 0 }; 4];
     for i in 0..WAKES {
         assert_eq!(
             syscalls::write_u64(&fd, 1).unwrap(),
@@ -469,6 +456,6 @@ pub fn run() -> crate::TestResult {
     test_writable_edge_between_waits_is_reported();
     test_write_does_not_spoof_writable_edge();
     test_write_stream_delivers_every_wake();
-    println!("io_mpx: eventfd unit tests OK");
+    println!("io_mpx: eventfd ABI tests OK");
     Ok(())
 }

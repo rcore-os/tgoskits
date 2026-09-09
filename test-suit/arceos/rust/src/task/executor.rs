@@ -4,7 +4,6 @@ use core::{
     task::{Context, Poll, Waker},
 };
 use std::{
-    os::arceos::task::executor::{BlockOnError, block_on, block_on_timeout},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -12,6 +11,8 @@ use std::{
     thread,
     time::Duration,
 };
+
+use ax_std::os::arceos::task::executor::{BlockOnError, block_on, block_on_timeout};
 
 struct PendingUntilCancelled(Arc<AtomicBool>);
 
@@ -35,7 +36,7 @@ impl Future for RemoteCompletion {
     type Output = usize;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut state = self.0.lock();
+        let mut state = self.0.lock().unwrap();
         if state.0 {
             Poll::Ready(42)
         } else {
@@ -70,7 +71,7 @@ pub fn run() -> crate::TestResult {
     let producer = thread::spawn(move || {
         loop {
             let wake = {
-                let mut state = producer_state.lock();
+                let mut state = producer_state.lock().unwrap();
                 let wake = state.1.take();
                 if wake.is_some() {
                     state.0 = true;

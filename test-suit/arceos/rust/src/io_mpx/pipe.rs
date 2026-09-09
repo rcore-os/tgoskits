@@ -1,4 +1,4 @@
-//! `pipe` + `epoll` unit tests.
+//! `pipe` + `epoll` ABI tests.
 //!
 //! These cover the write-end readiness contract that an edge-triggered
 //! `EPOLLOUT` watcher relies on:
@@ -13,22 +13,116 @@
 //! fill loop probes writability with a level-triggered `EPOLLOUT` watch on a
 //! throwaway epoll instance instead of assuming a pipe capacity.
 
-use core::ffi::c_int;
-use std::println;
+use std::{
+    fs::File,
+    io::{self, Read, Write},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    println,
+};
 
 use super::syscalls::{self, EpollEvent};
 
-/// `EPOLLOUT` = 0x004.
-const EPOLLOUT: u32 = 0x004;
-/// `EPOLLET` = `1 << 31`, requesting edge-triggered delivery.
-const EPOLLET: u32 = 1 << 31;
-/// `EPOLL_CTL_ADD` = 1.
-const EPOLL_CTL_ADD: c_int = 1;
-/// `EPOLL_CTL_DEL` = 2.
-const EPOLL_CTL_DEL: c_int = 2;
+const EPOLLOUT: u32 = libc::EPOLLOUT as u32;
+const EPOLLET: u32 = libc::EPOLLET as u32;
+use libc::{EPOLL_CTL_ADD, EPOLL_CTL_DEL};
 
 /// Upper bound for the fill loop: the probe stops as soon as the pipe is full.
 const PIPE_FILL_LIMIT: usize = 4096;
+
+fn test_std_pipe_descriptor_flags_and_io() {
+    let (mut reader, mut writer) = io::pipe().expect("std pipe creation failed");
+    for fd in [reader.as_raw_fd(), writer.as_raw_fd()] {
+        // SAFETY: each descriptor is owned by a live pipe endpoint; F_GETFD
+        // only reads descriptor metadata and takes no pointer argument.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert_eq!(
+            flags,
+            libc::FD_CLOEXEC,
+            "std pipe must set CLOEXEC on both ends"
+        );
+    }
+    writer.write_all(b"std pipe through libc").unwrap();
+    drop(writer);
+    let mut message = String::new();
+    reader.read_to_string(&mut message).unwrap();
+    assert_eq!(message, "std pipe through libc");
+}
+
+fn test_pipe2_rejects_flags_without_creating_descriptors() {
+    let mut fds = [-1; 2];
+    // SAFETY: fds has room for the two output descriptors. The deliberately
+    // invalid flag must fail before publishing either descriptor.
+    assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), -1) }, -1);
+    assert_eq!(
+        io::Error::last_os_error().raw_os_error(),
+        Some(libc::EINVAL)
+    );
+    assert_eq!(fds, [-1; 2]);
+}
+
+fn test_descriptor_flags_are_not_shared_by_duplicates() {
+    let (reader, _writer) = io::pipe().unwrap();
+    let reader = File::from(OwnedFd::from(reader));
+    let duplicate = reader.try_clone().unwrap();
+    // SAFETY: both descriptors remain owned by their File objects. These
+    // fcntl commands only inspect or change per-descriptor scalar flags.
+    unsafe {
+        assert_eq!(
+            libc::fcntl(duplicate.as_raw_fd(), libc::F_GETFD),
+            libc::FD_CLOEXEC
+        );
+        assert_eq!(libc::fcntl(reader.as_raw_fd(), libc::F_SETFD, 0), 0);
+        assert_eq!(libc::fcntl(reader.as_raw_fd(), libc::F_GETFD), 0);
+        assert_eq!(
+            libc::fcntl(duplicate.as_raw_fd(), libc::F_GETFD),
+            libc::FD_CLOEXEC
+        );
+    }
+    // SAFETY: F_DUPFD creates a new descriptor at or above the requested
+    // minimum. A successful return transfers its sole ownership to File.
+    let fd = unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_DUPFD, 64) };
+    assert!(fd >= 64);
+    // SAFETY: fd is the freshly created descriptor checked above.
+    let high = unsafe { File::from_raw_fd(fd) };
+    // SAFETY: high owns a live descriptor and F_GETFD has no pointer arguments.
+    assert_eq!(unsafe { libc::fcntl(high.as_raw_fd(), libc::F_GETFD) }, 0);
+}
+
+fn test_pipe2_rolls_back_when_only_one_fd_is_free() {
+    let mut occupied = Vec::new();
+    loop {
+        match syscalls::eventfd(0, 0) {
+            Ok(fd) => occupied.push(fd),
+            Err(errno) => {
+                assert_eq!(errno, libc::EMFILE);
+                break;
+            }
+        }
+        assert!(
+            occupied.len() < 4096,
+            "fd exhaustion probe exceeded its bound"
+        );
+    }
+    let freed = occupied
+        .pop()
+        .expect("the test must have allocated a descriptor");
+    let slot = freed.as_raw_fd();
+    drop(freed);
+    let mut fds = [-1; 2];
+    // SAFETY: fds provides two writable output slots; a single available
+    // table slot must cause failure without publishing or leaking either fd.
+    assert_eq!(
+        unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) },
+        -1
+    );
+    assert_eq!(
+        io::Error::last_os_error().raw_os_error(),
+        Some(libc::EMFILE)
+    );
+    assert_eq!(fds, [-1; 2]);
+    let recovered = syscalls::eventfd(0, 0).expect("failed pipe must return its reserved slot");
+    assert_eq!(recovered.as_raw_fd(), slot);
+}
 
 fn test_write_end_is_writable_until_full() {
     // This test only exercises the write end; the read end is never drained.
@@ -37,13 +131,13 @@ fn test_write_end_is_writable_until_full() {
     let epfd = syscalls::epoll_create1(0).expect("epoll_create1(0) failed");
     let mut interest = EpollEvent {
         events: EPOLLOUT,
-        data: 0,
+        u64: 0,
     };
     syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &write_fd, Some(&mut interest))
         .expect("epoll_ctl ADD failed");
 
     // Level-triggered: the write end must stay reportable while space remains.
-    let mut ready = [EpollEvent::default(); 4];
+    let mut ready = [EpollEvent { events: 0, u64: 0 }; 4];
     for i in 0..PIPE_FILL_LIMIT {
         let n = syscalls::epoll_wait(&epfd, &mut ready, 0).expect("epoll_wait failed");
         if n == 0 {
@@ -77,13 +171,13 @@ fn test_writable_edge_between_waits_is_reported() {
 
     let mut interest = EpollEvent {
         events: EPOLLOUT | EPOLLET,
-        data: 0,
+        u64: 0,
     };
     syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &write_fd, Some(&mut interest))
         .expect("epoll_ctl ADD failed");
 
     // The write end starts writable, so the initial edge is reported once.
-    let mut ready = [EpollEvent::default(); 4];
+    let mut ready = [EpollEvent { events: 0, u64: 0 }; 4];
     assert_eq!(
         syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         1,
@@ -100,7 +194,7 @@ fn test_writable_edge_between_waits_is_reported() {
     let probe = syscalls::epoll_create1(0).expect("epoll_create1(0) failed");
     let mut probe_interest = EpollEvent {
         events: EPOLLOUT,
-        data: 0,
+        u64: 0,
     };
     syscalls::epoll_ctl(&probe, EPOLL_CTL_ADD, &write_fd, Some(&mut probe_interest))
         .expect("epoll_ctl ADD on probe failed");
@@ -141,8 +235,12 @@ fn test_writable_edge_between_waits_is_reported() {
 }
 
 pub fn run() -> crate::TestResult {
+    test_std_pipe_descriptor_flags_and_io();
+    test_pipe2_rejects_flags_without_creating_descriptors();
+    test_descriptor_flags_are_not_shared_by_duplicates();
+    test_pipe2_rolls_back_when_only_one_fd_is_free();
     test_write_end_is_writable_until_full();
     test_writable_edge_between_waits_is_reported();
-    println!("io_mpx: pipe unit tests OK");
+    println!("io_mpx: pipe ABI tests OK");
     Ok(())
 }

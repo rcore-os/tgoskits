@@ -1,6 +1,5 @@
 use std::{
-    os::arceos::api::task::{self as api, AxWaitQueueHandle},
-    sync::Arc,
+    sync::{Arc, Barrier},
     thread,
     vec::Vec,
 };
@@ -9,20 +8,6 @@ use rand::{RngCore, SeedableRng, rngs::SmallRng};
 
 const NUM_DATA: usize = 200_000;
 const NUM_TASKS: usize = 8;
-
-fn barrier() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static BARRIER_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();
-    static BARRIER_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-    BARRIER_COUNT.fetch_add(1, Ordering::Release);
-    api::ax_wait_queue_wait_until(
-        &BARRIER_WQ,
-        || BARRIER_COUNT.load(Ordering::Acquire) == NUM_TASKS,
-        None,
-    );
-    api::ax_wait_queue_wake(&BARRIER_WQ, u32::MAX);
-}
 
 fn sqrt(n: &u64) -> u64 {
     let mut x = *n;
@@ -43,14 +28,16 @@ pub fn run() -> crate::TestResult {
     );
     let expect: u64 = values.iter().map(sqrt).sum();
 
+    let barrier = Arc::new(Barrier::new(NUM_TASKS));
     let mut tasks = Vec::with_capacity(NUM_TASKS);
     for i in 0..NUM_TASKS {
         let values = values.clone();
+        let barrier = Arc::clone(&barrier);
         tasks.push(thread::spawn(move || {
             let left = i * (NUM_DATA / NUM_TASKS);
             let right = (left + (NUM_DATA / NUM_TASKS)).min(NUM_DATA);
             let partial_sum: u64 = values[left..right].iter().map(sqrt).sum();
-            barrier();
+            barrier.wait();
             partial_sum
         }));
     }

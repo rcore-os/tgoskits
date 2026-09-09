@@ -1,22 +1,23 @@
 use std::{
     boxed::Box,
-    os::arceos::{
-        api::time::ax_monotonic_time,
-        task::time::{
-            MonotonicDeadline,
-            hard_timer::{
-                HardKernelTimerAction, HardKernelTimerCallback, arm_hard_kernel_timer,
-                register_hard_restartable_kernel_timer,
-            },
-            timer::{
-                KernelTimerAction, KernelTimerCancelOutcome, cancel_kernel_timer,
-                register_kernel_timer, register_restartable_kernel_timer,
-            },
-        },
-    },
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     thread,
     time::{Duration, Instant},
+};
+
+use ax_std::os::arceos::{
+    api::time::ax_monotonic_time,
+    task::time::{
+        MonotonicDeadline,
+        hard_timer::{
+            HardKernelTimerAction, HardKernelTimerCallback, arm_hard_kernel_timer,
+            register_hard_restartable_kernel_timer,
+        },
+        timer::{
+            KernelTimerAction, KernelTimerCancelOutcome, cancel_kernel_timer,
+            register_kernel_timer, register_restartable_kernel_timer,
+        },
+    },
 };
 
 static SOFT_CALLBACK_ORDER: AtomicUsize = AtomicUsize::new(0);
@@ -161,7 +162,7 @@ pub fn run() -> crate::TestResult {
 }
 
 fn cancel_in_flight_callback() -> crate::TestResult {
-    use std::os::arceos::task::sync::WaitQueue;
+    use ax_std::os::arceos::task::sync::WaitQueue;
 
     static ENTERED: AtomicBool = AtomicBool::new(false);
     static RELEASE: AtomicBool = AtomicBool::new(false);

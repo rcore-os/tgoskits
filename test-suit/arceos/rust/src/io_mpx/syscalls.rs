@@ -1,165 +1,100 @@
-//! Raw syscall shims for the eventfd/epoll tests.
+//! Standard file ownership and I/O with libc's Linux eventfd/epoll ABI.
 //!
-//! `ax_std` exposes `eventfd`, `epoll_create1`, `epoll_ctl`, `epoll_wait`,
-//! `read`, `write`, and `close` as `#[no_mangle]` `extern "C"` symbols in
-//! `ax_std::os::libc_compat`. The test crate declares them here with plain C
-//! ABI types (the layout is erased at link time), so the tests can call them
-//! without depending on the `libc` crate. Error results follow the Linux
-//! convention: `-1` and the global `errno` set to the error code.
+//! std has no eventfd or epoll interface. Those operations use libc types and
+//! symbols; pipe creation, reads, writes, errno and descriptor lifetime use std.
 
-use core::{ffi::c_int, ptr};
+use std::{
+    fs::File,
+    io::{self, Read, Write},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    ptr,
+};
 
-/// Linux `struct epoll_event` ABI. On x86_64 the `data` field is packed to
-/// offset 4 (12-byte struct); on other architectures it is naturally aligned
-/// (16-byte struct). Must match `ax-posix-api`'s bindgen `epoll_event`.
-#[cfg(target_arch = "x86_64")]
-#[repr(C, packed)]
-#[derive(Clone, Copy, Default)]
-pub struct EpollEvent {
-    pub events: u32,
-    pub data: u64,
+use libc::c_int;
+pub use libc::epoll_event as EpollEvent;
+
+fn errno(error: io::Error) -> c_int {
+    error
+        .raw_os_error()
+        .expect("libc I/O errors must preserve errno")
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct EpollEvent {
-    pub events: u32,
-    pub data: u64,
-}
-
-impl EpollEvent {
-    /// Reads `data`, which may be unaligned on x86_64 (packed layout).
-    pub fn data(&self) -> u64 {
-        unsafe { ptr::read_unaligned(ptr::addr_of!(self.data)) }
-    }
-}
-
-/// The `#[no_mangle]` symbols provided by `ax_std::os::libc_compat`.
-mod raw {
-    use core::ffi::{c_int, c_void};
-
-    use super::EpollEvent;
-
-    unsafe extern "C" {
-        pub(super) fn eventfd(initval: u32, flags: c_int) -> c_int;
-        pub(super) fn pipe(pipefd: *mut c_int) -> c_int;
-        pub(super) fn epoll_create1(flags: c_int) -> c_int;
-        pub(super) fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: *mut EpollEvent)
-        -> c_int;
-        pub(super) fn epoll_wait(
-            epfd: c_int,
-            events: *mut EpollEvent,
-            maxevents: c_int,
-            timeout: c_int,
-        ) -> c_int;
-        pub(super) fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
-        pub(super) fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
-        pub(super) fn close(fd: c_int) -> c_int;
-        pub(super) fn __errno_location() -> *mut c_int;
-    }
-}
-
-/// The `errno` set by the libc-compat layer on failure.
-fn last_errno() -> c_int {
-    unsafe { *raw::__errno_location() }
-}
-
-fn fd_syscall(result: c_int) -> Result<c_int, c_int> {
+fn fd_result(result: c_int) -> Result<c_int, c_int> {
     if result < 0 {
-        Err(last_errno())
+        Err(errno(io::Error::last_os_error()))
     } else {
         Ok(result)
     }
 }
 
-fn io_syscall(result: isize) -> Result<usize, c_int> {
-    if result < 0 {
-        Err(last_errno())
-    } else {
-        Ok(result as usize)
-    }
+fn owned_file(result: c_int) -> Result<File, c_int> {
+    let fd = fd_result(result)?;
+    // SAFETY: a successful descriptor-creating call returns a fresh fd. File
+    // takes its sole ownership and closes it when the test releases it.
+    Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-/// One test-owned descriptor, closed exactly once when its scope ends.
-#[derive(Debug)]
-pub struct OwnedFd(c_int);
-
-impl OwnedFd {
-    pub fn as_raw(&self) -> c_int {
-        self.0
-    }
+pub fn eventfd(initval: u32, flags: c_int) -> Result<File, c_int> {
+    // SAFETY: eventfd takes scalar values and returns a new descriptor.
+    owned_file(unsafe { libc::eventfd(initval, flags) })
 }
 
-impl Drop for OwnedFd {
-    fn drop(&mut self) {
-        // SAFETY: `OwnedFd` is constructed only from a successful descriptor
-        // creation and cannot be cloned, so this is its unique close.
-        if let Err(errno) = fd_syscall(unsafe { raw::close(self.0) }) {
-            panic!("failed to close test fd {}: errno {errno}", self.0);
-        }
-    }
+pub fn pipe() -> Result<(File, File), c_int> {
+    let (reader, writer) = io::pipe().map_err(errno)?;
+    Ok((
+        File::from(OwnedFd::from(reader)),
+        File::from(OwnedFd::from(writer)),
+    ))
 }
 
-pub fn eventfd(initval: u32, flags: c_int) -> Result<OwnedFd, c_int> {
-    fd_syscall(unsafe { raw::eventfd(initval, flags) }).map(OwnedFd)
-}
-
-/// Creates a pipe and returns its uniquely owned read and write descriptors.
-pub fn pipe() -> Result<(OwnedFd, OwnedFd), c_int> {
-    let mut fds = [0 as c_int; 2];
-    fd_syscall(unsafe { raw::pipe(fds.as_mut_ptr()) })?;
-    Ok((OwnedFd(fds[0]), OwnedFd(fds[1])))
-}
-
-pub fn epoll_create1(flags: c_int) -> Result<OwnedFd, c_int> {
-    fd_syscall(unsafe { raw::epoll_create1(flags) }).map(OwnedFd)
+pub fn epoll_create1(flags: c_int) -> Result<File, c_int> {
+    // SAFETY: epoll_create1 takes a scalar flag value and returns a new fd.
+    owned_file(unsafe { libc::epoll_create1(flags) })
 }
 
 pub fn epoll_ctl(
-    epfd: &OwnedFd,
+    epfd: &File,
     op: c_int,
-    fd: &OwnedFd,
+    fd: &File,
     event: Option<&mut EpollEvent>,
 ) -> Result<c_int, c_int> {
-    let ptr = event.map_or(ptr::null_mut(), |event| event as *mut EpollEvent);
-    fd_syscall(unsafe { raw::epoll_ctl(epfd.as_raw(), op, fd.as_raw(), ptr) })
+    let event = event.map_or(ptr::null_mut(), ptr::from_mut);
+    // SAFETY: both files stay alive for the call; event is either null for DEL
+    // or a uniquely borrowed initialized libc epoll_event of the target ABI.
+    fd_result(unsafe { libc::epoll_ctl(epfd.as_raw_fd(), op, fd.as_raw_fd(), event) })
 }
 
-pub fn epoll_wait(
-    epfd: &OwnedFd,
-    events: &mut [EpollEvent],
-    timeout: c_int,
-) -> Result<c_int, c_int> {
-    fd_syscall(unsafe {
-        raw::epoll_wait(
-            epfd.as_raw(),
-            events.as_mut_ptr(),
-            events.len() as c_int,
-            timeout,
-        )
+pub fn epoll_wait(epfd: &File, events: &mut [EpollEvent], timeout: c_int) -> Result<c_int, c_int> {
+    let maxevents = c_int::try_from(events.len()).expect("epoll test buffer exceeds c_int");
+    // SAFETY: the mutable slice provides maxevents writable, ABI-correct events
+    // and the epoll descriptor remains owned throughout the synchronous call.
+    fd_result(unsafe {
+        libc::epoll_wait(epfd.as_raw_fd(), events.as_mut_ptr(), maxevents, timeout)
     })
 }
 
-pub fn read(fd: &OwnedFd, buf: &mut [u8]) -> Result<usize, c_int> {
-    io_syscall(unsafe { raw::read(fd.as_raw(), buf.as_mut_ptr().cast(), buf.len()) })
+pub fn read(mut fd: &File, buf: &mut [u8]) -> Result<usize, c_int> {
+    fd.read(buf).map_err(errno)
 }
 
-pub fn write(fd: &OwnedFd, buf: &[u8]) -> Result<usize, c_int> {
-    io_syscall(unsafe { raw::write(fd.as_raw(), buf.as_ptr().cast(), buf.len()) })
+pub fn write(mut fd: &File, buf: &[u8]) -> Result<usize, c_int> {
+    fd.write(buf).map_err(errno)
 }
 
-pub fn read_u64(fd: &OwnedFd) -> Result<u64, c_int> {
+pub fn read_u64(fd: &File) -> Result<u64, c_int> {
     let mut buf = [0u8; 8];
-    read(fd, &mut buf)?;
+    assert_eq!(
+        read(fd, &mut buf)?,
+        buf.len(),
+        "eventfd read must return a full counter"
+    );
     Ok(u64::from_ne_bytes(buf))
 }
 
-pub fn write_u64(fd: &OwnedFd, value: u64) -> Result<usize, c_int> {
+pub fn write_u64(fd: &File, value: u64) -> Result<usize, c_int> {
     write(fd, &value.to_ne_bytes())
 }
 
-/// Asserts that a syscall failed with the given errno.
 pub fn assert_errno<T>(result: Result<T, c_int>, expected: c_int, what: &str) {
     match result {
         Err(errno) => assert_eq!(

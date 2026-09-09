@@ -2,25 +2,20 @@ use core::{
     cmp::min,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
-use std::{
-    os::arceos::{
-        api::{
-            task::{AxCpuMask, ax_set_current_affinity},
-            time::ax_monotonic_time,
-        },
-        modules::{
-            ax_hal,
-            ax_hal::{irq::CpuId, percpu::this_cpu_id},
-            ax_ipi,
-            ax_ipi::IpiNotification,
-        },
-        task::{sync::WaitQueue, time::MonotonicDeadline},
+use std::{println, sync::Arc, thread, time::Duration, vec::Vec};
+
+use ax_std::os::arceos::{
+    api::{
+        task::{AxCpuMask, ax_set_current_affinity},
+        time::ax_monotonic_time,
     },
-    println,
-    sync::Arc,
-    thread,
-    time::Duration,
-    vec::Vec,
+    modules::{
+        ax_hal,
+        ax_hal::{irq::CpuId, percpu::this_cpu_id},
+        ax_ipi,
+        ax_ipi::IpiNotification,
+    },
+    task::{sync::WaitQueue, time::MonotonicDeadline},
 };
 
 const MAX_SENDER_CPUS: usize = 3;
@@ -320,7 +315,7 @@ fn run_concurrent_hard_calls(target_cpu: usize, sender_cpus: &[usize]) {
 }
 
 pub fn run() -> crate::TestResult {
-    let cpu_num = thread::available_parallelism().unwrap().get();
+    let cpu_num = ax_std::os::arceos::task::sched::cpu_topology_len().unwrap();
     if cpu_num < 2 {
         println!("task_ipi: skipped on single CPU");
         return Ok(());

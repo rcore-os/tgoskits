@@ -1,8 +1,5 @@
-#![cfg_attr(all(not(test), not(feature = "std")), no_std)]
-#![cfg_attr(feature = "task-tls", feature(thread_local))]
-
 #[cfg(feature = "ax-std")]
-extern crate ax_std as std;
+use ax_std as _;
 
 pub type TestResult = Result<(), &'static str>;
 
@@ -88,11 +85,6 @@ macro_rules! test_runner {
         #[cfg(all(feature = $feature, feature = "ax-std"))]
         fn $runner() -> TestResult {
             $body()
-        }
-
-        #[cfg(all(feature = $feature, not(feature = "ax-std")))]
-        fn $runner() -> TestResult {
-            Ok(())
         }
     };
 }

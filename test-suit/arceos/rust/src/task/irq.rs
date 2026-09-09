@@ -1,12 +1,4 @@
 use std::{
-    os::arceos::{
-        modules::ax_hal,
-        task as scheduler,
-        task::sync::{
-            WaitQueue,
-            irq::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration},
-        },
-    },
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -14,6 +6,15 @@ use std::{
     thread,
     time::Duration,
     vec::Vec,
+};
+
+use ax_std::os::arceos::{
+    modules::ax_hal,
+    task as scheduler,
+    task::sync::{
+        WaitQueue,
+        irq::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration},
+    },
 };
 
 const NUM_TASKS: usize = 16;

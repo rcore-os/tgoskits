@@ -1,19 +1,20 @@
 use std::{
-    os::arceos::{
-        api::{
-            task as api,
-            task::{AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
-        },
-        guard::PreemptGuard,
-        modules::ax_hal,
-        task::{
-            sched::{CpuSet, RtPriority, SchedulePolicy},
-            thread::current::current_thread_id,
-        },
-    },
     sync::atomic::{AtomicBool, Ordering},
     thread,
     time::{Duration, Instant},
+};
+
+use ax_std::os::arceos::{
+    api::{
+        task as api,
+        task::{AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+    },
+    guard::PreemptGuard,
+    modules::ax_hal,
+    task::{
+        sched::{CpuSet, RtPriority, SchedulePolicy},
+        thread::current::current_thread_id,
+    },
 };
 
 const PROGRESS_TIMEOUT: Duration = Duration::from_secs(2);
@@ -41,7 +42,7 @@ pub fn run() -> crate::TestResult {
     let worker = thread::spawn(|| {
         assert!(ax_set_current_affinity(AxCpuMask::one_shot(0)).is_ok());
         let current = current_thread_id().expect("preempt worker must have an identity");
-        std::os::arceos::task::thread::ThreadHandle::lookup(current)
+        ax_std::os::arceos::task::thread::ThreadHandle::lookup(current)
             .and_then(|thread| {
                 thread.set_policy(SchedulePolicy::fifo(
                     RtPriority::new(80).expect("priority 80 must be valid"),
@@ -78,8 +79,8 @@ pub fn run() -> crate::TestResult {
         "final preempt guard exit did not schedule the ready RT worker",
     );
     worker.join().expect("preempt worker must exit normally");
-    std::os::arceos::task::thread::current::set_current_thread_affinity(CpuSet::all(
-        thread::available_parallelism().unwrap().get(),
+    ax_std::os::arceos::task::thread::current::set_current_thread_affinity(CpuSet::all(
+        ax_std::os::arceos::task::sched::cpu_topology_len().unwrap(),
     ))
     .expect("test owner must restore full affinity");
     assert!(ax_hal::asm::irqs_enabled());

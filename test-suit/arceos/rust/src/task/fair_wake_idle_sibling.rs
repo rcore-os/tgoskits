@@ -1,18 +1,4 @@
 use std::{
-    os::arceos::{
-        api::{
-            task as api,
-            task::{AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
-        },
-        modules::ax_hal::percpu::this_cpu_id,
-        task::{
-            sched::{CpuSet, FairMode, Nice, SchedulePolicy},
-            thread::{
-                ThreadState,
-                current::{current_thread_id, set_current_thread_affinity},
-            },
-        },
-    },
     string::String,
     sync::{
         Arc,
@@ -20,6 +6,21 @@ use std::{
     },
     thread,
     time::{Duration, Instant},
+};
+
+use ax_std::os::arceos::{
+    api::{
+        task as api,
+        task::{AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+    },
+    modules::ax_hal::percpu::this_cpu_id,
+    task::{
+        sched::{CpuSet, FairMode, Nice, SchedulePolicy},
+        thread::{
+            ThreadState,
+            current::{current_thread_id, set_current_thread_affinity},
+        },
+    },
 };
 
 const PROGRESS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -71,7 +72,7 @@ fn sched_idle_makes_progress_against_normal_current() {
 
     let idle = thread::spawn(|| {
         pin_current_to_cpu(0);
-        std::os::arceos::task::thread::ThreadHandle::lookup(
+        ax_std::os::arceos::task::thread::ThreadHandle::lookup(
             current_thread_id().expect("the SCHED_IDLE worker must have an identity"),
         )
         .and_then(|thread| thread.set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)))
@@ -145,10 +146,10 @@ fn sched_batch_wake_uses_fair_hrtick() {
     NORMAL_READY.store(false, Ordering::Release);
     STOP_NORMAL.store(false, Ordering::Release);
 
-    let batch = std::os::arceos::thread::spawn_raw(
+    let batch = ax_std::os::arceos::thread::spawn_raw(
         || {
             pin_current_to_cpu(0);
-            std::os::arceos::task::thread::ThreadHandle::lookup(
+            ax_std::os::arceos::task::thread::ThreadHandle::lookup(
                 current_thread_id().expect("the SCHED_BATCH worker must have an identity"),
             )
             .and_then(|thread| thread.set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Batch)))
@@ -209,7 +210,8 @@ fn sched_batch_wake_uses_fair_hrtick() {
     normal
         .join()
         .expect("the normal Fair occupier must exit normally");
-    std::os::arceos::thread::join_thread(batch).expect("the SCHED_BATCH worker must exit normally");
+    ax_std::os::arceos::thread::join_thread(batch)
+        .expect("the SCHED_BATCH worker must exit normally");
     assert!(
         made_progress,
         "SCHED_BATCH wakee did not run before the periodic scheduler tick fallback"
@@ -217,7 +219,7 @@ fn sched_batch_wake_uses_fair_hrtick() {
 }
 
 pub fn run() -> crate::TestResult {
-    let cpu_count = thread::available_parallelism().unwrap().get();
+    let cpu_count = ax_std::os::arceos::task::sched::cpu_topology_len().unwrap();
     assert!(
         cpu_count >= 4,
         "task-fair-wake-idle-sibling requires SMP >= 4, got {cpu_count}"
