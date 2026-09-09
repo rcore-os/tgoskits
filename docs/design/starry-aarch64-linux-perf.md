@@ -1,6 +1,6 @@
 # StarryOS AArch64 Linux perf 设计
 
-本文定义 StarryOS 在 AArch64 上兼容 Linux `perf_event_open(2)` 与 upstream `perf` 的实现边界。设计基线为 Linux v7.1 和 TGOSKits `dev` 提交 `43750ad64d4945f8e07edce998f310d084deaa34`，来源实现为 JosephJoshua 的 PR #1577、#1601、#1602、#1603 及其间的调用链提交。旧分支只作为行为与测试来源，不直接合并；实现必须服从当前 CPU-local、IRQ、timer、PID、地址空间和锁模型。
+本文定义 StarryOS 在 AArch64 上兼容 Linux `perf_event_open(2)` 与 upstream `perf` 的实现边界。设计基线为 Linux v7.1 和 TGOSKits `dev` 提交 `d9018b65a62ab3d623c11f5811e90ac7af2fa0b2`，来源实现为 JosephJoshua 的 PR #1577、#1601、#1602、#1603 及其间的调用链提交。旧分支只作为行为与测试来源，不直接合并；实现必须服从当前 CPU-local、IRQ、timer、PID、地址空间和锁模型。
 
 ## 1. 兼容范围
 
@@ -18,10 +18,10 @@
 | flags | 支持 `FD_NO_GROUP`、`FD_OUTPUT`、`FD_CLOEXEC`；`PID_CGROUP` 的合法组合返回 `EOPNOTSUPP`；未知位 `EINVAL` | `PerfOpenFlags`、`sys_perf_event_open()` |
 | task target | `pid >= 0,cpu == -1` 跟随线程；`cpu >= 0` 时限定运行 CPU | `PerfTarget::Task` |
 | CPU target | `pid == -1,cpu >= 0` 为 system-wide；`-1/-1` 返回 `EINVAL` | `PerfTarget::Cpu` |
-| group | 默认 ioctl 只控制指定 event，`PERF_IOC_FLAG_GROUP` 才控制整组；读快照 leader-first；跨上下文 link 返回 `EINVAL` | `PerfEvent::{members,group_leader,read_group}`、`PerTaskCounter::link_group()`、`SystemCounter::link_group()`；direct system-wide sampling group 在后端尚无组调度与采样读快照时于资源分配前返回 `EOPNOTSUPP` |
+| group | 默认 ioctl 只控制指定 event，`PERF_IOC_FLAG_GROUP` 才控制整组；读快照 leader-first；跨上下文 link 返回 `EINVAL` | `PerfEvent::{members,group_leader,read_group}`、`PerTaskCounter::link_group()`；缺少统一 coordinator 的 fixed-CPU hardware group、mixed software/hardware group 和 direct system-wide sampling group 在资源分配前返回 `EOPNOTSUPP` |
 | output | `FD_OUTPUT` 与 `SET_OUTPUT` 只允许相同 perf context；`SET_OUTPUT(-1)` 解除重定向 | `PerfEvent::{redirect_to,set_output}`、`PerfEventOps::{redirect_output,detach_output}` |
 | read | 支持 value、ID、`time_enabled`、`time_running`、LOST 与 GROUP | `PerfReadValues` |
-| sample | 支持 `PERF_SAMPLE_READ`、TID、CPU、period 和 kernel/user FP callchain | `sampling::{SampleSlot,SampleReadEntry}`、`perf::unwind` |
+| sample | 支持 `PERF_SAMPLE_READ`、TID、CPU、period 和 kernel/user FP callchain；`PERF_SAMPLE_REGS_USER` 仅接受零 mask 并输出 `PERF_SAMPLE_REGS_ABI_NONE` | `sampling::{SampleSlot,SampleReadEntry,build_sample}`、`perf::unwind`、`perf::uapi::validate_perf_event_attr()` |
 | mmap page | 只在事件实际运行于硬件槽时公开非零 `index` 与用户读能力 | `SystemCounter::write_rdpmc_snapshot()`、`PerTaskCounter::write_rdpmc_snapshot()` |
 
 硬件事件若事件编码合法但目标 CPU 的 `PMCEID` 未实现，返回 Linux ARM PMUv3 backend 对应的 unsupported 错误；格式错误返回 `EINVAL`，错误 fd 返回 `EBADF`，目标线程消失返回 `ESRCH`。不能把未知字段、未知事件或输出关系静默忽略。
@@ -61,7 +61,7 @@ task event 用 `context_sequence` 的奇偶代次让远端 reset 只在稳定的
 
 ### 2.2 调度与复用
 
-task event 在 scheduler switch-in 时尝试进入本核运行队列，switch-out 时折叠计数并撤销 mmap `index`。对当前正在运行的目标线程，`attach()` 在禁止抢占的作用域内立即发布 active context，等价于 Linux `perf_install_in_context()` 对首个 disabled event 执行的 running-task 安装；后续 `PERF_EVENT_IOC_ENABLE` 不依赖额外的 `sched_yield()`。system-wide event 固定在指定 CPU。unpinned 事件以调度单元轮转，`time_enabled/time_running` 分别累计逻辑启用和真实占槽时间；硬件 group 只能整体装载或整体等待。task pinned event 在调度时无法放置会进入 ERROR 并让 `read()` 返回 EOF；open-enabled system pinned event 会在 open 的同步放置阶段返回 `EBUSY`，之后启用失败也通过 `EBUSY` 报告。直接 system-wide sampling 需要在 open 时保留物理槽，因此槽耗尽也会立即返回 `EBUSY`。
+task event 在 scheduler switch-in 时尝试进入本核运行队列，switch-out 时折叠计数并撤销 mmap `index`。对当前正在运行的目标线程，`attach()` 在禁止抢占的作用域内立即发布 active context，等价于 Linux `perf_install_in_context()` 对首个 disabled event 执行的 running-task 安装；后续 `PERF_EVENT_IOC_ENABLE` 不依赖额外的 `sched_yield()`。system-wide event 固定在指定 CPU。unpinned 事件以调度单元轮转，`time_enabled/time_running` 分别累计逻辑启用和真实占槽时间；`SystemFlexCounter::read_on_owner()` 在 owner CPU 同步合并当前 active slice，而不等待下一次轮转。task hardware group 只能整体装载或整体等待。task pinned event 在调度时无法放置会进入 ERROR 并让 `read()` 返回 EOF；open-enabled system pinned event 会在 open 的同步放置阶段返回 `EBUSY`，之后启用失败也通过 `EBUSY` 报告。直接 system-wide sampling 需要在 open 时保留物理槽，因此槽耗尽也会立即返回 `EBUSY`。
 
 ```mermaid
 stateDiagram-v2
@@ -84,7 +84,7 @@ stateDiagram-v2
 
 software inherit 使用“每线程 slice + 共享 aggregate”结构。child 的调度起点、last CPU 和 enable-on-exec 独立，累计值通过 `Arc<SwAggregate>` 汇入根事件；根 fd 关闭后，仍运行的 descendants 由自身 `Arc` 保持 aggregate 生命周期，不能引用已释放 event。
 
-per-task sampling group 由 `PerTaskCounter` 统一调度并预构建 `PERF_SAMPLE_READ` 表；system-wide counting group 由 `SystemCounter` 作为整体放置。direct system-wide sampling 仍直接拥有物理 counter 与 IRQ descriptor，没有对应的 group scheduler 和 leader-first 采样读表，因此任何包含它的 group（sampling/sampling、sampling/counting 或 counting/sampling）都在创建 member backend 前返回 `EOPNOTSUPP`。这项显式拒绝防止“文件层已成组、硬件层却各自运行”的静默错误，也保证失败路径不残留 PMU 槽或调度注册。
+per-task sampling group 由 `PerTaskCounter` 统一调度并预构建 `PERF_SAMPLE_READ` 表。fixed-CPU flexible hardware event 目前各自拥有 `SystemFlexCounter` worker，mixed software/hardware group 也没有 Linux 的 PMU-context migration coordinator；这两类组合与 direct system-wide sampling group 都在创建 member backend 前返回 `EOPNOTSUPP`。这项显式拒绝防止“文件层已成组、硬件层却各自运行”的静默错误，也保证失败路径不残留 PMU 槽、worker 或调度注册。后续若补齐 fixed-CPU group，必须用同一个 coordinator 事务式取得全部槽并生成一次 leader-first read snapshot，不能恢复当前被拒绝的 no-op link。
 
 ## 3. 中断与采样
 
@@ -104,7 +104,7 @@ ring 无空间或 producer gate 竞争时增加 event 的 pending lost 数。下
 
 ### 3.3 读取快照
 
-`PERF_SAMPLE_READ` 在 arm 前构建有容量上限的 `[SampleReadEntry; MAX_SAMPLE_READ_EVENTS]` 并存入 `SampleSlot`。数组按 leader-first 保存稳定 callback context 和 event ID，IRQ 只做 owner-local PMU/原子读取与定长编码，不遍历可变 group 列表，也不进行分配。group member 保留自己的 `attr.disabled` 状态；仅 leader disabled、member enabled 的常见 perf 模式会在 leader 启用时整体装载。
+`PERF_SAMPLE_READ` 在 arm 前构建有容量上限的 `[SampleReadEntry; MAX_SAMPLE_READ_EVENTS]` 并存入 `SampleSlot`。数组按 leader-first 保存稳定 callback context 和 event ID，IRQ 只做 owner-local PMU/原子读取与定长编码，不遍历可变 group 列表，也不进行分配。`build_sample()` 按 Linux 顺序先编码 `ID/STREAM_ID/CPU/PERIOD/READ`，再编码 callchain 和 `REGS_USER` ABI word；`SAMPLE_RECORD_MAX_LEN` 为每个支持字段保留固定上界。group member 保留自己的 `attr.disabled` 状态；仅 leader disabled、member enabled 的常见 perf 模式会在 leader 启用时整体装载。
 
 ## 4. 事件语义
 

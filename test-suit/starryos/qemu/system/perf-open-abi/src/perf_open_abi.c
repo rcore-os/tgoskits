@@ -18,6 +18,8 @@
 
 #define PERF_TYPE_HARDWARE 0u
 #define PERF_COUNT_HW_CPU_CYCLES 0u
+#define PERF_SAMPLE_IP (1ull << 0)
+#define PERF_SAMPLE_REGS_USER (1ull << 12)
 #define PERF_ATTR_SIZE_VER0 64u
 #define PERF_ATTR_SIZE_VER9 144u
 
@@ -169,6 +171,13 @@ int main(void) {
                              PERF_FLAG_PID_CGROUP, EINVAL) != 0;
     failures += expect_errno("unsupported-cgroup", &attr, 0, 0, -1,
                              PERF_FLAG_PID_CGROUP, EOPNOTSUPP) != 0;
+
+    init_attr(&attr, PERF_ATTR_SIZE_VER9);
+    attr.sample_period = 100000;
+    attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_REGS_USER;
+    attr.sample_regs_user = 1;
+    failures += expect_errno("unsupported-regs-user-mask", &attr, 0, -1, -1,
+                             0, EINVAL) != 0;
 
     printf("STARRY_PERF_OPEN_ABI failures=%d online=%ld\n", failures, online);
     if (failures == 0) {

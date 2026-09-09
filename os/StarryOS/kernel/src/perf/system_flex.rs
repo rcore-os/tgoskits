@@ -114,6 +114,10 @@ impl SystemFlexCounter {
         );
     }
 
+    pub(super) const fn owner(&self) -> PerfCpuId {
+        self.owner
+    }
+
     pub(super) fn enable(&self) {
         if !self.enabled.swap(true, Ordering::AcqRel) {
             self.enabled_since.store(now_ns(), Ordering::Release);
@@ -145,17 +149,35 @@ impl SystemFlexCounter {
         }
     }
 
-    pub(super) fn read(&self) -> (u64, u64, u64) {
+    pub(super) fn read(self: &Arc<Self>) -> crate::StarryResult<(u64, u64, u64)> {
+        super::cpu_worker::read_system_flexible(Arc::clone(self))
+    }
+
+    /// Reads the committed totals plus the currently active hardware slice.
+    ///
+    /// The caller must execute on `self.owner` with local PMU exclusion. The
+    /// active lock serializes this snapshot with the slice worker's
+    /// disable/read/free transition, so the raw value and running time are
+    /// observed from the same slice generation without ending that slice.
+    pub(super) fn read_on_owner(&self) -> (u64, u64, u64) {
+        debug_assert_eq!(
+            self.owner.as_usize(),
+            ax_runtime::hal::percpu::this_cpu_id()
+        );
+        let active = self.active.lock();
+        let observed_at = now_ns();
         let mut enabled = self.time_enabled.load(Ordering::Acquire);
         let since = self.enabled_since.load(Ordering::Acquire);
         if since != 0 {
-            enabled = enabled.saturating_add(now_ns().saturating_sub(since));
+            enabled = enabled.saturating_add(observed_at.saturating_sub(since));
         }
-        (
-            self.accumulated.load(Ordering::Acquire),
-            enabled,
-            self.time_running.load(Ordering::Acquire),
-        )
+        let mut value = self.accumulated.load(Ordering::Acquire);
+        let mut running = self.time_running.load(Ordering::Acquire);
+        if let Some((counter, started_at)) = *active {
+            value = value.saturating_add(counter.read());
+            running = running.saturating_add(observed_at.saturating_sub(started_at));
+        }
+        (value, enabled, running)
     }
 
     pub(super) fn close(&self) {

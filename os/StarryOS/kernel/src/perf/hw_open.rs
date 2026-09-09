@@ -53,8 +53,9 @@ pub(super) fn validate_perf_event_open_hw(
     }
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 
+    let is_generic_hw = attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32;
     let is_hw_cache = attr.type_ == perf_type_id::PERF_TYPE_HW_CACHE as u32;
-    let event = if attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
+    let event = if is_generic_hw {
         ax_cpu::pmu::hw_event_to_arm(attr.config as u32).ok_or(crate::StarryError::Unsupported)?
     } else if is_hw_cache {
         ax_cpu::pmu::hw_cache_to_arm(attr.config).map_err(|error| match error {
@@ -71,7 +72,7 @@ pub(super) fn validate_perf_event_open_hw(
 
     let cycle_event = ax_cpu::pmu::hw_event_to_arm(perf_hw_id::PERF_COUNT_HW_CPU_CYCLES as u32)
         .ok_or(crate::StarryError::Unsupported)?;
-    if is_hw_cache && !ax_cpu::pmu::event_supported(event) {
+    if (is_generic_hw || is_hw_cache) && !ax_cpu::pmu::event_supported(event) {
         return Err(crate::StarryError::NotFound);
     }
     let prefer_cycle = !is_sampling

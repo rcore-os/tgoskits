@@ -156,6 +156,16 @@ const PERF_IOC_NR_SET_OUTPUT: u32 = 5;
 /// `PERF_EVENT_IOC_ID` request number (`_IOR('$', 7, __u64 *)`).
 const PERF_IOC_NR_ID: u32 = 7;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PerfGroupBackend {
+    /// ARM PMU event.
+    Hardware,
+    /// Software counting event.
+    Software,
+    /// Probe, tracking, or another backend without a shared coordinator.
+    Other,
+}
+
 /// Behaviour every perf event implements. Each variant in the dispatcher
 /// (kprobe / tracepoint / software-bpf / uprobe / hardware-PMU) provides a
 /// `Box<dyn PerfEventOps>` that `PerfEvent` then drives through the file
@@ -232,6 +242,13 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     /// constructing a new backend so a rejected link has no PMU side effects.
     fn supports_group_link(&mut self) -> bool {
         true
+    }
+
+    /// Backend family used to reject combinations whose coordinator is not
+    /// implemented. Returning success from `link_group` without linking the
+    /// backend would publish a file-level group with unrelated schedulers.
+    fn group_backend(&mut self) -> PerfGroupBackend {
+        PerfGroupBackend::Other
     }
 
     /// Number of programmable PMU slots required by one pinned-group member.
@@ -885,13 +902,53 @@ pub fn perf_event_open(
             .into_starry_result()?,
         )
     };
+    let new_group_backend = if is_hardware {
+        PerfGroupBackend::Hardware
+    } else if probe_args.as_ref().is_some_and(|args| {
+        matches!(
+            &args.config,
+            PerfProbeConfig::PerfSwIds(sw_id) if sw::is_counting_sw(*sw_id)
+        )
+    }) {
+        PerfGroupBackend::Software
+    } else {
+        PerfGroupBackend::Other
+    };
 
     target.with_authorized(attr.sigtrap() != 0, |target| {
         let context = target.context_key()?;
-        if let Some(leader) = &group_leader
-            && (direct_system_sampling || !leader.event.lock().supports_group_link())
-        {
-            return Err(crate::StarryError::OperationNotSupported);
+        if let Some(leader) = &group_leader {
+            if leader.context != Some(context)
+                || leader.inherit != (attr.inherit() != 0)
+                || leader.group_leader.lock().is_some()
+                || attr.pinned() != 0
+                || attr.exclusive() != 0
+            {
+                return Err(StarryError::InvalidInput);
+            }
+            let mut leader_backend = leader.event.lock();
+            let leader_group_backend = leader_backend.group_backend();
+            if direct_system_sampling || !leader_backend.supports_group_link() {
+                return Err(crate::StarryError::OperationNotSupported);
+            }
+            if (new_group_backend == PerfGroupBackend::Hardware
+                || leader_group_backend == PerfGroupBackend::Hardware)
+                && new_group_backend != leader_group_backend
+            {
+                // Linux can migrate mixed software/hardware groups between PMU
+                // contexts. Starry has no unified coordinator yet, so reject
+                // both opening orders instead of publishing an unlinked group.
+                return Err(crate::StarryError::OperationNotSupported);
+            }
+            if target.kind() == target::PerfTargetKind::Cpu
+                && new_group_backend == PerfGroupBackend::Hardware
+                && leader_group_backend == PerfGroupBackend::Hardware
+            {
+                // Flexible fixed-CPU events currently own independent workers.
+                // Until they share one transactional slot scheduler, accepting
+                // this link would violate whole-group scheduling and read.
+                return Err(crate::StarryError::OperationNotSupported);
+            }
         }
         // Hardware-PMU events (`PERF_TYPE_HARDWARE` / `PERF_TYPE_RAW`, plus
         // the dynamic ARM PMUv3 type `hw::ARMV8_PMUV3_PERF_TYPE`) bypass

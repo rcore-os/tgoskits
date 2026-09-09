@@ -18,12 +18,14 @@
 #define PERF_SAMPLE_TID (1ull << 1)
 #define PERF_SAMPLE_TIME (1ull << 2)
 #define PERF_SAMPLE_CALLCHAIN (1ull << 5)
+#define PERF_SAMPLE_ID (1ull << 6)
 #define PERF_CONTEXT_USER ((uint64_t)-512)
 #define PERF_CONTEXT_MAX ((uint64_t)-4095)
 #define PERF_ATTR_FLAG_DISABLED (1ull << 0)
 #define PERF_EVENT_IOC_ENABLE 0x2400u
 #define PERF_EVENT_IOC_DISABLE 0x2401u
 #define PERF_EVENT_IOC_RESET 0x2403u
+#define PERF_EVENT_IOC_ID 0x80082407u
 #define PERF_RECORD_SAMPLE 9u
 #define SYS_PERF_EVENT_OPEN 241
 #define RING_BYTES (9u * 4096u)
@@ -98,7 +100,7 @@ int main(void) {
         .config = 0x11,
         .sample_period = 100000,
         .sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME |
-                       PERF_SAMPLE_CALLCHAIN,
+                       PERF_SAMPLE_ID | PERF_SAMPLE_CALLCHAIN,
         .flags = PERF_ATTR_FLAG_DISABLED,
     };
     int fd = (int)syscall(SYS_PERF_EVENT_OPEN, &attr, 0, -1, -1, 0ul);
@@ -114,6 +116,11 @@ int main(void) {
         return 1;
     }
     struct perf_event_mmap_page *meta = mapping;
+    uint64_t event_id = 0;
+    if (ioctl(fd, PERF_EVENT_IOC_ID, &event_id) != 0 || event_id == 0) {
+        puts("perf-callchain-user FAILED: event id");
+        return 1;
+    }
     zero_fd = open("/dev/zero", O_RDONLY);
     ioctl(fd, PERF_EVENT_IOC_RESET, 0);
     ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
@@ -139,8 +146,15 @@ int main(void) {
         }
         if (header.type == PERF_RECORD_SAMPLE) {
             samples++;
-            /* header, ip, pid/tid, time, then callchain nr. */
+            /* header, ip, pid/tid, time, id, then callchain nr. */
             uint64_t cursor = 8 + 8 + 8 + 8;
+            uint64_t sample_id = 0;
+            ring_copy(ring, meta->data_size, start + cursor, &sample_id, 8);
+            cursor += 8;
+            if (sample_id != event_id) {
+                corrupt = 1;
+                break;
+            }
             uint64_t nr = 0;
             if (cursor + 8 > header.size) {
                 corrupt = 1;

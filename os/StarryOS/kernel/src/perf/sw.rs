@@ -714,6 +714,10 @@ impl PerfEventOps for SwPerfEvent {
             _ => Err(StarryError::InvalidInput),
         }
     }
+
+    fn group_backend(&mut self) -> super::PerfGroupBackend {
+        super::PerfGroupBackend::Software
+    }
 }
 
 impl Pollable for SwPerfEvent {

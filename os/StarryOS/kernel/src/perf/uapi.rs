@@ -21,6 +21,7 @@ pub(crate) const PERF_ATTR_SIZE_VER9: usize = 144;
 const PERF_ATTR_MAX_SIZE: usize = 4096;
 
 const PERF_SAMPLE_BRANCH_STACK: u64 = 1 << 11;
+const PERF_SAMPLE_REGS_USER: u64 = 1 << 12;
 const PERF_SAMPLE_STACK_USER: u64 = 1 << 13;
 const PERF_SAMPLE_WEIGHT: u64 = 1 << 14;
 const PERF_SAMPLE_WEIGHT_STRUCT: u64 = 1 << 24;
@@ -168,6 +169,12 @@ fn validate_perf_event_attr(attr: &mut perf_event_attr, bytes: &[u8]) -> StarryR
         && (attr.sample_stack_user >= u16::MAX as u32
             || !attr.sample_stack_user.is_multiple_of(size_of::<u64>() as u32))
     {
+        return Err(StarryError::InvalidInput);
+    }
+    if attr.sample_type & PERF_SAMPLE_REGS_USER != 0 && attr.sample_regs_user != 0 {
+        // Starry currently emits only PERF_SAMPLE_REGS_ABI_NONE. Accepting a
+        // non-zero mask without serializing the selected register values would
+        // shift every following sample field and corrupt the userspace ABI.
         return Err(StarryError::InvalidInput);
     }
     if attr.sample_type & PERF_SAMPLE_WEIGHT != 0

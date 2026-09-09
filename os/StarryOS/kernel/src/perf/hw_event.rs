@@ -464,7 +464,7 @@ impl HwPerfEventState {
             });
         }
         if let Some(flexible) = &self.system_flexible {
-            let (value, time_enabled, time_running) = flexible.read();
+            let (value, time_enabled, time_running) = flexible.read()?;
             return Ok(PerfReadValues {
                 value,
                 time_enabled,
@@ -923,7 +923,7 @@ impl PerfEventOps for HwPerfEvent {
 
     fn link_group(&mut self, leader: &mut dyn PerfEventOps) -> crate::StarryResult<()> {
         let Some(leader) = leader.as_any_mut().downcast_mut::<HwPerfEvent>() else {
-            return Ok(());
+            return Err(crate::StarryError::OperationNotSupported);
         };
         let leader_family = leader.control.state.lock().per_task.clone();
         let member_family = self.control.state.lock().per_task.clone();
@@ -931,9 +931,13 @@ impl PerfEventOps for HwPerfEvent {
             (Some(leader), Some(member)) => {
                 PerTaskCounter::link_group(&leader.root(), &member.root())
             }
-            (None, None) => Ok(()),
+            (None, None) => Err(crate::StarryError::OperationNotSupported),
             _ => Err(crate::StarryError::InvalidInput),
         }
+    }
+
+    fn group_backend(&mut self) -> super::PerfGroupBackend {
+        super::PerfGroupBackend::Hardware
     }
 
     fn supports_group_link(&mut self) -> bool {

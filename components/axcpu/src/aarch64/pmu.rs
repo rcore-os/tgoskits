@@ -341,25 +341,25 @@ pub fn hw_event_to_arm(hw_id: u32) -> Option<u16> {
 pub const fn hw_event_to_arm_with(info: PmuInfo, hw_id: u32) -> Option<u16> {
     match hw_id {
         // PERF_COUNT_HW_CPU_CYCLES => CPU_CYCLES.
-        0 => Some(0x11),
+        0 if info.event_supported(0x11) => Some(0x11),
         // PERF_COUNT_HW_INSTRUCTIONS => INST_RETIRED.
-        1 => Some(0x08),
+        1 if info.event_supported(0x08) => Some(0x08),
         // PERF_COUNT_HW_CACHE_REFERENCES => L1D_CACHE.
-        2 => Some(0x04),
+        2 if info.event_supported(0x04) => Some(0x04),
         // PERF_COUNT_HW_CACHE_MISSES => L1D_CACHE_REFILL.
-        3 => Some(0x03),
+        3 if info.event_supported(0x03) => Some(0x03),
         // Linux prefers BR_RETIRED and falls back to PC_WRITE_RETIRED.
         4 if info.event_supported(0x21) => Some(0x21),
         4 if info.event_supported(0x0c) => Some(0x0c),
         4 => None,
         // PERF_COUNT_HW_BRANCH_MISSES => BR_MIS_PRED.
-        5 => Some(0x10),
+        5 if info.event_supported(0x10) => Some(0x10),
         // PERF_COUNT_HW_BUS_CYCLES => BUS_CYCLES.
-        6 => Some(0x1D),
+        6 if info.event_supported(0x1D) => Some(0x1D),
         // PERF_COUNT_HW_STALLED_CYCLES_FRONTEND => STALL_FRONTEND.
-        7 => Some(0x23),
+        7 if info.event_supported(0x23) => Some(0x23),
         // PERF_COUNT_HW_STALLED_CYCLES_BACKEND => STALL_BACKEND.
-        8 => Some(0x24),
+        8 if info.event_supported(0x24) => Some(0x24),
         // PERF_COUNT_HW_REF_CPU_CYCLES (9) and anything else are unmapped.
         _ => None,
     }
@@ -756,6 +756,29 @@ mod tests {
         assert_eq!(hw_event_to_arm_with(info(1 << 12, 1 << 1), 4), Some(0x21));
         assert_eq!(hw_event_to_arm_with(info(1 << 12, 0), 4), Some(0x0c));
         assert_eq!(hw_event_to_arm_with(info(0, 0), 4), None);
+    }
+
+    #[test]
+    fn generic_hardware_mapping_requires_pmceid_support() {
+        let mappings = [
+            (0, 0x11),
+            (1, 0x08),
+            (2, 0x04),
+            (3, 0x03),
+            (5, 0x10),
+            (6, 0x1d),
+            (7, 0x23),
+            (8, 0x24),
+        ];
+        for (hw_id, event) in mappings {
+            assert_eq!(hw_event_to_arm_with(info(0, 0), hw_id), None);
+            let supported = if event < 0x20 {
+                info(1 << event, 0)
+            } else {
+                info(0, 1 << (event - 0x20))
+            };
+            assert_eq!(hw_event_to_arm_with(supported, hw_id), Some(event));
+        }
     }
 
     #[test]

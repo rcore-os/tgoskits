@@ -111,14 +111,15 @@ const PERF_RECORD_MISC_USER: u16 = 2;
 
 /// Upper bound on a single `PERF_RECORD_SAMPLE` we emit: 8-byte header plus at
 /// most nine 8-byte scalar fields (IDENTIFIER, IP, TID(pid+tid), TIME, ADDR, ID,
-/// STREAM_ID, CPU(cpu+res), PERIOD). [`build_sample`] writes into a stack buffer
-/// of this size and returns the actual length.
+/// STREAM_ID, CPU(cpu+res), PERIOD), plus the REGS_USER ABI discriminator.
+/// [`build_sample`] writes into a stack buffer of this size and returns the
+/// actual length.
 const MAX_STACK_DEPTH: usize = 64;
 const MAX_CALLCHAIN_ENTRIES: usize = 1 + MAX_STACK_DEPTH;
 pub const MAX_SAMPLE_READ_EVENTS: usize = 31;
 const SAMPLE_READ_MAX_U64S: usize = 3 + MAX_SAMPLE_READ_EVENTS * 3;
 const SAMPLE_RECORD_MAX_LEN: usize =
-    8 + 9 * 8 + SAMPLE_READ_MAX_U64S * 8 + (1 + MAX_CALLCHAIN_ENTRIES) * 8;
+    8 + 9 * 8 + SAMPLE_READ_MAX_U64S * 8 + (1 + MAX_CALLCHAIN_ENTRIES) * 8 + 8;
 const LOST_RECORD_LEN: usize = 8 + 2 * 8;
 
 /// Per-source loss accounting, independent of a possibly shared output ring.
@@ -795,12 +796,6 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
     if sample_type & PERF_SAMPLE_ADDR != 0 {
         put!(d.addr);
     }
-    if sample_type & PERF_SAMPLE_CALLCHAIN != 0 {
-        put!(d.callchain.len() as u64);
-        for &entry in d.callchain {
-            put!(entry);
-        }
-    }
     if sample_type & PERF_SAMPLE_ID != 0 {
         put!(d.id);
     }
@@ -848,6 +843,12 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
             if d.read_format & super::PERF_FORMAT_LOST != 0 {
                 put!(value.lost);
             }
+        }
+    }
+    if sample_type & PERF_SAMPLE_CALLCHAIN != 0 {
+        put!(d.callchain.len() as u64);
+        for &entry in d.callchain {
+            put!(entry);
         }
     }
     if sample_type & PERF_SAMPLE_REGS_USER != 0 {
@@ -1002,5 +1003,51 @@ mod tests {
     #[axtest::axtest]
     fn kernel_task_sample_ids_are_empty() {
         assert!(super::kernel_task_sample_ids_are_empty_for_test());
+    }
+
+    #[axtest::axtest]
+    fn maximum_sample_record_fits_irq_stack_buffer() {
+        use super::*;
+
+        let entries = [SampleReadEntry::EMPTY; MAX_SAMPLE_READ_EVENTS];
+        let values = [SampleReadValue::default(); MAX_SAMPLE_READ_EVENTS];
+        let callchain = [0u64; MAX_CALLCHAIN_ENTRIES];
+        let data = SampleData {
+            ip: 1,
+            pid: None,
+            tid: None,
+            time: 2,
+            addr: 3,
+            id: 4,
+            stream_id: 5,
+            cpu: 6,
+            period: 7,
+            read_format: super::super::PERF_FORMAT_GROUP
+                | super::super::PERF_FORMAT_TOTAL_TIME_ENABLED
+                | super::super::PERF_FORMAT_TOTAL_TIME_RUNNING
+                | super::super::PERF_FORMAT_ID
+                | super::super::PERF_FORMAT_LOST,
+            read_entries: &entries,
+            read_values: &values,
+            callchain: &callchain,
+        };
+        let mut record = [0u8; SAMPLE_RECORD_MAX_LEN];
+        let sample_type = PERF_SAMPLE_IDENTIFIER
+            | PERF_SAMPLE_IP
+            | PERF_SAMPLE_TID
+            | PERF_SAMPLE_TIME
+            | PERF_SAMPLE_ADDR
+            | PERF_SAMPLE_ID
+            | PERF_SAMPLE_STREAM_ID
+            | PERF_SAMPLE_CPU
+            | PERF_SAMPLE_PERIOD
+            | PERF_SAMPLE_READ
+            | PERF_SAMPLE_CALLCHAIN
+            | PERF_SAMPLE_REGS_USER;
+
+        assert_eq!(
+            build_sample(&mut record, sample_type, PERF_RECORD_MISC_USER, &data),
+            SAMPLE_RECORD_MAX_LEN
+        );
     }
 }

@@ -285,37 +285,48 @@ int main(void) {
     }
     close(member);
 
-    /* A fixed-CPU hardware group is scheduled and read as one unit. Closing
-     * its leader must leave a live member usable as a standalone event. */
+    /* Fixed-CPU flexible hardware events currently have independent workers.
+     * Reject the member until one transactional group coordinator owns their
+     * slots and snapshots; a file-level group alone would be misleading. */
     leader = open_system_raw(format, PERF_ATTR_DISABLED, -1);
+    errno = 0;
     member = open_system_raw(0, PERF_ATTR_DISABLED, leader);
-    if (leader < 0 || member < 0 || ioctl(leader, PERF_IOC_ID, &leader_id) != 0 ||
-        ioctl(member, PERF_IOC_ID, &member_id) != 0 ||
-        ioctl(leader, PERF_IOC_ENABLE, PERF_IOC_FLAG_GROUP) != 0) {
-        printf("perf-event-group FAILED: system group setup errno=%d\n", errno);
-        return 1;
-    }
-    work();
-    if (ioctl(leader, PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP) != 0 ||
-        read(leader, values, sizeof(values)) != (ssize_t)sizeof(values) ||
-        values[0] != 2 || values[3] == 0 || values[4] != leader_id ||
-        values[5] == 0 || values[6] != member_id) {
-        puts("perf-event-group FAILED: system group snapshot");
+    if (leader < 0 || member >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: uncoordinated system group errno=%d\n",
+               errno);
+        if (member >= 0) {
+            close(member);
+        }
+        if (leader >= 0) {
+            close(leader);
+        }
         return 1;
     }
     close(leader);
-    if (ioctl(member, PERF_IOC_ENABLE, 0) != 0) {
-        puts("perf-event-group FAILED: system member after leader close");
+
+    /* Starry also lacks Linux's context migration for mixed software/hardware
+     * groups. Both opening orders must fail identically instead of one order
+     * publishing a no-op hardware link. */
+    leader = open_system_sw_flags(PERF_COUNT_SW_CPU_CLOCK, 0, -1,
+                                  PERF_ATTR_DISABLED);
+    errno = 0;
+    member = open_system_raw(0, PERF_ATTR_DISABLED, leader);
+    if (leader < 0 || member >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: software/hardware group errno=%d\n",
+               errno);
         return 1;
     }
-    work();
-    if (read(member, &member_value, sizeof(member_value)) !=
-            (ssize_t)sizeof(member_value) ||
-        member_value == 0) {
-        puts("perf-event-group FAILED: system member read after leader close");
+    close(leader);
+    leader = open_system_raw(0, PERF_ATTR_DISABLED, -1);
+    errno = 0;
+    member = open_system_sw_flags(PERF_COUNT_SW_CPU_CLOCK, 0, leader,
+                                  PERF_ATTR_DISABLED);
+    if (leader < 0 || member >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: hardware/software group errno=%d\n",
+               errno);
         return 1;
     }
-    close(member);
+    close(leader);
 
     /* Direct system-wide sampling currently has no group-aware backend. It
      * must reject every mixed or sampling-only group instead of publishing a
@@ -422,23 +433,6 @@ int main(void) {
         close(flexible[i]);
     }
 
-    /* A pinned group larger than the six A53 programmable counters must fail
-     * as a complete transaction and expose Linux's pinned ERROR/EOF state. */
-    int pinned[7];
-    pinned[0] = open_system_raw(0, PERF_ATTR_DISABLED | PERF_ATTR_PINNED, -1);
-    for (int i = 1; i < 7; ++i) {
-        pinned[i] = open_system_raw(0, PERF_ATTR_DISABLED, pinned[0]);
-    }
-    errno = 0;
-    if (pinned[0] < 0 ||
-        ioctl(pinned[0], PERF_IOC_ENABLE, PERF_IOC_FLAG_GROUP) == 0 ||
-        errno != EBUSY || read(pinned[0], &member_value, sizeof(member_value)) != 0) {
-        printf("perf-event-group FAILED: pinned overcommit errno=%d\n", errno);
-        return 1;
-    }
-    for (int i = 6; i >= 0; --i) {
-        close(pinned[i]);
-    }
     printf("STARRY_PERF_EVENT_GROUP nr=%llu leader=%llu member=%llu\n",
            (unsigned long long)values[0], (unsigned long long)values[3],
            (unsigned long long)member_value);

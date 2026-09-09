@@ -84,6 +84,10 @@ enum PerfCpuCommand {
         request: SystemPmuRead,
         completion: Arc<PerfCompletion<SystemPmuReadResult>>,
     },
+    ReadSystemFlexible {
+        counter: Arc<super::system_flex::SystemFlexCounter>,
+        completion: Arc<PerfCompletion<(u64, u64, u64)>>,
+    },
     ResetSystem {
         request: SystemPmuReset,
         completion: Arc<PerfCompletion<()>>,
@@ -151,6 +155,12 @@ impl PerfCpuCommand {
             } => {
                 let result = with_local_pmu_exclusion(|| hw::read_system_on_owner(request));
                 completion.finish(result);
+            }
+            Self::ReadSystemFlexible {
+                counter,
+                completion,
+            } => {
+                completion.finish(Ok(counter.read_on_owner()));
             }
             Self::ResetSystem {
                 request,
@@ -388,6 +398,28 @@ pub(super) fn read_system(
     let completion = Arc::new(PerfCompletion::new());
     owner_worker(owner)?.submit(PerfCpuCommand::ReadSystem {
         request: request.expect("remote PMU read request"),
+        completion: Arc::clone(&completion),
+    });
+    completion.wait()
+}
+
+/// Snapshots one active flexible system event on its owner CPU.
+pub(super) fn read_system_flexible(
+    counter: Arc<super::system_flex::SystemFlexCounter>,
+) -> crate::StarryResult<(u64, u64, u64)> {
+    let owner = counter.owner();
+    let mut counter = Some(counter);
+    if let Some(result) = try_local(owner, || {
+        Ok(counter
+            .take()
+            .expect("single local flexible PMU read")
+            .read_on_owner())
+    }) {
+        return result;
+    }
+    let completion = Arc::new(PerfCompletion::new());
+    owner_worker(owner)?.submit(PerfCpuCommand::ReadSystemFlexible {
+        counter: counter.expect("remote flexible PMU read counter"),
         completion: Arc::clone(&completion),
     });
     completion.wait()
