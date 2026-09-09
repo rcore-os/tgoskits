@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/rcore-os/tgoskits/compare/phytium-mci-host-v0.4.1...phytium-mci-host-v0.4.2) - 2026-09-09
+
+### Fixed
+
+- *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+
 ## [0.4.1](https://github.com/rcore-os/tgoskits/compare/phytium-mci-host-v0.4.0...phytium-mci-host-v0.4.1) - 2026-08-27
 
 ### Other

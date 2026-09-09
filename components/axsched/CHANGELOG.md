@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.10](https://github.com/rcore-os/tgoskits/compare/ax-sched-v0.5.9...ax-sched-v0.5.10) - 2026-09-09
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+
 ## [0.5.9](https://github.com/rcore-os/tgoskits/compare/ax-sched-v0.5.8...ax-sched-v0.5.9) - 2026-08-20
 
 ### Added

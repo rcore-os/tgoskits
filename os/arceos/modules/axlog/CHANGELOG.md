@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-log-v0.6.0...ax-log-v0.6.1) - 2026-09-09
+
+### Fixed
+
+- *(axvisor)* preserve structured console output ([#2204](https://github.com/rcore-os/tgoskits/pull/2204))
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-log-v0.5.20...ax-log-v0.6.0) - 2026-08-20
 
 ### Fixed

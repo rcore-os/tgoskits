@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.5.33...ax-std-v0.6.0) - 2026-09-09
+
+### Added
+
+- *(aic8800)* integrate AKA WPA2 Wi-Fi and iperf validation ([#2222](https://github.com/rcore-os/tgoskits/pull/2222))
+
+### Fixed
+
+- *(release)* restore release-plz dependency updates ([#2329](https://github.com/rcore-os/tgoskits/pull/2329))
+- *(ax-posix-api)* deliver EPOLLIN/EPOLLOUT edges via direction-split readiness versions ([#2235](https://github.com/rcore-os/tgoskits/pull/2235))
+
+### Other
+
+- *(ax-task)* [**breaking**] organize scheduler namespaces and unify runtime APIs ([#2313](https://github.com/rcore-os/tgoskits/pull/2313))
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+
 ## [0.5.33](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.5.32...ax-std-v0.5.33) - 2026-08-27
 
 ### Other

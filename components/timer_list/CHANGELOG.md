@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6](https://github.com/rcore-os/tgoskits/compare/ax-timer-list-v0.3.5...ax-timer-list-v0.3.6) - 2026-09-09
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+
 ## [0.3.5](https://github.com/rcore-os/tgoskits/compare/ax-timer-list-v0.3.4...ax-timer-list-v0.3.5) - 2026-05-15
 
 ### Other

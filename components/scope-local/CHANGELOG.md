@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.5.0...scope-local-v0.6.0) - 2026-09-09
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
 ### Changed
 
 - Run execution-context and CPU-pinned coverage through the real ArceOS axtest

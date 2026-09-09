@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/rcore-os/tgoskits/compare/rdif-power-v0.9.0...rdif-power-v0.9.1) - 2026-09-09
+
+### Other
+
+- *(repo)* remove nonfunctional test scaffolding ([#2303](https://github.com/rcore-os/tgoskits/pull/2303))
+
 ## [0.9.0](https://github.com/rcore-os/tgoskits/compare/rdif-power-v0.8.2...rdif-power-v0.9.0) - 2026-08-20
 
 ### Other

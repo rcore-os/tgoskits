@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.7.0...axdevice_base-v0.7.1) - 2026-09-09
+
+### Fixed
+
+- *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.6.4...axdevice_base-v0.7.0) - 2026-08-20
 
 ### Fixed

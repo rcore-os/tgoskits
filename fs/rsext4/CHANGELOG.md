@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.8.1...rsext4-v0.9.0) - 2026-09-09
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+
+### Fixed
+
+- *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
+- *(rsext4)* retain recovery state after writable journal replay ([#2298](https://github.com/rcore-os/tgoskits/pull/2298))
+
+### Other
+
+- *(repo)* remove duplicated tests and configuration snapshots ([#2326](https://github.com/rcore-os/tgoskits/pull/2326))
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(repo)* remove nonfunctional test scaffolding ([#2303](https://github.com/rcore-os/tgoskits/pull/2303))
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+- *(rsext4)* [**breaking**] align ext4 semantics with Linux 7.1 ([#1957](https://github.com/rcore-os/tgoskits/pull/1957))
+
 ### Added
 
 - Add Linux-compatible signed and unsigned legacy, half-MD4, and TEA directory

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.9...aic8800-v0.3.0) - 2026-09-09
+
+### Added
+
+- *(aic8800)* integrate AKA WPA2 Wi-Fi and iperf validation ([#2222](https://github.com/rcore-os/tgoskits/pull/2222))
+
+### Fixed
+
+- *(net)* preserve ARP replies and stabilize board WiFi tests ([#2309](https://github.com/rcore-os/tgoskits/pull/2309))
+- *(aic8800)* bound queue memory with item and byte budgets ([#2290](https://github.com/rcore-os/tgoskits/pull/2290))
+- *(aic8800)* honor firmware data packet credits ([#2305](https://github.com/rcore-os/tgoskits/pull/2305))
+- *(net)* prevent Wi-Fi transmit and receive starvation ([#2299](https://github.com/rcore-os/tgoskits/pull/2299))
+- *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
+
+### Other
+
+- *(repo)* narrow SDIO rearm and TX queue policies ([#2250](https://github.com/rcore-os/tgoskits/pull/2250))
+
 ## [0.2.9](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.8...aic8800-v0.2.9) - 2026-08-27
 
 ### Other

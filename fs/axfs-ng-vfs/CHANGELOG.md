@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.6.1...axfs-ng-vfs-v0.7.0) - 2026-09-09
+
+### Fixed
+
+- *(axfs-ng-vfs)* validate admitted unmounts by affected topology ([#2321](https://github.com/rcore-os/tgoskits/pull/2321))
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(repo)* remove nonfunctional test scaffolding ([#2303](https://github.com/rcore-os/tgoskits/pull/2303))
+- *(rsext4)* [**breaking**] align ext4 semantics with Linux 7.1 ([#1957](https://github.com/rcore-os/tgoskits/pull/1957))
+
 ### Added
 
 - Add typed atomic symlink creation, preallocation and range mutation,

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.8.3...starry-kernel-v0.9.0) - 2026-09-09
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+- feat(StarryOS)：Enhance axivc IVC char devices and improve ioctl handling ([#2214](https://github.com/rcore-os/tgoskits/pull/2214))
+- *(aic8800)* integrate AKA WPA2 Wi-Fi and iperf validation ([#2222](https://github.com/rcore-os/tgoskits/pull/2222))
+
+### Fixed
+
+- *(axfs-ng-vfs)* validate admitted unmounts by affected topology ([#2321](https://github.com/rcore-os/tgoskits/pull/2321))
+- *(jpeg)* validate MPP DMA ranges against imported dma-bufs ([#2289](https://github.com/rcore-os/tgoskits/pull/2289))
+- *(starry-kernel)* limit clippy to package features ([#2312](https://github.com/rcore-os/tgoskits/pull/2312))
+- *(starry-kernel)* support setting the realtime clock ([#2237](https://github.com/rcore-os/tgoskits/pull/2237))
+- *(starry-kernel)* report times(2) in USER_HZ clock ticks ([#2263](https://github.com/rcore-os/tgoskits/pull/2263))
+- *(starry-kernel)* report an enabled CPUID from arch_prctl(ARCH_GET_CPUID) ([#2259](https://github.com/rcore-os/tgoskits/pull/2259))
+- *(starry-kernel)* stop select() reporting a hung-up fd as writable ([#2260](https://github.com/rcore-os/tgoskits/pull/2260))
+- *(starry)* enforce warning-free builds ([#2244](https://github.com/rcore-os/tgoskits/pull/2244))
+- *(starry-kernel)* avoid filesystem teardown in reboot syscall ([#2220](https://github.com/rcore-os/tgoskits/pull/2220))
+
+### Other
+
+- *(repo)* remove duplicated tests and configuration snapshots ([#2326](https://github.com/rcore-os/tgoskits/pull/2326))
+- *(ax-task)* [**breaking**] organize scheduler namespaces and unify runtime APIs ([#2313](https://github.com/rcore-os/tgoskits/pull/2313))
+- *(starry-kernel)* scope VMA and epoll scans to what each caller needs ([#2302](https://github.com/rcore-os/tgoskits/pull/2302))
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(repo)* remove nonfunctional test scaffolding ([#2303](https://github.com/rcore-os/tgoskits/pull/2303))
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+- *(rsext4)* [**breaking**] align ext4 semantics with Linux 7.1 ([#1957](https://github.com/rcore-os/tgoskits/pull/1957))
+
 ### Added
 
 - Implement ext4 data and xattr `FS_IOC_FIEMAP`, persistent inode-owned xattrs,

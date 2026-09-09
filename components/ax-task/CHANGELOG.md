@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.11...ax-task-v0.7.0) - 2026-09-09
+
+### Added
+
+- *(trait-ffi)* [**breaking**] maintain and extend static interfaces with syn 3 ([#2300](https://github.com/rcore-os/tgoskits/pull/2300))
+
+### Fixed
+
+- *(release)* restore release-plz dependency updates ([#2329](https://github.com/rcore-os/tgoskits/pull/2329))
+
+### Other
+
+- *(ax-task)* [**breaking**] organize scheduler namespaces and unify runtime APIs ([#2313](https://github.com/rcore-os/tgoskits/pull/2313))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
 ## [0.6.11](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.10...ax-task-v0.6.11) - 2026-08-27
 
 ### Added

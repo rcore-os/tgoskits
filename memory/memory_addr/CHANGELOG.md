@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/ax-memory-addr-v0.7.0...ax-memory-addr-v0.7.1) - 2026-09-09
+
+### Other
+
+- *(repo)* remove duplicated tests and configuration snapshots ([#2326](https://github.com/rcore-os/tgoskits/pull/2326))
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(repo)* remove nonfunctional test scaffolding ([#2303](https://github.com/rcore-os/tgoskits/pull/2303))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-memory-addr-v0.6.11...ax-memory-addr-v0.7.0) - 2026-08-20
 
 ### Other

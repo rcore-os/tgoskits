@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/rcore-os/tgoskits/compare/axivc-v0.1.0...axivc-v0.1.1) - 2026-09-09
+
+### Added
+
+- feat(StarryOS)：Enhance axivc IVC char devices and improve ioctl handling ([#2214](https://github.com/rcore-os/tgoskits/pull/2214))
+
+### Fixed
+
+- *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
+
 ## [0.1.0] - 2026-07-15
 
 ### Added

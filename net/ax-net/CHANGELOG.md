@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.10...ax-net-v0.13.0) - 2026-09-09
+
+### Added
+
+- *(aic8800)* integrate AKA WPA2 Wi-Fi and iperf validation ([#2222](https://github.com/rcore-os/tgoskits/pull/2222))
+
+### Fixed
+
+- *(net)* preserve ARP replies and stabilize board WiFi tests ([#2309](https://github.com/rcore-os/tgoskits/pull/2309))
+- *(net)* prevent Wi-Fi transmit and receive starvation ([#2299](https://github.com/rcore-os/tgoskits/pull/2299))
+- *(ax-net)* release queue backpressure before recycling RX frames ([#2294](https://github.com/rcore-os/tgoskits/pull/2294))
+- *(ax-net)* publish seqpacket EOF before waking readers ([#2269](https://github.com/rcore-os/tgoskits/pull/2269))
+
+### Other
+
+- *(repo)* remove duplicated tests and configuration snapshots ([#2326](https://github.com/rcore-os/tgoskits/pull/2326))
+- *(ax-task)* [**breaking**] organize scheduler namespaces and unify runtime APIs ([#2313](https://github.com/rcore-os/tgoskits/pull/2313))
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(net)* optimize RTL8125 data path and polling ([#2227](https://github.com/rcore-os/tgoskits/pull/2227))
+- *(repo)* narrow SDIO rearm and TX queue policies ([#2250](https://github.com/rcore-os/tgoskits/pull/2250))
+
 ## [0.12.10](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.9...ax-net-v0.12.10) - 2026-08-27
 
 ### Other

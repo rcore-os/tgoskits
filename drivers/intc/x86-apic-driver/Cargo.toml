@@ -1,6 +1,6 @@
 [package]
 name = "x86-apic-driver"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "A driver for the x86 local APIC and I/O APIC interrupt controllers."

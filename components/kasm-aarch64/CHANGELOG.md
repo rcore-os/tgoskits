@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/rcore-os/tgoskits/compare/kasm-aarch64-v0.2.2...kasm-aarch64-v0.2.3) - 2026-09-09
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+
 ## [0.2.2](https://github.com/rcore-os/tgoskits/compare/kasm-aarch64-v0.2.1...kasm-aarch64-v0.2.2) - 2026-08-09
 
 ### Other

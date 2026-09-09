@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/x86_vcpu-v0.6.2...x86_vcpu-v0.7.0) - 2026-09-09
+
+### Fixed
+
+- *(release)* restore release-plz dependency updates ([#2329](https://github.com/rcore-os/tgoskits/pull/2329))
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(repo)* remove nonfunctional test scaffolding ([#2303](https://github.com/rcore-os/tgoskits/pull/2303))
+
 ## [0.6.2](https://github.com/rcore-os/tgoskits/compare/x86_vcpu-v0.6.1...x86_vcpu-v0.6.2) - 2026-08-27
 
 ### Other

@@ -7,14 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.10](https://github.com/rcore-os/tgoskits/compare/ax-ctor-bare-macros-v0.4.9...ax-ctor-bare-macros-v0.4.10) - 2026-09-09
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-tracepoint-v0.6.0...ax-tracepoint-v0.6.1) - 2026-09-09
 
 ### Fixed
 
 - *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
 
-## [0.4.9](https://github.com/rcore-os/tgoskits/compare/ax-ctor-bare-macros-v0.4.8...ax-ctor-bare-macros-v0.4.9) - 2026-08-09
-
 ### Other
 
-- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))

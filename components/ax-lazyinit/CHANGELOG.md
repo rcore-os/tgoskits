@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/ax-lazyinit-v0.5.0...ax-lazyinit-v0.5.1) - 2026-09-09
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(repo)* remove nonfunctional test scaffolding ([#2303](https://github.com/rcore-os/tgoskits/pull/2303))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/ax-lazyinit-v0.4.10...ax-lazyinit-v0.5.0) - 2026-08-20
 
 ### Fixed
