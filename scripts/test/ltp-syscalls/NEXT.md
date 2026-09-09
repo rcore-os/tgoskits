@@ -31,3 +31,11 @@
 未承接：非阻塞冲突精确EAGAIN/EACCES、F_OFD_GETLK类型报告、非重叠区间即时成功、close(dup)保留锁、最后close释放锁。本项是部分替代，原程序及专属 CMake 清理。
 
 四架构03-candidates-<arch>.log实际通过；fcntl34=1 TPASS,fcntl36=7 TPASS；未修改内核或上游测试；最终累计集合另验。提交主题为 `test(starry): migrate OFD lock contention regression to LTP`。
+
+### 2.3 关闭描述符释放记录锁
+
+`bug-fcntl-posix-close-release` 替换为 [fcntl15.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/fcntl/fcntl15.c)。承接行为：dup和独立open关闭任一已参与加锁的FD释放本进程锁，其他进程锁保留；独立子进程分别观察关闭前后冲突。
+
+未承接：关闭从未参与加锁的同inode FD这一精确输入；原同进程GETLK和再次加锁本身不能区分锁释放与自有锁。本项是部分替代，原程序及专属 CMake 清理。
+
+四架构03-candidates-<arch>.log实际通过；fcntl15=12 TPASS；未修改内核或上游测试；最终累计集合另验。提交主题为 `test(starry): migrate POSIX close-release regression to LTP`。

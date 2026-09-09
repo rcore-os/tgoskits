@@ -26,7 +26,7 @@ test-suit/starryos/qemu/system/bugfix-bug-fcntl-len-negative,bug-fcntl-len-negat
 test-suit/starryos/qemu/system/bugfix-bug-fcntl-ofd-lock,bug-fcntl-ofd-lock,部分替代并清理,fcntl34 fcntl36,不同open形成独立OFD，F_OFD_SETLKW串行化线程写入；七种OFD/POSIX读写组合保证块内容一致,非阻塞冲突精确EAGAIN/EACCES、F_OFD_GETLK类型报告、非重叠区间即时成功、close(dup)保留锁、最后close释放锁,"四架构03-candidates-<arch>.log实际通过；fcntl34=1 TPASS,fcntl36=7 TPASS；未修改内核或上游测试；最终累计集合另验",test(starry): migrate OFD lock contention regression to LTP
 test-suit/starryos/qemu/system/bugfix-bug-fcntl-ofd-pid-einval,bug-fcntl-ofd-pid-einval,待清理,,,三种F_OFD命令非零l_pid返回EINVAL、零值成功,LTP fcntl36仅使用l_pid=0；主线程复核待完成,
 test-suit/starryos/qemu/system/bugfix-bug-fcntl-partial-wake,bug-fcntl-partial-wake,待清理,,,仅解锁左半区间、右半保留时子进程成功唤醒并加锁,LTP fcntl16边界阻塞后信号中断，不覆盖部分释放成功；主线程复核待完成,
-test-suit/starryos/qemu/system/bugfix-bug-fcntl-posix-close-release,bug-fcntl-posix-close-release,待验证,fcntl15,同inode关闭一个fd释放进程记录锁，LTP用子进程观察,原未加锁fd关闭场景未直接复现，但原同进程GETLK/重锁本身不能区分释放与未释放,主线程已读双方；LTP显式跨进程观察更有缺陷敏感度；运行待完成,
+test-suit/starryos/qemu/system/bugfix-bug-fcntl-posix-close-release,bug-fcntl-posix-close-release,部分替代并清理,fcntl15,dup和独立open关闭任一已参与加锁的FD释放本进程锁，其他进程锁保留；独立子进程分别观察关闭前后冲突,关闭从未参与加锁的同inode FD这一精确输入；原同进程GETLK和再次加锁本身不能区分锁释放与自有锁,四架构03-candidates-<arch>.log实际通过；fcntl15=12 TPASS；未修改内核或上游测试；最终累计集合另验,test(starry): migrate POSIX close-release regression to LTP
 test-suit/starryos/qemu/system/bugfix-bug-fcntl-posix-exit-release,bug-fcntl-posix-exit-release,待审计,,,进程退出自动释放POSIX锁,LTP fcntl15/16/19/20/21显式close/unlock，不直接覆盖退出自动释放；待进一步核实,
 test-suit/starryos/qemu/system/bugfix-bug-fcntl-posix-lock,bug-fcntl-posix-lock,待审计,,,,,
 test-suit/starryos/qemu/system/bugfix-bug-fcntl-setlkw-blocks,bug-fcntl-setlkw-blocks,待审计,,,,,

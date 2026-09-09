@@ -25,6 +25,7 @@ execve06
 execveat01
 faccessat201
 faccessat202
+fcntl15
 fcntl17
 fcntl34
 fcntl36

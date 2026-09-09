@@ -35,3 +35,5 @@ fcntl17 1
 # LTP 20260529 source-derived lock testcase completion counts.
 fcntl34 1
 fcntl36 7
+# LTP 20260529 source-derived lock testcase completion counts.
+fcntl15 12
