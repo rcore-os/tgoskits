@@ -742,6 +742,21 @@ impl FsContext {
             return Ok(());
         }
 
+        // CAP_DAC_READ_SEARCH bypasses read/search checks, but it does not
+        // grant write access to a directory. Keep write bits in the normal
+        // DAC path even when a read/search capability is present.
+        const READ_SEARCH_PERMISSIONS: NodePermission = NodePermission::OWNER_READ
+            .union(NodePermission::GROUP_READ)
+            .union(NodePermission::OTHER_READ)
+            .union(NodePermission::OWNER_EXEC)
+            .union(NodePermission::GROUP_EXEC)
+            .union(NodePermission::OTHER_EXEC);
+        if credentials.cap_dac_read_search
+            && required.difference(READ_SEARCH_PERMISSIONS).is_empty()
+        {
+            return Ok(());
+        }
+
         let metadata = location.metadata()?;
         let mode = if credentials.fsuid == metadata.uid {
             metadata.mode.bits() >> 6
@@ -774,19 +789,6 @@ impl FsContext {
             }
             current = current.parent().ok_or(VfsError::InvalidInput)?;
         }
-    }
-
-    /// Check the search and write permissions required to mutate a directory.
-    pub(crate) fn check_mutation_parent(
-        &self,
-        directory: &Location,
-        credentials: &MutationCredentials<'_>,
-    ) -> VfsResult<()> {
-        self.check_mutation_parent_with_boundary(
-            directory,
-            self.permission_root.as_ref(),
-            credentials,
-        )
     }
 
     fn check_mutation_parent_with_boundary(
@@ -977,7 +979,6 @@ impl FsContext {
     ) -> VfsResult<()> {
         let (src_dir, src_name) = source;
         let (dst_dir, dst_name) = destination;
-        let (src_boundary, dst_boundary) = boundaries;
         self.rename_locations_with_boundaries_and_search(
             (src_dir, src_name),
             (dst_dir, dst_name),
@@ -1059,6 +1060,7 @@ impl FsContext {
             return Err(VfsError::NotFound);
         }
         let (dir, name, searched) = self.resolve_parent_with_search(path)?;
+        self.check_search_trace(&searched, self.permission_root.as_ref(), credentials)?;
         match dir.lookup_no_follow(&name) {
             Ok(_) => return Err(VfsError::AlreadyExists),
             Err(VfsError::NotFound) => {}
@@ -1161,6 +1163,7 @@ impl FsContext {
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<Location> {
         let (dir, name, searched) = self.resolve_parent_with_search(link_path.as_ref())?;
+        self.check_search_trace(&searched, self.permission_root.as_ref(), credentials)?;
         match dir.lookup_no_follow(&name) {
             Ok(_) => return Err(VfsError::AlreadyExists),
             Err(VfsError::NotFound) => {}
@@ -1181,6 +1184,7 @@ impl FsContext {
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<Location> {
         let (dir, name, searched) = self.resolve_parent_with_search(path.as_ref())?;
+        self.check_search_trace(&searched, self.permission_root.as_ref(), credentials)?;
         match dir.lookup_no_follow(&name) {
             Ok(_) => return Err(VfsError::AlreadyExists),
             Err(VfsError::NotFound) => {}
