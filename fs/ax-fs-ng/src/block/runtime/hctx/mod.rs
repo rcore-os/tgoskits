@@ -363,14 +363,29 @@ impl Hctx {
     }
 
     fn close_submission_channels(&self) {
-        while let Some(channel) = {
-            let channels = self.state.submission_channels.lock();
-            channels
-                .iter()
-                .find(|channel| !channel.is_closed())
-                .cloned()
-        } {
-            channel.close();
+        // The worker may concurrently swap-remove closed channels. Repeat a
+        // pass when the registry changed so a moved channel is not skipped.
+        loop {
+            let channel_count = self.state.submission_channels.lock().len();
+            let mut scanned = 0;
+            while scanned < channel_count {
+                let channel = {
+                    let channels = self.state.submission_channels.lock();
+                    channels.get(scanned).cloned()
+                };
+                let Some(channel) = channel else {
+                    break;
+                };
+                if !channel.is_closed() {
+                    channel.close();
+                }
+                scanned += 1;
+            }
+            if scanned == channel_count
+                && self.state.submission_channels.lock().len() == channel_count
+            {
+                return;
+            }
         }
     }
 
@@ -738,16 +753,28 @@ fn run_hctx(
 }
 
 fn prune_closed_submission_channels(state: &HctxState) {
+    let mut index = 0;
     loop {
-        let retired = {
-            let mut channels = state.submission_channels.lock();
-            let Some(index) = channels
-                .iter()
-                .position(|channel| channel.is_closed_and_empty())
-            else {
+        let channel = {
+            let channels = state.submission_channels.lock();
+            let Some(channel) = channels.get(index) else {
                 return;
             };
-            channels.swap_remove(index)
+            Arc::clone(channel)
+        };
+        if !channel.is_closed_and_empty() {
+            index += 1;
+            continue;
+        }
+
+        let retired = {
+            let mut channels = state.submission_channels.lock();
+            match channels.get(index) {
+                Some(current) if Arc::ptr_eq(current, &channel) => {
+                    Some(channels.swap_remove(index))
+                }
+                _ => None,
+            }
         };
         drop(retired);
     }

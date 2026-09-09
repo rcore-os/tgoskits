@@ -15,6 +15,7 @@ vfs = ["ax-sync/sleep"]
 lockdep = ["axfs-ng-vfs/lockdep"]
 
 [dependencies]
+atomic-waker.workspace = true
 axfs-ng-vfs = { workspace = true }
 ax-io = { workspace = true, features = ["alloc"] }
 ax-lazyinit.workspace = true
