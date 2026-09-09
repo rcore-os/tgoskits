@@ -863,6 +863,7 @@ pub fn perf_event_open(
         PerfTargetError::NoSuchProcess => crate::StarryError::NoSuchProcess,
     })?;
     let target = ResolvedPerfTarget::resolve(target, ax_runtime::hal::cpu_num())?;
+    let target_kind = target.kind();
 
     // Starry does not yet deliver synchronous perf SIGTRAP notifications.
     // Reject the capability explicitly instead of accepting an event whose
@@ -879,13 +880,13 @@ pub fn perf_event_open(
         || attr.type_ == hw::ARMV8_CORTEX_A55_PERF_TYPE
         || attr.type_ == hw::ARMV8_CORTEX_A76_PERF_TYPE;
     let validated_hw = is_hardware
-        .then(|| hw::validate_perf_event_open_hw(attr, target.kind()))
+        .then(|| hw::validate_perf_event_open_hw(attr, target_kind))
         .transpose()?;
     #[cfg(target_arch = "aarch64")]
     let direct_system_sampling = validated_hw
         .as_ref()
         .is_some_and(|validated| validated.is_sampling)
-        && target.kind() == target::PerfTargetKind::Cpu;
+        && target_kind == target::PerfTargetKind::Cpu;
     #[cfg(not(target_arch = "aarch64"))]
     let direct_system_sampling = false;
     let probe_args = if is_hardware {
@@ -940,7 +941,7 @@ pub fn perf_event_open(
                 // both opening orders instead of publishing an unlinked group.
                 return Err(crate::StarryError::OperationNotSupported);
             }
-            if target.kind() == target::PerfTargetKind::Cpu
+            if target_kind == target::PerfTargetKind::Cpu
                 && new_group_backend == PerfGroupBackend::Hardware
                 && leader_group_backend == PerfGroupBackend::Hardware
             {
