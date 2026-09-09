@@ -105,6 +105,7 @@ fn rx_allocation_failure_recovers_without_disabling_tx() {
     let shared = Arc::new(PollGroupState::new(0, Arc::new(QueueNotification::new())));
     shared.activate(false);
     let mut executor = QueueGroupExecutor {
+        wifi_startup_group: None,
         group,
         rx_ready,
         rx_recycle,
@@ -368,6 +369,7 @@ fn missing_device_startup_is_cancelled_without_publishing_queues() {
         let (_protocol_tx, tx_ready) = spsc_ring(2);
         let shared = Arc::new(PollGroupState::new(0, Arc::new(QueueNotification::new())));
         let mut executor = QueueGroupExecutor {
+            wifi_startup_group: None,
             group,
             rx_ready,
             rx_recycle: recycle,
@@ -448,6 +450,7 @@ fn startup_executor(absent: bool, trace: Trace) -> QueueGroupExecutor {
     let shared = Arc::new(PollGroupState::new(0, Arc::new(QueueNotification::new())));
     let mut executor = QueueGroupExecutor {
         group,
+        wifi_startup_group: None,
         rx_ready,
         rx_recycle: recycle,
         rx_recycler: Arc::new(RxRecycler::new(rx_recycle, Arc::clone(&shared), 2)),
@@ -545,6 +548,108 @@ fn startup_pruning_releases_absent_queues_and_remaps_wifi_slots() {
 }
 
 #[test]
+fn absent_wifi_control_stops_surviving_device_group() {
+    let control = startup_executor(true, Arc::new(Mutex::new(Vec::new())));
+    let mut sibling = startup_executor(false, Arc::new(Mutex::new(Vec::new())));
+    sibling
+        .initialize(|| panic!("sibling startup must not wait"))
+        .unwrap();
+    assert!(!sibling.shared.is_disabled());
+    sibling.wifi_startup_group = Some(Arc::clone(&control.shared));
+    sibling.stop_if_wifi_absent().unwrap();
+    assert!(sibling.shared.startup_absent());
+    assert!(sibling.shared.is_disabled());
+    let (mut port, ..) = crate::queue_runtime::tests::tx_test_port(TxQueueDiscipline::NoQueue, 0);
+    let (mut sibling_port, ..) =
+        crate::queue_runtime::tests::tx_test_port(TxQueueDiscipline::NoQueue, 0);
+    port.groups[0].shared = Arc::clone(&control.shared);
+    sibling_port.groups[0].shared = Arc::clone(&sibling.shared);
+    port.groups.append(&mut sibling_port.groups);
+    let (ports, indices) = crate::queue_runtime::retain_started_ports(vec![port]);
+    assert!(ports.is_empty());
+    assert_eq!(indices, vec![None]);
+    let dropped = Arc::new(AtomicBool::new(false));
+    let mut wifi = vec![WifiExecutorSlot {
+        group_index: 0,
+        control: Box::new(StartupWifi(Arc::clone(&dropped))),
+        queue: Arc::new(crate::queue_runtime::WifiControlQueue::new()),
+        active: None,
+    }];
+    let mut groups = vec![control, sibling];
+    assert_eq!(
+        retain_started_executor_groups(&mut groups, &mut wifi, COMMAND_RUN),
+        Some(STATUS_EMPTY)
+    );
+    assert!(groups.is_empty());
+    assert!(wifi.is_empty());
+    assert!(dropped.load(Ordering::Acquire));
+}
+
+struct PruneIrq {
+    trace: Trace,
+    fail_shutdown: bool,
+}
+
+impl NetPollIrqControl for PruneIrq {
+    fn quiesce(&mut self) -> Result<(), NetError> {
+        self.trace.lock().unwrap().push("quiesce");
+        Ok(())
+    }
+
+    fn shutdown(&mut self) -> Result<(), NetError> {
+        self.trace.lock().unwrap().push("shutdown");
+        if self.fail_shutdown {
+            Err(NetError::InvalidParts)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn rearm_and_check(&mut self, _now_nanos: u64) -> Result<NetRearmResult, NetError> {
+        Ok(NetRearmResult::Idle)
+    }
+}
+
+#[test]
+fn wifi_device_pruning_requires_shutdown_and_preserves_unrelated_groups() {
+    for missing in [false, true] {
+        for fail_shutdown in [false, true] {
+            let control = startup_executor(missing, Arc::new(Mutex::new(Vec::new())));
+            let trace = Arc::new(Mutex::new(Vec::new()));
+            let mut sibling = startup_executor(false, Arc::new(Mutex::new(Vec::new())));
+            sibling
+                .initialize(|| panic!("sibling startup must not wait"))
+                .unwrap();
+            sibling.wifi_startup_group = Some(Arc::clone(&control.shared));
+            sibling.group.irq_control = Box::new(PruneIrq {
+                trace: Arc::clone(&trace),
+                fail_shutdown,
+            });
+            assert_eq!(
+                sibling.stop_if_wifi_absent().is_err(),
+                missing && fail_shutdown
+            );
+            assert_eq!(sibling.shared.startup_absent(), missing && !fail_shutdown);
+            assert_eq!(
+                *trace.lock().unwrap(),
+                if missing {
+                    vec!["quiesce", "shutdown"]
+                } else {
+                    vec![]
+                }
+            );
+            if missing && !fail_shutdown {
+                sibling.stop_if_wifi_absent().unwrap();
+                assert_eq!(*trace.lock().unwrap(), vec!["quiesce", "shutdown"]);
+            }
+            let mut unrelated = startup_executor(false, Arc::new(Mutex::new(Vec::new())));
+            unrelated.stop_if_wifi_absent().unwrap();
+            assert!(!unrelated.shared.startup_absent());
+        }
+    }
+}
+
+#[test]
 fn rx_refill_retry_drains_completions_and_preserves_tx_flush() {
     let trace = Arc::new(Mutex::new(Vec::new()));
     let dma = DeviceDma::new(
@@ -582,6 +687,7 @@ fn rx_refill_retry_drains_completions_and_preserves_tx_flush() {
     );
     let mut executor = QueueGroupExecutor {
         group,
+        wifi_startup_group: None,
         rx_ready,
         rx_recycle,
         rx_recycler: Arc::new(RxRecycler::new(recycle, Arc::clone(&shared), 2)),
@@ -708,6 +814,7 @@ fn tx_backpressure_allows_rx_delivery_before_tx_resumes() {
     }
     let mut executor = QueueGroupExecutor {
         group,
+        wifi_startup_group: None,
         rx_ready,
         rx_recycle,
         rx_recycler: Arc::new(RxRecycler::new(recycle, Arc::clone(&shared), 2)),

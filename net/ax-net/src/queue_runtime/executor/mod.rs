@@ -8,9 +8,10 @@ use rd_net::{
 };
 
 use super::{
-    COMMAND_QUARANTINE, COMMAND_RUN, COMMAND_STOP, COMMAND_WAIT, CPU_ROUND_BUDGET, PollGroupState,
-    QUEUE_BUDGET, QueueNotification, STATE_MASK, STATE_MISSED, STATE_POLLING, STATE_SCHEDULED,
-    STATUS_EMPTY, STATUS_FAILED, STATUS_READY, SpscConsumer, SpscProducer, TxQueueDiscipline,
+    COMMAND_PRUNE, COMMAND_QUARANTINE, COMMAND_RUN, COMMAND_STOP, COMMAND_WAIT, CPU_ROUND_BUDGET,
+    PollGroupState, QUEUE_BUDGET, QueueNotification, STATE_MASK, STATE_MISSED, STATE_POLLING,
+    STATE_SCHEDULED, STATUS_EMPTY, STATUS_FAILED, STATUS_PENDING, STATUS_READY, SpscConsumer,
+    SpscProducer, TxQueueDiscipline,
 };
 use crate::device::{
     ETH_ZLEN, EthernetFramePort, NetDeviceError, NetDeviceResult, ProtocolEthernetFrame,
@@ -418,6 +419,7 @@ const fn executor_wait(now_nanos: u64, deadline_nanos: Option<u64>) -> ExecutorW
 }
 
 pub(super) struct QueueGroupExecutor {
+    pub(super) wifi_startup_group: Option<Arc<PollGroupState>>,
     pub(super) group: PreparedNetPollGroup,
     pub(super) rx_ready: SpscProducer<RxCompletion>,
     pub(super) rx_recycle: SpscConsumer<DmaBuffer>,
@@ -435,6 +437,22 @@ pub(super) struct QueueGroupExecutor {
 }
 
 impl QueueGroupExecutor {
+    fn stop_if_wifi_absent(&mut self) -> Result<(), NetError> {
+        if self.shared.startup_absent()
+            || !self
+                .wifi_startup_group
+                .as_ref()
+                .is_some_and(|group| group.startup_absent())
+        {
+            return Ok(());
+        }
+        self.shared.disable();
+        self.group.irq_control.quiesce()?;
+        self.group.irq_control.shutdown()?;
+        self.shared.mark_startup_absent();
+        Ok(())
+    }
+
     fn disable_after_error(&self, operation: &str, error: &NetError) {
         log::error!(
             "network poll group {} on CPU {} disabled during {operation}: {error}",
@@ -738,6 +756,7 @@ pub(super) struct ExecutorControl {
     pub(super) command: AtomicU8,
     pub(super) affinity_status: AtomicU8,
     pub(super) startup_status: AtomicU8,
+    pub(super) prune_status: AtomicU8,
     pub(super) publication_status: AtomicU8,
     pub(super) startup_error: SpinLock<Option<NetError>>,
     pub(super) notify: Arc<QueueNotification>,
@@ -828,6 +847,23 @@ pub(super) fn queue_executor_main(
         if let Some(irq_synchronized) = requested_irq_synchronization(command) {
             release_executor_resources(groups, wifi, irq_synchronized);
             return;
+        }
+        if command == COMMAND_PRUNE
+            && control.prune_status.load(Ordering::Acquire) == STATUS_PENDING
+        {
+            let result = groups
+                .iter_mut()
+                .try_for_each(QueueGroupExecutor::stop_if_wifi_absent);
+            if let Err(error) = result {
+                *control.startup_error.lock_irqsave() = Some(error);
+                control.prune_status.store(STATUS_FAILED, Ordering::Release);
+                control.notify.notify();
+                let irq_synchronized = wait_for_cleanup_command(&control, &waiter);
+                release_executor_resources(groups, wifi, irq_synchronized);
+                return;
+            }
+            control.prune_status.store(STATUS_READY, Ordering::Release);
+            control.notify.notify();
         }
         if let Some(status) = retain_started_executor_groups(&mut groups, &mut wifi, command) {
             control.publication_status.store(status, Ordering::Release);
@@ -974,7 +1010,7 @@ fn shutdown_queue_groups(mut groups: Vec<QueueGroupExecutor>, irq_synchronized: 
     for group in &mut groups {
         group.shared.disable();
         if group.shared.startup_absent() {
-            // owner_startup.cancel() already completed before this marker was
+            // Startup cancellation or shutdown completed before this marker was
             // published, so no control endpoint owns live DMA to shut down.
             continue;
         }

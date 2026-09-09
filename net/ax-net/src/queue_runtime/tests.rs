@@ -144,7 +144,7 @@ fn tx_frame_marker(buffer: &DmaBuffer) -> u8 {
     buffer.read_with_cpu(buffer.len(), |packet| packet[0])
 }
 
-fn tx_test_port(
+pub(super) fn tx_test_port(
     tx_queue_discipline: TxQueueDiscipline,
     initial_tx_tokens: usize,
 ) -> (

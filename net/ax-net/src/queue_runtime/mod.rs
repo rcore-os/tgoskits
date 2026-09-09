@@ -45,6 +45,7 @@ const COMMAND_START: u8 = 1;
 const COMMAND_STOP: u8 = 2;
 const COMMAND_QUARANTINE: u8 = 3;
 const COMMAND_RUN: u8 = 4;
+const COMMAND_PRUNE: u8 = 5;
 
 const STATUS_PENDING: u8 = 0;
 const STATUS_READY: u8 = 1;
@@ -418,6 +419,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             let mut protocol_groups = Vec::with_capacity(poll_groups.len());
             let mut checksum_capabilities = None;
             let mut wifi_target = None;
+            let mut device_group_locations = Vec::with_capacity(poll_groups.len());
             for mut group in poll_groups {
                 checksum_capabilities = Some(checksum_capabilities.map_or(
                     group.tx.checksum_capabilities(),
@@ -468,6 +470,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                     shared: Arc::clone(&shared),
                 });
                 groups_by_cpu[owner_cpu].push(QueueGroupExecutor {
+                    wifi_startup_group: None,
                     group,
                     rx_ready: rx_ready_tx,
                     rx_recycle: rx_recycle_rx,
@@ -484,12 +487,17 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                     shared: Arc::clone(&shared),
                 });
                 wifi_target.get_or_insert((owner_cpu, owner_group_index, Arc::clone(&shared)));
+                device_group_locations.push((owner_cpu, owner_group_index));
                 group_states.push(shared);
                 flat_group += 1;
             }
             if let Some(wifi_control) = wifi_control {
                 let (owner_cpu, group_index, startup_group) =
                     wifi_target.ok_or(NetworkRuntimeError::InvalidTopology)?;
+                for (group_cpu, local_index) in device_group_locations {
+                    groups_by_cpu[group_cpu][local_index].wifi_startup_group =
+                        Some(Arc::clone(&startup_group));
+                }
                 let queue = Arc::new(WifiControlQueue::new());
                 let handle = WifiRuntimeHandle {
                     device_index,
@@ -535,6 +543,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 command: AtomicU8::new(COMMAND_WAIT),
                 affinity_status: AtomicU8::new(STATUS_PENDING),
                 startup_status: AtomicU8::new(STATUS_PENDING),
+                prune_status: AtomicU8::new(STATUS_PENDING),
                 publication_status: AtomicU8::new(STATUS_PENDING),
                 startup_error: SpinLock::new(None),
                 notify: Arc::clone(&cpu_notifies[owner_cpu]),
@@ -665,37 +674,41 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             }
         }
 
-        for executor in &executors {
-            executor
-                .control
-                .command
-                .store(COMMAND_START, Ordering::Release);
-            executor.control.notify.notify();
-        }
-        for executor in &executors {
-            wait_status(&executor.control.startup_status);
-            if executor.control.startup_status.load(Ordering::Acquire) != STATUS_READY {
-                let error = executor
-                    .control
-                    .startup_error
-                    .lock_irqsave()
-                    .take()
-                    .unwrap_or(NetError::InvalidParts);
-                let irq_synchronized = release_registered_endpoints(registrations);
-                stop_executors(&mut executors, irq_synchronized);
-                release_runtime_side_resources(
-                    (
-                        controls,
-                        ports,
-                        port_macs,
-                        wifi_handles,
-                        startup_transactions,
-                        group_states,
-                        cpu_notifies,
-                    ),
-                    irq_synchronized,
-                );
-                return Err(NetworkRuntimeError::QueueInit(error));
+        for command in [COMMAND_START, COMMAND_PRUNE] {
+            for executor in &executors {
+                executor.control.command.store(command, Ordering::Release);
+                executor.control.notify.notify();
+            }
+            for executor in &executors {
+                let status = if command == COMMAND_START {
+                    &executor.control.startup_status
+                } else {
+                    &executor.control.prune_status
+                };
+                wait_status(status);
+                if status.load(Ordering::Acquire) != STATUS_READY {
+                    let error = executor
+                        .control
+                        .startup_error
+                        .lock_irqsave()
+                        .take()
+                        .unwrap_or(NetError::InvalidParts);
+                    let irq_synchronized = release_registered_endpoints(registrations);
+                    stop_executors(&mut executors, irq_synchronized);
+                    release_runtime_side_resources(
+                        (
+                            controls,
+                            ports,
+                            port_macs,
+                            wifi_handles,
+                            startup_transactions,
+                            group_states,
+                            cpu_notifies,
+                        ),
+                        irq_synchronized,
+                    );
+                    return Err(NetworkRuntimeError::QueueInit(error));
+                }
             }
         }
 

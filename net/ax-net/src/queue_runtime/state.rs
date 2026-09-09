@@ -96,7 +96,7 @@ impl PollGroupState {
     }
 
     pub(super) fn mark_startup_absent(&self) {
-        // The owner publishes this only after startup cancellation has proved
+        // The owner publishes this only after startup cancellation or shutdown has proved
         // that the unpublished group can be released. The builder's acquire
         // load precedes IRQ synchronization and removal of protocol endpoints.
         self.startup_absent.store(true, Ordering::Release);

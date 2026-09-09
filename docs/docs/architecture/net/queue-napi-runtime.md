@@ -448,6 +448,9 @@ sequenceDiagram
     B->>W: run owner_startup on owner CPU
     W->>D: initial refill + rearm_and_check for present groups
     W-->>B: startup_status
+    B->>W: COMMAND_PRUNE after all startup statuses
+    W->>D: stop sibling groups whose Wi-Fi control group is absent
+    W-->>B: prune_status
     B->>I: disable+synchronize absent registrations
     B->>W: COMMAND_RUN
     W->>W: drop absent Wi-Fi slots and queues; remap group_index
@@ -462,6 +465,15 @@ worker 的 `affinity-ready` 不能等价于“task 已创建”。worker 必须�
 `WifiExecutorSlot`，并重映射存活 slot 的 `group_index`。`publication_status`
 只在析构完成后发布；`publish_executors` 等待该确认，并 join 没有存活 group 的
 worker。混合设备场景不保留缺席设备的队列，也不保留仅承载缺席设备的任务。
+
+Wi-Fi 控制端点固定绑定设备的首个 group，不自动迁移到其他 group 或 CPU。
+builder 等全部 `startup_status` 就绪后发送 `COMMAND_PRUNE`；每个 owner 通过
+`QueueGroupExecutor::stop_if_wifi_absent` 检查同设备的控制 group。控制 group
+缺席时，owner 对其余 group 执行 disable、quiesce 和 shutdown，只有成功后才
+标记 absent。builder 等全部 `prune_status` 成功，再同步这些 group 的 IRQ 并
+授权回收，因此多 group 设备会整体跳过，端口、Wi-Fi 句柄和启动事务不会部分发布。
+停止失败时仍返回初始化错误并进入回滚，无法证明 DMA 停止的资源保持隔离。
+
 builder 随后提交存活设备的 startup transaction；IRQ 同步失败时不发送
 `COMMAND_RUN`，而是沿 `QUARANTINE` 路径保留无法安全释放的所有权关系。
 
