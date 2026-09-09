@@ -180,8 +180,11 @@ def check_page():
     expect_status("GET /", status, 200)
     for marker in (
         b"/api/consoles",
-        b"/assets/xterm.js",
-        b"/assets/xterm.css",
+        # The page references its xterm assets relatively, so the same HTML
+        # resolves them wherever the page is mounted (/ or /console/).
+        b'href="assets/xterm.css"',
+        b'src="assets/xterm.js"',
+
         b"new Terminal",
         b"terminal.onData",
         b"catch(() => document.execCommand('copy'))",
