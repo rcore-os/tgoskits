@@ -51,18 +51,18 @@ crate::model_register!(
 struct RknpuDevice {
     core: Rknpu,
     resets: Vec<ResetLine>,
-    quarantined: bool,
+    state: DeviceState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NpuAccess {
-    Hardware,
-    SoftwareCleanup,
+enum DeviceState {
+    Operational,
+    Quarantined,
 }
 
-impl NpuAccess {
-    fn ensure_allowed(self, quarantined: bool) -> Result<(), Error> {
-        if quarantined && matches!(self, Self::Hardware) {
+impl DeviceState {
+    fn ensure_operational(self) -> Result<(), Error> {
+        if matches!(self, Self::Quarantined) {
             Err(Error::Quarantined)
         } else {
             Ok(())
@@ -72,11 +72,11 @@ impl NpuAccess {
 
 impl RknpuDevice {
     fn ensure_available(&self) -> Result<(), Error> {
-        NpuAccess::Hardware.ensure_allowed(self.quarantined)
+        self.state.ensure_operational()
     }
 
     fn recover_timeout(&mut self) -> Result<(), Error> {
-        recover_after_timeout(&mut self.quarantined, || {
+        recover_after_timeout(&mut self.state, || {
             for reset in &self.resets {
                 reset.reset().map_err(|err| {
                     log::error!(
@@ -90,21 +90,30 @@ impl RknpuDevice {
             Ok(())
         })
     }
+
+    fn destroy_gem(&mut self, handle: u32) -> Result<(), Error> {
+        cleanup_gem_if_safe(self.state, || self.core.destroy(handle))
+    }
 }
 
 fn recover_after_timeout(
-    quarantined: &mut bool,
+    state: &mut DeviceState,
     reset_all_cores: impl FnOnce() -> Result<(), Error>,
 ) -> Result<(), Error> {
     if let Err(err) = reset_all_cores() {
-        quarantine_device(quarantined);
+        quarantine_device(state);
         return Err(err);
     }
     Ok(())
 }
 
-fn quarantine_device(quarantined: &mut bool) {
-    *quarantined = true;
+fn quarantine_device(state: &mut DeviceState) {
+    *state = DeviceState::Quarantined;
+}
+
+fn cleanup_gem_if_safe<T>(state: DeviceState, cleanup: impl FnOnce() -> T) -> Result<T, Error> {
+    state.ensure_operational()?;
+    Ok(cleanup())
 }
 
 impl DriverGeneric for RknpuDevice {
@@ -148,7 +157,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let npu = RknpuDevice {
         core: Rknpu::new(&base_regs, config, dma),
         resets,
-        quarantined: false,
+        state: DeviceState::Operational,
     };
     plat_dev.register(npu);
     info!("NPU registered successfully");
@@ -230,12 +239,15 @@ pub fn mem_sync(args: &mut RknpuMemSync) -> Result<(), Error> {
 }
 
 /// Release a GEM handle, freeing an owned allocation or dropping the retainer of
-/// an imported buffer. A missing handle is a no-op.
+/// an imported buffer. A missing handle is a no-op. If the device is quarantined,
+/// this returns [`Error::Quarantined`] and keeps the handle because the device may
+/// still be accessing its backing allocation.
 pub fn mem_destroy(handle: u32) -> Result<(), Error> {
-    with_npu_access(NpuAccess::SoftwareCleanup, |npu| {
-        npu.destroy(handle);
-        Ok(())
-    })
+    let mut npu = rdrive::get_one::<RknpuDevice>()
+        .ok_or(Error::NotFound)?
+        .try_lock()
+        .map_err(|_| Error::Busy)?;
+    npu.destroy_gem(handle)
 }
 
 pub fn mem_map_offset(handle: u32) -> Result<u64, Error> {
@@ -254,18 +266,11 @@ fn with_npu<F, R>(f: F) -> Result<R, Error>
 where
     F: FnOnce(&mut Rknpu) -> Result<R, Error>,
 {
-    with_npu_access(NpuAccess::Hardware, f)
-}
-
-fn with_npu_access<F, R>(access: NpuAccess, f: F) -> Result<R, Error>
-where
-    F: FnOnce(&mut Rknpu) -> Result<R, Error>,
-{
     let mut npu = rdrive::get_one::<RknpuDevice>()
         .ok_or(Error::NotFound)?
         .try_lock()
         .map_err(|_| Error::Busy)?;
-    access.ensure_allowed(npu.quarantined)?;
+    npu.ensure_available()?;
     f(&mut npu.core)
 }
 
@@ -275,11 +280,11 @@ mod tests {
 
     #[test]
     fn failed_timeout_recovery_quarantines_the_device() {
-        let mut quarantined = false;
+        let mut state = DeviceState::Operational;
         let mut reset_attempted = false;
 
         assert_eq!(
-            recover_after_timeout(&mut quarantined, || {
+            recover_after_timeout(&mut state, || {
                 reset_attempted = true;
                 Err(Error::Quarantined)
             }),
@@ -287,14 +292,37 @@ mod tests {
         );
 
         assert!(reset_attempted);
-        assert_eq!(
-            NpuAccess::Hardware.ensure_allowed(quarantined),
-            Err(Error::Quarantined)
-        );
+        assert_eq!(state, DeviceState::Quarantined);
+        assert_eq!(state.ensure_operational(), Err(Error::Quarantined));
     }
 
     #[test]
-    fn software_cleanup_remains_allowed_when_device_is_quarantined() {
-        assert_eq!(NpuAccess::SoftwareCleanup.ensure_allowed(true), Ok(()));
+    fn failed_reset_keeps_gem_backing_for_deferred_cleanup() {
+        use core::sync::atomic::{AtomicBool, Ordering};
+
+        struct DropSpy(Arc<AtomicBool>);
+
+        impl Drop for DropSpy {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let mut state = DeviceState::Operational;
+        assert_eq!(
+            recover_after_timeout(&mut state, || Err(Error::Quarantined)),
+            Err(Error::Quarantined)
+        );
+
+        let released = Arc::new(AtomicBool::new(false));
+        let mut backing = Some(DropSpy(released.clone()));
+        let result = cleanup_gem_if_safe(state, || backing.take());
+
+        assert!(matches!(result, Err(Error::Quarantined)));
+        assert!(backing.is_some());
+        assert!(!released.load(Ordering::SeqCst));
+
+        drop(backing);
+        assert!(released.load(Ordering::SeqCst));
     }
 }
