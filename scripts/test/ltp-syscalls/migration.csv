@@ -32,7 +32,7 @@ test-suit/starryos/qemu/system/bugfix-bug-fcntl-posix-lock,bug-fcntl-posix-lock,
 test-suit/starryos/qemu/system/bugfix-bug-fcntl-setlkw-blocks,bug-fcntl-setlkw-blocks,待审计,,,,,
 test-suit/starryos/qemu/system/bugfix-bug-fcntl-whence,bug-fcntl-whence,待审计,,,,,
 test-suit/starryos/qemu/system/bugfix-bug-flock,bug-flock,部分替代并清理,flock02 flock04 flock06,同进程不同open的排他冲突及解锁后成功；跨进程共享/排他组合；排他冲突EWOULDBLOCK及错误参数,同进程两OFD的共享锁组合；共享锁阻止排他时精确EWOULDBLOCK（flock04只检查失败返回）,"四架构03-candidates-<arch>.log实际通过；flock02=4 TPASS,flock04=6 TPASS,flock06=4 TPASS；未修改内核或上游测试；最终累计集合另验",test(starry): migrate flock exclusion regression to LTP
-test-suit/starryos/qemu/system/bugfix-bug-flock-blocks,bug-flock-blocks,待审计,,,,,
+test-suit/starryos/qemu/system/bugfix-bug-flock-blocks,bug-flock-blocks,部分替代并清理,flock02 flock07,LOCK_NB排他冲突EWOULDBLOCK；无SA_RESTART处理函数中断阻塞LOCK_EX返回EINTR,父进程显式解锁后阻塞者成功获得锁；至少50ms阻塞及非阻塞最多50ms的耗时断言；LTP信号场景仍使用上游一秒睡眠,"四架构03-candidates-<arch>.log实际通过；flock02=4 TPASS,flock07=2 TPASS；未修改内核或上游测试；最终累计集合另验",test(starry): migrate interruptible flock regression to LTP
 test-suit/starryos/qemu/system/bugfix-bug-flock-failed-upgrade,bug-flock-failed-upgrade,待审计,,,,,
 test-suit/starryos/qemu/system/bugfix-bug-futex-wait-wake,bug-futex-wait-wake,待验证,futex_wait03,pthread私有futex等待唤醒与返回值,原ready+50ms未证明已阻塞；需核实LTP具体同步,候选已在累计manifest；主线程复核待完成,
 test-suit/starryos/qemu/system/bugfix-bug-getcwd-syscall-return,bug-getcwd-syscall-return,待审计,,,,,

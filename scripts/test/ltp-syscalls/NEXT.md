@@ -47,3 +47,11 @@
 未承接：同进程两OFD的共享锁组合；共享锁阻止排他时精确EWOULDBLOCK（flock04只检查失败返回）。本项是部分替代，原程序及专属 CMake 清理。
 
 四架构03-candidates-<arch>.log实际通过；flock02=4 TPASS,flock04=6 TPASS,flock06=4 TPASS；未修改内核或上游测试；最终累计集合另验。提交主题为 `test(starry): migrate flock exclusion regression to LTP`。
+
+### 2.5 flock 信号中断
+
+`bug-flock-blocks` 替换为 [flock02.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/flock/flock02.c), [flock07.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/flock/flock07.c)。承接行为：LOCK_NB排他冲突EWOULDBLOCK；无SA_RESTART处理函数中断阻塞LOCK_EX返回EINTR。
+
+未承接：父进程显式解锁后阻塞者成功获得锁；至少50ms阻塞及非阻塞最多50ms的耗时断言；LTP信号场景仍使用上游一秒睡眠。本项是部分替代，原程序及专属 CMake 清理。
+
+四架构03-candidates-<arch>.log实际通过；flock02=4 TPASS,flock07=2 TPASS；未修改内核或上游测试；最终累计集合另验。提交主题为 `test(starry): migrate interruptible flock regression to LTP`。

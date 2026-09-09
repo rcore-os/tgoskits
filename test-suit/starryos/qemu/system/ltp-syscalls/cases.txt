@@ -32,6 +32,7 @@ fcntl36
 flock02
 flock04
 flock06
+flock07
 futex_wait01
 futex_wait02
 futex_wait03
