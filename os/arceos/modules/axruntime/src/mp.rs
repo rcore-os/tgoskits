@@ -63,7 +63,7 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early_secondary(cpu_id);
 
-    #[cfg(feature = "tls")]
+    #[cfg(kernel_tls)]
     crate::thread::initialize_early_bootstrap_tls()
         .expect("failed to initialize secondary bootstrap TLS");
 

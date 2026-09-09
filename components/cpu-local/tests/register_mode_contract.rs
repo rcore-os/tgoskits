@@ -53,7 +53,7 @@ fn image_mode_is_additive_but_the_prefix_layout_is_not() {
             .unwrap_or_else(|| panic!("{type_name} must have a bounded definition"))
             .0;
         assert!(
-            !definition.contains("cfg(feature = \"tls\")"),
+            !definition.contains("cfg(kernel_tls)"),
             "Cargo image mode must never alter {type_name} layout"
         );
     }
@@ -137,7 +137,7 @@ fn each_image_mode_selects_one_current_context_source() {
 
 #[test]
 fn register_backends_implement_both_compile_time_image_modes() {
-    assert!(REGISTER.contains("cfg(feature = \"tls\")"));
+    assert!(REGISTER.contains("cfg(kernel_tls)"));
 
     assert!(X86_64.contains("IA32_GS_BASE"));
 

@@ -7,14 +7,17 @@ keywords = ["os"]
 license = "MPL-2.0"
 name = "someboot"
 repository.workspace = true
-version = "0.5.0"
+version = "0.5.1"
 
 [features]
 efi = []
 hv = []
 mmu = []
 thead-mae = []
+# Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = []
+# Enable userspace support without kernel TLS, including when `tls` is enabled.
+# User-space TLS remains available through the userspace context APIs.
 uspace = ["mmu"]
 
 [lints.rust]

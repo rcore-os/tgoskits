@@ -25,7 +25,7 @@ impl CpuRuntimeAnchor {
     const fn for_boot_context(boot_context: usize) -> Self {
         let current_context = if cfg!(all(target_arch = "x86_64", not(feature = "host-test")))
             || cfg!(all(
-                feature = "tls",
+                kernel_tls,
                 not(all(target_arch = "aarch64", not(feature = "host-test")))
             )) {
             boot_context

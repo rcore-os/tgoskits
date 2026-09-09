@@ -1,6 +1,6 @@
 [package]
 name = "ax-hal"
-version = "0.7.0"
+version = "0.7.1"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -22,8 +22,11 @@ paging = [
     "dep:ax-alloc",
     "dep:page-table-generic",
 ]
+# Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["ax-cpu/tls", "cpu-local/tls", "axplat-dyn/tls"]
-uspace = ["paging", "ax-cpu/uspace", "axplat-dyn/uspace"]
+# Enable userspace support without kernel TLS, including when `tls` is enabled.
+# User-space TLS remains available through the userspace context APIs.
+uspace = ["paging", "ax-cpu/uspace", "cpu-local/uspace", "axplat-dyn/uspace"]
 hv = [
   "paging",
   "ax-cpu/exception-table",

@@ -1,6 +1,6 @@
 [package]
 name = "ax-std"
-version = "0.6.0"
+version = "0.6.1"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -43,6 +43,8 @@ smp = ["ax-runtime/smp", "ax-posix-api/smp"]
 fp-simd = ["ax-hal/fp-simd", "ax-runtime/fp-simd"]
 
 # User space support
+# Enable userspace support without kernel TLS, including when `tls` is enabled.
+# User-space TLS remains available through the userspace context APIs.
 uspace = ["ax-runtime/uspace"]
 
 # Hypervisor support
@@ -57,6 +59,7 @@ ext-ld = ["ax-runtime/ext-ld"]
 # Memory
 alloc = ["ax-api/alloc", "ax-io/alloc", "ax-posix-api/alloc"]
 paging = ["alloc", "ax-runtime/paging"]
+# Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["ax-runtime/tls"]
 
 # Scheduler configuration

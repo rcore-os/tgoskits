@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(not(feature = "host-test"))]
 use ax_memory_addr::MemoryAddr;
 use ax_memory_addr::{PhysAddr, VirtAddr};
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 use x86::msr;
 #[cfg(not(feature = "host-test"))]
 use x86::{controlregs, tlb};
@@ -26,7 +26,7 @@ use x86_64::instructions::tlb::{InvPcidCommand, flush_pcid};
 use crate::InstalledAddressSpace;
 #[cfg(all(feature = "uspace", not(feature = "host-test")))]
 use crate::InstalledAddressSpaceMode;
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 use crate::KernelTlsBase;
 
 #[cfg(not(feature = "host-test"))]
@@ -303,7 +303,7 @@ pub fn update_mmu_cache(_vaddr: VirtAddr) {}
 ///
 /// It is used to implement TLS (Thread Local Storage).
 #[inline]
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub fn read_thread_pointer() -> KernelTlsBase {
     KernelTlsBase::new(unsafe { msr::rdmsr(msr::IA32_FS_BASE) as usize })
 }
@@ -316,7 +316,7 @@ pub fn read_thread_pointer() -> KernelTlsBase {
 ///
 /// This function is unsafe as it changes the CPU states.
 #[inline]
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub unsafe fn write_thread_pointer(kernel_tls: KernelTlsBase) {
     unsafe { msr::wrmsr(msr::IA32_FS_BASE, kernel_tls.as_usize() as u64) }
 }

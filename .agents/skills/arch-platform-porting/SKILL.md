@@ -35,7 +35,7 @@ description: 为 ArceOS、StarryOS、Axvisor、someboot、动态统一可扩展�
 ## 移植检查清单
 
 - **目标与工具链**：检查 `scripts/targets` 目标规格、目标三元组、内核恐慌策略、重定位与代码模型、二进制接口、软浮点、musl 或标准库支持、链接器、目标文件复制工具和 `rust-src`。四架构裸机构建和 Clippy 必须通过共享 `BareBuildTarget` 统一解析 `scripts/targets/bare/<逻辑目标名>.json`，不得为单一架构退回内置目标或另加命令行 target feature；逻辑目标名、`AX_TARGET` 和产物目录仍使用原目标三元组，JSON 路径只作为 Cargo `--target` 输入。各 JSON 精确保持固定 nightly 对应内置目标的二进制接口和指令集基线；LoongArch 目标额外保持 `lp64s` soft-float，并在 target specification 的 `features` 中声明 `-ual`，不得恢复会产生 unstable target feature 警报的命令行 `-Ctarget-feature=-ual`。改动 LoongArch 规格后同时运行 ArceOS `unaligned-fixup` 与 Starry `c-regression-test-loongarch-unaligned-cross-page` 回归，确认未对齐异常修复、跨页访问和 `SIGBUS` 语义。
-- **内核运行模式**：明确最终映像契约。Starry 是以 `build-std=core,alloc` 构建的独立 `no_std`、`no_main` 位置无关可执行文件，始终保留对称多处理能力且不得含内核线程局部存储。Axvisor 保持标准库与 musl 位置无关可执行文件，并显式启用线程局部存储。ArceOS 默认启用线程局部存储，但配置必须拒绝 `uspace + tls`，不能构造寄存器所有权重叠的映像。
+- **内核运行模式**：明确最终映像契约。Starry 是以 `build-std=core,alloc` 构建的独立 `no_std`、`no_main` 位置无关可执行文件，始终保留对称多处理能力且不得含内核线程局部存储。Axvisor 保持标准库与 musl 位置无关可执行文件，并显式启用线程局部存储。ArceOS 默认启用线程局部存储；`uspace + tls` 按 `uspace` 选择寄存器所有权，内部 `kernel_tls` cfg 关闭。
 - **处理器局部执行上下文二进制接口**：`cpu-local` 独占当前来源选择、上下文绑定、切换事务和体系结构选定的抢占状态；`ax-percpu` 只负责类型化布局与存储。不得创建第二个逐处理器当前上下文指针。最终映像模式决定寄存器分配；精确初始化后的 `CpuAreaRef` 地址就是区域身份，不增加映像内二进制接口版本、代数、标记、提供者特征外部函数接口或原始线程指针访问。
 
   | 体系结构 | 处理器区域 | `LinuxCurrent` | `UnikernelTls` |
@@ -99,6 +99,7 @@ description: 为 ArceOS、StarryOS、Axvisor、someboot、动态统一可扩展�
 - x86_64 直接位置无关可执行启动在进入 Rust 前，由裸函数和相对指令指针入口应用受支持的 `R_X86_64_RELATIVE`。统一可扩展固件接口头可以共用头部节，但原始入口符号仍是直接加载入口，加载偏移后其物理地址保持有效。
 - AArch64 需要在 Rust 全局保存异常级转换状态时，把它传入重定位后入口，不能在重定位前写可重定位静态变量。统一可扩展固件接口入口按通用固件重定位契约适配 `relocate::apply`，在公共异常级设置前初始化统一可扩展固件接口、扁平设备树和高级配置与电源接口，不能重进会清理未初始化数据段或覆盖已取得设备树地址的直接启动路径。
 - 未初始化数据段只清理一次，且先保存其中的入口数据。
+- `tls` 与 `uspace` 同时启用时采用 `uspace` 的寄存器所有权，不启用内核 TLS。相关软件包在 `build.rs` 由 `CARGO_FEATURE_TLS` 存在且 `CARGO_FEATURE_USPACE` 不存在派生内部 `kernel_tls` cfg；Cargo feature 必须完整转发到 `cpu-local` 和启动层，自定义 cfg 不跨包传播。`someboot::Build::kernel_tls` 与源码 cfg 消费同一次计算结果，不能使用 AArch64 启动调整后的 `Build::uspace` 反推内核 TLS。
 - 线程局部存储与无线程局部存储使用不同链接布局。后者拒绝 `.tdata` 和 `.tbss` 并省略 `PT_TLS`；前者保留线程局部存储程序头和启动数据。
 - LoongArch 开放虚拟机固件同时取得固件设备树配置表和高级配置与电源接口根系统描述指针，但不由 someboot 或 somehal 再从这些表探测实时时钟。动态路径先使用统一可扩展固件接口运行服务 `GetTime`；固件时钟不可用时，由 `ax-driver` 处理 `loongson,ls7a-rtc` 或 `LOON0001`。
 - 启用对称多处理前分配并对齐启动栈、逐处理器区域、次处理器栈、启动参数和页表；启用中断、定时中断、内存管理单元错误或次处理器前安装陷阱向量。

@@ -69,7 +69,7 @@ AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步
 
 - Starry 使用原裸机目标，以 `build-std=core,alloc` 构建 `no_std`、`no_main` 位置无关可执行文件；对称多处理是构建能力，运行时处理器上限另行配置。最终文件必须为 `ET_DYN`，且没有 `PT_TLS`、`.tdata` 或 `.tbss`。
 - Axvisor 保持标准库与 musl 位置无关可执行文件，并从 axruntime、axhal、`cpu-local`、axvm、axplat-dyn、somehal 到 someboot 显式选择完整线程局部存储链。AxVM 在每次客户机转换前后保存宿主内核线程局部存储值，并验证精确处理器区域。
-- ArceOS 默认保留线程局部存储。用户空间构建使用同一体系结构寄存器保存 Linux 当前上下文，因此 `uspace + tls` 是配置错误。
+- ArceOS 默认保留线程局部存储。用户空间构建使用同一体系结构寄存器保存 Linux 当前上下文，因此 `uspace + tls` 按 `uspace` 处理，`build.rs` 不输出 `kernel_tls` cfg，链接脚本也不启用内核 TLS。
 - someboot 分别生成线程局部存储与无线程局部存储链接布局。可重定位直接映像应在多个加载偏移检查最终文件，只接受体系结构支持的相对重定位类型。
 
 ## AArch64 Axvisor 异常级 2 检查

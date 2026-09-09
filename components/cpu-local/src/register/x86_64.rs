@@ -5,7 +5,7 @@ use crate::{
 };
 
 const IA32_GS_BASE: u32 = 0xc000_0101;
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 const IA32_FS_BASE: u32 = 0xc000_0100;
 
 pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentModel {
@@ -213,7 +213,7 @@ pub(super) unsafe fn compare_exchange_preemption_state(
     observed == current
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) unsafe fn read_kernel_tls() -> usize {
     let low: u32;
     let high: u32;
@@ -229,7 +229,7 @@ pub(super) unsafe fn read_kernel_tls() -> usize {
     ((high as usize) << 32) | low as usize
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) unsafe fn write_kernel_tls(value: usize) {
     let value = value as u64;
     unsafe {

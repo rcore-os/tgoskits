@@ -816,7 +816,7 @@ impl TaskContext {
     }
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 #[unsafe(naked)]
 unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
     naked_asm!(
@@ -878,7 +878,7 @@ mod tests {
     }
 }
 
-#[cfg(not(feature = "tls"))]
+#[cfg(not(kernel_tls))]
 #[unsafe(naked)]
 unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
     naked_asm!(

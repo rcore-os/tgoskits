@@ -134,7 +134,7 @@ pub(super) fn assemble_bootstrap_resources(
     if context.is_none() {
         return Err(TaskError::InvalidRuntimeHandle);
     }
-    #[cfg(feature = "tls")]
+    #[cfg(kernel_tls)]
     if tls.is_none() {
         return Err(TaskError::InvalidRuntimeHandle);
     }

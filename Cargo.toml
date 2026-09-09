@@ -134,8 +134,8 @@ arm_vgic = { version = "0.6", path = "virtualization/arm_vgic" }
 ax-alloc = { version = "0.9", path = "memory/ax-alloc", default-features = false }
 ax-api = { version = "0.8", path = "os/arceos/api/arceos_api" }
 ax-arm-pl031 = { version = "0.4", path = "drivers/rtc/arm_pl031" }
-cpu-local = { version = "0.2", path = "components/cpu-local" }
-ax-cpu = { version = "0.9", path = "components/axcpu" }
+cpu-local = { version = "0.3.0", path = "components/cpu-local" }
+ax-cpu = { version = "0.9.1", path = "components/axcpu" }
 ax-cpumask = { version = "0.4", path = "components/cpumask" }
 ax-crate-interface = { version = "0.5", path = "components/crate_interface" }
 ax-cgroup = { version = "0.3", path = "components/ax-cgroup" }
@@ -145,7 +145,7 @@ ax-display = { version = "0.6", path = "os/arceos/modules/axdisplay" }
 ax-driver = { version = "0.14", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 ax-fs-ng = { version = "0.10", path = "fs/ax-fs-ng" }
-ax-hal = { version = "0.7", path = "os/arceos/modules/axhal" }
+ax-hal = { version = "0.7.1", path = "os/arceos/modules/axhal" }
 irq-framework = { version = "0.5", path = "components/irq-framework" }
 ax-input = { version = "0.6", path = "os/arceos/modules/axinput" }
 ax-io = { version = "0.7", path = "components/axio" }
@@ -166,8 +166,8 @@ ax-plat = { version = "0.14", path = "platforms/ax-plat" }
 ax-plat-macros = { version = "0.3", path = "platforms/ax-plat-macros" }
 ax-posix-api = { version = "0.6.1", path = "os/arceos/api/arceos_posix_api" }
 ax-riscv-plic = { version = "0.4", path = "drivers/intc/riscv_plic" }
-ax-runtime = { version = "0.12", path = "os/arceos/modules/axruntime" }
-ax-std = { version = "0.6", path = "os/arceos/ulib/axstd", default-features = false }
+ax-runtime = { version = "0.12.1", path = "os/arceos/modules/axruntime" }
+ax-std = { version = "0.6.1", path = "os/arceos/ulib/axstd", default-features = false }
 ax-sync = { version = "0.6", path = "os/arceos/modules/axsync" }
 ax-task = { version = "0.7", path = "components/ax-task" }
 ax-tracepoint = { version = "0.6", path = "components/ax-tracepoint" }
@@ -183,7 +183,7 @@ axfs-ng-vfs = { version = "0.7", path = "fs/axfs-ng-vfs" }
 axhvc = { version = "0.5", path = "virtualization/axhvc" }
 axivc = { version = "0.1", path = "virtualization/axivc" }
 axklib = { version = "0.9", path = "components/axklib" }
-axplat-dyn = { version = "0.9", path = "platforms/axplat-dyn", default-features = false }
+axplat-dyn = { version = "0.9.1", path = "platforms/axplat-dyn", default-features = false }
 axpoll = { version = "0.7", path = "components/axpoll" }
 axvirtio-blk = { version = "0.2", path = "virtualization/axvirtio-blk" }
 axvirtio-common = { version = "0.2", path = "virtualization/axvirtio-common" }
@@ -259,13 +259,13 @@ httpboot-protocol = { version = "0.1.0", default-features = false }
 x86_vcpu = { version = "0.7.1", path = "virtualization/x86_vcpu", default-features = false }
 x86_vlapic = { version = "0.5", path = "virtualization/x86_vlapic" }
 page-table-generic = { version = "0.9", path = "memory/page-table-generic" }
-someboot = { version = "0.5", path = "platforms/someboot" }
+someboot = { version = "0.5.1", path = "platforms/someboot" }
 some-serial = { version = "0.7", path = "drivers/serial/some-serial" }
 kernutil = { path = "components/kernutil", version = "0.3" }
 ranges-ext = { version = "0.6", path = "memory/ranges-ext" }
 somehal-macros = { path = "platforms/somehal-macros", version = "0.1" }
 kasm-aarch64 = { path = "components/kasm-aarch64", version = "0.2" }
-somehal = { version = "0.10", path = "platforms/somehal" }
+somehal = { version = "0.10.1", path = "platforms/somehal" }
 
 # External crates
 acpi_tables = "0.2.1"

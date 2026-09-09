@@ -2,7 +2,7 @@
 
 use core::mem::{offset_of, size_of};
 
-#[cfg(not(feature = "tls"))]
+#[cfg(not(kernel_tls))]
 use cpu_local::EXECUTION_CONTEXT_ARCH_STATE_OFFSET;
 use cpu_local::{
     CPU_AREA_ARCH_STATE_OFFSET, CPU_AREA_ARCH_STATE_SIZE, EXECUTION_CONTEXT_ARCH_STATE_SIZE,
@@ -28,16 +28,16 @@ pub(super) const CPU_KERNEL_STACK_POINTER_OFFSET: usize =
     CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuTrapState, kernel_stack_pointer);
 pub(super) const CPU_USER_TRAP_FRAME_OFFSET: usize =
     CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuTrapState, user_trap_frame);
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) const CPU_ENTRY_SCRATCH0_OFFSET: usize =
     CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuTrapState, entry_scratch0);
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) const CPU_ENTRY_SCRATCH1_OFFSET: usize =
     CPU_AREA_ARCH_STATE_OFFSET + offset_of!(CpuTrapState, entry_scratch1);
-#[cfg(not(feature = "tls"))]
+#[cfg(not(kernel_tls))]
 pub(super) const THREAD_SCRATCH0_OFFSET: usize =
     EXECUTION_CONTEXT_ARCH_STATE_OFFSET + offset_of!(ThreadTrapState, scratch0);
-#[cfg(not(feature = "tls"))]
+#[cfg(not(kernel_tls))]
 pub(super) const THREAD_SCRATCH1_OFFSET: usize =
     EXECUTION_CONTEXT_ARCH_STATE_OFFSET + offset_of!(ThreadTrapState, scratch1);
 

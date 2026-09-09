@@ -758,7 +758,7 @@ dependencies = [
 
 [[package]]
 name = "ax-cpu"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-lazyinit",
@@ -929,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "ax-hal"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -1147,7 +1147,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "ax-alloc",
  "ax-crate-interface",
@@ -1197,7 +1197,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1421,7 +1421,7 @@ version = "0.1.1"
 
 [[package]]
 name = "axplat-dyn"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "ax-cpu",
@@ -2352,7 +2352,7 @@ dependencies = [
 
 [[package]]
 name = "cpu-local"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "thiserror 2.0.20",
 ]
@@ -7703,7 +7703,7 @@ dependencies = [
 
 [[package]]
 name = "someboot"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -7746,7 +7746,7 @@ dependencies = [
 
 [[package]]
 name = "somehal"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",

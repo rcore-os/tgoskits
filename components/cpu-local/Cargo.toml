@@ -1,6 +1,6 @@
 [package]
 name = "cpu-local"
-version = "0.2.1"
+version = "0.3.0"
 description = "Architecture CPU-local register capability for TGOSKits"
 repository.workspace = true
 edition.workspace = true
@@ -14,7 +14,12 @@ license.workspace = true
 # retain Linux current semantics; TP-aliased backends publish current through
 # the CPU runtime anchor while TP carries the TLS base, and their HAL adapter
 # excludes local IRQs across each unpinned current/preemption operation.
+# Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = []
+
+# Select userspace register ownership, overriding `tls` when both are enabled.
+# User-space TLS itself is managed by the architecture user-context APIs.
+uspace = []
 
 # Use a thread-local register model for host-side tests.
 host-test = []

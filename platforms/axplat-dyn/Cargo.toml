@@ -1,6 +1,6 @@
 [package]
 name = "axplat-dyn"
-version = "0.9.0"
+version = "0.9.1"
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories.workspace = true
 description = "A dynamic platform module for ArceOS, providing runtime platform detection and configuration"
@@ -15,8 +15,11 @@ smp = ["ax-plat/smp"]
 rtc = []
 efi = ["somehal/efi"]
 fp-simd = ["ax-cpu/fp-simd"]
+# Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["somehal/tls", "ax-cpu/tls", "cpu-local/tls"]
-uspace = ["somehal/uspace"]
+# Enable userspace support without kernel TLS, including when `tls` is enabled.
+# User-space TLS remains available through the userspace context APIs.
+uspace = ["somehal/uspace", "ax-cpu/uspace", "cpu-local/uspace"]
 hv = ["somehal/hv"]
 thead-mae = ["somehal/thead-mae", "ax-cpu/xuantie-c9xx"]
 

@@ -1,6 +1,6 @@
 use core::mem::size_of;
 
-#[cfg(not(feature = "tls"))]
+#[cfg(not(kernel_tls))]
 use cpu_local::EXECUTION_CONTEXT_CPU_BASE_OFFSET;
 #[cfg(feature = "fp-simd")]
 use riscv::register::sstatus;
@@ -12,9 +12,9 @@ use riscv::{
     register::{scause, stval},
 };
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 use super::local_state::{CPU_ENTRY_SCRATCH0_OFFSET, CPU_ENTRY_SCRATCH1_OFFSET};
-#[cfg(not(feature = "tls"))]
+#[cfg(not(kernel_tls))]
 use super::local_state::{THREAD_SCRATCH0_OFFSET, THREAD_SCRATCH1_OFFSET};
 use super::{
     TrapFrame,
@@ -95,7 +95,7 @@ impl core::fmt::Debug for KernelTrapFrame<'_> {
     }
 }
 
-#[cfg(not(feature = "tls"))]
+#[cfg(not(kernel_tls))]
 core::arch::global_asm!(
     include_asm_macros!(),
     include_str!("trap.S"),
@@ -107,7 +107,7 @@ core::arch::global_asm!(
     thread_scratch1_index = const THREAD_SCRATCH1_OFFSET / size_of::<usize>(),
 );
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 core::arch::global_asm!(
     include_asm_macros!(),
     include_str!("trap_tls.S"),

@@ -14,7 +14,7 @@ pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
 }
 
 pub(super) unsafe fn install_cpu_base(area_base: usize, boot_context: usize) {
-    if cfg!(feature = "tls") {
+    if cfg!(kernel_tls) {
         unsafe { core::arch::asm!("csrw sscratch, {base}", base = in(reg) area_base) };
     } else {
         unsafe {
@@ -28,7 +28,7 @@ pub(super) unsafe fn install_cpu_base(area_base: usize, boot_context: usize) {
 }
 
 pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
-    if cfg!(feature = "tls") {
+    if cfg!(kernel_tls) {
         let area_base: usize;
         unsafe { core::arch::asm!("csrr {base}, sscratch", base = out(reg) area_base) };
         Ok(area_base)
@@ -46,7 +46,7 @@ pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
 }
 
 pub(super) unsafe fn read_current_context(area_base: usize) -> usize {
-    if cfg!(feature = "tls") {
+    if cfg!(kernel_tls) {
         unsafe { area_runtime_anchor(area_base) }.current_context_raw()
     } else {
         let current: usize;
@@ -56,19 +56,19 @@ pub(super) unsafe fn read_current_context(area_base: usize) -> usize {
 }
 
 pub(super) unsafe fn write_current_context(value: usize) {
-    if !cfg!(feature = "tls") {
+    if !cfg!(kernel_tls) {
         unsafe { core::arch::asm!("mv tp, {value}", value = in(reg) value) };
     }
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) unsafe fn read_kernel_tls() -> usize {
     let value: usize;
     unsafe { core::arch::asm!("mv {value}, tp", value = out(reg) value) };
     value
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) unsafe fn write_kernel_tls(value: usize) {
     unsafe { core::arch::asm!("mv tp, {value}", value = in(reg) value) };
 }

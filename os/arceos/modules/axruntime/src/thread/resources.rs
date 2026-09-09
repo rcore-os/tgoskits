@@ -26,7 +26,7 @@ pub(super) enum StackBacking {
     VirtualPages(ax_mm::KernelVirtualAllocation),
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 struct RuntimeTls {
     area: ax_hal::tls::TlsArea,
 }
@@ -136,14 +136,14 @@ pub(super) fn deallocate_runtime_stack(handle: StackHandle) -> RuntimeStatus {
 }
 
 pub(super) fn allocate_runtime_tls() -> RuntimeHandleResult {
-    #[cfg(feature = "tls")]
+    #[cfg(kernel_tls)]
     {
         let tls = Box::new(RuntimeTls {
             area: ax_hal::tls::TlsArea::alloc(),
         });
         RuntimeHandleResult::success(Box::into_raw(tls).expose_provenance())
     }
-    #[cfg(not(feature = "tls"))]
+    #[cfg(not(kernel_tls))]
     {
         RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
     }
@@ -153,7 +153,7 @@ pub(super) fn deallocate_runtime_tls(handle: TlsHandle) -> RuntimeStatus {
     if handle.is_none() {
         return RuntimeStatus::Success;
     }
-    #[cfg(feature = "tls")]
+    #[cfg(kernel_tls)]
     {
         // SAFETY: the scheduler consumes a live runtime TLS handle once.
         drop(unsafe {
@@ -163,13 +163,13 @@ pub(super) fn deallocate_runtime_tls(handle: TlsHandle) -> RuntimeStatus {
         });
         RuntimeStatus::Success
     }
-    #[cfg(not(feature = "tls"))]
+    #[cfg(not(kernel_tls))]
     {
         RuntimeStatus::Unsupported
     }
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) fn runtime_tls_pointer(handle: TlsHandle) -> usize {
     if handle.is_none() {
         return 0;
@@ -183,7 +183,7 @@ pub(super) fn runtime_tls_pointer(handle: TlsHandle) -> usize {
     }
 }
 
-#[cfg(not(feature = "tls"))]
+#[cfg(not(kernel_tls))]
 pub(super) fn runtime_tls_pointer(_handle: TlsHandle) -> usize {
     0
 }

@@ -1,6 +1,6 @@
 [package]
 name = "ax-cpu"
-version = "0.9.0"
+version = "0.9.1"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -26,8 +26,11 @@ exception-table = []
 fp-simd = []
 # Use unprivileged host-safe register fallbacks in scheduler tests.
 host-test = []
+# Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["cpu-local/tls"]
-uspace = ["exception-table"]
+# Enable userspace support without kernel TLS, including when `tls` is enabled.
+# User-space TLS remains available through the userspace context APIs.
+uspace = ["exception-table", "cpu-local/uspace"]
 arm-el2 = []
 xuantie-c9xx = []
 

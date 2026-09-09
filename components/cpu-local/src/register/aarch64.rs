@@ -53,14 +53,14 @@ pub(super) unsafe fn write_current_context(value: usize) {
     unsafe { core::arch::asm!("msr SP_EL0, {value}", value = in(reg) value) };
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) unsafe fn read_kernel_tls() -> usize {
     let value: usize;
     unsafe { core::arch::asm!("mrs {value}, TPIDR_EL0", value = out(reg) value) };
     value
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) unsafe fn write_kernel_tls(value: usize) {
     unsafe { core::arch::asm!("msr TPIDR_EL0, {value}", value = in(reg) value) };
 }
