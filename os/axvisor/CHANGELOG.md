@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.7.0...axvisor-v0.7.1) - 2026-09-09
+
+### Fixed
+
+- *(release)* restore verified semver checks and package Axvisor linker ([#2335](https://github.com/rcore-os/tgoskits/pull/2335))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.6.2...axvisor-v0.7.0) - 2026-09-09
 
 ### Added
