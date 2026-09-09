@@ -54,9 +54,25 @@ struct RknpuDevice {
     quarantined: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NpuAccess {
+    Hardware,
+    SoftwareCleanup,
+}
+
+impl NpuAccess {
+    fn ensure_allowed(self, quarantined: bool) -> Result<(), Error> {
+        if quarantined && matches!(self, Self::Hardware) {
+            Err(Error::Quarantined)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl RknpuDevice {
     fn ensure_available(&self) -> Result<(), Error> {
-        ensure_device_available(self.quarantined)
+        NpuAccess::Hardware.ensure_allowed(self.quarantined)
     }
 
     fn recover_timeout(&mut self) -> Result<(), Error> {
@@ -89,14 +105,6 @@ fn recover_after_timeout(
 
 fn quarantine_device(quarantined: &mut bool) {
     *quarantined = true;
-}
-
-fn ensure_device_available(quarantined: bool) -> Result<(), Error> {
-    if quarantined {
-        Err(Error::Quarantined)
-    } else {
-        Ok(())
-    }
 }
 
 impl DriverGeneric for RknpuDevice {
@@ -224,7 +232,7 @@ pub fn mem_sync(args: &mut RknpuMemSync) -> Result<(), Error> {
 /// Release a GEM handle, freeing an owned allocation or dropping the retainer of
 /// an imported buffer. A missing handle is a no-op.
 pub fn mem_destroy(handle: u32) -> Result<(), Error> {
-    with_npu(|npu| {
+    with_npu_access(NpuAccess::SoftwareCleanup, |npu| {
         npu.destroy(handle);
         Ok(())
     })
@@ -246,11 +254,18 @@ fn with_npu<F, R>(f: F) -> Result<R, Error>
 where
     F: FnOnce(&mut Rknpu) -> Result<R, Error>,
 {
+    with_npu_access(NpuAccess::Hardware, f)
+}
+
+fn with_npu_access<F, R>(access: NpuAccess, f: F) -> Result<R, Error>
+where
+    F: FnOnce(&mut Rknpu) -> Result<R, Error>,
+{
     let mut npu = rdrive::get_one::<RknpuDevice>()
         .ok_or(Error::NotFound)?
         .try_lock()
         .map_err(|_| Error::Busy)?;
-    npu.ensure_available()?;
+    access.ensure_allowed(npu.quarantined)?;
     f(&mut npu.core)
 }
 
@@ -273,8 +288,13 @@ mod tests {
 
         assert!(reset_attempted);
         assert_eq!(
-            ensure_device_available(quarantined),
+            NpuAccess::Hardware.ensure_allowed(quarantined),
             Err(Error::Quarantined)
         );
+    }
+
+    #[test]
+    fn software_cleanup_remains_allowed_when_device_is_quarantined() {
+        assert_eq!(NpuAccess::SoftwareCleanup.ensure_allowed(true), Ok(()));
     }
 }
