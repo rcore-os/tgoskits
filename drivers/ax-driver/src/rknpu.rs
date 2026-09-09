@@ -154,8 +154,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     if resets.is_empty() {
         return Err(OnProbeError::other("RKNPU node has no reset line"));
     }
+    let core = Rknpu::new(&base_regs, config, dma).map_err(|error| {
+        OnProbeError::other(format!("failed to initialize RK3588 NPU: {error}"))
+    })?;
     let npu = RknpuDevice {
-        core: Rknpu::new(&base_regs, config, dma),
+        core,
         resets,
         state: DeviceState::Operational,
     };

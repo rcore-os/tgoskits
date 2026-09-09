@@ -101,10 +101,26 @@ impl Rknpu {
     /// The caller must ensure that `base_addr` is the correctly mapped and
     /// aligned physical address of the RKNPU register file and that it remains
     /// valid for the lifetime of the returned structure.
-    pub fn new(base_addrs: &[NonNull<u8>], config: RknpuConfig, dma: DeviceDma) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RknpuError::IommuError`] when the DMA device uses a translated
+    /// domain. GEM mmap currently needs a physical address, which this driver
+    /// cannot derive from an IOVA.
+    pub fn new(
+        base_addrs: &[NonNull<u8>],
+        config: RknpuConfig,
+        dma: DeviceDma,
+    ) -> Result<Self, RknpuError> {
+        // GEM mmap currently exports a physical range, while a translated DMA
+        // address is an IOVA. Reject that domain until GEM keeps and exposes a
+        // separate physical address for CPU mappings.
+        if matches!(dma.info().domain(), dma_api::DmaDomainId::Translated(_)) {
+            return Err(RknpuError::IommuError);
+        }
         let data = RknpuData::new(config.rknpu_type);
 
-        Self {
+        Ok(Self {
             base: base_addrs
                 .iter()
                 .map(|&addr| unsafe { RknpuCore::new(addr) })
@@ -112,13 +128,10 @@ impl Rknpu {
             data,
             config,
             dma: dma.clone(),
-            // A direct DMA domain bypasses address translation. Submit must
-            // fail closed in that configuration because validating a command
-            // buffer alone cannot constrain addresses embedded in its data.
-            iommu_enabled: matches!(dma.info().domain(), dma_api::DmaDomainId::Translated(_)),
+            iommu_enabled: false,
             gem: GemPool::new(dma),
             auto_core_cursor: 0,
-        }
+        })
     }
 
     pub fn dma(&self) -> &DeviceDma {
@@ -314,11 +327,7 @@ impl Rknpu {
 
     /// Enable or disable IOMMU
     pub fn set_iommu_enabled(&mut self, enabled: bool) {
-        self.iommu_enabled = enabled
-            && matches!(
-                self.dma.info().domain(),
-                dma_api::DmaDomainId::Translated(_)
-            );
+        self.iommu_enabled = enabled;
     }
 
     // /// Commit a prepared job descriptor to the hardware command parser.

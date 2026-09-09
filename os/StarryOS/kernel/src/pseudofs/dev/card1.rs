@@ -49,6 +49,11 @@ const PAGE_SHIFT: u32 = 12;
 const MAX_IOCTL_NR: u32 = 0xcf;
 /// Stack data buffer size
 const STACK_DATA_SIZE: usize = 128;
+
+/// Storage for DRM ioctl arguments whose ABI contains 64-bit fields or pointers.
+#[repr(align(8))]
+struct AlignedIoctlData([u8; STACK_DATA_SIZE]);
+
 /// DRM ioctl version command number
 const DRM_IOCTL_VERSION_NR: u32 = 0;
 /// DRM ioctl get unique command number
@@ -474,27 +479,27 @@ impl FileLike for Card1File {
         if nr > MAX_IOCTL_NR {
             return Err(StarryError::NotATty);
         }
-        let mut stack_data = [0u8; STACK_DATA_SIZE];
+        let mut stack_data = AlignedIoctlData([0u8; STACK_DATA_SIZE]);
         let in_size = io_size(cmd) as usize;
-        if in_size > stack_data.len() {
+        if in_size > stack_data.0.len() {
             return Err(StarryError::InvalidInput);
         }
-        copy_from_user(current, stack_data.as_mut_ptr(), arg as _, in_size)?;
+        copy_from_user(current, &mut stack_data.0[..in_size], arg)?;
         match nr {
-            DRM_IOCTL_VERSION_NR => drm_version(current, &mut stack_data)?,
-            DRM_IOCTL_GET_UNIQUE_NR => drm_get_unique(&mut stack_data)?,
+            DRM_IOCTL_VERSION_NR => drm_version(current, &mut stack_data.0)?,
+            DRM_IOCTL_GET_UNIQUE_NR => drm_get_unique(&mut stack_data.0)?,
             DRM_IOCTL_GEM_FLINK_NR => {
-                drm_gem_flink_ioctl(&mut stack_data)?;
+                drm_gem_flink_ioctl(&mut stack_data.0)?;
             }
             DRM_IOCTL_PRIME_HANDLE_TO_FD_NR => {
-                self.drm_prime_handle_to_fd_ioctl(&mut stack_data)?;
+                self.drm_prime_handle_to_fd_ioctl(&mut stack_data.0)?;
             }
             DRM_IOCTL_PRIME_FD_TO_HANDLE_NR => {
-                self.drm_prime_fd_to_handle_ioctl(&mut stack_data)?;
+                self.drm_prime_fd_to_handle_ioctl(&mut stack_data.0)?;
             }
             _ => return Err(VfsError::NotATty.into()),
         }
-        copy_to_user(current, arg as _, stack_data.as_ptr(), in_size)?;
+        copy_to_user(current, arg, &stack_data.0[..in_size])?;
         Ok(0)
     }
 
@@ -544,16 +549,14 @@ impl Card1File {
                 let mut submit_args = RknpuSubmit::default();
                 copy_from_user(
                     current,
-                    &mut submit_args as *mut _ as *mut u8,
-                    arg as *const u8,
-                    mem::size_of::<RknpuSubmit>(),
+                    bytemuck::bytes_of_mut(&mut submit_args),
+                    arg,
                 )?;
                 let submit_result = self.handle_submit(current, &mut submit_args);
                 copy_to_user(
                     current,
-                    arg as *mut u8,
-                    &submit_args as *const _ as *const u8,
-                    mem::size_of::<RknpuSubmit>(),
+                    arg,
+                    bytemuck::bytes_of(&submit_args),
                 )?;
                 submit_result?;
             }
@@ -561,9 +564,8 @@ impl Card1File {
                 let mut mem_create_args = RknpuMemCreate::default();
                 copy_from_user(
                     current,
-                    &mut mem_create_args as *mut _ as *mut u8,
-                    arg as *const u8,
-                    mem::size_of::<RknpuMemCreate>(),
+                    bytemuck::bytes_of_mut(&mut mem_create_args),
+                    arg,
                 )?;
                 rknpu::mem_create(&mut mem_create_args).map_err(map_rknpu_err)?;
                 let global_handle = mem_create_args.handle;
@@ -577,9 +579,8 @@ impl Card1File {
                 mem_create_args.handle = local_handle;
                 if let Err(error) = copy_to_user(
                     current,
-                    arg as *mut u8,
-                    &mem_create_args as *const _ as *const u8,
-                    mem::size_of::<RknpuMemCreate>(),
+                    arg,
+                    bytemuck::bytes_of(&mem_create_args),
                 ) {
                     let _ = self.remove_handle(local_handle).map(rknpu::mem_destroy);
                     return Err(error);
@@ -589,26 +590,23 @@ impl Card1File {
                 let mut mem_map = RknpuMemMap::default();
                 copy_from_user(
                     current,
-                    &mut mem_map as *mut _ as *mut u8,
-                    arg as *const u8,
-                    mem::size_of::<RknpuMemMap>(),
+                    bytemuck::bytes_of_mut(&mut mem_map),
+                    arg,
                 )?;
                 self.global_handle(mem_map.handle)?;
                 mem_map.offset = (mem_map.handle as u64) << PAGE_SHIFT;
                 copy_to_user(
                     current,
-                    arg as *mut u8,
-                    &mem_map as *const _ as *const u8,
-                    mem::size_of::<RknpuMemMap>(),
+                    arg,
+                    bytemuck::bytes_of(&mem_map),
                 )?;
             }
             RknpuCmd::MemDestroy => {
                 let mut mem_destroy = RknpuMemDestroy::default();
                 copy_from_user(
                     current,
-                    &mut mem_destroy as *mut _ as *mut u8,
-                    arg as *const u8,
-                    mem::size_of::<RknpuMemDestroy>(),
+                    bytemuck::bytes_of_mut(&mut mem_destroy),
+                    arg,
                 )?;
                 let global_handle = self.remove_handle(mem_destroy.handle)?;
                 rknpu::mem_destroy(global_handle).map_err(map_rknpu_err)?;
@@ -617,9 +615,8 @@ impl Card1File {
                 let mut mem_sync = RknpuMemSync::default();
                 copy_from_user(
                     current,
-                    &mut mem_sync as *mut _ as *mut u8,
-                    arg as *const u8,
-                    mem::size_of::<RknpuMemSync>(),
+                    bytemuck::bytes_of_mut(&mut mem_sync),
+                    arg,
                 )?;
                 if !self.find_cpu_range(mem_sync.obj_addr, mem_sync.offset, mem_sync.size) {
                     return Err(VfsError::InvalidData);
@@ -627,26 +624,23 @@ impl Card1File {
                 rknpu::mem_sync(&mut mem_sync).map_err(map_rknpu_err)?;
                 copy_to_user(
                     current,
-                    arg as *mut u8,
-                    &mem_sync as *const _ as *const u8,
-                    mem::size_of::<RknpuMemSync>(),
+                    arg,
+                    bytemuck::bytes_of(&mem_sync),
                 )?;
             }
             RknpuCmd::Action => {
                 let mut action = RknpuUserAction { flags: 0, value: 0 };
                 copy_from_user(
                     current,
-                    &mut action as *mut _ as *mut u8,
-                    arg as *const u8,
-                    mem::size_of::<RknpuUserAction>(),
+                    bytemuck::bytes_of_mut(&mut action),
+                    arg,
                 )?;
                 let action_kind = decode_rknpu_action(action.flags)?;
                 action.value = rknpu::action(action_kind).map_err(map_rknpu_err)?;
                 copy_to_user(
                     current,
-                    arg as *mut u8,
-                    &action as *const _ as *const u8,
-                    mem::size_of::<RknpuUserAction>(),
+                    arg,
+                    bytemuck::bytes_of(&action),
                 )?;
             }
         }
@@ -797,34 +791,19 @@ fn map_rknpu_err(err: rknpu::Error) -> VfsError {
     }
 }
 
-    /// Copies data from user space to kernel space
-    pub fn copy_from_user(
-        current: &UserTaskRef,
-        dst: *mut u8,
-        src: *const u8,
-        size: usize,
-    ) -> Result<(), VfsError> {
-    let bytes = vm_load(current, src, size).map_err(|err| {
+/// Copies data from user space to a kernel-owned byte slice.
+fn copy_from_user(current: &UserTaskRef, dst: &mut [u8], src: usize) -> Result<(), VfsError> {
+    let bytes = vm_load(current, src as *const u8, dst.len()).map_err(|err| {
         warn!("[rknpu]: copy_from_user failed: {err:?}");
         VfsError::BadAddress
     })?;
-    // SAFETY: ioctl dispatch supplies a live kernel destination at least
-    // `size` bytes long. The user source is now an owned kernel buffer.
-    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, size) };
+    dst.copy_from_slice(&bytes);
     Ok(())
 }
 
-/// Copies data from kernel space to user space
-pub fn copy_to_user(
-    current: &UserTaskRef,
-    dst: *mut u8,
-    src: *const u8,
-    size: usize,
-) -> Result<(), VfsError> {
-    // SAFETY: ioctl dispatch supplies a live initialized kernel source at
-    // least `size` bytes long for this synchronous copy.
-    let bytes = unsafe { core::slice::from_raw_parts(src, size) };
-    vm_write_slice(current, dst, bytes).map_err(|err| {
+/// Copies a kernel-owned byte slice to user space.
+fn copy_to_user(current: &UserTaskRef, dst: usize, src: &[u8]) -> Result<(), VfsError> {
+    vm_write_slice(current, dst as *mut u8, src).map_err(|err| {
         warn!("[rknpu]: copy_to_user failed: {err:?}");
         VfsError::BadAddress
     })
@@ -863,6 +842,12 @@ struct DrmPrimeHande {
 ///
 /// This function safely copies a string value to user space buffer,
 /// similar to the Linux kernel implementation with proper error handling.
+///
+/// # Safety
+///
+/// The caller must provide a valid mutable kernel reference for `buf_len` and
+/// a valid, initialized, NUL-terminated kernel string at `value`. `buf` is a
+/// user address and is only passed to the checked user-memory writer.
 unsafe fn drm_copy_field(
     current: &UserTaskRef,
     buf: *mut u8,
@@ -901,7 +886,10 @@ unsafe fn drm_copy_field(
 
     // Finally, try filling in the userbuf (same logic as kernel)
     if copy_len > 0 && !buf.is_null() {
-        copy_to_user(current, buf as _, value, copy_len as _)?;
+        // SAFETY: `value` points to a NUL-terminated kernel string and the scan
+        // above established that `copy_len` bytes are within that string.
+        let value = unsafe { core::slice::from_raw_parts(value, copy_len) };
+        copy_to_user(current, buf as usize, value)?;
     }
 
     Ok(())
