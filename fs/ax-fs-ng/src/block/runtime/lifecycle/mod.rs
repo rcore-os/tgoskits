@@ -20,7 +20,7 @@ use ax_lazyinit::OnceLock;
 use controller::{ControllerIrqToken, ControllerPort, run_controller};
 use device::{CpuSubmissionChannel, DeviceInfoEpoch};
 use irq_framework::IrqId;
-#[cfg(any(feature = "ext4", feature = "fat"))]
+#[cfg(any(feature = "ext4", feature = "fat", axtest))]
 use rdif_block::RequestFlags;
 use rdif_block::{
     BatchSubmitError, BlkError, BlockController, BlockControllerGroup, BlockGroupMember,
@@ -30,6 +30,8 @@ use rdif_block::{
     validate_owned_request,
 };
 
+#[cfg(axtest)]
+use super::dma;
 use super::{
     channel::{BoundedChannel, SendError},
     completion::{CompletionGroup, CompletionSubscription},
@@ -1114,6 +1116,35 @@ impl BlockDeviceHandle {
 
     pub fn device_info(&self) -> DeviceInfo {
         self.inner.published_device_info()
+    }
+
+    /// Returns the installed device list for the Starry kernel axtest target.
+    #[cfg(axtest)]
+    pub fn axtest_devices() -> Option<&'static [Arc<BlockDeviceHandle>]> {
+        BLOCK_RUNTIME.get().map(|runtime| runtime.devices())
+    }
+
+    /// Reads one logical block through the complete asynchronous runtime path.
+    ///
+    /// This helper is compiled only into the axtest target so production VFS
+    /// callers continue to use the existing synchronous block facade. DMA
+    /// preparation and request validation remain owned by the runtime.
+    #[cfg(axtest)]
+    pub async fn axtest_read(&self, lba: u64) -> Result<CompletedRequest, BlockError> {
+        let info = self.inner.selected_queue_info().ok_or(BlockError::Io)?;
+        let data = dma::prepare_read(info.limits, info.device.logical_block_size)?;
+        let request = OwnedRequest {
+            op: RequestOp::Read,
+            lba,
+            block_count: 1,
+            data: Some(data),
+            flags: RequestFlags::NONE,
+        };
+        let subscription = self
+            .submit_owned_async(request)
+            .await
+            .map_err(|error| BlockError::from(error.error))?;
+        Ok(subscription.recv_async().await)
     }
 
     #[cfg(feature = "ext4")]

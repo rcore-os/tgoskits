@@ -49,6 +49,9 @@ mod tracepoint;
 mod trap;
 mod uprobe;
 
+#[cfg(all(test, axtest))]
+mod block_runtime_axtest;
+
 pub use error::{DmaOperation, StarryError, StarryResult};
 // The staged MM ownership and transaction types are intentionally reachable
 // from the kernel boundary so migration call sites do not need a second
