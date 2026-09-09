@@ -71,3 +71,38 @@
 未承接：raw成功返回strlen(path)+1的精确数值；固定/tmp返回路径及长度恰好为strlen(/tmp)的NULL短缓冲输入。本项是部分替代，原程序及专属 CMake 清理。
 
 四架构03-candidates-<arch>.log实际通过；getcwd01=5 TPASS,getcwd02=3 TPASS；未修改内核或上游测试；最终累计集合另验。提交主题为 `test(starry): migrate getcwd buffer regression to LTP`。
+
+## 3. 暂缓记录
+
+失败候选没有从候选清单中移除。它们与已通过候选分别记录，不通过更换上游参数、增加超时或删除完成门槛使其进入执行集合。
+
+### 3.1 锁候选失败
+
+`02-lock-probe-x86_64.log` 记录 `fcntl14` 在上游给定的 38 秒期限内未完成，0 TPASS、1 TBROK，wrapper 返回 2。因此 `bug-fcntl-posix-lock` 和 `bug-fcntl-whence` 保留。日志不能区分执行成本与内核进度缺陷，本批不修复或增加 `LTP_TIMEOUT_MUL`。
+
+`fcntl16` 输出三段 TINFO PASSED，但固定源码没有 TPASS 成功报告，wrapper 以 `0 TPASS, expected at least 1` 返回 1。它实际包含部分解锁场景，纠正旧账本关于无部分释放覆盖的说法；但不能通过把 TINFO 当作 TPASS 接入。`bug-fcntl-partial-wake` 与 `bug-fcntl-setlkw-blocks` 保留，也不只选同一原程序的绿色 OFD 候选掩盖 POSIX 候选失败。
+
+### 3.2 其他保留项
+
+`bug-fcntl-fd-mode-ebadf`、`bug-fcntl-len-negative`、`bug-fcntl-ofd-pid-einval`、`bug-fcntl-posix-exit-release`、`bug-flock-failed-upgrade` 没有在本批建立完整等效映射，保留原程序和具体输入。普通 fcntl 无效 FD、正长度区间或 flock 排他冲突，不能分别证明读写模式不匹配、负长度归一化、非零 OFD PID、退出自动释放或失败升级丢弃原共享锁。
+
+## 4. 验证与兼容性
+
+本批只替换测试，不改变 Rust 实现。兼容性结论限定到新接入用例实际证明的输入；原程序未被承接的断言不因其他用例同名 syscall 就视为继续覆盖。
+
+### 4.1 验证入口
+
+通过 `cargo xtask starry test qemu --arch <arch> -c qemu/system/ltp-syscalls` 在 x86_64、aarch64、riscv64、loongarch64 串行运行候选。`03-candidates-<arch>.log` 保存固定源码数量契约下的执行结果。逐项提交之后还要运行累计集合和完整 `qemu/system`，核对实际执行程序、重复、已清理程序残留与失败候选误接入。
+
+### 4.2 syscall 对照
+
+固定 Linux 基准与 Starry 状态所有者分别列出。测试替换不改变 syscall 实现，不能把本表中的局部结果外推为完整锁生命周期、超时、用户页缺页或所有错误组合兼容性。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| fcntl(F_SETLKW/F_GETLK) / x86_64:72；其他三架构:25 | [Linux v7.1 posix_locks_deadlock](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c#L1101) | POSIX 等待环返回 EDEADLK，查询持锁者和区间 | sys_fcntl → dispatch_fcntl → fcntl_setlk/getlk → PosixLockWaitGuard 与 FCNTL_LOCKS，进程身份所有权 | 正确 | fcntl17；四架构候选验证通过，不包含 fcntl14/16 暂缓范围 |
+| fcntl(F_OFD_SETLKW/F_OFD_SETLK) / x86_64:72；其他三架构:25 | [Linux v7.1 fcntl_setlk](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c#L2506) | 独立 OFD 的读写互斥及与 POSIX 锁的竞争，解锁后可继续访问 | sys_fcntl → dispatch_fcntl → fcntl_setlk → FCNTL_LOCKS 的 OFD/POSIX 所有者及 inode 等待队列 | 正确 | fcntl34/36；四架构候选验证通过，不包含 OFD GETLK 或最后关闭语义 |
+| close / x86_64:3；其他三架构:57 | [Linux v7.1 filp_flush](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1456) | 关闭同 inode FD 释放当前所有者记录锁，保留其他进程的锁 | sys_close → close_file_like → release_locks_on_close → release_inode_posix_locks | 正确 | fcntl15 的 dup/open/fork 三种组合，四架构验证通过 |
+| flock / x86_64:73；其他三架构:32 | [Linux v7.1 flock](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c#L2214) | OFD 间共享/排他冲突、非阻塞 EWOULDBLOCK、阻塞信号中断 EINTR | sys_flock → flock_op → try_flock_once → FLOCK_LOCKS 及 inode 等待队列 | 正确 | flock02/04/06/07，四架构验证通过 |
+| futex / x86_64:202；其他三架构:98 | [Linux v7.1 do_futex](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/futex/syscalls.c#L112) | 私有 WAIT 返回0，WAKE 的计数为1 | sys_futex → FutexContext::resolve → wait_nofault_until/wake，进程私有键及桶队列 | 正确 | 复用 futex_wait03，四架构验证通过 |
+| getcwd / x86_64:79；其他三架构:17 | [Linux v7.1 getcwd](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/d_path.c#L413) | 缓冲区过短先 ERANGE，足够长但地址无效 EFAULT；返回当前路径 | sys_getcwd → current_fs_context 当前目录 → absolute_path → vm_write_slice | 正确 | getcwd01/02，四架构验证通过；不证明 raw 成功长度 |

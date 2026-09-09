@@ -249,3 +249,5 @@ flock04
 flock06
 flock07
 getcwd02
+fcntl14
+fcntl16
