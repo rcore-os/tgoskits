@@ -136,6 +136,7 @@ pub fn new_user_task(
 
             let saved_a0 = uctx.arg0();
             let saved_sysno = uctx.sysno();
+            let continuation_ip = uctx.ip();
             let is_syscall = matches!(reason, ReturnReason::Syscall);
             let mut syscall_restart = SyscallRestart::Allowed;
 
@@ -222,13 +223,15 @@ pub fn new_user_task(
                     Some(SyscallRestartInfo {
                         saved_a0,
                         saved_sysno,
+                        continuation_ip,
+                        without_handler: syscall_restart.can_restart_without_handler(),
                     })
                 } else {
                     None
                 };
-                // Single-shot: the first delivered signal decides
-                // whether to restart. Subsequent signals in the same
-                // loop must not re-apply the decision.
+                // The first user handler decides whether to restart a wait.
+                // Kernel-only processing preserves that internal restart
+                // class; other syscall classes retain their existing policy.
                 let mut pending_restart = restart.as_ref();
                 let mut deferred_mask_restore = thr.take_deferred_signal_mask_restore();
                 loop {
@@ -255,19 +258,33 @@ pub fn new_user_task(
                                     // temporary mask.
                                     thr.signal().set_blocked(old_blocked);
                                 }
+                                // Linux retains ERESTARTSYS when get_signal()
+                                // finds no user handler, including after a
+                                // stop/continue cycle or a consumed wakeup.
+                                if let Some(info) = pending_restart
+                                    && info.without_handler
+                                {
+                                    info.restore_context(&mut uctx);
+                                    pending_restart = None;
+                                }
                                 break;
                             }
                             SignalCheckOutcome::HandlerInstalled => {
                                 // The signal frame now owns restoration of the
                                 // syscall-entry mask through rt_sigreturn.
                                 deferred_mask_restore = None;
+                                pending_restart = None;
                             }
                             SignalCheckOutcome::HandledInKernel => {
                                 // Keep the temporary mask until a handler owns
                                 // restoration or no deliverable signals remain.
+                                // Only the wait-family internal restart class
+                                // changes its kernel-only signal policy here.
+                                if pending_restart.is_some_and(|info| !info.without_handler) {
+                                    pending_restart = None;
+                                }
                             }
                         }
-                        pending_restart = None;
                     }
                     thr.acknowledge_interrupt(interrupt_snapshot);
                     if !thr.interrupted() {

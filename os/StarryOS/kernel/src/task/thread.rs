@@ -773,7 +773,10 @@ impl Thread {
     /// Tests the Linux-style return-to-user work flags without entering any
     /// signal, exit, or realtime-limit state machine.
     pub(super) fn has_user_return_work(&self) -> bool {
-        self.signal().has_pending_signal_work()
+        // A publication can outlive its signal (consumed, ignored or masked).
+        // The return path must still reconcile and acknowledge that epoch.
+        self.interrupted()
+            || self.signal().has_pending_signal_work()
             || self.has_exit_request()
             || self.lifecycle.deadline_overrun.is_pending()
             || self

@@ -28,3 +28,5 @@ faccessat201 7
 faccessat202 6
 # access04.c: six errno cases for root and nobody.
 access04 12
+# epoll_create1_02.c: both invalid-flag cases must complete before driver exit.
+epoll_create1_02 2

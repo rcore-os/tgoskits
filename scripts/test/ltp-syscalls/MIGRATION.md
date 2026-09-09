@@ -440,3 +440,40 @@ stateDiagram-v2
 `cargo xtask clippy --package starry-kernel` 的四架构92项组合已通过，日志为 `16-stop-machine-clippy-final.log`。`cargo xtask test` 的58个软件包全部通过，日志为 `16-stop-machine-std-final.log`。随后无冲突重基到 `dev bfd64c640a`；停机同步源码与已验证版本一致。重基后的 aarch64 内核175项及最新59包标准库测试通过，日志为 `17-rebase-aarch64.log`、`17-rebase-std.log`。最终推送对应的 CI 和完整系统复验仍需完成，不以这些局部结果宣称全绿。
 
 推送前再次同步 `dev 34f9043485` 的重复测试清理，仍无冲突，停机同步实现与上述验证版本一致。上游删除了部分旧测试，最终数量以此基线的实际日志为准。
+
+## 8. wait 中断与重启
+
+CI 运行 `34302005386` 的 riscv64 任务在 `epoll_create1_02` 失败。两个 epoll 错误参数断言都输出 TPASS，随后 LTP 驱动的 `SAFE_WAITPID` 返回 EINTR，导致 TBROK。固定 LTP 的 `lib/tst_test.c::heartbeat` 使用 SIGUSR1 通知父进程，父进程通过 `signal()` 安装心跳处理函数。失败记录位于实施机器 `18-ci-riscv64-failure.log`；不通过重试 waitpid 或移除该 LTP 用例处理。根据固定源码的两个错误参数场景，补充 `epoll_create1_02 2` 完成数量契约，仍要求驱动正常退出。
+
+### 8.1 Linux 的重启决定
+
+Linux v7.1 的 [`__do_wait` 与 `do_wait`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/exit.c#L1703)使用内部 ERESTARTSYS 表示阻塞等待被中断。它与直接暴露给用户的 EINTR 不同：安装不带 SA_RESTART 的用户处理函数时转成 EINTR，没有用户处理函数时仍可重启。riscv64 的 [`arch_do_signal_or_restart`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/riscv/kernel/signal.c#L499)在取得信号前准备重启，再根据实际处理函数决定是否撤销；[aarch64](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/arm64/kernel/signal.c#L1626)、[x86_64](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/x86/kernel/signal.c#L333)和[loongarch64](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/loongarch/kernel/signal.c#L1017)也保留无处理函数时的重启分支。
+
+Starry 旧路径只在处理函数带 SA_RESTART 时回退指令地址，且任意 `HandledInKernel` 结果都会清空重启信息。停止后恢复等仅由内核处理的信号因此可能把 wait 的内部中断泄漏为 EINTR。此外，等待路径检查 `Thread.interrupted` 的通知代际，而返回用户态的工作判定没有包含该代际；信号已被消费时，通知仍需被核对和确认。
+
+### 8.2 状态所有者
+
+`handle_syscall` 为 wait4、waitid 的 `StarryError::Interrupted` 标记 `RestartableInterruption`，不从任意数值 EINTR 推断重启。`SyscallRestartInfo` 保存原参数、系统调用号和继续执行地址；`restore_context` 只调整仍停在原返回地址、仍持有 EINTR 的上下文，避免重复回退或覆盖被重定向的指令地址。x86_64 同时恢复与返回值共用寄存器的系统调用号，其他架构保留独立系统调用号寄存器。工作区已检索全部构造与调用者，元数据仅由用户任务入口构造。
+
+对于已标记的 wait 家族，`HandlerInstalled` 消费本次重启决定，`HandledInKernel` 保留决定；扫描结束且没有用户处理函数时，只对已标记的 wait 家族恢复上下文。`Thread::has_user_return_work` 同时检查尚未确认的中断代际，继续沿原有“扫描前快照、扫描后确认”协议处理，不能因为信号队列已空就跳过确认。seccomp 指定的 EINTR 和 `InterruptedNoRestart` 不参与此无处理函数重启。其他带超时的调用可能需要保存绝对截止时间的 restart-block 状态，本次不扩展该框架，也不把这些调用纳入新增的无处理函数直接重启分支；既有处理函数重启分类保持不变，不能据此宣称已完整实现所有重启类别。
+
+### 8.3 确定性回归
+
+现有 `test-signal-interrupt-eintr` 增加 wait4、waitid 的停止与恢复场景，保留原有 SA_RESTART、无 SA_RESTART 及默认 SIGCONT 场景。控制者、FIFO 80 的等待者和 FIFO 70 的子进程运行于同一 CPU。等待者阻塞后，子进程发送 SIGSTOP，再阻塞于释放管道；控制者通过 WUNTRACED 确认停止后发送 SIGCONT。高优先级等待者先恢复，控制者随后才能释放子进程，因此子进程退出不能抢先掩盖错误的 EINTR。两个场景均只执行一次被验证的 wait，不依靠睡眠或重复信号制造交错。
+
+原实现运行 `19-wait-family-riscv64-red.log` 时，mode 4 的 wait4 与 mode 5 的 waitid 均返回 `-1/EINTR`，最外层入口失败。修复将无处理函数重启范围限定为 wait 家族；最终七场景回归已在四个架构通过。停止/恢复回归证明无处理函数分支存在缺陷，但不代表 CI 中发生过 SIGSTOP；CI 对具体信号交错没有足够日志，应由修复后的原 LTP 集合与最终 CI 继续验证。
+
+另一个独立场景先以未屏蔽的 SIGUSR1 调用 raw `rt_sigtimedwait`。低优先级子进程发送信号后，等待者先同步消费该信号，再调用 wait4，此时子进程仍未退出。仅恢复旧的 `Thread::has_user_return_work`、保留其他 wait 修复时，`19-consumed-wake-riscv64-red.log` 的 mode 6 确定性返回 `-1/EINTR`；这将通知确认缺陷与停止恢复缺陷分开验证。恢复完整修复后，七种 wait 场景在四个架构全部通过。日志为 `20-final-wait-riscv64.log`、`20-final-wait-x86_64.log`、`21-final-wait-aarch64.log`、`21-final-wait-loongarch64.log`。riscv64 的 `syscall-test-seccomp` 与 `syscall-test-sa-restart` 也通过，分别确认显式 EINTR 不被重启及既有处理函数策略。riscv64 累计 LTP 的 74 个上游用例与两个 native 回归通过，原 `epoll_create1_02` 的两项断言及驱动退出均通过（`21-final-ltp.log`）。`cargo xtask clippy --package starry-kernel` 的 92 项检查与 `cargo xtask test` 的 59 个软件包通过，日志分别为 `21-final-clippy.log`、`21-final-std.log`。最终提交的四架构完整系统验证与 CI 仍须完成，不将历史运行视为最终全绿。
+
+该场景与发送链路对应：`ProcessSignalManager::send_signal` 先入队并发布提示，`publish_process_signal` 随后才调用 `task.interrupt`。消费可以发生在两者之间，通知本身不能证明仍有信号可安装处理函数。Linux [`do_sigtimedwait`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/signal.c#L3747)同样在返回用户态前同步取出等待信号，因此后续 wait 不应因已消费的通知返回 EINTR。
+
+### 8.4 兼容性对照
+
+本表只讨论此次重启和通知确认路径，不外推为完整信号、ptrace 或 restart-block 兼容性。运行中的检查不得计为通过。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| wait4 / x86_64:61；aarch64、riscv64、loongarch64:260 | [Linux v7.1 do_wait](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/exit.c#L1711) | 阻塞等待经过无用户处理函数的停止/恢复后继续等待；有处理函数时依 SA_RESTART 决定 | sys_waitpid → block_on_user → handle_syscall 重启标记 → 当前线程用户返回扫描 → restore_context | 正确 | riscv64 原版 mode 4 确定性失败，修复后四架构七场景通过；结论仅限表述的等待语义 |
+| waitid / x86_64:247；aarch64、riscv64、loongarch64:95 | [Linux v7.1 do_wait](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/exit.c#L1711) | 同样使用 ERESTARTSYS；成功后报告 CLD_EXITED、目标 PID 与退出状态 | sys_waitid → block_on_user → wait 家族重启标记 → 当前线程用户返回扫描 → restore_context | 正确 | riscv64 原版 mode 5 确定性失败，修复后四架构通过，验证完整退出 siginfo |
+| rt_sigreturn / x86_64:15；aarch64、riscv64、loongarch64:139 | [Linux v7.1 riscv64 signal.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/riscv/kernel/signal.c#L310) | SA_RESTART 处理函数返回后恢复被重启 wait 的上下文 | check_signals_with_outcome → 信号帧保存已调整上下文 → sys_rt_sigreturn → 用户任务入口 | 正确 | 既有 mode 2 在四架构通过；仅证明该 wait 的 SA_RESTART 返回，不推定嵌套/ptrace 兼容性 |
+| rt_sigtimedwait / x86_64:128；aarch64、riscv64、loongarch64:137 | [Linux v7.1 do_sigtimedwait](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/signal.c#L3747) | 同步消费 SIGUSR1 后不调用其用户处理函数，残留通知不打断下一次 wait4 | sys_rt_sigtimedwait → 信号队列消费 → Thread::has_user_return_work → 中断代际确认 | 正确 | 仅旧返回判定下 mode 6 确定性失败，完整修复在四架构通过；仅限同步消费与随后 wait 的通知确认 |

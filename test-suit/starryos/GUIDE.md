@@ -152,12 +152,15 @@ STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.012
 开始标记用于在超时时定位卡住的 binary；失败时保留该 binary 的原始输出、
 `STARRY_SYSTEM_TEST_FAILED`、退出码和耗时。
 
-### PR #1775 LTP 阶段
+### LTP 接管范围
 
 后续 syscall 测试逐项迁移的断言映射、覆盖损失和验证状态记录在
 [`MIGRATION.md`](../../scripts/test/ltp-syscalls/MIGRATION.md) 与
 [`migration.csv`](../../scripts/test/ltp-syscalls/migration.csv)。该清单包含待审计项，
-不能把候选数量当成已经完成的迁移数量；每项迁移保留独立提交。
+不能把候选数量当成已经完成的迁移数量；每项迁移保留独立提交。本轮 PR #2322 冻结为已完成的
+13 个原程序：9 项部分替代、4 项无等效清理，没有完整等效替代项。IPv6 及其他未完成
+候选保留原测试。当前实际清单包含 74 个共同 LTP 用例，x86_64 另有 2 个旧入口用例；
+这是累计执行集合，不是本轮新增数量。两个 native 隔离回归单独计数。
 
 `qemu/system/ltp-syscalls` 使用 rootfs 中固定的 Linux Test Project
 `20260529`（上游 commit `3a64d78f58bdceba93ed321e91215fb969a047ed`）。
@@ -227,7 +230,15 @@ scripts/test/ltp-syscalls/generate-common.sh \
 逐项 syscall 迁移以 `scripts/test/ltp-syscalls/migration.csv` 为账本。按当前工作约定，
 候选 LTP 出错时保留原测试，记录候选、失败架构、错误输出及证据路径后暂缓，先处理
 无需修复且四架构通过的替换。暂缓不是通过，不删除失败候选，也不放宽 wrapper 的失败
-传播或完成数量检查。已完成替换仍须逐项记录未承接的断言。
+传播或完成数量检查。已完成替换仍须逐项记录未承接的断言。本轮已停止继续迁移，后续工作仅处理当前 PR 的
+持续集成问题。停机同步对照本机 Linux v7.1 PREEMPT_RT 的命令锁、禁止抢占及阶段确认
+逻辑；wait 重启与信号通知确认修复的范围、源码依据和红绿证据分别记录在
+`MIGRATION.md` 第 7、8 节。
+
+定向运行累计 LTP 集合使用 `cargo xtask starry test qemu --arch <arch> -c qemu/system/ltp-syscalls`；
+完整系统验证使用 `cargo xtask starry test qemu --arch <arch> -c qemu/system`。四个架构
+`x86_64`、`aarch64`、`riscv64`、`loongarch64` 在同一工作区串行执行，只有实际完成的
+测试结果才能计为通过。
 
 子测例 CMake 产物应安装到：
 

@@ -30,13 +30,19 @@ use crate::{
 pub(crate) enum SyscallRestart {
     /// Apply the syscall-number policy when the result is EINTR.
     Allowed,
+    /// A wait-family ERESTARTSYS result, including when no handler remains.
+    RestartableInterruption,
     /// Preserve EINTR even when the delivered handler requests SA_RESTART.
     Suppressed,
 }
 
 impl SyscallRestart {
     pub(crate) const fn is_allowed(self) -> bool {
-        matches!(self, Self::Allowed)
+        !matches!(self, Self::Suppressed)
+    }
+
+    pub(crate) const fn can_restart_without_handler(self) -> bool {
+        matches!(self, Self::RestartableInterruption)
     }
 }
 
@@ -1542,6 +1548,13 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) -> SyscallR
     debug!("Syscall {sysno} return {result:?}");
     let restart = if matches!(&result, Err(StarryError::InterruptedNoRestart)) {
         SyscallRestart::Suppressed
+    } else if matches!(&result, Err(StarryError::Interrupted))
+        && matches!(sysno, Sysno::wait4 | Sysno::waitid)
+    {
+        // Linux do_wait() returns ERESTARTSYS. Other interrupted operations
+        // may need restart-block state (for example a saved sleep deadline),
+        // so do not infer the no-handler policy from EINTR alone.
+        SyscallRestart::RestartableInterruption
     } else {
         SyscallRestart::Allowed
     };

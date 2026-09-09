@@ -20,7 +20,7 @@ use crate::{
     task::future::{UserWaitOutcome, block_on, block_on_user},
 };
 
-/// Information needed to restart a syscall if SA_RESTART applies.
+/// Saved register state and policy for restarting an interrupted syscall.
 pub struct SyscallRestartInfo {
     /// First argument register value before the syscall overwrote it.
     pub saved_a0: usize,
@@ -28,6 +28,29 @@ pub struct SyscallRestartInfo {
     /// syscall number and the return value, so restarting requires
     /// restoring it to the syscall number.
     pub saved_sysno: usize,
+    /// Return PC at syscall entry; preserve a debugger's redirected context.
+    pub continuation_ip: usize,
+    /// Distinguishes an internal restart code from a userspace-facing EINTR.
+    pub without_handler: bool,
+}
+
+impl SyscallRestartInfo {
+    pub(super) fn restore_context(&self, uctx: &mut UserContext) {
+        if uctx.ip() != self.continuation_ip
+            || (uctx.retval() as isize) != -(crate::Errno::EINTR.into_raw() as isize)
+        {
+            return;
+        }
+        let restart_ip = self.continuation_ip - uctx.syscall_insn_len();
+        uctx.set_ip(restart_ip);
+        uctx.set_arg0(self.saved_a0);
+        // x86_64 shares the syscall-number and return-value register. The
+        // other supported architectures retain their separate syscall number.
+        #[cfg(target_arch = "x86_64")]
+        uctx.set_sysno(self.saved_sysno);
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = self.saved_sysno;
+    }
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -344,25 +367,13 @@ pub(crate) fn check_signals_with_outcome(
         restore_blocked,
         |uctx, _sig, restartable| {
             // Apply the SA_RESTART decision once per interrupted syscall.
-            // Callers pass `Some(info)` only for the first delivered signal;
-            // later iterations pass `None`, so the restart adjustment remains
-            // single-shot.
+            // Wait-family restart decisions survive kernel-only stop/continue
+            // processing until a user handler decides their disposition. The
+            // saved PC check prevents applying the adjustment twice.
             if let Some(info) = restart_info
-                && (uctx.retval() as isize) == -(crate::Errno::EINTR.into_raw() as isize)
                 && restartable
             {
-                let new_ip = uctx.ip() - uctx.syscall_insn_len();
-                uctx.set_ip(new_ip);
-                uctx.set_arg0(info.saved_a0);
-                // On x86_64, rax holds both the syscall number and the return
-                // value, so the syscall entry path clobbered sysno with -EINTR.
-                // Restore it before the syscall instruction re-executes. On
-                // RISC-V/AArch64/LoongArch64 sysno lives in a separate register
-                // (a7/x8/a7) that was not touched, so no restore is needed.
-                #[cfg(target_arch = "x86_64")]
-                uctx.set_sysno(info.saved_sysno);
-                #[cfg(not(target_arch = "x86_64"))]
-                let _ = info.saved_sysno;
+                info.restore_context(uctx);
             }
         },
         || {
