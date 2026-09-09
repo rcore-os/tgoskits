@@ -16,23 +16,31 @@ use serde_json::{Value, json};
 mod page;
 
 const BROWSER_INPUT_CAPACITY: usize = 4096;
+
+/// Path the console page is mounted at.
+///
+/// `web-ui` reserves `/` and `/assets/*` for the React dashboard, so with that
+/// feature the whole console subtree serves under `/console/`; without it this
+/// page is the only UI and keeps `/`. The startup access banner
+/// ([`crate::network_status`]) prints this same path, so the advertised URL
+/// stays in sync with [`router()`] by construction.
+#[cfg(feature = "web-ui")]
+pub(crate) const PAGE_PATH: &str = "/console/";
+#[cfg(not(feature = "web-ui"))]
+pub(crate) const PAGE_PATH: &str = "/";
+
 /// Browser-console routes served by Axvisor's optional HTTP listener.
 pub(super) fn router() -> Router {
-    // The React dashboard owns `/` and `/assets/*` once `web-ui` is enabled, so
-    // this whole subtree — page and its bundled xterm assets — moves under
-    // `/console/`. Discovery and stream routes are absolute inside the page and
-    // stay where they are.
+    // The xterm assets follow the page — the page addresses them relatively, so
+    // they carry the same mount prefix. Discovery and stream routes are
+    // absolute inside the page and stay where they are.
     #[cfg(not(feature = "web-ui"))]
-    let (index_path, script_path, style_path) = ("/", "/assets/xterm.js", "/assets/xterm.css");
+    let (script_path, style_path) = ("/assets/xterm.js", "/assets/xterm.css");
     #[cfg(feature = "web-ui")]
-    let (index_path, script_path, style_path) = (
-        "/console/",
-        "/console/assets/xterm.js",
-        "/console/assets/xterm.css",
-    );
+    let (script_path, style_path) = ("/console/assets/xterm.js", "/console/assets/xterm.css");
 
     Router::new()
-        .route(index_path, get(index))
+        .route(PAGE_PATH, get(index))
         .route(script_path, get(xterm_javascript))
         .route(style_path, get(xterm_stylesheet))
         .route("/api/consoles", get(console_descriptions))
