@@ -74,20 +74,20 @@ impl Drop for ListeningGuard {
 }
 
 /// Assemble only the HTTP services selected by build features.
+///
+/// Three roots keep the ownership of every URL namespace visible in one place:
+/// `/api/*` is the resource surface, the console group owns its page and
+/// streams, and `/` together with its page assets belongs to exactly one UI.
 pub fn router() -> Router {
-    let router = Router::new();
-
-    #[cfg(feature = "http-axum")]
-    let router = router.merge(management_router());
-
-    #[cfg(feature = "browser-console")]
-    let router = router.merge(crate::http::browser_console::router());
-
-    router
+    Router::new()
+        .merge(api_router())
+        .merge(console_router())
+        .merge(ui_router())
 }
 
+/// `/api/*`: the resource surface plus the top-level manifest.
 #[cfg(feature = "http-axum")]
-fn management_router() -> Router {
+fn api_router() -> Router {
     Router::new()
         .route("/api/vms", get(vm::list_vms))
         .route("/api/vms/{id}", get(vm::vm_detail).delete(vm::vm_delete))
@@ -96,6 +96,31 @@ fn management_router() -> Router {
         .route("/api/vms/{id}/stop", post(vm::vm_stop))
         .route("/api/vms/{id}/pause", post(vm::vm_pause))
         .route("/api/vms/{id}/resume", post(vm::vm_resume))
+}
+
+#[cfg(not(feature = "http-axum"))]
+fn api_router() -> Router {
+    Router::new()
+}
+
+/// The console page, console discovery, and console streams.
+#[cfg(feature = "browser-console")]
+fn console_router() -> Router {
+    crate::http::browser_console::router()
+}
+
+#[cfg(not(feature = "browser-console"))]
+fn console_router() -> Router {
+    Router::new()
+}
+
+/// `/` and its page assets.
+///
+/// The React dashboard takes this root over once the `web-ui` feature lands,
+/// and the legacy console page moves under `/console/`; until then the console
+/// group is the only UI and this root stays empty.
+fn ui_router() -> Router {
+    Router::new()
 }
 
 /// Bind address for the management HTTP server.
