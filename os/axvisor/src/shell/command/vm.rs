@@ -612,9 +612,12 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
     // Remove VM from global list
     // Note: This drops the reference from the global list, but the VM object
     // will only be fully destroyed when all vCPU threads exit and drop their references
+    let console_backend = crate::guest_console::backend_identity(vm_id);
     match crate::manager::AxvmManager::remove_vm(vm_id) {
         Some(vm) => {
-            crate::guest_console::remove(vm_id);
+            if let Some(identity) = console_backend {
+                crate::guest_console::remove_if_backend(identity);
+            }
             if let Err(err) = vm.destroy() {
                 println!("⚠ VM[{vm_id}] destroy failed: {err}");
             }

@@ -74,6 +74,7 @@ struct ConsoleCore {
 struct ConsoleState {
     guests: BTreeMap<VMId, GuestState>,
     running: BTreeSet<VMId>,
+    output_active: BTreeMap<VMId, BackendGeneration>,
     attached: Option<VMId>,
     last_attached: Option<VMId>,
     shortcut_prefix_pending: bool,
@@ -85,11 +86,34 @@ struct ConsoleState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BackendGeneration(u64);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GuestBackendIdentity {
+    vm_id: VMId,
+    generation: BackendGeneration,
+}
+
 #[derive(Debug, Default)]
 struct GuestState {
+    /// Stable identity of this VM incarnation, retained after output closes.
+    backend_identity: Option<BackendGeneration>,
+    /// Generation currently admitted for guest input and output.
     backend_generation: Option<BackendGeneration>,
     input: VecDeque<u8>,
     input_overflow_reported: bool,
+}
+
+impl GuestState {
+    fn invalidate_backend(&mut self) {
+        self.backend_generation = None;
+        self.input.clear();
+        self.input_overflow_reported = false;
+    }
+
+    fn invalidate_backend_generation(&mut self, generation: BackendGeneration) {
+        if self.backend_generation == Some(generation) {
+            self.invalidate_backend();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -116,11 +140,70 @@ impl GuestConsoleMux {
     }
 
     fn set_running(&self, running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
+        let generations = self.core.backend_generations();
+        let running = running
+            .into_iter()
+            .filter_map(|vm_id| {
+                generations
+                    .get(&vm_id)
+                    .map(|generation| (vm_id, *generation))
+            })
+            .collect::<Vec<_>>();
+        self.set_vm_states(running.clone(), running, [])
+    }
+
+    fn set_vm_states(
+        &self,
+        running: impl IntoIterator<Item = (VMId, BackendGeneration)>,
+        output_active: impl IntoIterator<Item = (VMId, BackendGeneration)>,
+        terminal: impl IntoIterator<Item = (VMId, BackendGeneration)>,
+    ) -> Option<VMId> {
+        let running = running.into_iter().collect::<BTreeMap<_, _>>();
+        let mut output_active = output_active.into_iter().collect::<BTreeMap<_, _>>();
+        output_active.extend(
+            running
+                .iter()
+                .map(|(vm_id, generation)| (*vm_id, *generation)),
+        );
+        let terminal = terminal.into_iter().collect::<BTreeMap<_, _>>();
+
         let _output_guard = self.core.lock_output();
         let mut state = self.core.lock_state();
-        state.running.clear();
-        for vm_id in running {
-            state.running.insert(vm_id);
+        let generation_is_current = |vm_id: &VMId, generation: &BackendGeneration| {
+            state
+                .guests
+                .get(vm_id)
+                .is_some_and(|guest| guest.backend_generation == Some(*generation))
+        };
+        let running = running
+            .into_iter()
+            .filter(|(vm_id, generation)| generation_is_current(vm_id, generation))
+            .map(|(vm_id, _)| vm_id)
+            .collect::<BTreeSet<_>>();
+        let output_active = output_active
+            .into_iter()
+            .filter(|(vm_id, generation)| generation_is_current(vm_id, generation))
+            .collect::<BTreeMap<_, _>>();
+
+        let inactive = state
+            .output_active
+            .iter()
+            .filter(|(vm_id, generation)| output_active.get(vm_id) != Some(generation))
+            .map(|(vm_id, generation)| (*vm_id, *generation))
+            .collect::<Vec<_>>();
+        for (vm_id, generation) in inactive {
+            if let Some(guest) = state.guests.get_mut(&vm_id) {
+                guest.invalidate_backend_generation(generation);
+            }
+        }
+        for (vm_id, generation) in terminal {
+            if let Some(guest) = state.guests.get_mut(&vm_id) {
+                guest.invalidate_backend_generation(generation);
+            }
+        }
+        state.running = running;
+        state.output_active = output_active;
+        for vm_id in state.output_active.keys().copied().collect::<Vec<_>>() {
             state.guests.entry(vm_id).or_default();
             state.output.register_guest(vm_id);
         }
@@ -137,10 +220,8 @@ impl GuestConsoleMux {
         } else {
             Vec::new()
         };
-        let ConsoleState {
-            running, output, ..
-        } = &mut *state;
-        output.reconcile_running(running);
+        let output_active = state.output_active.keys().copied().collect::<BTreeSet<_>>();
+        state.output.reconcile_running(&output_active);
         drop(state);
         submit_host_bytes(&host_output);
         detached
@@ -150,6 +231,9 @@ impl GuestConsoleMux {
         let mut state = self.core.lock_state();
         state.running.insert(vm_id);
         state.guests.entry(vm_id).or_default();
+        if let Some(generation) = state.guests[&vm_id].backend_generation {
+            state.output_active.insert(vm_id, generation);
+        }
         state.output.register_guest(vm_id);
     }
 
@@ -157,10 +241,9 @@ impl GuestConsoleMux {
         let _output_guard = self.core.lock_output();
         let mut state = self.core.lock_state();
         state.running.remove(&vm_id);
+        state.output_active.remove(&vm_id);
         if let Some(guest) = state.guests.get_mut(&vm_id) {
-            guest.backend_generation = None;
-            guest.input.clear();
-            guest.input_overflow_reported = false;
+            guest.invalidate_backend();
         }
         state.output.reset_guest(vm_id);
         let detached = state.attached == Some(vm_id);
@@ -178,28 +261,39 @@ impl GuestConsoleMux {
         detached
     }
 
+    #[cfg(any(test, axtest))]
     fn remove(&self, vm_id: VMId) -> bool {
         let _output_guard = self.core.lock_output();
         let mut state = self.core.lock_state();
-        state.running.remove(&vm_id);
-        state.guests.remove(&vm_id);
-        state.output.reset_guest(vm_id);
-        if state.last_attached == Some(vm_id) {
-            state.last_attached = None;
-        }
-        let detached = state.attached == Some(vm_id);
-        let host_output = if detached {
-            state.attached = None;
-            state.shortcut_prefix_pending = false;
-            let mut output = state.output.buffer_all();
-            append_host_log_replay(&mut state, &mut output);
-            output
-        } else {
-            Vec::new()
-        };
+        let (detached, host_output) = remove_guest_state(&mut state, vm_id);
         drop(state);
         submit_host_bytes(&host_output);
         detached
+    }
+
+    fn backend_identity(&self, vm_id: VMId) -> Option<GuestBackendIdentity> {
+        self.core
+            .lock_state()
+            .guests
+            .get(&vm_id)
+            .and_then(|guest| guest.backend_identity)
+            .map(|generation| GuestBackendIdentity { vm_id, generation })
+    }
+
+    fn remove_if_backend(&self, identity: GuestBackendIdentity) -> bool {
+        let _output_guard = self.core.lock_output();
+        let mut state = self.core.lock_state();
+        if !state
+            .guests
+            .get(&identity.vm_id)
+            .is_some_and(|guest| guest.backend_identity == Some(identity.generation))
+        {
+            return false;
+        }
+        let (_, host_output) = remove_guest_state(&mut state, identity.vm_id);
+        drop(state);
+        submit_host_bytes(&host_output);
+        true
     }
 
     fn attach_default(&self, running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
@@ -323,6 +417,27 @@ impl GuestConsoleMux {
     }
 }
 
+fn remove_guest_state(state: &mut ConsoleState, vm_id: VMId) -> (bool, Vec<u8>) {
+    state.running.remove(&vm_id);
+    state.output_active.remove(&vm_id);
+    state.guests.remove(&vm_id);
+    state.output.reset_guest(vm_id);
+    if state.last_attached == Some(vm_id) {
+        state.last_attached = None;
+    }
+    let detached = state.attached == Some(vm_id);
+    let host_output = if detached {
+        state.attached = None;
+        state.shortcut_prefix_pending = false;
+        let mut output = state.output.buffer_all();
+        append_host_log_replay(state, &mut output);
+        output
+    } else {
+        Vec::new()
+    };
+    (detached, host_output)
+}
+
 fn append_host_log_replay(state: &mut ConsoleState, output: &mut Vec<u8>) {
     for record in state.host_logs.drain() {
         output.extend(state.output.format_host_record(&record));
@@ -413,6 +528,18 @@ impl ConsoleCore {
         self.output_lock.lock()
     }
 
+    fn backend_generations(&self) -> BTreeMap<VMId, BackendGeneration> {
+        self.lock_state()
+            .guests
+            .iter()
+            .filter_map(|(vm_id, guest)| {
+                guest
+                    .backend_generation
+                    .map(|generation| (*vm_id, generation))
+            })
+            .collect()
+    }
+
     fn create_serial_backend(self: &Arc<Self>, vm_id: VMId) -> Arc<GuestSerialBackend> {
         let _output_guard = self.lock_output();
         let generation = {
@@ -423,10 +550,12 @@ impl ConsoleCore {
                 .expect("guest serial backend generation exhausted");
             let generation = BackendGeneration(state.next_backend_generation);
             let guest = GuestState {
+                backend_identity: Some(generation),
                 backend_generation: Some(generation),
                 ..GuestState::default()
             };
             state.guests.insert(vm_id, guest);
+            state.output_active.remove(&vm_id);
             state.output.reset_guest(vm_id);
             state.output.register_guest(vm_id);
             generation
@@ -485,27 +614,58 @@ impl ConsoleCore {
         if bytes.is_empty() {
             return false;
         }
+        let guard = self.lock_output();
+        if !self
+            .lock_state()
+            .guests
+            .get(&vm_id)
+            .is_some_and(|guest| guest.backend_generation == Some(generation))
+        {
+            return false;
+        }
+        let tag = ((vm_id as u128) << 64) | generation.0 as u128;
+        if super::host::queue_guest_output(tag, bytes) {
+            return true;
+        }
+        drop(guard);
+        self.replay_guest_output(vm_id, generation, bytes)
+    }
 
-        let mut accepted = false;
+    fn replay_guest_output(
+        &self,
+        vm_id: VMId,
+        generation: BackendGeneration,
+        bytes: &[u8],
+    ) -> bool {
+        if bytes.is_empty() {
+            return false;
+        }
+
         let _output_guard = self.lock_output();
+        {
+            let mut state = self.lock_state();
+            let Some(guest) = state.guests.get(&vm_id) else {
+                return false;
+            };
+            if guest.backend_generation != Some(generation) {
+                return false;
+            }
+            // Reconciliation may discard formatting state while a live
+            // backend still has queued output. Register in task context before
+            // entering the allocation-free host-output transaction.
+            state.output.register_guest(vm_id);
+        }
         submit_host_transaction(|emit| {
             let mut state = self.lock_state();
             let multiple_running = state.running.len() > 1;
-            let Some(guest) = state.guests.get(&vm_id) else {
-                return;
-            };
-            if guest.backend_generation != Some(generation) {
-                return;
-            }
-            accepted = true;
             let formatted =
                 state
                     .output
                     .format_registered_into(vm_id, multiple_running, bytes, emit);
-            debug_assert!(formatted, "active backend output state must be registered");
+            debug_assert!(formatted, "validated backend output must be registered");
         });
         drop(_output_guard);
-        accepted
+        true
     }
 
     #[cfg(any(feature = "browser-console", test, axtest))]
@@ -541,6 +701,14 @@ impl SerialBackend for GuestSerialBackend {
         self.core
             .read_guest_input(self.vm_id, self.generation, buffer)
     }
+}
+
+pub(crate) fn replay_guest_output(tag: u128, bytes: &[u8]) {
+    let vm_id = (tag >> 64) as usize;
+    let generation = BackendGeneration(tag as u64);
+    GUEST_CONSOLE_MUX
+        .core
+        .replay_guest_output(vm_id, generation, bytes);
 }
 
 impl SerialBackendFactory for GuestSerialBackendFactory {
@@ -652,18 +820,60 @@ pub fn mark_stopped(vm_id: VMId) -> bool {
     GUEST_CONSOLE_MUX.mark_stopped(vm_id)
 }
 
-/// Remove all console state associated with a deleted VM.
-pub fn remove(vm_id: VMId) -> bool {
-    GUEST_CONSOLE_MUX.remove(vm_id)
+/// Capture the backend identity that belongs to the current VM incarnation.
+pub(crate) fn backend_identity(vm_id: VMId) -> Option<GuestBackendIdentity> {
+    GUEST_CONSOLE_MUX.backend_identity(vm_id)
+}
+
+/// Remove console state only if it still belongs to the captured backend.
+pub(crate) fn remove_if_backend(identity: GuestBackendIdentity) -> bool {
+    GUEST_CONSOLE_MUX.remove_if_backend(identity)
 }
 
 /// Reconcile console attachment and prefixing against the actual VM registry.
 pub fn reconcile_vm_states() -> Option<VMId> {
-    let running = crate::manager::AxvmManager::vm_list()
+    // Capture backend identity first so a stale VM-registry snapshot cannot
+    // invalidate a newer backend created with the same VM ID.
+    let generations = GUEST_CONSOLE_MUX.core.backend_generations();
+    let vm_states = crate::manager::AxvmManager::vm_list()
         .into_iter()
-        .filter(|vm| vm.status() == VmStatus::Running)
-        .map(|vm| vm.id());
-    GUEST_CONSOLE_MUX.set_running(running)
+        .map(|vm| (vm.id(), vm.status()))
+        .collect::<Vec<_>>();
+    let running = vm_states
+        .iter()
+        .filter(|(_, status)| *status == VmStatus::Running)
+        .filter_map(|(vm_id, _)| {
+            generations
+                .get(vm_id)
+                .map(|generation| (*vm_id, *generation))
+        });
+    let output_active = vm_states
+        .iter()
+        .filter(|(_, status)| {
+            matches!(
+                status,
+                VmStatus::Running | VmStatus::Pausing | VmStatus::Paused | VmStatus::Stopping
+            )
+        })
+        .filter_map(|(vm_id, _)| {
+            generations
+                .get(vm_id)
+                .map(|generation| (*vm_id, *generation))
+        });
+    let terminal = vm_states
+        .iter()
+        .filter(|(_, status)| {
+            matches!(
+                status,
+                VmStatus::Stopped | VmStatus::Destroying | VmStatus::Destroyed | VmStatus::Failed
+            )
+        })
+        .filter_map(|(vm_id, _)| {
+            generations
+                .get(vm_id)
+                .map(|generation| (*vm_id, *generation))
+        });
+    GUEST_CONSOLE_MUX.set_vm_states(running, output_active, terminal)
 }
 
 /// Return the currently attached guest, if any.

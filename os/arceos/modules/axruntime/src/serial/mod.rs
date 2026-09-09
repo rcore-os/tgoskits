@@ -7,6 +7,7 @@
 mod control;
 mod ingress;
 mod log_mailbox;
+mod ordered_output;
 pub(crate) mod spsc;
 mod state;
 mod worker;
@@ -30,6 +31,7 @@ use self::{
     control::{ControlOp, ControlQueue},
     ingress::TxIngress,
     log_mailbox::{LogMailbox, LogRecordMeta},
+    ordered_output::OrderedOutput,
     spsc::{Consumer as SpscConsumer, Producer as SpscProducer},
     state::{SerialIrqLatch, SerialStatsAtomic},
     worker::SerialWorker,
@@ -221,8 +223,7 @@ struct RuntimeShared {
     ingress: TxIngress,
     log_mailbox: Arc<LogMailbox>,
     rx_subscription: SpinLock<Option<SpscConsumer<RxItem>>>,
-    log_subscription: SpinLock<Option<SpscConsumer<LogRecord>>>,
-    log_subscription_gate: SpinLock<()>,
+    log_subscription_gate: SpinLock<OrderedOutput>,
     log_subscription_active: AtomicBool,
     log_subscription_dropped_records: AtomicUsize,
     log_subscription_dropped_bytes: AtomicUsize,
@@ -241,6 +242,44 @@ struct RuntimeShared {
 }
 
 impl RuntimeShared {
+    fn record_subscription_drop(&self, bytes: usize) {
+        self.log_subscription_dropped_records
+            .fetch_add(1, Ordering::Relaxed);
+        self.log_subscription_dropped_bytes
+            .fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    fn publish_log(
+        &self,
+        cpu: usize,
+        meta: LogRecordMeta,
+        args: fmt::Arguments<'_>,
+    ) -> log_mailbox::PublishOutcome {
+        // Format before acquiring the gate: formatting can itself log.
+        let Ok(record) = LogRecord::format(cpu, 0, meta, args) else {
+            return log_mailbox::PublishOutcome::dropped(0);
+        };
+        let mut route = self.log_subscription_gate.lock_irqsave();
+        if self.log_subscription_active.load(Ordering::Acquire) {
+            self.stats.observe_log_record(
+                record.cpu_id(),
+                record.timestamp_nanos(),
+                record.task_id().is_some(),
+                record.kind() == LogRecordKind::Log,
+                record.is_truncated(),
+            );
+            match route.push(record) {
+                Ok(()) => log_mailbox::PublishOutcome::queued(&record),
+                Err(bytes) => {
+                    self.record_subscription_drop(bytes);
+                    log_mailbox::PublishOutcome::dropped(bytes)
+                }
+            }
+        } else {
+            self.log_mailbox.publish_formatted(cpu, record)
+        }
+    }
+
     /// Runs one task-context register transaction with local IRQ delivery
     /// excluded and all cross-CPU aliases serialized by the UART gate.
     fn with_port<R>(&self, access: impl FnOnce(&mut dyn rdif_serial::UartPort) -> R) -> Option<R> {
@@ -354,24 +393,29 @@ impl SerialRuntimeHandle {
 
     pub(crate) fn take_log_subscription(&self) -> Option<SerialLogSubscription> {
         self.shared.lifecycle.ensure_available().ok()?;
-        let _route = self.shared.log_subscription_gate.lock_irqsave();
+        let mut reader = self.shared.log_mailbox.reader();
+        let mut route = self.shared.log_subscription_gate.lock_irqsave();
         if self.shared.log_subscription_active.load(Ordering::Acquire) {
             return None;
         }
-        let mut available = self.shared.log_subscription.lock_irqsave();
-        let mut consumer = available.take()?;
-        consumer.clear();
+        route.clear();
         self.shared
             .log_subscription_dropped_records
             .store(0, Ordering::Release);
         self.shared
             .log_subscription_dropped_bytes
             .store(0, Ordering::Release);
+        // The publication gate excludes both ordinary log publishers and the
+        // UART worker. Transfer the old mailbox prefix before switching routes.
+        while let Some(record) = reader.take(self.shared.index) {
+            if let Err(bytes) = route.push(record.record) {
+                self.shared.record_subscription_drop(bytes);
+            }
+        }
         self.shared
             .log_subscription_active
             .store(true, Ordering::Release);
         Some(SerialLogSubscription {
-            consumer: SpinLock::new(Some(consumer)),
             shared: self.shared.clone(),
         })
     }
@@ -603,13 +647,26 @@ pub struct SerialRxSubscription {
 
 /// Internal complete-record consumer re-exported through `ax_runtime::console`.
 pub(crate) struct SerialLogSubscription {
-    consumer: SpinLock<Option<SpscConsumer<LogRecord>>>,
     shared: Arc<RuntimeShared>,
 }
 
 impl SerialLogSubscription {
     pub(crate) fn try_read(&self) -> Option<LogRecord> {
-        self.consumer.lock_irqsave().as_mut()?.pop()
+        self.shared.log_subscription_gate.lock_irqsave().pop()
+    }
+
+    pub(crate) fn write_output(&self, tag: u128, bytes: &[u8]) -> RuntimeResult {
+        self.shared.ensure_started()?;
+        let result = self
+            .shared
+            .log_subscription_gate
+            .lock_irqsave()
+            .write(tag, bytes);
+        if let Err(bytes) = result {
+            self.shared.record_subscription_drop(bytes);
+        }
+        self.shared.bridge.notify();
+        result.map_err(|_| RuntimeError::WouldBlock)
     }
 
     pub(crate) fn dropped(&self) -> (usize, usize) {
@@ -640,32 +697,18 @@ impl SerialLogSubscription {
             .log_subscription_dropped_records
             .load(Ordering::Acquire)
             != 0
-            || self
-                .consumer
-                .lock_irqsave()
-                .as_ref()
-                .is_some_and(|consumer| !consumer.is_empty())
+            || !self.shared.log_subscription_gate.lock_irqsave().is_empty()
     }
 }
 
 impl Drop for SerialLogSubscription {
     fn drop(&mut self) {
-        let _route = self.shared.log_subscription_gate.lock_irqsave();
+        let mut route = self.shared.log_subscription_gate.lock_irqsave();
         self.shared
             .log_subscription_active
             .store(false, Ordering::Release);
-        let Some(mut consumer) = self.consumer.get_mut().take() else {
-            return;
-        };
-        consumer.clear();
-        let mut available = self.shared.log_subscription.lock_irqsave();
-        debug_assert!(
-            available.is_none(),
-            "serial runtime cannot have two log consumers"
-        );
-        if available.is_none() {
-            *available = Some(consumer);
-        }
+        route.clear();
+        drop(route);
         self.shared.console_progress.notify_all();
         self.shared.bridge.notify();
     }
@@ -895,8 +938,6 @@ fn build_runtime(
         Arc::from(register_gate);
     let (irq_rx_producer, irq_rx_consumer) = spsc::channel(IRQ_RX_CAPACITY);
     let (rx_output_producer, rx_output_consumer) = spsc::channel(SUBSCRIPTION_RX_CAPACITY);
-    let (log_subscription_producer, log_subscription_consumer) =
-        spsc::channel(LOG_SUBSCRIPTION_CAPACITY);
     let shared = Arc::new(RuntimeShared {
         index,
         info,
@@ -907,8 +948,7 @@ fn build_runtime(
         ingress: TxIngress::new(),
         log_mailbox,
         rx_subscription: SpinLock::new(Some(rx_output_consumer)),
-        log_subscription: SpinLock::new(Some(log_subscription_consumer)),
-        log_subscription_gate: SpinLock::new(()),
+        log_subscription_gate: SpinLock::new(OrderedOutput::new(LOG_SUBSCRIPTION_CAPACITY)),
         log_subscription_active: AtomicBool::new(false),
         log_subscription_dropped_records: AtomicUsize::new(0),
         log_subscription_dropped_bytes: AtomicUsize::new(0),
@@ -926,12 +966,7 @@ fn build_runtime(
         irq_handle: OnceLock::new(),
     });
 
-    let worker = SerialWorker::new(
-        shared.clone(),
-        irq_rx_consumer,
-        rx_output_producer,
-        log_subscription_producer,
-    );
+    let worker = SerialWorker::new(shared.clone(), irq_rx_consumer, rx_output_producer);
     let owner_cpu =
         u32::try_from(primary_cpu).map_err(|_| RuntimeError::InvalidCpu { cpu: primary_cpu })?;
     let mut affinity = CpuSet::empty(ax_hal::cpu_num());
@@ -1082,10 +1117,7 @@ pub(crate) fn try_publish_record(
                 ax_log::RecordKind::Log => LogRecordMeta::log(timestamp_nanos, task_id),
             };
             (
-                runtime
-                    .shared
-                    .log_mailbox
-                    .try_publish(cpu_id, record_meta, args),
+                runtime.shared.publish_log(cpu_id, record_meta, args),
                 runtime.shared.log_mailbox.wake_ready(cpu_id),
             )
         })

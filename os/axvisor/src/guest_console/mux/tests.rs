@@ -2,6 +2,124 @@ use super::*;
 
 #[cfg_attr(axtest, axtest::axtest)]
 #[cfg_attr(not(axtest), test)]
+fn deferred_output_rejects_a_replaced_backend_generation() {
+    let mux = GuestConsoleMux::new();
+    let old = mux.core.create_serial_backend(1);
+    let current = mux.core.create_serial_backend(1);
+    assert!(!mux.core.replay_guest_output(1, old.generation, b"stale\n"));
+    assert!(
+        mux.core
+            .replay_guest_output(1, current.generation, b"current\n")
+    );
+    mux.mark_stopped(1);
+    assert!(
+        !mux.core
+            .replay_guest_output(1, current.generation, b"stopped\n")
+    );
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn lifecycle_reconciliation_accepts_stopping_and_rejects_stopped_output() {
+    let mux = GuestConsoleMux::new();
+    let backend = mux.core.create_serial_backend(1);
+    mux.set_running([1]);
+
+    mux.set_vm_states([], [(1, backend.generation)], []);
+    assert!(
+        mux.core
+            .replay_guest_output(1, backend.generation, b"trailing\n")
+    );
+
+    mux.set_running([]);
+
+    assert!(
+        !mux.core
+            .replay_guest_output(1, backend.generation, b"stale\n")
+    );
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn terminal_reconciliation_invalidates_a_backend_that_never_ran() {
+    let mux = GuestConsoleMux::new();
+    let backend = mux.core.create_serial_backend(1);
+
+    mux.set_vm_states([], [], [(1, backend.generation)]);
+
+    assert!(
+        !mux.core
+            .replay_guest_output(1, backend.generation, b"stale\n")
+    );
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn stale_lifecycle_snapshot_does_not_invalidate_a_recreated_backend() {
+    let mux = GuestConsoleMux::new();
+    let old = mux.core.create_serial_backend(1);
+    mux.set_running([1]);
+    let current = mux.core.create_serial_backend(1);
+
+    mux.set_vm_states([], [], [(1, old.generation)]);
+
+    assert!(
+        mux.core
+            .replay_guest_output(1, current.generation, b"current\n")
+    );
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn stale_backend_removal_does_not_remove_a_recreated_backend() {
+    let mux = GuestConsoleMux::new();
+    mux.core.create_serial_backend(1);
+    let stale = mux.backend_identity(1).unwrap();
+    let current = mux.core.create_serial_backend(1);
+
+    assert!(!mux.remove_if_backend(stale));
+    assert!(
+        mux.core
+            .replay_guest_output(1, current.generation, b"current\n")
+    );
+
+    let current_identity = mux.backend_identity(1).unwrap();
+    assert!(mux.remove_if_backend(current_identity));
+    assert!(
+        !mux.core
+            .replay_guest_output(1, current.generation, b"removed\n")
+    );
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn invalidated_backend_identity_still_removes_the_same_incarnation() {
+    let mux = GuestConsoleMux::new();
+    mux.core.create_serial_backend(1);
+    let identity = mux.backend_identity(1).unwrap();
+
+    mux.mark_stopped(1);
+
+    assert!(mux.remove_if_backend(identity));
+    assert!(!mux.core.lock_state().guests.contains_key(&1));
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn deferred_output_restores_pruned_startup_formatting_state() {
+    let mux = GuestConsoleMux::new();
+    let backend = mux.core.create_serial_backend(1);
+
+    mux.set_vm_states([], [], []);
+
+    assert!(
+        mux.core
+            .replay_guest_output(1, backend.generation, b"startup\n")
+    );
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
 fn host_log_record_terminates_an_open_guest_line() {
     let mux = GuestConsoleMux::new();
     {

@@ -192,6 +192,20 @@ pub fn console_init() {
 
         let dropped = crate::guest_console::take_host_log_drops();
         if let Some(record) = crate::guest_console::read_host_log() {
+            if let Some(tag) = record.output_tag() {
+                if dropped.records != 0 {
+                    route_pending_host_log(
+                        &[],
+                        &buf,
+                        cursor,
+                        line_len,
+                        dropped.records,
+                        dropped.source_bytes,
+                    );
+                }
+                crate::guest_console::replay_guest_output(tag, record.bytes());
+                continue;
+            }
             route_pending_host_log(
                 record.bytes(),
                 &buf,

@@ -83,7 +83,11 @@ pub async fn vm_delete(
     // to enter the guest run loop instead of stranding it.
     vm.destroy()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let console_backend = crate::guest_console::backend_identity(id);
     AxvmManager::remove_vm(id).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(identity) = console_backend {
+        crate::guest_console::remove_if_backend(identity);
+    }
     info!("HTTP: VM[{id}] removed via control API");
     Ok(StatusCode::NO_CONTENT)
 }
