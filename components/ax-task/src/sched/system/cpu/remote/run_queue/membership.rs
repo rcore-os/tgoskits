@@ -18,9 +18,6 @@ impl CpuRunQueueState {
         } else {
             self.current_runtime_timer_required()
         };
-        let runtime_timer_delta_before = (!realtime)
-            .then(|| self.current_runtime_timer_delta_ns())
-            .flatten();
         let entity = self.queue.enqueue_task(thread, reason, current_fair)?;
         if !realtime {
             self.tighten_current_fair_slice_protection(&entity);
@@ -30,14 +27,13 @@ impl CpuRunQueueState {
         } else {
             self.current_runtime_timer_required()
         };
-        let runtime_timer_delta_after = (!realtime)
-            .then(|| self.current_runtime_timer_delta_ns())
-            .flatten();
         Ok(OwnerRqEnqueue {
             entity,
+            // Enqueue changes the wakee and current's slice protection, but
+            // not current's deadline or charged runtime. Like hrtick_update(),
+            // only the first queued Fair contender needs to arm this timer.
             scheduler_deadline_refresh_required: runtime_timer_required_after
-                && (!runtime_timer_required_before
-                    || runtime_timer_delta_after < runtime_timer_delta_before),
+                && !runtime_timer_required_before,
         })
     }
 

@@ -76,14 +76,15 @@ impl CpuRunQueueState {
         let current_entity = self
             .current_scheduling_entity()
             .expect("current dispatch must have one rq-owned scheduling entity");
-        let irq_util_avg = self
-            .clock
-            .snapshot()
-            .map_or(0, RunQueueClockSnapshot::irq_util_avg);
-        if CurrentDispatch::runtime_timer_delta_for(current_entity, irq_util_avg).is_none() {
-            return false;
+        // Eligibility depends on the class and queued contenders, not on
+        // the numerical hrtick deadline. Derive that only when programming it.
+        match current_entity {
+            SchedulingEntity::Fair(_) => self.has_fair(),
+            SchedulingEntity::Deadline(_) => true,
+            SchedulingEntity::KernelStop
+            | SchedulingEntity::Fifo
+            | SchedulingEntity::RoundRobin { .. } => false,
         }
-        current_entity.fair().is_none_or(|_| self.has_fair())
     }
 
     pub(crate) fn current_thread(&self) -> Option<ThreadId> {
