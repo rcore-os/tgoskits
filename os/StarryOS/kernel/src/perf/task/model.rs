@@ -30,7 +30,7 @@ pub struct PerTaskCounter {
     /// ARM PMUv3 event number. It is programmed only for a programmable
     /// counter; a dedicated cycle-counter reservation carries the same semantic
     /// event so an inherited child can fall back to a programmable slot.
-    event: u16,
+    pub(super) event: u16,
     /// `attr.exclude_user`: do not count EL0 (`PMEVTYPERn_EL0.U`).
     pub(super) exclude_user: bool,
     /// `attr.exclude_kernel`: do not count EL1 (`PMEVTYPERn_EL0.P`).
