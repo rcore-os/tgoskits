@@ -27,6 +27,7 @@ auth/error mapping, start/stop, pause/resume, and the destroy-then-recreate
 resource re-acquire regression — mirroring
 `os/axvisor/doc/http-control-plane-quickstart.md`:
 
+    GET    /api/               -> 200            (control-plane manifest; vms node)
     GET    /api/vms            -> 200            (list; id=1 present)
     GET    /api/vms/1          -> 200 ready      (detail; id/name/cpu_num/vcpu_states/guest_entry_count)
     GET    /api/vms/not-an-id  -> 404            (non-numeric id)
@@ -387,6 +388,29 @@ def main():
     #    request briefly in case the axum router is still binding.
     poll_ready()
     print("  http probe: guest management server reachable")
+
+    # 1b. Control-plane manifest: the capability list a dashboard shell
+    #     navigates by. The shape is asserted, not just the status, because the
+    #     shell follows `href` instead of hardcoding routes.
+    status, body = request("GET", "/api/")
+    check("GET /api/", status, 200)
+    if body.get("proto") != 1:
+        raise AssertionError("GET /api/ reported proto=%r" % (body.get("proto"),))
+    resources = body.get("resources")
+    if not isinstance(resources, list):
+        raise AssertionError("GET /api/ reported no resources array: %r" % (body,))
+    vms_nodes = [node for node in resources if node.get("kind") == "vms"]
+    if len(vms_nodes) != 1:
+        raise AssertionError(
+            "GET /api/ did not report exactly one vms node: %r" % (body,)
+        )
+    vms_node = vms_nodes[0]
+    if vms_node.get("href") != "/api/vms":
+        raise AssertionError("GET /api/ vms node href=%r" % (vms_node.get("href"),))
+    if "read" not in vms_node.get("verbs", []) or "write" not in vms_node.get(
+        "verbs", []
+    ):
+        raise AssertionError("GET /api/ vms node verbs=%r" % (vms_node.get("verbs"),))
 
     # 2. List: the default VM (id 1) is registered and `Ready`.
     status, body = request("GET", "/api/vms")

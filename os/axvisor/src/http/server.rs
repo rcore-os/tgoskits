@@ -5,6 +5,7 @@
 //! but dispatch and JSON construction are delegated to axum + serde_json.
 //!
 //! ```text
+//! GET    /api/               → 200, JSON control-plane manifest (capability list)
 //! GET    /api/vms            → 200, JSON array (summary form)
 //! GET    /api/vms/{id}       → 200, JSON detail (with vcpu_states) | 404
 //! POST   /api/vms/create     → 200 {"id":N} | 400 | 409 | 500 (body {"toml": "..."})
@@ -56,6 +57,8 @@ use anyhow::Context;
 use axum::Router;
 
 #[cfg(feature = "http-axum")]
+use crate::http::manifest;
+#[cfg(feature = "http-axum")]
 use crate::http::vm;
 #[cfg(feature = "http-axum")]
 use axum::{routing::get, routing::post};
@@ -89,6 +92,7 @@ pub fn router() -> Router {
 #[cfg(feature = "http-axum")]
 fn api_router() -> Router {
     Router::new()
+        .route("/api/", get(manifest::get_manifest))
         .route("/api/vms", get(vm::list_vms))
         .route("/api/vms/{id}", get(vm::vm_detail).delete(vm::vm_delete))
         .route("/api/vms/create", post(vm::vm_create))
