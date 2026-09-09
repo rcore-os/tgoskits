@@ -35,7 +35,7 @@ impl CounterExtender {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use super::CounterExtender;
 
