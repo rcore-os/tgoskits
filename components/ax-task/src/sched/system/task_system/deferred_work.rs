@@ -164,9 +164,14 @@ impl TaskSystem {
                         callbacks
                     }
                     DeferredTaskWorkClass::Reap => {
-                        let reaped = self.reap_unreferenced_exited_inner(1)?;
-                        batch.reaped_threads += reaped;
-                        reaped
+                        if self.reclaim_exited_execution()? {
+                            batch.execution_reclaims += 1;
+                            1
+                        } else {
+                            let reaped = self.reap_unreferenced_exited_inner(1)?;
+                            batch.reaped_threads += reaped;
+                            reaped
+                        }
                     }
                     DeferredTaskWorkClass::Reclaim => match self.reclaim_one_resource()? {
                         ResourceReclaim::None => 0,

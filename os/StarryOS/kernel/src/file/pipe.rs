@@ -1527,16 +1527,11 @@ mod tests {
         let extension = unsafe { ThreadExtension::new(0, &BLOCK_OBSERVER_OPS) };
         // SAFETY: unique ownership of `extension` is transferred exactly once.
         let direct = unsafe {
-            ax_std::os::arceos::thread::spawn_raw_with_extension(
-                move || {
+            ax_std::os::arceos::thread::builder("pipe-direct-exclusive-waiter".to_string()).stack_size(256 * 1024).extension(extension).spawn(move || {
                     DIRECT_WAIT_ARMED.store(true, Ordering::Release);
                     waiters.wait_until(|| DIRECT_READY.load(Ordering::Acquire));
                     DIRECT_WOKEN.store(true, Ordering::Release);
-                },
-                "pipe-direct-exclusive-waiter".to_string(),
-                256 * 1024,
-                Some(extension),
-            )
+                })
         }
         .expect("failed to spawn direct pipe waiter");
         wait_for(&DIRECT_BLOCKED, "direct pipe waiter did not block");
@@ -1632,7 +1627,7 @@ mod tests {
         DIRECT_READY.store(true, Ordering::Release);
         wake_pipe_waiter_sync(waiters.as_ref(), IoEvents::IN);
         wait_for(&DIRECT_WOKEN, "direct pipe waiter was not selected");
-        ax_std::os::arceos::thread::join_thread(direct)
+        (direct).join()
             .expect("direct pipe waiter must exit cleanly");
         drop(registration);
 
@@ -1724,7 +1719,7 @@ mod tests {
 
         wake_pipe_waiter_sync(waiters.as_ref(), IoEvents::IN);
         wait_for(&DIRECT_WOKEN, "second wake did not select direct waiter");
-        ax_std::os::arceos::thread::join_thread(direct)
+        (direct).join()
             .expect("direct pipe waiter must exit cleanly");
         drop(registration);
     }
@@ -1795,16 +1790,11 @@ mod tests {
         let contender_state = Arc::clone(&waiters.state);
         let contender_attempted = Arc::clone(&attempted);
         let contender_acquired = Arc::clone(&acquired);
-        let contender = ax_std::os::arceos::thread::spawn_raw_with_affinity(
-            move || {
+        let contender = ax_std::os::arceos::thread::builder("pipe-wait-set-lock-contender".to_string()).stack_size(256 * 1024).affinity(affinity).spawn(move || {
                 contender_attempted.store(true, Ordering::Release);
                 let _state = contender_state.lock();
                 contender_acquired.store(true, Ordering::Release);
-            },
-            "pipe-wait-set-lock-contender".to_string(),
-            256 * 1024,
-            affinity,
-        )
+            })
         .expect("failed to spawn pipe wait-set lock contender");
 
         for _ in 0..32 {
@@ -1824,7 +1814,7 @@ mod tests {
         );
         drop(state);
 
-        ax_std::os::arceos::thread::join_thread(contender)
+        (contender).join()
             .expect("pipe wait-set lock contender must exit");
         scheduler::thread::current::set_current_thread_affinity(original_affinity)
             .expect("test task affinity must be restored");
@@ -1856,16 +1846,11 @@ mod tests {
         let waiter_started_flag = Arc::clone(&waiter_started);
         let waiter_ready = Arc::clone(&ready);
         let waiter_completed_flag = Arc::clone(&waiter_completed);
-        let waiter = ax_std::os::arceos::thread::spawn_raw_with_affinity(
-            move || {
+        let waiter = ax_std::os::arceos::thread::builder("pipe-wait-registration-order".to_string()).stack_size(256 * 1024).affinity(affinity).spawn(move || {
                 waiter_started_flag.store(true, Ordering::Release);
                 waiter_set.wait_until(|| waiter_ready.load(Ordering::Acquire));
                 waiter_completed_flag.store(true, Ordering::Release);
-            },
-            "pipe-wait-registration-order".to_string(),
-            256 * 1024,
-            affinity,
-        )
+            })
         .expect("failed to spawn pipe wait registration task");
 
         for _ in 0..32 {
@@ -1883,7 +1868,7 @@ mod tests {
         ready.store(true, Ordering::Release);
         waiters.wake_all(IoEvents::IN);
 
-        ax_std::os::arceos::thread::join_thread(waiter)
+        (waiter).join()
             .expect("pipe wait registration task must exit");
         scheduler::thread::current::set_current_thread_affinity(original_affinity)
             .expect("test task affinity must be restored");

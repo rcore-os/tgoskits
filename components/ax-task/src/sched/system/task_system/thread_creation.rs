@@ -28,7 +28,7 @@ impl TaskSystem {
     /// task can be observed by PI, policy, or hotplug code.
     fn create_thread_on_cpu(
         &self,
-        spec: ThreadSpec,
+        mut spec: ThreadSpec,
         initial_cpu: CpuId,
         context: ThreadCreationContext,
     ) -> Result<ThreadHandle, TaskError> {
@@ -40,6 +40,7 @@ impl TaskSystem {
             .affinity()
             .cloned()
             .unwrap_or_else(|| CpuSet::all(self.config.cpu_count()));
+        let execution = spec.execution.take();
         let unpublished = UnpublishedThreadGuard::new(self, spec);
         policy.validate()?;
         validate_affinity(&affinity, self.config.cpu_count())?;
@@ -126,6 +127,7 @@ impl TaskSystem {
             policy,
             sched: Arc::clone(&sched),
             extension: switch_extension,
+            execution,
             scheduler_tick_cpu_time,
             scheduler_tick_work,
             membarrier_identity,
@@ -137,6 +139,7 @@ impl TaskSystem {
             resources,
             extension,
             callbacks: ThreadCallbackState::new(),
+            activation: None,
         };
         let context = record.resources.context();
         if !context.is_none() {

@@ -36,14 +36,14 @@ pub struct UserTaskRef {
 /// Clone and pthread creation use this transaction token to finish all private
 /// resources before fallible scheduler staging.
 pub struct PreparedUserTask {
-    scheduler: ax_std::os::arceos::thread::PreparedThread,
+    scheduler: scheduler::thread::PreparedThread,
     extension_data: usize,
 }
 
 /// Starry task whose fallible scheduler placement has completed while its
-/// caller-owned user entry remains blocked at the runtime start gate.
+/// scheduler state remains New until Linux identity publication commits.
 pub struct StagedUserTask {
-    scheduler: ax_std::os::arceos::thread::StagedThread,
+    scheduler: scheduler::thread::StagedThread,
     extension_data: usize,
 }
 
@@ -75,7 +75,7 @@ impl StagedUserTask {
         operation(&task)
     }
 
-    /// Opens the runtime start gate after all Linux-visible state is committed.
+    /// Commits first runqueue admission after all Linux-visible state is committed.
     pub fn activate(self) -> UserTaskRef {
         let extension_data = self.extension_data;
         let task = finish_published_user_thread(self.scheduler.activate());
@@ -88,9 +88,8 @@ impl UserTaskRef {
     /// Tries to recover a Starry user task from a generic scheduler thread.
     ///
     /// Threads without an inner OS extension or with a foreign inner extension
-    /// return `Ok(None)`. A foreign runtime outer extension is a configuration
-    /// error; matching Starry operations with malformed data are a runtime-
-    /// handle error.
+    /// return `Ok(None)`. Matching Starry operations with malformed data are a
+    /// runtime-handle error.
     pub fn try_from_scheduler(
         handle: scheduler::thread::ThreadHandle,
     ) -> Result<Option<Self>, scheduler::thread::TaskError> {
@@ -98,8 +97,8 @@ impl UserTaskRef {
             return Ok(None);
         };
         // SAFETY: `try_extension_data` validated the callback-table identity,
-        // pointer alignment, and non-null value while `handle` pins the outer
-        // runtime extension. The handle is retained by the returned adapter.
+        // pointer alignment, and non-null value while `handle` pins the
+        // scheduler-owned extension. The handle is retained by the returned adapter.
         let data = unsafe { extension_data_from_raw(extension_data) };
         data.thread
             .validate_scheduler_id(handle.id())
@@ -122,7 +121,7 @@ impl UserTaskRef {
 
     /// Returns the Starry thread attached through the checked extension.
     pub fn as_thread(&self) -> &Thread {
-        self.extension().thread.as_ref()
+        &self.extension().thread
     }
 
     pub(crate) fn transfer_irq_pid_identity(
@@ -243,7 +242,7 @@ impl UserTaskRef {
 
     /// Waits for exit and reaps the scheduler-owned runtime resources.
     pub fn join(self) -> i32 {
-        ax_std::os::arceos::thread::join_thread(self.scheduler)
+        (self.scheduler).join()
             .unwrap_or_else(|error| panic!("failed to join Starry task: {error}"))
     }
 
@@ -442,12 +441,7 @@ pub fn spawn_kernel_thread_with_affinity<F>(
 where
     F: FnOnce() + Send + 'static,
 {
-    ax_std::os::arceos::thread::spawn_raw_with_affinity(
-        entry,
-        name,
-        crate::config::KERNEL_STACK_SIZE,
-        affinity,
-    )
+    ax_std::os::arceos::thread::builder(name).stack_size(crate::config::KERNEL_STACK_SIZE).affinity(affinity).spawn(entry)
     .unwrap_or_else(|error| panic!("failed to spawn affine kernel thread: {error}"))
 }
 
@@ -462,19 +456,13 @@ pub fn spawn_kernel_thread_with_policy_and_affinity<F>(
 where
     F: FnOnce() + Send + 'static,
 {
-    ax_std::os::arceos::thread::spawn_raw_with_policy_and_affinity(
-        entry,
-        name,
-        crate::config::KERNEL_STACK_SIZE,
-        policy,
-        affinity,
-    )
+    ax_std::os::arceos::thread::builder(name).stack_size(crate::config::KERNEL_STACK_SIZE).policy(policy).affinity(affinity).spawn(entry)
     .unwrap_or_else(|error| panic!("failed to spawn policy-bound kernel thread: {error}"))
 }
 
 /// Waits for a kernel worker and releases its scheduler-owned resources.
 pub fn join_kernel_thread(thread: scheduler::thread::ThreadHandle) -> i32 {
-    ax_std::os::arceos::thread::join_thread(thread)
+    (thread).join()
         .unwrap_or_else(|error| panic!("failed to join kernel thread: {error}"))
 }
 
@@ -498,7 +486,7 @@ pub fn try_spawn_kernel_thread_with_stack<F>(
 where
     F: FnOnce() + Send + 'static,
 {
-    ax_std::os::arceos::thread::spawn_raw(entry, name, stack_size)
+    ax_std::os::arceos::thread::builder(name).stack_size(stack_size).spawn(entry)
 }
 
 /// Returns Starry's default kernel stack size.
@@ -544,12 +532,12 @@ pub fn might_sleep() {
 /// Prepares a Starry user thread with the scheduler's default policy.
 ///
 /// The caller may stage the task, publish Linux-visible identity state while
-/// the runtime start gate remains closed, and activate it as the final step.
+/// the scheduler task remains New, and activate it as the final step.
 pub fn prepare_user_thread<F>(
     entry: F,
     name: String,
     stack_size: usize,
-    thread: Box<Thread>,
+    thread: Thread,
 ) -> Result<PreparedUserTask, scheduler::thread::TaskError>
 where
     F: FnOnce() + Send + 'static,
@@ -600,7 +588,7 @@ pub fn prepare_user_thread_with_scheduler_state<F>(
     entry: F,
     name: String,
     stack_size: usize,
-    thread: Box<Thread>,
+    thread: Thread,
     scheduler_state: UserThreadInitialSchedulerState,
 ) -> Result<PreparedUserTask, scheduler::thread::TaskError>
 where
@@ -623,7 +611,7 @@ pub fn prepare_user_thread_with_fp_scheduler_state<F>(
     name: String,
     stack_size: usize,
     fp_state: ax_cpu::FpState,
-    thread: Box<Thread>,
+    thread: Thread,
     scheduler_state: UserThreadInitialSchedulerState,
 ) -> Result<PreparedUserTask, scheduler::thread::TaskError>
 where
@@ -649,7 +637,7 @@ pub fn prepare_user_thread_inheriting_fp_scheduler_state<F>(
     entry: F,
     name: String,
     stack_size: usize,
-    thread: Box<Thread>,
+    thread: Thread,
     scheduler_state: UserThreadInitialSchedulerState,
 ) -> Result<PreparedUserTask, scheduler::thread::TaskError>
 where
@@ -720,7 +708,7 @@ fn prepare_user_thread_inner<F>(
     entry: F,
     name: String,
     stack_size: usize,
-    thread: Box<Thread>,
+    thread: Thread,
     context_state: StarryContextState,
 ) -> Result<PreparedUserTask, scheduler::thread::TaskError>
 where
@@ -748,69 +736,16 @@ where
         drop(extension);
         return Err(scheduler::thread::TaskError::InvalidRuntimeHandle);
     };
-    // SAFETY: the extension above transfers its unique callback-data ownership
-    // to the runtime and is never used or dropped again by this function.
+    let builder = ax_std::os::arceos::thread::builder(name)
+        .stack_size(stack_size).policy(context_state.scheduler_state.policy).extension(extension)
+        .affinity(context_state.scheduler_state.affinity);
+    let options = ax_std::os::arceos::thread::UserContextOptions::new(address_space);
     #[cfg(target_arch = "riscv64")]
-    let prepared = unsafe {
-        match context_state.fp_state {
-            Some(fp_state) => {
-                ax_std::os::arceos::thread::prepare_raw_with_extension_in_address_space_and_fp_scheduler_state(
-                    entry,
-                    name,
-                    stack_size,
-                    Some(extension),
-                    address_space,
-                    fp_state,
-                    context_state.scheduler_state.policy,
-                    context_state.scheduler_state.affinity,
-                )?
-            }
-            None => ax_std::os::arceos::thread::prepare_raw_with_extension_in_address_space_and_scheduler_state(
-                entry,
-                name,
-                stack_size,
-                Some(extension),
-                address_space,
-                context_state.scheduler_state.policy,
-                context_state.scheduler_state.affinity,
-            )?,
-        }
-    };
+    let options = match context_state.fp_state { Some(fp) => options.with_fp_state(fp), None => options };
     #[cfg(target_arch = "x86_64")]
-    let prepared = unsafe {
-        match context_state.x86_fp {
-            X86FpInitialization::InheritCurrent => ax_std::os::arceos::thread::prepare_raw_with_extension_in_address_space_and_inherited_fp_scheduler_state(
-                entry,
-                name,
-                stack_size,
-                Some(extension),
-                address_space,
-                context_state.scheduler_state.policy,
-                context_state.scheduler_state.affinity,
-            )?,
-            X86FpInitialization::Default => ax_std::os::arceos::thread::prepare_raw_with_extension_in_address_space_and_scheduler_state(
-                entry,
-                name,
-                stack_size,
-                Some(extension),
-                address_space,
-                context_state.scheduler_state.policy,
-                context_state.scheduler_state.affinity,
-            )?,
-        }
-    };
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
-    let prepared = unsafe {
-        ax_std::os::arceos::thread::prepare_raw_with_extension_in_address_space_and_scheduler_state(
-            entry,
-            name,
-            stack_size,
-            Some(extension),
-            address_space,
-            context_state.scheduler_state.policy,
-            context_state.scheduler_state.affinity,
-        )?
-    };
+    let options = match context_state.x86_fp { X86FpInitialization::InheritCurrent => options.inherit_current_fp(), X86FpInitialization::Default => options };
+    // SAFETY: the user entry and its uniquely owned MM/FP state belong to this task.
+    let prepared = unsafe { ax_std::os::arceos::thread::prepare_user_thread(builder, entry, options)? };
     let scheduler_id = prepared.thread_handle().id();
     // SAFETY: `data` was created above for this scheduler extension, and the
     // prepared token still owns that extension until it is staged or dropped.
@@ -834,7 +769,7 @@ fn finish_published_user_thread(handle: scheduler::thread::ThreadHandle) -> User
 }
 
 struct StarryUserTaskExtension {
-    thread: Box<Thread>,
+    thread: Thread,
     name: Mutex<Arc<str>>,
     irq_identity: IrqTaskIdentity,
     reset_on_fork: AtomicBool,
@@ -1010,7 +945,7 @@ unsafe extern "Rust" fn starry_user_task_scheduler_tick(
 }
 
 unsafe extern "Rust" fn starry_user_task_drop(data: usize) {
-    // SAFETY: ownership of this exact box was transferred to the runtime outer
+    // SAFETY: ownership of this exact box was transferred to the scheduler
     // extension, whose final callback invokes this function once.
     drop(unsafe { Box::from_raw(data as *mut StarryUserTaskExtension) });
 }
@@ -1018,7 +953,7 @@ unsafe extern "Rust" fn starry_user_task_drop(data: usize) {
 fn try_extension_data(
     scheduler: &scheduler::thread::ThreadHandle,
 ) -> Result<Option<usize>, scheduler::thread::TaskError> {
-    let extension = ax_std::os::arceos::thread::thread_os_extension(scheduler)?;
+    let extension = scheduler.extension();
     let StarryExtensionKind::User = classify_starry_extension(
         extension.as_ref().map(|extension| extension.ops()),
         extension.as_ref().map_or(0, |extension| extension.data()),

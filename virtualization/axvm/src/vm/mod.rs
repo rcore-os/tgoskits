@@ -403,7 +403,9 @@ impl VmRuntimeHandle {
     pub(crate) fn reap_retired_vcpu_task(&self, vcpu_id: usize) -> AxVmResult {
         let retired = self.vcpu_threads.lock().retired.remove(&vcpu_id);
         if let Some(runtime) = retired {
-            crate::host::task::join_thread(runtime.thread)
+            runtime
+                .thread
+                .join()
                 .map(|_exit_code| ())
                 .map_err(|error| AxVmError::host("join retired vCPU thread", error))?;
         }
@@ -768,7 +770,7 @@ impl VmRuntimeHandle {
         for (vcpu_id, thread) in threads {
             let thread_id = thread.id().as_u64();
             debug!("VM[{vm_id}] joining vCPU[{vcpu_id}] thread {thread_id}");
-            match crate::host::task::join_thread(thread) {
+            match thread.join() {
                 Ok(exit_code) => debug!(
                     "VM[{vm_id}] vCPU[{vcpu_id}] thread {thread_id} exited with code {exit_code}"
                 ),

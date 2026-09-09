@@ -38,10 +38,7 @@ fn scheduler_yield() {
     task::thread::current::yield_current_cpu().expect("kernel scheduler yield failed");
 }
 
-fn spawn_fifo(
-    name: &str,
-    entry: impl FnOnce() + Send + 'static,
-) -> task::thread::KernelThreadHandle {
+fn spawn_fifo(name: &str, entry: impl FnOnce() + Send + 'static) -> task::thread::ThreadHandle {
     task::thread::ThreadBuilder::new(name.into())
         .policy(fifo_policy())
         .affinity(cpu0_affinity())

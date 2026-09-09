@@ -237,7 +237,7 @@ impl TaskSystem {
             });
             if record
                 .callbacks
-                .prepare_exit(record.extension.is_some())
+                .prepare_exit(record.extension.is_some() || record.core.execution.is_some())
                 .is_err()
             {
                 task_runtime::fatal_invariant(0x4558_0003, exiting.as_u64() as usize);

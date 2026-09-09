@@ -38,6 +38,7 @@ pub struct DeferredTaskWorkBatch {
     pub(super) scheduler_tick_callbacks: usize,
     pub(super) exit_callbacks: usize,
     pub(super) reaped_threads: usize,
+    pub(super) execution_reclaims: usize,
     pub(super) coroutine_reclaims: usize,
     pub(super) address_space_reclaims: usize,
 }
@@ -49,6 +50,7 @@ impl DeferredTaskWorkBatch {
             + self.scheduler_tick_events
             + self.exit_callbacks
             + self.reaped_threads
+            + self.execution_reclaims
             + self.coroutine_reclaims
             + self.address_space_reclaims
     }

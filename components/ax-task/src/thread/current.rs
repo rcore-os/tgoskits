@@ -9,9 +9,12 @@ pub use crate::{
         yield_current_cpu,
     },
     sync::wait_queue::{sleep, sleep_until},
-    thread::current::park::{
-        CurrentParkDisposition, CurrentParkResume, CurrentParkStart, PreparedCurrentPark,
-        begin_current_park,
+    thread::{
+        current::park::{
+            CurrentParkDisposition, CurrentParkResume, CurrentParkStart, PreparedCurrentPark,
+            begin_current_park,
+        },
+        execution::exit_current,
     },
 };
 use crate::{

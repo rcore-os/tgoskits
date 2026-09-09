@@ -108,12 +108,11 @@ fn init_raw_input() -> RuntimeResult<Arc<RawInputRuntime>> {
         return Err(error.into());
     }
     let worker_runtime = runtime.clone();
-    if let Err(error) = crate::thread::spawn_raw_with_affinity(
-        move || run_raw_input_worker(worker_runtime),
-        alloc::format!("raw-console-{owner_cpu}-rx"),
-        crate::thread::default_task_stack_size(),
-        affinity,
-    ) {
+    if let Err(error) = crate::thread::builder(alloc::format!("raw-console-{owner_cpu}-rx"))
+        .stack_size(crate::thread::default_task_stack_size())
+        .affinity(affinity)
+        .spawn(move || run_raw_input_worker(worker_runtime))
+    {
         ax_hal::console::set_input_irq_enabled(false);
         if let Err(disable_error) = ax_hal::irq::disable_irq(handle) {
             warn!(

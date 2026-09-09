@@ -43,9 +43,11 @@ pub(crate) use crate::sched::{
 };
 pub use crate::thread::{
     error::TaskError,
-    spawn::{DEFAULT_KERNEL_THREAD_STACK_SIZE, KernelThreadHandle, ThreadBuilder},
+    spawn::{DEFAULT_KERNEL_THREAD_STACK_SIZE, ThreadBuilder},
 };
 
 pub(crate) mod error;
 
+pub(crate) mod execution;
 pub(crate) mod spawn;
+pub use execution::{PreparedThread, StagedThread};

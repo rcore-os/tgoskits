@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-thread-lifecycle-exec C)
+set(CMAKE_C_STANDARD 11)
+add_executable(test-thread-lifecycle-exec src/main.c)
+target_compile_options(test-thread-lifecycle-exec PRIVATE -Wall -Wextra -Werror -pthread)
+target_link_options(test-thread-lifecycle-exec PRIVATE -pthread)
+install(TARGETS test-thread-lifecycle-exec RUNTIME DESTINATION usr/bin/starry-test-suit)

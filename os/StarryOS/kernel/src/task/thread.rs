@@ -1,6 +1,6 @@
 //! Thread-owned state and its synchronization boundaries.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use core::{
     cell::UnsafeCell,
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
@@ -339,14 +339,14 @@ impl Thread {
         parent_cred: Option<Arc<Cred>>,
         signal_mask: SignalSet,
         scope: Scope,
-    ) -> Box<Self> {
+    ) -> Self {
         let tid = identity
             .visible_number(&ROOT_PID_NS)
             .expect("new thread identity has no root PID binding")
             .get();
         let process_signal = proc_data.signal.clone();
         let process_identity = proc_data.identity();
-        let thread = Box::new(Self {
+        let thread = Self {
             identity: ThreadIdentity::new(),
             pid: IrqMutex::new(ThreadPidOwnership {
                 identity: identity.clone(),
@@ -361,7 +361,7 @@ impl Thread {
             signals: ThreadSignals::new(tid, process_signal, signal_mask),
             security: ThreadSecurity::new(parent_cred),
             trace: ThreadTrace::new(),
-        });
+        };
         identity.bind_thread_pidfd(&process_identity, thread.exit_flag());
         thread
     }

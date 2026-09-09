@@ -990,20 +990,18 @@ fn build_runtime(
         ));
     }
 
-    crate::thread::spawn_raw_with_policy_and_affinity(
-        move || worker.run(),
-        alloc::format!("serial{index}-maint"),
-        crate::thread::default_task_stack_size(),
-        serial_worker_policy(),
-        affinity,
-    )
-    .map_err(|error| {
-        warn!(
-            "failed to start serial maintenance worker for {}: {error}",
-            shared.info.name
-        );
-        RuntimeError::from(error)
-    })?;
+    crate::thread::builder(alloc::format!("serial{index}-maint"))
+        .stack_size(crate::thread::default_task_stack_size())
+        .policy(serial_worker_policy())
+        .affinity(affinity)
+        .spawn(move || worker.run())
+        .map_err(|error| {
+            warn!(
+                "failed to start serial maintenance worker for {}: {error}",
+                shared.info.name
+            );
+            RuntimeError::from(error)
+        })?;
     if let Some(registration) = pending_irq_registration {
         registration.commit();
     }

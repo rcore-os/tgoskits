@@ -15,6 +15,7 @@ pub(super) struct InitialContextState {
 }
 
 impl InitialContextState {
+    #[cfg(test)]
     pub(super) const fn kernel() -> Self {
         Self {
             address_space: None,
@@ -35,23 +36,14 @@ impl InitialContextState {
         }
     }
 
-    #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
-    pub(super) fn user_with_fp_state(
-        address_space: TaskAddressSpace,
-        fp_state: ax_hal::cpu::FpState,
-    ) -> Self {
-        Self {
-            address_space: Some(address_space),
-            fp_state: Some(fp_state),
-        }
+    #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+    pub(super) fn inherits_current_fp(&self) -> bool {
+        matches!(self.x86_fp_state, InitialX86FpState::InheritCurrent)
     }
 
     #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
-    pub(super) fn user_inheriting_current_fp_state(address_space: TaskAddressSpace) -> Self {
-        Self {
-            address_space: Some(address_space),
-            x86_fp_state: InitialX86FpState::InheritCurrent,
-        }
+    pub(super) fn inherit_current_fp(&mut self) {
+        self.x86_fp_state = InitialX86FpState::InheritCurrent;
     }
 }
 
@@ -152,13 +144,13 @@ pub(super) fn assemble_bootstrap_resources(
 }
 
 pub(super) fn create_thread_resources(
-    stack_size: usize,
+    stack_request: StackRequest,
     entry: ax_task::runtime::resource::KernelEntry,
     context_state: InitialContextState,
 ) -> Result<ThreadResources, TaskError> {
     match create_thread_resources_with(
         &mut RuntimeThreadResourceBackend,
-        stack_size,
+        stack_request,
         entry,
         context_state,
     ) {
@@ -266,21 +258,12 @@ impl ThreadResourceBackend for RuntimeThreadResourceBackend {
 
 pub(super) fn create_thread_resources_with(
     backend: &mut impl ThreadResourceBackend,
-    stack_size: usize,
+    stack_request: StackRequest,
     entry: ax_task::runtime::resource::KernelEntry,
     mut context_state: InitialContextState,
 ) -> Result<ThreadResources, ThreadResourceCreationFailure> {
-    let guard_size = if cfg!(feature = "stack-guard-page") {
-        PAGE_SIZE
-    } else {
-        0
-    };
     let stack = backend
-        .allocate_stack(StackRequest {
-            usable_size: stack_size,
-            alignment: 16,
-            guard_size,
-        })
+        .allocate_stack(stack_request)
         .map_err(|status| ThreadResourceCreationFailure::new(runtime_status_error(status)))?;
     if stack.is_none() {
         return Err(ThreadResourceCreationFailure::new(

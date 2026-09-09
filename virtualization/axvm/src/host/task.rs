@@ -7,49 +7,19 @@ pub(crate) type ThreadWakeHandle = arceos::ArceOsThreadWakeHandle;
 #[cfg(target_arch = "x86_64")]
 pub(crate) type WakeResult = arceos::ArceOsWakeResult;
 pub(crate) type IrqNotification = arceos::ArceOsIrqNotification;
-pub(crate) type ThreadExtensionBorrow<'thread> =
-    ax_std::os::arceos::thread::ThreadOsExtensionBorrow<'thread>;
 pub(crate) type WaitQueue = arceos::ArceOsWaitQueue;
 pub(crate) type WaitQueueHandle = arceos::ArceOsWaitQueueHandle;
 pub(crate) use arceos::{
     ArceOsCpuSet as CpuSet, ArceOsSchedulePolicy as SchedulePolicy,
-    ArceOsSwitchReason as SwitchReason, ArceOsTaskError as TaskError,
-    ArceOsThreadExtension as ThreadExtension, ArceOsThreadExtensionOps as ThreadExtensionOps,
-    ArceOsThreadId as ThreadId,
+    ArceOsSwitchReason as SwitchReason, ArceOsThreadExtension as ThreadExtension,
+    ArceOsThreadExtensionOps as ThreadExtensionOps, ArceOsThreadId as ThreadId,
 };
 
 pub(crate) fn current_thread() -> ThreadHandle {
     arceos::current_thread()
 }
 
-pub(crate) unsafe fn spawn_thread_with_extension_and_affinity<F>(
-    entry: F,
-    name: std::string::String,
-    stack_size: usize,
-    extension: Option<ThreadExtension>,
-    affinity: Option<CpuSet>,
-) -> Result<ThreadHandle, TaskError>
-where
-    F: FnOnce() + Send + 'static,
-{
-    // SAFETY: the caller transfers the unique extension ownership through this
-    // one-to-one host adapter.
-    unsafe {
-        arceos::spawn_thread_with_extension_and_affinity(
-            entry, name, stack_size, extension, affinity,
-        )
-    }
-}
-
-pub(crate) fn join_thread(thread: ThreadHandle) -> Result<i32, TaskError> {
-    arceos::join_thread(thread)
-}
-
-pub(crate) fn thread_extension(
-    thread: &ThreadHandle,
-) -> Result<Option<ThreadExtensionBorrow<'_>>, TaskError> {
-    arceos::thread_extension(thread)
-}
+pub(crate) use ax_std::os::arceos::{task::thread::StagedThread, thread::builder};
 
 pub(crate) fn yield_now() {
     arceos::yield_now();

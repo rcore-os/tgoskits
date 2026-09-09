@@ -145,8 +145,9 @@ fn sched_batch_wake_uses_fair_hrtick() {
     NORMAL_READY.store(false, Ordering::Release);
     STOP_NORMAL.store(false, Ordering::Release);
 
-    let batch = std::os::arceos::thread::spawn_raw(
-        || {
+    let batch = std::os::arceos::thread::builder(String::from("fair-batch-wakee"))
+        .stack_size(TEST_STACK_SIZE)
+        .spawn(|| {
             pin_current_to_cpu(0);
             std::os::arceos::task::thread::ThreadHandle::lookup(
                 current_thread_id().expect("the SCHED_BATCH worker must have an identity"),
@@ -156,11 +157,8 @@ fn sched_batch_wake_uses_fair_hrtick() {
             BATCH_READY.store(true, Ordering::Release);
             api::ax_wait_queue_wait_until(&BATCH_WAIT, || RUN_BATCH.load(Ordering::Acquire), None);
             BATCH_PROGRESS.store(true, Ordering::Release);
-        },
-        String::from("fair-batch-wakee"),
-        TEST_STACK_SIZE,
-    )
-    .expect("the SCHED_BATCH worker must spawn");
+        })
+        .expect("the SCHED_BATCH worker must spawn");
     wait_until(
         || BATCH_READY.load(Ordering::Acquire),
         "the SCHED_BATCH worker did not publish readiness",
@@ -209,7 +207,9 @@ fn sched_batch_wake_uses_fair_hrtick() {
     normal
         .join()
         .expect("the normal Fair occupier must exit normally");
-    std::os::arceos::thread::join_thread(batch).expect("the SCHED_BATCH worker must exit normally");
+    (batch)
+        .join()
+        .expect("the SCHED_BATCH worker must exit normally");
     assert!(
         made_progress,
         "SCHED_BATCH wakee did not run before the periodic scheduler tick fallback"

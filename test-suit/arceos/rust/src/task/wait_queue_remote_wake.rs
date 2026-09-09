@@ -150,9 +150,12 @@ pub fn run() -> crate::TestResult {
     let extension = unsafe { ThreadExtension::new(0, &SWITCH_OUT_PROBE_OPS) };
     // SAFETY: this call transfers the extension's unique logical ownership and
     // installs the affinity before publishing the scheduler thread.
-    let sleeper = unsafe {
-        std::os::arceos::thread::spawn_raw_with_extension_and_affinity(
-            move || {
+    let sleeper = {
+        std::os::arceos::thread::builder("remote-wake-on-cpu".into())
+            .stack_size(TEST_STACK_SIZE)
+            .extension(extension)
+            .affinity(single_cpu_affinity(cpu_num, sleeper_cpu))
+            .spawn(move || {
                 assert_eq!(this_cpu_id(), sleeper_cpu);
                 SLEEPER_CPU.store(this_cpu_id(), Ordering::Release);
                 STALL_ARMED.store(true, Ordering::Release);
@@ -164,12 +167,7 @@ pub fn run() -> crate::TestResult {
                 );
                 DONE.store(true, Ordering::Release);
                 api::ax_wait_queue_wake(&DONE_WQ, 1);
-            },
-            "remote-wake-on-cpu".into(),
-            TEST_STACK_SIZE,
-            Some(extension),
-            Some(single_cpu_affinity(cpu_num, sleeper_cpu)),
-        )
+            })
     }
     .expect("failed to spawn remote sleeper with switch-out probe");
 
@@ -205,6 +203,6 @@ pub fn run() -> crate::TestResult {
         ),
         "remote wait-queue wakeup did not make bounded progress"
     );
-    std::os::arceos::thread::join_thread(sleeper).expect("remote sleeper must exit cleanly");
+    (sleeper).join().expect("remote sleeper must exit cleanly");
     Ok(())
 }

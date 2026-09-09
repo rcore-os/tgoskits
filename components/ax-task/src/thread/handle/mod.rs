@@ -143,6 +143,11 @@ impl ThreadHandle {
         self.core.effective_policy.load()
     }
 
+    /// Reports physical execution-resource reclamation independently of logical exit.
+    pub fn execution_reclaimed(&self) -> bool {
+        self.core.execution_reclaimed.load(Ordering::Acquire)
+    }
+
     /// Returns the most recently published lifecycle state.
     pub fn state(&self) -> ThreadState {
         self.core.state()
@@ -456,6 +461,8 @@ pub(crate) struct ThreadCore {
     // Immutable after publication. Every handle retaining this copy also pins
     // the registry-owned extension destructor through the reaper Arc contract.
     extension: Option<ThreadExtensionView>,
+    pub(crate) execution: Option<Arc<crate::thread::execution::ThreadExecution>>,
+    pub(crate) execution_reclaimed: AtomicBool,
     scheduler_tick_cpu_time: Option<Arc<SchedulerTickCpuTime>>,
     scheduler_tick_work: Option<SchedulerTickWork>,
     scheduler_tick_work_generation: AtomicU64,
@@ -497,6 +504,7 @@ pub(crate) struct ThreadCoreInit {
     pub(crate) policy: SchedulePolicy,
     pub(crate) sched: Arc<ThreadSchedCell>,
     pub(crate) extension: Option<ThreadExtensionView>,
+    pub(crate) execution: Option<Arc<crate::thread::execution::ThreadExecution>>,
     pub(crate) scheduler_tick_cpu_time: Option<Arc<SchedulerTickCpuTime>>,
     pub(crate) scheduler_tick_work: Option<SchedulerTickWork>,
     pub(crate) membarrier_identity: AddressSpaceMembarrierId,
@@ -510,6 +518,7 @@ impl ThreadCore {
             policy,
             sched,
             extension,
+            execution,
             scheduler_tick_cpu_time,
             scheduler_tick_work,
             membarrier_identity,
@@ -525,6 +534,8 @@ impl ThreadCore {
             runqueue_nodes: RunQueueNodeStorage::new(),
             pi_wait_nodes: PiWaitNodeStorage::new(),
             extension,
+            execution,
+            execution_reclaimed: AtomicBool::new(false),
             scheduler_tick_cpu_time,
             scheduler_tick_work,
             scheduler_tick_work_generation: AtomicU64::new(0),

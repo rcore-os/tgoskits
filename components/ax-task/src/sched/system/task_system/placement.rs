@@ -133,7 +133,7 @@ impl TaskSystem {
             return Err(TaskError::UnsafeContext);
         }
         validate_affinity(&affinity, self.config.cpu_count())?;
-        let state = self.state.lock();
+        let mut state = self.state.lock();
         let root_domain = self.root_domain.lock();
         let record = state.thread_record(thread)?;
         let core = Arc::clone(&record.core);
@@ -167,6 +167,17 @@ impl TaskSystem {
                 SchedulePolicy::KernelStop => self.select_fallback_active_cpu(&affinity, None),
             })
             .ok_or(TaskError::InvalidConfiguration)?;
+        // An unpublished task can have its affinity changed through a published
+        // OS identity. Reserve the replacement target before committing the mask.
+        let replacement = if record.activation.is_some() {
+            Some(self.prepare_owner_migration(
+                &core,
+                sched.placement.assigned_cpu().expect("new task CPU"),
+                target,
+            )?)
+        } else {
+            None
+        };
         let generation = sched
             .affinity
             .affinity_generation
@@ -188,7 +199,15 @@ impl TaskSystem {
         let publication = owner.map_or(Ok(()), |owner| {
             state.publish_affinity_update(&core, owner, target)
         });
+        let previous = replacement.and_then(|delivery| {
+            state
+                .thread_record_mut(thread)
+                .expect("locked task identity")
+                .activation
+                .replace(delivery)
+        });
         drop(state);
+        drop(previous);
         if completed {
             core.notify_affinity_waiters();
         }

@@ -731,7 +731,7 @@ pub(super) struct ExecutorControl {
 
 pub(super) struct ExecutorLease {
     pub(super) control: Arc<ExecutorControl>,
-    pub(super) task: ax_task::thread::KernelThreadHandle,
+    pub(super) task: ax_task::thread::ThreadHandle,
 }
 
 impl ExecutorLease {

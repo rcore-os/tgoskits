@@ -183,16 +183,12 @@ impl PhysicalIrqBridge {
     fn start_worker(self: &Arc<Self>) -> AxVmResult {
         self.shared.stopping.store(false, Ordering::Release);
         let bridge = self.clone();
-        let worker = unsafe {
+        let worker = {
             // SAFETY: no OS extension or affinity capability is transferred;
             // the worker closure and bridge reference move exactly once.
-            crate::host::task::spawn_thread_with_extension_and_affinity(
-                move || bridge.run_worker(),
-                std::format!("VM[{}]-plic-physical", self.shared.vm_id),
-                PHYSICAL_IRQ_WORKER_STACK_SIZE,
-                None,
-                None,
-            )
+            crate::host::task::builder(std::format!("VM[{}]-plic-physical", self.shared.vm_id))
+                .stack_size(PHYSICAL_IRQ_WORKER_STACK_SIZE)
+                .spawn(move || bridge.run_worker())
         }
         .map_err(|error| AxVmError::host("start RISC-V physical IRQ worker", error))?;
         *self.worker.lock_unpoisoned() = Some(worker);

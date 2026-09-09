@@ -128,7 +128,7 @@ mod axtests {
             sync::WaitQueue,
             thread::current::current_thread_id,
         },
-        thread::{join_thread, spawn_raw},
+        thread::builder,
     };
 
     use crate::sync::Mutex;
@@ -164,18 +164,14 @@ mod axtests {
             let owner_wait = Arc::clone(&owner_wait);
             let owner_locked = Arc::clone(&owner_locked);
             let release_owner = Arc::clone(&release_owner);
-            spawn_raw(
-                move || {
+            builder("pi-no-rq-owner".to_string()).stack_size(256 * 1024).spawn(move || {
                     begin_pi_schedule_test_probe(
                         current_thread_id().expect("PI owner must have a thread identity"),
                     );
                     let _guard = mutex.lock();
                     owner_locked.store(true, Ordering::Release);
                     owner_wait.wait_until(|| release_owner.load(Ordering::Acquire));
-                },
-                "pi-no-rq-owner".to_string(),
-                256 * 1024,
-            )
+                })
             .expect("failed to spawn PI owner")
         };
         wait_for(
@@ -186,14 +182,10 @@ mod axtests {
         let waiter = {
             let mutex = Arc::clone(&mutex);
             let waiter_done = Arc::clone(&waiter_done);
-            spawn_raw(
-                move || {
+            builder("pi-no-rq-waiter".to_string()).stack_size(256 * 1024).spawn(move || {
                     drop(mutex.lock());
                     waiter_done.store(true, Ordering::Release);
-                },
-                "pi-no-rq-waiter".to_string(),
-                256 * 1024,
-            )
+                })
             .expect("failed to spawn PI waiter")
         };
 
@@ -218,8 +210,8 @@ mod axtests {
 
         release_owner.store(true, Ordering::Release);
         owner_wait.notify_all();
-        join_thread(owner).expect("PI owner must exit cleanly");
-        join_thread(waiter).expect("PI waiter must exit cleanly");
+        owner.join().expect("PI owner must exit cleanly");
+        waiter.join().expect("PI waiter must exit cleanly");
         assert!(
             waiter_done.load(Ordering::Acquire),
             "PI waiter must acquire the mutex after owner release"

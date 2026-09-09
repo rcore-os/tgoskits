@@ -1,5 +1,7 @@
 //! Thread exit callbacks, registry reaping, and resource release.
 
+use core::sync::atomic::Ordering;
+
 use super::*;
 
 impl TaskSystem {
@@ -19,6 +21,9 @@ impl TaskSystem {
                 return Err(TaskError::StaleThreadId);
             }
             let mut sched = record.sched.lock();
+            if record.activation.is_some() {
+                return Err(TaskError::ThreadBusy);
+            }
             if sched.placement.queued_cpu().is_some() {
                 return Err(TaskError::AlreadyQueued);
             }
@@ -66,7 +71,7 @@ impl TaskSystem {
             scheduler_exit.seal();
             record
                 .callbacks
-                .prepare_exit(record.extension.is_some())
+                .prepare_exit(record.extension.is_some() || record.core.execution.is_some())
                 .unwrap_or_else(|_| {
                     task_runtime::fatal_invariant(0x4558_000b, core.id().as_u64() as usize)
                 });
@@ -110,13 +115,18 @@ impl TaskSystem {
                 let mut state = self.state.lock();
                 state.claim_pending_exit_callback()?
             };
-            let Some((extension, thread)) = callback else {
+            let Some(super::registry::ExitCallbackClaim { extension, core }) = callback else {
                 break;
             };
             // SAFETY: the registry record keeps the claimed extension live,
             // and ThreadExtension construction validated this callback table.
-            unsafe { (extension.ops().on_exit)(extension.data(), thread) };
-            self.state.lock().finish_exit_callback(thread)?;
+            if let Some(extension) = extension {
+                unsafe { (extension.ops().on_exit)(extension.data(), core.id()) };
+            }
+            if let Some(execution) = core.execution.as_ref() {
+                execution.finish();
+            }
+            self.state.lock().finish_exit_callback(core.id())?;
             dispatched += 1;
         }
         Ok(dispatched)
@@ -198,8 +208,28 @@ impl TaskSystem {
         Ok(reaped)
     }
 
+    pub(super) fn reclaim_exited_execution(&self) -> Result<bool, TaskError> {
+        let detached = self.state.lock().take_exited_execution()?;
+        let Some(detached) = detached else {
+            return Ok(false);
+        };
+        let address_space = detached.resources.release();
+        self.release_address_space_token(address_space);
+        detached
+            .handle
+            .core
+            .execution_reclaimed
+            .store(true, Ordering::Release);
+        drop(detached.handle);
+        Ok(true)
+    }
+
     pub(super) fn release_thread_record(&self, mut record: ThreadRecord) {
         let address_space = record.resources.release();
+        record
+            .core
+            .execution_reclaimed
+            .store(true, Ordering::Release);
         drop(record.extension.take());
         self.release_address_space_token(address_space);
     }
