@@ -112,7 +112,10 @@ impl Rknpu {
             data,
             config,
             dma: dma.clone(),
-            iommu_enabled: false,
+            // A direct DMA domain bypasses address translation. Submit must
+            // fail closed in that configuration because validating a command
+            // buffer alone cannot constrain addresses embedded in its data.
+            iommu_enabled: matches!(dma.info().domain(), dma_api::DmaDomainId::Translated(_)),
             gem: GemPool::new(dma),
             auto_core_cursor: 0,
         }
@@ -311,7 +314,11 @@ impl Rknpu {
 
     /// Enable or disable IOMMU
     pub fn set_iommu_enabled(&mut self, enabled: bool) {
-        self.iommu_enabled = enabled;
+        self.iommu_enabled = enabled
+            && matches!(
+                self.dma.info().domain(),
+                dma_api::DmaDomainId::Translated(_)
+            );
     }
 
     // /// Commit a prepared job descriptor to the hardware command parser.

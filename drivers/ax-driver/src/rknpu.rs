@@ -11,7 +11,7 @@ use rdrive::{
     register::ProbeFdt,
 };
 pub use rockchip_npu::{
-    GemBufferInfo, GemCachePolicy, RknpuAction,
+    GemBufferInfo, GemCachePolicy, RknpuAction, RknpuTask,
     ioctrl::{RknpuMemCreate, RknpuMemDestroy, RknpuMemMap, RknpuMemSync, RknpuSubmit},
 };
 use rockchip_npu::{Rknpu, RknpuConfig, RknpuType};
@@ -199,14 +199,14 @@ pub fn buffer_retainer(handle: u32) -> Result<Arc<dyn Any + Send + Sync>, Error>
     with_npu(|npu| npu.buffer_retainer(handle).ok_or(Error::NotFound))
 }
 
-pub fn submit(args: &mut RknpuSubmit) -> Result<(), Error> {
+pub fn submit(args: &mut RknpuSubmit, tasks: &mut [RknpuTask]) -> Result<(), Error> {
     let mut npu = rdrive::get_one::<RknpuDevice>()
         .ok_or(Error::NotFound)?
         .try_lock()
         .map_err(|_| Error::Busy)?;
     npu.ensure_available()?;
     let mut clock = axklib::time::monotonic_nanos;
-    match npu.core.submit_ioctrl(args, &mut clock) {
+    match npu.core.submit_ioctrl(args, tasks, &mut clock) {
         Ok(()) => Ok(()),
         Err(rockchip_npu::RknpuError::Timeout) => {
             npu.recover_timeout()?;
