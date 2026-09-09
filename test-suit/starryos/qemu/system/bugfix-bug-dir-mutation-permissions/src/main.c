@@ -23,6 +23,9 @@
 #ifndef RENAME_NOREPLACE
 #define RENAME_NOREPLACE (1U << 0)
 #endif
+#ifndef AT_EMPTY_PATH
+#define AT_EMPTY_PATH 0x1000
+#endif
 
 static const char *const base = "/tmp/bug-dir-mutation-permissions";
 static const char *const protected_dir = "/tmp/bug-dir-mutation-permissions/protected";
@@ -45,11 +48,26 @@ static const char *const sticky_target = "/tmp/bug-dir-mutation-permissions/stic
 static const char *const sticky_child = "/tmp/bug-dir-mutation-permissions/sticky/child-file";
 static const char *const dirfd_parent = "/tmp/bug-dir-mutation-permissions/dirfd-parent";
 static const char *const dirfd_root = "/tmp/bug-dir-mutation-permissions/dirfd-parent/opened";
+static const char *const empty_path_source =
+    "/tmp/bug-dir-mutation-permissions/empty-path-source";
+static const char *const empty_path_link =
+    "/tmp/bug-dir-mutation-permissions/public/empty-path-link";
 static const char *const dirfd_existing =
     "/tmp/bug-dir-mutation-permissions/dirfd-parent/opened/existing";
+static const char *const dirfd_created_by_openat =
+    "/tmp/bug-dir-mutation-permissions/dirfd-parent/opened/created-by-openat";
+static const char *const dirfd_created_by_mkdirat =
+    "/tmp/bug-dir-mutation-permissions/dirfd-parent/opened/created-by-mkdirat";
+static const char *const dirfd_created_by_linkat =
+    "/tmp/bug-dir-mutation-permissions/dirfd-parent/opened/created-by-linkat";
+static const char *const dirfd_rename_source =
+    "/tmp/bug-dir-mutation-permissions/dirfd-parent/opened/rename-source";
+static const char *const dirfd_rename_target =
+    "/tmp/bug-dir-mutation-permissions/dirfd-parent/opened/rename-target";
 static const char *const mount_a = "/tmp/bug-dir-mutation-permissions/mount-a";
 static const char *const mount_b = "/tmp/bug-dir-mutation-permissions/mount-b";
 static int dirfd = -1;
+static int empty_path_source_fd = -1;
 
 static int failures;
 
@@ -83,6 +101,18 @@ static void remove_if_present(const char *path)
 {
     unlink(path);
     rmdir(path);
+}
+
+static void cleanup_dirfd_tree(void)
+{
+    remove_if_present(dirfd_created_by_openat);
+    remove_if_present(dirfd_created_by_mkdirat);
+    remove_if_present(dirfd_created_by_linkat);
+    remove_if_present(dirfd_rename_source);
+    remove_if_present(dirfd_rename_target);
+    remove_if_present(dirfd_existing);
+    remove_if_present(dirfd_root);
+    remove_if_present(dirfd_parent);
 }
 
 static int run_unprivileged_checks(void)
@@ -169,6 +199,15 @@ static int run_unprivileged_checks(void)
                  "/tmp/bug-dir-mutation-permissions/sticky/root-link", 0) < 0
               && errno == EPERM,
           "linkat rejects a hard link to another user's file");
+
+    if (empty_path_source_fd >= 0) {
+        errno = 0;
+        check(linkat(empty_path_source_fd, "", AT_FDCWD, empty_path_link, AT_EMPTY_PATH) < 0
+                  && errno == ENOENT,
+              "linkat AT_EMPTY_PATH requires CAP_DAC_READ_SEARCH");
+        check(access(empty_path_link, F_OK) < 0 && errno == ENOENT,
+              "failed AT_EMPTY_PATH link leaves the destination unchanged");
+    }
 
     check(create_file(sticky_child) == 0, "unprivileged user creates its own file");
     errno = 0;
@@ -292,12 +331,18 @@ cleanup:
 
 int main(void)
 {
+    cleanup_dirfd_tree();
     remove_if_present(base);
     check(mkdir(base, 0755) == 0, "create test root");
     check(mkdir(protected_dir, 0700) == 0, "create protected directory");
     check(mkdir(public_dir, 0777) == 0, "create public directory");
     check(chmod(public_dir, 0777) == 0, "make public directory writable");
     check(create_file(source) == 0, "create hard-link source");
+    check(create_file(empty_path_source) == 0, "create AT_EMPTY_PATH source");
+    check(chown(empty_path_source, 1000, 1000) == 0,
+          "assign AT_EMPTY_PATH source to the unprivileged user");
+    empty_path_source_fd = open(empty_path_source, O_RDONLY);
+    check(empty_path_source_fd >= 0, "open AT_EMPTY_PATH source before dropping privileges");
     check(create_file(protected_file) == 0, "create protected victim");
     check(symlink(public_dir, protected_link) == 0,
           "create symlink through protected directory");
@@ -352,14 +397,17 @@ int main(void)
     remove_if_present(public_link_new);
     remove_if_present(protected_link);
     remove_if_present(protected_dir);
+    remove_if_present(empty_path_link);
     remove_if_present(public_dir);
     remove_if_present(source);
+    if (empty_path_source_fd >= 0) {
+        close(empty_path_source_fd);
+    }
+    remove_if_present(empty_path_source);
     if (dirfd >= 0) {
         close(dirfd);
     }
-    remove_if_present(dirfd_existing);
-    remove_if_present(dirfd_root);
-    remove_if_present(dirfd_parent);
+    cleanup_dirfd_tree();
     remove_if_present(base);
 
     printf("DIR_MUTATION_PERMISSIONS_TEST_%s\n", failures == 0 ? "PASSED" : "FAILED");

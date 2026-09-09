@@ -538,6 +538,7 @@ pub fn sys_openat(
         fsgid: cred.fsgid,
         supplementary_gids: &cred.groups,
         cap_dac_override: cred.has_cap_dac_override(),
+        cap_dac_read_search: cred.has_cap_dac_read_search(),
         cap_fowner: cred.has_cap_fowner(),
     };
     let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
@@ -633,6 +634,7 @@ pub fn sys_openat2(
         fsgid: cred.fsgid,
         supplementary_gids: &cred.groups,
         cap_dac_override: cred.has_cap_dac_override(),
+        cap_dac_read_search: cred.has_cap_dac_read_search(),
         cap_fowner: cred.has_cap_fowner(),
     };
     let mut options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));

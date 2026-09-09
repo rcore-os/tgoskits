@@ -10,9 +10,9 @@ use alloc::sync::Arc;
 #[cfg(feature = "rga")]
 use linux_raw_sys::general::CAP_SYS_RAWIO;
 use linux_raw_sys::general::{
-    CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_IPC_LOCK, CAP_KILL, CAP_LAST_CAP, CAP_NET_RAW,
-    CAP_PERFMON, CAP_SETGID, CAP_SETPCAP, CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE,
-    CAP_SYS_NICE, CAP_SYS_PTRACE, CAP_SYS_RESOURCE, CAP_SYS_TIME,
+    CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_DAC_READ_SEARCH, CAP_FOWNER, CAP_IPC_LOCK, CAP_KILL,
+    CAP_LAST_CAP, CAP_NET_RAW, CAP_PERFMON, CAP_SETGID, CAP_SETPCAP, CAP_SETUID, CAP_SYS_ADMIN,
+    CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_PTRACE, CAP_SYS_RESOURCE, CAP_SYS_TIME,
 };
 
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
@@ -226,6 +226,12 @@ impl Cred {
     /// permission checks (equivalent to `CAP_DAC_OVERRIDE`).
     pub fn has_cap_dac_override(&self) -> bool {
         self.has_cap(CAP_DAC_OVERRIDE)
+    }
+
+    /// Check whether this credential may bypass directory read and search
+    /// permission checks (equivalent to `CAP_DAC_READ_SEARCH`).
+    pub fn has_cap_dac_read_search(&self) -> bool {
+        self.has_cap(CAP_DAC_READ_SEARCH)
     }
 
     /// Check whether this credential may perform broad system administration

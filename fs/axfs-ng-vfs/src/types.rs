@@ -120,6 +120,8 @@ pub struct MutationCredentials<'a> {
     pub supplementary_gids: &'a [u32],
     /// Whether the caller has `CAP_DAC_OVERRIDE`.
     pub cap_dac_override: bool,
+    /// Whether the caller has `CAP_DAC_READ_SEARCH`.
+    pub cap_dac_read_search: bool,
     /// Whether the caller has `CAP_FOWNER`.
     pub cap_fowner: bool,
 }
@@ -132,6 +134,7 @@ impl MutationCredentials<'static> {
             fsgid: 0,
             supplementary_gids: &[],
             cap_dac_override: true,
+            cap_dac_read_search: true,
             cap_fowner: true,
         }
     }
