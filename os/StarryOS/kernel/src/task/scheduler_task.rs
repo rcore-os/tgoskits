@@ -59,7 +59,7 @@ impl PreparedUserTask {
         operation(&task)
     }
 
-    /// Completes fallible scheduler placement while keeping user entry gated.
+    /// Completes fallible scheduler placement while keeping the task in New state.
     pub fn stage(self) -> Result<StagedUserTask, scheduler::thread::TaskError> {
         Ok(StagedUserTask {
             scheduler: self.scheduler.stage()?,
@@ -87,7 +87,7 @@ impl StagedUserTask {
 impl UserTaskRef {
     /// Tries to recover a Starry user task from a generic scheduler thread.
     ///
-    /// Threads without an inner OS extension or with a foreign inner extension
+    /// Threads without an OS extension or with a foreign extension
     /// return `Ok(None)`. Matching Starry operations with malformed data are a
     /// runtime-handle error.
     pub fn try_from_scheduler(
@@ -242,13 +242,14 @@ impl UserTaskRef {
 
     /// Waits for exit and reaps the scheduler-owned runtime resources.
     pub fn join(self) -> i32 {
-        (self.scheduler).join()
+        self.scheduler
+            .join()
             .unwrap_or_else(|error| panic!("failed to join Starry task: {error}"))
     }
 
     fn extension(&self) -> &StarryUserTaskExtension {
         // SAFETY: construction validates this value and retains the scheduler
-        // handle that owns the enclosing runtime extension for `self`'s whole
+        // handle that pins the scheduler-owned OS extension for `self`'s whole
         // lifetime. The callback table and data pointer are immutable.
         unsafe { extension_data_from_raw(self.extension_data) }
     }
@@ -441,8 +442,11 @@ pub fn spawn_kernel_thread_with_affinity<F>(
 where
     F: FnOnce() + Send + 'static,
 {
-    ax_std::os::arceos::thread::builder(name).stack_size(crate::config::KERNEL_STACK_SIZE).affinity(affinity).spawn(entry)
-    .unwrap_or_else(|error| panic!("failed to spawn affine kernel thread: {error}"))
+    ax_std::os::arceos::thread::builder(name)
+        .stack_size(crate::config::KERNEL_STACK_SIZE)
+        .affinity(affinity)
+        .spawn(entry)
+        .unwrap_or_else(|error| panic!("failed to spawn affine kernel thread: {error}"))
 }
 
 /// Spawns a fixed per-CPU kernel service with its scheduler policy committed
@@ -456,13 +460,18 @@ pub fn spawn_kernel_thread_with_policy_and_affinity<F>(
 where
     F: FnOnce() + Send + 'static,
 {
-    ax_std::os::arceos::thread::builder(name).stack_size(crate::config::KERNEL_STACK_SIZE).policy(policy).affinity(affinity).spawn(entry)
-    .unwrap_or_else(|error| panic!("failed to spawn policy-bound kernel thread: {error}"))
+    ax_std::os::arceos::thread::builder(name)
+        .stack_size(crate::config::KERNEL_STACK_SIZE)
+        .policy(policy)
+        .affinity(affinity)
+        .spawn(entry)
+        .unwrap_or_else(|error| panic!("failed to spawn policy-bound kernel thread: {error}"))
 }
 
 /// Waits for a kernel worker and releases its scheduler-owned resources.
 pub fn join_kernel_thread(thread: scheduler::thread::ThreadHandle) -> i32 {
-    (thread).join()
+    thread
+        .join()
         .unwrap_or_else(|error| panic!("failed to join kernel thread: {error}"))
 }
 
@@ -486,7 +495,9 @@ pub fn try_spawn_kernel_thread_with_stack<F>(
 where
     F: FnOnce() + Send + 'static,
 {
-    ax_std::os::arceos::thread::builder(name).stack_size(stack_size).spawn(entry)
+    ax_std::os::arceos::thread::builder(name)
+        .stack_size(stack_size)
+        .spawn(entry)
 }
 
 /// Returns Starry's default kernel stack size.
@@ -582,28 +593,6 @@ impl UserThreadInitialSchedulerState {
     }
 }
 
-/// Prepares a Starry user thread with inherited scheduling state.
-#[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
-pub fn prepare_user_thread_with_scheduler_state<F>(
-    entry: F,
-    name: String,
-    stack_size: usize,
-    thread: Thread,
-    scheduler_state: UserThreadInitialSchedulerState,
-) -> Result<PreparedUserTask, scheduler::thread::TaskError>
-where
-    F: FnOnce() + Send + 'static,
-{
-    let address_space = thread.proc_data.scheduler_address_space()?;
-    prepare_user_thread_inner(
-        entry,
-        name,
-        stack_size,
-        thread,
-        StarryContextState::user_with_scheduler_state(address_space, scheduler_state),
-    )
-}
-
 /// Prepares a RISC-V user thread with inherited FP and scheduling state.
 #[cfg(target_arch = "riscv64")]
 pub fn prepare_user_thread_with_fp_scheduler_state<F>(
@@ -631,8 +620,8 @@ where
     )
 }
 
-/// Prepares an x86 user thread inheriting the current hardware FP image.
-#[cfg(target_arch = "x86_64")]
+/// Prepares a user thread inheriting the current hardware FP image.
+#[cfg(not(target_arch = "riscv64"))]
 pub fn prepare_user_thread_inheriting_fp_scheduler_state<F>(
     entry: F,
     name: String,
@@ -653,8 +642,8 @@ where
     )
 }
 
-#[cfg(target_arch = "x86_64")]
-enum X86FpInitialization {
+#[cfg(not(target_arch = "riscv64"))]
+enum FpInitialization {
     Default,
     InheritCurrent,
 }
@@ -663,8 +652,8 @@ struct StarryContextState {
     address_space: Option<ax_std::os::arceos::thread::TaskAddressSpace>,
     #[cfg(target_arch = "riscv64")]
     fp_state: Option<ax_cpu::FpState>,
-    #[cfg(target_arch = "x86_64")]
-    x86_fp: X86FpInitialization,
+    #[cfg(not(target_arch = "riscv64"))]
+    fp_initialization: FpInitialization,
     scheduler_state: UserThreadInitialSchedulerState,
 }
 
@@ -674,31 +663,20 @@ impl StarryContextState {
             address_space: Some(address_space),
             #[cfg(target_arch = "riscv64")]
             fp_state: None,
-            #[cfg(target_arch = "x86_64")]
-            x86_fp: X86FpInitialization::Default,
+            #[cfg(not(target_arch = "riscv64"))]
+            fp_initialization: FpInitialization::Default,
             scheduler_state: UserThreadInitialSchedulerState::default_user(),
         }
     }
 
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
-    fn user_with_scheduler_state(
-        address_space: ax_std::os::arceos::thread::TaskAddressSpace,
-        scheduler_state: UserThreadInitialSchedulerState,
-    ) -> Self {
-        Self {
-            address_space: Some(address_space),
-            scheduler_state,
-        }
-    }
-
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(not(target_arch = "riscv64"))]
     fn user_inheriting_current_fp_state(
         address_space: ax_std::os::arceos::thread::TaskAddressSpace,
         scheduler_state: UserThreadInitialSchedulerState,
     ) -> Self {
         Self {
             address_space: Some(address_space),
-            x86_fp: X86FpInitialization::InheritCurrent,
+            fp_initialization: FpInitialization::InheritCurrent,
             scheduler_state,
         }
     }
@@ -737,15 +715,24 @@ where
         return Err(scheduler::thread::TaskError::InvalidRuntimeHandle);
     };
     let builder = ax_std::os::arceos::thread::builder(name)
-        .stack_size(stack_size).policy(context_state.scheduler_state.policy).extension(extension)
+        .stack_size(stack_size)
+        .policy(context_state.scheduler_state.policy)
+        .extension(extension)
         .affinity(context_state.scheduler_state.affinity);
     let options = ax_std::os::arceos::thread::UserContextOptions::new(address_space);
     #[cfg(target_arch = "riscv64")]
-    let options = match context_state.fp_state { Some(fp) => options.with_fp_state(fp), None => options };
-    #[cfg(target_arch = "x86_64")]
-    let options = match context_state.x86_fp { X86FpInitialization::InheritCurrent => options.inherit_current_fp(), X86FpInitialization::Default => options };
+    let options = match context_state.fp_state {
+        Some(fp) => options.with_fp_state(fp),
+        None => options,
+    };
+    #[cfg(not(target_arch = "riscv64"))]
+    let options = match context_state.fp_initialization {
+        FpInitialization::InheritCurrent => options.inherit_current_fp(),
+        FpInitialization::Default => options,
+    };
     // SAFETY: the user entry and its uniquely owned MM/FP state belong to this task.
-    let prepared = unsafe { ax_std::os::arceos::thread::prepare_user_thread(builder, entry, options)? };
+    let prepared =
+        unsafe { ax_std::os::arceos::thread::prepare_user_thread(builder, entry, options)? };
     let scheduler_id = prepared.thread_handle().id();
     // SAFETY: `data` was created above for this scheduler extension, and the
     // prepared token still owns that extension until it is staged or dropped.

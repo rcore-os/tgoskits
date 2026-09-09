@@ -32,8 +32,8 @@ impl UserContextOptions {
         self.state.fp_state = Some(state);
         self
     }
-    /// Captures the calling thread's x86 user xstate during context preparation.
-    #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+    /// Captures the calling thread's user FP state during context preparation.
+    #[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
     pub fn inherit_current_fp(mut self) -> Self {
         self.state.inherit_current_fp();
         self
@@ -50,7 +50,7 @@ pub unsafe fn prepare_user_thread(
     entry: impl FnOnce() + Send + 'static,
     options: UserContextOptions,
 ) -> Result<PreparedThread, TaskError> {
-    #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+    #[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
     if options.state.inherits_current_fp() {
         context::validate_current_user_fp_clone_context()?;
     }

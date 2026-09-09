@@ -1,7 +1,7 @@
 use super::*;
 
-#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
-enum InitialX86FpState {
+#[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
+enum InitialFpState {
     Default,
     InheritCurrent,
 }
@@ -10,8 +10,8 @@ pub(super) struct InitialContextState {
     pub(super) address_space: Option<TaskAddressSpace>,
     #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
     pub(super) fp_state: Option<ax_hal::cpu::FpState>,
-    #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
-    x86_fp_state: InitialX86FpState,
+    #[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
+    fp_initialization: InitialFpState,
 }
 
 impl InitialContextState {
@@ -21,8 +21,8 @@ impl InitialContextState {
             address_space: None,
             #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
             fp_state: None,
-            #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
-            x86_fp_state: InitialX86FpState::Default,
+            #[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
+            fp_initialization: InitialFpState::Default,
         }
     }
 
@@ -31,19 +31,19 @@ impl InitialContextState {
             address_space: Some(address_space),
             #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
             fp_state: None,
-            #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
-            x86_fp_state: InitialX86FpState::Default,
+            #[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
+            fp_initialization: InitialFpState::Default,
         }
     }
 
-    #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+    #[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
     pub(super) fn inherits_current_fp(&self) -> bool {
-        matches!(self.x86_fp_state, InitialX86FpState::InheritCurrent)
+        matches!(self.fp_initialization, InitialFpState::InheritCurrent)
     }
 
-    #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+    #[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
     pub(super) fn inherit_current_fp(&mut self) {
-        self.x86_fp_state = InitialX86FpState::InheritCurrent;
+        self.fp_initialization = InitialFpState::InheritCurrent;
     }
 }
 
@@ -324,10 +324,10 @@ pub(super) fn create_thread_resources_with(
     if let Some(fp_state) = context_state.fp_state {
         context::install_initial_fp_state(context_result.handle, fp_state);
     }
-    #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+    #[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
     if matches!(
-        context_state.x86_fp_state,
-        InitialX86FpState::InheritCurrent
+        context_state.fp_initialization,
+        InitialFpState::InheritCurrent
     ) {
         context::inherit_current_user_fp_state(context_result.handle);
     }

@@ -430,7 +430,7 @@ pub(super) fn scheduler_current_thread_identity() -> ThreadIdentityV1 {
     scheduler_current_thread_publication().identity()
 }
 
-#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+#[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
 pub(super) fn validate_current_user_fp_clone_context() -> Result<(), TaskError> {
     if !ax_hal::asm::irqs_enabled() || ax_hal::irq::in_irq_context() {
         return Err(TaskError::UnsafeContext);
@@ -449,21 +449,18 @@ pub(super) fn validate_current_user_fp_clone_context() -> Result<(), TaskError> 
     result
 }
 
-#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+#[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
 pub(super) fn inherit_current_user_fp_state(child_context: usize) {
     assert!(
         ax_hal::asm::irqs_enabled() && !ax_hal::irq::in_irq_context(),
-        "x86 FPU inheritance requires ordinary task context",
+        "FPU inheritance requires ordinary task context",
     );
-    assert_ne!(
-        child_context, 0,
-        "x86 FPU inheritance requires a child context"
-    );
+    assert_ne!(child_context, 0, "FPU inheritance requires a child context");
     let child = ptr::with_exposed_provenance_mut::<RuntimeContext>(child_context);
     ax_hal::asm::disable_irqs();
     // SAFETY: the child allocation is exclusively owned by resource creation
     // and remains unpublished. IRQ exclusion pins the current parent context
-    // and its CPU-local FPU owner through the direct XSAVE into the child.
+    // and its CPU-local FPU owner through the architecture FP snapshot into the child.
     unsafe {
         with_current_cpu_pin(|cpu_pin| {
             let parent = current_runtime_context(cpu_pin)

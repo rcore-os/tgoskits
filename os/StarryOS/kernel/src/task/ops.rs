@@ -164,7 +164,9 @@ mod axtests {
             let owner_wait = Arc::clone(&owner_wait);
             let owner_locked = Arc::clone(&owner_locked);
             let release_owner = Arc::clone(&release_owner);
-            builder("pi-no-rq-owner".to_string()).stack_size(256 * 1024).spawn(move || {
+            builder("pi-no-rq-owner".to_string())
+                .stack_size(256 * 1024)
+                .spawn(move || {
                     begin_pi_schedule_test_probe(
                         current_thread_id().expect("PI owner must have a thread identity"),
                     );
@@ -172,7 +174,7 @@ mod axtests {
                     owner_locked.store(true, Ordering::Release);
                     owner_wait.wait_until(|| release_owner.load(Ordering::Acquire));
                 })
-            .expect("failed to spawn PI owner")
+                .expect("failed to spawn PI owner")
         };
         wait_for(
             || owner_locked.load(Ordering::Acquire),
@@ -182,11 +184,13 @@ mod axtests {
         let waiter = {
             let mutex = Arc::clone(&mutex);
             let waiter_done = Arc::clone(&waiter_done);
-            builder("pi-no-rq-waiter".to_string()).stack_size(256 * 1024).spawn(move || {
+            builder("pi-no-rq-waiter".to_string())
+                .stack_size(256 * 1024)
+                .spawn(move || {
                     drop(mutex.lock());
                     waiter_done.store(true, Ordering::Release);
                 })
-            .expect("failed to spawn PI waiter")
+                .expect("failed to spawn PI waiter")
         };
 
         wait_for(
