@@ -65,29 +65,6 @@ impl SchedulerDeadlinePublicationOutcome {
 }
 
 impl CpuLocal {
-    /// Returns whether every shared deadline source already has the
-    /// publication that this rq observation would derive.
-    ///
-    /// Linux does not restart hrtick or the RT period timer for a plain
-    /// FIFO-to-FIFO switch. Fair balance and the root RT period are absolute
-    /// shared deadlines, so the coherent deadline-base snapshot can prove that
-    /// they and the task/kernel timer heads are unchanged. The current class's
-    /// hrtick is rq-local and is published separately by the owner CPU.
-    pub(crate) fn can_reuse_scheduler_deadline_for_rq_observation(
-        &self,
-        rq_observation: SchedulerDeadlineRqObservation,
-    ) -> bool {
-        let fair_balance = rq_observation
-            .has_periodic_fair_balance_work
-            .then(|| self.dispatch.fair_balance_deadline())
-            .flatten();
-        let rt_period = self.rt_bandwidth.deadline_for(self.owner);
-        let non_timer = SchedulerNonTimerDeadlines {
-            deadline: [fair_balance, rt_period].into_iter().flatten().min(),
-        };
-        self.remote.deadline_publication_snapshot_matches(non_timer)
-    }
-
     pub(crate) fn scheduler_work_due(
         mut self: Pin<&mut Self>,
         monotonic_now: MonotonicInstant,
@@ -130,17 +107,15 @@ impl CpuLocal {
         }
     }
 
-    fn next_non_timer_deadline_from_rq_observation(
-        &self,
-        rq_observation: SchedulerDeadlineRqObservation,
-    ) -> SchedulerNonTimerDeadlines {
-        let fair_balance = rq_observation
-            .has_periodic_fair_balance_work
-            .then(|| self.dispatch.fair_balance_deadline())
-            .flatten();
-        let rt_period = self.rt_bandwidth.deadline_for(self.owner);
+    /// Returns the shared clockevent input owned outside task/kernel timers.
+    ///
+    /// Linux sched_balance_trigger() checks Fair balancing from the periodic
+    /// scheduler tick, not a separate hrtimer. Keep its logical deadline in
+    /// OwnerDispatchState without republishing it on rq membership changes.
+    /// The current class's hrtick remains a separate rq-owned input.
+    fn shared_non_timer_deadline(&self) -> SchedulerNonTimerDeadlines {
         SchedulerNonTimerDeadlines {
-            deadline: [fair_balance, rt_period].into_iter().flatten().min(),
+            deadline: self.rt_bandwidth.deadline_for(self.owner),
         }
     }
 
@@ -148,67 +123,42 @@ impl CpuLocal {
         mut self: Pin<&mut Self>,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<Option<SchedulerDeadlineUpdate>, TaskError> {
-        let rq_observation = self.scheduler_deadline_rq_observation();
         self.as_mut()
-            .update_scheduler_deadline_publication_if_changed_from_rq_observation(
-                rq_observation,
-                source,
-            )
+            .update_scheduler_deadline_publication_if_changed(source)
     }
 
-    pub(crate) fn next_scheduler_deadline_update_if_changed_from_rq_observation(
+    pub(crate) fn next_scheduler_deadline_update(
         mut self: Pin<&mut Self>,
-        rq_observation: SchedulerDeadlineRqObservation,
-        source: SchedulerDeadlineDerivationSource,
-    ) -> Result<Option<SchedulerDeadlineUpdate>, TaskError> {
-        self.as_mut()
-            .update_scheduler_deadline_publication_if_changed_from_rq_observation(
-                rq_observation,
-                source,
-            )
-    }
-
-    pub(crate) fn next_scheduler_deadline_update_from_rq_observation(
-        mut self: Pin<&mut Self>,
-        rq_observation: SchedulerDeadlineRqObservation,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<SchedulerDeadlineUpdate, TaskError> {
         self.as_mut()
-            .update_scheduler_deadline_publication_from_rq_observation(rq_observation, source)
+            .update_scheduler_deadline_publication(source)
             .map(SchedulerDeadlinePublicationOutcome::update)
     }
 
-    fn update_scheduler_deadline_publication_from_rq_observation(
+    fn update_scheduler_deadline_publication(
         self: Pin<&mut Self>,
-        rq_observation: SchedulerDeadlineRqObservation,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<SchedulerDeadlinePublicationOutcome, TaskError> {
         self.as_ref()
             .get_ref()
             .record_scheduler_deadline_derivation(source);
-        // Preserve the established rq/RT-period -> deadline-base lock order.
+        // Read the RT period before acquiring the deadline-base lock.
         // The task/kernel timer head and publication metadata are then read
         // and committed under one authoritative base lock.
-        let non_timer = self
-            .as_ref()
-            .get_ref()
-            .next_non_timer_deadline_from_rq_observation(rq_observation);
+        let non_timer = self.as_ref().get_ref().shared_non_timer_deadline();
         let mut task_deadlines = self.remote.lock_deadline_publication();
         Self::update_scheduler_deadline_publication_in_base(&mut task_deadlines, non_timer)
     }
 
-    fn update_scheduler_deadline_publication_if_changed_from_rq_observation(
+    fn update_scheduler_deadline_publication_if_changed(
         self: Pin<&mut Self>,
-        rq_observation: SchedulerDeadlineRqObservation,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<Option<SchedulerDeadlineUpdate>, TaskError> {
         self.as_ref()
             .get_ref()
             .record_scheduler_deadline_derivation(source);
-        let non_timer = self
-            .as_ref()
-            .get_ref()
-            .next_non_timer_deadline_from_rq_observation(rq_observation);
+        let non_timer = self.as_ref().get_ref().shared_non_timer_deadline();
         if self.remote.deadline_publication_snapshot_matches(non_timer) {
             return Ok(None);
         }

@@ -44,13 +44,6 @@ impl OwnerDispatchState {
         );
     }
 
-    pub(crate) const fn fair_balance_deadline(&self) -> Option<MonotonicDeadline> {
-        match self.fair_balance_timer {
-            FairBalanceTimer::Armed(deadline) => Some(deadline),
-            FairBalanceTimer::Idle | FairBalanceTimer::Pending => None,
-        }
-    }
-
     pub(crate) const fn fair_balance_pending(&self) -> bool {
         matches!(self.fair_balance_timer, FairBalanceTimer::Pending)
     }

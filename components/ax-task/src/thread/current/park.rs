@@ -269,10 +269,7 @@ pub fn on_clock_event(
     let runtime_deadline = cpu.scheduler_runtime_deadline_for_rq_observation(rq_observation);
     let update = cpu
         .as_mut()
-        .next_scheduler_deadline_update_from_rq_observation(
-            rq_observation,
-            SchedulerDeadlineDerivationSource::ClockEvent,
-        )?;
+        .next_scheduler_deadline_update(SchedulerDeadlineDerivationSource::ClockEvent)?;
     Ok(TaskClockEventOutcome {
         slice_expired: charge.slice_expired(),
         deadline_overrun: charge.deadline_overrun(),
