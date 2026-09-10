@@ -771,3 +771,17 @@ backing 准备由 `mapping` 在进入 MM 锁前完成；`SharedMemoryObject::all
 确定性 kernel 用例 `rmid_preserves_an_admitted_attach_until_cancelled` 通过生产准入和 RMID 方法构造受控顺序。仅有 Arc 的旧路径在“RMID must preserve a segment already admitted by shmat”失败；补齐临时引用后同一用例及 x86_64 kernel 186/186 通过，日志 `/tmp/pr2357-shmat-admission-{red,green}.log`。该用例验证领域状态交错，不声称已执行两个用户进程的受控并发 shmat。四架构 `syscall-test-shm-family`、`syscall-test-shmctl-info`、`test-shm-deadlock` 均通过；x86_64 `syscall-test-msgctl` 和实际选中的 starry-kernel std 通过，日志 `/tmp/pr2357-shmat-final-*`。单包 clippy 92/92 通过，日志 `/tmp/pr2357-shmat-final-clippy.log`。
 
 本节没有把现有 PID 附接台账当成 VMA 生命周期；共享 MM 红例、分裂/合并、fork/exec、最后用户引用和旧 pin 准入等第 5.32 节内容仍未完成。时间字段当前仍沿用既有 monotonic 纳秒写入，也尚未修正成 Linux 的 real seconds。独立核验未在限定时间内返回终态，不能记作领域审查通过。
+
+### 5.39 NPU 提交超时单位
+
+`f358124a86` 的主 CI `34536467761` 已结束：28 成功、5 取消、1 失败。失败 job `103071038717` 在 `OrangePi-5-Plus-1` 的 native-hardware-smoke 超时；随后同板 network-smoke 成功。原始与清理日志分别为 `/tmp/pr2357-f358-orangepi-ci.log` 和 `-clean.log`。NPU Submit 的多行日志只输出到中途，但普通日志发布走非阻塞记录队列，不能因此断言调用线程阻塞在打印。先前 Axvisor pause 超时在该提交 CI 成功，没有对应 AxVM 修复，仍保留为未解释的间歇性失败。
+
+检查实际厂商 ABI 时发现 `rockchip-npu::SubmitDeadline` 将 `RknpuSubmit.timeout` 当成微秒。固定 Rockchip Linux 提交 [77168c8d 的 rknpu_job_wait](https://github.com/rockchip-linux/kernel/blob/77168c8d5ab82399f65a80e9f807b50ba37cf483/drivers/rknpu/rknpu_job.c#L193) 使用 `msecs_to_jiffies(args->timeout)`，并在与微秒耗时比较时乘以 1000。现按毫秒转换成单调时钟纳秒，修正原来缩短 1000 倍的截止时间；未增大调用者传入的 timeout，也未增加重试。该厂商源码用于确定 RKNPU ABI，不能冒充本计划 Linux v7.1 PREEMPT_RT 的调度验证。
+
+旧测试只重复微秒换算假设，现替换为实际轮询行为：timeout=6000 的请求，在 7ms 时尚未超时且下一次轮询完成。旧实现返回 Timeout，修复后返回成功；`cargo xtask cross-test --arch x86_64 --package rockchip-npu --lib` 的同一用例和全部 6 项通过，日志 `/tmp/pr2357-rknpu-ms-{red,green}.log`。单包 clippy 1/1 和增量 std 的实际 6 项均通过，日志 `/tmp/pr2357-rknpu-ms-{clippy,std}.log`。同一块 `OrangePi-5-Plus-1` 的原 native-hardware-smoke 已通过，租约 `84edebfd-3ded-42c5-b190-fa62cab92947`，日志 `/tmp/pr2357-rknpu-ms-board.log`，包含 `STARRY_NPU_YOLOV8_OK` 和 `STARRY_NATIVE_HARDWARE_OK`。这证明修复后的实际设备路径通过，但不把一次成功当作所有历史间歇性挂起的根因证明。
+
+以下结论只针对提交超时字段。真实硬件完成、中断等待、复位和 DMA 回收的完整证明不由纯轮询用例替代。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| ioctl(RKNPU Submit) / aarch64 29 | [Rockchip Linux 77168c8d rknpu_job_wait](https://github.com/rockchip-linux/kernel/blob/77168c8d5ab82399f65a80e9f807b50ba37cf483/drivers/rknpu/rknpu_job.c#L193) | timeout 按毫秒解释，不应将 6000ms 请求在 7ms 时判为超时 | `sys_ioctl → card1::rknpu_driver_ioctl → ax-driver::rknpu::submit → submit_ioctrl → poll_until_ready` | 无法确认 | 单位换算的确定性红绿、std 6 项及同一板卡原用例通过；未证明完整 ioctl 或全部历史挂起根因 |
