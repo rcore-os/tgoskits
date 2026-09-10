@@ -333,8 +333,10 @@ pub fn sys_socketpair(
     }
     let cloexec = raw_ty & O_CLOEXEC != 0;
 
-    let first = crate::file::prepare_file_like(alloc::sync::Arc::new(sock1), cloexec)?;
-    let second = crate::file::prepare_file_like(alloc::sync::Arc::new(sock2), cloexec)?;
+    let sock1 = alloc::sync::Arc::new(sock1);
+    let first = crate::file::prepare_file_like(|| Ok(sock1), cloexec)?;
+    let sock2 = alloc::sync::Arc::new(sock2);
+    let second = crate::file::prepare_file_like(|| Ok(sock2), cloexec)?;
     // Both fd slots stay reserved until the complete user result is visible.
     fds.write(current, [first.fd(), second.fd()])?;
     first.install();

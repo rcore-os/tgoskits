@@ -509,7 +509,10 @@ impl CloneArgs {
             } else {
                 PidFd::new_process(identity.clone())
             };
-            let prepared = prepare_file_like(Arc::new(pidfd_obj), true)?;
+            let prepared = prepare_file_like(
+                || Ok(Arc::try_new(pidfd_obj).map_err(|_| StarryError::NoMemory)?),
+                true,
+            )?;
             let fd = prepared.fd();
             prepared_pidfd = Some(prepared);
             pidfd_copyout = Some((pidfd as *mut i32, fd));

@@ -126,7 +126,7 @@ impl<'task, 'a> CMsgBuilder<'task, 'a> {
         let maximum = self.body_capacity().unwrap_or(0) / size_of::<i32>();
         let mut installed = 0;
         for file in fds.into_iter().take(maximum) {
-            let Ok(prepared) = prepare_file_like(file, cloexec) else {
+            let Ok(prepared) = prepare_file_like(|| Ok(file), cloexec) else {
                 break;
             };
             let offset = self
