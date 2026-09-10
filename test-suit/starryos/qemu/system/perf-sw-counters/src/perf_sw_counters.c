@@ -3,6 +3,8 @@
 #endif
 
 #include <errno.h>
+#include <pthread.h>
+#include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +30,7 @@ extern char **environ;
 #define ATTR_DISABLED (1ull << 0)
 #define ATTR_INHERIT (1ull << 1)
 #define ATTR_ENABLE_ON_EXEC (1ull << 12)
+#define ATTR_INHERIT_THREAD (1ull << 35)
 #define PERF_SAMPLE_IDENTIFIER (1ull << 16)
 #define MADV_DONTNEED 4
 #ifndef SYS_perf_event_open
@@ -48,14 +51,18 @@ struct perf_event_attr {
     uint64_t config2;
 };
 
-static int open_sw(uint64_t config, uint64_t flags) {
+static int open_sw_on_cpu(uint64_t config, uint64_t flags, int cpu) {
     struct perf_event_attr attr;
     memset(&attr, 0, sizeof(attr));
     attr.type = PERF_TYPE_SOFTWARE;
     attr.size = sizeof(attr);
     attr.config = config;
     attr.flags = flags;
-    return (int)syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0ul);
+    return (int)syscall(SYS_perf_event_open, &attr, 0, cpu, -1, 0ul);
+}
+
+static int open_sw(uint64_t config, uint64_t flags) {
+    return open_sw_on_cpu(config, flags, -1);
 }
 
 static int open_cpu_clock(int cpu) {
@@ -226,6 +233,64 @@ static int test_systemwide(void) {
     return result;
 }
 
+static int test_inherit_thread_excludes_fork(void) {
+    int fd = open_sw(PERF_COUNT_SW_TASK_CLOCK, ATTR_DISABLED | ATTR_INHERIT |
+                     ATTR_INHERIT_THREAD | ATTR_ENABLE_ON_EXEC);
+    if (fd < 0) return -1;
+    pid_t child = fork();
+    if (child == 0) {
+        char *args[] = {(char *)"/proc/self/exe", (char *)"--child-work", NULL};
+        execve(args[0], args, environ);
+        _exit(1);
+    }
+    int status = 0;
+    uint64_t value = UINT64_MAX;
+    int failed = child < 0 || waitpid(child, &status, 0) != child ||
+        !WIFEXITED(status) || WEXITSTATUS(status) != 0 ||
+        read_value(fd, &value) != 0 || value != 0;
+    printf("STARRY_PERF_INHERIT_THREAD fork-count=%llu\n", (unsigned long long)value);
+    close(fd);
+    return failed ? -1 : 0;
+}
+
+static void *inherited_thread_work(void *unused) {
+    (void)unused;
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    CPU_SET(1, &mask);
+    if (sched_setaffinity(0, sizeof(mask), &mask) != 0) return (void *)1;
+    cpu_work();
+    return NULL;
+}
+
+static int test_inherit_thread_includes_thread(void) {
+    if (sysconf(_SC_NPROCESSORS_ONLN) < 2) {
+        puts("STARRY_PERF_INHERIT_THREAD thread-positive skipped: requires SMP");
+        return 0;
+    }
+    cpu_set_t saved, mask;
+    if (sched_getaffinity(0, sizeof(saved), &saved) != 0) return -1;
+    CPU_ZERO(&mask);
+    CPU_SET(0, &mask);
+    if (sched_setaffinity(0, sizeof(mask), &mask) != 0) return -1;
+    /* The parent stays on CPU0 and cannot contribute to this CPU1-filtered
+     * event. Only the inherited thread can make the final count nonzero. */
+    int fd = open_sw_on_cpu(PERF_COUNT_SW_TASK_CLOCK,
+                            ATTR_INHERIT | ATTR_INHERIT_THREAD, 1);
+    pthread_t thread;
+    void *result = (void *)1;
+    int failed = fd < 0 || pthread_create(&thread, NULL, inherited_thread_work, NULL) != 0;
+    if (!failed) failed = pthread_join(thread, &result) != 0 || result != NULL;
+    uint64_t value = 0;
+    if (fd >= 0) {
+        if (read_value(fd, &value) != 0 || value == 0) failed = 1;
+        close(fd);
+    }
+    if (sched_setaffinity(0, sizeof(saved), &saved) != 0) failed = 1;
+    printf("STARRY_PERF_INHERIT_THREAD thread-count=%llu\n", (unsigned long long)value);
+    return failed ? -1 : 0;
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--child-work") == 0) {
         workload();
@@ -284,7 +349,8 @@ int main(int argc, char **argv) {
     }
     if (test_counting_sample_type() != 0 || test_enable_on_exec() != 0 ||
         test_inherit() != 0 || test_inherited_exec() != 0 ||
-        test_systemwide() != 0) {
+        test_systemwide() != 0 || test_inherit_thread_excludes_fork() != 0 ||
+        test_inherit_thread_includes_thread() != 0) {
         printf("perf-sw-counters FAILED: exec/inherit/systemwide\n");
         return 1;
     }

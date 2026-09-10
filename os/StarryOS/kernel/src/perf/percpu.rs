@@ -10,13 +10,12 @@ use ax_cpu::pmu::{self, ClusterId, PmuInfo};
 
 use crate::sync::IrqMutex;
 
-const MAX_TRACKED_CPUS: usize = 64;
+pub(super) const MAX_TRACKED_CPUS: usize = 64;
 
 #[derive(Clone, Copy)]
 struct CpuPmuState {
     initialized: bool,
     info: Option<PmuInfo>,
-    used_programmable: u32,
     rotation_cursor: usize,
 }
 
@@ -24,7 +23,6 @@ impl CpuPmuState {
     const EMPTY: Self = Self {
         initialized: false,
         info: None,
-        used_programmable: 0,
         rotation_cursor: 0,
     };
 }
@@ -52,7 +50,6 @@ pub(super) fn ensure_current_cpu_initialized() -> Option<PmuInfo> {
     CPU_STATES.lock()[cpu] = CpuPmuState {
         initialized: true,
         info,
-        used_programmable: 0,
         rotation_cursor: 0,
     };
     info
@@ -61,29 +58,14 @@ pub(super) fn ensure_current_cpu_initialized() -> Option<PmuInfo> {
 /// Reserves one programmable PMU slot on the executing CPU.
 pub(super) fn alloc_current_programmable() -> Option<usize> {
     let cpu = ax_hal::percpu::this_cpu_id();
-    let mut states = CPU_STATES.lock();
-    let state = states.get_mut(cpu)?;
-    let count = state.info?.num_counters.min(32);
-    for slot in 0..count {
-        if state.used_programmable & (1 << slot) == 0
-            && !super::hw_allocation::programmable_reserved(slot)
-        {
-            state.used_programmable |= 1 << slot;
-            return Some(slot);
-        }
-    }
-    None
+    let count = cpu_info(cpu)?.num_counters;
+    super::hw_allocation::alloc_flexible(cpu, count)
 }
 
 /// Releases one programmable PMU slot on the executing CPU.
 pub(super) fn free_current_programmable(slot: usize) {
     let cpu = ax_hal::percpu::this_cpu_id();
-    let mut states = CPU_STATES.lock();
-    let state = states
-        .get_mut(cpu)
-        .expect("perf CPU exceeds PMU state capacity");
-    assert!(slot < 32 && state.used_programmable & (1 << slot) != 0);
-    state.used_programmable &= !(1 << slot);
+    super::hw_allocation::free_flexible(cpu, slot);
 }
 
 /// Chooses a new round-robin start for one scheduler-visible event list.
@@ -106,10 +88,7 @@ pub fn cpu_info(cpu: usize) -> Option<PmuInfo> {
     CPU_STATES.lock().get(cpu).and_then(|state| state.info)
 }
 
-fn target_infos(
-    cpu: Option<usize>,
-    cluster: Option<ClusterId>,
-) -> impl Iterator<Item = PmuInfo> {
+fn target_infos(cpu: Option<usize>, cluster: Option<ClusterId>) -> impl Iterator<Item = PmuInfo> {
     let states = CPU_STATES.lock();
     let infos: Vec<_> = states
         .iter()

@@ -32,7 +32,7 @@ JosephJoshua 的提交是累积能力链。迁移按能力拆分，以便每个�
 
 | 来源 | 迁移能力 | 本分支修正 |
 | --- | --- | --- |
-| PR #1577 | SMP per-CPU PMU、big.LITTLE、system-wide、multiplex、mmap 计数页 | 删除全局 allocator 和旧 timer hook；按真实 CPU 能力调度；TCG 与板卡断言分离 |
+| PR #1577 | SMP per-CPU PMU、big.LITTLE、system-wide、multiplex、mmap 计数页 | 固定与 per-CPU flexible 槽统一分配事务；按真实 CPU 能力调度；TCG 与板卡断言分离 |
 | 调用链提交 | kernel/user frame-pointer callchain | IRQ 边界只发布值快照；用户 SP 取自 `UserContext.sp`；no-fault walker 不保存裸 `TrapFrame *` |
 | PR #1601 | 五类 software counter、HW_CACHE | 补齐 inherit、enable-on-exec、迁移与每核 PMCEID 校验 |
 | PR #1602 | 精确 TGID/TID、LOST | 事件 arm 时固定 PID identity；LOST 在下一次成功提交前写入，IRQ 不等待消费者 |
@@ -46,13 +46,13 @@ PMU 寄存器、IRQ PPI 和计数器槽天然属于 CPU。task event 的 fd 只�
 
 ### 2.1 每核状态
 
-`percpu::CORE_PMU: CorePmu` 由 CPU-local 存储承载，每核缓存 `PmuInfo`、槽位 bitmap 和复用游标；`PmuInfo` 包含 `MIDR_EL1`、counter 数量与宽度以及 `PMCEID0/1_EL0`。`CPU_INFOS` 只提供跨核只读探测缓存，硬件槽仍只能由 owner CPU 分配。sysfs 从同一探测结果发布 event source 与 CPU mask，不能用 CPU 编号奇偶或硬编码 type 推断 cluster。
+`percpu::CPU_STATES` 按 CPU 缓存 `PmuInfo` 和复用游标；`PmuInfo` 包含 `MIDR_EL1`、counter 数量与宽度以及 `PMCEID0/1_EL0`。`hw_allocation::HwAlloc` 在同一个 `IrqMutex` 内维护固定事件的全局保留 bitmap 和每 CPU 的 flexible bitmap：固定申请检查所有 CPU 的在用槽，flexible 申请检查本核与固定保留，两者在锁内原子提交。固定事件目前仍保守地跨 CPU 保留相同索引，这不是完整的逐 CPU 固定事件分配；但不会再与 flexible 槽重复占用。分配数量使用本次已验证目标的参数，不通过可被另一 opener 覆盖的全局数量传递。sysfs 从同一探测结果发布 event source 与 CPU mask。
 
 ```mermaid
 flowchart LR
     FD["PerfEvent fd\n逻辑配置与控制"] --> CTX["PerfContextKey\ntask 或 CPU"]
     CTX --> EVENT["PerTaskCounter / SystemCounter\n累计值与 owner CPU"]
-    EVENT --> CPU["CorePmu\nPmuInfo + slot bitmap + cursor"]
+    EVENT --> CPU["CPU_STATES + HwAlloc\nPmuInfo + serialized slot ownership + cursor"]
     CPU --> IRQ["SampleSlot registry\n本核 PMU PPI"]
     IRQ --> OUT["RingEndpoint\n共享 cacheable ring"]
 ```
@@ -61,7 +61,7 @@ task event 用 `context_sequence` 的奇偶代次让远端 reset 只在稳定的
 
 ### 2.2 调度与复用
 
-task event 在 scheduler switch-in 时尝试进入本核运行队列，switch-out 时折叠计数并撤销 mmap `index`。对当前正在运行的目标线程，`attach()` 在禁止抢占的作用域内立即发布 active context，等价于 Linux `perf_install_in_context()` 对首个 disabled event 执行的 running-task 安装；后续 `PERF_EVENT_IOC_ENABLE` 不依赖额外的 `sched_yield()`。system-wide event 固定在指定 CPU。unpinned 事件以调度单元轮转，`time_enabled/time_running` 分别累计逻辑启用和真实占槽时间；`SystemFlexCounter::read_on_owner()` 在 owner CPU 同步合并当前 active slice，而不等待下一次轮转。task hardware group 只能整体装载或整体等待。task pinned event 在调度时无法放置会进入 ERROR 并让 `read()` 返回 EOF；open-enabled system pinned event 会在 open 的同步放置阶段返回 `EBUSY`，之后启用失败也通过 `EBUSY` 报告。直接 system-wide sampling 需要在 open 时保留物理槽，因此槽耗尽也会立即返回 `EBUSY`。
+task event 在 scheduler switch-in 时尝试进入本核运行队列，switch-out 时折叠计数并撤销 mmap `index`。对当前正在运行的目标线程，`attach()` 在禁止抢占的作用域内立即发布 active context，等价于 Linux `perf_install_in_context()` 对首个 disabled event 执行的 running-task 安装；后续 `PERF_EVENT_IOC_ENABLE` 不依赖额外的 `sched_yield()`。system-wide event 固定在指定 CPU。unpinned 事件以调度单元轮转，`time_enabled/time_running` 分别累计逻辑启用和真实占槽时间；`SystemFlexCounter::read_on_owner()` 在 owner CPU 同步合并当前 active slice，而不等待下一次轮转。task hardware group 只能整体装载或整体等待。硬件 pinned event 的优先放置和失败后的 ERROR/EOF 状态尚未实现，`perf_event_open()` 在分配 backend 前对 task/CPU pinned leader 返回 `EOPNOTSUPP`；group member 的非法 pinned 属性仍返回 `EINVAL`。直接 system-wide sampling 需要在 open 时保留物理槽，槽耗尽返回 `EBUSY`。
 
 ```mermaid
 stateDiagram-v2
@@ -83,6 +83,8 @@ stateDiagram-v2
 文件层 `PerfEvent::{members,group_leader}` 和硬件层 `PerTaskCounter` / `SystemCounter` 的双向 group link 都使用 `Weak`，避免关闭顺序形成引用环；fd 表、task 的 `perf_counters` 和 event backend 提供实际强所有权。link 时验证 task identity 或 CPU context 完全相同；控制传播先收集仍存活的成员，再逐一操作。与 Linux v7.1 一致，普通 ioctl 只作用于指定 event，只有 `PERF_IOC_FLAG_GROUP` 才从 leader 传播到 siblings；member 自己的 `attr.disabled` 状态不会在 link 时被改写。
 
 software inherit 使用“每线程 slice + 共享 aggregate”结构。child 的调度起点、last CPU 和 enable-on-exec 独立，累计值通过 `Arc<SwAggregate>` 汇入根事件；根 fd 关闭后，仍运行的 descendants 由自身 `Arc` 保持 aggregate 生命周期，不能引用已释放 event。
+
+`SwEventState::inherit_thread` 保留线程限定继承属性。`sw::on_clone_inherit()` 仅在 parent/child 共享同一个 `ProcessData` 时复制这种 binding；该共享关系由 `clone` 的 `CLONE_THREAD` 分支建立，普通 fork 即使随后 exec 也不会获得该软件事件。普通 `inherit` 仍覆盖两类子任务。
 
 `PerfEvent::control_group()` 从实际 leader 执行 GROUP ioctl；不带 GROUP 的操作保留 siblings 各自的启用意图。`read_group()` 从实际 leader 取值，但编码格式采用被读取 fd 的 `read_format`。新 member 先以 disabled 状态建立 backend 和组关系，再按原始 attr 启用，避免 link 前独立计数。`perf_sched_in_counters()` 先为整个启用组保留槽，`prepare_counter()` 完成全部寄存器和 IRQ registry 准备后才启动硬件；准备失败回滚整组。
 

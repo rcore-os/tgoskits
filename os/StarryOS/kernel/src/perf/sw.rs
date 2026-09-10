@@ -85,6 +85,7 @@ struct SwEventState {
     kind: SwId,
     read_format: u64,
     inherit: bool,
+    inherit_thread: bool,
     dead: AtomicBool,
     count: AtomicU64,
     runtime_ns: AtomicU64,
@@ -98,6 +99,7 @@ impl SwEventState {
             kind,
             read_format: attr.read_format,
             inherit: attr.inherit() != 0,
+            inherit_thread: attr.inherit_thread() != 0,
             dead: AtomicBool::new(false),
             count: AtomicU64::new(0),
             runtime_ns: AtomicU64::new(0),
@@ -906,7 +908,12 @@ pub fn on_clone_inherit(parent: &Thread, child: &Thread) {
         let counters = parent.perf_sw_counters.lock();
         counters
             .iter()
-            .filter(|counter| counter.state.inherit && !counter.state.dead.load(Ordering::Acquire))
+            .filter(|counter| {
+                counter.state.inherit
+                    && (!counter.state.inherit_thread
+                        || Arc::ptr_eq(&parent.proc_data, &child.proc_data))
+                    && !counter.state.dead.load(Ordering::Acquire)
+            })
             .map(|counter| (counter.clone(), counter.clone_for(child)))
             .collect::<Vec<_>>()
     };

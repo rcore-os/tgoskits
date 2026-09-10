@@ -464,10 +464,8 @@ int main(void) {
     }
     close(leader);
 
-    /* CPU-context pinned events outrank flexible CPU/task contexts. Filling all
-     * six A53 programmable slots with flexible events must not make a later
-     * pinned event fail: the scheduler first evicts flexible work, then places
-     * the pinned event and refills whatever capacity remains. */
+    /* Until pinned priority and ERROR/EOF are implemented, reject pinned
+     * events without disturbing existing flexible events. */
     int flexible[6];
     cpu_set_t affinity;
     CPU_ZERO(&affinity);
@@ -486,39 +484,24 @@ int main(void) {
     }
     int pinned_one =
         open_system_raw(0, PERF_ATTR_DISABLED | PERF_ATTR_PINNED, -1);
-    if (pinned_one < 0 || ioctl(pinned_one, PERF_IOC_ENABLE, 0) != 0) {
-        printf("perf-event-group FAILED: pinned did not evict flexible errno=%d\n",
+    if (pinned_one >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: unsupported CPU pinned accepted errno=%d\n",
                errno);
         return 1;
     }
-    work();
-    if (ioctl(pinned_one, PERF_IOC_DISABLE, 0) != 0 ||
-        read(pinned_one, &member_value, sizeof(member_value)) !=
-            (ssize_t)sizeof(member_value) ||
-        member_value == 0) {
-        puts("perf-event-group FAILED: pinned after flexible snapshot");
-        return 1;
-    }
-    close(pinned_one);
-
-    /* Task-pinned has second priority, ahead of both CPU/task flexible work.
-     * The target is the calling task and is already running: Linux installs
-     * that task context at open, so enable must immediately reschedule the PMU
-     * without requiring an unrelated context switch. */
     int task_pinned = open_task_raw(PERF_ATTR_DISABLED | PERF_ATTR_PINNED);
-    if (task_pinned < 0 || ioctl(task_pinned, PERF_IOC_ENABLE, 0) != 0) {
-        printf("perf-event-group FAILED: task pinned setup errno=%d\n", errno);
+    if (task_pinned >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: unsupported task pinned accepted errno=%d\n", errno);
         return 1;
     }
     work();
-    if (ioctl(task_pinned, PERF_IOC_DISABLE, 0) != 0 ||
-        read(task_pinned, &member_value, sizeof(member_value)) !=
+    if (ioctl(flexible[0], PERF_IOC_DISABLE, 0) != 0 ||
+        read(flexible[0], &member_value, sizeof(member_value)) !=
             (ssize_t)sizeof(member_value) ||
         member_value == 0) {
-        puts("perf-event-group FAILED: task pinned did not evict flexible");
+        puts("perf-event-group FAILED: rejected pinned event disturbed flexible");
         return 1;
     }
-    close(task_pinned);
     for (int i = 5; i >= 0; --i) {
         close(flexible[i]);
     }

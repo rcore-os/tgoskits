@@ -13,9 +13,7 @@ use super::{
         ARMV8_CORTEX_A55_PERF_TYPE, ARMV8_CORTEX_A76_PERF_TYPE, ARMV8_PMUV3_PERF_TYPE,
         ValidatedHwCounter, ValidatedHwOpen,
     },
-    hw_allocation::{
-        alloc_preferred_cycle, alloc_programmable, free_counter, set_programmable_counter_count,
-    },
+    hw_allocation::{alloc_preferred_cycle, alloc_programmable, free_counter},
     hw_event::{HwPerfEvent, SystemEventInit, TaskEventInit},
     hw_owner::SystemPmuConfigure,
     hw_sampling::{SamplingState, resolve_sampling, start_sampling_notify_worker},
@@ -123,8 +121,6 @@ pub(super) fn perf_event_open_hw(
     target: AuthorizedPerfTarget,
     validated: ValidatedHwOpen,
 ) -> crate::StarryResult<HwPerfEvent> {
-    set_programmable_counter_count(validated.num_counters);
-
     let owner_cpu = match target {
         AuthorizedPerfTarget::Task { task, cpu } => {
             return perf_event_open_hw_per_task(attr, task, cpu, validated);
@@ -138,7 +134,7 @@ pub(super) fn perf_event_open_hw(
 
     let (counter, event, flexible) = match validated.counter {
         ValidatedHwCounter::SystemPreferredCycle(event) => {
-            let counter = alloc_preferred_cycle(event)?;
+            let counter = alloc_preferred_cycle(event, validated.num_counters)?;
             let programmed_event = counter.programmable_index().map(|_| event);
             (counter, programmed_event, None)
         }
@@ -155,9 +151,11 @@ pub(super) fn perf_event_open_hw(
                 Some(flexible),
             )
         }
-        ValidatedHwCounter::SystemProgrammable(event) => {
-            (alloc_programmable(event)?, Some(event), None)
-        }
+        ValidatedHwCounter::SystemProgrammable(event) => (
+            alloc_programmable(event, validated.num_counters)?,
+            Some(event),
+            None,
+        ),
         ValidatedHwCounter::TaskPreferredCycle(_) | ValidatedHwCounter::TaskProgrammable(_) => {
             return Err(crate::StarryError::BadState);
         }
@@ -233,9 +231,11 @@ fn perf_event_open_hw_per_task(
     sampling::ensure_pmu_irq_registered().map_err(|_| crate::StarryError::NoSuchDevice)?;
 
     let (counter, event, flexible) = match validated.counter {
-        ValidatedHwCounter::TaskPreferredCycle(event) => {
-            (alloc_preferred_cycle(event)?, event, false)
-        }
+        ValidatedHwCounter::TaskPreferredCycle(event) => (
+            alloc_preferred_cycle(event, validated.num_counters)?,
+            event,
+            false,
+        ),
         ValidatedHwCounter::TaskProgrammable(event) => {
             // Flexible events are logical until a scheduler slice acquires one
             // of the executing CPU's physical programmable slots.

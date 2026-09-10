@@ -116,6 +116,12 @@ int main(void) {
     long online = sysconf(_SC_NPROCESSORS_ONLN);
 
     init_attr(&attr, PERF_ATTR_SIZE_VER0);
+    attr.flags |= 1ull << 2; /* pinned: unsupported until priority/error scheduling exists */
+    failures += expect_errno("unsupported-task-pinned", &attr, 0, -1, -1, 0,
+                             EOPNOTSUPP) != 0;
+    failures += expect_errno("unsupported-cpu-pinned", &attr, -1, 0, -1, 0,
+                             EOPNOTSUPP) != 0;
+    init_attr(&attr, PERF_ATTR_SIZE_VER0);
     failures += expect_open("short-attr", &attr, 0, -1, 0) != 0;
 
     init_attr(&attr, 0);

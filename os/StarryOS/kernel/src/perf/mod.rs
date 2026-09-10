@@ -992,6 +992,12 @@ pub fn perf_event_open(
                 return Err(crate::StarryError::OperationNotSupported);
             }
         }
+        if is_hardware && attr.pinned() != 0 {
+            // Pinned scheduling needs priority over flexible events and an
+            // ERROR/EOF transition on placement failure. Neither backend
+            // currently implements that contract; never silently multiplex it.
+            return Err(StarryError::OperationNotSupported);
+        }
         // Hardware-PMU events (`PERF_TYPE_HARDWARE` / `PERF_TYPE_RAW`, plus
         // the dynamic ARM PMUv3 type `hw::ARMV8_PMUV3_PERF_TYPE`) bypass
         // `PerfProbeArgs`, which maps non-probe configs through `perf_sw_ids`.
