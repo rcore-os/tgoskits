@@ -24,6 +24,18 @@ pub(super) fn matches_token(token: usize) -> bool {
         .is_some_and(|intid| *intid == super::host_irq_intid(token))
 }
 
+pub(super) fn preheat() {
+    // Commit the one-time discovery of the VGIC maintenance PPI while this
+    // code still runs on the control plane during VM preparation. Otherwise
+    // the per-CPU `hardware_enable` path races the first
+    // `get_or_try_init` across secondary CPUs; the std `OnceLock` loser
+    // waits on a futex, which can sleep on a preemption-disabled path and
+    // wedge the control plane exactly like the preheated libc-compat tables.
+    if let Err(error) = HOST_MAINTENANCE_INTID.get_or_try_init(discover_host_maintenance_intid) {
+        warn!("cannot preheat the VGIC maintenance PPI: {error:?}");
+    }
+}
+
 fn set_current_cpu_enabled(enabled: bool) -> BackendResult {
     let intid = *HOST_MAINTENANCE_INTID.get_or_try_init(discover_host_maintenance_intid)?;
     set_enabled(intid, enabled)

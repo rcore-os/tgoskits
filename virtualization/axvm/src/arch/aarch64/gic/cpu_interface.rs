@@ -109,6 +109,20 @@ pub(super) fn host_irq_config() -> Result<ArmHostIrqConfig, GicV3BackendError> {
     host_cpu_interface().map(HostCpuInterface::irq_config)
 }
 
+pub(super) fn preheat() {
+    // Commit the one-time discovery of the host VGIC CPU interface while
+    // this code still runs on the control plane during VM preparation.
+    // Otherwise the first `get_or_try_init` races across CPUs once guest
+    // interrupts arrive on the host IRQ hot path; the std `OnceLock` loser
+    // waits on a futex, which can sleep on a preemption-disabled path and
+    // wedge the control plane exactly like the preheated libc-compat tables.
+    // Discovery is idempotent and non-fatal: if it cannot complete here the
+    // hot path keeps its existing lazy fallback.
+    if let Err(error) = host_cpu_interface() {
+        warn!("cannot preheat the host VGIC CPU interface: {error:?}");
+    }
+}
+
 pub(super) fn load(
     capabilities: VgicBackendCapabilities,
     vcpu: GicVcpuId,
