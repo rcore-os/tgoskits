@@ -33,7 +33,7 @@ use ax_sync::SpinLock as Mutex;
 pub use rdif_base::irq::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 
 use crate::{
-    DeviceId, PlatformDevice,
+    DeviceId, DriverGeneric, PlatformDevice,
     error::DriverError,
     probe::{
         OnProbeError, ProbeError,
@@ -222,6 +222,16 @@ impl AcpiRouting {
         self.gsi_sources()
             .find(|source| source.contains_gsi(gsi))?
             .route(gsi, self.default_trigger(gsi), self.default_polarity(gsi))
+    }
+
+    /// Resolves a legacy ISA IRQ through any MADT Interrupt Source Override.
+    pub fn resolve_isa_irq(&self, irq: u8) -> Option<AcpiGsiRoute> {
+        let gsi = self
+            .isa_overrides
+            .iter()
+            .find(|irq_override| irq_override.source == irq)
+            .map_or(u32::from(irq), |irq_override| irq_override.gsi);
+        self.resolve_gsi(gsi)
     }
 
     fn gsi_sources(&self) -> impl Iterator<Item = AcpiGsiSource> + '_ {
@@ -720,6 +730,48 @@ mod tests {
     }
 
     #[test]
+    fn isa_irq_resolution_uses_legacy_gsi_without_an_override() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
+
+        let route = routing.resolve_isa_irq(4).unwrap();
+
+        assert_eq!(route.gsi, 4);
+        assert_eq!(route.controller_input, 4);
+        assert_eq!(route.trigger, AcpiIrqTrigger::Edge);
+        assert_eq!(route.polarity, AcpiIrqPolarity::ActiveHigh);
+    }
+
+    #[test]
+    fn isa_irq_resolution_applies_source_override_before_selecting_ioapic_input() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
+        routing.add_isa_irq_override(AcpiIsaIrqOverride {
+            source: 4,
+            gsi: 18,
+            trigger: AcpiIrqTrigger::Level,
+            polarity: AcpiIrqPolarity::ActiveLow,
+        });
+
+        let route = routing.resolve_isa_irq(4).unwrap();
+
+        assert_eq!(route.gsi, 18);
+        assert_eq!(route.controller_input, 18);
+        assert_eq!(route.trigger, AcpiIrqTrigger::Level);
+        assert_eq!(route.polarity, AcpiIrqPolarity::ActiveLow);
+    }
+
+    #[test]
     fn pci_link_irq_selects_prs_when_crs_is_unassigned() {
         let current = LinkIrqResource {
             kind: LinkIrqResourceKind::ExtendedIrq,
@@ -1028,6 +1080,19 @@ impl<'a> ProbeAcpi<'a> {
 
     pub fn into_parts(self) -> (AcpiInfo<'a>, PlatformDevice) {
         (self.info, self.platform)
+    }
+
+    /// Registers a device discovered by an ACPI root callback and associates
+    /// its register address with the resulting device identity.
+    pub fn register_root_resource_device<T: DriverGeneric>(
+        self,
+        address: AcpiResourceAddress,
+        driver: T,
+    ) {
+        debug_assert!(self.info.device.is_none());
+        let device_id = self.platform.descriptor().device_id();
+        self.platform.register(driver);
+        self.info.root.note_populated_resource(device_id, address);
     }
 }
 
@@ -1709,6 +1774,10 @@ impl System {
         for range in &device.io_ranges {
             resources.insert(AcpiResourceAddress::io(range.base), device_id);
         }
+    }
+
+    fn note_populated_resource(&self, device_id: DeviceId, address: AcpiResourceAddress) {
+        self.populated_resources.lock().insert(address, device_id);
     }
 }
 

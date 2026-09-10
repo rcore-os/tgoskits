@@ -1,21 +1,5 @@
 use core::{alloc::Layout, ptr::NonNull};
 use std::{
-    os::arceos::api::{
-        mem::{ax_alloc, ax_dealloc},
-        modules::{
-            ax_hal::{
-                mem::{virt_to_phys, virtual_address_space},
-                paging::MappingFlags,
-                percpu::this_cpu_id,
-                trap::{PageFaultFlags, set_page_fault_handler},
-            },
-            ax_runtime::kernel_mapping::{
-                map_kernel_pages, map_kernel_range, protect_kernel_range, query_kernel_mapping,
-                unmap_kernel_range,
-            },
-        },
-        task::{AxCpuMask, ax_set_current_affinity},
-    },
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -24,6 +8,22 @@ use std::{
 };
 
 use ax_memory_addr::{MemoryAddr, VirtAddr};
+use ax_std::os::arceos::api::{
+    mem::{ax_alloc, ax_dealloc},
+    modules::{
+        ax_hal::{
+            mem::{virt_to_phys, virtual_address_space},
+            paging::MappingFlags,
+            percpu::this_cpu_id,
+            trap::{PageFaultFlags, set_page_fault_handler},
+        },
+        ax_runtime::kernel_mapping::{
+            map_kernel_pages, map_kernel_range, protect_kernel_range, query_kernel_mapping,
+            unmap_kernel_range,
+        },
+    },
+    task::{AxCpuMask, ax_set_current_affinity},
+};
 
 const PAGE_SIZE: usize = 4096;
 const OLD_VALUE: u8 = 0x51;

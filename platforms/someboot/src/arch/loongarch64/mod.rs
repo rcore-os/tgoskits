@@ -28,16 +28,16 @@ pub use relocate::relocate;
 
 use crate::{ArchTrait, DCacheOp, SystimerArch, efi_stub, irq::IrqId, power::CpuOnError};
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 const BOOT_TLS_SIZE: usize = 64 * 1024;
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 #[repr(C, align(16))]
 struct BootTls {
     bytes: [u8; BOOT_TLS_SIZE],
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 static mut BOOT_TLS: BootTls = BootTls {
     bytes: [0; BOOT_TLS_SIZE],
 };
@@ -71,7 +71,7 @@ impl ArchTrait for Arch {
     fn post_allocator() {}
 
     fn init_boot_tls() {
-        #[cfg(feature = "tls")]
+        #[cfg(kernel_tls)]
         {
             unsafe extern "C" {
                 fn _stdata();
@@ -383,13 +383,13 @@ impl SystimerArch for Arch {
     }
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 #[cold]
 fn boot_tls_layout_fatal() -> ! {
     panic!("invalid or oversized LoongArch bootstrap TLS image")
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 const fn align_up(value: usize, align: usize) -> usize {
     (value + align - 1) & !(align - 1)
 }

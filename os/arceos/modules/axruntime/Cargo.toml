@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 name = "ax-runtime"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.12.0"
+version = "0.12.1"
 
 [features]
 default = []
@@ -30,11 +30,14 @@ fp-simd = ["ax-hal/fp-simd"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
 smp = ["ax-hal/smp", "ax-task/smp", "wake-ipi"]
+# Enable userspace support without kernel TLS, including when `tls` is enabled.
+# User-space TLS remains available through the userspace context APIs.
 uspace = ["ax-hal/uspace"]
 lockdep = ["ax-task/lockdep", "ax-fs-ng?/lockdep"]
 stack-guard-page = ["ipi", "paging"]
 vmap-task-stack = ["ipi", "paging"]
 stack-protector = []
+# Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["ax-hal/tls"]
 
 display = ["paging", "dep:ax-display", "ax-driver/display"]

@@ -236,7 +236,7 @@ impl PhysicalIrqBridge {
         self.shared.notify.notify();
         let worker = self.worker.lock_unpoisoned().take();
         worker
-            .map_or(Ok(0), crate::host::task::join_thread)
+            .map_or(Ok(0), |worker| worker.join())
             .map(|_exit_code| ())
             .map_err(|error| AxVmError::host("join RISC-V physical IRQ worker", error))
     }

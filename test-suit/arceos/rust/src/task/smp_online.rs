@@ -1,11 +1,4 @@
 use std::{
-    os::arceos::{
-        api::task::{AxCpuMask, ax_set_current_affinity},
-        modules::{
-            ax_hal::{irq::CpuId, percpu::this_cpu_id},
-            ax_ipi,
-        },
-    },
     println,
     sync::{
         Arc,
@@ -13,6 +6,14 @@ use std::{
     },
     thread,
     vec::Vec,
+};
+
+use ax_std::os::arceos::{
+    api::task::{AxCpuMask, ax_set_current_affinity},
+    modules::{
+        ax_hal::{irq::CpuId, percpu::this_cpu_id},
+        ax_ipi,
+    },
 };
 
 static IPI_ACKS: AtomicUsize = AtomicUsize::new(0);
@@ -58,7 +59,7 @@ fn wait_for_ipi_acks(expected: usize) -> bool {
 }
 
 pub fn run() -> crate::TestResult {
-    let cpu_num = thread::available_parallelism().unwrap().get();
+    let cpu_num = ax_std::os::arceos::task::sched::cpu_topology_len().unwrap();
     println!("task_smp_online: cpu_num={cpu_num}");
     assert!(
         cpu_num >= 2,

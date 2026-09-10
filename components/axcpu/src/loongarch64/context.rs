@@ -432,7 +432,7 @@ unsafe extern "C" fn restore_fp_registers(fpu: &FpuState) {
     )
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 #[unsafe(naked)]
 unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
     naked_asm!(
@@ -488,7 +488,7 @@ unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_t
     )
 }
 
-#[cfg(not(feature = "tls"))]
+#[cfg(not(kernel_tls))]
 #[unsafe(naked)]
 unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
     naked_asm!(

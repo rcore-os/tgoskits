@@ -107,3 +107,29 @@ fn std_build_cargo_config_builds_fake_lib_before_app() {
     assert!(prebuild.contains("create_empty_archive \"$fake_dir/libc.a\""));
     assert!(prebuild.contains("create_empty_archive \"$fake_dir/libunwind.a\""));
 }
+
+#[test]
+fn preparing_another_build_preserves_existing_target_configuration() {
+    let root = tempdir().unwrap();
+    let linker = root.path().join("linker");
+    let target = "x86_64-unknown-linux-musl";
+    let protected =
+        std_cargo_config_path(target, &linker, &["-Zstack-protector=strong".to_string()]).unwrap();
+    let original = fs::read_to_string(&protected).unwrap();
+    let plain = std_cargo_config_path(target, &linker, &[]).unwrap();
+
+    assert_ne!(
+        protected, plain,
+        "different build options must not share mutable configuration"
+    );
+    assert_eq!(fs::read_to_string(&protected).unwrap(), original);
+    assert!(
+        !fs::read_to_string(&plain)
+            .unwrap()
+            .contains("stack-protector")
+    );
+    assert_eq!(
+        std_cargo_config_path(target, &linker, &["-Zstack-protector=strong".to_string()]).unwrap(),
+        protected,
+    );
+}

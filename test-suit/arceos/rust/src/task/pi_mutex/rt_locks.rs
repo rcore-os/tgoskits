@@ -11,12 +11,12 @@ pub(super) fn run() {
 }
 
 fn rt_spin_lock_remains_preemptible() {
-    use std::os::arceos::task::{
+    use ax_std::os::arceos::task::{
         sched::{CpuId, CpuSet},
         sync::{SpinLock, WaitQueue},
         thread::ThreadState,
     };
-    let current = std::os::arceos::task::thread::current::current_thread_handle().unwrap();
+    let current = ax_std::os::arceos::task::thread::current::current_thread_handle().unwrap();
     let original_affinity = current.affinity().unwrap();
     pin_current_to_cpu(0);
     let mut affinity = CpuSet::empty(ax_hal::cpu_num());
@@ -27,7 +27,7 @@ fn rt_spin_lock_remains_preemptible() {
     let child_gate = Arc::clone(&gate);
     let child_released = Arc::clone(&released);
     let child_ran = Arc::clone(&ran);
-    let worker = std::os::arceos::thread::builder("rt-lock-preempt".into())
+    let worker = ax_std::os::arceos::thread::builder("rt-lock-preempt".into())
         .affinity(affinity)
         .policy(SchedulePolicy::fifo(RtPriority::new(80).unwrap()))
         .spawn(move || {
@@ -43,8 +43,8 @@ fn rt_spin_lock_remains_preemptible() {
     {
         let _guard = lock.lock();
         assert!(matches!(
-            std::os::arceos::task::thread::current::validate_blocking_context(),
-            Err(std::os::arceos::task::thread::TaskError::UnsafeContext)
+            ax_std::os::arceos::task::thread::current::validate_blocking_context(),
+            Err(ax_std::os::arceos::task::thread::TaskError::UnsafeContext)
         ));
         let nested = SpinLock::new(());
         drop(nested.lock());
@@ -56,11 +56,12 @@ fn rt_spin_lock_remains_preemptible() {
         );
     }
     worker.join().unwrap();
-    std::os::arceos::task::thread::current::set_current_thread_affinity(original_affinity).unwrap();
+    ax_std::os::arceos::task::thread::current::set_current_thread_affinity(original_affinity)
+        .unwrap();
 }
 
 fn rt_lock_preserves_outer_timeout() {
-    use std::os::arceos::{
+    use ax_std::os::arceos::{
         api::time::ax_monotonic_time,
         task::{
             sched::{CpuId, CpuSet},
@@ -89,7 +90,7 @@ fn rt_lock_preserves_outer_timeout() {
         let lock = Arc::clone(&lock);
         let held = Arc::clone(&held);
         let release = Arc::clone(&release);
-        std::os::arceos::thread::builder("rt-timeout-owner".into())
+        ax_std::os::arceos::thread::builder("rt-timeout-owner".into())
             .affinity(on_cpu(1))
             .spawn(move || {
                 let _guard = lock.lock();
@@ -109,7 +110,7 @@ fn rt_lock_preserves_outer_timeout() {
         let release = Arc::clone(&release);
         let restored = Arc::clone(&restored);
         let finished = Arc::clone(&finished);
-        std::os::arceos::thread::builder("rt-timeout-release".into())
+        ax_std::os::arceos::thread::builder("rt-timeout-release".into())
             .affinity(on_cpu(1))
             .policy(SchedulePolicy::fifo(RtPriority::new(80).unwrap()))
             .spawn(move || {
@@ -159,15 +160,15 @@ fn rt_lock_preserves_outer_timeout() {
     current::set_current_thread_affinity(original).unwrap();
 }
 
-fn cpu_mask(cpu: u32) -> std::os::arceos::task::sched::CpuSet {
-    use std::os::arceos::task::sched::{CpuId, CpuSet};
+fn cpu_mask(cpu: u32) -> ax_std::os::arceos::task::sched::CpuSet {
+    use ax_std::os::arceos::task::sched::{CpuId, CpuSet};
     let mut mask = CpuSet::empty(ax_hal::cpu_num());
     mask.insert(CpuId::new(cpu));
     mask
 }
 
 fn reader_drain_uses_lock_wake() {
-    use std::os::arceos::task::{
+    use ax_std::os::arceos::task::{
         sync::{RwSemaphore, SpinRwLock},
         thread::ThreadState,
     };
@@ -175,7 +176,7 @@ fn reader_drain_uses_lock_wake() {
     let lock = Arc::new(SpinRwLock::new(0));
     let reader = lock.read();
     let writer_lock = Arc::clone(&lock);
-    let writer = std::os::arceos::thread::builder("rt-rw-drain".into())
+    let writer = ax_std::os::arceos::thread::builder("rt-rw-drain".into())
         .affinity(cpu_mask(0))
         .spawn(move || {
             *writer_lock.write() = 1;
@@ -199,7 +200,7 @@ fn reader_drain_uses_lock_wake() {
     let semaphore = Arc::new(RwSemaphore::new(0));
     let reader = semaphore.read();
     let writer_lock = Arc::clone(&semaphore);
-    let writer = std::os::arceos::thread::builder("rwsem-drain".into())
+    let writer = ax_std::os::arceos::thread::builder("rwsem-drain".into())
         .affinity(cpu_mask(0))
         .spawn(move || {
             *writer_lock.write() = 2;
@@ -215,7 +216,7 @@ fn reader_drain_uses_lock_wake() {
 }
 
 fn nested_migration_defers_remote_affinity() {
-    use std::os::arceos::task::{sync::MigrationGuard, thread::current};
+    use ax_std::os::arceos::task::{sync::MigrationGuard, thread::current};
     pin_current_to_cpu(0);
     let parent = current::current_thread_handle().unwrap();
     let requested = Arc::new(AtomicBool::new(false));
@@ -224,7 +225,7 @@ fn nested_migration_defers_remote_affinity() {
     let setter = {
         let requested = Arc::clone(&requested);
         let parent = parent.clone();
-        std::os::arceos::thread::builder("pinned-affinity-setter".into())
+        ax_std::os::arceos::thread::builder("pinned-affinity-setter".into())
             .affinity(cpu_mask(2))
             .spawn(move || {
                 let completion = parent.request_affinity(cpu_mask(1)).unwrap();
@@ -255,7 +256,7 @@ fn nested_migration_defers_remote_affinity() {
 }
 
 fn local_lock_serializes_preempting_tasks() {
-    use std::os::arceos::task::{
+    use ax_std::os::arceos::task::{
         sync::{LocalLock, WaitQueue},
         thread::ThreadState,
     };
@@ -267,7 +268,7 @@ fn local_lock_serializes_preempting_tasks() {
         let lock = Arc::clone(&lock);
         let gate = Arc::clone(&gate);
         let start = Arc::clone(&start);
-        std::os::arceos::thread::builder("local-lock-preempt".into())
+        ax_std::os::arceos::thread::builder("local-lock-preempt".into())
             .affinity(cpu_mask(0))
             .policy(SchedulePolicy::fifo(RtPriority::new(80).unwrap()))
             .spawn(move || {
@@ -297,7 +298,7 @@ fn local_lock_serializes_preempting_tasks() {
 }
 
 fn semaphore_grants_and_cancellation() {
-    use std::os::arceos::{
+    use ax_std::os::arceos::{
         api::time::ax_monotonic_time,
         task::{
             sync::{Semaphore, SemaphoreError},
@@ -306,17 +307,17 @@ fn semaphore_grants_and_cancellation() {
         },
     };
     let semaphore = Arc::new(Semaphore::new(0));
-    std::os::arceos::task::sync::fail_next_semaphore_timer_registration();
+    ax_std::os::arceos::task::sync::fail_next_semaphore_timer_registration();
     let failure_deadline =
         MonotonicDeadline::from_duration(ax_monotonic_time() + Duration::from_secs(1));
     assert!(matches!(
         semaphore.down_until(failure_deadline),
         Err(SemaphoreError::Task(
-            std::os::arceos::task::thread::TaskError::TimerCapacity
+            ax_std::os::arceos::task::thread::TaskError::TimerCapacity
         ))
     ));
     assert_eq!(
-        std::os::arceos::task::thread::current::current_thread_handle()
+        ax_std::os::arceos::task::thread::current::current_thread_handle()
             .unwrap()
             .state(),
         ThreadState::Running
@@ -326,7 +327,7 @@ fn semaphore_grants_and_cancellation() {
     let first = {
         let semaphore = Arc::clone(&semaphore);
         let completed = Arc::clone(&completed);
-        std::os::arceos::thread::builder("semaphore-fifo-first".into())
+        ax_std::os::arceos::thread::builder("semaphore-fifo-first".into())
             .affinity(cpu_mask(0))
             .spawn(move || {
                 semaphore.down().unwrap();
@@ -341,7 +342,7 @@ fn semaphore_grants_and_cancellation() {
     let second = {
         let semaphore = Arc::clone(&semaphore);
         let completed = Arc::clone(&completed);
-        std::os::arceos::thread::builder("semaphore-fifo-second".into())
+        ax_std::os::arceos::thread::builder("semaphore-fifo-second".into())
             .affinity(cpu_mask(0))
             .spawn(move || {
                 semaphore.down().unwrap();
@@ -380,7 +381,7 @@ fn semaphore_grants_and_cancellation() {
 }
 
 fn semaphore_hard_irq_release() {
-    use std::os::arceos::{
+    use ax_std::os::arceos::{
         api::time::ax_monotonic_time,
         task::{
             sync::{Semaphore, SpinLock},

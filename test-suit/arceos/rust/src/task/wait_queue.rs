@@ -1,7 +1,6 @@
 mod lifecycle;
 
 use std::{
-    os::arceos::api::task::{self as api, AxWaitQueueHandle},
     println,
     sync::{
         Arc,
@@ -11,6 +10,8 @@ use std::{
     time::Duration,
     vec::Vec,
 };
+
+use ax_std::os::arceos::api::task::{self as api, AxWaitQueueHandle};
 
 const NUM_TASKS: usize = 16;
 
@@ -164,7 +165,7 @@ fn test_release_all_runtime_tasks() {
 }
 
 fn test_wake_before_admission() {
-    use std::os::arceos::{
+    use ax_std::os::arceos::{
         guard::PreemptGuard,
         modules::ax_runtime::task::{
             sched::{CpuId, CpuSet},
@@ -172,36 +173,36 @@ fn test_wake_before_admission() {
         },
     };
 
-    let owner = std::os::arceos::task::thread::current::current_thread_id().unwrap();
-    let old_affinity = std::os::arceos::task::thread::ThreadHandle::lookup(owner)
+    let owner = ax_std::os::arceos::task::thread::current::current_thread_id().unwrap();
+    let old_affinity = ax_std::os::arceos::task::thread::ThreadHandle::lookup(owner)
         .and_then(|thread| thread.affinity())
         .unwrap();
-    let mut cpu0 = CpuSet::empty(std::os::arceos::task::sched::cpu_topology_len().unwrap());
+    let mut cpu0 = CpuSet::empty(ax_std::os::arceos::task::sched::cpu_topology_len().unwrap());
     assert!(cpu0.insert(CpuId::new(0)));
-    std::os::arceos::task::thread::current::set_current_thread_affinity(cpu0.clone()).unwrap();
-    let prepared = std::os::arceos::thread::builder("admission-wake".into())
-        .stack_size(std::os::arceos::thread::default_task_stack_size())
+    ax_std::os::arceos::task::thread::current::set_current_thread_affinity(cpu0.clone()).unwrap();
+    let prepared = ax_std::os::arceos::thread::builder("admission-wake".into())
+        .stack_size(ax_std::os::arceos::thread::default_task_stack_size())
         .prepare(|| {
             let CurrentParkStart::Prepared(park) =
-                std::os::arceos::task::thread::current::begin_current_park().unwrap()
+                ax_std::os::arceos::task::thread::current::begin_current_park().unwrap()
             else {
                 panic!("a New-state wake must not notify the first admitted park");
             };
             park.cancel().unwrap();
             // Admission must clear only earlier wakes: a Running-state wake
             // still interrupts the next park through the public facade.
-            std::os::arceos::task::thread::current::current_thread_handle()
+            ax_std::os::arceos::task::thread::current::current_thread_handle()
                 .unwrap()
                 .wake_handle()
                 .wake();
             assert!(matches!(
-                std::os::arceos::task::thread::current::begin_current_park().unwrap(),
+                ax_std::os::arceos::task::thread::current::begin_current_park().unwrap(),
                 CurrentParkStart::Notified
             ));
         })
         .unwrap();
     let handle = prepared.thread_handle();
-    std::os::arceos::task::thread::ThreadHandle::lookup(handle.id())
+    ax_std::os::arceos::task::thread::ThreadHandle::lookup(handle.id())
         .and_then(|thread| thread.request_affinity(cpu0))
         .unwrap()
         .wait()
@@ -229,6 +230,6 @@ fn test_wake_before_admission() {
     };
     drop(handle);
     assert_eq!(published.join().unwrap(), 0);
-    std::os::arceos::task::thread::current::set_current_thread_affinity(old_affinity).unwrap();
+    ax_std::os::arceos::task::thread::current::set_current_thread_affinity(old_affinity).unwrap();
     println!("task_wait_queue: pre-admission wake isolation OK");
 }

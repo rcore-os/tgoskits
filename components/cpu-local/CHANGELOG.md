@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/rcore-os/tgoskits/compare/cpu-local-v0.2.1...cpu-local-v0.3.0) - 2026-09-09
+
+### Fixed
+
+- *(runtime)* prefer userspace over kernel TLS through build cfg ([#2339](https://github.com/rcore-os/tgoskits/pull/2339))
+
 ## [0.2.1](https://github.com/rcore-os/tgoskits/compare/cpu-local-v0.2.0...cpu-local-v0.2.1) - 2026-09-09
 
 ### Other

@@ -20,6 +20,17 @@ English | [中文](README_CN.md)
 
 > ax-cpu was derived from https://github.com/arceos-org/axcpu
 
+## TLS and userspace features
+
+`tls` requests kernel thread-local storage. `uspace` takes precedence over
+`tls`: enabling both selects the same register ownership and context-switch
+path as `uspace` alone, without kernel TLS. User-space TLS is still saved and
+restored by the user-context APIs. Kernel thread-pointer accessors are available
+only when `tls` is enabled and `uspace` is disabled. `build.rs` derives the
+internal `kernel_tls` cfg; callers should select Cargo features instead of
+setting this cfg themselves. Existing single-feature modes keep their behavior
+and task-context layout.
+
 ## Quick Start
 
 ### Installation

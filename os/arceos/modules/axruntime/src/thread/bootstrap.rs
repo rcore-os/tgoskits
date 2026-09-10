@@ -31,7 +31,7 @@ static CPU_REMOTE_HANDLE: LazyInit<usize> = LazyInit::new();
 #[ax_percpu::def_percpu]
 static CPU_LOCAL_OWNER_HANDLE: usize = 0;
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 #[ax_percpu::def_percpu]
 static EARLY_BOOTSTRAP_TLS: usize = 0;
 
@@ -75,7 +75,7 @@ pub(crate) fn initialize_primary(cpu_id: usize) -> Result<(), TaskError> {
 
 /// Installs temporary TLS before platform late-init can enter Rust code that
 /// uses thread-local storage.
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(crate) fn initialize_early_bootstrap_tls() -> Result<(), TaskError> {
     // SAFETY: early runtime entry owns this offline CPU until publication.
     let existing = unsafe { with_current_cpu_pin(|pin| EARLY_BOOTSTRAP_TLS.read_current(pin)) };
@@ -200,7 +200,7 @@ fn initialize_current_cpu(cpu_id: usize) -> Result<ThreadId, TaskError> {
     }
     let bootstrap_resources = create_bootstrap_resources()?;
     let bootstrap_context = bootstrap_resources.context();
-    #[cfg(feature = "tls")]
+    #[cfg(kernel_tls)]
     let bootstrap_tls = bootstrap_resources.tls();
     let bootstrap = system.install_bootstrap_thread(cpu.as_mut(), unsafe {
         // SAFETY: bootstrap_resources is a fresh unique runtime bundle.
@@ -210,9 +210,9 @@ fn initialize_current_cpu(cpu_id: usize) -> Result<ThreadId, TaskError> {
     })?;
     let bootstrap_thread = bootstrap.id();
     drop(bootstrap);
-    #[cfg(feature = "tls")]
+    #[cfg(kernel_tls)]
     let bootstrap_kernel_tls = runtime_tls_pointer(bootstrap_tls);
-    #[cfg(not(feature = "tls"))]
+    #[cfg(not(kernel_tls))]
     let bootstrap_kernel_tls = 0;
     // Publish the physical bootstrap resources only after their scheduler
     // record owns them. A failed installation must not leave this CPU using a
@@ -225,7 +225,7 @@ fn initialize_current_cpu(cpu_id: usize) -> Result<ThreadId, TaskError> {
         })
     }
     .unwrap_or_else(|error| panic!("failed to publish bootstrap runtime context: {error}"));
-    #[cfg(feature = "tls")]
+    #[cfg(kernel_tls)]
     {
         // SAFETY: bootstrap still owns this offline CPU-local slot.
         let early_tls = unsafe {

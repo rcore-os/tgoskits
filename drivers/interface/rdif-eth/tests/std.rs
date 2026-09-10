@@ -194,6 +194,10 @@ const fn queue_config() -> QueueConfig {
 #[test]
 fn rdif_eth_errors_map_to_io_kinds() {
     assert!(matches!(
+        rdif_eth::io::ErrorKind::from(NetError::DeviceNotPresent),
+        rdif_eth::io::ErrorKind::NotAvailable
+    ));
+    assert!(matches!(
         rdif_eth::io::ErrorKind::from(NetError::NotSupported),
         rdif_eth::io::ErrorKind::Unsupported
     ));

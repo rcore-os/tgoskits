@@ -7,7 +7,7 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-eth"
 repository.workspace = true
-version = "0.5.0"
+version = "0.6.0"
 
 [dependencies]
 dma-api = { workspace = true }

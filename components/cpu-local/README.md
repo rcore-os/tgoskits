@@ -25,9 +25,14 @@ userspace, so its user-transition assembly spills the current header in the
 pinned kernel stack and restores it before returning to Rust. LoongArch KS4 and
 KS5 remain outside this contract for vCPU scratch state.
 
-The `tls` feature selects the final-image register assignment. `host-test`
-provides a thread-local register model. These are the crate's only features;
-there is no runtime ABI mode inside one final image.
+The `tls` feature requests kernel TLS. The `uspace` feature takes precedence:
+when both are enabled, the image uses the same register ownership as `uspace`
+alone and does not provide kernel TLS. User-space TLS remains the responsibility
+of the user-context APIs. `build.rs` derives the internal `kernel_tls` cfg from
+these features; it is not a user-configurable feature. `kernel_tls` and
+`install_kernel_tls` are available only in the effective kernel TLS mode.
+`host-test` provides a thread-local register model; there is no runtime ABI mode
+inside one final image.
 
 Context publication follows a strict transaction: validate the outgoing
 binding, bind the next `ExecutionContextHeader`, prepare fallible architecture

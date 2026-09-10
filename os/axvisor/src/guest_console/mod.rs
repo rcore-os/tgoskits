@@ -21,6 +21,7 @@ pub(crate) use mux::attach_default;
 #[cfg(feature = "browser-console")]
 pub(crate) use mux::route_network_input;
 pub(crate) use mux::{
-    ConsoleInputEvent, activate, attach, attached_vm, mark_running, mark_stopped,
-    reconcile_vm_states, remove, route_host_byte, route_host_log, serial_backend_factory,
+    ConsoleInputEvent, activate, attach, attached_vm, backend_identity, mark_running, mark_stopped,
+    reconcile_vm_states, remove_if_backend, replay_guest_output, route_host_byte, route_host_log,
+    serial_backend_factory,
 };

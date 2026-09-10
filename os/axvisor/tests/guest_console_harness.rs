@@ -6,6 +6,10 @@
 )]
 
 pub(crate) mod host {
+    pub(crate) fn queue_guest_output(_tag: u128, _bytes: &[u8]) -> bool {
+        false
+    }
+
     pub(crate) fn submit_host_bytes(_bytes: &[u8]) {}
 
     pub(crate) fn submit_host_transaction(transaction: impl FnOnce(&mut dyn FnMut(&[u8]))) {

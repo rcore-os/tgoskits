@@ -39,14 +39,12 @@ impl Interface for super::v2::Gic {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl DriverGeneric for super::v3::Gic {
     fn name(&self) -> &str {
         "Arm GICv3 Driver"
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Interface for super::v3::Gic {
     fn translate_fdt(&self, irq_prop: &[u32]) -> Result<ControllerIrqTranslation, IrqError> {
         let config = fdt_parse_irq_config(irq_prop).map_err(|_| IrqError::InvalidIrq)?;

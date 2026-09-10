@@ -1,1 +1,1 @@
-ulib/axlibc/include/**/*.h linguist-vendored
+api/arceos_posix_api/include/**/*.h linguist-vendored

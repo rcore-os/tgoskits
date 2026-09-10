@@ -8,7 +8,8 @@ use tempfile::tempdir;
 use super::{
     ArceosBuildInfo, ArceosBuildMode,
     info::{load_build_info, resolve_build_info_path_in_dir},
-    load_arceos_build_mode, load_c_app_cargo_config, resolve_app_c_dir, resolve_app_c_mode,
+    load_arceos_build_mode, load_c_app_cargo_config, load_cargo_config, resolve_app_c_dir,
+    resolve_app_c_mode, resolve_build_info_path,
 };
 use crate::{build, context::ResolvedBuildRequest};
 
@@ -111,6 +112,39 @@ fn build_config_without_app_c_uses_std_rust_mode() {
     let mode = load_arceos_build_mode(&path).unwrap();
 
     assert_eq!(mode, ArceosBuildMode::RustStd);
+}
+
+#[test]
+fn rust_build_config_to_bin_is_passed_to_cargo_config() {
+    let root = tempdir().unwrap();
+    let path = root
+        .path()
+        .join("build-aarch64-unknown-none-softfloat.toml");
+    fs::write(&path, "features = []\nlog = \"Info\"\nto_bin = true\n").unwrap();
+    let request = request("arceos-helloworld", "aarch64-unknown-none-softfloat", path);
+
+    let cargo = load_cargo_config(&request).unwrap();
+
+    assert!(cargo.to_bin);
+}
+
+#[test]
+fn app_c_build_config_to_bin_is_passed_to_cargo_config() {
+    let root = tempdir().unwrap();
+    let source_dir = root.path().join("c");
+    fs::create_dir_all(&source_dir).unwrap();
+    fs::write(source_dir.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+    let path = root.path().join("build-x86_64-unknown-none.toml");
+    fs::write(
+        &path,
+        "app-c = \"c\"\nfeatures = []\nlog = \"Warn\"\nto_bin = true\n",
+    )
+    .unwrap();
+    let request = request("ax-libc", "x86_64-unknown-none", path);
+
+    let cargo = load_c_app_cargo_config(&request).unwrap();
+
+    assert!(cargo.to_bin);
 }
 
 #[test]

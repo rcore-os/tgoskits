@@ -57,7 +57,7 @@ pub use imp::net::{
     sys_shutdown, sys_socket,
 };
 #[cfg(feature = "pipe")]
-pub use imp::pipe::sys_pipe;
+pub use imp::pipe::{sys_pipe, sys_pipe2};
 pub use imp::{
     io::{sys_read, sys_write, sys_writev},
     pthread::{

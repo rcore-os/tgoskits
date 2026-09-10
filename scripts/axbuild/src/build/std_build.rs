@@ -298,8 +298,13 @@ pub(super) fn std_cargo_config_path(
     linker: &Path,
     extra_rustflags: &[String],
 ) -> anyhow::Result<PathBuf> {
-    let path = std_build_dir()?.join(format!("config-{target}-dynamic.toml"));
     let config = toml::to_string_pretty(&StdCargoConfig::new(target, linker, extra_rustflags))?;
+    // A prepared Cargo invocation must keep its own flags even when another
+    // build for the same target is prepared before it runs.
+    let path = std_build_dir()?
+        .join("config")
+        .join(short_content_hash(&config))
+        .join(format!("config-{target}-dynamic.toml"));
     write_if_changed(&path, &config)?;
     Ok(path)
 }

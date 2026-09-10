@@ -886,6 +886,32 @@ pub unsafe extern "C" fn pipe(_pipefd: *mut c_int) -> c_int {
     fail(Errno::ENOSYS)
 }
 
+/// Creates a byte-stream pipe with the supported creation flags.
+///
+/// # Safety
+///
+/// A non-null `pipefd` must point to two writable, aligned `c_int` values
+/// exclusively borrowed for this call.
+#[cfg(feature = "fd")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pipe2(pipefd: *mut c_int, flags: c_int) -> c_int {
+    if pipefd.is_null() {
+        return fail(Errno::EFAULT);
+    }
+    // SAFETY: the caller supplies two uniquely writable descriptor slots.
+    let fds = unsafe { core::slice::from_raw_parts_mut(pipefd, 2) };
+    ok_or_errno(ax_posix_api::sys_pipe2(fds, flags))
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(not(feature = "fd"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pipe2(_pipefd: *mut c_int, _flags: c_int) -> c_int {
+    fail(Errno::ENOSYS)
+}
+
 /// # Safety
 ///
 /// Callers must uphold the Linux/musl ABI contract for this libc symbol.

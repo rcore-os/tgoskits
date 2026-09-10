@@ -174,7 +174,7 @@ fn default_current_preemption_snapshot() -> Result<PreemptionSnapshot, CpuLocalE
 /// The caller must own the final IRQ-disabled context-switch boundary. `value`
 /// must identify the prepared pinned header and remain alive while current.
 pub(crate) unsafe fn commit_current_context(_area: CpuAreaRef, _value: usize) {
-    match imp::CURRENT_MODEL.current_context_source(cfg!(feature = "tls")) {
+    match imp::CURRENT_MODEL.current_context_source(cfg!(kernel_tls)) {
         #[cfg(not(all(target_arch = "aarch64", not(feature = "host-test"))))]
         CurrentContextSource::RuntimeAnchor => _area
             .runtime_anchor()
@@ -198,7 +198,7 @@ pub(crate) unsafe fn commit_current_context(_area: CpuAreaRef, _value: usize) {
 /// that published invariant while the caller's pin prevents migration.
 pub fn current_context(pin: &CpuPin<'_>) -> Result<NonNull<ExecutionContextHeader>, CpuLocalError> {
     let area = pin.area();
-    let raw = match imp::CURRENT_MODEL.current_context_source(cfg!(feature = "tls")) {
+    let raw = match imp::CURRENT_MODEL.current_context_source(cfg!(kernel_tls)) {
         #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
         CurrentContextSource::ArchitectureRegister => unsafe {
             imp::read_current_context(area.base())
@@ -217,7 +217,7 @@ pub fn current_context(pin: &CpuPin<'_>) -> Result<NonNull<ExecutionContextHeade
 /// dereference the result after a context switch.
 #[doc(hidden)]
 pub unsafe fn current_context_unpinned() -> Result<NonNull<ExecutionContextHeader>, CpuLocalError> {
-    match imp::CURRENT_MODEL.current_context_source(cfg!(feature = "tls")) {
+    match imp::CURRENT_MODEL.current_context_source(cfg!(kernel_tls)) {
         #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
         CurrentContextSource::ArchitectureRegister => {
             // The architecture current source does not require a sampled CPU
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(
             // SAFETY: both boot headers have process-lifetime storage.
             unsafe { current_context_unpinned() },
-            if cfg!(feature = "tls") {
+            if cfg!(kernel_tls) {
                 Ok(NonNull::from(second.prefix().boot_context().header()))
             } else {
                 Ok(NonNull::from(first_boot))
@@ -472,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "tls"))]
+    #[cfg(not(kernel_tls))]
     fn architecture_current_is_authoritative_when_anchor_is_stale() {
         let area = modeled_area(0);
         let boot = area.prefix().boot_context().header();
@@ -509,7 +509,7 @@ pub unsafe fn install_bootstrap_context(
 ) -> Result<(), ContextSwitchError> {
     let epoch = unsafe { header.bind_cpu(pin.area()) }?;
     let pointer = header.as_non_null().as_ptr() as usize;
-    match imp::CURRENT_MODEL.current_context_source(cfg!(feature = "tls")) {
+    match imp::CURRENT_MODEL.current_context_source(cfg!(kernel_tls)) {
         #[cfg(not(all(target_arch = "aarch64", not(feature = "host-test"))))]
         CurrentContextSource::RuntimeAnchor => unsafe {
             commit_current_context(pin.area(), pointer)
@@ -529,7 +529,7 @@ pub unsafe fn install_bootstrap_context(
 }
 
 /// Reads execution-context-owned kernel TLS under an explicit CPU pin.
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub fn kernel_tls(_pin: &CpuPin<'_>) -> usize {
     unsafe { imp::read_kernel_tls() }
 }
@@ -540,7 +540,7 @@ pub fn kernel_tls(_pin: &CpuPin<'_>) -> usize {
 ///
 /// The caller must own the offline CPU or IRQ-disabled final context switch, and
 /// `value` must remain a valid TLS base for the installed execution context.
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 #[doc(hidden)]
 pub unsafe fn install_kernel_tls(_pin: &CpuPin<'_>, value: usize) {
     unsafe { imp::write_kernel_tls(value) };

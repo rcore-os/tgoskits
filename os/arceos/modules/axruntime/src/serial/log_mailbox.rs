@@ -32,6 +32,7 @@ enum SlotState {
 pub(crate) enum LogRecordKind {
     Print,
     Log,
+    Output(u128),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +75,23 @@ pub(crate) struct LogRecord {
 }
 
 impl LogRecord {
+    pub(super) fn output(tag: u128) -> Self {
+        Self {
+            kind: LogRecordKind::Output(tag),
+            ..Self::empty()
+        }
+    }
+
+    pub(super) fn append_output(&mut self, bytes: &[u8]) -> usize {
+        let len = self.len as usize;
+        let accepted = bytes.len().min(LOG_RECORD_BYTES - len);
+        self.bytes[len..len + accepted].copy_from_slice(&bytes[..accepted]);
+        self.len += accepted as u16;
+        self.source_len += accepted as u32;
+        self.accepted_source_len += accepted as u32;
+        accepted
+    }
+
     const fn empty() -> Self {
         Self {
             cpu_id: 0,
@@ -245,6 +263,17 @@ pub(super) struct PublishOutcome {
 }
 
 impl PublishOutcome {
+    pub(super) fn queued(record: &LogRecord) -> Self {
+        Self {
+            #[cfg(test)]
+            accepted_source_bytes: record.accepted_source_len(),
+            dropped_source_bytes: record.source_len() - record.accepted_source_len(),
+            dropped_records: 0,
+            published: true,
+            truncated: record.is_truncated(),
+        }
+    }
+
     pub(super) fn dropped(source_len: usize) -> Self {
         Self {
             #[cfg(test)]
@@ -319,9 +348,7 @@ impl CpuLogRing {
         &self,
         owner: &AtomicUsize,
         expected_owner: usize,
-        cpu_id: usize,
-        meta: LogRecordMeta,
-        args: fmt::Arguments<'_>,
+        format: impl FnOnce(u64) -> Result<LogRecord, fmt::Error>,
     ) -> PublishOutcome {
         let Some(_producer) = ProducerReservation::try_enter(&self.producer_active) else {
             return PublishOutcome::dropped(0);
@@ -351,7 +378,7 @@ impl CpuLogRing {
         } else {
             0
         };
-        let Ok(record) = LogRecord::format(cpu_id, sequence, meta, args) else {
+        let Ok(record) = format(sequence) else {
             slot.state
                 .store(pack_state(sequence, SlotState::Free), Ordering::Release);
             let mut outcome = PublishOutcome::dropped(reclaimed_bytes);
@@ -523,11 +550,29 @@ impl LogMailbox {
         self.owner.load(Ordering::Acquire) == runtime_index
     }
 
+    #[cfg(test)]
     pub(super) fn try_publish(
         &self,
         cpu_id: usize,
         meta: LogRecordMeta,
         args: fmt::Arguments<'_>,
+    ) -> PublishOutcome {
+        self.try_publish_with(cpu_id, |sequence| {
+            LogRecord::format(cpu_id, sequence, meta, args)
+        })
+    }
+
+    pub(super) fn publish_formatted(&self, cpu_id: usize, mut record: LogRecord) -> PublishOutcome {
+        self.try_publish_with(cpu_id, |sequence| {
+            record.sequence = sequence;
+            Ok(record)
+        })
+    }
+
+    fn try_publish_with(
+        &self,
+        cpu_id: usize,
+        format: impl FnOnce(u64) -> Result<LogRecord, fmt::Error>,
     ) -> PublishOutcome {
         let owner = self.owner.load(Ordering::Acquire);
         if owner == NO_OWNER {
@@ -536,7 +581,7 @@ impl LogMailbox {
         let Some(ring) = self.rings.get(cpu_id) else {
             return PublishOutcome::dropped(0);
         };
-        ring.try_publish(&self.owner, owner, cpu_id, meta, args)
+        ring.try_publish(&self.owner, owner, format)
     }
 
     pub(super) fn has_pending_for(&self, runtime_index: usize) -> bool {

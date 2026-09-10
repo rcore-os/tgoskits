@@ -1,23 +1,16 @@
-use std::{
-    io::{self, Write},
-    os::arceos::modules::ax_hal,
-    println,
-};
-
 use ax_hal::{
     mem::VirtAddr,
     trap::{PageFaultFlags, set_page_fault_handler},
 };
+use ax_std::os::arceos::modules::{ax_hal, ax_runtime::emergency_console};
 
 fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
-    println!(
-        "Page fault @ {:#x}, access_flags: {:?}",
+    // This handler terminates the machine from exception context. std output
+    // can still be queued to the serial worker when power is cut.
+    emergency_console::write_fmt(format_args!(
+        "Page fault @ {:#x}, access_flags: {:?}\nPage fault test OK!\n",
         vaddr, access_flags
-    );
-    println!("Page fault test OK!");
-    io::stdout()
-        .flush()
-        .expect("failed to flush page fault test output");
+    ));
     ax_hal::power::system_off();
 }
 

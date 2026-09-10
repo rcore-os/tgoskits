@@ -61,13 +61,21 @@ Release-plz 通过关联 PR 的分支前缀识别发布 PR，仓库使用默认�
 
 | 例外软件包 | 默认检查无法运行的原因 |
 | --- | --- |
-| `arm-gic-driver` | 需要 AArch64，Release-plz 未提供包级 `--target` 配置 |
+| `arm-gic-driver` | 历史基线 `0.17.13` 的宿主 rustdoc 仍依赖 AArch64；`0.18.1` 已统一暴露接口并在内部选择目标操作 |
 | `ax-cpu`、`ax-hal`、`axplat-dyn`、`ax-runtime`、`ax-std` | 默认功能并集同时启用互斥的 `tls` 和 `uspace`；应分别检查合法组合 |
-| `x86_vcpu` | 检查器收集私有实现后，VMCB 宏生成的深层 `FieldValueEnumTypes` 超过 `cargo-semver-checks 0.50` 的 JSON 解析能力；这些寄存器类型未通过公开 API 暴露 |
+| `x86_vcpu` | 历史基线 `0.6.2` 的递归调试类型超出解析限制；`0.7.1` 已将指令与事件拦截位图改为内部 `bitflags` |
 | `ax-posix-api`、`ax-libc`、`axvm` | 已发布的 `ax-posix-api 0.5.34` 缺少仓库外构建所需的 `src/ctypes_gen.rs` |
 | `axbuild`、`axvisor` | 已发布的 `axbuild 0.5.3` 引用了包外的 review-bench 素材，Axvisor 宿主入口依赖它 |
 
-包级覆盖使用 [Release-plz 官方支持的配置](https://release-plz.dev/docs/config#the-semver_check-field)。历史包缺失文件并未因此得到修复；发布可独立构建的基线后，应重新启用相应检查。目标架构、互斥功能和解析器限制也应在工具支持后重新评估。
+包级覆盖使用 [Release-plz 官方支持的配置](https://release-plz.dev/docs/config#the-semver_check-field)。修复当前代码不会改写已经发布的基线。先发布这批手动递增的版本，再对 registry 基线完成真实比较后删除对应的 `semver_check=false`。`tls` 与 `uspace` 的互斥检查继续保留。
+
+`ax-posix-api 0.6.1` 将 C 头文件统一放在 `os/arceos/api/arceos_posix_api/include`，随 crate 发布；`build.rs` 始终按目标与功能配置，在 `OUT_DIR` 生成 `ax_pthread_mutex.h` 和 `ctypes_gen.rs`。`tm`、`jmp_buf` 也由该生成器统一产出，`ax-libc` 直接使用 `ax_posix_api::ctypes`，不再保留第二套 bindgen 构建脚本。ArceOS C 构建入口 `build_c_app()` 使用同一份头文件，不维护预生成 Rust 绑定的回退副本。这遵循 [Cargo 的构建产物目录约定](https://doc.rust-lang.org/cargo/reference/build-scripts.html#outputs-of-the-build-script)。
+
+`axbuild 0.6.1` 的 review-bench 模板是静态输入，保存在包内的 `src/agent_review_bench/assets`。静态输入应随包发布，不依赖构建时从仓库外复制进 `OUT_DIR`。
+
+预检中的 `python3 scripts/test/check_posix_bindings.py` 按 Cargo 实际打包清单构造独立生成环境，编译真实 `build.rs` 与生成的绑定，并覆盖默认、`smp`、`lockdep`、`smp,lockdep` 四种 pthread mutex 布局，同时检查 `tm` 和目标相关的 `jmp_buf` 布局；`--target` 可指定交叉编译目标。这个检查隔离尚未发布的内核依赖，专门防止生成输入漏包；完整发布依赖图仍由 workspace publish dry-run 检查。
+
+GIC 的非 AArch64 系统寄存器读取返回零，写入和架构屏障为空操作，仅服务宿主文档与接口检查，不模拟中断控制器。MMIO 对象仍要求合法映射；硬件行为必须另行通过 AArch64 构建和 QEMU 验证。
 
 ### 3.3 外部写入
 

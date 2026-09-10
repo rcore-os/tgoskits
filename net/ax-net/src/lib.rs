@@ -269,6 +269,7 @@ pub(crate) fn get_control() -> &'static NetControl {
 
 fn map_driver_net_error(error: rd_net::NetError) -> NetError {
     match error {
+        rd_net::NetError::DeviceNotPresent => NetError::NoSuchDevice,
         rd_net::NetError::NotSupported | rd_net::NetError::IrqUnavailable => {
             NetError::OperationNotSupported
         }
@@ -358,6 +359,14 @@ mod wifi_entropy_tests {
         let driver_error = rd_net::NetError::Other(Box::new(ax_io::IoError::Io));
         assert_eq!(map_driver_net_error(driver_error), NetError::BackendIo);
     }
+
+    #[test]
+    fn missing_driver_device_maps_to_no_such_device() {
+        assert_eq!(
+            map_driver_net_error(rd_net::NetError::DeviceNotPresent),
+            NetError::NoSuchDevice
+        );
+    }
 }
 
 /// Initializes the network subsystem by NIC devices.
@@ -403,7 +412,7 @@ pub fn init_network(
         let cfg_idx = find_interface_config(
             &config.interfaces,
             &mut used_configs,
-            order,
+            queue_runtime.discovery_order(order),
             mac,
             dev.device_name(),
         );

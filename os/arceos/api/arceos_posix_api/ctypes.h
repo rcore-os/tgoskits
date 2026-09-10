@@ -4,6 +4,7 @@
 #include <netinet/tcp.h>
 #include <pthread.h>
 #include <stddef.h>
+#include <setjmp.h>
 #include <time.h>
 #include <poll.h>
 #include <sys/epoll.h>

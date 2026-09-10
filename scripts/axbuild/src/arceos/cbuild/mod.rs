@@ -45,7 +45,7 @@ pub(crate) fn build_c_app(
     let arceos_dir = workspace_root.join("os/arceos");
     let axlibc_dir = arceos_dir.join("ulib/axlibc");
     let c_source_dir = axlibc_dir.join("c");
-    let include_dir = axlibc_dir.join("include");
+    let include_dir = arceos_dir.join("api/arceos_posix_api/include");
     let obj_root = input
         .target_dir
         .join("arceos-c")

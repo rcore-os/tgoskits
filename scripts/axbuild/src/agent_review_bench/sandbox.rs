@@ -11,8 +11,8 @@ use walkdir::WalkDir;
 
 use super::cases::BenchCase;
 
-const REVIEW_CONTRACT: &str = include_str!("../../../agent-review-bench/reviewer.md");
-const REVIEW_SCHEMA: &str = include_str!("../../../agent-review-bench/schemas/review.schema.json");
+const REVIEW_CONTRACT: &str = include_str!("assets/reviewer.md");
+const REVIEW_SCHEMA: &str = include_str!("assets/review.schema.json");
 const PROJECT_SKILLS_PATH: &str = ".agents/skills";
 
 pub(super) struct ReviewSandbox {

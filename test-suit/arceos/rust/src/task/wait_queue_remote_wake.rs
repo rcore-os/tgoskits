@@ -1,20 +1,21 @@
 use core::sync::atomic::AtomicUsize;
 use std::{
-    os::arceos::{
-        api::{
-            task as api,
-            task::{AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
-        },
-        modules::ax_hal::percpu::this_cpu_id,
-        task::{
-            sched::{CpuId, CpuSet, SchedulePolicy},
-            thread::{SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadId},
-        },
-    },
     println,
     sync::atomic::{AtomicBool, Ordering},
     thread,
     time::{Duration, Instant},
+};
+
+use ax_std::os::arceos::{
+    api::{
+        task as api,
+        task::{AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+    },
+    modules::ax_hal::percpu::this_cpu_id,
+    task::{
+        sched::{CpuId, CpuSet, SchedulePolicy},
+        thread::{SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadId},
+    },
 };
 
 static SLEEP_WQ: AxWaitQueueHandle = AxWaitQueueHandle::new();
@@ -108,7 +109,7 @@ fn wait_for_probe(flag: &AtomicBool, message: &str) {
 }
 
 pub fn run() -> crate::TestResult {
-    let cpu_num = thread::available_parallelism().unwrap().get();
+    let cpu_num = ax_std::os::arceos::task::sched::cpu_topology_len().unwrap();
     if cpu_num < 3 {
         println!("task_wait_queue_remote_wake: skipped with fewer than three CPUs");
         return Ok(());
@@ -151,7 +152,7 @@ pub fn run() -> crate::TestResult {
     // SAFETY: this call transfers the extension's unique logical ownership and
     // installs the affinity before publishing the scheduler thread.
     let sleeper = {
-        std::os::arceos::thread::builder("remote-wake-on-cpu".into())
+        ax_std::os::arceos::thread::builder("remote-wake-on-cpu".into())
             .stack_size(TEST_STACK_SIZE)
             .extension(extension)
             .affinity(single_cpu_affinity(cpu_num, sleeper_cpu))

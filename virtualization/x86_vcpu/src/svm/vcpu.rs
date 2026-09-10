@@ -434,7 +434,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
             SvmIntercept::SKINIT,
             SvmIntercept::XSETBV,
         ] {
-            control.set_intercept(intercept);
+            control.set_intercept(intercept, true);
         }
 
         control
@@ -1889,14 +1889,12 @@ fn set_interrupt_window_control(control: &mut super::vmcb::VmcbControlArea, enab
             | SVM_INT_CTL_V_INTR_MASKING;
         control.int_vector.set(0);
         control.int_control.set(int_control);
-        control.set_intercept(SvmIntercept::VINTR);
+        control.set_intercept(SvmIntercept::VINTR, true);
     } else {
         control
             .int_control
             .set(control.int_control.get() & !SVM_INT_CTL_V_IRQ_INJECTION_BITS);
-        control
-            .intercept_vector3
-            .modify(super::vmcb::InterceptVec3::VINTR::CLEAR);
+        control.set_intercept(SvmIntercept::VINTR, false);
     }
     control.clean_bits.set(0);
 }

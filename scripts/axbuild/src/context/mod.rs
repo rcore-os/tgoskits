@@ -140,6 +140,12 @@ impl AppContext {
                 .await?;
         stage.done();
         println!("[axbuild] cargo build elf={}", output.elf_path().display());
+        if cargo.to_bin {
+            println!(
+                "[axbuild] cargo build bin={}",
+                cargo_bin_path_for_elf(output.elf_path()).display()
+            );
+        }
         println!(
             "[axbuild] cargo build artifact_dir={}",
             output.cargo_artifact_dir().display()
@@ -574,6 +580,10 @@ impl StageLog {
 fn display_optional_path(path: Option<&Path>) -> String {
     path.map(|path| path.display().to_string())
         .unwrap_or_else(|| "<default>".to_string())
+}
+
+pub(crate) fn cargo_bin_path_for_elf(elf_path: &Path) -> PathBuf {
+    elf_path.with_extension("bin")
 }
 
 struct EnvRestoreGuard {

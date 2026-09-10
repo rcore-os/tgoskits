@@ -1,10 +1,9 @@
 use core::{arch::asm, hint::black_box, ptr};
-use std::{
-    os::arceos::{
-        api::task::{AxCpuMask, ax_set_current_affinity},
-        modules::ax_hal::percpu::this_cpu_id,
-    },
-    println, thread,
+use std::{println, thread};
+
+use ax_std::os::arceos::{
+    api::task::{AxCpuMask, ax_set_current_affinity},
+    modules::ax_hal::percpu::this_cpu_id,
 };
 
 const STACK_SIZE: usize = 64 * 1024;
@@ -12,7 +11,7 @@ const WRITE_STRIDE: usize = 64;
 const SEARCH_BYTES: usize = STACK_SIZE + 2 * 4096;
 
 pub fn run() -> crate::TestResult {
-    let cpu_num = thread::available_parallelism().unwrap().get();
+    let cpu_num = ax_std::os::arceos::task::sched::cpu_topology_len().unwrap();
     let creator_cpu = this_cpu_id();
     let target_cpu = if cpu_num > 1 {
         (creator_cpu + 1) % cpu_num
@@ -24,10 +23,10 @@ pub fn run() -> crate::TestResult {
          cpu_num={cpu_num}"
     );
 
-    let _ = thread::Builder::new()
-        .name("stack-guard-page-overflow".into())
+    ax_std::os::arceos::thread::builder("stack-guard-page-overflow".into())
         .stack_size(STACK_SIZE)
-        .spawn(move || hit_guard_page(target_cpu));
+        .spawn(move || hit_guard_page(target_cpu))
+        .expect("failed to spawn the kernel stack guard probe");
 
     loop {
         thread::yield_now();

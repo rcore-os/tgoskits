@@ -157,6 +157,16 @@ pub enum InterfaceMatcher {
 
 匹配规则只回答“配置属于哪个设备”，其优先级和唯一性在初始化校验中确定。设备匹配成功后，静态地址结构才决定本地 CIDR、gateway 和 DNS 等网络属性。
 
+`ByOrder` 使用候选 Ethernet device 的原始发现顺序，不因 owner startup 剔除
+不适用设备而重新编号。例如，原始 0 号设备缺失、1 号设备可用时，`ByOrder(1)`
+仍匹配原始 1 号设备，`ByOrder(0)` 不会转而匹配它。`init_network()` 通过
+`NetworkQueueRuntime::discovery_order()` 恢复该顺序；运行时句柄和普通接口缺省
+名称使用发布端口列表的紧凑索引。
+
+显式配置指向被剔除的设备时，仍会触发 `ensure_all_interface_configs_used()` 的
+未匹配配置检查。安全跳过候选设备不等于自动忽略其配置；需要允许该设备缺失的
+调用方不应同时提供必须匹配它的显式配置。
+
 ### 2.4 静态地址配置
 
 `StaticIpConfig` 把 CIDR、可选 gateway 和 DNS server 作为一个完整静态网络角色提交。`Router::ipv4_rules()` 根据这些字段生成 connected/default route，因而 prefix、gateway 和本地地址必须在初始化校验阶段保持同一子网语义。

@@ -196,6 +196,8 @@ timeout_minutes = 90
 command = '''
 echo "==> axvisor OrangePi 5 Plus Linux guest"
 cargo xtask axvisor test board --board orangepi-5-plus-linux
+echo "==> build the StarryOS guest from this checkout"
+cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/build-aarch64-unknown-none-softfloat.toml --smp 1
 echo "==> axvisor OrangePi 5 Plus StarryOS guest"
 cargo xtask axvisor test board --board orangepi-5-plus-starry
 echo "==> axvisor OrangePi 5 Plus AXIVC Zephyr-Starry benchmark"

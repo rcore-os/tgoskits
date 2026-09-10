@@ -7,14 +7,17 @@ keywords.workspace = true
 license.workspace = true
 name = "somehal"
 repository.workspace = true
-version = "0.10.0"
+version = "0.10.1"
 
 [features]
 efi = ["someboot/efi"]
 hv = ["mmu", "someboot/hv", "dep:ax-cpu"]
 mmu = ["someboot/mmu"]
 thead-mae = ["someboot/thead-mae"]
+# Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["someboot/tls"]
+# Enable userspace support without kernel TLS, including when `tls` is enabled.
+# User-space TLS remains available through the userspace context APIs.
 uspace = ["mmu", "someboot/uspace"]
 
 [dependencies]

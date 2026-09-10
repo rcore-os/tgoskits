@@ -30,3 +30,21 @@ faccessat202 6
 access04 12
 # epoll_create1_02.c: both invalid-flag cases must complete before driver exit.
 epoll_create1_02 2
+# LTP 20260529 source-derived lock testcase completion counts.
+fcntl17 1
+# LTP 20260529 source-derived lock testcase completion counts.
+fcntl34 1
+fcntl36 7
+# LTP 20260529 source-derived lock testcase completion counts.
+fcntl15 12
+# LTP 20260529 source-derived lock testcase completion counts.
+flock02 4
+flock04 6
+flock06 4
+# LTP 20260529 source-derived lock testcase completion counts.
+flock07 2
+# LTP 20260529 source-derived lock testcase completion counts.
+futex_wait03 1
+# LTP 20260529 source-derived lock testcase completion counts.
+getcwd01 5
+getcwd02 3

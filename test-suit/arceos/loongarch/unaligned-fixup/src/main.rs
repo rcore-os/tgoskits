@@ -1,11 +1,7 @@
-#![cfg_attr(any(feature = "ax-std", target_os = "none"), no_std)]
-#![cfg_attr(any(feature = "ax-std", target_os = "none"), no_main)]
-
-#[cfg(feature = "ax-std")]
-extern crate ax_std as std;
-
 #[cfg(feature = "ax-std")]
 use ax_cpu as _;
+#[cfg(feature = "ax-std")]
+use ax_std as _;
 
 #[cfg(feature = "ax-std")]
 const UNMAPPED_ADDRESS: u64 = 0x1000;
@@ -24,7 +20,6 @@ unsafe extern "C" {
     fn _unaligned_write(address: u64, value: u64, size: u64, fault_address: &mut u64) -> i32;
 }
 
-#[cfg_attr(feature = "ax-std", unsafe(no_mangle))]
 #[cfg(feature = "ax-std")]
 fn main() {
     let mut value = u64::MAX;
@@ -67,14 +62,4 @@ fn main() {
 #[cfg(not(feature = "ax-std"))]
 fn main() {
     eprintln!("this target requires the ax-std feature");
-}
-
-#[cfg(all(target_os = "none", not(feature = "ax-std")))]
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() {}
-
-#[cfg(all(target_os = "none", not(feature = "ax-std")))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    loop {}
 }

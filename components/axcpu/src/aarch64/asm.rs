@@ -7,7 +7,7 @@ use ax_memory_addr::{PhysAddr, VirtAddr};
 
 #[cfg(not(feature = "arm-el2"))]
 use super::asid::configured_tag_capacity;
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 use crate::KernelTlsBase;
 #[cfg(feature = "uspace")]
 use crate::{InstalledAddressSpace, InstalledAddressSpaceMode};
@@ -339,7 +339,7 @@ pub unsafe fn write_exception_vector_base(vbar: usize) {
 ///
 /// It is used to implement TLS (Thread Local Storage).
 #[inline]
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub fn read_thread_pointer() -> KernelTlsBase {
     KernelTlsBase::new(TPIDR_EL0.get() as usize)
 }
@@ -352,7 +352,7 @@ pub fn read_thread_pointer() -> KernelTlsBase {
 ///
 /// This function is unsafe as it changes the current CPU states.
 #[inline]
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub unsafe fn write_thread_pointer(kernel_tls: KernelTlsBase) {
     TPIDR_EL0.set(kernel_tls.as_usize() as _)
 }

@@ -56,6 +56,8 @@ typedef struct {{
 
         let allow_types = [
             "stat",
+            "tm",
+            "jmp_buf",
             "size_t",
             "ssize_t",
             "off_t",
@@ -112,7 +114,7 @@ typedef struct {{
         let mut builder = bindgen::Builder::default()
             .header(in_file)
             .clang_arg(format!("-I{}", generated_include_dir.display()))
-            .clang_arg("-I./../../ulib/axlibc/include")
+            .clang_arg("-Iinclude")
             .parse_callbacks(Box::new(MyCallbacks))
             .derive_default(true)
             .size_t_is_usize(false)
@@ -150,19 +152,7 @@ typedef struct {{
             .expect("Couldn't write bindings!");
     }
 
-    let axlibc_include = std::path::Path::new("../../ulib/axlibc/include");
     let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    let out_file = out_dir.join("ctypes_gen.rs");
-    if axlibc_include.exists() {
-        gen_pthread_mutex(&out_dir.join("ax_pthread_mutex.h")).unwrap();
-        gen_c_to_rust_bindings("ctypes.h", &out_dir, &out_file);
-    } else {
-        // During `cargo publish` verification, the external headers are not
-        // available. Use the pre-generated ctypes_gen.rs shipped in the crate.
-        eprintln!(
-            "cargo:warning=axlibc include directory not found, skipping ctypes_gen.rs regeneration"
-        );
-        std::fs::copy("src/ctypes_gen.rs", &out_file)
-            .expect("pre-generated ctypes_gen.rs is not available");
-    }
+    gen_pthread_mutex(&out_dir.join("ax_pthread_mutex.h")).unwrap();
+    gen_c_to_rust_bindings("ctypes.h", &out_dir, &out_dir.join("ctypes_gen.rs"));
 }

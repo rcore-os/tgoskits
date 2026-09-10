@@ -1,10 +1,11 @@
 use std::{
-    os::arceos::{
-        api::task::{AxCpuMask, ax_set_current_affinity},
-        modules::ax_hal::percpu::this_cpu_id,
-    },
     sync::atomic::{AtomicUsize, Ordering},
     thread,
+};
+
+use ax_std::os::arceos::{
+    api::task::{AxCpuMask, ax_set_current_affinity},
+    modules::ax_hal::percpu::this_cpu_id,
 };
 
 const NUM_TASKS: usize = 8;
@@ -21,7 +22,7 @@ fn online_cpu_mask(cpu_num: usize) -> AxCpuMask {
 
 pub fn run() -> crate::TestResult {
     FINISHED_TASKS.store(0, Ordering::Release);
-    let available_cpus = thread::available_parallelism().unwrap().get();
+    let available_cpus = ax_std::os::arceos::task::sched::cpu_topology_len().unwrap();
     let mut workers = std::vec::Vec::new();
     for i in 0..NUM_TASKS {
         let cpu_id = i % available_cpus;

@@ -175,6 +175,10 @@ Rust pipeline（`test/build/rust.rs`）交叉编译用例 `rust/` 目录下的 C
 
 二进制名取自 `Cargo.toml` 的 `[[bin]]` name，缺失时回退到 package 名。
 
+### 6.2 Rootfs 解包完整性校验
+
+rootfs 解包（`debugfs rdump`）的权限决策：Linux 上按有效 uid、完整 uid/gid 映射与 `CAP_CHOWN` 决定是否进入 fakeroot，需要 fakeroot 但不可用时在启动 debugfs 前失败。非 Linux Unix 宿主（如 macOS）没有可用的 fakeroot（常见打包是 shell shim，会拆坏 `-R` 引号参数并假成功退出 0），因此直接执行 debugfs，并在解包后用 `debugfs -R "ls -p /"` 校验镜像顶层条目在暂存目录中全部存在，不得只信任退出码。`ls -p` 行格式为 `/inode/mode/uid/gid/name/`，文件条目末尾多一段 `/<size>/`，名字固定取第 5 段。
+
 ## 7. 资产准备与 rootfs 缓存
 
 ### 7.1 工作目录布局

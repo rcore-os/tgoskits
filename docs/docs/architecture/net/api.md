@@ -618,9 +618,10 @@ task-context `NetPollIrqControl` 和一个或多个 move-only
 `NetHardIrqEndpoint`。driver core 不暴露动态 queue 创建、设备级 IRQ 开关或 raw
 完整设备 handle。
 
-group 还可以携带 move-only `NetOwnerStartup`。它只在 worker 已固定到 owner CPU、IRQ
-callback 已注册但仍 disabled 时执行，供固件下载或 bus 创建等不能在任意 probe CPU
-运行的初始化使用。
+group 还可以携带 move-only `NetOwnerStartup`。它在 worker 已固定到 owner CPU、IRQ
+callback 已注册并 enable 后、initial refill 和队列发布前执行。驱动可以在此完成
+传输层初始化、身份确认和固件下载，复用数据面的 owner 约束；runtime 只消费
+`start / advance / cancel` 的结果，不解释具体设备协议。
 
 ### 7.1 DMA 与提交错误
 
@@ -683,10 +684,19 @@ pub trait PinnedNetIrqRegistrar: Sync {
 backlog；`Fifo` 的 `max_frames` 是 packet limit，存储只在第一次 busy 入队时分配。
 该接口当前按设备生效，不是 per-hardware-queue 配置。
 
-`NetworkRuntimeBuilder` 一次性消费全部设备，构造 shared-IRQ affinity domain，等待
-worker pin-ready，再以 fixed owner CPU 注册 disabled IRQ 并 enable。owner startup、
-initial refill/rearm 与 startup transaction 任一步失败都会反向回滚；没有运行时
-新增/删除物理 NIC 的公共入口。
+`NetworkRuntimeBuilder` 一次性消费候选设备，构造 shared-IRQ affinity domain，等待
+worker pin-ready，再以 fixed owner CPU 注册 disabled IRQ 并 enable。IRQ enable、
+initial refill/rearm 与 startup transaction 失败都会回滚。owner startup 的结果
+决定候选设备是否可以继续发布：
+
+- `Ready`：执行 initial refill/rearm，准备发布队列。
+- `WaitForInterrupt`、`WaitForInterruptUntil` 或 `RetryAt`：按中断或 deadline 等待，尚未完成启动。
+- `DeviceNotPresent`：只有 `cancel()` 成功并 disable+synchronize 对应 IRQ callback 后才剔除该 group；设备没有剩余 group 时不发布接口，剩余设备继续初始化。
+- 其他错误、取消失败或 IRQ 同步失败：返回初始化错误；资源释放仍要求 IRQ 与 DMA 安全证明，不能确认时隔离。
+
+`DeviceNotPresent` 的非致命处理仅适用于 owner startup 的发布前阶段，不是运行期
+忽略设备错误的通用策略。候选登记不保证接口可用；没有运行时新增或删除物理
+NIC 的公共入口。
 
 ### 7.4 Wi-Fi 控制
 

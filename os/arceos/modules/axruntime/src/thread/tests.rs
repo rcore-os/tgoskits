@@ -305,7 +305,7 @@ fn secondary_bootstrap_retires_before_entering_idle_loop() {
     );
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 #[test]
 fn bootstrap_thread_rejects_a_missing_tls_resource() {
     // SAFETY: this inert non-zero identity is never dereferenced because

@@ -9,6 +9,8 @@ impact_targets = ["arceos:x86_64"]
 name = "QEMU x86_64 · Suites"
 command = '''
 cargo xtask arceos test qemu --arch x86_64
+cargo xtask arceos test qemu --arch x86_64 \
+  --test-group rust --test-case task-scheduler-irq-window
 '''
 
 [[check.suite]]
@@ -21,6 +23,8 @@ impact_targets = ["arceos:riscv64"]
 name = "QEMU riscv64 · Suites + task IPI"
 command = '''
 cargo xtask arceos test qemu --arch riscv64
+cargo xtask arceos test qemu --arch riscv64 \
+  --test-group rust --test-case task-scheduler-irq-window
 taskset -c 0 cargo xtask arceos test qemu --arch riscv64 \
   --test-group rust --test-case task-ipi
 '''
@@ -39,6 +43,8 @@ cargo xtask arceos qemu --arch aarch64 --smp 4 \
   --qemu-config os/arceos/configs/qemu/qemu-aarch64-gicv2-boot.toml
 echo "==> arceos aarch64 test suites (Rust GICv2 SMP4 IPI + C GICv3 SMP4)"
 cargo xtask arceos test qemu --arch aarch64
+cargo xtask arceos test qemu --arch aarch64 \
+  --test-group rust --test-case task-scheduler-irq-window
 '''
 
 [[check.suite]]
@@ -51,6 +57,8 @@ impact_targets = ["arceos:loongarch64"]
 name = "QEMU loongarch64 · Suites"
 command = '''
 cargo xtask arceos test qemu --arch loongarch64
+cargo xtask arceos test qemu --arch loongarch64 \
+  --test-group rust --test-case task-scheduler-irq-window
 '''
 
 [[check.suite]]

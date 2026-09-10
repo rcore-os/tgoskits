@@ -3,19 +3,9 @@ use core::{
     ptr::{self, NonNull},
     slice,
 };
-#[cfg(target_arch = "loongarch64")]
-use std::os::arceos::api::modules::ax_hal::mem::{phys_to_virt, virtual_address_space};
 use std::{
     collections::BTreeMap,
-    format,
-    os::arceos::{
-        api::{
-            mem::{ax_alloc, ax_dealloc},
-            task::{AxCpuMask, ax_set_current_affinity},
-        },
-        modules::ax_hal::percpu::this_cpu_id,
-    },
-    println,
+    format, println,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -24,6 +14,12 @@ use std::{
     vec::Vec,
 };
 
+#[cfg(target_arch = "loongarch64")]
+use ax_std::os::arceos::api::modules::ax_hal::mem::{phys_to_virt, virtual_address_space};
+use ax_std::os::arceos::{
+    api::task::{AxCpuMask, ax_set_current_affinity},
+    modules::ax_hal::percpu::this_cpu_id,
+};
 use rand::{RngCore, SeedableRng, rngs::SmallRng};
 
 const SLAB_LAYOUT_CASES: [LayoutCase; 9] = [
@@ -95,11 +91,12 @@ impl Allocation {
 }
 
 unsafe fn alloc_raw(layout: Layout) -> NonNull<u8> {
-    unsafe { ax_alloc(layout) }.unwrap_or_else(|| panic!("allocation failed for {layout:?}"))
+    NonNull::new(unsafe { std::alloc::alloc(layout) })
+        .unwrap_or_else(|| std::alloc::handle_alloc_error(layout))
 }
 
 unsafe fn dealloc_raw(ptr: NonNull<u8>, layout: Layout) {
-    unsafe { ax_dealloc(ptr, layout) };
+    unsafe { std::alloc::dealloc(ptr.as_ptr(), layout) };
 }
 
 fn allocation_pattern(index: usize, round: usize) -> u8 {

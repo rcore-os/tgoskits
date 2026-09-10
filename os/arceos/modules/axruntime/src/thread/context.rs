@@ -266,7 +266,7 @@ pub(super) fn bind_bootstrap_runtime_context(
     // record keeps this pinned header alive until its switch tail withdraws it.
     unsafe { ax_hal::percpu::install_bootstrap_context(cpu_pin, context.header()) }
         .map_err(|_| TaskError::InvalidConfiguration)?;
-    #[cfg(feature = "tls")]
+    #[cfg(kernel_tls)]
     // SAFETY: the same offline bootstrap boundary owns the task TLS register.
     unsafe {
         ax_hal::percpu::install_bootstrap_kernel_tls(
@@ -274,7 +274,7 @@ pub(super) fn bind_bootstrap_runtime_context(
             ax_hal::context::KernelTlsBase::new(kernel_tls),
         );
     }
-    #[cfg(not(feature = "tls"))]
+    #[cfg(not(kernel_tls))]
     assert_eq!(
         kernel_tls, 0,
         "TLS-disabled bootstrap must retain a zero TLS identity"

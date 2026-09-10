@@ -1,18 +1,18 @@
 use core::f64::consts;
 use std::{
-    format,
-    os::arceos::{
-        api::{config::TASK_STACK_SIZE, task as api},
-        guard::PreemptIrqSaveGuard,
-        sync::RawSpinLock,
-    },
-    println,
+    format, println,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     vec::Vec,
+};
+
+use ax_std::os::arceos::{
+    api::{config::TASK_STACK_SIZE, task as api},
+    guard::PreemptIrqSaveGuard,
+    sync::RawSpinLock,
 };
 
 const NUM_TASKS: usize = 10;

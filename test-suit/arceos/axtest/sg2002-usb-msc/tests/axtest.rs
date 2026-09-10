@@ -4,7 +4,7 @@
 extern crate alloc;
 
 #[cfg(feature = "ax-std")]
-extern crate ax_std as std;
+extern crate ax_std;
 
 use arceos_axtest_sg2002_usb_msc::{
     BenchConfig, WriteBenchConfig, bench_iterations, blocks_per_transfer, build_read10_command,

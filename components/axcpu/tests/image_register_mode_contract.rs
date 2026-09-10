@@ -22,7 +22,7 @@ fn tls_feature_selects_register_semantics_without_changing_context_layout() {
             .0;
         assert!(task_context.contains("task_local: TaskLocalState"));
         assert!(
-            !task_context.contains("cfg(feature = \"tls\")"),
+            !task_context.contains("cfg(kernel_tls)"),
             "image mode must not change TaskContext ABI"
         );
     }
@@ -30,7 +30,6 @@ fn tls_feature_selects_register_semantics_without_changing_context_layout() {
     assert!(TASK_LOCAL.contains("kernel_tls: KernelTlsBase"));
     assert!(LIB.contains("fn for_task_context"));
     assert!(LIB.contains("requested.0 == 0"));
-    assert!(LIB.contains("cfg(all(feature = \"uspace\", feature = \"tls\"))"));
 }
 
 #[test]
@@ -67,8 +66,8 @@ fn riscv_linux_current_trap_uses_the_user_tp_sscratch_handshake() {
 #[test]
 fn context_switches_select_tls_only_for_unikernel_images() {
     for source in [RISCV_CONTEXT, AARCH_CONTEXT, X86_CONTEXT, LOONGARCH_CONTEXT] {
-        assert!(source.contains("#[cfg(feature = \"tls\")]"));
-        assert!(source.contains("#[cfg(not(feature = \"tls\"))]"));
+        assert!(source.contains("#[cfg(kernel_tls)]"));
+        assert!(source.contains("#[cfg(not(kernel_tls))]"));
         assert!(source.contains("pub fn prepare_switch_to("));
         assert!(source.contains("pub unsafe fn switch_to_prepared("));
         assert!(source.contains("prepared.commit()"));

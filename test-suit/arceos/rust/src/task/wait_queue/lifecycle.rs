@@ -1,10 +1,6 @@
 //! Thread publication and physical/OS resource lifetime integration tests.
 use std::{
     boxed::Box,
-    os::arceos::task::{
-        sched::SchedulePolicy,
-        thread::{SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadId},
-    },
     println,
     sync::{
         Arc,
@@ -12,6 +8,11 @@ use std::{
     },
     thread,
     time::Duration,
+};
+
+use ax_std::os::arceos::task::{
+    sched::SchedulePolicy,
+    thread::{SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadId},
 };
 
 pub(super) fn run() {
@@ -24,7 +25,7 @@ pub(super) fn run() {
 }
 
 fn test_execution_reclamation_with_live_handle() {
-    let handle = std::os::arceos::thread::builder("reclaim-live-handle".into())
+    let handle = ax_std::os::arceos::thread::builder("reclaim-live-handle".into())
         .spawn(|| {})
         .unwrap();
     assert_eq!(handle.wait().unwrap(), 0);
@@ -50,7 +51,7 @@ fn test_cancel_unpublished_threads() {
     for stage in [false, true] {
         let dropped = Arc::new(AtomicUsize::new(0));
         let capture = EntryCapture(Arc::clone(&dropped));
-        let prepared = std::os::arceos::thread::builder("cancel-unpublished".into())
+        let prepared = ax_std::os::arceos::thread::builder("cancel-unpublished".into())
             .prepare(move || {
                 drop(capture);
                 panic!("cancelled entry must never run");
@@ -74,15 +75,16 @@ fn test_cancel_unpublished_threads() {
 }
 
 fn test_common_exit_result() {
-    let handle = std::os::arceos::thread::builder("exit-result".into())
+    let handle = ax_std::os::arceos::thread::builder("exit-result".into())
         .spawn(|| {
-            let current = std::os::arceos::task::thread::current::current_thread_handle().unwrap();
+            let current =
+                ax_std::os::arceos::task::thread::current::current_thread_handle().unwrap();
             assert!(matches!(
                 current.wait(),
-                Err(std::os::arceos::task::thread::TaskError::InvalidConfiguration)
+                Err(ax_std::os::arceos::task::thread::TaskError::InvalidConfiguration)
             ));
             drop(current);
-            std::os::arceos::task::thread::current::exit_current(17)
+            ax_std::os::arceos::task::thread::current::exit_current(17)
         })
         .unwrap();
     assert_eq!(handle.wait().unwrap(), 17);
@@ -97,12 +99,12 @@ fn test_creation_failure_rollback() {
         // SAFETY: the extension uniquely owns this boxed Arc through PROBE_OPS.
         let extension = unsafe { ThreadExtension::new(data, &PROBE_OPS) };
         let builder =
-            std::os::arceos::thread::builder("failed-creation".into()).extension(extension);
+            ax_std::os::arceos::thread::builder("failed-creation".into()).extension(extension);
         let builder = if fail_before_allocation {
             builder.stack_size(0)
         } else {
             // A mismatched topology fails after the real context/TLS/stack constructor.
-            builder.affinity(std::os::arceos::task::sched::CpuSet::empty(
+            builder.affinity(ax_std::os::arceos::task::sched::CpuSet::empty(
                 ax_hal::cpu_num() + 1,
             ))
         };
@@ -173,7 +175,7 @@ fn test_direct_extension_lifetime(drop_in_sensitive_context: bool) {
     let data = Box::into_raw(Box::new(Arc::clone(&counters))) as usize;
     // SAFETY: the callbacks use this boxed Arc until their unique drop callback.
     let extension = unsafe { ThreadExtension::new(data, &PROBE_OPS) };
-    let handle = std::os::arceos::thread::builder("direct-extension".into())
+    let handle = ax_std::os::arceos::thread::builder("direct-extension".into())
         .extension(extension)
         .spawn(thread::yield_now)
         .unwrap();
@@ -188,7 +190,7 @@ fn test_direct_extension_lifetime(drop_in_sensitive_context: bool) {
         .expect("direct OS extension remains available");
     assert_eq!(borrowed.data(), data);
     if drop_in_sensitive_context {
-        let _guard = std::os::arceos::guard::PreemptIrqSaveGuard::new();
+        let _guard = ax_std::os::arceos::guard::PreemptIrqSaveGuard::new();
         drop(handle);
     } else {
         handle.join().unwrap();
