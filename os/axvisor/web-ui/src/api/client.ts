@@ -11,7 +11,12 @@ import { useRef } from 'react'
 import { ApiError } from './types'
 
 export class ApiClient {
-  constructor(private readonly getToken: () => string) {}
+  // scheme 默认 Bearer，但优先用 manifest 声明的 auth.scheme（见 types.ts 的 AuthProbe），
+  // 与 api/auth.ts 的探测保持一致——不再写死。
+  constructor(
+    private readonly getToken: () => string,
+    private readonly getScheme: () => string = () => 'Bearer',
+  ) {}
 
   get<T>(path: string, signal?: AbortSignal): Promise<T> {
     return this.request<T>('GET', path, undefined, signal)
@@ -33,7 +38,9 @@ export class ApiClient {
     body: unknown,
     signal?: AbortSignal,
   ): Promise<T> {
-    const headers: Record<string, string> = { Authorization: `Bearer ${this.getToken()}` }
+    const headers: Record<string, string> = {
+      Authorization: `${this.getScheme()} ${this.getToken()}`,
+    }
     const init: RequestInit = { method, headers, signal }
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json'
@@ -54,13 +61,19 @@ export class ApiClient {
  * 不变量 12：client 只在 ref 为 null 时构造一次，不随每次渲染重建；
  * token 经 getter 读取，配合 tokenRef 每次渲染刷新，读到的永远是最新的。
  */
-export function useApiClient(token: string): ApiClient {
+export function useApiClient(token: string, scheme?: string): ApiClient {
   const clientRef = useRef<ApiClient | null>(null)
   const tokenRef = useRef(token)
   tokenRef.current = token
+  const schemeRef = useRef(scheme)
+  schemeRef.current = scheme
 
   if (clientRef.current === null) {
-    clientRef.current = new ApiClient(() => tokenRef.current)
+    // scheme 经 getter 读取：与 token 一样，每次请求都取最新（manifest 可能晚到）。
+    clientRef.current = new ApiClient(
+      () => tokenRef.current,
+      () => schemeRef.current ?? 'Bearer',
+    )
   }
   return clientRef.current
 }

@@ -21,6 +21,29 @@ interface TokenGateProps {
   onSubmit: (token: string) => void
 }
 
+/** 进门卡片的说明文案：按「清单失败 / 未声明校验 / 已声明校验」三态分支，避免嵌套三元。 */
+function gateDescription(manifestError: string | null, auth: AuthProbe | null) {
+  if (manifestError) {
+    return <>无法读取能力清单，界面无法确定入口与鉴权方式。</>
+  }
+  if (auth === null) {
+    return (
+      <>
+        管理接口需要 token：填入与构建时{' '}
+        <code className="font-mono">AXVM_HTTP_TOKEN</code> 一致的值。后端未声明
+        校验端点，token 会在写入时才被检验。
+      </>
+    )
+  }
+  return (
+    <>
+      管理接口需要 token：填入与构建时{' '}
+      <code className="font-mono">AXVM_HTTP_TOKEN</code> 一致的值，进入前会向后端
+      校验一次。
+    </>
+  )
+}
+
 export function TokenGate({ auth, manifestError, onRetryManifest, onSubmit }: TokenGateProps) {
   const [value, setValue] = useState('')
   const [failure, setFailure] = useState<string | null>(null)
@@ -52,23 +75,7 @@ export function TokenGate({ auth, manifestError, onRetryManifest, onSubmit }: To
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>Axvisor</CardTitle>
-          <CardDescription>
-            {manifestError ? (
-              <>无法读取能力清单，界面无法确定入口与鉴权方式。</>
-            ) : auth === null ? (
-              <>
-                管理接口需要 token：填入与构建时{' '}
-                <code className="font-mono">AXVM_HTTP_TOKEN</code> 一致的值。后端未声明
-                校验端点，token 会在写入时才被检验。
-              </>
-            ) : (
-              <>
-                管理接口需要 token：填入与构建时{' '}
-                <code className="font-mono">AXVM_HTTP_TOKEN</code> 一致的值，进入前会向后端
-                校验一次。
-              </>
-            )}
-          </CardDescription>
+        <CardDescription>{gateDescription(manifestError, auth)}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           {manifestError && (

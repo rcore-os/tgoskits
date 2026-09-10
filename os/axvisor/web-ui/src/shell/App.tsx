@@ -21,6 +21,11 @@ export interface TabState {
   kind: string
 }
 
+// 引导期拉清单用的根路径（manifest 尚未拿到，只能先写死这一处，且集中成常量）。
+const MANIFEST_HREF = '/api/'
+// 资源 kind 的唯一真相源：壳与面板都引用它，不再散落 'vms' 字面量。
+const VM_KIND = 'vms'
+
 export default function App({ registry }: { registry: PanelRegistry }) {
   const [token, setToken] = useState<string | null>(null)
   const [manifest, setManifest] = useState<Manifest | null>(null)
@@ -29,7 +34,7 @@ export default function App({ registry }: { registry: PanelRegistry }) {
 
   useEffect(() => {
     const ac = new AbortController()
-    fetch('/api/', { signal: ac.signal })
+    fetch(MANIFEST_HREF, { signal: ac.signal })
       .then(async (res) => {
         if (!res.ok) throw new Error(`能力清单返回 HTTP ${res.status}`)
         return (await res.json()) as Manifest
@@ -82,7 +87,7 @@ function Shell({
   manifestError: string | null
   onReloadManifest: () => void
 }) {
-  const api = useApiClient(token)
+  const api = useApiClient(token, manifest?.auth?.scheme)
   const [tabs, setTabs] = useState<TabState[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const bootstrappedRef = useRef(false)
@@ -100,7 +105,7 @@ function Shell({
   }, [manifest])
 
   // 壳级资源快照：跟随 manifest 给 vms 资源的 href，不硬编码端点。
-  const vmsHref = manifest?.resources.find((r) => r.kind === 'vms')?.href ?? null
+  const vmsHref = manifest?.resources.find((r) => r.kind === VM_KIND)?.href ?? null
   const feed = useVmFeed(api, vmsHref)
 
   // 关掉当前标签后，退回到还开着的最近一个
@@ -172,7 +177,7 @@ function Shell({
           live={feed.live}
           activeKind={activeKindOf(tabs, activeId)}
           onOpen={openPanel}
-          onOpenVm={() => openPanel('vms')}
+          onOpenVm={() => openPanel(VM_KIND)}
         />
         <Tabs
           resources={manifest?.resources ?? []}

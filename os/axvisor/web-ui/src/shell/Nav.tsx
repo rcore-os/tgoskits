@@ -83,9 +83,15 @@ export function Nav({ resources, vms, live, activeKind, onOpen, onOpenVm }: NavP
   )
 }
 
-function StateBadge({ status }: { status: string }) {
+function statusVariant(status: string): 'default' | 'destructive' | 'outline' {
   // 状态是不透明字符串：只对已知终态上色，未知值原样显示（降级不崩）。
-  const variant = status === 'running' ? 'default' : status === 'failed' ? 'destructive' : 'outline'
+  if (status === 'running') return 'default'
+  if (status === 'failed') return 'destructive'
+  return 'outline'
+}
+
+function StateBadge({ status }: { status: string }) {
+  const variant = statusVariant(status)
   return (
     <Badge variant={variant} className="text-[10px]">
       {describeStatus(status)}
