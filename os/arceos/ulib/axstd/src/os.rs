@@ -93,5 +93,13 @@ pub mod arceos {
 #[cfg(feature = "std-compat")]
 pub mod libc_compat;
 
+/// Kernel-image memory operations that replace the portable
+/// `compiler_builtins` versions on targets whose default codegen cannot use
+/// wide accesses. See the module documentation for the AArch64 rationale.
+/// Host-test builds compile the module for its exhaustive unit tests without
+/// exporting the kernel symbol.
+#[cfg(any(target_arch = "aarch64", all(test, feature = "host-test")))]
+pub mod arch_mem;
+
 #[cfg(any(feature = "std-compat", all(test, feature = "host-test")))]
 mod futex;

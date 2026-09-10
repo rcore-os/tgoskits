@@ -480,6 +480,7 @@ pub unsafe extern "C" fn free(ptr: *mut c_void) {
 ///
 /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
 #[unsafe(no_mangle)]
+#[cfg(not(target_arch = "aarch64"))]
 pub unsafe extern "C" fn memcpy(dst: *mut c_void, src: *const c_void, n: SizeT) -> *mut c_void {
     let dst_u8 = dst.cast::<u8>();
     let src_u8 = src.cast::<u8>();
