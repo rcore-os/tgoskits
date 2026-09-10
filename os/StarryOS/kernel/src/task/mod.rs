@@ -185,6 +185,7 @@ impl ProcessData {
             signal: Arc::new(ProcessSignalManager::new(
                 signal_actions,
                 crate::config::SIGNAL_TRAMPOLINE,
+                proc.group_exit_state(),
             )),
             nsproxy: IrqMutex::new(Arc::new(nsproxy)),
             namespace_update: Mutex::new(()),

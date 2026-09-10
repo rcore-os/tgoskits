@@ -648,7 +648,12 @@ fn publish_clone_security(
     // Linux copy_seccomp and TSYNC hold a common lock through thread-group
     // insertion. Refresh only after private preparation, while TASK_NEW cannot
     // execute; TSYNC either precedes this snapshot or includes the published child.
-    let _update = parent.proc_data.seccomp_update();
+    let _update = parent.proc_data.thread_group_update();
+    // Linux copy_process checks fatal_signal_pending under the publication
+    // lock and returns EINTR before the child becomes Linux-visible.
+    if parent.signal().pending().has(Signo::SIGKILL) {
+        return Err(StarryError::Interrupted);
+    }
     child.inherit_security(parent)?;
     publish()
 }

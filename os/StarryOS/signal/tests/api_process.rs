@@ -13,7 +13,7 @@ struct TestEnv {
 impl TestEnv {
     fn new() -> Self {
         let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
-        let proc = Arc::new(ProcessSignalManager::new(actions, 0));
+        let proc = Arc::new(ProcessSignalManager::new(actions, 0, Arc::default()));
         TestEnv { proc }
     }
 }
@@ -24,7 +24,7 @@ fn send_wakes_sets_pending() {
     let _thr = ThreadSignalManager::new(9, env.proc.clone()).unwrap();
     let sig = SignalInfo::new_user(Signo::SIGTERM, 0, 100, 0);
 
-    assert_eq!(env.proc.send_signal(sig.clone()), Some(9));
+    assert_eq!(env.proc.send_signal(sig.clone(), false), Some(9));
     assert!(env.proc.pending().has(Signo::SIGTERM));
 }
 
@@ -34,7 +34,7 @@ fn signal_ignore() {
     env.proc.actions().lock_irqsave()[Signo::SIGTERM].disposition = SignalDisposition::Ignore;
     let sig = SignalInfo::new_user(Signo::SIGTERM, 0, 100, 0);
 
-    assert_eq!(env.proc.send_signal(sig), None);
+    assert_eq!(env.proc.send_signal(sig, false), None);
     assert!(!env.proc.pending().has(Signo::SIGTERM));
 }
 
@@ -43,7 +43,7 @@ fn signal_default_ignore() {
     let env = TestEnv::new();
     let sig = SignalInfo::new_user(Signo::SIGCHLD, 0, 100, 0);
 
-    assert_eq!(env.proc.send_signal(sig), None);
+    assert_eq!(env.proc.send_signal(sig, false), None);
     assert!(!env.proc.pending().has(Signo::SIGCHLD));
 }
 

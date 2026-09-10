@@ -14,8 +14,9 @@ use linux_raw_sys::general::kernel_sigaction;
 use starry_vm::{VmIo, VmPtr, vm_write_slice};
 
 use crate::{
-    PendingSignals, SignalAction, SignalInfo, SignalResult, SignalSet, Signo,
-    api::ThreadSignalManager,
+    DefaultSignalAction, PendingSignals, SignalAction, SignalDisposition, SignalInfo, SignalResult,
+    SignalSet, Signo,
+    api::{GroupExit, ThreadSignalManager},
 };
 
 /// Signal actions for a process.
@@ -44,6 +45,8 @@ impl IndexMut<Signo> for SignalActions {
 
 /// Process-level signal manager.
 pub struct ProcessSignalManager {
+    /// Shared with process teardown; signal publication preserves the first code.
+    pub(super) group_exit: Arc<GroupExit>,
     /// The process-level shared pending signals
     pending: RawSpinLock<PendingSignals>,
 
@@ -67,8 +70,13 @@ pub struct ProcessSignalManager {
 
 impl ProcessSignalManager {
     /// Creates a new process signal manager.
-    pub fn new(actions: Arc<RawSpinLock<SignalActions>>, default_restorer: usize) -> Self {
+    pub fn new(
+        actions: Arc<RawSpinLock<SignalActions>>,
+        default_restorer: usize,
+        group_exit: Arc<GroupExit>,
+    ) -> Self {
         Self {
+            group_exit,
             pending: RawSpinLock::new(PendingSignals::default()),
             actions_slot: RawSpinLock::new(actions),
             default_restorer,
@@ -100,15 +108,25 @@ impl ProcessSignalManager {
                 .try_reserve_exact(required)
                 .map_err(|_| crate::SignalError::NoMemory)?;
 
+            let target = child
+                .upgrade()
+                .expect("registration retains the new signal owner");
+            let actions_owner = self.actions();
+            let actions = actions_owner.lock_irqsave();
             let mut children = self.children.lock();
             if replacement.capacity() < children.len().saturating_add(1) {
                 drop(children);
+                drop(actions);
                 continue;
             }
             replacement.append(&mut children);
             replacement.push((tid, child));
             core::mem::swap(&mut *children, &mut replacement);
+            if self.group_exit.status().is_some() {
+                target.publish_group_kill();
+            }
             drop(children);
+            drop(actions);
             // The replaced allocation is empty and is released after the
             // IRQ-disabled registry guard has gone away.
             drop(replacement);
@@ -181,55 +199,90 @@ impl ProcessSignalManager {
         result
     }
 
-    /// Sends a signal to the process.
+    /// Publishes against one disposition-locked, fully retained target set.
+    /// Registration and exec TID changes take the same action lock. A snapshot
+    /// taken before that lock is revalidated, so a new child cannot miss a
+    /// fatal broadcast. Retained owners and allocations drop after unlocking.
+    pub(super) fn publish_with_targets<R>(
+        &self,
+        publish: impl FnOnce(&SignalActions, &[(u32, Arc<ThreadSignalManager>)]) -> R,
+    ) -> (R, Vec<(u32, Arc<ThreadSignalManager>)>) {
+        loop {
+            let targets = self.children_snapshot();
+            let actions_owner = self.actions();
+            let actions = actions_owner.lock_irqsave();
+            let matches = {
+                let children = self.children.lock();
+                children.len() == targets.len()
+                    && children
+                        .iter()
+                        .zip(&targets)
+                        .all(|((tid, weak), (id, owner))| {
+                            tid == id && core::ptr::eq(weak.as_ptr(), Arc::as_ptr(owner))
+                        })
+            };
+            if !matches {
+                drop(actions);
+                continue;
+            }
+            let result = publish(&actions, &targets);
+            drop(actions);
+            return (result, targets);
+        }
+    }
+
+    /// Linux complete_signal's non-coredump fatal decision. The caller retains
+    /// the disposition lock and has selected an unblocked target. Starry keeps
+    /// sigtimedwait's waited set blocked, so it needs no temporary real_blocked
+    /// mask to exclude that target here.
+    pub(super) fn complete_fatal_signal(
+        &self,
+        signo: Signo,
+        defer_fatal: bool,
+        action: &SignalAction,
+        targets: &[(u32, Arc<ThreadSignalManager>)],
+    ) {
+        if matches!(action.disposition, SignalDisposition::Default)
+            && signo.default_action() == DefaultSignalAction::Terminate
+            && (signo == Signo::SIGKILL || !defer_fatal)
+        {
+            self.group_exit.begin(signo as i32);
+            for (_, target) in targets {
+                target.publish_group_kill();
+            }
+        }
+    }
+
+    /// Sends a process-directed signal with its current ptrace eligibility.
     ///
-    /// Returns `Some(tid)` if the signal wakes up a thread.
-    ///
-    /// See [`ThreadSignalManager::send_signal`] for the thread-level version.
+    /// Returns the selected target. The OS must wake the whole group when its
+    /// shared GroupExit decision is set, and must do so after publication.
     #[must_use]
-    pub fn send_signal(&self, sig: SignalInfo) -> Option<u32> {
+    pub fn send_signal(&self, sig: SignalInfo, defer_fatal: bool) -> Option<u32> {
         let signo = sig.signo();
-        // Declare the retained targets first so early returns release the action
-        // guard before either the target allocations or the snapshot buffer.
-        let children = self.children_snapshot();
-
-        // Lock by `actions`. The swappable slot lets `execve` detach the
-        // shared inner `Arc<SignalActions>` (with `CLONE_SIGHAND`) without
-        // racing this read.
-        let actions_arc = self.actions();
-        let actions = actions_arc.lock_irqsave();
-
-        // Check whether the signal is ignored, but only when it is not blocked
-        // in all threads AND no thread is waiting for it via sigwaitinfo.
-        // POSIX requires that a signal is queued as pending when:
-        //   (a) it is blocked in all threads (sigwaitinfo may dequeue it), OR
-        //   (b) a thread is specifically waiting for this signal via
-        //       rt_sigtimedwait/sigwaitinfo (its sigwait state contains signo).
-        // In both cases, applying is_ignore() would silently drop the signal
-        // and leave sigwaitinfo sleeping forever.
-        let all_blocked = !children.is_empty()
-            && children
+        let (result, children) = self.publish_with_targets(|actions, children| {
+            let all_blocked = !children.is_empty()
+                && children
+                    .iter()
+                    .all(|(_, thread)| thread.signal_blocked(signo));
+            let any_sigwait = children
                 .iter()
-                .all(|(_, thread)| thread.signal_blocked(signo));
-        let any_sigwait_for_this = children
-            .iter()
-            .any(|(_, thread)| thread.is_sigwait_for(signo));
-        if !all_blocked && !any_sigwait_for_this && actions[signo].is_ignore(signo) {
-            return None;
-        }
-        // Pending publication and wake callbacks do not hold the action lock.
-        drop(actions);
-
-        if self.pending.lock_irqsave().put_signal(sig) {
-            self.possibly_has_signal.store(true, Ordering::Release);
-        }
-        let result = children
-            .iter()
-            .find(|(_, thread)| !thread.signal_blocked(signo))
-            .map(|(tid, _)| *tid);
+                .any(|(_, thread)| thread.is_sigwait_for(signo));
+            if !all_blocked && !any_sigwait && actions[signo].is_ignore(signo) {
+                return None;
+            }
+            if self.pending.lock_irqsave().put_signal(sig) {
+                self.possibly_has_signal.store(true, Ordering::Release);
+            }
+            let target = children
+                .iter()
+                .find(|(_, thread)| !thread.signal_blocked(signo));
+            if target.is_some() {
+                self.complete_fatal_signal(signo, defer_fatal, &actions[signo], children);
+            }
+            target.map(|(tid, _)| *tid)
+        });
         if result.is_none() {
-            // The future waker is an arbitrary task-context callback. Invoke it
-            // only after dropping the process child registry lock.
             for (_, thread) in &children {
                 thread.wake_sigwait(signo);
             }
@@ -294,6 +347,8 @@ impl ProcessSignalManager {
     /// `execve`'s de_thread step so signals targeting the inherited leader
     /// TID resolve to the (renamed) caller thread.
     pub fn rename_child(&self, old_tid: u32, new_tid: u32) {
+        let actions_owner = self.actions();
+        let _actions = actions_owner.lock_irqsave();
         let mut children = self.children.lock();
         for entry in children.iter_mut() {
             if entry.0 == old_tid {
@@ -416,7 +471,7 @@ mod tests {
     #[test]
     fn last_thread_owner_unregisters_without_an_unrelated_signal() {
         let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
-        let process = Arc::new(ProcessSignalManager::new(actions, 0));
+        let process = Arc::new(ProcessSignalManager::new(actions, 0, Arc::default()));
         let thread = ThreadSignalManager::new(7, Arc::clone(&process)).unwrap();
         let retired = Arc::downgrade(&thread);
         drop(thread);
@@ -438,7 +493,7 @@ mod tests {
     #[test]
     fn renamed_thread_owner_unregisters_after_exec() {
         let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
-        let process = Arc::new(ProcessSignalManager::new(actions, 0));
+        let process = Arc::new(ProcessSignalManager::new(actions, 0, Arc::default()));
         let thread = ThreadSignalManager::new(7, Arc::clone(&process)).unwrap();
         process.rename_child(7, 1);
         let replacement = ThreadSignalManager::new(7, Arc::clone(&process)).unwrap();
@@ -463,7 +518,7 @@ mod tests {
     #[test]
     fn blocked_process_signal_wakes_the_matching_sigwait_future() {
         let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
-        let process = Arc::new(ProcessSignalManager::new(actions, 0));
+        let process = Arc::new(ProcessSignalManager::new(actions, 0, Arc::default()));
         let mut blocked = SignalSet::default();
         blocked.add(Signo::SIGCHLD);
         let thread =
@@ -475,7 +530,7 @@ mod tests {
         thread.register_sigwait_waker(&waker);
 
         assert_eq!(
-            process.send_signal(SignalInfo::new_kernel(Signo::SIGCHLD)),
+            process.send_signal(SignalInfo::new_kernel(Signo::SIGCHLD), false),
             None
         );
         assert_eq!(counter.0.load(Ordering::Relaxed), 1);
@@ -484,7 +539,11 @@ mod tests {
     #[test]
     fn process_signal_prepares_and_releases_targets_outside_action_lock() {
         let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
-        let process = Arc::new(ProcessSignalManager::new(Arc::clone(&actions), 0));
+        let process = Arc::new(ProcessSignalManager::new(
+            Arc::clone(&actions),
+            0,
+            Arc::default(),
+        ));
         let thread = ThreadSignalManager::new(1, Arc::clone(&process)).unwrap();
         let retired = ThreadSignalManager::new(2, Arc::clone(&process)).unwrap();
         drop(retired);
@@ -492,8 +551,8 @@ mod tests {
         let ((ignored, selected), locked_heap_operations) =
             crate::allocation_audit::with_action_lock(&actions, || {
                 (
-                    process.send_signal(SignalInfo::new_kernel(Signo::SIGCHLD)),
-                    process.send_signal(SignalInfo::new_kernel(Signo::SIGUSR1)),
+                    process.send_signal(SignalInfo::new_kernel(Signo::SIGCHLD), false),
+                    process.send_signal(SignalInfo::new_kernel(Signo::SIGUSR1), false),
                 )
             });
 

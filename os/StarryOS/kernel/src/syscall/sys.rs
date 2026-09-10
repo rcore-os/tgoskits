@@ -1121,7 +1121,7 @@ pub fn sys_seccomp(
             if flags != 0 || !args.is_null() {
                 return Err(StarryError::InvalidInput);
             }
-            let _update = current.as_thread().proc_data.seccomp_update();
+            let _update = current.as_thread().proc_data.thread_group_update();
             current.as_thread().install_seccomp_strict()?;
         }
         SECCOMP_SET_MODE_FILTER => {
@@ -1129,7 +1129,7 @@ pub fn sys_seccomp(
             let filter = read_seccomp_filter(current, args)?;
             let curr = current;
             let thread = curr.as_thread();
-            let _update = thread.proc_data.seccomp_update();
+            let _update = thread.proc_data.thread_group_update();
             thread.append_seccomp_filter(filter)?;
             if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 {
                 sync_seccomp_to_thread_group(current);

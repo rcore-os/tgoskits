@@ -268,7 +268,7 @@ static int clone_child_wait_for_release(void *argument) {
 /* Linux waits for vfork completion in TASK_KILLABLE. The observer releases
  * the child only AFTER reaping its killed parent, so child completion cannot
  * accidentally make a broken, unkillable parent wait appear correct. */
-static int test_clone_vfork_parent_wait(int extra_flags, int kill_parent) {
+static int test_clone_vfork_parent_wait(int extra_flags, int parent_signal) {
     int ready[2], release[2];
     if (pipe(ready) != 0) {
         return -1;
@@ -283,7 +283,7 @@ static int test_clone_vfork_parent_wait(int extra_flags, int kill_parent) {
         static char child_stack[16384];
         close(ready[0]);
         close(release[1]);
-        struct blocked_child_channels channels = {ready[1], release[0], kill_parent};
+        struct blocked_child_channels channels = {ready[1], release[0], parent_signal};
         int flags = CLONE_VM | CLONE_VFORK | SIGCHLD | extra_flags;
         long child;
         if (extra_flags & CLONE_THREAD) {
@@ -320,7 +320,7 @@ static int test_clone_vfork_parent_wait(int extra_flags, int kill_parent) {
     sigemptyset(&action.sa_mask);
     int handler_installed = sigaction(SIGALRM, &action, &previous) == 0;
     if (handler_installed && read(ready[0], &child, sizeof(child)) == sizeof(child)
-        && (!kill_parent || kill(parent, SIGKILL) == 0)) {
+        && (!parent_signal || kill(parent, parent_signal) == 0)) {
         kill_wait_expired = 0;
         /* Watchdog only: readiness and release pipes define the ordering. */
         alarm(10);
@@ -329,13 +329,13 @@ static int test_clone_vfork_parent_wait(int extra_flags, int kill_parent) {
         } while (reaped < 0 && errno == EINTR && !kill_wait_expired);
         alarm(0);
         passed = reaped == parent && !kill_wait_expired
-            && (kill_parent ? WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL
+            && (parent_signal ? WIFSIGNALED(status) && WTERMSIG(status) == parent_signal
                             : WIFEXITED(status) && WEXITSTATUS(status) == 0);
     }
     /* Also unblock the old implementation after the watchdog, so a red test
      * reports a failure without leaving an unkillable vfork family behind. */
     char byte = 1;
-    if (kill_parent && write(release[1], &byte, 1) != 1) {
+    if (parent_signal && write(release[1], &byte, 1) != 1) {
         passed = 0;
     }
     close(release[1]);
@@ -370,9 +370,13 @@ int main(void) {
     /* Test 4: CLONE_VFORK return observes do_exit resource cleanup. */
     clone_vfork_shm_cleanup_pass = test_clone_vfork_child_shm_cleanup();
 
-    int parent_sigkill_pass = test_clone_vfork_parent_wait(0, 1);
+    int parent_sigkill_pass = test_clone_vfork_parent_wait(0, SIGKILL);
     printf("CLONE_VFORK: %s (SIGKILL releases parent before child completion)\n",
            parent_sigkill_pass > 0 ? "PASS" : "FAIL");
+
+    int parent_sigterm_pass = test_clone_vfork_parent_wait(0, SIGTERM);
+    printf("CLONE_VFORK: %s (Default SIGTERM releases parent before child completion)\n",
+           parent_sigterm_pass > 0 ? "PASS" : "FAIL");
 
     int thread_completion_pass = test_clone_vfork_parent_wait(CLONE_THREAD | CLONE_SIGHAND, 0);
     printf("CLONE_VFORK: %s (Child thread exit releases parent)\n",
@@ -406,7 +410,7 @@ int main(void) {
     /* Return success only if all vfork-related tests pass */
     if (vfork_mem_pass > 0 && vfork_exec_pass > 0 && clone_stack_pass > 0
         && clone_vfork_shm_cleanup_pass > 0 && parent_sigkill_pass > 0
-        && thread_completion_pass > 0) {
+        && thread_completion_pass > 0 && parent_sigterm_pass > 0) {
         printf("VFORK TEST: ALL TESTS PASSED\n");
         return 0;
     } else {

@@ -445,7 +445,13 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     emit_sched_process_exit(thr.tid(), exit_code);
 
-    if group_exit && let Some(tids) = thr.proc_data.proc.start_group_exit(exit_code) {
+    let exiting_group = if group_exit {
+        let _update = thr.proc_data.thread_group_update();
+        thr.proc_data.proc.start_group_exit(exit_code)
+    } else {
+        None
+    };
+    if let Some(tids) = exiting_group {
         let sig = SignalInfo::new_kernel(Signo::SIGKILL);
         for tid in tids {
             if tid == thr.tid_number() {

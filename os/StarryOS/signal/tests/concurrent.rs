@@ -36,7 +36,7 @@ fn concurrent_send_signal() {
         let thr = thr.clone();
         move || {
             thread::sleep(Duration::from_millis(10));
-            let _ = thr.send_signal(sig);
+            let _ = thr.send_signal(sig, false);
         }
     });
 
@@ -62,7 +62,7 @@ fn concurrent_blocked() {
         let thr = thr.clone();
         move || {
             thread::sleep(Duration::from_millis(10));
-            let _ = thr.send_signal(sig);
+            let _ = thr.send_signal(sig, false);
         }
     });
 
@@ -99,7 +99,7 @@ fn concurrent_check_signals() {
     let mut uctx = UserContext::new(0, initial_sp().into(), 0);
 
     let first = SignalInfo::new_user(Signo::SIGTERM, 9, 9, 0);
-    assert!(thr.send_signal(first.clone()));
+    assert!(thr.send_signal(first.clone(), false));
 
     let (si, action) = thr
         .check_signals(
@@ -116,8 +116,8 @@ fn concurrent_check_signals() {
     thread::spawn({
         let thr = thr.clone();
         move || {
-            let _ = thr.send_signal(SignalInfo::new_user(Signo::SIGINT, 2, 2, 0));
-            let _ = thr.send_signal(SignalInfo::new_user(Signo::SIGTERM, 3, 3, 0));
+            let _ = thr.send_signal(SignalInfo::new_user(Signo::SIGINT, 2, 2, 0), false);
+            let _ = thr.send_signal(SignalInfo::new_user(Signo::SIGTERM, 3, 3, 0), false);
         }
     });
 

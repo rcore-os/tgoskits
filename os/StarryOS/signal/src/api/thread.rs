@@ -465,6 +465,14 @@ impl ThreadSignalManager {
         F: FnMut(&mut UserContext, &SignalInfo, bool),
         C: FnMut() -> crate::arch::SignalFpState,
     {
+        // Linux get_signal handles SIGNAL_GROUP_EXIT before dequeuing signals
+        // or consulting a disposition that userspace could change afterwards.
+        if self.proc.group_exit.status().is_some() {
+            return Some((
+                SignalInfo::new_kernel(Signo::SIGKILL),
+                SignalOSAction::Terminate,
+            ));
+        }
         // Fast path
         if !self.possibly_has_signal.load(Ordering::Acquire)
             && !self.proc.possibly_has_signal.load(Ordering::Acquire)
@@ -538,37 +546,32 @@ impl ThreadSignalManager {
     ///
     /// See [`ProcessSignalManager::send_signal`] for the process-level version.
     #[must_use]
-    pub fn send_signal(&self, sig: SignalInfo) -> bool {
+    pub fn send_signal(&self, sig: SignalInfo, defer_fatal: bool) -> bool {
         let signo = sig.signo();
-
-        // Lock by `actions`
-        let actions_arc = self.proc.actions();
-        let actions = actions_arc.lock_irqsave();
-        debug!("signal: {signo:?}");
-
-        // Skip is_ignore() when the signal is blocked in this thread OR when
-        // this thread is inside rt_sigtimedwait/sigwaitinfo waiting for it.
-        // POSIX requires that a blocked signal is queued as pending even if
-        // its default disposition is to ignore it, so that sigtimedwait() can
-        // synchronously consume it.  tgkill/tkill target a specific thread, so
-        // we must apply the same exemption here as ProcessSignalManager does
-        // for the process-level path.
-        let blocked = self.signal_blocked(signo);
-        let in_sigwait = self.is_sigwait_for(signo);
-        if !blocked && !in_sigwait && actions[signo].is_ignore(signo) {
-            return false;
-        }
-
-        if self.pending.lock_irqsave().put_signal(sig) {
-            self.possibly_has_signal.store(true, Ordering::Release);
-        }
-        let deliverable = !self.signal_blocked(signo);
-        drop(actions);
-        // The sigwait future is owned by this signal manager. Publish pending
-        // state before invoking the task-context waker and never wake while an
-        // action or pending-signal lock remains held.
+        let (deliverable, _targets) = self.proc.publish_with_targets(|actions, targets| {
+            let blocked = self.signal_blocked(signo);
+            let in_sigwait = self.is_sigwait_for(signo);
+            if !blocked && !in_sigwait && actions[signo].is_ignore(signo) {
+                return false;
+            }
+            if self.pending.lock_irqsave().put_signal(sig) {
+                self.possibly_has_signal.store(true, Ordering::Release);
+            }
+            if !blocked {
+                self.proc
+                    .complete_fatal_signal(signo, defer_fatal, &actions[signo], targets);
+            }
+            !blocked
+        });
         self.wake_sigwait(signo);
         deliverable
+    }
+
+    /// Allocation-free SIGKILL publication used by Linux group exit. The group
+    /// decision owns the original exit code; no per-thread sigqueue is needed.
+    pub(super) fn publish_group_kill(&self) {
+        self.pending.lock_irqsave().set.add(Signo::SIGKILL);
+        self.possibly_has_signal.store(true, Ordering::Release);
     }
 
     /// Gets the blocked signals.
@@ -656,7 +659,7 @@ mod tests {
     #[test]
     fn sigwait_waker_only_fires_for_the_published_set() {
         let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
-        let process = Arc::new(ProcessSignalManager::new(actions, 0));
+        let process = Arc::new(ProcessSignalManager::new(actions, 0, Arc::default()));
         let thread = ThreadSignalManager::new(1, process).unwrap();
         let counter = Arc::new(CountWake(AtomicUsize::new(0)));
         let waker = Waker::from(counter.clone());
@@ -668,7 +671,7 @@ mod tests {
         thread.wake_sigwait(Signo::SIGURG);
         assert_eq!(counter.0.load(Ordering::Relaxed), 0);
 
-        let _deliverable = thread.send_signal(SignalInfo::new_kernel(Signo::SIGCHLD));
+        let _deliverable = thread.send_signal(SignalInfo::new_kernel(Signo::SIGCHLD), false);
         assert_eq!(counter.0.load(Ordering::Relaxed), 1);
 
         thread.finish_sigwait();
