@@ -229,11 +229,21 @@ pub(super) async fn run_rust_qemu_case(
         .map(|config| HostHttpServerGuard::start(config, case_name))
         .transpose()?;
 
-    arceos
+    let mut qemu = case.qemu.clone();
+    let serial_rx = if case.case.feature.as_deref() == Some("serial-rx") {
+        Some(super::serial_rx::SerialRxFixture::start(&mut qemu).await?)
+    } else {
+        None
+    };
+    let result = arceos
         .app
-        .run_qemu_with_axtest_coverage(&case.cargo, case.qemu.clone(), capture_backtrace)
+        .run_qemu_with_axtest_coverage(&case.cargo, qemu, capture_backtrace)
         .await
-        .with_context(|| format!("failed to run ArceOS rust qemu test case `{case_name}`"))?;
+        .with_context(|| format!("failed to run ArceOS rust qemu test case `{case_name}`"));
+    if let Some(fixture) = serial_rx {
+        fixture.finish().await?;
+    }
+    result?;
 
     if auto_symbolize && let Some(path) = log_path {
         let blocks_snapshot = memory_blocks.and_then(|arc| arc.lock().ok().map(|b| b.clone()));

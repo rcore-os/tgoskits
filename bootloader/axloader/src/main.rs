@@ -4,9 +4,6 @@
 #[cfg(target_os = "uefi")]
 extern crate alloc;
 
-#[cfg(target_os = "uefi")]
-mod control_input;
-
 #[cfg(not(target_os = "uefi"))]
 fn main() {}
 

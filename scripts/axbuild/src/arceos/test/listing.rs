@@ -140,7 +140,11 @@ fn rust_qemu_listed_cases(
         .into_iter()
         .map(|feature| qemu_test::ListedQemuCase {
             name: feature.to_string(),
-            archs: archs.clone(),
+            archs: archs
+                .iter()
+                .filter(|arch| super::rust_qemu_feature_supports_arch(feature, arch))
+                .cloned()
+                .collect(),
         })
         .collect())
 }
@@ -159,6 +163,7 @@ fn rust_qemu_case_names(
             Ok(
                 rust_qemu_features_for_list(selected_case, allow_missing_selected_case)?
                     .into_iter()
+                    .filter(|feature| super::rust_qemu_feature_supports_arch(feature, arch))
                     .map(str::to_string)
                     .collect(),
             )

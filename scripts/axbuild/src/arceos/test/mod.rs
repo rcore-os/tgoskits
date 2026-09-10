@@ -7,6 +7,7 @@ mod generic_qemu;
 mod listing;
 mod runner;
 mod rust_qemu;
+mod serial_rx;
 mod types;
 
 pub use args::{ArgsTest, ArgsTestBoard, ArgsTestQemu, TestCommand};
@@ -34,6 +35,7 @@ const ARCEOS_RUST_CPU_LIFECYCLE_FEATURE: &str = "task-cpu-lifecycle";
 const ARCEOS_RUST_STANDALONE_FEATURES: &[&str] = &[
     ARCEOS_RUST_TASK_IRQ_FEATURE,
     ARCEOS_RUST_CPU_LIFECYCLE_FEATURE,
+    "serial-rx",
 ];
 
 const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
@@ -50,6 +52,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     ARCEOS_RUST_MEM_STAGE1_TRANSITION_FEATURE,
     "memtest",
     "net-loopback",
+    "serial-rx",
     "sched-cfs",
     "sched-rr",
     "task-affinity",
@@ -101,4 +104,9 @@ pub(super) async fn test(arceos: &mut ArceOS, args: ArgsTest) -> anyhow::Result<
         TestCommand::Qemu(args) => runner::test_qemu(arceos, args).await,
         TestCommand::Board(args) => arceos.test_board(args).await,
     }
+}
+
+/// PL011's controlled MMIO window is available on the AArch64 virt machine.
+fn rust_qemu_feature_supports_arch(feature: &str, arch: &str) -> bool {
+    feature != "serial-rx" || arch == "aarch64"
 }
