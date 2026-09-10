@@ -1,6 +1,6 @@
 //! Starry axtests for the asynchronous block runtime boundary.
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use ax_fs_ng::{BlockDeviceHandle, BlockError};
 use core::{
     future::{Future, poll_fn},
@@ -37,6 +37,12 @@ fn block_runtime_async_double_read() {
         .first()
         .cloned()
         .expect("block axtest requires an installed block device");
+    let serial = read_two(Arc::clone(&device), true);
+    let concurrent = read_two(device, false);
+    assert_eq!(concurrent, serial, "each completion must contain its requested block");
+}
+
+fn read_two(device: Arc<BlockDeviceHandle>, finish_first: bool) -> (Vec<u8>, Vec<u8>) {
     let info = device.device_info();
     assert!(info.num_blocks >= 2, "block axtest requires at least two blocks");
     let block_size = info.logical_block_size;
@@ -57,7 +63,7 @@ fn block_runtime_async_double_read() {
         } else {
             false
         };
-        let second_polled = if second_result.is_none() {
+        let second_polled = if second_result.is_none() && (!finish_first || first_result.is_some()) {
             match second.as_mut().poll(cx) {
                 Poll::Ready(result) => {
                     second_result = Some(result);
@@ -82,7 +88,7 @@ fn block_runtime_async_double_read() {
     }));
 
     assert!(
-        first_pending_before_second,
+        finish_first || first_pending_before_second,
         "second request was not polled while the first completion was pending"
     );
     let first = first_result.expect("first block request result");
@@ -91,5 +97,10 @@ fn block_runtime_async_double_read() {
     assert_eq!(second.result, Ok(()));
     assert_eq!(first.data.as_ref().map(|dma| dma.len().get()), Some(block_size));
     assert_eq!(second.data.as_ref().map(|dma| dma.len().get()), Some(block_size));
-    assert_ne!(usize::from(first.id), usize::from(second.id));
+    let first = first.data.expect("first read DMA backing").into_cpu_buffer();
+    let second = second.data.expect("second read DMA backing").into_cpu_buffer();
+    // Hardware queue tags can be reused as soon as a request completes, even
+    // while its consumer still owns the completed DMA buffer.
+    assert_ne!(first.cpu_ptr(), second.cpu_ptr());
+    (first.as_slice_cpu().to_vec(), second.as_slice_cpu().to_vec())
 }
