@@ -114,11 +114,10 @@ impl_task_runtime! {
             if cpu != unsafe { Self::current_cpu_id() } {
                 return RuntimeStatus::InvalidArgument;
             }
-            #[cfg(feature = "paging")]
-            if let Err(error) = crate::kernel_mapping::retry_kernel_tlb_reclaims() {
-                error!("failed to retry kernel TLB quarantine before CPU offline: {error}");
-                return RuntimeStatus::Platform;
-            }
+            // Global TLB quarantine retains its own frames until acknowledged.
+            // Its retries belong to ordinary MM mutation/reclaim paths: taking
+            // kernel_aspace or waiting for remote shootdowns here would invert
+            // the IRQ-off scheduler registry transaction against another CPU.
             // No recoverable work may follow this publication: it installs the
             // safe root, clears the CPU-local active handle, and releases the
             // logical address-space lease in one direction.

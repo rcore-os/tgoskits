@@ -410,6 +410,7 @@ dependencies = [
  "ax-driver",
  "ax-hal",
  "ax-memory-addr",
+ "ax-mm",
  "ax-runtime",
  "ax-std",
  "ax-task",

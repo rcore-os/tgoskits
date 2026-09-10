@@ -18,7 +18,7 @@ sched-cfs = ["task-runtime", "ax-std/alloc"]
 task-affinity = ["task-runtime"]
 task-fair-idle-pull = ["task-runtime", "ax-std/alloc"]
 task-fair-wake-idle-sibling = ["task-runtime"]
-task-wait-queue = ["task-runtime", "dep:ax-runtime", "ax-runtime/fault-injection", "ax-std/tls"]
+task-wait-queue = ["task-runtime", "dep:ax-runtime", "ax-runtime/fault-injection", "ax-std/tls", "ax-std/paging", "dep:ax-mm"]
 task-wait-queue-remote-wake = ["task-runtime", "ax-std/ipi"]
 task-ipi = ["task-runtime", "ax-std/alloc", "ax-std/ipi"]
 task-irq = ["task-runtime"]
@@ -87,6 +87,7 @@ all = [
 ]
 
 [dependencies]
+ax-mm = { workspace = true, optional = true }
 ax-runtime = { workspace = true, optional = true }
 ax-task = { workspace = true, optional = true }
 ax-driver = { workspace = true, optional = true }

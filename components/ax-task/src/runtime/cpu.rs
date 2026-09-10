@@ -198,3 +198,43 @@ impl CurrentCpuOwnerHandles {
 }
 
 pub use crate::sched::system::OwnerControlDrain;
+
+/// Exercises scheduler CPU offline/online on the real idle owner.
+///
+/// This test-only transaction retains IRQ exclusion and the exclusive owner
+/// borrow across both transitions. It never returns to scheduling while offline
+/// and does not implement platform power-off or an externally parked CPU.
+#[cfg(feature = "fault-injection")]
+pub fn probe_idle_cpu_round_trip() -> Result<(), TaskError> {
+    use crate::runtime::context::{RuntimeIrqGuard, runtime_current_cpu_mut, runtime_task_system};
+    validate_schedule_context(RuntimeScheduleOrigin::Preempt)?;
+    let system = runtime_task_system()?;
+    let mut irq = RuntimeIrqGuard::enter();
+    let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+    if cpu.remote().current_thread() != cpu.remote().idle_thread() {
+        return Err(TaskError::NotReady);
+    }
+    system.take_cpu_offline(cpu.as_mut())?;
+    assert_eq!(cpu.remote().lifecycle_state(), CpuLifecycleState::Offline);
+    assert!(system.cpu_remote(cpu.owner()).is_none());
+    // Returning an error here would strand the executing idle owner offline.
+    system
+        .bring_cpu_online(cpu.as_mut())
+        .expect("idle CPU re-online failed");
+    assert_eq!(cpu.remote().lifecycle_state(), CpuLifecycleState::Online);
+    Ok(())
+}
+
+/// Publishes ordinary owner work so an idle probe leaves NOHZ sleep.
+#[cfg(feature = "fault-injection")]
+pub fn notify_idle_cpu_probe(cpu: RuntimeCpuId) -> Result<(), TaskError> {
+    let system = crate::runtime::context::runtime_task_system()?;
+    let remote = system
+        .cpu_remote(crate::sched::CpuId::new(cpu.as_u32()))
+        .ok_or(TaskError::CpuOffline(cpu.as_u32()))?;
+    if remote.kick_scheduler_work() {
+        Ok(())
+    } else {
+        Err(TaskError::CpuOffline(cpu.as_u32()))
+    }
+}

@@ -118,3 +118,71 @@ pub(super) fn record_mm_switch(previous_user: bool, next_user: bool) {
     MM_SWITCHES[usize::from(previous_user) * 2 + usize::from(next_user)]
         .fetch_add(1, Ordering::Release);
 }
+
+static IDLE_TARGET: AtomicU64 = AtomicU64::new(0);
+const IDLE_ARMING: u64 = 1 << 61;
+const IDLE_DONE: u64 = 1 << 63;
+const IDLE_SUCCESS: u64 = 1 << 62;
+
+/// Requests one real idle-owner scheduler offline/online transaction.
+/// Consume its result before submitting another probe. This does not power off
+/// the processor; IRQ delivery stays excluded until re-online completes.
+pub fn request_idle_cpu_round_trip(cpu: usize) -> Result<(), TaskError> {
+    current::validate_blocking_context()?;
+    if cpu >= ax_hal::cpu_num() {
+        return Err(TaskError::InvalidCpu(cpu as u32));
+    }
+    IDLE_TARGET
+        .compare_exchange(
+            0,
+            (cpu as u64 + 1) | IDLE_ARMING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map_err(|_| TaskError::ThreadBusy)?;
+    let target = ax_task::runtime::cpu::RuntimeCpuId::new(cpu as u32);
+    if let Err(error) = ax_task::runtime::cpu::notify_idle_cpu_probe(target) {
+        // ARMING is not consumable by the idle owner, so failed admission can
+        // withdraw this request without racing an offline transaction.
+        IDLE_TARGET.store(0, Ordering::Release);
+        return Err(error);
+    }
+    // Only expose the probe after the work producer's publication lease has
+    // ended. A final physical edge covers a consumer that saw ARMING first.
+    IDLE_TARGET.store(cpu as u64 + 1, Ordering::Release);
+    assert_eq!(
+        ax_task::runtime::task_runtime::notify_scheduler_cpu(
+            ax_task::runtime::cpu::RuntimeCpuId::new(cpu as u32)
+        ),
+        ax_task::runtime::RuntimeStatus::Success,
+        "online probe target requires scheduler IPI delivery"
+    );
+    Ok(())
+}
+
+/// Returns true for a completed cycle and false for a non-quiescent rejection.
+pub fn take_idle_cpu_round_trip_result() -> Option<bool> {
+    let state = IDLE_TARGET.load(Ordering::Acquire);
+    if state & IDLE_DONE == 0 {
+        return None;
+    }
+    IDLE_TARGET
+        .compare_exchange(state, 0, Ordering::AcqRel, Ordering::Acquire)
+        .ok()
+        .map(|state| state & IDLE_SUCCESS != 0)
+}
+
+pub(super) fn service_idle_cpu_round_trip() {
+    // Called only by the idle loop, after its normal scheduler-work drain.
+    // SAFETY: idle is permanently bound to this CPU for its entire lifetime.
+    let cpu = unsafe { ax_task::runtime::task_runtime::current_cpu_id() }.as_u32();
+    if IDLE_TARGET.load(Ordering::Acquire) != u64::from(cpu) + 1 {
+        return;
+    }
+    let result = match ax_task::runtime::cpu::probe_idle_cpu_round_trip() {
+        Ok(()) => IDLE_SUCCESS,
+        Err(TaskError::CpuNotQuiescent(_)) => 0,
+        Err(error) => panic!("idle CPU lifecycle probe failed: {error}"),
+    };
+    IDLE_TARGET.store((u64::from(cpu) + 1) | IDLE_DONE | result, Ordering::Release);
+}

@@ -112,14 +112,6 @@ pub(crate) fn handle_kernel_page_fault(
     ax_mm::kernel_aspace().lock().handle_page_fault(addr, flags)
 }
 
-/// Retries deferred kernel mapping resources after CPU-footprint changes.
-pub(crate) fn retry_kernel_tlb_reclaims() -> RuntimeResult {
-    ax_mm::kernel_aspace()
-        .lock()
-        .retry_quarantined_tlb_reclaims()
-        .map_err(Into::into)
-}
-
 pub(crate) fn map_dma_coherent_alias(
     paddr: PhysAddr,
     size: usize,

@@ -202,3 +202,89 @@ fn wait_for_mm_drop(drops: &AtomicUsize) {
         "MM owner released more than once"
     );
 }
+
+#[axtest::axtest]
+fn idle_cpu_cycle_rejection_retains_active_mm() {
+    use ax_runtime::thread::creation_probe::{
+        request_idle_cpu_round_trip, take_idle_cpu_round_trip_result,
+    };
+    use ax_task::{
+        sched::{CpuId, CpuSet},
+        thread::current,
+    };
+    assert!(ax_hal::cpu_num() > 1, "idle MM cycle requires SMP");
+    let original = current::current_thread_handle()
+        .unwrap()
+        .affinity()
+        .unwrap();
+    let mut coordinator = CpuSet::empty(ax_hal::cpu_num());
+    coordinator.insert(CpuId::new(0));
+    current::set_current_thread_affinity(coordinator).unwrap();
+    let mut target = CpuSet::empty(ax_hal::cpu_num());
+    target.insert(CpuId::new(1));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mm = TaskAddressSpace::new(
+        ax_hal::asm::read_kernel_page_table(),
+        MmOwner(Arc::clone(&drops)),
+    )
+    .unwrap();
+    // SAFETY: the permanent kernel root remains live, and the closure never
+    // enters user mode. The runtime owns the real per-CPU active-MM lease.
+    let handle = unsafe {
+        prepare_user_thread(
+            builder("offline-active-mm".into()).affinity(target),
+            || {},
+            UserContextOptions::new(mm),
+        )
+    }
+    .unwrap()
+    .publish()
+    .unwrap();
+    handle.wait().unwrap();
+    let start = ax_task::runtime::task_runtime::monotonic_now().as_nanos();
+    while !handle.execution_reclaimed() {
+        assert!(ax_task::runtime::task_runtime::monotonic_now().as_nanos() - start < 2_000_000_000);
+        current::yield_current_cpu().unwrap();
+    }
+    handle.join().unwrap();
+    assert_eq!(
+        drops.load(Ordering::Acquire),
+        0,
+        "idle must retain active MM before offline"
+    );
+    request_idle_cpu_round_trip(1).unwrap();
+    loop {
+        if let Some(result) = take_idle_cpu_round_trip_result() {
+            assert!(
+                !result,
+                "Starry pinned stopper workers must prevent CPU offline"
+            );
+            assert_eq!(
+                drops.load(Ordering::Acquire),
+                0,
+                "rejected offline released active MM"
+            );
+            break;
+        }
+        assert!(ax_task::runtime::task_runtime::monotonic_now().as_nanos() - start < 2_000_000_000);
+        current::yield_current_cpu().unwrap();
+    }
+    let mut target = CpuSet::empty(ax_hal::cpu_num());
+    target.insert(CpuId::new(1));
+    let mm = TaskAddressSpace::new(ax_hal::asm::read_kernel_page_table(), ()).unwrap();
+    // SAFETY: the permanent kernel root is live and this closure stays in kernel mode.
+    unsafe {
+        prepare_user_thread(
+            builder("after-offline-rejection".into()).affinity(target),
+            || {},
+            UserContextOptions::new(mm),
+        )
+    }
+    .unwrap()
+    .publish()
+    .unwrap()
+    .join()
+    .unwrap();
+    wait_for_mm_drop(&drops);
+    current::set_current_thread_affinity(original).unwrap();
+}
