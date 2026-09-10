@@ -558,6 +558,15 @@ pub(super) fn register_counting(
 pub(super) fn unregister_counting(
     registration: SampleRegistration,
 ) -> Result<(), SamplingUnregisterError> {
+    drop(detach_counting(registration)?);
+    Ok(())
+}
+
+/// Detaches one generation without destroying its owned reference in an IPI.
+/// The caller must retain the returned reference until task-context cleanup.
+pub(super) fn detach_counting(
+    registration: SampleRegistration,
+) -> Result<Arc<IrqMutex<CounterExtender>>, SamplingUnregisterError> {
     if registration.owner().as_usize() != ax_hal::percpu::this_cpu_id() {
         return Err(SamplingUnregisterError::WrongCpu);
     }
@@ -570,8 +579,7 @@ pub(super) fn unregister_counting(
         }
         .map_err(SamplingUnregisterError::Registry)?
     };
-    drop(removed);
-    Ok(())
+    Ok(removed)
 }
 
 /// Failure to remove an owner-CPU sampling registration.

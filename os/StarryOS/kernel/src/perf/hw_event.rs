@@ -248,8 +248,7 @@ impl HwPerfEventState {
             return family.close();
         }
         if let Some(flexible) = &self.system_flexible {
-            flexible.close();
-            return Ok(());
+            return flexible.close();
         }
         let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         let stopped = cpu_worker::disable_system(
@@ -388,8 +387,7 @@ impl HwPerfEventState {
             return family.disable();
         }
         if let Some(flexible) = &self.system_flexible {
-            flexible.disable();
-            return Ok(());
+            return flexible.disable();
         }
         let Some(since) = self.enabled_since else {
             return Ok(());
@@ -429,8 +427,7 @@ impl HwPerfEventState {
             return family.reset();
         }
         if let Some(flexible) = &self.system_flexible {
-            flexible.reset();
-            return Ok(());
+            return flexible.reset();
         }
         if self.sampling.is_some() {
             let was_enabled = self.enabled_since.is_some();

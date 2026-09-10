@@ -9,7 +9,7 @@ use core::{
 use ax_runtime::task::sched::{CpuId, CpuSet};
 
 use super::{hw_owner::Counter, target::PerfCpuId};
-use crate::sync::{IrqMutex, NoPreemptIrqSave};
+use crate::sync::{IrqMutex, NoPreemptIrqSave, PreemptGuard};
 
 const SLICE: Duration = Duration::from_millis(2);
 
@@ -126,17 +126,17 @@ impl SystemFlexCounter {
     }
 
     fn finish_slice(&self) {
-        self.finish_slice_observed(|| {});
+        drop(self.finish_slice_observed(|| {}));
     }
 
-    fn finish_slice_observed(&self, before_commit: impl FnOnce()) {
+    fn finish_slice_observed(
+        &self,
+        before_commit: impl FnOnce(),
+    ) -> Option<Arc<IrqMutex<super::counting::CounterExtender>>> {
         let _guard = NoPreemptIrqSave::new();
-        // None is the completion publication consumed by remote disable/reset.
-        // Keep the guard through hardware quiescence, accounting and slot free.
+        // Publish None only after hardware quiescence, accounting and slot free.
         let mut active_state = self.active.lock();
-        let Some(active) = active_state.take() else {
-            return;
-        };
+        let active = active_state.take()?;
         before_commit();
         let slot = active
             .counter
@@ -145,12 +145,13 @@ impl SystemFlexCounter {
         ax_cpu::pmu::overflow::disable_irq(slot);
         active.counter.disable();
         let value = self.read_active_counter(active.counter);
-        super::sampling::unregister_counting(active.registration)
+        let retired = super::sampling::detach_counting(active.registration)
             .expect("system PMU overflow registration must match its active slice");
         self.accumulated.fetch_add(value, Ordering::AcqRel);
         self.time_running
             .fetch_add(now_ns().saturating_sub(active.started_at), Ordering::AcqRel);
         super::percpu::free_current_programmable(slot);
+        Some(retired)
     }
 
     pub(super) const fn owner(&self) -> PerfCpuId {
@@ -163,28 +164,61 @@ impl SystemFlexCounter {
         }
     }
 
-    pub(super) fn disable(&self) {
-        if !self.enabled.swap(false, Ordering::AcqRel) {
-            return;
+    pub(super) fn disable(&self) -> crate::StarryResult<()> {
+        self.control_on_owner(ControlOperation::Disable)
+    }
+
+    pub(super) fn reset(&self) -> crate::StarryResult<()> {
+        self.control_on_owner(ControlOperation::Reset)
+    }
+
+    fn reset_on_owner(&self) {
+        let _guard = NoPreemptIrqSave::new();
+        let active = self.active.lock();
+        if let Some(active) = active.as_ref() {
+            active.counter.disable();
+            active.counter.reset();
+            ax_cpu::pmu::overflow::clear(1 << active.registration.counter());
         }
-        while self.active.lock().is_some() {
-            crate::task::yield_now();
-        }
-        let since = self.enabled_since.swap(0, Ordering::AcqRel);
-        if since != 0 {
-            self.time_enabled
-                .fetch_add(now_ns().saturating_sub(since), Ordering::AcqRel);
+        self.accumulated.store(0, Ordering::Release);
+        self.extender.lock().reset();
+        // Linux RESET preserves the enabled state and cumulative time. Keep
+        // the current lease running even if a FIFO caller excludes the worker.
+        if let Some(active) = active.as_ref() {
+            active.counter.enable();
         }
     }
 
-    pub(super) fn reset(&self) {
-        let enabled = self.enabled.load(Ordering::Acquire);
-        self.disable();
-        self.accumulated.store(0, Ordering::Release);
-        self.extender.lock().reset();
-        if enabled {
-            self.enable();
-        }
+    fn control_on_owner(&self, operation: ControlOperation) -> crate::StarryResult<()> {
+        let mut request = ControlRequest {
+            counter: self,
+            operation,
+            retired: None,
+        };
+        let result = {
+            // Pin the local fast-path CPU without masking IPIs during a remote
+            // wait. No lock needed by the callback is held across the call.
+            let _pin = PreemptGuard::new();
+            // SAFETY: the synchronous call borrows this stack request until
+            // completion, including error cancellation. Only the callback
+            // accesses it meanwhile. It performs bounded IRQ-safe PMU work;
+            // detached ownership is returned here for task-context destruction.
+            unsafe {
+                ax_hal::irq::run_on_cpu_sync(
+                    ax_hal::irq::CpuId(self.owner.as_usize()),
+                    control_callback,
+                    (&raw mut request).cast(),
+                )
+            }
+        };
+        drop(request.retired);
+        result.map_err(|error| match error {
+            ax_hal::irq::IrqError::CpuOffline => crate::StarryError::NoSuchDeviceOrAddress,
+            ax_hal::irq::IrqError::InvalidCpu => crate::StarryError::InvalidInput,
+            ax_hal::irq::IrqError::Unsupported => crate::StarryError::Unsupported,
+            ax_hal::irq::IrqError::Timeout => crate::StarryError::TimedOut,
+            _ => crate::StarryError::Io,
+        })
     }
 
     pub(super) fn read(self: &Arc<Self>) -> crate::StarryResult<(u64, u64, u64)> {
@@ -218,9 +252,10 @@ impl SystemFlexCounter {
         (value, enabled, running)
     }
 
-    pub(super) fn close(&self) {
-        self.disable();
+    pub(super) fn close(&self) -> crate::StarryResult<()> {
+        self.disable()?;
         self.closed.store(true, Ordering::Release);
+        Ok(())
     }
 
     fn read_active_counter(&self, counter: Counter) -> u64 {
@@ -235,6 +270,42 @@ impl SystemFlexCounter {
         }
         let (_, width) = counter.mmap_metadata();
         extender.value(counter.read(), width)
+    }
+}
+
+enum ControlOperation {
+    Disable,
+    Reset,
+}
+
+struct ControlRequest<'a> {
+    counter: &'a SystemFlexCounter,
+    operation: ControlOperation,
+    retired: Option<Arc<IrqMutex<super::counting::CounterExtender>>>,
+}
+
+/// # Safety
+/// `arg` must point to the exclusive, live request borrowed by
+/// `control_on_owner`; this callback must execute on its counter's owner CPU.
+unsafe fn control_callback(arg: *mut ()) {
+    // SAFETY: control_on_owner lends an initialized, aligned stack request and
+    // does not access or destroy it until the synchronous callback completes.
+    let request = unsafe { &mut *arg.cast::<ControlRequest<'_>>() };
+    let _guard = NoPreemptIrqSave::new();
+    let counter = request.counter;
+    match request.operation {
+        ControlOperation::Disable => {
+            counter.enabled.store(false, Ordering::Release);
+            request.retired = counter.finish_slice_observed(|| {});
+            let since = counter.enabled_since.swap(0, Ordering::AcqRel);
+            if since != 0 {
+                counter.time_enabled.fetch_add(
+                    now_ns().saturating_sub(since),
+                    Ordering::AcqRel,
+                );
+            }
+        }
+        ControlOperation::Reset => counter.reset_on_owner(),
     }
 }
 
@@ -276,14 +347,14 @@ mod tests {
         });
         hardware.enable();
         let published_early = core::cell::Cell::new(false);
-        counter.finish_slice_observed(|| {
+        drop(counter.finish_slice_observed(|| {
             published_early.set(
                 counter
                     .active
                     .try_lock()
                     .is_some_and(|active| active.is_none()),
             );
-        });
+        }));
         assert!(
             !published_early.get(),
             "disable must not observe stopped before the slice commits"

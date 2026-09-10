@@ -43,7 +43,7 @@ JosephJoshua 的提交是累积能力链。迁移按能力拆分，以便每个�
 
 ## 2. 所有权模型
 
-PMU 寄存器、IRQ PPI 和计数器槽天然属于 CPU。task event 的 fd 只拥有逻辑配置与累计值，真正运行的一代由目标 CPU 的状态持有。`CpuPin` 保护本核读取，`ExclusiveCpu` 保护本核硬件修改；远端 task-context 控制通过当前 CPU worker 执行，scheduler 与 IRQ 路径不等待、不分配。
+PMU 寄存器、IRQ PPI 和计数器槽天然属于 CPU。task event 的 fd 只拥有逻辑配置与累计值，真正运行的一代由目标 CPU 的状态持有。`CpuPin` 保护本核读取，`ExclusiveCpu` 保护本核硬件修改；需要 task context 的远端控制通过 CPU worker 执行，fixed-CPU flexible 事件的 disable/reset 通过同步 IPI 执行。scheduler 与 IRQ 路径不等待任务完成、不分配。
 
 ### 2.1 每核状态
 
@@ -79,7 +79,11 @@ stateDiagram-v2
 
 每核首次完成 perf 初始化时注册复用 tick。callback 只推进预先分配的队列和寄存器状态，不获取可睡眠锁、不分配内存，也不执行对象析构。跨 CPU 同步操作只提交短的寄存器事务；资源释放在 task context、所有硬件与 IRQ registry 引用撤销之后执行。
 
-`SystemFlexCounter::finish_slice()` 将 active 锁保持到停表、注销、累计值提交和槽释放全部完成。远端 disable/reset 取得同一锁后才可将 `None` 视为停止完成，不能在取出 slice 时提前发布完成。RESET 不清除累计 enabled/running 时间。
+`SystemFlexCounter::control_on_owner()` 对照 Linux v7.1 的 `event_function_call()` → `cpu_function_call()` → `smp_call_function_single(..., wait=1)`，通过同步 `run_on_cpu_sync()` 完成固定 CPU 事件的控制。本核直接执行，远端由 IPI 执行，不等待普通优先级的 `perf-flex` 或 `perf-cpu` worker，避免 FIFO 调用者或 owner CPU 上的 FIFO 负载阻止停表。调用方只禁止迁移，不屏蔽远端等待期间的本核 IPI，也不持 callback 所需的锁。
+
+`SystemFlexCounter::finish_slice_observed()` 将 active 锁保持到停表、注销、累计值提交和槽释放全部完成，不能在取出 slice 时提前发布完成。`sampling::detach_counting()` 只撤销登记并转移引用；IPI 把取下的 `Arc` 写入调用方栈上的 `ControlRequest`，同步返回后由 task context 释放。传输失败沿 ioctl 调用链返回，不伪造完成。`reset_on_owner()` 在原槽上清零计数、溢出状态与扩展值，然后恢复该槽，保留 enabled 状态与累计 enabled/running 时间，对齐 Linux `_perf_event_reset()` 清值但不关闭事件的语义。
+
+`perf-hw-stat` 下的 `perf-hw-fifo-stop` 回归先以两次读之间增加的 `time_running` 确认活动切片，再验证 FIFO 调用者的 DISABLE、RESET 和最后 FD close。本核与远端控制分别覆盖；远端场景由较低优先级的 FIFO 任务接管 owner CPU，保证普通 worker 无法执行。DISABLE 后计数与时间必须稳定，RESET 后计数继续增加且累计时间不倒退；独立 CPU 的看门狗只用于报告失败。
 
 ### 2.3 group 与继承
 
