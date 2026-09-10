@@ -386,6 +386,20 @@ impl_task_runtime! {
                 ax_task::runtime::cpu::finish_current_cpu_idle_polling()
             }
             .expect("idle handoff requires an initialized current CPU");
+            #[cfg(feature = "fault-injection")]
+            let injected_probe = super::creation_probe::publish_idle_probe_at_wait();
+            #[cfg(feature = "fault-injection")]
+            if super::creation_probe::idle_probe_pending() {
+                // The probe mailbox is persistent work, like Linux's
+                // need_resched condition. An already-consumed IPI is not a
+                // substitute for this final IRQ-off observation before WFI.
+                crate::clock_event_runtime::restart_current_scheduler_tick_after_idle(
+                    crate::clock_event_runtime::monotonic_now(),
+                );
+                ax_hal::asm::enable_irqs();
+                drop(idle_exit_guard);
+                return;
+            }
             let mut now = crate::clock_event_runtime::monotonic_now();
             let mut needs_reschedule = ax_task::runtime::cpu::current_cpu_needs_resched()
                 .expect("idle handoff requires an initialized current CPU");
@@ -415,6 +429,9 @@ impl_task_runtime! {
                 return;
             }
 
+            #[cfg(feature = "fault-injection")]
+            assert!(!injected_probe || !super::creation_probe::idle_probe_pending(),
+                "idle must recheck pending owner probe before WFI");
             ax_hal::asm::wait_for_irqs_disabled();
 
             // A non-scheduling interrupt may leave the CPU in the idle loop,

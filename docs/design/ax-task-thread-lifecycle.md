@@ -281,7 +281,7 @@ Starry `thread_lifecycle_axtest::user_kernel_mm_switch_matrix` 让同 CPU、同�
 
 `probe_idle_cpu_round_trip` 仅在 `fault-injection` 下可用，由实际 `run_idle` 在普通调度工作排空后调用。整个 `take_cpu_offline → bring_cpu_online` 保持同一个 pinned owner 借用及 IRQ 排除，不让调度循环观察到 offline 的本地 owner。它验证调度器和运行时 hook 的真实事务，不执行物理断电、平台 IRQ/IPI 撤销或 AP 重新引导。
 
-`request_idle_cpu_round_trip` 先发布不可消费的 `ARMING`，投递真实 scheduler work；生产者租约退出后发布目标 CPU，再发物理通知，覆盖 idle 先观察到 `ARMING` 的情况。完成结果与消费状态放在同一个原子字中，避免旧消费者清除下一次请求。`idle_cpu_reservation_round_trip` 验证 staged 预留拒绝下线，取消或激活并退出后允许下线/上线，并用目标 CPU 上的实际睡眠验证恢复后的调度和 clockevent。
+`request_idle_cpu_round_trip` 先发布不可消费的 `ARMING`，投递真实 scheduler work；生产者租约退出后发布可消费的目标 CPU。后续第 5.12 节修复最终入睡检查，让 ARMING/ready 请求持续阻止 idle 入睡，不依赖第二次物理 IPI。完成结果与消费状态放在同一个原子字中，避免旧消费者清除下一次请求。`idle_cpu_reservation_round_trip` 验证 staged 预留拒绝下线，取消或激活并退出后允许下线/上线，并用目标 CPU 上的实际睡眠验证恢复后的调度和 clockevent。
 
 新增回归发现 `prepare_cpu_offline` 曾在 IRQ 关闭、调度登记表与 root-domain 锁内调用全局 `kernel_aspace().lock()`，并可能等待远端 TLB shootdown。该调用违反 hook 的不可阻塞契约，会与持 MM 锁并等待目标 CPU 响应的路径形成锁反转。删除这里的 `retry_kernel_tlb_reclaims` 包装和调用；隔离资源继续归 ax-mm 的 TLB quarantine 持有，普通 MM map/unmap/protect 等事务通过 `retry_tlb_quarantine` 重试，未提前释放资源。active-MM 退出和本地 clockevent 停止仍保持原事务顺序。
 
@@ -328,3 +328,12 @@ CPU 周期和全局 MM 锁回归迁到 `task/cpu_lifecycle.rs` 的独立 `task-c
 
 
 最终四架构默认 Rust 入口各通过 `all`、`task-irq`、`task-cpu-lifecycle`，共 12 个运行，日志 `/tmp/pr2357-ci-final-<arch>.log`。定向 clippy 的 axbuild 与 ArceOS 测试包 42 个组合通过；增加物理回收等待后，测试包 41 个组合再次通过。`cargo xtask test --since d06e05dbf1` 运行 axbuild，783 项通过，包含默认入口选择回归；fmt 与差异检查通过。原始 CI/本地失败证据分别在 `/tmp/pr2357-ci-x86-failure.log`、`/tmp/pr2357-ci-all-red.log`，没有用重跑旧实现代替修复。
+
+
+### 5.12 idle 请求与最后入睡检查
+
+`1545558b68` 的远端 AArch64 CI 在 `task-cpu-lifecycle` 超时。测试邮箱的请求不是普通 runnable task；仅发送物理 IPI 不能使其成为 scheduler 的持久 need-resched 条件。IPI 若在 service 点之后、最终 WFI 检查之前被处理，原来的调度状态检查可能看不到这项测试工作。Linux `kernel/sched/idle.c::do_idle` 和 `default_idle_call` 明确要求在 IRQ-off 入睡边界重检工作，不能靠已经消耗的中断边沿证明可睡眠。
+
+仅在 `fault-injection` 下，最终 idle wait 事务现在同时观察测试邮箱。ARMING、延迟到 wait 边界发布和 ready 均阻止 WFI；DONE 不阻止。生产者仍先投递普通 owner work，退出 publication 租约后才发布可消费状态，取消多余的直接物理 IPI。正常生产构建没有测试邮箱或这条分支。
+
+`request_idle_cpu_round_trip_at_wait` 在真实 idle service 点之后、IRQ-off wait 边界把同一邮箱请求变为可消费。测试断言这种确定性交错不能进入 WFI：旧实现失败于 `idle must recheck pending owner probe before WFI`，新实现返回 idle 主循环并执行同一下线事务。红绿日志为 `/tmp/pr2357-idle-pending-{red,green}.log`；断言只约束本次边界注入，后续并发请求仍由正常 IRQ-off 通知协议唤醒。

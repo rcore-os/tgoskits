@@ -120,6 +120,7 @@ pub(super) fn record_mm_switch(previous_user: bool, next_user: bool) {
 }
 
 static IDLE_TARGET: AtomicU64 = AtomicU64::new(0);
+const IDLE_AT_WAIT: u64 = 1 << 60;
 const IDLE_ARMING: u64 = 1 << 61;
 const IDLE_DONE: u64 = 1 << 63;
 const IDLE_SUCCESS: u64 = 1 << 62;
@@ -128,6 +129,10 @@ const IDLE_SUCCESS: u64 = 1 << 62;
 /// Consume its result before submitting another probe. This does not power off
 /// the processor; IRQ delivery stays excluded until re-online completes.
 pub fn request_idle_cpu_round_trip(cpu: usize) -> Result<(), TaskError> {
+    request_idle_probe(cpu, 0)
+}
+
+fn request_idle_probe(cpu: usize, phase: u64) -> Result<(), TaskError> {
     current::validate_blocking_context()?;
     if cpu >= ax_hal::cpu_num() {
         return Err(TaskError::InvalidCpu(cpu as u32));
@@ -147,16 +152,9 @@ pub fn request_idle_cpu_round_trip(cpu: usize) -> Result<(), TaskError> {
         IDLE_TARGET.store(0, Ordering::Release);
         return Err(error);
     }
-    // Only expose the probe after the work producer's publication lease has
-    // ended. A final physical edge covers a consumer that saw ARMING first.
-    IDLE_TARGET.store(cpu as u64 + 1, Ordering::Release);
-    assert_eq!(
-        ax_task::runtime::task_runtime::notify_scheduler_cpu(
-            ax_task::runtime::cpu::RuntimeCpuId::new(cpu as u32)
-        ),
-        ax_task::runtime::RuntimeStatus::Success,
-        "online probe target requires scheduler IPI delivery"
-    );
+    // ARMING remains persistent pending work in the final idle recheck.
+    // Make it consumable only after the producer's publication lease ends.
+    IDLE_TARGET.store((cpu as u64 + 1) | phase, Ordering::Release);
     Ok(())
 }
 
@@ -185,4 +183,32 @@ pub(super) fn service_idle_cpu_round_trip() {
         Err(error) => panic!("idle CPU lifecycle probe failed: {error}"),
     };
     IDLE_TARGET.store((u64::from(cpu) + 1) | IDLE_DONE | result, Ordering::Release);
+}
+
+/// Publishes a probe exactly after the idle service point, before final WFI.
+/// This deterministic interleaving must be caught by the final idle recheck.
+pub fn request_idle_cpu_round_trip_at_wait(cpu: usize) -> Result<(), TaskError> {
+    request_idle_probe(cpu, IDLE_AT_WAIT)
+}
+
+pub(super) fn publish_idle_probe_at_wait() -> bool {
+    // SAFETY: the idle wait transaction holds its preemption guard.
+    let cpu = unsafe { ax_task::runtime::task_runtime::current_cpu_id() }.as_u32();
+    let ready = u64::from(cpu) + 1;
+    IDLE_TARGET
+        .compare_exchange(
+            ready | IDLE_AT_WAIT,
+            ready,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+}
+
+pub(super) fn idle_probe_pending() -> bool {
+    // SAFETY: only called inside the pinned, IRQ-off idle wait transaction.
+    let cpu = unsafe { ax_task::runtime::task_runtime::current_cpu_id() }.as_u32();
+    let state = IDLE_TARGET.load(Ordering::Acquire);
+    let target = u64::from(cpu) + 1;
+    state == target || state == (target | IDLE_ARMING) || state == (target | IDLE_AT_WAIT)
 }

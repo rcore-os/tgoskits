@@ -95,6 +95,11 @@ fn idle_cpu_reservation_round_trip() {
         wait_for(|| resumed.execution_reclaimed());
         resumed.join().unwrap();
     }
+    ax_runtime::thread::creation_probe::request_idle_cpu_round_trip_at_wait(1).unwrap();
+    assert!(
+        wait_for_idle_cycle(),
+        "idle boundary publication must be serviced"
+    );
     offline_does_not_lock_global_mm();
     current::set_current_thread_affinity(original).unwrap();
     println!("task_cpu_lifecycle: idle owner offline/online and reservation release OK");
