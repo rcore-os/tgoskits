@@ -9,10 +9,6 @@ use scope_local::Scope;
 use starry_signal::Signo;
 
 use super::schedule_abi::fork_schedule_policy;
-#[cfg(not(target_arch = "riscv64"))]
-use crate::task::prepare_user_thread_inheriting_fp_scheduler_state;
-#[cfg(target_arch = "riscv64")]
-use crate::task::prepare_user_thread_with_fp_scheduler_state;
 use crate::{
     StarryError, StarryResult,
     file::{FD_TABLE, PidFd, PreparedFileDescriptor, prepare_file_like},
@@ -20,7 +16,8 @@ use crate::{
     sync::RawSpinLock,
     task::{
         PidIdentity, PidReservation, PidReservationKind, ProcessData, ProcessDataInit,
-        ProcessImage, Tgid, Thread, Tid, TidNumber, UserThreadInitialSchedulerState, new_user_task,
+        ProcessImage, Tgid, Thread, Tid, TidNumber, UserThreadInitialSchedulerState,
+        UserThreadOptions, new_user_task, prepare_user_thread,
     },
 };
 
@@ -539,23 +536,16 @@ impl CloneArgs {
             new_proc_data.set_vfork_done(poll);
         }
 
+        let options = UserThreadOptions::new(alloc::string::String::from(curr.name().as_ref()))
+            .with_scheduler_state(child_scheduler_state);
         #[cfg(target_arch = "riscv64")]
-        let prepared_task = prepare_user_thread_with_fp_scheduler_state(
-            new_user_task(new_uctx, set_child_tid, child_visible_tid),
-            alloc::string::String::from(curr.name().as_ref()),
-            crate::config::KERNEL_STACK_SIZE,
-            child_fp_state,
-            thr,
-            child_scheduler_state,
-        )
-        .map_err(map_task_creation_error)?;
+        let options = options.with_fp_state(child_fp_state);
         #[cfg(not(target_arch = "riscv64"))]
-        let prepared_task = prepare_user_thread_inheriting_fp_scheduler_state(
+        let options = options.inherit_current_fp();
+        let prepared_task = prepare_user_thread(
             new_user_task(new_uctx, set_child_tid, child_visible_tid),
-            alloc::string::String::from(curr.name().as_ref()),
-            crate::config::KERNEL_STACK_SIZE,
             thr,
-            child_scheduler_state,
+            options,
         )
         .map_err(map_task_creation_error)?;
 

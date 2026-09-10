@@ -14,8 +14,8 @@ use crate::{
     sync::{Mutex, RwLock},
     task::{
         PidReservation, PidReservationKind, Process, ProcessData, ProcessDataInit, ProcessImage,
-        ROOT_PID_NS, Tgid, Thread, Tid, TidNumber, kernel_thread_builder, new_user_task,
-        prepare_user_thread, sleep, spawn_alarm_task,
+        ROOT_PID_NS, Tgid, Thread, Tid, TidNumber, UserThreadOptions, kernel_thread_builder,
+        new_user_task, prepare_user_thread, sleep, spawn_alarm_task,
     },
     tracepoint::tracepoint_init,
 };
@@ -152,9 +152,8 @@ pub fn init(args: &[String], envs: &[String]) {
             0,
             TidNumber::try_from(pid).expect("init TID must be non-zero"),
         ),
-        name,
-        crate::config::KERNEL_STACK_SIZE,
         thr,
+        UserThreadOptions::new(name),
     )
     .expect("failed to prepare init task");
     let staged_task = prepared_task.stage().expect("failed to stage init task");

@@ -479,3 +479,21 @@ stopper/perf/cpufreq 服务在 `spawn` 前使用 `policy/affinity`，普通服�
 日志源码版本以 checkout 后的 `git log -1 --format=%H` 为准；日志中的 `a69a63265...` 是 Rust 工具链版本，不是 TGOSKits 提交。全部八份非 NUC 失败日志已下载为 `/tmp/ax-task-dev15/job-<id>.log`；下载连接失败后补取的是同一作业日志，不是重新运行测试。
 
 在本地 `1837ad4cc8` 执行原 `qemu/system/syscall-test-uid-gid-re-setters`，x86_64 四核通过，三项 NPTL 同步均通过，日志 `/tmp/pr2357-dev15-nptl-current.log`。这次没有修改测试或凭据/信号实现，因而只证明当前单次运行通过，不作为原超时已经定位或修复的证据。
+
+### 5.24 用户上下文的具名装配
+
+`prepare_user_thread` 现在统一接收入口、`Thread` 和 `UserThreadOptions`，移除两个带 FP/scheduler-state 名称的组合入口及内部 `StarryContextState`。配置持有线程名称、初始调度状态及架构 FP 初始化选择，MM 仍由统一入口从 `Thread::proc_data` 取得，调用方不能通过配置传入另一进程的 MM。所有现有 Starry 用户线程均使用相同的 `KERNEL_STACK_SIZE`，因此删除无独立调用需求的栈大小位置参数，沿公共 builder 装配。
+
+init 使用默认调度与初始 FP 状态；clone 保留策略、亲和性及 reset-on-fork 的既有计算。RISC-V 仍在原位置保存 FP 寄存器并设置 FS，之后传入 `with_fp_state`；其他架构只选择 `inherit_current_fp`，实际保存继续由 ax-runtime 在原准备阶段执行。固定 Linux 的 `arch_dup_task_struct` 也分别维护 arm64 FPSIMD 和 LoongArch FP 所有者，不能将配置收敛解释为取消架构差异。
+
+本轮没有修改 `stage → PID/拓扑发布 → activate`、错误转换或 FP 寄存器保存代码。既有 extension 分配回滚测试使用同一配置路径，真实四架构 `test-clone-fp-state` 验证子线程首次执行时的寄存器状态。保留的 runtime 同名 `prepare_user_thread(builder, entry, UserContextOptions)` 是架构资源装配接口，与 Starry OS 配置承担不同责任。
+
+统一入口后 x86_64 kernel axtest 182 项通过，四架构原 `test-clone-fp-state` 全部通过，均有实际子线程寄存器断言和 `STARRY_SYSTEM_TEST_PASSED` 标记。日志为 `/tmp/pr2357-user-options-kernel-x86_64.log`、`/tmp/pr2357-user-options-fp-<arch>.log`。fmt 和差异检查通过，增量 std 与 Starry 定向 clippy 继续执行；此前内核服务迁移的 92 个组合不替代本次新接口检查。
+
+### 5.25 独立目标的失败收集
+
+`dd8f1c9347` 的 CI 第一轮已结束：ArceOS/Starry 四架构、Starry 板卡、std 与增量 clippy 通过；NUC 失败令 Axvisor 同组 10 项取消。用户明确排除 NUC 的排查，但 fail-fast 仍会终止其他目标，使每次新推送都缺少独立验证结果。
+
+Axvisor 调用既有 reusable matrix 时改为 `fail_fast: false`，保留每个作业及整轮工作流原来的失败状态，不修改测试、超时、退出码或成功匹配。其他 CI 分组仍保持原 fail-fast 策略。`check_ci_routing.py` 同步明确要求这一分组策略，未删除路由校验；实际矩阵执行器仍直接使用 `inputs.fail_fast`。
+
+旧路由规则在新的工作流配置上明确拒绝 Axvisor 分组；更新策略后，`python3 scripts/test/check_ci_routing.py` 通过，`python3 -m unittest scripts.test.test_ci_routing` 的 26 项通过，日志 `/tmp/pr2357-ci-failure-collection-tests.log`。这只证明配置和路由，独立目标能否完成仍需新提交 CI 的真实结果。

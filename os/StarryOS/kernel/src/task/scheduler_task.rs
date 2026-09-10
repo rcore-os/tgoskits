@@ -455,27 +455,20 @@ pub fn might_sleep() {
     );
 }
 
-/// Prepares a Starry user thread with the scheduler's default policy.
+/// Prepares a Starry user thread without publishing its Linux identity.
 ///
-/// The caller may stage the task, publish Linux-visible identity state while
-/// the scheduler task remains New, and activate it as the final step.
+/// The MM comes from the thread's process; options only configure its private
+/// initial state. Stage reserves placement, and activate follows OS publication.
 pub fn prepare_user_thread<F>(
     entry: F,
-    name: String,
-    stack_size: usize,
     thread: Thread,
+    options: UserThreadOptions,
 ) -> Result<PreparedUserTask, scheduler::thread::TaskError>
 where
     F: FnOnce() + Send + 'static,
 {
     let address_space = thread.proc_data.scheduler_address_space()?;
-    prepare_user_thread_inner(
-        entry,
-        name,
-        stack_size,
-        thread,
-        StarryContextState::user(address_space),
-    )
+    prepare_user_thread_inner(entry, thread, options, address_space)
 }
 
 /// Scheduling attributes committed atomically during user-thread creation.
@@ -508,53 +501,51 @@ impl UserThreadInitialSchedulerState {
     }
 }
 
-/// Prepares a RISC-V user thread with inherited FP and scheduling state.
-#[cfg(target_arch = "riscv64")]
-pub fn prepare_user_thread_with_fp_scheduler_state<F>(
-    entry: F,
+/// Private initial state for the common Starry user-thread preparation path.
+///
+/// The default starts with fresh FP state and the default scheduler policy.
+/// Clone explicitly supplies inherited scheduling and architecture FP state.
+pub struct UserThreadOptions {
     name: String,
-    stack_size: usize,
-    fp_state: ax_cpu::FpState,
-    thread: Thread,
     scheduler_state: UserThreadInitialSchedulerState,
-) -> Result<PreparedUserTask, scheduler::thread::TaskError>
-where
-    F: FnOnce() + Send + 'static,
-{
-    let address_space = thread.proc_data.scheduler_address_space()?;
-    prepare_user_thread_inner(
-        entry,
-        name,
-        stack_size,
-        thread,
-        StarryContextState {
-            address_space,
-            fp_state: Some(fp_state),
-            scheduler_state,
-        },
-    )
+    #[cfg(target_arch = "riscv64")]
+    fp_state: Option<ax_cpu::FpState>,
+    #[cfg(not(target_arch = "riscv64"))]
+    fp_initialization: FpInitialization,
 }
 
-/// Prepares a user thread inheriting the current hardware FP image.
-#[cfg(not(target_arch = "riscv64"))]
-pub fn prepare_user_thread_inheriting_fp_scheduler_state<F>(
-    entry: F,
-    name: String,
-    stack_size: usize,
-    thread: Thread,
-    scheduler_state: UserThreadInitialSchedulerState,
-) -> Result<PreparedUserTask, scheduler::thread::TaskError>
-where
-    F: FnOnce() + Send + 'static,
-{
-    let address_space = thread.proc_data.scheduler_address_space()?;
-    prepare_user_thread_inner(
-        entry,
-        name,
-        stack_size,
-        thread,
-        StarryContextState::user_inheriting_current_fp_state(address_space, scheduler_state),
-    )
+impl UserThreadOptions {
+    /// Uses Starry's default stack size, scheduler policy and initial FP state.
+    pub fn new(name: String) -> Self {
+        Self {
+            name,
+            scheduler_state: UserThreadInitialSchedulerState::default_user(),
+            #[cfg(target_arch = "riscv64")]
+            fp_state: None,
+            #[cfg(not(target_arch = "riscv64"))]
+            fp_initialization: FpInitialization::Default,
+        }
+    }
+
+    /// Installs the child's scheduling attributes before first activation.
+    pub fn with_scheduler_state(mut self, state: UserThreadInitialSchedulerState) -> Self {
+        self.scheduler_state = state;
+        self
+    }
+
+    /// Supplies the RISC-V FP image and FS state saved by clone.
+    #[cfg(target_arch = "riscv64")]
+    pub fn with_fp_state(mut self, state: ax_cpu::FpState) -> Self {
+        self.fp_state = Some(state);
+        self
+    }
+
+    /// Captures the current hardware FP owner during resource preparation.
+    #[cfg(not(target_arch = "riscv64"))]
+    pub fn inherit_current_fp(mut self) -> Self {
+        self.fp_initialization = FpInitialization::InheritCurrent;
+        self
+    }
 }
 
 #[cfg(not(target_arch = "riscv64"))]
@@ -563,50 +554,16 @@ enum FpInitialization {
     InheritCurrent,
 }
 
-struct StarryContextState {
-    address_space: ax_std::os::arceos::thread::TaskAddressSpace,
-    #[cfg(target_arch = "riscv64")]
-    fp_state: Option<ax_cpu::FpState>,
-    #[cfg(not(target_arch = "riscv64"))]
-    fp_initialization: FpInitialization,
-    scheduler_state: UserThreadInitialSchedulerState,
-}
-
-impl StarryContextState {
-    fn user(address_space: ax_std::os::arceos::thread::TaskAddressSpace) -> Self {
-        Self {
-            address_space,
-            #[cfg(target_arch = "riscv64")]
-            fp_state: None,
-            #[cfg(not(target_arch = "riscv64"))]
-            fp_initialization: FpInitialization::Default,
-            scheduler_state: UserThreadInitialSchedulerState::default_user(),
-        }
-    }
-
-    #[cfg(not(target_arch = "riscv64"))]
-    fn user_inheriting_current_fp_state(
-        address_space: ax_std::os::arceos::thread::TaskAddressSpace,
-        scheduler_state: UserThreadInitialSchedulerState,
-    ) -> Self {
-        Self {
-            address_space,
-            fp_initialization: FpInitialization::InheritCurrent,
-            scheduler_state,
-        }
-    }
-}
-
 fn prepare_user_thread_inner<F>(
     entry: F,
-    name: String,
-    stack_size: usize,
     thread: Thread,
-    context_state: StarryContextState,
+    options: UserThreadOptions,
+    address_space: ax_std::os::arceos::thread::TaskAddressSpace,
 ) -> Result<PreparedUserTask, scheduler::thread::TaskError>
 where
     F: FnOnce() + Send + 'static,
 {
+    let name = options.name;
     let scheduler_tick_gate = thread.proc_data.scheduler_tick_gate();
     let scheduler_tick_cpu_time = thread.cpu_time().scheduler_tick_cpu_time();
     let irq_identity = IrqTaskIdentity::new(&thread, &name);
@@ -617,7 +574,7 @@ where
             thread,
             name: Mutex::new(extension_name),
             irq_identity,
-            reset_on_fork: AtomicBool::new(context_state.scheduler_state.reset_on_fork),
+            reset_on_fork: AtomicBool::new(options.scheduler_state.reset_on_fork),
         })
         .map_err(|_| super::allocation::no_memory())?,
     ) as usize;
@@ -630,28 +587,27 @@ where
             .with_running_policy_applied_hook(starry_user_task_policy_applied)
             .with_scheduler_tick_work(scheduler_tick_gate, starry_user_task_scheduler_tick)
     };
-    let address_space = context_state.address_space;
-    let mut builder = ax_std::os::arceos::thread::builder(name)
-        .stack_size(stack_size)
-        .policy(context_state.scheduler_state.policy)
+    let mut builder = kernel_thread_builder(name)
+        .policy(options.scheduler_state.policy)
         .extension(extension);
-    if let Some(affinity) = context_state.scheduler_state.affinity {
+    if let Some(affinity) = options.scheduler_state.affinity {
         builder = builder.affinity(affinity);
     }
-    let options = ax_std::os::arceos::thread::UserContextOptions::new(address_space);
+    let runtime_options = ax_std::os::arceos::thread::UserContextOptions::new(address_space);
     #[cfg(target_arch = "riscv64")]
-    let options = match context_state.fp_state {
-        Some(fp) => options.with_fp_state(fp),
-        None => options,
+    let runtime_options = match options.fp_state {
+        Some(fp) => runtime_options.with_fp_state(fp),
+        None => runtime_options,
     };
     #[cfg(not(target_arch = "riscv64"))]
-    let options = match context_state.fp_initialization {
-        FpInitialization::InheritCurrent => options.inherit_current_fp(),
-        FpInitialization::Default => options,
+    let runtime_options = match options.fp_initialization {
+        FpInitialization::InheritCurrent => runtime_options.inherit_current_fp(),
+        FpInitialization::Default => runtime_options,
     };
     // SAFETY: the user entry and its uniquely owned MM/FP state belong to this task.
-    let prepared =
-        unsafe { ax_std::os::arceos::thread::prepare_user_thread(builder, entry, options)? };
+    let prepared = unsafe {
+        ax_std::os::arceos::thread::prepare_user_thread(builder, entry, runtime_options)?
+    };
     let scheduler_id = prepared.thread_handle().id();
     // SAFETY: `data` was created above for this scheduler extension, and the
     // prepared token still owns that extension until it is staged or dropped.
@@ -1081,14 +1037,13 @@ fn unpublished_extension_allocation_releases_process() {
         let mm =
             ax_runtime::thread::TaskAddressSpace::new(ax_hal::asm::read_kernel_page_table(), ())
                 .unwrap();
-        let context = StarryContextState::user(mm);
+        let options = UserThreadOptions::new(String::from("extension-rollback"));
         let probe = ThreadAllocationProbe::fail_at(failure).unwrap();
         let result = prepare_user_thread_inner(
             || panic!("failed extension must not execute"),
-            String::from("extension-rollback"),
-            crate::config::KERNEL_STACK_SIZE,
             thread,
-            context,
+            options,
+            mm,
         );
         assert!(
             matches!(result, Err(TaskError::RuntimeFailure(code)) if code == RuntimeStatus::NoMemory as u32)
