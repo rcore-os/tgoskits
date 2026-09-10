@@ -62,6 +62,7 @@ pub(in crate::perf) fn sideband_target(
         sample_type: ptc.sample_type,
         sample_id_all: ptc.sample_id_all,
         id: ptc.sample_id.load(Ordering::Relaxed),
+        stream_id: ptc.stream_id.load(Ordering::Relaxed),
         pid,
         tid,
     })

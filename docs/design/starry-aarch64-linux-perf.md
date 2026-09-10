@@ -27,6 +27,8 @@
 
 硬件事件若事件编码合法但目标 CPU 的 `PMCEID` 未实现，返回 Linux ARM PMUv3 backend 对应的 unsupported 错误；格式错误返回 `EINVAL`，错误 fd 返回 `EBADF`，目标线程消失返回 `ESRCH`。不能把未知字段、未知事件或输出关系静默忽略。
 
+`uapi::read_zero_extended()` 对截在字段中间的 `attr.size` 保留已传入字节，仅将缺失字节补零，和 `perf_copy_attr()` 的完整结构零填充一致。`perf-open-abi` 分别用 111、117 字节的属性检查部分 `reserved_2` 与 AUX 保留位返回 `EINVAL`，并保留部分字段全零时可以成功打开的对照。
+
 ### 1.2 来源提交映射
 
 JosephJoshua 的提交是累积能力链。迁移按能力拆分，以便每个提交能独立审查，并在当前 `dev` 上保留明确的来源说明。
@@ -47,7 +49,9 @@ PMU 寄存器、IRQ PPI 和计数器槽天然属于 CPU。task event 的 fd 只�
 
 ### 2.1 每核状态
 
-`percpu::CPU_STATES` 按 CPU 缓存 `PmuInfo` 和复用游标；`PmuInfo` 包含 `MIDR_EL1`、counter 数量与宽度以及 `PMCEID0/1_EL0`。`hw_allocation::HwAlloc` 在同一个 `IrqMutex` 内维护固定事件的全局保留 bitmap 和每 CPU 的 flexible bitmap：固定申请检查所有 CPU 的在用槽，flexible 申请检查本核与固定保留，两者在锁内原子提交。固定事件目前仍保守地跨 CPU 保留相同索引，这不是完整的逐 CPU 固定事件分配；但不会再与 flexible 槽重复占用。分配数量使用本次已验证目标的参数，不通过可被另一 opener 覆盖的全局数量传递。sysfs 从同一探测结果发布 event source 与 CPU mask。
+`percpu::CPU_STATES` 按 CPU 缓存 `PmuInfo` 和复用游标；`PmuInfo` 包含 `MIDR_EL1`、counter 数量与宽度以及 `PMCEID0/1_EL0`。`hw_allocation::HwAlloc` 在同一个 `IrqMutex` 内维护可迁移 task-fixed 事件的全局保留 bitmap，以及 system event 与 flexible slice 共用的每 CPU bitmap。task-fixed 申请检查所有 CPU 的在用槽，CPU-local 申请只检查本核与全局保留，两者在锁内原子提交。system cycle counter 也逐 CPU 保留；全局 task cycle 保留与任何本核 cycle 保留互斥。system event 的分配、失败回滚与关闭都携带同一个 `PerfCpuId`，并从目标 CPU 的能力缓存校验事件，不再读取 opener CPU 的 PMU 能力。分配数量使用本次已验证目标的参数，不通过可被另一 opener 覆盖的全局数量传递。sysfs 从同一探测结果发布 event source 与 CPU mask。
+
+`perf-hw-cpu-slots` 在四个 CPU 上各启用两个 system event，分别测试 sampling 与 counting。总数超过 QEMU 单核六个 programmable slot，但每核需求仍有余量。所有事件同时存在时读取非零计数，关闭后重复整个流程，验证独立容量与槽回收；旧全局 bitmap 在第七次 open 返回 `EBUSY`。
 
 ```mermaid
 flowchart LR
@@ -55,14 +59,16 @@ flowchart LR
     CTX --> EVENT["PerTaskCounter / SystemCounter\n累计值与 owner CPU"]
     EVENT --> CPU["CPU_STATES + HwAlloc\nPmuInfo + serialized slot ownership + cursor"]
     CPU --> IRQ["SampleSlot registry\n本核 PMU PPI"]
-    IRQ --> OUT["RingEndpoint\n共享 cacheable ring"]
+    IRQ --> OUT["PerfRingOutput\n共享 cacheable ring"]
 ```
 
-task event 用 `context_sequence` 的奇偶代次让远端 reset 只在稳定的 sched-in/out 区间提交；`last_cpu`、`slot`、`running` 与 owner-CPU 同步调用共同约束当前硬件代。disable、close 和线程退出先在 owner CPU 撤下 counter 与 `SampleSlot`，再释放保存 ring 生命周期的锚点，避免旧事件清除已经复用的槽或让 IRQ 看到失效指针。
+task event 用 `PmuRunState` 和携带 owner CPU、counter、registration 的 `PmuRunLease` 约束当前硬件代。RESET 先禁止重新调入并完成当前代停表，再清值和恢复原启用意图。disable、close 和线程退出先在 owner CPU 撤下 counter 与 `SampleSlot`，再释放保存 ring 生命周期的锚点，避免旧事件清除已经复用的槽或让 IRQ 看到失效指针。
 
 ### 2.2 调度与复用
 
 task event 在 scheduler switch-in 时尝试进入本核运行队列，switch-out 时折叠计数并撤销 mmap `index`。对当前正在运行的目标线程，`attach()` 在禁止抢占的作用域内立即发布 active context，等价于 Linux `perf_install_in_context()` 对首个 disabled event 执行的 running-task 安装；后续 `PERF_EVENT_IOC_ENABLE` 不依赖额外的 `sched_yield()`。system-wide event 固定在指定 CPU。unpinned 事件以调度单元轮转，`time_enabled/time_running` 分别累计逻辑启用和真实占槽时间；`SystemFlexCounter::read_on_owner()` 在 owner CPU 同步合并当前 active slice，而不等待下一次轮转。task hardware group 只能整体装载或整体等待。硬件 pinned event 的优先放置和失败后的 ERROR/EOF 状态尚未实现，`perf_event_open()` 在分配 backend 前对 task/CPU pinned leader 返回 `EOPNOTSUPP`；group member 的非法 pinned 属性仍返回 `EINVAL`。直接 system-wide sampling 需要在 open 时保留物理槽，槽耗尽返回 `EBUSY`。
+
+`perf_sched_in_counters()` 在 CPU/cluster placement 检查前开始 enabled context：任务在不匹配 CPU 上运行仍消耗 context time，但不取得硬件槽、不增加计数和 running time。`perf-hw-smp-migrate` 为仅在 CPU1 运行的子任务创建 CPU0-filtered 事件，验证退出后 `time_enabled > 0`、value 与 `time_running == 0`。
 
 ```mermaid
 stateDiagram-v2
@@ -79,6 +85,8 @@ stateDiagram-v2
 
 每核首次完成 perf 初始化时注册复用 tick。callback 只推进预先分配的队列和寄存器状态，不获取可睡眠锁、不分配内存，也不执行对象析构。跨 CPU 同步操作只提交短的寄存器事务；资源释放在 task context、所有硬件与 IRQ registry 引用撤销之后执行。
 
+进程的 perf、CPU interval timer 和 RTTIME watchdog 需求共同驱动 `SchedulerTickGate`。`ProcessAccountingState::publish_scheduler_tick_gate()` 在一个短的 IRQ-safe 临界区内重新读取所有来源并发布 gate，避免最后一个 perf lease 释放时计算出的旧关闭值覆盖并发新 lease 的启用。来源计数仍先发布、再调用统一 refresh；临界区不获取 timer 或 scheduler task 锁，也不分配。kernel 回归在来源快照与 gate 写入之间尝试插入另一个发布，验证该事务边界不能被穿过。
+
 `SystemFlexCounter::control_on_owner()` 对照 Linux v7.1 的 `event_function_call()` → `cpu_function_call()` → `smp_call_function_single(..., wait=1)`，通过同步 `run_on_cpu_sync()` 完成固定 CPU 事件的控制。本核直接执行，远端由 IPI 执行，不等待普通优先级的 `perf-flex` 或 `perf-cpu` worker，避免 FIFO 调用者或 owner CPU 上的 FIFO 负载阻止停表。调用方只禁止迁移，不屏蔽远端等待期间的本核 IPI，也不持 callback 所需的锁。
 
 `SystemFlexCounter::finish_slice_observed()` 将 active 锁保持到停表、注销、累计值提交和槽释放全部完成，不能在取出 slice 时提前发布完成。`sampling::detach_counting()` 只撤销登记并转移引用；IPI 把取下的 `Arc` 写入调用方栈上的 `ControlRequest`，同步返回后由 task context 释放。传输失败沿 ioctl 调用链返回，不伪造完成。`reset_on_owner()` 在原槽上清零计数、溢出状态与扩展值，然后恢复该槽，保留 enabled 状态与累计 enabled/running 时间，对齐 Linux `_perf_event_reset()` 清值但不关闭事件的语义。
@@ -87,6 +95,8 @@ stateDiagram-v2
 
 `perf-hw-stat` 下的 `perf-hw-fifo-stop` 回归先以两次读之间增加的 `time_running` 确认活动切片，再验证 FIFO 调用者的 READ、DISABLE、RESET 和最后 FD close。本核与远端控制分别覆盖；远端场景由较低优先级的 FIFO 任务接管 owner CPU，保证普通 worker 无法执行。远端 READ 必须返回递增计数，DISABLE 后计数与时间必须稳定，RESET 后计数继续增加且累计时间不倒退；独立 CPU 的看门狗只用于报告失败。
 
+RESET 的精确清零由 kernel PMU 回归在 `exclude_kernel` 的活动槽上验证，同时检查硬件 enable 位、slot 起点及累计时间保持不变。用户态远端 RESET 回归主动覆盖调用者延后读取的合法状态：目标继续计数后，首次读数可以大于 RESET 前读数，不能用这个跨时间比较判断是否清零；用户态只验证控制返回、连续计数与时间不倒退，不弱化内核的精确清零检查。
+
 ### 2.3 group 与继承
 
 文件层 `PerfEvent::{members,group_leader}` 和硬件层 `PerTaskCounter` / `SystemCounter` 的双向 group link 都使用 `Weak`，避免关闭顺序形成引用环；fd 表、task 的 `perf_counters` 和 event backend 提供实际强所有权。link 时验证 task identity 或 CPU context 完全相同；控制传播先收集仍存活的成员，再逐一操作。与 Linux v7.1 一致，普通 ioctl 只作用于指定 event，只有 `PERF_IOC_FLAG_GROUP` 才从 leader 传播到 siblings；member 自己的 `attr.disabled` 状态不会在 link 时被改写。
@@ -94,6 +104,8 @@ stateDiagram-v2
 文件层建组通过 `live_group_leader()` 判断候选是否仍属于活跃组，而非检查保存弱引用的 `Option` 是否非空；旧 leader 关闭后的独立成员可以重新作为 leader。软件事件关闭时持 `SwEventState::control` 标记 family 已关闭，取得所有存活 binding 后，在各自任务上下文内解链并恢复 enabled siblings 的运行与启用区间。`link_group_binding()` 也持同一 leader family control，使继承关系发布不能越过关闭事务；关闭后拒绝建链时不修改成员的独立状态。
 
 software inherit 使用“每线程 slice + 共享 aggregate”结构。child 的调度起点、last CPU 和 enable-on-exec 独立，累计值通过 `Arc<SwEventState>` 汇入根事件。`SwEventState::bindings` 弱引用所有继承 binding，`control` 串行化父 FD 的启停与 clone；启停先取得 binding 快照，再逐个进入所属线程上下文，不能只改变根 binding。根 fd 关闭使共享状态失效，descendants 的 `Arc` 仅保持内存生命周期，不能继续计数或引用已释放 event。
+
+`SwTaskContext::close()` 在相同的线程上下文锁内永久关闭安装入口并退休现有 binding；即使当前没有 software event，退出 hook 也必须发布这个状态。已取得线程引用但尚未安装的 open 随后由 `attach()` 返回 `ESRCH`，成功安装后才增加 `PERF_SW_ACTIVE`。内核状态边界回归执行空 context 的 close → attach，防止退出快路径遗漏最后一次安装检查，对齐 Linux `TASK_TOMBSTONE` 门禁。
 
 `SwEventState::inherit_thread` 保留线程限定继承属性。`sw::on_clone_inherit()` 仅在 parent/child 共享同一个 `ProcessData` 时复制这种 binding；该共享关系由 `clone` 的 `CLONE_THREAD` 分支建立，普通 fork 即使随后 exec 也不会获得该软件事件。普通 `inherit` 仍覆盖两类子任务。
 
@@ -123,6 +135,8 @@ ring 无空间或 producer gate 竞争时增加 event 的 pending lost 数。下
 
 `SampleSlot::sample_id_all` 从 task 或 system-wide 事件一路传入，并在输出重定向替换注册时保留。LOST 与其他非采样记录共用 `sample_id::SampleId::encode()`，按 TID、TIME、ID、STREAM_ID、CPU、IDENTIFIER 的顺序编码选中的尾部字段；LOST 的 `header.size` 包含尾部。IRQ 路径只使用固定大小栈缓冲，身份、时间与随后同次提交的 SAMPLE 来自同一快照，未开启 `sample_id_all` 时仍为 24 字节。
 
+`PerTaskCounter` 分别保存 primary `sample_id` 与具体实例的 `stream_id`。根事件两者相同；每个继承子事件保留父 ID，但通过同一 `allocate_event_id()` 分配独立 stream identity。`SampleSlot` 与 `SidebandTarget` 传递两者。对齐 Linux `primary_event_id()` 和 `__perf_event_header__init_id()`，普通 SAMPLE、COMM 的 ID/IDENTIFIER 使用 primary ID，STREAM_ID 使用具体事件 ID。LOST 则遵循 `__perf_output_begin()`：继承输出先转向父事件，再记账和生成记录，因此继承家族通过 `PerTaskConfig::loss` 共享父事件的 `LossState`，`SampleId::encode_lost()` 的固定头和尾部 STREAM_ID 都使用父 ID。`perf-hw-inherit-stream` 验证两次 fork/exec 的 SAMPLE 与 COMM 身份；`perf-hw-lost` 由子事件独占目标 CPU 填满共享 ring，验证父 FD 的丢样总数、LOST 父身份和普通 SAMPLE 子身份。
+
 ### 3.3 读取快照
 
 `PERF_SAMPLE_READ` 在 arm 前构建有容量上限的 `[SampleReadEntry; MAX_SAMPLE_READ_EVENTS]` 并存入 `SampleSlot`。数组按 leader-first 保存稳定 callback context 和 event ID，IRQ 只做 owner-local PMU/原子读取与定长编码，不遍历可变 group 列表，也不进行分配。`build_sample()` 按 Linux 顺序先编码 `ID/STREAM_ID/CPU/PERIOD/READ`，再编码 callchain 和 `REGS_USER` ABI word；`SAMPLE_RECORD_MAX_LEN` 为每个支持字段保留固定上界。group member 保留自己的 `attr.disabled` 状态；仅 leader disabled、member enabled 的常见 perf 模式会在 leader 启用时整体装载。
@@ -130,6 +144,8 @@ ring 无空间或 producer gate 竞争时增加 event 的 pending lost 数。下
 task 的 `SampleReadEntry::owned()` 强持有回调对象，直到注册代被撤销。`ThreadPerfContext::attach()` 保留仍被 sampling slot 引用的已关闭 counter，使 scheduler 撤销 slot 时不会执行 counter 的最后析构；后续 task-context attach 或线程释放完成回收。非 GROUP 采样只读取 source；GROUP 采样保持 leader-first 顺序。各 event 的 `SamplingCount` 独立累计 raw delta，回调只读取累计快照，不通过数组位置推断 overflow 归属。
 
 `SamplingCountState::remaining` 跟踪逻辑周期剩余事件数，每次 raw 更新扣除已观察的 delta。单次硬件装载由 `hardware_period()` 限制为 `u32::MAX >> 1`，为中断延迟留出余量。中间片段 IRQ 只重装计数器；仅 `period_complete()` 为真时输出样本，`PERF_SAMPLE_PERIOD` 仍是请求的逻辑周期。`rearm()` 保留溢出后的超额计数，避免丢失整个 32 位回绕或提前产生样本。
+
+`SamplingCountState::period` 记录当前逻辑周期，首次 arm 才初始化 `remaining`。task 切片结束后只把该片段的 total 折叠到累计值；下次切入清零片段 total，但保留 remaining 与已调整的 period。system event 的 DISABLE/ENABLE 同样续接周期，RESET 只清事件值，不丢弃 `period_left`，对应 Linux `_perf_event_reset()` 与 `armpmu_event_set_period()`。`perf-hw-sliced-period` 强制同 CPU 管道往返或 system event 启停，并检查每段增量小于一个周期、总增量超过三个周期时仍输出样本。
 
 PMU IRQ 按 Linux `armv8pmu_handle_irq()` 的顺序通过 `ax_cpu::pmu::with_counters_paused()` 暂停整个 PMU，再生成组快照和重装计数器。该作用域要求 `CpuPin`，保留各槽的 enable 位，并在返回时恢复原全局 enable；恢复时不写回具有清零副作用的 PMCR P/C 位。
 
@@ -157,6 +173,8 @@ Linux v7.1 的 A55/A76 初始化使用 `PMUV3_INIT_SIMPLE`，所以通用 map �
 software backend 实现 `CPU_CLOCK`、`TASK_CLOCK`、`PAGE_FAULTS`、`CONTEXT_SWITCHES` 和 `CPU_MIGRATIONS`。调度 hook 更新 clock、switch 和 migration；用户 page fault 与 kernel-on-user-memory fault 分别在各自入口精确记一次；fork 根据 inherit 创建 child slice；exec 只启用带 `enable_on_exec` 的事件。
 
 软件 task clock 的 `SwClock` 分别保存 lifetime running time 和可重置事件值。RESET 记录截止时间但保留 running/enabled 时间；跨越 RESET 的 slice 在结束时将完整时长计入 running time，仅将截止点之后的部分计入事件值。两者在同一 IRQ-safe 临界区提交。system clock 用 `SwSystemCounter::clock_offset_ns` 从累计 enabled time 派生重置后的值，不改变时间字段。
+
+`SwPerTaskCounter::enabled_since_ns` 只在任务上下文正在执行且事件实际启用时开始，`sw::sched_out()` 同时提交 running 与 enabled 区间；睡眠或 SIGSTOP 不增加 task event 的 `time_enabled`。CPU filter 只限制 running 区间，不能把任务在其他 CPU 执行的 context time 一并丢掉。这与 Linux `perf_event_time()`、`ctx_sched_out()` 使用的任务 context clock 一致。`perf-sw-counters` 在子任务 SIGSTOP 已确认后创建事件，验证运行前时间为零，恢复并退出后软件 clock 的 enabled/running 时间一致。
 
 `SwEventState::read_task_family()` 持 family control 固定继承关系，取得存活 binding 的强引用后，逐个在所属任务上下文锁下调用 `SwPerTaskCounter::checkpoint()`。checkpoint 将尚未结束的运行片段及启用区间结算到共享累计值，并推进本地起点；最终只读取一次累计值。因此读取包含仍在远端运行的继承子任务，而后续读取、切出、停表与退出不会重复累计已经结算的区间。锁顺序仍为 family control → task context → clock，读取不等待远端 CPU worker，也不在 IRQ-safe 临界区分配。
 

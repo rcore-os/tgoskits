@@ -43,6 +43,8 @@ use starry_signal::{
     api::{ProcessSignalManager, SignalActions},
 };
 
+#[cfg(target_arch = "aarch64")]
+pub(crate) use self::process_accounting::PerfSchedulerTickLease;
 pub use self::{
     cred::*, futex::*, job_control::JobStatus, ops::*, posix_timer::PosixTimerTable, process::*,
     process_image::ProcessImage, process_wait::wait_on_pollset, resources::*, scheduler_task::*,
@@ -59,8 +61,6 @@ pub(crate) use self::{
     process_identity::*,
     process_memory::{PreparedProcessMemory, scheduler_address_space},
 };
-#[cfg(target_arch = "aarch64")]
-pub(crate) use self::process_accounting::PerfSchedulerTickLease;
 use crate::{
     mm::MmHandle,
     namespace::NsProxy,

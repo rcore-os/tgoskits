@@ -13,7 +13,7 @@ use super::{
         ARMV8_CORTEX_A55_PERF_TYPE, ARMV8_CORTEX_A76_PERF_TYPE, ARMV8_PMUV3_PERF_TYPE,
         ValidatedHwCounter, ValidatedHwOpen,
     },
-    hw_allocation::{alloc_preferred_cycle, alloc_programmable, free_counter},
+    hw_allocation::{alloc_preferred_cycle, alloc_system, free_system},
     hw_event::{HwPerfEvent, SystemEventInit, TaskEventInit},
     hw_owner::SystemPmuConfigure,
     hw_sampling::{SamplingState, resolve_sampling, start_sampling_notify_worker},
@@ -134,7 +134,7 @@ pub(super) fn perf_event_open_hw(
 
     let (counter, event, flexible) = match validated.counter {
         ValidatedHwCounter::SystemPreferredCycle(event) => {
-            let counter = alloc_preferred_cycle(event, validated.num_counters)?;
+            let counter = alloc_system(owner_cpu, event, true, validated.num_counters)?;
             let programmed_event = counter.programmable_index().map(|_| event);
             (counter, programmed_event, None)
         }
@@ -152,7 +152,7 @@ pub(super) fn perf_event_open_hw(
             )
         }
         ValidatedHwCounter::SystemProgrammable(event) => (
-            alloc_programmable(event, validated.num_counters)?,
+            alloc_system(owner_cpu, event, false, validated.num_counters)?,
             Some(event),
             None,
         ),
@@ -171,7 +171,7 @@ pub(super) fn perf_event_open_hw(
             },
         )
     {
-        free_counter(counter);
+        free_system(owner_cpu, counter);
         return Err(error);
     }
 
@@ -266,6 +266,7 @@ fn perf_event_open_hw_per_task(
         );
     let per_task_counter = Arc::new(super::task::PerTaskCounter::new(
         super::task::PerTaskConfig {
+            loss: Arc::new(sampling::LossState::new()),
             scheduler_id,
             counter,
             flexible,

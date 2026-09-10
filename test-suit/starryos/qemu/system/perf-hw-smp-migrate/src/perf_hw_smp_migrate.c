@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
@@ -55,11 +56,44 @@ static void run_child(int gate) {
     _exit(sum == UINT64_MAX);
 }
 
+static int check_filtered_context_time(void) {
+    pid_t child = fork();
+    if (child < 0) return 1;
+    if (!child) {
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        CPU_SET(1, &set);
+        if (sched_setaffinity(0, sizeof(set), &set)) _exit(1);
+        raise(SIGSTOP);
+        volatile uint64_t sum = 0;
+        for (uint64_t i = 0; i < 100000; ++i) sum += i;
+        _exit(sum == UINT64_MAX);
+    }
+    int status;
+    if (waitpid(child, &status, WUNTRACED) != child || !WIFSTOPPED(status)) return 1;
+    struct perf_event_attr attr = {
+        .type = PERF_TYPE_RAW, .size = sizeof(attr), .config = 0x11,
+        .read_format = PERF_FORMAT_TIMING,
+    };
+    int fd = (int)perf_open(&attr, child, 0);
+    if (fd < 0 || kill(child, SIGCONT) || waitpid(child, &status, 0) != child ||
+        !WIFEXITED(status) || WEXITSTATUS(status)) return 1;
+    uint64_t values[3] = {0};
+    int failed = read(fd, values, sizeof(values)) != sizeof(values) ||
+        values[0] != 0 || values[1] == 0 || values[2] != 0;
+    printf("filtered-context value=%llu enabled=%llu running=%llu failed=%d\n",
+           (unsigned long long)values[0], (unsigned long long)values[1],
+           (unsigned long long)values[2], failed);
+    close(fd);
+    return failed;
+}
+
 int main(void) {
 #if !defined(__aarch64__)
     puts("STARRY_SMP_MIGRATE_OK");
     return 0;
 #endif
+    if (check_filtered_context_time()) return 1;
     int gate[2];
     if (pipe(gate) != 0) {
         return 1;

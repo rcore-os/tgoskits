@@ -12,6 +12,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define PERF_TYPE_RAW 4u
@@ -227,6 +228,94 @@ static int check_lost(int trailer, int system_wide) {
     }
     return 0;
 }
+
+/* The parent is ineligible on CPU1. Only its CPU0 child can fill the shared
+ * ring, and pipe gates keep that child alive while the root fd is inspected. */
+static int check_inherited_lost(void) {
+    cpu_set_t cpus;
+    CPU_ZERO(&cpus);
+    CPU_SET(1, &cpus);
+    if (sched_setaffinity(0, sizeof(cpus), &cpus)) return 1;
+    struct perf_event_attr_v0 attr = {
+        .type = PERF_TYPE_RAW, .size = sizeof(attr),
+        .config = ARM_PMU_EVT_CPU_CYCLES, .sample_period = SAMPLE_PERIOD,
+        .sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_ID_FIELDS,
+        .read_format = PERF_FORMAT_LOST,
+        .flags = (1ull << 1) | PERF_ATTR_SAMPLE_ID_ALL,
+    };
+    int fd = (int)syscall(SYS_PERF_EVENT_OPEN, &attr, 0, 0, -1, 0ul);
+    if (fd < 0) return 1;
+    struct perf_event_mmap_page *meta = mmap(NULL, RING_BYTES,
+        PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (meta == MAP_FAILED) return 1;
+    uint64_t id;
+    int ready[2], go[2];
+    if (ioctl(fd, PERF_EVENT_IOC_ID, &id) || pipe(ready) || pipe(go)) return 1;
+    pid_t child = fork();
+    if (child < 0) return 1;
+    if (!child) {
+        close(ready[0]);
+        close(go[1]);
+        CPU_ZERO(&cpus);
+        CPU_SET(0, &cpus);
+        if (sched_setaffinity(0, sizeof(cpus), &cpus)) _exit(1);
+        struct timespec start, now;
+        if (clock_gettime(CLOCK_MONOTONIC, &start)) _exit(1);
+        while (__atomic_load_n(&meta->data_head, __ATOMIC_ACQUIRE) <
+               meta->data_size - 64) {
+            burn(10000);
+            if (clock_gettime(CLOCK_MONOTONIC, &now) ||
+                now.tv_sec - start.tv_sec >= 10) _exit(1);
+        }
+        /* More overflows after a full ring must be charged to the parent. */
+        burn(100000);
+        char token = 0;
+        if (write(ready[1], &token, 1) != 1 || read(go[0], &token, 1) != 1)
+            _exit(1);
+        uint64_t head = __atomic_load_n(&meta->data_head, __ATOMIC_ACQUIRE);
+        if (produce_until(fd, meta, head, 0) ||
+            write(ready[1], &token, 1) != 1 || read(go[0], &token, 1) != 1)
+            _exit(1);
+        _exit(0);
+    }
+    close(ready[1]);
+    close(go[0]);
+    char token = 0;
+    uint64_t pending[2] = {0};
+    if (read(ready[0], &token, 1) != 1 ||
+        read(fd, pending, sizeof(pending)) != sizeof(pending)) return 1;
+    uint64_t first = __atomic_load_n(&meta->data_head, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&meta->data_tail, first, __ATOMIC_RELEASE);
+    if (write(go[1], &token, 1) != 1 || read(ready[0], &token, 1) != 1 ||
+        ioctl(fd, PERF_EVENT_IOC_DISABLE, 0)) return 1;
+    uint64_t head = __atomic_load_n(&meta->data_head, __ATOMIC_ACQUIRE);
+    const uint8_t *ring = (const uint8_t *)meta + meta->data_offset;
+    uint64_t lost[9] = {0};
+    ring_copy(ring, meta->data_size, first, lost, sizeof(lost));
+    uint64_t sample[8] = {0};
+    ring_copy(ring, meta->data_size, first + sizeof(lost), sample, sizeof(sample));
+    uint64_t total[2] = {0};
+    int failed = read(fd, total, sizeof(total)) != sizeof(total) ||
+        pending[1] == 0 || head - first < sizeof(lost) + sizeof(sample) ||
+        (uint32_t)lost[0] != PERF_RECORD_LOST || (lost[0] >> 48) != sizeof(lost) ||
+        lost[1] != id || lost[2] == 0 || lost[2] > total[1] ||
+        lost[5] != id || lost[6] != id || lost[8] != id ||
+        (uint32_t)sample[0] != 9 || (sample[0] >> 48) != sizeof(sample) ||
+        sample[1] != id || sample[5] != id || sample[6] == 0 || sample[6] == id;
+    printf("INHERITED_LOST pending=%llu total=%llu lost=%llu id=%llu "
+           "lost_stream=%llu sample_stream=%llu failed=%d\n",
+           (unsigned long long)pending[1], (unsigned long long)total[1],
+           (unsigned long long)lost[2], (unsigned long long)id,
+           (unsigned long long)lost[6], (unsigned long long)sample[6], failed);
+    int status;
+    if (write(go[1], &token, 1) != 1 || waitpid(child, &status, 0) != child ||
+        !WIFEXITED(status) || WEXITSTATUS(status)) failed = 1;
+    close(ready[0]);
+    close(go[1]);
+    munmap(meta, RING_BYTES);
+    close(fd);
+    return failed;
+}
 #endif
 
 int main(void) {
@@ -235,7 +324,8 @@ int main(void) {
     CPU_ZERO(&cpus);
     CPU_SET(0, &cpus);
     if (sched_setaffinity(0, sizeof(cpus), &cpus)) return 1;
-    if (check_lost(0, 0) || check_lost(1, 0) || check_lost(1, 1)) return 1;
+    if (check_lost(0, 0) || check_lost(1, 0) || check_lost(1, 1) ||
+        check_inherited_lost()) return 1;
 #endif
     puts("STARRY_PERF_LOST_OK");
     return 0;

@@ -234,12 +234,22 @@ static int check_group_sample(int sampling_member) {
                               MAP_SHARED, member, 0);
         if (member_mapping == MAP_FAILED) return 1;
     }
-    ioctl(leader, PERF_EVENT_IOC_RESET, 0);
-    ioctl(leader, PERF_EVENT_IOC_ENABLE, 0);
-    for (uint64_t i = 0; i < 16000000; i++) {
-        sink += (i ^ (sink >> 1)) + 3;
+    if (ioctl(leader, PERF_EVENT_IOC_RESET, 0) ||
+        ioctl(leader, PERF_EVENT_IOC_ENABLE, 0)) return 1;
+    struct timespec start, now;
+    if (clock_gettime(CLOCK_MONOTONIC, &start)) return 1;
+    for (;;) {
+        for (uint64_t i = 0; i < 1000; i++) sink += (i ^ (sink >> 1)) + 3;
+        uint64_t progress[5];
+        if (read(leader, progress, sizeof(progress)) != sizeof(progress)) return 1;
+        /* Bound the real PMU work, not source iterations: after retaining
+         * period_left across slices a long workload legitimately overflows
+         * even UINT32_MAX. A hundred leader periods suffice for live READ. */
+        if (progress[1] >= 100 * leader_attr.sample_period) break;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) ||
+            now.tv_sec - start.tv_sec >= 10) return 1;
     }
-    ioctl(leader, PERF_EVENT_IOC_DISABLE, 0);
+    if (ioctl(leader, PERF_EVENT_IOC_DISABLE, 0)) return 1;
 
     uint64_t head = meta->data_head;
     __sync_synchronize();
@@ -294,11 +304,24 @@ static int check_group_sample(int sampling_member) {
            (unsigned long long)last_member, corrupt);
     uint64_t final[5] = {0};
     if (read(leader, final, sizeof(final)) != sizeof(final) || final[0] != 2 ||
-        final[1] < last_leader || final[3] < last_member) corrupt = 1;
+        final[1] < last_leader || final[3] < last_member) {
+        printf("group-final sampling=%d nr=%llu leader=%llu/%llu member=%llu/%llu\n",
+               sampling_member, (unsigned long long)final[0],
+               (unsigned long long)final[1], (unsigned long long)last_leader,
+               (unsigned long long)final[3], (unsigned long long)last_member);
+        corrupt = 1;
+    }
     if (sampling_member) {
         /* The member never overflows: its group READ must still increase. */
         struct perf_event_mmap_page *member_meta = member_mapping;
-        if (member_meta->data_head != 0 || last_member >= UINT32_MAX) corrupt = 1;
+        if (member_meta->data_head != 0 || last_member >= UINT32_MAX ||
+            final[3] >= UINT32_MAX) {
+            printf("group-member head=%llu value=%llu final=%llu\n",
+                   (unsigned long long)member_meta->data_head,
+                   (unsigned long long)last_member,
+                   (unsigned long long)final[3]);
+            corrupt = 1;
+        }
         munmap(member_mapping, RING_BYTES);
     }
     munmap(mapping, RING_BYTES);

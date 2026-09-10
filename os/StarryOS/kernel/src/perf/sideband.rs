@@ -24,14 +24,19 @@
 //! The trailer is part of `header.size`; omitting it would desync `perf`'s parser.
 //! [`push_trailer`] appends it when [`SidebandTarget::sample_id_all`] is set.
 
-use alloc::{sync::{Arc, Weak}, vec::Vec};
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use ax_lazyinit::LazyInit;
 
 use super::output::PerfRingOutput;
-use crate::sync::IrqMutex;
-use crate::task::{TgidNumber, TidNumber};
+use crate::{
+    sync::IrqMutex,
+    task::{TgidNumber, TidNumber},
+};
 
 /// `PERF_RECORD_COMM`.
 const PERF_RECORD_COMM: u32 = 3;
@@ -128,6 +133,7 @@ impl SystemSidebandSource {
                 sample_type: self.sample_type,
                 sample_id_all: self.sample_id_all,
                 id: self.sample_id.load(Ordering::Acquire),
+                stream_id: self.sample_id.load(Ordering::Acquire),
                 pid,
                 tid,
             },
@@ -187,6 +193,8 @@ pub struct SidebandTarget {
     pub sample_id_all: bool,
     /// Event id (for the trailer's `ID` / `IDENTIFIER` fields).
     pub id: u64,
+    /// Concrete event identity for the trailer's STREAM_ID field.
+    pub stream_id: u64,
     /// Process id of the monitored task in the event's captured view.
     pub pid: TgidNumber,
     /// Thread id of the monitored task in the event's captured view.
@@ -241,7 +249,7 @@ fn push_trailer(b: &mut Vec<u8>, t: &SidebandTarget) {
         tid: t.tid.get(),
         time: ax_runtime::hal::time::monotonic_time_nanos(),
         id: t.id,
-        stream_id: t.id,
+        stream_id: t.stream_id,
         cpu: ax_hal::percpu::this_cpu_id() as u32,
     };
     let mut trailer = [0u8; super::sample_id::SAMPLE_ID_MAX_LEN];

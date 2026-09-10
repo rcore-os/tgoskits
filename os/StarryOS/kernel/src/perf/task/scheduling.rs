@@ -51,6 +51,11 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
                 group.push(member).expect("group size validated at link");
             }
         }
+        // Context time advances whenever the task runs, including on CPUs
+        // excluded by an event's filter. Only time_running depends on placement.
+        for ptc in &group {
+            ptc.begin_enabled_context(now);
+        }
         if group.iter().any(|ptc| {
             ptc.run_state.lock().running().is_some()
                 || ptc.cpu_filter.is_some_and(|cpu| cpu != current_cpu)
@@ -62,9 +67,6 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
                 })
         }) {
             continue;
-        }
-        for ptc in &group {
-            ptc.begin_enabled_context(now);
         }
         let mut reserved: heapless::Vec<Counter, MAX_SAMPLE_READ_EVENTS> = heapless::Vec::new();
         for ptc in &group {
@@ -177,7 +179,9 @@ fn prepare_counter(
             )
             .expect("validated task PMU counter/event pairing");
         // Overflow after `sample_period` events.
-        ptc.sampling_count.reset();
+        // The old slice's total was folded into accumulated at sched-out.
+        // Logical period progress survives both migration and multiplexing.
+        ptc.sampling_count.reset_value();
         ptc.sampling_count.preload(n, ptc.sample_period);
         let registration = match sampling::register(
             n,
@@ -190,6 +194,7 @@ fn prepare_counter(
                     sample_id_all: ptc.sample_id_all,
                     sample_user_lr: ptc.sample_user_lr,
                     id: ptc.sample_id.load(Ordering::Relaxed),
+                    stream_id: ptc.stream_id.load(Ordering::Relaxed),
                     read_format: ptc.read_format,
                     read_entries,
                     read_len,

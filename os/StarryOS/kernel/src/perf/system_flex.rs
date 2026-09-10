@@ -303,10 +303,9 @@ unsafe fn control_callback(arg: *mut ()) {
             request.retired = counter.finish_slice_observed(|| {});
             let since = counter.enabled_since.swap(0, Ordering::AcqRel);
             if since != 0 {
-                counter.time_enabled.fetch_add(
-                    now_ns().saturating_sub(since),
-                    Ordering::AcqRel,
-                );
+                counter
+                    .time_enabled
+                    .fetch_add(now_ns().saturating_sub(since), Ordering::AcqRel);
             }
         }
         ControlOperation::Reset => counter.reset_on_owner(),
@@ -322,9 +321,8 @@ fn now_ns() -> u64 {
 mod tests {
     use super::*;
 
-    #[axtest::axtest]
-    fn stop_is_not_published_before_hardware_commit() {
-        let counter = SystemFlexCounter {
+    fn test_counter() -> SystemFlexCounter {
+        SystemFlexCounter {
             owner: PerfCpuId::new(0),
             event: 0x11,
             exclude_user: false,
@@ -337,7 +335,61 @@ mod tests {
             time_running: AtomicU64::new(0),
             extender: Arc::new(IrqMutex::new(super::super::counting::CounterExtender::new())),
             active: IrqMutex::new(None),
-        };
+        }
+    }
+
+    #[axtest::axtest]
+    fn reset_clears_active_value_without_stopping_or_restarting_time() {
+        let mut counter = test_counter();
+        let _guard = NoPreemptIrqSave::new();
+        counter.owner = PerfCpuId::new(ax_hal::percpu::this_cpu_id());
+        super::super::percpu::ensure_current_cpu_initialized().unwrap();
+        let slot = super::super::percpu::alloc_current_programmable().unwrap();
+        let hardware = Counter::Programmable(slot);
+        // Count EL0 only: the kernel can inspect an exact post-reset zero
+        // without charging the instructions between RESET and its observation.
+        hardware.configure(Some(0x11), false, true).unwrap();
+        ax_cpu::pmu::counter::write(slot, 12345);
+        counter.accumulated.store(99, Ordering::Release);
+        counter.extender.lock().record_overflow();
+        counter.enabled.store(true, Ordering::Release);
+        counter.time_enabled.store(17, Ordering::Release);
+        counter.time_running.store(19, Ordering::Release);
+        let registration =
+            super::super::sampling::register_counting(slot, Arc::clone(&counter.extender)).unwrap();
+        let started_at = now_ns();
+        *counter.active.lock() = Some(ActiveSlice {
+            counter: hardware,
+            started_at,
+            registration,
+        });
+        hardware.enable();
+        counter.reset_on_owner();
+        assert_eq!(
+            counter.read_on_owner().0,
+            0,
+            "RESET must clear hardware and extended totals"
+        );
+        let enabled: u64;
+        // SAFETY: the owner CPU is pinned with IRQs masked and PMUv3 initialized.
+        unsafe { core::arch::asm!("mrs {}, PMCNTENSET_EL0", out(reg) enabled) };
+        assert_ne!(
+            enabled & (1 << slot),
+            0,
+            "RESET must leave the hardware counter enabled"
+        );
+        assert_eq!(
+            counter.active.lock().as_ref().unwrap().started_at,
+            started_at
+        );
+        assert_eq!(counter.time_enabled.load(Ordering::Acquire), 17);
+        assert_eq!(counter.time_running.load(Ordering::Acquire), 19);
+        counter.finish_slice();
+    }
+
+    #[axtest::axtest]
+    fn stop_is_not_published_before_hardware_commit() {
+        let counter = test_counter();
         let _guard = NoPreemptIrqSave::new();
         super::super::percpu::ensure_current_cpu_initialized().unwrap();
         let slot = super::super::percpu::alloc_current_programmable().unwrap();

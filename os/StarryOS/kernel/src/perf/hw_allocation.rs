@@ -1,8 +1,8 @@
 //! Serialized fixed and CPU-local ARM PMUv3 counter reservations.
 //!
-//! Hardware slots are physically per CPU, but one global bitmap deliberately
-//! keeps fixed events conservative across CPUs. Flexible slices share the same
-//! lock and allocation state, so neither allocation direction can alias them.
+//! Task-fixed reservations exclude a slot on every CPU they can migrate to.
+//! System events and flexible slices reserve only their owner CPU. Both use
+//! one allocation transaction so the two reservation classes cannot alias.
 
 use super::hw_owner::Counter;
 use crate::sync::IrqMutex;
@@ -11,6 +11,7 @@ struct HwAlloc {
     used: u32,
     flexible: [u32; super::percpu::MAX_TRACKED_CPUS],
     cycle_used: bool,
+    local_cycle_used: [bool; super::percpu::MAX_TRACKED_CPUS],
 }
 
 impl HwAlloc {
@@ -19,11 +20,12 @@ impl HwAlloc {
             used: 0,
             flexible: [0; super::percpu::MAX_TRACKED_CPUS],
             cycle_used: false,
+            local_cycle_used: [false; super::percpu::MAX_TRACKED_CPUS],
         }
     }
 
     fn alloc_cycle(&mut self) -> Option<Counter> {
-        if self.cycle_used {
+        if self.cycle_used || self.local_cycle_used.iter().any(|used| *used) {
             return None;
         }
         self.cycle_used = true;
@@ -62,6 +64,21 @@ impl HwAlloc {
             }
         }
     }
+
+    fn alloc_system(
+        &mut self,
+        cpu: usize,
+        prefer_cycle: bool,
+        num_counters: usize,
+    ) -> Option<Counter> {
+        let local_cycle = self.local_cycle_used.get_mut(cpu)?;
+        if prefer_cycle && !self.cycle_used && !*local_cycle {
+            *local_cycle = true;
+            return Some(Counter::Cycle);
+        }
+        self.alloc_flexible(cpu, num_counters)
+            .map(Counter::Programmable)
+    }
 }
 
 static ALLOC: IrqMutex<HwAlloc> = IrqMutex::new(HwAlloc::new());
@@ -86,7 +103,37 @@ pub(super) fn free_counter(counter: Counter) {
     ALLOC.lock().free(counter);
 }
 
-/// Reserves a validated programmable counter for a system event.
+/// Reserves a system event on its target PMU, independent of the opener CPU.
+pub(super) fn alloc_system(
+    cpu: super::target::PerfCpuId,
+    event: u16,
+    prefer_cycle: bool,
+    num_counters: usize,
+) -> crate::StarryResult<Counter> {
+    let cpu = cpu.as_usize();
+    if !super::percpu::cpu_info(cpu).is_some_and(|info| info.event_supported(event)) {
+        return Err(crate::StarryError::Unsupported);
+    }
+    ALLOC
+        .lock()
+        .alloc_system(cpu, prefer_cycle, num_counters)
+        .ok_or(crate::StarryError::ResourceBusy)
+}
+
+/// Releases a system reservation after its owner CPU has quiesced the slot.
+pub(super) fn free_system(cpu: super::target::PerfCpuId, counter: Counter) {
+    match counter {
+        Counter::Cycle => {
+            let mut allocator = ALLOC.lock();
+            let used = &mut allocator.local_cycle_used[cpu.as_usize()];
+            assert!(*used, "system cycle reservation must be owned");
+            *used = false;
+        }
+        Counter::Programmable(slot) => free_flexible(cpu.as_usize(), slot),
+    }
+}
+
+/// Reserves a fixed programmable slot across every possible task CPU.
 pub(super) fn alloc_programmable(event: u16, num_counters: usize) -> crate::StarryResult<Counter> {
     if !ax_cpu::pmu::event_supported(event) {
         warn!(

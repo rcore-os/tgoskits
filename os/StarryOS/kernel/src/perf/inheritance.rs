@@ -459,7 +459,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
             Some(child_thr.proc_data.acquire_perf_scheduler_tick()),
             owner_ids,
         )));
-        child.set_sample_id(parent.sample_id());
+        child.set_inherited_sample_id(parent.sample_id());
 
         // `do_clone` has not made the child schedulable yet. Publish the local
         // scheduler-list reservation before family close can observe it.

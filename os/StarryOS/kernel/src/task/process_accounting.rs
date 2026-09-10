@@ -3,9 +3,9 @@
 use alloc::sync::Arc;
 #[cfg(target_arch = "aarch64")]
 use alloc::sync::Weak;
-use core::sync::atomic::{AtomicU8, Ordering};
 #[cfg(target_arch = "aarch64")]
 use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use ax_runtime::{hal::time::TimeValue, task::runtime::service::SchedulerTickGate};
 use linux_raw_sys::general::RLIMIT_RTTIME;
@@ -29,6 +29,8 @@ pub(super) struct ProcessAccountingState {
     #[cfg(target_arch = "aarch64")]
     perf_scheduler_tick_users: AtomicUsize,
     scheduler_tick_gate: Arc<SchedulerTickGate>,
+    /// Serializes source observation with scheduler gate publication.
+    scheduler_tick_publish: IrqMutex<()>,
     posix_timers: Arc<PosixTimerTable>,
 }
 
@@ -42,6 +44,7 @@ impl ProcessAccountingState {
             #[cfg(target_arch = "aarch64")]
             perf_scheduler_tick_users: AtomicUsize::new(0),
             scheduler_tick_gate: Arc::new(SchedulerTickGate::new()),
+            scheduler_tick_publish: IrqMutex::new(()),
             posix_timers: Arc::new(PosixTimerTable::default()),
         }
     }
@@ -49,24 +52,27 @@ impl ProcessAccountingState {
 
 impl ProcessData {
     fn refresh_scheduler_tick_gate(&self) {
-        let has_cpu_interval_timer = self
-            .accounting
-            .active_interval_timers
-            .load(Ordering::Acquire)
-            & CPU_INTERVAL_TIMER_MASK
-            != 0;
-        let has_rttime_watchdog = self.rlimit_current(RLIMIT_RTTIME) != u64::MAX;
-        let enabled = has_cpu_interval_timer || has_rttime_watchdog;
-        #[cfg(target_arch = "aarch64")]
-        let enabled = enabled
-            || self
-                .accounting
-                .perf_scheduler_tick_users
-                .load(Ordering::Acquire)
-                != 0;
-        self.accounting
-            .scheduler_tick_gate
-            .set_enabled(enabled);
+        self.accounting.publish_scheduler_tick_gate(
+            || {
+                let has_cpu_interval_timer = self
+                    .accounting
+                    .active_interval_timers
+                    .load(Ordering::Acquire)
+                    & CPU_INTERVAL_TIMER_MASK
+                    != 0;
+                let has_rttime_watchdog = self.rlimit_current(RLIMIT_RTTIME) != u64::MAX;
+                let enabled = has_cpu_interval_timer || has_rttime_watchdog;
+                #[cfg(target_arch = "aarch64")]
+                let enabled = enabled
+                    || self
+                        .accounting
+                        .perf_scheduler_tick_users
+                        .load(Ordering::Acquire)
+                        != 0;
+                enabled
+            },
+            || {},
+        );
     }
 
     fn publish_active_interval_timers(&self, mask: u8) {
@@ -222,6 +228,23 @@ impl ProcessData {
     }
 }
 
+impl ProcessAccountingState {
+    fn publish_scheduler_tick_gate(
+        &self,
+        sources_enabled: impl FnOnce() -> bool,
+        before_publish: impl FnOnce(),
+    ) {
+        // Source changes publish before calling us. Serialize the complete
+        // observation/store pair so an older refresh cannot disable a gate
+        // that a later interest acquisition has already enabled. This region
+        // reads atomics only and never takes timer or scheduler task locks.
+        let _publish = self.scheduler_tick_publish.lock();
+        let enabled = sources_enabled();
+        before_publish();
+        self.scheduler_tick_gate.set_enabled(enabled);
+    }
+}
+
 /// RAII interest keeping scheduler-tick task work enabled for PMU rotation.
 #[derive(Debug)]
 #[cfg(target_arch = "aarch64")]
@@ -241,5 +264,29 @@ impl Drop for PerfSchedulerTickLease {
             .fetch_sub(1, Ordering::AcqRel);
         assert!(previous > 0, "perf scheduler-tick interest underflow");
         process.refresh_scheduler_tick_gate();
+    }
+}
+
+#[cfg(all(test, axtest))]
+mod tests {
+    #[axtest::axtest]
+    fn tick_gate_source_snapshot_and_publication_are_one_transaction() {
+        let accounting = super::ProcessAccountingState::new();
+        let intervened = core::cell::Cell::new(false);
+        accounting.publish_scheduler_tick_gate(
+            || false,
+            || {
+                // A competing refresher must not publish a newer enabled state
+                // between this caller's source snapshot and its disabled store.
+                if let Some(_other_publisher) = accounting.scheduler_tick_publish.try_lock() {
+                    accounting.scheduler_tick_gate.set_enabled(true);
+                    intervened.set(true);
+                }
+            },
+        );
+        assert!(
+            !intervened.get(),
+            "stale tick refresh can overwrite a newer publication"
+        );
     }
 }

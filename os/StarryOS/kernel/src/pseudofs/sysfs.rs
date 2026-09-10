@@ -356,7 +356,7 @@ impl SimpleDirOps for PlatformBusClassDir {
 // Values match `kbpf_basic::perf::PerfTypeId` so the user-supplied number
 // dispatches cleanly in `perf_event_open`.
 const PERF_EVENT_SOURCES: &[(&str, u32)] = &[
-    ("software", 1),  // PERF_TYPE_SOFTWARE
+    ("software", 1),   // PERF_TYPE_SOFTWARE
     ("kprobe", 6),     // PerfTypeId::PERF_TYPE_KPROBE
     ("uprobe", 7),     // PerfTypeId::PERF_TYPE_UPROBE
     ("tracepoint", 2), // PERF_TYPE_TRACEPOINT
@@ -501,10 +501,10 @@ impl SimpleDirOps for HwPmuDeviceDir {
             }
             "cpus" => {
                 let cluster = self.cluster;
-                Ok(SimpleFile::new_regular(fs, move || {
-                    Ok(crate::perf::percpu::cpu_list(cluster))
-                })
-                .into())
+                Ok(
+                    SimpleFile::new_regular(fs, move || Ok(crate::perf::percpu::cpu_list(cluster)))
+                        .into(),
+                )
             }
             "format" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
                 fs.clone(),
@@ -560,9 +560,11 @@ struct HwPmuEventsDir {
 #[cfg(target_arch = "aarch64")]
 impl SimpleDirOps for HwPmuEventsDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(ARMV8_PMUV3_EVENTS.iter().filter_map(|(name, _)| {
-            hw_pmu_alias(self.cluster, name).map(|_| Cow::Borrowed(*name))
-        }))
+        Box::new(
+            ARMV8_PMUV3_EVENTS.iter().filter_map(|(name, _)| {
+                hw_pmu_alias(self.cluster, name).map(|_| Cow::Borrowed(*name))
+            }),
+        )
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
@@ -576,14 +578,13 @@ impl SimpleDirOps for HwPmuEventsDir {
 #[cfg(target_arch = "aarch64")]
 fn hw_pmu_source(name: &str) -> Option<(u32, Option<ax_cpu::pmu::ClusterId>)> {
     use ax_cpu::pmu::ClusterId;
+
     use crate::perf::hw::{
         ARMV8_CORTEX_A55_PERF_TYPE, ARMV8_CORTEX_A76_PERF_TYPE, ARMV8_PMUV3_PERF_TYPE,
     };
 
     match name {
-        ARMV8_PMUV3_DEVICE if crate::perf::percpu::has_pmu() => {
-            Some((ARMV8_PMUV3_PERF_TYPE, None))
-        }
+        ARMV8_PMUV3_DEVICE if crate::perf::percpu::has_pmu() => Some((ARMV8_PMUV3_PERF_TYPE, None)),
         ARMV8_CORTEX_A55_DEVICE if crate::perf::percpu::has_cluster(ClusterId::CortexA55) => {
             Some((ARMV8_CORTEX_A55_PERF_TYPE, Some(ClusterId::CortexA55)))
         }

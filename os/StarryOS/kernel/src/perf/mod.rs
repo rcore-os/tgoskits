@@ -130,6 +130,11 @@ use crate::{
 /// stays reserved for "no id".
 static NEXT_PERF_EVENT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Allocates a concrete event identity, including fd-less inherited events.
+fn allocate_event_id() -> u64 {
+    NEXT_PERF_EVENT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 /// `MIDR_EL1` for the cpuid `sysfs`/`procfs` nodes (`/proc/cpuinfo`,
 /// `/sys/devices/.../cpuid`, `.../regs/identification/midr_el1`).
 ///
@@ -369,7 +374,7 @@ impl PerfEvent {
         inherit: bool,
         pinned: bool,
     ) -> crate::StarryResult<Self> {
-        let id = NEXT_PERF_EVENT_ID.fetch_add(1, Ordering::Relaxed);
+        let id = allocate_event_id();
         event.set_sample_id(id);
         event.finish_open()?;
         #[cfg(not(target_arch = "aarch64"))]
@@ -1061,7 +1066,9 @@ pub fn perf_event_open(
         };
         // Keep membership publication and the member's initial enable inside
         // the same transaction as ioctls through any existing group FD.
-        let _transaction = group_leader.as_ref().map(|leader| leader.transaction.lock());
+        let _transaction = group_leader
+            .as_ref()
+            .map(|leader| leader.transaction.lock());
         let mut perf_event = PerfEvent::new(
             event,
             Some(context),

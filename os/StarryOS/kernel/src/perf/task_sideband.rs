@@ -181,27 +181,25 @@ pub(crate) fn on_clone_sideband(
     child_process: &PidIdentity,
     child_thread: &PidIdentity,
 ) {
-    let mut targets: Vec<(SidebandTarget, TgidNumber, TidNumber, TgidNumber, TidNumber)> = if PERF_TASK_ACTIVE
-        .load(Ordering::Acquire)
-        == 0
-    {
-        Vec::new()
-    } else {
-        let counters = parent_thr.perf_context().snapshot();
-        counters
-            .iter()
-            .filter(|counter| counter.wants_task())
-            .filter_map(|counter| {
-                Some((
-                    sideband_target(counter, parent_thr)?,
-                    visible_tgid(counter, child_process)?,
-                    visible_tid(counter, child_thread)?,
-                    visible_tgid(counter, &parent_thr.proc_data.identity())?,
-                    visible_tid(counter, &parent_thr.pid_identity())?,
-                ))
-            })
-            .collect()
-    };
+    let mut targets: Vec<(SidebandTarget, TgidNumber, TidNumber, TgidNumber, TidNumber)> =
+        if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+            Vec::new()
+        } else {
+            let counters = parent_thr.perf_context().snapshot();
+            counters
+                .iter()
+                .filter(|counter| counter.wants_task())
+                .filter_map(|counter| {
+                    Some((
+                        sideband_target(counter, parent_thr)?,
+                        visible_tgid(counter, child_process)?,
+                        visible_tid(counter, child_thread)?,
+                        visible_tgid(counter, &parent_thr.proc_data.identity())?,
+                        visible_tid(counter, &parent_thr.pid_identity())?,
+                    ))
+                })
+                .collect()
+        };
     let observer = parent_thr.active_pid_namespace().id();
     if let (Some((parent_pid, parent_tid)), Some(child_pid), Some(child_tid)) = (
         system_subject(parent_thr),
@@ -216,15 +214,7 @@ pub(crate) fn on_clone_sideband(
             sideband::system_targets(parent_pid, parent_tid)
                 .into_iter()
                 .filter(|target| target.task)
-                .map(|target| {
-                    (
-                        target.target,
-                        child_pid,
-                        child_tid,
-                        parent_pid,
-                        parent_tid,
-                    )
-                }),
+                .map(|target| (target.target, child_pid, child_tid, parent_pid, parent_tid)),
         );
     }
     for (target, child_pid, child_tid, parent_pid, parent_tid) in &targets {

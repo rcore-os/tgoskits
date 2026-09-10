@@ -56,7 +56,7 @@ use super::{access::AuthorizedPerfTarget, hw::ValidatedHwOpen};
 #[cfg(target_arch = "aarch64")]
 use super::{
     cpu_worker,
-    hw_allocation::free_counter,
+    hw_allocation::free_system,
     hw_owner::{Counter, SystemPmuDisable, SystemPmuEnable, SystemPmuRead, SystemPmuReset},
     hw_sampling::{SamplingState, alloc_sampling_ring, device_mmap_per_task, ring_has_data},
     inheritance::PerfInheritanceFamily,
@@ -266,7 +266,7 @@ impl HwPerfEventState {
         }
         self.rdpmc
             .publish_inactive(self.system_rdpmc_snapshot(stopped.value, stopped.stopped_at));
-        free_counter(self.counter);
+        free_system(owner, self.counter);
         if let Some(sampling) = &mut self.sampling {
             sampling.poll_alive.store(false, Ordering::Release);
             sampling.notify.notify();
@@ -355,6 +355,7 @@ impl HwPerfEventState {
                         sample_id_all: sampling.sample_id_all,
                         sample_user_lr: sampling.sample_user_lr,
                         id: self.sample_id,
+                        stream_id: self.sample_id,
                         read_format: self.read_format,
                         read_entries,
                         read_len: 1,
@@ -437,7 +438,7 @@ impl HwPerfEventState {
                 .as_ref()
                 .expect("sampling event")
                 .sample_count
-                .reset();
+                .reset_value();
             if was_enabled {
                 self.enable()?;
             }

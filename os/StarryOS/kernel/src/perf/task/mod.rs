@@ -63,7 +63,10 @@
 //! mode (`-F`, `sample_freq`); inherited child events share the root output
 //! through the same owned redirect boundary.
 
-use alloc::{sync::{Arc, Weak}, vec::Vec};
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     any::Any,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},

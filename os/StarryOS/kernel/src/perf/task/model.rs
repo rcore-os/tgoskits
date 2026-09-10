@@ -93,6 +93,8 @@ pub struct PerTaskCounter {
     /// once via [`set_sample_id`](Self::set_sample_id) from the `PerfEvent`
     /// wrapper, before any scheduler hook runs); `0` until then.
     pub(super) sample_id: AtomicU64,
+    /// Concrete event identity; inherited streams differ from the primary ID.
+    pub(super) stream_id: AtomicU64,
     /// Samples dropped by this source because its selected ring was full.
     loss: Arc<super::super::sampling::LossState>,
     /// `attr.comm`: this event wants `PERF_RECORD_COMM` side-band records.
@@ -194,6 +196,8 @@ impl core::fmt::Debug for SamplingAnchors {
 /// is `0`; for a sampling event it is the fixed `-c` period and `sample_type` is
 /// `PERF_SAMPLE_IP`.
 pub(in crate::perf) struct PerTaskConfig {
+    /// Inherited output charges losses to the root event, as on Linux.
+    pub(in crate::perf) loss: Arc<sampling::LossState>,
     /// Generation-bearing scheduler identity of the target task.
     pub(in crate::perf) scheduler_id: ax_runtime::task::thread::ThreadId,
     /// Reserved physical PMU counter.
@@ -281,7 +285,8 @@ impl PerTaskCounter {
             freq: cfg.freq,
             freq_target: cfg.target_freq,
             sample_id: AtomicU64::new(0),
-            loss: Arc::new(super::super::sampling::LossState::new()),
+            stream_id: AtomicU64::new(0),
+            loss: cfg.loss,
             want_comm: cfg.want_comm,
             want_mmap2: cfg.want_mmap2,
             want_task: cfg.want_task,
@@ -318,6 +323,14 @@ impl PerTaskCounter {
     /// once at open (before the scheduler hooks run), so a relaxed store suffices.
     pub fn set_sample_id(&self, id: u64) {
         self.sample_id.store(id, Ordering::Relaxed);
+        self.stream_id.store(id, Ordering::Relaxed);
+    }
+
+    /// Initializes an inherited event before it is published to the scheduler.
+    pub(in crate::perf) fn set_inherited_sample_id(&self, primary_id: u64) {
+        self.sample_id.store(primary_id, Ordering::Relaxed);
+        self.stream_id
+            .store(super::super::allocate_event_id(), Ordering::Relaxed);
     }
 
     pub(in crate::perf) fn inherited_config(
@@ -328,6 +341,7 @@ impl PerTaskCounter {
         owner_ids: Option<(TgidNumber, TidNumber)>,
     ) -> PerTaskConfig {
         PerTaskConfig {
+            loss: Arc::clone(&self.loss),
             scheduler_id,
             counter,
             // Every inherited copy obtains its own per-CPU reservation. The

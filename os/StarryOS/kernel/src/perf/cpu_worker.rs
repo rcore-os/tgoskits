@@ -163,9 +163,8 @@ impl PerfCpuCommand {
                 request,
                 completion,
             } => {
-                let result = with_local_pmu_exclusion(|| {
-                    hw::replace_system_output_on_owner(request)
-                });
+                let result =
+                    with_local_pmu_exclusion(|| hw::replace_system_output_on_owner(request));
                 completion.finish(result);
             }
         }
@@ -408,7 +407,6 @@ pub(super) fn reset_system(owner: PerfCpuId, request: SystemPmuReset) -> crate::
     });
     completion.wait()
 }
-
 
 /// Rebinds an already-running system sampling slot to its newly mmap'd ring.
 pub(super) fn replace_system_output(

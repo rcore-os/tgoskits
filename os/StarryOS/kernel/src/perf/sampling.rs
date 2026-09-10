@@ -69,6 +69,8 @@ struct SamplingCountState {
     previous: u32,
     total: u64,
     remaining: i64,
+    /// Zero until first arm; otherwise the current logical sampling period.
+    period: u32,
 }
 
 impl SamplingCountState {
@@ -92,8 +94,14 @@ impl SamplingCount {
         Self(IrqMutex::new(SamplingCountState::default()))
     }
 
-    pub(crate) fn reset(&self) {
-        *self.0.lock() = SamplingCountState::default();
+    /// Clears the observable count without discarding Linux period_left.
+    pub(crate) fn reset_value(&self) {
+        self.0.lock().total = 0;
+    }
+
+    fn period_or(&self, initial: u32) -> u32 {
+        let period = self.0.lock().period;
+        if period == 0 { initial } else { period }
     }
 
     pub(crate) fn value(&self) -> u64 {
@@ -110,7 +118,10 @@ impl SamplingCount {
     /// Reloads a stopped counter without charging the preload as events.
     pub(crate) fn preload(&self, index: usize, period: u32) {
         let mut state = self.0.lock();
-        state.remaining = i64::from(period);
+        if state.period == 0 {
+            state.period = period;
+            state.remaining = i64::from(period);
+        }
         Self::program_chunk(index, &mut state);
     }
 
@@ -121,6 +132,7 @@ impl SamplingCount {
     /// Reloads a hardware chunk, retaining progress and interrupt overshoot.
     fn rearm(&self, index: usize, period: u32) {
         let mut state = self.0.lock();
+        state.period = period;
         if state.remaining <= 0 {
             let period = i64::from(period);
             state.remaining = if state.remaining <= -period {
@@ -184,8 +196,6 @@ fn next_freq_period(cur: u32, target_freq: u32, delta_ns: u64) -> u32 {
 
 /// `PERF_RECORD_SAMPLE` discriminant (`perf_event_type::PERF_RECORD_SAMPLE`).
 const PERF_RECORD_SAMPLE: u32 = 9;
-/// `PERF_RECORD_LOST`: dropped samples since the previous loss record.
-const PERF_RECORD_LOST: u32 = 2;
 /// `PERF_RECORD_MISC_KERNEL`: the sample landed in kernel (EL1) context.
 const PERF_RECORD_MISC_KERNEL: u16 = 1;
 /// `PERF_RECORD_MISC_USER`: the sample landed in user (EL0) context.
@@ -202,7 +212,6 @@ pub const MAX_SAMPLE_READ_EVENTS: usize = 31;
 const SAMPLE_READ_MAX_U64S: usize = 3 + MAX_SAMPLE_READ_EVENTS * 3;
 const SAMPLE_RECORD_MAX_LEN: usize =
     8 + 9 * 8 + SAMPLE_READ_MAX_U64S * 8 + (1 + MAX_CALLCHAIN_ENTRIES) * 8 + 16;
-const LOST_RECORD_LEN: usize = 8 + 2 * 8;
 
 /// Per-source loss accounting, independent of a possibly shared output ring.
 #[derive(Debug)]
@@ -397,6 +406,8 @@ pub struct SampleSlot {
     /// fields. `0` when the event was opened without per-event ids (the common
     /// case in this single-group implementation).
     pub id: u64,
+    /// Concrete event identity, distinct for inherited event instances.
+    pub stream_id: u64,
     pub read_format: u64,
     pub read_entries: [SampleReadEntry; MAX_SAMPLE_READ_EVENTS],
     pub read_len: u8,
@@ -425,6 +436,7 @@ pub struct SampleSlotConfig {
     /// Whether PERF_SAMPLE_REGS_USER selects the AArch64 LR bit.
     pub sample_user_lr: bool,
     pub id: u64,
+    pub stream_id: u64,
     pub read_format: u64,
     pub read_entries: [SampleReadEntry; MAX_SAMPLE_READ_EVENTS],
     pub read_len: u8,
@@ -438,14 +450,16 @@ pub struct SampleSlotConfig {
 impl SampleSlot {
     /// Creates one owned per-CPU registry entry.
     pub fn new(output: SampleOutput, config: SampleSlotConfig) -> Self {
+        let period = config.count.period_or(config.period);
         Self {
             count: config.count,
             output,
-            period: config.period,
+            period,
             sample_type: config.sample_type,
             sample_id_all: config.sample_id_all,
             sample_user_lr: config.sample_user_lr,
             id: config.id,
+            stream_id: config.stream_id,
             read_format: config.read_format,
             read_entries: config.read_entries,
             read_len: config.read_len,
@@ -649,6 +663,7 @@ pub fn replace_output(
                     sample_id_all: slot.sample_id_all,
                     sample_user_lr: slot.sample_user_lr,
                     id: slot.id,
+                    stream_id: slot.stream_id,
                     read_format: slot.read_format,
                     read_entries: slot.read_entries.clone(),
                     read_len: slot.read_len,
@@ -774,7 +789,7 @@ fn service_overflowed_slots(
             time,
             addr: 0,
             id,
-            stream_id: id,
+            stream_id: slot.stream_id,
             cpu,
             period: cur_period as u64,
             read_format: slot.read_format,
@@ -1179,27 +1194,17 @@ fn write_sample(
 
     let pending = loss.pending.load(Ordering::Relaxed);
     if pending != 0 {
-        let mut record = [0u8; LOST_RECORD_LEN + super::sample_id::SAMPLE_ID_MAX_LEN];
-        let mut length = LOST_RECORD_LEN;
-        if slot.sample_id_all {
-            let identity = super::sample_id::SampleId {
-                pid: data.pid.map_or(0, TgidNumber::get),
-                tid: data.tid.map_or(0, TidNumber::get),
-                time: data.time,
-                id: data.id,
-                stream_id: data.stream_id,
-                cpu: data.cpu,
-            };
-            let mut trailer = [0u8; super::sample_id::SAMPLE_ID_MAX_LEN];
-            let trailer_len = identity.encode(slot.sample_type, &mut trailer);
-            record[length..length + trailer_len].copy_from_slice(&trailer[..trailer_len]);
-            length += trailer_len;
-        }
-        record[0..4].copy_from_slice(&PERF_RECORD_LOST.to_ne_bytes());
-        record[4..6].copy_from_slice(&0u16.to_ne_bytes());
-        record[6..8].copy_from_slice(&(length as u16).to_ne_bytes());
-        record[8..16].copy_from_slice(&data.id.to_ne_bytes());
-        record[16..24].copy_from_slice(&pending.to_ne_bytes());
+        let mut record = [0u8; super::sample_id::LOST_RECORD_MAX_LEN];
+        let identity = super::sample_id::SampleId {
+            pid: data.pid.map_or(0, TgidNumber::get),
+            tid: data.tid.map_or(0, TidNumber::get),
+            time: data.time,
+            id: data.id,
+            stream_id: data.stream_id,
+            cpu: data.cpu,
+        };
+        let length =
+            identity.encode_lost(pending, slot.sample_type, slot.sample_id_all, &mut record);
         // SAFETY: the producer lease is the ring's unique kernel writer.
         if !unsafe { ring_write_locked(ring, &record[..length]) } {
             loss.record_drop();
@@ -1279,6 +1284,7 @@ mod tests {
             previous: 0u32.wrapping_sub(100),
             total: 0,
             remaining: 100,
+            period: 100,
         };
         assert_eq!(state.update(0u32.wrapping_sub(60)), 40);
         assert_eq!(state.update(7), 107);

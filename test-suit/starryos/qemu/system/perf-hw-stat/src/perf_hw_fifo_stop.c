@@ -123,8 +123,19 @@ static int check_stop(unsigned operation, int remote) {
         if (syscall(SYS_read, fd, before, sizeof(before)) != sizeof(before))
             return -1;
         if (move_caller(remote, gate[1]) != 0 ||
-            (operation != 0x10000 && syscall(SYS_ioctl, fd, operation, 0) != 0) ||
-            syscall(SYS_read, fd, first, sizeof(first)) != sizeof(first) ||
+            (operation != 0x10000 && syscall(SYS_ioctl, fd, operation, 0) != 0))
+            return -1;
+        if (remote && operation == 0x2403) {
+            /* The caller can be delayed after RESET while the owner keeps
+             * counting. Establish that legal state without an arbitrary sleep;
+             * comparing the eventual read with the pre-RESET value is invalid. */
+            uint64_t delayed[3];
+            do {
+                if (syscall(SYS_read, fd, delayed, sizeof(delayed)) != sizeof(delayed))
+                    return -1;
+            } while (delayed[0] <= before[0]);
+        }
+        if (syscall(SYS_read, fd, first, sizeof(first)) != sizeof(first) ||
             syscall(SYS_read, fd, second, sizeof(second)) != sizeof(second))
             return -1;
         if (operation == 0x2401) {
@@ -135,9 +146,15 @@ static int check_stop(unsigned operation, int remote) {
             if (first[0] <= before[0] || second[0] <= first[0] ||
                 first[2] < before[2] || second[2] <= first[2])
                 return -1;
-        } else if (first[0] >= before[0] || second[0] <= first[0] ||
+        } else if (second[0] <= first[0] ||
                    first[1] < before[1] || first[2] < before[2] ||
                    second[2] <= first[2]) {
+            printf("FIFO reset before=%llu/%llu/%llu first=%llu/%llu/%llu second=%llu/%llu/%llu\n",
+                   (unsigned long long)before[0], (unsigned long long)before[1],
+                   (unsigned long long)before[2], (unsigned long long)first[0],
+                   (unsigned long long)first[1], (unsigned long long)first[2],
+                   (unsigned long long)second[0], (unsigned long long)second[1],
+                   (unsigned long long)second[2]);
             return -1;
         }
         /* Restore the owner-CPU setup for the next operation, only after
