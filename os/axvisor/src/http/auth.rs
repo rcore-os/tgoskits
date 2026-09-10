@@ -50,9 +50,10 @@ impl ApiToken {
             return false;
         };
         value.to_str().ok().is_some_and(|value| {
-            value
-                .strip_prefix("Bearer ")
-                .is_some_and(|rest| rest == token)
+            // The auth scheme is case-insensitive (RFC 7235); the token is not.
+            value.split_once(' ').is_some_and(|(scheme, rest)| {
+                scheme.eq_ignore_ascii_case("Bearer") && rest == token
+            })
         })
     }
 }

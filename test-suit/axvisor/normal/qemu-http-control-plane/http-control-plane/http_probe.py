@@ -127,12 +127,15 @@ POLL_DEADLINE = 120.0
 POLL_INTERVAL = 1.0
 
 
-def request(method, path, token=None, body=None):
+def request(method, path, token=None, body=None, scheme="Bearer"):
     """One HTTP request; returns (status, parsed JSON or None).
 
     `token` defaults to `None`: the unauthenticated steps assert the 401
     rejections, and the poll loops mirror the runner's no-token GETs. The
     authenticated steps pass `token=TOKEN` explicitly.
+
+    `scheme` defaults to `Bearer`; the auth-scheme casing is a parameter so
+    the probe can assert the case-insensitive form clients may send.
 
     A JSON `body` is sent with `Content-Type: application/json`. A non-2xx
     response is not an error here — the caller asserts the status. A transport
@@ -141,7 +144,7 @@ def request(method, path, token=None, body=None):
     """
     headers = {}
     if token:
-        headers["Authorization"] = "Bearer " + token
+        headers["Authorization"] = scheme + " " + token
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"
@@ -460,6 +463,10 @@ def main():
     check("GET /api/auth", status, 200)
     if auth_body != {"ok": True}:
         raise AssertionError("GET /api/auth body=%r" % (auth_body,))
+    # RFC 7235 makes the auth scheme case-insensitive: a client that spells the
+    # manifest's `scheme` verbatim (lowercase) must still authenticate.
+    status, _ = request("GET", "/api/auth", token=TOKEN, scheme="bearer")
+    check("GET /api/auth (lowercase scheme)", status, 200)
 
     status, _ = request("POST", "/api/vms/create")
     check("POST /api/vms/create (no auth)", status, 401)
