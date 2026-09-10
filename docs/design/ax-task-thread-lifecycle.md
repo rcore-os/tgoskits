@@ -488,7 +488,7 @@ init 使用默认调度与初始 FP 状态；clone 保留策略、亲和性及 r
 
 本轮没有修改 `stage → PID/拓扑发布 → activate`、错误转换或 FP 寄存器保存代码。既有 extension 分配回滚测试使用同一配置路径，真实四架构 `test-clone-fp-state` 验证子线程首次执行时的寄存器状态。保留的 runtime 同名 `prepare_user_thread(builder, entry, UserContextOptions)` 是架构资源装配接口，与 Starry OS 配置承担不同责任。
 
-统一入口后 x86_64 kernel axtest 182 项通过，四架构原 `test-clone-fp-state` 全部通过，均有实际子线程寄存器断言和 `STARRY_SYSTEM_TEST_PASSED` 标记。日志为 `/tmp/pr2357-user-options-kernel-x86_64.log`、`/tmp/pr2357-user-options-fp-<arch>.log`。fmt 和差异检查通过，增量 std 与 Starry 定向 clippy 继续执行；此前内核服务迁移的 92 个组合不替代本次新接口检查。
+统一入口后 x86_64 kernel axtest 182 项通过，四架构原 `test-clone-fp-state` 全部通过，均有实际子线程寄存器断言和 `STARRY_SYSTEM_TEST_PASSED` 标记。日志为 `/tmp/pr2357-user-options-kernel-x86_64.log`、`/tmp/pr2357-user-options-fp-<arch>.log`。fmt 和差异检查通过，该用户入口版本的增量 std 和 Starry 定向 clippy 92/92 均通过，日志 `/tmp/pr2357-user-options-{std,clippy}.log`；与前一内核服务迁移的验证分开记录。
 
 ### 5.25 独立目标的失败收集
 
@@ -497,3 +497,26 @@ init 使用默认调度与初始 FP 状态；clone 保留策略、亲和性及 r
 Axvisor 调用既有 reusable matrix 时改为 `fail_fast: false`，保留每个作业及整轮工作流原来的失败状态，不修改测试、超时、退出码或成功匹配。其他 CI 分组仍保持原 fail-fast 策略。`check_ci_routing.py` 同步明确要求这一分组策略，未删除路由校验；实际矩阵执行器仍直接使用 `inputs.fail_fast`。
 
 旧路由规则在新的工作流配置上明确拒绝 Axvisor 分组；更新策略后，`python3 scripts/test/check_ci_routing.py` 通过，`python3 -m unittest scripts.test.test_ci_routing` 的 26 项通过，日志 `/tmp/pr2357-ci-failure-collection-tests.log`。这只证明配置和路由，独立目标能否完成仍需新提交 CI 的真实结果。
+
+### 5.26 TSYNC 的限制标志传播
+
+固定 Linux `kernel/seccomp.c::seccomp_sync_threads` 同步过滤器时也传播调用线程的 `no_new_privs`，防止线程组通过安装过滤器的线程退出而绕过该限制。Starry 的 `sync_seccomp_to_thread_group` 原先只调用 `set_seccomp_state`。现在保存调用者的 NNP 状态，在开启对端 seccomp syscall-work 之前设置其单向限制标志。
+
+现有 `syscall-test-seccomp` 的 TSYNC 用例增加对端 NNP 的 0→1 断言，用 C11 acquire/release 握手替代原 `volatile` 通知，保证对端先确认初态，源线程再设置 NNP 并执行 TSYNC。原实现确定性通过过滤器断言却失败于 NNP 传播，修复后同一 x86_64 四核用例通过，日志 `/tmp/pr2357-seccomp-nnp-{red,green}.log`。宿主测试进程已经继承 NNP=1，无法构造初态 0，因此 `/tmp/pr2357-seccomp-nnp-linux.log` 不计为有效的 0→1 对照；依据仍为固定 Linux 源码和真实 Starry 红绿。
+
+下表只评估本次标志传播，不将其扩大为 seccomp 全部 TSYNC、clone 或 exec 语义正确。X 表示 x86_64，G 表示 AArch64、RISC-V64、LoongArch64。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| seccomp(TSYNC NNP) / X317 | [固定 seccomp.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | 同步过滤器与源线程 NNP | `sys_seccomp → sync_seccomp_to_thread_group → Thread` | 正确 | 同一原始 syscall 用例 x86_64 红绿 |
+| seccomp(TSYNC NNP) / G277 | [固定 seccomp.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | 同上 | 共用上述实现 | 正确 | RISC-V、AArch64、LoongArch 同一系统用例通过 |
+| prctl(GET_NO_NEW_PRIVS) / X157 | [固定 sys.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sys.c) | 对端查询同步后的单向标志 | `sys_prctl → Thread::no_new_privs` | 正确 | 原始 prctl 查询对端 0→1 |
+| prctl(GET_NO_NEW_PRIVS) / G167 | [固定 sys.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sys.c) | 同上 | 共用上述实现 | 正确 | RISC-V、AArch64、LoongArch 同一系统用例通过 |
+
+本轮两包增量 std 与 Starry 定向 clippy 四架构 92/92 已通过，日志 `/tmp/pr2357-seccomp-nnp-{std,clippy}.log`。
+
+独立源码核验还确认一个尚未修复的发布竞争：clone 在 `Thread::new` 后复制父线程安全状态，随后才执行 PID 发布与 `Process::add_thread`；TSYNC 的线程集合快照与这些操作没有共同锁。Linux `copy_process` 在共同 sighand 锁下执行最后一次 `copy_seccomp` 并加入线程组。NNP 传播修复不关闭这个旧过滤器逃逸窗口，后续必须统一“最后继承→发布”和 TSYNC 的串行边界；不能以对端标志回归通过替代它。
+
+TSYNC 新断言最终四架构均通过，日志 `/tmp/pr2357-seccomp-nnp-{green,riscv64,aarch64,loongarch64}.log`。
+
+`32820bc112` 的 OrangePi 作业 `102879230767` 再次在 native-hardware-smoke 超时。新日志明确记录 `rknn_yolov8_demo`、`yolov8.sh` 和输出文件的 `cat` 均以 0 退出，随后启动另一个命令但未完成整个 shell 检查。不能将这一失败定位为 MemDestroy 或 NPU 未完成；根因仍需后续命令与终端/等待状态证据，日志 `/tmp/pr2357-328-orangepi-failure.log`。

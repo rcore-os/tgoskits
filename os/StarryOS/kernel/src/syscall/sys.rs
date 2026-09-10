@@ -1089,12 +1089,19 @@ fn sync_seccomp_to_thread_group(current: &crate::task::UserTaskRef) {
     let curr = current;
     let thread = curr.as_thread();
     let state = thread.seccomp_state();
+    let no_new_privs = thread.no_new_privs();
     for tid in thread.proc_data.proc.threads() {
         if tid == thread.tid_number() {
             continue;
         }
         if let Ok(task) = get_task_by_number(tid) {
-            task.as_thread().set_seccomp_state(state.clone());
+            let peer = task.as_thread();
+            // Linux seccomp_sync_threads carries NNP with the filter. Publish
+            // it before set_seccomp_state enables the peer's syscall work.
+            if no_new_privs {
+                peer.set_no_new_privs();
+            }
+            peer.set_seccomp_state(state.clone());
         }
     }
 }
