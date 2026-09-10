@@ -12,14 +12,15 @@
 
 Linux 顺序是迁移验收条件，不要求复制 C 对象布局。每条路径必须同时检查发布者、观察者和资源释放责任。
 
-| Linux 基准 | 当前入口 | 目标保证 | 验证 |
+| Linux 基准 | 当前入口 | 最终所有者 | 顺序与验证场景 |
 | --- | --- | --- | --- |
-| `dup_task_struct/copy_process/sched_fork` | `ThreadBuilder`、`create_thread` | 完整初始化后登记，保持 `New`，普通 wake 不激活 | 创建失败回滚、提前唤醒 |
-| `wake_up_new_task` | `PreparedThread::stage/activate` | stage 不入队；身份发布后首次激活 | staged 状态及取消 |
-| `try_to_wake_up/rt_mutex_schedule` | `ThreadLifecycle`、`pi_park_current_once`、`PiWaitToken` | 普通通知触发条件重检，锁所有权只由 PI handoff/claim 转移 | PI 锁与普通唤醒交错 |
-| `context_switch/finish_task_switch` | `execute_switch_plan`、runtime switch tail | 先转移上下文，再 release 发布 prev off-CPU | SMP 切出与迁移 |
-| `schedule_tail` | 新线程 trampoline | 首次执行前完成切换尾部和抢占控制权交接 | 首次入口 IRQ/抢占状态 |
-| `put_task_stack/put_task_struct` | 任务上下文 reaper | 执行资源与对象引用分阶段回收 | 保留管理句柄的退出线程 |
+| `dup_task_struct/copy_process/sched_fork` | `ThreadBuilder`、`create_thread`、`UnpublishedContext` | ax-task 创建事务；ax-runtime 资源装配 | 完整初始化后保持 `New`；ArceOS/Starry QEMU 逐阶段回滚、提前普通 wake |
+| `wake_up_new_task` | `PreparedThread::stage`、`StagedThread::activate` | 登记表中的 activation 预留与目标 CPU 接收端 | 身份发布后首次激活；QEMU staged affinity/policy 更新、快速退出、取消不执行入口 |
+| `copy_process` 错误退出路径 | `publish_thread_cancellation`、`process_thread_cancellation` | 唯一创建令牌转交任务上下文 reaper | IRQ Drop 不取登记表锁；无管理句柄的取消与扩展一次性析构 |
+| `try_to_wake_up/rt_mutex_schedule` | `ThreadLifecycle`、`PiWaitToken` | ax-task 等待状态、PI owner 与 rq | 普通通知和锁交接分离；RT 外层超时、读者排空、远端唤醒与纯状态/Loom |
+| `context_switch/finish_task_switch` | `execute_switch_plan`、runtime switch tail | rq 提交；runtime 物理上下文；incoming tail | 读取 prev 终态后 release off-CPU；SMP 切出/迁移及四类 MM 交接 |
+| `schedule_tail` | 公共 trampoline | ax-task 公共执行对象与 runtime baton | 首次入口、阻塞恢复和 yield 后验证 IRQ/阻塞许可 |
+| `put_task_stack/put_task_struct` | `take_exited_execution`、task-work consumer | 资源、OS extension 和 active-MM 各自的所有者 | 管理句柄不保留退出栈；原子上下文直接 reap 拒绝；lazy-MM 在最后 CPU lease 退出后释放 |
 
 `finish_task_switch` 先读取退出状态，再清除 `on_cpu`；任务引用和内核栈引用具有不同寿命。Linux RT 通过延迟释放避免在原子上下文取得睡眠锁，本项目复用任务上下文 reaper，并单独证明每个被借用对象的读者保护。
 
@@ -164,7 +165,7 @@ spawn 每轮先预热 16 次，再测 100 次；join 放在计时区间外，但
 
 本地交付包括接口迁移、首次激活、分阶段回收、FP 继承修复、系统回归和微基准。公共执行接口与首次激活/回收协议在一个迁移提交中一起收敛，未完全做到计划要求的接口提交与语义提交分离；后续 FP 修复单独提交。上述生命周期阶段先以本地提交交付；后续 RT 锁工作按用户要求转为 PR 和 CI 验证。
 
-完整 RT 验收仍有明确缺口：第 3.3 节的既有 IRQ 压力失败与整个 host/Loom 库测试链接问题，以及没有直接系统级证据的 syscall 表项。现有 QEMU 验证也没有逐阶段注入真实栈/TLS/架构上下文分配失败、控制 CPU 下线与 activation 的每种交错或单独证明所有弱内存 MM 屏障；不能把两类已测创建失败扩大为这些场景均已验证。合入前仍需要计划要求的调度及 unsafe 领域审查。
+完整 RT 验收仍有明确缺口：第 3.3 节的既有 IRQ 压力失败与整个 host/Loom 库测试链接问题，以及没有直接系统级证据的 syscall 表项。初始交付尚未逐阶段注入栈/TLS/架构上下文分配失败，后续第 5.4 节已补齐真实运行时的阶段故障与回滚次序验证。完整 CPU 下线与 activation 的交错、独立弱内存 MM 屏障仍没有全矩阵系统证据，不能由其他用例通过推断这些场景均已验证。合入前仍需要计划要求的调度及 unsafe 领域审查。
 
 ## 4. Linux 可观察行为
 
@@ -229,7 +230,7 @@ RT 锁与调用方静态检查覆盖 9 个软件包、215 个组合，全部通�
 
 定时器容量故障通过仅测试用的 `fault-injection` feature 注入到当前线程下一次 semaphore 定时器注册。遗漏 park 取消时，QEMU 触发 `0x5041_0003` invariant；修复后返回 `TimerCapacity` 且线程保持 `Running`。IRQ `up` 不克隆或销毁 wake handle：生产者保持抢占保护，在 raw 锁内发布 handoff 完成并释放队列引用，等待者观察完成后才能销毁自身登记。
 
-CPU 下线 pin 检查已覆盖 idle 提前返回，但当前 ArceOS 没有安全的完整下线/重新上线入口，没有真实热插拔竞争测试。Linux 隐含 RCU 读侧的对象保护采用第 2.2 节逐对象租约与锁借用；不宣称新增通用 RCU API。新一轮性能基线仅完成独立 `a22f81c016` 检出的测量，尚未形成当前分支对照，不能引用第 3.5 节旧结果评价本次 RT 锁开销。
+CPU 下线 pin 检查已覆盖 idle 提前返回，但当前 ArceOS 没有安全的完整下线/重新上线入口，没有真实热插拔竞争测试。Linux 隐含 RCU 读侧的对象保护采用第 2.2 节逐对象租约与锁借用；不宣称新增通用 RCU API。本节最初验证阶段只测量了独立 `a22f81c016` 检出。后续按 #2308 完成的 dev/PR/dev 对照已确认回退；按当前要求暂停性能处理，不使用第 3.5 节旧结果推断当前分支无回退。
 
 ### 5.3 静态审查修复
 
@@ -251,3 +252,26 @@ Starry `thread_lifecycle_axtest::user_kernel_mm_switch_matrix` 让同 CPU、同�
 同一用例验证 active-MM 独立寿命：第一个 MM 在被第二个 MM 替换后释放；最后一个 user 线程退出并 join 后，其 MM 仍由 kernel lazy-MM 借用；再切换到另一 MM 后才释放一次。没有用管理句柄引用数代替 CPU lease 退出证明。用户返回前的 membarrier/TLB 屏障保留原实现；该用例验证 MM 交接与回收，不把 kernel 闭包执行误记为返回用户态或弱内存屏障的系统证明。
 
 用户上下文测试使用现有 `cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --features axtest,smp --arch <arch>`；`.github/ci/checks/starry.toml` 的四架构任务已经调用该入口，不需要额外的 CI 特例。ArceOS 的真实 std 套件与 uspace 的 TLS 寄存器所有权不同，不能为了复用一个测试二进制而同时启用两种模式。
+
+
+### 5.6 完成 ID 的测试契约
+
+最终 AArch64 kernel axtest 在既有 `block_runtime_async_double_read` 中触发 `left: 1 / right: 1`。`nvme-driver::NvmeQueueState::complete_one` 在终结请求时把 CID 放回空闲池，因此已完成对象存活期间出现同 CID 是合法行为，与任务调度错误不同。`rdif-block::RequestId` 明确这项队列局部、可复用契约。
+
+该用例保留两条真实异步读取、完成状态和长度检查，并把已交付的结果信封固定为合法的相同 ID，使回归不依赖硬件完成时序。原“不相等”断言确定性失败，记录为 `/tmp/pr2357-cid-contract-red.log`。修复验证两个已完成 DMA 对象的独立所有权：改写第一个 CPU 缓冲区后，第二个缓冲区内容必须保持不变。改写只发生在完成后的内存，不提交设备写入，也不通过放宽超时或重试掩盖失败。
+
+
+### 5.7 收尾验证记录
+
+收尾资源事务提交为 `d9f5be6997`，其后的变更仅修正 axtest 完成 ID 契约与文档。完整工作区 clippy 按要求交给 CI，本地只执行受影响包检查。性能回退按当前要求暂停，未混入任何性能实验。
+
+| 检查 | 本轮证据 |
+| --- | --- |
+| `cargo fmt -- --check`；Starry include 子模块定向 rustfmt | 通过；`block_runtime_axtest.rs` 与 `thread_lifecycle_axtest.rs` 显式覆盖 |
+| `cargo xtask clippy --package ax-runtime` | 26 组合通过；`/tmp/pr2357-resource-runtime-clippy.log` |
+| `cargo xtask test --since 7e62c2d9e1` | 11 个包全部通过；`/tmp/pr2357-plan-std.log` |
+| ArceOS `task-wait-queue` | 四架构真实资源故障回滚、取消、回收通过；`/tmp/pr2357-resource-final-<arch>.log` |
+| Starry kernel axtest | 最终四架构全部通过；AArch64 177 项，其余各 176 项；`/tmp/pr2357-closeout-final-<arch>.log` |
+| 完成 ID 契约 | AArch64 原断言确定性失败；同一合法重复 ID 输入修复后通过；`/tmp/pr2357-cid-contract-red.log` |
+
+这些结果覆盖本轮实现和直接调用链；CI 仍按最新推送执行，未等待或宣称其成功。真实 CPU 完整下线/重新上线和独立弱内存 MM 屏障仍保留第 3.6 节的证据边界，合入前的领域审查要求也不由本地测试替代。
