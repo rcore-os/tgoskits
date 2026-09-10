@@ -68,7 +68,16 @@ pub(crate) trait ArchOps {
         Ok(())
     }
 
-    fn after_vcpu_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
+    /// Interprets a durable exit after the machine-entry IRQ window closes.
+    /// The backend remains loaded and CPU-pinned for guest register accesses;
+    /// sleepable device handling is deferred to the unbound exit handler.
+    fn after_vcpu_run(
+        _vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        exit: <Self::VCpu as VmArchVcpuOps>::Exit,
+    ) -> AxVmResult<<Self::VCpu as VmArchVcpuOps>::Exit> {
+        Ok(exit)
+    }
 
     fn wait_for_vcpu_event(
         vm: &crate::AxVMRef,
@@ -182,13 +191,21 @@ pub(crate) trait ArchOps {
                         // A later remote request observes IN_GUEST and leaves
                         // an IPI pending until hardware entry or VM exit.
                         let entry_irq_guard = IrqSaveGuard::new();
-                        match vcpu.run_loaded(|| {
+                        #[cfg(not(target_arch = "aarch64"))]
+                        let Some(translation) = vm.enter_translations() else {
+                            drop(entry_irq_guard);
+                            break Ok(None);
+                        };
+                        let run = vcpu.run_loaded(|| {
                             interrupt_runtime.as_ref().is_some_and(|runtime| {
                                 runtime
                                     .irq_dispatcher()
                                     .has_pending(vcpu_id, interrupt_owner)
                             })
-                        })? {
+                        });
+                        #[cfg(not(target_arch = "aarch64"))]
+                        drop(translation);
+                        match run? {
                             crate::vcpu::VcpuRunResult::Retry => {
                                 drop(entry_irq_guard);
                                 continue;
@@ -198,8 +215,8 @@ pub(crate) trait ArchOps {
                                 break Ok(None);
                             }
                             crate::vcpu::VcpuRunResult::VmExit(exit) => {
-                                Self::after_vcpu_run(vm, vcpu);
                                 drop(entry_irq_guard);
+                                let exit = Self::after_vcpu_run(vm, vcpu, exit)?;
                                 break Ok(Some(exit));
                             }
                         }

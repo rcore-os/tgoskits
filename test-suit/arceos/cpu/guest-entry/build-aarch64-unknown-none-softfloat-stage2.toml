@@ -1,0 +1,3 @@
+features = ["ax-std", "ax-std/hv", "stage2-tlb"]
+log = "Info"
+max_cpu_num = 2

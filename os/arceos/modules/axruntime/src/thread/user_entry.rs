@@ -5,7 +5,7 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
-use ax_hal::cpu::uspace::{ReturnReason, UserContext};
+use ax_hal::cpu::user::{ReturnReason, UserContext};
 use ax_task::{runtime::RuntimeStatus, thread::TaskError};
 
 use super::{

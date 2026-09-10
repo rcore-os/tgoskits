@@ -5317,9 +5317,13 @@ impl AddrSpace {
         }
 
         self.process_area_data(start, size, |dst, _offset, sync_size| {
-            ax_runtime::hal::cache::clean_dcache_to_pou(dst, sync_size);
+            let range = ax_cpu::cache::CacheRange::new(dst, sync_size)
+                .expect("mapped text chunk must not wrap");
+            // SAFETY: process_area_data retains the translated backing mapping
+            // for this chunk until the callback completes its cache maintenance.
+            unsafe { ax_cpu::cache::clean_dcache_range_to_pou(range) };
         })?;
-        ax_runtime::hal::cache::flush_icache_all();
+        ax_cpu::cache::flush_icache_all();
         Ok(())
     }
 
@@ -6314,7 +6318,7 @@ impl AddrSpace {
         complete_page_fault_with(
             matches!(result, FaultResult::Handled),
             vaddr,
-            ax_runtime::hal::cache::update_mmu_cache,
+            ax_cpu::mmu::update_mmu_cache,
         );
         result
     }

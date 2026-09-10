@@ -21,7 +21,7 @@ tls = ["somehal/tls", "ax-cpu/tls", "cpu-local/tls"]
 # User-space TLS remains available through the userspace context APIs.
 uspace = ["somehal/uspace", "ax-cpu/uspace", "cpu-local/uspace"]
 hv = ["somehal/hv"]
-thead-mae = ["somehal/thead-mae", "ax-cpu/xuantie-c9xx"]
+thead-mae = ["somehal/thead-mae", "ax-cpu/riscv-thead-mae"]
 
 [dependencies]
 anyhow = { workspace = true }

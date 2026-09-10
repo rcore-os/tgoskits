@@ -16,14 +16,25 @@ pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Resul
         );
     }
     let to_bin = config.to_bin;
-    let mut cargo = config
-        .build_info
-        .into_prepared_std_cargo_config_with_metadata(
-            &request.package,
-            &request.target,
-            metadata,
-        )?;
-    cargo.to_bin = to_bin;
+    let mut cargo = if config.freestanding {
+        config
+            .build_info
+            .into_prepared_no_std_cargo_config_with_metadata(
+                &request.package,
+                &request.target,
+                metadata,
+                build::BareKernelLinkMode::Pie,
+            )?
+    } else {
+        config
+            .build_info
+            .into_prepared_std_cargo_config_with_metadata(
+                &request.package,
+                &request.target,
+                metadata,
+            )?
+    };
+    cargo.to_bin |= to_bin;
     Ok(cargo)
 }
 

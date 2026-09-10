@@ -36,7 +36,7 @@ AxVM 每次构建只选择一种目标架构。无论选中哪一种，虚拟机
 | 客户机启动能力 | `GuestBootPlatform` | 启动处理器状态与固件交接 |
 | 镜像装载能力 | `BootImagePlatform` | 镜像装载策略和写后可见性 |
 | 宿主时间能力 | `HostTimePlatform` | 宿主时钟来源 |
-| 处理器启动能力 | `CpuUpOps` | 启动已经存在但尚未运行的其他处理器 |
+| RISC-V hart 启动 | `arch/riscv64/hsm.rs` | 按 VM 拓扑解析 HSM 目标，启动已经存在但尚未运行的 vCPU；与 SBI IPI 共用 hart 标识解析 |
 
 ```rust
 trait Architecture:

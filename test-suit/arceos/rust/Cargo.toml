@@ -8,7 +8,7 @@ publish = false
 default = []
 # Every kernel test reaches ax-std through this feature, so it owns the ArceOS
 # baseline instead of relying on axbuild to add it for the selected test case.
-ax-std = ["dep:ax-driver", "dep:ax-hal", "dep:ax-std", "ax-std/arceos"]
+ax-std = ["dep:ax-cpu", "dep:ax-driver", "dep:ax-hal", "dep:ax-std", "ax-std/arceos"]
 memtest = ["ax-std", "dep:rand", "ax-std/alloc"]
 mem-stage1-transition = ["task-runtime", "ax-std/alloc", "ax-std/ipi", "ax-std/paging"]
 task-runtime = ["ax-std"]
@@ -88,6 +88,7 @@ all = [
 ]
 
 [dependencies]
+ax-cpu = { workspace = true, optional = true }
 ax-driver = { workspace = true, optional = true }
 ax-hal = { workspace = true, optional = true }
 ax-memory-addr.workspace = true

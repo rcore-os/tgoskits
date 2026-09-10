@@ -133,7 +133,7 @@ reports the **RV64GC baseline** (`IMA + FD + C`, no `Zba/Zbb/Zbs`, no vector `V`
 QEMU `-cpu rv64` already enables `Zba/Zbb/Zbc/Zbs` (bitmanip is pure userspace and
 needs no kernel support), but the **vector `V` extension is OFF and CANNOT be
 enabled by widening `-cpu`**: the generic StarryOS riscv64 kernel does not manage
-vector state (`sstatus.VS` is left `Off` outside the `xuantie-c9xx` board build, and
+vector state (`sstatus.VS` is left `Off` outside the `riscv-thead-mae` board build, and
 there is no vector-register context save/restore), so any guest `vsetvli` traps as
 `IllegalInstruction` even with `v=true`. Since the JIT targets that baseline anyway
 (it never emits vector stubs), the gate adds **no** rv-specific flags —

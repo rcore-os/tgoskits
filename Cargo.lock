@@ -60,7 +60,7 @@ dependencies = [
  "byteorder",
  "log",
  "pci_types",
- "spinning_top 0.3.0",
+ "spinning_top",
 ]
 
 [[package]]
@@ -200,34 +200,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
-name = "aml"
-version = "0.16.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4f8cba7d4260ea05671dda81029f6f718b54402a4ec926a0d9a41bdbb96b415"
-dependencies = [
- "bit_field",
- "bitvec",
- "byteorder",
- "log",
- "spinning_top 0.2.5",
-]
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae221649c9976a6f6c56ae1facf410f3ddb33cc661c4b7b61020a912d4237fbc"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "ansi_rgb"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a730095eb14ee842a0f1e68504b85c8d4a19b1ef2ac2a9b4debf0ed982f9b08a"
-dependencies = [
- "rgb",
 ]
 
 [[package]]
@@ -333,6 +311,79 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-cpu-fp-context"
+version = "0.1.0"
+dependencies = [
+ "ax-cpu",
+ "ax-std",
+]
+
+[[package]]
+name = "arceos-cpu-guest-entry"
+version = "0.1.0"
+dependencies = [
+ "ax-alloc",
+ "ax-cpu",
+ "ax-hal",
+ "ax-std",
+ "trait-ffi",
+]
+
+[[package]]
+name = "arceos-cpu-hypervisor-probe"
+version = "0.1.0"
+dependencies = [
+ "ax-cpu",
+ "ax-std",
+]
+
+[[package]]
+name = "arceos-cpu-paging"
+version = "0.1.0"
+dependencies = [
+ "ax-cpu",
+ "ax-hal",
+ "ax-mm",
+ "ax-std",
+ "someboot",
+]
+
+[[package]]
+name = "arceos-cpu-pmu"
+version = "0.1.0"
+dependencies = [
+ "ax-cpu",
+ "ax-std",
+]
+
+[[package]]
+name = "arceos-cpu-trap-entry"
+version = "0.1.0"
+dependencies = [
+ "ax-cpu",
+ "ax-std",
+]
+
+[[package]]
+name = "arceos-cpu-user-entry"
+version = "0.1.0"
+dependencies = [
+ "ax-alloc",
+ "ax-cpu",
+ "ax-std",
+]
+
+[[package]]
+name = "arceos-cpu-virtualization-lifecycle"
+version = "0.1.0"
+dependencies = [
+ "ax-alloc",
+ "ax-cpu",
+ "ax-hal",
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-helloworld"
 version = "0.1.0"
 dependencies = [
@@ -407,6 +458,7 @@ dependencies = [
 name = "arceos-test-suit"
 version = "0.3.1"
 dependencies = [
+ "ax-cpu",
  "ax-driver",
  "ax-hal",
  "ax-memory-addr",
@@ -479,16 +531,6 @@ dependencies = [
  "smccc",
  "thiserror 2.0.20",
  "tock-registers 0.10.1",
-]
-
-[[package]]
-name = "arm_vcpu"
-version = "0.5.22"
-dependencies = [
- "aarch64-cpu 11.2.0",
- "aarch64_sysreg",
- "log",
- "numeric-enum-macro",
 ]
 
 [[package]]
@@ -763,17 +805,15 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-lazyinit",
  "ax-memory-addr",
- "ax-percpu",
- "axbacktrace",
  "bitflags 2.13.1",
  "bytemuck",
- "cfg-if",
- "cpu-local",
  "log",
  "loongArch64",
  "page-table-generic",
  "riscv",
+ "thiserror 2.0.20",
  "tock-registers 0.10.1",
+ "trait-ffi",
  "x86",
  "x86_64",
 ]
@@ -939,6 +979,7 @@ dependencies = [
  "ax-percpu",
  "ax-plat",
  "ax-sync",
+ "axbacktrace",
  "axplat-dyn",
  "cfg-if",
  "cpu-local",
@@ -1029,6 +1070,7 @@ name = "ax-mm"
 version = "0.7.0"
 dependencies = [
  "ax-alloc",
+ "ax-cpu",
  "ax-hal",
  "ax-lazyinit",
  "ax-memory-addr",
@@ -1151,6 +1193,7 @@ name = "ax-runtime"
 version = "0.12.1"
 dependencies = [
  "ax-alloc",
+ "ax-cpu",
  "ax-crate-interface",
  "ax-ctor-bare",
  "ax-display",
@@ -1609,12 +1652,14 @@ dependencies = [
 name = "axvm"
 version = "0.7.0"
 dependencies = [
+ "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
+ "aarch64_sysreg",
  "acpi_tables",
  "arm-gic-driver",
- "arm_vcpu",
  "arm_vgic",
  "ax-api",
+ "ax-cpu",
  "ax-cpumask",
  "ax-crate-interface",
  "ax-driver",
@@ -1636,26 +1681,31 @@ dependencies = [
  "bitflags 2.13.1",
  "byte-unit",
  "cpu-local",
- "extern-trait",
  "fdt-edit",
  "fdt-raw",
  "irq-framework",
  "log",
- "loongarch_vcpu",
  "mmio-api",
- "numeric-enum-macro",
  "page-table-generic",
+ "paste",
+ "raw-cpuid 11.6.0",
  "rdif-clk",
  "rdif-intc",
  "rdrive",
- "riscv_vcpu",
+ "riscv",
+ "riscv-decode",
  "riscv_vplic",
  "rsext4",
+ "rustsbi",
+ "sbi-rt",
+ "sbi-spec",
  "serde",
  "thiserror 2.0.20",
+ "tock-registers 0.10.1",
  "toml 1.1.5+spec-1.1.0",
+ "trait-ffi",
  "x86",
- "x86_vcpu",
+ "x86_64",
  "x86_vlapic",
 ]
 
@@ -1842,18 +1892,6 @@ name = "bitmaps"
 version = "3.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d084b0137aaa901caf9f1e8b21daa6aa24d41cd806e111335541eff9683bd6"
-
-[[package]]
-name = "bitvec"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddcec3d12c579d40898fe0a9a358a803c23e9c52ca3c425707f81c9436211837"
-dependencies = [
- "funty",
- "radium",
- "tap",
- "wyz",
-]
 
 [[package]]
 name = "block-buffer"
@@ -2359,6 +2397,7 @@ dependencies = [
 name = "cpu-local"
 version = "0.3.0"
 dependencies = [
+ "ax-cpu",
  "thiserror 2.0.20",
 ]
 
@@ -3593,12 +3632,6 @@ name = "function_name-proc-macro"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "673464e1e314dd67a0fd9544abc99e8eb28d0c7e3b69b033bcff9b2d00b87333"
-
-[[package]]
-name = "funty"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 
 [[package]]
 name = "futures"
@@ -4951,16 +4984,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loongarch_vcpu"
-version = "0.5.18"
-dependencies = [
- "bitflags 2.13.1",
- "cpu-local",
- "log",
- "tock-registers 0.10.1",
-]
-
-[[package]]
 name = "lru"
 version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5477,12 +5500,6 @@ checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
 dependencies = [
  "libc",
 ]
-
-[[package]]
-name = "numeric-enum-macro"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "300e4bdb6b46b592948e700ea1ef24a4296491f6a0ee722b258040abd15a3714"
 
 [[package]]
 name = "nvme-driver"
@@ -6204,12 +6221,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
-name = "radium"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
-
-[[package]]
 name = "ramdisk"
 version = "0.1.11"
 
@@ -6853,23 +6864,6 @@ name = "riscv_goldfish"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07aac72f95e774476db82916d79f2d303191310393830573c1ab5c821b21660a"
-
-[[package]]
-name = "riscv_vcpu"
-version = "0.6.3"
-dependencies = [
- "bitflags 2.13.1",
- "log",
- "memoffset",
- "riscv",
- "riscv-decode",
- "riscv-h",
- "rustsbi",
- "sbi-rt",
- "sbi-spec",
- "thiserror 2.0.20",
- "tock-registers 0.10.1",
-]
 
 [[package]]
 name = "riscv_vplic"
@@ -7710,32 +7704,25 @@ name = "someboot"
 version = "0.5.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
- "aarch64-cpu-ext",
  "acpi",
- "aml",
- "ansi_rgb",
  "anyhow",
  "arrayvec",
+ "ax-cpu",
  "bit_field",
- "bitflags 2.13.1",
  "byte-unit",
  "byteorder",
- "derive_more",
  "fdt-edit",
  "fdt-raw",
  "heapless",
- "kasm-aarch64",
  "kernutil",
  "libc",
  "log",
  "loongArch64",
  "num-align",
- "numeric-enum-macro",
  "page-table-generic",
  "prettyplease 0.3.0",
  "quote",
  "ranges-ext",
- "rgb",
  "sbi-rt",
  "smccc",
  "some-serial",
@@ -7743,6 +7730,7 @@ dependencies = [
  "syn 3.0.5",
  "thiserror 2.0.20",
  "tock-registers 0.10.1",
+ "trait-ffi",
  "uefi",
  "uguid",
  "x86",
@@ -7787,15 +7775,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
-]
-
-[[package]]
-name = "spinning_top"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b9eb1a2f4c41445a3a0ff9abc5221c5fcd28e1f13cd7c0397706f9ac938ddb0"
-dependencies = [
- "lock_api",
 ]
 
 [[package]]
@@ -8130,12 +8109,6 @@ dependencies = [
  "core-foundation-sys",
  "libc",
 ]
-
-[[package]]
-name = "tap"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "tar"
@@ -9774,15 +9747,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
-name = "wyz"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
-dependencies = [
- "tap",
-]
-
-[[package]]
 name = "x2apic"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9828,23 +9792,6 @@ dependencies = [
  "const_fn",
  "rustversion",
  "volatile 0.4.6",
-]
-
-[[package]]
-name = "x86_vcpu"
-version = "0.7.1"
-dependencies = [
- "bit_field",
- "bitflags 2.13.1",
- "log",
- "memoffset",
- "numeric-enum-macro",
- "paste",
- "raw-cpuid 11.6.0",
- "tock-registers 0.10.1",
- "x86",
- "x86_64",
- "x86_vlapic",
 ]
 
 [[package]]

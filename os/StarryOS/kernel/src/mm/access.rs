@@ -12,8 +12,11 @@ use ax_io::prelude::*;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{
     cpu::{
-        UserAccessError, UserAccessType, UserAtomicError, UserAtomicU32Op, asm::user_copy,
-        trap::PageFaultFlags, user_atomic_u32, user_read_u32,
+        trap::PageFaultFlags,
+        user::{
+            UserAccessError, UserAccessType, UserAtomicError, UserAtomicU32Op, user_atomic_u32,
+            user_copy, user_read_u32,
+        },
     },
     paging::MappingFlags,
 };
@@ -34,7 +37,7 @@ fn access_user_memory<R>(task: &UserTaskRef, f: impl FnOnce() -> R) -> VmResult<
         return Err(VmError::AccessDenied);
     }
     assert!(
-        ax_runtime::hal::cpu::asm::irqs_enabled(),
+        ax_runtime::hal::cpu::interrupt::irqs_enabled(),
         "faultable user memory access requires IRQs enabled"
     );
     let _scope = task.as_thread().enter_user_memory_access();
@@ -313,7 +316,7 @@ fn user_range_probe_ready(range: UserAccessRange, intent: UserAccessIntent) -> b
         // SAFETY: IRQs are disabled for the whole loop by the guard above, which
         // is `user_access_ok_page`'s precondition (`PAR_EL1` not clobbered by a
         // concurrent `AT` on this CPU).
-        if !unsafe { ax_runtime::hal::cpu::asm::user_access_ok_page(page, architecture_access) } {
+        if !unsafe { ax_runtime::hal::cpu::user::user_access_ok_page(page, architecture_access) } {
             return false;
         }
         page += PAGE_SIZE_4K;
@@ -1029,7 +1032,11 @@ where
                 flush_tlb_range(aligned_addr, aligned_length);
                 action(addr.as_mut_ptr());
 
-                ax_runtime::hal::cache::clean_dcache_to_pou(addr, len);
+                let cache_range = ax_cpu::cache::CacheRange::new(addr, len)
+                    .map_err(|_| StarryError::BadAddress)?;
+                // SAFETY: the locked kernel mapping covers the range, and
+                // stop_machine excludes concurrent text execution and writes.
+                unsafe { ax_cpu::cache::clean_dcache_range_to_pou(cache_range) };
 
                 guard.protect(aligned_addr, aligned_length, original_flags)?;
                 return Ok(());
@@ -1063,7 +1070,7 @@ pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> StarryResult<()> {
 }
 
 pub fn flush_tlb_range(start: VirtAddr, size: usize) {
-    ax_runtime::hal::cache::flush_tlb_range(start, size);
+    ax_cpu::mmu::flush_tlb_range(start, size);
 }
 
 pub fn flush_tlb_range_sync(start: VirtAddr, size: usize) -> StarryResult {
@@ -1079,7 +1086,7 @@ pub fn flush_tlb_range_sync(start: VirtAddr, size: usize) -> StarryResult {
 }
 
 fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
-    ax_runtime::hal::cache::sync_kernel_text(start, size);
+    ax_cpu::cache::sync_kernel_text(start, size);
 }
 
 #[cfg(all(test, not(axtest)))]

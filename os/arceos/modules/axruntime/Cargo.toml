@@ -62,6 +62,7 @@ vsock = ["net", "ax-net/vsock", "ax-driver/vsock"]
 
 [dependencies]
 ax-alloc = {workspace = true}
+ax-cpu.workspace = true
 ax-crate-interface = {workspace = true}
 ax-ctor-bare = {workspace = true}
 ax-display = {workspace = true, optional = true}

@@ -30,6 +30,7 @@ mod host_link_symbols {
 
 mod cgroup;
 mod config;
+mod cpu_capabilities;
 mod ebpf;
 mod error;
 mod file;

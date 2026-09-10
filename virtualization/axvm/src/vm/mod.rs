@@ -1359,6 +1359,9 @@ impl VMMemoryRegion {
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
+mod translation;
+
 const TEMP_MAX_VCPU_NUM: usize = 64;
 
 /// A Virtual Machine.
@@ -1369,6 +1372,8 @@ pub struct AxVM {
     config: StdMutex<AxVMConfig>,
     /// Lifecycle and runtime state reached from both task and interrupt context.
     machine: IrqSafeMutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>,
+    #[cfg(not(target_arch = "aarch64"))]
+    translations: translation::TranslationGate,
     fw_cfg_payload: Arc<FwCfgPayloadSlot>,
 }
 
@@ -1394,6 +1399,8 @@ impl AxVM {
             name,
             config: StdMutex::new(config),
             machine: IrqSafeMutex::new(Machine::Ready(resources)),
+            #[cfg(not(target_arch = "aarch64"))]
+            translations: translation::TranslationGate::new(),
             fw_cfg_payload,
         });
 
@@ -1434,10 +1441,42 @@ impl AxVM {
         f(resources)
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
+    pub(crate) fn enter_translations(&self) -> Option<translation::GuestTranslation<'_>> {
+        self.translations.enter()
+    }
+
     fn with_resources_mut<F, R>(&self, f: F) -> AxVmResult<R>
     where
         F: FnOnce(&mut AxVMResources) -> AxVmResult<R>,
     {
+        #[cfg(not(target_arch = "aarch64"))]
+        let _translation_update = {
+            let update = self.translations.begin_update().ok_or_else(|| {
+                ax_err_type!(ResourceBusy, "nested table update already in progress")
+            })?;
+            if !update.quiescent() {
+                // Admission is already closed. A guest racing the final entry
+                // sees the pending physical IPI on hardware entry and exits.
+                let enabled = crate::percpu::enabled_cpu_mask();
+                for cpu in 0..usize::BITS as usize {
+                    if enabled & (1usize << cpu) != 0 {
+                        crate::host::task::send_ipi(cpu);
+                    }
+                }
+                let started = std::time::Instant::now();
+                while !update.quiescent() {
+                    if started.elapsed() >= std::time::Duration::from_secs(1) {
+                        return ax_err!(
+                            ResourceBusy,
+                            "guests did not retire for nested table update"
+                        );
+                    }
+                    std::hint::spin_loop();
+                }
+            }
+            update
+        };
         let mut machine = self.machine.lock();
         let resources = machine
             .resources_mut()

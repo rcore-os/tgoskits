@@ -1,4 +1,7 @@
-use ax_cpu::{FpuState, GeneralRegisters, uspace::UserContext};
+use ax_cpu::{
+    registers::{FpuState, GeneralRegisters},
+    user::UserContext,
+};
 
 use crate::{SignalSet, SignalStack};
 

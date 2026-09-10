@@ -31,6 +31,8 @@ mod timer;
 #[cfg(target_arch = "loongarch64")]
 mod unaligned;
 mod user;
+#[cfg(target_arch = "aarch64")]
+mod user_cpu_features;
 mod user_memory_access;
 mod user_wait;
 

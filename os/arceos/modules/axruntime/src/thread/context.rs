@@ -6,8 +6,9 @@ use core::{
     ptr::{self, NonNull},
 };
 
-use ax_hal::percpu::{
-    CpuPin, ExecutionContextHeader, PreparedContextSwitch, PreviousContextBinding,
+use ax_hal::{
+    cpu::context::TaskAnchor,
+    percpu::{CpuPin, ExecutionContextHeader, PreparedContextSwitch, PreviousContextBinding},
 };
 use ax_task::{
     runtime::{
@@ -402,7 +403,8 @@ pub(super) fn bind_runtime_context_thread(binding: ContextThreadBinding) -> Runt
     // Scheduler construction invokes this exactly once before the context can
     // enter a run queue. The bootstrap placeholder is likewise not consumed by
     // assembly until its first switch-out.
-    unsafe { &mut *context.inner.get() }.set_context_header(context.header().as_non_null());
+    unsafe { &mut *context.inner.get() }
+        .set_task_anchor(TaskAnchor::new(context.header().as_non_null()));
     RuntimeStatus::Success
 }
 
@@ -432,10 +434,10 @@ pub(super) fn scheduler_current_thread_identity() -> ThreadIdentityV1 {
 
 #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
 pub(super) fn validate_current_user_fp_clone_context() -> Result<(), TaskError> {
-    if !ax_hal::asm::irqs_enabled() || ax_hal::irq::in_irq_context() {
+    if !ax_cpu::interrupt::irqs_enabled() || ax_hal::irq::in_irq_context() {
         return Err(TaskError::UnsafeContext);
     }
-    ax_hal::asm::disable_irqs();
+    ax_cpu::interrupt::disable_irqs();
     // SAFETY: local IRQ exclusion pins the current header while validating
     // that this call originates from a runtime-owned user task context.
     let result = unsafe {
@@ -445,14 +447,14 @@ pub(super) fn validate_current_user_fp_clone_context() -> Result<(), TaskError> 
                 .map_err(runtime_status_error)
         })
     };
-    ax_hal::asm::enable_irqs();
+    ax_cpu::interrupt::enable_irqs();
     result
 }
 
 #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
 pub(super) fn inherit_current_user_fp_state(child_context: usize) {
     assert!(
-        ax_hal::asm::irqs_enabled() && !ax_hal::irq::in_irq_context(),
+        ax_cpu::interrupt::irqs_enabled() && !ax_hal::irq::in_irq_context(),
         "x86 FPU inheritance requires ordinary task context",
     );
     assert_ne!(
@@ -460,7 +462,7 @@ pub(super) fn inherit_current_user_fp_state(child_context: usize) {
         "x86 FPU inheritance requires a child context"
     );
     let child = ptr::with_exposed_provenance_mut::<RuntimeContext>(child_context);
-    ax_hal::asm::disable_irqs();
+    ax_cpu::interrupt::disable_irqs();
     // SAFETY: the child allocation is exclusively owned by resource creation
     // and remains unpublished. IRQ exclusion pins the current parent context
     // and its CPU-local FPU owner through the direct XSAVE into the child.
@@ -474,15 +476,16 @@ pub(super) fn inherit_current_user_fp_state(child_context: usize) {
             parent_architecture_context.clone_user_fp_state_into(child_architecture_context);
         })
     };
-    ax_hal::asm::enable_irqs();
+    ax_cpu::interrupt::enable_irqs();
 }
 
 #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
-pub(super) fn capture_current_user_fp_state() -> Result<ax_hal::cpu::UserXstate, TaskError> {
-    if !ax_hal::asm::irqs_enabled() || ax_hal::irq::in_irq_context() {
+pub(super) fn capture_current_user_fp_state()
+-> Result<ax_hal::cpu::registers::UserXstate, TaskError> {
+    if !ax_cpu::interrupt::irqs_enabled() || ax_hal::irq::in_irq_context() {
         return Err(TaskError::UnsafeContext);
     }
-    ax_hal::asm::disable_irqs();
+    ax_cpu::interrupt::disable_irqs();
     // SAFETY: local IRQ exclusion pins the runtime context and CPU-local FPU
     // owner while the current hardware image is copied into a task-owned value.
     let result = unsafe {
@@ -494,18 +497,18 @@ pub(super) fn capture_current_user_fp_state() -> Result<ax_hal::cpu::UserXstate,
             Ok(architecture_context.capture_user_fp_state())
         })
     };
-    ax_hal::asm::enable_irqs();
+    ax_cpu::interrupt::enable_irqs();
     result
 }
 
 #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
 pub(super) fn replace_current_user_fp_state(
-    state: ax_hal::cpu::UserXstate,
+    state: ax_hal::cpu::registers::UserXstate,
 ) -> Result<(), TaskError> {
-    if !ax_hal::asm::irqs_enabled() || ax_hal::irq::in_irq_context() {
+    if !ax_cpu::interrupt::irqs_enabled() || ax_hal::irq::in_irq_context() {
         return Err(TaskError::UnsafeContext);
     }
-    ax_hal::asm::disable_irqs();
+    ax_cpu::interrupt::disable_irqs();
     // SAFETY: local IRQ exclusion pins the runtime context and CPU-local FPU
     // owner through the task-memory replacement, hardware restore, and owner
     // publication transaction.
@@ -519,17 +522,17 @@ pub(super) fn replace_current_user_fp_state(
             Ok(())
         })
     };
-    ax_hal::asm::enable_irqs();
+    ax_cpu::interrupt::enable_irqs();
     result
 }
 
 pub(super) fn reset_current_user_fp_state() -> Result<(), TaskError> {
     #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
     {
-        if !ax_hal::asm::irqs_enabled() || ax_hal::irq::in_irq_context() {
+        if !ax_cpu::interrupt::irqs_enabled() || ax_hal::irq::in_irq_context() {
             return Err(TaskError::UnsafeContext);
         }
-        ax_hal::asm::disable_irqs();
+        ax_cpu::interrupt::disable_irqs();
         // SAFETY: local IRQ exclusion pins the current runtime context and its
         // CPU-local FPU owner through the reset and owner publication.
         let result = unsafe {
@@ -542,7 +545,7 @@ pub(super) fn reset_current_user_fp_state() -> Result<(), TaskError> {
                 Ok(())
             })
         };
-        ax_hal::asm::enable_irqs();
+        ax_cpu::interrupt::enable_irqs();
         result
     }
     #[cfg(not(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace")))]
@@ -567,7 +570,7 @@ fn prepare_runtime_thread_switch<'switch>(
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
-pub(super) fn install_initial_fp_state(context: usize, fp_state: ax_hal::cpu::FpState) {
+pub(super) fn install_initial_fp_state(context: usize, fp_state: ax_hal::cpu::registers::FpState) {
     let context = ptr::with_exposed_provenance_mut::<RuntimeContext>(context);
     // SAFETY: the context allocation was just created and has not been
     // published, so this construction path exclusively owns its FP snapshot.
@@ -596,13 +599,13 @@ pub(super) unsafe fn switch_runtime_context(plan: RuntimeSwitchPlan) {
             let previous_arch_context = &mut *previous_context.inner.get();
             let next_arch_context = &mut *next_context.inner.get();
             debug_assert_eq!(
-                previous_arch_context.context_header(),
-                Some(previous_context.header().as_non_null()),
+                previous_arch_context.task_anchor(),
+                Some(TaskAnchor::new(previous_context.header().as_non_null())),
                 "outgoing architecture context retained a different current header"
             );
             debug_assert_eq!(
-                next_arch_context.context_header(),
-                Some(next_context.header().as_non_null()),
+                next_arch_context.task_anchor(),
+                Some(TaskAnchor::new(next_context.header().as_non_null())),
                 "incoming architecture context retained a different current header"
             );
             let prepared_address_space =
@@ -627,8 +630,8 @@ pub(super) unsafe fn switch_runtime_context(plan: RuntimeSwitchPlan) {
             let qperf_prepare_binding_finished_ns =
                 crate::clock_event_runtime::monotonic_now().as_nanos();
             assert_eq!(
-                next_arch_context.context_header(),
-                Some(prepared.next_header()),
+                next_arch_context.task_anchor(),
+                Some(TaskAnchor::new(prepared.next_header())),
                 "prepared switch token must belong to the next task context",
             );
             previous_arch_context.prepare_switch_to(next_arch_context);
@@ -682,10 +685,12 @@ pub(super) unsafe fn switch_runtime_context(plan: RuntimeSwitchPlan) {
             let switch_baton = crate::guard::prepare_scheduler_switch_baton(pin);
             prepared_address_space.commit();
             switch_baton.transfer();
-            // SAFETY: switch_to_prepared consumes the sole publication token
-            // immediately after the baton transfer and enters naked assembly
-            // without another fallible or ownership-sensitive Rust operation.
-            previous_arch_context.switch_to_prepared(next_arch_context, prepared);
+            // SAFETY: scheduling and IRQ exclusion remain active. Commit consumes
+            // the sole publication token after the baton transfer. The next
+            // operation is the inlined machine transfer; no checks, callbacks
+            // or destructors run between publication and the naked switch.
+            prepared.commit();
+            previous_arch_context.switch_to(next_arch_context);
         })
     };
 }

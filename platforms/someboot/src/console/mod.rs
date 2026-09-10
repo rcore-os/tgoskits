@@ -371,8 +371,8 @@ impl<T> EarlyconMutex<T> {
             return unsafe { f(&mut *self.inner.get()) };
         }
 
-        let irq_enabled = crate::irq::irq_local_is_enabled();
-        crate::irq::irq_local_set_enable(false);
+        let irq_enabled = ax_cpu::interrupt::irqs_enabled();
+        ax_cpu::interrupt::disable_irqs();
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -384,7 +384,9 @@ impl<T> EarlyconMutex<T> {
         }
         let ret = unsafe { f(&mut *self.inner.get()) };
         self.locked.store(false, Ordering::Release);
-        crate::irq::irq_local_set_enable(irq_enabled);
+        if irq_enabled {
+            ax_cpu::interrupt::enable_irqs();
+        }
         ret
     }
 }

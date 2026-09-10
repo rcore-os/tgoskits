@@ -10,7 +10,6 @@ use ax_std::os::arceos::{
         task::{AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
     },
     guard::PreemptGuard,
-    modules::ax_hal,
     task::{
         sched::{CpuSet, RtPriority, SchedulePolicy},
         thread::current::current_thread_id,
@@ -33,7 +32,7 @@ fn wait_until(mut condition: impl FnMut() -> bool, message: &'static str) {
 }
 
 pub fn run() -> crate::TestResult {
-    assert!(ax_hal::asm::irqs_enabled());
+    assert!(ax_cpu::interrupt::irqs_enabled());
     assert!(ax_set_current_affinity(AxCpuMask::one_shot(0)).is_ok());
     READY.store(false, Ordering::Release);
     GO.store(false, Ordering::Release);
@@ -71,7 +70,7 @@ pub fn run() -> crate::TestResult {
         !RAN.load(Ordering::Acquire),
         "inner nested guard exit enabled preemption too early"
     );
-    assert!(ax_hal::asm::irqs_enabled());
+    assert!(ax_cpu::interrupt::irqs_enabled());
 
     drop(outer);
     wait_until(
@@ -83,6 +82,6 @@ pub fn run() -> crate::TestResult {
         ax_std::os::arceos::task::sched::cpu_topology_len().unwrap(),
     ))
     .expect("test owner must restore full affinity");
-    assert!(ax_hal::asm::irqs_enabled());
+    assert!(ax_cpu::interrupt::irqs_enabled());
     Ok(())
 }

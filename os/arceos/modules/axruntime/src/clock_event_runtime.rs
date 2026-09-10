@@ -57,7 +57,7 @@ fn with_local_clock_event_mut<R>(
     operation: impl for<'value> FnOnce(&'value mut crate::clock_event::LocalClockEvent) -> R,
 ) -> R {
     assert!(
-        !ax_hal::asm::irqs_enabled(),
+        !ax_cpu::interrupt::irqs_enabled(),
         "mutable clockevent access requires local IRQ exclusion"
     );
     // SAFETY: every caller is either offline initialization or the local timer
@@ -72,7 +72,7 @@ fn with_local_clock_event_mut_pinned<R>(
     operation: impl for<'value> FnOnce(&'value mut crate::clock_event::LocalClockEvent) -> R,
 ) -> R {
     assert!(
-        !ax_hal::asm::irqs_enabled(),
+        !ax_cpu::interrupt::irqs_enabled(),
         "mutable clockevent access requires local IRQ exclusion"
     );
     // SAFETY: the caller's local IRQ exclusion covers the supplied pin and
@@ -141,7 +141,7 @@ fn commit_local_clock_event<R>(
     )
 }
 pub(crate) fn enable_irqs_after_scheduler_online(_online: crate::thread::PublishedCpuOnline) {
-    ax_hal::asm::enable_irqs();
+    ax_cpu::interrupt::enable_irqs();
 }
 #[must_use = "a claimed clockevent firing transaction must be finished"]
 struct ClockEventFiringTransaction {
@@ -267,7 +267,7 @@ pub(crate) fn publish_local_scheduler_runtime_deadline(
     update: ax_task::runtime::cpu::SchedulerRuntimeDeadline,
 ) {
     assert!(
-        !ax_hal::asm::irqs_enabled(),
+        !ax_cpu::interrupt::irqs_enabled(),
         "scheduler runtime deadline requires local IRQ exclusion"
     );
     let deadline = resolve_scheduler_runtime_deadline(update);
@@ -279,7 +279,7 @@ pub(crate) fn publish_local_scheduler_runtime_deadline(
 /// Completes Linux-style deferred hrtimer rearm before local IRQ restoration.
 pub(crate) fn finish_deferred_rearm() {
     assert!(
-        !ax_hal::asm::irqs_enabled(),
+        !ax_cpu::interrupt::irqs_enabled(),
         "deferred clockevent rearm requires local IRQ exclusion"
     );
     if !deferred_rearm_pending() {
@@ -292,7 +292,7 @@ pub(crate) fn finish_deferred_rearm() {
 
 pub(crate) fn finish_deferred_rearm_pinned(pin: &cpu_local::CpuPin<'_>) {
     assert!(
-        !ax_hal::asm::irqs_enabled(),
+        !ax_cpu::interrupt::irqs_enabled(),
         "deferred clockevent rearm requires local IRQ exclusion"
     );
     let pending = DEFERRED_REARM_PENDING.with_current(pin, |state| state.load(Ordering::Acquire));
@@ -361,7 +361,7 @@ pub(crate) fn next_periodic_deadline(
     next
 }
 pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
-    debug_assert!(!ax_hal::asm::irqs_enabled());
+    debug_assert!(!ax_cpu::interrupt::irqs_enabled());
     let tick_mode = match ctx.origin {
         ax_hal::irq::IrqOrigin::Kernel => ax_task::runtime::service::SchedulerTickMode::System,
         ax_hal::irq::IrqOrigin::User => ax_task::runtime::service::SchedulerTickMode::User,

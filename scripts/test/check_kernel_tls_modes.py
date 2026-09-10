@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the compiled TLS mode and feature propagation through ax-cpu.
+"""Verify the compiled TLS mode and feature propagation from cpu-local into ax-cpu.
 
 Cargo's resolved features and build-script output must agree: adding uspace to
 an existing TLS build must stop selecting kernel TLS in both ax-cpu and cpu-local.
@@ -15,7 +15,7 @@ def main():
     # Start with the formerly rejected combination, then toggle the TLS mode.
     for features, expected in [("tls,uspace", False), ("tls", True),
                                ("uspace", False), ("", False), ("tls", True)]:
-        args = ["--locked", "-p", "ax-cpu", "--lib", "--no-default-features"]
+        args = ["--locked", "-p", "cpu-local", "--lib", "--no-default-features"]
         if features:
             args += ["--features", features]
         subprocess.run(["cargo", "check", *args], cwd=root, check=True)
@@ -24,7 +24,7 @@ def main():
             ["cargo", "tree", *tree_args, "--prefix", "none", "--format", "{p}|{f}"],
             cwd=root, text=True,
         )
-        dependency = next(line for line in tree.splitlines() if line.startswith("cpu-local "))
+        dependency = next(line for line in tree.splitlines() if line.startswith("ax-cpu "))
         resolved = set(dependency.split("|", 1)[1].removesuffix(" (*)").split(","))
         assert set(filter(None, features.split(","))) <= resolved, dependency
         for package in ["ax-cpu", "cpu-local"]:

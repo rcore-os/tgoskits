@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::{future::poll_fn, task::Poll};
 
-use ax_runtime::hal::cpu::uspace::UserContext;
+use ax_runtime::hal::cpu::user::UserContext;
 use linux_raw_sys::general::{
     MINSIGSTKSZ, SI_TKILL, SI_USER, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, SS_DISABLE, SS_FLAG_BITS,
     SS_ONSTACK, kernel_sigaction, siginfo, timespec,

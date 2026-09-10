@@ -15,7 +15,7 @@
 | 仅 `uspace` | 关闭 | 保持原有用户态模式 |
 | `tls,uspace` | 关闭 | 与仅 `uspace` 相同 |
 
-Cargo cfg 不跨包传播，因此依赖边必须转发 feature。`ax-cpu/uspace` 转发到 `cpu-local/uspace`；HAL 和动态平台同时向自身直接依赖转发，`somehal` 继续转发到 `someboot`。
+Cargo cfg 不跨包传播，因此依赖边必须转发 feature。`cpu-local/uspace` 转发到 `ax-cpu/uspace`；HAL 和动态平台同时向自身直接依赖转发，`somehal` 继续转发到 `someboot`。
 
 ### 1.2 所有权与接口
 
@@ -33,6 +33,6 @@ RISC-V 用户态模式在内核使用 `tp` 保存当前执行上下文，并令 
 
 ### 2.2 回归与发布
 
-`scripts/test/check_kernel_tls_modes.py` 编译真实 `ax-cpu`，检查依赖 feature 传播和两个底层包的 rustc cfg，并在同一构建目录切换四种组合。QEMU 验证独立保留 ArceOS 多任务 TLS、Starry 用户态 clone/TLS 和 Axvisor 宿主 TLS 路径，不能用宿主配置检查替代。
+`scripts/test/check_kernel_tls_modes.py` 编译真实 `cpu-local` 及其 `ax-cpu` 依赖，检查向 CPU 层的 feature 传播和两个底层包的 rustc cfg，并在同一构建目录切换四种组合。QEMU 验证独立保留 ArceOS 多任务 TLS、Starry 用户态 clone/TLS 和 Axvisor 宿主 TLS 路径，不能用宿主配置检查替代。
 
 旧注册表基线仍含互斥报错。先发布能够接受双开的新版本，再验证真实注册表基线并恢复相关 semver 检查。回滚通过撤销模式改动和依赖版本更新完成；已采用双开的调用方需要同时恢复为单独 `uspace`。合入前应由启动与调度领域审查人核对寄存器所有权及真实运行证据。

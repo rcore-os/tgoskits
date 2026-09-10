@@ -9,7 +9,7 @@ use super::{
     ArceosBuildInfo, ArceosBuildMode,
     info::{load_build_info, resolve_build_info_path_in_dir},
     load_arceos_build_mode, load_c_app_cargo_config, load_cargo_config, resolve_app_c_dir,
-    resolve_app_c_mode, resolve_build_info_path,
+    resolve_app_c_mode,
 };
 use crate::{build, context::ResolvedBuildRequest};
 
@@ -98,7 +98,7 @@ fn qemu_build_mode_initializes_missing_configs_for_all_supported_targets() {
 
         let mode = load_arceos_build_mode(&path).unwrap();
 
-        assert_eq!(mode, ArceosBuildMode::RustStd);
+        assert_eq!(mode, ArceosBuildMode::Rust);
         assert!(path.is_file());
     }
 }
@@ -111,7 +111,7 @@ fn build_config_without_app_c_uses_std_rust_mode() {
 
     let mode = load_arceos_build_mode(&path).unwrap();
 
-    assert_eq!(mode, ArceosBuildMode::RustStd);
+    assert_eq!(mode, ArceosBuildMode::Rust);
 }
 
 #[test]
@@ -341,4 +341,36 @@ fn to_cargo_config_maps_max_cpu_num_to_smp_env_for_dynamic_platforms() {
 
     assert_eq!(cargo.env.get("SMP"), Some(&"4".to_string()));
     assert!(cargo.features.contains(&"ax-std/smp".to_string()));
+}
+
+#[test]
+fn freestanding_rust_uses_core_alloc_without_the_std_linker_wrapper() {
+    let root = tempdir().unwrap();
+    let path = root
+        .path()
+        .join("build-aarch64-unknown-none-softfloat.toml");
+    fs::write(
+        &path,
+        "freestanding = true\nfeatures = []\nlog = \"Info\"\n",
+    )
+    .unwrap();
+    let request = request("arceos-helloworld", "aarch64-unknown-none-softfloat", path);
+    let cargo = load_cargo_config(&request).unwrap();
+    assert_eq!(
+        cargo.target,
+        "scripts/targets/bare/aarch64-unknown-none-softfloat.json"
+    );
+    assert!(
+        cargo
+            .args
+            .windows(2)
+            .any(|pair| pair == ["-Z", "build-std=core,alloc"])
+    );
+    assert!(cargo.pre_build_cmds.is_empty());
+    assert!(
+        cargo
+            .args
+            .iter()
+            .any(|argument| argument.contains("-Tlinker.x"))
+    );
 }
