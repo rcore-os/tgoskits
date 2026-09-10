@@ -1,7 +1,10 @@
-//! 应用壳：token 门 → 布局 → 标签栏 → 导航（manifest 驱动）。
+//! 应用壳：拉能力清单 → token 门 → 布局 → 标签栏 → 导航（manifest 驱动）。
 //!
 //! 不变量 5：本目录下没有一处 import panels/*，也没有任何 kind 字面量。
 //! 面板怎么渲染由注入进来的 registry 决定（types.ts 里的 PanelRegistry 契约）。
+//!
+//! manifest 是**开放**端点（`GET /api/`），所以在登录前就取：token 门需要它声明
+//! 的 auth 探测路径才能校验 token，而不是自己去猜一个端点。
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useApiClient } from '@/api/client'
@@ -20,52 +23,84 @@ export interface TabState {
 
 export default function App({ registry }: { registry: PanelRegistry }) {
   const [token, setToken] = useState<string | null>(null)
+  const [manifest, setManifest] = useState<Manifest | null>(null)
+  const [manifestError, setManifestError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
 
-  if (token === null) return <TokenGate onSubmit={setToken} />
-  return <Shell registry={registry} token={token} onResetToken={() => setToken(null)} />
+  useEffect(() => {
+    const ac = new AbortController()
+    fetch('/api/', { signal: ac.signal })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`能力清单返回 HTTP ${res.status}`)
+        return (await res.json()) as Manifest
+      })
+      .then((fetched) => {
+        setManifest(fetched)
+        setManifestError(null)
+      })
+      .catch((e: unknown) => {
+        if (ac.signal.aborted) return
+        setManifestError(describeError(e))
+      })
+    return () => ac.abort()
+  }, [reloadKey])
+
+  const reloadManifest = useCallback(() => setReloadKey((k) => k + 1), [])
+
+  if (token === null) {
+    return (
+      <TokenGate
+        auth={manifest?.auth ?? null}
+        manifestError={manifestError}
+        onRetryManifest={reloadManifest}
+        onSubmit={setToken}
+      />
+    )
+  }
+
+  return (
+    <Shell
+      registry={registry}
+      token={token}
+      manifest={manifest}
+      manifestError={manifestError}
+      onReloadManifest={reloadManifest}
+      onResetToken={() => setToken(null)}
+    />
+  )
 }
 
 function Shell({
   registry,
   token,
+  manifest,
+  manifestError,
+  onReloadManifest,
   onResetToken,
 }: {
   registry: PanelRegistry
   token: string
+  manifest: Manifest | null
+  manifestError: string | null
+  onReloadManifest: () => void
   onResetToken: () => void
 }) {
   const api = useApiClient(token)
-  const [manifest, setManifest] = useState<Manifest | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [reloadKey, setReloadKey] = useState(0)
   const [tabs, setTabs] = useState<TabState[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const bootstrappedRef = useRef(false)
 
+  // 默认打开第一个面板，省掉一次点击
   useEffect(() => {
-    const ac = new AbortController()
-    api
-      .get<Manifest>('/api/', ac.signal)
-      .then((m) => {
-        setManifest(m)
-        setError(null)
-        // 默认打开第一个面板，省掉一次点击
-        if (!bootstrappedRef.current) {
-          bootstrappedRef.current = true
-          const first = m.resources[0]
-          if (first) {
-            const tab: TabState = { id: tabId(0), kind: first.kind }
-            setTabs([tab])
-            setActiveId(tab.id)
-          }
-        }
-      })
-      .catch((e: unknown) => {
-        if (ac.signal.aborted) return
-        setError(describeError(e))
-      })
-    return () => ac.abort()
-  }, [api, reloadKey])
+    if (manifest === null || bootstrappedRef.current) return
+    bootstrappedRef.current = true
+    const first = manifest.resources[0]
+    if (first) {
+      const tab: TabState = { id: tabId(0), kind: first.kind }
+      setTabs([tab])
+      setActiveId(tab.id)
+    }
+  }, [manifest])
 
   // 壳级资源快照：跟随 manifest 给 vms 资源的 href，不硬编码端点。
   const vmsHref = manifest?.resources.find((r) => r.kind === 'vms')?.href ?? null
@@ -117,7 +152,7 @@ function Shell({
             manifest proto {manifest?.proto ?? '-'} · {manifest?.resources.length ?? 0} 个资源
           </span>
           {/* 重扫 manifest：后端插拔了能力，点一下导航就跟着变 */}
-          <Button size="sm" variant="ghost" onClick={() => setReloadKey((k) => k + 1)}>
+          <Button size="sm" variant="ghost" onClick={onReloadManifest}>
             刷新能力清单
           </Button>
           {/* token 只存在内存态：写操作报 401 时唯一的补救就是重新输入，
@@ -128,11 +163,11 @@ function Shell({
         </div>
       </header>
 
-      {error && (
+      {manifestError && (
         <div className="flex items-center justify-between gap-4 border-b bg-destructive/10 px-4 py-2 text-sm">
           {/* 错误消息同时给出 HTTP 状态与后端错误两个维度（不变量 11） */}
-          <span className="font-mono text-destructive">{error}</span>
-          <Button size="sm" variant="outline" onClick={() => setReloadKey((k) => k + 1)}>
+          <span className="font-mono text-destructive">{manifestError}</span>
+          <Button size="sm" variant="outline" onClick={onReloadManifest}>
             重试
           </Button>
         </div>
@@ -149,6 +184,7 @@ function Shell({
         />
         <Tabs
           resources={manifest?.resources ?? []}
+          auth={manifest?.auth}
           tabs={tabs}
           activeId={activeId}
           registry={registry}

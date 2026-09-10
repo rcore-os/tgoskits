@@ -5,6 +5,7 @@
 //! 路由全部从 `meta.href` 派生，不硬编码端点。
 
 import { useState } from 'react'
+import { verifyToken } from '@/api/auth'
 import {
   ApiError,
   describeError,
@@ -27,6 +28,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import {
   Dialog,
   DialogContent,
@@ -108,7 +110,7 @@ function actionsFor(status: string): RowAction[] {
   }
 }
 
-export default function VmsPanel({ meta, api, resources = [], refresh }: PanelProps) {
+export default function VmsPanel({ meta, api, resources = [], refresh, auth }: PanelProps) {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<{ id: number; op: LifecycleOp } | null>(null)
   const [confirming, setConfirming] = useState<{ op: ActionName; id: number } | null>(null)
@@ -118,6 +120,30 @@ export default function VmsPanel({ meta, api, resources = [], refresh }: PanelPr
   // happened.
   const [createError, setCreateError] = useState<string | null>(null)
   const [toml, setToml] = useState(DEFAULT_VM_TOML)
+  // 危险操作（create/delete）要求重输 token：这是确认式摩擦，不是安全边界——
+  // token 本来就在这个浏览器里。校验复用 api/auth.ts 的同一原语。
+  const [retyped, setRetyped] = useState('')
+  const [verifying, setVerifying] = useState(false)
+  const [confirmError, setConfirmError] = useState<string | null>(null)
+
+  /**
+   * 危险操作前的 token 复核。
+   * 后端未声明校验端点（auth 缺失）时退化为放行，并把这句话写在对话框里。
+   */
+  const verifyRetyped = async (report: (message: string) => void): Promise<boolean> => {
+    if (!auth) return true
+    const candidate = retyped.trim()
+    if (!candidate) {
+      report('请重新输入 token')
+      return false
+    }
+    setVerifying(true)
+    const verdict = await verifyToken(auth, candidate)
+    setVerifying(false)
+    if (verdict.ok) return true
+    report(verdict.reason)
+    return false
+  }
 
   // 资源根来自 manifest：详情/动作路由都从它派生（href + "/{id}" 等）。
   const base = meta.href
@@ -146,8 +172,9 @@ export default function VmsPanel({ meta, api, resources = [], refresh }: PanelPr
   }
 
   const runCreate = async () => {
-    setBusy({ id: -1, op: 'create' })
     setCreateError(null)
+    if (!(await verifyRetyped(setCreateError))) return
+    setBusy({ id: -1, op: 'create' })
     try {
       const created = await api.post<{ id: number }>(`${base}/create`, { toml })
       setCreateOpen(false)
@@ -187,6 +214,7 @@ export default function VmsPanel({ meta, api, resources = [], refresh }: PanelPr
             disabled={busy !== null}
             onClick={() => {
               setCreateError(null)
+              setRetyped('')
               setCreateOpen(true)
             }}
           >
@@ -229,6 +257,8 @@ export default function VmsPanel({ meta, api, resources = [], refresh }: PanelPr
                       onClick={() => {
                         // stop/delete 是破坏性且不可撤销的，先二次确认
                         if (action.op === 'stop' || action.op === 'delete') {
+                          setRetyped('')
+                          setConfirmError(null)
                           setConfirming({ op: action.op, id: vm.id })
                         } else {
                           void runAction(action.op, vm.id)
@@ -267,13 +297,50 @@ export default function VmsPanel({ meta, api, resources = [], refresh }: PanelPr
                 : '停止是异步操作：状态会先进入 stopping，等 vCPU 退出后才到达 stopped。'}
             </DialogDescription>
           </DialogHeader>
+
+          {confirming?.op === 'delete' && auth && (
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground" htmlFor="confirm-token">
+                删除不可逆：请重新输入管理 token 确认
+              </label>
+              <Input
+                id="confirm-token"
+                type="password"
+                value={retyped}
+                onChange={(e) => {
+                  setRetyped(e.target.value)
+                  setConfirmError(null)
+                }}
+                placeholder="Bearer token"
+                aria-label="确认删除的 token"
+              />
+              {confirmError && (
+                <p className="font-mono text-xs text-destructive" role="alert">
+                  {confirmError}
+                </p>
+              )}
+            </div>
+          )}
+
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirming(null)}>
               取消
             </Button>
             <Button
               variant="destructive"
-              onClick={() => confirming && void runAction(confirming.op, confirming.id)}
+              disabled={verifying}
+              onClick={() => {
+                if (!confirming) return
+                const target = confirming
+                void (async () => {
+                  // 删除不可逆：先让后端复核一次重输的 token 再执行。
+                  if (target.op === 'delete') {
+                    setConfirmError(null)
+                    if (!(await verifyRetyped(setConfirmError))) return
+                  }
+                  await runAction(target.op, target.id)
+                })()
+              }}
             >
               确认
             </Button>
@@ -296,6 +363,24 @@ export default function VmsPanel({ meta, api, resources = [], refresh }: PanelPr
             value={toml}
             onChange={(e) => setToml(e.target.value)}
           />
+          {auth && (
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground" htmlFor="create-token">
+                创建会占用资源：请重新输入管理 token 确认
+              </label>
+              <Input
+                id="create-token"
+                type="password"
+                value={retyped}
+                onChange={(e) => {
+                  setRetyped(e.target.value)
+                  setCreateError(null)
+                }}
+                placeholder="Bearer token"
+                aria-label="确认创建的 token"
+              />
+            </div>
+          )}
           {createError && (
             <p className="font-mono text-xs text-destructive" role="alert">
               {createError}
@@ -305,8 +390,11 @@ export default function VmsPanel({ meta, api, resources = [], refresh }: PanelPr
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
               取消
             </Button>
-            <Button disabled={busy !== null || !toml.trim()} onClick={() => void runCreate()}>
-              创建
+            <Button
+              disabled={busy !== null || verifying || !toml.trim()}
+              onClick={() => void runCreate()}
+            >
+              {verifying ? '校验中…' : '创建'}
             </Button>
           </DialogFooter>
         </DialogContent>

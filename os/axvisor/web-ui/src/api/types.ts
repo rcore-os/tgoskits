@@ -16,9 +16,20 @@ export interface ResourceMeta {
   verbs: string[]
 }
 
+/**
+ * manifest 声明的鉴权方式与 token 探测路径。
+ * 客户端从这里取探测端点，不硬编码——后端换路径前端不必改。
+ */
+export interface AuthProbe {
+  href: string
+  scheme: string
+}
+
 /** 后端 manifest（`GET /api/`）：proto 之后只增不改，老前端对未知字段降级。 */
 export interface Manifest {
   proto: number
+  /** 可选：后端未声明时前端只能退化为「写入时才校验」。 */
+  auth?: AuthProbe
   resources: ResourceMeta[]
 }
 
@@ -29,9 +40,9 @@ export interface PanelProps {
   token: string
   api: ApiClient
   resources?: VmInfo[]
-  focusVm?: number | null
-  /** 变更操作收口后立即刷新壳级快照。 */
   refresh?: () => void
+  /** manifest 声明的鉴权方式；面板做危险操作确认时用它校验重输的 token。 */
+  auth?: AuthProbe
 }
 
 export type PanelComponent = ComponentType<PanelProps>

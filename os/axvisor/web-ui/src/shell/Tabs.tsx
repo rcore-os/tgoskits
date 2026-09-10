@@ -7,7 +7,7 @@
 
 import { Suspense, useState } from 'react'
 import type { ApiClient } from '@/api/client'
-import type { PanelRegistry, ResourceMeta, VmInfo } from '@/api/types'
+import type { AuthProbe, PanelRegistry, ResourceMeta, VmInfo } from '@/api/types'
 import { cn } from '@/lib/utils'
 import type { TabState } from './App'
 
@@ -22,14 +22,28 @@ interface TabsProps {
   vms: VmInfo[]
   /** 变更操作收口后立即刷新壳级快照 */
   refresh: () => void
+  /** manifest 声明的鉴权方式，透传给面板做危险操作确认 */
+  auth?: AuthProbe
   onActivate: (id: string) => void
   onClose: (id: string) => void
   onNew: (kind: string) => void
 }
 
 export function Tabs(props: TabsProps) {
-  const { resources, tabs, activeId, registry, api, token, vms, refresh, onActivate, onClose, onNew } =
-    props
+  const {
+    resources,
+    tabs,
+    activeId,
+    registry,
+    api,
+    token,
+    vms,
+    refresh,
+    auth,
+    onActivate,
+    onClose,
+    onNew,
+  } = props
   const [pickerOpen, setPickerOpen] = useState(false)
 
   // 同 kind 多实例时给标签编号，方便辨认是哪个会话
@@ -117,7 +131,14 @@ export function Tabs(props: TabsProps) {
           return (
             <div key={t.id} className={cn('h-full', t.id === activeId ? 'block' : 'hidden')}>
               <Suspense fallback={<p className="text-sm text-muted-foreground">加载面板…</p>}>
-                <Panel meta={meta} api={api} token={token} resources={vms} refresh={refresh} />
+                <Panel
+                  meta={meta}
+                  api={api}
+                  token={token}
+                  resources={vms}
+                  refresh={refresh}
+                  auth={auth}
+                />
               </Suspense>
             </div>
           )
