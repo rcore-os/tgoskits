@@ -575,11 +575,11 @@ musl 的 `clone()` 包装会在进入内核前拒绝 `CLONE_THREAD`，不能用�
 
 本轮还发现必须继续修正的边界，不能把上面的成功扩大为完整 vfork/MM 对齐：Linux 的 `mm_release` 在 `exit_mm` 内通知 vfork，早于 `exit_shm/exit_files`；当前通知仍在现有退出清理尾部，exec 也仍在现有清理尾部通知。更重要的是，原 SHM 用例要求共享 MM 下孩子退出后 `shm_nattch == 1`，在 Linux 上不成立：宿主的 wait 前后均为 2，固定 Linux `shm_vm_ops` 的 open/close 也把附接绑定于 VMA，而非创建映射的 PID。Starry `clear_proc_shm` 按 PID 退出主动 unmap，会移除仍由共享 MM 使用的映射。原 SHM 通过记录仅说明满足旧测试，撤回其 Linux 等价性解释；需要修改实际 MM/VMA 所有权后，用正确的共享映射存续和分离行为替换旧预期，不能只改断言。
 
-本表限定当前已核实范围，未完成四架构或后续 MM 改动的项目继续保留缺口。
+本表限定当前已核实范围；4cacc4874b 的四架构等待回归已完成，后续 MM 改动和尚未直接观测的 ptrace 事件仍保留缺口。
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| clone(VFORK, SIGKILL) / X56、G220 | [固定 wait_for_vfork_done](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1430) | 父线程可在孩子完成前被 SIGKILL 终止；不报告 VFORK_DONE | `sys_clone → Thread::wait_vfork_done → pending(SIGKILL)` | 无法确认 | x86_64 红绿和宿主直接 ABI 通过，另外三架构待验证；ptrace 事件仍缺直接观测 |
+| clone(VFORK, SIGKILL) / X56、G220 | [固定 wait_for_vfork_done](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1430) | 父线程可在孩子完成前被 SIGKILL 终止；不报告 VFORK_DONE | `sys_clone → Thread::wait_vfork_done → pending(SIGKILL)` | 无法确认 | x86_64 红绿、四架构 QEMU 和宿主直接 ABI 通过；ptrace 事件仍缺直接观测 |
 | clone(THREAD,VFORK) / X56、G220 | [固定 kernel_clone](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 指定子线程释放 MM 后通知父线程 | `sys_clone → 子线程 ThreadLifecycle::vfork_done → do_exit` | 部分正确 | 每线程归属 x86 原始 ABI 红绿；通知仍晚于 Linux MM-release 阶段，见本节缺口 |
 | clone3(VFORK) / X435、G435 | [固定 clone3_args_valid](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L2962) | clone3 保留自己的 flag/exit-signal 校验，再进入相同等待协议 | `sys_clone3 → Clone3Args::try_from → CloneArgs → Thread` | 无法确认 | 参数校验保持，新的等待场景尚无 clone3 直接回归 |
 | vfork / X58；G 以 clone 实现 | [固定 mm_release](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1463) | 等待子线程 MM release，不等同进程资源全部清理 | `sys_vfork → sys_clone → Thread` | 部分正确 | 普通共享与阻塞通过；当前 exit/exec 通知位置仍待调整 |
@@ -590,4 +590,22 @@ musl 的 `clone()` 包装会在进入内核前拒绝 `CLONE_THREAD`，不能用�
 普通 OrangePi 最新失败日志为 `/tmp/pr2357-af015-orangepi-failure.log`：hardware-smoke 在 board-2 通过，network-smoke 在 board-3 的 init.sh 连续 touch 阶段之后停止，尚未出现交互 shell；DHCP 与 ARP 工作继续。不能再把该轮失败定位为 NPU 或已经开始的 iperf 工作负载。
 
 
-`Thread::prepare_vfork_done` 的分配故障已纳入现有 kernel 创建回滚用例：错误的 `Arc::new` 路径稳定失败于 `vfork completion allocation failure must return ENOMEM`，恢复可失败创建后 x86_64 kernel 183/183 通过；失败时完成槽保持空，并可在同一未发布线程上重新准备。日志 `/tmp/pr2357-vfork-allocation-{red,green}.log`。本轮尚未完成另外三架构和新版本定向 clippy，不沿用 `af0157b198` 的 93/93 作为新代码证据。
+`Thread::prepare_vfork_done` 的分配故障已纳入现有 kernel 创建回滚用例：错误的 `Arc::new` 路径稳定失败于 `vfork completion allocation failure must return ENOMEM`，恢复可失败创建后 x86_64 kernel 183/183 通过；失败时完成槽保持空，并可在同一未发布线程上重新准备。日志 `/tmp/pr2357-vfork-allocation-{red,green}.log`。`4cacc4874b` 已完成四架构 `syscall-test-vfork`、x86_64 `test-nix-clone-parent`、增量 `cargo xtask test --since af0157b198` 和定向 `cargo xtask clippy --package starry-kernel` 92/92。日志为 `/tmp/pr2357-vfork-final-{riscv64,aarch64,loongarch64}.log`、`/tmp/pr2357-vfork-clone3-x86_64.log`、`/tmp/pr2357-vfork-std.log`、`/tmp/pr2357-vfork-clippy.log`；这些检查使用新代码，没有沿用旧 head 的结果。
+
+
+### 5.30 初始名称分配回滚
+
+`CloneArgs::clone` 原先在进入 `UserThreadOptions` 前执行 `String::from`，这一步不能返回 `ENOMEM`，因此未被后续可失败 builder 覆盖。`UserThreadOptions::new` 改为借用名称并返回 `Result`，在身份发布前通过 `task::allocation::try_string` 获取所有权；clone 使用既有 `map_task_creation_error` 转换错误，init 和内核测试迁移到相同入口。`prepare_task_name` 复用同一字符串分配和 `try_arc`，删除重复分配实现。这里对照 Linux `copy_process` 的失败撤销和 `wake_up_new_task` 前不可运行要求；不声称 Linux 的内嵌 `comm` 字段需要同样的堆布局。
+
+现有 `task_name_allocation_failure_preserves_snapshot` 增加初始名称故障与恢复检查，错误的 `String::from` 路径稳定失败于 `initial thread name allocation failure must return ENOMEM`；修复后同一 x86_64 QEMU kernel 测试通过，整组 183/183。`unpublished_extension_allocation_releases_process` 同时覆盖名称准备阶段，验证已有 Thread、进程和 PID 预留随提前返回释放，入口不运行。日志为 `/tmp/pr2357-initial-name-{red,green}.log`。真实 clone 路径由 x86_64 `syscall-test-vfork` 通过验证，日志 `/tmp/pr2357-initial-name-clone.log`；定向 `cargo xtask clippy --package starry-kernel` 已完成四架构 92/92，日志 `/tmp/pr2357-initial-name-clippy.log`。提交前的增量 std 未选中未提交修改，因此不计为验证；提交后以 `4cacc4874b` 为基线重新执行，实际选中 `starry-kernel` 且全部通过，日志 `/tmp/pr2357-initial-name-std-committed.log`。
+
+本节只修复初始名称这一分配缺口。clone 的 pidfd `Arc::new` 及其他进程资源分配仍需要逐项审核，不能将此用例扩大为整个 copy_process 的全部分配失败证明。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| clone(名称分配失败) / X56、G220 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L2089) | 创建资源不足时在发布和首次运行前撤销并返回 ENOMEM | `sys_clone → CloneArgs::clone → UserThreadOptions::new → try_string → map_task_creation_error` | 无法确认 | 名称故障与进程回收的真实 kernel 红绿、普通 clone 用例通过；尚无从用户 syscall 注入该精确分配故障的证据 |
+| clone3(名称分配失败) / X435、G435 | [固定 kernel_clone](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 参数验证后遵循相同创建回滚 | `sys_clone3 → CloneArgs::clone → UserThreadOptions::new` | 无法确认 | 共用已验证的名称准备路径；未对 clone3 入口注入名称故障 |
+| fork(名称分配失败) / X57；G 无独立入口 | [固定 fork](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 创建资源失败时不发布子进程 | `sys_fork → sys_clone → UserThreadOptions::new` | 无法确认 | 共用已验证的名称准备路径；未对 fork 入口注入名称故障 |
+| vfork(名称分配失败) / X58；G 以 clone 实现 | [固定 vfork](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 创建失败时不进入等待孩子完成的阶段 | `sys_vfork → sys_clone → UserThreadOptions::new` | 无法确认 | x86_64 普通等待路径通过；精确失败仍由 kernel 创建用例覆盖 |
+
+SysV SHM 后续回归已先在宿主 Linux 验证：同一共享 MM 中，孩子附接、退出后，父进程在 wait 前后均观察到 nattch=2，仍能读取孩子的映射，并能对孩子创建的地址执行 shmdt，随后 nattch=1。临时程序 `/tmp/pr2357-shm-mm-regression.c`，结果 `/tmp/pr2357-shm-mm-regression-linux.log`。该证据补充第 5.29 节的反例，不代表 Starry 已修复。VMA 事务核验还确认 `publish_vma_metadata_successor` 仅覆盖部分元数据路径，map/unmap/mprotect/mremap/fork/clear 并不统一经过它；后续逻辑附接提交必须同时覆盖这些路径及失败回滚，不能仅绑定该函数或 backend Arc 的析构。

@@ -515,16 +515,17 @@ pub struct UserThreadOptions {
 }
 
 impl UserThreadOptions {
-    /// Uses Starry's default stack size, scheduler policy and initial FP state.
-    pub fn new(name: String) -> Self {
-        Self {
-            name,
+    /// Copies the name before task publication and uses the default stack,
+    /// scheduling policy and FP state. Allocation failure returns `NoMemory`.
+    pub fn new(name: &str) -> Result<Self, scheduler::thread::TaskError> {
+        Ok(Self {
+            name: super::allocation::try_string(name)?,
             scheduler_state: UserThreadInitialSchedulerState::default_user(),
             #[cfg(target_arch = "riscv64")]
             fp_state: None,
             #[cfg(not(target_arch = "riscv64"))]
             fp_initialization: FpInitialization::Default,
-        }
+        })
     }
 
     /// Installs the child's scheduling attributes before first activation.
@@ -623,14 +624,7 @@ where
 }
 
 fn prepare_task_name(name: &str) -> Result<Arc<String>, scheduler::thread::TaskError> {
-    super::allocation::point()?;
-    let mut snapshot = String::new();
-    snapshot
-        .try_reserve_exact(name.len())
-        .map_err(|_| super::allocation::no_memory())?;
-    snapshot.push_str(name);
-    super::allocation::point()?;
-    Arc::try_new(snapshot).map_err(|_| super::allocation::no_memory())
+    super::allocation::try_arc(super::allocation::try_string(name)?)
 }
 
 fn finish_published_user_thread(handle: scheduler::thread::ThreadHandle) -> UserTaskRef {
@@ -990,6 +984,18 @@ fn task_name_allocation_failure_preserves_snapshot() {
         runtime::RuntimeStatus,
         thread::{TaskError, ThreadAllocationProbe},
     };
+    let probe = ThreadAllocationProbe::fail_at(0).unwrap();
+    assert!(
+        matches!(UserThreadOptions::new("unpublished-child"), Err(TaskError::RuntimeFailure(code))
+            if code == RuntimeStatus::NoMemory as u32),
+        "initial thread name allocation failure must return ENOMEM"
+    );
+    assert_eq!(probe.attempts(), 1);
+    drop(probe);
+    assert_eq!(
+        UserThreadOptions::new("recovered-child").unwrap().name,
+        "recovered-child"
+    );
     let original = prepare_task_name("existing").unwrap();
     for failure in 0..2 {
         let probe = ThreadAllocationProbe::fail_at(failure).unwrap();
@@ -1017,7 +1023,7 @@ fn unpublished_extension_allocation_releases_process() {
 
     use crate::task::{PidReservation, PidReservationKind, ROOT_PID_NS, Tgid, Tid};
 
-    for failure in 0..3 {
+    for failure in 0..4 {
         let reservation =
             PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader).unwrap();
         let identity = reservation.identity();
@@ -1037,14 +1043,16 @@ fn unpublished_extension_allocation_releases_process() {
         let mm =
             ax_runtime::thread::TaskAddressSpace::new(ax_hal::asm::read_kernel_page_table(), ())
                 .unwrap();
-        let options = UserThreadOptions::new(String::from("extension-rollback"));
         let probe = ThreadAllocationProbe::fail_at(failure).unwrap();
-        let result = prepare_user_thread_inner(
-            || panic!("failed extension must not execute"),
-            thread,
-            options,
-            mm,
-        );
+        let result = (|| {
+            let options = UserThreadOptions::new("extension-rollback")?;
+            prepare_user_thread_inner(
+                || panic!("failed extension must not execute"),
+                thread,
+                options,
+                mm,
+            )
+        })();
         assert!(
             matches!(result, Err(TaskError::RuntimeFailure(code)) if code == RuntimeStatus::NoMemory as u32)
         );

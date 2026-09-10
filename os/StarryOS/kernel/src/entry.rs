@@ -153,7 +153,7 @@ pub fn init(args: &[String], envs: &[String]) {
             TidNumber::try_from(pid).expect("init TID must be non-zero"),
         ),
         thr,
-        UserThreadOptions::new(name),
+        UserThreadOptions::new(&name).expect("failed to prepare init thread name"),
     )
     .expect("failed to prepare init task");
     let staged_task = prepared_task.stage().expect("failed to stage init task");

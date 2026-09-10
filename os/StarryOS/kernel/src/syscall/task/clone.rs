@@ -522,7 +522,7 @@ impl CloneArgs {
             thr.prepare_vfork_done()?;
         }
 
-        let options = UserThreadOptions::new(alloc::string::String::from(curr.name().as_ref()))
+        let options = UserThreadOptions::new(curr.name().as_ref()).map_err(map_task_creation_error)?
             .with_scheduler_state(child_scheduler_state);
         #[cfg(target_arch = "riscv64")]
         let options = options.with_fp_state(child_fp_state);
