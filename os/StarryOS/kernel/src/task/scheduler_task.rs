@@ -696,7 +696,7 @@ where
     let scheduler_tick_cpu_time = thread.cpu_time().scheduler_tick_cpu_time();
     let irq_identity = IrqTaskIdentity::new(&thread, &name);
     let extension_name = prepare_task_name(&name)?;
-    user_extension_allocation_point()?;
+    super::allocation::point()?;
     let data = Box::into_raw(
         Box::try_new(StarryUserTaskExtension {
             thread,
@@ -704,7 +704,7 @@ where
             irq_identity,
             reset_on_fork: AtomicBool::new(context_state.scheduler_state.reset_on_fork),
         })
-        .map_err(|_| user_extension_no_memory())?,
+        .map_err(|_| super::allocation::no_memory())?,
     ) as usize;
     // SAFETY: `data` is a uniquely owned `Box<StarryUserTaskExtension>`. The
     // runtime takes that ownership even when scheduler creation fails and
@@ -751,25 +751,15 @@ where
     })
 }
 
-fn user_extension_no_memory() -> scheduler::thread::TaskError {
-    scheduler::thread::TaskError::RuntimeFailure(scheduler::runtime::RuntimeStatus::NoMemory as u32)
-}
-
-fn user_extension_allocation_point() -> Result<(), scheduler::thread::TaskError> {
-    #[cfg(axtest)]
-    scheduler::thread::ThreadAllocationProbe::allocation_point()?;
-    Ok(())
-}
-
 fn prepare_task_name(name: &str) -> Result<Arc<String>, scheduler::thread::TaskError> {
-    user_extension_allocation_point()?;
+    super::allocation::point()?;
     let mut snapshot = String::new();
     snapshot
         .try_reserve_exact(name.len())
-        .map_err(|_| user_extension_no_memory())?;
+        .map_err(|_| super::allocation::no_memory())?;
     snapshot.push_str(name);
-    user_extension_allocation_point()?;
-    Arc::try_new(snapshot).map_err(|_| user_extension_no_memory())
+    super::allocation::point()?;
+    Arc::try_new(snapshot).map_err(|_| super::allocation::no_memory())
 }
 
 fn finish_published_user_thread(handle: scheduler::thread::ThreadHandle) -> UserTaskRef {
@@ -1171,7 +1161,8 @@ fn unpublished_extension_allocation_releases_process() {
             None,
             Default::default(),
             scope_local::Scope::new(),
-        );
+        )
+        .unwrap();
         let mm =
             ax_runtime::thread::TaskAddressSpace::new(ax_hal::asm::read_kernel_page_table(), ())
                 .unwrap();

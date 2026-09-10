@@ -506,7 +506,7 @@ impl CloneArgs {
             parent_cred,
             curr_thread.signal().blocked(),
             scope,
-        );
+        )?;
         thr.set_nice(child_nice);
         if curr_thread.no_new_privs() {
             thr.set_no_new_privs();

@@ -90,7 +90,7 @@ pub struct ThreadSignalManager {
 }
 
 impl ThreadSignalManager {
-    pub fn new(tid: u32, proc: Arc<ProcessSignalManager>) -> Arc<Self> {
+    pub fn new(tid: u32, proc: Arc<ProcessSignalManager>) -> SignalResult<Arc<Self>> {
         Self::new_with_blocked(tid, proc, SignalSet::default())
     }
 
@@ -98,8 +98,11 @@ impl ThreadSignalManager {
         tid: u32,
         proc: Arc<ProcessSignalManager>,
         blocked: SignalSet,
-    ) -> Arc<Self> {
-        let this = Arc::new(Self {
+    ) -> SignalResult<Arc<Self>> {
+        #[cfg(axtest)]
+        ax_runtime::task::thread::ThreadAllocationProbe::allocation_point()
+            .map_err(|_| crate::SignalError::NoMemory)?;
+        let this = Arc::try_new(Self {
             proc: proc.clone(),
 
             pending: RawSpinLock::new(PendingSignals::default()),
@@ -109,9 +112,10 @@ impl ThreadSignalManager {
 
             possibly_has_signal: AtomicBool::new(false),
             sigwait: RawSpinLock::new(SigwaitState::default()),
-        });
-        proc.register_child(tid, Arc::downgrade(&this));
-        this
+        })
+        .map_err(|_| crate::SignalError::NoMemory)?;
+        proc.register_child(tid, Arc::downgrade(&this))?;
+        Ok(this)
     }
 
     /// Dequeues a signal from the thread's pending signals.
@@ -644,7 +648,7 @@ mod tests {
     fn sigwait_waker_only_fires_for_the_published_set() {
         let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
         let process = Arc::new(ProcessSignalManager::new(actions, 0));
-        let thread = ThreadSignalManager::new(1, process);
+        let thread = ThreadSignalManager::new(1, process).unwrap();
         let counter = Arc::new(CountWake(AtomicUsize::new(0)));
         let waker = Waker::from(counter.clone());
         let mut set = SignalSet::default();

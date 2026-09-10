@@ -130,11 +130,11 @@ struct ThreadAccounting {
 }
 
 impl ThreadAccounting {
-    fn new() -> Self {
-        Self {
-            cpu_time: CpuTimeAccounting::new(),
+    fn new() -> crate::StarryResult<Self> {
+        Ok(Self {
+            cpu_time: CpuTimeAccounting::new()?,
             rttime: Mutex::new(RttimeWatchdog::new()),
-        }
+        })
     }
 }
 
@@ -168,21 +168,21 @@ impl ThreadWork {
 }
 
 impl ThreadLifecycle {
-    fn new() -> Self {
-        Self {
+    fn new() -> crate::StarryResult<Self> {
+        Ok(Self {
             clear_child_tid: AtomicUsize::new(0),
             robust_list_head: AtomicUsize::new(0),
-            exit: Arc::new(AtomicBool::new(false)),
+            exit: super::allocation::try_arc(AtomicBool::new(false))?,
             exit_started: AtomicBool::new(false),
             interrupted: InterruptState::new(),
             user_memory_access: UserMemoryAccessDepth::new(),
             block_next_signal_check: NextSignalCheckBlock::new(),
-            exit_event: Arc::default(),
+            exit_event: super::allocation::try_arc(PollSet::new())?,
             exit_request: OneShotFlag::new(),
             deadline_overrun: OneShotFlag::new(),
             rseq_area: AtomicUsize::new(0),
             rseq_signature: AtomicU32::new(0),
-        }
+        })
     }
 }
 
@@ -199,13 +199,13 @@ impl ThreadSignals {
         tid: u32,
         process_signal: Arc<starry_signal::api::ProcessSignalManager>,
         signal_mask: SignalSet,
-    ) -> Self {
-        Self {
-            manager: ThreadSignalManager::new_with_blocked(tid, process_signal, signal_mask),
+    ) -> crate::StarryResult<Self> {
+        Ok(Self {
+            manager: ThreadSignalManager::new_with_blocked(tid, process_signal, signal_mask)?,
             signalfd_waker: PollSet::new(),
             deferred_mask_restore: IrqMutex::new(None),
             deferred_mask_restore_pending: AtomicBool::new(false),
-        }
+        })
     }
 }
 
@@ -222,17 +222,20 @@ struct ThreadSecurity {
 }
 
 impl ThreadSecurity {
-    fn new(parent_cred: Option<Arc<Cred>>) -> Self {
-        Self {
+    fn new(parent_cred: Option<Arc<Cred>>) -> crate::StarryResult<Self> {
+        Ok(Self {
             oom_score_adj: AtomicI32::new(200),
             pdeathsig: AtomicU32::new(0),
             no_new_privs: AtomicBool::new(false),
-            seccomp: SeccompStateStore::new(),
-            cred: Mutex::new(parent_cred.unwrap_or_else(|| Arc::new(Cred::root()))),
+            seccomp: SeccompStateStore::new()?,
+            cred: Mutex::new(match parent_cred {
+                Some(cred) => cred,
+                None => super::allocation::try_arc(Cred::root())?,
+            }),
             uid_map_written: AtomicBool::new(false),
             gid_map_written: AtomicBool::new(false),
             setgroups_deny: AtomicBool::new(false),
-        }
+        })
     }
 }
 
@@ -339,7 +342,7 @@ impl Thread {
         parent_cred: Option<Arc<Cred>>,
         signal_mask: SignalSet,
         scope: Scope,
-    ) -> Self {
+    ) -> crate::StarryResult<Self> {
         let tid = identity
             .visible_number(&ROOT_PID_NS)
             .expect("new thread identity has no root PID binding")
@@ -354,16 +357,17 @@ impl Thread {
             }),
             proc_data,
             scope: ThreadScope::new(scope),
-            accounting: ThreadAccounting::new(),
-            lifecycle: ThreadLifecycle::new(),
+            accounting: ThreadAccounting::new()?,
+            lifecycle: ThreadLifecycle::new()?,
             work: ThreadWork::new(),
             wait: ThreadWaitState::new(),
-            signals: ThreadSignals::new(tid, process_signal, signal_mask),
-            security: ThreadSecurity::new(parent_cred),
+            security: ThreadSecurity::new(parent_cred)?,
             trace: ThreadTrace::new(),
+            // Register with the process only after every private allocation succeeds.
+            signals: ThreadSignals::new(tid, process_signal, signal_mask)?,
         };
         identity.bind_thread_pidfd(&process_identity, thread.exit_flag());
-        thread
+        Ok(thread)
     }
 
     pub(super) const fn wait_state(&self) -> &ThreadWaitState {
@@ -1080,5 +1084,55 @@ mod tests {
         assert!(!thread_b.unblock());
         assert!(thread_a.unblock());
         assert!(!thread_a.unblock());
+    }
+}
+
+#[cfg(axtest)]
+#[axtest::axtest]
+fn thread_state_creation_returns_allocation_failure() {
+    use ax_std::os::arceos::task::thread::ThreadAllocationProbe;
+
+    use crate::task::{PidReservation, PidReservationKind, Tgid};
+
+    let attempt = |failure| {
+        let reservation =
+            PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader).unwrap();
+        let identity = reservation.identity();
+        let tid = identity.acquire_role::<Tid>().unwrap();
+        let tgid = identity.acquire_role::<Tgid>().unwrap();
+        let process = crate::task::new_test_process_data(identity.clone(), tgid);
+        let retired = Arc::downgrade(&process);
+        let probe = ThreadAllocationProbe::fail_at(failure).unwrap();
+        let result = Thread::new(
+            identity,
+            tid,
+            process,
+            None,
+            Default::default(),
+            Scope::new(),
+        );
+        let attempts = probe.attempts();
+        drop(probe);
+        if failure == usize::MAX {
+            assert!(result.is_ok());
+            drop(result);
+        } else {
+            let error = result
+                .err()
+                .expect("thread state allocation must return ENOMEM");
+            assert_eq!(error.linux_errno(), syscalls::Errno::ENOMEM);
+            assert_eq!(attempts, failure + 1);
+        }
+        assert!(
+            retired.upgrade().is_none(),
+            "failed thread state retained process ownership"
+        );
+        drop(reservation);
+        attempts
+    };
+    let attempts = attempt(usize::MAX);
+    assert!(attempts > 0);
+    for failure in 0..attempts {
+        attempt(failure);
     }
 }

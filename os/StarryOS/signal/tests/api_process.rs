@@ -21,7 +21,7 @@ impl TestEnv {
 #[test]
 fn send_wakes_sets_pending() {
     let env = TestEnv::new();
-    let _thr = ThreadSignalManager::new(9, env.proc.clone());
+    let _thr = ThreadSignalManager::new(9, env.proc.clone()).unwrap();
     let sig = SignalInfo::new_user(Signo::SIGTERM, 0, 100, 0);
 
     assert_eq!(env.proc.send_signal(sig.clone()), Some(9));

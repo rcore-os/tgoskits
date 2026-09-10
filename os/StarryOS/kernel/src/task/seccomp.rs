@@ -7,7 +7,7 @@
 //! compact classic-BPF interpreter for `struct seccomp_data`; unsupported or
 //! malformed programs fail closed by returning a kill decision.
 
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use ax_runtime::hal::cpu::uspace::UserContext;
@@ -134,13 +134,15 @@ pub(crate) struct SeccompStateStore {
 }
 
 impl SeccompStateStore {
-    pub(crate) fn new() -> Self {
-        let initial = Arc::new(SeccompState::default());
+    pub(crate) fn new() -> crate::StarryResult<Self> {
+        let initial = super::allocation::try_arc(SeccompState::default())?;
+        let mut snapshots = super::allocation::try_vec(1)?;
         let current = Arc::as_ptr(&initial).cast_mut();
-        Self {
+        snapshots.push(initial);
+        Ok(Self {
             current: AtomicPtr::new(current),
-            snapshots: Mutex::new(vec![initial]),
-        }
+            snapshots: Mutex::new(snapshots),
+        })
     }
 
     fn current(&self) -> &SeccompState {
@@ -702,9 +704,9 @@ fn seccomp_filter_construction_rules_hold_for_test() -> bool {
     use alloc::vec;
 
     // Empty instruction list is rejected.
-    SeccompFilter::new(vec![]).is_err()
+    SeccompFilter::new(alloc::vec![]).is_err()
         // A single return-instruction filter is accepted.
-        && SeccompFilter::new(vec![SockFilter {
+        && SeccompFilter::new(alloc::vec![SockFilter {
             code: BPF_RET,
             jt: 0,
             jf: 0,
@@ -712,7 +714,7 @@ fn seccomp_filter_construction_rules_hold_for_test() -> bool {
         }])
         .is_ok()
         // Exactly BPF_MAXINSNS instructions is the boundary and is accepted.
-        && SeccompFilter::new(vec![
+        && SeccompFilter::new(alloc::vec![
             SockFilter {
                 code: BPF_RET,
                 jt: 0,
@@ -723,7 +725,7 @@ fn seccomp_filter_construction_rules_hold_for_test() -> bool {
         ])
         .is_ok()
         // One instruction above BPF_MAXINSNS is rejected.
-        && SeccompFilter::new(vec![
+        && SeccompFilter::new(alloc::vec![
             SockFilter {
                 code: BPF_RET,
                 jt: 0,

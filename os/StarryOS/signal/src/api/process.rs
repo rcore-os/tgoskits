@@ -85,11 +85,20 @@ impl ProcessSignalManager {
         self.actions_slot.lock_irqsave().clone()
     }
 
-    pub(crate) fn register_child(&self, tid: u32, child: Weak<ThreadSignalManager>) {
+    pub(crate) fn register_child(
+        &self,
+        tid: u32,
+        child: Weak<ThreadSignalManager>,
+    ) -> SignalResult<()> {
         let mut replacement = Vec::new();
         loop {
             let required = self.children.lock().len().saturating_add(1);
-            reserve_empty_child_slots(&mut replacement, required);
+            #[cfg(axtest)]
+            ax_runtime::task::thread::ThreadAllocationProbe::allocation_point()
+                .map_err(|_| crate::SignalError::NoMemory)?;
+            replacement
+                .try_reserve_exact(required)
+                .map_err(|_| crate::SignalError::NoMemory)?;
 
             let mut children = self.children.lock();
             if replacement.capacity() < children.len().saturating_add(1) {
@@ -103,7 +112,7 @@ impl ProcessSignalManager {
             // The replaced allocation is empty and is released after the
             // IRQ-disabled registry guard has gone away.
             drop(replacement);
-            return;
+            return Ok(());
         }
     }
 
@@ -409,7 +418,8 @@ mod tests {
         let process = Arc::new(ProcessSignalManager::new(actions, 0));
         let mut blocked = SignalSet::default();
         blocked.add(Signo::SIGCHLD);
-        let thread = ThreadSignalManager::new_with_blocked(1, Arc::clone(&process), blocked);
+        let thread =
+            ThreadSignalManager::new_with_blocked(1, Arc::clone(&process), blocked).unwrap();
         let counter = Arc::new(CountWake(AtomicUsize::new(0)));
         let waker = Waker::from(Arc::clone(&counter));
 
@@ -427,8 +437,8 @@ mod tests {
     fn process_signal_prepares_and_releases_targets_outside_action_lock() {
         let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
         let process = Arc::new(ProcessSignalManager::new(Arc::clone(&actions), 0));
-        let thread = ThreadSignalManager::new(1, Arc::clone(&process));
-        let retired = ThreadSignalManager::new(2, Arc::clone(&process));
+        let thread = ThreadSignalManager::new(1, Arc::clone(&process)).unwrap();
+        let retired = ThreadSignalManager::new(2, Arc::clone(&process)).unwrap();
         drop(retired);
 
         let ((ignored, selected), locked_heap_operations) =

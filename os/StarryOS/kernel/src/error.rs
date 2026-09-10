@@ -200,6 +200,7 @@ impl StarryError {
             Self::Errno(errno) => *errno,
             Self::Vm(error) => vm_errno(*error),
             Self::Signal(SignalError::UserMemory(error)) => vm_errno(*error),
+            Self::Signal(SignalError::NoMemory) => Errno::ENOMEM,
             Self::Mm(error) => mm_errno(*error),
             Self::Vfs(error) => vfs_errno(*error),
             Self::Mapping(error) => mapping_errno(error),

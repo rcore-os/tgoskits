@@ -65,7 +65,7 @@ pub fn new_test_env() -> (Arc<ProcessSignalManager>, Arc<ThreadSignalManager>) {
         Arc::new(RawSpinLock::new(SignalActions::default())),
         0,
     ));
-    let thr = ThreadSignalManager::new(TID, proc.clone());
+    let thr = ThreadSignalManager::new(TID, proc.clone()).unwrap();
     (proc, thr)
 }
 

@@ -27,17 +27,11 @@ struct RealtimeCpuTime {
     baseline_pending: bool,
 }
 
-impl Default for CpuTimeAccounting {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl CpuTimeAccounting {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new() -> crate::StarryResult<Self> {
         let scheduler_tick_cpu_time =
-            Arc::new(scheduler::runtime::service::SchedulerTickCpuTime::new());
-        Self {
+            crate::task::allocation::try_arc(scheduler::runtime::service::SchedulerTickCpuTime::new())?;
+        Ok(Self {
             scheduler_tick_cpu_time,
             published_user_ns: AtomicU64::new(0),
             published_system_ns: AtomicU64::new(0),
@@ -50,7 +44,7 @@ impl CpuTimeAccounting {
                 reset_generation: 0,
                 baseline_pending: false,
             }),
-        }
+        })
     }
 
     /// Returns the current user time and system time as a tuple of `TimeValue`.
@@ -445,7 +439,7 @@ impl ProcessCpuTimeSnapshot {
 #[cfg(axtest)]
 pub(super) fn process_cpu_high_water_preserves_runtime_total_for_test() -> bool {
     let process = ProcessCpuTimeAccounting::new();
-    let accounting = CpuTimeAccounting::new();
+    let accounting = CpuTimeAccounting::new().unwrap();
     process.record_transition(|| {
         accounting.scheduler_switch_in_at(false, 0);
         CpuTimeDelta::ZERO

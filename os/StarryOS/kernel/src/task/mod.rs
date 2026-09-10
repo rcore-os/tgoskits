@@ -1,5 +1,6 @@
 //! User task management.
 
+mod allocation;
 mod bounded_stack;
 mod cgroup_exit_invariant;
 mod cred;

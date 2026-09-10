@@ -385,3 +385,21 @@ x86_64 的同一名称回归红绿日志为 `/tmp/pr2357-starry-name-{red,green}
 仅在 `fault-injection` 构建中，`IdleOfflineRejection` 记录最后一次串行 idle 探针失败的判定阶段。记录在原判断处完成，日志在 `probe_idle_cpu_round_trip` 返回、其 IRQ/owner 与登记表锁全部释放后输出。非测试构建没有诊断原子变量；原短路判断顺序和取消 deactivation/draining 的顺序保持不变，不重试、不放宽排空条件，也不将拒绝记作成功。
 
 本地 LoongArch `task-cpu-lifecycle` 通过，三次 staged 预留均记录为 `PlacementPublication`，日志 `/tmp/pr2357-offline-rejection-probe.log`。这只验证诊断路径与原断言同时生效，没有复现 CI 的非预期拒绝；该根因仍未关闭。
+
+### 5.17 Thread 私有状态的可失败构造
+
+`Thread::new` 原先在调度器装配之前创建 CPU 时间、退出状态、seccomp 和信号对象，仍可能因不可失败堆分配而终止内核。它现在返回 `StarryResult<Thread>`；clone 使用既有错误链传播失败，init 则在一次性启动边界明确处理致命失败。公共执行生命周期仍由 ax-task 持有，Starry 的退出、信号和凭据字段保留其 Linux ABI 责任，没有合并两者状态。
+
+`task::allocation` 集中私有线程对象的标准 `Arc::try_new` 和向量预留，供 CPU 时间、退出状态、seccomp 与扩展装配使用。移除 `CpuTimeAccounting` 的不可失败 `Default`，调用方直接消费可失败构造。seccomp 的首个快照和保留向量都准备成功后才安装裸指针；快照读者的既有生命周期协议保持不变。
+
+`ThreadSignalManager::new/new_with_blocked` 同样返回 `SignalResult`。进程的 `register_child` 保留锁外预留、锁内重新验证和发布的顺序，预留失败返回 `SignalError::NoMemory`，在 Starry 错误边界精确映射到 ENOMEM。Thread 的其他私有分配先完成，信号登记最后执行；这样在登记之前失败不产生提前可见的弱引用。没有修改普通信号投递、等待或 RT 锁的语义。
+
+固定 Linux v7.1 的 `copy_process` 对各项复制失败逐层回滚，`copy_signal` 分配失败返回 `-ENOMEM`。下面只评估本次新增分配错误链；正常 clone 的既有系统测试不能证明用户态 OOM 注入行为。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| clone / x86_64 56；asm-generic 220 | [v7.1 固定提交 fork.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 未发布线程的私有状态分配失败返回 ENOMEM并撤销资源 | `do_clone_in_cgroup → Thread::new → ThreadSignals/ThreadLifecycle/ThreadAccounting/ThreadSecurity`；信号错误集中经 `StarryError::linux_errno` 转换 | 部分正确 | 真实 kernel axtest 对构造路径逐分配边界注入，原实现确定性未返回 ENOMEM；尚无直接用户 syscall 级 OOM 注入证明，也不据此声称整个进程复制链已覆盖 |
+
+`thread_state_creation_returns_allocation_failure` 先观察真实构造经过的分配边界，再逐个注入失败，检查 ENOMEM、尝试次数以及进程强所有权释放。测试使用真实 PID 预留与 ProcessData，不替换 TaskRuntime。原实现的确定性失败日志为 `/tmp/pr2357-thread-state-red.log`；首次修复后的 x86_64 kernel axtest 181 项通过，日志 `/tmp/pr2357-thread-state-green.log`。逐边界最终版本的多架构验证另行记录，不能以第一次单边界通过替代。
+
+最终逐边界版本的四架构 kernel axtest 全部通过：AArch64 182 项，其余各 181 项，日志 `/tmp/pr2357-thread-state-final-<arch>.log`。信号组件定向 clippy 通过，日志 `/tmp/pr2357-thread-signal-clippy.log`。组件的 `axtest` 条件显式加入 check-cfg，未降低告警等级；内核其余功能组合继续由 PR CI 检查。本节不将先前未覆盖的整个进程地址空间、文件表或命名空间复制分配算作已完成。

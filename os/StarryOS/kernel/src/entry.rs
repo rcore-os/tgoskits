@@ -145,7 +145,7 @@ pub fn init(args: &[String], envs: &[String]) {
         None,
         starry_signal::SignalSet::default(),
         scope,
-    );
+    ).expect("failed to prepare init thread state");
     let prepared_task = prepare_user_thread(
         new_user_task(
             uctx,
