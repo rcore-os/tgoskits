@@ -524,7 +524,7 @@ TSYNC 新断言最终四架构均通过，日志 `/tmp/pr2357-seccomp-nnp-{green
 
 ### 5.27 安全状态的最终继承
 
-Linux `copy_seccomp` 在共同 `sighand->siglock` 下重新读取父线程过滤器、NNP 与 syscall-work，并由 `copy_process` 持锁完成线程组插入。Starry 现在在 `ProcessPolicyState` 持有任务上下文 PI mutex：`sys_seccomp` 的 strict/filter 安装及 TSYNC 与 `publish_clone_security` 共用此锁。clone 在资源准备、stage 以及可回滚的 cgroup/拓扑准备完成后，才调用 `Thread::inherit_security` 并发布 PID、附接任务和加入线程组；解锁后才安装已预留 pidfd、通知和首次 activate。
+Linux `copy_seccomp` 在共同 `sighand->siglock` 下重新读取父线程过滤器、NNP 与 syscall-work，并由 `copy_process` 持锁完成线程组插入。Starry 现在在 `ProcessPolicyState` 持有任务上下文 PI mutex：`sys_seccomp` 的 strict/filter 安装及 TSYNC 与 `publish_clone` 共用此锁。clone 在资源准备、stage 以及可回滚的 cgroup/拓扑准备完成后，才调用 `Thread::inherit_security` 并发布 PID、附接任务和加入线程组；解锁后才安装已预留 pidfd、通知和首次 activate。
 
 这条边界保证 TSYNC 先完成时 clone 继承新状态，clone 先发布时 TSYNC 的成员扫描包含子线程。锁顺序为进程安全更新锁、每线程快照存储锁（复制后释放）、PID 发布锁及线程组成员锁。新锁只用于可睡眠任务上下文，不模拟 raw rq 锁，也不改变 IRQ、迁移或调度交接。非 `CLONE_THREAD` 的孩子拥有独立进程锁，但最终快照仍在父进程锁下取得；单独共享 sighand 的另一进程不属于 TSYNC 线程组。
 
@@ -541,10 +541,10 @@ exec 的身份转交发生在同组其他线程退出后；退出请求只在 sy
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| clone / X56、G220 | [固定 copy_seccomp](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1752) | 发布前最终继承父线程安全状态，失败不发布 | `sys_clone → CloneArgs::do_clone_in_cgroup → publish_clone_security → Thread`，父进程更新锁 | 无法确认 | x86 kernel 状态及失败次序红绿；直接 syscall 交错待验证 |
-| clone3 / X435、G435 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 参数处理后进入共同复制、发布协议 | `sys_clone3 → CloneArgs::do_clone_in_cgroup → publish_clone_security` | 无法确认 | 共用核心回归，clone3 直接交错待验证 |
-| fork / X57 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 新进程在可执行前继承过滤器 | `sys_fork → sys_clone → publish_clone_security` | 无法确认 | 四架构原 seccomp 的 libc fork 继承通过，未独立覆盖 X57 交错 |
-| vfork / X58 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 完成继承并激活后父线程才等待孩子 | `sys_vfork → sys_clone → publish_clone_security`，等待在锁外 | 无法确认 | x86_64 原 `syscall-test-vfork` 通过；该用例不验证过滤器交错 |
+| clone / X56、G220 | [固定 copy_seccomp](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1752) | 发布前最终继承父线程安全状态，失败不发布 | `sys_clone → CloneArgs::do_clone_in_cgroup → publish_clone → Thread`，父进程更新锁 | 无法确认 | x86 kernel 状态及失败次序红绿；直接 syscall 交错待验证 |
+| clone3 / X435、G435 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 参数处理后进入共同复制、发布协议 | `sys_clone3 → CloneArgs::do_clone_in_cgroup → publish_clone` | 无法确认 | 共用核心回归，clone3 直接交错待验证 |
+| fork / X57 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 新进程在可执行前继承过滤器 | `sys_fork → sys_clone → publish_clone` | 无法确认 | 四架构原 seccomp 的 libc fork 继承通过，未独立覆盖 X57 交错 |
+| vfork / X58 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 完成继承并激活后父线程才等待孩子 | `sys_vfork → sys_clone → publish_clone`，等待在锁外 | 无法确认 | x86_64 原 `syscall-test-vfork` 通过；该用例不验证过滤器交错 |
 | seccomp(filter/TSYNC) / X317、G277 | [固定 seccomp_attach_filter](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | 同步更新与新线程最终复制/成员插入互斥 | `sys_seccomp → append_seccomp_filter → sync_seccomp_to_thread_group`，同一进程更新锁 | 无法确认 | kernel 晚期更新回归通过，直接并发 syscall 交错待验证 |
 | seccomp(strict) / X317、G277 | [固定 seccomp_set_mode_strict](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | 参数检查后提交当前线程模式 | `sys_seccomp → install_seccomp_strict`，取得同一更新锁 | 无法确认 | 四架构原 `syscall-test-seccomp` 通过；独立锁交错未覆盖 |
 | prctl(SET_SECCOMP) / X157、G167 | [固定 prctl_set_seccomp](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | legacy 入口复用模式安装，不支持 TSYNC 参数 | `sys_prctl → sys_seccomp(flags=0)` | 无法确认 | 四架构原 `syscall-test-seccomp` 通过；独立锁交错未覆盖 |
@@ -595,7 +595,7 @@ musl 的 `clone()` 包装会在进入内核前拒绝 `CLONE_THREAD`，不能用�
 
 ### 5.30 初始名称分配回滚
 
-`CloneArgs::clone` 原先在进入 `UserThreadOptions` 前执行 `String::from`，这一步不能返回 `ENOMEM`，因此未被后续可失败 builder 覆盖。`UserThreadOptions::new` 改为借用名称并返回 `Result`，在身份发布前通过 `task::allocation::try_string` 获取所有权；clone 使用既有 `map_task_creation_error` 转换错误，init 和内核测试迁移到相同入口。`prepare_task_name` 复用同一字符串分配和 `try_arc`，删除重复分配实现。这里对照 Linux `copy_process` 的失败撤销和 `wake_up_new_task` 前不可运行要求；不声称 Linux 的内嵌 `comm` 字段需要同样的堆布局。
+`CloneArgs::do_clone_in_cgroup` 原先在进入 `UserThreadOptions` 前执行 `String::from`，这一步不能返回 `ENOMEM`，因此未被后续可失败 builder 覆盖。`UserThreadOptions::new` 改为借用名称并返回 `Result`，在身份发布前通过 `task::allocation::try_string` 获取所有权；clone 使用既有 `map_task_creation_error` 转换错误，init 和内核测试迁移到相同入口。`prepare_task_name` 复用同一字符串分配和 `try_arc`，删除重复分配实现。这里对照 Linux `copy_process` 的失败撤销和 `wake_up_new_task` 前不可运行要求；不声称 Linux 的内嵌 `comm` 字段需要同样的堆布局。
 
 现有 `task_name_allocation_failure_preserves_snapshot` 增加初始名称故障与恢复检查，错误的 `String::from` 路径稳定失败于 `initial thread name allocation failure must return ENOMEM`；修复后同一 x86_64 QEMU kernel 测试通过，整组 183/183。`unpublished_extension_allocation_releases_process` 同时覆盖名称准备阶段，验证已有 Thread、进程和 PID 预留随提前返回释放，入口不运行。日志为 `/tmp/pr2357-initial-name-{red,green}.log`。真实 clone 路径由 x86_64 `syscall-test-vfork` 通过验证，日志 `/tmp/pr2357-initial-name-clone.log`；定向 `cargo xtask clippy --package starry-kernel` 已完成四架构 92/92，日志 `/tmp/pr2357-initial-name-clippy.log`。提交前的增量 std 未选中未提交修改，因此不计为验证；提交后以 `4cacc4874b` 为基线重新执行，实际选中 `starry-kernel` 且全部通过，日志 `/tmp/pr2357-initial-name-std-committed.log`。
 
@@ -603,9 +603,61 @@ musl 的 `clone()` 包装会在进入内核前拒绝 `CLONE_THREAD`，不能用�
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| clone(名称分配失败) / X56、G220 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L2089) | 创建资源不足时在发布和首次运行前撤销并返回 ENOMEM | `sys_clone → CloneArgs::clone → UserThreadOptions::new → try_string → map_task_creation_error` | 无法确认 | 名称故障与进程回收的真实 kernel 红绿、普通 clone 用例通过；尚无从用户 syscall 注入该精确分配故障的证据 |
-| clone3(名称分配失败) / X435、G435 | [固定 kernel_clone](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 参数验证后遵循相同创建回滚 | `sys_clone3 → CloneArgs::clone → UserThreadOptions::new` | 无法确认 | 共用已验证的名称准备路径；未对 clone3 入口注入名称故障 |
+| clone(名称分配失败) / X56、G220 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L2089) | 创建资源不足时在发布和首次运行前撤销并返回 ENOMEM | `sys_clone → CloneArgs::do_clone_in_cgroup → UserThreadOptions::new → try_string → map_task_creation_error` | 无法确认 | 名称故障与进程回收的真实 kernel 红绿、普通 clone 用例通过；尚无从用户 syscall 注入该精确分配故障的证据 |
+| clone3(名称分配失败) / X435、G435 | [固定 kernel_clone](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 参数验证后遵循相同创建回滚 | `sys_clone3 → CloneArgs::do_clone_in_cgroup → UserThreadOptions::new` | 无法确认 | 共用已验证的名称准备路径；未对 clone3 入口注入名称故障 |
 | fork(名称分配失败) / X57；G 无独立入口 | [固定 fork](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 创建资源失败时不发布子进程 | `sys_fork → sys_clone → UserThreadOptions::new` | 无法确认 | 共用已验证的名称准备路径；未对 fork 入口注入名称故障 |
 | vfork(名称分配失败) / X58；G 以 clone 实现 | [固定 vfork](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 创建失败时不进入等待孩子完成的阶段 | `sys_vfork → sys_clone → UserThreadOptions::new` | 无法确认 | x86_64 普通等待路径通过；精确失败仍由 kernel 创建用例覆盖 |
 
 SysV SHM 后续回归已先在宿主 Linux 验证：同一共享 MM 中，孩子附接、退出后，父进程在 wait 前后均观察到 nattch=2，仍能读取孩子的映射，并能对孩子创建的地址执行 shmdt，随后 nattch=1。临时程序 `/tmp/pr2357-shm-mm-regression.c`，结果 `/tmp/pr2357-shm-mm-regression-linux.log`。该证据补充第 5.29 节的反例，不代表 Starry 已修复。VMA 事务核验还确认 `publish_vma_metadata_successor` 仅覆盖部分元数据路径，map/unmap/mprotect/mremap/fork/clear 并不统一经过它；后续逻辑附接提交必须同时覆盖这些路径及失败回滚，不能仅绑定该函数或 backend Arc 的析构。
+
+
+### 5.31 致命信号发布
+
+固定 Linux `complete_signal` 在找到可接收信号的线程后，对默认、非 coredump 且不受 ptrace 延迟的致命信号提交 `SIGNAL_GROUP_EXIT` 和原始退出码，再向所有线程发布 SIGKILL 并唤醒。`get_signal` 优先处理该退出决定，`do_group_exit` 保留已经提交的退出码。这解释了为何 vfork 父线程不仅能被 SIGKILL 终止，也应能在孩子完成前被默认 SIGTERM 或实时信号终止。原实现仅排队原始信号，vfork 的 killable 等待看不到 SIGKILL，必须等孩子完成才能继续处理信号。
+
+`GroupExit` 现在保存同一线程组不可撤销的退出决定，由 `Process` 和 `ProcessSignalManager` 共享；原 `ThreadGroup::group_exited` 被移除，`last_exit_code` 只记录尚未形成线程组退出决定时的线程退出值。`ProcessData::thread_group_update` 从原 seccomp 门禁扩展为信号、退出和 clone 最终发布的共同任务上下文 PI 门禁。处置、pending 与 `GroupExit` 的短状态锁不执行调度通知；`queue_thread_signal`、`publish_process_signal` 在释放共同门禁后释放停止状态并显式唤醒任务。组件内的 sigwait waker 已在处置锁外调用，但仍处于外层共同门禁期间，其回调上下文仍需单独收尾，不能笼统认定所有通知均已移至门禁外。clone 在该门禁下检查父线程的 SIGKILL，依照 `copy_process` 在 PID 发布前返回 EINTR。`exit_group` 通过 `ThreadSignalManager::begin_group_exit` 在同一处置锁内提交共享退出状态和所有其他线程的 SIGKILL，释放共同门禁后才通知。该事务先于 `Thread::begin_exit` 的 PF_EXITING 声明，返回最先提交的 wait status 供后续清理使用，对齐 `do_group_exit → do_exit`。原先先提交状态、解锁后逐线程发送的窗口以及 `Process::start_group_exit` 被删除；进程退出也不再借用 exec 的 `zap_thread`。
+
+`publish_with_targets` 在取得处置锁后重新核验保留的线程集合；新接收者登记和 exec TID 更名使用同一处置锁，防止锁外快照漏掉新成员。已经作出的退出决定会为后来准备的接收者设置 SIGKILL，clone 的最终发布检查仍会拒绝它。`PF_EXITING` 对应的单次退出声明移入 `ThreadSignalManager`，`Thread::begin_exit` 委托这一声明，不再维护第二份标志。发送资格排除已开始退出的线程；退出期间的信号检查停止重入清理。被屏蔽、带用户处理器、coredump 或由 OS 要求延迟致命处理的信号不走提前线程组终止分支。实时信号此前落入错误的默认 Ignore 分支，现按 Linux 的 ignore/stop mask 改为默认 Terminate。
+
+信号队列的准备和发布也必须分开。`PreparedSignalInfo` 在进入处置锁前持有标准信号的 Box 或实时信号的单个链表节点；锁内只插入或拼接，重复或未使用的预备对象在解锁后释放。实时 FIFO 使用 Rust `LinkedList` 传递已经分配的节点，避免 `VecDeque::push_back` 在处置锁内扩容。现有锁内堆操作测试已扩展到实时信号，原扩容路径稳定报告 1 次锁内堆操作，修复后为 0。本项证据覆盖处置锁，不替代全部 pending 释放上下文与 RT 锁分类的最终审核。
+
+线程定向通知通过 `Thread::scheduler_id → ThreadHandle::lookup → UserTaskRef::try_from_scheduler` 保留原调度代际，不再重新查询可能复用的数字 TID。组通知在解析成员后额外复核进程身份，避免成员快照过期后唤醒无关进程。这些变更复用已有身份与句柄协议，没有新增弱引用登记表；尚未取得强制 TID 复用交错的直接红绿证据。
+
+新增共享状态不能引入新的不可恢复创建点。`Process::allocate` 对 `GroupExit` 和 `Process` 均使用可失败的 `task::allocation::try_arc`；`prepare_fork` 返回 `Result`，clone 在发布前传播错误，bootstrap 和测试入口明确处理初始化失败。旧的、实际只用于 bootstrap 的通用 `new(parent)` 分支收敛为 `new_bootstrap`，删除失效的 `ProcessBuilder` 注释。已有不可见性用例扩展覆盖两次分配失败、ENOMEM 和父进程无已发布孩子。
+
+本轮已取得的红绿证据按实际风险记录，尚在运行的矩阵不视为通过。
+
+| 风险 | 红证据 | 绿证据 |
+| --- | --- | --- |
+| 默认 SIGTERM 的 vfork 父线程不能被及时终止 | `/tmp/pr2357-vfork-sigterm-red.log`，watchdog 触发 | `/tmp/pr2357-vfork-sigterm-green.log`，同一 x86_64 用例通过且 wait 状态仍为 SIGTERM |
+| 实时信号默认被忽略 | `/tmp/pr2357-vfork-realtime-red.log`，同一父线程等待失败 | `/tmp/pr2357-vfork-realtime-green.log`，同一 x86_64 用例通过 |
+| 处置锁内分配 | 标准信号 `/tmp/pr2357-fatal-publication-std-red.log`；实时信号 `/tmp/pr2357-fatal-realtime-allocation-red-confirmed.log` | `/tmp/pr2357-fatal-publication-std-green.log`，锁内堆操作为 0 |
+| 选中已进入退出的线程 | `/tmp/pr2357-fatal-receiver-red.log`，错误选中 TID 1 | `/tmp/pr2357-fatal-receiver-green.log`，排除该接收者并覆盖屏蔽、处理器和 coredump 条件 |
+| 排队信号多读取不存在的 sigsetsize | `/tmp/pr2357-queue-arity-{sigqueueinfo,tgsigqueueinfo}-red.log`，旧实现对显式零的未使用参数返回 EINVAL | `/tmp/pr2357-queue-arity-<arch>-<case>-green.log`，同一首项断言在四架构通过；FIFO 红绿另见 signal-routes/queued-abi 日志 |
+| exit_group 解锁时 peer 尚未持有 SIGKILL | `/tmp/pr2357-exit-group-publication-red.log`，恢复只发布决定的旧边界后 peer pending 断言失败 | `/tmp/pr2357-exit-group-publication-green.log`，同一回归及两包 std 通过；最后版本 `/tmp/pr2357-group-serial-std.log` 再次通过 |
+| 进程准备分配不能返回 ENOMEM | `/tmp/pr2357-process-preparation-allocation-red.log` | `/tmp/pr2357-process-preparation-allocation-green.log`，kernel 183/183 |
+
+宿主 Linux 的同一 SIGKILL、SIGTERM、实时信号和 THREAD/VFORK 场景均通过，日志 `/tmp/pr2357-vfork-realtime-linux.log`；这仍是额外 ABI 对照，不能当作固定 v7.1 PREEMPT_RT 构建验证。两包定向 clippy 已完成 93/93，增量 std、四架构 vfork 和另外 9 个 x86_64 系统用例全部通过，日志为 `/tmp/pr2357-fatal-*`。其中 `syscall-test-uid-gid-re-setters` 返回 0 fail，但该次成功不证明历史超时根因已定位。扩展的六种信号发送入口和实时 FIFO 已通过四架构 vfork 用例，日志 `/tmp/pr2357-group-final-<arch>-syscall-test-vfork.log`；最后退出顺序调整后的 x86_64 额外复跑也通过，日志 `/tmp/pr2357-group-restored-x86_64-syscall-test-vfork.log`。最后版本的 x86_64 kernel 为 183/183，日志 `/tmp/pr2357-group-serial-kernel.log`；增量 std 通过。一次定向 clippy 被并行 QEMU 构建写入的 `bitmaps@3.2.1` future-incompatibility 报告拦下；停止并行构建后，保持原门禁的串行复验两包 93/93 全部通过，日志 `/tmp/pr2357-group-serial-clippy.log`。已推送的 `05447c0700` 在 CI run `34498542687` 完成 34 项、全部成功，不能将其结果用于本节尚未推送的代码，也不能据此认定历史 OrangePi 停滞根因已经修复。
+
+`syscall-test-sigqueueinfo` 和 `syscall-test-tgsigqueueinfo` 原先安装到 `starry-known-fail`，未进入分组成功条件。现已迁回 `starry-test-suit`；未修改既有断言，x86_64 最初分别取得 8/8、14/14，之后补充 Linux 不使用的第四/第五参数必须被忽略的确定性 ABI 断言，宿主 Linux 均通过。旧实现确定性返回 EINVAL，恢复修复后同一首项断言及整个用例在四架构分别 9/9、15/15 通过，日志 `/tmp/pr2357-queue-arity-<arch>-<case>-green.log`。
+
+下表限定本节直接调整的发送、创建和退出语义。X 为 x86_64，G 为 riscv64、aarch64、loongarch64 的通用编号。没有直接入口回归的分支保留为无法确认；本节不把共享状态的 Arc 当作 MM、栈或 RCU 宽限期证明。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| kill(默认致命信号) / X62、G129 | [固定 complete_signal](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/signal.c#L958) | 先提交线程组终止，再结束 killable 等待；保留原始信号退出码 | `sys_kill → send_signal_to_process_data → publish_process_signal → ProcessSignalManager → GroupExit → wake_exiting_signal_group` | 无法确认 | 四架构 SIGKILL/SIGTERM/实时信号直接回归及宿主对照通过；完整权限和停止竞争未覆盖 |
+| tkill / X200、G130 | [固定 do_tkill](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/signal.c) | 线程定向信号在合格接收者上仍可终止整个线程组 | `sys_tkill → send_signal_to_task → queue_thread_signal` | 无法确认 | 四架构 vfork 父线程的 tkill 致命投递通过；完整凭据和线程组竞争未覆盖 |
+| tgkill / X234、G131 | [固定 do_tkill](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/signal.c) | 先检查指定线程组，再执行线程定向投递 | `sys_tgkill → send_signal_to_task → expected_process 校验 → queue_thread_signal` | 无法确认 | 四架构 vfork 父线程的 tgkill 致命投递通过；完整权限/错误优先级仍需核验 |
+| rt_sigqueueinfo / X129、G138 | [固定 do_rt_sigqueueinfo](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/signal.c) | 实时信号保留每个排队实例；默认动作遵守相同致命判断 | `sys_rt_sigqueueinfo → send_signal_to_process_data → PreparedSignalInfo → pending FIFO` | 部分正确 | 四架构致命投递、FIFO 和三参数 ABI 9/9 通过；`make_queue_signal_info` 的 signo=0 复制顺序、si_code 原点判断和入口权限检查仍有实现缺口 |
+| rt_tgsigqueueinfo / X297、G240 | [固定 do_rt_tgsigqueueinfo](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/signal.c) | 线程组校验后向指定线程排队 | `sys_rt_tgsigqueueinfo → send_signal_to_task → queue_thread_signal → pending FIFO` | 部分正确 | 四架构致命投递、FIFO 和四参数 ABI 15/15 通过；复制、参数、身份匹配与权限检查顺序仍需按 `do_rt_tgsigqueueinfo → do_send_specific` 修复 |
+| pidfd_send_signal / X424、G424 | [固定 pidfd_send_signal](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/signal.c) | 使用稳定身份选择进程或线程后执行相同投递规则 | `sys_pidfd_send_signal → 已解析 PID generation → process/task 投递` | 无法确认 | 四架构 vfork 致命投递通过；x86_64 原 pidfd 发送用例通过；其余 flag/权限分支未全覆盖 |
+| clone(最终发布) / X56、G220 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L2448) | 父线程已有致命信号时，在发布前撤销并返回 EINTR | `CloneArgs::do_clone_in_cgroup → publish_clone → thread_group_update → pending(SIGKILL)` | 无法确认 | 真实 kernel 中最终发布回调禁止/EINTR 的确定性红绿通过；尚非 clone syscall 入口级并发注入 |
+| clone3(最终发布) / X435、G435 | [固定 kernel_clone](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | clone3 参数验证后进入同一不可运行准备和最后发布检查 | `sys_clone3 → CloneArgs::do_clone_in_cgroup → publish_clone` | 无法确认 | 共用发布实现；该新分支尚无 clone3 入口回归 |
+| fork(进程准备) / X57；G 无独立入口 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L2089) | 分配失败不发布孩子并返回 ENOMEM | `sys_fork → sys_clone → Process::prepare_fork → try_arc` | 无法确认 | 两个新分配点的真实 kernel 红绿通过，入口级注入未完成 |
+| vfork / X58；G 以 clone 实现 | [固定 wait_for_vfork_done](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1430) | 等待可被终止；正常完成关联 MM release | `sys_vfork → sys_clone → Thread::wait_vfork_done` | 部分正确 | 默认致命信号等待已修；MM 通知仍在旧清理尾部，缺口见第 5.29 节 |
+| exit / X60、G93 | [固定 synchronize_group_exit](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/exit.c#L867) | 每线程退出只声明一次，最后线程保留已提交的线程组状态 | `sys_exit → do_exit → Thread::begin_exit → Process::exit_thread → GroupExit` | 部分正确 | vfork 子线程退出与 kernel 回滚通过；MM/SHM 退出阶段仍待修正 |
+| exit_group / X231、G94 | [固定 do_group_exit](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/exit.c#L1098) | 一次线程组退出决定不能被后续 SIGKILL 或线程退出覆盖 | `sys_exit_group → do_exit → ThreadSignalManager::begin_group_exit → GroupExit/peer SIGKILL → 解锁后通知 → Thread::begin_exit` | 部分正确 | peer 发布确定性红绿、首个退出码保持、x86_64 SIGCHLD 退出码用例和 kernel 183/183 通过；MM/SHM 阶段仍需修复 |
+
+合入前仍需取得调度与锁领域审核。现有处置锁和 pending 锁的 raw 分类必须按全部调用上下文继续核验；本轮共同 PI 门禁的串行证明不等于所有锁类型已经完成 RT 收尾。
+
+clone 最终发布的 EINTR 分支已扩展进既有 `clone_publication_refreshes_security_after_preparation`：省略致命信号检查时，测试稳定进入禁止的发布回调并失败；恢复检查后返回 EINTR，kernel 183/183。日志 `/tmp/pr2357-clone-fatal-publication-{red,green}.log`。`publish_clone` 的命名覆盖最终信号检查、安全继承和身份发布这一个提交边界，不再只指 seccomp。

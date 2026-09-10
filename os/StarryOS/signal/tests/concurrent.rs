@@ -95,6 +95,10 @@ fn concurrent_check_signals() {
     unsafe extern "C" fn test_handler(_: i32) {}
     proc.actions().lock_irqsave()[Signo::SIGTERM].disposition =
         SignalDisposition::Handler(test_handler);
+    // Both deliveries must be catchable: default SIGINT commits group exit
+    // and Linux does not continue to a second user handler afterwards.
+    proc.actions().lock_irqsave()[Signo::SIGINT].disposition =
+        SignalDisposition::Handler(test_handler);
 
     let mut uctx = UserContext::new(0, initial_sp().into(), 0);
 

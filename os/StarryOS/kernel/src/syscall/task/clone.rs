@@ -388,7 +388,7 @@ impl CloneArgs {
             } else {
                 old_proc_data.proc.clone()
             }
-            .prepare_fork(identity.clone());
+            .prepare_fork(identity.clone())?;
             let proc = prepared.process().clone();
             prepared_fork = Some(prepared);
 
@@ -522,7 +522,8 @@ impl CloneArgs {
             thr.prepare_vfork_done()?;
         }
 
-        let options = UserThreadOptions::new(curr.name().as_ref()).map_err(map_task_creation_error)?
+        let options = UserThreadOptions::new(curr.name().as_ref())
+            .map_err(map_task_creation_error)?
             .with_scheduler_state(child_scheduler_state);
         #[cfg(target_arch = "riscv64")]
         let options = options.with_fp_state(child_fp_state);
@@ -554,7 +555,7 @@ impl CloneArgs {
             .transpose()?;
 
         staged_task.with_task(|task| {
-            publish_clone_security(curr_thread, task.as_thread(), || {
+            publish_clone(curr_thread, task.as_thread(), || {
                 // PID publication is the final fallible visibility edge.
                 let published_identity = reservation.publish()?;
                 debug_assert!(Arc::ptr_eq(&published_identity, &identity));
@@ -640,7 +641,7 @@ impl CloneArgs {
     }
 }
 
-fn publish_clone_security(
+fn publish_clone(
     parent: &Thread,
     child: &Thread,
     publish: impl FnOnce() -> StarryResult<()>,
@@ -798,7 +799,7 @@ mod axtests {
         let updated = parent.seccomp_state();
         let original = child.seccomp_state();
         let probe = ax_std::os::arceos::task::thread::ThreadAllocationProbe::fail_at(0).unwrap();
-        let failed = super::publish_clone_security(&parent, &child, || {
+        let failed = super::publish_clone(&parent, &child, || {
             panic!("failed security inheritance must not publish a child")
         });
         let attempts = probe.attempts();
@@ -808,7 +809,7 @@ mod axtests {
         assert!(Arc::ptr_eq(&original, &child.seccomp_state()));
         assert!(!child.no_new_privs());
         assert!(!child.has_seccomp_syscall_work());
-        super::publish_clone_security(&parent, &child, || {
+        super::publish_clone(&parent, &child, || {
             assert!(child.no_new_privs(), "clone published stale no_new_privs");
             assert!(
                 Arc::ptr_eq(&updated, &child.seccomp_state()),
@@ -818,6 +819,17 @@ mod axtests {
             Ok(())
         })
         .unwrap();
+        assert!(parent.signal().send_signal(
+            starry_signal::SignalInfo::new_kernel(starry_signal::Signo::SIGKILL),
+            false,
+        ));
+        let interrupted = super::publish_clone(&parent, &child, || {
+            panic!("fatal parent must not publish a child")
+        });
+        assert_eq!(
+            interrupted.unwrap_err().linux_errno(),
+            syscalls::Errno::EINTR
+        );
     }
 
     #[axtest::axtest]

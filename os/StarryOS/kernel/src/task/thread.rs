@@ -150,7 +150,6 @@ struct ThreadLifecycle {
     clear_child_tid: AtomicUsize,
     robust_list_head: AtomicUsize,
     exit: Arc<AtomicBool>,
-    exit_started: AtomicBool,
     interrupted: InterruptState,
     user_memory_access: UserMemoryAccessDepth,
     block_next_signal_check: NextSignalCheckBlock,
@@ -181,7 +180,6 @@ impl ThreadLifecycle {
             clear_child_tid: AtomicUsize::new(0),
             robust_list_head: AtomicUsize::new(0),
             exit: super::allocation::try_arc(AtomicBool::new(false))?,
-            exit_started: AtomicBool::new(false),
             interrupted: InterruptState::new(),
             user_memory_access: UserMemoryAccessDepth::new(),
             block_next_signal_check: NextSignalCheckBlock::new(),
@@ -589,7 +587,6 @@ impl Thread {
     }
 
     /// Returns the generation-bearing scheduler identity, if bound.
-    #[cfg(target_arch = "aarch64")]
     pub fn scheduler_id(&self) -> Option<ax_std::os::arceos::task::thread::ThreadId> {
         self.identity.scheduler.get()
     }
@@ -716,10 +713,7 @@ impl Thread {
 
     /// Claims this thread's exit transaction exactly once.
     pub fn begin_exit(&self) -> bool {
-        self.lifecycle
-            .exit_started
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+        self.signal().begin_exit()
     }
 
     /// Publishes completion of the thread exit transaction.

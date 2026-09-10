@@ -141,7 +141,9 @@ impl Signo {
             Signo::SIGIO => DefaultSignalAction::Terminate,
             Signo::SIGPWR => DefaultSignalAction::Terminate,
             Signo::SIGSYS => DefaultSignalAction::CoreDump,
-            _ => DefaultSignalAction::Ignore,
+            // The remaining variants are real-time signals. Linux excludes
+            // none of them through SIG_KERNEL_IGNORE_MASK or STOP_MASK.
+            _ => DefaultSignalAction::Terminate,
         }
     }
 }

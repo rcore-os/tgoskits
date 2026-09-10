@@ -10,7 +10,7 @@ use starry_signal::{SignalInfo, Signo};
 use super::{
     AlarmTarget, AlarmToken, PendingTimerActions, ProcessData, Thread, UserTaskRef, ZombieSnapshot,
     current_user_task, processes, publish_zombie, resolve_futex_for_process_teardown,
-    send_signal_to_process, send_signal_to_process_data, send_signal_to_thread, yield_now,
+    send_signal_to_process, send_signal_to_process_data, yield_now,
 };
 use crate::{
     StarryError, StarryResult,
@@ -437,30 +437,24 @@ fn close_process_relations_for_exit(
 pub fn do_exit(exit_code: i32, group_exit: bool) {
     let curr = current_user_task();
     let thr = curr.as_thread();
+    // Linux do_group_exit commits the group decision before do_exit claims
+    // PF_EXITING. All subsequent teardown observes the first group's status.
+    let exit_code = if group_exit {
+        let status = {
+            let _update = thr.proc_data.thread_group_update();
+            thr.signal().begin_group_exit(exit_code)
+        };
+        super::signal::wake_exiting_signal_group(&thr.proc_data);
+        status
+    } else {
+        exit_code
+    };
     if !thr.begin_exit() {
         return;
     }
 
     info!("{} exit with code: {}", curr.id_name(), exit_code);
-
     emit_sched_process_exit(thr.tid(), exit_code);
-
-    let exiting_group = if group_exit {
-        let _update = thr.proc_data.thread_group_update();
-        thr.proc_data.proc.start_group_exit(exit_code)
-    } else {
-        None
-    };
-    if let Some(tids) = exiting_group {
-        let sig = SignalInfo::new_kernel(Signo::SIGKILL);
-        for tid in tids {
-            if tid == thr.tid_number() {
-                continue;
-            }
-            let _ = send_signal_to_thread(None, tid, Some(sig));
-            let _ = zap_thread(tid);
-        }
-    }
 
     // Free any per-task perf HW counters attached to this thread before the fd
     // table is torn down, so the PMU slots are released even if a perf fd

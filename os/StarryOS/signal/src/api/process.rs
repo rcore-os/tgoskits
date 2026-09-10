@@ -253,13 +253,15 @@ impl ProcessSignalManager {
         }
     }
 
-    /// Sends a process-directed signal with its current ptrace eligibility.
+    /// Sends a process-directed signal. `defer_fatal` keeps ptraced or stopped
+    /// targets on the normal signal-delivery path; SIGKILL always overrides it.
     ///
     /// Returns the selected target. The OS must wake the whole group when its
     /// shared GroupExit decision is set, and must do so after publication.
     #[must_use]
     pub fn send_signal(&self, sig: SignalInfo, defer_fatal: bool) -> Option<u32> {
         let signo = sig.signo();
+        let mut prepared = Some(crate::pending::PreparedSignalInfo::new(sig));
         let (result, children) = self.publish_with_targets(|actions, children| {
             let all_blocked = !children.is_empty()
                 && children
@@ -271,12 +273,17 @@ impl ProcessSignalManager {
             if !all_blocked && !any_sigwait && actions[signo].is_ignore(signo) {
                 return None;
             }
-            if self.pending.lock_irqsave().put_signal(sig) {
+            prepared = self.pending.lock_irqsave().put_prepared(
+                prepared
+                    .take()
+                    .expect("signal publication consumes its prepared info once"),
+            );
+            if prepared.is_none() {
                 self.possibly_has_signal.store(true, Ordering::Release);
             }
             let target = children
                 .iter()
-                .find(|(_, thread)| !thread.signal_blocked(signo));
+                .find(|(_, thread)| thread.wants_signal(signo));
             if target.is_some() {
                 self.complete_fatal_signal(signo, defer_fatal, &actions[signo], children);
             }
@@ -288,6 +295,11 @@ impl ProcessSignalManager {
             }
         }
         result
+    }
+
+    /// Returns the original wait status of an irrevocable group-exit decision.
+    pub fn group_exit_status(&self) -> Option<i32> {
+        self.group_exit.status()
     }
 
     /// Gets currently pending signals.
@@ -548,16 +560,26 @@ mod tests {
         let retired = ThreadSignalManager::new(2, Arc::clone(&process)).unwrap();
         drop(retired);
 
-        let ((ignored, selected), locked_heap_operations) =
+        let realtime = Signo::from_repr(34).unwrap();
+        unsafe extern "C" fn receiver(_: i32) {}
+        {
+            let mut table = actions.lock_irqsave();
+            table[Signo::SIGUSR1].disposition = SignalDisposition::Handler(receiver);
+            table[realtime].disposition = SignalDisposition::Handler(receiver);
+        }
+        let ((ignored, selected, selected_realtime), locked_heap_operations) =
             crate::allocation_audit::with_action_lock(&actions, || {
                 (
                     process.send_signal(SignalInfo::new_kernel(Signo::SIGCHLD), false),
                     process.send_signal(SignalInfo::new_kernel(Signo::SIGUSR1), false),
+                    process.send_signal(SignalInfo::new_kernel(realtime), true),
                 )
             });
 
         assert_eq!(ignored, None);
         assert_eq!(selected, Some(1));
+        assert_eq!(selected_realtime, Some(1));
+        assert!(thread.pending().has(realtime));
         assert!(thread.pending().has(Signo::SIGUSR1));
         assert_eq!(
             locked_heap_operations, 0,

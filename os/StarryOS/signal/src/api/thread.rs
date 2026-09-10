@@ -66,6 +66,8 @@ struct PreparedSignalHandler {
 
 /// Thread-level signal manager.
 pub struct ThreadSignalManager {
+    /// PF_EXITING-equivalent claim, shared by OS teardown and signal selection.
+    exit_started: AtomicBool,
     /// The process-level signal manager
     proc: Arc<ProcessSignalManager>,
 
@@ -112,6 +114,7 @@ impl ThreadSignalManager {
         ax_runtime::task::thread::ThreadAllocationProbe::allocation_point()
             .map_err(|_| crate::SignalError::NoMemory)?;
         let this = Arc::try_new(Self {
+            exit_started: AtomicBool::new(false),
             proc: proc.clone(),
 
             pending: RawSpinLock::new(PendingSignals::default()),
@@ -125,6 +128,22 @@ impl ThreadSignalManager {
         .map_err(|_| crate::SignalError::NoMemory)?;
         proc.register_child(tid, Arc::downgrade(&this))?;
         Ok(this)
+    }
+
+    /// Claims OS thread teardown exactly once and excludes normal signal selection.
+    pub fn begin_exit(&self) -> bool {
+        self.exit_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Returns whether OS teardown has claimed this receiver.
+    pub fn is_exiting(&self) -> bool {
+        self.exit_started.load(Ordering::Acquire)
+    }
+
+    pub(super) fn wants_signal(&self, signo: Signo) -> bool {
+        !self.is_exiting() && !self.signal_blocked(signo)
     }
 
     /// Dequeues a signal from the thread's pending signals.
@@ -465,6 +484,9 @@ impl ThreadSignalManager {
         F: FnMut(&mut UserContext, &SignalInfo, bool),
         C: FnMut() -> crate::arch::SignalFpState,
     {
+        if self.is_exiting() {
+            return None;
+        }
         // Linux get_signal handles SIGNAL_GROUP_EXIT before dequeuing signals
         // or consulting a disposition that userspace could change afterwards.
         if self.proc.group_exit.status().is_some() {
@@ -548,23 +570,55 @@ impl ThreadSignalManager {
     #[must_use]
     pub fn send_signal(&self, sig: SignalInfo, defer_fatal: bool) -> bool {
         let signo = sig.signo();
+        let mut prepared = Some(crate::pending::PreparedSignalInfo::new(sig));
         let (deliverable, _targets) = self.proc.publish_with_targets(|actions, targets| {
             let blocked = self.signal_blocked(signo);
+            let deliverable = self.wants_signal(signo);
             let in_sigwait = self.is_sigwait_for(signo);
             if !blocked && !in_sigwait && actions[signo].is_ignore(signo) {
                 return false;
             }
-            if self.pending.lock_irqsave().put_signal(sig) {
+            prepared = self.pending.lock_irqsave().put_prepared(
+                prepared
+                    .take()
+                    .expect("signal publication consumes its prepared info once"),
+            );
+            if prepared.is_none() {
                 self.possibly_has_signal.store(true, Ordering::Release);
             }
-            if !blocked {
+            if deliverable {
                 self.proc
                     .complete_fatal_signal(signo, defer_fatal, &actions[signo], targets);
             }
-            !blocked
+            deliverable
         });
         self.wake_sigwait(signo);
         deliverable
+    }
+
+    /// Commits the first group exit status and every peer's SIGKILL bit under
+    /// the disposition lock, like Linux do_group_exit/zap_other_threads.
+    /// The OS must hold its clone publication gate and notify peers only after
+    /// this method returns and that gate is released. The caller does not
+    /// receive an additional pending signal. Returns the winning wait status
+    /// for the caller's subsequent per-thread exit, preserving any earlier exit.
+    #[must_use]
+    pub fn begin_group_exit(&self, status: i32) -> i32 {
+        let (status, targets) = self.proc.publish_with_targets(|_, targets| {
+            if self.proc.group_exit.begin(status) {
+                for (_, target) in targets {
+                    if !core::ptr::eq(self, Arc::as_ref(target)) {
+                        target.publish_group_kill();
+                    }
+                }
+            }
+            self.proc
+                .group_exit
+                .status()
+                .expect("group exit was committed")
+        });
+        drop(targets);
+        status
     }
 
     /// Allocation-free SIGKILL publication used by Linux group exit. The group

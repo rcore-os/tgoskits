@@ -340,7 +340,7 @@ pub(crate) fn check_signals_with_outcome(
     restart_info: Option<&SyscallRestartInfo>,
 ) -> SignalCheckOutcome {
     let thr = current.as_thread();
-    if thr.pending_exit() {
+    if thr.signal().is_exiting() {
         return SignalCheckOutcome::None;
     }
     if thr.take_deadline_overrun() {
@@ -644,7 +644,9 @@ pub(crate) fn queue_thread_signal(thread: &Thread, sig: SignalInfo) -> bool {
     };
     if !wake_exiting_signal_group(process)
         && deliverable
-        && let Ok(task) = get_task_by_number(thread.tid_number())
+        && let Some(id) = thread.scheduler_id()
+        && let Ok(handle) = ax_runtime::task::thread::ThreadHandle::lookup(id)
+        && let Ok(Some(task)) = UserTaskRef::try_from_scheduler(handle)
     {
         task.interrupt();
     }
@@ -653,14 +655,16 @@ pub(crate) fn queue_thread_signal(thread: &Thread, sig: SignalInfo) -> bool {
 
 /// A group decision precedes every stop release and task wake. The per-thread
 /// SIGKILL bits were published by the signal owner before reaching this point.
-fn wake_exiting_signal_group(process: &ProcessData) -> bool {
-    if process.proc.group_exit_state().status().is_none() {
+pub(super) fn wake_exiting_signal_group(process: &ProcessData) -> bool {
+    if process.signal.group_exit_status().is_none() {
         return false;
     }
     process.clear_ptrace_stop();
     process.clear_job_stop_for_kill();
     for tid in process.proc.threads() {
-        if let Ok(task) = get_task_by_number(tid) {
+        if let Ok(task) = get_task_by_number(tid)
+            && Arc::ptr_eq(&task.as_thread().proc_data.identity(), &process.identity())
+        {
             task.interrupt();
         }
     }
@@ -773,8 +777,11 @@ fn publish_process_signal(
 ) -> Option<TidNumber> {
     let wake_tid = {
         let _update = proc_data.thread_group_update();
-        let defer_fatal = proc_data.ptrace_tracer_identity().is_some() || proc_data.is_job_stopped();
-        proc_data.signal.send_signal(sig, defer_fatal)
+        let defer_fatal =
+            proc_data.ptrace_tracer_identity().is_some() || proc_data.is_job_stopped();
+        proc_data
+            .signal
+            .send_signal(sig, defer_fatal)
             .and_then(|tid| TidNumber::try_from(tid).ok())
     };
     if wake_exiting_signal_group(proc_data) {

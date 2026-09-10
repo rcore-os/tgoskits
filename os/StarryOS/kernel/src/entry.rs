@@ -100,7 +100,7 @@ pub fn init(args: &[String], envs: &[String]) {
     let tgid_lease = identity
         .acquire_role::<Tgid>()
         .expect("failed to acquire init TGID role");
-    let proc = Process::new_init(identity.clone());
+    let proc = Process::new_init(identity.clone()).expect("failed to prepare init process");
     proc.add_thread(TidNumber::try_from(pid).expect("init TID must be non-zero"));
 
     if let Err(error) = tty::bind_console_to(&proc) {
