@@ -1,6 +1,6 @@
 //! Common thread construction, publication, completion, and join ownership.
 
-use alloc::{boxed::Box, string::String, sync::Arc};
+use alloc::string::String;
 
 use crate::{
     runtime::{
@@ -113,10 +113,10 @@ impl ThreadBuilder {
     ) -> Result<PreparedThread, TaskError> {
         validate_spec(&self)?;
         let system = runtime_task_system()?;
-        let execution = Arc::new(ThreadExecution::new(
-            Box::new(entry),
+        let execution = crate::thread::allocation::try_arc(ThreadExecution::new(
+            crate::thread::allocation::try_box(entry)?,
             core::mem::take(&mut self.name),
-        ));
+        ))?;
         let resources = resources(self.stack_request(), thread_entry)?;
         // SAFETY: the integration constructor transfers the owning resource bundle.
         let mut spec = unsafe { ThreadSpec::new(self.policy).with_resources(resources) };

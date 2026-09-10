@@ -158,6 +158,22 @@ impl CpuSet {
         }
     }
 
+    pub(crate) fn try_all(cpu_count: usize) -> Result<Self, super::TaskError> {
+        let mut words =
+            crate::thread::allocation::try_vec(cpu_count.div_ceil(Self::BITS_PER_WORD))?;
+        words.resize(cpu_count.div_ceil(Self::BITS_PER_WORD), usize::MAX);
+        if let Some(last) = words.last_mut()
+            && !cpu_count.is_multiple_of(Self::BITS_PER_WORD)
+        {
+            *last = (1usize << (cpu_count % Self::BITS_PER_WORD)) - 1;
+        }
+        Ok(Self {
+            words,
+            topology_len: cpu_count,
+            allowed_count: cpu_count,
+        })
+    }
+
     /// Creates an empty CPU set for a topology.
     pub fn empty(cpu_count: usize) -> Self {
         Self {
@@ -603,6 +619,16 @@ impl ThreadSpec {
     /// Returns explicit affinity, if one was supplied.
     pub fn affinity(&self) -> Option<&CpuSet> {
         self.affinity.as_ref()
+    }
+
+    pub(crate) fn take_affinity(&mut self) -> Option<CpuSet> {
+        self.affinity.take()
+    }
+    pub(crate) fn resources(&self) -> &ThreadResources {
+        &self.resources
+    }
+    pub(crate) fn extension(&self) -> Option<&ThreadExtension> {
+        self.extension.as_ref()
     }
 
     pub(crate) fn into_owned_parts(mut self) -> (Option<ThreadExtension>, ThreadResources) {

@@ -109,19 +109,19 @@ impl RuntimeContext {
         inner: ax_hal::context::TaskContext,
         stack: StackHandle,
         preemption: InitialPreemptionState,
-    ) -> *mut RuntimeContext {
-        let inner = Box::new(UnsafeCell::new(inner));
+    ) -> Result<*mut RuntimeContext, RuntimeStatus> {
+        let inner = super::allocation::try_box(UnsafeCell::new(inner))?;
         let header = match preemption {
             InitialPreemptionState::Enabled => ExecutionContextHeader::new(),
             InitialPreemptionState::BootstrapDisabled => ExecutionContextHeader::new_bootstrap(),
         };
-        Box::into_raw(Box::new(Self {
+        Ok(Box::into_raw(super::allocation::try_box(Self {
             header,
             publication: UnsafeCell::new(CurrentThreadPublication::NONE),
             inner,
             stack,
             switch_tail: UnsafeCell::new(None),
-        }))
+        })?))
     }
 
     fn header(&self) -> Pin<&ExecutionContextHeader> {
@@ -354,10 +354,10 @@ fn create_runtime_context_parts(
         ax_memory_addr::VirtAddr::from(stack.usable_top),
         ax_hal::context::KernelTlsBase::new(tls_pointer),
     );
-    RuntimeHandleResult::success(
-        RuntimeContext::allocate(context, stack_handle, InitialPreemptionState::Enabled)
-            .expose_provenance(),
-    )
+    match RuntimeContext::allocate(context, stack_handle, InitialPreemptionState::Enabled) {
+        Ok(context) => RuntimeHandleResult::success(context.expose_provenance()),
+        Err(status) => RuntimeHandleResult::failure(status),
+    }
 }
 
 pub(super) fn create_bootstrap_context() -> ExecutionContextHandle {
@@ -366,7 +366,8 @@ pub(super) fn create_bootstrap_context() -> ExecutionContextHandle {
         context,
         StackHandle::NONE,
         InitialPreemptionState::BootstrapDisabled,
-    );
+    )
+    .expect("bootstrap context allocation failed");
     // SAFETY: Box::into_raw yields a non-null uniquely owned RuntimeContext
     // that stays live until destroy_runtime_context consumes the handle.
     unsafe { ExecutionContextHandle::from_raw(context.expose_provenance()) }
@@ -721,12 +722,14 @@ mod tests {
                 ax_hal::context::TaskContext::new(),
                 StackHandle::NONE,
                 InitialPreemptionState::Enabled,
-            );
+            )
+            .unwrap();
             let next = RuntimeContext::allocate(
                 ax_hal::context::TaskContext::new(),
                 StackHandle::NONE,
                 InitialPreemptionState::Enabled,
-            );
+            )
+            .unwrap();
 
             // SAFETY: both leaked runtime contexts remain pinned for the
             // modeled switch, and this host thread cannot migrate.
@@ -777,12 +780,14 @@ mod tests {
                 ax_hal::context::TaskContext::new(),
                 StackHandle::NONE,
                 InitialPreemptionState::Enabled,
-            );
+            )
+            .unwrap();
             let next = RuntimeContext::allocate(
                 ax_hal::context::TaskContext::new(),
                 StackHandle::NONE,
                 InitialPreemptionState::Enabled,
-            );
+            )
+            .unwrap();
 
             // SAFETY: both leaked contexts remain pinned while the modeled CPU
             // validates and then rolls back this uncommitted switch.
@@ -832,7 +837,8 @@ mod tests {
                 ax_hal::context::TaskContext::new(),
                 StackHandle::NONE,
                 InitialPreemptionState::Enabled,
-            );
+            )
+            .unwrap();
 
             // SAFETY: the leaked runtime context remains pinned while this
             // host thread validates the modeled current publication.
@@ -874,7 +880,8 @@ mod tests {
                 ax_hal::context::TaskContext::new(),
                 StackHandle::NONE,
                 InitialPreemptionState::Enabled,
-            );
+            )
+            .unwrap();
 
             // SAFETY: the leaked runtime context remains pinned while this
             // host thread reads its immutable scheduler publication.

@@ -303,7 +303,7 @@ impl TaskSystem {
         let task_work = Arc::new(TaskWorkDoorbell::new());
         let cpu_remotes = (0..config.cpu_count())
             .map(|index| CpuRemote::create(CpuId::new(index as u32), config))
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         let cpu_registrations = cpu_remotes
             .iter()
             .cloned()
@@ -315,12 +315,14 @@ impl TaskSystem {
             cpu_remotes,
             state: PreemptTicketLock::new(TaskSystemState {
                 cpus: cpu_registrations,
-                slots: Vec::new(),
-                free_slots: Vec::new(),
-                pending_address_space_reclaims: Vec::new(),
+                slots: crate::thread::allocation::try_vec(config.thread_capacity())?,
+                free_slots: crate::thread::allocation::try_vec(config.thread_capacity())?,
+                pending_address_space_reclaims: crate::thread::allocation::try_vec(
+                    config.thread_capacity().max(config.cpu_count()),
+                )?,
                 task_work_class_cursor: DeferredTaskWorkClass::Deadline,
                 address_space_reclaim_first: true,
-                exited_work: ExitedThreadWork::new(),
+                exited_work: ExitedThreadWork::new(config.thread_capacity())?,
             }),
             root_domain,
             deferred_coroutine_reclaims: SchedulerInbox::new(InboxKind::Reclaim),

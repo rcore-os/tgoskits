@@ -52,3 +52,7 @@ pub(crate) mod error;
 pub(crate) mod execution;
 pub(crate) mod spawn;
 pub use execution::{PreparedThread, StagedThread};
+
+pub(crate) mod allocation;
+#[cfg(feature = "fault-injection")]
+pub use allocation::ThreadAllocationProbe;

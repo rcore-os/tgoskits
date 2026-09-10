@@ -337,3 +337,21 @@ CPU 周期和全局 MM 锁回归迁到 `task/cpu_lifecycle.rs` 的独立 `task-c
 仅在 `fault-injection` 下，最终 idle wait 事务现在同时观察测试邮箱。ARMING、延迟到 wait 边界发布和 ready 均阻止 WFI；DONE 不阻止。生产者仍先投递普通 owner work，退出 publication 租约后才发布可消费状态，取消多余的直接物理 IPI。正常生产构建没有测试邮箱或这条分支。
 
 `request_idle_cpu_round_trip_at_wait` 在真实 idle service 点之后、IRQ-off wait 边界把同一邮箱请求变为可消费。测试断言这种确定性交错不能进入 WFI：旧实现失败于 `idle must recheck pending owner probe before WFI`，新实现返回 idle 主循环并执行同一下线事务。红绿日志为 `/tmp/pr2357-idle-pending-{red,green}.log`；断言只约束本次边界注入，后续并发请求仍由正常 IRQ-off 通知协议唤醒。
+
+### 5.13 创建分配与失败回滚
+
+固定 Linux 基准的 `copy_process` 在 `dup_task_struct` 失败时返回 `-ENOMEM`，调度初始化完成后才允许发布与首次唤醒。创建路径不能因为“节点在首次入队之前准备”就在持有 raw rq 锁时分配。此前 `prepare_thread_slot` 会在 IRQ-save rq 锁内扩容各调度类的索引，本轮删除该入口及转发，把这些存储移到 `TaskSystem` 初始化。
+
+`RunQueue::configured` 按 `TaskSystemConfig::thread_capacity` 预建 membership、Fair、Deadline 和 pushable 索引；登记槽、空闲槽和退出候选也在锁对象投入使用前预留容量。创建、唤醒及迁移不再扩容这些索引。代价是每 CPU 提前承担配置上限对应的索引内存，而不是随活跃线程数增长；配置上限仍限制可用线程槽，槽耗尽与堆分配失败保持不同错误。
+
+`thread::allocation` 使用标准 `Box::try_new`、`Arc::try_new` 和 `Vec::try_reserve_exact`。入口闭包、公共执行对象、调度状态、PI/运行队列节点及任务核心均沿 `Result` 返回 `RuntimeFailure(NoMemory)`。显式 affinity 移交所有权后由一个 `Arc<CpuSet>` 共享，不再在创建途中隐式克隆底层向量。没有引入自定义引用计数或可变尾部布局。
+
+`ThreadSlotReservation` 统一拥有未发布槽的 generation 和 Deadline 准入额度。私有对象分配失败时，先撤销槽与额度，再由 `UnpublishedThreadGuard` 释放资源及直接 OS extension；bind 或提交重验证失败也先释放预留锁，再执行资源析构。只有登记表提交成功才解除回滚责任，失败路径不运行新线程入口。
+
+运行时为栈描述符先分配 `Box<MaybeUninit<RuntimeStack>>`，随后取得栈 backing，成功后用 `Box::write` 完成对象；这样描述符分配失败不会遗失 backing。`TlsArea::try_alloc`、架构上下文及 MM owner/token 的包装分配同样可失败。已取得的 TLS、栈、context 和 MM 由既有所有权事务回收。一次性 bootstrap 的致命失败策略仍明确保留，不能据此宣称所有系统初始化分配都已可恢复。
+
+`ThreadAllocationProbe` 只在 `fault-injection` 构建中为当前创建者注入分配边界失败。ArceOS 在 Fair 和高利用率 Deadline 两种策略下逐个失败，检查 ENOMEM、闭包与扩展各析构一次、入口不执行，并立即成功创建下一线程以检测准入泄漏；当前带 TLS 的 x86_64 路径各覆盖 24 个边界。Starry 从 MM owner 装配到用户上下文准备逐个注入，验证 MM owner 恰好释放一次。这是实际生产路径的分配边界注入，不是耗尽整机堆的实验。
+
+旧 rq 路径由同一上下文断言确定性报出 `thread allocation must not hold a scheduler or IRQ lock`，日志 `/tmp/pr2357-allocation-rq-red.log`；预分配后四架构默认 ArceOS 套件通过，日志 `/tmp/pr2357-alloc-default-<arch>.log`。本轮资源实现的定向 clippy 覆盖 ax-task、ax-runtime、ax-hal、ArceOS 测试共 85 个组合；Starry 四架构 kernel axtest 均通过。槽回滚与运行时 OOM 所有权的两项独立静态核验未发现已证实的泄漏或重复释放；这不替代合入前维护者的调度及 unsafe 审查。
+
+错误传播回归在实际准备失败后同时通过 ArceOS `ApiError → IoError` 和 Starry `StarryError::linux_errno`，旧映射确定性得到 `(BadState, EFAULT)`，修复后同一断言得到 `(NoMemory, ENOMEM)`。两个边界只为 `RuntimeStatus::NoMemory` 增加精确分支，其他运行时故障保留原分类。x86_64 红绿证据为 `/tmp/pr2357-oom-errno-{red,green}.log`；clone 既有专用转换原本已保留分配失败的 ENOMEM。

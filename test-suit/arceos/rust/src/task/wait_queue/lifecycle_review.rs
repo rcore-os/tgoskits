@@ -9,6 +9,7 @@ use ax_std::os::arceos::{
 use super::*;
 
 pub(super) fn run() {
+    allocation_failure_rollback();
     resource_failure_rollback();
     reclaim_rejects_atomic_context();
     managed_exit_requires_token();
@@ -224,4 +225,73 @@ fn resource_failure_rollback() {
         assert_eq!(counters.exited.load(Ordering::Acquire), 0);
     }
     println!("task_wait_queue: real resource-stage rollback OK");
+}
+
+fn allocation_failure_rollback() {
+    use ax_std::os::arceos::task::{
+        sched::{DeadlineFlags, DeadlinePolicy},
+        thread::ThreadAllocationProbe,
+    };
+    struct EntryDrop(Arc<AtomicUsize>);
+    impl Drop for EntryDrop {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Release);
+        }
+    }
+    let deadline = SchedulePolicy::deadline(
+        DeadlinePolicy::new(9_000_000, 10_000_000, 10_000_000, DeadlineFlags::NONE).unwrap(),
+    );
+    for policy in [SchedulePolicy::default(), deadline] {
+        let probe = ThreadAllocationProbe::fail_at(usize::MAX).unwrap();
+        let prepared = ax_runtime::thread::builder("allocation-context".into())
+            .policy(policy)
+            .prepare(|| {})
+            .unwrap();
+        let attempts = probe.attempts();
+        assert!(attempts > 0);
+        drop(probe);
+        let handle = prepared.thread_handle();
+        drop(prepared);
+        handle.wait().unwrap();
+        wait_for(|| handle.execution_reclaimed());
+        handle.join().unwrap();
+        for fail_at in 0..attempts {
+            let counters = Arc::new(ExtensionProbe::default());
+            let data = Box::into_raw(Box::new(Arc::clone(&counters))) as usize;
+            // SAFETY: this extension exclusively owns its boxed Arc until rollback.
+            let extension = unsafe { ThreadExtension::new(data, &PROBE_OPS) };
+            let entry_drops = Arc::new(AtomicUsize::new(0));
+            let entry_drop = EntryDrop(Arc::clone(&entry_drops));
+            let probe = ThreadAllocationProbe::fail_at(fail_at).unwrap();
+            let result = ax_runtime::thread::builder("allocation-failure".into())
+                .policy(policy)
+                .extension(extension)
+                .prepare(move || {
+                    drop(entry_drop);
+                    panic!("failed allocation became runnable");
+                });
+            assert!(
+                matches!(result, Err(TaskError::RuntimeFailure(code))
+                if code == ax_std::os::arceos::task::runtime::RuntimeStatus::NoMemory as u32),
+                "allocation {fail_at} must propagate ENOMEM"
+            );
+            assert_eq!(probe.attempts(), fail_at + 1);
+            drop(probe);
+            assert_eq!(entry_drops.load(Ordering::Acquire), 1);
+            assert_eq!(counters.dropped.load(Ordering::Acquire), 1);
+            assert_eq!(counters.switched_in.load(Ordering::Acquire), 0);
+            // Repeated high-utilization Deadline creation detects leaked
+            // admission charges; prepare must remain possible after each OOM.
+            let recovered = ax_runtime::thread::builder("allocation-recovered".into())
+                .policy(policy)
+                .prepare(|| {})
+                .unwrap();
+            let handle = recovered.thread_handle();
+            drop(recovered);
+            handle.wait().unwrap();
+            wait_for(|| handle.execution_reclaimed());
+            handle.join().unwrap();
+        }
+        println!("task_wait_queue: {attempts} heap allocation rollback boundaries OK");
+    }
 }

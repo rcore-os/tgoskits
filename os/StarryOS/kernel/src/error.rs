@@ -333,6 +333,11 @@ fn task_errno(error: TaskError) -> Errno {
         | TaskError::ThreadBusy => Errno::EBUSY,
         TaskError::StaleThreadId => Errno::ESRCH,
         TaskError::TimerCapacity => Errno::ENOMEM,
+        TaskError::RuntimeFailure(status)
+            if status == ax_runtime::task::runtime::RuntimeStatus::NoMemory as u32 =>
+        {
+            Errno::ENOMEM
+        }
         TaskError::UnsafeContext => Errno::EPERM,
         TaskError::CpuOwnerMismatch { .. }
         | TaskError::CpuOwnerBorrowed

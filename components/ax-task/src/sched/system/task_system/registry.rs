@@ -59,8 +59,7 @@ impl TaskSystemState {
             }
             let slot =
                 u32::try_from(self.slots.len()).map_err(|_| TaskError::InvalidConfiguration)?;
-            let required_capacity = self.slots.len().saturating_add(1);
-            self.exited_work.reserve_slot_capacity(required_capacity);
+            assert!(self.slots.len() < self.slots.capacity());
             self.slots.push(ThreadSlot {
                 generation: 1,
                 record: None,

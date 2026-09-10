@@ -11,16 +11,12 @@ pub(super) struct ExitedThreadWork {
 }
 
 impl ExitedThreadWork {
-    pub(super) const fn new() -> Self {
-        Self {
-            candidates: VecDeque::new(),
-        }
-    }
-
-    /// Reserves candidate capacity while thread construction may allocate.
-    pub(super) fn reserve_slot_capacity(&mut self, slot_count: usize) {
-        self.candidates
-            .reserve(slot_count.saturating_sub(self.candidates.len()));
+    pub(super) fn new(capacity: usize) -> Result<Self, crate::thread::TaskError> {
+        let mut candidates = VecDeque::new();
+        candidates
+            .try_reserve_exact(capacity)
+            .map_err(|_| crate::thread::allocation::no_memory())?;
+        Ok(Self { candidates })
     }
 
     /// Publishes an exited generation without allocating in the exit path.

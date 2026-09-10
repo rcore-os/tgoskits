@@ -102,17 +102,6 @@ impl RunQueue {
         Ok((charge, policy, charged_entity, rt_quota_exempt))
     }
 
-    /// Reserves every class index before a thread becomes externally visible.
-    /// Scheduler fast paths treat missing capacity as an invariant violation
-    /// instead of allocating under the irqsave rq lock.
-    pub(crate) fn prepare_thread_slot(&mut self, slot: usize) {
-        if self.membership.len() <= slot {
-            self.membership.resize(slot.saturating_add(1), None);
-        }
-        self.deadline.prepare_thread_slot(slot);
-        self.fair.prepare_thread_slot(slot);
-    }
-
     pub(crate) const fn nr_running(&self) -> usize {
         self.nr_running
     }

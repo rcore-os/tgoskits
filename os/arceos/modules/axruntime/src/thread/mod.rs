@@ -197,3 +197,5 @@ pub const fn default_task_stack_size() -> usize {
 
 #[cfg(test)]
 mod tests;
+
+mod allocation;

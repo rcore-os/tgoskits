@@ -431,8 +431,7 @@ pub(in crate::sched::system) struct ThreadAffinityState {
 }
 
 impl ThreadAffinityState {
-    pub(super) fn new(affinity: CpuSet) -> Self {
-        let affinity = Arc::new(affinity);
+    pub(super) fn new(affinity: Arc<CpuSet>) -> Self {
         Self {
             requested_affinity: Arc::clone(&affinity),
             affinity,

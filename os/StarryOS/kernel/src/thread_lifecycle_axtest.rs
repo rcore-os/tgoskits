@@ -86,6 +86,60 @@ fn user_context_resource_failure_rollback() {
 }
 
 #[axtest::axtest]
+fn user_context_heap_failure_rollback() {
+    use ax_task::thread::ThreadAllocationProbe;
+    let root = ax_hal::asm::read_kernel_page_table();
+    let prepare = |drops: Arc<AtomicUsize>| {
+        TaskAddressSpace::new(root, MmOwner(drops)).and_then(|mm| {
+            // SAFETY: the kernel root is permanent, and the entry never enters
+            // user mode. Every failed allocation remains before publication.
+            unsafe {
+                prepare_user_thread(
+                    builder("user-heap-rollback".into()),
+                    || {},
+                    UserContextOptions::new(mm),
+                )
+            }
+        })
+    };
+    let probe = ThreadAllocationProbe::fail_at(usize::MAX).unwrap();
+    let prepared = prepare(Arc::new(AtomicUsize::new(0))).unwrap();
+    let attempts = probe.attempts();
+    assert!(attempts > 0);
+    drop(probe);
+    let handle = prepared.thread_handle();
+    drop(prepared);
+    handle.join().unwrap();
+    for fail_at in 0..attempts {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let probe = ThreadAllocationProbe::fail_at(fail_at).unwrap();
+        let result = prepare(Arc::clone(&drops));
+        assert!(
+            matches!(result, Err(TaskError::RuntimeFailure(code))
+            if code == RuntimeStatus::NoMemory as u32),
+            "user heap allocation {fail_at}"
+        );
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => unreachable!("allocation fault must fail preparation"),
+        };
+        let api_error: ax_io::IoError = ax_std::os::arceos::api::ApiError::Task(error).into();
+        assert_eq!(
+            (api_error, crate::StarryError::from(error).linux_errno()),
+            (ax_io::IoError::NoMemory, syscalls::Errno::ENOMEM),
+            "allocation failure must preserve ENOMEM across public error boundaries"
+        );
+        assert_eq!(probe.attempts(), fail_at + 1);
+        drop(probe);
+        assert_eq!(
+            drops.load(Ordering::Acquire),
+            1,
+            "MM owner leaked at allocation {fail_at}"
+        );
+    }
+}
+
+#[axtest::axtest]
 fn user_kernel_mm_switch_matrix() {
     use ax_task::{
         sched::{CpuSet, RtPriority, SchedulePolicy},

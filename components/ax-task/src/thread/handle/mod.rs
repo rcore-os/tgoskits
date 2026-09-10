@@ -515,7 +515,7 @@ pub(crate) struct ThreadCoreInit {
 }
 
 impl ThreadCore {
-    pub(crate) fn new(init: ThreadCoreInit) -> Self {
+    pub(crate) fn new(init: ThreadCoreInit) -> Result<Self, TaskError> {
         let ThreadCoreInit {
             id,
             policy,
@@ -529,13 +529,13 @@ impl ThreadCore {
         } = init;
         debug_assert_eq!(id, sched.id());
         let lifecycle = Arc::clone(sched.lifecycle());
-        let reap_signal = Arc::new(ThreadReapSignal::new(task_work));
-        Self {
+        let reap_signal = crate::thread::allocation::try_arc(ThreadReapSignal::new(task_work))?;
+        Ok(Self {
             id,
             sched,
             membarrier_identity: AtomicUsize::new(membarrier_identity.into_raw()),
-            runqueue_nodes: RunQueueNodeStorage::new(),
-            pi_wait_nodes: PiWaitNodeStorage::new(),
+            runqueue_nodes: RunQueueNodeStorage::new()?,
+            pi_wait_nodes: PiWaitNodeStorage::new()?,
             extension,
             execution,
             execution_reclaimed: AtomicBool::new(false),
@@ -576,7 +576,7 @@ impl ThreadCore {
             #[cfg(feature = "lockdep")]
             held_locks: ThreadHeldLocks::new(),
             pi_wait_state: PiWaitState::new(),
-        }
+        })
     }
 
     pub(crate) const fn runqueue_nodes(&self) -> &RunQueueNodeStorage {
