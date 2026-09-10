@@ -124,6 +124,19 @@ int main(void) {
     init_attr(&attr, PERF_ATTR_SIZE_VER0);
     failures += expect_open("short-attr", &attr, 0, -1, 0) != 0;
 
+    /* Linux copy_struct_from_user zero-fills a partially supplied field; it
+     * does not discard the field's bytes that are inside attr.size. */
+    init_attr(&attr, 111);
+    attr.reserved_2 = 1;
+    failures += expect_errno("partial-reserved-field", &attr, 0, -1, -1, 0,
+                             EINVAL) != 0;
+    attr.reserved_2 = 0;
+    failures += expect_open("partial-zero-reserved", &attr, 0, -1, 0) != 0;
+    init_attr(&attr, 117);
+    attr.aux_action = 8;
+    failures += expect_errno("partial-aux-reserved", &attr, 0, -1, -1, 0,
+                             EINVAL) != 0;
+
     init_attr(&attr, 0);
     failures += expect_open("zero-size-quirk", &attr, 0, -1, 0) != 0;
 

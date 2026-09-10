@@ -143,13 +143,13 @@ fn decode_perf_event_attr(bytes: &[u8], size: usize) -> StarryResult<perf_event_
 }
 
 fn validate_perf_event_attr(attr: &mut perf_event_attr, bytes: &[u8]) -> StarryResult<()> {
-    let attr_flags = read_u64(bytes, 40);
+    let attr_flags = u64::from_ne_bytes(read_zero_extended(bytes, 40));
     if attr_flags >> 40 != 0 {
         return Err(StarryError::InvalidInput);
     }
 
-    let reserved_2 = read_u16(bytes, 110);
-    let aux_action = read_u32(bytes, 116);
+    let reserved_2 = u16::from_ne_bytes(read_zero_extended(bytes, 110));
+    let aux_action = u32::from_ne_bytes(read_zero_extended(bytes, 116));
     if reserved_2 != 0 || aux_action & !0b111 != 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -201,25 +201,14 @@ fn validate_perf_event_attr(attr: &mut perf_event_attr, bytes: &[u8]) -> StarryR
     Ok(())
 }
 
-fn read_u16(bytes: &[u8], offset: usize) -> u16 {
-    bytes
-        .get(offset..offset + size_of::<u16>())
-        .map(|raw| u16::from_ne_bytes(raw.try_into().expect("fixed-size u16 slice")))
-        .unwrap_or(0)
-}
-
-fn read_u32(bytes: &[u8], offset: usize) -> u32 {
-    bytes
-        .get(offset..offset + size_of::<u32>())
-        .map(|raw| u32::from_ne_bytes(raw.try_into().expect("fixed-size u32 slice")))
-        .unwrap_or(0)
-}
-
-fn read_u64(bytes: &[u8], offset: usize) -> u64 {
-    bytes
-        .get(offset..offset + size_of::<u64>())
-        .map(|raw| u64::from_ne_bytes(raw.try_into().expect("fixed-size u64 slice")))
-        .unwrap_or(0)
+/// Mirrors copy_struct_from_user even when attr.size cuts through a field.
+fn read_zero_extended<const N: usize>(bytes: &[u8], offset: usize) -> [u8; N] {
+    let mut field = [0; N];
+    if let Some(tail) = bytes.get(offset..) {
+        let length = tail.len().min(N);
+        field[..length].copy_from_slice(&tail[..length]);
+    }
+    field
 }
 
 #[cfg(all(test, not(axtest)))]
