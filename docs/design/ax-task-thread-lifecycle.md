@@ -165,7 +165,7 @@ spawn 每轮先预热 16 次，再测 100 次；join 放在计时区间外，但
 
 本地交付包括接口迁移、首次激活、分阶段回收、FP 继承修复、系统回归和微基准。公共执行接口与首次激活/回收协议在一个迁移提交中一起收敛，未完全做到计划要求的接口提交与语义提交分离；后续 FP 修复单独提交。上述生命周期阶段先以本地提交交付；后续 RT 锁工作按用户要求转为 PR 和 CI 验证。
 
-完整 RT 验收仍有明确缺口：第 3.3 节的既有 IRQ 压力失败与整个 host/Loom 库测试链接问题，以及没有直接系统级证据的 syscall 表项。初始交付尚未逐阶段注入栈/TLS/架构上下文分配失败，后续第 5.4 节已补齐真实运行时的阶段故障与回滚次序验证。完整 CPU 下线与 activation 的交错、独立弱内存 MM 屏障仍没有全矩阵系统证据，不能由其他用例通过推断这些场景均已验证。合入前仍需要计划要求的调度及 unsafe 领域审查。
+完整 RT 验收仍有明确缺口：第 3.3 节的既有 IRQ 压力失败与整个 host/Loom 库测试链接问题，以及没有直接系统级证据的 syscall 表项。初始交付尚未逐阶段注入栈/TLS/架构上下文分配失败，后续第 5.4 节已补齐真实运行时的阶段故障与回滚次序验证。第 5.8–5.10 节进一步补齐四架构实际调度器下线/上线、activation 预留与用户态 membarrier 证据；物理 CPU 停机/重新引导和穷尽弱内存交错仍不在这些结果的证明范围内。合入前仍需要计划要求的调度及 unsafe 领域审查。
 
 ## 4. Linux 可观察行为
 
@@ -230,7 +230,7 @@ RT 锁与调用方静态检查覆盖 9 个软件包、215 个组合，全部通�
 
 定时器容量故障通过仅测试用的 `fault-injection` feature 注入到当前线程下一次 semaphore 定时器注册。遗漏 park 取消时，QEMU 触发 `0x5041_0003` invariant；修复后返回 `TimerCapacity` 且线程保持 `Running`。IRQ `up` 不克隆或销毁 wake handle：生产者保持抢占保护，在 raw 锁内发布 handoff 完成并释放队列引用，等待者观察完成后才能销毁自身登记。
 
-CPU 下线 pin 检查已覆盖 idle 提前返回，但当前 ArceOS 没有安全的完整下线/重新上线入口，没有真实热插拔竞争测试。Linux 隐含 RCU 读侧的对象保护采用第 2.2 节逐对象租约与锁借用；不宣称新增通用 RCU API。本节最初验证阶段只测量了独立 `a22f81c016` 检出。后续按 #2308 完成的 dev/PR/dev 对照已确认回退；按当前要求暂停性能处理，不使用第 3.5 节旧结果推断当前分支无回退。
+本节初次验证仅覆盖 idle 提前返回的下线 pin 检查；后续第 5.8 节已通过实际 idle owner 验证调度器下线/上线。当前仍没有平台物理停机、IRQ/IPI 撤销和重新引导的完整热插拔契约。Linux 隐含 RCU 读侧的对象保护采用第 2.2 节逐对象租约与锁借用；不宣称新增通用 RCU API。本节最初验证阶段只测量了独立 `a22f81c016` 检出。后续按 #2308 完成的 dev/PR/dev 对照已确认回退；按当前要求暂停性能处理，不使用第 3.5 节旧结果推断当前分支无回退。
 
 ### 5.3 静态审查修复
 
@@ -263,7 +263,7 @@ Starry `thread_lifecycle_axtest::user_kernel_mm_switch_matrix` 让同 CPU、同�
 
 ### 5.7 收尾验证记录
 
-收尾资源事务提交为 `d9f5be6997`，其后的变更仅修正 axtest 完成 ID 契约与文档。完整工作区 clippy 按要求交给 CI，本地只执行受影响包检查。性能回退按当前要求暂停，未混入任何性能实验。
+本节记录资源事务提交 `d9f5be6997` 及完成 ID 契约修复 `d467030dcb` 的验证；后续缺口补充见第 5.8–5.10 节。完整工作区 clippy 按要求交给 CI，本地只执行受影响包检查。性能回退按当前要求暂停，未混入任何性能实验。
 
 | 检查 | 本轮证据 |
 | --- | --- |
@@ -274,4 +274,40 @@ Starry `thread_lifecycle_axtest::user_kernel_mm_switch_matrix` 让同 CPU、同�
 | Starry kernel axtest | 最终四架构全部通过；AArch64 177 项，其余各 176 项；`/tmp/pr2357-closeout-final-<arch>.log` |
 | 完成 ID 契约 | AArch64 原断言确定性失败；同一合法重复 ID 输入修复后通过；`/tmp/pr2357-cid-contract-red.log` |
 
-这些结果覆盖本轮实现和直接调用链；CI 仍按最新推送执行，未等待或宣称其成功。真实 CPU 完整下线/重新上线和独立弱内存 MM 屏障仍保留第 3.6 节的证据边界，合入前的领域审查要求也不由本地测试替代。
+这些结果覆盖本轮实现和直接调用链；CI 仍按最新推送执行，未等待或宣称其成功。后续调度器 CPU 周期及用户态 MM 屏障的证据见第 5.8–5.10 节；合入前的领域审查要求不由本地测试替代。
+
+
+### 5.8 CPU 生命周期与锁顺序
+
+`probe_idle_cpu_round_trip` 仅在 `fault-injection` 下可用，由实际 `run_idle` 在普通调度工作排空后调用。整个 `take_cpu_offline → bring_cpu_online` 保持同一个 pinned owner 借用及 IRQ 排除，不让调度循环观察到 offline 的本地 owner。它验证调度器和运行时 hook 的真实事务，不执行物理断电、平台 IRQ/IPI 撤销或 AP 重新引导。
+
+`request_idle_cpu_round_trip` 先发布不可消费的 `ARMING`，投递真实 scheduler work；生产者租约退出后发布目标 CPU，再发物理通知，覆盖 idle 先观察到 `ARMING` 的情况。完成结果与消费状态放在同一个原子字中，避免旧消费者清除下一次请求。`idle_cpu_reservation_round_trip` 验证 staged 预留拒绝下线，取消或激活并退出后允许下线/上线，并用目标 CPU 上的实际睡眠验证恢复后的调度和 clockevent。
+
+新增回归发现 `prepare_cpu_offline` 曾在 IRQ 关闭、调度登记表与 root-domain 锁内调用全局 `kernel_aspace().lock()`，并可能等待远端 TLB shootdown。该调用违反 hook 的不可阻塞契约，会与持 MM 锁并等待目标 CPU 响应的路径形成锁反转。删除这里的 `retry_kernel_tlb_reclaims` 包装和调用；隔离资源继续归 ax-mm 的 TLB quarantine 持有，普通 MM map/unmap/protect 等事务通过 `retry_tlb_quarantine` 重试，未提前释放资源。active-MM 退出和本地 clockevent 停止仍保持原事务顺序。
+
+`offline_does_not_lock_global_mm` 在 CPU2 持有真实全局 MM 锁，CPU0 请求 CPU1 下线/上线，必须在释放 MM 锁前收到成功回复。旧实现确定性失败于 `CPU offline must not acquire the global kernel MM lock`，修复后同一用例通过；日志为 `/tmp/pr2357-offline-mm-lock-{red,green}.log`。失败路径先释放持锁线程并收回复，避免留下 IRQ-off 自旋 CPU。
+
+Starry 的 `migration/N` stopper 是固定 CPU 的 `KernelStop` 线程，尚无 hotplug park 契约，不能为测试放宽下线门禁。`idle_cpu_cycle_rejection_retains_active_mm` 验证这种拒绝不会释放 idle 的 active-MM；随后实际切换到新 MM，旧 owner 才释放一次。
+
+### 5.9 用户返回与屏障证据
+
+`syscall-test-mm-lifecycle/src/membarrier.c` 在现有真实用户态测试中加入 512 轮 store/load litmus。两个 pthread 绑定不同 CPU，注册并调用 `PRIVATE_EXPEDITED`；远端只使用编译器屏障，隔轮经过 nanosleep 和实际用户返回。pthread barrier 仅用于轮次边界，测试中的 store/load 之间没有额外 acquire/release 握手。双侧同时读到旧值是失败，成功标记为 `MM_MEMBARRIER_USER_RETURN_PASSED`。
+
+源码证明与运行证据分别维护：`scheduled_membarrier_state` 在 kernel thread 上保留借用 MM 的身份；`collect_membarrier_targets` 在 CPU publication 租约和 raw rq 锁保护下选择同 MM 的 CPU。因此同 MM 的 user→kernel→user 不采用 Linux NULL-mm 分支的跳过 IPI 路径。`sync/membarrier/operations.rs::membarrier` 在扫描前与最后同步应答后执行 SeqCst fence，`synchronize_membarrier_cpu` 的硬 IPI 回调执行全屏障；rq 身份改变也有 SeqCst fence。`SameUser` 快路径不能绕过上述同步，也没有用额外的无依据 fence 掩盖所有权问题。
+
+四架构 QEMU 验证真实 syscall、用户执行和返回路径，但不穷尽硬件弱内存交错，也不保证每轮睡眠都切入 idle；不能把 litmus 通过当成形式化证明。现有四类内核 MM 切换和 CPU lease 回收测试继续独立运行。
+
+### 5.10 缺口补充验证
+
+本轮在 `d467030dcb` 基础上补充验证，没有恢复性能实验或本地完整 clippy。取消节点、epoch grace、唯一创建令牌和 RAII 资源事务的独立只读核验未发现已证实的 UAF、重复释放或丢失取消；这属于静态核验记录，不代替合入前维护者的调度及 unsafe 审查。
+
+| 检查 | 结果与日志 |
+| --- | --- |
+| 格式与差异 | `cargo fmt -- --check`、Starry include 子模块定向 rustfmt、`git diff --check` 通过 |
+| 增量 std | `cargo xtask test --since d467030dcb` 的 13 包全部通过；`/tmp/pr2357-gap-std.log` |
+| 定向 clippy | `ax-task`、`ax-runtime`、`arceos-test-suit` 共 72 组合通过；`/tmp/pr2357-gap-clippy.log` |
+| ArceOS `task-wait-queue` | 四架构通过，包含实际 CPU 周期、预留释放及持 MM 锁回归；`/tmp/pr2357-gap-final-idle-<arch>.log` |
+| Starry kernel axtest | 四架构通过，包含拒绝下线后的 active-MM 寿命；`/tmp/pr2357-gap-final-kernel-<arch>.log` |
+| Starry `qemu/system/syscall-test-mm-lifecycle` | 四架构通过；`/tmp/pr2357-membarrier-user-{x86_64,riscv64,loongarch64}.log`、`/tmp/pr2357-membarrier-isolated-aarch64.log` |
+
+AArch64 首次构建被共享 target 中的 `bitmaps@3.2.1` future-incompat 报告门禁拒绝；保留门禁，以独立 `CARGO_TARGET_DIR=/tmp/pr2357-gap-aarch64-target` 重跑后通过。没有删除共享报告或扩展允许列表。新增探针只恢复既有 hook 契约，未改变体系结构切换或平台启动协议。
