@@ -213,15 +213,37 @@ impl TaskSystem {
         self.migrate_dormant_deadline_bandwidth_for_cpu_offline(&state, &root_domain, id)?;
 
         if !remote.try_deactivate() {
+            #[cfg(feature = "fault-injection")]
+            crate::runtime::cpu::record_idle_offline_rejection(
+                crate::runtime::cpu::IdleOfflineRejection::PlacementPublication,
+            );
             Err(TaskError::CpuNotQuiescent(id.as_u32()))
-        } else if !Self::prepare_thread_targets_for_cpu_offline(&state, &root_domain, id)
-            || !remote.try_begin_draining()
-        {
+        } else if !Self::prepare_thread_targets_for_cpu_offline(&state, &root_domain, id) {
+            #[cfg(feature = "fault-injection")]
+            crate::runtime::cpu::record_idle_offline_rejection(
+                crate::runtime::cpu::IdleOfflineRejection::ThreadTarget,
+            );
             remote.cancel_deactivation();
             Err(TaskError::CpuNotQuiescent(id.as_u32()))
-        } else if !cpu.is_quiescent_for_offline()
-            || !Self::threads_allow_cpu_offline(&state, &root_domain, id)
-        {
+        } else if !remote.try_begin_draining() {
+            #[cfg(feature = "fault-injection")]
+            crate::runtime::cpu::record_idle_offline_rejection(
+                crate::runtime::cpu::IdleOfflineRejection::OwnerPublication,
+            );
+            remote.cancel_deactivation();
+            Err(TaskError::CpuNotQuiescent(id.as_u32()))
+        } else if !cpu.is_quiescent_for_offline() {
+            #[cfg(feature = "fault-injection")]
+            crate::runtime::cpu::record_idle_offline_rejection(
+                crate::runtime::cpu::IdleOfflineRejection::CpuState,
+            );
+            remote.cancel_draining();
+            Err(TaskError::CpuNotQuiescent(id.as_u32()))
+        } else if !Self::threads_allow_cpu_offline(&state, &root_domain, id) {
+            #[cfg(feature = "fault-injection")]
+            crate::runtime::cpu::record_idle_offline_rejection(
+                crate::runtime::cpu::IdleOfflineRejection::ThreadOwnership,
+            );
             remote.cancel_draining();
             Err(TaskError::CpuNotQuiescent(id.as_u32()))
         } else if let Err(error) = ensure_runtime_success(task_runtime::prepare_cpu_offline(

@@ -199,6 +199,46 @@ impl CurrentCpuOwnerHandles {
 
 pub use crate::sched::system::OwnerControlDrain;
 
+/// Failed prerequisite observed by the serial real-idle test probe.
+#[cfg(feature = "fault-injection")]
+#[derive(Clone, Copy, Debug)]
+#[repr(u8)]
+pub enum IdleOfflineRejection {
+    /// No instrumented prerequisite failed.
+    Unclassified         = 0,
+    /// A publisher still owns the placement endpoint.
+    PlacementPublication = 1,
+    /// A thread cannot leave this CPU's placement domain.
+    ThreadTarget         = 2,
+    /// Owner-directed delivery has not relinquished publication.
+    OwnerPublication     = 3,
+    /// Runqueue, timer, handoff or remote work remains.
+    CpuState             = 4,
+    /// A thread retains CPU ownership or a migration pin.
+    ThreadOwnership      = 5,
+}
+
+#[cfg(feature = "fault-injection")]
+static IDLE_OFFLINE_REJECTION: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+#[cfg(feature = "fault-injection")]
+pub(crate) fn record_idle_offline_rejection(reason: IdleOfflineRejection) {
+    IDLE_OFFLINE_REJECTION.store(reason as u8, core::sync::atomic::Ordering::Release);
+}
+
+/// Reads the last serial probe's rejection after its locks have been released.
+#[cfg(feature = "fault-injection")]
+pub fn idle_offline_rejection() -> IdleOfflineRejection {
+    match IDLE_OFFLINE_REJECTION.load(core::sync::atomic::Ordering::Acquire) {
+        1 => IdleOfflineRejection::PlacementPublication,
+        2 => IdleOfflineRejection::ThreadTarget,
+        3 => IdleOfflineRejection::OwnerPublication,
+        4 => IdleOfflineRejection::CpuState,
+        5 => IdleOfflineRejection::ThreadOwnership,
+        _ => IdleOfflineRejection::Unclassified,
+    }
+}
+
 /// Exercises scheduler CPU offline/online on the real idle owner.
 ///
 /// This test-only transaction retains IRQ exclusion and the exclusive owner
@@ -214,6 +254,7 @@ pub fn probe_idle_cpu_round_trip() -> Result<(), TaskError> {
     if cpu.remote().current_thread() != cpu.remote().idle_thread() {
         return Err(TaskError::NotReady);
     }
+    record_idle_offline_rejection(IdleOfflineRejection::Unclassified);
     system.take_cpu_offline(cpu.as_mut())?;
     assert_eq!(cpu.remote().lifecycle_state(), CpuLifecycleState::Offline);
     assert!(system.cpu_remote(cpu.owner()).is_none());

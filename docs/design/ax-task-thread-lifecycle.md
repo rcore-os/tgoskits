@@ -377,3 +377,11 @@ WFI 边界用例现在持有真实 staged 预留，使结果有明确前提：�
 `task_name_allocation_failure_preserves_snapshot` 在真实 kernel axtest 中逐一注入字符串存储及共享快照分配失败。旧实现确定性触发 `name allocation failure must return ENOMEM`，新实现返回 ENOMEM，旧快照保持有效，随后正常构造成功。`unpublished_extension_allocation_releases_process` 使用真实 PID 预留、Thread 和 ProcessData，在装配的三个分配边界失败，检查入口不能执行、错误与尝试次数正确、进程没有被残留 extension 引用保留。它不替换调度运行时，也不模拟整机堆耗尽。
 
 x86_64 的同一名称回归红绿日志为 `/tmp/pr2357-starry-name-{red,green}.log`；加入 extension 回滚后 x86_64 kernel axtest 180 项通过，日志 `/tmp/pr2357-starry-extension-green.log`。RISC-V 同一内核套件通过，日志 `/tmp/pr2357-starry-extension-riscv64.log`。其余架构与 Starry 定向 clippy 仍在执行，尚未计为通过。LoongArch 下线回归的 `Some(false)` 仍未定位具体拒绝条件，本节分配修复不作为该 CI 故障的修复证据。
+
+### 5.16 下线拒绝的诊断边界
+
+`de61c97784` 的 push CI 在 LoongArch 持全局 MM 锁用例中返回 `Some(false)`，并非等待超时。原日志无法区分 placement publisher、线程目标、owner publisher、本地 rq/timer/handoff 状态与线程迁移所有权，因此不能由这一失败推导出全局 MM 锁反转。相同源码的补充 CI 四架构 ArceOS 套件随后通过，也不能替代根因分析。
+
+仅在 `fault-injection` 构建中，`IdleOfflineRejection` 记录最后一次串行 idle 探针失败的判定阶段。记录在原判断处完成，日志在 `probe_idle_cpu_round_trip` 返回、其 IRQ/owner 与登记表锁全部释放后输出。非测试构建没有诊断原子变量；原短路判断顺序和取消 deactivation/draining 的顺序保持不变，不重试、不放宽排空条件，也不将拒绝记作成功。
+
+本地 LoongArch `task-cpu-lifecycle` 通过，三次 staged 预留均记录为 `PlacementPublication`，日志 `/tmp/pr2357-offline-rejection-probe.log`。这只验证诊断路径与原断言同时生效，没有复现 CI 的非预期拒绝；该根因仍未关闭。

@@ -179,7 +179,13 @@ pub(super) fn service_idle_cpu_round_trip() {
     }
     let result = match ax_task::runtime::cpu::probe_idle_cpu_round_trip() {
         Ok(()) => IDLE_SUCCESS,
-        Err(TaskError::CpuNotQuiescent(_)) => 0,
+        Err(TaskError::CpuNotQuiescent(_)) => {
+            warn!(
+                "idle CPU {cpu} offline rejection: {:?}",
+                ax_task::runtime::cpu::idle_offline_rejection()
+            );
+            0
+        }
         Err(error) => panic!("idle CPU lifecycle probe failed: {error}"),
     };
     IDLE_TARGET.store((u64::from(cpu) + 1) | IDLE_DONE | result, Ordering::Release);
