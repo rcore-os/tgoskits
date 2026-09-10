@@ -666,6 +666,14 @@ impl PreparedFileDescriptor {
         create: impl FnOnce() -> StarryResult<FileDescriptor>,
         max_entries: usize,
     ) -> StarryResult<Self> {
+        let mut prepared = Self::reserve_in(table, max_entries)?;
+        // The factory and its destructors run outside the table lock. A
+        // creation failure drops the reservation even before a file exists.
+        prepared.state = DescriptorPreparation::Ready(create()?);
+        Ok(prepared)
+    }
+
+    fn reserve_in(table: Arc<RwLock<FileTable>>, max_entries: usize) -> StarryResult<Self> {
         let fd = {
             let mut table = table.write();
             if table.count() >= max_entries {
@@ -673,15 +681,11 @@ impl PreparedFileDescriptor {
             }
             table.reserve().ok_or(StarryError::TooManyOpenFiles)?
         };
-        let mut prepared = Self {
+        Ok(Self {
             table,
             fd,
             state: DescriptorPreparation::Reserved,
-        };
-        // The reservation rolls back even if allocation fails before a file
-        // exists. The factory and its destructors run outside the table lock.
-        prepared.state = DescriptorPreparation::Ready(create()?);
-        Ok(prepared)
+        })
     }
 
     pub const fn fd(&self) -> c_int {
@@ -739,6 +743,35 @@ pub fn prepare_file_like(
         },
         max_nofile as usize,
     )
+}
+
+/// Reserves two descriptors and copies their numbers before creating files.
+///
+/// Both callbacks run outside the raw table lock. Failure in either callback
+/// releases both reservations; returned files stay hidden until installation.
+pub(crate) fn prepare_file_pair(
+    copy_out: impl FnOnce([c_int; 2]) -> StarryResult<()>,
+    create: impl FnOnce() -> StarryResult<[Arc<dyn FileLike>; 2]>,
+    cloexec: bool,
+) -> StarryResult<[PreparedFileDescriptor; 2]> {
+    let max_nofile = current_user_task()
+        .as_thread()
+        .proc_data
+        .rlimit_current(RLIMIT_NOFILE) as usize;
+    let table = current_fd_table();
+    let mut first = PreparedFileDescriptor::reserve_in(table.clone(), max_nofile)?;
+    let mut second = PreparedFileDescriptor::reserve_in(table, max_nofile)?;
+    copy_out([first.fd(), second.fd()])?;
+    let [first_file, second_file] = create()?;
+    first.state = DescriptorPreparation::Ready(FileDescriptor {
+        inner: first_file,
+        cloexec,
+    });
+    second.state = DescriptorPreparation::Ready(FileDescriptor {
+        inner: second_file,
+        cloexec,
+    });
+    Ok([first, second])
 }
 
 /// Get a file-like object by `fd`.

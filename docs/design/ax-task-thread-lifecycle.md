@@ -747,3 +747,17 @@ Linux 普通 `FUTEX_REQUEUE` 和 `FUTEX_CMP_REQUEUE` 允许源、目标 key 相�
 | --- | --- | --- | --- | --- | --- |
 | futex(FUTEX_REQUEUE_PRIVATE，同键) / X202、G98 | [v7.1 futex_requeue](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/futex/requeue.c#L589) | 同键合法；保持等待状态，返回选中的等待记录数 | `sys_futex → ResolvedFutex::requeue_to → collect_futex_requeue_same_bucket`，MM 私有 futex 域和桶锁 | 无法确认 | x86_64 同一直接 syscall 红绿，其他三架构待 CI；实现未再提前返回 |
 | futex(FUTEX_CMP_REQUEUE_PRIVATE，同键) / X202、G98 | [v7.1 futex_requeue](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/futex/requeue.c#L589) | 比较通过后同键仍计入重排数，不额外唤醒 | `sys_futex → futex_read_user_nofault → requeue_to → collect_futex_requeue_same_bucket` | 无法确认 | x86_64 同一直接 syscall 红绿；本例不穷举比较失败和错误优先级，其他架构待 CI |
+
+### 5.37 Socketpair 准备顺序
+
+`sys_socketpair` 现在遵循固定 Linux `__sys_socketpair` 的准备边界：先检查非法 type flag，预留两个 FD，在 raw 文件表锁外分别复制两个编号，再创建 socket 和文件，最后逐项安装。`PreparedFileDescriptor::reserve_in` 是单 FD 与双 FD 事务共用的私有预留入口；`prepare_file_pair` 只在两个预留成功后调用 copyout，再调用创建闭包。任一阶段失败都由原守卫撤销预留，socket/file 析构不在文件表锁内。两个文件 Arc 改用可失败分配并将失败映射为 ENOMEM；底层 transport 的既有分配策略未在本节扩展。
+
+`bugfix-usercopy-socket-results` 新增非法 flag、非法 family 与坏指针的组合、创建失败后的编号可见性、跨页第二个输出失败和 FD 耗尽检查。旧 Starry 有四项确定性失败，日志 `/tmp/pr2357-socketpair-order-red.log`；第二个输出失败保留首项的原有正确行为也继续覆盖。宿主 Linux 同一完整用例通过。修复后的 x86_64、aarch64、riscv64、loongarch64 均通过，日志分别为 `/tmp/pr2357-socketpair-order-green-final.log` 和 `/tmp/pr2357-socketpair-final-<arch>.log`。x86_64 kernel 185/185、单包 clippy 92/92 通过。首次 std 使用当前 HEAD 作基线，没有选中软件包，未作为证据；改用 `cargo xtask test --since 5feff518b3` 后实际执行 13 个白名单软件包并全部通过，日志 `/tmp/pr2357-socketpair-final-std-selected.log`。
+
+表中只评价此次准备、复制和回滚路径。FD 上限按已占数量判断的遗留近似，以及完整 socket family/type/protocol 支持仍未由这些用例证明。X 为 x86_64，G 为 aarch64、riscv64、loongarch64。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| socketpair(准备、copyout、失败回滚) / X53、G199 | [v7.1 __sys_socketpair](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/socket.c#L1828) | 非法 flag 最先报 EINVAL；预留失败早于 copyout；复制完成才创建 socket；后续失败保留已写编号且不安装 FD | `sys_socketpair → prepare_file_pair → reserve_in → UserPtr::write → create → install`，当前进程共享文件表，回调和析构在表锁外 | 正确 | 原实现四项直接红例；同一完整用例宿主 Linux 和四架构 QEMU 通过，部分输出与描述符数量均验证 |
+
+前一提交 `325e81d987` 的 CI job `103064860703` 在 Axvisor aarch64 HTTP `POST /api/vms/1/pause` 超时。日志 `/tmp/pr2357-325e-axvisor-aarch64-ci-clean.log` 显示此前 start 和 running/guest-entry 查询成功；本节 socketpair 修改属于 Starry，不把它当作该失败的修复。pause 的锁、设备回调和通知链仍在定位，未增加超时或重试。
