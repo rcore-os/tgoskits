@@ -34,7 +34,7 @@ pub(super) struct SamplingState {
     pub(super) poll_alive: Arc<AtomicBool>,
     pub(super) output: PerfOutputRoute,
     pub(super) loss: Arc<sampling::LossState>,
-    pub(super) sample_count: AtomicU64,
+    pub(super) sample_count: Arc<sampling::SamplingCount>,
     pub(super) enabled_at_ns: AtomicU64,
     pub(super) time_enabled_ns: AtomicU64,
     pub(super) time_running_ns: AtomicU64,

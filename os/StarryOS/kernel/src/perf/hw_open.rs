@@ -69,12 +69,8 @@ pub(super) fn validate_perf_event_open_hw(
         ARMV8_PMUV3_PERF_TYPE | ARMV8_CORTEX_A55_PERF_TYPE | ARMV8_CORTEX_A76_PERF_TYPE
     );
     let event = if is_generic_hw {
-        super::percpu::generic_event_for_target(
-            target_cpu,
-            required_cluster,
-            attr.config as u32,
-        )
-        .ok_or(crate::StarryError::NotFound)?
+        super::percpu::generic_event_for_target(target_cpu, required_cluster, attr.config as u32)
+            .ok_or(crate::StarryError::NotFound)?
     } else if is_hw_cache {
         ax_cpu::pmu::hw_cache_to_arm(attr.config).map_err(|error| match error {
             ax_cpu::pmu::CacheEventError::Invalid => crate::StarryError::InvalidInput,
@@ -102,9 +98,7 @@ pub(super) fn validate_perf_event_open_hw(
         (PerfTargetKind::Cpu, true) => ValidatedHwCounter::SystemPreferredCycle(event),
         (PerfTargetKind::Cpu, false) => ValidatedHwCounter::SystemProgrammable(event),
         (PerfTargetKind::Task, true) => ValidatedHwCounter::TaskPreferredCycle(event),
-        (PerfTargetKind::Task, false) => {
-            ValidatedHwCounter::TaskProgrammable(event)
-        }
+        (PerfTargetKind::Task, false) => ValidatedHwCounter::TaskProgrammable(event),
     };
 
     Ok(ValidatedHwOpen {
@@ -155,7 +149,11 @@ pub(super) fn perf_event_open_hw(
                 exclude_user,
                 exclude_kernel,
             );
-            (super::hw_owner::Counter::Programmable(0), Some(event), Some(flexible))
+            (
+                super::hw_owner::Counter::Programmable(0),
+                Some(event),
+                Some(flexible),
+            )
         }
         ValidatedHwCounter::SystemProgrammable(event) => {
             (alloc_programmable(event)?, Some(event), None)
@@ -202,7 +200,7 @@ pub(super) fn perf_event_open_hw(
             poll_alive,
             output: PerfOutputRoute::new(),
             loss: Arc::new(sampling::LossState::new()),
-            sample_count: core::sync::atomic::AtomicU64::new(0),
+            sample_count: Arc::new(sampling::SamplingCount::new()),
             enabled_at_ns: core::sync::atomic::AtomicU64::new(0),
             time_enabled_ns: core::sync::atomic::AtomicU64::new(0),
             time_running_ns: core::sync::atomic::AtomicU64::new(0),

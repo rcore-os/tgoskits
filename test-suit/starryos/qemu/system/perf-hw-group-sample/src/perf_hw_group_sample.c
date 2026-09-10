@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <sched.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -59,6 +60,44 @@ _Static_assert(offsetof(struct perf_event_mmap_page, data_head) == 1024,
 #if defined(__aarch64__)
 static volatile uint64_t sink;
 
+/* A sampling event must count before its first overflow, including its last
+ * partial slice. A huge period keeps this independent of sample delivery. */
+static int check_partial_period(int system_wide) {
+    struct perf_event_attr_v0 attr = {
+        .type = PERF_TYPE_RAW, .size = sizeof(attr), .config = 0x11,
+        .sample_period = UINT32_MAX, .sample_type = PERF_SAMPLE_IP,
+        .flags = PERF_ATTR_FLAG_DISABLED,
+    };
+    int fd = syscall(SYS_PERF_EVENT_OPEN, &attr, system_wide ? -1 : 0,
+                     system_wide ? sched_getcpu() : -1, -1, 0ul);
+    if (fd < 0) return 1;
+    void *mapping = mmap(NULL, RING_BYTES, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (mapping == MAP_FAILED) return 1;
+    if (ioctl(fd, PERF_EVENT_IOC_ENABLE, 0)) return 1;
+    for (uint64_t i = 0; i < 100000; ++i) sink += i;
+    uint64_t live = 0, stopped = 0;
+    if (read(fd, &live, sizeof(live)) != sizeof(live) ||
+        ioctl(fd, PERF_EVENT_IOC_DISABLE, 0) ||
+        read(fd, &stopped, sizeof(stopped)) != sizeof(stopped)) return 1;
+    struct perf_event_mmap_page *meta = mapping;
+    int failed = live == 0 || stopped < live || stopped >= UINT32_MAX ||
+                 meta->data_head != 0;
+    printf("partial-period system=%d live=%llu stopped=%llu head=%llu\n",
+           system_wide, (unsigned long long)live, (unsigned long long)stopped,
+           (unsigned long long)meta->data_head);
+    uint64_t reset_value = UINT64_MAX, resumed = 0;
+    if (ioctl(fd, PERF_EVENT_IOC_RESET, 0) ||
+        read(fd, &reset_value, sizeof(reset_value)) != sizeof(reset_value) ||
+        reset_value != 0 || ioctl(fd, PERF_EVENT_IOC_ENABLE, 0)) failed = 1;
+    for (uint64_t i = 0; i < 100000; ++i) sink += i;
+    if (ioctl(fd, PERF_EVENT_IOC_DISABLE, 0) ||
+        read(fd, &resumed, sizeof(resumed)) != sizeof(resumed) ||
+        resumed == 0 || resumed >= UINT32_MAX) failed = 1;
+    munmap(mapping, RING_BYTES);
+    close(fd);
+    return failed;
+}
+
 static void ring_copy(const uint8_t *ring, uint64_t size, uint64_t at,
                       void *dst, size_t len) {
     for (size_t i = 0; i < len; i++) {
@@ -67,9 +106,9 @@ static void ring_copy(const uint8_t *ring, uint64_t size, uint64_t at,
 }
 #endif
 
-int main(void) {
+static int check_group_sample(int sampling_member) {
 #if !defined(__aarch64__)
-    puts("STARRY_PERF_GROUP_SAMPLE_OK");
+    (void)sampling_member;
     return 0;
 #else
     struct perf_event_attr_v0 leader_attr = {
@@ -90,6 +129,8 @@ int main(void) {
         .type = PERF_TYPE_RAW,
         .size = sizeof(member_attr),
         .config = 0x11,
+        .sample_period = sampling_member ? UINT32_MAX : 0,
+        .sample_type = sampling_member ? PERF_SAMPLE_IP : 0,
         /* Linux groups are gated by the disabled leader; siblings stay enabled. */
     };
     int member =
@@ -116,6 +157,12 @@ int main(void) {
         return 1;
     }
     struct perf_event_mmap_page *meta = mapping;
+    void *member_mapping = MAP_FAILED;
+    if (sampling_member) {
+        member_mapping = mmap(NULL, RING_BYTES, PROT_READ | PROT_WRITE,
+                              MAP_SHARED, member, 0);
+        if (member_mapping == MAP_FAILED) return 1;
+    }
     ioctl(leader, PERF_EVENT_IOC_RESET, 0);
     ioctl(leader, PERF_EVENT_IOC_ENABLE, 0);
     for (uint64_t i = 0; i < 16000000; i++) {
@@ -147,7 +194,8 @@ int main(void) {
             ring_copy(ring, meta->data_size, start + 16, fields, sizeof(fields));
             if (fields[0] != 2 || fields[2] != leader_id ||
                 fields[4] != member_id || fields[1] <= last_leader ||
-                fields[3] < last_member) {
+                fields[3] <= last_member ||
+                (sampling_member && fields[3] >= UINT32_MAX)) {
                 printf("STARRY_PERF_GROUP_SAMPLE_BAD nr=%llu leader=%llu/%llu "
                        "leader_id=%llu/%llu member=%llu/%llu member_id=%llu/%llu\n",
                        (unsigned long long)fields[0],
@@ -171,6 +219,15 @@ int main(void) {
     printf("STARRY_PERF_GROUP_SAMPLE samples=%llu leader=%llu member=%llu corrupt=%d\n",
            (unsigned long long)samples, (unsigned long long)last_leader,
            (unsigned long long)last_member, corrupt);
+    uint64_t final[5] = {0};
+    if (read(leader, final, sizeof(final)) != sizeof(final) || final[0] != 2 ||
+        final[1] < last_leader || final[3] < last_member) corrupt = 1;
+    if (sampling_member) {
+        /* The member never overflows: its group READ must still increase. */
+        struct perf_event_mmap_page *member_meta = member_mapping;
+        if (member_meta->data_head != 0 || last_member >= UINT32_MAX) corrupt = 1;
+        munmap(member_mapping, RING_BYTES);
+    }
     munmap(mapping, RING_BYTES);
     close(member);
     close(leader);
@@ -178,7 +235,18 @@ int main(void) {
         puts("perf-group-sample FAILED: malformed or empty group snapshot");
         return 1;
     }
-    puts("STARRY_PERF_GROUP_SAMPLE_OK");
     return 0;
 #endif
+}
+
+int main(void) {
+#if defined(__aarch64__)
+    if (check_partial_period(1) || check_partial_period(0)) {
+        puts("perf-group-sample FAILED: partial sampling period lost");
+        return 1;
+    }
+#endif
+    if (check_group_sample(0) || check_group_sample(1)) return 1;
+    puts("STARRY_PERF_GROUP_SAMPLE_OK");
+    return 0;
 }

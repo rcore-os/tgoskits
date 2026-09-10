@@ -58,6 +58,56 @@ fn pmu_irq() -> Result<IrqId, ax_hal::irq::IrqError> {
 /// [`ax_cpu::pmu::overflow`]); the registry is sized one past this for indexing.
 const MAX_COUNTER: usize = 30;
 
+/// Counts sampling events independently of overflow delivery and period reloads.
+/// Owner-CPU callers hold their PMU lease; the IRQ-safe lock serializes live
+/// reads with overflow service. No registry lookup is needed by group callbacks.
+#[derive(Debug)]
+pub(crate) struct SamplingCount(IrqMutex<SamplingCountState>);
+
+#[derive(Debug, Default)]
+struct SamplingCountState {
+    previous: u32,
+    total: u64,
+}
+
+impl SamplingCountState {
+    fn update(&mut self, raw: u32) -> u64 {
+        self.total = self
+            .total
+            .saturating_add(u64::from(raw.wrapping_sub(self.previous)));
+        self.previous = raw;
+        self.total
+    }
+}
+
+impl SamplingCount {
+    pub(crate) fn new() -> Self {
+        Self(IrqMutex::new(SamplingCountState::default()))
+    }
+
+    pub(crate) fn reset(&self) {
+        *self.0.lock() = SamplingCountState::default();
+    }
+
+    pub(crate) fn value(&self) -> u64 {
+        self.0.lock().total
+    }
+
+    /// Accounts the current raw value, including a wrap from the preload.
+    pub(crate) fn update(&self, index: usize) -> u64 {
+        let mut state = self.0.lock();
+        let raw = ax_cpu::pmu::counter::read(index) as u32;
+        state.update(raw)
+    }
+
+    /// Reloads a stopped counter without charging the preload as events.
+    pub(crate) fn preload(&self, index: usize, period: u32) {
+        let mut state = self.0.lock();
+        ax_cpu::pmu::counter::preload(index, period);
+        state.previous = 0u32.wrapping_sub(period);
+    }
+}
+
 /// Minimum sampling period for frequency mode. Floors the adaptive control loop
 /// so a rare event cannot drive the period to 0 (which would re-arm the counter
 /// to overflow only after a full `2^32` wrap, i.e. effectively never). `1`
@@ -203,7 +253,7 @@ pub struct SampleReadValue {
     pub lost: u64,
 }
 
-type SampleReadCallback = unsafe fn(*const (), usize, u64, u32, bool) -> SampleReadValue;
+type SampleReadCallback = unsafe fn(*const (), usize, u64) -> SampleReadValue;
 
 #[derive(Clone)]
 pub struct SampleReadEntry {
@@ -250,12 +300,12 @@ impl SampleReadEntry {
         }
     }
 
-    fn read(&self, slot: usize, now: u64, period: u32, account_source: bool) -> SampleReadValue {
+    fn read(&self, slot: usize, now: u64) -> SampleReadValue {
         self.callback
             .map_or_else(SampleReadValue::default, |callback| {
                 // SAFETY: the slot owner retains the callback context until
                 // generation-checked unregister completes.
-                unsafe { callback(self.context, slot, now, period, account_source) }
+                unsafe { callback(self.context, slot, now) }
             })
     }
 }
@@ -300,6 +350,7 @@ impl SampleOutput {
 /// [`SampleOutput`] remain live until generation-checked unregister completes
 /// with local IRQs excluded.
 pub struct SampleSlot {
+    pub(crate) count: Arc<SamplingCount>,
     output: SampleOutput,
     /// Sampling period: the counter is re-armed to overflow after this many
     /// events via [`ax_cpu::pmu::counter::preload`]. Also emitted as the
@@ -333,6 +384,7 @@ pub struct SampleSlot {
 
 /// Immutable attributes copied into one owner-CPU sampling slot.
 pub struct SampleSlotConfig {
+    pub(crate) count: Arc<SamplingCount>,
     pub period: u32,
     pub sample_type: u64,
     pub id: u64,
@@ -350,6 +402,7 @@ impl SampleSlot {
     /// Creates one owned per-CPU registry entry.
     pub fn new(output: SampleOutput, config: SampleSlotConfig) -> Self {
         Self {
+            count: config.count,
             output,
             period: config.period,
             sample_type: config.sample_type,
@@ -508,7 +561,12 @@ pub fn unregister(registration: SampleRegistration) -> Result<(), SamplingUnregi
         // SAFETY: the guard prevents migration and local IRQ reentry.
         unsafe {
             with_registry_mut(|registry| {
-                registry.unregister(registration.counter(), registration.generation())
+                let removed =
+                    registry.unregister(registration.counter(), registration.generation())?;
+                // Every unregister caller has stopped this generation's
+                // hardware. Preserve the final partial period before release.
+                removed.count.update(registration.counter());
+                Ok(removed)
             })
         }
         .map_err(SamplingUnregisterError::Registry)?
@@ -538,6 +596,7 @@ pub fn replace_output(
                     .get_mut(registration.counter())
                     .ok_or(UnregisterError::Stale)?;
                 let config = SampleSlotConfig {
+                    count: Arc::clone(&slot.count),
                     period: slot.period,
                     sample_type: slot.sample_type,
                     id: slot.id,
@@ -620,14 +679,18 @@ fn service_overflowed_slots(
         let id = slot.id;
         let cur_period = slot.period;
 
+        // Freeze before accounting, then reload only after every reader has
+        // observed the terminal raw value. This includes IRQ delivery latency.
+        ax_cpu::pmu::counter::disable(n);
+        slot.count.update(n);
+
         let time = ax_runtime::hal::time::monotonic_time_nanos();
         let cpu = ax_hal::percpu::this_cpu_id() as u32;
         let read_len = usize::from(slot.read_len).min(MAX_SAMPLE_READ_EVENTS);
         let mut read_values = [SampleReadValue::default(); MAX_SAMPLE_READ_EVENTS];
         for (entry, value) in slot.read_entries[..read_len].iter().zip(&mut read_values) {
-            let source = entry.id == id;
-            if source || sample_type & PERF_SAMPLE_READ != 0 {
-                *value = entry.read(n, time, cur_period, source);
+            if sample_type & PERF_SAMPLE_READ != 0 {
+                *value = entry.read(n, time);
             }
         }
         let (pid, tid) = slot.owner_ids.map_or_else(
@@ -686,7 +749,8 @@ fn service_overflowed_slots(
             cur_period
         };
 
-        ax_cpu::pmu::counter::preload(n, next_period);
+        slot.count.preload(n, next_period);
+        ax_cpu::pmu::counter::enable(n);
 
         if let Some(notify) = &slot.output.notify {
             notify.notify_irq();
@@ -1082,16 +1146,24 @@ pub(crate) unsafe fn ring_write_process(ring: &PerfRingOutput, record: &[u8]) {
 #[cfg(all(test, axtest))]
 mod tests {
     #[axtest::axtest]
+    fn sampling_delta_counts_partial_wrap_and_reload() {
+        let mut state = super::SamplingCountState {
+            previous: 0u32.wrapping_sub(100),
+            total: 0,
+        };
+        assert_eq!(state.update(0u32.wrapping_sub(60)), 40);
+        assert_eq!(state.update(7), 107);
+        assert_eq!(state.update(7), 107);
+        // Reloading changes the baseline, never the already-accounted count.
+        state.previous = 0u32.wrapping_sub(200);
+        assert_eq!(state.update(0u32.wrapping_sub(170)), 137);
+    }
+
+    #[axtest::axtest]
     fn read_snapshot_retains_callback_until_registry_removal() {
         use super::*;
 
-        unsafe fn read_value(
-            context: *const (),
-            _slot: usize,
-            _now: u64,
-            _period: u32,
-            _source: bool,
-        ) -> SampleReadValue {
+        unsafe fn read_value(context: *const (), _slot: usize, _now: u64) -> SampleReadValue {
             // SAFETY: the entry owns the AtomicU64 used as callback context.
             let value = unsafe { &*context.cast::<AtomicU64>() }.load(Ordering::Acquire);
             SampleReadValue {
@@ -1110,7 +1182,7 @@ mod tests {
             weak.upgrade().is_some(),
             "closing the fd must retain IRQ callback state"
         );
-        assert_eq!(registry.get_mut(0).unwrap().read(0, 0, 0, false).value, 17);
+        assert_eq!(registry.get_mut(0).unwrap().read(0, 0).value, 17);
         drop(registry.unregister(0, 1).unwrap());
         assert!(
             weak.upgrade().is_none(),

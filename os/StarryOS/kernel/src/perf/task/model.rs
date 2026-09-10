@@ -60,6 +60,8 @@ pub struct PerTaskCounter {
     pub(super) sample_read_floor: AtomicU64,
     /// Owner-CPU state extending the current finite-width hardware slice.
     pub(super) counting_extender: Arc<IrqMutex<super::super::counting::CounterExtender>>,
+    /// Raw sampling deltas for this slice; reloads do not change its total.
+    pub(super) sampling_count: Arc<sampling::SamplingCount>,
     /// Accumulated enabled time across past windows (ns).
     pub(super) time_enabled_ns: AtomicU64,
     /// Accumulated running time across past windows (ns). Equal to
@@ -260,6 +262,7 @@ impl PerTaskCounter {
             enabled: AtomicBool::new(cfg.enabled),
             run_state: IrqMutex::new(PmuRunState::new()),
             accumulated: AtomicU64::new(0),
+            sampling_count: Arc::new(sampling::SamplingCount::new()),
             sample_read_floor: AtomicU64::new(0),
             counting_extender: Arc::new(IrqMutex::new(
                 super::super::counting::CounterExtender::new(),
@@ -728,30 +731,28 @@ impl PerTaskCounter {
 
 unsafe fn per_task_sample_read_irq(
     context: *const (),
-    source_slot: usize,
+    _source_slot: usize,
     now: u64,
-    period: u32,
-    account_source: bool,
 ) -> SampleReadValue {
     // SAFETY: task context ownership keeps the counter alive until its sampling
     // registration has been synchronously removed.
     let counter = unsafe { &*context.cast::<PerTaskCounter>() };
-    if account_source {
-        counter
-            .accumulated
-            .fetch_add(period as u64, Ordering::AcqRel);
-    }
+    // Retain the generation lock through the physical read, not merely while
+    // copying the lease: its slot and sampling baseline must describe the
+    // same scheduling generation throughout the snapshot.
+    let run_state = counter.run_state.lock();
     let mut value = counter.accumulated.load(Ordering::Acquire);
-    let running = counter.run_state.lock().running();
-    if !account_source
-        && !counter.is_sampling
-        && let Some(lease) = running
+    let running = run_state.running();
+    if let Some(lease) = running
         && lease.owner().as_usize() == ax_hal::percpu::this_cpu_id()
     {
         let physical = lease.counter();
-        let live = match physical {
-            Counter::Programmable(index) if index == source_slot => 0,
-            Counter::Cycle | Counter::Programmable(_) => counter.read_counting_slice(physical),
+        let live = if counter.is_sampling {
+            counter
+                .sampling_count
+                .update(physical.programmable_index().expect("sampling slot"))
+        } else {
+            counter.read_counting_slice(physical)
         };
         value = value.saturating_add(live);
     }

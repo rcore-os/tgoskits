@@ -177,12 +177,14 @@ fn prepare_counter(
             )
             .expect("validated task PMU counter/event pairing");
         // Overflow after `sample_period` events.
-        ax_cpu::pmu::counter::preload(n, ptc.sample_period);
+        ptc.sampling_count.reset();
+        ptc.sampling_count.preload(n, ptc.sample_period);
         let registration = match sampling::register(
             n,
             SampleSlot::new(
                 output,
                 SampleSlotConfig {
+                    count: Arc::clone(&ptc.sampling_count),
                     period: ptc.sample_period,
                     sample_type: ptc.sample_type,
                     id: ptc.sample_id.load(Ordering::Relaxed),
@@ -276,8 +278,8 @@ fn prepare_counter(
 /// stop the counter (it can no longer overflow), `disable_irq`, then `unregister`
 /// the [`SampleSlot`]. After this, an overflow on counter `n` while some *other*
 /// task runs cannot fire a sample into this task's ring — that is what attributes
-/// samples to the task. (Sampling events carry no read-back value, so no delta is
-/// accumulated; only wall time is accrued.)
+/// samples to the task. The stopped sampling slice is accumulated before its
+/// registry entry is removed, including any incomplete period.
 ///
 /// Same hot-path constraints as [`perf_sched_in`].
 pub fn perf_sched_out(thr: &Thread) {
@@ -355,6 +357,8 @@ fn stop_hardware_on_owner(
         }
         ax_cpu::pmu::overflow::disable_irq(n);
         ax_cpu::pmu::counter::disable(n);
+        let delta = ptc.sampling_count.update(n);
+        ptc.accumulated.fetch_add(delta, Ordering::AcqRel);
         ax_cpu::pmu::overflow::clear(1 << n);
         sampling::unregister(registration).map_err(|_| crate::StarryError::BadState)?;
     } else {
