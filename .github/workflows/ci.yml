@@ -462,7 +462,8 @@ jobs:
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
       matrix_json: ${{ needs.plan_ci.outputs.axvisor_matrix }}
-      fail_fast: true
+      # Independent board and QEMU targets must retain their own failure evidence.
+      fail_fast: false
       save_cache: >-
         ${{ github.event_name == 'push' &&
             (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') }}
