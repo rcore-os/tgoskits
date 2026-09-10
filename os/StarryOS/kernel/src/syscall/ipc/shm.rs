@@ -7,17 +7,14 @@ use linux_raw_sys::general::*;
 
 use super::{
     IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, SHM_INFO, SHM_STAT,
-    next_ipc_id,
 };
 use crate::{
     StarryError,
     ipc::{
-        has_ipc_permission,
-        shm::{SHM_MANAGER, ShmCreation, ShmSegment, ShmidDs},
+        has_ipc_permission, next_ipc_id,
+        shm::{SHM_MANAGER, ShmAttachPreparation, ShmCreation, ShmSegment, ShmidDs},
     },
-    mm::{
-        AddressSpaceMutationOutcome, MappingOperation, SharedMemoryObject, UserPtr, VmMutPtr, VmPtr,
-    },
+    mm::{AddressSpaceMutationOutcome, MappingOperation, UserPtr, VmMutPtr, VmPtr},
     sync::Mutex,
 };
 
@@ -135,97 +132,41 @@ pub fn sys_shmat(
 
     info!("shmat pid={pid} shmid={shmid} enter");
 
-    // Grab the shm_inner Arc under SHM_MANAGER, then drop it before
-    // mapping work to avoid holding the global lock across aspace ops.
-    let shm_inner_arc = {
-        let shm_manager = SHM_MANAGER.lock();
-        let ns_id = proc_data.namespace_snapshot().ipc_ns.lock().ns_id;
-        shm_manager
-            .get_inner_by_shmid(shmid, ns_id)
-            .ok_or(StarryError::InvalidInput)?
-    };
-    info!("shmat pid={pid} shmid={shmid} lock shm_inner");
-    let mut shm_inner = shm_inner_arc.lock();
-    let aspace_arc = proc_data.pin_aspace()?;
-    info!("shmat pid={pid} shmid={shmid} lock aspace");
-    let mut aspace = aspace_arc.lock();
-
-    let mut mapping_flags = shm_inner.mapping_flags;
+    let ns_id = proc_data.namespace_snapshot().ipc_ns.lock().ns_id;
+    let preparation = ShmAttachPreparation::prepare(shmid, ns_id)?;
+    let mapping = preparation.mapping()?;
+    let mut mapping_flags = mapping.flags;
     if shm_flg.contains(ShmAtFlags::SHM_RDONLY) {
         mapping_flags.remove(MappingFlags::WRITE);
     }
 
-    // TODO: solve shmflg: SHM_RND and SHM_REMAP
-
+    // SHM_RND and SHM_REMAP retain their existing unsupported behavior here.
     let start_aligned = ax_memory_addr::align_down_4k(addr);
-    let length = shm_inner.page_num * PAGE_SIZE_4K;
-
-    // alloc the virtual address range
-    let start_addr = aspace
-        .find_free_area(
-            VirtAddr::from(start_aligned),
-            length,
-            VirtAddrRange::new(aspace.base(), aspace.end()),
-            PAGE_SIZE_4K,
-        )
-        .or_else(|| {
-            aspace.find_free_area(
-                aspace.base(),
-                length,
-                VirtAddrRange::new(aspace.base(), aspace.end()),
-                PAGE_SIZE_4K,
-            )
-        })
-        .ok_or(StarryError::NoMemory)?;
-    let end_addr = VirtAddr::from(start_addr.as_usize() + length);
-    let va_range = VirtAddrRange::new(start_addr, end_addr);
-
-    info!(
-        "Process {} alloc shm virt addr start: {:#x}, size: {}, mapping_flags: {:#x?}",
-        pid,
-        start_addr.as_usize(),
-        length,
-        mapping_flags
-    );
-
-    // map the virtual address range to the physical address
-    let mut pending_tlb_error = None;
-    if let Some(phys_pages) = shm_inner.phys_pages.clone() {
-        // Another process has attached the shared memory
-        // TODO(mivik): shm page size
-        let backend = MappingOperation::new_shared(start_addr, phys_pages);
-        match aspace.map_outcome(start_addr, length, mapping_flags, false, backend)? {
-            AddressSpaceMutationOutcome::Complete => {}
-            AddressSpaceMutationOutcome::PublishedPendingTlb(error) => {
-                pending_tlb_error = Some(error);
-            }
-        }
-    } else {
-        // This is the first process to attach the shared memory
-        let pages = Arc::new(SharedMemoryObject::allocate(length, PAGE_SIZE_4K)?);
-        let backend = MappingOperation::new_shared(start_addr, pages.clone());
-        match aspace.map_outcome(start_addr, length, mapping_flags, false, backend)? {
-            AddressSpaceMutationOutcome::Complete => {}
-            AddressSpaceMutationOutcome::PublishedPendingTlb(error) => {
-                pending_tlb_error = Some(error);
-            }
-        }
-
-        shm_inner.map_to_phys(pages);
-    }
-
-    info!("shmat pid={pid} shmid={shmid} mapped; attach_process");
-    shm_inner.attach_process(owner, operator, va_range);
-    drop(aspace);
-    drop(shm_inner);
-
-    info!("shmat pid={pid} shmid={shmid} lock shm_manager for vaddr");
-    let mut shm_manager = SHM_MANAGER.lock();
-    shm_manager.insert_shmid_vaddr(owner, shmid, start_addr);
-    info!("shmat pid={pid} shmid={shmid} done");
-    match pending_tlb_error {
-        Some(error) => Err(error),
-        None => Ok(start_addr.as_usize() as isize),
+    let length = mapping.length;
+    let aspace_arc = proc_data.pin_aspace()?;
+    let (start_addr, outcome) = {
+        let mut aspace = aspace_arc.lock();
+        let range = VirtAddrRange::new(aspace.base(), aspace.end());
+        let start_addr = aspace
+            .find_free_area(VirtAddr::from(start_aligned), length, range, PAGE_SIZE_4K)
+            .or_else(|| aspace.find_free_area(aspace.base(), length, range, PAGE_SIZE_4K))
+            .ok_or(StarryError::NoMemory)?;
+        let backend = MappingOperation::new_shared(start_addr, mapping.pages);
+        let outcome = aspace.map_outcome(start_addr, length, mapping_flags, false, backend)?;
+        // PublishedPendingTlb already owns a VMA; it must retain its attach
+        // reference even if the syscall reports the pending TLB error.
+        preparation.record_attachment(
+            owner,
+            operator,
+            VirtAddrRange::from_start_size(start_addr, length),
+        );
+        (start_addr, outcome)
+    };
+    // Linux releases its temporary nattch reference after mmap_write_unlock.
+    drop(preparation);
+    match outcome {
+        AddressSpaceMutationOutcome::Complete => Ok(start_addr.as_usize() as isize),
+        AddressSpaceMutationOutcome::PublishedPendingTlb(error) => Err(error),
     }
 }
 
@@ -300,23 +241,7 @@ pub fn sys_shmctl(
         // Otherwise mark it for deferred destruction and remove the key
         // mapping so future shmget() calls won't find it. See Linux
         // do_shm_rmid() in ipc/shm.c.
-        let mut shm_manager = SHM_MANAGER.lock();
-        let shm_inner_arc = shm_manager
-            .get_inner_by_shmid(shmid, ns_id)
-            .ok_or(StarryError::InvalidInput)?;
-        let mut shm_inner = shm_inner_arc.lock();
-
-        shm_inner.rmid = true;
-        shm_inner.shmid_ds.shm_ctime = monotonic_time_nanos() as __kernel_time_t;
-
-        // Make private so no new shmget() finds it by key.
-        shm_manager.make_private(shmid);
-
-        if shm_inner.attach_count() == 0 {
-            drop(shm_inner);
-            shm_manager.remove_shmid(shmid);
-        }
-
+        SHM_MANAGER.lock().mark_for_removal(shmid, ns_id)?;
         return Ok(0);
     }
 

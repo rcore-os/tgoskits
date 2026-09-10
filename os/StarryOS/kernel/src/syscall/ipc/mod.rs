@@ -1,16 +1,8 @@
-use core::sync::atomic::{AtomicI32, Ordering};
-
 mod mqueue;
 mod msg;
 mod shm;
 
 pub use self::{mqueue::*, msg::*, shm::*};
-
-static IPC_ID: AtomicI32 = AtomicI32::new(0);
-
-fn next_ipc_id() -> i32 {
-    IPC_ID.fetch_add(1, Ordering::Relaxed)
-}
 
 // IPC command constants
 const IPC_PRIVATE: i32 = 0;

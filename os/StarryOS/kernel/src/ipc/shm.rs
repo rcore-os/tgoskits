@@ -121,6 +121,85 @@ pub struct ShmCreation {
     pub ns_id: u64,
 }
 
+/// Task-context shmat admission, distinct from the VMA's attachment reference.
+///
+/// The temporary nattch reference follows Linux do_shmat: take it under the
+/// registry/object locks, do MM work without either lock, then release it.
+pub(crate) struct ShmAttachPreparation {
+    segment: Arc<Mutex<ShmSegment>>,
+}
+
+pub(crate) struct ShmMapping {
+    pub(crate) pages: Arc<SharedMemoryObject>,
+    pub(crate) length: usize,
+    pub(crate) flags: MappingFlags,
+}
+
+impl ShmAttachPreparation {
+    pub(crate) fn prepare(shmid: i32, ns_id: u64) -> StarryResult<Self> {
+        let manager = SHM_MANAGER.lock();
+        let segment = manager
+            .get_inner_by_shmid(shmid, ns_id)
+            .ok_or(StarryError::InvalidInput)?;
+        {
+            let mut segment = segment.lock();
+            segment.shmid_ds.shm_nattch = segment
+                .shmid_ds
+                .shm_nattch
+                .checked_add(1)
+                .ok_or(StarryError::NoMemory)?;
+        }
+        Ok(Self { segment })
+    }
+
+    /// Prepares the backing object before taking the address-space mutex.
+    pub(crate) fn mapping(&self) -> StarryResult<ShmMapping> {
+        let mut segment = self.segment.lock();
+        let length = segment.page_num * PAGE_SIZE_4K;
+        if segment.phys_pages.is_none() {
+            let pages = Arc::try_new(SharedMemoryObject::allocate(length, PAGE_SIZE_4K)?)
+                .map_err(|_| StarryError::NoMemory)?;
+            segment.phys_pages = Some(pages);
+        }
+        Ok(ShmMapping {
+            pages: segment.phys_pages.as_ref().unwrap().clone(),
+            length,
+            flags: segment.mapping_flags,
+        })
+    }
+
+    /// Records a published mapping while the caller still owns the MM mutex.
+    pub(crate) fn record_attachment(
+        &self,
+        owner: PidIdentityId,
+        operator: PidSnapshot,
+        range: VirtAddrRange,
+    ) {
+        let mut manager = SHM_MANAGER.lock();
+        let mut segment = self.segment.lock();
+        segment.attach_process(owner, operator, range);
+        manager.insert_shmid_vaddr(owner, segment.shmid, range.start);
+    }
+}
+
+impl Drop for ShmAttachPreparation {
+    fn drop(&mut self) {
+        let mut manager = SHM_MANAGER.lock();
+        let mut segment = self.segment.lock();
+        assert!(
+            segment.shmid_ds.shm_nattch > 0,
+            "shmat admission reference underflow"
+        );
+        segment.shmid_ds.shm_nattch -= 1;
+        let shmid = segment.shmid;
+        let remove = segment.rmid && segment.attach_count() == 0;
+        drop(segment);
+        if remove {
+            manager.remove_shmid(shmid);
+        }
+    }
+}
+
 impl ShmSegment {
     /// Creates a segment before its ID is inserted into the registry.
     pub fn new(shmid: i32, creation: ShmCreation) -> Self {
@@ -190,14 +269,9 @@ impl ShmSegment {
         Ok(self.shmid as isize)
     }
 
-    /// Maps the given physical shared pages to this shared memory segment.
-    pub fn map_to_phys(&mut self, phys_pages: Arc<SharedMemoryObject>) {
-        self.phys_pages = Some(phys_pages);
-    }
-
-    /// Returns the number of current attaches to this shared memory segment.
+    /// Returns VMA/legacy attachment and in-flight shmat admission references.
     pub fn attach_count(&self) -> usize {
-        self.va_range.values().map(Vec::len).sum()
+        self.shmid_ds.shm_nattch as usize
     }
 
     /// Returns all virtual address ranges associated with the given Pid.
@@ -347,6 +421,20 @@ pub struct ShmManager {
 }
 
 impl ShmManager {
+    pub(crate) fn mark_for_removal(&mut self, shmid: i32, ns_id: u64) -> StarryResult {
+        let segment = self
+            .get_inner_by_shmid(shmid, ns_id)
+            .ok_or(StarryError::InvalidInput)?;
+        let mut segment = segment.lock();
+        segment.rmid = true;
+        segment.shmid_ds.shm_ctime = monotonic_time_nanos() as __kernel_time_t;
+        self.make_private(shmid);
+        if segment.attach_count() == 0 {
+            drop(segment);
+            self.remove_shmid(shmid);
+        }
+        Ok(())
+    }
     /// Counts the namespace's allocated segments without exposing registry storage.
     pub(crate) fn segment_count(&self, ns_id: u64) -> usize {
         self.shmid_inner
@@ -483,8 +571,9 @@ impl ShmManager {
 
 /// Global shared memory manager.
 ///
-/// Lock ordering: SHM_MANAGER before ShmSegment before aspace (per-process).
-/// All code paths must acquire locks in this order to prevent deadlock.
+/// Lock ordering: address-space mutex, then SHM_MANAGER, then ShmSegment.
+/// Admission and backing allocation release IPC locks before entering MM;
+/// registry/object locks must never be carried into address-space operations.
 pub static SHM_MANAGER: Mutex<ShmManager> = Mutex::new(ShmManager::new());
 
 /// Clear all shared memory segments for a process on exit.
@@ -558,4 +647,54 @@ pub fn clear_proc_shm(owner: PidIdentityId, operator: PidSnapshot, aspace: &MmPi
         }
     }
     shm_manager.remove_pid(owner);
+}
+
+#[cfg(axtest)]
+mod tests {
+    use super::*;
+
+    #[axtest::axtest]
+    fn rmid_preserves_an_admitted_attach_until_cancelled() {
+        let namespace = crate::task::new_test_pid_namespace();
+        let (identity, _role) = crate::task::new_test_process_identity(&namespace);
+        let ns_id = crate::namespace::IpcNamespace::new_root().ns_id;
+        let shmid = crate::ipc::next_ipc_id();
+        let segment = Arc::new(Mutex::new(ShmSegment::new(
+            shmid,
+            ShmCreation {
+                key: shmid,
+                size: PAGE_SIZE_4K,
+                shmflg: 0o600,
+                creator: identity.snapshot(),
+                uid: 0,
+                gid: 0,
+                ns_id,
+            },
+        )));
+        SHM_MANAGER
+            .lock()
+            .insert_shmid_inner(shmid, segment.clone());
+        let preparation = ShmAttachPreparation::prepare(shmid, ns_id).unwrap();
+        SHM_MANAGER.lock().mark_for_removal(shmid, ns_id).unwrap();
+        let retained = SHM_MANAGER
+            .lock()
+            .get_inner_by_shmid(shmid, ns_id)
+            .is_some();
+        drop(preparation);
+        let removed = SHM_MANAGER
+            .lock()
+            .get_inner_by_shmid(shmid, ns_id)
+            .is_none();
+        assert!(
+            retained,
+            "RMID must preserve a segment already admitted by shmat"
+        );
+        assert!(
+            removed,
+            "cancelling the last attach preparation must complete RMID"
+        );
+        // This observer Arc intentionally survives removal: allocation
+        // lifetime alone must not keep the segment in the IPC registry.
+        assert_eq!(segment.lock().attach_count(), 0);
+    }
 }

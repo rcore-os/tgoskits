@@ -670,7 +670,7 @@ clone 最终发布的 EINTR 分支已扩展进既有 `clone_publication_refreshe
 
 只把 `ShmInner::va_range` 和 `ShmManager::pid_shmid_vaddr` 的键改成 MM ID 不能覆盖 VMA 分裂、fork、部分 munmap 和 exec。把计数放入 SharedMemoryObject 或普通 Arc 的 Drop 也不正确，因为旧 VMA 根、PTE 槽和 TLB 回执可能保留物理资源。实现应复用现有 VMA 事务，令逻辑附接跟随已提交的 VMA 身份，物理页仍由 SharedMemoryObject、MappingOperation 和 MappingSlot 持有；不增加通用插件或另一个独立的内存对象登记体系。
 
-`publish_mutation_classified` 已区分未发布失败和已发布但 TLB 待确认。map/unmap/mprotect/mremap 都保留自己的 preimage；fork 为子 MM 提交独立回执，失败走 `reset_uninstalled_for_loader`。拟在准备阶段保留逻辑 VMA 前像和可失败的计数变更，在发布成功或 PublishedPendingTlb 时提交，未发布失败沿原 preimage 回滚。不能只挂在 `publish_vma_metadata_successor`，也不能漏掉不经过普通回执的未发布 MM 清理。
+`publish_mutation_classified` 已区分未发布失败和已发布但 TLB 待确认。map/unmap/mprotect/mremap 都保留自己的 preimage；fork 为子 MM 提交独立回执，失败走 `reset_uninstalled_for_loader`。需要保留逻辑 VMA 前像，但不能只按最终根或附接净增量生成生命周期回调：固定 Linux `mm/vma.c:1427,1448` 在中段 munmap 前分别执行两次 `__split_vma`，`:543` 调用新片段的 open，随后移除中间 VMA 才执行 close。最终数量从 1 变成 2，实际却有两次 open 和一次 close。后续实现须记录操作级分裂、建立和关闭阶段，分别处理已经发布的分裂、未发布失败和 PublishedPendingTlb；不能只挂在 `publish_vma_metadata_successor`，也不能漏掉不经过普通回执的未发布 MM 清理。宿主探针 `/tmp/pr2357-shm-split-times.c` 和 `.log` 同时观察到中段 munmap 后 nattch 1→2、atime 更新及 dtime 从 0 更新；最初对精确秒边界的额外假设失败，改为核验实际 open/close 引起的前后变化，不把该宿主探针当作 Starry 或 RT 构建验证。
 
 锁顺序需要同时迁移：当前 `sys_shmat` 持 ShmInner 锁调用 `aspace.map_outcome`；VMA 关闭回到段记账后会形成反向顺序。映射准备必须先取得稳定段/物理对象的预留，释放 IPC 和段锁，再进入 MM 事务。IPC_RMID 竞争由这项预留保护，失败撤销预留，不在 MM 锁内重新走原来的 SHM_MANAGER→ShmInner→aspace 链。正常 shmdt 从当前 MM 的 VMA 来源和原附接地址选择片段，不再依赖创建映射的 PID。
 
@@ -761,3 +761,13 @@ Linux 普通 `FUTEX_REQUEUE` 和 `FUTEX_CMP_REQUEUE` 允许源、目标 key 相�
 | socketpair(准备、copyout、失败回滚) / X53、G199 | [v7.1 __sys_socketpair](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/socket.c#L1828) | 非法 flag 最先报 EINVAL；预留失败早于 copyout；复制完成才创建 socket；后续失败保留已写编号且不安装 FD | `sys_socketpair → prepare_file_pair → reserve_in → UserPtr::write → create → install`，当前进程共享文件表，回调和析构在表锁外 | 正确 | 原实现四项直接红例；同一完整用例宿主 Linux 和四架构 QEMU 通过，部分输出与描述符数量均验证 |
 
 前一提交 `325e81d987` 的 CI job `103064860703` 在 Axvisor aarch64 HTTP `POST /api/vms/1/pause` 超时。日志 `/tmp/pr2357-325e-axvisor-aarch64-ci-clean.log` 显示此前 start 和 running/guest-entry 查询成功；本节 socketpair 修改属于 Starry，不把它当作该失败的修复。pause 的锁、设备回调和通知链仍在定位，未增加超时或重试。
+
+### 5.38 Shmat 准入引用
+
+`ShmAttachPreparation` 在 `SHM_MANAGER → ShmSegment` 锁内取得临时 nattch 引用，对照 Linux `do_shmat` 在获取 backing file 后增加 `shm_nattch`、在 `out_nattch` 释放的顺序。即使另一个操作执行 `IPC_RMID`，已准入的 shmat 仍保留登记；取消且没有其他附接时才删除登记。普通观察者的 Arc 只保留对象内存，不保持 IPC 登记。这不是任务对象的自定义引用计数，而是 Linux 可观察的附接计账。
+
+backing 准备由 `mapping` 在进入 MM 锁前完成；`SharedMemoryObject::allocate` 这里只建立稀疏页索引，实际物理页仍按 fault 分配。`sys_shmat` 在 MM 事务发布后调用 `record_attachment`，同时维护现有两份 PID/地址索引，再释放 MM 锁，最后释放临时引用。完整的新锁顺序为 MM → SHM_MANAGER → ShmSegment；准入和 backing 准备释放 IPC 锁后才进入 MM。`PublishedPendingTlb` 已发布映射，保留正式附接，不因返回错误而误删。`mark_for_removal` 集中承接原 IPC_RMID 实现；IPC ID 的唯一分配器移入 IPC 域，msg/shm 直接调用，没有兼容重新导出。
+
+确定性 kernel 用例 `rmid_preserves_an_admitted_attach_until_cancelled` 通过生产准入和 RMID 方法构造受控顺序。仅有 Arc 的旧路径在“RMID must preserve a segment already admitted by shmat”失败；补齐临时引用后同一用例及 x86_64 kernel 186/186 通过，日志 `/tmp/pr2357-shmat-admission-{red,green}.log`。该用例验证领域状态交错，不声称已执行两个用户进程的受控并发 shmat。四架构 `syscall-test-shm-family`、`syscall-test-shmctl-info`、`test-shm-deadlock` 均通过；x86_64 `syscall-test-msgctl` 和实际选中的 starry-kernel std 通过，日志 `/tmp/pr2357-shmat-final-*`。单包 clippy 92/92 通过，日志 `/tmp/pr2357-shmat-final-clippy.log`。
+
+本节没有把现有 PID 附接台账当成 VMA 生命周期；共享 MM 红例、分裂/合并、fork/exec、最后用户引用和旧 pin 准入等第 5.32 节内容仍未完成。时间字段当前仍沿用既有 monotonic 纳秒写入，也尚未修正成 Linux 的 real seconds。独立核验未在限定时间内返回终态，不能记作领域审查通过。
