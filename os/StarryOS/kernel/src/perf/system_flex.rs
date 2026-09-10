@@ -95,11 +95,11 @@ impl SystemFlexCounter {
                         super::percpu::free_current_programmable(slot);
                         false
                     } else {
-                        let registration = super::sampling::register_counting(
-                            slot,
-                            Arc::clone(&self.extender),
-                        )
-                        .expect("reserved system PMU slot must have an empty overflow registry");
+                        let registration =
+                            super::sampling::register_counting(slot, Arc::clone(&self.extender))
+                                .expect(
+                                    "reserved system PMU slot must have an empty overflow registry",
+                                );
                         ax_cpu::pmu::overflow::enable_irq(slot);
                         counter.enable();
                         *active = Some(ActiveSlice {
@@ -126,10 +126,18 @@ impl SystemFlexCounter {
     }
 
     fn finish_slice(&self) {
+        self.finish_slice_observed(|| {});
+    }
+
+    fn finish_slice_observed(&self, before_commit: impl FnOnce()) {
         let _guard = NoPreemptIrqSave::new();
-        let Some(active) = self.active.lock().take() else {
+        // None is the completion publication consumed by remote disable/reset.
+        // Keep the guard through hardware quiescence, accounting and slot free.
+        let mut active_state = self.active.lock();
+        let Some(active) = active_state.take() else {
             return;
         };
+        before_commit();
         let slot = active
             .counter
             .programmable_index()
@@ -173,8 +181,6 @@ impl SystemFlexCounter {
         let enabled = self.enabled.load(Ordering::Acquire);
         self.disable();
         self.accumulated.store(0, Ordering::Release);
-        self.time_enabled.store(0, Ordering::Release);
-        self.time_running.store(0, Ordering::Release);
         self.extender.lock().reset();
         if enabled {
             self.enable();
@@ -234,4 +240,54 @@ impl SystemFlexCounter {
 
 fn now_ns() -> u64 {
     ax_runtime::hal::time::monotonic_time_nanos()
+}
+
+#[cfg(all(test, axtest))]
+mod tests {
+    use super::*;
+
+    #[axtest::axtest]
+    fn stop_is_not_published_before_hardware_commit() {
+        let counter = SystemFlexCounter {
+            owner: PerfCpuId::new(0),
+            event: 0x11,
+            exclude_user: false,
+            exclude_kernel: false,
+            enabled: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+            enabled_since: AtomicU64::new(0),
+            accumulated: AtomicU64::new(0),
+            time_enabled: AtomicU64::new(0),
+            time_running: AtomicU64::new(0),
+            extender: Arc::new(IrqMutex::new(super::super::counting::CounterExtender::new())),
+            active: IrqMutex::new(None),
+        };
+        let _guard = NoPreemptIrqSave::new();
+        super::super::percpu::ensure_current_cpu_initialized().unwrap();
+        let slot = super::super::percpu::alloc_current_programmable().unwrap();
+        let hardware = Counter::Programmable(slot);
+        hardware.configure(Some(0x11), false, false).unwrap();
+        let registration =
+            super::super::sampling::register_counting(slot, Arc::clone(&counter.extender)).unwrap();
+        *counter.active.lock() = Some(ActiveSlice {
+            counter: hardware,
+            started_at: now_ns(),
+            registration,
+        });
+        hardware.enable();
+        let published_early = core::cell::Cell::new(false);
+        counter.finish_slice_observed(|| {
+            published_early.set(
+                counter
+                    .active
+                    .try_lock()
+                    .is_some_and(|active| active.is_none()),
+            );
+        });
+        assert!(
+            !published_early.get(),
+            "disable must not observe stopped before the slice commits"
+        );
+        assert!(counter.active.lock().is_none());
+    }
 }

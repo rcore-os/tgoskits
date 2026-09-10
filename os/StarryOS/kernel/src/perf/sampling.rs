@@ -68,15 +68,22 @@ pub(crate) struct SamplingCount(IrqMutex<SamplingCountState>);
 struct SamplingCountState {
     previous: u32,
     total: u64,
+    remaining: i64,
 }
 
 impl SamplingCountState {
     fn update(&mut self, raw: u32) -> u64 {
-        self.total = self
-            .total
-            .saturating_add(u64::from(raw.wrapping_sub(self.previous)));
+        let delta = raw.wrapping_sub(self.previous);
+        self.total = self.total.saturating_add(u64::from(delta));
+        self.remaining = self.remaining.saturating_sub(i64::from(delta));
         self.previous = raw;
         self.total
+    }
+
+    fn hardware_period(&self) -> u32 {
+        // Like armpmu_event_set_period(), leave half the counter range for
+        // interrupt delivery latency before modular subtraction becomes ambiguous.
+        self.remaining.clamp(1, i64::from(u32::MAX >> 1)) as u32
     }
 }
 
@@ -103,8 +110,32 @@ impl SamplingCount {
     /// Reloads a stopped counter without charging the preload as events.
     pub(crate) fn preload(&self, index: usize, period: u32) {
         let mut state = self.0.lock();
-        ax_cpu::pmu::counter::preload(index, period);
-        state.previous = 0u32.wrapping_sub(period);
+        state.remaining = i64::from(period);
+        Self::program_chunk(index, &mut state);
+    }
+
+    fn period_complete(&self) -> bool {
+        self.0.lock().remaining <= 0
+    }
+
+    /// Reloads a hardware chunk, retaining progress and interrupt overshoot.
+    fn rearm(&self, index: usize, period: u32) {
+        let mut state = self.0.lock();
+        if state.remaining <= 0 {
+            let period = i64::from(period);
+            state.remaining = if state.remaining <= -period {
+                period
+            } else {
+                state.remaining + period
+            };
+        }
+        Self::program_chunk(index, &mut state);
+    }
+
+    fn program_chunk(index: usize, state: &mut SamplingCountState) {
+        let chunk = state.hardware_period();
+        ax_cpu::pmu::counter::preload(index, chunk);
+        state.previous = 0u32.wrapping_sub(chunk);
     }
 }
 
@@ -683,6 +714,13 @@ fn service_overflowed_slots(
         // observed the terminal raw value. This includes IRQ delivery latency.
         ax_cpu::pmu::counter::disable(n);
         slot.count.update(n);
+        if !slot.count.period_complete() {
+            // This IRQ completed only a hardware chunk of the logical period.
+            // Do not emit a premature sample or update frequency timestamps.
+            slot.count.rearm(n, cur_period);
+            ax_cpu::pmu::counter::enable(n);
+            continue;
+        }
 
         let time = ax_runtime::hal::time::monotonic_time_nanos();
         let cpu = ax_hal::percpu::this_cpu_id() as u32;
@@ -749,7 +787,7 @@ fn service_overflowed_slots(
             cur_period
         };
 
-        slot.count.preload(n, next_period);
+        slot.count.rearm(n, next_period);
         ax_cpu::pmu::counter::enable(n);
 
         if let Some(notify) = &slot.output.notify {
@@ -821,10 +859,17 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
     // SAFETY: the handler runs with local IRQs masked on its current CPU, so
     // the registry cannot be re-entered or observed after migration.
     let _handled = unsafe {
-        with_registry_mut(|registry| {
-            service_overflowed_slots(registry, ovf, misc, interrupted, ip, is_user)
+        ax_percpu::with_cpu_pin(|pin| {
+            // Linux armv8pmu_handle_irq pauses the whole PMU while reading a
+            // group, so siblings cannot advance while another slot is reloaded.
+            ax_cpu::pmu::with_counters_paused(pin, || {
+                with_registry_mut(|registry| {
+                    service_overflowed_slots(registry, ovf, misc, interrupted, ip, is_user)
+                })
+            })
         })
-    };
+    }
+    .expect("PMU IRQ must have a bound CPU-local area");
 
     debug_assert_eq!(_handled & !ovf, 0);
     IrqReturn::Handled
@@ -1146,10 +1191,45 @@ pub(crate) unsafe fn ring_write_process(ring: &PerfRingOutput, record: &[u8]) {
 #[cfg(all(test, axtest))]
 mod tests {
     #[axtest::axtest]
+    fn maximum_period_preload_leaves_irq_latency_headroom() {
+        let count = super::SamplingCount::new();
+        let _guard = crate::sync::NoPreemptIrqSave::new();
+        super::super::percpu::ensure_current_cpu_initialized().unwrap();
+        let slot = super::super::percpu::alloc_current_programmable().unwrap();
+        ax_cpu::pmu::counter::disable(slot);
+        count.preload(slot, u32::MAX);
+        let raw = ax_cpu::pmu::counter::read(slot) as u32;
+        ax_cpu::pmu::counter::write(slot, 10);
+        count.update(slot);
+        assert!(
+            !count.period_complete(),
+            "first hardware chunk is not a full logical sample"
+        );
+        count.rearm(slot, u32::MAX);
+        ax_cpu::pmu::counter::write(slot, 9);
+        count.update(slot);
+        assert!(count.period_complete());
+        assert_eq!(
+            count.value(),
+            u64::from(u32::MAX) + 9,
+            "IRQ latency must survive the logical period boundary"
+        );
+        count.rearm(slot, u32::MAX);
+        assert!(!count.period_complete());
+        super::super::percpu::free_current_programmable(slot);
+        assert_eq!(
+            raw,
+            0u32.wrapping_sub(u32::MAX >> 1),
+            "hardware chunk must leave overflow latency headroom"
+        );
+    }
+
+    #[axtest::axtest]
     fn sampling_delta_counts_partial_wrap_and_reload() {
         let mut state = super::SamplingCountState {
             previous: 0u32.wrapping_sub(100),
             total: 0,
+            remaining: 100,
         };
         assert_eq!(state.update(0u32.wrapping_sub(60)), 40);
         assert_eq!(state.update(7), 107);

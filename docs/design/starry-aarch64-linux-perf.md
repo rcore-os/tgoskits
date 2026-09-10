@@ -21,6 +21,7 @@
 | group | 默认 ioctl 只控制指定 event，`PERF_IOC_FLAG_GROUP` 才控制整组；读快照 leader-first；跨上下文 link 返回 `EINVAL` | `PerfEvent::{members,group_leader,read_group}`、`PerTaskCounter::link_group()`；缺少统一 coordinator 的 fixed-CPU hardware group、mixed software/hardware group 和 direct system-wide sampling group 在资源分配前返回 `EOPNOTSUPP` |
 | output | `FD_OUTPUT` 与 `SET_OUTPUT` 只允许相同 perf context；`SET_OUTPUT(-1)` 解除重定向 | `PerfEvent::{redirect_to,set_output}`、`PerfEventOps::{redirect_output,detach_output}` |
 | read | 支持 value、ID、`time_enabled`、`time_running`、LOST 与 GROUP | `PerfReadValues` |
+| RESET | 清零事件值，保留累计 `time_enabled/time_running`；停止事务必须先完成 | `SystemFlexCounter::{finish_slice,reset}`、`SwEventState::reset()`、`SwClock` |
 | sample | 支持 `PERF_SAMPLE_READ`、TID、CPU、period 和 kernel/user FP callchain；`PERF_SAMPLE_REGS_USER` 仅接受零 mask 并输出 `PERF_SAMPLE_REGS_ABI_NONE` | `sampling::{SampleSlot,SampleReadEntry,build_sample}`、`perf::unwind`、`perf::uapi::validate_perf_event_attr()` |
 | mmap page | 只在事件实际运行于硬件槽时公开非零 `index` 与用户读能力 | `SystemCounter::write_rdpmc_snapshot()`、`PerTaskCounter::write_rdpmc_snapshot()` |
 
@@ -78,6 +79,8 @@ stateDiagram-v2
 
 每核首次完成 perf 初始化时注册复用 tick。callback 只推进预先分配的队列和寄存器状态，不获取可睡眠锁、不分配内存，也不执行对象析构。跨 CPU 同步操作只提交短的寄存器事务；资源释放在 task context、所有硬件与 IRQ registry 引用撤销之后执行。
 
+`SystemFlexCounter::finish_slice()` 将 active 锁保持到停表、注销、累计值提交和槽释放全部完成。远端 disable/reset 取得同一锁后才可将 `None` 视为停止完成，不能在取出 slice 时提前发布完成。RESET 不清除累计 enabled/running 时间。
+
 ### 2.3 group 与继承
 
 文件层 `PerfEvent::{members,group_leader}` 和硬件层 `PerTaskCounter` / `SystemCounter` 的双向 group link 都使用 `Weak`，避免关闭顺序形成引用环；fd 表、task 的 `perf_counters` 和 event backend 提供实际强所有权。link 时验证 task identity 或 CPU context 完全相同；控制传播先收集仍存活的成员，再逐一操作。与 Linux v7.1 一致，普通 ioctl 只作用于指定 event，只有 `PERF_IOC_FLAG_GROUP` 才从 leader 传播到 siblings；member 自己的 `attr.disabled` 状态不会在 link 时被改写。
@@ -112,7 +115,11 @@ ring 无空间或 producer gate 竞争时增加 event 的 pending lost 数。下
 
 `PERF_SAMPLE_READ` 在 arm 前构建有容量上限的 `[SampleReadEntry; MAX_SAMPLE_READ_EVENTS]` 并存入 `SampleSlot`。数组按 leader-first 保存稳定 callback context 和 event ID，IRQ 只做 owner-local PMU/原子读取与定长编码，不遍历可变 group 列表，也不进行分配。`build_sample()` 按 Linux 顺序先编码 `ID/STREAM_ID/CPU/PERIOD/READ`，再编码 callchain 和 `REGS_USER` ABI word；`SAMPLE_RECORD_MAX_LEN` 为每个支持字段保留固定上界。group member 保留自己的 `attr.disabled` 状态；仅 leader disabled、member enabled 的常见 perf 模式会在 leader 启用时整体装载。
 
-task 的 `SampleReadEntry::owned()` 强持有回调对象，直到注册代被撤销。`ThreadPerfContext::attach()` 保留仍被 sampling slot 引用的已关闭 counter，使 scheduler 撤销 slot 时不会执行 counter 的最后析构；后续 task-context attach 或线程释放完成回收。非 GROUP 采样只读取 source；GROUP 采样保持 leader-first 顺序，并通过 source event ID 决定哪个 counter 累加本次 overflow，不能把数组首项一律当作中断来源。
+task 的 `SampleReadEntry::owned()` 强持有回调对象，直到注册代被撤销。`ThreadPerfContext::attach()` 保留仍被 sampling slot 引用的已关闭 counter，使 scheduler 撤销 slot 时不会执行 counter 的最后析构；后续 task-context attach 或线程释放完成回收。非 GROUP 采样只读取 source；GROUP 采样保持 leader-first 顺序。各 event 的 `SamplingCount` 独立累计 raw delta，回调只读取累计快照，不通过数组位置推断 overflow 归属。
+
+`SamplingCountState::remaining` 跟踪逻辑周期剩余事件数，每次 raw 更新扣除已观察的 delta。单次硬件装载由 `hardware_period()` 限制为 `u32::MAX >> 1`，为中断延迟留出余量。中间片段 IRQ 只重装计数器；仅 `period_complete()` 为真时输出样本，`PERF_SAMPLE_PERIOD` 仍是请求的逻辑周期。`rearm()` 保留溢出后的超额计数，避免丢失整个 32 位回绕或提前产生样本。
+
+PMU IRQ 按 Linux `armv8pmu_handle_irq()` 的顺序通过 `ax_cpu::pmu::with_counters_paused()` 暂停整个 PMU，再生成组快照和重装计数器。该作用域要求 `CpuPin`，保留各槽的 enable 位，并在返回时恢复原全局 enable；恢复时不写回具有清零副作用的 PMCR P/C 位。
 
 ## 4. 事件语义
 
@@ -136,6 +143,8 @@ Linux v7.1 的 A55/A76 初始化使用 `PMUV3_INIT_SIMPLE`，所以通用 map �
 ### 4.2 软件事件
 
 software backend 实现 `CPU_CLOCK`、`TASK_CLOCK`、`PAGE_FAULTS`、`CONTEXT_SWITCHES` 和 `CPU_MIGRATIONS`。调度 hook 更新 clock、switch 和 migration；用户 page fault 与 kernel-on-user-memory fault 分别在各自入口精确记一次；fork 根据 inherit 创建 child slice；exec 只启用带 `enable_on_exec` 的事件。
+
+软件 task clock 的 `SwClock` 分别保存 lifetime running time 和可重置事件值。RESET 记录截止时间但保留 running/enabled 时间；跨越 RESET 的 slice 在结束时将完整时长计入 running time，仅将截止点之后的部分计入事件值。两者在同一 IRQ-safe 临界区提交。system clock 用 `SwSystemCounter::clock_offset_ns` 从累计 enabled time 派生重置后的值，不改变时间字段。
 
 software event 同样参加 group 控制和 sample read。关闭 leader、先关闭成员或 child 先退出均不得留下悬空引用；退出路径先复制事件 `Arc` 列表并释放 thread lock，再执行可能等待 owner CPU 的 teardown。
 

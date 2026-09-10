@@ -71,6 +71,30 @@ fn write_pmcr_el0(value: u64) {
     }
 }
 
+/// Runs a bounded owner-CPU operation with all PMU counters paused.
+///
+/// The CPU pin must cover the entire operation. The caller serializes local
+/// PMU configuration (normally by masking IRQs). Individual enable bits and
+/// counter values are preserved, and the previous global enable is restored
+/// on return or unwind. This gives overflow group reads one frozen snapshot.
+pub fn with_counters_paused<R>(_pin: &cpu_local::CpuPin<'_>, operation: impl FnOnce() -> R) -> R {
+    struct RestorePmu(u64);
+    impl Drop for RestorePmu {
+        fn drop(&mut self) {
+            write_pmcr_el0(self.0);
+            // SAFETY: ISB synchronizes this CPU's PMU control-register write.
+            unsafe { asm!("isb") };
+        }
+    }
+    // Never write back the destructive P/C reset bits.
+    let saved = read_pmcr_el0() & !((1 << 1) | (1 << 2));
+    write_pmcr_el0(saved & !1);
+    // SAFETY: observe the global counter stop before reading individual values.
+    unsafe { asm!("isb") };
+    let _restore = RestorePmu(saved);
+    operation()
+}
+
 /// Writes `PMUSERENR_EL0` (user-mode enable register), which gates EL0 access to
 /// the PMU registers.
 #[inline]

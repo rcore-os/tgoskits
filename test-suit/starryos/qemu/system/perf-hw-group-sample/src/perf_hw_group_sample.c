@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <sched.h>
+#include <time.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -59,6 +60,67 @@ _Static_assert(offsetof(struct perf_event_mmap_page, data_head) == 1024,
 
 #if defined(__aarch64__)
 static volatile uint64_t sink;
+
+static int check_reset_times(uint32_t type, uint64_t config, int pid, int cpu) {
+    struct perf_event_attr_v0 attr = {
+        .type = type, .size = sizeof(attr), .config = config,
+        .read_format = 3, .flags = PERF_ATTR_FLAG_DISABLED,
+    };
+    int fd = syscall(SYS_PERF_EVENT_OPEN, &attr, pid, cpu, -1, 0ul);
+    if (fd < 0 || ioctl(fd, PERF_EVENT_IOC_ENABLE, 0)) return 1;
+    uint64_t before[3] = {0}, after[3] = {0};
+    for (int retry = 0; retry < 2000 && before[2] == 0; ++retry) {
+        for (uint64_t i = 0; i < 10000; ++i) sink += i;
+        sched_yield();
+        if (read(fd, before, sizeof(before)) != sizeof(before)) return 1;
+    }
+    if (ioctl(fd, PERF_EVENT_IOC_DISABLE, 0) ||
+        read(fd, before, sizeof(before)) != sizeof(before) ||
+        ioctl(fd, PERF_EVENT_IOC_RESET, 0) ||
+        read(fd, after, sizeof(after)) != sizeof(after)) return 1;
+    close(fd);
+    printf("reset-times type=%u config=%llu before=%llu/%llu after=%llu/%llu value=%llu\n",
+           type, (unsigned long long)config, (unsigned long long)before[1],
+           (unsigned long long)before[2], (unsigned long long)after[1],
+           (unsigned long long)after[2], (unsigned long long)after[0]);
+    return before[1] == 0 || before[2] == 0 || after[0] != 0 ||
+           after[1] != before[1] || after[2] != before[2];
+}
+
+static int check_large_period(void) {
+    struct perf_event_attr_v0 attr = {
+        .type = PERF_TYPE_RAW, .size = sizeof(attr), .config = 0x11,
+        .sample_period = UINT32_MAX, .sample_type = PERF_SAMPLE_IP | (1ull << 8),
+        .flags = PERF_ATTR_FLAG_DISABLED,
+    };
+    int fd = syscall(SYS_PERF_EVENT_OPEN, &attr, -1, sched_getcpu(), -1, 0ul);
+    if (fd < 0) return 1;
+    void *mapping = mmap(NULL, RING_BYTES, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (mapping == MAP_FAILED || ioctl(fd, PERF_EVENT_IOC_ENABLE, 0)) return 1;
+    struct perf_event_mmap_page *meta = mapping;
+    struct timespec start, now;
+    if (clock_gettime(CLOCK_MONOTONIC, &start)) return 1;
+    /* Do not read the perf fd before the first sample: live reads would split
+     * the raw delta themselves and conceal a missing overflow extension. */
+    while (__atomic_load_n(&meta->data_head, __ATOMIC_ACQUIRE) == 0) {
+        if (clock_gettime(CLOCK_MONOTONIC, &now) || now.tv_sec - start.tv_sec > 12) {
+            puts("perf-group-sample FAILED: large-period sample deadline");
+            return 1;
+        }
+        sched_yield();
+    }
+    uint64_t value = 0;
+    if (ioctl(fd, PERF_EVENT_IOC_DISABLE, 0) || read(fd, &value, sizeof(value)) != sizeof(value)) return 1;
+    const uint64_t *record = (const uint64_t *)((const uint8_t *)mapping + meta->data_offset);
+    struct perf_event_header header = *(const struct perf_event_header *)record;
+    int failed = header.type != PERF_RECORD_SAMPLE || header.size != 24 ||
+                 record[2] != UINT32_MAX || value < UINT32_MAX;
+    printf("large-period value=%llu period=%llu\n", (unsigned long long)value,
+           (unsigned long long)record[2]);
+    munmap(mapping, RING_BYTES);
+    close(fd);
+    return failed;
+}
 
 static int sample_values_valid(uint64_t leader, uint64_t previous_leader,
                                uint64_t member, uint64_t previous_member,
@@ -254,6 +316,17 @@ static int check_group_sample(int sampling_member) {
 
 int main(void) {
 #if defined(__aarch64__)
+    int reset_failures = check_reset_times(PERF_TYPE_RAW, 0x11, -1, sched_getcpu());
+    reset_failures += check_reset_times(1, 1, 0, -1);
+    reset_failures += check_reset_times(1, 0, -1, sched_getcpu());
+    if (reset_failures) {
+        puts("perf-group-sample FAILED: RESET changed timing fields");
+        return 1;
+    }
+    if (check_large_period()) {
+        puts("perf-group-sample FAILED: large logical period accounting");
+        return 1;
+    }
     /* Replay the adjacent snapshots from CI job 102711616406. A group member
      * is not itself the overflow source: equal adjacent snapshots are valid. */
     if (!sample_values_valid(12998996, 12547600, 14058984, 14058984, 0) ||

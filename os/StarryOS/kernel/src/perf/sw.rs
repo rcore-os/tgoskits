@@ -88,9 +88,32 @@ struct SwEventState {
     inherit_thread: bool,
     dead: AtomicBool,
     count: AtomicU64,
-    runtime_ns: AtomicU64,
+    clock: IrqMutex<SwClock>,
     time_enabled_ns: AtomicU64,
-    reset_epoch: AtomicU64,
+}
+
+/// Lifetime running time and resettable clock value share one commit boundary.
+/// A slice ending after RESET contributes its full duration to running time,
+/// but only its post-reset portion to the event value.
+#[derive(Debug, Default)]
+struct SwClock {
+    runtime_ns: u64,
+    count_ns: u64,
+    reset_at_ns: u64,
+}
+
+impl SwClock {
+    fn reset(&mut self, now: u64) {
+        self.count_ns = 0;
+        self.reset_at_ns = now;
+    }
+
+    fn finish_slice(&mut self, since: u64, now: u64) {
+        self.runtime_ns = self.runtime_ns.saturating_add(now.saturating_sub(since));
+        self.count_ns = self
+            .count_ns
+            .saturating_add(now.saturating_sub(since.max(self.reset_at_ns)));
+    }
 }
 
 impl SwEventState {
@@ -102,18 +125,15 @@ impl SwEventState {
             inherit_thread: attr.inherit_thread() != 0,
             dead: AtomicBool::new(false),
             count: AtomicU64::new(0),
-            runtime_ns: AtomicU64::new(0),
+            clock: IrqMutex::new(SwClock::default()),
             time_enabled_ns: AtomicU64::new(0),
-            reset_epoch: AtomicU64::new(1),
         }
     }
 
-    fn reset(&self) -> u64 {
-        let epoch = self.reset_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+    fn reset(&self) {
+        let mut clock = self.clock.lock();
+        clock.reset(now_ns());
         self.count.store(0, Ordering::Release);
-        self.runtime_ns.store(0, Ordering::Release);
-        self.time_enabled_ns.store(0, Ordering::Release);
-        epoch
     }
 }
 
@@ -129,7 +149,6 @@ pub struct SwPerTaskCounter {
     retired: AtomicBool,
     enabled_since_ns: AtomicU64,
     run_since_ns: AtomicU64,
-    epoch: AtomicU64,
     /// A sibling keeps only weak ownership of its leader. Closing the leader
     /// therefore makes the sibling standalone instead of creating a cycle.
     group_leader: IrqMutex<Option<Weak<SwPerTaskCounter>>>,
@@ -147,7 +166,6 @@ impl SwPerTaskCounter {
     ) -> Self {
         let now = now_ns();
         Self {
-            epoch: AtomicU64::new(state.reset_epoch.load(Ordering::Acquire)),
             state,
             owner,
             cpu_filter,
@@ -205,20 +223,7 @@ impl SwPerTaskCounter {
         live
     }
 
-    fn synchronize_epoch(&self, now: u64) {
-        let epoch = self.state.reset_epoch.load(Ordering::Acquire);
-        if self.epoch.swap(epoch, Ordering::AcqRel) != epoch {
-            self.run_since_ns.store(0, Ordering::Release);
-            if self.is_effectively_enabled() {
-                self.enabled_since_ns.store(now, Ordering::Release);
-            } else {
-                self.enabled_since_ns.store(0, Ordering::Release);
-            }
-        }
-    }
-
     fn start_slice(&self, now: u64, cpu: usize) {
-        self.synchronize_epoch(now);
         if !self.retired.load(Ordering::Acquire)
             && !self.state.dead.load(Ordering::Acquire)
             && self.is_effectively_enabled()
@@ -231,19 +236,15 @@ impl SwPerTaskCounter {
     }
 
     fn close_slice(&self, now: u64) {
+        let mut clock = self.state.clock.lock();
         let since = self.run_since_ns.swap(0, Ordering::AcqRel);
-        if since != 0
-            && self.epoch.load(Ordering::Acquire) == self.state.reset_epoch.load(Ordering::Acquire)
-        {
-            self.state
-                .runtime_ns
-                .fetch_add(now.saturating_sub(since), Ordering::AcqRel);
+        if since != 0 {
+            clock.finish_slice(since, now);
         }
     }
 
     fn enable_at(&self, now: u64) -> bool {
         if !self.enabled.swap(true, Ordering::AcqRel) {
-            self.synchronize_epoch(now);
             if self.is_effectively_enabled() {
                 self.enabled_since_ns.store(now, Ordering::Release);
                 self.arm_if_current(now);
@@ -285,7 +286,6 @@ impl SwPerTaskCounter {
             && !self.state.dead.load(Ordering::Acquire)
             && self.is_effectively_enabled()
         {
-            self.synchronize_epoch(now);
             let _ =
                 self.enabled_since_ns
                     .compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire);
@@ -324,16 +324,7 @@ impl SwPerTaskCounter {
     }
 
     fn reset(&self) {
-        let now = now_ns();
-        let epoch = self.state.reset();
-        self.epoch.store(epoch, Ordering::Release);
-        self.run_since_ns.store(0, Ordering::Release);
-        if self.is_effectively_enabled() {
-            self.enabled_since_ns.store(now, Ordering::Release);
-            self.arm_if_current(now);
-        } else {
-            self.enabled_since_ns.store(0, Ordering::Release);
-        }
+        self.state.reset();
     }
 
     fn snapshot(&self) -> PerfReadValues {
@@ -345,16 +336,22 @@ impl SwPerTaskCounter {
         } else {
             0
         };
+        let clock = self.state.clock.lock();
         let run_since = self.run_since_ns.load(Ordering::Acquire);
         let live_runtime = if enabled && run_since != 0 {
             now.saturating_sub(run_since)
         } else {
             0
         };
-        let runtime = self.state.runtime_ns.load(Ordering::Acquire) + live_runtime;
+        let runtime = clock.runtime_ns.saturating_add(live_runtime);
+        let live_count = if enabled && run_since != 0 {
+            now.saturating_sub(run_since.max(clock.reset_at_ns))
+        } else {
+            0
+        };
         PerfReadValues {
             value: if self.state.kind.is_clock() {
-                runtime
+                clock.count_ns.saturating_add(live_count)
             } else {
                 self.state.count.load(Ordering::Acquire)
             },
@@ -396,8 +393,7 @@ impl SwPerTaskCounter {
         member.run_since_ns.store(0, Ordering::Release);
         member.enabled_since_ns.store(0, Ordering::Release);
         if reset_new_event {
-            let epoch = member.state.reset();
-            member.epoch.store(epoch, Ordering::Release);
+            member.state.reset();
         }
         *member.group_leader.lock() = Some(Arc::downgrade(leader));
         let mut members = leader.group_members.lock();
@@ -442,6 +438,7 @@ struct SwSystemCounter {
     cpu: usize,
     enabled: AtomicBool,
     enabled_since_ns: AtomicU64,
+    clock_offset_ns: AtomicU64,
     group_leader: IrqMutex<Option<Weak<SwSystemCounter>>>,
     group_members: IrqMutex<Vec<Weak<SwSystemCounter>>>,
 }
@@ -453,6 +450,7 @@ impl SwSystemCounter {
             cpu,
             enabled: AtomicBool::new(enabled),
             enabled_since_ns: AtomicU64::new(if enabled { now_ns() } else { 0 }),
+            clock_offset_ns: AtomicU64::new(0),
             group_leader: IrqMutex::new(None),
             group_members: IrqMutex::new(Vec::new()),
         }
@@ -552,11 +550,8 @@ impl SwSystemCounter {
 
     fn reset(&self) {
         self.state.reset();
-        if self.is_effectively_enabled() {
-            self.enabled_since_ns.store(now_ns(), Ordering::Release);
-        } else {
-            self.enabled_since_ns.store(0, Ordering::Release);
-        }
+        self.clock_offset_ns
+            .store(self.enabled_time(), Ordering::Release);
     }
 
     fn enabled_time(&self) -> u64 {
@@ -573,7 +568,7 @@ impl SwSystemCounter {
         let time = self.enabled_time();
         PerfReadValues {
             value: if self.state.kind.is_clock() {
-                time
+                time.saturating_sub(self.clock_offset_ns.load(Ordering::Acquire))
             } else {
                 self.state.count.load(Ordering::Acquire)
             },
@@ -944,5 +939,24 @@ pub fn on_task_exit(thread: &Thread) {
     let counters = thread.perf_sw_counters.lock();
     for counter in counters.iter() {
         counter.retire();
+    }
+}
+
+#[cfg(all(test, axtest))]
+mod tests {
+    #[axtest::axtest]
+    fn reset_clips_event_value_without_discarding_running_time() {
+        let mut clock = super::SwClock::default();
+        clock.finish_slice(100, 200);
+        clock.reset(250);
+        // One slice crosses reset; another inherited binding overlaps it.
+        clock.finish_slice(200, 300);
+        clock.finish_slice(220, 310);
+        assert_eq!(clock.runtime_ns, 290);
+        assert_eq!(clock.count_ns, 110);
+        clock.reset(320);
+        clock.finish_slice(310, 330);
+        assert_eq!(clock.runtime_ns, 310);
+        assert_eq!(clock.count_ns, 10);
     }
 }
