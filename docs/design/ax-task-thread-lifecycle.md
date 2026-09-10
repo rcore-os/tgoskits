@@ -355,3 +355,15 @@ CPU 周期和全局 MM 锁回归迁到 `task/cpu_lifecycle.rs` 的独立 `task-c
 旧 rq 路径由同一上下文断言确定性报出 `thread allocation must not hold a scheduler or IRQ lock`，日志 `/tmp/pr2357-allocation-rq-red.log`；预分配后四架构默认 ArceOS 套件通过，日志 `/tmp/pr2357-alloc-default-<arch>.log`。本轮资源实现的定向 clippy 覆盖 ax-task、ax-runtime、ax-hal、ArceOS 测试共 85 个组合；Starry 四架构 kernel axtest 均通过。槽回滚与运行时 OOM 所有权的两项独立静态核验未发现已证实的泄漏或重复释放；这不替代合入前维护者的调度及 unsafe 审查。
 
 错误传播回归在实际准备失败后同时通过 ArceOS `ApiError → IoError` 和 Starry `StarryError::linux_errno`，旧映射确定性得到 `(BadState, EFAULT)`，修复后同一断言得到 `(NoMemory, ENOMEM)`。两个边界只为 `RuntimeStatus::NoMemory` 增加精确分支，其他运行时故障保留原分类。x86_64 红绿证据为 `/tmp/pr2357-oom-errno-{red,green}.log`；clone 既有专用转换原本已保留分配失败的 ENOMEM。
+
+### 5.14 idle 边界测试的下线条件
+
+`6ebdd372eb` 的 CI 在 RISC-V `task-cpu-lifecycle` 报出 `idle boundary publication must be serviced`。该断言收到的是已完成的 `Some(false)`，并非请求没有被消费；它把处理测试邮箱与 CPU 此刻能够成功下线合成了一个条件。`take_cpu_offline` 还要求 publisher、owner work、idle-pull、定时器和任务目标排空，`CpuLocal/CpuRemote::is_quiescent_for_offline` 并不由一次 idle 边界检查保证。Linux `do_idle` 的工作重检和 `sched_cpu_wait_empty` 的下线排空也是不同协议，不能为测试放宽后者。
+
+WFI 边界用例现在持有真实 staged 预留，使结果有明确前提：边界请求必须被消费，但下线必须拒绝，且入口不能执行。测试随后取消预留并等待执行资源回收。前面两组预留释放后的成功 offline/online、CPU 归属与 clockevent 检查保持不变。用同一 staged 输入运行原来的成功断言，确定性得到失败；改为检查预留不能被绕过后通过。日志为 `/tmp/pr2357-idle-boundary-contract-{red,green}.log`。没有改变生产调度器下线条件，也没有增加重试或超时。
+
+补充反向验证临时移除 runtime 的最后 pending 检查，同一个新测试仍确定性触发 `idle must recheck pending owner probe before WFI`，日志 `/tmp/pr2357-idle-boundary-wfi-red.log`；随后恢复生产实现。这证明预留输入没有绕过原先受保护的 WFI 边界。
+
+分配提交 `6ebdd372eb` 的最终错误映射复测四架构通过：AArch64 179 项，其余各 178 项，日志 `/tmp/pr2357-oom-errno-green.log`、`/tmp/pr2357-oom-errno-riscv64.log`、`/tmp/pr2357-oom-errno-final-{aarch64,loongarch64}.log`。`cargo xtask test --since 3c7f1c69d4` 的 13 包全部通过。补充 ax-api/Starry 定向 clippy 在第 85/101 项因构建输出目录缺失中断，不能记为全通过；此前第 5.13 节的 85 个资源实现组合与本次补充检查是不同记录。完整静态门禁继续交给 CI，未扩大为本地全工作区 clippy。
+
+最终四架构 `task-cpu-lifecycle` 全部通过，日志 `/tmp/pr2357-idle-boundary-final-<arch>.log`。同一 RISC-V 默认入口复测 `all/task-irq/task-cpu-lifecycle` 3 项通过，日志 `/tmp/pr2357-idle-boundary-default-riscv64.log`。原始远端失败日志为 `/tmp/pr2357-6eb-riscv-failure.log`；这些证据区分请求已处理、预留拒绝和真正排空后的成功下线。
