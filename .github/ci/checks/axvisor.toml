@@ -32,7 +32,7 @@ cases = ["smoke", "gicv2-timer-stress", "gicv3-timer-stress"]
 id = "test-axvisor-aarch64-qemu-panic-http-control-plane-ivc"
 impact_targets = ["axvisor:aarch64"]
 name = "QEMU aarch64 · Panic modes + HTTP control-plane + browser console + IVC"
-timeout_minutes = 30
+timeout_minutes = 40
 command = '''
 echo "==> axvisor aarch64 backtrace panic"
 cargo xtask axvisor test qemu --arch aarch64 --test-case backtrace-panic
@@ -47,6 +47,10 @@ echo "==> axvisor aarch64 HTTP control-plane (incl. pause/resume)"
 cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 echo "==> axvisor aarch64 browser console"
 cargo xtask axvisor test qemu --arch aarch64 --test-case browser-console
+echo "==> build the dashboard bundle (cargo never invokes npm)"
+(cd os/axvisor/web-ui && npm ci && npm run build)
+echo "==> axvisor aarch64 web-ui dashboard (assets + lifecycle)"
+cargo xtask axvisor test qemu --arch aarch64 --test-case web-ui
 echo "==> axvisor aarch64 IVC"
 cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
 '''
@@ -54,7 +58,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qem
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["backtrace-panic", "no-backtrace", "el2-fatal", "el2-fatal-foreign-context", "http-control-plane", "browser-console", "qemu-ivc"]
+cases = ["backtrace-panic", "no-backtrace", "el2-fatal", "el2-fatal-foreign-context", "http-control-plane", "browser-console", "web-ui", "qemu-ivc"]
 
 [[check]]
 id = "test-axvisor-riscv64-qemu-smoke-panic-modes"
