@@ -409,3 +409,21 @@ x86_64 的同一名称回归红绿日志为 `/tmp/pr2357-starry-name-{red,green}
 `map_task_creation_error` 原先把线程槽耗尽映射为 EFAULT，并把所有 RuntimeFailure 统一映射为 ENOMEM。现在 `ThreadCapacity` 返回 EAGAIN，只有 `RuntimeStatus::NoMemory` 返回 ENOMEM，其他运行时故障保留 BadState/EFAULT 分类。固定 Linux `copy_process` 在线程数量限制检查前设置 `retval = -EAGAIN`，与分配失败的 ENOMEM 明确分开。
 
 `creation_errors_preserve_resource_domain` 调用实际 clone 错误转换及最终 errno 边界：旧实现确定性返回 `[EFAULT, ENOMEM, ENOMEM]`，修复后同一输入得到 `[EAGAIN, ENOMEM, EFAULT]`。x86_64 kernel axtest 红绿日志为 `/tmp/pr2357-clone-errors-{red,green}.log`。这证明转换边界，未用其代替直接用户态线程上限或 OOM 故障注入的系统证明。
+
+### 5.19 补充系统调用证据
+
+在 `b31727b024` 上执行现有 x86_64 定向系统测试，没有新增重复用例。`bugfix-clone3-badsize` 直接调用 syscall 435，验证零填充的未知结构扩展能够创建并等待子进程；`zombie-bugfix-bug-waitid-basic` 直接调用 waitid，覆盖 P_PID/P_ALL/P_PGID、当前进程组、WNOHANG/WNOWAIT、回收与错误输入；`test-queued-affinity` 通过实际 syscall 验证排队任务的亲和性迁移及恢复。三项均出现各自 `STARRY_SYSTEM_TEST_PASSED` 标记，日志 `/tmp/pr2357-plan-audit-<case>.log`。
+
+这些证据更新第 4 节早期“本次未执行专项”的时间范围，但不将单项场景推广为每个 flag、每种 OOM 或所有体系结构的完整证明。直接 fork、其余策略设置场景以及 syscall 级 OOM 注入仍按各自证据独立评估。
+
+### 5.20 信号登记的最终释放
+
+`ProcessSignalManager::children_snapshot` 原先仅在后续信号扫描时清理失效弱引用。线程退出或创建回滚后，长期不接收信号的进程仍会保留这些登记与 Arc 分配存储。现在 `ThreadSignalManager::drop` 在最后强引用退出时主动注销，不依赖一次无关的未来信号。
+
+登记匹配同时检查 TID 和对象地址，防止旧清理路径删除复用同一 TID 的新对象；地址只比较、不解引用。进程由正在析构对象的 Arc 字段保持有效，Arc 的隐含弱引用持续到析构完成，因此取走登记不会提前释放正在析构的对象。`unregister_child` 在原登记锁内移出弱引用，在锁外丢弃；后续扫描对同一个登记再次清理也是无副作用的。
+
+Linux 固定基准的 `__exit_signal → __unhash_process` 主动删除线程组登记，再按独立读者/对象回收协议释放资源。这里不复制 Linux 的 RCU 对象布局，也不以 Arc 计数替代宽限期；信号快照已有强引用保持当前读者对象有效，移除弱登记只停止后续快照发现它。
+
+`last_thread_owner_unregisters_without_an_unrelated_signal` 在旧实现确定性失败于登记仍存在；修复后同一用例验证立即注销以及旧对象清理不影响复用 TID 的新对象。`cargo xtask test --since d563c3477c` 红绿日志为 `/tmp/pr2357-signal-retire-{red,green}.log`，修复后信号与内核两包 std 检查通过；信号组件定向 clippy 通过，日志 `/tmp/pr2357-signal-retire-clippy.log`。真实内核回归结果单独记录，不以组件测试冒充 IRQ/切换行为证明。
+
+新增注销路径后的 x86_64 kernel axtest 全部通过，日志 `/tmp/pr2357-signal-retire-kernel.log`，继续覆盖 Thread 私有分配回滚、扩展回滚和实际切换/回收。该结果不表示此前 SG2002 停滞或 LoongArch 非预期下线拒绝已定位根因。

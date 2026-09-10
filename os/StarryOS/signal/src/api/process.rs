@@ -137,19 +137,19 @@ impl ProcessSignalManager {
             if let Some(thread) = weak.upgrade() {
                 live.push((tid, thread));
             } else {
-                self.remove_dead_child(tid, &weak);
+                self.unregister_child(tid, weak.as_ptr());
             }
         }
         live
     }
 
-    fn remove_dead_child(&self, tid: u32, dead: &Weak<ThreadSignalManager>) {
+    pub(super) fn unregister_child(&self, tid: u32, identity: *const ThreadSignalManager) {
         let removed = {
             let mut children = self.children.lock();
             children
                 .iter()
                 .position(|(registered_tid, child)| {
-                    *registered_tid == tid && Weak::ptr_eq(child, dead)
+                    *registered_tid == tid && core::ptr::eq(child.as_ptr(), identity)
                 })
                 .map(|index| children.swap_remove(index))
         };
@@ -410,6 +410,28 @@ mod tests {
         fn wake(self: Arc<Self>) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    #[test]
+    fn last_thread_owner_unregisters_without_an_unrelated_signal() {
+        let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
+        let process = Arc::new(ProcessSignalManager::new(actions, 0));
+        let thread = ThreadSignalManager::new(7, Arc::clone(&process)).unwrap();
+        let retired = Arc::downgrade(&thread);
+        drop(thread);
+        assert!(
+            process.children.lock().is_empty(),
+            "last thread owner must retire its registry lease"
+        );
+        let replacement = ThreadSignalManager::new(7, Arc::clone(&process)).unwrap();
+        process.unregister_child(7, retired.as_ptr());
+        assert_eq!(
+            process.children.lock().len(),
+            1,
+            "stale cleanup removed a reused TID"
+        );
+        drop(replacement);
+        assert!(process.children.lock().is_empty());
     }
 
     #[test]
