@@ -370,7 +370,11 @@ mod tests {
         let features = rust_qemu_features_for_run(None, false).unwrap();
         assert_eq!(
             features,
-            vec![ARCEOS_RUST_ALL_FEATURE, ARCEOS_RUST_TASK_IRQ_FEATURE]
+            vec![
+                ARCEOS_RUST_ALL_FEATURE,
+                ARCEOS_RUST_TASK_IRQ_FEATURE,
+                "serial-rx"
+            ]
         );
     }
 

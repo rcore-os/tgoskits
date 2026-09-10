@@ -6,8 +6,8 @@ publish = false
 
 [features]
 default = ["ax-std"]
-stage2-tlb = ["ax-std/smp", "ax-std/ipi"]
-sstc = ["ax-cpu/riscv-sstc"]
+stage2-tlb = ["ax-std", "ax-std/smp", "ax-std/ipi"]
+sstc = ["ax-std", "ax-cpu/riscv-sstc"]
 expect-no-sstc = ["sstc"]
 ax-std = ["dep:ax-std", "ax-std/arceos"]
 
@@ -19,3 +19,6 @@ ax-std = { workspace = true, optional = true, features = ["default"] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 trait-ffi.workspace = true
+
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-linux-musl", "riscv64gc-unknown-linux-musl", "loongarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]

@@ -147,10 +147,10 @@ pub fn run() {
         }
         let host_vsscratch: usize;
         core::arch::asm!("csrr {}, vsscratch", out(reg) host_vsscratch, options(nostack));
-        let aborted: Result<(), ()> = (|| {
+        let aborted: Result<(), ()> = {
             let _binding = GuestBinding::load(&state).unwrap();
             Err(())
-        })();
+        };
         assert!(aborted.is_err());
         let restored: usize;
         core::arch::asm!("csrr {}, vsscratch", out(reg) restored, options(nostack));

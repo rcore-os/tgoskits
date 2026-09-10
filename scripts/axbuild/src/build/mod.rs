@@ -51,6 +51,7 @@ pub(crate) use platform::{
     apply_makefile_features, cached_workspace_metadata, default_build_info_path_in_workspace,
     makefile_features_from_env,
 };
+pub(crate) use std_build::std_check_target_for;
 use std_build::*;
 
 #[cfg(test)]

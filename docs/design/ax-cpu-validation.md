@@ -143,3 +143,11 @@ PMU IRQ 固件解析目前支持公共三 cell GIC PPI；ACPI PMU 路由、SPI �
 ## 10. 最新 dev 测试协议迁移
 
 PR 创建期间 #2361 合入 dev，ostool 升级到 0.29，结果匹配改为 `shell_check_steps`。30 个新增 CPU/板卡配置已把成功正则放入被动检查步骤，保留原根级失败正则和超时。技能文档保留上游新增的 UEFI 与 xHCI 说明；未从旧分支覆盖构建或依赖清单。变基后的验证另行记录，旧日志不能替代新协议实际执行。
+
+变基到 `481d6bdc4d` 后重新执行：CPU QEMU 四架构仍为 9/9、9/9、6/6、4/4；OrangePi PMU 会话 `b7caa3c8-6549-4433-a044-1df2562f7334`、用户态会话 `c11eb92f-59fa-479a-830a-ec88b2b26fba` 均完成八核验证。Starry cycles/mmap 授权用例通过新协议，CI 规划器 66 项通过。标准库检查发现上游增加 `serial-rx` 后默认选择列表断言未同步，更新明确期望列表后 58 个软件包通过。
+
+首轮 CI 发现新 CPU 用例未声明静态检查目标，AArch64 FP 用例误在 x86 宿主检查。各用例现声明其实际架构；普通 Rust 用例使用共享 musl PIE target，freestanding 用户态用例使用裸机 target。Clippy 对显式 musl 目标复用构建描述并编译 std，避免以 bare target 检查 std 程序。目标选择回归先确认旧命令缺少共享 JSON/标准库编译参数而失败，再验证新命令。
+
+静态检查器的标准库目标回归日志为 `ax-cpu-clippy-std-target-red.log` / `ax-cpu-clippy-std-target-green.log`。Cargo 同时编译 std 内部与应用依赖的同版本 memchr 时，会串接相同包头的诊断；新增解析回归先失败（`ax-cpu-duplicate-report-red.log`），修复只允许完整相同包头后继续逐条校验既有 Rust #134375 诊断，仍拒绝额外 warning。CPU 用例的独立选项 feature 显式依赖 ax-std，保留关闭默认 feature 时的可构建性。
+
+首轮实现提交 `6ff17198a4b6db1bd6f9ec076e994b6b959b2f62` 的 CI run `34484241126` 取得 AMD KVM 证据：job `102897076648` 使用 `-cpu host,-la57,+svm,+npt,+nrip-save -accel kvm`，CPU 为 AMD Ryzen AI 7 350，smoke 与 direct/OVMF Linux 客体均通过；PCI 枚举 job `102897076496` 也通过。因此前文 AMD KVM 缺少证据仅指本地阶段。该轮 NUC job `102897076726` 在等待 axloader ready 时超时，镜像尚未交接，不是已进入重构 CPU 的运行证据。最新提交的 CI 仍以其自身运行结果为准。

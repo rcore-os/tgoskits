@@ -11,3 +11,6 @@ ax-std = ["dep:ax-std", "ax-std/arceos"]
 [dependencies]
 ax-cpu = { workspace = true, features = ["context"] }
 ax-std = { workspace = true, optional = true, features = ["default"] }
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-musl"]

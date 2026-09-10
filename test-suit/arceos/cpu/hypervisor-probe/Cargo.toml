@@ -7,11 +7,11 @@ publish = false
 [features]
 default = ["ax-std"]
 ax-std = ["dep:ax-std", "ax-std/arceos"]
-expect-h = []
+expect-h = ["ax-std"]
 
 [dependencies]
 ax-cpu.workspace = true
 ax-std = { workspace = true, optional = true, features = ["default"] }
 
 [package.metadata.docs.rs]
-targets = ["riscv64gc-unknown-none-elf"]
+targets = ["riscv64gc-unknown-linux-musl"]

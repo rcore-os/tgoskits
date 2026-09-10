@@ -825,3 +825,31 @@ fn package_clippy_configuration_rejects_empty_rustflags() {
         "clippy configuration `aarch64-source` rustflag for `alpha` must be non-empty and trimmed"
     );
 }
+
+#[test]
+fn clippy_std_targets_use_kernel_specs_and_build_the_standard_library() {
+    for target in [
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "riscv64gc-unknown-linux-musl",
+        "loongarch64-unknown-linux-musl",
+    ] {
+        let check = ClippyCheck {
+            package: "arceos-cpu-contract".into(),
+            kind: ClippyCheckKind::Base,
+            target: Some(target.into()),
+            env: Vec::new(),
+        };
+        let invocation = check.cargo_invocation();
+        assert!(invocation.args.windows(2).any(|args| {
+            args[0] == "--target"
+                && args[1].ends_with(&format!("scripts/targets/std/pie/{target}.json"))
+        }));
+        assert!(
+            invocation
+                .args
+                .windows(2)
+                .any(|args| args == ["-Z", "build-std=std,panic_abort"])
+        );
+    }
+}

@@ -382,6 +382,15 @@ fn validate_package_diagnostics(package: &str, diagnostic: &str) -> anyhow::Resu
     let mut warning_count = 0;
     let mut index = 0;
     while index < lines.len() {
+        // Cargo concatenates reports when build-std and application dependencies
+        // instantiate the same package. Each instance must contain approved
+        // diagnostics; a repeated header does not authorize arbitrary content.
+        if lines[index] == header {
+            index += 1;
+            if index == lines.len() {
+                bail!("`{package}` has an empty repeated diagnostic body");
+            }
+        }
         if lines[index] != format!("> {WARNING}") {
             bail!(
                 "`{package}` contains unapproved content outside a Rust #134375 diagnostic: {}",
@@ -513,6 +522,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(packages, ["core@0.0.0", "memchr@2.8.3"]);
+    }
+
+    #[test]
+    fn report_accepts_std_and_dependency_instances_of_the_same_package() {
+        let diagnostic = approved_diagnostic("memchr@2.8.3").repeat(2);
+        assert_eq!(
+            validate_report_json(&report_json(
+                REPORT_VERSION,
+                &[("memchr@2.8.3", diagnostic)]
+            ))
+            .unwrap(),
+            ["memchr@2.8.3"]
+        );
+        let mixed = format!(
+            "{}{}",
+            approved_diagnostic("memchr@2.8.3"),
+            approved_diagnostic("memchr@2.8.3").replace(WARNING, "warning: unapproved ABI")
+        );
+        assert!(
+            validate_report_json(&report_json(REPORT_VERSION, &[("memchr@2.8.3", mixed)])).is_err()
+        );
     }
 
     #[test]

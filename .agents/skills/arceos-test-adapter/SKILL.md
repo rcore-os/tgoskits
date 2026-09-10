@@ -80,3 +80,5 @@ OrangePi 的 `pmu`、`pmu-user` 使用 `arceos-board` 注册，保持板卡 runn
 
 
 CPU QEMU/板卡配置使用最新 ostool 的 `[[shell_check_steps]]`，被动等待用例只在该步骤内声明 `success_regex`，不填写 shell 命令。`fail_regex`、`timeout`、启动参数保留在根配置。不得恢复已删除的根级 `success_regex` 或 `shell_init_cmd`；分组程序的执行协议沿用当前 axbuild。
+
+跨架构独立用例必须在 `package.metadata.docs.rs.targets` 声明实际检查目标。依赖 Rust 标准库的用例使用相应 `*-unknown-linux-musl`，`cargo xtask clippy` 将其解析到共享 musl PIE JSON 并构建标准库；freestanding 用例使用共享 bare target。用例选项 feature 必须包含程序必需的 `ax-std`，因为 feature 独立检查关闭默认 feature。不得通过空 main、架构伪实现或跳过测试包来绕过检查。
