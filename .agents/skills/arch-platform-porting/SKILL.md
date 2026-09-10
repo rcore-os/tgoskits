@@ -13,6 +13,8 @@ description: 为 ArceOS、StarryOS、Axvisor、someboot、动态统一可扩展�
 
 ## 初步检查
 
+Starry AArch64 Linux perf 的 system suite 与 `apps/starry/linux-perf` 使用 `-icount shift=auto,align=off,sleep=on`，避免 QEMU PMU 定时器插入异常返回前后计数基线转换的空窗。保留 guest SMP4，但不把 icount 结果解释成 MTTCG 宿主并行或真实 PMU 性能证明；计数跳变时检查 `docs/design/starry-aarch64-linux-perf.md` 的模拟器边界，不放宽组计数断言。
+
 1. 确定变化层：目标规格、axbuild、测试套件配置、someboot、axcpu、axplat-dyn 或 somehal、设备驱动或操作系统配置。
 2. 先检查最接近且已工作的体系结构。动态统一可扩展固件接口路径优先与 x86_64 比较，不要直接创造新行为。
 3. 从 QEMU 参数一直追踪到内核入口的完整启动契约。固件、目标二进制接口、加载器和运行时平台不一致时，只改 QEMU 配置不能解决问题。

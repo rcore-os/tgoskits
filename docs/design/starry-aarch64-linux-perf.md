@@ -158,7 +158,9 @@ software event 同样参加 group 控制和 sample read。关闭 leader、先关
 
 ### 5.1 QEMU TCG
 
-AArch64 QEMU 显式使用 `-cpu cortex-a53,pmu=on -smp 4`。TCG 可验证 `perf_event_open`、计数器生命周期、溢出控制、mmap ring、group、LOST、callchain 编码和 upstream perf 控制流；cycle 是虚拟时间，instructions 依赖精确 icount，多数 cache/branch/stall 事件不实现或为零。
+AArch64 system suite 与 linux-perf app 显式使用 `-cpu cortex-a53,pmu=on -smp 4 -icount shift=auto,align=off,sleep=on`。TCG 可验证 `perf_event_open`、计数器生命周期、溢出控制、mmap ring、group、LOST、callchain 编码和 upstream perf 控制流；cycle 是虚拟时间，多数 cache/branch/stall 事件不实现或为零。
+
+`icount` 让虚拟定时器与 vCPU 指令执行使用同一时间线，保留四个 guest CPU，但不使用 MTTCG 宿主并行。因此这些结果不能代替真实并行硬件验收。选择它是为了避免 QEMU PMU 的跨线程状态转换空窗：[QEMU v11.1.1 的异常返回](https://github.com/qemu/qemu/blob/v11.1.1/target/arm/tcg/helper-a64.c#L694-L763) 分别锁住前后 EL-change hook，中间释放 BQL；[PMU 定时器](https://github.com/qemu/qemu/blob/v11.1.1/target/arm/cpregs-pmu.c#L615-L639) 同样修改两阶段计数基线。定时器在空窗插入时可能丢掉 preload，表现为组成员突然增加约半个 32 位范围。原 CI 及 focused case 均观察到该原始值跳变；保留组计数断言，不在内核中裁剪异常增量。
 
 ```bash
 cargo xtask starry test qemu --arch aarch64 -c qemu/system

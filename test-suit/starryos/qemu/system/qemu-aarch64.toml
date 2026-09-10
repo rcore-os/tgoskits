@@ -1,4 +1,8 @@
+# PMU timer/EL-transition updates must share the icount execution timeline.
+# Guest SMP4 remains enabled; this does not use MTTCG host parallelism.
 args = [
+    "-icount",
+    "shift=auto,align=off,sleep=on",
     "-nographic",
     "-machine",
     "virt,gic-version=3,its=on",

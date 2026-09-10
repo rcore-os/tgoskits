@@ -1,4 +1,7 @@
+# Match the PMU ABI suite's icount timeline; retain four guest CPUs.
 args = [
+  "-icount",
+  "shift=auto,align=off,sleep=on",
   "-nographic",
   "-machine", "virt,gic-version=3,its=on",
   "-m", "1024M",
