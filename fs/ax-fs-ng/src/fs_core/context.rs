@@ -597,6 +597,12 @@ impl FsContext {
         path: &'a Path,
         check_search: impl Fn(&Location) -> VfsResult<()>,
     ) -> VfsResult<(Location, Cow<'a, str>, Vec<Location>)> {
+        // An empty path is not the current directory. Keep the special
+        // `.`/`..` handling below, but match Linux's ENOENT for mutations
+        // given an empty pathname.
+        if path.as_str().is_empty() {
+            return Err(VfsError::NotFound);
+        }
         let mut searched = Vec::new();
         let (dir, name) =
             self.resolve_inner_with_trace(path, &mut 0, &mut searched, Some(&check_search))?;
