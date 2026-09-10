@@ -335,7 +335,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        arceos::test::{ARCEOS_RUST_TASK_IRQ_FEATURE, ARCEOS_RUST_TEST_PACKAGE},
+        arceos::test::{
+            ARCEOS_RUST_CPU_LIFECYCLE_FEATURE, ARCEOS_RUST_TASK_IRQ_FEATURE,
+            ARCEOS_RUST_TEST_PACKAGE,
+        },
         test::case::TestQemuCase,
     };
 
@@ -352,6 +355,7 @@ mod tests {
                 .iter()
                 .any(|feature| *feature == ARCEOS_RUST_TASK_IRQ_FEATURE)
         );
+        assert!(features.contains(&ARCEOS_RUST_CPU_LIFECYCLE_FEATURE));
     }
 
     #[test]

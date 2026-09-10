@@ -311,3 +311,14 @@ Starry 的 `migration/N` stopper 是固定 CPU 的 `KernelStop` 线程，尚无 
 | Starry `qemu/system/syscall-test-mm-lifecycle` | 四架构通过；`/tmp/pr2357-membarrier-user-{x86_64,riscv64,loongarch64}.log`、`/tmp/pr2357-membarrier-isolated-aarch64.log` |
 
 AArch64 首次构建被共享 target 中的 `bitmaps@3.2.1` future-incompat 报告门禁拒绝；保留门禁，以独立 `CARGO_TARGET_DIR=/tmp/pr2357-gap-aarch64-target` 重跑后通过。没有删除共享报告或扩展允许列表。新增探针只恢复既有 hook 契约，未改变体系结构切换或平台启动协议。
+
+
+### 5.11 完整套件的 CPU 下线前提
+
+提交 `d06e05dbf1` 的 CI 在 ArceOS x86_64 `all` 中失败于 `released reservation must permit idle CPU cycle`，本地同一入口也复现。此前单独 `task-wait-queue` 通过不能证明完整套件的 CPU 已排空：`all` 启用 fs/net，`BlockThreadOps::spawn_pinned` 和网络队列 executor 仍保有固定 CPU 服务线程。释放测试线程的 activation 预留并不撤销这些服务的 CPU 所有权。
+
+Linux v7.1 RT 的依据是 `kernel/sched/core.c::sched_cpu_deactivate` 先清除 active mask，启动 `balance_push` 并执行 `synchronize_rcu`；`kernel/cpu.c` 的反向 hotplug 状态遍历在 `sched_cpu_wait_empty` 之前调用 `smpboot_park_threads`。`block/blk-mq.c::blk_mq_hctx_notify_offline` 先关闭对应 hctx 准入，再等待在途请求。`balance_hotplug_wait` 还检查 RT 的 `rq_has_pinned_tasks`；`sched_cpu_dying` 不允许未排空的 CPU 直接退出。当前 `take_cpu_offline` 是要求调用方先排空的最终事务，不包含 Linux 上述设备与线程的完整停放编排，不能把 blocked worker 当作已经 parked。
+
+CPU 周期和全局 MM 锁回归迁到 `task/cpu_lifecycle.rs` 的独立 `task-cpu-lifecycle` feature。`ARCEOS_RUST_STANDALONE_FEATURES` 将它与 `task-irq` 一起加入默认运行，四架构 CI 的既有 `cargo xtask arceos test qemu --arch <arch>` 因而仍必跑这项回归。`all` 继续覆盖其他生命周期与设备测试；成功下线、取消不执行、预留阻止下线和 MM 锁断言均保留。独立用例明确要求至少三个 CPU，不通过 UP 跳过产生成功结果。
+
+该修复只更正测试执行前提，不新增或放宽生产热插拔规则。Linux 完整设备停放、迁移和物理 CPU 热插拔仍是明确未实现的能力，不以此次 CI 修复冒充完成。
