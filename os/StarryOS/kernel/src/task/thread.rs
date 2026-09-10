@@ -329,7 +329,7 @@ pub struct Thread {
     security: ThreadSecurity,
     trace: ThreadTrace,
     /// Per-task software perf bindings. Inherited tasks own slice-local state.
-    pub(crate) perf_sw_counters: IrqMutex<Vec<Arc<crate::perf::sw::SwPerTaskCounter>>>,
+    pub(crate) perf_sw_counters: Arc<IrqMutex<crate::perf::sw::SwTaskContext>>,
     /// Last CPU observed by the software perf scheduler hook.
     pub(crate) perf_sw_last_cpu: AtomicU32,
 }
@@ -365,7 +365,7 @@ impl Thread {
             signals: ThreadSignals::new(tid, process_signal, signal_mask),
             security: ThreadSecurity::new(parent_cred),
             trace: ThreadTrace::new(),
-            perf_sw_counters: IrqMutex::new(Vec::new()),
+            perf_sw_counters: Arc::new(IrqMutex::new(Default::default())),
             perf_sw_last_cpu: AtomicU32::new(crate::perf::sw::CPU_UNSET),
         });
         identity.bind_thread_pidfd(&process_identity, thread.exit_flag());

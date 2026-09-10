@@ -22,7 +22,7 @@ use kbpf_basic::linux_bpf::{perf_event_attr, perf_sw_ids};
 use super::{PerfEventOps, PerfReadValues, access::AuthorizedPerfTarget};
 use crate::{
     StarryError, StarryResult,
-    sync::IrqMutex,
+    sync::{IrqMutex, Mutex},
     task::{PidIdentityId, Thread},
 };
 
@@ -34,6 +34,15 @@ static PERF_SW_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 pub(crate) const CPU_UNSET: u32 = u32::MAX;
 
 static SYSTEM_COUNTERS: LazyInit<IrqMutex<Vec<Arc<SwSystemCounter>>>> = LazyInit::new();
+
+/// Scheduler and task-context controls serialize on this per-thread boundary.
+/// Even without an event, switch hooks keep the current running CPU published,
+/// so a remote opener can start a software clock in the existing interval.
+#[derive(Default)]
+pub(crate) struct SwTaskContext {
+    counters: Vec<Arc<SwPerTaskCounter>>,
+    running_cpu: Option<usize>,
+}
 
 #[inline]
 fn now_ns() -> u64 {
@@ -86,6 +95,11 @@ struct SwEventState {
     read_format: u64,
     inherit: bool,
     inherit_thread: bool,
+    exclude_user: bool,
+    exclude_kernel: bool,
+    /// Serializes family controls with cloning, never acquired by IRQ hooks.
+    control: Mutex<()>,
+    bindings: Mutex<Vec<Weak<SwPerTaskCounter>>>,
     dead: AtomicBool,
     count: AtomicU64,
     clock: IrqMutex<SwClock>,
@@ -123,6 +137,10 @@ impl SwEventState {
             read_format: attr.read_format,
             inherit: attr.inherit() != 0,
             inherit_thread: attr.inherit_thread() != 0,
+            exclude_user: attr.exclude_user() != 0,
+            exclude_kernel: attr.exclude_kernel() != 0,
+            control: Mutex::new(()),
+            bindings: Mutex::new(Vec::new()),
             dead: AtomicBool::new(false),
             count: AtomicU64::new(0),
             clock: IrqMutex::new(SwClock::default()),
@@ -135,6 +153,38 @@ impl SwEventState {
         clock.reset(now_ns());
         self.count.store(0, Ordering::Release);
     }
+
+    fn accepts_mode(&self, user: bool) -> bool {
+        if user {
+            !self.exclude_user
+        } else {
+            !self.exclude_kernel
+        }
+    }
+
+    fn set_family_enabled(&self, enabled: bool) {
+        let _control = self.control.lock();
+        let bindings = self
+            .bindings
+            .lock()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect::<Vec<_>>();
+        for binding in bindings {
+            let Some(context) = binding.context.upgrade() else {
+                continue;
+            };
+            let context = context.lock();
+            if binding.retired.load(Ordering::Acquire) {
+                continue;
+            }
+            if enabled {
+                binding.set_enabled_on(context.running_cpu);
+            } else {
+                binding.set_disabled();
+            }
+        }
+    }
 }
 
 /// Slice-local state for an event attached to one task. An inherited child gets
@@ -142,6 +192,7 @@ impl SwEventState {
 #[derive(Debug)]
 pub struct SwPerTaskCounter {
     state: Arc<SwEventState>,
+    context: Weak<IrqMutex<SwTaskContext>>,
     owner: PidIdentityId,
     cpu_filter: Option<usize>,
     enabled: AtomicBool,
@@ -159,6 +210,7 @@ pub struct SwPerTaskCounter {
 impl SwPerTaskCounter {
     fn new(
         state: Arc<SwEventState>,
+        context: Weak<IrqMutex<SwTaskContext>>,
         owner: PidIdentityId,
         cpu_filter: Option<usize>,
         enabled: bool,
@@ -167,6 +219,7 @@ impl SwPerTaskCounter {
         let now = now_ns();
         Self {
             state,
+            context,
             owner,
             cpu_filter,
             enabled: AtomicBool::new(enabled),
@@ -179,13 +232,14 @@ impl SwPerTaskCounter {
         }
     }
 
-    fn clone_for(&self, child: &Thread) -> Arc<Self> {
+    fn clone_for(&self, child: &Thread, enabled: bool, enable_on_exec: bool) -> Arc<Self> {
         Arc::new(Self::new(
             self.state.clone(),
+            Arc::downgrade(&child.perf_sw_counters),
             child.pid_identity().id(),
             self.cpu_filter,
-            self.enabled.load(Ordering::Acquire),
-            self.enable_on_exec.load(Ordering::Acquire),
+            enabled,
+            enable_on_exec,
         ))
     }
 
@@ -208,21 +262,6 @@ impl SwPerTaskCounter {
                 .is_none_or(|leader| leader.enabled.load(Ordering::Acquire))
     }
 
-    fn live_group_members(&self) -> Vec<Arc<Self>> {
-        let mut members = self.group_members.lock();
-        let live = members
-            .iter()
-            .filter_map(Weak::upgrade)
-            .filter(|member| !member.state.dead.load(Ordering::Acquire))
-            .collect::<Vec<_>>();
-        members.retain(|member| {
-            member
-                .upgrade()
-                .is_some_and(|member| !member.state.dead.load(Ordering::Acquire))
-        });
-        live
-    }
-
     fn start_slice(&self, now: u64, cpu: usize) {
         if !self.retired.load(Ordering::Acquire)
             && !self.state.dead.load(Ordering::Acquire)
@@ -243,11 +282,11 @@ impl SwPerTaskCounter {
         }
     }
 
-    fn enable_at(&self, now: u64) -> bool {
+    fn enable_at(&self, now: u64, cpu: Option<usize>) -> bool {
         if !self.enabled.swap(true, Ordering::AcqRel) {
             if self.is_effectively_enabled() {
                 self.enabled_since_ns.store(now, Ordering::Release);
-                self.arm_if_current(now);
+                self.arm_on(now, cpu);
             }
             true
         } else {
@@ -281,7 +320,7 @@ impl SwPerTaskCounter {
         }
     }
 
-    fn resume_for_group(&self, now: u64) {
+    fn resume_for_group(&self, now: u64, cpu: Option<usize>) {
         if !self.retired.load(Ordering::Acquire)
             && !self.state.dead.load(Ordering::Acquire)
             && self.is_effectively_enabled()
@@ -289,15 +328,15 @@ impl SwPerTaskCounter {
             let _ =
                 self.enabled_since_ns
                     .compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire);
-            self.arm_if_current(now);
+            self.arm_on(now, cpu);
         }
     }
 
-    fn set_enabled(&self) {
+    fn set_enabled_on(&self, cpu: Option<usize>) {
         let now = now_ns();
-        if self.enable_at(now) && self.live_group_leader().is_none() {
-            for member in self.live_group_members() {
-                member.resume_for_group(now);
+        if self.enable_at(now, cpu) && self.live_group_leader().is_none() {
+            for member in self.group_members.lock().iter().filter_map(Weak::upgrade) {
+                member.resume_for_group(now, cpu);
             }
         }
     }
@@ -306,20 +345,15 @@ impl SwPerTaskCounter {
         let now = now_ns();
         let is_group_root = self.live_group_leader().is_none();
         if self.disable_at(now) && is_group_root {
-            for member in self.live_group_members() {
+            for member in self.group_members.lock().iter().filter_map(Weak::upgrade) {
                 member.pause_for_group(now);
             }
         }
     }
 
-    fn arm_if_current(&self, now: u64) {
-        let _guard = crate::sync::PreemptGuard::new();
-        let Ok(Some(current)) = crate::task::try_current_user_task() else {
-            return;
-        };
-        let thread = current.as_thread();
-        if thread.pid_identity().id() == self.owner {
-            self.start_slice(now, ax_hal::percpu::this_cpu_id());
+    fn arm_on(&self, now: u64, cpu: Option<usize>) {
+        if let Some(cpu) = cpu {
+            self.start_slice(now, cpu);
         }
     }
 
@@ -389,6 +423,8 @@ impl SwPerTaskCounter {
             return Err(StarryError::InvalidInput);
         }
 
+        let context = member.context.upgrade().ok_or(StarryError::NoSuchProcess)?;
+        let context = context.lock();
         let now = now_ns();
         member.run_since_ns.store(0, Ordering::Release);
         member.enabled_since_ns.store(0, Ordering::Release);
@@ -405,12 +441,16 @@ impl SwPerTaskCounter {
         members.push(Arc::downgrade(member));
         drop(members);
         if leader.enabled.load(Ordering::Acquire) {
-            member.resume_for_group(now);
+            member.resume_for_group(now, context.running_cpu);
         }
         Ok(())
     }
 
     fn detach_group_members(leader: &Arc<Self>) {
+        let Some(context) = leader.context.upgrade() else {
+            return;
+        };
+        let context = context.lock();
         let members = core::mem::take(&mut *leader.group_members.lock());
         let weak_leader = Arc::downgrade(leader);
         let now = now_ns();
@@ -424,7 +464,7 @@ impl SwPerTaskCounter {
             }
             drop(group_leader);
             if attached {
-                member.resume_for_group(now);
+                member.resume_for_group(now, context.running_cpu);
             }
         }
     }
@@ -663,7 +703,7 @@ impl Drop for SwPerfEvent {
 impl PerfEventOps for SwPerfEvent {
     fn enable(&mut self) -> StarryResult<()> {
         match &self.target {
-            SwTargetCounter::Task(counter) => counter.set_enabled(),
+            SwTargetCounter::Task(_) => self.state.set_family_enabled(true),
             SwTargetCounter::Cpu(counter) => counter.set_enabled(),
         }
         Ok(())
@@ -671,7 +711,7 @@ impl PerfEventOps for SwPerfEvent {
 
     fn disable(&mut self) -> StarryResult<()> {
         match &self.target {
-            SwTargetCounter::Task(counter) => counter.set_disabled(),
+            SwTargetCounter::Task(_) => self.state.set_family_enabled(false),
             SwTargetCounter::Cpu(counter) => counter.set_disabled(),
         }
         Ok(())
@@ -683,7 +723,11 @@ impl PerfEventOps for SwPerfEvent {
 
     fn read_values(&mut self) -> StarryResult<PerfReadValues> {
         Ok(match &self.target {
-            SwTargetCounter::Task(counter) => counter.snapshot(),
+            SwTargetCounter::Task(counter) => {
+                let context = counter.context.upgrade();
+                let _context = context.as_ref().map(|context| context.lock());
+                counter.snapshot()
+            }
             SwTargetCounter::Cpu(counter) => counter.snapshot(),
         })
     }
@@ -736,9 +780,13 @@ pub fn initialize() {
 }
 
 fn attach_task(thread: &Thread, counter: Arc<SwPerTaskCounter>) {
-    let mut counters = thread.perf_sw_counters.lock();
-    counters.retain(|counter| !counter.state.dead.load(Ordering::Acquire));
-    counters.push(counter);
+    counter.state.bindings.lock().push(Arc::downgrade(&counter));
+    let mut context = thread.perf_sw_counters.lock();
+    context
+        .counters
+        .retain(|counter| !counter.state.dead.load(Ordering::Acquire));
+    counter.arm_on(now_ns(), context.running_cpu);
+    context.counters.push(counter);
 }
 
 fn attach_system(counter: Arc<SwSystemCounter>) {
@@ -771,15 +819,14 @@ pub fn perf_event_open_sw(
             let thread = task.as_thread();
             let counter = Arc::new(SwPerTaskCounter::new(
                 state.clone(),
+                Arc::downgrade(&thread.perf_sw_counters),
                 thread.pid_identity().id(),
                 cpu.map(super::target::PerfCpuId::as_usize),
                 enabled,
                 attr.enable_on_exec() != 0,
             ));
+            PERF_SW_ACTIVE.fetch_add(1, Ordering::AcqRel);
             attach_task(thread, counter.clone());
-            if enabled {
-                counter.arm_if_current(now_ns());
-            }
             SwTargetCounter::Task(counter)
         }
         AuthorizedPerfTarget::Cpu(cpu) => {
@@ -787,11 +834,11 @@ pub fn perf_event_open_sw(
                 return Err(StarryError::InvalidInput);
             }
             let counter = Arc::new(SwSystemCounter::new(state.clone(), cpu.as_usize(), enabled));
+            PERF_SW_ACTIVE.fetch_add(1, Ordering::AcqRel);
             attach_system(counter.clone());
             SwTargetCounter::Cpu(counter)
         }
     };
-    PERF_SW_ACTIVE.fetch_add(1, Ordering::AcqRel);
     Ok(SwPerfEvent {
         state,
         target: counter,
@@ -810,16 +857,17 @@ fn for_each_system(mut operation: impl FnMut(&SwSystemCounter)) {
 /// Scheduler entry hook for task clocks, CPU migration events, and CPU-wide
 /// migration accounting.
 pub fn sched_in(thread: &Thread) {
+    let mut context = thread.perf_sw_counters.lock();
+    let cpu = ax_hal::percpu::this_cpu_id();
+    context.running_cpu = Some(cpu);
     if PERF_SW_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
     let now = now_ns();
-    let cpu = ax_hal::percpu::this_cpu_id();
     let previous_cpu = thread.perf_sw_last_cpu.swap(cpu as u32, Ordering::AcqRel);
     let migrated = previous_cpu != CPU_UNSET && previous_cpu != cpu as u32;
     {
-        let counters = thread.perf_sw_counters.lock();
-        for counter in counters.iter() {
+        for counter in context.counters.iter() {
             if migrated
                 && counter.state.kind == SwId::CpuMigrations
                 && counter.is_effectively_enabled()
@@ -831,6 +879,7 @@ pub fn sched_in(thread: &Thread) {
             counter.start_slice(now, cpu);
         }
     }
+    drop(context);
     if migrated {
         for_each_system(|counter| counter.add_discrete(SwId::CpuMigrations));
     }
@@ -838,13 +887,14 @@ pub fn sched_in(thread: &Thread) {
 
 /// Scheduler exit hook for task running time and context-switch events.
 pub fn sched_out(thread: &Thread) {
+    let mut context = thread.perf_sw_counters.lock();
+    context.running_cpu = None;
     if PERF_SW_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
     let now = now_ns();
     {
-        let counters = thread.perf_sw_counters.lock();
-        for counter in counters.iter() {
+        for counter in context.counters.iter() {
             if counter.state.kind == SwId::ContextSwitches
                 && counter.is_effectively_enabled()
                 && counter.accepts_cpu(ax_hal::percpu::this_cpu_id())
@@ -855,6 +905,7 @@ pub fn sched_out(thread: &Thread) {
             counter.close_slice(now);
         }
     }
+    drop(context);
     for_each_system(|counter| counter.add_discrete(SwId::ContextSwitches));
 }
 
@@ -864,33 +915,38 @@ pub fn on_exec(thread: &Thread) {
     if PERF_SW_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let counters = thread.perf_sw_counters.lock();
-    for counter in counters.iter() {
+    let context = thread.perf_sw_counters.lock();
+    for counter in context.counters.iter() {
         if counter.enable_on_exec.swap(false, Ordering::AcqRel) {
-            counter.set_enabled();
+            counter.set_enabled_on(context.running_cpu);
         }
     }
 }
 
 /// Charges one user-address page fault to the current task and CPU contexts.
-pub fn on_page_fault(thread: &Thread) {
+pub fn on_page_fault(thread: &Thread, user: bool) {
     if PERF_SW_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
     let cpu = ax_hal::percpu::this_cpu_id();
     {
         let counters = thread.perf_sw_counters.lock();
-        for counter in counters.iter() {
+        for counter in counters.counters.iter() {
             if counter.state.kind == SwId::PageFaults
                 && counter.is_effectively_enabled()
                 && counter.accepts_cpu(cpu)
                 && !counter.state.dead.load(Ordering::Acquire)
+                && counter.state.accepts_mode(user)
             {
                 counter.state.count.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
-    for_each_system(|counter| counter.add_discrete(SwId::PageFaults));
+    for_each_system(|counter| {
+        if counter.state.accepts_mode(user) {
+            counter.add_discrete(SwId::PageFaults);
+        }
+    });
 }
 
 /// Creates per-child bindings for every live inherited event before the child
@@ -902,6 +958,7 @@ pub fn on_clone_inherit(parent: &Thread, child: &Thread) {
     let inherited = {
         let counters = parent.perf_sw_counters.lock();
         counters
+            .counters
             .iter()
             .filter(|counter| {
                 counter.state.inherit
@@ -909,9 +966,29 @@ pub fn on_clone_inherit(parent: &Thread, child: &Thread) {
                         || Arc::ptr_eq(&parent.proc_data, &child.proc_data))
                     && !counter.state.dead.load(Ordering::Acquire)
             })
-            .map(|counter| (counter.clone(), counter.clone_for(child)))
+            .cloned()
             .collect::<Vec<_>>()
     };
+    let inherited = inherited
+        .into_iter()
+        .map(|parent_counter| {
+            // Family control precedes the task context; no sleeping lock is taken
+            // while the scheduler-facing context is held.
+            let _control = parent_counter.state.control.lock();
+            let (enabled, enable_on_exec) = {
+                let _context = parent.perf_sw_counters.lock();
+                (
+                    parent_counter.enabled.load(Ordering::Acquire),
+                    parent_counter.enable_on_exec.load(Ordering::Acquire),
+                )
+            };
+            let child_counter = parent_counter.clone_for(child, enabled, enable_on_exec);
+            let mut bindings = parent_counter.state.bindings.lock();
+            bindings.retain(|binding| binding.strong_count() != 0);
+            bindings.push(Arc::downgrade(&child_counter));
+            (Arc::clone(&parent_counter), child_counter)
+        })
+        .collect::<Vec<_>>();
     for (parent_counter, child_counter) in &inherited {
         let Some(parent_leader) = parent_counter.live_group_leader() else {
             continue;
@@ -927,6 +1004,7 @@ pub fn on_clone_inherit(parent: &Thread, child: &Thread) {
     child
         .perf_sw_counters
         .lock()
+        .counters
         .extend(inherited.into_iter().map(|(_, child)| child));
 }
 
@@ -937,7 +1015,7 @@ pub fn on_task_exit(thread: &Thread) {
         return;
     }
     let counters = thread.perf_sw_counters.lock();
-    for counter in counters.iter() {
+    for counter in counters.counters.iter() {
         counter.retire();
     }
 }

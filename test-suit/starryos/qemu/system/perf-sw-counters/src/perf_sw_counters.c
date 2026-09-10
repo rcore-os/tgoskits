@@ -92,6 +92,130 @@ static int test_counting_sample_type(void) {
     return 0;
 }
 
+static int test_inherited_control(void) {
+    int command[2], reply[2];
+    if (pipe(command) || pipe(reply)) return 1;
+    int fd = open_sw(PERF_COUNT_SW_PAGE_FAULTS, ATTR_INHERIT);
+    if (fd < 0) return 1;
+    pid_t child = fork();
+    if (child < 0) return 1;
+    if (child == 0) {
+        close(command[1]);
+        close(reply[0]);
+        char byte = 'r';
+        if (write(reply[1], &byte, 1) != 1) _exit(2);
+        for (int phase = 0; phase < 2; ++phase) {
+            if (read(command[0], &byte, 1) != 1) _exit(3);
+            volatile char *pages = mmap(NULL, 64 * 4096, PROT_READ | PROT_WRITE,
+                                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (pages == MAP_FAILED) _exit(4);
+            for (int i = 0; i < 64; ++i) pages[i * 4096] = (char)i;
+            if (munmap((void *)pages, 64 * 4096) || write(reply[1], &byte, 1) != 1) _exit(5);
+        }
+        _exit(0);
+    }
+    close(command[0]);
+    close(reply[1]);
+    char byte = 0;
+    uint64_t before = 0, disabled = 0, enabled = 0;
+    int failed = read(reply[0], &byte, 1) != 1 ||
+        ioctl(fd, PERF_EVENT_IOC_DISABLE, 0) || read(fd, &before, 8) != 8 ||
+        write(command[1], &byte, 1) != 1 || read(reply[0], &byte, 1) != 1 ||
+        read(fd, &disabled, 8) != 8;
+    failed |= ioctl(fd, PERF_EVENT_IOC_ENABLE, 0) ||
+        write(command[1], &byte, 1) != 1 || read(reply[0], &byte, 1) != 1 ||
+        ioctl(fd, PERF_EVENT_IOC_DISABLE, 0) || read(fd, &enabled, 8) != 8;
+    int status = 0;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status)) failed = 1;
+    close(fd);
+    close(command[1]);
+    close(reply[0]);
+    printf("inherit-control before=%llu disabled=%llu enabled=%llu\n",
+           (unsigned long long)before, (unsigned long long)disabled,
+           (unsigned long long)enabled);
+    return failed || disabled != before || enabled <= disabled;
+}
+
+static int test_fault_mode_filter(void) {
+    /* Both filters together must exclude every fault, regardless of whether
+     * it came from an EL0 instruction or a faulting kernel user copy. */
+    int fd = open_sw(PERF_COUNT_SW_PAGE_FAULTS, (1ull << 4) | (1ull << 5));
+    if (fd < 0) return 1;
+    volatile char *pages = mmap(NULL, 32 * 4096, PROT_READ | PROT_WRITE,
+                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (pages == MAP_FAILED) return 1;
+    for (int i = 0; i < 32; ++i) pages[i * 4096] = 1;
+    uint64_t value = 1;
+    int failed = ioctl(fd, PERF_EVENT_IOC_DISABLE, 0) || read(fd, &value, 8) != 8;
+    close(fd);
+    munmap((void *)pages, 32 * 4096);
+    printf("fault-mode-filter value=%llu\n", (unsigned long long)value);
+    return failed || value != 0;
+}
+
+static int remote_cpu, remote_tid, remote_phase, remote_error;
+
+static void *remote_clock_work(void *unused) {
+    (void)unused;
+    cpu_set_t affinity;
+    CPU_ZERO(&affinity);
+    CPU_SET(remote_cpu, &affinity);
+    struct sched_param priority = {.sched_priority = 20};
+    if (sched_setaffinity(0, sizeof(affinity), &affinity) ||
+        syscall(SYS_sched_setscheduler, 0, SCHED_FIFO, &priority)) {
+        __atomic_store_n(&remote_error, errno, __ATOMIC_RELEASE);
+        return NULL;
+    }
+    __atomic_store_n(&remote_tid, (int)syscall(SYS_gettid), __ATOMIC_RELEASE);
+    while (__atomic_load_n(&remote_phase, __ATOMIC_ACQUIRE) == 0) {}
+    volatile uint64_t work = 0;
+    for (uint64_t i = 0; i < 1000000; ++i) work += i;
+    __atomic_store_n(&remote_phase, 2, __ATOMIC_RELEASE);
+    while (__atomic_load_n(&remote_phase, __ATOMIC_ACQUIRE) == 2) {}
+    priority.sched_priority = 0;
+    syscall(SYS_sched_setscheduler, 0, SCHED_OTHER, &priority);
+    return NULL;
+}
+
+static int test_remote_clock_enable(void) {
+    cpu_set_t saved, affinity;
+    if (sched_getaffinity(0, sizeof(saved), &saved)) return 1;
+    int first = -1;
+    remote_cpu = -1;
+    for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+        if (!CPU_ISSET(cpu, &saved)) continue;
+        if (first < 0) first = cpu;
+        else { remote_cpu = cpu; break; }
+    }
+    if (remote_cpu < 0) {
+        puts("remote-clock SKIP: requires two allowed CPUs");
+        return 0;
+    }
+    CPU_ZERO(&affinity);
+    CPU_SET(first, &affinity);
+    if (sched_setaffinity(0, sizeof(affinity), &affinity)) return 1;
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, remote_clock_work, NULL)) return 1;
+    while (!__atomic_load_n(&remote_tid, __ATOMIC_ACQUIRE) &&
+           !__atomic_load_n(&remote_error, __ATOMIC_ACQUIRE)) sched_yield();
+    struct perf_event_attr attr = {.type = PERF_TYPE_SOFTWARE, .size = sizeof(attr),
+        .config = PERF_COUNT_SW_TASK_CLOCK, .flags = ATTR_DISABLED};
+    int fd = remote_error ? -1 : (int)syscall(SYS_perf_event_open, &attr, remote_tid, -1, -1, 0ul);
+    int open_error = fd < 0 ? errno : 0;
+    int failed = fd < 0 || ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
+    __atomic_store_n(&remote_phase, 1, __ATOMIC_RELEASE);
+    while (!remote_error && __atomic_load_n(&remote_phase, __ATOMIC_ACQUIRE) != 2) sched_yield();
+    uint64_t value = 0;
+    if (fd >= 0 && (read(fd, &value, 8) != 8 || ioctl(fd, PERF_EVENT_IOC_DISABLE, 0))) failed = 1;
+    __atomic_store_n(&remote_phase, 3, __ATOMIC_RELEASE);
+    pthread_join(thread, NULL);
+    if (fd >= 0) close(fd);
+    if (sched_setaffinity(0, sizeof(saved), &saved)) failed = 1;
+    printf("remote-clock value=%llu setup_error=%d open_error=%d\n",
+           (unsigned long long)value, remote_error, open_error);
+    return failed || value == 0;
+}
+
 static volatile uint64_t sink;
 
 static void cpu_work(void) {
@@ -352,6 +476,13 @@ int main(int argc, char **argv) {
         test_systemwide() != 0 || test_inherit_thread_excludes_fork() != 0 ||
         test_inherit_thread_includes_thread() != 0) {
         printf("perf-sw-counters FAILED: exec/inherit/systemwide\n");
+        return 1;
+    }
+    int review_failures = test_inherited_control();
+    review_failures += test_fault_mode_filter();
+    review_failures += test_remote_clock_enable();
+    if (review_failures) {
+        puts("perf-sw-counters FAILED: inherit-control/fault-filter/remote-clock");
         return 1;
     }
     printf("STARRY_PERF_SW_COUNTERS_OK\n");
