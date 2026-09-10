@@ -22,10 +22,18 @@ export default function App({ registry }: { registry: PanelRegistry }) {
   const [token, setToken] = useState<string | null>(null)
 
   if (token === null) return <TokenGate onSubmit={setToken} />
-  return <Shell registry={registry} token={token} />
+  return <Shell registry={registry} token={token} onResetToken={() => setToken(null)} />
 }
 
-function Shell({ registry, token }: { registry: PanelRegistry; token: string }) {
+function Shell({
+  registry,
+  token,
+  onResetToken,
+}: {
+  registry: PanelRegistry
+  token: string
+  onResetToken: () => void
+}) {
   const api = useApiClient(token)
   const [manifest, setManifest] = useState<Manifest | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -111,6 +119,11 @@ function Shell({ registry, token }: { registry: PanelRegistry; token: string }) 
           {/* 重扫 manifest：后端插拔了能力，点一下导航就跟着变 */}
           <Button size="sm" variant="ghost" onClick={() => setReloadKey((k) => k + 1)}>
             刷新能力清单
+          </Button>
+          {/* token 只存在内存态：写操作报 401 时唯一的补救就是重新输入，
+             所以必须给一个入口，否则只能刷新页面。 */}
+          <Button size="sm" variant="outline" onClick={onResetToken}>
+            重设 token
           </Button>
         </div>
       </header>
