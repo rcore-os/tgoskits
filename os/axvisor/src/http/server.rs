@@ -123,9 +123,15 @@ fn console_router() -> Router {
 
 /// `/` and its page assets.
 ///
-/// The React dashboard takes this root over once the `web-ui` feature lands,
-/// and the legacy console page moves under `/console/`; until then the console
-/// group is the only UI and this root stays empty.
+/// The React dashboard owns this root when the `web-ui` feature is enabled, and
+/// the console page yields to `/console/` for it (see
+/// [`crate::http::browser_console::router`]).
+#[cfg(feature = "web-ui")]
+fn ui_router() -> Router {
+    crate::web::router()
+}
+
+#[cfg(not(feature = "web-ui"))]
 fn ui_router() -> Router {
     Router::new()
 }
