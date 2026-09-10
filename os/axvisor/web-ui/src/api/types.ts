@@ -107,7 +107,7 @@ export class ApiError extends Error {
 
 const STATUS_HINT: Record<number, string> = {
   400: '请求不合法',
-  401: 'token 缺失或不匹配：用右上角「重设 token」重新输入构建时的 AXVM_HTTP_TOKEN',  404: 'VM 不存在',
+  401: 'token 缺失或不匹配：token 已失效，请刷新页面用构建时的 AXVM_HTTP_TOKEN 重新登录',  404: 'VM 不存在',
   409: '当前状态不允许该操作',
   500: '宿主错误，可查串口日志',
   503: '宿主资源不足',

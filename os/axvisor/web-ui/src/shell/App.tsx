@@ -65,7 +65,6 @@ export default function App({ registry }: { registry: PanelRegistry }) {
       manifest={manifest}
       manifestError={manifestError}
       onReloadManifest={reloadManifest}
-      onResetToken={() => setToken(null)}
     />
   )
 }
@@ -76,14 +75,12 @@ function Shell({
   manifest,
   manifestError,
   onReloadManifest,
-  onResetToken,
 }: {
   registry: PanelRegistry
   token: string
   manifest: Manifest | null
   manifestError: string | null
   onReloadManifest: () => void
-  onResetToken: () => void
 }) {
   const api = useApiClient(token)
   const [tabs, setTabs] = useState<TabState[]>([])
@@ -154,11 +151,6 @@ function Shell({
           {/* 重扫 manifest：后端插拔了能力，点一下导航就跟着变 */}
           <Button size="sm" variant="ghost" onClick={onReloadManifest}>
             刷新能力清单
-          </Button>
-          {/* token 只存在内存态：写操作报 401 时唯一的补救就是重新输入，
-             所以必须给一个入口，否则只能刷新页面。 */}
-          <Button size="sm" variant="outline" onClick={onResetToken}>
-            重设 token
           </Button>
         </div>
       </header>
