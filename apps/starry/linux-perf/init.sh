@@ -1,4 +1,4 @@
-session_dir=/tmp/starry-linux-perf-session
+session_dir=${TMPDIR:-/tmp}/starry-linux-perf-session
 archive_0="$session_dir/runtime.tar.gz.part-0"
 archive_1="$session_dir/runtime.tar.gz.part-1"
 runner="$session_dir/linux-perf-run"
@@ -14,14 +14,16 @@ download_file() {
     partial="$output.part"
     attempt=1
     while [ "$attempt" -le 30 ]; do
+        complete=0
         if command -v curl >/dev/null 2>&1; then
-            curl --connect-timeout 2 --max-time 20 -fsSL "$url" -o "$partial" || true
+            curl --connect-timeout 2 --max-time 20 -fsSL "$url" -o "$partial" && complete=1
         elif command -v wget >/dev/null 2>&1; then
-            wget -T 20 -O "$partial" "$url" || true
+            wget -T 20 -O "$partial" "$url" && complete=1
         fi
-        if [ -s "$partial" ] && mv "$partial" "$output"; then
+        if [ "$complete" = 1 ] && [ -s "$partial" ] && mv "$partial" "$output"; then
             return 0
         fi
+        rm -f "$partial"
         sleep 1
         attempt=$((attempt + 1))
     done
