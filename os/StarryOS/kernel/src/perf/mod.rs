@@ -962,7 +962,7 @@ pub fn perf_event_open(
         if let Some(leader) = &group_leader {
             if leader.context != Some(context)
                 || leader.inherit != (attr.inherit() != 0)
-                || leader.group_leader.lock().is_some()
+                || leader.live_group_leader().is_some()
                 || attr.pinned() != 0
                 || attr.exclusive() != 0
             {
@@ -1047,7 +1047,7 @@ pub fn perf_event_open(
         if let Some(leader) = group_leader {
             if leader.context != perf_event.context
                 || leader.inherit != perf_event.inherit
-                || leader.group_leader.lock().is_some()
+                || leader.live_group_leader().is_some()
                 || attr.pinned() != 0
                 || attr.exclusive() != 0
             {

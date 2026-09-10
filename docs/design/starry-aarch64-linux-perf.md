@@ -85,6 +85,8 @@ stateDiagram-v2
 
 文件层 `PerfEvent::{members,group_leader}` 和硬件层 `PerTaskCounter` / `SystemCounter` 的双向 group link 都使用 `Weak`，避免关闭顺序形成引用环；fd 表、task 的 `perf_counters` 和 event backend 提供实际强所有权。link 时验证 task identity 或 CPU context 完全相同；控制传播先收集仍存活的成员，再逐一操作。与 Linux v7.1 一致，普通 ioctl 只作用于指定 event，只有 `PERF_IOC_FLAG_GROUP` 才从 leader 传播到 siblings；member 自己的 `attr.disabled` 状态不会在 link 时被改写。
 
+文件层建组通过 `live_group_leader()` 判断候选是否仍属于活跃组，而非检查保存弱引用的 `Option` 是否非空；旧 leader 关闭后的独立成员可以重新作为 leader。软件事件关闭时持 `SwEventState::control` 标记 family 已关闭，取得所有存活 binding 后，在各自任务上下文内解链并恢复 enabled siblings 的运行与启用区间。`link_group_binding()` 也持同一 leader family control，使继承关系发布不能越过关闭事务；关闭后拒绝建链时不修改成员的独立状态。
+
 software inherit 使用“每线程 slice + 共享 aggregate”结构。child 的调度起点、last CPU 和 enable-on-exec 独立，累计值通过 `Arc<SwEventState>` 汇入根事件。`SwEventState::bindings` 弱引用所有继承 binding，`control` 串行化父 FD 的启停与 clone；启停先取得 binding 快照，再逐个进入所属线程上下文，不能只改变根 binding。根 fd 关闭使共享状态失效，descendants 的 `Arc` 仅保持内存生命周期，不能继续计数或引用已释放 event。
 
 `SwEventState::inherit_thread` 保留线程限定继承属性。`sw::on_clone_inherit()` 仅在 parent/child 共享同一个 `ProcessData` 时复制这种 binding；该共享关系由 `clone` 的 `CLONE_THREAD` 分支建立，普通 fork 即使随后 exec 也不会获得该软件事件。普通 `inherit` 仍覆盖两类子任务。

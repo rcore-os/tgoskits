@@ -432,6 +432,9 @@ impl SwPerTaskCounter {
         member: &Arc<Self>,
         reset_new_event: bool,
     ) -> StarryResult<()> {
+        // Inherited group publication must not race the root fd's family-wide
+        // detach. A closed leader is rejected before changing either binding.
+        let _control = leader.state.control.lock();
         if leader.owner != member.owner
             || leader.cpu_filter != member.cpu_filter
             || leader.state.dead.load(Ordering::Acquire)
@@ -707,9 +710,23 @@ pub struct SwPerfEvent {
 
 impl Drop for SwPerfEvent {
     fn drop(&mut self) {
+        // Serialize closure with clone registration and group publication;
+        // scheduler hooks never acquire this sleeping family control lock.
+        let _control = self.state.control.lock();
         if !self.state.dead.swap(true, Ordering::AcqRel) {
             match &self.target {
-                SwTargetCounter::Task(counter) => SwPerTaskCounter::detach_group_members(counter),
+                SwTargetCounter::Task(_) => {
+                    let bindings = self
+                        .state
+                        .bindings
+                        .lock()
+                        .iter()
+                        .filter_map(Weak::upgrade)
+                        .collect::<Vec<_>>();
+                    for binding in &bindings {
+                        SwPerTaskCounter::detach_group_members(binding);
+                    }
+                }
                 SwTargetCounter::Cpu(counter) => SwSystemCounter::detach_group_members(counter),
             }
             PERF_SW_ACTIVE.fetch_sub(1, Ordering::AcqRel);

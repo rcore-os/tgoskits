@@ -111,6 +111,44 @@ static void work(void) {
         sink += (i * 5u) ^ sink;
     }
 }
+
+static int regroup_after_close(void) {
+    uint64_t format = PERF_FORMAT_GROUP | PERF_FORMAT_ID;
+    int leader = open_sw(PERF_COUNT_SW_TASK_CLOCK, 0, -1);
+    if (leader < 0) return 1;
+    int survivor = open_sw_flags(PERF_COUNT_SW_CPU_CLOCK, format, leader, 0);
+    if (survivor < 0) {
+        close(leader);
+        return 1;
+    }
+    int nested = open_sw_flags(PERF_COUNT_SW_TASK_CLOCK, 0, survivor, 0);
+    if (nested >= 0 || errno != EINVAL) {
+        if (nested >= 0) close(nested);
+        close(survivor);
+        close(leader);
+        puts("perf-event-group FAILED: live sibling accepted as leader");
+        return 1;
+    }
+    close(leader);
+    int member = open_sw_flags(PERF_COUNT_SW_TASK_CLOCK, 0, survivor, 0);
+    if (member < 0) {
+        printf("perf-event-group FAILED: regroup surviving member errno=%d\n", errno);
+        close(survivor);
+        return 1;
+    }
+    uint64_t ids[2] = {0}, values[5] = {0};
+    work();
+    int failed = ioctl(survivor, PERF_IOC_ID, &ids[0]) ||
+        ioctl(member, PERF_IOC_ID, &ids[1]) ||
+        ioctl(survivor, PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP) ||
+        read(survivor, values, sizeof(values)) != sizeof(values) ||
+        values[0] != 2 || values[1] == 0 || values[3] == 0 ||
+        values[2] != ids[0] || values[4] != ids[1];
+    close(member);
+    close(survivor);
+    printf("STARRY_PERF_REGROUP nr=%llu failed=%d\n", (unsigned long long)values[0], failed);
+    return failed;
+}
 #endif
 
 int main(void) {
@@ -118,6 +156,7 @@ int main(void) {
     puts("STARRY_PERF_EVENT_GROUP_OK");
     return 0;
 #else
+    if (regroup_after_close()) return 1;
     /* Reading/control through a sibling still addresses the canonical group.
      * A disabled sibling must retain its own OFF state on leader-only enable. */
     const uint64_t sibling_format = PERF_FORMAT_GROUP | PERF_FORMAT_ID;

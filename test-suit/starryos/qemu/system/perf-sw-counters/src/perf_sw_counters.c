@@ -218,7 +218,7 @@ static int test_remote_clock_enable(void) {
 
 static volatile uint64_t sink;
 
-static int test_inherited_live_clock(uint64_t kind) {
+static int test_inherited_live_clock(uint64_t kind, int detach_leader) {
     cpu_set_t saved, affinity;
     if (sched_getaffinity(0, sizeof(saved), &saved)) return 1;
     int first = -1;
@@ -241,18 +241,37 @@ static int test_inherited_live_clock(uint64_t kind) {
         .read_format = 3}; /* value, time_enabled, time_running */
     /* Only the inherited binding can run on this CPU. Enable after its FIFO
      * handshake, so no completed child slice can hide a missing live read. */
-    int fd = (int)syscall(SYS_perf_event_open, &attr, 0, remote_cpu, -1, 0ul);
+    int leader = -1;
+    if (detach_leader) {
+        leader = (int)syscall(SYS_perf_event_open, &attr, 0, remote_cpu, -1, 0ul);
+        if (leader < 0) {
+            sched_setaffinity(0, sizeof(saved), &saved);
+            return 1;
+        }
+        attr.flags = ATTR_INHERIT; /* Enabled sibling, gated by its leader. */
+    }
+    int fd = (int)syscall(SYS_perf_event_open, &attr, 0, remote_cpu, leader, 0ul);
     pthread_t thread;
     if (fd < 0 || pthread_create(&thread, NULL, remote_clock_work, NULL)) {
         if (fd >= 0) close(fd);
+        if (leader >= 0) close(leader);
         sched_setaffinity(0, sizeof(saved), &saved);
         return 1;
     }
     while (!__atomic_load_n(&remote_tid, __ATOMIC_ACQUIRE) &&
            !__atomic_load_n(&remote_error, __ATOMIC_ACQUIRE)) sched_yield();
     uint64_t before[3] = {0}, live[3] = {0}, stopped[3] = {0}, again[3] = {0};
-    int failed = remote_error || ioctl(fd, PERF_EVENT_IOC_ENABLE, 0) ||
-        read(fd, before, sizeof(before)) != sizeof(before);
+    int failed = remote_error;
+    if (detach_leader) {
+        /* Closing the shared last leader FD must resume both the root sibling
+         * and its inherited binding while the FIFO child is still running. */
+        if (read(fd, before, sizeof(before)) != sizeof(before) ||
+            before[0] || before[1] || before[2]) failed = 1;
+        if (close(leader)) failed = 1;
+    } else if (ioctl(fd, PERF_EVENT_IOC_ENABLE, 0)) {
+        failed = 1;
+    }
+    if (read(fd, before, sizeof(before)) != sizeof(before)) failed = 1;
     __atomic_store_n(&remote_phase, 1, __ATOMIC_RELEASE);
     while (!remote_error && __atomic_load_n(&remote_phase, __ATOMIC_ACQUIRE) != 2)
         sched_yield();
@@ -279,8 +298,8 @@ static int test_inherited_live_clock(uint64_t kind) {
         again[1] != stopped[1] || again[2] != stopped[2]) failed = 1;
     __atomic_store_n(&remote_phase, 3, __ATOMIC_RELEASE);
     if (pthread_join(thread, NULL)) failed = 1;
-    printf("inherit-live-clock kind=%llu before=%llu live=%llu/%llu/%llu stopped=%llu setup_error=%d\n",
-           (unsigned long long)kind, (unsigned long long)before[0],
+    printf("inherit-live-clock kind=%llu detach=%d before=%llu live=%llu/%llu/%llu stopped=%llu setup_error=%d\n",
+           (unsigned long long)kind, detach_leader, (unsigned long long)before[0],
            (unsigned long long)live[0], (unsigned long long)live[1],
            (unsigned long long)live[2], (unsigned long long)stopped[0], remote_error);
     close(fd);
@@ -551,8 +570,10 @@ int main(int argc, char **argv) {
     int review_failures = test_inherited_control();
     review_failures += test_fault_mode_filter();
     review_failures += test_remote_clock_enable();
-    review_failures += test_inherited_live_clock(PERF_COUNT_SW_TASK_CLOCK);
-    review_failures += test_inherited_live_clock(PERF_COUNT_SW_CPU_CLOCK);
+    review_failures += test_inherited_live_clock(PERF_COUNT_SW_TASK_CLOCK, 0);
+    review_failures += test_inherited_live_clock(PERF_COUNT_SW_CPU_CLOCK, 0);
+    review_failures += test_inherited_live_clock(PERF_COUNT_SW_TASK_CLOCK, 1);
+    review_failures += test_inherited_live_clock(PERF_COUNT_SW_CPU_CLOCK, 1);
     if (review_failures) {
         puts("perf-sw-counters FAILED: inherit-control/fault-filter/remote-clock/inherit-live-clock");
         return 1;
