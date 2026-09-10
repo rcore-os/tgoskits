@@ -374,6 +374,7 @@ mod tests {
                 ARCEOS_RUST_ALL_FEATURE,
                 ARCEOS_RUST_TASK_IRQ_FEATURE,
                 ARCEOS_RUST_CPU_LIFECYCLE_FEATURE,
+                "serial-rx",
             ]
         );
     }
