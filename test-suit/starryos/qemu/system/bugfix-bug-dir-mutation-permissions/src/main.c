@@ -135,6 +135,11 @@ static long renameat2_call(const char *old_path, const char *new_path,
     return syscall(SYS_renameat2, AT_FDCWD, old_path, AT_FDCWD, new_path, flags);
 }
 
+static long symlinkat_call(const char *target, const char *linkpath)
+{
+    return syscall(SYS_symlinkat, target, AT_FDCWD, linkpath);
+}
+
 static void remove_if_present(const char *path)
 {
     unlink(path);
@@ -159,6 +164,26 @@ static int run_unprivileged_checks(void)
         perror("setuid");
         return 1;
     }
+
+    errno = 0;
+    check(mknodat(AT_FDCWD, "", S_IFREG | 0600, 0) < 0 && errno == ENOENT,
+          "mknodat rejects an empty pathname");
+
+    errno = 0;
+    check(symlinkat_call("target", "") < 0 && errno == ENOENT,
+          "symlinkat rejects an empty pathname");
+
+    errno = 0;
+    check(linkat(AT_FDCWD, source, AT_FDCWD, "", 0) < 0 && errno == ENOENT,
+          "linkat rejects an empty destination pathname");
+
+    errno = 0;
+    check(renameat2_call("", source, 0) < 0 && errno == ENOENT,
+          "renameat2 rejects an empty source pathname");
+
+    errno = 0;
+    check(renameat2_call(source, "", 0) < 0 && errno == ENOENT,
+          "renameat2 rejects an empty destination pathname");
 
     errno = 0;
     int inaccessible = open(protected_file, O_RDONLY | O_CREAT, 0600);
@@ -273,6 +298,29 @@ static int run_unprivileged_checks(void)
     errno = 0;
     check(access(public_link_new, F_OK) < 0 && errno == ENOENT,
           "symlink permission failure leaves the resolved target unchanged");
+
+    errno = 0;
+    check(linkat(AT_FDCWD, source, AT_FDCWD, protected_link_new, 0) < 0
+              && errno == EACCES,
+          "linkat checks an inaccessible parent before a missing symlink target");
+
+    errno = 0;
+    check(renameat2_call(source, protected_link_new, 0) < 0 && errno == EACCES,
+          "renameat2 checks an inaccessible parent before a missing symlink target");
+
+    errno = 0;
+    check(linkat(AT_FDCWD, "/tmp/bug-dir-mutation-permissions/protected/missing-source",
+                 AT_FDCWD, "/tmp/bug-dir-mutation-permissions/public/missing-link", 0)
+                  < 0
+              && errno == EACCES,
+          "linkat checks the source parent before a missing final entry");
+
+    errno = 0;
+    check(renameat2_call("/tmp/bug-dir-mutation-permissions/protected/missing-source",
+                         "/tmp/bug-dir-mutation-permissions/public/missing-rename", 0)
+              < 0
+              && errno == EACCES,
+          "renameat2 checks the source parent before a missing final entry");
 
     errno = 0;
     check(rmdir("/tmp/bug-dir-mutation-permissions/sticky/root-dir") < 0
