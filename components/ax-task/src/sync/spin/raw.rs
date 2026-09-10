@@ -8,7 +8,7 @@
 //! The guard semantics still come from a [`GuardState`]: acquiring the lock
 //! runs `G::acquire()` (e.g. disabling preemption and local IRQs) *before*
 //! spinning, and releasing it restores that state. This matches the behaviour
-//! of [`SpinLock::lock_irqsave`](super::SpinLock::lock_irqsave) and is what makes the lock safe to take
+//! of [`RawSpinLock::lock_irqsave`](super::RawSpinLock::lock_irqsave) and is what makes the lock safe to take
 //! from contexts that may be re-entered by interrupts or trap handlers.
 
 #[cfg(feature = "smp")]
@@ -120,6 +120,6 @@ unsafe impl<G: GuardState + Send + Sync + 'static> lock_api::RawMutex for BaseRa
 }
 
 /// A raw spin lock that disables kernel preemption and local IRQs while held,
-/// mirroring [`SpinLock::lock_irqsave`](super::SpinLock::lock_irqsave) but exposed as a
+/// mirroring [`RawSpinLock::lock_irqsave`](super::RawSpinLock::lock_irqsave) but exposed as a
 /// [`lock_api::RawMutex`] for use with foreign generic code.
 pub type RawIrqSaveMutex = BaseRawSpinLock<PreemptIrqSaveState>;

@@ -6,7 +6,7 @@ static HOST_CPU_GUARD_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(feature = "host-test")]
 #[test]
 fn host_spin_guard_before_runtime_bootstrap_is_noop() {
-    let lock = crate::task::sync::SpinLock::new(());
+    let lock = crate::task::sync::RawSpinLock::new(());
     let _guard = lock.lock_irqsave();
 }
 

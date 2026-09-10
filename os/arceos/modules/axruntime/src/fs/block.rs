@@ -19,7 +19,7 @@ use ax_task::runtime::RuntimeStatus;
 use crate::task::{
     sched::{CpuId, CpuSet},
     sync::{
-        SpinLock,
+        RawSpinLock,
         irq::{IrqWaitCell, IrqWorkerWaiter},
     },
     thread::{TaskError, ThreadHandle, ThreadId},
@@ -128,7 +128,7 @@ struct RuntimeBlockThread {
     // move-out and is always released before the potentially blocking join.
     // No IRQ path observes this state, so masking local IRQs would only widen
     // interrupt latency without adding serialization.
-    task: SpinLock<Option<ThreadHandle>>,
+    task: RawSpinLock<Option<ThreadHandle>>,
 }
 
 impl BlockThread for RuntimeBlockThread {
@@ -184,7 +184,7 @@ impl BlockRuntimeOps for RuntimeTaskOps {
             .spawn(entry)
             .map_err(task_error_to_block_error)?;
         Ok(Box::new(RuntimeBlockThread {
-            task: SpinLock::new(Some(task)),
+            task: RawSpinLock::new(Some(task)),
         }))
     }
 }

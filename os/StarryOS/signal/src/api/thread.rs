@@ -7,7 +7,7 @@ use core::{
 };
 
 use ax_cpu::uspace::UserContext;
-use ax_runtime::task::sync::SpinLock;
+use ax_runtime::task::sync::RawSpinLock;
 use starry_vm::{VmIo, VmMutPtr, VmPtr};
 
 use super::ProcessSignalManager;
@@ -70,13 +70,13 @@ pub struct ThreadSignalManager {
     proc: Arc<ProcessSignalManager>,
 
     /// The pending signals
-    pending: SpinLock<PendingSignals>,
+    pending: RawSpinLock<PendingSignals>,
     /// The set of signals currently blocked from delivery.
-    blocked: SpinLock<SignalSet>,
+    blocked: RawSpinLock<SignalSet>,
     /// The stack used by signal handlers
-    stack: SpinLock<SignalStack>,
+    stack: RawSpinLock<SignalStack>,
     /// Number of active signal handlers currently executing on the alternate stack.
-    stack_active_depth: SpinLock<usize>,
+    stack_active_depth: RawSpinLock<usize>,
 
     possibly_has_signal: AtomicBool,
 
@@ -86,7 +86,7 @@ pub struct ThreadSignalManager {
     /// a coherent registration. The syscall still rechecks pending signals
     /// after installing the waker, matching Linux's state-publication then
     /// dequeue-again protocol without coupling this component to a scheduler.
-    sigwait: SpinLock<SigwaitState>,
+    sigwait: RawSpinLock<SigwaitState>,
 }
 
 impl ThreadSignalManager {
@@ -102,13 +102,13 @@ impl ThreadSignalManager {
         let this = Arc::new(Self {
             proc: proc.clone(),
 
-            pending: SpinLock::new(PendingSignals::default()),
-            blocked: SpinLock::new(blocked),
-            stack: SpinLock::new(SignalStack::default()),
-            stack_active_depth: SpinLock::new(0),
+            pending: RawSpinLock::new(PendingSignals::default()),
+            blocked: RawSpinLock::new(blocked),
+            stack: RawSpinLock::new(SignalStack::default()),
+            stack_active_depth: RawSpinLock::new(0),
 
             possibly_has_signal: AtomicBool::new(false),
-            sigwait: SpinLock::new(SigwaitState::default()),
+            sigwait: RawSpinLock::new(SigwaitState::default()),
         });
         proc.register_child(tid, Arc::downgrade(&this));
         this
@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn sigwait_waker_only_fires_for_the_published_set() {
-        let actions = Arc::new(SpinLock::new(SignalActions::default()));
+        let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
         let process = Arc::new(ProcessSignalManager::new(actions, 0));
         let thread = ThreadSignalManager::new(1, process);
         let counter = Arc::new(CountWake(AtomicUsize::new(0)));

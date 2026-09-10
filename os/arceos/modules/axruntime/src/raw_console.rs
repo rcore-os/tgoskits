@@ -16,7 +16,7 @@ use crate::{
     },
     task::{
         sched::{CpuId, CpuSet},
-        sync::{SpinLock, WaitQueue},
+        sync::{RawSpinLock, WaitQueue},
     },
 };
 
@@ -25,7 +25,7 @@ const RAW_RX_CAPACITY: usize = 4_096;
 static RAW_INPUT: OnceLock<RuntimeResult<Arc<RawInputRuntime>>> = OnceLock::new();
 
 struct RawInputRuntime {
-    available: SpinLock<Option<SpscConsumer<RxItem>>>,
+    available: RawSpinLock<Option<SpscConsumer<RxItem>>>,
     overflow: AtomicBool,
     progress: WaitQueue,
     poll_source: Arc<PollSet>,
@@ -35,7 +35,7 @@ struct RawInputRuntime {
 
 /// Unique task-side consumer for the HAL console's IRQ-backed RX queue.
 pub(crate) struct RawConsoleInput {
-    consumer: SpinLock<Option<SpscConsumer<RxItem>>>,
+    consumer: RawSpinLock<Option<SpscConsumer<RxItem>>>,
     runtime: Arc<RawInputRuntime>,
 }
 
@@ -47,7 +47,7 @@ pub(crate) fn take_input() -> RuntimeResult<RawConsoleInput> {
         .take()
         .ok_or(RuntimeError::SerialConsoleBusy)?;
     Ok(RawConsoleInput {
-        consumer: SpinLock::new(Some(consumer)),
+        consumer: RawSpinLock::new(Some(consumer)),
         runtime,
     })
 }
@@ -74,7 +74,7 @@ fn init_raw_input() -> RuntimeResult<Arc<RawInputRuntime>> {
     ax_hal::console::set_input_irq_enabled(false);
     let (mut producer, consumer) = crate::serial::spsc::channel(RAW_RX_CAPACITY);
     let runtime = Arc::new(RawInputRuntime {
-        available: SpinLock::new(Some(consumer)),
+        available: RawSpinLock::new(Some(consumer)),
         overflow: AtomicBool::new(false),
         progress: WaitQueue::new(),
         poll_source: Arc::new(PollSet::new()),
@@ -289,7 +289,7 @@ mod tests {
     fn raw_irq_queue_preserves_bytes_and_reports_overflow() {
         let (mut producer, consumer) = crate::serial::spsc::channel(1);
         let runtime = Arc::new(RawInputRuntime {
-            available: SpinLock::new(None),
+            available: RawSpinLock::new(None),
             overflow: AtomicBool::new(false),
             progress: WaitQueue::new(),
             poll_source: Arc::new(PollSet::new()),
@@ -297,7 +297,7 @@ mod tests {
             irq_handle: OnceLock::new(),
         });
         let input = RawConsoleInput {
-            consumer: SpinLock::new(Some(consumer)),
+            consumer: RawSpinLock::new(Some(consumer)),
             runtime: runtime.clone(),
         };
         let retained = RxItem::Byte {
@@ -323,7 +323,7 @@ mod tests {
         let source_bytes = RAW_RX_CAPACITY + 64;
         let (mut producer, _consumer) = crate::serial::spsc::channel(source_bytes);
         let runtime = RawInputRuntime {
-            available: SpinLock::new(None),
+            available: RawSpinLock::new(None),
             overflow: AtomicBool::new(false),
             progress: WaitQueue::new(),
             poll_source: Arc::new(PollSet::new()),

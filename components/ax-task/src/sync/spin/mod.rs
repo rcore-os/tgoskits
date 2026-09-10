@@ -23,18 +23,18 @@ pub use self::raw::RawIrqSaveMutex;
 /// choose the policy at the acquisition site with [`Self::lock`],
 /// [`Self::lock_irqsave`], or [`Self::lock_raw`].
 #[repr(transparent)]
-pub struct SpinLock<T: ?Sized>(BaseSpinLock<RawState, T>);
+pub struct RawSpinLock<T: ?Sized>(BaseSpinLock<RawState, T>);
 
-/// A guard returned by [`SpinLock::lock`].
-pub type SpinLockGuard<'a, T> = BaseSpinLockGuard<'a, PreemptState, T>;
+/// A guard returned by [`RawSpinLock::lock`].
+pub type RawSpinLockGuard<'a, T> = BaseSpinLockGuard<'a, PreemptState, T>;
 
-/// A guard returned by [`SpinLock::lock_irqsave`].
-pub type SpinLockIrqSaveGuard<'a, T> = BaseSpinLockGuard<'a, PreemptIrqSaveState, T>;
+/// A guard returned by [`RawSpinLock::lock_irqsave`].
+pub type RawSpinLockIrqSaveGuard<'a, T> = BaseSpinLockGuard<'a, PreemptIrqSaveState, T>;
 
-/// A guard returned by [`SpinLock::lock_raw`].
-pub type RawSpinLockGuard<'a, T> = BaseSpinLockGuard<'a, RawState, T>;
+/// A guard returned by [`RawSpinLock::lock_raw`].
+pub type RawSpinLockUnpinnedGuard<'a, T> = BaseSpinLockGuard<'a, RawState, T>;
 
-impl<T> SpinLock<T> {
+impl<T> RawSpinLock<T> {
     /// Creates an unlocked spin lock.
     #[inline(always)]
     #[track_caller]
@@ -49,7 +49,7 @@ impl<T> SpinLock<T> {
     }
 }
 
-impl<T: ?Sized> SpinLock<T> {
+impl<T: ?Sized> RawSpinLock<T> {
     #[inline(always)]
     fn with_state<G: GuardState>(&self) -> &BaseSpinLock<G, T> {
         // SAFETY: `BaseSpinLock` has a stable C layout, and its guard-state
@@ -68,7 +68,7 @@ impl<T: ?Sized> SpinLock<T> {
     /// Acquires the lock after disabling kernel preemption.
     #[inline(always)]
     #[track_caller]
-    pub fn lock(&self) -> SpinLockGuard<'_, T> {
+    pub fn lock(&self) -> RawSpinLockGuard<'_, T> {
         self.with_state::<PreemptState>().lock()
     }
 
@@ -78,21 +78,21 @@ impl<T: ?Sized> SpinLock<T> {
     /// locks with the same class. Without `lockdep`, `subclass` has no effect.
     #[inline(always)]
     #[track_caller]
-    pub fn lock_nested(&self, subclass: u32) -> SpinLockGuard<'_, T> {
+    pub fn lock_nested(&self, subclass: u32) -> RawSpinLockGuard<'_, T> {
         self.with_state::<PreemptState>().lock_nested(subclass)
     }
 
     /// Attempts to acquire the lock after disabling kernel preemption.
     #[inline(always)]
     #[track_caller]
-    pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T>> {
+    pub fn try_lock(&self) -> Option<RawSpinLockGuard<'_, T>> {
         self.with_state::<PreemptState>().try_lock()
     }
 
     /// Acquires the lock after disabling preemption and saving/disabling IRQs.
     #[inline(always)]
     #[track_caller]
-    pub fn lock_irqsave(&self) -> SpinLockIrqSaveGuard<'_, T> {
+    pub fn lock_irqsave(&self) -> RawSpinLockIrqSaveGuard<'_, T> {
         self.with_state::<PreemptIrqSaveState>().lock()
     }
 
@@ -103,7 +103,7 @@ impl<T: ?Sized> SpinLock<T> {
     /// locks with the same class. Without `lockdep`, `subclass` has no effect.
     #[inline(always)]
     #[track_caller]
-    pub fn lock_irqsave_nested(&self, subclass: u32) -> SpinLockIrqSaveGuard<'_, T> {
+    pub fn lock_irqsave_nested(&self, subclass: u32) -> RawSpinLockIrqSaveGuard<'_, T> {
         self.with_state::<PreemptIrqSaveState>()
             .lock_nested(subclass)
     }
@@ -111,7 +111,7 @@ impl<T: ?Sized> SpinLock<T> {
     /// Attempts to acquire the lock after disabling preemption and IRQs.
     #[inline(always)]
     #[track_caller]
-    pub fn try_lock_irqsave(&self) -> Option<SpinLockIrqSaveGuard<'_, T>> {
+    pub fn try_lock_irqsave(&self) -> Option<RawSpinLockIrqSaveGuard<'_, T>> {
         self.with_state::<PreemptIrqSaveState>().try_lock()
     }
 
@@ -124,7 +124,7 @@ impl<T: ?Sized> SpinLock<T> {
     /// where the atomic lock word is compiled out.
     #[inline(always)]
     #[track_caller]
-    pub unsafe fn lock_raw(&self) -> RawSpinLockGuard<'_, T> {
+    pub unsafe fn lock_raw(&self) -> RawSpinLockUnpinnedGuard<'_, T> {
         self.with_state::<RawState>().lock()
     }
 
@@ -136,7 +136,7 @@ impl<T: ?Sized> SpinLock<T> {
     /// [`Self::lock_raw`], even when this function returns `None`.
     #[inline(always)]
     #[track_caller]
-    pub unsafe fn try_lock_raw(&self) -> Option<RawSpinLockGuard<'_, T>> {
+    pub unsafe fn try_lock_raw(&self) -> Option<RawSpinLockUnpinnedGuard<'_, T>> {
         self.with_state::<RawState>().try_lock()
     }
 
@@ -167,18 +167,21 @@ impl<T: ?Sized> SpinLock<T> {
     }
 }
 
-impl<T: Default> Default for SpinLock<T> {
+impl<T: Default> Default for RawSpinLock<T> {
     fn default() -> Self {
         Self::new(T::default())
     }
 }
 
-impl<T: fmt::Debug> fmt::Debug for SpinLock<T> {
+impl<T: fmt::Debug> fmt::Debug for RawSpinLock<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.try_lock() {
-            Some(guard) => f.debug_struct("SpinLock").field("data", &&*guard).finish(),
+            Some(guard) => f
+                .debug_struct("RawSpinLock")
+                .field("data", &&*guard)
+                .finish(),
             None => f
-                .debug_struct("SpinLock")
+                .debug_struct("RawSpinLock")
                 .field("data", &"<locked>")
                 .finish(),
         }
@@ -187,27 +190,28 @@ impl<T: fmt::Debug> fmt::Debug for SpinLock<T> {
 
 /// A non-sleeping read-write lock with acquisition-site context policy.
 #[repr(transparent)]
-pub struct SpinRwLock<T: ?Sized>(BaseSpinRwLock<RawState, T>);
+pub struct RawSpinRwLock<T: ?Sized>(BaseSpinRwLock<RawState, T>);
 
-/// A read guard returned by [`SpinRwLock::read`].
-pub type SpinRwLockReadGuard<'a, T> = BaseSpinRwLockReadGuard<'a, PreemptState, T>;
+/// A read guard returned by [`RawSpinRwLock::read`].
+pub type RawSpinRwLockReadGuard<'a, T> = BaseSpinRwLockReadGuard<'a, PreemptState, T>;
 
-/// A write guard returned by [`SpinRwLock::write`].
-pub type SpinRwLockWriteGuard<'a, T> = BaseSpinRwLockWriteGuard<'a, PreemptState, T>;
+/// A write guard returned by [`RawSpinRwLock::write`].
+pub type RawSpinRwLockWriteGuard<'a, T> = BaseSpinRwLockWriteGuard<'a, PreemptState, T>;
 
 /// An IRQ-save read guard.
-pub type SpinRwLockIrqSaveReadGuard<'a, T> = BaseSpinRwLockReadGuard<'a, PreemptIrqSaveState, T>;
+pub type RawSpinRwLockIrqSaveReadGuard<'a, T> = BaseSpinRwLockReadGuard<'a, PreemptIrqSaveState, T>;
 
 /// An IRQ-save write guard.
-pub type SpinRwLockIrqSaveWriteGuard<'a, T> = BaseSpinRwLockWriteGuard<'a, PreemptIrqSaveState, T>;
+pub type RawSpinRwLockIrqSaveWriteGuard<'a, T> =
+    BaseSpinRwLockWriteGuard<'a, PreemptIrqSaveState, T>;
 
 /// A raw read guard.
-pub type RawSpinRwLockReadGuard<'a, T> = BaseSpinRwLockReadGuard<'a, RawState, T>;
+pub type RawSpinRwLockUnpinnedReadGuard<'a, T> = BaseSpinRwLockReadGuard<'a, RawState, T>;
 
 /// A raw write guard.
-pub type RawSpinRwLockWriteGuard<'a, T> = BaseSpinRwLockWriteGuard<'a, RawState, T>;
+pub type RawSpinRwLockUnpinnedWriteGuard<'a, T> = BaseSpinRwLockWriteGuard<'a, RawState, T>;
 
-impl<T> SpinRwLock<T> {
+impl<T> RawSpinRwLock<T> {
     /// Creates an unlocked spin read-write lock.
     #[inline(always)]
     #[track_caller]
@@ -222,10 +226,10 @@ impl<T> SpinRwLock<T> {
     }
 }
 
-impl<T: ?Sized> SpinRwLock<T> {
+impl<T: ?Sized> RawSpinRwLock<T> {
     #[inline(always)]
     fn with_state<G: GuardState>(&self) -> &BaseSpinRwLock<G, T> {
-        // SAFETY: identical to `SpinLock::with_state`; the generic parameter
+        // SAFETY: identical to `RawSpinLock::with_state`; the generic parameter
         // is represented only by `PhantomData` in a stable C layout.
         unsafe { &*(ptr::from_ref(&self.0) as *const BaseSpinRwLock<G, T>) }
     }
@@ -239,56 +243,56 @@ impl<T: ?Sized> SpinRwLock<T> {
     /// Acquires a read guard after disabling preemption.
     #[inline(always)]
     #[track_caller]
-    pub fn read(&self) -> SpinRwLockReadGuard<'_, T> {
+    pub fn read(&self) -> RawSpinRwLockReadGuard<'_, T> {
         self.with_state::<PreemptState>().read()
     }
 
     /// Attempts a read acquisition after disabling preemption.
     #[inline(always)]
     #[track_caller]
-    pub fn try_read(&self) -> Option<SpinRwLockReadGuard<'_, T>> {
+    pub fn try_read(&self) -> Option<RawSpinRwLockReadGuard<'_, T>> {
         self.with_state::<PreemptState>().try_read()
     }
 
     /// Acquires a write guard after disabling preemption.
     #[inline(always)]
     #[track_caller]
-    pub fn write(&self) -> SpinRwLockWriteGuard<'_, T> {
+    pub fn write(&self) -> RawSpinRwLockWriteGuard<'_, T> {
         self.with_state::<PreemptState>().write()
     }
 
     /// Attempts a write acquisition after disabling preemption.
     #[inline(always)]
     #[track_caller]
-    pub fn try_write(&self) -> Option<SpinRwLockWriteGuard<'_, T>> {
+    pub fn try_write(&self) -> Option<RawSpinRwLockWriteGuard<'_, T>> {
         self.with_state::<PreemptState>().try_write()
     }
 
     /// Acquires an IRQ-save read guard.
     #[inline(always)]
     #[track_caller]
-    pub fn read_irqsave(&self) -> SpinRwLockIrqSaveReadGuard<'_, T> {
+    pub fn read_irqsave(&self) -> RawSpinRwLockIrqSaveReadGuard<'_, T> {
         self.with_state::<PreemptIrqSaveState>().read()
     }
 
     /// Attempts an IRQ-save read acquisition.
     #[inline(always)]
     #[track_caller]
-    pub fn try_read_irqsave(&self) -> Option<SpinRwLockIrqSaveReadGuard<'_, T>> {
+    pub fn try_read_irqsave(&self) -> Option<RawSpinRwLockIrqSaveReadGuard<'_, T>> {
         self.with_state::<PreemptIrqSaveState>().try_read()
     }
 
     /// Acquires an IRQ-save write guard.
     #[inline(always)]
     #[track_caller]
-    pub fn write_irqsave(&self) -> SpinRwLockIrqSaveWriteGuard<'_, T> {
+    pub fn write_irqsave(&self) -> RawSpinRwLockIrqSaveWriteGuard<'_, T> {
         self.with_state::<PreemptIrqSaveState>().write()
     }
 
     /// Attempts an IRQ-save write acquisition.
     #[inline(always)]
     #[track_caller]
-    pub fn try_write_irqsave(&self) -> Option<SpinRwLockIrqSaveWriteGuard<'_, T>> {
+    pub fn try_write_irqsave(&self) -> Option<RawSpinRwLockIrqSaveWriteGuard<'_, T>> {
         self.with_state::<PreemptIrqSaveState>().try_write()
     }
 
@@ -300,7 +304,7 @@ impl<T: ?Sized> SpinRwLock<T> {
     /// contract, including on single-core builds.
     #[inline(always)]
     #[track_caller]
-    pub unsafe fn read_raw(&self) -> RawSpinRwLockReadGuard<'_, T> {
+    pub unsafe fn read_raw(&self) -> RawSpinRwLockUnpinnedReadGuard<'_, T> {
         self.with_state::<RawState>().read()
     }
 
@@ -311,7 +315,7 @@ impl<T: ?Sized> SpinRwLock<T> {
     /// The caller must uphold the contract of [`Self::read_raw`].
     #[inline(always)]
     #[track_caller]
-    pub unsafe fn try_read_raw(&self) -> Option<RawSpinRwLockReadGuard<'_, T>> {
+    pub unsafe fn try_read_raw(&self) -> Option<RawSpinRwLockUnpinnedReadGuard<'_, T>> {
         self.with_state::<RawState>().try_read()
     }
 
@@ -323,7 +327,7 @@ impl<T: ?Sized> SpinRwLock<T> {
     /// including on single-core builds.
     #[inline(always)]
     #[track_caller]
-    pub unsafe fn write_raw(&self) -> RawSpinRwLockWriteGuard<'_, T> {
+    pub unsafe fn write_raw(&self) -> RawSpinRwLockUnpinnedWriteGuard<'_, T> {
         self.with_state::<RawState>().write()
     }
 
@@ -334,7 +338,7 @@ impl<T: ?Sized> SpinRwLock<T> {
     /// The caller must uphold the contract of [`Self::write_raw`].
     #[inline(always)]
     #[track_caller]
-    pub unsafe fn try_write_raw(&self) -> Option<RawSpinRwLockWriteGuard<'_, T>> {
+    pub unsafe fn try_write_raw(&self) -> Option<RawSpinRwLockUnpinnedWriteGuard<'_, T>> {
         self.with_state::<RawState>().try_write()
     }
 
@@ -359,27 +363,27 @@ impl<T: ?Sized> SpinRwLock<T> {
     }
 }
 
-impl<T: Default> Default for SpinRwLock<T> {
+impl<T: Default> Default for RawSpinRwLock<T> {
     fn default() -> Self {
         Self::new(T::default())
     }
 }
 
-impl<T> From<T> for SpinRwLock<T> {
+impl<T> From<T> for RawSpinRwLock<T> {
     fn from(value: T) -> Self {
         Self::new(value)
     }
 }
 
-impl<T: fmt::Debug> fmt::Debug for SpinRwLock<T> {
+impl<T: fmt::Debug> fmt::Debug for RawSpinRwLock<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.try_read() {
             Some(guard) => f
-                .debug_struct("SpinRwLock")
+                .debug_struct("RawSpinRwLock")
                 .field("data", &&*guard)
                 .finish(),
             None => f
-                .debug_struct("SpinRwLock")
+                .debug_struct("RawSpinRwLock")
                 .field("data", &"<write locked>")
                 .finish(),
         }

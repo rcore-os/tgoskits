@@ -22,7 +22,7 @@ use ax_std::os::arceos::{
 
 use crate::{
     mm::{AddrSpace, SharedFutexIdentity, SharedFutexRegion},
-    sync::{LockdepMutexExt, Mutex, SpinLock},
+    sync::{LockdepMutexExt, Mutex, RawSpinLock},
     task::{ProcessData, UserTaskRef, future::WallClockWaiter, process_memory::ProcessMemoryShare},
     time::{ClockDeadline, ClockSnapshot},
 };
@@ -161,7 +161,7 @@ pub(crate) struct ThreadWaitState {
     // No IRQ path observes it and the guard is never held while taking the
     // table or wait-queue locks, so a short preemption-only spin lock is the
     // narrow capability this metadata needs.
-    cleanup: SpinLock<Option<FutexWaitCleanup>>,
+    cleanup: RawSpinLock<Option<FutexWaitCleanup>>,
 }
 
 impl ThreadWaitState {
@@ -170,7 +170,7 @@ impl ThreadWaitState {
         Self {
             generation: AtomicU64::new(0),
             phase: AtomicU8::new(WAIT_IDLE),
-            cleanup: SpinLock::new(None),
+            cleanup: RawSpinLock::new(None),
         }
     }
 

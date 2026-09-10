@@ -33,9 +33,10 @@ pub use self::context::{
     hardirq_exit,
 };
 pub use crate::sync::spin::{
-    RawIrqSaveMutex, RawSpinLockGuard, RawSpinRwLockReadGuard, RawSpinRwLockWriteGuard, SpinLock,
-    SpinLockGuard, SpinLockIrqSaveGuard, SpinRwLock, SpinRwLockIrqSaveReadGuard,
-    SpinRwLockIrqSaveWriteGuard, SpinRwLockReadGuard, SpinRwLockWriteGuard,
+    RawIrqSaveMutex, RawSpinLock, RawSpinLockGuard, RawSpinLockIrqSaveGuard,
+    RawSpinLockUnpinnedGuard, RawSpinRwLock, RawSpinRwLockIrqSaveReadGuard,
+    RawSpinRwLockIrqSaveWriteGuard, RawSpinRwLockReadGuard, RawSpinRwLockUnpinnedReadGuard,
+    RawSpinRwLockUnpinnedWriteGuard, RawSpinRwLockWriteGuard,
 };
 
 /// A non-sleeping mutex whose guard saves and disables local IRQs.

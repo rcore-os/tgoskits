@@ -9,7 +9,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_runtime::task::sync::SpinLock;
+use ax_runtime::task::sync::RawSpinLock;
 use linux_raw_sys::general::kernel_sigaction;
 use starry_vm::{VmIo, VmPtr, vm_write_slice};
 
@@ -45,7 +45,7 @@ impl IndexMut<Signo> for SignalActions {
 /// Process-level signal manager.
 pub struct ProcessSignalManager {
     /// The process-level shared pending signals
-    pending: SpinLock<PendingSignals>,
+    pending: RawSpinLock<PendingSignals>,
 
     /// The signal actions. Held in a swappable slot because `CLONE_SIGHAND`
     /// hands the inner `Arc` to a peer process; `execve` must be able to
@@ -54,25 +54,25 @@ pub struct ProcessSignalManager {
     /// Outside of exec, callers should obtain the current table via
     /// [`Self::actions`] which clones the strong reference under the slot
     /// lock for the duration of one operation.
-    actions_slot: SpinLock<Arc<SpinLock<SignalActions>>>,
+    actions_slot: RawSpinLock<Arc<RawSpinLock<SignalActions>>>,
 
     /// The default restorer function.
     pub(crate) default_restorer: usize,
 
     /// Thread-level signal managers.
-    pub(crate) children: SpinLock<Vec<(u32, Weak<ThreadSignalManager>)>>,
+    pub(crate) children: RawSpinLock<Vec<(u32, Weak<ThreadSignalManager>)>>,
 
     pub(crate) possibly_has_signal: AtomicBool,
 }
 
 impl ProcessSignalManager {
     /// Creates a new process signal manager.
-    pub fn new(actions: Arc<SpinLock<SignalActions>>, default_restorer: usize) -> Self {
+    pub fn new(actions: Arc<RawSpinLock<SignalActions>>, default_restorer: usize) -> Self {
         Self {
-            pending: SpinLock::new(PendingSignals::default()),
-            actions_slot: SpinLock::new(actions),
+            pending: RawSpinLock::new(PendingSignals::default()),
+            actions_slot: RawSpinLock::new(actions),
             default_restorer,
-            children: SpinLock::new(Vec::new()),
+            children: RawSpinLock::new(Vec::new()),
             possibly_has_signal: AtomicBool::new(false),
         }
     }
@@ -81,7 +81,7 @@ impl ProcessSignalManager {
     /// table. The slot lock is held only for the duration of the clone, so
     /// callers can freely lock the returned inner mutex without blocking
     /// concurrent `execve` swap.
-    pub fn actions(&self) -> Arc<SpinLock<SignalActions>> {
+    pub fn actions(&self) -> Arc<RawSpinLock<SignalActions>> {
         self.actions_slot.lock_irqsave().clone()
     }
 
@@ -274,7 +274,7 @@ impl ProcessSignalManager {
                 *action = SignalAction::default();
             }
         }
-        let replacement = Arc::new(SpinLock::new(new_actions));
+        let replacement = Arc::new(RawSpinLock::new(new_actions));
         let previous = core::mem::replace(&mut *self.actions_slot.lock_irqsave(), replacement);
         // The old Arc may own the final allocation reference.
         drop(previous);
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn blocked_process_signal_wakes_the_matching_sigwait_future() {
-        let actions = Arc::new(SpinLock::new(SignalActions::default()));
+        let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
         let process = Arc::new(ProcessSignalManager::new(actions, 0));
         let mut blocked = SignalSet::default();
         blocked.add(Signo::SIGCHLD);
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn process_signal_prepares_and_releases_targets_outside_action_lock() {
-        let actions = Arc::new(SpinLock::new(SignalActions::default()));
+        let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
         let process = Arc::new(ProcessSignalManager::new(Arc::clone(&actions), 0));
         let thread = ThreadSignalManager::new(1, Arc::clone(&process));
         let retired = ThreadSignalManager::new(2, Arc::clone(&process));

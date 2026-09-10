@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn adjusted_cpu_time_matches_linux_monotonic_runtime_contract() {
-        let high_water = SpinLock::new(CpuTimeHighWater::ZERO);
+        let high_water = RawSpinLock::new(CpuTimeHighWater::ZERO);
 
         assert_eq!(
             adjust_cpu_time(0, 0, 10, &high_water),

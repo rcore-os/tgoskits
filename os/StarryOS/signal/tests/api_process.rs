@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ax_runtime::task::sync::SpinLock;
+use ax_runtime::task::sync::RawSpinLock;
 use starry_signal::{
     SignalActionFlags, SignalDisposition, SignalInfo, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
@@ -12,7 +12,7 @@ struct TestEnv {
 
 impl TestEnv {
     fn new() -> Self {
-        let actions = Arc::new(SpinLock::new(SignalActions::default()));
+        let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
         let proc = Arc::new(ProcessSignalManager::new(actions, 0));
         TestEnv { proc }
     }

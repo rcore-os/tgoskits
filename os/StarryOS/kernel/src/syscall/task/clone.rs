@@ -17,7 +17,7 @@ use crate::{
     StarryError, StarryResult,
     file::{FD_TABLE, PidFd, PreparedFileDescriptor, prepare_file_like},
     mm::{MmHandle, VmMutPtr, copy_from_kernel},
-    sync::SpinLock,
+    sync::RawSpinLock,
     task::{
         PidIdentity, PidReservation, PidReservationKind, ProcessData, ProcessDataInit,
         ProcessImage, Tgid, Thread, Tid, TidNumber, UserThreadInitialSchedulerState, new_user_task,
@@ -418,9 +418,9 @@ impl CloneArgs {
             let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
                 old_proc_data.signal.actions()
             } else if flags.contains(CloneFlags::CLEAR_SIGHAND) {
-                Arc::new(SpinLock::new(Default::default()))
+                Arc::new(RawSpinLock::new(Default::default()))
             } else {
-                Arc::new(SpinLock::new(
+                Arc::new(RawSpinLock::new(
                     old_proc_data.signal.actions().lock_irqsave().clone(),
                 ))
             };

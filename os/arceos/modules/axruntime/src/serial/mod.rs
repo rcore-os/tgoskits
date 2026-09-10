@@ -39,7 +39,7 @@ use crate::{
     irq::FixedIrqWorkerSignal,
     task::{
         sched::{CpuId, CpuSet, FairMode, Nice, SchedulePolicy},
-        sync::{Mutex, SpinLock, WaitQueue},
+        sync::{Mutex, RawSpinLock, WaitQueue},
     },
 };
 
@@ -216,13 +216,13 @@ struct RuntimeShared {
     info: SerialDeviceInfo,
     owner_cpu: usize,
     polling: bool,
-    port: SpinLock<Box<dyn rdif_serial::UartPort>>,
+    port: RawSpinLock<Box<dyn rdif_serial::UartPort>>,
     register_gate: Arc<rdif_serial::UartRegisterGate<dyn rdif_serial::UartEmergencyTx>>,
     ingress: TxIngress,
     log_mailbox: Arc<LogMailbox>,
-    rx_subscription: SpinLock<Option<SpscConsumer<RxItem>>>,
-    log_subscription: SpinLock<Option<SpscConsumer<LogRecord>>>,
-    log_subscription_gate: SpinLock<()>,
+    rx_subscription: RawSpinLock<Option<SpscConsumer<RxItem>>>,
+    log_subscription: RawSpinLock<Option<SpscConsumer<LogRecord>>>,
+    log_subscription_gate: RawSpinLock<()>,
     log_subscription_active: AtomicBool,
     log_subscription_dropped_records: AtomicUsize,
     log_subscription_dropped_bytes: AtomicUsize,
@@ -371,7 +371,7 @@ impl SerialRuntimeHandle {
             .log_subscription_active
             .store(true, Ordering::Release);
         Some(SerialLogSubscription {
-            consumer: SpinLock::new(Some(consumer)),
+            consumer: RawSpinLock::new(Some(consumer)),
             shared: self.shared.clone(),
         })
     }
@@ -603,7 +603,7 @@ pub struct SerialRxSubscription {
 
 /// Internal complete-record consumer re-exported through `ax_runtime::console`.
 pub(crate) struct SerialLogSubscription {
-    consumer: SpinLock<Option<SpscConsumer<LogRecord>>>,
+    consumer: RawSpinLock<Option<SpscConsumer<LogRecord>>>,
     shared: Arc<RuntimeShared>,
 }
 
@@ -902,13 +902,13 @@ fn build_runtime(
         info,
         owner_cpu: primary_cpu,
         polling,
-        port: SpinLock::new(port),
+        port: RawSpinLock::new(port),
         register_gate: register_gate.clone(),
         ingress: TxIngress::new(),
         log_mailbox,
-        rx_subscription: SpinLock::new(Some(rx_output_consumer)),
-        log_subscription: SpinLock::new(Some(log_subscription_consumer)),
-        log_subscription_gate: SpinLock::new(()),
+        rx_subscription: RawSpinLock::new(Some(rx_output_consumer)),
+        log_subscription: RawSpinLock::new(Some(log_subscription_consumer)),
+        log_subscription_gate: RawSpinLock::new(()),
         log_subscription_active: AtomicBool::new(false),
         log_subscription_dropped_records: AtomicUsize::new(0),
         log_subscription_dropped_bytes: AtomicUsize::new(0),
