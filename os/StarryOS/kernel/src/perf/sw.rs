@@ -45,6 +45,27 @@ static SYSTEM_CONTEXTS: LazyInit<Vec<Mutex<()>>> = LazyInit::new();
 pub(crate) struct SwTaskContext {
     counters: Vec<Arc<SwPerTaskCounter>>,
     running_cpu: Option<usize>,
+    closed: bool,
+}
+
+impl SwTaskContext {
+    fn attach(&mut self, counter: Arc<SwPerTaskCounter>) -> StarryResult<()> {
+        if self.closed {
+            return Err(StarryError::NoSuchProcess);
+        }
+        self.counters
+            .retain(|counter| !counter.state.dead.load(Ordering::Acquire));
+        counter.arm_on(now_ns(), self.running_cpu);
+        self.counters.push(counter);
+        Ok(())
+    }
+
+    fn close(&mut self) {
+        self.closed = true;
+        for counter in &self.counters {
+            counter.retire();
+        }
+    }
 }
 
 #[inline]
@@ -252,7 +273,6 @@ impl SwPerTaskCounter {
         enabled: bool,
         enable_on_exec: bool,
     ) -> Self {
-        let now = now_ns();
         Self {
             state,
             context,
@@ -261,7 +281,7 @@ impl SwPerTaskCounter {
             enabled: AtomicBool::new(enabled),
             enable_on_exec: AtomicBool::new(enable_on_exec),
             retired: AtomicBool::new(false),
-            enabled_since_ns: AtomicU64::new(if enabled { now } else { 0 }),
+            enabled_since_ns: AtomicU64::new(0),
             run_since_ns: AtomicU64::new(0),
             group_leader: IrqMutex::new(None),
             group_members: IrqMutex::new(Vec::new()),
@@ -302,8 +322,15 @@ impl SwPerTaskCounter {
         if !self.retired.load(Ordering::Acquire)
             && !self.state.dead.load(Ordering::Acquire)
             && self.is_effectively_enabled()
-            && self.accepts_cpu(cpu)
         {
+            // Task time_enabled uses the active task context, not wall time.
+            // A CPU filter limits running time, but not this context clock.
+            let _ =
+                self.enabled_since_ns
+                    .compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire);
+            if !self.accepts_cpu(cpu) {
+                return;
+            }
             let _ = self
                 .run_since_ns
                 .compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire);
@@ -321,7 +348,6 @@ impl SwPerTaskCounter {
     fn enable_at(&self, now: u64, cpu: Option<usize>) -> bool {
         if !self.enabled.swap(true, Ordering::AcqRel) {
             if self.is_effectively_enabled() {
-                self.enabled_since_ns.store(now, Ordering::Release);
                 self.arm_on(now, cpu);
             }
             true
@@ -361,9 +387,6 @@ impl SwPerTaskCounter {
             && !self.state.dead.load(Ordering::Acquire)
             && self.is_effectively_enabled()
         {
-            let _ =
-                self.enabled_since_ns
-                    .compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire);
             self.arm_on(now, cpu);
         }
     }
@@ -831,19 +854,19 @@ impl Pollable for SwPerfEvent {
 /// Initializes the CPU-wide registry before userspace can open perf events.
 pub fn initialize() {
     SYSTEM_CONTEXTS.init_once(
-        (0..ax_runtime::hal::cpu_num()).map(|_| Mutex::new(())).collect(),
+        (0..ax_runtime::hal::cpu_num())
+            .map(|_| Mutex::new(()))
+            .collect(),
     );
     SYSTEM_COUNTERS.init_once(IrqMutex::new(Vec::new()));
 }
 
-fn attach_task(thread: &Thread, counter: Arc<SwPerTaskCounter>) {
+fn attach_task(thread: &Thread, counter: Arc<SwPerTaskCounter>) -> StarryResult<()> {
     counter.state.bindings.lock().push(Arc::downgrade(&counter));
     let mut context = thread.perf_sw_counters.lock();
-    context
-        .counters
-        .retain(|counter| !counter.state.dead.load(Ordering::Acquire));
-    counter.arm_on(now_ns(), context.running_cpu);
-    context.counters.push(counter);
+    context.attach(counter)?;
+    PERF_SW_ACTIVE.fetch_add(1, Ordering::AcqRel);
+    Ok(())
 }
 
 fn attach_system(counter: Arc<SwSystemCounter>) {
@@ -882,8 +905,7 @@ pub fn perf_event_open_sw(
                 enabled,
                 attr.enable_on_exec() != 0,
             ));
-            PERF_SW_ACTIVE.fetch_add(1, Ordering::AcqRel);
-            attach_task(thread, counter.clone());
+            attach_task(thread, counter.clone())?;
             SwTargetCounter::Task(counter)
         }
         AuthorizedPerfTarget::Cpu(cpu) => {
@@ -960,6 +982,7 @@ pub fn sched_out(thread: &Thread) {
                 counter.state.count.fetch_add(1, Ordering::Relaxed);
             }
             counter.close_slice(now);
+            counter.close_enabled_window(now);
         }
     }
     drop(context);
@@ -1068,18 +1091,39 @@ pub fn on_clone_inherit(parent: &Thread, child: &Thread) {
 /// Folds an exiting task's last running/enabled windows while leaving the
 /// aggregate readable through an fd that outlives the task.
 pub fn on_task_exit(thread: &Thread) {
-    if PERF_SW_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
-    let counters = thread.perf_sw_counters.lock();
-    for counter in counters.counters.iter() {
-        counter.retire();
-    }
+    // Tombstone even an empty context: an opener may already hold the target
+    // identity without having published the first software event yet.
+    thread.perf_sw_counters.lock().close();
 }
 
 #[cfg(all(test, axtest))]
 mod tests {
     use super::*;
+
+    #[axtest::axtest]
+    fn closed_software_context_rejects_late_installation() {
+        let context = Arc::new(IrqMutex::new(SwTaskContext::default()));
+        // Exercise the actual exit/installation state boundary, including an
+        // exit with no events. No task, scheduler, or IRQ runtime is replaced.
+        context.lock().close();
+        // SAFETY: perf_event_attr contains only integer fields and unions.
+        let attr = unsafe { core::mem::zeroed() };
+        let counter = Arc::new(SwPerTaskCounter::new(
+            Arc::new(SwEventState::new(SwId::TaskClock, &attr)),
+            Arc::downgrade(&context),
+            PidIdentityId::try_from(1).unwrap(),
+            None,
+            true,
+            false,
+        ));
+        assert!(
+            matches!(
+                context.lock().attach(counter),
+                Err(StarryError::NoSuchProcess)
+            ),
+            "an event resolved before exit must not install after context closure"
+        );
+    }
 
     #[axtest::axtest]
     fn group_disable_cannot_split_group_enable() {
@@ -1088,6 +1132,7 @@ mod tests {
             sync::WaitQueue,
             thread::current::current_thread_handle,
         };
+
         use super::super::{PerfContextKey, PerfEvent, target::PerfCpuId};
 
         if SYSTEM_COUNTERS.get().is_none() {
@@ -1100,15 +1145,26 @@ mod tests {
             let state = Arc::new(SwEventState::new(SwId::CpuClock, &attr));
             let counter = Arc::new(SwSystemCounter::new(Arc::clone(&state), 0, false));
             PERF_SW_ACTIVE.fetch_add(1, Ordering::AcqRel);
-            PerfEvent::new(alloc::boxed::Box::new(SwPerfEvent {
-                state, target: SwTargetCounter::Cpu(counter),
-            }), Some(PerfContextKey::Cpu(PerfCpuId::new(0))), false, false).unwrap()
+            PerfEvent::new(
+                alloc::boxed::Box::new(SwPerfEvent {
+                    state,
+                    target: SwTargetCounter::Cpu(counter),
+                }),
+                Some(PerfContextKey::Cpu(PerfCpuId::new(0))),
+                false,
+                false,
+            )
+            .unwrap()
         };
         let leader = Arc::new(make_event());
         let mut member = make_event();
         member.transaction = Arc::clone(&leader.transaction);
         let member = Arc::new(member);
-        member.event.lock().link_group(&mut **leader.event.lock()).unwrap();
+        member
+            .event
+            .lock()
+            .link_group(&mut **leader.event.lock())
+            .unwrap();
         *member.group_leader.lock() = Some(Arc::downgrade(&leader));
         leader.members.lock().push(Arc::downgrade(&member));
 
@@ -1124,29 +1180,41 @@ mod tests {
         let old_affinity = current.affinity().unwrap();
         let old_policy = current.base_policy();
         current.set_affinity_and_wait(cpu0.clone()).unwrap();
-        current.set_policy(SchedulePolicy::fifo(RtPriority::new(20).unwrap())).unwrap();
+        current
+            .set_policy(SchedulePolicy::fifo(RtPriority::new(20).unwrap()))
+            .unwrap();
         let publisher = {
             let leader = Arc::clone(&leader);
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
             let gate = Arc::clone(&gate);
-            crate::task::spawn_kernel_thread_with_affinity(move || {
-                leader.control_group_observed(Some(true), || {
-                    entered.store(true, Ordering::Release);
-                    gate.notify_all();
-                    gate.wait_until(|| release.load(Ordering::Acquire));
-                }).unwrap();
-            }, "perf-group-enable".into(), cpu1)
+            crate::task::spawn_kernel_thread_with_affinity(
+                move || {
+                    leader
+                        .control_group_observed(Some(true), || {
+                            entered.store(true, Ordering::Release);
+                            gate.notify_all();
+                            gate.wait_until(|| release.load(Ordering::Acquire));
+                        })
+                        .unwrap();
+                },
+                "perf-group-enable".into(),
+                cpu1,
+            )
         };
         gate.wait_until(|| entered.load(Ordering::Acquire));
         let disabler = {
             let member = Arc::clone(&member);
             let done = Arc::clone(&done);
-            crate::task::spawn_kernel_thread_with_policy_and_affinity(move || {
-                member.control_group(Some(false)).unwrap();
-                done.store(true, Ordering::Release);
-            }, "perf-group-disable".into(),
-            SchedulePolicy::fifo(RtPriority::new(30).unwrap()), cpu0)
+            crate::task::spawn_kernel_thread_with_policy_and_affinity(
+                move || {
+                    member.control_group(Some(false)).unwrap();
+                    done.store(true, Ordering::Release);
+                },
+                "perf-group-disable".into(),
+                SchedulePolicy::fifo(RtPriority::new(30).unwrap()),
+                cpu0,
+            )
         };
         crate::task::yield_now();
         let premature = done.load(Ordering::Acquire);
@@ -1159,7 +1227,10 @@ mod tests {
         assert!(!premature, "GROUP DISABLE split an unfinished GROUP ENABLE");
         for event in [leader, member] {
             let stopped = event.read_values().unwrap();
-            assert_eq!(event.read_values().unwrap().time_enabled, stopped.time_enabled);
+            assert_eq!(
+                event.read_values().unwrap().time_enabled,
+                stopped.time_enabled
+            );
         }
     }
 
@@ -1178,10 +1249,14 @@ mod tests {
         let mut attr: perf_event_attr = unsafe { core::mem::zeroed() };
         attr.read_format = 3;
         let leader = Arc::new(SwSystemCounter::new(
-            Arc::new(SwEventState::new(SwId::CpuClock, &attr)), 0, true,
+            Arc::new(SwEventState::new(SwId::CpuClock, &attr)),
+            0,
+            true,
         ));
         let member = Arc::new(SwSystemCounter::new(
-            Arc::new(SwEventState::new(SwId::CpuClock, &attr)), 0, false,
+            Arc::new(SwEventState::new(SwId::CpuClock, &attr)),
+            0,
+            false,
         ));
         SwSystemCounter::link_group(&leader, &member).unwrap();
         let entered = Arc::new(AtomicBool::new(false));
@@ -1196,30 +1271,40 @@ mod tests {
         let old_affinity = current.affinity().unwrap();
         let old_policy = current.base_policy();
         current.set_affinity_and_wait(cpu0.clone()).unwrap();
-        current.set_policy(SchedulePolicy::fifo(RtPriority::new(20).unwrap())).unwrap();
+        current
+            .set_policy(SchedulePolicy::fifo(RtPriority::new(20).unwrap()))
+            .unwrap();
 
         let publisher = {
             let member = Arc::clone(&member);
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
             let gate = Arc::clone(&gate);
-            crate::task::spawn_kernel_thread_with_affinity(move || {
-                member.set_enabled_observed(|| {
-                    entered.store(true, Ordering::Release);
-                    gate.notify_all();
-                    gate.wait_until(|| release.load(Ordering::Acquire));
-                });
-            }, "perf-member-enable".into(), cpu1)
+            crate::task::spawn_kernel_thread_with_affinity(
+                move || {
+                    member.set_enabled_observed(|| {
+                        entered.store(true, Ordering::Release);
+                        gate.notify_all();
+                        gate.wait_until(|| release.load(Ordering::Acquire));
+                    });
+                },
+                "perf-member-enable".into(),
+                cpu1,
+            )
         };
         gate.wait_until(|| entered.load(Ordering::Acquire));
         let disabler = {
             let leader = Arc::clone(&leader);
             let done = Arc::clone(&done);
-            crate::task::spawn_kernel_thread_with_policy_and_affinity(move || {
-                leader.set_disabled();
-                done.store(true, Ordering::Release);
-            }, "perf-leader-disable".into(),
-            SchedulePolicy::fifo(RtPriority::new(30).unwrap()), cpu0)
+            crate::task::spawn_kernel_thread_with_policy_and_affinity(
+                move || {
+                    leader.set_disabled();
+                    done.store(true, Ordering::Release);
+                },
+                "perf-leader-disable".into(),
+                SchedulePolicy::fifo(RtPriority::new(30).unwrap()),
+                cpu0,
+            )
         };
         // The higher-priority same-CPU task must run until it either blocks on
         // the context transaction or incorrectly completes the disable.
@@ -1231,7 +1316,10 @@ mod tests {
         crate::task::join_kernel_thread(disabler);
         current.set_policy(old_policy).unwrap();
         current.set_affinity_and_wait(old_affinity).unwrap();
-        assert!(!premature, "leader disable passed an unfinished member enable");
+        assert!(
+            !premature,
+            "leader disable passed an unfinished member enable"
+        );
         assert_eq!(member.enabled_since_ns.load(Ordering::Acquire), 0);
         let stopped = member.snapshot();
         assert_eq!(member.snapshot().time_enabled, stopped.time_enabled);

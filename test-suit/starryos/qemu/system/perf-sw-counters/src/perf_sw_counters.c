@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -504,6 +505,39 @@ static int test_inherit_thread_includes_thread(void) {
     return failed ? -1 : 0;
 }
 
+static int test_stopped_task_clock(void) {
+    pid_t child = fork();
+    if (child < 0) return 1;
+    if (!child) {
+        raise(SIGSTOP);
+        cpu_work();
+        _exit(0);
+    }
+    int status;
+    if (waitpid(child, &status, WUNTRACED) != child || !WIFSTOPPED(status))
+        return 1;
+    struct perf_event_attr attr = {
+        .type = PERF_TYPE_SOFTWARE, .size = sizeof(attr),
+        .config = PERF_COUNT_SW_TASK_CLOCK, .read_format = 3,
+    };
+    int fd = (int)syscall(SYS_perf_event_open, &attr, child, -1, -1, 0ul);
+    if (fd < 0) return 1;
+    uint64_t stopped[3] = {0}, done[3] = {0};
+    int failed = read(fd, stopped, sizeof(stopped)) != sizeof(stopped) ||
+        stopped[0] != 0 || stopped[1] != 0 || stopped[2] != 0;
+    if (kill(child, SIGCONT) || waitpid(child, &status, 0) != child ||
+        !WIFEXITED(status) || WEXITSTATUS(status) ||
+        read(fd, done, sizeof(done)) != sizeof(done)) failed = 1;
+    /* Without multiplexing or a CPU filter, both context times are runtime. */
+    if (done[0] == 0 || done[1] != done[2] || done[0] != done[2]) failed = 1;
+    printf("stopped-task-clock stopped=%llu/%llu/%llu done=%llu/%llu/%llu failed=%d\n",
+           (unsigned long long)stopped[0], (unsigned long long)stopped[1],
+           (unsigned long long)stopped[2], (unsigned long long)done[0],
+           (unsigned long long)done[1], (unsigned long long)done[2], failed);
+    close(fd);
+    return failed;
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--child-work") == 0) {
         workload();
@@ -570,6 +604,7 @@ int main(int argc, char **argv) {
     int review_failures = test_inherited_control();
     review_failures += test_fault_mode_filter();
     review_failures += test_remote_clock_enable();
+    review_failures += test_stopped_task_clock();
     review_failures += test_inherited_live_clock(PERF_COUNT_SW_TASK_CLOCK, 0);
     review_failures += test_inherited_live_clock(PERF_COUNT_SW_CPU_CLOCK, 0);
     review_failures += test_inherited_live_clock(PERF_COUNT_SW_TASK_CLOCK, 1);
