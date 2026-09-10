@@ -515,8 +515,36 @@ Axvisor 调用既有 reusable matrix 时改为 `fail_fast: false`，保留每个
 
 本轮两包增量 std 与 Starry 定向 clippy 四架构 92/92 已通过，日志 `/tmp/pr2357-seccomp-nnp-{std,clippy}.log`。
 
-独立源码核验还确认一个尚未修复的发布竞争：clone 在 `Thread::new` 后复制父线程安全状态，随后才执行 PID 发布与 `Process::add_thread`；TSYNC 的线程集合快照与这些操作没有共同锁。Linux `copy_process` 在共同 sighand 锁下执行最后一次 `copy_seccomp` 并加入线程组。NNP 传播修复不关闭这个旧过滤器逃逸窗口，后续必须统一“最后继承→发布”和 TSYNC 的串行边界；不能以对端标志回归通过替代它。
+此阶段的独立源码核验还确认一个发布竞争（后续修复见第 5.27 节）：clone 在 `Thread::new` 后复制父线程安全状态，随后才执行 PID 发布与 `Process::add_thread`；TSYNC 的线程集合快照与这些操作没有共同锁。Linux `copy_process` 在共同 sighand 锁下执行最后一次 `copy_seccomp` 并加入线程组。NNP 传播修复不关闭这个旧过滤器逃逸窗口，后续必须统一“最后继承→发布”和 TSYNC 的串行边界；不能以对端标志回归通过替代它。
 
 TSYNC 新断言最终四架构均通过，日志 `/tmp/pr2357-seccomp-nnp-{green,riscv64,aarch64,loongarch64}.log`。
 
 `32820bc112` 的 OrangePi 作业 `102879230767` 再次在 native-hardware-smoke 超时。新日志明确记录 `rknn_yolov8_demo`、`yolov8.sh` 和输出文件的 `cat` 均以 0 退出，随后启动另一个命令但未完成整个 shell 检查。不能将这一失败定位为 MemDestroy 或 NPU 未完成；根因仍需后续命令与终端/等待状态证据，日志 `/tmp/pr2357-328-orangepi-failure.log`。
+
+
+### 5.27 安全状态的最终继承
+
+Linux `copy_seccomp` 在共同 `sighand->siglock` 下重新读取父线程过滤器、NNP 与 syscall-work，并由 `copy_process` 持锁完成线程组插入。Starry 现在在 `ProcessPolicyState` 持有任务上下文 PI mutex：`sys_seccomp` 的 strict/filter 安装及 TSYNC 与 `publish_clone_security` 共用此锁。clone 在资源准备、stage 以及可回滚的 cgroup/拓扑准备完成后，才调用 `Thread::inherit_security` 并发布 PID、附接任务和加入线程组；解锁后才安装已预留 pidfd、通知和首次 activate。
+
+这条边界保证 TSYNC 先完成时 clone 继承新状态，clone 先发布时 TSYNC 的成员扫描包含子线程。锁顺序为进程安全更新锁、每线程快照存储锁（复制后释放）、PID 发布锁及线程组成员锁。新锁只用于可睡眠任务上下文，不模拟 raw rq 锁，也不改变 IRQ、迁移或调度交接。非 `CLONE_THREAD` 的孩子拥有独立进程锁，但最终快照仍在父进程锁下取得；单独共享 sighand 的另一进程不属于 TSYNC 线程组。
+
+`SeccompStateStore::inherit` 在发布指针前执行可失败的 `try_reserve`。失败返回 ENOMEM，原快照、NNP 和 syscall-work 均不改变，发布回调不执行；外层既有创建令牌和身份事务撤销资源。成功后 immutable snapshot 仍保留到 Thread 析构，延续现有读者保护，不把 Arc 计数解释为 RCU 宽限期。这里没有改变普通 filter 更新的分配策略。
+
+exec 的身份转交发生在同组其他线程退出后；退出请求只在 syscall 返回用户态前处理，已经开始的同步 TSYNC 会先完成。因此这次不在 exec 兄弟退出等待外增加安全更新锁，避免持锁等待正在取得同一锁的兄弟。该论证仅覆盖本次线程组更新与身份转交，不表示全部 exec 凭据语义已经核验。
+
+真实 kernel axtest `clone_publication_refreshes_security_after_preparation` 在准备后更新父线程 BPF filter 与 NNP，验证发布时继承最新同一快照及 syscall-work；同时注入最终继承的分配失败，验证 ENOMEM 和未调用发布回调。最初旧继承顺序的确定性失败为 `clone published stale no_new_privs`，日志 `/tmp/pr2357-clone-security-red.log`。本节补充测试、四架构系统调用及静态检查结果在运行完成后记录；目前不将源码证明写成四架构系统级通过。
+
+
+补充分配次序回归将发布故意提前后，稳定失败于 `failed security inheritance must not publish a child`；恢复后同一用例和整个 x86_64 kernel axtest 183 项通过。日志 `/tmp/pr2357-clone-security-final-{red,green}.log`。增量 std 两包通过，日志 `/tmp/pr2357-clone-security-std.log`。尚未完成本版本的四架构用户态并发回归和定向 clippy。
+
+以下表项限定为新增的最终继承/同步边界；尚无直接 syscall 交错回归的入口使用“无法确认”，不能由 kernel 状态回归推导为完整 Linux 兼容。X/G 编号约定沿用第 4 节。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| clone / X56、G220 | [固定 copy_seccomp](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1752) | 发布前最终继承父线程安全状态，失败不发布 | `sys_clone → CloneArgs::do_clone_in_cgroup → publish_clone_security → Thread`，父进程更新锁 | 无法确认 | x86 kernel 状态及失败次序红绿；直接 syscall 交错待验证 |
+| clone3 / X435、G435 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 参数处理后进入共同复制、发布协议 | `sys_clone3 → CloneArgs::do_clone_in_cgroup → publish_clone_security` | 无法确认 | 共用核心回归，clone3 直接交错待验证 |
+| fork / X57 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 新进程在可执行前继承过滤器 | `sys_fork → sys_clone → publish_clone_security` | 无法确认 | 直接用户态继承回归待复测 |
+| vfork / X58 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 完成继承并激活后父线程才等待孩子 | `sys_vfork → sys_clone → publish_clone_security`，等待在锁外 | 无法确认 | 本版本直接 vfork 回归待复测 |
+| seccomp(filter/TSYNC) / X317、G277 | [固定 seccomp_attach_filter](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | 同步更新与新线程最终复制/成员插入互斥 | `sys_seccomp → append_seccomp_filter → sync_seccomp_to_thread_group`，同一进程更新锁 | 无法确认 | kernel 晚期更新回归通过，直接并发 syscall 交错待验证 |
+| seccomp(strict) / X317、G277 | [固定 seccomp_set_mode_strict](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | 参数检查后提交当前线程模式 | `sys_seccomp → install_seccomp_strict`，取得同一更新锁 | 无法确认 | 原 strict 用例待复测 |
+| prctl(SET_SECCOMP) / X157、G167 | [固定 prctl_set_seccomp](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | legacy 入口复用模式安装，不支持 TSYNC 参数 | `sys_prctl → sys_seccomp(flags=0)` | 无法确认 | 原 prctl seccomp 用例待复测 |

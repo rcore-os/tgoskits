@@ -84,6 +84,7 @@ impl ResourceLimitUpdate<'_> {
 
 pub(super) struct ProcessPolicyState {
     rlimits: ProcessResourceLimits,
+    seccomp_update: Mutex<()>,
     umask: AtomicU32,
     dumpable: AtomicI32,
     personality: AtomicUsize,
@@ -93,6 +94,7 @@ impl ProcessPolicyState {
     pub(super) fn new() -> Self {
         Self {
             rlimits: ProcessResourceLimits::new(),
+            seccomp_update: Mutex::new(()),
             umask: AtomicU32::new(0o022),
             dumpable: AtomicI32::new(1),
             personality: AtomicUsize::new(0),
@@ -109,6 +111,15 @@ impl ProcessPolicyState {
 }
 
 impl ProcessData {
+    /// Serializes filter updates with the final clone inheritance/publication.
+    ///
+    /// Acquire before per-thread seccomp stores and thread membership locks.
+    /// This task-context gate may cover fallible snapshot reservation; it is
+    /// never held across scheduler activation or a userspace return.
+    pub(crate) fn seccomp_update(&self) -> MutexGuard<'_, ()> {
+        self.policy.seccomp_update.lock()
+    }
+
     pub fn rlimit(&self, resource: u32) -> Rlimit {
         self.policy.rlimit(resource)
     }

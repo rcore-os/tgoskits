@@ -849,6 +849,20 @@ impl Thread {
             .fetch_or(SYSCALL_WORK_SECCOMP, Ordering::Release);
     }
 
+    /// Copies the parent's final security state while its publication gate is held.
+    pub(crate) fn inherit_security(&self, parent: &Thread) -> crate::StarryResult<()> {
+        let state = parent.seccomp_state();
+        let active = state.is_active();
+        self.security.seccomp.inherit(state)?;
+        if parent.no_new_privs() {
+            self.set_no_new_privs();
+        }
+        if active {
+            self.publish_seccomp_syscall_work();
+        }
+        Ok(())
+    }
+
     /// Replaces inherited seccomp state.
     pub fn set_seccomp_state(&self, state: Arc<SeccompState>) {
         let active = state.is_active();

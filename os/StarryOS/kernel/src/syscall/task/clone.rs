@@ -505,10 +505,6 @@ impl CloneArgs {
             scope,
         )?;
         thr.set_nice(child_nice);
-        if curr_thread.no_new_privs() {
-            thr.set_no_new_privs();
-        }
-        thr.set_seccomp_state(curr_thread.seccomp_state());
         if flags.contains(CloneFlags::CHILD_CLEARTID) {
             thr.set_clear_child_tid(child_tid);
         }
@@ -567,15 +563,20 @@ impl CloneArgs {
             .map(|prepared| prepared.publish().ok_or(StarryError::WouldBlock))
             .transpose()?;
 
-        // PID publication is the final fallible visibility edge.
-        let published_identity = reservation.publish()?;
-        debug_assert!(Arc::ptr_eq(&published_identity, &identity));
-        if let Some(published) = published_fork {
-            let process = published.commit();
-            debug_assert!(Arc::ptr_eq(&process, &new_proc_data.proc));
-        }
-        staged_task.with_task(|task| task.as_thread().attach_pid_task(task));
-        new_proc_data.proc.add_thread(root_tid);
+        staged_task.with_task(|task| {
+            publish_clone_security(curr_thread, task.as_thread(), || {
+                // PID publication is the final fallible visibility edge.
+                let published_identity = reservation.publish()?;
+                debug_assert!(Arc::ptr_eq(&published_identity, &identity));
+                if let Some(published) = published_fork {
+                    let process = published.commit();
+                    debug_assert!(Arc::ptr_eq(&process, &new_proc_data.proc));
+                }
+                task.as_thread().attach_pid_task(task);
+                new_proc_data.proc.add_thread(root_tid);
+                Ok(())
+            })
+        })?;
         if let Some(pidfd) = prepared_pidfd.take() {
             pidfd.install();
         }
@@ -648,6 +649,19 @@ impl CloneArgs {
 
         Ok(parent_visible_tid.get() as _)
     }
+}
+
+fn publish_clone_security(
+    parent: &Thread,
+    child: &Thread,
+    publish: impl FnOnce() -> StarryResult<()>,
+) -> StarryResult<()> {
+    // Linux copy_seccomp and TSYNC hold a common lock through thread-group
+    // insertion. Refresh only after private preparation, while TASK_NEW cannot
+    // execute; TSYNC either precedes this snapshot or includes the published child.
+    let _update = parent.proc_data.seccomp_update();
+    child.inherit_security(parent)?;
+    publish()
 }
 
 fn map_task_creation_error(error: ax_std::os::arceos::task::thread::TaskError) -> StarryError {
@@ -751,6 +765,66 @@ mod axtests {
 
     use super::CloneTransaction;
     use crate::task::{PidReservation, PidReservationKind, Tgid, Tid};
+
+    #[axtest::axtest]
+    fn clone_publication_refreshes_security_after_preparation() {
+        use crate::task::{ROOT_PID_NS, Thread};
+        let make_thread = || {
+            let reservation =
+                PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader).unwrap();
+            let identity = reservation.identity();
+            let tid = identity.acquire_role::<Tid>().unwrap();
+            let tgid = identity.acquire_role::<Tgid>().unwrap();
+            let process = crate::task::new_test_process_data(identity.clone(), tgid);
+            let thread = Thread::new(
+                identity,
+                tid,
+                process,
+                None,
+                Default::default(),
+                scope_local::Scope::new(),
+            )
+            .unwrap();
+            (reservation, thread)
+        };
+        let (_parent_reservation, parent) = make_thread();
+        let (_child_reservation, child) = make_thread();
+        child.set_seccomp_state(parent.seccomp_state());
+        // A completed TSYNC may update the parent while clone is preparing
+        // private execution resources and the child is absent from its scan.
+        parent.set_no_new_privs();
+        parent
+            .append_seccomp_filter(alloc::vec![crate::task::SockFilter {
+                code: 0x06, // BPF_RET | BPF_K
+                jt: 0,
+                jf: 0,
+                k: 0x7fff_0000, // SECCOMP_RET_ALLOW
+            }])
+            .unwrap();
+        let updated = parent.seccomp_state();
+        let original = child.seccomp_state();
+        let probe = ax_std::os::arceos::task::thread::ThreadAllocationProbe::fail_at(0).unwrap();
+        let failed = super::publish_clone_security(&parent, &child, || {
+            panic!("failed security inheritance must not publish a child")
+        });
+        let attempts = probe.attempts();
+        drop(probe);
+        assert_eq!(failed.unwrap_err().linux_errno(), syscalls::Errno::ENOMEM);
+        assert_eq!(attempts, 1);
+        assert!(Arc::ptr_eq(&original, &child.seccomp_state()));
+        assert!(!child.no_new_privs());
+        assert!(!child.has_seccomp_syscall_work());
+        super::publish_clone_security(&parent, &child, || {
+            assert!(child.no_new_privs(), "clone published stale no_new_privs");
+            assert!(
+                Arc::ptr_eq(&updated, &child.seccomp_state()),
+                "clone published a stale seccomp snapshot"
+            );
+            assert!(child.has_seccomp_syscall_work());
+            Ok(())
+        })
+        .unwrap();
+    }
 
     #[axtest::axtest]
     fn creation_errors_preserve_resource_domain() {

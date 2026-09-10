@@ -168,6 +168,19 @@ impl SeccompStateStore {
         }
     }
 
+    /// Reserves the child's inherited snapshot before publishing its identity.
+    pub(crate) fn inherit(&self, state: Arc<SeccompState>) -> StarryResult<()> {
+        let mut snapshots = self.snapshots.lock();
+        super::allocation::point()?;
+        snapshots
+            .try_reserve(1)
+            .map_err(|_| StarryError::NoMemory)?;
+        let current = Arc::as_ptr(&state).cast_mut();
+        snapshots.push(state);
+        self.current.store(current, Ordering::Release);
+        Ok(())
+    }
+
     pub(crate) fn replace(&self, state: Arc<SeccompState>) {
         let mut snapshots = self.snapshots.lock();
         let current = Arc::as_ptr(&state).cast_mut();
