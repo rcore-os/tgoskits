@@ -57,6 +57,8 @@ use anyhow::Context;
 use axum::Router;
 
 #[cfg(feature = "http-axum")]
+use crate::http::auth;
+#[cfg(feature = "http-axum")]
 use crate::http::manifest;
 #[cfg(feature = "http-axum")]
 use crate::http::vm;
@@ -93,6 +95,7 @@ pub fn router() -> Router {
 fn api_router() -> Router {
     Router::new()
         .route("/api/", get(manifest::get_manifest))
+        .route("/api/auth", get(auth::check))
         .route("/api/vms", get(vm::list_vms))
         .route("/api/vms/{id}", get(vm::vm_detail).delete(vm::vm_delete))
         .route("/api/vms/create", post(vm::vm_create))

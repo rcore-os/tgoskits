@@ -18,9 +18,16 @@ const PROTO: u32 = 1;
 ///
 /// Read-only and unauthenticated like every other GET route; mutating routes
 /// are the ones gated by the build-time bearer token (see [`crate::http::auth`]).
+/// The `auth` node tells a client where to check a token before relying on it,
+/// so the check path is a declared part of the contract rather than something
+/// each client hard-codes.
 pub async fn get_manifest() -> Json<Value> {
     Json(json!({
         "proto": PROTO,
+        "auth": {
+            "href": "/api/auth",
+            "scheme": "bearer",
+        },
         "resources": [{
             "kind": "vms",
             "title": "虚拟机",

@@ -15,12 +15,14 @@
 //! them off the management network unless an operator explicitly opts in.
 
 use axum::{
+    Json,
     extract::FromRequestParts,
     http::{
         StatusCode,
         header::{AUTHORIZATION, HeaderValue},
     },
 };
+use serde_json::{Value, json};
 
 /// A request that carries a matching `Authorization: Bearer <token>` header.
 ///
@@ -28,6 +30,18 @@ use axum::{
 /// with `401 Unauthorized` when no token was baked into the image
 /// (`AXVM_HTTP_TOKEN` unset) or the header is missing / does not match.
 pub struct ApiToken;
+
+/// `GET /api/auth` — reports whether the caller's token is usable.
+///
+/// Discovery has to stay open (a client cannot read a capability list it is not
+/// yet authorized for), so a client that wants to *validate* a token before
+/// relying on it needs a route that does nothing but check it. Reaching this
+/// handler means the extractor already accepted the token, so the body only
+/// confirms it; the manifest points clients here (see
+/// [`crate::http::manifest`]) so no client hard-codes the path.
+pub async fn check(_token: ApiToken) -> Json<Value> {
+    Json(json!({ "ok": true }))
+}
 
 impl ApiToken {
     /// Whether the given header value carries the required bearer token.

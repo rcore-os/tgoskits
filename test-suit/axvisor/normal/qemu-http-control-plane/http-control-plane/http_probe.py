@@ -27,7 +27,8 @@ auth/error mapping, start/stop, pause/resume, and the destroy-then-recreate
 resource re-acquire regression — mirroring
 `os/axvisor/doc/http-control-plane-quickstart.md`:
 
-    GET    /api/               -> 200            (control-plane manifest; vms node)
+    GET    /api/               -> 200            (control-plane manifest; vms node + auth href)
+    GET    /api/auth           -> 401 | 200      (token probe: no token / valid token)
     GET    /api/vms            -> 200            (list; id=1 present)
     GET    /api/vms/1          -> 200 ready      (detail; id/name/cpu_num/vcpu_states/guest_entry_count)
     GET    /api/vms/not-an-id  -> 404            (non-numeric id)
@@ -411,6 +412,9 @@ def main():
         "verbs", []
     ):
         raise AssertionError("GET /api/ vms node verbs=%r" % (vms_node.get("verbs"),))
+    auth_node = body.get("auth")
+    if not isinstance(auth_node, dict) or auth_node.get("href") != "/api/auth":
+        raise AssertionError("GET /api/ did not declare the auth probe: %r" % (auth_node,))
 
     # 2. List: the default VM (id 1) is registered and `Ready`.
     status, body = request("GET", "/api/vms")
@@ -447,8 +451,16 @@ def main():
     status, _ = request("GET", "/api/vms/999")
     check("GET /api/vms/999", status, 404)
 
-    # 6-11. Auth: every mutating route rejects an unauthenticated write with
-    #        401, before any VM lookup or body parse.
+    # 6-11. Auth: the token probe answers for itself, and every mutating route
+    #        rejects an unauthenticated write with 401, before any VM lookup or
+    #        body parse.
+    status, _ = request("GET", "/api/auth")
+    check("GET /api/auth (no auth)", status, 401)
+    status, auth_body = request("GET", "/api/auth", token=TOKEN)
+    check("GET /api/auth", status, 200)
+    if auth_body != {"ok": True}:
+        raise AssertionError("GET /api/auth body=%r" % (auth_body,))
+
     status, _ = request("POST", "/api/vms/create")
     check("POST /api/vms/create (no auth)", status, 401)
     status, _ = request("POST", "/api/vms/1/start")
