@@ -403,3 +403,9 @@ x86_64 的同一名称回归红绿日志为 `/tmp/pr2357-starry-name-{red,green}
 `thread_state_creation_returns_allocation_failure` 先观察真实构造经过的分配边界，再逐个注入失败，检查 ENOMEM、尝试次数以及进程强所有权释放。测试使用真实 PID 预留与 ProcessData，不替换 TaskRuntime。原实现的确定性失败日志为 `/tmp/pr2357-thread-state-red.log`；首次修复后的 x86_64 kernel axtest 181 项通过，日志 `/tmp/pr2357-thread-state-green.log`。逐边界最终版本的多架构验证另行记录，不能以第一次单边界通过替代。
 
 最终逐边界版本的四架构 kernel axtest 全部通过：AArch64 182 项，其余各 181 项，日志 `/tmp/pr2357-thread-state-final-<arch>.log`。信号组件定向 clippy 通过，日志 `/tmp/pr2357-thread-signal-clippy.log`。组件的 `axtest` 条件显式加入 check-cfg，未降低告警等级；内核其余功能组合继续由 PR CI 检查。本节不将先前未覆盖的整个进程地址空间、文件表或命名空间复制分配算作已完成。
+
+### 5.18 创建错误的分类
+
+`map_task_creation_error` 原先把线程槽耗尽映射为 EFAULT，并把所有 RuntimeFailure 统一映射为 ENOMEM。现在 `ThreadCapacity` 返回 EAGAIN，只有 `RuntimeStatus::NoMemory` 返回 ENOMEM，其他运行时故障保留 BadState/EFAULT 分类。固定 Linux `copy_process` 在线程数量限制检查前设置 `retval = -EAGAIN`，与分配失败的 ENOMEM 明确分开。
+
+`creation_errors_preserve_resource_domain` 调用实际 clone 错误转换及最终 errno 边界：旧实现确定性返回 `[EFAULT, ENOMEM, ENOMEM]`，修复后同一输入得到 `[EAGAIN, ENOMEM, EFAULT]`。x86_64 kernel axtest 红绿日志为 `/tmp/pr2357-clone-errors-{red,green}.log`。这证明转换边界，未用其代替直接用户态线程上限或 OOM 故障注入的系统证明。

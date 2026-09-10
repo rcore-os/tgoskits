@@ -664,7 +664,13 @@ fn map_task_creation_error(error: ax_std::os::arceos::task::thread::TaskError) -
     use ax_std::os::arceos::task::thread::TaskError;
 
     match error {
-        TaskError::TimerCapacity | TaskError::RuntimeFailure(_) => StarryError::NoMemory,
+        TaskError::ThreadCapacity => StarryError::WouldBlock,
+        TaskError::TimerCapacity => StarryError::NoMemory,
+        TaskError::RuntimeFailure(status)
+            if status == ax_std::os::arceos::task::runtime::RuntimeStatus::NoMemory as u32 =>
+        {
+            StarryError::NoMemory
+        }
         TaskError::DeadlineAdmission | TaskError::ThreadBusy => StarryError::ResourceBusy,
         _ => StarryError::BadState,
     }
@@ -755,6 +761,22 @@ mod axtests {
 
     use super::CloneTransaction;
     use crate::task::{PidReservation, PidReservationKind, Tgid, Tid};
+
+    #[axtest::axtest]
+    fn creation_errors_preserve_resource_domain() {
+        use ax_std::os::arceos::task::{runtime::RuntimeStatus, thread::TaskError};
+        use syscalls::Errno;
+        let errors = [
+            TaskError::ThreadCapacity,
+            TaskError::RuntimeFailure(RuntimeStatus::NoMemory as u32),
+            TaskError::RuntimeFailure(RuntimeStatus::Platform as u32),
+        ];
+        assert_eq!(
+            errors.map(|error| super::map_task_creation_error(error).linux_errno()),
+            [Errno::EAGAIN, Errno::ENOMEM, Errno::EFAULT],
+            "clone must distinguish thread limits, OOM, and runtime faults"
+        );
+    }
 
     #[axtest::axtest]
     fn unpublished_process_rollback_releases_identity_and_topology() {
