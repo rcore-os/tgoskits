@@ -65,7 +65,7 @@ Linux 对照包括 `kernel/locking/spinlock_rt.c`、`rwbase_rt.c`、`rtmutex.c`�
 
 `StagedThread::activate` 在 IRQ/抢占保护下消费预留，只执行一次 `New` 到可运行状态的转换。身份发布后的正常路径没有可恢复错误；运行时未安装等违反契约的情况仍作为不变量失败。低层 `TaskSystem::start_thread` 复用同一准入协议，并拒绝绕过持有公共执行对象的创建令牌。
 
-取消先取走并释放预留，再执行 `mark_exited`，把未调用的入口闭包交给任务上下文退出回调释放。`ThreadExecution::finish` 在闭包析构结束后通知等待者；创建令牌不需要启动线程来完成清理。
+`PreparedThread/StagedThread::drop` 只将预分配的 `ThreadExecution::cancellation_node` 和一个强引用投递给现有 task-work inbox，不在硬中断或原子上下文取得登记表锁。reaper 的 `process_thread_cancellation` 先取走并在锁外释放预留，再执行私有 `mark_unqueued_exited`，把未调用的入口闭包交给任务上下文退出回调释放。并发调度控制仍忙时保留请求重试。公共 `mark_exited` 与 `start_thread` 都拒绝 managed 线程，避免绕过创建令牌的唯一所有权。`ThreadExecution::finish` 在闭包析构结束后通知等待者；创建令牌不需要启动线程来完成清理。
 
 ### 2.2 回收事务
 
@@ -76,6 +76,8 @@ Linux 对照包括 `kernel/locking/spinlock_rt.c`、`rwbase_rt.c`、`rtmutex.c`�
 这个租约只覆盖一次资源释放事务。普通 `ThreadHandle` 和 `ThreadExtensionBorrow` 保留的是任务对象与 OS 状态，不能通过它们访问已释放的执行上下文或栈。当前调用链没有远端栈读取 API，因此不引入没有消费者的栈引用类型；将来增加栈观察者时必须先加入独立栈保护，不能使用管理句柄代替。
 
 最终对象回收继续经过登记表锁、外部租约、generation 检查、调度活动关闭和回调 claim 协议。CPU 当前对象的裸指针借用由 IRQ/抢占 pin 与 on-CPU 所有权保护，inbox 裸指针由投递租约保护。这里的等价性依赖这些读者逐一退出，并非仅凭 `Arc::strong_count` 推断 Linux RCU 宽限期已经结束。敏感上下文丢弃最后一个管理引用只发布 reaper 工作，不直接调用可能取得睡眠锁的 OS 析构。
+
+取消队列的强引用保护节点所在的执行对象；`SchedulerInbox` 的 epoch grace 完成后才拆下节点并把引用交给消费者。`New` 登记记录和唯一创建令牌阻止提前回收；这条读者协议与强引用各负其责。`validate_task_work_context` 在直接 reap 和 task-work 消费者取得任何锁之前拒绝硬中断、IRQ/抢占保护、未结束的调度交接及 RT 锁临界区，防止睡眠析构绕过普通 join 的上下文检查。
 
 ### 2.3 完成交接
 
@@ -228,3 +230,9 @@ RT 锁与调用方静态检查覆盖 9 个软件包、215 个组合，全部通�
 定时器容量故障通过仅测试用的 `fault-injection` feature 注入到当前线程下一次 semaphore 定时器注册。遗漏 park 取消时，QEMU 触发 `0x5041_0003` invariant；修复后返回 `TimerCapacity` 且线程保持 `Running`。IRQ `up` 不克隆或销毁 wake handle：生产者保持抢占保护，在 raw 锁内发布 handoff 完成并释放队列引用，等待者观察完成后才能销毁自身登记。
 
 CPU 下线 pin 检查已覆盖 idle 提前返回，但当前 ArceOS 没有安全的完整下线/重新上线入口，没有真实热插拔竞争测试。Linux 隐含 RCU 读侧的对象保护采用第 2.2 节逐对象租约与锁借用；不宣称新增通用 RCU API。新一轮性能基线仅完成独立 `a22f81c016` 检出的测量，尚未形成当前分支对照，不能引用第 3.5 节旧结果评价本次 RT 锁开销。
+
+### 5.3 静态审查修复
+
+`wait_queue/lifecycle_review.rs` 对三项问题分别取得 x86_64 四核 QEMU 确定性失败：原子上下文取消同步变为 `Exited`、公共 `mark_exited` 成功消费 managed 退出权、直接回收未优先返回 `UnsafeContext`。同一断言在修复后通过，日志为 `/tmp/pr2357-review-{cancel,owner,reclaim}-red.log` 和 `/tmp/pr2357-review-green.log`。取消测试让真实 reaper 的退出回调等待协调线程，保证观察时消费者尚未处理取消请求，不依赖竞态概率。
+
+补充用例在真实硬定时器回调中取消 prepare/stage 令牌，包含不保留管理句柄的最后引用路径；同时检查 raw 锁、RT 锁及 IRQ 保护中的直接回收均被拒绝。最终四架构 `task-wait-queue` 通过，x86_64 `task-pi-mutex` 通过；定向 `cargo xtask clippy --package ax-task --package arceos-test-suit` 的 2 包、46 组合通过。全工作区 clippy 交由 PR CI。日志为 `/tmp/pr2357-review-final-{x86_64,riscv64,aarch64}.log`、`/tmp/pr2357-review-green-loongarch64.log`、`/tmp/pr2357-review-pi-green.log` 和 `/tmp/pr2357-review-clippy.log`。

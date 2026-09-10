@@ -6,12 +6,20 @@ use core::{
 };
 
 use crate::{
-    runtime::{context::runtime_task_system, lock::PreemptTicketLock, task_runtime},
+    runtime::{
+        context::runtime_task_system,
+        delivery::inbox::{InboxKind, InboxNode},
+        lock::PreemptTicketLock,
+        task_runtime,
+    },
     sync::WaitQueue,
     thread::{TaskError, ThreadHandle},
 };
 
 /// Owns a new task which has never entered a runqueue.
+///
+/// Drop queues cancellation for the task-context reaper, including in hard IRQ.
+/// Retain a thread handle and join it to observe cancellation completion.
 #[must_use = "prepare must be published or cancelled"]
 pub struct PreparedThread {
     handle: Option<ThreadHandle>,
@@ -51,6 +59,9 @@ impl Drop for PreparedThread {
 }
 
 /// Owns a reserved first activation, analogous to Linux's pre-wake TASK_NEW.
+///
+/// Drop queues cancellation; the reaper releases the reservation and entry.
+/// The task never becomes runnable when cancelled.
 #[must_use = "staged publication must be activated or cancelled"]
 pub struct StagedThread {
     handle: Option<ThreadHandle>,
@@ -76,17 +87,14 @@ impl StagedThread {
 }
 impl Drop for StagedThread {
     fn drop(&mut self) {
-        // Release the CPU/inbox reservation before asking the task reaper to retire it.
         if let Some(handle) = self.handle.take() {
-            runtime_task_system()
-                .expect("staged system remains installed")
-                .cancel_staged_thread(&handle);
             cancel_new_thread(handle);
         }
     }
 }
 
 pub(crate) struct ThreadExecution {
+    pub(crate) cancellation_node: InboxNode,
     entry: PreemptTicketLock<Option<Box<dyn FnOnce() + Send + 'static>>>,
     completion: WaitQueue,
     completed: AtomicBool,
@@ -103,6 +111,7 @@ impl fmt::Debug for ThreadExecution {
 impl ThreadExecution {
     pub(crate) fn new(entry: Box<dyn FnOnce() + Send + 'static>, name: String) -> Self {
         Self {
+            cancellation_node: InboxNode::new(InboxKind::Reclaim),
             entry: PreemptTicketLock::new(Some(entry)),
             completion: WaitQueue::new(),
             completed: AtomicBool::new(false),
@@ -202,9 +211,7 @@ pub(crate) unsafe extern "C" fn thread_entry() -> ! {
 
 fn cancel_new_thread(handle: ThreadHandle) {
     let system = runtime_task_system().expect("prepared task system remains installed");
-    system
-        .mark_exited(handle.id())
-        .expect("unactivated task cancellation must succeed");
+    system.publish_thread_cancellation(&handle.core);
     drop(handle);
 }
 

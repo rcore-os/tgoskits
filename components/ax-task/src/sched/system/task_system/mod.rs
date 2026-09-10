@@ -1,6 +1,7 @@
 //! Generation-checked registry and scheduling orchestration.
 
 mod balance;
+mod cancellation;
 mod cpu_lifecycle;
 mod deadline;
 mod deferred_work;
@@ -323,6 +324,7 @@ impl TaskSystem {
             }),
             root_domain,
             deferred_coroutine_reclaims: SchedulerInbox::new(InboxKind::Reclaim),
+            deferred_thread_cancellations: SchedulerInbox::new(InboxKind::Reclaim),
             deferred_deadline_callbacks: SchedulerInbox::new(InboxKind::TaskWork),
             deferred_scheduler_ticks: SchedulerInbox::new(InboxKind::TaskWork),
             task_work,

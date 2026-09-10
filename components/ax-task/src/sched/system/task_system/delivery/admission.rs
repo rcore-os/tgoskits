@@ -85,18 +85,6 @@ impl TaskSystem {
         Ok(())
     }
 
-    /// Cancels the reserved CPU/inbox lease before retiring an unactivated task.
-    pub(crate) fn cancel_staged_thread(&self, handle: &ThreadHandle) {
-        let delivery = self
-            .state
-            .lock()
-            .thread_record_mut(handle.id())
-            .expect("staged task remains registered")
-            .activation
-            .take();
-        drop(delivery);
-    }
-
     /// Removes a ready thread from its owner run queue for migration or update.
     pub fn dequeue(&self, cpu: Pin<&mut CpuLocal>, thread: ThreadId) -> Result<(), TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;

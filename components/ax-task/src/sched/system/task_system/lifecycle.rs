@@ -5,19 +5,30 @@ use core::sync::atomic::Ordering;
 use super::*;
 
 impl TaskSystem {
-    /// Marks a non-queued thread exited and queues its task-context exit hook.
+    /// Marks an unmanaged, non-queued thread exited and queues its exit hook.
+    /// Managed creation tokens exclusively own cancellation of their tasks.
     pub fn mark_exited(&self, thread: ThreadId) -> Result<(), TaskError> {
+        crate::runtime::delivery::work::validate_task_work_context()?;
         let core = {
             let state = self.state.lock();
             Arc::clone(&state.thread_record(thread)?.core)
         };
+        if core.execution.is_some() {
+            return Err(TaskError::NotReady);
+        }
+        self.mark_unqueued_exited(&core)
+    }
+
+    /// Consumes exit authority held by a validated caller or cancellation worker.
+    pub(super) fn mark_unqueued_exited(&self, core: &Arc<ThreadCore>) -> Result<(), TaskError> {
+        let thread = core.id();
         let mut scheduler_exit = core
             .close_owned_scheduler_activity()
             .ok_or(TaskError::ThreadBusy)?;
         let exited_core = {
             let mut state = self.state.lock();
             let record = state.thread_record_mut(thread)?;
-            if !Arc::ptr_eq(&record.core, &core) {
+            if !Arc::ptr_eq(&record.core, core) {
                 return Err(TaskError::StaleThreadId);
             }
             let mut sched = record.sched.lock();
@@ -134,9 +145,7 @@ impl TaskSystem {
 
     /// Removes an exited registry record and makes its slot reusable.
     pub fn reap_thread(&self, thread: ThreadId) -> Result<(), TaskError> {
-        if task_runtime::in_hard_irq() {
-            return Err(TaskError::UnsafeContext);
-        }
+        crate::runtime::delivery::work::validate_task_work_context()?;
         let record = {
             let mut state = self.state.lock();
             let mut root_domain = self.root_domain.lock();
@@ -154,8 +163,8 @@ impl TaskSystem {
     /// reaper on another CPU from winning between a handle drop and an ID-based
     /// reap. Retryable failures return the same handle to the caller.
     pub fn reap_thread_handle(&self, handle: ThreadHandle) -> Result<(), OwnedThreadReapError> {
-        if task_runtime::in_hard_irq() {
-            return Err(OwnedThreadReapError::new(TaskError::UnsafeContext, handle));
+        if let Err(error) = crate::runtime::delivery::work::validate_task_work_context() {
+            return Err(OwnedThreadReapError::new(error, handle));
         }
         let record = {
             let mut state = self.state.lock();

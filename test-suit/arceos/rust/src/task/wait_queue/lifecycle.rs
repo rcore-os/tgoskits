@@ -15,7 +15,11 @@ use ax_std::os::arceos::task::{
     thread::{SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadId},
 };
 
+#[path = "lifecycle_review.rs"]
+mod review;
+
 pub(super) fn run() {
+    review::run();
     test_execution_reclamation_with_live_handle();
     test_cancel_unpublished_threads();
     test_common_exit_result();
@@ -122,6 +126,7 @@ fn test_creation_failure_rollback() {
 
 #[derive(Default)]
 struct ExtensionProbe {
+    pause_exit: std::sync::atomic::AtomicBool,
     switched_in: AtomicUsize,
     switched_out: AtomicUsize,
     exited: AtomicUsize,
@@ -155,6 +160,9 @@ unsafe extern "Rust" fn probe_exit(data: usize, _: ThreadId) {
     unsafe { probe(data) }
         .exited
         .fetch_add(1, Ordering::Release);
+    while unsafe { probe(data) }.pause_exit.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
 }
 unsafe extern "Rust" fn probe_deadline(_: usize, _: ThreadId) {}
 unsafe extern "Rust" fn probe_drop(data: usize) {
