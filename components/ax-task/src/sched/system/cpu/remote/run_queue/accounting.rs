@@ -104,7 +104,7 @@ impl CpuRunQueueState {
         }
 
         let bandwidth = self.queue.deadline_bandwidth();
-        let (mut charge, policy, current_entity, rt_quota_exempt) = self.queue.charge_current(
+        let (mut charge, policy, rt_quota_exempt) = self.queue.charge_current(
             runtime_ns,
             now_ns,
             bandwidth.inactive_bw_scaled(),
@@ -118,15 +118,22 @@ impl CpuRunQueueState {
         } else {
             false
         };
-        if let Some(current_fair) = current_entity.fair() {
+        if let Some(current_fair) = self.current_fair_contender() {
             self.queue.update_fair_virtual_time(Some(current_fair));
         }
         let class_tick = event.runs_class_tick(charge.slice_expired).then(|| {
+            // The class tick hook runs only on periodic/clock events; it
+            // re-reads the full entity itself instead of forcing every
+            // ordinary settle to carry the wide snapshot.
+            let entity = self
+                .queue
+                .current_entity_snapshot(current_thread)
+                .expect("current identity must retain its scheduling entity");
             SchedulerClass::for_policy(policy).task_tick(
                 &mut self.queue,
                 current_thread,
                 policy,
-                &current_entity,
+                &entity,
                 charge,
                 event.periodic_tick_ns(),
             )

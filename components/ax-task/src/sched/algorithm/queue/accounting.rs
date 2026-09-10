@@ -21,6 +21,9 @@ impl RunQueue {
     /// The common dispatch token and RT/DL active nodes are disjoint fields
     /// of the same rq. Keeping this operation here prevents callers from
     /// temporarily clearing `rq->curr` merely to obtain two mutable borrows.
+    /// Only small copyable accounting facts cross this boundary, like Linux
+    /// `update_curr()` returning to its callers; the running entity stays in
+    /// the rq and is re-read where a consumer actually needs it.
     pub(crate) fn charge_current(
         &mut self,
         runtime_ns: u64,
@@ -29,37 +32,34 @@ impl RunQueue {
         extra_bw_scaled: u64,
         max_bw_scaled: u64,
         reclaimed_ns: u64,
-    ) -> Result<(DispatchCharge, SchedulePolicy, SchedulingEntity, bool), TaskError> {
+    ) -> Result<(DispatchCharge, SchedulePolicy, bool), TaskError> {
         let current = self.current.as_ref().ok_or(TaskError::NoRunnableThread)?;
         let id = current.thread();
         let policy = current.schedule_policy();
         let rt_quota_exempt = current.rt_quota_exempt();
         let membership = self.membership_class(id);
-        let current_entity = match membership {
-            Some(QueueMembershipClass::Deadline(key)) => self
-                .deadline
-                .get(key)
-                .map(QueuedThread::entity_snapshot)
-                .ok_or(TaskError::InvalidConfiguration)?,
-            Some(QueueMembershipClass::Realtime(key)) => self
-                .rt
-                .get(key)
-                .map(QueuedThread::entity_snapshot)
-                .ok_or(TaskError::InvalidConfiguration)?,
-            _ => current
-                .owned_scheduling_entity_ref()
-                .cloned()
-                .ok_or(TaskError::InvalidConfiguration)?,
+        // GRUB reclaim consults only a Deadline entity's server flags and the
+        // task's bandwidth metadata; every other class pays the full runtime
+        // charge, so the pre-charge entity snapshot exists only for Deadline.
+        let grub_reclaimed_ns = match membership {
+            Some(QueueMembershipClass::Deadline(key)) => {
+                let entity = self
+                    .deadline
+                    .get(key)
+                    .map(QueuedThread::entity_snapshot)
+                    .ok_or(TaskError::InvalidConfiguration)?;
+                current.grub_reclaimed_ns(
+                    &entity,
+                    runtime_ns,
+                    inactive_bw_scaled,
+                    extra_bw_scaled,
+                    max_bw_scaled,
+                )
+            }
+            _ => 0,
         };
-        let dispatch = self.current.as_mut().ok_or(TaskError::NoRunnableThread)?;
-        let grub_reclaimed_ns = dispatch.grub_reclaimed_ns(
-            &current_entity,
-            runtime_ns,
-            inactive_bw_scaled,
-            extra_bw_scaled,
-            max_bw_scaled,
-        );
         let reclaimed_ns = reclaimed_ns.saturating_add(grub_reclaimed_ns);
+        let dispatch = self.current.as_mut().ok_or(TaskError::NoRunnableThread)?;
         let charge = match membership {
             Some(QueueMembershipClass::Deadline(key)) => {
                 let entity = &mut self
@@ -81,25 +81,7 @@ impl RunQueue {
             }
             _ => dispatch.charge(runtime_ns, now_ns, reclaimed_ns),
         };
-        let charged_entity = match membership {
-            Some(QueueMembershipClass::Deadline(key)) => self
-                .deadline
-                .get(key)
-                .map(QueuedThread::entity_snapshot)
-                .ok_or(TaskError::InvalidConfiguration)?,
-            Some(QueueMembershipClass::Realtime(key)) => self
-                .rt
-                .get(key)
-                .map(QueuedThread::entity_snapshot)
-                .ok_or(TaskError::InvalidConfiguration)?,
-            _ => self
-                .current
-                .as_ref()
-                .and_then(CurrentDispatch::owned_scheduling_entity_ref)
-                .cloned()
-                .ok_or(TaskError::InvalidConfiguration)?,
-        };
-        Ok((charge, policy, charged_entity, rt_quota_exempt))
+        Ok((charge, policy, rt_quota_exempt))
     }
 
     /// Reserves every class index before a thread becomes externally visible.
