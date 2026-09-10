@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use core::mem::size_of;
 
 use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_runtime::hal::cpu::uspace::UserContext;
@@ -264,13 +263,6 @@ impl CloneArgs {
             0
         };
 
-        if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid_ptr != 0 {
-            crate::mm::prepare_user_write(current, parent_tid_ptr, size_of::<u32>())?;
-        }
-        if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
-            crate::mm::prepare_user_write(current, pidfd, size_of::<i32>())?;
-        }
-
         let curr = current;
         let curr_thread = curr.as_thread();
         let old_proc_data = &curr_thread.proc_data;
@@ -501,7 +493,7 @@ impl CloneArgs {
         }
         let mut prepared_pidfd: Option<PreparedFileDescriptor> = None;
         let mut pidfd_copyout = None;
-        if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
+        if flags.contains(CloneFlags::PIDFD) {
             // The pidfd and later namespace publication share the prepared
             // identity. Until the final commit, PID-number lookup cannot see it.
             let pidfd_obj = if flags.contains(CloneFlags::THREAD) {

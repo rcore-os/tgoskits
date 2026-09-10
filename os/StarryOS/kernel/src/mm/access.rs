@@ -864,17 +864,6 @@ fn prepare_user_memory(
     UserAccess::<Faultable>::new(start, len, intent)?.prepare(task, op)
 }
 
-/// Faults in and validates a userspace output range without modifying it.
-///
-/// Transactions use this before their publication point so copyout is the
-/// only remaining userspace operation after kernel resources are prepared.
-pub(crate) fn prepare_user_write(task: &UserTaskRef, start: usize, len: usize) -> VmResult {
-    if len == 0 {
-        return Ok(());
-    }
-    prepare_user_memory(task, "write", start, len, MappingFlags::WRITE)
-}
-
 /// Validates a transaction's captured source range before publication.
 pub(crate) fn prepare_user_read(task: &UserTaskRef, start: usize, len: usize) -> VmResult {
     if len == 0 {

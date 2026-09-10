@@ -661,3 +661,56 @@ SysV SHM 后续回归已先在宿主 Linux 验证：同一共享 MM 中，孩子
 合入前仍需取得调度与锁领域审核。现有处置锁和 pending 锁的 raw 分类必须按全部调用上下文继续核验；本轮共同 PI 门禁的串行证明不等于所有锁类型已经完成 RT 收尾。
 
 clone 最终发布的 EINTR 分支已扩展进既有 `clone_publication_refreshes_security_after_preparation`：省略致命信号检查时，测试稳定进入禁止的发布回调并失败；恢复检查后返回 EINTR，kernel 183/183。日志 `/tmp/pr2357-clone-fatal-publication-{red,green}.log`。`publish_clone` 的命名覆盖最终信号检查、安全继承和身份发布这一个提交边界，不再只指 seccomp。
+
+### 5.32 SysV SHM 的 VMA 生命周期
+
+该项正在实施，尚未宣称修复。`CLONE_VM|CLONE_VFORK` 的孩子建立的附接必须继续属于共享 MM，父进程可以读取该映射并通过原地址执行 shmdt。新的 `test_clone_vfork_shared_shm` 替换了旧的 PID 退出清理预期，并删除对 nattch 的低 16 位掩码。当前 Starry 的确定性红证据为 `/tmp/pr2357-shm-shared-mm-red.log`：wait 前后计数均不符合 2，父进程 shmdt 失败；退出与自身附接清理本身成功。这不是单纯改变断言，而是明确尚未实现的所有权要求。
+
+固定 Linux `ipc/shm.c` 的 `shm_open/__shm_close` 随 VMA 建立和关闭维护附接；`mm/vma.c::can_merge_remove_vma` 禁止通过合并移除带 close 操作的 VMA。宿主对照 `/tmp/pr2357-shm-vma-count-linux.log` 的实际计数为：初次附接 1，mprotect 分裂后 3，恢复权限后仍为 3，munmap 中间页后 2，fork 孩子存活时 4，孩子退出后 2。该程序在开始时设置 IPC_RMID，所有映射最终分离；不把这个宿主结果当作固定 RT 构建证据。
+
+只把 `ShmInner::va_range` 和 `ShmManager::pid_shmid_vaddr` 的键改成 MM ID 不能覆盖 VMA 分裂、fork、部分 munmap 和 exec。把计数放入 SharedMemoryObject 或普通 Arc 的 Drop 也不正确，因为旧 VMA 根、PTE 槽和 TLB 回执可能保留物理资源。实现应复用现有 VMA 事务，令逻辑附接跟随已提交的 VMA 身份，物理页仍由 SharedMemoryObject、MappingOperation 和 MappingSlot 持有；不增加通用插件或另一个独立的内存对象登记体系。
+
+`publish_mutation_classified` 已区分未发布失败和已发布但 TLB 待确认。map/unmap/mprotect/mremap 都保留自己的 preimage；fork 为子 MM 提交独立回执，失败走 `reset_uninstalled_for_loader`。拟在准备阶段保留逻辑 VMA 前像和可失败的计数变更，在发布成功或 PublishedPendingTlb 时提交，未发布失败沿原 preimage 回滚。不能只挂在 `publish_vma_metadata_successor`，也不能漏掉不经过普通回执的未发布 MM 清理。
+
+锁顺序需要同时迁移：当前 `sys_shmat` 持 ShmInner 锁调用 `aspace.map_outcome`；VMA 关闭回到段记账后会形成反向顺序。映射准备必须先取得稳定段/物理对象的预留，释放 IPC 和段锁，再进入 MM 事务。IPC_RMID 竞争由这项预留保护，失败撤销预留，不在 MM 锁内重新走原来的 SHM_MANAGER→ShmInner→aspace 链。正常 shmdt 从当前 MM 的 VMA 来源和原附接地址选择片段，不再依赖创建映射的 PID。
+
+MM 用户所有权结束时要关闭逻辑附接，不能等 lazy active-MM 和旧 PTE 所有者最终析构才更新 nattch；同时必须串行化仍在进行的 VMA 修改，并禁止已关闭映射重新发布附接。现有 `MmHandle::user_refs` 表示进程拥有者，RuntimeMmOwner 还持有每任务 MmPin，不能直接把其中一个计数当成 Linux mm_users。具体退出准入、内核读者、操作 PID 和任务上下文释放协议需要一并证明，然后才能移动 exit/exec 的 vfork MM-release 通知。
+
+验收覆盖共享 MM、普通 fork、VMA 分裂和不合并、部分 munmap、mremap、exec、IPC_RMID 最后附接、预发布失败和 PublishedPendingTlb。保留旧 VMA 元数据快照或 active-MM 时，也必须分别验证逻辑计数与物理资源寿命。所有计数变更和关闭只能发生一次，释放路径不能在 raw 锁或 IRQ 上下文取得可睡眠锁。
+
+### 5.33 文件描述符准备
+
+Linux `pidfd_prepare` 先经 `get_unused_fd` 预留编号，再执行可失败的 `pidfs_alloc_file`；文件创建失败时释放预留，后续 clone 失败则分别撤销编号和文件引用。Starry 的 `prepare_file_like` 改为先预留，再在锁外调用可失败的文件工厂。clone 的 pidfd 使用 `Arc::try_new`，失败返回 ENOMEM。`PreparedFileDescriptor` 区分 Reserved、Ready 和 Installed，确保创建失败、copyout 失败和取消均撤销原表中的预留，安装后的析构不会删除已经被另一个线程关闭并复用的 FD。SCM_RIGHTS 和 socketpair 迁移到同一入口，原有 copyout-before-install 边界保持不变。
+
+`FileTable` 原先在 raw 写锁内通过 `BTreeSet` 分配和释放预留节点。现在在已有 `FlattenObjects` 的内联槽和位图中保存 `FileSlot::Reserved` 或 `Installed`，不再维护第二份预留集合。查找、关闭和枚举只观察 Installed；dup2/dup3 对 Reserved 仍返回 EBUSY，复制 FD 表只复制已安装文件。文件析构始终在本次准备事务释放 raw 表锁之后执行。本节不证明其余所有 FD 操作都已排除锁内分配：表复制的 generation Arc、批量关闭收集等路径仍需继续核验。
+
+确定性回归 `descriptor_reservation_precedes_fallible_file_creation` 在创建入口观察预留、确认表写锁可取得，再注入 ENOMEM，检查编号释放和立即复用，并检查 FD 耗尽时不调用文件工厂。旧顺序稳定失败于预留数量 0 而非 1，日志 `/tmp/pr2357-fd-reservation-red.log`；新顺序同一回归及 x86_64 kernel 184/184 通过，日志 `/tmp/pr2357-fd-reservation-green.log`。这项 kernel 证据不能扩大为用户 clone 的精确分配故障注入。随后 `cargo xtask clippy --package starry-kernel` 完成四架构 92/92，日志 `/tmp/pr2357-fd-reservation-clippy.log`；没有执行全工作区 clippy。
+
+其余兼容缺口分别记录，不能因本次准备事务通过而视作已解决：`sys_socketpair` 尚未按照 Linux `__sys_socketpair` 在创建 socket 前预留两个 FD 并完成结果复制；FD 分配仍用现有 count 近似 RLIMIT_NOFILE，而 Linux `alloc_fd` 比较候选编号和上限。这两项需要独立的错误顺序回归和实现收尾。第 5.32 节的共享 MM / SysV SHM 生命周期也仍未实现，本地尚未提交的共享 MM 回归目前为红。
+
+当前远端基线 `8e44bbc49e` 的 CI run `34517679621` 已结束：28 项成功、4 项取消、2 项失败。Starry OrangePi-5-Plus-1 hardware-smoke 停滞根因尚未定位；同板诊断通过不能算修复。另一个 Axvisor robot 项仅因 FPS 27.78 低于 28 失败，按当前任务约定暂停性能调查，不修改阈值。取消的 Starry QEMU 和 SG2002 项不能视为通过。
+
+本节按实际改变的文件准备调用链区分证据范围。X 表示 x86_64，G 表示 aarch64、riscv64 和 loongarch64 的 asm-generic 编号；表中结论不代表对应系统调用的全部参数已经完成兼容。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| clone(CLONE_PIDFD 准备) / X56、G220 | [v7.1 pidfd_prepare](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1865) | 先预留 FD，再创建 pidfd 文件；失败撤销且不运行孩子 | `sys_clone → do_clone_in_cgroup → prepare_file_like → PreparedFileDescriptor`，文件表由进程共享 | 无法确认 | kernel 预留顺序和 ENOMEM 红绿；尚无从用户 clone 注入实际 pidfd 分配失败的证据 |
+| clone3(CLONE_PIDFD 准备) / X435、G435 | [v7.1 pidfd_prepare](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1865) | 参数检查后按相同预留和创建顺序准备 pidfd | `sys_clone3 → do_clone_in_cgroup → prepare_file_like` | 无法确认 | 共用 kernel 准备事务；未注入 clone3 的实际 pidfd 分配失败 |
+| socketpair(准备与结果复制) / X53、G199 | [v7.1 __sys_socketpair](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/socket.c#L1828) | 两个 FD 预留和结果复制先于 socket 创建，失败释放预留 | `sys_socketpair → prepare_file_like → PreparedFileDescriptor::install` | 部分正确 | copyout 前不安装、失败撤销；实现仍先创建 socket，错误优先级待修复 |
+| recvmsg(SCM_RIGHTS) / X47、G212 | [v7.1 scm_detach_fds](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/core/scm.c#L354) | 逐 FD 预留、复制编号、安装；部分结果按 cmsg 边界处理 | `sys_recvmsg → recv_impl → CMsgBuilder::push_rights → prepare_file_like → install` | 无法确认 | 工厂复用现有文件 Arc；本轮 x86_64 `test-unix-scm-rights` 已通过，其他三架构该用例未复跑 |
+| recvmmsg(SCM_RIGHTS) / X299、G243 | [v7.1 do_recvmmsg](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/socket.c) | 每条消息独立提交已成功接收的描述符 | `sys_recvmmsg → recv_impl → CMsgBuilder::push_rights` | 无法确认 | 共用 FD 事务，尚无批量消息携带 SCM_RIGHTS 的本轮回归 |
+
+`CLONE_PIDFD` 的 NULL 输出指针也必须进入 pidfd 准备和 copyout，而不是被当成“不请求 pidfd”。现删除 pidfd 准备分支中的 `pidfd != 0`，并删除 clone 开始时对 pidfd/parent_tid 的提前 `prepare_user_write`。pidfd 的错误指针在预留之后、身份发布之前由 `vm_write` 返回 EFAULT；FD 耗尽则先返回 EMFILE。`CLONE_PARENT_SETTID` 继续在孩子发布之后写入，写失败不撤销孩子，对照固定 Linux `copy_process` 的 `put_user(pidfd, args->pidfd)`（kernel/fork.c:2310）与 `kernel_clone` 的 `put_user(nr, args->parent_tid)`（:2738）。两类 copyout 不能合并为一项创建前预检查。
+
+扩展的 `syscall-test-clone-tls` 取得分层红证据：原实现对 NULL pidfd 实际创建孩子（`/tmp/pr2357-null-pidfd-red.log`）；只修补提前 NULL 检查的中间实现仍在 FD 耗尽时错误返回 EFAULT（`/tmp/pr2357-pidfd-error-order-red.log`）；无效 parent_tid 同样被提前拒绝，孩子没有创建（`/tmp/pr2357-clone-copyout-red.log`）。最后同一完整 C 用例在宿主 Linux 40 pass、0 fail，日志 `/tmp/pr2357-clone-copyout-linux.log`。中间版本的三个架构通过记录不代表最后的错误顺序已验证；最终四架构回归均为 40 pass、0 fail，使用独立的 `/tmp/pr2357-fd-copyout-green-<arch>-syscall-test-clone-tls.log`。x86_64 的 `test-unix-scm-rights`、`bugfix-usercopy-socket-results` 和 `test-clone-files-race` 也通过，日志使用同一 fd-copyout-green 前缀。增量 std 全部通过，日志 `/tmp/pr2357-fd-copyout-green-std.log`。
+
+以下两类 flag 独立核验，不能把 pidfd 的失败回滚套用到 parent_tid 的发布后写入。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| clone(CLONE_PIDFD 输出错误) / X56、G220 | [v7.1 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L2305) | FD 耗尽先报 EMFILE；否则坏输出报 EFAULT，不发布孩子 | `sys_clone → do_clone_in_cgroup → prepare_file_like → vm_write` | 正确 | 旧实现和中间实现的直接红例均已确认，同一最终用例四架构通过 |
+| clone3(CLONE_PIDFD 输出错误) / X435、G435 | [v7.1 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L2305) | 结构参数验证后按相同顺序处理 pidfd 输出 | `sys_clone3 → do_clone_in_cgroup → prepare_file_like → vm_write` | 无法确认 | 共用修复后的实现；本轮未直接覆盖 clone3 的这些错误组合 |
+| clone(CLONE_PARENT_SETTID 输出错误) / X56、G220 | [v7.1 kernel_clone](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L2737) | 孩子发布后尽力写 parent_tid，坏指针不取消创建 | `sys_clone → do_clone_in_cgroup → publish_clone → vm_write` | 正确 | 直接 syscall 红例及同一最终四架构绿例均已确认 |
+| clone3(CLONE_PARENT_SETTID 输出错误) / X435、G435 | [v7.1 kernel_clone](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L2737) | 结构参数验证后保留发布后的孩子，不因 parent_tid 写失败回滚 | `sys_clone3 → do_clone_in_cgroup → publish_clone → vm_write` | 无法确认 | 共用修复后的实现；本轮未直接覆盖 clone3 的坏 parent_tid |
+
+删除提前写入预检查后，同时清理了失去调用方的 `prepare_user_write` 和 `size_of` 导入；首次最终构建因这两项未清理而被 `-D warnings` 拒绝，清理后再执行上述全部最终绿例。copyout 修复后的完整功能组合静态检查交由新提交 CI；前述本地 92/92 精确对应 FD 预留提交 `d92a45e8f8`。
