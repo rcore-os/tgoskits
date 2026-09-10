@@ -146,6 +146,8 @@ software backend 实现 `CPU_CLOCK`、`TASK_CLOCK`、`PAGE_FAULTS`、`CONTEXT_SW
 
 软件 task clock 的 `SwClock` 分别保存 lifetime running time 和可重置事件值。RESET 记录截止时间但保留 running/enabled 时间；跨越 RESET 的 slice 在结束时将完整时长计入 running time，仅将截止点之后的部分计入事件值。两者在同一 IRQ-safe 临界区提交。system clock 用 `SwSystemCounter::clock_offset_ns` 从累计 enabled time 派生重置后的值，不改变时间字段。
 
+`SwEventState::read_task_family()` 持 family control 固定继承关系，取得存活 binding 的强引用后，逐个在所属任务上下文锁下调用 `SwPerTaskCounter::checkpoint()`。checkpoint 将尚未结束的运行片段及启用区间结算到共享累计值，并推进本地起点；最终只读取一次累计值。因此读取包含仍在远端运行的继承子任务，而后续读取、切出、停表与退出不会重复累计已经结算的区间。锁顺序仍为 family control → task context → clock，读取不等待远端 CPU worker，也不在 IRQ-safe 临界区分配。
+
 `SwTaskContext` 在同一 IRQ-safe 锁下保存线程 binding 列表和 scheduler hook 发布的 `running_cpu`。没有活动事件时仍更新运行状态；远端 open/enable 在此锁内读取状态并设置 slice 起点，不必等待目标线程下一次切换。锁顺序为 family control → task context → binding/group/clock；scheduler hook 不取得可睡眠的 family control。exec 只修改当前 binding，后续父 FD ioctl 仍遍历整个继承关系。
 
 缺页 hook 将用户异常和内核用户内存访问的来源传入 `sw::on_page_fault()`；`SwEventState::accepts_mode()` 对 task 与 CPU 事件应用 `exclude_user/exclude_kernel`，过滤依据是故障发生的特权级，而非被访问地址属于谁。

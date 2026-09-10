@@ -185,6 +185,39 @@ impl SwEventState {
             }
         }
     }
+
+    fn read_task_family(&self) -> PerfReadValues {
+        // Like Linux's child_mutex, serialize the family walk with inheritance
+        // and controls. Scheduler hooks only need their task context and clock.
+        let _control = self.control.lock();
+        let bindings = self
+            .bindings
+            .lock()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect::<Vec<_>>();
+        for binding in &bindings {
+            let Some(context) = binding.context.upgrade() else {
+                continue;
+            };
+            let _context = context.lock();
+            binding.checkpoint();
+        }
+        // Each checkpoint advances its binding's cursors. A later switch-out
+        // therefore commits only the remainder, not the interval just read.
+        let clock = self.clock.lock();
+        PerfReadValues {
+            value: if self.kind.is_clock() {
+                clock.count_ns
+            } else {
+                self.count.load(Ordering::Acquire)
+            },
+            time_enabled: self.time_enabled_ns.load(Ordering::Acquire),
+            time_running: clock.runtime_ns,
+            lost: 0,
+            read_format: self.read_format,
+        }
+    }
 }
 
 /// Slice-local state for an event attached to one task. An inherited child gets
@@ -361,38 +394,22 @@ impl SwPerTaskCounter {
         self.state.reset();
     }
 
-    fn snapshot(&self) -> PerfReadValues {
+    /// Commits live windows without stopping the binding. The caller holds
+    /// its task context, excluding schedule, enable/disable, and exit updates.
+    fn checkpoint(&self) {
+        let mut clock = self.state.clock.lock();
         let now = now_ns();
-        let enabled = self.is_effectively_enabled();
-        let enabled_since = self.enabled_since_ns.load(Ordering::Acquire);
-        let live_enabled = if enabled && enabled_since != 0 {
-            now.saturating_sub(enabled_since)
-        } else {
-            0
-        };
-        let clock = self.state.clock.lock();
-        let run_since = self.run_since_ns.load(Ordering::Acquire);
-        let live_runtime = if enabled && run_since != 0 {
-            now.saturating_sub(run_since)
-        } else {
-            0
-        };
-        let runtime = clock.runtime_ns.saturating_add(live_runtime);
-        let live_count = if enabled && run_since != 0 {
-            now.saturating_sub(run_since.max(clock.reset_at_ns))
-        } else {
-            0
-        };
-        PerfReadValues {
-            value: if self.state.kind.is_clock() {
-                clock.count_ns.saturating_add(live_count)
-            } else {
-                self.state.count.load(Ordering::Acquire)
-            },
-            time_enabled: self.state.time_enabled_ns.load(Ordering::Acquire) + live_enabled,
-            time_running: runtime,
-            lost: 0,
-            read_format: self.state.read_format,
+        let since = self.run_since_ns.load(Ordering::Acquire);
+        if since != 0 {
+            clock.finish_slice(since, now);
+            self.run_since_ns.store(now, Ordering::Release);
+        }
+        let since = self.enabled_since_ns.load(Ordering::Acquire);
+        if since != 0 {
+            self.state
+                .time_enabled_ns
+                .fetch_add(now.saturating_sub(since), Ordering::AcqRel);
+            self.enabled_since_ns.store(now, Ordering::Release);
         }
     }
 
@@ -723,11 +740,7 @@ impl PerfEventOps for SwPerfEvent {
 
     fn read_values(&mut self) -> StarryResult<PerfReadValues> {
         Ok(match &self.target {
-            SwTargetCounter::Task(counter) => {
-                let context = counter.context.upgrade();
-                let _context = context.as_ref().map(|context| context.lock());
-                counter.snapshot()
-            }
+            SwTargetCounter::Task(_) => self.state.read_task_family(),
             SwTargetCounter::Cpu(counter) => counter.snapshot(),
         })
     }
