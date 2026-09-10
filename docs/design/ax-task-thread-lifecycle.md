@@ -25,9 +25,33 @@ Linux 顺序是迁移验收条件，不要求复制 C 对象布局。每条路�
 
 ### 1.3 锁等待边界
 
-当前 `RawMutex` 是普通 PI sleeping mutex，`BaseSpinLock` 仍是 raw spinning lock；没有 Linux 将 `spinlock_t` 转换成 sleeping RT lock 的独立类型。因此不能把现有 `WAKE_PENDING/PARK_NOTIFIED` 称为 `TASK_RTLOCK_WAIT/saved_state` 的完整实现。普通 PI mutex 使用独立 `PiWaitToken` 判定 handoff，普通唤醒返回条件循环，interruptible 等待由持久中断谓词决定取消。此重构保留这条路径，不把普通 wake 当作取得锁。
+`RawMutex` 保持普通 PI mutex 等待。`SpinLock`、`SpinRwLock` 使用独立的 RT 锁等待语义，原不可睡眠实现改名为 `RawSpinLock`、`RawSpinRwLock`。普通锁、RT 锁和 raw 锁不能仅按接口形状互换：IRQ、调度交接和已有抢占保护中的调用方显式使用 raw 类型。
 
-Linux RT sleeping spinlock 在已经发布睡眠状态之后嵌套阻塞所需的 saved-state 协议，当前没有相应实现和直接系统回归；这是计划中尚未完成的验收项，不能以现有 PI 测试通过替代。未来实现需分别保存外层睡眠状态与内层锁等待状态，并验证普通通知仅更新外层状态，不能直接恢复内层锁等待。
+`ThreadLifecycle` 的一个 `AtomicU16` 同时保存物理调度状态、内层通知和外层状态。`RTLOCK_ACTIVE` 期间，普通唤醒只更新高字节的保存通知；锁交接通过独立 `WakeSource` 更新低字节，才能激活内层阻塞。`PiHandoffWake` 在 wait-lock 内捕获 PI 代次，交接延迟到下一次等待时不会误唤醒新等待。读写锁的读者排空使用独立的内层 park 代次。
+
+外层 `ParkTicket` 的代次保存在 `ThreadCore::ordinary_park_generation`；内层 park 使用单调递增的 `park_sequence`，不能恢复计数器而复用旧代次。硬、软和同步超时到期路径都比较普通等待代次。`restore_rt_lock_wait` 在调度锁下恢复外层状态和票据，外层通知使随后的 commit 取消阻塞，而非重新丢入运行队列。
+
+### 1.4 锁类型与上下文
+
+锁对象的 Rust 借用保护被锁数据的有效期；调度侧迁移 pin、RT 临界区深度和等待状态分别表达不同约束。`RtCriticalGuard` 只禁止普通睡眠，不禁止抢占或另一把 RT 锁的竞争调度。它不是通用 RCU 宽限期实现，不能用其计数或 `Arc` 计数替代第 2.2 节的逐对象读者证明。
+
+| Linux RT 对象 | ax-task 对象 | 等待与交接 | 持有期间 |
+| --- | --- | --- | --- |
+| `raw_spinlock_t` | `RawSpinLock`、`RawSpinRwLock` | 原子自旋；不做 PI | 普通方法关闭抢占；IRQ-save 方法同时关闭 IRQ；unpinned 方法由 unsafe 调用方提供保护 |
+| `spinlock_t` | `SpinLock` | PI gate，保存外层状态的 RT 锁等待 | 可抢占，禁止迁移及普通睡眠；IRQ-save 拼写不改变硬件 IRQ |
+| `rwlock_t` | `SpinRwLock` | PI 写者 gate，等已有读者排空 | 同 RT spinlock；不能向多个已有读者捐赠优先级 |
+| `local_lock_t` | `LocalLock` | 先 pin，再选择每 CPU 锁，再取得 RT spinlock | 同 CPU 任务可抢占竞争；解锁后释放外层 pin |
+| `mutex` | `Mutex`、`InterruptibleMutexExt` | 普通 PI 等待，取消谓词和 handoff 竞争 | 普通可睡眠任务上下文，不自动 pin |
+| `rw_semaphore` | `RwSemaphore` | 与 RT rwlock 共用写者 gate 和 reader-drain，使用普通等待 | 不自动 pin；已有读者完成后才允许独占 |
+| `semaphore` | `Semaphore` | raw IRQ-safe FIFO，直接交付许可，不做 PI | `up/try_down` 可在 IRQ 调用；阻塞、超时和中断等待只在任务上下文 |
+
+Linux 对照包括 `kernel/locking/spinlock_rt.c`、`rwbase_rt.c`、`rtmutex.c`、`semaphore.c`、`include/linux/local_lock_internal.h` 和 `kernel/sched/core.c`。`SemaphoreRegistration` 在同一 raw 锁下裁定取消与授予；队列扩容在任务上下文分配，IRQ 端不销毁等待者对象。
+
+### 1.5 迁移禁止
+
+`ThreadAffinityState` 区分 `requested_affinity` 与有效 `affinity`。首次 `MigrationGuard` 在登记表、任务调度锁和 owner rq 事务下安装预建的单 CPU 掩码，并刷新所有调度类的迁移候选索引；嵌套 guard 只增加深度。外层释放恢复最新请求，并投递 owner reconciliation。CPU 下线在同一登记表锁下拒绝仍有 pin 的 CPU。
+
+锁获取后建立 RT 临界区和迁移保护；释放按 `migrate_enable → 结束 RT 临界区 → PI unlock` 排列。普通管理引用不是迁移保护。Starry 的远端 `sys_sched_setaffinity` 使用 `set_affinity_and_wait`，异步请求只有在目标 CPU 满足新 mask 后才完成。
 
 ## 2. 发布与回收
 
@@ -136,9 +160,9 @@ spawn 每轮先预热 16 次，再测 100 次；join 放在计时区间外，但
 
 ### 3.6 交付边界
 
-本地交付包括接口迁移、首次激活、分阶段回收、FP 继承修复、系统回归和微基准。公共执行接口与首次激活/回收协议在一个迁移提交中一起收敛，未完全做到计划要求的接口提交与语义提交分离；后续 FP 修复单独提交。没有推送、创建拉取请求或合并。
+本地交付包括接口迁移、首次激活、分阶段回收、FP 继承修复、系统回归和微基准。公共执行接口与首次激活/回收协议在一个迁移提交中一起收敛，未完全做到计划要求的接口提交与语义提交分离；后续 FP 修复单独提交。上述生命周期阶段先以本地提交交付；后续 RT 锁工作按用户要求转为 PR 和 CI 验证。
 
-完整 RT 验收仍有明确缺口：第 1.3 节的 `TASK_RTLOCK_WAIT/saved_state`，第 3.3 节的既有 IRQ 压力失败与整个 host/Loom 库测试链接问题，以及没有直接系统级证据的 syscall 表项。现有 QEMU 验证也没有逐阶段注入真实栈/TLS/架构上下文分配失败、控制 CPU 下线与 activation 的每种交错或单独证明所有弱内存 MM 屏障；不能把两类已测创建失败扩大为这些场景均已验证。合入前仍需要计划要求的调度及 unsafe 领域审查。
+完整 RT 验收仍有明确缺口：第 3.3 节的既有 IRQ 压力失败与整个 host/Loom 库测试链接问题，以及没有直接系统级证据的 syscall 表项。现有 QEMU 验证也没有逐阶段注入真实栈/TLS/架构上下文分配失败、控制 CPU 下线与 activation 的每种交错或单独证明所有弱内存 MM 屏障；不能把两类已测创建失败扩大为这些场景均已验证。合入前仍需要计划要求的调度及 unsafe 领域审查。
 
 ## 4. Linux 可观察行为
 
@@ -183,3 +207,24 @@ spawn 每轮先预热 16 次，再测 100 次；join 放在计时区间外，但
 | sched_setscheduler / X144、G119 | [v7.1 固定提交 syscalls.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/syscalls.c) | 校验策略与权限后更新调度实体 | `sys_sched_setscheduler → apply_scheduler_update → TaskSystem`，每线程调度状态 | 无法确认 | 公共 API staged policy 更新已测；未执行该 syscall 专项 |
 | sched_setparam / X142、G118 | [v7.1 固定提交 syscalls.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/syscalls.c) | 保留策略并更新优先级 | `sys_sched_setparam → 读取当前策略 → apply_scheduler_update` | 无法确认 | 未执行该 syscall 专项 |
 | sched_setattr / X314、G274 | [v7.1 固定提交 syscalls.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/syscalls.c) | 检查 sched_attr、权限和准入后提交策略 | `sys_sched_setattr → sched_attr 解析 → apply_scheduler_update` | 无法确认 | 未执行该 syscall 专项 |
+
+
+## 5. RT 锁验证
+
+本节记录 `a22f81c016` 之后的锁语义改动，不能把第 3 节此前的通过记录当作这些新改动的验证。
+
+### 5.1 确定性交错
+
+`task/pi_mutex/rt_locks.rs` 通过公开运行时 API 检查 RT 锁持有期间的高优先级抢占、RT 锁内层阻塞期间的外层超时、读者排空、同 CPU local lock 竞争、嵌套迁移守卫与远端亲和性更新，以及 semaphore 的 FIFO 许可、超时和取消。外层超时测试先用高优先级任务抢占 owner，明确结束 owner spinning，再触发内层 park；失败时用普通 wake 取回测试控制权，并检查实际 park disposition，不依赖 QEMU 超时判定。
+
+旧 SpinLock 在同一断言失败于 `Linux RT spinlock must allow higher-priority preemption while held`；新实现通过。初版内层 park 覆盖外层 timeout 代次时，同一断言失败于 `outer timeout must survive the RT-lock inner park`；三条超时路径改用普通等待代次后通过。日志分别为 `/tmp/ax-task-rt-spin-preemption-{red,green}.log` 和 `/tmp/ax-task-rt-outer-timeout-{red,green}.log`。
+
+### 5.2 验证范围
+
+RT 锁与调用方静态检查覆盖 9 个软件包、215 个组合，全部通过；idle pin 检查前移后，ax-task 的 6 个组合又独立通过。`cargo fmt -- --check` 通过，`cargo xtask test --since a22f81c016` 选出的 13 个软件包全部通过。`lifecycle_state` 独立编译实际生命周期实现，13 项状态与 Loom 用例通过，没有增加 fake runtime。
+
+最终四架构各执行 ArceOS `all` 和 `task-pi-mutex`，8 个运行全部通过，包含外层超时、semaphore 定时器注册失败回滚及真实硬中断 `up`。Starry 最终复跑已完成 RISC-V 的 `test-clone-fp-state`、`syscall-test-clone-tls`、`test-execve`、`test-thread-lifecycle-exec`。随后按用户要求停止扩大本地矩阵，改由 PR CI 验证；未完成的其余 Starry/Axvisor 运行不记为通过。
+
+定时器容量故障通过仅测试用的 `fault-injection` feature 注入到当前线程下一次 semaphore 定时器注册。遗漏 park 取消时，QEMU 触发 `0x5041_0003` invariant；修复后返回 `TimerCapacity` 且线程保持 `Running`。IRQ `up` 不克隆或销毁 wake handle：生产者保持抢占保护，在 raw 锁内发布 handoff 完成并释放队列引用，等待者观察完成后才能销毁自身登记。
+
+CPU 下线 pin 检查已覆盖 idle 提前返回，但当前 ArceOS 没有安全的完整下线/重新上线入口，没有真实热插拔竞争测试。Linux 隐含 RCU 读侧的对象保护采用第 2.2 节逐对象租约与锁借用；不宣称新增通用 RCU API。新一轮性能基线仅完成独立 `a22f81c016` 检出的测量，尚未形成当前分支对照，不能引用第 3.5 节旧结果评价本次 RT 锁开销。
