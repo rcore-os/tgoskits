@@ -1,0 +1,6 @@
+env = { GIPC_ROLE = "rtos-server", GIPC_LOCAL_IP = "10.0.42.2" }
+features = ["net", "multitask", "ax-driver/virtio-net"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+max_cpu_num = 1
+to_bin = true

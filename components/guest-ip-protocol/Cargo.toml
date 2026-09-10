@@ -1,0 +1,11 @@
+[package]
+name = "guest-ip-protocol"
+version = "0.1.0"
+edition.workspace = true
+description = "Versioned application protocol for Starry/Linux and RTOS guest IP links"
+license.workspace = true
+publish = false
+
+[features]
+default = []
+std = []

@@ -333,6 +333,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-guest-ip-server"
+version = "0.1.0"
+dependencies = [
+ "ax-net",
+ "ax-std",
+ "guest-ip-protocol",
+]
+
+[[package]]
 name = "arceos-helloworld"
 version = "0.1.0"
 dependencies = [
@@ -3827,6 +3836,10 @@ dependencies = [
  "plain",
  "scroll",
 ]
+
+[[package]]
+name = "guest-ip-protocol"
+version = "0.1.0"
 
 [[package]]
 name = "h2"
