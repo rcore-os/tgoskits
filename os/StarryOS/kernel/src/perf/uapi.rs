@@ -22,6 +22,8 @@ const PERF_ATTR_MAX_SIZE: usize = 4096;
 
 const PERF_SAMPLE_BRANCH_STACK: u64 = 1 << 11;
 const PERF_SAMPLE_REGS_USER: u64 = 1 << 12;
+/// Linux AArch64 user-register mask requested by the perf FP unwinder.
+pub(crate) const PERF_REG_ARM64_LR_MASK: u64 = 1 << 30;
 const PERF_SAMPLE_STACK_USER: u64 = 1 << 13;
 const PERF_SAMPLE_WEIGHT: u64 = 1 << 14;
 const PERF_SAMPLE_WEIGHT_STRUCT: u64 = 1 << 24;
@@ -167,14 +169,19 @@ fn validate_perf_event_attr(attr: &mut perf_event_attr, bytes: &[u8]) -> StarryR
     }
     if attr.sample_type & PERF_SAMPLE_STACK_USER != 0
         && (attr.sample_stack_user >= u16::MAX as u32
-            || !attr.sample_stack_user.is_multiple_of(size_of::<u64>() as u32))
+            || !attr
+                .sample_stack_user
+                .is_multiple_of(size_of::<u64>() as u32))
     {
         return Err(StarryError::InvalidInput);
     }
-    if attr.sample_type & PERF_SAMPLE_REGS_USER != 0 && attr.sample_regs_user != 0 {
-        // Starry currently emits only PERF_SAMPLE_REGS_ABI_NONE. Accepting a
-        // non-zero mask without serializing the selected register values would
-        // shift every following sample field and corrupt the userspace ABI.
+    if attr.sample_type & PERF_SAMPLE_REGS_USER != 0
+        && attr.sample_regs_user != 0
+        && !(cfg!(target_arch = "aarch64") && attr.sample_regs_user == PERF_REG_ARM64_LR_MASK)
+    {
+        // Only LR is captured for the AArch64 FP unwinder. Never accept a
+        // register selection whose values cannot be serialized from the IRQ
+        // snapshot; mask zero still produces PERF_SAMPLE_REGS_ABI_NONE.
         return Err(StarryError::InvalidInput);
     }
     if attr.sample_type & PERF_SAMPLE_WEIGHT != 0

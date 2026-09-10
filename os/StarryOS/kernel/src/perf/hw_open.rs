@@ -189,6 +189,7 @@ pub(super) fn perf_event_open_hw(
             freq: validated.is_freq,
             target_freq: validated.target_freq,
             sample_type: attr.sample_type,
+            sample_user_lr: attr.sample_regs_user == super::uapi::PERF_REG_ARM64_LR_MASK,
             observer: crate::task::current_user_task()
                 .as_thread()
                 .active_pid_namespace()
@@ -278,6 +279,7 @@ fn perf_event_open_hw_per_task(
             required_cluster: validated.required_cluster,
             sample_period: validated.sample_period,
             sample_type: attr.sample_type,
+            sample_user_lr: attr.sample_regs_user == super::uapi::PERF_REG_ARM64_LR_MASK,
             freq: validated.is_freq,
             target_freq: validated.target_freq,
             want_comm: attr.comm() != 0,

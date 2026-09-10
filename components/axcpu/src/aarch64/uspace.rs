@@ -240,6 +240,7 @@ impl UserContext {
                         pc: self.tf.ip(),
                         sp: self.sp(),
                         fp: self.tf.x[29] as usize,
+                        lr: self.tf.x[30] as usize,
                         privilege: super::pmu::InterruptedPrivilege::User,
                     });
                 crate::trap::dispatch_irq(0, crate::trap::TrapOrigin::User);

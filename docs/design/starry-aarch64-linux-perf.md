@@ -22,7 +22,7 @@
 | output | `FD_OUTPUT` 与 `SET_OUTPUT` 只允许相同 perf context；`SET_OUTPUT(-1)` 解除重定向 | `PerfEvent::{redirect_to,set_output}`、`PerfEventOps::{redirect_output,detach_output}` |
 | read | 支持 value、ID、`time_enabled`、`time_running`、LOST 与 GROUP | `PerfReadValues` |
 | RESET | 清零事件值，保留累计 `time_enabled/time_running`；停止事务必须先完成 | `SystemFlexCounter::{finish_slice,reset}`、`SwEventState::reset()`、`SwClock` |
-| sample | 支持 `PERF_SAMPLE_READ`、TID、CPU、period 和 kernel/user FP callchain；`PERF_SAMPLE_REGS_USER` 仅接受零 mask 并输出 `PERF_SAMPLE_REGS_ABI_NONE` | `sampling::{SampleSlot,SampleReadEntry,build_sample}`、`perf::unwind`、`perf::uapi::validate_perf_event_attr()` |
+| sample | 支持 `PERF_SAMPLE_READ`、TID、CPU、period 和 kernel/user FP callchain；AArch64 `PERF_SAMPLE_REGS_USER` 接受零 mask 或 LR mask `1 << 30`，分别输出 ABI_NONE 或 ABI_64 与真实 LR | `sampling::{SampleSlot,SampleReadEntry,build_sample}`、`perf::unwind`、`perf::uapi::validate_perf_event_attr()` |
 | mmap page | 只在事件实际运行于硬件槽时公开非零 `index` 与用户读能力 | `SystemCounter::write_rdpmc_snapshot()`、`PerTaskCounter::write_rdpmc_snapshot()` |
 
 硬件事件若事件编码合法但目标 CPU 的 `PMCEID` 未实现，返回 Linux ARM PMUv3 backend 对应的 unsupported 错误；格式错误返回 `EINVAL`，错误 fd 返回 `EBADF`，目标线程消失返回 `ESRCH`。不能把未知字段、未知事件或输出关系静默忽略。
@@ -101,7 +101,7 @@ per-task sampling group 由 `PerTaskCounter` 统一调度并预构建 `PERF_SAMP
 
 ### 3.1 中断上下文快照
 
-AArch64 kernel IRQ 和 user IRQ 入口按值构造 `InterruptedContext { pc, sp, fp, privilege }`。用户 SP 必须来自进入汇编保存的 `UserContext.sp`，不能读取 Rust dispatch 时已恢复为线程头指针的 `SP_EL0`。per-CPU snapshot 仅在一次 `dispatch_irq()` 动态作用域内可见，RAII guard 在返回和 unwind 路径清除旧值。
+AArch64 kernel IRQ 和 user IRQ 入口按值构造 `InterruptedContext { pc, sp, fp, lr, privilege }`。用户 SP 必须来自进入汇编保存的 `UserContext.sp`，不能读取 Rust dispatch 时已恢复为线程头指针的 `SP_EL0`。LR 来自保存的 `x[30]`，用于 upstream perf 的 AArch64 FP unwinder 请求；只有用户 IRQ 且事件选择 LR 时才编码 ABI_64 和 LR，其他情况输出 ABI_NONE，不伪造用户寄存器。per-CPU snapshot 仅在一次 `dispatch_irq()` 动态作用域内可见，RAII guard 在返回和 unwind 路径清除旧值。
 
 `perf::unwind::{kernel_callchain,user_callchain}` 调用 `axbacktrace::walk_fp()` 并注入 reader：内核栈使用 `nofault::read_kernel_word()`，用户栈使用 `nofault::read_user_word()`。walker 检查 8 字节对齐、地址单调递增、地址范围、checked arithmetic、合理 frame gap 与输出容量，且不在遍历过程中分配。
 

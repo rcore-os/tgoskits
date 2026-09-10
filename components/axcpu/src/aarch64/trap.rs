@@ -239,6 +239,7 @@ unsafe extern "C" fn aarch64_trap_handler(raw: *mut RawTrapFrame, raw_kind: u8, 
                     pc: snapshot.ip(),
                     sp: snapshot.sp as usize,
                     fp: snapshot.x[29] as usize,
+                    lr: snapshot.x[30] as usize,
                     privilege: super::pmu::InterruptedPrivilege::Kernel,
                 });
             crate::trap::dispatch_irq(0, crate::trap::TrapOrigin::Kernel);

@@ -833,6 +833,8 @@ pub struct InterruptedContext {
     pub sp: usize,
     /// Frame pointer belonging to the interrupted context.
     pub fp: usize,
+    /// Link register saved at the interruption point.
+    pub lr: usize,
     /// Privilege domain of the interrupted context.
     pub privilege: InterruptedPrivilege,
 }

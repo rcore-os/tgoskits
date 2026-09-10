@@ -19,6 +19,7 @@
 #define PERF_SAMPLE_TIME (1ull << 2)
 #define PERF_SAMPLE_CALLCHAIN (1ull << 5)
 #define PERF_SAMPLE_ID (1ull << 6)
+#define PERF_SAMPLE_REGS_USER (1ull << 12)
 #define PERF_CONTEXT_USER ((uint64_t)-512)
 #define PERF_CONTEXT_MAX ((uint64_t)-4095)
 #define PERF_ATTR_FLAG_DISABLED (1ull << 0)
@@ -30,11 +31,13 @@
 #define SYS_PERF_EVENT_OPEN 241
 #define RING_BYTES (9u * 4096u)
 
-struct perf_event_attr_v0 {
+struct perf_event_attr_v3 {
     uint32_t type, size;
     uint64_t config, sample_period, sample_type, read_format, flags;
     uint32_t wakeup_events, bp_type;
     uint64_t bp_addr;
+    uint64_t config2, branch_sample_type, sample_regs_user;
+    uint32_t sample_stack_user, clockid;
 };
 
 struct perf_event_mmap_page {
@@ -56,24 +59,19 @@ struct perf_event_header {
     uint16_t misc, size;
 };
 
-_Static_assert(sizeof(struct perf_event_attr_v0) == 64, "perf attr v0 size");
+_Static_assert(sizeof(struct perf_event_attr_v3) == 96, "perf attr v3 size");
 _Static_assert(offsetof(struct perf_event_mmap_page, data_head) == 1024,
                "perf data_head offset");
 
 #if defined(__aarch64__)
-static int zero_fd = -1;
 static volatile uint64_t sink;
 
 __attribute__((noinline)) static void busy(void) {
-    static uint8_t page[4096];
+    /* Keep the sampled execution inside the four FP-linked user frames.
+     * Repeated /dev/zero reads mostly sample the kernel and turn this ABI
+     * check into a multi-gigabyte copy benchmark under icount. */
     for (uint64_t i = 0; i < 400000; i++) {
-        if (zero_fd >= 0) {
-            if (read(zero_fd, page, sizeof(page)) < 0) {
-                break;
-            }
-        } else {
-            sink += i * 3u + 1u;
-        }
+        sink += i * 3u + 1u;
     }
 }
 
@@ -94,14 +92,15 @@ int main(void) {
     puts("STARRY_PERF_CALLCHAIN_USER_OK");
     return 0;
 #else
-    struct perf_event_attr_v0 attr = {
+    struct perf_event_attr_v3 attr = {
         .type = PERF_TYPE_RAW,
         .size = sizeof(attr),
         .config = 0x11,
         .sample_period = 100000,
         .sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME |
-                       PERF_SAMPLE_ID | PERF_SAMPLE_CALLCHAIN,
-        .flags = PERF_ATTR_FLAG_DISABLED,
+                       PERF_SAMPLE_ID | PERF_SAMPLE_CALLCHAIN | PERF_SAMPLE_REGS_USER,
+        .sample_regs_user = 1ull << 30, /* upstream perf's AArch64 FP unwinder requests LR */
+        .flags = PERF_ATTR_FLAG_DISABLED | (1ull << 5), /* exclude_kernel */
     };
     int fd = (int)syscall(SYS_PERF_EVENT_OPEN, &attr, 0, -1, -1, 0ul);
     if (fd < 0) {
@@ -121,20 +120,16 @@ int main(void) {
         puts("perf-callchain-user FAILED: event id");
         return 1;
     }
-    zero_fd = open("/dev/zero", O_RDONLY);
     ioctl(fd, PERF_EVENT_IOC_RESET, 0);
     ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
     outer();
     ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-    if (zero_fd >= 0) {
-        close(zero_fd);
-    }
 
     uint64_t head = meta->data_head;
     __sync_synchronize();
     uint64_t tail = meta->data_tail;
     const uint8_t *ring = (const uint8_t *)mapping + meta->data_offset;
-    uint64_t samples = 0, user_chains = 0, max_user_ips = 0;
+    uint64_t samples = 0, user_chains = 0, max_user_ips = 0, user_regs = 0;
     int corrupt = 0;
     while (tail < head && meta->data_size != 0) {
         struct perf_event_header header;
@@ -184,6 +179,17 @@ int main(void) {
             if (user_ips > max_user_ips) {
                 max_user_ips = user_ips;
             }
+            cursor += nr * 8;
+            uint64_t abi = 0, lr = 0;
+            if (cursor + 8 > header.size) { corrupt = 1; break; }
+            ring_copy(ring, meta->data_size, start + cursor, &abi, 8);
+            cursor += 8;
+            if ((header.misc & 7) == 2) {
+                if (abi != 2 || cursor + 8 != header.size) { corrupt = 1; break; }
+                ring_copy(ring, meta->data_size, start + cursor, &lr, 8);
+                if (lr == 0 || lr >= (1ull << 48) || (lr & 3)) { corrupt = 1; break; }
+                user_regs++;
+            } else if (abi != 0 || cursor != header.size) { corrupt = 1; break; }
         }
         tail += header.size;
     }
@@ -194,7 +200,8 @@ int main(void) {
            (unsigned long long)max_user_ips, corrupt);
     munmap(mapping, RING_BYTES);
     close(fd);
-    if (corrupt || samples == 0 || user_chains == 0 || max_user_ips < 4) {
+    printf("STARRY_PERF_USER_LR samples=%llu\n", (unsigned long long)user_regs);
+    if (corrupt || samples == 0 || user_chains == 0 || max_user_ips < 4 || user_regs == 0) {
         puts("perf-callchain-user FAILED: no user callchain with four IPs");
         return 1;
     }

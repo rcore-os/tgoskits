@@ -83,6 +83,7 @@ pub struct PerTaskCounter {
     pub(super) sample_period: u32,
     /// Validated scalar `attr.sample_type`.
     pub(super) sample_type: u64,
+    pub(super) sample_user_lr: bool,
     /// Frequency mode (`attr.freq`): the overflow handler re-derives the period
     /// after each sample to converge on `freq_target` Hz. Fixed period when false.
     pub(super) freq: bool,
@@ -220,6 +221,8 @@ pub(in crate::perf) struct PerTaskConfig {
     pub(in crate::perf) sample_period: u32,
     /// `attr.sample_type` (only meaningful when `sample_period > 0`).
     pub(in crate::perf) sample_type: u64,
+    /// Capture the saved user LR for PERF_SAMPLE_REGS_USER.
+    pub(in crate::perf) sample_user_lr: bool,
     /// Frequency mode (`attr.freq`): the overflow handler adapts the period each
     /// slice toward `target_freq` Hz. Fixed `-c` period when false.
     pub(in crate::perf) freq: bool,
@@ -274,6 +277,7 @@ impl PerTaskCounter {
             is_sampling: cfg.sample_period > 0,
             sample_period: cfg.sample_period,
             sample_type: cfg.sample_type,
+            sample_user_lr: cfg.sample_user_lr,
             freq: cfg.freq,
             freq_target: cfg.target_freq,
             sample_id: AtomicU64::new(0),
@@ -342,6 +346,7 @@ impl PerTaskCounter {
             required_cluster: self.required_cluster,
             sample_period: self.sample_period,
             sample_type: self.sample_type,
+            sample_user_lr: self.sample_user_lr,
             freq: self.freq,
             target_freq: self.freq_target,
             want_comm: self.want_comm,

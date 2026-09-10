@@ -193,7 +193,7 @@ const PERF_RECORD_MISC_USER: u16 = 2;
 
 /// Upper bound on a single `PERF_RECORD_SAMPLE` we emit: 8-byte header plus at
 /// most nine 8-byte scalar fields (IDENTIFIER, IP, TID(pid+tid), TIME, ADDR, ID,
-/// STREAM_ID, CPU(cpu+res), PERIOD), plus the REGS_USER ABI discriminator.
+/// STREAM_ID, CPU(cpu+res), PERIOD), plus the REGS_USER ABI and saved LR.
 /// [`build_sample`] writes into a stack buffer of this size and returns the
 /// actual length.
 const MAX_STACK_DEPTH: usize = 64;
@@ -201,7 +201,7 @@ const MAX_CALLCHAIN_ENTRIES: usize = 1 + MAX_STACK_DEPTH;
 pub const MAX_SAMPLE_READ_EVENTS: usize = 31;
 const SAMPLE_READ_MAX_U64S: usize = 3 + MAX_SAMPLE_READ_EVENTS * 3;
 const SAMPLE_RECORD_MAX_LEN: usize =
-    8 + 9 * 8 + SAMPLE_READ_MAX_U64S * 8 + (1 + MAX_CALLCHAIN_ENTRIES) * 8 + 8;
+    8 + 9 * 8 + SAMPLE_READ_MAX_U64S * 8 + (1 + MAX_CALLCHAIN_ENTRIES) * 8 + 16;
 const LOST_RECORD_LEN: usize = 8 + 2 * 8;
 
 /// Per-source loss accounting, independent of a possibly shared output ring.
@@ -253,8 +253,7 @@ const PERF_SAMPLE_CPU: u64 = 1 << 7;
 const PERF_SAMPLE_PERIOD: u64 = 1 << 8;
 /// `PERF_SAMPLE_STREAM_ID`: stream id (`u64`).
 const PERF_SAMPLE_STREAM_ID: u64 = 1 << 9;
-/// `PERF_SAMPLE_REGS_USER`: user-register ABI discriminator. Starry currently
-/// reports `PERF_SAMPLE_REGS_ABI_NONE`, so no register payload follows.
+/// `PERF_SAMPLE_REGS_USER`: ABI discriminator and optional saved AArch64 LR.
 const PERF_SAMPLE_REGS_USER: u64 = 1 << 12;
 /// `PERF_SAMPLE_IDENTIFIER`: leading event id (`u64`), emitted first.
 const PERF_SAMPLE_IDENTIFIER: u64 = 1 << 16;
@@ -390,6 +389,8 @@ pub struct SampleSlot {
     /// `attr.sample_type`: the set of scalar fields each record carries (see
     /// [`build_sample`]). Validated against [`SUPPORTED_SAMPLE_TYPE`] at open.
     pub sample_type: u64,
+    /// Whether the event requested the saved AArch64 user link register.
+    pub sample_user_lr: bool,
     /// Event id emitted for the `PERF_SAMPLE_ID` / `PERF_SAMPLE_IDENTIFIER`
     /// fields. `0` when the event was opened without per-event ids (the common
     /// case in this single-group implementation).
@@ -418,6 +419,8 @@ pub struct SampleSlotConfig {
     pub(crate) count: Arc<SamplingCount>,
     pub period: u32,
     pub sample_type: u64,
+    /// Whether PERF_SAMPLE_REGS_USER selects the AArch64 LR bit.
+    pub sample_user_lr: bool,
     pub id: u64,
     pub read_format: u64,
     pub read_entries: [SampleReadEntry; MAX_SAMPLE_READ_EVENTS],
@@ -437,6 +440,7 @@ impl SampleSlot {
             output,
             period: config.period,
             sample_type: config.sample_type,
+            sample_user_lr: config.sample_user_lr,
             id: config.id,
             read_format: config.read_format,
             read_entries: config.read_entries,
@@ -630,6 +634,7 @@ pub fn replace_output(
                     count: Arc::clone(&slot.count),
                     period: slot.period,
                     sample_type: slot.sample_type,
+                    sample_user_lr: slot.sample_user_lr,
                     id: slot.id,
                     read_format: slot.read_format,
                     read_entries: slot.read_entries.clone(),
@@ -763,6 +768,12 @@ fn service_overflowed_slots(
             read_entries: &slot.read_entries[..read_len],
             read_values: &read_values[..read_len],
             callchain: &callchain[..callchain_len],
+            user_lr: interrupted
+                .filter(|context| {
+                    slot.sample_user_lr
+                        && context.privilege == ax_cpu::pmu::InterruptedPrivilege::User
+                })
+                .map(|context| context.lr as u64),
         };
         let len = build_sample(&mut record, sample_type, misc, &data);
 
@@ -947,6 +958,7 @@ struct SampleData<'a> {
     read_entries: &'a [SampleReadEntry],
     read_values: &'a [SampleReadValue],
     callchain: &'a [u64],
+    user_lr: Option<u64>,
 }
 
 fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> usize {
@@ -1043,9 +1055,12 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
         }
     }
     if sample_type & PERF_SAMPLE_REGS_USER != 0 {
-        // Linux requires only the ABI word when no user register set is
-        // available; a zero value means PERF_SAMPLE_REGS_ABI_NONE.
-        put!(0u64);
+        if let Some(lr) = d.user_lr {
+            put!(2u64); // PERF_SAMPLE_REGS_ABI_64
+            put!(lr);
+        } else {
+            put!(0u64); // PERF_SAMPLE_REGS_ABI_NONE
+        }
     }
 
     // Back-patch the header's `size` field now that the total length is known.
@@ -1301,6 +1316,7 @@ mod tests {
             read_entries: &entries,
             read_values: &values,
             callchain: &callchain,
+            user_lr: Some(8),
         };
         let mut record = [0u8; SAMPLE_RECORD_MAX_LEN];
         let sample_type = PERF_SAMPLE_IDENTIFIER
