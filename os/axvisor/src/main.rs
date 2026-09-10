@@ -46,6 +46,8 @@ mod manager;
 mod network_console;
 #[cfg(feature = "browser-console")]
 mod network_status;
+#[cfg(feature = "test-vcpu-perf")]
+mod perf_load;
 mod shell;
 
 /// Axvisor kernel entry point.
@@ -82,6 +84,8 @@ fn main() {
     fatal_regression::run();
 
     manager.init_default_vms();
+    #[cfg(feature = "test-vcpu-perf")]
+    let _performance_load = perf_load::start();
 
     // The browser-console registry snapshots the successfully initialized
     // default VM set exactly once. Initialize it before HTTP so the browser's

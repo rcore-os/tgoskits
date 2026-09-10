@@ -1,0 +1,16 @@
+[base]
+id = 1
+name = "arceos-vcpu-perf"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0]
+[kernel]
+entry_point = 0x80200000
+kernel_load_addr = 0x80200000
+dtb_load_addr = 0x80000000
+image_location = "memory"
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-vcpu-perf.bin"
+memory_regions = [[0x80000000, 0x20000000, 0x7, 0]]
+[devices]
+passthrough = []
+disabled = []

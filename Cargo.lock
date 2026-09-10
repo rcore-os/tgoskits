@@ -489,6 +489,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-vcpu-perf"
+version = "0.1.0"
+dependencies = [
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-virtio-blk-test"
 version = "0.1.0"
 dependencies = [

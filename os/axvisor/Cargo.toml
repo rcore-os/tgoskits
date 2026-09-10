@@ -58,6 +58,7 @@ test-el2-fatal = []
 test-el2-fatal-foreign-context = ["test-el2-fatal"]
 test-console-interleave = ["dep:ax-log"]
 test-console-atomic-output = []
+test-vcpu-perf = []
 # axum-based management HTTP server. Pulls `ax-std/net` explicitly so the
 # ArceOS network stack (which probes the QEMU virtio-net NIC and backs the
 # tokio `TcpListener`) is enabled only when the control plane is built; a

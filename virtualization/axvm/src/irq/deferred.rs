@@ -24,6 +24,11 @@ pub(crate) struct DeferredVcpuKick {
 }
 
 impl DeferredVcpuKick {
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn vm_id(&self) -> usize {
+        self.vm_id
+    }
+
     /// Creates an inactive publisher for one VM.
     pub(crate) fn new(vm_id: usize) -> Arc<Self> {
         Arc::new(Self {

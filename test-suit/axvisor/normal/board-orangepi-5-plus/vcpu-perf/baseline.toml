@@ -1,0 +1,9 @@
+# Median of three independent Orange Pi 5 Plus boots, rounded down.
+baseline_blocks_per_second = 369906
+max_regression_percent = 10
+min_timer_wakes_per_second = 50
+reference_platform = "RK3588 OPi 5 Plus, A55 CPU 0, rk3588-cpufreq"
+reference_base_commit = "5163723577f6fc2c4d0ef255f0cf8d62075614ba"
+reference_fix = "local-entry VGIC notification elision and FIFO-only exit yield"
+reference_guest_sha256 = "57ec37919f46f5db8401bb3b86ccb8944a61a69acb02cc3b5163cb32162c6f5d"
+reference_runs = [369906.24, 369302.83, 369934.27]

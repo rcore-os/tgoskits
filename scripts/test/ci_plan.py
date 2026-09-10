@@ -85,9 +85,11 @@ CHECK_FIELDS = {
     "impact_packages",
     "pull_request_command",
     "suite",
+    "suite_preserve_command",
 }
 REQUIRED_CHECK_FIELDS = {"id", "name", "command"}
 BOOLEAN_CHECK_FIELDS = {
+    "suite_preserve_command",
     "upload_xtask_bin_artifact",
     "download_xtask_bin_artifact",
     "wifi_secrets",
@@ -523,6 +525,7 @@ def _plan_suite_rows(
 
     checks_by_id = {check["id"]: check for check in checks}
     rows = []
+    preserved_templates = set()
     for selection in selections:
         template = checks_by_id[selection.template_id]
         if not _is_enabled(template, context):
@@ -530,6 +533,14 @@ def _plan_suite_rows(
                 f"test suite path `{selection.source_path}` requires unavailable "
                 f"check '{selection.template_id}'"
             )
+        if template.get("suite_preserve_command", False):
+            # A preserved wrapper covers all its leaves. Do not run it twice
+            # when another leaf or the ordinary impact row already covers it.
+            if selection.template_id in preserved_templates or (
+                not impact.exclusive and _matches_impact(template, context)
+            ):
+                continue
+            preserved_templates.add(selection.template_id)
         rows.append(_normalize_suite_selection(template, selection, context))
     return rows
 
@@ -540,6 +551,8 @@ def _normalize_suite_selection(
     context: PlanContext,
 ) -> dict[str, Any]:
     row = _normalize_check(template, context)
+    if template.get("suite_preserve_command", False):
+        return row
     row.update(
         {
             "id": selection.row_id,
