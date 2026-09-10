@@ -449,3 +449,33 @@ stopper/perf/cpufreq 服务在 `spawn` 前使用 `policy/affinity`，普通服�
 这项迁移复用既有真实 kernel axtest 与 CI 功能矩阵，不增加只检查转发关系的测试。全仓 Rust 检索确认 Starry 的上述旧入口已无定义或调用；ArceOS runtime 自身的默认栈配置仍由其平台装配层维护。
 
 迁移后的 x86_64 kernel axtest 共 182 项通过，无失败或跳过，日志 `/tmp/pr2357-kernel-builder-ktest.log`。本次未新增内核行为，因此没有为单纯转发接口构造人工红绿；调度、退出与资源回收继续由已有真实运行时回归约束。两包增量 std 全部通过，日志 `/tmp/pr2357-kernel-builder-std.log`；Starry 定向 clippy 四架构 92/92 组合全部通过，日志 `/tmp/pr2357-kernel-builder-clippy.log`；未执行本地全工作区 clippy。
+
+### 5.23 固定 dev 提交的 CI 复核
+
+复核沿用首次调查保存的 15 个 dev 提交，以 `81d50f67ac` 为清单顶端，不把调查期间新合入的提交替换进来。GitHub 当前查询得到 7 轮失败、6 轮成功、1 轮取消、1 个提交无 CI 记录。运行状态只证明对应提交的 CI 结果，不能单独确定错误归属。原始清单、运行及作业元数据保存在 `/tmp/ax-task-dev15/{commits,runs,jobs}.json`。
+
+| dev 提交 | CI 运行 | 当前终态 |
+| --- | --- | --- |
+| `81d50f67ac` | [34430391363](https://github.com/rcore-os/tgoskits/actions/runs/34430391363) | failure |
+| `cee67bd09a` | [34428429562](https://github.com/rcore-os/tgoskits/actions/runs/34428429562) | failure |
+| `b2a3682a7b` | [34424085211](https://github.com/rcore-os/tgoskits/actions/runs/34424085211) | success |
+| `3e751a68b8` | [34418485986](https://github.com/rcore-os/tgoskits/actions/runs/34418485986) | cancelled |
+| `ac8eaf7bb7` | [34418199371](https://github.com/rcore-os/tgoskits/actions/runs/34418199371) | failure |
+| `cc3db295c8` | [34368351913](https://github.com/rcore-os/tgoskits/actions/runs/34368351913) | success |
+| `1027176f76` | [34346970094](https://github.com/rcore-os/tgoskits/actions/runs/34346970094) | success |
+| `bbf4772685` | [34340537243](https://github.com/rcore-os/tgoskits/actions/runs/34340537243) | success |
+| `63365ffb7c` | [34339553573](https://github.com/rcore-os/tgoskits/actions/runs/34339553573) | failure |
+| `ad49842255` | [34332660124](https://github.com/rcore-os/tgoskits/actions/runs/34332660124) | failure |
+| `504808b73b` | [34329952009](https://github.com/rcore-os/tgoskits/actions/runs/34329952009) | failure |
+| `581c44ad98` | [34327850888](https://github.com/rcore-os/tgoskits/actions/runs/34327850888) | success |
+| `cc8faa9222` | 无记录 | 无法确认 |
+| `cdfe00c678` | [34325466260](https://github.com/rcore-os/tgoskits/actions/runs/34325466260) | success |
+| `d64451917e` | [34321235630](https://github.com/rcore-os/tgoskits/actions/runs/34321235630) | failure |
+
+失败日志中，`102720076216` 的 AArch64 `block_runtime_async_double_read` 触发旧 CID 不等断言，已由第 5 节的独立 DMA 所有权回归修正；不能因 CID 相同认定调度错误。`102689248865` 的 x86_64 `test-uid-gid-re-setters` 在 NPTL 并发 setreuid 阶段超时，前两项已通过，尚无阻塞任务或唤醒链证据，继续保留为待定位项。
+
+`102449958281`、`102449957971` 在 rootfs 下载时 HTTP 500，`102462774825` 在获取镜像 registry 时连接超时，均未进入对应 guest 测试。robot 的 `102728943741`、`102439317535` 直接失败于 28 FPS 门槛，`102689249124` 第二次运行无帧后超时；伴随 xHCI/USB 错误但不足以归因调度，性能处理仍按用户要求暂停。NUC 作业 `102401877640` 按要求排除。未改变阈值、重试次数或测试断言。
+
+日志源码版本以 checkout 后的 `git log -1 --format=%H` 为准；日志中的 `a69a63265...` 是 Rust 工具链版本，不是 TGOSKits 提交。全部八份非 NUC 失败日志已下载为 `/tmp/ax-task-dev15/job-<id>.log`；下载连接失败后补取的是同一作业日志，不是重新运行测试。
+
+在本地 `1837ad4cc8` 执行原 `qemu/system/syscall-test-uid-gid-re-setters`，x86_64 四核通过，三项 NPTL 同步均通过，日志 `/tmp/pr2357-dev15-nptl-current.log`。这次没有修改测试或凭据/信号实现，因而只证明当前单次运行通过，不作为原超时已经定位或修复的证据。
