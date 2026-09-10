@@ -134,14 +134,14 @@ impl UserTaskRef {
     }
 
     /// Returns a shared snapshot of the diagnostic task name.
-    pub fn name(&self) -> Arc<str> {
+    pub fn name(&self) -> Arc<String> {
         self.extension().name.lock().clone()
     }
 
     /// Replaces the Linux-visible thread command name.
     pub fn set_name(&self, name: &str) {
         let extension = self.extension();
-        let replacement = Arc::<str>::from(name);
+        let replacement = Arc::new(String::from(name));
         let previous = {
             let mut stored_name = extension.name.lock();
             let previous = core::mem::replace(&mut *stored_name, replacement);
@@ -695,12 +695,17 @@ where
     let scheduler_tick_gate = thread.proc_data.scheduler_tick_gate();
     let scheduler_tick_cpu_time = thread.cpu_time().scheduler_tick_cpu_time();
     let irq_identity = IrqTaskIdentity::new(&thread, &name);
-    let data = Box::into_raw(Box::new(StarryUserTaskExtension {
-        thread,
-        name: Mutex::new(Arc::from(name.as_str())),
-        irq_identity,
-        reset_on_fork: AtomicBool::new(context_state.scheduler_state.reset_on_fork),
-    })) as usize;
+    let extension_name = prepare_task_name(&name)?;
+    user_extension_allocation_point()?;
+    let data = Box::into_raw(
+        Box::try_new(StarryUserTaskExtension {
+            thread,
+            name: Mutex::new(extension_name),
+            irq_identity,
+            reset_on_fork: AtomicBool::new(context_state.scheduler_state.reset_on_fork),
+        })
+        .map_err(|_| user_extension_no_memory())?,
+    ) as usize;
     // SAFETY: `data` is a uniquely owned `Box<StarryUserTaskExtension>`. The
     // runtime takes that ownership even when scheduler creation fails and
     // invokes `starry_user_task_drop` exactly once from task/reaper context.
@@ -747,6 +752,27 @@ where
     })
 }
 
+fn user_extension_no_memory() -> scheduler::thread::TaskError {
+    scheduler::thread::TaskError::RuntimeFailure(scheduler::runtime::RuntimeStatus::NoMemory as u32)
+}
+
+fn user_extension_allocation_point() -> Result<(), scheduler::thread::TaskError> {
+    #[cfg(axtest)]
+    scheduler::thread::ThreadAllocationProbe::allocation_point()?;
+    Ok(())
+}
+
+fn prepare_task_name(name: &str) -> Result<Arc<String>, scheduler::thread::TaskError> {
+    user_extension_allocation_point()?;
+    let mut snapshot = String::new();
+    snapshot
+        .try_reserve_exact(name.len())
+        .map_err(|_| user_extension_no_memory())?;
+    snapshot.push_str(name);
+    user_extension_allocation_point()?;
+    Arc::try_new(snapshot).map_err(|_| user_extension_no_memory())
+}
+
 fn finish_published_user_thread(handle: scheduler::thread::ThreadHandle) -> UserTaskRef {
     match UserTaskRef::try_from_scheduler(handle) {
         Ok(Some(task)) => task,
@@ -757,7 +783,7 @@ fn finish_published_user_thread(handle: scheduler::thread::ThreadHandle) -> User
 
 struct StarryUserTaskExtension {
     thread: Thread,
-    name: Mutex<Arc<str>>,
+    name: Mutex<Arc<String>>,
     irq_identity: IrqTaskIdentity,
     reset_on_fork: AtomicBool,
 }
@@ -1014,16 +1040,6 @@ mod tests {
     }
 
     #[test]
-    fn task_name_uses_a_sleepable_snapshot_lock() {
-        fn assert_name_lock(_: &crate::sync::Mutex<alloc::sync::Arc<str>>) {}
-        fn assert_extension_name_lock(extension: &StarryUserTaskExtension) {
-            assert_name_lock(&extension.name);
-        }
-
-        let _ = assert_extension_name_lock as fn(&StarryUserTaskExtension);
-    }
-
-    #[test]
     fn missing_and_foreign_extensions_are_not_user_tasks() {
         assert_eq!(
             classify_starry_extension(None, 0),
@@ -1105,4 +1121,79 @@ mod tests {
     }
 
     unsafe extern "Rust" fn foreign_thread_drop(_data: usize) {}
+}
+
+#[cfg(axtest)]
+#[axtest::axtest]
+fn task_name_allocation_failure_preserves_snapshot() {
+    use scheduler::{
+        runtime::RuntimeStatus,
+        thread::{TaskError, ThreadAllocationProbe},
+    };
+    let original = prepare_task_name("existing").unwrap();
+    for failure in 0..2 {
+        let probe = ThreadAllocationProbe::fail_at(failure).unwrap();
+        assert!(
+            matches!(prepare_task_name("replacement"), Err(TaskError::RuntimeFailure(code))
+            if code == RuntimeStatus::NoMemory as u32),
+            "name allocation failure must return ENOMEM"
+        );
+        drop(probe);
+        assert_eq!(original.as_str(), "existing");
+        assert_eq!(
+            prepare_task_name("recovered").unwrap().as_str(),
+            "recovered"
+        );
+    }
+}
+
+#[cfg(axtest)]
+#[axtest::axtest]
+fn unpublished_extension_allocation_releases_process() {
+    use scheduler::{
+        runtime::RuntimeStatus,
+        thread::{TaskError, ThreadAllocationProbe},
+    };
+
+    use crate::task::{PidReservation, PidReservationKind, ROOT_PID_NS, Tgid, Tid};
+
+    for failure in 0..3 {
+        let reservation =
+            PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader).unwrap();
+        let identity = reservation.identity();
+        let tid = identity.acquire_role::<Tid>().unwrap();
+        let tgid = identity.acquire_role::<Tgid>().unwrap();
+        let process = crate::task::new_test_process_data(identity.clone(), tgid);
+        let retired_process = Arc::downgrade(&process);
+        let thread = Thread::new(
+            identity,
+            tid,
+            process,
+            None,
+            Default::default(),
+            scope_local::Scope::new(),
+        );
+        let mm =
+            ax_runtime::thread::TaskAddressSpace::new(ax_hal::asm::read_kernel_page_table(), ())
+                .unwrap();
+        let context = StarryContextState::user(mm);
+        let probe = ThreadAllocationProbe::fail_at(failure).unwrap();
+        let result = prepare_user_thread_inner(
+            || panic!("failed extension must not execute"),
+            String::from("extension-rollback"),
+            crate::config::KERNEL_STACK_SIZE,
+            thread,
+            context,
+        );
+        assert!(
+            matches!(result, Err(TaskError::RuntimeFailure(code)) if code == RuntimeStatus::NoMemory as u32)
+        );
+        assert_eq!(probe.attempts(), failure + 1);
+        drop(probe);
+        assert!(
+            retired_process.upgrade().is_none(),
+            "unpublished extension retained its process"
+        );
+        drop(reservation);
+    }
 }

@@ -367,3 +367,13 @@ WFI 边界用例现在持有真实 staged 预留，使结果有明确前提：�
 分配提交 `6ebdd372eb` 的最终错误映射复测四架构通过：AArch64 179 项，其余各 178 项，日志 `/tmp/pr2357-oom-errno-green.log`、`/tmp/pr2357-oom-errno-riscv64.log`、`/tmp/pr2357-oom-errno-final-{aarch64,loongarch64}.log`。`cargo xtask test --since 3c7f1c69d4` 的 13 包全部通过。补充 ax-api/Starry 定向 clippy 在第 85/101 项因构建输出目录缺失中断，不能记为全通过；此前第 5.13 节的 85 个资源实现组合与本次补充检查是不同记录。完整静态门禁继续交给 CI，未扩大为本地全工作区 clippy。
 
 最终四架构 `task-cpu-lifecycle` 全部通过，日志 `/tmp/pr2357-idle-boundary-final-<arch>.log`。同一 RISC-V 默认入口复测 `all/task-irq/task-cpu-lifecycle` 3 项通过，日志 `/tmp/pr2357-idle-boundary-default-riscv64.log`。原始远端失败日志为 `/tmp/pr2357-6eb-riscv-failure.log`；这些证据区分请求已处理、预留拒绝和真正排空后的成功下线。
+
+### 5.15 Starry 扩展的前置分配
+
+`prepare_user_thread_inner` 在调用公共 builder 前仍需创建 `StarryUserTaskExtension`，因此核心创建对象的可失败分配并不覆盖这层 OS 状态。该入口改用 `Box::try_new`；共享线程名采用 `Arc<String>`，先通过 `String::try_reserve_exact` 复制内容，再使用 `Arc::try_new` 建立共享快照。失败沿既有 `TaskError::RuntimeFailure(NoMemory)` 返回，尚未移交的 `Thread`、MM 配置与闭包按 Rust 所有权释放。没有引入可变尾部对象或自定义引用计数。
+
+`UserTaskRef::name` 和 extension 字段同时迁移到新的快照类型，原有名称读取调用方由内核构建检查覆盖；名称内容及锁外构造、锁内替换、锁外释放旧快照的顺序保持不变。这一改动只补齐用户线程装配的前置分配，不宣称 `Thread::new`、进程资源复制及名称更新等其他入口的全部分配已具备 OOM 回滚。
+
+`task_name_allocation_failure_preserves_snapshot` 在真实 kernel axtest 中逐一注入字符串存储及共享快照分配失败。旧实现确定性触发 `name allocation failure must return ENOMEM`，新实现返回 ENOMEM，旧快照保持有效，随后正常构造成功。`unpublished_extension_allocation_releases_process` 使用真实 PID 预留、Thread 和 ProcessData，在装配的三个分配边界失败，检查入口不能执行、错误与尝试次数正确、进程没有被残留 extension 引用保留。它不替换调度运行时，也不模拟整机堆耗尽。
+
+x86_64 的同一名称回归红绿日志为 `/tmp/pr2357-starry-name-{red,green}.log`；加入 extension 回滚后 x86_64 kernel axtest 180 项通过，日志 `/tmp/pr2357-starry-extension-green.log`。RISC-V 同一内核套件通过，日志 `/tmp/pr2357-starry-extension-riscv64.log`。其余架构与 Starry 定向 clippy 仍在执行，尚未计为通过。LoongArch 下线回归的 `Some(false)` 仍未定位具体拒绝条件，本节分配修复不作为该 CI 故障的修复证据。
