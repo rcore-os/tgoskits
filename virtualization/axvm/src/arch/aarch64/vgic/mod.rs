@@ -231,6 +231,21 @@ struct Aarch64VcpuWake {
 
 impl GicV3VcpuWake for Aarch64VcpuWake {
     fn wake(&self) -> VgicResult {
+        if crate::vcpu::with_current_vcpu::<crate::arch::current::ArchVCpu, _>(|current| {
+            current.is_some_and(|vcpu| {
+                vcpu.vm_id() == self.kick.vm_id()
+                    && vcpu.id() == self.vcpu_id
+                    && vcpu.entry_loop_is_active()
+            })
+        }) {
+            // Canonical VGIC state was published before this callback. The
+            // owner loads it with local IRQs masked immediately before guest
+            // entry; IRQs stay masked through guest exit and VGIC save. Thus
+            // a local callback either precedes that load or follows the exit.
+            // The scoped publication excludes migration and sleeping vCPUs.
+            // Nonlocal and control-plane callbacks retain the deferred path.
+            return Ok(());
+        }
         self.kick
             .publish_from_irq(self.vcpu_id)
             .map_err(|error| VgicError::Backend {

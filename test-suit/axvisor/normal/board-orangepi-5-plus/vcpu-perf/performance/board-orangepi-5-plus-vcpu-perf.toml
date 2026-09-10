@@ -1,0 +1,6 @@
+board_type = "OrangePi-5-Plus"
+timeout = 120
+fail_regex = ['VCPU_PERF_FAIL', '(?i)\bpanic(?:ked)?\b', 'Failed to initialize guest VM']
+
+[[shell_check_steps]]
+success_regex = ['(?m)^(?:\[VM 1\] )?VCPU_PERF_DONE windows=5\s*$']
