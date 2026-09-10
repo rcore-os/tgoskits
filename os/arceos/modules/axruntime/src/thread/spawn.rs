@@ -17,25 +17,33 @@ pub fn builder(name: String) -> ThreadBuilder {
 
 /// Initial user address space and architecture-specific floating-point state.
 pub struct UserContextOptions {
-    state: InitialContextState,
+    pub(super) address_space: TaskAddressSpace,
+    #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
+    pub(super) fp_state: Option<ax_hal::cpu::FpState>,
+    #[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
+    pub(super) inherit_current_fp: bool,
 }
 impl UserContextOptions {
     /// Creates a user context with the architecture's initial FP state.
     pub fn new(address_space: TaskAddressSpace) -> Self {
         Self {
-            state: InitialContextState::user(address_space),
+            address_space,
+            #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
+            fp_state: None,
+            #[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
+            inherit_current_fp: false,
         }
     }
     /// Supplies the child's RISC-V floating-point register image.
     #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
     pub fn with_fp_state(mut self, state: ax_hal::cpu::FpState) -> Self {
-        self.state.fp_state = Some(state);
+        self.fp_state = Some(state);
         self
     }
     /// Captures the calling thread's user FP state during context preparation.
     #[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
     pub fn inherit_current_fp(mut self) -> Self {
-        self.state.inherit_current_fp();
+        self.inherit_current_fp = true;
         self
     }
 }
@@ -51,14 +59,14 @@ pub unsafe fn prepare_user_thread(
     options: UserContextOptions,
 ) -> Result<PreparedThread, TaskError> {
     #[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
-    if options.state.inherits_current_fp() {
+    if options.inherit_current_fp {
         context::validate_current_user_fp_clone_context()?;
     }
     // SAFETY: the resource factory installs the provided trampoline, and its
     // rollback owns every partial allocation until returning a complete bundle.
     unsafe {
         builder.prepare_with(entry, |request, trampoline| {
-            create_thread_resources(request, trampoline, options.state)
+            create_user_resources(request, trampoline, options)
         })
     }
 }

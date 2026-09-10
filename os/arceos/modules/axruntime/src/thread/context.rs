@@ -338,6 +338,10 @@ fn create_runtime_context_parts(
     entry: ax_task::runtime::resource::KernelEntry,
     tls_handle: ax_task::runtime::resource::TlsHandle,
 ) -> RuntimeHandleResult {
+    #[cfg(feature = "fault-injection")]
+    if super::creation_probe::record(super::creation_probe::CreationEvent::Context) {
+        return RuntimeHandleResult::failure(RuntimeStatus::NoMemory);
+    }
     if stack_handle.is_none() {
         return RuntimeHandleResult::failure(RuntimeStatus::InvalidHandle);
     }
@@ -382,10 +386,16 @@ pub(super) fn destroy_runtime_context(handle: ExecutionContextHandle) -> Runtime
     // SAFETY: the scheduler proves this context cannot run again and consumes
     // its runtime handle exactly once.
     drop(unsafe { Box::from_raw(context) });
+    #[cfg(feature = "fault-injection")]
+    super::creation_probe::record(super::creation_probe::CreationEvent::DropContext);
     RuntimeStatus::Success
 }
 
 pub(super) fn bind_runtime_context_thread(binding: ContextThreadBinding) -> RuntimeStatus {
+    #[cfg(feature = "fault-injection")]
+    if super::creation_probe::record(super::creation_probe::CreationEvent::Bind) {
+        return RuntimeStatus::NoMemory;
+    }
     if !binding.publication.identity().is_bound() || binding.publication.owner().is_none() {
         return RuntimeStatus::InvalidArgument;
     }

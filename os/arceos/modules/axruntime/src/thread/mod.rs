@@ -38,6 +38,8 @@ pub use mm_activation::{
 mod bootstrap;
 pub(crate) mod context;
 
+#[cfg(feature = "fault-injection")]
+pub mod creation_probe;
 mod resources;
 pub(crate) mod runtime_impl;
 pub(crate) mod scheduler_events;
@@ -164,13 +166,7 @@ fn finish_initial_scheduler_switch() {
 }
 #[cfg(all(test, kernel_tls))]
 use thread_resources::assemble_bootstrap_resources;
-use thread_resources::{
-    InitialContextState, create_bootstrap_resources, create_idle_resources, create_thread_resources,
-};
-#[cfg(test)]
-use thread_resources::{
-    ThreadResourceBackend, UnreleasedThreadResources, create_thread_resources_with,
-};
+use thread_resources::{create_bootstrap_resources, create_idle_resources, create_user_resources};
 #[cfg(feature = "uspace")]
 pub use user_entry::UserExecutionContext;
 

@@ -9,6 +9,7 @@ use ax_std::os::arceos::{
 use super::*;
 
 pub(super) fn run() {
+    resource_failure_rollback();
     reclaim_rejects_atomic_context();
     managed_exit_requires_token();
     cancellation_is_deferred();
@@ -180,4 +181,47 @@ fn reclaim_rejects_atomic_context() {
     assert_eq!(error.task_error(), TaskError::UnsafeContext);
     error.into_retry_handle().join().unwrap();
     println!("task_wait_queue: atomic direct reclamation rejected OK");
+}
+
+fn resource_failure_rollback() {
+    use ax_runtime::thread::creation_probe::{
+        CreationEvent as E, CreationStage as S, ThreadCreationProbe,
+    };
+    let cases: &[(S, &[E])] = &[
+        (S::Stack, &[E::Stack]),
+        (S::Tls, &[E::Stack, E::Tls, E::DropStack]),
+        (
+            S::Context,
+            &[E::Stack, E::Tls, E::Context, E::DropTls, E::DropStack],
+        ),
+        (
+            S::Bind,
+            &[
+                E::Stack,
+                E::Tls,
+                E::Context,
+                E::Bind,
+                E::DropContext,
+                E::DropTls,
+                E::DropStack,
+            ],
+        ),
+    ];
+    for &(stage, expected) in cases {
+        let counters = Arc::new(ExtensionProbe::default());
+        let data = Box::into_raw(Box::new(Arc::clone(&counters))) as usize;
+        // SAFETY: the extension owns this boxed probe until creation rollback.
+        let extension = unsafe { ThreadExtension::new(data, &PROBE_OPS) };
+        let probe = ThreadCreationProbe::fail_at(stage).unwrap();
+        let result = ax_std::os::arceos::thread::builder("allocation-rollback".into())
+            .extension(extension)
+            .prepare(|| panic!("failed resource transaction became runnable"));
+        assert!(matches!(result, Err(TaskError::RuntimeFailure(code))
+            if code == ax_std::os::arceos::task::runtime::RuntimeStatus::NoMemory as u32));
+        assert_eq!(probe.events(), expected, "rollback order at {stage:?}");
+        assert_eq!(counters.dropped.load(Ordering::Acquire), 1);
+        assert_eq!(counters.switched_in.load(Ordering::Acquire), 0);
+        assert_eq!(counters.exited.load(Ordering::Acquire), 0);
+    }
+    println!("task_wait_queue: real resource-stage rollback OK");
 }

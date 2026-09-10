@@ -310,6 +310,10 @@ impl TaskAddressSpace {
         cpu_state: Arc<AddressSpaceCpuState>,
         owner: Box<dyn TaskAddressSpaceOwner>,
     ) -> Result<Self, TaskError> {
+        #[cfg(feature = "fault-injection")]
+        if super::creation_probe::record(super::creation_probe::CreationEvent::Mm) {
+            return Err(TaskError::RuntimeFailure(RuntimeStatus::NoMemory as u32));
+        }
         if root.as_usize() == 0 || !cpu_state.matches_root(root) {
             return Err(TaskError::InvalidRuntimeHandle);
         }
@@ -325,6 +329,7 @@ impl TaskAddressSpace {
         Ok(Self(Some(unsafe { AddressSpaceToken::from_raw(raw) })))
     }
 
+    #[cfg(any(feature = "uspace", test))]
     pub(super) fn handle(&self) -> AddressSpaceHandle {
         self.0
             .as_ref()
@@ -730,6 +735,8 @@ pub(super) fn prepare_runtime_address_space_switch<'pin, 'cpu>(
     same_address_space: bool,
     phase: AddressSpaceTransitionPhase,
 ) -> Result<PreparedAddressSpaceSwitch<'pin, 'cpu>, RuntimeStatus> {
+    #[cfg(feature = "fault-injection")]
+    super::creation_probe::record_mm_switch(!previous_selected.is_none(), !next_selected.is_none());
     #[cfg(feature = "uspace")]
     let pin = _pin;
     #[cfg(feature = "uspace")]

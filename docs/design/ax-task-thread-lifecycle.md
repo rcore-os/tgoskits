@@ -236,3 +236,18 @@ CPU 下线 pin 检查已覆盖 idle 提前返回，但当前 ArceOS 没有安全
 `wait_queue/lifecycle_review.rs` 对三项问题分别取得 x86_64 四核 QEMU 确定性失败：原子上下文取消同步变为 `Exited`、公共 `mark_exited` 成功消费 managed 退出权、直接回收未优先返回 `UnsafeContext`。同一断言在修复后通过，日志为 `/tmp/pr2357-review-{cancel,owner,reclaim}-red.log` 和 `/tmp/pr2357-review-green.log`。取消测试让真实 reaper 的退出回调等待协调线程，保证观察时消费者尚未处理取消请求，不依赖竞态概率。
 
 补充用例在真实硬定时器回调中取消 prepare/stage 令牌，包含不保留管理句柄的最后引用路径；同时检查 raw 锁、RT 锁及 IRQ 保护中的直接回收均被拒绝。最终四架构 `task-wait-queue` 通过，x86_64 `task-pi-mutex` 通过；定向 `cargo xtask clippy --package ax-task --package arceos-test-suit` 的 2 包、46 组合通过。全工作区 clippy 交由 PR CI。日志为 `/tmp/pr2357-review-final-{x86_64,riscv64,aarch64}.log`、`/tmp/pr2357-review-green-loongarch64.log`、`/tmp/pr2357-review-pi-green.log` 和 `/tmp/pr2357-review-clippy.log`。
+
+
+### 5.4 资源装配收尾
+
+用户上下文装配删除了 `InitialContextState`、`ThreadResourceBackend`、`ThreadResourceCreationFailure` 和 `UnreleasedThreadResources`。`UserContextOptions` 直接拥有必需的 MM 和架构 FP 配置，不再保留未被调用的 kernel 分支。`create_user_resources` 在第一次分配前建立 `UnpublishedContext`，成功时转交完整 `ThreadResources`，失败时由同一任务上下文释放 context、TLS、stack。MM 在完成架构初始化前仍由配置持有；因此任何失败都不能遗失它的唯一所有权。执行资源释放遵循当前 TaskRuntime 的一次性消费契约，不恢复旧的 Busy/重试状态。虚拟栈 shootdown 失败时的隔离区由 ax-mm 独立持有，不能重试已经消费的栈句柄。
+
+`ax-runtime/fault-injection` 只用于真实内核测试。`ThreadCreationProbe` 用创建者 ThreadId 限定一次故障，只记录实际提供者的分配入口和释放顺序；其他任务及硬中断不受影响。删除的宿主 fake backend 测试由 ArceOS `task-wait-queue` 的栈/TLS/context/bind 失败回滚和 Starry `user_context_resource_failure_rollback` 的 MM/栈/TLS/context/FP/bind 回滚替代。FP 注入验证的是上下文已创建、FP 初始化尚未结束时的事务回滚，不声称默认 FP 初始化新增了可恢复硬件错误。
+
+### 5.5 MM 交接验收
+
+Starry `thread_lifecycle_axtest::user_kernel_mm_switch_matrix` 让同 CPU、同优先级 FIFO 的两个带 MM 上下文和两个 kernel 上下文依次运行，验证 UU、UK、KK、KU 四类实际切换。它们使用始终有效的内核页表根且不进入用户态；运行时 MM 身份和 CPU lease 是真实对象，带 MM 的入口检查实际硬件根。首次入口、阻塞恢复和 yield 后检查 IRQ 已恢复、阻塞许可有效。
+
+同一用例验证 active-MM 独立寿命：第一个 MM 在被第二个 MM 替换后释放；最后一个 user 线程退出并 join 后，其 MM 仍由 kernel lazy-MM 借用；再切换到另一 MM 后才释放一次。没有用管理句柄引用数代替 CPU lease 退出证明。用户返回前的 membarrier/TLB 屏障保留原实现；该用例验证 MM 交接与回收，不把 kernel 闭包执行误记为返回用户态或弱内存屏障的系统证明。
+
+用户上下文测试使用现有 `cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --features axtest,smp --arch <arch>`；`.github/ci/checks/starry.toml` 的四架构任务已经调用该入口，不需要额外的 CI 特例。ArceOS 的真实 std 套件与 uspace 的 TLS 寄存器所有权不同，不能为了复用一个测试二进制而同时启用两种模式。

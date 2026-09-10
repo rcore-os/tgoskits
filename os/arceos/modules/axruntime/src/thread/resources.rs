@@ -32,6 +32,10 @@ struct RuntimeTls {
 }
 
 pub(super) fn allocate_runtime_stack(request: StackRequest) -> Result<StackHandle, RuntimeStatus> {
+    #[cfg(feature = "fault-injection")]
+    if super::creation_probe::record(super::creation_probe::CreationEvent::Stack) {
+        return Err(RuntimeStatus::NoMemory);
+    }
     if request.usable_size == 0 || request.alignment == 0 || !request.alignment.is_power_of_two() {
         return Err(RuntimeStatus::InvalidArgument);
     }
@@ -132,10 +136,16 @@ pub(super) fn deallocate_runtime_stack(handle: StackHandle) -> RuntimeStatus {
             }
         }
     }
+    #[cfg(feature = "fault-injection")]
+    super::creation_probe::record(super::creation_probe::CreationEvent::DropStack);
     RuntimeStatus::Success
 }
 
 pub(super) fn allocate_runtime_tls() -> RuntimeHandleResult {
+    #[cfg(feature = "fault-injection")]
+    if super::creation_probe::record(super::creation_probe::CreationEvent::Tls) {
+        return RuntimeHandleResult::failure(RuntimeStatus::NoMemory);
+    }
     #[cfg(kernel_tls)]
     {
         let tls = Box::new(RuntimeTls {
@@ -150,6 +160,10 @@ pub(super) fn allocate_runtime_tls() -> RuntimeHandleResult {
 }
 
 pub(super) fn deallocate_runtime_tls(handle: TlsHandle) -> RuntimeStatus {
+    #[cfg(feature = "fault-injection")]
+    if !handle.is_none() {
+        super::creation_probe::record(super::creation_probe::CreationEvent::DropTls);
+    }
     if handle.is_none() {
         return RuntimeStatus::Success;
     }
