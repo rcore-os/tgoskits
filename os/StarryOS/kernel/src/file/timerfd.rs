@@ -168,11 +168,9 @@ impl Timerfd {
         // Hand a weak reference to the task so the Timerfd can be freed
         // (and the task told to exit) when userspace closes the fd.
         let weak = Arc::downgrade(&this);
-        crate::task::spawn_kernel_thread_with_stack(
-            move || block_on(run_timer(weak)),
-            "timerfd".to_owned(),
-            crate::task::default_task_stack_size(),
-        );
+        crate::task::kernel_thread_builder("timerfd".to_owned())
+            .spawn(move || block_on(run_timer(weak)))
+            .expect("failed to spawn kernel thread");
         Ok(this)
     }
 

@@ -1063,10 +1063,9 @@ fn enqueue_request(context: &Arc<AioContext>, request: Arc<AioRequest>) -> Starr
 
     if spawn_worker {
         let worker_context = context.clone();
-        crate::task::spawn_kernel_thread(
-            move || aio_worker(worker_context),
-            String::from("aio-worker"),
-        );
+        crate::task::kernel_thread_builder(String::from("aio-worker"))
+            .spawn(move || aio_worker(worker_context))
+            .expect("failed to spawn kernel thread");
     }
     context.work_wq.notify_one();
     Ok(())

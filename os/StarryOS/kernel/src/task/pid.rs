@@ -1700,16 +1700,15 @@ fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     let release_descendant = Arc::new(core::sync::atomic::AtomicBool::new(false));
     let descendant_body = descendant.clone();
     let release_descendant_body = release_descendant.clone();
-    let descendant_task = crate::task::spawn_kernel_thread(
-        move || {
+    let descendant_task = crate::task::kernel_thread_builder("pid-namespace-descendant".into())
+        .spawn(move || {
             while !release_descendant_body.load(Ordering::Acquire) {
                 crate::task::yield_now();
             }
             descendant_body.mark_task_exited().complete();
             descendant_tid.release();
-        },
-        "pid-namespace-descendant".into(),
-    );
+        })
+        .expect("failed to spawn kernel thread");
 
     let shutdown = child
         .begin_shutdown(child_init.id(), shutdown_executor.id())
@@ -1722,7 +1721,9 @@ fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     }
     release_descendant.store(true, Ordering::Release);
     shutdown.wait_for_descendants_exit();
-    crate::task::join_kernel_thread(descendant_task);
+    descendant_task
+        .join()
+        .expect("failed to join kernel thread");
     shutdown_executor.mark_task_exited().complete();
     shutdown_executor_tid.release();
     if view.visible_number(&child_init).is_some() || view.nspid_chain(&child_init).is_some() {

@@ -439,3 +439,13 @@ Linux 固定基准的 `__exit_signal → __unhash_process` 主动删除线程组
 远端 `b31727b024` 的 [CI 34470614083](https://github.com/rcore-os/tgoskits/actions/runs/34470614083) 已结束：增量 clippy、std、ArceOS/Starry 四架构和 Starry 板卡通过；ASUS NUC15CRH 失败且部分 Axvisor 作业取消。按用户要求排除 NUC，取消项仍缺验证。SG2002 此轮通过不等于先前停滞已修复，LoongArch 同理。
 
 修复后同一组件回归通过，两包增量 std 与信号组件定向 clippy 通过，日志 `/tmp/pr2357-signal-rename-{green,clippy}.log`。x86_64 四核真实 `qemu/system/test-thread-lifecycle-exec` 通过，日志 `/tmp/pr2357-signal-rename-exec.log`，直接 SYS_execve 验证非 leader 更名、原 PID 保持及父进程等待。execveat 共用 `do_execve` 的注销路径，但本轮未单独运行 execveat 更名场景。
+
+### 5.22 内核服务创建入口
+
+Starry 原先仍通过 `spawn_kernel_thread`、`spawn_kernel_thread_with_stack/affinity/policy_and_affinity`、两种 `try_spawn_kernel_thread`、`join_kernel_thread` 和重复默认栈 getter 装配内核服务。这些入口已经转发给公共生命周期，但继续以组合函数重复表达 builder 参数。本轮迁移所有调用方，仅保留 `kernel_thread_builder` 设置 Starry 默认栈大小，返回原来的 ax-task `ThreadBuilder`；没有新增另一种 builder 或管理句柄。
+
+stopper/perf/cpufreq 服务在 `spawn` 前使用 `policy/affinity`，普通服务使用默认配置；evdev、KPU、AXIVC 与 timer worker 的创建错误继续由原调用方撤销启动状态。等待直接消费 `ThreadHandle::join`，后台服务仍由调度器拥有执行责任。闭包内容、唤醒协议、IRQ 状态和发布顺序保持原样，本节是独立接口迁移，不作为历史板卡故障或 OOM 缺口的修复证据。
+
+这项迁移复用既有真实 kernel axtest 与 CI 功能矩阵，不增加只检查转发关系的测试。全仓 Rust 检索确认 Starry 的上述旧入口已无定义或调用；ArceOS runtime 自身的默认栈配置仍由其平台装配层维护。
+
+迁移后的 x86_64 kernel axtest 共 182 项通过，无失败或跳过，日志 `/tmp/pr2357-kernel-builder-ktest.log`。本次未新增内核行为，因此没有为单纯转发接口构造人工红绿；调度、退出与资源回收继续由已有真实运行时回归约束。两包增量 std 全部通过，日志 `/tmp/pr2357-kernel-builder-std.log`；Starry 定向 clippy 四架构 92/92 组合全部通过，日志 `/tmp/pr2357-kernel-builder-clippy.log`；未执行本地全工作区 clippy。

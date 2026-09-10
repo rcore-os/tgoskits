@@ -230,11 +230,10 @@ pub(super) fn init() {
         let worker = Arc::clone(&CPU_WORKERS[cpu]);
         let mut affinity = CpuSet::empty(cpu_count);
         assert!(affinity.insert(CpuId::new(cpu as u32)));
-        crate::task::spawn_kernel_thread_with_affinity(
-            move || worker.run(),
-            format!("perf-cpu/{cpu}"),
-            affinity,
-        );
+        crate::task::kernel_thread_builder(format!("perf-cpu/{cpu}"))
+            .affinity(affinity)
+            .spawn(move || worker.run())
+            .expect("failed to spawn kernel thread");
     }
 }
 

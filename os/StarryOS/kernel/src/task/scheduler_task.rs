@@ -411,98 +411,13 @@ pub(crate) fn try_current_user_irq_view() -> Option<UserTaskIrqView> {
     })
 }
 
-/// Spawns a kernel worker without installing a Starry user-task extension.
-pub fn spawn_kernel_thread<F>(entry: F, name: String) -> scheduler::thread::ThreadHandle
-where
-    F: FnOnce() + Send + 'static,
-{
-    try_spawn_kernel_thread(entry, name)
-        .unwrap_or_else(|error| panic!("failed to spawn kernel thread: {error}"))
-}
-
-/// Spawns a kernel worker with an explicit kernel stack size.
-pub fn spawn_kernel_thread_with_stack<F>(
-    entry: F,
-    name: String,
-    stack_size: usize,
-) -> scheduler::thread::ThreadHandle
-where
-    F: FnOnce() + Send + 'static,
-{
-    try_spawn_kernel_thread_with_stack(entry, name, stack_size)
-        .unwrap_or_else(|error| panic!("failed to spawn kernel thread: {error}"))
-}
-
-/// Spawns a kernel worker with affinity installed before run-queue publication.
-pub fn spawn_kernel_thread_with_affinity<F>(
-    entry: F,
-    name: String,
-    affinity: scheduler::sched::CpuSet,
-) -> scheduler::thread::ThreadHandle
-where
-    F: FnOnce() + Send + 'static,
-{
-    ax_std::os::arceos::thread::builder(name)
-        .stack_size(crate::config::KERNEL_STACK_SIZE)
-        .affinity(affinity)
-        .spawn(entry)
-        .unwrap_or_else(|error| panic!("failed to spawn affine kernel thread: {error}"))
-}
-
-/// Spawns a fixed per-CPU kernel service with its scheduler policy committed
-/// before first publication.
-pub fn spawn_kernel_thread_with_policy_and_affinity<F>(
-    entry: F,
-    name: String,
-    policy: scheduler::sched::SchedulePolicy,
-    affinity: scheduler::sched::CpuSet,
-) -> scheduler::thread::ThreadHandle
-where
-    F: FnOnce() + Send + 'static,
-{
-    ax_std::os::arceos::thread::builder(name)
-        .stack_size(crate::config::KERNEL_STACK_SIZE)
-        .policy(policy)
-        .affinity(affinity)
-        .spawn(entry)
-        .unwrap_or_else(|error| panic!("failed to spawn policy-bound kernel thread: {error}"))
-}
-
-/// Waits for a kernel worker and releases its scheduler-owned resources.
-pub fn join_kernel_thread(thread: scheduler::thread::ThreadHandle) -> i32 {
-    thread
-        .join()
-        .unwrap_or_else(|error| panic!("failed to join kernel thread: {error}"))
-}
-
-/// Tries to spawn a kernel worker with Starry's default kernel stack size.
-pub fn try_spawn_kernel_thread<F>(
-    entry: F,
-    name: String,
-) -> Result<scheduler::thread::ThreadHandle, scheduler::thread::TaskError>
-where
-    F: FnOnce() + Send + 'static,
-{
-    try_spawn_kernel_thread_with_stack(entry, name, crate::config::KERNEL_STACK_SIZE)
-}
-
-/// Tries to spawn a kernel worker without installing a user-task extension.
-pub fn try_spawn_kernel_thread_with_stack<F>(
-    entry: F,
-    name: String,
-    stack_size: usize,
-) -> Result<scheduler::thread::ThreadHandle, scheduler::thread::TaskError>
-where
-    F: FnOnce() + Send + 'static,
-{
-    ax_std::os::arceos::thread::builder(name)
-        .stack_size(stack_size)
-        .spawn(entry)
-}
-
-/// Returns Starry's default kernel stack size.
-pub const fn default_task_stack_size() -> usize {
-    crate::config::KERNEL_STACK_SIZE
+/// Returns the common thread builder with Starry's kernel stack size.
+///
+/// Callers configure policy or affinity before `spawn`, or use `prepare` to
+/// retain the unpublished task. Completion and reclamation belong to the
+/// returned runtime thread handle.
+pub fn kernel_thread_builder(name: String) -> scheduler::thread::ThreadBuilder {
+    ax_std::os::arceos::thread::builder(name).stack_size(crate::config::KERNEL_STACK_SIZE)
 }
 
 /// Yields the calling scheduler thread.

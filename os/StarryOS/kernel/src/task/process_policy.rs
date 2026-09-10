@@ -164,17 +164,15 @@ fn resource_limit_read_is_nonblocking_for_test() -> bool {
     let worker_started = Arc::clone(&started);
     let worker_completed = Arc::clone(&completed);
     let limits = policy.rlimits.writer.lock();
-    let worker = super::try_spawn_kernel_thread(
-        move || {
+    let worker = super::kernel_thread_builder(String::from("rlimit-read-fast-path"))
+        .spawn(move || {
             worker_started.store(true, Ordering::Release);
             worker_completed.store(
                 worker_policy.rlimit_current(RLIMIT_RTTIME) == u64::MAX,
                 Ordering::Release,
             );
-        },
-        String::from("rlimit-read-fast-path"),
-    )
-    .expect("failed to spawn resource-limit read test worker");
+        })
+        .expect("failed to spawn resource-limit read test worker");
 
     while !started.load(Ordering::Acquire) {
         super::yield_now();
@@ -185,7 +183,7 @@ fn resource_limit_read_is_nonblocking_for_test() -> bool {
     let completed_while_limits_locked = completed.load(Ordering::Acquire);
 
     drop(limits);
-    super::join_kernel_thread(worker);
+    worker.join().expect("failed to join kernel thread");
     completed_while_limits_locked
 }
 

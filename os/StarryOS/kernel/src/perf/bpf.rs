@@ -199,17 +199,18 @@ fn start_bpf_perf_notify_worker(
     poll_notify: Arc<IrqNotify>,
     poll_alive: Arc<AtomicBool>,
 ) {
-    crate::task::spawn_kernel_thread(
-        move || loop {
-            poll_notify.wait();
-            if !poll_alive.load(Ordering::Acquire) {
-                break;
+    crate::task::kernel_thread_builder("bpf-perf-notify".into())
+        .spawn(move || {
+            loop {
+                poll_notify.wait();
+                if !poll_alive.load(Ordering::Acquire) {
+                    break;
+                }
+                // Ring data is written before the deferred poll wake.
+                unsafe { poll_ready.wake(IoEvents::IN) };
             }
-            // Ring data is written before the deferred poll wake.
-            unsafe { poll_ready.wake(IoEvents::IN) };
-        },
-        "bpf-perf-notify".into(),
-    );
+        })
+        .expect("failed to spawn kernel thread");
 }
 
 impl Debug for BpfPerfEventWrapper {

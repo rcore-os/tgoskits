@@ -59,17 +59,18 @@ pub(super) fn start_sampling_notify_worker(
     notify: Arc<IrqNotify>,
     poll_alive: Arc<AtomicBool>,
 ) {
-    crate::task::spawn_kernel_thread(
-        move || loop {
-            notify.wait();
-            if !poll_alive.load(Ordering::Acquire) {
-                break;
+    crate::task::kernel_thread_builder("hw-perf-sample-notify".into())
+        .spawn(move || {
+            loop {
+                notify.wait();
+                if !poll_alive.load(Ordering::Acquire) {
+                    break;
+                }
+                // The overflow handler publishes the ring record before notifying.
+                unsafe { poll_ready.wake(IoEvents::IN) };
             }
-            // The overflow handler publishes the ring record before notifying.
-            unsafe { poll_ready.wake(IoEvents::IN) };
-        },
-        "hw-perf-sample-notify".into(),
-    );
+        })
+        .expect("failed to spawn kernel thread");
 }
 
 /// Allocates and initializes one Linux perf mmap ring.
