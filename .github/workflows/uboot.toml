@@ -6,6 +6,13 @@ fail_regex = [
   "panicked at",
 ]
 serial = "${env:BOARD_COMM_UART_DEV}"
+timeout = 300
+
+[net]
+interface = "${env:BOARD_COMM_NET_IFACE}"
+tftp_dir = "${env:TFTP_DIR}"
+
+[[shell_check_steps]]
 success_regex = [
     "All tests passed!",
     "Hello World!",
@@ -14,8 +21,3 @@ success_regex = [
     "Last login: *",
     "orangepi5plus login: *",
 ]
-timeout = 300
-
-[net]
-interface = "${env:BOARD_COMM_NET_IFACE}"
-tftp_dir = "${env:TFTP_DIR}"

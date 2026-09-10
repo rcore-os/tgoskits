@@ -2,6 +2,8 @@ args = ["-machine", "q35", "-cpu", "max", "-m", "256M", "-smp", "1", "-nographic
 # Dynamic-platform PIE images boot through the same UEFI path as the Rust suite.
 uefi = true
 to_bin = true
-success_regex = ["KERNEL_SCHED_BENCH_PASSED"]
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
 timeout = 120
+
+[[shell_check_steps]]
+success_regex = ["KERNEL_SCHED_BENCH_PASSED"]

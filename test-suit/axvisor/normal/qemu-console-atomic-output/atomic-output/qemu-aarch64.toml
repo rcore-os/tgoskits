@@ -13,7 +13,9 @@ fail_regex = [
     "(?i)panic",
     "sleeping or rescheduling is not allowed in atomic context",
 ]
-success_regex = ["(?m)^CONSOLE_ATOMIC_OUTPUT_REGRESSION_PASSED\\s*$"]
 timeout = 60
 to_bin = true
 uefi = false
+
+[[shell_check_steps]]
+success_regex = ["(?m)^CONSOLE_ATOMIC_OUTPUT_REGRESSION_PASSED\\s*$"]

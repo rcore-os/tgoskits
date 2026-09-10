@@ -14,7 +14,7 @@ cargo xtask starry app qemu -t selfhost/selfhost-full-kernel --arch x86_64
 ```
 
 该命令使用项目的 Starry app runner：构建种子内核、创建或复用 app 专用 rootfs、执行
-`prebuild.sh`、注入 overlay，并通过 `shell_init_cmd` 启动来宾 runner。它不依赖
+`prebuild.sh`、注入 overlay，并通过有序 shell-check 步骤启动来宾 runner。它不依赖
 `scripts/self-compile.sh`、`expect`、loop mount 或 host sudo。
 
 ### 1.1 来宾流程

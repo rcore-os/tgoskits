@@ -1,3 +1,6 @@
+use ostool::board::config::BoardRunConfig;
+use regex::Regex;
+
 use super::*;
 
 #[test]
@@ -10,26 +13,16 @@ fn discovers_board_test_group_and_build_mapping() {
     );
     let board_test_config =
         write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
-    fs::write(
-        board_test_config
-            .parent()
-            .unwrap()
-            .join("requirements.toml"),
-        "required_env = [\"BOARD_TOKEN\"]\n",
-    )
-    .unwrap();
 
     let groups = discover_board_test_groups(root.path(), None, None).unwrap();
 
-    let group = groups
-        .iter()
-        .find(|group| group.name == "smoke" && group.board_name == "orangepi-5-plus")
-        .expect("smoke board group should be discovered");
-    assert_eq!(group.arch, "aarch64");
-    assert_eq!(group.target, "aarch64-unknown-none-softfloat");
-    assert_eq!(group.build_config_path, build_config);
-    assert_eq!(group.board_test_config_path, board_test_config);
-    assert_eq!(group.required_env, ["BOARD_TOKEN"]);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].name, "smoke");
+    assert_eq!(groups[0].board_name, "orangepi-5-plus");
+    assert_eq!(groups[0].arch, "aarch64");
+    assert_eq!(groups[0].target, "aarch64-unknown-none-softfloat");
+    assert_eq!(groups[0].build_config_path, build_config);
+    assert_eq!(groups[0].board_test_config_path, board_test_config);
 }
 
 #[test]
@@ -47,20 +40,19 @@ fn discovers_board_case_when_case_dir_contains_build_config() {
     let board_test_config = case_dir.join("board-orangepi-5-plus.toml");
     fs::write(
         &board_test_config,
-        "board_type = \"OrangePi-5-Plus\"\nshell_prefix = \
-         \"orangepi@orangepi5plus:~\"\nshell_init_cmd = \"pwd && echo 'test \
-         pass'\"\nsuccess_regex = [\"(?m)^test pass\\\\s*$\"]\nfail_regex = []\ntimeout = 300\n",
+        "board_type = \"OrangePi-5-Plus\"\nshell_check_steps = [{ shell_prefix = \
+         \"orangepi@orangepi5plus:~\", shell_cmd = \"pwd && echo 'test pass'\", success_regex = \
+         [\"(?m)^test pass\\\\s*$\"] }]\nfail_regex = []\ntimeout = 300\n",
     )
     .unwrap();
 
     let groups = discover_board_test_groups(root.path(), None, None).unwrap();
 
-    let group = groups
-        .iter()
-        .find(|group| group.name == "smoke" && group.board_name == "orangepi-5-plus")
-        .expect("smoke board group should be discovered");
-    assert_eq!(group.build_config_path, build_config);
-    assert_eq!(group.board_test_config_path, board_test_config);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].name, "smoke");
+    assert_eq!(groups[0].board_name, "orangepi-5-plus");
+    assert_eq!(groups[0].build_config_path, build_config);
+    assert_eq!(groups[0].board_test_config_path, board_test_config);
 }
 
 #[test]
@@ -77,16 +69,13 @@ fn filters_board_test_group_by_case() {
 
     let groups = discover_board_test_groups(root.path(), Some("smoke"), None).unwrap();
 
-    assert!(groups.iter().all(|group| group.name == "smoke"));
-    assert!(
+    assert_eq!(groups.len(), 2);
+    assert_eq!(
         groups
             .iter()
-            .any(|group| group.board_name == "orangepi-5-plus")
-    );
-    assert!(
-        groups
-            .iter()
-            .any(|group| group.board_name == "vision-five2")
+            .map(|group| format!("{}/{}", group.name, group.board_name))
+            .collect::<Vec<_>>(),
+        vec!["smoke/orangepi-5-plus", "smoke/vision-five2"]
     );
 }
 
@@ -105,13 +94,13 @@ fn filters_board_test_groups_by_board() {
 
     let groups = discover_board_test_groups(root.path(), None, Some("orangepi-5-plus")).unwrap();
 
-    assert!(
+    assert_eq!(
         groups
             .iter()
-            .all(|group| group.board_name == "orangepi-5-plus")
+            .map(|group| format!("{}/{}", group.name, group.board_name))
+            .collect::<Vec<_>>(),
+        vec!["smoke/orangepi-5-plus", "syscall/orangepi-5-plus"]
     );
-    assert!(groups.iter().any(|group| group.name == "smoke"));
-    assert!(groups.iter().any(|group| group.name == "syscall"));
 }
 
 #[test]
@@ -144,4 +133,77 @@ fn rejects_missing_mapped_board_build_config() {
 
     assert!(err.contains("not under a build wrapper"));
     assert!(err.contains("smoke"));
+}
+
+#[test]
+fn visionfive2_success_marker_accepts_ansi_without_matching_command_echo() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let config_path =
+        workspace_root.join("test-suit/starryos/board-visionfive2/boot/board-visionfive2.toml");
+    let config: BoardRunConfig = toml::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
+    let success_pattern = &config.shell_check_steps[0].success_regex.as_ref().unwrap()[0];
+    let success_regex = Regex::new(success_pattern).unwrap();
+
+    assert!(success_regex.is_match("\u{1b}[mSTARRY_VISIONFIVE2_SHELL_OK\n"));
+    assert!(!success_regex.is_match("echo STARRY_VISIONFIVE2_SHELL_OK\n"));
+    assert!(!success_regex.is_match(
+        "[ 33.201821 starry_kernel::task::user] STARRY_VISIONFIVE2_SHELL_OK [ 33.223141 task exit]"
+    ));
+}
+
+#[test]
+fn sg2002_success_markers_accept_starry_log_ansi_prefixes() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for (config_path, marker) in [
+        (
+            "test-suit/starryos/board-aka-00-sg2002/tennis-yolo/board-aka-00-sg2002.toml",
+            "STARRY_AKA00_TENNIS_DETECT_OK",
+        ),
+        (
+            "test-suit/starryos/board-aka-00-sg2002/usb2-lsusb/board-aka-00-sg2002.toml",
+            "STARRY_AKA_USB2_LSUSB_OK",
+        ),
+    ] {
+        let config: BoardRunConfig =
+            toml::from_str(&fs::read_to_string(workspace_root.join(config_path)).unwrap()).unwrap();
+        let pattern = config.shell_check_steps[0]
+            .success_regex
+            .as_ref()
+            .and_then(|patterns| patterns.iter().find(|pattern| pattern.contains(marker)))
+            .unwrap_or_else(|| panic!("{config_path} must match {marker}"));
+
+        assert!(
+            Regex::new(pattern)
+                .unwrap()
+                .is_match(&format!("\u{1b}[m{marker}\n")),
+            "{config_path} must accept the ANSI reset emitted before {marker}"
+        );
+    }
+}
+
+#[test]
+fn sg2002_repository_dtbs_declare_noncoherent_dma() {
+    // SG2002 peripherals are DMA non-coherent: mainline Linux declares
+    // dma-noncoherent on the sg2002 soc node, while the vendor SDK device
+    // trees never do. The kernel resolves coherency from firmware, so a
+    // regenerated DTB that silently drops the property would make CV181x
+    // engines read stale cached descriptors. Property names live in the
+    // compiled DTB strings block, so a byte-level search is sufficient.
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for dtb in [
+        "os/StarryOS/configs/board/aka-00-sg2002.dtb",
+        "os/StarryOS/configs/board/licheerv-nano-sg2002.dtb",
+    ] {
+        let path = workspace_root.join(dtb);
+        let bytes = fs::read(&path)
+            .unwrap_or_else(|err| panic!("failed to read repository DTB {dtb}: {err}"));
+        assert!(
+            bytes
+                .windows(b"dma-noncoherent\0".len())
+                .any(|window| window == b"dma-noncoherent\0"),
+            "{dtb} must declare dma-noncoherent; SG2002 devices require it"
+        );
+    }
 }

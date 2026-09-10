@@ -548,3 +548,10 @@ exec 的身份转交发生在同组其他线程退出后；退出请求只在 sy
 | seccomp(filter/TSYNC) / X317、G277 | [固定 seccomp_attach_filter](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | 同步更新与新线程最终复制/成员插入互斥 | `sys_seccomp → append_seccomp_filter → sync_seccomp_to_thread_group`，同一进程更新锁 | 无法确认 | kernel 晚期更新回归通过，直接并发 syscall 交错待验证 |
 | seccomp(strict) / X317、G277 | [固定 seccomp_set_mode_strict](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | 参数检查后提交当前线程模式 | `sys_seccomp → install_seccomp_strict`，取得同一更新锁 | 无法确认 | 原 strict 用例待复测 |
 | prctl(SET_SECCOMP) / X157、G167 | [固定 prctl_set_seccomp](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | legacy 入口复用模式安装，不支持 TSYNC 参数 | `sys_prctl → sys_seccomp(flags=0)` | 无法确认 | 原 prctl seccomp 用例待复测 |
+
+
+### 5.28 测试接口合并
+
+合并 `origin/dev@481d6bdc4d` 的 shell-check 迁移时，保留 scheduler-latency-bench 的 UEFI/二进制启动设置，将成功匹配放入新的 `shell_check_steps`。`serial-rx` 的 AArch64 配置也补齐相同迁移，不保留已经移除的顶层 `success_regex`。超时、失败匹配和成功文本均未放宽。
+
+`rust_qemu_features_for_run` 的精确列表断言继续覆盖 `task-cpu-lifecycle`，避免 dev 的两项列表排除本分支独立用例。NVMe 两分支已经修复同一 CID 复用误判，合并保留本分支在真实并发读回执上归一化 ID、改写第一块 CPU 缓冲区并验证第二块不变的单一回归，不重复增加同义用例。合并后的验证另行记录，不沿用合并前的绿色结果。

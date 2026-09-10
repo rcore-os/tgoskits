@@ -200,7 +200,7 @@ impl AppContext {
         qemu: QemuConfig,
         capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
-        let success_regex = qemu.success_regex.clone();
+        let success_regex = crate::support::qemu_success::configured_success_regex(&qemu);
         let (capture_backtrace, success_output) =
             crate::support::qemu_success::capture_required_success_output(
                 &success_regex,
@@ -265,7 +265,7 @@ impl AppContext {
         )?;
         crate::support::axtest_coverage::apply_qemu_monitor(&mut qemu, &paths)?;
         crate::support::axtest_coverage::update_success_regex(&mut qemu);
-        let success_regex = qemu.success_regex.clone();
+        let success_regex = crate::support::qemu_success::configured_success_regex(&qemu);
         let (capture_backtrace, success_output) =
             crate::support::qemu_success::capture_required_success_output(
                 &success_regex,
@@ -299,7 +299,7 @@ impl AppContext {
         qemu: QemuConfig,
         capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
-        let success_regex = qemu.success_regex.clone();
+        let success_regex = crate::support::qemu_success::configured_success_regex(&qemu);
         let (capture_backtrace, success_output) =
             crate::support::qemu_success::capture_required_success_output(
                 &success_regex,

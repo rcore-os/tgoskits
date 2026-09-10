@@ -80,13 +80,13 @@ flowchart TD
 | 内核编译 | `build_artifact()` | 调用共享 Cargo 装配 + `postprocess_starry_artifact()`（kallsyms + 可选 uImage） |
 | QEMU config | `read_qemu_config_from_path_for_cargo()` | 从用例的 `qemu-<arch>.toml` 加载，替换 managed rootfs 路径 |
 | rootfs 准备 | `ensure_qemu_case_rootfs_paths()` | 区分 default rootfs（`ensure_rootfs_in_tmp_dir`）和 managed rootfs（`ensure_optional_managed_rootfs`） |
-| grouped 校验 | `validate_grouped_qemu_commands()` / `normalize_qemu_test_commands()` | 禁止同时声明 `shell_init_cmd` 与 `test_commands`，并拒绝空命令 |
+| grouped 校验 | `validate_grouped_qemu_commands()` / `normalize_qemu_test_commands()` | 禁止同时声明 `shell_check_steps` 与 `test_commands`，并拒绝空命令 |
 
 ### 3.2 单个 case 运行
 
 每个 case 在 QEMU 运行前完成以下处理：
 
-1. **Grouped runner 注入**：`apply_grouped_qemu_config()` 设置 `shell_init_cmd`、`success_regex`（`STARRY_GROUPED_TESTS_PASSED`）和 `fail_regex`。
+1. **Grouped runner 注入**：登录 profile 脚本自动执行 runner，同时创建一个无命令的被动步骤匹配 `STARRY_GROUPED_TESTS_PASSED`，并把 grouped 失败标记追加到顶层 `fail_regex`。
 2. **SMP 覆盖**：`apply_smp_qemu_arg()` 从 QEMU config 反读 `-smp` 值（`smp_from_qemu_arg`），写入用例声明的核数。
 3. **Timeout 缩放**：`apply_timeout_scale()` 按 `AXBUILD_TEST_TIMEOUT_SCALE` 放大。
 4. **资产准备**：`prepare_case_assets()` 进入共享的 `test/case/` 层（见 [测试基础设施](../test_infra#7-资产准备与-rootfs-缓存)），StarryOS 的 staging 钩子注入 DNS，guest 包环境钩子按 `STARRY_APK_REGION` 重写 APK 源。
@@ -112,4 +112,4 @@ STARRY_GROUPED_TEST_PASSED: step=1/3 epoch=... status=0 command=/usr/bin/test-a
 STARRY_GROUPED_TESTS_PASSED
 ```
 
-axbuild 通过这些结构化标记精确统计每条命令的通过/失败状态。`success_regex` 设为 `STARRY_GROUPED_TESTS_PASSED`（全部通过），`fail_regex` 含 `STARRY_GROUPED_TESTS_FAILED` 和单步 `STARRY_GROUPED_TEST_FAILED`。runner 脚本生成和 marker 协议的完整说明见 [测试基础设施](../test_infra#8-grouped-runner-协议)。
+axbuild 通过这些结构化标记精确统计每条命令的通过/失败状态。生成的被动步骤使用 `STARRY_GROUPED_TESTS_PASSED` 作为 `success_regex`（全部通过），QEMU 顶层 `fail_regex` 匹配单步 `STARRY_GROUPED_TEST_FAILED:`；runner 只有在没有单步失败时才会打印全部通过标记。runner 脚本生成和 marker 协议的完整说明见 [测试基础设施](../test_infra#8-grouped-runner-协议)。

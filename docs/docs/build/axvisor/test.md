@@ -5,7 +5,7 @@ sidebar_label: "测试"
 
 # Axvisor 测试
 
-Axvisor 复用了与 [StarryOS 测试](../starry/test) 相同的测试基础设施（用例发现、资产准备、结果判定），因为两者都是完整 OS/Hypervisor 级别的测试，需要在 rootfs 用户空间中执行测试命令。六种 pipeline 类型（plain/grouped/C/sh/python/rust）的处理逻辑完全相同。
+Axvisor 复用了与 [StarryOS 测试](../starry/test) 相同的用例发现、资产准备和结果判定基础设施，但不支持 `test_commands` 分组命令。需要执行命令的 Axvisor 用例使用 `shell_check_steps`，明确指定提示符、命令和完成条件。
 
 测试编排（用例发现、分组构建、资产准备、结果判定）由 `scripts/axbuild/src/test/` 提供统一框架，核心原则是 **OS 只构建一次，逐 case 运行**。共享框架的完整说明见 [测试基础设施](../test_infra)；本文描述 Axvisor 特有的测试目录结构、三种测试模式（QEMU / U-Boot / Board）的差异，以及 Axvisor 独有的 `test uboot` 模式。
 
@@ -57,7 +57,7 @@ flowchart TD
     F1 --> F2["load_cargo_config + app.build"]
     F2 --> G["Phase 2: 运行全部 QEMU 用例"]
     G --> H["逐 case：run_qemu_case"]
-    H --> I["load_qemu_case_config<br/>注入 grouped runner + timeout"]
+    H --> I["load_qemu_case_config<br/>保留显式步骤并调整 timeout"]
     I --> J["prepare_case_assets<br/>rootfs 副本/overlay"]
     J --> K["patch_qemu_rootfs_path(Discard)"]
     K --> L["run_qemu_with_prepared_case_assets"]
@@ -77,10 +77,10 @@ flowchart TD
 | 用例发现 | `discovery.rs::discover_qemu_cases()` | 扫描 `test-suit/axvisor/<group>/`，默认 group 为 `normal` |
 | VM 配置 | `qemu_group_build_context()` | 读取 axbuild 已解析并写入 `AXVISOR_VM_CONFIGS` 的 VM 配置路径 |
 | rootfs 准备 | `rootfs::ensure_qemu_rootfs_ready()` | 每个 build group 编译前准备当前 arch 的 managed rootfs |
-| grouped 校验 | `validate_grouped_qemu_commands()` | 检查 `test_commands` 无空命令 |
+| 分组命令校验 | `discovery.rs::load_qemu_case()` | 在构建前拒绝非空 `test_commands`，提示改用 `shell_check_steps` |
 | 结果判定 | `QemuTestSummary` | 收集所有 case 的 pass/fail，最终 `finish_with_total_detail()` 统一判定退出码 |
 
-单个 case 运行（`run_qemu_case` → `load_qemu_case_config`）：注入 grouped runner（marker 前缀 `AXVISOR`）、`apply_timeout_scale`、准备 rootfs 资产（走共享 `test/case/` 层）、以 `RootfsWritePolicy::Discard` patch rootfs 路径。Axvisor 不启用 backtrace capture（`capture_backtrace = None`）。
+单个 case 运行（`run_qemu_case` → `load_qemu_case_config`）：保留显式 `shell_check_steps`、应用 `apply_timeout_scale`、准备 rootfs 资产（走共享 `test/case/` 层）、以 `RootfsWritePolicy::Discard` patch rootfs 路径。Axvisor 不生成 grouped runner，也不启用 backtrace capture（`capture_backtrace = None`）。
 
 ### 3.2 U-Boot 测试
 
@@ -112,7 +112,7 @@ flowchart TD
 关键步骤：
 
 - **用例定位**：`discover_uboot_test_group()` 按 board 名和 guest 名定位唯一的 board test group。
-- **U-Boot config 合并**：`merge_board_test_uboot_config()` 把 base config（来自 `--uboot-config` 或自动发现）与 board test config（来自 `board-test-*.toml`）合并。合并策略：board test 的 `success_regex`、`fail_regex`、`uboot_cmd`、`shell_prefix`、`shell_init_cmd` **覆盖** base；地址类字段（`kernel_load_addr`、`fit_load_addr`、`bootm_addr`）仅在 board test 提供时覆盖；base 的 `local`（串口、波特率）和 `dtb_file` **保留**。
+- **U-Boot config 合并**：`merge_board_test_uboot_config()` 把 base config（来自 `--uboot-config` 或自动发现）与 board test config（来自 `board-test-*.toml`）合并。合并策略：board test 的 `fail_regex`、`uboot_cmd` 以及有序 `shell_check_steps` **整体覆盖** base；步骤内使用可选的 `shell_prefix`、`shell_cmd` 和成功/失败判定，无命令步骤可只检查自行产生的输出。地址类字段（`kernel_load_addr`、`fit_load_addr`、`bootm_addr`）仅在 board test 提供时覆盖；base 的 `local`（串口、波特率）和 `dtb_file` **保留**。
 - **编译与运行**：`app.uboot()` 一次性完成编译和 U-Boot 运行，由合并后的 U-Boot config 判定结果。
 
 该模式验证完整的"U-Boot → Axvisor → Guest"引导链路，覆盖真实硬件上 U-Boot 加载 Axvisor ELF、Axvisor 初始化硬件虚拟化扩展、再启动 Guest 的全流程。
@@ -134,11 +134,11 @@ ROCK 4D 用例从板卡文件系统加载 BSP kernel 和 guest DTB，运行前�
 
 ## 4. 资产管线
 
-Axvisor 测试的六种 pipeline 类型与 StarryOS 完全一致，因为两者都需要在 rootfs 用户空间中执行测试命令。`resolve_case_pipeline()` 按固定优先级检测每个用例目录的特征文件，同一目录同时出现多个 pipeline 触发条件会直接报错：
+Axvisor 复用共享资产管线中的 C、Shell、Python、Rust 和 Plain 类型。`test_commands` 在进入资产管线前已被拒绝；其他类型由 `resolve_case_pipeline()` 检测，同一目录同时出现多个 pipeline 触发条件会直接报错：
 
 | Pipeline | 触发条件 | Axvisor 使用情况 |
 |----------|----------|-----------------|
-| Grouped | `test_commands` 非空 | 多命令聚合 case |
+| Grouped | `test_commands` 非空 | 不支持，在用例发现阶段报错 |
 | C | 含 `c/` 子目录 | C 测试程序 |
 | Shell | 含 `sh/` 子目录 | shell 脚本测试 |
 | Python | 含 `python/` 子目录 | Python 测试 |

@@ -13,8 +13,10 @@ args = [
 ]
 uefi = false
 to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "python3 /usr/bin/test_hello.py"
-success_regex = ['(?m)^TEST PASSED\s*$']
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
 timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "python3 /usr/bin/test_hello.py"
+success_regex = ['(?m)^TEST PASSED\s*$']

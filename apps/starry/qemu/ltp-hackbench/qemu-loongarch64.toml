@@ -15,9 +15,6 @@ args = [
 ]
 uefi = true
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/ltp-hackbench-run smoke"
-success_regex = ["(?m)^LTP_HACKBENCH_SMOKE_PASSED\\s*$"]
 fail_regex = [
     "(?i)kernel panic",
     "(?i)lockdep.*(panic|fatal)",
@@ -25,3 +22,8 @@ fail_regex = [
     "(?m)^LTP_HACKBENCH_APP_FAILED:",
 ]
 timeout = 600
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/ltp-hackbench-run smoke"
+success_regex = ["(?m)^LTP_HACKBENCH_SMOKE_PASSED\\s*$"]

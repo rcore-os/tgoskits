@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, bail, ensure};
+use ostool::board::config::BoardRunConfig;
 
 use super::{
     StarryAppBoardCase,
@@ -74,6 +75,29 @@ pub(crate) fn resolve_board_case(
     })
 }
 
+pub(crate) fn configure_board_init_step(
+    board: &mut BoardRunConfig,
+    init_cmd: &str,
+) -> anyhow::Result<()> {
+    match board.shell_check_steps.as_mut_slice() {
+        [step] => {
+            ensure!(
+                step.shell_prefix.is_some(),
+                "Starry app board shell check step requires `shell_prefix`"
+            );
+            step.shell_cmd = Some(merge_board_init_command(
+                init_cmd,
+                step.shell_cmd.as_deref(),
+            ));
+        }
+        [] => {
+            bail!("Starry app board config must define `shell_check_steps` before board init");
+        }
+        _ => bail!("Starry app board config must define at most one shell check step"),
+    }
+    Ok(())
+}
+
 pub(crate) fn merge_board_init_command(init_cmd: &str, board_prelude: Option<&str>) -> String {
     let script = match board_prelude
         .map(str::trim)
@@ -83,7 +107,7 @@ pub(crate) fn merge_board_init_command(init_cmd: &str, board_prelude: Option<&st
         None => init_cmd.to_string(),
     };
 
-    // ostool sends shell_init_cmd to an interactive serial shell. If every
+    // ostool sends shell_cmd to an interactive serial shell. If every
     // script line is sent as an interactive command, early commands may start
     // producing console output while later chunks are still arriving. Keep
     // the complete script inert in one quoted argument and execute it only

@@ -15,11 +15,13 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/postgresql-test.sh"
-success_regex = ["(?m)^POSTGRESQL_TEST_PASSED\\s*$"]
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',
     "(?m)^POSTGRESQL_TEST_FAILED(?:[: ].*)?$",
 ]
 timeout = 1800
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/postgresql-test.sh"
+success_regex = ["(?m)^POSTGRESQL_TEST_PASSED\\s*$"]

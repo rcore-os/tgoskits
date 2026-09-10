@@ -15,8 +15,6 @@ args = [
 ]
 uefi = false
 to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/apk-curl-tests.sh"
-success_regex = ["(?m)^APK_CURL_TEST_PASSED\\s*$"]
+shell_check_steps = [{ shell_prefix = "root@starry:", shell_cmd = "/usr/bin/apk-curl-tests.sh", success_regex = ["(?m)^APK_CURL_TEST_PASSED\\s*$"] }]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", "(?m)^APK_CURL_TEST_FAILED\\s*$"]
 timeout = 720

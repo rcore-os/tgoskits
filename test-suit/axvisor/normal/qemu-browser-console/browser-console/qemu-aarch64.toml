@@ -14,7 +14,6 @@ fail_regex = [
     "(?i)kernel panic",
 ]
 # The host-side probe is the verdict and terminates QEMU through QMP.
-success_regex = []
 timeout = 180
 to_bin = true
 uefi = false

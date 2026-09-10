@@ -8,8 +8,12 @@ args = [
 ]
 uefi = false
 to_bin = true
+fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', '(?m)^STARRY_GROUPED_TEST_FAILED:']
+timeout = 300
+
+[[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_init_cmd = '''
+shell_cmd = '''
 set -e
 
 echo "SQLITE_DEEP_ENV_BEGIN"
@@ -75,5 +79,3 @@ echo "S8_BLOB_OK"
 echo "SQLITE3_DEEP_TEST_PASSED"
 '''
 success_regex = ["(?m)^SQLITE3_DEEP_TEST_PASSED\\s*$"]
-fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', '(?m)^STARRY_GROUPED_TEST_FAILED:']
-timeout = 300
