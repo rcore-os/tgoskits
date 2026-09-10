@@ -43,7 +43,7 @@ JosephJoshua 的提交是累积能力链。迁移按能力拆分，以便每个�
 
 ## 2. 所有权模型
 
-PMU 寄存器、IRQ PPI 和计数器槽天然属于 CPU。task event 的 fd 只拥有逻辑配置与累计值，真正运行的一代由目标 CPU 的状态持有。`CpuPin` 保护本核读取，`ExclusiveCpu` 保护本核硬件修改；需要 task context 的远端控制通过 CPU worker 执行，fixed-CPU flexible 事件的 disable/reset 通过同步 IPI 执行。scheduler 与 IRQ 路径不等待任务完成、不分配。
+PMU 寄存器、IRQ PPI 和计数器槽天然属于 CPU。task event 的 fd 只拥有逻辑配置与累计值，真正运行的一代由目标 CPU 的状态持有。`CpuPin` 保护本核读取，`ExclusiveCpu` 保护本核硬件修改；需要 task context 的远端控制通过 CPU worker 执行，fixed-CPU flexible 事件的 read/disable/reset 通过同步 IPI 执行。scheduler 与 IRQ 路径不等待任务完成、不分配。
 
 ### 2.1 每核状态
 
@@ -83,7 +83,9 @@ stateDiagram-v2
 
 `SystemFlexCounter::finish_slice_observed()` 将 active 锁保持到停表、注销、累计值提交和槽释放全部完成，不能在取出 slice 时提前发布完成。`sampling::detach_counting()` 只撤销登记并转移引用；IPI 把取下的 `Arc` 写入调用方栈上的 `ControlRequest`，同步返回后由 task context 释放。传输失败沿 ioctl 调用链返回，不伪造完成。`reset_on_owner()` 在原槽上清零计数、溢出状态与扩展值，然后恢复该槽，保留 enabled 状态与累计 enabled/running 时间，对齐 Linux `_perf_event_reset()` 清值但不关闭事件的语义。
 
-`perf-hw-stat` 下的 `perf-hw-fifo-stop` 回归先以两次读之间增加的 `time_running` 确认活动切片，再验证 FIFO 调用者的 DISABLE、RESET 和最后 FD close。本核与远端控制分别覆盖；远端场景由较低优先级的 FIFO 任务接管 owner CPU，保证普通 worker 无法执行。DISABLE 后计数与时间必须稳定，RESET 后计数继续增加且累计时间不倒退；独立 CPU 的看门狗只用于报告失败。
+`ControlOperation::Read` 与 disable/reset 共用同步 IPI 传输，把 `read_on_owner()` 的标量快照写入调用方栈上的 `ControlRequest::snapshot`，不再排入普通 CPU worker。它保留活动切片，不释放计数器或等待下一次调度；对应 Linux `perf_event_read()` 的同步跨核读取。
+
+`perf-hw-stat` 下的 `perf-hw-fifo-stop` 回归先以两次读之间增加的 `time_running` 确认活动切片，再验证 FIFO 调用者的 READ、DISABLE、RESET 和最后 FD close。本核与远端控制分别覆盖；远端场景由较低优先级的 FIFO 任务接管 owner CPU，保证普通 worker 无法执行。远端 READ 必须返回递增计数，DISABLE 后计数与时间必须稳定，RESET 后计数继续增加且累计时间不倒退；独立 CPU 的看门狗只用于报告失败。
 
 ### 2.3 group 与继承
 
@@ -96,6 +98,8 @@ software inherit 使用“每线程 slice + 共享 aggregate”结构。child �
 `SwEventState::inherit_thread` 保留线程限定继承属性。`sw::on_clone_inherit()` 仅在 parent/child 共享同一个 `ProcessData` 时复制这种 binding；该共享关系由 `clone` 的 `CLONE_THREAD` 分支建立，普通 fork 即使随后 exec 也不会获得该软件事件。普通 `inherit` 仍覆盖两类子任务。
 
 `PerfEvent::control_group()` 从实际 leader 执行 GROUP ioctl；不带 GROUP 的操作保留 siblings 各自的启用意图。`read_group()` 从实际 leader 取值，但编码格式采用被读取 fd 的 `read_format`。新 member 先以 disabled 状态建立 backend 和组关系，再按原始 attr 启用，避免 link 前独立计数。`perf_sched_in_counters()` 先为整个启用组保留槽，`prepare_counter()` 完成全部寄存器和 IRQ registry 准备后才启动硬件；准备失败回滚整组。
+
+`PerfEvent::transaction` 是 leader 与成员共享的可睡眠事务锁，在最后一个成员释放前保持存在。GROUP ioctl 的整个成员遍历、普通启停/RESET、文件读取和新成员发布都经过此边界，不能在成员操作之间释放；backend 自有锁只作为内层锁，不反向获取文件事务锁。独立组不共享文件事务锁，CPU 软件 backend 的 `SYSTEM_CONTEXTS` 继续保护同 CPU 的计时状态。确定性 kernel 回归暂停“成员已启用、leader 尚未启用”的阶段，再从成员 FD 发起 GROUP DISABLE，验证它必须等待整次 ENABLE 完成，不能留下混合状态。
 
 硬件 inherited child 使用独立的 flexible 资源，在每个 slice 从执行 CPU 取得物理槽，不复制 parent 的固定槽。`on_clone_inherit()` 在发布 child 前重建其 leader/sibling 关系。硬件与软件 binding 的 `enable_on_exec` 使用一次性原子状态；首次 exec 消费标志，后续 disable 不会被第二次 exec 撤销。fork 在 family ioctl 串行化边界内读取 parent 的实际启用状态，以保留 exec 对单个 binding 的影响。
 

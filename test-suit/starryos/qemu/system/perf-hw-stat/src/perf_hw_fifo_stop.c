@@ -123,7 +123,7 @@ static int check_stop(unsigned operation, int remote) {
         if (syscall(SYS_read, fd, before, sizeof(before)) != sizeof(before))
             return -1;
         if (move_caller(remote, gate[1]) != 0 ||
-            syscall(SYS_ioctl, fd, operation, 0) != 0 || pin_cpu(0) != 0 ||
+            (operation != 0x10000 && syscall(SYS_ioctl, fd, operation, 0) != 0) ||
             syscall(SYS_read, fd, first, sizeof(first)) != sizeof(first) ||
             syscall(SYS_read, fd, second, sizeof(second)) != sizeof(second))
             return -1;
@@ -131,12 +131,18 @@ static int check_stop(unsigned operation, int remote) {
             if (first[0] == 0 || first[2] == 0 ||
                 memcmp(first, second, sizeof(first)) != 0)
                 return -1;
+        } else if (operation == 0x10000) {
+            if (first[0] <= before[0] || second[0] <= first[0] ||
+                first[2] < before[2] || second[2] <= first[2])
+                return -1;
         } else if (first[0] >= before[0] || second[0] <= first[0] ||
                    first[1] < before[1] || first[2] < before[2] ||
                    second[2] <= first[2]) {
             return -1;
         }
-        if (syscall(SYS_close, fd) != 0)
+        /* Restore the owner-CPU setup for the next operation, only after
+         * both reads have exercised the remote FIFO-busy path. */
+        if (pin_cpu(0) != 0 || syscall(SYS_close, fd) != 0)
             return -1;
     }
     if (remote && write(stop[1], "s", 1) != 1)
@@ -161,10 +167,10 @@ static int run_checks(void) {
 #if defined(__aarch64__)
     if (pin_cpu(0) != 0)
         return 1;
-    const unsigned operations[] = {0x2401, 0x2403, 0};
-    for (unsigned i = 0; i < 6; ++i) {
-        unsigned operation = operations[i % 3];
-        int remote = i >= 3;
+    const unsigned operations[] = {0x10000, 0x2401, 0x2403, 0};
+    for (unsigned i = 0; i < 8; ++i) {
+        unsigned operation = operations[i % 4];
+        int remote = i >= 4;
         printf("STARRY_FIFO_STOP_BEGIN operation=%#x remote=%d\n", operation, remote);
         fflush(stdout);
         if (check_stop(operation, remote) != 0) {

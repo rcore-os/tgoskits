@@ -1082,6 +1082,88 @@ mod tests {
     use super::*;
 
     #[axtest::axtest]
+    fn group_disable_cannot_split_group_enable() {
+        use ax_runtime::task::{
+            sched::{CpuId, CpuSet, RtPriority, SchedulePolicy},
+            sync::WaitQueue,
+            thread::current::current_thread_handle,
+        };
+        use super::super::{PerfContextKey, PerfEvent, target::PerfCpuId};
+
+        if SYSTEM_COUNTERS.get().is_none() {
+            initialize();
+        }
+        let make_event = || {
+            // SAFETY: perf_event_attr contains only integer fields and unions.
+            let mut attr: perf_event_attr = unsafe { core::mem::zeroed() };
+            attr.read_format = 3;
+            let state = Arc::new(SwEventState::new(SwId::CpuClock, &attr));
+            let counter = Arc::new(SwSystemCounter::new(Arc::clone(&state), 0, false));
+            PERF_SW_ACTIVE.fetch_add(1, Ordering::AcqRel);
+            PerfEvent::new(alloc::boxed::Box::new(SwPerfEvent {
+                state, target: SwTargetCounter::Cpu(counter),
+            }), Some(PerfContextKey::Cpu(PerfCpuId::new(0))), false, false).unwrap()
+        };
+        let leader = Arc::new(make_event());
+        let mut member = make_event();
+        member.transaction = Arc::clone(&leader.transaction);
+        let member = Arc::new(member);
+        member.event.lock().link_group(&mut **leader.event.lock()).unwrap();
+        *member.group_leader.lock() = Some(Arc::downgrade(&leader));
+        leader.members.lock().push(Arc::downgrade(&member));
+
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        let gate = Arc::new(WaitQueue::new());
+        let mut cpu0 = CpuSet::empty(ax_runtime::hal::cpu_num());
+        assert!(cpu0.insert(CpuId::new(0)));
+        let mut cpu1 = CpuSet::empty(ax_runtime::hal::cpu_num());
+        assert!(cpu1.insert(CpuId::new(1)));
+        let current = current_thread_handle().unwrap();
+        let old_affinity = current.affinity().unwrap();
+        let old_policy = current.base_policy();
+        current.set_affinity_and_wait(cpu0.clone()).unwrap();
+        current.set_policy(SchedulePolicy::fifo(RtPriority::new(20).unwrap())).unwrap();
+        let publisher = {
+            let leader = Arc::clone(&leader);
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            let gate = Arc::clone(&gate);
+            crate::task::spawn_kernel_thread_with_affinity(move || {
+                leader.control_group_observed(Some(true), || {
+                    entered.store(true, Ordering::Release);
+                    gate.notify_all();
+                    gate.wait_until(|| release.load(Ordering::Acquire));
+                }).unwrap();
+            }, "perf-group-enable".into(), cpu1)
+        };
+        gate.wait_until(|| entered.load(Ordering::Acquire));
+        let disabler = {
+            let member = Arc::clone(&member);
+            let done = Arc::clone(&done);
+            crate::task::spawn_kernel_thread_with_policy_and_affinity(move || {
+                member.control_group(Some(false)).unwrap();
+                done.store(true, Ordering::Release);
+            }, "perf-group-disable".into(),
+            SchedulePolicy::fifo(RtPriority::new(30).unwrap()), cpu0)
+        };
+        crate::task::yield_now();
+        let premature = done.load(Ordering::Acquire);
+        release.store(true, Ordering::Release);
+        gate.notify_all();
+        crate::task::join_kernel_thread(publisher);
+        crate::task::join_kernel_thread(disabler);
+        current.set_policy(old_policy).unwrap();
+        current.set_affinity_and_wait(old_affinity).unwrap();
+        assert!(!premature, "GROUP DISABLE split an unfinished GROUP ENABLE");
+        for event in [leader, member] {
+            let stopped = event.read_values().unwrap();
+            assert_eq!(event.read_values().unwrap().time_enabled, stopped.time_enabled);
+        }
+    }
+
+    #[axtest::axtest]
     fn cpu_group_disable_waits_for_member_enable_publication() {
         use ax_runtime::task::{
             sched::{CpuId, CpuSet, RtPriority, SchedulePolicy},

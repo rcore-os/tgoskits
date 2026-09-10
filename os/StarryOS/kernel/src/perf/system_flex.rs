@@ -154,10 +154,6 @@ impl SystemFlexCounter {
         Some(retired)
     }
 
-    pub(super) const fn owner(&self) -> PerfCpuId {
-        self.owner
-    }
-
     pub(super) fn enable(&self) {
         if !self.enabled.swap(true, Ordering::AcqRel) {
             self.enabled_since.store(now_ns(), Ordering::Release);
@@ -165,11 +161,11 @@ impl SystemFlexCounter {
     }
 
     pub(super) fn disable(&self) -> crate::StarryResult<()> {
-        self.control_on_owner(ControlOperation::Disable)
+        self.control_on_owner(ControlOperation::Disable).map(|_| ())
     }
 
     pub(super) fn reset(&self) -> crate::StarryResult<()> {
-        self.control_on_owner(ControlOperation::Reset)
+        self.control_on_owner(ControlOperation::Reset).map(|_| ())
     }
 
     fn reset_on_owner(&self) {
@@ -189,11 +185,15 @@ impl SystemFlexCounter {
         }
     }
 
-    fn control_on_owner(&self, operation: ControlOperation) -> crate::StarryResult<()> {
+    fn control_on_owner(
+        &self,
+        operation: ControlOperation,
+    ) -> crate::StarryResult<Option<(u64, u64, u64)>> {
         let mut request = ControlRequest {
             counter: self,
             operation,
             retired: None,
+            snapshot: None,
         };
         let result = {
             // Pin the local fast-path CPU without masking IPIs during a remote
@@ -218,11 +218,13 @@ impl SystemFlexCounter {
             ax_hal::irq::IrqError::Unsupported => crate::StarryError::Unsupported,
             ax_hal::irq::IrqError::Timeout => crate::StarryError::TimedOut,
             _ => crate::StarryError::Io,
-        })
+        })?;
+        Ok(request.snapshot)
     }
 
-    pub(super) fn read(self: &Arc<Self>) -> crate::StarryResult<(u64, u64, u64)> {
-        super::cpu_worker::read_system_flexible(Arc::clone(self))
+    pub(super) fn read(&self) -> crate::StarryResult<(u64, u64, u64)> {
+        self.control_on_owner(ControlOperation::Read)
+            .map(|snapshot| snapshot.expect("completed PMU read must return a snapshot"))
     }
 
     /// Reads the committed totals plus the currently active hardware slice.
@@ -276,12 +278,14 @@ impl SystemFlexCounter {
 enum ControlOperation {
     Disable,
     Reset,
+    Read,
 }
 
 struct ControlRequest<'a> {
     counter: &'a SystemFlexCounter,
     operation: ControlOperation,
     retired: Option<Arc<IrqMutex<super::counting::CounterExtender>>>,
+    snapshot: Option<(u64, u64, u64)>,
 }
 
 /// # Safety
@@ -306,6 +310,7 @@ unsafe fn control_callback(arg: *mut ()) {
             }
         }
         ControlOperation::Reset => counter.reset_on_owner(),
+        ControlOperation::Read => request.snapshot = Some(counter.read_on_owner()),
     }
 }
 

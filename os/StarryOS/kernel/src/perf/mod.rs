@@ -350,6 +350,8 @@ pub struct PerfEvent {
     members: Mutex<Vec<Weak<PerfEvent>>>,
     /// Ordinary group leader, or `None` for a leader/standalone event.
     group_leader: Mutex<Option<Weak<PerfEvent>>>,
+    /// Shared by a leader and its members, including after leader FD closure.
+    transaction: Arc<Mutex<()>>,
 }
 
 impl Debug for PerfEvent {
@@ -401,6 +403,7 @@ impl PerfEvent {
             group_error: AtomicBool::new(false),
             members: Mutex::new(Vec::new()),
             group_leader: Mutex::new(None),
+            transaction: Arc::new(Mutex::new(())),
         })
     }
 
@@ -492,6 +495,17 @@ impl PerfEvent {
     }
 
     fn control_group(&self, enable: Option<bool>) -> StarryResult<()> {
+        self.control_group_observed(enable, || {})
+    }
+
+    fn control_group_observed(
+        &self,
+        enable: Option<bool>,
+        before_leader_enable: impl FnOnce(),
+    ) -> StarryResult<()> {
+        // One transaction spans every member and the leader. Backend locks
+        // remain inner locks and must not reacquire this sleepable boundary.
+        let _transaction = self.transaction.lock();
         let leader = self.live_group_leader();
         let leader = leader.as_deref().unwrap_or(self);
         match enable {
@@ -499,6 +513,7 @@ impl PerfEvent {
                 #[cfg(target_arch = "aarch64")]
                 leader.validate_pinned_group_capacity()?;
                 leader.propagate_members(true)?;
+                before_leader_enable();
                 if let Err(error) = leader.set_enabled(true) {
                     let _ = leader.propagate_members(false);
                     return Err(error);
@@ -680,6 +695,7 @@ impl Pollable for PerfEvent {
 
 impl FileLike for PerfEvent {
     fn read(&self, dst: &mut crate::file::IoDst) -> StarryResult<usize> {
+        let _transaction = self.transaction.lock();
         if self.group_error.load(Ordering::Acquire) {
             return Ok(0);
         }
@@ -787,6 +803,7 @@ impl FileLike for PerfEvent {
             if arg & PERF_IOC_FLAG_GROUP != 0 {
                 self.control_group(None)?;
             } else {
+                let _transaction = self.transaction.lock();
                 self.reset_one()?;
             }
             return Ok(0);
@@ -797,6 +814,7 @@ impl FileLike for PerfEvent {
                 if arg & PERF_IOC_FLAG_GROUP != 0 {
                     self.control_group(Some(true))?;
                 } else {
+                    let _transaction = self.transaction.lock();
                     self.set_enabled(true)?;
                 }
             }
@@ -804,6 +822,7 @@ impl FileLike for PerfEvent {
                 if arg & PERF_IOC_FLAG_GROUP != 0 {
                     self.control_group(Some(false))?;
                 } else {
+                    let _transaction = self.transaction.lock();
                     self.set_enabled(false)?;
                 }
             }
@@ -1040,13 +1059,20 @@ pub fn perf_event_open(
                 }
             }
         };
-        let perf_event = Arc::new(PerfEvent::new(
+        // Keep membership publication and the member's initial enable inside
+        // the same transaction as ioctls through any existing group FD.
+        let _transaction = group_leader.as_ref().map(|leader| leader.transaction.lock());
+        let mut perf_event = PerfEvent::new(
             event,
             Some(context),
             attr.inherit() != 0,
             attr.pinned() != 0,
-        )?);
-        if let Some(leader) = group_leader {
+        )?;
+        if let Some(leader) = &group_leader {
+            perf_event.transaction = Arc::clone(&leader.transaction);
+        }
+        let perf_event = Arc::new(perf_event);
+        if let Some(leader) = &group_leader {
             if leader.context != perf_event.context
                 || leader.inherit != perf_event.inherit
                 || leader.live_group_leader().is_some()
@@ -1060,7 +1086,7 @@ pub fn perf_event_open(
                 let mut member_backend = perf_event.event.lock();
                 member_backend.link_group(&mut **leader_backend)?;
             }
-            *perf_event.group_leader.lock() = Some(Arc::downgrade(&leader));
+            *perf_event.group_leader.lock() = Some(Arc::downgrade(leader));
             leader.members.lock().push(Arc::downgrade(&perf_event));
         }
         if let Some(output) = output_event {
