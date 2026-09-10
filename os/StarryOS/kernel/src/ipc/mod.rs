@@ -7,3 +7,9 @@
 //! limits in one place avoids a cyclic dependency between those two consumers.
 
 pub mod mqueue;
+
+mod permission;
+pub mod shm;
+
+pub use permission::IpcPerm;
+pub(crate) use permission::has_ipc_permission;

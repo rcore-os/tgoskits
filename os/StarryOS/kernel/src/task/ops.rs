@@ -617,7 +617,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // resources that still belong to the exiting process. In particular,
         // a vfork parent resumes only after this cleanup.
         if let Ok(aspace) = thr.proc_data.pin_aspace() {
-            crate::syscall::clear_proc_shm(
+            crate::ipc::shm::clear_proc_shm(
                 process_identity_id,
                 process.identity().snapshot(),
                 &aspace,
