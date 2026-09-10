@@ -60,6 +60,15 @@ _Static_assert(offsetof(struct perf_event_mmap_page, data_head) == 1024,
 #if defined(__aarch64__)
 static volatile uint64_t sink;
 
+static int sample_values_valid(uint64_t leader, uint64_t previous_leader,
+                               uint64_t member, uint64_t previous_member,
+                               int sampling_member) {
+    /* Only the leader caused this overflow. A sibling is a cumulative read,
+     * not an independent promise of progress for every leader sample. */
+    return leader > previous_leader && member >= previous_member &&
+           (!sampling_member || member < UINT32_MAX);
+}
+
 /* A sampling event must count before its first overflow, including its last
  * partial slice. A huge period keeps this independent of sample delivery. */
 static int check_partial_period(int system_wide) {
@@ -175,6 +184,7 @@ static int check_group_sample(int sampling_member) {
     uint64_t tail = meta->data_tail;
     const uint8_t *ring = (const uint8_t *)mapping + meta->data_offset;
     uint64_t samples = 0, last_leader = 0, last_member = 0;
+    uint64_t first_member = 0;
     int corrupt = 0;
     while (tail < head && meta->data_size != 0) {
         struct perf_event_header header;
@@ -193,9 +203,9 @@ static int check_group_sample(int sampling_member) {
             }
             ring_copy(ring, meta->data_size, start + 16, fields, sizeof(fields));
             if (fields[0] != 2 || fields[2] != leader_id ||
-                fields[4] != member_id || fields[1] <= last_leader ||
-                fields[3] <= last_member ||
-                (sampling_member && fields[3] >= UINT32_MAX)) {
+                fields[4] != member_id ||
+                !sample_values_valid(fields[1], last_leader, fields[3],
+                                     last_member, sampling_member)) {
                 printf("STARRY_PERF_GROUP_SAMPLE_BAD nr=%llu leader=%llu/%llu "
                        "leader_id=%llu/%llu member=%llu/%llu member_id=%llu/%llu\n",
                        (unsigned long long)fields[0],
@@ -210,6 +220,7 @@ static int check_group_sample(int sampling_member) {
                 corrupt = 1;
                 break;
             }
+            if (samples == 0) first_member = fields[3];
             last_leader = fields[1];
             last_member = fields[3];
             samples++;
@@ -231,7 +242,9 @@ static int check_group_sample(int sampling_member) {
     munmap(mapping, RING_BYTES);
     close(member);
     close(leader);
-    if (corrupt || samples < 2 || last_leader == 0 || last_member == 0) {
+    /* Plateaus may occur between adjacent snapshots, but a permanently frozen
+     * member must still fail over the complete workload. */
+    if (corrupt || samples < 2 || last_leader == 0 || last_member <= first_member) {
         puts("perf-group-sample FAILED: malformed or empty group snapshot");
         return 1;
     }
@@ -241,6 +254,15 @@ static int check_group_sample(int sampling_member) {
 
 int main(void) {
 #if defined(__aarch64__)
+    /* Replay the adjacent snapshots from CI job 102711616406. A group member
+     * is not itself the overflow source: equal adjacent snapshots are valid. */
+    if (!sample_values_valid(12998996, 12547600, 14058984, 14058984, 0) ||
+        sample_values_valid(12998996, 12547600, 14058983, 14058984, 0) ||
+        sample_values_valid(12547600, 12547600, 14058985, 14058984, 0) ||
+        sample_values_valid(12998996, 12547600, UINT32_MAX, 14058984, 1)) {
+        puts("perf-group-sample FAILED: sample value validation contract");
+        return 1;
+    }
     if (check_partial_period(1) || check_partial_period(0)) {
         puts("perf-group-sample FAILED: partial sampling period lost");
         return 1;
