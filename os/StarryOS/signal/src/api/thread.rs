@@ -66,8 +66,6 @@ struct PreparedSignalHandler {
 
 /// Thread-level signal manager.
 pub struct ThreadSignalManager {
-    /// Registry key; the allocation address separately prevents TID reuse races.
-    tid: u32,
     /// The process-level signal manager
     proc: Arc<ProcessSignalManager>,
 
@@ -96,8 +94,7 @@ impl Drop for ThreadSignalManager {
         // The process remains owned through this destructor. Compare pointer
         // identity only; no raw pointer is dereferenced. Arc retains its implicit
         // weak reference until Drop returns, including failed registration.
-        self.proc
-            .unregister_child(self.tid, core::ptr::from_ref(self));
+        self.proc.unregister_child(core::ptr::from_ref(self));
     }
 }
 
@@ -115,7 +112,6 @@ impl ThreadSignalManager {
         ax_runtime::task::thread::ThreadAllocationProbe::allocation_point()
             .map_err(|_| crate::SignalError::NoMemory)?;
         let this = Arc::try_new(Self {
-            tid,
             proc: proc.clone(),
 
             pending: RawSpinLock::new(PendingSignals::default()),

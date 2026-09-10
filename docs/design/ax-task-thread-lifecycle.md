@@ -420,10 +420,22 @@ x86_64 的同一名称回归红绿日志为 `/tmp/pr2357-starry-name-{red,green}
 
 `ProcessSignalManager::children_snapshot` 原先仅在后续信号扫描时清理失效弱引用。线程退出或创建回滚后，长期不接收信号的进程仍会保留这些登记与 Arc 分配存储。现在 `ThreadSignalManager::drop` 在最后强引用退出时主动注销，不依赖一次无关的未来信号。
 
-登记匹配同时检查 TID 和对象地址，防止旧清理路径删除复用同一 TID 的新对象；地址只比较、不解引用。进程由正在析构对象的 Arc 字段保持有效，Arc 的隐含弱引用持续到析构完成，因此取走登记不会提前释放正在析构的对象。`unregister_child` 在原登记锁内移出弱引用，在锁外丢弃；后续扫描对同一个登记再次清理也是无副作用的。
+登记匹配使用被引用保护的对象地址，防止旧清理路径删除复用同一 TID 的新对象；TID 可能因 exec 改变，不作为析构时的匹配条件。地址只比较、不解引用。进程由正在析构对象的 Arc 字段保持有效，Arc 的隐含弱引用持续到析构完成，因此取走登记不会提前释放正在析构的对象。`unregister_child` 在原登记锁内移出弱引用，在锁外丢弃；后续扫描对同一个登记再次清理也是无副作用的。
 
 Linux 固定基准的 `__exit_signal → __unhash_process` 主动删除线程组登记，再按独立读者/对象回收协议释放资源。这里不复制 Linux 的 RCU 对象布局，也不以 Arc 计数替代宽限期；信号快照已有强引用保持当前读者对象有效，移除弱登记只停止后续快照发现它。
 
 `last_thread_owner_unregisters_without_an_unrelated_signal` 在旧实现确定性失败于登记仍存在；修复后同一用例验证立即注销以及旧对象清理不影响复用 TID 的新对象。`cargo xtask test --since d563c3477c` 红绿日志为 `/tmp/pr2357-signal-retire-{red,green}.log`，修复后信号与内核两包 std 检查通过；信号组件定向 clippy 通过，日志 `/tmp/pr2357-signal-retire-clippy.log`。真实内核回归结果单独记录，不以组件测试冒充 IRQ/切换行为证明。
 
 新增注销路径后的 x86_64 kernel axtest 全部通过，日志 `/tmp/pr2357-signal-retire-kernel.log`，继续覆盖 Thread 私有分配回滚、扩展回滚和实际切换/回收。该结果不表示此前 SG2002 停滞或 LoongArch 非预期下线拒绝已定位根因。
+
+### 5.21 exec 更名后的登记回收
+
+独立核验发现 `536505f3ba` 把创建时 TID 同时保存在 `ThreadSignalManager`，而非主线程 exec 的 `rename_child` 只更新进程登记表。最后强引用析构时，旧 TID 无法匹配已更名的表项，重新出现等待无关信号才释放弱登记的问题。固定 Linux 基准的 `fs/exec.c::de_thread` 用 `exchange_tids/transfer_pid` 转交身份，`kernel/exit.c::__unhash_process` 按任务对象解除登记；对象生命周期不以最初的数字 TID 为准。
+
+现在删除 manager 内重复的 TID，`unregister_child` 按对象地址匹配。析构期间 Arc 隐含弱引用、扫描期间显式 Weak 各自阻止该分配地址复用；不增加原子 TID、额外锁或新引用计数。取走登记仍在原锁内，最终 Weak 释放仍在锁外。
+
+`renamed_thread_owner_unregisters_after_exec` 创建线程、执行真实 `rename_child`，再创建复用旧 TID 的对象；释放更名线程必须只留下新对象，最后释放新对象后登记表必须为空。同一测试在旧实现确定性得到两个残留登记而非一个，日志 `/tmp/pr2357-signal-rename-red.log`。该组件回归直接观察资源登记责任；用户态 exec 的成功只能补充身份转交行为，不能单独证明内核弱引用已释放。
+
+远端 `b31727b024` 的 [CI 34470614083](https://github.com/rcore-os/tgoskits/actions/runs/34470614083) 已结束：增量 clippy、std、ArceOS/Starry 四架构和 Starry 板卡通过；ASUS NUC15CRH 失败且部分 Axvisor 作业取消。按用户要求排除 NUC，取消项仍缺验证。SG2002 此轮通过不等于先前停滞已修复，LoongArch 同理。
+
+修复后同一组件回归通过，两包增量 std 与信号组件定向 clippy 通过，日志 `/tmp/pr2357-signal-rename-{green,clippy}.log`。x86_64 四核真实 `qemu/system/test-thread-lifecycle-exec` 通过，日志 `/tmp/pr2357-signal-rename-exec.log`，直接 SYS_execve 验证非 leader 更名、原 PID 保持及父进程等待。execveat 共用 `do_execve` 的注销路径，但本轮未单独运行 execveat 更名场景。

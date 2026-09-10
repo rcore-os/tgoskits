@@ -137,20 +137,21 @@ impl ProcessSignalManager {
             if let Some(thread) = weak.upgrade() {
                 live.push((tid, thread));
             } else {
-                self.unregister_child(tid, weak.as_ptr());
+                self.unregister_child(weak.as_ptr());
             }
         }
         live
     }
 
-    pub(super) fn unregister_child(&self, tid: u32, identity: *const ThreadSignalManager) {
+    pub(super) fn unregister_child(&self, identity: *const ThreadSignalManager) {
         let removed = {
             let mut children = self.children.lock();
             children
                 .iter()
-                .position(|(registered_tid, child)| {
-                    *registered_tid == tid && core::ptr::eq(child.as_ptr(), identity)
-                })
+                // Exec may replace the TID. The caller's Weak or the Arc
+                // destructor's implicit Weak keeps this allocation identity
+                // from being reused until removal finishes.
+                .position(|(_, child)| core::ptr::eq(child.as_ptr(), identity))
                 .map(|index| children.swap_remove(index))
         };
         // A final Weak drop may release the allocation. Keep it out of the
@@ -424,12 +425,37 @@ mod tests {
             "last thread owner must retire its registry lease"
         );
         let replacement = ThreadSignalManager::new(7, Arc::clone(&process)).unwrap();
-        process.unregister_child(7, retired.as_ptr());
+        process.unregister_child(retired.as_ptr());
         assert_eq!(
             process.children.lock().len(),
             1,
             "stale cleanup removed a reused TID"
         );
+        drop(replacement);
+        assert!(process.children.lock().is_empty());
+    }
+
+    #[test]
+    fn renamed_thread_owner_unregisters_after_exec() {
+        let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
+        let process = Arc::new(ProcessSignalManager::new(actions, 0));
+        let thread = ThreadSignalManager::new(7, Arc::clone(&process)).unwrap();
+        process.rename_child(7, 1);
+        let replacement = ThreadSignalManager::new(7, Arc::clone(&process)).unwrap();
+        drop(thread);
+        {
+            let children = process.children.lock();
+            assert_eq!(
+                children.len(),
+                1,
+                "exec-renamed owner left a registry lease"
+            );
+            assert_eq!(children[0].0, 7);
+            assert!(core::ptr::eq(
+                children[0].1.as_ptr(),
+                Arc::as_ptr(&replacement)
+            ));
+        }
         drop(replacement);
         assert!(process.children.lock().is_empty());
     }
