@@ -5,7 +5,13 @@
 //! 路由全部从 `meta.href` 派生，不硬编码端点。
 
 import { useState } from 'react'
-import { describeError, describeStatus, type PanelProps, type VmDetail } from '@/api/types'
+import {
+  ApiError,
+  describeError,
+  describeStatus,
+  type PanelProps,
+  type VmDetail,
+} from '@/api/types'
 import {
   countersOf,
   settleToTerminalState,
@@ -107,6 +113,10 @@ export default function VmsPanel({ meta, api, resources = [], refresh }: PanelPr
   const [busy, setBusy] = useState<{ id: number; op: LifecycleOp } | null>(null)
   const [confirming, setConfirming] = useState<{ op: ActionName; id: number } | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
+  // A create failure must be readable while the dialog holds the screen: the
+  // card's own banner sits behind the overlay, so it would look like nothing
+  // happened.
+  const [createError, setCreateError] = useState<string | null>(null)
   const [toml, setToml] = useState(DEFAULT_VM_TOML)
 
   // 资源根来自 manifest：详情/动作路由都从它派生（href + "/{id}" 等）。
@@ -137,7 +147,7 @@ export default function VmsPanel({ meta, api, resources = [], refresh }: PanelPr
 
   const runCreate = async () => {
     setBusy({ id: -1, op: 'create' })
-    setError(null)
+    setCreateError(null)
     try {
       const created = await api.post<{ id: number }>(`${base}/create`, { toml })
       setCreateOpen(false)
@@ -146,7 +156,12 @@ export default function VmsPanel({ meta, api, resources = [], refresh }: PanelPr
       )
       if (!result.ok) setError(result.message)
     } catch (e: unknown) {
-      setError(describeError(e))
+      // 409 在创建场景下的含义是「这个 id 已经被占用」，通用状态码文案说不清楚。
+      setCreateError(
+        e instanceof ApiError && e.status === 409
+          ? '该 id 已被占用：先删除现有 VM，或换一个构建期内嵌了镜像的 id'
+          : describeError(e),
+      )
     } finally {
       setBusy(null)
       refresh?.()
@@ -167,7 +182,14 @@ export default function VmsPanel({ meta, api, resources = [], refresh }: PanelPr
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex items-center gap-2">
-          <Button size="sm" disabled={busy !== null} onClick={() => setCreateOpen(true)}>
+          <Button
+            size="sm"
+            disabled={busy !== null}
+            onClick={() => {
+              setCreateError(null)
+              setCreateOpen(true)
+            }}
+          >
             创建 VM
           </Button>
           {error && <span className="font-mono text-xs text-destructive">{error}</span>}
@@ -274,6 +296,11 @@ export default function VmsPanel({ meta, api, resources = [], refresh }: PanelPr
             value={toml}
             onChange={(e) => setToml(e.target.value)}
           />
+          {createError && (
+            <p className="font-mono text-xs text-destructive" role="alert">
+              {createError}
+            </p>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
               取消
