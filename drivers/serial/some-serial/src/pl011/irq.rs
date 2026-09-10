@@ -28,6 +28,16 @@ impl UartIrq for Pl011Irq {
         if active == 0 {
             return None;
         }
+        // Clear the sampled status before draining, mirroring Linux
+        // pl011_int(). The host console refills the RX FIFO as soon as this
+        // handler frees space, and a PL011 implementation may assert the
+        // receive interrupt only on a new arrival edge instead of
+        // re-evaluating the FIFO level. Clearing after the drain would wipe
+        // an interrupt asserted by bytes that arrived while the handler was
+        // running, leaving them stranded in the FIFO with no way to signal
+        // again. Clearing first keeps every later arrival latched as a new
+        // interrupt.
+        self.registers().uarticr.set(active);
 
         let mut events = events_from_mis(mis);
         let mut rx = IrqRxBatch::new();
@@ -59,7 +69,6 @@ impl UartIrq for Pl011Irq {
         } else if !rearm.is_empty() {
             self.mask(rearm);
         }
-        self.registers().uarticr.set(active);
 
         Some(SerialIrqReport::new(
             SerialIrqEvent {
