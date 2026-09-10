@@ -23,6 +23,10 @@ const UDP_POLL_STALL: Duration = Duration::from_millis(10);
 const UDP_COMPLETION_POLLS: usize = 200;
 const DISCOVERY_RECEIVE_ATTEMPTS: usize = 8;
 const DISCOVERY_CLIENT_PORT: u16 = 2999;
+const UDP_NETWORK_UNREACHABLE: Status = Status(Status::ERROR_BIT | 100);
+const UDP_HOST_UNREACHABLE: Status = Status(Status::ERROR_BIT | 101);
+const UDP_PROTOCOL_UNREACHABLE: Status = Status(Status::ERROR_BIT | 102);
+const UDP_PORT_UNREACHABLE: Status = Status(Status::ERROR_BIT | 103);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkError {
@@ -326,7 +330,7 @@ impl Udp4Client {
             self.cancel_and_complete(&mut receive_token, NetworkError::UdpReceive)?;
             return Err(error);
         }
-        self.wait(&mut receive_token, NetworkError::UdpReceive)?;
+        self.wait_for_receive(&mut receive_token)?;
         collect_received_bytes(&receive_token, receive_limit)
     }
 
@@ -342,7 +346,7 @@ impl Udp4Client {
         self.protocol_mut()
             .receive(&mut token)
             .map_err(|_| NetworkError::UdpReceive)?;
-        self.wait(&mut token, NetworkError::UdpReceive)?;
+        self.wait_for_receive(&mut token)?;
         collect_received_bytes(&token, limit)
     }
 
@@ -371,6 +375,36 @@ impl Udp4Client {
         Err(NetworkError::Timeout)
     }
 
+    fn wait_for_receive(&mut self, token: &mut Udp4CompletionToken) -> Result<(), NetworkError> {
+        for _ in 0..UDP_COMPLETION_POLLS {
+            if token.status == Status::SUCCESS {
+                return Ok(());
+            }
+            if token.status != Status::NOT_READY {
+                if !is_discovery_icmp_status(token.status) {
+                    crate::logln!("udp_completion_error: {:?}", token.status);
+                    return Err(NetworkError::UdpReceive);
+                }
+
+                // A broadcast probe can also reach a network path without a
+                // discovery listener.  Its ICMP error must not win the race
+                // against a valid offer arriving through another path.
+                crate::logln!("udp_discovery_ignored_error: {:?}", token.status);
+                token.status = Status::NOT_READY;
+                token.packet = Udp4CompletionTokenPacket {
+                    rx_data: ptr::null_mut(),
+                };
+                self.protocol_mut()
+                    .receive(token)
+                    .map_err(|_| NetworkError::UdpReceive)?;
+            }
+            self.protocol_mut().poll();
+            boot::stall(UDP_POLL_STALL);
+        }
+        self.cancel_and_complete(token, NetworkError::UdpReceive)?;
+        Err(NetworkError::Timeout)
+    }
+
     fn cancel_and_complete(
         &mut self,
         token: &mut Udp4CompletionToken,
@@ -389,6 +423,14 @@ impl Udp4Client {
         }
         Ok(())
     }
+}
+
+fn is_discovery_icmp_status(status: Status) -> bool {
+    status == UDP_NETWORK_UNREACHABLE
+        || status == UDP_HOST_UNREACHABLE
+        || status == UDP_PROTOCOL_UNREACHABLE
+        || status == UDP_PORT_UNREACHABLE
+        || status == Status::ICMP_ERROR
 }
 
 fn collect_received_bytes(

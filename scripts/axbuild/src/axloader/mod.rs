@@ -29,6 +29,7 @@ const AXLOADER_BIN: &str = "axloader";
 const DEFAULT_UEFI_TARGET: &str = "x86_64-unknown-uefi";
 const HTTP_SMOKE_BOOT_TIMEOUT: Duration = Duration::from_secs(240);
 const HTTP_SMOKE_MAX_ATTEMPTS: usize = 2;
+const HTTP_SMOKE_DISCOVERY_REPLY_DELAY: Duration = Duration::from_millis(500);
 const QEMU_HOST_GATEWAY: &str = "10.0.2.2";
 
 #[derive(Clone, Copy)]
@@ -558,6 +559,10 @@ impl SmokeControlServer {
                     };
                     let payload = serde_json::to_vec(&offer).unwrap();
                     let response = build_discovery_reply(&request, &payload);
+                    // Let SLiRP report its unhandled copy of the broadcast
+                    // first.  The loader must keep receiving after that ICMP
+                    // error and still accept this valid discovery offer.
+                    thread::sleep(HTTP_SMOKE_DISCOVERY_REPLY_DELAY);
                     if let Some(stream) = injection.as_mut()
                         && write_qemu_filter_frame(stream, &response).is_err()
                     {
