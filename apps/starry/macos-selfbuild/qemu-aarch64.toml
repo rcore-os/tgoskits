@@ -21,9 +21,6 @@ args = [
 uefi = false
 to_bin = true
 rootfs_write_policy = "persist"
-shell_prefix = "root@starry:"
-shell_init_cmd = "/bin/sh /opt/starry-macos-run.sh"
-success_regex = ["(?m)^===STARRY-MACOS-SELFBUILD-PASS jobs=[0-9]+ elapsed=[0-9]+===$"]
 fail_regex = [
     "(?i)\\bpanicked at\\b",
     "(?i)\\bkernel panic\\b",
@@ -35,3 +32,8 @@ fail_regex = [
     "(?m)^===STARRY-MACOS-SELFBUILD-FAIL",
 ]
 timeout = 7200
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/bin/sh /opt/starry-macos-run.sh"
+success_regex = ["(?m)^===STARRY-MACOS-SELFBUILD-PASS jobs=[0-9]+ elapsed=[0-9]+===$"]

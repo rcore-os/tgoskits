@@ -9,9 +9,6 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/dynamic-test.sh"
-success_regex = ["(?m)^DYNAMIC_MUSL_TEST_DONE\\s+RC=0\\s*$"]
 fail_regex = [
     "(?m)^DYNAMIC_MUSL_TEST_DONE\\s+RC=[^0]",
     "(?i)not found",
@@ -22,3 +19,8 @@ fail_regex = [
     "(?i)illegal instruction",
 ]
 timeout = 60
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/dynamic-test.sh"
+success_regex = ["(?m)^DYNAMIC_MUSL_TEST_DONE\\s+RC=0\\s*$"]

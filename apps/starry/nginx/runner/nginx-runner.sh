@@ -1,7 +1,7 @@
 #!/bin/sh
 # nginx-runner.sh - unified entry point for the Starry nginx test suite.
 #
-# Usage (invoked as the QEMU shell_init_cmd):
+# Usage (invoked as the QEMU shell-check step command):
 #   /usr/bin/nginx-runner.sh smoke
 #   /usr/bin/nginx-runner.sh phase <phase-id>
 #   /usr/bin/nginx-runner.sh all

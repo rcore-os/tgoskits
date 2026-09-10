@@ -61,9 +61,9 @@ mkdir -p "$overlay_dir/usr/local/bin" "$overlay_dir/root"
 # Stage the host golden for the byte-exact on-target compare.
 install -Dm0644 "$app_dir/golden.txt" "$overlay_dir/root/golang-lang-golden.txt"
 
-# Stage the on-target gate script (invoked as the ENTIRE shell_init_cmd). Keeping the gate
+# Stage the on-target gate script (invoked as the entire shell-check step command). Keeping the gate
 # in a staged script — not inline in the toml — avoids the harness false-positive where the
-# echoed shell_init_cmd text containing `echo "TEST PASSED"` would self-match success_regex.
+# echoed step command text containing `echo "TEST PASSED"` would self-match success_regex.
 install -Dm0755 "$app_dir/go/run-go.sh" "$overlay_dir/usr/local/bin/run-go.sh"
 
 echo "prebuild: built static golang-lang for $arch ($goarch) + staged golden ($(wc -l <"$app_dir/golden.txt") lines) + run-go.sh gate"

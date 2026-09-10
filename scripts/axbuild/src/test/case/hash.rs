@@ -70,10 +70,6 @@ fn hash_grouped_execution(hasher: &mut Sha256, execution: &GroupedCaseExecution)
             hash_token(hasher, "guest-init");
             hash_grouped_runner_config(hasher, config);
         }
-        GroupedCaseExecution::ShellCommand(config) => {
-            hash_token(hasher, "shell-command");
-            hash_grouped_runner_config(hasher, config);
-        }
         GroupedCaseExecution::External => hash_token(hasher, "external"),
     }
 }

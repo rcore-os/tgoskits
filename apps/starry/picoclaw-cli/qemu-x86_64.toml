@@ -1,8 +1,6 @@
 timeout = 420
-shell_prefix = "root@starry:"
 uefi = false
 to_bin = false
-success_regex = ["(?m)^STARRY_PICOCLAW_OFFLINE_PASSED\\s*$"]
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)page fault",
@@ -22,7 +20,10 @@ args = [
   "-netdev", "user,id=net0",
 ]
 
-shell_init_cmd = """
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+
+shell_cmd = """
 export HOME=/root
 export USER=root
 export SHELL=/bin/sh
@@ -46,3 +47,4 @@ grep -F "config.json" /tmp/picoclaw-smoke/onboard.txt
 grep -F '"version"' "$PICOCLAW_CONFIG"
 printf 'STARRY_%s\n' PICOCLAW_OFFLINE_PASSED
 """
+success_regex = ["(?m)^STARRY_PICOCLAW_OFFLINE_PASSED\\s*$"]

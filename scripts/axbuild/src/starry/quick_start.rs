@@ -445,9 +445,7 @@ pub fn prepare_sg2002_uboot_config(
         "kernel_load_addr",
         "fit_load_addr",
         "dtb_file",
-        "shell_prefix",
-        "shell_init_cmd",
-        "success_regex",
+        "shell_check_steps",
         "fail_regex",
         "timeout",
     ] {

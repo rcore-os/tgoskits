@@ -15,6 +15,5 @@ args = [
   "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
 ]
 fail_regex = []
-success_regex = []
 to_bin = true
 uefi = true

@@ -396,8 +396,11 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
 -m 2G
 -dtb os/StarryOS/configs/board/k230-canmv.dtb
 -drive if=sd,format=raw,file=tmp/axbuild/rootfs/rootfs-riscv64-alpine.img
-shell_init_cmd = "/usr/bin/k230-nncase-runtime-demo"
 timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/k230-nncase-runtime-demo"
 ```
 
 ### 10.2 App 入口

@@ -82,6 +82,8 @@ AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步
 
 ## 动态统一可扩展固件接口平台
 
+StarryOS 的 x86_64 裸机产物是位置无关可执行映像，不带 QEMU 直接 ELF 加载所需的 Xen PVH note。若出现 `Error loading uncompressed kernel without PVH ELF Note`，说明尚未进入内核；随后出现的 shell check 未完成只是启动失败的结果。`apps/starry/mysql/qemu-x86_64*.toml` 与 `apps/starry/llvm22/qemu-x86_64.toml` 使用 `uefi = true`、`to_bin = true`，由项目运行器完成固件交接。该路径不使用 `-kernel`，因此也不能保留 QEMU 的 `-append` 参数；MySQL 配置由现有根文件系统发现机制选择唯一的 NVMe 根盘。不要通过调整 shell 成功匹配规则处理该加载错误。
+
 - 动态平台表示平台事实由 `someboot`、`somehal` 和 `axplat-dyn` 从固件或运行时发现，不表示可以省略体系结构特定页表、陷阱、定时器、中断和电源代码。
 - 调试时分离页表阶段：`someboot` 负责启动页表和内存管理单元交接；`ax-cpu` 负责运行时第一阶段页表项与地址转换缓存；虚拟化组件负责第二阶段。三者可以使用 `page-table-generic` 执行通用操作，但该软件包不能选择活动体系结构。
 - 先对齐 x86_64 动态路径中的固件磁盘布局、`to_bin`、闪存或 OVMF 和交接预期。
@@ -267,3 +269,7 @@ cargo xtask clippy --package ax-driver
 ```
 
 软件包集合按实际差异调整。只修改技能文档时不需要运行静态检查。
+
+Starry 的 `apps/starry/deepseek-tui/qemu-x86_64-shell.toml`、`apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-interactive.toml` 以及 eBPF `kret`、`mytrace`、`rawtp`、`upb`、`upb2` 的 x86_64 配置同样使用 `uefi = true`、`to_bin = true`。这些配置的结果判断必须晚于内核启动：CLI 等待离线检查通过标记，eBPF 常驻示例等待加载和附着后的就绪输出；就绪输出不证明探针事件已正确处理。
+
+Starry `qemu/system` 在 AArch64、RISC-V 与 x86_64 上要求 xHCI 使用传统 PCI 中断时，配置 `nec-usb-xhci,id=xhci,msi=off,msix=off`。QEMU 8.2.2 的 `qemu-xhci` 不暴露 `msi`、`msix` 属性，不能把上述开关加到该模型；用 `qemu-system-aarch64 -device nec-usb-xhci,help` 核对属性。单个 `qemu/system/test-dup2` 等子用例仍继承分组设备拓扑，设备参数错误会在子用例运行前终止 QEMU。
