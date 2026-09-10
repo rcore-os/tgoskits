@@ -566,7 +566,7 @@ where
 /// Scheduling attributes committed atomically during user-thread creation.
 pub struct UserThreadInitialSchedulerState {
     policy: scheduler::sched::SchedulePolicy,
-    affinity: scheduler::sched::CpuSet,
+    affinity: Option<scheduler::sched::CpuSet>,
     reset_on_fork: bool,
 }
 
@@ -579,17 +579,17 @@ impl UserThreadInitialSchedulerState {
     ) -> Self {
         Self {
             policy,
-            affinity,
+            affinity: Some(affinity),
             reset_on_fork,
         }
     }
 
     fn default_user() -> Self {
-        Self::new(
-            scheduler::sched::SchedulePolicy::default(),
-            scheduler::sched::CpuSet::all(ax_runtime::hal::cpu_num()),
-            false,
-        )
+        Self {
+            policy: scheduler::sched::SchedulePolicy::default(),
+            affinity: None,
+            reset_on_fork: false,
+        }
     }
 }
 
@@ -613,7 +613,7 @@ where
         stack_size,
         thread,
         StarryContextState {
-            address_space: Some(address_space),
+            address_space,
             fp_state: Some(fp_state),
             scheduler_state,
         },
@@ -649,7 +649,7 @@ enum FpInitialization {
 }
 
 struct StarryContextState {
-    address_space: Option<ax_std::os::arceos::thread::TaskAddressSpace>,
+    address_space: ax_std::os::arceos::thread::TaskAddressSpace,
     #[cfg(target_arch = "riscv64")]
     fp_state: Option<ax_cpu::FpState>,
     #[cfg(not(target_arch = "riscv64"))]
@@ -660,7 +660,7 @@ struct StarryContextState {
 impl StarryContextState {
     fn user(address_space: ax_std::os::arceos::thread::TaskAddressSpace) -> Self {
         Self {
-            address_space: Some(address_space),
+            address_space,
             #[cfg(target_arch = "riscv64")]
             fp_state: None,
             #[cfg(not(target_arch = "riscv64"))]
@@ -675,7 +675,7 @@ impl StarryContextState {
         scheduler_state: UserThreadInitialSchedulerState,
     ) -> Self {
         Self {
-            address_space: Some(address_space),
+            address_space,
             fp_initialization: FpInitialization::InheritCurrent,
             scheduler_state,
         }
@@ -715,15 +715,14 @@ where
             .with_running_policy_applied_hook(starry_user_task_policy_applied)
             .with_scheduler_tick_work(scheduler_tick_gate, starry_user_task_scheduler_tick)
     };
-    let Some(address_space) = context_state.address_space else {
-        drop(extension);
-        return Err(scheduler::thread::TaskError::InvalidRuntimeHandle);
-    };
-    let builder = ax_std::os::arceos::thread::builder(name)
+    let address_space = context_state.address_space;
+    let mut builder = ax_std::os::arceos::thread::builder(name)
         .stack_size(stack_size)
         .policy(context_state.scheduler_state.policy)
-        .extension(extension)
-        .affinity(context_state.scheduler_state.affinity);
+        .extension(extension);
+    if let Some(affinity) = context_state.scheduler_state.affinity {
+        builder = builder.affinity(affinity);
+    }
     let options = ax_std::os::arceos::thread::UserContextOptions::new(address_space);
     #[cfg(target_arch = "riscv64")]
     let options = match context_state.fp_state {
