@@ -322,3 +322,9 @@ Linux v7.1 RT 的依据是 `kernel/sched/core.c::sched_cpu_deactivate` 先清除
 CPU 周期和全局 MM 锁回归迁到 `task/cpu_lifecycle.rs` 的独立 `task-cpu-lifecycle` feature。`ARCEOS_RUST_STANDALONE_FEATURES` 将它与 `task-irq` 一起加入默认运行，四架构 CI 的既有 `cargo xtask arceos test qemu --arch <arch>` 因而仍必跑这项回归。`all` 继续覆盖其他生命周期与设备测试；成功下线、取消不执行、预留阻止下线和 MM 锁断言均保留。独立用例明确要求至少三个 CPU，不通过 UP 跳过产生成功结果。
 
 该修复只更正测试执行前提，不新增或放宽生产热插拔规则。Linux 完整设备停放、迁移和物理 CPU 热插拔仍是明确未实现的能力，不以此次 CI 修复冒充完成。
+
+
+上线后验证 clockevent 的线程也必须先结束物理执行：`ThreadHandle::join` 只等待逻辑完成，回收忙时允许转交 reaper。CPU 周期测试现在等待该线程的 `execution_reclaimed`，再发下一次下线请求，避免把逻辑退出当成 Linux `sched_cpu_wait_empty` 的排空条件。首次 AArch64 默认入口在 MM 锁回归返回 `Some(false)`，补齐这一等待后同一用例通过；没有添加超时重试。
+
+
+最终四架构默认 Rust 入口各通过 `all`、`task-irq`、`task-cpu-lifecycle`，共 12 个运行，日志 `/tmp/pr2357-ci-final-<arch>.log`。定向 clippy 的 axbuild 与 ArceOS 测试包 42 个组合通过；增加物理回收等待后，测试包 41 个组合再次通过。`cargo xtask test --since d06e05dbf1` 运行 axbuild，783 项通过，包含默认入口选择回归；fmt 与差异检查通过。原始 CI/本地失败证据分别在 `/tmp/pr2357-ci-x86-failure.log`、`/tmp/pr2357-ci-all-red.log`，没有用重跑旧实现代替修复。

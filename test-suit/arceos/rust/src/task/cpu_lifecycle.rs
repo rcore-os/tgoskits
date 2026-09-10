@@ -84,15 +84,16 @@ fn idle_cpu_reservation_round_trip() {
             wait_for_idle_cycle(),
             "released reservation must permit idle CPU cycle"
         );
-        ax_runtime::thread::builder("after-reonline".into())
+        let resumed = ax_runtime::thread::builder("after-reonline".into())
             .affinity(target.clone())
             .spawn(|| {
                 assert_eq!(ax_hal::percpu::this_cpu_id(), 1);
                 thread::sleep(Duration::from_millis(2));
             })
-            .unwrap()
-            .join()
             .unwrap();
+        resumed.wait().unwrap();
+        wait_for(|| resumed.execution_reclaimed());
+        resumed.join().unwrap();
     }
     offline_does_not_lock_global_mm();
     current::set_current_thread_affinity(original).unwrap();
