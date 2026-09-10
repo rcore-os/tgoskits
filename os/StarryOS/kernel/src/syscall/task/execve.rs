@@ -470,7 +470,7 @@ fn do_execve(
     // Unblock a vfork parent waiting for this child to exec.
     // Must be last: by now CLOEXEC fds are closed so the parent's pipe
     // read will see EOF correctly.
-    proc_data.notify_vfork_done();
+    thr.notify_vfork_done();
 
     Ok(0)
 }

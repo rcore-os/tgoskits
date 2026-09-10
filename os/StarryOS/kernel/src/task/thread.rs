@@ -9,7 +9,7 @@ use core::{
 use ax_runtime::hal::{cpu::uspace::UserContext, percpu::CpuPin, time::TimeValue};
 use axpoll_set::PollSet;
 use scope_local::{ActiveScope, LocalItem, Scope};
-use starry_signal::{SignalSet, api::ThreadSignalManager};
+use starry_signal::{SignalSet, Signo, api::ThreadSignalManager};
 
 use super::{
     CpuTimeAccounting, Cred, ExitPathLease, PidIdentity, PidNamespaceRef, PidRoleLease,
@@ -17,10 +17,12 @@ use super::{
     SockFilter, Tid, TidNumber, UserTaskRef,
     bounded_stack::BoundedStack,
     futex::ThreadWaitState,
+    future,
     interruption::{InterruptSnapshot, InterruptState},
     ops,
     scheduler_identity::SchedulerIdentity,
     user_memory_access::{UserMemoryAccessDepth, UserMemoryAccessGuard},
+    wait_on_pollset,
 };
 use crate::sync::{IrqMutex, Mutex, NoPreemptIrqSave};
 
@@ -138,6 +140,11 @@ impl ThreadAccounting {
     }
 }
 
+struct VforkDone {
+    done: bool,
+    poll: Arc<PollSet>,
+}
+
 /// Thread-exit, userspace restart, and interruptible-wait state.
 struct ThreadLifecycle {
     clear_child_tid: AtomicUsize,
@@ -148,6 +155,7 @@ struct ThreadLifecycle {
     user_memory_access: UserMemoryAccessDepth,
     block_next_signal_check: NextSignalCheckBlock,
     exit_event: Arc<PollSet>,
+    vfork_done: IrqMutex<Option<VforkDone>>,
     exit_request: OneShotFlag,
     deadline_overrun: OneShotFlag,
     rseq_area: AtomicUsize,
@@ -178,6 +186,7 @@ impl ThreadLifecycle {
             user_memory_access: UserMemoryAccessDepth::new(),
             block_next_signal_check: NextSignalCheckBlock::new(),
             exit_event: super::allocation::try_arc(PollSet::new())?,
+            vfork_done: IrqMutex::new(None),
             exit_request: OneShotFlag::new(),
             deadline_overrun: OneShotFlag::new(),
             rseq_area: AtomicUsize::new(0),
@@ -334,6 +343,74 @@ pub struct Thread {
 }
 
 impl Thread {
+    /// Prepares this unpublished child's MM-release completion.
+    pub(crate) fn prepare_vfork_done(&self) -> crate::StarryResult<()> {
+        let poll = super::allocation::try_arc(PollSet::new())?;
+        let mut completion = self.lifecycle.vfork_done.lock();
+        assert!(completion.is_none(), "vfork completion installed twice");
+        *completion = Some(VforkDone { done: false, poll });
+        Ok(())
+    }
+
+    /// Waits for MM release, or detaches a killed parent as TASK_KILLABLE does.
+    /// Returns whether the child completed the wait (and permits VFORK_DONE).
+    pub(crate) fn wait_vfork_done(&self, parent: &UserTaskRef) -> bool {
+        let poll = {
+            let guard = self.lifecycle.vfork_done.lock();
+            match guard.as_ref() {
+                Some(vfork) => vfork.poll.clone(),
+                None => return true,
+            }
+        };
+        let curr_thr = parent.as_thread();
+        loop {
+            let result = future::block_on_user(
+                parent,
+                wait_on_pollset(&poll, || {
+                    self.lifecycle
+                        .vfork_done
+                        .lock()
+                        .as_ref()
+                        .map(|vfork| vfork.done)
+                        .unwrap_or(true)
+                        .then_some(())
+                }),
+            );
+            match result {
+                future::UserWaitOutcome::Ready(()) => return true,
+                future::UserWaitOutcome::Interrupted
+                    if curr_thr.has_exit_request()
+                        || curr_thr.signal().pending().has(Signo::SIGKILL) =>
+                {
+                    // Linux clears child->vfork_done under task_lock before
+                    // letting a killed parent leave its completion wait. Drop
+                    // the detached poll owner after releasing our IRQ lock.
+                    let detached = self.lifecycle.vfork_done.lock().take();
+                    drop(detached);
+                    return false;
+                }
+                future::UserWaitOutcome::Interrupted => continue,
+                future::UserWaitOutcome::TimedOut => {
+                    unreachable!("vfork completion wait has no deadline")
+                }
+            }
+        }
+    }
+
+    /// Publishes vfork completion before waking the parent.
+    pub(crate) fn notify_vfork_done(&self) {
+        let poll = {
+            let mut guard = self.lifecycle.vfork_done.lock();
+            match guard.as_mut() {
+                Some(vfork) => {
+                    vfork.done = true;
+                    vfork.poll.clone()
+                }
+                None => return,
+            }
+        };
+        unsafe { poll.wake(axpoll::IoEvents::IN) };
+    }
     /// Creates a new thread state object before the scheduler identity is bound.
     pub fn new(
         identity: Arc<PidIdentity>,
@@ -1128,8 +1205,17 @@ fn thread_state_creation_returns_allocation_failure() {
         let attempts = probe.attempts();
         drop(probe);
         if failure == usize::MAX {
-            assert!(result.is_ok());
-            drop(result);
+            let thread = result.expect("private thread construction must succeed");
+            let probe = ThreadAllocationProbe::fail_at(0).unwrap();
+            let error = thread
+                .prepare_vfork_done()
+                .expect_err("vfork completion allocation failure must return ENOMEM");
+            assert_eq!(error.linux_errno(), syscalls::Errno::ENOMEM);
+            assert_eq!(probe.attempts(), 1);
+            drop(probe);
+            assert!(thread.lifecycle.vfork_done.lock().is_none());
+            thread.prepare_vfork_done().unwrap();
+            drop(thread);
         } else {
             let error = result
                 .err()

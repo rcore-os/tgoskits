@@ -161,22 +161,13 @@ pub struct CloneArgs {
 
 impl CloneArgs {
     fn validate(&self) -> StarryResult<()> {
-        let Self {
-            flags, exit_signal, ..
-        } = self;
-
-        if *exit_signal > 0 && flags.contains(CloneFlags::THREAD) {
-            return Err(StarryError::InvalidInput);
-        }
+        let Self { flags, .. } = self;
         if flags.contains(CloneFlags::THREAD)
             && !flags.contains(CloneFlags::VM | CloneFlags::SIGHAND)
         {
             return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::SIGHAND) && !flags.contains(CloneFlags::VM) {
-            return Err(StarryError::InvalidInput);
-        }
-        if flags.contains(CloneFlags::VFORK | CloneFlags::THREAD) {
             return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::PIDFD | CloneFlags::DETACHED) {
@@ -528,8 +519,7 @@ impl CloneArgs {
         // execs or exits. Use PollSet so the parent's wait remains
         // interruptible by task.interrupt().
         if needs_vfork_block {
-            let poll = Arc::new(axpoll_set::PollSet::new());
-            new_proc_data.set_vfork_done(poll);
+            thr.prepare_vfork_done()?;
         }
 
         let options = UserThreadOptions::new(alloc::string::String::from(curr.name().as_ref()))
@@ -615,7 +605,7 @@ impl CloneArgs {
 
         cgroup_guard.commit();
         clone_transaction.commit();
-        let _task = staged_task.activate();
+        let task = staged_task.activate();
 
         if trace_clone && needs_vfork_block {
             let _ = crate::task::send_signal_to_thread(
@@ -642,8 +632,7 @@ impl CloneArgs {
         );
 
         // Block the parent until the child exec's or exits.
-        if needs_vfork_block {
-            new_proc_data.wait_vfork_done();
+        if needs_vfork_block && task.as_thread().wait_vfork_done(current) {
             let _ = super::ptrace::ptrace_notify_vfork_done(parent_pid, parent_tid, &identity);
         }
 

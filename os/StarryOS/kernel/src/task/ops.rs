@@ -713,11 +713,10 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 .exit_event()
                 .wake(IoEvents::IN | IoEvents::RDNORM);
         };
-
-        // Unblock a vfork parent waiting for this child to exit.
-        thr.proc_data.notify_vfork_done();
     }
 
+    // Every child thread owns its vfork completion, including CLONE_THREAD.
+    thr.notify_vfork_done();
     thr.set_exit();
     task_identity.notify_thread_pidfd_exit();
     unsafe { thr.exit_event().wake(axpoll::IoEvents::IN) };

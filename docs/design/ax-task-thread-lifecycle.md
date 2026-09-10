@@ -181,7 +181,7 @@ spawn 每轮先预热 16 次，再测 100 次；join 放在计时区间外，但
 | clone：TLS/共享 MM / X56、G220 | [v7.1 固定提交 fork.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | pthread 子线程看到自己的 TLS，并共享指定进程资源 | `sys_clone → Thread → PreparedUserTask → stage → 身份发布 → activate` | 正确 | 四架构 `syscall-test-clone-tls`、非主线程 exec |
 | clone3 / 四架构435 | [v7.1 固定提交 fork.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 检查结构长度与参数后创建，失败不发布子进程 | `sys_clone3 → CloneArgs::try_from → do_clone_in_cgroup` | 无法确认 | 共用创建主体已验证；本次未执行 clone3 专项系统测试 |
 | fork / X57；G 无独立入口 | [v7.1 固定提交 fork.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 创建独立子进程，父子返回不同值 | `sys_fork → sys_clone(SIGCHLD)` | 无法确认 | libc fork 场景通过，但不据此断言直接 X57 已执行 |
-| vfork / X58；G 使用 clone | [v7.1 固定提交 fork.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 父线程等待子进程 exec 或退出 | `sys_vfork → sys_clone(VFORK|VM) → ProcessData::notify_vfork_done` | 正确 | 四架构 `syscall-test-vfork`；G 验证的是 clone 入口的 VFORK 语义 |
+| vfork / X58；G 使用 clone | [v7.1 固定提交 fork.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 父线程等待子进程 exec 或退出 | `sys_vfork → sys_clone(VFORK|VM) → Thread::notify_vfork_done` | 部分正确 | 原普通路径四架构通过；新发现的 MM 通知时机和共享 SHM 缺口见第 5.29 节 |
 
 `clone3` 与直接 `fork` 的专项证据缺口单独列出，不能由共同辅助函数或 libc 调用名称推断已经覆盖对应入口。
 
@@ -532,10 +532,10 @@ Linux `copy_seccomp` 在共同 `sighand->siglock` 下重新读取父线程过滤
 
 exec 的身份转交发生在同组其他线程退出后；退出请求只在 syscall 返回用户态前处理，已经开始的同步 TSYNC 会先完成。因此这次不在 exec 兄弟退出等待外增加安全更新锁，避免持锁等待正在取得同一锁的兄弟。该论证仅覆盖本次线程组更新与身份转交，不表示全部 exec 凭据语义已经核验。
 
-真实 kernel axtest `clone_publication_refreshes_security_after_preparation` 在准备后更新父线程 BPF filter 与 NNP，验证发布时继承最新同一快照及 syscall-work；同时注入最终继承的分配失败，验证 ENOMEM 和未调用发布回调。最初旧继承顺序的确定性失败为 `clone published stale no_new_privs`，日志 `/tmp/pr2357-clone-security-red.log`。本节补充测试、四架构系统调用及静态检查结果在运行完成后记录；目前不将源码证明写成四架构系统级通过。
+真实 kernel axtest `clone_publication_refreshes_security_after_preparation` 在准备后更新父线程 BPF filter 与 NNP，验证发布时继承最新同一快照及 syscall-work；同时注入最终继承的分配失败，验证 ENOMEM 和未调用发布回调。最初旧继承顺序的确定性失败为 `clone published stale no_new_privs`，日志 `/tmp/pr2357-clone-security-red.log`。合并后的系统用例与静态检查结果见本节末；直接控制 syscall 并发交错仍未被普通系统用例覆盖。
 
 
-补充分配次序回归将发布故意提前后，稳定失败于 `failed security inheritance must not publish a child`；恢复后同一用例和整个 x86_64 kernel axtest 183 项通过。日志 `/tmp/pr2357-clone-security-final-{red,green}.log`。增量 std 两包通过，日志 `/tmp/pr2357-clone-security-std.log`。尚未完成本版本的四架构用户态并发回归和定向 clippy。
+补充分配次序回归将发布故意提前后，稳定失败于 `failed security inheritance must not publish a child`；恢复后同一用例和整个 x86_64 kernel axtest 183 项通过。日志 `/tmp/pr2357-clone-security-final-{red,green}.log`。增量 std 两包通过，日志 `/tmp/pr2357-clone-security-std.log`。合并后的 Starry/axbuild 定向 clippy 93/93 通过，日志 `/tmp/pr2357-merged-clippy.log`。四架构原始 seccomp 系统用例也通过，但没有据此宣称穷尽 clone/TSYNC 的 syscall 并发交错。
 
 以下表项限定为新增的最终继承/同步边界；尚无直接 syscall 交错回归的入口使用“无法确认”，不能由 kernel 状态回归推导为完整 Linux 兼容。X/G 编号约定沿用第 4 节。
 
@@ -543,11 +543,11 @@ exec 的身份转交发生在同组其他线程退出后；退出请求只在 sy
 | --- | --- | --- | --- | --- | --- |
 | clone / X56、G220 | [固定 copy_seccomp](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1752) | 发布前最终继承父线程安全状态，失败不发布 | `sys_clone → CloneArgs::do_clone_in_cgroup → publish_clone_security → Thread`，父进程更新锁 | 无法确认 | x86 kernel 状态及失败次序红绿；直接 syscall 交错待验证 |
 | clone3 / X435、G435 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 参数处理后进入共同复制、发布协议 | `sys_clone3 → CloneArgs::do_clone_in_cgroup → publish_clone_security` | 无法确认 | 共用核心回归，clone3 直接交错待验证 |
-| fork / X57 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 新进程在可执行前继承过滤器 | `sys_fork → sys_clone → publish_clone_security` | 无法确认 | 直接用户态继承回归待复测 |
-| vfork / X58 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 完成继承并激活后父线程才等待孩子 | `sys_vfork → sys_clone → publish_clone_security`，等待在锁外 | 无法确认 | 本版本直接 vfork 回归待复测 |
+| fork / X57 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 新进程在可执行前继承过滤器 | `sys_fork → sys_clone → publish_clone_security` | 无法确认 | 四架构原 seccomp 的 libc fork 继承通过，未独立覆盖 X57 交错 |
+| vfork / X58 | [固定 copy_process](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 完成继承并激活后父线程才等待孩子 | `sys_vfork → sys_clone → publish_clone_security`，等待在锁外 | 无法确认 | x86_64 原 `syscall-test-vfork` 通过；该用例不验证过滤器交错 |
 | seccomp(filter/TSYNC) / X317、G277 | [固定 seccomp_attach_filter](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | 同步更新与新线程最终复制/成员插入互斥 | `sys_seccomp → append_seccomp_filter → sync_seccomp_to_thread_group`，同一进程更新锁 | 无法确认 | kernel 晚期更新回归通过，直接并发 syscall 交错待验证 |
-| seccomp(strict) / X317、G277 | [固定 seccomp_set_mode_strict](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | 参数检查后提交当前线程模式 | `sys_seccomp → install_seccomp_strict`，取得同一更新锁 | 无法确认 | 原 strict 用例待复测 |
-| prctl(SET_SECCOMP) / X157、G167 | [固定 prctl_set_seccomp](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | legacy 入口复用模式安装，不支持 TSYNC 参数 | `sys_prctl → sys_seccomp(flags=0)` | 无法确认 | 原 prctl seccomp 用例待复测 |
+| seccomp(strict) / X317、G277 | [固定 seccomp_set_mode_strict](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | 参数检查后提交当前线程模式 | `sys_seccomp → install_seccomp_strict`，取得同一更新锁 | 无法确认 | 四架构原 `syscall-test-seccomp` 通过；独立锁交错未覆盖 |
+| prctl(SET_SECCOMP) / X157、G167 | [固定 prctl_set_seccomp](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/seccomp.c) | legacy 入口复用模式安装，不支持 TSYNC 参数 | `sys_prctl → sys_seccomp(flags=0)` | 无法确认 | 四架构原 `syscall-test-seccomp` 通过；独立锁交错未覆盖 |
 
 
 ### 5.28 测试接口合并
@@ -555,3 +555,39 @@ exec 的身份转交发生在同组其他线程退出后；退出请求只在 sy
 合并 `origin/dev@481d6bdc4d` 的 shell-check 迁移时，保留 scheduler-latency-bench 的 UEFI/二进制启动设置，将成功匹配放入新的 `shell_check_steps`。`serial-rx` 的 AArch64 配置也补齐相同迁移，不保留已经移除的顶层 `success_regex`。超时、失败匹配和成功文本均未放宽。
 
 `rust_qemu_features_for_run` 的精确列表断言继续覆盖 `task-cpu-lifecycle`，避免 dev 的两项列表排除本分支独立用例。NVMe 两分支已经修复同一 CID 复用误判，合并保留本分支在真实并发读回执上归一化 ID、改写第一块 CPU 缓冲区并验证第二块不变的单一回归，不重复增加同义用例。合并后的验证另行记录，不沿用合并前的绿色结果。
+
+
+合并后增量 std 首轮 59 包中只有 axbuild 的精确清单断言失败：实际还包含 `serial-rx`，断言漏列。补齐后同一 axbuild 套件通过，其他 58 包沿用首轮通过结果；日志 `/tmp/pr2357-merged-std.log` 与 `/tmp/pr2357-merged-std-green.log`。Starry/axbuild 定向 clippy 为 93/93，通过后串行运行 kernel x86_64（183 项）、四架构 `syscall-test-seccomp`、x86_64 `syscall-test-vfork` 与 `test-thread-lifecycle-exec`、AArch64 `serial-rx`，8 项全部通过。日志统一为 `/tmp/pr2357-merged-<case>.log`。其中 serial-rx 实际执行新 shell-check 配置并完成原成功断言，不只是 TOML 解析通过。
+
+`af0157b198` 的 CI 34486525334 已结束，唯一失败是普通 OrangePi 的 native-network-smoke；其 hardware-smoke 和其他作业通过。前轮普通 OrangePi 失败发生在 board-2，日志停在 Submit 结构体输出中途并含 NUL；更早 board-1 曾完成 NPU/脚本/cat 后停滞。两者尚未确定共同根因，不用更换板卡或重跑通过关闭问题。临时诊断配置位于仓库外，保留原超时与判定，仅增加线程状态读取；结果仍需实际运行核实。
+
+
+临时线程状态诊断在此前失败过的 `OrangePi-5-Plus-1` 上完成了 NPU、grep 和整个硬件检查，日志 `/tmp/pr2357-orangepi-task-diagnostic.log`。租约 `52ed0bf7-7400-4c12-8faa-3ce7af008182` 的运行命令正常结束；用例在延迟状态采样前结束，没有捕获挂起。成功日志在启动阶段同样含 NUL，因此不能仅凭 NUL 推断挂起根因。该结果只证明本次诊断运行通过，不关闭历史失败。
+
+
+### 5.29 vfork 等待的线程归属
+
+重新对照固定 Linux `wait_for_vfork_done`、`mm_release` 与 `signal_pending_state` 后，确认等待不能只响应 Starry 内部退出请求：SIGKILL 必须能在孩子仍未释放 MM 时结束父线程的等待，并断开孩子的完成指针；只有正常完成才报告 `PTRACE_EVENT_VFORK_DONE`。现有 C 用例增加独立观察者和两条管道，由观察者先等待父线程被 SIGKILL 回收，之后才放行孩子。10 秒 alarm 仅负责错误实现的诊断与清理，交错由管道握手确定。
+
+vfork 完成状态现在属于 `ThreadLifecycle`，从 `ProcessWaitState` 移除；clone 在发布前通过 `Thread::prepare_vfork_done` 做可失败分配，父线程持有激活后的 `UserTaskRef` 等待指定孩子。`do_exit` 对每个线程通知，exec 通知其当前线程。父线程被杀死时，在该孩子的 IRQ 锁内取走完成对象，在解锁后释放；普通信号仍重新等待。legacy clone 不再沿用 clone3 的线程 exit-signal 限制，也不再拒绝 Linux 支持的 `CLONE_THREAD|CLONE_VFORK`；clone3 自己的参数检查保留。
+
+musl 的 `clone()` 包装会在进入内核前拒绝 `CLONE_THREAD`，不能用它的 EINVAL 判断 Starry 是否进入了完成等待。测试对此组合使用强制内联的四架构原始 clone ABI，并依赖 VFORK 保证父栈在孩子单线程 `SYS_exit` 前不被父线程继续使用。最终直接 ABI 回归在“只对最后线程通知”的错误次序上稳定触发 watchdog，恢复每线程通知后 x86_64 同一用例通过，日志 `/tmp/pr2357-vfork-thread-owner-raw-{red,green}.log`。SIGKILL 原实现失败、修复后通过的日志为 `/tmp/pr2357-vfork-killable-{red,green}.log`。宿主 Linux 的相同两项直接 ABI 检查均通过，日志 `/tmp/pr2357-vfork-waits-linux.log`；它只是额外 ABI 对照，不是本地 v7.1 PREEMPT_RT 运行验证。
+
+本轮还发现必须继续修正的边界，不能把上面的成功扩大为完整 vfork/MM 对齐：Linux 的 `mm_release` 在 `exit_mm` 内通知 vfork，早于 `exit_shm/exit_files`；当前通知仍在现有退出清理尾部，exec 也仍在现有清理尾部通知。更重要的是，原 SHM 用例要求共享 MM 下孩子退出后 `shm_nattch == 1`，在 Linux 上不成立：宿主的 wait 前后均为 2，固定 Linux `shm_vm_ops` 的 open/close 也把附接绑定于 VMA，而非创建映射的 PID。Starry `clear_proc_shm` 按 PID 退出主动 unmap，会移除仍由共享 MM 使用的映射。原 SHM 通过记录仅说明满足旧测试，撤回其 Linux 等价性解释；需要修改实际 MM/VMA 所有权后，用正确的共享映射存续和分离行为替换旧预期，不能只改断言。
+
+本表限定当前已核实范围，未完成四架构或后续 MM 改动的项目继续保留缺口。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| clone(VFORK, SIGKILL) / X56、G220 | [固定 wait_for_vfork_done](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1430) | 父线程可在孩子完成前被 SIGKILL 终止；不报告 VFORK_DONE | `sys_clone → Thread::wait_vfork_done → pending(SIGKILL)` | 无法确认 | x86_64 红绿和宿主直接 ABI 通过，另外三架构待验证；ptrace 事件仍缺直接观测 |
+| clone(THREAD,VFORK) / X56、G220 | [固定 kernel_clone](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 指定子线程释放 MM 后通知父线程 | `sys_clone → 子线程 ThreadLifecycle::vfork_done → do_exit` | 部分正确 | 每线程归属 x86 原始 ABI 红绿；通知仍晚于 Linux MM-release 阶段，见本节缺口 |
+| clone3(VFORK) / X435、G435 | [固定 clone3_args_valid](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L2962) | clone3 保留自己的 flag/exit-signal 校验，再进入相同等待协议 | `sys_clone3 → Clone3Args::try_from → CloneArgs → Thread` | 无法确认 | 参数校验保持，新的等待场景尚无 clone3 直接回归 |
+| vfork / X58；G 以 clone 实现 | [固定 mm_release](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1463) | 等待子线程 MM release，不等同进程资源全部清理 | `sys_vfork → sys_clone → Thread` | 部分正确 | 普通共享与阻塞通过；当前 exit/exec 通知位置仍待调整 |
+| shmat / X30、G196 | [固定 shm_vm_ops](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/shm.c#L685) | 共享 MM 中的 VMA 不随映射创建者 PID 退出而消失 | `sys_shmat → ShmInner PID 索引 → do_exit::clear_proc_shm` | 不正确 | Linux wait 前后 nattch=2，Starry 旧测试要求 1；`/tmp/pr2357-vfork-shm-linux.log` |
+| shmdt / X67、G197 | [固定 ksys_shmdt](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/shm.c) | 通过当前 MM 的 VMA 分离映射，不要求创建该映射的 PID 相同 | `sys_shmdt → get_shmid_by_vaddr(owner PID) → unmap` | 不正确 | `shm.rs:897` 按调用者 PID 查找，无法分离另一共享 MM 进程建立的映射；直接回归待补 |
+| shmctl(IPC_STAT) / X31、G195 | [固定 shmctl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/shm.c) | nattch 反映存活 VMA 附接 | `sys_shmctl → ShmInner::attach_count` | 不正确 | 原 C 用例在 Linux 观察到 wait 前后均为 2，Starry 退出按 PID 清理后降为 1 |
+
+普通 OrangePi 最新失败日志为 `/tmp/pr2357-af015-orangepi-failure.log`：hardware-smoke 在 board-2 通过，network-smoke 在 board-3 的 init.sh 连续 touch 阶段之后停止，尚未出现交互 shell；DHCP 与 ARP 工作继续。不能再把该轮失败定位为 NPU 或已经开始的 iperf 工作负载。
+
+
+`Thread::prepare_vfork_done` 的分配故障已纳入现有 kernel 创建回滚用例：错误的 `Arc::new` 路径稳定失败于 `vfork completion allocation failure must return ENOMEM`，恢复可失败创建后 x86_64 kernel 183/183 通过；失败时完成槽保持空，并可在同一未发布线程上重新准备。日志 `/tmp/pr2357-vfork-allocation-{red,green}.log`。本轮尚未完成另外三架构和新版本定向 clippy，不沿用 `af0157b198` 的 93/93 作为新代码证据。
