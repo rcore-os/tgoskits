@@ -427,7 +427,12 @@ cargo xtask starry test qemu --arch x86_64 -c qemu/test-futex-race
 ```
 
 这会继续使用 `qemu/system/qemu-<arch>.toml`，但只配置、编译和注入指定 subcase
-目录。
+目录。若父配置声明 `[[grouped_qemu_profiles]]`，`qemu_profiles::expand()` 按
+`subcase_prefix` 将匹配项放入独立 QEMU 启动，使用 `config` 指定的同目录配置；
+`name` 用于独立日志和工作目录。各 profile 不能重名或匹配同一子用例，不能匹配空集，
+其配置必须声明 `test_commands`；未匹配项仍使用父配置执行。定向选择也经过同一分组，
+不会额外启动未选择的子用例。AArch64 的 `perf-*` 因此独立使用 icount，普通 system
+测试保留 MTTCG；两组都由原有 CI suite 命令运行，不需要复制测试源码或增大超时。
 
 在 `qemu-<arch>.toml` 中使用 `test_commands`：
 

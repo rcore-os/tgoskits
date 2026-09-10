@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -72,6 +73,29 @@ static void burn(uint64_t iterations) {
     }
 }
 
+/* Stop producing as soon as the required ring transition is observable. A
+ * fixed instruction budget depends on the emulator's execution speed and can
+ * exhaust the suite deadline long after the ring has already overflowed. */
+static int produce_until(int fd, struct perf_event_mmap_page *meta,
+                         uint64_t previous_head, int require_loss) {
+    struct timespec start, now;
+    if (clock_gettime(CLOCK_MONOTONIC, &start)) return 1;
+    for (;;) {
+        burn(10000);
+        uint64_t values[2];
+        if (read(fd, values, sizeof(values)) != sizeof(values)) return 1;
+        if (require_loss ? values[1] != 0 :
+            __atomic_load_n(&meta->data_head, __ATOMIC_ACQUIRE) > previous_head)
+            return 0;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) ||
+            now.tv_sec - start.tv_sec >= 10) {
+            printf("perf-hw-lost FAILED: deadline waiting for %s\n",
+                   require_loss ? "ring loss" : "loss record");
+            return 1;
+        }
+    }
+}
+
 static void ring_copy(const uint8_t *ring, uint64_t size, uint64_t at,
                       void *dst, size_t len) {
     for (size_t i = 0; i < len; i++) {
@@ -129,20 +153,22 @@ int main(void) {
     struct perf_event_mmap_page *meta = mapping;
     const uint8_t *ring = (const uint8_t *)mapping + meta->data_offset;
 
-    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-    ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-    burn(80000000ull);
+    if (ioctl(fd, PERF_EVENT_IOC_RESET, 0) ||
+        ioctl(fd, PERF_EVENT_IOC_ENABLE, 0) ||
+        produce_until(fd, meta, 0, 1) ||
+        ioctl(fd, PERF_EVENT_IOC_DISABLE, 0)) return 1;
 
-    uint64_t first_head = meta->data_head;
-    __sync_synchronize();
-    meta->data_tail = first_head;
-    __sync_synchronize();
+    uint64_t pending[2];
+    if (read(fd, pending, sizeof(pending)) != sizeof(pending) || pending[1] == 0)
+        return 1;
+    uint64_t first_head = __atomic_load_n(&meta->data_head, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&meta->data_tail, first_head, __ATOMIC_RELEASE);
 
     /* The next overflow must flush pending loss before its sample. */
-    burn(10000000ull);
-    ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-    uint64_t second_head = meta->data_head;
-    __sync_synchronize();
+    if (ioctl(fd, PERF_EVENT_IOC_ENABLE, 0) ||
+        produce_until(fd, meta, first_head, 0) ||
+        ioctl(fd, PERF_EVENT_IOC_DISABLE, 0)) return 1;
+    uint64_t second_head = __atomic_load_n(&meta->data_head, __ATOMIC_ACQUIRE);
 
     uint64_t records = 0;
     uint64_t in_band = count_lost(ring, meta->data_size, first_head,
@@ -159,7 +185,7 @@ int main(void) {
     munmap(mapping, RING_BYTES);
     close(fd);
     if (records == 0 || in_band == 0 || read_size != 16 ||
-        read_values[1] < in_band) {
+        in_band != pending[1] || read_values[1] < in_band) {
         puts("perf-hw-lost FAILED: missing or inconsistent loss accounting");
         return 1;
     }

@@ -53,6 +53,7 @@ ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos
 - 旧的 `--test-group` 和 `--stress` 入口已删除。大型应用、压力、K230、图形和基准图像工作负载位于 `apps/starry`，通过 `cargo xtask starry app ...` 或各自脚本运行。
 - `-l/--list` 列出所有发现的 Starry QEMU 或板卡用例。`qemu` 等构建包装目录本身没有运行配置时不进入列表。
 - `qemu/system` 是统一 QEMU 构建包装目录下的聚合用例。其子目录只保存文件，不得再放置 `qemu-<arch>.toml`。
+- 分组父配置可以用 `[[grouped_qemu_profiles]]` 的 `name`、`subcase_prefix`、`config` 将不同模拟器要求拆成互斥启动。`qemu_profiles::expand()` 保留全部未匹配项，并让定向子用例选择使用同一配置；不得用拆分跳过用例。AArch64 `perf-*` 独立使用 icount，普通 system 测试保留默认 MTTCG。
 
 ## QEMU 文件处理流水线
 

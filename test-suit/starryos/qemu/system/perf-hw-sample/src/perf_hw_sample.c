@@ -57,6 +57,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -245,6 +246,21 @@ static int fail(const char *reason) {
     return 1;
 }
 
+static int await_samples(struct perf_event_mmap_page *meta) {
+    struct timespec start, now;
+    if (clock_gettime(CLOCK_MONOTONIC, &start)) return fail("sample clock");
+    volatile uint64_t spin = 0;
+    /* IP-only records are 16 bytes. Collect several without filling the ring;
+     * ring overflow and LOST delivery have their own regression. */
+    while (__atomic_load_n(&meta->data_head, __ATOMIC_ACQUIRE) < 16 * 16) {
+        for (uint64_t i = 0; i < 10000; ++i) spin += i;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) || now.tv_sec - start.tv_sec >= 10)
+            return fail("sample deadline");
+    }
+    (void)spin;
+    return 0;
+}
+
 static int check_open_enabled_system_sample(struct perf_event_attr *attr) {
     cpu_set_t affinity;
     CPU_ZERO(&affinity);
@@ -265,11 +281,11 @@ static int check_open_enabled_system_sample(struct perf_event_attr *attr) {
         return fail("mmap open-enabled system sampling event");
     }
 
-    volatile uint64_t spin = 0;
-    for (uint64_t i = 0; i < 50000000ull; ++i) {
-        spin += i;
+    if (await_samples(base)) {
+        munmap(base, PERF_MMAP_TOTAL_BYTES);
+        close((int)fd);
+        return 1;
     }
-    (void)spin;
     if (ioctl((int)fd, PERF_EVENT_IOC_DISABLE, 0) != 0) {
         munmap(base, PERF_MMAP_TOTAL_BYTES);
         close((int)fd);
@@ -331,15 +347,11 @@ int main(void) {
     (void)ioctl(efd, PERF_EVENT_IOC_RESET, 0);
     (void)ioctl(efd, PERF_EVENT_IOC_ENABLE, 0);
 
-    /*
-     * Large busy loop so the 0x11 counter crosses SAMPLE_PERIOD many times and
-     * the kernel writes many PERF_RECORD_SAMPLE records into the ring.
-     */
-    volatile uint64_t spin = 0;
-    for (uint64_t i = 0; i < 200000000ull; i++) {
-        spin += i;
+    if (await_samples(meta)) {
+        munmap(base, PERF_MMAP_TOTAL_BYTES);
+        close(efd);
+        return 1;
     }
-    (void)spin;
 
     (void)ioctl(efd, PERF_EVENT_IOC_DISABLE, 0);
 
@@ -424,6 +436,8 @@ int main(void) {
         rc = fail("no samples captured (data_head == data_tail)");
     } else if (sample_count == 0) {
         rc = fail("no PERF_RECORD_SAMPLE records in ring");
+    } else if (saw_truncated) {
+        rc = fail("truncated sample record");
     } else if (first_ip == 0) {
         rc = fail("sampled ip is zero");
     }

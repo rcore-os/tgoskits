@@ -39,6 +39,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -177,10 +178,17 @@ int main(int argc, char **argv) {
     /* Post-exec child: burn cycles so the attached counter overflows often. */
     if (argc > 1 && strcmp(argv[1], "--busy") == 0) {
         volatile uint64_t spin = 0;
-        for (uint64_t i = 0; i < 300000000ull; i++) {
-            spin += i;
-        }
-        return (int)(spin & 1);
+        struct timespec start, now;
+        if (clock_gettime(CLOCK_MONOTONIC, &start)) return 1;
+        /* Exercise post-exec sampling for one guest second, independent of
+         * host instruction throughput. The parent still validates the ring. */
+        do {
+            for (uint64_t i = 0; i < 10000; ++i) spin += i;
+            if (clock_gettime(CLOCK_MONOTONIC, &now)) return 1;
+        } while ((now.tv_sec - start.tv_sec) * 1000000000ll +
+                 now.tv_nsec - start.tv_nsec < 1000000000ll);
+        (void)spin;
+        return 0;
     }
 
     /* go-pipe: child blocks until the parent has the event + mmap ready. */
@@ -296,7 +304,11 @@ int main(int argc, char **argv) {
            (unsigned long long)data_size, saw_truncated, status);
 
     int rc = 0;
-    if (data_head == data_tail) {
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        rc = fail("post-exec workload failed");
+    } else if (saw_truncated) {
+        rc = fail("truncated sample record");
+    } else if (data_head == data_tail) {
         rc = fail("no samples captured (data_head == data_tail)");
     } else if (sample_count == 0) {
         rc = fail("no PERF_RECORD_SAMPLE records in ring");

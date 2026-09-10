@@ -158,7 +158,11 @@ software event 同样参加 group 控制和 sample read。关闭 leader、先关
 
 ### 5.1 QEMU TCG
 
-AArch64 system suite 与 linux-perf app 显式使用 `-cpu cortex-a53,pmu=on -smp 4 -icount shift=auto,align=off,sleep=on`。TCG 可验证 `perf_event_open`、计数器生命周期、溢出控制、mmap ring、group、LOST、callchain 编码和 upstream perf 控制流；cycle 是虚拟时间，多数 cache/branch/stall 事件不实现或为零。
+AArch64 system suite 的 `perf-*` 子用例通过 `grouped_qemu_profiles` 独立运行，配置在 `perf-aarch64.toml`；它与 linux-perf app 显式使用 `-cpu cortex-a53,pmu=on -smp 4 -icount shift=auto,align=off,sleep=on`。其他 system 子用例保留默认 MTTCG 配置，不受 perf 模拟时钟影响。`qemu_profiles::expand()` 在已有选择结果上做互斥分组，未匹配项仍执行，原有定向入口不变。TCG 可验证 `perf_event_open`、计数器生命周期、溢出控制、mmap ring、group、LOST、callchain 编码和 upstream perf 控制流；cycle 是虚拟时间，多数 cache/branch/stall 事件不实现或为零。
+
+CI run `34438510466` 证明不能将 icount 扩展到整个 system suite：四个 perf 固定大循环超时 120 秒，`poll`/`timerfd` 时间断言失败，最后套件超时 1800 秒。采样测试改为等到记录发布，LOST 测试先通过 read 确认累计丢样再释放环空间并核对 LOST 精确值；exec 子进程运行一秒 guest 时间的采样负载。保留原有超时与计数断言，不把宿主执行速度当作测试目标。
+
+只撤销 icount 会重新暴露 PMU 计数跳变，维持全局 icount 又会改变非 perf 时间测试的环境；复制或搬迁整套 perf 源码则会引入双重维护或破坏现有选择路径。因此复用 `load_qemu_cases_for_selection()` 的选择结果，仅在准备 rootfs 前扩展成互斥 profile。原始 TOML 是配置所有者；每个 profile 使用独立工作目录、完整运行配置和同一构建包装目录，错误配置在启动前返回错误。没有 profile 的配置保持原行为，没有持久格式迁移；回滚时必须同时回滚分组配置与加载逻辑，不能只用旧工具忽略新增字段。
 
 `icount` 让虚拟定时器与 vCPU 指令执行使用同一时间线，保留四个 guest CPU，但不使用 MTTCG 宿主并行。因此这些结果不能代替真实并行硬件验收。选择它是为了避免 QEMU PMU 的跨线程状态转换空窗：[QEMU v11.1.1 的异常返回](https://github.com/qemu/qemu/blob/v11.1.1/target/arm/tcg/helper-a64.c#L694-L763) 分别锁住前后 EL-change hook，中间释放 BQL；[PMU 定时器](https://github.com/qemu/qemu/blob/v11.1.1/target/arm/cpregs-pmu.c#L615-L639) 同样修改两阶段计数基线。定时器在空窗插入时可能丢掉 preload，表现为组成员突然增加约半个 32 位范围。原 CI 及 focused case 均观察到该原始值跳变；保留组计数断言，不在内核中裁剪异常增量。
 

@@ -1,8 +1,4 @@
-# PMU timer/EL-transition updates must share the icount execution timeline.
-# Guest SMP4 remains enabled; this does not use MTTCG host parallelism.
 args = [
-    "-icount",
-    "shift=auto,align=off,sleep=on",
     "-nographic",
     "-machine",
     "virt,gic-version=3,its=on",
@@ -44,6 +40,11 @@ test_commands = ["exec /usr/bin/starry-run-system-tests"]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
 timeout = 1800
+
+[[grouped_qemu_profiles]]
+name = "perf"
+subcase_prefix = "perf-"
+config = "perf-aarch64.toml"
 
 [host_http_server]
 bind = "127.0.0.1"
