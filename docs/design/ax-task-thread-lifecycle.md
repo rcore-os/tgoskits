@@ -714,3 +714,36 @@ Linux `pidfd_prepare` 先经 `get_unused_fd` 预留编号，再执行可失败�
 | clone3(CLONE_PARENT_SETTID 输出错误) / X435、G435 | [v7.1 kernel_clone](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L2737) | 结构参数验证后保留发布后的孩子，不因 parent_tid 写失败回滚 | `sys_clone3 → do_clone_in_cgroup → publish_clone → vm_write` | 无法确认 | 共用修复后的实现；本轮未直接覆盖 clone3 的坏 parent_tid |
 
 删除提前写入预检查后，同时清理了失去调用方的 `prepare_user_write` 和 `size_of` 导入；首次最终构建因这两项未清理而被 `-D warnings` 拒绝，清理后再执行上述全部最终绿例。copyout 修复后的完整功能组合静态检查交由新提交 CI；前述本地 92/92 精确对应 FD 预留提交 `d92a45e8f8`。
+
+### 5.34 SysV 段所有者
+
+`ShmSegment`、`ShmManager` 和唯一的 `SHM_MANAGER` 移入现有 `ipc::shm` 域，`IpcPerm` 与权限辅助函数移入 `ipc::permission`，msg 与 shm 调用方直接使用域类型。`syscall::ipc::shm` 保留命令解码、用户输入输出和事务编排；`task::ops` 直接调用 IPC 域清理，不再反向依赖 syscall 导出。`ShmCreation` 承载段创建参数，移除旧八参数构造器的 lint 豁免；统计和按索引查找通过登记表方法完成，不向 syscall 暴露 BTreeMap。这项接口迁移为 VMA 持有具体 SysV 来源提供边界，没有新增登记表或插件接口。
+
+当前仍保留 PID 附接记录及原来的清理行为，第 5.32 节的 VMA 记账尚未实现。最新已发布 `55851f0562` 上，共享 MM 红例仍报告 `SHM_MM before=0 reaped=1 after=0 readable=0 detached=0 remaining=1 cleanup=1`，日志 `/tmp/pr2357-55851-shared-shm-red.log`。核验还确认 `MmInner::try_pin` 拒绝 Retiring 状态的新 pin，但现有 `MmPin::Deref` 仍暴露 `Mutex<AddrSpace>`；VMA 修改没有重新验证生命周期。因此关闭逻辑附接必须串行化已准入的修改，并防止关闭后再次发布，而不能只读取 `is_address_space_live` 后减计数。
+
+接口迁移的 x86_64 kernel 为 184/184；`syscall-test-shm-family`、`syscall-test-shmctl-info`、`syscall-test-msgctl`、`test-shm-deadlock` 以及增量 std 均通过，日志为 `/tmp/pr2357-shm-domain-*`。单包 clippy 在出现新的远端 futex panic 后被主动中止，未把部分检查视为通过；随后与 futex 唤醒合并修复一起执行两包定向检查，98/98 通过，日志 `/tmp/pr2357-wake-shm-clippy.log`；该检查在下述同 key requeue 修复之前结束。
+
+### 5.35 唤醒队列合并
+
+`55851f0562` 的 CI run `34527456646` 结束为 28 成功、5 取消、1 失败。失败 job `103041932517` 在 riscv64 的 `ltp-syscalls-fcntl36` 期间触发 `one futex wait generation cannot enter two live wake batches`，原始日志 `/tmp/pr2357-55851-riscv64-ci.log`。问题是把每任务的 wake_q 节点当成了每等待代际的节点：等待者看到 WAIT_WOKEN 后，可以在旧批次发送前结束这一代并开始下一代。Linux `futex_wake_mark` 先发布出队状态，`wake_q_add_safe` 对已经排队的任务合并通知；futex 的返回计数仍按选中的 futex_q 增加。
+
+Starry 的 `WakeBatch` 现在分别保存 selected 等待记录数和 `ThreadWakeBatch` 的任务队列，后者只负责去重与调度通知。只有 `mark_woken` 成功才增加 selected；wake 限额、wake-op 两次选择、同/异桶 requeue 的 wake 部分及返回值均使用 selected。删除了把合法合并视为错误的断言。`ThreadWakeBatch::push` 在 CAS 前执行完整屏障，失败合并路径也发布先前状态；drain 在释放节点之后、调用 scheduler wake 之前执行匹配的完整屏障，对照 Linux `__wake_q_add` 与 `wake_up_q → wake_up_process`。节点链接、Arc 和外部 lease 的所有权转移保持单次取得和释放。
+
+确定性 kernel 回归把同一真实线程句柄交给两个尚未发送的批次。旧实现第二次计数为 0，修复后为 1；日志 `/tmp/pr2357-futex-coalescing-{red,green}.log`，绿例整组 185/185。该用例证明合并时的计数契约，没有模拟完整的 `mark_woken → finish → begin` 执行时序。Starry kernel 现有 std/Loom 边界另验证 store/load 屏障关系：旧顺序允许合并者与发送者同时错过状态，补齐后通过，日志 `/tmp/pr2357-futex-wake-ordering-model-{red,green}.log`；这是协议模型，不是硬件运行证明。最初试图在 ax-task 中运行该模型时发现其不在 std 白名单，模型没有执行，相关全白名单结果未作为此项证据；最终模型使用已有 Starry kernel 的 host-only Loom 依赖，没有添加假运行时或修改白名单。
+
+实际 riscv64 LTP 分组为 86/86 通过，其中 fcntl36 完成全部 7 项并返回成功，日志 `/tmp/pr2357-futex-fcntl36-riscv64-ltp.log`。独立核验确认 selected 限额、wake-op 返回值、节点复用和引用转移符合这次修改的契约；同时指出两项边界：同 key requeue 仍提前返回 woken、没有计入保持原位的 requeue；底层返回 WakeResult::Unavailable 时的既有交付路径尚需结合运行时准入证明。两项都没有通过放宽测试或加入重试掩盖，本节不宣称全部 futex 语义已经完成。
+
+### 5.36 同键重排计数
+
+Linux 普通 `FUTEX_REQUEUE` 和 `FUTEX_CMP_REQUEUE` 允许源、目标 key 相同，仍逐项计入选中的等待者；只有 PI requeue 拒绝相同 key。`collect_futex_requeue_same_bucket` 原来的提前返回漏掉这些计数，现保留原位遍历并按 `requeue_count` 限额更新等待记录。此处不改变入队、唤醒或桶锁顺序。
+
+`syscall-test-futex-requeue` 先把三个真实 pthread 等待者从 source 重排到 target，以返回的实际移动数确认入队；随后在没有唤醒或信号的阶段，对 target 执行两种同键重排，最后唤醒并 join 全部线程。宿主 Linux 返回 `3 / 3 / 3`；旧 Starry 返回 `0 / 0 / 3`，最外层 xtask 返回 1，日志 `/tmp/pr2357-same-key-red.log`。宿主结果不是 PREEMPT_RT 构建或性能证据。
+
+修复后同一 x86_64 QEMU 用例返回 `3 / 3 / 3`，最外层 xtask 返回 0，日志 `/tmp/pr2357-same-key-green.log`。完整四架构执行和最终提交 clippy 由新提交 CI 继续核验；此前 98/98 不冒充这项后续修改的结果。
+
+以下结论限定本节两种非 PI 的同键、零 wake 重排。X 为 x86_64，G 为 aarch64、riscv64、loongarch64；未运行的架构明确保留验证缺口。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| futex(FUTEX_REQUEUE_PRIVATE，同键) / X202、G98 | [v7.1 futex_requeue](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/futex/requeue.c#L589) | 同键合法；保持等待状态，返回选中的等待记录数 | `sys_futex → ResolvedFutex::requeue_to → collect_futex_requeue_same_bucket`，MM 私有 futex 域和桶锁 | 无法确认 | x86_64 同一直接 syscall 红绿，其他三架构待 CI；实现未再提前返回 |
+| futex(FUTEX_CMP_REQUEUE_PRIVATE，同键) / X202、G98 | [v7.1 futex_requeue](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/futex/requeue.c#L589) | 比较通过后同键仍计入重排数，不额外唤醒 | `sys_futex → futex_read_user_nofault → requeue_to → collect_futex_requeue_same_bucket` | 无法确认 | x86_64 同一直接 syscall 红绿；本例不穷举比较失败和错误优先级，其他架构待 CI |
