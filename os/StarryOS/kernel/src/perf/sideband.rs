@@ -46,14 +46,6 @@ const PERF_RECORD_MISC_USER: u16 = 2;
 /// `PERF_RECORD_MISC_COMM_EXEC`: this `COMM` came from `execve` (not `prctl`).
 const PERF_RECORD_MISC_COMM_EXEC: u16 = 1 << 13;
 
-// `sample_type` bits relevant to the `sample_id_all` trailer.
-const PERF_SAMPLE_TID: u64 = 1 << 1;
-const PERF_SAMPLE_TIME: u64 = 1 << 2;
-const PERF_SAMPLE_ID: u64 = 1 << 6;
-const PERF_SAMPLE_CPU: u64 = 1 << 7;
-const PERF_SAMPLE_STREAM_ID: u64 = 1 << 9;
-const PERF_SAMPLE_IDENTIFIER: u64 = 1 << 16;
-
 /// `comm` is capped at Linux's `TASK_COMM_LEN` (16, including the NUL).
 const COMM_MAX: usize = 15;
 
@@ -244,27 +236,17 @@ fn push_trailer(b: &mut Vec<u8>, t: &SidebandTarget) {
     if !t.sample_id_all {
         return;
     }
-    let st = t.sample_type;
-    if st & PERF_SAMPLE_TID != 0 {
-        push_u32(b, t.pid.get());
-        push_u32(b, t.tid.get());
-    }
-    if st & PERF_SAMPLE_TIME != 0 {
-        push_u64(b, ax_runtime::hal::time::monotonic_time_nanos());
-    }
-    if st & PERF_SAMPLE_ID != 0 {
-        push_u64(b, t.id);
-    }
-    if st & PERF_SAMPLE_STREAM_ID != 0 {
-        push_u64(b, 0);
-    }
-    if st & PERF_SAMPLE_CPU != 0 {
-        push_u32(b, ax_hal::percpu::this_cpu_id() as u32);
-        push_u32(b, 0);
-    }
-    if st & PERF_SAMPLE_IDENTIFIER != 0 {
-        push_u64(b, t.id);
-    }
+    let identity = super::sample_id::SampleId {
+        pid: t.pid.get(),
+        tid: t.tid.get(),
+        time: ax_runtime::hal::time::monotonic_time_nanos(),
+        id: t.id,
+        stream_id: t.id,
+        cpu: ax_hal::percpu::this_cpu_id() as u32,
+    };
+    let mut trailer = [0u8; super::sample_id::SAMPLE_ID_MAX_LEN];
+    let length = identity.encode(t.sample_type, &mut trailer);
+    b.extend_from_slice(&trailer[..length]);
 }
 
 /// Back-patch the 8-byte header (reserved at the front of `b`) once the full

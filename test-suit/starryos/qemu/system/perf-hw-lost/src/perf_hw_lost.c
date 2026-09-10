@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <sched.h>
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -15,6 +16,10 @@
 
 #define PERF_TYPE_RAW 4u
 #define PERF_SAMPLE_IP (1ull << 0)
+#define PERF_SAMPLE_ID_FIELDS ((1ull << 1) | (1ull << 2) | (1ull << 6) | \
+                              (1ull << 7) | (1ull << 9) | (1ull << 16))
+#define PERF_ATTR_SAMPLE_ID_ALL (1ull << 18)
+#define PERF_EVENT_IOC_ID 0x80082407u
 #define PERF_FORMAT_LOST (1ull << 4)
 #define PERF_ATTR_FLAG_DISABLED (1ull << 0)
 #define PERF_EVENT_IOC_ENABLE 0x2400u
@@ -81,7 +86,7 @@ static int produce_until(int fd, struct perf_event_mmap_page *meta,
     struct timespec start, now;
     if (clock_gettime(CLOCK_MONOTONIC, &start)) return 1;
     for (;;) {
-        burn(10000);
+        burn(require_loss ? 10000 : 1);
         uint64_t values[2];
         if (read(fd, values, sizeof(values)) != sizeof(values)) return 1;
         if (require_loss ? values[1] != 0 :
@@ -104,7 +109,8 @@ static void ring_copy(const uint8_t *ring, uint64_t size, uint64_t at,
 }
 
 static uint64_t count_lost(const uint8_t *ring, uint64_t size, uint64_t tail,
-                           uint64_t head, uint64_t *records) {
+                           uint64_t head, uint64_t *records, int trailer,
+                           uint64_t id, uint64_t *invalid) {
     uint64_t total = 0;
     while (tail < head) {
         struct perf_event_header header;
@@ -117,6 +123,34 @@ static uint64_t count_lost(const uint8_t *ring, uint64_t size, uint64_t tail,
             ring_copy(ring, size, tail % size + 16, &lost, sizeof(lost));
             total += lost;
             (*records)++;
+            uint64_t words[9] = {0};
+            unsigned expected = trailer ? sizeof(words) : 24;
+            if (header.size != expected) {
+                printf("LOST size=%u expected=%u\n", header.size, expected);
+                (*invalid)++;
+            } else {
+                ring_copy(ring, size, tail, words, expected);
+                if (words[1] != id) (*invalid)++;
+                if (trailer &&
+                    (words[4] == 0 || words[5] != id || words[6] != id ||
+                     words[7] != 0 || words[8] != id))
+                    (*invalid)++;
+                if (trailer) {
+                    /* The emptied ring fits LOST plus its following sample.
+                     * Both must carry the same emission identity and time,
+                     * including system-wide IRQs outside the test task. */
+                    uint64_t sample[8] = {0};
+                    if (tail + header.size + sizeof(sample) > head) {
+                        (*invalid)++;
+                    } else {
+                        ring_copy(ring, size, tail + header.size, sample, sizeof(sample));
+                        if ((uint32_t)sample[0] != 9 || sample[1] != id)
+                            (*invalid)++;
+                        for (unsigned i = 3; i <= 7; ++i)
+                            if (words[i] != sample[i]) (*invalid)++;
+                    }
+                }
+            }
         }
         tail += header.size;
     }
@@ -124,21 +158,19 @@ static uint64_t count_lost(const uint8_t *ring, uint64_t size, uint64_t tail,
 }
 #endif
 
-int main(void) {
-#if !defined(__aarch64__)
-    puts("STARRY_PERF_LOST_OK");
-    return 0;
-#else
+#if defined(__aarch64__)
+static int check_lost(int trailer, int system_wide) {
     struct perf_event_attr_v0 attr = {
         .type = PERF_TYPE_RAW,
         .size = sizeof(attr),
         .config = ARM_PMU_EVT_CPU_CYCLES,
         .sample_period = SAMPLE_PERIOD,
-        .sample_type = PERF_SAMPLE_IP,
+        .sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_ID_FIELDS,
         .read_format = PERF_FORMAT_LOST,
-        .flags = PERF_ATTR_FLAG_DISABLED,
+        .flags = PERF_ATTR_FLAG_DISABLED | (trailer ? PERF_ATTR_SAMPLE_ID_ALL : 0),
     };
-    int fd = (int)syscall(SYS_PERF_EVENT_OPEN, &attr, 0, -1, -1, 0ul);
+    int fd = (int)syscall(SYS_PERF_EVENT_OPEN, &attr,
+                          system_wide ? -1 : 0, system_wide ? 0 : -1, -1, 0ul);
     if (fd < 0) {
         printf("perf-hw-lost FAILED: open errno=%d\n", errno);
         return 1;
@@ -152,6 +184,8 @@ int main(void) {
     }
     struct perf_event_mmap_page *meta = mapping;
     const uint8_t *ring = (const uint8_t *)mapping + meta->data_offset;
+    uint64_t id;
+    if (syscall(SYS_ioctl, fd, PERF_EVENT_IOC_ID, &id)) return 1;
 
     if (ioctl(fd, PERF_EVENT_IOC_RESET, 0) ||
         ioctl(fd, PERF_EVENT_IOC_ENABLE, 0) ||
@@ -170,26 +204,39 @@ int main(void) {
         ioctl(fd, PERF_EVENT_IOC_DISABLE, 0)) return 1;
     uint64_t second_head = __atomic_load_n(&meta->data_head, __ATOMIC_ACQUIRE);
 
-    uint64_t records = 0;
+    uint64_t records = 0, invalid = 0;
     uint64_t in_band = count_lost(ring, meta->data_size, first_head,
-                                  second_head, &records);
+                                  second_head, &records, trailer, id, &invalid);
     uint64_t read_values[2] = {0, 0};
     ssize_t read_size = read(fd, read_values, sizeof(read_values));
 
     printf("STARRY_PERF_LOST records=%llu in_band=%llu read_total=%llu "
-           "first_head=%llu second_head=%llu\n",
+           "first_head=%llu second_head=%llu pending=%llu invalid=%llu trailer=%d system=%d\n",
            (unsigned long long)records, (unsigned long long)in_band,
            (unsigned long long)read_values[1],
-           (unsigned long long)first_head, (unsigned long long)second_head);
+           (unsigned long long)first_head, (unsigned long long)second_head,
+           (unsigned long long)pending[1], (unsigned long long)invalid,
+           trailer, system_wide);
 
     munmap(mapping, RING_BYTES);
     close(fd);
-    if (records == 0 || in_band == 0 || read_size != 16 ||
+    if (invalid != 0 || records == 0 || in_band == 0 || read_size != 16 ||
         in_band != pending[1] || read_values[1] < in_band) {
         puts("perf-hw-lost FAILED: missing or inconsistent loss accounting");
         return 1;
     }
+    return 0;
+}
+#endif
+
+int main(void) {
+#if defined(__aarch64__)
+    cpu_set_t cpus;
+    CPU_ZERO(&cpus);
+    CPU_SET(0, &cpus);
+    if (sched_setaffinity(0, sizeof(cpus), &cpus)) return 1;
+    if (check_lost(0, 0) || check_lost(1, 0) || check_lost(1, 1)) return 1;
+#endif
     puts("STARRY_PERF_LOST_OK");
     return 0;
-#endif
 }

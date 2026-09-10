@@ -352,6 +352,7 @@ impl HwPerfEventState {
                         count: Arc::clone(&sampling.sample_count),
                         period,
                         sample_type: sampling.sample_type,
+                        sample_id_all: sampling.sample_id_all,
                         sample_user_lr: sampling.sample_user_lr,
                         id: self.sample_id,
                         read_format: self.read_format,

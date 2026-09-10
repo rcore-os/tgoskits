@@ -389,6 +389,8 @@ pub struct SampleSlot {
     /// `attr.sample_type`: the set of scalar fields each record carries (see
     /// [`build_sample`]). Validated against [`SUPPORTED_SAMPLE_TYPE`] at open.
     pub sample_type: u64,
+    /// Non-sample records carry the selected sample-id trailer.
+    pub sample_id_all: bool,
     /// Whether the event requested the saved AArch64 user link register.
     pub sample_user_lr: bool,
     /// Event id emitted for the `PERF_SAMPLE_ID` / `PERF_SAMPLE_IDENTIFIER`
@@ -419,6 +421,7 @@ pub struct SampleSlotConfig {
     pub(crate) count: Arc<SamplingCount>,
     pub period: u32,
     pub sample_type: u64,
+    pub sample_id_all: bool,
     /// Whether PERF_SAMPLE_REGS_USER selects the AArch64 LR bit.
     pub sample_user_lr: bool,
     pub id: u64,
@@ -440,6 +443,7 @@ impl SampleSlot {
             output,
             period: config.period,
             sample_type: config.sample_type,
+            sample_id_all: config.sample_id_all,
             sample_user_lr: config.sample_user_lr,
             id: config.id,
             read_format: config.read_format,
@@ -642,6 +646,7 @@ pub fn replace_output(
                     count: Arc::clone(&slot.count),
                     period: slot.period,
                     sample_type: slot.sample_type,
+                    sample_id_all: slot.sample_id_all,
                     sample_user_lr: slot.sample_user_lr,
                     id: slot.id,
                     read_format: slot.read_format,
@@ -769,7 +774,7 @@ fn service_overflowed_slots(
             time,
             addr: 0,
             id,
-            stream_id: 0,
+            stream_id: id,
             cpu,
             period: cur_period as u64,
             read_format: slot.read_format,
@@ -786,7 +791,7 @@ fn service_overflowed_slots(
         let len = build_sample(&mut record, sample_type, misc, &data);
 
         if let Some(ring) = &slot.output.ring {
-            write_sample(ring, &slot.output.loss, id, &record[..len]);
+            write_sample(ring, &slot.output.loss, slot, &data, &record[..len]);
         }
 
         let next_period = if slot.freq {
@@ -1159,7 +1164,13 @@ unsafe fn ring_write_locked(ring: &PerfRingOutput, record: &[u8]) -> bool {
     true
 }
 
-fn write_sample(ring: &PerfRingOutput, loss: &LossState, id: u64, sample: &[u8]) {
+fn write_sample(
+    ring: &PerfRingOutput,
+    loss: &LossState,
+    slot: &SampleSlot,
+    data: &SampleData<'_>,
+    sample: &[u8],
+) {
     let Some(_writer) = ring.try_begin_write() else {
         ring.record_contention_drop();
         loss.record_drop();
@@ -1168,14 +1179,29 @@ fn write_sample(ring: &PerfRingOutput, loss: &LossState, id: u64, sample: &[u8])
 
     let pending = loss.pending.load(Ordering::Relaxed);
     if pending != 0 {
-        let mut record = [0u8; LOST_RECORD_LEN];
+        let mut record = [0u8; LOST_RECORD_LEN + super::sample_id::SAMPLE_ID_MAX_LEN];
+        let mut length = LOST_RECORD_LEN;
+        if slot.sample_id_all {
+            let identity = super::sample_id::SampleId {
+                pid: data.pid.map_or(0, TgidNumber::get),
+                tid: data.tid.map_or(0, TidNumber::get),
+                time: data.time,
+                id: data.id,
+                stream_id: data.stream_id,
+                cpu: data.cpu,
+            };
+            let mut trailer = [0u8; super::sample_id::SAMPLE_ID_MAX_LEN];
+            let trailer_len = identity.encode(slot.sample_type, &mut trailer);
+            record[length..length + trailer_len].copy_from_slice(&trailer[..trailer_len]);
+            length += trailer_len;
+        }
         record[0..4].copy_from_slice(&PERF_RECORD_LOST.to_ne_bytes());
         record[4..6].copy_from_slice(&0u16.to_ne_bytes());
-        record[6..8].copy_from_slice(&(LOST_RECORD_LEN as u16).to_ne_bytes());
-        record[8..16].copy_from_slice(&id.to_ne_bytes());
+        record[6..8].copy_from_slice(&(length as u16).to_ne_bytes());
+        record[8..16].copy_from_slice(&data.id.to_ne_bytes());
         record[16..24].copy_from_slice(&pending.to_ne_bytes());
         // SAFETY: the producer lease is the ring's unique kernel writer.
-        if !unsafe { ring_write_locked(ring, &record) } {
+        if !unsafe { ring_write_locked(ring, &record[..length]) } {
             loss.record_drop();
             return;
         }

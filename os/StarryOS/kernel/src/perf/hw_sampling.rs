@@ -28,6 +28,7 @@ pub(super) struct SamplingState {
     pub(super) freq: bool,
     pub(super) target_freq: u32,
     pub(super) sample_type: u64,
+    pub(super) sample_id_all: bool,
     pub(super) sample_user_lr: bool,
     pub(super) observer: PidNamespaceId,
     pub(super) poll_ready: Arc<PollSet>,

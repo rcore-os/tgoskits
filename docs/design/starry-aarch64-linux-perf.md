@@ -117,6 +117,8 @@ AArch64 kernel IRQ 和 user IRQ 入口按值构造 `InterruptedContext { pc, sp,
 
 ring 无空间或 producer gate 竞争时增加 event 的 pending lost 数。下一次能够写入时先提交 `PERF_RECORD_LOST`，成功后才清零 pending 数，再尝试当前 record；任一步失败都保留累计值。该过程不等待消费者，因此满环测试能在有限时间内结束。
 
+`SampleSlot::sample_id_all` 从 task 或 system-wide 事件一路传入，并在输出重定向替换注册时保留。LOST 与其他非采样记录共用 `sample_id::SampleId::encode()`，按 TID、TIME、ID、STREAM_ID、CPU、IDENTIFIER 的顺序编码选中的尾部字段；LOST 的 `header.size` 包含尾部。IRQ 路径只使用固定大小栈缓冲，身份、时间与随后同次提交的 SAMPLE 来自同一快照，未开启 `sample_id_all` 时仍为 24 字节。
+
 ### 3.3 读取快照
 
 `PERF_SAMPLE_READ` 在 arm 前构建有容量上限的 `[SampleReadEntry; MAX_SAMPLE_READ_EVENTS]` 并存入 `SampleSlot`。数组按 leader-first 保存稳定 callback context 和 event ID，IRQ 只做 owner-local PMU/原子读取与定长编码，不遍历可变 group 列表，也不进行分配。`build_sample()` 按 Linux 顺序先编码 `ID/STREAM_ID/CPU/PERIOD/READ`，再编码 callchain 和 `REGS_USER` ABI word；`SAMPLE_RECORD_MAX_LEN` 为每个支持字段保留固定上界。group member 保留自己的 `attr.disabled` 状态；仅 leader disabled、member enabled 的常见 perf 模式会在 leader 启用时整体装载。
@@ -155,6 +157,8 @@ software backend 实现 `CPU_CLOCK`、`TASK_CLOCK`、`PAGE_FAULTS`、`CONTEXT_SW
 `SwEventState::read_task_family()` 持 family control 固定继承关系，取得存活 binding 的强引用后，逐个在所属任务上下文锁下调用 `SwPerTaskCounter::checkpoint()`。checkpoint 将尚未结束的运行片段及启用区间结算到共享累计值，并推进本地起点；最终只读取一次累计值。因此读取包含仍在远端运行的继承子任务，而后续读取、切出、停表与退出不会重复累计已经结算的区间。锁顺序仍为 family control → task context → clock，读取不等待远端 CPU worker，也不在 IRQ-safe 临界区分配。
 
 `SwTaskContext` 在同一 IRQ-safe 锁下保存线程 binding 列表和 scheduler hook 发布的 `running_cpu`。没有活动事件时仍更新运行状态；远端 open/enable 在此锁内读取状态并设置 slice 起点，不必等待目标线程下一次切换。锁顺序为 family control → task context → binding/group/clock；scheduler hook 不取得可睡眠的 family control。exec 只修改当前 binding，后续父 FD ioctl 仍遍历整个继承关系。
+
+CPU-wide 软件事件通过 `SYSTEM_CONTEXTS` 共享每 CPU 一个可睡眠控制锁，不能只依赖各 FD 自己的锁。`SwSystemCounter` 的启停、RESET、snapshot、建组以及 leader 关闭解绑在同一控制事务内完成；成员检查 leader 状态到发布 `enabled_since_ns` 之间，leader 不能插入停表。锁顺序为 FD/family control → CPU context → group/clock，IRQ 与调度计数钩子不取得 CPU context 的可睡眠锁。真实 kernel axtest 用就绪通知暂停成员发布，再让同核更高优先级 FIFO 任务禁用 leader，验证禁用必须等待该事务完成，不依赖压力循环或随机时间窗。
 
 缺页 hook 将用户异常和内核用户内存访问的来源传入 `sw::on_page_fault()`；`SwEventState::accepts_mode()` 对 task 与 CPU 事件应用 `exclude_user/exclude_kernel`，过滤依据是故障发生的特权级，而非被访问地址属于谁。
 

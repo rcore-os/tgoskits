@@ -187,6 +187,7 @@ fn prepare_counter(
                     count: Arc::clone(&ptc.sampling_count),
                     period: ptc.sample_period,
                     sample_type: ptc.sample_type,
+                    sample_id_all: ptc.sample_id_all,
                     sample_user_lr: ptc.sample_user_lr,
                     id: ptc.sample_id.load(Ordering::Relaxed),
                     read_format: ptc.read_format,

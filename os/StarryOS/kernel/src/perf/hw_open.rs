@@ -189,6 +189,7 @@ pub(super) fn perf_event_open_hw(
             freq: validated.is_freq,
             target_freq: validated.target_freq,
             sample_type: attr.sample_type,
+            sample_id_all: attr.sample_id_all() != 0,
             sample_user_lr: attr.sample_regs_user == super::uapi::PERF_REG_ARM64_LR_MASK,
             observer: crate::task::current_user_task()
                 .as_thread()

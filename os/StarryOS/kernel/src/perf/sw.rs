@@ -34,6 +34,9 @@ static PERF_SW_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 pub(crate) const CPU_UNSET: u32 = u32::MAX;
 
 static SYSTEM_COUNTERS: LazyInit<IrqMutex<Vec<Arc<SwSystemCounter>>>> = LazyInit::new();
+// Like perf_event_context::mutex, all CPU events share one task-context
+// transaction lock per CPU, including members reached through another FD.
+static SYSTEM_CONTEXTS: LazyInit<Vec<Mutex<()>>> = LazyInit::new();
 
 /// Scheduler and task-context controls serialize on this per-thread boundary.
 /// Even without an event, switch hooks keep the current running CPU published,
@@ -496,6 +499,7 @@ impl SwPerTaskCounter {
 struct SwSystemCounter {
     state: Arc<SwEventState>,
     cpu: usize,
+    context: &'static Mutex<()>,
     enabled: AtomicBool,
     enabled_since_ns: AtomicU64,
     clock_offset_ns: AtomicU64,
@@ -508,6 +512,10 @@ impl SwSystemCounter {
         Self {
             state,
             cpu,
+            context: SYSTEM_CONTEXTS
+                .get()
+                .and_then(|contexts| contexts.get(cpu))
+                .expect("software CPU context initialized before event creation"),
             enabled: AtomicBool::new(enabled),
             enabled_since_ns: AtomicU64::new(if enabled { now_ns() } else { 0 }),
             clock_offset_ns: AtomicU64::new(0),
@@ -546,9 +554,10 @@ impl SwSystemCounter {
         live
     }
 
-    fn enable_at(&self, now: u64) -> bool {
+    fn enable_at(&self, now: u64, before_publish: impl FnOnce()) -> bool {
         if !self.enabled.swap(true, Ordering::AcqRel) {
             if self.is_effectively_enabled() {
+                before_publish();
                 self.enabled_since_ns.store(now, Ordering::Release);
             }
             true
@@ -590,8 +599,13 @@ impl SwSystemCounter {
     }
 
     fn set_enabled(&self) {
+        self.set_enabled_observed(|| {});
+    }
+
+    fn set_enabled_observed(&self, before_publish: impl FnOnce()) {
+        let _context = self.context.lock();
         let now = now_ns();
-        if self.enable_at(now) && self.live_group_leader().is_none() {
+        if self.enable_at(now, before_publish) && self.live_group_leader().is_none() {
             for member in self.live_group_members() {
                 member.resume_for_group(now);
             }
@@ -599,6 +613,7 @@ impl SwSystemCounter {
     }
 
     fn set_disabled(&self) {
+        let _context = self.context.lock();
         let now = now_ns();
         let is_group_root = self.live_group_leader().is_none();
         if self.disable_at(now) && is_group_root {
@@ -609,6 +624,7 @@ impl SwSystemCounter {
     }
 
     fn reset(&self) {
+        let _context = self.context.lock();
         self.state.reset();
         self.clock_offset_ns
             .store(self.enabled_time(), Ordering::Release);
@@ -625,6 +641,7 @@ impl SwSystemCounter {
     }
 
     fn snapshot(&self) -> PerfReadValues {
+        let _context = self.context.lock();
         let time = self.enabled_time();
         PerfReadValues {
             value: if self.state.kind.is_clock() {
@@ -650,6 +667,7 @@ impl SwSystemCounter {
     }
 
     fn link_group(leader: &Arc<Self>, member: &Arc<Self>) -> StarryResult<()> {
+        let _context = leader.context.lock();
         if leader.cpu != member.cpu
             || leader.state.dead.load(Ordering::Acquire)
             || member.state.dead.load(Ordering::Acquire)
@@ -713,6 +731,12 @@ impl Drop for SwPerfEvent {
         // Serialize closure with clone registration and group publication;
         // scheduler hooks never acquire this sleeping family control lock.
         let _control = self.state.control.lock();
+        // Publish leader death and detach siblings in the same CPU transaction
+        // used by enable/disable/read; a member cannot revive an old window.
+        let _cpu_context = match &self.target {
+            SwTargetCounter::Cpu(counter) => Some(counter.context.lock()),
+            SwTargetCounter::Task(_) => None,
+        };
         if !self.state.dead.swap(true, Ordering::AcqRel) {
             match &self.target {
                 SwTargetCounter::Task(_) => {
@@ -806,6 +830,9 @@ impl Pollable for SwPerfEvent {
 
 /// Initializes the CPU-wide registry before userspace can open perf events.
 pub fn initialize() {
+    SYSTEM_CONTEXTS.init_once(
+        (0..ax_runtime::hal::cpu_num()).map(|_| Mutex::new(())).collect(),
+    );
     SYSTEM_COUNTERS.init_once(IrqMutex::new(Vec::new()));
 }
 
@@ -1052,6 +1079,82 @@ pub fn on_task_exit(thread: &Thread) {
 
 #[cfg(all(test, axtest))]
 mod tests {
+    use super::*;
+
+    #[axtest::axtest]
+    fn cpu_group_disable_waits_for_member_enable_publication() {
+        use ax_runtime::task::{
+            sched::{CpuId, CpuSet, RtPriority, SchedulePolicy},
+            sync::WaitQueue,
+            thread::current::current_thread_handle,
+        };
+
+        if SYSTEM_COUNTERS.get().is_none() {
+            initialize();
+        }
+        // SAFETY: perf_event_attr consists of integers and integer unions.
+        let mut attr: perf_event_attr = unsafe { core::mem::zeroed() };
+        attr.read_format = 3;
+        let leader = Arc::new(SwSystemCounter::new(
+            Arc::new(SwEventState::new(SwId::CpuClock, &attr)), 0, true,
+        ));
+        let member = Arc::new(SwSystemCounter::new(
+            Arc::new(SwEventState::new(SwId::CpuClock, &attr)), 0, false,
+        ));
+        SwSystemCounter::link_group(&leader, &member).unwrap();
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        let gate = Arc::new(WaitQueue::new());
+        let mut cpu0 = CpuSet::empty(ax_runtime::hal::cpu_num());
+        assert!(cpu0.insert(CpuId::new(0)));
+        let mut cpu1 = CpuSet::empty(ax_runtime::hal::cpu_num());
+        assert!(cpu1.insert(CpuId::new(1)));
+        let current = current_thread_handle().unwrap();
+        let old_affinity = current.affinity().unwrap();
+        let old_policy = current.base_policy();
+        current.set_affinity_and_wait(cpu0.clone()).unwrap();
+        current.set_policy(SchedulePolicy::fifo(RtPriority::new(20).unwrap())).unwrap();
+
+        let publisher = {
+            let member = Arc::clone(&member);
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            let gate = Arc::clone(&gate);
+            crate::task::spawn_kernel_thread_with_affinity(move || {
+                member.set_enabled_observed(|| {
+                    entered.store(true, Ordering::Release);
+                    gate.notify_all();
+                    gate.wait_until(|| release.load(Ordering::Acquire));
+                });
+            }, "perf-member-enable".into(), cpu1)
+        };
+        gate.wait_until(|| entered.load(Ordering::Acquire));
+        let disabler = {
+            let leader = Arc::clone(&leader);
+            let done = Arc::clone(&done);
+            crate::task::spawn_kernel_thread_with_policy_and_affinity(move || {
+                leader.set_disabled();
+                done.store(true, Ordering::Release);
+            }, "perf-leader-disable".into(),
+            SchedulePolicy::fifo(RtPriority::new(30).unwrap()), cpu0)
+        };
+        // The higher-priority same-CPU task must run until it either blocks on
+        // the context transaction or incorrectly completes the disable.
+        crate::task::yield_now();
+        let premature = done.load(Ordering::Acquire);
+        release.store(true, Ordering::Release);
+        gate.notify_all();
+        crate::task::join_kernel_thread(publisher);
+        crate::task::join_kernel_thread(disabler);
+        current.set_policy(old_policy).unwrap();
+        current.set_affinity_and_wait(old_affinity).unwrap();
+        assert!(!premature, "leader disable passed an unfinished member enable");
+        assert_eq!(member.enabled_since_ns.load(Ordering::Acquire), 0);
+        let stopped = member.snapshot();
+        assert_eq!(member.snapshot().time_enabled, stopped.time_enabled);
+    }
+
     #[axtest::axtest]
     fn reset_clips_event_value_without_discarding_running_time() {
         let mut clock = super::SwClock::default();
