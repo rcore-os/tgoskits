@@ -65,6 +65,11 @@ const DRM_IOCTL_PRIME_HANDLE_TO_FD_NR: u32 = 0x2d;
 /// DRM ioctl prime fd to handle command number (import an external dma-buf)
 const DRM_IOCTL_PRIME_FD_TO_HANDLE_NR: u32 = 0x2e;
 
+/// GEM handles whose destruction could not acquire the global NPU lock yet.
+/// The backing allocations remain owned by the driver until a later card1
+/// operation retries these handles.
+static DEFERRED_GEM_DESTROYS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
 /// RKNPU command types
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +224,7 @@ pub(crate) fn open_card1_file(
     file: ax_fs_ng::File,
     open_flags: u32,
 ) -> StarryResult<Arc<dyn FileLike>> {
+    retry_deferred_gem_destroys();
     Ok(Arc::new(Card1File::new(KernelFile::new(file, open_flags))))
 }
 
@@ -469,6 +475,7 @@ impl FileLike for Card1File {
             return Err(StarryError::BadAddress);
         }
         let _operation = self.operation.lock();
+        retry_deferred_gem_destroys();
         let nr = ioctl_nr(cmd);
         info!("card1: cmd {cmd:#x}, nr {nr:#x}, arg {arg:#x}");
         if is_driver_ioctl(nr) {
@@ -505,6 +512,7 @@ impl FileLike for Card1File {
 
     fn device_mmap(&self, offset: u64, _length: u64) -> StarryResult<DeviceMmap> {
         let _operation = self.operation.lock();
+        retry_deferred_gem_destroys();
         let handle = map_handle_from_offset(offset).ok_or(StarryError::InvalidInput)?;
         Ok(self.exported_gem_buffer(handle)?.device_mmap_kind_resolved())
     }
@@ -572,7 +580,7 @@ impl Card1File {
                 let local_handle = match self.add_handle(global_handle) {
                     Ok(handle) => handle,
                     Err(error) => {
-                        let _ = rknpu::mem_destroy(global_handle);
+                        destroy_gem_or_defer(global_handle);
                         return Err(error);
                     }
                 };
@@ -582,7 +590,8 @@ impl Card1File {
                     arg,
                     bytemuck::bytes_of(&mem_create_args),
                 ) {
-                    let _ = self.remove_handle(local_handle).map(rknpu::mem_destroy);
+                    let global_handle = self.remove_handle(local_handle)?;
+                    destroy_gem_or_defer(global_handle);
                     return Err(error);
                 }
             }
@@ -608,8 +617,9 @@ impl Card1File {
                     bytemuck::bytes_of_mut(&mut mem_destroy),
                     arg,
                 )?;
-                let global_handle = self.remove_handle(mem_destroy.handle)?;
+                let global_handle = self.global_handle(mem_destroy.handle)?;
                 rknpu::mem_destroy(global_handle).map_err(map_rknpu_err)?;
+                self.remove_handle(mem_destroy.handle)?;
             }
             RknpuCmd::MemSync => {
                 let mut mem_sync = RknpuMemSync::default();
@@ -670,7 +680,7 @@ impl Card1File {
         req.handle = match self.add_handle(global_handle) {
             Ok(handle) => handle,
             Err(error) => {
-                let _ = rknpu::mem_destroy(global_handle);
+                destroy_gem_or_defer(global_handle);
                 return Err(error);
             }
         };
@@ -682,7 +692,58 @@ impl Drop for Card1File {
     fn drop(&mut self) {
         let handles = core::mem::take(&mut *self.handles.lock());
         for global_handle in handles.into_values() {
-            let _ = rknpu::mem_destroy(global_handle);
+            destroy_gem_or_defer(global_handle);
+        }
+    }
+}
+
+fn enqueue_deferred_gem_destroy(pending: &mut Vec<u32>, handle: u32) {
+    if !pending.contains(&handle) {
+        pending.push(handle);
+    }
+}
+
+fn defer_gem_destroy(handle: u32) {
+    enqueue_deferred_gem_destroy(&mut DEFERRED_GEM_DESTROYS.lock(), handle);
+}
+
+fn destroy_gem_or_defer(handle: u32) {
+    match rknpu::mem_destroy(handle) {
+        Ok(()) => {}
+        Err(error @ (rknpu::Error::Busy | rknpu::Error::Quarantined)) => {
+            warn!(
+                "rknpu: GEM destroy for handle {} deferred after {:?}",
+                handle, error
+            );
+            defer_gem_destroy(handle);
+        }
+        Err(error) => {
+            warn!(
+                "rknpu: GEM destroy for handle {} could not be completed: {:?}",
+                handle, error
+            );
+        }
+    }
+}
+
+fn retry_deferred_gem_destroys() {
+    let pending = core::mem::take(&mut *DEFERRED_GEM_DESTROYS.lock());
+    for handle in pending {
+        match rknpu::mem_destroy(handle) {
+            Ok(()) => {}
+            Err(error @ (rknpu::Error::Busy | rknpu::Error::Quarantined)) => {
+                warn!(
+                    "rknpu: deferred GEM destroy for handle {} still unavailable: {:?}",
+                    handle, error
+                );
+                defer_gem_destroy(handle);
+            }
+            Err(error) => {
+                warn!(
+                    "rknpu: deferred GEM destroy for handle {} was discarded: {:?}",
+                    handle, error
+                );
+            }
         }
     }
 }
@@ -1068,5 +1129,15 @@ mod tests {
         args.task_start = 0;
         args.task_number = 4096;
         assert!(Card1File::submit_task_span(&args).is_err());
+    }
+
+    #[test]
+    fn deferred_destroy_queue_keeps_each_handle_once() {
+        let mut pending = Vec::new();
+        enqueue_deferred_gem_destroy(&mut pending, 7);
+        enqueue_deferred_gem_destroy(&mut pending, 7);
+        enqueue_deferred_gem_destroy(&mut pending, 9);
+
+        assert_eq!(pending.as_slice(), &[7, 9]);
     }
 }
