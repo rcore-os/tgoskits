@@ -422,14 +422,22 @@ impl SchedulerPlacement {
 /// Affinity policy remains under the task control lock.
 #[derive(Debug)]
 pub(in crate::sched::system) struct ThreadAffinityState {
+    /// Effective placement mask; a singleton during migration disable.
     pub(in crate::sched::system) affinity: Arc<CpuSet>,
+    pub(in crate::sched::system) requested_affinity: Arc<CpuSet>,
+    pub(in crate::sched::system) migration_depth: usize,
+    pub(in crate::sched::system) migration_cpu: Option<CpuId>,
     pub(in crate::sched::system) affinity_generation: u64,
 }
 
 impl ThreadAffinityState {
     pub(super) fn new(affinity: CpuSet) -> Self {
+        let affinity = Arc::new(affinity);
         Self {
-            affinity: Arc::new(affinity),
+            requested_affinity: Arc::clone(&affinity),
+            affinity,
+            migration_depth: 0,
+            migration_cpu: None,
             affinity_generation: 1,
         }
     }

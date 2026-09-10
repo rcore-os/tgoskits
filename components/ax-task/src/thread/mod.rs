@@ -10,6 +10,7 @@ mod pi_tree;
 
 pub(crate) mod spec;
 mod state;
+mod state_kind;
 pub(crate) mod tick_work;
 
 pub use current_token::CurrentThreadToken;
@@ -30,8 +31,8 @@ pub use spec::{
     RunningPolicyAppliedHook, SwitchReason, ThreadExtension, ThreadExtensionBorrow,
     ThreadExtensionLease, ThreadExtensionOps, ThreadExtensionView, ThreadSpec,
 };
-pub use state::ThreadState;
 pub(crate) use state::{ParkPublication, ThreadLifecycle, WakePublication, transition_is_valid};
+pub use state_kind::ThreadState;
 pub(crate) use tick_work::{SchedulerTickWork, SchedulerTickWorkClaim};
 
 pub(crate) use crate::sched::{

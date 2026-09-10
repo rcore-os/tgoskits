@@ -38,6 +38,7 @@ pub(crate) use scheduler::{RescheduleKind, SchedulerRequestClaim, SchedulerReque
 #[derive(Debug)]
 pub struct CpuRemote {
     owner: CpuId,
+    pub(crate) migration_affinity: Arc<crate::sched::CpuSet>,
     run_queue: IrqTicketLock<CpuRunQueueState>,
     rt_bandwidth: IrqTicketLock<RtRunQueueBandwidth>,
     deadline: CpuDeadlineBase,
@@ -57,8 +58,11 @@ impl CpuRemote {
         let deadline_max_bw_scaled = u64::from(config.deadline_cap_percent())
             * crate::sched::algorithm::DEADLINE_UTILIZATION_SCALE
             / 100;
+        let mut migration_affinity = crate::sched::CpuSet::empty(config.cpu_count());
+        assert!(migration_affinity.insert(owner));
         Arc::new(Self {
             owner,
+            migration_affinity: Arc::new(migration_affinity),
             run_queue: IrqTicketLock::new(CpuRunQueueState::new(owner, config)),
             rt_bandwidth: IrqTicketLock::new(RtRunQueueBandwidth::offline()),
             deadline: CpuDeadlineBase::new(config),

@@ -411,6 +411,7 @@ dependencies = [
  "ax-hal",
  "ax-memory-addr",
  "ax-std",
+ "ax-task",
  "axbacktrace",
  "axfs-ng-vfs",
  "embedded-graphics",

@@ -10,6 +10,7 @@ description = "OS-independent IRQ-safe SMP task scheduling core"
 [features]
 default = []
 qperf-metrics = []
+fault-injection = []
 host-test = ["smp"]
 lockdep = ["dep:axpanic"]
 smp = []

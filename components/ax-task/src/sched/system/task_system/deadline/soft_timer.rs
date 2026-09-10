@@ -88,7 +88,7 @@ impl TaskSystem {
             .then(|| handle.expect("a completed task timer retains its handle"))
             .filter(|handle| {
                 event.kind().is_some_and(|kind| {
-                    kind.park_generation() == Some(handle.core.park_generation())
+                    kind.park_generation() == Some(handle.core.ordinary_park_generation())
                 })
             })
             .map(ThreadHandle::wake_handle);

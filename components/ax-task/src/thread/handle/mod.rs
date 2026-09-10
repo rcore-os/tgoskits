@@ -220,8 +220,8 @@ impl WeakThreadHandle {
 
 /// A stable direct wake header reference.
 ///
-/// [`Self::wake`] performs only bounded atomic operations and is safe in hard IRQ
-/// context. Creating, cloning, and dropping this owning reference are task-context
+/// [`Self::wake`] uses non-sleeping scheduler transactions and is safe in hard
+/// IRQ context. Creating, cloning, and dropping this owning reference are task-context
 /// operations. A coroutine whose last raw-waker reference is released in hard IRQ
 /// defers only that zero-reference allocation to the typed task-system reaper.
 #[derive(Debug)]
@@ -481,6 +481,9 @@ pub(crate) struct ThreadCore {
     scheduler_inbox_deliveries: AtomicUsize,
     pub(super) affinity_completion: ThreadAffinityCompletion,
     park_generation: AtomicU64,
+    park_sequence: AtomicU64,
+    rt_lock_depth: AtomicUsize,
+    ordinary_park_generation: AtomicU64,
     wake_cpu_hint: AtomicU32,
     wake_affinity: WakeAffinityState,
     affinity_update_node: InboxNode,
@@ -554,6 +557,9 @@ impl ThreadCore {
             scheduler_inbox_deliveries: AtomicUsize::new(0),
             affinity_completion: ThreadAffinityCompletion::new(1),
             park_generation: AtomicU64::new(0),
+            park_sequence: AtomicU64::new(0),
+            rt_lock_depth: AtomicUsize::new(0),
+            ordinary_park_generation: AtomicU64::new(0),
             wake_cpu_hint: AtomicU32::new(u32::MAX),
             wake_affinity: WakeAffinityState::new(),
             affinity_update_node: InboxNode::new(InboxKind::OwnerControl),

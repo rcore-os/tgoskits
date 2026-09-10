@@ -1,3 +1,5 @@
+mod rt_locks;
+
 use std::{
     os::arceos::{
         api::{
@@ -239,6 +241,7 @@ fn ownerless_lock_rekey_wakes_new_top() {
 }
 
 pub fn run() -> crate::TestResult {
+    rt_locks::run();
     assert!(
         thread::available_parallelism().unwrap().get() >= 3,
         "task-pi-mutex requires at least three CPUs"

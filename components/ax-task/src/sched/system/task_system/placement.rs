@@ -43,7 +43,7 @@ impl TaskSystem {
         let placement_is_allowed = [sched.placement.queued_cpu(), sched.placement.on_cpu()]
             .into_iter()
             .flatten()
-            .all(|cpu| sched.affinity.affinity.contains(cpu));
+            .all(|cpu| sched.affinity.requested_affinity.contains(cpu));
         if !placement_is_allowed {
             return false;
         }
@@ -184,7 +184,10 @@ impl TaskSystem {
             .checked_add(1)
             .ok_or(TaskError::InvalidConfiguration)?;
         sched.affinity.affinity_generation = generation;
-        sched.affinity.affinity = Arc::new(affinity);
+        sched.affinity.requested_affinity = Arc::new(affinity);
+        if sched.affinity.migration_depth == 0 {
+            sched.affinity.affinity = Arc::clone(&sched.affinity.requested_affinity);
+        }
         // The affinity mask is task metadata, but physical placement belongs
         // to one runqueue owner. A remote writer only publishes a reconciliation
         // request; it never rewrites Queued/Running or the independent
@@ -248,6 +251,9 @@ impl TaskSystem {
             return Err(TaskError::ActiveTimerAffinity);
         }
         let owner = cpu.owner();
+        if sched.affinity.migration_depth != 0 && !affinity.contains(owner) {
+            return Err(TaskError::UnsafeContext);
+        }
         let must_migrate = !affinity.contains(owner);
         let remote = Arc::clone(cpu.remote());
         let mut transaction = OwnerRqTxn::begin(self, &remote);
@@ -291,7 +297,10 @@ impl TaskSystem {
             }
         };
         sched.affinity.affinity_generation = generation;
-        sched.affinity.affinity = Arc::new(affinity);
+        sched.affinity.requested_affinity = Arc::new(affinity);
+        if sched.affinity.migration_depth == 0 {
+            sched.affinity.affinity = Arc::clone(&sched.affinity.requested_affinity);
+        }
         transaction.update_thread_affinity(current, Arc::clone(&sched.affinity.affinity));
         sched
             .placement

@@ -424,12 +424,13 @@ impl TaskSystem {
                     .cpus
                     .iter()
                     .any(|registration| registration.remote.idle_thread() == Some(id));
-                if is_idle {
-                    return true;
-                }
-
                 let sched = record.sched.lock();
-                if sched.lifecycle.state() == ThreadState::Exited {
+                // Migration exclusion applies even to idle. Do not bypass a
+                // live pin merely because this task has no class-queue node.
+                if sched.affinity.migration_cpu == Some(cpu) {
+                    return false;
+                }
+                if is_idle || sched.lifecycle.state() == ThreadState::Exited {
                     return true;
                 }
                 if Self::is_parked_ktimer_worker(state, cpu, &record.core, &sched) {

@@ -27,7 +27,7 @@ task-kernel-timer = ["task-runtime"]
 task-executor = ["task-runtime"]
 task-tls = ["task-runtime", "ax-std/tls", "ax-std/alloc"]
 task-parallel = ["task-runtime", "dep:rand", "ax-std/alloc"]
-task-pi-mutex = ["task-runtime"]
+task-pi-mutex = ["task-runtime", "dep:ax-task", "ax-task/fault-injection"]
 task-preempt-guard = ["task-runtime"]
 task-priority = ["task-runtime", "ax-std/alloc"]
 task-rt-policy = ["task-runtime", "ax-std/alloc"]
@@ -88,6 +88,7 @@ all = [
 ]
 
 [dependencies]
+ax-task = { workspace = true, optional = true }
 ax-driver = { workspace = true, optional = true }
 ax-hal = { workspace = true, optional = true }
 ax-memory-addr.workspace = true

@@ -210,7 +210,7 @@ impl TaskSystem {
         if sched.lifecycle.state() == ThreadState::Exited {
             return Err(TaskError::NotReady);
         }
-        affinity.copy_from_set(&sched.affinity.affinity)?;
+        affinity.copy_from_set(&sched.affinity.requested_affinity)?;
         let applied_reservation = sched.deadline.bandwidth.reservation_scaled();
         let pending_reservation = sched
             .policy
@@ -288,7 +288,7 @@ impl TaskSystem {
             .sched
             .lock()
             .affinity
-            .affinity
+            .requested_affinity
             .as_ref()
             .clone())
     }

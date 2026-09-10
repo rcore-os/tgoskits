@@ -9,6 +9,7 @@ mod dispatch;
 mod exited_work;
 mod lifecycle;
 mod membarrier;
+mod migration;
 mod model;
 mod outcome;
 mod park_exit;
@@ -101,8 +102,8 @@ use crate::{
         ParkPrepare, ParkTicket, PiDonation, PiWaitKey, PiWaitRegistration, REALTIME_CLASS_RANK,
         SchedulingUrgency, SwitchReason, TaskError, ThreadCore, ThreadCoreInit, ThreadExtension,
         ThreadExtensionBorrow, ThreadExtensionLease, ThreadExtensionView, ThreadHandle, ThreadId,
-        ThreadRuntimeSnapshot, ThreadSpec, ThreadState, ThreadWakeBatch, ThreadWakeHandle,
-        WaitWakeClaim, WaitWakeDelivery, WakeIntent, WakeResult,
+        ThreadRuntimeSnapshot, ThreadSpec, ThreadState, ThreadWakeHandle, WaitWakeClaim,
+        WaitWakeDelivery, WakeIntent, WakeResult,
     },
     time::{
         MonotonicDeadline, MonotonicInstant,
