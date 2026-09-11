@@ -285,13 +285,22 @@ impl FsContext {
     pub fn set_mount_namespace(&mut self, new_ns: Arc<MountNamespace>) -> VfsResult<()> {
         let root_path = self.root_dir.absolute_path()?;
         let current_path = self.current_dir.absolute_path()?;
+        let permission_root_path = self
+            .permission_root
+            .as_ref()
+            .map(Location::absolute_path)
+            .transpose()?;
         let new_root_loc = new_ns.root_mount().root_location();
         let resolver = Self::new_in_namespace(new_ns.clone(), new_root_loc);
         let root_dir = resolver.resolve(root_path)?;
         let current_dir = resolver.resolve(current_path)?;
+        let permission_root = permission_root_path
+            .map(|path| resolver.resolve(path))
+            .transpose()?;
         self.mnt_ns = new_ns;
         self.root_dir = root_dir;
         self.current_dir = current_dir;
+        self.permission_root = permission_root;
         Ok(())
     }
 
@@ -613,7 +622,11 @@ impl FsContext {
         } else if dir.ptr_eq(&self.root_dir) {
             Err(VfsError::InvalidInput)
         } else if let Some(parent) = dir.parent() {
-            searched.push(parent.clone());
+            // `parent` is only used to represent the resolved final `.`/`..`
+            // entry as `(parent, name)`. It was not traversed by the path
+            // walk, so it must not be added to the search trace. This is
+            // essential for an already-open dirfd whose own parent is not
+            // searchable.
             Ok((parent, dir.name().into_owned().into(), searched))
         } else {
             Err(VfsError::InvalidInput)
@@ -1139,6 +1152,11 @@ impl FsContext {
         let (dst_dir, dst_name) = destination;
         let (src_boundary, dst_boundary) = boundaries;
         let (src_search, dst_search) = searches;
+        // Search permission is a prerequisite for looking up either final
+        // entry. Keep this inside the VFS operation so callers cannot observe
+        // ENOENT/EEXIST from an inaccessible parent before DAC search checks.
+        self.check_search_trace(src_search, src_boundary, credentials)?;
+        self.check_search_trace(dst_search, dst_boundary, credentials)?;
         let source = src_dir.lookup_no_follow(src_name)?;
         let destination = match dst_dir.lookup_no_follow(dst_name) {
             Ok(destination) => Some(destination),
@@ -1279,9 +1297,19 @@ impl FsContext {
         let (old, old_search) = source;
         let (new_dir, new_name, new_search) = destination;
         let (old_boundary, new_boundary) = boundaries;
+        // A directory cannot be hard-linked. Check this before inspecting
+        // the source parent: `linkat(dirfd, ".", ...)` must not re-walk a
+        // parent outside the dirfd permission boundary.
+        if old.is_dir() {
+            return Err(VfsError::OperationNotPermitted);
+        }
         self.check_search_trace(old_search, old_boundary, credentials)?;
-        if let Some(old_dir) = old.parent() {
-            self.check_search_path(&old_dir, old_boundary, credentials)?;
+        self.check_search_trace(new_search, new_boundary, credentials)?;
+        // An existing target takes precedence over an unwritable parent.
+        match new_dir.lookup_no_follow(new_name) {
+            Ok(_) => return Err(VfsError::AlreadyExists),
+            Err(VfsError::NotFound) => {}
+            Err(error) => return Err(error),
         }
         self.check_mutation_parent_with_boundary_and_search(
             new_dir,
@@ -1289,9 +1317,6 @@ impl FsContext {
             new_boundary,
             credentials,
         )?;
-        if old.is_dir() {
-            return Err(VfsError::OperationNotPermitted);
-        }
         let old_metadata = old.metadata()?;
         if !credentials.cap_fowner && credentials.fsuid != old_metadata.uid {
             return Err(VfsError::OperationNotPermitted);

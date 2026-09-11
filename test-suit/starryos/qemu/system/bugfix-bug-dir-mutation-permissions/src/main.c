@@ -74,6 +74,8 @@ static const char *const protected_new_file =
     "/tmp/bug-dir-mutation-permissions/protected/created-by-symlink";
 static const char *const public_dir = "/tmp/bug-dir-mutation-permissions/public";
 static const char *const readonly_dir = "/tmp/bug-dir-mutation-permissions/readonly";
+static const char *const readonly_existing =
+    "/tmp/bug-dir-mutation-permissions/readonly/existing";
 static const char *const protected_link =
     "/tmp/bug-dir-mutation-permissions/protected/public-link";
 static const char *const public_link_new =
@@ -91,6 +93,8 @@ static const char *const empty_path_source =
     "/tmp/bug-dir-mutation-permissions/empty-path-source";
 static const char *const empty_path_link =
     "/tmp/bug-dir-mutation-permissions/public/empty-path-link";
+static const char *const nonempty_empty_flag_link =
+    "/tmp/bug-dir-mutation-permissions/public/nonempty-empty-flag-link";
 static const char *const dirfd_existing =
     "/tmp/bug-dir-mutation-permissions/dirfd-parent/opened/existing";
 static const char *const dirfd_created_by_openat =
@@ -152,6 +156,8 @@ static void cleanup_dirfd_tree(void)
     remove_if_present(dirfd_created_by_openat);
     remove_if_present(dirfd_created_by_mkdirat);
     remove_if_present(dirfd_created_by_linkat);
+    remove_if_present(nonempty_empty_flag_link);
+    remove_if_present(readonly_existing);
     remove_if_present(dirfd_rename_source);
     remove_if_present(dirfd_rename_target);
     remove_if_present(dirfd_existing);
@@ -260,6 +266,35 @@ static int run_unprivileged_checks(void)
           "linkat rejects an unwritable parent");
 
     errno = 0;
+    check(linkat(AT_FDCWD, empty_path_source, AT_FDCWD, readonly_existing, 0) < 0
+              && errno == EEXIST,
+          "linkat reports an existing target before destination write permission");
+
+    int dirfd_dot = open(dirfd_root, O_RDONLY | O_DIRECTORY);
+    errno = 0;
+    check(dirfd_dot >= 0
+              && linkat(dirfd_dot, ".", AT_FDCWD,
+                        "/tmp/bug-dir-mutation-permissions/public/directory-link", 0)
+                         < 0
+              && errno == EPERM,
+          "linkat rejects a directory source before rechecking its dirfd parent");
+    if (dirfd_dot >= 0) {
+        close(dirfd_dot);
+    }
+
+    int opened_dot = dirfd >= 0 ? openat(dirfd, ".", O_RDONLY | O_DIRECTORY) : -1;
+    check(opened_dot >= 0, "openat accepts dot through an opened dirfd");
+    if (opened_dot >= 0) {
+        close(opened_dot);
+    }
+
+    errno = 0;
+    check(dirfd >= 0
+              && linkat(AT_FDCWD, empty_path_source, dirfd, ".", 0) < 0
+              && errno == EEXIST,
+          "linkat checks the dot destination before the dirfd parent");
+
+    errno = 0;
     check(unlinkat(AT_FDCWD, protected_file, 0) < 0 && errno == EACCES,
           "unlinkat rejects an unsearchable parent");
 
@@ -357,6 +392,13 @@ static int run_unprivileged_checks(void)
         check(access(empty_path_link, F_OK) < 0 && errno == ENOENT,
               "failed AT_EMPTY_PATH link leaves the destination unchanged");
     }
+
+    errno = 0;
+    check(linkat(AT_FDCWD, empty_path_source, AT_FDCWD,
+                 nonempty_empty_flag_link, AT_EMPTY_PATH) == 0,
+          "non-empty linkat path ignores AT_EMPTY_PATH capability requirement");
+    check(access(nonempty_empty_flag_link, F_OK) == 0,
+          "non-empty AT_EMPTY_PATH link creates the destination");
 
     check(create_file(sticky_child) == 0, "unprivileged user creates its own file");
     errno = 0;
@@ -546,6 +588,8 @@ int main(void)
     check(mkdir(public_dir, 0777) == 0, "create public directory");
     check(chmod(public_dir, 0777) == 0, "make public directory writable");
     check(mkdir(readonly_dir, 0555) == 0, "create searchable read-only directory");
+    check(create_file(readonly_existing) == 0,
+          "create existing target in searchable read-only directory");
     check(chmod(readonly_dir, 0555) == 0, "make read-only directory unwritable");
     check(create_file(source) == 0, "create hard-link source");
     check(create_file(empty_path_source) == 0, "create AT_EMPTY_PATH source");

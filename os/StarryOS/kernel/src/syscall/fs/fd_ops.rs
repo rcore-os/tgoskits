@@ -638,6 +638,16 @@ pub fn sys_openat2(
     };
     let mut options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     let result = with_fs(dirfd, |fs| {
+        // A final `.` names the already-open dirfd itself. Resolving it
+        // directly avoids manufacturing a lookup through the dirfd's parent,
+        // which may be intentionally inaccessible.
+        if path == "." {
+            let (location, _) = fs.resolve_with_search_checked(axfs_ng_vfs::path::Path::new(&path), |directory| {
+                fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
+            })?;
+            options.no_follow(true);
+            return Ok(options.open_loc(location)?);
+        }
         let (parent, name) = fs.resolve_parent_beneath_no_symlinks_checked(
             path.as_ref(),
             |directory| fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred),
