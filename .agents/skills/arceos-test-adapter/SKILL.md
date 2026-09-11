@@ -15,7 +15,7 @@ description: 适配或修复 ArceOS 测试用例以通过 `cargo xtask arceos te
 axtest target，也不得在 std 测试中用 fake runtime 代替真实运行时。
 
 用例的目标风险、必要性、缺陷敏感度与跨层去重先按
-[`test-quality`](../test-quality/SKILL.md) 判断；本技能只补充 ArceOS QEMU 的发现、配置和运行契约。
+[`test-quality`](../test-quality/SKILL.md) 判断；先复用或增强已有完整功能测试，不按参数、平台实例或 case 清单新增断言。本技能只补充 ArceOS QEMU 的发现、配置和运行契约，指定 case 是执行选择，不是测试设计粒度。
 
 上层 Starry kernel、Axvisor 和板卡测试包才直接持有 `axtest` 依赖，并通过
 `cargo xtask ktest qemu` 或 `cargo xtask ktest board` 运行。旧的目录式 `axtest` 组不由本
