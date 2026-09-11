@@ -255,8 +255,10 @@ struct MountUseState {
     normally_unmounted: bool,
 }
 
-/// Pins an active operation or open file against a normal unmount.
-/// Lazy detachment remains allowed while this guard is held.
+/// Owns one counted mount use, released automatically on drop.
+///
+/// Unlike an ordinary `Arc<Mountpoint>`, this guard prevents normal unmount
+/// while an operation or open file is active. Lazy detachment remains allowed.
 #[derive(Debug)]
 pub struct MountUseGuard {
     mountpoint: Arc<Mountpoint>,
@@ -336,10 +338,6 @@ impl Mountpoint {
         Ok(MountUseGuard {
             mountpoint: self.clone(),
         })
-    }
-
-    fn has_active_uses(&self) -> bool {
-        self.active_uses.lock().users != 0
     }
 
     #[cfg(test)]

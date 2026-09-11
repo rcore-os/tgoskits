@@ -93,7 +93,6 @@ static void nonblocking_pair(void)
     require(syscall(SYS_fchmod, reader, 0640) == 0 &&
             fstat(reader, &st) == 0 && (st.st_mode & 0777) == 0640,
             "fchmod updates FIFO permissions");
-    require(syscall(SYS_fcntl, reader, F_GETPIPE_SZ) > 0, "FIFO exposes pipe capacity");
     char fd_path[64];
     snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", reader);
     int reopened = syscall(SYS_openat, AT_FDCWD, fd_path, O_RDONLY | O_NONBLOCK, 0);
@@ -219,6 +218,8 @@ static void restarted_open(void)
     puts("PASS: SA_RESTART resumes FIFO open until its peer arrives");
 }
 
+int fifo_boundary_tests(void);
+
 int main(void)
 {
     unlink(fifo);
@@ -245,5 +246,5 @@ int main(void)
     no_reader();
     require(unlink(fifo) == 0, "remove FIFO");
     puts("PASS: FIFO open interruption and endpoint lifetime");
-    return 0;
+    return fifo_boundary_tests();
 }

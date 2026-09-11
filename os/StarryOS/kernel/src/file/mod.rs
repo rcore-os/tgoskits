@@ -632,24 +632,21 @@ pub(crate) struct FileDescriptorReservation {
 }
 
 impl FileDescriptorReservation {
-    fn reserve_in(table: Arc<RwLock<FileTable>>, limit: usize) -> StarryResult<Self> {
-        let fd = table
-            .write()
-            .reserve(limit)
-            .ok_or(StarryError::TooManyOpenFiles)?;
-        Ok(Self {
-            table,
-            fd: Some(fd),
-        })
-    }
-
     /// Reserves a slot in the originating fd table without exposing a file.
     pub(crate) fn new() -> StarryResult<Self> {
         let limit = current_user_task()
             .as_thread()
             .proc_data
             .rlimit_current(RLIMIT_NOFILE);
-        Self::reserve_in(current_fd_table(), limit as usize)
+        let table = current_fd_table();
+        let fd = table
+            .write()
+            .reserve(limit as usize)
+            .ok_or(StarryError::TooManyOpenFiles)?;
+        Ok(Self {
+            table,
+            fd: Some(fd),
+        })
     }
 
     pub(crate) const fn fd(&self) -> c_int {

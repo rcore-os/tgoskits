@@ -164,7 +164,7 @@ static void pending_open_busy(void)
     check(rmdir(mount_path) == 0, "remove mount point");
 }
 
-int main(void)
+int fifo_boundary_tests(void)
 {
     void (*cases[])(void) = {full_fd_table, shared_mount_identity, pending_open_busy};
     const char *names[] = {"FIFO EMFILE ordering", "FIFO mount aliases share channel", "FIFO pending-open mount busy"};

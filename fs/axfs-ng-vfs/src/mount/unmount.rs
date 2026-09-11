@@ -49,7 +49,8 @@ impl UnmountPlan {
     }
 
     fn has_active_uses(&self) -> bool {
-        self.targets().any(|mount| mount.has_active_uses())
+        self.targets()
+            .any(|mount| mount.active_uses.lock().users != 0)
     }
 
     fn has_same_targets(&self, expected: &Self) -> bool {
