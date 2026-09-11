@@ -764,7 +764,13 @@ fn fd_tables_contain_file(file: &Arc<dyn FileLike>) -> bool {
 
 fn notify_close_write(fd: &FileDescriptor) {
     let access = fd.inner.open_flags() & O_ACCMODE;
-    if (access == O_WRONLY || access == O_RDWR) && fd.inner.is::<File>() {
+    let filesystem_backed = fd.inner.is::<File>()
+        || fd
+            .inner
+            .downcast_ref::<Pipe>()
+            .and_then(Pipe::named_file)
+            .is_some();
+    if (access == O_WRONLY || access == O_RDWR) && filesystem_backed {
         let path = fd.inner.path();
         inotify::notify_close_write_path(path.as_ref());
     }

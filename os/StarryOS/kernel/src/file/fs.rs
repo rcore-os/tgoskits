@@ -75,6 +75,11 @@ pub fn resolve_fd(fd: c_int) -> StarryResult<ResolveAtResult> {
         // man "O_PATH": fstat(2) is in the allowed-operations list.
         // Fixes bug-open-path-fstat-ebadf.
         ResolveAtResult::File(file.inner().location().clone())
+    } else if let Some(file) = f
+        .downcast_ref::<super::Pipe>()
+        .and_then(super::Pipe::named_file)
+    {
+        ResolveAtResult::File(file.inner().location().clone())
     } else if let Some(dir) = f.downcast_ref::<Directory>() {
         ResolveAtResult::File(dir.inner().clone())
     } else {

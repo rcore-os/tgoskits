@@ -346,6 +346,11 @@ pub fn sys_fstatfs(
         directory.inner()
     } else if let Some(file) = file_like.downcast_ref::<File>() {
         file.inner().location()
+    } else if let Some(file) = file_like
+        .downcast_ref::<crate::file::Pipe>()
+        .and_then(crate::file::Pipe::named_file)
+    {
+        file.inner().location()
     } else if let Some(memfd) = file_like.downcast_ref::<Memfd>() {
         memfd.inner().inner().location()
     } else {
