@@ -785,3 +785,21 @@ backing 准备由 `mapping` 在进入 MM 锁前完成；`SharedMemoryObject::all
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
 | ioctl(RKNPU Submit) / aarch64 29 | [Rockchip Linux 77168c8d rknpu_job_wait](https://github.com/rockchip-linux/kernel/blob/77168c8d5ab82399f65a80e9f807b50ba37cf483/drivers/rknpu/rknpu_job.c#L193) | timeout 按毫秒解释，不应将 6000ms 请求在 7ms 时判为超时 | `sys_ioctl → card1::rknpu_driver_ioctl → ax-driver::rknpu::submit → submit_ioctrl → poll_until_ready` | 无法确认 | 单位换算的确定性红绿、std 6 项及同一板卡原用例通过；未证明完整 ioctl 或全部历史挂起根因 |
+
+### 5.40 Exec 的 robust 清理
+
+`do_execve` 原来在安装新 MM 后直接清空 `robust_list_head`，共享映射中的持锁 owner 因而没有收到 `FUTEX_OWNER_DIED`。现在 exit 和 exec 共用 `release_robust_futexes`，在旧 MM 仍可访问时执行既有 robust walk，再清空登记。exec 的非 leader 身份转交移到该清理之前，遵循固定 Linux `begin_new_exec → de_thread → exec_mmap → exec_mm_release → futex_exec_release` 的顺序；Linux 在 robust owner 比较前已经交换 TID，所以仍写着旧非 leader TID 的锁字不应被本线程清理。
+
+新增 `syscall-test-exec-robust` 使用共享映射保存锁字，通过两个管道把新映像保持在存活状态后再观察结果，避免退出时清理掩盖 exec 的遗漏。它覆盖普通 exec、`CLONE_VM | CLONE_VFORK` 共享 MM 和非 leader exec。非 leader 使用 `pthread_create`，因为客户机 musl 1.2.5 的公开 `clone()` 包装会在系统调用前拒绝 `CLONE_THREAD`；先前的 EINVAL 是测试准备失败，不是 Starry clone 缺陷。宿主静态 musl 的最终同一测试三项通过；宿主配置不是 Linux RT 验证。
+
+最终版测试在旧实现上普通和共享 MM 两项失败，锁字分别仍为 `0x80000003`、`0x80000004`；非 leader 原有行为继续通过。日志 `/tmp/pr2357-exec-robust-final-red.log`，最外层 xtask 返回 1。恢复修复后 x86_64 三项均通过，日志 `/tmp/pr2357-exec-robust-final-x86_64.log`。riscv64、aarch64、loongarch64 同一测试也均三项通过，日志 `/tmp/pr2357-exec-robust-final-<arch>.log`。本轮格式检查通过；提交后的 clippy 和完整回归由精确提交 CI 验证。
+
+本节仅修复清理入口和 TID/MM 交接顺序。`handle_futex_death` 仍用读后写更新锁字，可能覆盖并发设置的 WAITERS；Linux 使用可处理缺页的 cmpxchg 并重试。PI 标记和遍历错误处理、`clear_child_tid` 的 mm_users 条件、vfork 完成通知以及第 5.32 节 SHM/VMA 生命周期均未因此完成。X 表示 x86_64，G 表示 aarch64、riscv64、loongarch64。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| execve(普通 robust 清理) / X59、G221 | [v7.1 exec_mmap](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c#L837) | 在旧 MM 中清理登记的 robust owner，再替换映像 | `sys_execve → do_execve → release_robust_futexes → exit_robust_list`，每线程登记与旧 MM | 部分正确 | x86_64 普通和共享 MM 确定性红绿、四架构通过；原子更新及 PI 遗留问题见本节 |
+| execve(非 leader 身份转交) / X59、G221 | [v7.1 de_thread](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c#L987) | 先交换 TID；robust owner 比较使用交换后的可见 TID | `do_execve → transfer_pid_identity → release_robust_futexes`，进程 leader 身份和当前线程 | 无法确认 | 四架构与宿主非 leader 用例通过；本例未直接读取新映像 gettid/getpid，不能独立证明完整身份协议 |
+| execveat(robust 清理) / X322、G281 | [v7.1 exec_mm_release](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1502) | 使用同一旧 MM 清理协议 | `sys_execveat → do_execve → release_robust_futexes` | 无法确认 | 本次新回归直接使用 execve，尚无 execveat 独立入口证据 |
+| exit(robust 清理入口收敛) / X60、G93 | [v7.1 futex_cleanup](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/futex/core.c#L1407) | 清理 robust 登记后清空指针，再继续 MM release | `sys_exit → do_exit → release_robust_futexes` | 无法确认 | 保留既有 walk 顺序；尚待本次退出回归和 CI |
+| exit_group(robust 清理入口收敛) / X231、G94 | [v7.1 exit_mm_release](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1496) | 发布组退出后，各退出线程执行自己的 robust 清理 | `sys_exit_group → do_exit → release_robust_futexes` | 无法确认 | 本次入口收敛不证明全部组退出竞争 |

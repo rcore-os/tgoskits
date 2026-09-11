@@ -340,12 +340,26 @@ fn handle_futex_death(
     Ok(())
 }
 
-pub fn exit_robust_list(
+/// Releases registered robust locks before exit or exec discards the old MM.
+/// User-memory errors do not prevent the lifecycle change.
+pub(crate) fn release_robust_futexes(current: &UserTaskRef) {
+    let thread = current.as_thread();
+    let head = thread.robust_list_head() as *const RobustListHead;
+    if head.is_null() {
+        return;
+    }
+    if let Err(error) = exit_robust_list(current, thread, head) {
+        warn!("robust futex cleanup failed: {error}");
+    }
+    thread.set_robust_list_head(0);
+}
+
+fn exit_robust_list(
     current: &UserTaskRef,
     thr: &Thread,
     head: *const RobustListHead,
 ) -> crate::StarryResult<()> {
-    // Reference: https://elixir.bootlin.com/linux/v6.13.6/source/kernel/futex/core.c#L777
+    // Linux v7.1 kernel/futex/core.c: exit_robust_list and futex_cleanup.
 
     let mut limit = ROBUST_LIST_LIMIT;
 
@@ -466,12 +480,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // Robust futex ownership must be released before clone-child-tid wakes a
     // pthread joiner; otherwise userspace can observe thread exit before the
     // OWNER_DIED handoff has been written.
-    let head = thr.robust_list_head() as *const RobustListHead;
-    if !head.is_null()
-        && let Err(err) = exit_robust_list(&curr, thr, head)
-    {
-        warn!("exit robust list failed: {err:?}");
-    }
+    release_robust_futexes(&curr);
 
     let clear_child_tid = thr.clear_child_tid() as *mut u32;
     if clear_child_tid.vm_write(&curr, 0).is_ok() {
