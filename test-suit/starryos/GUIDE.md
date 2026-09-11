@@ -157,9 +157,9 @@ STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.012
 [`MIGRATION.md`](../../scripts/test/ltp-syscalls/MIGRATION.md) 与
 [`migration.csv`](../../scripts/test/ltp-syscalls/migration.csv)。该清单包含待审计项，
 不能把候选数量当成已经完成的迁移数量；每项迁移保留独立提交。已合入的 PR #2322
-处理了 13 个原程序（9 项部分替代、4 项无等效清理）。续迁批次另部分替代 7 个原程序，
-详细断言损失与失败记录见 [`NEXT.md`](../../scripts/test/ltp-syscalls/NEXT.md)。当前实际清单
-包含 84 个共同 LTP 用例，x86_64 另有 2 个旧入口用例；这是累计执行集合，两个 native
+处理了 13 个原程序（9 项部分替代、4 项无等效清理）。先前续迁批次另部分替代 7 个原程序；当前轮追加
+`bug-linkat-flags-symlink` 的 `linkat01` 部分替代并修复绝对目标路径的 `newdirfd` 语义，详细断言损失与失败记录见 [`NEXT.md`](../../scripts/test/ltp-syscalls/NEXT.md)。当前实际清单
+包含 85 个共同 LTP 用例，x86_64 另有 2 个旧入口用例；这是累计执行集合，两个 native
 隔离回归单独计数。IPv6 等先前失败项，以及本批 fcntl14/16 对应的原测试继续保留。
 
 `qemu/system/ltp-syscalls` 使用 rootfs 中固定的 Linux Test Project
