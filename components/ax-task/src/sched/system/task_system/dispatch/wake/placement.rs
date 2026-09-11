@@ -16,7 +16,14 @@ impl TaskSystem {
                 return self
                     .cpu_remotes
                     .get(target.as_usize())
-                    .filter(|remote| remote.accepts_placement())
+                    .filter(|remote| {
+                        // Linux is_cpu_allowed() keeps per-CPU kthreads on an
+                        // online but inactive CPU until hotplug parks them.
+                        // Only the registered timer worker may finish soft
+                        // work here; ordinary pinned tasks need active placement.
+                        remote.accepts_placement()
+                            || (remote.is_online() && remote.ktimer_worker() == Some(wakee.id()))
+                    })
                     .map(|_| target);
             }
             WakeTargetSelection::SchedulerClass => {}

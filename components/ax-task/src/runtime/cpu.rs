@@ -258,7 +258,8 @@ pub fn idle_offline_rejection() -> IdleOfflineRejection {
 /// borrow across both transitions. It never returns to scheduling while offline
 /// and does not implement platform power-off or an externally parked CPU.
 /// Returns `NotReady` while ordinary scheduler work must be drained first.
-/// `publish_work_after_drain` injects that real publication once for a regression.
+/// `publish_work_after_drain` injects scheduler work, then a timer notification
+/// after placement closes, to verify that the per-CPU worker can still drain.
 #[cfg(feature = "fault-injection")]
 pub fn probe_idle_cpu_round_trip(publish_work_after_drain: bool) -> Result<(), TaskError> {
     use crate::runtime::context::{RuntimeIrqGuard, runtime_current_cpu_mut, runtime_task_system};
@@ -275,7 +276,18 @@ pub fn probe_idle_cpu_round_trip(publish_work_after_drain: bool) -> Result<(), T
         cpu.request_scheduler_work();
     }
     record_idle_offline_rejection(IdleOfflineRejection::Unclassified);
-    system.take_cpu_offline(cpu.as_mut())?;
+    let offline = system.take_cpu_offline(cpu.as_mut());
+    if publish_work_after_drain {
+        assert!(
+            matches!(offline, Err(TaskError::NotReady)),
+            "owner work must defer CPU offline: {offline:?}"
+        );
+        assert_eq!(cpu.remote().lifecycle_state(), CpuLifecycleState::Inactive);
+        // A timer IRQ may publish soft work after placement closes. The fixed
+        // worker must still wake, drain the event, and park before final offline.
+        cpu.remote().publish_ktimer_work();
+    }
+    offline?;
     assert_eq!(cpu.remote().lifecycle_state(), CpuLifecycleState::Offline);
     assert!(system.cpu_remote(cpu.owner()).is_none());
     // Returning an error here would strand the executing idle owner offline.

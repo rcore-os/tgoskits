@@ -160,7 +160,8 @@ fn offline_does_not_lock_global_mm() {
     assert_eq!(
         result,
         Some(true),
-        "CPU offline must not acquire the global kernel MM lock"
+        "CPU offline must drain owner work while the global kernel MM lock is held: {:?}",
+        ax_task::runtime::cpu::idle_offline_rejection()
     );
 }
 

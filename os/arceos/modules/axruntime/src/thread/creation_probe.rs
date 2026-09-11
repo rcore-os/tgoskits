@@ -133,8 +133,8 @@ pub fn request_idle_cpu_round_trip(cpu: usize) -> Result<(), TaskError> {
     request_idle_probe(cpu, 0)
 }
 
-/// Publishes scheduler work after idle's drain, before the offline admission.
-/// The owner must service that work before attempting the lifecycle transition.
+/// Publishes scheduler work after idle's drain, then timer work once inactive.
+/// The owner must still wake its fixed timer worker and park it before offline.
 pub fn request_idle_cpu_round_trip_after_work(cpu: usize) -> Result<(), TaskError> {
     request_idle_probe(cpu, IDLE_AFTER_DRAIN)
 }
