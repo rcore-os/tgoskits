@@ -322,22 +322,87 @@ fn handle_futex_death(
     // After non-leader execve, that value is the thread's active-namespace TID,
     // not its root-namespace TID or scheduler task id.
     let owner_tid = thr.user_tid().get() & FUTEX_TID_MASK;
-    let value = futex_word.vm_read(current)?;
-    let owner = value & FUTEX_TID_MASK;
+    loop {
+        match update_robust_owner_nofault(futex_word, owner_tid, pending) {
+            Ok(wake) => {
+                if wake {
+                    wake_robust_futex(&thr.proc_data, address);
+                }
+                return Ok(());
+            }
+            Err(RobustOwnerError::ReadFault) => {
+                crate::mm::fault_in_user_u32_read(current, futex_word)?;
+            }
+            Err(RobustOwnerError::WriteFault) => {
+                crate::mm::fault_in_user_u32_write(current, futex_word)?;
+            }
+            Err(RobustOwnerError::Retry) => yield_now(),
+        }
+    }
+}
 
-    if pending && owner == 0 {
-        wake_robust_futex(&thr.proc_data, address);
-        return Ok(());
-    }
+#[derive(Debug, thiserror::Error)]
+enum RobustOwnerError {
+    #[error("robust owner read requires fault resolution")]
+    ReadFault,
+    #[error("robust owner update requires write fault resolution")]
+    WriteFault,
+    #[error("robust owner update exhausted bounded atomic retries")]
+    Retry,
+}
 
-    if owner != owner_tid {
-        return Ok(());
+/// Completes the nonfaulting part of Linux handle_futex_death. The caller
+/// resolves read/write faults and reschedules after LL/SC exhaustion.
+fn update_robust_owner_nofault(
+    word: *mut u32,
+    owner_tid: u32,
+    pending: bool,
+) -> Result<bool, RobustOwnerError> {
+    loop {
+        let value =
+            crate::mm::read_user_u32_nofault(word).map_err(|_| RobustOwnerError::ReadFault)?;
+        let owner = value & FUTEX_TID_MASK;
+        if pending && owner == 0 {
+            return Ok(true);
+        }
+        if owner != owner_tid {
+            return Ok(false);
+        }
+        #[cfg(axtest)]
+        robust_waiter_publication_probe(word);
+        let observed = crate::mm::compare_exchange_user_u32_nofault(
+            word,
+            value,
+            (value & FUTEX_WAITERS) | FUTEX_OWNER_DIED,
+        )
+        .map_err(|error| match error {
+            ax_cpu::UserAtomicError::Fault => RobustOwnerError::WriteFault,
+            ax_cpu::UserAtomicError::Retry => RobustOwnerError::Retry,
+        })?;
+        if observed == value {
+            return Ok(value & FUTEX_WAITERS != 0);
+        }
+        // Like Linux's retry label, reread and revalidate ownership. In
+        // particular, never overwrite a WAITERS publication or a new owner.
     }
-    futex_word.vm_write(current, (value & FUTEX_WAITERS) | FUTEX_OWNER_DIED)?;
-    if value & FUTEX_WAITERS != 0 {
-        wake_robust_futex(&thr.proc_data, address);
+}
+
+// Inject exactly one user-side WAITERS publication after the kernel read.
+// The test uses a real mapped word and the runtime's MM/scheduler protocol.
+#[cfg(axtest)]
+static ROBUST_WAITER_PUBLICATION: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(axtest)]
+fn robust_waiter_publication_probe(word: *mut u32) {
+    use core::sync::atomic::Ordering;
+    if ROBUST_WAITER_PUBLICATION
+        .compare_exchange(word.addr(), 0, Ordering::AcqRel, Ordering::Relaxed)
+        .is_ok()
+    {
+        crate::mm::atomic_update_user_u32_nofault(word, ax_cpu::UserAtomicU32Op::Or, FUTEX_WAITERS)
+            .expect("the probe word must already be writable");
     }
-    Ok(())
 }
 
 /// Releases registered robust locks before exit or exec discards the old MM.
@@ -797,4 +862,90 @@ mod tests {
     fn decode_wait_status_rules_hold() {
         assert!(super::decode_wait_status_rules_hold_for_test());
     }
+}
+
+#[cfg(axtest)]
+#[axtest::axtest]
+fn robust_owner_death_preserves_concurrent_waiters() {
+    use core::sync::atomic::Ordering;
+
+    use ax_memory_addr::VirtAddr;
+    use ax_runtime::{
+        hal::paging::MappingFlags,
+        thread::{UserContextOptions, prepare_user_thread},
+    };
+
+    use crate::mm::{AddrSpace, MappingOperation, MmHandle, copy_from_kernel};
+
+    let address = VirtAddr::from(0x10000);
+    let mut aspace = AddrSpace::new_empty(address, 0x10000).unwrap();
+    copy_from_kernel(&mut aspace).unwrap();
+    aspace
+        .map(
+            address,
+            4096,
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+            true,
+            MappingOperation::new_alloc(address, 4096, "robust-word"),
+        )
+        .unwrap();
+    let readonly = address + 4096;
+    aspace
+        .map(
+            readonly,
+            4096,
+            MappingFlags::READ | MappingFlags::USER,
+            true,
+            MappingOperation::new_alloc(readonly, 4096, "robust-readonly"),
+        )
+        .unwrap();
+    let mm = MmHandle::from_arc(Arc::new(crate::sync::Mutex::new(aspace))).unwrap();
+    let options = UserContextOptions::new(mm.scheduler_address_space().unwrap());
+    // SAFETY: this entry accesses only the mapped test word. The prepared
+    // runtime context owns this MM through completion of its execution.
+    let task = unsafe {
+        prepare_user_thread(
+            super::kernel_thread_builder("robust-word".into()),
+            || {
+                let word = 0x10000 as *mut u32;
+                crate::mm::atomic_update_user_u32_nofault(word, ax_cpu::UserAtomicU32Op::Set, 17)
+                    .unwrap();
+                ROBUST_WAITER_PUBLICATION.store(word.addr(), Ordering::Release);
+                let wake = update_robust_owner_nofault(word, 17, false).unwrap();
+                assert_eq!(ROBUST_WAITER_PUBLICATION.load(Ordering::Acquire), 0);
+                assert_eq!(
+                    crate::mm::read_user_u32_nofault(word).unwrap(),
+                    FUTEX_OWNER_DIED | FUTEX_WAITERS,
+                    "owner death must preserve WAITERS published after the initial read"
+                );
+                assert!(wake, "the newly published waiter must receive a wake");
+                let dead = FUTEX_OWNER_DIED | FUTEX_WAITERS;
+                let compare = crate::mm::compare_exchange_user_u32_nofault;
+                assert_eq!(compare(word, 17, 9), Ok(dead));
+                assert_eq!(crate::mm::read_user_u32_nofault(word).unwrap(), dead);
+                assert_eq!(compare(word, dead, u32::MAX), Ok(dead));
+                assert_eq!(compare(word, u32::MAX, 0), Ok(u32::MAX));
+                // The first address faults at the store-exclusive/cmpxchg;
+                // the second faults at the initial user access.
+                assert_eq!(
+                    compare(0x11000 as *mut u32, 0, 1),
+                    Err(ax_cpu::UserAtomicError::Fault)
+                );
+                assert_eq!(
+                    compare(0x12000 as *mut u32, 0, 1),
+                    Err(ax_cpu::UserAtomicError::Fault)
+                );
+                assert_eq!(
+                    crate::mm::read_user_u32_nofault(0x11000 as *const u32).unwrap(),
+                    0
+                );
+            },
+            options,
+        )
+    }
+    .unwrap()
+    .stage()
+    .unwrap()
+    .activate();
+    assert_eq!(task.join().unwrap(), 0);
 }

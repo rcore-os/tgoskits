@@ -13,7 +13,7 @@ use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{
     cpu::{
         UserAccessError, UserAccessType, UserAtomicError, UserAtomicU32Op, asm::user_copy,
-        trap::PageFaultFlags, user_atomic_u32, user_read_u32,
+        trap::PageFaultFlags, user_atomic_u32, user_cmpxchg_u32, user_read_u32,
     },
     paging::MappingFlags,
 };
@@ -266,6 +266,20 @@ impl UserAccess<NoFault> {
         // SAFETY: construction checked alignment and the architecture user
         // range. The nofault exception table handles a concurrent unmap.
         unsafe { user_read_u32(self.range.start.as_usize() as *const u32) }
+    }
+
+    fn cmpxchg_u32(self, expected: u32, replacement: u32) -> Result<u32, UserAtomicError> {
+        debug_assert_eq!(self.intent, UserAccessIntent::ReadWrite);
+        // SAFETY: construction checked alignment and the active user range.
+        // The architecture exception table handles faults and concurrent unmaps;
+        // no Rust reference to user memory is constructed or retained.
+        unsafe {
+            user_cmpxchg_u32(
+                self.range.start.as_usize() as *mut u32,
+                expected,
+                replacement,
+            )
+        }
     }
 
     fn atomic_u32(self, operation: UserAtomicU32Op, argument: u32) -> Result<u32, UserAtomicError> {
@@ -602,6 +616,18 @@ pub fn atomic_update_user_u32_nofault(
     UserAccess::<NoFault>::aligned_u32(ptr.addr(), UserAccessIntent::ReadWrite)
         .ok_or(UserAtomicError::Fault)?
         .atomic_u32(operation, argument)
+}
+
+/// Returns the observed user word, replacing it only if it equals `expected`.
+/// Fault handling and contention rescheduling belong to the task-context caller.
+pub fn compare_exchange_user_u32_nofault(
+    ptr: *mut u32,
+    expected: u32,
+    replacement: u32,
+) -> Result<u32, UserAtomicError> {
+    UserAccess::<NoFault>::aligned_u32(ptr.addr(), UserAccessIntent::ReadWrite)
+        .ok_or(UserAtomicError::Fault)?
+        .cmpxchg_u32(expected, replacement)
 }
 
 pub fn read_user_u32_nofault(ptr: *const u32) -> Result<u32, UserAccessError> {
