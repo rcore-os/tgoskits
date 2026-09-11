@@ -263,8 +263,10 @@ impl TaskAddressSpace {
     pub fn new(root: PhysAddr, owner: impl Send + Sync + 'static) -> Result<Self, TaskError> {
         Self::new_with_owner(
             root,
-            Arc::new(AddressSpaceCpuState::new(root)),
-            Box::new(RetainedTaskAddressSpaceOwner(owner)),
+            super::allocation::try_arc(AddressSpaceCpuState::new(root))
+                .map_err(|status| TaskError::RuntimeFailure(status as u32))?,
+            super::allocation::try_box(RetainedTaskAddressSpaceOwner(owner))
+                .map_err(|status| TaskError::RuntimeFailure(status as u32))?,
         )
     }
 
@@ -283,11 +285,12 @@ impl TaskAddressSpace {
         Self::new_with_owner(
             root,
             cpu_state,
-            Box::new(DetachableTaskAddressSpaceOwner {
+            super::allocation::try_box(DetachableTaskAddressSpaceOwner {
                 owner,
                 detached: core::sync::atomic::AtomicBool::new(false),
                 detach,
-            }),
+            })
+            .map_err(|status| TaskError::RuntimeFailure(status as u32))?,
         )
     }
 
@@ -301,7 +304,8 @@ impl TaskAddressSpace {
         Self::new_with_owner(
             root,
             cpu_state,
-            Box::new(ManagedTaskAddressSpaceOwner(owner)),
+            super::allocation::try_box(ManagedTaskAddressSpaceOwner(owner))
+                .map_err(|status| TaskError::RuntimeFailure(status as u32))?,
         )
     }
 
@@ -310,21 +314,27 @@ impl TaskAddressSpace {
         cpu_state: Arc<AddressSpaceCpuState>,
         owner: Box<dyn TaskAddressSpaceOwner>,
     ) -> Result<Self, TaskError> {
+        #[cfg(feature = "fault-injection")]
+        if super::creation_probe::record(super::creation_probe::CreationEvent::Mm) {
+            return Err(TaskError::RuntimeFailure(RuntimeStatus::NoMemory as u32));
+        }
         if root.as_usize() == 0 || !cpu_state.matches_root(root) {
             return Err(TaskError::InvalidRuntimeHandle);
         }
-        let address_space = Box::new(RuntimeAddressSpace {
+        let address_space = super::allocation::try_box(RuntimeAddressSpace {
             active_leases: AtomicUsize::new(0),
             reclaim_waiting: AtomicUsize::new(0),
             cpu_state,
             _owner: owner,
-        });
+        })
+        .map_err(|status| TaskError::RuntimeFailure(status as u32))?;
         let raw = Box::into_raw(address_space).expose_provenance();
         // SAFETY: the fresh allocation transfers its unique destruction right
         // into this move-only token.
         Ok(Self(Some(unsafe { AddressSpaceToken::from_raw(raw) })))
     }
 
+    #[cfg(any(feature = "uspace", test))]
     pub(super) fn handle(&self) -> AddressSpaceHandle {
         self.0
             .as_ref()
@@ -730,6 +740,8 @@ pub(super) fn prepare_runtime_address_space_switch<'pin, 'cpu>(
     same_address_space: bool,
     phase: AddressSpaceTransitionPhase,
 ) -> Result<PreparedAddressSpaceSwitch<'pin, 'cpu>, RuntimeStatus> {
+    #[cfg(feature = "fault-injection")]
+    super::creation_probe::record_mm_switch(!previous_selected.is_none(), !next_selected.is_none());
     #[cfg(feature = "uspace")]
     let pin = _pin;
     #[cfg(feature = "uspace")]

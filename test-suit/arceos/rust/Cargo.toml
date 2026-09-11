@@ -17,9 +17,11 @@ task-yield = ["task-runtime"]
 sched-rr = ["task-runtime", "ax-std/alloc"]
 sched-cfs = ["task-runtime", "ax-std/alloc"]
 task-affinity = ["task-runtime"]
+# Kept outside `all`: device workers have no CPU hotplug park contract.
+task-cpu-lifecycle = ["task-runtime", "dep:ax-runtime", "ax-runtime/fault-injection", "ax-std/paging", "dep:ax-mm"]
 task-fair-idle-pull = ["task-runtime", "ax-std/alloc"]
 task-fair-wake-idle-sibling = ["task-runtime"]
-task-wait-queue = ["task-runtime"]
+task-wait-queue = ["task-runtime", "dep:ax-runtime", "ax-runtime/fault-injection", "ax-std/tls"]
 task-wait-queue-remote-wake = ["task-runtime", "ax-std/ipi"]
 task-ipi = ["task-runtime", "ax-std/alloc", "ax-std/ipi"]
 task-irq = ["task-runtime"]
@@ -27,7 +29,7 @@ task-kernel-timer = ["task-runtime"]
 task-executor = ["task-runtime"]
 task-tls = ["task-runtime", "ax-std/tls", "ax-std/alloc"]
 task-parallel = ["task-runtime", "dep:rand", "ax-std/alloc"]
-task-pi-mutex = ["task-runtime"]
+task-pi-mutex = ["task-runtime", "dep:ax-task", "ax-task/fault-injection"]
 task-preempt-guard = ["task-runtime"]
 task-priority = ["task-runtime", "ax-std/alloc"]
 task-rt-policy = ["task-runtime", "ax-std/alloc"]
@@ -88,6 +90,9 @@ all = [
 ]
 
 [dependencies]
+ax-mm = { workspace = true, optional = true }
+ax-runtime = { workspace = true, optional = true }
+ax-task = { workspace = true, optional = true }
 ax-cpu = { workspace = true, optional = true }
 ax-driver = { workspace = true, optional = true }
 ax-hal = { workspace = true, optional = true }

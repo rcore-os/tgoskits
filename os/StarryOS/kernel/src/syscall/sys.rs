@@ -1089,12 +1089,19 @@ fn sync_seccomp_to_thread_group(current: &crate::task::UserTaskRef) {
     let curr = current;
     let thread = curr.as_thread();
     let state = thread.seccomp_state();
+    let no_new_privs = thread.no_new_privs();
     for tid in thread.proc_data.proc.threads() {
         if tid == thread.tid_number() {
             continue;
         }
         if let Ok(task) = get_task_by_number(tid) {
-            task.as_thread().set_seccomp_state(state.clone());
+            let peer = task.as_thread();
+            // Linux seccomp_sync_threads carries NNP with the filter. Publish
+            // it before set_seccomp_state enables the peer's syscall work.
+            if no_new_privs {
+                peer.set_no_new_privs();
+            }
+            peer.set_seccomp_state(state.clone());
         }
     }
 }
@@ -1114,6 +1121,7 @@ pub fn sys_seccomp(
             if flags != 0 || !args.is_null() {
                 return Err(StarryError::InvalidInput);
             }
+            let _update = current.as_thread().proc_data.thread_group_update();
             current.as_thread().install_seccomp_strict()?;
         }
         SECCOMP_SET_MODE_FILTER => {
@@ -1121,6 +1129,7 @@ pub fn sys_seccomp(
             let filter = read_seccomp_filter(current, args)?;
             let curr = current;
             let thread = curr.as_thread();
+            let _update = thread.proc_data.thread_group_update();
             thread.append_seccomp_filter(filter)?;
             if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 {
                 sync_seccomp_to_thread_group(current);

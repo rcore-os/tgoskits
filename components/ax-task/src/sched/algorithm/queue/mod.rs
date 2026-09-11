@@ -145,21 +145,24 @@ pub(crate) struct RunQueue {
 }
 
 impl RunQueue {
-    pub(crate) fn configured(deadline_max_bw_scaled: u64, thread_capacity: usize) -> Self {
-        Self {
+    pub(crate) fn configured(
+        deadline_max_bw_scaled: u64,
+        thread_capacity: usize,
+    ) -> Result<Self, crate::thread::TaskError> {
+        Ok(Self {
             current: None,
             stop: None,
-            deadline: DeadlineRunQueue::new(deadline_max_bw_scaled, thread_capacity),
+            deadline: DeadlineRunQueue::new(deadline_max_bw_scaled, thread_capacity)?,
             rt: RealtimeRunQueue::new(),
-            fair: FairRunQueue::new(),
-            membership: Vec::new(),
+            fair: FairRunQueue::new(thread_capacity)?,
+            membership: crate::thread::allocation::empty_slots(thread_capacity)?,
             fixed_placement_demand: 0,
             balance_scan_epoch: 0,
             next_sequence: 0,
             nr_running: 0,
             publication_dirty: true,
             detached_current_publication: None,
-        }
+        })
     }
 
     pub(crate) fn take_publication_dirty(&mut self) -> bool {

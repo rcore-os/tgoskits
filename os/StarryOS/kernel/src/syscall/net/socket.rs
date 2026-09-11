@@ -299,44 +299,57 @@ pub fn sys_socketpair(
     fds: UserPtr<[i32; 2]>,
 ) -> StarryResult<isize> {
     debug!("sys_socketpair <= domain: {domain}, ty: {raw_ty}, proto: {proto}");
-    let ty = raw_ty & 0xFF;
-
-    if domain != AF_UNIX {
-        return Err(StarryError::from(Errno::EAFNOSUPPORT));
+    if raw_ty & !(SOCK_TYPE_MASK | SOCK_FLAGS_MASK) != 0 {
+        return Err(StarryError::InvalidInput);
     }
-
-    let credentials = Socket::current_unix_credentials();
-    let (sock1, sock2) = match ty {
-        SOCK_STREAM => {
-            let (sock1, sock2) = StreamTransport::new_pair(credentials);
-            (UnixSocket::new(sock1), UnixSocket::new(sock2))
-        }
-        SOCK_DGRAM => {
-            let (sock1, sock2) = DgramTransport::new_pair(credentials);
-            (UnixSocket::new(sock1), UnixSocket::new(sock2))
-        }
-        SOCK_SEQPACKET => {
-            let (sock1, sock2) = DgramTransport::new_pair_seqpacket(credentials);
-            (UnixSocket::new(sock1), UnixSocket::new(sock2))
-        }
-        _ => {
-            warn!("Unsupported socketpair type: {ty}");
-            return Err(StarryError::from(Errno::ESOCKTNOSUPPORT));
-        }
-    };
-    let sock1 = Socket::new(sock1.into(), AF_UNIX);
-    let sock2 = Socket::new(sock2.into(), AF_UNIX);
-
-    if raw_ty & O_NONBLOCK != 0 {
-        sock1.set_nonblocking(true)?;
-        sock2.set_nonblocking(true)?;
-    }
+    let ty = raw_ty & SOCK_TYPE_MASK;
     let cloexec = raw_ty & O_CLOEXEC != 0;
+    let [first, second] = crate::file::prepare_file_pair(
+        |numbers| {
+            // Linux publishes each number separately before socket creation.
+            // A fault on the second output preserves the first user write.
+            let output = fds.cast::<i32>();
+            output.write(current, numbers[0])?;
+            UserPtr::from(output.as_ptr().wrapping_add(1)).write(current, numbers[1])
+        },
+        || {
+            if domain != AF_UNIX {
+                return Err(StarryError::from(Errno::EAFNOSUPPORT));
+            }
 
-    let first = crate::file::prepare_file_like(alloc::sync::Arc::new(sock1), cloexec)?;
-    let second = crate::file::prepare_file_like(alloc::sync::Arc::new(sock2), cloexec)?;
-    // Both fd slots stay reserved until the complete user result is visible.
-    fds.write(current, [first.fd(), second.fd()])?;
+            let credentials = Socket::current_unix_credentials();
+            let (sock1, sock2) = match ty {
+                SOCK_STREAM => {
+                    let (sock1, sock2) = StreamTransport::new_pair(credentials);
+                    (UnixSocket::new(sock1), UnixSocket::new(sock2))
+                }
+                SOCK_DGRAM => {
+                    let (sock1, sock2) = DgramTransport::new_pair(credentials);
+                    (UnixSocket::new(sock1), UnixSocket::new(sock2))
+                }
+                SOCK_SEQPACKET => {
+                    let (sock1, sock2) = DgramTransport::new_pair_seqpacket(credentials);
+                    (UnixSocket::new(sock1), UnixSocket::new(sock2))
+                }
+                _ => {
+                    warn!("Unsupported socketpair type: {ty}");
+                    return Err(StarryError::from(Errno::ESOCKTNOSUPPORT));
+                }
+            };
+            let sock1 = Socket::new(sock1.into(), AF_UNIX);
+            let sock2 = Socket::new(sock2.into(), AF_UNIX);
+
+            if raw_ty & O_NONBLOCK != 0 {
+                sock1.set_nonblocking(true)?;
+                sock2.set_nonblocking(true)?;
+            }
+            Ok([
+                alloc::sync::Arc::try_new(sock1).map_err(|_| StarryError::NoMemory)?,
+                alloc::sync::Arc::try_new(sock2).map_err(|_| StarryError::NoMemory)?,
+            ])
+        },
+        cloexec,
+    )?;
     first.install();
     second.install();
     Ok(0)

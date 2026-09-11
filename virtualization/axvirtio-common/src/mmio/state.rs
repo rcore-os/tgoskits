@@ -514,3 +514,198 @@ fn combine_addr(current: usize, half: u32, low: bool) -> usize {
     };
     combined as usize
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::{sync::Arc, vec};
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    use axvm_types::{AccessWidth, GuestPhysAddr};
+
+    use super::*;
+    use crate::{GuestMemory, NoGuestMemoryAccessor, VirtioResult};
+
+    /// Guest-memory implementation that re-enters the MMIO queue state on its
+    /// first access, making the callback/transport interleaving deterministic.
+    struct ReentrantMemory {
+        on_access: Arc<dyn Fn() + Send + Sync>,
+    }
+
+    impl GuestMemory for ReentrantMemory {
+        fn read(&mut self, _guest_addr: GuestPhysAddr, data: &mut [u8]) -> VirtioResult<()> {
+            (self.on_access)();
+            data.fill(0);
+            Ok(())
+        }
+
+        fn write(&mut self, _guest_addr: GuestPhysAddr, _data: &[u8]) -> VirtioResult<()> {
+            (self.on_access)();
+            Ok(())
+        }
+    }
+
+    struct PanicMemory;
+
+    impl GuestMemory for PanicMemory {
+        fn read(&mut self, _guest_addr: GuestPhysAddr, _data: &mut [u8]) -> VirtioResult<()> {
+            panic!("QUEUE_READY=0 must not probe guest memory");
+        }
+
+        fn write(&mut self, _guest_addr: GuestPhysAddr, _data: &[u8]) -> VirtioResult<()> {
+            panic!("QUEUE_READY=0 must not write guest memory");
+        }
+    }
+
+    struct AcceptMemory;
+
+    impl GuestMemory for AcceptMemory {
+        fn read(&mut self, _guest_addr: GuestPhysAddr, data: &mut [u8]) -> VirtioResult<()> {
+            data.fill(0);
+            Ok(())
+        }
+
+        fn write(&mut self, _guest_addr: GuestPhysAddr, _data: &[u8]) -> VirtioResult<()> {
+            Ok(())
+        }
+    }
+
+    fn configured_state() -> Arc<VirtioMmioState<NoGuestMemoryAccessor>> {
+        const BASE: usize = 0x0a00_0000;
+        const LENGTH: usize = 0x200;
+
+        let queue = VirtioQueue::new(0, 4, Arc::new(NoGuestMemoryAccessor));
+        let state = Arc::new(VirtioMmioState::new(
+            GuestPhysAddr::from(BASE),
+            LENGTH,
+            2,
+            vc::VIRTIO_VENDOR_ID,
+            0,
+            vec![queue],
+        ));
+        for (register, value) in [
+            (vc::VIRTIO_MMIO_QUEUE_SEL, 0),
+            (vc::VIRTIO_MMIO_QUEUE_NUM, 4),
+            (vc::VIRTIO_MMIO_QUEUE_DESC_LOW, 0x1000),
+            (vc::VIRTIO_MMIO_QUEUE_AVAIL_LOW, 0x2000),
+            (vc::VIRTIO_MMIO_QUEUE_USED_LOW, 0x3000),
+        ] {
+            state
+                .mmio_write(
+                    GuestPhysAddr::from(BASE + register),
+                    AccessWidth::Dword,
+                    value,
+                )
+                .unwrap();
+        }
+        state
+    }
+
+    #[test]
+    fn queue_ready_zero_cancels_without_guest_memory_probe() {
+        const BASE: usize = 0x0a00_0000;
+
+        let state = configured_state();
+        assert!(
+            state.queues.lock_irqsave()[0]
+                .begin_ready_preparation()
+                .is_some()
+        );
+        let mut memory = PanicMemory;
+        state
+            .mmio_write_with_memory(
+                GuestPhysAddr::from(BASE + vc::VIRTIO_MMIO_QUEUE_READY),
+                AccessWidth::Dword,
+                0,
+                &mut memory,
+            )
+            .unwrap();
+
+        assert_eq!(
+            state
+                .mmio_read(
+                    GuestPhysAddr::from(BASE + vc::VIRTIO_MMIO_QUEUE_READY),
+                    AccessWidth::Dword,
+                )
+                .unwrap(),
+            MmioReadOutcome::Standard(0)
+        );
+
+        let mut memory = AcceptMemory;
+        state
+            .mmio_write_with_memory(
+                GuestPhysAddr::from(BASE + vc::VIRTIO_MMIO_QUEUE_READY),
+                AccessWidth::Dword,
+                1,
+                &mut memory,
+            )
+            .unwrap();
+        assert_eq!(
+            state
+                .mmio_read(
+                    GuestPhysAddr::from(BASE + vc::VIRTIO_MMIO_QUEUE_READY),
+                    AccessWidth::Dword,
+                )
+                .unwrap(),
+            MmioReadOutcome::Standard(1),
+            "QUEUE_READY=0 must release a prior preparation for retry"
+        );
+    }
+
+    #[test]
+    fn queue_ready_rejects_reentrant_configuration_changes() {
+        const BASE: usize = 0x0a00_0000;
+
+        let state = configured_state();
+
+        // The callback changes the live layout only when it can re-enter the
+        // queue lock. The old hold-the-lock implementation therefore leaves
+        // the original layout unchanged and incorrectly publishes READY.
+        let callback_attempted = Arc::new(AtomicBool::new(false));
+        let callback_reentered = Arc::new(AtomicBool::new(false));
+        let state_for_callback = Arc::clone(&state);
+        let attempted_for_callback = Arc::clone(&callback_attempted);
+        let reentered_for_callback = Arc::clone(&callback_reentered);
+        let mut memory = ReentrantMemory {
+            on_access: Arc::new(move || {
+                if attempted_for_callback.swap(true, Ordering::AcqRel) {
+                    return;
+                }
+                let Some(mut queues) = state_for_callback.queues.try_lock_irqsave() else {
+                    return;
+                };
+                queues[0]
+                    .set_used_ring_addr(GuestPhysAddr::from(0x4000))
+                    .unwrap();
+                reentered_for_callback.store(true, Ordering::Release);
+            }),
+        };
+
+        state
+            .mmio_write_with_memory(
+                GuestPhysAddr::from(BASE + vc::VIRTIO_MMIO_QUEUE_READY),
+                AccessWidth::Dword,
+                1,
+                &mut memory,
+            )
+            .unwrap();
+
+        assert!(
+            callback_reentered.load(Ordering::Acquire),
+            "guest-memory callback must run after the queue lock is released"
+        );
+        assert_eq!(
+            state
+                .mmio_read(
+                    GuestPhysAddr::from(BASE + vc::VIRTIO_MMIO_QUEUE_READY),
+                    AccessWidth::Dword,
+                )
+                .unwrap(),
+            MmioReadOutcome::Standard(0),
+            "a configuration change during validation must prevent stale ready publication"
+        );
+        assert_eq!(
+            state.queues_lock()[0].used_ring_addr,
+            GuestPhysAddr::from(0x4000)
+        );
+    }
+}

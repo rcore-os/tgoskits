@@ -7,10 +7,7 @@ use crate::{
         resource::{
             AddressSpaceHandle, AddressSpaceToken, ExecutionContextHandle, StackHandle, TlsHandle,
         },
-        service::{
-            SchedulerTickCpuTime, SchedulerTickGate, SchedulerTickTaskWork,
-            SchedulerTickWorkDisposition,
-        },
+        service::{SchedulerTickCpuTime, SchedulerTickGate, SchedulerTickTaskWork},
         task_runtime,
     },
     sched::{CpuId, SchedulePolicy},
@@ -159,6 +156,22 @@ impl CpuSet {
             topology_len: cpu_count,
             allowed_count: cpu_count,
         }
+    }
+
+    pub(crate) fn try_all(cpu_count: usize) -> Result<Self, super::TaskError> {
+        let mut words =
+            crate::thread::allocation::try_vec(cpu_count.div_ceil(Self::BITS_PER_WORD))?;
+        words.resize(cpu_count.div_ceil(Self::BITS_PER_WORD), usize::MAX);
+        if let Some(last) = words.last_mut()
+            && !cpu_count.is_multiple_of(Self::BITS_PER_WORD)
+        {
+            *last = (1usize << (cpu_count % Self::BITS_PER_WORD)) - 1;
+        }
+        Ok(Self {
+            words,
+            topology_len: cpu_count,
+            allowed_count: cpu_count,
+        })
     }
 
     /// Creates an empty CPU set for a topology.
@@ -430,69 +443,11 @@ impl ThreadExtension {
         self.ops
     }
 
-    /// Returns the callback used to observe running-thread base-policy changes.
-    pub const fn running_policy_applied_hook(&self) -> Option<RunningPolicyAppliedHook> {
-        self.running_policy_applied_hook
-    }
-
-    /// Forwards a running-thread base-policy change to this extension.
-    ///
-    /// Returns `false` when this extension did not register such a hook.
-    ///
-    /// # Safety
-    ///
-    /// The caller must retain this extension, invoke the callback only after
-    /// scheduler metadata locks are released, and preserve the hook's bounded,
-    /// non-blocking context contract.
-    pub unsafe fn forward_running_policy_applied(
-        &self,
-        thread: ThreadId,
-        base_policy: SchedulePolicy,
-        observed_ns: u64,
-    ) -> bool {
-        let Some(callback) = self.running_policy_applied_hook else {
-            return false;
-        };
-        unsafe { callback(self.data, thread, base_policy, observed_ns) };
-        true
-    }
-
-    /// Clones the gate used to select scheduler-tick task work.
-    ///
-    /// Runtime extension composition uses this to install the same interest
-    /// generation on an outer scheduler-owned extension.
-    pub fn scheduler_tick_work_gate(&self) -> Option<Arc<SchedulerTickGate>> {
-        self.scheduler_tick_work
-            .as_ref()
-            .map(SchedulerTickWork::gate)
-    }
-
     /// Clones the IRQ-safe CPU-time sampling capability.
     ///
-    /// Runtime extension composition uses this to preserve the inner OS
-    /// capability on the outer scheduler-owned extension.
+    /// Thread creation retains this capability alongside the extension.
     pub fn scheduler_tick_cpu_time(&self) -> Option<Arc<SchedulerTickCpuTime>> {
         self.scheduler_tick_cpu_time.as_ref().map(Arc::clone)
-    }
-
-    /// Forwards one scheduler-tick task-work callback to this extension.
-    ///
-    /// Returns `None` when this extension did not register such work.
-    ///
-    /// # Safety
-    ///
-    /// The caller must own an ordinary task-context publication authorized by
-    /// the gate returned from [`Self::scheduler_tick_work_gate`], keep this
-    /// extension alive for the call, and invoke it at most once for that
-    /// publication. A forwarded [`SchedulerTickWorkDisposition::Retry`] keeps
-    /// the same no-partial-publication contract as the original callback.
-    pub unsafe fn forward_scheduler_tick_work(
-        &self,
-        thread: ThreadId,
-        observed_ns: u64,
-    ) -> Option<SchedulerTickWorkDisposition> {
-        let work = self.scheduler_tick_work.as_ref()?;
-        Some(unsafe { work.invoke(self.data, thread, observed_ns) })
     }
 
     pub(crate) const fn as_view(&self) -> ThreadExtensionView {
@@ -584,25 +539,6 @@ impl ThreadExtensionLease {
     pub const fn ops(&self) -> &'static ThreadExtensionOps {
         self.view.ops()
     }
-
-    /// Releases the strong lookup lease while retaining the extension view.
-    ///
-    /// Fresh thread-entry trampolines need this operation before invoking an
-    /// entry point that terminates through a non-unwinding scheduler switch.
-    /// Otherwise the suspended stack permanently pins the exited thread.
-    ///
-    /// # Safety
-    ///
-    /// The caller must be the running thread identified by [`Self::thread_id`].
-    /// Its registry record must remain live until every use of the returned
-    /// view completes. The consumed lookup lease and its pinned thread header
-    /// must not be accessed again, and the returned view must not escape past
-    /// thread exit.
-    pub unsafe fn release_for_current_thread_entry(self) -> ThreadExtensionView {
-        let view = self.view;
-        drop(self);
-        view
-    }
 }
 
 impl ThreadExtensionView {
@@ -631,6 +567,7 @@ impl ThreadExtensionView {
 /// Validated inputs used to create a scheduler thread record.
 #[derive(Debug)]
 pub struct ThreadSpec {
+    pub(crate) execution: Option<Arc<crate::thread::execution::ThreadExecution>>,
     policy: SchedulePolicy,
     affinity: Option<CpuSet>,
     // Runtime resources must be dropped before the extension that owns their
@@ -643,6 +580,7 @@ impl ThreadSpec {
     /// Creates a thread specification with full topology affinity.
     pub const fn new(policy: SchedulePolicy) -> Self {
         Self {
+            execution: None,
             policy,
             affinity: None,
             resources: ThreadResources::NONE,
@@ -681,6 +619,16 @@ impl ThreadSpec {
     /// Returns explicit affinity, if one was supplied.
     pub fn affinity(&self) -> Option<&CpuSet> {
         self.affinity.as_ref()
+    }
+
+    pub(crate) fn take_affinity(&mut self) -> Option<CpuSet> {
+        self.affinity.take()
+    }
+    pub(crate) fn resources(&self) -> &ThreadResources {
+        &self.resources
+    }
+    pub(crate) fn extension(&self) -> Option<&ThreadExtension> {
+        self.extension.as_ref()
     }
 
     pub(crate) fn into_owned_parts(mut self) -> (Option<ThreadExtension>, ThreadResources) {

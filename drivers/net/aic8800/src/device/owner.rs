@@ -14,6 +14,7 @@ use crate::{
 pub(super) struct ActiveTx {
     pub completion: TxCompletion,
     pub wire_frame: Vec<u8>,
+    pub retry_at: Option<MonotonicTime>,
 }
 
 #[derive(Clone, Copy)]

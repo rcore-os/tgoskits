@@ -227,9 +227,8 @@ pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
 pub(crate) use runtime_task::{
     sched::{CpuId as ArceOsCpuId, CpuSet as ArceOsCpuSet, SchedulePolicy as ArceOsSchedulePolicy},
     thread::{
-        SwitchReason as ArceOsSwitchReason, TaskError as ArceOsTaskError,
-        ThreadExtension as ArceOsThreadExtension, ThreadExtensionOps as ArceOsThreadExtensionOps,
-        ThreadId as ArceOsThreadId,
+        SwitchReason as ArceOsSwitchReason, ThreadExtension as ArceOsThreadExtension,
+        ThreadExtensionOps as ArceOsThreadExtensionOps, ThreadId as ArceOsThreadId,
     },
     time::MonotonicDeadline as ArceOsMonotonicDeadline,
 };
@@ -306,35 +305,6 @@ impl ArceOsIrqNotification {
 pub(crate) fn current_thread() -> ArceOsThreadHandle {
     runtime_task::thread::current::current_thread_handle()
         .unwrap_or_else(|error| panic!("AxVM requires a current scheduler thread: {error}"))
-}
-
-pub(crate) unsafe fn spawn_thread_with_extension_and_affinity<F>(
-    entry: F,
-    name: std::string::String,
-    stack_size: usize,
-    extension: Option<ArceOsThreadExtension>,
-    affinity: Option<ArceOsCpuSet>,
-) -> Result<ArceOsThreadHandle, ArceOsTaskError>
-where
-    F: FnOnce() + Send + 'static,
-{
-    // SAFETY: the caller transfers unique ownership of `extension`; this
-    // adapter forwards it exactly once to the ArceOS runtime.
-    unsafe {
-        ax_std::os::arceos::thread::spawn_raw_with_extension_and_affinity(
-            entry, name, stack_size, extension, affinity,
-        )
-    }
-}
-
-pub(crate) fn join_thread(thread: ArceOsThreadHandle) -> Result<i32, ArceOsTaskError> {
-    ax_std::os::arceos::thread::join_thread(thread)
-}
-
-pub(crate) fn thread_extension(
-    thread: &ArceOsThreadHandle,
-) -> Result<Option<ax_std::os::arceos::thread::ThreadOsExtensionBorrow<'_>>, ArceOsTaskError> {
-    ax_std::os::arceos::thread::thread_os_extension(thread)
 }
 
 pub(crate) fn cpu_set_from_raw_bits(bits: usize) -> ArceOsCpuSet {
@@ -577,21 +547,18 @@ impl HostPlatform for ArceOsHost {
             let affinity = cpu_set_one(cpu_id);
             // SAFETY: no OS extension is transferred and the affinity is
             // validated against the current runtime topology above.
-            let _task = unsafe {
-                spawn_thread_with_extension_and_affinity(
-                    move || {
+            let _task = {
+                ax_std::os::arceos::thread::builder(std::format!("axvm-hv-init-{cpu_id}"))
+                    .stack_size(AXVM_KERNEL_STACK_SIZE)
+                    .affinity(affinity)
+                    .spawn(move || {
                         let host = arceos_host();
                         info!("Core {cpu_id} is initializing hardware virtualization support...");
                         host.enable_virtualization_on_current_cpu()
                             .expect("failed to enable hardware virtualization");
                         info!("Hardware virtualization support enabled on core {cpu_id}");
                         let _ = CORES.fetch_add(1, Ordering::Release);
-                    },
-                    std::format!("axvm-hv-init-{cpu_id}"),
-                    AXVM_KERNEL_STACK_SIZE,
-                    None,
-                    Some(affinity),
-                )
+                    })
             }
             .unwrap_or_else(|error| {
                 panic!("failed to spawn AxVM CPU {cpu_id} initialization task: {error}")

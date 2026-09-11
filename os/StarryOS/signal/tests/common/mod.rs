@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use ax_runtime::task::sync::SpinLock;
+use ax_runtime::task::sync::RawSpinLock;
 use starry_signal::api::{ProcessSignalManager, SignalActions, ThreadSignalManager};
 use starry_vm::{VmError, VmIo, VmResult};
 
@@ -62,10 +62,11 @@ pub const TID: u32 = 7;
 
 pub fn new_test_env() -> (Arc<ProcessSignalManager>, Arc<ThreadSignalManager>) {
     let proc = Arc::new(ProcessSignalManager::new(
-        Arc::new(SpinLock::new(SignalActions::default())),
+        Arc::new(RawSpinLock::new(SignalActions::default())),
         0,
+        Arc::default(),
     ));
-    let thr = ThreadSignalManager::new(TID, proc.clone());
+    let thr = ThreadSignalManager::new(TID, proc.clone()).unwrap();
     (proc, thr)
 }
 

@@ -29,6 +29,7 @@
 //! Interrupt handling and task scheduling are mandatory runtime capabilities.
 
 #![cfg_attr(not(test), no_std)]
+#![feature(allocator_api)]
 #![allow(missing_abi)]
 
 #[cfg(all(feature = "host-test", not(target_os = "none")))]

@@ -59,8 +59,7 @@ impl TaskSystemState {
             }
             let slot =
                 u32::try_from(self.slots.len()).map_err(|_| TaskError::InvalidConfiguration)?;
-            let required_capacity = self.slots.len().saturating_add(1);
-            self.exited_work.reserve_slot_capacity(required_capacity);
+            assert!(self.slots.len() < self.slots.capacity());
             self.slots.push(ThreadSlot {
                 generation: 1,
                 record: None,
@@ -304,9 +303,52 @@ impl TaskSystemState {
         Ok(None)
     }
 
+    /// Detaches execution resources after switch tail, independently of task leases.
+    pub(super) fn take_exited_execution(&mut self) -> Result<Option<ExitedExecution>, TaskError> {
+        let candidates = self.exited_work.candidate_count();
+        for _ in 0..candidates {
+            let thread = self
+                .exited_work
+                .next_candidate()
+                .expect("exit candidate count");
+            let record = match self.thread_record_mut(thread) {
+                Ok(record) => record,
+                Err(TaskError::StaleThreadId) => {
+                    self.exited_work.remove(thread);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let mut sched = record.sched.lock();
+            if sched.lifecycle.state() != ThreadState::Exited
+                || sched.placement.on_cpu().is_some()
+                || sched.placement.has_pending_migration()
+                || sched.deadline.bandwidth.reservation_owner().is_some()
+                || sched.deadline.overrun_events != 0
+                || record.callbacks.blocks_reap()
+                || record.core.scheduler_inbox_delivery_count() != 0
+                || record.core.sleep_timer_cpu().is_some()
+                || record
+                    .core
+                    .execution_reclaimed
+                    .load(core::sync::atomic::Ordering::Acquire)
+            {
+                continue;
+            }
+            // The consumer is unique. Retain an external lease until destruction
+            // finishes so concurrent join cannot drop the OS extension first.
+            let handle = ThreadHandle::from_core(Arc::clone(&record.core));
+            let resources = core::mem::replace(&mut record.resources, ThreadResources::NONE);
+            sched.runtime.context = crate::runtime::resource::ExecutionContextHandle::NONE;
+            sched.runtime.address_space = crate::runtime::resource::AddressSpaceHandle::NONE;
+            return Ok(Some(ExitedExecution { resources, handle }));
+        }
+        Ok(None)
+    }
+
     pub(super) fn claim_pending_exit_callback(
         &mut self,
-    ) -> Result<Option<(ThreadExtensionView, ThreadId)>, TaskError> {
+    ) -> Result<Option<ExitCallbackClaim>, TaskError> {
         let candidate_count = self.exited_work.candidate_count();
         for _ in 0..candidate_count {
             let thread = self
@@ -324,13 +366,12 @@ impl TaskSystemState {
                     {
                         None
                     } else {
-                        let extension = record
-                            .extension
-                            .as_ref()
-                            .ok_or(TaskError::InvalidConfiguration)?
-                            .as_view();
+                        let extension = record.extension.as_ref().map(ThreadExtension::as_view);
                         record.callbacks.claim_exit()?;
-                        Some(extension)
+                        Some(ExitCallbackClaim {
+                            extension,
+                            core: Arc::clone(&record.core),
+                        })
                     }
                 }
                 Err(TaskError::StaleThreadId) => {
@@ -340,7 +381,7 @@ impl TaskSystemState {
                 Err(error) => return Err(error),
             };
             if let Some(extension) = extension {
-                return Ok(Some((extension, thread)));
+                return Ok(Some(extension));
             }
         }
         Ok(None)
@@ -448,6 +489,7 @@ pub(super) struct ThreadRecord {
     pub(super) resources: ThreadResources,
     pub(super) extension: Option<ThreadExtension>,
     pub(super) callbacks: ThreadCallbackState,
+    pub(super) activation: Option<PreparedMigrationDelivery>,
 }
 
 #[derive(Debug)]
@@ -479,4 +521,16 @@ impl ThreadRecord {
         let sched = self.sched.lock();
         sched.pi.blocked_on.is_some() || !sched.pi.donors.is_empty()
     }
+}
+
+/// Pins the common completion and optional OS hook through task-context dispatch.
+pub(super) struct ExitCallbackClaim {
+    pub(super) extension: Option<ThreadExtensionView>,
+    pub(super) core: Arc<ThreadCore>,
+}
+
+/// Owns detached physical resources and pins their OS metadata through destruction.
+pub(super) struct ExitedExecution {
+    pub(super) resources: ThreadResources,
+    pub(super) handle: ThreadHandle,
 }

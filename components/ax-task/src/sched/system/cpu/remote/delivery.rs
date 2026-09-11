@@ -44,6 +44,14 @@ impl PreparedMigrationDelivery {
         })
     }
 
+    pub(crate) fn refresh_placement_demand(&mut self) {
+        self.placement_demand = self
+            .core
+            .as_ref()
+            .expect("uncommitted delivery")
+            .effective_placement_demand();
+    }
+
     pub(crate) const fn target(&self) -> CpuId {
         self.target
     }

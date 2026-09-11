@@ -73,10 +73,7 @@ fn next_alarm_action(now: ClockSnapshot) -> AlarmAction {
 /// Spawns the alarm task.
 pub fn spawn_alarm_task() {
     info!("Initialize alarm...");
-    crate::task::try_spawn_kernel_thread_with_stack(
-        alarm_task,
-        "alarm_task".to_owned(),
-        crate::config::KERNEL_STACK_SIZE,
-    )
-    .unwrap_or_else(|error| panic!("failed to spawn alarm task: {error}"));
+    crate::task::kernel_thread_builder("alarm_task".to_owned())
+        .spawn(alarm_task)
+        .unwrap_or_else(|error| panic!("failed to spawn alarm task: {error}"));
 }

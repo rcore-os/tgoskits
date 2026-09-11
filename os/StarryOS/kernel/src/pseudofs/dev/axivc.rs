@@ -129,17 +129,15 @@ impl AxivcRegistry {
     fn start_notify_service(self: &Arc<Self>) -> bool {
         let registry = Arc::downgrade(self);
         let notify = Arc::clone(&self.deferred_notify);
-        match crate::task::try_spawn_kernel_thread_with_stack(
-            move || loop {
+        match crate::task::kernel_thread_builder("axivc-notify-service".into()).spawn(move || {
+            loop {
                 notify.wait();
                 let Some(registry) = registry.upgrade() else {
                     break;
                 };
                 registry.wake_channel_pollers();
-            },
-            "axivc-notify-service".into(),
-            crate::task::default_task_stack_size(),
-        ) {
+            }
+        }) {
             Ok(_service) => true,
             Err(error) => {
                 warn!("axivc: failed to start notify service: {error}");

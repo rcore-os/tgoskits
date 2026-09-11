@@ -288,10 +288,10 @@ impl<G: GuardState, T: ?Sized + fmt::Debug> fmt::Debug for BaseSpinRwLock<G, T> 
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.try_read() {
             Some(guard) => f
-                .debug_struct("SpinRwLock")
+                .debug_struct("RawSpinRwLock")
                 .field("data", &&*guard)
                 .finish(),
-            None => write!(f, "SpinRwLock {{ <locked> }}"),
+            None => write!(f, "RawSpinRwLock {{ <locked> }}"),
         }
     }
 }

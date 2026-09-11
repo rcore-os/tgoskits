@@ -113,3 +113,18 @@ __axcpu_user_atomic_u32:
     _asm_nofault_extable .Luser_atomic_and_not_load, .Luser_atomic_fault
     _asm_nofault_extable .Luser_atomic_and_not_cmpxchg, .Luser_atomic_fault
 .size __axcpu_user_atomic_u32, . - __axcpu_user_atomic_u32
+
+.global __axcpu_user_cmpxchg_u32
+.type __axcpu_user_cmpxchg_u32, @function
+__axcpu_user_cmpxchg_u32:
+    mov eax, esi
+.Luser_cmpxchg:
+    lock cmpxchg dword ptr [rdi], edx
+    mov dword ptr [rcx], eax
+    xor eax, eax
+    ret
+.Luser_cmpxchg_fault:
+    mov eax, 1
+    ret
+    _asm_nofault_extable .Luser_cmpxchg, .Luser_cmpxchg_fault
+.size __axcpu_user_cmpxchg_u32, . - __axcpu_user_cmpxchg_u32

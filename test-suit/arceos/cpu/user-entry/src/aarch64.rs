@@ -181,16 +181,16 @@ fn run_cpu(cpu: usize) {
     // SAFETY: the runtime address-space token retains every table and backing
     // page until task and lazy-CPU leases retire; there is no external extension.
     let task = unsafe {
-        thread::spawn_raw_with_extension_in_address_space(
+        thread::prepare_user_thread(
+            thread::builder("cpu-pmu-user".into()).stack_size(0x10000),
             move || user_thread(loop_offset, cpu),
-            "cpu-pmu-user".into(),
-            0x10000,
-            None,
-            address_space,
+            thread::UserContextOptions::new(address_space),
         )
         .unwrap()
-    };
-    assert_eq!(thread::join_thread(task).unwrap(), 0);
+    }
+    .publish()
+    .unwrap();
+    assert_eq!(task.join().unwrap(), 0);
     std::println!(
         "CPU_PMU_USER_CORE cpu={cpu} pc={:#x}",
         USER_IRQ_PC.load(Ordering::Acquire)

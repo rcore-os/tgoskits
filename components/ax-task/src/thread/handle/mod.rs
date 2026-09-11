@@ -143,6 +143,11 @@ impl ThreadHandle {
         self.core.effective_policy.load()
     }
 
+    /// Reports physical execution-resource reclamation independently of logical exit.
+    pub fn execution_reclaimed(&self) -> bool {
+        self.core.execution_reclaimed.load(Ordering::Acquire)
+    }
+
     /// Returns the most recently published lifecycle state.
     pub fn state(&self) -> ThreadState {
         self.core.state()
@@ -215,8 +220,8 @@ impl WeakThreadHandle {
 
 /// A stable direct wake header reference.
 ///
-/// [`Self::wake`] performs only bounded atomic operations and is safe in hard IRQ
-/// context. Creating, cloning, and dropping this owning reference are task-context
+/// [`Self::wake`] uses non-sleeping scheduler transactions and is safe in hard
+/// IRQ context. Creating, cloning, and dropping this owning reference are task-context
 /// operations. A coroutine whose last raw-waker reference is released in hard IRQ
 /// defers only that zero-reference allocation to the typed task-system reaper.
 #[derive(Debug)]
@@ -456,6 +461,8 @@ pub(crate) struct ThreadCore {
     // Immutable after publication. Every handle retaining this copy also pins
     // the registry-owned extension destructor through the reaper Arc contract.
     extension: Option<ThreadExtensionView>,
+    pub(crate) execution: Option<Arc<crate::thread::execution::ThreadExecution>>,
+    pub(crate) execution_reclaimed: AtomicBool,
     scheduler_tick_cpu_time: Option<Arc<SchedulerTickCpuTime>>,
     scheduler_tick_work: Option<SchedulerTickWork>,
     scheduler_tick_work_generation: AtomicU64,
@@ -474,6 +481,9 @@ pub(crate) struct ThreadCore {
     scheduler_inbox_deliveries: AtomicUsize,
     pub(super) affinity_completion: ThreadAffinityCompletion,
     park_generation: AtomicU64,
+    park_sequence: AtomicU64,
+    rt_lock_depth: AtomicUsize,
+    ordinary_park_generation: AtomicU64,
     wake_cpu_hint: AtomicU32,
     wake_affinity: WakeAffinityState,
     affinity_update_node: InboxNode,
@@ -497,6 +507,7 @@ pub(crate) struct ThreadCoreInit {
     pub(crate) policy: SchedulePolicy,
     pub(crate) sched: Arc<ThreadSchedCell>,
     pub(crate) extension: Option<ThreadExtensionView>,
+    pub(crate) execution: Option<Arc<crate::thread::execution::ThreadExecution>>,
     pub(crate) scheduler_tick_cpu_time: Option<Arc<SchedulerTickCpuTime>>,
     pub(crate) scheduler_tick_work: Option<SchedulerTickWork>,
     pub(crate) membarrier_identity: AddressSpaceMembarrierId,
@@ -504,12 +515,13 @@ pub(crate) struct ThreadCoreInit {
 }
 
 impl ThreadCore {
-    pub(crate) fn new(init: ThreadCoreInit) -> Self {
+    pub(crate) fn new(init: ThreadCoreInit) -> Result<Self, TaskError> {
         let ThreadCoreInit {
             id,
             policy,
             sched,
             extension,
+            execution,
             scheduler_tick_cpu_time,
             scheduler_tick_work,
             membarrier_identity,
@@ -517,14 +529,16 @@ impl ThreadCore {
         } = init;
         debug_assert_eq!(id, sched.id());
         let lifecycle = Arc::clone(sched.lifecycle());
-        let reap_signal = Arc::new(ThreadReapSignal::new(task_work));
-        Self {
+        let reap_signal = crate::thread::allocation::try_arc(ThreadReapSignal::new(task_work))?;
+        Ok(Self {
             id,
             sched,
             membarrier_identity: AtomicUsize::new(membarrier_identity.into_raw()),
-            runqueue_nodes: RunQueueNodeStorage::new(),
-            pi_wait_nodes: PiWaitNodeStorage::new(),
+            runqueue_nodes: RunQueueNodeStorage::new()?,
+            pi_wait_nodes: PiWaitNodeStorage::new()?,
             extension,
+            execution,
+            execution_reclaimed: AtomicBool::new(false),
             scheduler_tick_cpu_time,
             scheduler_tick_work,
             scheduler_tick_work_generation: AtomicU64::new(0),
@@ -543,6 +557,9 @@ impl ThreadCore {
             scheduler_inbox_deliveries: AtomicUsize::new(0),
             affinity_completion: ThreadAffinityCompletion::new(1),
             park_generation: AtomicU64::new(0),
+            park_sequence: AtomicU64::new(0),
+            rt_lock_depth: AtomicUsize::new(0),
+            ordinary_park_generation: AtomicU64::new(0),
             wake_cpu_hint: AtomicU32::new(u32::MAX),
             wake_affinity: WakeAffinityState::new(),
             affinity_update_node: InboxNode::new(InboxKind::OwnerControl),
@@ -559,7 +576,7 @@ impl ThreadCore {
             #[cfg(feature = "lockdep")]
             held_locks: ThreadHeldLocks::new(),
             pi_wait_state: PiWaitState::new(),
-        }
+        })
     }
 
     pub(crate) const fn runqueue_nodes(&self) -> &RunQueueNodeStorage {

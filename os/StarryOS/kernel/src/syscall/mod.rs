@@ -1160,7 +1160,6 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) -> SyscallR
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
-            uctx.arg3() as _,
         ),
         Sysno::rt_tgsigqueueinfo => sys_rt_tgsigqueueinfo(
             current,
@@ -1168,7 +1167,6 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) -> SyscallR
             uctx.arg1() as _,
             uctx.arg2() as _,
             uctx.arg3() as _,
-            uctx.arg4() as _,
         ),
         Sysno::sigaltstack => sys_sigaltstack(current, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::futex => sys_futex(

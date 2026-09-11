@@ -57,7 +57,7 @@ pub enum VsockRuntimeError {
 /// Live device, IRQ registration, and fixed worker ownership.
 pub(super) struct VsockIrqRuntime {
     registration: Option<Box<dyn PinnedNetIrqRegistration>>,
-    worker: Option<ax_task::thread::KernelThreadHandle>,
+    worker: Option<ax_task::thread::ThreadHandle>,
     control: Arc<VsockWorkerControl>,
     device: Arc<Mutex<VsockDevice>>,
 }
@@ -344,7 +344,7 @@ fn release_registration(registration: Box<dyn PinnedNetIrqRegistration>) -> bool
 
 fn stop_worker(
     control: &VsockWorkerControl,
-    worker: ax_task::thread::KernelThreadHandle,
+    worker: ax_task::thread::ThreadHandle,
     irq_synchronized: bool,
 ) {
     control.command.store(

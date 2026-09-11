@@ -183,12 +183,14 @@ pub(crate) fn in_atomic_context() -> bool {
     ax_cpu::interrupt::enable_irqs();
     guarded
 }
+#[cfg(not(any(test, feature = "host-test")))]
 pub(crate) fn enter_irq() {
     let outer_irqs_enabled = ax_cpu::interrupt::irqs_enabled();
     ax_cpu::interrupt::disable_irqs();
 
     with_guard_state_mut(|state| state.enter_irq(outer_irqs_enabled));
 }
+#[cfg(not(any(test, feature = "host-test")))]
 pub(crate) fn exit_irq(owner: &'static str) {
     let (must_schedule, restore_irqs) = with_current_cpu_pin(|pin| {
         let preempt_depth = current_preempt_depth_pinned(pin);
@@ -421,6 +423,7 @@ fn preempt_exit_needs_schedule(
         && (origin.is_irq_return() || irqs_were_enabled)
         && !in_hard_irq()
 }
+#[cfg(any(test, not(feature = "host-test")))]
 fn irq_guard_exit_needs_schedule(
     state: &RuntimeGuardState,
     preempt_depth: u32,

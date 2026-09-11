@@ -38,10 +38,7 @@ fn scheduler_yield() {
     task::thread::current::yield_current_cpu().expect("kernel scheduler yield failed");
 }
 
-fn spawn_fifo(
-    name: &str,
-    entry: impl FnOnce() + Send + 'static,
-) -> task::thread::KernelThreadHandle {
+fn spawn_fifo(name: &str, entry: impl FnOnce() + Send + 'static) -> task::thread::ThreadHandle {
     task::thread::ThreadBuilder::new(name.into())
         .policy(fifo_policy())
         .affinity(cpu0_affinity())
@@ -121,7 +118,94 @@ fn run_round() -> u128 {
     elapsed / (THREADS * MEASURED_YIELDS) as u128
 }
 
+const MEASURED_SPAWNS: usize = 100;
+const WARMUP_SPAWNS: usize = 16;
+const MEASURED_WAKES: usize = 2_000;
+const WARMUP_WAKES: usize = 100;
+
+fn run_spawn_round() -> u128 {
+    let mut total = 0;
+    for iteration in 0..WARMUP_SPAWNS + MEASURED_SPAWNS {
+        let started = Instant::now();
+        let worker = spawn_fifo("fifo-spawn", || {});
+        let elapsed = started.elapsed().as_nanos();
+        // Join is outside the measured interval. Spawn includes any first-entry
+        // preemption caused by publishing this higher-priority child.
+        worker.join().expect("FIFO spawn worker failed");
+        if iteration >= WARMUP_SPAWNS {
+            total += elapsed;
+        }
+    }
+    total / MEASURED_SPAWNS as u128
+}
+
+struct WakeProbe {
+    queue: task::sync::WaitQueue,
+    epoch: Instant,
+    generation: AtomicUsize,
+    completed: AtomicUsize,
+    started_ns: AtomicUsize,
+    average_ns: AtomicUsize,
+}
+
+fn run_wake_round() -> u128 {
+    let probe = Arc::new(WakeProbe {
+        queue: task::sync::WaitQueue::new(),
+        epoch: Instant::now(),
+        generation: AtomicUsize::new(0),
+        completed: AtomicUsize::new(0),
+        started_ns: AtomicUsize::new(0),
+        average_ns: AtomicUsize::new(0),
+    });
+    let waiter = Arc::clone(&probe);
+    let worker = spawn_fifo("fifo-wake", move || {
+        let mut total = 0;
+        for generation in 1..=WARMUP_WAKES + MEASURED_WAKES {
+            waiter
+                .queue
+                .wait_until(|| waiter.generation.load(Ordering::Acquire) >= generation);
+            let resumed_ns = waiter.epoch.elapsed().as_nanos() as usize;
+            let latency = resumed_ns - waiter.started_ns.load(Ordering::Acquire);
+            if generation > WARMUP_WAKES {
+                total += latency;
+            }
+            waiter.completed.store(generation, Ordering::Release);
+        }
+        waiter
+            .average_ns
+            .store(total / MEASURED_WAKES, Ordering::Release);
+    });
+    // Both tasks run on CPU0. The FIFO waiter outranks this fair coordinator,
+    // so the coordinator resumes only after the waiter parks or exits. The
+    // generation acknowledgement also prevents notification coalescing.
+    for generation in 1..=WARMUP_WAKES + MEASURED_WAKES {
+        probe
+            .started_ns
+            .store(probe.epoch.elapsed().as_nanos() as usize, Ordering::Relaxed);
+        probe.generation.store(generation, Ordering::Release);
+        probe.queue.notify_one();
+        while probe.completed.load(Ordering::Acquire) != generation {
+            scheduler_yield();
+        }
+    }
+    worker.join().expect("FIFO wake worker failed");
+    probe.average_ns.load(Ordering::Acquire) as u128
+}
+
+fn report_lifecycle_benchmark(name: &str, mut run: impl FnMut() -> u128) {
+    let mut samples = Vec::with_capacity(ROUNDS);
+    for round in 0..ROUNDS {
+        let nanoseconds = run();
+        println!("{name} round={} ns_per_operation={nanoseconds}", round + 1);
+        samples.push(nanoseconds);
+    }
+    samples.sort_unstable();
+    println!("{name} p50_ns={}", samples[ROUNDS / 2]);
+}
+
 fn main() {
+    report_lifecycle_benchmark("kernel_thread_spawn", run_spawn_round);
+    report_lifecycle_benchmark("kernel_thread_wake_to_run", run_wake_round);
     let mut no_switch_samples = Vec::with_capacity(ROUNDS);
     for round in 0..ROUNDS {
         let nanoseconds = run_single_thread_round();

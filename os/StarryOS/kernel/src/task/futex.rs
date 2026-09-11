@@ -22,14 +22,38 @@ use ax_std::os::arceos::{
 
 use crate::{
     mm::{AddrSpace, SharedFutexIdentity, SharedFutexRegion},
-    sync::{LockdepMutexExt, Mutex, SpinLock},
+    sync::{LockdepMutexExt, Mutex, RawSpinLock},
     task::{ProcessData, UserTaskRef, future::WallClockWaiter, process_memory::ProcessMemoryShare},
     time::{ClockDeadline, ClockSnapshot},
 };
 
 const NESTED_FUTEX_BUCKET_LOCK_SUBCLASS: u32 = 1;
 const FUTEX_BUCKET_COUNT: usize = 64;
-type WakeBatch = ThreadWakeBatch;
+/// Counts selected wait generations independently of coalesced scheduler wakes.
+/// Linux futex_wake counts unqueued futex_q records even when wake_q_add_safe
+/// finds the task already queued by another wake owner.
+struct WakeBatch {
+    tasks: ThreadWakeBatch,
+    selected: usize,
+}
+
+impl WakeBatch {
+    fn new() -> Self {
+        Self {
+            tasks: ThreadWakeBatch::new(),
+            selected: 0,
+        }
+    }
+
+    fn push(&mut self, wake: scheduler::thread::ThreadWakeHandle) {
+        let _inserted = self.tasks.push(wake);
+        self.selected += 1;
+    }
+
+    fn len(&self) -> usize {
+        self.selected
+    }
+}
 
 fn scheduler_monotonic_now() -> MonotonicInstant {
     MonotonicInstant::from_nanos(
@@ -40,7 +64,8 @@ fn scheduler_monotonic_now() -> MonotonicInstant {
 }
 
 fn wake_batch(wakes: WakeBatch) -> usize {
-    wakes.wake_all()
+    wakes.tasks.wake_all();
+    wakes.selected
 }
 
 /// Retry outcome from a futex operation's nofault user-memory phase.
@@ -161,7 +186,7 @@ pub(crate) struct ThreadWaitState {
     // No IRQ path observes it and the guard is never held while taking the
     // table or wait-queue locks, so a short preemption-only spin lock is the
     // narrow capability this metadata needs.
-    cleanup: SpinLock<Option<FutexWaitCleanup>>,
+    cleanup: RawSpinLock<Option<FutexWaitCleanup>>,
 }
 
 impl ThreadWaitState {
@@ -170,7 +195,7 @@ impl ThreadWaitState {
         Self {
             generation: AtomicU64::new(0),
             phase: AtomicU8::new(WAIT_IDLE),
-            cleanup: SpinLock::new(None),
+            cleanup: RawSpinLock::new(None),
         }
     }
 
@@ -541,10 +566,9 @@ impl WaitQueue {
     }
 
     fn push_wake(wakes: &mut WakeBatch, waiter: Waiter) {
-        assert!(
-            wakes.push(waiter.wake),
-            "one futex wait generation cannot enter two live wake batches"
-        );
+        // mark_woken already selected this generation under its queue lock.
+        // The task-level wake_q node may still belong to an earlier selector.
+        wakes.push(waiter.wake);
     }
 
     /// Wakes up at most `count` tasks whose bitset intersects with the given
@@ -1317,9 +1341,8 @@ fn collect_futex_requeue_same_bucket(
         wakes,
     );
     let woken = wakes.len() - wake_base;
-    if source_key.same(&target.key) {
-        return woken;
-    }
+    // Ordinary Linux requeue counts selected waiters even if the key stays
+    // unchanged. Only PI requeue rejects identical source and target keys.
     let mut requeued = 0;
     for entry in waiters.iter_mut() {
         if requeued == request.requeue_count {
@@ -1520,6 +1543,29 @@ mod axtests {
     use crate::mm::{MappingOperation, SharedMemoryObject};
 
     #[axtest::axtest]
+    fn coalesced_scheduler_wake_still_counts_each_selected_wait() {
+        let prepared = ax_runtime::thread::builder("futex-wake-coalescing".into())
+            .prepare(|| panic!("a wake batch must not activate a new thread"))
+            .unwrap();
+        let handle = prepared.thread_handle();
+        let mut first = WakeBatch::new();
+        let mut second = WakeBatch::new();
+        // A task may observe WAIT_WOKEN and begin another generation before
+        // the first selector drains its task-level wake_q node.
+        first.push(handle.wake_handle());
+        second.push(handle.wake_handle());
+        let second_count = wake_batch(second);
+        let first_count = wake_batch(first);
+        drop(prepared);
+        handle.join().unwrap();
+        assert_eq!(first_count, 1);
+        assert_eq!(
+            second_count, 1,
+            "coalescing scheduler delivery must not erase a selected futex wait"
+        );
+    }
+
+    #[axtest::axtest]
     fn empty_wake_op_leaves_fixed_buckets_empty() {
         assert!(super::empty_wake_op_leaves_fixed_buckets_empty_for_test());
     }
@@ -1594,5 +1640,48 @@ mod axtests {
 
         aspace.reset_uninstalled_for_loader().unwrap();
         assert_eq!(before, after, "VMA split changed shared futex identity");
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+mod wake_ordering_tests {
+    use loom::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering, fence},
+        },
+        thread,
+    };
+
+    // The wake_q store/load litmus: a coalesced selector must not be paired
+    // with a drainer that misses the state published before that selection.
+    #[test]
+    fn coalesced_wake_observes_published_state() {
+        loom::model(|| {
+            let linked = Arc::new(AtomicBool::new(true));
+            let wakeable = Arc::new(AtomicBool::new(false));
+            let selector = {
+                let linked = linked.clone();
+                let wakeable = wakeable.clone();
+                thread::spawn(move || {
+                    wakeable.store(true, Ordering::Release);
+                    fence(Ordering::SeqCst);
+                    linked
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_err()
+                })
+            };
+            let drainer = thread::spawn(move || {
+                linked.store(false, Ordering::Release);
+                fence(Ordering::SeqCst);
+                wakeable.load(Ordering::Acquire)
+            });
+            let coalesced = selector.join().unwrap();
+            let observed = drainer.join().unwrap();
+            assert!(
+                !coalesced || observed,
+                "coalesced wake missed the published wait state"
+            );
+        });
     }
 }

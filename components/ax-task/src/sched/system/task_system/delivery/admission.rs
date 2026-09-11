@@ -39,64 +39,49 @@ impl TaskSystem {
         thread: ThreadId,
     ) -> Result<(), TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
-        let owner = cpu.owner();
-        let migration = {
+        let handle = {
             let state = self.state.lock();
             state.ensure_cpu_online(&cpu)?;
             let record = state.thread_record(thread)?;
-            let mut sched = record.sched.lock();
-            if sched.lifecycle.state() != ThreadState::New {
+            // Managed entries require their owning publication token. The raw
+            // integration primitive cannot bypass an OS identity transaction.
+            if record.core.execution.is_some() {
                 return Err(TaskError::NotReady);
             }
-            if sched.placement.queued_cpu().is_some()
-                || sched.placement.on_cpu().is_some()
-                || sched.placement.has_pending_migration()
-            {
-                return Err(TaskError::AlreadyQueued);
-            }
-            let affinity = &sched.affinity.affinity;
-            let active = record.core.sched().active(&sched);
-            let policy = active.policy();
-            let load_aware = matches!(policy, SchedulePolicy::Fair { .. });
-            let target = if load_aware {
-                state.select_initial_fair_cpu(affinity, Some(owner))
-            } else if matches!(
-                policy,
-                SchedulePolicy::Fifo { .. }
-                    | SchedulePolicy::RoundRobin { .. }
-                    | SchedulePolicy::Deadline(_)
-            ) {
-                self.select_priority_cpu(policy, Some(active.entity()), affinity, Some(owner), None)
-            } else if affinity.contains(owner) {
-                Some(owner)
-            } else {
-                self.select_fallback_active_cpu(affinity, None)
-            }
-            .ok_or(TaskError::InvalidConfiguration)?;
-            drop(active);
-            let core = Arc::clone(&record.core);
-            if target == owner {
-                drop(sched);
-                drop(state);
-                self.start_owner_thread(cpu.as_mut(), core)?;
-                None
-            } else {
-                let carrier = self.prepare_owner_migration(&core, owner, target)?;
-                sched.transition(&core, ThreadState::Running)?;
-                sched.placement.begin_remote_wakeup(target);
-                record.core.set_wake_cpu_hint(target);
-                drop(sched);
-                Some((carrier, target))
-            }
+            ThreadHandle::from_core(Arc::clone(&record.core))
         };
-        if let Some((carrier, _target)) = migration {
-            carrier.commit();
-            return Ok(());
+        self.stage_new_thread(&handle)?;
+        self.activate_staged_thread(cpu.as_mut(), &handle);
+        Ok(())
+    }
+
+    /// Reserves the first owner delivery while the thread is still TASK_NEW.
+    pub(crate) fn stage_new_thread(&self, handle: &ThreadHandle) -> Result<(), TaskError> {
+        // SAFETY: task-context preparation runs on an installed runtime CPU.
+        let source = CpuId::new(unsafe { task_runtime::current_cpu_id() }.as_u32());
+        let mut state = self.state.lock();
+        let record = state.thread_record(handle.id())?;
+        let sched = record.sched.lock();
+        if sched.lifecycle.state() != ThreadState::New || record.activation.is_some() {
+            return Err(TaskError::NotReady);
         }
-        self.program_local_timer(cpu.as_mut(), SchedulerDeadlineDerivationSource::Placement)
-            .unwrap_or_else(|_| {
-                task_runtime::fatal_invariant(0x5354_0001, thread.as_u64() as usize)
-            });
+        let active = record.core.sched().active(&sched);
+        let target = if matches!(active.policy(), SchedulePolicy::Fair { .. }) {
+            state.select_initial_fair_cpu(&sched.affinity.affinity, Some(source))
+        } else {
+            self.select_priority_cpu(
+                active.policy(),
+                Some(active.entity()),
+                &sched.affinity.affinity,
+                Some(source),
+                None,
+            )
+        }
+        .ok_or(TaskError::InvalidConfiguration)?;
+        let delivery = self.prepare_owner_migration(&record.core, source, target)?;
+        drop(active);
+        drop(sched);
+        state.thread_record_mut(handle.id())?.activation = Some(delivery);
         Ok(())
     }
 

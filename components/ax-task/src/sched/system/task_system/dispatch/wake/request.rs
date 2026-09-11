@@ -2,6 +2,12 @@
 
 use super::*;
 
+enum WakeSource {
+    Ordinary,
+    RtLock { generation: u64 },
+    RtLockPark { generation: u64 },
+}
+
 impl TaskSystem {
     /// Wakes a blocked thread from the runtime's current CPU.
     pub(crate) fn wake_thread_from_current_cpu(
@@ -13,6 +19,31 @@ impl TaskSystem {
     }
 
     pub(super) fn wake_thread(&self, core: &Arc<ThreadCore>, intent: WakeIntent) -> WakeResult {
+        self.wake_thread_source(core, intent, WakeSource::Ordinary)
+    }
+
+    pub(in crate::sched::system) fn wake_rt_lock_thread(
+        &self,
+        core: &Arc<ThreadCore>,
+        generation: u64,
+    ) -> WakeResult {
+        self.wake_thread_source(core, WakeIntent::Normal, WakeSource::RtLock { generation })
+    }
+
+    pub(crate) fn wake_rt_lock_park(&self, core: &Arc<ThreadCore>, generation: u64) -> WakeResult {
+        self.wake_thread_source(
+            core,
+            WakeIntent::Normal,
+            WakeSource::RtLockPark { generation },
+        )
+    }
+
+    fn wake_thread_source(
+        &self,
+        core: &Arc<ThreadCore>,
+        intent: WakeIntent,
+        source: WakeSource,
+    ) -> WakeResult {
         #[cfg(feature = "qperf-metrics")]
         crate::diagnostics::counters::record_direct_wake_attempt();
         // A direct wake owns an Arc-backed task handle, so its lifetime is
@@ -25,8 +56,36 @@ impl TaskSystem {
         // scheduler baton, so the wake path must not probe IRQ context first.
         let _preempt = crate::runtime::lock::PreemptScope::enter();
         let context = WakeTransactionContext::current();
-        let wake_publication = core.publish_wake();
+        let sched = core.sched().lock();
+        let wake_publication = match source {
+            WakeSource::Ordinary => core.publish_wake(),
+            WakeSource::RtLockPark { generation } => {
+                if core.park_generation() != generation {
+                    return WakeResult::Notified;
+                }
+                let Some(publication) = core.publish_rt_lock_wake() else {
+                    return WakeResult::Notified;
+                };
+                publication
+            }
+            WakeSource::RtLock { generation } => {
+                if sched
+                    .pi
+                    .blocked_on
+                    .is_none_or(|wait| wait.generation != generation)
+                {
+                    return WakeResult::Notified;
+                }
+                let Some(publication) = core.publish_rt_lock_wake() else {
+                    return WakeResult::Notified;
+                };
+                publication
+            }
+        };
 
+        if wake_publication.saved_state_only() {
+            return WakeResult::Notified;
+        }
         if wake_publication.already_pending() && wake_publication.state() != ThreadState::Blocked {
             return WakeResult::AlreadyPending;
         }
@@ -42,7 +101,6 @@ impl TaskSystem {
             ThreadState::Blocked => {}
         }
 
-        let sched = core.sched().lock();
         if sched.lifecycle.state() == ThreadState::Exited {
             core.discard_failed_wake();
             return WakeResult::Exited;
@@ -112,9 +170,17 @@ impl TaskSystem {
         let _preempt = crate::runtime::lock::PreemptScope::enter();
         let context = WakeTransactionContext::current();
         let sched = core.sched().lock();
-        if core.park_generation() != claim.park_generation() {
+        if core.ordinary_park_generation() != claim.park_generation() {
             claim.cancel_selected();
             return WaitWakeDelivery::Cancelled;
+        }
+        if core.in_rt_lock_wait() {
+            if !claim.deliver_selected() {
+                return WaitWakeDelivery::Cancelled;
+            }
+            let publication = core.publish_wake();
+            debug_assert!(publication.saved_state_only());
+            return WaitWakeDelivery::Delivered;
         }
         match sched.lifecycle.state() {
             ThreadState::Parking => {

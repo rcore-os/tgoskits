@@ -780,6 +780,7 @@ impl CowBackend {
         let page = self.prepare_new_at_sized(vaddr, leaf_size, access_flags)?;
         let frame = page.frame().paddr();
         let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+        page.prepare_executable_mapping(frame, leaf_size, pte_flags);
         if let Err(err) = pt.map_page(vaddr, frame, leaf_size, pte_flags) {
             self.discard_pending_page(&page);
             return Err(err.into());
@@ -979,6 +980,7 @@ impl CowBackend {
             let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
             dst.copy_from_slice(&buf[chunk_start..chunk_end]);
             let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+            page.prepare_executable_mapping(frame, self.page_size, pte_flags);
             if let Err(err) = pt.map_page(addr, frame, self.page_size, pte_flags) {
                 self.discard_pending_page(&page);
                 self.rollback_new_pages(&mut mapped_pages, pt);
@@ -1008,6 +1010,9 @@ impl CowBackend {
         pt: &mut PageTable,
     ) -> StarryResult<PreparedPteOwner> {
         let owner = self.prepare_cow_fault(space_id, vaddr, paddr, leaf_size, vma_flags)?;
+        owner
+            .page
+            .prepare_executable_mapping(owner.paddr, leaf_size, vma_flags);
         let apply_result = match owner.transition {
             super::PteOwnerTransition::Updated => pt.protect_page(vaddr, vma_flags),
             super::PteOwnerTransition::Replaced => pt.remap_page(vaddr, owner.paddr, vma_flags),
@@ -1607,6 +1612,7 @@ impl MappingExecution for CowBackend {
             if page.mapping_refs() == 0 {
                 return Err(StarryError::BadState);
             }
+            page.prepare_executable_mapping(paddr, page_size, cow_flags);
             if let Err(err) = transaction
                 .page_table_mut()
                 .map_page(vaddr, paddr, page_size, cow_flags)

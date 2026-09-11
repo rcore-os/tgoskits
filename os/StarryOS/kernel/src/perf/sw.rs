@@ -1188,8 +1188,9 @@ mod tests {
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
             let gate = Arc::clone(&gate);
-            crate::task::spawn_kernel_thread_with_affinity(
-                move || {
+            crate::task::kernel_thread_builder("perf-group-enable".into())
+                .affinity(cpu1)
+                .spawn(move || {
                     leader
                         .control_group_observed(Some(true), || {
                             entered.store(true, Ordering::Release);
@@ -1197,31 +1198,28 @@ mod tests {
                             gate.wait_until(|| release.load(Ordering::Acquire));
                         })
                         .unwrap();
-                },
-                "perf-group-enable".into(),
-                cpu1,
-            )
+                })
+                .unwrap()
         };
         gate.wait_until(|| entered.load(Ordering::Acquire));
         let disabler = {
             let member = Arc::clone(&member);
             let done = Arc::clone(&done);
-            crate::task::spawn_kernel_thread_with_policy_and_affinity(
-                move || {
+            crate::task::kernel_thread_builder("perf-group-disable".into())
+                .policy(SchedulePolicy::fifo(RtPriority::new(30).unwrap()))
+                .affinity(cpu0)
+                .spawn(move || {
                     member.control_group(Some(false)).unwrap();
                     done.store(true, Ordering::Release);
-                },
-                "perf-group-disable".into(),
-                SchedulePolicy::fifo(RtPriority::new(30).unwrap()),
-                cpu0,
-            )
+                })
+                .unwrap()
         };
         crate::task::yield_now();
         let premature = done.load(Ordering::Acquire);
         release.store(true, Ordering::Release);
         gate.notify_all();
-        crate::task::join_kernel_thread(publisher);
-        crate::task::join_kernel_thread(disabler);
+        publisher.join().unwrap();
+        disabler.join().unwrap();
         current.set_policy(old_policy).unwrap();
         current.set_affinity_and_wait(old_affinity).unwrap();
         assert!(!premature, "GROUP DISABLE split an unfinished GROUP ENABLE");
@@ -1280,31 +1278,29 @@ mod tests {
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
             let gate = Arc::clone(&gate);
-            crate::task::spawn_kernel_thread_with_affinity(
-                move || {
+            crate::task::kernel_thread_builder("perf-member-enable".into())
+                .affinity(cpu1)
+                .spawn(move || {
                     member.set_enabled_observed(|| {
                         entered.store(true, Ordering::Release);
                         gate.notify_all();
                         gate.wait_until(|| release.load(Ordering::Acquire));
                     });
-                },
-                "perf-member-enable".into(),
-                cpu1,
-            )
+                })
+                .unwrap()
         };
         gate.wait_until(|| entered.load(Ordering::Acquire));
         let disabler = {
             let leader = Arc::clone(&leader);
             let done = Arc::clone(&done);
-            crate::task::spawn_kernel_thread_with_policy_and_affinity(
-                move || {
+            crate::task::kernel_thread_builder("perf-leader-disable".into())
+                .policy(SchedulePolicy::fifo(RtPriority::new(30).unwrap()))
+                .affinity(cpu0)
+                .spawn(move || {
                     leader.set_disabled();
                     done.store(true, Ordering::Release);
-                },
-                "perf-leader-disable".into(),
-                SchedulePolicy::fifo(RtPriority::new(30).unwrap()),
-                cpu0,
-            )
+                })
+                .unwrap()
         };
         // The higher-priority same-CPU task must run until it either blocks on
         // the context transaction or incorrectly completes the disable.
@@ -1312,8 +1308,8 @@ mod tests {
         let premature = done.load(Ordering::Acquire);
         release.store(true, Ordering::Release);
         gate.notify_all();
-        crate::task::join_kernel_thread(publisher);
-        crate::task::join_kernel_thread(disabler);
+        publisher.join().unwrap();
+        disabler.join().unwrap();
         current.set_policy(old_policy).unwrap();
         current.set_affinity_and_wait(old_affinity).unwrap();
         assert!(

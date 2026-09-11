@@ -54,6 +54,7 @@ axvm-types = { workspace = true }
 axhvc = { workspace = true }
 axdevice = { workspace = true }
 axdevice_base = { workspace = true }
+ax-sync.workspace = true
 axvirtio-blk = { workspace = true }
 axvirtio-common = { workspace = true }
 axvirtio-net = { workspace = true }

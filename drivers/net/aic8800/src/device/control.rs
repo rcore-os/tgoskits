@@ -88,6 +88,29 @@ impl ControlState {
         Some(command)
     }
 
+    pub(super) fn assign_ap_interface(&mut self, index: u8) -> Result<(), AicError> {
+        use crate::lmac::{APM_SET_BEACON_IE_REQ, APM_START_REQ, MM_ADD_IF_REQ};
+        if self.commands.front().map(|command| command.message_id) != Some(MM_ADD_IF_REQ) {
+            return Err(AicError::CompletionMismatch);
+        }
+        self.pop_command();
+        for command in &mut self.commands {
+            match command.message_id {
+                APM_SET_BEACON_IE_REQ => command.payload[0] = index,
+                APM_START_REQ => command.payload[APM_START_VIF_INDEX] = index,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn confirm_ap_start(&mut self, payload: &[u8]) -> Result<(), AicError> {
+        let command = self.commands.front().ok_or(AicError::CompletionMismatch)?;
+        crate::lmac::parse_ap_start(payload, command.payload[APM_START_VIF_INDEX])?;
+        self.pop_command();
+        Ok(())
+    }
+
     pub(super) fn accept_connect_indication(
         &mut self,
         station_index: u8,
@@ -370,37 +393,54 @@ fn scan_command(ssid: Option<&[u8]>) -> ControlCommand {
     }
 }
 
+/// Offset of the `vif_idx` field inside the natural-aligned vendor
+/// `struct apm_start_req` payload built by [`open_access_point_commands`].
+///
+/// Vendor layout (lmac_msg.h, natural alignment): `mac_rateset` (length + 12
+/// rates = 13 bytes), one pad byte, `mac_chan_def` { u16 freq; u8 band;
+/// u8 flags; s8 tx_power } at 14..19, `center_freq1/2` u32 at 20..28,
+/// `ch_width` at 28, pad, `bcn_addr` u32 at 32, `bcn_len`/`tim_oft`/
+/// `bcn_int` u16 at 36..42, pad, `flags` u32 at 44, `ctrl_port_ethertype`
+/// u16 at 48, `tim_len` at 50, `vif_idx` at 51 (struct size 52).
+const APM_START_VIF_INDEX: usize = 51;
+
 fn open_access_point_commands(ssid: &[u8], channel: u8, mac: [u8; 6]) -> VecDeque<ControlCommand> {
+    use crate::lmac::{
+        APM_SET_BEACON_IE_CFM, APM_SET_BEACON_IE_REQ, APM_START_CFM, APM_START_REQ, MM_ADD_IF_CFM,
+        MM_ADD_IF_REQ, MM_SET_FILTER_CFM, MM_SET_FILTER_REQ, MM_START_CFM, MM_START_REQ, TASK_MM,
+    };
     let mut commands = VecDeque::new();
-    let mut add_interface = vec![0; 10];
-    add_interface[0] = 2;
-    add_interface[2..8].copy_from_slice(&mac);
+    let add_interface = crate::lmac::add_interface_payload(mac, 2).to_vec();
     commands.push_back(ControlCommand {
-        message_id: 0x0006,
-        destination: 0,
-        expected_message_id: 0x0007,
+        message_id: MM_ADD_IF_REQ,
+        destination: TASK_MM,
+        expected_message_id: MM_ADD_IF_CFM,
         payload: add_interface,
     });
     commands.push_back(ControlCommand {
-        message_id: 0x0002,
-        destination: 0,
-        expected_message_id: 0x0003,
+        message_id: MM_START_REQ,
+        destination: TASK_MM,
+        expected_message_id: MM_START_CFM,
         payload: crate::lmac::start_payload().to_vec(),
     });
     commands.push_back(ControlCommand {
-        message_id: 0x000e,
-        destination: 0,
-        expected_message_id: 0x000f,
-        payload: 0x1502_868cu32.to_le_bytes().to_vec(),
+        message_id: MM_SET_FILTER_REQ,
+        destination: TASK_MM,
+        expected_message_id: MM_SET_FILTER_CFM,
+        payload: crate::lmac::filter_payload().to_vec(),
     });
     let (beacon, tim_offset) = open_beacon(ssid, channel, mac);
+    // Vendor `struct apm_set_bcn_ie_req` layout (natural alignment): vif_idx
+    // at 0, one pad byte, bcn_ie_len u16 at 2, bcn_ie at 4. The vif index
+    // comes from the ADD_IF confirmation and is pinned in by the mailbox
+    // completion path.
     let mut beacon_request = vec![0; 516];
     beacon_request[2..4].copy_from_slice(&(beacon.len() as u16).to_le_bytes());
     beacon_request[4..4 + beacon.len()].copy_from_slice(&beacon);
     commands.push_back(ControlCommand {
-        message_id: 0x1c08,
+        message_id: APM_SET_BEACON_IE_REQ,
         destination: 7,
-        expected_message_id: 0x1c09,
+        expected_message_id: APM_SET_BEACON_IE_CFM,
         payload: beacon_request,
     });
     let mut start = vec![0; 52];
@@ -420,9 +460,9 @@ fn open_access_point_commands(ssid: &[u8], channel: u8, mac: [u8; 6]) -> VecDequ
     start[48..50].copy_from_slice(&0x888eu16.to_be_bytes());
     start[50] = 6;
     commands.push_back(ControlCommand {
-        message_id: 0x1c00,
+        message_id: APM_START_REQ,
         destination: 7,
-        expected_message_id: 0x1c01,
+        expected_message_id: APM_START_CFM,
         payload: start,
     });
     commands

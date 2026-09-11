@@ -8,7 +8,6 @@ use crate::{
         DBG_MEM_BLOCK_WRITE_REQ, DBG_MEM_MASK_WRITE_REQ, DBG_MEM_READ_REQ, DBG_MEM_WRITE_REQ,
         DBG_START_APP_REQ, command_frame, debug_command_frame,
     },
-    registers::flow_credits,
 };
 
 const MAILBOX_TIMEOUT: Duration = Duration::from_secs(5);
@@ -71,7 +70,9 @@ impl AicDevice {
 
     pub(super) fn mailbox_waiting_for_receive(&self) -> bool {
         self.lifecycle.mailbox.as_ref().is_some_and(|mailbox| {
-            mailbox.phase == MailboxPhase::Confirmation && self.io.receive.active
+            (mailbox.phase == MailboxPhase::Confirmation
+                || (self.lifecycle.state == AicState::Ready && mailbox.phase == MailboxPhase::Flow))
+                && self.io.receive.active
         })
     }
 
@@ -111,7 +112,11 @@ impl AicDevice {
         };
         if let Some(retry_at) = mailbox.retry_at {
             if now < retry_at {
-                return AicAction::RetryAt(retry_at);
+                return if self.lifecycle.state == AicState::Ready {
+                    AicAction::WaitForInterruptUntil(retry_at)
+                } else {
+                    AicAction::RetryAt(retry_at)
+                };
             }
             mailbox.retry_at = None;
         }
@@ -141,6 +146,16 @@ impl AicDevice {
         response: SdioResponse,
         now: MonotonicTime,
     ) -> Result<(), AicError> {
+        // The flow register decode is profile-dependent and borrows the
+        // device; resolve it before taking the mailbox reference.
+        let flow = if purpose == IoPurpose::MailboxFlow {
+            Some(
+                self.registers()
+                    .flow_credits(expect_byte(response.clone())?),
+            )
+        } else {
+            None
+        };
         let mailbox = self
             .lifecycle
             .mailbox
@@ -148,7 +163,7 @@ impl AicDevice {
             .ok_or(AicError::CompletionMismatch)?;
         match purpose {
             IoPurpose::MailboxFlow => {
-                let flow = flow_credits(expect_byte(response)?);
+                let flow = flow.expect("mailbox flow decoded before the borrow");
                 if flow == 0 {
                     mailbox.flow_retries = mailbox.flow_retries.saturating_add(1);
                     if mailbox.flow_retries >= MAX_MAILBOX_FLOW_RETRIES {
@@ -232,7 +247,8 @@ impl AicDevice {
     fn complete_control_mailbox(&mut self, result: Vec<u8>) -> Result<(), AicError> {
         use super::control::{ConnectPhase, ControlOperation};
         use crate::lmac::{
-            ME_SET_CONTROL_PORT_CFM, MM_KEY_ADD_CFM, SM_CONNECT_CFM, SM_DISCONNECT_CFM,
+            APM_START_CFM, ME_SET_CONTROL_PORT_CFM, MM_ADD_IF_CFM, MM_KEY_ADD_CFM, SM_CONNECT_CFM,
+            SM_DISCONNECT_CFM,
         };
 
         let control = self
@@ -298,6 +314,14 @@ impl AicDevice {
                 control.pop_command();
                 self.data.link.clear_peer();
                 finish = true;
+            }
+            MM_ADD_IF_CFM => {
+                let index = crate::lmac::parse_add_interface(&result)?;
+                control.assign_ap_interface(index)?;
+            }
+            APM_START_CFM => {
+                control.confirm_ap_start(&result)?;
+                finish = control.commands.is_empty();
             }
             _ => {
                 control.pop_command();
@@ -467,6 +491,52 @@ mod tests {
     }
 
     #[test]
+    fn ready_mailbox_backoff_drains_rx_before_retrying_command_credits() {
+        let now = MonotonicTime::default();
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.data.link.install_mac([2, 0, 0, 0, 0, 1]).unwrap();
+        device.data.link.install_interface(0).unwrap();
+        let AicAction::SubmitSdio(flow) = device.advance(AicInput {
+            now,
+            event: Some(AicInputEvent::Control(ControlRequest::Disconnect)),
+        }) else {
+            panic!("expected command credit read")
+        };
+        let deadline = now.after(MAILBOX_FLOW_RETRY);
+        assert_eq!(
+            device.advance(complete(&flow, SdioResponse::Byte(0), now)),
+            AicAction::WaitForInterruptUntil(deadline)
+        );
+        let AicAction::SubmitSdio(rx) = device.advance(AicInput {
+            now,
+            event: Some(AicInputEvent::Irq(IrqSnapshot {
+                sequence: 1,
+                card_interrupt: true,
+                ..IrqSnapshot::default()
+            })),
+        }) else {
+            panic!("RX must run during command credit backoff")
+        };
+        assert!(matches!(rx.kind, SdioRequestKind::ReadByte { address, .. }
+            if address.get() == device.registers().block_count));
+        assert_eq!(
+            device.advance(complete(&rx, SdioResponse::Byte(0), now)),
+            AicAction::WaitForInterruptUntil(deadline)
+        );
+        let AicAction::SubmitSdio(flow) = device.advance(AicInput::tick(deadline)) else {
+            panic!("command credit retry must resume at the same deadline")
+        };
+        assert!(matches!(
+            device.advance(complete(&flow, SdioResponse::Byte(128), deadline)),
+            AicAction::SubmitSdio(SdioRequest {
+                kind: SdioRequestKind::Write { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn dc_firmware_mailbox_bypasses_data_fifo_flow_credits() {
         let now = MonotonicTime::from_nanos(0);
         let mut dc = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
@@ -623,6 +693,174 @@ mod tests {
         mailbox.result = Some(vec![0; 8]);
 
         assert!(!device.mailbox_timed_out(deadline));
+    }
+
+    #[test]
+    fn ap_add_if_confirmation_assigns_the_vif_index_to_beacon_and_apm_start() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.lifecycle.control = Some(
+            super::control::build(
+                ControlRequest::StartOpenAccessPoint {
+                    ssid: b"SG2002".to_vec(),
+                    channel: 6,
+                },
+                [2, 0, 0, 0, 0, 1],
+                Some(0),
+            )
+            .unwrap(),
+        );
+        device.lifecycle.mailbox = Some(MailboxState {
+            frame: Vec::new(),
+            request: MailboxRequest::Lmac {
+                message_id: crate::lmac::MM_ADD_IF_REQ,
+            },
+            expected_message_id: crate::lmac::MM_ADD_IF_CFM,
+            phase: MailboxPhase::Complete,
+            deadline: MonotonicTime::from_nanos(1),
+            retry_at: None,
+            flow_retries: 0,
+            result: Some(vec![0, 1]),
+        });
+
+        assert_eq!(device.complete_mailbox(), Ok(()));
+        let control = device.lifecycle.control.as_ref().unwrap();
+        let beacon_upload = control
+            .commands
+            .iter()
+            .find(|command| command.message_id == crate::lmac::APM_SET_BEACON_IE_REQ)
+            .unwrap();
+        let apm_start = control
+            .commands
+            .iter()
+            .find(|command| command.message_id == crate::lmac::APM_START_REQ)
+            .unwrap();
+        assert_eq!(beacon_upload.payload[0], 1);
+        assert_eq!(apm_start.payload[51], 1);
+    }
+
+    #[test]
+    fn ap_add_interface_rejects_invalid_identity_before_followup_commands() {
+        for payload in [vec![0, 255], vec![0, 1, 0]] {
+            let payload_length = payload.len();
+            let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+            device.lifecycle.state = AicState::Ready;
+            device.lifecycle.control = Some(
+                super::control::build(
+                    ControlRequest::StartOpenAccessPoint {
+                        ssid: b"test".to_vec(),
+                        channel: 6,
+                    },
+                    [2, 0, 0, 0, 0, 1],
+                    Some(0),
+                )
+                .unwrap(),
+            );
+            device.lifecycle.mailbox = Some(MailboxState {
+                frame: Vec::new(),
+                request: MailboxRequest::Lmac {
+                    message_id: crate::lmac::MM_ADD_IF_REQ,
+                },
+                expected_message_id: crate::lmac::MM_ADD_IF_CFM,
+                phase: MailboxPhase::Complete,
+                deadline: MonotonicTime::from_nanos(1),
+                retry_at: None,
+                flow_retries: 0,
+                result: Some(payload),
+            });
+            assert_eq!(
+                device.advance(AicInput::tick(MonotonicTime::default())),
+                AicAction::Event(AicEvent::Failed(AicError::MalformedMailboxResponse {
+                    request: MailboxRequest::Lmac {
+                        message_id: crate::lmac::MM_ADD_IF_REQ
+                    },
+                    expected_message_id: crate::lmac::MM_ADD_IF_CFM,
+                    payload_length,
+                }))
+            );
+            assert!(device.lifecycle.control.is_none());
+        }
+    }
+
+    #[test]
+    fn ap_add_if_rejection_surfaces_the_firmware_status() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.lifecycle.control = Some(
+            super::control::build(
+                ControlRequest::StartOpenAccessPoint {
+                    ssid: b"SG2002".to_vec(),
+                    channel: 6,
+                },
+                [2, 0, 0, 0, 0, 1],
+                Some(0),
+            )
+            .unwrap(),
+        );
+        device.lifecycle.mailbox = Some(MailboxState {
+            frame: Vec::new(),
+            request: MailboxRequest::Lmac {
+                message_id: crate::lmac::MM_ADD_IF_REQ,
+            },
+            expected_message_id: crate::lmac::MM_ADD_IF_CFM,
+            phase: MailboxPhase::Complete,
+            deadline: MonotonicTime::from_nanos(1),
+            retry_at: None,
+            flow_retries: 0,
+            result: Some(vec![3, 1]),
+        });
+
+        assert!(matches!(
+            device.complete_mailbox(),
+            Err(AicError::FirmwareRejected {
+                message_id: crate::lmac::MM_ADD_IF_CFM,
+                status: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn apm_start_rejection_surfaces_the_firmware_status() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        let control = super::control::build(
+            ControlRequest::StartOpenAccessPoint {
+                ssid: b"SG2002".to_vec(),
+                channel: 6,
+            },
+            [2, 0, 0, 0, 0, 1],
+            Some(0),
+        )
+        .unwrap();
+        let mut control = control;
+        while control
+            .commands
+            .front()
+            .is_some_and(|command| command.expected_message_id != crate::lmac::APM_START_CFM)
+        {
+            control.commands.pop_front();
+        }
+        device.lifecycle.control = Some(control);
+        device.lifecycle.mailbox = Some(MailboxState {
+            frame: Vec::new(),
+            request: MailboxRequest::Lmac {
+                message_id: crate::lmac::APM_START_REQ,
+            },
+            expected_message_id: crate::lmac::APM_START_CFM,
+            phase: MailboxPhase::Complete,
+            deadline: MonotonicTime::from_nanos(1),
+            retry_at: None,
+            flow_retries: 0,
+            result: Some(vec![5, 0, 0, 0]),
+        });
+
+        assert!(matches!(
+            device.complete_mailbox(),
+            Err(AicError::FirmwareRejected {
+                message_id: crate::lmac::APM_START_CFM,
+                status: 5
+            })
+        ));
     }
 
     #[test]

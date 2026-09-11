@@ -2,10 +2,9 @@
 
 use core::fmt;
 
-use super::{PciError, PciResult};
+use super::{PciError, PciResult, config_layout};
 use crate::AccessWidth;
 
-pub(crate) const CONFIG_SPACE_SIZE: usize = 0x100;
 const MAX_DEVICE: u8 = 31;
 const MAX_FUNCTION: u8 = 7;
 
@@ -116,7 +115,7 @@ impl PciBarIndex {
     ///
     /// Returns [`PciError::InvalidAddress`] for an index above BAR5.
     pub fn new(value: u8) -> PciResult<Self> {
-        if value >= 6 {
+        if value >= config_layout::BAR_COUNT {
             return Err(PciError::InvalidAddress {
                 component: "BAR index",
                 value: u64::from(value),
@@ -131,7 +130,7 @@ impl PciBarIndex {
     }
 
     pub(crate) const fn config_offset(self) -> usize {
-        0x10 + self.0 as usize * 4
+        config_layout::CONFIG_BAR_START + self.0 as usize * config_layout::CONFIG_BAR_REGISTER_SIZE
     }
 }
 
@@ -152,7 +151,7 @@ impl ConfigOffset {
     ///
     /// Returns [`PciError::InvalidAddress`] for an extended-config offset.
     pub fn new(value: u16) -> PciResult<Self> {
-        if usize::from(value) >= CONFIG_SPACE_SIZE {
+        if usize::from(value) >= config_layout::CONFIG_SPACE_SIZE {
             return Err(PciError::InvalidAddress {
                 component: "config offset",
                 value: u64::from(value),
@@ -192,7 +191,10 @@ impl ConfigOffset {
                 width,
                 detail: "access range overflows",
             })?;
-        if end > CONFIG_SPACE_SIZE || offset / 4 != (end - 1) / 4 {
+        if end > config_layout::CONFIG_SPACE_SIZE
+            || offset / config_layout::CONFIG_DWORD_SIZE
+                != (end - 1) / config_layout::CONFIG_DWORD_SIZE
+        {
             return Err(PciError::InvalidConfigAccess {
                 offset: self.0,
                 width,

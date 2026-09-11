@@ -20,6 +20,7 @@ pub use self::pi_core::*;
 /// donation registration, and handoff are in progress. Blocking and targeted
 /// wake happen after that metadata guard has been released.
 pub struct RawMutex {
+    rt_lock: bool,
     core: PiMutexCore,
     next_waiter_sequence: AtomicU64,
     #[cfg(feature = "lockdep")]
@@ -28,6 +29,7 @@ pub struct RawMutex {
 
 /// Borrowed execution state for the unique native PI-mutex algorithm.
 pub(in crate::sync) struct PiMutexAlgorithm<'lock> {
+    rt_lock: bool,
     core: PiMutexCoreView<'lock>,
     next_waiter_sequence: &'lock AtomicU64,
 }
@@ -101,6 +103,7 @@ impl RawMutex {
     /// Creates an unlocked PI mutex.
     pub const fn new() -> Self {
         Self {
+            rt_lock: false,
             core: PiMutexCore::new(),
             next_waiter_sequence: AtomicU64::new(0),
             #[cfg(feature = "lockdep")]
@@ -108,8 +111,16 @@ impl RawMutex {
         }
     }
 
+    pub(crate) const fn new_rt_lock() -> Self {
+        let mut lock = Self::new();
+        lock.rt_lock = true;
+        lock
+    }
+
     const fn algorithm(&self) -> PiMutexAlgorithm<'_> {
-        PiMutexAlgorithm::new(self.core.view(), &self.next_waiter_sequence)
+        let mut algorithm = PiMutexAlgorithm::new(self.core.view(), &self.next_waiter_sequence);
+        algorithm.rt_lock = self.rt_lock;
+        algorithm
     }
 
     /// Returns whether the current thread owns this mutex.
@@ -124,6 +135,7 @@ impl<'lock> PiMutexAlgorithm<'lock> {
         next_waiter_sequence: &'lock AtomicU64,
     ) -> Self {
         Self {
+            rt_lock: false,
             core,
             next_waiter_sequence,
         }
@@ -147,6 +159,12 @@ impl<'lock> PiMutexAlgorithm<'lock> {
     }
 
     pub(in crate::sync) fn lock_pi(&self) {
+        if !self.rt_lock {
+            task_result(
+                crate::thread::current::validate_sleeping_lock_context(),
+                "validate sleeping lock context",
+            );
+        }
         #[cfg(feature = "qperf-metrics")]
         crate::diagnostics::counters::record_pi_mutex_lock_attempt();
         match capture_current_and_prepare_slow(
@@ -162,7 +180,11 @@ impl<'lock> PiMutexAlgorithm<'lock> {
                 // schedules and must remain usable during single-threaded
                 // boot.
                 task_result(
-                    crate::thread::current::validate_blocking_context(),
+                    if self.rt_lock {
+                        crate::thread::current::validate_rt_lock_context()
+                    } else {
+                        crate::thread::current::validate_blocking_context()
+                    },
                     "validate PI mutex blocking context",
                 );
             },
@@ -183,6 +205,10 @@ impl<'lock> PiMutexAlgorithm<'lock> {
         &self,
         mut should_interrupt: impl FnMut() -> bool,
     ) -> Result<(), PiMutexLockInterrupted> {
+        task_result(
+            crate::thread::current::validate_sleeping_lock_context(),
+            "validate interruptible sleeping lock context",
+        );
         match capture_current_and_prepare_slow(
             || {
                 task_result(
@@ -208,6 +234,12 @@ impl<'lock> PiMutexAlgorithm<'lock> {
     #[cold]
     #[inline(never)]
     fn lock_contended(&self, current: crate::thread::CurrentThreadToken) {
+        let _saved_state = self.rt_lock.then(|| {
+            task_result(
+                crate::runtime::sync::rt_lock::RtLockWaitGuard::enter(),
+                "save task state for RT lock wait",
+            )
+        });
         let current_id = current.id().into();
         let sequence = self.next_waiter_sequence.fetch_add(1, Ordering::Relaxed);
         let lock = core_result(self.core.mutex_ref(), "borrow PI mutex identity");
@@ -343,6 +375,9 @@ impl<'lock> PiMutexAlgorithm<'lock> {
     }
 
     pub(in crate::sync) fn try_lock_pi(&self) -> bool {
+        if crate::runtime::task_runtime::in_hard_irq() {
+            return false;
+        }
         let current = Self::current_task_id();
         match self.core.try_acquire(current) {
             Ok(PiMutexAcquire::Acquired) => true,
@@ -509,6 +544,9 @@ unsafe impl lock_api::RawMutex for RawMutex {
     #[inline(always)]
     #[track_caller]
     fn try_lock(&self) -> bool {
+        if crate::runtime::task_runtime::in_hard_irq() {
+            return false;
+        }
         #[cfg(feature = "lockdep")]
         {
             self.try_lock_nested(super::lockdep::DEFAULT_LOCK_SUBCLASS)

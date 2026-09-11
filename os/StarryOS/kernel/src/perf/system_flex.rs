@@ -69,11 +69,10 @@ impl SystemFlexCounter {
         let worker_counter = Arc::clone(&counter);
         let mut affinity = CpuSet::empty(ax_runtime::hal::cpu_num());
         assert!(affinity.insert(CpuId::new(owner.as_usize() as u32)));
-        crate::task::spawn_kernel_thread_with_affinity(
-            move || worker_counter.run(),
-            format!("perf-flex/{}", owner.as_usize()),
-            affinity,
-        );
+        crate::task::kernel_thread_builder(format!("perf-flex/{}", owner.as_usize()))
+            .affinity(affinity)
+            .spawn(move || worker_counter.run())
+            .expect("failed to spawn affine perf worker");
         counter
     }
 

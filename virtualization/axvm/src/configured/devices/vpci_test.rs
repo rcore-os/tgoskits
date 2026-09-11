@@ -162,7 +162,7 @@ impl PciFunction for VpciTestFunction {
     fn read_bar(
         &self,
         access: PciBarAccess,
-        _context: &mut dyn DeviceContext,
+        _context: &mut dyn PciEndpointContext,
     ) -> DeviceResult<u64> {
         let (offset, size) = self.access_range(access)?;
         let backing = self.backing.lock().map_err(|_| DeviceError::InvalidState {
@@ -181,7 +181,7 @@ impl PciFunction for VpciTestFunction {
         &self,
         access: PciBarAccess,
         value: u64,
-        _context: &mut dyn DeviceContext,
+        _context: &mut dyn PciEndpointContext,
     ) -> DeviceResult {
         let (offset, size) = self.access_range(access)?;
         let mut backing = self.backing.lock().map_err(|_| DeviceError::InvalidState {
@@ -190,6 +190,17 @@ impl PciFunction for VpciTestFunction {
         })?;
         let bytes = value.to_le_bytes();
         backing[offset..offset + size].copy_from_slice(&bytes[..size]);
+        Ok(())
+    }
+
+    fn reset(&self, _command: PciCommandState) -> DeviceResult {
+        self.backing
+            .lock()
+            .map_err(|_| DeviceError::InvalidState {
+                operation: "reset vpci-test BAR",
+                detail: "BAR backing lock is poisoned".into(),
+            })?
+            .fill(0);
         Ok(())
     }
 }

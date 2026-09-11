@@ -30,7 +30,13 @@ const ARCEOS_RUST_LOCKDEP_DETECT_FEATURE: &str = "lockdep-detect";
 const ARCEOS_RUST_MEM_STAGE1_TRANSITION_FEATURE: &str = "mem-stage1-transition";
 const ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE: &str = "task-stack-guard-page";
 const ARCEOS_RUST_TASK_IRQ_FEATURE: &str = "task-irq";
-const ARCEOS_RUST_STANDALONE_FEATURES: &[&str] = &[ARCEOS_RUST_TASK_IRQ_FEATURE, "serial-rx"];
+// Device workers in `all` retain CPU ownership; offline tests need a fresh kernel.
+const ARCEOS_RUST_CPU_LIFECYCLE_FEATURE: &str = "task-cpu-lifecycle";
+const ARCEOS_RUST_STANDALONE_FEATURES: &[&str] = &[
+    ARCEOS_RUST_TASK_IRQ_FEATURE,
+    ARCEOS_RUST_CPU_LIFECYCLE_FEATURE,
+    "serial-rx",
+];
 
 const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     ARCEOS_RUST_ALL_FEATURE,
@@ -50,6 +56,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     "sched-cfs",
     "sched-rr",
     "task-affinity",
+    ARCEOS_RUST_CPU_LIFECYCLE_FEATURE,
     "task-fair-idle-pull",
     "task-fair-wake-idle-sibling",
     "task-ipi",

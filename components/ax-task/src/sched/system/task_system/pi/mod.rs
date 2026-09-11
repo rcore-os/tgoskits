@@ -16,9 +16,9 @@ use crate::{
 };
 
 #[derive(Clone, Copy)]
-enum PiRqFollowup {
-    RemoteReschedule,
-    SchedulerWork,
+struct PiRqFollowup {
+    reschedule: Option<RescheduleKind>,
+    owner_work: bool,
 }
 
 struct PiWaiterRefresh {
@@ -28,7 +28,33 @@ struct PiWaiterRefresh {
     /// The new top waiter of an ownerless lock whose top changed. Linux wakes
     /// this waiter from `rt_mutex_adjust_prio_chain()` step [9]; otherwise no
     /// owner remains to provide the scheduling edge.
-    ownerless_wake: Option<Arc<ThreadCore>>,
+    ownerless_wake: Option<PiHandoffWake>,
+}
+
+/// A wake selected under wait_lock, retaining the exact PI registration.
+struct PiHandoffWake {
+    core: Arc<ThreadCore>,
+    generation: u64,
+    rt_lock_wait: bool,
+}
+
+impl PiHandoffWake {
+    fn new(core: Arc<ThreadCore>, generation: u64) -> Self {
+        let rt_lock_wait = core.in_rt_lock_wait();
+        Self {
+            core,
+            generation,
+            rt_lock_wait,
+        }
+    }
+
+    fn deliver(self, system: &TaskSystem) {
+        if self.rt_lock_wait {
+            system.wake_rt_lock_thread(&self.core, self.generation);
+        } else {
+            system.wake_thread_from_current_cpu(&self.core, crate::thread::WakeIntent::Normal);
+        }
+    }
 }
 
 impl TaskSystem {

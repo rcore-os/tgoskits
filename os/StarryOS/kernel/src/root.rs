@@ -52,6 +52,8 @@ mod uprobe;
 
 #[cfg(all(test, axtest))]
 mod block_runtime_axtest;
+#[cfg(all(test, axtest))]
+mod thread_lifecycle_axtest;
 
 pub use error::{DmaOperation, StarryError, StarryResult};
 // The staged MM ownership and transaction types are intentionally reachable

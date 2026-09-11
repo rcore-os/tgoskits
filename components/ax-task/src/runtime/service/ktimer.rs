@@ -48,7 +48,7 @@ pub fn start_current_ktimer_service() -> Result<(), TaskError> {
             return Err(error);
         }
     };
-    worker.detach_permanent();
+    worker.detach();
     Ok(())
 }
 

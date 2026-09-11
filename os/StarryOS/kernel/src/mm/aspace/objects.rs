@@ -474,6 +474,43 @@ impl PageObject {
         &self.frame
     }
 
+    /// Publishes CPU-written RAM contents before granting instruction fetch.
+    /// The mapping transaction retains the frame or its external provider pin
+    /// throughout maintenance; a borrowed FrameLease alone is not ownership.
+    pub(super) fn prepare_executable_mapping(
+        &self,
+        paddr: PhysAddr,
+        size: usize,
+        flags: ax_runtime::hal::paging::MappingFlags,
+    ) {
+        use ax_runtime::hal::{mem::phys_to_virt, paging::MappingFlags};
+
+        if !flags.contains(MappingFlags::EXECUTE)
+            || flags.intersects(MappingFlags::DEVICE | MappingFlags::UNCACHED)
+        {
+            return;
+        }
+        let offset = paddr
+            .as_usize()
+            .checked_sub(self.frame.paddr().as_usize())
+            .expect("executable leaf must belong to its retained page");
+        assert!(
+            offset <= self.frame.size() && size <= self.frame.size() - offset,
+            "executable leaf exceeds its retained page"
+        );
+        let range = ax_cpu::cache::CacheRange::new(phys_to_virt(paddr), size)
+            .expect("retained RAM alias must not wrap");
+        // SAFETY: the fault/populate/protect transaction retains this bounded
+        // RAM range through its owning frame, pending file-cache pin, or live
+        // MappingSlot eviction exclusion. It has not published the new
+        // executable PTE yet. Cleaning preserves other CPU data; unlike DMA
+        // invalidation it cannot discard dirty bytes.
+        unsafe { ax_cpu::cache::clean_dcache_range_to_pou(range) };
+        // arm64 broadcasts invalidation; remote user exception return provides
+        // context synchronization. RISC-V also executes fence.i on user return.
+        ax_cpu::cache::flush_icache_all();
+    }
+
     pub fn resident_kind(&self) -> Option<RssKind> {
         RssKind::from_slot_value(self.resident_kind.load(Ordering::Acquire))
     }

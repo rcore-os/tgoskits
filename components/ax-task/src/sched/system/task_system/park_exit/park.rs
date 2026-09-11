@@ -3,6 +3,16 @@
 use super::*;
 
 impl TaskSystem {
+    pub(crate) fn enter_rt_lock_wait(&self, core: &ThreadCore) -> Result<(), TaskError> {
+        let _sched = core.sched().lock();
+        core.enter_rt_lock_wait()
+    }
+
+    pub(crate) fn restore_rt_lock_wait(&self, core: &ThreadCore) -> Result<(), TaskError> {
+        let _sched = core.sched().lock();
+        core.restore_rt_lock_wait()
+    }
+
     /// Publishes `PARKING` after consuming a wake-before-park notification.
     pub fn prepare_park(
         &self,

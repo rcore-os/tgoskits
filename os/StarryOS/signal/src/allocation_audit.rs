@@ -6,12 +6,12 @@ use alloc::sync::{Arc, Weak};
 use core::cell::{Cell, RefCell};
 use std::alloc::{GlobalAlloc, Layout, System};
 
-use ax_runtime::task::sync::SpinLock;
+use ax_runtime::task::sync::RawSpinLock;
 
 use crate::api::SignalActions;
 
 std::thread_local! {
-    static ACTIONS: RefCell<Weak<SpinLock<SignalActions>>> = const { RefCell::new(Weak::new()) };
+    static ACTIONS: RefCell<Weak<RawSpinLock<SignalActions>>> = const { RefCell::new(Weak::new()) };
     static LOCKED_HEAP_OPERATIONS: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -53,7 +53,7 @@ fn record_heap_operation() {
 
 struct AuditScope<'a> {
     // Retain a strong owner for every temporary Weak upgrade in the observer.
-    _owner: &'a Arc<SpinLock<SignalActions>>,
+    _owner: &'a Arc<RawSpinLock<SignalActions>>,
 }
 
 impl Drop for AuditScope<'_> {
@@ -65,7 +65,7 @@ impl Drop for AuditScope<'_> {
 }
 
 pub(crate) fn with_action_lock<T>(
-    actions: &Arc<SpinLock<SignalActions>>,
+    actions: &Arc<RawSpinLock<SignalActions>>,
     operation: impl FnOnce() -> T,
 ) -> (T, usize) {
     ACTIONS.with(|observed| {

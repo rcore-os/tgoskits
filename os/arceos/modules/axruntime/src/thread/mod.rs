@@ -1,11 +1,7 @@
 //! ArceOS ownership and trait-FFI glue for the OS-independent task system.
 
 use alloc::{boxed::Box, string::String};
-use core::{
-    pin::Pin,
-    ptr,
-    sync::atomic::{AtomicBool, AtomicI32, Ordering},
-};
+use core::{pin::Pin, ptr};
 
 use ax_hal::percpu::CpuPin;
 use ax_lazyinit::LazyInit;
@@ -23,7 +19,6 @@ use ax_task::{
             MembarrierRegistration, MembarrierRegistrationPhase, RuntimeMembarrierAction,
             StackHandle, StackRequest, ThreadResources, TlsHandle, UserContextRequest,
         },
-        service::SchedulerTickWorkDisposition,
         switch::{
             ContextThreadBinding, CurrentThreadPublication, RuntimeSchedulerFrameEnterResult,
             RuntimeSwitchPlan, SchedSwitchRecord, ThreadIdentityV1,
@@ -31,12 +26,7 @@ use ax_task::{
         task_runtime::impl_trait as impl_task_runtime,
     },
     sched::{CpuId, CpuSet, FairMode, Nice, SchedulePolicy},
-    sync::WaitQueue,
-    thread::{
-        SwitchReason, TaskError, ThreadExtension, ThreadExtensionOps, ThreadHandle, ThreadId,
-        ThreadSpec,
-        current::{current_thread_extension, current_thread_handle, current_thread_id},
-    },
+    thread::{TaskError, ThreadId, ThreadSpec, current::current_thread_id},
 };
 
 mod address_space;
@@ -48,7 +38,8 @@ pub use mm_activation::{
 mod bootstrap;
 pub(crate) mod context;
 
-mod lifecycle;
+#[cfg(feature = "fault-injection")]
+pub mod creation_probe;
 mod resources;
 pub(crate) mod runtime_impl;
 pub(crate) mod scheduler_events;
@@ -78,8 +69,7 @@ pub(crate) use bootstrap::{
 };
 use bootstrap::{
     cpu_remote, current_cpu_owner_handles, idle_context_entry, primary_bootstrap_thread,
-    scheduler_current_cpu_remote_handle, task_system, with_current_cpu_local_mut_owner,
-    with_current_cpu_pin,
+    scheduler_current_cpu_remote_handle, task_system, with_current_cpu_pin,
 };
 #[cfg(feature = "smp")]
 pub(crate) use bootstrap::{initialize_secondary, run_idle};
@@ -167,44 +157,18 @@ pub fn replace_current_user_fp_state(
 ) -> Result<(), TaskError> {
     context::replace_current_user_fp_state(state)
 }
-pub use lifecycle::{
-    PreparedThread, StagedThread, ThreadOsExtensionBorrow, ThreadOsExtensionLease,
-    current_os_extension, exit_current, join_thread, thread_os_extension, wait_thread,
-};
-#[cfg(test)]
-use lifecycle::{
-    RUNTIME_THREAD_EXTENSION_OPS, RuntimeExtensionKind, classify_runtime_extension,
-    extension_data_after_releasing_lease,
-};
-use lifecycle::{
-    RuntimeThreadData, RuntimeThreadStart, finish_initial_scheduler_switch,
-    release_transferred_extension, runtime_thread_entry, runtime_thread_extension,
-};
 #[cfg(all(feature = "qperf-metrics", any(feature = "ipi", feature = "wake-ipi")))]
 pub(crate) use scheduler_events::{record_scheduler_ipi_consume, record_scheduler_ipi_send};
-#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
-pub use spawn::prepare_raw_with_extension_in_address_space_and_inherited_fp_scheduler_state;
-pub use spawn::{
-    prepare_raw, prepare_raw_with_extension_in_address_space_and_scheduler_state, spawn_raw,
-    spawn_raw_with_affinity, spawn_raw_with_extension, spawn_raw_with_extension_and_affinity,
-    spawn_raw_with_extension_in_address_space,
-    spawn_raw_with_extension_in_address_space_and_policy, spawn_raw_with_policy_and_affinity,
-};
-#[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
-pub use spawn::{
-    prepare_raw_with_extension_in_address_space_and_fp_scheduler_state,
-    spawn_raw_with_extension_in_address_space_and_fp_state,
-    spawn_raw_with_extension_in_address_space_and_fp_state_and_policy,
-};
+pub use spawn::{UserContextOptions, builder, exit_current, prepare_user_thread};
+
+fn finish_initial_scheduler_switch() {
+    // SAFETY: bootstrap entry owns the first incoming switch baton.
+    unsafe { ax_task::runtime::switch::finish_initial_context_switch() }
+        .expect("initial context switch must finish");
+}
 #[cfg(all(test, kernel_tls))]
 use thread_resources::assemble_bootstrap_resources;
-use thread_resources::{
-    InitialContextState, create_bootstrap_resources, create_idle_resources, create_thread_resources,
-};
-#[cfg(test)]
-use thread_resources::{
-    ThreadResourceBackend, UnreleasedThreadResources, create_thread_resources_with,
-};
+use thread_resources::{create_bootstrap_resources, create_idle_resources, create_user_resources};
 #[cfg(feature = "uspace")]
 pub use user_entry::UserExecutionContext;
 
@@ -235,3 +199,5 @@ pub const fn default_task_stack_size() -> usize {
 
 #[cfg(test)]
 mod tests;
+
+mod allocation;

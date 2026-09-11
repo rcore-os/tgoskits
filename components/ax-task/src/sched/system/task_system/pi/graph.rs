@@ -510,10 +510,12 @@ impl TaskSystem {
                     .as_ref()
                     .is_some_and(|(old_key, _)| lock_state.waiters.first() != Some(*old_key))
             {
-                lock_state
-                    .waiters
-                    .first_entry()
-                    .and_then(|(_, donation)| donation.waiter_core())
+                lock_state.waiters.first_entry().and_then(|(_, donation)| {
+                    Some(PiHandoffWake::new(
+                        donation.waiter_core()?,
+                        donation.wait_generation()?,
+                    ))
+                })
             } else {
                 None
             };
@@ -567,27 +569,9 @@ impl TaskSystem {
         &self,
         start: ThreadId,
         origin_lock: Option<PiMutexRaw>,
-        next_lock: Option<PiMutexRaw>,
-        top_task: ThreadId,
-        limit: usize,
-    ) -> Result<(), TaskError> {
-        // Keep wake callbacks outside every PI metadata lock. The chain walk
-        // collects ownerless top waiters and drains them after the last lock
-        // drop, matching Linux's wake_q split in rt_mutex_slowunlock().
-        let mut wakes = crate::thread::ThreadWakeBatch::new();
-        let result = self.run_pi_chain(start, origin_lock, next_lock, top_task, limit, &mut wakes);
-        let _woken = wakes.wake_all();
-        result
-    }
-
-    fn run_pi_chain(
-        &self,
-        start: ThreadId,
-        origin_lock: Option<PiMutexRaw>,
         mut next_lock: Option<PiMutexRaw>,
         top_task: ThreadId,
         limit: usize,
-        wakes: &mut crate::thread::ThreadWakeBatch,
     ) -> Result<(), TaskError> {
         let mut current = start;
         for depth in 1..=limit {
@@ -627,8 +611,9 @@ impl TaskSystem {
                 origin_lock,
                 origin_lock.map(|_| top_task),
             )?;
-            if let Some(core) = refresh.ownerless_wake {
-                let _queued = wakes.push(crate::thread::ThreadWakeHandle::from_core(core));
+            if let Some(wake) = refresh.ownerless_wake {
+                // refresh returned after dropping both wait_lock and pi_lock.
+                wake.deliver(self);
             }
             if !refresh.changed && origin_lock.is_none() {
                 return Ok(());
@@ -656,22 +641,9 @@ impl TaskSystem {
         thread: ThreadId,
     ) -> Result<(), TaskError> {
         let core = self.pi_thread_core(thread)?;
-        let mut wakes = crate::thread::ThreadWakeBatch::new();
-        let result =
-            self.propagate_pi_waiter_key_after_policy_change_inner(thread, &core, &mut wakes);
-        let _woken = wakes.wake_all();
-        result
-    }
-
-    fn propagate_pi_waiter_key_after_policy_change_inner(
-        &self,
-        thread: ThreadId,
-        core: &Arc<ThreadCore>,
-        wakes: &mut crate::thread::ThreadWakeBatch,
-    ) -> Result<(), TaskError> {
-        let refresh = self.refresh_blocked_waiter_key(core, None, None, None)?;
-        if let Some(top) = refresh.ownerless_wake {
-            let _queued = wakes.push(crate::thread::ThreadWakeHandle::from_core(top));
+        let refresh = self.refresh_blocked_waiter_key(&core, None, None, None)?;
+        if let Some(wake) = refresh.ownerless_wake {
+            wake.deliver(self);
         }
         let Some(owner) = refresh.owner else {
             return Ok(());

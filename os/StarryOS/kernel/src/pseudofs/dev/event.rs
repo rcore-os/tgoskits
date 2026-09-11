@@ -290,11 +290,9 @@ impl EventDev {
         }
 
         let event_dev = Arc::clone(self);
-        match crate::task::try_spawn_kernel_thread_with_stack(
-            move || event_dev.run_irq_service(),
-            "evdev-irq-service".into(),
-            crate::task::default_task_stack_size(),
-        ) {
+        match crate::task::kernel_thread_builder("evdev-irq-service".into())
+            .spawn(move || event_dev.run_irq_service())
+        {
             Ok(_service) => {
                 self.irq_service_state
                     .store(IRQ_SERVICE_STARTED, Ordering::Release);

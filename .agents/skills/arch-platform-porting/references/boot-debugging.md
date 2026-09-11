@@ -307,3 +307,9 @@ x86、RISC-V 和 LoongArch 的 AxVM 映射变更先关闭该 VM 的客户机进�
 AArch64 客户机向量中的致命宿主异常通过 `ax_cpu::trap::fatal::FatalTrap` 静态交给 `ax-runtime::panic_output`。运行期屏蔽中断并读取已安装 CPU-local 区域，不能通过 `this_cpu_id()` 取得任务抢占守卫，不能依赖 `SP_EL0` 或 `TPIDR_EL0` 仍属于宿主任务。输出只使用 emergency console；递归和并发终止复用 `axpanic`，不进入应用的 Rust panic hook，不回溯未知栈，不仅停驻持锁 CPU。该路径要求有效宿主栈和 CPU-local 区域；它不实现 Linux nVHE 的独立 overflow stack 或异常表恢复/宿主现场切换。
 
 `cargo xtask axvisor test qemu --arch aarch64 --test-case el2-fatal` 覆盖真实四核 EL2 同步异常与应用 panic hook 绕过；同一命令选择 `--test-case el2-fatal-foreign-context` 验证清空 TLS/任务锚点后的终止诊断。验证需同时看到 `ARCEOS_PANIC_EMERGENCY` 与固定 BRK syndrome；命中 `EL2_FATAL_ENTERED_STD_PANIC` 必须使任务失败。常规 panic 与 browser-console 仍需分别验证，终止诊断不能证明长会话网络挂起已消除。
+
+## 用户可执行页与指令缓存
+
+Starry 的可执行文件页、COW 拷贝及预填充由 `PageObject::prepare_executable_mapping` 在可执行 PTE 发布前完成缓存同步，mprotect 同样先同步被保留的叶子页。AArch64 使用直接映射别名清理 D-cache 到 PoU，再以 `ic ialluis; dsb ish; isb` 完成 Inner Shareable 指令缓存失效；远端 CPU 的用户异常返回提供 context synchronization。只执行 TLBI、加原子屏障或只在首次进入用户态清缓存不能覆盖后续缺页。
+
+对照 Linux `8cd9520d35a6c38db6567e97dd93b1f11f185dc6` 的 `__set_ptes_anysz -> __sync_cache_and_tags -> __sync_icache_dcache`。用 `cargo xtask starry test board --board orangepi-5-plus --test-case exec-cache` 验证文件页内核写入后的重新取指；QEMU 只作为执行路径检查，不作为 I-cache/D-cache 实机红绿证明。完整所有权与证据见 `docs/design/user-executable-cache-coherence.md`。

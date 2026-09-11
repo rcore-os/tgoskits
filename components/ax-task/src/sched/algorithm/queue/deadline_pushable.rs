@@ -22,8 +22,8 @@ pub(crate) struct DeadlinePushableNode {
 }
 
 impl DeadlinePushableNode {
-    pub(crate) fn empty() -> Box<Self> {
-        Box::new(Self {
+    pub(crate) fn empty() -> Result<Box<Self>, crate::thread::TaskError> {
+        crate::thread::allocation::try_box(Self {
             key: DeadlineQueueKey::empty(),
             left: None,
             right: None,
@@ -54,18 +54,12 @@ pub(super) struct DeadlinePushableTasks {
 }
 
 impl DeadlinePushableTasks {
-    pub(super) const fn new() -> Self {
-        Self {
+    pub(super) fn new(thread_capacity: usize) -> Result<Self, crate::thread::TaskError> {
+        Ok(Self {
             root: None,
-            keys: Vec::new(),
+            keys: crate::thread::allocation::empty_slots(thread_capacity)?,
             len: 0,
-        }
-    }
-
-    pub(super) fn prepare_thread_slot(&mut self, slot: usize) {
-        if self.keys.len() <= slot {
-            self.keys.resize(slot.saturating_add(1), None);
-        }
+        })
     }
 
     pub(super) const fn is_empty(&self) -> bool {

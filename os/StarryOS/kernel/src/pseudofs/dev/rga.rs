@@ -29,7 +29,7 @@ use crate::{
     },
     mm::{VmMutPtr, VmPtr},
     pseudofs::DeviceOps,
-    sync::SpinLock,
+    sync::RawSpinLock,
     task::UserTaskRef,
 };
 
@@ -125,22 +125,22 @@ struct RgaFile {
     /// Backing file: keeps the node alive and serves the trivial `FileLike` methods.
     base: KernelFile,
     /// Handles assigned by `RGA_IOC_IMPORT_BUFFER`, keyed by handle id (this open's namespace).
-    handle_table: SpinLock<BTreeMap<u32, ImportedBuf>>,
-    next_handle: SpinLock<u32>,
+    handle_table: RawSpinLock<BTreeMap<u32, ImportedBuf>>,
+    next_handle: RawSpinLock<u32>,
     /// Requests created by `RGA_IOC_REQUEST_CREATE`, keyed by request id. An entry's presence
     /// marks the id as live; the `Vec` holds tasks staged via `RGA_IOC_REQUEST_CONFIG`.
-    requests: SpinLock<BTreeMap<u32, Vec<librga_abi::RgaReq>>>,
-    next_request_id: SpinLock<u32>,
+    requests: RawSpinLock<BTreeMap<u32, Vec<librga_abi::RgaReq>>>,
+    next_request_id: RawSpinLock<u32>,
 }
 
 impl RgaFile {
     fn new(base: KernelFile) -> Self {
         Self {
             base,
-            handle_table: SpinLock::new(BTreeMap::new()),
-            next_handle: SpinLock::new(1),
-            requests: SpinLock::new(BTreeMap::new()),
-            next_request_id: SpinLock::new(1),
+            handle_table: RawSpinLock::new(BTreeMap::new()),
+            next_handle: RawSpinLock::new(1),
+            requests: RawSpinLock::new(BTreeMap::new()),
+            next_request_id: RawSpinLock::new(1),
         }
     }
 

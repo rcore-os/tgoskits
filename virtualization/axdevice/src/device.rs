@@ -168,6 +168,8 @@ pub struct DeviceRuntime {
     stop_grants: Vec<(DeviceId, StopGrant)>,
     /// VM runtime access ports used after grant verification.
     access_ports: RuntimeAccessPorts,
+    /// Routed endpoint grants minted by successful PCI endpoint binding.
+    routed_grants: Vec<RoutedDeviceGrant>,
     /// Whether this runtime topology has been frozen after VM preparation.
     sealed: bool,
     pci_roots: BTreeMap<DeviceNodeId, Arc<PciRootBinding>>,
@@ -177,12 +179,116 @@ pub struct DeviceRuntime {
 /// Stack-scoped metadata for one routed device access.
 struct RuntimeDeviceContext<'runtime, 'memory> {
     device_id: DeviceId,
+    routed_context: RoutedContextKind,
     memory: Option<&'memory mut dyn GuestMemoryAccess>,
     dma_grants: &'runtime [(DeviceId, DmaGrant)],
     timer_grants: &'runtime [(DeviceId, TimerGrant)],
     wake_grants: &'runtime [(DeviceId, WakeGrant)],
     stop_grants: &'runtime [(DeviceId, StopGrant)],
+    routed_grants: &'runtime [RoutedDeviceGrant],
     access_ports: &'runtime RuntimeAccessPorts,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RoutedContextKind {
+    Root,
+    Nested,
+}
+
+struct RuntimeRegistrationCheckpoint {
+    devices_len: usize,
+    dma_grants_len: usize,
+    timer_grants_len: usize,
+    wake_grants_len: usize,
+    stop_grants_len: usize,
+    pollable_devices_len: usize,
+    dma_pollable_devices_len: usize,
+    lifecycle_devices_len: usize,
+    routed_grants_len: usize,
+    pci_binding_leases_len: usize,
+    services_len: usize,
+    planned: PlannedRuntimeCheckpoint,
+}
+
+struct RuntimeRegistrationTransaction<'runtime> {
+    runtime: &'runtime mut DeviceRuntime,
+    checkpoint: RuntimeRegistrationCheckpoint,
+    root_node: DeviceNodeId,
+    root_inserted: bool,
+    committed: bool,
+}
+
+impl<'runtime> RuntimeRegistrationTransaction<'runtime> {
+    fn new(runtime: &'runtime mut DeviceRuntime, root_node: DeviceNodeId) -> Self {
+        let checkpoint = RuntimeRegistrationCheckpoint {
+            devices_len: runtime.devices.len(),
+            dma_grants_len: runtime.dma_grants.len(),
+            timer_grants_len: runtime.timer_grants.len(),
+            wake_grants_len: runtime.wake_grants.len(),
+            stop_grants_len: runtime.stop_grants.len(),
+            pollable_devices_len: runtime.pollable_devices.len(),
+            dma_pollable_devices_len: runtime.dma_pollable_devices.len(),
+            lifecycle_devices_len: runtime.lifecycle_devices.len(),
+            routed_grants_len: runtime.routed_grants.len(),
+            pci_binding_leases_len: runtime.pci_binding_leases.len(),
+            services_len: runtime.services.len(),
+            planned: runtime.planned.checkpoint(),
+        };
+        Self {
+            runtime,
+            checkpoint,
+            root_node,
+            root_inserted: false,
+            committed: false,
+        }
+    }
+
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for RuntimeRegistrationTransaction<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        self.runtime
+            .pci_binding_leases
+            .truncate(self.checkpoint.pci_binding_leases_len);
+        self.runtime
+            .routed_grants
+            .truncate(self.checkpoint.routed_grants_len);
+        if self.root_inserted {
+            self.runtime.pci_roots.remove(&self.root_node);
+        }
+        self.runtime.truncate_devices(self.checkpoint.devices_len);
+        self.runtime
+            .dma_grants
+            .truncate(self.checkpoint.dma_grants_len);
+        self.runtime
+            .timer_grants
+            .truncate(self.checkpoint.timer_grants_len);
+        self.runtime
+            .wake_grants
+            .truncate(self.checkpoint.wake_grants_len);
+        self.runtime
+            .stop_grants
+            .truncate(self.checkpoint.stop_grants_len);
+        self.runtime
+            .pollable_devices
+            .truncate(self.checkpoint.pollable_devices_len);
+        self.runtime
+            .dma_pollable_devices
+            .truncate(self.checkpoint.dma_pollable_devices_len);
+        self.runtime
+            .lifecycle_devices
+            .truncate(self.checkpoint.lifecycle_devices_len);
+        self.runtime.services.truncate(self.checkpoint.services_len);
+        self.runtime
+            .planned
+            .rollback(self.checkpoint.planned.clone());
+    }
 }
 
 impl RuntimeDeviceContext<'_, '_> {
@@ -191,11 +297,61 @@ impl RuntimeDeviceContext<'_, '_> {
             *device_id == self.device_id && matches_token(registered)
         })
     }
+
+    fn has_routed_grant(&self, grant: &RoutedDeviceGrant) -> bool {
+        self.routed_grants.iter().any(|registered| {
+            registered.binding_generation() == grant.binding_generation()
+                && registered.device_id() == grant.device_id()
+                && registered.same_token(grant)
+                && grant.admission_is_open()
+        })
+    }
 }
 
 impl DeviceContext for RuntimeDeviceContext<'_, '_> {
     fn device_id(&self) -> DeviceId {
         self.device_id
+    }
+
+    fn with_routed_device(
+        &mut self,
+        grant: &RoutedDeviceGrant,
+        callback: &mut dyn FnMut(&mut dyn DeviceContext) -> DeviceResult,
+    ) -> DeviceResult {
+        if self.routed_context == RoutedContextKind::Nested {
+            return Err(DeviceError::Unsupported {
+                operation: "enter routed device context",
+                detail: "routed device contexts are single-hop capabilities".into(),
+            });
+        }
+        if !self.has_routed_grant(grant) {
+            return Err(DeviceError::Unsupported {
+                operation: "enter routed device context",
+                detail: "device has no matching routed-device grant".into(),
+            });
+        }
+        let transfers_memory = grant.dma_enabled();
+        let memory = if transfers_memory {
+            self.memory.take()
+        } else {
+            None
+        };
+        let mut nested = RuntimeDeviceContext {
+            device_id: grant.device_id(),
+            routed_context: RoutedContextKind::Nested,
+            memory,
+            dma_grants: self.dma_grants,
+            timer_grants: self.timer_grants,
+            wake_grants: self.wake_grants,
+            stop_grants: self.stop_grants,
+            routed_grants: self.routed_grants,
+            access_ports: self.access_ports,
+        };
+        let result = callback(&mut nested);
+        if transfers_memory {
+            self.memory = nested.memory;
+        }
+        result
     }
 
     fn read_guest_memory(
@@ -317,6 +473,7 @@ impl DeviceRuntime {
             wake_grants: Vec::new(),
             stop_grants: Vec::new(),
             access_ports: RuntimeAccessPorts::new(),
+            routed_grants: Vec::new(),
             sealed: false,
             pci_roots: BTreeMap::new(),
             pci_binding_leases: Vec::new(),
@@ -506,7 +663,7 @@ impl DeviceRuntime {
     /// owner and topology match the resolved node; endpoint bundles must bind
     /// their resolved function through a dependency-hosted root. The binding
     /// lease is retained by the runtime and its `Drop` unwinds the provisional
-    /// route (invalidate generation -> withdraw root route -> release the
+    /// route (withdraw root route -> invalidate admission -> release the
     /// endpoint reference), so any failure leaves no residue.
     pub(crate) fn register_graph_bundle(
         &mut self,
@@ -562,6 +719,15 @@ impl DeviceRuntime {
                         ),
                     });
                 }
+                if !function.function.resources().is_empty() {
+                    return Err(DeviceManagerError::InvalidConfig {
+                        operation: "register PCI endpoint bundle",
+                        detail: alloc::format!(
+                            "endpoint {} must not publish ordinary device resources",
+                            node.id()
+                        ),
+                    });
+                }
                 let binding = self.pci_roots.get(&endpoint.host).ok_or_else(|| {
                     DeviceManagerError::ResourceNotFound {
                         operation: "register PCI endpoint bundle",
@@ -569,7 +735,15 @@ impl DeviceRuntime {
                     }
                 })?;
                 let device = DeviceId::new((self.devices.len() + function.device_index) as u32);
-                Some(binding.bind(&endpoint.function_node, device, function.function.clone())?)
+                // Keep all endpoint metadata local until ordinary device,
+                // DMA, service, and planned-resource registration succeeds.
+                // The root route is deliberately published last below.
+                Some((
+                    binding.clone(),
+                    endpoint.function_node.clone(),
+                    device,
+                    function.function.clone(),
+                ))
             }
             (Some(_), None) => {
                 return Err(DeviceManagerError::InvalidConfig {
@@ -592,13 +766,25 @@ impl DeviceRuntime {
             (None, None) => None,
         };
 
-        self.register_bundle_inner(bundle)?;
+        let mut transaction = RuntimeRegistrationTransaction::new(self, node.id().clone());
+        transaction.runtime.register_bundle_inner(bundle)?;
         if let Some(root) = root {
-            self.pci_roots.insert(node.id().clone(), root);
+            transaction
+                .runtime
+                .pci_roots
+                .insert(node.id().clone(), root);
+            transaction.root_inserted = true;
         }
-        if let Some(endpoint) = endpoint {
-            self.pci_binding_leases.push(endpoint);
+        if let Some((binding, function_id, device, function)) = endpoint {
+            let endpoint = binding.bind_registered(
+                &function_id,
+                device,
+                function,
+                &mut transaction.runtime.routed_grants,
+            )?;
+            transaction.runtime.pci_binding_leases.push(endpoint);
         }
+        transaction.commit();
         Ok(())
     }
 
@@ -911,6 +1097,15 @@ impl DeviceRuntime {
         self.devices.len()
     }
 
+    /// Returns the guest-memory grant registered for a device in host tests.
+    #[cfg(feature = "host-test")]
+    pub fn dma_grant_for_test(&self, device_id: DeviceId) -> Option<DmaGrant> {
+        self.dma_grants
+            .iter()
+            .find(|(registered_id, _)| *registered_id == device_id)
+            .map(|(_, grant)| grant.clone())
+    }
+
     // ─── Iterator helpers ───────────────────────────────────────────
     //
     // NOTE: With the unified Device trait, [`devices()`] is the canonical
@@ -933,11 +1128,13 @@ impl DeviceRuntime {
         for (device_id, pollable, grant) in &self.dma_pollable_devices {
             let mut context = RuntimeDeviceContext {
                 device_id: *device_id,
+                routed_context: RoutedContextKind::Root,
                 memory: Some(&mut *memory),
                 dma_grants: &self.dma_grants,
                 timer_grants: &self.timer_grants,
                 wake_grants: &self.wake_grants,
                 stop_grants: &self.stop_grants,
+                routed_grants: &self.routed_grants,
                 access_ports: &self.access_ports,
             };
             observe(pollable.poll_dma(now_ns, &mut context, grant));
@@ -1060,13 +1257,27 @@ impl DeviceRuntime {
     ) -> RuntimeDeviceContext<'runtime, 'memory> {
         RuntimeDeviceContext {
             device_id: DeviceId::new(index as u32),
+            routed_context: RoutedContextKind::Root,
             memory,
             dma_grants: &self.dma_grants,
             timer_grants: &self.timer_grants,
             wake_grants: &self.wake_grants,
             stop_grants: &self.stop_grants,
+            routed_grants: &self.routed_grants,
             access_ports: &self.access_ports,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_routed_grant_for_test<T>(
+        &mut self,
+        index: usize,
+        grant: RoutedDeviceGrant,
+        callback: impl FnOnce(&mut dyn DeviceContext) -> T,
+    ) -> T {
+        self.routed_grants.push(grant);
+        let mut context = self.context_for(index, None);
+        callback(&mut context)
     }
 }
 
@@ -1118,8 +1329,9 @@ mod tests {
 
     use axdevice_base::{
         AccessWidth, BusKind, Device, DeviceAccess, DeviceContext, DeviceError, DeviceId,
-        DeviceRegistry, DeviceVcpuId, DmaGrant, GuestMemoryAccess, InvalidResourceReason,
-        RegistryError, Resource, StopGrant, TimerGrant, WakeGrant,
+        DeviceRegistry, DeviceResult, DeviceVcpuId, DmaGrant, GuestMemoryAccess,
+        InvalidResourceReason, NoopDeviceContext, RegistryError, Resource, RoutedAdmissionEpoch,
+        RoutedBindingGeneration, RoutedDeviceGrant, StopGrant, TimerGrant, WakeGrant,
     };
     use axvm_types::GuestPhysAddr;
 
@@ -1127,14 +1339,397 @@ mod tests {
         DeviceRuntime, RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,
     };
     use crate::{
-        DeviceBundle, DeviceLifecycle, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
-        DmaPollableDeviceOps, ServiceCardinality, ServiceKey,
+        ConfigOffset, DeviceBundle, DeviceLifecycle, DeviceManagerError, DeviceManagerResult,
+        DeviceNodeId, DeviceRegistration, DmaPollableDeviceOps, PciBarIndex, PciClass,
+        PciEndpointContext, PciEndpointIdentity, PciFunction, PciMemoryBar, PciRootBinding,
+        PciRootState, PciTopologyBuilder, ServiceCardinality, ServiceKey,
     };
 
     struct D {
         resources: alloc::vec::Vec<Resource>,
         n: &'static str,
     }
+
+    struct TestMemory {
+        reads: usize,
+        writes: usize,
+    }
+
+    impl GuestMemoryAccess for TestMemory {
+        fn read(&mut self, _addr: GuestPhysAddr, data: &mut [u8]) -> DeviceResult {
+            self.reads += 1;
+            data.fill(0x5a);
+            Ok(())
+        }
+
+        fn write(&mut self, _addr: GuestPhysAddr, _data: &[u8]) -> DeviceResult {
+            self.writes += 1;
+            Ok(())
+        }
+    }
+
+    struct RoutedDmaEndpoint {
+        grant: DmaGrant,
+        expected_device: DeviceId,
+        writes: AtomicUsize,
+    }
+
+    impl Device for RoutedDmaEndpoint {
+        fn name(&self) -> &str {
+            "routed-dma-endpoint"
+        }
+
+        fn resources(&self) -> &[Resource] {
+            &[]
+        }
+
+        fn read(
+            &self,
+            _access: &DeviceAccess,
+            _context: &mut dyn DeviceContext,
+        ) -> DeviceResult<u64> {
+            Ok(0)
+        }
+
+        fn write(
+            &self,
+            _access: &DeviceAccess,
+            _value: u64,
+            _context: &mut dyn DeviceContext,
+        ) -> DeviceResult {
+            Ok(())
+        }
+    }
+
+    impl PciFunction for RoutedDmaEndpoint {
+        fn reset(&self, _command: crate::PciCommandState) -> DeviceResult {
+            Ok(())
+        }
+
+        fn read_bar(
+            &self,
+            _access: crate::PciBarAccess,
+            _context: &mut dyn PciEndpointContext,
+        ) -> DeviceResult<u64> {
+            Ok(0)
+        }
+
+        fn write_bar(
+            &self,
+            _access: crate::PciBarAccess,
+            _value: u64,
+            context: &mut dyn PciEndpointContext,
+        ) -> DeviceResult {
+            assert_eq!(context.device_id(), self.expected_device);
+            let mut input = [0u8; 1];
+            context.read_guest_memory(
+                &self.grant,
+                GuestPhysAddr::from_usize(0x1000),
+                &mut input,
+            )?;
+            context.write_guest_memory(&self.grant, GuestPhysAddr::from_usize(0x2000), &input)?;
+            self.writes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn routed_context_rechecks_target_grants_and_preserves_memory_lifetime() {
+        let mut runtime = DeviceRuntime::empty();
+        let target = DeviceId::new(7);
+        let dma = DmaGrant::new();
+        let routed = RoutedDeviceGrant::new(
+            target,
+            RoutedBindingGeneration::new(1),
+            RoutedAdmissionEpoch::new(1),
+            true,
+        );
+        runtime.routed_grants.push(routed.clone());
+        runtime.dma_grants.push((target, dma.clone()));
+        let mut memory = TestMemory {
+            reads: 0,
+            writes: 0,
+        };
+        let mut context = runtime.context_for(0, Some(&mut memory));
+        let mut bytes = [0; 2];
+        let mut callback = |nested: &mut dyn DeviceContext| {
+            let mut nested_callback = |_next: &mut dyn DeviceContext| Ok(());
+            assert!(matches!(
+                nested.with_routed_device(&routed, &mut nested_callback),
+                Err(DeviceError::Unsupported { .. })
+            ));
+            nested.read_guest_memory(&dma, GuestPhysAddr::from_usize(0x1000), &mut bytes)
+        };
+        context.with_routed_device(&routed, &mut callback).unwrap();
+        assert_eq!(bytes, [0x5a; 2]);
+        assert_eq!(memory.reads, 1);
+    }
+
+    #[test]
+    fn routed_context_keeps_an_admitted_grant_alive_until_scope_drop() {
+        let mut runtime = DeviceRuntime::empty();
+        let target = DeviceId::new(7);
+        let ordinary = RoutedDeviceGrant::new(
+            target,
+            RoutedBindingGeneration::new(1),
+            RoutedAdmissionEpoch::new(1),
+            true,
+        );
+        runtime.routed_grants.push(ordinary.clone());
+        let (admitted, scope) = ordinary
+            .clone()
+            .admit()
+            .expect("open ordinary grant can be admitted");
+        let retained = admitted.clone();
+        ordinary.close_admission();
+        assert!(ordinary.clone().admit().is_none());
+        let dma_disabled = admitted.with_dma_enabled(false);
+        let next_epoch = admitted.with_admission_epoch(RoutedAdmissionEpoch::new(2));
+        assert!(!dma_disabled.dma_enabled());
+        assert!(dma_disabled.admission_is_open());
+        assert!(!next_epoch.admission_is_open());
+
+        let mut context = runtime.context_for(0, None);
+        let mut callback = |_nested: &mut dyn DeviceContext| Ok(());
+        context
+            .with_routed_device(&admitted, &mut callback)
+            .expect("an already admitted callback survives global close");
+        assert!(matches!(
+            context.with_routed_device(&ordinary, &mut callback),
+            Err(DeviceError::Unsupported { .. })
+        ));
+
+        drop(scope);
+        assert!(matches!(
+            context.with_routed_device(&retained, &mut callback),
+            Err(DeviceError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn routed_context_denies_dma_when_the_root_bme_snapshot_is_clear() {
+        let mut runtime = DeviceRuntime::empty();
+        let target = DeviceId::new(7);
+        let dma = DmaGrant::new();
+        let routed = RoutedDeviceGrant::new(
+            target,
+            RoutedBindingGeneration::new(1),
+            RoutedAdmissionEpoch::new(1),
+            false,
+        );
+        runtime.routed_grants.push(routed.clone());
+        runtime.dma_grants.push((DeviceId::new(0), dma.clone()));
+        runtime.dma_grants.push((target, dma.clone()));
+        let mut memory = TestMemory {
+            reads: 0,
+            writes: 0,
+        };
+        let bytes = {
+            let mut context = runtime.context_for(0, Some(&mut memory));
+            let mut bytes = [0; 2];
+            let mut callback = |nested: &mut dyn DeviceContext| {
+                nested.read_guest_memory(&dma, GuestPhysAddr::from_usize(0x1000), &mut bytes)
+            };
+            assert!(matches!(
+                context.with_routed_device(&routed, &mut callback),
+                Err(DeviceError::Unsupported { .. })
+            ));
+            // Denying DMA for the nested route must not consume the outer
+            // context's ordinary guest-memory port.
+            context
+                .read_guest_memory(&dma, GuestPhysAddr::from_usize(0x1000), &mut bytes)
+                .unwrap();
+            bytes
+        };
+        assert_eq!(bytes, [0x5a; 2]);
+        assert_eq!(memory.reads, 1);
+    }
+
+    #[test]
+    fn noop_context_explicitly_denies_routed_entry() {
+        let mut context = NoopDeviceContext::new(DeviceId::new(0));
+        let grant = RoutedDeviceGrant::new(
+            DeviceId::new(1),
+            RoutedBindingGeneration::new(1),
+            RoutedAdmissionEpoch::new(1),
+            true,
+        );
+        let mut callback = |_nested: &mut dyn DeviceContext| Ok(());
+        assert!(matches!(
+            context.with_routed_device(&grant, &mut callback),
+            Err(DeviceError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn bar_dispatch_enters_endpoint_context_with_bidirectional_dma() {
+        let function_id = DeviceNodeId::new("routed-dma-function").unwrap();
+        let function_spec = crate::PciFunctionSpec::new(
+            function_id.clone(),
+            PciEndpointIdentity::new(0x1af4, 0x1042, PciClass::new(0xff, 0, 0)),
+        )
+        .with_bar(PciMemoryBar::new(PciBarIndex::new(0).unwrap(), 0x100).unwrap())
+        .unwrap();
+        let mut topology_builder = PciTopologyBuilder::new();
+        topology_builder.add_function(function_spec).unwrap();
+        let topology = Arc::new(topology_builder.resolve(0x4000..0x8000).unwrap());
+        let function = topology.function(&function_id).unwrap();
+        let bar = function.bar(PciBarIndex::new(0).unwrap()).unwrap();
+        let bdf = function.bdf();
+        let bar_address = bar.address();
+        let root = Arc::new(PciRootState::new(Arc::clone(&topology)));
+        let binding = Arc::new(PciRootBinding::new(
+            DeviceNodeId::new("routed-dma-host").unwrap(),
+            root.clone(),
+        ));
+        let target = DeviceId::new(7);
+        let dma = DmaGrant::new();
+        let endpoint = Arc::new(RoutedDmaEndpoint {
+            grant: dma.clone(),
+            expected_device: target,
+            writes: AtomicUsize::new(0),
+        });
+        let mut runtime = DeviceRuntime::empty();
+        runtime.dma_grants.push((target, dma));
+        let _binding_lease = binding
+            .bind_registered(
+                &function_id,
+                target,
+                endpoint.clone(),
+                &mut runtime.routed_grants,
+            )
+            .unwrap();
+
+        root.write_config(
+            bdf,
+            ConfigOffset::new(4).unwrap(),
+            AccessWidth::Word,
+            0x0002,
+        )
+        .unwrap();
+        let mut memory = TestMemory {
+            reads: 0,
+            writes: 0,
+        };
+        {
+            let mut context = runtime.context_for(0, Some(&mut memory));
+            assert!(matches!(
+                binding.write_bar_with_context(bar_address, AccessWidth::Byte, 0x10, &mut context,),
+                Err(DeviceError::Unsupported { .. })
+            ));
+        }
+        assert_eq!(memory.reads, 0);
+        assert_eq!(memory.writes, 0);
+
+        root.write_config(
+            bdf,
+            ConfigOffset::new(4).unwrap(),
+            AccessWidth::Word,
+            0x0006,
+        )
+        .unwrap();
+        {
+            let mut context = runtime.context_for(0, Some(&mut memory));
+            binding
+                .write_bar_with_context(bar_address, AccessWidth::Byte, 0x10, &mut context)
+                .unwrap();
+        }
+        assert_eq!(memory.reads, 1);
+        assert_eq!(memory.writes, 1);
+        assert_eq!(endpoint.writes.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn reset_reopens_runtime_dispatch_with_a_fresh_epoch() {
+        let function_id = DeviceNodeId::new("reset-routed-dma-function").unwrap();
+        let function_spec = crate::PciFunctionSpec::new(
+            function_id.clone(),
+            PciEndpointIdentity::new(0x1af4, 0x1042, PciClass::new(0xff, 0, 0)),
+        )
+        .with_bar(PciMemoryBar::new(PciBarIndex::new(0).unwrap(), 0x100).unwrap())
+        .unwrap();
+        let mut topology_builder = PciTopologyBuilder::new();
+        topology_builder.add_function(function_spec).unwrap();
+        let topology = Arc::new(topology_builder.resolve(0x4000..0x8000).unwrap());
+        let function = topology.function(&function_id).unwrap();
+        let bar_address = function
+            .bar(PciBarIndex::new(0).unwrap())
+            .unwrap()
+            .address();
+        let bdf = function.bdf();
+        let root = Arc::new(PciRootState::new(Arc::clone(&topology)));
+        let binding = Arc::new(PciRootBinding::new(
+            DeviceNodeId::new("reset-routed-dma-host").unwrap(),
+            root.clone(),
+        ));
+        let target = DeviceId::new(7);
+        let dma = DmaGrant::new();
+        let endpoint = Arc::new(RoutedDmaEndpoint {
+            grant: dma.clone(),
+            expected_device: target,
+            writes: AtomicUsize::new(0),
+        });
+        let mut runtime = DeviceRuntime::empty();
+        runtime.dma_grants.push((target, dma));
+        let _binding_lease = binding
+            .bind_registered(
+                &function_id,
+                target,
+                endpoint.clone(),
+                &mut runtime.routed_grants,
+            )
+            .unwrap();
+        let old_grant = runtime.routed_grants[0].clone();
+
+        root.write_config(
+            bdf,
+            ConfigOffset::new(4).unwrap(),
+            AccessWidth::Word,
+            0x0006,
+        )
+        .unwrap();
+        let mut memory = TestMemory {
+            reads: 0,
+            writes: 0,
+        };
+        {
+            let mut context = runtime.context_for(0, Some(&mut memory));
+            binding
+                .write_bar_with_context(bar_address, AccessWidth::Byte, 0x10, &mut context)
+                .unwrap();
+        }
+        assert_eq!(endpoint.writes.load(Ordering::Relaxed), 1);
+
+        binding.reset_lifecycle().unwrap();
+        assert!(!old_grant.admission_is_open());
+
+        let mut stale_context = runtime.context_for(0, Some(&mut memory));
+        let mut stale_callback = |_nested: &mut dyn DeviceContext| Ok(());
+        assert!(matches!(
+            stale_context.with_routed_device(&old_grant, &mut stale_callback),
+            Err(DeviceError::Unsupported { .. })
+        ));
+
+        // Reset restores the root command register too, so the fresh route
+        // must be exercised through the normal config and BAR dispatch path.
+        root.write_config(
+            bdf,
+            ConfigOffset::new(4).unwrap(),
+            AccessWidth::Word,
+            0x0006,
+        )
+        .unwrap();
+        {
+            let mut context = runtime.context_for(0, Some(&mut memory));
+            binding
+                .write_bar_with_context(bar_address, AccessWidth::Byte, 0x20, &mut context)
+                .unwrap();
+        }
+        assert_eq!(endpoint.writes.load(Ordering::Relaxed), 2);
+        assert_eq!(memory.reads, 2);
+        assert_eq!(memory.writes, 2);
+    }
+
     impl D {
         fn new_mmio(a: u64, s: u64, n: &'static str) -> Self {
             Self {

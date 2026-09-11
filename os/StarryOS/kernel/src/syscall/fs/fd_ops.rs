@@ -19,7 +19,7 @@ use crate::{
     },
     mm::{VmMutPtr, VmPtr, vm_load, vm_load_path_string},
     pseudofs::{Device, dev::tty},
-    sync::SpinRwLock,
+    sync::RawSpinRwLock,
     task::{
         TgidNumber, TidNumber, current_pid_view, get_user_process_data_by_number,
         get_user_task_by_number,
@@ -691,7 +691,7 @@ pub fn sys_close_range(
     debug!("sys_close_range <= fds: [{first}, {last}], flags: {flags:?}");
     if flags.contains(CloseRangeFlags::UNSHARE) {
         let curr = current;
-        let new_files = Arc::new(SpinRwLock::new(
+        let new_files = Arc::new(RawSpinRwLock::new(
             crate::file::current_fd_table().read().clone(),
         ));
         curr.as_thread().with_current_scope_mut(|scope| {

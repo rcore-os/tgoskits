@@ -191,10 +191,6 @@ impl SchedulerTickWork {
         self.gate.generation_is_enabled(generation)
     }
 
-    pub(crate) fn gate(&self) -> Arc<SchedulerTickGate> {
-        Arc::clone(&self.gate)
-    }
-
     pub(crate) unsafe fn invoke(
         &self,
         data: usize,
