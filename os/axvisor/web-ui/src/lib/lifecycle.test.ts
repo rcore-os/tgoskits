@@ -114,6 +114,19 @@ describe('settleToTerminalState', () => {
     expect(result.ok).toBe(false)
   })
 
+  // Regression: without a per-request signal the loop awaited a request that
+  // never settles and the deadline below was never reached, so the poll hung
+  // forever and neither the timeout message nor the caller's `busy` reset ran.
+  it('a detail request that never settles is aborted instead of hanging the poll', async () => {
+    const { deps } = fakeClock(1, 1)
+    const neverSettles = (signal?: AbortSignal) =>
+      new Promise<VmDetail>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('aborted at the deadline')))
+      })
+    const result = await settleToTerminalState('stop', BEFORE, neverSettles, deps)
+    expect(result.ok).toBe(false)
+  })
+
   it('a non-zero baseline is judged by the delta, not by an absolute zero', () => {
     const before: Counters = { guest_entry_count: 7, guest_park_count: 0 }
     expect(isSettled('start', before, detail('running', 7, 0))).toBe(false)

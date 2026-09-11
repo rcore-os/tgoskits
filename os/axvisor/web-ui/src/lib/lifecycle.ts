@@ -120,11 +120,15 @@ export function timeoutMessage(
  * A 404 during polling counts as success only for delete; other errors keep polling
  * until the timeout, because one transient failure does not mean the operation had
  * no effect.
+ *
+ * Every detail request receives an AbortSignal that fires once the deadline
+ * passes, so a request that never settles cannot park the loop forever and
+ * swallow the timeout.
  */
 export async function settleToTerminalState(
   op: LifecycleOp,
   before: Counters,
-  fetchDetail: () => Promise<VmDetail>,
+  fetchDetail: (signal?: AbortSignal) => Promise<VmDetail>,
   deps: SettleDeps = defaultDeps,
 ): Promise<SettleResult> {
   const deadline = deps.now() + deps.timeoutMs
@@ -132,8 +136,15 @@ export async function settleToTerminalState(
   let lastError: unknown
 
   for (;;) {
+    const remaining = deadline - deps.now()
+    if (remaining <= 0) {
+      return { ok: false, message: timeoutMessage(op, last, lastError), detail: last }
+    }
+
+    const controller = new AbortController()
+    const abortAt = setTimeout(() => controller.abort(), Math.max(remaining, 1))
     try {
-      const detail = await fetchDetail()
+      const detail = await fetchDetail(controller.signal)
       last = detail
       lastError = undefined
       if (isSettled(op, before, detail)) {
@@ -144,6 +155,8 @@ export async function settleToTerminalState(
       if (op === 'delete' && error instanceof ApiError && error.status === 404) {
         return { ok: true }
       }
+    } finally {
+      clearTimeout(abortAt)
     }
 
     if (deps.now() >= deadline) {

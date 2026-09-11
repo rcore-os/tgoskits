@@ -5,7 +5,7 @@
 //! guest_entry_count to grow, pause requires guest_park_count to grow).
 //! Every route is derived from `meta.href`; no endpoint is hardcoded.
 
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { verifyToken } from '@/api/auth'
 import {
   ApiError,
@@ -131,6 +131,37 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
   const [verifying, setVerifying] = useState(false)
   const [confirmError, setConfirmError] = useState<string | null>(null)
 
+  // Each dialog owns a session counter that every open and close bumps. Token
+  // verification is async, so the user can dismiss a dialog while it is in
+  // flight; comparing the counter after the await drops the result instead of
+  // performing an operation that was just cancelled.
+  const confirmSessionRef = useRef(0)
+  const createSessionRef = useRef(0)
+
+  const openConfirm = useCallback((op: ActionName, id: number) => {
+    confirmSessionRef.current += 1
+    setRetyped('')
+    setConfirmError(null)
+    setConfirming({ op, id })
+  }, [])
+
+  const closeConfirm = useCallback(() => {
+    confirmSessionRef.current += 1
+    setConfirming(null)
+  }, [])
+
+  const openCreate = useCallback(() => {
+    createSessionRef.current += 1
+    setCreateError(null)
+    setRetyped('')
+    setCreateOpen(true)
+  }, [])
+
+  const closeCreate = useCallback(() => {
+    createSessionRef.current += 1
+    setCreateOpen(false)
+  }, [])
+
   /**
    * Re-verifies the token before a dangerous operation.
    * When the backend declares no probe endpoint (auth missing) this degrades to
@@ -154,7 +185,8 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
   // The resource root comes from the manifest: detail and action routes are derived
   // from it (href + "/{id}" and so on).
   const base = meta.href
-  const fetchDetail = (id: number) => api.get<VmDetail>(`${base}/${id}`)
+  const fetchDetail = (id: number, signal?: AbortSignal) =>
+    api.get<VmDetail>(`${base}/${id}`, signal)
 
   const runAction = async (op: ActionName, id: number) => {
     setConfirming(null)
@@ -169,7 +201,7 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
       } else {
         await api.post(`${base}/${id}/${op}`)
       }
-      const result = await settleToTerminalState(op, before, () => fetchDetail(id))
+      const result = await settleToTerminalState(op, before, (signal) => fetchDetail(id, signal))
       if (!result.ok) setError(result.message)
     } catch (e: unknown) {
       setError(describeError(e))
@@ -180,14 +212,18 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
   }
 
   const runCreate = async () => {
+    const session = createSessionRef.current
     setCreateError(null)
     if (!(await verifyRetyped(setCreateError))) return
+    // The dialog may have been dismissed while the token was being verified;
+    // creating now would allocate resources the user just declined.
+    if (createSessionRef.current !== session) return
     setBusy({ id: -1, op: 'create' })
     try {
       const created = await api.post<{ id: number }>(`${base}/create`, { toml })
-      setCreateOpen(false)
-      const result = await settleToTerminalState('create', NO_COUNTERS, () =>
-        fetchDetail(created.id),
+      closeCreate()
+      const result = await settleToTerminalState('create', NO_COUNTERS, (signal) =>
+        fetchDetail(created.id, signal),
       )
       if (!result.ok) setError(result.message)
     } catch (e: unknown) {
@@ -218,15 +254,7 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            disabled={busy !== null}
-            onClick={() => {
-              setCreateError(null)
-              setRetyped('')
-              setCreateOpen(true)
-            }}
-          >
+          <Button size="sm" disabled={busy !== null} onClick={openCreate}>
             创建 VM
           </Button>
           {error && <span className="font-mono text-xs text-destructive">{error}</span>}
@@ -268,9 +296,7 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
                         // stop/delete are destructive and irreversible, so ask for a
                         // second confirmation.
                         if (action.op === 'stop' || action.op === 'delete') {
-                          setRetyped('')
-                          setConfirmError(null)
-                          setConfirming({ op: action.op, id: vm.id })
+                          openConfirm(action.op, vm.id)
                         } else {
                           void runAction(action.op, vm.id)
                         }
@@ -294,7 +320,7 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
       <Dialog
         open={confirming !== null}
         onOpenChange={(open) => {
-          if (!open) setConfirming(null)
+          if (!open) closeConfirm()
         }}
       >
         <DialogContent>
@@ -334,7 +360,7 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
           )}
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirming(null)}>
+            <Button variant="outline" onClick={closeConfirm}>
               取消
             </Button>
             <Button
@@ -343,12 +369,17 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
               onClick={() => {
                 if (!confirming) return
                 const target = confirming
+                const session = confirmSessionRef.current
                 void (async () => {
                   // Delete is irreversible: have the backend re-verify the retyped
                   // token before running it.
                   if (target.op === 'delete') {
                     setConfirmError(null)
                     if (!(await verifyRetyped(setConfirmError))) return
+                    // The dialog may have been dismissed while the token was being
+                    // verified; deleting now would destroy a VM the user just
+                    // decided to keep.
+                    if (confirmSessionRef.current !== session) return
                   }
                   await runAction(target.op, target.id)
                 })()
@@ -360,7 +391,12 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
         </DialogContent>
       </Dialog>
 
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+      <Dialog
+        open={createOpen}
+        onOpenChange={(open) => {
+          if (!open) closeCreate()
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>创建 VM</DialogTitle>
@@ -399,7 +435,7 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
             </p>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>
+            <Button variant="outline" onClick={closeCreate}>
               取消
             </Button>
             <Button
