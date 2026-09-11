@@ -829,3 +829,15 @@ backing 准备由 `mapping` 在进入 MM 锁前完成；`SharedMemoryObject::all
 | execveat(普通 robust owner 更新) / X322、G281 | [v7.1 exec_mm_release](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1502) | 在旧 MM 中执行同一原子 owner 清理 | `sys_execveat → do_execve → release_robust_futexes → handle_futex_death` | 无法确认 | 本轮直接 execve 和 SYS_exit 回归不替代 execveat 独立入口证据 |
 
 前一已发布 `4aab4205ca` 的 CI 34544811759 出现两个失败。ArceOS riscv64 job 103096481641 在 LocalLock owner 唤醒 FIFO 子线程后观察到 Running 而非 Blocked，日志 `/tmp/pr2357-4aab-arceos-rv-ci-clean.log`；PI 重排/抢占链仍需受控定位，未修改断言。OrangePi job 103096481776 中 NPU 已退出 0，后续输出含 NUL 并停滞、ARP 继续，日志 `/tmp/pr2357-4aab-orangepi-ci-clean.log`；不能归因为 NPU submit 超时，也不能据后续重跑声称修复。本节原子更新不被当作这两个失败的根因修复。
+
+### 5.42 队列中的 PI owner 抢占
+
+`apply_pi_schedule_update_in_rq` 原先对队列中的 owner 完成 PI 重排后，无条件返回立即抢占。固定 Linux `switched_to_rt/prio_changed_rt` 则只让优先级严格高于当前任务的 RT owner 请求抢占。现在同一个 rq 事务在重排后调用既有 `wakeup_preempt_with_intent`，保留当前抢占状态和 FIFO 同优先级顺序，提交后才通知 owner CPU。`PiRqFollowup` 分别携带抢占决定和维护工作；不需要抢占时，定时器及平衡维护仍能交给 owner，不用抢占位代替工作通知。Fair 使用完整 rq 的既有判断，已存在立即抢占时不重复取消当前请求保护。
+
+`pi_boost_checks_current_priority` 使用真实 ArceOS 调度器：CPU 0 owner 持有 mutex，FIFO 40 waiter 阻塞并捐赠；CPU 0 的 FIFO 80 或 60 observer 在短暂 IRQ-save 区间观察请求，CPU 1 把 waiter 提到 FIFO 80。owner 保持可运行，观察完成后还检查其有效策略确实已变为 FIFO 80。相同优先级必须没有立即抢占，低优先级 observer 必须有立即抢占，随后完整释放锁并 join 所有线程。没有 fake runtime，也未放宽原 LocalLock 断言。
+
+最初错误使用 `current_cpu_needs_resched()`，它还包含 owner 维护工作，因此早期 `/tmp/pr2357-pi-equal-resched-{red,green}.log` 不用于证明抢占位。现在在已有 fault-injection 功能下用只读 `current_immediate_preemption_requested` 直接观察真实位，没有新建辅助状态。最终同一测试在原 PI 实现上得到 true 而非 false，日志 `/tmp/pr2357-pi-queued-final-red.log`；修复后的四架构 ArceOS `--test-group rust --test-case all` 均通过，日志 `/tmp/pr2357-pi-queued-all-<arch>.log`，包含正反向新检查及原始 LocalLock 用例。合并 dev 的 ax-cpu 重构后，四架构 `task-pi-mutex` 再次全部通过（`/tmp/pr2357-pi-post-merge-<arch>.log`），ax-task 定向 clippy 6/6 通过（`/tmp/pr2357-pi-post-merge-clippy.log`）。
+
+这证明并修复了一个 PI 通知语义错误，但尚不能把原始 LocalLock 偶发失败完全归因于它：未修改的 `task-pi-mutex` 和 RISC-V `all` 本地复跑也曾通过，日志 `/tmp/pr2357-local-lock-rv-{repro,all-repro}.log`。当前运行 owner 的 PI 更新分支仍保留旧的立即重调度，需继续按运行中 RT/DL 的 class hook、配额和定时器生命周期核验。独立探查未及时返回终态，不记作审查通过；完整计划和 OrangePi 停滞仍未完成。
+
+Linux 顺序依据为固定 v7.1 的 [rt_mutex_setprio](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/core.c#L7584)、[switched_to_rt/prio_changed_rt](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/rt.c#L2436) 和 [prio_changed_dl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/deadline.c#L3389)。本节通过的是 ArceOS 真实锁和调度路径，不能替代 Starry 每个 scheduler syscall 的独立兼容性结论。

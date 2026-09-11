@@ -16,9 +16,9 @@ use crate::{
 };
 
 #[derive(Clone, Copy)]
-enum PiRqFollowup {
-    RemoteReschedule,
-    SchedulerWork,
+struct PiRqFollowup {
+    reschedule: Option<RescheduleKind>,
+    owner_work: bool,
 }
 
 struct PiWaiterRefresh {

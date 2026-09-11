@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) fn run() {
+    pi_boost_checks_current_priority();
     rt_spin_lock_remains_preemptible();
     rt_lock_preserves_outer_timeout();
     reader_drain_uses_lock_wake();
@@ -8,6 +9,122 @@ pub(super) fn run() {
     local_lock_serializes_preempting_tasks();
     semaphore_grants_and_cancellation();
     semaphore_hard_irq_release();
+}
+
+fn pi_boost_checks_current_priority() {
+    for (priority, expected) in [(80, false), (60, true)] {
+        assert_eq!(
+            queued_pi_boost_requests_preemption(priority),
+            expected,
+            "PI boost to FIFO 80 must preempt only a lower-priority current task (FIFO {priority})"
+        );
+    }
+}
+
+fn queued_pi_boost_requests_preemption(current_priority: u8) -> bool {
+    use ax_std::os::arceos::task::{
+        runtime::cpu::current_immediate_preemption_requested,
+        sync::RawSpinLock,
+        thread::{ThreadState, current},
+    };
+
+    let owner = current::current_thread_handle().unwrap();
+    let original_affinity = owner.affinity().unwrap();
+    pin_current_to_cpu(0);
+    let mutex = Arc::new(Mutex::new(()));
+    let held = mutex.lock();
+    let waiter = {
+        let mutex = Arc::clone(&mutex);
+        ax_std::os::arceos::thread::builder("pi-equal-waiter".into())
+            .affinity(cpu_mask(0))
+            .policy(SchedulePolicy::fifo(RtPriority::new(40).unwrap()))
+            .spawn(move || drop(mutex.lock()))
+            .unwrap()
+    };
+    wait_until(
+        || waiter.state() == ThreadState::Blocked,
+        "PI equal-priority waiter must first donate priority 40",
+    );
+    assert_eq!(
+        owner.effective_policy(),
+        SchedulePolicy::fifo(RtPriority::new(40).unwrap())
+    );
+
+    let update = Arc::new(AtomicBool::new(false));
+    let updated = Arc::new(AtomicBool::new(false));
+    let observations = Arc::new(AtomicUsize::new(0));
+    let controller = {
+        let waiter = waiter.clone();
+        let update = Arc::clone(&update);
+        let updated = Arc::clone(&updated);
+        ax_std::os::arceos::thread::builder("pi-equal-controller".into())
+            .affinity(cpu_mask(1))
+            .spawn(move || {
+                wait_until(
+                    || update.load(Ordering::Acquire),
+                    "PI observer must be running",
+                );
+                waiter
+                    .set_policy(SchedulePolicy::fifo(RtPriority::new(80).unwrap()))
+                    .unwrap();
+                updated.store(true, Ordering::Release);
+            })
+            .unwrap()
+    };
+    let observer = {
+        let observations = Arc::clone(&observations);
+        ax_std::os::arceos::thread::builder("pi-equal-current".into())
+            .affinity(cpu_mask(0))
+            .policy(SchedulePolicy::fifo(
+                RtPriority::new(current_priority).unwrap(),
+            ))
+            .spawn(move || {
+                // Freeze this CPU's execution while the other CPU performs
+                // the real policy/PI transaction. No timer or IPI handler can
+                // consume the sticky reschedule publication before we read it.
+                let exclusion = RawSpinLock::new(());
+                let guard = exclusion.lock_irqsave();
+                let before = current_immediate_preemption_requested().unwrap();
+                update.store(true, Ordering::Release);
+                let started = Instant::now();
+                while !updated.load(Ordering::Acquire) {
+                    assert!(
+                        started.elapsed() < PROGRESS_TIMEOUT,
+                        "PI update must finish remotely"
+                    );
+                    core::hint::spin_loop();
+                }
+                let after = current_immediate_preemption_requested().unwrap();
+                observations.store(
+                    4 | usize::from(before) | (usize::from(after) << 1),
+                    Ordering::Release,
+                );
+                drop(guard);
+            })
+            .unwrap()
+    };
+    // Keep the owner runnable until the remote PI update has finished. A
+    // join here before the observer runs would test an inactive owner instead.
+    wait_until(
+        || observations.load(Ordering::Acquire) & 4 != 0,
+        "PI observer must record the queued-owner update",
+    );
+    observer.join().unwrap();
+    controller.join().unwrap();
+    assert_eq!(
+        owner.effective_policy(),
+        SchedulePolicy::fifo(RtPriority::new(80).unwrap())
+    );
+    drop(held);
+    waiter.join().unwrap();
+    current::set_current_thread_affinity(original_affinity).unwrap();
+    let observations = observations.load(Ordering::Acquire);
+    assert_eq!(
+        observations & 1,
+        0,
+        "observer must start without pending preemption"
+    );
+    observations & 2 != 0
 }
 
 fn rt_spin_lock_remains_preemptible() {

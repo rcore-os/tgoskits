@@ -49,6 +49,16 @@ pub fn current_cpu_needs_resched() -> Result<bool, TaskError> {
     unsafe { current_needs_reschedule_pinned() }
 }
 
+/// Observes only the immediate preemption bit in real-runtime regression tests.
+/// Owner maintenance and lazy preemption remain separate scheduler requests.
+#[cfg(feature = "fault-injection")]
+pub fn current_immediate_preemption_requested() -> Result<bool, TaskError> {
+    let _pin = PreemptScope::enter();
+    Ok(current_cpu_remote()
+        .ok_or(TaskError::NotInitialized)?
+        .immediate_preemption_requested())
+}
+
 /// Clears the current CPU's idle-polling state at the runtime sleep boundary.
 ///
 /// # Safety
