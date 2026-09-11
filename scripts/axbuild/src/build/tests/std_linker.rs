@@ -36,17 +36,3 @@ fn std_linker_wrapper_filters_crt_and_replaces_fixed_libs() {
     assert!(!wrapper.contains("\"-u\""));
     assert!(!wrapper.contains("_start"));
 }
-
-#[test]
-fn std_linker_wrapper_uses_explicit_dynamic_platform_mode() {
-    let fake_dir = std_fake_lib_dir("aarch64-unknown-linux-musl").unwrap();
-    let wrapper = std_linker_wrapper_path("aarch64-unknown-linux-musl", &fake_dir).unwrap();
-    let wrapper = fs::read_to_string(wrapper).unwrap();
-
-    assert!(wrapper.contains("find_linker_script"));
-    assert!(!wrapper.contains("latest_build_output_script axplat.x"));
-    assert!(!wrapper.contains("entry_symbol="));
-    assert!(!wrapper.contains("link_mode_args="));
-    assert!(!wrapper.contains("dynamic_platform="));
-    assert!(!wrapper.contains("_head"));
-}

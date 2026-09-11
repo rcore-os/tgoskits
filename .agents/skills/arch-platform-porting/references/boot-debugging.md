@@ -296,3 +296,14 @@ x86 的启动异常由 `ax_cpu::boot::BootVectorTable` 和共享 GPR 保存片�
 LoongArch 和 RISC-V 的早期异常入口也归 CPU，someboot 仅实现 `BootTrapHandler` 的处理策略。LoongArch 启动与运行期使用同一四级 walker/refill；启动表安装和 DA/PG 转换分别通过 CPU boot 接口完成。RISC-V 的 T-Head 维护接收 `PhysicalCacheRange`，地址转换及 DMA 方向由平台决定，不能将虚拟地址直接交给物理 cache 指令。
 
 x86、RISC-V 和 LoongArch 的 AxVM 映射变更先关闭该 VM 的客户机进入通道，再请求在途客户机退出；尚未取得 quiescence 时不得持有 machine 锁或释放映射。后续每次 CPU 进入执行本核客体翻译失效。LoongArch 的客体域采用 `INVTLB_ALLGID`，不能将宿主 INVTLB 视为所有 guest ID 的失效证明。
+
+
+## AArch64 宿主虚拟化初始化与致命异常
+
+`AxvmRuntime::new` 必须在每 CPU 的 `PreemptIrqSaveGuard` 之前完成 `prepare_host_virtualization`。`gic::host::HostGic` 同时发布已发现的 CPU interface 与已解析的 maintenance IRQ；失败不发布、不启用硬件。IRQ、VGIC save/load 和 maintenance enable/disable 仅通过 `OnceLock::get` 读取完成态，不执行 FDT 解析、rdrive 查找或等待初始化。不要在 `init_vm` 或线程创建入口添加预热：VM 创建晚于宿主虚拟化启用，预热不能表达此生命周期约束。
+
+对照 Linux `8cd9520d35a6c38db6567e97dd93b1f11f185dc6` 的 `kvm_vgic_hyp_init`、`kvm_vgic_cpu_up` 和 `kvm_arch_enable_virtualization_cpu`：全局探测和 IRQ 解析先于每 CPU 硬件使能。AxVM 的 maintenance IRQ 仍沿现有退出路径折叠 VGIC 状态，本次不改变客户机 EOI/IRQ 退休协议。
+
+AArch64 客户机向量中的致命宿主异常通过 `ax_cpu::trap::fatal::FatalTrap` 静态交给 `ax-runtime::panic_output`。运行期屏蔽中断并读取已安装 CPU-local 区域，不能通过 `this_cpu_id()` 取得任务抢占守卫，不能依赖 `SP_EL0` 或 `TPIDR_EL0` 仍属于宿主任务。输出只使用 emergency console；递归和并发终止复用 `axpanic`，不进入应用的 Rust panic hook，不回溯未知栈，不仅停驻持锁 CPU。该路径要求有效宿主栈和 CPU-local 区域；它不实现 Linux nVHE 的独立 overflow stack 或异常表恢复/宿主现场切换。
+
+`cargo xtask axvisor test qemu --arch aarch64 --test-case el2-fatal` 覆盖真实四核 EL2 同步异常与应用 panic hook 绕过；同一命令选择 `--test-case el2-fatal-foreign-context` 验证清空 TLS/任务锚点后的终止诊断。验证需同时看到 `ARCEOS_PANIC_EMERGENCY` 与固定 BRK syndrome；命中 `EL2_FATAL_ENTERED_STD_PANIC` 必须使任务失败。常规 panic 与 browser-console 仍需分别验证，终止诊断不能证明长会话网络挂起已消除。

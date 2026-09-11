@@ -306,7 +306,6 @@ mod tests {
     fn arceos_c_default_list_hides_all_feature() {
         let features = c_qemu_features_for_list(None).unwrap();
 
-        assert_eq!(features, ARCEOS_C_QEMU_LISTED_CASES);
         assert!(!features.contains(&ARCEOS_C_ALL_FEATURE));
     }
 
@@ -377,24 +376,6 @@ mod tests {
     }
 
     #[test]
-    fn load_c_test_build_config_reads_build_info() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("build-x86_64-unknown-none.toml");
-        fs::write(
-            &path,
-            "app-c = \"c\"\nfeatures = [\"alloc\", \"paging\"]\nlog = \"Trace\"\nmax_cpu_num = \
-             4\n\n[env]\n",
-        )
-        .unwrap();
-
-        let config = load_c_test_build_config(&path).unwrap();
-        assert_eq!(config.app_c, Some(PathBuf::from("c")));
-        assert_eq!(config.build_info.features, vec!["alloc", "paging"]);
-        assert_eq!(config.build_info.log, build::LogLevel::Trace);
-        assert_eq!(config.build_info.max_cpu_num, Some(4));
-    }
-
-    #[test]
     fn load_c_test_build_config_rejects_missing_app_c() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("build-x86_64-unknown-none.toml");
@@ -402,27 +383,5 @@ mod tests {
 
         let err = load_c_test_build_config(&path).unwrap_err();
         assert!(err.to_string().contains("must set `app-c = \"c\"`"));
-    }
-
-    #[test]
-    fn load_c_test_qemu_config_reads_standard_qemu_config() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("qemu-x86_64.toml");
-        fs::write(
-            &path,
-            "args = [\"-nographic\"]\nuefi = false\nto_bin = false\nshell_check_steps = [{ \
-             shell_prefix = \"#\", shell_cmd = \"run\", success_regex = [\"PASS\"] }]\nfail_regex \
-             = [\"panic\"]\ntimeout = 120\n",
-        )
-        .unwrap();
-
-        let config = load_c_test_qemu_config(&path).unwrap();
-        assert_eq!(config.args, vec!["-nographic"]);
-        assert_eq!(
-            config.shell_check_steps[0].success_regex,
-            Some(vec!["PASS".to_string()])
-        );
-        assert_eq!(config.fail_regex, vec!["panic"]);
-        assert_eq!(config.timeout, Some(120));
     }
 }

@@ -2,6 +2,7 @@
 
 pub mod boot;
 pub mod diagnostics;
+pub mod fatal;
 mod fault;
 mod interrupted;
 use core::sync::atomic::{AtomicUsize, Ordering};

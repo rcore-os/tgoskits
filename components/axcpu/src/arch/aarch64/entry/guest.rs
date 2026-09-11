@@ -2,7 +2,7 @@
 
 use core::mem::{offset_of, size_of};
 
-use aarch64_cpu::registers::{ESR_EL2, FAR_EL2, Readable};
+use aarch64_cpu::registers::{ESR_EL2, FAR_EL2, HCR_EL2, Readable};
 
 use super::super::{
     fp,
@@ -131,11 +131,12 @@ unsafe extern "C" fn __ax_cpu_arm_current_irq(frame: *const GuestContext) {
 unsafe extern "C" fn __ax_cpu_arm_current_sync(frame: *const GuestContext) {
     // SAFETY: the vector created a complete live current-EL stack frame.
     let frame = unsafe { &*frame };
-    panic!(
-        "EL2 synchronous trap: ESR={:#x}, FAR={:#x}, {frame:?}",
+    crate::trap::fatal::terminate(format_args!(
+        "EL2 synchronous trap: ESR={:#x}, FAR={:#x}, HCR={:#x}, {frame:?}",
         ESR_EL2.get(),
-        FAR_EL2.get()
-    );
+        FAR_EL2.get(),
+        HCR_EL2.get()
+    ));
 }
 
 #[unsafe(no_mangle)]
@@ -146,5 +147,7 @@ unsafe extern "C" fn __ax_cpu_arm_invalid_exception(
 ) {
     // SAFETY: only a current-EL vector reaches this fatal path on a host stack.
     let frame = unsafe { &*frame };
-    panic!("EL2 invalid trap: kind={kind}, source={source}, {frame:?}");
+    crate::trap::fatal::terminate(format_args!(
+        "EL2 invalid trap: kind={kind}, source={source}, {frame:?}"
+    ));
 }

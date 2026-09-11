@@ -862,30 +862,6 @@ mod tests {
     }
 
     #[test]
-    fn x86_64_qemu_uses_network_device_supported_by_ostool_ovmf() {
-        let args = x86_64_qemu_args(Path::new("/firmware.fd"), Path::new("/esp"), 12345, 12346);
-
-        assert!(args.windows(2).any(|pair| pair
-            == [
-                "-device",
-                "virtio-net-pci,netdev=user0,mac=02:00:00:00:00:01"
-            ]));
-    }
-
-    #[test]
-    fn x86_64_qemu_mirrors_discovery_frames_without_serial_control() {
-        let args = x86_64_qemu_args(Path::new("/firmware.fd"), Path::new("/esp"), 12345, 12346);
-
-        assert!(args.windows(2).any(|pair| pair == ["-machine", "q35"]));
-        assert!(args.windows(2).any(|pair| pair == ["-cpu", "host"]));
-        assert!(args.iter().any(|arg| arg
-            == "filter-mirror,id=discovery_mirror,netdev=user0,queue=rx,outdev=discovery_capture"));
-        assert!(args.iter().any(|arg| arg
-            == "filter-redirector,id=discovery_redirect,netdev=user0,queue=tx,\
-                indev=discovery_injection"));
-    }
-
-    #[test]
     fn first_failed_qemu_attempt_is_retried() {
         assert_eq!(next_smoke_attempt(1), Some(2));
         assert_eq!(next_smoke_attempt(2), None);

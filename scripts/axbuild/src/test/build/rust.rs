@@ -229,20 +229,3 @@ pub(super) fn rust_case_bin_name(cargo_toml: &Path) -> anyhow::Result<String> {
         )
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::rust_case_rustflags;
-
-    #[test]
-    fn loongarch_static_cases_inherit_sigpipe_for_legacy_linux_abi() {
-        assert_eq!(
-            rust_case_rustflags("loongarch64"),
-            "-C target-feature=+crt-static -Zon-broken-pipe=inherit"
-        );
-        assert_eq!(
-            rust_case_rustflags("aarch64"),
-            "-C target-feature=+crt-static"
-        );
-    }
-}

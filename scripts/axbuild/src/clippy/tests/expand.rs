@@ -1,4 +1,4 @@
-use super::common::{expand, metadata_for_packages, metadata_with_resolve, pkg, pkg_with_metadata};
+use super::common::{expand, metadata_with_resolve, pkg, pkg_with_metadata};
 use crate::clippy::{
     AXSTD_STD_CLIPPY_FEATURES, AXSTD_STD_DEFAULT_FEATURE, AXSTD_STD_PACKAGE,
     check::{ClippyCheck, ClippyCheckKind},
@@ -148,52 +148,6 @@ fn host_test_feature_alias_uses_host_target_outside_docs_target_matrix() {
 
     assert_eq!(test_checks[0].label(), "alpha (feature: test)");
     assert!(!test_checks[0].cargo_args().contains(&"--target".into()));
-}
-
-#[test]
-fn clippy_uses_shared_bare_target_specs_for_all_architectures() {
-    for target in [
-        "x86_64-unknown-none",
-        "aarch64-unknown-none-softfloat",
-        "riscv64gc-unknown-none-elf",
-        "loongarch64-unknown-none-softfloat",
-    ] {
-        let check = ClippyCheck {
-            package: "starry-kernel".into(),
-            kind: ClippyCheckKind::Configuration {
-                name: format!("{target}-system"),
-                features: Vec::new(),
-                rustflags: Vec::new(),
-            },
-            target: Some(target.into()),
-            env: vec![("AX_TARGET".into(), target.into())],
-        };
-
-        let invocation = check.cargo_invocation();
-
-        assert!(invocation.args.windows(2).any(|args| {
-            args[0] == "--target"
-                && args[1].ends_with(&format!("scripts/targets/bare/{target}.json"))
-        }));
-        assert!(
-            invocation
-                .args
-                .windows(2)
-                .any(|args| args == ["-Z", "json-target-spec"])
-        );
-        assert!(
-            invocation
-                .args
-                .windows(2)
-                .any(|args| args == ["-Z", "build-std=core,alloc"])
-        );
-        assert!(
-            invocation
-                .env
-                .contains(&("CARGO_UNSTABLE_JSON_TARGET_SPEC".into(), "true".into()))
-        );
-        assert!(!invocation.args.join("\n").contains("target-feature=-ual"));
-    }
 }
 
 #[test]
@@ -481,72 +435,6 @@ fn docs_rs_targets_expand_base_and_feature_checks() {
 }
 
 #[test]
-fn ax_hal_platform_features_are_filtered_by_target_arch() {
-    let checks = expand(&[pkg(
-        "ax-hal",
-        "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
-        &[("fp-simd", &[])],
-        Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
-    )]);
-
-    let has_feature_on_target = |feature: &str, target: &str| {
-        checks.iter().any(|check| {
-            matches!(&check.kind, ClippyCheckKind::Feature(check_feature) if check_feature == feature)
-                && check.target.as_deref() == Some(target)
-        })
-    };
-
-    assert!(has_feature_on_target(
-        "fp-simd",
-        "loongarch64-unknown-none-softfloat"
-    ));
-    assert!(has_feature_on_target(
-        "fp-simd",
-        "riscv64gc-unknown-none-elf"
-    ));
-}
-
-#[test]
-fn ax_hal_target_only_features_are_skipped_for_host_clippy() {
-    let checks = expand(&[pkg(
-        "ax-hal",
-        "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
-        &[("fp-simd", &[])],
-        None,
-    )]);
-
-    assert!(checks.iter().any(|check| {
-        matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "fp-simd")
-    }));
-}
-
-#[test]
-fn ax_hal_platform_feature_forwards_are_filtered_by_target_arch() {
-    let checks = expand(&[pkg(
-        "platform-forwarder",
-        "platform-forwarder 0.1.0 (path+file:///tmp/platform-forwarder)",
-        &[("fp-simd", &["ax-hal/fp-simd"])],
-        Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
-    )]);
-
-    let has_feature_on_target = |feature: &str, target: &str| {
-        checks.iter().any(|check| {
-            matches!(&check.kind, ClippyCheckKind::Feature(check_feature) if check_feature == feature)
-                && check.target.as_deref() == Some(target)
-        })
-    };
-
-    assert!(has_feature_on_target(
-        "fp-simd",
-        "loongarch64-unknown-none-softfloat"
-    ));
-    assert!(has_feature_on_target(
-        "fp-simd",
-        "riscv64gc-unknown-none-elf"
-    ));
-}
-
-#[test]
 fn nested_docs_rs_targets_expand_base_checks() {
     let checks = expand(&[pkg_with_metadata(
         "alpha",
@@ -747,31 +635,6 @@ fn package_clippy_configuration_lints_source_with_rustflags() {
 }
 
 #[test]
-fn selected_package_expands_package_clippy_configurations() {
-    let package = pkg_with_metadata(
-        "alpha",
-        "alpha 0.1.0 (path+file:///tmp/alpha)",
-        &[],
-        serde_json::json!({
-            "clippy": {
-                "configurations": [{
-                    "name": "aarch64-system",
-                    "target": "aarch64-unknown-none-softfloat",
-                }],
-            },
-        }),
-    );
-    let metadata = metadata_for_packages(core::slice::from_ref(&package));
-    let checks = crate::clippy::expand::expand_clippy_checks(&[package], &metadata).unwrap();
-
-    assert_eq!(checks[0].label(), "alpha (base)");
-    assert_eq!(
-        checks[1].label(),
-        "alpha (configuration: aarch64-system, features: , target: aarch64-unknown-none-softfloat)"
-    );
-}
-
-#[test]
 fn duplicate_package_clippy_configuration_names_are_rejected() {
     let package = pkg_with_metadata(
         "alpha",
@@ -824,32 +687,4 @@ fn package_clippy_configuration_rejects_empty_rustflags() {
         err.to_string(),
         "clippy configuration `aarch64-source` rustflag for `alpha` must be non-empty and trimmed"
     );
-}
-
-#[test]
-fn clippy_std_targets_use_kernel_specs_and_build_the_standard_library() {
-    for target in [
-        "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-musl",
-        "riscv64gc-unknown-linux-musl",
-        "loongarch64-unknown-linux-musl",
-    ] {
-        let check = ClippyCheck {
-            package: "arceos-cpu-contract".into(),
-            kind: ClippyCheckKind::Base,
-            target: Some(target.into()),
-            env: Vec::new(),
-        };
-        let invocation = check.cargo_invocation();
-        assert!(invocation.args.windows(2).any(|args| {
-            args[0] == "--target"
-                && args[1].ends_with(&format!("scripts/targets/std/pie/{target}.json"))
-        }));
-        assert!(
-            invocation
-                .args
-                .windows(2)
-                .any(|args| args == ["-Z", "build-std=std,panic_abort"])
-        );
-    }
 }

@@ -1382,6 +1382,8 @@ pub struct AxVM {
 impl AxVM {
     /// Creates a ready VM with eagerly initialized architecture resources.
     ///
+    /// Initialize the host with [`crate::AxvmRuntime::new`] before creating VMs;
+    /// resource planning uses the host capabilities recorded during CPU enable.
     /// The VM is not started until [`Self::start`] is called.
     ///
     /// # Errors

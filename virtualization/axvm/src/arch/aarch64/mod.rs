@@ -18,6 +18,7 @@ mod capabilities;
 pub(crate) mod fdt;
 mod firmware_plan;
 mod gic;
+pub(super) use gic::prepare as prepare_host_virtualization;
 mod npt;
 mod resource_pools;
 mod shared_provider;

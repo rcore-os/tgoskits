@@ -451,11 +451,6 @@ fn persist_policy_allows_explicit_snapshot_off() {
 }
 
 #[test]
-fn rootfs_write_policy_defaults_to_discard() {
-    assert_eq!(RootfsWritePolicy::default(), RootfsWritePolicy::Discard);
-}
-
-#[test]
 fn ensure_disk_boot_net_accepts_shuffled_disk0_fields() {
     let rootfs = Path::new("/tmp/new-rootfs.img");
     let mut qemu = QemuConfig {

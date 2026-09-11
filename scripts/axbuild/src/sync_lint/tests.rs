@@ -452,10 +452,13 @@ fn stats_path(flag: &AtomicBool) {
 "#,
     );
 
-    assert!(
-        findings
-            .iter()
-            .any(|finding| finding.rule == Rule::MixedOrdering)
+    let mixed = findings
+        .iter()
+        .filter(|finding| finding.rule == Rule::MixedOrdering)
+        .count();
+    assert_eq!(
+        mixed, 1,
+        "the unrelated stats_path binding must not add a MixedOrdering finding"
     );
 }
 
@@ -477,10 +480,13 @@ fn demo(flag: &AtomicBool, wq: WaitQueue) {
 "#,
     );
 
-    assert!(
-        findings
-            .iter()
-            .any(|finding| finding.rule == Rule::MixedOrdering)
+    let mixed = findings
+        .iter()
+        .filter(|finding| finding.rule == Rule::MixedOrdering)
+        .count();
+    assert_eq!(
+        mixed, 1,
+        "the shadowed inner binding must not add a MixedOrdering finding"
     );
 }
 

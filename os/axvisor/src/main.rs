@@ -36,6 +36,8 @@ mod config;
     feature = "test-console-interleave"
 ))]
 mod console_regression;
+#[cfg(all(feature = "test-el2-fatal", target_arch = "aarch64"))]
+mod fatal_regression;
 mod guest_console;
 #[cfg(any(feature = "browser-console", feature = "http-axum"))]
 mod http;
@@ -75,6 +77,9 @@ fn main() {
     info!("Starting virtualization...");
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
+
+    #[cfg(all(feature = "test-el2-fatal", target_arch = "aarch64"))]
+    fatal_regression::run();
 
     manager.init_default_vms();
 

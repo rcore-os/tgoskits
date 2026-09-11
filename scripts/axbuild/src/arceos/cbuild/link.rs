@@ -44,25 +44,6 @@ pub(super) fn find_final_linker_script(
     latest_script_with_package_prefix(&build_dir, "ax-runtime-", ARCEOS_LINKER_SCRIPT)
 }
 
-#[cfg(test)]
-pub(super) fn find_linker_search_dirs(
-    target_dir: &Path,
-    target: &str,
-    mode: &str,
-    _platform: &str,
-    features: &[String],
-) -> anyhow::Result<Vec<PathBuf>> {
-    let build_dir = target_dir.join(target).join(mode).join("build");
-    let mut dirs = BTreeSet::new();
-    let runtime_out = latest_out_dir_with_script(&build_dir, "ax-runtime-", ARCEOS_LINKER_SCRIPT)?;
-    dirs.insert(runtime_out);
-    let platform_out = latest_out_dir_with_script(&build_dir, "axplat-dyn-", "axplat.x")?;
-    let _ = features;
-    dirs.insert(platform_out);
-
-    Ok(dirs.into_iter().collect())
-}
-
 fn find_dynamic_linker_search_dirs(
     target_dir: &Path,
     target: &str,

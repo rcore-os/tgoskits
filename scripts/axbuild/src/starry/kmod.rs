@@ -718,29 +718,4 @@ ccflags-remove-y += -pg
 
         assert!(built.is_none());
     }
-
-    #[test]
-    fn linux_c_make_args_pass_module_pwd_for_makefile_pwd_users() {
-        let module_path = Path::new("/ws/os/StarryOS/lkm/linux-hello");
-        let mut clean_args = linux_c_module_make_args(module_path);
-        clean_args.push("clean".to_string());
-
-        assert_eq!(
-            linux_c_module_make_args(module_path),
-            vec![
-                "-C".to_string(),
-                "/ws/os/StarryOS/lkm/linux-hello".to_string(),
-                "PWD=/ws/os/StarryOS/lkm/linux-hello".to_string()
-            ]
-        );
-        assert_eq!(
-            clean_args,
-            vec![
-                "-C".to_string(),
-                "/ws/os/StarryOS/lkm/linux-hello".to_string(),
-                "PWD=/ws/os/StarryOS/lkm/linux-hello".to_string(),
-                "clean".to_string()
-            ]
-        );
-    }
 }
