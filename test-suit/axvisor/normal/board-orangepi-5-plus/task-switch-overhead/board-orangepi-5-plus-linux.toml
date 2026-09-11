@@ -1,0 +1,11 @@
+board_type = "OrangePi-5-Plus"
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "Failed to initialize guest VM",
+  "VM\\[1\\] run VCpu\\[0\\] get error",
+  "AXVISOR_TASK_SWITCH_BENCH_FAILED",
+]
+success_regex = [
+  "(?m)^(?:\\[VM 1\\] )?AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=9 .*samples_per_direction=1000000 .*avg_cycles=[0-9]+ .*min_cycles=[0-9]+ .*max_cycles=[0-9]+.*$",
+]
+timeout = 7200

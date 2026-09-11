@@ -1,0 +1,6 @@
+args = ["-machine", "virt", "-cpu", "cortex-a72", "-m", "512M", "-smp", "1", "-nographic", "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65", "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/runtime-assets/apps/arceos/task_switch_bench/disk.img", "-serial", "mon:stdio"]
+uefi = false
+to_bin = false
+success_regex = ["AXVISOR_TASK_SWITCH_BENCH_DONE"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "AXVISOR_TASK_SWITCH_BENCH_FAILED"]
+timeout = 300

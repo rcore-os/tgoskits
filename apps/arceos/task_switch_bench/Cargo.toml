@@ -1,0 +1,28 @@
+[package]
+name = "arceos-task-switch-bench"
+version = "0.1.0"
+edition.workspace = true
+authors = ["AxVisor Team"]
+publish = false
+
+[features]
+default = ["arceos"]
+arceos = [
+    "dep:ax-cpu",
+    "dep:ax-memory-addr",
+    "dep:ax-mm",
+    "dep:ax-runtime",
+    "dep:ax-std",
+    "dep:rockchip-soc",
+    "ax-std/arceos",
+]
+
+[dependencies]
+ax-cpu = { workspace = true, optional = true }
+ax-memory-addr = { workspace = true, optional = true }
+ax-mm = { workspace = true, optional = true }
+ax-runtime = { workspace = true, optional = true }
+ax-std = { workspace = true, optional = true, features = ["default"] }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+rockchip-soc = { path = "../../../drivers/soc/rockchip/rockchip-soc", optional = true }

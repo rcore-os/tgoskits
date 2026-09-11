@@ -1,0 +1,21 @@
+[base]
+id = 1
+name = "arceos-task-switch-bench"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [0x400]
+
+[kernel]
+entry_point = 0x4008_0000
+image_location = "memory"
+kernel_load_addr = 0x4008_0000
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-task-switch-bench.bin"
+dtb_load_addr = 0x4000_0000
+
+memory_regions = [
+  [0x4000_0000, 0x4000_0000, 0x7, 1],
+]
+
+[devices]
+passthrough = []
+disabled = []
