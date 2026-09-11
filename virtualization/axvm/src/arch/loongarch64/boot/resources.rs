@@ -50,6 +50,16 @@ pub fn prepare_uefi_fdt_config(
     Ok(())
 }
 
+pub fn prepare_direct_fdt_config(vm_config: &mut AxVMConfig, vm_create_config: &mut GuestConfig) {
+    info!(
+        "VM[{}] uses LoongArch direct boot protocol, loading FDT at {:#x}",
+        vm_config.id(),
+        UEFI_FIRMWARE_FDT_BASE
+    );
+    vm_config.set_dtb_load_gpa(UEFI_FIRMWARE_FDT_BASE.into());
+    vm_create_config.kernel.dtb_load_addr = Some(UEFI_FIRMWARE_FDT_BASE);
+}
+
 pub fn prepare_uefi_runtime_config(vm: &AxVMRef, vm_create_config: &GuestConfig) -> AxVmResult {
     store_guest_irq_routes(vm.id(), super::guest_irq_routes(vm, vm_create_config)?);
     Ok(())

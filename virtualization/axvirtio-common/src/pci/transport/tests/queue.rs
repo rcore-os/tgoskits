@@ -366,7 +366,7 @@ fn queue_fault_activity_blocks_reset_until_terminal_publication() {
 }
 
 #[test]
-fn concurrent_notify_same_queue_does_not_fault_or_replace_owner_queue() {
+fn concurrent_notify_same_queue_requests_rerun_without_replacing_owner_queue() {
     let entered = StdArc::new(Barrier::new(2));
     let release = StdArc::new(Barrier::new(2));
     let transport = StdArc::new(
@@ -458,7 +458,7 @@ fn concurrent_notify_same_queue_does_not_fault_or_replace_owner_queue() {
     let second_result = second.join().expect("second notify should finish");
     let second_outcome = second_result.expect("second notify should not fail");
     let VirtioPciWriteOutcome::QueueNotified(notification) = second_outcome else {
-        panic!("expected an idle queue notification");
+        panic!("expected a concurrent queue notification");
     };
     assert_eq!(notification.outcome(), QueueNotifyOutcome::Idle);
     notification.complete();
@@ -475,6 +475,11 @@ fn concurrent_notify_same_queue_does_not_fault_or_replace_owner_queue() {
     let VirtioPciWriteOutcome::QueueNotified(notification) = first_outcome else {
         panic!("expected first queue notification");
     };
+    assert_eq!(
+        notification.outcome(),
+        QueueNotifyOutcome::Deferred { notify: false },
+        "the queue owner must publish the rerun requested by the concurrent notify"
+    );
     notification.complete();
     first.join().expect("first notify should finish");
 }

@@ -98,6 +98,8 @@ pub(super) struct QueueState {
     pub(super) queue: VirtioQueue<NoGuestMemoryAccessor>,
     pub(super) enabled: bool,
     pub(super) processing: bool,
+    /// A notify observed while `processing` was owned by another context.
+    pub(super) rerun_requested: bool,
 }
 
 pub(super) struct TransportState {
@@ -122,6 +124,7 @@ impl TransportState {
                 queue: VirtioQueue::new(index, queue_size_max, Arc::new(NoGuestMemoryAccessor)),
                 enabled: false,
                 processing: false,
+                rerun_requested: false,
             })
             .collect();
         Self {
@@ -155,6 +158,7 @@ impl TransportState {
         for queue in &mut self.queues {
             queue.enabled = false;
             queue.processing = false;
+            queue.rerun_requested = false;
             queue.queue.reset();
         }
     }

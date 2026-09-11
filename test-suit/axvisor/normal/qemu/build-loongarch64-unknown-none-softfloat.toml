@@ -3,9 +3,10 @@ features = [
   "fs",
 ]
 log = "Info"
-max_cpu_num = 1
+max_cpu_num = 2
 target = "loongarch64-unknown-none-softfloat"
-vm_configs = []
+vm_configs = ["os/axvisor/configs/vms/qemu/loongarch64/linux-virtio-blk.toml"]
 
 [env]
 KERNEL_BUILTIN_CMDLINE = "root=/dev/nvme0n1 earlycon=uart8250,mmio,0x1fe001e0,115200"
+AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/images/initramfs-loongarch64-busybox.cpio.gz/initramfs-loongarch64-busybox.cpio.gz"

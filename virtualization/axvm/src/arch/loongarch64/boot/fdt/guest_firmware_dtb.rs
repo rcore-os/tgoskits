@@ -2,7 +2,9 @@ use std::{format, vec::Vec};
 
 use fdt_edit::{Fdt, Node, NodeId};
 
-use super::property::{prop_null, prop_string, prop_string_list, prop_u32, prop_u32_array};
+use super::property::{
+    prop_null, prop_string, prop_string_list, prop_u32, prop_u32_array, prop_u64,
+};
 use crate::{
     AxVmResult,
     arch::loongarch64::boot::GuestPlatform,
@@ -17,7 +19,11 @@ const PHANDLE_PCH_PIC: u32 = 0x8003;
 const PHANDLE_PCH_MSI: u32 = 0x8004;
 const PHANDLE_GED_SYSCON: u32 = 0x8005;
 
-pub fn build(platform: &GuestPlatform) -> AxVmResult<Vec<u8>> {
+pub fn build(
+    platform: &GuestPlatform,
+    cmdline: Option<&str>,
+    initrd: Option<(u64, u64)>,
+) -> AxVmResult<Vec<u8>> {
     let mut fdt = Fdt::new();
     let root = fdt.root_id();
     set_prop(&mut fdt, root, prop_u32("#address-cells", 2))?;
@@ -28,10 +34,11 @@ pub fn build(platform: &GuestPlatform) -> AxVmResult<Vec<u8>> {
         prop_string("compatible", "linux,dummy-loongson3"),
     )?;
 
-    add_chosen(&mut fdt, root, platform)?;
+    add_chosen(&mut fdt, root, platform, cmdline, initrd)?;
     add_cpus(&mut fdt, root)?;
     add_memory(&mut fdt, root, platform)?;
     add_interrupt_controllers(&mut fdt, root, platform)?;
+    add_pci(&mut fdt, root, platform)?;
     add_configured_devices(&mut fdt, root, platform)?;
     add_platform_bus(&mut fdt, root, platform)?;
     add_power(&mut fdt, root, platform)?;
@@ -106,7 +113,13 @@ fn platform_bus_range(platform: &GuestPlatform) -> (u64, u64) {
     (base, end.saturating_sub(base).max(PAGE_SIZE))
 }
 
-fn add_chosen(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
+fn add_chosen(
+    fdt: &mut Fdt,
+    root: NodeId,
+    platform: &GuestPlatform,
+    cmdline: Option<&str>,
+    initrd: Option<(u64, u64)>,
+) -> AxVmResult {
     let chosen = add_child(fdt, root, "chosen");
     set_prop(
         fdt,
@@ -115,7 +128,15 @@ fn add_chosen(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResu
             "stdout-path",
             &format!("/serial@{:x}", platform.serial.mmio.base),
         ),
-    )
+    )?;
+    if let Some(cmdline) = cmdline {
+        set_prop(fdt, chosen, prop_string("bootargs", cmdline))?;
+    }
+    if let Some((start, end)) = initrd {
+        set_prop(fdt, chosen, prop_u64("linux,initrd-start", start))?;
+        set_prop(fdt, chosen, prop_u64("linux,initrd-end", end))?;
+    }
+    Ok(())
 }
 
 fn add_cpus(fdt: &mut Fdt, root: NodeId) -> AxVmResult {
@@ -290,6 +311,77 @@ fn add_configured_devices(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform)
         }
     }
     Ok(())
+}
+
+fn add_pci(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
+    let pci = platform.pci;
+    let node = add_child(fdt, root, &format!("pcie@{:x}", pci.ecam.base));
+    set_prop(
+        fdt,
+        node,
+        prop_string("compatible", "pci-host-ecam-generic"),
+    )?;
+    set_prop(fdt, node, prop_string("device_type", "pci"))?;
+    set_prop(fdt, node, prop_u32("#address-cells", 3))?;
+    set_prop(fdt, node, prop_u32("#size-cells", 2))?;
+    set_prop(fdt, node, prop_u32("#interrupt-cells", 1))?;
+    set_prop(fdt, node, prop_null("dma-coherent"))?;
+    prop_reg(fdt, node, pci.ecam.base, pci.ecam.size)?;
+    let bus_end = pci
+        .ecam
+        .size
+        .checked_shr(20)
+        .unwrap_or_default()
+        .saturating_sub(1);
+    let bus_end = u32::try_from(bus_end).map_err(|_| {
+        crate::AxVmError::invalid_config("LoongArch PCI ECAM bus range exceeds u32")
+    })?;
+    set_prop(fdt, node, prop_u32_array("bus-range", &[0, bus_end]))?;
+    set_prop(fdt, node, prop_u32("linux,pci-domain", 0))?;
+
+    let io_child_base = 0x4000_u64.min(pci.io_size);
+    let io_size = pci.io_size.saturating_sub(io_child_base);
+    set_prop(
+        fdt,
+        node,
+        prop_u32_array(
+            "ranges",
+            &[
+                0x0100_0000,
+                0,
+                io_child_base as u32,
+                ((pci.io_base + io_child_base) >> 32) as u32,
+                (pci.io_base + io_child_base) as u32,
+                (io_size >> 32) as u32,
+                io_size as u32,
+                0x0200_0000,
+                (pci.mmio.base >> 32) as u32,
+                pci.mmio.base as u32,
+                (pci.mmio.base >> 32) as u32,
+                pci.mmio.base as u32,
+                (pci.mmio.size >> 32) as u32,
+                pci.mmio.size as u32,
+            ],
+        ),
+    )?;
+    set_prop(
+        fdt,
+        node,
+        prop_u32_array("interrupt-map-mask", &[0x1800, 0, 0, 7]),
+    )?;
+    let mut interrupt_map = Vec::with_capacity(4 * 4 * 7);
+    for device in 0_u32..4 {
+        for pin in 1_u32..=4 {
+            let input = pci.intx_base + (device + pin - 1) % 4;
+            interrupt_map.extend_from_slice(&[device << 11, 0, 0, pin, PHANDLE_PCH_PIC, input, 4]);
+        }
+    }
+    set_prop(fdt, node, prop_u32_array("interrupt-map", &interrupt_map))?;
+    set_prop(
+        fdt,
+        node,
+        prop_u32_array("msi-map", &[0, PHANDLE_PCH_MSI, 0, 0x1_0000]),
+    )
 }
 
 fn configured_device_node_name(device: &ResolvedFdtDevice) -> String {
@@ -486,6 +578,10 @@ mod tests {
                 .as_str(),
             Some(serial_path.as_str())
         );
+        let pci_path = format!("/pcie@{:x}", platform.pci.ecam.base);
+        let pci = fdt.get_by_path(&pci_path).unwrap();
+        assert_eq!(pci.regs()[0].address, platform.pci.ecam.base);
+        assert_eq!(pci.regs()[0].size, Some(platform.pci.ecam.size));
     }
 
     #[test]

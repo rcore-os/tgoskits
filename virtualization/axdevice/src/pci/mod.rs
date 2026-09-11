@@ -11,6 +11,7 @@ mod capability;
 mod config;
 mod config_layout;
 mod error;
+mod frontend;
 mod function;
 mod graph;
 mod placement;
@@ -30,6 +31,7 @@ pub use capability::{
     PciCapabilityLayout, PciCapabilitySnapshot, PciCapabilitySpec, PciConfigEffectId,
 };
 pub use error::{PciError, PciResult};
+pub use frontend::{PciEcamConfigFrontend, PciMemoryApertureDevice, PciRootLifecycle};
 pub use function::{PciClass, PciEndpointIdentity, PciFunctionSpec};
 pub use graph::{
     PciFunctionRequirement, PciHostKey, PciHostProvider, PciIntxPin, PciIntxRequirement,

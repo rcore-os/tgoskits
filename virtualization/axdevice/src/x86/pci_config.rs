@@ -5,10 +5,7 @@ use alloc::{boxed::Box, sync::Arc};
 use ax_sync::SpinLock;
 use axdevice_base::*;
 
-use crate::{
-    ConfigOffset, DeviceLifecycle, DeviceManagerResult, PciBdf, PciRootBinding, PciSegment,
-    all_ones, read_bytes,
-};
+use crate::{ConfigOffset, PciBdf, PciRootBinding, PciSegment, all_ones, read_bytes};
 
 const CONFIG_ADDRESS_ENABLE: u32 = 1 << 31;
 const CONFIG_ADDRESS_PORT: u16 = 0xcf8;
@@ -275,82 +272,6 @@ impl Device for X86PciConfigFrontend {
         Err(DeviceError::OutOfRange {
             addr: access.address(),
         })
-    }
-}
-
-/// Single top-level MMIO device owning a PCI root's complete memory aperture.
-pub struct PciMemoryApertureDevice {
-    binding: Arc<PciRootBinding>,
-    resources: Box<[Resource]>,
-}
-impl PciMemoryApertureDevice {
-    /// Creates the aperture adapter from the graph-resolved range.
-    pub fn new(base: u64, size: u64, binding: Arc<PciRootBinding>) -> Self {
-        Self {
-            binding,
-            resources: alloc::vec![Resource::MmioRange { base, size }].into_boxed_slice(),
-        }
-    }
-}
-impl Device for PciMemoryApertureDevice {
-    fn name(&self) -> &str {
-        "pci-memory-aperture"
-    }
-    fn resources(&self) -> &[Resource] {
-        &self.resources
-    }
-    fn read(&self, access: &DeviceAccess, context: &mut dyn DeviceContext) -> DeviceResult<u64> {
-        if access.bus() != BusKind::Mmio {
-            return Err(DeviceError::OutOfRange {
-                addr: access.address(),
-            });
-        }
-        match self
-            .binding
-            .read_bar_with_context(access.address(), access.width(), context)
-        {
-            Err(DeviceError::NotFound) => Ok(all_ones(access.width().size())),
-            result => result,
-        }
-    }
-    fn write(
-        &self,
-        access: &DeviceAccess,
-        value: u64,
-        context: &mut dyn DeviceContext,
-    ) -> DeviceResult {
-        if access.bus() != BusKind::Mmio {
-            return Err(DeviceError::OutOfRange {
-                addr: access.address(),
-            });
-        }
-        match self
-            .binding
-            .write_bar_with_context(access.address(), access.width(), value, context)
-        {
-            Err(DeviceError::NotFound) => Ok(()),
-            result => result,
-        }
-    }
-}
-
-/// Lifecycle adapter restoring the PCI root and all bound endpoint state.
-pub struct PciRootLifecycle(Arc<PciRootBinding>);
-impl PciRootLifecycle {
-    /// Creates a lifecycle adapter for one generic PCI root.
-    pub const fn new(binding: Arc<PciRootBinding>) -> Self {
-        Self(binding)
-    }
-}
-impl DeviceLifecycle for PciRootLifecycle {
-    fn reset(&self) -> DeviceManagerResult {
-        self.0.reset_lifecycle()
-    }
-    fn suspend(&self) -> DeviceManagerResult {
-        Ok(())
-    }
-    fn resume(&self) -> DeviceManagerResult {
-        Ok(())
     }
 }
 

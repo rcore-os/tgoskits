@@ -13,6 +13,7 @@ pub(crate) mod boot;
 mod capabilities;
 pub(crate) mod irq;
 mod npt;
+mod pci_config;
 mod resource_pools;
 mod vm;
 pub(crate) use vm::LoongArchVmPlan;
@@ -39,13 +40,27 @@ impl ArchOps for LoongArch64Arch {
         vcpu: &crate::vcpu::AxVCpu<Self::VCpu>,
         interrupt: crate::runtime::QueuedVcpuInterrupt,
     ) {
-        let crate::runtime::QueuedVcpuInterrupt::Physical {
-            vector,
-            physical_irq,
-        } = interrupt
-        else {
-            unreachable!("virtual interrupts are consumed by the common injection path")
+        let (vector, physical_irq) = match interrupt {
+            crate::runtime::QueuedVcpuInterrupt::Physical {
+                vector,
+                physical_irq,
+            } => (vector, Some(physical_irq)),
+            crate::runtime::QueuedVcpuInterrupt::External { vector } => (vector, None),
+            crate::runtime::QueuedVcpuInterrupt::Virtual(_) => {
+                unreachable!("virtual interrupts are consumed by the common injection path")
+            }
         };
+        if physical_irq.is_none() {
+            if let Err(err) = vcpu.get_arch_vcpu().inject_eiointc_interrupt(vector) {
+                warn!(
+                    "Failed to inject queued LoongArch EIOINTC vector={vector:#x} into \
+                     VM[{vm_id}] VCpu[{}]: {err:?}",
+                    vcpu.id()
+                );
+            }
+            return;
+        }
+        let physical_irq = physical_irq.expect("physical interrupt identity was checked above");
         let Some(vm) = crate::get_vm_by_id(vm_id) else {
             warn!("VM[{vm_id}] disappeared before physical interrupt injection");
             return;
@@ -330,6 +345,11 @@ impl LoongArchHostOps for AxvmLoongArchHostOps {
 pub(crate) struct AxvmLoongArchVcpu(LoongArchVcpu<AxvmLoongArchHostOps>);
 
 impl AxvmLoongArchVcpu {
+    fn inject_eiointc_interrupt(&mut self, vector: usize) -> AxVmResult {
+        loongarch_result(self.0.inject_eiointc_interrupt(vector))
+            .map_err(|error| AxVmError::interrupt("inject LoongArch EIOINTC interrupt", error))
+    }
+
     fn inject_external_interrupt(&mut self, vector: usize, physical_irq: usize) -> AxVmResult {
         loongarch_result(self.0.inject_external_interrupt(vector, physical_irq))
             .map_err(|error| AxVmError::interrupt("inject LoongArch external interrupt", error))

@@ -1,5 +1,6 @@
 mod acpi;
 mod fdt;
+mod linux;
 pub(super) mod probe;
 mod resources;
 
@@ -9,8 +10,8 @@ use axdevice::{FwCfgKernelPayload, FwCfgPlatformConfig, FwCfgRamRegion};
 use axdevice_base::InterruptControllerId;
 use axvmconfig::{GuestConfig, VMBootProtocol};
 pub(crate) use resources::{
-    LoongArchGuestIrqRoute, get_guest_irq_routes, prepare_uefi_fdt_config,
-    prepare_uefi_runtime_config,
+    LoongArchGuestIrqRoute, get_guest_irq_routes, prepare_direct_fdt_config,
+    prepare_uefi_fdt_config, prepare_uefi_runtime_config,
 };
 
 use crate::{
@@ -128,6 +129,8 @@ impl GuestPlatform {
             .build();
         platform.interrupt.controller = special.controller;
         platform.interrupt.pch_pic = special.pch_pic;
+        platform.pci.ecam = special.pci_ecam;
+        platform.pci.mmio = special.pci_memory;
         platform.configured_fdt_devices = fdt_firmware.devices;
         platform.configured_acpi_devices = acpi_firmware.devices;
         Ok(platform)
@@ -151,6 +154,8 @@ impl GuestPlatform {
 struct LoongArchSpecialFirmware {
     controller: InterruptControllerId,
     pch_pic: MmioRegion,
+    pci_ecam: MmioRegion,
+    pci_memory: MmioRegion,
     fw_cfg: MmioRegion,
 }
 
@@ -164,12 +169,12 @@ fn resolve_special_firmware(
         fdt::device::{ResolvedFdtProperty, ResolvedFdtSpecialKind},
     };
 
-    if fdt.len() != 3 || acpi.len() != 3 {
+    if fdt.len() != 4 || acpi.len() != 4 {
         return Err(AxVmError::unsupported(
             "resolve LoongArch firmware topology",
             std::format!(
-                "expected interrupt-controller, console, and fw_cfg contributions in both FDT and \
-                 ACPI; found {} FDT and {} ACPI",
+                "expected interrupt-controller, PCI host, console, and fw_cfg contributions in \
+                 both FDT and ACPI; found {} FDT and {} ACPI",
                 fdt.len(),
                 acpi.len()
             ),
@@ -226,6 +231,55 @@ fn resolve_special_firmware(
     {
         return Err(AxVmError::invalid_config(
             "LoongArch PCH-PIC FDT and ACPI contributions disagree",
+        ));
+    }
+
+    let fdt_pci = single_fdt_special(
+        fdt,
+        |kind| kind == ResolvedFdtSpecialKind::PciHostBridge,
+        "PCI host bridge",
+    )?;
+    let acpi_pci = single_acpi_special(
+        acpi,
+        |kind| kind == ResolvedAcpiSpecialKind::PciHostBridge,
+        "PCI host bridge",
+    )?;
+    let [pci_ecam, pci_memory] = fdt_pci.registers.as_slice() else {
+        return Err(AxVmError::invalid_config(
+            "LoongArch FDT PCI host contribution must resolve ECAM and memory windows",
+        ));
+    };
+    let [
+        ResolvedAcpiRegister::Mmio {
+            base: acpi_ecam_base,
+            size: acpi_ecam_size,
+        },
+        ResolvedAcpiRegister::Mmio {
+            base: acpi_memory_base,
+            size: acpi_memory_size,
+        },
+    ] = acpi_pci.registers.as_slice()
+    else {
+        return Err(AxVmError::invalid_config(
+            "LoongArch ACPI PCI host contribution must resolve ECAM and memory windows",
+        ));
+    };
+    if *pci_ecam != (*acpi_ecam_base, *acpi_ecam_size)
+        || *pci_memory != (*acpi_memory_base, *acpi_memory_size)
+        || fdt_pci.node_name != "pcie"
+        || fdt_pci.compatible.as_slice() != ["pci-host-ecam-generic"]
+        || !fdt_pci.interrupts.is_empty()
+        || !matches!(
+            fdt_pci.properties.as_slice(),
+            [ResolvedFdtProperty::Empty(name)] if name == "dma-coherent"
+        )
+        || acpi_pci.name != "PCI0"
+        || acpi_pci.hid.as_deref() != Some("PNP0A08")
+        || !acpi_pci.interrupts.is_empty()
+        || !acpi_pci.properties.is_empty()
+    {
+        return Err(AxVmError::invalid_config(
+            "LoongArch PCI host FDT and ACPI contributions disagree",
         ));
     }
 
@@ -359,6 +413,14 @@ fn resolve_special_firmware(
             base: pch_pic.0,
             size: pch_pic.1,
         },
+        pci_ecam: MmioRegion {
+            base: pci_ecam.0,
+            size: pci_ecam.1,
+        },
+        pci_memory: MmioRegion {
+            base: pci_memory.0,
+            size: pci_memory.1,
+        },
         fw_cfg: MmioRegion {
             base: fw_cfg.0,
             size: fw_cfg.1,
@@ -437,11 +499,19 @@ fn resolved_serial(vm: &AxVMRef) -> AxVmResult<SerialDevice> {
     })
 }
 
-pub fn load_firmware_fdt(vm: &AxVMRef, config: &GuestConfig) -> AxVmResult {
+fn build_firmware_fdt(
+    vm: &AxVMRef,
+    config: &GuestConfig,
+    cmdline: Option<&str>,
+    initrd: Option<(u64, u64)>,
+) -> AxVmResult<Vec<u8>> {
     let platform = GuestPlatform::discover(vm, config)?;
-    let fdt = fdt::guest_firmware_dtb::build(&platform)?;
+    fdt::guest_firmware_dtb::build(&platform, cmdline, initrd)
+}
+
+fn install_firmware_fdt(vm: &AxVMRef, config: &GuestConfig, fdt: Vec<u8>) -> AxVmResult {
     debug!(
-        "VM[{}] loading LoongArch UEFI firmware FDT: {} bytes at {:#x}",
+        "VM[{}] loading LoongArch guest FDT: {} bytes at {:#x}",
         config.base.id,
         fdt.len(),
         UEFI_FIRMWARE_FDT_BASE
@@ -480,11 +550,14 @@ impl BootImagePlatform for super::LoongArch64Arch {
         loader: &mut ImageLoaderCore<'_>,
         images: StaticVmImage,
     ) -> AxVmResult {
+        if loader.config.kernel.effective_boot_protocol() == VMBootProtocol::Direct {
+            return load_direct_linux(loader, images.kernel, images.ramdisk);
+        }
         ensure_uefi_boot(loader)?;
         load_uefi_firmware_dtb(loader)?;
-        add_uefi_fw_cfg(
+        add_fw_cfg(
             loader,
-            Arc::from(images.kernel),
+            FwCfgKernelPayload::unsplit(Arc::from(images.kernel)),
             images.ramdisk.map(Arc::from),
         )?;
         let firmware = images
@@ -501,6 +574,21 @@ impl BootImagePlatform for super::LoongArch64Arch {
 
     #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn load_images_from_filesystem(loader: &mut ImageLoaderCore<'_>) -> AxVmResult {
+        if loader.config.kernel.effective_boot_protocol() == VMBootProtocol::Direct {
+            let kernel = crate::boot::images::fs::read_full_image(
+                &loader.config.kernel.kernel_path,
+                loader.provider,
+            )?;
+            let ramdisk = if let Some(path) = &loader.config.kernel.ramdisk_path {
+                Some(crate::boot::images::fs::read_full_image(
+                    path,
+                    loader.provider,
+                )?)
+            } else {
+                None
+            };
+            return load_direct_linux(loader, &kernel, ramdisk.as_deref());
+        }
         ensure_uefi_boot(loader)?;
         load_uefi_firmware_dtb(loader)?;
 
@@ -515,7 +603,7 @@ impl BootImagePlatform for super::LoongArch64Arch {
         } else {
             None
         };
-        add_uefi_fw_cfg(loader, kernel, ramdisk)?;
+        add_fw_cfg(loader, FwCfgKernelPayload::unsplit(kernel), ramdisk)?;
 
         let firmware = provider_firmware_image(loader).ok_or_else(|| {
             ax_err_type!(
@@ -537,12 +625,56 @@ fn ensure_uefi_boot(loader: &ImageLoaderCore<'_>) -> AxVmResult {
 
 fn load_uefi_firmware_dtb(loader: &ImageLoaderCore<'_>) -> AxVmResult {
     prepare_uefi_runtime_config(&loader.vm, &loader.config)?;
-    load_firmware_fdt(&loader.vm, &loader.config)
+    let fdt = build_firmware_fdt(&loader.vm, &loader.config, None, None)?;
+    install_firmware_fdt(&loader.vm, &loader.config, fdt)
 }
 
-fn add_uefi_fw_cfg(
+fn load_direct_linux(
     loader: &ImageLoaderCore<'_>,
-    kernel: Arc<[u8]>,
+    kernel: &[u8],
+    ramdisk: Option<&[u8]>,
+) -> AxVmResult {
+    let initrd = ramdisk
+        .map(|ramdisk| -> AxVmResult<(GuestPhysAddr, usize)> {
+            let load_gpa = loader.ramdisk_load_gpa()?;
+            Ok((load_gpa, ramdisk.len()))
+        })
+        .transpose()?;
+    prepare_uefi_runtime_config(&loader.vm, &loader.config)?;
+    let initrd_fdt = initrd
+        .map(|(start, size)| -> AxVmResult<(u64, u64)> {
+            let start = start.as_usize() as u64;
+            let end = start.checked_add(size as u64).ok_or_else(|| {
+                ax_err_type!(InvalidData, "LoongArch initramfs address range overflows")
+            })?;
+            Ok((start, end))
+        })
+        .transpose()?;
+    let fdt = build_firmware_fdt(
+        &loader.vm,
+        &loader.config,
+        loader.config.kernel.cmdline.as_deref(),
+        initrd_fdt,
+    )?;
+    linux::validate_image_layout(kernel, initrd, fdt.len())?;
+
+    linux::load_elf(kernel, loader)?;
+    if let Some(ramdisk) = ramdisk {
+        loader.load_ramdisk_from_memory(ramdisk)?;
+    }
+    let initrd_boot = initrd.map(|(start, size)| (start.as_usize() as u64, size as u64));
+    linux::load_boot_info(loader, initrd_boot)?;
+    add_fw_cfg(loader, FwCfgKernelPayload::empty(), None)?;
+    install_firmware_fdt(&loader.vm, &loader.config, fdt)
+}
+
+pub(super) const fn direct_linux_boot_args() -> [usize; 3] {
+    linux::boot_args()
+}
+
+fn add_fw_cfg(
+    loader: &ImageLoaderCore<'_>,
+    kernel: FwCfgKernelPayload,
     ramdisk: Option<Arc<[u8]>>,
 ) -> AxVmResult {
     let platform = GuestPlatform::discover(&loader.vm, &loader.config)?;
@@ -554,7 +686,7 @@ fn add_uefi_fw_cfg(
         ),
         size: usize::try_from(fw_cfg.size)
             .map_err(|_| crate::AxVmError::invalid_config("fw_cfg size does not fit usize"))?,
-        kernel: FwCfgKernelPayload::unsplit(kernel),
+        kernel,
         initrd: ramdisk,
         cmdline: loader.config.kernel.cmdline.clone(),
         cpu_num: loader.config.base.cpu_num as u16,

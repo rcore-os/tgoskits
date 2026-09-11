@@ -625,6 +625,37 @@ impl VmRuntimeHandle {
         )
     }
 
+    #[cfg(target_arch = "loongarch64")]
+    pub(crate) fn dispatch_external_vcpu_interrupt(
+        &self,
+        vcpu_id: usize,
+        vector: usize,
+    ) -> AxVmResult {
+        let (owner, kick) = self.vcpu_dispatch_target(vcpu_id)?;
+        dispatch_vcpu_interrupt_with(
+            || {
+                let needs_kick = self
+                    .irq_dispatcher
+                    .enqueue_external(vcpu_id, owner, vector)
+                    .ok_or_else(|| {
+                        AxVmError::invalid_state(
+                            "dispatch external vCPU interrupt",
+                            format_args!("vCPU {vcpu_id} task generation changed"),
+                        )
+                    })?;
+                Ok(needs_kick)
+            },
+            || {
+                self.notify_all();
+                let exit_cpu = kick.kick_from_task(crate::host::task::current_cpu_id());
+                if let Some(cpu_id) = exit_cpu {
+                    crate::host::task::send_ipi(cpu_id);
+                }
+                Ok(())
+            },
+        )
+    }
+
     /// Called by the vCPU run loop to drain pending interrupts before
     /// entering the guest.
     pub(crate) fn irq_dispatcher(&self) -> &VcpuIrqDispatcher {

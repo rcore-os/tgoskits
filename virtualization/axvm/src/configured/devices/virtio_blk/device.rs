@@ -1,7 +1,6 @@
 //! Configured VirtIO block device with MMIO and modern PCI transports.
 //!
-//! MMIO devices may use memory or file-backed storage; the current PCI
-//! configuration accepts the synchronous ramdisk backend.
+//! MMIO and PCI devices may use memory or file-backed storage.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "fs")]
@@ -90,14 +89,6 @@ fn create_device_node(
             })?)
         }
     };
-    if matches!(&transport, VirtioBlkTransport::Pci)
-        && !matches!(&backend_config, BackendConfig::RamDisk)
-    {
-        return Err(invalid_options(
-            request,
-            "PCI transport requires `backend = \"ramdisk\"`",
-        ));
-    }
     let vm_id = match &backend_config {
         BackendConfig::RamDisk => None,
         BackendConfig::File { .. } => {
@@ -414,12 +405,7 @@ impl DeviceModel for VirtioBlkModel {
                 Ok(bundle)
             }
             VirtioBlkTransportConfig::Pci { .. } => {
-                if backend.requires_deferred_processing() {
-                    return Err(invalid_device_config(
-                        "construct virtio-blk PCI device",
-                        "PCI transport requires a synchronous backend",
-                    ));
-                }
+                let deferred = backend.requires_deferred_processing();
                 let irq = context.irq(PCI_INTX_SLOT)?;
                 let grant = DmaGrant::new();
                 let function = Arc::new(
@@ -431,8 +417,12 @@ impl DeviceModel for VirtioBlkModel {
                     .map_err(DeviceManagerError::Device)?,
                 );
                 let mut bundle = DeviceBundle::new();
-                let device_index = bundle.add_pci_function(function)?;
-                bundle.grant_guest_memory_to_device(device_index, grant);
+                let device_index = bundle.add_pci_function(function.clone())?;
+                if deferred {
+                    bundle.grant_dma_polling_to_device(device_index, function, grant);
+                } else {
+                    bundle.grant_guest_memory_to_device(device_index, grant);
+                }
                 Ok(bundle)
             }
         }
@@ -934,8 +924,11 @@ mod tests {
     }
 
     #[test]
-    fn pci_transport_requires_explicit_ramdisk_backend() {
-        let request = request(&[("transport", toml::Value::String("pci".into()))]);
+    fn pci_file_backend_reaches_vm_identity_validation() {
+        let request = request(&[
+            ("transport", toml::Value::String("pci".into())),
+            ("filesystem", toml::Value::String("ext4".into())),
+        ]);
         let result = create_device_node(
             DeviceNodeId::new("disk0").unwrap(),
             &request,
@@ -943,7 +936,7 @@ mod tests {
         );
         assert!(matches!(
             result,
-            Err(ConfiguredDeviceError::InvalidOptions { .. })
+            Err(ConfiguredDeviceError::Instantiation { .. })
         ));
     }
 

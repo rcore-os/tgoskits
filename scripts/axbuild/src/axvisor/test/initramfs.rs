@@ -300,6 +300,17 @@ case "$cmdline" in
   *axvisor.pci_case=enumeration*) run_pci_enumeration_check AXVISOR_X86_VPCI_ENUMERATION_PASSED; exec /bin/busybox sh -i ;;
   *axvisor.pci_block_case=rw*) run_x86_pci_block_check rw AXVISOR_X86_PCI_BLOCK_RW_PASSED; exec /bin/busybox sh -i ;;
   *axvisor.pci_block_case=ro*) run_x86_pci_block_check ro AXVISOR_X86_PCI_BLOCK_RO_PASSED; exec /bin/busybox sh -i ;;
+  *axvisor.pci_block_case=mount*)
+    /bin/busybox mkdir -p /mnt/v
+    if /bin/busybox mount -t ext4 -o ro /dev/vda /mnt/v; then
+      /bin/busybox cat /mnt/v/etc/alpine-release
+      /bin/busybox umount /mnt/v
+      echo AXVISOR_PCI_BLOCK_MOUNT_PASSED
+    else
+      echo AXVISOR_PCI_BLOCK_MOUNT_FAILED
+    fi
+    exec /bin/busybox sh -i
+    ;;
   *axvisor.acpi_case=off*)
     if [ -d /sys/firmware/acpi/tables ]; then
       echo AXVISOR_X86_ACPI_FAILED

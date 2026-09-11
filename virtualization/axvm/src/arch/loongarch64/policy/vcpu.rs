@@ -300,6 +300,17 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         self.inject_interrupt(vector)
     }
 
+    pub fn inject_eiointc_interrupt(&mut self, vector: usize) -> LoongArchVcpuResult {
+        if let Some(hwi) =
+            inject_guest_eiointc_vector(&self.iocsr_state, self.vm_id, self.vcpu_id, vector)
+        {
+            self.machine.context.gcsr_estat |= 1usize << hwi;
+            return self.inject_interrupt(hwi);
+        }
+        log::warn!("Ignoring masked LoongArch EIOINTC vector {vector}");
+        Ok(())
+    }
+
     pub fn has_enabled_pending_interrupt(&self) -> bool {
         self.machine.context.gcsr_eentry != 0
             && self.machine.context.gcsr_crmd & CSR_CRMD_IE != 0

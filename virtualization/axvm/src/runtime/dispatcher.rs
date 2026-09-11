@@ -93,6 +93,18 @@ impl VcpuIrqDispatcher {
         )
     }
 
+    /// Enqueues one virtual LoongArch EIOINTC source.
+    #[cfg(target_arch = "loongarch64")]
+    pub(crate) fn enqueue_external(
+        &self,
+        vcpu_id: usize,
+        owner: u64,
+        vector: usize,
+    ) -> Option<bool> {
+        self.queue
+            .push(vcpu_id, owner, QueuedVcpuInterrupt::External { vector })
+    }
+
     /// Drains all pending interrupts for the given vCPU, leaving its queue
     /// empty.
     ///

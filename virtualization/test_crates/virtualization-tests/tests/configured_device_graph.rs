@@ -487,7 +487,7 @@ read_only = true
 }
 
 #[test]
-fn virtio_blk_pci_rejects_file_backend_and_unknown_options() {
+fn virtio_blk_pci_accepts_file_options_before_vm_identity_and_rejects_unknown_options() {
     let file_config = GuestConfig::from_toml(
         r#"
 [devices]
@@ -497,6 +497,7 @@ model = "virtio-blk"
 transport = "pci"
 backend = "file"
 path = "/tmp/disk0.img"
+filesystem = "ext4"
 "#,
     )
     .unwrap();
@@ -522,7 +523,7 @@ unknown = true
 
     assert!(matches!(
         catalog.instantiate_node(&file_config.devices.virtual_devices[0], &context),
-        Err(ConfiguredDeviceError::InvalidOptions { .. })
+        Err(ConfiguredDeviceError::Instantiation { .. })
     ));
     assert!(matches!(
         catalog.instantiate_node(&unknown_config.devices.virtual_devices[0], &context),

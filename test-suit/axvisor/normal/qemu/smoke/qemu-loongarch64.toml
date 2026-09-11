@@ -6,7 +6,7 @@ args = [
   "-m",
   "2G",
   "-smp",
-  "1",
+  "2",
   "-nographic",
   "-serial",
   "mon:stdio",
@@ -21,13 +21,29 @@ fail_regex = [
   "(?i)kernel panic",
   "(?i)login incorrect",
   "(?i)permission denied",
+  "(?i)failed to initialize guest VM",
   "(?m)^(?:echo|cat|rm):\\s",
 ]
-shell_check_steps = [{ shell_prefix = "axvisor:/$", shell_cmd = """
+timeout = 300
+to_bin = true
+uefi = true
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = """
 echo AXVISOR_NVME_RW_PAYLOAD > /tmp/axvisor-nvme-rw
 cat /tmp/axvisor-nvme-rw
 rm -f /tmp/axvisor-nvme-rw
 echo AXVISOR_NVME_ROOTFS_RW_PASSED
-""", success_regex = ["(?m)^AXVISOR_NVME_RW_PAYLOAD\\s*$", "(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\\s*$"] }]
-to_bin = true
-uefi = true
+"""
+success_regex = ["(?m)^AXVISOR_NVME_RW_PAYLOAD\\s*$", "(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = [
+  "(?m)^3\\.23\\.5\\s*$",
+  "(?m)^AXVISOR_PCI_BLOCK_MOUNT_PASSED\\s*$",
+]
+fail_regex = ["(?m)^AXVISOR_PCI_BLOCK_MOUNT_FAILED\\s*$", "mount:"]
+timeout = 60
