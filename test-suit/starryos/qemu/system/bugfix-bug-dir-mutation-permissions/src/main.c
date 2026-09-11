@@ -73,6 +73,7 @@ static const char *const protected_dangling_path =
 static const char *const protected_new_file =
     "/tmp/bug-dir-mutation-permissions/protected/created-by-symlink";
 static const char *const public_dir = "/tmp/bug-dir-mutation-permissions/public";
+static const char *const readonly_dir = "/tmp/bug-dir-mutation-permissions/readonly";
 static const char *const protected_link =
     "/tmp/bug-dir-mutation-permissions/protected/public-link";
 static const char *const public_link_new =
@@ -184,6 +185,17 @@ static int run_unprivileged_checks(void)
     errno = 0;
     check(renameat2_call(source, "", 0) < 0 && errno == ENOENT,
           "renameat2 rejects an empty destination pathname");
+
+    errno = 0;
+    check(renameat2_call("/tmp/bug-dir-mutation-permissions/readonly/missing", source, 0) < 0
+              && errno == ENOENT,
+          "renameat2 reports a missing source before an unwritable source parent");
+
+    errno = 0;
+    check(renameat2_call("/tmp/bug-dir-mutation-permissions/public/missing", readonly_dir, 0)
+                  < 0
+              && errno == ENOENT,
+          "renameat2 reports a missing source before an unwritable destination parent");
 
     errno = 0;
     int inaccessible = open(protected_file, O_RDONLY | O_CREAT, 0600);
@@ -533,6 +545,8 @@ int main(void)
     check(mkdir(protected_dir, 0700) == 0, "create protected directory");
     check(mkdir(public_dir, 0777) == 0, "create public directory");
     check(chmod(public_dir, 0777) == 0, "make public directory writable");
+    check(mkdir(readonly_dir, 0555) == 0, "create searchable read-only directory");
+    check(chmod(readonly_dir, 0555) == 0, "make read-only directory unwritable");
     check(create_file(source) == 0, "create hard-link source");
     check(create_file(empty_path_source) == 0, "create AT_EMPTY_PATH source");
     check(chown(empty_path_source, 1000, 1000) == 0,
@@ -612,6 +626,7 @@ int main(void)
     remove_if_present(protected_new_file);
     remove_if_present(protected_file);
     remove_if_present(public_link_new);
+    remove_if_present(readonly_dir);
     remove_if_present(protected_link);
     remove_if_present(protected_dir);
     remove_if_present(empty_path_link);

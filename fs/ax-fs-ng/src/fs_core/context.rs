@@ -475,12 +475,14 @@ impl FsContext {
         if target.is_empty() {
             return Err(VfsError::NotFound);
         }
-        self.resolve_components_with_trace(
-            PathBuf::from(target).components(),
+        let target = PathBuf::from(target);
+        let resolved = self.resolve_components_with_trace(
+            target.components(),
             follow_count,
             searched,
             search,
-        )
+        )?;
+        Self::finish_checked_path(&target, resolved, search)
     }
 
     fn lookup_with_trace(
@@ -626,10 +628,11 @@ impl FsContext {
         path: impl AsRef<Path>,
         check_search: impl Fn(&Location) -> VfsResult<()>,
     ) -> VfsResult<(Location, Vec<Location>)> {
+        let path = path.as_ref();
         let mut searched = Vec::new();
         let mut follow_count = 0;
         let (dir, name) = self.resolve_inner_with_trace(
-            path.as_ref(),
+            path,
             &mut follow_count,
             &mut searched,
             Some(&check_search),
@@ -644,6 +647,7 @@ impl FsContext {
             )?,
             None => dir,
         };
+        let location = Self::finish_checked_path(path, location, Some(&check_search))?;
         Ok((location, searched))
     }
 
@@ -654,20 +658,31 @@ impl FsContext {
         path: impl AsRef<Path>,
         check_search: impl Fn(&Location) -> VfsResult<()>,
     ) -> VfsResult<(Location, Vec<Location>)> {
+        let path = path.as_ref();
         let mut searched = Vec::new();
+        let mut follow_count = 0;
         let (dir, name) = self.resolve_inner_with_trace(
-            path.as_ref(),
-            &mut 0,
+            path,
+            &mut follow_count,
             &mut searched,
             Some(&check_search),
         )?;
+        let requires_directory = Self::ends_in_dot(path) || path.as_str().ends_with('/');
         let location = match name {
+            Some(name) if requires_directory => self.lookup_with_trace(
+                &dir,
+                name,
+                &mut follow_count,
+                &mut searched,
+                Some(&check_search),
+            )?,
             Some(name) => {
                 Self::check_search(&dir, Some(&check_search))?;
                 dir.lookup_no_follow(name)?
             }
             None => dir,
         };
+        let location = Self::finish_checked_path(path, location, Some(&check_search))?;
         Ok((location, searched))
     }
 
@@ -1124,6 +1139,16 @@ impl FsContext {
         let (dst_dir, dst_name) = destination;
         let (src_boundary, dst_boundary) = boundaries;
         let (src_search, dst_search) = searches;
+        let source = src_dir.lookup_no_follow(src_name)?;
+        let destination = match dst_dir.lookup_no_follow(dst_name) {
+            Ok(destination) => Some(destination),
+            Err(VfsError::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+
+        // Resolve both final entries before checking parent write access. A
+        // missing source must remain ENOENT even when either mutation parent
+        // is searchable but not writable.
         self.check_mutation_parent_with_boundary_and_search(
             src_dir,
             src_search,
@@ -1136,13 +1161,6 @@ impl FsContext {
             dst_boundary,
             credentials,
         )?;
-
-        let source = src_dir.lookup_no_follow(src_name)?;
-        let destination = match dst_dir.lookup_no_follow(dst_name) {
-            Ok(destination) => Some(destination),
-            Err(VfsError::NotFound) => None,
-            Err(error) => return Err(error),
-        };
 
         if options.no_replace() && destination.is_some() {
             return Err(VfsError::AlreadyExists);
