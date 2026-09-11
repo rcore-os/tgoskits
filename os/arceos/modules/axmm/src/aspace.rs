@@ -822,7 +822,7 @@ impl AddrSpace {
                 if !handled {
                     return false;
                 }
-                ax_hal::cache::update_mmu_cache(vaddr);
+                ax_cpu::mmu::update_mmu_cache(vaddr);
                 return true;
             }
         }

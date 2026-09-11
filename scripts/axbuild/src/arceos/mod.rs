@@ -368,7 +368,7 @@ impl ArceOS {
 
     async fn run_qemu_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
         match build::load_arceos_build_mode(&request.build_info_path)? {
-            build::ArceosBuildMode::RustStd => {
+            build::ArceosBuildMode::Rust => {
                 let cargo = build::load_cargo_config(&request)?;
                 self.run_qemu_request_with_cargo(request, cargo).await
             }
@@ -399,7 +399,7 @@ impl ArceOS {
         Self::validate_board_request(&request)?;
         self.app.set_debug_mode(request.debug)?;
         match build::load_arceos_build_mode(&request.build_info_path)? {
-            build::ArceosBuildMode::RustStd => {
+            build::ArceosBuildMode::Rust => {
                 let mut cargo = build::load_cargo_config(&request)?;
                 if !extra_rustflags.is_empty() {
                     crate::build::append_cargo_rustflags(&mut cargo, extra_rustflags);
@@ -413,7 +413,7 @@ impl ArceOS {
             }
             build::ArceosBuildMode::AppC { app_dir, app_name } => {
                 if !extra_rustflags.is_empty() {
-                    bail!("ArceOS board extra rustflags are only supported for RustStd packages");
+                    bail!("ArceOS board extra rustflags are only supported for Rust packages");
                 }
                 let cargo = build::load_c_app_cargo_config(&request)?;
                 let board_config = self
@@ -464,7 +464,7 @@ impl ArceOS {
     async fn run_build_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
         match build::load_arceos_build_mode(&request.build_info_path)? {
-            build::ArceosBuildMode::RustStd => {
+            build::ArceosBuildMode::Rust => {
                 let cargo = build::load_cargo_config(&request)?;
                 self.app
                     .build(cargo, request.build_info_path)
@@ -492,7 +492,7 @@ impl ArceOS {
     async fn run_uboot_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
         match build::load_arceos_build_mode(&request.build_info_path)? {
-            build::ArceosBuildMode::RustStd => {
+            build::ArceosBuildMode::Rust => {
                 let cargo = build::load_cargo_config(&request)?;
                 let uboot = self.load_uboot_config(&request, &cargo).await?;
                 self.app.uboot(cargo, request.build_info_path, uboot).await

@@ -256,7 +256,7 @@ pub unsafe fn spawn_raw_with_extension_in_address_space_and_fp_state<F>(
     stack_size: usize,
     os_extension: Option<ThreadExtension>,
     address_space: TaskAddressSpace,
-    fp_state: ax_hal::cpu::FpState,
+    fp_state: ax_hal::cpu::registers::FpState,
 ) -> Result<ThreadHandle, TaskError>
 where
     F: FnOnce() + Send + 'static,
@@ -289,7 +289,7 @@ pub unsafe fn spawn_raw_with_extension_in_address_space_and_fp_state_and_policy<
     stack_size: usize,
     os_extension: Option<ThreadExtension>,
     address_space: TaskAddressSpace,
-    fp_state: ax_hal::cpu::FpState,
+    fp_state: ax_hal::cpu::registers::FpState,
     policy: SchedulePolicy,
 ) -> Result<ThreadHandle, TaskError>
 where
@@ -323,7 +323,7 @@ pub unsafe fn prepare_raw_with_extension_in_address_space_and_fp_scheduler_state
     stack_size: usize,
     os_extension: Option<ThreadExtension>,
     address_space: TaskAddressSpace,
-    fp_state: ax_hal::cpu::FpState,
+    fp_state: ax_hal::cpu::registers::FpState,
     policy: SchedulePolicy,
     affinity: CpuSet,
 ) -> Result<PreparedThread, TaskError>

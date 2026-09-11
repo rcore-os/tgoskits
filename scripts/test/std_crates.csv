@@ -9,7 +9,6 @@ ax-io
 axklib
 axpoll
 ax-cgroup
-ax-cpu
 ax-memory-addr
 ax-memory-set
 axpanic

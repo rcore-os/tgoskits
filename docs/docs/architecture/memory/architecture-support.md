@@ -62,9 +62,9 @@ all remaining Free descriptors -> independent Buddy sections
 
 ### 2.2 页表与一致性
 
-`ArchPagingMeta` 的 x86_64 常量来自 `components/axcpu/src/x86_64/paging.rs`，配置 4 级、48 位虚拟地址和最多 52 位物理地址。`X64Pte` 把公共读、写、执行、用户和设备属性转换为 `PRESENT`、`WRITABLE`、`NO_EXECUTE`、`USER`、`NO_CACHE` 与 `WRITE_THROUGH`。
+`ArchPagingMeta` 的 x86_64 常量来自 `components/axcpu/src/arch/x86_64/paging/native.rs`，配置 4 级、48 位虚拟地址和最多 52 位物理地址。`X64Pte` 把公共读、写、执行、用户和设备属性转换为 `PRESENT`、`WRITABLE`、`NO_EXECUTE`、`USER`、`NO_CACHE` 与 `WRITE_THROUGH`。独立的 `paging/ept.rs` 拥有 Intel EPT 描述符及内存类型，VM 侧保留映射策略与几何。
 
-`ArchPagingMeta::flush()` 经 `ax_cpu::asm::flush_tlb` 执行本 CPU 的单页（`invlpg`）或全量（重写 CR3）失效。因此共享内核映射被其他 CPU 使用时，上层必须先完成页表写入，再经 `ax_hal::cache::flush_tlb_range_all_cpus()` 发起远程失效，并在所有目标 CPU 确认后才释放被替换的物理页。
+`ArchPagingMeta::flush()` 经 `ax_cpu::mmu::flush_tlb` 执行本 CPU 的单页或全量失效。全量操作使用 INVPCID，或翻转并恢复 CR4.PGE，包含 global 项。因此共享内核映射被其他 CPU 使用时，上层必须先完成页表写入，再经 `ax_hal::cache::flush_tlb_range_all_cpus()` 发起远程失效，并在所有目标 CPU 确认后才释放被替换的物理页。
 
 ## 3. AArch64
 
@@ -78,7 +78,7 @@ AArch64 同时存在异常级别和内存属性寄存器差异。启动页表和
 
 ### 3.2 内存属性与失效
 
-`components/axcpu/src/aarch64/paging.rs` 中的私有 `A64MemAttr` 枚举与 `pub(super) const MAIR_VALUE` 是页表项 `AttrIndx` 和 `MAIR_ELx` 的运行时事实来源。当前槽位为 Device-nGnRE、Normal write-back 和 Normal non-cacheable；`MAIR_VALUE` 由 `MAIR_EL1::Attr0/1/2` 字段值在 const 块中计算，结果为 `0x44ff04`。启动侧额外写入第四个 WriteThrough transient 槽位（见[页表分层](./page-table.md#5-aarch64-内存属性)）。
+`components/axcpu/src/arch/aarch64/paging.rs` 中的私有 `A64MemAttr` 枚举与 `pub(super) const MAIR_VALUE` 是页表项 `AttrIndx` 和 `MAIR_ELx` 的运行时事实来源。当前槽位为 Device-nGnRE、Normal write-back 和 Normal non-cacheable；`MAIR_VALUE` 由 `MAIR_EL1::Attr0/1/2` 字段值在 const 块中计算，结果为 `0x44ff04`。启动侧额外写入第四个 WriteThrough transient 槽位（见[页表分层](./page-table.md#5-aarch64-内存属性)）。
 
 第一阶段按地址失效在 EL1 使用 `tlbi vaae1`、在 EL2 使用 `tlbi vae2`；全量失效分别使用 `tlbi vmalle1` 和 `tlbi alle2`。这些指令都只处理目标 CPU，并以 `dsb nshst`、`dsb nsh` 和 `isb` 包住本地失效。跨 CPU 路径由发起 CPU 的 `dsb ishst` 先发布页表写入，再通过软件 shootdown mask 让每个目标 CPU 执行本地序列并等待确认；不能把地址级硬件广播和软件确认混用为两个所有者。
 
@@ -98,7 +98,7 @@ RISC-V 将页表模式编码在 `satp`。当前 someboot 与运行时都只使�
 
 `Rv64Pte` 使用标准 V/R/W/X/U/G/A/D 位。玄铁 C9xx feature 额外编码 shareable、bufferable、cacheable 和 strong-order 位；这属于处理器扩展，不应成为其他 RISC-V 平台的默认假设。
 
-`ArchPagingMeta::flush()` 经 `ax_cpu::asm::flush_tlb` 对当前 CPU 执行单地址或全地址 `sfence.vma`。多 CPU 系统必须通过处理器间中断让运行同一地址空间的其他 hart 执行对应失效。
+`ArchPagingMeta::flush()` 经 `ax_cpu::mmu::flush_tlb` 对当前 CPU 执行单地址或全地址 `sfence.vma`。多 CPU 系统必须通过处理器间中断让运行同一地址空间的其他 hart 执行对应失效。
 
 ## 5. LoongArch64
 

@@ -119,7 +119,7 @@ __x86_ap_trampoline_entry:
     .quad 0
 __x86_ap_trampoline_end:
 "#,
-    kernel_cr0_state = const super::KERNEL_CR0_STATE,
+    kernel_cr0_state = const ax_cpu::boot::KERNEL_CR0_STATE,
     options(att_syntax)
 );
 
@@ -188,9 +188,9 @@ fn us_to_tsc_ticks(us: u64) -> u64 {
 }
 
 fn delay_us(us: u64) {
-    let start = super::trap::ticks_now();
+    let start = ax_cpu::timer::read_counter();
     let target = us_to_tsc_ticks(us);
-    while super::trap::ticks_now().wrapping_sub(start) < target {
+    while ax_cpu::timer::read_counter().wrapping_sub(start) < target {
         spin_loop();
     }
 }
@@ -378,6 +378,6 @@ mod tests {
 
     #[test]
     fn kernel_cr0_state_matches_linux_boot_state() {
-        assert_eq!(super::super::KERNEL_CR0_STATE, 0x8005_0033);
+        assert_eq!(ax_cpu::boot::KERNEL_CR0_STATE, 0x8005_0033);
     }
 }

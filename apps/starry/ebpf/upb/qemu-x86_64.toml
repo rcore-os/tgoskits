@@ -11,10 +11,12 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
-uefi = false
-to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/upb"
-success_regex = []
-fail_regex = ['(?i)\bpanic(?:ked)?\b']
+uefi = true
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?m)^Error: ", "(?m)^/bin/sh: .*not found"]
 timeout = 240
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/upb"
+success_regex = ['(?m)^Waiting for Ctrl-C\.\.\.\s*$']

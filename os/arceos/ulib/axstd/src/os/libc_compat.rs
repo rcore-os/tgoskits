@@ -10,7 +10,6 @@ use core::{
     time::Duration,
 };
 
-use ax_lazyinit::LazyLock;
 use ax_runtime::task::sync::SpinLock as Mutex;
 use syscalls::Errno;
 
@@ -2002,32 +2001,11 @@ unsafe fn futex_timeout(
     super::futex::timeout_from_timespec(ts, mode, clocks).map(Some)
 }
 
-static FUTEX_QUEUES: LazyLock<Mutex<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>>> =
-    LazyLock::new(|| Mutex::new(BTreeMap::new()));
-static MMAP_ALLOCS: LazyLock<Mutex<BTreeMap<usize, SizeT>>> =
-    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+static FUTEX_QUEUES: Mutex<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>> =
+    Mutex::new(BTreeMap::new());
+static MMAP_ALLOCS: Mutex<BTreeMap<usize, SizeT>> = Mutex::new(BTreeMap::new());
 #[cfg(feature = "fs")]
-static FD_PATHS: LazyLock<Mutex<BTreeMap<c_int, FdPath>>> =
-    LazyLock::new(|| Mutex::new(BTreeMap::new()));
-
-/// Commits the one-time initialization of every process-wide lazy table in
-/// this module.
-///
-/// A task can first touch one of these tables while it runs inside a context
-/// that cannot sleep (for example a network event wakes a fresh std thread and
-/// the scheduler runs its first instructions inside the preemption-disabled
-/// IRQ tail). If two threads race on the first touch, the loser waits for the
-/// winner's initialization; that wait may need a sleepable context and panics
-/// on the preemption-disabled path. Running this from a normal task context
-/// (for example when spawning a thread) commits all one-time initialization
-/// up front so later first touches only take the fast path.
-pub(crate) fn preheat_lazy_tables() {
-    let _ = FUTEX_QUEUES.lock();
-    let _ = MMAP_ALLOCS.lock();
-    #[cfg(feature = "fs")]
-    let _ = FD_PATHS.lock();
-    pthread::preheat_lazy_tables();
-}
+static FD_PATHS: Mutex<BTreeMap<c_int, FdPath>> = Mutex::new(BTreeMap::new());
 
 mod pthread {
     use super::*;
@@ -2040,22 +2018,12 @@ mod pthread {
     type PthreadTlsMap = BTreeMap<u64, ForceSendSync<PthreadTlsValues>>;
     type CxaThreadDtorMap = BTreeMap<u64, Vec<CxaThreadDtor>>;
 
-    static KEY_SLOTS: LazyLock<Mutex<Vec<Option<TlsKey>>>> =
-        LazyLock::new(|| Mutex::new(Vec::new()));
-    static TLS_VALUES: LazyLock<Mutex<PthreadTlsMap>> =
-        LazyLock::new(|| Mutex::new(BTreeMap::new()));
-    static CXA_THREAD_DTORS: LazyLock<Mutex<CxaThreadDtorMap>> =
-        LazyLock::new(|| Mutex::new(BTreeMap::new()));
+    static KEY_SLOTS: Mutex<Vec<Option<TlsKey>>> = Mutex::new(Vec::new());
+    static TLS_VALUES: Mutex<PthreadTlsMap> = Mutex::new(BTreeMap::new());
+    static CXA_THREAD_DTORS: Mutex<CxaThreadDtorMap> = Mutex::new(BTreeMap::new());
     static NEXT_COND_ID: AtomicUsize = AtomicUsize::new(1);
-    static CONDVARS: LazyLock<Mutex<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>>> =
-        LazyLock::new(|| Mutex::new(BTreeMap::new()));
-
-    pub(super) fn preheat_lazy_tables() {
-        let _ = KEY_SLOTS.lock();
-        let _ = TLS_VALUES.lock();
-        let _ = CXA_THREAD_DTORS.lock();
-        let _ = CONDVARS.lock();
-    }
+    static CONDVARS: Mutex<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>> =
+        Mutex::new(BTreeMap::new());
 
     struct TlsKey {
         destructor: Option<unsafe extern "C" fn(*mut c_void)>,
@@ -2150,7 +2118,6 @@ mod pthread {
         start: extern "C" fn(*mut c_void) -> *mut c_void,
         arg: *mut c_void,
     ) -> c_int {
-        super::preheat_lazy_tables();
         let start = Box::into_raw(Box::new(PthreadStart { start, arg }));
         let ret = unsafe {
             ax_posix_api::sys_pthread_create(

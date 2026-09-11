@@ -11,8 +11,16 @@ args = [
 ]
 uefi = true
 to_bin = true
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?m)^lockdep fatal violation\\s*$",
+  "(?m)^STARRY_TIMER_PREEMPTION_X86_FAILED:",
+]
+timeout = 180
+
+[[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_init_cmd = '''
+shell_cmd = '''
 /usr/bin/timer-preemption-x86
 status=$?
 if [ "$status" -eq 0 ]; then
@@ -23,9 +31,3 @@ else
 fi
 '''
 success_regex = ["(?m)^STARRY_TIMER_PREEMPTION_X86_PASSED\\s*$"]
-fail_regex = [
-  "(?i)\\bpanic(?:ked)?\\b",
-  "(?m)^lockdep fatal violation\\s*$",
-  "(?m)^STARRY_TIMER_PREEMPTION_X86_FAILED:",
-]
-timeout = 180

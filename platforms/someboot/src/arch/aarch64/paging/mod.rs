@@ -1,6 +1,3 @@
-use core::arch::asm;
-
-use aarch64_cpu::asm::barrier::{self, dsb, isb};
 use num_align::NumAlign;
 use page_table_generic::{MapConfig, VirtAddr};
 
@@ -40,23 +37,12 @@ pub fn enable_mmu() -> ! {
     setup_sctlr();
 
     super::relocate::reset();
-    dsb(barrier::SY);
-    isb(barrier::SY);
+    ax_cpu::barrier::data_sync_system();
+    ax_cpu::barrier::instruction_sync();
 
-    // Jump to mmu_entry using physical address
-    unsafe {
-        asm!(
-            "
-            mov x8, {0}
-            mov x9, {1}
-            mov sp, x9
-            br x8
-        ",
-            in(reg) v_entry,
-            in(reg) v_sp,
-            options(noreturn, nostack)
-        )
-    }
+    // SAFETY: setup_page_table retains the relocated entry and reserved stack;
+    // no Rust instruction may run on the old stack after this final handoff.
+    unsafe { ax_cpu::boot::jump_to(v_entry.into(), v_sp.into()) }
 }
 
 pub fn init_mmu_secondary(cpu_meta_paddr: usize) -> usize {
@@ -72,8 +58,8 @@ pub fn init_mmu_secondary(cpu_meta_paddr: usize) -> usize {
     set_user_table(tb);
     setup_sctlr();
     flush_tlb(None);
-    dsb(barrier::SY);
-    isb(barrier::SY);
+    ax_cpu::barrier::data_sync_system();
+    ax_cpu::barrier::instruction_sync();
     cpu_meta_paddr
 }
 

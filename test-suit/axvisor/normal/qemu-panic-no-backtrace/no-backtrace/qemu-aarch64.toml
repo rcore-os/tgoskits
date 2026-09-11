@@ -12,7 +12,9 @@ args = [
 # Negative case: test-panic-no-backtrace = [] (no backtrace feature chain).
 # Panic text still uses the emergency writer, but no backtrace is attempted.
 fail_regex = ["BACKTRACE_BEGIN"]
-success_regex = ["(?s)ARCEOS_PANIC_EMERGENCY(?-u:\\b).*axvisor no-backtrace smoke test"]
 timeout = 60
 to_bin = true
 uefi = false
+
+[[shell_check_steps]]
+success_regex = ["(?s)ARCEOS_PANIC_EMERGENCY(?-u:\\b).*axvisor no-backtrace smoke test"]

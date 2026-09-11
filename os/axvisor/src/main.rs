@@ -36,6 +36,8 @@ mod config;
     feature = "test-console-interleave"
 ))]
 mod console_regression;
+#[cfg(all(feature = "test-el2-fatal", target_arch = "aarch64"))]
+mod fatal_regression;
 mod guest_console;
 #[cfg(any(feature = "browser-console", feature = "http-axum"))]
 mod http;
@@ -59,18 +61,6 @@ mod shell;
 ///    lifecycle waiter and the physical-console shell.
 ///
 fn main() {
-    // Route unhandled current-EL synchronous exceptions (host faults, e.g.
-    // aborts while touching guest memory) to the allocation-free emergency
-    // console before EL2 virtualization is enabled anywhere. The vCPU core
-    // then halts the faulting CPU instead of panicking on top of a context
-    // that may already hold the allocator lock (see the 3VM HTTP wedge root
-    // cause: recursive panic output wedged the heap and froze the control
-    // plane).
-    #[cfg(target_arch = "aarch64")]
-    arm_vcpu::register_current_el_sync_fault_writer(Some(|args| {
-        let _ = ax_std::os::arceos::modules::ax_runtime::emergency_console::write_fmt(args);
-    }));
-
     // Test-only panic paths — gated behind dedicated features so they never
     // activate in normal builds.  These are consumed by test-suit cases that
     // verify the backtrace markers (or their absence) via QEMU regex matching.
@@ -87,6 +77,9 @@ fn main() {
     info!("Starting virtualization...");
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
+
+    #[cfg(all(feature = "test-el2-fatal", target_arch = "aarch64"))]
+    fatal_regression::run();
 
     manager.init_default_vms();
 
@@ -136,9 +129,7 @@ fn main() {
     // `Ready`) and the management plane boots them on demand, so nothing is
     // launched or waited on here.
     #[cfg(not(feature = "no-auto-start"))]
-    let started_vms = manager.launch_default_vms();
-    #[cfg(not(feature = "no-auto-start"))]
-    guest_console::attach_default(started_vms);
+    let _ = manager.launch_default_vms();
 
     #[cfg(not(feature = "no-auto-start"))]
     std::thread::Builder::new()

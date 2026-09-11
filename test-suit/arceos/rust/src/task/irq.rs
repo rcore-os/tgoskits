@@ -9,7 +9,6 @@ use std::{
 };
 
 use ax_std::os::arceos::{
-    modules::ax_hal,
     task as scheduler,
     task::sync::{
         WaitQueue,
@@ -22,7 +21,7 @@ const NUM_TIMES: usize = 32;
 
 fn assert_irq_enabled() {
     assert!(
-        ax_hal::asm::irqs_enabled(),
+        ax_cpu::interrupt::irqs_enabled(),
         "Task id = {:?} IRQs should be enabled",
         thread::current().id()
     );
@@ -30,7 +29,7 @@ fn assert_irq_enabled() {
 
 fn assert_irq_disabled() {
     assert!(
-        !ax_hal::asm::irqs_enabled(),
+        !ax_cpu::interrupt::irqs_enabled(),
         "Task id = {:?} IRQs should be disabled",
         thread::current().id()
     );
@@ -38,9 +37,9 @@ fn assert_irq_disabled() {
 
 fn assert_irq_enabled_and_disabled() {
     assert_irq_enabled();
-    ax_hal::asm::disable_irqs();
+    ax_cpu::interrupt::disable_irqs();
     assert_irq_disabled();
-    ax_hal::asm::enable_irqs();
+    ax_cpu::interrupt::enable_irqs();
 }
 
 fn test_first_thread_entry() {

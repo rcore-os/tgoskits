@@ -92,6 +92,12 @@ ABI version, layout generation, owner cookie, or provider FFI inside one final
 image. `someboot` still performs only raw area allocation and CPU startup;
 `axplat-dyn` validates the frozen layout before binding each `CpuAreaRef`.
 
+CPU 入口状态的字段布局由 `ax_cpu::registers::CpuEntryState` 定义；RISC-V 另有 `TaskEntryState`。`cpu-local` 依赖这些类型，在 `src/cpu_entry.rs` 核对预留空间的大小、对齐和立即数范围，并从自身真实布局生成隐藏的绝对链接符号。ax-cpu 不依赖 `cpu-local`，也不定义其 `ExecutionContextHeader` 或区域前缀。
+
+四架构的生产寄存器访问也统一调用 `ax_cpu::registers`。本包继续决定寄存器的运行期用途、验证 CPU 区域与当前任务，并向 x86 GS 相对原语提交真实字段偏移。`increment_gs_u32`、`decrement_gs_u32` 和 `compare_exchange_gs_u32` 只执行机器操作，抢占深度、pending 位和 token 生命周期仍由本包管理。原有宿主模型保留在本包的测试边界，ax-cpu 不提供模型或测试替身。
+
+`__AX_CPU_AREA_ARCH_STATE_OFFSET` 定位每核入口状态；RISC-V 的 `__AX_CPU_TASK_ARCH_STATE_OFFSET` 和 `__AX_CPU_TASK_CPU_BASE_OFFSET` 分别定位任务暂存区和 CPU 基址字段。入口汇编只读取链接后的立即数，不增加运行期初始化、动态重定位或恢复 TLS 之前的 Rust 回调。RISC-V 的整个预留区必须位于正的 12 位有符号立即数范围内，防止 `%lo` 截断后变为负偏移。LoongArch 的共享 scratch CSR 分配从 `ax_cpu::registers` 取得。
+
 | Operation | Required protection |
 | --- | --- |
 | Atomic per-CPU scalar | Migration disabled; local IRQs may remain enabled |

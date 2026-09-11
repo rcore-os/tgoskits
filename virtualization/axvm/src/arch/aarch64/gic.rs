@@ -17,9 +17,11 @@ use axdevice_base::InterruptTrigger;
 use super::vtimer::Aarch64TimerBinding;
 
 mod cpu_interface;
+mod host;
 mod maintenance;
 mod physical;
 
+pub(crate) use host::prepare;
 pub(crate) use physical::AssignedSpiRoutes;
 
 pub(super) fn try_with_gic<T>(
@@ -69,7 +71,7 @@ pub(crate) struct AxvmVgicBackend {
 }
 
 impl AxvmVgicBackend {
-    /// Discovers immutable host CPU-interface capabilities once.
+    /// Uses the host CPU-interface capabilities committed before CPU enable.
     pub(crate) fn new() -> Result<Self, GicV3BackendError> {
         Ok(Self {
             capabilities: cpu_interface::capabilities()?,
@@ -462,7 +464,8 @@ pub(crate) fn backend() -> Result<Arc<AxvmVgicBackend>, GicV3BackendError> {
     AxvmVgicBackend::new().map(Arc::new)
 }
 
-pub(crate) fn host_irq_config() -> Result<arm_vcpu::ArmHostIrqConfig, GicV3BackendError> {
+pub(crate) fn host_irq_config() -> Result<ax_cpu::virtualization::HostIrqConfig, GicV3BackendError>
+{
     cpu_interface::host_irq_config()
 }
 
@@ -572,27 +575,4 @@ pub(crate) fn enable_maintenance_interrupt() -> axvm_types::VmBackendResult {
 
 pub(crate) fn disable_maintenance_interrupt() -> axvm_types::VmBackendResult {
     maintenance::disable_current_cpu()
-}
-
-/// Commits the one-time discovery of the VGIC maintenance PPI from the
-/// control plane while a VM is being prepared.
-///
-/// Per-CPU `hardware_enable` runs on every secondary CPU when the default
-/// VMs launch; without this preheat the first `get_or_try_init` there races
-/// across CPUs and the `OnceLock` loser sleeps on a futex from a context
-/// that must not sleep. The discovery itself is idempotent and non-fatal:
-/// if it cannot complete here (for example the host FDT is not yet
-/// available) the per-CPU enable path keeps its existing lazy fallback.
-pub(crate) fn preheat_maintenance_interrupt() {
-    maintenance::preheat();
-}
-
-/// Commits the one-time discovery of the host VGIC CPU interface from the
-/// control plane while a VM is being prepared, mirroring
-/// `preheat_maintenance_interrupt` for the `OnceLock<HostCpuInterface>` in
-/// `cpu_interface`. Without this preheat the first `get_or_try_init` there
-/// races across CPUs once guest interrupts arrive on the host IRQ hot path;
-/// the `OnceLock` loser sleeps on a futex from a context that must not sleep.
-pub(crate) fn preheat_host_cpu_interface() {
-    cpu_interface::preheat();
 }

@@ -243,7 +243,7 @@ struct X8664UserRegs {
 #[cfg(target_arch = "x86_64")]
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-struct X8664FpRegs(ax_cpu::FxsaveArea);
+struct X8664FpRegs(ax_cpu::registers::FxsaveArea);
 
 #[derive(Clone, Copy)]
 struct PtraceTarget(PidNumber);
@@ -1067,7 +1067,7 @@ fn ptrace_setregset_x86_xstate(
     if !requested.is_multiple_of(size_of::<u64>()) {
         return Err(StarryError::InvalidInput);
     }
-    let user_size = ax_cpu::UserXstate::user_size().ok_or(StarryError::NoSuchDevice)?;
+    let user_size = ax_cpu::registers::UserXstate::user_size().ok_or(StarryError::NoSuchDevice)?;
     let copy_len = requested.min(user_size);
     if copy_len != user_size {
         return Err(StarryError::BadAddress);
@@ -1492,7 +1492,7 @@ fn ptrace_stopped_tracee_with_tid(
 pub fn ptrace_setup_singlestep(
     _tracee: &ProcessData,
     _tid: TidNumber,
-    uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
+    uctx: &mut ax_runtime::hal::cpu::user::UserContext,
 ) {
     // Set Trap Flag (TF, bit 8) in RFLAGS.
     // The CPU will generate a #DB debug exception after executing one
@@ -1508,7 +1508,7 @@ pub fn ptrace_setup_singlestep(
 pub fn ptrace_setup_singlestep(
     tracee: &ProcessData,
     tid: TidNumber,
-    uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
+    uctx: &mut ax_runtime::hal::cpu::user::UserContext,
 ) {
     let pc = uctx.ip();
     let Ok(aspace) = tracee.pin_aspace() else {
@@ -1572,7 +1572,7 @@ pub fn ptrace_setup_singlestep(
 pub fn ptrace_setup_singlestep(
     tracee: &ProcessData,
     tid: TidNumber,
-    uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
+    uctx: &mut ax_runtime::hal::cpu::user::UserContext,
 ) {
     let pc = uctx.ip();
     let Ok(aspace) = tracee.pin_aspace() else {
@@ -1620,7 +1620,7 @@ pub fn ptrace_setup_singlestep(
 pub fn ptrace_setup_singlestep(
     tracee: &ProcessData,
     tid: TidNumber,
-    uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
+    uctx: &mut ax_runtime::hal::cpu::user::UserContext,
 ) {
     let pc = uctx.ip();
     let Ok(aspace) = tracee.pin_aspace() else {
@@ -1651,7 +1651,7 @@ pub fn ptrace_setup_singlestep(
     };
     if orig_insn == LOONGARCH_BREAK_INSN {
         tracee.set_ptrace_ss_saved_insn_for(tid, None);
-        ax_runtime::hal::cache::flush_icache_all();
+        ax_cpu::cache::flush_icache_all();
         return;
     }
 
@@ -1660,7 +1660,7 @@ pub fn ptrace_setup_singlestep(
         return;
     }
     tracee.set_ptrace_ss_saved_insn_for(tid, Some((next_insn_addr, orig_insn as usize)));
-    ax_runtime::hal::cache::flush_icache_all();
+    ax_cpu::cache::flush_icache_all();
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -1717,7 +1717,7 @@ pub fn ptrace_restore_singlestep_insn(
 pub fn ptrace_complete_singlestep_breakpoint_if_at_ip(
     tracee: &ProcessData,
     tid: TidNumber,
-    uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
+    uctx: &mut ax_runtime::hal::cpu::user::UserContext,
 ) -> bool {
     let Some((addr, insn)) = tracee.take_ptrace_ss_saved_insn_for(tid) else {
         return false;
@@ -1745,7 +1745,7 @@ fn riscv_next_pc(
     insn: u32,
     insn_len: usize,
     pc: usize,
-    uctx: &ax_runtime::hal::cpu::uspace::UserContext,
+    uctx: &ax_runtime::hal::cpu::user::UserContext,
 ) -> usize {
     if insn_len == 2 {
         return riscv_compressed_next_pc(insn as u16, pc, uctx);
@@ -1804,7 +1804,7 @@ fn riscv_next_pc(
 fn riscv_compressed_next_pc(
     insn: u16,
     pc: usize,
-    uctx: &ax_runtime::hal::cpu::uspace::UserContext,
+    uctx: &ax_runtime::hal::cpu::user::UserContext,
 ) -> usize {
     let quadrant = insn & 0x3;
     let funct3 = (insn >> 13) & 0x7;
@@ -1879,7 +1879,7 @@ fn riscv_add_pc(base: usize, offset: isize) -> usize {
 }
 
 #[cfg(target_arch = "riscv64")]
-fn riscv_reg(uctx: &ax_runtime::hal::cpu::uspace::UserContext, index: usize) -> usize {
+fn riscv_reg(uctx: &ax_runtime::hal::cpu::user::UserContext, index: usize) -> usize {
     match index {
         0 => 0,
         1 => uctx.regs.ra,
@@ -1933,11 +1933,7 @@ fn ptrace_add_offset(base: usize, offset: isize) -> usize {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn aarch64_next_pc(
-    insn: u32,
-    pc: usize,
-    uctx: &ax_runtime::hal::cpu::uspace::UserContext,
-) -> usize {
+fn aarch64_next_pc(insn: u32, pc: usize, uctx: &ax_runtime::hal::cpu::user::UserContext) -> usize {
     if insn & 0x7c00_0000 == 0x1400_0000 {
         return ptrace_add_offset(pc, ptrace_sign_extend(insn & 0x03ff_ffff, 26) << 2);
     }
@@ -2021,7 +2017,7 @@ fn aarch64_condition_holds(cond: u8, pstate: u64) -> bool {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn aarch64_reg(uctx: &ax_runtime::hal::cpu::uspace::UserContext, index: usize) -> usize {
+fn aarch64_reg(uctx: &ax_runtime::hal::cpu::user::UserContext, index: usize) -> usize {
     if index < 31 {
         uctx.x[index] as usize
     } else {
@@ -2033,7 +2029,7 @@ fn aarch64_reg(uctx: &ax_runtime::hal::cpu::uspace::UserContext, index: usize) -
 fn loongarch_next_pc(
     insn: u32,
     pc: usize,
-    uctx: &ax_runtime::hal::cpu::uspace::UserContext,
+    uctx: &ax_runtime::hal::cpu::user::UserContext,
 ) -> usize {
     match insn >> 26 {
         0x10 | 0x11 => {
@@ -2082,7 +2078,7 @@ fn loongarch_next_pc(
 }
 
 #[cfg(target_arch = "loongarch64")]
-fn loongarch_reg(uctx: &ax_runtime::hal::cpu::uspace::UserContext, index: usize) -> usize {
+fn loongarch_reg(uctx: &ax_runtime::hal::cpu::user::UserContext, index: usize) -> usize {
     match index {
         0 => 0,
         1 => uctx.regs.ra,
@@ -2233,8 +2229,8 @@ pub fn ptrace_notify_vfork_done(
 }
 
 #[cfg(target_arch = "riscv64")]
-impl From<&ax_runtime::hal::cpu::uspace::UserContext> for RiscvUserRegs {
-    fn from(uctx: &ax_runtime::hal::cpu::uspace::UserContext) -> Self {
+impl From<&ax_runtime::hal::cpu::user::UserContext> for RiscvUserRegs {
+    fn from(uctx: &ax_runtime::hal::cpu::user::UserContext) -> Self {
         let r = &uctx.regs;
         Self {
             pc: uctx.sepc,
@@ -2275,7 +2271,7 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for RiscvUserRegs {
 
 #[cfg(target_arch = "riscv64")]
 impl RiscvUserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> StarryResult<()> {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::user::UserContext) -> StarryResult<()> {
         uctx.sepc = self.pc;
         let r = &mut uctx.regs;
         r.ra = self.ra;
@@ -2334,8 +2330,8 @@ impl From<RiscvFpRegs> for PtraceStopFpData {
 }
 
 #[cfg(target_arch = "aarch64")]
-impl From<&ax_runtime::hal::cpu::uspace::UserContext> for Aarch64UserRegs {
-    fn from(uctx: &ax_runtime::hal::cpu::uspace::UserContext) -> Self {
+impl From<&ax_runtime::hal::cpu::user::UserContext> for Aarch64UserRegs {
+    fn from(uctx: &ax_runtime::hal::cpu::user::UserContext) -> Self {
         Self {
             regs: uctx.x,
             sp: uctx.sp,
@@ -2347,7 +2343,7 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for Aarch64UserRegs {
 
 #[cfg(target_arch = "aarch64")]
 impl Aarch64UserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> StarryResult<()> {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::user::UserContext) -> StarryResult<()> {
         let mut updated = *uctx;
         updated.x = self.regs;
         updated.sp = self.sp;
@@ -2385,8 +2381,8 @@ impl From<Aarch64FpRegs> for PtraceStopFpData {
 }
 
 #[cfg(target_arch = "loongarch64")]
-impl From<&ax_runtime::hal::cpu::uspace::UserContext> for LoongarchUserRegs {
-    fn from(uctx: &ax_runtime::hal::cpu::uspace::UserContext) -> Self {
+impl From<&ax_runtime::hal::cpu::user::UserContext> for LoongarchUserRegs {
+    fn from(uctx: &ax_runtime::hal::cpu::user::UserContext) -> Self {
         let r = &uctx.regs;
         Self {
             regs: [
@@ -2433,7 +2429,7 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for LoongarchUserRegs {
 
 #[cfg(target_arch = "loongarch64")]
 impl LoongarchUserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> StarryResult<()> {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::user::UserContext) -> StarryResult<()> {
         let r = &mut uctx.regs;
         r.zero = 0;
         r.ra = self.regs[1] as usize;
@@ -2766,25 +2762,25 @@ fn sanitize_ptrace_x86_64_eflags(new_eflags: u64, current_eflags: u64) -> u64 {
 }
 
 #[cfg(target_arch = "x86_64")]
-impl From<&ax_runtime::hal::cpu::uspace::UserContext> for X8664UserRegs {
-    fn from(uctx: &ax_runtime::hal::cpu::uspace::UserContext) -> Self {
+impl From<&ax_runtime::hal::cpu::user::UserContext> for X8664UserRegs {
+    fn from(uctx: &ax_runtime::hal::cpu::user::UserContext) -> Self {
         Self {
-            r15: uctx.r15,
-            r14: uctx.r14,
-            r13: uctx.r13,
-            r12: uctx.r12,
-            rbp: uctx.rbp,
-            rbx: uctx.rbx,
-            r11: uctx.r11,
-            r10: uctx.r10,
-            r9: uctx.r9,
-            r8: uctx.r8,
-            rax: uctx.rax,
-            rcx: uctx.rcx,
-            rdx: uctx.rdx,
-            rsi: uctx.rsi,
-            rdi: uctx.rdi,
-            orig_rax: uctx.rax,
+            r15: uctx.regs.r15,
+            r14: uctx.regs.r14,
+            r13: uctx.regs.r13,
+            r12: uctx.regs.r12,
+            rbp: uctx.regs.rbp,
+            rbx: uctx.regs.rbx,
+            r11: uctx.regs.r11,
+            r10: uctx.regs.r10,
+            r9: uctx.regs.r9,
+            r8: uctx.regs.r8,
+            rax: uctx.regs.rax,
+            rcx: uctx.regs.rcx,
+            rdx: uctx.regs.rdx,
+            rsi: uctx.regs.rsi,
+            rdi: uctx.regs.rdi,
+            orig_rax: uctx.regs.rax,
             rip: uctx.rip,
             cs: uctx.cs,
             eflags: uctx.rflags,
@@ -2802,26 +2798,26 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for X8664UserRegs {
 
 #[cfg(target_arch = "x86_64")]
 impl X8664UserRegs {
-    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> StarryResult<()> {
+    fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::user::UserContext) -> StarryResult<()> {
         if self.cs != uctx.cs || self.ss != uctx.ss {
             return Err(StarryError::from(Errno::EINVAL));
         }
 
-        uctx.r15 = self.r15;
-        uctx.r14 = self.r14;
-        uctx.r13 = self.r13;
-        uctx.r12 = self.r12;
-        uctx.rbp = self.rbp;
-        uctx.rbx = self.rbx;
-        uctx.r11 = self.r11;
-        uctx.r10 = self.r10;
-        uctx.r9 = self.r9;
-        uctx.r8 = self.r8;
-        uctx.rax = self.rax;
-        uctx.rcx = self.rcx;
-        uctx.rdx = self.rdx;
-        uctx.rsi = self.rsi;
-        uctx.rdi = self.rdi;
+        uctx.regs.r15 = self.r15;
+        uctx.regs.r14 = self.r14;
+        uctx.regs.r13 = self.r13;
+        uctx.regs.r12 = self.r12;
+        uctx.regs.rbp = self.rbp;
+        uctx.regs.rbx = self.rbx;
+        uctx.regs.r11 = self.r11;
+        uctx.regs.r10 = self.r10;
+        uctx.regs.r9 = self.r9;
+        uctx.regs.r8 = self.r8;
+        uctx.regs.rax = self.rax;
+        uctx.regs.rcx = self.rcx;
+        uctx.regs.rdx = self.rdx;
+        uctx.regs.rsi = self.rsi;
+        uctx.regs.rdi = self.rdi;
         uctx.rip = self.rip;
         uctx.rflags = sanitize_ptrace_x86_64_eflags(self.eflags, uctx.rflags);
         uctx.rsp = self.rsp;

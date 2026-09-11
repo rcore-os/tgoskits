@@ -2,43 +2,13 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+use ax_cpu::cache::flush_icache_all;
+pub use ax_memory_addr::VirtAddr;
 
 static KERNEL_TLB_GENERATION: AtomicU64 = AtomicU64::new(0);
 static KERNEL_TLB_READY_CPUS: AtomicUsize = AtomicUsize::new(0);
 static ADDRESS_SPACE_TAG_CAPACITY: AtomicU32 = AtomicU32::new(u32::MAX);
 static FROZEN_ADDRESS_SPACE_TAG_CAPACITY: AtomicU32 = AtomicU32::new(0);
-
-// The range API is normalized to 4 KiB pages. x86_64 and RISC-V use the
-// current Linux defaults; the other backends keep the page-table engine's
-// existing 32-entry bound until an architecture-specific cost model exists.
-#[cfg(target_arch = "x86_64")]
-const TLB_SINGLE_PAGE_FLUSH_CEILING: usize = 33;
-#[cfg(target_arch = "riscv64")]
-const TLB_SINGLE_PAGE_FLUSH_CEILING: usize = 64;
-#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
-const TLB_SINGLE_PAGE_FLUSH_CEILING: usize = 32;
-#[cfg(not(any(
-    target_arch = "x86_64",
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-)))]
-const TLB_SINGLE_PAGE_FLUSH_CEILING: usize = 32;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TlbRangeFlushMode {
-    Pages,
-    Full,
-}
-
-fn tlb_range_flush_mode(size: usize) -> TlbRangeFlushMode {
-    if size.div_ceil(PAGE_SIZE_4K) > TLB_SINGLE_PAGE_FLUSH_CEILING {
-        TlbRangeFlushMode::Full
-    } else {
-        TlbRangeFlushMode::Pages
-    }
-}
 
 /// Failure while synchronously invalidating a kernel TLB range.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -128,7 +98,15 @@ fn publish_address_space_tag_capacity_with(
 }
 
 fn publish_current_cpu_address_space_tag_capacity() -> Result<u32, TlbShootdownError> {
-    let local_capacity = ax_cpu::asm::address_space_tag_capacity(crate::cpu_num());
+    let local_capacity = crate::KernelMmu::address_space_tag_capacity();
+    // Linux's RISC-V allocator requires more than twice the possible CPU
+    // count. This is runtime allocation policy, not a CPU capability probe.
+    #[cfg(target_arch = "riscv64")]
+    let local_capacity = if local_capacity as usize > crate::cpu_num().saturating_mul(2) {
+        local_capacity
+    } else {
+        1
+    };
     let aggregate =
         publish_address_space_tag_capacity_with(local_capacity, &ADDRESS_SPACE_TAG_CAPACITY)?;
     let frozen = FROZEN_ADDRESS_SPACE_TAG_CAPACITY.load(Ordering::Acquire);
@@ -246,7 +224,7 @@ pub fn publish_current_cpu_tlb_ready(
         preparation.cpu_id,
         &KERNEL_TLB_GENERATION,
         &KERNEL_TLB_READY_CPUS,
-        || ax_cpu::asm::flush_tlb(None),
+        || crate::KernelMmu::flush_tlb(None),
     )
 }
 
@@ -264,38 +242,9 @@ pub unsafe fn withdraw_current_cpu_tlb_ready() -> Result<CurrentCpuTlbOffline, T
         cpu_id,
         &KERNEL_TLB_GENERATION,
         &KERNEL_TLB_READY_CPUS,
-        || ax_cpu::asm::flush_tlb(None),
+        || crate::KernelMmu::flush_tlb(None),
     )?;
     Ok(CurrentCpuTlbOffline { cpu_id })
-}
-
-/// Flushes the TLB entries covering a virtual-address range on the current CPU.
-pub fn flush_tlb_range(start: VirtAddr, size: usize) {
-    if size == 0 {
-        return;
-    }
-    if tlb_range_flush_mode(size) == TlbRangeFlushMode::Full {
-        ax_cpu::asm::flush_tlb(None);
-        return;
-    }
-    for offset in (0..size).step_by(PAGE_SIZE_4K) {
-        ax_cpu::asm::flush_tlb(Some(start + offset));
-    }
-}
-
-fn update_mmu_cache_with(vaddr: VirtAddr, update: impl FnOnce(VirtAddr)) {
-    update(vaddr.align_down_4k());
-}
-
-/// Synchronizes a page-table update performed by the local page-fault handler.
-///
-/// This is the architecture boundary corresponding to Linux's
-/// `update_mmu_cache()`: it is intentionally local and must not be replaced by
-/// a cross-CPU shootdown. Architectures that do not cache invalid translations
-/// implement it as a no-op.
-#[inline]
-pub fn update_mmu_cache(vaddr: VirtAddr) {
-    update_mmu_cache_with(vaddr, ax_cpu::asm::update_mmu_cache);
 }
 
 /// Flushes a virtual-address range on the caller and every TLB-ready CPU.
@@ -372,7 +321,7 @@ impl TlbShootdown for AxHalTlbShootdown {
 
     fn synchronize_page_table_writes(&self) {
         #[cfg(target_arch = "aarch64")]
-        ax_cpu::asm::synchronize_page_table_writes();
+        ax_cpu::barrier::synchronize_page_table_writes();
         #[cfg(not(target_arch = "aarch64"))]
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     }
@@ -412,7 +361,7 @@ impl TlbShootdown for AxHalTlbShootdown {
     }
 
     fn flush_local(&self, start: VirtAddr, size: usize) {
-        flush_tlb_range(start, size);
+        crate::KernelMmu::flush_tlb_range(start, size);
     }
 }
 
@@ -462,12 +411,7 @@ struct FlushRangeArg {
 #[cfg(feature = "ipi")]
 unsafe fn flush_tlb_range_thunk(arg: *mut ()) {
     let arg = unsafe { &*(arg as *const FlushRangeArg) };
-    flush_tlb_range(VirtAddr::from(arg.start), arg.size);
-}
-
-/// Flushes the entire instruction cache on the current CPU.
-pub fn flush_icache_all() {
-    ax_cpu::asm::flush_icache_all();
+    crate::KernelMmu::flush_tlb_range(VirtAddr::from(arg.start), arg.size);
 }
 
 /// Flushes the entire instruction cache on all available CPUs.
@@ -502,43 +446,11 @@ unsafe fn flush_icache_all_thunk(_arg: *mut ()) {
     flush_icache_all();
 }
 
-/// Cleans a data-cache range to the point of unification when needed.
-pub fn clean_dcache_to_pou(vaddr: VirtAddr, size: usize) {
-    #[cfg(target_arch = "aarch64")]
-    {
-        ax_cpu::asm::clean_dcache_range_to_pou(vaddr, size);
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        let _ = (vaddr, size);
-    }
-}
-
-/// Synchronizes modified kernel text with the local execution pipeline.
-pub fn sync_kernel_text(start: VirtAddr, size: usize) {
-    flush_tlb_range(start, size);
-    flush_icache_all();
-}
-
 #[cfg(test)]
 mod tests {
     use core::cell::Cell;
 
     use super::*;
-
-    #[test]
-    fn local_mmu_cache_update_aligns_the_fault_address_once() {
-        let calls = Cell::new(0);
-        let observed = Cell::new(VirtAddr::from(0));
-
-        update_mmu_cache_with(VirtAddr::from(0x4567), |vaddr| {
-            calls.set(calls.get() + 1);
-            observed.set(vaddr);
-        });
-
-        assert_eq!(calls.get(), 1);
-        assert_eq!(observed.get(), VirtAddr::from(0x4000));
-    }
 
     struct ModelShootdown {
         online: [bool; 3],
@@ -650,19 +562,6 @@ mod tests {
         assert_eq!(runtime.remote_mask.get(), 1usize << 2);
         assert!(!runtime.local_flushed.get());
         assert!(runtime.writes_synchronized.get());
-    }
-
-    #[test]
-    fn large_tlb_ranges_switch_to_one_full_invalidation() {
-        assert_eq!(tlb_range_flush_mode(0), TlbRangeFlushMode::Pages);
-        assert_eq!(
-            tlb_range_flush_mode(TLB_SINGLE_PAGE_FLUSH_CEILING * PAGE_SIZE_4K),
-            TlbRangeFlushMode::Pages
-        );
-        assert_eq!(
-            tlb_range_flush_mode((TLB_SINGLE_PAGE_FLUSH_CEILING + 1) * PAGE_SIZE_4K),
-            TlbRangeFlushMode::Full
-        );
     }
 
     #[test]

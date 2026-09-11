@@ -360,7 +360,7 @@ impl PerTaskCounter {
         }
         let page = self
             .rdpmc
-            .install(len, self.counter, self.rdpmc_snapshot())?;
+            .install(len, self.rdpmc_snapshot())?;
         // Close the publication-versus-sched-out race: whichever side runs
         // second republishes the completed accumulator after the weak page
         // reference is visible.

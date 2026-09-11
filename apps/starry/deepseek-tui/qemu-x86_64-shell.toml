@@ -1,10 +1,8 @@
-# Example only: interactive DeepSeek TUI shell, not part of test-suit or CI.
-timeout = 0
-shell_prefix = "root@starry:"
-uefi = false
-to_bin = false
-success_regex = []
-fail_regex = []
+# Example only: DeepSeek CLI smoke checks, not part of test-suit or CI.
+timeout = 120
+uefi = true
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?i)page fault", "(?i)segmentation fault", "No such process \\(os error 3\\)", "sys_prctl: unsupported option 23"]
 
 args = [
     "-machine",
@@ -22,29 +20,26 @@ args = [
     "user,id=net0",
 ]
 
-shell_init_cmd = '''
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = '''
 export HOME=/root
 export USER=root
 export SHELL=/bin/sh
 export TERM=xterm-256color
 export PATH=/usr/local/bin:/usr/bin:/bin:/sbin
-export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-if [ -f "$HOME/.deepseek/starry-online-env" ]; then
-    . "$HOME/.deepseek/starry-online-env"
-fi
-cd "$HOME"
-cat <<'STARRY_DEEPSEEK_USAGE'
+set -e
 
-StarryOS DeepSeek TUI interactive shell is ready.
+deepseek --version
+deepseek-tui --version
 
-Common commands:
-  deepseek --version
-  deepseek-tui --version
-  deepseek model list
-  deepseek-tui
+deepseek --help > /tmp/deepseek-help.txt 2>&1
+grep -F "Usage:" /tmp/deepseek-help.txt
 
-Exit QEMU:
-  Ctrl-a x
+deepseek model list > /tmp/deepseek-model-list.txt 2>&1
+head -3 /tmp/deepseek-model-list.txt
+grep -q "deepseek" /tmp/deepseek-model-list.txt
 
-STARRY_DEEPSEEK_USAGE
+echo "STARRY_DEEPSEEK_STAGE_G_PASSED"
 '''
+success_regex = ["(?m)^STARRY_DEEPSEEK_STAGE_G_PASSED\\s*$"]

@@ -87,9 +87,34 @@ fn block_runtime_async_double_read() {
     );
     let first = first_result.expect("first block request result");
     let second = second_result.expect("second block request result");
+    assert_independent_reads(first, second, block_size);
+}
+
+fn assert_independent_reads(first: CompletedRequest, second: CompletedRequest, block_size: usize) {
     assert_eq!(first.result, Ok(()));
     assert_eq!(second.result, Ok(()));
     assert_eq!(first.data.as_ref().map(|dma| dma.len().get()), Some(block_size));
     assert_eq!(second.data.as_ref().map(|dma| dma.len().get()), Some(block_size));
-    assert_ne!(usize::from(first.id), usize::from(second.id));
+    let first_data = first.data.expect("first read must return DMA ownership").into_cpu_buffer();
+    let second_data = second.data.expect("second read must return DMA ownership").into_cpu_buffer();
+    // Request IDs are queue-local and recyclable. Both completed allocations
+    // remain owned here, so independent requests must return distinct buffers.
+    assert_ne!(first_data.cpu_ptr(), second_data.cpu_ptr());
+}
+
+#[axtest::axtest]
+fn block_runtime_completed_reads_allow_queue_local_id_reuse() {
+    let device = BlockDeviceHandle::axtest_devices()
+        .expect("block runtime must be installed")
+        .first()
+        .cloned()
+        .expect("block axtest requires a device");
+    let block_size = device.device_info().logical_block_size;
+    let first = crate::task::future::block_on(device.axtest_read(0)).expect("first read");
+    let mut second = crate::task::future::block_on(device.axtest_read(1)).expect("second read");
+    // Queue-local IDs can collide across queues or be recycled after completion.
+    // Normalize only the ID to exercise that legal input deterministically;
+    // both results and DMA buffers still come from real device reads.
+    second.id = first.id;
+    assert_independent_reads(first, second, block_size);
 }

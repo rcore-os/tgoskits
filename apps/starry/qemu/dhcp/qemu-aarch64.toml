@@ -15,8 +15,7 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = '''
+shell_check_steps = [{ shell_prefix = "root@starry:", shell_cmd = '''
 echo 'DHCP_PROBE_BEGIN'
 
 ifconfig_out="$(ifconfig eth0 2>&1 || true)"
@@ -40,7 +39,6 @@ else
 fi
 
 echo 'DHCP_TEST_DONE'
-'''
-success_regex = ["(?m)^DHCP_TEST_DONE\\s*$"]
+''', success_regex = ["(?m)^DHCP_TEST_DONE\\s*$"] }]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", "(?m)^DHCP_TEST_FAILED\\s*$"]
 timeout = 120

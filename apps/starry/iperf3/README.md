@@ -18,9 +18,9 @@ STARRY_WIFI_SSID='<ssid>' STARRY_WIFI_PASSWORD='<password>' \
 ```
 
 The board session provides both the address of the persistent iperf3 server and
-the script URL. The app's `init.sh` is merged into `shell_init_cmd`, where it
-downloads and starts the benchmark script. The xtask command therefore needs
-neither a fixed IP address nor a separate board launcher.
+the script URL. The app's `init.sh` is appended to the configured shell-check
+step, which downloads and starts the benchmark script. The xtask command
+therefore needs neither a fixed IP address nor a separate board launcher.
 
 The AKA build reads the two Wi-Fi environment variables at compile time. The
 `ax-driver` AIC glue validates them, derives the WPA2 PMK, and publishes a

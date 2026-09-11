@@ -1386,7 +1386,7 @@ impl DirectRwFsFileOps for ProcMemFile {
         let aspace = aspace.lock();
         aspace.write(VirtAddr::from_usize(addr), buf)?;
         drop(aspace);
-        ax_runtime::hal::cache::flush_icache_all();
+        ax_cpu::cache::flush_icache_all();
         Ok(buf.len())
     }
 }

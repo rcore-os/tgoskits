@@ -1,0 +1,5 @@
+package = "arceos-cpu-pmu"
+target = "aarch64-unknown-none-softfloat"
+features = ["ax-std", "ax-std/smp"]
+log = "Info"
+max_cpu_num = 8

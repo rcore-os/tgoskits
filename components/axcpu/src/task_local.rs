@@ -1,8 +1,6 @@
 use core::ptr::NonNull;
 
-use cpu_local::ExecutionContextHeader;
-
-use crate::KernelTlsBase;
+use crate::{KernelTlsBase, context::TaskAnchor};
 
 /// Architecture-neutral task state participating in the final switch tail.
 ///
@@ -18,27 +16,22 @@ pub struct TaskLocalState {
 }
 
 impl TaskLocalState {
-    /// Creates empty task-local switch state.
-    pub const fn new() -> Self {
-        Self {
-            context_header: 0,
-            kernel_tls: KernelTlsBase::new(0),
-        }
-    }
-
     /// Configures the task-owned TLS base for the selected image mode.
     pub(crate) fn set_kernel_tls(&mut self, kernel_tls: KernelTlsBase) {
         self.kernel_tls = KernelTlsBase::for_task_context(kernel_tls);
     }
 
-    /// Sets the stable task-owned execution-context header.
-    pub fn set_context_header(&mut self, header: NonNull<ExecutionContextHeader>) {
+    /// Sets the stable task-owned runtime task anchor.
+    pub fn set_task_anchor(&mut self, header: TaskAnchor) {
         self.context_header = header.as_ptr() as usize;
     }
 
-    /// Returns the configured task-owned execution-context header.
-    pub const fn context_header(&self) -> Option<NonNull<ExecutionContextHeader>> {
-        NonNull::new(self.context_header as *mut ExecutionContextHeader)
+    /// Returns the configured task-owned runtime task anchor.
+    pub const fn task_anchor(&self) -> Option<TaskAnchor> {
+        match NonNull::new(self.context_header as *mut ()) {
+            Some(pointer) => Some(TaskAnchor::new(pointer)),
+            None => None,
+        }
     }
 }
 

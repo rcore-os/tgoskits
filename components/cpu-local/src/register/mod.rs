@@ -15,10 +15,7 @@ mod aarch64;
 mod host;
 #[cfg(all(not(feature = "host-test"), target_arch = "loongarch64"))]
 mod loongarch64;
-#[cfg(all(
-    not(feature = "host-test"),
-    any(target_arch = "riscv32", target_arch = "riscv64")
-))]
+#[cfg(all(not(feature = "host-test"), target_arch = "riscv64"))]
 mod riscv;
 #[cfg(all(not(feature = "host-test"), target_arch = "x86_64"))]
 mod x86_64;
@@ -29,10 +26,7 @@ use aarch64 as imp;
 use host as imp;
 #[cfg(all(not(feature = "host-test"), target_arch = "loongarch64"))]
 use loongarch64 as imp;
-#[cfg(all(
-    not(feature = "host-test"),
-    any(target_arch = "riscv32", target_arch = "riscv64")
-))]
+#[cfg(all(not(feature = "host-test"), target_arch = "riscv64"))]
 use riscv as imp;
 #[cfg(all(not(feature = "host-test"), target_arch = "x86_64"))]
 use x86_64 as imp;
@@ -42,7 +36,6 @@ use x86_64 as imp;
     not(any(
         target_arch = "x86_64",
         target_arch = "aarch64",
-        target_arch = "riscv32",
         target_arch = "riscv64",
         target_arch = "loongarch64"
     ))

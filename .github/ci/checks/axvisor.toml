@@ -36,6 +36,9 @@ timeout_minutes = 30
 command = '''
 echo "==> axvisor aarch64 backtrace panic"
 cargo xtask axvisor test qemu --arch aarch64 --test-case backtrace-panic
+echo "==> axvisor aarch64 terminal EL2 faults"
+cargo xtask axvisor test qemu --arch aarch64 --test-case el2-fatal
+cargo xtask axvisor test qemu --arch aarch64 --test-case el2-fatal-foreign-context
 echo "==> axvisor aarch64 no-backtrace panic"
 cargo xtask axvisor test qemu --arch aarch64 --test-case no-backtrace
 echo "==> pull qemu-aarch64 image"
@@ -51,7 +54,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qem
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["backtrace-panic", "no-backtrace", "http-control-plane", "browser-console", "qemu-ivc"]
+cases = ["backtrace-panic", "no-backtrace", "el2-fatal", "el2-fatal-foreign-context", "http-control-plane", "browser-console", "qemu-ivc"]
 
 [[check]]
 id = "test-axvisor-riscv64-qemu-smoke-panic-modes"
@@ -63,11 +66,8 @@ echo "==> axvisor riscv64 smoke"
 cargo xtask axvisor test qemu --arch riscv64 --test-case smoke
 echo "==> axvisor riscv64 IPI cross-test"
 cargo xtask cross-test --arch riscv64 \
-  --package riscv_vcpu --package axvm \
+  --package axvm \
   --features axvm/host-test --no-default-features --lib ipi
-echo "==> axvisor riscv64 VSEIP unbound-state cross-test"
-cargo xtask cross-test --arch riscv64 --package riscv_vcpu --lib \
-  controller_vseip_line_updates_saved_state_while_unbound
 echo "==> axvisor riscv64 backtrace panic"
 cargo xtask axvisor test qemu --arch riscv64 --test-case backtrace-panic
 echo "==> axvisor riscv64 no-backtrace panic"

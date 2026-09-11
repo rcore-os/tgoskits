@@ -248,7 +248,6 @@ impl Axvisor {
                         case.case.display_name
                     )
                 })?;
-            test_qemu::validate_grouped_qemu_commands(&qemu, &case.case, "Axvisor")?;
             prepared.push(PreparedAxvisorQemuCase { case, qemu });
         }
 
@@ -296,11 +295,6 @@ impl Axvisor {
         asset_config: &test_case::CaseAssetConfig,
     ) -> anyhow::Result<(QemuConfig, test_case::PreparedCaseAssets)> {
         let mut qemu = case.qemu.clone();
-        test_case::apply_grouped_qemu_config(
-            &mut qemu,
-            &case.case.case,
-            &asset_config.grouped_execution,
-        );
         test_qemu::apply_timeout_scale(&mut qemu);
         if !qemu
             .fail_regex

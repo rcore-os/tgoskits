@@ -77,7 +77,7 @@ pub(super) fn free_counter(counter: Counter) {
 
 /// Reserves a validated programmable counter for a system event.
 pub(super) fn alloc_programmable(event: u16) -> crate::StarryResult<Counter> {
-    if !ax_cpu::pmu::event_supported(event) {
+    if !crate::perf::event_map::event_supported(event) {
         warn!(
             "perf_event_open: ARM event {:#x} not implemented on this CPU",
             event

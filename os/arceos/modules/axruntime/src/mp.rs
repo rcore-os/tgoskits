@@ -53,7 +53,7 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     // This must precede per-CPU initialization, which indexes the final area.
     if !secondary_cpu_is_usable(cpu_id, ax_hal::cpu_num()) {
         loop {
-            ax_hal::asm::wait_for_irqs();
+            ax_cpu::interrupt::wait_for_irqs();
         }
     }
     ax_hal::percpu::init_secondary(cpu_id);

@@ -974,7 +974,7 @@ impl MmPin {
             }
         };
         if matches!(result, FaultResult::Handled) {
-            ax_runtime::hal::cache::update_mmu_cache(vaddr);
+            ax_cpu::mmu::update_mmu_cache(vaddr);
         }
         result
     }

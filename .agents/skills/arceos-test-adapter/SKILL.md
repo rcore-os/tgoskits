@@ -64,3 +64,21 @@ Starry/板卡边界和目录契约见 [`starry-test-suit`](../starry-test-suit/S
 - 使用 `cargo xtask arceos test qemu --list` 检查新 case 已被发现；需要 axtest target 时改用 `cargo xtask ktest qemu`。
 - 确认故意触发内核恐慌或真实失败时，`ostool` 或 `xtask` 能命中 `fail_regex` 并以非零状态码退出。
 - 如果有编译警告且与当前改动相关，一并修掉。
+
+## Freestanding 用户态 CPU 用例
+
+ArceOS Rust 构建默认使用标准库和 musl PIE。验证 `uspace` 时，内核 TLS 按运行期契约关闭，不能放宽 someboot 链接断言来容纳标准库 TLS。此类独立 Rust 镜像在 build TOML 显式使用 `freestanding = true`，由同一个 `cargo xtask arceos test qemu/board` 入口选择共享裸机 JSON、`build-std=core,alloc` 与 PIE 内核链接脚本。它与 `app-c` 互斥，不恢复已删除的 `std` 配置别名。
+
+软件包应保持 `no_std`、`no_main`，按真实需求启用 `ax-std` 的 mini-std 能力，不启用 `ax-std/arceos` 带入的 `std-compat`。全局分配器由 `ax-alloc/global-allocator` 显式提供。参考 `cpu/user-entry`：用户线程经 `TaskAddressSpace` 保留真实页表及 backing pages，再由 `UserExecutionContext` 验证并进入，不能绕过调度器创建伪用户上下文。
+
+
+## CPU 契约用例的 CI 归属
+
+`test-suit/arceos/cpu` 通过 `cargo xtask arceos test qemu --arch <arch> --test-group cpu` 运行，并在 `.github/ci/checks/arceos.toml` 以 `group = "cpu"` 注册。不指定组的本地入口仍发现所有组；CI 普通 runner 显式选择 Rust/C，CPU 组单独使用满足硬件要求的 runner，避免普通 x86 runner 误跑 VMX。x86 CPU 组包含 VMX，必须使用 Intel KVM runner；LoongArch 客体进入使用 LVZ 镜像 runner。针对单个变体的测试路径通过 CI 规划器保留准确的 `--test-case`，不能降级为只跑默认 Rust 组。
+
+OrangePi 的 `pmu`、`pmu-user` 使用 `arceos-board` 注册，保持板卡 runner 和真实 case 名。调整这些规则时，运行 `test_ci_plan.py` 的 CPU QEMU 与板卡路由回归；脚本要求 Python 3.11 以上，系统 Python 3.10 时可用 `uv run --python 3.13 --no-project python3 -m unittest discover -s scripts/test -p 'test_ci_*.py'`。
+
+
+CPU QEMU/板卡配置使用最新 ostool 的 `[[shell_check_steps]]`，被动等待用例只在该步骤内声明 `success_regex`，不填写 shell 命令。`fail_regex`、`timeout`、启动参数保留在根配置。不得恢复已删除的根级 `success_regex` 或 `shell_init_cmd`；分组程序的执行协议沿用当前 axbuild。
+
+跨架构独立用例必须在 `package.metadata.docs.rs.targets` 声明实际检查目标。依赖 Rust 标准库的用例使用相应 `*-unknown-linux-musl`，`cargo xtask clippy` 将其解析到共享 musl PIE JSON 并构建标准库；freestanding 用例使用共享 bare target。用例选项 feature 必须包含程序必需的 `ax-std`，因为 feature 独立检查关闭默认 feature。不得通过空 main、架构伪实现或跳过测试包来绕过检查。

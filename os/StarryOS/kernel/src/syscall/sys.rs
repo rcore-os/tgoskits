@@ -1151,7 +1151,7 @@ pub fn sys_riscv_flush_icache(start: usize, end: usize, flags: usize) -> StarryR
     }
 
     if flags & SYS_RISCV_FLUSH_ICACHE_LOCAL != 0 {
-        ax_runtime::hal::cache::flush_icache_all();
+        ax_cpu::cache::flush_icache_all();
     } else {
         ax_runtime::hal::cache::flush_icache_all_cpus();
     }
@@ -1192,7 +1192,7 @@ pub fn sys_riscv_hwprobe(
         // the next one. The value field is output-only and no array is staged.
         let key_ptr = pair.cast::<i64>();
         let mut key = key_ptr.vm_read(current)?;
-        let value = if let Some(value) = ax_runtime::hal::cpu::cap::riscv_hwprobe(key) {
+        let value = if let Some(value) = crate::cpu_capabilities::riscv_hwprobe(key) {
             value
         } else {
             key = -1;

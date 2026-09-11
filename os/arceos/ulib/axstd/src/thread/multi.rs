@@ -95,15 +95,6 @@ impl Builder {
         F: Send + 'static,
         T: Send + 'static,
     {
-        // Commit the one-time initialization of the process-wide lazy tables
-        // (libc-compat futex/mmap/pthread-key maps) before the new task can
-        // first touch them. A freshly scheduled task may run its first
-        // instructions in a preemption-disabled window (for example when a
-        // network event wakes it), where waiting on a concurrent first-touch
-        // initialization would panic; running here from the spawner's normal
-        // task context makes later first touches take the fast path.
-        #[cfg(feature = "std-compat")]
-        crate::os::libc_compat::preheat_lazy_tables();
         let name = self.name.unwrap_or_default();
         let stack_size = self.stack_size.unwrap_or(ax_api::config::TASK_STACK_SIZE);
 

@@ -182,7 +182,7 @@ fn initialize_current_cpu(cpu_id: usize) -> Result<ThreadId, TaskError> {
     #[cfg(feature = "uspace")]
     {
         let kernel_root = if cfg!(any(target_arch = "x86_64", target_arch = "riscv64")) {
-            ax_hal::asm::read_kernel_page_table().as_usize()
+            ax_cpu::mmu::read_kernel_page_table().as_usize()
         } else {
             0
         };
@@ -287,7 +287,7 @@ pub(super) fn task_system() -> Option<&'static TaskSystem> {
 fn with_current_cpu_local_mut_for_boot<R>(
     operation: impl for<'cpu> FnOnce(Pin<&'cpu mut CpuLocal>) -> Result<R, TaskError>,
 ) -> Result<R, TaskError> {
-    if ax_hal::asm::irqs_enabled() {
+    if ax_cpu::interrupt::irqs_enabled() {
         return Err(TaskError::InvalidConfiguration);
     }
     // SAFETY: this CPU has installed its final area but remains offline with

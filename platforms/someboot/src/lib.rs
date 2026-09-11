@@ -1,7 +1,6 @@
 #![no_std]
 #![cfg_attr(not(test), no_main)]
 #![cfg_attr(axtest_coverage, feature(coverage_attribute))]
-#![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 
 #[allow(unused_imports)]
 #[macro_use]
@@ -132,9 +131,6 @@ pub trait ArchTrait {
     fn systimer_tick() -> usize;
     /// Reports whether the timer counter is a synchronized system counter.
     fn systimer_stability() -> timer::CounterStability;
-
-    fn irq_all_is_enabled() -> bool;
-    fn irq_all_set_enable(enable: bool);
 
     fn dcache_range(op: DCacheOp, addr: usize, size: usize);
 

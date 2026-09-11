@@ -49,7 +49,7 @@ pub(crate) fn release_bootstrap_preemption() {
     // same after every scheduler dependency and the task identity are live;
     // the scheduler decision, not bootstrap release, consumes pending work.
     assert!(
-        ax_hal::asm::irqs_enabled(),
+        ax_cpu::interrupt::irqs_enabled(),
         "multitask bootstrap must publish IRQ delivery before releasing PREEMPT_DISABLED"
     );
     ax_task::runtime::switch::schedule_current_cpu()
@@ -64,10 +64,10 @@ pub(crate) fn release_bootstrap_preemption() {
 #[cfg(feature = "uspace")]
 pub(crate) fn prepare_user_return() -> Result<(), ax_task::thread::TaskError> {
     loop {
-        if !ax_hal::asm::irqs_enabled() {
+        if !ax_cpu::interrupt::irqs_enabled() {
             return Err(ax_task::thread::TaskError::UnsafeContext);
         }
-        ax_hal::asm::disable_irqs();
+        ax_cpu::interrupt::disable_irqs();
         let pending = with_current_cpu_pin(|pin| {
             let state = RUNTIME_GUARD_STATE.with_current(pin, |state| *state);
             if !state.irq.is_clear()
@@ -82,7 +82,7 @@ pub(crate) fn prepare_user_return() -> Result<(), ax_task::thread::TaskError> {
         let pending = match pending {
             Ok(pending) => pending,
             Err(error) => {
-                ax_hal::asm::enable_irqs();
+                ax_cpu::interrupt::enable_irqs();
                 return Err(error);
             }
         };
@@ -93,7 +93,7 @@ pub(crate) fn prepare_user_return() -> Result<(), ax_task::thread::TaskError> {
             return Ok(());
         }
 
-        ax_hal::asm::enable_irqs();
+        ax_cpu::interrupt::enable_irqs();
         // The ordinary task entry consumes both request classes. Recheck with
         // IRQs disabled after it returns, like exit_to_user_mode_loop().
         ax_task::runtime::switch::schedule_current_cpu()?;
@@ -106,14 +106,14 @@ pub(crate) fn validate_schedule_context(
 ) -> ax_task::runtime::RuntimeStatus {
     use ax_task::runtime::RuntimeStatus;
 
-    if !ax_hal::asm::irqs_enabled() {
+    if !ax_cpu::interrupt::irqs_enabled() {
         return RuntimeStatus::UnsafeContext;
     }
     // Linux's public scheduling entry validates the task-context preemption
     // word while already inside one IRQ-excluded boundary. Keep the same
     // single window here instead of toggling IRQs once for the guard-state
     // read and again while sampling the architecture depth.
-    ax_hal::asm::disable_irqs();
+    ax_cpu::interrupt::disable_irqs();
     let valid = with_current_cpu_pin(|pin| {
         let state = RUNTIME_GUARD_STATE.with_current(pin, |state| *state);
         state.irq.is_clear()
@@ -121,7 +121,7 @@ pub(crate) fn validate_schedule_context(
             && current_preempt_depth_pinned(pin) == 0
             && !in_hard_irq_on(pin)
     });
-    ax_hal::asm::enable_irqs();
+    ax_cpu::interrupt::enable_irqs();
     if valid {
         RuntimeStatus::Success
     } else {
@@ -136,7 +136,7 @@ pub(crate) fn validate_owner_cpu_context() -> ax_task::runtime::RuntimeStatus {
     // Every valid owner scope already disabled raw IRQs before reconstructing
     // the CpuLocal reference. Refuse to create a diagnostic IRQ window here:
     // doing so would itself permit the scheduler re-entry this check prevents.
-    if ax_hal::asm::irqs_enabled() {
+    if ax_cpu::interrupt::irqs_enabled() {
         return RuntimeStatus::UnsafeContext;
     }
     with_current_cpu_pin(|pin| {
@@ -157,7 +157,7 @@ pub(crate) fn validate_owner_cpu_context() -> ax_task::runtime::RuntimeStatus {
 
 #[cfg(not(any(test, feature = "host-test")))]
 pub(crate) fn inherits_hardirq_cpu_owner() -> bool {
-    if ax_hal::asm::irqs_enabled() {
+    if ax_cpu::interrupt::irqs_enabled() {
         return false;
     }
     with_current_cpu_pin(|pin| {
@@ -169,7 +169,7 @@ pub(crate) fn inherits_hardirq_cpu_owner() -> bool {
 /// Reports whether the current CPU is in a context that must not sleep.
 #[cfg(feature = "fs")]
 pub(crate) fn in_atomic_context() -> bool {
-    if !ax_hal::asm::irqs_enabled() {
+    if !ax_cpu::interrupt::irqs_enabled() {
         return true;
     }
     if ax_hal::irq::in_irq_context() {
@@ -178,14 +178,14 @@ pub(crate) fn in_atomic_context() -> bool {
 
     // A raw local-IRQ window gives a coherent snapshot of preemption nesting
     // without recursively entering ax-kspin's LockRuntime hooks.
-    ax_hal::asm::disable_irqs();
+    ax_cpu::interrupt::disable_irqs();
     let guarded = read_state().has_context_guard(current_preempt_depth());
-    ax_hal::asm::enable_irqs();
+    ax_cpu::interrupt::enable_irqs();
     guarded
 }
 pub(crate) fn enter_irq() {
-    let outer_irqs_enabled = ax_hal::asm::irqs_enabled();
-    ax_hal::asm::disable_irqs();
+    let outer_irqs_enabled = ax_cpu::interrupt::irqs_enabled();
+    ax_cpu::interrupt::disable_irqs();
 
     with_guard_state_mut(|state| state.enter_irq(outer_irqs_enabled));
 }
@@ -228,14 +228,14 @@ pub(crate) fn exit_irq(owner: &'static str) {
     }
 
     if restore_irqs {
-        ax_hal::asm::enable_irqs();
+        ax_cpu::interrupt::enable_irqs();
     }
 }
 
 #[cfg(not(any(test, feature = "host-test")))]
 pub(crate) fn publish_local_scheduler_work() -> bool {
     assert!(
-        !ax_hal::asm::irqs_enabled(),
+        !ax_cpu::interrupt::irqs_enabled(),
         "local scheduler-work query requires an IRQ publication guard"
     );
     with_current_cpu_pin(|pin| {
@@ -287,7 +287,7 @@ impl PreemptExitOrigin {
 fn exit_lock_preempt(origin: PreemptExitOrigin, token: cpu_local::PreemptionToken) {
     let irq_return = origin.is_irq_return();
     assert!(
-        !irq_return || !ax_hal::asm::irqs_enabled(),
+        !irq_return || !ax_cpu::interrupt::irqs_enabled(),
         "IRQ-return preemption exit requires hardware IRQs disabled"
     );
     let cpu_local::PreemptionExit::Pending(pending) = cpu_local::finish_preemption(token) else {
@@ -297,9 +297,9 @@ fn exit_lock_preempt(origin: PreemptExitOrigin, token: cpu_local::PreemptionToke
     // Like Linux's preempt_count_dec_and_test(), only the final pending exit
     // enters the IRQ-excluded scheduling path. The retained depth pins this
     // execution until the scheduler baton or pending.release() consumes it.
-    let irqs_were_enabled = ax_hal::asm::irqs_enabled();
+    let irqs_were_enabled = ax_cpu::interrupt::irqs_enabled();
     if irqs_were_enabled {
-        ax_hal::asm::disable_irqs();
+        ax_cpu::interrupt::disable_irqs();
     }
 
     let must_schedule = claim_preempt_exit_scheduler(origin, irqs_were_enabled);
@@ -325,7 +325,7 @@ fn exit_lock_preempt(origin: PreemptExitOrigin, token: cpu_local::PreemptionToke
             panic!("preemption-exit scheduler entry failed: {error}");
         }
         assert_eq!(
-            ax_hal::asm::irqs_enabled(),
+            ax_cpu::interrupt::irqs_enabled(),
             !irq_return,
             "scheduler continuation restored the wrong hardware IRQ state"
         );
@@ -333,7 +333,7 @@ fn exit_lock_preempt(origin: PreemptExitOrigin, token: cpu_local::PreemptionToke
     }
 
     if !irq_return && irqs_were_enabled {
-        ax_hal::asm::enable_irqs();
+        ax_cpu::interrupt::enable_irqs();
     }
 }
 
@@ -368,7 +368,7 @@ fn claim_preempt_exit_scheduler(origin: PreemptExitOrigin, irqs_were_enabled: bo
 #[cfg(not(any(test, feature = "host-test")))]
 #[inline(always)]
 pub(crate) fn enter_lock_preempt() -> Option<cpu_local::PreemptionToken> {
-    if !ax_hal::asm::irqs_enabled() {
+    if !ax_cpu::interrupt::irqs_enabled() {
         let state = read_state();
         if state.owns_cpu_context()
             || (state.irq.is_clear()
@@ -438,7 +438,7 @@ pub(crate) fn enter_scheduler_frame_guard(
 ) -> ax_task::runtime::switch::RuntimeSchedulerFrameEnterResult {
     use ax_task::runtime::switch::{RuntimeSchedulerEntry, RuntimeSchedulerFrameEnterResult};
 
-    let irqs_enabled = ax_hal::asm::irqs_enabled();
+    let irqs_enabled = ax_cpu::interrupt::irqs_enabled();
     if entry == RuntimeSchedulerEntry::IrqReturnContinuation {
         if irqs_enabled || in_hard_irq() {
             return RuntimeSchedulerFrameEnterResult::failure();
@@ -461,11 +461,11 @@ pub(crate) fn enter_scheduler_frame_guard(
         return RuntimeSchedulerFrameEnterResult::failure();
     }
 
-    ax_hal::asm::disable_irqs();
+    ax_cpu::interrupt::disable_irqs();
     let capabilities = claim_scheduler_cpu_state(entry);
     let Some(capabilities) = capabilities else {
         if irqs_enabled {
-            ax_hal::asm::enable_irqs();
+            ax_cpu::interrupt::enable_irqs();
         }
         return RuntimeSchedulerFrameEnterResult::failure();
     };
@@ -474,7 +474,7 @@ pub(crate) fn enter_scheduler_frame_guard(
 
 fn enter_irq_return_continuation_scheduler() -> bool {
     assert!(
-        !ax_hal::asm::irqs_enabled(),
+        !ax_cpu::interrupt::irqs_enabled(),
         "IRQ-return continuation must enter with hardware IRQs disabled"
     );
     let Some(token) = enter_lock_preempt() else {
@@ -485,12 +485,12 @@ fn enter_irq_return_continuation_scheduler() -> bool {
     // IRQs between __schedule() passes. The token prevents an interrupt in
     // this window from recursively scheduling, while carrying no CpuPin,
     // owner borrow, or scheduler baton across the IRQ-enabled interval.
-    ax_hal::asm::enable_irqs();
+    ax_cpu::interrupt::enable_irqs();
     // x86 STI defers maskable interrupts through the following instruction.
     // Keep one architecture relaxation in the window so a pending IRQ can be
     // delivered before CLI closes the next scheduler transaction.
     core::hint::spin_loop();
-    ax_hal::asm::disable_irqs();
+    ax_cpu::interrupt::disable_irqs();
     #[cfg(feature = "qperf-metrics")]
     crate::thread::record_irq_return_scheduler_window();
 
@@ -539,13 +539,13 @@ fn exit_scheduler_frame_guard_inner(
     use ax_task::runtime::switch::RuntimeSchedulerReturn;
 
     assert!(
-        !ax_hal::asm::irqs_enabled(),
+        !ax_cpu::interrupt::irqs_enabled(),
         "scheduler baton must keep hardware IRQs disabled until switch tail"
     );
     finish_scheduler_cpu_transaction(needs_reschedule, owner);
     match return_to {
         RuntimeSchedulerReturn::Task => {
-            ax_hal::asm::enable_irqs();
+            ax_cpu::interrupt::enable_irqs();
             true
         }
         RuntimeSchedulerReturn::IrqReturn => false,
@@ -592,7 +592,7 @@ pub(crate) fn prepare_scheduler_switch_baton<'pin, 'cpu>(
     pin: &'pin cpu_local::CpuPin<'cpu>,
 ) -> PreparedSchedulerSwitchBaton<'pin, 'cpu> {
     assert!(
-        !ax_hal::asm::irqs_enabled(),
+        !ax_cpu::interrupt::irqs_enabled(),
         "scheduler switch requires local IRQs disabled"
     );
     let state = RUNTIME_GUARD_STATE.with_current(pin, |state| *state);
@@ -612,7 +612,7 @@ fn in_hard_irq_on(pin: &cpu_local::CpuPin<'_>) -> bool {
 
 #[inline(always)]
 fn read_state() -> RuntimeGuardState {
-    if !ax_hal::asm::irqs_enabled() {
+    if !ax_cpu::interrupt::irqs_enabled() {
         // Raw IRQ exclusion already fixes the CPU and prevents every local
         // guard-state mutation. Reading the CPU-owned object directly avoids
         // rebuilding task-current identity inside an existing owner scope.
@@ -645,16 +645,16 @@ fn publish_preemption_pending_pinned(pin: &cpu_local::CpuPin<'_>, pending: bool)
 fn with_current_cpu_pin<R>(
     operation: impl for<'scope> FnOnce(&cpu_local::CpuPin<'scope>) -> R,
 ) -> R {
-    let restore_irqs = ax_hal::asm::irqs_enabled();
+    let restore_irqs = ax_cpu::interrupt::irqs_enabled();
     if restore_irqs {
-        ax_hal::asm::disable_irqs();
+        ax_cpu::interrupt::disable_irqs();
     }
     // SAFETY: local IRQ exclusion prevents migration for the complete
     // non-escaping CPU-local operation.
     let result = unsafe { cpu_local::with_cpu_pin(operation) }
         .unwrap_or_else(|error| panic!("runtime CPU-local state is invalid: {error}"));
     if restore_irqs {
-        ax_hal::asm::enable_irqs();
+        ax_cpu::interrupt::enable_irqs();
     }
     result
 }
@@ -673,7 +673,7 @@ fn with_guard_state_mut_pinned<R>(
     operation: impl for<'value> FnOnce(&'value mut RuntimeGuardState) -> R,
 ) -> R {
     assert!(
-        !ax_hal::asm::irqs_enabled(),
+        !ax_cpu::interrupt::irqs_enabled(),
         "mutable runtime guard state requires local IRQ exclusion"
     );
     // SAFETY: local IRQ exclusion prevents migration, re-entry, and every

@@ -111,15 +111,14 @@ pub(crate) struct GroupedCaseRunnerConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GroupedCaseExecution {
-    GuestInit(GroupedCaseRunnerConfig),
-    ShellCommand(GroupedCaseRunnerConfig),
+    GuestInit(Box<GroupedCaseRunnerConfig>),
     External,
 }
 
 impl GroupedCaseExecution {
     pub(crate) fn runner(&self) -> Option<&GroupedCaseRunnerConfig> {
         match self {
-            Self::GuestInit(config) | Self::ShellCommand(config) => Some(config),
+            Self::GuestInit(config) => Some(config),
             Self::External => None,
         }
     }

@@ -57,6 +57,13 @@ fn load_qemu_case(case: test_qemu::DiscoveredQemuCase) -> anyhow::Result<Axvisor
         "Axvisor",
         false,
     )?;
+    if !test_case.test_commands.is_empty() {
+        bail!(
+            "Axvisor QEMU case `{}` does not support `test_commands`; use `shell_check_steps` to \
+             execute commands and check their results",
+            test_case.qemu_config_path.display()
+        );
+    }
     Ok(AxvisorQemuCase {
         case: test_case,
         build_group,

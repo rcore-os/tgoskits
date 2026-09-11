@@ -2,12 +2,13 @@
 
 use std::{sync::Arc, vec::Vec};
 
-use arm_vcpu::{ArmTimerVmConfig, ArmVcpuCreateConfig, ArmVcpuSetupConfig};
 use axvm_types::NestedPagingConfig;
 
 use super::*;
 use crate::{
-    AxVmError, AxVmResult, ax_err,
+    AxVmError, AxVmResult,
+    arch::aarch64::policy::{ArmTimerVmConfig, ArmVcpuCreateConfig, ArmVcpuSetupConfig},
+    ax_err,
     config::*,
     machine::*,
     vm::{
@@ -31,13 +32,6 @@ impl Aarch64Arch {
     }
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
-        // Commit the one-time maintenance-PPI and host-CPU-interface
-        // discovery on the control plane before any secondary CPU races them
-        // inside per-CPU `hardware_enable` or on the host IRQ hot path at
-        // launch time (see `preheat_maintenance_interrupt` and
-        // `preheat_host_cpu_interface`).
-        super::gic::preheat_maintenance_interrupt();
-        super::gic::preheat_host_cpu_interface();
         vm.prepare_resources_with(|resources, config| {
             let vcpu_mappings = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
             let placements = resources.vcpu_placements(config);

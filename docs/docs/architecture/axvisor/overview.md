@@ -92,15 +92,14 @@ fn main() {
     ensure_hardware_support();
     hal::enable_virtualization();
     vmm::init();
-    let started_vms = vmm::launch_default_vms();
-    guest_console::attach_default(started_vms);
+    vmm::launch_default_vms();
     spawn_vm_completion_waiter();
     info!("[OK] Default guest initialized");
     shell::console_init();
 }
 ```
 
-运行时主线可概括为五步：检查硬件支持 → 使能虚拟化 → 初始化 VMM → 启动 VM 与完成等待任务 → 进入并发运行的管理 shell。`GuestConsoleMux` 是宿主控制台的唯一输入读取者，默认把输入附着到 ID 最小的运行中客户机；`Ctrl+X` 后输入 `h` 返回 shell，输入 `[` 或 `]` 在运行中客户机之间循环切换。
+运行时主线可概括为五步：检查硬件支持 → 使能虚拟化 → 初始化 VMM → 启动 VM 与完成等待任务 → 进入并发运行的管理 shell。`GuestConsoleMux` 是宿主控制台的唯一输入读取者。默认启动的客户机输出先进入各自的有界缓存，管理 shell 保持前台；执行 `vm console <VM_ID>` 后才处理目标客户机的缓存：运行中的 VM 回放后接管输入，已停止的 VM 只回放并立即返回 shell。交互附着后，`Ctrl+X` 后输入 `h` 返回 shell，输入 `[` 或 `]` 在运行中客户机之间循环切换。
 
 ### 架构适配
 

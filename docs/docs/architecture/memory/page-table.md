@@ -134,7 +134,7 @@ pub struct PteConfig {
 
 ### 4.1 失效入口
 
-失效入口是 `TableMeta::flush(Option<VirtAddr>)`：`Some(vaddr)` 表示单地址，`None` 表示全部。`ArchPagingMeta::flush()` 转发到 `ax_cpu::asm::flush_tlb()`，即各架构的本 CPU 指令；公共层没有 scope 枚举或批量 invalidator trait。
+失效入口是 `TableMeta::flush(Option<VirtAddr>)`：`Some(vaddr)` 表示单地址，`None` 表示全部。`ArchPagingMeta::flush()` 转发到 `ax_cpu::mmu::flush_tlb()`，即各架构的本 CPU 指令；公共层没有 scope 枚举或批量 invalidator trait。
 
 | 架构 | 单地址失效 | 全量失效 | 覆盖范围 |
 | --- | --- | --- | --- |
@@ -169,7 +169,7 @@ ready 状态用 Release 发布、Acquire 读取。已 ready CPU 的处理器间�
 
 ## 5. AArch64 内存属性
 
-AArch64 页表项的 `AttrIndx` 必须与对应执行级的 Memory Attribute Indirection Register（内存属性间接寄存器，MAIR）slot 完全一致。运行时布局位于 `components/axcpu/src/aarch64/paging.rs`（私有 `A64MemAttr` 枚举与 `pub(super) const MAIR_VALUE`），启动布局位于 `someboot` 的 AArch64 paging 模块；两者不建立反向 crate 依赖。
+AArch64 页表项的 `AttrIndx` 必须与对应执行级的 Memory Attribute Indirection Register（内存属性间接寄存器，MAIR）slot 完全一致。运行时布局位于 `components/axcpu/src/arch/aarch64/paging.rs`（私有 `A64MemAttr` 枚举与 `pub(super) const MAIR_VALUE`），启动布局位于 `someboot` 的 AArch64 paging 模块；两者不建立反向 crate 依赖。
 
 ### 5.1 属性槽位
 
@@ -190,11 +190,11 @@ axcpu 侧 `MAIR_VALUE` 由 `MAIR_EL1::Attr0/1/2` 字段值在 const 块中计算
 
 | 消费位置 | 使用内容 |
 | --- | --- |
-| `components/axcpu/src/aarch64/init.rs` | 写 `MAIR_EL1` |
+| `components/axcpu/src/arch/aarch64/init.rs` | 写 `MAIR_EL1` |
 | `platforms/someboot/src/arch/aarch64/el1/mod.rs` | boot EL1 MAIR（4 个 slot） |
 | `platforms/someboot/src/arch/aarch64/el2/mod.rs` | boot EL2 MAIR（4 个 slot） |
 | `platforms/someboot/src/arch/aarch64/paging/pte.rs` | boot 页表项 index encode/decode（index 0/1/2） |
-| `components/axcpu/src/aarch64/paging.rs` | Stage-1 `A64Pte` encode/decode 与 `MAIR_VALUE` |
+| `components/axcpu/src/arch/aarch64/paging.rs` | Stage-1 `A64Pte` encode/decode 与 `MAIR_VALUE` |
 
 DMA cache maintenance 不能仅靠把页表项改为 uncached 代替。coherent/streaming ownership 和同步时序属于 `dma-api` 与平台 cache adapter。
 

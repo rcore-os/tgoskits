@@ -2,12 +2,13 @@
 
 use std::vec::Vec;
 
-use riscv_vcpu::{RiscvIpiCompletion, RiscvIpiRequest};
-
-use super::{AxvmRiscvVcpu, RiscvDeferredRunWork};
+use super::{
+    AxvmRiscvVcpu, RiscvDeferredRunWork,
+    policy::{RiscvIpiCompletion, RiscvIpiRequest},
+};
 use crate::{
     AxVMRef, AxVmResult, InterruptTriggerMode,
-    architecture::{BoundVcpuExit, cpu_up::VmArchCpuIdResolver},
+    architecture::BoundVcpuExit,
     irq::{
         model::{PendingVcpuInterrupt, VirtualInterruptId},
         sender::VmInterruptSender,
@@ -27,7 +28,7 @@ pub(super) fn handle(
         request.hart_mask(),
         request.hart_mask_base(),
         || vm.vcpu_list().iter().map(|vcpu| vcpu.id()).collect(),
-        |hart_id| vm.vcpu_id_for_arch_cpu_id(hart_id),
+        |hart_id| super::hsm::target_vcpu_id(vm, hart_id),
         |target_vcpu_id, interrupt| sender.send(target_vcpu_id, interrupt),
     ) {
         Ok(()) => RiscvIpiCompletion::Success,

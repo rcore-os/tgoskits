@@ -2,9 +2,8 @@
 
 use axdevice::{DeviceFirmwareBinding, DeviceNodeId, DeviceNodeSpec};
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
-use riscv_vcpu::RiscvVcpuCreateConfig;
 
-use super::*;
+use super::{policy::RiscvVcpuCreateConfig, *};
 use crate::{
     AxVmError, AxVmResult, ax_err,
     config::*,

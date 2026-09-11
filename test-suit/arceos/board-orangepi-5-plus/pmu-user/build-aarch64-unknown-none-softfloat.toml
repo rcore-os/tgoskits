@@ -1,0 +1,6 @@
+package = "arceos-cpu-user-entry"
+target = "aarch64-unknown-none-softfloat"
+freestanding = true
+features = ["ax-std"]
+log = "Info"
+max_cpu_num = 8

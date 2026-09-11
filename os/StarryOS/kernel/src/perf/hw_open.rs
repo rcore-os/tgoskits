@@ -48,7 +48,8 @@ pub(super) fn validate_perf_event_open_hw(
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 
     let event = if attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
-        ax_cpu::pmu::hw_event_to_arm(attr.config as u32).ok_or(crate::StarryError::Unsupported)?
+        crate::perf::event_map::hardware_event(attr.config as u32)
+            .ok_or(crate::StarryError::Unsupported)?
     } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32
         || attr.type_ == ARMV8_PMUV3_PERF_TYPE
     {
@@ -57,14 +58,15 @@ pub(super) fn validate_perf_event_open_hw(
         return Err(crate::StarryError::Unsupported);
     };
 
-    let cycle_event = ax_cpu::pmu::hw_event_to_arm(perf_hw_id::PERF_COUNT_HW_CPU_CYCLES as u32)
-        .ok_or(crate::StarryError::Unsupported)?;
+    let cycle_event =
+        crate::perf::event_map::hardware_event(perf_hw_id::PERF_COUNT_HW_CPU_CYCLES as u32)
+            .ok_or(crate::StarryError::Unsupported)?;
     let prefer_cycle = !is_sampling && event == cycle_event;
     let counter = match (target_kind, prefer_cycle) {
         (PerfTargetKind::Cpu, true) => ValidatedHwCounter::SystemPreferredCycle(event),
         (PerfTargetKind::Cpu, false) => ValidatedHwCounter::SystemProgrammable(event),
         (PerfTargetKind::Task, true) => ValidatedHwCounter::TaskPreferredCycle(event),
-        (PerfTargetKind::Task, false) if ax_cpu::pmu::event_supported(event) => {
+        (PerfTargetKind::Task, false) if crate::perf::event_map::event_supported(event) => {
             ValidatedHwCounter::TaskProgrammable(event)
         }
         (PerfTargetKind::Task, false) => return Err(crate::StarryError::Unsupported),

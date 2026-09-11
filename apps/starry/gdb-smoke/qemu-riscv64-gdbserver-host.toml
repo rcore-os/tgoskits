@@ -9,11 +9,6 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "gdbserver 0.0.0.0:1234 /usr/bin/gdbserver-smoke-target; echo __HOST_REMOTE_GDBSERVER_DONE__"
-success_regex = [
-    "(?m)^__HOST_REMOTE_GDBSERVER_DONE__$",
-]
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',
     '(?m)FAIL',
@@ -25,3 +20,10 @@ fail_regex = [
     '(?i)Segmentation fault',
 ]
 timeout = 240
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "gdbserver 0.0.0.0:1234 /usr/bin/gdbserver-smoke-target; echo __HOST_REMOTE_GDBSERVER_DONE__"
+success_regex = [
+    "(?m)^__HOST_REMOTE_GDBSERVER_DONE__$",
+]

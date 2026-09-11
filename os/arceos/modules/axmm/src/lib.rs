@@ -77,8 +77,9 @@ pub fn new_kernel_aspace() -> MmResult<AddrSpace> {
     // SAFETY: the architecture boot code installed this root before entering
     // Rust. It stays mapped for the lifetime of the kernel address space, and
     // initialization runs before concurrent page-table mutation begins.
-    let boot_page_table =
-        unsafe { PageTableRef::from_paddr(ax_hal::asm::read_kernel_page_table(), PagingAllocator) };
+    let boot_page_table = unsafe {
+        PageTableRef::from_paddr(ax_hal::KernelMmu::read_kernel_page_table(), PagingAllocator)
+    };
     let mut aspace = AddrSpace::new_empty(base, size)?;
     for r in ax_hal::mem::memory_regions() {
         // mapped range should contain the whole region if it is not aligned.
@@ -138,16 +139,16 @@ pub fn init_memory_management() {
     debug!("kernel address space init OK: {kernel_aspace:#x?}");
     KERNEL_ASPACE.init_once(SpinLock::new(kernel_aspace));
     unsafe {
-        ax_hal::asm::write_kernel_page_table(kernel_page_table_root());
-        ax_hal::asm::flush_tlb(None);
+        ax_hal::KernelMmu::write_kernel_page_table(kernel_page_table_root());
+        ax_hal::KernelMmu::flush_tlb(None);
     }
 }
 
 /// Initializes kernel paging for secondary CPUs.
 pub fn init_memory_management_secondary() {
     unsafe {
-        ax_hal::asm::write_kernel_page_table(kernel_page_table_root());
-        ax_hal::asm::flush_tlb(None);
+        ax_hal::KernelMmu::write_kernel_page_table(kernel_page_table_root());
+        ax_hal::KernelMmu::flush_tlb(None);
     }
 }
 

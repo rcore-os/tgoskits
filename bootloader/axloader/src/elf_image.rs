@@ -276,7 +276,7 @@ fn option_hex(value: Option<u64>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{hex, parse_hex_u64, validate_manifest_address};
+    use super::{parse_hex_u64, validate_manifest_address};
 
     #[test]
     fn parse_hex_accepts_optional_prefix() {

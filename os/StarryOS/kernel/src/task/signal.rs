@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 #[cfg(target_arch = "riscv64")]
 use core::mem::{MaybeUninit, align_of, size_of};
 
-use ax_runtime::hal::cpu::uspace::UserContext;
+use ax_runtime::hal::cpu::user::UserContext;
 use linux_raw_sys::general::{CLD_CONTINUED, CLD_STOPPED, CLD_TRAPPED, RLIMIT_RTTIME};
 use starry_signal::{SignalInfo, SignalOSAction, SignalSet, Signo};
 
@@ -172,7 +172,7 @@ fn dump_user_crash_context(current: &UserTaskRef, uctx: &UserContext) {
         warn!(
             "user register dump:\n  rip={:#018x} rsp={:#018x} rflags={:#018x}\n  rax={:#018x} \
              rdi={:#018x} rsi={:#018x} rdx={:#018x}",
-            uctx.rip, uctx.rsp, uctx.rflags, uctx.rax, uctx.rdi, uctx.rsi, uctx.rdx,
+            uctx.rip, uctx.rsp, uctx.rflags, uctx.regs.rax, uctx.regs.rdi, uctx.regs.rsi, uctx.regs.rdx,
         );
     }
     #[cfg(target_arch = "loongarch64")]

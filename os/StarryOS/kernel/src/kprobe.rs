@@ -31,7 +31,7 @@ use core::{
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{
-    cpu::{KernelTrapFrame, UserRegisters},
+    cpu::context::{KernelTrapFrame, UserRegisters},
     paging::MappingFlags,
 };
 use kprobe::{
@@ -203,7 +203,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
                 .expect("uprobe: target address not mapped");
             let kvaddr = ax_runtime::hal::mem::phys_to_virt(paddr);
             action(kvaddr.as_mut_ptr());
-            ax_runtime::hal::cache::sync_kernel_text(vaddr.align_down_4k(), PAGE_SIZE_4K);
+            ax_cpu::cache::sync_kernel_text(vaddr.align_down_4k(), PAGE_SIZE_4K);
             return;
         }
         let addr = VirtAddr::from(address);
@@ -262,7 +262,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             .expect("uprobe: exec page not mapped after populate");
         let kvaddr = ax_runtime::hal::mem::phys_to_virt(paddr);
         action(kvaddr.as_mut_ptr());
-        ax_runtime::hal::cache::sync_kernel_text(vaddr, PAGE_SIZE_4K);
+        ax_cpu::cache::sync_kernel_text(vaddr, PAGE_SIZE_4K);
         vaddr.as_mut_ptr()
     }
 
@@ -374,21 +374,21 @@ pub(crate) fn trapframe_to_ptregs(tf: &UserRegisters) -> kprobe::PtRegs {
     #[cfg(target_arch = "x86_64")]
     {
         kprobe::PtRegs {
-            r15: tf.r15 as usize,
-            r14: tf.r14 as usize,
-            r13: tf.r13 as usize,
-            r12: tf.r12 as usize,
-            rbp: tf.rbp as usize,
-            rbx: tf.rbx as usize,
-            r11: tf.r11 as usize,
-            r10: tf.r10 as usize,
-            r9: tf.r9 as usize,
-            r8: tf.r8 as usize,
-            rax: tf.rax as usize,
-            rcx: tf.rcx as usize,
-            rdx: tf.rdx as usize,
-            rsi: tf.rsi as usize,
-            rdi: tf.rdi as usize,
+            r15: tf.regs.r15 as usize,
+            r14: tf.regs.r14 as usize,
+            r13: tf.regs.r13 as usize,
+            r12: tf.regs.r12 as usize,
+            rbp: tf.regs.rbp as usize,
+            rbx: tf.regs.rbx as usize,
+            r11: tf.regs.r11 as usize,
+            r10: tf.regs.r10 as usize,
+            r9: tf.regs.r9 as usize,
+            r8: tf.regs.r8 as usize,
+            rax: tf.regs.rax as usize,
+            rcx: tf.regs.rcx as usize,
+            rdx: tf.regs.rdx as usize,
+            rsi: tf.regs.rsi as usize,
+            rdi: tf.regs.rdi as usize,
             orig_rax: tf.vector as usize,
             rip: tf.rip as usize,
             cs: tf.cs as usize,
@@ -502,21 +502,21 @@ pub(crate) fn trapframe_to_ptregs(tf: &UserRegisters) -> kprobe::PtRegs {
 pub(crate) fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut UserRegisters) {
     #[cfg(target_arch = "x86_64")]
     {
-        tf.r15 = pt.r15 as u64;
-        tf.r14 = pt.r14 as u64;
-        tf.r13 = pt.r13 as u64;
-        tf.r12 = pt.r12 as u64;
-        tf.rbp = pt.rbp as u64;
-        tf.rbx = pt.rbx as u64;
-        tf.r11 = pt.r11 as u64;
-        tf.r10 = pt.r10 as u64;
-        tf.r9 = pt.r9 as u64;
-        tf.r8 = pt.r8 as u64;
-        tf.rax = pt.rax as u64;
-        tf.rcx = pt.rcx as u64;
-        tf.rdx = pt.rdx as u64;
-        tf.rsi = pt.rsi as u64;
-        tf.rdi = pt.rdi as u64;
+        tf.regs.r15 = pt.r15 as u64;
+        tf.regs.r14 = pt.r14 as u64;
+        tf.regs.r13 = pt.r13 as u64;
+        tf.regs.r12 = pt.r12 as u64;
+        tf.regs.rbp = pt.rbp as u64;
+        tf.regs.rbx = pt.rbx as u64;
+        tf.regs.r11 = pt.r11 as u64;
+        tf.regs.r10 = pt.r10 as u64;
+        tf.regs.r9 = pt.r9 as u64;
+        tf.regs.r8 = pt.r8 as u64;
+        tf.regs.rax = pt.rax as u64;
+        tf.regs.rcx = pt.rcx as u64;
+        tf.regs.rdx = pt.rdx as u64;
+        tf.regs.rsi = pt.rsi as u64;
+        tf.regs.rdi = pt.rdi as u64;
         tf.rip = pt.rip as u64;
         tf.cs = pt.cs as u64;
         tf.vector = pt.orig_rax as u64;

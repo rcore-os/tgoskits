@@ -16,6 +16,5 @@ args = [
   "8g",
 ]
 fail_regex = []
-success_regex = []
 to_bin = true
 uefi = false

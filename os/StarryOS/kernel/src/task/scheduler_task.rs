@@ -622,7 +622,7 @@ pub fn prepare_user_thread_with_fp_scheduler_state<F>(
     entry: F,
     name: String,
     stack_size: usize,
-    fp_state: ax_cpu::FpState,
+    fp_state: ax_cpu::registers::FpState,
     thread: Box<Thread>,
     scheduler_state: UserThreadInitialSchedulerState,
 ) -> Result<PreparedUserTask, scheduler::thread::TaskError>
@@ -674,7 +674,7 @@ enum X86FpInitialization {
 struct StarryContextState {
     address_space: Option<ax_std::os::arceos::thread::TaskAddressSpace>,
     #[cfg(target_arch = "riscv64")]
-    fp_state: Option<ax_cpu::FpState>,
+    fp_state: Option<ax_cpu::registers::FpState>,
     #[cfg(target_arch = "x86_64")]
     x86_fp: X86FpInitialization,
     scheduler_state: UserThreadInitialSchedulerState,

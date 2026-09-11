@@ -19,7 +19,7 @@ cargo xtask starry app qemu -t dropbear --arch riscv64
 cargo xtask starry app qemu -t dropbear --arch loongarch64
 ```
 
-The gate (`programs/run-dropbear.sh`) is the entire `shell_init_cmd`. It prints `TEST PASSED`
+The gate (`programs/run-dropbear.sh`) is the entire `shell_cmd`. It prints `TEST PASSED`
 only when every assertion passes AND the count equals the pinned `EXPECTED` total, so a
 skipped or dropped assertion fails the gate. The last line is `DROPBEAR_OK=50/50`.
 

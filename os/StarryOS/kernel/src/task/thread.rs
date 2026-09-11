@@ -6,7 +6,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
 };
 
-use ax_runtime::hal::{cpu::uspace::UserContext, percpu::CpuPin, time::TimeValue};
+use ax_runtime::hal::{cpu::user::UserContext, percpu::CpuPin, time::TimeValue};
 use axpoll_set::PollSet;
 use scope_local::{ActiveScope, LocalItem, Scope};
 use starry_signal::{SignalSet, api::ThreadSignalManager};

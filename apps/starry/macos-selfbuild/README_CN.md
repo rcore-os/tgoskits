@@ -17,7 +17,7 @@ Apple M3。流程复用现有 Starry app runner：host 侧构建 AArch64 StarryO
 | Stage 1 | `prepare_host_tools.sh` | 准备 macOS host 上构建 AArch64 种子内核需要的工具 wrapper |
 | Stage 2 | `cargo xtask starry app qemu -t macos-selfbuild --arch aarch64` | 使用现有 Starry app runner 构建种子内核、确保 rootfs、执行 `prebuild.sh`、通过内部 `rootfs::inject::inject_overlay()` 注入 overlay，并启动 QEMU/HVF |
 | Stage 2 / prebuild | `cargo xtask image resize <ROOTFS> --size-mib 16384` | host 侧 `prebuild.sh` 在 overlay 注入前扩容 app runner 选中的 rootfs |
-| Stage 3 | QEMU/HVF guest Cargo 构建 | StarryOS guest 启动后，由 `shell_init_cmd` 执行 guest runner，并在 guest 内直接运行 `cargo build` |
+| Stage 3 | QEMU/HVF guest Cargo 构建 | StarryOS guest 启动后，由 `shell_cmd` 执行 guest runner，并在 guest 内直接运行 `cargo build` |
 | Stage 4 | `debugfs` 提取产物 | 从 app runner 使用的 rootfs 提取 guest-built 内核 ELF 和 `.bin` |
 
 ## 脚本职责

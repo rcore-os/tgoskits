@@ -121,3 +121,10 @@ pub(crate) fn default_boot_firmware_load_gpa(
 ) -> Option<axvm_types::GuestPhysAddr> {
     CurrentArch::default_boot_firmware_load_gpa(config)
 }
+
+/// Completes fallible host discovery before per-CPU hardware ownership begins.
+pub(crate) fn prepare_host_virtualization() -> AxVmResult {
+    #[cfg(target_arch = "aarch64")]
+    target::prepare_host_virtualization()?;
+    Ok(())
+}

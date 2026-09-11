@@ -2,9 +2,9 @@
 
 use axdevice_base::{BusKind, DeviceAccess, DeviceVcpuId};
 use axvm_types::{AccessWidth, GuestPhysAddr, MappingFlags, Port};
-use x86_vcpu::{X86PortIoDirection, X86PortIoStringExit};
 
 use super::*;
+use crate::arch::x86_64::policy::{X86PortIoDirection, X86PortIoStringExit};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DeferredRunWork {

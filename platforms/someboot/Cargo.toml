@@ -13,8 +13,7 @@ version = "0.5.1"
 efi = []
 hv = []
 mmu = []
-thead-mae = []
-# Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
+thead-mae = ["ax-cpu/riscv-thead-mae"]
 tls = []
 # Enable userspace support without kernel TLS, including when `tls` is enabled.
 # User-space TLS remains available through the userspace context APIs.
@@ -24,13 +23,12 @@ uspace = ["mmu"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(axtest_coverage)'] }
 
 [dependencies]
+ax-cpu.workspace = true
+trait-ffi.workspace = true
 acpi = "6.0.1"
-aml = "0.16"
-ansi_rgb = "0.2"
 anyhow = { workspace = true, default-features = false }
 arrayvec = { version = "0.7", default-features = false }
 bit_field = "0.10"
-bitflags = "2.9"
 byte-unit = { workspace = true }
 byteorder = { version = "1", default-features = false }
 fdt-edit.workspace = true
@@ -40,15 +38,12 @@ heapless = "0.9"
 kernutil = { workspace = true }
 log = "0.4"
 num-align = "0.1"
-numeric-enum-macro = "0.2"
 page-table-generic = { workspace = true }
 ranges-ext = { workspace = true }
-rgb = "0.8"
 some-serial.workspace = true
 somehal-macros = { workspace = true }
 tock-registers.workspace = true
 uguid = "2.2.1"
-derive_more.workspace = true
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 loongArch64 = "0.2"
@@ -56,8 +51,6 @@ uefi.workspace = true
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu = "11"
-aarch64-cpu-ext = "0.1"
-kasm-aarch64 = { workspace = true }
 smccc = "0.2"
 uefi.workspace = true
 

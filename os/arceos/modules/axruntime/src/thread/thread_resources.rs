@@ -9,7 +9,7 @@ enum InitialX86FpState {
 pub(super) struct InitialContextState {
     pub(super) address_space: Option<TaskAddressSpace>,
     #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
-    pub(super) fp_state: Option<ax_hal::cpu::FpState>,
+    pub(super) fp_state: Option<ax_hal::cpu::registers::FpState>,
     #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
     x86_fp_state: InitialX86FpState,
 }
@@ -38,7 +38,7 @@ impl InitialContextState {
     #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
     pub(super) fn user_with_fp_state(
         address_space: TaskAddressSpace,
-        fp_state: ax_hal::cpu::FpState,
+        fp_state: ax_hal::cpu::registers::FpState,
     ) -> Self {
         Self {
             address_space: Some(address_space),

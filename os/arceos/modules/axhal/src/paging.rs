@@ -1,12 +1,21 @@
 //! Page table manipulation.
 
 use ax_alloc::{UsageKind, global_allocator};
-use ax_cpu::paging::ArchPagingMeta;
 #[doc(no_inline)]
 pub use ax_cpu::paging::MappingFlags;
-use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
-use page_table_generic::FrameAllocator;
-pub use page_table_generic::{PageTableEntry, PagingError, PagingResult};
+pub use ax_cpu::{PhysAddr, VirtAddr};
+core::cfg_select! {
+    all(target_arch = "aarch64", feature = "hv") => {
+        pub use ax_cpu::paging::El2PagingMeta as ArchPagingMeta;
+    }
+    _ => {
+        pub use ax_cpu::paging::ArchPagingMeta;
+    }
+}
+use ax_memory_addr::PAGE_SIZE_4K;
+pub use page_table_generic::{
+    FrameAllocator, MapConfig, PageTableEntry, PageTableOp, PagingError, PagingResult, TableMeta,
+};
 
 use crate::mem::{phys_to_virt, virt_to_phys};
 

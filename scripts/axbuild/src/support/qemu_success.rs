@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, bail};
+use ostool::run::{ShellCheckStep, qemu::QemuConfig};
 use regex_automata::{
     Input,
     dfa::{Automaton, dense},
@@ -195,6 +196,36 @@ pub(crate) fn capture_required_success_output(
     (Some(capture), Some(success_output))
 }
 
+pub(crate) fn configured_success_regex(qemu: &QemuConfig) -> Vec<String> {
+    qemu.shell_check_steps
+        .last()
+        .and_then(|step| step.success_regex.as_ref())
+        .cloned()
+        .unwrap_or_default()
+}
+
+pub(crate) fn replace_configured_success_regex(qemu: &mut QemuConfig, patterns: Vec<String>) {
+    if let Some(step) = qemu.shell_check_steps.last_mut() {
+        step.success_regex = Some(patterns);
+    }
+}
+
+pub(crate) fn append_configured_success_regex(qemu: &mut QemuConfig, pattern: &str) {
+    if qemu.shell_check_steps.is_empty() {
+        qemu.shell_check_steps.push(ShellCheckStep {
+            success_regex: Some(vec![pattern.to_string()]),
+            ..Default::default()
+        });
+        return;
+    }
+    if let Some(step) = qemu.shell_check_steps.last_mut() {
+        let success_regex = step.success_regex.get_or_insert_with(Vec::new);
+        if !success_regex.iter().any(|regex| regex == pattern) {
+            success_regex.push(pattern.to_string());
+        }
+    }
+}
+
 const BENIGN_QEMU_STOP_ERROR: &str = "QEMU stopped without matching a configured success regex";
 
 fn is_benign_qemu_stop_error(err: &anyhow::Error) -> bool {
@@ -242,7 +273,28 @@ pub(crate) fn verify_qemu_success_contract(
 }
 #[cfg(test)]
 mod tests {
-    use super::{QemuSuccessOutput, TRANSCRIPT_TAIL_BYTES, verify_qemu_success_contract};
+    use ostool::run::qemu::QemuConfig;
+
+    use super::{
+        QemuSuccessOutput, TRANSCRIPT_TAIL_BYTES, append_configured_success_regex,
+        verify_qemu_success_contract,
+    };
+
+    #[test]
+    fn appending_success_to_config_without_steps_creates_passive_step() {
+        let mut qemu = QemuConfig::default();
+
+        append_configured_success_regex(&mut qemu, "AXTEST_SUITE_OK");
+
+        assert_eq!(qemu.shell_check_steps.len(), 1);
+        let step = &qemu.shell_check_steps[0];
+        assert!(step.shell_prefix.is_none());
+        assert!(step.shell_cmd.is_none());
+        assert_eq!(
+            step.success_regex.as_deref(),
+            Some(&["AXTEST_SUITE_OK".to_string()][..])
+        );
+    }
 
     fn captured_output(patterns: &[&str], chunks: &[&[u8]]) -> QemuSuccessOutput {
         let patterns = patterns.iter().map(ToString::to_string).collect::<Vec<_>>();

@@ -785,7 +785,7 @@ impl ElfLoader {
             .collect::<Vec<_>>();
         auxv.push(AuxEntry::new(
             AuxType::HWCAP,
-            ax_runtime::hal::cpu::cap::elf_hwcap(),
+            crate::cpu_capabilities::elf_hwcap(),
         ));
         auxv.push(AuxEntry::new(AuxType::UID, 0));
         auxv.push(AuxEntry::new(AuxType::EUID, 0));

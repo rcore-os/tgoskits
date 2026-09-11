@@ -13,5 +13,4 @@ args = [
 ]
 uefi = false
 to_bin = false
-shell_prefix = "root@starry:"
 timeout = 0

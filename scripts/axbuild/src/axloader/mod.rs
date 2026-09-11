@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::{Read, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command as StdCommand, Stdio},
     sync::{
@@ -15,7 +15,12 @@ use std::{
 
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
+use httpboot_protocol::{
+    BootArch, ImageFormat, LoaderDiscoveryOffer, LoaderDiscoveryProbe, LoaderPollResponse,
+    LoaderStatusPhase, LoaderStatusReport, PROTOCOL_VERSION,
+};
 use ostool::ovmf::Arch;
+use sha2::{Digest, Sha256};
 
 use crate::support::{ovmf::OvmfFirmware, process::ProcessExt};
 
@@ -23,10 +28,8 @@ const AXLOADER_PACKAGE: &str = "axloader";
 const AXLOADER_BIN: &str = "axloader";
 const DEFAULT_UEFI_TARGET: &str = "x86_64-unknown-uefi";
 const HTTP_SMOKE_BOOT_TIMEOUT: Duration = Duration::from_secs(240);
-const HTTP_SMOKE_TRANSFER_TIMEOUT: Duration = Duration::from_secs(30);
 const HTTP_SMOKE_MAX_ATTEMPTS: usize = 2;
-const HTTP_SMOKE_SERIAL_READY_DELAY: Duration = Duration::from_millis(50);
-const HTTP_SMOKE_SERIAL_BYTE_DELAY: Duration = Duration::from_millis(2);
+const HTTP_SMOKE_DISCOVERY_REPLY_DELAY: Duration = Duration::from_millis(500);
 const QEMU_HOST_GATEWAY: &str = "10.0.2.2";
 
 #[derive(Clone, Copy)]
@@ -35,7 +38,7 @@ struct LoaderSmokeTarget {
     ovmf_arch: Arch,
     efi_output_file: &'static str,
     qemu_program: &'static str,
-    qemu_args: fn(&Path, &Path) -> Vec<String>,
+    qemu_args: fn(&Path, &Path, u16, u16) -> Vec<String>,
     kernel_elf: fn() -> Vec<u8>,
 }
 
@@ -45,33 +48,6 @@ struct SmokeAttemptContext<'a> {
     smoke_target: LoaderSmokeTarget,
     firmware: &'a Path,
     kernel: &'a [u8],
-}
-
-struct SmokeAttemptProgress {
-    deadline: Instant,
-    boot_sent: bool,
-}
-
-impl SmokeAttemptProgress {
-    fn waiting_for_ready(started: Instant) -> Self {
-        Self {
-            deadline: started + HTTP_SMOKE_BOOT_TIMEOUT,
-            boot_sent: false,
-        }
-    }
-
-    fn mark_boot_sent(&mut self, sent_at: Instant) {
-        self.boot_sent = true;
-        self.deadline = sent_at + HTTP_SMOKE_TRANSFER_TIMEOUT;
-    }
-
-    fn boot_sent(&self) -> bool {
-        self.boot_sent
-    }
-
-    fn expired_at(&self, now: Instant) -> bool {
-        now >= self.deadline
-    }
 }
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
@@ -247,34 +223,31 @@ fn run_http_smoke_attempt(context: &SmokeAttemptContext<'_>) -> anyhow::Result<(
     )
     .context("failed to stage axloader EFI binary")?;
 
-    let http_server = SmokeHttpServer::start(context.kernel.to_vec())?;
-    let boot_line = format_boot_line(
-        context.smoke_target.arch,
-        context.kernel.len(),
-        http_server.port(),
-    );
+    let control_server =
+        SmokeControlServer::start(context.smoke_target.arch, context.kernel.to_vec())?;
 
     let mut child = spawn_axloader_qemu(
         context.smoke_target,
         context.firmware,
         &temp.path().join("esp"),
+        control_server.capture_port(),
+        control_server.injection_port(),
     )?;
-    let smoke_result = drive_http_smoke_session(&mut child, &boot_line);
+    let smoke_result = drive_http_smoke_session(&mut child, &control_server);
     stop_child(&mut child);
     smoke_result?;
 
-    if !http_server.was_requested() {
-        bail!("axloader HTTP smoke reached elf_loaded without observing /kernel.elf request");
+    if !control_server.was_requested() || !control_server.ready_to_handoff() {
+        bail!("axloader network smoke did not observe both kernel download and ready_to_handoff");
     }
 
     Ok(())
 }
 
-fn drive_http_smoke_session(child: &mut Child, boot_line: &str) -> anyhow::Result<()> {
-    let mut stdin = child
-        .stdin
-        .take()
-        .context("failed to capture QEMU stdin for serial control")?;
+fn drive_http_smoke_session(
+    child: &mut Child,
+    control_server: &SmokeControlServer,
+) -> anyhow::Result<()> {
     let stdout = child
         .stdout
         .take()
@@ -287,21 +260,19 @@ fn drive_http_smoke_session(child: &mut Child, boot_line: &str) -> anyhow::Resul
     spawn_output_reader(stdout, output_tx.clone());
     spawn_output_reader(stderr, output_tx);
 
-    let mut progress = SmokeAttemptProgress::waiting_for_ready(Instant::now());
+    let deadline = Instant::now() + HTTP_SMOKE_BOOT_TIMEOUT;
     let mut transcript = String::new();
-    while !progress.expired_at(Instant::now()) {
+    while Instant::now() < deadline {
+        if transcript.contains("elf_loaded:")
+            && control_server.was_requested()
+            && control_server.ready_to_handoff()
+        {
+            return Ok(());
+        }
         match output_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(chunk) => {
                 print!("{chunk}");
                 transcript.push_str(&chunk);
-                if !progress.boot_sent() && transcript.contains("AXLOADER READY") {
-                    write_serial_control_line(&mut stdin, boot_line)
-                        .context("failed to send AXLOADER BOOT over QEMU serial")?;
-                    progress.mark_boot_sent(Instant::now());
-                }
-                if transcript.contains("elf_loaded:") {
-                    return Ok(());
-                }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if let Some(status) = child.try_wait()? {
@@ -323,54 +294,11 @@ fn drive_http_smoke_session(child: &mut Child, boot_line: &str) -> anyhow::Resul
         }
     }
 
-    let phase = if progress.boot_sent() {
-        "kernel transfer"
-    } else {
-        "UEFI startup"
-    };
-    bail!("axloader HTTP smoke timed out during {phase}; transcript:\n{transcript}")
-}
-
-fn write_serial_control_line(output: &mut impl Write, line: &str) -> std::io::Result<()> {
-    write_serial_control_line_with_delay(output, line, thread::sleep)
-}
-
-fn write_serial_control_line_with_delay(
-    output: &mut impl Write,
-    line: &str,
-    mut delay: impl FnMut(Duration),
-) -> std::io::Result<()> {
-    delay(HTTP_SMOKE_SERIAL_READY_DELAY);
-    let mut bytes = line.as_bytes().iter().peekable();
-    while let Some(byte) = bytes.next() {
-        output.write_all(core::slice::from_ref(byte))?;
-        output.flush()?;
-        if bytes.peek().is_some() {
-            delay(HTTP_SMOKE_SERIAL_BYTE_DELAY);
-        }
-    }
-    Ok(())
+    bail!("axloader network smoke timed out; transcript:\n{transcript}")
 }
 
 fn next_smoke_attempt(current_attempt: usize) -> Option<usize> {
     (current_attempt < HTTP_SMOKE_MAX_ATTEMPTS).then_some(current_attempt + 1)
-}
-
-fn format_boot_line(arch: &str, kernel_size: usize, http_port: u16) -> String {
-    format!(
-        concat!(
-            "AXLOADER BOOT {{",
-            "\"protocol_version\":1,",
-            "\"boot_id\":\"ci-http-smoke\",",
-            "\"kernel_url\":\"http://{}:{}/kernel.elf\",",
-            "\"kernel_size\":{},",
-            "\"image_format\":\"elf64\",",
-            "\"arch\":\"{}\",",
-            "\"entry_symbol\":null",
-            "}}\n"
-        ),
-        QEMU_HOST_GATEWAY, http_port, kernel_size, arch,
-    )
 }
 
 fn axloader_efi_path(workspace_root: &Path, target: &str) -> PathBuf {
@@ -399,9 +327,16 @@ fn spawn_axloader_qemu(
     target: LoaderSmokeTarget,
     firmware: &Path,
     esp_dir: &Path,
+    capture_port: u16,
+    injection_port: u16,
 ) -> anyhow::Result<Child> {
     StdCommand::new(target.qemu_program)
-        .args((target.qemu_args)(firmware, esp_dir))
+        .args((target.qemu_args)(
+            firmware,
+            esp_dir,
+            capture_port,
+            injection_port,
+        ))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -414,7 +349,12 @@ fn spawn_axloader_qemu(
         })
 }
 
-fn x86_64_qemu_args(firmware: &Path, esp_dir: &Path) -> Vec<String> {
+fn x86_64_qemu_args(
+    firmware: &Path,
+    esp_dir: &Path,
+    capture_port: u16,
+    injection_port: u16,
+) -> Vec<String> {
     [
         "-m".into(),
         "256M".into(),
@@ -425,8 +365,6 @@ fn x86_64_qemu_args(firmware: &Path, esp_dir: &Path) -> Vec<String> {
         "-accel".into(),
         "kvm".into(),
         "-cpu".into(),
-        // The pinned OVMF build does not publish its network protocols with
-        // QEMU's restricted default CPU. This smoke runs on KVM-labelled hosts.
         "host".into(),
         "-display".into(),
         "none".into(),
@@ -435,11 +373,22 @@ fn x86_64_qemu_args(firmware: &Path, esp_dir: &Path) -> Vec<String> {
         "-serial".into(),
         "stdio".into(),
         "-netdev".into(),
-        "user,id=net0".into(),
+        "user,id=user0".into(),
+        "-chardev".into(),
+        format!("socket,id=discovery_capture,host=127.0.0.1,port={capture_port},reconnect-ms=100"),
+        "-chardev".into(),
+        format!(
+            "socket,id=discovery_injection,host=127.0.0.1,port={injection_port},reconnect-ms=100"
+        ),
+        "-object".into(),
+        "filter-mirror,id=discovery_mirror,netdev=user0,queue=rx,outdev=discovery_capture".into(),
+        "-object".into(),
+        "filter-redirector,id=discovery_redirect,netdev=user0,queue=tx,indev=discovery_injection"
+            .into(),
         "-device".into(),
         // ostool's OVMF prebuilt always includes VirtioNetDxe, while its E1000
         // driver is optional and absent from the pinned firmware build.
-        "virtio-net-pci,netdev=net0".into(),
+        "virtio-net-pci,netdev=user0,mac=02:00:00:00:00:01".into(),
         "-drive".into(),
         format!(
             "if=pflash,format=raw,readonly=on,file={}",
@@ -474,45 +423,99 @@ fn stop_child(child: &mut Child) {
     let _ = child.wait();
 }
 
-struct SmokeHttpServer {
+struct SmokeControlServer {
     stop: Arc<AtomicBool>,
     requested: Arc<AtomicBool>,
-    thread: Option<thread::JoinHandle<()>>,
-    port: u16,
+    ready_to_handoff: Arc<AtomicBool>,
+    threads: Vec<thread::JoinHandle<()>>,
+    capture_port: u16,
+    injection_port: u16,
 }
 
-impl SmokeHttpServer {
-    fn start(body: Vec<u8>) -> anyhow::Result<Self> {
+impl SmokeControlServer {
+    fn start(arch: &str, body: Vec<u8>) -> anyhow::Result<Self> {
         let listener =
-            TcpListener::bind("0.0.0.0:0").context("failed to bind axloader HTTP smoke server")?;
+            TcpListener::bind("0.0.0.0:0").context("failed to bind axloader control server")?;
         let port = listener
             .local_addr()
-            .context("failed to read axloader HTTP smoke server address")?
+            .context("failed to read axloader control server address")?
             .port();
         listener
             .set_nonblocking(true)
-            .context("failed to configure axloader HTTP smoke server")?;
+            .context("failed to configure axloader control server")?;
+        let capture_listener = TcpListener::bind("127.0.0.1:0")
+            .context("failed to bind axloader discovery capture")?;
+        let capture_port = capture_listener.local_addr()?.port();
+        capture_listener
+            .set_nonblocking(true)
+            .context("failed to configure axloader discovery capture")?;
+        let injection_listener = TcpListener::bind("127.0.0.1:0")
+            .context("failed to bind axloader discovery injection")?;
+        let injection_port = injection_listener.local_addr()?.port();
+        injection_listener
+            .set_nonblocking(true)
+            .context("failed to configure axloader discovery injection")?;
 
         let stop = Arc::new(AtomicBool::new(false));
         let requested = Arc::new(AtomicBool::new(false));
-        let thread_stop = stop.clone();
-        let thread_requested = requested.clone();
-        let thread = thread::spawn(move || {
-            while !thread_stop.load(Ordering::Acquire) {
+        let ready_to_handoff = Arc::new(AtomicBool::new(false));
+        let http_stop = stop.clone();
+        let http_requested = requested.clone();
+        let http_ready = ready_to_handoff.clone();
+        let kernel_sha256 = format!("{:x}", Sha256::digest(&body));
+        let boot_arch = parse_smoke_arch(arch)?;
+        let http_thread = thread::spawn(move || {
+            while !http_stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let mut request = [0u8; 1024];
+                        let mut request = [0u8; 16 * 1024];
                         let read = stream.read(&mut request).unwrap_or(0);
-                        let request = String::from_utf8_lossy(&request[..read]);
-                        if request.starts_with("GET /kernel.elf ") {
-                            thread_requested.store(true, Ordering::Release);
-                        }
-                        let header = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                            body.len()
-                        );
-                        if stream.write_all(header.as_bytes()).is_ok() {
-                            let _ = stream.write_all(&body);
+                        let request = &request[..read];
+                        let first_line_end = request
+                            .windows(2)
+                            .position(|window| window == b"\r\n")
+                            .unwrap_or(request.len());
+                        let first_line = String::from_utf8_lossy(&request[..first_line_end]);
+                        if first_line.starts_with("GET /kernel.elf ") {
+                            http_requested.store(true, Ordering::Release);
+                            write_http_response(&mut stream, "200 OK", &body);
+                        } else if first_line.starts_with("POST /api/v1/loaders/poll ") {
+                            if !json_request_is_framed(request) {
+                                write_http_response(&mut stream, "400 Bad Request", &[]);
+                                continue;
+                            }
+                            let response = LoaderPollResponse::Boot {
+                                board_id: "qemu-smoke".into(),
+                                session_id: "qemu-smoke-session".into(),
+                                boot_id: "qemu-smoke-boot".into(),
+                                kernel_path: "/kernel.elf".into(),
+                                kernel_size: body.len() as u64,
+                                kernel_sha256: kernel_sha256.clone(),
+                                arch: boot_arch,
+                                image_format: ImageFormat::Elf64,
+                                entry_symbol: None,
+                            };
+                            let response = serde_json::to_vec(&response).unwrap();
+                            write_http_response(&mut stream, "200 OK", &response);
+                        } else if first_line.starts_with("POST /api/v1/loaders/status ") {
+                            if !json_request_is_framed(request) {
+                                write_http_response(&mut stream, "400 Bad Request", &[]);
+                                continue;
+                            }
+                            if let Some(body_start) = request
+                                .windows(4)
+                                .position(|window| window == b"\r\n\r\n")
+                                .map(|offset| offset + 4)
+                                && let Ok(report) = serde_json::from_slice::<LoaderStatusReport>(
+                                    &request[body_start..],
+                                )
+                                && report.status == LoaderStatusPhase::ReadyToHandoff
+                            {
+                                http_ready.store(true, Ordering::Release);
+                            }
+                            write_http_response(&mut stream, "204 No Content", &[]);
+                        } else {
+                            write_http_response(&mut stream, "404 Not Found", &[]);
                         }
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
@@ -523,30 +526,279 @@ impl SmokeHttpServer {
             }
         });
 
-        println!("axloader http smoke: serving kernel on 0.0.0.0:{port}");
+        let udp_stop = stop.clone();
+        let udp_thread = thread::spawn(move || {
+            let mut capture = None;
+            let mut injection = None;
+            let mut encoded_frames = Vec::new();
+            let mut buffer = [0u8; 2048];
+            while !udp_stop.load(Ordering::Acquire) {
+                accept_qemu_filter(&capture_listener, &mut capture);
+                accept_qemu_filter(&injection_listener, &mut injection);
+                let Some(stream) = capture.as_mut() else {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                match stream.read(&mut buffer) {
+                    Ok(0) => capture = None,
+                    Ok(read) => encoded_frames.extend_from_slice(&buffer[..read]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(_) => capture = None,
+                }
+
+                while let Some(frame) = take_qemu_filter_frame(&mut encoded_frames) {
+                    let Some(request) = parse_discovery_frame(&frame) else {
+                        continue;
+                    };
+                    let offer = LoaderDiscoveryOffer {
+                        protocol_version: PROTOCOL_VERSION,
+                        server_id: "axloader-qemu-smoke".into(),
+                        control_base_url: format!("http://{QEMU_HOST_GATEWAY}:{port}"),
+                        registration_id: "axloader-qemu-registration".into(),
+                        expires_in_ms: 60_000,
+                    };
+                    let payload = serde_json::to_vec(&offer).unwrap();
+                    let response = build_discovery_reply(&request, &payload);
+                    // Let SLiRP report its unhandled copy of the broadcast
+                    // first.  The loader must keep receiving after that ICMP
+                    // error and still accept this valid discovery offer.
+                    thread::sleep(HTTP_SMOKE_DISCOVERY_REPLY_DELAY);
+                    if let Some(stream) = injection.as_mut()
+                        && write_qemu_filter_frame(stream, &response).is_err()
+                    {
+                        injection = None;
+                    }
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        println!(
+            "axloader network smoke: discovery filter capture :{capture_port}, injection \
+             :{injection_port}, and HTTP control :{port}"
+        );
         Ok(Self {
             stop,
             requested,
-            thread: Some(thread),
-            port,
+            ready_to_handoff,
+            threads: vec![http_thread, udp_thread],
+            capture_port,
+            injection_port,
         })
-    }
-
-    fn port(&self) -> u16 {
-        self.port
     }
 
     fn was_requested(&self) -> bool {
         self.requested.load(Ordering::Acquire)
     }
+
+    fn ready_to_handoff(&self) -> bool {
+        self.ready_to_handoff.load(Ordering::Acquire)
+    }
+
+    fn capture_port(&self) -> u16 {
+        self.capture_port
+    }
+
+    fn injection_port(&self) -> u16 {
+        self.injection_port
+    }
 }
 
-impl Drop for SmokeHttpServer {
+impl Drop for SmokeControlServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
+        for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
+    }
+}
+
+fn accept_qemu_filter(listener: &TcpListener, stream: &mut Option<TcpStream>) {
+    if stream.is_some() {
+        return;
+    }
+    match listener.accept() {
+        Ok((accepted, _)) => {
+            let _ = accepted.set_nonblocking(true);
+            let _ = accepted.set_nodelay(true);
+            *stream = Some(accepted);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+        Err(_) => {}
+    }
+}
+
+fn take_qemu_filter_frame(encoded: &mut Vec<u8>) -> Option<Vec<u8>> {
+    const MAX_FRAME_BYTES: usize = 64 * 1024;
+    if encoded.len() < std::mem::size_of::<u32>() {
+        return None;
+    }
+    let frame_length = u32::from_be_bytes(encoded[..4].try_into().ok()?) as usize;
+    if frame_length == 0 || frame_length > MAX_FRAME_BYTES {
+        encoded.clear();
+        return None;
+    }
+    let encoded_length = std::mem::size_of::<u32>() + frame_length;
+    if encoded.len() < encoded_length {
+        return None;
+    }
+    let frame = encoded[4..encoded_length].to_vec();
+    encoded.drain(..encoded_length);
+    Some(frame)
+}
+
+fn write_qemu_filter_frame(stream: &mut TcpStream, frame: &[u8]) -> std::io::Result<()> {
+    let frame_length = u32::try_from(frame.len()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Ethernet frame is too large",
+        )
+    })?;
+    stream.write_all(&frame_length.to_be_bytes())?;
+    stream.write_all(frame)
+}
+
+struct DiscoveryFrame {
+    guest_mac: [u8; 6],
+    guest_ip: [u8; 4],
+    guest_port: u16,
+}
+
+fn parse_discovery_frame(frame: &[u8]) -> Option<DiscoveryFrame> {
+    if frame.len() < 14 + 20 + 8 || frame.get(12..14)? != [0x08, 0x00] {
+        return None;
+    }
+    let ip = 14;
+    let header_length = usize::from(frame[ip] & 0x0f) * 4;
+    if frame[ip] >> 4 != 4 || header_length < 20 || frame[ip + 9] != 17 {
+        return None;
+    }
+    let total_length = usize::from(u16::from_be_bytes([frame[ip + 2], frame[ip + 3]]));
+    if total_length < header_length + 8 || ip.checked_add(total_length)? > frame.len() {
+        return None;
+    }
+    let udp = ip + header_length;
+    let destination_port = u16::from_be_bytes([frame[udp + 2], frame[udp + 3]]);
+    let udp_length = usize::from(u16::from_be_bytes([frame[udp + 4], frame[udp + 5]]));
+    if destination_port != httpboot_protocol::DISCOVERY_PORT
+        || udp_length < 8
+        || udp.checked_add(udp_length)? > frame.len()
+    {
+        return None;
+    }
+    serde_json::from_slice::<LoaderDiscoveryProbe>(&frame[udp + 8..udp + udp_length]).ok()?;
+    Some(DiscoveryFrame {
+        guest_mac: frame.get(6..12)?.try_into().ok()?,
+        guest_ip: frame.get(ip + 12..ip + 16)?.try_into().ok()?,
+        guest_port: u16::from_be_bytes([frame[udp], frame[udp + 1]]),
+    })
+}
+
+fn build_discovery_reply(request: &DiscoveryFrame, payload: &[u8]) -> Vec<u8> {
+    const ETHERNET_HEADER: usize = 14;
+    const IPV4_HEADER: usize = 20;
+    const UDP_HEADER: usize = 8;
+    // QEMU's SLiRP gateway MAC for the default 10.0.2.0/24 network.  Using the
+    // gateway identity makes the injected discovery response consistent with
+    // the neighbour entry that the same interface later uses for HTTP.
+    const SERVER_MAC: [u8; 6] = [0x52, 0x55, 0x0a, 0x00, 0x02, 0x02];
+    let ip_length = IPV4_HEADER + UDP_HEADER + payload.len();
+    let mut frame = vec![0u8; (ETHERNET_HEADER + ip_length).max(60)];
+    frame[..6].copy_from_slice(&request.guest_mac);
+    frame[6..12].copy_from_slice(&SERVER_MAC);
+    frame[12..14].copy_from_slice(&[0x08, 0x00]);
+
+    let ip = ETHERNET_HEADER;
+    frame[ip] = 0x45;
+    frame[ip + 2..ip + 4].copy_from_slice(&(ip_length as u16).to_be_bytes());
+    frame[ip + 6..ip + 8].copy_from_slice(&0x4000_u16.to_be_bytes());
+    frame[ip + 8] = 64;
+    frame[ip + 9] = 17;
+    frame[ip + 12..ip + 16].copy_from_slice(&[10, 0, 2, 2]);
+    frame[ip + 16..ip + 20].copy_from_slice(&request.guest_ip);
+    let checksum = ipv4_checksum(&frame[ip..ip + IPV4_HEADER]);
+    frame[ip + 10..ip + 12].copy_from_slice(&checksum.to_be_bytes());
+
+    let udp = ip + IPV4_HEADER;
+    frame[udp..udp + 2].copy_from_slice(&httpboot_protocol::DISCOVERY_PORT.to_be_bytes());
+    frame[udp + 2..udp + 4].copy_from_slice(&request.guest_port.to_be_bytes());
+    let udp_length = UDP_HEADER + payload.len();
+    frame[udp + 4..udp + 6].copy_from_slice(&(udp_length as u16).to_be_bytes());
+    frame[udp + UDP_HEADER..udp + UDP_HEADER + payload.len()].copy_from_slice(payload);
+
+    let mut checksum_input = Vec::with_capacity(12 + udp_length);
+    checksum_input.extend_from_slice(&frame[ip + 12..ip + 20]);
+    checksum_input.push(0);
+    checksum_input.push(frame[ip + 9]);
+    checksum_input.extend_from_slice(&(udp_length as u16).to_be_bytes());
+    checksum_input.extend_from_slice(&frame[udp..udp + udp_length]);
+    let checksum = internet_checksum(&checksum_input);
+    frame[udp + 6..udp + 8].copy_from_slice(&checksum.to_be_bytes());
+    frame
+}
+
+fn ipv4_checksum(header: &[u8]) -> u16 {
+    internet_checksum(header)
+}
+
+fn internet_checksum(bytes: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    let (pairs, remainder) = bytes.as_chunks::<2>();
+    for pair in pairs {
+        sum += u32::from(u16::from_be_bytes([pair[0], pair[1]]));
+    }
+    if let Some(byte) = remainder.first() {
+        sum += u32::from(*byte) << 8;
+    }
+    while sum > 0xffff {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn write_http_response(stream: &mut impl Write, status: &str, body: &[u8]) {
+    let header = format!(
+        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    if stream.write_all(header.as_bytes()).is_ok() {
+        let _ = stream.write_all(body);
+    }
+}
+
+fn json_request_is_framed(request: &[u8]) -> bool {
+    let Some(body_start) = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|offset| offset + 4)
+    else {
+        return false;
+    };
+    let Ok(headers) = std::str::from_utf8(&request[..body_start]) else {
+        return false;
+    };
+    let mut content_type_is_json = false;
+    let mut content_length = None;
+    for line in headers.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-type") {
+            content_type_is_json = value.trim().eq_ignore_ascii_case("application/json");
+        } else if name.eq_ignore_ascii_case("content-length") {
+            content_length = value.trim().parse::<usize>().ok();
+        }
+    }
+    content_type_is_json && content_length == Some(request.len() - body_start)
+}
+
+fn parse_smoke_arch(arch: &str) -> anyhow::Result<BootArch> {
+    match arch {
+        "x86_64" => Ok(BootArch::X86_64),
+        "aarch64" => Ok(BootArch::Aarch64),
+        "riscv64" => Ok(BootArch::Riscv64),
+        "loongarch64" => Ok(BootArch::Loongarch64),
+        _ => bail!("unsupported axloader smoke architecture `{arch}`"),
     }
 }
 
@@ -604,96 +856,100 @@ mod tests {
     use super::*;
 
     #[test]
-    fn boot_line_includes_qemu_reachable_kernel_url() {
-        let boot_line = format_boot_line("x86_64", 4096, 18380);
-
-        assert!(boot_line.starts_with("AXLOADER BOOT "));
-        assert!(boot_line.contains("\"kernel_url\":\"http://10.0.2.2:18380/kernel.elf\""));
-        assert!(boot_line.contains("\"kernel_size\":4096"));
-        assert!(boot_line.contains("\"arch\":\"x86_64\""));
-        assert!(boot_line.ends_with('\n'));
-    }
-
-    #[test]
-    fn boot_line_is_paced_for_uefi_polled_serial_input() {
-        #[derive(Default)]
-        struct WriteRecorder {
-            bytes: Vec<u8>,
-            writes: Vec<usize>,
-            flushes: usize,
-        }
-
-        impl Write for WriteRecorder {
-            fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-                self.bytes.extend_from_slice(buffer);
-                self.writes.push(buffer.len());
-                Ok(buffer.len())
-            }
-
-            fn flush(&mut self) -> std::io::Result<()> {
-                self.flushes += 1;
-                Ok(())
-            }
-        }
-
-        let line = "AXLOADER BOOT {\"protocol_version\":1}\n";
-        let mut output = WriteRecorder::default();
-        let mut delays = Vec::new();
-
-        write_serial_control_line_with_delay(&mut output, line, |delay| delays.push(delay))
-            .unwrap();
-
-        assert_eq!(output.bytes, line.as_bytes());
-        assert_eq!(output.writes, vec![1; line.len()]);
-        assert_eq!(output.flushes, line.len());
-        assert_eq!(delays[0], HTTP_SMOKE_SERIAL_READY_DELAY);
-        assert_eq!(
-            delays[1..],
-            vec![HTTP_SMOKE_SERIAL_BYTE_DELAY; line.len() - 1]
-        );
+    fn smoke_arch_uses_protocol_architecture() {
+        assert_eq!(parse_smoke_arch("x86_64").unwrap(), BootArch::X86_64);
+        assert!(parse_smoke_arch("mips64").is_err());
     }
 
     #[test]
     fn x86_64_qemu_uses_network_device_supported_by_ostool_ovmf() {
-        let args = x86_64_qemu_args(Path::new("/firmware.fd"), Path::new("/esp"));
+        let args = x86_64_qemu_args(Path::new("/firmware.fd"), Path::new("/esp"), 12345, 12346);
 
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["-device", "virtio-net-pci,netdev=net0"])
-        );
+        assert!(args.windows(2).any(|pair| pair
+            == [
+                "-device",
+                "virtio-net-pci,netdev=user0,mac=02:00:00:00:00:01"
+            ]));
     }
 
     #[test]
-    fn x86_64_qemu_uses_kvm_host_cpu_for_ovmf_network_stack() {
-        let args = x86_64_qemu_args(Path::new("/firmware.fd"), Path::new("/esp"));
+    fn x86_64_qemu_mirrors_discovery_frames_without_serial_control() {
+        let args = x86_64_qemu_args(Path::new("/firmware.fd"), Path::new("/esp"), 12345, 12346);
 
-        assert!(args.windows(2).any(|pair| pair == ["-accel", "kvm"]));
+        assert!(args.windows(2).any(|pair| pair == ["-machine", "q35"]));
         assert!(args.windows(2).any(|pair| pair == ["-cpu", "host"]));
-    }
-
-    #[test]
-    fn ready_near_startup_deadline_gets_a_transfer_window() {
-        let started = Instant::now();
-        let ready_at = started + HTTP_SMOKE_BOOT_TIMEOUT - Duration::from_millis(1);
-        let mut progress = SmokeAttemptProgress::waiting_for_ready(started);
-
-        progress.mark_boot_sent(ready_at);
-
-        assert_eq!(progress.deadline, ready_at + HTTP_SMOKE_TRANSFER_TIMEOUT);
-        assert!(!progress.expired_at(ready_at + Duration::from_secs(1)));
-    }
-
-    #[test]
-    fn slow_ovmf_boot_keeps_a_thirty_second_startup_margin() {
-        let started = Instant::now();
-        let progress = SmokeAttemptProgress::waiting_for_ready(started);
-
-        assert!(!progress.expired_at(started + Duration::from_secs(195)));
+        assert!(args.iter().any(|arg| arg
+            == "filter-mirror,id=discovery_mirror,netdev=user0,queue=rx,outdev=discovery_capture"));
+        assert!(args.iter().any(|arg| arg
+            == "filter-redirector,id=discovery_redirect,netdev=user0,queue=tx,\
+                indev=discovery_injection"));
     }
 
     #[test]
     fn first_failed_qemu_attempt_is_retried() {
         assert_eq!(next_smoke_attempt(1), Some(2));
         assert_eq!(next_smoke_attempt(2), None);
+    }
+
+    #[test]
+    fn json_control_requests_require_explicit_http_framing() {
+        let body = br#"{"protocol_version":2}"#;
+        let content_length = format!("Content-Length: {}\r\n\r\n", body.len());
+        let framed = [
+            b"POST /api/v1/loaders/poll HTTP/1.1\r\n".as_slice(),
+            b"Content-Type: application/json\r\n",
+            content_length.as_bytes(),
+            body,
+        ]
+        .concat();
+        assert!(json_request_is_framed(&framed));
+
+        let unframed = [
+            b"POST /api/v1/loaders/poll HTTP/1.1\r\n".as_slice(),
+            b"Host: 10.0.2.2\r\n\r\n",
+            body,
+        ]
+        .concat();
+        assert!(!json_request_is_framed(&unframed));
+    }
+
+    #[test]
+    fn qemu_filter_frame_parser_waits_for_complete_frame_and_rejects_invalid_lengths() {
+        let mut encoded = Vec::from(3_u32.to_be_bytes());
+        encoded.extend_from_slice(b"ab");
+        assert!(take_qemu_filter_frame(&mut encoded).is_none());
+        encoded.push(b'c');
+        assert_eq!(take_qemu_filter_frame(&mut encoded).unwrap(), b"abc");
+        assert!(encoded.is_empty());
+
+        let mut empty = Vec::from(0_u32.to_be_bytes());
+        assert!(take_qemu_filter_frame(&mut empty).is_none());
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn discovery_reply_targets_requester_and_has_valid_checksums() {
+        let request = DiscoveryFrame {
+            guest_mac: [0x02, 0, 0, 0, 0, 1],
+            guest_ip: [10, 0, 2, 15],
+            guest_port: 2999,
+        };
+        let frame = build_discovery_reply(&request, b"offer");
+
+        assert_eq!(&frame[..6], &request.guest_mac);
+        assert_eq!(ipv4_checksum(&frame[14..34]), 0);
+        assert_eq!(u16::from_be_bytes([frame[34], frame[35]]), 2998);
+        assert_eq!(
+            u16::from_be_bytes([frame[36], frame[37]]),
+            request.guest_port
+        );
+
+        let udp_length = usize::from(u16::from_be_bytes([frame[38], frame[39]]));
+        let mut checksum_input = Vec::new();
+        checksum_input.extend_from_slice(&frame[26..34]);
+        checksum_input.extend_from_slice(&[0, 17]);
+        checksum_input.extend_from_slice(&(udp_length as u16).to_be_bytes());
+        checksum_input.extend_from_slice(&frame[34..34 + udp_length]);
+        assert_eq!(internet_checksum(&checksum_input), 0);
     }
 }
