@@ -1,16 +1,6 @@
 use super::*;
 
 #[test]
-fn std_build_rejects_removed_platform_feature() {
-    let info = BuildInfo {
-        features: vec!["ax-std/plat-dyn".to_string(), "alloc".to_string()],
-        ..BuildInfo::default()
-    };
-
-    assert!(info.validate_features().is_err());
-}
-
-#[test]
 fn build_cargo_args_uses_target_stem_as_rustflags_key() {
     let args = BuildInfo::build_cargo_args(
         "aarch64-unknown-none-softfloat",

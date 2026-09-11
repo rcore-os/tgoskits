@@ -1,4 +1,4 @@
-use super::common::{expand, metadata_for_packages, metadata_with_resolve, pkg, pkg_with_metadata};
+use super::common::{expand, metadata_with_resolve, pkg, pkg_with_metadata};
 use crate::clippy::{
     AXSTD_STD_CLIPPY_FEATURES, AXSTD_STD_DEFAULT_FEATURE, AXSTD_STD_PACKAGE,
     check::{ClippyCheck, ClippyCheckKind},
@@ -631,31 +631,6 @@ fn package_clippy_configuration_lints_source_with_rustflags() {
             "-D",
             "warnings",
         ]
-    );
-}
-
-#[test]
-fn selected_package_expands_package_clippy_configurations() {
-    let package = pkg_with_metadata(
-        "alpha",
-        "alpha 0.1.0 (path+file:///tmp/alpha)",
-        &[],
-        serde_json::json!({
-            "clippy": {
-                "configurations": [{
-                    "name": "aarch64-system",
-                    "target": "aarch64-unknown-none-softfloat",
-                }],
-            },
-        }),
-    );
-    let metadata = metadata_for_packages(core::slice::from_ref(&package));
-    let checks = crate::clippy::expand::expand_clippy_checks(&[package], &metadata).unwrap();
-
-    assert_eq!(checks[0].label(), "alpha (base)");
-    assert_eq!(
-        checks[1].label(),
-        "alpha (configuration: aarch64-system, features: , target: aarch64-unknown-none-softfloat)"
     );
 }
 

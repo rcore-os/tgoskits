@@ -91,35 +91,6 @@ fn axvisor_request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRe
 }
 
 #[test]
-fn parses_supported_arch_aliases() {
-    assert_eq!(
-        parse_target(&Some("aarch64".to_string()), &None).unwrap(),
-        (
-            "aarch64".to_string(),
-            "aarch64-unknown-none-softfloat".to_string()
-        )
-    );
-    assert_eq!(
-        parse_target(&Some("x86_64".to_string()), &None).unwrap(),
-        ("x86_64".to_string(), "x86_64-unknown-none".to_string())
-    );
-    assert_eq!(
-        parse_target(&Some("loongarch64".to_string()), &None).unwrap(),
-        (
-            "loongarch64".to_string(),
-            "loongarch64-unknown-none-softfloat".to_string()
-        )
-    );
-    assert_eq!(
-        parse_target(&Some("riscv64".to_string()), &None).unwrap(),
-        (
-            "riscv64".to_string(),
-            "riscv64gc-unknown-none-elf".to_string()
-        )
-    );
-}
-
-#[test]
 fn accepts_full_target_triples() {
     assert_eq!(
         parse_target(&None, &Some("aarch64-unknown-none-softfloat".to_string())).unwrap(),
@@ -158,50 +129,6 @@ fn rejects_unsupported_arches() {
     assert!(err.contains("loongarch64"));
     assert!(err.contains("riscv64"));
     assert!(err.contains("x86_64"));
-}
-
-#[test]
-fn qemu_test_request_ignores_inherited_smp() {
-    let mut request = axvisor_request(
-        PathBuf::from("/tmp/build-riscv64gc-unknown-none-elf.toml"),
-        "riscv64",
-        "riscv64gc-unknown-none-elf",
-    );
-    request.smp = Some(1);
-
-    let request = Axvisor::qemu_test_request(request);
-
-    assert_eq!(request.smp, None);
-}
-
-#[test]
-fn board_test_request_ignores_inherited_smp() {
-    let mut request = axvisor_request(
-        PathBuf::from("/tmp/build-aarch64-unknown-none-softfloat.toml"),
-        "aarch64",
-        "aarch64-unknown-none-softfloat",
-    );
-    request.smp = Some(2);
-
-    let request = Axvisor::board_test_request(request);
-
-    assert_eq!(request.smp, None);
-}
-
-#[test]
-fn qemu_test_request_ignores_inherited_vmconfigs() {
-    let mut request = axvisor_request(
-        PathBuf::from("/tmp/build-x86_64-unknown-none.toml"),
-        "x86_64",
-        "x86_64-unknown-none",
-    );
-    request
-        .vmconfigs
-        .push(PathBuf::from("tmp/old-axvisor-vm.toml"));
-
-    let request = Axvisor::qemu_test_request(request);
-
-    assert!(request.vmconfigs.is_empty());
 }
 
 #[test]

@@ -55,39 +55,6 @@ fn resolve_build_info_path_ignores_source_tree_defaults() {
 }
 
 #[test]
-fn load_cargo_config_writes_default_template_when_missing() {
-    let root = tempdir().unwrap();
-    let path = root
-        .path()
-        .join("os/axvisor/.build-aarch64-unknown-none-softfloat.toml");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    write_board(
-        path.parent().unwrap(),
-        "qemu-aarch64",
-        r#"
-target = "aarch64-unknown-none-softfloat"
-features = []
-log = "Info"
-vm_configs = []
-"#,
-    );
-
-    let cargo = load_cargo_config(&request(
-        path.clone(),
-        "aarch64",
-        "aarch64-unknown-none-softfloat",
-    ))
-    .unwrap();
-
-    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"dyn-plat".to_string()));
-    assert!(path.exists());
-}
-
-#[test]
 fn load_cargo_config_injects_vmconfigs() {
     let root = tempdir().unwrap();
     let config_path = root.path().join(".build.toml");

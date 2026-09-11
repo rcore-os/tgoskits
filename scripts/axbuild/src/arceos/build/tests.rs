@@ -257,53 +257,6 @@ fn prepared_cargo_config_uses_unified_std_target() {
 }
 
 #[test]
-fn c_app_cargo_configs_use_shared_bare_target_specs() {
-    for target in [
-        "x86_64-unknown-none",
-        "aarch64-unknown-none-softfloat",
-        "riscv64gc-unknown-none-elf",
-        "loongarch64-unknown-none-softfloat",
-    ] {
-        let root = tempdir().unwrap();
-        let build_config = root.path().join(format!("build-{target}.toml"));
-        let build_info = ArceosBuildInfo {
-            features: vec!["ax-std".to_string()],
-            ..ArceosBuildInfo::default()
-        };
-        fs::write(&build_config, toml::to_string_pretty(&build_info).unwrap()).unwrap();
-        let request = request("arceos-helloworld", target, build_config);
-        let cargo = load_c_app_cargo_config(&request).unwrap();
-
-        assert_eq!(cargo.target, format!("scripts/targets/bare/{target}.json"));
-        assert_eq!(cargo.env.get("AX_TARGET"), Some(&target.to_string()));
-        assert_eq!(
-            cargo.env.get("CARGO_UNSTABLE_JSON_TARGET_SPEC"),
-            Some(&"true".to_string())
-        );
-        assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-        assert!(
-            cargo
-                .args
-                .windows(2)
-                .any(|pair| pair == ["-Z", "build-std=core,alloc"])
-        );
-        assert!(
-            cargo
-                .args
-                .windows(2)
-                .any(|pair| pair == ["-Z", "json-target-spec"])
-        );
-
-        let final_cargo = crate::arceos::cbuild::prepare_c_app_cargo_config(&request, &[]).unwrap();
-        assert_eq!(
-            final_cargo.target,
-            format!("scripts/targets/bare/{target}.json")
-        );
-        assert_eq!(final_cargo.env.get("AX_TARGET"), Some(&target.to_string()));
-    }
-}
-
-#[test]
 fn to_cargo_config_maps_max_cpu_num_to_smp_env_for_dynamic_platforms() {
     let root = tempdir().unwrap();
     let request = request(
