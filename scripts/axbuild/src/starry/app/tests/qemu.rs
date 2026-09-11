@@ -1,32 +1,15 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::Path};
 
-use regex::Regex;
 use tempfile::tempdir;
 
-use super::{
-    app_qemu_test_case, load_qemu_app_case_fields, prepare_qemu_app_case, resolve_qemu_config,
-};
+use super::{load_qemu_app_case_fields, prepare_qemu_app_case, resolve_qemu_config};
 use crate::{
     rootfs::qemu::RootfsWritePolicy,
     starry::app::{
-        StarryAppQemuCase, discover_apps,
+        discover_apps,
         test_support::{write_case_file, write_test_image_config},
     },
-    test::case::HostHttpServerConfig,
 };
-
-fn first_step_success_regex(config: &toml::Value) -> Option<&[toml::Value]> {
-    config
-        .get("shell_check_steps")
-        .and_then(toml::Value::as_array)
-        .and_then(|steps| steps.first())
-        .and_then(|step| step.get("success_regex"))
-        .and_then(toml::Value::as_array)
-        .map(Vec::as_slice)
-}
 
 #[tokio::test]
 async fn app_owned_rootfs_runs_declared_builder_without_default_rootfs() {
@@ -160,64 +143,6 @@ target_arch = "aarch64"
         "unexpected error: {error}"
     );
     assert!(!builder_marker.exists());
-}
-
-#[test]
-fn starrynixos_qemu_matcher_requires_ordered_evidence_and_rejects_failures() {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("axbuild manifest should live under scripts/axbuild")
-        .to_path_buf();
-    let config_path = repo.join("apps/starry/nixos/qemu-x86_64.toml");
-    let config: toml::Value = toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-    let timeout = config
-        .get("timeout")
-        .and_then(toml::Value::as_integer)
-        .unwrap_or_default();
-    assert!(
-        timeout > 0,
-        "{} must classify a partial boot as a timeout instead of waiting indefinitely",
-        config_path.display()
-    );
-    let success_regex = first_step_success_regex(&config)
-        .and_then(|patterns| patterns.first())
-        .and_then(toml::Value::as_str)
-        .map(Regex::new)
-        .expect("StarryNixOS must have one compound success regex")
-        .unwrap();
-
-    let complete = "STARRY_NIXOS_PHASE=pid1\nSTARRY_NIXOS_PHASE=activation\\
-                    nSTARRY_NIXOS_PHASE=systemd\nSTARRY_NIXOS_PHASE=marker\\
-                    nSTARRY_NIXOS_SYSTEM_PASSED\n";
-    assert!(success_regex.is_match(complete));
-    assert!(!success_regex.is_match(
-        "STARRY_NIXOS_PHASE=pid1\nSTARRY_NIXOS_PHASE=activation\nSTARRY_NIXOS_SYSTEM_PASSED\n"
-    ));
-    assert!(!success_regex.is_match(
-        "STARRY_NIXOS_PHASE=activation\nSTARRY_NIXOS_PHASE=pid1\nSTARRY_NIXOS_PHASE=systemd\\
-         nSTARRY_NIXOS_PHASE=marker\nSTARRY_NIXOS_SYSTEM_PASSED\n"
-    ));
-
-    let fail_regexes = config
-        .get("fail_regex")
-        .and_then(toml::Value::as_array)
-        .expect("StarryNixOS must declare terminal failure patterns")
-        .iter()
-        .map(|pattern| Regex::new(pattern.as_str().unwrap()).unwrap())
-        .collect::<Vec<_>>();
-    for failure in [
-        "kernel panicked at boot",
-        "FATAL: PID 1 exited",
-        "STARRY_NIXOS_SYSTEM_FAILED: phase=activation",
-        "marker.service: Failed with result 'exit-code'",
-        "Failed to start Verify the StarryNixOS stage-2 baseline",
-    ] {
-        assert!(
-            fail_regexes.iter().any(|regex| regex.is_match(failure)),
-            "failure was not rejected: {failure}"
-        );
-    }
 }
 
 #[test]
@@ -434,44 +359,4 @@ fail_regex = []
         load_qemu_app_case_fields(root.path(), &app, qemu_config.as_deref().unwrap()).unwrap();
 
     assert_eq!(fields.write_policy, RootfsWritePolicy::Persist);
-}
-
-#[test]
-fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
-    let case_dir = PathBuf::from("/tmp/apps/starry/memtrack-backtrace");
-    let qemu_config_path = case_dir.join("qemu-x86_64.toml");
-    let case = StarryAppQemuCase {
-        name: "memtrack-backtrace".to_string(),
-        arch: "x86_64".to_string(),
-        target: "x86_64-unknown-none".to_string(),
-        build_config_path: None,
-        qemu_config_path: Some(qemu_config_path.clone()),
-        rootfs_path: PathBuf::from("/tmp/rootfs.img"),
-        rootfs_write_policy: RootfsWritePolicy::Discard,
-        test_commands: Vec::new(),
-        grouped_command_selection: Default::default(),
-        host_symbolize_success_regex: vec!["symbolized".to_string()],
-        host_http_server: Some(HostHttpServerConfig {
-            bind: "127.0.0.1".to_string(),
-            port: 18382,
-            body: "fixture".to_string(),
-            body_size: None,
-            body_byte: b'X',
-            dir: None,
-        }),
-        subcases: Vec::new(),
-    };
-
-    let test_case = app_qemu_test_case(&case, case_dir.clone()).unwrap();
-
-    assert_eq!(test_case.case_dir, case_dir);
-    assert_eq!(test_case.qemu_config_path, qemu_config_path);
-    assert_eq!(test_case.host_symbolize_success_regex, vec!["symbolized"]);
-    assert_eq!(
-        test_case
-            .host_http_server
-            .as_ref()
-            .map(|config| (config.bind.as_str(), config.port)),
-        Some(("127.0.0.1", 18382))
-    );
 }

@@ -3,6 +3,7 @@
 mod ivc;
 mod virtio_blk;
 mod virtio_net;
+pub(crate) mod virtio_pci;
 #[cfg(feature = "vpci-test-device")]
 mod vpci_test;
 

@@ -5,21 +5,111 @@
 //! runtime identities, and lifecycle callbacks are introduced by later
 //! integration layers.
 
-use alloc::{collections::BTreeMap, string::ToString, sync::Arc};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 use core::{fmt, ops::Range};
 
 use ax_sync::SpinLock;
+use axdevice_base::DeviceId;
 
 use super::{
-    EndpointRouteToken, FOUR_GIB, PciBarIndex, PciBdf, PciError, PciResult, ResolvedPciTopology,
+    EndpointRouteToken, FOUR_GIB, PciBarIndex, PciBdf, PciCommandState, PciConfigReadEffect,
+    PciConfigWriteEffect, PciError, PciResult, ResolvedPciTopology,
     config::{BarWriteAction, FunctionState},
+    config_layout::{
+        CONFIG_COMMAND_OFFSET, CONFIG_COMMAND_SIZE, CONFIG_SPACE_SIZE, CONFIG_STATUS_OFFSET,
+        STATUS_INTERRUPT_PENDING,
+    },
 };
 use crate::{AccessWidth, ConfigOffset};
+
+pub(crate) enum PciConfigReadOutcome {
+    Value(u64),
+    DynamicStatus {
+        token: EndpointRouteToken,
+        command: PciCommandState,
+        value: u64,
+        interrupt_status_mask: u64,
+    },
+    Effect {
+        token: EndpointRouteToken,
+        command: PciCommandState,
+        effect: Box<PciConfigReadEffect>,
+    },
+}
+
+pub(crate) enum PciConfigWriteOutcome {
+    Complete,
+    Effect {
+        token: EndpointRouteToken,
+        command: PciCommandState,
+        effect: Box<PciConfigWriteEffect>,
+    },
+    CommandChanged {
+        token: Option<EndpointRouteToken>,
+        command: PciCommandState,
+    },
+}
 
 /// Shared root state for one frozen PCI topology.
 pub struct PciRootState {
     topology: Arc<ResolvedPciTopology>,
     state: SpinLock<RootState>,
+}
+
+/// Owns a pending endpoint binding until it is either published or dropped.
+///
+/// The reservation keeps command writes blocked between the command snapshot
+/// and root publication. Its destructor removes that marker on every failure
+/// path, so callers cannot leave a function permanently in the provisional
+/// binding state by forgetting a manual cancellation.
+pub(crate) struct EndpointBindingReservation<'a> {
+    root: &'a PciRootState,
+    function: String,
+    bdf: PciBdf,
+    command: PciCommandState,
+    committed: bool,
+}
+
+impl EndpointBindingReservation<'_> {
+    pub(crate) const fn command(&self) -> PciCommandState {
+        self.command
+    }
+
+    /// Publishes the endpoint route and consumes this reservation.
+    pub(crate) fn commit(mut self, token: EndpointRouteToken) -> PciResult {
+        let mut state = self.root.state.lock_irqsave();
+        if state.bindings.contains_key(&self.bdf) {
+            return Err(PciError::FunctionAlreadyBound {
+                function: self.function.clone(),
+            });
+        }
+        if !state.pending_bindings.remove(&self.bdf) {
+            return Err(PciError::BindingReservationExpired {
+                function: self.function.clone(),
+            });
+        }
+        state.bindings.insert(self.bdf, token);
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for EndpointBindingReservation<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.root
+                .state
+                .lock_irqsave()
+                .pending_bindings
+                .remove(&self.bdf);
+        }
+    }
 }
 
 impl PciRootState {
@@ -29,13 +119,19 @@ impl PciRootState {
             .function_plans()
             .iter()
             .map(|function| {
-                FunctionState::new(function.bdf(), function.power_on.clone(), function.bars())
+                FunctionState::new(
+                    function.bdf(),
+                    function.power_on.clone(),
+                    function.bars(),
+                    function.intx().is_some(),
+                )
             })
             .collect();
         Self {
             state: SpinLock::new(RootState {
                 functions,
                 bindings: BTreeMap::new(),
+                pending_bindings: BTreeSet::new(),
             }),
             topology,
         }
@@ -64,12 +160,15 @@ impl PciRootState {
         offset: ConfigOffset,
         width: AccessWidth,
     ) -> PciResult<u64> {
-        let (offset, size) = offset.validate_access(width)?;
-        let state = self.state.lock_irqsave();
-        Ok(state.function_index(bdf).map_or_else(
-            || all_ones(size),
-            |index| state.functions[index].read(offset, size),
-        ))
+        match self.prepare_read_config(bdf, offset, width)? {
+            PciConfigReadOutcome::Value(value) => Ok(value),
+            PciConfigReadOutcome::DynamicStatus { .. } => Err(PciError::ConfigEffectUnavailable {
+                detail: "an endpoint binding is required for dynamic interrupt status",
+            }),
+            PciConfigReadOutcome::Effect { .. } => Err(PciError::ConfigEffectUnavailable {
+                detail: "an endpoint binding is required for this config read",
+            }),
+        }
     }
 
     /// Applies one conventional config write.
@@ -89,30 +188,226 @@ impl PciRootState {
         width: AccessWidth,
         value: u64,
     ) -> PciResult {
-        let (offset, size) = offset.validate_access(width)?;
-        let mut state = self.state.lock_irqsave();
-        let Some(function_index) = state.function_index(bdf) else {
-            return Ok(());
-        };
-        let Some(action) = state.functions[function_index].prepare_bar_write(offset, size, value)
-        else {
-            state.functions[function_index].write_non_bar(offset, size, value);
-            return Ok(());
-        };
-        match action {
-            BarWriteAction::Probe { bar } => state.functions[function_index].apply_probe(bar),
-            BarWriteAction::Relocate { bar, candidate } => {
-                let accepted = state.bar_address_available(
-                    self.topology.memory_aperture(),
-                    function_index,
-                    bar,
-                    candidate,
-                );
-                state.functions[function_index]
-                    .finish_relocation(bar, accepted.then_some(candidate));
+        match self.prepare_write_config(bdf, offset, width, value)? {
+            PciConfigWriteOutcome::Complete | PciConfigWriteOutcome::CommandChanged { .. } => {
+                Ok(())
             }
+            PciConfigWriteOutcome::Effect { .. } => Err(PciError::ConfigEffectUnavailable {
+                detail: "an endpoint binding is required for this config write",
+            }),
         }
-        Ok(())
+    }
+
+    pub(crate) fn prepare_read_config(
+        &self,
+        bdf: PciBdf,
+        offset: ConfigOffset,
+        width: AccessWidth,
+    ) -> PciResult<PciConfigReadOutcome> {
+        let (offset, size) = offset.validate_access(width)?;
+        let (token, command, capability, effect, relative, snapshot) = {
+            let state = self.state.lock_irqsave();
+            let Some(function_index) = state.function_index(bdf) else {
+                return Ok(PciConfigReadOutcome::Value(all_ones(size)));
+            };
+            let function = &state.functions[function_index];
+            let Some((capability, effect, relative, snapshot)) =
+                function.config_effect(offset, size, width, false)?
+            else {
+                let value = function.read(offset, size);
+                let Some(interrupt_status_mask) = function
+                    .has_intx()
+                    .then(|| interrupt_status_mask(offset, size))
+                    .flatten()
+                else {
+                    return Ok(PciConfigReadOutcome::Value(value));
+                };
+                let Some(token) = state
+                    .bindings
+                    .get(&bdf)
+                    .and_then(EndpointRouteToken::snapshot_if_admitted)
+                else {
+                    return Ok(PciConfigReadOutcome::Value(value));
+                };
+                return Ok(PciConfigReadOutcome::DynamicStatus {
+                    token,
+                    command: function.command_state(),
+                    value,
+                    interrupt_status_mask,
+                });
+            };
+            let token = state
+                .bindings
+                .get(&bdf)
+                .and_then(EndpointRouteToken::snapshot_if_admitted)
+                .ok_or(PciError::ConfigEffectUnavailable {
+                    detail: "an admitted endpoint binding is required for this config read",
+                })?;
+            (
+                token,
+                function.command_state(),
+                capability,
+                effect,
+                relative,
+                snapshot,
+            )
+        };
+        Ok(PciConfigReadOutcome::Effect {
+            token,
+            command,
+            effect: Box::new(PciConfigReadEffect::new(
+                capability,
+                effect.effect(),
+                relative,
+                width,
+                snapshot,
+                command,
+            )),
+        })
+    }
+
+    pub(crate) fn config_access_intersects_effect(
+        &self,
+        bdf: PciBdf,
+        offset: ConfigOffset,
+        width: AccessWidth,
+    ) -> PciResult<bool> {
+        let size = width.size();
+        let offset = usize::from(offset.value());
+        let end = offset
+            .checked_add(size)
+            .ok_or(PciError::InvalidConfigAccess {
+                offset: offset as u16,
+                width,
+                detail: "config access range overflows",
+            })?;
+        if end > CONFIG_SPACE_SIZE {
+            return Err(PciError::InvalidConfigAccess {
+                offset: offset as u16,
+                width,
+                detail: "config access leaves the function boundary",
+            });
+        }
+        let state = self.state.lock_irqsave();
+        Ok(state
+            .function_index(bdf)
+            .is_some_and(|index| state.functions[index].intersects_config_effect(offset, size)))
+    }
+
+    pub(crate) fn prepare_write_config(
+        &self,
+        bdf: PciBdf,
+        offset: ConfigOffset,
+        width: AccessWidth,
+        value: u64,
+    ) -> PciResult<PciConfigWriteOutcome> {
+        let (offset, size) = offset.validate_access(width)?;
+        let (token, command, capability, effect, relative, snapshot) = {
+            let mut state = self.state.lock_irqsave();
+            let Some(function_index) = state.function_index(bdf) else {
+                return Ok(PciConfigWriteOutcome::Complete);
+            };
+            let access_end = offset + size;
+            let command_end = CONFIG_COMMAND_OFFSET + CONFIG_COMMAND_SIZE;
+            if state.pending_bindings.contains(&bdf)
+                && offset < command_end
+                && access_end > CONFIG_COMMAND_OFFSET
+            {
+                let function = self
+                    .topology
+                    .functions()
+                    .find(|function| function.bdf() == bdf)
+                    .ok_or_else(|| PciError::UnknownFunction {
+                        function: bdf.to_string(),
+                    })?;
+                return Err(PciError::BindingInProgress {
+                    function: function.id().to_string(),
+                });
+            }
+            if let Some((capability, effect, relative, snapshot)) =
+                state.functions[function_index].config_effect(offset, size, width, true)?
+            {
+                let token = state
+                    .bindings
+                    .get(&bdf)
+                    .and_then(EndpointRouteToken::snapshot_if_admitted)
+                    .ok_or(PciError::ConfigEffectUnavailable {
+                        detail: "an admitted endpoint binding is required for this config write",
+                    })?;
+                (
+                    token,
+                    state.functions[function_index].command_state(),
+                    capability,
+                    effect,
+                    relative,
+                    snapshot,
+                )
+            } else {
+                let bar_action =
+                    state.functions[function_index].prepare_bar_write(offset, size, value);
+                if let Some(action) = bar_action {
+                    match action {
+                        BarWriteAction::Probe { bar } => {
+                            state.functions[function_index].apply_probe(bar)
+                        }
+                        BarWriteAction::Relocate { bar, candidate } => {
+                            let accepted = state.bar_address_available(
+                                self.topology.memory_aperture(),
+                                function_index,
+                                bar,
+                                candidate,
+                            );
+                            state.functions[function_index]
+                                .finish_relocation(bar, accepted.then_some(candidate));
+                        }
+                    }
+                    return Ok(PciConfigWriteOutcome::Complete);
+                }
+                let previous = state.functions[function_index].command_state();
+                let command_changes =
+                    state.functions[function_index].command_write_changes(offset, size, value);
+                if command_changes {
+                    // Check the revision before mutating the config image so
+                    // exhaustion cannot leave a guest-visible partial write.
+                    state.functions[function_index]
+                        .command_state()
+                        .revision()
+                        .next()?;
+                }
+                state.functions[function_index].write_non_bar(offset, size, value);
+                if command_changes {
+                    state.functions[function_index].bump_command_revision()?;
+                }
+                let command = state.functions[function_index].command_state();
+                let command_changed = previous.bus_master_enable() != command.bus_master_enable()
+                    || previous.interrupt_disable() != command.interrupt_disable();
+                if command_changed {
+                    return Ok(PciConfigWriteOutcome::CommandChanged {
+                        token: state
+                            .bindings
+                            .get(&bdf)
+                            .and_then(EndpointRouteToken::snapshot_if_admitted),
+                        command,
+                    });
+                }
+                return Ok(PciConfigWriteOutcome::Complete);
+            }
+        };
+        Ok(PciConfigWriteOutcome::Effect {
+            token,
+            command,
+            effect: Box::new(PciConfigWriteEffect::new(
+                PciConfigReadEffect::new(
+                    capability,
+                    effect.effect(),
+                    relative,
+                    width,
+                    snapshot,
+                    command,
+                ),
+                value,
+            )),
+        })
     }
 
     /// Resolves one complete memory access against the current enabled BARs.
@@ -128,46 +423,137 @@ impl PciRootState {
         &self,
         address: u64,
         width: AccessWidth,
-    ) -> Option<(EndpointRouteToken, PciBarRoute)> {
+    ) -> Option<(EndpointRouteToken, PciBarRoute, PciCommandState)> {
         let access_end = address.checked_add(width.size() as u64)?;
         let state = self.state.lock_irqsave();
         let (bdf, route) = resolve_route(&state.functions, address, access_end, width)?;
-        Some((*state.bindings.get(&bdf)?, route))
+        let function = state
+            .functions
+            .iter()
+            .find(|function| function.bdf() == bdf)?;
+        Some((
+            state.bindings.get(&bdf)?.snapshot_if_admitted()?,
+            route,
+            function.command_state(),
+        ))
     }
 
-    pub(crate) fn bind_endpoint(
+    pub(crate) fn reserve_endpoint_binding(
         &self,
         function_id: &crate::DeviceNodeId,
-        token: EndpointRouteToken,
-    ) -> PciResult {
+    ) -> PciResult<EndpointBindingReservation<'_>> {
+        let function_name = function_id.to_string();
         let function =
             self.topology
                 .function(function_id)
                 .ok_or_else(|| PciError::UnknownFunction {
-                    function: function_id.to_string(),
+                    function: function_name.clone(),
                 })?;
+        let bdf = function.bdf();
         let mut state = self.state.lock_irqsave();
-        if state.bindings.contains_key(&function.bdf()) {
+        let function_index =
+            state
+                .function_index(bdf)
+                .ok_or_else(|| PciError::UnknownFunction {
+                    function: function_name.clone(),
+                })?;
+        if state.bindings.contains_key(&bdf) {
             return Err(PciError::FunctionAlreadyBound {
-                function: function_id.to_string(),
+                function: function_name,
             });
         }
-        state.bindings.insert(function.bdf(), token);
-        Ok(())
+        if state.pending_bindings.contains(&bdf) {
+            return Err(PciError::BindingInProgress {
+                function: function_name,
+            });
+        }
+        // This marker linearizes the command snapshot with final binding
+        // publication while leaving endpoint initialization outside the root
+        // state lock.
+        let command = state.functions[function_index].command_state();
+        state.pending_bindings.insert(bdf);
+        Ok(EndpointBindingReservation {
+            root: self,
+            function: function_name,
+            bdf,
+            command,
+            committed: false,
+        })
     }
 
-    pub(crate) fn unbind_endpoint(&self, token: EndpointRouteToken) {
-        self.state
-            .lock_irqsave()
-            .bindings
-            .retain(|_, registered| *registered != token);
+    pub(crate) fn replace_endpoint_tokens(
+        &self,
+        replacements: &[(EndpointRouteToken, EndpointRouteToken)],
+    ) {
+        let mut state = self.state.lock_irqsave();
+        for token in state.bindings.values_mut() {
+            if let Some((_, replacement)) = replacements.iter().find(|(old, _)| old == token) {
+                *token = replacement.clone();
+            }
+        }
+    }
+
+    /// Revokes the root route for one stable endpoint binding identity.
+    ///
+    /// The admission epoch is intentionally not part of this match: a full
+    /// lifecycle reset replaces the epoch while preserving the binding
+    /// generation.  Matching the generation as well as the device prevents a
+    /// stale lease from removing a later binding for the same device.
+    pub(crate) fn unbind_route_for_binding(&self, route: &EndpointRouteToken) {
+        let device = route.device_id();
+        let binding_generation = route.binding_generation();
+        self.state.lock_irqsave().bindings.retain(|_, token| {
+            token.device_id() != device || token.binding_generation() != binding_generation
+        });
+    }
+
+    /// Revokes every root route before router teardown starts.
+    pub(crate) fn unbind_all_routes(&self) {
+        self.state.lock_irqsave().bindings.clear();
     }
 
     /// Restores every function's root-owned power-on config and BAR route.
-    pub fn reset(&self) {
-        for function in &mut self.state.lock_irqsave().functions {
-            function.reset();
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PciError::CommandRevisionExhausted`] if a command snapshot
+    /// revision cannot advance without wrapping.
+    pub fn reset(&self) -> PciResult {
+        let mut state = self.state.lock_irqsave();
+        for function in &state.functions {
+            function.command_state().revision().next()?;
         }
+        state.pending_bindings.clear();
+        for function in &mut state.functions {
+            function.reset()?
+        }
+        Ok(())
+    }
+
+    /// Resets root-owned state and snapshots the fresh command state for all
+    /// currently bound endpoint device identities.
+    pub(crate) fn reset_and_snapshot_commands(
+        &self,
+    ) -> PciResult<Vec<(DeviceId, PciCommandState)>> {
+        let mut state = self.state.lock_irqsave();
+        for function in &state.functions {
+            function.command_state().revision().next()?;
+        }
+        state.pending_bindings.clear();
+        for function in &mut state.functions {
+            function.reset()?
+        }
+        Ok(state
+            .bindings
+            .iter()
+            .filter_map(|(bdf, token)| {
+                state
+                    .functions
+                    .iter()
+                    .find(|function| function.bdf() == *bdf)
+                    .map(|function| (token.device_id(), function.command_state()))
+            })
+            .collect())
     }
 }
 
@@ -200,6 +586,14 @@ fn resolve_route(
     None
 }
 
+fn interrupt_status_mask(offset: usize, size: usize) -> Option<u64> {
+    let status_offset = CONFIG_STATUS_OFFSET;
+    if !(offset..offset + size).contains(&status_offset) {
+        return None;
+    }
+    Some(u64::from(STATUS_INTERRUPT_PENDING) << ((status_offset - offset) * 8))
+}
+
 impl fmt::Debug for PciRootState {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -212,6 +606,7 @@ impl fmt::Debug for PciRootState {
 struct RootState {
     functions: alloc::vec::Vec<FunctionState>,
     bindings: BTreeMap<PciBdf, EndpointRouteToken>,
+    pending_bindings: BTreeSet<PciBdf>,
 }
 
 impl RootState {
@@ -296,314 +691,4 @@ pub(crate) fn all_ones(size: usize) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use alloc::sync::Arc;
-
-    use super::*;
-    use crate::{
-        ConfigOffset, DeviceNodeId, PciClass, PciEndpointIdentity, PciFunctionSpec, PciMemoryBar,
-        PciSegment, PciTopologyBuilder, ResourceRequest,
-    };
-
-    const APERTURE_START: u64 = 0x2000_0000;
-    const APERTURE_END: u64 = 0x2040_0000;
-    const BAR_SIZE: u64 = 0x1_0000;
-
-    #[test]
-    fn exposes_a_256_byte_type_zero_config_image() {
-        let (root, endpoint_bdf, _) = root_with_bar();
-
-        assert_eq!(
-            root.read_config(endpoint_bdf, offset(0), AccessWidth::Dword)
-                .unwrap(),
-            0x5678_1234
-        );
-        assert_eq!(
-            root.read_config(endpoint_bdf, offset(8), AccessWidth::Dword)
-                .unwrap(),
-            0x0500_0001
-        );
-        assert_eq!(
-            root.read_config(endpoint_bdf, offset(0x0e), AccessWidth::Byte)
-                .unwrap(),
-            0
-        );
-        assert!(matches!(
-            ConfigOffset::new(0x100),
-            Err(PciError::InvalidAddress { .. })
-        ));
-    }
-
-    #[test]
-    fn absent_functions_read_all_ones_and_ignore_writes() {
-        let (root, ..) = root_with_bar();
-        let absent = bdf(30, 0);
-
-        assert_eq!(
-            root.read_config(absent, offset(0), AccessWidth::Word)
-                .unwrap(),
-            0xffff
-        );
-        root.write_config(absent, offset(4), AccessWidth::Word, 0xffff)
-            .unwrap();
-        assert_eq!(
-            root.read_config(absent, offset(4), AccessWidth::Word)
-                .unwrap(),
-            0xffff
-        );
-    }
-
-    #[test]
-    fn rejects_misaligned_and_qword_config_accesses() {
-        let (root, endpoint_bdf, _) = root_with_bar();
-
-        assert!(matches!(
-            root.read_config(endpoint_bdf, offset(1), AccessWidth::Word),
-            Err(PciError::InvalidConfigAccess { .. })
-        ));
-        assert!(matches!(
-            root.read_config(endpoint_bdf, offset(0), AccessWidth::Qword),
-            Err(PciError::InvalidConfigAccess { .. })
-        ));
-    }
-
-    #[test]
-    fn platform_config_bytes_cannot_override_core_identity_or_bars() {
-        let function = PciFunctionSpec::new(
-            node("platform"),
-            PciEndpointIdentity::new(0x1234, 0x5678, PciClass::new(0x06, 0, 0)),
-        );
-        assert!(matches!(
-            function
-                .clone()
-                .with_platform_config_byte(ConfigOffset::new(0).unwrap(), 0, u8::MAX),
-            Err(PciError::InvalidConfigPatch { offset: 0, .. })
-        ));
-        assert!(matches!(
-            function.with_platform_config_byte(ConfigOffset::new(0x10).unwrap(), 0, u8::MAX),
-            Err(PciError::InvalidConfigPatch { offset: 0x10, .. })
-        ));
-    }
-
-    #[test]
-    fn command_register_only_accepts_memory_space_enable() {
-        let (root, endpoint_bdf, bar_base) = root_with_bar();
-
-        assert!(root.resolve_bar(bar_base, AccessWidth::Dword).is_none());
-        root.write_config(endpoint_bdf, offset(4), AccessWidth::Word, 0xffff)
-            .unwrap();
-
-        assert_eq!(
-            root.read_config(endpoint_bdf, offset(4), AccessWidth::Word)
-                .unwrap(),
-            0x0002
-        );
-        let route = root.resolve_bar(bar_base + 8, AccessWidth::Dword).unwrap();
-        assert_eq!(route.bdf(), endpoint_bdf);
-        assert_eq!(route.bar(), PciBarIndex::new(2).unwrap());
-        assert_eq!(route.offset(), 8);
-        assert_eq!(route.width(), AccessWidth::Dword);
-        assert!(
-            root.resolve_bar(bar_base + BAR_SIZE - 2, AccessWidth::Dword)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn bar_probe_reports_size_without_changing_the_runtime_route() {
-        let (root, endpoint_bdf, bar_base) = enabled_root_with_bar();
-
-        root.write_config(
-            endpoint_bdf,
-            offset(0x18),
-            AccessWidth::Dword,
-            u64::from(u32::MAX),
-        )
-        .unwrap();
-
-        assert_eq!(
-            root.read_config(endpoint_bdf, offset(0x18), AccessWidth::Dword)
-                .unwrap(),
-            0xffff_0000
-        );
-        assert!(root.resolve_bar(bar_base, AccessWidth::Byte).is_some());
-    }
-
-    #[test]
-    fn valid_bar_relocation_moves_the_route() {
-        let (root, endpoint_bdf, old_base) = enabled_root_with_bar();
-        let new_base = APERTURE_START + 0x10_0000;
-
-        root.write_config(endpoint_bdf, offset(0x18), AccessWidth::Dword, new_base)
-            .unwrap();
-
-        assert_eq!(
-            root.read_config(endpoint_bdf, offset(0x18), AccessWidth::Dword)
-                .unwrap(),
-            new_base
-        );
-        assert!(root.resolve_bar(old_base, AccessWidth::Byte).is_none());
-        assert!(root.resolve_bar(new_base, AccessWidth::Byte).is_some());
-    }
-
-    #[test]
-    fn partial_bar_write_uses_the_merged_dword_and_preserves_attributes() {
-        let (root, endpoint_bdf, old_base) = enabled_root_with_bar();
-        let new_base = APERTURE_START + 0x10_0000;
-
-        root.write_config(
-            endpoint_bdf,
-            offset(0x1a),
-            AccessWidth::Word,
-            new_base >> 16,
-        )
-        .unwrap();
-
-        assert_eq!(
-            root.read_config(endpoint_bdf, offset(0x18), AccessWidth::Dword)
-                .unwrap(),
-            new_base
-        );
-        assert_eq!(
-            root.read_config(endpoint_bdf, offset(0x18), AccessWidth::Byte)
-                .unwrap(),
-            0
-        );
-        assert!(root.resolve_bar(old_base, AccessWidth::Byte).is_none());
-        assert!(root.resolve_bar(new_base, AccessWidth::Byte).is_some());
-    }
-
-    #[test]
-    fn invalid_bar_relocation_preserves_config_and_route() {
-        let (root, endpoint_bdf, old_base) = enabled_root_with_bar();
-
-        root.write_config(
-            endpoint_bdf,
-            offset(0x18),
-            AccessWidth::Dword,
-            APERTURE_START + 0x10,
-        )
-        .unwrap();
-
-        assert_eq!(
-            root.read_config(endpoint_bdf, offset(0x18), AccessWidth::Dword)
-                .unwrap(),
-            old_base
-        );
-        assert!(root.resolve_bar(old_base, AccessWidth::Byte).is_some());
-    }
-
-    #[test]
-    fn overlapping_bar_relocation_preserves_the_previous_route() {
-        let bar2 = PciBarIndex::new(2).unwrap();
-        let alpha_base = APERTURE_START;
-        let beta_base = APERTURE_START + BAR_SIZE;
-        let mut builder = PciTopologyBuilder::new();
-        for (id, base) in [("alpha", alpha_base), ("beta", beta_base)] {
-            builder
-                .add_function(
-                    function(id)
-                        .with_bar(
-                            PciMemoryBar::new(bar2, BAR_SIZE)
-                                .unwrap()
-                                .with_address(ResourceRequest::Fixed(base)),
-                        )
-                        .unwrap(),
-                )
-                .unwrap();
-        }
-        let topology = Arc::new(builder.resolve(APERTURE_START..APERTURE_END).unwrap());
-        let alpha_bdf = topology.function(&node("alpha")).unwrap().bdf();
-        let beta_bdf = topology.function(&node("beta")).unwrap().bdf();
-        let root = PciRootState::new(topology);
-        for endpoint_bdf in [alpha_bdf, beta_bdf] {
-            root.write_config(endpoint_bdf, offset(4), AccessWidth::Word, 0x0002)
-                .unwrap();
-        }
-
-        root.write_config(beta_bdf, offset(0x18), AccessWidth::Dword, alpha_base)
-            .unwrap();
-
-        assert_eq!(
-            root.read_config(beta_bdf, offset(0x18), AccessWidth::Dword)
-                .unwrap(),
-            beta_base
-        );
-        assert_eq!(
-            root.resolve_bar(alpha_base, AccessWidth::Byte)
-                .unwrap()
-                .bdf(),
-            alpha_bdf
-        );
-        assert_eq!(
-            root.resolve_bar(beta_base, AccessWidth::Byte)
-                .unwrap()
-                .bdf(),
-            beta_bdf
-        );
-    }
-
-    #[test]
-    fn reset_restores_root_owned_command_bar_and_route_state() {
-        let (root, endpoint_bdf, power_on_base) = enabled_root_with_bar();
-        let relocated = APERTURE_START + 0x10_0000;
-        root.write_config(endpoint_bdf, offset(0x18), AccessWidth::Dword, relocated)
-            .unwrap();
-        assert!(root.resolve_bar(relocated, AccessWidth::Byte).is_some());
-
-        root.reset();
-
-        assert_eq!(
-            root.read_config(endpoint_bdf, offset(4), AccessWidth::Word)
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            root.read_config(endpoint_bdf, offset(0x18), AccessWidth::Dword)
-                .unwrap(),
-            power_on_base
-        );
-        assert!(root.resolve_bar(power_on_base, AccessWidth::Byte).is_none());
-    }
-
-    fn function(id: &str) -> PciFunctionSpec {
-        PciFunctionSpec::new(
-            node(id),
-            PciEndpointIdentity::new(0x1234, 0x5678, PciClass::new(0x05, 0x00, 0x00))
-                .with_revision(1),
-        )
-    }
-
-    fn node(id: &str) -> DeviceNodeId {
-        DeviceNodeId::new(id).unwrap()
-    }
-
-    fn bdf(device: u8, function: u8) -> PciBdf {
-        PciBdf::new(PciSegment::new(0), 0, device, function).unwrap()
-    }
-
-    fn offset(value: u16) -> ConfigOffset {
-        ConfigOffset::new(value).unwrap()
-    }
-
-    fn root_with_bar() -> (PciRootState, PciBdf, u64) {
-        let bar2 = PciBarIndex::new(2).unwrap();
-        let endpoint = function("endpoint")
-            .with_bar(PciMemoryBar::new(bar2, BAR_SIZE).unwrap())
-            .unwrap();
-        let mut builder = PciTopologyBuilder::new();
-        builder.add_function(endpoint).unwrap();
-        let topology = Arc::new(builder.resolve(APERTURE_START..APERTURE_END).unwrap());
-        let function = topology.function(&node("endpoint")).unwrap();
-        let endpoint_bdf = function.bdf();
-        let bar_base = function.bar(bar2).unwrap().address();
-        (PciRootState::new(topology), endpoint_bdf, bar_base)
-    }
-
-    fn enabled_root_with_bar() -> (PciRootState, PciBdf, u64) {
-        let (root, endpoint_bdf, bar_base) = root_with_bar();
-        root.write_config(endpoint_bdf, offset(4), AccessWidth::Word, 0x0002)
-            .unwrap();
-        (root, endpoint_bdf, bar_base)
-    }
-}
+mod tests;

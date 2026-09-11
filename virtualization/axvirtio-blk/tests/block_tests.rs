@@ -15,7 +15,8 @@ use axdevice_base::{
     WiredIrqInput, WiredIrqSink,
 };
 use axvirtio_blk::{
-    BlockBackend, ManagedVirtioBlockDevice, VirtioBlockConfig, VirtioMmioBlockDevice, VirtioResult,
+    BlockBackend, ManagedVirtioBlockDevice, VIRTIO_BLK_F_RO, VirtioBlockConfig,
+    VirtioMmioBlockDevice, VirtioResult,
 };
 use axvirtio_common::{AddressSpaceMemory, NoGuestMemoryAccessor};
 use axvm_types::{AccessWidth, GuestPhysAddr};
@@ -217,6 +218,32 @@ mod mmio_device_tests {
             .unwrap();
         let high_features = device.mmio_read(features_addr, AccessWidth::Dword);
         assert_eq!(high_features.unwrap(), 1); // VERSION_1 is bit 32.
+    }
+
+    #[test]
+    fn test_mmio_features_follow_block_policy() {
+        let backend = NoIoBackend;
+        let accessor = MockGuestMemoryAccessor::new(1024 * 1024);
+        let config = VirtioBlockConfig {
+            read_only: true,
+            flush_supported: false,
+            ..VirtioBlockConfig::default()
+        };
+        let base_ipa = GuestPhysAddr::from(0x0a000000);
+        let device =
+            VirtioMmioBlockDevice::new(base_ipa, 0x200, backend, config, accessor).unwrap();
+        let features_sel_addr =
+            GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_DEVICE_FEATURES_SEL as usize);
+        let features_addr =
+            GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_DEVICE_FEATURES as usize);
+
+        device
+            .mmio_write(features_sel_addr, AccessWidth::Dword, 0)
+            .unwrap();
+        let features = device.mmio_read(features_addr, AccessWidth::Dword).unwrap() as u64;
+
+        assert_ne!(features & VIRTIO_BLK_F_RO, 0);
+        assert_eq!(features & (1 << 9), 0);
     }
 
     #[test]

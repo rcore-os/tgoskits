@@ -324,6 +324,40 @@ fn do_execve(
     // Nothing below may fail; errors here would leave the process broken.
     // ----------------------------------------------------------------
 
+    // de_thread leader transfer (non-leader caller only).
+    //
+    // After the sibling-teardown loop above, the only remaining task in
+    // this thread group is `curr`. If `curr` is not the original leader,
+    // Linux's `de_thread()` transfers the leader's TID/TGID identity to
+    // the calling thread via `exchange_tids` / `transfer_pid` so that
+    // `gettid() == getpid()` holds in the new image, and the parent's
+    // existing handle on the (still-original) PID continues to refer to
+    // this thread for `wait`, `kill`, `tgkill`, `/proc/<pid>` etc.
+    //
+    // We mirror that here by transferring the stable leader identity to the
+    // caller, then updating signal and thread-group indexes that use TIDs.
+    //
+    // The original leader was zapped above (it's a sibling from `curr`'s
+    // viewpoint), did its `do_exit(0, false)`, and transferred its TID role to
+    // the process. Taking that exact lease preserves the generation instead of
+    // releasing and reacquiring a numeric slot.
+    if my_tid != leader_tid {
+        let old_task_identity = thr.pid_identity();
+        let leader_identity = proc_data.identity();
+        crate::cgroup::rename_task(proc_data, &old_task_identity, &leader_identity)
+            .expect("de-threaded task must own the process's sole cgroup charge");
+        let (_, leader_tid_lease) = proc_data.take_retired_leader_for_exec();
+        thr.transfer_pid_identity(curr, leader_identity, leader_tid_lease);
+        proc_data
+            .signal
+            .rename_child(my_tid.get(), leader_tid.get());
+        proc_data.proc.rename_thread(my_tid, leader_tid);
+    }
+
+    // Linux exec_mmap calls exec_mm_release while the old MM is installed.
+    // Shared robust locks must report owner death before that mapping is lost.
+    crate::task::release_robust_futexes(curr);
+
     // Publish only this process's new MM. CLONE_VM peers keep their owner.
     commit_address_space_handoff(
         || proc_data.stage_memory_replacement(prepared_memory),
@@ -371,7 +405,6 @@ fn do_execve(
     // OLD aspace are now dangling. Clear them so subsequent syscalls and
     // the thread-exit path don't dereference freed user pages.
     thr.set_clear_child_tid(0);
-    thr.set_robust_list_head(0);
     thr.clear_rseq_state();
 
     // Scan after sibling teardown so their final CLOEXEC changes are visible.
@@ -393,36 +426,6 @@ fn do_execve(
         };
         cursor = fd + 1;
         crate::file::release_locks_on_close(descriptor);
-    }
-
-    // de_thread leader transfer (non-leader caller only).
-    //
-    // After the sibling-teardown loop above, the only remaining task in
-    // this thread group is `curr`. If `curr` is not the original leader,
-    // Linux's `de_thread()` transfers the leader's TID/TGID identity to
-    // the calling thread via `exchange_tids` / `transfer_pid` so that
-    // `gettid() == getpid()` holds in the new image, and the parent's
-    // existing handle on the (still-original) PID continues to refer to
-    // this thread for `wait`, `kill`, `tgkill`, `/proc/<pid>` etc.
-    //
-    // We mirror that here by transferring the stable leader identity to the
-    // caller, then updating signal and thread-group indexes that use TIDs.
-    //
-    // The original leader was zapped above (it's a sibling from `curr`'s
-    // viewpoint), did its `do_exit(0, false)`, and transferred its TID role to
-    // the process. Taking that exact lease preserves the generation instead of
-    // releasing and reacquiring a numeric slot.
-    if my_tid != leader_tid {
-        let old_task_identity = thr.pid_identity();
-        let leader_identity = proc_data.identity();
-        crate::cgroup::rename_task(proc_data, &old_task_identity, &leader_identity)
-            .expect("de-threaded task must own the process's sole cgroup charge");
-        let (_, leader_tid_lease) = proc_data.take_retired_leader_for_exec();
-        thr.transfer_pid_identity(curr, leader_identity, leader_tid_lease);
-        proc_data
-            .signal
-            .rename_child(my_tid.get(), leader_tid.get());
-        proc_data.proc.rename_thread(my_tid, leader_tid);
     }
 
     // Reset every user-visible register to a fresh-process state, not
@@ -470,7 +473,7 @@ fn do_execve(
     // Unblock a vfork parent waiting for this child to exec.
     // Must be last: by now CLOEXEC fds are closed so the parent's pipe
     // read will see EOF correctly.
-    proc_data.notify_vfork_done();
+    thr.notify_vfork_done();
 
     Ok(0)
 }

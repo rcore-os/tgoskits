@@ -1,7 +1,5 @@
 //! Checked GICH/ICH register save and restore.
 
-use std::sync::OnceLock;
-
 use arm_gic_driver::v3::{
     ICH_AP1R0_EL2, ICH_AP1R1_EL2, ICH_AP1R2_EL2, ICH_AP1R3_EL2, ICH_HCR_EL2, ICH_LR_EL2,
     ICH_VMCR_EL2, ICH_VTR_EL2, LocalRegisterCopy, Readable, Writeable, ich_lr_el2_get,
@@ -17,7 +15,7 @@ use ax_std::os::arceos::sync::IrqSafeMutex;
 const V2_SGI_TOKEN: usize = 1usize << (usize::BITS as usize - 1);
 const V2_SGI_SOURCE_SHIFT: usize = 24;
 
-enum HostCpuInterface {
+pub(super) enum HostCpuInterface {
     V2 {
         hypervisor: IrqSafeMutex<arm_gic_driver::v2::HypervisorInterface>,
         trap: arm_gic_driver::v2::TrapOp,
@@ -44,17 +42,15 @@ impl HostCpuInterface {
     }
 }
 
-static HOST_CPU_INTERFACE: OnceLock<HostCpuInterface> = OnceLock::new();
-
 fn host_cpu_interface() -> Result<&'static HostCpuInterface, GicV3BackendError> {
-    // Discovery is the only operation that takes the `rdrive` device lock.
-    // The returned register capability is immutable, and every vCPU/IRQ hot
-    // path below uses it directly so a hard IRQ cannot re-enter `rdrive` while
-    // interrupted code already owns the same non-IRQ-safe device lock.
-    HOST_CPU_INTERFACE.get_or_try_init(discover_host_cpu_interface)
+    super::host::get()
+        .map(|host| &host.cpu_interface)
+        .ok_or_else(|| {
+            GicV3BackendError::new("access host GIC CPU interface", "host GIC is not prepared")
+        })
 }
 
-fn discover_host_cpu_interface() -> Result<HostCpuInterface, GicV3BackendError> {
+pub(super) fn discover() -> Result<HostCpuInterface, GicV3BackendError> {
     super::try_with_gic("inspect host VGIC capabilities", |intc| {
         if let Some(gic) = intc.typed_mut::<arm_gic_driver::v2::Gic>() {
             let base = usize::from(gic.gicc_addr());

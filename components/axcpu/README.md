@@ -50,6 +50,8 @@ CPU 层定义需要外部提供的服务，最终系统通过 `trait-ffi` 绑定
 
 `trap::diagnostics::TrapDiagnostics` 接收 `BacktraceRegisters` 并格式化回溯。`ax-hal::cpu_diagnostics` 调用运行期栈展开器；CPU 层不依赖 `axbacktrace`。提供者必须适用于异常上下文，不得假设寄存器中的地址一定可读，也不能保存格式化器或栈内存引用。
 
+`trap::fatal::FatalTrap` 由 `ax-runtime::panic_output` 静态提供，接收借用的格式化记录并终止系统。AArch64 客户机向量遇到不可恢复的当前 EL 同步异常或无效异常时，直接调用该服务，不经过 Rust panic hook。运行期先关中断，以 CPU-local 区域取得 panic 所有权，再通过 emergency console 输出；不会访问任务抢占状态或对异常栈作回溯。递归或并发故障直接关机，避免故障 CPU 持锁停驻后让其余 CPU 永久等待。
+
 ### 2.2 x86 描述符存储
 
 `boot::TrapStorageProvider` 为每个 CPU 交出一次 GDT、TSS 和双重故障栈顶。`ax-hal::cpu_trap_storage` 持有内存，CPU 层构造描述符并执行装载指令。存储在 CPU 关闭前必须保持固定、映射和专有；重复交接在指针返回前失败。

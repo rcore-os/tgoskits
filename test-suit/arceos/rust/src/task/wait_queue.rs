@@ -1,3 +1,5 @@
+mod lifecycle;
+
 use std::{
     println,
     sync::{
@@ -15,6 +17,7 @@ const NUM_TASKS: usize = 16;
 
 pub fn run() -> crate::TestResult {
     test_wake_before_admission();
+    lifecycle::run();
     test_wait();
     test_wait_timeout_until();
     test_release_all_runtime_tasks();
@@ -177,8 +180,9 @@ fn test_wake_before_admission() {
     let mut cpu0 = CpuSet::empty(ax_std::os::arceos::task::sched::cpu_topology_len().unwrap());
     assert!(cpu0.insert(CpuId::new(0)));
     ax_std::os::arceos::task::thread::current::set_current_thread_affinity(cpu0.clone()).unwrap();
-    let prepared = ax_std::os::arceos::thread::prepare_raw(
-        || {
+    let prepared = ax_std::os::arceos::thread::builder("admission-wake".into())
+        .stack_size(ax_std::os::arceos::thread::default_task_stack_size())
+        .prepare(|| {
             let CurrentParkStart::Prepared(park) =
                 ax_std::os::arceos::task::thread::current::begin_current_park().unwrap()
             else {
@@ -195,11 +199,8 @@ fn test_wake_before_admission() {
                 ax_std::os::arceos::task::thread::current::begin_current_park().unwrap(),
                 CurrentParkStart::Notified
             ));
-        },
-        "admission-wake".into(),
-        ax_std::os::arceos::thread::default_task_stack_size(),
-    )
-    .unwrap();
+        })
+        .unwrap();
     let handle = prepared.thread_handle();
     ax_std::os::arceos::task::thread::ThreadHandle::lookup(handle.id())
         .and_then(|thread| thread.request_affinity(cpu0))
@@ -209,17 +210,26 @@ fn test_wake_before_admission() {
     assert_eq!(handle.state(), ThreadState::New);
     handle.wake_handle().wake();
     assert_eq!(handle.state(), ThreadState::New);
-    // Keep the start gate from parking before activation, which would consume
-    // the stale notification and hide the admission defect.
+    // Pin the probe so the old gate-based implementation cannot consume an
+    // early notification before this admission-state assertion.
     let published = {
         let _guard = PreemptGuard::new();
-        prepared.publish().unwrap()
+        let staged = prepared.stage().unwrap();
+        assert_eq!(
+            handle.state(),
+            ThreadState::New,
+            "staging must not make an unpublished thread runnable"
+        );
+        handle.wake_handle().wake();
+        assert_eq!(handle.state(), ThreadState::New);
+        handle.set_policy(handle.base_policy()).unwrap();
+        // Activation will consume the updated reservation; do not block under this guard.
+        drop(handle.request_affinity(handle.affinity().unwrap()).unwrap());
+        assert_eq!(handle.state(), ThreadState::New);
+        staged.activate()
     };
     drop(handle);
-    assert_eq!(
-        ax_std::os::arceos::thread::join_thread(published).unwrap(),
-        0
-    );
+    assert_eq!(published.join().unwrap(), 0);
     ax_std::os::arceos::task::thread::current::set_current_thread_affinity(old_affinity).unwrap();
     println!("task_wait_queue: pre-admission wake isolation OK");
 }

@@ -1,7 +1,12 @@
 //! Allocation-free task-context wake batching.
 
 use alloc::{rc::Rc, sync::Arc};
-use core::{marker::PhantomData, mem::ManuallyDrop, ptr, sync::atomic::Ordering};
+use core::{
+    marker::PhantomData,
+    mem::ManuallyDrop,
+    ptr,
+    sync::atomic::{Ordering, fence},
+};
 
 use super::{ThreadCore, ThreadWakeHandle};
 
@@ -38,6 +43,9 @@ impl ThreadWakeBatch {
     /// live batch.
     pub fn push(&mut self, wake: ThreadWakeHandle) -> bool {
         let core = &wake.core;
+        // Linux __wake_q_add publishes preceding domain state even when the
+        // node is already queued. An acquire-only failed CAS cannot do this.
+        fence(Ordering::SeqCst);
         if core
             .wake_batch_linked
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -81,6 +89,10 @@ impl ThreadWakeBatch {
     pub fn wake_all(mut self) -> usize {
         let count = self.len;
         while let Some(wake) = self.pop() {
+            // Pair node release with a full barrier before scheduler wakeup,
+            // as wake_up_q relies on wake_up_process to do in Linux. A racing
+            // coalesced insertion must not lose its preceding domain state.
+            fence(Ordering::SeqCst);
             let _result = wake.wake();
         }
         count

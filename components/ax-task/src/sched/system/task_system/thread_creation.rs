@@ -2,10 +2,32 @@
 
 use super::*;
 
-#[derive(Clone, Copy)]
-enum ThreadCreationContext {
-    Runtime,
-    OfflineBootstrap,
+/// Owns an unpublished identity and its admission charge until registry commit.
+struct ThreadSlotReservation<'system> {
+    system: &'system TaskSystem,
+    slot: u32,
+    generation: u32,
+    bandwidth: u64,
+    committed: bool,
+}
+
+impl Drop for ThreadSlotReservation<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let mut state = self.system.state.lock();
+        let mut root_domain = self.system.root_domain.lock();
+        let slot = &mut state.slots[self.slot as usize];
+        assert_eq!(slot.generation, self.generation);
+        assert!(slot.record.is_none());
+        assert_eq!(slot.pending_deadline_reservation, self.bandwidth);
+        slot.pending_deadline_reservation = 0;
+        if advance_thread_slot_generation(slot) {
+            state.free_slots.push(self.slot);
+        }
+        root_domain.release_deadline(self.bandwidth);
+    }
 }
 
 impl TaskSystem {
@@ -18,7 +40,7 @@ impl TaskSystem {
         // creation is enabled. Like Linux fork, this establishes task_cpu()
         // before the new task can participate in PI or become runnable.
         let initial_cpu = CpuId::new(unsafe { task_runtime::current_cpu_id() }.as_u32());
-        self.create_thread_on_cpu(spec, initial_cpu, ThreadCreationContext::Runtime)
+        self.create_thread_on_cpu(spec, initial_cpu)
     }
 
     /// Builds an unpublished task with an explicit initial `task_cpu`.
@@ -30,113 +52,105 @@ impl TaskSystem {
         &self,
         spec: ThreadSpec,
         initial_cpu: CpuId,
-        context: ThreadCreationContext,
     ) -> Result<ThreadHandle, TaskError> {
+        use crate::thread::allocation::try_arc;
+        // Install the resource owner before any validation or fallible allocation.
+        let mut unpublished = UnpublishedThreadGuard::new(self, spec);
         if initial_cpu.as_usize() >= self.config.cpu_count() {
             return Err(TaskError::InvalidCpu(initial_cpu.as_u32()));
         }
-        let policy = spec.policy();
-        let affinity = spec
-            .affinity()
-            .cloned()
-            .unwrap_or_else(|| CpuSet::all(self.config.cpu_count()));
-        let unpublished = UnpublishedThreadGuard::new(self, spec);
+        let policy = unpublished.spec().policy();
         policy.validate()?;
+        let spec = unpublished
+            .spec
+            .as_mut()
+            .expect("unpublished specification");
+        let affinity = match spec.take_affinity() {
+            Some(affinity) => affinity,
+            None => CpuSet::try_all(self.config.cpu_count())?,
+        };
         validate_affinity(&affinity, self.config.cpu_count())?;
-        let (slot, generation, reservation) = {
+        let affinity = try_arc(affinity)?;
+        let execution = spec.execution.take();
+        let mut reservation = {
             let mut state = self.state.lock();
             let mut root_domain = self.root_domain.lock();
-            let reservation = root_domain.reserve_deadline(policy, &affinity)?;
+            let bandwidth = root_domain.reserve_deadline(policy, &affinity)?;
             let (slot, generation) = match state.allocate_thread_slot(self.config.thread_capacity())
             {
                 Ok(identity) => identity,
                 Err(error) => {
-                    root_domain.release_deadline(reservation);
+                    root_domain.release_deadline(bandwidth);
                     return Err(error);
                 }
             };
-            state.slots[slot as usize].pending_deadline_reservation = reservation;
-            (slot, generation, reservation)
+            state.slots[slot as usize].pending_deadline_reservation = bandwidth;
+            ThreadSlotReservation {
+                system: self,
+                slot,
+                generation,
+                bandwidth,
+                committed: false,
+            }
         };
-        let id = ThreadId::from_parts(slot, generation);
-
-        // Linux embeds class nodes in task_struct before publication. Prepare
-        // the Rust class-node indexes at the same cold construction boundary,
-        // so a first wake or cross-CPU migration cannot allocate under rq
-        // irqsave locks.
-        for remote in &self.cpu_remotes {
-            let mut run_queue = match context {
-                ThreadCreationContext::Runtime => {
-                    remote.lock_run_queue(RunQueueGuardSource::Lifecycle)
-                }
-                ThreadCreationContext::OfflineBootstrap => {
-                    // SAFETY: per-CPU bootstrap retains raw IRQ exclusion and
-                    // PREEMPT_DISABLED until the complete rq/current/idle
-                    // owner is published.
-                    unsafe { remote.lock_run_queue_irq_disabled() }
-                }
-            };
-            run_queue.prepare_thread_slot(slot as usize);
-        }
-
-        // Runtime construction may allocate, fault, or call into platform
-        // code. Keep it outside the IRQ-disabled registry domain. The removed
-        // slot is a private reservation until the short commit below.
-        let deadline_server = DeadlineServer::unbound();
+        let id = ThreadId::from_parts(reservation.slot, reservation.generation);
+        // rq indexes and exit candidates are fixed-capacity, initialized before
+        // their locks exist. Fork allocates only private task-owned objects here.
+        let deadline_server = DeadlineServer::unbound()?;
         let entity = SchedulingEntity::new_with_deadline_server(
             policy,
             self.config.fair_slice_ns(),
             0,
             deadline_server.clone(),
         );
-        let (extension, resources) = unpublished.into_owned_parts();
-        let switch_extension = extension.as_ref().map(ThreadExtension::as_view);
-        let scheduler_tick_cpu_time = extension
-            .as_ref()
-            .and_then(ThreadExtension::scheduler_tick_cpu_time);
-        let scheduler_tick_work = extension
-            .as_ref()
-            .and_then(ThreadExtension::scheduler_tick_work);
+        let extension = unpublished.spec().extension();
+        let switch_extension = extension.map(ThreadExtension::as_view);
+        let scheduler_tick_cpu_time = extension.and_then(ThreadExtension::scheduler_tick_cpu_time);
+        let scheduler_tick_work = extension.and_then(ThreadExtension::scheduler_tick_work);
+        let resources = unpublished.spec().resources();
         let address_space = resources.address_space();
         let membarrier_identity = if address_space.is_none() {
             crate::runtime::resource::AddressSpaceMembarrierId::NONE
         } else {
             task_runtime::address_space_membarrier_state(address_space).identity()
         };
-        let sched = Arc::new(ThreadSchedCell::new(
+        let sched = try_arc(ThreadSchedCell::new(
             id,
             ThreadSchedInit {
                 policy: ThreadPolicyInit { policy, entity },
                 placement: ThreadPlacementInit {
                     initial_cpu,
-                    affinity: affinity.clone(),
+                    affinity: Arc::clone(&affinity),
                 },
                 deadline: ThreadDeadlineInit {
                     server: deadline_server,
-                    reservation_scaled: reservation,
+                    reservation_scaled: reservation.bandwidth,
                 },
                 runtime: ThreadRuntimeInit {
                     context: resources.context(),
                     address_space,
                 },
             },
-        ));
-        let core = Arc::new(ThreadCore::new(ThreadCoreInit {
+        )?)?;
+        let core = try_arc(ThreadCore::new(ThreadCoreInit {
             id,
             policy,
             sched: Arc::clone(&sched),
             extension: switch_extension,
+            execution,
             scheduler_tick_cpu_time,
             scheduler_tick_work,
             membarrier_identity,
             task_work: Some(Arc::clone(&self.task_work)),
-        }));
+        })?)?;
+        let (extension, resources) = unpublished.into_owned_parts();
         let record = ThreadRecord {
             core: Arc::clone(&core),
             sched,
             resources,
             extension,
             callbacks: ThreadCallbackState::new(),
+            activation: None,
         };
         let context = record.resources.context();
         if !context.is_none() {
@@ -145,62 +159,36 @@ impl TaskSystem {
                 publication: CurrentThreadPublication::from_core(id, &core),
             });
             if status != RuntimeStatus::Success {
-                {
-                    let mut state = self.state.lock();
-                    let mut root_domain = self.root_domain.lock();
-                    let failed_slot = &mut state.slots[slot as usize];
-                    debug_assert_eq!(failed_slot.generation, generation);
-                    debug_assert!(failed_slot.record.is_none());
-                    debug_assert_eq!(failed_slot.pending_deadline_reservation, reservation);
-                    failed_slot.pending_deadline_reservation = 0;
-                    if advance_thread_slot_generation(failed_slot) {
-                        state.free_slots.push(slot);
-                    }
-                    root_domain.release_deadline(reservation);
-                }
+                drop(reservation);
                 drop(core);
                 self.release_thread_record(record);
                 return Err(TaskError::RuntimeFailure(status as u32));
             }
         }
-
         let mut record = Some(record);
         let commit_error = {
             let mut state = self.state.lock();
-            let mut root_domain = self.root_domain.lock();
+            let root_domain = self.root_domain.lock();
             let is_deadline = matches!(policy, SchedulePolicy::Deadline(_));
-            let topology_rejects_deadline = is_deadline && !affinity.covers(&root_domain.online);
-            let admission_overcommitted = is_deadline && root_domain.admission_overcommitted();
-            if topology_rejects_deadline || admission_overcommitted {
-                let failed_slot = &mut state.slots[slot as usize];
-                debug_assert_eq!(failed_slot.generation, generation);
-                debug_assert!(failed_slot.record.is_none());
-                debug_assert_eq!(failed_slot.pending_deadline_reservation, reservation);
-                failed_slot.pending_deadline_reservation = 0;
-                if advance_thread_slot_generation(failed_slot) {
-                    state.free_slots.push(slot);
-                }
-                root_domain.release_deadline(reservation);
-                Some(if topology_rejects_deadline {
-                    TaskError::DeadlineAffinity
-                } else {
-                    TaskError::DeadlineAdmission
-                })
+            if is_deadline && !affinity.covers(&root_domain.online) {
+                Some(TaskError::DeadlineAffinity)
+            } else if is_deadline && root_domain.admission_overcommitted() {
+                Some(TaskError::DeadlineAdmission)
             } else {
-                let reserved_slot = &mut state.slots[slot as usize];
-                debug_assert_eq!(reserved_slot.generation, generation);
-                debug_assert!(reserved_slot.record.is_none());
-                debug_assert_eq!(reserved_slot.pending_deadline_reservation, reservation);
-                reserved_slot.pending_deadline_reservation = 0;
-                reserved_slot.record = record.take();
+                let slot = &mut state.slots[reservation.slot as usize];
+                assert_eq!(slot.generation, reservation.generation);
+                assert!(slot.record.is_none());
+                assert_eq!(slot.pending_deadline_reservation, reservation.bandwidth);
+                slot.pending_deadline_reservation = 0;
+                slot.record = record.take();
+                reservation.committed = true;
                 None
             }
         };
         if let Some(error) = commit_error {
+            drop(reservation);
             drop(core);
-            self.release_thread_record(
-                record.expect("rejected thread commit must retain its resource record"),
-            );
+            self.release_thread_record(record.expect("rejected commit owns its record"));
             return Err(error);
         }
         Ok(ThreadHandle::from_core(core))
@@ -257,11 +245,7 @@ impl TaskSystem {
             }
         }
 
-        let thread = self.create_thread_on_cpu(
-            unpublished.into_spec(),
-            cpu.owner(),
-            ThreadCreationContext::OfflineBootstrap,
-        )?;
+        let thread = self.create_thread_on_cpu(unpublished.into_spec(), cpu.owner())?;
         let setup = (|| {
             let core = {
                 let state = self.state.lock();
@@ -332,11 +316,7 @@ impl TaskSystem {
             }
         }
 
-        let thread = self.create_thread_on_cpu(
-            unpublished.into_spec(),
-            cpu.owner(),
-            ThreadCreationContext::OfflineBootstrap,
-        )?;
+        let thread = self.create_thread_on_cpu(unpublished.into_spec(), cpu.owner())?;
         // SAFETY: the target CPU remains offline and boot-owned until idle is
         // installed and the complete runtime endpoint is published.
         let setup = unsafe { self.make_ready_bootstrap(thread.id()) }.and_then(|()| {

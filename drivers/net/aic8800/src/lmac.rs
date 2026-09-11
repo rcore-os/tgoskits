@@ -19,6 +19,10 @@ pub(crate) const MM_ADD_IF_REQ: u16 = 0x0006;
 pub(crate) const MM_ADD_IF_CFM: u16 = 0x0007;
 pub(crate) const MM_SET_FILTER_REQ: u16 = 0x000e;
 pub(crate) const MM_SET_FILTER_CFM: u16 = 0x000f;
+pub(crate) const APM_START_REQ: u16 = 0x1c00;
+pub(crate) const APM_START_CFM: u16 = 0x1c01;
+pub(crate) const APM_SET_BEACON_IE_REQ: u16 = 0x1c08;
+pub(crate) const APM_SET_BEACON_IE_CFM: u16 = 0x1c09;
 pub(crate) const MM_KEY_ADD_REQ: u16 = 0x0024;
 pub(crate) const MM_KEY_ADD_CFM: u16 = 0x0025;
 pub(crate) const MM_SET_RF_CALIB_REQ: u16 = 0x0069;
@@ -164,6 +168,17 @@ pub(crate) fn parse_add_interface(payload: &[u8]) -> Result<u8, AicError> {
     (payload[1] != u8::MAX)
         .then_some(payload[1])
         .ok_or(AicError::MalformedResponse)
+}
+
+pub(crate) fn parse_ap_start(payload: &[u8], interface_index: u8) -> Result<(), AicError> {
+    if payload.len() != 4 {
+        return Err(AicError::MalformedResponse);
+    }
+    require_status_ok(APM_START_CFM, payload)?;
+    if payload[1] != interface_index || payload[2] == u8::MAX || payload[3] == u8::MAX {
+        return Err(AicError::MalformedResponse);
+    }
+    Ok(())
 }
 
 pub(crate) fn parse_connect_indication(payload: &[u8]) -> Result<ConnectIndication, AicError> {
@@ -413,6 +428,27 @@ mod tests {
         assert_eq!(
             parse_add_interface(&[0, u8::MAX]),
             Err(AicError::MalformedResponse)
+        );
+    }
+
+    #[test]
+    fn ap_start_confirmation_requires_the_requested_vif_and_complete_firmware_layout() {
+        assert_eq!(parse_ap_start(&[0, 1, 2, 3], 1), Ok(()));
+        for payload in [
+            &[0][..],
+            &[0, 1, 2, 3, 0],
+            &[0, 2, 2, 3],
+            &[0, 1, 255, 3],
+            &[0, 1, 2, 255],
+        ] {
+            assert_eq!(parse_ap_start(payload, 1), Err(AicError::MalformedResponse));
+        }
+        assert_eq!(
+            parse_ap_start(&[5, 1, 2, 3], 1),
+            Err(AicError::FirmwareRejected {
+                message_id: APM_START_CFM,
+                status: 5
+            })
         );
     }
 

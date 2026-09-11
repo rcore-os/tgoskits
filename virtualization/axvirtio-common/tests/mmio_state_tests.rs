@@ -1,5 +1,7 @@
 //! Shared MMIO transport state tests (plan section 13.2).
 
+extern crate ax_runtime as _;
+
 use std::sync::Arc;
 
 use ax_memory_addr::PhysAddr;

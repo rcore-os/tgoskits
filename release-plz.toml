@@ -4,33 +4,3 @@ publish_no_verify = true
 # Publish the coordinated versions and dependency requirements from the release
 # PR, rather than publishing new crates before their dependencies are released.
 release_always = false
-
-# Published baselines still reject the tls/uspace feature union. Current sources
-# select userspace ownership when both are enabled. Re-enable these checks after
-# the new baselines are published and validated against the registry.
-[[package]]
-name = "ax-cpu"
-semver_check = false
-
-[[package]]
-name = "ax-hal"
-semver_check = false
-
-[[package]]
-name = "axplat-dyn"
-semver_check = false
-
-[[package]]
-name = "ax-runtime"
-semver_check = false
-
-[[package]]
-name = "ax-std"
-semver_check = false
-
-# starry-kernel 0.9.0 resolves axplat-dyn 0.9.1, whose direct cpu-local 0.3
-# dependency conflicts with ax-percpu 0.4.19's published cpu-local 0.2
-# requirement. Re-enable this check after ax-percpu 0.4.20 is published.
-[[package]]
-name = "starry-kernel"
-semver_check = false

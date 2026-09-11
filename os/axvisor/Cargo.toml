@@ -54,6 +54,8 @@ stack-protector = ["ax-std/stack-protector"]
 backtrace = ["ax-std/backtrace"]
 test-backtrace-panic = ["backtrace"]
 test-panic-no-backtrace = []
+test-el2-fatal = []
+test-el2-fatal-foreign-context = ["test-el2-fatal"]
 test-console-interleave = ["dep:ax-log"]
 test-console-atomic-output = []
 # axum-based management HTTP server. Pulls `ax-std/net` explicitly so the

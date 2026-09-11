@@ -36,6 +36,9 @@ timeout_minutes = 30
 command = '''
 echo "==> axvisor aarch64 backtrace panic"
 cargo xtask axvisor test qemu --arch aarch64 --test-case backtrace-panic
+echo "==> axvisor aarch64 terminal EL2 faults"
+cargo xtask axvisor test qemu --arch aarch64 --test-case el2-fatal
+cargo xtask axvisor test qemu --arch aarch64 --test-case el2-fatal-foreign-context
 echo "==> axvisor aarch64 no-backtrace panic"
 cargo xtask axvisor test qemu --arch aarch64 --test-case no-backtrace
 echo "==> pull qemu-aarch64 image"
@@ -51,7 +54,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qem
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["backtrace-panic", "no-backtrace", "http-control-plane", "browser-console", "qemu-ivc"]
+cases = ["backtrace-panic", "no-backtrace", "el2-fatal", "el2-fatal-foreign-context", "http-control-plane", "browser-console", "qemu-ivc"]
 
 [[check]]
 id = "test-axvisor-riscv64-qemu-smoke-panic-modes"
@@ -183,6 +186,40 @@ cargo xtask axvisor test qemu --arch x86_64 --test-case pci-enumeration-svm
 kind = "axvisor-qemu"
 arch = "x86_64"
 cases = ["pci-enumeration-svm"]
+
+[[check]]
+id = "test-axvisor-x86-64-pci-block-vmx"
+impact_targets = ["axvisor:x86_64"]
+name = "VMX x86_64 · VirtIO PCI block RW/RO"
+runner = "kvm-intel"
+timeout_minutes = 45
+command = '''
+cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
+cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-rw-vmx
+cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-ro-vmx
+'''
+
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "x86_64"
+cases = ["pci-block-rw-vmx", "pci-block-ro-vmx"]
+
+[[check]]
+id = "test-axvisor-x86-64-pci-block-svm"
+impact_targets = ["axvisor:x86_64"]
+name = "SVM x86_64 · VirtIO PCI block RW/RO"
+runner = "kvm-amd"
+timeout_minutes = 45
+command = '''
+cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
+cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-rw-svm
+cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-ro-svm
+'''
+
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "x86_64"
+cases = ["pci-block-rw-svm", "pci-block-ro-svm"]
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-starry-ivc-benchmark"

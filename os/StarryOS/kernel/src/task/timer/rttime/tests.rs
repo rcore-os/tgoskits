@@ -26,7 +26,7 @@ mod tests {
             RttimeLimitAction::Hard
         );
 
-        let accounting = CpuTimeAccounting::new();
+        let accounting = CpuTimeAccounting::new().unwrap();
         let mut watchdog = RttimeWatchdog::new();
         assert_eq!(
             watchdog.check_snapshot(accounting.snapshot(0), 0, 0),

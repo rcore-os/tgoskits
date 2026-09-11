@@ -7,23 +7,12 @@ use axpoll::IoEvents;
 use axpoll_set::PollSet;
 use starry_signal::Signo;
 
-use super::{PidRoleLease, ProcessData, Tid, TidNumber, current_user_task, future};
+use super::{PidRoleLease, ProcessData, Tid, TidNumber, future};
 use crate::sync::{IrqMutex, Mutex};
-
-struct VforkDone {
-    done: bool,
-    poll: Arc<PollSet>,
-}
 
 struct RetiredLeader {
     nice: i32,
     tid_lease: PidRoleLease<Tid>,
-}
-
-impl VforkDone {
-    fn new(poll: Arc<PollSet>) -> Self {
-        Self { done: false, poll }
-    }
 }
 
 /// Exit metadata and wait channels owned by one process generation.
@@ -35,7 +24,6 @@ pub(super) struct ProcessWaitState {
     exit_signal: Option<Signo>,
     wait_parent_tid: TidNumber,
     retired_leader: IrqMutex<Option<RetiredLeader>>,
-    vfork_done: IrqMutex<Option<VforkDone>>,
 }
 
 impl ProcessWaitState {
@@ -48,7 +36,6 @@ impl ProcessWaitState {
             exit_signal,
             wait_parent_tid,
             retired_leader: IrqMutex::new(None),
-            vfork_done: IrqMutex::new(None),
         }
     }
 
@@ -148,60 +135,5 @@ impl ProcessData {
     /// Returns whether this child uses clone-style exit notification.
     pub fn is_clone_child(&self) -> bool {
         self.wait.exit_signal != Some(Signo::SIGCHLD)
-    }
-
-    /// Installs the vfork completion before the child is published.
-    pub fn set_vfork_done(&self, poll: Arc<PollSet>) {
-        *self.wait.vfork_done.lock() = Some(VforkDone::new(poll));
-    }
-
-    /// Waits until the vfork child execs/exits or this thread is zapped.
-    pub fn wait_vfork_done(&self) {
-        let poll = {
-            let guard = self.wait.vfork_done.lock();
-            match guard.as_ref() {
-                Some(vfork) => vfork.poll.clone(),
-                None => return,
-            }
-        };
-        let curr_task = current_user_task();
-        let curr_thr = curr_task.as_thread();
-        loop {
-            let result = future::block_on_user(
-                &curr_task,
-                wait_on_pollset(&poll, || {
-                    self.wait
-                        .vfork_done
-                        .lock()
-                        .as_ref()
-                        .map(|vfork| vfork.done)
-                        .unwrap_or(true)
-                        .then_some(())
-                }),
-            );
-            match result {
-                future::UserWaitOutcome::Ready(()) => return,
-                future::UserWaitOutcome::Interrupted if curr_thr.has_exit_request() => return,
-                future::UserWaitOutcome::Interrupted => continue,
-                future::UserWaitOutcome::TimedOut => {
-                    unreachable!("vfork completion wait has no deadline")
-                }
-            }
-        }
-    }
-
-    /// Publishes vfork completion before waking the parent.
-    pub fn notify_vfork_done(&self) {
-        let poll = {
-            let mut guard = self.wait.vfork_done.lock();
-            match guard.as_mut() {
-                Some(vfork) => {
-                    vfork.done = true;
-                    vfork.poll.clone()
-                }
-                None => return,
-            }
-        };
-        unsafe { poll.wake(IoEvents::IN) };
     }
 }

@@ -4,6 +4,10 @@ use crate::constants::*;
 /// Layout according to VirtIO specification
 #[derive(Debug, Clone)]
 pub struct VirtioBlockConfig {
+    /// Whether write requests must fail with `VIRTIO_BLK_S_IOERR`.
+    pub read_only: bool,
+    /// Whether the device accepts `VIRTIO_BLK_T_FLUSH` requests.
+    pub flush_supported: bool,
     /// Total capacity in 512-byte sectors (8 bytes at offset 0x00)
     pub capacity: u64,
     /// Maximum segment size (4 bytes at offset 0x08)
@@ -31,6 +35,8 @@ pub struct VirtioBlockConfig {
 impl Default for VirtioBlockConfig {
     fn default() -> Self {
         Self {
+            read_only: false,
+            flush_supported: true,
             capacity: DEFAULT_CAPACITY_SECTORS,
             size_max: DEFAULT_SIZE_MAX,
             seg_max: DEFAULT_SEG_MAX,

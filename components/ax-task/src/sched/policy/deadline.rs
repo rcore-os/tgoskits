@@ -20,13 +20,15 @@ struct DeadlineServerStorage {
 }
 
 impl DeadlineServer {
-    pub(crate) fn unbound() -> Self {
-        Self {
-            storage: Arc::new(IrqTicketLock::new(DeadlineServerStorage {
-                policy: None,
-                execution: DeadlineServerState::new(),
-            })),
-        }
+    pub(crate) fn unbound() -> Result<Self, crate::thread::TaskError> {
+        Ok(Self {
+            storage: crate::thread::allocation::try_arc(IrqTicketLock::new(
+                DeadlineServerStorage {
+                    policy: None,
+                    execution: DeadlineServerState::new(),
+                },
+            ))?,
+        })
     }
 
     pub(crate) fn bind(&self, policy: DeadlinePolicy) {

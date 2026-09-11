@@ -19,7 +19,7 @@ use ax_task::runtime::RuntimeStatus;
 use crate::task::{
     sched::{CpuId, CpuSet},
     sync::{
-        SpinLock,
+        RawSpinLock,
         irq::{IrqWaitCell, IrqWorkerWaiter},
     },
     thread::{TaskError, ThreadHandle, ThreadId},
@@ -128,7 +128,7 @@ struct RuntimeBlockThread {
     // move-out and is always released before the potentially blocking join.
     // No IRQ path observes this state, so masking local IRQs would only widen
     // interrupt latency without adding serialization.
-    task: SpinLock<Option<ThreadHandle>>,
+    task: RawSpinLock<Option<ThreadHandle>>,
 }
 
 impl BlockThread for RuntimeBlockThread {
@@ -136,7 +136,8 @@ impl BlockThread for RuntimeBlockThread {
         let Some(task) = self.task.lock().take() else {
             return;
         };
-        crate::thread::join_thread(task)
+        (task)
+            .join()
             .unwrap_or_else(|error| panic!("failed to join block maintenance thread: {error}"));
     }
 }
@@ -177,15 +178,13 @@ impl BlockRuntimeOps for RuntimeTaskOps {
         if !affinity.insert(CpuId::new(cpu)) {
             return Err(BlockError::InvalidRequest);
         }
-        let task = crate::thread::spawn_raw_with_affinity(
-            entry,
-            name,
-            crate::runtime_default_task_stack_size(),
-            affinity,
-        )
-        .map_err(task_error_to_block_error)?;
+        let task = crate::thread::builder(name)
+            .stack_size(crate::runtime_default_task_stack_size())
+            .affinity(affinity)
+            .spawn(entry)
+            .map_err(task_error_to_block_error)?;
         Ok(Box::new(RuntimeBlockThread {
-            task: SpinLock::new(Some(task)),
+            task: RawSpinLock::new(Some(task)),
         }))
     }
 }

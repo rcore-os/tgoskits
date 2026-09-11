@@ -462,7 +462,10 @@ dependencies = [
  "ax-driver",
  "ax-hal",
  "ax-memory-addr",
+ "ax-mm",
+ "ax-runtime",
  "ax-std",
+ "ax-task",
  "axbacktrace",
  "axfs-ng-vfs",
  "embedded-graphics",
@@ -1375,6 +1378,7 @@ dependencies = [
 name = "axdevice"
 version = "0.7.0"
 dependencies = [
+ "ax-runtime",
  "ax-sync",
  "axdevice_base",
  "axvm-types",
@@ -1598,8 +1602,10 @@ name = "axvirtio-common"
 version = "0.2.1"
 dependencies = [
  "ax-memory-addr",
+ "ax-runtime",
  "ax-sync",
  "axaddrspace",
+ "axdevice_base",
  "axvm-types",
  "log",
  "mbarrier",
@@ -1650,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "axvm"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -1667,6 +1673,7 @@ dependencies = [
  "ax-memory-set",
  "ax-plat",
  "ax-std",
+ "ax-sync",
  "axaddrspace",
  "axdevice",
  "axdevice_base",
@@ -7239,7 +7246,7 @@ dependencies = [
 
 [[package]]
 name = "scope-local"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "ax-lazyinit",
  "ax-percpu",

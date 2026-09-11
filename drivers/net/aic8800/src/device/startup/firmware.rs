@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 
 use super::{
     START_STABILIZE, StartupStage,
+    d80::D80PatchStage,
     dc::{DcStage, DcStartupState},
     map_debug_error,
 };
@@ -23,7 +24,7 @@ impl AicDevice {
     pub(super) fn drive_main_upload(&mut self, offset: usize, now: MonotonicTime) -> AicAction {
         let main = d80_main_image();
         if offset >= main.len() {
-            self.set_startup_stage(StartupStage::StartApplication);
+            self.set_startup_stage(StartupStage::D80Patch(D80PatchStage::ReadConfigBase));
             return self.drive_startup(now);
         }
         let end = (offset + FIRMWARE_UPLOAD_CHUNK).min(main.len());
@@ -50,10 +51,15 @@ impl AicDevice {
             StartupStage::UploadMain(offset) => {
                 require_debug_status(&result)
                     .map_err(|error| map_debug_error(DBG_MEM_BLOCK_WRITE_REQ + 1, error))?;
-                StartupStage::UploadMain(
-                    (offset + FIRMWARE_UPLOAD_CHUNK).min(d80_main_image().len()),
-                )
+                let length = d80_main_image().len();
+                let next = (offset + FIRMWARE_UPLOAD_CHUNK).min(length);
+                if next >= length {
+                    StartupStage::D80Patch(D80PatchStage::ReadConfigBase)
+                } else {
+                    StartupStage::UploadMain(next)
+                }
             }
+            StartupStage::D80Patch(stage) => self.complete_d80_patch_mailbox(stage, result)?,
             StartupStage::Dc(stage) => self.complete_dc_mailbox(stage, result)?,
             StartupStage::StartApplication => {
                 require_debug_status(&result)
@@ -157,7 +163,7 @@ impl AicDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::ChipVariant;
+    use crate::{common::ChipVariant, protocol::DBG_MEM_READ_REQ};
 
     #[test]
     fn dc_revision_enters_the_dc_owner_state_machine() {
@@ -188,5 +194,38 @@ mod tests {
             device.lifecycle.startup.as_ref().map(|state| state.stage),
             Some(StartupStage::ReadMacAddress)
         ));
+    }
+
+    #[test]
+    fn d80_upload_completion_begins_patch_configuration_before_starting_the_app() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Starting;
+        device.lifecycle.startup = Some(super::super::StartupState::new());
+        device.set_startup_stage(StartupStage::UploadMain(
+            d80_main_image().len() - FIRMWARE_UPLOAD_CHUNK,
+        ));
+
+        assert_eq!(device.complete_startup_mailbox([0; 4].to_vec()), Ok(()));
+        let AicAction::SubmitSdio(flow) = device.drive_startup(MonotonicTime::from_nanos(0)) else {
+            panic!("expected the mailbox flow read")
+        };
+        let AicAction::SubmitSdio(write) = device.advance(AicInput {
+            now: MonotonicTime::from_nanos(0),
+            event: Some(AicInputEvent::Sdio(SdioCompletion {
+                request_id: flow.id,
+                result: Ok(SdioResponse::Byte(64)),
+            })),
+        }) else {
+            panic!("expected the mailbox FIFO write")
+        };
+
+        // The firmware header read that feeds the patch config must run before
+        // the start-application mailbox; the vendor sequence never starts the
+        // app immediately after the image upload.
+        let SdioRequestKind::Write { bytes, .. } = write.kind else {
+            panic!("expected a FIFO write")
+        };
+        assert_eq!(&bytes[8..10], &DBG_MEM_READ_REQ.to_le_bytes());
+        assert_eq!(&bytes[16..20], &(D80_MAIN_ADDRESS + 0x0198).to_le_bytes());
     }
 }

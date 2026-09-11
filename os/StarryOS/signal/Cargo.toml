@@ -28,3 +28,6 @@ thiserror.workspace = true
 [dev-dependencies]
 ax-runtime = { path = "../../arceos/modules/axruntime", features = ["host-test", "smp", "lockdep"] }
 extern-trait = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

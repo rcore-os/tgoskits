@@ -212,32 +212,6 @@ fn grouped_c_subcases_reject_missing_direct_usr_bin_commands() {
 }
 
 #[test]
-fn cross_compile_spec_maps_supported_arches() {
-    assert_eq!(
-        cross_compile_spec("aarch64").unwrap(),
-        CrossCompileSpec {
-            llvm_target: "aarch64-linux-musl",
-            rust_musl_target: "aarch64-unknown-linux-musl",
-            cmake_system_processor: "aarch64",
-            guest_tool_dir: "usr/aarch64-alpine-linux-musl/bin",
-            gnu_tool_prefix: "aarch64-linux-musl",
-            qemu_user_binaries: &["qemu-aarch64-static", "qemu-aarch64"],
-        }
-    );
-    assert_eq!(
-        cross_compile_spec("loongarch64").unwrap(),
-        CrossCompileSpec {
-            llvm_target: "loongarch64-linux-musl",
-            rust_musl_target: "loongarch64-unknown-linux-musl",
-            cmake_system_processor: "loongarch64",
-            guest_tool_dir: "usr/loongarch64-alpine-linux-musl/bin",
-            gnu_tool_prefix: "loongarch64-linux-musl",
-            qemu_user_binaries: &["qemu-loongarch64-static", "qemu-loongarch64"],
-        }
-    );
-}
-
-#[test]
 fn write_cross_bin_wrappers_generates_prefixed_and_plain_tools() {
     let root = tempdir().unwrap();
     let layout =

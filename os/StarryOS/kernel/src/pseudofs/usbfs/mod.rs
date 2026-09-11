@@ -70,14 +70,13 @@ pub(crate) fn new_usbfs() -> StarryResult<Option<Filesystem>> {
     let init_result = Arc::new(IrqMutex::new(None));
     let worker_result = init_result.clone();
     let worker_manager = manager.clone();
-    let init_worker = crate::task::spawn_kernel_thread(
-        move || {
+    let init_worker = crate::task::kernel_thread_builder("usbfs-init".to_owned())
+        .spawn(move || {
             let report = manager::initialize_hosts(&worker_manager);
             *worker_result.lock() = Some(report);
-        },
-        "usbfs-init".to_owned(),
-    );
-    let _exit_code = crate::task::join_kernel_thread(init_worker);
+        })
+        .expect("failed to spawn kernel thread");
+    let _exit_code = init_worker.join().expect("failed to join kernel thread");
     let report = init_result
         .lock()
         .take()
@@ -97,10 +96,9 @@ pub(crate) fn new_usbfs() -> StarryResult<Option<Filesystem>> {
 
     info!("usbfs: spawning refresh task");
     let refresh_manager = manager.clone();
-    crate::task::spawn_kernel_thread(
-        move || manager::usbfs_refresh_task(refresh_manager.clone()),
-        "usbfs-refresh".to_owned(),
-    );
+    crate::task::kernel_thread_builder("usbfs-refresh".to_owned())
+        .spawn(move || manager::usbfs_refresh_task(refresh_manager.clone()))
+        .expect("failed to spawn kernel thread");
 
     Ok(Some(create_filesystem(manager)))
 }
@@ -837,8 +835,8 @@ impl UsbDeviceFile {
         let poll_urbs = self.poll_urbs.clone();
         let worker = self.urb_worker.clone();
         let manager = self.manager.clone();
-        crate::task::spawn_kernel_thread(
-            move || {
+        crate::task::kernel_thread_builder("usbfs-urb-worker".to_owned())
+            .spawn(move || {
                 crate::task::future::block_on(async {
                     loop {
                         let mut ready = Vec::new();
@@ -960,9 +958,8 @@ impl UsbDeviceFile {
                     }
                 });
                 worker.stop();
-            },
-            "usbfs-urb-worker".to_owned(),
-        );
+            })
+            .expect("failed to spawn kernel thread");
     }
 
     fn submit_endpoint_urb_async(
@@ -1523,13 +1520,12 @@ impl Drop for UsbDeviceFile {
             return;
         }
 
-        crate::task::spawn_kernel_thread(
-            move || {
+        crate::task::kernel_thread_builder("usbfs-urb-cleanup".to_owned())
+            .spawn(move || {
                 let _lease = lease;
                 cleanup_submitted_urbs(submitted, None);
-            },
-            "usbfs-urb-cleanup".to_owned(),
-        );
+            })
+            .expect("failed to spawn kernel thread");
     }
 }
 

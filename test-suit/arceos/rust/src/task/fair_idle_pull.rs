@@ -50,8 +50,10 @@ impl CooperativeWorkers {
             let mut affinity = CpuSet::empty(cpu_count);
             assert!(affinity.insert(CpuId::new(cpu as u32)));
             handles.push(
-                ax_std::os::arceos::thread::spawn_raw_with_affinity(
-                    move || {
+                ax_std::os::arceos::thread::builder(String::from("fair-idle-pull-worker"))
+                    .stack_size(TEST_STACK_SIZE)
+                    .affinity(affinity)
+                    .spawn(move || {
                         assert_eq!(
                             this_cpu_id(),
                             cpu,
@@ -66,12 +68,8 @@ impl CooperativeWorkers {
                             observed_cpus.fetch_or(1usize << this_cpu_id(), Ordering::Relaxed);
                             thread::yield_now();
                         }
-                    },
-                    String::from("fair-idle-pull-worker"),
-                    TEST_STACK_SIZE,
-                    affinity,
-                )
-                .expect("cooperative Fair worker must spawn"),
+                    })
+                    .expect("cooperative Fair worker must spawn"),
             );
         }
         Self {
@@ -92,8 +90,7 @@ impl CooperativeWorkers {
     fn stop_and_join(mut self) {
         self.stop.store(true, Ordering::Release);
         for handle in self.handles.drain(..) {
-            ax_std::os::arceos::thread::join_thread(handle)
-                .expect("cooperative Fair worker must exit");
+            (handle).join().expect("cooperative Fair worker must exit");
         }
     }
 }

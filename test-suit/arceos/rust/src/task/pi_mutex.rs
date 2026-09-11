@@ -1,3 +1,5 @@
+mod rt_locks;
+
 use std::{
     sync::{
         Arc,
@@ -241,6 +243,7 @@ fn ownerless_lock_rekey_wakes_new_top() {
 }
 
 pub fn run() -> crate::TestResult {
+    rt_locks::run();
     assert!(
         ax_std::os::arceos::task::sched::cpu_topology_len().unwrap() >= 3,
         "task-pi-mutex requires at least three CPUs"

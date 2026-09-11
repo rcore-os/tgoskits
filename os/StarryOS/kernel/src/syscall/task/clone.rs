@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use core::mem::size_of;
 
 use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_runtime::hal::cpu::user::UserContext;
@@ -9,20 +8,15 @@ use scope_local::Scope;
 use starry_signal::Signo;
 
 use super::schedule_abi::fork_schedule_policy;
-#[cfg(target_arch = "x86_64")]
-use crate::task::prepare_user_thread_inheriting_fp_scheduler_state;
-#[cfg(target_arch = "riscv64")]
-use crate::task::prepare_user_thread_with_fp_scheduler_state;
-#[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
-use crate::task::prepare_user_thread_with_scheduler_state;
 use crate::{
     StarryError, StarryResult,
     file::{FD_TABLE, PidFd, PreparedFileDescriptor, prepare_file_like},
     mm::{MmHandle, VmMutPtr, copy_from_kernel},
-    sync::SpinLock,
+    sync::RawSpinLock,
     task::{
         PidIdentity, PidReservation, PidReservationKind, ProcessData, ProcessDataInit,
-        ProcessImage, Tgid, Thread, Tid, TidNumber, UserThreadInitialSchedulerState, new_user_task,
+        ProcessImage, Tgid, Thread, Tid, TidNumber, UserThreadInitialSchedulerState,
+        UserThreadOptions, new_user_task, prepare_user_thread,
     },
 };
 
@@ -166,22 +160,13 @@ pub struct CloneArgs {
 
 impl CloneArgs {
     fn validate(&self) -> StarryResult<()> {
-        let Self {
-            flags, exit_signal, ..
-        } = self;
-
-        if *exit_signal > 0 && flags.contains(CloneFlags::THREAD) {
-            return Err(StarryError::InvalidInput);
-        }
+        let Self { flags, .. } = self;
         if flags.contains(CloneFlags::THREAD)
             && !flags.contains(CloneFlags::VM | CloneFlags::SIGHAND)
         {
             return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::SIGHAND) && !flags.contains(CloneFlags::VM) {
-            return Err(StarryError::InvalidInput);
-        }
-        if flags.contains(CloneFlags::VFORK | CloneFlags::THREAD) {
             return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::PIDFD | CloneFlags::DETACHED) {
@@ -277,13 +262,6 @@ impl CloneArgs {
         } else {
             0
         };
-
-        if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid_ptr != 0 {
-            crate::mm::prepare_user_write(current, parent_tid_ptr, size_of::<u32>())?;
-        }
-        if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
-            crate::mm::prepare_user_write(current, pidfd, size_of::<i32>())?;
-        }
 
         let curr = current;
         let curr_thread = curr.as_thread();
@@ -402,7 +380,7 @@ impl CloneArgs {
             } else {
                 old_proc_data.proc.clone()
             }
-            .prepare_fork(identity.clone());
+            .prepare_fork(identity.clone())?;
             let proc = prepared.process().clone();
             prepared_fork = Some(prepared);
 
@@ -420,9 +398,9 @@ impl CloneArgs {
             let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
                 old_proc_data.signal.actions()
             } else if flags.contains(CloneFlags::CLEAR_SIGHAND) {
-                Arc::new(SpinLock::new(Default::default()))
+                Arc::new(RawSpinLock::new(Default::default()))
             } else {
-                Arc::new(SpinLock::new(
+                Arc::new(RawSpinLock::new(
                     old_proc_data.signal.actions().lock_irqsave().clone(),
                 ))
             };
@@ -508,18 +486,14 @@ impl CloneArgs {
             parent_cred,
             curr_thread.signal().blocked(),
             scope,
-        );
+        )?;
         thr.set_nice(child_nice);
-        if curr_thread.no_new_privs() {
-            thr.set_no_new_privs();
-        }
-        thr.set_seccomp_state(curr_thread.seccomp_state());
         if flags.contains(CloneFlags::CHILD_CLEARTID) {
             thr.set_clear_child_tid(child_tid);
         }
         let mut prepared_pidfd: Option<PreparedFileDescriptor> = None;
         let mut pidfd_copyout = None;
-        if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
+        if flags.contains(CloneFlags::PIDFD) {
             // The pidfd and later namespace publication share the prepared
             // identity. Until the final commit, PID-number lookup cannot see it.
             let pidfd_obj = if flags.contains(CloneFlags::THREAD) {
@@ -527,7 +501,10 @@ impl CloneArgs {
             } else {
                 PidFd::new_process(identity.clone())
             };
-            let prepared = prepare_file_like(Arc::new(pidfd_obj), true)?;
+            let prepared = prepare_file_like(
+                || Ok(Arc::try_new(pidfd_obj).map_err(|_| StarryError::NoMemory)?),
+                true,
+            )?;
             let fd = prepared.fd();
             prepared_pidfd = Some(prepared);
             pidfd_copyout = Some((pidfd as *mut i32, fd));
@@ -537,36 +514,20 @@ impl CloneArgs {
         // execs or exits. Use PollSet so the parent's wait remains
         // interruptible by task.interrupt().
         if needs_vfork_block {
-            let poll = Arc::new(axpoll_set::PollSet::new());
-            new_proc_data.set_vfork_done(poll);
+            thr.prepare_vfork_done()?;
         }
 
+        let options = UserThreadOptions::new(curr.name().as_ref())
+            .map_err(map_task_creation_error)?
+            .with_scheduler_state(child_scheduler_state);
         #[cfg(target_arch = "riscv64")]
-        let prepared_task = prepare_user_thread_with_fp_scheduler_state(
+        let options = options.with_fp_state(child_fp_state);
+        #[cfg(not(target_arch = "riscv64"))]
+        let options = options.inherit_current_fp();
+        let prepared_task = prepare_user_thread(
             new_user_task(new_uctx, set_child_tid, child_visible_tid),
-            alloc::string::String::from(curr.name().as_ref()),
-            crate::config::KERNEL_STACK_SIZE,
-            child_fp_state,
             thr,
-            child_scheduler_state,
-        )
-        .map_err(map_task_creation_error)?;
-        #[cfg(target_arch = "x86_64")]
-        let prepared_task = prepare_user_thread_inheriting_fp_scheduler_state(
-            new_user_task(new_uctx, set_child_tid, child_visible_tid),
-            alloc::string::String::from(curr.name().as_ref()),
-            crate::config::KERNEL_STACK_SIZE,
-            thr,
-            child_scheduler_state,
-        )
-        .map_err(map_task_creation_error)?;
-        #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
-        let prepared_task = prepare_user_thread_with_scheduler_state(
-            new_user_task(new_uctx, set_child_tid, child_visible_tid),
-            alloc::string::String::from(curr.name().as_ref()),
-            crate::config::KERNEL_STACK_SIZE,
-            thr,
-            child_scheduler_state,
+            options,
         )
         .map_err(map_task_creation_error)?;
 
@@ -588,15 +549,20 @@ impl CloneArgs {
             .map(|prepared| prepared.publish().ok_or(StarryError::WouldBlock))
             .transpose()?;
 
-        // PID publication is the final fallible visibility edge.
-        let published_identity = reservation.publish()?;
-        debug_assert!(Arc::ptr_eq(&published_identity, &identity));
-        if let Some(published) = published_fork {
-            let process = published.commit();
-            debug_assert!(Arc::ptr_eq(&process, &new_proc_data.proc));
-        }
-        staged_task.with_task(|task| task.as_thread().attach_pid_task(task));
-        new_proc_data.proc.add_thread(root_tid);
+        staged_task.with_task(|task| {
+            publish_clone(curr_thread, task.as_thread(), || {
+                // PID publication is the final fallible visibility edge.
+                let published_identity = reservation.publish()?;
+                debug_assert!(Arc::ptr_eq(&published_identity, &identity));
+                if let Some(published) = published_fork {
+                    let process = published.commit();
+                    debug_assert!(Arc::ptr_eq(&process, &new_proc_data.proc));
+                }
+                task.as_thread().attach_pid_task(task);
+                new_proc_data.proc.add_thread(root_tid);
+                Ok(())
+            })
+        })?;
         if let Some(pidfd) = prepared_pidfd.take() {
             pidfd.install();
         }
@@ -635,7 +601,7 @@ impl CloneArgs {
 
         cgroup_guard.commit();
         clone_transaction.commit();
-        let _task = staged_task.activate();
+        let task = staged_task.activate();
 
         if trace_clone && needs_vfork_block {
             let _ = crate::task::send_signal_to_thread(
@@ -662,8 +628,7 @@ impl CloneArgs {
         );
 
         // Block the parent until the child exec's or exits.
-        if needs_vfork_block {
-            new_proc_data.wait_vfork_done();
+        if needs_vfork_block && task.as_thread().wait_vfork_done(current) {
             let _ = super::ptrace::ptrace_notify_vfork_done(parent_pid, parent_tid, &identity);
         }
 
@@ -671,11 +636,35 @@ impl CloneArgs {
     }
 }
 
+fn publish_clone(
+    parent: &Thread,
+    child: &Thread,
+    publish: impl FnOnce() -> StarryResult<()>,
+) -> StarryResult<()> {
+    // Linux copy_seccomp and TSYNC hold a common lock through thread-group
+    // insertion. Refresh only after private preparation, while TASK_NEW cannot
+    // execute; TSYNC either precedes this snapshot or includes the published child.
+    let _update = parent.proc_data.thread_group_update();
+    // Linux copy_process checks fatal_signal_pending under the publication
+    // lock and returns EINTR before the child becomes Linux-visible.
+    if parent.signal().pending().has(Signo::SIGKILL) {
+        return Err(StarryError::Interrupted);
+    }
+    child.inherit_security(parent)?;
+    publish()
+}
+
 fn map_task_creation_error(error: ax_std::os::arceos::task::thread::TaskError) -> StarryError {
     use ax_std::os::arceos::task::thread::TaskError;
 
     match error {
-        TaskError::TimerCapacity | TaskError::RuntimeFailure(_) => StarryError::NoMemory,
+        TaskError::ThreadCapacity => StarryError::WouldBlock,
+        TaskError::TimerCapacity => StarryError::NoMemory,
+        TaskError::RuntimeFailure(status)
+            if status == ax_std::os::arceos::task::runtime::RuntimeStatus::NoMemory as u32 =>
+        {
+            StarryError::NoMemory
+        }
         TaskError::DeadlineAdmission | TaskError::ThreadBusy => StarryError::ResourceBusy,
         _ => StarryError::BadState,
     }
@@ -766,6 +755,93 @@ mod axtests {
 
     use super::CloneTransaction;
     use crate::task::{PidReservation, PidReservationKind, Tgid, Tid};
+
+    #[axtest::axtest]
+    fn clone_publication_refreshes_security_after_preparation() {
+        use crate::task::{ROOT_PID_NS, Thread};
+        let make_thread = || {
+            let reservation =
+                PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader).unwrap();
+            let identity = reservation.identity();
+            let tid = identity.acquire_role::<Tid>().unwrap();
+            let tgid = identity.acquire_role::<Tgid>().unwrap();
+            let process = crate::task::new_test_process_data(identity.clone(), tgid);
+            let thread = Thread::new(
+                identity,
+                tid,
+                process,
+                None,
+                Default::default(),
+                scope_local::Scope::new(),
+            )
+            .unwrap();
+            (reservation, thread)
+        };
+        let (_parent_reservation, parent) = make_thread();
+        let (_child_reservation, child) = make_thread();
+        child.set_seccomp_state(parent.seccomp_state());
+        // A completed TSYNC may update the parent while clone is preparing
+        // private execution resources and the child is absent from its scan.
+        parent.set_no_new_privs();
+        parent
+            .append_seccomp_filter(alloc::vec![crate::task::SockFilter {
+                code: 0x06, // BPF_RET | BPF_K
+                jt: 0,
+                jf: 0,
+                k: 0x7fff_0000, // SECCOMP_RET_ALLOW
+            }])
+            .unwrap();
+        let updated = parent.seccomp_state();
+        let original = child.seccomp_state();
+        let probe = ax_std::os::arceos::task::thread::ThreadAllocationProbe::fail_at(0).unwrap();
+        let failed = super::publish_clone(&parent, &child, || {
+            panic!("failed security inheritance must not publish a child")
+        });
+        let attempts = probe.attempts();
+        drop(probe);
+        assert_eq!(failed.unwrap_err().linux_errno(), syscalls::Errno::ENOMEM);
+        assert_eq!(attempts, 1);
+        assert!(Arc::ptr_eq(&original, &child.seccomp_state()));
+        assert!(!child.no_new_privs());
+        assert!(!child.has_seccomp_syscall_work());
+        super::publish_clone(&parent, &child, || {
+            assert!(child.no_new_privs(), "clone published stale no_new_privs");
+            assert!(
+                Arc::ptr_eq(&updated, &child.seccomp_state()),
+                "clone published a stale seccomp snapshot"
+            );
+            assert!(child.has_seccomp_syscall_work());
+            Ok(())
+        })
+        .unwrap();
+        assert!(parent.signal().send_signal(
+            starry_signal::SignalInfo::new_kernel(starry_signal::Signo::SIGKILL),
+            false,
+        ));
+        let interrupted = super::publish_clone(&parent, &child, || {
+            panic!("fatal parent must not publish a child")
+        });
+        assert_eq!(
+            interrupted.unwrap_err().linux_errno(),
+            syscalls::Errno::EINTR
+        );
+    }
+
+    #[axtest::axtest]
+    fn creation_errors_preserve_resource_domain() {
+        use ax_std::os::arceos::task::{runtime::RuntimeStatus, thread::TaskError};
+        use syscalls::Errno;
+        let errors = [
+            TaskError::ThreadCapacity,
+            TaskError::RuntimeFailure(RuntimeStatus::NoMemory as u32),
+            TaskError::RuntimeFailure(RuntimeStatus::Platform as u32),
+        ];
+        assert_eq!(
+            errors.map(|error| super::map_task_creation_error(error).linux_errno()),
+            [Errno::EAGAIN, Errno::ENOMEM, Errno::EFAULT],
+            "clone must distinguish thread limits, OOM, and runtime faults"
+        );
+    }
 
     #[axtest::axtest]
     fn unpublished_process_rollback_releases_identity_and_topology() {

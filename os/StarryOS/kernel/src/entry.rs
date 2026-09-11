@@ -14,9 +14,8 @@ use crate::{
     sync::{Mutex, RwLock},
     task::{
         PidReservation, PidReservationKind, Process, ProcessData, ProcessDataInit, ProcessImage,
-        ROOT_PID_NS, Tgid, Thread, Tid, TidNumber, join_kernel_thread, new_user_task,
-        prepare_user_thread, sleep, spawn_alarm_task, spawn_kernel_thread,
-        spawn_kernel_thread_with_affinity,
+        ROOT_PID_NS, Tgid, Thread, Tid, TidNumber, UserThreadOptions, kernel_thread_builder,
+        new_user_task, prepare_user_thread, sleep, spawn_alarm_task,
     },
     tracepoint::tracepoint_init,
 };
@@ -101,7 +100,7 @@ pub fn init(args: &[String], envs: &[String]) {
     let tgid_lease = identity
         .acquire_role::<Tgid>()
         .expect("failed to acquire init TGID role");
-    let proc = Process::new_init(identity.clone());
+    let proc = Process::new_init(identity.clone()).expect("failed to prepare init process");
     proc.add_thread(TidNumber::try_from(pid).expect("init TID must be non-zero"));
 
     if let Err(error) = tty::bind_console_to(&proc) {
@@ -145,16 +144,16 @@ pub fn init(args: &[String], envs: &[String]) {
         None,
         starry_signal::SignalSet::default(),
         scope,
-    );
+    )
+    .expect("failed to prepare init thread state");
     let prepared_task = prepare_user_thread(
         new_user_task(
             uctx,
             0,
             TidNumber::try_from(pid).expect("init TID must be non-zero"),
         ),
-        name,
-        crate::config::KERNEL_STACK_SIZE,
         thr,
+        UserThreadOptions::new(&name).expect("failed to prepare init thread name"),
     )
     .expect("failed to prepare init task");
     let staged_task = prepared_task.stage().expect("failed to stage init task");
@@ -202,12 +201,11 @@ fn run_opp_calibration() {
             affinity.insert(ax_runtime::task::sched::CpuId::new(cpu_id)),
             "cpufreq calibration CPU {cpu} is outside the runtime topology"
         );
-        let task = spawn_kernel_thread_with_affinity(
-            move || ax_driver::cpufreq::calibrate_cluster(cluster_idx, cpu),
-            String::from("cpufreq-cal"),
-            affinity,
-        );
-        let _exit_code = join_kernel_thread(task);
+        let task = kernel_thread_builder(String::from("cpufreq-cal"))
+            .affinity(affinity)
+            .spawn(move || ax_driver::cpufreq::calibrate_cluster(cluster_idx, cpu))
+            .expect("failed to spawn kernel thread");
+        let _exit_code = task.join().expect("failed to join kernel thread");
     }
     info!("cpufreq: OPP calibration sweep complete");
 }
@@ -229,7 +227,9 @@ fn spawn_cpufreq_governor() {
         return;
     }
     info!("Initialize cpufreq ondemand governor...");
-    let _ = spawn_kernel_thread(cpufreq_governor_loop, String::from("cpufreq-gov"));
+    let _ = kernel_thread_builder(String::from("cpufreq-gov"))
+        .spawn(cpufreq_governor_loop)
+        .expect("failed to spawn kernel thread");
 }
 
 /// Periodic body of the DVFS governor task: sleep, sample every CPU's cumulative

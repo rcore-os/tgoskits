@@ -10,6 +10,12 @@ pub(crate) struct PlannedRuntimeResources {
     leases: Vec<ResourceLease>,
 }
 
+#[derive(Clone)]
+pub(crate) struct PlannedRuntimeCheckpoint {
+    interrupts: InterruptRegistryCheckpoint,
+    leases_len: usize,
+}
+
 impl PlannedRuntimeResources {
     pub(crate) const fn new() -> Self {
         Self {
@@ -30,5 +36,17 @@ impl PlannedRuntimeResources {
         self.interrupts
             .append(resources.controllers, resources.endpoints);
         self.leases.extend(resources.leases);
+    }
+
+    pub(crate) fn checkpoint(&self) -> PlannedRuntimeCheckpoint {
+        PlannedRuntimeCheckpoint {
+            interrupts: self.interrupts.checkpoint(),
+            leases_len: self.leases.len(),
+        }
+    }
+
+    pub(crate) fn rollback(&mut self, checkpoint: PlannedRuntimeCheckpoint) {
+        self.interrupts.rollback(checkpoint.interrupts);
+        self.leases.truncate(checkpoint.leases_len);
     }
 }

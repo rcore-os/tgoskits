@@ -17,9 +17,11 @@ use axdevice_base::InterruptTrigger;
 use super::vtimer::Aarch64TimerBinding;
 
 mod cpu_interface;
+mod host;
 mod maintenance;
 mod physical;
 
+pub(crate) use host::prepare;
 pub(crate) use physical::AssignedSpiRoutes;
 
 pub(super) fn try_with_gic<T>(
@@ -69,7 +71,7 @@ pub(crate) struct AxvmVgicBackend {
 }
 
 impl AxvmVgicBackend {
-    /// Discovers immutable host CPU-interface capabilities once.
+    /// Uses the host CPU-interface capabilities committed before CPU enable.
     pub(crate) fn new() -> Result<Self, GicV3BackendError> {
         Ok(Self {
             capabilities: cpu_interface::capabilities()?,

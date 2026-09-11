@@ -7,7 +7,7 @@ use core::{
 };
 
 use ax_cpu::user::UserContext;
-use ax_runtime::task::sync::SpinLock;
+use ax_runtime::task::sync::RawSpinLock;
 use starry_vm::{VmIo, VmMutPtr, VmPtr};
 
 use super::ProcessSignalManager;
@@ -66,17 +66,19 @@ struct PreparedSignalHandler {
 
 /// Thread-level signal manager.
 pub struct ThreadSignalManager {
+    /// PF_EXITING-equivalent claim, shared by OS teardown and signal selection.
+    exit_started: AtomicBool,
     /// The process-level signal manager
     proc: Arc<ProcessSignalManager>,
 
     /// The pending signals
-    pending: SpinLock<PendingSignals>,
+    pending: RawSpinLock<PendingSignals>,
     /// The set of signals currently blocked from delivery.
-    blocked: SpinLock<SignalSet>,
+    blocked: RawSpinLock<SignalSet>,
     /// The stack used by signal handlers
-    stack: SpinLock<SignalStack>,
+    stack: RawSpinLock<SignalStack>,
     /// Number of active signal handlers currently executing on the alternate stack.
-    stack_active_depth: SpinLock<usize>,
+    stack_active_depth: RawSpinLock<usize>,
 
     possibly_has_signal: AtomicBool,
 
@@ -86,11 +88,20 @@ pub struct ThreadSignalManager {
     /// a coherent registration. The syscall still rechecks pending signals
     /// after installing the waker, matching Linux's state-publication then
     /// dequeue-again protocol without coupling this component to a scheduler.
-    sigwait: SpinLock<SigwaitState>,
+    sigwait: RawSpinLock<SigwaitState>,
+}
+
+impl Drop for ThreadSignalManager {
+    fn drop(&mut self) {
+        // The process remains owned through this destructor. Compare pointer
+        // identity only; no raw pointer is dereferenced. Arc retains its implicit
+        // weak reference until Drop returns, including failed registration.
+        self.proc.unregister_child(core::ptr::from_ref(self));
+    }
 }
 
 impl ThreadSignalManager {
-    pub fn new(tid: u32, proc: Arc<ProcessSignalManager>) -> Arc<Self> {
+    pub fn new(tid: u32, proc: Arc<ProcessSignalManager>) -> SignalResult<Arc<Self>> {
         Self::new_with_blocked(tid, proc, SignalSet::default())
     }
 
@@ -98,20 +109,41 @@ impl ThreadSignalManager {
         tid: u32,
         proc: Arc<ProcessSignalManager>,
         blocked: SignalSet,
-    ) -> Arc<Self> {
-        let this = Arc::new(Self {
+    ) -> SignalResult<Arc<Self>> {
+        #[cfg(axtest)]
+        ax_runtime::task::thread::ThreadAllocationProbe::allocation_point()
+            .map_err(|_| crate::SignalError::NoMemory)?;
+        let this = Arc::try_new(Self {
+            exit_started: AtomicBool::new(false),
             proc: proc.clone(),
 
-            pending: SpinLock::new(PendingSignals::default()),
-            blocked: SpinLock::new(blocked),
-            stack: SpinLock::new(SignalStack::default()),
-            stack_active_depth: SpinLock::new(0),
+            pending: RawSpinLock::new(PendingSignals::default()),
+            blocked: RawSpinLock::new(blocked),
+            stack: RawSpinLock::new(SignalStack::default()),
+            stack_active_depth: RawSpinLock::new(0),
 
             possibly_has_signal: AtomicBool::new(false),
-            sigwait: SpinLock::new(SigwaitState::default()),
-        });
-        proc.register_child(tid, Arc::downgrade(&this));
-        this
+            sigwait: RawSpinLock::new(SigwaitState::default()),
+        })
+        .map_err(|_| crate::SignalError::NoMemory)?;
+        proc.register_child(tid, Arc::downgrade(&this))?;
+        Ok(this)
+    }
+
+    /// Claims OS thread teardown exactly once and excludes normal signal selection.
+    pub fn begin_exit(&self) -> bool {
+        self.exit_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Returns whether OS teardown has claimed this receiver.
+    pub fn is_exiting(&self) -> bool {
+        self.exit_started.load(Ordering::Acquire)
+    }
+
+    pub(super) fn wants_signal(&self, signo: Signo) -> bool {
+        !self.is_exiting() && !self.signal_blocked(signo)
     }
 
     /// Dequeues a signal from the thread's pending signals.
@@ -452,6 +484,17 @@ impl ThreadSignalManager {
         F: FnMut(&mut UserContext, &SignalInfo, bool),
         C: FnMut() -> crate::arch::SignalFpState,
     {
+        if self.is_exiting() {
+            return None;
+        }
+        // Linux get_signal handles SIGNAL_GROUP_EXIT before dequeuing signals
+        // or consulting a disposition that userspace could change afterwards.
+        if self.proc.group_exit.status().is_some() {
+            return Some((
+                SignalInfo::new_kernel(Signo::SIGKILL),
+                SignalOSAction::Terminate,
+            ));
+        }
         // Fast path
         if !self.possibly_has_signal.load(Ordering::Acquire)
             && !self.proc.possibly_has_signal.load(Ordering::Acquire)
@@ -525,37 +568,64 @@ impl ThreadSignalManager {
     ///
     /// See [`ProcessSignalManager::send_signal`] for the process-level version.
     #[must_use]
-    pub fn send_signal(&self, sig: SignalInfo) -> bool {
+    pub fn send_signal(&self, sig: SignalInfo, defer_fatal: bool) -> bool {
         let signo = sig.signo();
-
-        // Lock by `actions`
-        let actions_arc = self.proc.actions();
-        let actions = actions_arc.lock_irqsave();
-        debug!("signal: {signo:?}");
-
-        // Skip is_ignore() when the signal is blocked in this thread OR when
-        // this thread is inside rt_sigtimedwait/sigwaitinfo waiting for it.
-        // POSIX requires that a blocked signal is queued as pending even if
-        // its default disposition is to ignore it, so that sigtimedwait() can
-        // synchronously consume it.  tgkill/tkill target a specific thread, so
-        // we must apply the same exemption here as ProcessSignalManager does
-        // for the process-level path.
-        let blocked = self.signal_blocked(signo);
-        let in_sigwait = self.is_sigwait_for(signo);
-        if !blocked && !in_sigwait && actions[signo].is_ignore(signo) {
-            return false;
-        }
-
-        if self.pending.lock_irqsave().put_signal(sig) {
-            self.possibly_has_signal.store(true, Ordering::Release);
-        }
-        let deliverable = !self.signal_blocked(signo);
-        drop(actions);
-        // The sigwait future is owned by this signal manager. Publish pending
-        // state before invoking the task-context waker and never wake while an
-        // action or pending-signal lock remains held.
+        let mut prepared = Some(crate::pending::PreparedSignalInfo::new(sig));
+        let (deliverable, _targets) = self.proc.publish_with_targets(|actions, targets| {
+            let blocked = self.signal_blocked(signo);
+            let deliverable = self.wants_signal(signo);
+            let in_sigwait = self.is_sigwait_for(signo);
+            if !blocked && !in_sigwait && actions[signo].is_ignore(signo) {
+                return false;
+            }
+            prepared = self.pending.lock_irqsave().put_prepared(
+                prepared
+                    .take()
+                    .expect("signal publication consumes its prepared info once"),
+            );
+            if prepared.is_none() {
+                self.possibly_has_signal.store(true, Ordering::Release);
+            }
+            if deliverable {
+                self.proc
+                    .complete_fatal_signal(signo, defer_fatal, &actions[signo], targets);
+            }
+            deliverable
+        });
         self.wake_sigwait(signo);
         deliverable
+    }
+
+    /// Commits the first group exit status and every peer's SIGKILL bit under
+    /// the disposition lock, like Linux do_group_exit/zap_other_threads.
+    /// The OS must hold its clone publication gate and notify peers only after
+    /// this method returns and that gate is released. The caller does not
+    /// receive an additional pending signal. Returns the winning wait status
+    /// for the caller's subsequent per-thread exit, preserving any earlier exit.
+    #[must_use]
+    pub fn begin_group_exit(&self, status: i32) -> i32 {
+        let (status, targets) = self.proc.publish_with_targets(|_, targets| {
+            if self.proc.group_exit.begin(status) {
+                for (_, target) in targets {
+                    if !core::ptr::eq(self, Arc::as_ref(target)) {
+                        target.publish_group_kill();
+                    }
+                }
+            }
+            self.proc
+                .group_exit
+                .status()
+                .expect("group exit was committed")
+        });
+        drop(targets);
+        status
+    }
+
+    /// Allocation-free SIGKILL publication used by Linux group exit. The group
+    /// decision owns the original exit code; no per-thread sigqueue is needed.
+    pub(super) fn publish_group_kill(&self) {
+        self.pending.lock_irqsave().set.add(Signo::SIGKILL);
+        self.possibly_has_signal.store(true, Ordering::Release);
     }
 
     /// Gets the blocked signals.
@@ -642,9 +712,9 @@ mod tests {
 
     #[test]
     fn sigwait_waker_only_fires_for_the_published_set() {
-        let actions = Arc::new(SpinLock::new(SignalActions::default()));
-        let process = Arc::new(ProcessSignalManager::new(actions, 0));
-        let thread = ThreadSignalManager::new(1, process);
+        let actions = Arc::new(RawSpinLock::new(SignalActions::default()));
+        let process = Arc::new(ProcessSignalManager::new(actions, 0, Arc::default()));
+        let thread = ThreadSignalManager::new(1, process).unwrap();
         let counter = Arc::new(CountWake(AtomicUsize::new(0)));
         let waker = Waker::from(counter.clone());
         let mut set = SignalSet::default();
@@ -655,7 +725,7 @@ mod tests {
         thread.wake_sigwait(Signo::SIGURG);
         assert_eq!(counter.0.load(Ordering::Relaxed), 0);
 
-        let _deliverable = thread.send_signal(SignalInfo::new_kernel(Signo::SIGCHLD));
+        let _deliverable = thread.send_signal(SignalInfo::new_kernel(Signo::SIGCHLD), false);
         assert_eq!(counter.0.load(Ordering::Relaxed), 1);
 
         thread.finish_sigwait();

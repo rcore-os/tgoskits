@@ -44,6 +44,13 @@ pub enum UserAtomicError {
 unsafe extern "C" {
     fn __axcpu_user_read_u32(address: *const u32, value: *mut u32) -> u32;
 
+    fn __axcpu_user_cmpxchg_u32(
+        address: *mut u32,
+        expected: u32,
+        replacement: u32,
+        observed: *mut u32,
+    ) -> u32;
+
     fn __axcpu_user_atomic_u32(
         address: *mut u32,
         operation: u32,
@@ -94,5 +101,35 @@ pub unsafe fn user_atomic_u32(
         1 => Err(UserAtomicError::Fault),
         2 => Err(UserAtomicError::Retry),
         _ => unreachable!("architecture returned an invalid user atomic status"),
+    }
+}
+
+/// Compares and conditionally replaces one aligned user word without faulting in pages.
+///
+/// Returns the observed word: equality with `expected` means the replacement
+/// was stored. A successful replacement orders surrounding memory accesses;
+/// a mismatch only promises an atomic observation. Faults and bounded LL/SC
+/// exhaustion use the same exception-table protocol as [`user_atomic_u32`].
+///
+/// # Safety
+///
+/// `address` must be aligned for `u32` and lie in the current task's user
+/// address range. Its active address space and user-access permissions must
+/// remain installed through the call. Resolve faults only after releasing
+/// every lock whose critical section must remain nofault.
+pub unsafe fn user_cmpxchg_u32(
+    address: *mut u32,
+    expected: u32,
+    replacement: u32,
+) -> Result<u32, UserAtomicError> {
+    let mut observed = 0;
+    // SAFETY: the caller supplies the active user address; the output points
+    // to this function's initialized kernel-local word for the whole call.
+    let status = unsafe { __axcpu_user_cmpxchg_u32(address, expected, replacement, &mut observed) };
+    match status {
+        0 => Ok(observed),
+        1 => Err(UserAtomicError::Fault),
+        2 => Err(UserAtomicError::Retry),
+        _ => unreachable!("architecture returned an invalid user cmpxchg status"),
     }
 }

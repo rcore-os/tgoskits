@@ -460,5 +460,5 @@ fn enqueue_ptrace_syscall_resume_signal(thr: &super::Thread, resume_signo: Optio
     // A PTRACE_SYSCALL resume signal is delivered after the matching syscall
     // exit stop. Do not arm the ptrace bypass: the tracer must observe its
     // subsequent signal-delivery stop.
-    let _ = thr.signal().send_signal(SignalInfo::new_kernel(signo));
+    super::queue_thread_signal(thr, SignalInfo::new_kernel(signo));
 }

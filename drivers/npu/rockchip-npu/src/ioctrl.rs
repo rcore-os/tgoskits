@@ -13,7 +13,7 @@ use crate::{
 
 const RKNN_NPU_CORE_ALL: u32 = 0xffff;
 const RKNPU_SYNC_POLL_LOG_INTERVAL: u64 = 1_000_000;
-const NANOS_PER_MICROSECOND: u64 = 1_000;
+const NANOS_PER_MILLISECOND: u64 = 1_000_000;
 static LOGGED_SUBMIT_CORE_LAYOUT: AtomicBool = AtomicBool::new(false);
 
 /// 子核心任务索引结构体
@@ -64,7 +64,7 @@ pub struct RknpuMemDestroy {
 pub struct RknpuSubmit {
     /// 作业提交标志
     pub flags: u32,
-    /// Submission timeout in microseconds, as defined by the RKNPU ABI.
+    /// Submission timeout in milliseconds, matching Linux rknpu_job_wait.
     pub timeout: u32,
     /// 任务起始索引
     pub task_start: u32,
@@ -155,9 +155,9 @@ struct SubmitDeadline {
 }
 
 impl SubmitDeadline {
-    fn from_timeout_us(start_ns: u64, timeout_us: u32) -> Self {
+    fn from_timeout(start_ns: u64, timeout_ms: u32) -> Self {
         Self {
-            expires_at_ns: start_ns.saturating_add(u64::from(timeout_us) * NANOS_PER_MICROSECOND),
+            expires_at_ns: start_ns.saturating_add(u64::from(timeout_ms) * NANOS_PER_MILLISECOND),
         }
     }
 
@@ -222,7 +222,7 @@ impl Rknpu {
     /// Submits an RKNPU job and bounds all synchronous polling by `args.timeout`.
     ///
     /// `clock` must return monotonically nondecreasing nanoseconds. The timeout
-    /// encoded in [`RknpuSubmit`] is measured in microseconds by the RKNPU ABI.
+    /// encoded in [`RknpuSubmit`] is measured in milliseconds by the RKNPU ABI.
     pub fn submit_ioctrl(
         &mut self,
         args: &mut RknpuSubmit,
@@ -306,7 +306,7 @@ impl Rknpu {
             );
         }
 
-        let deadline = SubmitDeadline::from_timeout_us(clock(), args.timeout);
+        let deadline = SubmitDeadline::from_timeout(clock(), args.timeout);
         for state in states.iter_mut() {
             self.clear_pending_interrupts(state.core_idx, deadline, clock)?;
             self.submit_next_chunk(state, args)?;
@@ -476,24 +476,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn abi_timeout_is_converted_from_microseconds_to_nanoseconds() {
-        let deadline = SubmitDeadline::from_timeout_us(1_000, 6_000_000);
-
-        assert_eq!(deadline.expires_at_ns, 6_000_001_000);
-        assert!(!deadline.expired(6_000_000_999));
-        assert!(deadline.expired(6_000_001_000));
+    fn completion_within_abi_millisecond_timeout_is_not_rejected() {
+        // Linux rknpu_job_wait passes timeout directly to msecs_to_jiffies.
+        // A 6000 ms request must still accept completion after seven ms.
+        let deadline = SubmitDeadline::from_timeout(0, 6000);
+        let mut polls = 0;
+        let result = poll_until_ready(deadline, &mut || 7_000_000, || {
+            polls += 1;
+            Ok((polls == 2).then_some(()))
+        });
+        assert_eq!(result, Ok(()));
     }
 
     #[test]
     fn polling_never_ready_returns_timeout_at_deadline() {
-        let deadline = SubmitDeadline::from_timeout_us(0, 1);
+        let deadline = SubmitDeadline::from_timeout(0, 1);
         let mut now_ns = 0;
         let mut poll_count = 0;
 
         let result: Result<(), RknpuError> = poll_until_ready(
             deadline,
             &mut || {
-                now_ns += NANOS_PER_MICROSECOND;
+                now_ns += NANOS_PER_MILLISECOND;
                 now_ns
             },
             || {
@@ -508,8 +512,8 @@ mod tests {
 
     #[test]
     fn polling_accepts_completion_observed_at_deadline() {
-        let deadline = SubmitDeadline::from_timeout_us(0, 1);
-        let now_ns = NANOS_PER_MICROSECOND;
+        let deadline = SubmitDeadline::from_timeout(0, 1);
+        let now_ns = NANOS_PER_MILLISECOND;
 
         let result = poll_until_ready(deadline, &mut || now_ns, || Ok(Some(())));
 

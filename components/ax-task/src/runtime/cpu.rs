@@ -49,6 +49,16 @@ pub fn current_cpu_needs_resched() -> Result<bool, TaskError> {
     unsafe { current_needs_reschedule_pinned() }
 }
 
+/// Observes only the immediate preemption bit in real-runtime regression tests.
+/// Owner maintenance and lazy preemption remain separate scheduler requests.
+#[cfg(feature = "fault-injection")]
+pub fn current_immediate_preemption_requested() -> Result<bool, TaskError> {
+    let _pin = PreemptScope::enter();
+    Ok(current_cpu_remote()
+        .ok_or(TaskError::NotInitialized)?
+        .immediate_preemption_requested())
+}
+
 /// Clears the current CPU's idle-polling state at the runtime sleep boundary.
 ///
 /// # Safety
@@ -198,3 +208,84 @@ impl CurrentCpuOwnerHandles {
 }
 
 pub use crate::sched::system::OwnerControlDrain;
+
+/// Failed prerequisite observed by the serial real-idle test probe.
+#[cfg(feature = "fault-injection")]
+#[derive(Clone, Copy, Debug)]
+#[repr(u8)]
+pub enum IdleOfflineRejection {
+    /// No instrumented prerequisite failed.
+    Unclassified         = 0,
+    /// A publisher still owns the placement endpoint.
+    PlacementPublication = 1,
+    /// A thread cannot leave this CPU's placement domain.
+    ThreadTarget         = 2,
+    /// Owner-directed delivery has not relinquished publication.
+    OwnerPublication     = 3,
+    /// Runqueue, timer, handoff or remote work remains.
+    CpuState             = 4,
+    /// A thread retains CPU ownership or a migration pin.
+    ThreadOwnership      = 5,
+}
+
+#[cfg(feature = "fault-injection")]
+static IDLE_OFFLINE_REJECTION: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+#[cfg(feature = "fault-injection")]
+pub(crate) fn record_idle_offline_rejection(reason: IdleOfflineRejection) {
+    IDLE_OFFLINE_REJECTION.store(reason as u8, core::sync::atomic::Ordering::Release);
+}
+
+/// Reads the last serial probe's rejection after its locks have been released.
+#[cfg(feature = "fault-injection")]
+pub fn idle_offline_rejection() -> IdleOfflineRejection {
+    match IDLE_OFFLINE_REJECTION.load(core::sync::atomic::Ordering::Acquire) {
+        1 => IdleOfflineRejection::PlacementPublication,
+        2 => IdleOfflineRejection::ThreadTarget,
+        3 => IdleOfflineRejection::OwnerPublication,
+        4 => IdleOfflineRejection::CpuState,
+        5 => IdleOfflineRejection::ThreadOwnership,
+        _ => IdleOfflineRejection::Unclassified,
+    }
+}
+
+/// Exercises scheduler CPU offline/online on the real idle owner.
+///
+/// This test-only transaction retains IRQ exclusion and the exclusive owner
+/// borrow across both transitions. It never returns to scheduling while offline
+/// and does not implement platform power-off or an externally parked CPU.
+#[cfg(feature = "fault-injection")]
+pub fn probe_idle_cpu_round_trip() -> Result<(), TaskError> {
+    use crate::runtime::context::{RuntimeIrqGuard, runtime_current_cpu_mut, runtime_task_system};
+    validate_schedule_context(RuntimeScheduleOrigin::Preempt)?;
+    let system = runtime_task_system()?;
+    let mut irq = RuntimeIrqGuard::enter();
+    let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+    if cpu.remote().current_thread() != cpu.remote().idle_thread() {
+        return Err(TaskError::NotReady);
+    }
+    record_idle_offline_rejection(IdleOfflineRejection::Unclassified);
+    system.take_cpu_offline(cpu.as_mut())?;
+    assert_eq!(cpu.remote().lifecycle_state(), CpuLifecycleState::Offline);
+    assert!(system.cpu_remote(cpu.owner()).is_none());
+    // Returning an error here would strand the executing idle owner offline.
+    system
+        .bring_cpu_online(cpu.as_mut())
+        .expect("idle CPU re-online failed");
+    assert_eq!(cpu.remote().lifecycle_state(), CpuLifecycleState::Online);
+    Ok(())
+}
+
+/// Publishes ordinary owner work so an idle probe leaves NOHZ sleep.
+#[cfg(feature = "fault-injection")]
+pub fn notify_idle_cpu_probe(cpu: RuntimeCpuId) -> Result<(), TaskError> {
+    let system = crate::runtime::context::runtime_task_system()?;
+    let remote = system
+        .cpu_remote(crate::sched::CpuId::new(cpu.as_u32()))
+        .ok_or(TaskError::CpuOffline(cpu.as_u32()))?;
+    if remote.kick_scheduler_work() {
+        Ok(())
+    } else {
+        Err(TaskError::CpuOffline(cpu.as_u32()))
+    }
+}

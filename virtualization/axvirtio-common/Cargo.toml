@@ -10,6 +10,7 @@ keywords = ["virtio", "hypervisor", "no_std", "arceos"]
 categories = ["no-std", "embedded", "hardware-support"]
 
 [dependencies]
+axdevice_base.workspace = true
 ax-memory-addr.workspace = true
 axaddrspace.workspace = true
 axvm-types.workspace = true
@@ -18,4 +19,5 @@ log.workspace = true
 mbarrier = "0.1"
 
 [dev-dependencies]
+ax-runtime = { workspace = true, features = ["host-test"] }
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }

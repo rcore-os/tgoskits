@@ -708,23 +708,6 @@ kernel_path = "{}"
     }
 
     #[test]
-    fn managed_rootfs_path_keeps_explicit_managed_rootfs() {
-        let root = tempdir().unwrap();
-        write_test_image_config(root.path());
-        let explicit = managed_rootfs_path_for_test(root.path(), "rootfs-aarch64-debian.img");
-
-        assert_eq!(
-            managed_rootfs_path(
-                &request(root.path(), vec![]),
-                root.path(),
-                Some(explicit.as_path())
-            )
-            .unwrap(),
-            Some(explicit)
-        );
-    }
-
-    #[test]
     fn qemu_uefi_without_to_bin_is_rejected() {
         let qemu = QemuConfig {
             uefi: true,

@@ -36,8 +36,8 @@ pub(crate) struct RealtimeNode {
 }
 
 impl RealtimeNode {
-    pub(crate) fn empty() -> Box<Self> {
-        Box::new(Self {
+    pub(crate) fn empty() -> Result<Box<Self>, crate::thread::TaskError> {
+        crate::thread::allocation::try_box(Self {
             thread: None,
             prev: None,
             next: None,
@@ -80,8 +80,8 @@ pub(crate) struct RealtimePushableNode {
 }
 
 impl RealtimePushableNode {
-    pub(crate) fn empty() -> Box<Self> {
-        Box::new(Self {
+    pub(crate) fn empty() -> Result<Box<Self>, crate::thread::TaskError> {
+        crate::thread::allocation::try_box(Self {
             thread: ThreadId::from_parts(0, 0),
             active: None,
             prev: None,

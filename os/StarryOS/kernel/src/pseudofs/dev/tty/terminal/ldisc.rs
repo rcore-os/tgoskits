@@ -475,8 +475,8 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         input_ready: Arc<PollSet>,
         worker_source: Arc<PollSet>,
     ) {
-        crate::task::spawn_kernel_thread(
-            move || {
+        crate::task::kernel_thread_builder("tty-reader".into())
+            .spawn(move || {
                 let mut registrar = None::<PollRegistrar<ExclusiveConsumer>>;
                 block_on(poll_fn(|cx| {
                     if let Some(registrar) = registrar.as_mut() {
@@ -495,9 +495,8 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                     Self::drive_input(&reader, input_ready.as_ref());
                     Poll::<()>::Pending
                 }))
-            },
-            "tty-reader".into(),
-        );
+            })
+            .expect("failed to spawn kernel thread");
     }
 
     pub fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Self {

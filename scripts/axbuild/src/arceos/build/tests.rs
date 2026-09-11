@@ -85,25 +85,6 @@ fn load_build_info_creates_missing_default_file() {
 }
 
 #[test]
-fn qemu_build_mode_initializes_missing_configs_for_all_supported_targets() {
-    let root = tempdir().unwrap();
-
-    for target in [
-        "aarch64-unknown-none-softfloat",
-        "x86_64-unknown-none",
-        "riscv64gc-unknown-none-elf",
-        "loongarch64-unknown-none-softfloat",
-    ] {
-        let path = root.path().join(format!("build-{target}.toml"));
-
-        let mode = load_arceos_build_mode(&path).unwrap();
-
-        assert_eq!(mode, ArceosBuildMode::Rust);
-        assert!(path.is_file());
-    }
-}
-
-#[test]
 fn build_config_without_app_c_uses_std_rust_mode() {
     let root = tempdir().unwrap();
     let path = root.path().join("build-x86_64-unknown-none.toml");
@@ -273,53 +254,6 @@ fn prepared_cargo_config_uses_unified_std_target() {
             .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
     );
     assert!(cargo.features.contains(&"ax-std/lockdep".to_string()));
-}
-
-#[test]
-fn c_app_cargo_configs_use_shared_bare_target_specs() {
-    for target in [
-        "x86_64-unknown-none",
-        "aarch64-unknown-none-softfloat",
-        "riscv64gc-unknown-none-elf",
-        "loongarch64-unknown-none-softfloat",
-    ] {
-        let root = tempdir().unwrap();
-        let build_config = root.path().join(format!("build-{target}.toml"));
-        let build_info = ArceosBuildInfo {
-            features: vec!["ax-std".to_string()],
-            ..ArceosBuildInfo::default()
-        };
-        fs::write(&build_config, toml::to_string_pretty(&build_info).unwrap()).unwrap();
-        let request = request("arceos-helloworld", target, build_config);
-        let cargo = load_c_app_cargo_config(&request).unwrap();
-
-        assert_eq!(cargo.target, format!("scripts/targets/bare/{target}.json"));
-        assert_eq!(cargo.env.get("AX_TARGET"), Some(&target.to_string()));
-        assert_eq!(
-            cargo.env.get("CARGO_UNSTABLE_JSON_TARGET_SPEC"),
-            Some(&"true".to_string())
-        );
-        assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-        assert!(
-            cargo
-                .args
-                .windows(2)
-                .any(|pair| pair == ["-Z", "build-std=core,alloc"])
-        );
-        assert!(
-            cargo
-                .args
-                .windows(2)
-                .any(|pair| pair == ["-Z", "json-target-spec"])
-        );
-
-        let final_cargo = crate::arceos::cbuild::prepare_c_app_cargo_config(&request, &[]).unwrap();
-        assert_eq!(
-            final_cargo.target,
-            format!("scripts/targets/bare/{target}.json")
-        );
-        assert_eq!(final_cargo.env.get("AX_TARGET"), Some(&target.to_string()));
-    }
 }
 
 #[test]

@@ -54,19 +54,19 @@ pub(crate) struct ThreadSchedCell {
 }
 
 impl ThreadSchedCell {
-    pub(super) fn new(id: ThreadId, init: ThreadSchedInit) -> Self {
-        let (state, active) = ThreadSchedState::new(init);
+    pub(super) fn new(id: ThreadId, init: ThreadSchedInit) -> Result<Self, TaskError> {
+        let (state, active) = ThreadSchedState::new(init)?;
         let lifecycle = alloc::sync::Arc::clone(&state.lifecycle);
         let placement = alloc::sync::Arc::clone(&state.placement);
         let deadline_server = state.deadline.server.clone();
-        Self {
+        Ok(Self {
             id,
             lifecycle,
             placement,
             deadline_server,
             detached_active: DetachedActiveState::new(active),
             state: IrqTicketLock::new(state),
-        }
+        })
     }
 
     pub(crate) const fn id(&self) -> ThreadId {
@@ -221,7 +221,7 @@ pub(super) struct ThreadPolicyInit {
 
 pub(super) struct ThreadPlacementInit {
     pub(super) initial_cpu: CpuId,
-    pub(super) affinity: CpuSet,
+    pub(super) affinity: alloc::sync::Arc<CpuSet>,
 }
 
 pub(super) struct ThreadDeadlineInit {
@@ -242,15 +242,15 @@ pub(super) struct ThreadSchedInit {
 }
 
 impl ThreadSchedState {
-    pub(super) fn new(init: ThreadSchedInit) -> (Self, ActiveSchedulingState) {
-        let active = ActiveSchedulingState::new(init.policy.policy, init.policy.entity);
-        (
+    pub(super) fn new(init: ThreadSchedInit) -> Result<(Self, ActiveSchedulingState), TaskError> {
+        let active = ActiveSchedulingState::new(init.policy.policy, init.policy.entity)?;
+        Ok((
             Self {
-                lifecycle: alloc::sync::Arc::new(ThreadLifecycle::new()),
+                lifecycle: crate::thread::allocation::try_arc(ThreadLifecycle::new())?,
                 policy: policy_state::ThreadPolicyState::new(init.policy.policy),
-                placement: alloc::sync::Arc::new(placement::SchedulerPlacement::new(
+                placement: crate::thread::allocation::try_arc(placement::SchedulerPlacement::new(
                     init.placement.initial_cpu,
-                )),
+                ))?,
                 affinity: placement::ThreadAffinityState::new(init.placement.affinity),
                 deadline: deadline_state::ThreadDeadlineState::new(
                     init.deadline.server,
@@ -263,7 +263,7 @@ impl ThreadSchedState {
                 ),
             },
             active,
-        )
+        ))
     }
 
     pub(super) fn transition(

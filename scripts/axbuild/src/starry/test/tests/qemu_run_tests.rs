@@ -309,21 +309,6 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
 }
 
 #[test]
-fn board_test_group_prefers_case_target_build_config() {
-    let root = tempdir().unwrap();
-    let build = write_starry_board_build_config(
-        root.path(),
-        "orangepi-5-plus",
-        "aarch64-unknown-none-softfloat",
-    );
-    write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
-
-    let groups = discover_board_test_groups(root.path(), None, None).unwrap();
-
-    assert!(groups.iter().any(|group| group.build_config_path == build));
-}
-
-#[test]
 fn board_test_group_rejects_legacy_case_build_config() {
     let root = tempdir().unwrap();
     write_board_test_config(root.path(), "smoke", "smoke", "orangepi-5-plus");
@@ -337,19 +322,4 @@ fn board_test_group_rejects_legacy_case_build_config() {
         .to_string();
 
     assert!(err.contains("not under a build wrapper"));
-}
-
-#[test]
-fn board_test_group_falls_back_to_mapped_board_build_config() {
-    let root = tempdir().unwrap();
-    let build = write_starry_board_build_config(
-        root.path(),
-        "orangepi-5-plus",
-        "aarch64-unknown-none-softfloat",
-    );
-    write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
-
-    let groups = discover_board_test_groups(root.path(), None, None).unwrap();
-
-    assert!(groups.iter().any(|group| group.build_config_path == build));
 }

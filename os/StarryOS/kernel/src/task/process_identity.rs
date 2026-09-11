@@ -306,6 +306,7 @@ mod reap_test_support {
         let child_tgid = child_identity.acquire_role::<Tgid>().unwrap();
         let child = parent
             .prepare_fork(child_identity.clone())
+            .unwrap()
             .publish()
             .unwrap()
             .commit();

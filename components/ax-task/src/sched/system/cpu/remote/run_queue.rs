@@ -246,20 +246,20 @@ struct IdleRqTask {
 }
 
 impl CpuRunQueueState {
-    pub(crate) fn new(owner: CpuId, config: TaskSystemConfig) -> Self {
-        Self {
+    pub(crate) fn new(owner: CpuId, config: TaskSystemConfig) -> Result<Self, TaskError> {
+        Ok(Self {
             owner,
             clock: RunQueueClock::new(),
             queue: RunQueue::configured(
                 u64::from(config.deadline_cap_percent()) * 10_000_000,
                 config.thread_capacity(),
-            ),
+            )?,
             rt_throttled: false,
             idle: None,
             membarrier_state: AddressSpaceMembarrierState::NONE,
             published_domain: None,
             published_load: None,
-        }
+        })
     }
 
     pub(crate) fn take_domain_publication(
@@ -311,16 +311,6 @@ impl CpuRunQueueState {
     pub(crate) fn update_clock(&mut self) -> RunQueueClockSnapshot {
         let sample = task_runtime::rq_clock_sample();
         self.clock.update(sample)
-    }
-
-    /// Reserves class-node storage before the task is published.
-    ///
-    /// This changes only cold structural capacity, never runnable state, and
-    /// therefore deliberately precedes the first owner-rq transaction for the
-    /// new task. Linux obtains the same property by embedding class nodes in
-    /// `task_struct` before publication.
-    pub(crate) fn prepare_thread_slot(&mut self, slot: usize) {
-        self.queue.prepare_thread_slot(slot);
     }
 
     /// Grants the owner-rq transaction access to scheduler-class mutations.

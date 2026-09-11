@@ -11,8 +11,8 @@ use crate::StarryResult;
 pub fn bind_dev_log() -> StarryResult<()> {
     let server = UnixSocket::new(DgramTransport::new(1));
     server.bind(SocketAddrEx::Unix(UnixSocketAddr::Path("/dev/log".into())))?;
-    crate::task::spawn_kernel_thread(
-        move || {
+    crate::task::kernel_thread_builder("dev-log-server".into())
+        .spawn(move || {
             let mut buf = [0u8; 65536];
             loop {
                 let mut dst = &mut buf[..];
@@ -33,9 +33,8 @@ pub fn bind_dev_log() -> StarryResult<()> {
                     }
                 }
             }
-        },
-        "dev-log-server".into(),
-    );
+        })
+        .expect("failed to spawn kernel thread");
     Ok(())
 }
 

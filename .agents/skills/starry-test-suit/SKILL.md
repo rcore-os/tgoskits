@@ -21,10 +21,10 @@ QEMU 用例构建 `starryos` 软件包，并运行对应体系结构的 `qemu-<a
 - 宿主 `std` 只验证算法、数据结构、状态机、协议解析和错误转换；不能用 fake runtime、fake IRQ、fake timer 或 shell prompt 代替 StarryOS 运行证据。
 - ArceOS 的真实调度、IPI、IRQ、timer、SMP、affinity 和上下文切换优先放在 `test-suit/arceos/rust`，使用 `cargo xtask arceos test qemu ...`。
 - Starry kernel 私有 Linux ABI、namespace、procfs、pipe、epoll 和内核生命周期语义保留在本 suite 或 Starry kernel axtest；Axvisor 和板卡专有行为分别使用 `cargo xtask ktest qemu`/`cargo xtask ktest board`。
-- 同一 crate 可以同时有 std 模型测试和 QEMU/axtest 集成测试，但同一断言只能由一个最接近真实语义的层负责；上层运行证据不能被低层 host 编译替代。
+- 同一 crate 可以同时有 std 模型测试和 QEMU/axtest 集成测试；按独立行为与故障种类去重，上层只补充低层无法证明的真实装配或运行时行为。不能用 host 编译、fake runtime 或 shell prompt 替代目标运行时证据。
 
 用例的目标风险、必要性、缺陷敏感度与跨层去重先按
-[`test-quality`](../test-quality/SKILL.md) 判断；本技能只补充 Starry 测试套件的目录、发现、文件流水线和运行器契约。
+[`test-quality`](../test-quality/SKILL.md) 判断；输入拒绝、错误传播和无副作用要求并入所属完整功能，不按每个参数或 errno 拆测。本技能只补充 Starry 测试套件的目录、发现、文件流水线和运行器契约，case 选择与 LTP 完成判定不因测试去重而削弱。
 
 宿主 `std` 允许列表和 profile 规则见 [`update-std-tests`](../update-std-tests/SKILL.md)，
 ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos-test-adapter/SKILL.md)。
@@ -90,7 +90,7 @@ ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos
 - `qemu/system` 中不同程序不能共享进程标识命名空间或 procfs 挂载。清理必须终止整个命名空间，不能只终止原始进程组或会话，否则后台化或 `setsid()` 后代会把锁和状态泄漏到下一用例。
 - 命令行包装脚本应在测试命令后立即保存 `$?`，再赋值、打印日志或清理。`status=failed` 等赋值会把 `$?` 重置为零，过早赋值会隐藏真实退出状态。
 - 日志保持紧凑且可追踪：每个程序前输出开始标记，结束时输出包含程序路径和耗时的一条通过或失败结果，最后只输出一次套件汇总。不要在末尾重复逐程序耗时。
-- 共享 `qemu/system` 运行器的逐程序默认超时保持 120 秒。只有确实同步密集的程序可以通过运行器内按名称匹配的明确条目延长，并由 axbuild 源码契约测试覆盖；不得提高默认值或把例外复制到各体系结构 TOML。`test-ext4-inode-unique` 和 `test-pagecache-cap` 为 240 秒。
+- 共享 `qemu/system` 运行器的逐程序默认超时保持 120 秒。只有确实同步密集的程序可以通过运行器内按名称匹配的明确条目延长，并通过运行器功能验证选择、生效和超时失败传播；复用通用规则测试，不按例外名称新增源码文本断言；不得提高默认值或把例外复制到各体系结构 TOML。`test-ext4-inode-unique` 和 `test-pagecache-cap` 为 240 秒。
 - 逐程序超时后的进程标识命名空间清理另设上限，当前为 30 秒。无法回收命名空间初始化进程时，输出 `STARRY_SYSTEM_TEST_CLEANUP_TIMEOUT`，并在启动下一程序前终止套件。隔离回归中的逃逸后代应阻塞在原始管道等待上，以迫使内核在发布不可捕获终止信号后唤醒它。
 - CMake 配置、构建和安装命令成功时保持安静；失败时必须重放命令、标准输出、标准错误、退出状态和阶段上下文。预构建及客户机或 QEMU 输出保持实时。
 - 启动 `debugfs` 前先决定根文件系统解压权限。直接执行 `rdump` 需要完整宿主所有权权限，否则先进入 `fakeroot`。Linux 上检查有效用户标识、完整用户与组标识映射以及有效 `CAP_CHOWN`；需要 `fakeroot` 但不可用时，在启动 `debugfs` 前失败；不得先输出再过滤所有权警告，也不得用更弱语义静默重试。非 Linux Unix 宿主（如 macOS）没有可用的 fakeroot：常见打包是 shell shim，会拆坏 `-R` 的引号参数并假成功退出 0，因此这些宿主直接执行 `debugfs`，解包后必须校验镜像顶层条目在暂存目录中存在，不得只信任退出码。

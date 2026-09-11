@@ -2,7 +2,7 @@ use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
 use core::{
     cell::UnsafeCell,
     ffi::{c_int, c_void},
-    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+    sync::atomic::{AtomicU8, Ordering},
 };
 
 use ax_lazyinit::LazyLock;
@@ -69,14 +69,6 @@ impl PthreadCreateOptions {
     }
 }
 
-fn spawn_pthread_with<F, R>(
-    options: PthreadCreateOptions,
-    entry: F,
-    spawn: impl FnOnce(F, alloc::string::String, usize) -> R,
-) -> R {
-    spawn(entry, alloc::string::String::new(), options.stack_size)
-}
-
 impl Pthread {
     /// # Safety
     ///
@@ -97,15 +89,7 @@ impl Pthread {
         let their_packet = my_packet.clone();
         let join_state = Arc::new(PthreadJoinState::new());
         let child_join_state = Arc::clone(&join_state);
-        let registered = Arc::new(AtomicBool::new(false));
-        let child_registered = registered.clone();
-
         let main = move || {
-            while !child_registered.load(Ordering::Acquire) {
-                if let Err(error) = ax_runtime::task::thread::current::yield_current_cpu() {
-                    panic!("pthread registration yield failed: {error}");
-                }
-            }
             let arg = arg_wrapper;
             let ret = start_routine(arg.0);
             unsafe { *their_packet.result.get() = ret };
@@ -115,11 +99,15 @@ impl Pthread {
             }
         };
 
-        let task_inner =
-            spawn_pthread_with(options, main, ax_runtime::thread::spawn_raw).map_err(|error| {
-                warn!("failed to spawn pthread scheduler task: {error}");
+        let staged = ax_runtime::thread::builder(alloc::string::String::new())
+            .stack_size(options.stack_size)
+            .prepare(main)
+            .and_then(|prepared| prepared.stage())
+            .map_err(|error| {
+                warn!("failed to prepare pthread scheduler task: {error}");
                 PosixError::EAGAIN
             })?;
+        let task_inner = staged.thread_handle();
         let tid = task_inner.id().as_u64();
         let thread = Pthread {
             inner: task_inner,
@@ -128,7 +116,7 @@ impl Pthread {
         };
         let ptr = Box::into_raw(Box::new(thread)) as *mut c_void;
         TID_TO_PTHREAD.lock().insert(tid, ForceSendSync(ptr));
-        registered.store(true, Ordering::Release);
+        staged.activate().detach();
         Ok(ptr)
     }
 
@@ -164,7 +152,7 @@ impl Pthread {
         }
 
         let thread = Self::claim_join(ptr)?;
-        let scheduler_exit_code = match ax_runtime::thread::wait_thread(&thread.inner) {
+        let scheduler_exit_code = match (thread.inner).wait() {
             Ok(exit_code) => exit_code,
             Err(error) => {
                 thread.join_state.release_join();
@@ -198,7 +186,8 @@ impl Pthread {
         // access the allocation after ownership is reconstructed here.
         let thread = unsafe { Box::from_raw(ptr as *mut Pthread) };
         let Pthread { inner, .. } = *thread;
-        let reaped_exit_code = ax_runtime::thread::join_thread(inner)
+        let reaped_exit_code = (inner)
+            .join()
             .unwrap_or_else(|error| panic!("failed to reap an exited pthread: {error}"));
         assert_eq!(
             reaped_exit_code, scheduler_exit_code,
@@ -442,10 +431,10 @@ unsafe impl<T> Sync for ForceSendSync<T> {}
 
 #[cfg(test)]
 mod tests {
-    use super::{PosixError, PthreadCreateOptions, PthreadJoinState, spawn_pthread_with};
+    use super::{PosixError, PthreadCreateOptions, PthreadJoinState};
 
     #[test]
-    fn pthread_create_forwards_the_attribute_stack_size_to_the_runtime() {
+    fn pthread_create_decodes_the_abi_stack_size() {
         let mut attr = crate::ctypes::pthread_attr_t::default();
         let requested_stack_size = crate::config::TASK_STACK_SIZE + 0x4000;
         // SAFETY: selecting the `__s` union member initializes the exact ABI
@@ -455,22 +444,14 @@ mod tests {
         // SAFETY: `attr` is an initialized local value with the ABI layout
         // generated from this crate's public pthread header.
         let options = unsafe { PthreadCreateOptions::from_attr(&attr) };
-        let forwarded_stack_size = spawn_pthread_with(options, (), |(), name, stack_size| {
-            assert!(name.is_empty());
-            stack_size
-        });
-
-        assert_eq!(forwarded_stack_size, requested_stack_size);
+        assert_eq!(options.stack_size, requested_stack_size);
     }
 
     #[test]
     fn null_pthread_attributes_use_the_runtime_default_stack_size() {
         // SAFETY: null requests the documented default options.
         let options = unsafe { PthreadCreateOptions::from_attr(core::ptr::null()) };
-        let forwarded_stack_size =
-            spawn_pthread_with(options, (), |(), _name, stack_size| stack_size);
-
-        assert_eq!(forwarded_stack_size, crate::config::TASK_STACK_SIZE);
+        assert_eq!(options.stack_size, crate::config::TASK_STACK_SIZE);
     }
 
     #[test]

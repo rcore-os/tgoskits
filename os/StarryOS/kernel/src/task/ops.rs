@@ -10,7 +10,7 @@ use starry_signal::{SignalInfo, Signo};
 use super::{
     AlarmTarget, AlarmToken, PendingTimerActions, ProcessData, Thread, UserTaskRef, ZombieSnapshot,
     current_user_task, processes, publish_zombie, resolve_futex_for_process_teardown,
-    send_signal_to_process, send_signal_to_process_data, send_signal_to_thread, yield_now,
+    send_signal_to_process, send_signal_to_process_data, yield_now,
 };
 use crate::{
     StarryError, StarryResult,
@@ -128,7 +128,7 @@ mod axtests {
             sync::WaitQueue,
             thread::current::current_thread_id,
         },
-        thread::{join_thread, spawn_raw},
+        thread::builder,
     };
 
     use crate::sync::Mutex;
@@ -164,19 +164,17 @@ mod axtests {
             let owner_wait = Arc::clone(&owner_wait);
             let owner_locked = Arc::clone(&owner_locked);
             let release_owner = Arc::clone(&release_owner);
-            spawn_raw(
-                move || {
+            builder("pi-no-rq-owner".to_string())
+                .stack_size(256 * 1024)
+                .spawn(move || {
                     begin_pi_schedule_test_probe(
                         current_thread_id().expect("PI owner must have a thread identity"),
                     );
                     let _guard = mutex.lock();
                     owner_locked.store(true, Ordering::Release);
                     owner_wait.wait_until(|| release_owner.load(Ordering::Acquire));
-                },
-                "pi-no-rq-owner".to_string(),
-                256 * 1024,
-            )
-            .expect("failed to spawn PI owner")
+                })
+                .expect("failed to spawn PI owner")
         };
         wait_for(
             || owner_locked.load(Ordering::Acquire),
@@ -186,15 +184,13 @@ mod axtests {
         let waiter = {
             let mutex = Arc::clone(&mutex);
             let waiter_done = Arc::clone(&waiter_done);
-            spawn_raw(
-                move || {
+            builder("pi-no-rq-waiter".to_string())
+                .stack_size(256 * 1024)
+                .spawn(move || {
                     drop(mutex.lock());
                     waiter_done.store(true, Ordering::Release);
-                },
-                "pi-no-rq-waiter".to_string(),
-                256 * 1024,
-            )
-            .expect("failed to spawn PI waiter")
+                })
+                .expect("failed to spawn PI waiter")
         };
 
         wait_for(
@@ -218,8 +214,8 @@ mod axtests {
 
         release_owner.store(true, Ordering::Release);
         owner_wait.notify_all();
-        join_thread(owner).expect("PI owner must exit cleanly");
-        join_thread(waiter).expect("PI waiter must exit cleanly");
+        owner.join().expect("PI owner must exit cleanly");
+        waiter.join().expect("PI waiter must exit cleanly");
         assert!(
             waiter_done.load(Ordering::Acquire),
             "PI waiter must acquire the mutex after owner release"
@@ -326,30 +322,113 @@ fn handle_futex_death(
     // After non-leader execve, that value is the thread's active-namespace TID,
     // not its root-namespace TID or scheduler task id.
     let owner_tid = thr.user_tid().get() & FUTEX_TID_MASK;
-    let value = futex_word.vm_read(current)?;
-    let owner = value & FUTEX_TID_MASK;
-
-    if pending && owner == 0 {
-        wake_robust_futex(&thr.proc_data, address);
-        return Ok(());
+    loop {
+        match update_robust_owner_nofault(futex_word, owner_tid, pending) {
+            Ok(wake) => {
+                if wake {
+                    wake_robust_futex(&thr.proc_data, address);
+                }
+                return Ok(());
+            }
+            Err(RobustOwnerError::ReadFault) => {
+                crate::mm::fault_in_user_u32_read(current, futex_word)?;
+            }
+            Err(RobustOwnerError::WriteFault) => {
+                crate::mm::fault_in_user_u32_write(current, futex_word)?;
+            }
+            Err(RobustOwnerError::Retry) => yield_now(),
+        }
     }
-
-    if owner != owner_tid {
-        return Ok(());
-    }
-    futex_word.vm_write(current, (value & FUTEX_WAITERS) | FUTEX_OWNER_DIED)?;
-    if value & FUTEX_WAITERS != 0 {
-        wake_robust_futex(&thr.proc_data, address);
-    }
-    Ok(())
 }
 
-pub fn exit_robust_list(
+#[derive(Debug, thiserror::Error)]
+enum RobustOwnerError {
+    #[error("robust owner read requires fault resolution")]
+    ReadFault,
+    #[error("robust owner update requires write fault resolution")]
+    WriteFault,
+    #[error("robust owner update exhausted bounded atomic retries")]
+    Retry,
+}
+
+/// Completes the nonfaulting part of Linux handle_futex_death. The caller
+/// resolves read/write faults and reschedules after LL/SC exhaustion.
+fn update_robust_owner_nofault(
+    word: *mut u32,
+    owner_tid: u32,
+    pending: bool,
+) -> Result<bool, RobustOwnerError> {
+    loop {
+        let value =
+            crate::mm::read_user_u32_nofault(word).map_err(|_| RobustOwnerError::ReadFault)?;
+        let owner = value & FUTEX_TID_MASK;
+        if pending && owner == 0 {
+            return Ok(true);
+        }
+        if owner != owner_tid {
+            return Ok(false);
+        }
+        #[cfg(axtest)]
+        robust_waiter_publication_probe(word);
+        let observed = crate::mm::compare_exchange_user_u32_nofault(
+            word,
+            value,
+            (value & FUTEX_WAITERS) | FUTEX_OWNER_DIED,
+        )
+        .map_err(|error| match error {
+            ax_cpu::user::UserAtomicError::Fault => RobustOwnerError::WriteFault,
+            ax_cpu::user::UserAtomicError::Retry => RobustOwnerError::Retry,
+        })?;
+        if observed == value {
+            return Ok(value & FUTEX_WAITERS != 0);
+        }
+        // Like Linux's retry label, reread and revalidate ownership. In
+        // particular, never overwrite a WAITERS publication or a new owner.
+    }
+}
+
+// Inject exactly one user-side WAITERS publication after the kernel read.
+// The test uses a real mapped word and the runtime's MM/scheduler protocol.
+#[cfg(axtest)]
+static ROBUST_WAITER_PUBLICATION: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(axtest)]
+fn robust_waiter_publication_probe(word: *mut u32) {
+    use core::sync::atomic::Ordering;
+    if ROBUST_WAITER_PUBLICATION
+        .compare_exchange(word.addr(), 0, Ordering::AcqRel, Ordering::Relaxed)
+        .is_ok()
+    {
+        crate::mm::atomic_update_user_u32_nofault(
+            word,
+            ax_cpu::user::UserAtomicU32Op::Or,
+            FUTEX_WAITERS,
+        )
+        .expect("the probe word must already be writable");
+    }
+}
+
+/// Releases registered robust locks before exit or exec discards the old MM.
+/// User-memory errors do not prevent the lifecycle change.
+pub(crate) fn release_robust_futexes(current: &UserTaskRef) {
+    let thread = current.as_thread();
+    let head = thread.robust_list_head() as *const RobustListHead;
+    if head.is_null() {
+        return;
+    }
+    if let Err(error) = exit_robust_list(current, thread, head) {
+        warn!("robust futex cleanup failed: {error}");
+    }
+    thread.set_robust_list_head(0);
+}
+
+fn exit_robust_list(
     current: &UserTaskRef,
     thr: &Thread,
     head: *const RobustListHead,
 ) -> crate::StarryResult<()> {
-    // Reference: https://elixir.bootlin.com/linux/v6.13.6/source/kernel/futex/core.c#L777
+    // Linux v7.1 kernel/futex/core.c: exit_robust_list and futex_cleanup.
 
     let mut limit = ROBUST_LIST_LIMIT;
 
@@ -441,24 +520,24 @@ fn close_process_relations_for_exit(
 pub fn do_exit(exit_code: i32, group_exit: bool) {
     let curr = current_user_task();
     let thr = curr.as_thread();
+    // Linux do_group_exit commits the group decision before do_exit claims
+    // PF_EXITING. All subsequent teardown observes the first group's status.
+    let exit_code = if group_exit {
+        let status = {
+            let _update = thr.proc_data.thread_group_update();
+            thr.signal().begin_group_exit(exit_code)
+        };
+        super::signal::wake_exiting_signal_group(&thr.proc_data);
+        status
+    } else {
+        exit_code
+    };
     if !thr.begin_exit() {
         return;
     }
 
     info!("{} exit with code: {}", curr.id_name(), exit_code);
-
     emit_sched_process_exit(thr.tid(), exit_code);
-
-    if group_exit && let Some(tids) = thr.proc_data.proc.start_group_exit(exit_code) {
-        let sig = SignalInfo::new_kernel(Signo::SIGKILL);
-        for tid in tids {
-            if tid == thr.tid_number() {
-                continue;
-            }
-            let _ = send_signal_to_thread(None, tid, Some(sig));
-            let _ = zap_thread(tid);
-        }
-    }
 
     // Free any per-task perf HW counters attached to this thread before the fd
     // table is torn down, so the PMU slots are released even if a perf fd
@@ -470,12 +549,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // Robust futex ownership must be released before clone-child-tid wakes a
     // pthread joiner; otherwise userspace can observe thread exit before the
     // OWNER_DIED handoff has been written.
-    let head = thr.robust_list_head() as *const RobustListHead;
-    if !head.is_null()
-        && let Err(err) = exit_robust_list(&curr, thr, head)
-    {
-        warn!("exit robust list failed: {err:?}");
-    }
+    release_robust_futexes(&curr);
 
     let clear_child_tid = thr.clear_child_tid() as *mut u32;
     if clear_child_tid.vm_write(&curr, 0).is_ok() {
@@ -621,7 +695,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // resources that still belong to the exiting process. In particular,
         // a vfork parent resumes only after this cleanup.
         if let Ok(aspace) = thr.proc_data.pin_aspace() {
-            crate::syscall::clear_proc_shm(
+            crate::ipc::shm::clear_proc_shm(
                 process_identity_id,
                 process.identity().snapshot(),
                 &aspace,
@@ -717,11 +791,10 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 .exit_event()
                 .wake(IoEvents::IN | IoEvents::RDNORM);
         };
-
-        // Unblock a vfork parent waiting for this child to exit.
-        thr.proc_data.notify_vfork_done();
     }
 
+    // Every child thread owns its vfork completion, including CLONE_THREAD.
+    thr.notify_vfork_done();
     thr.set_exit();
     task_identity.notify_thread_pidfd_exit();
     unsafe { thr.exit_event().wake(axpoll::IoEvents::IN) };
@@ -793,4 +866,94 @@ mod tests {
     fn decode_wait_status_rules_hold() {
         assert!(super::decode_wait_status_rules_hold_for_test());
     }
+}
+
+#[cfg(axtest)]
+#[axtest::axtest]
+fn robust_owner_death_preserves_concurrent_waiters() {
+    use core::sync::atomic::Ordering;
+
+    use ax_memory_addr::VirtAddr;
+    use ax_runtime::{
+        hal::paging::MappingFlags,
+        thread::{UserContextOptions, prepare_user_thread},
+    };
+
+    use crate::mm::{AddrSpace, MappingOperation, MmHandle, copy_from_kernel};
+
+    let address = VirtAddr::from(0x10000);
+    let mut aspace = AddrSpace::new_empty(address, 0x10000).unwrap();
+    copy_from_kernel(&mut aspace).unwrap();
+    aspace
+        .map(
+            address,
+            4096,
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+            true,
+            MappingOperation::new_alloc(address, 4096, "robust-word"),
+        )
+        .unwrap();
+    let readonly = address + 4096;
+    aspace
+        .map(
+            readonly,
+            4096,
+            MappingFlags::READ | MappingFlags::USER,
+            true,
+            MappingOperation::new_alloc(readonly, 4096, "robust-readonly"),
+        )
+        .unwrap();
+    let mm = MmHandle::from_arc(Arc::new(crate::sync::Mutex::new(aspace))).unwrap();
+    let options = UserContextOptions::new(mm.scheduler_address_space().unwrap());
+    // SAFETY: this entry accesses only the mapped test word. The prepared
+    // runtime context owns this MM through completion of its execution.
+    let task = unsafe {
+        prepare_user_thread(
+            super::kernel_thread_builder("robust-word".into()),
+            || {
+                let word = 0x10000 as *mut u32;
+                crate::mm::atomic_update_user_u32_nofault(
+                    word,
+                    ax_cpu::user::UserAtomicU32Op::Set,
+                    17,
+                )
+                .unwrap();
+                ROBUST_WAITER_PUBLICATION.store(word.addr(), Ordering::Release);
+                let wake = update_robust_owner_nofault(word, 17, false).unwrap();
+                assert_eq!(ROBUST_WAITER_PUBLICATION.load(Ordering::Acquire), 0);
+                assert_eq!(
+                    crate::mm::read_user_u32_nofault(word).unwrap(),
+                    FUTEX_OWNER_DIED | FUTEX_WAITERS,
+                    "owner death must preserve WAITERS published after the initial read"
+                );
+                assert!(wake, "the newly published waiter must receive a wake");
+                let dead = FUTEX_OWNER_DIED | FUTEX_WAITERS;
+                let compare = crate::mm::compare_exchange_user_u32_nofault;
+                assert_eq!(compare(word, 17, 9), Ok(dead));
+                assert_eq!(crate::mm::read_user_u32_nofault(word).unwrap(), dead);
+                assert_eq!(compare(word, dead, u32::MAX), Ok(dead));
+                assert_eq!(compare(word, u32::MAX, 0), Ok(u32::MAX));
+                // The first address faults at the store-exclusive/cmpxchg;
+                // the second faults at the initial user access.
+                assert_eq!(
+                    compare(0x11000 as *mut u32, 0, 1),
+                    Err(ax_cpu::user::UserAtomicError::Fault)
+                );
+                assert_eq!(
+                    compare(0x12000 as *mut u32, 0, 1),
+                    Err(ax_cpu::user::UserAtomicError::Fault)
+                );
+                assert_eq!(
+                    crate::mm::read_user_u32_nofault(0x11000 as *const u32).unwrap(),
+                    0
+                );
+            },
+            options,
+        )
+    }
+    .unwrap()
+    .stage()
+    .unwrap()
+    .activate();
+    assert_eq!(task.join().unwrap(), 0);
 }

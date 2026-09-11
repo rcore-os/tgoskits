@@ -11,7 +11,7 @@ use crate::{AxVMRef, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err, ax_err_t
 mod linux;
 
 /// Return the q35 PCI INTx route reserved for the passthrough block device.
-#[cfg(all(target_arch = "x86_64", any(test, feature = "host-fs")))]
+#[cfg(all(target_arch = "x86_64", feature = "host-fs"))]
 pub(crate) const fn x86_qemu_passthrough_block_intx() -> (u8, u8, u8, usize) {
     (3, 0, 1, 19)
 }

@@ -19,7 +19,7 @@ cfg-if = "1.0"
 ax-sync.workspace = true
 
 # System independent crates provided by ArceOS.
-axdevice_base = { workspace = true }
+axdevice_base = { workspace = true, features = ["runtime-internal"] }
 axvm-types = { workspace = true }
 thiserror = { workspace = true }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
@@ -32,6 +32,7 @@ name = "lookup_DeviceRuntime"
 harness = false
 
 [dev-dependencies]
+ax-runtime = { workspace = true, features = ["host-test"] }
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
 divan = "0.1.21"
 paste = "1.0"

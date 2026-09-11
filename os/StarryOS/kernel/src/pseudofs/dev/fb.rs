@@ -96,10 +96,9 @@ pub struct FrameBuffer {
 }
 impl FrameBuffer {
     pub fn new() -> Self {
-        crate::task::spawn_kernel_thread(
-            || crate::task::future::block_on(refresh_task()),
-            "fb-refresh".into(),
-        );
+        crate::task::kernel_thread_builder("fb-refresh".into())
+            .spawn(|| crate::task::future::block_on(refresh_task()))
+            .expect("failed to spawn kernel thread");
         let info = ax_display::framebuffer_info();
         Self {
             base: VirtAddr::from(info.fb_base_vaddr),

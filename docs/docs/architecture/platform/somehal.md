@@ -187,7 +187,7 @@ pub trait PlatOp {
 2. **ACPI SPCR**：通过 `rdrive::acpi_spcr_console_device_id()`，仅 serial index 0。
 3. **FDT stdout-path**：读 `/chosen/stdout-path` 或 `linux,stdout-path`，并解析 alias。
 
-该模块有 8 个单元测试覆盖各种组合，是 somehal 中测试最完善的子模块。
+该模块的测试用于验证控制台解析与选择规则；质量取决于能否识别选择错误，不以输入组合或用例数量衡量。
 
 ## 架构后端
 
@@ -240,4 +240,4 @@ pub trait PlatOp {
 
 - **新增架构**：创建 `src/arch/<arch>/`，定义 `pub struct Plat;` 并实现 `PlatOp`；按需在 `irq_routing.rs` 添加架构无关 helper；通过 `module_driver!` 注册中断控制器。
 - **新增 IRQ domain**：在 `IrqDomainKind` 加枚举值，给 arch 后端在合适时机调用 `register_irq_domain` / `alloc_irq_domain`；添加 per-kind atomic slot 以走 fast path。
-- **新增 console 解析路径**：在 `boot_console.rs` 的 `device_id()` 中按优先级追加；务必补单元测试。
+- **新增 console 解析路径**：在 `boot_console.rs` 的 `device_id()` 中按优先级追加；按 [test-quality](https://github.com/rcore-os/tgoskits/blob/dev/.agents/skills/test-quality/SKILL.md) 优先复用或增强完整解析与选择验证，不为每个控制台名称或参数取值新增用例。

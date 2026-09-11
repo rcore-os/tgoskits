@@ -1,5 +1,6 @@
 //! User task management.
 
+mod allocation;
 mod bounded_stack;
 mod cgroup_exit_invariant;
 mod cred;
@@ -64,7 +65,7 @@ pub(crate) use self::{
 use crate::{
     mm::MmHandle,
     namespace::NsProxy,
-    sync::{IrqMutex, Mutex, MutexGuard, SpinLock},
+    sync::{IrqMutex, Mutex, MutexGuard, RawSpinLock},
 };
 
 /// Resources shared by every thread in one Linux process generation.
@@ -109,7 +110,7 @@ pub struct ProcessData {
 pub struct ProcessDataInit {
     image: ProcessImage,
     aspace: MmHandle,
-    signal_actions: Arc<SpinLock<SignalActions>>,
+    signal_actions: Arc<RawSpinLock<SignalActions>>,
     nsproxy: NsProxy,
     cgroup: Arc<ax_cgroup::CgroupNode>,
     exit_signal: Option<Signo>,
@@ -122,7 +123,7 @@ impl ProcessDataInit {
     pub fn new(
         image: ProcessImage,
         aspace: MmHandle,
-        signal_actions: Arc<SpinLock<SignalActions>>,
+        signal_actions: Arc<RawSpinLock<SignalActions>>,
         nsproxy: NsProxy,
         exit_signal: Option<Signo>,
         wait_parent_tid: TidNumber,
@@ -186,6 +187,7 @@ impl ProcessData {
             signal: Arc::new(ProcessSignalManager::new(
                 signal_actions,
                 crate::config::SIGNAL_TRAMPOLINE,
+                proc.group_exit_state(),
             )),
             nsproxy: IrqMutex::new(Arc::new(nsproxy)),
             namespace_update: Mutex::new(()),

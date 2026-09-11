@@ -47,6 +47,15 @@ int main(void)
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("=== test-sigqueueinfo: rt_sigqueueinfo siginfo preservation ===\n");
 
+    siginfo_t unused_info;
+    fill_siginfo(&unused_info, 0, 0);
+    errno = 0;
+    /* Linux consumes three arguments. Poison the unused fourth register so
+     * a bogus sigsetsize check fails deterministically, not by register luck. */
+    long probe_rc = syscall(SYS_rt_sigqueueinfo, (long)getpid(), 0L, &unused_info, 0L);
+    CHECK("unused fourth argument is ignored", probe_rc == 0,
+          "got=%ld errno=%d (%s)", probe_rc, errno, strerror(errno));
+
     int signo = SIGRTMIN + 1;
     int value = 0x5149;
     sender_uid = getuid();

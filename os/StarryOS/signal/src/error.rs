@@ -3,6 +3,9 @@ use starry_vm::VmError;
 /// Errors produced by signal-management operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SignalError {
+    /// Preparing thread signal state exhausted memory.
+    #[error("signal allocation failed")]
+    NoMemory,
     /// A signal operation could not access the caller's userspace memory.
     #[error("signal user-memory access failed: {0}")]
     UserMemory(

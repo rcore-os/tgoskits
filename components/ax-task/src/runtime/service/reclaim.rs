@@ -52,7 +52,7 @@ pub fn start_deferred_task_work_service() -> Result<(), TaskError> {
                 return Err(error);
             }
         };
-    worker.detach_permanent();
+    worker.detach();
     Ok(())
 }
 

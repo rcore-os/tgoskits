@@ -1,6 +1,6 @@
 //! Thread-owned state and its synchronization boundaries.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use core::{
     cell::UnsafeCell,
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
@@ -9,7 +9,7 @@ use core::{
 use ax_runtime::hal::{cpu::user::UserContext, percpu::CpuPin, time::TimeValue};
 use axpoll_set::PollSet;
 use scope_local::{ActiveScope, LocalItem, Scope};
-use starry_signal::{SignalSet, api::ThreadSignalManager};
+use starry_signal::{SignalSet, Signo, api::ThreadSignalManager};
 
 use super::{
     CpuTimeAccounting, Cred, ExitPathLease, PidIdentity, PidNamespaceRef, PidRoleLease,
@@ -17,10 +17,12 @@ use super::{
     SockFilter, Tid, TidNumber, UserTaskRef,
     bounded_stack::BoundedStack,
     futex::ThreadWaitState,
+    future,
     interruption::{InterruptSnapshot, InterruptState},
     ops,
     scheduler_identity::SchedulerIdentity,
     user_memory_access::{UserMemoryAccessDepth, UserMemoryAccessGuard},
+    wait_on_pollset,
 };
 use crate::sync::{IrqMutex, Mutex, NoPreemptIrqSave};
 
@@ -130,12 +132,17 @@ struct ThreadAccounting {
 }
 
 impl ThreadAccounting {
-    fn new() -> Self {
-        Self {
-            cpu_time: CpuTimeAccounting::new(),
+    fn new() -> crate::StarryResult<Self> {
+        Ok(Self {
+            cpu_time: CpuTimeAccounting::new()?,
             rttime: Mutex::new(RttimeWatchdog::new()),
-        }
+        })
     }
+}
+
+struct VforkDone {
+    done: bool,
+    poll: Arc<PollSet>,
 }
 
 /// Thread-exit, userspace restart, and interruptible-wait state.
@@ -143,11 +150,11 @@ struct ThreadLifecycle {
     clear_child_tid: AtomicUsize,
     robust_list_head: AtomicUsize,
     exit: Arc<AtomicBool>,
-    exit_started: AtomicBool,
     interrupted: InterruptState,
     user_memory_access: UserMemoryAccessDepth,
     block_next_signal_check: NextSignalCheckBlock,
     exit_event: Arc<PollSet>,
+    vfork_done: IrqMutex<Option<VforkDone>>,
     exit_request: OneShotFlag,
     deadline_overrun: OneShotFlag,
     rseq_area: AtomicUsize,
@@ -168,21 +175,21 @@ impl ThreadWork {
 }
 
 impl ThreadLifecycle {
-    fn new() -> Self {
-        Self {
+    fn new() -> crate::StarryResult<Self> {
+        Ok(Self {
             clear_child_tid: AtomicUsize::new(0),
             robust_list_head: AtomicUsize::new(0),
-            exit: Arc::new(AtomicBool::new(false)),
-            exit_started: AtomicBool::new(false),
+            exit: super::allocation::try_arc(AtomicBool::new(false))?,
             interrupted: InterruptState::new(),
             user_memory_access: UserMemoryAccessDepth::new(),
             block_next_signal_check: NextSignalCheckBlock::new(),
-            exit_event: Arc::default(),
+            exit_event: super::allocation::try_arc(PollSet::new())?,
+            vfork_done: IrqMutex::new(None),
             exit_request: OneShotFlag::new(),
             deadline_overrun: OneShotFlag::new(),
             rseq_area: AtomicUsize::new(0),
             rseq_signature: AtomicU32::new(0),
-        }
+        })
     }
 }
 
@@ -199,13 +206,13 @@ impl ThreadSignals {
         tid: u32,
         process_signal: Arc<starry_signal::api::ProcessSignalManager>,
         signal_mask: SignalSet,
-    ) -> Self {
-        Self {
-            manager: ThreadSignalManager::new_with_blocked(tid, process_signal, signal_mask),
+    ) -> crate::StarryResult<Self> {
+        Ok(Self {
+            manager: ThreadSignalManager::new_with_blocked(tid, process_signal, signal_mask)?,
             signalfd_waker: PollSet::new(),
             deferred_mask_restore: IrqMutex::new(None),
             deferred_mask_restore_pending: AtomicBool::new(false),
-        }
+        })
     }
 }
 
@@ -222,17 +229,20 @@ struct ThreadSecurity {
 }
 
 impl ThreadSecurity {
-    fn new(parent_cred: Option<Arc<Cred>>) -> Self {
-        Self {
+    fn new(parent_cred: Option<Arc<Cred>>) -> crate::StarryResult<Self> {
+        Ok(Self {
             oom_score_adj: AtomicI32::new(200),
             pdeathsig: AtomicU32::new(0),
             no_new_privs: AtomicBool::new(false),
-            seccomp: SeccompStateStore::new(),
-            cred: Mutex::new(parent_cred.unwrap_or_else(|| Arc::new(Cred::root()))),
+            seccomp: SeccompStateStore::new()?,
+            cred: Mutex::new(match parent_cred {
+                Some(cred) => cred,
+                None => super::allocation::try_arc(Cred::root())?,
+            }),
             uid_map_written: AtomicBool::new(false),
             gid_map_written: AtomicBool::new(false),
             setgroups_deny: AtomicBool::new(false),
-        }
+        })
     }
 }
 
@@ -331,6 +341,74 @@ pub struct Thread {
 }
 
 impl Thread {
+    /// Prepares this unpublished child's MM-release completion.
+    pub(crate) fn prepare_vfork_done(&self) -> crate::StarryResult<()> {
+        let poll = super::allocation::try_arc(PollSet::new())?;
+        let mut completion = self.lifecycle.vfork_done.lock();
+        assert!(completion.is_none(), "vfork completion installed twice");
+        *completion = Some(VforkDone { done: false, poll });
+        Ok(())
+    }
+
+    /// Waits for MM release, or detaches a killed parent as TASK_KILLABLE does.
+    /// Returns whether the child completed the wait (and permits VFORK_DONE).
+    pub(crate) fn wait_vfork_done(&self, parent: &UserTaskRef) -> bool {
+        let poll = {
+            let guard = self.lifecycle.vfork_done.lock();
+            match guard.as_ref() {
+                Some(vfork) => vfork.poll.clone(),
+                None => return true,
+            }
+        };
+        let curr_thr = parent.as_thread();
+        loop {
+            let result = future::block_on_user(
+                parent,
+                wait_on_pollset(&poll, || {
+                    self.lifecycle
+                        .vfork_done
+                        .lock()
+                        .as_ref()
+                        .map(|vfork| vfork.done)
+                        .unwrap_or(true)
+                        .then_some(())
+                }),
+            );
+            match result {
+                future::UserWaitOutcome::Ready(()) => return true,
+                future::UserWaitOutcome::Interrupted
+                    if curr_thr.has_exit_request()
+                        || curr_thr.signal().pending().has(Signo::SIGKILL) =>
+                {
+                    // Linux clears child->vfork_done under task_lock before
+                    // letting a killed parent leave its completion wait. Drop
+                    // the detached poll owner after releasing our IRQ lock.
+                    let detached = self.lifecycle.vfork_done.lock().take();
+                    drop(detached);
+                    return false;
+                }
+                future::UserWaitOutcome::Interrupted => continue,
+                future::UserWaitOutcome::TimedOut => {
+                    unreachable!("vfork completion wait has no deadline")
+                }
+            }
+        }
+    }
+
+    /// Publishes vfork completion before waking the parent.
+    pub(crate) fn notify_vfork_done(&self) {
+        let poll = {
+            let mut guard = self.lifecycle.vfork_done.lock();
+            match guard.as_mut() {
+                Some(vfork) => {
+                    vfork.done = true;
+                    vfork.poll.clone()
+                }
+                None => return,
+            }
+        };
+        unsafe { poll.wake(axpoll::IoEvents::IN) };
+    }
     /// Creates a new thread state object before the scheduler identity is bound.
     pub fn new(
         identity: Arc<PidIdentity>,
@@ -339,14 +417,14 @@ impl Thread {
         parent_cred: Option<Arc<Cred>>,
         signal_mask: SignalSet,
         scope: Scope,
-    ) -> Box<Self> {
+    ) -> crate::StarryResult<Self> {
         let tid = identity
             .visible_number(&ROOT_PID_NS)
             .expect("new thread identity has no root PID binding")
             .get();
         let process_signal = proc_data.signal.clone();
         let process_identity = proc_data.identity();
-        let thread = Box::new(Self {
+        let thread = Self {
             identity: ThreadIdentity::new(),
             pid: IrqMutex::new(ThreadPidOwnership {
                 identity: identity.clone(),
@@ -354,16 +432,17 @@ impl Thread {
             }),
             proc_data,
             scope: ThreadScope::new(scope),
-            accounting: ThreadAccounting::new(),
-            lifecycle: ThreadLifecycle::new(),
+            accounting: ThreadAccounting::new()?,
+            lifecycle: ThreadLifecycle::new()?,
             work: ThreadWork::new(),
             wait: ThreadWaitState::new(),
-            signals: ThreadSignals::new(tid, process_signal, signal_mask),
-            security: ThreadSecurity::new(parent_cred),
+            security: ThreadSecurity::new(parent_cred)?,
             trace: ThreadTrace::new(),
-        });
+            // Register with the process only after every private allocation succeeds.
+            signals: ThreadSignals::new(tid, process_signal, signal_mask)?,
+        };
         identity.bind_thread_pidfd(&process_identity, thread.exit_flag());
-        thread
+        Ok(thread)
     }
 
     pub(super) const fn wait_state(&self) -> &ThreadWaitState {
@@ -508,7 +587,6 @@ impl Thread {
     }
 
     /// Returns the generation-bearing scheduler identity, if bound.
-    #[cfg(target_arch = "aarch64")]
     pub fn scheduler_id(&self) -> Option<ax_std::os::arceos::task::thread::ThreadId> {
         self.identity.scheduler.get()
     }
@@ -635,10 +713,7 @@ impl Thread {
 
     /// Claims this thread's exit transaction exactly once.
     pub fn begin_exit(&self) -> bool {
-        self.lifecycle
-            .exit_started
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+        self.signal().begin_exit()
     }
 
     /// Publishes completion of the thread exit transaction.
@@ -843,6 +918,20 @@ impl Thread {
         self.work
             .syscall
             .fetch_or(SYSCALL_WORK_SECCOMP, Ordering::Release);
+    }
+
+    /// Copies the parent's final security state while its publication gate is held.
+    pub(crate) fn inherit_security(&self, parent: &Thread) -> crate::StarryResult<()> {
+        let state = parent.seccomp_state();
+        let active = state.is_active();
+        self.security.seccomp.inherit(state)?;
+        if parent.no_new_privs() {
+            self.set_no_new_privs();
+        }
+        if active {
+            self.publish_seccomp_syscall_work();
+        }
+        Ok(())
     }
 
     /// Replaces inherited seccomp state.
@@ -1080,5 +1169,64 @@ mod tests {
         assert!(!thread_b.unblock());
         assert!(thread_a.unblock());
         assert!(!thread_a.unblock());
+    }
+}
+
+#[cfg(axtest)]
+#[axtest::axtest]
+fn thread_state_creation_returns_allocation_failure() {
+    use ax_std::os::arceos::task::thread::ThreadAllocationProbe;
+
+    use crate::task::{PidReservation, PidReservationKind, Tgid};
+
+    let attempt = |failure| {
+        let reservation =
+            PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader).unwrap();
+        let identity = reservation.identity();
+        let tid = identity.acquire_role::<Tid>().unwrap();
+        let tgid = identity.acquire_role::<Tgid>().unwrap();
+        let process = crate::task::new_test_process_data(identity.clone(), tgid);
+        let retired = Arc::downgrade(&process);
+        let probe = ThreadAllocationProbe::fail_at(failure).unwrap();
+        let result = Thread::new(
+            identity,
+            tid,
+            process,
+            None,
+            Default::default(),
+            Scope::new(),
+        );
+        let attempts = probe.attempts();
+        drop(probe);
+        if failure == usize::MAX {
+            let thread = result.expect("private thread construction must succeed");
+            let probe = ThreadAllocationProbe::fail_at(0).unwrap();
+            let error = thread
+                .prepare_vfork_done()
+                .expect_err("vfork completion allocation failure must return ENOMEM");
+            assert_eq!(error.linux_errno(), syscalls::Errno::ENOMEM);
+            assert_eq!(probe.attempts(), 1);
+            drop(probe);
+            assert!(thread.lifecycle.vfork_done.lock().is_none());
+            thread.prepare_vfork_done().unwrap();
+            drop(thread);
+        } else {
+            let error = result
+                .err()
+                .expect("thread state allocation must return ENOMEM");
+            assert_eq!(error.linux_errno(), syscalls::Errno::ENOMEM);
+            assert_eq!(attempts, failure + 1);
+        }
+        assert!(
+            retired.upgrade().is_none(),
+            "failed thread state retained process ownership"
+        );
+        drop(reservation);
+        attempts
+    };
+    let attempts = attempt(usize::MAX);
+    assert!(attempts > 0);
+    for failure in 0..attempts {
+        attempt(failure);
     }
 }

@@ -1,7 +1,7 @@
 [package]
 name = "axvm"
 authors = ["aarkegz <aarkegz@gmail.com>"]
-version = "0.7.0"
+version = "0.7.1"
 edition.workspace = true
 categories = ["virtualization"]
 description = "Virtual Machine resource management crate for ArceOS's hypervisor variant."
@@ -54,6 +54,7 @@ axvm-types = { workspace = true }
 axhvc = { workspace = true }
 axdevice = { workspace = true }
 axdevice_base = { workspace = true }
+ax-sync.workspace = true
 axvirtio-blk = { workspace = true }
 axvirtio-common = { workspace = true }
 axvirtio-net = { workspace = true }

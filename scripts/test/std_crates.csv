@@ -3,6 +3,7 @@ aarch64_sysreg
 ax-arm-pl031
 axaddrspace
 axbacktrace
+axdevice
 axdevice_base
 axhvc
 ax-io
@@ -25,6 +26,7 @@ aic8800
 ax-sched
 axvm
 axvirtio-blk
+axvirtio-common
 virtualization-tests
 axvmconfig
 ax-cpumask

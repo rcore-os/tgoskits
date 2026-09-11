@@ -5,7 +5,7 @@
 //! allocation and multiplexing are modeled.
 
 use super::hw_owner::Counter;
-use crate::sync::SpinLock;
+use crate::sync::RawSpinLock;
 
 struct HwAlloc {
     num_counters: usize,
@@ -52,7 +52,7 @@ impl HwAlloc {
     }
 }
 
-static ALLOC: SpinLock<HwAlloc> = SpinLock::new(HwAlloc::new());
+static ALLOC: RawSpinLock<HwAlloc> = RawSpinLock::new(HwAlloc::new());
 
 pub(super) fn set_programmable_counter_count(num_counters: usize) {
     ALLOC.lock().num_counters = num_counters;

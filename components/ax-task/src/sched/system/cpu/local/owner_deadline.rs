@@ -464,7 +464,8 @@ impl CpuLocal {
                             .and_then(TaskDeadlineKind::park_generation)
                             .expect("a hard park deadline retains its park generation");
                         let completed = thread.complete_sleep_timer(event.token().generation());
-                        let ready = completed && thread.park_generation() == park_generation;
+                        let ready =
+                            completed && thread.ordinary_park_generation() == park_generation;
                         HardTimerServiceClaim::Park(ready.then_some(thread))
                     }
                     HardTaskDeadlineClaim::Scheduler(event) => {
