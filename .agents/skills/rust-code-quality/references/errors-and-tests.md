@@ -6,7 +6,7 @@
 
 ### 1.1 领域错误
 
-库、组件、领域和硬件抽象软件包中的非平凡公共错误枚举使用工作区 `thiserror` 依赖派生 `thiserror::Error`，在 `#[error(...)]` 中提供显示文本。只有体量很小且对依赖高度敏感的软件包才手工实现 `Display` 和 `core::error::Error`。
+公共错误类型的采用、转换和重新导出遵循 [类型与接口](../../rust-api-design/references/types-and-interfaces.md)。语义合适的第三方错误类型可以直接采用，不要求额外定义包装；需要自行定义非平凡公共错误枚举时，使用工作区 `thiserror` 依赖派生 `thiserror::Error`，在 `#[error(...)]` 中提供显示文本。只有体量很小且对依赖高度敏感的软件包才手工实现 `Display` 和 `core::error::Error`。
 
 宿主侧二进制程序和工具软件包使用 `anyhow::Result`、`Context`、`anyhow!` 和 `bail!` 处理顶层编排与面向人的报告。不要把 `anyhow::Error` 泄漏到可复用库接口；在 ArceOS 或内核集成边界把领域错误显式转换为 `ax_errno::{AxError, AxResult}`。
 
