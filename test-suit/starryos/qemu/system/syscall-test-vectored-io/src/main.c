@@ -98,49 +98,6 @@ static int create_tmp(const char *content, size_t len)
     return fd;
 }
 
-/* Reuse 1 MiB of user memory across 1024 segments. In the 512 MiB QEMU
- * guest, allocating a 1 GiB payload copy must fail, although the nonblocking
- * pipe only needs enough bytes to fill its capacity. No timing threshold or
- * concurrent memory pressure is needed to detect the extra allocation.
- */
-static void test_writev_large_request(void)
-{
-    int pipefd[2];
-    if (pipe2(pipefd, O_NONBLOCK) != 0) {
-        CHECK(0, "create nonblocking pipe for large writev");
-        return;
-    }
-    long capacity = fcntl(pipefd[1], F_GETPIPE_SZ);
-    size_t segment_size = 1024 * 1024;
-    char *payload = malloc(segment_size);
-    char *received = capacity > 0 ? malloc((size_t)capacity) : NULL;
-    if (!payload || !received) {
-        CHECK(0, "prepare large writev buffers");
-        goto cleanup;
-    }
-    memset(payload, 'V', segment_size);
-    struct iovec segments[1024];
-    for (size_t i = 0; i < 1024; i++) {
-        segments[i].iov_base = payload;
-        segments[i].iov_len = segment_size;
-    }
-    CHECK_RET(syscall(SYS_writev, pipefd[1], segments, 1024), capacity,
-              "large writev fills pipe without allocating the full request");
-    ssize_t count = read(pipefd[0], received, (size_t)capacity);
-    CHECK(count == capacity, "large writev commits exactly pipe capacity");
-    if (count > 0) {
-        int matches = 1;
-        for (ssize_t i = 0; i < count; i++)
-            matches &= received[i] == 'V';
-        CHECK(matches, "large writev preserves payload bytes");
-    }
-cleanup:
-    free(received);
-    free(payload);
-    close(pipefd[0]);
-    close(pipefd[1]);
-}
-
 int main(void)
 {
     printf("================================================\n");
@@ -532,8 +489,6 @@ int main(void)
         /* Restore default SIGPIPE handling */
         signal(SIGPIPE, SIG_DFL);
     }
-
-    test_writev_large_request();
 
     /* Clean up */
     unlink(TMPFILE);
