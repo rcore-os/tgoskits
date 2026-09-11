@@ -1,13 +1,13 @@
-//! 导航项 100% 来自 manifest（不变量 5）：这里没有任何 kind 的硬编码，
-//! 后端 manifest 加一个节点，导航就多一项。
+//! Navigation items come 100% from the manifest (invariant 5): no kind is hardcoded
+//! here, so one new manifest node means one more navigation entry.
 
 import { Badge } from '@/components/ui/badge'
 import { describeStatus, type ResourceMeta, type VmInfo } from '@/api/types'
 
 interface NavProps {
-  /** manifest 暴露的资源族（能力区） */
+  /** Resource families exposed by the manifest (capability area). */
   resources: ResourceMeta[]
-  /** 壳级资源快照（轮询，见 api/feed.ts） */
+  /** Shell-level resource snapshot (polled; see api/feed.ts). */
   vms: VmInfo[]
   live: boolean
   activeKind: string | null
@@ -84,7 +84,8 @@ export function Nav({ resources, vms, live, activeKind, onOpen, onOpenVm }: NavP
 }
 
 function statusVariant(status: string): 'default' | 'destructive' | 'outline' {
-  // 状态是不透明字符串：只对已知终态上色，未知值原样显示（降级不崩）。
+  // The status is an opaque string: only known terminal states get a colour, unknown
+  // values are shown verbatim (degrade, never crash).
   if (status === 'running') return 'default'
   if (status === 'failed') return 'destructive'
   return 'outline'

@@ -11,8 +11,9 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // dev 形态：浏览器同源访问 5173，/api 与 /ws 代理到 server。
-    // 前端代码本身用相对路径（不变量 10），所以 build 产物不经代理也能跑。
+    // Dev form: the browser hits 5173 same-origin, with /api and /ws proxied to the
+    // server. The frontend itself uses relative paths (invariant 10), so the build
+    // output runs without the proxy too.
     proxy: {
       '/api': 'http://localhost:8080',
       '/ws': { target: 'ws://localhost:8080', ws: true },

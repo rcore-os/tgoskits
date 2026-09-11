@@ -1,7 +1,9 @@
-//! 未知 kind 的降级视图（不变量 7）：不报错，直接把 manifest 节点渲染成 JSON。
+//! Degraded view for an unknown kind (invariant 7): no error, just render the
+//! manifest node as JSON.
 //!
-//! 前向兼容的意义：前端与后端可以是不同代——后端先挂上新 kind，
-//! 老前端照样能看见它，而不是白屏。
+//! The point is forward compatibility: frontend and backend may be of different
+//! generations — the backend can expose a new kind first and an older frontend still
+//! shows it instead of a blank page.
 
 import { Badge } from '@/components/ui/badge'
 import {

@@ -1,8 +1,9 @@
-//! vms 面板 —— 纯管理页：列表、创建、生命周期动作、删除。
+//! vms panel — a pure management page: list, create, lifecycle actions, delete.
 //!
-//! 语义纪律：HTTP 200 只代表请求被接受，终态由 `@/lib/lifecycle` 轮询详情断言
-//! （start/resume 要 guest_entry_count 增长、pause 要 guest_park_count 增长）。
-//! 路由全部从 `meta.href` 派生，不硬编码端点。
+//! Semantics: HTTP 200 only means the request was accepted; the terminal state is
+//! asserted by `@/lib/lifecycle` polling the detail (start/resume require
+//! guest_entry_count to grow, pause requires guest_park_count to grow).
+//! Every route is derived from `meta.href`; no endpoint is hardcoded.
 
 import { useState } from 'react'
 import { verifyToken } from '@/api/auth'
@@ -38,14 +39,16 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 
-/** 动作前的零基线：stop/delete 不需要计数增长证明，只做状态断言。 */
+/** Zero baseline for actions that only assert a status: stop/delete need no counter growth. */
 const NO_COUNTERS: Counters = { guest_entry_count: 0, guest_park_count: 0 }
 
 /**
- * 创建对话框的默认模板：一份 `image_location = "memory"` 的 guest 配置。
- * 运行期只能实例化构建期内嵌的镜像，且只按 `base.id` 匹配，所以这份模板与
- * `test-suit/axvisor/normal/qemu-web-ui/web-ui/vm-memory.toml` 的 `base.id` 一致；
- * 改成别的 id 会因为找不到内嵌镜像而返回 500（后端既有行为）。
+ * Default template for the create dialog: a guest config with
+ * `image_location = "memory"`.
+ * At runtime only images embedded at build time can be instantiated, matched by
+ * `base.id` alone, so this template keeps the same `base.id` as
+ * `test-suit/axvisor/normal/qemu-web-ui/web-ui/vm-memory.toml`; any other id returns
+ * 500 because no embedded image matches (existing backend behaviour).
  */
 const DEFAULT_VM_TOML = `[base]
 id = 1
@@ -81,7 +84,7 @@ interface RowAction {
   destructive?: boolean
 }
 
-/** 行内可用动作：非法动作不渲染，而不是点了才报 409。 */
+/** Actions available per row: illegal actions are not rendered, rather than returning 409 only once clicked. */
 function actionsFor(status: string): RowAction[] {
   switch (status) {
     case 'ready':
@@ -102,10 +105,11 @@ function actionsFor(status: string): RowAction[] {
         { op: 'delete', label: '删除', destructive: true },
       ]
     case 'stopped':
-      // 后端不支持重启已停止的 VM（start 会 409）：只能删除后重新创建。
+      // The backend cannot restart a stopped VM (start returns 409): delete and
+      // recreate is the only path.
       return [{ op: 'delete', label: '删除', destructive: true }]
     default:
-      // failed / destroying / 未知状态：只读展示，等待后端收敛
+      // failed / destroying / unknown: read-only display, waiting for the backend to converge.
       return []
   }
 }
@@ -120,15 +124,17 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
   // happened.
   const [createError, setCreateError] = useState<string | null>(null)
   const [toml, setToml] = useState(DEFAULT_VM_TOML)
-  // 危险操作（create/delete）要求重输 token：这是确认式摩擦，不是安全边界——
-  // token 本来就在这个浏览器里。校验复用 api/auth.ts 的同一原语。
+  // Dangerous operations (create/delete) require retyping the token: this is
+  // confirmation friction, not a security boundary — the token is already in this
+  // browser. Verification reuses the same primitive from api/auth.ts.
   const [retyped, setRetyped] = useState('')
   const [verifying, setVerifying] = useState(false)
   const [confirmError, setConfirmError] = useState<string | null>(null)
 
   /**
-   * 危险操作前的 token 复核。
-   * 后端未声明校验端点（auth 缺失）时退化为放行，并把这句话写在对话框里。
+   * Re-verifies the token before a dangerous operation.
+   * When the backend declares no probe endpoint (auth missing) this degrades to
+   * letting it through, and the dialog says so.
    */
   const verifyRetyped = async (report: (message: string) => void): Promise<boolean> => {
     if (!auth) return true
@@ -145,7 +151,8 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
     return false
   }
 
-  // 资源根来自 manifest：详情/动作路由都从它派生（href + "/{id}" 等）。
+  // The resource root comes from the manifest: detail and action routes are derived
+  // from it (href + "/{id}" and so on).
   const base = meta.href
   const fetchDetail = (id: number) => api.get<VmDetail>(`${base}/${id}`)
 
@@ -154,7 +161,8 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
     setBusy({ id, op })
     setError(null)
     try {
-      // start/resume 要证明计数增长，pause 要证明 park 增长，所以先采基线。
+      // start/resume must prove the entry counter grew and pause must prove park grew,
+      // so the baseline is sampled first.
       const before = op === 'stop' ? NO_COUNTERS : countersOf(await fetchDetail(id))
       if (op === 'delete') {
         await api.delete(`${base}/${id}`)
@@ -183,7 +191,8 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
       )
       if (!result.ok) setError(result.message)
     } catch (e: unknown) {
-      // 409 在创建场景下的含义是「这个 id 已经被占用」，通用状态码文案说不清楚。
+      // A 409 in the create case means "this id is already taken", which the generic
+      // status text cannot convey.
       setCreateError(
         e instanceof ApiError && e.status === 409
           ? '该 id 已被占用：先删除现有 VM，或换一个构建期内嵌了镜像的 id'
@@ -226,7 +235,8 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
         <ul className="divide-y rounded-md border">
           {resources.map((vm) => {
             const actions = actionsFor(vm.status)
-            // 行级 busy：既用于防重（按钮 disabled），也用于显示当前动作
+            // Row-level busy: used both to prevent double submission (button disabled)
+            // and to show the active action.
             const busyHere = busy !== null && busy.id === vm.id ? busy : null
             return (
               <li key={vm.id} className="flex items-center justify-between gap-2 px-3 py-2">
@@ -255,7 +265,8 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
                       disabled={busy !== null}
                       variant={action.destructive ? 'destructive' : 'outline'}
                       onClick={() => {
-                        // stop/delete 是破坏性且不可撤销的，先二次确认
+                        // stop/delete are destructive and irreversible, so ask for a
+                        // second confirmation.
                         if (action.op === 'stop' || action.op === 'delete') {
                           setRetyped('')
                           setConfirmError(null)
@@ -333,7 +344,8 @@ export default function VmsPanel({ meta, api, resources = [], refresh, auth }: P
                 if (!confirming) return
                 const target = confirming
                 void (async () => {
-                  // 删除不可逆：先让后端复核一次重输的 token 再执行。
+                  // Delete is irreversible: have the backend re-verify the retyped
+                  // token before running it.
                   if (target.op === 'delete') {
                     setConfirmError(null)
                     if (!(await verifyRetyped(setConfirmError))) return

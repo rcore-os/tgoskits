@@ -1,13 +1,15 @@
-//! 前后端契约类型：manifest / 面板渲染器契约 / VM 摘要 / 错误对象。
-//! shell/ 只依赖这里，不依赖 panels/（不变量 5）。
+//! Contract types shared by the backend and the frontend: the manifest, the
+//! panel renderer contract, the VM summary, and the error object.
+//! shell/ depends only on this module, never on panels/ (invariant 5).
 
 import type { ComponentType } from 'react'
 import type { ApiClient } from './client'
 
 /**
- * manifest 里的一个资源族节点。
- * `href` 是该资源的根，create/详情/动作路由都由它派生（href + "/{id}" 等）——
- * 面板不得硬编码端点。
+ * One resource family node from the manifest.
+ * `href` is the root of the resource; the create, detail and action routes are
+ * all derived from it (href + "/{id}" and so on) — panels must not hardcode
+ * endpoints.
  */
 export interface ResourceMeta {
   kind: string
@@ -17,42 +19,43 @@ export interface ResourceMeta {
 }
 
 /**
- * manifest 声明的鉴权方式与 token 探测路径。
- * 客户端从这里取探测端点，不硬编码——后端换路径前端不必改。
+ * The auth scheme and token probe path declared by the manifest.
+ * The client reads the probe endpoint from here instead of hardcoding it, so the
+ * backend can move the path without a frontend change.
  */
 export interface AuthProbe {
   href: string
   scheme: string
 }
 
-/** 后端 manifest（`GET /api/`）：proto 之后只增不改，老前端对未知字段降级。 */
+/** Backend manifest (`GET /api/`): additive after `proto`, so an older frontend degrades on unknown fields. */
 export interface Manifest {
   proto: number
-  /** 可选：后端未声明时前端只能退化为「写入时才校验」。 */
+  /** Optional: when the backend omits it, the frontend can only fall back to validating on write. */
   auth?: AuthProbe
   resources: ResourceMeta[]
 }
 
-/** 每个面板拿到的上下文：manifest 节点 + REST client + 壳级资源快照。
- *  resources/refresh 是壳级轮询快照的注入——资源型面板（vms）使用，其它面板忽略。 */
+/** Context handed to every panel: manifest node + REST client + shell-level resource snapshot.
+ *  resources/refresh inject the shell polling snapshot — resource panels (vms) use them, other panels ignore them. */
 export interface PanelProps {
   meta: ResourceMeta
   token: string
   api: ApiClient
   resources?: VmInfo[]
   refresh?: () => void
-  /** manifest 声明的鉴权方式；面板做危险操作确认时用它校验重输的 token。 */
+  /** Auth scheme declared by the manifest; a panel uses it to re-verify the token retyped in a danger confirmation. */
   auth?: AuthProbe
 }
 
 export type PanelComponent = ComponentType<PanelProps>
 
-/** 注册表契约。具体实现在 panels/registry.ts，由入口注入进壳。 */
+/** Registry contract. The implementation lives in panels/registry.ts and is injected into the shell by the entry point. */
 export interface PanelRegistry {
   resolve(kind: string): PanelComponent
 }
 
-/** VM 摘要（`GET /api/vms` 的元素）。status 是不透明字符串：后端可以比前端新。 */
+/** VM summary (an element of `GET /api/vms`). status is an opaque string: the backend may be newer than the frontend. */
 export interface VmInfo {
   id: number
   name?: string
@@ -61,18 +64,18 @@ export interface VmInfo {
   memory_mb?: number
 }
 
-/** VM 详情（`GET /api/vms/{id}`）：摘要 + vCPU 状态与两个单调计数器。 */
+/** VM detail (`GET /api/vms/{id}`): the summary plus vCPU states and two monotonic counters. */
 export interface VmDetail extends VmInfo {
   vcpu_states?: string[]
-  /** vCPU 真正进入 guest 的次数（start/resume 的终态证据）。 */
+  /** Times a vCPU really entered the guest (terminal-state evidence for start/resume). */
   guest_entry_count?: number
-  /** vCPU 真正 park 的次数（pause 的终态证据）。 */
+  /** Times a vCPU really parked (terminal-state evidence for pause). */
   guest_park_count?: number
 }
 
 /**
- * 已知状态的中文文案。`describeStatus` 对未知值原样返回，
- * 所以后端新增状态时界面降级显示而不是崩。
+ * Display text for the known statuses. `describeStatus` returns unknown values
+ * verbatim, so a new backend status degrades to plain text instead of crashing.
  */
 const STATUS_TEXT: Record<string, string> = {
   ready: '就绪',
@@ -91,8 +94,8 @@ export function describeStatus(status: string): string {
 }
 
 /**
- * 错误对象携带 HTTP 状态码。后端错误响应体为空（只回状态码），
- * 所以可读文案来自下面的映射表。
+ * Error object carrying the HTTP status. Backend error responses carry an empty
+ * body (status code only), so the readable text comes from the table below.
  */
 export class ApiError extends Error {
   readonly status: number

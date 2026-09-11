@@ -1,9 +1,11 @@
-//! token 门：进入界面前先让后端校验 token。
+//! Token gate: have the backend verify the token before the UI is entered.
 //!
-//! 探测路径来自 manifest 的 auth 节点——门不硬编码端点，也不假设后端一定有
-//! token 校验（老后端没有 auth 节点时退化为「写入时才校验」，并把这句话说清楚）。
+//! The probe path comes from the manifest's auth node — the gate hardcodes no endpoint
+//! and does not assume the backend verifies tokens at all (an older backend without an
+//! auth node degrades to "verified on write", and the copy says so explicitly).
 //!
-//! token 只存在内存态（由 App 持有），不落 sessionStorage/localStorage。
+//! The token lives only in memory (held by App); it is never written to
+//! sessionStorage or localStorage.
 
 import { useState } from 'react'
 import { verifyToken } from '@/api/auth'
@@ -13,15 +15,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 
 interface TokenGateProps {
-  /** manifest 声明的鉴权方式；null 表示后端没声明（或清单还没取到）。 */
+  /** Auth scheme declared by the manifest; null means the backend declared none (or the manifest has not arrived yet). */
   auth: AuthProbe | null
-  /** manifest 拉取失败的原因；此时无从校验，只能先修清单可达性。 */
+  /** Why the manifest fetch failed; nothing can be verified until the manifest is reachable. */
   manifestError: string | null
   onRetryManifest: () => void
   onSubmit: (token: string) => void
 }
 
-/** 进门卡片的说明文案：按「清单失败 / 未声明校验 / 已声明校验」三态分支，避免嵌套三元。 */
+/** Copy for the gate card: branches over "manifest failed / no probe declared / probe declared", avoiding a nested ternary. */
 function gateDescription(manifestError: string | null, auth: AuthProbe | null) {
   if (manifestError) {
     return <>无法读取能力清单，界面无法确定入口与鉴权方式。</>
@@ -55,7 +57,8 @@ export function TokenGate({ auth, manifestError, onRetryManifest, onSubmit }: To
     setFailure(null)
 
     if (auth === null) {
-      // 没有探测端点可用：只能放行，并把「校验发生在写入时」讲清楚。
+      // No probe endpoint available: let it through, and be explicit that verification
+      // happens on write.
       onSubmit(token)
       return
     }

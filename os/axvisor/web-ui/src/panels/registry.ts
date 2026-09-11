@@ -1,19 +1,21 @@
-//! 渲染器注册表：kind → 懒加载组件。
+//! Renderer registry: kind -> lazily loaded component.
 //!
-//! 不变量 6：新增一个面板 = panels/ 加目录 + 本文件加一行 + manifest 加一个节点，
-//! 共三处，其余（壳、路由、client）零改动。
-//! 面板之间零 import——vms（管理页）与 console（终端宿主）是两个独立组件，
-//! 只共享壳注入的资源事件流；这就是「积木式组合，不焊接」。
+//! Invariant 6: adding a panel means a new panels/ directory, one line here, and one
+//! manifest node — three places in total, with the shell, routes and client unchanged.
+//! Panels never import each other: vms (management page) and console (terminal host)
+//! are independent components that only share the resource event stream injected by
+//! the shell. That is "composable building blocks, not welded together".
 
 import { lazy } from 'react'
 import type { PanelComponent, PanelRegistry } from '@/api/types'
 import { FallbackPanel } from './FallbackPanel'
 
-// 懒加载：注册表里有 kind，不等于用户点了它——用到了才下载那一块代码
+// Lazy loading: having a kind in the registry does not mean the user opened it —
+// the chunk is downloaded only when it is actually used.
 const VmsPanel = lazy(() => import('./vms/VmsPanel'))
 
 const renderers: Record<string, PanelComponent> = {
-  vms: VmsPanel, // 虚拟机管理页：创建/生命周期/列表
+  vms: VmsPanel, // VM management page: create / lifecycle / list
 }
 
 export function resolvePanel(kind: string): PanelComponent {

@@ -1,18 +1,22 @@
-//! 生命周期收口：**HTTP 200 只代表请求被接受，不等于到达终态**。
+//! Lifecycle settling: **HTTP 200 only means the request was accepted, not that the
+//! terminal state was reached**.
 //!
-//! 每个变更操作完成后轮询 VM 详情，直到断言成立或超时。断言纪律与
-//! `test-suit/axvisor/normal/qemu-http-control-plane` 的 `http_probe.py` 一致：
-//! start/resume 要 `guest_entry_count` 严格增长（vCPU 真正进入 guest），
-//! pause 要 `guest_park_count` 严格增长（vCPU 真正 park，不只是状态翻转），
-//! stop 要 `stopped`，create 要 `ready`，delete 要详情变 404。
+//! After every mutating operation this polls the VM detail until the assertion holds
+//! or it times out. The assertion discipline matches `http_probe.py` in
+//! `test-suit/axvisor/normal/qemu-http-control-plane`: start/resume require
+//! `guest_entry_count` to strictly increase (a vCPU really entered the guest), pause
+//! requires `guest_park_count` to strictly increase (a vCPU really parked, not just a
+//! status flip), stop requires `stopped`, create requires `ready`, and delete requires
+//! the detail to turn 404.
 //!
-//! 全部是纯函数 + 注入依赖，便于用 vitest 做确定性单测。
+//! Everything here is a pure function with injected dependencies, so vitest can drive
+//! it deterministically.
 
 import { ApiError, type VmDetail } from '@/api/types'
 
 export type LifecycleOp = 'create' | 'start' | 'pause' | 'resume' | 'stop' | 'delete'
 
-/** 操作前的计数基线：只有需要「严格增长」证明的操作才会用到。 */
+/** Counter baseline captured before the operation; only operations proven by "strictly increased" use it. */
 export interface Counters {
   guest_entry_count: number
   guest_park_count: number
@@ -28,7 +32,7 @@ export function countersOf(detail: VmDetail): Counters {
   }
 }
 
-/** 该操作此刻是否已到达真实终态。delete 没有可断言的状态，由 404 判定。 */
+/** Whether this operation has reached its real terminal state. delete has no assertable status; a 404 decides it. */
 export function isSettled(op: LifecycleOp, before: Counters, after: VmDetail): boolean {
   switch (op) {
     case 'start':
@@ -50,7 +54,7 @@ export function isSettled(op: LifecycleOp, before: Counters, after: VmDetail): b
   }
 }
 
-/** 等待中的提示语，超时后随观测值一起展示。 */
+/** Hint shown while waiting; on timeout it is displayed together with the observed values. */
 export function settleHint(op: LifecycleOp): string {
   switch (op) {
     case 'start':
@@ -75,7 +79,7 @@ export interface SettleSuccess {
 export interface SettleTimeout {
   ok: false
   message: string
-  /** 超时时最后一次观测到的详情；一次都没取到则为 undefined。 */
+  /** Last detail observed before the timeout; undefined if none was ever fetched. */
   detail?: VmDetail
 }
 
@@ -95,7 +99,7 @@ const defaultDeps: SettleDeps = {
   timeoutMs: POLL_TIMEOUT_MS,
 }
 
-/** 超时文案：如实带上已观测到的状态与计数，方便定位卡在哪一步。 */
+/** Timeout text: reports the observed status and counters verbatim, so the stuck step is easy to locate. */
 export function timeoutMessage(
   op: LifecycleOp,
   last: VmDetail | undefined,
@@ -110,11 +114,12 @@ export function timeoutMessage(
 }
 
 /**
- * 轮询详情直到终态断言成立。
+ * Polls the detail until the terminal-state assertion holds.
  *
- * 采样基线由调用方在动作**之前**取好并传入（`before`）。
- * 轮询期间的 404 只对 delete 视为成功；其它错误继续轮询到超时，
- * 因为一次瞬时失败不代表操作没有生效。
+ * The caller samples the baseline **before** the action and passes it as `before`.
+ * A 404 during polling counts as success only for delete; other errors keep polling
+ * until the timeout, because one transient failure does not mean the operation had
+ * no effect.
  */
 export async function settleToTerminalState(
   op: LifecycleOp,

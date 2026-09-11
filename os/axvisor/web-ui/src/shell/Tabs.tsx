@@ -1,9 +1,11 @@
-//! 多标签：每标签一个面板实例。
+//! Tabs: one panel instance per tab.
 //!
-//! 所有已打开的标签都保持挂载（非激活的用 hidden 隐藏），这样将来终端这类
-//! 「独占订阅」的面板在两个标签同时打开时才真的会撞上 409。
+//! Every opened tab stays mounted (inactive ones are hidden with `hidden`), so that a
+//! future "exclusive subscription" panel such as the terminal really does hit the 409
+//! when two tabs hold it at once.
 //!
-//! 「+」新开实例：从 manifest 里的资源中挑一个，无条件新开一个标签。
+//! "+" opens a new instance: pick one of the manifest resources and unconditionally
+//! open a new tab.
 
 import { Suspense, useState } from 'react'
 import type { ApiClient } from '@/api/client'
@@ -18,11 +20,11 @@ interface TabsProps {
   registry: PanelRegistry
   api: ApiClient
   token: string
-  /** 壳级资源快照透传给面板（资源型面板使用，其余忽略） */
+  /** Shell-level resource snapshot passed through to panels (used by resource panels, ignored by the rest). */
   vms: VmInfo[]
-  /** 变更操作收口后立即刷新壳级快照 */
+  /** Refreshes the shell-level snapshot as soon as a mutating operation settles. */
   refresh: () => void
-  /** manifest 声明的鉴权方式，透传给面板做危险操作确认 */
+  /** Auth scheme declared by the manifest, passed through to panels for danger confirmations. */
   auth?: AuthProbe
   onActivate: (id: string) => void
   onClose: (id: string) => void
@@ -46,7 +48,7 @@ export function Tabs(props: TabsProps) {
   } = props
   const [pickerOpen, setPickerOpen] = useState(false)
 
-  // 同 kind 多实例时给标签编号，方便辨认是哪个会话
+  // Number tabs when one kind has several instances, so each session is identifiable.
   const counts = new Map<string, number>()
   for (const t of tabs) counts.set(t.kind, (counts.get(t.kind) ?? 0) + 1)
   const seen = new Map<string, number>()

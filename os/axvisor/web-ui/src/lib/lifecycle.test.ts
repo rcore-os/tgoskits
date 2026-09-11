@@ -1,7 +1,9 @@
-//! 生命周期收口的确定性单测。
+//! Deterministic unit tests for lifecycle settling.
 //!
-//! 断言纪律与 `http_probe.py` 一致：200 不代表终态，要靠轮询详情里的计数增长
-//! 或状态到达来证明。这里用注入的假时钟把「何时算收口、何时算超时」钉死。
+//! The assertion discipline matches `http_probe.py`: a 200 does not mean the terminal
+//! state was reached — it has to be proven by a growing counter or a settled status in
+//! the polled detail. An injected fake clock pins down what counts as settled and what
+//! counts as a timeout.
 
 import { describe, expect, it } from 'vitest'
 import { ApiError, describeError, describeStatus, type VmDetail } from '@/api/types'
@@ -19,7 +21,7 @@ function detail(status: string, entry = 0, park = 0): VmDetail {
   return { id: 1, status, guest_entry_count: entry, guest_park_count: park }
 }
 
-/** 假时钟：每次 sleep 前进一个周期，并在超时前让序列走完。 */
+/** Fake clock: every sleep advances one interval, letting the sequence run out before the timeout. */
 function fakeClock(intervalMs = 100, timeoutMs = 1000) {
   let now = 0
   return {
@@ -34,7 +36,7 @@ function fakeClock(intervalMs = 100, timeoutMs = 1000) {
   }
 }
 
-/** 依次返回给定观测序列，用尽后重复最后一个（模拟状态不再变化）。 */
+/** Yields the given observation sequence, then repeats the last one (simulating a status that stops changing). */
 function sequenceFetcher(observations: VmDetail[]) {
   let index = 0
   return async () => {
@@ -50,43 +52,43 @@ async function settle(op: LifecycleOp, observations: VmDetail[], before = BEFORE
 }
 
 describe('isSettled', () => {
-  it('start 只有在 vCPU 真正进入 guest 后才算收口', () => {
+  it('start settles only after a vCPU really entered the guest', () => {
     expect(isSettled('start', BEFORE, detail('running', 0, 0))).toBe(false)
     expect(isSettled('start', BEFORE, detail('running', 1, 0))).toBe(true)
   })
 
-  it('pause 只有在 vCPU 真正 park 后才算收口', () => {
+  it('pause settles only after a vCPU really parked', () => {
     expect(isSettled('pause', BEFORE, detail('paused', 0, 0))).toBe(false)
     expect(isSettled('pause', BEFORE, detail('paused', 0, 1))).toBe(true)
   })
 
-  it('resume 与 start 同判据', () => {
+  it('resume shares the start predicate', () => {
     expect(isSettled('resume', BEFORE, detail('running', 0, 0))).toBe(false)
     expect(isSettled('resume', BEFORE, detail('running', 1, 0))).toBe(true)
   })
 
-  it('stop 只需到达 stopped（异步，vCPU 退出后才成立）', () => {
+  it('stop only needs to reach stopped (async, holds once the vCPU exits)', () => {
     expect(isSettled('stop', BEFORE, detail('stopping'))).toBe(false)
     expect(isSettled('stop', BEFORE, detail('stopped'))).toBe(true)
   })
 
-  it('create 只需到达 ready', () => {
+  it('create only needs to reach ready', () => {
     expect(isSettled('create', BEFORE, detail('created'))).toBe(false)
     expect(isSettled('create', BEFORE, detail('ready'))).toBe(true)
   })
 
-  it('delete 没有可断言的状态，由 404 判定', () => {
+  it('delete has no assertable status; a 404 decides it', () => {
     expect(isSettled('delete', BEFORE, detail('stopped'))).toBe(false)
   })
 })
 
 describe('settleToTerminalState', () => {
-  it('轮询到计数增长为止', async () => {
+  it('polls until the counter grows', async () => {
     const result = await settle('start', [detail('running', 0), detail('running', 1)])
     expect(result.ok).toBe(true)
   })
 
-  it('计数不增长时超时，并保留最后一次观测', async () => {
+  it('times out when the counter does not grow, keeping the last observation', async () => {
     const result = await settle('pause', [detail('paused', 0, 0)])
     expect(result.ok).toBe(false)
     if (result.ok) return
@@ -95,7 +97,7 @@ describe('settleToTerminalState', () => {
     expect(result.message).toContain('park=0')
   })
 
-  it('delete 遇到 404 视为成功', async () => {
+  it('delete treats a 404 as success', async () => {
     const { deps } = fakeClock()
     const fetchDetail = async () => {
       throw new ApiError(404, '')
@@ -103,7 +105,7 @@ describe('settleToTerminalState', () => {
     expect((await settleToTerminalState('delete', BEFORE, fetchDetail, deps)).ok).toBe(true)
   })
 
-  it('delete 的 404 之外的错误继续轮询到超时', async () => {
+  it('errors other than 404 keep delete polling until the timeout', async () => {
     const { deps } = fakeClock()
     const fetchDetail = async () => {
       throw new ApiError(500, '')
@@ -112,7 +114,7 @@ describe('settleToTerminalState', () => {
     expect(result.ok).toBe(false)
   })
 
-  it('基线非零时按增量判断，而不是按绝对值为零', () => {
+  it('a non-zero baseline is judged by the delta, not by an absolute zero', () => {
     const before: Counters = { guest_entry_count: 7, guest_park_count: 0 }
     expect(isSettled('start', before, detail('running', 7, 0))).toBe(false)
     expect(isSettled('start', before, detail('running', 8, 0))).toBe(true)
@@ -120,18 +122,18 @@ describe('settleToTerminalState', () => {
 })
 
 describe('countersOf', () => {
-  it('缺失字段按 0 处理', () => {
+  it('missing fields are treated as 0', () => {
     expect(countersOf({ id: 1, status: 'ready' })).toEqual(BEFORE)
   })
 })
 
-describe('展示降级', () => {
-  it('未知状态原样显示而不是崩', () => {
+describe('display degradation', () => {
+  it('an unknown status is shown verbatim instead of crashing', () => {
     expect(describeStatus('running')).toBe('运行中')
     expect(describeStatus('some-future-state')).toBe('some-future-state')
   })
 
-  it('空错误体按状态码给出可读文案', () => {
+  it('an empty error body yields readable text from the status code', () => {
     expect(describeError(new ApiError(409, ''))).toBe('HTTP 409 · 当前状态不允许该操作')
     expect(describeError(new ApiError(401, ''))).toContain('AXVM_HTTP_TOKEN')
     expect(describeError(new ApiError(503, ''))).toBe('HTTP 503 · 宿主资源不足')
