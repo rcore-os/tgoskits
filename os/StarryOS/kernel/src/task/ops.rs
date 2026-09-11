@@ -400,8 +400,12 @@ fn robust_waiter_publication_probe(word: *mut u32) {
         .compare_exchange(word.addr(), 0, Ordering::AcqRel, Ordering::Relaxed)
         .is_ok()
     {
-        crate::mm::atomic_update_user_u32_nofault(word, ax_cpu::user::UserAtomicU32Op::Or, FUTEX_WAITERS)
-            .expect("the probe word must already be writable");
+        crate::mm::atomic_update_user_u32_nofault(
+            word,
+            ax_cpu::user::UserAtomicU32Op::Or,
+            FUTEX_WAITERS,
+        )
+        .expect("the probe word must already be writable");
     }
 }
 
@@ -908,8 +912,12 @@ fn robust_owner_death_preserves_concurrent_waiters() {
             super::kernel_thread_builder("robust-word".into()),
             || {
                 let word = 0x10000 as *mut u32;
-                crate::mm::atomic_update_user_u32_nofault(word, ax_cpu::user::UserAtomicU32Op::Set, 17)
-                    .unwrap();
+                crate::mm::atomic_update_user_u32_nofault(
+                    word,
+                    ax_cpu::user::UserAtomicU32Op::Set,
+                    17,
+                )
+                .unwrap();
                 ROBUST_WAITER_PUBLICATION.store(word.addr(), Ordering::Release);
                 let wake = update_robust_owner_nofault(word, 17, false).unwrap();
                 assert_eq!(ROBUST_WAITER_PUBLICATION.load(Ordering::Acquire), 0);

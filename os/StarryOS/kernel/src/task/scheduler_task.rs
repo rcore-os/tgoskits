@@ -1040,11 +1040,9 @@ fn unpublished_extension_allocation_releases_process() {
             scope_local::Scope::new(),
         )
         .unwrap();
-        let mm = ax_runtime::thread::TaskAddressSpace::new(
-            ax_cpu::mmu::read_kernel_page_table(),
-            (),
-        )
-        .unwrap();
+        let mm =
+            ax_runtime::thread::TaskAddressSpace::new(ax_cpu::mmu::read_kernel_page_table(), ())
+                .unwrap();
         let probe = ThreadAllocationProbe::fail_at(failure).unwrap();
         let result = (|| {
             let options = UserThreadOptions::new("extension-rollback")?;

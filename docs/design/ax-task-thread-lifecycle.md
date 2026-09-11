@@ -810,6 +810,8 @@ backing 准备由 `mapping` 在进入 MM 锁前完成；`SharedMemoryObject::all
 
 `ax-cpu::user::user_cmpxchg_u32` 集中暴露“返回观察值”的契约，不增加可变 task 布局或调度泛型。x86_64 使用 locked cmpxchg；AArch64 使用 LDXR/STLXR 和成功后的 DMB；RISC-V 使用 LR.W/SC.W.AQRL；LoongArch 使用 LL.W/SC.W 和 DBAR。LL/SC 沿用有界重试错误，架构异常表覆盖读与条件存储。RISC-V 用现有 XLENB 宏区分 RV32/RV64，避免在 RV32 发出 sext.w；RISC-V/LoongArch 对高位 u32 做与加载指令一致的符号扩展。普通 Rust 引用不指向用户锁字，缺页解析和 MM 锁不进入原子指令区间。
 
+同步 dev `822a34a6c9` 的 ax-cpu 重构时，各架构汇编迁入 `components/axcpu/src/arch/<arch>/user_atomic.S`，公共入口统一从 `ax_cpu::user` 导出；FP clone 用 `TaskContext::task_anchor()` 核验绑定，不让 CPU 后端重新依赖运行时的 `ExecutionContextHeader`。`ax-runtime` 继续拥有准备和取消令牌，`prepared.commit()` 后立即调用 `switch_to()`。迁移后定向 `cargo xtask clippy --package ax-cpu` 40/40 通过；四架构 Starry kernel 的 x86_64/riscv64/loongarch64 各 187/187、aarch64 188/188 通过，记录在 `/tmp/pr2357-dev-migration-{cpu-clippy,kernel-<arch>}.log`。增量 `cargo xtask test --since fedc660263` 实际选中 19 个软件包并全部通过，日志 `/tmp/pr2357-dev-migration-std.log`。这组结果验证本次迁移，不替代其余生命周期待办或整套 CI。
+
 确定性 kernel 回归在真实 runtime MM 和任务中映射锁字，在内核读取 owner 后、更新前注入一次 WAITERS 发布，不使用 fake TaskRuntime/TaskSystem/CpuLocal。保留旧读后替换顺序时，同一断言收到 `0x40000000` 而非 `0xc0000000`，最外层 xtask 返回 1，日志 `/tmp/pr2357-robust-cas-red.log`。修复后 x86_64 kernel 187/187 通过；最终用例还检查比较失配不修改、高位 expected 成功匹配、只读页写错误和未映射地址错误，日志 `/tmp/pr2357-robust-cas-final-x86_64.log`。riscv64/loongarch64 kernel 187/187、aarch64 188/188，以及四架构 exec robust 回归均通过，日志 `/tmp/pr2357-robust-cas-final-{kernel,exec}-<arch>.log`。LoongArch 的 grouped runner 捕获成功用例输出，其程序通过标记和非零失败传播仍保留。
 
 独立汇编核验发现最初无条件 sext.w 破坏 RV32，已用宿主 clang 对实际汇编片段得到同一命令的编译红绿，日志 `/tmp/pr2357-rv32-cas-{red,green}.log`。项目没有单独汇编片段的 xtask 入口，这项编译只证明 RV32 指令合法，不替代四架构内核运行。限定范围核验未发现其他新增 ABI 或内存序缺陷，不冒充完整调度/unsafe 合入审查。第 5.40 节登记和 TID 顺序保持；PI 标记、遍历错误处理、MM/vfork 与 SHM/VMA 遗留项仍分别收尾。
