@@ -420,8 +420,8 @@ impl FileTable {
         Ok(())
     }
 
-    fn reserve(&mut self) -> Option<usize> {
-        let fd = (0..AX_FILE_LIMIT)
+    fn reserve(&mut self, limit: usize) -> Option<usize> {
+        let fd = (0..limit.min(AX_FILE_LIMIT))
             .find(|fd| !self.entries.is_assigned(*fd) && !self.reserved.contains(fd))?;
         let inserted = self.reserved.insert(fd);
         debug_assert!(inserted);
@@ -625,14 +625,61 @@ pub fn current_fd_table() -> Arc<RwLock<FileTable>> {
 #[cfg(all(test, axtest))]
 static FD_TABLE_LOOKUP_READ_LOCKS: AtomicUsize = AtomicUsize::new(0);
 
-/// A file descriptor number prepared by a fallible syscall transaction.
-///
-/// Dropping it before [`PreparedFileDescriptor::install`] rolls the descriptor
-/// back from its originating table.
-pub struct PreparedFileDescriptor {
+/// An unpublished fd slot reserved before an operation can block.
+pub(crate) struct FileDescriptorReservation {
     table: Arc<RwLock<FileTable>>,
-    fd: usize,
-    descriptor: Option<FileDescriptor>,
+    fd: Option<usize>,
+}
+
+impl FileDescriptorReservation {
+    fn reserve_in(table: Arc<RwLock<FileTable>>, limit: usize) -> StarryResult<Self> {
+        let fd = table
+            .write()
+            .reserve(limit)
+            .ok_or(StarryError::TooManyOpenFiles)?;
+        Ok(Self {
+            table,
+            fd: Some(fd),
+        })
+    }
+
+    /// Reserves a slot in the originating fd table without exposing a file.
+    pub(crate) fn new() -> StarryResult<Self> {
+        let limit = current_user_task()
+            .as_thread()
+            .proc_data
+            .rlimit_current(RLIMIT_NOFILE);
+        Self::reserve_in(current_fd_table(), limit as usize)
+    }
+
+    pub(crate) const fn fd(&self) -> c_int {
+        self.fd.expect("installed fd reservation queried") as c_int
+    }
+
+    pub(crate) fn install(mut self, descriptor: FileDescriptor) {
+        let fd = self.fd.take().expect("fd reservation installed twice");
+        let install = self.table.write().install_reserved(fd, descriptor);
+        if let Err(descriptor) = install {
+            // Destruction may wake waiters; keep it outside the table lock.
+            drop(descriptor);
+            panic!("prepared file descriptor lost its reservation before install");
+        }
+    }
+}
+
+impl Drop for FileDescriptorReservation {
+    fn drop(&mut self) {
+        if let Some(fd) = self.fd.take() {
+            self.table.write().release_reserved(fd);
+        }
+    }
+}
+
+/// A file descriptor prepared by a fallible syscall transaction.
+/// Dropping it before installation releases its slot before its file object.
+pub struct PreparedFileDescriptor {
+    reservation: FileDescriptorReservation,
+    descriptor: FileDescriptor,
 }
 
 impl PreparedFileDescriptor {
@@ -641,47 +688,32 @@ impl PreparedFileDescriptor {
         descriptor: FileDescriptor,
         max_entries: usize,
     ) -> StarryResult<Self> {
+        // Preserve the existing count-based admission policy for prepared
+        // descriptor callers. FIFO opens use the fd-number limit separately.
         let fd = {
-            let mut table = table.write();
-            if table.count() >= max_entries {
+            let mut contents = table.write();
+            if contents.count() >= max_entries {
                 return Err(StarryError::TooManyOpenFiles);
             }
-            table.reserve().ok_or(StarryError::TooManyOpenFiles)?
+            contents
+                .reserve(AX_FILE_LIMIT)
+                .ok_or(StarryError::TooManyOpenFiles)?
         };
         Ok(Self {
-            table,
-            fd,
-            descriptor: Some(descriptor),
+            reservation: FileDescriptorReservation {
+                table,
+                fd: Some(fd),
+            },
+            descriptor,
         })
     }
 
     pub const fn fd(&self) -> c_int {
-        self.fd as c_int
+        self.reservation.fd()
     }
 
-    pub fn install(mut self) {
-        let descriptor = self
-            .descriptor
-            .take()
-            .expect("prepared descriptor installed twice");
-        let install = self.table.write().install_reserved(self.fd, descriptor);
-        if let Err(descriptor) = install {
-            // Keep descriptor destruction outside the preemption-disabling
-            // table lock even when an internal reservation invariant fails.
-            drop(descriptor);
-            panic!("prepared file descriptor lost its reservation before install");
-        }
-    }
-}
-
-impl Drop for PreparedFileDescriptor {
-    fn drop(&mut self) {
-        if let Some(descriptor) = self.descriptor.take() {
-            self.table.write().release_reserved(self.fd);
-            // File destructors may wake waiters, so the descriptor must drop
-            // after the preemption-disabling table guard is gone.
-            drop(descriptor);
-        }
+    pub fn install(self) {
+        self.reservation.install(self.descriptor);
     }
 }
 
@@ -901,7 +933,7 @@ fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
     let table = Arc::new(RwLock::new(FileTable::new()));
     let prepared =
         PreparedFileDescriptor::prepare_in(table.clone(), descriptor(), AX_FILE_LIMIT).unwrap();
-    let reserved_fd = prepared.fd;
+    let reserved_fd = prepared.fd() as usize;
     let hidden = table.read().get(reserved_fd).is_none();
     let counted_against_limit =
         PreparedFileDescriptor::prepare_in(table.clone(), descriptor(), 1).is_err();
@@ -925,7 +957,7 @@ fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
     let prepared =
         PreparedFileDescriptor::prepare_in(install_table.clone(), descriptor(), AX_FILE_LIMIT)
             .unwrap();
-    let installed_fd = prepared.fd;
+    let installed_fd = prepared.fd() as usize;
     prepared.install();
     let install_made_visible = install_table.read().get(installed_fd).is_some();
 

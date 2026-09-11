@@ -4,7 +4,9 @@ use alloc::{
     collections::BTreeMap,
     sync::{Arc, Weak},
 };
+use core::ops::Bound::{Excluded, Unbounded};
 
+use axfs_ng_vfs::{FilesystemId, MountUseGuard};
 use linux_raw_sys::general::{O_ACCMODE, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY};
 
 use super::{Pipe, PipeAccess, PipeState, Shared};
@@ -12,10 +14,44 @@ use crate::{StarryError, StarryResult, file::File, sync::Mutex, task::UserTaskRe
 
 // The inode remains pinned by each opening/open file description. Weak entries
 // never retain a buffer after the last endpoint and pending open have gone away.
-static FIFOS: Mutex<BTreeMap<(u64, u64), Weak<Shared>>> = Mutex::new(BTreeMap::new());
+type FifoKey = (FilesystemId, u64);
+
+struct FifoRegistry {
+    channels: BTreeMap<FifoKey, Weak<Shared>>,
+    cleanup_after: Option<FifoKey>,
+}
+
+impl FifoRegistry {
+    fn prune_stale(&mut self) {
+        // Inspect two entries per open, advancing even past live channels.
+        // This bounds lock work without allowing one long-lived first entry
+        // to permanently shield all later stale entries from reclamation.
+        for _ in 0..2 {
+            let candidate = self
+                .cleanup_after
+                .and_then(|key| self.channels.range((Excluded(key), Unbounded)).next())
+                .or_else(|| self.channels.first_key_value())
+                .map(|(key, shared)| (*key, shared.strong_count() == 0));
+            let Some((key, stale)) = candidate else {
+                self.cleanup_after = None;
+                break;
+            };
+            self.cleanup_after = Some(key);
+            if stale {
+                self.channels.remove(&key);
+            }
+        }
+    }
+}
+
+static FIFOS: Mutex<FifoRegistry> = Mutex::new(FifoRegistry {
+    channels: BTreeMap::new(),
+    cleanup_after: None,
+});
 
 pub(super) struct NamedFile {
     pub(super) file: Arc<File>,
+    _mount_use: MountUseGuard,
     // Linux suppresses HUP on a nonblocking reader until a writer has opened.
     pub(super) initial_writer_generation: Option<u64>,
 }
@@ -37,21 +73,28 @@ impl Pipe {
             O_RDWR => PipeAccess::ReadWrite,
             _ => return Err(StarryError::InvalidInput),
         };
-        let metadata = file.location().metadata()?;
-        let key = (metadata.device, metadata.inode);
+        let nonblocking = flags & O_NONBLOCK != 0;
+        let mount_use = file.location().mountpoint().acquire_use()?;
+        let key = (
+            file.location().mountpoint().filesystem_id(),
+            file.location().entry().inode(),
+        );
         let file = Arc::new(File::new(file, flags));
         let shared = {
             let mut registry = FIFOS.lock();
-            registry.retain(|_, shared| shared.strong_count() != 0);
-            if let Some(shared) = registry.get(&key).and_then(Weak::upgrade) {
+            registry.prune_stale();
+            if let Some(shared) = registry.channels.get(&key).and_then(Weak::upgrade) {
                 shared
             } else {
+                registry.channels.remove(&key);
+                if access == PipeAccess::Write && nonblocking {
+                    return Err(StarryError::NoSuchDeviceOrAddress);
+                }
                 let shared = Arc::new(Shared::new(PipeState::empty()));
-                registry.insert(key, Arc::downgrade(&shared));
+                registry.channels.insert(key, Arc::downgrade(&shared));
                 shared
             }
         };
-        let nonblocking = flags & O_NONBLOCK != 0;
         let (wait_generation, initial_writer_generation) = shared.update_state(|state| {
             if access == PipeAccess::Write && nonblocking && state.readers == 0 {
                 return Err(StarryError::NoSuchDeviceOrAddress);
@@ -77,6 +120,7 @@ impl Pipe {
             non_blocking: core::sync::atomic::AtomicBool::new(nonblocking),
             named: Some(NamedFile {
                 file,
+                _mount_use: mount_use,
                 initial_writer_generation,
             }),
         };

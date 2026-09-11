@@ -6,3 +6,7 @@ set(CMAKE_C_EXTENSIONS ON)
 add_executable(bug-open-eintr-not-implemented src/main.c)
 target_compile_options(bug-open-eintr-not-implemented PRIVATE -Wall -Wextra -Werror)
 install(TARGETS bug-open-eintr-not-implemented RUNTIME DESTINATION usr/bin/starry-test-suit)
+
+add_executable(bug-fifo-open-boundary src/boundary.c)
+target_compile_options(bug-fifo-open-boundary PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-fifo-open-boundary RUNTIME DESTINATION usr/bin/starry-test-suit)

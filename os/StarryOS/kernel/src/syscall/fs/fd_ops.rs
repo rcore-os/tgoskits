@@ -90,8 +90,14 @@ fn add_to_fd(
                 return add_file_like(Arc::new(File::new(file, flags)), flags & O_CLOEXEC != 0);
             }
             if file.location().node_type() == NodeType::Fifo {
+                let reservation = crate::file::FileDescriptorReservation::new()?;
                 let pipe = Pipe::open_fifo(current, file, flags)?;
-                return add_file_like(Arc::new(pipe), flags & O_CLOEXEC != 0);
+                let fd = reservation.fd();
+                reservation.install(crate::file::FileDescriptor {
+                    inner: Arc::new(pipe),
+                    cloexec: flags & O_CLOEXEC != 0,
+                });
+                return Ok(fd);
             }
             // /dev/xx handling
             if let Ok(device) = file.location().entry().downcast::<Device>() {

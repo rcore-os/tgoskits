@@ -116,3 +116,44 @@ fn admitted_unmount_rejects_new_child_mount() {
         .unmount()
         .expect("unmount parent with fresh admission");
 }
+
+#[axtest::axtest]
+fn active_use_revalidates_normal_unmount_and_rejects_late_admission() {
+    let (_root, mount) = mounted_tree();
+    let location = mount.location().unwrap();
+    let plan = mount.plan_unmount(UnmountKind::Normal).unwrap();
+    let active = mount.acquire_use().unwrap();
+    assert!(matches!(
+        mount.plan_unmount(UnmountKind::Normal),
+        Err(VfsError::ResourceBusy)
+    ));
+    // The use appeared after planning but before the post-flush commit.
+    assert_eq!(
+        mount.root_location().commit_unmount(plan),
+        Err(VfsError::ResourceBusy)
+    );
+    drop(active);
+    mount.root_location().unmount().unwrap();
+    assert!(matches!(mount.acquire_use(), Err(VfsError::NotFound)));
+    assert_eq!(
+        mount.attach_detached(&location),
+        Err(VfsError::InvalidInput)
+    );
+}
+
+#[axtest::axtest]
+fn active_use_survives_lazy_detach_and_reattachment() {
+    let (_root, mount) = mounted_tree();
+    let location = mount.location().unwrap();
+    let active = mount.acquire_use().unwrap();
+    mount.detach().unwrap();
+    let detached_use = mount.acquire_use().unwrap();
+    mount.attach_detached(&location).unwrap();
+    assert!(matches!(
+        mount.plan_unmount(UnmountKind::Normal),
+        Err(VfsError::ResourceBusy)
+    ));
+    drop(detached_use);
+    drop(active);
+    mount.root_location().unmount().unwrap();
+}
