@@ -18,6 +18,13 @@ include = [
     "xtask/src/**",
     "README.md",
     "LICENSE*",
+    # The `web-ui` feature builds the dashboard from these sources: build.rs
+    # embeds `web-ui/dist`, which a consumer produces with the frontend
+    # toolchain. Installed dependencies and the build output are reproducible
+    # from the manifest and the lockfile, so they stay out of the package.
+    "web-ui/**",
+    "!web-ui/node_modules/**",
+    "!web-ui/dist/**",
 ]
 
 [[bin]]
