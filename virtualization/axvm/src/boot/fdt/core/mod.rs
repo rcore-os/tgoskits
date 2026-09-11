@@ -182,8 +182,10 @@ fn enrich_guest_config(
     };
 
     parse_reserved_memory_regions(vm_create_config, dtb)?;
-    parse_passthrough_devices_address(vm_config, vm_create_config, dtb)?;
-    parse_vm_interrupt(vm_config, vm_create_config, dtb)
+    // Interrupt discovery needs the original FDT selectors. Address resolution
+    // replaces them with MMIO mappings whose names need not be node paths.
+    parse_vm_interrupt(vm_config, vm_create_config, dtb)?;
+    parse_passthrough_devices_address(vm_config, vm_create_config, dtb)
 }
 
 fn clear_unresolved_dtb_config(vm_config: &mut AxVMConfig, vm_create_config: &mut GuestConfig) {

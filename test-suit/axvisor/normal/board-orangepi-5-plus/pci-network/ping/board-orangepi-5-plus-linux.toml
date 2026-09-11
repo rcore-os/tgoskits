@@ -1,0 +1,14 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "orangepi@orangepi5plus:~"
+# A single shell transaction avoids losing queued terminal input when a
+# foreground command changes terminal settings.
+shell_init_cmd = '''
+printf '%s\n' orangepi | sudo -S sh -c 'n=enP3p49s0; d=/sys/class/net/$n/device; m=AXVISOR_PCI_NET_PING; ip -br a; readlink -f $d; if [ "$(cat $d/vendor)" = 0x10ec ] && [ "$(cat $d/device)" = 0x8125 ] && nmcli -w 45 device connect $n && ping -n -I $n -c 5 -w 10 -W 2 192.168.1.2; then sync; echo ${m}_PASSED; else sync; echo ${m}_FAILED; fi'
+'''
+success_regex = ['(?m)^AXVISOR_PCI_NET_PING_PASSED\s*$']
+fail_regex = [
+    '(?m)^AXVISOR_PCI_NET_PING_FAILED\s*$',
+    'panicked at',
+    'Kernel panic - not syncing',
+]
+timeout = 300

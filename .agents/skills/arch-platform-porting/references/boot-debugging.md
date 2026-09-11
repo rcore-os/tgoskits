@@ -44,6 +44,28 @@ Axvisor x86 嵌套 OVMF 用例按下列顺序调试：
 
 AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步长，与传给运行时的 `ArmVgicConfig` 比较。不得通过向下转换已注册 GIC 前端推断配置。宿主 GIC 内存映射区域保持陷入，客户机写入不能改变宿主 GICD 或 GICR。
 
+## OrangePi-5-Plus Linux 网卡直通
+
+物理网卡用例位于 `test-suit/axvisor/normal/board-orangepi-5-plus/pci-network`。
+它读取板卡 `/boot/Image`（已验证 Linux 6.1.99）和匹配根文件系统中的 `r8125`
+模块；旧 `/guest/linux/orangepi-5-plus` 的 6.1.43 映像在相同设备树下出现 PCIe
+链路训练失败。网线连接 `fe180000.pcie` 下的 RTL8125，客户机接口为 `enP3p49s0`，
+目标为板卡网络中的 `192.168.1.2`。用例显式选择 PCIe 控制器，并保留 `aliases`、
+GPIO、SCMI、IOC、PHP GRF 和 PHY GRF 依赖。`pci=nomsi` 明确验证物理 INTx 级联；
+这条证据不代表物理 MSI/ITS 直通已经实现。
+
+通过 `cargo xtask axvisor test board -g normal -c ping --board orangepi-5-plus-linux -b OrangePi-5-Plus`
+运行该用例。测试先核验 PCI 身份 `10ec:8125`，再通过该接口向 `192.168.1.2`
+发送五个 ICMP 请求，只有在截止时间内收到全部回复才报告成功。
+
+`boot::fdt::core::enrich_guest_config` 必须先执行 `parse_vm_interrupt`，再执行
+`parse_passthrough_devices_address`。后者把原始设备树选择器替换为带 `-ecam`
+等后缀的地址映射名，不能再用这些名字发现 PCIe 控制器和无寄存器子节点的中断。
+顺序错误时可观察到 PCIe Link up、RTL8125 的 `INTx+`、客户机网卡中断计数为零，
+以及 PHY 已协商但接口 `NO-CARRIER`。回归 `pci_interrupts_survive_address_resolution`
+通过真实配置补全过程验证地址与中断同时保留。板卡验收必须检查实际 ping 回复和
+`AXVISOR_PCI_NET_PING_PASSED`，不能只检查登录或命令回显。
+
 ## 处理器局部寄存器所有权
 
 `cpu-local` 是宿主处理器区域、当前上下文、内核线程局部存储绑定和体系结构选择抢占语义的唯一所有者。实际寄存器指令由 `ax_cpu::registers` 提供，CPU 层不解释运行期头或抢占位。x86 GS 相对操作接收由 `cpu-local` 提供的常量偏移，保留单指令本核操作；不能将无 LOCK 的比较交换用于跨核共享状态。`ax-percpu` 只提供类型化模板、布局和区域实现，不能独立选择体系结构寄存器。最终映像的两种模式互斥：
