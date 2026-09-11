@@ -20,7 +20,8 @@ use super::drm::{DrmUnique, DrmVersion};
 use crate::{
     StarryError, StarryResult,
     file::{
-        File as KernelFile, FileLike, IoDst, IoSrc, Kstat,
+        add_file_like, current_fd_table, release_locks_on_close, File as KernelFile, FileLike,
+        IoDst, IoSrc, Kstat,
         dmabuf::{ContiguousDmaBuf, resolve_contiguous_dmabuf},
     },
     mm::{vm_load, vm_write_slice},
@@ -553,6 +554,7 @@ impl FileLike for Card1File {
             return Err(StarryError::InvalidInput);
         }
         copy_from_user(current, &mut stack_data.0[..in_size], arg)?;
+        let mut prime_rollback = None;
         match nr {
             DRM_IOCTL_VERSION_NR => drm_version(current, &mut stack_data.0)?,
             DRM_IOCTL_GET_UNIQUE_NR => drm_get_unique(&mut stack_data.0)?,
@@ -560,14 +562,21 @@ impl FileLike for Card1File {
                 drm_gem_flink_ioctl(&mut stack_data.0)?;
             }
             DRM_IOCTL_PRIME_HANDLE_TO_FD_NR => {
-                self.drm_prime_handle_to_fd_ioctl(&mut stack_data.0)?;
+                prime_rollback = Some(self.drm_prime_handle_to_fd_ioctl(&mut stack_data.0)?);
             }
             DRM_IOCTL_PRIME_FD_TO_HANDLE_NR => {
-                self.drm_prime_fd_to_handle_ioctl(&mut stack_data.0)?;
+                prime_rollback = Some(self.drm_prime_fd_to_handle_ioctl(&mut stack_data.0)?);
             }
             _ => return Err(VfsError::NotATty.into()),
         }
+        // PRIME handlers publish an fd or local GEM handle before this common
+        // copy-back. The guard remains armed until the user-visible result has
+        // been copied successfully, so a bad output pointer cannot commit a
+        // resource that userspace never received.
         copy_to_user(current, arg, &stack_data.0[..in_size])?;
+        if let Some(rollback) = prime_rollback {
+            rollback.commit();
+        }
         Ok(0)
     }
 
@@ -718,16 +727,18 @@ impl Card1File {
         Ok(0)
     }
 
-    fn drm_prime_handle_to_fd_ioctl(&self, data: &mut [u8]) -> VfsResult<usize> {
+    fn drm_prime_handle_to_fd_ioctl(&self, data: &mut [u8]) -> VfsResult<PrimeRollback<'_>> {
         let data = unsafe { &mut *(data.as_mut_ptr() as *mut DrmPrimeHande) };
-        let exported = self.exported_gem_buffer(data.handle).map_err(|_| VfsError::NotFound)?;
-        data.fd = exported
-            .add_to_fd_table(prime_fd_cloexec(data.flags))
+        let exported: Arc<dyn FileLike> = Arc::new(
+            self.exported_gem_buffer(data.handle)
+                .map_err(|_| VfsError::NotFound)?,
+        );
+        data.fd = add_file_like(exported.clone(), prime_fd_cloexec(data.flags))
             .map_err(|_| VfsError::NoMemory)?;
-        Ok(0)
+        Ok(PrimeRollback::new_fd(data.fd, exported))
     }
 
-    fn drm_prime_fd_to_handle_ioctl(&self, data: &mut [u8]) -> VfsResult<usize> {
+    fn drm_prime_fd_to_handle_ioctl(&self, data: &mut [u8]) -> VfsResult<PrimeRollback<'_>> {
         let req = unsafe { &mut *(data.as_mut_ptr() as *mut DrmPrimeHande) };
         let buf = resolve_contiguous_dmabuf(req.fd).ok_or(VfsError::InvalidInput)?;
         let global_handle = rknpu::mem_import(
@@ -745,7 +756,101 @@ impl Card1File {
                 return Err(error);
             }
         };
-        Ok(0)
+        Ok(PrimeRollback::new_import(self, req.handle, global_handle))
+    }
+}
+
+enum PrimeRollbackAction<'a> {
+    CloseFd {
+        fd: i32,
+        file: Arc<dyn FileLike>,
+    },
+    DestroyImportedGem {
+        file: &'a Card1File,
+        local_handle: u32,
+        global_handle: u32,
+    },
+}
+
+struct PrimeRollback<'a> {
+    action: PrimeRollbackAction<'a>,
+    committed: bool,
+}
+
+impl<'a> PrimeRollback<'a> {
+    fn new_fd(fd: i32, file: Arc<dyn FileLike>) -> Self {
+        Self {
+            action: PrimeRollbackAction::CloseFd { fd, file },
+            committed: false,
+        }
+    }
+
+    fn new_import(file: &'a Card1File, local_handle: u32, global_handle: u32) -> Self {
+        Self {
+            action: PrimeRollbackAction::DestroyImportedGem {
+                file,
+                local_handle,
+                global_handle,
+            },
+            committed: false,
+        }
+    }
+
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PrimeRollback<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        match &self.action {
+            PrimeRollbackAction::CloseFd { fd, file } => close_exported_fd(*fd, file),
+            PrimeRollbackAction::DestroyImportedGem {
+                file,
+                local_handle,
+                global_handle,
+            } => match file.remove_handle(*local_handle) {
+                Ok(removed) if removed == *global_handle => destroy_gem_or_defer(*global_handle),
+                Ok(removed) => {
+                    warn!(
+                        "rknpu: PRIME rollback handle mismatch: local={local_handle}, \
+                         expected={global_handle}, actual={removed}"
+                    );
+                    destroy_gem_or_defer(removed);
+                    destroy_gem_or_defer(*global_handle);
+                }
+                Err(error) => {
+                    // Keep the global allocation recoverable even if local
+                    // bookkeeping has already been changed unexpectedly.
+                    warn!(
+                        "rknpu: PRIME rollback could not remove local handle {local_handle}: \
+                         {error:?}"
+                    );
+                    defer_gem_destroy(*global_handle);
+                }
+            },
+        }
+    }
+}
+
+fn close_exported_fd(fd: i32, expected: &Arc<dyn FileLike>) {
+    let removed = {
+        let table = current_fd_table();
+        let mut table = table.write();
+        let matches = table
+            .get(fd as usize)
+            .is_some_and(|descriptor| Arc::ptr_eq(&descriptor.inner, expected));
+        matches.then(|| table.remove(fd as usize)).flatten()
+    };
+    if let Some(descriptor) = removed {
+        release_locks_on_close(descriptor);
+    } else {
+        // Another thread may have closed or reused the freshly exported fd;
+        // its normal close path then owns the descriptor cleanup.
+        warn!("rknpu: PRIME fd rollback skipped fd {fd} after descriptor changed");
     }
 }
 
@@ -852,10 +957,10 @@ impl ExportedGemBuffer {
         let anchor = Some(self.retainer.clone());
         match self.cache_policy {
             GemCachePolicy::Cacheable => {
-                DeviceMmap::PhysicalCachedResolved(self.range, anchor)
+                DeviceMmap::PhysicalCachedResolvedPageCapped(self.range, anchor)
             }
             GemCachePolicy::NonCacheable | GemCachePolicy::WriteCombine => {
-                DeviceMmap::PhysicalResolved(self.range, anchor)
+                DeviceMmap::PhysicalResolvedPageCapped(self.range, anchor)
             }
         }
     }
@@ -1159,7 +1264,7 @@ mod tests {
 
         assert!(matches!(
             exported.device_mmap_kind_resolved(),
-            DeviceMmap::PhysicalCachedResolved(actual, Some(_)) if actual == range
+            DeviceMmap::PhysicalCachedResolvedPageCapped(actual, Some(_)) if actual == range
         ));
     }
 
