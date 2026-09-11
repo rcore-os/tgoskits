@@ -1334,7 +1334,14 @@ impl FileLike for Pipe {
     }
 
     fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
-        self.write_with_broken_pipe_handler(src, raise_pipe)
+        let result = self.write_with_broken_pipe_handler(src, raise_pipe);
+        if let Ok(bytes) = result
+            && bytes > 0
+            && let Some(file) = self.named_file()
+        {
+            super::inotify::notify_modify_path(file.path().as_ref());
+        }
+        result
     }
 
     fn stat(&self) -> StarryResult<Kstat> {

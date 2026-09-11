@@ -4,9 +4,11 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <poll.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/inotify.h>
 #include <sys/stat.h>
 #include <sys/vfs.h>
 #include <sys/syscall.h>
@@ -112,11 +114,32 @@ static void nonblocking_pair(void)
     require(poll(&event, 1, 0) == 0, "reader has no HUP before first writer");
     char byte = 0;
     require(syscall(SYS_read, reader, &byte, 1) == 0, "reader without writer observes EOF");
+    int notify = syscall(SYS_inotify_init1, IN_NONBLOCK);
+    require(notify >= 0, "create FIFO notification instance");
+    int watch = syscall(SYS_inotify_add_watch, notify, fifo, IN_MODIFY | IN_CLOSE_WRITE);
+    require(watch >= 0, "watch FIFO writes and writer close");
     int writer = fifo_open(O_WRONLY | O_NONBLOCK);
     require(writer >= 0, "nonblocking writer opens with reader");
     require(syscall(SYS_write, writer, "x", 1) == 1, "write through FIFO");
     require(syscall(SYS_read, reader, &byte, 1) == 1 && byte == 'x', "read peer data through FIFO");
     close(writer);
+    _Alignas(struct inotify_event) char events[4096];
+    ssize_t count = syscall(SYS_read, notify, events, sizeof(events));
+    require(count > 0, "FIFO produces inotify events");
+    uint32_t observed = 0;
+    for (size_t offset = 0; offset < (size_t)count;) {
+        require((size_t)count - offset >= sizeof(struct inotify_event), "complete inotify event header");
+        struct inotify_event entry;
+        memcpy(&entry, events + offset, sizeof(entry));
+        size_t size = sizeof(entry) + entry.len;
+        require(size <= (size_t)count - offset, "complete inotify event payload");
+        if (entry.wd == watch)
+            observed |= entry.mask;
+        offset += size;
+    }
+    require((observed & (IN_MODIFY | IN_CLOSE_WRITE)) == (IN_MODIFY | IN_CLOSE_WRITE),
+            "FIFO preserves IN_MODIFY and IN_CLOSE_WRITE notifications");
+    close(notify);
     event.revents = 0;
     require(poll(&event, 1, 0) == 1 && (event.revents & POLLHUP), "last writer close reports HUP");
     require(syscall(SYS_read, reader, &byte, 1) == 0, "last writer close restores EOF");
