@@ -588,7 +588,12 @@ pub fn sys_linkat(
 
     let cred = current.as_thread().cred();
     let mutation_cred = mutation_credentials(&cred);
-    if flags & AT_EMPTY_PATH != 0 {
+    // AT_EMPTY_PATH changes `olddirfd` into an object fd only for the
+    // genuinely empty pathname. With a non-empty pathname it is ignored by
+    // linkat(), so ordinary path-based linking remains unprivileged.
+    if flags & AT_EMPTY_PATH != 0
+        && old_path.as_deref().map_or(true, |path| path.is_empty())
+    {
         // Linux requires CAP_DAC_READ_SEARCH for AT_EMPTY_PATH and reports
         // ENOENT when the caller does not have it.
         if !mutation_cred.cap_dac_read_search {
