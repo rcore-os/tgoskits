@@ -2,11 +2,18 @@ args = [
   "-nographic",
   "-cpu", "cortex-a72",
   "-machine", "virt,virtualization=on,gic-version=3",
-  "-smp", "4",
+  # CPU0 stays with AxVisor, the four guests are pinned to CPU1..CPU4.
+  "-smp", "8",
   "-m", "4g",
 ]
-fail_regex = ["VM1_VIRTIO_NET_FAIL", "VM2_VIRTIO_NET_FAIL", "(?i)panic"]
-timeout = 180
+fail_regex = [
+  "VM1_VIRTIO_NET_FAIL",
+  "VM2_VIRTIO_NET_FAIL",
+  "VM3_VIRTIO_NET_FAIL",
+  "VM4_VIRTIO_NET_FAIL",
+  "(?i)panic",
+]
+timeout = 240
 to_bin = true
 uefi = false
 
@@ -14,12 +21,50 @@ uefi = false
 shell_prefix = "axvisor:$"
 shell_cmd = "vm console 1"
 
+# Each guest is both a server and a client, so `role=client` proves the session
+# towards the next guest of the chain (VM1 -> VM2 -> VM3 -> VM4) is up.
 [[shell_check_steps]]
-success_regex = ["VM1_VIRTIO_NET_PASS"]
+success_regex = ["VM1_VIRTIO_NET_PASS role=client"]
+
+# The guests heartbeat forever now, so a console never returns to the axvisor
+# shell on its own. Wait for a client heartbeat on the attached console, then
+# send Ctrl-X h (`\u0018` is the shortcut prefix) to detach from it.
+[[shell_check_steps]]
+shell_prefix = "VM1_VIRTIO_NET_HB_TX"
+shell_cmd = "\u0018h"
 
 [[shell_check_steps]]
 shell_prefix = "axvisor:$"
 shell_cmd = "vm console 2"
 
 [[shell_check_steps]]
-success_regex = ["VM2_VIRTIO_NET_PASS"]
+success_regex = ["VM2_VIRTIO_NET_PASS role=client"]
+
+[[shell_check_steps]]
+shell_prefix = "VM2_VIRTIO_NET_HB_TX"
+shell_cmd = "\u0018h"
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:$"
+shell_cmd = "vm console 3"
+
+[[shell_check_steps]]
+success_regex = ["VM3_VIRTIO_NET_PASS role=client"]
+
+[[shell_check_steps]]
+shell_prefix = "VM3_VIRTIO_NET_HB_TX"
+shell_cmd = "\u0018h"
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:$"
+shell_cmd = "vm console 4"
+
+# VM4 closes the chain: it answers VM3's heartbeats and has no further neighbour
+# to connect to (its client only logs CONNECT_RETRY for 10.0.2.19).
+[[shell_check_steps]]
+success_regex = ["VM4_VIRTIO_NET_PASS role=server"]
+
+# Attaching to VM4's console replays its backlog, so this asserts the tail of
+# the chain keeps exchanging heartbeats for a while after the pass markers.
+[[shell_check_steps]]
+success_regex = ["VM4_VIRTIO_NET_HB_RX.*count=5"]
