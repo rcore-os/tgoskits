@@ -153,8 +153,9 @@ pub fn sys_writev(
         file_like.validate_write_len(len)
     })?;
     memfd_checks_before_stream_write(&file_like, source.byte_len() as u64)?;
-    let data = copy_user_iov_read_buf(source)?;
-    file_like.write(&mut data.as_slice()).map(|n| n as _)
+    // Preserve eager payload validation without allocating a full request copy.
+    source.prepare_read()?;
+    file_like.write(&mut source.into_io()).map(|n| n as _)
 }
 
 pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> StarryResult<isize> {
