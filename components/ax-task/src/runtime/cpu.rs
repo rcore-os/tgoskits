@@ -269,34 +269,13 @@ pub fn probe_idle_cpu_round_trip(publish_work_after_drain: bool) -> Result<(), T
     if cpu.remote().current_thread() != cpu.remote().idle_thread() {
         return Err(TaskError::NotReady);
     }
-    // Linux drains pending wakeups before its final sched_cpu_dying checks.
-    // Idle's preceding schedule is not a quiescence guarantee: owner work can
-    // arrive after it returns. Keep the request pending until the normal idle
-    // scheduler consumes that work, without entering the offline transaction.
-    // The IRQ guard closes the local interrupt window through admission.
-    if !publish_work_after_drain && (cpu.needs_reschedule() || cpu.has_remote_work()) {
-        return Err(TaskError::NotReady);
-    }
     if publish_work_after_drain {
-        // Force the remote-arrival window after the optimistic work recheck.
-        // Admission must still classify it while its publication gate is shut.
+        // Force work published after idle's normal scheduler drain.
+        // The lifecycle owner must close placement before draining this work.
         cpu.request_scheduler_work();
     }
     record_idle_offline_rejection(IdleOfflineRejection::Unclassified);
-    match system.take_cpu_offline(cpu.as_mut()) {
-        Err(TaskError::CpuNotQuiescent(_))
-            if matches!(
-                idle_offline_rejection(),
-                IdleOfflineRejection::SchedulerWork
-            ) =>
-        {
-            // A remote producer can win after the initial recheck. The
-            // transaction classified that work with publication closed and
-            // rolled admission back; drain it through the normal idle loop.
-            return Err(TaskError::NotReady);
-        }
-        result => result?,
-    }
+    system.take_cpu_offline(cpu.as_mut())?;
     assert_eq!(cpu.remote().lifecycle_state(), CpuLifecycleState::Offline);
     assert!(system.cpu_remote(cpu.owner()).is_none());
     // Returning an error here would strand the executing idle owner offline.
@@ -318,5 +297,55 @@ pub fn notify_idle_cpu_probe(cpu: RuntimeCpuId) -> Result<(), TaskError> {
         Ok(())
     } else {
         Err(TaskError::CpuOffline(cpu.as_u32()))
+    }
+}
+
+/// Actual scheduler readers retained by the cross-CPU offline regression.
+#[cfg(feature = "fault-injection")]
+#[derive(Clone, Copy, Debug)]
+pub enum IdleOfflineReader {
+    /// A remote control publisher between admission and completion.
+    OwnerDelivery,
+    /// A source CPU still finishing a committed idle-balance claim.
+    IdleBalance,
+}
+
+/// Retains a real scheduler reader across a controlled cross-CPU test.
+/// No IRQ or rq guard is held across the callback, so the target can run its
+/// ordinary idle lifecycle protocol while the callback observes the transition.
+#[cfg(feature = "fault-injection")]
+pub fn with_idle_offline_reader<T>(
+    cpu: RuntimeCpuId,
+    reader: IdleOfflineReader,
+    action: impl FnOnce(&CpuRemote) -> T,
+) -> Result<T, TaskError> {
+    crate::thread::current::validate_blocking_context()?;
+    let system = crate::runtime::context::runtime_task_system()?;
+    let remote = system
+        .cpu_remote(crate::sched::CpuId::new(cpu.as_u32()))
+        .ok_or(TaskError::CpuOffline(cpu.as_u32()))?;
+    record_idle_offline_rejection(IdleOfflineRejection::Unclassified);
+    match reader {
+        IdleOfflineReader::OwnerDelivery => {
+            let _publication = remote
+                .begin_owner_delivery()
+                .ok_or(TaskError::CpuOffline(cpu.as_u32()))?;
+            Ok(action(remote))
+        }
+        IdleOfflineReader::IdleBalance => {
+            let crate::sched::system::IdlePullReservation::Started(reservation) =
+                remote.begin_idle_pull()
+            else {
+                return Err(TaskError::NotReady);
+            };
+            let Some(mut claim) = remote.claim_idle_pull(reservation) else {
+                remote.cancel_idle_pull(reservation);
+                return Err(TaskError::NotReady);
+            };
+            if !claim.commit() {
+                return Err(TaskError::NotReady);
+            }
+            Ok(action(remote))
+        }
     }
 }

@@ -18,7 +18,7 @@ sched-rr = ["task-runtime", "ax-std/alloc"]
 sched-cfs = ["task-runtime", "ax-std/alloc"]
 task-affinity = ["task-runtime"]
 # Kept outside `all`: device workers have no CPU hotplug park contract.
-task-cpu-lifecycle = ["task-runtime", "dep:ax-runtime", "ax-runtime/fault-injection", "ax-std/paging", "dep:ax-mm"]
+task-cpu-lifecycle = ["dep:ax-task", "task-runtime", "dep:ax-runtime", "ax-runtime/fault-injection", "ax-std/paging", "dep:ax-mm"]
 task-fair-idle-pull = ["task-runtime", "ax-std/alloc"]
 task-fair-wake-idle-sibling = ["task-runtime"]
 task-wait-queue = ["task-runtime", "dep:ax-runtime", "ax-runtime/fault-injection", "ax-std/tls"]
