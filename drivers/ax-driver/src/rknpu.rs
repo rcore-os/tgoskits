@@ -11,7 +11,8 @@ use rdrive::{
     register::ProbeFdt,
 };
 pub use rockchip_npu::{
-    GemBufferInfo, GemCachePolicy, RknpuAction, RknpuTask,
+    GemBufferInfo, GemCachePolicy, RKNPU_CORE0_MASK, RKNPU_CORE1_MASK, RKNPU_CORE2_MASK,
+    RknpuAction, RknpuTask,
     ioctrl::{RknpuMemCreate, RknpuMemDestroy, RknpuMemMap, RknpuMemSync, RknpuSubmit},
 };
 use rockchip_npu::{Rknpu, RknpuConfig, RknpuType};
@@ -217,6 +218,17 @@ pub fn submit(args: &mut RknpuSubmit, tasks: &mut [RknpuTask]) -> Result<(), Err
         }
         Err(_) => Err(Error::InvalidData),
     }
+}
+
+/// Resolve the core mask using the same device state as a later submission.
+///
+/// Card-specific validation uses this result to select only task descriptors
+/// that the portable RKNPU submit path will consume.
+pub fn normalize_core_mask(requested_mask: u32) -> Result<u32, Error> {
+    with_npu(|npu| {
+        npu.normalize_core_mask(requested_mask)
+            .map_err(|_| Error::InvalidData)
+    })
 }
 
 pub fn mem_create(args: &mut RknpuMemCreate) -> Result<(), Error> {

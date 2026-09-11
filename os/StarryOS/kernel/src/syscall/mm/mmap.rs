@@ -441,7 +441,7 @@ pub fn sys_mmap(
                         if range.is_empty() {
                             return Err(StarryError::InvalidInput);
                         }
-                        length = length.min(range.size().align_down(page_size));
+                        length = capped_device_map_len(length, range.size(), page_size)?;
                         match retain {
                             Some(retain) => MappingOperation::new_linear_anchored(
                                 start,
@@ -460,7 +460,7 @@ pub fn sys_mmap(
                         if range.is_empty() {
                             return Err(StarryError::InvalidInput);
                         }
-                        length = length.min(range.size().align_down(page_size));
+                        length = capped_device_map_len(length, range.size(), page_size)?;
                         match retain {
                             Some(retain) => MappingOperation::new_linear_anchored(
                                 start,
@@ -476,7 +476,7 @@ pub fn sys_mmap(
                         if range.is_empty() {
                             return Err(StarryError::InvalidInput);
                         }
-                        length = length.min(range.size().align_down(page_size));
+                        length = capped_device_map_len(length, range.size(), page_size)?;
                         match retain {
                             Some(retain) => MappingOperation::new_linear_anchored(
                                 start,
@@ -492,7 +492,7 @@ pub fn sys_mmap(
                         if range.is_empty() {
                             return Err(StarryError::InvalidInput);
                         }
-                        length = length.min(range.size().align_down(page_size));
+                        length = capped_device_map_len(length, range.size(), page_size)?;
                         match retain {
                             Some(retain) => MappingOperation::new_linear_anchored(
                                 start,
@@ -1670,6 +1670,7 @@ fn mmap_capped_device_map_len_rules_hold_for_test() -> bool {
     assert_eq!(capped_device_map_len(8192, 4096, page_size).unwrap(), 4096); // request > available
     assert_eq!(capped_device_map_len(0, 8192, page_size).unwrap(), 0); // zero request
     assert_eq!(capped_device_map_len(5000, 4096, page_size).unwrap(), 4096); // request > available (aligned)
+    assert_eq!(capped_device_map_len(0x10_000, 0x9_708, page_size).unwrap(), 0xa_000);
     assert!(checked_align_up(usize::MAX, page_size).is_err());
     true
 }

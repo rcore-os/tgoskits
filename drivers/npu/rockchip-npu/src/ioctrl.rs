@@ -233,14 +233,7 @@ impl Rknpu {
             debug!("Nonblock task");
         }
 
-        let core_mask = self.normalize_core_mask(args)?;
-        if core_mask > self.data.core_mask || !is_supported_core_mask(core_mask) {
-            warn!(
-                "rknpu submit: invalid core_mask={:#x}, supported_mask={:#x}",
-                args.core_mask, self.data.core_mask
-            );
-            return Err(RknpuError::InvalidParameter);
-        }
+        let core_mask = self.normalize_core_mask(args.core_mask)?;
 
         let use_core_num = active_core_count(core_mask);
         let mut states = Vec::new();
@@ -353,13 +346,25 @@ impl Rknpu {
         Ok(())
     }
 
-    fn normalize_core_mask(&mut self, args: &RknpuSubmit) -> Result<u32, RknpuError> {
-        match args.core_mask {
+    /// Normalizes and validates the core mask before a submission is read.
+    ///
+    /// Callers that need to inspect the per-core task layout must use the
+    /// returned mask, because automatic and all-core masks are resolved here.
+    pub fn normalize_core_mask(&mut self, requested_mask: u32) -> Result<u32, RknpuError> {
+        let core_mask = match requested_mask {
             RKNPU_CORE_AUTO_MASK => self.select_auto_core_mask(),
             RKNN_NPU_CORE_ALL => Ok(self.data.core_mask),
             mask if mask > self.data.core_mask => Err(RknpuError::InvalidParameter),
             mask => Ok(mask),
+        }?;
+        if !is_supported_core_mask(core_mask) {
+            warn!(
+                "rknpu submit: invalid core_mask={:#x}, supported_mask={:#x}",
+                requested_mask, self.data.core_mask
+            );
+            return Err(RknpuError::InvalidParameter);
         }
+        Ok(core_mask)
     }
 
     fn select_auto_core_mask(&mut self) -> Result<u32, RknpuError> {

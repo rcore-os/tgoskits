@@ -8,7 +8,7 @@ use core::{
 
 use ax_driver::rknpu::{
     self, GemCachePolicy, RknpuAction, RknpuMemCreate, RknpuMemDestroy, RknpuMemMap, RknpuMemSync,
-    RknpuSubmit, RknpuTask,
+    RknpuSubmit, RknpuTask, RKNPU_CORE0_MASK, RKNPU_CORE1_MASK, RKNPU_CORE2_MASK,
 };
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
@@ -240,6 +240,12 @@ struct Card1File {
     operation: Mutex<()>,
 }
 
+const RKNPU_CORE_MASKS: [u32; 3] = [
+    RKNPU_CORE0_MASK,
+    RKNPU_CORE1_MASK,
+    RKNPU_CORE2_MASK,
+];
+
 impl Card1File {
     fn new(base: KernelFile) -> Self {
         Self {
@@ -314,7 +320,7 @@ impl Card1File {
         })
     }
 
-    fn submit_task_span(args: &RknpuSubmit) -> VfsResult<(usize, usize)> {
+    fn submit_task_span(args: &RknpuSubmit, core_mask: u32) -> VfsResult<(usize, usize)> {
         const MAX_TASKS: usize = 4095;
         let mut first = usize::MAX;
         let mut end = 0usize;
@@ -329,9 +335,19 @@ impl Card1File {
             Ok(())
         };
 
-        add_range(args.task_start, args.task_number)?;
-        for subcore in args.subcore_task {
-            add_range(subcore.task_start, subcore.task_number)?;
+        let active_core_count = Self::active_core_count(core_mask);
+        for subcore_idx in Self::active_subcore_task_indices(core_mask) {
+            let subcore = args
+                .subcore_task
+                .get(subcore_idx)
+                .ok_or(VfsError::InvalidData)?;
+            if subcore.task_number != 0 {
+                add_range(subcore.task_start, subcore.task_number)?;
+            } else if active_core_count == 1 && args.task_number != 0 {
+                add_range(args.task_start, args.task_number)?;
+            } else {
+                return Err(VfsError::InvalidData);
+            }
         }
         if first == usize::MAX || end.checked_sub(first).is_none_or(|len| len > MAX_TASKS) {
             return Err(VfsError::InvalidData);
@@ -339,12 +355,37 @@ impl Card1File {
         Ok((first, end))
     }
 
+    fn active_core_count(core_mask: u32) -> usize {
+        RKNPU_CORE_MASKS
+            .into_iter()
+            .filter(|core_bit| core_mask & core_bit != 0)
+            .count()
+    }
+
+    fn active_subcore_task_indices(core_mask: u32) -> impl Iterator<Item = usize> {
+        let active_core_count = Self::active_core_count(core_mask);
+        RKNPU_CORE_MASKS
+            .into_iter()
+            .enumerate()
+            .filter_map(move |(core_idx, core_bit)| {
+                (core_mask & core_bit != 0).then_some(if active_core_count == 3 {
+                    // This is the layout consumed by rockchip-npu::submit_ioctrl:
+                    // three-core submissions use slots 2..=4, while one- and
+                    // two-core submissions use the corresponding core slots.
+                    core_idx + 2
+                } else {
+                    core_idx
+                })
+            })
+    }
+
     fn load_tasks(
         &self,
         current: &UserTaskRef,
         args: &RknpuSubmit,
+        core_mask: u32,
     ) -> VfsResult<(usize, Vec<RknpuTask>)> {
-        let (first, end) = Self::submit_task_span(args)?;
+        let (first, end) = Self::submit_task_span(args, core_mask)?;
         let task_size = mem::size_of::<RknpuTask>();
         let byte_offset = first.checked_mul(task_size).ok_or(VfsError::BadAddress)?;
         let byte_len = (end - first)
@@ -376,8 +417,11 @@ impl Card1File {
         tasks: &[RknpuTask],
         task_bytes: u64,
     ) -> VfsResult<()> {
-        if args.task_base_addr > u32::MAX as u64
-            || !self.find_dma_range(args.task_base_addr, task_bytes)
+        if args.task_base_addr != 0
+            && !task_base_addr_is_valid(
+                args.task_base_addr,
+                self.find_dma_range(args.task_base_addr, task_bytes),
+            )
         {
             return Err(VfsError::InvalidData);
         }
@@ -396,20 +440,33 @@ impl Card1File {
     }
 
     fn handle_submit(&self, current: &UserTaskRef, args: &mut RknpuSubmit) -> VfsResult<()> {
-        let (first, mut tasks) = self.load_tasks(current, args)?;
+        let core_mask = rknpu::normalize_core_mask(args.core_mask).map_err(map_rknpu_err)?;
+        let (first, mut tasks) = self.load_tasks(current, args, core_mask)?;
         let task_bytes = (tasks.len() as u64)
             .checked_mul(mem::size_of::<RknpuTask>() as u64)
             .ok_or(VfsError::BadAddress)?;
         self.validate_submit_dma(args, &tasks, task_bytes)?;
 
         let mut driver_args = *args;
-        if driver_args.task_number != 0 {
+        driver_args.core_mask = core_mask;
+        let active_core_count = Self::active_core_count(core_mask);
+        let active_subcore_indices = Self::active_subcore_task_indices(core_mask);
+        let active_subcore_indices = active_subcore_indices.collect::<Vec<_>>();
+        let only_active_subcore_idx = active_subcore_indices
+            .first()
+            .copied()
+            .ok_or(VfsError::InvalidData)?;
+        if active_core_count == 1
+            && driver_args.task_number != 0
+            && driver_args.subcore_task[only_active_subcore_idx].task_number == 0
+        {
             driver_args.task_start = driver_args
                 .task_start
                 .checked_sub(first as u32)
                 .ok_or(VfsError::InvalidData)?;
         }
-        for subcore in &mut driver_args.subcore_task {
+        for subcore_idx in active_subcore_indices {
+            let subcore = &mut driver_args.subcore_task[subcore_idx];
             if subcore.task_number != 0 {
                 subcore.task_start = subcore
                     .task_start
@@ -446,6 +503,10 @@ fn range_contains(base: u64, size: usize, address: u64, length: u64) -> bool {
         return false;
     };
     address >= base && end <= buffer_end
+}
+
+fn task_base_addr_is_valid(address: u64, dma_range_valid: bool) -> bool {
+    address == 0 || (address <= u32::MAX as u64 && dma_range_valid)
 }
 
 impl FileLike for Card1File {
@@ -1117,18 +1178,44 @@ mod tests {
 
     #[test]
     fn submit_task_span_rejects_empty_and_unbounded_ranges() {
-        assert!(Card1File::submit_task_span(&RknpuSubmit::default()).is_err());
+        assert!(Card1File::submit_task_span(&RknpuSubmit::default(), RKNPU_CORE0_MASK).is_err());
 
         let mut args = RknpuSubmit {
             task_start: u32::MAX,
             task_number: u32::MAX,
             ..RknpuSubmit::default()
         };
-        assert!(Card1File::submit_task_span(&args).is_err());
+        assert!(Card1File::submit_task_span(&args, RKNPU_CORE0_MASK).is_err());
 
         args.task_start = 0;
         args.task_number = 4096;
-        assert!(Card1File::submit_task_span(&args).is_err());
+        assert!(Card1File::submit_task_span(&args, RKNPU_CORE0_MASK).is_err());
+    }
+
+    #[test]
+    fn submit_task_span_ignores_unselected_subcore_slots() {
+        let mut args = RknpuSubmit {
+            task_start: 17,
+            task_number: 1,
+            core_mask: RKNPU_CORE0_MASK,
+            ..RknpuSubmit::default()
+        };
+        args.subcore_task[1].task_start = u32::MAX;
+        args.subcore_task[1].task_number = u32::MAX;
+        args.subcore_task[4].task_start = u32::MAX;
+        args.subcore_task[4].task_number = u32::MAX;
+
+        assert_eq!(
+            Card1File::submit_task_span(&args, RKNPU_CORE0_MASK).unwrap(),
+            (17, 18)
+        );
+    }
+
+    #[test]
+    fn zero_task_base_addr_is_valid_abi_input() {
+        assert!(task_base_addr_is_valid(0, false));
+        assert!(!task_base_addr_is_valid(1, false));
+        assert!(task_base_addr_is_valid(1, true));
     }
 
     #[test]
