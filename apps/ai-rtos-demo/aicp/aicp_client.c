@@ -91,14 +91,18 @@ int aicp_client_session_handshake(
         AICP_MSG_HELLO,
         0,
         payload_len,
-        (*next_seq)++,
+        *next_seq,
         monotonic_ns(ops),
         AICP_OK);
     int result = send_request(stream, &request, payload, ops);
     if (result != 0) {
         return result;
     }
-    return receive_status_response(stream, &request, status, NULL, 0, ops);
+    result = receive_status_response(stream, &request, status, NULL, 0, ops);
+    if (result == 0) {
+        (*next_seq)++;
+    }
+    return result;
 }
 
 int aicp_client_session_transact_control(
@@ -119,7 +123,7 @@ int aicp_client_session_transact_control(
         AICP_MSG_CONTROL_SET,
         0,
         AICP_CONTROL_PAYLOAD_LEN,
-        (*next_seq)++,
+        *next_seq,
         start,
         AICP_OK);
     int result = send_request(stream, &request, control_wire, ops);
@@ -127,5 +131,9 @@ int aicp_client_session_transact_control(
         return result;
     }
 
-    return receive_status_response(stream, &request, status, rtt_ns, start, ops);
+    result = receive_status_response(stream, &request, status, rtt_ns, start, ops);
+    if (result == 0) {
+        (*next_seq)++;
+    }
+    return result;
 }

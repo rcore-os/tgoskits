@@ -25,6 +25,18 @@ struct client_context {
     unsigned rx_complete;
 };
 
+struct dropped_control_case {
+    int socket;
+    struct aicp_header request;
+    int result;
+};
+
+struct replayed_control_case {
+    int socket;
+    uint32_t expected_seq;
+    int result;
+};
+
 static uint64_t fake_monotonic_ns(void *context) {
     struct client_context *client = context;
     client->now += 1000;
@@ -145,6 +157,54 @@ static void *serve_client(void *argument) {
     return NULL;
 }
 
+static void *serve_dropped_control_response(void *argument) {
+    struct dropped_control_case *test = argument;
+    struct aicp_posix_stream stream;
+    uint8_t payload[AICP_MAX_PAYLOAD];
+
+    aicp_posix_stream_init(&stream, test->socket);
+    test->result = aicp_stream_recv_frame(
+        &stream.stream, &test->request, payload, sizeof(payload));
+    if (test->result != 0 || test->request.msg_type != AICP_MSG_CONTROL_SET) {
+        test->result = -1;
+    }
+    (void)shutdown(test->socket, SHUT_RDWR);
+    return NULL;
+}
+
+static void *serve_replayed_control_response(void *argument) {
+    struct replayed_control_case *test = argument;
+    struct aicp_posix_stream stream;
+    uint8_t payload[AICP_MAX_PAYLOAD];
+    struct aicp_header request;
+
+    aicp_posix_stream_init(&stream, test->socket);
+    test->result = aicp_stream_recv_frame(&stream.stream, &request, payload, sizeof(payload));
+    if (test->result != 0 || request.msg_type != AICP_MSG_CONTROL_SET ||
+        request.seq != test->expected_seq) {
+        test->result = -1;
+        return NULL;
+    }
+
+    const struct aicp_status_payload status = {
+        .setpoint = 0.25f,
+        .measured = 0.5f,
+        .control_output = 0.75f,
+        .error = -0.25f,
+        .mode = 1,
+        .applied_seq = request.seq,
+    };
+    const struct aicp_header response = aicp_make_header(
+        AICP_MSG_STATUS,
+        0,
+        AICP_STATUS_PAYLOAD_LEN,
+        request.seq,
+        1234,
+        AICP_OK);
+    test->result = send_response(&stream.stream, response, &status);
+    return NULL;
+}
+
 static int run_case(int corrupt_response_seq, int corrupt_response_version) {
     int sockets[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {
@@ -208,7 +268,8 @@ static int run_case(int corrupt_response_seq, int corrupt_response_version) {
     const int expect_protocol_error =
         corrupt_response_seq || corrupt_response_version;
     const int expected = expect_protocol_error ? -EPROTO : 0;
-    if (result != expected || server.result != 0 || seq != 3 ||
+    const uint32_t expected_seq = expect_protocol_error ? 2 : 3;
+    if (result != expected || server.result != 0 || seq != expected_seq ||
         trace.tx_begin != 2 || trace.tx_complete != 2 ||
         trace.rx_complete != 2) {
         return -1;
@@ -226,6 +287,70 @@ static int run_case(int corrupt_response_seq, int corrupt_response_version) {
     return 0;
 }
 
+static int run_control_retry_after_lost_response(void) {
+    int first_sockets[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, first_sockets) != 0) {
+        return -1;
+    }
+
+    struct dropped_control_case first_server = {.socket = first_sockets[1]};
+    pthread_t first_thread;
+    if (pthread_create(&first_thread, NULL, serve_dropped_control_response, &first_server) != 0) {
+        close(first_sockets[0]);
+        close(first_sockets[1]);
+        return -1;
+    }
+
+    struct aicp_posix_stream first_stream;
+    aicp_posix_stream_init(&first_stream, first_sockets[0]);
+    const struct aicp_control_payload control = {
+        .target = 0.25f,
+        .kp = 0.5f,
+        .ki = 0.1f,
+        .kd = 0.01f,
+        .feed_forward = 0.2f,
+        .mode = 1,
+    };
+    struct aicp_status_payload status = {0};
+    uint32_t seq = 7;
+    const int first_result = aicp_client_session_transact_control(
+        &first_stream.stream, &seq, &control, &status, NULL, NULL);
+    close(first_sockets[0]);
+    pthread_join(first_thread, NULL);
+    close(first_sockets[1]);
+    if (first_result == 0 || first_server.result != 0 || first_server.request.seq != 7 || seq != 7) {
+        return -1;
+    }
+
+    int retry_sockets[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, retry_sockets) != 0) {
+        return -1;
+    }
+    struct replayed_control_case retry_server = {
+        .socket = retry_sockets[1],
+        .expected_seq = first_server.request.seq,
+    };
+    pthread_t retry_thread;
+    if (pthread_create(&retry_thread, NULL, serve_replayed_control_response, &retry_server) != 0) {
+        close(retry_sockets[0]);
+        close(retry_sockets[1]);
+        return -1;
+    }
+
+    struct aicp_posix_stream retry_stream;
+    aicp_posix_stream_init(&retry_stream, retry_sockets[0]);
+    const int retry_result = aicp_client_session_transact_control(
+        &retry_stream.stream, &seq, &control, &status, NULL, NULL);
+    close(retry_sockets[0]);
+    pthread_join(retry_thread, NULL);
+    close(retry_sockets[1]);
+
+    return retry_result == 0 && retry_server.result == 0 && seq == 8 &&
+                   status.applied_seq == 7
+               ? 0
+               : -1;
+}
+
 int main(void) {
     unsigned passed = 0;
     unsigned failed = 0;
@@ -241,6 +366,11 @@ int main(void) {
         failed++;
     }
     if (run_case(0, 1) == 0) {
+        passed++;
+    } else {
+        failed++;
+    }
+    if (run_control_retry_after_lost_response() == 0) {
         passed++;
     } else {
         failed++;
