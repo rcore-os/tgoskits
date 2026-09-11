@@ -120,7 +120,7 @@ fn idle_cpu_reservation_round_trip() {
 
 fn offline_does_not_lock_global_mm() {
     use ax_runtime::thread::creation_probe::{
-        request_idle_cpu_round_trip, take_idle_cpu_round_trip_result,
+        request_idle_cpu_round_trip_after_work, take_idle_cpu_round_trip_result,
     };
     use ax_std::os::arceos::task::sched::{CpuId, CpuSet};
     let held = Arc::new(AtomicBool::new(false));
@@ -140,7 +140,7 @@ fn offline_does_not_lock_global_mm() {
         })
         .unwrap();
     wait_for(|| held.load(Ordering::Acquire));
-    request_idle_cpu_round_trip(1).unwrap();
+    request_idle_cpu_round_trip_after_work(1).unwrap();
     let started = std::time::Instant::now();
     let mut result = None;
     while result.is_none() && started.elapsed() < Duration::from_secs(2) {

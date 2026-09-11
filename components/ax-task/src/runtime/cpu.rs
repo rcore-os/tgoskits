@@ -226,6 +226,8 @@ pub enum IdleOfflineRejection {
     CpuState             = 4,
     /// A thread retains CPU ownership or a migration pin.
     ThreadOwnership      = 5,
+    /// Scheduler work arrived before owner publication was closed.
+    SchedulerWork        = 6,
 }
 
 #[cfg(feature = "fault-injection")]
@@ -245,6 +247,7 @@ pub fn idle_offline_rejection() -> IdleOfflineRejection {
         3 => IdleOfflineRejection::OwnerPublication,
         4 => IdleOfflineRejection::CpuState,
         5 => IdleOfflineRejection::ThreadOwnership,
+        6 => IdleOfflineRejection::SchedulerWork,
         _ => IdleOfflineRejection::Unclassified,
     }
 }
@@ -254,8 +257,10 @@ pub fn idle_offline_rejection() -> IdleOfflineRejection {
 /// This test-only transaction retains IRQ exclusion and the exclusive owner
 /// borrow across both transitions. It never returns to scheduling while offline
 /// and does not implement platform power-off or an externally parked CPU.
+/// Returns `NotReady` while ordinary scheduler work must be drained first.
+/// `publish_work_after_drain` injects that real publication once for a regression.
 #[cfg(feature = "fault-injection")]
-pub fn probe_idle_cpu_round_trip() -> Result<(), TaskError> {
+pub fn probe_idle_cpu_round_trip(publish_work_after_drain: bool) -> Result<(), TaskError> {
     use crate::runtime::context::{RuntimeIrqGuard, runtime_current_cpu_mut, runtime_task_system};
     validate_schedule_context(RuntimeScheduleOrigin::Preempt)?;
     let system = runtime_task_system()?;
@@ -264,8 +269,34 @@ pub fn probe_idle_cpu_round_trip() -> Result<(), TaskError> {
     if cpu.remote().current_thread() != cpu.remote().idle_thread() {
         return Err(TaskError::NotReady);
     }
+    // Linux drains pending wakeups before its final sched_cpu_dying checks.
+    // Idle's preceding schedule is not a quiescence guarantee: owner work can
+    // arrive after it returns. Keep the request pending until the normal idle
+    // scheduler consumes that work, without entering the offline transaction.
+    // The IRQ guard closes the local interrupt window through admission.
+    if !publish_work_after_drain && (cpu.needs_reschedule() || cpu.has_remote_work()) {
+        return Err(TaskError::NotReady);
+    }
+    if publish_work_after_drain {
+        // Force the remote-arrival window after the optimistic work recheck.
+        // Admission must still classify it while its publication gate is shut.
+        cpu.request_scheduler_work();
+    }
     record_idle_offline_rejection(IdleOfflineRejection::Unclassified);
-    system.take_cpu_offline(cpu.as_mut())?;
+    match system.take_cpu_offline(cpu.as_mut()) {
+        Err(TaskError::CpuNotQuiescent(_))
+            if matches!(
+                idle_offline_rejection(),
+                IdleOfflineRejection::SchedulerWork
+            ) =>
+        {
+            // A remote producer can win after the initial recheck. The
+            // transaction classified that work with publication closed and
+            // rolled admission back; drain it through the normal idle loop.
+            return Err(TaskError::NotReady);
+        }
+        result => result?,
+    }
     assert_eq!(cpu.remote().lifecycle_state(), CpuLifecycleState::Offline);
     assert!(system.cpu_remote(cpu.owner()).is_none());
     // Returning an error here would strand the executing idle owner offline.

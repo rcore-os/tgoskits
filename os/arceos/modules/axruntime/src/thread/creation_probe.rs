@@ -120,6 +120,7 @@ pub(super) fn record_mm_switch(previous_user: bool, next_user: bool) {
 }
 
 static IDLE_TARGET: AtomicU64 = AtomicU64::new(0);
+const IDLE_AFTER_DRAIN: u64 = 1 << 59;
 const IDLE_AT_WAIT: u64 = 1 << 60;
 const IDLE_ARMING: u64 = 1 << 61;
 const IDLE_DONE: u64 = 1 << 63;
@@ -130,6 +131,12 @@ const IDLE_SUCCESS: u64 = 1 << 62;
 /// the processor; IRQ delivery stays excluded until re-online completes.
 pub fn request_idle_cpu_round_trip(cpu: usize) -> Result<(), TaskError> {
     request_idle_probe(cpu, 0)
+}
+
+/// Publishes scheduler work after idle's drain, before the offline admission.
+/// The owner must service that work before attempting the lifecycle transition.
+pub fn request_idle_cpu_round_trip_after_work(cpu: usize) -> Result<(), TaskError> {
+    request_idle_probe(cpu, IDLE_AFTER_DRAIN)
 }
 
 fn request_idle_probe(cpu: usize, phase: u64) -> Result<(), TaskError> {
@@ -174,11 +181,20 @@ pub(super) fn service_idle_cpu_round_trip() {
     // Called only by the idle loop, after its normal scheduler-work drain.
     // SAFETY: idle is permanently bound to this CPU for its entire lifetime.
     let cpu = unsafe { ax_task::runtime::task_runtime::current_cpu_id() }.as_u32();
-    if IDLE_TARGET.load(Ordering::Acquire) != u64::from(cpu) + 1 {
+    let target = u64::from(cpu) + 1;
+    let state = IDLE_TARGET.load(Ordering::Acquire);
+    if state != target && state != (target | IDLE_AFTER_DRAIN) {
         return;
     }
-    let result = match ax_task::runtime::cpu::probe_idle_cpu_round_trip() {
+    let publish_work = state & IDLE_AFTER_DRAIN != 0;
+    if publish_work {
+        IDLE_TARGET.store(target, Ordering::Release);
+    }
+    let result = match ax_task::runtime::cpu::probe_idle_cpu_round_trip(publish_work) {
         Ok(()) => IDLE_SUCCESS,
+        // No offline transition committed. Preserve the request so the idle
+        // loop drains newly published work at its next safe point.
+        Err(TaskError::NotReady) => return,
         Err(TaskError::CpuNotQuiescent(_)) => {
             warn!(
                 "idle CPU {cpu} offline rejection: {:?}",
@@ -216,5 +232,8 @@ pub(super) fn idle_probe_pending() -> bool {
     let cpu = unsafe { ax_task::runtime::task_runtime::current_cpu_id() }.as_u32();
     let state = IDLE_TARGET.load(Ordering::Acquire);
     let target = u64::from(cpu) + 1;
-    state == target || state == (target | IDLE_ARMING) || state == (target | IDLE_AT_WAIT)
+    state == target
+        || state == (target | IDLE_ARMING)
+        || state == (target | IDLE_AT_WAIT)
+        || state == (target | IDLE_AFTER_DRAIN)
 }

@@ -235,7 +235,11 @@ impl TaskSystem {
         } else if !cpu.is_quiescent_for_offline() {
             #[cfg(feature = "fault-injection")]
             crate::runtime::cpu::record_idle_offline_rejection(
-                crate::runtime::cpu::IdleOfflineRejection::CpuState,
+                if cpu.needs_reschedule() || cpu.has_remote_work() {
+                    crate::runtime::cpu::IdleOfflineRejection::SchedulerWork
+                } else {
+                    crate::runtime::cpu::IdleOfflineRejection::CpuState
+                },
             );
             remote.cancel_draining();
             Err(TaskError::CpuNotQuiescent(id.as_u32()))
