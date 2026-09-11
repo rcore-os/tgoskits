@@ -1,3 +1,4 @@
+use core::sync::atomic::Ordering;
 use std::format;
 
 use axdevice::{
@@ -171,6 +172,7 @@ impl<D: VirtioDeviceCore> PciFunction for VirtioPciFunction<D> {
     }
 
     fn reset(&self, command: PciCommandState) -> DeviceResult {
+        self.queue_pending.store(false, Ordering::Release);
         let _interrupt = self.transport.reset()?;
         let transition = self
             .apply_command_revision(command, true)

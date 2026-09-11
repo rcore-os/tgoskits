@@ -107,6 +107,15 @@ pub trait VirtioDeviceCore: Send + Sync {
         memory: &mut dyn GuestMemory,
     ) -> DeviceResult<QueueNotifyOutcome>;
 
+    /// Retries one queue whose device-specific backend deferred completion.
+    fn poll_queue(
+        &self,
+        queue: &mut VirtioQueue<NoGuestMemoryAccessor>,
+        memory: &mut dyn GuestMemory,
+    ) -> DeviceResult<QueueNotifyOutcome> {
+        self.notify_queue(queue, memory)
+    }
+
     /// Whether queue processing can complete asynchronously.
     fn requires_deferred_processing(&self) -> bool {
         false
@@ -156,10 +165,8 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
     ///
     /// # Errors
     ///
-    /// Returns an error when the core does not expose exactly one queue, has
-    /// a non-power-of-two queue size, or uses asynchronous processing. Commit
-    /// 4 deliberately supports only the synchronous single-queue path; a
-    /// multi-queue or asynchronous adapter belongs to a later integration.
+    /// Returns an error when the core does not expose exactly one queue or has
+    /// a non-power-of-two queue size.
     pub fn try_new(core: D) -> DeviceResult<Self> {
         let queue_num_max = core.queue_num_max();
         let queue_size_max = core.queue_size_max();
@@ -173,13 +180,6 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
             return Err(DeviceError::InvalidInput {
                 operation: "create VirtIO PCI transport",
                 detail: "queue size must be a power of two".into(),
-            });
-        }
-        if core.requires_deferred_processing() {
-            return Err(DeviceError::Unsupported {
-                operation: "create VirtIO PCI transport",
-                detail: "deferred queue processing is not supported by the synchronous PCI adapter"
-                    .into(),
             });
         }
         Ok(Self {

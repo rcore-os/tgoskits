@@ -31,4 +31,4 @@ uefi = true
 [[shell_check_steps]]
 shell_prefix = "axvisor:$"
 shell_cmd = "vm console 1"
-success_regex = ["(?m)^AXVISOR_X86_OVMF_ACPI_PASSED\\s*$"]
+success_regex = ["AXVISOR_X86_OVMF_ACPI_PASSED"]

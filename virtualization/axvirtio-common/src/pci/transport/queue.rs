@@ -56,7 +56,7 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
                 detail: "queue generation is resetting".into(),
             })?;
 
-        let mut queue = {
+        let queue = {
             let mut state = self.state.lock();
             // The first snapshot was taken before activity admission. A
             // reset may have completed in that gap, so validate every
@@ -95,7 +95,73 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
             return Ok(fault);
         }
 
-        let result = self.core.notify_queue(&mut queue, memory);
+        self.process_queue(selected, queue, memory, activity, false)
+    }
+
+    /// Retries a previously deferred queue using a scoped guest-memory grant.
+    pub fn poll_queue(
+        &self,
+        queue_index: u16,
+        memory: &mut dyn GuestMemory,
+    ) -> DeviceResult<VirtioPciWriteOutcome> {
+        let selected = queue_index as usize;
+        let generation = {
+            let state = self.state.lock();
+            if selected >= state.queues.len() {
+                return Err(invalid_queue(queue_index));
+            }
+            VirtioQueueGeneration(state.queue_generation)
+        };
+        let activity = self
+            .activity
+            .acquire(generation)
+            .ok_or(DeviceError::InvalidState {
+                operation: "virtio-pci queue poll",
+                detail: "queue generation is resetting".into(),
+            })?;
+        let queue = {
+            let mut state = self.state.lock();
+            if state.queue_generation != generation.value()
+                || !queue_processing_enabled(state.status)
+                || !state.queues[selected].enabled
+                || state.queues[selected].processing
+            {
+                drop(state);
+                drop(activity);
+                return Ok(self.idle_notification());
+            }
+            let queue = &mut state.queues[selected];
+            queue.processing = true;
+            let queue_size = queue.queue.size;
+            core::mem::replace(
+                &mut queue.queue,
+                VirtioQueue::new(queue_index, queue_size, Arc::new(NoGuestMemoryAccessor)),
+            )
+        };
+        if let Err(error) = queue
+            .validate_layout_with_memory(memory)
+            .map_err(map_pci_error)
+        {
+            let fault = self.queue_fault(error, activity);
+            self.restore_queue(selected, queue);
+            return Ok(fault);
+        }
+        self.process_queue(selected, queue, memory, activity, true)
+    }
+
+    fn process_queue(
+        &self,
+        selected: usize,
+        mut queue: VirtioQueue<NoGuestMemoryAccessor>,
+        memory: &mut dyn GuestMemory,
+        activity: ActivityPermit,
+        poll: bool,
+    ) -> DeviceResult<VirtioPciWriteOutcome> {
+        let result = if poll {
+            self.core.poll_queue(&mut queue, memory)
+        } else {
+            self.core.notify_queue(&mut queue, memory)
+        };
         let outcome = match result {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -104,20 +170,12 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
                 return Ok(fault);
             }
         };
-        if matches!(outcome, QueueNotifyOutcome::Deferred { .. }) {
-            let fault = self.queue_fault(
-                DeviceError::Unsupported {
-                    operation: "virtio-pci queue notify",
-                    detail: "asynchronous queue processing is not supported by this transport"
-                        .into(),
-                },
-                activity,
-            );
-            self.restore_queue(selected, queue);
-            return Ok(fault);
-        }
         self.restore_queue(selected, queue);
-        let kind = if matches!(outcome, QueueNotifyOutcome::Completed { notify: true }) {
+        let kind = if matches!(
+            outcome,
+            QueueNotifyOutcome::Completed { notify: true }
+                | QueueNotifyOutcome::Deferred { notify: true }
+        ) {
             Some(InterruptPublicationKind::Queue)
         } else {
             None

@@ -1,5 +1,6 @@
 //! AxVM-owned adapter from VirtIO transport state to a generic PCI endpoint.
 
+use core::sync::atomic::AtomicBool;
 #[cfg(test)]
 use std::sync::Arc;
 use std::vec::Vec;
@@ -25,6 +26,7 @@ pub struct VirtioPciFunction<D: VirtioDeviceCore> {
     pub(super) irq_line: IrqLine,
     pub(super) resources: Vec<Resource>,
     pub(super) command_revision: SpinLock<Option<PciCommandRevision>>,
+    pub(super) queue_pending: AtomicBool,
     #[cfg(test)]
     pub(super) command_revision_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
@@ -34,8 +36,7 @@ impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
     ///
     /// # Errors
     ///
-    /// Returns the transport configuration error when the core cannot be
-    /// served by the synchronous VirtIO PCI adapter.
+    /// Returns an error when the core's queue configuration is unsupported.
     pub fn try_new(
         transport_core: D,
         dma_grant: DmaGrant,
@@ -47,6 +48,7 @@ impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
             irq_line,
             resources: Vec::new(),
             command_revision: SpinLock::new(None),
+            queue_pending: AtomicBool::new(false),
             #[cfg(test)]
             command_revision_hook: SpinLock::new(None),
         })

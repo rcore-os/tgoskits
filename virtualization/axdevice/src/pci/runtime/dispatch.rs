@@ -19,6 +19,19 @@ use crate::{
 };
 
 impl PciRootBinding {
+    /// Runs one runtime-owned endpoint poll while its current IRQ admission is held.
+    pub(crate) fn with_endpoint_irq_permit(
+        &self,
+        device: DeviceId,
+        callback: &mut dyn FnMut() -> DeviceManagerResult,
+    ) -> DeviceManagerResult {
+        let _permit = self
+            .router
+            .acquire_irq_permit(device)
+            .map_err(DeviceManagerError::Device)?;
+        callback()
+    }
+
     pub(super) fn queue_irq_withdrawal(&self, withdrawal: PendingIrqWithdrawal) {
         self.pending_irq_withdrawals.lock_irqsave().push(withdrawal);
     }
