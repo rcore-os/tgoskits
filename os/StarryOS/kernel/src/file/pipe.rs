@@ -1416,7 +1416,18 @@ impl Pollable for Pipe {
     fn poll(&self) -> IoEvents {
         // Linux reports POLLOUT when the pipe has a free PIPE_BUF-sized slot,
         // independently of whether the reader has already closed.
-        let readiness = self.shared.readiness();
+        let (readiness, suppress_hup) = if let Some(generation) = self
+            .named
+            .as_ref()
+            .and_then(|named| named.initial_writer_generation)
+        {
+            // Peer presence and its generation must describe the same instant:
+            // mixing snapshots could report HUP as the first writer arrives.
+            let state = self.shared.state.lock();
+            (state.readiness(), state.writer_generation == generation)
+        } else {
+            (self.shared.readiness(), false)
+        };
         let mut events = IoEvents::empty();
         if self.is_read() {
             events |= readiness.poll_events(true);
@@ -1424,13 +1435,7 @@ impl Pollable for Pipe {
         if self.is_write() {
             events |= readiness.poll_events(false);
         }
-        if events.contains(IoEvents::HUP)
-            && let Some(generation) = self
-                .named
-                .as_ref()
-                .and_then(|named| named.initial_writer_generation)
-            && self.shared.state.lock().writer_generation == generation
-        {
+        if suppress_hup {
             events.remove(IoEvents::HUP);
         }
         events
