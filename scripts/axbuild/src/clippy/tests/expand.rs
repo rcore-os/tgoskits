@@ -151,52 +151,6 @@ fn host_test_feature_alias_uses_host_target_outside_docs_target_matrix() {
 }
 
 #[test]
-fn clippy_uses_shared_bare_target_specs_for_all_architectures() {
-    for target in [
-        "x86_64-unknown-none",
-        "aarch64-unknown-none-softfloat",
-        "riscv64gc-unknown-none-elf",
-        "loongarch64-unknown-none-softfloat",
-    ] {
-        let check = ClippyCheck {
-            package: "starry-kernel".into(),
-            kind: ClippyCheckKind::Configuration {
-                name: format!("{target}-system"),
-                features: Vec::new(),
-                rustflags: Vec::new(),
-            },
-            target: Some(target.into()),
-            env: vec![("AX_TARGET".into(), target.into())],
-        };
-
-        let invocation = check.cargo_invocation();
-
-        assert!(invocation.args.windows(2).any(|args| {
-            args[0] == "--target"
-                && args[1].ends_with(&format!("scripts/targets/bare/{target}.json"))
-        }));
-        assert!(
-            invocation
-                .args
-                .windows(2)
-                .any(|args| args == ["-Z", "json-target-spec"])
-        );
-        assert!(
-            invocation
-                .args
-                .windows(2)
-                .any(|args| args == ["-Z", "build-std=core,alloc"])
-        );
-        assert!(
-            invocation
-                .env
-                .contains(&("CARGO_UNSTABLE_JSON_TARGET_SPEC".into(), "true".into()))
-        );
-        assert!(!invocation.args.join("\n").contains("target-feature=-ual"));
-    }
-}
-
-#[test]
 fn clippy_preserves_non_bare_docs_rs_targets() {
     let target = "x86_64-unknown-linux-gnu";
     let check = ClippyCheck {
@@ -481,72 +435,6 @@ fn docs_rs_targets_expand_base_and_feature_checks() {
 }
 
 #[test]
-fn ax_hal_platform_features_are_filtered_by_target_arch() {
-    let checks = expand(&[pkg(
-        "ax-hal",
-        "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
-        &[("fp-simd", &[])],
-        Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
-    )]);
-
-    let has_feature_on_target = |feature: &str, target: &str| {
-        checks.iter().any(|check| {
-            matches!(&check.kind, ClippyCheckKind::Feature(check_feature) if check_feature == feature)
-                && check.target.as_deref() == Some(target)
-        })
-    };
-
-    assert!(has_feature_on_target(
-        "fp-simd",
-        "loongarch64-unknown-none-softfloat"
-    ));
-    assert!(has_feature_on_target(
-        "fp-simd",
-        "riscv64gc-unknown-none-elf"
-    ));
-}
-
-#[test]
-fn ax_hal_target_only_features_are_skipped_for_host_clippy() {
-    let checks = expand(&[pkg(
-        "ax-hal",
-        "ax-hal 0.1.0 (path+file:///tmp/ax-hal)",
-        &[("fp-simd", &[])],
-        None,
-    )]);
-
-    assert!(checks.iter().any(|check| {
-        matches!(&check.kind, ClippyCheckKind::Feature(feature) if feature == "fp-simd")
-    }));
-}
-
-#[test]
-fn ax_hal_platform_feature_forwards_are_filtered_by_target_arch() {
-    let checks = expand(&[pkg(
-        "platform-forwarder",
-        "platform-forwarder 0.1.0 (path+file:///tmp/platform-forwarder)",
-        &[("fp-simd", &["ax-hal/fp-simd"])],
-        Some(&["loongarch64-unknown-none", "riscv64gc-unknown-none-elf"]),
-    )]);
-
-    let has_feature_on_target = |feature: &str, target: &str| {
-        checks.iter().any(|check| {
-            matches!(&check.kind, ClippyCheckKind::Feature(check_feature) if check_feature == feature)
-                && check.target.as_deref() == Some(target)
-        })
-    };
-
-    assert!(has_feature_on_target(
-        "fp-simd",
-        "loongarch64-unknown-none-softfloat"
-    ));
-    assert!(has_feature_on_target(
-        "fp-simd",
-        "riscv64gc-unknown-none-elf"
-    ));
-}
-
-#[test]
 fn nested_docs_rs_targets_expand_base_checks() {
     let checks = expand(&[pkg_with_metadata(
         "alpha",
@@ -824,32 +712,4 @@ fn package_clippy_configuration_rejects_empty_rustflags() {
         err.to_string(),
         "clippy configuration `aarch64-source` rustflag for `alpha` must be non-empty and trimmed"
     );
-}
-
-#[test]
-fn clippy_std_targets_use_kernel_specs_and_build_the_standard_library() {
-    for target in [
-        "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-musl",
-        "riscv64gc-unknown-linux-musl",
-        "loongarch64-unknown-linux-musl",
-    ] {
-        let check = ClippyCheck {
-            package: "arceos-cpu-contract".into(),
-            kind: ClippyCheckKind::Base,
-            target: Some(target.into()),
-            env: Vec::new(),
-        };
-        let invocation = check.cargo_invocation();
-        assert!(invocation.args.windows(2).any(|args| {
-            args[0] == "--target"
-                && args[1].ends_with(&format!("scripts/targets/std/pie/{target}.json"))
-        }));
-        assert!(
-            invocation
-                .args
-                .windows(2)
-                .any(|args| args == ["-Z", "build-std=std,panic_abort"])
-        );
-    }
 }

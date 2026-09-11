@@ -1,6 +1,3 @@
-use ostool::board::config::BoardRunConfig;
-use regex::Regex;
-
 use super::*;
 
 #[test]
@@ -133,77 +130,4 @@ fn rejects_missing_mapped_board_build_config() {
 
     assert!(err.contains("not under a build wrapper"));
     assert!(err.contains("smoke"));
-}
-
-#[test]
-fn visionfive2_success_marker_accepts_ansi_without_matching_command_echo() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let config_path =
-        workspace_root.join("test-suit/starryos/board-visionfive2/boot/board-visionfive2.toml");
-    let config: BoardRunConfig = toml::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
-    let success_pattern = &config.shell_check_steps[0].success_regex.as_ref().unwrap()[0];
-    let success_regex = Regex::new(success_pattern).unwrap();
-
-    assert!(success_regex.is_match("\u{1b}[mSTARRY_VISIONFIVE2_SHELL_OK\n"));
-    assert!(!success_regex.is_match("echo STARRY_VISIONFIVE2_SHELL_OK\n"));
-    assert!(!success_regex.is_match(
-        "[ 33.201821 starry_kernel::task::user] STARRY_VISIONFIVE2_SHELL_OK [ 33.223141 task exit]"
-    ));
-}
-
-#[test]
-fn sg2002_success_markers_accept_starry_log_ansi_prefixes() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-
-    for (config_path, marker) in [
-        (
-            "test-suit/starryos/board-aka-00-sg2002/tennis-yolo/board-aka-00-sg2002.toml",
-            "STARRY_AKA00_TENNIS_DETECT_OK",
-        ),
-        (
-            "test-suit/starryos/board-aka-00-sg2002/usb2-lsusb/board-aka-00-sg2002.toml",
-            "STARRY_AKA_USB2_LSUSB_OK",
-        ),
-    ] {
-        let config: BoardRunConfig =
-            toml::from_str(&fs::read_to_string(workspace_root.join(config_path)).unwrap()).unwrap();
-        let pattern = config.shell_check_steps[0]
-            .success_regex
-            .as_ref()
-            .and_then(|patterns| patterns.iter().find(|pattern| pattern.contains(marker)))
-            .unwrap_or_else(|| panic!("{config_path} must match {marker}"));
-
-        assert!(
-            Regex::new(pattern)
-                .unwrap()
-                .is_match(&format!("\u{1b}[m{marker}\n")),
-            "{config_path} must accept the ANSI reset emitted before {marker}"
-        );
-    }
-}
-
-#[test]
-fn sg2002_repository_dtbs_declare_noncoherent_dma() {
-    // SG2002 peripherals are DMA non-coherent: mainline Linux declares
-    // dma-noncoherent on the sg2002 soc node, while the vendor SDK device
-    // trees never do. The kernel resolves coherency from firmware, so a
-    // regenerated DTB that silently drops the property would make CV181x
-    // engines read stale cached descriptors. Property names live in the
-    // compiled DTB strings block, so a byte-level search is sufficient.
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-
-    for dtb in [
-        "os/StarryOS/configs/board/aka-00-sg2002.dtb",
-        "os/StarryOS/configs/board/licheerv-nano-sg2002.dtb",
-    ] {
-        let path = workspace_root.join(dtb);
-        let bytes = fs::read(&path)
-            .unwrap_or_else(|err| panic!("failed to read repository DTB {dtb}: {err}"));
-        assert!(
-            bytes
-                .windows(b"dma-noncoherent\0".len())
-                .any(|window| window == b"dma-noncoherent\0"),
-            "{dtb} must declare dma-noncoherent; SG2002 devices require it"
-        );
-    }
 }

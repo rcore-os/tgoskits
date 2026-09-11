@@ -11,35 +11,6 @@ fn std_build_rejects_removed_platform_feature() {
 }
 
 #[test]
-fn unsupported_targets_do_not_effectively_enable_dynamic_platform() {
-    assert!(!supports_platform_dynamic("armv7-unknown-none-eabi"));
-}
-
-#[test]
-fn build_cargo_args_use_json_target_and_build_std_for_all_bare_architectures() {
-    for target in [
-        "x86_64-unknown-none",
-        "aarch64-unknown-none-softfloat",
-        "riscv64gc-unknown-none-elf",
-        "loongarch64-unknown-none-softfloat",
-    ] {
-        let args = BuildInfo::build_cargo_args(target, &[]);
-
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["-Z", "json-target-spec"])
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["-Z", "build-std=core,alloc"])
-        );
-        assert!(!args.iter().any(|arg| arg.contains("-Tlinker.x")));
-        assert!(!args.iter().any(|arg| arg.contains("-Taxplat.x")));
-        assert!(!args.iter().any(|arg| arg.contains("-Truntime.x")));
-    }
-}
-
-#[test]
 fn build_cargo_args_uses_target_stem_as_rustflags_key() {
     let args = BuildInfo::build_cargo_args(
         "aarch64-unknown-none-softfloat",

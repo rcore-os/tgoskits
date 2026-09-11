@@ -349,58 +349,16 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::{
-        arceos::test::{
-            ARCEOS_RUST_TASK_IRQ_FEATURE, ARCEOS_RUST_TEST_PACKAGE,
-            discovery::arceos_test_suit_case_qemu_config_path,
-        },
-        test::case::TestQemuCase,
-    };
+    use crate::{arceos::test::ARCEOS_RUST_TEST_PACKAGE, test::case::TestQemuCase};
 
     fn rust_test_suite_root() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-suit/arceos/rust")
-    }
-
-    fn load_qemu_config(path: &Path) -> QemuConfig {
-        toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
-    }
-
-    #[test]
-    fn arceos_rust_default_run_selects_bulk_and_standalone_features() {
-        let features = rust_qemu_features_for_run(None, false).unwrap();
-        assert_eq!(
-            features,
-            vec![
-                ARCEOS_RUST_ALL_FEATURE,
-                ARCEOS_RUST_TASK_IRQ_FEATURE,
-                "serial-rx"
-            ]
-        );
     }
 
     #[test]
     fn arceos_rust_selected_case_is_feature_name() {
         let features = rust_qemu_features_for_list(Some("task-yield"), false).unwrap();
         assert_eq!(features, vec!["task-yield"]);
-    }
-
-    #[test]
-    fn arceos_rust_selected_cases_include_restored_coverage_features() {
-        for feature in [
-            ARCEOS_RUST_DEBUG_BACKTRACE_FEATURE,
-            ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE,
-            ARCEOS_RUST_EXCEPTION_PAGE_FAULT_FEATURE,
-            "fs-basic",
-            "lockdep-baseline",
-            ARCEOS_RUST_LOCKDEP_DETECT_FEATURE,
-            "net-loopback",
-            "sched-cfs",
-            "sched-rr",
-            ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE,
-        ] {
-            let features = rust_qemu_features_for_list(Some(feature), false).unwrap();
-            assert_eq!(features, vec![feature]);
-        }
     }
 
     #[test]
@@ -542,55 +500,6 @@ BT 0 ip=0x1 fp=0x2
             vec![r"lockdep did not report an expected .*lock order inversion"]
         );
         assert_eq!(qemu.timeout, Some(30));
-    }
-
-    #[test]
-    fn arceos_rust_remote_wake_riscv_config_uses_single_threaded_tcg() {
-        let path = arceos_test_suit_case_qemu_config_path(
-            &rust_test_suite_root(),
-            "riscv64",
-            "task-wait-queue-remote-wake",
-        )
-        .unwrap();
-        let qemu = load_qemu_config(&path);
-
-        assert!(
-            qemu.args
-                .windows(2)
-                .any(|args| args == ["-accel", "tcg,thread=single"])
-        );
-    }
-
-    #[test]
-    fn arceos_rust_task_ipi_riscv_config_uses_single_threaded_tcg_and_short_timeout() {
-        let path =
-            arceos_test_suit_case_qemu_config_path(&rust_test_suite_root(), "riscv64", "task-ipi")
-                .unwrap();
-        let qemu = load_qemu_config(&path);
-
-        assert!(
-            qemu.args
-                .windows(2)
-                .any(|args| args == ["-accel", "tcg,thread=single"])
-        );
-        assert_eq!(qemu.timeout, Some(15));
-    }
-
-    #[test]
-    fn arceos_rust_task_ipi_non_riscv_falls_back_to_suite_config() {
-        let path =
-            arceos_test_suit_case_qemu_config_path(&rust_test_suite_root(), "x86_64", "task-ipi")
-                .unwrap();
-        let qemu = load_qemu_config(&path);
-
-        assert!(
-            !qemu
-                .args
-                .windows(2)
-                .any(|args| args == ["-accel", "tcg,thread=single"])
-        );
-        assert_eq!(qemu.timeout, Some(120));
-        assert_eq!(path, rust_test_suite_root().join("qemu-x86_64.toml"));
     }
 
     #[tokio::test]

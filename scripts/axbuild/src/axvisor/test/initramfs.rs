@@ -590,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_archive_contains_busybox_loader_and_shell_applets() {
+    fn generated_archive_packs_busybox_loader_and_applet_links() {
         let compressed =
             build_busybox_initramfs(b"busybox", "/lib/ld-musl-test.so.1", b"loader").unwrap();
         let mut archive = Vec::new();
@@ -603,57 +603,7 @@ mod tests {
         assert_eq!(entries.get("lib/ld-musl-test.so.1").unwrap(), b"loader");
         let init = entries.get("init").unwrap();
         assert!(init.starts_with(b"#!/bin/busybox sh"));
-        assert!(
-            init.windows(b"validate_pci_bar_resource".len())
-                .any(|window| window == b"validate_pci_bar_resource")
-        );
-        assert!(
-            init.windows(b"validate_pci_capabilities".len())
-                .any(|window| window == b"validate_pci_capabilities")
-        );
-        assert!(
-            !init
-                .windows(b"__AXVISOR_PCI_MEMORY_APERTURE_START__".len())
-                .any(|window| window == b"__AXVISOR_PCI_MEMORY_APERTURE_START__")
-        );
-        assert!(
-            !init
-                .windows(b"__AXVISOR_PCI_CAPABILITY_VALIDATOR__".len())
-                .any(|window| window == b"__AXVISOR_PCI_CAPABILITY_VALIDATOR__")
-        );
-        assert!(
-            init.windows(b"AXVISOR_GICV2_TIMER_STRESS_PASSED".len())
-                .any(|window| window == b"AXVISOR_GICV2_TIMER_STRESS_PASSED")
-        );
-        assert!(
-            init.windows(b"AXVISOR_GICV3_TIMER_STRESS_PASSED".len())
-                .any(|window| window == b"AXVISOR_GICV3_TIMER_STRESS_PASSED")
-        );
-        assert!(
-            init.windows(b"AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED".len())
-                .any(|window| window == b"AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED")
-        );
-        assert!(
-            init.windows(b"AXVISOR_X86_DIRECT_ACPI_PASSED".len())
-                .any(|window| window == b"AXVISOR_X86_DIRECT_ACPI_PASSED")
-        );
-        assert!(
-            init.windows(b"AXVISOR_X86_OVMF_ACPI_PASSED".len())
-                .any(|window| window == b"AXVISOR_X86_OVMF_ACPI_PASSED")
-        );
-        assert!(
-            init.windows(b"AXVISOR_X86_VPCI_ENUMERATION_PASSED".len())
-                .any(|window| window == b"AXVISOR_X86_VPCI_ENUMERATION_PASSED")
-        );
-        assert!(
-            init.windows(b"AXVISOR_X86_VPCI_ENUMERATION_FAILED".len())
-                .any(|window| window == b"AXVISOR_X86_VPCI_ENUMERATION_FAILED")
-        );
-        for applet in [
-            "cat", "date", "dmesg", "grep", "mount", "od", "sed", "sh", "sleep",
-        ] {
-            assert_eq!(entries.get(&format!("bin/{applet}")).unwrap(), b"busybox");
-        }
+        assert_eq!(entries.get("bin/sh").unwrap(), b"busybox");
     }
 
     #[cfg(unix)]

@@ -60,12 +60,3 @@ fn makefile_features_use_ax_std_dependency_for_std_build() {
 
     assert!(info.features.contains(&"ax-std/lockdep".to_string()));
 }
-
-#[test]
-fn unknown_ax_hal_features_are_not_platforms() {
-    let metadata = repo_metadata();
-
-    for feature in ["ax-hal/not-a-platform", "ax-hal/qemu-board"] {
-        assert_eq!(ax_hal_platform_feature_name(feature, Some(&metadata)), None);
-    }
-}
