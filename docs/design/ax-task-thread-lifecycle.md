@@ -808,7 +808,7 @@ backing 准备由 `mapping` 在进入 MM 锁前完成；`SharedMemoryObject::all
 
 `handle_futex_death` 原先先读取 owner，再写回 `OWNER_DIED`。用户态在两步之间发布 `WAITERS` 时，旧写入会覆盖等待位，也不会发出所需唤醒。现在 `update_robust_owner_nofault` 使用 `compare_exchange_user_u32_nofault`，比较失配后重新读取并检查 owner，只有成功替换后才按该次锁字决定唤醒。读缺页、写缺页和 LL/SC 重试分别通过 `RobustOwnerError` 返回外层：任务上下文解决相应访问权限的缺页，只有 LL/SC 耗尽才让出 CPU。顺序对应固定 Linux `kernel/futex/core.c` 的 `handle_futex_death`，不会把只读访问错误一律当作写缺页。
 
-`ax-cpu::user_cmpxchg_u32` 集中暴露“返回观察值”的契约，不增加可变 task 布局或调度泛型。x86_64 使用 locked cmpxchg；AArch64 使用 LDXR/STLXR 和成功后的 DMB；RISC-V 使用 LR.W/SC.W.AQRL；LoongArch 使用 LL.W/SC.W 和 DBAR。LL/SC 沿用有界重试错误，架构异常表覆盖读与条件存储。RISC-V 用现有 XLENB 宏区分 RV32/RV64，避免在 RV32 发出 sext.w；RISC-V/LoongArch 对高位 u32 做与加载指令一致的符号扩展。普通 Rust 引用不指向用户锁字，缺页解析和 MM 锁不进入原子指令区间。
+`ax-cpu::user::user_cmpxchg_u32` 集中暴露“返回观察值”的契约，不增加可变 task 布局或调度泛型。x86_64 使用 locked cmpxchg；AArch64 使用 LDXR/STLXR 和成功后的 DMB；RISC-V 使用 LR.W/SC.W.AQRL；LoongArch 使用 LL.W/SC.W 和 DBAR。LL/SC 沿用有界重试错误，架构异常表覆盖读与条件存储。RISC-V 用现有 XLENB 宏区分 RV32/RV64，避免在 RV32 发出 sext.w；RISC-V/LoongArch 对高位 u32 做与加载指令一致的符号扩展。普通 Rust 引用不指向用户锁字，缺页解析和 MM 锁不进入原子指令区间。
 
 确定性 kernel 回归在真实 runtime MM 和任务中映射锁字，在内核读取 owner 后、更新前注入一次 WAITERS 发布，不使用 fake TaskRuntime/TaskSystem/CpuLocal。保留旧读后替换顺序时，同一断言收到 `0x40000000` 而非 `0xc0000000`，最外层 xtask 返回 1，日志 `/tmp/pr2357-robust-cas-red.log`。修复后 x86_64 kernel 187/187 通过；最终用例还检查比较失配不修改、高位 expected 成功匹配、只读页写错误和未映射地址错误，日志 `/tmp/pr2357-robust-cas-final-x86_64.log`。riscv64/loongarch64 kernel 187/187、aarch64 188/188，以及四架构 exec robust 回归均通过，日志 `/tmp/pr2357-robust-cas-final-{kernel,exec}-<arch>.log`。LoongArch 的 grouped runner 捕获成功用例输出，其程序通过标记和非零失败传播仍保留。
 
