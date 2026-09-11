@@ -10,12 +10,14 @@ use std::{
 };
 
 use aarch64_cpu_ext::registers::{CNTPCT_EL0, Readable};
-use arm_vcpu::{ArmTimerKind, ArmTimerSnapshot};
 use arm_vgic::{GicVcpuId, PpiId, VgicCore, VgicResult};
 use ax_std::os::arceos::sync::IrqSafeMutex;
 
 use crate::{
-    arch::aarch64::gic::AxvmVgicBackend,
+    arch::aarch64::{
+        gic::AxvmVgicBackend,
+        policy::{ArmTimerKind, ArmTimerSnapshot},
+    },
     host::{HostCpu, HostHardTimerAction, HostTime, HostTimer, default_host},
 };
 
@@ -134,7 +136,7 @@ impl Aarch64TimerWaitState {
 /// Bridges one vCPU's canonical timer contexts into its private VGIC lines.
 ///
 /// The binding owns only delivery plumbing. Compare values, controls, and
-/// interrupt conditions remain in `arm_vcpu`; pending/active/EOI state remains
+/// interrupt conditions remain in the VM timer policy; pending/active/EOI state remains
 /// in the VGIC.
 pub(in crate::arch::aarch64) struct Aarch64TimerBinding {
     vgic: Arc<VgicCore>,

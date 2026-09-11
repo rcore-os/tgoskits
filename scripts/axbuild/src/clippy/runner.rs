@@ -31,8 +31,7 @@ pub(super) fn run_clippy_checks<R: CargoRunner>(
         let report_session = if check
             .target
             .as_deref()
-            .and_then(crate::context::arch_for_target)
-            == Some("aarch64")
+            .is_some_and(|target| target.starts_with("aarch64-"))
         {
             Some(crate::build::start_future_incompat_report_session(
                 &workspace_root.join("target"),

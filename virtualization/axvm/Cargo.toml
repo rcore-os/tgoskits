@@ -18,21 +18,20 @@ host-test = [
     "vpci-test-device",
 ]
 vpci-test-device = []
-sstc = ["riscv_vcpu/sstc"]
+sstc = ["ax-cpu/riscv-sstc"]
 tls = ["ax-std/tls", "cpu-local/tls"]
 
 [dependencies]
 log = "0.4"
-extern-trait = { workspace = true }
 bit_field = "0.10"
 bitflags = "2.9"
 byte-unit = { version = "5", default-features = false, features = ["byte"] }
-numeric-enum-macro = "0.2"
 thiserror = { workspace = true }
 acpi_tables = { workspace = true }
 serde = { version = "1.0.204", default-features = false, features = ["derive"] }
 
 # System independent crates provided by ArceOS.
+ax-cpu.workspace = true
 ax-cpumask = { workspace = true }
 ax-crate-interface = { workspace = true }
 ax-memory-addr = { workspace = true }
@@ -65,18 +64,30 @@ toml = { workspace = true }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 ax-driver = { workspace = true, optional = true, features = ["pci"] }
 x86 = "0.52"
-x86_vcpu = { workspace = true }
+paste = "1.0.15"
+raw-cpuid = "11.0"
+x86_64 = { version = "0.15", default-features = false, features = ["instructions"] }
 x86_vlapic = { workspace = true }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
+riscv = { workspace = true, features = ["s-mode"] }
+ax-cpu = { workspace = true, features = ["virtualization"] }
 ax-plat = { workspace = true }
-riscv_vcpu = { workspace = true }
+riscv-decode = "0.2.3"
+rustsbi = { version = "0.4.0", features = ["forward"] }
+sbi-rt = { workspace = true, features = ["integer-impls"] }
+sbi-spec = { version = "0.0.9", features = ["legacy"] }
 riscv_vplic = { workspace = true }
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 ax-plat = { workspace = true }
-loongarch_vcpu = { workspace = true }
+ax-cpu = { workspace = true, features = ["virtualization"] }
+tock-registers = "0.10"
 [target.'cfg(target_arch = "aarch64")'.dependencies]
+trait-ffi.workspace = true
 aarch64-cpu-ext = "0.1"
-arm_vcpu = { workspace = true }
+aarch64-cpu = "11.0"
+ax-cpu = { workspace = true, features = ["virtualization"] }
+aarch64_sysreg.workspace = true
+tock-registers = "0.10"
 arm_vgic = { workspace = true }
 arm-gic-driver = { workspace = true, features = ["rdif"] }
 axklib.workspace = true

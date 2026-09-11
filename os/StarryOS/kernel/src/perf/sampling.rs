@@ -53,8 +53,8 @@ fn pmu_irq() -> Result<IrqId, ax_hal::irq::IrqError> {
     ax_hal::pmu::irq()
 }
 
-/// Maximum programmable counter index (matches [`ax_cpu::pmu::counter`] /
-/// [`ax_cpu::pmu::overflow`]); the registry is sized one past this for indexing.
+/// Maximum programmable counter index (matches [`ax_cpu::pmu::CounterId`] /
+/// [`ax_cpu::pmu::Pmu`]); the registry is sized one past this for indexing.
 const MAX_COUNTER: usize = 30;
 
 /// Minimum sampling period for frequency mode. Floors the adaptive control loop
@@ -63,8 +63,8 @@ const MAX_COUNTER: usize = 30;
 /// matches Linux's lower bound — a counter preloaded to overflow after a single
 /// event.
 const MIN_FREQ_PERIOD: u32 = 1;
-/// Maximum sampling period: the programmable counter is 32-bit, so the preload
-/// `(0u32).wrapping_sub(period)` requires `period <= u32::MAX`.
+/// Sampling policy caps periods at u32::MAX. The CPU preload operation uses
+/// the owner CPU's actual 32-bit or 64-bit overflow width.
 const MAX_SAMPLE_PERIOD: u32 = u32::MAX;
 /// Upper bound on a frequency-mode target rate (Hz). Mirrors the advertised
 /// `/proc/sys/kernel/perf_event_max_sample_rate`; a wild `sample_freq` is clamped
@@ -187,7 +187,7 @@ impl SampleOutput {
 pub struct SampleSlot {
     output: SampleOutput,
     /// Sampling period: the counter is re-armed to overflow after this many
-    /// events via [`ax_cpu::pmu::counter::preload`]. Also emitted as the
+    /// events via [`ax_cpu::pmu::Pmu::preload`]. Also emitted as the
     /// `PERF_SAMPLE_PERIOD` field of each record.
     pub period: u32,
     /// `attr.sample_type`: the set of scalar fields each record carries (see
@@ -361,10 +361,10 @@ pub fn enable_local_pmu_irq() -> Result<(), ax_hal::irq::IrqError> {
 
 fn service_overflowed_slots(
     registry: &mut SamplingRegistry<SampleSlot>,
-    overflow: u32,
+    overflow: u64,
     misc: u16,
     ip: u64,
-) -> u32 {
+) -> u64 {
     let current = try_current_user_irq_view();
 
     // Bits we have serviced; cleared (write-1-to-clear) only after every slot
@@ -432,7 +432,7 @@ fn service_overflowed_slots(
             cur_period
         };
 
-        ax_cpu::pmu::counter::preload(n, next_period);
+        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.preload(id, u64::from(next_period)));
 
         if let Some(notify) = &slot.output.notify {
             notify.notify_irq();
@@ -460,10 +460,12 @@ fn service_overflowed_slots(
 pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
     // Capture the interrupted context before doing anything that could fault or
     // overwrite ELR_EL1 / SPSR_EL1.
-    let ip = ax_cpu::pmu::interrupted_pc();
-    let is_user = ax_cpu::pmu::interrupted_is_user();
+    let context = ax_hal::irq::interrupted_context()
+        .expect("PMU trap must supply its interrupted register image");
+    let ip = context.pc as u64;
+    let is_user = context.privilege == ax_cpu::trap::InterruptedPrivilege::User;
 
-    let ovf = ax_cpu::pmu::overflow::status();
+    let ovf = crate::perf::hw_owner::on_pmu(|pmu| pmu.overflow_status());
     if ovf == 0 {
         return IrqReturn::Unhandled;
     }
@@ -480,7 +482,7 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         unsafe { with_registry_mut(|registry| service_overflowed_slots(registry, ovf, misc, ip)) };
 
     // Clear exactly the overflow bits we serviced.
-    ax_cpu::pmu::overflow::clear(handled);
+    crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(handled));
     IrqReturn::Handled
 }
 

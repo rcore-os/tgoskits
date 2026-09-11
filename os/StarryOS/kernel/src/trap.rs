@@ -1,9 +1,9 @@
-fn default_breakpoint_handler(tf: &mut ax_runtime::hal::cpu::KernelTrapFrame<'_>) -> bool {
+fn default_breakpoint_handler(tf: &mut ax_runtime::hal::cpu::context::KernelTrapFrame<'_>) -> bool {
     crate::kprobe::handle_breakpoint(tf)
 }
 
 #[cfg(target_arch = "x86_64")]
-fn default_debug_handler(tf: &mut ax_runtime::hal::cpu::KernelTrapFrame<'_>) -> bool {
+fn default_debug_handler(tf: &mut ax_runtime::hal::cpu::context::KernelTrapFrame<'_>) -> bool {
     crate::kprobe::handle_debug(tf)
 }
 

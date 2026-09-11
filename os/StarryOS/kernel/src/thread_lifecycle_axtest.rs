@@ -21,7 +21,7 @@ impl Drop for MmOwner {
 fn user_context_resource_failure_rollback() {
     // The bootstrap owns the kernel table for the whole test. Failed contexts
     // never install this root or enter user mode; no fake runtime is involved.
-    let root = ax_hal::asm::read_kernel_page_table();
+    let root = ax_hal::cpu::mmu::read_kernel_page_table();
     let cases: &[(S, &[E])] = &[
         (S::Mm, &[E::Mm]),
         (S::Stack, &[E::Mm, E::Stack]),
@@ -88,7 +88,7 @@ fn user_context_resource_failure_rollback() {
 #[axtest::axtest]
 fn user_context_heap_failure_rollback() {
     use ax_task::thread::ThreadAllocationProbe;
-    let root = ax_hal::asm::read_kernel_page_table();
+    let root = ax_hal::cpu::mmu::read_kernel_page_table();
     let prepare = |drops: Arc<AtomicUsize>| {
         TaskAddressSpace::new(root, MmOwner(drops)).and_then(|mm| {
             // SAFETY: the kernel root is permanent, and the entry never enters
@@ -154,7 +154,7 @@ fn user_kernel_mm_switch_matrix() {
         .affinity()
         .unwrap();
     current::set_current_thread_affinity(affinity.clone()).unwrap();
-    let root = ax_hal::asm::read_kernel_page_table();
+    let root = ax_hal::cpu::mmu::read_kernel_page_table();
     let before = ax_runtime::thread::creation_probe::mm_switch_counts();
     let gate = Arc::new(Semaphore::new(0));
     let entered = Arc::new(AtomicUsize::new(0));
@@ -167,19 +167,19 @@ fn user_kernel_mm_switch_matrix() {
         let entered = Arc::clone(&entered);
         let entry = move || {
             assert!(
-                ax_hal::asm::irqs_enabled(),
+                ax_hal::cpu::interrupt::irqs_enabled(),
                 "first switch tail retained IRQ ownership"
             );
             current::validate_blocking_context().unwrap();
             gate.down().unwrap();
             for _ in 0..3 {
                 if user {
-                    assert_eq!(ax_hal::asm::read_user_page_table(), root);
+                    assert_eq!(ax_hal::cpu::mmu::read_user_page_table(), root);
                 }
                 entered.fetch_add(1, Ordering::Release);
                 current::yield_current_cpu().unwrap();
                 assert!(
-                    ax_hal::asm::irqs_enabled(),
+                    ax_hal::cpu::interrupt::irqs_enabled(),
                     "resumed switch retained IRQ ownership"
                 );
                 current::validate_blocking_context().unwrap();
@@ -278,7 +278,7 @@ fn idle_cpu_cycle_rejection_retains_active_mm() {
     target.insert(CpuId::new(1));
     let drops = Arc::new(AtomicUsize::new(0));
     let mm = TaskAddressSpace::new(
-        ax_hal::asm::read_kernel_page_table(),
+        ax_hal::cpu::mmu::read_kernel_page_table(),
         MmOwner(Arc::clone(&drops)),
     )
     .unwrap();
@@ -325,7 +325,7 @@ fn idle_cpu_cycle_rejection_retains_active_mm() {
     }
     let mut target = CpuSet::empty(ax_hal::cpu_num());
     target.insert(CpuId::new(1));
-    let mm = TaskAddressSpace::new(ax_hal::asm::read_kernel_page_table(), ()).unwrap();
+    let mm = TaskAddressSpace::new(ax_hal::cpu::mmu::read_kernel_page_table(), ()).unwrap();
     // SAFETY: the permanent kernel root is live and this closure stays in kernel mode.
     unsafe {
         prepare_user_thread(

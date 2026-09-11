@@ -144,19 +144,19 @@ unsafe fn probe<'a>(data: usize) -> &'a Arc<ExtensionProbe> {
     unsafe { &*(data as *const Arc<ExtensionProbe>) }
 }
 unsafe extern "Rust" fn probe_in(data: usize, _: ThreadId, _: SchedulePolicy, _: u64) {
-    assert!(!ax_hal::asm::irqs_enabled());
+    assert!(!ax_hal::cpu::interrupt::irqs_enabled());
     unsafe { probe(data) }
         .switched_in
         .fetch_add(1, Ordering::Release);
 }
 unsafe extern "Rust" fn probe_out(data: usize, _: ThreadId, _: SwitchReason) {
-    assert!(!ax_hal::asm::irqs_enabled());
+    assert!(!ax_hal::cpu::interrupt::irqs_enabled());
     unsafe { probe(data) }
         .switched_out
         .fetch_add(1, Ordering::Release);
 }
 unsafe extern "Rust" fn probe_exit(data: usize, _: ThreadId) {
-    assert!(ax_hal::asm::irqs_enabled() && !ax_hal::irq::in_irq_context());
+    assert!(ax_hal::cpu::interrupt::irqs_enabled() && !ax_hal::irq::in_irq_context());
     unsafe { probe(data) }
         .exited
         .fetch_add(1, Ordering::Release);
@@ -166,7 +166,7 @@ unsafe extern "Rust" fn probe_exit(data: usize, _: ThreadId) {
 }
 unsafe extern "Rust" fn probe_deadline(_: usize, _: ThreadId) {}
 unsafe extern "Rust" fn probe_drop(data: usize) {
-    assert!(ax_hal::asm::irqs_enabled() && !ax_hal::irq::in_irq_context());
+    assert!(ax_hal::cpu::interrupt::irqs_enabled() && !ax_hal::irq::in_irq_context());
     // SAFETY: the unique extension destructor consumes the boxed Arc exactly once.
     let probe = unsafe { Box::from_raw(data as *mut Arc<ExtensionProbe>) };
     probe.dropped.fetch_add(1, Ordering::Release);

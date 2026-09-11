@@ -19,7 +19,7 @@ pub fn builder(name: String) -> ThreadBuilder {
 pub struct UserContextOptions {
     pub(super) address_space: TaskAddressSpace,
     #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
-    pub(super) fp_state: Option<ax_hal::cpu::FpState>,
+    pub(super) fp_state: Option<ax_hal::cpu::registers::FpState>,
     #[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
     pub(super) inherit_current_fp: bool,
 }
@@ -36,7 +36,7 @@ impl UserContextOptions {
     }
     /// Supplies the child's RISC-V floating-point register image.
     #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
-    pub fn with_fp_state(mut self, state: ax_hal::cpu::FpState) -> Self {
+    pub fn with_fp_state(mut self, state: ax_hal::cpu::registers::FpState) -> Self {
         self.fp_state = Some(state);
         self
     }

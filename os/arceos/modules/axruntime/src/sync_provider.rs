@@ -4,6 +4,8 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize},
 };
 
+use ax_task::runtime::{cpu::LocalIrqState, task_runtime};
+
 fn context_preempt_enter() -> usize {
     crate::guard::enter_lock_preempt().map_or(0, cpu_local::PreemptionToken::into_raw)
 }
@@ -27,16 +29,14 @@ unsafe fn context_preempt_exit_irq_return(state: usize) {
 }
 
 fn context_irq_save_and_disable() -> usize {
-    let was_enabled = ax_hal::asm::irqs_enabled();
-    ax_hal::asm::disable_irqs();
-    usize::from(was_enabled)
+    task_runtime::local_irq_save_and_disable().into_raw()
 }
 
 unsafe fn context_irq_restore(state: usize) {
-    if state != 0 {
-        ax_hal::asm::enable_irqs();
-    } else {
-        ax_hal::asm::disable_irqs();
+    // SAFETY: the bridge retains the exact opaque token from this provider's
+    // matching save operation and restores it in the same protected scope.
+    unsafe {
+        task_runtime::local_irq_restore(LocalIrqState::from_raw(state));
     }
 }
 

@@ -1,7 +1,7 @@
 //! AxVM x86_64 adapter.
 //!
-//! This module owns the AxVM/ArceOS glue for the OS-neutral `x86_vcpu` and
-//! `x86_vlapic` cores.
+//! CPU mechanisms come from ax-cpu; this module owns VM policy, the ArceOS
+//! integration, and the x86_vlapic device model.
 
 use std::{
     arch::asm,
@@ -21,10 +21,14 @@ use ax_std::os::arceos::{
 use axdevice::*;
 use axdevice_base::*;
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
-use x86_vcpu::{
+use x86_vlapic::*;
+
+use crate::arch::x86_64::policy::{
     X86AccessWidth, X86GuestPhysAddr, X86HostPhysAddr, X86HostVirtAddr, X86MsrAddr, X86Port, *,
 };
-use x86_vlapic::*;
+
+mod control_memory;
+pub(crate) mod policy;
 
 use super::*;
 use crate::{
@@ -65,7 +69,7 @@ impl ArchOps for X86_64Arch {
     type NestedPageTable = nested_paging::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
-        x86_vcpu::initialize_hardware_support().is_ok()
+        crate::arch::x86_64::policy::initialize_hardware_support().is_ok()
     }
 
     fn enter_runtime(vm: &crate::AxVM) -> AxVmResult {
@@ -261,10 +265,6 @@ impl ArchOps for X86_64Arch {
                 }))
             }
             X86VmExit::Nothing => Ok(BoundVcpuExit::Continue),
-            _ => Err(AxVmError::unsupported(
-                "handle x86 VM exit",
-                "unsupported VM exit reason",
-            )),
         }
     }
 
@@ -557,34 +557,6 @@ fn dispatch_pit_interrupt(
 }
 
 impl X86HostOps for AxvmX86HostOps {
-    fn alloc_frame() -> Option<X86HostPhysAddr> {
-        default_host()
-            .alloc_frame()
-            .map(|addr| X86HostPhysAddr::from_usize(addr.as_usize()))
-    }
-
-    fn dealloc_frame(paddr: X86HostPhysAddr) {
-        default_host().dealloc_frame(axvm_types::HostPhysAddr::from(paddr.as_usize()));
-    }
-
-    fn alloc_contiguous_frames(frame_count: usize, frame_align: usize) -> Option<X86HostPhysAddr> {
-        default_host()
-            .alloc_contiguous_frames(frame_count, frame_align)
-            .map(|addr| X86HostPhysAddr::from_usize(addr.as_usize()))
-    }
-
-    fn dealloc_contiguous_frames(start_paddr: X86HostPhysAddr, frame_count: usize) {
-        default_host().dealloc_contiguous_frames(
-            axvm_types::HostPhysAddr::from(start_paddr.as_usize()),
-            frame_count,
-        );
-    }
-
-    fn phys_to_virt(paddr: X86HostPhysAddr) -> X86HostVirtAddr {
-        let vaddr = default_host().phys_to_virt(axvm_types::HostPhysAddr::from(paddr.as_usize()));
-        X86HostVirtAddr::from_usize(vaddr.as_usize())
-    }
-
     fn read_guest_u8(paddr: X86GuestPhysAddr) -> X86VcpuResult<u8> {
         let vm_id = with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| vcpu.map(|vcpu| vcpu.vm_id()))
             .ok_or(X86VcpuError::BadState)?;
@@ -643,7 +615,7 @@ impl<T> PendingCompletion<T> {
 }
 
 pub(crate) struct AxvmX86Vcpu(
-    X86Vcpu<AxvmX86HostOps>,
+    X86Vcpu<AxvmX86HostOps, control_memory::ControlPages>,
     PendingCompletion<X86PortIoStringExit>,
 );
 
@@ -692,8 +664,37 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
     type Exit = X86VmExit;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
-        x86_result(X86Vcpu::new_with_config(vm_id, vcpu_id, config))
-            .map(|vcpu| Self(vcpu, PendingCompletion::default()))
+        use ax_cpu::virtualization::{SvmControlMemory, VcpuControlMemory, VmxControlMemory};
+        use control_memory::ControlPages;
+        let memory = match x86_result(crate::arch::x86_64::policy::selected_nested_paging_format())?
+        {
+            X86NestedPagingFormat::Ept => VcpuControlMemory::Vmx(VmxControlMemory {
+                vmcs: ControlPages::allocate(1)?,
+                io_bitmap_a: ControlPages::allocate(1)?,
+                io_bitmap_b: ControlPages::allocate(1)?,
+                msr_bitmap: ControlPages::allocate(1)?,
+            }),
+            X86NestedPagingFormat::Npt => VcpuControlMemory::Svm(SvmControlMemory {
+                guest: ControlPages::allocate(1)?,
+                host: ControlPages::allocate(1)?,
+                io_permissions: ControlPages::allocate(3)?,
+                msr_permissions: ControlPages::allocate(2)?,
+            }),
+        };
+        // SAFETY: VM construction executes at ring 0 on an initialized CPU.
+        // The CPU backend revalidates this layout on every pinned binding.
+        let layout = unsafe { ax_cpu::virtualization::XstateLayout::current() };
+        let pages = layout.byte_len().div_ceil(4096);
+        let xstate = ax_cpu::virtualization::GuestXstate::new(
+            layout,
+            ControlPages::allocate(pages)?,
+            ControlPages::allocate(pages)?,
+        )
+        .map_err(|_| VmBackendError::InvalidInput)?;
+        x86_result(X86Vcpu::new_with_config(
+            vm_id, vcpu_id, config, memory, xstate,
+        ))
+        .map(|vcpu| Self(vcpu, PendingCompletion::default()))
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
@@ -717,10 +718,12 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
     }
 
     fn bind(&mut self) -> BackendResult {
+        let _irqs = IrqSaveGuard::new();
         x86_result(self.0.bind())
     }
 
     fn unbind(&mut self) -> BackendResult {
+        let _irqs = IrqSaveGuard::new();
         x86_result(self.0.unbind())
     }
 
@@ -759,11 +762,27 @@ const fn x86_interrupt_is_level_triggered(trigger: InterruptTriggerMode) -> bool
     }
 }
 
-pub(crate) struct AxvmX86PerCpu(X86PerCpuState<AxvmX86HostOps>);
+pub(crate) struct AxvmX86PerCpu(ax_cpu::virtualization::PerCpu<control_memory::ControlPages>);
 
 impl VmArchPerCpuOps for AxvmX86PerCpu {
-    fn new(cpu_id: usize) -> BackendResult<Self> {
-        x86_result(X86PerCpuState::new(cpu_id)).map(Self)
+    fn new(_cpu_id: usize) -> BackendResult<Self> {
+        let memory = control_memory::ControlPages::allocate(1)?;
+        let cpu =
+            ax_cpu::virtualization::PerCpu::new(memory).map_err(|_| BackendError::Unsupported)?;
+        let format = x86_result(crate::arch::x86_64::policy::selected_nested_paging_format())?;
+        if !matches!(
+            (cpu.backend(), format),
+            (
+                ax_cpu::virtualization::Backend::Vmx,
+                X86NestedPagingFormat::Ept
+            ) | (
+                ax_cpu::virtualization::Backend::Svm,
+                X86NestedPagingFormat::Npt
+            )
+        ) {
+            return Err(BackendError::Unsupported);
+        }
+        Ok(Self(cpu))
     }
 
     fn is_enabled(&self) -> bool {
@@ -771,11 +790,22 @@ impl VmArchPerCpuOps for AxvmX86PerCpu {
     }
 
     fn hardware_enable(&mut self) -> BackendResult {
-        x86_result(self.0.hardware_enable())
+        let _irqs = IrqSaveGuard::new();
+        // SAFETY: AxVM's per-CPU initialization owns this physical CPU before
+        // guests can be scheduled. Its prepared control lease stays with self.
+        unsafe {
+            if self.0.backend() == ax_cpu::virtualization::Backend::Vmx {
+                ax_cpu::boot::authorize_vmx().map_err(|_| BackendError::Unsupported)?;
+            }
+            self.0.enable().map_err(|_| BackendError::InvalidState)
+        }
     }
 
     fn hardware_disable(&mut self) -> BackendResult {
-        x86_result(self.0.hardware_disable())
+        let _irqs = IrqSaveGuard::new();
+        // SAFETY: AxVM retires every guest binding on this CPU before teardown.
+        // A failure keeps the hardware owner and its memory lease active.
+        unsafe { self.0.disable() }.map_err(|_| BackendError::InvalidState)
     }
 }
 
@@ -1136,19 +1166,21 @@ fn declaration_range_error(operation: &'static str) -> DeviceManagerError {
 }
 
 pub(crate) fn x86_apic_access_page_addr() -> AxVmResult<axvm_types::HostPhysAddr> {
-    x86_result(x86_vcpu::apic_access_page_addr::<AxvmX86HostOps>())
-        .map(|addr| axvm_types::HostPhysAddr::from(addr.as_usize()))
-        .map_err(|error| AxVmError::vcpu("get x86 APIC access page", error))
+    x86_result(crate::arch::x86_64::policy::apic_access_page_addr::<
+        AxvmX86HostOps,
+    >())
+    .map(|addr| axvm_types::HostPhysAddr::from(addr.as_usize()))
+    .map_err(|error| AxVmError::vcpu("get x86 APIC access page", error))
 }
 
 pub(crate) fn x86_apic_access_page_gpa() -> AxVmResult<axvm_types::GuestPhysAddr> {
-    x86_result(x86_vcpu::apic_access_page_gpa())
+    x86_result(crate::arch::x86_64::policy::apic_access_page_gpa())
         .map(|addr| axvm_types::GuestPhysAddr::from(addr.as_usize()))
         .map_err(|error| AxVmError::vcpu("get x86 APIC access page", error))
 }
 
 pub(crate) fn x86_requires_apic_access_page() -> AxVmResult<bool> {
-    x86_result(x86_vcpu::requires_apic_access_page())
+    x86_result(crate::arch::x86_64::policy::requires_apic_access_page())
         .map_err(|error| AxVmError::vcpu("check x86 APIC access page", error))
 }
 

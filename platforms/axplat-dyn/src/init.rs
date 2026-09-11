@@ -50,11 +50,11 @@ impl InitIf for InitIfImpl {
     any(target_arch = "aarch64", target_arch = "loongarch64")
 ))]
 fn enable_fp_simd() {
-    ax_cpu::asm::enable_fp();
+    ax_cpu::registers::enable_fp();
     #[cfg(target_arch = "loongarch64")]
     {
-        ax_cpu::asm::enable_lsx();
-        ax_cpu::asm::enable_lasx();
+        ax_cpu::registers::enable_lsx();
+        ax_cpu::registers::enable_lasx();
     }
     debug!("axplat-dyn: fp/simd enabled");
 }

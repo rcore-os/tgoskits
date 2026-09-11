@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ax_cpu::uspace::UserContext;
+use ax_cpu::user::UserContext;
 use starry_signal::{SignalDisposition, SignalInfo, SignalOSAction, SignalSet, Signo};
 
 mod common;

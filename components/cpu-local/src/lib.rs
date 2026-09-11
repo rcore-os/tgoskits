@@ -5,10 +5,10 @@
 extern crate std;
 
 mod area;
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+mod cpu_entry;
 mod error;
 mod identity;
-#[cfg(target_arch = "loongarch64")]
-pub mod loongarch64;
 mod pin;
 mod preempt;
 mod register;

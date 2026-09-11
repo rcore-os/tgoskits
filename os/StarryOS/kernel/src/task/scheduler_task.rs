@@ -509,7 +509,7 @@ pub struct UserThreadOptions {
     name: String,
     scheduler_state: UserThreadInitialSchedulerState,
     #[cfg(target_arch = "riscv64")]
-    fp_state: Option<ax_cpu::FpState>,
+    fp_state: Option<ax_cpu::registers::FpState>,
     #[cfg(not(target_arch = "riscv64"))]
     fp_initialization: FpInitialization,
 }
@@ -536,7 +536,7 @@ impl UserThreadOptions {
 
     /// Supplies the RISC-V FP image and FS state saved by clone.
     #[cfg(target_arch = "riscv64")]
-    pub fn with_fp_state(mut self, state: ax_cpu::FpState) -> Self {
+    pub fn with_fp_state(mut self, state: ax_cpu::registers::FpState) -> Self {
         self.fp_state = Some(state);
         self
     }
@@ -1040,9 +1040,11 @@ fn unpublished_extension_allocation_releases_process() {
             scope_local::Scope::new(),
         )
         .unwrap();
-        let mm =
-            ax_runtime::thread::TaskAddressSpace::new(ax_hal::asm::read_kernel_page_table(), ())
-                .unwrap();
+        let mm = ax_runtime::thread::TaskAddressSpace::new(
+            ax_cpu::mmu::read_kernel_page_table(),
+            (),
+        )
+        .unwrap();
         let probe = ThreadAllocationProbe::fail_at(failure).unwrap();
         let result = (|| {
             let options = UserThreadOptions::new("extension-rollback")?;

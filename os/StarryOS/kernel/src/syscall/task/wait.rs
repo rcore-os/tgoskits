@@ -730,7 +730,7 @@ mod axtests {
 
     #[axtest::axtest]
     fn ptrace_wait_status_remains_bound_to_the_selected_stop() {
-        use ax_runtime::hal::cpu::uspace::UserContext;
+        use ax_runtime::hal::cpu::user::UserContext;
         use starry_signal::Signo;
 
         use crate::task::{TidNumber, new_test_process_data};

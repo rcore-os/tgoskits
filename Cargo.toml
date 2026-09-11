@@ -109,6 +109,14 @@ members = [
     "os/axvisor",
     "scripts/axbuild",
     "test-suit/arceos/loongarch/unaligned-fixup",
+    "test-suit/arceos/cpu/pmu",
+    "test-suit/arceos/cpu/user-entry",
+    "test-suit/arceos/cpu/paging",
+    "test-suit/arceos/cpu/hypervisor-probe",
+    "test-suit/arceos/cpu/guest-entry",
+    "test-suit/arceos/cpu/fp-context",
+    "test-suit/arceos/cpu/virtualization-lifecycle",
+    "test-suit/arceos/cpu/trap-entry",
     "test-suit/arceos/axtest/sg2002-usb-msc",
     "test-suit/arceos/rust",
     "apps/arceos/*",
@@ -129,7 +137,6 @@ exclude = [
 # propagate patch-only releases to dependent workspace crates.
 aarch64_sysreg = { version = "0.3", path = "virtualization/aarch64_sysreg" }
 arm-scmi-rs = { version = "0.1", path = "drivers/firmware/arm-scmi-rs" }
-arm_vcpu = { version = "0.5", path = "virtualization/arm_vcpu" }
 arm_vgic = { version = "0.6", path = "virtualization/arm_vgic" }
 ax-alloc = { version = "0.9", path = "memory/ax-alloc", default-features = false }
 ax-api = { version = "0.8", path = "os/arceos/api/arceos_api" }
@@ -203,9 +210,6 @@ arm-gic-driver = { version = "0.18.1", path = "drivers/intc/arm-gic-driver" }
 loongarch-intc-driver = { version = "0.1", path = "drivers/intc/loongarch-intc-driver" }
 x86-apic-driver = { version = "0.2", path = "drivers/intc/x86-apic-driver" }
 eth-intel = { version = "0.2", path = "drivers/net/eth-intel" }
-loongarch_vcpu = { version = "0.5", path = "virtualization/loongarch_vcpu" }
-riscv-h = { version = "0.4", path = "virtualization/riscv-h" }
-riscv_vcpu = { version = "0.6", path = "virtualization/riscv_vcpu" }
 riscv_vplic = { version = "0.5", path = "virtualization/riscv_vplic" }
 nvme-driver = { version = "0.8", path = "drivers/blk/nvme-driver" }
 pcie = { version = "0.7", path = "drivers/pci/pcie" }
@@ -256,7 +260,6 @@ starry-kernel = { version = "0.9", path = "os/StarryOS/kernel" }
 starry-signal = { version = "0.9", path = "os/StarryOS/signal" }
 starry-vm = { version = "0.6", path = "os/StarryOS/vm" }
 httpboot-protocol = { version = "0.2.0", default-features = false, features = ["alloc", "json"] }
-x86_vcpu = { version = "0.7.1", path = "virtualization/x86_vcpu", default-features = false }
 x86_vlapic = { version = "0.5", path = "virtualization/x86_vlapic" }
 page-table-generic = { version = "0.9", path = "memory/page-table-generic" }
 someboot = { version = "0.5.1", path = "platforms/someboot" }
@@ -264,7 +267,6 @@ some-serial = { version = "0.7", path = "drivers/serial/some-serial" }
 kernutil = { path = "components/kernutil", version = "0.3" }
 ranges-ext = { version = "0.6", path = "memory/ranges-ext" }
 somehal-macros = { path = "platforms/somehal-macros", version = "0.1" }
-kasm-aarch64 = { path = "components/kasm-aarch64", version = "0.2" }
 somehal = { version = "0.10.1", path = "platforms/somehal" }
 
 # External crates

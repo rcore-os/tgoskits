@@ -10,7 +10,6 @@ use ax_std::os::arceos::{
         time::ax_monotonic_time,
     },
     modules::{
-        ax_hal,
         ax_hal::{irq::CpuId, percpu::this_cpu_id},
         ax_ipi,
         ax_ipi::IpiNotification,
@@ -77,7 +76,7 @@ unsafe fn idle_wake_callback(_argument: *mut ()) {
 
 #[cfg(target_arch = "loongarch64")]
 fn set_idle_test_timer_irq_enabled(enabled: bool) {
-    ax_hal::asm::set_timer_irq_enabled(enabled);
+    ax_cpu::interrupt::set_timer_irq_enabled(enabled);
 }
 
 #[cfg(not(target_arch = "loongarch64"))]
@@ -90,13 +89,13 @@ fn exercise_irq_masked_idle_wake(target_cpu: usize, sender_cpu: usize) {
 
     let target = thread::spawn(move || {
         pin_current_to_cpu(target_cpu);
-        ax_hal::asm::disable_irqs();
+        ax_cpu::interrupt::disable_irqs();
         // LoongArch has a separate local timer line. Mask it for this narrow
         // window so a later scheduler tick cannot hide a bad return into IDLE
         // after the already-consumed IPI.
         set_idle_test_timer_irq_enabled(false);
         assert!(
-            !ax_hal::asm::irqs_enabled(),
+            !ax_cpu::interrupt::irqs_enabled(),
             "idle-wake target must publish readiness with IRQs masked"
         );
         IDLE_TARGET_MASKED.store(true, Ordering::Release);
@@ -105,10 +104,10 @@ fn exercise_irq_masked_idle_wake(target_cpu: usize, sender_cpu: usize) {
             core::hint::spin_loop();
         }
 
-        ax_hal::asm::wait_for_irqs_disabled();
+        ax_cpu::interrupt::wait_for_irqs_disabled();
         set_idle_test_timer_irq_enabled(true);
         assert!(
-            ax_hal::asm::irqs_enabled(),
+            ax_cpu::interrupt::irqs_enabled(),
             "IRQ-masked idle wait must return with IRQ delivery enabled"
         );
     });

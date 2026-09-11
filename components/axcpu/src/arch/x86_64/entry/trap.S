@@ -1,0 +1,164 @@
+# Reference: <https://github.com/asterinas/asterinas/blob/257b0c63b1f039e1ec4fd94c2c7bd549f8db2830/ostd/src/arch/x86/trap/trap.S>
+#            <https://github.com/asterinas/asterinas/blob/257b0c63b1f039e1ec4fd94c2c7bd549f8db2830/ostd/src/arch/x86/trap/syscall.S>
+
+.code64
+.equ NUM_INT, 256
+.equ IA32_GS_BASE, 0xc0000101
+
+.altmacro
+.macro DEF_HANDLER, i
+.Ltrap_handler_\i:
+.if \i == 8 || (\i >= 10 && \i <= 14) || \i == 17 || \i == 21 || \i == 29 || \i == 30
+    # error code pushed by CPU
+    push    \i          # interrupt vector
+    jmp     .Ltrap_common
+.else
+    push    0           # fill in error code in TrapFrame
+    push    \i          # interrupt vector
+    jmp     .Ltrap_common
+.endif
+.endm
+
+.macro DEF_TABLE_ENTRY, i
+    .long .Ltrap_handler_\i - trap_handler_table
+.endm
+
+.section .rodata
+.balign 4
+.global trap_handler_table
+trap_handler_table:
+.set i, 0
+.rept NUM_INT
+    DEF_TABLE_ENTRY %i
+    .set i, i + 1
+.endr
+
+.section .text
+.type trap_vector_entries, @function
+trap_vector_entries:
+.set i, 0
+.rept NUM_INT
+    DEF_HANDLER %i
+    .set i, i + 1
+.endr
+
+.Ltrap_common:
+    cld
+    cmp     qword ptr [rsp], 8
+    je      .Ltrap_double_fault
+    test    byte ptr [rsp + 3 * 8], 3
+    jz      .Ltrap_kernel
+
+.Ltrap_user:
+    swapgs                              # swap in kernel gs
+    jmp     .Lexit_user
+
+.Ltrap_kernel:
+    PUSH_GENERAL_REGS
+
+    mov     rdi, rsp
+    call    x86_trap_handler
+
+    POP_GENERAL_REGS
+    add     rsp, 16                     # pop vector, error_code
+    iretq
+.size trap_vector_entries, . - trap_vector_entries
+
+.Ltrap_double_fault:
+    # A double fault can interrupt the entry/exit window after SWAPGS but
+    # before IRET. The saved CS then describes the interrupted kernel
+    # instruction, not the live GS base, so it cannot safely decide whether
+    # another SWAPGS is required. Save the diagnostic register image first,
+    # then use the kernel-negative GS convention (the same non-FSGSBASE
+    # decision used by Linux paranoid_entry).
+    PUSH_GENERAL_REGS
+
+    mov     ecx, IA32_GS_BASE
+    rdmsr
+    test    edx, edx
+    js      1f
+    swapgs
+1:
+    mov     rdi, rsp
+    call    x86_double_fault_handler
+    ud2
+
+.global syscall_entry
+syscall_entry:
+    swapgs                              # swap in kernel gs
+    mov     gs:[offset __CPU_LOCAL_TSS_OFFSET + {tss_sp1_offset}], rsp # store user rsp -> scratch at TSS.sp1
+    mov     rsp, gs:[offset __CPU_LOCAL_TSS_OFFSET + {tss_sp0_offset}]  # load end of TrapFrame <- TSS.sp0
+
+    push    {UDATA}                     # push ss
+    push    gs:[offset __CPU_LOCAL_TSS_OFFSET + {tss_sp1_offset}]      # push rsp
+    push    r11                         # push rflags
+    push    {UCODE64}                   # push cs
+    push    rcx                         # push rip
+
+    push    0                           # push error_code
+    push    {SYSCALL_VECTOR}            # push vector
+
+.Lexit_user:
+    PUSH_GENERAL_REGS
+
+    # LinuxCurrent kernels do not own FS and CR4.FSGSBASE is disabled. The
+    # user TLS image therefore remains authoritative across the trap; only GS
+    # is swapped to the CPU area before returning to Rust.
+    mov     r8, [rsp + {kernel_stack_pointer_offset}]
+    mov     rsp, r8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+.global enter_user
+enter_user:
+    # save kernel context
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov [rdi + {kernel_stack_pointer_offset}], rsp
+
+    mov rsp, rdi
+    add rdi, {trapframe_size}
+    mov gs:[offset __CPU_LOCAL_TSS_OFFSET + {tss_sp0_offset}], rdi      # store end of TrapFrame -> TSS.sp0
+
+    swapgs                              # swap in user gs
+
+    POP_GENERAL_REGS
+    add rsp, 16                         # pop vector, error_code
+
+    # Determine whether to use sysret or iret.
+    # If returning to user space with a clean context,
+    # the fast sysret path can be used;
+    # otherwise, the slower iret path should be used.
+    # Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/arch/x86/entry/entry_64.S#L122>.
+
+    cmp qword ptr [rsp], rcx            # sysret requires rcx = rip
+    jne .Liret
+
+    cmp qword ptr [rsp + 16], r11       # sysret requires r11 = rflags
+    jne .Liret
+
+    test r11, 0x10100                   # sysret requires rflags not contain RF and TF flags
+    jnz .Liret
+
+    shl rcx, 16
+    sar rcx, 16
+    cmp qword ptr [rsp], rcx            # sysret requires rip be a canonical address
+    je .Lsysret
+    mov rcx, [rsp]
+
+.Liret:
+    iretq
+
+.Lsysret:
+    mov rsp, [rsp + 24]                 # load user rsp
+    sysretq

@@ -2,7 +2,7 @@ use ax_memory_addr::VirtAddr;
 use ax_runtime::{
     hal::cpu::{
         trap::PageFaultFlags,
-        uspace::{ExceptionKind, ReturnReason, UserContext},
+        user::{ExceptionKind, ReturnReason, UserContext},
     },
     thread::UserExecutionContext,
 };
@@ -300,7 +300,7 @@ pub fn new_user_task(
 fn handle_user_exception(
     current: &super::UserTaskRef,
     uctx: &mut UserContext,
-    exc_info: ax_runtime::hal::cpu::uspace::ExceptionInfo,
+    exc_info: ax_runtime::hal::cpu::user::ExceptionInfo,
 ) {
     let thr = current.as_thread();
     let kind = exc_info.kind();
@@ -413,7 +413,7 @@ fn handle_user_exception(
             // IllegalInstruction. Emulate them like Linux
             // instead of killing the program with SIGILL.
             #[cfg(target_arch = "aarch64")]
-            if unsafe { uctx.emulate_mrs_id_reg() } {
+            if super::user_cpu_features::emulate_mrs_id_reg(current, uctx) {
                 return;
             }
             SignalInfo::new_kernel(Signo::SIGILL)

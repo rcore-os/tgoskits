@@ -3,7 +3,7 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
-use ax_runtime::hal::cpu::uspace::UserContext;
+use ax_runtime::hal::cpu::user::UserContext;
 use axpoll::IoEvents;
 use axpoll_set::PollSet;
 use starry_signal::{SignalInfo, Signo};
@@ -317,7 +317,7 @@ pub struct PtraceStopFpData;
 
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
-pub struct PtraceStopFpData(pub ax_cpu::UserXstate);
+pub struct PtraceStopFpData(pub ax_cpu::registers::UserXstate);
 
 impl ProcessData {
     /// Mark this process as traceable by its parent.
@@ -762,7 +762,7 @@ impl ProcessData {
 
     #[cfg(target_arch = "riscv64")]
     pub fn save_current_fp_for_ptrace(&self, tid: TidNumber) {
-        let mut fp = ax_cpu::FpState::default();
+        let mut fp = ax_cpu::registers::FpState::default();
         fp.save();
         fp.fs = riscv::register::sstatus::read().fs();
         self.ptrace.stop_fp_data.lock().insert(
@@ -776,7 +776,7 @@ impl ProcessData {
 
     #[cfg(target_arch = "aarch64")]
     pub fn save_current_fp_for_ptrace(&self, tid: TidNumber) {
-        let mut fp = ax_cpu::FpState::default();
+        let mut fp = ax_cpu::registers::FpState::default();
         fp.save();
         self.ptrace.stop_fp_data.lock().insert(
             tid,
@@ -790,7 +790,7 @@ impl ProcessData {
 
     #[cfg(target_arch = "loongarch64")]
     pub fn save_current_fp_for_ptrace(&self, tid: TidNumber) {
-        let mut fp = ax_cpu::FpuState::default();
+        let mut fp = ax_cpu::registers::FpuState::default();
         fp.save();
         self.ptrace.stop_fp_data.lock().insert(
             tid,
@@ -829,7 +829,7 @@ impl ProcessData {
             return;
         };
 
-        let fp_state = ax_cpu::FpState {
+        let fp_state = ax_cpu::registers::FpState {
             fp: fp.regs,
             fcsr: fp.fcsr,
             fs: riscv::register::sstatus::FS::Dirty,
@@ -848,7 +848,7 @@ impl ProcessData {
             return;
         };
 
-        let fp_state = ax_cpu::FpState {
+        let fp_state = ax_cpu::registers::FpState {
             regs: fp.regs,
             fpcr: fp.fpcr,
             fpsr: fp.fpsr,
@@ -863,7 +863,7 @@ impl ProcessData {
             return;
         };
 
-        let fp_state = ax_cpu::FpuState {
+        let fp_state = ax_cpu::registers::FpuState {
             fp: fp.regs,
             fp_high: fp.fp_high,
             fp_lasx_hi0: fp.fp_lasx_hi0,
@@ -935,7 +935,7 @@ mod tests {
 
 #[cfg(all(test, axtest))]
 mod axtests {
-    use ax_runtime::hal::cpu::uspace::UserContext;
+    use ax_runtime::hal::cpu::user::UserContext;
     use starry_signal::Signo;
 
     use super::{ProcessPtraceState, PtraceStopKind};

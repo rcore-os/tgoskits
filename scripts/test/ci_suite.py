@@ -10,12 +10,13 @@ from ci_impact import ARCH_TARGETS
 
 SUPPORTED_SUITE_KINDS = {
     "arceos-qemu",
+    "arceos-board",
     "starry-qemu",
     "starry-board",
     "axvisor-qemu",
     "axvisor-board",
 }
-SUITE_FIELDS = {"kind", "arch", "board", "cases"}
+SUITE_FIELDS = {"kind", "arch", "board", "cases", "group"}
 SUITE_ROOTS = {
     "arceos": Path("test-suit/arceos"),
     "starry": Path("test-suit/starryos"),
@@ -88,6 +89,7 @@ def validate_suite_catalog(
 ) -> None:
     registrations = _suite_registrations(checks)
     discovered = {
+        "arceos": [case for case in _discover_runtime_cases(workspace_root / SUITE_ROOTS["arceos"], "arceos") if case.kind == "arceos-board"],
         "starry": _discover_runtime_cases(
             workspace_root / SUITE_ROOTS["starry"],
             "starry",
@@ -101,6 +103,13 @@ def validate_suite_catalog(
         kind = registration["kind"]
         if kind == "arceos-qemu":
             arch = registration["arch"]
+            if registration.get("group") == "cpu":
+                cases = _discover_runtime_cases(workspace_root / SUITE_ROOTS["arceos"] / "cpu", "arceos")
+                present = {case.case for case in cases if case.arch == arch}
+                required = set(registration.get("cases", present))
+                if not required or required - present:
+                    raise SuiteRouteError(f"check '{check['id']}' registers missing CPU cases: {sorted(required - present)}")
+                continue
             runtime = (
                 workspace_root / SUITE_ROOTS["arceos"] / "rust" / f"qemu-{arch}.toml"
             )
@@ -194,6 +203,14 @@ def _selections_for_path(
     path: Path,
 ) -> list[SuiteSelection]:
     if _is_prefix(path, SUITE_ROOTS["arceos"]):
+        relative = path.relative_to(SUITE_ROOTS["arceos"])
+        if relative.parts and relative.parts[0] == "cpu":
+            root = workspace_root / SUITE_ROOTS["arceos"] / "cpu"
+            cases = _discover_runtime_cases(root, "arceos")
+            return _runtime_selections(registrations, path,
+                _matching_runtime_cases(cases, workspace_root / path), suite_group="cpu")
+        if relative.parts and relative.parts[0].startswith("board-"):
+            return _discovered_selections(workspace_root, registrations, path, "arceos")
         return _arceos_selections(registrations, path)
     if _is_prefix(path, SUITE_ROOTS["starry"]):
         return _discovered_selections(
@@ -241,7 +258,7 @@ def _arceos_selections(
         arches = {
             registration["arch"]
             for _, registration in registrations
-            if registration["kind"] == "arceos-qemu"
+            if registration["kind"] == "arceos-qemu" and registration.get("group") is None
         }
 
     selections = []
@@ -283,7 +300,7 @@ def _arceos_all_selections(
                 check,
                 f"QEMU {arch}",
                 "all",
-                f"cargo xtask arceos test qemu --arch {arch}",
+                check["command"],
                 path,
             )
         )
@@ -321,6 +338,7 @@ def _runtime_selections(
     cases: Sequence[_RuntimeCase],
     *,
     selector_override: str | None = None,
+    suite_group: str | None = None,
 ) -> list[SuiteSelection]:
     selections = []
     for runtime_case in cases:
@@ -331,11 +349,16 @@ def _runtime_selections(
             arch=runtime_case.arch,
             board=runtime_case.board,
             case=runtime_case.case,
+            group=suite_group,
         )
         if template is None:
             continue
 
-        if runtime_case.kind == "starry-qemu":
+        if runtime_case.kind == "arceos-qemu":
+            platform = f"QEMU {runtime_case.arch}"
+            command = (f"cargo xtask arceos test qemu --arch {runtime_case.arch} "
+                f"--test-group {suite_group} --test-case {selector}")
+        elif runtime_case.kind == "starry-qemu":
             platform = f"QEMU {runtime_case.arch}"
             command = (
                 f"cargo xtask starry test qemu --arch {runtime_case.arch} "
@@ -354,7 +377,7 @@ def _runtime_selections(
             )
         else:
             platform = _platform_label(template)
-            os_cli = "starry" if runtime_case.kind == "starry-board" else "axvisor"
+            os_cli = _kind_os(runtime_case.kind)
             command = (
                 f"cargo xtask {os_cli} test board --test-case {selector} "
                 f"--board {runtime_case.board}"
@@ -421,6 +444,8 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
             if relative_case.parts
             else wrapper_dir.relative_to(root).as_posix()
         )
+        if os_name == "arceos":
+            case = runtime_config.parent.name
         cases.append(
             _RuntimeCase(
                 kind=board_kind,
@@ -539,10 +564,13 @@ def _registered_template(
     arch: str | None = None,
     board: str | None = None,
     case: str | None = None,
+    group: str | None = None,
 ) -> dict[str, Any] | None:
     matches = []
     for check, registration in registrations:
         if registration["kind"] != kind:
+            continue
+        if registration.get("group") != group:
             continue
         if arch is not None and registration.get("arch") != arch:
             continue

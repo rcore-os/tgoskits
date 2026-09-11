@@ -1,0 +1,3 @@
+features = ["ax-std", "expect-h"]
+log = "Info"
+max_cpu_num = 1

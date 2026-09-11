@@ -246,9 +246,7 @@ impl PlatOp for Plat {
         // The blocking command waits for transport acceptance, not for prior
         // shared-memory stores. Complete those stores before ringing the IOCSR
         // doorbell so the target cannot observe a stale payload.
-        unsafe {
-            core::arch::asm!("dbar 0", options(nostack));
-        }
+        ax_cpu::barrier::data_fence();
         iocsr_write_w(IOCSR_IPI_SEND, command);
         Ok(())
     }

@@ -70,62 +70,10 @@ pub(crate) fn resume_masked_level_oneshot(
     unmask_source();
 }
 
-#[cfg(any(target_arch = "aarch64", test))]
-pub(crate) mod aarch64_deadline {
-    #[cfg(any(not(feature = "hv"), test))]
-    pub(crate) mod el1 {
-        use super::super::ArchTimerMode;
-
-        pub(crate) trait TimerRegisters {
-            fn read_virtual_counter(&self) -> u64;
-            fn read_physical_counter(&self) -> u64;
-            fn write_virtual_compare(&self, deadline: u64);
-            fn write_physical_compare(&self, deadline: u64);
-        }
-
-        pub(crate) fn program_deadline(
-            registers: &impl TimerRegisters,
-            mode: ArchTimerMode,
-            deadline_ticks: u64,
-        ) {
-            match mode {
-                ArchTimerMode::El1Virt => registers.write_virtual_compare(
-                    deadline_ticks.max(registers.read_virtual_counter().saturating_add(1)),
-                ),
-                ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => registers
-                    .write_physical_compare(
-                        deadline_ticks.max(registers.read_physical_counter().saturating_add(1)),
-                    ),
-            }
-        }
-
-        pub(crate) fn disarm(registers: &impl TimerRegisters, mode: ArchTimerMode) {
-            match mode {
-                ArchTimerMode::El1Virt => registers.write_virtual_compare(u64::MAX),
-                ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => {
-                    registers.write_physical_compare(u64::MAX);
-                }
-            }
-        }
-    }
-
-    #[cfg(any(feature = "hv", test))]
-    pub(crate) mod el2 {
-        pub(crate) trait TimerRegisters {
-            fn read_physical_counter(&self) -> u64;
-            fn write_hyp_physical_compare(&self, deadline: u64);
-        }
-
-        pub(crate) fn program_deadline(registers: &impl TimerRegisters, deadline_ticks: u64) {
-            registers.write_hyp_physical_compare(
-                deadline_ticks.max(registers.read_physical_counter().saturating_add(1)),
-            );
-        }
-
-        pub(crate) fn disarm(registers: &impl TimerRegisters) {
-            registers.write_hyp_physical_compare(u64::MAX);
-        }
-    }
+/// Keeps platform clock-event deadlines ahead of the current raw counter.
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
+pub(crate) fn next_cpu_timer_deadline(now: u64, requested: u64) -> u64 {
+    requested.max(now.saturating_add(1))
 }
 
 #[cfg(any(target_arch = "riscv64", test))]
@@ -212,13 +160,7 @@ pub fn elapsed() -> Duration {
 mod tests {
     use core::cell::Cell;
 
-    use super::{
-        aarch64_deadline::{
-            el1::{self, TimerRegisters as El1TimerRegisters},
-            el2::{self, TimerRegisters as El2TimerRegisters},
-        },
-        *,
-    };
+    use super::*;
 
     #[test]
     fn el2_kernel_uses_hyp_physical_timer() {
@@ -284,134 +226,10 @@ mod tests {
     }
 
     #[test]
-    fn el1_virtual_timer_programs_absolute_deadline() {
-        let registers = RecordingEl1TimerRegisters::new(17, 19);
-
-        el1::program_deadline(&registers, ArchTimerMode::El1Virt, 23);
-
-        assert_eq!(registers.virtual_compare.get(), Some(23));
-        assert_eq!(registers.physical_compare.get(), None);
-        assert_eq!(registers.virtual_counter_reads.get(), 1);
-        assert_eq!(registers.physical_counter_reads.get(), 0);
-    }
-
-    #[test]
-    fn el1_physical_timer_advances_past_deadline_to_next_tick() {
-        let registers = RecordingEl1TimerRegisters::new(17, 19);
-
-        el1::program_deadline(&registers, ArchTimerMode::El1Phys, 8);
-
-        assert_eq!(registers.virtual_compare.get(), None);
-        assert_eq!(registers.physical_compare.get(), Some(20));
-        assert_eq!(registers.virtual_counter_reads.get(), 0);
-        assert_eq!(registers.physical_counter_reads.get(), 1);
-    }
-
-    #[test]
-    fn el2_hyp_timer_advances_past_deadline_to_next_tick() {
-        let registers = RecordingEl2TimerRegisters::new(19);
-
-        el2::program_deadline(&registers, 8);
-
-        assert_eq!(registers.hyp_physical_compare.get(), Some(20));
-        assert_eq!(registers.physical_counter_reads.get(), 1);
-    }
-
-    #[test]
-    fn el1_timer_stop_discards_the_selected_comparator() {
-        let registers = RecordingEl1TimerRegisters::new(17, 19);
-
-        el1::disarm(&registers, ArchTimerMode::El1Virt);
-
-        assert_eq!(registers.virtual_compare.get(), Some(u64::MAX));
-        assert_eq!(registers.physical_compare.get(), None);
-
-        el1::disarm(&registers, ArchTimerMode::El1Phys);
-
-        assert_eq!(registers.physical_compare.get(), Some(u64::MAX));
-        assert_eq!(registers.virtual_counter_reads.get(), 0);
-        assert_eq!(registers.physical_counter_reads.get(), 0);
-    }
-
-    #[test]
-    fn el2_timer_stop_discards_the_hyp_comparator() {
-        let registers = RecordingEl2TimerRegisters::new(17);
-
-        el2::disarm(&registers);
-
-        assert_eq!(registers.hyp_physical_compare.get(), Some(u64::MAX));
-        assert_eq!(registers.physical_counter_reads.get(), 0);
-    }
-
-    struct RecordingEl1TimerRegisters {
-        virtual_counter: u64,
-        physical_counter: u64,
-        virtual_counter_reads: Cell<usize>,
-        physical_counter_reads: Cell<usize>,
-        virtual_compare: Cell<Option<u64>>,
-        physical_compare: Cell<Option<u64>>,
-    }
-
-    impl RecordingEl1TimerRegisters {
-        fn new(virtual_counter: u64, physical_counter: u64) -> Self {
-            Self {
-                virtual_counter,
-                physical_counter,
-                virtual_counter_reads: Cell::new(0),
-                physical_counter_reads: Cell::new(0),
-                virtual_compare: Cell::new(None),
-                physical_compare: Cell::new(None),
-            }
-        }
-    }
-
-    impl El1TimerRegisters for RecordingEl1TimerRegisters {
-        fn read_virtual_counter(&self) -> u64 {
-            self.virtual_counter_reads
-                .set(self.virtual_counter_reads.get() + 1);
-            self.virtual_counter
-        }
-
-        fn read_physical_counter(&self) -> u64 {
-            self.physical_counter_reads
-                .set(self.physical_counter_reads.get() + 1);
-            self.physical_counter
-        }
-
-        fn write_virtual_compare(&self, deadline: u64) {
-            self.virtual_compare.set(Some(deadline));
-        }
-
-        fn write_physical_compare(&self, deadline: u64) {
-            self.physical_compare.set(Some(deadline));
-        }
-    }
-
-    struct RecordingEl2TimerRegisters {
-        physical_counter: u64,
-        physical_counter_reads: Cell<usize>,
-        hyp_physical_compare: Cell<Option<u64>>,
-    }
-
-    impl RecordingEl2TimerRegisters {
-        fn new(physical_counter: u64) -> Self {
-            Self {
-                physical_counter,
-                physical_counter_reads: Cell::new(0),
-                hyp_physical_compare: Cell::new(None),
-            }
-        }
-    }
-
-    impl El2TimerRegisters for RecordingEl2TimerRegisters {
-        fn read_physical_counter(&self) -> u64 {
-            self.physical_counter_reads
-                .set(self.physical_counter_reads.get() + 1);
-            self.physical_counter
-        }
-
-        fn write_hyp_physical_compare(&self, deadline: u64) {
-            self.hyp_physical_compare.set(Some(deadline));
-        }
+    fn clock_event_deadlines_remain_ahead_of_the_counter() {
+        assert_eq!(next_cpu_timer_deadline(17, 23), 23);
+        assert_eq!(next_cpu_timer_deadline(19, 8), 20);
+        assert_eq!(next_cpu_timer_deadline(19, 19), 20);
+        assert_eq!(next_cpu_timer_deadline(u64::MAX, 0), u64::MAX);
     }
 }

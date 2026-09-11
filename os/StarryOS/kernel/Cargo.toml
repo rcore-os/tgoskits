@@ -40,7 +40,7 @@ rk3588-pwm = [
     "ax-driver/rk3588-pwm",
     "dep:rdif-pwm",
 ]
-k230-kpu = ["ax-hal/xuantie-c9xx", "dep:k230-kpu"]
+k230-kpu = ["ax-hal/riscv-thead-mae", "dep:k230-kpu"]
 vsock = ["ax-runtime/vsock"]
 dynamic_debug = ["ipi"]
 sg2002 = [
@@ -198,3 +198,7 @@ x86 = "0.52"
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
 riscv.workspace = true
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+ax-cpu = { workspace = true, features = ["pmu"] }
+ax-hal = { workspace = true, features = ["pmu"] }

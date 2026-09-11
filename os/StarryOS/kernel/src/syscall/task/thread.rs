@@ -95,7 +95,7 @@ pub fn sys_set_tid_address(
 #[cfg(target_arch = "x86_64")]
 pub fn sys_arch_prctl(
     current: &crate::task::UserTaskRef,
-    uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
+    uctx: &mut ax_runtime::hal::cpu::user::UserContext,
     code: i32,
     addr: usize,
 ) -> crate::StarryResult<isize> {

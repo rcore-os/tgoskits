@@ -1,12 +1,10 @@
+use ax_cpu::registers;
+
 use super::*;
 use crate::{
     CPU_AREA_CURRENT_CONTEXT_OFFSET, CPU_AREA_PREEMPTION_STATE_OFFSET, CPU_AREA_SELF_BASE_OFFSET,
     CpuIndex, CpuLocalError, preempt::PreemptionState,
 };
-
-const IA32_GS_BASE: u32 = 0xc000_0101;
-#[cfg(kernel_tls)]
-const IA32_FS_BASE: u32 = 0xc000_0100;
 
 pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentModel {
     linux_current: CurrentContextSource::RuntimeAnchor,
@@ -18,35 +16,19 @@ pub(super) struct Backend;
 impl ArchitectureRegisterBackend for Backend {
     #[inline(always)]
     fn current_cpu_index() -> Result<CpuIndex, CpuLocalError> {
-        let index: u32;
         // SAFETY: the installed GS base points at the immutable CPU-area
         // header for the current CPU and the caller's preemption/IRQ pin keeps
         // that area selected until this scalar is consumed.
-        unsafe {
-            core::arch::asm!(
-                "mov {index:e}, dword ptr gs:[{offset}]",
-                index = out(reg) index,
-                offset = const crate::CPU_AREA_CPU_INDEX_OFFSET,
-                options(nostack, preserves_flags, readonly),
-            );
-        }
+        let index = unsafe { registers::read_gs_u32::<{ crate::CPU_AREA_CPU_INDEX_OFFSET }>() };
         CpuIndex::from_u32(index).ok_or(CpuLocalError::AreaIdentityMismatch)
     }
 
     #[inline(always)]
     fn current_preemption_snapshot() -> Result<PreemptionSnapshot, CpuLocalError> {
-        let state: u32;
         // SAFETY: x86 owns the selected preemption word in the installed CPU
         // runtime anchor. The fixed GS offset is the architecture-native
         // override of the execution-context default implementation.
-        unsafe {
-            core::arch::asm!(
-                "mov {state:e}, dword ptr gs:[{offset}]",
-                state = out(reg) state,
-                offset = const CPU_AREA_PREEMPTION_STATE_OFFSET,
-                options(nostack, preserves_flags, readonly),
-            );
-        }
+        let state = unsafe { registers::read_gs_u32::<CPU_AREA_PREEMPTION_STATE_OFFSET>() };
         Ok(PreemptionSnapshot::from_raw(state))
     }
 }
@@ -56,99 +38,47 @@ pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
 }
 
 pub(super) unsafe fn install_cpu_base(area_base: usize, _boot_context: usize) {
-    let area_base = area_base as u64;
-    unsafe {
-        core::arch::asm!(
-            "wrmsr",
-            in("ecx") IA32_GS_BASE,
-            in("eax") area_base as u32,
-            in("edx") (area_base >> 32) as u32,
-            options(nostack, preserves_flags),
-        );
-    }
+    // SAFETY: the caller owns installation of this permanent CPU area.
+    unsafe { registers::write_gs_base(area_base) };
 }
 
 pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
-    let area_base: usize;
-    unsafe {
-        core::arch::asm!(
-            "mov {base}, gs:[{offset}]",
-            base = out(reg) area_base,
-            offset = const CPU_AREA_SELF_BASE_OFFSET,
-            options(nostack, preserves_flags),
-        );
-    }
-    Ok(area_base)
+    // SAFETY: installation retains the CPU area's initialized self pointer.
+    Ok(unsafe { registers::read_gs_usize::<CPU_AREA_SELF_BASE_OFFSET>() })
 }
 
 pub(super) unsafe fn read_current_context(_area_base: usize) -> usize {
-    let current_context: usize;
-    unsafe {
-        core::arch::asm!(
-            "mov {current}, gs:[{offset}]",
-            current = out(reg) current_context,
-            offset = const CPU_AREA_CURRENT_CONTEXT_OFFSET,
-            options(nostack, preserves_flags, readonly),
-        );
-    }
-    current_context
+    // SAFETY: the installed GS area retains its current-context publication.
+    unsafe { registers::read_gs_usize::<CPU_AREA_CURRENT_CONTEXT_OFFSET>() }
 }
 
 #[inline(always)]
 pub(super) unsafe fn enter_preemption() {
-    unsafe {
-        core::arch::asm!(
-            "inc dword ptr gs:[{offset}]",
-            offset = const CPU_AREA_PREEMPTION_STATE_OFFSET,
-            options(nostack),
-        );
-    }
+    // SAFETY: the installed CPU owns the live preemption word exclusively.
+    unsafe { registers::increment_gs_u32::<CPU_AREA_PREEMPTION_STATE_OFFSET>() };
 }
 
 #[inline(always)]
 pub(super) unsafe fn read_preemption_state() -> u32 {
-    let state: u32;
-    // SAFETY: a live preemption token pins the GS-selected CPU area until the
-    // matching finish consumes its depth.
-    unsafe {
-        core::arch::asm!(
-            "mov {state:e}, dword ptr gs:[{offset}]",
-            state = out(reg) state,
-            offset = const CPU_AREA_PREEMPTION_STATE_OFFSET,
-            options(nostack, preserves_flags, readonly),
-        );
-    }
-    state
+    // SAFETY: the live token retains the selected CPU's preemption owner.
+    unsafe { registers::read_gs_u32::<CPU_AREA_PREEMPTION_STATE_OFFSET>() }
 }
 
 #[inline(always)]
 pub(super) unsafe fn compare_exchange_current_preemption_state(current: u32, next: u32) -> bool {
-    let mut observed = current;
-    // SAFETY: the positive depth excludes remote writers. A local interrupt
-    // can update the pending bit only before or after this instruction.
-    unsafe {
-        core::arch::asm!(
-            "cmpxchg dword ptr gs:[{offset}], {next:e}",
-            offset = const CPU_AREA_PREEMPTION_STATE_OFFSET,
-            next = in(reg) next,
-            inout("eax") observed,
-            options(nostack),
-        );
-    }
+    // SAFETY: positive depth excludes remote writers; local IRQs can update
+    // pending state only before or after the one CMPXCHG instruction.
+    let observed = unsafe {
+        registers::compare_exchange_gs_u32::<CPU_AREA_PREEMPTION_STATE_OFFSET>(current, next)
+    };
     observed == current
 }
 
 #[inline(always)]
 pub(super) unsafe fn decrement_current_preemption_state() {
-    // SAFETY: the caller retains a nested depth, and integer subtraction
-    // preserves the pending high bit regardless of an interrupt publication.
-    unsafe {
-        core::arch::asm!(
-            "dec dword ptr gs:[{offset}]",
-            offset = const CPU_AREA_PREEMPTION_STATE_OFFSET,
-            options(nostack),
-        );
-    }
+    // SAFETY: the retained nested depth owns the selected CPU word. The
+    // subtraction preserves the pending high bit across local IRQ delivery.
+    unsafe { registers::decrement_gs_u32::<CPU_AREA_PREEMPTION_STATE_OFFSET>() };
 }
 
 /// Returns the current CPU's preemption word after a caller has raised its
@@ -162,19 +92,9 @@ pub(super) unsafe fn decrement_current_preemption_state() {
 /// the runtime lifetime.
 #[inline(always)]
 pub(super) unsafe fn current_preemption_state() -> &'static PreemptionState {
-    let area_base: usize;
-    // SAFETY: the preceding GS increment pins this instruction stream to the
-    // selected CPU area until the matching preemption exit. `mov` is used
-    // instead of `lea`: x86 effective-address calculation does not include a
-    // GS base, while this load reads the installed per-CPU self pointer.
-    unsafe {
-        core::arch::asm!(
-            "mov {base}, gs:[{offset}]",
-            base = out(reg) area_base,
-            offset = const CPU_AREA_SELF_BASE_OFFSET,
-            options(nostack, preserves_flags, readonly),
-        );
-    }
+    // SAFETY: the preceding GS increment pins the selected area until exit.
+    // A load follows the GS base; LEA would ignore the segment base.
+    let area_base = unsafe { registers::read_gs_usize::<CPU_AREA_SELF_BASE_OFFSET>() };
     let state = area_base
         .checked_add(CPU_AREA_PREEMPTION_STATE_OFFSET)
         .unwrap_or_else(|| crate::register::fatal_register_invariant());
@@ -215,30 +135,11 @@ pub(super) unsafe fn compare_exchange_preemption_state(
 
 #[cfg(kernel_tls)]
 pub(super) unsafe fn read_kernel_tls() -> usize {
-    let low: u32;
-    let high: u32;
-    unsafe {
-        core::arch::asm!(
-            "rdmsr",
-            in("ecx") IA32_FS_BASE,
-            out("eax") low,
-            out("edx") high,
-            options(nostack, preserves_flags),
-        )
-    };
-    ((high as usize) << 32) | low as usize
+    registers::read_thread_pointer().as_usize()
 }
 
 #[cfg(kernel_tls)]
 pub(super) unsafe fn write_kernel_tls(value: usize) {
-    let value = value as u64;
-    unsafe {
-        core::arch::asm!(
-            "wrmsr",
-            in("ecx") IA32_FS_BASE,
-            in("eax") value as u32,
-            in("edx") (value >> 32) as u32,
-            options(nostack, preserves_flags),
-        )
-    };
+    // SAFETY: the caller owns the offline or final TLS installation boundary.
+    unsafe { registers::write_thread_pointer(ax_cpu::context::KernelTlsBase::new(value)) };
 }

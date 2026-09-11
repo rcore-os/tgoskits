@@ -1,4 +1,4 @@
-use ax_cpu::uspace::UserContext;
+use ax_cpu::user::UserContext;
 
 use crate::{SignalSet, SignalStack};
 

@@ -376,8 +376,8 @@ fn update_robust_owner_nofault(
             (value & FUTEX_WAITERS) | FUTEX_OWNER_DIED,
         )
         .map_err(|error| match error {
-            ax_cpu::UserAtomicError::Fault => RobustOwnerError::WriteFault,
-            ax_cpu::UserAtomicError::Retry => RobustOwnerError::Retry,
+            ax_cpu::user::UserAtomicError::Fault => RobustOwnerError::WriteFault,
+            ax_cpu::user::UserAtomicError::Retry => RobustOwnerError::Retry,
         })?;
         if observed == value {
             return Ok(value & FUTEX_WAITERS != 0);
@@ -400,7 +400,7 @@ fn robust_waiter_publication_probe(word: *mut u32) {
         .compare_exchange(word.addr(), 0, Ordering::AcqRel, Ordering::Relaxed)
         .is_ok()
     {
-        crate::mm::atomic_update_user_u32_nofault(word, ax_cpu::UserAtomicU32Op::Or, FUTEX_WAITERS)
+        crate::mm::atomic_update_user_u32_nofault(word, ax_cpu::user::UserAtomicU32Op::Or, FUTEX_WAITERS)
             .expect("the probe word must already be writable");
     }
 }
@@ -908,7 +908,7 @@ fn robust_owner_death_preserves_concurrent_waiters() {
             super::kernel_thread_builder("robust-word".into()),
             || {
                 let word = 0x10000 as *mut u32;
-                crate::mm::atomic_update_user_u32_nofault(word, ax_cpu::UserAtomicU32Op::Set, 17)
+                crate::mm::atomic_update_user_u32_nofault(word, ax_cpu::user::UserAtomicU32Op::Set, 17)
                     .unwrap();
                 ROBUST_WAITER_PUBLICATION.store(word.addr(), Ordering::Release);
                 let wake = update_robust_owner_nofault(word, 17, false).unwrap();
@@ -929,11 +929,11 @@ fn robust_owner_death_preserves_concurrent_waiters() {
                 // the second faults at the initial user access.
                 assert_eq!(
                     compare(0x11000 as *mut u32, 0, 1),
-                    Err(ax_cpu::UserAtomicError::Fault)
+                    Err(ax_cpu::user::UserAtomicError::Fault)
                 );
                 assert_eq!(
                     compare(0x12000 as *mut u32, 0, 1),
-                    Err(ax_cpu::UserAtomicError::Fault)
+                    Err(ax_cpu::user::UserAtomicError::Fault)
                 );
                 assert_eq!(
                     crate::mm::read_user_u32_nofault(0x11000 as *const u32).unwrap(),

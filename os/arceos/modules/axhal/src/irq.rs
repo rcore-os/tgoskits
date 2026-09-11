@@ -1,7 +1,7 @@
 //! Interrupt management.
 
-pub use ax_cpu::trap::TrapOrigin;
 use ax_cpu::trap::set_irq_handler;
+pub use ax_cpu::trap::{InterruptedContext, InterruptedPrivilege, TrapOrigin};
 #[cfg(feature = "smp")]
 pub use ax_plat::irq::init_secondary_boot_irqs;
 pub use ax_plat::irq::{
@@ -19,6 +19,7 @@ pub use ax_plat::irq::{
 #[cfg(feature = "ipi")]
 pub use ax_plat::irq::{IpiTarget, send_ipi};
 use ax_plat::irq::{handle, prepare_irq_context};
+pub use cpu_local::CpuPin;
 
 /// Returns the platform IRQ id used for inter-processor interrupts.
 #[cfg(feature = "ipi")]
@@ -98,7 +99,7 @@ fn finish_irq_entry(release_preempt: impl FnOnce(), complete: impl FnOnce()) {
 /// Tests IRQ-action context for the explicitly pinned current CPU.
 #[doc(hidden)]
 #[inline(always)]
-pub fn in_irq_context_pinned(pin: &cpu_local::CpuPin<'_>) -> bool {
+pub fn in_irq_context_pinned(pin: &CpuPin<'_>) -> bool {
     ax_plat::irq::in_irq_context_pinned(pin)
 }
 
@@ -108,7 +109,58 @@ pub fn in_irq_context_pinned(pin: &cpu_local::CpuPin<'_>) -> bool {
 /// [`ax_cpu::trap::dispatch_irq`] instead of relying on the `#[irq_handler]`
 /// link-time override path.
 pub fn init_common_irq_handler() {
-    let _ = set_irq_handler(handle_irq);
+    let _ = set_irq_handler(handle_trap_irq);
+}
+
+#[ax_percpu::def_percpu]
+static INTERRUPTED_CONTEXT: Option<ax_cpu::trap::InterruptedContext> = None;
+
+/// Returns the by-value snapshot for the current IRQ dispatch scope.
+pub fn interrupted_context() -> Option<InterruptedContext> {
+    let _irq = ax_sync::IrqSaveGuard::new();
+    // SAFETY: IRQ exclusion prevents migration and concurrent local mutation.
+    unsafe { crate::percpu::with_cpu_pin(|pin| INTERRUPTED_CONTEXT.with_current(pin, |v| *v)) }
+        .ok()
+        .flatten()
+}
+
+fn replace_interrupted_context(
+    next: Option<ax_cpu::trap::InterruptedContext>,
+) -> Option<ax_cpu::trap::InterruptedContext> {
+    // SAFETY: only the IRQ-dispatch closure and its guard call this function;
+    // both run with local interrupts disabled on the same CPU.
+    unsafe {
+        crate::percpu::with_cpu_pin(|pin| {
+            crate::percpu::with_exclusive_cpu(pin, |exclusive| {
+                INTERRUPTED_CONTEXT.with_current_mut(exclusive, |v| core::mem::replace(v, next))
+            })
+        })
+    }
+    .expect("IRQ dispatch requires an installed CPU area")
+}
+
+fn handle_trap_irq(
+    vector: usize,
+    origin: TrapOrigin,
+    context: Option<ax_cpu::trap::InterruptedContext>,
+) -> bool {
+    struct Snapshot(Option<ax_cpu::trap::InterruptedContext>);
+    impl Drop for Snapshot {
+        fn drop(&mut self) {
+            replace_interrupted_context(self.0);
+        }
+    }
+    let origin = match origin {
+        TrapOrigin::Kernel => IrqOrigin::Kernel,
+        TrapOrigin::User => IrqOrigin::User,
+    };
+    with_irq_entry(
+        || prepare_irq_context(TrapVector(vector)),
+        || {
+            let _snapshot = Snapshot(replace_interrupted_context(context));
+            handle(TrapVector(vector), origin).is_some()
+        },
+    )
 }
 
 #[cfg(test)]

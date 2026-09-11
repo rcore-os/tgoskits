@@ -16,7 +16,7 @@
 
 use alloc::sync::Arc;
 
-use ax_runtime::hal::cpu::UserRegisters;
+use ax_runtime::hal::cpu::context::UserRegisters;
 use kprobe::{ProbeBuilder, Uprobe};
 
 use crate::{

@@ -46,6 +46,7 @@ pub(super) fn load_build_config_with_makefile_features(
             request.build_info_path.display()
         )
     })?;
+    config.validate_runtime()?;
     config.build_info.validate_features()?;
 
     build::apply_makefile_features(&mut config.build_info, makefile_features)?;

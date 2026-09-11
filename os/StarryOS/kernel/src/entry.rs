@@ -4,7 +4,7 @@ use alloc::{
 };
 
 use ax_fs_ng::vfs::current_fs_context;
-use ax_runtime::hal::cpu::uspace::UserContext;
+use ax_runtime::hal::cpu::user::UserContext;
 
 use crate::{
     file::{FD_TABLE, FileTable, new_file_table_scope},

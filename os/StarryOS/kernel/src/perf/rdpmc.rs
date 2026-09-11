@@ -17,7 +17,6 @@ use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
-use super::hw_owner::Counter;
 use crate::sync::IrqMutex;
 
 /// Values published atomically to one perf mmap page.
@@ -33,7 +32,6 @@ pub(super) struct PerfRdpmcPage {
     _pages: GlobalPage,
     kernel_address: usize,
     physical_address: PhysAddr,
-    active_index: u32,
     /// Serializes the bounded ABI publication transaction across scheduler and
     /// sleepable control paths. The lock never covers PMU access, allocation,
     /// wakeup, or an owner-CPU rendezvous.
@@ -44,23 +42,20 @@ impl core::fmt::Debug for PerfRdpmcPage {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PerfRdpmcPage")
             .field("physical_address", &self.physical_address)
-            .field("active_index", &self.active_index)
             .finish_non_exhaustive()
     }
 }
 
 impl PerfRdpmcPage {
-    fn allocate(counter: Counter, initial: RdpmcSnapshot) -> crate::StarryResult<Arc<Self>> {
+    fn allocate(initial: RdpmcSnapshot) -> crate::StarryResult<Arc<Self>> {
         let mut pages = GlobalPage::alloc_contiguous(1, PAGE_SIZE_4K)?;
         pages.zero();
         let kernel_address = pages.start_vaddr().as_usize();
         let physical_address = virt_to_phys(pages.start_vaddr());
-        let (active_index, pmc_width) = counter.mmap_metadata();
         let page = Arc::new(Self {
             _pages: pages,
             kernel_address,
             physical_address,
-            active_index,
             publish_gate: IrqMutex::new(()),
         });
 
@@ -70,12 +65,14 @@ impl PerfRdpmcPage {
         unsafe {
             core::ptr::addr_of_mut!((*header).version).write_volatile(1);
             core::ptr::addr_of_mut!((*header).compat_version).write_volatile(0);
-            core::ptr::addr_of_mut!((*header).pmc_width).write_volatile(pmc_width);
-            // `cap_user_rdpmc` is bit 2 after the two legacy bit-0 fields.
+            // Direct access requires an event-owned authorization that is
+            // revoked at every scheduling/slot handoff. No such grant is
+            // established by this metadata mapping; readers must use read(2).
+            core::ptr::addr_of_mut!((*header).pmc_width).write_volatile(0);
             core::ptr::addr_of_mut!((*header).__bindgen_anon_1.capabilities)
-                .write_volatile(1u64 << 2);
+                .write_volatile(0);
         }
-        page.publish(false, initial);
+        page.publish(initial);
         Ok(page)
     }
 
@@ -89,7 +86,7 @@ impl PerfRdpmcPage {
         unsafe { AtomicU32::from_ptr(core::ptr::addr_of_mut!((*self.header()).lock)) }
     }
 
-    fn publish(&self, active: bool, snapshot: RdpmcSnapshot) {
+    fn publish(&self, snapshot: RdpmcSnapshot) {
         let _publish = self.publish_gate.lock();
         let sequence = self.sequence();
         let odd = sequence.load(Ordering::Relaxed).wrapping_add(1) | 1;
@@ -102,11 +99,7 @@ impl PerfRdpmcPage {
         // SAFETY: the VMA and this kernel object share the live page. Volatile
         // stores make every ABI field publication observable to userspace.
         unsafe {
-            core::ptr::addr_of_mut!((*header).index).write_volatile(if active {
-                self.active_index
-            } else {
-                0
-            });
+            core::ptr::addr_of_mut!((*header).index).write_volatile(0);
             core::ptr::addr_of_mut!((*header).offset).write_volatile(snapshot.offset as i64);
             core::ptr::addr_of_mut!((*header).time_enabled).write_volatile(snapshot.time_enabled);
             core::ptr::addr_of_mut!((*header).time_running).write_volatile(snapshot.time_running);
@@ -137,7 +130,6 @@ impl RdpmcMapping {
     pub(super) fn install(
         &self,
         len: usize,
-        counter: Counter,
         initial: RdpmcSnapshot,
     ) -> crate::StarryResult<Arc<PerfRdpmcPage>> {
         // Mapping more than the allocated metadata page would expose unrelated
@@ -145,7 +137,7 @@ impl RdpmcMapping {
         if len != PAGE_SIZE_4K {
             return Err(crate::StarryError::InvalidInput);
         }
-        let page = PerfRdpmcPage::allocate(counter, initial)?;
+        let page = PerfRdpmcPage::allocate(initial)?;
         let mut published = self.page.lock();
         if published.as_ref().and_then(Weak::upgrade).is_some() {
             return Err(crate::StarryError::ResourceBusy);
@@ -167,13 +159,13 @@ impl RdpmcMapping {
 
     pub(super) fn publish_active(&self, snapshot: RdpmcSnapshot) {
         if let Some(page) = self.page.lock().as_ref().and_then(Weak::upgrade) {
-            page.publish(true, snapshot);
+            page.publish(snapshot);
         }
     }
 
     pub(super) fn publish_inactive(&self, snapshot: RdpmcSnapshot) {
         if let Some(page) = self.page.lock().as_ref().and_then(Weak::upgrade) {
-            page.publish(false, snapshot);
+            page.publish(snapshot);
         }
     }
 }
