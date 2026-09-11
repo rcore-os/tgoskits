@@ -54,8 +54,8 @@ fn pmu_irq() -> Result<IrqId, ax_hal::irq::IrqError> {
     ax_hal::pmu::irq()
 }
 
-/// Maximum programmable counter index (matches [`ax_cpu::pmu::counter`] /
-/// [`ax_cpu::pmu::overflow`]); the registry is sized one past this for indexing.
+/// Maximum programmable counter index (matches [`ax_cpu::pmu::CounterId`] /
+/// [`ax_cpu::pmu::Pmu`]); the registry is sized one past this for indexing.
 const MAX_COUNTER: usize = 30;
 
 /// Counts sampling events independently of overflow delivery and period reloads.
@@ -111,7 +111,7 @@ impl SamplingCount {
     /// Accounts the current raw value, including a wrap from the preload.
     pub(crate) fn update(&self, index: usize) -> u64 {
         let mut state = self.0.lock();
-        let raw = ax_cpu::pmu::counter::read(index) as u32;
+        let raw = crate::perf::hw_owner::on_counter(index, |pmu, id| pmu.read(id)) as u32;
         state.update(raw)
     }
 
@@ -146,7 +146,7 @@ impl SamplingCount {
 
     fn program_chunk(index: usize, state: &mut SamplingCountState) {
         let chunk = state.hardware_period();
-        ax_cpu::pmu::counter::preload(index, chunk);
+        crate::perf::hw_owner::on_counter(index, |pmu, id| pmu.preload(id, u64::from(chunk)));
         state.previous = 0u32.wrapping_sub(chunk);
     }
 }
@@ -392,7 +392,7 @@ pub struct SampleSlot {
     pub(crate) count: Arc<SamplingCount>,
     output: SampleOutput,
     /// Sampling period: the counter is re-armed to overflow after this many
-    /// events via [`ax_cpu::pmu::counter::preload`]. Also emitted as the
+    /// events via [`ax_cpu::pmu::Pmu::preload`]. Also emitted as the
     /// `PERF_SAMPLE_PERIOD` field of each record.
     pub period: u32,
     /// `attr.sample_type`: the set of scalar fields each record carries (see
@@ -719,7 +719,7 @@ fn service_overflowed_slots(
     registry: &mut SamplingRegistry<SampleSlot>,
     overflow: u32,
     misc: u16,
-    interrupted: Option<ax_cpu::pmu::InterruptedContext>,
+    interrupted: Option<ax_cpu::trap::InterruptedContext>,
     ip: usize,
     is_user: bool,
 ) -> u32 {
@@ -745,13 +745,13 @@ fn service_overflowed_slots(
 
         // Freeze before accounting, then reload only after every reader has
         // observed the terminal raw value. This includes IRQ delivery latency.
-        ax_cpu::pmu::counter::disable(n);
+        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.disable(id));
         slot.count.update(n);
         if !slot.count.period_complete() {
             // This IRQ completed only a hardware chunk of the logical period.
             // Do not emit a premature sample or update frequency timestamps.
             slot.count.rearm(n, cur_period);
-            ax_cpu::pmu::counter::enable(n);
+            crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.enable(id));
             continue;
         }
 
@@ -799,7 +799,7 @@ fn service_overflowed_slots(
             user_lr: interrupted
                 .filter(|context| {
                     slot.sample_user_lr
-                        && context.privilege == ax_cpu::pmu::InterruptedPrivilege::User
+                        && context.privilege == ax_cpu::trap::InterruptedPrivilege::User
                 })
                 .map(|context| context.lr as u64),
         };
@@ -827,7 +827,7 @@ fn service_overflowed_slots(
         };
 
         slot.count.rearm(n, next_period);
-        ax_cpu::pmu::counter::enable(n);
+        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.enable(id));
 
         if let Some(notify) = &slot.output.notify {
             notify.notify_irq();
@@ -855,16 +855,13 @@ fn service_overflowed_slots(
 pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
     // Capture the interrupted context before doing anything that could fault or
     // overwrite ELR_EL1 / SPSR_EL1.
-    let interrupted = ax_cpu::pmu::interrupted_context();
-    let ip = interrupted.map_or_else(
-        || ax_cpu::pmu::interrupted_pc() as usize,
-        |context| context.pc,
-    );
-    let is_user = interrupted.map_or_else(ax_cpu::pmu::interrupted_is_user, |context| {
-        context.privilege == ax_cpu::pmu::InterruptedPrivilege::User
-    });
+    let context = ax_hal::irq::interrupted_context()
+        .expect("PMU trap must supply its interrupted register image");
+    let interrupted = Some(context);
+    let ip = context.pc;
+    let is_user = context.privilege == ax_cpu::trap::InterruptedPrivilege::User;
 
-    let ovf = ax_cpu::pmu::overflow::status();
+    let ovf = crate::perf::hw_owner::on_pmu(|pmu| pmu.overflow_status()) as u32;
     if ovf == 0 {
         return IrqReturn::Unhandled;
     }
@@ -872,7 +869,7 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
     // Match Linux arm_pmuv3: acknowledge the complete overflow snapshot before
     // reprogramming any counter. QEMU's PMU model also requires this order to
     // schedule subsequent overflows from a newly preloaded value.
-    ax_cpu::pmu::overflow::clear(ovf);
+    crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(u64::from(ovf)));
 
     let misc = if is_user {
         PERF_RECORD_MISC_USER
@@ -895,27 +892,23 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         })
     };
 
-    // SAFETY: the handler runs with local IRQs masked on its current CPU, so
-    // the registry cannot be re-entered or observed after migration.
-    let _handled = unsafe {
-        ax_percpu::with_cpu_pin(|pin| {
-            // Linux armv8pmu_handle_irq pauses the whole PMU while reading a
-            // group, so siblings cannot advance while another slot is reloaded.
-            ax_cpu::pmu::with_counters_paused(pin, || {
-                with_registry_mut(|registry| {
-                    service_overflowed_slots(registry, ovf, misc, interrupted, ip, is_user)
-                })
+    // Linux armv8pmu_handle_irq pauses the whole PMU while reading a group,
+    // so siblings cannot advance while another slot is reloaded.
+    let handled = crate::perf::hw_owner::with_counters_paused(|| {
+        // SAFETY: the pause scope prevents migration and local IRQ reentry.
+        unsafe {
+            with_registry_mut(|registry| {
+                service_overflowed_slots(registry, ovf, misc, interrupted, ip, is_user)
             })
-        })
-    }
-    .expect("PMU IRQ must have a bound CPU-local area");
+        }
+    });
 
-    debug_assert_eq!(_handled & !ovf, 0);
+    debug_assert_eq!(handled & !ovf, 0);
     IrqReturn::Handled
 }
 
 fn build_callchain(
-    interrupted: Option<ax_cpu::pmu::InterruptedContext>,
+    interrupted: Option<ax_cpu::trap::InterruptedContext>,
     ip: usize,
     is_user: bool,
     chain: &mut [u64],
@@ -1250,17 +1243,17 @@ mod tests {
         let _guard = crate::sync::NoPreemptIrqSave::new();
         super::super::percpu::ensure_current_cpu_initialized().unwrap();
         let slot = super::super::percpu::alloc_current_programmable().unwrap();
-        ax_cpu::pmu::counter::disable(slot);
+        crate::perf::hw_owner::on_counter(slot, |pmu, id| pmu.disable(id));
         count.preload(slot, u32::MAX);
-        let raw = ax_cpu::pmu::counter::read(slot) as u32;
-        ax_cpu::pmu::counter::write(slot, 10);
+        let raw = crate::perf::hw_owner::on_counter(slot, |pmu, id| pmu.read(id)) as u32;
+        crate::perf::hw_owner::on_counter(slot, |pmu, id| pmu.write(id, 10));
         count.update(slot);
         assert!(
             !count.period_complete(),
             "first hardware chunk is not a full logical sample"
         );
         count.rearm(slot, u32::MAX);
-        ax_cpu::pmu::counter::write(slot, 9);
+        crate::perf::hw_owner::on_counter(slot, |pmu, id| pmu.write(id, 9));
         count.update(slot);
         assert!(count.period_complete());
         assert_eq!(

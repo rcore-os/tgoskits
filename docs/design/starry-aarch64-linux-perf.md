@@ -1,6 +1,6 @@
 # StarryOS AArch64 Linux perf 设计
 
-本文定义 StarryOS 在 AArch64 上兼容 Linux `perf_event_open(2)` 与 upstream `perf` 的实现边界。设计基线为 Linux v7.1 和 TGOSKits `dev` 提交 `d9018b65a62ab3d623c11f5811e90ac7af2fa0b2`，来源实现为 JosephJoshua 的 PR #1577、#1601、#1602、#1603 及其间的调用链提交。旧分支只作为行为与测试来源，不直接合并；实现必须服从当前 CPU-local、IRQ、timer、PID、地址空间和锁模型。
+本文定义 StarryOS 在 AArch64 上兼容 Linux `perf_event_open(2)` 与 upstream `perf` 的实现边界。Linux 语义基线为 v7.1，当前整合的 TGOSKits `dev` 提交为 `e8c2e66466682528d64e4b8102d5940333beaabb`。来源实现为 JosephJoshua 的 PR #1577、#1601、#1602、#1603 及其间的调用链提交。来源分支只提供行为与测试参考，不直接合并；实现遵循当前 CPU-local、IRQ、timer、PID、地址空间和锁模型。
 
 ## 1. 兼容范围
 
@@ -23,7 +23,7 @@
 | read | 支持 value、ID、`time_enabled`、`time_running`、LOST 与 GROUP | `PerfReadValues` |
 | RESET | 清零事件值，保留累计 `time_enabled/time_running`；停止事务必须先完成 | `SystemFlexCounter::{finish_slice,reset}`、`SwEventState::reset()`、`SwClock` |
 | sample | 支持 `PERF_SAMPLE_READ`、TID、CPU、period 和 kernel/user FP callchain；AArch64 `PERF_SAMPLE_REGS_USER` 接受零 mask 或 LR mask `1 << 30`，分别输出 ABI_NONE 或 ABI_64 与真实 LR | `sampling::{SampleSlot,SampleReadEntry,build_sample}`、`perf::unwind`、`perf::uapi::validate_perf_event_attr()` |
-| mmap page | 只在事件实际运行于硬件槽时公开非零 `index` 与用户读能力 | `SystemCounter::write_rdpmc_snapshot()`、`PerTaskCounter::write_rdpmc_snapshot()` |
+| mmap page | 沿用最新 dev 的授权边界：未建立逐事件用户直接读授权时，`index` 与用户读能力均为零，使用 read(2) | `PerfRdpmcPage::publish()`、`Pmu::disable_user_access()` |
 
 硬件事件若事件编码合法但目标 CPU 的 `PMCEID` 未实现，返回 Linux ARM PMUv3 backend 对应的 unsupported 错误；格式错误返回 `EINVAL`，错误 fd 返回 `EBADF`，目标线程消失返回 `ESRCH`。不能把未知字段、未知事件或输出关系静默忽略。
 
@@ -46,6 +46,10 @@ JosephJoshua 的提交是累积能力链。迁移按能力拆分，以便每个�
 ## 2. 所有权模型
 
 PMU 寄存器、IRQ PPI 和计数器槽天然属于 CPU。task event 的 fd 只拥有逻辑配置与累计值，真正运行的一代由目标 CPU 的状态持有。`CpuPin` 保护本核读取，`ExclusiveCpu` 保护本核硬件修改；需要 task context 的远端控制通过 CPU worker 执行，fixed-CPU flexible 事件的 read/disable/reset 通过同步 IPI 执行。scheduler 与 IRQ 路径不等待任务完成、不分配。
+
+寄存器操作通过 `hw_owner::on_pmu/on_counter` 进入 HAL 的局部排他会话并使用 `ax_cpu::pmu::Pmu`，不保留旧自由函数。Linux event/cache 编码和 cluster 选择归 `event_map`；硬件 `PmuInfo` 保留 MIDR 与完整 PMCEID。
+
+首次初始化 reset 后选择 32 位 programmable overflow，保持 `SamplingCount` 和 `CounterExtender` 的算术契约，cycle 保持 64 位。`Pmu::disable_overflow_irq()` 同时清除 pending 标志，因此 counting 停止顺序为停表、结算 pending wrap、禁用 IRQ、注销。`system_flex::tests::stop_is_not_published_before_hardware_commit` 通过真实 PMU 溢出验证该顺序和停止状态的发布边界。
 
 ### 2.1 每核状态
 
@@ -147,7 +151,7 @@ task 的 `SampleReadEntry::owned()` 强持有回调对象，直到注册代被�
 
 `SamplingCountState::period` 记录当前逻辑周期，首次 arm 才初始化 `remaining`。task 切片结束后只把该片段的 total 折叠到累计值；下次切入清零片段 total，但保留 remaining 与已调整的 period。system event 的 DISABLE/ENABLE 同样续接周期，RESET 只清事件值，不丢弃 `period_left`，对应 Linux `_perf_event_reset()` 与 `armpmu_event_set_period()`。`perf-hw-sliced-period` 强制同 CPU 管道往返或 system event 启停，并检查每段增量小于一个周期、总增量超过三个周期时仍输出样本。
 
-PMU IRQ 按 Linux `armv8pmu_handle_irq()` 的顺序通过 `ax_cpu::pmu::with_counters_paused()` 暂停整个 PMU，再生成组快照和重装计数器。该作用域要求 `CpuPin`，保留各槽的 enable 位，并在返回时恢复原全局 enable；恢复时不写回具有清零副作用的 PMCR P/C 位。
+PMU IRQ 按 Linux `armv8pmu_handle_irq()` 的顺序通过 `hw_owner::with_counters_paused()` 暂停整个 PMU，再生成组快照和重装计数器。该作用域用 `NoPreemptIrqSave` 保持 CPU 与 IRQ 排他边界，各次寄存器事务分别使用短 `Pmu` 会话，避免在持有一个会话时递归创建另一个会话。保留各槽的 enable 位，返回时恢复原全局 enable；恢复时不写回具有清零副作用的 PMCR P/C 位。
 
 ## 4. 事件语义
 

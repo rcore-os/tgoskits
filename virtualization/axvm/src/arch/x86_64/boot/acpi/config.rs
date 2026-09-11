@@ -164,12 +164,11 @@ impl X86FirmwarePlan {
             cpus: X86CpuPlan { apic_ids },
             interrupts: X86InterruptPlan {
                 controller: specials.controller,
-                local_apic_base: u32::try_from(x86_vcpu::X86_LOCAL_APIC_GPA).map_err(|_| {
-                    X86FirmwarePlanError::InvalidValue {
+                local_apic_base: u32::try_from(crate::arch::x86_64::policy::X86_LOCAL_APIC_GPA)
+                    .map_err(|_| X86FirmwarePlanError::InvalidValue {
                         field: "local APIC address",
-                        value: format!("{:#x}", x86_vcpu::X86_LOCAL_APIC_GPA),
-                    }
-                })?,
+                        value: format!("{:#x}", crate::arch::x86_64::policy::X86_LOCAL_APIC_GPA),
+                    })?,
                 io_apic_base: u32::try_from(io_apic_base).map_err(|_| {
                     X86FirmwarePlanError::InvalidValue {
                         field: "I/O APIC address",

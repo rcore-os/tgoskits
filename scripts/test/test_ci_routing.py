@@ -19,6 +19,23 @@ REUSABLE_CHECK_MATRIX = (
 PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
 
 
+class ReleasePrerequisiteTests(unittest.TestCase):
+    def test_semver_checks_install_libudev_before_release_plz(self) -> None:
+        workflow = (
+            WORKSPACE_ROOT / ".github/workflows/release-plz.yml"
+        ).read_text(encoding="utf-8")
+        job = mapping_block(workflow, "release-plz-pr", 2)
+        setup = named_step_block(job, "Install semver-check system dependencies")
+
+        self.assertTrue(setup, "semver checks require the libudev development files")
+        self.assertIn("sudo apt-get update", setup)
+        self.assertRegex(
+            setup,
+            r"sudo apt-get install --yes (?:pkg-config libudev-dev|libudev-dev pkg-config)",
+        )
+        self.assertLess(job.index(setup), job.index("- name: Run release-plz"))
+
+
 class RunnerTrustTests(unittest.TestCase):
     def test_cleanup_reuses_planning_runner(self) -> None:
         self.assertFalse(

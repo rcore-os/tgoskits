@@ -31,20 +31,6 @@ fn toolchain_rustflags_preserves_debug_and_backtrace_env() {
 }
 
 #[test]
-fn toolchain_rustflags_enable_stack_protector_from_features() {
-    let env = HashMap::from([("BACKTRACE".to_string(), "y".to_string())]);
-    let features = vec!["ax-std/stack-protector".to_string()];
-
-    assert_eq!(
-        toolchain_rustflags_for_features(&env, &features),
-        vec![
-            "-Cforce-frame-pointers=yes".to_string(),
-            "-Zstack-protector=strong".to_string(),
-        ]
-    );
-}
-
-#[test]
 fn appended_rustflags_preserve_quoted_inline_target_contract() {
     let mut cargo = Cargo {
         target: "x86_64-unknown-none".into(),

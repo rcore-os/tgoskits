@@ -32,15 +32,15 @@ impl<H: crate::host::PagingHandler + 'static> NestedPageTable<H> {
     /// The runtime chooses once before VM resources are created, so a VM cannot
     /// accidentally mix EPT and NPT entries while its vCPUs use one backend.
     pub(crate) fn new(level: usize) -> crate::AxVmResult<Self> {
-        match x86_vcpu::selected_nested_paging_format().map_err(|_| {
+        match crate::arch::x86_64::policy::selected_nested_paging_format().map_err(|_| {
             crate::ax_err_type!(BadState, "x86 virtualization backend is not selected")
         })? {
-            x86_vcpu::X86NestedPagingFormat::Ept => {
+            crate::arch::x86_64::policy::X86NestedPagingFormat::Ept => {
                 EptNestedPageTable::new(level).map(|table| Self {
                     inner: NestedPageTableInner::Ept(table),
                 })
             }
-            x86_vcpu::X86NestedPagingFormat::Npt => {
+            crate::arch::x86_64::policy::X86NestedPagingFormat::Npt => {
                 NptNestedPageTable::new(level).map(|table| Self {
                     inner: NestedPageTableInner::Npt(table),
                 })
@@ -160,24 +160,8 @@ impl<H: crate::host::PagingHandler + 'static> NestedPageTableOps for NestedPageT
     }
 }
 
-#[cfg(target_os = "none")]
-/// Invalidate host translations after page-table-generic changes an entry.
-///
-/// The generic walker invokes this callback after installing or removing an
-/// entry. It may provide one address for a targeted invalidation or no address
-/// when the whole table must be invalidated.
-pub(super) fn flush_nested_page_table(vaddr: Option<ptg::VirtAddr>) {
-    if let Some(vaddr) = vaddr {
-        // SAFETY: page-table-generic calls this after changing the current CPU's
-        // translation entries; `vaddr` is a virtual address belonging to that table.
-        unsafe { x86::tlb::flush(vaddr.as_usize()) }
-    } else {
-        // SAFETY: page-table-generic requests a full invalidation after changing
-        // entries without a single virtual-address target.
-        unsafe { x86::tlb::flush_all() }
-    }
-}
-
-#[cfg(not(target_os = "none"))]
-/// Host-side tests do not execute with the kernel page tables installed.
+/// The VM owner closes guest admission and waits for hardware exit before
+/// mutating these tables. Every subsequent Vcpu::run invalidates its local
+/// EPT/NPT context; host INVLPG/CR3 cannot invalidate either nested format.
+/// Initial construction and destruction occur while this VM cannot run.
 pub(super) fn flush_nested_page_table(_vaddr: Option<ptg::VirtAddr>) {}

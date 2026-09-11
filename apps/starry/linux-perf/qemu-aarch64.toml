@@ -12,9 +12,6 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "LINUX_PERF_RUNTIME_ARCHIVE_PARTS='/usr/share/linux-perf/runtime.tar.gz.part-0 /usr/share/linux-perf/runtime.tar.gz.part-1' LINUX_PERF_WORKLOAD=/usr/bin/linux-perf-workload /usr/bin/linux-perf-run"
-success_regex = ["(?m)^STARRY_LINUX_PERF_PASSED\\s*$"]
 fail_regex = [
   "(?m)^STARRY_LINUX_PERF_FAILED:",
   "(?i)kernel panic",
@@ -22,3 +19,8 @@ fail_regex = [
   "(?i)segmentation fault",
 ]
 timeout = 900
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "LINUX_PERF_RUNTIME_ARCHIVE_PARTS='/usr/share/linux-perf/runtime.tar.gz.part-0 /usr/share/linux-perf/runtime.tar.gz.part-1' LINUX_PERF_WORKLOAD=/usr/bin/linux-perf-workload /usr/bin/linux-perf-run"
+success_regex = ["(?m)^STARRY_LINUX_PERF_PASSED\\s*$"]

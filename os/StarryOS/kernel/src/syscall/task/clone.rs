@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use core::mem::size_of;
 
 use ax_fs_ng::vfs::FS_CONTEXT;
-use ax_runtime::hal::cpu::uspace::UserContext;
+use ax_runtime::hal::cpu::user::UserContext;
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use scope_local::Scope;
@@ -307,7 +307,7 @@ impl CloneArgs {
 
         #[cfg(target_arch = "riscv64")]
         let child_fp_state = {
-            let mut fp_state = ax_cpu::FpState::default();
+            let mut fp_state = ax_cpu::registers::FpState::default();
             fp_state.save();
             fp_state.fs = child_fp_fs;
             fp_state

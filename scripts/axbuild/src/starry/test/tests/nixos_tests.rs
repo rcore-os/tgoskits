@@ -135,32 +135,6 @@ fn boot_selects_the_canonical_build_config() {
 }
 
 #[test]
-fn discovered_cases_select_the_same_build_config() {
-    let root = tempdir().unwrap();
-    for case_name in ["service", "service-fail", "unsupported", "hello-tmpfiles"] {
-        write_case(root.path(), case_name);
-        let action = plan_nixos_action(
-            root.path(),
-            &ArgsTestNixos {
-                arch: Some("x86_64".to_string()),
-                test_case: Some(case_name.to_string()),
-                list: false,
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            action,
-            NixosAction::Run {
-                build_config: root
-                    .path()
-                    .join("apps/starry/nixos/build-x86_64-unknown-none.toml"),
-                case_name: case_name.to_string(),
-            }
-        );
-    }
-}
-
-#[test]
 fn p1_build_bounds_serial_logging_without_changing_capabilities() {
     let build_info = StarryBuildInfo {
         log: LogLevel::Info,

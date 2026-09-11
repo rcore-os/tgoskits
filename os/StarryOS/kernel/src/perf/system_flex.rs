@@ -90,7 +90,7 @@ impl SystemFlexCounter {
                         .configure(Some(self.event), self.exclude_user, self.exclude_kernel)
                         .expect("validated flexible system PMU event");
                     self.extender.lock().reset();
-                    ax_cpu::pmu::overflow::clear(1 << slot);
+                    crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(1u64 << slot));
                     if super::sampling::enable_local_pmu_irq().is_err() {
                         super::percpu::free_current_programmable(slot);
                         false
@@ -100,7 +100,9 @@ impl SystemFlexCounter {
                                 .expect(
                                     "reserved system PMU slot must have an empty overflow registry",
                                 );
-                        ax_cpu::pmu::overflow::enable_irq(slot);
+                        crate::perf::hw_owner::on_counter(slot, |pmu, id| {
+                            pmu.enable_overflow_irq(id)
+                        });
                         counter.enable();
                         *active = Some(ActiveSlice {
                             counter,
@@ -142,9 +144,10 @@ impl SystemFlexCounter {
             .counter
             .programmable_index()
             .expect("flexible programmable slot");
-        ax_cpu::pmu::overflow::disable_irq(slot);
         active.counter.disable();
         let value = self.read_active_counter(active.counter);
+        // IRQ disable acknowledges the pending overflow, so account it first.
+        crate::perf::hw_owner::on_counter(slot, |pmu, id| pmu.disable_overflow_irq(id));
         let retired = super::sampling::detach_counting(active.registration)
             .expect("system PMU overflow registration must match its active slice");
         self.accumulated.fetch_add(value, Ordering::AcqRel);
@@ -174,7 +177,9 @@ impl SystemFlexCounter {
         if let Some(active) = active.as_ref() {
             active.counter.disable();
             active.counter.reset();
-            ax_cpu::pmu::overflow::clear(1 << active.registration.counter());
+            crate::perf::hw_owner::on_pmu(|pmu| {
+                pmu.clear_overflow(1u64 << active.registration.counter())
+            });
         }
         self.accumulated.store(0, Ordering::Release);
         self.extender.lock().reset();
@@ -266,8 +271,8 @@ impl SystemFlexCounter {
             .programmable_index()
             .expect("flexible programmable slot");
         let bit = 1 << slot;
-        if ax_cpu::pmu::overflow::status() & bit != 0 {
-            ax_cpu::pmu::overflow::clear(bit);
+        if (crate::perf::hw_owner::on_pmu(|pmu| pmu.overflow_status()) as u32) & bit != 0 {
+            crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(u64::from(bit)));
             extender.record_overflow();
         }
         let (_, width) = counter.mmap_metadata();
@@ -349,7 +354,7 @@ mod tests {
         // Count EL0 only: the kernel can inspect an exact post-reset zero
         // without charging the instructions between RESET and its observation.
         hardware.configure(Some(0x11), false, true).unwrap();
-        ax_cpu::pmu::counter::write(slot, 12345);
+        crate::perf::hw_owner::on_counter(slot, |pmu, id| pmu.write(id, 12345));
         counter.accumulated.store(99, Ordering::Release);
         counter.extender.lock().record_overflow();
         counter.enabled.store(true, Ordering::Release);
@@ -402,7 +407,19 @@ mod tests {
             started_at: now_ns(),
             registration,
         });
+        super::super::hw_owner::on_counter(slot, |pmu, id| {
+            pmu.write(id, u64::from(u32::MAX - 128))
+        });
         hardware.enable();
+        let bit = 1u64 << slot;
+        let deadline = now_ns() + 100_000_000;
+        while super::super::hw_owner::on_pmu(|pmu| pmu.overflow_status()) & bit == 0 {
+            assert!(
+                now_ns() < deadline,
+                "the test counter must wrap before stop"
+            );
+        }
+        hardware.disable();
         let published_early = core::cell::Cell::new(false);
         drop(counter.finish_slice_observed(|| {
             published_early.set(
@@ -417,5 +434,9 @@ mod tests {
             "disable must not observe stopped before the slice commits"
         );
         assert!(counter.active.lock().is_none());
+        assert!(
+            counter.accumulated.load(Ordering::Acquire) >= 1u64 << 32,
+            "stop must account the pending wrap before IRQ disable clears it"
+        );
     }
 }

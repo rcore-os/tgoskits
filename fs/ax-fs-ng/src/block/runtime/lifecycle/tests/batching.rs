@@ -17,9 +17,11 @@ fn read_blocks_queues_the_next_bounded_window_before_waiting() {
     let controller = BatchingReadController {
         queue: Some(BatchingReadQueue {
             counters: Arc::clone(&counters),
+            reported_info: batching_queue_info(),
             next_id: 0,
             pending: Vec::new(),
             fail_next_drain: false,
+            probe: None,
         }),
     };
     let irq = IrqId::new(IrqDomainId(1), HwIrq(12));
@@ -121,9 +123,11 @@ fn fua_write_marks_every_split_request() {
     let controller = BatchingReadController {
         queue: Some(BatchingReadQueue {
             counters: Arc::clone(&counters),
+            reported_info: batching_queue_info(),
             next_id: 0,
             pending: Vec::new(),
             fail_next_drain: false,
+            probe: None,
         }),
     };
     let irq = IrqId::new(IrqDomainId(1), HwIrq(12));
@@ -189,9 +193,11 @@ fn write_blocks_drains_submitted_windows_before_returning_error() {
     let controller = BatchingReadController {
         queue: Some(BatchingReadQueue {
             counters: Arc::clone(&counters),
+            reported_info: batching_queue_info(),
             next_id: 0,
             pending: Vec::new(),
             fail_next_drain: true,
+            probe: None,
         }),
     };
     let irq = IrqId::new(IrqDomainId(1), HwIrq(13));

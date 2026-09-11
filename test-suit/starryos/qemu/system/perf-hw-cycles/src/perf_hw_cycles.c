@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -141,6 +142,26 @@ int main(void) {
     }
 
     int efd = (int)fd;
+
+    /* config1.rdpmc is zero: Linux ARM PMUv3 must not publish direct
+     * counter access for this ordinary counting event. The mmap reader must
+     * use read(2), even while the event is active. */
+    long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) return 1;
+    void *metadata = mmap(NULL, (size_t)page_size, PROT_READ, MAP_SHARED, efd, 0);
+    if (metadata == MAP_FAILED) {
+        printf("perf metadata mmap failed errno=%d\n", errno);
+        close(efd);
+        return 1;
+    }
+    volatile uint64_t *capabilities = (volatile uint64_t *)((char *)metadata + 40);
+    if (*capabilities & (1ull << 2)) {
+        printf("perf published direct PMU access without event authorization\n");
+        munmap(metadata, (size_t)page_size);
+        close(efd);
+        return 1;
+    }
+    if (munmap(metadata, (size_t)page_size) != 0) return 1;
 
     (void)ioctl(efd, PERF_EVENT_IOC_RESET, 0);
     (void)ioctl(efd, PERF_EVENT_IOC_ENABLE, 0);

@@ -73,21 +73,6 @@ pub extern "C" fn el_entry(timer_mode_raw: usize) -> ! {
     crate::arch::paging::enable_mmu()
 }
 
-#[inline(always)]
-pub(crate) fn eret_with_timer_mode_arg(timer_mode: ArchTimerMode) -> ! {
-    let timer_mode = timer_mode as usize;
-
-    unsafe {
-        core::arch::asm!(
-            "mov x0, {timer_mode}",
-            "isb",
-            "eret",
-            timer_mode = in(reg) timer_mode,
-            options(noreturn, nostack),
-        );
-    }
-}
-
 pub(crate) fn mmu_entry() -> ! {
     println!("Disable user page table");
     #[cfg(uspace)]

@@ -35,6 +35,13 @@ mod tests {
         metadata_for_remove, move_file_or_dir, remove_path, touch_file_at,
     };
 
+    fn remove_guest_console(vm_id: usize) {
+        use crate::guest_console_harness::mux;
+
+        let identity = mux::backend_identity(vm_id).expect("guest backend must be registered");
+        assert!(mux::remove_if_backend(identity));
+    }
+
     #[test]
     fn guest_output_reaches_only_its_network_console() {
         use crate::{guest_console_harness::mux, network_console};
@@ -53,8 +60,8 @@ mod tests {
         ax_assert_eq!(network_console::take_guest_output(1), b"starry output\n");
         ax_assert_eq!(network_console::take_guest_output(2), b"zephyr output\n");
         ax_assert!(network_console::take_guest_output(3).is_empty());
-        mux::remove(1);
-        mux::remove(2);
+        remove_guest_console(1);
+        remove_guest_console(2);
     }
 
     #[test]
@@ -68,7 +75,7 @@ mod tests {
         backend.write(b"physical console only\n");
 
         ax_assert!(network_console::take_guest_output(1).is_empty());
-        mux::remove(1);
+        remove_guest_console(1);
     }
 
     #[test]
@@ -83,7 +90,7 @@ mod tests {
         backend.write(b"./run_dual_pick.sh");
 
         ax_assert_eq!(network_console::take_guest_output(1), b"./run_dual_pick.sh");
-        mux::remove(1);
+        remove_guest_console(1);
     }
 
     #[test]
@@ -100,7 +107,7 @@ mod tests {
         }
 
         ax_assert_eq!(network_console::take_guest_output(2), b"zephyr log line\n");
-        mux::remove(2);
+        remove_guest_console(2);
     }
 
     #[test]

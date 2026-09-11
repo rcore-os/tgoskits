@@ -7,6 +7,8 @@ sidebar_label: "测试与限制"
 
 `ax-net` 测试分三层：`net/ax-net` crate 内单元测试覆盖协议栈内部数据结构和路由/绑定语义；StarryOS system 测试覆盖 Linux ABI 观测面；`apps/starry/qemu/dual-net` 覆盖双网口 DHCP、路由和并发数据面。
 
+本文记录现有测试资产与运行条件，不把测试名称、数量或固定输入作为新增测试模板。后续维护统一遵循 [test-quality](https://github.com/rcore-os/tgoskits/blob/dev/.agents/skills/test-quality/SKILL.md)：复用或增强通用网络功能证明，参数回读与默认值检查并入实际选路、连接或收发行为，无独立价值时删除。此处资产记录不表示已有测试均完成清理。
+
 ## 1. 测试资产
 
 网络测试按纯数据结构、host-test、StarryOS system case 和双网卡集成场景分层，每层验证不同故障面。下表把测试位置与职责对应起来，选择验证命令时应优先使用能覆盖原始行为边界的最低层测试，再补充跨系统路径。
@@ -134,7 +136,7 @@ TCP 监听表测试位于 `listen_table.rs`，验证 wildcard/具体地址 liste
 
 queue runtime 与统计还有专门覆盖：protocol generation 测试验证同步 flush 不取得第二 ownership；状态机穷举验证 `MISSED`、rearm window 与 `DISABLED` 不可复活；source affinity 测试验证 shared IRQ 同 CPU、独立 source 可分布；源码契约测试确认 queue executor 没有 periodic timeout。Ethernet 的 padding、ARP deferred frame、malformed frame 和 pending buffer 测试继续验证 `/proc/net/dev` 的 L2 长度/error/drop 口径。`net/ax-net/tests/std.rs` 的 6 个 public API 集成测试仅在 `host-test` feature 下构建。
 
-`DeviceBinding` 使用 atomic raw ifindex 保存，这个测试验证 public 语义不会因为内部原子编码而丢失。
+`DeviceBinding` 使用 atomic raw ifindex 保存。独立回读只能说明存储结果；后续应通过绑定后实际选路、连接或收发结果验证能力，按通用功能规则处置已有回读测试。
 
 ### DMA 与批次提交回归
 
@@ -480,7 +482,7 @@ AF_PACKET、ioctl、netlink 与 procfs 视图不一致通常意味着某个 ABI 
 
 ## 6. 当前限制
 
-测试限制说明哪些结论尚不能从当前自动化覆盖中推出，并把协议功能缺口与测试基础设施缺口分开。新增测试时应优先覆盖确定的最低层状态转换，再补充 QEMU 或物理板卡证据，避免只增加宽泛的成功字符串。
+测试限制说明哪些结论尚不能从当前自动化覆盖中推出，并把协议功能缺口与测试基础设施缺口分开。维护时优先复用或增强已有完整功能验证，仅在缺少独立行为证明时新增；QEMU 或物理板卡用于补充真实运行时证据，不逐参数、内部转换或配置实例拆测。
 
 ### 6.1 测试覆盖限制
 

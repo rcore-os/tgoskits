@@ -2,7 +2,7 @@
 name = "axvisor"
 authors = ["Keyang Hu <keyang.hu@qq.com>", "周睿 <zrufo747@outlook.com>"]
 edition.workspace = true
-version = "0.7.1"
+version = "0.7.2"
 description = "A lightweight type-1 hypervisor based on ArceOS"
 repository = "https://github.com/arceos-hypervisor/axvisor"
 documentation = "https://docs.rs/axvisor"
@@ -54,6 +54,8 @@ stack-protector = ["ax-std/stack-protector"]
 backtrace = ["ax-std/backtrace"]
 test-backtrace-panic = ["backtrace"]
 test-panic-no-backtrace = []
+test-el2-fatal = []
+test-el2-fatal-foreign-context = ["test-el2-fatal"]
 test-console-interleave = ["dep:ax-log"]
 test-console-atomic-output = []
 # axum-based management HTTP server. Pulls `ax-std/net` explicitly so the

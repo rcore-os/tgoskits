@@ -43,7 +43,7 @@ pub struct PerTaskCounter {
     /// Optional Linux task-event CPU constraint (`cpu >= 0`).
     pub(super) cpu_filter: Option<PerfCpuId>,
     /// PMU cluster selected by a cluster-specific sysfs event source.
-    pub(super) required_cluster: Option<ax_cpu::pmu::ClusterId>,
+    pub(super) required_cluster: Option<crate::perf::event_map::ClusterId>,
 
     /// Userspace wants this event counting (see the struct-level state machine).
     pub(super) enabled: AtomicBool,
@@ -219,7 +219,7 @@ pub(in crate::perf) struct PerTaskConfig {
     /// Optional CPU on which this task event is eligible to run.
     pub(in crate::perf) cpu_filter: Option<PerfCpuId>,
     /// PMU cluster selected by a cluster-specific sysfs event source.
-    pub(in crate::perf) required_cluster: Option<ax_cpu::pmu::ClusterId>,
+    pub(in crate::perf) required_cluster: Option<crate::perf::event_map::ClusterId>,
     /// Sampling period (`> 0` ⇒ sampling event); `0` ⇒ counting event. In
     /// frequency mode this is the initial estimate the overflow handler adapts.
     pub(in crate::perf) sample_period: u32,
@@ -380,7 +380,7 @@ impl PerTaskCounter {
     pub(super) fn reset_counting_slice(&self, counter: Counter) {
         self.counting_extender.lock().reset();
         if let Some(index) = counter.programmable_index() {
-            ax_cpu::pmu::overflow::clear(1 << index);
+            crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(1u64 << index));
         }
     }
 
@@ -388,8 +388,8 @@ impl PerTaskCounter {
         let mut extender = self.counting_extender.lock();
         if let Some(index) = counter.programmable_index() {
             let bit = 1 << index;
-            if ax_cpu::pmu::overflow::status() & bit != 0 {
-                ax_cpu::pmu::overflow::clear(bit);
+            if (crate::perf::hw_owner::on_pmu(|pmu| pmu.overflow_status()) as u32) & bit != 0 {
+                crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(u64::from(bit)));
                 extender.record_overflow();
             }
         }
@@ -452,9 +452,7 @@ impl PerTaskCounter {
         if self.flexible {
             return Err(crate::StarryError::Unsupported);
         }
-        let page = self
-            .rdpmc
-            .install(len, self.counter, self.rdpmc_snapshot())?;
+        let page = self.rdpmc.install(len, self.rdpmc_snapshot())?;
         // Close the publication-versus-sched-out race: whichever side runs
         // second republishes the completed accumulator after the weak page
         // reference is visible.

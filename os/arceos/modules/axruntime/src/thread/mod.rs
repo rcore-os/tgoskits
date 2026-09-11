@@ -68,7 +68,7 @@ use address_space::{
 };
 #[cfg(feature = "uspace")]
 use bootstrap::current_cpu_remote;
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(crate) use bootstrap::initialize_early_bootstrap_tls;
 #[cfg(test)]
 use bootstrap::{IdleEntryAction, idle_entry_action};
@@ -118,7 +118,7 @@ pub(crate) fn current_cpu_needs_reschedule_pinned(cpu_pin: &CpuPin) -> Result<bo
         .needs_reschedule())
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 use resources::runtime_tls_pointer;
 use resources::{
     allocate_runtime_stack, allocate_runtime_tls, deallocate_runtime_stack, deallocate_runtime_tls,
@@ -156,13 +156,15 @@ pub fn reset_current_user_fp_state() -> Result<(), TaskError> {
 
 /// Captures the current x86 task's complete standard user xstate image.
 #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
-pub fn capture_current_user_fp_state() -> Result<ax_hal::cpu::UserXstate, TaskError> {
+pub fn capture_current_user_fp_state() -> Result<ax_hal::cpu::registers::UserXstate, TaskError> {
     context::capture_current_user_fp_state()
 }
 
 /// Replaces the current x86 task's user xstate and physical FPU owner image.
 #[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
-pub fn replace_current_user_fp_state(state: ax_hal::cpu::UserXstate) -> Result<(), TaskError> {
+pub fn replace_current_user_fp_state(
+    state: ax_hal::cpu::registers::UserXstate,
+) -> Result<(), TaskError> {
     context::replace_current_user_fp_state(state)
 }
 pub use lifecycle::{
@@ -194,7 +196,7 @@ pub use spawn::{
     spawn_raw_with_extension_in_address_space_and_fp_state,
     spawn_raw_with_extension_in_address_space_and_fp_state_and_policy,
 };
-#[cfg(all(test, feature = "tls"))]
+#[cfg(all(test, kernel_tls))]
 use thread_resources::assemble_bootstrap_resources;
 use thread_resources::{
     InitialContextState, create_bootstrap_resources, create_idle_resources, create_thread_resources,

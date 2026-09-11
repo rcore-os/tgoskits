@@ -8,8 +8,12 @@ args = [
 ]
 uefi = false
 to_bin = false
+fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', '(?m)^STARRY_GROUPED_TEST_FAILED:']
+timeout = 300
+
+[[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_init_cmd = '''
+shell_cmd = '''
 set -e
 
 echo "STAGE_APK_BEGIN"
@@ -45,5 +49,3 @@ echo "S4_OK"
 echo "ALL_STAGES_PASSED"
 '''
 success_regex = ["(?m)^ALL_STAGES_PASSED\\s*$"]
-fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', '(?m)^STARRY_GROUPED_TEST_FAILED:']
-timeout = 300

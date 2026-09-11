@@ -16,6 +16,12 @@ use zeroize::Zeroize;
 /// Errors that can occur during network device operations.
 #[derive(thiserror::Error, Debug)]
 pub enum NetError {
+    /// Deferred hardware identification found no device handled by this
+    /// network driver. The runtime may omit the unpublished poll group after
+    /// cancelling startup and synchronizing its IRQ callbacks.
+    #[error("Network device is not present")]
+    DeviceNotPresent,
+
     /// The requested operation is not supported by the device.
     #[error("Operation not supported")]
     NotSupported,
@@ -62,6 +68,7 @@ pub enum NetError {
 impl From<NetError> for io::ErrorKind {
     fn from(value: NetError) -> Self {
         match value {
+            NetError::DeviceNotPresent => io::ErrorKind::NotAvailable,
             NetError::NotSupported => io::ErrorKind::Unsupported,
             NetError::Retry => io::ErrorKind::Interrupted,
             NetError::NoMemory => io::ErrorKind::OutOfMemory,

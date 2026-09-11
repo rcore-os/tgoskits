@@ -1,7 +1,7 @@
 use core::mem::{self, MaybeUninit};
 
 use ax_memory_addr::PAGE_SIZE_4K;
-use ax_runtime::hal::cpu::uspace::UserContext;
+use ax_runtime::hal::cpu::user::UserContext;
 use bytemuck::AnyBitPattern;
 
 use super::clone::{CloneArgs, CloneFlags};

@@ -9,14 +9,14 @@ description: 审计并更新本 ArceOS 与 StarryOS 工作区的 `scripts/test/s
 
 ## 测试分层边界
 
-先按被测语义选择测试层，再审计允许列表：
+测试必要性、去重和 Rust 布局先按 [test-quality](../test-quality/SKILL.md) 判断；不为进入允许列表而添加构造、参数回读或固定实例测试。再按被测语义选择执行环境并审计允许列表：
 
 - `std` 只验证算法、数据结构、状态机、协议解析、错误转换和可确定性模型。测试可以使用局部数据夹具，但不得实现或依赖假调度器、假 IRQ、假 timer、假 SMP 或假设备来证明运行时语义。
 - 真实调度、阻塞/唤醒、IPI、IRQ、timer、SMP、affinity、上下文切换和目标指令必须通过 `test-suit/arceos/rust` 的 ArceOS QEMU case 验证。`ax-task`、`ax-runtime` 等启动依赖库不创建独立 axtest target。
 - Starry kernel、Axvisor 和板卡专属行为使用 `cargo xtask ktest qemu` 或 `cargo xtask ktest board`；直接 axtest 依赖不会因为传递依赖而自动扩散。
 - ArceOS suite 的正式入口是 `cargo xtask arceos test qemu ...`，不是 `cargo xtask test arceos`。Starry suite 使用 `cargo xtask starry test ...`。
 
-同一 crate 可以同时拥有 std 模型测试和上层 QEMU/axtest 集成测试，但每个断言只能由最接近其真实语义的一层负责。不能用宿主机编译成功、fake runtime 或 shell prompt 替代目标运行时证据。
+同一 crate 可以同时有 std 模型测试和 QEMU/axtest 集成测试；按独立行为与故障种类去重，上层只补充低层无法证明的真实装配或运行时行为。不能用 host 编译、fake runtime 或 shell prompt 替代目标运行时证据。
 
 相关层级适配规则见 [`arceos-test-adapter`](../arceos-test-adapter/SKILL.md) 和
 [`starry-test-suit`](../starry-test-suit/SKILL.md)。

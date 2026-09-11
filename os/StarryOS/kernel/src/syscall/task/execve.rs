@@ -10,7 +10,7 @@ use core::{
 };
 
 use ax_fs_ng::vfs::current_fs_context;
-use ax_runtime::hal::cpu::uspace::UserContext;
+use ax_runtime::hal::cpu::user::UserContext;
 use axfs_ng_vfs::Location;
 use kernel_elf_parser::AuxType;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};

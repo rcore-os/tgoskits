@@ -1,13 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-pub(super) fn supports_platform_dynamic(target: &str) -> bool {
-    target.starts_with("aarch64-")
-        || target.starts_with("loongarch64-")
-        || target.starts_with("riscv64")
-        || target.starts_with("x86_64-")
-}
-
 pub(super) fn normalize_std_feature(feature: &str) -> String {
     match feature {
         "ax-std" => feature.to_string(),
@@ -180,76 +172,4 @@ pub(super) fn workspace_package<'a>(
         .iter()
         .find(|pkg| metadata.workspace_members.contains(&pkg.id) && pkg.name == package)
         .ok_or_else(|| anyhow::anyhow!("workspace package `{package}` not found"))
-}
-
-#[cfg(test)]
-pub(super) fn ax_hal_platform_feature_name<'a>(
-    feature: &'a str,
-    metadata: Option<&Metadata>,
-) -> Option<&'a str> {
-    let platform = feature.strip_prefix("ax-hal/")?;
-    match platform {
-        _ if metadata
-            .map(|metadata| platform_package_by_name(metadata, platform).is_some())
-            .unwrap_or_else(|| is_known_ax_hal_platform_feature(platform)) =>
-        {
-            Some(platform)
-        }
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-pub(super) fn is_known_ax_hal_platform_feature(_platform: &str) -> bool {
-    false
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-#[serde(rename_all = "kebab-case")]
-pub(super) struct AxplatMetadata {
-    platform: String,
-    arch: String,
-    default_for_arch: bool,
-    dynamic: bool,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub(super) struct PlatformPackage {
-    package: String,
-    metadata: AxplatMetadata,
-}
-
-#[cfg(test)]
-pub(super) fn platform_metadata(package: &Package) -> Option<AxplatMetadata> {
-    package
-        .metadata
-        .get("axplat")
-        .cloned()
-        .and_then(|metadata| serde_json::from_value(metadata).ok())
-}
-
-#[cfg(test)]
-pub(super) fn platform_packages(metadata: &Metadata) -> Vec<PlatformPackage> {
-    metadata
-        .packages
-        .iter()
-        .filter_map(|package| {
-            let metadata = platform_metadata(package)?;
-            Some(PlatformPackage {
-                package: package.name.to_string(),
-                metadata,
-            })
-        })
-        .collect()
-}
-
-#[cfg(test)]
-pub(super) fn platform_package_by_name(metadata: &Metadata, platform_name: &str) -> Option<String> {
-    platform_packages(metadata)
-        .into_iter()
-        .find(|platform| platform.metadata.platform == platform_name)
-        .map(|platform| platform.package)
 }

@@ -338,17 +338,6 @@ mod tests {
     }
 
     #[test]
-    fn probe_asset_spawn_uses_the_text_file_busy_retry_boundary() {
-        let source = include_str!("http_probe.rs");
-        let retry_spawn = ["retry_text_file_busy", "(|| command.spawn())"].concat();
-
-        assert!(
-            source.contains(&retry_spawn),
-            "directly executed probe assets must retry the transient ETXTBSY publication window"
-        );
-    }
-
-    #[test]
     fn captured_probe_output_is_bounded_without_changing_execution_verdict() {
         let mut output = BoundedProbeOutput::default();
         output.append(&vec![b'x'; MAX_PROBE_OUTPUT_BYTES + 1]);

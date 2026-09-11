@@ -62,6 +62,12 @@ jobs:
       pull-requests: write
     steps:
       - *checkout
+      - name: Install semver-check system dependencies
+        # All-feature rustdoc builds include host tooling that links to libudev.
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes pkg-config libudev-dev
+
       - name: Install workspace Rust toolchain
         run: |
           toolchain="$(rustup show active-toolchain)"

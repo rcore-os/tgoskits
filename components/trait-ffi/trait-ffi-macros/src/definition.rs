@@ -179,6 +179,7 @@ pub fn expand(args: Args, input: ItemTrait) -> Result<TokenStream> {
         #[cfg(all(#(#trait_cfg),*))]
         #vis use #impl_macro as #name;
         #[cfg(all(#(#trait_cfg),*))]
+        #[doc = concat!("Statically bound calls and implementation binding for [`", stringify!(#name), "`].")]
         #vis mod #module {
             use super::*;
             mod __macros {

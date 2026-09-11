@@ -41,22 +41,16 @@ The QEMU config uses the generated rootfs:
 tmp/axbuild/rootfs/rootfs-x86_64-mysql.img
 ```
 
-## Interactive Mode
+## 指定测试配置
 
-To enter the MySQL client and run SQL manually, use the interactive QEMU config:
+`qemu-x86_64-interactive.toml` 保留原文件名，现与默认入口一样执行完整 MySQL SQL 测例，不再自动进入手动交互客户端：
 
 ```bash
 cargo xtask starry app qemu -t mysql --arch x86_64 \
   --qemu-config qemu-x86_64-interactive.toml
 ```
 
-The guest automatically runs:
-
-```sh
-/usr/bin/mysql-interactive.sh
-```
-
-The script initializes `/opt/mysql/data` if needed, starts `mysqld` in the background, waits until the Unix socket is usable, then enters the MySQL interactive client. Use `exit` to leave the MySQL client and `Ctrl-a x` to exit QEMU.
+该配置通过 `shell_check_steps` 执行 `/usr/bin/mysql-test.sh`，匹配 `MYSQL_TEST_PASSED` 后退出；遇到 `MYSQL_TEST_FAILED` 或内核错误则失败，整体超时为 2400 秒。
 
 ## Guest Test Flow
 

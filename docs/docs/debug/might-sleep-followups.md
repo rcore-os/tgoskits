@@ -7,6 +7,8 @@ sidebar_label: "might_sleep 后续计划"
 
 本文档记录 `might_sleep` 原子上下文检查的后续增强计划，用作逐项讨论和拆分实现任务的基础。
 
+测试规范更新：下文保留原计划及已完成验证的历史记录；“新增最小回归”“每类新增判定至少一个回归”等旧建议由仓库 [test-quality](https://github.com/rcore-os/tgoskits/blob/dev/.agents/skills/test-quality/SKILL.md) 取代。后续先复用或增强完整功能验证，仅在缺少独立行为证明时新增。MS-8 的矩阵是候选故障面，不要求逐项新建 feature/case；已选定且会终止系统的预期 panic 行为仍须隔离启动，保证每项实际执行并正确传播结果。
+
 当前实现已经覆盖基础睡眠入口：调度让出、定时睡眠、任务退出、
 `WaitQueue::wait*`、`ax_runtime::task::block_on`、`ax_sync::Mutex::lock`、
 Starry 用户内存访问和 page fault slow path。核心调度入口通过
@@ -320,7 +322,7 @@ Starry 用户内存访问和 page fault slow path 目前直接调用 `might_slee
 已确认方向：
 
 - 新增 ArceOS rust debug 类测试 feature，不把预期 panic 用例塞进普通通过型 suite。
-- 对“应该触发 `might_sleep()` panic”的用例，沿用 `lockdep-detect` 这类 xtask feature override：`success_regex` 匹配明确诊断文本，`fail_regex` 只匹配“未触发预期诊断”的兜底错误。
+- 对“应该触发 `might_sleep()` panic”的用例，沿用 `lockdep-detect` 这类 xtask feature override：shell-check 步骤的 `success_regex` 匹配明确诊断文本，根 `fail_regex` 只匹配“未触发预期诊断”的兜底错误。
 - 预期 panic 会终止系统，因此每个预期 panic 场景单独一个 feature/case，不放在同一个 boot 里。
 - `ax_sync::Mutex::try_lock()` 在原子上下文不触发属于通过型反例，可以放进普通 smoke case。
 - Starry user copy / `might_fault()` 回归放到 MS-4 实现之后补，不抢在核心 `might_sleep()` 判定测试之前。

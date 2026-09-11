@@ -6,8 +6,9 @@
 
 use alloc::{string::String, vec::Vec};
 
-use ax_cpu::pmu::{self, ClusterId, PmuInfo};
+use ax_cpu::pmu::PmuInfo;
 
+use super::event_map::{self as pmu, ClusterId};
 use crate::sync::IrqMutex;
 
 pub(super) const MAX_TRACKED_CPUS: usize = 64;
@@ -32,6 +33,7 @@ static CPU_STATES: IrqMutex<[CpuPmuState; MAX_TRACKED_CPUS]> =
 
 /// Initializes the PMU owned by the executing CPU exactly once.
 pub(super) fn ensure_current_cpu_initialized() -> Option<PmuInfo> {
+    let _guard = crate::sync::NoPreemptIrqSave::new();
     let cpu = ax_hal::percpu::this_cpu_id();
     if cpu >= MAX_TRACKED_CPUS {
         return None;
@@ -42,11 +44,18 @@ pub(super) fn ensure_current_cpu_initialized() -> Option<PmuInfo> {
         return state.info;
     }
 
-    pmu::init_cpu();
-    pmu::counter::disable_all();
-    pmu::overflow::disable_all_irq();
-    pmu::overflow::clear_all();
-    let info = pmu::probe();
+    // SAFETY: this CPU is pinned with IRQs masked. No perf slot is published
+    // before this one-time domain reset; user access stays disabled as on dev.
+    let info = unsafe {
+        ax_hal::pmu::with_current(|pmu| {
+            pmu.reset();
+            // Starry's software extension and sampling state use 32-bit chunks.
+            pmu.set_long_counters(false)
+                .expect("32-bit counters are architectural");
+            pmu.start();
+            pmu.info()
+        })
+    };
     CPU_STATES.lock()[cpu] = CpuPmuState {
         initialized: true,
         info,
@@ -121,7 +130,8 @@ pub(super) fn event_supported_for_target(
     event: u16,
 ) -> bool {
     let mut infos = target_infos(cpu, cluster).peekable();
-    infos.peek().is_some() && infos.all(|info| info.event_supported(event))
+    infos.peek().is_some()
+        && infos.all(|info| crate::perf::event_map::event_supported_by(info, event))
 }
 
 /// Returns the smallest programmable-counter capacity in a target PMU set.
@@ -157,7 +167,7 @@ pub fn event_supported_on(cluster: Option<ClusterId>, event: u16) -> bool {
             continue;
         }
         matched = true;
-        if !info.event_supported(event) {
+        if !crate::perf::event_map::event_supported_by(info, event) {
             return false;
         }
     }

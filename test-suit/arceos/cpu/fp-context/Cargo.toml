@@ -1,0 +1,16 @@
+[package]
+name = "arceos-cpu-fp-context"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[features]
+default = ["ax-std"]
+ax-std = ["dep:ax-std", "ax-std/arceos"]
+
+[dependencies]
+ax-cpu = { workspace = true, features = ["fp-simd"] }
+ax-std = { workspace = true, optional = true, features = ["default", "fp-simd"] }
+
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-linux-musl"]

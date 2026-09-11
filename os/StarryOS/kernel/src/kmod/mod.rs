@@ -99,7 +99,7 @@ impl SectionMemOps for KmodMemSection {
                 // symbols. DMW translations do not consult the page table, so
                 // there are no PTE permissions to update here.
                 if perms.contains(kmod_loader::SectionPerm::EXECUTE) {
-                    ax_runtime::hal::cache::flush_icache_all();
+                    ax_cpu::cache::flush_icache_all();
                 }
                 true
             }
@@ -130,7 +130,7 @@ impl Drop for KmodMemSection {
                     self.num_pages,
                     UsageKind::VirtMem,
                 );
-                ax_runtime::hal::cache::flush_icache_all();
+                ax_cpu::cache::flush_icache_all();
             }
         }
     }
@@ -237,7 +237,7 @@ impl KernelModuleHelper for KmodHelper {
         // otherwise fetch stale instructions — or fault — from the new code
         // pages, so the instruction cache must be invalidated in addition to
         // the TLB. Mirrors `mm::access::sync_modified_kernel_text`.
-        ax_runtime::hal::cache::sync_kernel_text(VirtAddr::from_usize(_addr), _size);
+        ax_cpu::cache::sync_kernel_text(VirtAddr::from_usize(_addr), _size);
     }
 }
 

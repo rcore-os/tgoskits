@@ -77,11 +77,11 @@ pub fn read_user_word(va: usize) -> Option<u64> {
     if va == 0 || va.checked_add(WORD_SIZE)? > USER_VA_END {
         return None;
     }
-    read_word_via(ax_cpu::asm::read_user_page_table().as_usize(), va)
+    read_word_via(ax_cpu::mmu::read_user_page_table().as_usize(), va)
 }
 
 /// Reads one kernel word through `TTBR1_EL1` without directly dereferencing a
 /// possibly corrupt frame pointer.
 pub fn read_kernel_word(va: usize) -> Option<u64> {
-    read_word_via(ax_cpu::asm::read_kernel_page_table().as_usize(), va)
+    read_word_via(ax_cpu::mmu::read_kernel_page_table().as_usize(), va)
 }

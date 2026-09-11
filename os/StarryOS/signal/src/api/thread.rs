@@ -6,7 +6,7 @@ use core::{
     task::Waker,
 };
 
-use ax_cpu::uspace::UserContext;
+use ax_cpu::user::UserContext;
 use ax_runtime::task::sync::SpinLock;
 use starry_vm::{VmIo, VmMutPtr, VmPtr};
 

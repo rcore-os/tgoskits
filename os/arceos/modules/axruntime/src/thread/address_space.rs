@@ -385,7 +385,7 @@ fn replace_active_activation(
     pin: &CpuPin<'_>,
     next: Option<SchedulerAddressSpaceActivation>,
 ) -> Option<SchedulerAddressSpaceActivation> {
-    debug_assert!(!ax_hal::asm::irqs_enabled());
+    debug_assert!(!ax_cpu::interrupt::irqs_enabled());
     // SAFETY: the root-switch transaction holds local IRQ exclusion. This
     // CPU-only slot has no remote readers, and the mutable borrow cannot escape.
     unsafe {
@@ -400,7 +400,7 @@ fn replace_active_activation(
 fn install_mm_identity(installed: ax_hal::context::InstalledAddressSpace) {
     // SAFETY: the prepared/active lease owns the root, and the caller keeps IRQs
     // disabled from CPU-footprint publication through active-lease publication.
-    unsafe { ax_hal::asm::install_user_address_space(installed) };
+    unsafe { ax_cpu::mmu::install_user_address_space(installed.hardware()) };
     #[cfg(feature = "qperf-metrics")]
     ACTIVE_MM_HARDWARE_ROOT_WRITES.fetch_add(1, Ordering::Relaxed);
 }
@@ -442,7 +442,7 @@ fn offline_kernel_root() -> usize {
 
 #[cfg(feature = "uspace")]
 pub(super) fn current_hardware_root() -> usize {
-    ax_hal::asm::read_user_page_table().as_usize()
+    ax_cpu::mmu::read_user_page_table().as_usize()
 }
 
 #[cfg(feature = "uspace")]
@@ -494,7 +494,7 @@ fn install_hardware_root(root: usize, transition: HardwareAddressSpaceTransition
         let root = ax_memory_addr::PhysAddr::from(root);
         // SAFETY: callers retain local IRQ exclusion for the complete active-mm
         // transaction.
-        unsafe { ax_hal::asm::write_user_page_table(root) };
+        unsafe { ax_cpu::mmu::write_user_page_table(root) };
         #[cfg(feature = "qperf-metrics")]
         ACTIVE_MM_HARDWARE_ROOT_WRITES.fetch_add(1, Ordering::Relaxed);
         // Linux reloads CR3 when the logical mm changes even if a reclaimed
@@ -503,7 +503,7 @@ fn install_hardware_root(root: usize, transition: HardwareAddressSpaceTransition
         // architecture backends only update their root register and require an
         // explicit invalidation for the same identity transition.
         #[cfg(not(target_arch = "x86_64"))]
-        ax_hal::asm::flush_tlb(None);
+        ax_cpu::mmu::flush_tlb(None);
     }
 }
 
@@ -621,7 +621,7 @@ impl PreparedAddressSpaceSwitch<'_, '_> {
         match self.phase {
             #[cfg(feature = "uspace")]
             AddressSpaceTransitionPhase::CurrentTask => assert!(
-                !ax_hal::asm::irqs_enabled(),
+                !ax_cpu::interrupt::irqs_enabled(),
                 "current-task address-space commit requires local IRQ exclusion"
             ),
             AddressSpaceTransitionPhase::ContextSwitch => {}
@@ -890,7 +890,7 @@ pub(super) fn release_current_active_address_space() {
                 HardwareAddressSpaceTransition::DifferentAddressSpace,
             );
             // CPU offline invalidates every local tag before retiring its MM.
-            ax_hal::asm::flush_tlb(None);
+            ax_cpu::mmu::flush_tlb(None);
             if let Some(activation) = replace_active_activation(pin, None) {
                 activation.release(AddressSpaceSwitchProof::new(
                     pin.area().cpu_index().as_usize(),

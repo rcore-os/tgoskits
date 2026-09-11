@@ -11,6 +11,7 @@ license.workspace = true
 copy = ["dep:page-table-generic", "page-table-generic/copy-from"]
 
 [dependencies]
+ax-cpu.workspace = true
 ax-alloc = { workspace = true }
 ax-hal = { workspace = true, features = ["paging"] }
 ax-sync.workspace = true

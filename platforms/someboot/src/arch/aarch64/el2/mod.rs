@@ -1,94 +1,58 @@
-use aarch64_cpu::{
-    asm::{barrier::*, *},
-    registers::*,
-};
-use aarch64_cpu_ext::asm::tlb::*;
+use aarch64_cpu::registers::*;
 use page_table_generic::VirtAddr;
 
-use crate::{
-    arch::entry::{el_entry, eret_with_timer_mode_arg},
-    mem::PageTableInfo,
-    timer::{self, ArchTimerMode},
-};
+use crate::{arch::entry::el_entry, mem::PageTableInfo, timer::ArchTimerMode};
 
 pub fn switch_to_elx() -> ! {
     unsafe extern "C" {
         fn __cpu0_stack_top();
     }
-
-    SPSel.write(SPSel::SP::ELx);
-    SP_EL0.set(0);
-    let current_el = CurrentEL.read(CurrentEL::EL);
-
+    // SAFETY: assembly startup installed the dedicated boot stack; SP_EL0 has no owner.
+    unsafe { ax_cpu::boot::select_privileged_stack() };
+    let current_el = ax_cpu::registers::current_exception_level();
+    let timer_mode = ArchTimerMode::El2HypPhys;
     if current_el >= 3 {
-        let el_entry = sym_addr!(el_entry);
-        let sp = sym_addr!(__cpu0_stack_top);
-
-        if current_el == 3 {
-            // Set EL2 to 64bit and enable the HVC instruction.
-            SCR_EL3.write(
-                SCR_EL3::NS::NonSecure + SCR_EL3::HCE::HvcEnabled + SCR_EL3::RW::NextELIsAarch64,
-            );
-            // Set the return address and exception level for EL2.
-            SPSR_EL3.write(
-                SPSR_EL3::M::EL2h           // Target EL2h mode
-                    + SPSR_EL3::D::Masked   // Disable debug exceptions
-                    + SPSR_EL3::A::Masked   // Disable async data abort
-                    + SPSR_EL3::I::Masked   // Disable IRQ
-                    + SPSR_EL3::F::Masked, // Disable FIQ
-            );
-
-            ELR_EL3.set(el_entry as _);
-            SP_EL2.set(sp as _);
-            eret_with_timer_mode_arg(ArchTimerMode::El2HypPhys);
-        }
+        // SAFETY: boot owns the destination stack and entry before translation
+        // handoff, and transfers only the selected timer mode as an integer.
+        unsafe {
+            ax_cpu::boot::El2::enter(
+                sym_addr!(el_entry).into(),
+                sym_addr!(__cpu0_stack_top).into(),
+                timer_mode as usize,
+            )
+        };
     }
-
-    // Call el_entry directly if we're already in EL2
-    el_entry(ArchTimerMode::El2HypPhys as usize);
+    el_entry(timer_mode as usize)
 }
 
 pub fn switch_to_elx_secondary(cpu_meta_paddr: usize) -> ! {
-    SPSel.write(SPSel::SP::ELx);
-    SP_EL0.set(0);
-
-    let current_el = CurrentEL.read(CurrentEL::EL);
-    let secondary_entry = sym_addr!(crate::arch::entry::secondary_el_entry);
-    let stack_top = unsafe { (cpu_meta_paddr as *const usize).read_volatile() };
-
+    // SAFETY: the secondary assembly entry selected its private boot stack.
+    unsafe { ax_cpu::boot::select_privileged_stack() };
+    let current_el = ax_cpu::registers::current_exception_level();
     if current_el >= 3 {
-        SCR_EL3.write(
-            SCR_EL3::NS::NonSecure + SCR_EL3::HCE::HvcEnabled + SCR_EL3::RW::NextELIsAarch64,
-        );
-        SPSR_EL3.write(
-            SPSR_EL3::M::EL2h
-                + SPSR_EL3::D::Masked
-                + SPSR_EL3::A::Masked
-                + SPSR_EL3::I::Masked
-                + SPSR_EL3::F::Masked,
-        );
-        ELR_EL3.set(secondary_entry as _);
-        SP_EL2.set(stack_top as _);
-        barrier::isb(barrier::SY);
-        eret();
+        // SAFETY: the primary published this live metadata before firmware
+        // started the CPU; its first word is the exclusive secondary stack top.
+        let stack_top = unsafe { (cpu_meta_paddr as *const usize).read_volatile() };
+        // SAFETY: the boot owner retains metadata and stack until secondary
+        // handoff completes. CPU entry preserves the metadata address in x0.
+        unsafe {
+            ax_cpu::boot::El2::enter(
+                sym_addr!(crate::arch::entry::secondary_el_entry).into(),
+                stack_top.into(),
+                cpu_meta_paddr,
+            )
+        };
     }
-
+    // SAFETY: the same published metadata remains owned by this secondary CPU.
     unsafe { crate::arch::entry::secondary_el_entry(cpu_meta_paddr) }
 }
 
 #[inline(always)]
 pub fn flush_tlb(vaddr: Option<VirtAddr>) {
     match vaddr {
-        Some(addr) => {
-            // VAE2IS requires (asid, va), TTBR0_EL2 doesn't have ASID field, so use 0
-            tlbi(VAE2IS::new(0, addr.as_usize()));
-        }
-        None => {
-            tlbi(ALLE2);
-        }
+        Some(address) => ax_cpu::mmu::El2::flush_tlb_inner_shareable(Some(address)),
+        None => ax_cpu::mmu::El2::flush_tlb(None),
     }
-    dsb(SY);
-    isb(SY);
 }
 
 #[inline(always)]
@@ -119,94 +83,31 @@ pub fn setup_table_regs() {
     let attr3 = MAIR_EL2::Attr3_Normal_Inner::WriteThrough_Transient_WriteAlloc
         + MAIR_EL2::Attr3_Normal_Outer::WriteThrough_Transient_WriteAlloc;
 
-    MAIR_EL2.write(attr0 + attr1 + attr2 + attr3);
-
-    // Enable TTBR0 walks, page size = 4K, vaddr size = 48 bits, paddr size = 40 bits.
-    const VADDR_SIZE: u64 = 48;
-    const T0SZ: u64 = 64 - VADDR_SIZE;
-
-    // Note: TCR_EL2 only has one set of translation controls (T0SZ, TG0)
-    // TTBR1_EL2 does not exist in ARMv8 architecture
-    let tcr_flags0 = TCR_EL2::T0SZ.val(T0SZ)
-        + TCR_EL2::TG0::KiB_4
-        + TCR_EL2::SH0::Inner
-        + TCR_EL2::ORGN0::WriteBack_ReadAlloc_WriteAlloc_Cacheable
-        + TCR_EL2::IRGN0::WriteBack_ReadAlloc_WriteAlloc_Cacheable;
-
-    TCR_EL2.write(TCR_EL2::PS::Bits_40 + tcr_flags0);
-
-    tlbi(ALLE2IS);
-    barrier::dsb(barrier::SY);
-    barrier::isb(barrier::SY);
+    // SAFETY: the boot owner has not enabled its new translation regime;
+    // these slots match the descriptors constructed by boot paging.
+    unsafe { ax_cpu::mmu::El2::configure_stage1((attr0 + attr1 + attr2 + attr3).value) };
 }
 
 pub fn get_kernal_table() -> PageTableInfo {
-    // EL2 only has TTBR0_EL2 (no TTBR1_EL2)
-    // TTBR0_EL2 doesn't have ASID field, so we use 0
-    let addr = TTBR0_EL2.get_baddr();
     PageTableInfo {
         asid: 0,
-        addr: addr as usize,
+        addr: ax_cpu::mmu::El2::read_kernel_page_table().as_usize(),
     }
 }
 
-pub fn set_kernal_table(tb: PageTableInfo) {
-    // TTBR0_EL2 doesn't have ASID field, only set the address
-    TTBR0_EL2.set_baddr(tb.addr as _);
+pub fn set_kernal_table(table: PageTableInfo) {
+    // SAFETY: the boot owner retains this EL2 root and all active mappings.
+    unsafe { ax_cpu::mmu::El2::write_kernel_page_table(table.addr.into()) };
 }
 
 #[inline(always)]
 pub fn is_mmu_enabled() -> bool {
-    SCTLR_EL2.is_set(SCTLR_EL2::M)
+    ax_cpu::mmu::El2::is_mmu_enabled()
 }
 
 #[inline(always)]
 pub fn setup_sctlr() {
-    SCTLR_EL2.modify(SCTLR_EL2::M::Enable + SCTLR_EL2::C::Cacheable + SCTLR_EL2::I::Cacheable);
-    flush_tlb(None);
-    barrier::dsb(barrier::SY);
-    barrier::isb(barrier::SY);
-}
-
-pub fn systick_enable() {
-    CNTHP_CTL_EL2.write(CNTHP_CTL_EL2::ENABLE::SET);
-}
-
-pub fn systick_irq_disable() {
-    CNTHP_CTL_EL2.modify(CNTHP_CTL_EL2::IMASK::SET);
-}
-
-pub fn systick_stop_oneshot() {
-    systick_irq_disable();
-    timer::aarch64_deadline::el2::disarm(&El2TimerRegisters);
-}
-
-pub fn systick_irq_enable() {
-    CNTHP_CTL_EL2.modify(CNTHP_CTL_EL2::IMASK::CLEAR);
-}
-
-pub fn systick_irq_is_enabled() -> bool {
-    !CNTHP_CTL_EL2.is_set(CNTHP_CTL_EL2::IMASK)
-}
-
-struct El2TimerRegisters;
-
-impl timer::aarch64_deadline::el2::TimerRegisters for El2TimerRegisters {
-    fn read_physical_counter(&self) -> u64 {
-        CNTPCT_EL0.get()
-    }
-
-    fn write_hyp_physical_compare(&self, deadline: u64) {
-        // CNTHP_CVAL_EL2 is not exposed by aarch64-cpu's register bindings.
-        // SAFETY: This adapter is compiled only for the `hv` EL2 path, where
-        // CNTHP_CVAL_EL2 is accessible. `program` derives `deadline` from the
-        // paired CNTPCT_EL0 physical counter before calling this method.
-        unsafe {
-            core::arch::asm!("msr CNTHP_CVAL_EL2, {0:x}", in(reg) deadline);
-        }
-    }
-}
-
-pub fn systick_set_deadline(deadline_ticks: u64) {
-    timer::aarch64_deadline::el2::program_deadline(&El2TimerRegisters, deadline_ticks);
+    // SAFETY: boot paging has installed roots covering the active execution
+    // window, stack and handoff data before enabling this regime.
+    unsafe { ax_cpu::mmu::El2::enable_mmu_and_caches() };
 }

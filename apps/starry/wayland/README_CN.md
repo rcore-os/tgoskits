@@ -56,7 +56,7 @@ APK 注入 rootfs overlay。客体内脚本是 [`wayland-test.sh`](wayland-test.
 
 ## 使用 VNC 手动复现
 
-手动流程刻意绕过 app 测试里的 `shell_init_cmd`，直接启动同一个内核和 Alpine
+手动流程刻意绕过 app 测试里的 `shell_cmd`，直接启动同一个内核和 Alpine
 rootfs。这样可以在 StarryOS shell 中手动输入命令，并通过 VNC 与 GTK 窗口交互。
 直接启动的 riscv64 和 x86_64 流程进入客体后的 Weston 和 GTK 命令完全相同，只有
 宿主机侧的 QEMU 启动命令不同。aarch64 请使用后文 aarch64 说明中的辅助脚本。

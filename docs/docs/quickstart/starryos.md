@@ -128,7 +128,7 @@ LS2K1000 启动链路由早期引导、动态平台、中断控制器、设备�
 | 类型 | crates | feature 或实现位置 | 作用 |
 | --- | --- | --- | --- |
 | 早期启动 | `someboot` | `platforms/someboot/src/arch/loongarch64/` | 解析 U-Boot 传入的 FDT，建立页表并启动 SMP |
-| CPU 与动态平台 | `ax-cpu`、`axplat-dyn`、`ax-hal` | `components/axcpu/src/loongarch64/`、`platforms/axplat-dyn/` | 提供 LoongArch64 上下文、陷阱和动态平台接口 |
+| CPU 与动态平台 | `ax-cpu`、`axplat-dyn`、`ax-hal` | `components/axcpu/src/arch/loongarch64/`、`platforms/axplat-dyn/` | 提供 LoongArch64 上下文、陷阱和动态平台接口 |
 | 中断控制器 | `loongarch-intc-driver`、`somehal`、`rdif-intc`、`irq-framework` | `drivers/intc/loongarch-intc-driver/`；`platforms/somehal/src/arch/loongarch64/` | OS 无关 crate 驱动 EIOINTC、PCH-PIC 与 LIOINTC；`somehal` 负责 FDT/ACPI、映射、domain、注册和级联 |
 | 驱动发现 | `rdrive`、`ax-driver` | `drivers/ax-driver/` | 根据 FDT 探测并注册板载设备 |
 | 虚拟地址布局 | `someboot`、`axplat-dyn`、`starry-kernel` | CPUCFG `VALEN`、`VirtualAddressSpaceLayout`、`UserVirtualAddressLayout` | 启动时按硬件位宽发布 canonical lower/upper half；每个 Starry MM 固化裁剪后的 Linux 风格 `TASK_SIZE`，不使用板卡 feature |

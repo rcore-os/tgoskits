@@ -432,7 +432,7 @@ impl SimpleDirOps for EventSourceDevicesDir {
         let mut devices = devices;
         #[cfg(target_arch = "aarch64")]
         {
-            use ax_cpu::pmu::ClusterId;
+            use crate::perf::event_map::ClusterId;
 
             if crate::perf::percpu::has_pmu() {
                 devices.push(Cow::Borrowed(ARMV8_PMUV3_DEVICE));
@@ -477,7 +477,7 @@ impl SimpleDirOps for EventSourceDevicesDir {
 struct HwPmuDeviceDir {
     fs: Arc<SimpleFs>,
     ty: u32,
-    cluster: Option<ax_cpu::pmu::ClusterId>,
+    cluster: Option<crate::perf::event_map::ClusterId>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -554,7 +554,7 @@ impl SimpleDirOps for HwPmuFormatDir {
 #[cfg(target_arch = "aarch64")]
 struct HwPmuEventsDir {
     fs: Arc<SimpleFs>,
-    cluster: Option<ax_cpu::pmu::ClusterId>,
+    cluster: Option<crate::perf::event_map::ClusterId>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -576,11 +576,10 @@ impl SimpleDirOps for HwPmuEventsDir {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn hw_pmu_source(name: &str) -> Option<(u32, Option<ax_cpu::pmu::ClusterId>)> {
-    use ax_cpu::pmu::ClusterId;
-
-    use crate::perf::hw::{
-        ARMV8_CORTEX_A55_PERF_TYPE, ARMV8_CORTEX_A76_PERF_TYPE, ARMV8_PMUV3_PERF_TYPE,
+fn hw_pmu_source(name: &str) -> Option<(u32, Option<crate::perf::event_map::ClusterId>)> {
+    use crate::perf::{
+        event_map::ClusterId,
+        hw::{ARMV8_CORTEX_A55_PERF_TYPE, ARMV8_CORTEX_A76_PERF_TYPE, ARMV8_PMUV3_PERF_TYPE},
     };
 
     match name {
@@ -596,7 +595,7 @@ fn hw_pmu_source(name: &str) -> Option<(u32, Option<ax_cpu::pmu::ClusterId>)> {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn hw_pmu_alias(cluster: Option<ax_cpu::pmu::ClusterId>, name: &str) -> Option<u16> {
+fn hw_pmu_alias(cluster: Option<crate::perf::event_map::ClusterId>, name: &str) -> Option<u16> {
     let declared = ARMV8_PMUV3_EVENTS
         .iter()
         .find(|(declared, _)| *declared == name)

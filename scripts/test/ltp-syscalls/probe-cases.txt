@@ -240,3 +240,14 @@ fallocate04
 fchmodat2_01
 fchmodat2_02
 getcwd01
+fcntl17
+fcntl34
+fcntl36
+fcntl15
+flock02
+flock04
+flock06
+flock07
+getcwd02
+fcntl14
+fcntl16

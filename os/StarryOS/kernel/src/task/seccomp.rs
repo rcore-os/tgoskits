@@ -10,7 +10,7 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use ax_runtime::hal::cpu::uspace::UserContext;
+use ax_runtime::hal::cpu::user::UserContext;
 use syscalls::Sysno;
 
 use crate::{StarryError, StarryResult, sync::Mutex};

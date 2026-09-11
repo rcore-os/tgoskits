@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/someboot-v0.5.0...someboot-v0.5.1) - 2026-09-09
+
+### Fixed
+
+- *(runtime)* prefer userspace over kernel TLS through build cfg ([#2339](https://github.com/rcore-os/tgoskits/pull/2339))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/someboot-v0.4.2...someboot-v0.5.0) - 2026-09-09
 
 ### Added

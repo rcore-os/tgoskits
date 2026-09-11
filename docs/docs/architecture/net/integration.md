@@ -69,7 +69,7 @@ ax_net::init_network(runtime, ports, config);
 - 将 runtime 发现的设备消费为 `PreparedNetDevice`，并把 source ID 精确解析为物理 `IrqId`。
 - 只从 scheduler active CPU mask 选择立即可运行的 queue/protocol owner；固定拓扑中尚未 online 的 CPU 不参与启动期放置。
 - 将结构化 `NetworkConfig` 交给 `ax-net`，由 `ax-net` 创建 `lo`、Ethernet 接口、路由、DHCP 状态和 DNS registry。
-- 在 worker pin、disabled IRQ registration、owner startup、initial refill/rearm 和 startup Wi-Fi transaction 全部成功后发布 service。
+- 在 worker pin、disabled IRQ registration 与 enable 完成后执行 owner startup；安全剔除不适用的候选设备，并在剩余设备 initial refill/rearm 和 startup Wi-Fi transaction 成功后发布 service。
 
 `parse_network_config()` 当前直接返回 `NetworkConfig::default()`，尚未接入系统配置。因此启动时所有未显式匹配的普通 NIC 都采用 `ax-net` 默认策略：`eth{order}`、metric 100、DHCP、无静态 fallback DNS。该函数是未来接入接口地址/DNS/metric 的预留转换点，不应把它描述成已经生效的配置解析器。
 
@@ -97,10 +97,19 @@ ax_net::unix::register_unix_namespace(crate::unix_ns::AxFsUnixNamespace);
 
 ### 2.4 Wi-Fi 与 SoftAP
 
-Wi-Fi 与有线设备走同一个 all-at-once builder。AIC probe 只识别 variant 并提取 IRQ
-source，固件与 FDRV 初始化经 `NetOwnerStartup` 在 worker pin、disabled IRQ registration
-之后由 owner CPU 执行。`NetDeviceParts` 中的 owned `WifiControl` 绑定该设备首个 poll
-group 的 owner CPU；startup transaction 只在 IRQ enable 完成后执行，service 尚未发布。运行期
+Wi-Fi 与有线设备走同一个 all-at-once builder。固定连接的 AIC 由板级配置选择，
+平台 probe 封装 host parts 和 IRQ source，并登记候选 `wlan0`。`AicOwnerStartup`
+在 worker pin、IRQ registration 和 enable 之后调用驱动的卡识别、固件与 FDRV
+初始化逻辑；总线协议由驱动组件处理，`ax-net` 只调度通用 `NetOwnerStartup`
+进度，不需要为卡识别建立独立执行线程。
+
+候选登记不等于接口可用。卡不包含 SDIO I/O Function 时，AIC startup 返回
+`DeviceNotPresent`；runtime 只有在取消成功并同步该 IRQ callback 后才剔除对应
+group。清理由持有队列的 owner 执行，同时删除对应 Wi-Fi slot 并重映射存活 slot
+的 group 索引；builder 等待清理确认并 join 没有存活 group 的 worker，再提交
+startup transaction。设备没有剩余 group 时不发布接口，其余网卡继续初始化。其他初始化错误
+仍返回失败。`NetDeviceParts` 中的 owned `WifiControl` 绑定该设备首个 poll
+group 的 owner CPU；startup transaction 只在设备 startup 完成后执行，service 尚未发布。运行期
 `reconfigure_wifi(ifname, WifiTransaction)` 进入有界 control queue：owner 先
 quiesce group，在同 CPU 执行 SDIO/MMIO 控制，再 rearm，最后由 protocol owner
 提交 STA DHCP 或 SoftAP 静态地址/DHCP server 状态。启动后不支持新增物理 Wi-Fi。
@@ -284,11 +293,15 @@ StarryOS 的 rtnetlink 与 procfs 都应从 `ax-net` 的接口、路由、ARP �
 `InterfaceId` 是跨 ArceOS、StarryOS 和 `ax-net` 的稳定接口身份，Linux ifindex 只是它在 ABI 边界的数值表示。接口名可以用于用户查询和设备绑定，但实现不能假定永远存在 `eth0`，也不能把列表位置当作持久身份。
 
 - `lo` 固定为 `InterfaceId::LOOPBACK`，Linux ifindex 为 1。
-- Ethernet 接口默认按发现顺序命名为 `eth0`、`eth1`。
+- 普通 Ethernet 接口的缺省名称使用发布端口列表的紧凑索引，形式为 `eth{order}`；Wi-Fi 沿用驱动登记的接口名。
 - Linux `ifindex` 和 `InterfaceId` 直接映射。
 - 外部系统不得把 Router 内部 `dev` 索引暴露为 ifindex。
 
 接口标识列表说明名称、ifindex 与内部 ID 的转换必须集中处理，不能依赖设备顺序。命名空间在这些稳定身份之上做可见性过滤，但不改变全局所有权。
+
+启动时剔除候选设备后，运行时句柄使用紧凑索引，`ByOrder` 配置匹配仍使用
+`NetworkQueueRuntime::discovery_order()` 恢复的原始发现顺序。两种索引不能混用；
+配置匹配规则见[网络配置](./configuration.md#23-接口匹配)。
 
 ### 6.4 命名空间限制
 

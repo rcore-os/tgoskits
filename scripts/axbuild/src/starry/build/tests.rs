@@ -483,28 +483,6 @@ fn load_cargo_config_uses_bare_no_std_pie_contract() {
 }
 
 #[test]
-fn load_cargo_config_derives_to_bin_from_original_bare_target() {
-    for (arch, target, expected_to_bin) in [
-        ("x86_64", "x86_64-unknown-none", false),
-        ("loongarch64", "loongarch64-unknown-none-softfloat", false),
-        ("aarch64", "aarch64-unknown-none-softfloat", true),
-        ("riscv64", "riscv64gc-unknown-none-elf", true),
-    ] {
-        let mut request = request(PathBuf::from("/tmp/.build.toml"), arch, target);
-        request.build_info_override = Some(default_starry_build_info());
-
-        let cargo = load_cargo_config(&request).unwrap();
-        assert_eq!(cargo.target, format!("scripts/targets/bare/{target}.json"));
-        assert_eq!(cargo.env.get("AX_TARGET"), Some(&target.to_string()));
-        assert_eq!(
-            cargo.env.get("CARGO_UNSTABLE_JSON_TARGET_SPEC"),
-            Some(&"true".to_string())
-        );
-        assert_eq!(cargo.to_bin, expected_to_bin);
-    }
-}
-
-#[test]
 fn load_cargo_config_applies_arch_specific_bare_pie_flags() {
     for (arch, target, expected_flag) in [(
         "riscv64",

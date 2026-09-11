@@ -56,7 +56,7 @@ pub unsafe fn install_bootstrap_context(
 }
 
 /// Reads the current task-owned kernel TLS base.
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub fn kernel_tls(pin: &CpuPin<'_>) -> crate::context::KernelTlsBase {
     crate::context::KernelTlsBase::new(cpu_local::kernel_tls(pin))
 }
@@ -67,7 +67,7 @@ pub fn kernel_tls(pin: &CpuPin<'_>) -> crate::context::KernelTlsBase {
 ///
 /// The CPU must remain offline, and `kernel_tls` must remain valid while the
 /// bootstrap context executes.
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub unsafe fn install_bootstrap_kernel_tls(
     pin: &CpuPin<'_>,
     kernel_tls: crate::context::KernelTlsBase,

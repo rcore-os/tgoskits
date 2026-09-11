@@ -31,7 +31,7 @@ mod types;
 mod workspace;
 
 pub(crate) use arch::{
-    CrossCompileSpec, arch_for_target, arch_for_target_checked, arch_spec_for_target,
+    CrossCompileSpec, arch_for_target_checked, arch_spec_for_target,
     cross_compile_spec_for_arch_checked, default_rootfs_image_for_arch,
     resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target,
     resolve_starry_arch_and_target, starry_arch_for_target_checked, starry_target_for_arch_checked,
@@ -140,6 +140,12 @@ impl AppContext {
                 .await?;
         stage.done();
         println!("[axbuild] cargo build elf={}", output.elf_path().display());
+        if cargo.to_bin {
+            println!(
+                "[axbuild] cargo build bin={}",
+                cargo_bin_path_for_elf(output.elf_path()).display()
+            );
+        }
         println!(
             "[axbuild] cargo build artifact_dir={}",
             output.cargo_artifact_dir().display()
@@ -194,7 +200,7 @@ impl AppContext {
         qemu: QemuConfig,
         capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
-        let success_regex = qemu.success_regex.clone();
+        let success_regex = crate::support::qemu_success::configured_success_regex(&qemu);
         let (capture_backtrace, success_output) =
             crate::support::qemu_success::capture_required_success_output(
                 &success_regex,
@@ -259,7 +265,7 @@ impl AppContext {
         )?;
         crate::support::axtest_coverage::apply_qemu_monitor(&mut qemu, &paths)?;
         crate::support::axtest_coverage::update_success_regex(&mut qemu);
-        let success_regex = qemu.success_regex.clone();
+        let success_regex = crate::support::qemu_success::configured_success_regex(&qemu);
         let (capture_backtrace, success_output) =
             crate::support::qemu_success::capture_required_success_output(
                 &success_regex,
@@ -293,7 +299,7 @@ impl AppContext {
         qemu: QemuConfig,
         capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
-        let success_regex = qemu.success_regex.clone();
+        let success_regex = crate::support::qemu_success::configured_success_regex(&qemu);
         let (capture_backtrace, success_output) =
             crate::support::qemu_success::capture_required_success_output(
                 &success_regex,
@@ -574,6 +580,10 @@ impl StageLog {
 fn display_optional_path(path: Option<&Path>) -> String {
     path.map(|path| path.display().to_string())
         .unwrap_or_else(|| "<default>".to_string())
+}
+
+pub(crate) fn cargo_bin_path_for_elf(elf_path: &Path) -> PathBuf {
+    elf_path.with_extension("bin")
 }
 
 struct EnvRestoreGuard {

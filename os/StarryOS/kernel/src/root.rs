@@ -30,6 +30,7 @@ mod host_link_symbols {
 
 mod cgroup;
 mod config;
+mod cpu_capabilities;
 mod ebpf;
 mod error;
 mod file;
@@ -48,6 +49,9 @@ mod time;
 mod tracepoint;
 mod trap;
 mod uprobe;
+
+#[cfg(all(test, axtest))]
+mod block_runtime_axtest;
 
 pub use error::{DmaOperation, StarryError, StarryResult};
 // The staged MM ownership and transaction types are intentionally reachable

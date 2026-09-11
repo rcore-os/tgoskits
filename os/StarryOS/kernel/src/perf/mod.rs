@@ -15,6 +15,8 @@ mod counting;
 mod cpu_id;
 #[cfg(target_arch = "aarch64")]
 mod cpu_worker;
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod event_map;
 pub mod hw;
 #[cfg(target_arch = "aarch64")]
 mod hw_allocation;

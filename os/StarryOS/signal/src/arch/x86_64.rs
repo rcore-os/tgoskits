@@ -1,7 +1,7 @@
 use alloc::{vec, vec::Vec};
 use core::mem::{MaybeUninit, size_of};
 
-use ax_cpu::uspace::UserContext;
+use ax_cpu::user::UserContext;
 use starry_vm::{VmError, VmIo};
 
 use crate::{SignalResult, SignalSet, SignalStack};
@@ -82,21 +82,21 @@ unsafe impl bytemuck::NoUninit for MContext {}
 impl MContext {
     pub fn new(uctx: &UserContext) -> Self {
         Self {
-            r8: uctx.r8 as _,
-            r9: uctx.r9 as _,
-            r10: uctx.r10 as _,
-            r11: uctx.r11 as _,
-            r12: uctx.r12 as _,
-            r13: uctx.r13 as _,
-            r14: uctx.r14 as _,
-            r15: uctx.r15 as _,
-            rdi: uctx.rdi as _,
-            rsi: uctx.rsi as _,
-            rbp: uctx.rbp as _,
-            rbx: uctx.rbx as _,
-            rdx: uctx.rdx as _,
-            rax: uctx.rax as _,
-            rcx: uctx.rcx as _,
+            r8: uctx.regs.r8 as _,
+            r9: uctx.regs.r9 as _,
+            r10: uctx.regs.r10 as _,
+            r11: uctx.regs.r11 as _,
+            r12: uctx.regs.r12 as _,
+            r13: uctx.regs.r13 as _,
+            r14: uctx.regs.r14 as _,
+            r15: uctx.regs.r15 as _,
+            rdi: uctx.regs.rdi as _,
+            rsi: uctx.regs.rsi as _,
+            rbp: uctx.regs.rbp as _,
+            rbx: uctx.regs.rbx as _,
+            rdx: uctx.regs.rdx as _,
+            rax: uctx.regs.rax as _,
+            rcx: uctx.regs.rcx as _,
             rsp: uctx.rsp as _,
             rip: uctx.rip as _,
             eflags: uctx.rflags as _,
@@ -114,21 +114,21 @@ impl MContext {
     }
 
     pub fn restore(&self, uctx: &mut UserContext) {
-        uctx.r8 = self.r8 as _;
-        uctx.r9 = self.r9 as _;
-        uctx.r10 = self.r10 as _;
-        uctx.r11 = self.r11 as _;
-        uctx.r12 = self.r12 as _;
-        uctx.r13 = self.r13 as _;
-        uctx.r14 = self.r14 as _;
-        uctx.r15 = self.r15 as _;
-        uctx.rdi = self.rdi as _;
-        uctx.rsi = self.rsi as _;
-        uctx.rbp = self.rbp as _;
-        uctx.rbx = self.rbx as _;
-        uctx.rdx = self.rdx as _;
-        uctx.rax = self.rax as _;
-        uctx.rcx = self.rcx as _;
+        uctx.regs.r8 = self.r8 as _;
+        uctx.regs.r9 = self.r9 as _;
+        uctx.regs.r10 = self.r10 as _;
+        uctx.regs.r11 = self.r11 as _;
+        uctx.regs.r12 = self.r12 as _;
+        uctx.regs.r13 = self.r13 as _;
+        uctx.regs.r14 = self.r14 as _;
+        uctx.regs.r15 = self.r15 as _;
+        uctx.regs.rdi = self.rdi as _;
+        uctx.regs.rsi = self.rsi as _;
+        uctx.regs.rbp = self.rbp as _;
+        uctx.regs.rbx = self.rbx as _;
+        uctx.regs.rdx = self.rdx as _;
+        uctx.regs.rax = self.rax as _;
+        uctx.regs.rcx = self.rcx as _;
         uctx.rsp = self.rsp as _;
         uctx.rip = self.rip as _;
         uctx.rflags = self.eflags as _;
@@ -193,23 +193,27 @@ impl UContext {
 
 /// Task-owned x86 FPU snapshot encoded in Linux's signal-frame UABI.
 pub struct SignalFpState {
-    state: ax_cpu::UserXstate,
+    state: ax_cpu::registers::UserXstate,
+    xsave: Option<(usize, u64)>,
 }
 
 impl SignalFpState {
     /// Wraps a task-owned xstate captured by the current-task runtime boundary.
-    pub const fn new(state: ax_cpu::UserXstate) -> Self {
-        Self { state }
+    pub fn new(state: ax_cpu::registers::UserXstate) -> Self {
+        let xsave = ax_cpu::registers::UserXstate::user_size()
+            .map(|size| (size, ax_cpu::registers::UserXstate::user_feature_mask()));
+        Self { state, xsave }
     }
 
     /// Returns whether the signal payload uses Linux's extended XSAVE format.
     pub fn has_xstate(&self) -> bool {
-        ax_cpu::UserXstate::user_size().is_some()
+        self.xsave.is_some()
     }
 
     /// Returns the payload size, including Linux's trailing XSAVE magic word.
     pub fn frame_size(&self) -> usize {
-        ax_cpu::UserXstate::user_size().map_or(FXSAVE_SIZE, |size| size + size_of::<u32>())
+        self.xsave
+            .map_or(FXSAVE_SIZE, |(size, _)| size + size_of::<u32>())
     }
 
     /// Writes an aligned Linux x86 signal fpstate payload to userspace.
@@ -219,7 +223,7 @@ impl SignalFpState {
         }
 
         let mut frame = vec![0; self.frame_size()];
-        if let Some(user_size) = ax_cpu::UserXstate::user_size() {
+        if let Some((user_size, features)) = self.xsave {
             frame[..user_size].copy_from_slice(
                 self.state
                     .user_bytes()
@@ -233,11 +237,7 @@ impl SignalFpState {
                 FXSAVE_SW_RESERVED_OFFSET + 4,
                 (user_size + size_of::<u32>()) as u32,
             );
-            write_u64(
-                &mut frame,
-                FXSAVE_SW_RESERVED_OFFSET + 8,
-                ax_cpu::UserXstate::user_feature_mask(),
-            );
+            write_u64(&mut frame, FXSAVE_SW_RESERVED_OFFSET + 8, features);
             write_u32(&mut frame, FXSAVE_SW_RESERVED_OFFSET + 16, user_size as u32);
             let xstate_bv = read_u64(&frame, XSAVE_HEADER_OFFSET) | XFEATURE_MASK_FPSSE;
             write_u64(&mut frame, XSAVE_HEADER_OFFSET, xstate_bv);
@@ -258,21 +258,32 @@ impl SignalFpState {
     pub fn restore<I: VmIo>(
         vm: &mut I,
         address: usize,
-    ) -> SignalResult<Option<ax_cpu::UserXstate>> {
+    ) -> SignalResult<Option<ax_cpu::registers::UserXstate>> {
         if address == 0 {
             return Ok(None);
         }
         Self::restore_inner(vm, address).map(Some)
     }
 
-    fn restore_inner<I: VmIo>(vm: &mut I, address: usize) -> SignalResult<ax_cpu::UserXstate> {
+    fn restore_inner<I: VmIo>(
+        vm: &mut I,
+        address: usize,
+    ) -> SignalResult<ax_cpu::registers::UserXstate> {
         if !address.is_multiple_of(16) {
             return Err(VmError::BadAddress.into());
         }
-        let legacy = read_user_bytes(vm, address, FXSAVE_SIZE)?;
-        let mut state = ax_cpu::UserXstate::initial();
+        let mut legacy = read_user_bytes(vm, address, FXSAVE_SIZE)?;
+        let mut state = ax_cpu::registers::UserXstate::initial();
 
-        let valid = if let Some(user_size) = ax_cpu::UserXstate::user_size() {
+        let valid = if read_u32(&legacy, FXSAVE_SW_RESERVED_OFFSET) != FP_XSTATE_MAGIC1 {
+            // A legacy frame restores only x87/SSE; the remaining components
+            // stay in the initial state. Its software-reserved bytes do not
+            // belong to the hardware image. No XSAVE capability is needed to
+            // decode this format.
+            legacy[FXSAVE_SW_RESERVED_OFFSET..FXSAVE_SW_RESERVED_OFFSET + FXSAVE_SW_RESERVED_SIZE]
+                .fill(0);
+            state.replace_fxsave_bytes(&legacy)
+        } else if let Some(user_size) = ax_cpu::registers::UserXstate::user_size() {
             Self::restore_xsave_or_legacy(vm, address, user_size, &legacy, &mut state)?
         } else {
             state.replace_fxsave_bytes(&legacy)
@@ -288,7 +299,7 @@ impl SignalFpState {
         address: usize,
         user_size: usize,
         legacy: &[u8],
-        state: &mut ax_cpu::UserXstate,
+        state: &mut ax_cpu::registers::UserXstate,
     ) -> SignalResult<bool> {
         let magic1 = read_u32(legacy, FXSAVE_SW_RESERVED_OFFSET);
         let extended_size = read_u32(legacy, FXSAVE_SW_RESERVED_OFFSET + 4) as usize;
@@ -310,7 +321,7 @@ impl SignalFpState {
                     .ok_or(VmError::BadAddress)?,
             )?;
             if read_u32(&frame, xstate_size) == FP_XSTATE_MAGIC2 {
-                let allowed = ax_cpu::UserXstate::user_feature_mask();
+                let allowed = ax_cpu::registers::UserXstate::user_feature_mask();
                 let user_xstate_bv = read_u64(&frame, XSAVE_HEADER_OFFSET);
                 if user_xstate_bv & !allowed != 0 {
                     return Ok(false);
@@ -334,13 +345,18 @@ impl SignalFpState {
 }
 
 impl Default for SignalFpState {
+    /// Constructs an initial legacy payload without reading the current CPU.
+    /// Live task delivery uses `new` with the runtime's captured xstate instead.
     fn default() -> Self {
-        Self::new(ax_cpu::UserXstate::initial())
+        Self {
+            state: ax_cpu::registers::UserXstate::initial(),
+            xsave: None,
+        }
     }
 }
 
 /// Decoded x86 signal FPU state; `None` requests the initial state.
-pub type SignalFpRestore = Option<ax_cpu::UserXstate>;
+pub type SignalFpRestore = Option<ax_cpu::registers::UserXstate>;
 
 fn read_user_bytes<I: VmIo>(vm: &mut I, address: usize, size: usize) -> SignalResult<Vec<u8>> {
     address.checked_add(size).ok_or(VmError::BadAddress)?;

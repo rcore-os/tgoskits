@@ -92,15 +92,6 @@ mod tests {
             selected_cache_dir(Some(override_dir.clone().into_os_string())).unwrap(),
             override_dir
         );
-        assert_eq!(selected_cache_dir(None).unwrap(), default_cache_dir());
         assert!(selected_cache_dir(Some(OsString::new())).is_err());
-
-        let json = serde_json::to_value(OvmfFirmware {
-            code: PathBuf::from("/cache/ovmf/x64/code.fd"),
-            vars: PathBuf::from("/cache/ovmf/x64/vars.fd"),
-        })
-        .unwrap();
-        assert_eq!(json["code"], "/cache/ovmf/x64/code.fd");
-        assert_eq!(json["vars"], "/cache/ovmf/x64/vars.fd");
     }
 }

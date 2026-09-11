@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.13.0...ax-net-v0.13.1) - 2026-09-09
+
+### Fixed
+
+- *(ax-net)* skip absent devices after owner startup ([#2288](https://github.com/rcore-os/tgoskits/pull/2288))
+
 ## [0.13.0](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.10...ax-net-v0.13.0) - 2026-09-09
 
 ### Added

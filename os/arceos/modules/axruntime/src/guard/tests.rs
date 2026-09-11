@@ -18,7 +18,7 @@ fn scheduler_exit_state_reuses_one_cpu_pin() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::thread::spawn(|| {
         ax_hal::percpu::initialize_host_test_cpu();
-        ax_hal::asm::disable_irqs();
+        ax_cpu::interrupt::disable_irqs();
         with_guard_state_mut(|state| assert!(state.claim_task_scheduler(0)));
         cpu_local::host_test::reset_register_read_counts();
 
@@ -33,7 +33,7 @@ fn scheduler_exit_state_reuses_one_cpu_pin() {
             reads.binding_observations, 0,
             "scheduler exit must trust switch-time binding publication"
         );
-        ax_hal::asm::enable_irqs();
+        ax_cpu::interrupt::enable_irqs();
     })
     .join()
     .expect("modeled CPU must finish scheduler exit state");
@@ -47,7 +47,7 @@ fn scheduler_entry_state_reuses_one_cpu_pin() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::thread::spawn(|| {
         ax_hal::percpu::initialize_host_test_cpu();
-        ax_hal::asm::disable_irqs();
+        ax_cpu::interrupt::disable_irqs();
         with_current_cpu_pin(cpu_local::release_bootstrap_preemption)
             .expect("modeled task must release bootstrap preemption");
         cpu_local::host_test::reset_register_read_counts();
@@ -71,7 +71,7 @@ fn scheduler_entry_state_reuses_one_cpu_pin() {
             "scheduler entry must trust switch-time binding publication"
         );
         with_guard_state_mut(|state| state.exit_scheduler_preempt("test scheduler frame"));
-        ax_hal::asm::enable_irqs();
+        ax_cpu::interrupt::enable_irqs();
     })
     .join()
     .expect("modeled CPU must finish scheduler entry state");
@@ -85,7 +85,7 @@ fn irq_pinned_guard_state_read_skips_current_context_reconstruction() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::thread::spawn(|| {
         ax_hal::percpu::initialize_host_test_cpu();
-        ax_hal::asm::disable_irqs();
+        ax_cpu::interrupt::disable_irqs();
         cpu_local::host_test::reset_register_read_counts();
 
         assert!(read_state().irq.is_clear());
@@ -96,7 +96,7 @@ fn irq_pinned_guard_state_read_skips_current_context_reconstruction() {
             reads.current_context, 0,
             "an IRQ-pinned CPU owner must not reconstruct task current"
         );
-        ax_hal::asm::enable_irqs();
+        ax_cpu::interrupt::enable_irqs();
     })
     .join()
     .expect("modeled CPU must finish the owner-state read");
@@ -110,7 +110,7 @@ fn final_preempt_exit_reuses_one_cpu_pin_and_one_depth_snapshot() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::thread::spawn(|| {
         ax_hal::percpu::initialize_host_test_cpu();
-        ax_hal::asm::disable_irqs();
+        ax_cpu::interrupt::disable_irqs();
         assert_eq!(
             current_preempt_depth(),
             1,
@@ -126,7 +126,7 @@ fn final_preempt_exit_reuses_one_cpu_pin_and_one_depth_snapshot() {
             "preempt exit reuses the published current and reads only the owned depth"
         );
         with_guard_state_mut(|state| state.exit_scheduler_preempt("modeled preempt exit"));
-        ax_hal::asm::enable_irqs();
+        ax_cpu::interrupt::enable_irqs();
     })
     .join()
     .expect("modeled CPU must finish the final preempt exit");

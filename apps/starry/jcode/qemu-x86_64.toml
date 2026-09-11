@@ -16,8 +16,17 @@ args = [
 ]
 uefi = false
 to_bin = false
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)page fault",
+    "(?i)segmentation fault",
+    "(?m)^/bin/sh:.*not found",
+]
+timeout = 60
+
+[[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_init_cmd = '''
+shell_cmd = '''
 export HOME=/root
 export USER=root
 export SHELL=/bin/sh
@@ -30,10 +39,3 @@ jcode --version
 echo "STARRY_JCODE_SMOKE_PASSED"
 '''
 success_regex = ["(?m)^STARRY_JCODE_SMOKE_PASSED\\s*$"]
-fail_regex = [
-    "(?i)\\bpanic(?:ked)?\\b",
-    "(?i)page fault",
-    "(?i)segmentation fault",
-    "(?m)^/bin/sh:.*not found",
-]
-timeout = 60

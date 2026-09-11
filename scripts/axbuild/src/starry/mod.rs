@@ -401,10 +401,7 @@ impl Starry {
         let (mut board_config, board_config_path) = self
             .load_board_config(&cargo, Some(case.board_config_path.as_path()))
             .await?;
-        board_config.shell_init_cmd = Some(app::merge_board_init_command(
-            &case.init_cmd,
-            board_config.shell_init_cmd.as_deref(),
-        ));
+        app::configure_board_init_step(&mut board_config, &case.init_cmd)?;
         let arch = arch_for_target_checked(&case.target)?;
         let session_assets = app::prepare_app_board_session_assets(
             self.app.workspace_root(),

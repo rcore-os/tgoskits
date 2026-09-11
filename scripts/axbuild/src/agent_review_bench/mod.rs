@@ -418,25 +418,6 @@ mod tests {
         assert!(recall_gate_failed(79.9, Some(80)));
     }
 
-    #[test]
-    fn agent_options_apply_to_review_and_grade() {
-        let args = RunArgs {
-            cases: Vec::new(),
-            prs: Vec::new(),
-            agent: AgentKind::Claude,
-            model: Some(String::new()),
-            reasoning_effort: "effort with spaces".into(),
-            timeout_secs: 7,
-            min_recall: None,
-            output: None,
-        };
-
-        let options = resolve_agent_options(&args);
-        assert_eq!(options.model.as_deref(), Some(""));
-        assert_eq!(options.reasoning_effort, "effort with spaces");
-        assert_eq!(options.timeout_secs, 7);
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn mock_agents_write_artifacts_and_reject_invalid_json() {

@@ -204,7 +204,7 @@ mod tests {
 
 #[cfg(all(test, axtest))]
 mod axtests {
-    use ax_runtime::hal::cpu::asm::irqs_enabled;
+    use ax_runtime::hal::cpu::interrupt::irqs_enabled;
 
     use super::*;
 

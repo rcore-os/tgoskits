@@ -13,6 +13,13 @@ const DEFAULT_PLATFORM_CRATE: &str = "axplat_dyn";
 const DEFAULT_CPU_CAPACITY: usize = 16;
 
 fn main() {
+    let kernel_tls = std::env::var_os("CARGO_FEATURE_TLS").is_some()
+        && std::env::var_os("CARGO_FEATURE_USPACE").is_none();
+    println!("cargo::rustc-check-cfg=cfg(kernel_tls)");
+    if kernel_tls {
+        println!("cargo::rustc-cfg=kernel_tls");
+    }
+
     println!("cargo:rerun-if-env-changed=SMP");
     println!("cargo:rerun-if-env-changed={PLATFORM_CRATE_ENV}");
 

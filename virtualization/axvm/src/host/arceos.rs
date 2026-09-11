@@ -548,6 +548,7 @@ impl HostPlatform for ArceOsHost {
     }
 
     fn enable_virtualization_on_current_cpu(&self) -> AxVmResult {
+        crate::arch::current::prepare_host_virtualization()?;
         crate::percpu::init_current_cpu()?;
         crate::percpu::enable_current_cpu()?;
         crate::percpu::mark_cpu_enabled(self.this_cpu_id());
@@ -557,6 +558,7 @@ impl HostPlatform for ArceOsHost {
     fn enable_virtualization_on_all_cpus(&self) -> AxVmResult {
         static CORES: AtomicUsize = AtomicUsize::new(0);
 
+        crate::arch::current::prepare_host_virtualization()?;
         info!("Enabling hardware virtualization support on all cores...");
         CORES.store(0, Ordering::Release);
         crate::percpu::reset_enabled_cpu_mask();

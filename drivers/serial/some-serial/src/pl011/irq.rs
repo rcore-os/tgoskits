@@ -35,6 +35,18 @@ impl UartIrq for Pl011Irq {
             events |= SerialEventSet::FAULT;
         }
         let mut rx_errors = rx_errors_from_mis(mis);
+        let tx_rearm = events & SerialEventSet::TX_SPACE;
+        if !tx_rearm.is_empty() && !events.contains(SerialEventSet::FAULT) {
+            self.mask(tx_rearm);
+        }
+        // Retire RX/RT by reading UARTDR, as in Linux pl011_int. Explicitly
+        // clearing them can erase a new arrival after the final RXFE check;
+        // QEMU will not reassert RX until the FIFO crosses its threshold again.
+        // TX is already masked, and sampled error/modem latches are cleared
+        // before draining so later events remain pending for the next IRQ.
+        self.registers()
+            .uarticr
+            .set(active & !(UARTIS::RX::SET.value | UARTIS::RT::SET.value));
         if events.intersects(SerialEventSet::RX) {
             let base = self.base;
             // SAFETY: `base` is the mapped PL011 register block shared with
@@ -50,16 +62,15 @@ impl UartIrq for Pl011Irq {
             }
         }
 
-        let mut rearm = events & SerialEventSet::TX_SPACE;
+        let mut rearm = tx_rearm;
         if rx.len() == IRQ_RX_BATCH_CAPACITY || rx_errors.contains(RxErrorFlags::OVERRUN) {
             rearm |= SerialEventSet::RX;
         }
         if events.contains(SerialEventSet::FAULT) {
             self.registers().uartimsc.set(0);
-        } else if !rearm.is_empty() {
-            self.mask(rearm);
+        } else if rearm.intersects(SerialEventSet::RX) {
+            self.mask(SerialEventSet::RX);
         }
-        self.registers().uarticr.set(active);
 
         Some(SerialIrqReport::new(
             SerialIrqEvent {

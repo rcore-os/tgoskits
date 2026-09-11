@@ -23,6 +23,8 @@ fn test_vm_with_machine(
         name: config.name(),
         config: StdMutex::new(config),
         machine: IrqSafeMutex::new(machine),
+        #[cfg(not(target_arch = "aarch64"))]
+        translations: translation::TranslationGate::new(),
         fw_cfg_payload: Arc::new(FwCfgPayloadSlot::new()),
     })
 }

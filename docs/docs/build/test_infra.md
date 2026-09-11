@@ -175,6 +175,10 @@ Rust pipeline（`test/build/rust.rs`）交叉编译用例 `rust/` 目录下的 C
 
 二进制名取自 `Cargo.toml` 的 `[[bin]]` name，缺失时回退到 package 名。
 
+### 6.2 Rootfs 解包完整性校验
+
+rootfs 解包（`debugfs rdump`）的权限决策：Linux 上按有效 uid、完整 uid/gid 映射与 `CAP_CHOWN` 决定是否进入 fakeroot，需要 fakeroot 但不可用时在启动 debugfs 前失败。非 Linux Unix 宿主（如 macOS）没有可用的 fakeroot（常见打包是 shell shim，会拆坏 `-R` 引号参数并假成功退出 0），因此直接执行 debugfs，并在解包后用 `debugfs -R "ls -p /"` 校验镜像顶层条目在暂存目录中全部存在，不得只信任退出码。`ls -p` 行格式为 `/inode/mode/uid/gid/name/`，文件条目末尾多一段 `/<size>/`，名字固定取第 5 段。
+
 ## 7. 资产准备与 rootfs 缓存
 
 ### 7.1 工作目录布局
@@ -295,12 +299,7 @@ fi
 
 ### 8.2 自动执行
 
-`apply_grouped_qemu_config()` 把 runner 注入 QEMU 配置：
-
-- 无 `autorun_profile_script` 时，设置 `qemu.shell_init_cmd = "exec <runner_path>"`，guest shell 启动即执行；
-- 有 `autorun_profile_script` 时，写入 `etc/profile.d/<script>.sh`，在登录 profile 阶段执行（通过 `AXBUILD_GROUPED_AUTORUN_DONE` 防止重复）。
-
-同时把 `success_regex` 设为 `all_passed_marker`，并把 `fail_regex` 追加 `all_failed_marker`。
+`GroupedCaseExecution::GuestInit` 表示由客户机启动脚本执行 grouped runner。StarryOS 的 `os/StarryOS/starryos/src/init.sh` 在进入登录 shell 前调用 `/usr/bin/starry-run-case-tests`，不依赖 `/etc/profile.d`。`apply_grouped_qemu_config()` 生成不含 `shell_prefix`/`shell_cmd` 的被动步骤，匹配整组成功标记，并把 grouped 失败正则追加到 QEMU 顶层。`External` 表示共享框架不生成或启动 grouped runner；Axvisor 使用该配置，并在用例发现阶段拒绝非空 `test_commands`，其命令执行由显式 `shell_check_steps` 负责。
 
 ## 9. QEMU 启动控制
 
@@ -362,7 +361,7 @@ StarryOS 和 Axvisor 通过 `CaseAssetConfig` 注入差异，共享框架不包�
 
 ```rust
 pub(crate) struct CaseAssetConfig {
-    pub(crate) grouped_runner: GroupedCaseRunnerConfig,   // marker 前缀
+    pub(crate) grouped_execution: GroupedCaseExecution,  // 分组执行归属
     pub(crate) script_env: CaseScriptEnvConfig,           // 脚本环境变量
     pub(crate) cache_env_vars: Vec<String>,               // 纳入缓存键的环境变量
     pub(crate) prepare_staging_root: fn(&Path) -> Result<()>,  // rootfs 解压后钩子
@@ -373,6 +372,6 @@ pub(crate) struct CaseAssetConfig {
 | 子系统 | `prepare_staging_root` | `prepare_guest_package_env` | `cache_env_vars` | grouped marker 前缀 |
 |--------|------------------------|-----------------------------|------------------|---------------------|
 | StarryOS | DNS 注入 | APK 区域配置 | `STARRY_APK_REGION` | `STARRY` |
-| Axvisor | 空操作 `\|_| Ok(())` | 无 | — | `AXVISOR` |
+| Axvisor | 空操作 `\|_| Ok(())` | 无 | — | 不支持 `test_commands` |
 
 StarryOS 的 `prepare_staging_root` 读取宿主 DNS 写入 staging `/etc/resolv.conf`，过滤 loopback 和 slirp 地址；`prepare_guest_package_env` 根据 `STARRY_APK_REGION` 重写 `/etc/apk/repositories`。`STARRY_APK_REGION` 同时出现在 `cache_env_vars` 中，因此切换区域会使 rootfs 缓存失效。

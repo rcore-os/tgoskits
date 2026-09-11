@@ -36,6 +36,8 @@ mod config;
     feature = "test-console-interleave"
 ))]
 mod console_regression;
+#[cfg(all(feature = "test-el2-fatal", target_arch = "aarch64"))]
+mod fatal_regression;
 mod guest_console;
 #[cfg(any(feature = "browser-console", feature = "http-axum"))]
 mod http;
@@ -75,6 +77,9 @@ fn main() {
     info!("Starting virtualization...");
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
+
+    #[cfg(all(feature = "test-el2-fatal", target_arch = "aarch64"))]
+    fatal_regression::run();
 
     manager.init_default_vms();
 
@@ -124,9 +129,7 @@ fn main() {
     // `Ready`) and the management plane boots them on demand, so nothing is
     // launched or waited on here.
     #[cfg(not(feature = "no-auto-start"))]
-    let started_vms = manager.launch_default_vms();
-    #[cfg(not(feature = "no-auto-start"))]
-    guest_console::attach_default(started_vms);
+    let _ = manager.launch_default_vms();
 
     #[cfg(not(feature = "no-auto-start"))]
     std::thread::Builder::new()

@@ -19,6 +19,13 @@ const DEFAULT_SCHEDULER_TICK_MS: u64 = 10;
 const NANOS_PER_MILLISECOND: u64 = 1_000_000;
 
 fn main() -> Result<()> {
+    let kernel_tls = std::env::var_os("CARGO_FEATURE_TLS").is_some()
+        && std::env::var_os("CARGO_FEATURE_USPACE").is_none();
+    println!("cargo::rustc-check-cfg=cfg(kernel_tls)");
+    if kernel_tls {
+        println!("cargo::rustc-cfg=kernel_tls");
+    }
+
     println!("cargo:rerun-if-changed={LINKER_TEMPLATE_NAME}");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_EXT_LD");
     println!("cargo:rerun-if-env-changed=SMP");

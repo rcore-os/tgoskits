@@ -1,4 +1,4 @@
-use ax_cpu::{UnalignedAccess, UnalignedAccessType, UnalignedError};
+use ax_cpu::trap::{UnalignedAccess, UnalignedAccessType, UnalignedError};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{cpu::trap::PageFaultFlags, paging::MappingFlags};
 
@@ -15,7 +15,7 @@ pub(super) enum UnalignedEmulationResult {
 
 pub(super) fn emulate_user_unaligned(
     thread: &Thread,
-    context: &mut ax_cpu::uspace::UserContext,
+    context: &mut ax_cpu::user::UserContext,
     fault_address: usize,
 ) -> Result<UnalignedEmulationResult, UnalignedError> {
     let access = unsafe { context.decode_unaligned_access_at(fault_address as u64)? };

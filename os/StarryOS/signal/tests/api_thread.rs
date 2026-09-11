@@ -1,4 +1,4 @@
-use ax_cpu::uspace::UserContext;
+use ax_cpu::user::UserContext;
 use linux_raw_sys::general::{SS_DISABLE, SS_ONSTACK};
 use starry_signal::{
     SignalActionFlags, SignalDisposition, SignalInfo, SignalOSAction, SignalSet, SignalStack, Signo,

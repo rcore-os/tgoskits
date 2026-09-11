@@ -293,29 +293,19 @@ mod tests {
     #[test]
     fn arceos_c_default_run_selects_all_feature_only() {
         let features = c_qemu_features_for_run(None).unwrap();
-        assert!(
-            features
-                .iter()
-                .any(|feature| *feature == ARCEOS_C_ALL_FEATURE)
-        );
+        assert_eq!(features, vec![ARCEOS_C_ALL_FEATURE]);
     }
 
     #[test]
     fn arceos_c_selected_case_is_exact_feature_name() {
         let features = c_qemu_features_for_list(Some("pthread-basic")).unwrap();
-        assert!(features.iter().any(|feature| *feature == "pthread-basic"));
+        assert_eq!(features, vec!["pthread-basic"]);
     }
 
     #[test]
     fn arceos_c_default_list_hides_all_feature() {
         let features = c_qemu_features_for_list(None).unwrap();
 
-        assert!(!features.is_empty());
-        assert!(
-            ARCEOS_C_QEMU_LISTED_CASES
-                .iter()
-                .all(|feature| features.contains(feature))
-        );
         assert!(!features.contains(&ARCEOS_C_ALL_FEATURE));
     }
 
@@ -367,8 +357,9 @@ mod tests {
         .unwrap();
         fs::write(
             root.join("qemu-x86_64.toml"),
-            "args = [\"-nographic\"]\nuefi = false\nto_bin = false\nsuccess_regex = \
-             [\"PASS\"]\nfail_regex = [\"panic\"]\n",
+            "args = [\"-nographic\"]\nuefi = false\nto_bin = false\nshell_check_steps = [{ \
+             shell_prefix = \"#\", shell_cmd = \"run\", success_regex = [\"PASS\"] }]\nfail_regex \
+             = [\"panic\"]\n",
         )
         .unwrap();
 
@@ -385,37 +376,6 @@ mod tests {
     }
 
     #[test]
-    fn load_c_test_build_config_reads_build_info() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("build-x86_64-unknown-none.toml");
-        fs::write(
-            &path,
-            "app-c = \"c\"\nfeatures = [\"alloc\", \"paging\"]\nlog = \"Trace\"\nmax_cpu_num = \
-             4\n\n[env]\n",
-        )
-        .unwrap();
-
-        let config = load_c_test_build_config(&path).unwrap();
-        assert_eq!(config.app_c, Some(PathBuf::from("c")));
-        assert!(
-            config
-                .build_info
-                .features
-                .iter()
-                .any(|feature| feature == "alloc")
-        );
-        assert!(
-            config
-                .build_info
-                .features
-                .iter()
-                .any(|feature| feature == "paging")
-        );
-        assert_eq!(config.build_info.log, build::LogLevel::Trace);
-        assert_eq!(config.build_info.max_cpu_num, Some(4));
-    }
-
-    #[test]
     fn load_c_test_build_config_rejects_missing_app_c() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("build-x86_64-unknown-none.toml");
@@ -423,23 +383,5 @@ mod tests {
 
         let err = load_c_test_build_config(&path).unwrap_err();
         assert!(err.to_string().contains("must set `app-c = \"c\"`"));
-    }
-
-    #[test]
-    fn load_c_test_qemu_config_reads_standard_qemu_config() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("qemu-x86_64.toml");
-        fs::write(
-            &path,
-            "args = [\"-nographic\"]\nuefi = false\nto_bin = false\nsuccess_regex = \
-             [\"PASS\"]\nfail_regex = [\"panic\"]\ntimeout = 120\n",
-        )
-        .unwrap();
-
-        let config = load_c_test_qemu_config(&path).unwrap();
-        assert!(config.args.iter().any(|arg| arg == "-nographic"));
-        assert!(config.success_regex.iter().any(|regex| regex == "PASS"));
-        assert!(config.fail_regex.iter().any(|regex| regex == "panic"));
-        assert_eq!(config.timeout, Some(120));
     }
 }

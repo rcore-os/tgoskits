@@ -40,5 +40,4 @@ mod platform;
 mod std_features;
 mod std_linker;
 mod std_metadata;
-mod std_targets;
 mod target_specs;

@@ -15,6 +15,7 @@ vfs = ["ax-sync/sleep"]
 lockdep = ["axfs-ng-vfs/lockdep"]
 
 [dependencies]
+atomic-waker.workspace = true
 axfs-ng-vfs = { workspace = true }
 ax-io = { workspace = true, features = ["alloc"] }
 ax-lazyinit.workspace = true
@@ -51,3 +52,6 @@ ax-sync = { workspace = true, features = ["host-test"] }
 # Runtime integration is tested from the workspace. A published version here
 # would form a release-order cycle with ax-runtime's filesystem dependency.
 ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

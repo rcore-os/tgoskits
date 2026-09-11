@@ -7,6 +7,8 @@ sidebar_label: "Std 白名单测试"
 
 `cargo xtask test` 是 axbuild 在 host 端执行的 Rust std 测试入口。它不是 `cargo test --workspace`：TGOSKits workspace 中混合了大量 `#![no_std]` 内核 crate，它们无法在标准 `cargo test` 环境下运行；盲目全量测试会因平台/特性不兼容大面积失败。本命令只测试一份**显式维护的白名单**，普通 package 执行 `cargo test -p <package>`，需要 host adapter 的 package 执行仓库定义的固定 feature profile。这样纯算法库以及可通过正式 host 边界测试的内核组件都能保持回归覆盖。
 
+测试设计与 Rust 布局统一遵循仓库 [test-quality](https://github.com/rcore-os/tgoskits/blob/dev/.agents/skills/test-quality/SKILL.md)：源码末尾的单元测试验证算法和业务逻辑，`{crate}/tests/` 只通过公开 API 验证完整能力，不通过 `#[path]` 或其他源码包含方式引入生产实现。白名单决定执行哪些软件包，不要求为新增软件包复制固定实例测试。
+
 ## 1. 白名单边界
 
 TGOSKits workspace 目前包含近 150 个 crate，其中绝大多数是面向裸机/内核环境的 `#![no_std]` crate，依赖 `axcpu`、特定 target triple 和明确的内核 feature 组合才能编译。直接对全 workspace 跑 `cargo test` 会触发两类系统性失败：
@@ -109,7 +111,7 @@ cargo test -p ax-task --features host-test
 ```
 
 `ax-hal` 等关键 profile 先用同一参数追加 `-- --list`，并把发现到的测试名与静态预期集合
-精确比较。这样 feature 改名或 cfg 漂移导致的“命令成功但实际运行 0 个关键测试”会直接失败。
+精确比较。这样 feature 改名或 cfg 漂移导致的“命令成功但实际运行 0 个关键测试”会直接失败。该机制用于确认必需功能实际运行，不是要求为每个测试名、参数或 profile 新增固定断言；清理测试时仍需保持发现和零测试拒绝有效。
 
 关键设计决策：
 

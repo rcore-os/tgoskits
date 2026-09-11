@@ -260,5 +260,3 @@ proxychains4 cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix
 - `qemu run` finished in 394.18 seconds; xtask wall time 423.31 seconds
 
 The app image still lacks `/etc/starry-nixos/keep-running`. Marker/poweroff semantics are unchanged from P1.
-
-

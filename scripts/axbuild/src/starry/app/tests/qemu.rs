@@ -1,20 +1,14 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::Path};
 
 use tempfile::tempdir;
 
-use super::{
-    app_qemu_test_case, load_qemu_app_case_fields, prepare_qemu_app_case, resolve_qemu_config,
-};
+use super::{load_qemu_app_case_fields, prepare_qemu_app_case, resolve_qemu_config};
 use crate::{
     rootfs::qemu::RootfsWritePolicy,
     starry::app::{
-        StarryAppQemuCase, discover_apps,
+        discover_apps,
         test_support::{write_case_file, write_test_image_config},
     },
-    test::case::HostHttpServerConfig,
 };
 
 #[tokio::test]
@@ -31,7 +25,6 @@ async fn app_owned_rootfs_runs_declared_builder_without_default_rootfs() {
 ]
 uefi = true
 to_bin = true
-success_regex = []
 fail_regex = []
 
 [rootfs_preparation]
@@ -74,7 +67,6 @@ async fn app_owned_rootfs_rejects_builder_that_does_not_publish_artifact() {
 ]
 uefi = true
 to_bin = true
-success_regex = []
 fail_regex = []
 
 [rootfs_preparation]
@@ -121,7 +113,6 @@ async fn app_owned_rootfs_rejects_target_arch_mismatch_before_builder_runs() {
 ]
 uefi = true
 to_bin = true
-success_regex = []
 fail_regex = []
 
 [rootfs_preparation]
@@ -191,7 +182,6 @@ async fn qemu_case_uses_starry_default_arch_without_an_arch_argument() {
 ]
 uefi = false
 to_bin = true
-success_regex = []
 fail_regex = []
 
 [rootfs_preparation]
@@ -280,8 +270,8 @@ fn qemu_case_fields_load_grouped_commands_and_subcases() {
         root.path(),
         "qemu/sqlite",
         "qemu-x86_64.toml",
-        "args = []\nuefi = false\nto_bin = true\nsuccess_regex = []\nfail_regex = \
-         []\ntest_commands = [\"/usr/bin/app-sqlite\", \"/usr/bin/app-sqlite-deep\"]\n",
+        "args = []\nuefi = false\nto_bin = true\nfail_regex = []\ntest_commands = \
+         [\"/usr/bin/app-sqlite\", \"/usr/bin/app-sqlite-deep\"]\n",
     );
     write_case_file(
         root.path(),
@@ -305,20 +295,11 @@ fn qemu_case_fields_load_grouped_commands_and_subcases() {
     let fields =
         load_qemu_app_case_fields(root.path(), &app, qemu_config.as_deref().unwrap()).unwrap();
 
-    assert!(
-        fields
-            .test_case
-            .test_commands
-            .iter()
-            .any(|command| command == "/usr/bin/app-sqlite")
+    assert_eq!(
+        fields.test_case.test_commands,
+        vec!["/usr/bin/app-sqlite", "/usr/bin/app-sqlite-deep"]
     );
-    assert!(
-        fields
-            .test_case
-            .test_commands
-            .iter()
-            .any(|command| command == "/usr/bin/app-sqlite-deep")
-    );
+    assert_eq!(fields.test_case.subcases.len(), 2);
 }
 
 #[test]
@@ -336,7 +317,6 @@ fn qemu_case_fields_load_configured_managed_rootfs() {
 ]
 uefi = false
 to_bin = true
-success_regex = []
 fail_regex = []
 "#,
     );
@@ -365,7 +345,6 @@ fn qemu_case_fields_load_persistent_rootfs_policy() {
 uefi = false
 to_bin = true
 rootfs_write_policy = "persist"
-success_regex = []
 fail_regex = []
 "#,
     );
@@ -380,49 +359,4 @@ fail_regex = []
         load_qemu_app_case_fields(root.path(), &app, qemu_config.as_deref().unwrap()).unwrap();
 
     assert_eq!(fields.write_policy, RootfsWritePolicy::Persist);
-}
-
-#[test]
-fn app_qemu_test_case_preserves_host_symbolize_success_regex() {
-    let case_dir = PathBuf::from("/tmp/apps/starry/memtrack-backtrace");
-    let qemu_config_path = case_dir.join("qemu-x86_64.toml");
-    let case = StarryAppQemuCase {
-        name: "memtrack-backtrace".to_string(),
-        arch: "x86_64".to_string(),
-        target: "x86_64-unknown-none".to_string(),
-        build_config_path: None,
-        qemu_config_path: Some(qemu_config_path.clone()),
-        rootfs_path: PathBuf::from("/tmp/rootfs.img"),
-        rootfs_write_policy: RootfsWritePolicy::Discard,
-        test_commands: Vec::new(),
-        grouped_command_selection: Default::default(),
-        host_symbolize_success_regex: vec!["symbolized".to_string()],
-        host_http_server: Some(HostHttpServerConfig {
-            bind: "127.0.0.1".to_string(),
-            port: 18382,
-            body: "fixture".to_string(),
-            body_size: None,
-            body_byte: b'X',
-            dir: None,
-        }),
-        subcases: Vec::new(),
-    };
-
-    let test_case = app_qemu_test_case(&case, case_dir.clone()).unwrap();
-
-    assert_eq!(test_case.case_dir, case_dir);
-    assert_eq!(test_case.qemu_config_path, qemu_config_path);
-    assert!(
-        test_case
-            .host_symbolize_success_regex
-            .iter()
-            .any(|regex| regex == "symbolized")
-    );
-    assert_eq!(
-        test_case
-            .host_http_server
-            .as_ref()
-            .map(|config| (config.bind.as_str(), config.port)),
-        Some(("127.0.0.1", 18382))
-    );
 }

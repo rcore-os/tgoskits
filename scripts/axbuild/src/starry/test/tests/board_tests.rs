@@ -10,26 +10,16 @@ fn discovers_board_test_group_and_build_mapping() {
     );
     let board_test_config =
         write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
-    fs::write(
-        board_test_config
-            .parent()
-            .unwrap()
-            .join("requirements.toml"),
-        "required_env = [\"BOARD_TOKEN\"]\n",
-    )
-    .unwrap();
 
     let groups = discover_board_test_groups(root.path(), None, None).unwrap();
 
-    let group = groups
-        .iter()
-        .find(|group| group.name == "smoke" && group.board_name == "orangepi-5-plus")
-        .expect("smoke board group should be discovered");
-    assert_eq!(group.arch, "aarch64");
-    assert_eq!(group.target, "aarch64-unknown-none-softfloat");
-    assert_eq!(group.build_config_path, build_config);
-    assert_eq!(group.board_test_config_path, board_test_config);
-    assert_eq!(group.required_env, ["BOARD_TOKEN"]);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].name, "smoke");
+    assert_eq!(groups[0].board_name, "orangepi-5-plus");
+    assert_eq!(groups[0].arch, "aarch64");
+    assert_eq!(groups[0].target, "aarch64-unknown-none-softfloat");
+    assert_eq!(groups[0].build_config_path, build_config);
+    assert_eq!(groups[0].board_test_config_path, board_test_config);
 }
 
 #[test]
@@ -47,20 +37,19 @@ fn discovers_board_case_when_case_dir_contains_build_config() {
     let board_test_config = case_dir.join("board-orangepi-5-plus.toml");
     fs::write(
         &board_test_config,
-        "board_type = \"OrangePi-5-Plus\"\nshell_prefix = \
-         \"orangepi@orangepi5plus:~\"\nshell_init_cmd = \"pwd && echo 'test \
-         pass'\"\nsuccess_regex = [\"(?m)^test pass\\\\s*$\"]\nfail_regex = []\ntimeout = 300\n",
+        "board_type = \"OrangePi-5-Plus\"\nshell_check_steps = [{ shell_prefix = \
+         \"orangepi@orangepi5plus:~\", shell_cmd = \"pwd && echo 'test pass'\", success_regex = \
+         [\"(?m)^test pass\\\\s*$\"] }]\nfail_regex = []\ntimeout = 300\n",
     )
     .unwrap();
 
     let groups = discover_board_test_groups(root.path(), None, None).unwrap();
 
-    let group = groups
-        .iter()
-        .find(|group| group.name == "smoke" && group.board_name == "orangepi-5-plus")
-        .expect("smoke board group should be discovered");
-    assert_eq!(group.build_config_path, build_config);
-    assert_eq!(group.board_test_config_path, board_test_config);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].name, "smoke");
+    assert_eq!(groups[0].board_name, "orangepi-5-plus");
+    assert_eq!(groups[0].build_config_path, build_config);
+    assert_eq!(groups[0].board_test_config_path, board_test_config);
 }
 
 #[test]
@@ -77,16 +66,13 @@ fn filters_board_test_group_by_case() {
 
     let groups = discover_board_test_groups(root.path(), Some("smoke"), None).unwrap();
 
-    assert!(groups.iter().all(|group| group.name == "smoke"));
-    assert!(
+    assert_eq!(groups.len(), 2);
+    assert_eq!(
         groups
             .iter()
-            .any(|group| group.board_name == "orangepi-5-plus")
-    );
-    assert!(
-        groups
-            .iter()
-            .any(|group| group.board_name == "vision-five2")
+            .map(|group| format!("{}/{}", group.name, group.board_name))
+            .collect::<Vec<_>>(),
+        vec!["smoke/orangepi-5-plus", "smoke/vision-five2"]
     );
 }
 
@@ -105,13 +91,13 @@ fn filters_board_test_groups_by_board() {
 
     let groups = discover_board_test_groups(root.path(), None, Some("orangepi-5-plus")).unwrap();
 
-    assert!(
+    assert_eq!(
         groups
             .iter()
-            .all(|group| group.board_name == "orangepi-5-plus")
+            .map(|group| format!("{}/{}", group.name, group.board_name))
+            .collect::<Vec<_>>(),
+        vec!["smoke/orangepi-5-plus", "syscall/orangepi-5-plus"]
     );
-    assert!(groups.iter().any(|group| group.name == "smoke"));
-    assert!(groups.iter().any(|group| group.name == "syscall"));
 }
 
 #[test]

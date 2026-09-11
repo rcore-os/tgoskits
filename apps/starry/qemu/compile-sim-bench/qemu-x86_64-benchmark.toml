@@ -15,9 +15,6 @@ args = [
 ]
 uefi = true
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/compile-sim-bench-run --benchmark"
-success_regex = ["(?m)^COMPILE_SIM_BENCH_PASSED\\s*$"]
 fail_regex = [
     "(?m)^COMPILE_SIM_BENCH_FAILED status=",
     "(?i)kernel panic",
@@ -25,3 +22,8 @@ fail_regex = [
     "(?i)segmentation fault",
 ]
 timeout = 1800
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/compile-sim-bench-run --benchmark"
+success_regex = ["(?m)^COMPILE_SIM_BENCH_PASSED\\s*$"]

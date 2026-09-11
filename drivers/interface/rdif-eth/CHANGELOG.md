@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.5.0...rdif-eth-v0.6.0) - 2026-09-09
+
+### Fixed
+
+- *(ax-net)* skip absent devices after owner startup ([#2288](https://github.com/rcore-os/tgoskits/pull/2288))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.4.1...rdif-eth-v0.5.0) - 2026-09-09
 
 ### Added

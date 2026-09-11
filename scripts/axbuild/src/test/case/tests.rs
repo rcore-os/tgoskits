@@ -52,7 +52,7 @@ impl Drop for TempEnvVar {
 
 fn fake_config() -> CaseAssetConfig {
     CaseAssetConfig {
-        grouped_execution: GroupedCaseExecution::ShellCommand(GroupedCaseRunnerConfig {
+        grouped_execution: GroupedCaseExecution::GuestInit(Box::new(GroupedCaseRunnerConfig {
             runner_name: "suite-run-case-tests".to_string(),
             runner_path: "/usr/bin/suite-run-case-tests".to_string(),
             begin_marker: "SUITE_GROUPED_TEST_BEGIN".to_string(),
@@ -62,7 +62,7 @@ fn fake_config() -> CaseAssetConfig {
             all_failed_marker: "SUITE_GROUPED_TESTS_FAILED".to_string(),
             success_regex: r"(?m)^SUITE_GROUPED_TESTS_PASSED\s*$".to_string(),
             fail_regex: r"(?m)^SUITE_GROUPED_TEST_FAILED:".to_string(),
-        }),
+        })),
         script_env: CaseScriptEnvConfig {
             staging_root: "SUITE_STAGING_ROOT".to_string(),
             case_dir: "SUITE_CASE_DIR".to_string(),
@@ -143,15 +143,21 @@ fn external_grouped_execution_does_not_install_a_runner() {
 
 #[test]
 fn guest_init_grouped_execution_skips_shell_init() {
-    let mut config = fake_config();
-    config.grouped_execution = GroupedCaseExecution::GuestInit(fake_runner(&config).clone());
+    let config = fake_config();
     let mut qemu = QemuConfig::default();
     let mut case = fake_case(tempdir().unwrap().path(), "grouped");
     case.test_commands = vec!["/usr/bin/alpha".to_string()];
 
     apply_grouped_qemu_config(&mut qemu, &case, &config.grouped_execution);
 
-    assert!(qemu.shell_init_cmd.is_none());
+    assert_eq!(qemu.shell_check_steps.len(), 1);
+    let step = &qemu.shell_check_steps[0];
+    assert_eq!(step.shell_prefix, None);
+    assert_eq!(step.shell_cmd, None);
+    assert_eq!(
+        step.success_regex,
+        Some(vec![fake_runner(&config).success_regex.clone()])
+    );
 }
 
 #[test]
@@ -162,17 +168,6 @@ fn grouped_cache_key_tracks_execution_owner() {
     let case = fake_case(root.path(), "grouped");
     let mut config = fake_config();
 
-    let shell_command = case_asset_cache_key(
-        "x86_64",
-        "x86_64-unknown-none",
-        CasePipeline::Grouped,
-        &case,
-        &shared_img,
-        &config,
-    )
-    .unwrap();
-
-    config.grouped_execution = GroupedCaseExecution::GuestInit(fake_runner(&config).clone());
     let guest_init = case_asset_cache_key(
         "x86_64",
         "x86_64-unknown-none",
@@ -183,7 +178,18 @@ fn grouped_cache_key_tracks_execution_owner() {
     )
     .unwrap();
 
-    assert_ne!(shell_command, guest_init);
+    config.grouped_execution = GroupedCaseExecution::External;
+    let external = case_asset_cache_key(
+        "x86_64",
+        "x86_64-unknown-none",
+        CasePipeline::Grouped,
+        &case,
+        &shared_img,
+        &config,
+    )
+    .unwrap();
+
+    assert_ne!(guest_init, external);
 }
 
 #[test]

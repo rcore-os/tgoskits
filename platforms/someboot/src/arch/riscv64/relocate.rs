@@ -12,14 +12,14 @@ pub fn apply() {
             ext_sym_addr!(__rela_dyn_end) as _,
             R_RISCV_RELATIVE,
         );
-        core::arch::asm!("fence.i", options(nostack, preserves_flags));
+        ax_cpu::cache::flush_icache_all();
     }
 }
 
 pub fn reset() {
     unsafe {
         crate::elf::reset(R_RISCV_RELATIVE);
-        core::arch::asm!("fence.i", options(nostack, preserves_flags));
+        ax_cpu::cache::flush_icache_all();
     }
 }
 

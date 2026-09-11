@@ -61,8 +61,8 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
                 || ptc.cpu_filter.is_some_and(|cpu| cpu != current_cpu)
                 || ptc.required_cluster.is_some_and(|cluster| {
                     super::super::percpu::cpu_info(current_cpu.as_usize()).is_none_or(|info| {
-                        ax_cpu::pmu::classify_midr(info.midr) != cluster
-                            || !info.event_supported(ptc.event)
+                        crate::perf::event_map::classify_midr(info.midr) != cluster
+                            || !crate::perf::event_map::event_supported_by(info, ptc.event)
                     })
                 })
         }) {
@@ -224,7 +224,7 @@ fn prepare_counter(
         };
         run_state.publish_registration(ticket, registration);
         // Arm the per-counter overflow interrupt, then start counting.
-        ax_cpu::pmu::overflow::enable_irq(n);
+        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.enable_overflow_irq(id));
     } else {
         // Counting: configure() programs event + EL filter AND resets to 0.
         counter
@@ -264,7 +264,7 @@ fn prepare_counter(
                     }
                 };
             run_state.publish_registration(ticket, registration);
-            ax_cpu::pmu::overflow::enable_irq(n);
+            crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.enable_overflow_irq(id));
         }
     }
     ptc.last_in_ns.store(now, Ordering::Release);
@@ -362,21 +362,23 @@ fn stop_hardware_on_owner(
         if registration.counter() != n {
             return Err(crate::StarryError::BadState);
         }
-        ax_cpu::pmu::overflow::disable_irq(n);
-        ax_cpu::pmu::counter::disable(n);
+        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.disable_overflow_irq(id));
+        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.disable(id));
         let delta = ptc.sampling_count.update(n);
         ptc.accumulated.fetch_add(delta, Ordering::AcqRel);
-        ax_cpu::pmu::overflow::clear(1 << n);
+        crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(1u64 << n));
         sampling::unregister(registration).map_err(|_| crate::StarryError::BadState)?;
     } else {
         // Freeze the physical slice before sampling its terminal value. Reading
         // first would lose the events retired between the read and disable.
         let counter = lease.counter();
-        if let Some(n) = counter.programmable_index() {
-            ax_cpu::pmu::overflow::disable_irq(n);
-        }
         counter.disable();
         let delta = ptc.read_counting_slice(counter);
+        if let Some(n) = counter.programmable_index() {
+            // The new PMU operation also acknowledges overflow. Fold its
+            // pending wrap before masking/clearing it; local IRQs are excluded.
+            crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.disable_overflow_irq(id));
+        }
         if let Some(registration) = lease.registration() {
             sampling::unregister_counting(registration)
                 .map_err(|_| crate::StarryError::BadState)?;

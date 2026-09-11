@@ -98,7 +98,7 @@ pub(crate) fn enter() {
 #[cfg(not(any(test, feature = "host-test")))]
 pub(crate) fn enter() {
     assert!(
-        !ax_hal::asm::irqs_enabled(),
+        !ax_cpu::interrupt::irqs_enabled(),
         "hard-IRQ accounting requires local IRQ exclusion"
     );
     let is_outer = with_current_state(HardIrqTime::begins_outer_interval);
@@ -118,7 +118,7 @@ pub(crate) fn exit() {
 #[cfg(not(any(test, feature = "host-test")))]
 pub(crate) fn exit() {
     assert!(
-        !ax_hal::asm::irqs_enabled(),
+        !ax_cpu::interrupt::irqs_enabled(),
         "hard-IRQ accounting requires local IRQ exclusion"
     );
     let is_outer = with_current_state(HardIrqTime::ends_outer_interval);

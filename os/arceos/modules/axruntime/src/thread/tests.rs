@@ -493,7 +493,7 @@ fn entry_extension_lookup_does_not_pin_exited_thread() {
     .expect("modeled CPU fixture must finish without a current-register mismatch");
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 #[test]
 fn bootstrap_thread_rejects_a_missing_tls_resource() {
     // SAFETY: this inert non-zero identity is never dereferenced because

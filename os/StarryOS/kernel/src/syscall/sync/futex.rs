@@ -1,7 +1,7 @@
 use core::mem::{align_of, size_of};
 
 use ax_runtime::hal::{
-    cpu::{UserAccessError, UserAtomicError, UserAtomicU32Op},
+    cpu::user::{UserAccessError, UserAtomicError, UserAtomicU32Op},
     time::monotonic_time,
 };
 use linux_raw_sys::general::{

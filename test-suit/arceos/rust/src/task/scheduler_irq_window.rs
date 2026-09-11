@@ -10,17 +10,12 @@ use std::{
 
 use ax_std::os::arceos::{
     api::task::{AxCpuMask, ax_set_current_affinity},
-    modules::{
-        ax_hal,
-        ax_runtime::{
-            diagnostics::qperf_runtime_scheduler_metrics_snapshot,
-            task::{
-                runtime::config::DEFAULT_BATCH_LIMIT,
-                sched::{
-                    CpuId, CpuSet, FairMode, Nice, RtPriority, SchedulePolicy, cpu_topology_len,
-                },
-                thread::{ThreadState, current::current_thread_id},
-            },
+    modules::ax_runtime::{
+        diagnostics::qperf_runtime_scheduler_metrics_snapshot,
+        task::{
+            runtime::config::DEFAULT_BATCH_LIMIT,
+            sched::{CpuId, CpuSet, FairMode, Nice, RtPriority, SchedulePolicy, cpu_topology_len},
+            thread::{ThreadState, current::current_thread_id},
         },
     },
     thread::{default_task_stack_size, join_thread, spawn_raw_with_affinity},
@@ -123,15 +118,15 @@ pub fn run() -> crate::TestResult {
 
     let before = qperf_runtime_scheduler_metrics_snapshot();
 
-    assert!(ax_hal::asm::irqs_enabled());
-    ax_hal::asm::disable_irqs();
+    assert!(ax_cpu::interrupt::irqs_enabled());
+    ax_cpu::interrupt::disable_irqs();
     publish_owner_work.store(true, Ordering::Release);
     let started = Instant::now();
     while !owner_work_published.load(Ordering::Acquire) && started.elapsed() < PROGRESS_TIMEOUT {
         hint::spin_loop();
     }
     let publication_completed = owner_work_published.load(Ordering::Acquire);
-    ax_hal::asm::enable_irqs();
+    ax_cpu::interrupt::enable_irqs();
     assert!(
         publication_completed,
         "CPU1 did not publish the bounded owner-work backlog"

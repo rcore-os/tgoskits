@@ -49,27 +49,6 @@ fn starry_final_images_leave_kernel_tls_disabled() {
     }
 }
 
-#[test]
-fn non_aarch64_final_images_never_select_arm_el2() {
-    let workspace = workspace_root();
-
-    for (package, targets) in [("axvisor", AXVISOR_TARGETS), ("starryos", STARRY_TARGETS)] {
-        for target in targets.iter().filter(|target| !target.contains("aarch64-")) {
-            let feature_graph = resolved_features(&workspace, package, target);
-            assert_lacks_feature(&feature_graph, "ax-cpu", "arm-el2", package, target);
-        }
-    }
-}
-
-#[test]
-fn aarch64_axvisor_selects_the_el2_cpu_execution_contract() {
-    let workspace = workspace_root();
-    let target = "scripts/targets/std/pie/aarch64-unknown-linux-musl.json";
-    let feature_graph = resolved_features(&workspace, "axvisor", target);
-
-    assert_has_feature(&feature_graph, "ax-cpu", "arm-el2", "Axvisor", target);
-}
-
 fn resolved_features(
     workspace: &Path,
     image_package: &str,

@@ -568,23 +568,18 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
                 .bind()
                 .map_err(|error| map_vcpu_backend_error("load vCPU on host CPU", error))?;
 
-            let result = operation();
-            let unload_result = self
-                .get_arch_vcpu()
-                .unbind()
-                .map_err(|error| map_vcpu_backend_error("unload vCPU from host CPU", error));
-            match result {
-                Ok(value) => {
-                    unload_result?;
-                    Ok(value)
+            with_backend_cleanup(operation, || {
+                if let Err(error) = self.get_arch_vcpu().unbind() {
+                    // A failed hardware retirement still owns this CPU and
+                    // its control leases. Returning or unwinding would release
+                    // the pin and permit migration with an active binding.
+                    // This runtime cannot recover that ownership transition;
+                    // abort without running the surrounding guard destructors.
+                    error!("cannot retire vCPU hardware on its binding CPU: {error:?}");
+                    std::process::abort();
                 }
-                Err(error) => {
-                    if let Err(unload_error) = unload_result {
-                        warn!("vCPU unload after operation failure also failed: {unload_error:?}");
-                    }
-                    Err(error)
-                }
-            }
+                Ok(())
+            })
         })
     }
 
@@ -622,6 +617,57 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     /// Sets the guest return value.
     pub fn set_return_value(&self, val: usize) {
         self.get_arch_vcpu().set_return_value(val);
+    }
+}
+
+/// Runs backend cleanup before its containing CPU pin and publication expire.
+/// The closure borrows the vCPU owner without holding a mutable backend borrow
+/// across exit interpretation, which may itself borrow the backend.
+struct BackendCleanup<F: FnOnce() -> AxVmResult> {
+    unload: Option<F>,
+}
+
+impl<F: FnOnce() -> AxVmResult> BackendCleanup<F> {
+    fn finish(mut self) -> AxVmResult {
+        // A cleanup can only be consumed once. Disarm before calling the backend
+        // so a backend panic cannot attempt the same unload again from Drop.
+        self.unload
+            .take()
+            .expect("backend cleanup is consumed once")()
+    }
+}
+
+impl<F: FnOnce() -> AxVmResult> Drop for BackendCleanup<F> {
+    fn drop(&mut self) {
+        if let Some(unload) = self.unload.take()
+            && let Err(error) = unload()
+        {
+            warn!("vCPU unload during unwinding failed: {error:?}");
+        }
+    }
+}
+
+/// Completes backend ownership before the surrounding pinned scope returns.
+fn with_backend_cleanup<T>(
+    operation: impl FnOnce() -> AxVmResult<T>,
+    unload: impl FnOnce() -> AxVmResult,
+) -> AxVmResult<T> {
+    let cleanup = BackendCleanup {
+        unload: Some(unload),
+    };
+    let result = operation();
+    let unload_result = cleanup.finish();
+    match result {
+        Ok(value) => {
+            unload_result?;
+            Ok(value)
+        }
+        Err(error) => {
+            if let Err(unload_error) = unload_result {
+                warn!("vCPU unload after operation failure also failed: {unload_error:?}");
+            }
+            Err(error)
+        }
     }
 }
 
@@ -770,6 +816,55 @@ fn map_interrupt_backend_error(operation: &'static str, error: VmBackendError) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_operation_unwind_runs_cleanup_once() {
+        let unloads = std::cell::Cell::new(0);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_backend_cleanup::<()>(
+                || panic!("exit interpretation failed"),
+                || {
+                    unloads.set(unloads.get() + 1);
+                    Ok(())
+                },
+            )
+        }));
+        assert!(result.is_err());
+        assert_eq!(unloads.get(), 1, "unwinding must release backend ownership");
+    }
+
+    #[test]
+    fn backend_cleanup_preserves_operation_error_priority() {
+        for operation_fails in [false, true] {
+            let unloads = std::cell::Cell::new(0);
+            let result = with_backend_cleanup(
+                || {
+                    if operation_fails {
+                        Err(AxVmError::OutOfMemory {
+                            operation: "operation",
+                        })
+                    } else {
+                        Ok(())
+                    }
+                },
+                || {
+                    unloads.set(unloads.get() + 1);
+                    Err(AxVmError::OutOfMemory {
+                        operation: "unload",
+                    })
+                },
+            );
+            let expected = if operation_fails {
+                "operation"
+            } else {
+                "unload"
+            };
+            assert!(
+                matches!(result, Err(AxVmError::OutOfMemory { operation }) if operation == expected)
+            );
+            assert_eq!(unloads.get(), 1);
+        }
+    }
 
     #[test]
     #[cfg(target_arch = "x86_64")]

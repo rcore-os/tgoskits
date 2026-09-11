@@ -11,7 +11,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-use alloc::{boxed::Box, collections::VecDeque, format, string::String, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, format, string::String, sync::Arc, vec, vec::Vec};
 use core::{
     num::NonZeroUsize,
     sync::atomic::{AtomicBool, AtomicU8, Ordering},
@@ -44,10 +44,13 @@ const COMMAND_WAIT: u8 = 0;
 const COMMAND_START: u8 = 1;
 const COMMAND_STOP: u8 = 2;
 const COMMAND_QUARANTINE: u8 = 3;
+const COMMAND_RUN: u8 = 4;
+const COMMAND_PRUNE: u8 = 5;
 
 const STATUS_PENDING: u8 = 0;
 const STATUS_READY: u8 = 1;
 const STATUS_FAILED: u8 = 2;
+const STATUS_EMPTY: u8 = 3;
 
 struct WifiCommandCompletion {
     result: SpinLock<Option<Result<(), NetError>>>,
@@ -144,6 +147,7 @@ pub(crate) struct WifiRuntimeHandle {
     owner_cpu: usize,
     queue: Arc<WifiControlQueue>,
     notify: Arc<QueueNotification>,
+    startup_group: Arc<PollGroupState>,
 }
 
 impl WifiRuntimeHandle {
@@ -271,6 +275,11 @@ struct EndpointToRegister {
     shared: Arc<PollGroupState>,
 }
 
+struct RegisteredEndpoint {
+    registration: Box<dyn PinnedNetIrqRegistration>,
+    shared: Arc<PollGroupState>,
+}
+
 /// Live queue runtime.  Dropping it masks IRQs before stopping executors.
 pub struct NetworkQueueRuntime {
     registrations: Vec<Box<dyn PinnedNetIrqRegistration>>,
@@ -279,10 +288,18 @@ pub struct NetworkQueueRuntime {
     _controls: Vec<Box<dyn rd_net::NetControlEndpoint>>,
     wifi_handles: Vec<WifiRuntimeHandle>,
     initial_wifi_policies: Vec<(usize, WifiLinkPolicy)>,
+    device_index_map: Vec<Option<usize>>,
     protocol_owner_cpu: usize,
 }
 
 impl NetworkQueueRuntime {
+    pub(crate) fn discovery_order(&self, device_index: usize) -> usize {
+        self.device_index_map
+            .iter()
+            .position(|&index| index == Some(device_index))
+            .expect("published network port must have a discovery order")
+    }
+
     pub fn protocol_owner_cpu(&self) -> usize {
         self.protocol_owner_cpu
     }
@@ -402,6 +419,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             let mut protocol_groups = Vec::with_capacity(poll_groups.len());
             let mut checksum_capabilities = None;
             let mut wifi_target = None;
+            let mut device_group_locations = Vec::with_capacity(poll_groups.len());
             for mut group in poll_groups {
                 checksum_capabilities = Some(checksum_capabilities.map_or(
                     group.tx.checksum_capabilities(),
@@ -452,6 +470,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                     shared: Arc::clone(&shared),
                 });
                 groups_by_cpu[owner_cpu].push(QueueGroupExecutor {
+                    wifi_startup_group: None,
                     group,
                     rx_ready: rx_ready_tx,
                     rx_recycle: rx_recycle_rx,
@@ -467,19 +486,25 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                     retry_at: None,
                     shared: Arc::clone(&shared),
                 });
-                wifi_target.get_or_insert((owner_cpu, owner_group_index));
+                wifi_target.get_or_insert((owner_cpu, owner_group_index, Arc::clone(&shared)));
+                device_group_locations.push((owner_cpu, owner_group_index));
                 group_states.push(shared);
                 flat_group += 1;
             }
             if let Some(wifi_control) = wifi_control {
-                let (owner_cpu, group_index) =
+                let (owner_cpu, group_index, startup_group) =
                     wifi_target.ok_or(NetworkRuntimeError::InvalidTopology)?;
+                for (group_cpu, local_index) in device_group_locations {
+                    groups_by_cpu[group_cpu][local_index].wifi_startup_group =
+                        Some(Arc::clone(&startup_group));
+                }
                 let queue = Arc::new(WifiControlQueue::new());
                 let handle = WifiRuntimeHandle {
                     device_index,
                     owner_cpu,
                     queue: Arc::clone(&queue),
                     notify: Arc::clone(&cpu_notifies[owner_cpu]),
+                    startup_group,
                 };
                 if let Some(transaction) = wifi_control.startup_transaction() {
                     startup_transactions.push((handle.clone(), transaction));
@@ -495,7 +520,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             controls.push(control);
             let port_mac = Arc::new(SpinLock::new(info.mac_address));
             port_macs.push(Arc::clone(&port_mac));
-            ports.push(Box::new(QueueFramePort {
+            ports.push(QueueFramePort {
                 name: port_name,
                 mac: port_mac,
                 groups: protocol_groups,
@@ -505,7 +530,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 next_tx: 0,
                 checksum_capabilities: checksum_capabilities
                     .unwrap_or(rd_net::TxChecksumCapabilities::NONE),
-            }) as Box<dyn EthernetFramePort>);
+            });
         }
 
         let mut executors = Vec::new();
@@ -518,6 +543,8 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 command: AtomicU8::new(COMMAND_WAIT),
                 affinity_status: AtomicU8::new(STATUS_PENDING),
                 startup_status: AtomicU8::new(STATUS_PENDING),
+                prune_status: AtomicU8::new(STATUS_PENDING),
+                publication_status: AtomicU8::new(STATUS_PENDING),
                 startup_error: SpinLock::new(None),
                 notify: Arc::clone(&cpu_notifies[owner_cpu]),
             });
@@ -557,6 +584,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
         let mut endpoint_iter = endpoints.into_iter();
         while let Some(mut endpoint) = endpoint_iter.next() {
             let shared = Arc::clone(&endpoint.shared);
+            let registration_state = Arc::clone(&endpoint.shared);
             let owner_cpu = endpoint.owner_cpu;
             let action = PinnedNetIrqAction::new(move || match endpoint.endpoint.handle_irq() {
                 NetHardIrqResult::Spurious => {
@@ -580,8 +608,11 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 {
                     Ok(registration) if registration.owner_cpu() == owner_cpu => registration,
                     Ok(registration) => {
-                        registrations.push(registration);
-                        let irq_synchronized = release_registrations(registrations);
+                        registrations.push(RegisteredEndpoint {
+                            registration,
+                            shared: registration_state,
+                        });
+                        let irq_synchronized = release_registered_endpoints(registrations);
                         stop_executors(&mut executors, irq_synchronized);
                         release_runtime_side_resources(
                             (
@@ -599,7 +630,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                         return Err(NetworkRuntimeError::InvalidTopology);
                     }
                     Err(error) => {
-                        let irq_synchronized = release_registrations(registrations);
+                        let irq_synchronized = release_registered_endpoints(registrations);
                         stop_executors(&mut executors, irq_synchronized);
                         release_runtime_side_resources(
                             (
@@ -617,13 +648,16 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                         return Err(error.into());
                     }
                 };
-            registrations.push(registration);
+            registrations.push(RegisteredEndpoint {
+                registration,
+                shared: registration_state,
+            });
         }
         drop(endpoint_iter);
 
         for registration in &registrations {
-            if let Err(error) = registration.enable() {
-                let irq_synchronized = release_registrations(registrations);
+            if let Err(error) = registration.registration.enable() {
+                let irq_synchronized = release_registered_endpoints(registrations);
                 stop_executors(&mut executors, irq_synchronized);
                 release_runtime_side_resources(
                     (
@@ -641,24 +675,48 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             }
         }
 
-        for executor in &executors {
-            executor
-                .control
-                .command
-                .store(COMMAND_START, Ordering::Release);
-            executor.control.notify.notify();
+        for command in [COMMAND_START, COMMAND_PRUNE] {
+            for executor in &executors {
+                executor.control.command.store(command, Ordering::Release);
+                executor.control.notify.notify();
+            }
+            for executor in &executors {
+                let status = if command == COMMAND_START {
+                    &executor.control.startup_status
+                } else {
+                    &executor.control.prune_status
+                };
+                wait_status(status);
+                if status.load(Ordering::Acquire) != STATUS_READY {
+                    let error = executor
+                        .control
+                        .startup_error
+                        .lock_irqsave()
+                        .take()
+                        .unwrap_or(NetError::InvalidParts);
+                    let irq_synchronized = release_registered_endpoints(registrations);
+                    stop_executors(&mut executors, irq_synchronized);
+                    release_runtime_side_resources(
+                        (
+                            controls,
+                            ports,
+                            port_macs,
+                            wifi_handles,
+                            startup_transactions,
+                            group_states,
+                            cpu_notifies,
+                        ),
+                        irq_synchronized,
+                    );
+                    return Err(NetworkRuntimeError::QueueInit(error));
+                }
+            }
         }
-        for executor in &executors {
-            wait_status(&executor.control.startup_status);
-            if executor.control.startup_status.load(Ordering::Acquire) != STATUS_READY {
-                let error = executor
-                    .control
-                    .startup_error
-                    .lock_irqsave()
-                    .take()
-                    .unwrap_or(NetError::InvalidParts);
-                let irq_synchronized = release_registrations(registrations);
-                stop_executors(&mut executors, irq_synchronized);
+
+        let registrations = match prune_absent_irq_registrations(registrations) {
+            Ok(registrations) => registrations,
+            Err(error) => {
+                stop_executors(&mut executors, false);
                 release_runtime_side_resources(
                     (
                         controls,
@@ -669,12 +727,51 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                         group_states,
                         cpu_notifies,
                     ),
-                    irq_synchronized,
+                    false,
                 );
-                return Err(NetworkRuntimeError::QueueInit(error));
+                return Err(error.into());
             }
-        }
-        let protocol_owner_cpu = select_protocol_owner(&group_owners, &active_cpus);
+        };
+
+        publish_executors(&mut executors);
+
+        let (started_ports, device_index_map) = retain_started_ports(ports);
+        group_states.retain(|state| !state.startup_absent());
+        let controls = controls
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, control)| device_index_map[index].map(|_| control))
+            .collect::<Vec<_>>();
+        let port_macs = port_macs
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, mac)| device_index_map[index].map(|_| mac))
+            .collect::<Vec<_>>();
+        let wifi_handles = wifi_handles
+            .into_iter()
+            .filter_map(|mut handle| {
+                if handle.startup_group.startup_absent() {
+                    return None;
+                }
+                handle.device_index = device_index_map[handle.device_index]?;
+                Some(handle)
+            })
+            .collect::<Vec<_>>();
+        let startup_transactions = startup_transactions
+            .into_iter()
+            .filter_map(|(mut handle, transaction)| {
+                if handle.startup_group.startup_absent() {
+                    return None;
+                }
+                handle.device_index = device_index_map[handle.device_index]?;
+                Some((handle, transaction))
+            })
+            .collect::<Vec<_>>();
+        let active_group_owners = group_states
+            .iter()
+            .map(|state| state.owner_cpu)
+            .collect::<Vec<_>>();
+        let protocol_owner_cpu = select_protocol_owner(&active_group_owners, &active_cpus);
         let mut runtime = NetworkQueueRuntime {
             registrations,
             executors,
@@ -682,6 +779,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             _controls: controls,
             wifi_handles,
             initial_wifi_policies: Vec::new(),
+            device_index_map,
             protocol_owner_cpu,
         };
         for (handle, transaction) in startup_transactions {
@@ -699,8 +797,25 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             let address = control.mac_address()?;
             *mac.lock_irqsave() = address;
         }
-        Ok((runtime, ports))
+        Ok((runtime, started_ports))
     }
+}
+
+fn retain_started_ports(ports: Vec<QueueFramePort>) -> (EthernetFramePortList, Vec<Option<usize>>) {
+    let mut device_index_map = vec![None; ports.len()];
+    let mut started_ports = Vec::with_capacity(ports.len());
+    for (device_index, mut port) in ports.into_iter().enumerate() {
+        if port.retain_started_groups() {
+            device_index_map[device_index] = Some(started_ports.len());
+            started_ports.push(Box::new(port) as Box<dyn EthernetFramePort>);
+        } else {
+            log::warn!(
+                "network device {} is not present after owner startup; skipping it",
+                port.name
+            );
+        }
+    }
+    (started_ports, device_index_map)
 }
 
 fn prepare_startup_transaction(
@@ -834,6 +949,35 @@ fn wait_status(status: &AtomicU8) {
     }
 }
 
+fn release_registered_endpoints(registrations: Vec<RegisteredEndpoint>) -> bool {
+    release_registrations(
+        registrations
+            .into_iter()
+            .map(|registered| registered.registration)
+            .collect(),
+    )
+}
+
+fn prune_absent_irq_registrations(
+    registrations: Vec<RegisteredEndpoint>,
+) -> Result<Vec<Box<dyn PinnedNetIrqRegistration>>, PinnedNetIrqError> {
+    let mut started = Vec::new();
+    let mut absent = Vec::new();
+    for registered in registrations {
+        if registered.shared.startup_absent() {
+            absent.push(registered.registration);
+        } else {
+            started.push(registered.registration);
+        }
+    }
+    if release_registrations(absent) {
+        Ok(started)
+    } else {
+        let _ = release_registrations(started);
+        Err(PinnedNetIrqError::Other)
+    }
+}
+
 fn disable_registrations(registrations: &[Box<dyn PinnedNetIrqRegistration>]) -> bool {
     let mut synchronized = true;
     for registration in registrations.iter().rev() {
@@ -867,11 +1011,26 @@ fn stop_executors(executors: &mut Vec<ExecutorLease>, irq_synchronized: bool) {
         executor.stop(irq_synchronized);
     }
     while let Some(executor) = executors.pop() {
-        if let Err(error) = executor.task.join() {
-            log::error!(
-                "failed to join network queue executor for CPU {}: {error}",
-                executor.control.owner_cpu
-            );
+        executor.join();
+    }
+}
+
+fn publish_executors(executors: &mut Vec<ExecutorLease>) {
+    for executor in executors.iter() {
+        executor
+            .control
+            .command
+            .store(COMMAND_RUN, Ordering::Release);
+        executor.control.notify.notify();
+    }
+    let mut index = 0;
+    while index < executors.len() {
+        let status = &executors[index].control.publication_status;
+        wait_status(status);
+        if status.load(Ordering::Acquire) == STATUS_EMPTY {
+            executors.swap_remove(index).join();
+        } else {
+            index += 1;
         }
     }
 }

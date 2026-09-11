@@ -284,9 +284,7 @@ mod tests {
         let setup_config =
             build_vcpu_setup_config(&config, &[], &[], &[(bar0_base, bar0_size)]).unwrap();
 
-        let ranges = setup_config
-            .intercepted_mmio_ranges()
-            .collect::<std::vec::Vec<_>>();
+        let ranges = setup_config.intercepted_mmio;
         assert_eq!(
             ranges,
             std::vec![X86InterceptedMmioRange {

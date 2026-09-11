@@ -2,12 +2,13 @@
 
 use std::{sync::Arc, vec::Vec};
 
-use arm_vcpu::{ArmTimerVmConfig, ArmVcpuCreateConfig, ArmVcpuSetupConfig};
 use axvm_types::NestedPagingConfig;
 
 use super::*;
 use crate::{
-    AxVmError, AxVmResult, ax_err,
+    AxVmError, AxVmResult,
+    arch::aarch64::policy::{ArmTimerVmConfig, ArmVcpuCreateConfig, ArmVcpuSetupConfig},
+    ax_err,
     config::*,
     machine::*,
     vm::{

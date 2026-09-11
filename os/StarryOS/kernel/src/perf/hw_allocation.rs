@@ -111,7 +111,9 @@ pub(super) fn alloc_system(
     num_counters: usize,
 ) -> crate::StarryResult<Counter> {
     let cpu = cpu.as_usize();
-    if !super::percpu::cpu_info(cpu).is_some_and(|info| info.event_supported(event)) {
+    if !super::percpu::cpu_info(cpu)
+        .is_some_and(|info| crate::perf::event_map::event_supported_by(info, event))
+    {
         return Err(crate::StarryError::Unsupported);
     }
     ALLOC
@@ -135,7 +137,7 @@ pub(super) fn free_system(cpu: super::target::PerfCpuId, counter: Counter) {
 
 /// Reserves a fixed programmable slot across every possible task CPU.
 pub(super) fn alloc_programmable(event: u16, num_counters: usize) -> crate::StarryResult<Counter> {
-    if !ax_cpu::pmu::event_supported(event) {
+    if !crate::perf::event_map::event_supported(event) {
         warn!(
             "perf_event_open: ARM event {:#x} not implemented on this CPU",
             event

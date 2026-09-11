@@ -12,7 +12,7 @@ mod sys;
 mod task;
 mod time;
 
-use ax_runtime::hal::cpu::uspace::UserContext;
+use ax_runtime::hal::cpu::user::UserContext;
 use starry_signal::Signo;
 use syscalls::Sysno;
 

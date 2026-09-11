@@ -1,7 +1,4 @@
 board_type = "JL-LSGD2K10"
-shell_prefix = "root@starry:"
-shell_init_cmd = "echo STARRY_JL_LSGD2K10_BOOT_OK"
-success_regex = ["(?m)^STARRY_JL_LSGD2K10_BOOT_OK\\s*$"]
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)segmentation fault",
@@ -10,3 +7,8 @@ fail_regex = [
   "failed to determine root device",
 ]
 timeout = 600
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "echo STARRY_JL_LSGD2K10_BOOT_OK"
+success_regex = ["(?m)^STARRY_JL_LSGD2K10_BOOT_OK\\s*$"]

@@ -29,11 +29,7 @@ pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
 
 pub(super) unsafe fn install_cpu_base(area_base: usize, boot_context: usize) {
     CPU_BASE.set(area_base);
-    ARCHITECTURE_CURRENT.set(if cfg!(feature = "tls") {
-        0
-    } else {
-        boot_context
-    });
+    ARCHITECTURE_CURRENT.set(if cfg!(kernel_tls) { 0 } else { boot_context });
 }
 
 pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
@@ -50,7 +46,7 @@ pub(super) unsafe fn read_current_context(area_base: usize) -> usize {
             CPU_BASE.set(target);
         }
     });
-    if cfg!(feature = "tls") {
+    if cfg!(kernel_tls) {
         // SAFETY: the shared caller validated the sampled shutdown-lifetime
         // CPU area before asking the host backend for its selected source.
         return unsafe { area_runtime_anchor(area_base) }.current_context_raw();
@@ -67,12 +63,12 @@ pub(super) unsafe fn write_current_context(value: usize) {
     ARCHITECTURE_CURRENT.set(value);
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) unsafe fn read_kernel_tls() -> usize {
     KERNEL_TLS.get()
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) unsafe fn write_kernel_tls(value: usize) {
     KERNEL_TLS.set(value);
 }
@@ -106,7 +102,7 @@ pub(super) fn migrate_on_next_current_read(area_base: usize) {
     MIGRATION_TARGET.set(area_base);
 }
 
-#[cfg(all(test, not(feature = "tls")))]
+#[cfg(all(test, not(kernel_tls)))]
 pub(super) fn set_architecture_current(current: usize) {
     ARCHITECTURE_CURRENT.set(current);
 }

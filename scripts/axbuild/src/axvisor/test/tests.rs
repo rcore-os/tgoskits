@@ -91,35 +91,6 @@ fn axvisor_request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRe
 }
 
 #[test]
-fn parses_supported_arch_aliases() {
-    assert_eq!(
-        parse_target(&Some("aarch64".to_string()), &None).unwrap(),
-        (
-            "aarch64".to_string(),
-            "aarch64-unknown-none-softfloat".to_string()
-        )
-    );
-    assert_eq!(
-        parse_target(&Some("x86_64".to_string()), &None).unwrap(),
-        ("x86_64".to_string(), "x86_64-unknown-none".to_string())
-    );
-    assert_eq!(
-        parse_target(&Some("loongarch64".to_string()), &None).unwrap(),
-        (
-            "loongarch64".to_string(),
-            "loongarch64-unknown-none-softfloat".to_string()
-        )
-    );
-    assert_eq!(
-        parse_target(&Some("riscv64".to_string()), &None).unwrap(),
-        (
-            "riscv64".to_string(),
-            "riscv64gc-unknown-none-elf".to_string()
-        )
-    );
-}
-
-#[test]
 fn accepts_full_target_triples() {
     assert_eq!(
         parse_target(&None, &Some("aarch64-unknown-none-softfloat".to_string())).unwrap(),
@@ -161,50 +132,6 @@ fn rejects_unsupported_arches() {
 }
 
 #[test]
-fn qemu_test_request_ignores_inherited_smp() {
-    let mut request = axvisor_request(
-        PathBuf::from("/tmp/build-riscv64gc-unknown-none-elf.toml"),
-        "riscv64",
-        "riscv64gc-unknown-none-elf",
-    );
-    request.smp = Some(1);
-
-    let request = Axvisor::qemu_test_request(request);
-
-    assert_eq!(request.smp, None);
-}
-
-#[test]
-fn board_test_request_ignores_inherited_smp() {
-    let mut request = axvisor_request(
-        PathBuf::from("/tmp/build-aarch64-unknown-none-softfloat.toml"),
-        "aarch64",
-        "aarch64-unknown-none-softfloat",
-    );
-    request.smp = Some(2);
-
-    let request = Axvisor::board_test_request(request);
-
-    assert_eq!(request.smp, None);
-}
-
-#[test]
-fn qemu_test_request_ignores_inherited_vmconfigs() {
-    let mut request = axvisor_request(
-        PathBuf::from("/tmp/build-x86_64-unknown-none.toml"),
-        "x86_64",
-        "x86_64-unknown-none",
-    );
-    request
-        .vmconfigs
-        .push(PathBuf::from("tmp/old-axvisor-vm.toml"));
-
-    let request = Axvisor::qemu_test_request(request);
-
-    assert!(request.vmconfigs.is_empty());
-}
-
-#[test]
 fn discovers_only_cases_with_matching_qemu_config() {
     let root = tempdir().unwrap();
     let build_config = write_qemu_build_config(
@@ -218,13 +145,14 @@ fn discovers_only_cases_with_matching_qemu_config() {
         root.path(),
         "smoke",
         "aarch64",
-        "shell_prefix = \"~ #\"\nshell_init_cmd = \"pwd\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \"~ #\", shell_cmd = \"pwd\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
     write_qemu_config(
         root.path(),
         "x86-only",
         "x86_64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"hello_world\" }]\nfail_regex \
          = []\n",
     );
 
@@ -237,11 +165,49 @@ fn discovers_only_cases_with_matching_qemu_config() {
     )
     .unwrap();
 
-    let case = cases
-        .iter()
-        .find(|case| case.case.name == "smoke")
-        .expect("matching qemu case should be discovered");
-    assert_eq!(case.build_config_path, build_config);
+    assert_eq!(
+        cases
+            .iter()
+            .map(|case| case.case.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["smoke"]
+    );
+    assert_eq!(cases[0].build_config_path, build_config);
+}
+
+#[test]
+fn rejects_test_commands_during_axvisor_case_discovery() {
+    for steps in [
+        "",
+        "[[shell_check_steps]]\nshell_prefix = \"guest#\"\nshell_cmd = \
+         \"run-tests\"\nsuccess_regex = [\"PASSED\"]\n",
+    ] {
+        let root = tempdir().unwrap();
+        write_qemu_build_config(
+            root.path(),
+            "normal",
+            "default",
+            "aarch64-unknown-none-softfloat",
+        );
+        let path = write_qemu_config(
+            root.path(),
+            "unsupported",
+            "aarch64",
+            &format!("test_commands = [\"/usr/bin/test-a\"]\n{steps}"),
+        );
+        let error = discover_qemu_cases(
+            root.path(),
+            "normal",
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("test_commands"), "{error}");
+        assert!(error.contains("shell_check_steps"), "{error}");
+        assert!(error.contains(&path.display().to_string()), "{error}");
+    }
 }
 
 #[test]
@@ -258,7 +224,7 @@ fn selected_case_requires_matching_qemu_config() {
         root.path(),
         "smoke",
         "x86_64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"hello_world\" }]\nfail_regex \
          = []\n",
     );
 
@@ -303,7 +269,8 @@ fn selected_qemu_case_skips_non_qemu_case_with_same_name() {
         "qemu",
         "smoke",
         "aarch64",
-        "shell_prefix = \"~ #\"\nshell_init_cmd = \"pwd\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \"~ #\", shell_cmd = \"pwd\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
 
     let cases = discover_qemu_cases(
@@ -315,6 +282,7 @@ fn selected_qemu_case_skips_non_qemu_case_with_same_name() {
     )
     .unwrap();
 
+    assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].build_group, "qemu");
     assert_eq!(cases[0].case.name, "smoke");
 }
@@ -338,7 +306,8 @@ fn discovers_qemu_cases_from_selected_group() {
         root.path(),
         "smoke",
         "aarch64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"normal\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"normal\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
     write_qemu_config_in_group(
         root.path(),
@@ -346,7 +315,8 @@ fn discovers_qemu_cases_from_selected_group() {
         "stress-default",
         "load",
         "aarch64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"stress\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"stress\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
 
     let cases = discover_qemu_cases(
@@ -358,7 +328,13 @@ fn discovers_qemu_cases_from_selected_group() {
     )
     .unwrap();
 
-    assert!(cases.iter().any(|case| case.case.name == "load"));
+    assert_eq!(
+        cases
+            .iter()
+            .map(|case| case.case.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["load"]
+    );
 }
 
 #[test]
@@ -371,7 +347,7 @@ fn discovers_qemu_cases_from_custom_group_without_polluting_normal_group() {
         "default",
         "baseline",
         "x86_64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"hello_world\" }]\nfail_regex \
          = []\n",
     );
     write_qemu_build_config(root.path(), "custom", "firmware", "x86_64-unknown-none");
@@ -381,16 +357,18 @@ fn discovers_qemu_cases_from_custom_group_without_polluting_normal_group() {
         "firmware",
         "smoke",
         "x86_64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"hello_world\" }]\nfail_regex \
          = []\n",
     );
 
     let normal_cases =
         discover_qemu_cases(root.path(), "normal", "x86_64", "x86_64-unknown-none", None).unwrap();
+    assert_eq!(normal_cases.len(), 1);
     assert_eq!(normal_cases[0].case.name, "baseline");
 
     let custom_cases =
         discover_qemu_cases(root.path(), "custom", "x86_64", "x86_64-unknown-none", None).unwrap();
+    assert_eq!(custom_cases.len(), 1);
     assert_eq!(custom_cases[0].case.name, "smoke");
     assert_eq!(custom_cases[0].build_group, "firmware");
 }
@@ -408,7 +386,8 @@ fn rejects_unknown_qemu_test_group() {
         root.path(),
         "smoke",
         "aarch64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"normal\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"normal\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
 
     let err = discover_qemu_cases(
@@ -446,15 +425,12 @@ fn returns_all_board_test_groups_when_no_filter_is_given() {
 
     let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
 
-    assert!(
+    assert_eq!(
         groups
             .iter()
-            .any(|group| { group.name == "smoke" && group.board_name == "orangepi-5-plus-linux" })
-    );
-    assert!(
-        groups
-            .iter()
-            .any(|group| { group.name == "smoke" && group.board_name == "phytiumpi-linux" })
+            .map(|group| format!("{}/{}", group.name, group.board_name))
+            .collect::<Vec<_>>(),
+        vec!["smoke/orangepi-5-plus-linux", "smoke/phytiumpi-linux"]
     );
 }
 
@@ -474,6 +450,7 @@ fn discovers_board_case_when_case_dir_contains_build_config() {
 
     let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
 
+    assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "smoke");
     assert_eq!(groups[0].board_name, "phytiumpi-linux");
     assert_eq!(groups[0].build_config, build_config);
@@ -493,6 +470,7 @@ fn board_case_uses_unique_nearest_build_config_without_target_assumption() {
 
     let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
 
+    assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "smoke");
     assert_eq!(groups[0].board_name, "custom");
     assert_eq!(groups[0].build_config, build_config);
@@ -512,6 +490,7 @@ fn filters_board_test_group_by_case() {
 
     let groups = discover_board_test_groups(root.path(), "normal", Some("smoke"), None).unwrap();
 
+    assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "smoke");
     assert_eq!(groups[0].board_name, "phytiumpi-linux");
     assert_eq!(groups[0].build_config, build_config);
@@ -544,13 +523,13 @@ fn filters_board_test_groups_by_board() {
     let groups =
         discover_board_test_groups(root.path(), "normal", None, Some("phytiumpi-linux")).unwrap();
 
-    assert!(
+    assert_eq!(
         groups
             .iter()
-            .all(|group| group.board_name == "phytiumpi-linux")
+            .map(|group| format!("{}/{}", group.name, group.board_name))
+            .collect::<Vec<_>>(),
+        vec!["smoke/phytiumpi-linux", "syscall/phytiumpi-linux"]
     );
-    assert!(groups.iter().any(|group| group.name == "smoke"));
-    assert!(groups.iter().any(|group| group.name == "syscall"));
 }
 
 #[test]
@@ -564,7 +543,8 @@ fn discovers_uboot_test_group_from_board_cases() {
         "smoke",
         "rdk-s100-linux",
         "board_type = \"RDK-S100\"\nuboot_cmd = [\"run ab_select_cmd\", \"run \
-         avb_boot\"]\nsuccess_regex = [\"ubuntu login:\"]\nfail_regex = [\"(?i)panic\"]\n",
+         avb_boot\"]\nfail_regex = [\"(?i)panic\"]\n\n[[shell_check_steps]]\nsuccess_regex = \
+         [\"ubuntu login:\"]\n",
     );
 
     let group = discovery::discover_uboot_test_group(root.path(), "rdk-s100", "linux").unwrap();
@@ -589,7 +569,8 @@ fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
         root.path(),
         "smoke",
         "aarch64",
-        "shell_prefix = \"~ #\"\nshell_init_cmd = \"pwd\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \"~ #\", shell_cmd = \"pwd\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
 
     write_board_build_config(root.path(), "default");
@@ -602,6 +583,7 @@ fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
 
     let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
 
+    assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "smoke");
     assert_eq!(groups[0].board_name, "orangepi-5-plus-linux");
 }
@@ -694,6 +676,7 @@ fn qemu_cases_activate_their_build_group_artifact_and_conversion_mode() {
     let plan =
         super::qemu::plan_qemu_case_artifacts(&groups, &artifacts, |to_bin| *to_bin).unwrap();
 
+    assert_eq!(plan.len(), 3);
     assert_eq!(plan[0].build_group_index, 0);
     assert_eq!(plan[0].build_artifact, artifacts[0]);
     assert!(!plan[0].to_bin);

@@ -1,6 +1,9 @@
 #[cfg(feature = "ax-std")]
 use ax_std as _;
 
+#[cfg(feature = "serial-rx")]
+pub mod serial_rx;
+
 pub type TestResult = Result<(), &'static str>;
 
 #[derive(Clone, Copy, Debug)]
@@ -190,7 +193,11 @@ test_runner!(
 );
 test_runner!("task-yield", run_task_yield, task::yield_now::run);
 
+test_runner!("serial-rx", run_serial_rx, serial_rx::run);
+
 const SELECTED_TESTS: &[TestCase] = &[
+    #[cfg(feature = "serial-rx")]
+    TestCase::new("serial-rx", "serial IRQ receive continuity", run_serial_rx),
     #[cfg(feature = "debug-backtrace")]
     TestCase::new("debug-backtrace", "capture backtrace", run_debug_backtrace),
     #[cfg(feature = "debug-panic-path")]

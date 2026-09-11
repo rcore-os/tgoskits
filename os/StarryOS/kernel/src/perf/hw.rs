@@ -36,7 +36,7 @@ pub(super) struct ValidatedHwOpen {
     pub(super) is_freq: bool,
     pub(super) sample_period: u32,
     pub(super) target_freq: u32,
-    pub(super) required_cluster: Option<ax_cpu::pmu::ClusterId>,
+    pub(super) required_cluster: Option<crate::perf::event_map::ClusterId>,
 }
 
 /// Uninhabited-in-practice validation token on architectures without a PMU.

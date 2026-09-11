@@ -35,8 +35,8 @@ pub(super) fn validate_perf_event_open_hw(
     cpu_constraint: Option<PerfCpuId>,
 ) -> crate::StarryResult<ValidatedHwOpen> {
     let required_cluster = match attr.type_ {
-        ARMV8_CORTEX_A55_PERF_TYPE => Some(ax_cpu::pmu::ClusterId::CortexA55),
-        ARMV8_CORTEX_A76_PERF_TYPE => Some(ax_cpu::pmu::ClusterId::CortexA76),
+        ARMV8_CORTEX_A55_PERF_TYPE => Some(crate::perf::event_map::ClusterId::CortexA55),
+        ARMV8_CORTEX_A76_PERF_TYPE => Some(crate::perf::event_map::ClusterId::CortexA76),
         _ => None,
     };
     let target_cpu = cpu_constraint.map(PerfCpuId::as_usize);
@@ -70,9 +70,9 @@ pub(super) fn validate_perf_event_open_hw(
         super::percpu::generic_event_for_target(target_cpu, required_cluster, attr.config as u32)
             .ok_or(crate::StarryError::NotFound)?
     } else if is_hw_cache {
-        ax_cpu::pmu::hw_cache_to_arm(attr.config).map_err(|error| match error {
-            ax_cpu::pmu::CacheEventError::Invalid => crate::StarryError::InvalidInput,
-            ax_cpu::pmu::CacheEventError::Unsupported => crate::StarryError::NotFound,
+        crate::perf::event_map::hw_cache_to_arm(attr.config).map_err(|error| match error {
+            crate::perf::event_map::CacheEventError::Invalid => crate::StarryError::InvalidInput,
+            crate::perf::event_map::CacheEventError::Unsupported => crate::StarryError::NotFound,
         })?
     } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32 || is_named_pmu {
         (attr.config & 0xFFFF) as u16

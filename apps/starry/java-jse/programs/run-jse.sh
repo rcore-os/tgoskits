@@ -1,7 +1,7 @@
 #!/bin/sh
 # run-jse.sh — on-target gate for the StarryOS java-jse J2SE library + JSE stdlib carpet.
 #
-# Staged into the rootfs by prebuild.sh and invoked as the ENTIRE shell_init_cmd
+# Staged into the rootfs by prebuild.sh and invoked as the entire shell-check step command
 # (`sh /usr/bin/run-jse.sh`). The gate lives in a staged script, not inline in the toml, so
 # the harness does not echo a literal `TEST PASSED` back over the serial console and
 # self-match success_regex: TEST PASSED is printed ONLY by this script's real stdout, ONLY

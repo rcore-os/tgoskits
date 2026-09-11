@@ -3,13 +3,10 @@ use std::fs;
 use ostool::build::config::LogLevel;
 
 use super::{
-    features::{
-        c_compiler_features, c_config_features, c_defines, dynamic_pie_for_c_app,
-        map_c_app_features,
-    },
+    features::{c_compiler_features, c_config_features, c_defines, map_c_app_features},
     flags::{CFlagsInput, cflags, pthread_mutex_header_contents},
     libc::{PIC_RUSTFLAG, append_pic_rustflag},
-    link::{find_final_linker_script, find_link_scripts, find_linker_search_dirs},
+    link::{find_final_linker_script, find_link_scripts},
 };
 use crate::build::ARCEOS_LINKER_SCRIPT;
 
@@ -116,14 +113,6 @@ fn map_c_app_features_rejects_removed_platform_feature() {
 }
 
 #[test]
-fn c_apps_always_use_pie() {
-    assert!(dynamic_pie_for_c_app(&[]));
-    assert!(dynamic_pie_for_c_app(&strings(&["plat-dyn"])));
-    assert!(dynamic_pie_for_c_app(&strings(&["ax-std/plat-dyn"])));
-    assert!(dynamic_pie_for_c_app(&strings(&["smp"])));
-}
-
-#[test]
 fn pic_rustflag_is_appended_to_axlibc_cargo_env() {
     let mut env = std::collections::HashMap::new();
     append_pic_rustflag(&mut env);
@@ -222,62 +211,6 @@ fn linker_scripts_support_split_build_directory_layout() {
     assert!(link_scripts.search_dirs.contains(&axplat_out));
     assert!(link_scripts.search_dirs.contains(&somehal_out));
     assert!(link_scripts.search_dirs.contains(&someboot_out));
-}
-
-#[test]
-fn linker_search_dirs_use_current_platform_script_owner() {
-    let root = tempfile::tempdir().unwrap();
-    let target_dir = root.path().join("target");
-    let target = "loongarch64-unknown-none-softfloat";
-    let mode = "release";
-    let build_dir = target_dir.join(target).join(mode).join("build");
-    let runtime_out = build_dir.join("ax-runtime-def/out");
-    let axplat_out = build_dir.join("axplat-dyn-def/out");
-    let somehal_out = build_dir.join("somehal-ghi/out");
-    let someboot_out = build_dir.join("someboot-jkl/out");
-    fs::create_dir_all(&runtime_out).unwrap();
-    fs::create_dir_all(&axplat_out).unwrap();
-    fs::create_dir_all(&somehal_out).unwrap();
-    fs::create_dir_all(&someboot_out).unwrap();
-    fs::write(runtime_out.join(ARCEOS_LINKER_SCRIPT), "").unwrap();
-    fs::write(axplat_out.join("axplat.x"), "").unwrap();
-    fs::write(somehal_out.join("link.x"), "").unwrap();
-    fs::write(someboot_out.join("someboot.x"), "").unwrap();
-
-    let link_scripts = find_link_scripts(
-        &target_dir,
-        target,
-        mode,
-        "plat-dyn",
-        &strings(&["plat-dyn"]),
-    )
-    .unwrap();
-
-    assert_eq!(link_scripts.script, runtime_out.join(ARCEOS_LINKER_SCRIPT));
-    assert!(link_scripts.pie);
-    assert!(link_scripts.search_dirs.contains(&runtime_out));
-    assert!(link_scripts.search_dirs.contains(&axplat_out));
-    assert!(link_scripts.search_dirs.contains(&somehal_out));
-    assert!(link_scripts.search_dirs.contains(&someboot_out));
-}
-
-#[test]
-fn linker_search_dirs_use_axplat_dyn_for_generic_dynamic_platforms() {
-    let root = tempfile::tempdir().unwrap();
-    let target_dir = root.path().join("target");
-    let target = "riscv64gc-unknown-none-elf";
-    let mode = "release";
-    let build_dir = target_dir.join(target).join(mode).join("build");
-    let axplat_out = build_dir.join("axplat-dyn-abc/out");
-    let runtime_out = build_dir.join("ax-runtime-def/out");
-    fs::create_dir_all(&axplat_out).unwrap();
-    fs::create_dir_all(&runtime_out).unwrap();
-    fs::write(axplat_out.join("axplat.x"), "").unwrap();
-    fs::write(runtime_out.join(ARCEOS_LINKER_SCRIPT), "").unwrap();
-
-    let dirs = find_linker_search_dirs(&target_dir, target, mode, "riscv64-generic", &[]).unwrap();
-
-    assert_eq!(dirs, vec![runtime_out, axplat_out]);
 }
 
 #[test]

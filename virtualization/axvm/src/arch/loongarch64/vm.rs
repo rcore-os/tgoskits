@@ -4,9 +4,11 @@ use std::sync::Arc;
 
 use axdevice::{DeviceNodeId, DeviceNodeSpec};
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
-use loongarch_vcpu::{LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig};
 
-use super::*;
+use super::{
+    policy::{LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig},
+    *,
+};
 use crate::{
     AxVmError, AxVmResult, ax_err,
     config::*,
@@ -52,7 +54,7 @@ impl LoongArch64Arch {
                 .max()
                 .map_or(0, |vcpu_id| vcpu_id + 1);
             let iocsr_state =
-                loongarch_result(loongarch_vcpu::LoongArchIocsrState::new(state_count))
+                loongarch_result(super::policy::LoongArchIocsrState::new(state_count))
                     .map_err(|error| AxVmError::vcpu("create LoongArch IOCSR state", error))?;
             let dtb_addr = config.image_config().dtb_load_gpa.unwrap_or_default();
             let firmware_boot = uses_firmware_boot(config);
@@ -137,10 +139,7 @@ fn build_vcpu_setup_config(
     config: &AxVMConfig,
     _memory_regions: &[crate::vm::VMMemoryRegion],
 ) -> AxVmResult<<super::AxvmLoongArchVcpu as VmArchVcpuOps>::SetupConfig> {
-    let passthrough = config.uses_passthrough_address_space();
     Ok(LoongArchVCpuSetupConfig {
-        passthrough_interrupt: passthrough,
-        passthrough_timer: passthrough,
         boot_args: [0; 3],
         boot_stack_top: 0,
         firmware_boot: uses_firmware_boot(config),

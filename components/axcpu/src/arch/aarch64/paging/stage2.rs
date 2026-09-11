@@ -1,0 +1,195 @@
+// Copyright 2025 The Axvisor Team
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+use core::fmt;
+
+use page_table_generic as ptg;
+
+use crate::{PhysAddr as HostPhysAddr, paging::MappingFlags};
+
+bitflags::bitflags! {
+    /// Memory attribute fields in VMSAv8-64 stage-2 descriptors.
+    #[derive(Debug)]
+    struct DescriptorAttr: u64 {
+        const VALID =       1 << 0;
+        const NON_BLOCK =   1 << 1;
+        const ATTR =        0b1111 << 2;
+        const S2AP_RO =     1 << 6;
+        const S2AP_WO =     1 << 7;
+        const INNER =       1 << 8;
+        const SHAREABLE =   1 << 9;
+        const AF =          1 << 10;
+        const NG =          1 << 11;
+        const CONTIGUOUS =  1 << 52;
+        const XN =          1 << 54;
+        const NS =          1 << 55;
+        const PXN_TABLE =   1 << 59;
+        const XN_TABLE =    1 << 60;
+        const AP_NO_EL0_TABLE =   1 << 61;
+        const AP_NO_WRITE_TABLE = 1 << 62;
+        const NS_TABLE =    1 << 63;
+    }
+}
+
+#[repr(u64)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum MemType {
+    Device         = 0,
+    Normal         = 1,
+    NormalNonCache = 2,
+}
+
+impl DescriptorAttr {
+    const ATTR_INDEX_MASK: u64 = 0b0011_1100;
+    const PTE_S2_MEM_ATTR_NORMAL_INNER_WRITE_BACK_CACHEABLE: u64 = 0b11 << 2;
+    const PTE_S2_MEM_ATTR_NORMAL_OUTER_WRITE_BACK_CACHEABLE: u64 = 0b11 << 4;
+    // Non-FWB stage-2 Normal Non-cacheable is 0b0101, independently
+    // selecting non-cacheable inner and outer attributes (Linux MT_S2_NORMAL_NC).
+    const NORMAL_NON_CACHEABLE: u64 = 0b0101 << 2;
+    const NORMAL_BIT: u64 = Self::PTE_S2_MEM_ATTR_NORMAL_INNER_WRITE_BACK_CACHEABLE
+        | Self::PTE_S2_MEM_ATTR_NORMAL_OUTER_WRITE_BACK_CACHEABLE;
+
+    const fn from_mem_type(mem_type: MemType) -> Self {
+        let bits = match mem_type {
+            MemType::Normal => Self::NORMAL_BIT | Self::SHAREABLE.bits(),
+            MemType::NormalNonCache => Self::NORMAL_NON_CACHEABLE | Self::SHAREABLE.bits(),
+            MemType::Device => Self::SHAREABLE.bits(),
+        };
+        Self::from_bits_retain(bits)
+    }
+
+    fn mem_type(&self) -> MemType {
+        let idx = self.bits() & Self::ATTR_INDEX_MASK;
+        match idx {
+            Self::NORMAL_BIT => MemType::Normal,
+            Self::NORMAL_NON_CACHEABLE => MemType::NormalNonCache,
+            0 => MemType::Device,
+            _ => panic!("Invalid memory attribute index"),
+        }
+    }
+}
+
+impl From<DescriptorAttr> for MappingFlags {
+    fn from(attr: DescriptorAttr) -> Self {
+        if !attr.contains(DescriptorAttr::VALID) {
+            return Self::empty();
+        }
+        let mut flags = Self::empty();
+        if attr.contains(DescriptorAttr::S2AP_RO) {
+            flags |= Self::READ;
+        }
+        if attr.contains(DescriptorAttr::S2AP_WO) {
+            flags |= Self::WRITE;
+        }
+        if !attr.contains(DescriptorAttr::XN) {
+            flags |= Self::EXECUTE;
+        }
+        match attr.mem_type() {
+            MemType::Device => flags |= Self::DEVICE,
+            MemType::NormalNonCache => flags |= Self::UNCACHED,
+            MemType::Normal => {}
+        }
+        flags
+    }
+}
+
+impl From<MappingFlags> for DescriptorAttr {
+    fn from(flags: MappingFlags) -> Self {
+        let mut attr = if flags.contains(MappingFlags::DEVICE) {
+            Self::from_mem_type(MemType::Device)
+        } else if flags.contains(MappingFlags::UNCACHED) {
+            Self::from_mem_type(MemType::NormalNonCache)
+        } else {
+            Self::from_mem_type(MemType::Normal)
+        };
+        if flags.intersects(MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE) {
+            attr |= Self::VALID;
+        }
+        if flags.contains(MappingFlags::READ) {
+            attr |= Self::S2AP_RO;
+        }
+        if flags.contains(MappingFlags::WRITE) {
+            attr |= Self::S2AP_WO;
+        }
+        if !flags.contains(MappingFlags::EXECUTE) {
+            attr |= Self::XN;
+        }
+        attr
+    }
+}
+
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+/// AArch64 stage-two descriptor for a non-FWB translation regime.
+pub struct Stage2Pte(u64);
+
+impl Stage2Pte {
+    const PHYS_ADDR_MASK: u64 = 0x0000_ffff_ffff_f000;
+
+    fn paddr(&self) -> HostPhysAddr {
+        HostPhysAddr::from((self.0 & Self::PHYS_ADDR_MASK) as usize)
+    }
+
+    fn flags(&self) -> MappingFlags {
+        DescriptorAttr::from_bits_truncate(self.0).into()
+    }
+}
+
+impl ptg::PageTableEntry for Stage2Pte {
+    type PteConfig = MappingFlags;
+
+    fn new_page(paddr: HostPhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
+        if config.is_empty() {
+            return Self(0);
+        }
+        let mut attr = DescriptorAttr::from(config) | DescriptorAttr::AF;
+        if !is_huge {
+            attr |= DescriptorAttr::NON_BLOCK;
+        }
+        Self(attr.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
+    }
+
+    fn new_table(paddr: HostPhysAddr) -> Self {
+        let attr = DescriptorAttr::NON_BLOCK | DescriptorAttr::VALID;
+        Self(attr.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
+    }
+
+    fn paddr(&self, _is_dir: bool) -> HostPhysAddr {
+        Stage2Pte::paddr(self)
+    }
+
+    fn config(&self, _is_dir: bool) -> Self::PteConfig {
+        self.flags()
+    }
+
+    fn present(&self) -> bool {
+        DescriptorAttr::from_bits_truncate(self.0).contains(DescriptorAttr::VALID)
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        is_dir
+            && self.present()
+            && !DescriptorAttr::from_bits_truncate(self.0).contains(DescriptorAttr::NON_BLOCK)
+    }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
+
+    fn clear(&mut self) {
+        self.0 = 0;
+    }
+}
+
+impl fmt::Debug for Stage2Pte {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("A64PTE")
+            .field("raw", &self.0)
+            .field("paddr", &self.paddr())
+            .field("attr", &DescriptorAttr::from_bits_truncate(self.0))
+            .field("flags", &self.flags())
+            .finish()
+    }
+}
