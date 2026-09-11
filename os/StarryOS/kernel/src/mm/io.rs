@@ -72,7 +72,7 @@ impl<'task> IoVectorBuf<'task> {
         self.len
     }
 
-    /// Faults the captured source ranges before copying or passing them to a backend.
+    /// Faults the captured source ranges before allocating their owned copy.
     /// Subsequent copy-in still revalidates accesses; no user reference escapes.
     pub(crate) fn prepare_read(&self) -> StarryResult {
         for iov in &self.iovs {

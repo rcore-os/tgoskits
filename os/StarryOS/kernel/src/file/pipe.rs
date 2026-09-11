@@ -711,6 +711,8 @@ impl PipeState {
     }
 
     fn copy_from(&mut self, src: &mut IoSrc, limit: usize) -> StarryResult<usize> {
+        // Publish this chunk only after both reads succeed. A source fault may
+        // consume input bytes, but must not expose a partial chunk to readers.
         let (left, right) = self.buffer.vacant_slices_mut();
         let left_limit = left.len().min(limit);
         // `left` covers vacant ring storage and the following `read` initializes
@@ -936,7 +938,7 @@ impl Pipe {
         enum WriteStep {
             Closed,
             WouldBlock,
-            Wrote(usize),
+            Wrote,
         }
 
         let mut total_written = 0;
@@ -949,6 +951,9 @@ impl Pipe {
         let mut wait_recorded = false;
         let mut task = None;
         loop {
+            // Keep committed progress outside the fallible step: a later
+            // source fault must not discard bytes already published to readers.
+            let mut written = 0;
             let step = self
                 .shared
                 .update_state(|state| -> StarryResult<WriteStep> {
@@ -964,7 +969,6 @@ impl Pipe {
                         sample_initial_was_empty = false;
                     }
 
-                    let mut written = 0;
                     if merge_pending {
                         merge_pending = false;
                         if merge_bytes > 0 && state.can_merge(merge_bytes) {
@@ -981,15 +985,24 @@ impl Pipe {
                     if written == 0 {
                         Ok(WriteStep::WouldBlock)
                     } else {
-                        Ok(WriteStep::Wrote(written))
+                        Ok(WriteStep::Wrote)
                     }
                 });
 
+            total_written += written;
+            #[cfg(feature = "qperf-metrics")]
+            if written > 0 {
+                PIPE_WRITE_BYTES.fetch_add(written as u64, Ordering::Relaxed);
+            }
             let step = match step {
                 Ok(step) => step,
                 Err(error) => {
                     self.finish_write_wakes(was_empty, wake_next_writer);
-                    return Err(error);
+                    return if total_written > 0 {
+                        Ok(total_written)
+                    } else {
+                        Err(error)
+                    };
                 }
             };
             match step {
@@ -1002,10 +1015,7 @@ impl Pipe {
                     return Err(StarryError::BrokenPipe);
                 }
                 WriteStep::WouldBlock => {}
-                WriteStep::Wrote(written) => {
-                    #[cfg(feature = "qperf-metrics")]
-                    PIPE_WRITE_BYTES.fetch_add(written as u64, Ordering::Relaxed);
-                    total_written += written;
+                WriteStep::Wrote => {
                     if total_written == size || self.nonblocking() {
                         self.finish_write_wakes(was_empty, wake_next_writer);
                         return Ok(total_written);
