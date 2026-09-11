@@ -530,27 +530,51 @@ static int test_inherit_thread_includes_thread(void) {
 }
 
 static int test_stopped_task_clock(void) {
+    cpu_set_t saved, affinity;
+    if (sched_getaffinity(0, sizeof(saved), &saved)) return 1;
+    int cpu = -1;
+    for (int i = 0; i < CPU_SETSIZE; ++i) {
+        if (CPU_ISSET(i, &saved)) { cpu = i; break; }
+    }
+    if (cpu < 0) return 1;
+    CPU_ZERO(&affinity);
+    CPU_SET(cpu, &affinity);
+    if (sched_setaffinity(0, sizeof(affinity), &affinity)) return 1;
+
+    int failed = 1, status, fd = -1;
     pid_t child = fork();
-    if (child < 0) return 1;
+    if (child < 0) goto restore;
     if (!child) {
+        /* Linux reports CLD_STOPPED before schedule(). On our shared CPU,
+         * FIFO keeps the child running until it blocks, so the parent cannot
+         * install the event during the stop notification's kernel tail. */
+        struct sched_param priority = {.sched_priority = 20};
+        if (syscall(SYS_sched_setscheduler, 0, SCHED_FIFO, &priority)) _exit(2);
         raise(SIGSTOP);
         cpu_work();
         _exit(0);
     }
-    int status;
-    if (waitpid(child, &status, WUNTRACED) != child || !WIFSTOPPED(status))
-        return 1;
+    if (waitpid(child, &status, WUNTRACED) != child) goto reap;
+    if (!WIFSTOPPED(status)) goto restore;
     struct perf_event_attr attr = {
         .type = PERF_TYPE_SOFTWARE, .size = sizeof(attr),
         .config = PERF_COUNT_SW_TASK_CLOCK, .read_format = 3,
     };
-    int fd = (int)syscall(SYS_perf_event_open, &attr, child, -1, -1, 0ul);
-    if (fd < 0) return 1;
+    fd = (int)syscall(SYS_perf_event_open, &attr, child, -1, -1, 0ul);
+    if (fd < 0) goto reap;
     uint64_t stopped[3] = {0}, done[3] = {0};
-    int failed = read(fd, stopped, sizeof(stopped)) != sizeof(stopped) ||
+    failed = read(fd, stopped, sizeof(stopped)) != sizeof(stopped) ||
         stopped[0] != 0 || stopped[1] != 0 || stopped[2] != 0;
-    if (kill(child, SIGCONT) || waitpid(child, &status, 0) != child ||
-        !WIFEXITED(status) || WEXITSTATUS(status) ||
+    if (kill(child, SIGCONT)) {
+        failed = 1;
+        goto reap;
+    }
+    if (waitpid(child, &status, 0) != child) {
+        failed = 1;
+        goto reap;
+    }
+    child = -1;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) ||
         read(fd, done, sizeof(done)) != sizeof(done)) failed = 1;
     /* Without multiplexing or a CPU filter, both context times are runtime. */
     if (done[0] == 0 || done[1] != done[2] || done[0] != done[2]) failed = 1;
@@ -558,7 +582,14 @@ static int test_stopped_task_clock(void) {
            (unsigned long long)stopped[0], (unsigned long long)stopped[1],
            (unsigned long long)stopped[2], (unsigned long long)done[0],
            (unsigned long long)done[1], (unsigned long long)done[2], failed);
-    close(fd);
+reap:
+    if (child > 0) {
+        kill(child, SIGKILL);
+        waitpid(child, &status, 0);
+    }
+    if (fd >= 0) close(fd);
+restore:
+    if (sched_setaffinity(0, sizeof(saved), &saved)) failed = 1;
     return failed;
 }
 
