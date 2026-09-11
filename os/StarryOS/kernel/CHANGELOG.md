@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.9.0...starry-kernel-v0.10.0) - 2026-09-11
+
+### Added
+
+- *(ax-fs-ng)* add async block request runtime ([#2349](https://github.com/rcore-os/tgoskits/pull/2349))
+
+### Fixed
+
+- *(starry-kernel)* bound pipe writev copies and preserve partial writes ([#2372](https://github.com/rcore-os/tgoskits/pull/2372))
+- *(rknpu)* add timeout error handling and update ioctl error mapping ([#2324](https://github.com/rcore-os/tgoskits/pull/2324))
+
+### Other
+
+- *(starry)* migrate linkat checks and honor absolute destination dirfd ([#2376](https://github.com/rcore-os/tgoskits/pull/2376))
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+- *(ax-cpu)* [**breaking**] centralize CPU mechanisms and architecture backends ([#2363](https://github.com/rcore-os/tgoskits/pull/2363))
+- *(axbuild)* migrate test execution to shell check steps ([#2361](https://github.com/rcore-os/tgoskits/pull/2361))
+
 ## [0.9.0](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.8.3...starry-kernel-v0.9.0) - 2026-09-09
 
 ### Added

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-mm-v0.7.0...ax-mm-v0.8.0) - 2026-09-11
+
+### Other
+
+- *(ax-cpu)* [**breaking**] centralize CPU mechanisms and architecture backends ([#2363](https://github.com/rcore-os/tgoskits/pull/2363))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-mm-v0.6.0...ax-mm-v0.7.0) - 2026-09-09
 
 ### Added

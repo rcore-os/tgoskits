@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.7.1...axdevice_base-v0.7.2) - 2026-09-11
+
+### Added
+
+- *(virtio)* add synchronized VirtIO block PCI ramdisk ([#2070](https://github.com/rcore-os/tgoskits/pull/2070))
+
 ## [0.7.1](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.7.0...axdevice_base-v0.7.1) - 2026-09-09
 
 ### Fixed

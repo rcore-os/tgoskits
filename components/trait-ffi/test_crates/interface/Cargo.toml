@@ -9,4 +9,4 @@ publish = false
 extra = []
 
 [dependencies]
-renamed-ffi = { package = "trait-ffi", path = "../../trait-ffi", version = "0.3.0" }
+renamed-ffi = { package = "trait-ffi", path = "../../trait-ffi", version = "0.3.1" }

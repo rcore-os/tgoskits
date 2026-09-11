@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.7.2...axvisor-v0.7.3) - 2026-09-11
+
+### Added
+
+- *(axvisor)* validate AArch64 virtio-blk with Linux smoke
+
+### Fixed
+
+- *(axvm)* prepare host GIC before CPU enable and centralize fatal traps ([#2356](https://github.com/rcore-os/tgoskits/pull/2356))
+- *(axvisor)* restore COM1 console and preserve guest output order ([#2311](https://github.com/rcore-os/tgoskits/pull/2311))
+
+### Other
+
+- *(axbuild)* migrate test execution to shell check steps ([#2361](https://github.com/rcore-os/tgoskits/pull/2361))
+
 ## [0.7.2](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.7.1...axvisor-v0.7.2) - 2026-09-09
 
 ### Other

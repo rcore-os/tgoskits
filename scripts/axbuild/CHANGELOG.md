@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.6.1...axbuild-v0.7.0) - 2026-09-11
+
+### Added
+
+- *(axbuild)* reuse cross-tool wrappers for native binutils ([#2280](https://github.com/rcore-os/tgoskits/pull/2280))
+- *(virtio)* add synchronized VirtIO block PCI ramdisk ([#2070](https://github.com/rcore-os/tgoskits/pull/2070))
+- *(axloader)* move boot control to UEFI networking ([#2354](https://github.com/rcore-os/tgoskits/pull/2354))
+- *(axbuild)* support to_bin in ArceOS build configs and log bin path ([#2336](https://github.com/rcore-os/tgoskits/pull/2336))
+
+### Fixed
+
+- *(some-serial)* preserve PL011 RX interrupts and add a real QEMU regression ([#2328](https://github.com/rcore-os/tgoskits/pull/2328))
+- *(axbuild)* validate rootfs extraction and drop broken fakeroot wrap on non-Linux hosts ([#2279](https://github.com/rcore-os/tgoskits/pull/2279))
+- *(rknpu)* add timeout error handling and update ioctl error mapping ([#2324](https://github.com/rcore-os/tgoskits/pull/2324))
+
+### Other
+
+- Merge pull request #2374 from rcore-os/arm-blk
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+- *(axbuild)* drop non-functional tests that pin instance parameters ([#2371](https://github.com/rcore-os/tgoskits/pull/2371))
+- *(ax-cpu)* [**breaking**] centralize CPU mechanisms and architecture backends ([#2363](https://github.com/rcore-os/tgoskits/pull/2363))
+- *(axbuild)* migrate test execution to shell check steps ([#2361](https://github.com/rcore-os/tgoskits/pull/2361))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.5.3...axbuild-v0.6.1) - 2026-09-09
 
 ### Added

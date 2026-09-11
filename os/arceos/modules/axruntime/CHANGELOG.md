@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.12.1...ax-runtime-v0.13.0) - 2026-09-11
+
+### Fixed
+
+- *(ax-task)* drain idle scheduler work before offline probes ([#2377](https://github.com/rcore-os/tgoskits/pull/2377))
+- *(axvm)* prepare host GIC before CPU enable and centralize fatal traps ([#2356](https://github.com/rcore-os/tgoskits/pull/2356))
+- *(axvisor)* restore COM1 console and preserve guest output order ([#2311](https://github.com/rcore-os/tgoskits/pull/2311))
+
+### Other
+
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+- *(ax-cpu)* [**breaking**] centralize CPU mechanisms and architecture backends ([#2363](https://github.com/rcore-os/tgoskits/pull/2363))
+
 ## [0.12.1](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.12.0...ax-runtime-v0.12.1) - 2026-09-09
 
 ### Fixed

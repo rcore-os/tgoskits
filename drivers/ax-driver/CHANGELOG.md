@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.14.0...ax-driver-v0.15.0) - 2026-09-11
+
+### Fixed
+
+- *(axvisor)* restore COM1 console and preserve guest output order ([#2311](https://github.com/rcore-os/tgoskits/pull/2311))
+- *(rknpu)* add timeout error handling and update ioctl error mapping ([#2324](https://github.com/rcore-os/tgoskits/pull/2324))
+
 ## [0.14.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.13.3...ax-driver-v0.14.0) - 2026-09-09
 
 ### Added

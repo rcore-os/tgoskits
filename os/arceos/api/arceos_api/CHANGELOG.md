@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.8.0...ax-api-v0.8.1) - 2026-09-11
+
+### Other
+
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.7.9...ax-api-v0.8.0) - 2026-09-09
 
 ### Fixed
