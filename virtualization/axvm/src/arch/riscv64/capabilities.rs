@@ -91,6 +91,10 @@ pub(super) fn patch_runtime_fdt(
     vm: &crate::AxVMRef,
     crate_config: &axvmconfig::GuestConfig,
 ) -> AxVmResult<Vec<u8>> {
+    let initrd = vm.with_config(|config| {
+        let ramdisk = config.image_config.ramdisk.as_ref()?;
+        Some((ramdisk.load_gpa.as_usize() as u64, ramdisk.size? as u64))
+    });
     let host_fdt = crate::boot::fdt::core::try_get_host_fdt()
         .map(fdt_edit::Fdt::from_bytes)
         .transpose()
@@ -149,7 +153,7 @@ pub(super) fn patch_runtime_fdt(
             gic_profile: None,
             plic_profile: Some(&plic_profile),
             timer_profile: None,
-            initrd_start_size: None,
+            initrd_start_size: initrd,
             create_chosen: false,
         },
     )?;
