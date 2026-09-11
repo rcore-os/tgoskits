@@ -794,7 +794,7 @@ backing 准备由 `mapping` 在进入 MM 锁前完成；`SharedMemoryObject::all
 
 最终版测试在旧实现上普通和共享 MM 两项失败，锁字分别仍为 `0x80000003`、`0x80000004`；非 leader 原有行为继续通过。日志 `/tmp/pr2357-exec-robust-final-red.log`，最外层 xtask 返回 1。恢复修复后 x86_64 三项均通过，日志 `/tmp/pr2357-exec-robust-final-x86_64.log`。riscv64、aarch64、loongarch64 同一测试也均三项通过，日志 `/tmp/pr2357-exec-robust-final-<arch>.log`。本轮格式检查通过；提交后的 clippy 和完整回归由精确提交 CI 验证。
 
-本节仅修复清理入口和 TID/MM 交接顺序。`handle_futex_death` 仍用读后写更新锁字，可能覆盖并发设置的 WAITERS；Linux 使用可处理缺页的 cmpxchg 并重试。PI 标记和遍历错误处理、`clear_child_tid` 的 mm_users 条件、vfork 完成通知以及第 5.32 节 SHM/VMA 生命周期均未因此完成。X 表示 x86_64，G 表示 aarch64、riscv64、loongarch64。
+本节仅修复清理入口和 TID/MM 交接顺序。本节当时的 `handle_futex_death` 仍用读后写更新锁字，可能覆盖并发设置的 WAITERS；后续第 5.41 节已按 Linux nofault cmpxchg 重试协议修复。PI 标记和遍历错误处理、`clear_child_tid` 的 mm_users 条件、vfork 完成通知以及第 5.32 节 SHM/VMA 生命周期均未因此完成。X 表示 x86_64，G 表示 aarch64、riscv64、loongarch64。
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
@@ -803,3 +803,27 @@ backing 准备由 `mapping` 在进入 MM 锁前完成；`SharedMemoryObject::all
 | execveat(robust 清理) / X322、G281 | [v7.1 exec_mm_release](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1502) | 使用同一旧 MM 清理协议 | `sys_execveat → do_execve → release_robust_futexes` | 无法确认 | 本次新回归直接使用 execve，尚无 execveat 独立入口证据 |
 | exit(robust 清理入口收敛) / X60、G93 | [v7.1 futex_cleanup](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/futex/core.c#L1407) | 清理 robust 登记后清空指针，再继续 MM release | `sys_exit → do_exit → release_robust_futexes` | 无法确认 | 保留既有 walk 顺序；尚待本次退出回归和 CI |
 | exit_group(robust 清理入口收敛) / X231、G94 | [v7.1 exit_mm_release](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1496) | 发布组退出后，各退出线程执行自己的 robust 清理 | `sys_exit_group → do_exit → release_robust_futexes` | 无法确认 | 本次入口收敛不证明全部组退出竞争 |
+
+### 5.41 Robust 锁字原子更新
+
+`handle_futex_death` 原先先读取 owner，再写回 `OWNER_DIED`。用户态在两步之间发布 `WAITERS` 时，旧写入会覆盖等待位，也不会发出所需唤醒。现在 `update_robust_owner_nofault` 使用 `compare_exchange_user_u32_nofault`，比较失配后重新读取并检查 owner，只有成功替换后才按该次锁字决定唤醒。读缺页、写缺页和 LL/SC 重试分别通过 `RobustOwnerError` 返回外层：任务上下文解决相应访问权限的缺页，只有 LL/SC 耗尽才让出 CPU。顺序对应固定 Linux `kernel/futex/core.c` 的 `handle_futex_death`，不会把只读访问错误一律当作写缺页。
+
+`ax-cpu::user_cmpxchg_u32` 集中暴露“返回观察值”的契约，不增加可变 task 布局或调度泛型。x86_64 使用 locked cmpxchg；AArch64 使用 LDXR/STLXR 和成功后的 DMB；RISC-V 使用 LR.W/SC.W.AQRL；LoongArch 使用 LL.W/SC.W 和 DBAR。LL/SC 沿用有界重试错误，架构异常表覆盖读与条件存储。RISC-V 用现有 XLENB 宏区分 RV32/RV64，避免在 RV32 发出 sext.w；RISC-V/LoongArch 对高位 u32 做与加载指令一致的符号扩展。普通 Rust 引用不指向用户锁字，缺页解析和 MM 锁不进入原子指令区间。
+
+确定性 kernel 回归在真实 runtime MM 和任务中映射锁字，在内核读取 owner 后、更新前注入一次 WAITERS 发布，不使用 fake TaskRuntime/TaskSystem/CpuLocal。保留旧读后替换顺序时，同一断言收到 `0x40000000` 而非 `0xc0000000`，最外层 xtask 返回 1，日志 `/tmp/pr2357-robust-cas-red.log`。修复后 x86_64 kernel 187/187 通过；最终用例还检查比较失配不修改、高位 expected 成功匹配、只读页写错误和未映射地址错误，日志 `/tmp/pr2357-robust-cas-final-x86_64.log`。riscv64/loongarch64 kernel 187/187、aarch64 188/188，以及四架构 exec robust 回归均通过，日志 `/tmp/pr2357-robust-cas-final-{kernel,exec}-<arch>.log`。LoongArch 的 grouped runner 捕获成功用例输出，其程序通过标记和非零失败传播仍保留。
+
+独立汇编核验发现最初无条件 sext.w 破坏 RV32，已用宿主 clang 对实际汇编片段得到同一命令的编译红绿，日志 `/tmp/pr2357-rv32-cas-{red,green}.log`。项目没有单独汇编片段的 xtask 入口，这项编译只证明 RV32 指令合法，不替代四架构内核运行。限定范围核验未发现其他新增 ABI 或内存序缺陷，不冒充完整调度/unsafe 合入审查。第 5.40 节登记和 TID 顺序保持；PI 标记、遍历错误处理、MM/vfork 与 SHM/VMA 遗留项仍分别收尾。
+
+
+`test-mt-execve` 原来安装到 `starry-known-fail`，且 NULL argv 子进程重启硬编码 `/usr/bin/test-mt-execve`。恢复发现后先得到路径 ENOENT 红例；改用 `/proc/self/exe`，断言不变，四架构完整用例通过，现重新纳入 grouped CI。日志 `/tmp/pr2357-robust-cas-mt-exec-x86_64.log` 是路径红例，修复后的 x86_64 为 `-mt-exec-path-green.log`，其余为 `-mt-exec-<arch>.log`。其中 Phase 7 明确检查新映像 gettid 等于 getpid、原始 SYS_exit 执行 robust 清理，以及等待者观察到 OWNER_DIED；这补充了第 5.40 节新用例未直接读取新身份的限制。
+
+以下结论只覆盖普通 robust owner 的原子更新和本节经过的入口，不涵盖 PI robust list 或其余生命周期遗留项。X 表示 x86_64，G 表示 aarch64、riscv64、loongarch64。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| execve(普通 robust owner 更新) / X59、G221 | [v7.1 handle_futex_death](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/futex/core.c#L1097) | 比较替换 owner；保留并发 WAITERS；失配重新检查 owner | `sys_execve → do_execve → release_robust_futexes → handle_futex_death → update_robust_owner_nofault` | 正确 | 实际 MM 受控交错红绿、四架构 kernel/exec 回归通过 |
+| exit(普通 robust owner 更新) / X60、G93 | [v7.1 handle_futex_death](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/futex/core.c#L1097) | 成功标记 owner 死亡后，按锁字唤醒普通等待者 | `sys_exit → do_exit → release_robust_futexes → handle_futex_death → wake_robust_futex` | 正确 | 四架构 test-mt-execve Phase 7 真实 SYS_exit 和等待者；同一底层原子交错回归 |
+| exit_group(普通 robust owner 更新) / X231、G94 | [v7.1 exit_mm_release](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1496) | 各退出线程执行相同原子 owner 清理 | `sys_exit_group → do_exit → release_robust_futexes → handle_futex_death` | 无法确认 | 共享清理已验证，尚无本节非空 robust list 的独立 exit_group 入口回归 |
+| execveat(普通 robust owner 更新) / X322、G281 | [v7.1 exec_mm_release](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1502) | 在旧 MM 中执行同一原子 owner 清理 | `sys_execveat → do_execve → release_robust_futexes → handle_futex_death` | 无法确认 | 本轮直接 execve 和 SYS_exit 回归不替代 execveat 独立入口证据 |
+
+前一已发布 `4aab4205ca` 的 CI 34544811759 出现两个失败。ArceOS riscv64 job 103096481641 在 LocalLock owner 唤醒 FIFO 子线程后观察到 Running 而非 Blocked，日志 `/tmp/pr2357-4aab-arceos-rv-ci-clean.log`；PI 重排/抢占链仍需受控定位，未修改断言。OrangePi job 103096481776 中 NPU 已退出 0，后续输出含 NUL 并停滞、ARP 继续，日志 `/tmp/pr2357-4aab-orangepi-ci-clean.log`；不能归因为 NPU submit 超时，也不能据后续重跑声称修复。本节原子更新不被当作这两个失败的根因修复。
