@@ -841,3 +841,9 @@ backing 准备由 `mapping` 在进入 MM 锁前完成；`SharedMemoryObject::all
 这证明并修复了一个 PI 通知语义错误，但尚不能把原始 LocalLock 偶发失败完全归因于它：未修改的 `task-pi-mutex` 和 RISC-V `all` 本地复跑也曾通过，日志 `/tmp/pr2357-local-lock-rv-{repro,all-repro}.log`。当前运行 owner 的 PI 更新分支仍保留旧的立即重调度，需继续按运行中 RT/DL 的 class hook、配额和定时器生命周期核验。独立探查未及时返回终态，不记作审查通过；完整计划和 OrangePi 停滞仍未完成。
 
 Linux 顺序依据为固定 v7.1 的 [rt_mutex_setprio](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/core.c#L7584)、[switched_to_rt/prio_changed_rt](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/rt.c#L2436) 和 [prio_changed_dl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/deadline.c#L3389)。本节通过的是 ArceOS 真实锁和调度路径，不能替代 Starry 每个 scheduler syscall 的独立兼容性结论。
+
+### 5.43 EL0 PMU 测试创建接口
+
+合入 dev 新 CPU 测试后，`test-suit/arceos/cpu/user-entry/src/aarch64.rs::run_cpu` 仍使用已删除的 raw 创建与独立 join 函数，导致 CI `34552205250` 的 OrangePi PMU job `103118430514` 在 `pmu-user` 编译失败。现改用 `thread::builder`、`UserContextOptions`、`prepare_user_thread().publish()` 和 `ThreadHandle::join`，保留原栈大小、MM 对页表及 backing pages 的所有权和所有硬件断言。没有恢复兼容入口。
+
+同一 `cargo xtask arceos test qemu --arch aarch64 --test-group cpu --test-case user-entry` 先复现两个 E0425 编译错误，迁移后四个 CPU 的 EL0 授权读取、撤销访问和中断现场检查全部通过，日志 `/tmp/pr2357-pmu-api-{red,green}.log`。定向 `cargo xtask clippy --package arceos-cpu-user-entry` 2/2 通过，日志 `/tmp/pr2357-pmu-api-clippy.log`。这是 QEMU 验证，修复后的 OrangePi 实体板卡结果仍由新提交 CI 提供；前一次 fail-fast 取消的其他 ArceOS 项不计为通过。
