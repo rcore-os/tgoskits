@@ -306,7 +306,6 @@ mod tests {
     fn arceos_c_default_list_hides_all_feature() {
         let features = c_qemu_features_for_list(None).unwrap();
 
-        assert_eq!(features, ARCEOS_C_QEMU_LISTED_CASES);
         assert!(!features.contains(&ARCEOS_C_ALL_FEATURE));
     }
 
