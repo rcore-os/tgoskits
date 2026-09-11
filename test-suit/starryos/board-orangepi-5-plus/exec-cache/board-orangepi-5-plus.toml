@@ -1,0 +1,25 @@
+board_type = "OrangePi-5-Plus"
+timeout = 300
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_EXEC_CACHE_FAILED(?: errno=[0-9]+)?\s*$', '(?i)segmentation fault']
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:/root #"
+shell_cmd = '''
+marker=STARRY_EXEC_CACHE
+ready=0
+attempt=1
+while [ "$attempt" -le 30 ]; do
+  if curl --connect-timeout 2 --max-time 5 -fsSL '${sessionFile:usr/bin/starry-test-suit/syscall-test-exec-cache}' -o /tmp/starry-exec-cache; then
+    ready=1
+    break
+  fi
+  sleep 1
+  attempt=$((attempt + 1))
+done
+if [ "$ready" = 1 ] && chmod +x /tmp/starry-exec-cache; then
+  /tmp/starry-exec-cache || echo "${marker}_FAILED"
+else
+  echo "${marker}_FAILED"
+fi
+'''
+success_regex = ['(?m)^STARRY_EXEC_CACHE_OK errno=[0-9]+\s*$']

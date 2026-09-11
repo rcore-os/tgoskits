@@ -1084,6 +1084,7 @@ impl MappingExecution for FileBackend {
                             .page_object_for_va(addr, paddr)
                             .ok_or(StarryError::BadState)?;
                         self.0.cache.mark_mmap_dirty_page(pn)?;
+                        page.prepare_executable_mapping(paddr, PAGE_SIZE_4K, flags);
                         if pt.remap_page(addr, paddr, flags)? != PAGE_SIZE_4K {
                             return Err(StarryError::BadState);
                         }
@@ -1112,6 +1113,7 @@ impl MappingExecution for FileBackend {
                     let page_pin = self.0.cache.pin_page_or_insert(pn)?;
                     let paddr = PhysAddr::from(page_pin.paddr());
                     let page_object = self.0.get_or_create_page_object(pn, page_pin)?;
+                    page_object.prepare_executable_mapping(paddr, PAGE_SIZE_4K, map_flags);
                     if let Err(error) = pt.map_page(addr, paddr, PAGE_SIZE_4K, map_flags) {
                         self.0.cancel_page_publication(addr, &page_object)?;
                         return Err(error.into());

@@ -5414,6 +5414,23 @@ impl AddrSpace {
         });
         let touched_memfds =
             crate::syscall::memfd_collect_metas_touching_mprotect_range(self, start, size);
+        if flags.contains(MappingFlags::EXECUTE) {
+            for leaf in &protection_preimage {
+                let key = MappingSlotKey {
+                    space_id: self.id,
+                    va: leaf.va,
+                };
+                let slot = self
+                    .mapping_slots
+                    .get(&key)
+                    .expect("published executable leaf must retain its mapping owner");
+                slot.page.prepare_executable_mapping(
+                    leaf.paddr,
+                    leaf.page_size,
+                    flags | (leaf.flags & (MappingFlags::DEVICE | MappingFlags::UNCACHED)),
+                );
+            }
+        }
         if let Err(error) = self.apply_protection_unpublished(range, flags, reported_flags) {
             return self.abort_unpublished_protection(
                 vma_preimage,
@@ -6128,6 +6145,16 @@ impl AddrSpace {
             let result = if !preimage_matches {
                 Err(PagingError::stale_map_deposit(owner_va))
             } else {
+                // Linux set_ptes synchronizes executable folios before making
+                // the PTE visible, including read faults on executable VMAs.
+                let owner = attempt
+                    .prepared()
+                    .materialization
+                    .owner()
+                    .expect("prepared fault retains its page until PTE publication");
+                owner
+                    .page
+                    .prepare_executable_mapping(owner_paddr, owner_page_size, desired_flags);
                 match owner_transition {
                     PteOwnerTransition::Installed => {
                         let deposit = map_deposit
