@@ -82,6 +82,12 @@ RISC-V H 扩展的异常探测由 `ax_cpu::capability::has_hypervisor_extension`
 - 确认运行时报告 `EL: 2`，检查 `ax-hal::KernelMmu`、页表元数据与向量安装均选择 EL2，并在插桩驱动前验证 `ioremap` 后的设备访问。
 - Axvisor QEMU 和板卡用例独占处理器数量契约。测试请求必须丢弃交互快照中的 `smp`，否则陈旧 `tmp/axbuild/.axvisor.toml` 会静默缩小宿主。Phytium 客户机分配逻辑处理器 2 时会退回处理器 0，并可能停在第一次虚拟定时中断，即使虚拟处理器切换本身正确。
 
+## AArch64 客户机镜像缓存发布
+
+AxVM 的 `BootImagePlatform::make_guest_memory_visible()` 在客户机执行前发布宿主写入的镜像。宿主通过可缓存别名复制数据，而客户机可能先在 MMU/缓存关闭时修改重定位数据，随后才开启缓存；仅 Clean 会保留干净但陈旧的宿主缓存副本。因此加载器在独占镜像目标范围时使用 CleanAndInvalidate，并完成相应屏障。该操作只解决启动镜像发布，不替代运行期客户机缓存切换、共享内存或 DMA 的一致性协议。Linux KVM 对无 Stage-2 FWB 时非缓存写入与缓存旧副本的风险也有说明：[arm64 KVM 缓存维护](https://github.com/torvalds/linux/blob/master/arch/arm64/kvm/mmu.c)。
+
+遇到仅虚拟机启动不稳定、早期低地址 MMIO 错误或首次分配器初始化异常时，先核对镜像缓存发布以及实际进入阶段。对照必须保持客户机镜像与负载一致，不把带插桩或缺少宿主竞争负载的成功运行计入性能基准。
+
 ## 动态统一可扩展固件接口平台
 
 StarryOS 的 x86_64 裸机产物是位置无关可执行映像，不带 QEMU 直接 ELF 加载所需的 Xen PVH note。若出现 `Error loading uncompressed kernel without PVH ELF Note`，说明尚未进入内核；随后出现的 shell check 未完成只是启动失败的结果。`apps/starry/mysql/qemu-x86_64*.toml` 与 `apps/starry/llvm22/qemu-x86_64.toml` 使用 `uefi = true`、`to_bin = true`，由项目运行器完成固件交接。该路径不使用 `-kernel`，因此也不能保留 QEMU 的 `-append` 参数；MySQL 配置由现有根文件系统发现机制选择唯一的 NVMe 根盘。不要通过调整 shell 成功匹配规则处理该加载错误。

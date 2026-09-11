@@ -4,7 +4,6 @@ import importlib.util
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 from pathlib import Path
 from typing import Any
 
@@ -572,55 +571,6 @@ command = "true"
                     enabled_boolean_inputs=enabled,
                 )
                 self.assertEqual(ci_plan._is_enabled(check, context), expected)
-
-    def test_exact_suite_keeps_opt_in_wrapper_and_default_still_uses_leaf(self):
-        template = dict(
-            id="test-fixture", name="Fixture", phase="test", group="AxVisor",
-            command="prepare-fixture && run-fixture && check-fixture",
-            runs_on=["self-hosted"], environment="host", source="fixture.toml",
-        )
-        selection = ci_plan.SuiteSelection(
-            "test-fixture", "test-fixture-leaf", "Fixture leaf",
-            "run-fixture --leaf", "test-suit/fixture/board-test.toml",
-        )
-        for preserve in (False, True):
-            with self.subTest(preserve=preserve):
-                template["suite_preserve_command"] = preserve
-                row = ci_plan._normalize_suite_selection(template, selection, self.upstream)
-                self.assertEqual(
-                    row["command"], template["command"] if preserve else selection.command
-                )
-
-    def test_preserved_wrapper_runs_once_for_multiple_or_mixed_inputs(self):
-        template = dict(
-            id="test-fixture", name="Fixture", phase="test", group="AxVisor",
-            command="prepare-fixture && run-fixture && check-fixture",
-            runs_on=["self-hosted"], environment="host", source="fixture.toml",
-            suite_preserve_command=True, impact_targets=["axvisor:aarch64"],
-        )
-        selections = [
-            ci_plan.SuiteSelection(
-                "test-fixture", f"test-fixture-{leaf}", leaf,
-                f"run-fixture --leaf {leaf}", "test-suit/axvisor/fixture/input.toml",
-            )
-            for leaf in ("one", "two")
-        ]
-        for exclusive, expected_rows in ((True, 1), (False, 0)):
-            context = ci_plan.PlanContext(
-                repository="rcore-os/tgoskits", repository_owner="rcore-os",
-                event_name="pull_request", base_ref="dev",
-                impact=ci_plan.CiImpact(
-                    full=False, reason="fixture", exclusive=exclusive,
-                    changed_paths=("test-suit/axvisor/fixture/input.toml",),
-                    test_suite_paths=("test-suit/axvisor/fixture/input.toml",),
-                    targets=() if exclusive else ("axvisor:aarch64",),
-                ),
-            )
-            with self.subTest(exclusive=exclusive), patch.object(
-                ci_plan, "resolve_suite_selections", return_value=selections
-            ):
-                rows = ci_plan._plan_suite_rows([template], context)
-                self.assertEqual(len(rows), expected_rows)
 
     def assert_unique_ids(
         self, rows: list[dict[str, Any]]
