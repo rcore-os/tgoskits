@@ -748,6 +748,8 @@ pub struct AddrSpace {
     /// and `mm->brk`, not a process-side mirror.
     heap: HeapState,
     executable_data: ExecutableDataLayout,
+    /// The main image remains write-protected until this MM is retired.
+    executable_file: Option<Arc<ax_fs_ng::file::ExecutableFile>>,
     pt: PageTable,
     /// Fixed-order PTE/structure lock domains.  The page-table root remains a
     /// materialized view; ownership is carried by VMA/page records.
@@ -814,6 +816,28 @@ impl AddrSpace {
     /// Returns the current program break while the address-space lock is held.
     pub(crate) const fn heap_break(&self) -> usize {
         self.heap.current
+    }
+
+    /// Transfers the loader's exclusion lease to the address-space lifetime.
+    pub(crate) fn set_executable_file(&mut self, file: ax_fs_ng::file::ExecutableFile) {
+        self.executable_file = Some(Arc::new(file));
+    }
+
+    /// Ends file exclusion at last-user exit, separately from physical reclaim.
+    /// Returned leases must be destroyed after releasing the MM metadata lock.
+    fn take_file_accesses(
+        &mut self,
+    ) -> (
+        Option<Arc<ax_fs_ng::file::ExecutableFile>>,
+        Vec<Arc<ax_fs_ng::file::WriteAccess>>,
+    ) {
+        let mut writers = Vec::new();
+        for entry in self.vma_root.iter_entries() {
+            if let Some(access) = entry.operation().take_write_access() {
+                writers.push(access);
+            }
+        }
+        (self.executable_file.take(), writers)
     }
 
     /// Publishes the main executable's Linux `start_data`/`end_data` pair.
@@ -1567,6 +1591,7 @@ impl AddrSpace {
             vma_root: Arc::new(VmaMap::default()),
             heap: HeapState::new(USER_HEAP_BASE),
             executable_data: ExecutableDataLayout::default(),
+            executable_file: None,
             pt: PageTable::new(PagingAllocator).map_err(|_| StarryError::NoMemory)?,
             pte_domain: PageTableDomain::new(),
             mutation_gate: MutationGate::new(),
@@ -5513,6 +5538,7 @@ impl AddrSpace {
         self.resident_watermark.reset();
         self.vm_stat.on_clear();
         self.vma_root = Arc::new(VmaMap::default());
+        self.executable_file = None;
         // Once every materialized and software owner is empty, a prior repair
         // bit belonging solely to this unpublished/retired image is resolved.
         self.mutation_gate.clear_repair();
@@ -6520,6 +6546,7 @@ impl AddrSpace {
         let mut guard = new_aspace.lock_nested(CLONED_ADDR_SPACE_LOCK_SUBCLASS);
         guard.heap = self.heap;
         guard.executable_data = self.executable_data;
+        guard.executable_file = self.executable_file.clone();
         let mut child_memfd_deltas = Vec::new();
         let mut child_vss_pages = 0u64;
 

@@ -650,6 +650,14 @@ pub(super) trait MappingExecution {
 #[derive(Clone)]
 pub struct MappingOperation {
     kind: MappingOperationKind,
+    /// A mapping keeps its writable open description busy after close(fd).
+    write_access: Option<Arc<MappingWriteAccess>>,
+}
+
+// VMA fragments and rollback snapshots within one MM share this token. Fork
+// creates a separate token so retiring one MM cannot release another's lease.
+struct MappingWriteAccess {
+    lease: crate::sync::Mutex<Option<Arc<ax_fs_ng::file::WriteAccess>>>,
 }
 
 #[derive(Clone)]
@@ -763,27 +771,55 @@ pub(crate) struct ResidentLeafRestore<'a> {
 }
 
 impl MappingOperation {
+    /// Retains the source open's exclusion lease across every VMA fragment.
+    pub(crate) fn with_write_access(
+        mut self,
+        access: Option<Arc<ax_fs_ng::file::WriteAccess>>,
+    ) -> Self {
+        self.write_access = access.map(|lease| {
+            Arc::new(MappingWriteAccess {
+                lease: crate::sync::Mutex::new(Some(lease)),
+            })
+        });
+        self
+    }
+
+    fn with_mapping_write_access(mut self, access: Option<Arc<MappingWriteAccess>>) -> Self {
+        self.write_access = access;
+        self
+    }
+
+    /// Detaches this MM's VMA lease; duplicate fragments return `None`.
+    /// The caller must drop the returned inode lease outside MM metadata locks.
+    pub(super) fn take_write_access(&self) -> Option<Arc<ax_fs_ng::file::WriteAccess>> {
+        self.write_access.as_ref()?.lease.lock().take()
+    }
+
     fn from_linear(backend: linear::LinearBackend) -> Self {
         Self {
             kind: MappingOperationKind::Linear(backend),
+            write_access: None,
         }
     }
 
     fn from_cow(backend: cow::CowBackend) -> Self {
         Self {
             kind: MappingOperationKind::Cow(backend),
+            write_access: None,
         }
     }
 
     fn from_shared(backend: shared::SharedBackend) -> Self {
         Self {
             kind: MappingOperationKind::Shared(backend),
+            write_access: None,
         }
     }
 
     fn from_file(backend: file::FileBackend) -> Self {
         Self {
             kind: MappingOperationKind::File(backend),
+            write_access: None,
         }
     }
 
@@ -1164,12 +1200,13 @@ impl MappingOperation {
             .checked_sub(src_offset)
             .map(VirtAddr::from)
             .ok_or(StarryError::InvalidInput)?;
-        Ok(match &self.kind {
+        Ok((match &self.kind {
             MappingOperationKind::Cow(cb) => Self::from_cow(cb.with_start(adjusted)),
             MappingOperationKind::Shared(sb) => Self::from_shared(sb.with_start(adjusted)),
             MappingOperationKind::Linear(_) => return Err(StarryError::OperationNotSupported),
             MappingOperationKind::File(fb) => Self::from_file(fb.with_start(adjusted)?),
         })
+        .with_mapping_write_access(self.write_access.clone()))
     }
 
     /// Adjusts the logical extent for an `mremap` destination.  The operation
@@ -1180,12 +1217,13 @@ impl MappingOperation {
         if size == 0 {
             return Err(StarryError::InvalidInput);
         }
-        Ok(match &self.kind {
+        Ok((match &self.kind {
             MappingOperationKind::Cow(cow) => Self::from_cow(cow.for_extent(size)?),
             MappingOperationKind::Shared(shared) => Self::from_shared(shared.with_size(size)?),
             MappingOperationKind::Linear(_) => return Err(StarryError::OperationNotSupported),
             MappingOperationKind::File(file) => Self::from_file(file.clone()),
         })
+        .with_mapping_write_access(self.write_access.clone()))
     }
 }
 
@@ -1391,7 +1429,7 @@ impl MappingExecution for MappingOperation {
         old_pt: &mut PageTable,
         new_pt: &mut PageTable,
     ) -> StarryResult<(MappingOperation, PteMaterialization)> {
-        match &self.kind {
+        let (operation, materialization) = match &self.kind {
             MappingOperationKind::Linear(backend) => {
                 MappingExecution::clone_map(backend, range, flags, old_pt, new_pt)
             }
@@ -1404,16 +1442,22 @@ impl MappingExecution for MappingOperation {
             MappingOperationKind::File(backend) => {
                 MappingExecution::clone_map(backend, range, flags, old_pt, new_pt)
             }
-        }
+        }?;
+        let write_access = self
+            .write_access
+            .as_ref()
+            .and_then(|access| access.lease.lock().clone());
+        Ok((operation.with_write_access(write_access), materialization))
     }
 
     fn split(&mut self, align_diff: usize) -> Option<MappingOperation> {
-        match &mut self.kind {
+        let operation = match &mut self.kind {
             MappingOperationKind::Linear(backend) => MappingExecution::split(backend, align_diff),
             MappingOperationKind::Cow(backend) => MappingExecution::split(backend, align_diff),
             MappingOperationKind::Shared(backend) => MappingExecution::split(backend, align_diff),
             MappingOperationKind::File(backend) => MappingExecution::split(backend, align_diff),
-        }
+        }?;
+        Some(operation.with_mapping_write_access(self.write_access.clone()))
     }
 
     fn shrink_left(&mut self, shrink_size: usize) -> bool {

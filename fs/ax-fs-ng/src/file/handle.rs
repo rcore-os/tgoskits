@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 #[cfg(test)]
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -10,6 +11,7 @@ use axfs_ng_vfs::{
 use axpoll::{IoEvents, Pollable};
 
 use super::{
+    access::WriteAccess,
     cache::CachedFile,
     open::{FileFlags, OpenOptions, OpenResult},
 };
@@ -218,6 +220,7 @@ impl FileBackend {
 
 /// Provides `std::fs::File`-like interface.
 pub struct File {
+    write_access: Option<Arc<WriteAccess>>,
     inner: FileBackend,
     flags: AtomicU8,
     position: Option<Mutex<u64>>,
@@ -225,7 +228,10 @@ pub struct File {
 }
 
 impl File {
-    /// Creates a new [`File`] from a [`FileBackend`] and access flags.
+    /// Creates a low-level file without registering inode write access.
+    ///
+    /// Use [`OpenOptions`] for ordinary opens. Anonymous pseudo files such as
+    /// newly created memfds deliberately bypass executable/write exclusion.
     pub fn new(inner: FileBackend, flags: FileFlags) -> Self {
         // man 2 open: "The file offset is set to the beginning of the file"
         // — initial position is always 0, regardless of O_APPEND.
@@ -239,11 +245,28 @@ impl File {
             Some(Mutex::new(0))
         };
         Self {
+            write_access: None,
             inner,
             flags: AtomicU8::new(flags.bits()),
             position,
             access_flags: AtomicU8::new(0),
         }
+    }
+
+    pub(super) fn with_write_access(
+        inner: FileBackend,
+        flags: FileFlags,
+        write_access: Option<Arc<WriteAccess>>,
+    ) -> Self {
+        let mut file = Self::new(inner, flags);
+        file.write_access = write_access;
+        file
+    }
+
+    /// Returns the writer lease retained by this open file description.
+    /// Clone it when a mapping outlives the descriptor that created it.
+    pub fn write_access(&self) -> Option<&Arc<WriteAccess>> {
+        self.write_access.as_ref()
     }
 
     /// Opens an existing file for reading.

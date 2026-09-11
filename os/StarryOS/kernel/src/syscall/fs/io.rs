@@ -225,10 +225,16 @@ pub fn sys_truncate(
     if length < 0 {
         return Err(StarryError::InvalidInput);
     }
-    let file = OpenOptions::new()
-        .write(true)
-        .open(&ax_fs_ng::vfs::current_fs_context().lock(), &path)?
-        .into_file()?;
+    let location = ax_fs_ng::vfs::current_fs_context().lock().resolve(&path)?;
+    if location.node_type() == axfs_ng_vfs::NodeType::Directory {
+        return Err(StarryError::IsADirectory);
+    }
+    if location.node_type() != axfs_ng_vfs::NodeType::RegularFile {
+        return Err(StarryError::InvalidInput);
+    }
+    if location.is_readonly() {
+        return Err(StarryError::ReadOnlyFilesystem);
+    }
     if (length as u64) > u32::MAX as u64 * 4096 {
         return Err(StarryError::from(Errno::EFBIG));
     }
@@ -236,7 +242,7 @@ pub fn sys_truncate(
     // same owner/group/other + root-bypass rules as faccessat2(2).
     let cred = current.as_thread().cred();
     if cred.fsuid != 0 {
-        let metadata = file.location().metadata()?;
+        let metadata = location.metadata()?;
         let (file_uid, file_gid, file_mode) = (metadata.uid, metadata.gid, metadata.mode);
         let has_write = if cred.fsuid == file_uid {
             file_mode.contains(NodePermission::OWNER_WRITE)
@@ -249,6 +255,11 @@ pub fn sys_truncate(
             return Err(StarryError::from(Errno::EACCES));
         }
     }
+    // Linux checks write permission before acquiring inode write access.
+    let file = OpenOptions::new()
+        .write(true)
+        .open_loc(location)?
+        .into_file()?;
     file.access(FileFlags::WRITE)?.set_len(length as _)?;
     Ok(0)
 }
