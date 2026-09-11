@@ -21,6 +21,7 @@ Environment (set by the generic runner):
                                  (default: this file's directory)
     AXVISOR_HTTP_CONNECT_TIMEOUT seconds for the initial reachability wait
     AXVISOR_HTTP_REQUEST_TIMEOUT seconds per HTTP request
+    AXVISOR_HTTP_CREATE_TIMEOUT  seconds for the VM create request
 
 The probe drives the whole `/api/vms` lifecycle contract in one boot —
 auth/error mapping, start/stop, pause/resume, and the destroy-then-recreate
@@ -128,9 +129,15 @@ REQUEST_TIMEOUT = float(os.environ.get("AXVISOR_HTTP_REQUEST_TIMEOUT", "5"))
 # the QEMU timeout.
 POLL_DEADLINE = 120.0
 POLL_INTERVAL = 1.0
+# Creating a VM parses the config, loads the embedded images and builds the
+# runtime, so its latency is not comparable to a status read and REQUEST_TIMEOUT
+# is too tight for it. A create that returns but never settles is still caught by
+# the `ready` poll that follows, so a longer budget here does not weaken the
+# probe.
+CREATE_TIMEOUT = float(os.environ.get("AXVISOR_HTTP_CREATE_TIMEOUT", "60"))
 
 
-def request(method, path, token=None, body=None):
+def request(method, path, token=None, body=None, timeout=None):
     """One HTTP request; returns (status, parsed JSON or None).
 
     `token` defaults to `None`: the unauthenticated steps assert the 401
@@ -141,6 +148,9 @@ def request(method, path, token=None, body=None):
     response is not an error here — the caller asserts the status. A transport
     error (connection refused/reset/timeout while the guest server is coming up
     or mid-transition) raises RuntimeError for the caller to retry or fail.
+
+    `timeout` overrides REQUEST_TIMEOUT for a single request; it is meant for
+    the few requests whose cost is legitimately higher than a status read.
     """
     headers = {}
     if token:
@@ -151,7 +161,9 @@ def request(method, path, token=None, body=None):
         data = body.encode("utf-8")
     req = urllib.request.Request(BASE + path, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+        with urllib.request.urlopen(
+            req, timeout=REQUEST_TIMEOUT if timeout is None else timeout
+        ) as resp:
             status = resp.status
             raw = resp.read()
     except urllib.error.HTTPError as err:
@@ -677,7 +689,9 @@ def main():
 
     # 33. Recreate after delete: the embedded image is matched by id, so a
     #     fresh create with the same config succeeds and registers id 1 again.
-    status, body = request("POST", "/api/vms/create", token=TOKEN, body=create_body)
+    status, body = request(
+        "POST", "/api/vms/create", token=TOKEN, body=create_body, timeout=CREATE_TIMEOUT
+    )
     check("POST /api/vms/create (recreate)", status, 200)
     if not isinstance(body, dict) or body.get("id") != 1:
         raise AssertionError("recreate did not return id=1")
