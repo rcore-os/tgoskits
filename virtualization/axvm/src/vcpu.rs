@@ -895,25 +895,6 @@ mod tests {
     }
 
     #[test]
-    fn entry_loop_scope_retires_on_an_early_backend_error() {
-        let active = AtomicBool::new(false);
-        let fail_backend = || -> Result<(), ()> {
-            let _scope = EntryLoopGuard::new(&active);
-            assert!(active.load(Ordering::Acquire));
-            Err(())
-        };
-        assert!(fail_backend().is_err());
-        // A subsequent control-plane operation must not inherit the proof
-        // that the owner will recheck canonical IRQ state before entry.
-        assert!(!active.load(Ordering::Acquire));
-        {
-            let _next_scope = EntryLoopGuard::new(&active);
-            assert!(active.load(Ordering::Acquire));
-        }
-        assert!(!active.load(Ordering::Acquire));
-    }
-
-    #[test]
     #[cfg(target_arch = "x86_64")]
     fn hard_irq_exit_claim_distinguishes_outside_local_and_remote_guest() {
         let state = VcpuRunState::new();

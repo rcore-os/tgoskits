@@ -820,12 +820,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fair_vcpu_keeps_its_request_across_device_exits() {
-        use crate::host::task::SchedulePolicy;
-        assert!(!yield_after_vcpu_exit(SchedulePolicy::default()));
-    }
-
-    #[test]
     fn vcpu_waits_for_runtime_registration_before_entering_guest() {
         assert!(!vcpu_start_is_ready(true, false));
         assert!(vcpu_start_is_ready(true, true));

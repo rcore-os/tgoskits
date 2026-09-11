@@ -1,6 +1,9 @@
 board_type = "OrangePi-5-Plus"
 timeout = 120
-fail_regex = ['VCPU_PERF_FAIL', '(?i)\bpanic(?:ked)?\b', 'Failed to initialize guest VM']
+fail_regex = ['VCPU_PERF_FAIL', '(?i)\bpanic(?:ked)?\b', 'Failed to initialize guest VM', 'VM\[1\] run VCpu\[0\] get error']
 
 [[shell_check_steps]]
+# AxVisor now starts in its shell. This no-filesystem build has no '/' in its prompt.
+shell_prefix = "axvisor:$"
+shell_cmd = "vm console 1"
 success_regex = ['(?m)^(?:\[VM 1\] )?VCPU_PERF_DONE windows=5\s*$']

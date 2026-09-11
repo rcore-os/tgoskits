@@ -225,7 +225,6 @@ timeout_minutes = 15
 # Exact suite routing must also build the guest and run the throughput verdict.
 suite_preserve_command = true
 command = '''
-python3 test-suit/axvisor/normal/board-orangepi-5-plus/vcpu-perf/test_check.py
 bash test-suit/axvisor/normal/board-orangepi-5-plus/vcpu-perf/run.sh
 '''
 

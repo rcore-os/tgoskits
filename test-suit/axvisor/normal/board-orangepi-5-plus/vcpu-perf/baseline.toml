@@ -1,9 +1,11 @@
 # Median of three independent Orange Pi 5 Plus boots, rounded down.
-baseline_blocks_per_second = 369906
+baseline_blocks_per_second = 361975
 max_regression_percent = 10
 min_timer_wakes_per_second = 50
 reference_platform = "RK3588 OPi 5 Plus, A55 CPU 0, rk3588-cpufreq"
-reference_base_commit = "5163723577f6fc2c4d0ef255f0cf8d62075614ba"
-reference_fix = "local-entry VGIC notification elision and FIFO-only exit yield"
-reference_guest_sha256 = "57ec37919f46f5db8401bb3b86ccb8944a61a69acb02cc3b5163cb32162c6f5d"
-reference_runs = [369906.24, 369302.83, 369934.27]
+reference_base_commit = "822a34a6c93843fecf41611493bbd38bd9b87873"
+reference_fix = "local-entry VGIC notification elision, FIFO-only exit yield, clean+invalidate guest image publication"
+reference_guest_sha256 = "f7d711feb7586679fa7eb67412bff4345d8fc401ceb9066b778a5e910d6447af"
+reference_host_elf_sha256 = "35af3d4a0200eaeea87269341f1416c83a25d9a072e49d5053bd2af7efc8c9ae"
+reference_runs = [362896.43, 361975.06, 361925.10]
+reference_date = "2026-09-11"
