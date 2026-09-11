@@ -4,6 +4,7 @@ name = "arceos-virtio-net-peer-vm2"
 guest_type = "virtualized"
 cpu_num = 1
 phys_cpu_ids = [2]
+# `phys_cpu_sets` is a per-vCPU host CPU bitmap (bit N = pCPU N).
 phys_cpu_sets = [2]
 
 [kernel]
