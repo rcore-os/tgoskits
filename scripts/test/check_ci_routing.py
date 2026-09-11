@@ -329,9 +329,9 @@ def main() -> int:
         if not job:
             errors.append(f"missing grouped CI job: {job_id}")
             continue
-        # AxVisor combines independent QEMU and board targets. A failed board
+        # Starry and AxVisor combine independent QEMU and board targets. A failed board
         # must not cancel the other targets and discard their test evidence.
-        fail_fast = "false" if output_prefix == "axvisor" else "true"
+        fail_fast = "false" if output_prefix in ("starry", "axvisor") else "true"
         for fragment, message in (
             (f"name: {display_name}", "must expose the expected group name"),
             ("- plan_ci", "must depend on Plan CI"),
