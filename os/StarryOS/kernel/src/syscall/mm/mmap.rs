@@ -116,7 +116,11 @@ fn capped_device_map_len(
     available_len: usize,
     page_size: usize,
 ) -> StarryResult<usize> {
-    Ok(request_len.min(checked_align_up(available_len, page_size)?))
+    if page_size == 0 || !page_size.is_power_of_two() {
+        return Err(StarryError::InvalidInput);
+    }
+    let available_len = available_len & !(page_size - 1);
+    Ok(request_len.min(available_len))
 }
 
 bitflags::bitflags! {
@@ -1664,13 +1668,17 @@ pub fn sys_munlock(
 
 #[cfg(all(test, not(axtest)))]
 fn mmap_capped_device_map_len_rules_hold_for_test() -> bool {
-    // capped_device_map_len: returns min of request and aligned available.
+    // Device GEMs expose only fully initialized pages; a partial final page is
+    // not safe to publish because its allocation layout covers only the
+    // requested bytes.
     let page_size = PAGE_SIZE_4K;
     assert_eq!(capped_device_map_len(1000, 4096, page_size).unwrap(), 1000); // request < available
     assert_eq!(capped_device_map_len(8192, 4096, page_size).unwrap(), 4096); // request > available
     assert_eq!(capped_device_map_len(0, 8192, page_size).unwrap(), 0); // zero request
     assert_eq!(capped_device_map_len(5000, 4096, page_size).unwrap(), 4096); // request > available (aligned)
-    assert_eq!(capped_device_map_len(0x10_000, 0x9_708, page_size).unwrap(), 0xa_000);
+    assert_eq!(capped_device_map_len(0x2_000, 0x1_001, page_size).unwrap(), 0x1_000);
+    assert_eq!(capped_device_map_len(0x10_000, 0x9_708, page_size).unwrap(), 0x9_000);
+    assert!(capped_device_map_len(0x1000, 0x1001, 0).is_err());
     assert!(checked_align_up(usize::MAX, page_size).is_err());
     true
 }
