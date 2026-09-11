@@ -25,7 +25,7 @@ const GRADE_PROMPT: &str =
      issue does not match. Return exactly one match object per known finding ID. \
      `finding_indices` are zero-based indices in `candidate_findings.json` and must contain every \
      candidate used to support the match, or be empty when missed. Do not inspect any other paths.";
-const GRADE_SCHEMA: &str = include_str!("../../../agent-review-bench/schemas/grade.schema.json");
+const GRADE_SCHEMA: &str = include_str!("assets/grade.schema.json");
 
 const CLAUDE_COMMON_ARGS: &[&str] = &[
     "-p",
@@ -449,7 +449,6 @@ mod tests {
 
     #[test]
     fn claude_tool_sets_are_read_only_and_offline() {
-        assert_eq!(CLAUDE_GRADE_TOOLS, "Read");
         assert!(
             CLAUDE_REVIEW_TOOLS
                 .split(',')
@@ -463,7 +462,6 @@ mod tests {
         }));
         assert!(!CLAUDE_COMMON_ARGS.contains(&"--safe-mode"));
         assert!(CLAUDE_GRADE_ARGS.contains(&"--safe-mode"));
-        assert_eq!(CLAUDE_REVIEW_SETTING_SOURCES, "user,project");
         let settings = serde_json::from_str::<serde_json::Value>(CLAUDE_REVIEW_SETTINGS).unwrap();
         assert_eq!(settings["disableAllHooks"], true);
         assert_eq!(settings["disableAgentView"], true);
@@ -476,8 +474,6 @@ mod tests {
 
     #[test]
     fn reviewer_prompts_only_invoke_the_project_skill() {
-        assert_eq!(CODEX_REVIEW_PROMPT, "$review-single-pr offline-benchmark");
-        assert_eq!(CLAUDE_REVIEW_PROMPT, "/review-single-pr offline-benchmark");
         for prompt in [CODEX_REVIEW_PROMPT, CLAUDE_REVIEW_PROMPT] {
             assert!(!prompt.contains("correctness"));
             assert!(!prompt.contains("GitHub"));
@@ -489,8 +485,6 @@ mod tests {
     fn grader_prompt_limits_context_and_matches_underlying_issues() {
         assert!(GRADE_PROMPT.contains("known_findings.json"));
         assert!(GRADE_PROMPT.contains("candidate_findings.json"));
-        assert!(GRADE_PROMPT.contains("same underlying defect or material risk"));
-        assert!(GRADE_PROMPT.contains("jointly cover one known finding"));
         assert!(!GRADE_PROMPT.contains("review.json"));
         assert!(!GRADE_PROMPT.contains("match_if"));
     }

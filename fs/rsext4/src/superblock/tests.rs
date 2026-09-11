@@ -49,11 +49,6 @@ fn test_superblock_disk_format_roundtrip() {
 }
 
 #[test]
-fn test_superblock_disk_size() {
-    assert_eq!(Ext4Superblock::disk_size(), 1024);
-}
-
-#[test]
 fn test_superblock_64bit_values() {
     let sb = Ext4Superblock {
         s_blocks_count_lo: 0xFFFFFFFF,

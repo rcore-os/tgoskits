@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.13.1...ax-plat-v0.14.0) - 2026-09-09
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+
+### Fixed
+
+- *(starry-kernel)* support setting the realtime clock ([#2237](https://github.com/rcore-os/tgoskits/pull/2237))
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
+### Changed
+
+- **Breaking:** replace the kernel-address-space tuple with a typed, fallible
+  platform layout that publishes disjoint user and page-table-backed kernel
+  ranges.
+
 ## [0.13.1](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.13.0...ax-plat-v0.13.1) - 2026-08-27
 
 ### Other

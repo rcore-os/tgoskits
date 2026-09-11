@@ -1,0 +1,3 @@
+features = ["ax-std", "boot-trap"]
+log = "Info"
+max_cpu_num = 1

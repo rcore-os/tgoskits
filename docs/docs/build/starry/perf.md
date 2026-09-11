@@ -7,15 +7,18 @@ sidebar_label: "性能剖析"
 
 `cargo xtask starry perf` 构建 StarryOS 并通过 qperf 进行性能剖析，输出火焰图（SVG/HTML/Folded）、Pprof 或 callchain 数据。这是 StarryOS 独有的命令，[ArceOS](../arceos/overview) 和 [Axvisor](../axvisor/overview) 没有。
 
-目前支持 `riscv64`、`loongarch64` 和 `x86_64`。x86_64 使用 StarryOS 的 q35/UEFI
-启动配置，并通过 Ostool 的固定版本和 SHA-256 校验流程复用公共 OVMF 缓存。需要隔离缓存时，
+目前支持 `riscv64`、`loongarch64` 和 `x86_64`，要求 QEMU 11.1.1（Plugin API v7）。
+x86_64 和 LoongArch 按用例的 UEFI 配置启动，并通过 Ostool 的固定版本和 SHA-256
+校验流程复用公共 OVMF 缓存。需要隔离缓存时，
 统一设置 `TGOS_OVMF_DIR`；该目录必须使用 Ostool 的 `<arch>/code.fd`、`vars.fd` 布局。
 建议在 x86_64 上同时使用 `--kernel-filter`，排除 UEFI 固件和用户态地址。
 
-qperf 工具和报告脚本统一通过 `apps/common/prebuild-harness-kit.sh` 获取固定版本的
-harness kit；`cargo xtask starry perf` 与 `apps/qperf`、`apps/OScope-harness` 复用同一
-checkout。需要使用预先准备的只读 checkout 时，设置 `TGOSKIT_HARNESS_KIT_DIR`；该
-目录必须是文档所列固定提交的 Git checkout，且包含 qperf 与报告脚本。
+`cargo xtask starry perf` 的 `build_qperf_tools()` 与 `apps/qperf/prebuild.sh`
+统一使用本仓库 `tools/qperf` 中的插件和分析器源码，不再回退到外部插件源码。
+报告后处理和 `apps/OScope-harness` 仍通过 `apps/common/prebuild-harness-kit.sh`
+获取固定版本的 harness kit。需要使用预先准备的只读 checkout 时，设置
+`TGOSKIT_HARNESS_KIT_DIR`；该目录必须满足 provider 的固定提交和文件完整性校验。
+此变量不改变 qperf 插件和分析器的源码来源。
 
 ## 1. 剖析流程
 
@@ -26,7 +29,7 @@ flowchart TD
     A["cargo xtask starry perf"] --> B["构建 qperf 工具链<br/>qperf + qperf-analyzer + flamegraph"]
     B --> C["构建 StarryOS<br/>注入 qperf feature"]
     C --> D["准备 rootfs + QEMU 配置"]
-    D --> E["运行 QEMU<br/>采集 trace buffer / 指令采样"]
+    D --> E["运行 QEMU<br/>翻译块 / 指令采样"]
     E --> F{"QEMU 是否产出样本?"}
     F -->|"否（早退）"| ERR["bail: 未产出样本"]
     F -->|"是"| G["qperf-analyzer 解析<br/>符号化 + 折叠栈"]
@@ -46,7 +49,7 @@ flowchart TD
 | `--arch <ARCH>` | 目标架构：`riscv64`/`loongarch64`/`x86_64`（默认 `riscv64`） |
 | `--freq <HZ>` | 采样频率（默认 99） |
 | `--format` | 输出格式：`Folded`/`Svg`/`Pprof`/`All`（默认 `All`） |
-| `--mode` | 采样模式：`Tb`（trace buffer，默认）/ `Insn`（指令级） |
+| `--mode` | 采样模式：`Tb`（translation block，默认）/ `Insn`（指令级） |
 | `--max-depth <N>` | 最大调用栈深度（默认 128） |
 | `--timeout <SEC>` | 采集超时（默认 20） |
 | `--output-dir`/`--out <DIR>` | 输出根目录，报告位于 `<DIR>/perf/<arch>/latest` |
@@ -74,13 +77,29 @@ flowchart TD
 | `--smp <N>` | CPU 核数 |
 | `--debug` | debug 构建 |
 
+### Guest 调度指标
+
+`--qperf-metrics` 会启用 `/sys/kernel/debug/scheduler_metrics`。该文件输出从启动开始累计的无锁诊断计数；快照使用 relaxed 读取，不代表跨字段的事务一致性。测量一个工作负载时，应在窗口前后各读取一次并对相同字段作差。
+
+`context_switches` 记录已经进入架构 `switch_context` 的真实切换总数；以下字段按 outgoing task 的稳定 `SwitchReason` 对总数分类：
+
+| 字段 | 含义 |
+|------|------|
+| `context_switches_preempted` | 更高优先级或更符合当前调度策略的任务触发抢占 |
+| `context_switches_yield` | 当前任务主动让出 CPU |
+| `context_switches_blocked` | 当前任务提交 park 或其他阻塞操作 |
+| `context_switches_exited` | 当前任务退出且不再运行 |
+| `context_switches_migrated` | affinity 或负载均衡将当前任务移出本 CPU |
+
+五个分类字段来自 ax-task 的唯一真实切换点；Starry debugfs 只展示同一份 snapshot，不单独维护计数状态。
+
 ## 3. 采样模式
 
-采样模式决定 qperf 从 trace buffer 读取样本，还是按指令级事件收集样本。
+采样模式决定 qperf 在翻译块（translation block）执行回调还是指令执行回调中采样。
 
 | 模式 | 说明 |
 |------|------|
-| `Tb`（trace buffer，默认） | 从 qperf 的内核 trace buffer 读取采样，开销低 |
+| `Tb`（translation block，默认） | 在 QEMU 翻译块执行回调中采样，开销较低 |
 | `Insn`（指令级） | 指令级采样，精度高但开销大 |
 
 ## 4. Callchain 解栈模式

@@ -1,204 +1,136 @@
 # axloader
 
-`axloader` is the UEFI loader used by AxVisor board boot flows. It is built for
-one UEFI target architecture at a time, waits for a serial boot offer from the
-host, then downloads and starts the AxVisor ELF image through UEFI HTTP
-services.
+`axloader` is the UEFI loader used by AxVisor HTTP-boot boards. Its control
+plane uses firmware-provided network protocols; serial is reserved for loader
+diagnostics and for the target system after handoff.
 
-The loader is intentionally small:
+The loader does not implement a network adapter driver and does not read UEFI
+`ConIn` or open `SerialIo`. It selects one physical UEFI controller that
+provides all of these protocols:
 
-- the loader is built for one UEFI target architecture at a time;
-- runtime boot metadata is sent by the host over the board serial console;
-- the kernel image is fetched from the URL provided in that serial offer;
-- ELF loading and entry selection are handled in the loader.
+- `EFI_SIMPLE_NETWORK_PROTOCOL` for the permanent and current Ethernet MAC;
+- `EFI_IP4_CONFIG2_PROTOCOL` for IPv4 configuration;
+- `EFI_UDP4_SERVICE_BINDING_PROTOCOL` for server discovery;
+- `EFI_HTTP_SERVICE_BINDING_PROTOCOL` for JSON control and image download.
 
-## Loader Protocol
+Keeping those services in one interface bundle prevents discovery on one NIC
+and HTTP transfer on another. Diagnostic text uses firmware `ConOut` only.
 
-At runtime, `axloader` participates in the HTTP boot protocol like this:
+## Network boot protocol
 
-1. The user powers on or resets the board with `axloader.efi` installed on the
-   EFI system partition.
-2. `axloader` starts under UEFI and prints an `AXLOADER READY ...` line on the
-   serial console.
-3. The host sends an `AXLOADER BOOT ...` line containing the kernel URL, image
-   size, architecture, image format, and optional entry symbol.
-4. `axloader` downloads the ELF image, loads its `PT_LOAD` segments at their
-   physical addresses, resolves the requested entry point, exits UEFI boot
-   services, and jumps to the kernel.
+The incompatible `httpboot-protocol` 0.2 flow is:
 
-The serial control protocol is shared through `httpboot-protocol`. The loader
-depends on the workspace protocol crate with `default-features = false`, so the
-UEFI binary can reuse the same string prefixes and protocol constants without
-pulling in host-only functionality.
+1. Configure IPv4 on the selected UEFI network controller.
+2. Broadcast a JSON discovery probe to UDP port `2998`. The probe contains the
+   protocol version, permanent/current MAC, architecture, and loader version.
+3. Accept one server offer. Offers from different server instances are
+   ambiguous and cause discovery to retry.
+4. Read SMBIOS Type 1 identity and `POST /api/v1/loaders/poll` every two
+   seconds while the device is unbound or bound and idle.
+5. On a `boot` response, report progress to
+   `POST /api/v1/loaders/status`, download the ELF, and verify both its declared
+   length and SHA-256 digest.
+6. Report `ready_to_handoff`, destroy UDP/HTTP/IP objects, call
+   `ExitBootServices`, and enter the image.
 
-Board-specific boot metadata, including the kernel URL, image architecture,
-and entry symbol, is supplied by the host in the `AXLOADER BOOT` offer. The
-`board` field in `AXLOADER READY` is kept only for protocol compatibility.
+Every loader restart performs discovery again and gets a fresh
+`registration_id`. The server binds the device by its persistent MAC and may
+reissue the active Session's same `boot_id`. A failed `boot_id` is not retried
+until the server publishes a new command.
 
-## Supported Targets
+Discovery retries forever with a 1, 2, 4, 8, then 10 second capped backoff. An
+unbound or idle loader remains available for configuration and future
+Sessions; it never falls back to serial control.
 
-Currently supported UEFI target:
+## Hardware identity
 
-| Target architecture | UEFI target | EFI boot filename |
-| --- | --- | --- | --- |
+The permanent SNP MAC is preferred. If it is empty, the current link MAC is
+used. Only six-byte Ethernet addresses are accepted.
+
+SMBIOS 3 is preferred and SMBIOS 2 is the fallback. The loader reports only
+Type 1 manufacturer, product, version, and serial through HTTP. Parsing checks
+entry-point checksums, structure bounds, string termination and string indexes,
+and rejects tables larger than 1 MiB.
+
+## Supported targets
+
+| Architecture | Rust UEFI target | EFI boot filename |
+| --- | --- | --- |
 | `x86_64` | `x86_64-unknown-uefi` | `BOOTX64.EFI` |
 
-The x86_64 loader expects an x86_64 ELF image and prefers the `httpboot_entry`
-symbol when the host provides it. If no entry symbol is provided, the ELF
-header entry address is used.
+The current loader accepts little-endian x86_64 ELF64 images. `PT_LOAD`
+segments must have page-aligned physical addresses. If `httpboot_entry` is
+requested, the loader resolves that symbol; otherwise it uses the ELF header
+entry. The maximum download is 256 MiB.
 
-## Build
+## Build and test
 
-Install the UEFI target once:
+Use the project task runner:
 
 ```bash
 rustup target add x86_64-unknown-uefi
+cargo xtask axloader build --target x86_64-unknown-uefi --release
+cargo xtask clippy --package axloader
+cargo xtask axloader test qemu --target x86_64-unknown-uefi
 ```
 
-Build the loader by selecting the matching UEFI target:
-
-```bash
-cargo build -p axloader \
-  --target x86_64-unknown-uefi \
-  --bin axloader \
-  --release
-```
-
-The output path follows Cargo's target directory layout:
+The output is:
 
 ```text
 target/x86_64-unknown-uefi/release/axloader.efi
 ```
 
-Host-side checks can run without a UEFI target:
+The QEMU test uses OVMF, q35, a virtio network device, real UDP discovery and
+HTTP control/download. The serial stream is observed for diagnostics and is
+never used to inject a command. Success requires all of the following:
 
-```bash
-cargo clippy -p axloader --all-targets -- -D warnings
-```
+- discovery and HTTP polling completed;
+- `/kernel.elf` was requested;
+- the declared SHA-256 was verified;
+- `ready_to_handoff` reached the control server;
+- `elf_loaded:` appeared in diagnostics.
 
-The real loader build path should also be checked with the UEFI target:
+## Install to removable media
 
-```bash
-cargo clippy -p axloader \
-  --target x86_64-unknown-uefi \
-  --bin axloader \
-  -- -D warnings
-```
-
-## Install To A USB EFI Partition
-
-The helper script builds the loader, mounts the EFI partition, installs the
-loader under `EFI/BOOT`, verifies the copied file hash, syncs the device, and
-unmounts it.
-
-By default it looks for a filesystem labeled `OSTOOLBOOT` and installs
-`BOOTX64.EFI` for the x86_64 UEFI target:
+The helper builds the loader, mounts an EFI partition, installs the removable
+media filename, verifies the copy, syncs, and unmounts:
 
 ```bash
 ./bootloader/axloader/scripts/build-install-efi.sh
-```
-
-Use an explicit partition when needed:
-
-```bash
 ./bootloader/axloader/scripts/build-install-efi.sh --device /dev/sdb1
 ```
 
-Useful options:
-
-```text
---target TARGET       Rust target, default: x86_64-unknown-uefi
---output FILE         EFI filename under EFI/BOOT, default: BOOTX64.EFI
---no-clean            Skip cargo clean before building
---keep-mounted        Leave the EFI partition mounted after writing
-```
-
-For removable media, make sure the board firmware can find the loader at:
-
-```text
-EFI/BOOT/BOOTX64.EFI
-```
-
-## Current Scope
-
-This PR provides the loader crate, its build/test commands, and the EFI install
-helper. It does not add a complete board-flow configuration. In particular,
-board-specific files such as AxVisor board configs, remote board configs, and
-VM configs are expected to come from the board-flow work that lands separately.
-
-```bash
-cargo axloader build
-cargo axloader test qemu
-```
-
-Once a board-flow configuration is available, the host side is responsible for
-building or publishing the AxVisor ELF, opening the serial console, waiting for
-`AXLOADER READY`, and sending the `AXLOADER BOOT` offer over that same serial
-console.
-
-Typical serial output starts like this:
-
-```text
-HTTP bootloader
-round: 1/10
-arch: x86_64
-output: BOOTX64.EFI
-serial_control_wait: waiting for AXLOADER BOOT
-AXLOADER READY {"protocol_version":1,"board":"axloader","arch":"x86_64","loader_version":"axloader"}
-```
-
-After the host replies, the loader prints the selected boot metadata and the
-download progress.
-
-## Kernel Image Requirements
-
-The current x86_64 loader accepts ELF64 little-endian x86_64 images. Loadable
-segments must use page-aligned physical addresses because the loader allocates
-UEFI pages at the segment physical load range.
-
-The preferred AxVisor HTTP boot entry is:
-
-```text
-httpboot_entry
-```
-
-When the host sends `entry_symbol = "httpboot_entry"`, the loader resolves that
-symbol from the ELF image and jumps to its physical address. Unsupported entry
-symbols are rejected.
-
-The loader enforces a maximum kernel download size of 256 MiB.
-
-## Adding A New UEFI Target
-
-To add a target, keep the target-specific data small and explicit:
-
-1. Add the target architecture name and EFI output filename in `src/loader/mod.rs`.
-2. Add the matching build-time validation entry in `build.rs`.
-3. Choose the correct UEFI target and default EFI boot filename.
-
-For example, a future LoongArch64 loader should use a LoongArch64 UEFI target
-and the firmware-expected EFI boot filename for that architecture.
+By default it finds the `OSTOOLBOOT` filesystem and installs
+`EFI/BOOT/BOOTX64.EFI`.
 
 ## Troubleshooting
 
-`unsupported axloader UEFI target ...`
+`network_select_error`
 
-The selected UEFI target is unsupported or does not match its Rust target
-architecture. Rebuild with the UEFI target shown by the error.
+No single UEFI controller exposes SNP, IPv4 configuration, UDP4 service
+binding, and HTTP service binding. Check that the firmware contains the driver
+for the configured NIC.
 
-`control_boot_error: Timeout`
+`discovery_error: Timeout`
 
-The loader did not receive an `AXLOADER BOOT` line before the serial-control
-timeout. Check that the host-side board-flow runner is connected to the correct
-serial device and is sending a boot offer for this loader.
+The loader did not receive a valid UDP offer. Check VLAN/bridge broadcast
+forwarding, server UDP port `2998`, DHCP, and that exactly one server instance
+is visible.
 
-`elf_load_error: Download(SizeMismatch)`
+`control_boot_error`
 
-The HTTP download completed with fewer bytes than the host advertised. Check
-the ostool server URL, network reachability from UEFI, and whether the current
-session artifact is still active.
+The poll or status exchange failed. Check the offered HTTP base URL and the
+server's `loader_network.public_base_url` as seen from the UEFI client. JSON
+POST requests carry explicit `Content-Type: application/json` and
+`Content-Length` headers because an HTTP/1.1 server must not infer a request
+body from bytes following an unframed header block.
 
-`elf_load_error: UnsupportedEntrySymbol`
+`elf_load_error: Download(SizeMismatch)` or `Sha256Mismatch`
 
-The host sent an entry symbol that this loader does not implement. For the
-current x86_64 AxVisor flow, use `httpboot_entry` or omit the entry symbol.
+The downloaded bytes differ from the active boot manifest. Upload a new
+kernel, which creates a new `boot_id`; the failed command is intentionally not
+retried.
+
+When debugging handoff, remember that `ready_to_handoff` is the last reliable
+network state. No UEFI network object may remain live across
+`ExitBootServices`.

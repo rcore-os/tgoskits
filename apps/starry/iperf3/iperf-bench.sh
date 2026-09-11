@@ -6,7 +6,7 @@ omit=2
 block_size=128K
 rounds=3
 cooldown=15
-result_dir=/tmp/starry-iperf3-bench
+result_dir=${TMPDIR:-/tmp}/starry-iperf3-bench
 summary_file=$result_dir/summary
 
 fail() {
@@ -43,6 +43,13 @@ read_receiver_mbps() {
 }
 
 print_command() {
+    case "$case_mode" in
+        tx) case_direction=TX ;;
+        rx) case_direction=RX ;;
+        bidir) case_direction=TX/RX ;;
+    esac
+
+    printf '类别：%s %s\n' "$case_category" "$case_direction"
     printf 'Command: iperf3 -c %s -t %s -O %s -P %s -l %s' \
         "$server_ip" "$duration" "$omit" "$case_streams" "$block_size"
     case "$case_mode" in
@@ -121,8 +128,8 @@ summarize_direction() {
     summary_median=$(sort -n "$summary_samples" | sed -n '2p')
 
     printf '\nMedian %-6s %10s Mbps\n' "DUT $summary_direction:" "$summary_median"
-    printf '%s|%s|%s|%s|%s|%s|%s\n' \
-        "$case_id" "$case_label" "$summary_direction" \
+    printf '%s|%s|%s|%s|%s|%s|%s|%s\n' \
+        "$case_id" "$case_category" "$case_label" "$summary_direction" \
         "$summary_run_1" "$summary_run_2" "$summary_run_3" "$summary_median" \
         >>"$summary_file"
     printf 'STARRY_IPERF3_BENCH_RESULT case=%s direction=%s median_mbps=%s\n' \
@@ -131,9 +138,10 @@ summarize_direction() {
 
 run_case() {
     case_id=$1
-    case_label=$2
-    case_mode=$3
-    case_streams=$4
+    case_category=$2
+    case_label=$3
+    case_mode=$4
+    case_streams=$5
 
     : >"$result_dir/$case_id-TX.samples"
     : >"$result_dir/$case_id-RX.samples"
@@ -163,18 +171,22 @@ print_summary() {
     printf '\n============================================================\n'
     printf 'iperf3 benchmark summary (Mbps)\n'
     printf '============================================================\n\n'
-    printf '%-4s %-29s %-4s %10s %10s %10s %10s\n' \
-        Case Scenario Dir Run1 Run2 Run3 Median
-    printf '%-4s %-29s %-4s %10s %10s %10s %10s\n' \
-        ---- ----------------------------- ---- ---------- ---------- ---------- ----------
+    printf '%-4s %-8s %-29s %-4s %10s %10s %10s %10s\n' \
+        Case Category Scenario Dir Run1 Run2 Run3 Median
+    printf '%-4s %-8s %-29s %-4s %10s %10s %10s %10s\n' \
+        ---- -------- ----------------------------- ---- \
+        ---------- ---------- ---------- ----------
 
-    while IFS='|' read -r summary_case summary_label summary_direction \
-        summary_run_1 summary_run_2 summary_run_3 summary_median; do
-        printf '%-4s %-29s %-4s %10s %10s %10s %10s\n' \
-            "$summary_case" "$summary_label" "$summary_direction" \
+    while IFS='|' read -r summary_case summary_category summary_label \
+        summary_direction summary_run_1 summary_run_2 summary_run_3 \
+        summary_median; do
+        printf '%-4s %-8s %-29s %-4s %10s %10s %10s %10s\n' \
+            "$summary_case" "$summary_category" "$summary_label" \
+            "$summary_direction" \
             "$summary_run_1" "$summary_run_2" "$summary_run_3" "$summary_median"
     done <"$summary_file"
 
+    printf '\n注：TX 表示板端发送、宿主机接收；RX 表示宿主机发送、板端接收。\n'
     printf '\nSTARRY_IPERF3_BENCH_PASSED\n'
 }
 
@@ -193,13 +205,13 @@ main() {
     printf 'Profile: 10 seconds, 2-second omit, 128K block, 3 rounds\n'
     printf 'Isolation: %s-second cooldown after every connection\n' "$cooldown"
 
-    run_case T01 "Single-stream DUT TX" tx 1
-    run_case T02 "Single-stream DUT RX" rx 1
-    run_case T03 "Single-stream bidirectional" bidir 1
-    run_case T04 "2-stream DUT TX" tx 2
-    run_case T05 "4-stream DUT TX" tx 4
-    run_case T06 "8-stream DUT TX" tx 8
-    run_case T07 "4-stream DUT RX" rx 4
+    run_case T01 "单流单向" "Single-stream DUT TX" tx 1
+    run_case T02 "单流单向" "Single-stream DUT RX" rx 1
+    run_case T03 "单流双向" "Single-stream bidirectional" bidir 1
+    run_case T04 "双流单向" "2-stream DUT TX" tx 2
+    run_case T05 "四流单向" "4-stream DUT TX" tx 4
+    run_case T06 "八流单向" "8-stream DUT TX" tx 8
+    run_case T07 "四流单向" "4-stream DUT RX" rx 4
 
     print_summary
 }

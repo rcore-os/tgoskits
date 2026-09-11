@@ -31,6 +31,7 @@ src/
     request.rs
     startup/
       mod.rs
+      d80.rs
       dc.rs
       firmware.rs
       vendor.rs

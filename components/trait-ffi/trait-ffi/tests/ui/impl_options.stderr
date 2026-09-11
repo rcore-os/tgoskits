@@ -1,0 +1,7 @@
+error: impl_extern_trait accepts no options; link metadata belongs to the interface
+ --> tests/ui/impl_options.rs:2:1
+  |
+2 | #[trait_ffi::impl_extern_trait(namespace = "Wrong")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `trait_ffi::impl_extern_trait` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -20,7 +20,7 @@
 | `build-x86_64-unknown-none.toml` | StarryOS 内核构建配置 |
 | `qemu-x86_64.toml` | 离线 smoke 测试 QEMU 配置 |
 | `qemu-x86_64-deepseek-prime-test.toml` | 在线 C 素数测试 QEMU 配置，需要 API Key + 网络 |
-| `qemu-x86_64-shell.toml` | 交互式 shell QEMU 配置 |
+| `qemu-x86_64-shell.toml` | CLI 离线冒烟配置，保留原文件名 |
 
 ## 默认流程
 
@@ -100,28 +100,13 @@ STARRY_DEEPSEEK_PRIME_TEST_DONE
 STARRY_DEEPSEEK_PRIME_TEST_PASSED
 ```
 
-### 交互式 shell
+### CLI 离线检查
+
+`qemu-x86_64-shell.toml` 保留原文件名，现在自动执行版本、帮助和模型列表检查，匹配 `STARRY_DEEPSEEK_STAGE_G_PASSED` 后退出，不再停留在交互 shell。该路径不要求 API Key。
 
 ```bash
-cargo xtask starry app qemu \
-  -t deepseek-tui \
-  --arch x86_64 \
-  --qemu-config apps/starry/deepseek-tui/qemu-x86_64-shell.toml
-```
-
-或带 API Key/代理：
-
-```bash
-bash apps/starry/deepseek-tui/run_me.sh --shell --api-key sk-your-key-here --proxy http://10.0.2.2:7890
-```
-
-进入 `root@starry` 后可手动运行：
-
-```sh
-deepseek --version
-deepseek-tui --version
-deepseek model list
-deepseek-tui
+cargo xtask starry app qemu -t deepseek-tui --arch x86_64 \
+  --qemu-config qemu-x86_64-shell.toml
 ```
 
 ### 仅构建 host 资产

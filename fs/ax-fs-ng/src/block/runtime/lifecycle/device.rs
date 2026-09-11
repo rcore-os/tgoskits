@@ -1,4 +1,4 @@
-use super::*;
+use super::{super::waiters::AsyncWaiter, *};
 
 impl DeviceInner {
     pub(super) fn quarantine_resources(&self) {
@@ -105,6 +105,13 @@ impl DeviceInner {
         };
         self.accepting.store(false, Ordering::Release);
         if changed {
+            let channel_count = self.cpu_channels.lock().len();
+            for index in (0..channel_count).rev() {
+                let channel = self.cpu_channels.lock().get(index).cloned();
+                if let Some(channel) = channel {
+                    channel.channel.close();
+                }
+            }
             self.state_notification.notify();
             self.notify_all_barrier_waiters();
         }
@@ -120,11 +127,43 @@ impl DeviceInner {
     }
 
     pub(super) fn selected_queue_info(&self) -> Option<QueueInfo> {
-        self.select_cpu_channel().map(|channel| {
-            let mut info = channel.hctx.info();
-            info.device = self.published_device_info();
-            info
-        })
+        self.select_cpu_channel()
+            .map(|channel| self.effective_queue_info(&channel))
+    }
+
+    pub(super) fn effective_queue_info(&self, channel: &CpuSubmissionChannel) -> QueueInfo {
+        let mut info = channel.hctx.info();
+        info.device = self.published_device_info();
+        info
+    }
+
+    pub(super) fn listen_for_admission(&self) -> AsyncWaiter {
+        self.admission_async_waiters.listen()
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_admission_wait_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        let previous = self
+            .admission_wait_hook
+            .lock()
+            .replace(alloc::boxed::Box::new(hook));
+        assert!(previous.is_none(), "admission wait hook already installed");
+    }
+
+    #[cfg(test)]
+    pub(super) fn run_admission_wait_hook(&self) {
+        let hook = self.admission_wait_hook.lock().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    pub(super) fn closed_submission_error(&self) -> BlkError {
+        if self.lifecycle_gate.lock().phase == DevicePhase::Ready {
+            BlkError::Retry
+        } else {
+            BlkError::Io
+        }
     }
 
     pub(super) fn published_device_info(&self) -> DeviceInfo {
@@ -136,26 +175,8 @@ impl DeviceInner {
         count: usize,
         admission: SubmissionAdmission,
     ) -> Result<(), BlkError> {
-        if count == 0 {
-            return Err(BlkError::InvalidRequest);
-        }
         loop {
-            let blocked_by_flush = {
-                let mut gate = self.lifecycle_gate.lock();
-                if gate.phase != DevicePhase::Ready {
-                    return Err(BlkError::Io);
-                }
-                if gate.flush_active {
-                    true
-                } else {
-                    gate.active_data = gate
-                        .active_data
-                        .checked_add(count)
-                        .ok_or(BlkError::InvalidRequest)?;
-                    false
-                }
-            };
-            if !blocked_by_flush {
+            if self.lifecycle_gate.lock().try_admit_data(count)? {
                 return Ok(());
             }
             {
@@ -177,19 +198,7 @@ impl DeviceInner {
         admission: SubmissionAdmission,
     ) -> Result<(), BlkError> {
         loop {
-            let acquired = {
-                let mut gate = self.lifecycle_gate.lock();
-                if gate.phase != DevicePhase::Ready {
-                    return Err(BlkError::Io);
-                }
-                if gate.flush_active {
-                    false
-                } else {
-                    gate.flush_active = true;
-                    true
-                }
-            };
-            if acquired {
+            if self.lifecycle_gate.lock().try_admit_flush()?.is_some() {
                 break;
             }
             if admission.cannot_wait() {
@@ -245,6 +254,7 @@ impl DeviceInner {
         }
         if notify_data {
             self.data_drain_waiters.notify_all();
+            self.admission_async_waiters.notify_all();
         }
         if notify_flush {
             self.notify_flush_gate_released();
@@ -274,16 +284,17 @@ impl DeviceInner {
         hctxs: &[Arc<Hctx>],
     ) -> Result<InstalledIrqRegistration, BlkError> {
         let source_id = endpoint.source_id();
-        let queue_bits = endpoint.queue_bits();
+        let queue_mask = endpoint.queue_mask();
         let valid_queue_bits = hctxs
             .iter()
+            .filter(|hctx| hctx.id() < u64::BITS as usize)
             .fold(0u64, |bits, hctx| bits | (1u64 << hctx.id()));
-        if queue_bits & !valid_queue_bits != 0 {
+        if queue_mask.bits() & !valid_queue_bits != 0 {
             return Err(BlkError::InvalidRequest);
         }
         let target_count = hctxs
             .iter()
-            .filter(|hctx| queue_bits & (1u64 << hctx.id()) != 0)
+            .filter(|hctx| queue_mask.contains(hctx.id()))
             .count();
         let mut targets = Vec::new();
         let mut hctx_tokens = Vec::new();
@@ -294,18 +305,18 @@ impl DeviceInner {
             .try_reserve(target_count)
             .map_err(|_| BlkError::NoMemory)?;
         for hctx in hctxs {
-            if queue_bits & (1u64 << hctx.id()) != 0 {
+            if queue_mask.contains(hctx.id()) {
                 let (target, token) = hctx.prepare_irq_target(source_id);
                 targets.push(target);
                 hctx_tokens.push(token);
             }
         }
-        if queue_bits != 0 && targets.is_empty() {
+        if !queue_mask.is_empty() && targets.is_empty() {
             return Err(BlkError::NotSupported);
         }
         let cpu = hctxs
             .iter()
-            .find(|hctx| queue_bits & (1u64 << hctx.id()) != 0)
+            .find(|hctx| queue_mask.contains(hctx.id()))
             .map_or(0, |hctx| hctx.cpu());
         let irq = self
             .irq_sources
@@ -323,9 +334,11 @@ impl DeviceInner {
         )
         .map_err(|_| BlkError::Io)?;
         info!(
-            "block device {} IRQ source {} ({irq:?}) fixed to CPU {} for queue mask \
-             {queue_bits:#x}",
-            self.name, source_id, cpu
+            "block device {} IRQ source {} ({irq:?}) fixed to CPU {} for queue mask {:#x}",
+            self.name,
+            source_id,
+            cpu,
+            queue_mask.bits()
         );
         Ok(InstalledIrqRegistration {
             registration,
@@ -659,6 +672,7 @@ impl HctxObserver for DeviceInner {
         }
         if notify_data {
             self.data_drain_waiters.notify_all();
+            self.admission_async_waiters.notify_all();
         }
         if notify_flush {
             self.notify_flush_gate_released();
@@ -704,12 +718,14 @@ impl DeviceInner {
     fn notify_flush_gate_released(&self) {
         self.data_gate_waiters.notify_all();
         self.flush_gate_waiters.notify_one();
+        self.admission_async_waiters.notify_all();
     }
 
     fn notify_all_barrier_waiters(&self) {
         self.data_gate_waiters.notify_all();
         self.flush_gate_waiters.notify_all();
         self.data_drain_waiters.notify_all();
+        self.admission_async_waiters.notify_all();
     }
 }
 
@@ -909,7 +925,7 @@ impl InstallUpdateTransaction {
             let additional = self
                 .endpoints
                 .iter()
-                .filter(|endpoint| endpoint.queue_bits() & (1u64 << hctx.id()) != 0)
+                .filter(|endpoint| endpoint.queue_mask().contains(hctx.id()))
                 .count();
             hctx.reserve_irq_targets(additional)
         });

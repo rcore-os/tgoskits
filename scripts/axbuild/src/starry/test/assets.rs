@@ -1,17 +1,18 @@
 pub(crate) fn starry_case_asset_config() -> case::CaseAssetConfig {
     case::CaseAssetConfig {
-        grouped_runner: case::GroupedCaseRunnerConfig {
-            runner_name: "starry-run-case-tests".to_string(),
-            runner_path: "/usr/bin/starry-run-case-tests".to_string(),
-            autorun_profile_script: Some("99-starry-run-case-tests.sh".to_string()),
-            begin_marker: "STARRY_GROUPED_TEST_BEGIN".to_string(),
-            passed_marker: "STARRY_GROUPED_TEST_PASSED".to_string(),
-            failed_marker: "STARRY_GROUPED_TEST_FAILED".to_string(),
-            all_passed_marker: "STARRY_GROUPED_TESTS_PASSED".to_string(),
-            all_failed_marker: "STARRY_GROUPED_TESTS_FAILED".to_string(),
-            success_regex: r"(?m)^STARRY_GROUPED_TESTS_PASSED\s*$".to_string(),
-            fail_regex: r"(?m)^STARRY_GROUPED_TEST_FAILED:".to_string(),
-        },
+        grouped_execution: case::GroupedCaseExecution::GuestInit(Box::new(
+            case::GroupedCaseRunnerConfig {
+                runner_name: "starry-run-case-tests".to_string(),
+                runner_path: "/usr/bin/starry-run-case-tests".to_string(),
+                begin_marker: "STARRY_GROUPED_TEST_BEGIN".to_string(),
+                passed_marker: "STARRY_GROUPED_TEST_PASSED".to_string(),
+                failed_marker: "STARRY_GROUPED_TEST_FAILED".to_string(),
+                all_passed_marker: "STARRY_GROUPED_TESTS_PASSED".to_string(),
+                all_failed_marker: "STARRY_GROUPED_TESTS_FAILED".to_string(),
+                success_regex: r"(?m)^STARRY_GROUPED_TESTS_PASSED\s*$".to_string(),
+                fail_regex: r"(?m)^STARRY_GROUPED_TEST_FAILED:".to_string(),
+            },
+        )),
         script_env: case::CaseScriptEnvConfig {
             staging_root: "STARRY_STAGING_ROOT".to_string(),
             case_dir: "STARRY_CASE_DIR".to_string(),

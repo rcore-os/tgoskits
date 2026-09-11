@@ -55,6 +55,7 @@ __pycache__/
 
 # Tooling artifacts
 .direnv/
+.ci-cache/
 .codex
 /.agents/*
 !/.agents/skills/
@@ -63,7 +64,9 @@ __pycache__/
 coverage/
 third_party/
 os/StarryOS-REF
-.Ds_Store
+.DS_Store
+*.tmp
+*.swp
 starry-*.log
 loongarch64-axvisor-guest-tests.md
 

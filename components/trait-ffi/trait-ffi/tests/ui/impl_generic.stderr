@@ -1,0 +1,5 @@
+error: trait-ffi bindings require a concrete provider, without impl generics or where clauses
+ --> tests/ui/impl_generic.rs:5:5
+  |
+5 | impl<T> Interface for Provider<T> { fn read() {} }
+  |     ^^^

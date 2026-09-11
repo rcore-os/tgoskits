@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.5.1...riscv_vplic-v0.5.2) - 2026-09-09
+
+### Fixed
+
+- *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
+
 ## [0.5.1](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.5.0...riscv_vplic-v0.5.1) - 2026-08-27
 
 ### Fixed

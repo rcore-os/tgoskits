@@ -1,11 +1,9 @@
 use core::ptr::NonNull;
 
-use aarch64_cpu::{
-    asm::barrier,
-    registers::{CurrentEL, MPIDR_EL1},
-};
 use log::*;
 pub use tock_registers::{LocalRegisterCopy, interfaces::*};
+
+use crate::arch;
 
 mod gicd;
 pub(crate) mod gicr;
@@ -182,12 +180,11 @@ impl Affinity {
     /// let affinity = Affinity::from_mpidr(mpidr_value);
     /// ```
     pub fn from_mpidr(mpidr: u64) -> Self {
-        let val = LocalRegisterCopy::<u64, MPIDR_EL1::Register>::new(mpidr);
         Self {
-            aff0: val.read(MPIDR_EL1::Aff0) as u8,
-            aff1: val.read(MPIDR_EL1::Aff1) as u8,
-            aff2: val.read(MPIDR_EL1::Aff2) as u8,
-            aff3: val.read(MPIDR_EL1::Aff3) as u8,
+            aff0: mpidr as u8,
+            aff1: (mpidr >> 8) as u8,
+            aff2: (mpidr >> 16) as u8,
+            aff3: (mpidr >> 32) as u8,
         }
     }
 
@@ -212,7 +209,7 @@ impl Affinity {
     /// );
     /// ```
     pub fn current() -> Self {
-        Self::from_mpidr(MPIDR_EL1.get())
+        Self::from_mpidr(arch::mpidr())
     }
 }
 
@@ -401,7 +398,7 @@ impl Gic {
 
         // 1. Disable all interrupt groups before configuration
         self.disable();
-        barrier::isb(barrier::SY);
+        arch::isb();
 
         // Wait for register write to complete
         if let Err(e) = self.gicd().wait_for_rwp() {
@@ -431,7 +428,7 @@ impl Gic {
         };
         self.gicd().CTLR.set(ctrl);
 
-        barrier::isb(barrier::SY);
+        arch::isb();
 
         // Wait for final configuration to complete
         if let Err(e) = self.gicd().wait_for_rwp() {
@@ -516,7 +513,7 @@ impl Gic {
                 pending,
             )?;
         }
-        barrier::dsb(barrier::SY);
+        arch::dsb();
         Ok(())
     }
 
@@ -537,7 +534,7 @@ impl Gic {
             }
         };
         self.gicd().CTLR.set(old & !val);
-        barrier::isb(barrier::SY);
+        arch::isb();
     }
 
     fn rd_slice(&self) -> RDv3Slice {
@@ -1016,7 +1013,7 @@ impl CpuInterface {
         self.rd().lpi.wait_for_rwp()?;
 
         // 3. Configure CPU interface system registers
-        if CurrentEL.read(CurrentEL::EL) == 2 {
+        if arch::current_el() == 2 {
             ICC_SRE_EL2.write(
                 ICC_SRE_EL2::SRE::SET
                     + ICC_SRE_EL2::DFB::SET
@@ -1053,7 +1050,7 @@ impl CpuInterface {
         }
 
         // 6. Configure EOI mode
-        if CurrentEL.read(CurrentEL::EL) == 2 {
+        if arch::current_el() == 2 {
             ICC_CTLR_EL1.modify(ICC_CTLR_EL1::EOIMODE::SET);
         }
 
@@ -1296,5 +1293,5 @@ pub fn send_sgi(sgi_id: IntId, target: SGITarget) {
             ICC_SGI1R_EL1.write(value);
         }
     }
-    barrier::isb(barrier::SY);
+    arch::isb();
 }

@@ -10,8 +10,7 @@ use core::{
     time::Duration,
 };
 
-use ax_lazyinit::LazyLock;
-use ax_runtime::sync::SpinLock as Mutex;
+use ax_runtime::task::sync::SpinLock as Mutex;
 use syscalls::Errno;
 
 #[cfg(feature = "fs")]
@@ -37,8 +36,12 @@ const MAX_PTHREAD_KEYS: usize = 1024;
 const PTHREAD_DESTRUCTOR_ITERATIONS: usize = 4;
 const PTHREAD_COND_SIZE: usize = 48;
 const PTHREAD_ATTR_SIZE: usize = 56;
-const PTHREAD_ATTR_STACK_SIZE_OFFSET: usize = 8;
-const DEFAULT_STACK_SIZE: usize = 2 * 1024 * 1024;
+const PTHREAD_ATTR_STACK_SIZE_OFFSET: usize = 0;
+const PTHREAD_ATTR_GUARD_SIZE_OFFSET: usize = size_of::<usize>();
+const PTHREAD_ATTR_STACK_ADDR_OFFSET: usize = size_of::<usize>() * 2;
+const PTHREAD_STACK_MIN: usize = 2048;
+const DEFAULT_STACK_SIZE: usize = 128 * 1024;
+const DEFAULT_GUARD_SIZE: usize = 8 * 1024;
 #[cfg(feature = "fs")]
 const LINUX_DIRENT64_NAME_OFFSET: usize = 19;
 #[cfg(feature = "fs")]
@@ -863,6 +866,54 @@ pub unsafe extern "C" fn eventfd(_initval: c_uint, _flags: c_int) -> c_int {
 /// # Safety
 ///
 /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(feature = "fd")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pipe(pipefd: *mut c_int) -> c_int {
+    if pipefd.is_null() {
+        return fail(Errno::EFAULT);
+    }
+    let fds = unsafe { core::slice::from_raw_parts_mut(pipefd, 2) };
+    ok_or_errno(ax_posix_api::sys_pipe(fds))
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(not(feature = "fd"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pipe(_pipefd: *mut c_int) -> c_int {
+    fail(Errno::ENOSYS)
+}
+
+/// Creates a byte-stream pipe with the supported creation flags.
+///
+/// # Safety
+///
+/// A non-null `pipefd` must point to two writable, aligned `c_int` values
+/// exclusively borrowed for this call.
+#[cfg(feature = "fd")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pipe2(pipefd: *mut c_int, flags: c_int) -> c_int {
+    if pipefd.is_null() {
+        return fail(Errno::EFAULT);
+    }
+    // SAFETY: the caller supplies two uniquely writable descriptor slots.
+    let fds = unsafe { core::slice::from_raw_parts_mut(pipefd, 2) };
+    ok_or_errno(ax_posix_api::sys_pipe2(fds, flags))
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(not(feature = "fd"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pipe2(_pipefd: *mut c_int, _flags: c_int) -> c_int {
+    fail(Errno::ENOSYS)
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn isatty(_fd: c_int) -> c_int {
     fail(Errno::ENOTTY)
@@ -873,7 +924,17 @@ pub unsafe extern "C" fn isatty(_fd: c_int) -> c_int {
 /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
 #[cfg(feature = "fs")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn open(path: *const c_char, flags: c_int, mode: ModeT) -> c_int {
+pub unsafe extern "C" fn open(path: *const c_char, flags: c_int, mut args: ...) -> c_int {
+    let mode = if flags & libc::O_CREAT != 0 {
+        unsafe { args.next_arg::<ModeT>() }
+    } else {
+        0
+    };
+    open_with_mode(path, flags, mode)
+}
+
+#[cfg(feature = "fs")]
+fn open_with_mode(path: *const c_char, flags: c_int, mode: ModeT) -> c_int {
     let path_string = ax_posix_api::utils::char_ptr_to_str(path)
         .ok()
         .map(ToString::to_string);
@@ -891,8 +952,13 @@ pub unsafe extern "C" fn open(path: *const c_char, flags: c_int, mode: ModeT) ->
 /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
 #[cfg(feature = "fs")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn open64(path: *const c_char, flags: c_int, mode: ModeT) -> c_int {
-    unsafe { open(path, flags, mode) }
+pub unsafe extern "C" fn open64(path: *const c_char, flags: c_int, mut args: ...) -> c_int {
+    let mode = if flags & libc::O_CREAT != 0 {
+        unsafe { args.next_arg::<ModeT>() }
+    } else {
+        0
+    };
+    open_with_mode(path, flags, mode)
 }
 
 /// # Safety
@@ -1089,14 +1155,19 @@ pub unsafe extern "C" fn openat(
     dirfd: c_int,
     path: *const c_char,
     flags: c_int,
-    mode: ModeT,
+    mut args: ...
 ) -> c_int {
+    let mode = if flags & libc::O_CREAT != 0 {
+        unsafe { args.next_arg::<ModeT>() }
+    } else {
+        0
+    };
     let path = match resolve_at_path(dirfd, path) {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
     let path = c_string_from_string(path);
-    unsafe { open(path.as_ptr(), flags, mode) }
+    open_with_mode(path.as_ptr(), flags, mode)
 }
 
 /// # Safety
@@ -1108,9 +1179,19 @@ pub unsafe extern "C" fn openat64(
     dirfd: c_int,
     path: *const c_char,
     flags: c_int,
-    mode: ModeT,
+    mut args: ...
 ) -> c_int {
-    unsafe { openat(dirfd, path, flags, mode) }
+    let mode = if flags & libc::O_CREAT != 0 {
+        unsafe { args.next_arg::<ModeT>() }
+    } else {
+        0
+    };
+    let path = match resolve_at_path(dirfd, path) {
+        Ok(path) => path,
+        Err(err) => return fail(err),
+    };
+    let path = c_string_from_string(path);
+    open_with_mode(path.as_ptr(), flags, mode)
 }
 
 /// # Safety
@@ -1470,9 +1551,49 @@ mod fs_stubs {
         };
     }
 
+    /// # Safety
+    ///
+    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn open(_path: *const c_char, _flags: c_int, _args: ...) -> c_int {
+        fail(Errno::ENOSYS)
+    }
+
+    /// # Safety
+    ///
+    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn open64(_path: *const c_char, _flags: c_int, _args: ...) -> c_int {
+        fail(Errno::ENOSYS)
+    }
+
+    /// # Safety
+    ///
+    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn openat(
+        _dirfd: c_int,
+        _path: *const c_char,
+        _flags: c_int,
+        _args: ...
+    ) -> c_int {
+        fail(Errno::ENOSYS)
+    }
+
+    /// # Safety
+    ///
+    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn openat64(
+        _dirfd: c_int,
+        _path: *const c_char,
+        _flags: c_int,
+        _args: ...
+    ) -> c_int {
+        fail(Errno::ENOSYS)
+    }
+
     fs_stub! {
-        fn open(path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
-        fn open64(path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
         fn lseek(fd: c_int, offset: OffT, whence: c_int) -> OffT => { fail(Errno::ENOSYS) as OffT }
         fn lseek64(fd: c_int, offset: OffT, whence: c_int) -> OffT => { fail(Errno::ENOSYS) as OffT }
         fn stat(path: *const c_char, buf: *mut libc::stat) -> c_int => { fail(Errno::ENOSYS) }
@@ -1484,8 +1605,6 @@ mod fs_stubs {
         fn rename(old: *const c_char, new: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
         fn unlink(path: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
         fn unlinkat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int => { fail(Errno::ENOSYS) }
-        fn openat(dirfd: c_int, path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
-        fn openat64(dirfd: c_int, path: *const c_char, flags: c_int, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
         fn mkdir(path: *const c_char, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
         fn mkdirat(dirfd: c_int, path: *const c_char, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }
         fn rmdir(path: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
@@ -1882,30 +2001,29 @@ unsafe fn futex_timeout(
     super::futex::timeout_from_timespec(ts, mode, clocks).map(Some)
 }
 
-static FUTEX_QUEUES: LazyLock<Mutex<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>>> =
-    LazyLock::new(|| Mutex::new(BTreeMap::new()));
-static MMAP_ALLOCS: LazyLock<Mutex<BTreeMap<usize, SizeT>>> =
-    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+static FUTEX_QUEUES: Mutex<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>> =
+    Mutex::new(BTreeMap::new());
+static MMAP_ALLOCS: Mutex<BTreeMap<usize, SizeT>> = Mutex::new(BTreeMap::new());
 #[cfg(feature = "fs")]
-static FD_PATHS: LazyLock<Mutex<BTreeMap<c_int, FdPath>>> =
-    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+static FD_PATHS: Mutex<BTreeMap<c_int, FdPath>> = Mutex::new(BTreeMap::new());
 
 mod pthread {
     use super::*;
+
+    fn pthread_result(ret: c_int) -> c_int {
+        if ret < 0 { -ret } else { ret }
+    }
 
     type PthreadTlsValues = [*mut c_void; MAX_PTHREAD_KEYS];
     type PthreadTlsMap = BTreeMap<u64, ForceSendSync<PthreadTlsValues>>;
     type CxaThreadDtorMap = BTreeMap<u64, Vec<CxaThreadDtor>>;
 
-    static KEY_SLOTS: LazyLock<Mutex<Vec<Option<TlsKey>>>> =
-        LazyLock::new(|| Mutex::new(Vec::new()));
-    static TLS_VALUES: LazyLock<Mutex<PthreadTlsMap>> =
-        LazyLock::new(|| Mutex::new(BTreeMap::new()));
-    static CXA_THREAD_DTORS: LazyLock<Mutex<CxaThreadDtorMap>> =
-        LazyLock::new(|| Mutex::new(BTreeMap::new()));
+    static KEY_SLOTS: Mutex<Vec<Option<TlsKey>>> = Mutex::new(Vec::new());
+    static TLS_VALUES: Mutex<PthreadTlsMap> = Mutex::new(BTreeMap::new());
+    static CXA_THREAD_DTORS: Mutex<CxaThreadDtorMap> = Mutex::new(BTreeMap::new());
     static NEXT_COND_ID: AtomicUsize = AtomicUsize::new(1);
-    static CONDVARS: LazyLock<Mutex<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>>> =
-        LazyLock::new(|| Mutex::new(BTreeMap::new()));
+    static CONDVARS: Mutex<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>> =
+        Mutex::new(BTreeMap::new());
 
     struct TlsKey {
         destructor: Option<unsafe extern "C" fn(*mut c_void)>,
@@ -2012,7 +2130,7 @@ mod pthread {
         if ret != 0 {
             unsafe { drop(Box::from_raw(start)) };
         }
-        ret
+        pthread_result(ret)
     }
 
     /// # Safety
@@ -2032,15 +2150,15 @@ mod pthread {
         thread: libc::pthread_t,
         retval: *mut *mut c_void,
     ) -> c_int {
-        unsafe { ax_posix_api::sys_pthread_join(thread as _, retval) }
+        unsafe { pthread_result(ax_posix_api::sys_pthread_join(thread as _, retval)) }
     }
 
     /// # Safety
     ///
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_detach(_thread: libc::pthread_t) -> c_int {
-        0
+    pub unsafe extern "C" fn pthread_detach(thread: libc::pthread_t) -> c_int {
+        pthread_result(ax_posix_api::sys_pthread_detach(thread as _))
     }
 
     /// # Safety
@@ -2065,6 +2183,7 @@ mod pthread {
         unsafe {
             ptr::write_bytes(attr.cast::<u8>(), 0, PTHREAD_ATTR_SIZE);
             write_attr_stack_size(attr, DEFAULT_STACK_SIZE);
+            write_attr_word(attr, PTHREAD_ATTR_GUARD_SIZE_OFFSET, DEFAULT_GUARD_SIZE);
         }
         0
     }
@@ -2082,16 +2201,16 @@ mod pthread {
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_attr_getstack(
-        _attr: *const libc::pthread_attr_t,
+        attr: *const libc::pthread_attr_t,
         stack_addr: *mut *mut c_void,
         stack_size: *mut SizeT,
     ) -> c_int {
-        if stack_addr.is_null() || stack_size.is_null() {
+        if attr.is_null() || stack_addr.is_null() || stack_size.is_null() {
             return Errno::EFAULT.into_raw();
         }
         unsafe {
-            stack_addr.write(ptr::null_mut());
-            stack_size.write(0);
+            stack_addr.write(read_attr_word(attr, PTHREAD_ATTR_STACK_ADDR_OFFSET) as *mut c_void);
+            stack_size.write(read_attr_word(attr, PTHREAD_ATTR_STACK_SIZE_OFFSET));
         }
         0
     }
@@ -2101,15 +2220,13 @@ mod pthread {
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_attr_getguardsize(
-        _attr: *const libc::pthread_attr_t,
+        attr: *const libc::pthread_attr_t,
         guard_size: *mut SizeT,
     ) -> c_int {
-        if guard_size.is_null() {
+        if attr.is_null() || guard_size.is_null() {
             return Errno::EFAULT.into_raw();
         }
-        unsafe {
-            guard_size.write(0);
-        }
+        unsafe { guard_size.write(read_attr_word(attr, PTHREAD_ATTR_GUARD_SIZE_OFFSET)) };
         0
     }
 
@@ -2124,15 +2241,26 @@ mod pthread {
         if attr.is_null() {
             return Errno::EFAULT.into_raw();
         }
-        unsafe { write_attr_stack_size(attr, stack_size) };
+        if stack_size.wrapping_sub(PTHREAD_STACK_MIN) > usize::MAX / 4 {
+            return Errno::EINVAL.into_raw();
+        }
+        unsafe {
+            write_attr_word(attr, PTHREAD_ATTR_STACK_ADDR_OFFSET, 0);
+            write_attr_stack_size(attr, stack_size);
+        }
         0
     }
 
     unsafe fn write_attr_stack_size(attr: *mut libc::pthread_attr_t, stack_size: SizeT) {
-        unsafe {
-            let bytes = attr.cast::<u8>().add(PTHREAD_ATTR_STACK_SIZE_OFFSET);
-            ptr::write_unaligned(bytes.cast::<SizeT>(), stack_size);
-        }
+        unsafe { write_attr_word(attr, PTHREAD_ATTR_STACK_SIZE_OFFSET, stack_size) };
+    }
+
+    unsafe fn write_attr_word(attr: *mut libc::pthread_attr_t, offset: usize, value: SizeT) {
+        unsafe { ptr::write_unaligned(attr.cast::<u8>().add(offset).cast::<SizeT>(), value) };
+    }
+
+    unsafe fn read_attr_word(attr: *const libc::pthread_attr_t, offset: usize) -> SizeT {
+        unsafe { ptr::read_unaligned(attr.cast::<u8>().add(offset).cast::<SizeT>()) }
     }
 
     /// # Safety
@@ -2143,7 +2271,10 @@ mod pthread {
         mutex: *mut libc::pthread_mutex_t,
         attr: *const libc::pthread_mutexattr_t,
     ) -> c_int {
-        ax_posix_api::sys_pthread_mutex_init(mutex.cast(), attr.cast())
+        pthread_result(ax_posix_api::sys_pthread_mutex_init(
+            mutex.cast(),
+            attr.cast(),
+        ))
     }
 
     /// # Safety
@@ -2151,7 +2282,7 @@ mod pthread {
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_mutex_lock(mutex: *mut libc::pthread_mutex_t) -> c_int {
-        ax_posix_api::sys_pthread_mutex_lock(mutex.cast())
+        pthread_result(ax_posix_api::sys_pthread_mutex_lock(mutex.cast()))
     }
 
     /// # Safety
@@ -2159,7 +2290,7 @@ mod pthread {
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_mutex_trylock(mutex: *mut libc::pthread_mutex_t) -> c_int {
-        ax_posix_api::sys_pthread_mutex_trylock(mutex.cast())
+        pthread_result(ax_posix_api::sys_pthread_mutex_trylock(mutex.cast()))
     }
 
     /// # Safety
@@ -2167,7 +2298,7 @@ mod pthread {
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_mutex_unlock(mutex: *mut libc::pthread_mutex_t) -> c_int {
-        ax_posix_api::sys_pthread_mutex_unlock(mutex.cast())
+        pthread_result(ax_posix_api::sys_pthread_mutex_unlock(mutex.cast()))
     }
 
     /// # Safety
@@ -2175,7 +2306,7 @@ mod pthread {
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_mutex_destroy(mutex: *mut libc::pthread_mutex_t) -> c_int {
-        ax_posix_api::sys_pthread_mutex_destroy(mutex.cast())
+        pthread_result(ax_posix_api::sys_pthread_mutex_destroy(mutex.cast()))
     }
 
     /// # Safety
@@ -3033,8 +3164,8 @@ mod net_stubs {
 #[cfg(not(feature = "net"))]
 pub use net_stubs::*;
 
-#[cfg_attr(not(doc), ax_runtime::ax_app_entry)]
-fn axstd_std_check_entry() {
+#[unsafe(no_mangle)]
+extern "C" fn __axstd_std_check_entry() {
     unsafe extern "C" {
         safe fn main(argc: c_int, argv: *const *const c_char) -> c_int;
     }

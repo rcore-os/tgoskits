@@ -1,6 +1,6 @@
 [package]
 name = "ax-mm"
-version = "0.6.0"
+version = "0.7.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -11,6 +11,7 @@ license.workspace = true
 copy = ["dep:page-table-generic", "page-table-generic/copy-from"]
 
 [dependencies]
+ax-cpu.workspace = true
 ax-alloc = { workspace = true }
 ax-hal = { workspace = true, features = ["paging"] }
 ax-sync.workspace = true

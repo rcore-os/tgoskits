@@ -37,6 +37,34 @@ pub(crate) enum OwnerProgress {
     Wait(OwnerWait),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CardIrqWait {
+    Masked,
+    Armed,
+}
+
+impl CardIrqWait {
+    fn complete_event(
+        &mut self,
+        transmit_completed: bool,
+        output_blocked: bool,
+    ) -> Option<OwnerProgress> {
+        if transmit_completed {
+            // A busy TX queue must not keep CARD_INT masked across successive
+            // SDIO writes. Return to the owner rearm boundary after publishing
+            // each completion so pending RX is sampled before the next TX.
+            *self = Self::Armed;
+        }
+        if output_blocked {
+            Some(OwnerProgress::Wait(OwnerWait::Interrupt))
+        } else if transmit_completed {
+            Some(OwnerProgress::Ready)
+        } else {
+            None
+        }
+    }
+}
+
 /// Sole task-context owner of the SDIO card, controller transactions and AIC core.
 pub(crate) struct AicOwner<H: CompletionIrqRearmHost + 'static> {
     card: SdioCard<H>,
@@ -49,6 +77,7 @@ pub(crate) struct AicOwner<H: CompletionIrqRearmHost + 'static> {
     irq_latch: Arc<IrqLatch>,
     mac: Arc<MacAddressState>,
     started: bool,
+    card_irq_wait: CardIrqWait,
 }
 
 impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
@@ -79,6 +108,7 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
             irq_latch,
             mac,
             started: false,
+            card_irq_wait: CardIrqWait::Masked,
         };
         (owner, wifi.requests_tx, wifi.progress_rx)
     }
@@ -154,11 +184,14 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
         // completion.  The card endpoint must then sample and republish the
         // still-latched CARD_INT instead of losing that edge in the window.
         let completion_pending = self.rearm_completion_irq()?;
-        let card_pending = card_irq_rearm_allowed(self.card_irq_needed(), self.active.is_some())
-            && self
-                .card_irq
-                .as_mut()
-                .is_some_and(CardIrqControl::rearm_and_check);
+        let card_pending = card_irq_rearm_allowed(
+            self.card_irq_needed(),
+            self.active.is_some(),
+            self.card_irq_wait,
+        ) && self
+            .card_irq
+            .as_mut()
+            .is_some_and(CardIrqControl::rearm_and_check);
         if card_pending {
             self.irq_latch.publish_card_pending();
         }
@@ -296,6 +329,7 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
         now_nanos: u64,
     ) -> Result<Option<OwnerProgress>, AicRdifError> {
         loop {
+            self.card_irq_wait = CardIrqWait::Masked;
             match action {
                 AicAction::SubmitSdio(request) => {
                     let mut active = ActiveOperation::submit(&mut self.card, request)?;
@@ -330,11 +364,13 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
                     ))));
                 }
                 AicAction::WaitForInterrupt => {
+                    self.card_irq_wait = CardIrqWait::Armed;
                     self.outputs
                         .publish_wait_progress(WifiControlProgress::WaitForInterrupt);
                     return Ok(Some(OwnerProgress::Wait(OwnerWait::Interrupt)));
                 }
                 AicAction::WaitForInterruptUntil(deadline) => {
+                    self.card_irq_wait = CardIrqWait::Armed;
                     self.outputs.publish_wait_progress(
                         WifiControlProgress::WaitForInterruptUntil {
                             deadline_nanos: deadline.as_nanos(),
@@ -349,13 +385,19 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
                     return Ok(Some(OwnerProgress::Ready));
                 }
                 AicAction::Event(event) => {
-                    if self.outputs.consume_event(event)? {
-                        return Ok(Some(OwnerProgress::Wait(OwnerWait::Interrupt)));
-                    }
-                    return Ok(None);
+                    let transmit_completed = matches!(event, AicEvent::TransmitComplete(_));
+                    let output_blocked = self.outputs.consume_event(event)?;
+                    return Ok(self
+                        .card_irq_wait
+                        .complete_event(transmit_completed, output_blocked));
                 }
                 AicAction::Idle => {
                     let ready = self.device()?.state() == AicState::Ready;
+                    self.card_irq_wait = if ready {
+                        CardIrqWait::Armed
+                    } else {
+                        CardIrqWait::Masked
+                    };
                     return Ok(Some(if ready {
                         OwnerProgress::Ready
                     } else {
@@ -436,11 +478,14 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
         // checks can be consumed by the SDHCI completion helper without being
         // published to the card-interrupt latch.
         let completion_pending = self.rearm_completion_irq()?;
-        let card_pending = card_irq_rearm_allowed(self.card_irq_needed(), self.active.is_some())
-            && self
-                .card_irq
-                .as_mut()
-                .is_some_and(CardIrqControl::rearm_and_check);
+        let card_pending = card_irq_rearm_allowed(
+            self.card_irq_needed(),
+            self.active.is_some(),
+            self.card_irq_wait,
+        ) && self
+            .card_irq
+            .as_mut()
+            .is_some_and(CardIrqControl::rearm_and_check);
         if card_pending {
             self.irq_latch.publish_card_pending();
         }
@@ -469,8 +514,12 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
     }
 }
 
-const fn card_irq_rearm_allowed(card_protocol_ready: bool, sdio_operation_active: bool) -> bool {
-    card_protocol_ready && !sdio_operation_active
+const fn card_irq_rearm_allowed(
+    card_protocol_ready: bool,
+    sdio_operation_active: bool,
+    wait: CardIrqWait,
+) -> bool {
+    card_protocol_ready && !sdio_operation_active && matches!(wait, CardIrqWait::Armed)
 }
 
 const fn pending_irq_retry(
@@ -525,20 +574,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn card_interrupt_stays_masked_until_sdio_enumeration_completes() {
-        assert!(!card_irq_rearm_allowed(false, false));
-        assert!(card_irq_rearm_allowed(true, false));
-        assert!(!card_irq_rearm_allowed(true, true));
+    fn transmit_completion_yields_to_card_irq_before_next_sdio_submission() {
+        for output_blocked in [false, true] {
+            let mut wait = CardIrqWait::Masked;
+            let progress = wait.complete_event(true, output_blocked);
+
+            assert!(
+                progress.is_some(),
+                "a completed TX must return to the rearm boundary before dequeuing more TX"
+            );
+            assert!(card_irq_rearm_allowed(true, false, wait));
+            assert!(!card_irq_rearm_allowed(true, true, wait));
+            assert!(!card_irq_rearm_allowed(false, false, wait));
+        }
+
+        let mut wait = CardIrqWait::Masked;
+        assert_eq!(wait.complete_event(false, false), None);
+        assert_eq!(wait, CardIrqWait::Masked);
+        assert_eq!(
+            wait.complete_event(false, true),
+            Some(OwnerProgress::Wait(OwnerWait::Interrupt))
+        );
+        assert_eq!(wait, CardIrqWait::Masked);
     }
 
     #[test]
-    fn ready_device_rearms_card_irq_during_flow_credit_retries() {
-        // The TX flow-credit retry loop never emits WaitForInterrupt; the
-        // firmware data still waiting behind CARD_INT would then never be
-        // drained.  A ready device with no active SDIO operation must rearm
-        // and check the card interrupt regardless of the published wait state.
-        assert!(card_irq_rearm_allowed(true, false));
-        assert!(!card_irq_rearm_allowed(false, false));
+    fn card_interrupt_stays_masked_until_sdio_enumeration_completes() {
+        assert!(!card_irq_rearm_allowed(false, false, CardIrqWait::Armed));
+        assert!(card_irq_rearm_allowed(true, false, CardIrqWait::Armed));
+        assert!(!card_irq_rearm_allowed(true, true, CardIrqWait::Armed));
+        assert!(!card_irq_rearm_allowed(true, false, CardIrqWait::Masked));
     }
 
     #[test]

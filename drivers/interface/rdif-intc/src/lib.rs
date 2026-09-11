@@ -190,19 +190,10 @@ impl DerefMut for Intc {
 
 #[cfg(test)]
 mod tests {
-    extern crate std;
-
-    use std::{
-        sync::{Arc, Mutex},
-        vec,
-        vec::Vec,
-    };
-
     use super::*;
 
     struct MockIntc {
         hwirq: HwIrq,
-        enabled_calls: Arc<Mutex<Vec<(HwIrq, bool)>>>,
     }
 
     impl DriverGeneric for MockIntc {
@@ -222,29 +213,12 @@ mod tests {
         ) -> Result<ControllerIrqTranslation, IrqError> {
             Ok(ControllerIrqTranslation::new(self.hwirq))
         }
-
-        fn set_enabled(&mut self, hwirq: HwIrq, enabled: bool) -> Result<(), IrqError> {
-            self.enabled_calls.lock().unwrap().push((hwirq, enabled));
-            Ok(())
-        }
     }
 
     #[test]
     fn intc_translation_uses_its_own_domain() {
-        let intc_a = Intc::new(
-            IrqDomainId(11),
-            MockIntc {
-                hwirq: HwIrq(5),
-                enabled_calls: Arc::new(Mutex::new(Vec::new())),
-            },
-        );
-        let intc_b = Intc::new(
-            IrqDomainId(12),
-            MockIntc {
-                hwirq: HwIrq(5),
-                enabled_calls: Arc::new(Mutex::new(Vec::new())),
-            },
-        );
+        let intc_a = Intc::new(IrqDomainId(11), MockIntc { hwirq: HwIrq(5) });
+        let intc_b = Intc::new(IrqDomainId(12), MockIntc { hwirq: HwIrq(5) });
 
         assert_eq!(
             intc_a.translate_fdt(&[5]).unwrap().id,
@@ -257,30 +231,8 @@ mod tests {
     }
 
     #[test]
-    fn set_enabled_passes_controller_local_hwirq() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let mut intc = Intc::new(
-            IrqDomainId(11),
-            MockIntc {
-                hwirq: HwIrq(5),
-                enabled_calls: Arc::clone(&calls),
-            },
-        );
-
-        intc.set_enabled(HwIrq(5), true).unwrap();
-
-        assert_eq!(*calls.lock().unwrap(), vec![(HwIrq(5), true)]);
-    }
-
-    #[test]
     fn configure_acpi_rejects_route_translation_mismatch() {
-        let mut intc = Intc::new(
-            IrqDomainId(11),
-            MockIntc {
-                hwirq: HwIrq(5),
-                enabled_calls: Arc::new(Mutex::new(Vec::new())),
-            },
-        );
+        let mut intc = Intc::new(IrqDomainId(11), MockIntc { hwirq: HwIrq(5) });
         let route = AcpiGsiRoute {
             gsi: 5,
             vector: 37,

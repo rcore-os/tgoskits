@@ -1,6 +1,6 @@
 [package]
 name = "axfs-ng-vfs"
-version = "0.6.1"
+version = "0.7.1"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Virtual filesystem layer for ArceOS"
@@ -15,6 +15,7 @@ lockdep = []
 
 [dependencies]
 ax-sync = { workspace = true, features = ["sleep"] }
+axpoll.workspace = true
 bitflags = "2.10"
 cfg-if = "1"
 hashbrown = "0.16"

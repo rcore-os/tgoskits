@@ -6,6 +6,10 @@ use linux_raw_sys::general::{
 
 use crate::{StarryError, StarryResult};
 
+mod deadline;
+
+pub(crate) use deadline::{ClockDeadline, ClockSnapshot};
+
 /// A helper trait for converting from and to `TimeValue`.
 pub trait TimeValueLike {
     /// Converts from `TimeValue`.

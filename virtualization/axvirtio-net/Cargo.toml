@@ -1,6 +1,6 @@
 [package]
 name = "axvirtio-net"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 authors = ["Debin <luodeb@outlook.com>"]
 license.workspace = true
@@ -8,7 +8,6 @@ repository.workspace = true
 description = "VirtIO network device implementation with MMIO transport for hypervisors"
 keywords = ["virtio", "net", "hypervisor", "no_std", "arceos"]
 categories = ["no-std", "embedded", "hardware-support", "network-programming"]
-readme = "README.md"
 
 [features]
 default = []

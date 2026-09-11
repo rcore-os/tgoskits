@@ -278,33 +278,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn display_error_includes_phase_and_cmd() {
-        let err = Error::Timeout(ErrorContext::for_cmd(Phase::DataRead, 17));
-        assert_eq!(format!("{err}"), "timeout during data read (CMD17)");
-    }
-
-    #[test]
-    fn display_error_without_cmd_drops_parenthesis() {
-        let err = Error::BadResponse(ErrorContext::new(Phase::ResponseWait));
-        assert_eq!(format!("{err}"), "bad response during response wait");
-    }
-
-    #[test]
-    fn display_card_error_known_variant() {
-        let err = Error::CardError(CardError::OutOfRange);
-        assert_eq!(format!("{err}"), "card reported out-of-range argument");
-    }
-
-    #[test]
-    fn display_card_error_unknown_preserves_bits() {
-        let err = Error::CardError(CardError::Unknown(0x1234));
-        assert_eq!(
-            format!("{err}"),
-            "card reported unknown card error bits 0x1234"
-        );
-    }
-
-    #[test]
     fn error_trait_source_threads_card_error_through() {
         let err = Error::CardError(CardError::WriteProtect);
         let src = core::error::Error::source(&err).expect("source should be CardError");

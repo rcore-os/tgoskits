@@ -99,28 +99,63 @@ signal-enable 字段始终通过单次 32-bit MMIO 访问；不能拆成两次
 
 ## 启动、等待和回滚
 
+固定硬件拓扑采用板级绑定、owner 延后确认的启动方式。板级 feature 和设备树
+选择 AIC 平台适配，`AicRdifDevice` 持有准备好的 host；平台登记的 `wlan0` 是
+候选设备，不代表网络接口已经可用。`AicOwnerStartup` 复用 group owner，调用
+`sdmmc-protocol` 完成卡识别，再初始化 AIC 固件与数据面。`NetworkRuntimeBuilder`
+只管理 `NetOwnerStartup` 的进度、等待和资源生命周期，不解释 SDIO 命令或卡身份。
+
+初始化与数据面沿用同一 owner 的硬件访问约束，不为卡识别另建总线线程或请求
+转发层。静态绑定决定尝试哪个驱动，运行时身份检查确认该假设是否成立；两者
+不要求独立的动态总线枚举框架。是否需要 host 仲裁、动态匹配或重新绑定，应由
+实际共享和插拔需求决定，不从软件分层推导出额外线程。
+
 1. ax-driver 映射 MMIO、执行 SDIO1 SoC 设置并注册 portable device；reset
    settle 以绝对 deadline 交给 owner，不在驱动中 sleep。
 2. ax-net 固定 owner CPU，注册并启用硬 IRQ；poll group 仍保持 disabled，
    IRQ 只能唤醒启动状态机，不能开放网络队列。
 3. owner 完成 IO-only 卡初始化、Function 生命周期、固件和 FDRV；每步只
-   返回 Ready、WaitForInterrupt、RetryAt 或错误。
-4. 成功后才 refill RX、rearm 并 publish 队列，再执行可选启动 transaction。
+   返回 Ready、WaitForInterrupt、RetryAt 或类型化错误。AIC 的 CMD5 返回
+   `NoIoFunctions` 时转换为 `NetError::DeviceNotPresent`，表示当前卡不属于该网络
+   驱动，不把其他协议错误或固件故障一起降级。
+4. `DeviceNotPresent` 分支先在 owner CPU 执行 `cancel()`；确认取消成功后，
+   `NetworkRuntimeBuilder` 才 disable+synchronize 对应 IRQ registration，并从
+   protocol port 中剔除该 poll group。该设备没有剩余 group 时不发布网络接口，
+   其他网络设备继续初始化。取消失败仍返回错误，不发布 absent 状态；IRQ 同步
+   失败时拒绝发布，并隔离无法证明安全的资源。
+5. 成功后才 refill RX、rearm 并 publish 队列，再执行可选启动 transaction。
    Wi-Fi 控制同样使用 `start/advance/cancel`。
-5. 失败先 disable+synchronize IRQ，再 cancel/abort；证明 host DMA 停止后
-   释放队列，无法证明时隔离整个 ownership domain。
+6. 其他 owner startup 错误先由 owner 尝试 `cancel()`，随后 builder
+   disable+synchronize IRQ 并停止 executor。只有确认 IRQ 已同步且 host DMA
+   已停止才能释放队列，无法证明时隔离整个 ownership domain。
+
+`DeviceNotPresent` 补齐候选设备不适用时的终止路径，不把固件、DMA 或超时错误
+一起忽略。撤销发生在网络接口发布前，不负责将同一控制器重新绑定到块驱动，也
+不保证该控制器上的存储卡可用；已有独立块设备的探测与初始化流程保持不变。
+
+剔除 group 后，`QueueFramePort` 保留构建时所有 group 的 checksum 能力交集，
+不提升剩余队列对外宣告的能力。该交集仍是剩余 group 支持能力的保守子集；AIC
+只有一个 group，缺失时整个端口被剔除，不需要为此增加逐 group 的能力副本。
 
 等待原因必须由类型区分，不能再用一个 `rearm_ready` 布尔值同时表示定时器和
 设备中断：
 
-- `RetryAt(deadline)` 只表示 timer deadline。reset settle、vendor settle、flow-control
-  backoff 等纯定时等待保持 `CARD_INT` masked；到期由 runtime 在 owner CPU 继续。
+- `RetryAt(deadline)` 只表示 timer deadline。reset settle、vendor settle 和启动 mailbox 的
+  flow-control backoff 等纯定时等待保持 `CARD_INT` masked；到期由 runtime 在 owner CPU 继续。
 - `WaitForInterrupt` 表示只等待下一次设备中断；
   `WaitForInterruptUntil(deadline)` 表示等待设备中断或绝对超时，mailbox
-  confirmation 使用后者。只有这两种等待允许 task-context 执行 card-level
-  `rearm_and_check()`。
+  confirmation 使用后者。这两种等待允许 task-context 执行 card-level
+  `rearm_and_check()`；发送完成也沿 `CardIrqWait::complete_event()` 返回 rearm 边界，
+  避免连续 TX 遮蔽 RX。
 - 活动 CMD52/CMD53 的 controller completion IRQ 独立于 card-level IRQ，始终按
   host transaction 生命周期 enable/ack；它不能因为核心正在 timer wait 而被关闭。
+
+运行期的数据包退避由 `ActiveTx::retry_at` 持有，随发送对象一起释放；它不再占用
+`LifecycleState::retry_at`。`drive_ready()` 先处理 IRQ 已请求的 RX scan，再检查该包的
+重试期限，并返回 `WaitForInterruptUntil`。运行期 mailbox 的 credit backoff 同样允许
+IRQ 驱动的 RX scan，但启动 mailbox 的 credit backoff 仍返回 `RetryAt`。这样既不会
+提前反复读取 credit，也不会在等待发送空间时阻止接收；owner 保留 `CardIrqWait`
+和发送完成后的 rearm 边界，不根据 ready 状态无条件重开 CARD_INT。
 
 该区分也固定 AIC 启动时序：Function enable、block size 和 vendor register setup
 可以在 card IRQ masked 时推进；只有 mailbox 已写入且进入 confirmation wait 后才
@@ -160,6 +195,19 @@ FIFO drain”语义；固件 settle 的 timer 不能冒充这个 consumer-ready 
   wire-equivalence 测试证明的 MAC/reset/ME/channel/interface/start/filter 流程。
 
 成功的 add-interface confirmation 返回的 `inst_nbr` 是唯一 firmware VIF 来源。
+AP 控制也复用 `parse_add_interface()`，要求完整两字节响应并拒绝 `0xff`；
+`ControlState::assign_ap_interface()` 将合法索引写入 beacon 和 AP start 请求，
+通过 `pop_command()` 维护队列字节预算。`parse_ap_start()` 按 vendor 的四字节
+`apm_start_cfm` 校验状态、VIF 匹配和有效 channel/BCMC 索引，异常不能发布控制成功。
+这保证 AP 启动确认可信，不代表已经实现或验证 AP 客户端关联及完整 AP 数据面。
+
+D80 上传后的补丁配置由 `startup/d80.rs` 的 `D80PatchStage` 独占，复用唯一 debug
+mailbox。它先读取配置、patch structure 和版本；版本超过 `0x06090100` 时读取
+重定位 buffer，否则使用 BSP 的 `0x0016f800`。`PatchLayout` 在首笔写入前检查
+指针非零、对齐与地址溢出，再按 `aic_patch_t` 顺序写 header、三组配置和四个
+零 block size。请求生成和响应校验使用同一写入计划；任意失败阻止 `StartApplication`。
+配置采用 2.4 GHz、AMSDU_RX 与 power calibration/channel power flags，与 pinned
+Sipeed BSP 的对应编译选项一致。
 
 LMAC payload 按 vendor Linux C ABI 的自然对齐构造，包括尾部 padding；不能用字段
 长度之和替代 `sizeof(struct ...)`。confirmation 的声明长度、消息 ID、精确 payload
@@ -221,6 +269,11 @@ DC 使用 V1 SDIO profile 和两个 Function，但仍只有一个 owner：Functi
 Function 2 不产生第二个线程、锁或 executor。DC RX 以 V1 `block_cnt` 读取 512-byte
 块数并分别 drain 两条 FIFO；D80 继续使用 V3 misc-status、byte/block mode 和 header
 CRC。transport/profile 必须显式选择这些差异，未知变体不能落入 V1 默认分支。
+`RegisterMap` 集中解释 V1/V3 差异：D80 的 flow credit 保留全部八位，DC 只取低七位；
+普通数据以一个完整包消耗一个 buffer，并保留两个 command buffer，不能按 SDIO
+块数折算 credit。V3 RX 使用 BSP 的组合编码：119/120/127 表示 byte mode，
+113..118/121..126 表示第二队列的 1..6 个块。OTHER 触发独立的 pending read/clear
+事务，清除 bit 0 后在同一路径重新读取状态。所有操作仍由同一个核心串行推进。
 
 硬件只向 host 暴露 card-level IRQ，不能把它压缩成“仅 Function 1 有数据”。core
 在每次新 `CARD_INT` 上启动一次有界 RX scan：按 profile 的唯一 RX Function 集合

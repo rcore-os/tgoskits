@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.35](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.34...ax-libc-v0.5.35) - 2026-09-09
+
+### Fixed
+
+- *(arceos)* exercise real std and repair queued task affinity ([#2332](https://github.com/rcore-os/tgoskits/pull/2332))
+
+## [0.5.34](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.33...ax-libc-v0.5.34) - 2026-09-09
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
 ## [0.5.33](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.32...ax-libc-v0.5.33) - 2026-08-27
 
 ### Other

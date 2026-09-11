@@ -1,6 +1,6 @@
 [package]
 name = "ax-fs-ng"
-version = "0.9.3"
+version = "0.10.1"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]
@@ -8,22 +8,25 @@ description = "ArceOS filesystem module"
 license.workspace = true
 
 [features]
-host-test = ["ax-sync/host-test"]
+host-test = ["ax-sync/host-test", "axfs-ng-vfs/host-test"]
 fat = ["dep:fatfs"]
 ext4 = ["dep:rsext4"]
 vfs = ["ax-sync/sleep"]
 lockdep = ["axfs-ng-vfs/lockdep"]
 
 [dependencies]
+atomic-waker.workspace = true
 axfs-ng-vfs = { workspace = true }
 ax-io = { workspace = true, features = ["alloc"] }
 ax-lazyinit.workspace = true
+axpoll.workspace = true
 ax-sync = { workspace = true, features = ["sleep"] }
 bitflags = "2.10"
 cfg-if = { workspace = true }
 chrono = { workspace = true }
 dma-api = { workspace = true }
 hashbrown = "0.16"
+heapless.workspace = true
 intrusive-collections = "0.9"
 irq-framework = { workspace = true }
 log = { workspace = true }
@@ -46,3 +49,9 @@ features = ["alloc", "lfn", "log_level_trace", "unicode"]
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 ax-sync = { workspace = true, features = ["host-test"] }
+# Runtime integration is tested from the workspace. A published version here
+# would form a release-order cycle with ax-runtime's filesystem dependency.
+ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

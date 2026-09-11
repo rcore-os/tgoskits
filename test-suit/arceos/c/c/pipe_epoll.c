@@ -1,11 +1,15 @@
 #include "test.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <unistd.h>
+
+/* Upper bound for the fill loop: the probe stops as soon as the pipe is full. */
+#define PIPE_FILL_LIMIT 4096
 
 static struct epoll_event make_event(uint32_t events, int fd)
 {
@@ -78,6 +82,17 @@ int arceos_c_test_pipe(char *reason, size_t reason_len)
     CHECK_RET(close(fd[1]), 0);
     CHECK_RET(read(fd[0], buf, sizeof(buf)), 0);
     CHECK_RET(close(fd[0]), 0);
+    CHECK_RET(pipe2(fd, O_CLOEXEC), 0);
+    CHECK_RET(fcntl(fd[0], F_GETFD), FD_CLOEXEC);
+    CHECK_RET(fcntl(fd[1], F_GETFD), FD_CLOEXEC);
+    CHECK_RET(close(fd[0]), 0);
+    CHECK_RET(close(fd[1]), 0);
+    fd[0] = fd[1] = -1;
+    errno = 0;
+    CHECK_RET(pipe2(fd, -1), -1);
+    CHECK_RET(errno, EINVAL);
+    CHECK_RET(fd[0], -1);
+    CHECK_RET(fd[1], -1);
     puts("pipe: pipe APIs OK");
     return 0;
 }
@@ -192,6 +207,72 @@ static int test_edge_triggered_epoll(int epfd, int read_fd, int write_fd, char *
     return expect_no_event(epfd, reason, reason_len);
 }
 
+/*
+ * A write that overflows the pipe blocks until a reader drains it, so the fill
+ * loop probes writability with a level-triggered `EPOLLOUT` watch on a throwaway
+ * epoll instance instead of assuming a pipe capacity.
+ */
+static int fill_pipe_until_full(int probe_epfd, int write_fd, char *reason, size_t reason_len)
+{
+    struct epoll_event event = make_event(EPOLLOUT, write_fd);
+    struct epoll_event ready;
+    int i;
+
+    CHECK_RET(epoll_ctl(probe_epfd, EPOLL_CTL_ADD, write_fd, &event), 0);
+    for (i = 0; i < PIPE_FILL_LIMIT; i++) {
+        memset(&ready, 0, sizeof(ready));
+        if (epoll_wait(probe_epfd, &ready, 1, 0) == 0) {
+            CHECK_RET(epoll_ctl(probe_epfd, EPOLL_CTL_DEL, write_fd, NULL), 0);
+            return 0;
+        }
+        CHECK_RET(write(write_fd, "x", 1), 1);
+    }
+    test_fail(reason, reason_len, "pipe still writable after %d bytes", PIPE_FILL_LIMIT);
+    return -1;
+}
+
+/*
+ * An edge-triggered `EPOLLOUT` watch on the write end must report the
+ * Full -> Normal transition even when the pipe is filled and drained between two
+ * `epoll_wait` calls: no wait observes the Full state, so a delivery rule that
+ * only compares the previously sampled writability drops the edge and leaves a
+ * writer waiting for a wake that never comes.
+ */
+static int test_edge_triggered_epollout(int epfd, int read_fd, int write_fd, char *reason,
+                                        size_t reason_len)
+{
+    char buf[1];
+    struct epoll_event event = make_event(EPOLLOUT | EPOLLET, write_fd);
+    int probe_epfd;
+
+    CHECK_RET(epoll_ctl(epfd, EPOLL_CTL_ADD, write_fd, &event), 0);
+    if (expect_one_event(epfd, EPOLLOUT, write_fd, reason, reason_len) != 0) {
+        return -1;
+    }
+    if (expect_no_event(epfd, reason, reason_len) != 0) {
+        return -1;
+    }
+
+    probe_epfd = epoll_create(1);
+    CHECK_TRUE(probe_epfd >= 0);
+    if (fill_pipe_until_full(probe_epfd, write_fd, reason, reason_len) != 0) {
+        close(probe_epfd);
+        return -1;
+    }
+    close(probe_epfd);
+
+    /* Full -> Normal with no wait in between: the writable edge must survive. */
+    CHECK_RET(read(read_fd, buf, 1), 1);
+    if (expect_one_event(epfd, EPOLLOUT, write_fd, reason, reason_len) != 0) {
+        return -1;
+    }
+    if (expect_no_event(epfd, reason, reason_len) != 0) {
+        return -1;
+    }
+    CHECK_RET(epoll_ctl(epfd, EPOLL_CTL_DEL, write_fd, NULL), 0);
+    return 0;
+}
+
 static int test_oneshot_epoll(int epfd, int read_fd, int write_fd, char *reason,
                               size_t reason_len)
 {
@@ -257,6 +338,7 @@ int arceos_c_test_epoll(char *reason, size_t reason_len)
     if (test_level_triggered_epoll(epfd, pipefd[1], reason, reason_len) != 0 ||
         test_edge_triggered_epoll(epfd, pipefd[0], pipefd[1], reason, reason_len) != 0 ||
         test_oneshot_epoll(epfd, pipefd[0], pipefd[1], reason, reason_len) != 0 ||
+        test_edge_triggered_epollout(epfd, pipefd[0], pipefd[1], reason, reason_len) != 0 ||
         test_registered_fd_close(reason, reason_len) != 0) {
         close(pipefd[0]);
         close(pipefd[1]);

@@ -44,8 +44,6 @@ CrabUSB/
 │   ├── uvc/            # USB Video Class (crab-uvc)
 │   └── hid/keyboard/   # HID 键盘设备
 ├── test_crates/        # 测试用例
-│   ├── test_xhci_uvc/  # xHCI UVC 测试 (aarch64-none)
-│   ├── test_hub/       # Hub 多层枚举测试 (aarch64-none)
 │   ├── test_libusb_uvc/# libusb UVC 测试
 │   └── test_libusb/    # libusb 基础测试
 ├── docs/               # 架构文档
@@ -62,7 +60,7 @@ CrabUSB/
 - `usb-host/backend`: 后端实现，xHCI 用于生产环境，libusb 用于开发测试
 - `usb-host/hub`: Hub 设备管理，支持 Root Hub 和 External Hub 统一接口
 - `usb-device`: 设备类驱动，UVC 是最复杂的实现（视频流捕获）
-- `test_crates`: 验证功能，包括 UVC 测试和 Hub 多层枚举测试
+- `test_crates`: 验证 libusb 后端和 UVC 传输
 
 **最近新增功能 (2024-2025)**:
 
@@ -134,12 +132,6 @@ CrabUSB/
 ```bash
 # 标准 no_std 测试 (使用 QEMU aarch64)
 cargo test -p crab-usb --test test --target aarch64-unknown-none-softfloat -- -c qemu.toml --show-output
-
-# 运行特定测试 (例如 uboot 测试)
-cargo test --package test_xhci_uvc --test test --target aarch64-unknown-none-softfloat -- --show-output uboot
-
-# Hub 多层枚举测试 (RK3588 DWC3 平台)
-cargo test --package test_hub --test test --target aarch64-unknown-none-softfloat -- --show-output test_all
 
 # libusb 后端测试 (需要 libudev-dev)
 cargo test -p crab-usb --features libusb --test test
@@ -360,7 +352,7 @@ Root Hub Port = 0x2
 
 ```bash
 # 运行 UVC 相机测试（会捕获 30 秒视频）
-cargo run -p test_libusb_uvc
+cargo run -p test-libusb-uvc
 
 # 输出位置
 # - JPEG 帧: target/output/images/frame_*.jpg
@@ -410,7 +402,6 @@ cargo run -p test_libusb_uvc
 1. 阅读 `docs/HUB_ARCHITECTURE.md` 了解架构设计
 2. 查看 `usb-host/src/hub/mod.rs` 了解 RouteString 实现
 3. 研究 `usb-host/src/backend/ty/hub.rs` 了解 HubOp trait
-4. 运行 `test_hub` 测试查看实际枚举流程
 
 **理解 RK3588 平台**:
 

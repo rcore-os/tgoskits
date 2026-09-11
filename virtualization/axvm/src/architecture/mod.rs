@@ -1,14 +1,6 @@
 //! Architecture-neutral contracts shared by target implementations.
 
 pub(crate) mod capabilities;
-#[cfg_attr(
-    not(any(target_arch = "aarch64", target_arch = "riscv64")),
-    expect(
-        dead_code,
-        reason = "CPU-up is an intentionally absent capability on this target"
-    )
-)]
-pub(crate) mod cpu_up;
 pub(crate) mod exit;
 pub(crate) mod ops;
 pub(crate) mod sysreg;
@@ -22,7 +14,9 @@ pub(crate) use exit::{handle_hypercall, handle_mmio_read, handle_mmio_write};
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 pub(crate) use exit::{try_handle_mmio_read, try_handle_mmio_write};
 pub(crate) use ops::ArchOps;
-pub(crate) use types::{BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+pub(crate) use types::{
+    BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction, VcpuRunOutcome,
+};
 
 /// Complete compile-time contract implemented by every selected guest architecture.
 ///
@@ -32,13 +26,4 @@ pub(crate) use types::{BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit
 pub(crate) trait Architecture:
     ArchOps + MachinePlatform + GuestBootPlatform + BootImagePlatform
 {
-    fn run_vcpu(
-        vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-    ) -> crate::AxVmResult<VcpuRunAction>
-    where
-        Self: Sized,
-    {
-        ops::run_vcpu::<Self>(vm, vcpu)
-    }
 }

@@ -6,8 +6,10 @@
 
 #![no_std]
 
+use core::num::NonZeroU32;
+
 use dma_api::DeviceDma;
-use sdhci_host::Sdhci;
+use sdhci_host::{HostResetHook, Sdhci};
 use sdmmc_protocol::Error as ProtocolError;
 
 mod board;
@@ -34,6 +36,33 @@ enum ControllerResources {
     Sdio1(Cv181xSdio1Mmio),
 }
 
+struct Cv181xResetHook {
+    mmio: Cv181xMmio,
+}
+
+impl Cv181xResetHook {
+    const fn new(mmio: Cv181xMmio) -> Self {
+        Self { mmio }
+    }
+}
+
+// SAFETY: The hook is owned by the corresponding `Sdhci` instance and is only
+// invoked while that host is exclusively borrowed for a controller reset. Its
+// MMIO pointer aliases the wrapper's mapping but all accesses are serialized by
+// the host's mutable request path.
+unsafe impl Send for Cv181xResetHook {}
+// SAFETY: See the `Send` implementation. Hook callbacks serialize writes
+// through the exclusively borrowed host even though the callback receiver is
+// shared by the generic capability contract.
+unsafe impl Sync for Cv181xResetHook {}
+
+impl HostResetHook for Cv181xResetHook {
+    fn after_reset(&self, _host: &mut Sdhci) -> Result<(), ProtocolError> {
+        board::restore_ds_hs_phy(self.mmio);
+        Ok(())
+    }
+}
+
 // SAFETY: The wrapper owns exclusive access to one SDHCI register file and the
 // board-level syscon/pinmux window for the controller lifetime. It does not
 // expose shared mutable access; IRQ extraction uses the cloned SDHCI IRQ core.
@@ -47,12 +76,20 @@ impl Cv181xSdhci {
     /// `mmio.core` must point to an exclusively-owned CV181x SDHCI register
     /// block and `mmio.syscon` must cover TOP_BASE including the pinmux block.
     pub unsafe fn new(mmio: Cv181xMmio, config: Cv181xConfig) -> Self {
-        let inner = unsafe { Sdhci::new(mmio.core()) };
+        let config = config.normalized();
+        let mut inner = unsafe { Sdhci::new(mmio.core()) };
+        let source_clock = NonZeroU32::new(config.src_frequency_hz)
+            .expect("normalized CV181x source clock must be non-zero");
+        inner
+            .set_fixed_base_clock_hz(source_clock)
+            .expect("a newly constructed SDHCI host must be idle");
+        let controller = ControllerResources::Sd;
+        inner.set_reset_hook(Cv181xResetHook::new(mmio));
         let mut this = Self {
             inner,
             mmio,
-            config: config.normalized(),
-            controller: ControllerResources::Sd,
+            config,
+            controller,
         };
         this.restore_ds_hs_phy();
         this
@@ -67,13 +104,21 @@ impl Cv181xSdhci {
     /// returned controller lifetime. The runtime must observe
     /// [`CV181X_SDIO1_RESET_SETTLE`] before issuing the first card command.
     pub unsafe fn new_sdio1(mmio: Cv181xSdio1Mmio, config: Cv181xConfig) -> Self {
+        let config = config.normalized();
         let host = mmio.host();
-        let inner = unsafe { Sdhci::new(host.core()) };
+        let mut inner = unsafe { Sdhci::new(host.core()) };
+        let source_clock = NonZeroU32::new(config.src_frequency_hz)
+            .expect("normalized CV181x source clock must be non-zero");
+        inner
+            .set_fixed_base_clock_hz(source_clock)
+            .expect("a newly constructed SDHCI host must be idle");
+        let controller = ControllerResources::Sdio1(mmio);
+        inner.set_reset_hook(Cv181xResetHook::new(host));
         let mut this = Self {
             inner,
             mmio: host,
-            config: config.normalized(),
-            controller: ControllerResources::Sdio1(mmio),
+            config,
+            controller,
         };
         this.restore_controller_after_reset();
         this
@@ -97,24 +142,6 @@ impl Cv181xSdhci {
 
     pub fn configure_dma(&mut self, dma: DeviceDma) -> Result<(), ProtocolError> {
         self.inner.configure_dma(dma)
-    }
-}
-
-fn map_protocol_error(err: ProtocolError) -> sdmmc_host::Error {
-    match err {
-        ProtocolError::Timeout(_) => sdmmc_host::Error::Timeout,
-        ProtocolError::Crc(_) => sdmmc_host::Error::Crc,
-        ProtocolError::NoCard => sdmmc_host::Error::NoCard,
-        ProtocolError::Busy => sdmmc_host::Error::Busy,
-        ProtocolError::UnsupportedCommand => sdmmc_host::Error::Unsupported,
-        ProtocolError::Misaligned => sdmmc_host::Error::Misaligned,
-        ProtocolError::InvalidArgument => sdmmc_host::Error::InvalidArgument,
-        ProtocolError::BusError(_) => sdmmc_host::Error::Bus,
-        ProtocolError::ReadError(_)
-        | ProtocolError::WriteError(_)
-        | ProtocolError::BadResponse(_) => sdmmc_host::Error::Bus,
-        ProtocolError::CardError(_) | ProtocolError::CardLocked => sdmmc_host::Error::Controller,
-        _ => sdmmc_host::Error::Controller,
     }
 }
 

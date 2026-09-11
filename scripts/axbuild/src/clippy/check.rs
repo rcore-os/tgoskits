@@ -100,7 +100,9 @@ impl ClippyCheck {
                 env: self.env.clone(),
             };
         };
-        let Some(target) = crate::build::bare_build_target_for(target) else {
+        let Some(target) = crate::build::bare_build_target_for(target)
+            .or_else(|| crate::build::std_check_target_for(target))
+        else {
             return ClippyCargoInvocation {
                 args: self.cargo_args(),
                 env: self.env.clone(),

@@ -9,7 +9,7 @@ mod table;
 mod walk;
 
 pub use def::*;
-pub use frame::Frame;
+pub use frame::{DetachedPageTableFrame, Frame};
 pub use map::*;
 pub use table::*;
 pub use walk::*;
@@ -39,8 +39,19 @@ pub trait FrameAllocator: Clone + Sync + Send + 'static {
             self.dealloc_frame(start);
             return;
         }
+        // A malformed frame count/stride must never wrap back into a live
+        // allocation.  Allocator implementations cannot return an error from
+        // this legacy hook, so stop before the first unrepresentable address;
+        // callers using the fallible detached-frame API get the full checked
+        // range validation before reaching this path.
         for i in 0..frames {
-            self.dealloc_frame(PhysAddr::from_usize(start.as_usize() + i * frame_size));
+            let Some(offset) = i.checked_mul(frame_size) else {
+                break;
+            };
+            let Some(address) = start.as_usize().checked_add(offset) else {
+                break;
+            };
+            self.dealloc_frame(PhysAddr::from_usize(address));
         }
     }
 }
@@ -95,6 +106,10 @@ pub trait PageTableEntry: Debug + Sync + Send + Clone + Copy + Sized + 'static {
     fn present(&self) -> bool;
 
     /// Returns whether this entry is a block mapping at the current level.
+    ///
+    /// CPU page-table formats should preserve this structural answer for a
+    /// retained non-present block. Formats that encode an empty-permission
+    /// block as zero may return `false`; typed split then reports `NotMapped`.
     fn huge(&self, is_dir: bool) -> bool;
 
     /// Returns whether this entry contains no descriptor state at all.

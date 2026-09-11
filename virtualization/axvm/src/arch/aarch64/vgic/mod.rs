@@ -123,28 +123,49 @@ impl Aarch64VgicRuntime {
             return Err(error);
         }
 
-        self.kick.start();
-        if let Err(error) = self.core.bind_assigned_spis() {
-            self.kick.stop();
+        if let Err(error) = self.kick.start() {
             *self.phase.lock() = RuntimePhase::Inactive;
-            return Err(AxVmError::interrupt("bind assigned physical SPIs", error));
+            return Err(error);
+        }
+        if let Err(error) = self.core.bind_assigned_spis() {
+            let primary = AxVmError::interrupt("bind assigned physical SPIs", error);
+            let rollback = self.kick.stop();
+            *self.phase.lock() = RuntimePhase::Inactive;
+            return match rollback {
+                Ok(()) => Err(primary),
+                Err(rollback) => Err(AxVmError::lifecycle_rollback(
+                    "activate AArch64 VGIC runtime",
+                    primary,
+                    rollback,
+                )),
+            };
         }
 
         let routes = match gic::register_assigned_spi_routes(&self.core) {
             Ok(routes) => routes,
             Err(error) => {
-                if let Err(rollback_error) = self.core.unbind_assigned_spis() {
-                    warn!(
-                        "failed to roll back AArch64 assigned SPIs after route error: \
-                         {rollback_error}"
-                    );
-                }
-                self.kick.stop();
+                let primary = AxVmError::interrupt("register assigned physical SPI routes", error);
+                let unbind = self.core.unbind_assigned_spis();
+                let stop = self.kick.stop();
                 *self.phase.lock() = RuntimePhase::Inactive;
-                return Err(AxVmError::interrupt(
-                    "register assigned physical SPI routes",
-                    error,
-                ));
+                return match (unbind, stop) {
+                    (Ok(()), Ok(())) => Err(primary),
+                    (Err(rollback), Ok(())) => Err(AxVmError::lifecycle_rollback(
+                        "activate AArch64 VGIC runtime",
+                        primary,
+                        rollback,
+                    )),
+                    (Ok(()), Err(rollback)) => Err(AxVmError::lifecycle_rollback(
+                        "activate AArch64 VGIC runtime",
+                        primary,
+                        rollback,
+                    )),
+                    (Err(unbind), Err(stop)) => Err(AxVmError::lifecycle_rollback(
+                        "activate AArch64 VGIC runtime",
+                        primary,
+                        std::format_args!("{unbind}; {stop}"),
+                    )),
+                };
             }
         };
         *self.phase.lock() = RuntimePhase::Active(routes);
@@ -161,8 +182,8 @@ impl Aarch64VgicRuntime {
                     return Ok(());
                 }
                 RuntimePhase::Active(routes) => routes,
-                RuntimePhase::Activating | RuntimePhase::Deactivating => {
-                    *phase = RuntimePhase::Deactivating;
+                transition @ (RuntimePhase::Activating | RuntimePhase::Deactivating) => {
+                    *phase = transition;
                     return Err(AxVmError::resource_conflict(
                         "AArch64 VGIC lifecycle",
                         "another lifecycle transition is in progress",
@@ -184,9 +205,9 @@ impl Aarch64VgicRuntime {
         // Dropping the route handles removes the static hard-IRQ lookup before
         // the task-context kick worker is stopped.
         drop(routes);
-        self.kick.stop();
+        let stop = self.kick.stop();
         *self.phase.lock() = RuntimePhase::Inactive;
-        Ok(())
+        stop
     }
 }
 

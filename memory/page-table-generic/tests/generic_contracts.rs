@@ -5,7 +5,7 @@ use std::alloc::{self, Layout};
 
 use mocks::{Fram4k, MappingFlags, PteImpl};
 use page_table_generic::{
-    FrameAllocator, PageTable, PageTableEntry, PhysAddr, TableMeta, VirtAddr,
+    FrameAllocator, PageTable, PageTableEntry, PhysAddr, TableMeta, VirtAddr, WalkConfig,
 };
 
 const PAGE_SIZE_16K: usize = 0x4000;
@@ -15,6 +15,7 @@ const BLOCK_SIZE_2M: usize = OpaqueMeta::PAGE_SIZE << OpaqueMeta::LEVEL_BITS[0];
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct OpaqueConfig {
     domain: u8,
+    present: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -34,9 +35,10 @@ impl PageTableEntry for OpaquePte {
 
     fn new_page(paddr: PhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
         let huge = if is_huge { Self::HUGE } else { 0 };
+        let present = if config.present { Self::PRESENT } else { 0 };
         Self(
             (paddr.as_usize() as u64 & Self::PADDR_MASK)
-                | Self::PRESENT
+                | present
                 | huge
                 | (u64::from(config.domain) << Self::CONFIG_SHIFT),
         )
@@ -53,6 +55,7 @@ impl PageTableEntry for OpaquePte {
     fn config(&self, _is_dir: bool) -> Self::PteConfig {
         OpaqueConfig {
             domain: ((self.0 & Self::CONFIG_MASK) >> Self::CONFIG_SHIFT) as u8,
+            present: self.present(),
         }
     }
 
@@ -134,14 +137,97 @@ fn maps_and_protects_with_an_opaque_pte_config() {
     let paddr = PhysAddr::from_usize(0x8000);
 
     page_table
-        .map_page(vaddr, paddr, 0x1000, OpaqueConfig { domain: 0x2a })
+        .map_page(
+            vaddr,
+            paddr,
+            0x1000,
+            OpaqueConfig {
+                domain: 0x2a,
+                present: true,
+            },
+        )
         .unwrap();
     assert_eq!(page_table.query(vaddr).unwrap().1.domain, 0x2a);
 
     page_table
-        .protect_page(vaddr, OpaqueConfig { domain: 0x7f })
+        .protect_page(
+            vaddr,
+            OpaqueConfig {
+                domain: 0x7f,
+                present: true,
+            },
+        )
         .unwrap();
     assert_eq!(page_table.query(vaddr).unwrap().1.domain, 0x7f);
+}
+
+#[test]
+fn occupied_walk_retains_non_present_leaf_identity() {
+    let mut page_table = PageTable::<OpaqueMeta, Fram4k>::new(Fram4k).unwrap();
+    let vaddr = VirtAddr::from_usize(0x4000);
+    let paddr = PhysAddr::from_usize(0x8000);
+
+    page_table
+        .map_page(
+            vaddr,
+            paddr,
+            OpaqueMeta::PAGE_SIZE,
+            OpaqueConfig {
+                domain: 0x2a,
+                present: false,
+            },
+        )
+        .unwrap();
+
+    assert!(page_table.query(vaddr).is_err());
+    let occupied = page_table.walk_occupied().collect::<Vec<_>>();
+    assert_eq!(occupied.len(), 1);
+    assert_eq!(occupied[0].vaddr, vaddr);
+    assert_eq!(occupied[0].level, 1);
+    assert_eq!(page_table.walk_valid().count(), 0);
+    assert_eq!(
+        page_table.mapping_size_for_level(occupied[0].level),
+        Some(OpaqueMeta::PAGE_SIZE)
+    );
+}
+
+#[test]
+fn ranged_walk_descends_into_an_overlapping_parent_entry() {
+    let mut page_table = PageTable::<OpaqueMeta, Fram4k>::new(Fram4k).unwrap();
+    let vaddr = VirtAddr::from_usize(0x20_4000);
+    let paddr = PhysAddr::from_usize(0x80_0000);
+
+    page_table
+        .map_page(
+            vaddr,
+            paddr,
+            OpaqueMeta::PAGE_SIZE,
+            OpaqueConfig {
+                domain: 0x2a,
+                present: false,
+            },
+        )
+        .unwrap();
+
+    let occupied = page_table
+        .walk_all(WalkConfig {
+            start_vaddr: vaddr,
+            end_vaddr: vaddr + OpaqueMeta::PAGE_SIZE,
+        })
+        .filter(|entry| {
+            !entry.pte.unused() && (entry.level == 1 || entry.pte.huge(entry.level > 1))
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(occupied.len(), 1);
+    assert_eq!(occupied[0].vaddr, vaddr);
+    assert_eq!(occupied[0].level, 1);
+
+    let occupied = page_table
+        .walk_occupied_range(vaddr, vaddr + OpaqueMeta::PAGE_SIZE)
+        .collect::<Vec<_>>();
+    assert_eq!(occupied.len(), 1);
+    assert_eq!(occupied[0].vaddr, vaddr);
 }
 
 #[test]
@@ -149,17 +235,17 @@ fn partial_protect_splits_a_huge_leaf_without_changing_neighbors() {
     let mut page_table = PageTable::<OpaqueMeta, Fram4k>::new(Fram4k).unwrap();
     let vaddr = VirtAddr::from_usize(BLOCK_SIZE_2M);
     let paddr = PhysAddr::from_usize(BLOCK_SIZE_2M * 2);
-    let original = OpaqueConfig { domain: 0x2a };
-    let protected = OpaqueConfig { domain: 0x7f };
+    let original = OpaqueConfig {
+        domain: 0x2a,
+        present: true,
+    };
+    let protected = OpaqueConfig {
+        domain: 0x7f,
+        present: true,
+    };
 
     page_table
-        .map_region(
-            vaddr,
-            |current| paddr + (current - vaddr),
-            BLOCK_SIZE_2M,
-            original,
-            true,
-        )
+        .map_linear_pages(vaddr, paddr, BLOCK_SIZE_2M, original, true)
         .unwrap();
     assert_eq!(page_table.query(vaddr).unwrap().2, BLOCK_SIZE_2M);
 
@@ -205,15 +291,15 @@ fn query_reports_arbitrary_base_page_size() {
 }
 
 #[test]
-fn map_region_selects_page_sizes_from_table_levels() {
+fn map_linear_pages_selects_page_sizes_from_table_levels() {
     let mut page_table = PageTable::<T16kL4, Fram16k>::new(Fram16k).unwrap();
     let vaddr = VirtAddr::from_usize(BLOCK_SIZE_32M);
     let paddr = PhysAddr::from_usize(BLOCK_SIZE_32M);
 
     page_table
-        .map_region(
+        .map_linear_pages(
             vaddr,
-            |current| paddr + (current - vaddr),
+            paddr,
             BLOCK_SIZE_32M,
             MappingFlags::READ.into(),
             true,
@@ -223,4 +309,27 @@ fn map_region_selects_page_sizes_from_table_levels() {
     let (mapped_paddr, _, page_size) = page_table.query(vaddr + PAGE_SIZE_16K).unwrap();
     assert_eq!(mapped_paddr, paddr + PAGE_SIZE_16K);
     assert_eq!(page_size, BLOCK_SIZE_32M);
+}
+
+#[test]
+fn resolver_mapping_does_not_infer_physical_contiguity() {
+    let mut page_table = PageTable::<OpaqueMeta, Fram4k>::new(Fram4k).unwrap();
+    let vaddr = VirtAddr::from_usize(BLOCK_SIZE_2M);
+    let paddr = PhysAddr::from_usize(BLOCK_SIZE_2M * 2);
+
+    page_table
+        .map_region(
+            vaddr,
+            |current| paddr + (current - vaddr),
+            BLOCK_SIZE_2M,
+            OpaqueConfig {
+                domain: 0x2a,
+                present: true,
+            },
+        )
+        .unwrap();
+
+    let (mapped_paddr, _, page_size) = page_table.query(vaddr + OpaqueMeta::PAGE_SIZE).unwrap();
+    assert_eq!(mapped_paddr, paddr + OpaqueMeta::PAGE_SIZE);
+    assert_eq!(page_size, OpaqueMeta::PAGE_SIZE);
 }

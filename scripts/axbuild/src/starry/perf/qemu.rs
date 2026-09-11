@@ -147,14 +147,16 @@ pub(super) fn validate_arch(arch: &str) -> anyhow::Result<()> {
 }
 
 fn direct_qemu_args(arch: &str, mut args: Vec<String>) -> anyhow::Result<Vec<String>> {
-    match arch {
-        "riscv64" | "loongarch64" => {
-            if !has_qemu_option(&args, "-machine") {
-                args.splice(0..0, ["-machine".to_string(), "virt".to_string()]);
-            }
-        }
-        "x86_64" => {}
+    let default_machine = match arch {
+        "riscv64" | "loongarch64" => "virt",
+        "x86_64" => "q35",
         _ => bail!("qperf currently supports StarryOS {SUPPORTED_ARCHES} only"),
+    };
+    if !args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-machine" | "-M"))
+    {
+        args.splice(0..0, ["-machine".to_string(), default_machine.to_string()]);
     }
     Ok(args)
 }
@@ -257,37 +259,44 @@ async fn prepare_boot_args(
     arch: &str,
     kernel_bin: &Path,
 ) -> anyhow::Result<Vec<String>> {
-    if arch != "x86_64" {
+    if !config.uefi {
+        if arch == "x86_64" {
+            bail!("StarryOS x86_64 qperf requires a QEMU config with `uefi = true`");
+        }
         return Ok(vec![
             "-kernel".to_string(),
             kernel_bin.display().to_string(),
         ]);
     }
-    if !config.uefi {
-        bail!("StarryOS x86_64 qperf requires a QEMU config with `uefi = true`");
-    }
     if !config.to_bin {
-        bail!("StarryOS x86_64 qperf requires a QEMU config with `to_bin = true`");
+        bail!("StarryOS {arch} UEFI qperf requires a QEMU config with `to_bin = true`");
     }
 
-    let firmware = crate::support::ovmf::OvmfFirmware::fetch(Arch::X64).await?;
-    prepare_x86_64_uefi_boot(&outputs.dir, kernel_bin, &firmware)
+    let (firmware_arch, boot_filename) = match arch {
+        "x86_64" => (Arch::X64, "BOOTX64.EFI"),
+        "loongarch64" => (Arch::LoongArch64, "BOOTLOONGARCH64.EFI"),
+        "riscv64" => (Arch::Riscv64, "BOOTRISCV64.EFI"),
+        _ => bail!("qperf currently supports StarryOS {SUPPORTED_ARCHES} only"),
+    };
+    let firmware = crate::support::ovmf::OvmfFirmware::fetch(firmware_arch).await?;
+    prepare_uefi_boot(&outputs.dir, kernel_bin, &firmware, boot_filename)
 }
 
-fn prepare_x86_64_uefi_boot(
+fn prepare_uefi_boot(
     output_dir: &Path,
     kernel_bin: &Path,
     firmware: &crate::support::ovmf::OvmfFirmware,
+    boot_filename: &str,
 ) -> anyhow::Result<Vec<String>> {
-    ensure_file(kernel_bin, "StarryOS x86_64 UEFI image")?;
+    ensure_file(kernel_bin, "StarryOS UEFI image")?;
     ensure_file(firmware.code(), "OVMF code image")?;
     ensure_file(firmware.vars(), "OVMF vars template")?;
 
     let esp_dir = output_dir.join("starryos.esp");
     let boot_dir = esp_dir.join("EFI/BOOT");
     fs::create_dir_all(&boot_dir)
-        .with_context(|| format!("failed to create x86_64 UEFI ESP {}", boot_dir.display()))?;
-    let boot_image = boot_dir.join("BOOTX64.EFI");
+        .with_context(|| format!("failed to create UEFI ESP {}", boot_dir.display()))?;
+    let boot_image = boot_dir.join(boot_filename);
     fs::copy(kernel_bin, &boot_image).with_context(|| {
         format!(
             "failed to copy StarryOS UEFI image from {} to {}",
@@ -354,45 +363,31 @@ fn qemu_stdout_monitor_enabled(args: &ArgsPerf) -> bool {
 mod tests {
     use std::fs;
 
-    use super::{
-        append_text_filter_params, direct_qemu_args, prepare_x86_64_uefi_boot, qemu_command_prefix,
-        validate_arch,
-    };
+    use super::{append_text_filter_params, prepare_uefi_boot};
     use crate::{
         starry::perf::symbols::{AddressRange, KernelTextRange},
         support::ovmf::OvmfFirmware,
     };
 
-    #[test]
-    fn direct_qemu_args_accepts_x86_64_q35_config() {
-        let args = vec!["-machine".to_string(), "q35".to_string()];
-
-        let args = direct_qemu_args("x86_64", args.clone()).unwrap();
-
-        assert_eq!(args, vec!["-machine", "q35"]);
-    }
-
-    #[test]
-    fn supported_arch_validation_includes_x86_64() {
-        assert!(validate_arch("x86_64").is_ok());
-        assert!(validate_arch("aarch64").is_err());
-    }
-
-    #[test]
-    fn timeout_keeps_interactive_qemu_in_the_foreground() {
-        let prefix = qemu_command_prefix("qemu-system-x86_64", 15, false);
-
-        assert_eq!(
-            prefix,
-            vec![
-                "timeout",
-                "--foreground",
-                "--signal=INT",
-                "--kill-after=5s",
-                "15s",
-                "qemu-system-x86_64",
-            ]
-        );
+    #[tokio::test]
+    async fn loongarch_uefi_rejects_unconverted_kernel_before_boot() {
+        let temp = tempfile::tempdir().unwrap();
+        let outputs =
+            super::super::outputs::prepare_outputs(temp.path(), "loongarch64", "boot", None, None)
+                .unwrap();
+        let config = toml::from_str::<super::PerfQemuConfig>(
+            "args = []\nuefi = true\nto_bin = false\nsuccess_regex = []\nfail_regex = []\n",
+        )
+        .unwrap();
+        let error = super::prepare_boot_args(
+            &outputs,
+            &config,
+            "loongarch64",
+            &temp.path().join("kernel.bin"),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("to_bin = true"));
     }
 
     #[test]
@@ -418,31 +413,39 @@ mod tests {
     }
 
     #[test]
-    fn x86_64_uefi_boot_uses_a_private_vars_copy_and_esp() {
-        let temp = tempfile::tempdir().unwrap();
-        let kernel_bin = temp.path().join("starryos.bin");
-        let code = temp.path().join("code.fd");
-        let vars = temp.path().join("vars.fd");
-        fs::write(&kernel_bin, b"MZ kernel").unwrap();
-        fs::write(&code, b"code").unwrap();
-        fs::write(&vars, b"vars").unwrap();
+    fn uefi_boot_uses_a_private_vars_copy_and_arch_specific_esp() {
+        for boot_filename in ["BOOTX64.EFI", "BOOTLOONGARCH64.EFI", "BOOTRISCV64.EFI"] {
+            let temp = tempfile::tempdir().unwrap();
+            let kernel_bin = temp.path().join("starryos.bin");
+            let code = temp.path().join("code.fd");
+            let vars = temp.path().join("vars.fd");
+            fs::write(&kernel_bin, b"MZ kernel").unwrap();
+            fs::write(&code, b"code").unwrap();
+            fs::write(&vars, b"vars").unwrap();
 
-        let args = prepare_x86_64_uefi_boot(
-            temp.path(),
-            &kernel_bin,
-            &OvmfFirmware::from_paths(code.clone(), vars),
-        )
-        .unwrap();
+            let args = prepare_uefi_boot(
+                temp.path(),
+                &kernel_bin,
+                &OvmfFirmware::from_paths(code.clone(), vars),
+                boot_filename,
+            )
+            .unwrap();
 
-        assert_eq!(
-            fs::read(temp.path().join("starryos.esp/EFI/BOOT/BOOTX64.EFI")).unwrap(),
-            b"MZ kernel"
-        );
-        assert_eq!(
-            fs::read(temp.path().join("starryos.vars.fd")).unwrap(),
-            b"vars"
-        );
-        assert!(args.iter().any(|arg| arg.contains(code.to_str().unwrap())));
-        assert!(!args.iter().any(|arg| arg == "-kernel"));
+            assert_eq!(
+                fs::read(
+                    temp.path()
+                        .join("starryos.esp/EFI/BOOT")
+                        .join(boot_filename)
+                )
+                .unwrap(),
+                b"MZ kernel"
+            );
+            assert_eq!(
+                fs::read(temp.path().join("starryos.vars.fd")).unwrap(),
+                b"vars"
+            );
+            assert!(args.iter().any(|arg| arg.contains(code.to_str().unwrap())));
+            assert!(!args.iter().any(|arg| arg == "-kernel"));
+        }
     }
 }

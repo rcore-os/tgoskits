@@ -81,10 +81,9 @@ pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> Ax
     crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
 }
 
-/// Wake and kick a target vCPU whose architecture backend already published
-/// pending interrupt state.
-pub fn notify_vm_vcpu(vm_id: VMId, vcpu_id: usize) -> AxVmResult {
-    crate::runtime::vcpus::notify_vcpu(vm_id, vcpu_id)
+/// Kick a target vCPU after the caller has published canonical architecture state.
+pub fn kick_vm_vcpu(vm_id: VMId, vcpu_id: usize) -> AxVmResult {
+    crate::runtime::vcpus::kick_vcpu_from_published_state(vm_id, vcpu_id)
 }
 
 /// Return the current VM ID from the vCPU currently executing on this CPU.

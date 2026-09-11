@@ -100,17 +100,17 @@ where
         )
     }
 
-    pub(crate) fn map_region(
+    pub(crate) fn map_linear(
         &mut self,
         vaddr: GuestPhysAddr,
-        get_paddr: impl Fn(GuestPhysAddr) -> PhysAddr,
+        paddr: PhysAddr,
         size: usize,
         flags: MappingFlags,
         allow_huge: bool,
     ) -> ptg::PagingResult {
-        self.inner.map_region(
+        self.inner.map_linear_pages(
             ptg::VirtAddr::from_usize(vaddr.as_usize()),
-            |current| get_paddr(GuestPhysAddr::from(current.as_usize())),
+            paddr,
             size,
             flags,
             allow_huge,
@@ -250,17 +250,17 @@ where
         .map_err(map_error)
     }
 
-    pub(crate) fn map_region(
+    pub(crate) fn map_linear(
         &mut self,
         vaddr: GuestPhysAddr,
-        get_paddr: impl Fn(GuestPhysAddr) -> PhysAddr,
+        paddr: PhysAddr,
         size: usize,
         flags: MappingFlags,
         allow_huge: bool,
     ) -> MappingResult {
         match self {
-            Self::L3(pt) => pt.map_region(vaddr, &get_paddr, size, flags, allow_huge),
-            Self::L4(pt) => pt.map_region(vaddr, &get_paddr, size, flags, allow_huge),
+            Self::L3(pt) => pt.map_linear(vaddr, paddr, size, flags, allow_huge),
+            Self::L4(pt) => pt.map_linear(vaddr, paddr, size, flags, allow_huge),
         }
         .map_err(map_error)
     }
@@ -357,16 +357,16 @@ where
         Ok(LeveledPageTable::unmap(self, vaddr)?)
     }
 
-    fn map_region(
+    fn map_linear(
         &mut self,
         vaddr: GuestPhysAddr,
-        get_paddr: impl Fn(GuestPhysAddr) -> PhysAddr,
+        paddr: PhysAddr,
         size: usize,
         flags: MappingFlags,
         allow_huge: bool,
     ) -> AddrSpaceResult {
-        Ok(LeveledPageTable::map_region(
-            self, vaddr, get_paddr, size, flags, allow_huge,
+        Ok(LeveledPageTable::map_linear(
+            self, vaddr, paddr, size, flags, allow_huge,
         )?)
     }
 
@@ -422,6 +422,8 @@ pub(crate) fn map_error(err: ptg::PagingError) -> MappingError {
         | ptg::PagingError::InvalidRange { .. } => MappingError::InvalidParam,
         ptg::PagingError::NoMemory
         | ptg::PagingError::HierarchyError { .. }
+        | ptg::PagingError::StaleHugeSplit { .. }
+        | ptg::PagingError::StaleMapDeposit { .. }
         | ptg::PagingError::NotMapped => MappingError::BadState,
     }
 }

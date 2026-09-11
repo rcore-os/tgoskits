@@ -1,7 +1,8 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 use ringbuf::{
     Cons, HeapRb, Prod,
     traits::{Consumer, Producer},

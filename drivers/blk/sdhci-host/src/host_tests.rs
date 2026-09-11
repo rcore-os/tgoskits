@@ -8,42 +8,6 @@ use core::{
 use super::*;
 
 #[test]
-fn constructs_from_mapped_mmio_pointer() {
-    let base = NonNull::new(0x1000_0000 as *mut u8).unwrap();
-    let host = unsafe { Sdhci::new(base) };
-
-    assert_eq!(host.base_addr, 0x1000_0000);
-}
-
-#[test]
-fn legacy_addr_constructor_keeps_raw_mmio_boundary_explicit() {
-    let host = unsafe { Sdhci::new_from_addr(0x1000_0000) };
-
-    assert_eq!(host.base_addr, 0x1000_0000);
-}
-
-#[test]
-fn external_clock_can_be_scoped_and_cleared() {
-    struct Clock;
-
-    impl HostClock for Clock {
-        fn set_clock(&self, _target_hz: u32) -> Result<(), Error> {
-            Ok(())
-        }
-    }
-
-    let mut mmio = [0u8; 256];
-    let base = NonNull::new(mmio.as_mut_ptr()).unwrap();
-    let mut host = unsafe { Sdhci::new(base) };
-
-    host.set_external_clock(Clock);
-    assert!(host.ext_clock.is_some());
-
-    host.clear_external_clock();
-    assert!(host.ext_clock.is_none());
-}
-
-#[test]
 fn reset_all_calls_owned_platform_before_hook_before_software_reset() {
     struct Hook;
     static OBSERVED_RESET: AtomicU8 = AtomicU8::new(u8::MAX);

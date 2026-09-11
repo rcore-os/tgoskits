@@ -68,10 +68,10 @@ __x86_ap_trampoline_start:
     orl $0x00000100, %eax
     wrmsr
 
-    # Clear EM/TS and enable protected mode, paging, MP, and native FP errors.
-    movl %cr0, %eax
-    andl $0xfffffff3, %eax
-    orl $0x80000023, %eax
+    # Install the same complete kernel CR0 state as the boot CPU. WP makes
+    # supervisor user-copy honor read-only COW PTEs, and the exact write clears
+    # reset-time CD/NW instead of carrying disabled caches into the runtime.
+    movl ${kernel_cr0_state}, %eax
     movl %eax, %cr0
 
     ljmpl *(__x86_ap_ljmp_ptr - __x86_ap_trampoline_start)
@@ -119,6 +119,7 @@ __x86_ap_trampoline_entry:
     .quad 0
 __x86_ap_trampoline_end:
 "#,
+    kernel_cr0_state = const ax_cpu::boot::KERNEL_CR0_STATE,
     options(att_syntax)
 );
 
@@ -187,9 +188,9 @@ fn us_to_tsc_ticks(us: u64) -> u64 {
 }
 
 fn delay_us(us: u64) {
-    let start = super::trap::ticks_now();
+    let start = ax_cpu::timer::read_counter();
     let target = us_to_tsc_ticks(us);
-    while super::trap::ticks_now().wrapping_sub(start) < target {
+    while ax_cpu::timer::read_counter().wrapping_sub(start) < target {
         spin_loop();
     }
 }
@@ -373,5 +374,10 @@ mod tests {
 
         assert_eq!(ICR_STARTUP_BASE, 0x600);
         assert_eq!(ICR_STARTUP_BASE & ICR_LEVEL_ASSERT, 0);
+    }
+
+    #[test]
+    fn kernel_cr0_state_matches_linux_boot_state() {
+        assert_eq!(ax_cpu::boot::KERNEL_CR0_STATE, 0x8005_0033);
     }
 }

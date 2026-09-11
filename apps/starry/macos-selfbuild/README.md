@@ -19,7 +19,7 @@ as these stages:
 | Stage 1 | `prepare_host_tools.sh` | Prepares macOS host wrappers needed by the AArch64 seed-kernel build. |
 | Stage 2 | `cargo xtask starry app qemu -t macos-selfbuild --arch aarch64` | Uses the existing Starry app runner to build the seed kernel, ensure the rootfs, run `prebuild.sh`, inject the overlay through the internal `rootfs::inject::inject_overlay()` path, and launch QEMU/HVF. |
 | Stage 2 / prebuild | `cargo xtask image resize <ROOTFS> --size-mib 16384` | Host-side `prebuild.sh` grows the rootfs selected by the app runner before overlay injection. |
-| Stage 3 | QEMU/HVF guest Cargo build | After StarryOS boots, `shell_init_cmd` starts the guest runner, which runs `cargo build` directly inside the guest. |
+| Stage 3 | QEMU/HVF guest Cargo build | After StarryOS boots, `shell_cmd` starts the guest runner, which runs `cargo build` directly inside the guest. |
 | Stage 4 | `debugfs` artifact extraction | Extracts the guest-built kernel ELF and `.bin` from the app runner rootfs. |
 
 ## Script Roles

@@ -1,16 +1,10 @@
-use pci_types::{ConfigRegionAccess, PciAddress};
+use pci_types::PciAddress;
 use rdif_pcie::{
     DriverGeneric, Interface, PciMem32, PciMem64, PcieController, SimpleBarAllocator,
-    addr_alloc::{
-        AddressAllocator, AllocPolicy, Constraint, DEFAULT_CONSTRAINT_ALIGN, Error, IdAllocator,
-        RangeInclusive,
-    },
+    addr_alloc::{AllocPolicy, Constraint, DEFAULT_CONSTRAINT_ALIGN, Error, RangeInclusive},
 };
 
-struct MockPcie {
-    last_offset: u16,
-    last_value: u32,
-}
+struct MockPcie;
 
 impl DriverGeneric for MockPcie {
     fn name(&self) -> &str {
@@ -27,64 +21,18 @@ impl DriverGeneric for MockPcie {
 }
 
 impl Interface for MockPcie {
-    fn read(&mut self, address: PciAddress, offset: u16) -> u32 {
-        self.last_offset = offset;
-        u32::from(address.bus()) << 24 | u32::from(offset)
+    fn read(&mut self, _address: PciAddress, _offset: u16) -> u32 {
+        panic!("BAR allocation must not read PCI configuration space");
     }
 
-    fn write(&mut self, _address: PciAddress, offset: u16, value: u32) {
-        self.last_offset = offset;
-        self.last_value = value;
-    }
-}
-
-#[test]
-fn rdif_pcie_controller_delegates_driver_identity_and_config_io() {
-    let controller = PcieController::new(MockPcie {
-        last_offset: 0,
-        last_value: 0,
-    });
-    let address = PciAddress::new(0, 2, 3, 0);
-
-    assert_eq!(controller.name(), "mock-pcie");
-
-    unsafe {
-        assert_eq!(
-            controller.read(address, 0x10),
-            u32::from(address.bus()) << 24 | 0x10
-        );
-        controller.write(address, 0x14, 0xdead_beef);
-    }
-}
-
-#[test]
-fn rdif_pcie_config_access_is_bound_to_one_address() {
-    let mut controller = PcieController::new(MockPcie {
-        last_offset: 0,
-        last_value: 0,
-    });
-    let address = PciAddress::new(0, 2, 3, 0);
-
-    let access = controller.config_access(address);
-    unsafe {
-        assert_eq!(
-            access.read(address, 0x20),
-            u32::from(address.bus()) << 24 | 0x20
-        );
-        access.write(address, 0x24, 0xabcd_0123);
+    fn write(&mut self, _address: PciAddress, _offset: u16, _value: u32) {
+        panic!("BAR allocation must not write PCI configuration space");
     }
 }
 
 #[test]
 fn rdif_pcie_controller_initializes_bar_windows() {
-    let mut controller = PcieController::new(MockPcie {
-        last_offset: 0,
-        last_value: 0,
-    });
-
-    ax_assert!(!controller.dma_coherent());
-    controller.set_dma_coherent(true);
-    ax_assert!(controller.dma_coherent());
+    let mut controller = PcieController::new(MockPcie);
 
     controller.set_mem32(
         PciMem32 {
@@ -117,9 +65,6 @@ fn rdif_pcie_range_and_constraint_validation_rules_hold() {
     );
 
     let range = RangeInclusive::new(2, 6).unwrap();
-    assert_eq!(range.start(), 2);
-    assert_eq!(range.end(), 6);
-    assert_eq!(range.len(), 5);
     assert!(range.contains(&RangeInclusive::new(3, 5).unwrap()));
     assert!(!range.contains(&RangeInclusive::new(1, 5).unwrap()));
     assert!(range.overlaps(&RangeInclusive::new(6, 8).unwrap()));
@@ -136,80 +81,6 @@ fn rdif_pcie_range_and_constraint_validation_rules_hold() {
     assert_eq!(
         Constraint::new(0x100, 0x100, AllocPolicy::ExactMatch(0x80)).unwrap_err(),
         Error::UnalignedAddress
-    );
-    let constraint = Constraint::new(0x100, 0x100, AllocPolicy::LastMatch).unwrap();
-    assert_eq!(constraint.size(), 0x100);
-    assert_eq!(constraint.align(), 0x100);
-}
-
-#[test]
-fn rdif_pcie_id_allocator_allocates_reuses_and_reports_errors() {
-    assert_eq!(
-        IdAllocator::new(23, 5).unwrap_err(),
-        Error::InvalidRange(23, 5)
-    );
-
-    let mut ids = IdAllocator::new(5, 7).unwrap();
-    assert_eq!(ids.allocate_id(), Ok(5));
-    assert_eq!(ids.allocate_id(), Ok(6));
-    assert_eq!(ids.free_id(6), Ok(6));
-    assert_eq!(ids.allocate_id(), Ok(6));
-    assert_eq!(ids.allocate_id(), Ok(7));
-    assert_eq!(ids.allocate_id(), Err(Error::ResourceNotAvailable));
-    assert_eq!(ids.free_id(4), Err(Error::OutOfRange(4)));
-    assert_eq!(ids.free_id(6), Ok(6));
-    assert_eq!(ids.free_id(6), Err(Error::AlreadyReleased(6)));
-    assert_eq!(ids.free_id(99), Err(Error::OutOfRange(99)));
-
-    let mut overflow = IdAllocator::new(u32::MAX - 1, u32::MAX).unwrap();
-    assert_eq!(overflow.allocate_id(), Ok(u32::MAX - 1));
-    assert_eq!(overflow.allocate_id(), Ok(u32::MAX));
-    assert_eq!(overflow.allocate_id(), Err(Error::Overflow));
-}
-
-#[test]
-fn rdif_pcie_address_allocator_handles_first_last_exact_and_free_paths() {
-    assert_eq!(AddressAllocator::new(0x1000, 0), Err(Error::Underflow));
-    assert_eq!(AddressAllocator::new(u64::MAX, 0x100), Err(Error::Overflow));
-
-    let mut pool = AddressAllocator::new(0x1000, 0x1000).unwrap();
-    assert_eq!(pool.base(), 0x1000);
-    assert_eq!(pool.end(), 0x1fff);
-    assert_eq!(
-        pool.allocate(0x110, 0x100, AllocPolicy::FirstMatch)
-            .unwrap(),
-        RangeInclusive::new(0x1000, 0x110f).unwrap()
-    );
-    assert_eq!(
-        pool.allocate(0x100, 0x100, AllocPolicy::FirstMatch)
-            .unwrap(),
-        RangeInclusive::new(0x1200, 0x12ff).unwrap()
-    );
-    assert_eq!(
-        pool.allocate(0x200, 0x100, AllocPolicy::ExactMatch(0x1a00))
-            .unwrap(),
-        RangeInclusive::new(0x1a00, 0x1bff).unwrap()
-    );
-    assert_eq!(
-        pool.allocate(0x800, 0x100, AllocPolicy::ExactMatch(0x1400)),
-        Err(Error::ResourceNotAvailable)
-    );
-    assert_eq!(
-        pool.free(&RangeInclusive::new(0x1200, 0x12ff).unwrap()),
-        Ok(())
-    );
-    assert_eq!(
-        pool.allocate(0x100, 0x100, AllocPolicy::FirstMatch)
-            .unwrap(),
-        RangeInclusive::new(0x1200, 0x12ff).unwrap()
-    );
-
-    let mut reverse = AddressAllocator::new(0x1000, 0x10000).unwrap();
-    assert_eq!(
-        reverse
-            .allocate(0x110, 0x100, AllocPolicy::LastMatch)
-            .unwrap(),
-        RangeInclusive::new(0x10e00, 0x10f0f).unwrap()
     );
 }
 

@@ -7,9 +7,13 @@ keywords = ["rk3588", "rga", "graphics"]
 license.workspace = true
 name = "rockchip-rga"
 repository.workspace = true
-version = "0.2.0"
+version = "0.3.0"
 
 [dependencies]
+bytemuck = { version = "1.24", default-features = false, features = [
+    "derive",
+    "min_const_generics",
+] }
 dma-api.workspace = true
 rdif-base.workspace = true
 thiserror.workspace = true

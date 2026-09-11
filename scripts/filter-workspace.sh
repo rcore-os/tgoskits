@@ -25,14 +25,14 @@ filter_member() { local name="$1"
 }
 
 for name in \
-    arm_vcpu arm_vgic aarch64_sysreg kasm-aarch64 \
-    riscv-h riscv_vcpu riscv_vplic loongarch_vcpu \
+    arm_vgic aarch64_sysreg kasm-aarch64 \
+    riscv-h riscv_vplic \
     axdevice axvm someboot \
-    x86_vcpu x86_vlapic \
+    x86_vlapic \
     ; do
     case "$ARCH" in
         x86_64)
-            case "$name" in x86_vcpu|x86_vlapic) continue ;; esac
+            case "$name" in x86_vlapic) continue ;; esac
             filter_member "$name"
             ;;
         riscv64)

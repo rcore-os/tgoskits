@@ -1,6 +1,6 @@
 [package]
 name = "ax-hal"
-version = "0.6.2"
+version = "0.7.1"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -16,33 +16,36 @@ fp-simd = [
     "ax-cpu/fp-simd",
     "axplat-dyn/fp-simd",
 ]
-xuantie-c9xx = ["ax-cpu/xuantie-c9xx"]
+riscv-thead-mae = ["ax-cpu/riscv-thead-mae"]
 rtc = ["axplat-dyn/rtc"]
 paging = [
     "dep:ax-alloc",
     "dep:page-table-generic",
 ]
+# Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["ax-cpu/tls", "cpu-local/tls", "axplat-dyn/tls"]
-uspace = ["paging", "ax-cpu/uspace", "axplat-dyn/uspace"]
+# Enable userspace support without kernel TLS, including when `tls` is enabled.
+# User-space TLS remains available through the userspace context APIs.
+uspace = ["paging", "ax-cpu/uspace", "cpu-local/uspace", "axplat-dyn/uspace"]
 hv = [
-    "paging",
-    "ax-cpu/arm-el2",
-    "ax-cpu/exception-table",
-    "axplat-dyn/hv",
+  "paging",
+  "fp-simd",
+  "ax-cpu/virtualization",
+  "axplat-dyn/hv",
 ]
 host-test = [
     "cpu-local/host-test",
-    "ax-cpu/host-test",
     "ax-percpu/host-test",
     "ax-sync/host-test",
 ]
-
+pmu = ["ax-cpu/pmu"]
 default = []
 ipi = []
 
 [dependencies]
+axbacktrace.workspace = true
 ax-alloc = { workspace = true, optional = true }
-ax-cpu.workspace = true
+ax-cpu = { workspace = true, features = ["context"] }
 cpu-local.workspace = true
 ax-plat.workspace = true
 ax-lazyinit.workspace = true

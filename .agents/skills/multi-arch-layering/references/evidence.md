@@ -38,7 +38,7 @@ Linux Kbuild 的[Generic header files](https://docs.kernel.org/kbuild/makefiles.
 
 [Rust Reference 的条件编译说明](https://doc.rust-lang.org/reference/conditional-compilation.html)将 `#[cfg]` 定义为编译期选择：谓词为假的项不进入源码构建结果。Rust 1.95 的[发布说明](https://blog.rust-lang.org/2026/04/16/Rust-1.95.0/)稳定了内置 [`cfg_select!`](https://doc.rust-lang.org/stable/core/macro.cfg_select.html)；它按书写顺序发出第一个谓词为真的分支，可以用在项或表达式位置，未提供 `_` 且没有谓词命中时直接产生编译错误。
 
-截至 2026-09-01，[最新稳定版 Rust 是 1.98](https://blog.rust-lang.org/2026/08/20/Rust-1.98.0/)。本仓库的 [`rust-toolchain.toml`](../../../../rust-toolchain.toml) 锁定 `nightly-2026-07-15`，已经包含稳定后的 `cfg_select!`。创建本技能时，使用 `#![no_std]` 探针分别在 Rust 1.98 和仓库工具链上验证了无功能门使用、表达式位置和首个匹配分支；另一个无 `_`、无匹配分支的探针按预期编译失败。
+截至 2026-09-01，[最新稳定版 Rust 是 1.98](https://blog.rust-lang.org/2026/08/20/Rust-1.98.0/)。本仓库的 [`rust-toolchain.toml`](../../../../rust-toolchain.toml) 锁定 `nightly-2026-09-04`，已经包含稳定后的 `cfg_select!`。创建本技能时，使用 `#![no_std]` 探针分别在 Rust 1.98 和仓库工具链上验证了无功能门使用、表达式位置和首个匹配分支；另一个无 `_`、无匹配分支的探针按预期编译失败。
 
 该宏适合在单一装配点表达“候选后端中只选择一个”，但不自动证明谓词互斥。多个功能开关可以同时为真，首个匹配语义可能掩盖重叠；除非顺序就是明确的优先级契约，否则仍需显式拒绝重叠。独立能力需要同时进入构建、需要在项上附着条件或最低 Rust 版本早于 1.95 时继续使用 `#[cfg]`。`cfg!` 只计算布尔值，不移除其他目标无法类型检查的代码，不能替代这两种装配机制。
 

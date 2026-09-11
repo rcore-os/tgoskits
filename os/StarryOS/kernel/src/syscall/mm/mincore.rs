@@ -6,14 +6,42 @@
 //
 // This file has been modified by KylinSoft on 2025.
 
-use alloc::vec;
-
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-use ax_runtime::hal::paging::MappingFlags;
-use ax_task::current;
-use starry_vm::vm_write_slice;
 
-use crate::{StarryError, StarryResult, task::AsThread};
+use crate::{StarryError, StarryResult, mm::vm_write_slice};
+
+// A cache query owns a backend snapshot, so keep fewer entries than Linux
+// needs for its byte-only scratch page. Neither batch buffer can allocate.
+const MINCORE_BATCH_PAGES: usize = 32;
+
+fn validate_mincore_request(
+    addr: usize,
+    length: usize,
+    vec_is_null: bool,
+    user_base: usize,
+    user_end: usize,
+) -> StarryResult<usize> {
+    let start = VirtAddr::from(addr);
+    if !start.is_aligned(PAGE_SIZE_4K) {
+        return Err(StarryError::InvalidInput);
+    }
+
+    // Linux treats a zero-page request as a no-op. In particular, no output
+    // byte is touched, so a null `vec` cannot turn it into EFAULT.
+    if length == 0 {
+        return Ok(0);
+    }
+
+    let end = addr.checked_add(length).ok_or(StarryError::NoMemory)?;
+    if addr < user_base || end > user_end {
+        return Err(StarryError::NoMemory);
+    }
+    let pages = length.div_ceil(PAGE_SIZE_4K);
+    if vec_is_null {
+        return Err(StarryError::BadAddress);
+    }
+    Ok(pages)
+}
 
 /// Check whether pages are resident in memory.
 ///
@@ -42,120 +70,103 @@ use crate::{StarryError, StarryResult, task::AsThread};
 /// - EFAULT: vec points to invalid address
 /// - EINVAL: addr not page-aligned
 /// - ENOMEM: length > (TASK_SIZE - addr), negative length, or unmapped memory
-pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> StarryResult<isize> {
+pub fn sys_mincore(
+    current: &crate::task::UserTaskRef,
+    addr: usize,
+    length: usize,
+    vec: *mut u8,
+) -> crate::StarryResult<isize> {
     let start_addr = VirtAddr::from(addr);
-
-    // EINVAL: addr must be a multiple of the page size
-    if !start_addr.is_aligned(PAGE_SIZE_4K) {
-        return Err(StarryError::InvalidInput);
-    }
-
-    // EFAULT: vec must not be null (basic check, vm_write_slice will do full validation)
-    if vec.is_null() {
-        return Err(StarryError::BadAddress);
-    }
+    let curr = current;
+    let cred = curr.as_thread().cred();
+    let aspace_pin = curr.as_thread().proc_data.pin_aspace()?;
+    let (user_base, user_end) = {
+        let aspace = aspace_pin.lock();
+        (aspace.base().as_usize(), aspace.end().as_usize())
+    };
+    let page_count = validate_mincore_request(addr, length, vec.is_null(), user_base, user_end)?;
 
     debug!("sys_mincore <= addr: {addr:#x}, length: {length:#x}, vec: {vec:?}");
 
-    // Special case: length=0
-    // According to Linux kernel (mm/mincore.c), length=0 returns success
-    // WITHOUT validating that addr is mapped.  This is intentional behavior
-    // to match POSIX semantics where a zero-length operation is a no-op.
-    if length == 0 {
+    if page_count == 0 {
         return Ok(0);
     }
 
-    // Calculate number of pages to check
-    let page_count = length.div_ceil(PAGE_SIZE_4K);
-
-    let mut result = vec![0u8; page_count];
-
-    {
-        // Get current address space
-        let curr = current();
-        let aspace_arc = curr.as_thread().proc_data.aspace();
-        let aspace = aspace_arc.lock();
-        let mut i = 0;
-
-        while i < page_count {
-            let addr = start_addr + i * PAGE_SIZE_4K;
-
-            // ENOMEM: Check if this page is within a valid VMA
-            let area = aspace.find_area(addr).ok_or(StarryError::NoMemory)?;
-
-            // Verify we have at least USER access permission
-            if !area.flags().contains(MappingFlags::USER) {
-                return Err(StarryError::NoMemory);
-            }
-
-            // Query page table with batch awareness
-            let (is_resident, size) = match aspace.page_table().query(addr) {
-                Ok((_, _, size)) => {
-                    // Physical page exists and is resident
-                    // page_size tells us how many contiguous pages have the same status
-                    (true, size as _)
+    crate::mm::check_access(vec.addr(), page_count)?;
+    let mut completed = 0;
+    while completed < page_count {
+        let batch_pages = (page_count - completed).min(MINCORE_BATCH_PAGES);
+        let mut result = [0u8; MINCORE_BATCH_PAGES];
+        let mut cache_queries = heapless::Vec::<_, MINCORE_BATCH_PAGES>::new();
+        let mut filled = 0;
+        let mut range_error = None;
+        {
+            let aspace = aspace_pin.lock();
+            while filled < batch_pages {
+                let address = start_addr + (completed + filled) * PAGE_SIZE_4K;
+                let Some(probe) = aspace.mincore_probe(address) else {
+                    range_error = Some(StarryError::NoMemory);
+                    break;
+                };
+                // Residency is independent of access permission. In
+                // particular, PROT_NONE does not relinquish a resident owner.
+                if let Some(bytes) = aspace.resident_bytes_from(address) {
+                    let pages = (bytes / PAGE_SIZE_4K).min(batch_pages - filled);
+                    debug_assert!(pages != 0);
+                    result[filled..filled + pages].fill(1);
+                    filled += pages;
+                } else {
+                    if cache_queries.push((filled, address, probe)).is_err() {
+                        unreachable!("one cache query per bounded output byte");
+                    }
+                    filled += 1;
                 }
-                Err(_) => {
-                    // Page is mapped but not populated (lazy allocation)
-                    // We need to determine how many contiguous pages are also not populated
-                    // For safety, we check the next page or use PAGE_SIZE_4K as minimum step
-                    (false, PAGE_SIZE_4K)
-                }
-            };
-            let n = size / PAGE_SIZE_4K;
-
-            if is_resident {
-                let end = (i + n).min(page_count);
-                result[i..end].fill(1);
             }
-
-            i += n;
         }
-    }
 
-    // EFAULT: Write result to user space
-    // vm_write_slice will return EFAULT if vec is invalid
-    vm_write_slice(vec, result.as_slice())?;
+        // Cache lookups and copyout may take independent locks or fault.
+        // Finish them after releasing MM metadata, then discard these owned
+        // snapshots before beginning another bounded batch.
+        for (index, address, probe) in cache_queries {
+            if probe.mincore_resident(address, &cred) {
+                result[index] = 1;
+            }
+        }
+        if filled != 0 {
+            vm_write_slice(current, vec.wrapping_add(completed), &result[..filled])?;
+        }
+        if let Some(error) = range_error {
+            return Err(error);
+        }
+        completed += filled;
+    }
 
     Ok(0)
 }
 
 #[cfg(all(test, not(axtest)))]
-fn mincore_validation_rules_hold_for_test() -> bool {
-    use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-    // Test mincore validation logic
-    // Page-aligned address should pass alignment check
-    let aligned_addr = VirtAddr::from(0x1000usize);
-    assert!(aligned_addr.is_aligned(PAGE_SIZE_4K));
-
-    // Non-page-aligned address should fail alignment check
-    let unaligned_addr = VirtAddr::from(0x1001usize);
-    assert!(!unaligned_addr.is_aligned(PAGE_SIZE_4K));
-
-    // Zero address is aligned (0 is multiple of any page size)
-    let zero_addr = VirtAddr::from(0usize);
-    assert!(zero_addr.is_aligned(PAGE_SIZE_4K));
-
-    // Test page count calculation
-    let length: usize = 4096;
-    let page_count = length.div_ceil(PAGE_SIZE_4K);
-    assert!(page_count == 1);
-
-    let length: usize = 8192;
-    let page_count = length.div_ceil(PAGE_SIZE_4K);
-    assert!(page_count == 2);
-
-    let length: usize = 1;
-    let page_count = length.div_ceil(PAGE_SIZE_4K);
-    assert!(page_count == 1);
-
-    true
-}
-
-#[cfg(all(test, not(axtest)))]
 mod tests {
+    use crate::StarryError;
+
     #[test]
-    fn mincore_validation_rules_hold() {
-        assert!(super::mincore_validation_rules_hold_for_test());
+    fn zero_length_does_not_validate_output_pointer() {
+        assert_eq!(
+            super::validate_mincore_request(0x1000, 0, true, 0x1000, 0x20_0000).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn overflowing_range_precedes_output_pointer_validation() {
+        assert!(matches!(
+            super::validate_mincore_request(
+                usize::MAX & !(4096 - 1),
+                4096,
+                true,
+                0x1000,
+                0x20_0000,
+            ),
+            Err(StarryError::NoMemory)
+        ));
     }
 }

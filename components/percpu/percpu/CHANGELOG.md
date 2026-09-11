@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.20](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.19...ax-percpu-v0.4.20) - 2026-09-10
+
+### Fixed
+
+- Publish the workspace `cpu-local 0.3` dependency so registry consumers use the
+  same CPU-local types as the current workspace.
+
+## [0.4.19](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.18...ax-percpu-v0.4.19) - 2026-09-09
+
+### Other
+
+- *(repo)* remove duplicated tests and configuration snapshots ([#2326](https://github.com/rcore-os/tgoskits/pull/2326))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
 ## [0.4.18](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.17...ax-percpu-v0.4.18) - 2026-08-20
 
 ### Added

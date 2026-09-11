@@ -13,6 +13,7 @@ pub fn into_vfs_err(err: Ext4Error) -> VfsError {
         | Ext4ErrorKind::BadSuperblock
         | Ext4ErrorKind::InvalidMagic => VfsError::InvalidInput,
         Ext4ErrorKind::NoSpace => VfsError::StorageFull,
+        Ext4ErrorKind::NoMemory => VfsError::NoMemory,
         Ext4ErrorKind::ReadOnly => VfsError::ReadOnlyFilesystem,
         Ext4ErrorKind::Busy => VfsError::ResourceBusy,
         Ext4ErrorKind::BadFileDescriptor => VfsError::BadFileDescriptor,
@@ -62,6 +63,7 @@ mod tests {
             VfsError::FilesystemCorrupted,
         );
         assert_eq!(into_vfs_err(Ext4Error::overflow()), VfsError::ValueOverflow,);
+        assert_eq!(into_vfs_err(Ext4Error::no_memory()), VfsError::NoMemory,);
         assert_eq!(into_vfs_err(Ext4Error::journal_aborted()), VfsError::Io,);
         assert_eq!(
             into_vfs_err(Ext4Error::too_many_links()),

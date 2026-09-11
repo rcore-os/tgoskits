@@ -192,8 +192,7 @@ pub(super) fn upload_huff_tables(jpu_base: usize, header: &JpegHeaderInfo) {
     r.huff_ctrl
         .write(MJPEG_HUFF_CTRL::PHASE.val(HUFF_PHASE_MIN));
     for table_idx in [0, 2, 1, 3] {
-        for j in 0..16 {
-            let huff_data = header.huff_tables[table_idx].min_codes[j];
+        for &huff_data in &header.huff_tables[table_idx].min_codes {
             let temp = HuffTable::sign_extend_16(huff_data);
             r.huff_data
                 .write(VALUE32::VAL.val(((temp & 0xFFFF) << 16) | huff_data));
@@ -204,8 +203,7 @@ pub(super) fn upload_huff_tables(jpu_base: usize, header: &JpegHeaderInfo) {
         .write(MJPEG_HUFF_CTRL::PHASE.val(HUFF_PHASE_MAX));
     r.huff_addr.write(VALUE32::VAL.val(HUFF_ADDR_MAX));
     for table_idx in [0, 2, 1, 3] {
-        for j in 0..16 {
-            let huff_data = header.huff_tables[table_idx].max_codes[j];
+        for &huff_data in &header.huff_tables[table_idx].max_codes {
             let temp = HuffTable::sign_extend_16(huff_data);
             r.huff_data
                 .write(VALUE32::VAL.val(((temp & 0xFFFF) << 16) | huff_data));
@@ -216,8 +214,8 @@ pub(super) fn upload_huff_tables(jpu_base: usize, header: &JpegHeaderInfo) {
         .write(MJPEG_HUFF_CTRL::PHASE.val(HUFF_PHASE_PTR));
     r.huff_addr.write(VALUE32::VAL.val(HUFF_ADDR_PTR));
     for table_idx in [0, 2, 1, 3] {
-        for j in 0..16 {
-            let huff_data = header.huff_tables[table_idx].ptrs[j] as u32;
+        for &ptr in &header.huff_tables[table_idx].ptrs {
+            let huff_data = ptr as u32;
             let temp = HuffTable::sign_extend_8(huff_data);
             r.huff_data
                 .write(VALUE32::VAL.val(((temp & 0xFFFFFF) << 8) | huff_data));
@@ -235,8 +233,12 @@ pub(super) fn upload_huff_tables(jpu_base: usize, header: &JpegHeaderInfo) {
             .map(|&b| b as usize)
             .sum();
 
-        for j in 0..count.min(header.huff_tables[table_idx].num_values) {
-            let val = header.huff_tables[table_idx].values[j] as u32;
+        for &value in header.huff_tables[table_idx]
+            .values
+            .iter()
+            .take(count.min(header.huff_tables[table_idx].num_values))
+        {
+            let val = value as u32;
             let temp = HuffTable::sign_extend_8(val);
             r.huff_data
                 .write(VALUE32::VAL.val(((temp & 0xFFFFFF) << 8) | val));
@@ -260,9 +262,8 @@ pub(super) fn upload_quant_tables(jpu_base: usize, header: &JpegHeaderInfo) {
         }
 
         r.qmat_ctrl.write(MJPEG_QMAT_CTRL::PHASE.val(phase));
-        for j in 0..64 {
-            r.qmat_data
-                .write(VALUE32::VAL.val(header.quant_tables[table_idx].values[j] as u32));
+        for &value in &header.quant_tables[table_idx].values {
+            r.qmat_data.write(VALUE32::VAL.val(value as u32));
         }
         r.qmat_ctrl.write(MJPEG_QMAT_CTRL::PHASE.val(0));
     }

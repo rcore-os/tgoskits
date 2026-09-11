@@ -6,8 +6,7 @@ use std::{
     },
 };
 
-use ax_runtime::sync::SpinLock;
-use extern_trait::extern_trait;
+use ax_runtime::task::sync::SpinLock;
 use starry_signal::api::{ProcessSignalManager, SignalActions, ThreadSignalManager};
 use starry_vm::{VmError, VmIo, VmResult};
 
@@ -29,15 +28,9 @@ pub fn initial_sp() -> usize {
     pool.as_ptr() as usize + offset + TEST_STACK_SIZE
 }
 
-struct Vm(MutexGuard<'static, Box<[u8]>>);
+pub struct Vm(MutexGuard<'static, Box<[u8]>>);
 
-#[extern_trait]
 unsafe impl VmIo for Vm {
-    fn new() -> Self {
-        let pool = POOL.lock().unwrap();
-        Vm(pool)
-    }
-
     fn read(&mut self, start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult {
         let base = self.0.as_ptr() as usize;
         let offset = start.checked_sub(base).ok_or(VmError::BadAddress)?;
@@ -61,6 +54,10 @@ unsafe impl VmIo for Vm {
     }
 }
 
+pub fn vm() -> Vm {
+    Vm(POOL.lock().unwrap())
+}
+
 pub const TID: u32 = 7;
 
 pub fn new_test_env() -> (Arc<ProcessSignalManager>, Arc<ThreadSignalManager>) {
@@ -72,7 +69,7 @@ pub fn new_test_env() -> (Arc<ProcessSignalManager>, Arc<ThreadSignalManager>) {
     (proc, thr)
 }
 
-pub fn prepare_restore_context(_uctx: &mut ax_cpu::uspace::UserContext) {
+pub fn prepare_restore_context(_uctx: &mut ax_cpu::user::UserContext) {
     // Simulate the user-state that `rt_sigreturn` sees after the handler returns.
     // x86_64 consumes the pushed restorer with `ret`; other archs keep SP unchanged.
     #[cfg(target_arch = "x86_64")]

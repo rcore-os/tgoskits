@@ -1,8 +1,9 @@
 features = [
+  "ax-driver/rk3588-cpufreq",
   "ax-driver/rockchip-dwmmc",
   "ax-driver/rockchip-sdhci",
   "fs",
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
-vm_configs = ["os/axvisor/configs/vms/orangepi-5-plus/starry-smp1.toml"]
+vm_configs = ["test-suit/axvisor/normal/board-orangepi-5-plus/starry/guest.toml"]

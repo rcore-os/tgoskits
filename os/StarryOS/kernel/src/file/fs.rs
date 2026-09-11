@@ -3,28 +3,28 @@ use core::{
     ffi::c_int,
     hint::likely,
     sync::atomic::{AtomicBool, Ordering},
-    task::Context,
 };
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext};
 use ax_io::{Seek, SeekFrom};
-use ax_task::future::{block_on, poll_io};
-use axfs_ng_vfs::{
-    DirectoryCursor, DirectoryReadState, FsIoEvents, FsPollable, Location, Metadata, NodeFlags,
-};
+use axfs_ng_vfs::{DirectoryCursor, DirectoryReadState, Location, Metadata, NodeFlags, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
     general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
     ioctl::TIOCSCTTY,
 };
-use starry_vm::VmPtr;
 
 use super::{FileLike, Kstat, get_file_like};
 use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc},
+    mm::VmPtr,
     pseudofs::Device,
     sync::Mutex,
+    task::{
+        current_user_task,
+        future::{block_on_user, poll_io},
+    },
 };
 
 // FusionIO/directFS atomic-write toggle used by MySQL.
@@ -65,25 +65,56 @@ impl ResolveAtResult {
     }
 }
 
+/// Resolves an actual file descriptor without interpreting AT_FDCWD.
+pub fn resolve_fd(fd: c_int) -> StarryResult<ResolveAtResult> {
+    let file_like = get_file_like(fd)?;
+    let f = file_like.clone();
+    Ok(if let Some(file) = f.downcast_ref::<File>() {
+        // Use location() directly: backend() rejects PATH-only fds
+        // (BadFileDescriptor) which would break fstat(O_PATH-fd).
+        // man "O_PATH": fstat(2) is in the allowed-operations list.
+        // Fixes bug-open-path-fstat-ebadf.
+        ResolveAtResult::File(file.inner().location().clone())
+    } else if let Some(dir) = f.downcast_ref::<Directory>() {
+        ResolveAtResult::File(dir.inner().clone())
+    } else {
+        ResolveAtResult::Other(file_like)
+    })
+}
+
 pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> StarryResult<ResolveAtResult> {
+    resolve_at_with_search(dirfd, path, flags, None)
+}
+
+/// Resolves the same dirfd/empty-path contract with directory search admission.
+pub fn resolve_at_checked(
+    dirfd: c_int,
+    path: Option<&str>,
+    flags: u32,
+    check_search: impl Fn(&Location) -> VfsResult<()>,
+) -> StarryResult<ResolveAtResult> {
+    resolve_at_with_search(dirfd, path, flags, Some(&check_search))
+}
+
+type SearchCheck<'a> = Option<&'a dyn Fn(&Location) -> VfsResult<()>>;
+
+fn resolve_at_with_search(
+    dirfd: c_int,
+    path: Option<&str>,
+    flags: u32,
+    search: SearchCheck<'_>,
+) -> StarryResult<ResolveAtResult> {
     match path {
         Some("") | None => {
             if flags & AT_EMPTY_PATH == 0 {
                 return Err(StarryError::NotFound);
             }
-            let file_like = get_file_like(dirfd)?;
-            let f = file_like.clone();
-            Ok(if let Some(file) = f.downcast_ref::<File>() {
-                // Use location() directly: backend() rejects PATH-only fds
-                // (BadFileDescriptor) which would break fstat(O_PATH-fd).
-                // man "O_PATH": fstat(2) is in the allowed-operations list.
-                // Fixes bug-open-path-fstat-ebadf.
-                ResolveAtResult::File(file.inner().location().clone())
-            } else if let Some(dir) = f.downcast_ref::<Directory>() {
-                ResolveAtResult::File(dir.inner().clone())
-            } else {
-                ResolveAtResult::Other(file_like)
-            })
+            if dirfd == AT_FDCWD {
+                return with_fs(dirfd, |fs| {
+                    Ok(ResolveAtResult::File(fs.current_dir().clone()))
+                });
+            }
+            resolve_fd(dirfd)
         }
         Some(path) => {
             let dirfd = if path.starts_with('/') {
@@ -92,12 +123,13 @@ pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> StarryResult<
                 dirfd
             };
             with_fs(dirfd, |fs| {
-                Ok(if flags & AT_SYMLINK_NOFOLLOW != 0 {
-                    fs.resolve_no_follow(path)
-                } else {
-                    fs.resolve(path)
-                }
-                .map(ResolveAtResult::File)?)
+                let location = match (search, flags & AT_SYMLINK_NOFOLLOW != 0) {
+                    (Some(check), true) => fs.resolve_no_follow_checked(path, check),
+                    (Some(check), false) => fs.resolve_checked(path, check),
+                    (None, true) => fs.resolve_no_follow(path),
+                    (None, false) => fs.resolve(path),
+                }?;
+                Ok(ResolveAtResult::File(location))
             })
         }
     }
@@ -149,7 +181,9 @@ impl File {
 
 impl Drop for File {
     fn drop(&mut self) {
-        if let Ok(device) = self.inner.location().entry().downcast::<Device>() {
+        if self.open_flags & linux_raw_sys::general::O_PATH == 0
+            && let Ok(device) = self.inner.location().entry().downcast::<Device>()
+        {
             device.inner().close(self.open_flags & O_EXCL != 0);
         }
     }
@@ -166,23 +200,20 @@ fn path_for(loc: &Location) -> Cow<'static, str> {
         .map_or_else(|_| "<error>".into(), |f| Cow::Owned(f.to_string()))
 }
 
-fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
-    IoEvents::from_bits_truncate(events.bits())
-}
-
-fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
-    FsIoEvents::from_bits_truncate(events.bits())
-}
-
 impl FileLike for File {
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         let inner = self.inner();
         if likely(self.is_blocking()) {
             Ok(inner.read(dst)?)
         } else {
-            block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-                Ok(inner.read(&mut *dst)?)
-            }))
+            let task = current_user_task();
+            block_on_user(
+                &task,
+                poll_io(self, IoEvents::IN, self.nonblocking(), || {
+                    Ok(inner.read(&mut *dst)?)
+                }),
+            )
+            .into_result()?
         }
     }
 
@@ -194,9 +225,14 @@ impl FileLike for File {
         let result: StarryResult<usize> = if likely(self.is_blocking()) {
             Ok(inner.write(src)?)
         } else {
-            block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
-                Ok(inner.write(&mut *src)?)
-            }))
+            let task = current_user_task();
+            block_on_user(
+                &task,
+                poll_io(self, IoEvents::OUT, self.nonblocking(), || {
+                    Ok(inner.write(&mut *src)?)
+                }),
+            )
+            .into_result()?
         };
         if let Ok(bytes) = result
             && bytes > 0
@@ -216,7 +252,12 @@ impl FileLike for File {
         Some((m.device, m.inode))
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> StarryResult<usize> {
+    fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> StarryResult<usize> {
         let loc = self.inner().backend()?.location();
         if cmd == TIOCSCTTY
             && let Some(result) = crate::pseudofs::dev::tty::bind_pty_at_location(loc.clone())
@@ -225,10 +266,16 @@ impl FileLike for File {
         }
         match cmd {
             DFS_IOCTL_ATOMIC_WRITE_SET => {
-                let _enabled: u32 = (arg as *const u32).vm_read()?;
+                let _enabled: u32 = (arg as *const u32).vm_read(current)?;
                 Ok(0)
             }
-            _ => Ok(loc.ioctl(cmd, arg)?),
+            _ => {
+                if let Ok(device) = loc.entry().downcast::<Device>() {
+                    Ok(device.ioctl_for_task(current, cmd, arg)?)
+                } else {
+                    Ok(loc.ioctl(cmd, arg)?)
+                }
+            }
         }
     }
 
@@ -291,13 +338,23 @@ impl FileLike for File {
 }
 impl Pollable for File {
     fn poll(&self) -> IoEvents {
-        fs_events_to_io(self.inner().location().poll())
+        self.inner().location().poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.inner()
-            .location()
-            .register(context, io_events_to_fs(events));
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner().location().register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner().location().register_exclusive(sink, events) };
     }
 }
 
@@ -358,6 +415,10 @@ impl Directory {
 }
 
 impl FileLike for Directory {
+    fn supports_epoll(&self) -> bool {
+        false
+    }
+
     fn read(&self, _dst: &mut IoDst) -> StarryResult<usize> {
         Err(StarryError::IsADirectory)
     }
@@ -394,10 +455,15 @@ impl FileLike for Directory {
 }
 impl Pollable for Directory {
     fn poll(&self) -> IoEvents {
-        fs_events_to_io(FsIoEvents::IN | FsIoEvents::OUT)
+        IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
 #[cfg(all(test, not(axtest)))]
 fn metadata_to_kstat_conversion_rules_hold_for_test() -> bool {

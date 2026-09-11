@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.9.0...ax-cpu-v0.9.1) - 2026-09-09
+
+### Fixed
+
+- *(runtime)* prefer userspace over kernel TLS through build cfg ([#2339](https://github.com/rcore-os/tgoskits/pull/2339))
+
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.8...ax-cpu-v0.9.0) - 2026-09-09
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+
+### Fixed
+
+- *(release)* restore release-plz dependency updates ([#2329](https://github.com/rcore-os/tgoskits/pull/2329))
+- *(ax-cpu)* preserve AArch64 PTE memory type ([#2238](https://github.com/rcore-os/tgoskits/pull/2238))
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+
 ## [0.8.8](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.7...ax-cpu-v0.8.8) - 2026-08-27
 
 ### Added

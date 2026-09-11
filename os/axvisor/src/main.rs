@@ -36,6 +36,8 @@ mod config;
     feature = "test-console-interleave"
 ))]
 mod console_regression;
+#[cfg(all(feature = "test-el2-fatal", target_arch = "aarch64"))]
+mod fatal_regression;
 mod guest_console;
 #[cfg(any(feature = "browser-console", feature = "http-axum"))]
 mod http;
@@ -45,29 +47,6 @@ mod network_console;
 #[cfg(feature = "browser-console")]
 mod network_status;
 mod shell;
-
-#[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
-fn init_panic_hook() {
-    std::panic::set_hook(Box::new(|info| {
-        // When the `backtrace` feature is NOT enabled, axbacktrace is compiled
-        // without `alloc` → Inner::Disabled → BT_ERROR requires_alloc.
-        // When the `backtrace` feature IS enabled, axbacktrace captures real
-        // frames (alloc=true, frames enumerated).
-        let backtrace = axbacktrace::Backtrace::capture().kind("panic");
-        let _ = ax_std::os::arceos::modules::ax_runtime::emergency_console::write_fmt(
-            format_args!("{info}\n{backtrace}\n"),
-        );
-    }));
-}
-
-#[cfg(feature = "test-console-atomic-output")]
-fn init_atomic_output_panic_hook() {
-    std::panic::set_hook(Box::new(|info| {
-        let _ = ax_std::os::arceos::modules::ax_runtime::emergency_console::write_fmt(
-            format_args!("{info}\n"),
-        );
-    }));
-}
 
 /// Axvisor kernel entry point.
 ///
@@ -82,11 +61,6 @@ fn init_atomic_output_panic_hook() {
 ///    lifecycle waiter and the physical-console shell.
 ///
 fn main() {
-    #[cfg(feature = "test-console-atomic-output")]
-    init_atomic_output_panic_hook();
-    #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
-    init_panic_hook();
-
     // Test-only panic paths — gated behind dedicated features so they never
     // activate in normal builds.  These are consumed by test-suit cases that
     // verify the backtrace markers (or their absence) via QEMU regex matching.
@@ -103,6 +77,9 @@ fn main() {
     info!("Starting virtualization...");
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
+
+    #[cfg(all(feature = "test-el2-fatal", target_arch = "aarch64"))]
+    fatal_regression::run();
 
     manager.init_default_vms();
 
@@ -152,9 +129,7 @@ fn main() {
     // `Ready`) and the management plane boots them on demand, so nothing is
     // launched or waited on here.
     #[cfg(not(feature = "no-auto-start"))]
-    let started_vms = manager.launch_default_vms();
-    #[cfg(not(feature = "no-auto-start"))]
-    guest_console::attach_default(started_vms);
+    let _ = manager.launch_default_vms();
 
     #[cfg(not(feature = "no-auto-start"))]
     std::thread::Builder::new()

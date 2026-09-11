@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5](https://github.com/rcore-os/tgoskits/compare/axvm-types-v0.7.4...axvm-types-v0.7.5) - 2026-09-09
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+
 ## [0.7.4](https://github.com/rcore-os/tgoskits/compare/axvm-types-v0.7.3...axvm-types-v0.7.4) - 2026-08-20
 
 ### Other

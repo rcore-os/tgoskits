@@ -62,6 +62,7 @@ pub(crate) async fn prepare_board_session_assets(
             case_dir: case_dir.clone(),
             qemu_config_path: board_config_path,
             test_commands: Vec::new(),
+            grouped_command_selection: Default::default(),
             host_symbolize_success_regex: Vec::new(),
             host_http_server: None,
             subcases: Vec::new(),

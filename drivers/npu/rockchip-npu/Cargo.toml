@@ -7,12 +7,13 @@ autotests = false
 keywords = ["rk3588", "npu", "rknn"]
 license = "Apache-2.0"
 name = "rockchip-npu"
-version = "0.3.0"
+version = "0.4.0"
 repository.workspace = true
 
 [dependencies]
 aarch64-cpu-ext = "0.1"
 bitflags = "2"
+bytemuck = { version = "1.23", default-features = false, features = ["derive"] }
 dma-api = {workspace = true}
 log = "0.4"
 mbarrier = "0.1"
@@ -20,13 +21,3 @@ num-align = "0.1"
 rdif-base.workspace = true
 thiserror = {version = "2.0", default-features = false}
 tock-registers = "0.10"
-
-[dev-dependencies]
-# fdt-edit = "0.2.3"
-# rockchip-pm = { workspace = true }
-# rockchip-soc = { workspace = true }
-
-# bare-test integration test is temporarily disabled.
-# [[test]]
-# harness = false
-# name = "test"

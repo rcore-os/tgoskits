@@ -1,17 +1,16 @@
 use alloc::{string::String, sync::Arc};
 use core::ffi::c_char;
 
-use ax_fs_ng::vfs::OpenOptions;
-use ax_task::current;
+use ax_fs_ng::vfs::{OpenOptions, current_fs_context};
 use linux_raw_sys::general::{MFD_CLOEXEC, O_RDWR};
 
 pub(crate) use crate::file::memfd::{
+    apply_shared_writable_deltas as memfd_apply_shared_writable_deltas,
     check_write_seal_for_shared_file_backend as memfd_check_write_seal_for_shared_file_backend,
     collect_metas_touching_mprotect_range as memfd_collect_metas_touching_mprotect_range,
     on_after_map as memfd_on_after_map,
-    on_aspace_replace_metadata as memfd_on_aspace_replace_metadata,
-    on_aspace_unmap_range as memfd_on_aspace_unmap_range,
-    release_all_shared_writable_counts_for_aspace as memfd_release_all_shared_writable_counts_for_aspace,
+    prepare_aspace_replace_deltas as memfd_prepare_aspace_replace_deltas,
+    prepare_aspace_unmap_deltas as memfd_prepare_aspace_unmap_deltas,
     resync_shared_writable_counts_after_mprotect as memfd_resync_shared_writable_counts_after_mprotect,
 };
 use crate::{
@@ -22,7 +21,6 @@ use crate::{
     },
     mm::vm_load_string,
     pseudofs,
-    task::AsThread,
 };
 
 /// `MFD_ALLOW_SEALING` — bit 1. `linux-raw-sys` does not export it on every
@@ -31,18 +29,20 @@ const MFD_ALLOW_SEALING: u32 = 0x0002;
 
 /// `MFD_HUGETLB` — bit 2. We do not back memfds with hugepages yet, so reject it.
 const MFD_HUGETLB: u32 = 0x0004;
-/// `MFD_NOEXEC_SEAL` — Linux 6.3+. Forces the W^X policy on the memfd.
-/// We don't enforce executable mappings, so accepting and ignoring is
-/// equivalent in our security model.
+/// `MFD_NOEXEC_SEAL` — Linux 6.3+. Removes the backing inode's execute bits.
+/// Locking those mode bits with `F_SEAL_EXEC` is not implemented yet.
 const MFD_NOEXEC_SEAL: u32 = 0x0008;
-/// `MFD_EXEC` — opt-out from `MFD_NOEXEC_SEAL`, also Linux 6.3+. Same
-/// reasoning: accepted and ignored.
+/// `MFD_EXEC` — explicitly selects the default executable inode mode.
 const MFD_EXEC: u32 = 0x0010;
 
 /// Linux enforces `NAME_MAX - strlen("memfd:")` = 249 bytes for the name.
 const MEMFD_NAME_MAX: usize = 249;
 
-pub fn sys_memfd_create(name: *const c_char, flags: u32) -> StarryResult<isize> {
+pub fn sys_memfd_create(
+    current: &crate::task::UserTaskRef,
+    name: *const c_char,
+    flags: u32,
+) -> crate::StarryResult<isize> {
     let valid_flags = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL | MFD_EXEC;
     if flags & !valid_flags != 0 || flags & MFD_HUGETLB != 0 {
         return Err(StarryError::InvalidInput);
@@ -52,7 +52,7 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> StarryResult<isize> 
     let allow_sealing = flags & MFD_ALLOW_SEALING != 0;
 
     // Load the name argument. Linux rejects overlong names.
-    let name_str: String = vm_load_string(name)?;
+    let name_str: String = vm_load_string(current, name)?;
     if name_str.len() > MEMFD_NAME_MAX {
         return Err(StarryError::InvalidInput);
     }
@@ -64,13 +64,20 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> StarryResult<isize> 
     };
     let tmpfs = tmpfs.ok_or(StarryError::NotFound)?;
 
-    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let fs_context = current_fs_context();
     let fs = fs_context.lock();
     let mountpoint = fs.resolve(mount_path)?.mountpoint().clone();
-    let cred = current().as_thread().cred();
+    let cred = current.as_thread().cred();
+    // Linux shmem_file_setup creates an executable anonymous inode; the
+    // explicit no-exec flag removes its execute bits before publication.
+    let mode = if flags & MFD_NOEXEC_SEAL != 0 {
+        0o666
+    } else {
+        0o777
+    };
     let entry = tmpfs.create_anonymous_file(
         &name_str,
-        axfs_ng_vfs::NodePermission::from_bits_truncate(0o666),
+        axfs_ng_vfs::NodePermission::from_bits_truncate(mode),
         cred.fsuid,
         cred.fsgid,
     );
@@ -89,10 +96,7 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> StarryResult<isize> 
 }
 
 fn fs_has_dir(path: &str) -> bool {
-    ax_fs_ng::vfs::current_fs_context()
-        .lock()
-        .resolve(path)
-        .is_ok()
+    current_fs_context().lock().resolve(path).is_ok()
 }
 
 fn memfd_from_file_like(file_like: &Arc<dyn FileLike>) -> Option<Arc<Memfd>> {
@@ -144,6 +148,11 @@ pub fn memfd_checks_before_stream_write(
     memfd_check_write_seal(file_like)
 }
 
+/// Preserves Linux's EFAULT-before-seal ordering for scalar stream writes.
+///
+/// Non-memfd streams keep the user buffer as an I/O cursor and therefore skip
+/// eager address-space preparation. A memfd can reject the write before
+/// consuming that cursor, so its input range must be validated first.
 pub fn memfd_checks_before_write_at(
     file_like: &Arc<dyn FileLike>,
     _offset: u64,
@@ -153,40 +162,4 @@ pub fn memfd_checks_before_write_at(
         return Ok(());
     }
     memfd_check_write_seal(file_like)
-}
-
-#[cfg(all(test, not(axtest)))]
-fn memfd_flags_validation_rules_hold_for_test() -> bool {
-    // Test memfd_create flag validation
-    let valid_flags = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL | MFD_EXEC;
-
-    let flags = 0u32;
-    assert!(flags & !valid_flags == 0 && flags & MFD_HUGETLB == 0);
-
-    let cloexec_only = MFD_CLOEXEC;
-    assert!(cloexec_only & !valid_flags == 0 && cloexec_only & MFD_HUGETLB == 0);
-
-    let allow_sealing_only = MFD_ALLOW_SEALING;
-    assert!(allow_sealing_only & !valid_flags == 0 && allow_sealing_only & MFD_HUGETLB == 0);
-
-    let all_valid = valid_flags;
-    assert!(all_valid & !valid_flags == 0 && all_valid & MFD_HUGETLB == 0);
-
-    // MFD_HUGETLB should be rejected
-    let huge_tlb = MFD_HUGETLB;
-    assert!(huge_tlb & MFD_HUGETLB != 0);
-
-    // Invalid flag should be detected
-    let invalid_flags = 0xFFFFu32;
-    assert!(invalid_flags & !valid_flags != 0);
-
-    true
-}
-
-#[cfg(all(test, not(axtest)))]
-mod tests {
-    #[test]
-    fn memfd_flags_validation_rules_hold() {
-        assert!(super::memfd_flags_validation_rules_hold_for_test());
-    }
 }

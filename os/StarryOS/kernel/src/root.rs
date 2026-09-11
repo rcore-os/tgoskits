@@ -1,6 +1,9 @@
 extern crate alloc;
 extern crate ax_runtime;
 
+#[cfg(all(test, not(axtest)))]
+extern crate std;
+
 #[macro_use]
 extern crate ax_log;
 
@@ -27,6 +30,7 @@ mod host_link_symbols {
 
 mod cgroup;
 mod config;
+mod cpu_capabilities;
 mod ebpf;
 mod error;
 mod file;
@@ -46,5 +50,25 @@ mod tracepoint;
 mod trap;
 mod uprobe;
 
+#[cfg(all(test, axtest))]
+mod block_runtime_axtest;
+
 pub use error::{DmaOperation, StarryError, StarryResult};
+// The staged MM ownership and transaction types are intentionally reachable
+// from the kernel boundary so migration call sites do not need a second
+// compatibility facade.
+pub use mm::{
+    ActivationError, ActivationLease, AddressSpaceCpuState, AddressSpaceId, AddressSpaceTag,
+    AnonymousSource, AppliedMutation, CloneUserRefError, CpuMask, EvictionError, EvictionLease,
+    EvictionResult, ExternalSource, FileSource, FrameLease, InstalledAddressSpace,
+    InstalledPageTableRoot, LinearSource, MappingDelta, MappingGroup, MappingId,
+    MappingPermissions, MappingRights, MappingSlot, MappingSlotKey, MappingSource, MmHandle, MmPin,
+    MmState, MutationError, MutationGate, MutationReceipt, MutationState, PageId, PageObject,
+    PageOffset, PageOrder, PageSizePolicy, PageState, PinError, PreparedMutation, PteDelta,
+    PublishEvent, PublishedMutation, PublishedPendingTlb, QuarantineError, QuarantineFailure,
+    ReclaimError, RepairPermit, ResidentDelta, RetirePermit, RmapSet, SlotState, SwapError,
+    SwapProvider, SwapToken, TagMode, TlbQuarantine, TlbRange, TlbRequest, UnsupportedSwap, Vma,
+    VmaDelta, VmaId, VmaMap, VmaSnapshot, WritebackError, WritebackLease, allocate_vma_id,
+    request_repair_retry, take_repair_candidates,
+};
 pub use syscalls::Errno;

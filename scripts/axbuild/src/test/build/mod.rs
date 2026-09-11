@@ -18,7 +18,10 @@ use anyhow::{Context, ensure};
 
 use super::{
     case as case_assets,
-    case::{CaseAssetConfig, TestQemuCase, TestQemuSubcase, TestQemuSubcaseKind},
+    case::{
+        CaseAssetConfig, GroupedCommandSelection, TestQemuCase, TestQemuSubcase,
+        TestQemuSubcaseKind,
+    },
     timing,
 };
 use crate::{

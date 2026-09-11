@@ -5,7 +5,36 @@ use core::{
     time::Duration,
 };
 
-use ax_task::WaitQueue;
+use ax_task::sync::WaitQueue;
+
+/// Bounds consecutive protocol polls across immediately runnable generations.
+/// The limits follow Linux's softirq restart/time budget; neither a pending
+/// socket nor an expired soft deadline grants unbounded CPU ownership.
+pub(super) struct ProtocolPollBudget {
+    remaining: usize,
+    deadline_nanos: u64,
+}
+
+impl ProtocolPollBudget {
+    const MAX_POLLS: usize = 10;
+    const MAX_NANOS: u64 = 2_000_000;
+
+    pub(super) fn new(now_nanos: u64) -> Self {
+        Self {
+            remaining: Self::MAX_POLLS,
+            deadline_nanos: now_nanos.saturating_add(Self::MAX_NANOS),
+        }
+    }
+
+    pub(super) fn consume(&mut self, now_nanos: u64) -> bool {
+        self.remaining = self.remaining.saturating_sub(1);
+        self.remaining == 0 || now_nanos >= self.deadline_nanos
+    }
+
+    pub(super) fn reset(&mut self, now_nanos: u64) {
+        *self = Self::new(now_nanos);
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PollGeneration(u64);
@@ -41,7 +70,7 @@ impl ProtocolPollRuntime {
 
     pub(crate) fn schedule(&self) {
         if !self.scheduled.swap(true, Ordering::AcqRel) {
-            self.executor_wake.notify_one(true);
+            self.executor_wake.notify_one();
         }
     }
 
@@ -61,7 +90,7 @@ impl ProtocolPollRuntime {
 
     pub(crate) fn complete(&self, generation: PollGeneration) {
         self.completed.store(generation.0, Ordering::Release);
-        self.completion.notify_all(true);
+        self.completion.notify_all();
     }
 
     pub(crate) fn wait_for_completion(&self, generation: PollGeneration) {
@@ -73,11 +102,18 @@ impl ProtocolPollRuntime {
     }
 
     pub(crate) fn finish_cycle(&self, external_pending: impl FnOnce() -> bool) -> bool {
-        self.scheduled.store(false, Ordering::Release);
+        // Every producer performs a release RMW on scheduled, including
+        // already-scheduled requests. Acquire that publication before reading
+        // requested/external work; a release store alone can lose the producer
+        // that observed scheduled=true and therefore sent no wakeup.
+        self.scheduled.swap(false, Ordering::AcqRel);
         if self.requested.load(Ordering::Acquire) != self.completed.load(Ordering::Acquire)
             || external_pending()
         {
-            self.scheduled.store(true, Ordering::Release);
+            // Keep the RMW chain intact when another producer races this
+            // rearm. Overwriting its release with a plain store would hide its
+            // generation from the following cycle's acquire-clear.
+            self.scheduled.swap(true, Ordering::AcqRel);
             true
         } else {
             false
@@ -95,6 +131,27 @@ impl ProtocolPollRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn immediate_protocol_work_yields_within_a_bounded_number_of_polls() {
+        let mut budget = ProtocolPollBudget::new(0);
+        for poll in 1..ProtocolPollBudget::MAX_POLLS {
+            assert!(!budget.consume(0), "yielded before poll budget at {poll}");
+        }
+        assert!(
+            budget.consume(0),
+            "immediate work monopolizes the owner CPU"
+        );
+        budget.reset(7);
+        assert!(!budget.consume(7));
+    }
+
+    #[test]
+    fn expensive_protocol_work_yields_at_the_time_budget() {
+        let mut budget = ProtocolPollBudget::new(19);
+        assert!(!budget.consume(19 + ProtocolPollBudget::MAX_NANOS - 1));
+        assert!(budget.consume(19 + ProtocolPollBudget::MAX_NANOS));
+    }
 
     #[test]
     fn synchronous_flush_never_takes_protocol_ownership() {

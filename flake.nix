@@ -198,9 +198,18 @@
             shellHook = ''
               export project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
-              # export RUSTUP_HOME="$project_root/.rustup"
+              # Keep crate metadata in-tree, but never let ~/.rustup or the
+              # system rustup shims win. rust-toolchain.toml is a rustup
+              # override; /run/current-system/sw/bin/cargo will otherwise
+              # compile with ~/.rustup/toolchains/nightly-2026-07-15 and its
+              # GC'd Nix lld wrapper.
               export CARGO_HOME="$project_root/.cargo"
-              export PATH="$CARGO_HOME/bin:${crossCompilerPath}:$PATH"
+              mkdir -p "$CARGO_HOME" "$CARGO_HOME/bin"
+              export CARGO="${rustToolchain}/bin/cargo"
+              export RUSTC="${rustToolchain}/bin/rustc"
+              unset RUSTUP_TOOLCHAIN
+              export PATH="${lib.makeBinPath [ rustToolchain ]}:$CARGO_HOME/bin:${crossCompilerPath}:$PATH"
+              hash -r 2>/dev/null || true
 
               unset CC CXX AR RANLIB
               unset CC_x86_64_unknown_linux_gnu
@@ -208,12 +217,9 @@
               unset AR_x86_64_unknown_linux_gnu
               unset RANLIB_x86_64_unknown_linux_gnu
 
-              # mkdir -p "$RUSTUP_HOME" "$CARGO_HOME" "$CARGO_HOME/bin"
-              mkdir -p "$CARGO_HOME" "$CARGO_HOME/bin"
-
               echo "TGOSKits dev shell"
-              # echo "  RUSTUP_HOME=$RUSTUP_HOME"
               echo "  CARGO_HOME=$CARGO_HOME"
+              echo "  CARGO=$CARGO"
               echo "  Rust toolchain: rust-overlay from rust-toolchain.toml"
               echo "  Cross compilers: available by target-prefixed command name"
             '';

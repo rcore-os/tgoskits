@@ -10,12 +10,7 @@ use ax_alloc::tracking::{allocations_in, current_generation, disable_tracking, e
 use axbacktrace::Backtrace;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 
-use crate::{
-    mm::clear_elf_cache,
-    pseudofs::DeviceOps,
-    sync::IrqMutex,
-    task::{cleanup_task_tables, tasks},
-};
+use crate::{mm::clear_elf_cache, pseudofs::DeviceOps, sync::IrqMutex, task::tasks};
 
 static STAMPED_GENERATION: AtomicU64 = AtomicU64::new(0);
 static SAMPLE_ALLOCATION: IrqMutex<Option<Vec<u8>>> = IrqMutex::new(None);
@@ -37,8 +32,7 @@ impl fmt::Display for AllocationBacktrace {
 
 fn run_memory_analysis() {
     // Wait for gc
-    ax_task::yield_now();
-    cleanup_task_tables();
+    crate::task::yield_now();
     clear_elf_cache();
 
     ax_println!(

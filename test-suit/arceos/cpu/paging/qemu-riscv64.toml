@@ -1,0 +1,8 @@
+args = [ "-m", "1G", "-smp", "4", "-display", "none", "-serial", "mon:stdio"]
+timeout = 60
+uefi = false
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+
+[[shell_check_steps]]
+success_regex = ["CPU_PAGING_OK"]

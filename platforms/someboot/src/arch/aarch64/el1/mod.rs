@@ -1,138 +1,58 @@
-use aarch64_cpu::{
-    asm::{barrier::*, *},
-    registers::*,
-};
-use aarch64_cpu_ext::asm::tlb::*;
+use aarch64_cpu::registers::*;
 use page_table_generic::VirtAddr;
 
-use crate::{
-    arch::entry::{el_entry, eret_with_timer_mode_arg},
-    mem::PageTableInfo,
-    timer::{self, ArchTimerMode},
-};
+use crate::{arch::entry::el_entry, mem::PageTableInfo, timer};
 
 pub fn switch_to_elx() -> ! {
-    switch_to_elx_inner(None)
-}
-
-extern "C" fn switch_to_elx_from_el3(timer_mode_raw: usize) -> ! {
-    switch_to_elx_inner(Some(ArchTimerMode::from_raw(timer_mode_raw as u8)))
-}
-
-fn switch_to_elx_inner(preserved_timer_mode: Option<ArchTimerMode>) -> ! {
     unsafe extern "C" {
         fn __cpu0_stack_top();
     }
-
-    SPSel.write(SPSel::SP::ELx);
-    SP_EL0.set(0);
-    let current_el = CurrentEL.read(CurrentEL::EL);
-    let timer_mode = preserved_timer_mode
-        .unwrap_or_else(|| timer::select_aarch64_timer_mode(false, current_el >= 2));
+    // SAFETY: assembly startup installed the dedicated boot stack; SP_EL0 has no owner.
+    unsafe { ax_cpu::boot::select_privileged_stack() };
+    let current_el = ax_cpu::registers::current_exception_level();
+    let timer_mode = timer::select_aarch64_timer_mode(false, current_el >= 2);
     if current_el >= 2 {
-        let el_entry = sym_addr!(el_entry);
-        let sp = sym_addr!(__cpu0_stack_top);
-
-        if current_el == 3 {
-            // Set EL2 to 64bit and enable the HVC instruction.
-            SCR_EL3.write(
-                SCR_EL3::NS::NonSecure + SCR_EL3::HCE::HvcEnabled + SCR_EL3::RW::NextELIsAarch64,
-            );
-            // Set the return address and exception level.
-            SPSR_EL3.write(
-                SPSR_EL3::M::EL1h
-                    + SPSR_EL3::D::Masked
-                    + SPSR_EL3::A::Masked
-                    + SPSR_EL3::I::Masked
-                    + SPSR_EL3::F::Masked,
-            );
-            let switch = sym_addr!(switch_to_elx_from_el3);
-
-            ELR_EL3.set(switch as _);
-            SP_EL2.set(sp as _);
-            eret_with_timer_mode_arg(timer_mode);
-        }
-        // Disable EL1 timer traps and the timer offset.
-        CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
-        CNTVOFF_EL2.set(0);
-        // Set EL1 to 64bit.
-        HCR_EL2.write(HCR_EL2::RW::EL1IsAarch64);
-        // Set the return address and exception level.
-        SPSR_EL2.write(
-            SPSR_EL2::M::EL1h
-                + SPSR_EL2::D::Masked
-                + SPSR_EL2::A::Masked
-                + SPSR_EL2::I::Masked
-                + SPSR_EL2::F::Masked,
-        );
-
-        ELR_EL2.set(el_entry as _);
-        SP_EL1.set(sp as _);
-        eret_with_timer_mode_arg(timer_mode);
+        // SAFETY: boot owns the destination stack and entry before translation
+        // handoff, and transfers only the selected timer mode as an integer.
+        unsafe {
+            ax_cpu::boot::El1::enter(
+                sym_addr!(el_entry).into(),
+                sym_addr!(__cpu0_stack_top).into(),
+                timer_mode as usize,
+            )
+        };
     }
-
-    el_entry(timer_mode as usize);
+    el_entry(timer_mode as usize)
 }
 
 pub fn switch_to_elx_secondary(cpu_meta_paddr: usize) -> ! {
-    SPSel.write(SPSel::SP::ELx);
-    SP_EL0.set(0);
-
-    let current_el = CurrentEL.read(CurrentEL::EL);
-    let secondary_entry = sym_addr!(crate::arch::entry::secondary_el_entry);
-    let stack_top = unsafe { (cpu_meta_paddr as *const usize).read_volatile() };
-
+    // SAFETY: the secondary assembly entry selected its private boot stack.
+    unsafe { ax_cpu::boot::select_privileged_stack() };
+    let current_el = ax_cpu::registers::current_exception_level();
     if current_el >= 2 {
-        if current_el == 3 {
-            SCR_EL3.write(
-                SCR_EL3::NS::NonSecure + SCR_EL3::HCE::HvcEnabled + SCR_EL3::RW::NextELIsAarch64,
-            );
-            SPSR_EL3.write(
-                SPSR_EL3::M::EL1h
-                    + SPSR_EL3::D::Masked
-                    + SPSR_EL3::A::Masked
-                    + SPSR_EL3::I::Masked
-                    + SPSR_EL3::F::Masked,
-            );
-            let switch = sym_addr!(switch_to_elx_secondary);
-            ELR_EL3.set(switch as _);
-            SP_EL2.set(stack_top as _);
-            barrier::isb(barrier::SY);
-            eret();
-        }
-
-        CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
-        CNTVOFF_EL2.set(0);
-        HCR_EL2.write(HCR_EL2::RW::EL1IsAarch64);
-        SPSR_EL2.write(
-            SPSR_EL2::M::EL1h
-                + SPSR_EL2::D::Masked
-                + SPSR_EL2::A::Masked
-                + SPSR_EL2::I::Masked
-                + SPSR_EL2::F::Masked,
-        );
-
-        ELR_EL2.set(secondary_entry as _);
-        SP_EL1.set(stack_top as _);
-        barrier::isb(barrier::SY);
-        eret();
+        // SAFETY: the primary published this live metadata before firmware
+        // started the CPU; its first word is the exclusive secondary stack top.
+        let stack_top = unsafe { (cpu_meta_paddr as *const usize).read_volatile() };
+        // SAFETY: the boot owner retains metadata and stack until secondary
+        // handoff completes. CPU entry preserves the metadata address in x0.
+        unsafe {
+            ax_cpu::boot::El1::enter(
+                sym_addr!(crate::arch::entry::secondary_el_entry).into(),
+                stack_top.into(),
+                cpu_meta_paddr,
+            )
+        };
     }
-
+    // SAFETY: the same published metadata remains owned by this secondary CPU.
     unsafe { crate::arch::entry::secondary_el_entry(cpu_meta_paddr) }
 }
 
 #[inline(always)]
 pub fn flush_tlb(vaddr: Option<VirtAddr>) {
     match vaddr {
-        Some(addr) => {
-            tlbi(VAAE1IS::new(addr.as_usize()));
-        }
-        None => {
-            tlbi(VMALLE1);
-        }
+        Some(address) => ax_cpu::mmu::El1::flush_tlb_inner_shareable(Some(address)),
+        None => ax_cpu::mmu::El1::flush_tlb(None),
     }
-    dsb(SY);
-    isb(SY);
 }
 
 #[inline(always)]
@@ -149,136 +69,47 @@ pub fn setup_table_regs() {
     let attr3 = MAIR_EL1::Attr3_Normal_Inner::WriteThrough_Transient_WriteAlloc
         + MAIR_EL1::Attr3_Normal_Outer::WriteThrough_Transient_WriteAlloc;
 
-    MAIR_EL1.write(attr0 + attr1 + attr2 + attr3);
-
-    // Enable TTBR0 and TTBR1 walks, page size = 4K, vaddr size = 48 bits, paddr size = 40 bits.
-    const VADDR_SIZE: u64 = 48;
-    const T0SZ: u64 = 64 - VADDR_SIZE;
-
-    let tcr_flags0 = TCR_EL1::EPD0::EnableTTBR0Walks
-        + TCR_EL1::TG0::KiB_4
-        + TCR_EL1::SH0::Inner
-        + TCR_EL1::ORGN0::WriteBack_ReadAlloc_WriteAlloc_Cacheable
-        + TCR_EL1::IRGN0::WriteBack_ReadAlloc_WriteAlloc_Cacheable
-        + TCR_EL1::T0SZ.val(T0SZ);
-    let tcr_flags1 = TCR_EL1::EPD1::EnableTTBR1Walks
-        + TCR_EL1::TG1::KiB_4
-        + TCR_EL1::SH1::Inner
-        + TCR_EL1::ORGN1::WriteBack_ReadAlloc_WriteAlloc_Cacheable
-        + TCR_EL1::IRGN1::WriteBack_ReadAlloc_WriteAlloc_Cacheable
-        + TCR_EL1::T1SZ.val(T0SZ);
-    TCR_EL1.write(TCR_EL1::IPS::Bits_48 + tcr_flags0 + tcr_flags1);
-
-    tlbi(VMALLE1);
-    barrier::dsb(barrier::SY);
-    barrier::isb(barrier::SY);
+    // SAFETY: the boot owner has not enabled its new translation regime;
+    // these slots match the descriptors constructed by boot paging.
+    unsafe { ax_cpu::mmu::El1::configure_stage1((attr0 + attr1 + attr2 + attr3).value) };
 }
 
 pub fn get_kernal_table() -> PageTableInfo {
-    let val = TTBR1_EL1.extract();
+    let space = ax_cpu::mmu::El1::read_kernel_address_space();
     PageTableInfo {
-        asid: val.read(TTBR1_EL1::ASID) as _,
-        addr: (val.read(TTBR1_EL1::BADDR) << 1) as _,
+        asid: space.hardware_tag() as usize,
+        addr: space.root().as_usize(),
     }
 }
 
-pub fn set_kernal_table(tb: PageTableInfo) {
-    TTBR1_EL1.set(TTBR1_EL1::ASID.val(tb.asid as u64).value + tb.addr as u64);
+pub fn set_kernal_table(table: PageTableInfo) {
+    let space = ax_cpu::mmu::HardwareAddressSpace::new(table.addr.into(), table.asid as u16);
+    // SAFETY: the boot mapping owner retains the aligned tables and active mappings.
+    unsafe { ax_cpu::mmu::El1::write_kernel_address_space(space) };
 }
 
-pub fn set_user_table(tb: PageTableInfo) {
-    TTBR0_EL1.set(TTBR0_EL1::ASID.val(tb.asid as u64).value + tb.addr as u64);
+pub fn set_user_table(table: PageTableInfo) {
+    let space = ax_cpu::mmu::HardwareAddressSpace::new(table.addr.into(), table.asid as u16);
+    // SAFETY: the boot mapping owner retains the lower-address mapping lease.
+    unsafe { ax_cpu::mmu::El1::write_user_address_space(space) };
 }
 
 pub fn get_user_table() -> PageTableInfo {
-    let val = TTBR0_EL1.extract();
+    let space = ax_cpu::mmu::El1::read_user_address_space();
     PageTableInfo {
-        asid: val.read(TTBR0_EL1::ASID) as _,
-        addr: (val.read(TTBR0_EL1::BADDR) << 1) as _,
+        asid: space.hardware_tag() as usize,
+        addr: space.root().as_usize(),
     }
 }
 
 #[inline(always)]
 pub fn is_mmu_enabled() -> bool {
-    SCTLR_EL1.is_set(SCTLR_EL1::M)
+    ax_cpu::mmu::El1::is_mmu_enabled()
 }
 
 #[inline(always)]
 pub fn setup_sctlr() {
-    SCTLR_EL1.modify(
-        SCTLR_EL1::M::Enable
-            + SCTLR_EL1::C::Cacheable
-            + SCTLR_EL1::I::Cacheable
-            + SCTLR_EL1::UCT::DontTrap
-            + SCTLR_EL1::DZE::DontTrap
-            + SCTLR_EL1::UCI::DontTrap,
-    );
-    SCTLR_EL1.set(SCTLR_EL1.get() | (1 << 23));
-    flush_tlb(None);
-    barrier::dsb(barrier::SY);
-    barrier::isb(barrier::SY);
-}
-
-pub fn systick_enable() {
-    match timer::aarch64_timer_mode() {
-        ArchTimerMode::El1Virt => CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET),
-        ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => {
-            CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
-        }
-    }
-}
-
-pub fn systick_irq_disable() {
-    match timer::aarch64_timer_mode() {
-        ArchTimerMode::El1Virt => CNTV_CTL_EL0.modify(CNTV_CTL_EL0::IMASK::SET),
-        ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => {
-            CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::SET);
-        }
-    }
-}
-
-pub fn systick_irq_enable() {
-    match timer::aarch64_timer_mode() {
-        ArchTimerMode::El1Virt => CNTV_CTL_EL0.modify(CNTV_CTL_EL0::IMASK::CLEAR),
-        ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => {
-            CNTP_CTL_EL0.modify(CNTP_CTL_EL0::IMASK::CLEAR);
-        }
-    }
-}
-
-pub fn systick_irq_is_enabled() -> bool {
-    match timer::aarch64_timer_mode() {
-        ArchTimerMode::El1Virt => !CNTV_CTL_EL0.is_set(CNTV_CTL_EL0::IMASK),
-        ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => {
-            !CNTP_CTL_EL0.is_set(CNTP_CTL_EL0::IMASK)
-        }
-    }
-}
-
-struct El1TimerRegisters;
-
-impl timer::aarch64_deadline::el1::TimerRegisters for El1TimerRegisters {
-    fn read_virtual_counter(&self) -> u64 {
-        CNTVCT_EL0.get()
-    }
-
-    fn read_physical_counter(&self) -> u64 {
-        CNTPCT_EL0.get()
-    }
-
-    fn write_virtual_compare(&self, deadline: u64) {
-        CNTV_CVAL_EL0.set(deadline);
-    }
-
-    fn write_physical_compare(&self, deadline: u64) {
-        CNTP_CVAL_EL0.set(deadline);
-    }
-}
-
-pub fn systick_set_interval(ticks: usize) {
-    timer::aarch64_deadline::el1::program(
-        &El1TimerRegisters,
-        timer::aarch64_timer_mode(),
-        ticks as u64,
-    );
+    // SAFETY: boot paging has installed roots covering the active execution
+    // window, stack and handoff data before enabling this regime.
+    unsafe { ax_cpu::mmu::El1::enable_mmu_and_caches() };
 }

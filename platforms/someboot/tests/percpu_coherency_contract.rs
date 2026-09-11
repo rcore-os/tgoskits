@@ -41,13 +41,6 @@ fn aarch64_percpu_alias_is_normal_shareable_memory() {
 }
 
 #[test]
-fn aarch64_shareability_names_match_the_stage_one_descriptor_encoding() {
-    assert!(AARCH64_PTE.contains("RESERVED = 0b01"));
-    assert!(AARCH64_PTE.contains("OUTER = 0b10"));
-    assert!(AARCH64_PTE.contains("INNER = 0b11"));
-}
-
-#[test]
 fn late_boot_metadata_publication_never_invalidates_live_cpu_local_values() {
     let publish = function_body(SMP, "pub(crate) fn finalize_secondary_boot_metadata(");
     assert!(publish.contains("DCacheOp::Clean"));

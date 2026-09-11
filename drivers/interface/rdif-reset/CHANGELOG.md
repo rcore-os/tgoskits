@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/rcore-os/tgoskits/compare/rdif-reset-v0.2.0...rdif-reset-v0.2.1) - 2026-09-09
+
+### Other
+
+- *(repo)* remove nonfunctional test scaffolding ([#2303](https://github.com/rcore-os/tgoskits/pull/2303))
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/rdif-reset-v0.1.2...rdif-reset-v0.2.0) - 2026-08-20
 
 ### Other

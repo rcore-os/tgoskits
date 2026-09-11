@@ -11,6 +11,7 @@ fn starry_qemu_case_starts_host_http_server_from_loaded_config() {
         case_dir: case_dir.clone(),
         qemu_config_path: case_dir.join("qemu-x86_64.toml"),
         test_commands: Vec::new(),
+        grouped_command_selection: Default::default(),
         host_symbolize_success_regex: Vec::new(),
         host_http_server: Some(case::HostHttpServerConfig {
             bind: "127.0.0.1".to_string(),

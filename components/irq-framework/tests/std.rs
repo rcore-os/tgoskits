@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use irq_framework::{
     AutoEnable, CpuId, CpuMask, HwIrq, IrqAffinity, IrqDomainId, IrqError, IrqExecution, IrqId,
-    IrqOps, IrqRequest, IrqReturn, IrqScope, Registry, ShareMode,
+    IrqOps, IrqOrigin, IrqRequest, IrqReturn, IrqScope, Registry, ShareMode,
 };
 
 const TEST_DOMAIN: IrqDomainId = IrqDomainId(7);
@@ -184,7 +184,7 @@ fn irq_framework_request_dispatch_status_and_free_global_action() {
     assert_eq!(ops.set_enabled_calls.load(Ordering::SeqCst), 2);
     assert!(registry.status(handle).unwrap().action_enabled);
 
-    let outcome = registry.dispatch(irq(3), CpuId(0));
+    let outcome = registry.dispatch(irq(3), CpuId(0), IrqOrigin::Kernel);
     assert!(outcome.handled);
     assert!(!outcome.wake);
     assert_eq!(outcome.called, 1);
@@ -192,12 +192,27 @@ fn irq_framework_request_dispatch_status_and_free_global_action() {
 
     registry.disable(handle).unwrap();
     assert!(!registry.status(handle).unwrap().action_enabled);
-    assert_eq!(registry.dispatch(irq(3), CpuId(0)).called, 0);
+    assert_eq!(
+        registry
+            .dispatch(irq(3), CpuId(0), IrqOrigin::Kernel)
+            .called,
+        0
+    );
     registry.enable(handle).unwrap();
-    assert_eq!(registry.dispatch(irq(3), CpuId(0)).called, 1);
+    assert_eq!(
+        registry
+            .dispatch(irq(3), CpuId(0), IrqOrigin::Kernel)
+            .called,
+        1
+    );
 
     registry.free(handle).unwrap();
-    assert_eq!(registry.dispatch(irq(3), CpuId(0)).called, 0);
+    assert_eq!(
+        registry
+            .dispatch(irq(3), CpuId(0), IrqOrigin::Kernel)
+            .called,
+        0
+    );
     assert_eq!(registry.free(handle), Err(IrqError::NotFound));
 }
 
@@ -223,7 +238,7 @@ fn irq_framework_shared_requests_dispatch_all_actions_and_reject_exclusive_peer(
         )
         .unwrap();
 
-    let outcome = registry.dispatch(irq(4), CpuId(0));
+    let outcome = registry.dispatch(irq(4), CpuId(0), IrqOrigin::Kernel);
     assert!(outcome.handled);
     assert!(outcome.wake);
     assert_eq!(outcome.called, 2);
@@ -245,7 +260,8 @@ fn irq_framework_concurrent_request_dispatches_with_wake_outcome() {
     registry
         .request(
             irq(8),
-            IrqRequest::new_concurrent(|_| {
+            IrqRequest::new_concurrent(|ctx| {
+                assert_eq!(ctx.origin, IrqOrigin::User);
                 CALLS.fetch_add(1, Ordering::SeqCst);
                 IrqReturn::Wake
             })
@@ -253,7 +269,7 @@ fn irq_framework_concurrent_request_dispatches_with_wake_outcome() {
         )
         .unwrap();
 
-    let outcome = registry.dispatch(irq(8), CpuId(0));
+    let outcome = registry.dispatch(irq(8), CpuId(0), IrqOrigin::User);
     assert!(outcome.handled);
     assert!(outcome.wake);
     assert_eq!(outcome.called, 1);
@@ -280,14 +296,29 @@ fn irq_framework_percpu_request_tracks_offline_pending_enable() {
         )
         .unwrap();
 
-    assert_eq!(registry.dispatch(irq(5), CpuId(2)).called, 0);
+    assert_eq!(
+        registry
+            .dispatch(irq(5), CpuId(2), IrqOrigin::Kernel)
+            .called,
+        0
+    );
     registry.enable(handle).unwrap();
     assert_eq!(ops.remote_calls.load(Ordering::SeqCst), 0);
     ops.set_online(2, true);
     registry.cpu_online(CpuId(2)).unwrap();
     assert!(registry.status(handle).unwrap().line_enabled);
-    assert_eq!(registry.dispatch(irq(5), CpuId(2)).called, 1);
-    assert_eq!(registry.dispatch(irq(5), CpuId(1)).called, 0);
+    assert_eq!(
+        registry
+            .dispatch(irq(5), CpuId(2), IrqOrigin::Kernel)
+            .called,
+        1
+    );
+    assert_eq!(
+        registry
+            .dispatch(irq(5), CpuId(1), IrqOrigin::Kernel)
+            .called,
+        0
+    );
 }
 
 #[test]

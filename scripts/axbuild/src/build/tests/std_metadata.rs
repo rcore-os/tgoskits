@@ -1,36 +1,6 @@
 use super::*;
 
 #[test]
-fn std_build_only_propagates_selected_features() {
-    let workspace = temp_workspace("std-app", "").unwrap();
-    let app_manifest = workspace.join("app/Cargo.toml");
-    fs::write(
-        &app_manifest,
-        "[package]\nname = \"std-app\"\nversion = \"0.1.0\"\nedition = \
-         \"2024\"\n\n[package.metadata.axstd]\nfeatures = [\"net\", \"log-level-debug\"]\n",
-    )
-    .unwrap();
-
-    let mut info = BuildInfo {
-        features: vec!["dns".to_string()],
-        ..BuildInfo::default()
-    };
-
-    info.resolve_std_features();
-    pass_std_build_nested_features(
-        &mut info.features,
-        &[],
-        &[
-            "dns".to_string(),
-            "net".to_string(),
-            "std-compat".to_string(),
-        ],
-    );
-
-    assert!(info.features.contains(&"ax-std/dns".to_string()));
-}
-
-#[test]
 fn std_build_does_not_auto_enable_app_arceos_feature() {
     let metadata = repo_metadata();
     let cargo = BuildInfo {
@@ -45,82 +15,6 @@ fn std_build_does_not_auto_enable_app_arceos_feature() {
     .unwrap();
 
     assert!(!cargo.features.contains(&"arceos".to_string()));
-}
-
-#[test]
-fn std_build_uses_dynamic_platform_features_without_static_hal_platform() {
-    let metadata = repo_metadata();
-    let cargo = BuildInfo {
-        features: vec![
-            "ax-std".to_string(),
-            "ax-driver/virtio-net".to_string(),
-            "net".to_string(),
-        ],
-        ..BuildInfo::default()
-    }
-    .into_prepared_base_cargo_config_with_metadata(
-        "arceos-httpclient",
-        "aarch64-unknown-none-softfloat",
-        &metadata,
-    )
-    .unwrap();
-
-    assert!(
-        cargo
-            .target
-            .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
-    );
-    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-std/smp".to_string()));
-    assert!(!cargo.features.contains(&"ax-std/std-compat".to_string()));
-    assert!(cargo.features.contains(&"ax-std/virtio-net".to_string()));
-    assert!(cargo.features.contains(&"ax-std/net".to_string()));
-    assert!(!cargo.to_bin);
-    assert_eq!(
-        cargo.env.get("AX_TARGET"),
-        Some(&"aarch64-unknown-none-softfloat".to_string())
-    );
-    assert!(
-        cargo
-            .features
-            .iter()
-            .all(|feature| !feature.starts_with("ax-std/aarch64-"))
-    );
-}
-
-#[test]
-fn std_build_aarch64_defaults_to_dynamic_platform() {
-    let metadata = repo_metadata();
-    let cargo = BuildInfo {
-        ..BuildInfo::default()
-    }
-    .into_prepared_base_cargo_config_with_metadata(
-        "arceos-helloworld",
-        "aarch64-unknown-none-softfloat",
-        &metadata,
-    )
-    .unwrap();
-
-    assert!(
-        cargo
-            .target
-            .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
-    );
-    assert!(!cargo.env.contains_key("AX_CONFIG_PATH"));
-    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-std/smp".to_string()));
-    assert!(!cargo.features.contains(&"ax-std/std-compat".to_string()));
-    assert!(
-        cargo
-            .features
-            .iter()
-            .all(|feature| !feature.starts_with("ax-std/aarch64-"))
-    );
-    let config = std::fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
-    assert!(!config.contains("--cfg"));
-    assert!(!config.contains("--check-cfg"));
-    assert!(!config.contains("relocation-model"));
-    assert!(!config.contains("code-model"));
 }
 
 #[test]

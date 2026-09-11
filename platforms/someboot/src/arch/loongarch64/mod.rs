@@ -2,9 +2,7 @@
 mod _macros;
 
 mod addrspace;
-mod cache;
 mod console;
-mod context;
 pub(crate) mod entry;
 mod head;
 pub(crate) mod irq;
@@ -14,29 +12,27 @@ pub(crate) mod pte;
 mod register;
 mod relocate;
 mod trap;
+mod virtual_address;
 
 use core::{hint::spin_loop, ptr::null};
 
 pub(crate) use entry::_secondary_entry;
-use loongArch64::{
-    register::*,
-    time::{Time, get_timer_freq},
-};
+use loongArch64::register::*;
 pub use paging::Entry as Pte;
 pub use relocate::relocate;
 
 use crate::{ArchTrait, DCacheOp, SystimerArch, efi_stub, irq::IrqId, power::CpuOnError};
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 const BOOT_TLS_SIZE: usize = 64 * 1024;
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 #[repr(C, align(16))]
 struct BootTls {
     bytes: [u8; BOOT_TLS_SIZE],
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 static mut BOOT_TLS: BootTls = BootTls {
     bytes: [0; BOOT_TLS_SIZE],
 };
@@ -70,7 +66,7 @@ impl ArchTrait for Arch {
     fn post_allocator() {}
 
     fn init_boot_tls() {
-        #[cfg(feature = "tls")]
+        #[cfg(kernel_tls)]
         {
             unsafe extern "C" {
                 fn _stdata();
@@ -104,11 +100,11 @@ impl ArchTrait for Arch {
     }
 
     fn systimer_freq() -> usize {
-        get_timer_freq()
+        ax_cpu::timer::counter_frequency() as usize
     }
 
     fn systimer_tick() -> usize {
-        Time::read()
+        ax_cpu::timer::read_counter() as usize
     }
 
     fn systimer_stability() -> crate::timer::CounterStability {
@@ -143,14 +139,6 @@ impl ArchTrait for Arch {
 
     fn secondary_entry_fn_address() -> *const () {
         _secondary_entry as *const ()
-    }
-
-    fn irq_all_is_enabled() -> bool {
-        crmd::read().ie()
-    }
-
-    fn irq_all_set_enable(enable: bool) {
-        crmd::set_ie(enable);
     }
 
     fn kernel_page_table() -> crate::mem::PageTableInfo {
@@ -236,8 +224,18 @@ impl ArchTrait for Arch {
         cpuid::read().core_id()
     }
 
-    fn kernel_space() -> core::ops::Range<usize> {
-        addrspace::PAGE_OFFSET..usize::MAX
+    fn virtual_address_space()
+    -> Result<crate::mem::VirtualAddressSpaceLayout, crate::mem::VirtualAddressSpaceError> {
+        let geometry = virtual_address::LoongArchVirtualAddressLayout::from_valen(
+            loongArch64::cpu::get_valen(),
+        )
+        .map_err(|error| {
+            crate::mem::VirtualAddressSpaceError::UnsupportedAddressWidth { valen: error.valen }
+        })?;
+        crate::mem::VirtualAddressSpaceLayout::try_new(
+            crate::mem::configured_user_space(geometry.lower_end()),
+            geometry.upper_start()..usize::MAX,
+        )
     }
 
     fn is_mmu_enabled() -> bool {
@@ -268,7 +266,7 @@ impl SystimerArch for Arch {
     }
 
     fn systimer_enable() {
-        tcfg::set_en(true);
+        Self::systimer_cancel_oneshot();
     }
 
     fn systimer_irq_enable() {
@@ -283,8 +281,12 @@ impl SystimerArch for Arch {
         tcfg::read().en()
     }
 
-    fn systimer_set_interval(ticks: usize) {
-        let ticks = crate::timer::loongarch64_interval::aligned_ticks(ticks);
+    fn systimer_set_deadline(deadline_ticks: u64) {
+        let current_ticks = Self::systimer_tick() as u64;
+        let interval_ticks = deadline_ticks.saturating_sub(current_ticks).max(1);
+        let ticks = crate::timer::loongarch64_interval::aligned_ticks(
+            usize::try_from(interval_ticks).unwrap_or(usize::MAX),
+        );
 
         // 先禁用定时器
         tcfg::set_en(false);
@@ -298,6 +300,22 @@ impl SystimerArch for Arch {
         // program the next event with TCFG.EN set; leaving it disabled stalls
         // timer-based sleeps after the first reprogram.
         tcfg::set_en(true);
+    }
+
+    fn systimer_requires_irq_quiesce() -> bool {
+        false
+    }
+
+    fn systimer_cancel_oneshot() {
+        tcfg::set_en(false);
+        tcfg::set_periodic(false);
+        tcfg::set_init_val(crate::timer::loongarch64_interval::stopped_ticks());
+        ticlr::clear_timer_interrupt();
+    }
+
+    fn systimer_resume_oneshot(deadline_ticks: u64) {
+        // Programming TCFG also enables the one-shot after clearing stale TI.
+        Self::systimer_set_deadline(deadline_ticks);
     }
 
     /// The pending timer interrupt latches in TICLR and must be cleared
@@ -352,13 +370,13 @@ impl SystimerArch for Arch {
     }
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 #[cold]
 fn boot_tls_layout_fatal() -> ! {
     panic!("invalid or oversized LoongArch bootstrap TLS image")
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 const fn align_up(value: usize, align: usize) -> usize {
     (value + align - 1) & !(align - 1)
 }

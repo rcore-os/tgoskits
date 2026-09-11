@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.5...some-serial-v0.7.6) - 2026-09-09
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
 ## [0.7.5](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.4...some-serial-v0.7.5) - 2026-08-27
 
 ### Fixed

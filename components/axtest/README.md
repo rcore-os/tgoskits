@@ -81,6 +81,18 @@ printing, runs the suite, emits `AXTEST_SUITE_OK` / `AXTEST_SUITE_FAIL`, dumps
 coverage when enabled, and requests an orderly runtime shutdown on success so
 accepted console output is drained before the target powers off.
 
+Targets that own runtime services can initialize them once before the suite by
+passing a setup function path:
+
+```rust
+#[axtest::tests(setup = kernel::init_test_services)]
+mod tests {}
+```
+
+The setup function runs after the platform runtime is available and before any
+test case. It should initialize target-owned services only; per-case fixtures
+belong in the test module hooks instead.
+
 ### Basic Test
 
 No explicit return needed — `AxTestResult::Ok` is appended automatically on success:

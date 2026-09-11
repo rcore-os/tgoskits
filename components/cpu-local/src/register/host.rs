@@ -7,12 +7,17 @@ pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentMo
     unikernel_tls: CurrentContextSource::RuntimeAnchor,
 };
 
+pub(super) struct Backend;
+
+impl ArchitectureRegisterBackend for Backend {}
+
 std::thread_local! {
     static CPU_BASE: Cell<usize> = const { Cell::new(0) };
     static ARCHITECTURE_CURRENT: Cell<usize> = const { Cell::new(0) };
     static KERNEL_TLS: Cell<usize> = const { Cell::new(0) };
     static CPU_BASE_READS: Cell<usize> = const { Cell::new(0) };
     static CURRENT_CONTEXT_READS: Cell<usize> = const { Cell::new(0) };
+    static BINDING_OBSERVATIONS: Cell<usize> = const { Cell::new(0) };
     static INITIALIZED_AREA_VALIDATIONS: Cell<usize> = const { Cell::new(0) };
     #[cfg(test)]
     static MIGRATION_TARGET: Cell<usize> = const { Cell::new(0) };
@@ -24,11 +29,7 @@ pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
 
 pub(super) unsafe fn install_cpu_base(area_base: usize, boot_context: usize) {
     CPU_BASE.set(area_base);
-    ARCHITECTURE_CURRENT.set(if cfg!(feature = "tls") {
-        0
-    } else {
-        boot_context
-    });
+    ARCHITECTURE_CURRENT.set(if cfg!(kernel_tls) { 0 } else { boot_context });
 }
 
 pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
@@ -45,7 +46,7 @@ pub(super) unsafe fn read_current_context(area_base: usize) -> usize {
             CPU_BASE.set(target);
         }
     });
-    if cfg!(feature = "tls") {
+    if cfg!(kernel_tls) {
         // SAFETY: the shared caller validated the sampled shutdown-lifetime
         // CPU area before asking the host backend for its selected source.
         return unsafe { area_runtime_anchor(area_base) }.current_context_raw();
@@ -62,12 +63,12 @@ pub(super) unsafe fn write_current_context(value: usize) {
     ARCHITECTURE_CURRENT.set(value);
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) unsafe fn read_kernel_tls() -> usize {
     KERNEL_TLS.get()
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) unsafe fn write_kernel_tls(value: usize) {
     KERNEL_TLS.set(value);
 }
@@ -75,6 +76,7 @@ pub(super) unsafe fn write_kernel_tls(value: usize) {
 pub(super) fn reset_register_read_counts() {
     CPU_BASE_READS.set(0);
     CURRENT_CONTEXT_READS.set(0);
+    BINDING_OBSERVATIONS.set(0);
     INITIALIZED_AREA_VALIDATIONS.set(0);
 }
 
@@ -82,8 +84,13 @@ pub(super) fn register_read_counts() -> super::host_test::RegisterReadCounts {
     super::host_test::RegisterReadCounts {
         cpu_base: CPU_BASE_READS.get(),
         current_context: CURRENT_CONTEXT_READS.get(),
+        binding_observations: BINDING_OBSERVATIONS.get(),
         initialized_area_validations: INITIALIZED_AREA_VALIDATIONS.get(),
     }
+}
+
+pub(super) fn record_binding_observation() {
+    BINDING_OBSERVATIONS.set(BINDING_OBSERVATIONS.get().wrapping_add(1));
 }
 
 pub(super) fn record_initialized_area_validation() {
@@ -95,7 +102,7 @@ pub(super) fn migrate_on_next_current_read(area_base: usize) {
     MIGRATION_TARGET.set(area_base);
 }
 
-#[cfg(all(test, not(feature = "tls")))]
+#[cfg(all(test, not(kernel_tls)))]
 pub(super) fn set_architecture_current(current: usize) {
     ARCHITECTURE_CURRENT.set(current);
 }

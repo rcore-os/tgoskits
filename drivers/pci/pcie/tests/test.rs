@@ -20,11 +20,6 @@ mod tests {
     };
 
     #[test]
-    fn test_framework_boot() {
-        println!("pcie bare-test bootstrap ok");
-    }
-
-    #[test]
     #[timeout = 10000]
     fn test_iter() {
         let PlatformDescriptor::DeviceTree(dtb) = get_platform_descriptor() else {

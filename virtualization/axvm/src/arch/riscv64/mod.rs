@@ -2,20 +2,18 @@ use std::sync::Arc;
 
 use ax_memory_addr::VirtAddr;
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
-use riscv_vcpu::{GprIndex as RiscvGprIndex, *};
 
+use self::policy::{GprIndex as RiscvGprIndex, *};
 use super::*;
-use crate::{
-    AxVmResult, StopReason,
-    architecture::cpu_up::{self, CpuUpExit, CpuUpOps},
-    host::*,
-};
+use crate::{AxVmResult, StopReason, architecture::ops::*, host::*};
 
 mod capabilities;
 pub(crate) mod fdt;
+mod hsm;
 mod ipi;
 mod irq;
 mod npt;
+mod policy;
 mod resource_pools;
 mod vm;
 pub(crate) use vm::RiscvVmPlan;
@@ -25,12 +23,6 @@ pub(crate) struct Riscv64Arch;
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum RiscvDeferredRunWork {
     ExternalInterrupt { vector: usize },
-}
-
-impl CpuUpOps for Riscv64Arch {
-    fn set_cpu_up_success(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
-        vcpu.set_gpr(RiscvGprIndex::A0 as usize, 0);
-    }
 }
 
 impl ArchOps for Riscv64Arch {
@@ -45,7 +37,7 @@ impl ArchOps for Riscv64Arch {
     }
 
     fn has_hardware_support() -> bool {
-        riscv_vcpu::has_hardware_support()
+        ax_cpu::capability::has_hypervisor_extension()
     }
 
     fn enter_runtime(vm: &crate::AxVM) -> AxVmResult {
@@ -72,12 +64,29 @@ impl ArchOps for Riscv64Arch {
         vcpu.inject_interrupt_with_trigger(vector, interrupt.trigger)
     }
 
-    fn handle_vcpu_exit_bound(
+    fn after_vcpu_run(
+        _vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        exit: RiscvVmExit,
+    ) -> AxVmResult<RiscvVmExit> {
+        match exit {
+            RiscvVmExit::Machine(exit) => riscv_result(vcpu.get_arch_vcpu().0.process_exit(exit))
+                .map_err(|error| {
+                    crate::vcpu::map_vcpu_backend_error("interpret RISC-V exit", error)
+                }),
+            exit => Ok(exit),
+        }
+    }
+
+    fn handle_vcpu_exit_unbound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
     ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
         match exit {
+            RiscvVmExit::Machine(_) => {
+                ax_err!(BadState, "CPU exit was not interpreted before unloading")
+            }
             RiscvVmExit::Hypercall { nr, args } => super::handle_hypercall(
                 vm,
                 vcpu,
@@ -126,10 +135,10 @@ impl ArchOps for Riscv64Arch {
                 target_cpu,
                 entry_point,
                 arg,
-            } => cpu_up::handle::<Self>(
+            } => hsm::handle(
                 vm,
                 vcpu,
-                CpuUpExit {
+                hsm::HartStart {
                     target_cpu,
                     entry_point: riscv_guest_phys_addr_to_ax(entry_point),
                     arg,
@@ -192,6 +201,10 @@ impl ArchOps for Riscv64Arch {
             exits_vcpu: false,
         })
     }
+
+    fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
+        Self::exit_runtime(vm)
+    }
 }
 
 fn finish_external_interrupt(vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>, vector: usize) {
@@ -221,7 +234,10 @@ fn handle_riscv_nested_page_fault(
     access_flags: RiscvAccessFlags,
 ) -> AxVmResult<BoundVcpuExit<RiscvDeferredRunWork>> {
     let ax_addr = riscv_guest_phys_addr_to_ax(addr);
-    if let Some(decoded) = vcpu.get_arch_vcpu().decode_mmio_fault(addr, access_flags) {
+    let decoded = vcpu.with_backend_bound_current_cpu(|| {
+        Ok(vcpu.get_arch_vcpu().decode_mmio_fault(addr, access_flags))
+    })?;
+    if let Some(decoded) = decoded {
         let handled = match decoded {
             RiscvVmExit::MmioRead {
                 addr,
@@ -288,7 +304,7 @@ impl RiscvHostOps for AxvmRiscvHostOps {
     }
 }
 
-pub(crate) struct AxvmRiscvVcpu(RiscvVCpu<AxvmRiscvHostOps>);
+pub(crate) struct AxvmRiscvVcpu(RiscvVcpu<AxvmRiscvHostOps>);
 
 impl AxvmRiscvVcpu {
     fn latch_hvip_from_hw(&mut self) {
@@ -318,7 +334,7 @@ impl VmArchVcpuOps for AxvmRiscvVcpu {
     type Exit = RiscvVmExit;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
-        riscv_result(RiscvVCpu::new(vm_id, vcpu_id, config)).map(Self)
+        riscv_result(RiscvVcpu::new(vm_id, vcpu_id, config)).map(Self)
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
@@ -337,7 +353,7 @@ impl VmArchVcpuOps for AxvmRiscvVcpu {
     }
 
     fn run(&mut self) -> BackendResult<Self::Exit> {
-        riscv_result(self.0.run())
+        riscv_result(self.0.run_machine()).map(RiscvVmExit::Machine)
     }
 
     fn bind(&mut self) -> BackendResult {
@@ -375,11 +391,11 @@ impl VmArchVcpuOps for AxvmRiscvVcpu {
     }
 }
 
-pub(crate) struct AxvmRiscvPerCpu(RiscvPerCpu);
+pub(crate) struct AxvmRiscvPerCpu(ax_cpu::virtualization::PerCpu);
 
 impl VmArchPerCpuOps for AxvmRiscvPerCpu {
-    fn new(cpu_id: usize) -> BackendResult<Self> {
-        riscv_result(RiscvPerCpu::new(cpu_id)).map(Self)
+    fn new(_cpu_id: usize) -> BackendResult<Self> {
+        Ok(Self(ax_cpu::virtualization::PerCpu::new()))
     }
 
     fn is_enabled(&self) -> bool {
@@ -387,11 +403,21 @@ impl VmArchPerCpuOps for AxvmRiscvPerCpu {
     }
 
     fn hardware_enable(&mut self) -> BackendResult {
-        riscv_result(self.0.hardware_enable())
+        // SAFETY: AxVM's current-percpu mutation holds its IRQ/preemption guard
+        // and exclusively owns this hart before any vCPU can bind.
+        unsafe { self.0.enable() }.map_err(cpu_virtualization_error)?;
+        // Physical IRQ source ownership remains in the host integration.
+        unsafe {
+            ax_cpu::interrupt::enable_source(ax_cpu::interrupt::Interrupt::SupervisorExternal);
+            ax_cpu::interrupt::enable_source(ax_cpu::interrupt::Interrupt::SupervisorSoft);
+            ax_cpu::interrupt::enable_source(ax_cpu::interrupt::Interrupt::SupervisorTimer);
+        }
+        Ok(())
     }
 
     fn hardware_disable(&mut self) -> BackendResult {
-        riscv_result(self.0.hardware_disable())
+        // SAFETY: AxVM retires the current per-CPU owner with all vCPUs unloaded.
+        unsafe { self.0.disable() }.map_err(cpu_virtualization_error)
     }
 
     fn max_guest_page_table_levels(&self) -> usize {
@@ -471,13 +497,6 @@ fn riscv_access_flags_to_ax(flags: RiscvAccessFlags) -> MappingFlags {
 mod tests {
     use super::*;
 
-    fn assert_riscv_exit_type<T: VmArchVcpuOps<Exit = RiscvVmExit>>() {}
-
-    #[test]
-    fn axvm_riscv_vcpu_uses_riscv_exit_type() {
-        assert_riscv_exit_type::<AxvmRiscvVcpu>();
-    }
-
     #[test]
     fn converts_riscv_vcpu_errors_to_backend_errors() {
         assert_eq!(
@@ -512,5 +531,20 @@ mod tests {
             riscv_access_flags_to_ax(RiscvAccessFlags::READ | RiscvAccessFlags::WRITE),
             MappingFlags::READ | MappingFlags::WRITE
         );
+    }
+}
+
+fn cpu_virtualization_error(error: ax_cpu::virtualization::VirtualizationError) -> BackendError {
+    use ax_cpu::virtualization::VirtualizationError;
+    match error {
+        VirtualizationError::InvalidRoot | VirtualizationError::InvalidVector => {
+            BackendError::InvalidInput
+        }
+        VirtualizationError::Unavailable
+        | VirtualizationError::UnsupportedPaging
+        | VirtualizationError::UnsupportedTimer => BackendError::Unsupported,
+        VirtualizationError::AlreadyEnabled | VirtualizationError::NotEnabled => {
+            BackendError::InvalidState
+        }
     }
 }

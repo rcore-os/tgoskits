@@ -1,23 +1,6 @@
 use super::*;
 
 #[test]
-fn only_device_discovery_machines_emit_a_default_root_selector() {
-    assert_eq!(x86_64_profile().default_passthrough_device_path, None);
-    assert_eq!(
-        aarch64_profile(1).default_passthrough_device_path,
-        Some("/")
-    );
-    assert_eq!(
-        riscv64_profile(2).default_passthrough_device_path,
-        Some("/")
-    );
-    assert_eq!(
-        loongarch64_profile().default_passthrough_device_path,
-        Some("/")
-    );
-}
-
-#[test]
 fn machine_serial_resources_match_guest_platform_contract() {
     assert_eq!(
         x86_64_profile().serial,

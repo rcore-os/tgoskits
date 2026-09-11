@@ -1,171 +1,126 @@
 ---
-sidebar_position: 3
+sidebar_position: 4
 sidebar_label: "设备管理"
 ---
 
-# 设备管理
+# 设备身份与注册管理
 
-`rdrive` 是驱动框架的核心管理 crate。它负责驱动注册（`DriverRegister`）、设备探测（probe）分发、类型化设备 registry 和设备查询。`rdrive` 不包含具体硬件逻辑，也不依赖任何 OS runtime 或平台 HAL。
+`rdrive` 保存驱动注册项、平台发现状态和已注册设备的身份。它不运行网络协议、文件系统请求队列或 USB 枚举任务；这些执行行为属于具体领域。管理入口位于 `drivers/rdrive/src/lib.rs`，设备容器位于 `manager.rs`，类型化句柄及独占访问位于 `lock.rs`。
 
-源码位于 `drivers/rdrive/src/`，入口 `lib.rs`。
+## 1. 注册模型
 
-## 核心 API
+驱动注册与设备注册是两种不同操作。`DriverRegister` 描述哪些回调可以匹配平台设备；`DeviceOwner` 持有回调实际创建的对象。链接了回调不等于平台上存在设备，设备注册成功也不等于上层运行时已经启动。
 
-`rdrive` 的公共 API 围绕平台初始化、驱动注册和设备查询三组能力：
+### 1.1 驱动注册项
 
-```rust
-// 平台来源初始化
-pub enum Platform {
-    Static,
-    Fdt { addr: NonNull<u8> },
-    Acpi(probe::acpi::AcpiRoot),
-}
+`drivers/rdrive/src/register/mod.rs` 的 `DriverRegister` 不保存设备实例。管理器为探测生成注册项快照，再按阶段和优先级排序；不能将注册表本身描述为始终有序的容器。
 
-pub fn init(platform: Platform) -> Result<(), DriverError>;
-pub fn register_append(slice: DriverRegisterSlice);
-
-// 探测
-pub fn probe_pre_kernel() -> Result<(), ProbeError>;
-pub fn probe_all(stop_if_fail: bool) -> Result<(), ProbeError>;
-
-// 设备查询
-pub fn get_device<T: DriverGeneric>(id: DeviceId) -> Result<Device<T>, GetDeviceError>;
-pub fn get_one<T: DriverGeneric>() -> Option<Device<T>>;
-pub fn get_list<T: DriverGeneric>() -> Vec<Device<T>>;
-```
-
-`Platform` 是初始化时传入的平台来源。仓库内置平台默认使用 FDT 或 ACPI；外部静态平台使用 `Platform::Static`。`init()` 只能调用一次，重复调用 panic。
-
-## Manager
-
-`Manager` 是 rdrive 的核心，源码位于 `manager.rs`。它只持有两个状态：
-
-```rust
-pub struct Manager {
-    pub registers: RegisterContainer,
-    pub(crate) dev_container: DeviceContainer,
-}
-```
-
-- `registers`：所有已注册的 `DriverRegister`，按 `ProbeLevel` 和 `ProbePriority` 排序。
-- `dev_container`：类型化设备 registry，`BTreeMap<DeviceId, DeviceOwner>`。
-
-`Manager` 全局唯一，通过 `OnceLock<SpinLock<Manager>>` 保护：
-
-```rust
-static CONTAINER: OnceLock<SpinLock<Manager>> = OnceLock::new();
-
-pub(crate) fn container() -> &'static SpinLock<Manager> { ... }
-```
-
-registry 使用 `ax_sync::SpinLock`，并由内部 `lock_container()` 通过 `unsafe lock_raw()` 获取。
-该路径不在 hard IRQ 中运行，且 discovery/runtime 调用方维持历史的串行排他契约；因此不会触发
-runtime preempt hook。所有写操作（register、probe、insert device）经过 `edit()` 闭包，所有读操作
-（query）也经同一内部入口获取。
-
-## DriverRegister
-
-`DriverRegister` 描述一个驱动的注册信息，源码位于 `register/mod.rs`：
-
-```rust
-pub struct DriverRegister {
-    pub name: &'static str,
-    pub level: ProbeLevel,
-    pub priority: ProbePriority,
-    pub probe_kinds: &'static [ProbeKind],
-}
-```
-
-| 字段 | 含义 |
-| --- | --- |
-| `name` | 驱动名，用于日志和诊断 |
-| `level` | `PreKernel`（内核前早期 probe）或 `PostKernel`（普通 probe） |
-| `priority` | 同 level 内的排序权重，值小者优先 |
-| `probe_kinds` | 该驱动支持的平台来源和匹配规则 |
-
-`ProbePriority` 预定义了关键平台设备的优先级：
-
-```rust
-pub const CLK: ProbePriority = ProbePriority(6);     // 时钟控制器
-pub const INTC: ProbePriority = ProbePriority(10);   // 中断控制器
-pub const DEFAULT: ProbePriority = ProbePriority(256);
-```
-
-时钟和中断控制器必须在其它设备之前 probe，因为后续设备的 clk 和 IRQ 解析依赖它们。
-
-## ProbeKind 与 backend 分发
-
-`ProbeKind` 是多来源分发的基础：
-
-```rust
-pub enum ProbeKind {
-    Static { on_probe: static_::FnOnProbe },
-    Fdt { compatibles: &'static [&'static str], on_probe: fdt::FnOnProbe },
-    Acpi { ids: &'static [acpi::AcpiId], on_probe: acpi::FnOnProbe },
-    Pci { on_probe: pci::FnOnProbe },
-}
-```
-
-一个 `DriverRegister` 可以同时声明多个 `ProbeKind`，例如同一驱动既能从 FDT 发现，也能从 PCI 枚举。各 backend 的职责如下：
-
-| backend | 独立状态 | 匹配输入 | probe 输入 | 职责 |
-| --- | --- | --- | --- | --- |
-| `probe::static_` | `System { probed_names }` | 显式注册的 driver name | `PlatformDevice` | 保留外部平台和板级 glue 的手工注册能力 |
-| `probe::fdt` | `System { fdt, phandle_map, probed }` | compatible + node status | `FdtInfo` + `PlatformDevice` | FDT 设备树解析与匹配 |
-| `probe::acpi` | `System { root, routing, pci, probed }` | HID/CID + ACPI device | `AcpiInfo` + `PlatformDevice` | ACPI source、MCFG/GSI routing、PCI `_PRT` |
-| `probe::pci` | PCIe controller enumerator | vendor/device/class | endpoint + `PlatformDevice` | PCIe 二阶段 endpoint probe |
-
-`probe_pre_kernel()` 只运行 `ProbeLevel::PreKernel`，通过 backend 分发器执行 Static、FDT、ACPI 中的早期 probe（interrupt controller、clock、timer、systick、pinmux、PCIe root complex）。PCI endpoint 枚举依赖已注册的 PCIe controller，因此在普通 probe 阶段触发。`probe_all(stop_if_fail)` 运行普通设备 probe，再执行 PCI endpoint 枚举。
-
-## PlatformDevice 与设备注册
-
-`PlatformDevice` 是 probe 回调中向 registry 注册设备的句柄，源码位于 `driver/mod.rs`：
-
-```rust
-pub struct PlatformDevice {
-    pub descriptor: Descriptor,
-}
-
-impl PlatformDevice {
-    pub fn register<T: DriverGeneric>(self, driver: T) { ... }
-    pub fn register_pcie(self, drv: PcieController) { ... }
-}
-```
-
-probe 回调构造硬件实例（实现某个 `rdif-*::Interface` trait），包装成 `DriverGeneric` 后调用 `register()`。`Descriptor` 携带 `DeviceId`、name、IRQ binding 等元数据。
-
-## 类型化设备查询
-
-`DeviceContainer` 提供 three 种查询方式：
-
-| 方法 | 语义 | 典型调用方 |
+| 字段 | 类型 | 行为 |
 | --- | --- | --- |
-| `get_typed::<T>(id)` | 按 `DeviceId` 查询特定能力类型的设备 | 已知设备 ID 的低层 HAL |
-| `get_one::<T>()` | 查询任意一个实现能力 `T` 的设备 | 单设备领域（如 primary display） |
-| `devices::<T>()` | 查询所有实现能力 `T` 的设备 | 多设备领域（如多网卡、多块设备） |
+| `name` | `&'static str` | 标识注册项，参与日志及 Static 后端完成记录 |
+| `level` | `ProbeLevel` | 区分 `PreKernel` 与 `PostKernel` |
+| `priority` | `ProbePriority` | 同阶段内数值较小者先执行 |
+| `probe_kinds` | `&'static [ProbeKind]` | 保存 Static、FDT、ACPI 或 PCI 匹配规则与回调 |
 
-返回的 `Device<T>` 是弱引用句柄，持有 `Arc<Mutex<T>>`。调用方 `lock()` 后获得 `&mut T`，可以调用 `rdif-*::Interface` 方法。
+`register_add()` 加入单个注册项，`register_append()` 接受 `&[DriverRegister]`。`DriverRegisterSlice::from_raw()` 用于将链接器区间解释为注册项切片，不是 `register_append()` 的独立参数类型。链接器区间的布局由注册宏和链接脚本共同约束。
 
-```rust
-use rdrive::get_device;
-use rdif_intc::Intc;
+### 1.2 设备实例
 
-let intc: Device<Intc> = get_device(irq_id).expect("device not found");
-let dev = intc.lock().unwrap();
-dev.enable_irq(...);
+`Manager` 将注册项放入 `registers`，将已构建设备放入 `dev_container`。`DeviceContainer::devices` 的实际类型为 `BTreeMap<DeviceId, Vec<DeviceOwner>>`，一个设备身份可以关联多种外层对象类型。
+
+相同 `DeviceId` 下可以注册不同类型，例如围绕同一硬件资源发布不同能力；相同身份和相同外层类型重复插入会触发断言。该规则不是按任意 trait 自动去重，也不是全局只能存在一个同类设备。
+
+## 2. 身份与所有权
+
+设备身份用于把固件描述、注册实例和消费者关联起来；资源所有权用于决定对象是否仍然存活。二者分开保存。`Descriptor` 的元数据可以随句柄保留，但元数据存在不能证明驱动核心仍可访问。
+
+### 2.1 描述符
+
+`drivers/rdrive/src/descriptor.rs` 的 `Descriptor` 保存 `device_id`、`name`、`irq_parent` 和可选的 `fdt_node`。`FdtNodeIdentity` 关联节点身份和路径，避免消费者用显示名称反向猜测固件节点。
+
+| 查询或记录接口 | 关联对象 | 边界 |
+| --- | --- | --- |
+| `fdt_phandle_to_device_id()` | FDT phandle 与设备身份 | 依赖后端已记录对应关系 |
+| `fdt_path_to_device_id()` | FDT 路径与设备身份 | 路径不是驱动类型 |
+| `acpi_path_to_device_id()` | ACPI 路径与设备身份 | 不等于任意资源地址查询 |
+| `acpi_resource_address_to_device_id()` | ACPI 资源地址与设备身份 | 与路径查找是不同入口 |
+| `get::<T>(id)` | 身份下的具体注册类型 | 不扫描对象实现的所有能力 trait |
+
+设备名用于日志与领域命名，不能替代 `DeviceId` 的唯一性约束。IRQ 父控制器身份也不能替代设备源编号或最终 `IrqId`。
+
+### 2.2 句柄与访问守卫
+
+`DeviceOwner` 持有 `Arc<LockInner>`；`Device<T>` 保存弱引用与类型化指针；访问时升级为持有强引用的 `DeviceGuard<T>`。下面的图同时表示注册所有权、借用和领域接管，接管后注册身份不随之删除。
+
+![设备身份、弱句柄与一次性接管](./images/driver-registry.svg)
+
+`Device::lock()` 和 `try_lock()` 通过 `LockInner` 的借用状态实现独占访问，守卫析构时释放访问状态。克隆 `Device<T>` 不是复制硬件对象，也不允许两个可变访问同时存在。句柄升级失败、类型不匹配和借用冲突应按 `GetDeviceError` 处理。
+
+## 3. 类型查询与资源接管
+
+类型查询解决“哪个注册对象可以访问”，领域接管解决“谁负责之后的硬件运行”。两者使用不同机制，不能把查询成功等同于资源仍未被取走。
+
+### 3.1 查询范围
+
+`get_list::<T>()` 返回所有匹配外层注册类型的弱句柄；`get_one::<T>()` 取其中一个；`get::<T>(id)` 在指定身份下查询。`Device::downcast()` 使用实现提供的类型信息转换对象视图，不是动态发现任意 Rust trait 的能力反射机制。
+
+`get_list()` 获取全局注册表锁并分配 `Vec`，源码明确规定它不适用于硬中断。IRQ 回调需要的设备端点、完成状态和通知句柄必须在注册 action 前发布，不能在每次中断中重新查找设备。
+
+### 3.2 一次性移交
+
+`drivers/ax-driver/src/registration.rs` 的 `TakeRegistered` 用于显示、输入和 vsock 包装，`take_registered_device()` 在访问守卫内调用 `take_registered()`。块和网络保留自己的接管入口，因为交付对象及错误处理不同。
+
+| 消费模式 | 具体入口 | 注册后的状态 |
+| --- | --- | --- |
+| 持续查询 provider | `get()`、`get_one()` 与守卫 | 对象仍由注册所有者持有 |
+| 取走领域对象 | `take_registered_device()` | 包装保留，内部 `Option` 清空 |
+| 取走控制器或网卡 | 块 take、`take_net_device()` | 交付对象及对应资源来源 |
+| 接管 USB 事件入口 | `take_event_handler()` | 主机对象保留，handler 不能重复取走 |
+
+同一张注册表允许上述不同模式，不强制所有消费者走网络的 `prepare_device()` 或 builder。
+
+```mermaid
+sequenceDiagram
+    participant Consumer as 领域初始化
+    participant Registry as rdrive
+    participant Wrapper as 领域包装
+    participant Owner as 领域所有者
+    Consumer->>Registry: 按具体外层类型查询
+    Registry-->>Consumer: Device 弱句柄
+    Consumer->>Wrapper: lock 后调用领域接管入口
+    Wrapper-->>Consumer: 已移交对象及相关资源
+    Consumer->>Owner: 建立该领域的执行或服务
+    Consumer->>Wrapper: 再次接管
+    Wrapper-->>Consumer: 按领域入口返回空或错误
 ```
 
-直接使用 `rdrive::get_*` 只允许出现在设备管理型或低层 HAL 型代码中（例如 Starry USBFS host 管理、Axvisor AArch64 GIC backend）。普通 FS、NET、display、input、vsock 上层模块必须通过领域 service 消费设备，不得裸查 `rdrive`。
+注册描述符存在不表示内部对象尚未取走。接管失败的回滚由领域负责，`rdrive` 不会自动恢复 `Option`，也不提供通用热插拔卸载事务。生命周期见[设备发布与停止](lifecycle.md)。
 
-## 注册宏
+## 4. 平台状态与子设备发布
 
-`rdrive-macros` 提供 `module_driver!` / `model_register!` 宏，把 `DriverRegister` 放入 `.driver.register` linker section，启动时由 `register_append()` 统一收集：
+`rdrive` 将设备容器与各发现后端的状态分开。初始化后端、记录已探测节点和发布设备实例发生在不同位置，避免把全部状态误认为 `Manager` 的字段。
 
-```rust
-#[unsafe(link_section = ".driver.register")]
-#[unsafe(no_mangle)]
-#[used(linker)]
-pub static DRIVER: DriverRegister = DriverRegister { ... };
-```
+### 4.1 平台来源
 
-`ax-driver` 的 `model_register!` 宏基于同一机制，让具体驱动 crate 只需声明注册信息，不需要手动调用 `register_add()`。
+`Platform` 支持 `Static`、`Fdt`、`Acpi`、`AcpiWithoutAml`；`init_sources()` 支持来源切片，先校验并建立后端，再通过 `OnceLock` 建立管理器。它不是用于任意运行期替换现有平台和清空设备表的接口。
+
+FDT 后端在 `drivers/rdrive/src/probe/fdt/mod.rs` 保存 `phandle_2_device_id`、`node_2_device_id`、`populated_paths`、`populated_nodes` 和 `child_owners`。Static 后端保存已成功探测的注册名，PCI 枚举器保存已处理的地址。后端完成记录决定再次探测时跳过哪些对象。
+
+### 4.2 复合设备发布
+
+`PlatformDevice::register_fdt_child()` 和 `register_with_fdt_child()` 处理由父设备管理的 FDT 子节点。后者先校验子设备发布条件，再一起发布父对象和子对象，避免父对象已经进入注册表而子节点绑定失败的半发布状态。
+
+子节点校验失败应保留原注册状态，不以伪造 phandle 或重复注册父节点解决。普通设备发布、FDT 子节点发布和领域 `take` 是三个不同的生命周期操作。
+
+## 5. 实现索引
+
+源码边界按状态的归属划分，而不是按上层操作系统划分。平台初始化顺序由[探测与初始化](probe.md)说明，运行时接管由[生命周期](lifecycle.md)说明。
+
+| 源码 | 核心对象 | 维护内容 |
+| --- | --- | --- |
+| `drivers/rdrive/src/lib.rs` | `init_sources`、`get_list`、`probe_all` | 全局入口和阶段调度 |
+| `drivers/rdrive/src/manager.rs` | `Manager`、`DeviceContainer` | 注册项及设备所有者容器 |
+| `drivers/rdrive/src/lock.rs` | `DeviceOwner`、`Device`、`DeviceGuard` | 类型、存活及独占访问 |
+| `drivers/rdrive/src/descriptor.rs` | `Descriptor` | 设备身份和固件关联 |
+| `drivers/rdrive/src/probe/fdt/mod.rs` | FDT `System` | 节点完成记录和资源提供者查找 |
+| `drivers/rdrive/src/driver/mod.rs` | `PlatformDevice` | 注册对象和子节点发布 |

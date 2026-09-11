@@ -25,14 +25,14 @@ sidebar_label: "队列级 NAPI 运行时"
 
 ### 2.1 具体问题
 
-当前网络路径在 hard IRQ 后丢失了 source 和 queue 身份，只向一个全局通知发布事件。共享 net-poll task 随后唤醒全部设备，设备各自的 RX/TX task 再搬运数据，最终竞争单一 smoltcp poll owner。该结构产生四类问题：
+重构前的网络路径在 hard IRQ 后丢失了 source 和 queue 身份，只向一个全局通知发布事件。共享 net-poll task 随后唤醒全部设备，设备各自的 RX/TX task 再搬运数据，最终竞争单一 smoltcp poll owner。该结构产生四类问题：
 
 1. 单个设备 IRQ 会唤醒所有设备，SMP 下形成无关 worker 扇出。
 2. 永久 net-poll worker 与同步 flush 调用者都可能取得 protocol poll ownership，运行时不具备单一任务所有权。
 3. virtio task-side transport gate 竞争时不能在 hard IRQ 中等待；当前延迟 ACK 依赖设备周期 poll 才能保证后续探测。
 4. 迁移前的 AIC8800/SDIO 通过带外回调、独立 RX/TX task 和 10ms kicker 推进，绕过网卡 IRQ 注册与 CPU affinity 契约。
 
-PR #1775 曾实际暴露生产初始化与 split-route helper 各启动一个永久协议 worker，二者竞争同一 IRQ waiter，最终触发 `net IRQ waiter was registered concurrently`。当前 dev 虽以一个原子 owner 串行化实际 poll，但调用者仍可成为第二种 owner，并且全局 IRQ fanout、设备 fallback 与 AIC OOB 路径仍存在。
+PR #1775 曾实际暴露生产初始化与 split-route helper 各启动一个永久协议 worker，二者竞争同一 IRQ waiter，最终触发 `net IRQ waiter was registered concurrently`。该失败与当时 dev 仅用原子 owner 串行化 poll 的结构共同构成这次破坏性重构的输入；当前实现以本文其余章节的不变量为准。
 
 ### 2.2 直接用户
 
@@ -130,12 +130,13 @@ flowchart LR
 
 ### 6.1 输入
 
-每个 `NetPollGroupParts` 声明一个或多个 `NetIrqSourceId`。平台把 source 解析为：
+每个 `NetPollGroupParts` 声明一个或多个 `NetIrqSourceId`。平台在构造
+`NetworkDeviceInput` 之前完成解析，把每个 source 转换为
+`ResolvedNetIrqSource { source_id, irq }`：driver 的 `BindingIrq`（含 controller 拥有
+的嵌套来源，例如 AIC 的 SDHCI controller IRQ）在这一步统一解析为可注册的物理
+`IrqId`。
 
-- `BindingIrq(IrqId)`：runtime 可直接注册的物理 IRQ。
-- `NestedIrqSource`：由 controller/provider 拥有，接受选定的 `owner_cpu` 后返回固定 affinity 的 move-only registration lease。
-
-source ID 是 topology identity，不等同于 queue ID。多个 endpoint 引用相同 source ID 时表示共享物理 affinity/rearm 约束。
+source ID 是 topology identity，不等同于 queue ID。多个 endpoint 引用相同 source ID 时表示共享物理 affinity/rearm 约束；builder 内 `resolve_endpoint_irq()` 要求每个 endpoint source ID 唯一映射到一个物理 `IrqId`，重复映射或未被引用的 source 都会使初始化失败。
 
 ### 6.2 算法
 
@@ -143,8 +144,8 @@ source ID 是 topology identity，不等同于 queue ID。多个 endpoint 引用
 2. 对引用相同 `NetIrqSourceId` 的 group 做 union。
 3. 每个连通分量构造一个 `NetAffinityDomain`。
 4. 按 `(minimum source id, minimum group id)` 排序 domain，保证启动顺序稳定。
-5. 按当前在线 CPU 集合进行最小负载分配；负载先按 group 数，再按稳定 CPU ID 打破平局。
-6. protocol executor 选择 domain 负载最小的 CPU；没有物理网卡时使用 bootstrap CPU 并只发布 loopback。
+5. domain 按稳定创建顺序轮转分配在线 CPU（`domain_index % cpu_count`），保证不同 domain 均匀分布。
+6. protocol executor 选择 domain 负载最小的 CPU（先按 group 数，再按 CPU ID 打破平局）；没有物理网卡时使用 bootstrap CPU 并只发布 loopback。
 
 同一个 source ID 如果解析出不同物理 `IrqId`，或同一个物理 `IrqId` 被不同 source identity 隐式共享，builder 必须拒绝初始化。平台必须在注册前提供完整映射，不能在 callback 内动态发现。
 
@@ -204,10 +205,10 @@ owner CPU 从 pending set 取 group 后，以 CAS 把 `SCHEDULED` 变为 `POLLIN
 
 每个 group 的一次 poll cycle 依次执行：
 
-1. recycle/refill，最多 64 个 token；
-2. RX completion，最多 64 项；
-3. TX completion/reclaim，最多 64 项；
-4. TX submission，最多 64 项。
+1. TX completion，最多 64 项；
+2. TX submission，最多 64 项，批次结束后 `flush()`；
+3. RX recycle，最多 64 个 token；
+4. RX reclaim/refill 与完成项发布，最多 64 项。
 
 每个 CPU executor 一轮最多处理 256 项。group 任一子预算耗尽即保持 IRQ 关闭并重新排队；executor 总预算耗尽时 yield 给调度器，然后立即继续，不等待 IRQ 或 timer。
 
@@ -312,14 +313,15 @@ group 完成本轮 poll 并执行 `rearm_and_check()`，等待未来事件，而
 
 ### 9.3 有界 SPSC ring
 
-每个 group 与 protocol owner 之间预分配：
+每个 group 与 protocol owner 之间预分配四条 ring：
 
-- `rx_ready`: group producer，protocol consumer。
-- `rx_recycle`: protocol producer，group consumer。
-- `tx_submit`: protocol producer，group consumer。
-- 可选 `tx_complete`: group producer，protocol consumer；如果完成只归还通用 pool，可由 group 直接回收。
+- `rx_ready`: group producer，protocol consumer，载荷 `RxCompletion`；
+- `rx_recycle`: protocol producer，group consumer，载荷 `DmaBuffer`；
+- `tx_ready`: protocol producer，group consumer，载荷 `TxRequest`（token 与提交选项）；
+- `tx_free`: group producer，protocol consumer，载荷 `DmaBuffer`。
 
-ring 满不分配、不覆盖、不丢失 token：
+TX completion 由 queue owner 自行 reclaim 后直接把 token 放回 `tx_free`，不需要独立的
+TX-complete ring。ring 满不分配、不覆盖、不丢失 token：
 
 - RX ring 满：group 进入 backpressure，IRQ 保持关闭，保留尚未移交的 completion ownership。
 - protocol 消费 RX 后向 recycle ring 发布 token，并精准调度该 group。
@@ -361,7 +363,7 @@ pub struct NetPollGroupParts {
 - queue ID 与 group ID 使用 typed newtype。
 - 当前生产后端全部提供一个 queue-0 group；接口允许多个 group，但本次不启用 virtio/fxmac 硬件多队列。
 - 只有拥有独立 IRQ source 和独立 `rearm_and_check()` 域的硬件队列才能拆成多个 group。
-- `NetOwnerStartup` 是 move-only one-shot endpoint，只能由已固定 CPU 的 group worker 在 IRQ 注册但尚未 enable 时执行。AIC 固件和 FDRV 初始化经此边界延后，probe 不再执行 SDIO 数据面 I/O。
+- `NetOwnerStartup` 是 move-only one-shot endpoint，只能由已固定 CPU 的 group worker 在 IRQ 注册并 enable 之后、initial refill 与队列发布之前执行。它允许驱动在同一 owner 上完成传输层初始化、身份确认和固件启动；runtime 只处理进度与等待，不接管设备协议。若它返回 `NetError::DeviceNotPresent`，runtime 只在 `cancel()` 成功并 disable+synchronize 对应 IRQ callback 后剔除该 group；取消失败不发布 absent 状态，其他错误仍使 builder 回滚。
 - `NetPollIrqControl` 暴露 `quiesce()`、`shutdown()` 和 `rearm_and_check()`；`shutdown()` 只有在硬件已不能访问 descriptor/token backing 时才能成功，否则 runtime 必须隔离整个 group。
 - hard endpoint 是 move-only owned callback，不保存 queue 或 control 的反向引用。
 
@@ -371,14 +373,19 @@ pub struct NetPollGroupParts {
 
 ```rust
 pub struct TakenNetDevice {
+    pub name: &'static str,
     pub prepared_device: Box<dyn NetDevice>,
-    pub irq_sources: Vec<PreparedNetIrqSource>,
+    pub dma: DeviceDma,
+    pub irq_sources: Vec<BindingIrqBinding>,
 }
 ```
 
-`NetworkRuntimeBuilder` 显式消费所有 `TakenNetDevice` 和一个 `PinnedNetIrqRegistrar`。registrar API 必须携带 `owner_cpu`，并在 lease 中记录实际 CPU；它没有 `Any` variant。
+`NetworkRuntimeBuilder` 显式消费所有 `NetworkDeviceInput`（含平台解析好的
+`ResolvedNetIrqSource` 列表）和一个 `PinnedNetIrqRegistrar`。registrar API 必须携带
+`owner_cpu`，并在 lease 中记录实际 CPU；它没有 `Any` variant。
 
-nested source 的 controller registration、child callback 和 source mask/rearm lease 必须由同一个 move-only 对象管理。AIC SDIO controller IRQ 不能在 driver probe 中提前注册到任意 CPU。
+controller 拥有的嵌套 IRQ 来源（如 AIC SDHCI controller IRQ）在平台解析
+`BindingIrq` 阶段统一展开为物理 `IrqId`，不能在 driver probe 中提前注册到任意 CPU。
 
 ## 11. Protocol executor
 
@@ -418,6 +425,10 @@ protocol executor:
 
 ### 12.1 原子初始化
 
+`NetworkRuntimeBuilder` 在 owner startup 与接口发布之间确认资源清理完成。
+worker 发布 `startup_status` 后等待 builder 决策，不提前进入数据面或执行 Wi-Fi
+事务；builder 同步 absent group 的 IRQ 后才允许 owner 回收其资源。
+
 ```mermaid
 sequenceDiagram
     participant P as Platform
@@ -433,13 +444,38 @@ sequenceDiagram
     W-->>B: affinity-ready(owner_cpu)
     B->>I: register Fixed(owner_cpu), disabled
     I-->>B: move-only leases with actual CPU
-    B->>W: run owner_startup on owner CPU
-    B->>D: initial refill + rearm_and_check
     B->>I: enable registrations
+    B->>W: run owner_startup on owner CPU
+    W->>D: initial refill + rearm_and_check for present groups
+    W-->>B: startup_status
+    B->>W: COMMAND_PRUNE after all startup statuses
+    W->>D: stop sibling groups whose Wi-Fi control group is absent
+    W-->>B: prune_status
+    B->>I: disable+synchronize absent registrations
+    B->>W: COMMAND_RUN
+    W->>W: drop absent Wi-Fi slots and queues; remap group_index
+    W-->>B: publication_status (READY or EMPTY)
+    B->>W: join EMPTY workers
     B->>S: publish complete runtime atomically
 ```
 
 worker 的 `affinity-ready` 不能等价于“task 已创建”。worker 必须在其自身上下文验证 `current_cpu == owner_cpu` 并发布成功；失败时在任何 IRQ 注册前回滚。
+
+`retain_started_executor_groups` 在 owner CPU 上删除 absent group 及其
+`WifiExecutorSlot`，并重映射存活 slot 的 `group_index`。`publication_status`
+只在析构完成后发布；`publish_executors` 等待该确认，并 join 没有存活 group 的
+worker。混合设备场景不保留缺席设备的队列，也不保留仅承载缺席设备的任务。
+
+Wi-Fi 控制端点固定绑定设备的首个 group，不自动迁移到其他 group 或 CPU。
+builder 等全部 `startup_status` 就绪后发送 `COMMAND_PRUNE`；每个 owner 通过
+`QueueGroupExecutor::stop_if_wifi_absent` 检查同设备的控制 group。控制 group
+缺席时，owner 对其余 group 执行 disable、quiesce 和 shutdown，只有成功后才
+标记 absent。builder 等全部 `prune_status` 成功，再同步这些 group 的 IRQ 并
+授权回收，因此多 group 设备会整体跳过，端口、Wi-Fi 句柄和启动事务不会部分发布。
+停止失败时仍返回初始化错误并进入回滚，无法证明 DMA 停止的资源保持隔离。
+
+builder 随后提交存活设备的 startup transaction；IRQ 同步失败时不发送
+`COMMAND_RUN`，而是沿 `QUARANTINE` 路径保留无法安全释放的所有权关系。
 
 ### 12.2 反向回滚
 
@@ -509,8 +545,12 @@ AP/STA confirmation 已由同一 owner executor 中的 command/RX 有限状态�
 
 ### 14.6 AIC8800/SDIO
 
+固定硬件拓扑通过板级配置选择 AIC，`AicRdifDevice` 是尚待身份确认的候选设备。
+`AicOwnerStartup` 在现有 group owner 上调用 SDIO 协议组件并启动芯片，这种
+分阶段初始化不要求独立总线线程；只有启动成功的设备才进入可用网络接口集合。
+
 - SDHCI controller IRQ 是 nested source，由 unified runtime 选择 CPU 后注册。
-- probe 只识别 chip variant 并提取 move-only CARD_INT source；固件下载与 FDRV/bus 创建由 `NetOwnerStartup` 在 group owner CPU 上完成。
+- probe 只封装 host parts 和 move-only CARD_INT source；卡类型、chip variant、固件下载与 FDRV/bus 创建由 `NetOwnerStartup` 在 group owner CPU 上完成。CMD5 没有 I/O Function 时，AIC 报告 `DeviceNotPresent`，同步撤销该 group 后不发布 `wlan0`。
 - top half 只 mask `CARD_INT` signal、发布 pending/snapshot 并激活本地 group。
 - RX FIFO、TX queue、firmware command completion 和 card-side clear 由 owner executor 推进。
 - 删除 `set_rx_wake`、全局 raw callback、RX/TX kicker 和独立 RX/TX data tasks。
@@ -521,7 +561,7 @@ AP/STA confirmation 已由同一 owner executor 中的 command/RX 有限状态�
 - SDHCI rearm 是一个 task-context 原子操作：unmask CARD_INT 后立即读 controller status，若 level 已经挂起则重新 mask 并返回 `WorkPending`，不依赖重新产生 edge。
 - shutdown 在 owner CPU 先 mask CARD_INT，按 variant 清除 chip interrupt-enable register，再禁用 SDHCI interrupt signal；任一步无法确认时整个 executor graph 进入隔离。
 - D80/DC 都不提供 kicker 或 polling fallback；缺少对应 profile、固件或 CIS 身份证据
-  的变体在 probe 阶段明确失败。
+  的变体在 owner startup 阶段明确失败，不与 `NoIoFunctions` 一起降级。
 - SDHCI 的 PIO command/data completion 仍是 host transaction 语义，不能误当成 network queue IRQ。
 
 ## 15. 公共错误与失败策略
@@ -596,7 +636,7 @@ Loom 或等价穷举模型覆盖：
 当前代码已经完成以下单一边界迁移：
 
 - `rdif-eth`/`rd-net` 使用 consumable parts、move-only DMA token、typed queue/group/source ID 与 split hard/task IRQ endpoint。
-- `NetworkRuntimeBuilder` 在 worker affinity-ready 后以 fixed CPU 注册 disabled IRQ，依次执行 owner startup、initial refill/rearm，再 enable IRQ 并原子发布 service。
+- `NetworkRuntimeBuilder` 在 worker affinity-ready 后以 fixed CPU 注册并 enable disabled IRQ，依次执行 owner startup、initial refill/rearm，最后原子发布 service。
 - E1000、RTL8125、virtio、FXMAC、Loongson GMAC 已迁移到 queue-0 poll group；AIC/SDHCI 已迁移到 nested CARD_INT source 与 owner-CPU control transaction。
 - runtime stop 在 disable/synchronize callback 后由 owner CPU 调用 driver `shutdown()`；同步失败的 callback lease 会隔离，E1000、RTL8125 与 Loongson GMAC 以 reset 证明停止，无法从当前 API 证明停止的 virtio/FXMAC backing 会显式隔离。
 - queue 状态机具备确定性交错模型，Starry grouped case `test-tcp-napi-runtime` 固定真实 TCP/epoll/signal/close 语义。

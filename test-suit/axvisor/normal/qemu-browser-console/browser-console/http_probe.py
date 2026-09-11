@@ -180,21 +180,36 @@ def check_page():
     expect_status("GET /", status, 200)
     for marker in (
         b"/api/consoles",
-        b"terminal-cursor",
-        b"pauseRendering()",
-        b"requestAnimationFrame",
-        b"selectionchange",
+        b"/assets/xterm.js",
+        b"/assets/xterm.css",
+        b"new Terminal",
+        b"terminal.onData",
+        b"catch(() => document.execCommand('copy'))",
+        b"rows: 40",
+        b"height: calc(100vh - 4.8rem)",
     ):
         if marker not in page:
             raise AssertionError("embedded page is missing %r" % marker)
     for external_asset in (
         b"https://",
         b"http://",
-        b"<script src=",
-        b'<link rel="stylesheet"',
     ):
         if external_asset in page:
             raise AssertionError("embedded page depends on %r" % external_asset)
+    if b".console { height: 34rem; }" in page:
+        raise AssertionError("mobile layout still stretches a fixed 24-row terminal")
+    if b"rows: 24" in page or b"syncFixedTerminalHeight" in page:
+        raise AssertionError("page still uses the shrunken 80x24 layout")
+
+    status, javascript = get("/assets/xterm.js")
+    expect_status("GET /assets/xterm.js", status, 200)
+    if b"Terminal" not in javascript:
+        raise AssertionError("xterm.js asset does not export Terminal")
+
+    status, stylesheet = get("/assets/xterm.css")
+    expect_status("GET /assets/xterm.css", status, 200)
+    if b".xterm" not in stylesheet:
+        raise AssertionError("xterm.css asset is incomplete")
 
     status, body = get("/api/consoles")
     expect_status("GET /api/consoles", status, 200)

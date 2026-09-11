@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/rcore-os/tgoskits/compare/axvirtio-blk-v0.2.0...axvirtio-blk-v0.2.1) - 2026-09-09
+
+### Added
+
+- *(axvm)* service virtio block images with on-demand file I/O ([#2310](https://github.com/rcore-os/tgoskits/pull/2310))
+- *(virtio)* implement split-ring event index ([#2255](https://github.com/rcore-os/tgoskits/pull/2255))
+
+### Fixed
+
+- *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
+
+### Other
+
+- *(repo)* remove duplicated tests and configuration snapshots ([#2326](https://github.com/rcore-os/tgoskits/pull/2326))
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/axvirtio-blk-v0.1.0...axvirtio-blk-v0.2.0) - 2026-08-20
 
 ### Added

@@ -11,23 +11,6 @@ mod mocks;
 
 use mocks::*;
 
-#[test]
-fn test_pte() {
-    let mut want = PteImpl(0);
-    want = PteImpl::from_config(PteConfig {
-        valid: true,
-        ..want.to_config(false)
-    });
-    assert!(want.to_config(false).valid);
-
-    let addr = PhysAddr::from(0xff123456000usize);
-    want = PteImpl::from_config(PteConfig {
-        paddr: addr,
-        ..want.to_config(false)
-    });
-    assert_eq!(want.to_config(false).paddr, addr);
-}
-
 fn test_high<T: TableMeta<P = PteImpl>, A: FrameAllocator>(
     pte: PteConfig,
     alloc: A,
@@ -1138,7 +1121,6 @@ fn map_region_rejects_unaligned_range_before_mapping() {
             |_| PhysAddr::from_usize(0x40_0000),
             0x1000,
             MappingFlags::READ.into(),
-            false,
         ),
         Err(PagingError::AlignmentError { .. })
     ));
@@ -1151,7 +1133,6 @@ fn map_region_rejects_unaligned_range_before_mapping() {
             |_| PhysAddr::from_usize(0x50_0000),
             0x1001,
             MappingFlags::READ.into(),
-            false,
         ),
         Err(PagingError::AlignmentError { .. })
     ));

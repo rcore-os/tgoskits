@@ -7,6 +7,8 @@ sidebar_label: "测试与限制"
 
 `ax-net` 测试分三层：`net/ax-net` crate 内单元测试覆盖协议栈内部数据结构和路由/绑定语义；StarryOS system 测试覆盖 Linux ABI 观测面；`apps/starry/qemu/dual-net` 覆盖双网口 DHCP、路由和并发数据面。
 
+本文记录现有测试资产与运行条件，不把测试名称、数量或固定输入作为新增测试模板。后续维护统一遵循 [test-quality](https://github.com/rcore-os/tgoskits/blob/dev/.agents/skills/test-quality/SKILL.md)：复用或增强通用网络功能证明，参数回读与默认值检查并入实际选路、连接或收发行为，无独立价值时删除。此处资产记录不表示已有测试均完成清理。
+
 ## 1. 测试资产
 
 网络测试按纯数据结构、host-test、StarryOS system case 和双网卡集成场景分层，每层验证不同故障面。下表把测试位置与职责对应起来，选择验证命令时应优先使用能覆盖原始行为边界的最低层测试，再补充跨系统路径。
@@ -17,7 +19,7 @@ sidebar_label: "测试与限制"
 | host 集成测试 | `net/ax-net/tests/std.rs` | 验证 public 配置/快照、option dispatch、credentials 和 route 数据类型；需要 `host-test` |
 | StarryOS system 测试 | `test-suit/starryos/qemu/system` | 验证 Linux socket syscall、ioctl、AF_PACKET、netlink、procfs 等 ABI |
 | dual-net 集成测试 | `apps/starry/qemu/dual-net` | 验证两张 virtio-net、双 DHCP、接口绑定下载和并发数据面 |
-| xtask 结构自检 | `scripts/axbuild/src/starry/test/tests/asset_network_tests.rs` | 验证 `dual-net` app 配置必须包含双网卡、host HTTP fixture 和 guest probe |
+| xtask 结构自检 | `scripts/axbuild/src/rootfs/qemu/tests.rs` | 验证 rootfs 参数补全不重复注入绑定到 `net0` 的自定义网卡（`ensure_disk_boot_net_preserves_custom_network_device_bound_to_net0`） |
 
 资产表说明每层测试使用不同运行环境和观察面，不能用单元测试替代 ABI 或双网卡验证。单元测试首先固定纯状态结构的确定语义，为更高层失败提供可快速排除的基础。
 
@@ -36,8 +38,8 @@ cargo test -p ax-net --features host-test
 `ax-net` 在 std 白名单中，完整仓库入口是 `cargo xtask test`；该入口会为 `ax-net` 自动选择 `host-test` profile。上面的命令用于单独迭代这个 crate。单元/集成测试主要覆盖不依赖真实 QEMU 设备的内部逻辑。部分测试会使用 `lib.rs` 中的 `test_support` 构造一个 split-route 测试网络：
 
 ```text
-LOCAL_IF = InterfaceId(2), LOCAL_ADDR = 10.0.2.15
-PEER_IF  = InterfaceId(3), PEER_ADDR  = 10.0.3.15
+LOCAL_IF = InterfaceId(2), LOCAL_ADDR = 192.0.2.10
+PEER_IF  = InterfaceId(3), PEER_ADDR  = 198.51.100.20
 ```
 
 `network_test_guard()` 用全局 mutex 串行化会初始化全局网络状态的测试，避免 `SERVICE`、`NET_CONTROL`、`SOCKET_SET` 这类全局单例在并发 host test 中互相污染。
@@ -53,12 +55,12 @@ PEER_IF  = InterfaceId(3), PEER_ADDR  = 10.0.3.15
 | `route_lookup_keeps_stable_order_for_equal_metric` | 同前缀、同 metric 时保持插入顺序 |
 | `route_lookup_skips_unusable_interface` | `select_route_if()` 可通过闭包跳过不可用接口 |
 | `default_routes_only_reports_zero_prefix_ipv4_rules` | `default_routes()` 只导出 IPv4 `0.0.0.0/0` 规则 |
-| `bounded_packet_queue_reports_full_and_preserves_order` | 有界队列满时返回错误，并保持 FIFO |
-| `rx_backpressure_preserves_frame_len_pairing` | shared RX queue 背压时，本地 batch 保留 packet 与 L2 frame 长度的 1:1 配对 |
 | `no_route_does_not_count_interface_tx_dropped` | IP 层无路由不错误归入某个网卡 `tx_dropped` |
 | `stats_reflects_current_counters_after_counting` | `NetDevStats` 快照反映累计原子计数 |
 
-这些测试对应多网口 route decision 的核心排序规则：最长前缀、metric、稳定顺序和接口可用性过滤。
+这些测试对应多网口 route decision 的核心排序规则：最长前缀、metric、稳定顺序和接口可用性过滤。有界队列与 RX 背压的对应回归不在 `router.rs`，而是位于 `queue_runtime/tests.rs` 的
+`spsc_ring_is_bounded_and_preserves_move_order` 和
+`detached_rx_releases_ring_backpressure_before_recycling_dma`。
 
 ### 2.3 DHCP 地址状态
 
@@ -134,11 +136,41 @@ TCP 监听表测试位于 `listen_table.rs`，验证 wildcard/具体地址 liste
 
 queue runtime 与统计还有专门覆盖：protocol generation 测试验证同步 flush 不取得第二 ownership；状态机穷举验证 `MISSED`、rearm window 与 `DISABLED` 不可复活；source affinity 测试验证 shared IRQ 同 CPU、独立 source 可分布；源码契约测试确认 queue executor 没有 periodic timeout。Ethernet 的 padding、ARP deferred frame、malformed frame 和 pending buffer 测试继续验证 `/proc/net/dev` 的 L2 长度/error/drop 口径。`net/ax-net/tests/std.rs` 的 6 个 public API 集成测试仅在 `host-test` feature 下构建。
 
-`DeviceBinding` 使用 atomic raw ifindex 保存，这个测试验证 public 语义不会因为内部原子编码而丢失。
+`DeviceBinding` 使用 atomic raw ifindex 保存。独立回读只能说明存储结果；后续应通过绑定后实际选路、连接或收发结果验证能力，按通用功能规则处置已有回读测试。
+
+### DMA 与批次提交回归
+
+`queue_runtime/tests.rs` 覆盖 RX token 消费前不归还、回收 ring 满时保留所有权、
+直接填充 TX DMA buffer，以及提交选项跨 FIFO 重试的保留。检查 frame 内容时也核对
+buffer 地址，避免一次额外复制仍通过相同内容断言。`rd-net` 测试检查 replacement
+分配和 `SubmitError` 返回原 token；RTL8125 测试检查 checksum descriptor 编码及约束。
+`rdif-eth` 的能力组合测试与这两 crate 的完整 host tests 已加入 `scripts/test/std_crates.csv`。
+
+`rx_allocation_failure_recovers_without_disabling_tx` 让该设备的 DMA allocator 暂时失败，
+检查丢包重投、RX/TX 恢复、drop 计数、replacement 数量上限及上限后的 token 复用。
+loopback 和 Ethernet 的 raw UDP 回归同时覆盖零值与指定 checksum，Ethernet 还覆盖
+短帧 padding 和无需 padding 的长度；原传输层字节与提交选项必须保持不变。`stack_tcp_and_udp_emit_complete_software_checksums`
+通过实际 smoltcp Interface 发送 TCP SYN 和 UDP，验证普通 socket 仍输出有效 checksum。
+
+Router fanout 回归在广播和 IPv6 组播路径同时模拟成功、连续 `Again`、先恢复的出口及
+永久错误，检查原包保留、成功出口不重发、无进展时不空转，以及下一包重新遍历出口。
+Ethernet 发送回归检查 IPv4/IPv6 组播 MAC、有限广播和子网广播，并验证这些路径在
+回压后重试时不进入 ARP、不改写 IP payload 或请求 checksum 卸载。
+
+板端验证还需要确认每轮退出前的 `flush()` 真正推动已发布发送、replacement refill
+不会饿死 RX，以及接收端数据正确；显式驱动 checksum 请求需单独验证。Orange Pi 5 Plus 的 iperf3 矩阵
+使用 `apps/starry/iperf3/iperf-bench.sh`，记录构建提交、FIT 与脚本 SHA-256、链路速率、
+每轮 receiver 结果。吞吐数据单独记录，不能替代 token 生命周期与 IRQ 状态机断言。
 
 ## 3. StarryOS 系统测试
 
 StarryOS 系统测试在 QEMU 中运行真实用户态程序和 syscall 路径，覆盖单元测试无法观察的 ABI 编解码、fd 生命周期和 proc/netlink 输出。测试分组位于 `test-suit/starryos/qemu/system`，应通过 xtask 入口运行以保持镜像、参数和成功正则一致。
+
+`bugfix-bug-proc-comm-tcp-partial-send` 使用 `O_NONBLOCK`，不设置
+`MSG_DONTWAIT`。准备阶段以 4 KiB 分块填满固定容量的 socket，等待持续背压后，
+最多排空 64 KiB 来重新打开发送窗口，再检查 1 MiB 发送返回正的部分字节数。
+这样保留原 nonblocking 回归的断言，同时避免逐字节填充在仿真 CPU 上耗尽测试时限。
+排空过程同时等待接收数据和发送端可写，适配 Linux 大 loopback 分段的内存回收时机。
 
 ### 3.1 运行方式
 
@@ -355,23 +387,16 @@ guest 检查代码在同一 case 中验证接口、路由、绑定和并行请�
 - `apk fetch -R` 下载较大的包集合并写入磁盘，验证较长 TCP 流、DNS、默认路由和文件写入路径的组合稳定性。
 - `apk verify` 验证 APK 内置签名/完整性元数据，`sha256sum -c` 验证落盘文件再次读取后的内容一致性。
 
-覆盖列表说明双网卡 case 同时验证控制面与真实 TX 路径，任一环节缺失都会降低测试价值。xtask 结构自检在运行前静态确认 case 仍包含两接口和并行传输等关键构件。
+覆盖列表说明双网卡 case 同时验证控制面与真实 TX 路径，任一环节缺失都会降低测试价值；case 的双网卡与并行传输构件目前没有等价静态断言，修改配置时需要人工核对拓扑与 guest 检查项。
 
-### 4.5 xtask 结构自检
+### 4.5 rootfs 网卡结构自检
 
-`scripts/axbuild/src/starry/test/tests/asset_network_tests.rs` 中的 `dual_net_qemu_case_exercises_two_interfaces_and_parallel_fetches` 会静态检查 `dual-net` case 的结构：
+`scripts/axbuild/src/rootfs/qemu/tests.rs` 中的 `ensure_disk_boot_net_preserves_custom_network_device_bound_to_net0` 固定 rootfs 参数补全与自定义网卡的交互契约：
 
-- `c/dual-net-tests.sh`、`c/prebuild.sh`、`c/CMakeLists.txt` 必须存在。
-- riscv64 和 x86_64 都必须有 `qemu-*.toml`。
-- QEMU args 必须包含 `net0`、`net1` 两个 virtio-net-pci。
-- net0 必须是 `10.0.2.0/24` 且 DHCP 起始地址为 `10.0.2.15`。
-- net1 必须是 `10.0.3.0/24` 且 DHCP 起始地址为 `10.0.3.15`。
-- `shell_init_cmd` 必须是 `/usr/bin/dual-net-tests.sh`。
-- host HTTP server 必须监听 18382，payload 至少 1 MiB。
-- `dual-net-tests.sh` 必须包含 `apk fetch -R`、APK 重试、`apk verify`、`sha256sum -c` 和 `DUAL_NET_APK_FETCH_MS`。
-- QEMU timeout 必须足够覆盖 APK 下载校验流程。
+- QEMU 配置已包含绑定到 `net0` 的自定义网卡（如 E1000）时，补全逻辑只替换 rootfs 驱动器，不重复注入同名默认 NIC。
+- 补全按 `-device` 的 `netdev=net0` 连接关系识别已有网卡，而不是维护 virtio/E1000 型号白名单。
 
-这个结构测试防止 app 配置被误删、改成单网卡或失去自动 guest probe。
+该测试保证 `dual-net`、`qemu-e1000` 这类自定义网卡 case 在 rootfs 补全后、QEMU 启动前仍保持原网络拓扑；`dual-net` 自身的双接口与并行下载构件依赖人工评审保持。
 
 ## 5. 常见失败定位
 
@@ -457,7 +482,7 @@ AF_PACKET、ioctl、netlink 与 procfs 视图不一致通常意味着某个 ABI 
 
 ## 6. 当前限制
 
-测试限制说明哪些结论尚不能从当前自动化覆盖中推出，并把协议功能缺口与测试基础设施缺口分开。新增测试时应优先覆盖确定的最低层状态转换，再补充 QEMU 或物理板卡证据，避免只增加宽泛的成功字符串。
+测试限制说明哪些结论尚不能从当前自动化覆盖中推出，并把协议功能缺口与测试基础设施缺口分开。维护时优先复用或增强已有完整功能验证，仅在缺少独立行为证明时新增；QEMU 或物理板卡用于补充真实运行时证据，不逐参数、内部转换或配置实例拆测。
 
 ### 6.1 测试覆盖限制
 
@@ -489,8 +514,8 @@ AF_PACKET、ioctl、netlink 与 procfs 视图不一致通常意味着某个 ABI 
 
 - 协议核心仍是单 smoltcp `Interface + SocketSet`，TCP/UDP 状态机本身不多核并行。
 - 多设备 dataplane 已使用 queue-level NAPI 状态机；当前生产 backend 仍只发布 queue-0 group，未启用 RSS 或真实硬件多队列。
-- loopback 已有直接注入快路径，但普通设备 RX/TX 仍存在必要的 packet copy。
-- 尚未实现端到端 zero-copy；这需要 rd-net buffer ownership、packet pool 和 smoltcp token 共同改造。
+- DMA RX 已覆盖 token 保留到 smoltcp 消费后的回收，TX 可直接组帧；非 DMA 端口、FIFO 积压以及 socket/user buffer 仍有复制。
+- 不提供用户态端到端 zero-copy；现有 DMA token 测试不能替代真实硬件的 cache maintenance 和 descriptor ordering 验证。
 - StarryOS network namespace 当前主要是可见性过滤，不是完整 per-namespace network stack。
 
 这些限制使当前测试更适合作为功能与边界回归，而不是完整性能或硬件兼容认证。扩展覆盖时应保持失败可定位、命令可复现，并让新增用例真正编译和运行目标实现。

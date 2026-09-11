@@ -1,8 +1,5 @@
 #![no_std]
 
-#[cfg(all(feature = "uspace", feature = "tls"))]
-compile_error!("axplat-dyn userspace requires LinuxCurrent and cannot enable kernel TLS mode");
-
 extern crate alloc;
 extern crate ax_driver as _;
 extern crate somehal;
@@ -26,10 +23,6 @@ mod power;
 
 pub use boot::{boot_entropy, boot_stack_bounds, bootargs};
 pub use generic_timer::try_init_epoch_offset;
-
-pub fn enable_timer_irq() {
-    somehal::timer::irq_enable();
-}
 pub fn ipi_irq() -> ax_plat::irq::IrqId {
     somehal::irq::ipi_irq()
 }

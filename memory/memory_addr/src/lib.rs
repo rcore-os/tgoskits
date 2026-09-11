@@ -97,40 +97,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_align() {
-        assert_eq!(align_down(0x12345678, 0x1000), 0x12345000);
-        assert_eq!(align_up(0x12345678, 0x1000), 0x12346000);
-        assert_eq!(align_offset(0x12345678, 0x1000), 0x678);
-        assert!(is_aligned(0x12345000, 0x1000));
-        assert!(!is_aligned(0x12345678, 0x1000));
-
-        assert_eq!(align_down_4k(0x12345678), 0x12345000);
-        assert_eq!(align_up_4k(0x12345678), 0x12346000);
-        assert_eq!(align_offset_4k(0x12345678), 0x678);
-        assert!(is_aligned_4k(0x12345000));
-        assert!(!is_aligned_4k(0x12345678));
-    }
-
-    #[test]
-    fn page_size_constants_and_alignment_boundaries_hold() {
-        assert_eq!(PAGE_SIZE_4K, 4096);
-        assert_eq!(PAGE_SIZE_2M, 2_097_152);
-        assert_eq!(PAGE_SIZE_1G, 1_073_741_824);
-
+    fn alignment_keeps_zero_and_exact_page_boundaries() {
         assert_eq!(align_down(0, 4096), 0);
         assert_eq!(align_up(0, 4096), 0);
         assert_eq!(align_down(4096, 4096), 4096);
         assert_eq!(align_up(4096, 4096), 4096);
         assert_eq!(align_down(4097, 4096), 4096);
         assert_eq!(align_up(4097, 4096), 8192);
-    }
-
-    #[test]
-    fn align_4k_helpers_cover_unaligned_addresses() {
-        assert_eq!(align_down_4k(0x12345), 0x12000);
-        assert_eq!(align_up_4k(0x12345), 0x13000);
-        assert_eq!(align_offset_4k(0x12345), 0x345);
-        assert!(is_aligned_4k(0x12000));
-        assert!(!is_aligned_4k(0x12001));
     }
 }

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="860" viewBox="0 0 1280 860" role="img" aria-labelledby="title desc">
+  <title id="title">类型化设备注册表与内部资源交付</title>
+  <desc id="desc">Manager 的 DeviceContainer 持有 DeviceOwner，DeviceOwner 通过 Arc 保持对象存活。查询得到 Device 弱句柄，锁定得到 Guard。领域 take 将内部能力交付给消费者，外层包装器仍可留在 registry 中。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#15805a"/></marker>
+    <marker id="weak" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker>
+    <style>
+      text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #172b4d; }
+      .title { font-size: 27px; font-weight: 700; }
+      .heading { font-size: 21px; font-weight: 700; }
+      .label { font-size: 19px; }
+      .small { font-size: 17px; }
+      .own { fill: none; stroke: #15805a; stroke-width: 2.4; marker-end: url(#arrow); }
+      .weak { fill: none; stroke: #64748b; stroke-width: 2; stroke-dasharray: 7 5; marker-end: url(#weak); }
+    </style>
+  </defs>
+  <rect width="1280" height="860" rx="16" fill="#f8fafc"/>
+  <text x="36" y="45" class="title">设备身份、句柄与内部资源不是同一层对象</text>
+  <rect x="35" y="80" width="745" height="155" rx="12" fill="#eaf0ff" stroke="#94a8d3"/>
+  <text x="55" y="118" class="heading">Manager / DeviceContainer</text>
+  <text x="55" y="153" class="label">BTreeMap&lt;DeviceId, Vec&lt;DeviceOwner&gt;&gt;</text>
+  <text x="55" y="187" class="small">同一 DeviceId 可发布不同外层类型；同 ID + 同类型不能重复插入</text>
+  <text x="55" y="215" class="small">DriverRegister 存放于另一份 RegisterContainer，不是设备实例</text>
+  <path class="own" d="M390 235 V275"/>
+  <rect x="35" y="275" width="745" height="230" rx="12" fill="#e7f3f0" stroke="#75a48a"/>
+  <text x="55" y="313" class="heading">DeviceOwner → Arc&lt;LockInner&gt;</text>
+  <text x="55" y="350" class="label">Descriptor：设备身份、名称与固件节点信息</text>
+  <text x="55" y="386" class="label">实际外层对象：领域包装或平台能力</text>
+  <text x="55" y="423" class="small">排他访问状态与对象寿命由 LockInner / DeviceGuard 维护</text>
+  <text x="55" y="462" class="small">按外层类型查找；不会自动注册包装器内部的全部 trait</text>
+  <rect x="855" y="80" width="390" height="155" rx="12" fill="#f0edf8" stroke="#a59abf"/>
+  <text x="875" y="118" class="heading">查询方：Device&lt;T&gt;</text>
+  <text x="875" y="155" class="label">Weak&lt;LockInner&gt; + 描述信息</text>
+  <text x="875" y="190" class="small">get / get_one / get_list 返回句柄</text>
+  <path class="weak" d="M855 197 H820 V348 H780"/>
+  <text x="860" y="266" class="small">lock / try_lock</text>
+  <path class="own" d="M1050 235 V295"/>
+  <rect x="855" y="295" width="390" height="170" rx="12" fill="#fff5e5" stroke="#c4a36a"/>
+  <text x="875" y="333" class="heading">DeviceGuard&lt;T&gt;</text>
+  <text x="875" y="370" class="label">临时保持对象存活与排他访问</text>
+  <text x="875" y="407" class="small">Drop 释放访问状态</text>
+  <text x="875" y="438" class="small">不等于停止硬件或释放 DMA</text>
+  <path class="own" d="M855 410 H780"/>
+  <rect x="35" y="555" width="745" height="220" rx="12" fill="#ffffff" stroke="#75a48a"/>
+  <text x="55" y="592" class="heading">领域包装器内部状态示例</text>
+  <text x="55" y="630" class="label">取走前：内部能力保存在 Option 中</text>
+  <text x="55" y="667" class="label">领域 take：移交对象及相应资源</text>
+  <text x="55" y="704" class="label">取走后：对应 Option 已清空</text>
+  <text x="55" y="747" class="small">包装器仍可被查询；再次取走失败；这不是注销或热拔插</text>
+  <path class="own" d="M390 505 V555"/>
+  <rect x="855" y="555" width="390" height="220" rx="12" fill="#e7f3f0" stroke="#75a48a"/>
+  <text x="875" y="592" class="heading">领域所有者</text>
+  <text x="875" y="630" class="label">TakeRegistered 等领域入口</text>
+  <text x="875" y="667" class="label">按具体合同初始化或直接消费</text>
+  <text x="875" y="704" class="label">控制 / 事件 / 请求各有合同</text>
+  <text x="875" y="747" class="small">接管不等于注销或硬件关闭</text>
+  <path class="own" d="M780 660 H855"/>
+  <text x="36" y="820" class="small">实线：强持有、访问或资源交付　虚线：弱句柄关联　源码：rdrive/src/lock.rs、manager.rs；ax-driver/src/registration.rs</text>
+</svg>

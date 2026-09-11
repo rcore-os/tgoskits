@@ -27,7 +27,7 @@ impl AicDevice {
         {
             return self.fail(error);
         }
-        if let Some(event) = self.data.events.pop_front() {
+        if let Some(event) = self.data.pop_event() {
             return AicAction::Event(event);
         }
         if self.lifecycle.cancel_pending
@@ -115,7 +115,7 @@ impl AicDevice {
                 self.lifecycle.mailbox = None;
                 self.lifecycle.cancel_pending = false;
                 self.data.link.clear_peer();
-                self.data.internal_tx.clear();
+                self.data.clear_internal_tx();
                 Ok(())
             }
             operation => {
@@ -172,7 +172,7 @@ impl AicDevice {
             IoPurpose::Shutdown => {
                 expect_write_readback(response, 0)?;
                 self.lifecycle.state = AicState::Stopped;
-                self.data.events.push_back(AicEvent::Stopped);
+                let _ = self.data.push_event(AicEvent::Stopped);
                 Ok(())
             }
         }
@@ -193,9 +193,7 @@ impl AicDevice {
         }
         let tokens: Vec<_> = self.data.tx.drain_tokens().collect();
         for token in tokens {
-            self.data
-                .events
-                .push_back(AicEvent::TransmitComplete(token));
+            let _ = self.data.push_event(AicEvent::TransmitComplete(token));
         }
         self.emit(
             IoPurpose::Shutdown,
@@ -208,12 +206,12 @@ impl AicDevice {
         self.lifecycle.mailbox = None;
         self.lifecycle.control = None;
         self.data.link.clear_peer();
-        self.data.internal_tx.clear();
+        self.data.clear_internal_tx();
         if self.lifecycle.state == AicState::Starting {
             self.lifecycle.startup = None;
             self.lifecycle.state = AicState::Stopped;
         }
-        self.data.events.push_back(AicEvent::ControlCancelled);
+        let _ = self.data.push_event(AicEvent::ControlCancelled);
     }
 
     pub(super) fn fail(&mut self, error: AicError) -> AicAction {
@@ -226,20 +224,17 @@ impl AicDevice {
         if let Some(active) = self.data.active_tx.take()
             && let super::owner::TxCompletion::User(token) = active.completion
         {
-            self.data
-                .events
-                .push_back(AicEvent::TransmitComplete(token));
+            let _ = self.data.push_event(AicEvent::TransmitComplete(token));
         }
-        self.data.internal_tx.clear();
+        self.data.clear_internal_tx();
         let tokens: Vec<_> = self.data.tx.drain_tokens().collect();
-        self.data
-            .events
-            .extend(tokens.into_iter().map(AicEvent::TransmitComplete));
-        self.data.events.push_back(AicEvent::Failed(error));
+        for token in tokens {
+            let _ = self.data.push_event(AicEvent::TransmitComplete(token));
+        }
+        let _ = self.data.push_event(AicEvent::Failed(error));
         AicAction::Event(
             self.data
-                .events
-                .pop_front()
+                .pop_event()
                 .expect("failure always publishes at least one terminal event"),
         )
     }
@@ -270,10 +265,6 @@ impl AicDevice {
 
     pub(super) const fn mailbox_flow_policy(&self) -> crate::profile::MailboxFlowPolicy {
         self.profile.mailbox_flow()
-    }
-
-    pub(super) const fn data_tx_flow_policy(&self) -> crate::profile::DataTxFlowPolicy {
-        self.profile.data_tx_flow()
     }
 
     pub(super) const fn startup_function(&self, index: usize) -> Option<u8> {
@@ -497,6 +488,7 @@ mod tests {
         let active = TxToken::new(7);
         let queued = TxToken::new(8);
         device.data.active_tx = Some(ActiveTx {
+            retry_at: None,
             completion: super::owner::TxCompletion::User(active),
             wire_frame: vec![1],
         });

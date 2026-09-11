@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/axtest-macros-v0.5.15...axtest-macros-v0.5.16) - 2026-09-09
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
+### Added
+
+- Add a target-owned setup hook to the generated kernel test entry point.
+
 ## [0.5.15](https://github.com/rcore-os/tgoskits/compare/axtest-macros-v0.5.14...axtest-macros-v0.5.15) - 2026-08-20
 
 ### Fixed

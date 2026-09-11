@@ -58,12 +58,12 @@ pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};
 pub(crate) use host::{
     paging::HostPagingHandler,
-    task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
+    task::{ThreadHandle, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
 };
 pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, dispatch_current_vcpu_interrupt, get_vm_by_id,
-    get_vm_list, inject_current_vcpu_interrupt, notify_vm_vcpu, register_vm,
+    get_vm_list, inject_current_vcpu_interrupt, kick_vm_vcpu, register_vm,
 };
 pub(crate) use task::{AsVCpuTask, VCpuTask};
 pub use vm::{

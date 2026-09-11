@@ -23,7 +23,7 @@ pub enum TermiosParity {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
 pub struct Termios {
     c_iflag: tcflag_t,
     c_oflag: tcflag_t,
@@ -159,7 +159,7 @@ impl Termios {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
 pub struct Termios2 {
     termios: Termios,
     c_ispeed: speed_t,

@@ -1,135 +1,133 @@
 ---
-sidebar_position: 5
-sidebar_label: "能力边界"
+sidebar_position: 6
+sidebar_label: "能力接口"
 ---
 
-# 能力边界 rdif
+# 能力接口与所有权合同
 
-`rdif-*` 是能力边界（capability boundary），只定义某类设备向上暴露什么能力，不负责设备发现、iomap、IRQ 注册、任务调度或系统启动顺序。块设备不新增 runtime crate：`rdif-block` 承载 owned-DMA controller/queue/IRQ 合同，`ax-fs-ng::block::runtime` 负责 channel、hctx 维护线程、阻塞订阅和 teardown。其它领域如网络仍可按需保留 runtime wrapper，负责 waker、poll、blocking API、buffer pool 等运行时行为。
+能力接口表达设备可执行的操作、资源交接方式和错误结果。`drivers/interface/` 中的 `rdif-*` 不统一规定线程、队列和固件格式；USB 后端也保留自己的主机与传输合同。接口的组织依据是操作形态，不是将所有设备套进网络收发模型。
 
-所有 `rdif-*` crate 位于 `drivers/interface/`，公共基础是 `rdif-base`。
+## 1. 注册类型与能力
 
-## 能力边界总览
+注册类型确定如何在 `rdrive` 中找到对象，领域接口确定找到后能执行什么操作。平台包装还可能保存尚未解析的资源来源，不能把它与内部驱动能力混为一谈。
 
-| 能力 | interface crate | runtime crate | 上层消费 |
-| --- | --- | --- | --- |
-| 块设备 | `rdif-block` | `ax-fs-ng::block::runtime`（现有 crate 内模块） | block volume service、FS |
-| 网络设备 | `rdif-eth` | `rd-net` | net interface service、NET/NET-NG |
-| 显示 | `rdif-display` | `rd-display` | display service、Starry fb |
-| 输入 | `rdif-input` | `rd-input` | input service、Starry input |
-| vsock | `rdif-vsock` | `rd-vsock` | vsock service |
-| 平台设备 | `rdif-intc`、`rdif-pinctrl`、`rdif-pcie`、`rdif-clk`、`rdif-timer`、`rdif-systick`、`rdif-serial`、`rdif-pwm`、`rdif-power` | 按需 | HAL、Axvisor backend、平台 glue |
+### 1.1 类型化发布
 
-`rdif-base` 定义所有能力 trait 的公共基础：
+`drivers/ax-driver/src/registration.rs` 的 `BoundDevice` 关联 `BindingInfo`，领域包装保存具体能力对象。`DeviceId` 下可以发布不同外层类型，但 `get::<T>()` 不会扫描对象实现的任意 Rust trait。
 
-```rust
-pub trait DriverGeneric: Send + Any {
-    fn name(&self) -> &str;
+`rdif-base` 的通用类型信息与领域接口的操作方法具有不同职责。显示 `Interface`、块 `BlockController` 和串口 `SplitUart` 不能通过一个未经定义的通用 downcast 自动互换。
 
-    fn raw_any(&self) -> Option<&dyn Any> { None }
-    fn raw_any_mut(&mut self) -> Option<&mut dyn Any> { None }
-}
-```
+### 1.2 合同分类
 
-每个 `rdif-*::Interface` trait 都继承 `DriverGeneric`，并定义该领域能力契约。设备实现 trait 后通过 `PlatformDevice::register()` 注册到 `rdrive`，上层通过 `Device<T>` 弱引用查询。
+相同设备可能同时提供控制、事件和传输端点。分类用于解释职责，不要求每个设备同时实现表中所有形态。
 
-## rdif-block
+| 形态 | 关键接口 | 操作与交付 |
+| --- | --- | --- |
+| 平台资源控制 | `rdif-clk`、`rdif-reset`、`rdif-power` | 按资源 ID 执行配置 |
+| 总线与中断控制 | `rdif-pcie`、`rdif-intc` | 配置空间、路由及控制器能力 |
+| 请求队列 | `BlockController`、`HardwareQueue` | 控制状态、owned 批次及完成 |
+| 拆分端点 | `SplitUart`、`NetDevice` | 控制、IRQ 与任务侧资源分开 |
+| 借用与事件读取 | 显示、输入 `Interface` | 帧缓冲、事件和能力查询 |
+| 连接传输 | vsock `Interface` | CID、连接、数据和连接事件 |
+| 主机枚举与异步请求 | USB `CoreOp`、`BackendOp` | hub 拓扑、寻址和传输完成 |
 
-`rdif-block` 是块设备能力边界，源码位于 `drivers/interface/rdif-block/`。块请求不暴露 Linux block layer 的 512B sector 公共单位，而使用真实设备的 `lba` / `block_count` / `logical_block_size`。OS glue 负责把上层 byte offset、FS block、Linux-like sector 或分区 region 转换成设备 LBA。
+运行方式和生命周期分别由[运行时与完成](runtime.md)与[生命周期](lifecycle.md)维护，接口章节只定义交付对象和操作条件。
 
-| 源码 | 职责 |
+## 2. 资源控制能力
+
+平台 provider 的资源身份只在相应控制器语境中有意义。时钟 ID、复位 ID 和 GPIO 线号不能当作设备 ID 或 IRQ 注册 ID。
+
+### 2.1 时钟、复位与电源
+
+`drivers/interface/rdif-clk/src/lib.rs` 的 `Interface` 按 `ClockId` 启用和查询、设置频率。`assignment_mmio_write_protection()` 表达直通场景下 provider 寄存器写入的保护要求，其中 `None` 与空集合具有不同语义。
+
+`drivers/interface/rdif-reset/src/lib.rs` 的 `reset()` 默认依次调用 `assert()` 和 `deassert()`，错误通过 `ResetError` 返回；默认实现不自动插入设备特定的脉冲延时。电源和 PWM 分别由 `rdif-power`、`rdif-pwm` 的接口表达，不能以复位释放代替电源已稳定。
+
+### 2.2 引脚、总线与时间
+
+`rdif-pinctrl` 的 `PinState`、`MuxSetting` 和 `ConfigSetting` 表达复用与电气配置，GPIO 操作和事件另有接口。`rdif-pcie` 提供主控制器能力供枚举使用，`rdif-intc` 提供中断控制器操作。
+
+`rdif-timer` 与 `rdif-systick` 分别表达计时及系统 tick 所需能力。它们是平台资源，并不负责维护块请求超时、网络状态机 deadline 或 USB future；这些等待由相应运行时解释。
+
+## 3. 队列与端点合同
+
+队列合同需要明确谁能提交、何时资源归还、IRQ 能访问哪些状态。块、串口和网络都划分执行端点，但拆分结果不同。
+
+### 3.1 控制器与 owned 请求
+
+`drivers/interface/rdif-block/src/hardware.rs` 的 `BlockController::advance()` 推进控制器，`HardwareQueue` 由一个任务上下文维护者独占。IRQ 端点返回队列及控制事件，不直接调用维护者的队列对象。
+
+`submit_batch_owned()` 接收 `OwnedRequestBatch` 的有序前缀，通过 `SubmissionSink` 同序报告请求 ID。未接受的后缀保持原顺序和运行时所有权；接受数非零时，即使结果包含故障，也必须调用一次 `commit_submissions()` 发布已接受描述符。
+
+| 对象或结果 | 合同 |
 | --- | --- |
-| `hardware.rs` | `BlockController`、`HardwareQueue`、owned batch 提交与完成 sink |
-| `request.rs` | `OwnedRequest`、`RequestId`、请求形状验证 |
-| `planner.rs` | 依据硬件/DMA 边界生成传输计划 |
-| `irq.rs` | boxed `HardIrqHandler`、`IrqAck` 与 queue mask |
-| `info.rs` | 设备信息、队列深度与硬件限制 |
-| `error.rs` | `BlockError` |
+| `BatchSubmitResult::accepted()` | 已从批次转移的请求数量 |
+| `Continue` / `QueueFull` / `Fatal` | 区分额度内已接受、空间不足与不可继续提交 |
+| `CompletionSink::complete()` | 返回终态请求及 DMA backing |
+| `drain_completions()` | 由已确认 IRQ 驱动，不作为周期或提交侧轮询 |
+| `advance_register_retry()` | 只推进寄存器或协议记账，不读取硬件完成源 |
 
-接口保留 blk-mq 风格的结构能力：controller 状态机交付一个或多个
-`HardwareQueue` 与 IRQ endpoint；runtime 把每 CPU channel 的请求组成 owned
-batch，经 `submit_batch_owned()` 交给 queue，并在批次边界调用
-`commit_submissions()`。只有收到已确认的 IRQ 事件后，独占 queue 的 hctx 维护线程
-才调用 `drain_completions()`；没有同步轮询或 polling fallback。
+队列深度、批次上限和控制器队列数分别由实现报告，单深度控制器不会因使用该合同而变成原生多队列硬件。
 
-块设备内部的 IRQ endpoint 按 source 和 queue 分离。每个 endpoint 拥有
-`Box<dyn HardIrqHandler + Send>`；`ack()` 只返回
-`Spurious`、`Cleared` 或 `MaskedNeedsRearm` 以及 queue mask/控制事件。handler
-生命周期由 IRQ 注册 token 持有，不能查找 `rdrive`、drain queue 或完成业务请求。
+### 3.2 串口端点
 
-## rdif-display / rdif-input / rdif-vsock
+`drivers/interface/rdif-serial/src/raw.rs` 的 `SplitUart::split()` 返回 `SerialParts`，分别交付控制端点、IRQ 端点和紧急发送端点。`UartPort` 提供启动、配置、RX/TX 和 rearm；`UartIrq` 返回有界 `SerialIrqReport`；`UartEmergencyTx` 只用于紧急输出。
 
-这三个能力边界按 `error/types/interface` 或 `addr/event/interface` 拆文件：
+`UartIrq::handle()` 不调用运行时代码，也不写 TX FIFO。`mask()` 只屏蔽本设备源，不能关闭共享中断控制器线路。紧急端点需要进入 `UartRegisterGate`，不能把正常配置、RX 和紧急发送混成一个可任意并发调用的对象。
 
-| crate | 文件拆分 |
+### 3.3 网络部件
+
+`drivers/interface/rdif-eth/src/lib.rs` 的 `NetDevice::into_parts()` 消耗设备，交付控制、可选无线控制和 poll group。group 表达共同屏蔽与 rearm 的硬件服务域，不是其他领域必须实现的通用队列类型。
+
+| 对象或字段 | 所有权与能力 |
 | --- | --- |
-| `rdif-display` | `types.rs`（`DisplayInfo`、`PixelFormat`、`FrameBuffer`）、`error.rs`（`DisplayError`）、`interface.rs`（`Interface`、`Event`） |
-| `rdif-input` | `event.rs`（`EventType`、`InputEvent`、`AbsInfo`）、`id.rs`（`InputDeviceId`）、`error.rs`（`InputError`）、`interface.rs`（`Interface`、`Event`） |
-| `rdif-vsock` | `addr.rs`（`VsockAddr`、`VsockConnId`）、`event.rs`（`VsockEvent`）、`error.rs`（`VsockError`）、`interface.rs`（`Interface`、`Event`） |
+| `NetDeviceInfo`、`NetControlEndpoint` | 静态信息和独占控制查询 |
+| `wifi_control` | 可选无线有限步事务端点 |
+| `queues` | 独占 `ITxQueue` 和 `IRxQueue` |
+| `irq_control` | owner 上的 `quiesce()`、`rearm_and_check()`、`shutdown()` |
+| `owner_startup` | 可选设备启动状态机 |
+| `irq_endpoints` | 携带局部 `NetIrqSourceId` 的可移动硬 IRQ 端点 |
 
-接口目标形态：
+`DmaBuffer` 不可克隆，提交失败由 `SubmitError` 返回原令牌。`TxSubmitOptions` 的校验和与延迟通知是显式选项，默认实现可以拒绝不支持的请求。准备层拒绝空 group、重复身份、缺失 IRQ endpoint 和小于 2 的 ring，具体资源约束见[平台资源](resources.md)。
 
-```rust
-pub trait DisplayInterface: rdif_base::DriverGeneric {
-    fn info(&self) -> DisplayInfo;
-    fn framebuffer(&mut self) -> Result<FrameBuffer<'_>, DisplayError>;
-    fn need_flush(&self) -> bool;
-    fn flush(&mut self) -> Result<(), DisplayError>;
-    fn handle_irq(&mut self) -> DisplayEvent;
-}
+## 4. 借用与事件能力
+
+部分领域保留对象的可变访问，不需要 owned-DMA 队列合同。借用有效期、事件字段和操作缺省值仍需明确。
+
+### 4.1 显示与输入
+
+`drivers/interface/rdif-display/src/interface.rs` 的 `framebuffer()` 返回 `FrameBuffer<'_>`，其内存视图受设备借用约束；`need_flush()`、`flush()` 描述刷新，事件以 `handled`、`changed` 区分处理与显示变化。
+
+`drivers/interface/rdif-input/src/interface.rs` 提供设备标识、位置、事件位图和 `read_event()`。`get_prop_bits()` 默认返回零，`get_abs_info()` 默认返回 `NotSupported`；输入 `input_ready` 不能解释成块 I/O 或显示刷新完成。
+
+### 4.2 连接与主机
+
+`drivers/interface/rdif-vsock/src/interface.rs` 使用 `VsockConnId`，提供监听、连接、收发、断开、终止和事件查询。vsock 不需要 MAC 或 DHCP，虽然系统消费位置也在网络模块。
+
+USB `drivers/usb/usb-host/src/backend/kmod/kcore.rs` 的 `CoreOp` 提供主机初始化、根 hub 和已寻址设备创建，`USBHost` 对上层暴露设备变化及打开操作。hub 信息、端点请求和事件 handler 分别有自己的对象，不通过网络 parts 表达。
+
+## 5. 资源转移与错误
+
+接口的成功与失败结果必须明确是否发生所有权转移。错误类型无法单独证明资源已恢复，调用者还需结合操作阶段。
+
+### 5.1 转移条件
+
+块批次可能部分接受，网络失败提交返回令牌，显示帧缓冲是借用，USB 完成与取消需要等待控制器协议。统一的是准确记录所有权，而不是强迫这些操作使用相同返回类型。
+
+```mermaid
+flowchart LR
+    Call[调用能力方法] --> Result{操作结果}
+    Result --> Accepted[按合同转移已接受资源]
+    Result --> Rejected[保留或归还未接受资源]
+    Result --> Borrow[借用范围内访问]
+    Accepted --> Complete[领域终态或完成交付]
+    Complete --> Reuse[调用者重新获得使用权]
 ```
 
-```rust
-pub trait InputInterface: rdif_base::DriverGeneric {
-    fn device_id(&self) -> InputDeviceId;
-    fn physical_location(&self) -> &str;
-    fn unique_id(&self) -> &str;
-    fn get_event_bits(&mut self, ty: EventType, out: &mut [u8]) -> Result<bool, InputError>;
-    fn read_event(&mut self) -> Result<InputEvent, InputError>;
-    fn get_prop_bits(&mut self, out: &mut [u8]) -> Result<usize, InputError>;
-    fn get_abs_info(&mut self, axis: u8) -> Result<AbsInfo, InputError>;
-    fn handle_irq(&mut self) -> InputEventState;
-}
-```
+图示仅归纳合同种类，部分接受与借用不是所有接口都支持的分支。错误后可否重试由具体能力定义。
 
-```rust
-pub trait VsockInterface: rdif_base::DriverGeneric {
-    fn guest_cid(&self) -> u64;
-    fn listen(&mut self, port: u32) -> Result<(), VsockError>;
-    fn connect(&mut self, id: VsockConnId) -> Result<(), VsockError>;
-    fn send(&mut self, id: VsockConnId, buf: &[u8]) -> Result<usize, VsockError>;
-    fn recv(&mut self, id: VsockConnId, buf: &mut [u8]) -> Result<usize, VsockError>;
-    fn recv_avail(&mut self, id: VsockConnId) -> Result<usize, VsockError>;
-    fn disconnect(&mut self, id: VsockConnId) -> Result<(), VsockError>;
-    fn abort(&mut self, id: VsockConnId) -> Result<(), VsockError>;
-    fn poll_event(&mut self) -> Result<Option<VsockEvent>, VsockError>;
-    fn handle_irq(&mut self) -> VsockIrqEvent;
-}
-```
+### 5.2 合同与执行分离
 
-IRQ 路径只返回稳定事件和唤醒等待方；不能在 IRQ handler 中执行阻塞 I/O、长流程状态推进或广域锁持有。
+`UartPort::startup()` 要求失败时恢复配置，无法证明恢复的寄存器错误要求调用方停止正常服务；块控制器关闭期间需要保留队列；网络有 DMA 停止未确认错误。这些是不同失败语义，不能统一转换为“忽略并继续”。
 
-## rdif-pinctrl
-
-`rdif-pinctrl` 是 pinctrl、GPIO、GPIO IRQ 的能力边界，分成三个独立 endpoint：`Interface`、`GpioBank`、`GpioIrqHandler`。`Interface` 只描述 pins/groups/functions/configs/states 这些 Linux pinctrl 模型中的稳定语义，但用 `PinId`、`GroupId`、`FunctionId`、`GpioLineId`、`MuxValue` 和 typed `PinConfig` 表达，不引入全局字符串 registry、packed `unsigned long` config、devm/module/debugfs 语义。`PinState` 应用顺序固定为先 mux 再 pin config。
-
-GPIO line 所有权通过 `GpioLineHandle` 表达。consumer 先向 `GpioBank` request line，后续 direction/read/write 必须带 handle，避免裸 `PinId` 被多个调用方重复配置。GPIO IRQ 与 GPIO control path 分离：`Interface::take_irq_handler(source_id)` 把 `Box<dyn GpioIrqHandler>` 所有权移交给 OS runtime，runtime 再把 handler move 进 IRQ registration closure；task/control path 不共享 handler。`GpioIrqHandler::handle_irq()` 只返回 pending line mask、edge/level/error/overflow 事件，不做 OS wakeup、任务调度、IRQ 注册或 GPIO consumer 回调。
-
-FDT/ACPI 解析不进入 `rdif-pinctrl` portable core。`rdrive` / `ax-driver` probe glue 负责把 FDT consumer node 的 `pinctrl-names` + `pinctrl-N`、SoC-specific `rockchip,pins`、`gpio-ranges`、`gpios` / `gpio` 等解析成 `PinState`、`MuxSetting`、`PinConfig` 或 `GpioLineId`。ACPI 第一版只暴露 `AcpiPinStateSpec` / `AcpiGpioLineSpec` 这类 typed metadata；仓库尚无 Linux-style ACPI pinctrl state parser 时，probe glue 必须返回明确的 `PinctrlError::UnsupportedFirmware(FirmwareKind::Acpi)`，不能静默 fallback。
-
-## 文件拆分规则
-
-新增 crate 默认遵循以下布局：
-
-```text
-src/
-  lib.rs          # re-export only
-  error.rs       # error type and conversions
-  types.rs       # public data types
-  interface.rs   # trait and event contract
-  device.rs      # runtime device wrapper, if this is rd-* crate
-  irq.rs         # irq event handling, if needed
-  queue.rs       # queue/request/event stream, if needed
-```
-
-`lib.rs` 只做模块声明和 re-export，不承载核心实现。已有大文件在迁移触及时必须拆分。
+接口不提供上层挂载、socket 或用户设备撤销语义。资源来源、执行推进与服务交付分别由[平台资源](resources.md)、[运行时与完成](runtime.md)和[领域服务](services.md)定义。

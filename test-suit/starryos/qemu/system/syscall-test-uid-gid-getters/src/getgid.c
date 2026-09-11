@@ -22,8 +22,7 @@
  *    supporting 32-bit IDs. The glibc wrapper functions transparently deal
  *    with the variations across kernel versions."
  *
- * 5 维度覆盖 (a-e):
- *   (a) basic 返回值                       man §DESCRIPTION
+ * 4 维度覆盖 (b-e):
  *   (b) idempotent 纯查询无副作用           man §DESCRIPTION (隐含)
  *   (c) errno 不动                          man §ERRORS
  *   (d) raw syscall vs libc wrapper 一致    man §HISTORY (libc 透明处理)
@@ -39,16 +38,6 @@ static int waitpid_safely(pid_t pid, int *status)
     return r == pid ? 0 : -1;
 }
 
-static void getgid_basic_returns_gid(void)
-{
-    /* 测什么: man §DESCRIPTION — getgid() returns real group ID.
-     * 怎么测: 直接调 getgid(), 打印.
-     * 期望:   返回当前 cred.gid (root 启动时为 0).
-     * 为什么: 验证 syscall 不 panic. gid_t 是 unsigned, "always succeeds". */
-    gid_t g = getgid();
-    CHECK(g == g, "getgid (a) basic: returned value (always succeeds)");
-    printf("  current real gid = %u\n", (unsigned)g);
-}
 
 static void getgid_idempotent(void)
 {
@@ -115,7 +104,6 @@ static void getgid_fork_child_inherits(void)
 int getgid_run(void)
 {
     printf("\n----- getgid -----\n");
-    getgid_basic_returns_gid();
     getgid_idempotent();
     getgid_does_not_modify_errno();
     getgid_raw_syscall_matches_libc();

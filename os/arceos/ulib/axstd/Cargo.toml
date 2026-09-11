@@ -1,6 +1,6 @@
 [package]
 name = "ax-std"
-version = "0.5.33"
+version = "0.6.1"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -29,9 +29,8 @@ arceos = ["paging", "std-compat", "smp"]
 host-test = [
     "ax-api/host-test",
     "ax-hal/host-test",
-
     "ax-percpu/host-test",
-    "ax-task/host-test",
+    "ax-runtime/host-test",
 ]
 
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
@@ -41,13 +40,15 @@ std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
 smp = ["ax-runtime/smp", "ax-posix-api/smp"]
 
 # Floating point/SIMD
-fp-simd = ["ax-hal/fp-simd"]
+fp-simd = ["ax-hal/fp-simd", "ax-runtime/fp-simd"]
 
 # User space support
+# Enable userspace support without kernel TLS, including when `tls` is enabled.
+# User-space TLS remains available through the userspace context APIs.
 uspace = ["ax-runtime/uspace"]
 
 # Hypervisor support
-hv = ["ax-hal/hv"]
+hv = ["ax-hal/hv", "fp-simd"]
 
 # Inter-processor interrupts
 ipi = ["ax-api/ipi", "ax-runtime/ipi"]
@@ -58,14 +59,14 @@ ext-ld = ["ax-runtime/ext-ld"]
 # Memory
 alloc = ["ax-api/alloc", "ax-io/alloc", "ax-posix-api/alloc"]
 paging = ["alloc", "ax-runtime/paging"]
+# Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["ax-runtime/tls"]
 
 # Scheduler configuration
-lockdep = ["ax-posix-api/lockdep", "ax-runtime/lockdep",]
-task-ext = ["ax-task/task-ext"]
-tracepoint-hooks = ["ax-task/tracepoint-hooks"]
-sched-rr = ["ax-task/sched-rr"]
-sched-cfs = ["ax-task/sched-cfs"]
+lockdep = ["ax-posix-api/lockdep", "ax-runtime/lockdep"]
+qperf-metrics = ["ax-runtime/qperf-metrics"]
+task-ext = []
+tracepoint-hooks = []
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 
@@ -95,6 +96,7 @@ dns = ["net"]
 fd = [
   "ax-posix-api/fd",
   "ax-posix-api/poll",
+  "ax-posix-api/pipe",
   "ax-posix-api/epoll",
   "ax-posix-api/eventfd",
 ]
@@ -132,7 +134,6 @@ ax-lazyinit.workspace = true
 ax-percpu.workspace = true
 ax-posix-api.workspace = true
 ax-runtime.workspace = true
-ax-task.workspace = true
 libc.workspace = true
 syscalls.workspace = true
 thiserror.workspace = true

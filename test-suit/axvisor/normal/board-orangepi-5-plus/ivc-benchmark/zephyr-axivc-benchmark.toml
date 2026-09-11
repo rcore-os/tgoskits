@@ -1,0 +1,25 @@
+[base]
+id = 2
+name = "zephyr-axivc-starry-benchmark"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x100]
+
+[kernel]
+entry_point = 0x5000_923c
+image_location = "fs"
+kernel_load_addr = 0x5000_0000
+kernel_path = "/guest/zephyr/zephyr-ivc-benchmark.bin"
+dtb_load_addr = 0x7000_0000
+
+memory_regions = [
+  [0x5000_0000, 0x3000_0000, 0x7, 2],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "ivc0"
+model = "ivc-channel"

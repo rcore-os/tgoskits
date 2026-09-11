@@ -312,20 +312,3 @@ impl DmaMapHandle {
         self.bounce_ptr
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn coherent_handle_keeps_cpu_alias_and_allocator_address_distinct() {
-        let alias = NonNull::new(0x8000_usize as *mut u8).unwrap();
-        let allocation = NonNull::new(0x4000_usize as *mut u8).unwrap();
-        let layout = Layout::from_size_align(0x1000, 0x1000).unwrap();
-        let handle = unsafe { DmaAllocHandle::new(alias, allocation, 0x2000_u64.into(), layout) };
-
-        assert_eq!(handle.as_ptr(), alias);
-        assert_eq!(handle.allocation_ptr(), allocation);
-        assert_eq!(handle.dma_addr(), DmaAddr::from(0x2000_u64));
-    }
-}

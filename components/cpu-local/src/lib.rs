@@ -5,10 +5,10 @@
 extern crate std;
 
 mod area;
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+mod cpu_entry;
 mod error;
 mod identity;
-#[cfg(target_arch = "loongarch64")]
-pub mod loongarch64;
 mod pin;
 mod preempt;
 mod register;
@@ -22,10 +22,12 @@ pub use identity::*;
 pub use pin::*;
 pub use preempt::*;
 pub use register::current_context;
-#[cfg(feature = "tls")]
+#[doc(hidden)]
+pub use register::current_cpu_index;
+#[cfg(kernel_tls)]
 #[doc(hidden)]
 pub use register::install_kernel_tls;
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub use register::kernel_tls;
 #[doc(hidden)]
 pub use register::{

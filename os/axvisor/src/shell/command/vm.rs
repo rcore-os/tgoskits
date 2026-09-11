@@ -259,12 +259,15 @@ fn start_vm_by_id(vm_id: usize, attach_console: bool) {
             println!("✓ VM[{}] started successfully", vm_id);
             if attach_console {
                 match crate::guest_console::attach(vm_id) {
-                    Ok(()) => {
+                    Ok(crate::guest_console::ConsoleAttachment::Interactive) => {
                         println!(
                             "✓ Attached VM[{vm_id}] console; use Ctrl+X, then h to return to the \
                              shell"
                         );
                         crate::guest_console::activate(vm_id);
+                    }
+                    Ok(crate::guest_console::ConsoleAttachment::Replayed) => {
+                        println!("✓ Replayed buffered VM[{vm_id}] console output");
                     }
                     Err(error) => println!("✗ Failed to attach VM[{vm_id}] console: {error:#}"),
                 }
@@ -612,9 +615,12 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
     // Remove VM from global list
     // Note: This drops the reference from the global list, but the VM object
     // will only be fully destroyed when all vCPU threads exit and drop their references
+    let console_backend = crate::guest_console::backend_identity(vm_id);
     match crate::manager::AxvmManager::remove_vm(vm_id) {
         Some(vm) => {
-            crate::guest_console::remove(vm_id);
+            if let Some(identity) = console_backend {
+                crate::guest_console::remove_if_backend(identity);
+            }
             if let Err(err) = vm.destroy() {
                 println!("⚠ VM[{vm_id}] destroy failed: {err}");
             }
@@ -654,9 +660,12 @@ fn vm_console(cmd: &ParsedCommand) {
     };
 
     match crate::guest_console::attach(vm_id) {
-        Ok(()) => {
+        Ok(crate::guest_console::ConsoleAttachment::Interactive) => {
             println!("✓ Attached VM[{vm_id}] console; use Ctrl+X, then h to return to the shell");
             crate::guest_console::activate(vm_id);
+        }
+        Ok(crate::guest_console::ConsoleAttachment::Replayed) => {
+            println!("✓ Replayed buffered VM[{vm_id}] console output");
         }
         Err(error) => println!("✗ Failed to attach VM[{vm_id}] console: {error:#}"),
     }

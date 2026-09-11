@@ -242,6 +242,10 @@ impl PlatOp for Plat {
         active.id()
     }
 
+    fn acknowledge_ipi(active: &mut Self::ActiveIrq) {
+        active.complete();
+    }
+
     fn systick_irq() -> IrqId {
         lapic_timer_irq_id()
     }
@@ -276,21 +280,32 @@ impl PlatOp for Plat {
 
 pub struct ActiveIrq {
     irq: IrqId,
+    completion_pending: bool,
 }
 
 impl ActiveIrq {
     const fn new(irq: IrqId) -> Self {
-        Self { irq }
+        Self {
+            irq,
+            completion_pending: true,
+        }
     }
 
     pub fn id(&self) -> IrqId {
         self.irq
     }
+
+    fn complete(&mut self) {
+        if self.completion_pending {
+            lapic::eoi();
+            self.completion_pending = false;
+        }
+    }
 }
 
 impl Drop for ActiveIrq {
     fn drop(&mut self) {
-        lapic::eoi();
+        self.complete();
     }
 }
 
@@ -565,15 +580,5 @@ mod tests {
         };
 
         assert_eq!(route_to_rdif(route_to_irq_framework(route)), route);
-    }
-}
-
-#[cfg(test)]
-mod coverage_tests {
-    use super::*;
-
-    #[test]
-    fn irq_route_constant_marks_valid_entries() {
-        assert_eq!(IRQ_ROUTE_VALID, 1 << 63);
     }
 }

@@ -33,16 +33,7 @@
 extern crate alloc;
 extern crate ax_driver as _;
 
-mod ctypes {
-    #[rustfmt::skip]
-    #[allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals, clippy::upper_case_acronyms)]
-    mod libctypes {
-        include!(concat!(env!("OUT_DIR"), "/libctypes_gen.rs"));
-    }
-
-    pub use ax_posix_api::ctypes::*;
-    pub use libctypes::*;
-}
+use ax_posix_api::ctypes;
 
 #[macro_use]
 mod utils;
@@ -103,8 +94,8 @@ pub use self::{
     io::{read, writev},
     mktime::mktime,
     pthread::{
-        pthread_create, pthread_exit, pthread_join, pthread_mutex_init, pthread_mutex_lock,
-        pthread_mutex_unlock, pthread_self,
+        pthread_create, pthread_detach, pthread_exit, pthread_join, pthread_mutex_init,
+        pthread_mutex_lock, pthread_mutex_unlock, pthread_self,
     },
     rand::{rand, random, srand},
     resource::{getrlimit, setrlimit},

@@ -17,6 +17,7 @@ pub struct CpuPin<'scope> {
 
 impl CpuPin<'_> {
     /// Returns the initialized CPU area validated when this pin was created.
+    #[inline(always)]
     pub const fn area(&self) -> CpuAreaRef {
         self.area
     }
@@ -63,6 +64,7 @@ impl CurrentCpuArea<'_> {
     /// CPU area. The returned pointer may only be dereferenced while the outer
     /// owner transaction retains the synchronization required by `T`.
     #[doc(hidden)]
+    #[inline(always)]
     pub unsafe fn symbol_ptr<T>(&self, offset: usize) -> Result<NonNull<T>, CpuLocalError> {
         let address = self
             .area_base
@@ -102,14 +104,14 @@ impl ExclusiveCpu<'_> {
 /// # Errors
 ///
 /// Returns [`CpuLocalError::AreaNotInstalled`] before this CPU has installed
-/// its runtime area, or an identity error if the live register and area header
-/// disagree.
+/// its runtime area.
 ///
 /// # Safety
 ///
 /// The caller must prevent migration for the complete callback. Offline boot
 /// code may call this while the CPU cannot be scheduled; runtime code must
 /// hold an appropriate preemption or IRQ guard.
+#[inline(always)]
 pub unsafe fn with_cpu_pin<R>(
     operation: impl for<'scope> FnOnce(&CpuPin<'scope>) -> R,
 ) -> Result<R, CpuLocalError> {
@@ -119,9 +121,9 @@ pub unsafe fn with_cpu_pin<R>(
         _scope: PhantomData,
         _not_send_or_sync: PhantomData,
     };
-    // Validate the image's selected current-context source before exposing
-    // typed access. Each image mode has exactly one authoritative source.
-    register::current_context(&pin)?;
+    // Installation validates the area, while initial binding and every switch
+    // validate current before publication. Like Linux per-CPU access, this hot
+    // path trusts those owner boundaries instead of re-reading current.
     Ok(operation(&pin))
 }
 
@@ -164,6 +166,7 @@ pub unsafe fn with_exclusive_cpu<R>(
 /// and every conflicting remote access to be excluded. Offline CPU bootstrap
 /// satisfies these conditions before interrupt publication.
 #[doc(hidden)]
+#[inline(always)]
 pub unsafe fn with_current_cpu_area<R>(
     operation: impl for<'scope> FnOnce(&CurrentCpuArea<'scope>) -> R,
 ) -> Result<R, CpuLocalError> {

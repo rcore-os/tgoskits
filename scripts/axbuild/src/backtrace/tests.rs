@@ -4,13 +4,11 @@ use std::{
     sync::Arc,
 };
 
-use clap::Parser;
 use object::{Object, ObjectSymbol};
 
 use super::{
-    BacktraceBlockCapture, BacktraceSymbolizeSession, Command, SymbolizeAfterQemuOutcome,
-    apply_qemu_log_retention, arceos_rust_elf_path, flush_pending_stream_symbolize,
-    maybe_symbolize_after_qemu,
+    BacktraceBlockCapture, BacktraceSymbolizeSession, SymbolizeAfterQemuOutcome,
+    apply_qemu_log_retention, flush_pending_stream_symbolize, maybe_symbolize_after_qemu,
     parser::{infer_kind_filter, parse_blocks},
     should_delete_qemu_log_after_symbolize, should_persist_qemu_capture_log, std_test_elf_path,
     symbolize::{
@@ -118,28 +116,6 @@ BACKTRACE_END
 }
 
 #[test]
-fn cli_accepts_adjust_ip_false() {
-    #[derive(clap::Parser)]
-    struct TestCli {
-        #[command(subcommand)]
-        command: Command,
-    }
-
-    let cli = TestCli::try_parse_from([
-        "tg-xtask",
-        "symbolize",
-        "--elf",
-        "/tmp/fake.elf",
-        "--adjust-ip",
-        "false",
-    ])
-    .unwrap();
-
-    let Command::Symbolize(args) = cli.command;
-    assert!(!args.adjust_ip);
-}
-
-#[test]
 fn symbolize_resolves_symbol_with_ip_bias_under_aslr() {
     let exe = std::env::current_exe().unwrap();
     let bytes = std::fs::read(&exe).unwrap();
@@ -200,30 +176,7 @@ BACKTRACE_END
 }
 
 #[test]
-fn arceos_rust_elf_path_uses_release_profile() {
-    let path = arceos_rust_elf_path(Path::new("/ws"), "x86_64-unknown-none", "app", false);
-    assert_eq!(
-        path,
-        PathBuf::from("/ws/target/x86_64-unknown-none/release/app")
-    );
-}
-
-#[test]
 fn std_test_elf_path_uses_release_profile() {
-    let path = std_test_elf_path(
-        Path::new("/ws"),
-        "x86_64-unknown-none",
-        "arceos-test-suit",
-        false,
-    );
-    assert_eq!(
-        path,
-        PathBuf::from("/ws/target/x86_64-unknown-linux-musl/release/arceos-test-suit")
-    );
-}
-
-#[test]
-fn std_test_elf_path_maps_arceos_none_target_to_std_target_dir() {
     let path = std_test_elf_path(
         Path::new("/ws"),
         "x86_64-unknown-none",

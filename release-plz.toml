@@ -1,4 +1,6 @@
 [workspace]
 dependencies_update = true
 publish_no_verify = true
-release_always = true
+# Publish the coordinated versions and dependency requirements from the release
+# PR, rather than publishing new crates before their dependencies are released.
+release_always = false

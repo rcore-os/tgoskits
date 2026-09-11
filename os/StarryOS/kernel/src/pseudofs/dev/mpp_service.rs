@@ -12,27 +12,18 @@
 //! → physical-address resolution (via the /dev/dma_heap DmaBufFile), and the
 //! hardware run.
 
+use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, ffi::c_int, mem::size_of};
 
-use ax_driver::jpeg::{self, mpp, registers};
-use ax_runtime::hal::cpu::asm::user_copy;
+use ax_driver::jpeg::{self, ResolvedDmaBuf, mpp, registers};
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
 
-use crate::{file::dmabuf::resolve_contiguous_dmabuf, pseudofs::DeviceOps, sync::Mutex};
-
-fn copy_from_user(dst: *mut u8, src: *const u8, size: usize) -> VfsResult<()> {
-    if unsafe { user_copy(dst, src, size) } != 0 {
-        return Err(VfsError::InvalidData);
-    }
-    Ok(())
-}
-
-fn copy_to_user(dst: *mut u8, src: *const u8, size: usize) -> VfsResult<()> {
-    if unsafe { user_copy(dst, src, size) } != 0 {
-        return Err(VfsError::InvalidData);
-    }
-    Ok(())
-}
+use crate::{
+    file::dmabuf::resolve_contiguous_dmabuf,
+    mm::{UserConstPtr, UserPtr},
+    pseudofs::DeviceOps,
+    sync::Mutex,
+};
 
 /// Char-device id for `/dev/mpp_service` (opened by path; id is informational).
 pub const MPP_SERVICE_DEVICE_ID: DeviceId = DeviceId::new(0xF1, 0x10);
@@ -83,7 +74,7 @@ impl DeviceOps for MppService {
         self
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
+    fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
         // Only the V1 request layout is implemented; V2 uses a different record
         // and must not be parsed as V1.
         if cmd != mpp::MPP_IOC_CFG_V1 {
@@ -96,8 +87,8 @@ impl DeviceOps for MppService {
         let mut state = self.state.lock();
         // Walk the chained request records (MULTI_MSG ... LAST_MSG).
         for i in 0..mpp::MAX_MSG_NUM {
-            let req = read_request(arg + i * size_of::<mpp::MppRequest>())?;
-            handle_request(&mut state, &req)?;
+            let req = read_request(current, arg + i * size_of::<mpp::MppRequest>())?;
+            handle_request(current, &mut state, &req)?;
             if req.flag & mpp::flags::LAST_MSG != 0 || req.flag & mpp::flags::MULTI_MSG == 0 {
                 break;
             }
@@ -106,56 +97,57 @@ impl DeviceOps for MppService {
     }
 }
 
-fn read_request(uaddr: usize) -> VfsResult<mpp::MppRequest> {
-    let mut req = mpp::MppRequest::default();
-    copy_from_user(
-        (&mut req) as *mut mpp::MppRequest as *mut u8,
-        uaddr as *const u8,
-        size_of::<mpp::MppRequest>(),
-    )?;
-    Ok(req)
+fn read_request(current: &crate::task::UserTaskRef, uaddr: usize) -> VfsResult<mpp::MppRequest> {
+    // SAFETY: `MppRequest` is a `repr(C)` aggregate of integer fields with no
+    // padding, so every possible userspace byte pattern is a valid value.
+    unsafe { UserConstPtr::<mpp::MppRequest>::from(uaddr).read_abi(current) }
+        .map_err(|_| VfsError::InvalidData)
 }
 
-fn write_u32_to_user(uaddr: usize, value: u32) -> VfsResult<()> {
-    copy_to_user(
-        uaddr as *mut u8,
-        (&value) as *const u32 as *const u8,
-        size_of::<u32>(),
-    )
+fn write_u32_to_user(
+    current: &crate::task::UserTaskRef,
+    uaddr: usize,
+    value: u32,
+) -> VfsResult<()> {
+    UserPtr::<u32>::from(uaddr)
+        .write(current, value)
+        .map_err(|_| VfsError::InvalidData)
 }
 
-fn handle_request(state: &mut TaskState, req: &mpp::MppRequest) -> VfsResult<()> {
+fn handle_request(
+    current: &crate::task::UserTaskRef,
+    state: &mut TaskState,
+    req: &mpp::MppRequest,
+) -> VfsResult<()> {
     let data = req.data_ptr as usize;
     match req.cmd {
         mpp::cmd::PROBE_HW_SUPPORT => {
-            write_u32_to_user(data, mpp::HW_SUPPORT_JPEG_DEC)?;
+            write_u32_to_user(current, data, mpp::HW_SUPPORT_JPEG_DEC)?;
         }
         mpp::cmd::QUERY_HW_ID => {
-            write_u32_to_user(data, jpeg::read_id().unwrap_or(0))?;
+            write_u32_to_user(current, data, jpeg::read_id().unwrap_or(0))?;
         }
         mpp::cmd::QUERY_CMD_SUPPORT => {
             // No command-support table is offered; write back 0 (rather than
             // leaving the user buffer untouched) so MPP's capability probe reads a
             // defined value and falls back to the old-kernel command path.
-            write_u32_to_user(data, 0)?;
+            write_u32_to_user(current, data, 0)?;
         }
         mpp::cmd::INIT_CLIENT_TYPE => {
-            let mut client: u32 = 0;
-            copy_from_user(
-                (&mut client) as *mut u32 as *mut u8,
-                data as *const u8,
-                size_of::<u32>(),
-            )?;
+            let client = UserConstPtr::<u32>::from(data)
+                .read(current)
+                .map_err(|_| VfsError::InvalidData)?;
             state
                 .session
                 .init_client_type(client)
                 .map_err(|_| VfsError::InvalidInput)?;
         }
         mpp::cmd::SET_REG_WRITE => {
-            let mut words = [0u32; registers::REG_COUNT];
             let n = (req.size as usize / 4).min(registers::REG_COUNT);
-            copy_from_user(words.as_mut_ptr() as *mut u8, data as *const u8, n * 4)?;
-            state.session.set_reg_write(&words[..n]);
+            let words = UserConstPtr::<u32>::from(data)
+                .read_slice(current, n)
+                .map_err(|_| VfsError::InvalidData)?;
+            state.session.set_reg_write(&words);
         }
         mpp::cmd::SET_REG_READ => {
             state.read_dst = data;
@@ -164,15 +156,18 @@ fn handle_request(state: &mut TaskState, req: &mpp::MppRequest) -> VfsResult<()>
         mpp::cmd::SET_REG_ADDR_OFFSET => {
             let elem = size_of::<mpp::RegOffset>();
             let cnt = (req.size as usize / elem).min(mpp::MAX_REG_OFFSETS);
-            let mut elems = [mpp::RegOffset::default(); mpp::MAX_REG_OFFSETS];
-            copy_from_user(elems.as_mut_ptr() as *mut u8, data as *const u8, cnt * elem)?;
+            // SAFETY: `RegOffset` is `repr(C)` with exactly two `u32` fields,
+            // so every possible userspace byte pattern is a valid value.
+            let elems =
+                unsafe { UserConstPtr::<mpp::RegOffset>::from(data).read_abi_slice(current, cnt) }
+                    .map_err(|_| VfsError::InvalidData)?;
             state
                 .session
-                .add_reg_offsets(&elems[..cnt])
+                .add_reg_offsets(&elems)
                 .map_err(|_| VfsError::InvalidInput)?;
         }
         mpp::cmd::POLL_HW_FINISH | mpp::cmd::POLL_HW_IRQ => {
-            run_decode(state)?;
+            run_decode(current, state)?;
         }
         mpp::cmd::RESET_SESSION => {
             state.session.reset();
@@ -185,10 +180,14 @@ fn handle_request(state: &mut TaskState, req: &mpp::MppRequest) -> VfsResult<()>
     Ok(())
 }
 
-fn run_decode(state: &mut TaskState) -> VfsResult<()> {
+fn run_decode(current: &crate::task::UserTaskRef, state: &mut TaskState) -> VfsResult<()> {
+    // Keep every imported allocation alive until the synchronous hardware run
+    // has completed. Resolving only to a physical number would allow a concurrent
+    // close of the dma-buf fd to free pages while the JPEG block still owns them.
+    let mut imported = Vec::with_capacity(registers::ADDR_REG_INDICES.len());
     state
         .session
-        .resolve_addresses(resolve_fd)
+        .resolve_addresses(|fd| resolve_fd(fd, &mut imported))
         .map_err(|_| VfsError::InvalidInput)?;
 
     let mut readback = [0u32; registers::REG_COUNT];
@@ -198,11 +197,9 @@ fn run_decode(state: &mut TaskState) -> VfsResult<()> {
     let (first, count) = state.session.read_window();
     if state.read_dst != 0 && count > 0 && first < registers::REG_COUNT {
         let count = count.min(registers::REG_COUNT - first);
-        copy_to_user(
-            state.read_dst as *mut u8,
-            readback[first..].as_ptr() as *const u8,
-            count * 4,
-        )?;
+        UserPtr::<u32>::from(state.read_dst)
+            .write_slice(current, &readback[first..first + count])
+            .map_err(|_| VfsError::InvalidData)?;
     }
 
     state.session.clear_task();
@@ -213,7 +210,10 @@ fn run_decode(state: &mut TaskState) -> VfsResult<()> {
 /// Resolve a dma-buf fd (as MPP places it in an address register) to the
 /// physical base of its contiguous buffer. MPP allocates these from our
 /// `/dev/dma_heap` ([`DmaBufFile`]).
-fn resolve_fd(fd: u32) -> Option<u32> {
+fn resolve_fd(
+    fd: u32,
+    imported: &mut Vec<Arc<crate::file::dmabuf::DmaBufFile>>,
+) -> Option<ResolvedDmaBuf> {
     let Some(buf) = resolve_contiguous_dmabuf(fd as c_int) else {
         warn!("mpp_service: register fd {fd} is not a resolvable dma-buf");
         return None;
@@ -223,7 +223,11 @@ fn resolve_fd(fd: u32) -> Option<u32> {
     // are allocated below 4 GiB (dma32), so this should not trigger.
     let phys = buf.phys_base();
     match u32::try_from(phys) {
-        Ok(addr) => Some(addr),
+        Ok(address) => {
+            let size = buf.size();
+            imported.push(buf);
+            Some(ResolvedDmaBuf { address, size })
+        }
         Err(_) => {
             warn!("mpp_service: dma-buf fd {fd} phys {phys:#x} exceeds 32-bit JPU range");
             None

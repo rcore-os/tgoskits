@@ -33,6 +33,18 @@ pub trait X86VlapicHostOps: 'static {
         callback: X86TimerCallback,
     ) -> X86VlapicResult<Self::TimerHandle>;
 
+    /// Register a stable timer callback that may run in hard IRQ context.
+    ///
+    /// # Safety
+    ///
+    /// The callback must be bounded, allocation-free, non-sleeping, and use
+    /// only IRQ-safe pre-bound capabilities. It may not perform destruction or
+    /// registry lookup.
+    unsafe fn register_hard_timer(
+        deadline_nanos: u64,
+        callback: X86TimerCallback,
+    ) -> X86VlapicResult<Self::TimerHandle>;
+
     /// Cancel a timer callback.
     fn cancel_timer(handle: Self::TimerHandle) -> X86VlapicResult;
 
@@ -119,6 +131,13 @@ pub(crate) fn register_timer<H: X86VlapicHostOps>(
     callback: X86TimerCallback,
 ) -> X86VlapicResult<H::TimerHandle> {
     H::register_timer(deadline_nanos, callback)
+}
+
+pub(crate) unsafe fn register_hard_timer<H: X86VlapicHostOps>(
+    deadline_nanos: u64,
+    callback: X86TimerCallback,
+) -> X86VlapicResult<H::TimerHandle> {
+    unsafe { H::register_hard_timer(deadline_nanos, callback) }
 }
 
 pub(crate) fn cancel_timer<H: X86VlapicHostOps>(handle: H::TimerHandle) -> X86VlapicResult {

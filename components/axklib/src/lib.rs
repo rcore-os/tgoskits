@@ -51,7 +51,7 @@ pub use irq_framework::{
     CpuMask as IrqCpuMask, IrqAffinity, IrqContext, IrqError, IrqExecution, IrqHandle, IrqId,
     IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus, ShareMode as IrqShareMode,
 };
-use trait_ffi::*;
+use trait_ffi::def_extern_trait;
 
 mod error;
 pub use error::{KlibError, KlibResult};

@@ -1,11 +1,11 @@
 use std::{
     string::String,
-    sync::{Arc, Barrier, mpsc},
+    sync::{Arc, Barrier, Mutex as StdMutex, mpsc},
     thread,
     time::Duration,
 };
 
-use ax_std::{os::arceos::sync::IrqSafeMutex, sync::Mutex as SleepMutex};
+use ax_std::os::arceos::sync::IrqSafeMutex;
 
 use super::*;
 
@@ -21,23 +21,12 @@ fn test_vm_with_machine(
     Arc::new(AxVM {
         id,
         name: config.name(),
-        config: SleepMutex::new(config),
+        config: StdMutex::new(config),
         machine: IrqSafeMutex::new(machine),
+        #[cfg(not(target_arch = "aarch64"))]
+        translations: translation::TranslationGate::new(),
         fw_cfg_payload: Arc::new(FwCfgPayloadSlot::new()),
     })
-}
-
-#[test]
-fn config_and_machine_use_their_required_lock_types() {
-    fn assert_sleep_mutex<T: ?Sized>(_: &SleepMutex<T>) {}
-    fn assert_irq_safe_mutex<T: ?Sized>(_: &IrqSafeMutex<T>) {}
-
-    fn check(vm: &AxVM) {
-        assert_sleep_mutex(&vm.config);
-        assert_irq_safe_mutex(&vm.machine);
-    }
-
-    let _ = check as fn(&AxVM);
 }
 
 #[test]

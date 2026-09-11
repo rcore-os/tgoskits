@@ -8,7 +8,10 @@ id = "test-arceos-x86-64-qemu"
 impact_targets = ["arceos:x86_64"]
 name = "QEMU x86_64 · Suites"
 command = '''
-cargo xtask arceos test qemu --arch x86_64
+cargo xtask arceos test qemu --arch x86_64 --test-group rust
+cargo xtask arceos test qemu --arch x86_64 --test-group c
+cargo xtask arceos test qemu --arch x86_64 \
+  --test-group rust --test-case task-scheduler-irq-window
 '''
 
 [[check.suite]]
@@ -20,7 +23,10 @@ id = "test-arceos-riscv64-qemu"
 impact_targets = ["arceos:riscv64"]
 name = "QEMU riscv64 · Suites + task IPI"
 command = '''
-cargo xtask arceos test qemu --arch riscv64
+cargo xtask arceos test qemu --arch riscv64 --test-group rust
+cargo xtask arceos test qemu --arch riscv64 --test-group c
+cargo xtask arceos test qemu --arch riscv64 \
+  --test-group rust --test-case task-scheduler-irq-window
 taskset -c 0 cargo xtask arceos test qemu --arch riscv64 \
   --test-group rust --test-case task-ipi
 '''
@@ -38,7 +44,10 @@ echo "==> arceos aarch64 GICv2 SMP4 default app boot"
 cargo xtask arceos qemu --arch aarch64 --smp 4 \
   --qemu-config os/arceos/configs/qemu/qemu-aarch64-gicv2-boot.toml
 echo "==> arceos aarch64 test suites (Rust GICv2 SMP4 IPI + C GICv3 SMP4)"
-cargo xtask arceos test qemu --arch aarch64
+cargo xtask arceos test qemu --arch aarch64 --test-group rust
+cargo xtask arceos test qemu --arch aarch64 --test-group c
+cargo xtask arceos test qemu --arch aarch64 \
+  --test-group rust --test-case task-scheduler-irq-window
 '''
 
 [[check.suite]]
@@ -50,9 +59,94 @@ id = "test-arceos-loongarch64-qemu"
 impact_targets = ["arceos:loongarch64"]
 name = "QEMU loongarch64 · Suites"
 command = '''
-cargo xtask arceos test qemu --arch loongarch64
+cargo xtask arceos test qemu --arch loongarch64 --test-group rust
+cargo xtask arceos test qemu --arch loongarch64 --test-group c
+cargo xtask arceos test qemu --arch loongarch64 --test-group loongarch
+cargo xtask arceos test qemu --arch loongarch64 \
+  --test-group rust --test-case task-scheduler-irq-window
 '''
 
 [[check.suite]]
 kind = "arceos-qemu"
 arch = "loongarch64"
+
+[[check]]
+id = "test-arceos-cpu-aarch64"
+impact_targets = ["arceos:aarch64"]
+name = "CPU aarch64 · Hardware contracts"
+runner = "qcs"
+timeout_minutes = 30
+cache_key = ""
+command = '''
+cargo xtask arceos test qemu --arch aarch64 --test-group cpu
+'''
+
+[[check.suite]]
+kind = "arceos-qemu"
+arch = "aarch64"
+group = "cpu"
+
+[[check]]
+id = "test-arceos-cpu-riscv64"
+impact_targets = ["arceos:riscv64"]
+name = "CPU riscv64 · Hardware contracts"
+runner = "qcs"
+timeout_minutes = 30
+cache_key = ""
+command = '''
+cargo xtask arceos test qemu --arch riscv64 --test-group cpu
+'''
+
+[[check.suite]]
+kind = "arceos-qemu"
+arch = "riscv64"
+group = "cpu"
+
+[[check]]
+id = "test-arceos-cpu-loongarch64"
+impact_targets = ["arceos:loongarch64"]
+name = "CPU loongarch64 · Hardware contracts"
+runner = "ubuntu-axvisor-lvz"
+timeout_minutes = 30
+cache_key = ""
+command = '''
+cargo xtask arceos test qemu --arch loongarch64 --test-group cpu
+'''
+
+[[check.suite]]
+kind = "arceos-qemu"
+arch = "loongarch64"
+group = "cpu"
+
+[[check]]
+id = "test-arceos-cpu-x86-64"
+impact_targets = ["arceos:x86_64"]
+name = "CPU x86_64 · Hardware contracts"
+runner = "kvm-intel"
+timeout_minutes = 30
+cache_key = ""
+command = '''
+cargo xtask arceos test qemu --arch x86_64 --test-group cpu
+'''
+
+[[check.suite]]
+kind = "arceos-qemu"
+arch = "x86_64"
+group = "cpu"
+
+[[check]]
+id = "test-arceos-cpu-orangepi-5-plus"
+impact_targets = ["arceos:aarch64"]
+name = "Board OrangePi 5 Plus · CPU PMU"
+runner = "board"
+timeout_minutes = 30
+cache_key = ""
+command = '''
+cargo xtask arceos test board --board orangepi-5-plus --test-case pmu
+cargo xtask arceos test board --board orangepi-5-plus --test-case pmu-user
+'''
+
+[[check.suite]]
+kind = "arceos-board"
+board = "orangepi-5-plus"
+cases = ["pmu", "pmu-user"]

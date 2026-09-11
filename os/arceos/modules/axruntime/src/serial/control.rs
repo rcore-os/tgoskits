@@ -1,9 +1,11 @@
 use alloc::{collections::VecDeque, sync::Arc};
 
-use ax_task::{IrqNotify, WaitQueue};
 use rdif_serial::Config;
 
-use crate::{RuntimeError, RuntimeResult, sync::SpinLock};
+use crate::{
+    RuntimeError, RuntimeResult,
+    task::sync::{Mutex, SpinLock, WaitQueue},
+};
 
 pub(super) const CONTROL_QUEUE_CAPACITY: usize = 32;
 
@@ -53,7 +55,7 @@ impl ControlQueue {
         }
     }
 
-    pub(super) fn submit(&self, op: ControlOp, notify: &IrqNotify) -> RuntimeResult {
+    pub(super) fn submit(&self, op: ControlOp, notify: impl FnOnce()) -> RuntimeResult {
         let completion = Arc::new(CommandCompletion::new());
         {
             let mut requests = self.requests.lock_irqsave();
@@ -65,11 +67,11 @@ impl ControlQueue {
                 completion: completion.clone(),
             }));
         }
-        notify.notify();
+        notify();
         completion.wait()
     }
 
-    pub(super) fn submit_drain(&self, notify: &IrqNotify) -> RuntimeResult {
+    pub(super) fn submit_drain(&self, notify: impl FnOnce()) -> RuntimeResult {
         let completion = Arc::new(CommandCompletion::new());
         {
             let mut requests = self.requests.lock_irqsave();
@@ -80,7 +82,7 @@ impl ControlQueue {
                 completion: completion.clone(),
             }));
         }
-        notify.notify();
+        notify();
         completion.wait()
     }
 
@@ -94,28 +96,27 @@ impl ControlQueue {
 }
 
 struct CommandCompletion {
-    result: SpinLock<Option<RuntimeResult>>,
+    result: Mutex<Option<RuntimeResult>>,
     wait: WaitQueue,
 }
 
 impl CommandCompletion {
     fn new() -> Self {
         Self {
-            result: SpinLock::new(None),
+            result: Mutex::new(None),
             wait: WaitQueue::new(),
         }
     }
 
     fn complete(&self, result: RuntimeResult) {
-        *self.result.lock_irqsave() = Some(result);
-        self.wait.notify_all(true);
+        *self.result.lock() = Some(result);
+        self.wait.notify_all();
     }
 
     fn wait(&self) -> RuntimeResult {
-        self.wait
-            .wait_until(|| self.result.lock_irqsave().is_some());
+        self.wait.wait_until(|| self.result.lock().is_some());
         self.result
-            .lock_irqsave()
+            .lock()
             .take()
             .expect("serial command completion was published without a result")
     }

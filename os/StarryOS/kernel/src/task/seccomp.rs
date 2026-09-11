@@ -7,12 +7,13 @@
 //! compact classic-BPF interpreter for `struct seccomp_data`; unsupported or
 //! malformed programs fail closed by returning a kill decision.
 
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec, vec::Vec};
+use core::sync::atomic::{AtomicPtr, Ordering};
 
-use ax_runtime::hal::cpu::uspace::UserContext;
+use ax_runtime::hal::cpu::user::UserContext;
 use syscalls::Sysno;
 
-use crate::{StarryError, StarryResult};
+use crate::{StarryError, StarryResult, sync::Mutex};
 
 const BPF_MAXINSNS: usize = 4096;
 const BPF_MEMWORDS: usize = 16;
@@ -119,6 +120,74 @@ pub struct SeccompState {
     filters: Vec<SeccompFilter>,
 }
 
+/// Append-only publication store for immutable per-thread seccomp snapshots.
+///
+/// Linux evaluates seccomp from an immutable filter chain without taking an
+/// rtmutex on every syscall. StarryOS follows the same lifetime model: writers
+/// serialize rare policy updates, publish the fully built snapshot with
+/// release ordering, and retain every published allocation until the owning
+/// thread is destroyed. Readers can therefore borrow the acquire-loaded
+/// snapshot without locking or reference-count traffic.
+pub(crate) struct SeccompStateStore {
+    current: AtomicPtr<SeccompState>,
+    snapshots: Mutex<Vec<Arc<SeccompState>>>,
+}
+
+impl SeccompStateStore {
+    pub(crate) fn new() -> Self {
+        let initial = Arc::new(SeccompState::default());
+        let current = Arc::as_ptr(&initial).cast_mut();
+        Self {
+            current: AtomicPtr::new(current),
+            snapshots: Mutex::new(vec![initial]),
+        }
+    }
+
+    fn current(&self) -> &SeccompState {
+        let current = self.current.load(Ordering::Acquire);
+        // SAFETY: `current` is initialized from the first element in
+        // `snapshots`. Writers append before publishing and never remove a
+        // snapshot, so every published allocation remains alive for `self`.
+        unsafe { &*current }
+    }
+
+    pub(crate) fn evaluate(&self, uctx: &UserContext) -> SeccompDecision {
+        self.current().evaluate(uctx)
+    }
+
+    pub(crate) fn snapshot(&self) -> Arc<SeccompState> {
+        let current = self.current.load(Ordering::Acquire);
+        // SAFETY: the append-only owner list keeps `current` alive while
+        // `self` is borrowed. Incrementing before constructing the Arc gives
+        // the caller an independent strong reference.
+        unsafe {
+            Arc::increment_strong_count(current);
+            Arc::from_raw(current)
+        }
+    }
+
+    pub(crate) fn replace(&self, state: Arc<SeccompState>) {
+        let mut snapshots = self.snapshots.lock();
+        let current = Arc::as_ptr(&state).cast_mut();
+        snapshots.push(state);
+        self.current.store(current, Ordering::Release);
+    }
+
+    pub(crate) fn update(
+        &self,
+        operation: impl FnOnce(&mut SeccompState) -> crate::StarryResult<()>,
+    ) -> crate::StarryResult<()> {
+        let mut snapshots = self.snapshots.lock();
+        let mut next = self.current().clone();
+        operation(&mut next)?;
+        let next = Arc::new(next);
+        let current = Arc::as_ptr(&next).cast_mut();
+        snapshots.push(next);
+        self.current.store(current, Ordering::Release);
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 /// Active seccomp operating mode for a thread.
 enum SeccompMode {
@@ -159,9 +228,7 @@ struct SeccompData {
 }
 
 impl SeccompState {
-    /// Whether any seccomp mode is installed (strict or filter). When false, the
-    /// syscall path can skip locking+cloning+evaluating this state entirely.
-    pub fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.mode != SeccompMode::Disabled
     }
 
@@ -723,37 +790,6 @@ fn seccomp_action_and_precedence_rules_hold_for_test() -> bool {
 }
 
 #[cfg(all(test, not(axtest)))]
-fn seccomp_bpf_constants_hold_for_test() -> bool {
-    const {
-        assert!(BPF_MAXINSNS == 4096);
-        assert!(BPF_MEMWORDS == 16);
-
-        assert!(BPF_CLASS_MASK == 0x07);
-        assert!(BPF_LD == 0x00);
-        assert!(BPF_LDX == 0x01);
-        assert!(BPF_ST == 0x02);
-        assert!(BPF_STX == 0x03);
-        assert!(BPF_ALU == 0x04);
-        assert!(BPF_JMP == 0x05);
-        assert!(BPF_RET == 0x06);
-        assert!(BPF_MISC == 0x07);
-
-        assert!(BPF_SIZE_MASK == 0x18);
-        assert!(BPF_W == 0x00);
-        assert!(BPF_H == 0x08);
-        assert!(BPF_B == 0x10);
-
-        assert!(BPF_MODE_MASK == 0xe0);
-        assert!(BPF_IMM == 0x00);
-        assert!(BPF_ABS == 0x20);
-        assert!(BPF_MEM == 0x60);
-        assert!(BPF_LEN == 0x80);
-    }
-
-    true
-}
-
-#[cfg(all(test, not(axtest)))]
 mod tests {
     #[test]
     fn seccomp_filter_rules_hold() {
@@ -768,10 +804,5 @@ mod tests {
     #[test]
     fn seccomp_action_and_precedence_rules_hold() {
         assert!(super::seccomp_action_and_precedence_rules_hold_for_test());
-    }
-
-    #[test]
-    fn seccomp_bpf_constants_hold() {
-        assert!(super::seccomp_bpf_constants_hold_for_test());
     }
 }

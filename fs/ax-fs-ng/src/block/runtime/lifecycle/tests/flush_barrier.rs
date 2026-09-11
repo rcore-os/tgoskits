@@ -1,6 +1,6 @@
 use super::*;
 
-fn barrier_test_inner() -> Arc<DeviceInner> {
+pub(super) fn barrier_test_inner() -> Arc<DeviceInner> {
     let ops = runtime_ops().unwrap();
     let controller_notification = ops.notification();
     Arc::new(DeviceInner {
@@ -28,6 +28,8 @@ fn barrier_test_inner() -> Arc<DeviceInner> {
         data_gate_waiters: TaskWaiters::new(),
         flush_gate_waiters: TaskWaiters::new(),
         data_drain_waiters: TaskWaiters::new(),
+        admission_async_waiters: AsyncWaiters::new(),
+        admission_wait_hook: IrqMutex::new(None),
         state_notification: ops.notification(),
         lifecycle_gate: IrqMutex::new(LifecycleGateState {
             phase: DevicePhase::Ready,

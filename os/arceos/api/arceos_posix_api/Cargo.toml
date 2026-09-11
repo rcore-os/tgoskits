@@ -1,6 +1,6 @@
 [package]
 name = "ax-posix-api"
-version = "0.5.34"
+version = "0.6.2"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -12,13 +12,13 @@ authors = [
     "Shiping Yuan <robert_yuan@pku.edu.com>",
 ]
 description = "POSIX-compatible APIs for ArceOS modules"
-include = ["src/**/*.rs", "Cargo.toml", "build.rs", "ctypes.h"]
+include = ["src/**/*.rs", "Cargo.toml", "build.rs", "ctypes.h", "include/**/*.h"]
 license.workspace = true
 
 [features]
 default = []
 
-smp = []
+smp = ["ax-runtime/smp"]
 alloc = ["dep:ax-alloc"]
 lockdep = ["ax-runtime/lockdep"]
 fd = ["alloc", "dep:scope-local"]

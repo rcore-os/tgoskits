@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.10](https://github.com/rcore-os/tgoskits/compare/ax-ctor-bare-v0.4.9...ax-ctor-bare-v0.4.10) - 2026-09-09
+
+### Fixed
+
+- *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
+
 ## [0.4.9](https://github.com/rcore-os/tgoskits/compare/ax-ctor-bare-v0.4.8...ax-ctor-bare-v0.4.9) - 2026-08-09
 
 ### Other

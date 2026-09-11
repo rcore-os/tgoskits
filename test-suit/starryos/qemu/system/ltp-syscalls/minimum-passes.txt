@@ -1,0 +1,50 @@
+# LTP 20260529 source-derived minimum TPASS counts, not previous run totals.
+# execve03.c: tst_test.tcnt = ARRAY_SIZE(tcases), with six errno cases.
+# https://github.com/linux-test-project/ltp/blob/20260529/testcases/kernel/syscalls/execve/execve03.c
+execve03 6
+# sched_getaffinity01.c: one mask check and three errno checks.
+sched_getaffinity01 4
+# alarm02.c: three settings, each with arm and cancel assertions.
+alarm02 6
+# alarm05.c: arm, replace, and delivered signal count.
+alarm05 3
+# alarm06.c: remaining seconds and no signal after cancellation.
+alarm06 2
+# epoll_create01/02.c: two inputs in both raw and libc variants.
+epoll_create01 4
+epoll_create02 4
+# epoll_ctl02.c: nine errno cases; epoll_wait01.c: OUT, IN, and combined IO.
+epoll_ctl02 9
+epoll_wait01 3
+# epoll_wait03.c: five errno cases.
+epoll_wait03 5
+# epoll_wait06.c: nine pipe edge-trigger assertions.
+epoll_wait06 9
+# rmdir02.c: nine errno cases; rename03.c: eight replacement/inode assertions per filesystem.
+rmdir02 9
+rename03 8
+# faccessat201/202.c: seven success paths and six errno cases.
+faccessat201 7
+faccessat202 6
+# access04.c: six errno cases for root and nobody.
+access04 12
+# epoll_create1_02.c: both invalid-flag cases must complete before driver exit.
+epoll_create1_02 2
+# LTP 20260529 source-derived lock testcase completion counts.
+fcntl17 1
+# LTP 20260529 source-derived lock testcase completion counts.
+fcntl34 1
+fcntl36 7
+# LTP 20260529 source-derived lock testcase completion counts.
+fcntl15 12
+# LTP 20260529 source-derived lock testcase completion counts.
+flock02 4
+flock04 6
+flock06 4
+# LTP 20260529 source-derived lock testcase completion counts.
+flock07 2
+# LTP 20260529 source-derived lock testcase completion counts.
+futex_wait03 1
+# LTP 20260529 source-derived lock testcase completion counts.
+getcwd01 5
+getcwd02 3

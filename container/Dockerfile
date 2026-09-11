@@ -1,7 +1,7 @@
 FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG QEMU_VERSION=10.2.1
+ARG QEMU_VERSION=11.1.1
 
 ENV TZ=Etc/UTC \
     RUSTUP_HOME=/opt/rustup \

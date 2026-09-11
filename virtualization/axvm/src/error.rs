@@ -233,6 +233,7 @@ impl AxVmError {
                 format_args!("{operation} failed: {error}"),
             ),
             AddrSpaceError::MappingState
+            | AddrSpaceError::NeedsRepair
             | AddrSpaceError::Unmapped { .. }
             | AddrSpaceError::InsufficientAccess { .. } => Self::memory(operation, error),
         }

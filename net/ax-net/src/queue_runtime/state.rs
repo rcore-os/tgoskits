@@ -1,7 +1,10 @@
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
-use super::{STATE_DISABLED, STATE_IDLE, STATE_MASK, STATE_MISSED, STATE_POLLING, STATE_SCHEDULED};
+use super::{
+    QueueNotification, STATE_DISABLED, STATE_IDLE, STATE_MASK, STATE_MISSED, STATE_POLLING,
+    STATE_SCHEDULED,
+};
 
 /// Observable queue statistics used by SMP contract tests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,19 +76,43 @@ impl QueueStatsAtomic {
 /// Shared atomic state for one poll group.
 pub(super) struct PollGroupState {
     pub(super) state: AtomicU8,
+    startup_absent: AtomicBool,
     pub(super) owner_cpu: usize,
-    notify: Arc<ax_task::IrqNotify>,
+    notify: Arc<QueueNotification>,
     pub(super) stats: QueueStatsAtomic,
+    rx_drops: AtomicU64,
 }
 
 impl PollGroupState {
-    pub(super) fn new(owner_cpu: usize, notify: Arc<ax_task::IrqNotify>) -> Self {
+    pub(super) fn new(owner_cpu: usize, notify: Arc<QueueNotification>) -> Self {
         Self {
             state: AtomicU8::new(STATE_DISABLED),
+            startup_absent: AtomicBool::new(false),
             owner_cpu,
             notify,
             stats: QueueStatsAtomic::new(),
+            rx_drops: AtomicU64::new(0),
         }
+    }
+
+    pub(super) fn mark_startup_absent(&self) {
+        // The owner publishes this only after startup cancellation or shutdown has proved
+        // that the unpublished group can be released. The builder's acquire
+        // load precedes IRQ synchronization and removal of protocol endpoints.
+        self.startup_absent.store(true, Ordering::Release);
+    }
+
+    pub(super) fn startup_absent(&self) -> bool {
+        self.startup_absent.load(Ordering::Acquire)
+    }
+
+    pub(super) fn record_rx_drop(&self) {
+        // Statistics only; packet ownership is published through the queues.
+        self.rx_drops.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn take_rx_drops(&self) -> u64 {
+        self.rx_drops.swap(0, Ordering::Relaxed)
     }
 
     pub(super) fn activate(&self, pending: bool) {
@@ -99,6 +126,9 @@ impl PollGroupState {
         let cpu = ax_hal::percpu::this_cpu_id();
         self.stats.irq.fetch_add(1, Ordering::Relaxed);
         self.stats.last_irq_cpu.store(cpu, Ordering::Release);
+        if self.startup_absent() {
+            return;
+        }
         if cpu != self.owner_cpu {
             self.stats
                 .irq_to_poll_remote_wake
@@ -109,21 +139,25 @@ impl PollGroupState {
         if self.is_disabled() {
             // During owner startup queues stay disabled, but the startup
             // state machine still needs the IRQ notification to advance.
-            self.notify.notify_irq();
+            self.notify.notify();
         } else if self.publish_schedule() {
-            self.notify.notify_irq();
+            self.notify.notify();
         }
     }
 
-    pub(super) fn wait_startup_irq(&self) {
-        self.notify.wait();
+    pub(super) fn wait_startup_irq(&self, waiter: &ax_task::sync::irq::IrqWorkerWaiter) {
+        self.notify.wait(waiter);
     }
 
-    pub(super) fn wait_startup_deadline(&self, deadline_nanos: u64) {
+    pub(super) fn wait_startup_deadline(
+        &self,
+        waiter: &ax_task::sync::irq::IrqWorkerWaiter,
+        deadline_nanos: u64,
+    ) {
         let now = ax_hal::time::monotonic_time_nanos();
         if deadline_nanos > now {
             let duration = core::time::Duration::from_nanos(deadline_nanos - now);
-            self.notify.wait_timeout(duration);
+            self.notify.wait_timeout(waiter, duration);
         }
     }
 

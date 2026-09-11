@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.18.0...arm-gic-driver-v0.18.1) - 2026-09-09
+
+### Fixed
+
+- *(release)* make package baselines and CI inputs reproducible ([#2331](https://github.com/rcore-os/tgoskits/pull/2331))
+
+## [0.18.0](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.13...arm-gic-driver-v0.18.0) - 2026-09-09
+
+### Fixed
+
+- *(release)* restore release-plz dependency updates ([#2329](https://github.com/rcore-os/tgoskits/pull/2329))
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+
 ## [0.17.13](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.12...arm-gic-driver-v0.17.13) - 2026-08-25
 
 ### Added

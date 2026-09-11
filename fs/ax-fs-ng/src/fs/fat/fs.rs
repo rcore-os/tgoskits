@@ -53,7 +53,7 @@ impl FatFilesystem {
         let result = Arc::new(Self {
             inner: SleepMutex::new(inner),
             disk_flusher,
-            root_dir: IrqMutex::default(),
+            root_dir: IrqMutex::new(None),
         });
 
         let root_dir = DirEntry::new_dir(

@@ -1,8 +1,8 @@
 use ax_memory_addr::VirtAddr;
-use ax_task::current;
 use ddebug::{ControlFile, DebugOps};
 
-use crate::task::AsThread;
+use crate::task::current_user_task;
+
 pub struct DynamicDebugOps;
 
 impl DebugOps for DynamicDebugOps {
@@ -16,9 +16,7 @@ impl DebugOps for DynamicDebugOps {
     }
 
     fn thread_id() -> u64 {
-        let task = current();
-        task.try_as_thread()
-            .map_or_else(|| task.id().as_u64(), |thread| thread.tid().get() as u64)
+        current_user_task().as_thread().tid().get() as u64
     }
 }
 

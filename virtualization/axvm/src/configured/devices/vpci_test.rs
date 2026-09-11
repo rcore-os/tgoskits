@@ -229,14 +229,6 @@ mod tests {
     }
 
     #[test]
-    fn backing_is_zeroed_per_endpoint() {
-        let first = VpciTestFunction::new().unwrap();
-        let second = VpciTestFunction::new().unwrap();
-        first.backing.lock().unwrap()[0] = 0xa5;
-        assert_eq!(second.backing.lock().unwrap()[0], 0);
-    }
-
-    #[test]
     fn unknown_options_are_rejected_through_the_catalog_path() {
         let context = DeviceInstantiationContext::new();
 

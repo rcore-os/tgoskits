@@ -220,16 +220,24 @@ pub enum ControllerState {
 /// IRQ endpoint emitted by a controller transition.
 pub struct IrqEndpoint {
     source_id: usize,
-    queue_bits: u64,
+    queue_mask: crate::IrqQueueMask,
     handler: Box<dyn HardIrqHandler>,
 }
 
 impl IrqEndpoint {
-    /// Creates an endpoint whose boxed handler is owned by one IRQ token.
-    pub fn new(source_id: usize, queue_bits: u64, handler: Box<dyn HardIrqHandler>) -> Self {
+    /// Creates a complete routing snapshot for one physical IRQ source.
+    ///
+    /// Emitting the same `source_id` again replaces its installed endpoint.
+    /// The driver must keep that source masked until the runtime advances
+    /// [`ControllerEvent::Rearm`] after publishing the replacement.
+    pub fn new(
+        source_id: usize,
+        queue_mask: crate::IrqQueueMask,
+        handler: Box<dyn HardIrqHandler>,
+    ) -> Self {
         Self {
             source_id,
-            queue_bits,
+            queue_mask,
             handler,
         }
     }
@@ -240,8 +248,8 @@ impl IrqEndpoint {
     }
 
     /// Returns the hardware queues activated by this fixed endpoint.
-    pub const fn queue_bits(&self) -> u64 {
-        self.queue_bits
+    pub const fn queue_mask(&self) -> crate::IrqQueueMask {
+        self.queue_mask
     }
 
     /// Transfers the handler into the runtime IRQ registration token.
@@ -327,137 +335,4 @@ pub trait BlockController: crate::DriverGeneric {
     /// cannot be created, or hardware reports a terminal failure. Callers must
     /// unwind every resource emitted by earlier successful transitions.
     fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError>;
-}
-
-#[cfg(test)]
-mod tests {
-    use alloc::{boxed::Box, vec};
-
-    use super::*;
-    use crate::{
-        BatchSubmitDisposition, HardIrqHandler, IrqAck, IrqQueueMask, OwnedRequest,
-        OwnedRequestBatch, QueueLimits, RequestFlags, RequestOp, SubmissionSink,
-    };
-
-    fn test_dma() -> dma_api::DmaDeviceInfo {
-        dma_api::DmaDeviceInfo::new(
-            dma_api::DmaDomainId::Direct,
-            dma_api::DmaCoherency::NonCoherent,
-            dma_api::DmaConstraints::new(u64::MAX),
-        )
-    }
-
-    #[derive(Default)]
-    struct AcceptedIds(Vec<RequestId>);
-
-    impl SubmissionSink for AcceptedIds {
-        fn accepted(&mut self, id: RequestId) {
-            self.0.push(id);
-        }
-    }
-
-    struct NoopQueue;
-
-    impl HardwareQueue for NoopQueue {
-        fn id(&self) -> usize {
-            3
-        }
-
-        fn info(&self) -> QueueInfo {
-            QueueInfo {
-                id: self.id(),
-                device: DeviceInfo::new(8, 512),
-                limits: QueueLimits::simple(512, test_dma()),
-            }
-        }
-
-        fn submit_batch_owned(
-            &mut self,
-            _requests: &mut OwnedRequestBatch,
-            _sink: &mut dyn SubmissionSink,
-        ) -> BatchSubmitResult {
-            BatchSubmitResult::new(0, BatchSubmitDisposition::QueueFull)
-        }
-
-        fn commit_submissions(&mut self) -> Result<(), BlkError> {
-            Ok(())
-        }
-
-        fn drain_completions(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-            Ok(())
-        }
-
-        fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-            Ok(())
-        }
-    }
-
-    struct QueueIrq;
-
-    impl HardIrqHandler for QueueIrq {
-        fn ack(&mut self) -> IrqAck {
-            IrqAck::cleared(IrqQueueMask::from_queue(3), ControlEvent::new(7, 0x20))
-        }
-    }
-
-    #[test]
-    fn controller_update_transfers_move_only_queue_and_handler_ownership() {
-        let queue: BHardwareQueue = Box::new(NoopQueue);
-        let endpoint = IrqEndpoint::new(7, 1 << 3, Box::new(QueueIrq));
-        let mut update =
-            ControllerUpdate::with_resources(ControllerState::Ready, vec![queue], vec![endpoint]);
-
-        let mut queues = update.take_queues();
-        let mut endpoints = update.take_irq_endpoints();
-        assert_eq!(queues[0].id(), 3);
-        assert_eq!(endpoints[0].source_id(), 7);
-
-        let request = OwnedRequest {
-            op: RequestOp::Flush,
-            lba: 0,
-            block_count: 0,
-            data: None,
-            flags: RequestFlags::NONE,
-        };
-        let mut batch = OwnedRequestBatch::from_iter([request]);
-        let mut accepted = AcceptedIds::default();
-        let result = queues[0].submit_batch_owned(&mut batch, &mut accepted);
-        assert_eq!(result.disposition(), BatchSubmitDisposition::QueueFull);
-        assert_eq!(batch.len(), 1);
-
-        let mut handler = endpoints.remove(0).into_handler();
-        let ack = handler.ack();
-        assert!(ack.queues().contains(3));
-        assert_eq!(ack.control_event().bits(), 0x20);
-    }
-
-    #[test]
-    fn batch_queue_full_preserves_every_unaccepted_request() {
-        let mut queue = NoopQueue;
-        let mut batch = OwnedRequestBatch::from_iter([
-            OwnedRequest {
-                op: RequestOp::Flush,
-                lba: 0,
-                block_count: 0,
-                data: None,
-                flags: RequestFlags::NONE,
-            },
-            OwnedRequest {
-                op: RequestOp::Flush,
-                lba: 0,
-                block_count: 0,
-                data: None,
-                flags: RequestFlags::NONE,
-            },
-        ]);
-        let mut accepted = AcceptedIds::default();
-
-        let result = queue.submit_batch_owned(&mut batch, &mut accepted);
-
-        assert_eq!(result.accepted(), 0);
-        assert_eq!(result.disposition(), BatchSubmitDisposition::QueueFull);
-        assert!(accepted.0.is_empty());
-        assert_eq!(batch.len(), 2);
-        assert_eq!(QueueLimits::simple(512, test_dma()).max_submit_batch, 1);
-    }
 }

@@ -91,6 +91,29 @@ pub(super) fn std_build_target_for(target: &str) -> anyhow::Result<StdBuildTarge
     })
 }
 
+/// Resolves explicit kernel standard-library targets for static checking.
+pub(crate) fn std_check_target_for(target: &str) -> Option<super::bare_build::CargoBuildTarget> {
+    if !matches!(
+        target,
+        "x86_64-unknown-linux-musl"
+            | "aarch64-unknown-linux-musl"
+            | "riscv64gc-unknown-linux-musl"
+            | "loongarch64-unknown-linux-musl"
+    ) {
+        return None;
+    }
+    let mut resolved = std_build_target_for(target)
+        .expect("the four workspace standard-library targets are supported");
+    resolved
+        .cargo_args
+        .extend(["-Z".into(), "build-std=std,panic_abort".into()]);
+    Some(super::bare_build::CargoBuildTarget {
+        target: resolved.target,
+        cargo_args: resolved.cargo_args,
+        env: resolved.env,
+    })
+}
+
 pub(super) fn std_c_toolchain_env(target_name: &str, tool_prefix: &str) -> HashMap<String, String> {
     let mut env = HashMap::new();
     let target_env = target_name.replace('-', "_");
@@ -298,8 +321,13 @@ pub(super) fn std_cargo_config_path(
     linker: &Path,
     extra_rustflags: &[String],
 ) -> anyhow::Result<PathBuf> {
-    let path = std_build_dir()?.join(format!("config-{target}-dynamic.toml"));
     let config = toml::to_string_pretty(&StdCargoConfig::new(target, linker, extra_rustflags))?;
+    // A prepared Cargo invocation must keep its own flags even when another
+    // build for the same target is prepared before it runs.
+    let path = std_build_dir()?
+        .join("config")
+        .join(short_content_hash(&config))
+        .join(format!("config-{target}-dynamic.toml"));
     write_if_changed(&path, &config)?;
     Ok(path)
 }

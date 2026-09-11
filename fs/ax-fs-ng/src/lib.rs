@@ -8,6 +8,8 @@
 #![allow(clippy::new_ret_no_self)]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate ax_runtime;
 
 #[macro_use]
 extern crate log;
@@ -54,6 +56,9 @@ pub use block::{
 pub use highlevel::*;
 #[cfg(feature = "vfs")]
 pub mod vfs {
+    /// Create an ext4 filesystem from an owned file source and its open lease.
+    #[cfg(feature = "ext4")]
+    pub use crate::fs::new_from_file as new_filesystem_from_file;
     /// Create a filesystem from a native block runtime handle.
     #[cfg(any(feature = "ext4", feature = "fat"))]
     pub use crate::fs::new_from_handle as new_filesystem_from_handle;

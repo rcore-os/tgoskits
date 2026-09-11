@@ -16,12 +16,12 @@
 //!
 //! # Data Paths
 //!
-//! - Queue executors publish RX DMA tokens into bounded SPSC rings. The unique
-//!   protocol executor copies a frame from the selected port and returns the
-//!   token through its recycle ring before `Router::poll()` consumes the packet.
+//! - Queue executors replace a completed RX descriptor before publishing its
+//!   old DMA token. The token remains owned through smoltcp `RxToken::consume`
+//!   and then returns to the queue-local replacement cache.
 //! - smoltcp TX writes into `tx_buffer`. `Router::dispatch()` parses the IP
-//!   destination, selects a route, and publishes the packet to the chosen frame
-//!   port's TX SPSC ring.
+//!   destination, selects a route, and fills a queue-owned DMA token directly.
+//!   A descriptor batch shares one device notification.
 //! - Loopback bypasses hardware queue domains: dispatch copies directly
 //!   from TX buffer to RX buffer and asks the protocol core to poll again.
 //!
@@ -32,6 +32,7 @@
 
 use alloc::{
     boxed::Box,
+    collections::VecDeque,
     string::{String, ToString},
     sync::Arc,
     vec,
@@ -44,7 +45,7 @@ use ax_sync::SpinRwLock as RwLock;
 use smoltcp::{
     iface::SocketSet,
     phy::{DeviceCapabilities, Medium, PacketMeta},
-    storage::PacketMetadata,
+    storage::{PacketMetadata, RingBuffer},
     time::Instant,
     wire::{
         IpAddress, IpCidr, IpProtocol, IpVersion, Ipv4Address, Ipv4Cidr, Ipv4Packet, Ipv6Packet,
@@ -56,7 +57,7 @@ use crate::{
     LISTEN_TABLE,
     config::{DeviceBinding, InterfaceId, RouteInfo},
     consts::{SOCKET_BUFFER_SIZE, STANDARD_MTU},
-    device::{ArpEntry, Device},
+    device::{ArpEntry, Device, DeviceRxPacket, DeviceRxPoll, NetDeviceError},
     ip_tos::apply_egress_ip_tos,
     rx_meta::packet_meta_for_rx_packet,
 };
@@ -142,21 +143,29 @@ struct RxMetadata {
 type RouterPacketBuffer = smoltcp::storage::PacketBuffer<'static, RxMetadata>;
 type DevicePacketBuffer = smoltcp::storage::PacketBuffer<'static, InterfaceId>;
 
-// TX metadata is created before route lookup; dispatch() selects the real
-// egress interface from the packet destination and route table.
-const TX_INTERFACE_PLACEHOLDER: InterfaceId = InterfaceId::new(0);
+// Each free slot guarantees a contiguous MTU-sized packet without byte-ring
+// padding or a second metadata allocation when the queue wraps.
+#[derive(Clone)]
+struct TxPacket {
+    len: usize,
+    bytes: [u8; STANDARD_MTU],
+}
+
+impl TxPacket {
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+struct OwnedRxPacket {
+    metadata: RxMetadata,
+    packet: DeviceRxPacket,
+}
 
 fn rx_metadata(interface_id: InterfaceId, packet: &[u8]) -> RxMetadata {
     RxMetadata {
         interface_id,
         packet_meta: packet_meta_for_rx_packet(packet),
-    }
-}
-
-fn tx_metadata() -> RxMetadata {
-    RxMetadata {
-        interface_id: TX_INTERFACE_PLACEHOLDER,
-        packet_meta: PacketMeta::default(),
     }
 }
 
@@ -286,6 +295,24 @@ impl DeviceHandle {
     }
 
     fn send(&mut self, next_hop: IpAddress, packet: &[u8], timestamp: Instant) -> bool {
+        match self.try_send(next_hop, packet, timestamp) {
+            Ok(consumed) => consumed,
+            Err(NetDeviceError::Again) => false,
+            Err(error) => {
+                warn!("{}: transmit failed: {error:?}", self.name);
+                self.count_tx_errors(1);
+                self.drain_device_counters();
+                false
+            }
+        }
+    }
+
+    fn try_send(
+        &mut self,
+        next_hop: IpAddress,
+        packet: &[u8],
+        timestamp: Instant,
+    ) -> Result<bool, NetDeviceError> {
         if packet.len() > STANDARD_MTU {
             warn!(
                 "{}: packet to {} exceeds MTU ({} bytes), dropping",
@@ -294,15 +321,14 @@ impl DeviceHandle {
                 packet.len()
             );
             self.count_tx_dropped(1);
-            self.count_tx_dropped(1);
-            return false;
+            return Ok(false);
         }
-        let frame_len = self.inner.send(next_hop, packet, timestamp);
+        let frame_len = self.inner.try_send(next_hop, packet, timestamp)?;
         if frame_len > 0 {
             self.count_tx(frame_len);
         }
         self.drain_device_counters();
-        true
+        Ok(true)
     }
 }
 
@@ -437,7 +463,12 @@ pub(crate) type SharedRouteTable = Arc<RwLock<RouteTable>>;
 /// Virtual smoltcp device that multiplexes all concrete devices.
 pub struct Router {
     rx_buffer: RouterPacketBuffer,
-    tx_buffer: RouterPacketBuffer,
+    tx_buffer: RingBuffer<'static, TxPacket>,
+    /// Device indices still awaiting the head TX packet. Devices are append-only;
+    /// accepted or permanently failed ports leave this list before the next retry.
+    pending_fanout: Vec<usize>,
+    /// DMA-backed packets waiting for smoltcp consumption.
+    ready_rx: VecDeque<OwnedRxPacket>,
     devices: Vec<DeviceHandle>,
     table: SharedRouteTable,
 }
@@ -448,13 +479,18 @@ impl Router {
             vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
             vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
         );
-        let tx_buffer = RouterPacketBuffer::new(
-            vec![PacketMetadata::EMPTY; SOCKET_BUFFER_SIZE],
-            vec![0u8; STANDARD_MTU * SOCKET_BUFFER_SIZE],
-        );
+        let tx_buffer = RingBuffer::new(vec![
+            TxPacket {
+                len: 0,
+                bytes: [0; STANDARD_MTU],
+            };
+            SOCKET_BUFFER_SIZE
+        ]);
         Self {
             rx_buffer,
             tx_buffer,
+            pending_fanout: Vec::new(),
+            ready_rx: VecDeque::with_capacity(SOCKET_BUFFER_SIZE),
             devices: Vec::new(),
             table,
         }
@@ -549,13 +585,64 @@ impl Router {
         mut snoop: impl FnMut(InterfaceId, &[u8]),
     ) -> bool {
         let mut moved_rx = false;
-        for device in &mut self.devices {
+        let Router {
+            rx_buffer,
+            ready_rx,
+            devices,
+            ..
+        } = self;
+        for device in devices {
             if device.interface_id == InterfaceId::LOOPBACK {
                 continue;
             }
             let mut budget = DEVICE_RX_WORKER_BATCH;
-            while budget > 0 && !self.rx_buffer.is_full() && !device.rx_buffer.is_full() {
+            while budget > 0 && ready_rx.len() < SOCKET_BUFFER_SIZE {
+                let interface_id = device.interface_id;
+                match device.inner.poll_owned_rx(now()) {
+                    DeviceRxPoll::Packet(packet) => {
+                        let metadata = packet.read_with(|bytes| {
+                            snoop_tcp_packet(bytes, sockets);
+                            snoop(interface_id, bytes);
+                            rx_metadata(interface_id, bytes)
+                        });
+                        let frame_len = packet.frame_len();
+                        ready_rx.push_back(OwnedRxPacket { metadata, packet });
+                        device.count_rx(frame_len);
+                        moved_rx = true;
+                        budget -= 1;
+                        continue;
+                    }
+                    DeviceRxPoll::Idle => break,
+                    DeviceRxPoll::Unsupported => {}
+                }
+                if rx_buffer.is_full() || device.rx_buffer.is_full() {
+                    break;
+                }
                 let mut frame_snoop = |_packet: &[u8]| {};
+                let direct = device.inner.recv_direct(
+                    now(),
+                    &mut |packet| {
+                        snoop_tcp_packet(packet, sockets);
+                        snoop(interface_id, packet);
+                        let Ok(dst) =
+                            rx_buffer.enqueue(packet.len(), rx_metadata(interface_id, packet))
+                        else {
+                            return false;
+                        };
+                        dst.copy_from_slice(packet);
+                        true
+                    },
+                    &mut frame_snoop,
+                );
+                if let Some(frame_len) = direct {
+                    if frame_len == 0 {
+                        break;
+                    }
+                    device.count_rx(frame_len);
+                    moved_rx = true;
+                    budget -= 1;
+                    continue;
+                }
                 let frame_len = device.inner.recv(
                     device.interface_id,
                     &mut device.rx_buffer,
@@ -571,9 +658,7 @@ impl Router {
                 };
                 snoop_tcp_packet(packet, sockets);
                 snoop(interface_id, packet);
-                let Ok(dst) = self
-                    .rx_buffer
-                    .enqueue(packet.len(), rx_metadata(interface_id, packet))
+                let Ok(dst) = rx_buffer.enqueue(packet.len(), rx_metadata(interface_id, packet))
                 else {
                     device.count_rx_dropped(1);
                     break;
@@ -649,23 +734,28 @@ impl Router {
         let Router {
             rx_buffer,
             tx_buffer,
+            pending_fanout,
             devices,
             table,
             ..
         } = self;
-        while let Ok((_, packet)) = tx_buffer.dequeue() {
-            apply_egress_ip_tos(packet);
-            match IpVersion::of_packet(packet).expect("got invalid IP packet") {
+        while let Some(packet) = tx_buffer.get_allocated(0, 1).first() {
+            let packet = packet.as_bytes();
+            let outcome = match IpVersion::of_packet(packet).expect("got invalid IP packet") {
                 IpVersion::Ipv4 => {
                     let packet = smoltcp::wire::Ipv4Packet::new_checked(packet)
                         .expect("got invalid IPv4 packet");
                     let src_addr = IpAddress::Ipv4(packet.src_addr());
                     let dst_addr = IpAddress::Ipv4(packet.dst_addr());
                     if packet.dst_addr().is_broadcast() {
-                        poll_next |=
-                            dispatch_link_local_fanout(devices, dst_addr, packet.into_inner());
+                        dispatch_link_local_fanout(
+                            devices,
+                            pending_fanout,
+                            dst_addr,
+                            packet.into_inner(),
+                        )
                     } else {
-                        poll_next |= dispatch_unicast_packet(
+                        dispatch_unicast_packet(
                             rx_buffer,
                             devices,
                             table,
@@ -673,7 +763,7 @@ impl Router {
                             dst_addr,
                             packet.into_inner(),
                             sockets,
-                        );
+                        )
                     }
                 }
                 IpVersion::Ipv6 => {
@@ -682,10 +772,14 @@ impl Router {
                     let src_addr = IpAddress::Ipv6(packet.src_addr());
                     let dst_addr = IpAddress::Ipv6(packet.dst_addr());
                     if packet.dst_addr().is_multicast() {
-                        poll_next |=
-                            dispatch_link_local_fanout(devices, dst_addr, packet.into_inner());
+                        dispatch_link_local_fanout(
+                            devices,
+                            pending_fanout,
+                            dst_addr,
+                            packet.into_inner(),
+                        )
                     } else {
-                        poll_next |= dispatch_unicast_packet(
+                        dispatch_unicast_packet(
                             rx_buffer,
                             devices,
                             table,
@@ -693,10 +787,27 @@ impl Router {
                             dst_addr,
                             packet.into_inner(),
                             sockets,
-                        );
+                        )
                     }
                 }
+            };
+            match outcome {
+                DispatchOutcome::Consumed(next) => {
+                    poll_next |= next;
+                    tx_buffer
+                        .dequeue_one()
+                        .expect("the packet was only peeked while dispatching");
+                }
+                DispatchOutcome::Retry(next) => {
+                    poll_next |= next;
+                    break;
+                }
             }
+        }
+        if tx_buffer.is_empty() {
+            // Reuse the hot slots after a drained batch instead of rotating
+            // through the entire allocation for shallow TX queues.
+            tx_buffer.clear();
         }
         poll_next
     }
@@ -704,16 +815,45 @@ impl Router {
 
 fn dispatch_link_local_fanout(
     devices: &mut [DeviceHandle],
+    pending: &mut Vec<usize>,
     dst_addr: IpAddress,
     packet: &[u8],
-) -> bool {
-    let mut poll_next = false;
-    for dev in devices {
-        if dev.interface_id != InterfaceId::LOOPBACK {
-            poll_next |= dev.send(dst_addr, packet, now());
-        }
+) -> DispatchOutcome {
+    if pending.is_empty() {
+        // Snapshot the eligible ports once for this head packet. Reuse the
+        // allocation across packets; no packet copy is needed for retry.
+        pending.extend(devices.iter().enumerate().filter_map(|(index, dev)| {
+            (dev.interface_id != InterfaceId::LOOPBACK).then_some(index)
+        }));
     }
-    poll_next
+    let mut poll_next = false;
+    pending.retain(|&index| {
+        let dev = &mut devices[index];
+        match dev.try_send(dst_addr, packet, now()) {
+            Ok(consumed) => {
+                poll_next |= consumed;
+                false
+            }
+            Err(NetDeviceError::Again) => true,
+            Err(error) => {
+                warn!("{}: transmit failed: {error:?}", dev.name);
+                dev.count_tx_errors(1);
+                dev.drain_device_counters();
+                false
+            }
+        }
+    });
+    if pending.is_empty() {
+        DispatchOutcome::Consumed(poll_next)
+    } else {
+        DispatchOutcome::Retry(poll_next)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DispatchOutcome {
+    Consumed(bool),
+    Retry(bool),
 }
 
 fn dispatch_unicast_packet(
@@ -724,7 +864,7 @@ fn dispatch_unicast_packet(
     dst_addr: IpAddress,
     packet: &[u8],
     sockets: &mut SocketSet<'_>,
-) -> bool {
+) -> DispatchOutcome {
     let route = {
         let routes = table.read();
         let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr) else {
@@ -737,7 +877,7 @@ fn dispatch_unicast_packet(
             // IPSTATS_MIB_OUTNOROUTES (IpOutNoRoutes in /proc/net/snmp), never via
             // per-device tx_dropped.  Once system-level SNMP counters are available
             // this should update IpOutNoRoutes instead.
-            return false;
+            return DispatchOutcome::Consumed(false);
         };
         route
     };
@@ -760,9 +900,18 @@ fn dispatch_unicast_packet(
             // behaves identically.
             dev.count_rx_dropped(1);
         }
-        ok
+        DispatchOutcome::Consumed(ok)
     } else {
-        dev.send(route.next_hop, packet, now())
+        match dev.try_send(route.next_hop, packet, now()) {
+            Ok(consumed) => DispatchOutcome::Consumed(consumed),
+            Err(NetDeviceError::Again) => DispatchOutcome::Retry(false),
+            Err(error) => {
+                warn!("{}: transmit failed: {error:?}", dev.name);
+                dev.count_tx_errors(1);
+                dev.drain_device_counters();
+                DispatchOutcome::Consumed(false)
+            }
+        }
     }
 }
 
@@ -784,19 +933,24 @@ fn inject_loopback_rx_direct(
 }
 
 /// smoltcp TX token backed by the router's temporary TX buffer.
-pub struct TxToken<'a>(&'a mut RouterPacketBuffer);
+pub struct TxToken<'a>(&'a mut RingBuffer<'static, TxPacket>);
 
 impl smoltcp::phy::TxToken for TxToken<'_> {
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        // TX metadata is ignored: Router::dispatch parses the emitted IP
-        // packet and selects the actual egress interface from the route table.
-        f(self
+        // receive()/transmit() checked for a free MTU-sized slot. This token's
+        // exclusive borrow prevents any intervening enqueue before consume().
+        let slot = self
             .0
-            .enqueue(len, tx_metadata())
-            .expect("This was checked before creating the TxToken"))
+            .enqueue_one()
+            .expect("This was checked before creating the TxToken");
+        slot.len = len;
+        let packet = &mut slot.bytes[..len];
+        let result = f(packet);
+        apply_egress_ip_tos(packet);
+        result
     }
 }
 
@@ -845,11 +999,16 @@ fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
     }
 }
 
+enum RxTokenPacket<'a> {
+    Borrowed(&'a [u8]),
+    Owned(DeviceRxPacket),
+}
+
 /// smoltcp RX token for one packet queued by the router.
 pub struct RxToken<'a> {
     interface_id: InterfaceId,
     packet_meta: PacketMeta,
-    packet: &'a [u8],
+    packet: RxTokenPacket<'a>,
 }
 
 impl<'a> smoltcp::phy::RxToken for RxToken<'a> {
@@ -858,7 +1017,10 @@ impl<'a> smoltcp::phy::RxToken for RxToken<'a> {
         F: FnOnce(&[u8]) -> R,
     {
         let _ingress_if = self.interface_id;
-        f(self.packet)
+        match self.packet {
+            RxTokenPacket::Borrowed(packet) => f(packet),
+            RxTokenPacket::Owned(packet) => packet.consume(f),
+        }
     }
 
     fn meta(&self) -> PacketMeta {
@@ -871,21 +1033,31 @@ impl smoltcp::phy::Device for Router {
     type TxToken<'a> = TxToken<'a>;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        if self.rx_buffer.is_empty() || self.tx_buffer.is_full() {
-            None
-        } else {
-            Some((
-                {
-                    let (metadata, packet) = self.rx_buffer.dequeue().unwrap();
-                    RxToken {
-                        interface_id: metadata.interface_id,
-                        packet_meta: metadata.packet_meta,
-                        packet,
-                    }
-                },
-                TxToken(&mut self.tx_buffer),
-            ))
+        if self.tx_buffer.is_full() {
+            return None;
         }
+        let Self {
+            rx_buffer,
+            ready_rx,
+            tx_buffer,
+            ..
+        } = self;
+        let rx_token = if !rx_buffer.is_empty() {
+            let (metadata, packet) = rx_buffer.dequeue().unwrap();
+            RxToken {
+                interface_id: metadata.interface_id,
+                packet_meta: metadata.packet_meta,
+                packet: RxTokenPacket::Borrowed(packet),
+            }
+        } else {
+            let packet = ready_rx.pop_front()?;
+            RxToken {
+                interface_id: packet.metadata.interface_id,
+                packet_meta: packet.metadata.packet_meta,
+                packet: RxTokenPacket::Owned(packet.packet),
+            }
+        };
+        Some((rx_token, TxToken(tx_buffer)))
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
@@ -901,15 +1073,116 @@ impl smoltcp::phy::Device for Router {
         caps.medium = Medium::Ip;
         caps.max_transmission_unit = STANDARD_MTU;
         caps.max_burst_size = Some(SOCKET_BUFFER_SIZE);
+        // smoltcp does not distinguish raw transport payloads from stack-
+        // generated TCP packets at the TxToken boundary. Keep software TX
+        // checksums until that boundary carries explicit per-packet intent;
+        // a zero checksum can be intentional, especially for IPv4 raw UDP.
         caps
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use smoltcp::storage::PacketBuffer;
+    use smoltcp::{
+        phy::{Device as _, TxToken as _},
+        storage::PacketBuffer,
+    };
 
     use super::*;
+    use crate::device::TxChecksumCapabilities;
+
+    #[test]
+    fn stack_tcp_and_udp_emit_complete_software_checksums() {
+        use smoltcp::{
+            iface::{Config, Interface},
+            socket::{tcp, udp},
+            wire::{HardwareAddress, UdpPacket},
+        };
+
+        let mut router = Router::new(Arc::new(RwLock::new(RouteTable::new())));
+        router.add_device(
+            IF0,
+            Box::new(crate::device::EthernetDevice::new(
+                "checksum".into(),
+                Box::new(ChecksumPort),
+                None,
+            )),
+        );
+        let now = Instant::from_millis(0);
+        let mut interface = Interface::new(Config::new(HardwareAddress::Ip), &mut router, now);
+        interface.update_ip_addrs(|addrs| {
+            addrs
+                .push(ipv4_cidr(Ipv4Address::new(10, 0, 0, 2), 24))
+                .unwrap()
+        });
+        let destination = IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1));
+        let mut sockets = SocketSet::new(vec![]);
+        let mut tcp = tcp::Socket::new(
+            tcp::SocketBuffer::new(vec![0; 1024]),
+            tcp::SocketBuffer::new(vec![0; 1024]),
+        );
+        tcp.connect(interface.context(), (destination, 4321), 1234)
+            .unwrap();
+        sockets.add(tcp);
+        interface.poll_egress(now, &mut router, &mut sockets);
+        let packet = router
+            .tx_buffer
+            .dequeue_one()
+            .expect("TCP SYN must be emitted");
+        let ip = Ipv4Packet::new_checked(packet.as_bytes()).unwrap();
+        let tcp = TcpPacket::new_checked(ip.payload()).unwrap();
+        assert!(tcp.syn());
+        assert!(tcp.verify_checksum(&ip.src_addr().into(), &ip.dst_addr().into()));
+
+        let mut udp = udp::Socket::new(
+            udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY; 1], vec![0; 64]),
+            udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY; 1], vec![0; 64]),
+        );
+        udp.bind(1235).unwrap();
+        udp.send_slice(b"checksum", (destination, 4322)).unwrap();
+        sockets.add(udp);
+        interface.poll_egress(now, &mut router, &mut sockets);
+        let packet = router
+            .tx_buffer
+            .dequeue_one()
+            .expect("UDP packet must be emitted");
+        let ip = Ipv4Packet::new_checked(packet.as_bytes()).unwrap();
+        let udp = UdpPacket::new_checked(ip.payload()).unwrap();
+        assert_ne!(udp.checksum(), 0, "ordinary UDP must generate a checksum");
+        assert!(udp.verify_checksum(&ip.src_addr().into(), &ip.dst_addr().into()));
+        assert_eq!(udp.payload(), b"checksum");
+    }
+
+    #[test]
+    fn loopback_preserves_raw_udp_checksum() {
+        let table = Arc::new(RwLock::new(RouteTable::new()));
+        let mut router = Router::new(table);
+        let mut sockets = SocketSet::new(vec![]);
+        for checksum in [0u16, 0x1234] {
+            let mut packet = [0u8; 32];
+            packet[0] = 0x45;
+            packet[2..4].copy_from_slice(&32u16.to_be_bytes());
+            packet[8] = 64;
+            packet[9] = 17;
+            packet[12..16].copy_from_slice(&[127, 0, 0, 1]);
+            packet[16..20].copy_from_slice(&[127, 0, 0, 1]);
+            packet[20..22].copy_from_slice(&1234u16.to_be_bytes());
+            packet[22..24].copy_from_slice(&4321u16.to_be_bytes());
+            packet[24..26].copy_from_slice(&12u16.to_be_bytes());
+            packet[26..28].copy_from_slice(&checksum.to_be_bytes());
+            assert!(inject_loopback_rx_direct(
+                &mut router.rx_buffer,
+                IpAddress::Ipv4(Ipv4Address::LOCALHOST),
+                &packet,
+                &mut sockets
+            ));
+            let (_, received) = router.rx_buffer.dequeue().unwrap();
+            assert_eq!(
+                received, &packet,
+                "loopback rewrote raw UDP transport bytes"
+            );
+        }
+    }
 
     const IF0: InterfaceId = InterfaceId::new(2);
     const IF1: InterfaceId = InterfaceId::new(3);
@@ -935,6 +1208,62 @@ mod tests {
 
         fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> usize {
             0
+        }
+    }
+
+    struct RetryDevice;
+
+    impl Device for RetryDevice {
+        fn name(&self) -> &str {
+            "retry"
+        }
+
+        fn recv(
+            &mut self,
+            _interface_id: InterfaceId,
+            _buffer: &mut PacketBuffer<InterfaceId>,
+            _timestamp: Instant,
+            _snoop: &mut dyn FnMut(&[u8]),
+        ) -> usize {
+            0
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> usize {
+            0
+        }
+
+        fn try_send(
+            &mut self,
+            _next_hop: IpAddress,
+            _packet: &[u8],
+            _timestamp: Instant,
+        ) -> crate::device::NetDeviceResult<usize> {
+            Err(NetDeviceError::Again)
+        }
+    }
+
+    struct ChecksumPort;
+
+    impl crate::device::EthernetFramePort for ChecksumPort {
+        fn device_name(&self) -> &str {
+            "checksum"
+        }
+        fn mac_address(&self) -> [u8; 6] {
+            [2, 0, 0, 0, 0, 1]
+        }
+        fn checksum_capabilities(&self) -> TxChecksumCapabilities {
+            TxChecksumCapabilities::TCP_UDP
+        }
+        fn transmit(
+            &mut self,
+            _: &crate::device::ProtocolEthernetFrame,
+        ) -> crate::device::NetDeviceResult {
+            Err(NetDeviceError::Again)
+        }
+        fn receive(
+            &mut self,
+        ) -> crate::device::NetDeviceResult<crate::device::ProtocolEthernetFrame> {
+            Err(NetDeviceError::Again)
         }
     }
 
@@ -976,6 +1305,382 @@ mod tests {
             route.next_hop,
             IpAddress::Ipv4(Ipv4Address::new(10, 0, 1, 99))
         );
+    }
+
+    #[test]
+    fn transient_tx_backpressure_keeps_the_router_packet_queued() {
+        let table = Arc::new(RwLock::new(RouteTable::new()));
+        let mut router = Router::new(Arc::clone(&table));
+        router.add_device(IF0, Box::new(RetryDevice));
+        router.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::UNSPECIFIED, 0),
+            Some(IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1))),
+            0,
+            IF0,
+            SRC0,
+            100,
+        ));
+        router
+            .transmit(Instant::from_millis(0))
+            .expect("the empty router TX queue has capacity")
+            .consume(20, |packet| {
+                packet[0] = 0x45;
+                packet[2..4].copy_from_slice(&20u16.to_be_bytes());
+                packet[12..16].copy_from_slice(&[10, 0, 0, 2]);
+                packet[16..20].copy_from_slice(&[198, 51, 100, 1]);
+            });
+
+        let mut sockets = SocketSet::new(vec![]);
+        assert!(!router.dispatch(Instant::from_millis(0), &mut sockets));
+        assert_eq!(router.tx_buffer.len(), 1);
+        assert_eq!(router.tx_buffer.get_allocated(0, 1)[0].as_bytes().len(), 20);
+        assert_eq!(router.devices[0].stats().tx_packets, 0);
+        assert_eq!(router.devices[0].stats().tx_dropped, 0);
+    }
+
+    #[test]
+    fn drained_tx_queue_reuses_packet_storage() {
+        use smoltcp::phy::RxToken as _;
+
+        let mut router = Router::new(Arc::new(RwLock::new(RouteTable::new())));
+        router.add_device(InterfaceId::LOOPBACK, Box::new(EmptyDevice));
+        router.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::LOCALHOST, 8),
+            None,
+            0,
+            InterfaceId::LOOPBACK,
+            IpAddress::Ipv4(Ipv4Address::LOCALHOST),
+            0,
+        ));
+        let now = Instant::from_millis(0);
+        let mut sockets = SocketSet::new(vec![]);
+        let mut first_slot = None;
+
+        // Storage identity is the cache-reuse contract: successful delivery
+        // alone would not detect rotating through cold slots after each drain.
+        for len in [64, STANDARD_MTU, 64] {
+            let mut packet = vec![0; len];
+            packet[0] = 0x45;
+            packet[2..4].copy_from_slice(&(len as u16).to_be_bytes());
+            packet[12..16].copy_from_slice(&[127, 0, 0, 1]);
+            packet[16..20].copy_from_slice(&[127, 0, 0, 1]);
+            let address = router.transmit(now).unwrap().consume(len, |dst| {
+                dst.copy_from_slice(&packet);
+                dst.as_ptr() as usize
+            });
+            assert_eq!(
+                address,
+                *first_slot.get_or_insert(address),
+                "a drained TX queue must reuse the first packet's storage"
+            );
+            assert!(router.dispatch(now, &mut sockets));
+            let (rx, _tx) = router.receive(now).unwrap();
+            rx.consume(|received| assert_eq!(received, packet));
+        }
+        assert!(router.receive(now).is_none());
+    }
+
+    #[test]
+    fn transmit_token_survives_backpressure_and_payload_wrap() {
+        check_tx_token_after_payload_wrap(false);
+    }
+
+    #[test]
+    fn receive_token_survives_backpressure_and_payload_wrap() {
+        check_tx_token_after_payload_wrap(true);
+    }
+
+    fn check_tx_token_after_payload_wrap(reply_to_rx: bool) {
+        use ax_sync::SpinLock;
+        use smoltcp::phy::RxToken as _;
+
+        #[derive(Default)]
+        struct TxProbe {
+            allowance: usize,
+            packets: Vec<Vec<u8>>,
+        }
+
+        struct BackpressureDevice(Arc<SpinLock<TxProbe>>);
+
+        impl Device for BackpressureDevice {
+            fn name(&self) -> &str {
+                "backpressure"
+            }
+
+            fn recv(
+                &mut self,
+                _: InterfaceId,
+                _: &mut PacketBuffer<InterfaceId>,
+                _: Instant,
+                _: &mut dyn FnMut(&[u8]),
+            ) -> usize {
+                0
+            }
+
+            fn send(&mut self, _: IpAddress, _: &[u8], _: Instant) -> usize {
+                panic!("dispatch must use the fallible TX contract")
+            }
+
+            fn try_send(
+                &mut self,
+                _: IpAddress,
+                packet: &[u8],
+                _: Instant,
+            ) -> crate::device::NetDeviceResult<usize> {
+                let mut probe = self.0.lock_irqsave();
+                if probe.allowance == 0 {
+                    return Err(NetDeviceError::Again);
+                }
+                probe.allowance -= 1;
+                probe.packets.push(packet.to_vec());
+                Ok(packet.len())
+            }
+        }
+
+        fn packet(len: usize, id: u8) -> Vec<u8> {
+            let mut packet = vec![id; len];
+            packet[0] = 0x45;
+            packet[2..4].copy_from_slice(&(len as u16).to_be_bytes());
+            packet[12..16].copy_from_slice(&[10, 0, 0, 2]);
+            packet[16..20].copy_from_slice(&[198, 51, 100, 1]);
+            packet
+        }
+
+        let mut router = Router::new(Arc::new(RwLock::new(RouteTable::new())));
+        let probe = Arc::new(SpinLock::new(TxProbe::default()));
+        router.add_device(IF0, Box::new(BackpressureDevice(Arc::clone(&probe))));
+        router.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::UNSPECIFIED, 0),
+            Some(IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1))),
+            0,
+            IF0,
+            SRC0,
+            100,
+        ));
+        let now = Instant::from_millis(0);
+        let mut sockets = SocketSet::new(vec![]);
+        let mut expected = vec![];
+
+        // Keep one small packet queued while advancing the payload ring's head.
+        for id in 0..2 {
+            let packet = packet(20, id);
+            router.transmit(now).unwrap().consume(packet.len(), |dst| {
+                dst.copy_from_slice(&packet);
+            });
+            expected.push(packet);
+        }
+        probe.lock_irqsave().allowance = 1;
+        assert!(router.dispatch(now, &mut sockets));
+        assert_eq!(probe.lock_irqsave().packets, expected[..1]);
+
+        for id in 0..SOCKET_BUFFER_SIZE - 1 {
+            let packet = packet(STANDARD_MTU, id as u8);
+            router.transmit(now).unwrap().consume(packet.len(), |dst| {
+                dst.copy_from_slice(&packet);
+            });
+            expected.push(packet);
+            assert!(!router.dispatch(now, &mut sockets));
+        }
+        assert!(router.transmit(now).is_none());
+
+        let incoming = packet(20, 0);
+        router
+            .rx_buffer
+            .enqueue(incoming.len(), rx_metadata(IF0, &incoming))
+            .unwrap()
+            .copy_from_slice(&incoming);
+        assert!(router.receive(now).is_none());
+
+        // With the old byte ring, the next MTU packet needs to wrap, but the
+        // free bytes are split into a 1460-byte tail and a 40-byte head.
+        probe.lock_irqsave().allowance = 1;
+        assert!(router.dispatch(now, &mut sockets));
+        assert_eq!(probe.lock_irqsave().packets, expected[..2]);
+        let token = if reply_to_rx {
+            let (rx, tx) = router.receive(now).unwrap();
+            rx.consume(|packet| assert_eq!(packet, incoming));
+            tx
+        } else {
+            router.transmit(now).unwrap()
+        };
+        let final_packet = packet(STANDARD_MTU, 0xfe);
+        assert_eq!(
+            token.consume(final_packet.len(), |dst| {
+                dst.copy_from_slice(&final_packet);
+                42
+            }),
+            42
+        );
+        expected.push(final_packet);
+
+        probe.lock_irqsave().allowance = expected.len();
+        assert!(router.dispatch(now, &mut sockets));
+        assert_eq!(probe.lock_irqsave().packets, expected);
+        assert!(router.transmit(now).is_some());
+        assert!(!router.dispatch(now, &mut sockets));
+        assert_eq!(router.devices[0].stats().tx_packets, expected.len() as u64);
+        assert_eq!(router.devices[0].stats().tx_errors, 0);
+        assert_eq!(router.devices[0].stats().tx_dropped, 0);
+    }
+
+    #[test]
+    fn fanout_retries_only_blocked_ports_without_repeating_accepted_packets() {
+        use ax_sync::SpinLock;
+
+        #[derive(Default)]
+        struct TxProbe {
+            failures: VecDeque<NetDeviceError>,
+            attempts: usize,
+            packets: Vec<Vec<u8>>,
+        }
+
+        struct FanoutDevice(Arc<SpinLock<TxProbe>>);
+
+        impl Device for FanoutDevice {
+            fn name(&self) -> &str {
+                "fanout"
+            }
+
+            fn recv(
+                &mut self,
+                _: InterfaceId,
+                _: &mut PacketBuffer<InterfaceId>,
+                _: Instant,
+                _: &mut dyn FnMut(&[u8]),
+            ) -> usize {
+                0
+            }
+
+            fn send(&mut self, _: IpAddress, _: &[u8], _: Instant) -> usize {
+                panic!("fanout must preserve the fallible TX contract")
+            }
+
+            fn try_send(
+                &mut self,
+                _: IpAddress,
+                packet: &[u8],
+                _: Instant,
+            ) -> crate::device::NetDeviceResult<usize> {
+                let mut probe = self.0.lock_irqsave();
+                probe.attempts += 1;
+                if let Some(error) = probe.failures.pop_front() {
+                    return Err(error);
+                }
+                probe.packets.push(packet.to_vec());
+                Ok(packet.len())
+            }
+        }
+
+        for ipv6 in [false, true] {
+            let mut packet = if ipv6 { vec![0u8; 40] } else { vec![0u8; 20] };
+            if ipv6 {
+                packet[0] = 0x60;
+                packet[24] = 0xff;
+                packet[25] = 2;
+                packet[39] = 1;
+            } else {
+                packet[0] = 0x45;
+                packet[2..4].copy_from_slice(&20u16.to_be_bytes());
+                packet[16..20].fill(0xff);
+            }
+            let mut router = Router::new(Arc::new(RwLock::new(RouteTable::new())));
+            let probes: Vec<_> = [
+                vec![],
+                vec![NetDeviceError::Again, NetDeviceError::Again],
+                vec![NetDeviceError::Again],
+                vec![NetDeviceError::Io],
+                vec![],
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, failures)| {
+                let probe = Arc::new(SpinLock::new(TxProbe {
+                    failures: failures.into(),
+                    ..TxProbe::default()
+                }));
+                let id = if index == 4 {
+                    InterfaceId::LOOPBACK
+                } else {
+                    InterfaceId::new(index as u32 + 2)
+                };
+                router.add_device(id, Box::new(FanoutDevice(Arc::clone(&probe))));
+                probe
+            })
+            .collect();
+            let mut next_packet = packet.clone();
+            next_packet[1] = 1;
+            for queued in [&packet, &next_packet] {
+                router
+                    .transmit(Instant::from_millis(0))
+                    .unwrap()
+                    .consume(queued.len(), |dst| dst.copy_from_slice(queued));
+            }
+            let mut sockets = SocketSet::new(vec![]);
+            for completed_port in [0, 2] {
+                assert!(router.dispatch(Instant::from_millis(0), &mut sockets));
+                assert_eq!(router.tx_buffer.get_allocated(0, 1)[0].as_bytes(), packet);
+                assert_eq!(router.tx_buffer.len(), 2);
+                assert_eq!(
+                    probes[completed_port].lock_irqsave().packets,
+                    vec![packet.clone()]
+                );
+                assert_eq!(probes[0].lock_irqsave().attempts, 1);
+                assert_eq!(probes[3].lock_irqsave().attempts, 1);
+                assert_eq!(router.devices[3].stats().tx_errors, 1);
+            }
+            probes[1]
+                .lock_irqsave()
+                .failures
+                .push_back(NetDeviceError::Again);
+            assert!(!router.dispatch(Instant::from_millis(0), &mut sockets));
+            assert_eq!(router.tx_buffer.get_allocated(0, 1)[0].as_bytes(), packet);
+            assert_eq!(probes[0].lock_irqsave().attempts, 1);
+            assert_eq!(probes[2].lock_irqsave().attempts, 2);
+            assert!(router.dispatch(Instant::from_millis(0), &mut sockets));
+            assert!(router.tx_buffer.is_empty());
+            for (index, attempts) in [2, 5, 3, 2].into_iter().enumerate() {
+                let probe = probes[index].lock_irqsave();
+                assert_eq!(probe.attempts, attempts);
+                let expected = if index == 3 {
+                    vec![next_packet.clone()]
+                } else {
+                    vec![packet.clone(), next_packet.clone()]
+                };
+                assert_eq!(probe.packets, expected);
+                assert_eq!(
+                    router.devices[index].stats().tx_packets,
+                    expected.len() as u64
+                );
+                assert_eq!(router.devices[index].stats().tx_dropped, 0);
+            }
+            assert_eq!(probes[4].lock_irqsave().attempts, 0);
+        }
+    }
+
+    #[test]
+    fn router_keeps_software_checksums_even_with_offload_capable_devices() {
+        let table = Arc::new(RwLock::new(RouteTable::new()));
+        let mut router = Router::new(table);
+        router.add_device(
+            IF0,
+            Box::new(crate::device::EthernetDevice::new(
+                "checksum".into(),
+                Box::new(ChecksumPort),
+                None,
+            )),
+        );
+
+        let caps = smoltcp::phy::Device::capabilities(&router);
+        // rx()/tx() mean software verification/computation, not NIC offload.
+        assert!(caps.checksum.tcp.rx());
+        assert!(caps.checksum.tcp.tx());
+        assert!(caps.checksum.udp.rx());
+        assert!(caps.checksum.udp.tx());
+
+        router.add_device(IF1, Box::new(EmptyDevice));
+        let caps = smoltcp::phy::Device::capabilities(&router);
+        assert!(caps.checksum.tcp.tx());
+        assert!(caps.checksum.udp.tx());
     }
 
     #[test]
@@ -1177,7 +1882,7 @@ mod tests {
 
         let before: Vec<_> = devices.iter().map(|d| d.stats()).collect();
 
-        let ok = dispatch_unicast_packet(
+        let outcome = dispatch_unicast_packet(
             &mut rx_buffer,
             &mut devices,
             &shared_table,
@@ -1187,7 +1892,11 @@ mod tests {
             &mut sockets,
         );
 
-        assert!(!ok, "no-route dispatch must return false");
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Consumed(false),
+            "no-route dispatch must consume the packet without scheduling work"
+        );
 
         for (i, dev) in devices.iter().enumerate() {
             let snap = dev.stats();
@@ -1307,23 +2016,6 @@ mod l2_counter_tests {
     }
 
     // ── stats snapshot ─────────────────────────────────────────────────
-
-    #[test]
-    fn stats_starts_at_zero() {
-        let device = test_device_handle(Box::new(CountingMockDevice {
-            name: "mock",
-            send_returns: 0,
-            deferred_tx_lens: vec![],
-            deferred_rx_lens: vec![],
-            recv_returns: 0,
-        }));
-
-        let snap = device.stats();
-        assert_eq!(snap.rx_bytes, 0);
-        assert_eq!(snap.rx_packets, 0);
-        assert_eq!(snap.tx_bytes, 0);
-        assert_eq!(snap.tx_packets, 0);
-    }
 
     #[test]
     fn stats_reflects_current_counters_after_counting() {
@@ -1448,48 +2140,6 @@ mod l2_counter_tests {
         let snap = device.stats();
         assert_eq!(snap.rx_bytes, 0);
         assert_eq!(snap.rx_packets, 0);
-    }
-
-    // ── drain_deferred_tx default ─────────────────────────────────────────
-
-    #[test]
-    fn drain_deferred_tx_default_returns_empty_vec() {
-        let mut device = CountingMockDevice {
-            name: "mock",
-            send_returns: 0,
-            deferred_tx_lens: vec![],
-            deferred_rx_lens: vec![],
-            recv_returns: 0,
-        };
-
-        // Default trait implementation returns Vec::new().
-        let drained = device.drain_deferred_tx();
-        assert!(drained.is_empty());
-
-        // Second call is also empty (no side effects).
-        let drained = device.drain_deferred_tx();
-        assert!(drained.is_empty());
-    }
-
-    // ── drain_deferred_rx default ─────────────────────────────────────────
-
-    #[test]
-    fn drain_deferred_rx_default_returns_empty_vec() {
-        let mut device = CountingMockDevice {
-            name: "mock",
-            send_returns: 0,
-            deferred_tx_lens: vec![],
-            deferred_rx_lens: vec![],
-            recv_returns: 0,
-        };
-
-        // Default trait implementation returns Vec::new().
-        let drained = device.drain_deferred_rx();
-        assert!(drained.is_empty());
-
-        // Second call is also empty and idempotent.
-        let drained = device.drain_deferred_rx();
-        assert!(drained.is_empty());
     }
 
     // ── Protocol executor combined drain integration ──────────────────

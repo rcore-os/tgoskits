@@ -13,6 +13,7 @@ use crate::{
 
 const RKNN_NPU_CORE_ALL: u32 = 0xffff;
 const RKNPU_SYNC_POLL_LOG_INTERVAL: u64 = 1_000_000;
+const NANOS_PER_MICROSECOND: u64 = 1_000;
 static LOGGED_SUBMIT_CORE_LAYOUT: AtomicBool = AtomicBool::new(false);
 
 /// 子核心任务索引结构体
@@ -20,7 +21,7 @@ static LOGGED_SUBMIT_CORE_LAYOUT: AtomicBool = AtomicBool::new(false);
 /// 对应 C 结构体 `rknpu_subcore_task`
 /// 用于表示子核心任务的起始索引和任务数量
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RknpuSubcoreTask {
     /// 任务起始索引
     pub task_start: u32,
@@ -30,7 +31,7 @@ pub struct RknpuSubcoreTask {
 
 /// A structure for getting a fake-offset that can be used with mmap.
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct RknpuMemMap {
     /// handle of gem object.
     pub handle: u32,
@@ -44,7 +45,7 @@ pub struct RknpuMemMap {
 ///
 /// Corresponds to C `struct rknpu_mem_destroy`.
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct RknpuMemDestroy {
     /// handle of the gem object to destroy.
     pub handle: u32,
@@ -59,11 +60,11 @@ pub struct RknpuMemDestroy {
 /// 对应 C 结构体 `rknpu_submit`
 /// 用于向 RKNPU 提交作业任务
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct RknpuSubmit {
     /// 作业提交标志
     pub flags: u32,
-    /// 提交超时时间
+    /// Submission timeout in microseconds, as defined by the RKNPU ABI.
     pub timeout: u32,
     /// 任务起始索引
     pub task_start: u32,
@@ -96,7 +97,7 @@ pub struct RknpuSubmit {
 /// Fields correspond to the original C layout. Use `#[repr(C)]` so this type
 /// can be used across the FFI boundary or when mirroring kernel structs.
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct RknpuMemCreate {
     /// The handle of the created GEM object.
     pub handle: u32,
@@ -121,7 +122,7 @@ pub struct RknpuMemCreate {
 /// Fields correspond to the original C layout. Use `#[repr(C)]` so this type
 /// can be used across FFI boundaries if needed.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct RknpuMemSync {
     /// User request for setting memory type or cache attributes.
     pub flags: u32,
@@ -145,6 +146,44 @@ struct CoreSubmitState {
     current_int_mask: u32,
     completed: usize,
     inflight: bool,
+}
+
+/// A monotonic deadline shared by all polling phases of one submission.
+#[derive(Debug, Clone, Copy)]
+struct SubmitDeadline {
+    expires_at_ns: u64,
+}
+
+impl SubmitDeadline {
+    fn from_timeout_us(start_ns: u64, timeout_us: u32) -> Self {
+        Self {
+            expires_at_ns: start_ns.saturating_add(u64::from(timeout_us) * NANOS_PER_MICROSECOND),
+        }
+    }
+
+    fn expired(self, now_ns: u64) -> bool {
+        now_ns >= self.expires_at_ns
+    }
+}
+
+/// Polls an MMIO condition until it becomes ready or the submission expires.
+///
+/// The clock is supplied by OS glue so this portable driver core does not depend
+/// on a particular runtime timer implementation.
+fn poll_until_ready<T>(
+    deadline: SubmitDeadline,
+    clock: &mut impl FnMut() -> u64,
+    mut poll: impl FnMut() -> Result<Option<T>, RknpuError>,
+) -> Result<T, RknpuError> {
+    loop {
+        if let Some(value) = poll()? {
+            return Ok(value);
+        }
+        if deadline.expired(clock()) {
+            return Err(RknpuError::Timeout);
+        }
+        spin_loop();
+    }
 }
 
 fn core_mask_for_index(core_idx: usize) -> u32 {
@@ -180,7 +219,15 @@ fn subcore_task_index(use_core_num: usize, core_idx: usize) -> usize {
 }
 
 impl Rknpu {
-    pub fn submit_ioctrl(&mut self, args: &mut RknpuSubmit) -> Result<(), RknpuError> {
+    /// Submits an RKNPU job and bounds all synchronous polling by `args.timeout`.
+    ///
+    /// `clock` must return monotonically nondecreasing nanoseconds. The timeout
+    /// encoded in [`RknpuSubmit`] is measured in microseconds by the RKNPU ABI.
+    pub fn submit_ioctrl(
+        &mut self,
+        args: &mut RknpuSubmit,
+        clock: &mut impl FnMut() -> u64,
+    ) -> Result<(), RknpuError> {
         if args.flags & 1 << 1 > 0 {
             debug!("Nonblock task");
         }
@@ -259,13 +306,14 @@ impl Rknpu {
             );
         }
 
+        let deadline = SubmitDeadline::from_timeout_us(clock(), args.timeout);
         for state in states.iter_mut() {
-            self.clear_pending_interrupts(state.core_idx)?;
+            self.clear_pending_interrupts(state.core_idx, deadline, clock)?;
             self.submit_next_chunk(state, args)?;
         }
 
         let mut wait_count: u64 = 0;
-        while states.iter().any(|state| state.inflight) {
+        poll_until_ready(deadline, clock, || {
             let mut progressed = false;
             for state in states.iter_mut().filter(|state| state.inflight) {
                 progressed |= self.poll_core_completion(state, args)?;
@@ -280,9 +328,9 @@ impl Rknpu {
                         core_mask, wait_count
                     );
                 }
-                spin_loop();
             }
-        }
+            Ok((!states.iter().any(|state| state.inflight)).then_some(()))
+        })?;
 
         args.task_counter = args.task_number;
         args.hw_elapse_time = (args.timeout / 2) as _;
@@ -317,9 +365,17 @@ impl Rknpu {
         Err(RknpuError::InvalidParameter)
     }
 
-    fn clear_pending_interrupts(&mut self, core_idx: usize) -> Result<(), RknpuError> {
+    fn clear_pending_interrupts(
+        &mut self,
+        core_idx: usize,
+        deadline: SubmitDeadline,
+        clock: &mut impl FnMut() -> u64,
+    ) -> Result<(), RknpuError> {
         let mut clear_count: u64 = 0;
-        while self.base[core_idx].handle_interrupt() != 0 {
+        poll_until_ready(deadline, clock, || {
+            if self.base[core_idx].handle_interrupt() == 0 {
+                return Ok(Some(()));
+            }
             clear_count += 1;
             if clear_count.is_multiple_of(RKNPU_SYNC_POLL_LOG_INTERVAL) {
                 warn!(
@@ -327,9 +383,8 @@ impl Rknpu {
                     core_idx, clear_count
                 );
             }
-            spin_loop();
-        }
-        Ok(())
+            Ok(None)
+        })
     }
 
     fn submit_next_chunk(
@@ -413,5 +468,51 @@ impl Rknpu {
         }
 
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abi_timeout_is_converted_from_microseconds_to_nanoseconds() {
+        let deadline = SubmitDeadline::from_timeout_us(1_000, 6_000_000);
+
+        assert_eq!(deadline.expires_at_ns, 6_000_001_000);
+        assert!(!deadline.expired(6_000_000_999));
+        assert!(deadline.expired(6_000_001_000));
+    }
+
+    #[test]
+    fn polling_never_ready_returns_timeout_at_deadline() {
+        let deadline = SubmitDeadline::from_timeout_us(0, 1);
+        let mut now_ns = 0;
+        let mut poll_count = 0;
+
+        let result: Result<(), RknpuError> = poll_until_ready(
+            deadline,
+            &mut || {
+                now_ns += NANOS_PER_MICROSECOND;
+                now_ns
+            },
+            || {
+                poll_count += 1;
+                Ok(None)
+            },
+        );
+
+        assert_eq!(result, Err(RknpuError::Timeout));
+        assert_eq!(poll_count, 1);
+    }
+
+    #[test]
+    fn polling_accepts_completion_observed_at_deadline() {
+        let deadline = SubmitDeadline::from_timeout_us(0, 1);
+        let now_ns = NANOS_PER_MICROSECOND;
+
+        let result = poll_until_ready(deadline, &mut || now_ns, || Ok(Some(())));
+
+        assert_eq!(result, Ok(()));
     }
 }

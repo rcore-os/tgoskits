@@ -10,11 +10,9 @@ use crate::{BlockError, BlockResult};
 
 /// Wait/notify object created and owned by the block runtime.
 pub trait BlockNotification: Send + Sync + 'static {
-    /// Publishes work from normal task context.
+    /// Publishes work from task or hard IRQ context without allocation or
+    /// sleeping.
     fn notify(&self);
-
-    /// Publishes work from hard IRQ context without allocation or sleeping.
-    fn notify_from_irq(&self);
 
     /// Blocks until a notification is pending and consumes that notification.
     #[track_caller]
@@ -95,6 +93,27 @@ pub(crate) fn install_test_runtime_ops() {
     crate::os::time::set_time_provider(&tests::TEST_TIME_PROVIDER);
 }
 
+/// Temporarily overrides the host test runtime's blocking capability for the
+/// current thread.
+#[cfg(test)]
+pub(crate) fn test_can_block(can_block: bool) -> TestCanBlockGuard {
+    TestCanBlockGuard {
+        previous: tests::set_can_block(can_block),
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct TestCanBlockGuard {
+    previous: bool,
+}
+
+#[cfg(test)]
+impl Drop for TestCanBlockGuard {
+    fn drop(&mut self) {
+        tests::set_can_block(self.previous);
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn reset_test_wait_timeout_count() {
     tests::TEST_WAIT_TIMEOUTS.store(0, Ordering::Relaxed);
@@ -113,6 +132,7 @@ mod tests {
         time::Duration,
     };
     use std::{
+        cell::Cell,
         sync::{Condvar, Mutex, OnceLock},
         thread::{self, JoinHandle},
         time::Instant,
@@ -126,8 +146,16 @@ mod tests {
     pub(super) static TEST_WAIT_TIMEOUTS: AtomicUsize = AtomicUsize::new(0);
     static TEST_START: OnceLock<Instant> = OnceLock::new();
 
+    std::thread_local! {
+        static TEST_CAN_BLOCK: Cell<bool> = const { Cell::new(true) };
+    }
+
     pub(super) struct TestRuntimeOps;
     pub(super) struct TestTimeProvider;
+
+    pub(super) fn set_can_block(can_block: bool) -> bool {
+        TEST_CAN_BLOCK.with(|value| value.replace(can_block))
+    }
 
     struct TestNotification {
         pending: Mutex<bool>,
@@ -157,15 +185,14 @@ mod tests {
             self.publish();
         }
 
-        fn notify_from_irq(&self) {
-            self.publish();
-        }
-
         #[track_caller]
         fn wait(&self) {
-            assert_eq!(
-                ax_sync::host_preempt_depth(),
-                0,
+            assert!(
+                TEST_CAN_BLOCK.with(Cell::get),
+                "test runtime wait was called from a nonblocking context"
+            );
+            assert!(
+                !crate::os::sync::current_thread_holds_irq_mutex(),
                 "block notification wait cannot hold a non-sleeping lock"
             );
             let mut pending = self.pending.lock().unwrap();
@@ -177,9 +204,12 @@ mod tests {
 
         #[track_caller]
         fn wait_timeout(&self, duration: Duration) -> bool {
-            assert_eq!(
-                ax_sync::host_preempt_depth(),
-                0,
+            assert!(
+                TEST_CAN_BLOCK.with(Cell::get),
+                "test runtime timed wait was called from a nonblocking context"
+            );
+            assert!(
+                !crate::os::sync::current_thread_holds_irq_mutex(),
                 "block notification wait cannot hold a non-sleeping lock"
             );
             TEST_WAIT_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
@@ -214,7 +244,7 @@ mod tests {
         }
 
         fn can_block(&self) -> bool {
-            true
+            TEST_CAN_BLOCK.with(Cell::get)
         }
 
         fn notification(&self) -> Arc<dyn BlockNotification> {

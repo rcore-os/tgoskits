@@ -3,11 +3,11 @@ use core::{
     future::poll_fn,
     ops::Range,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    task::{Poll, Waker},
+    task::Poll,
 };
 
-use ax_task::future::block_on;
-use axpoll::{IoEvents, PollSet};
+use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar};
+use axpoll_set::PollSet;
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, ONLCR, OPOST, VEOF, VERASE, VKILL, VMIN, VTIME,
 };
@@ -21,7 +21,7 @@ use super::{Terminal, termios::Termios2};
 use crate::{
     StarryError, StarryResult,
     sync::{IrqMutex, Mutex},
-    task::send_signal_to_process_group,
+    task::{future::block_on, send_signal_to_process_group},
 };
 
 const BUF_SIZE: usize = 4096;
@@ -475,16 +475,20 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         input_ready: Arc<PollSet>,
         worker_source: Arc<PollSet>,
     ) {
-        ax_task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             move || {
+                let mut registrar = None::<PollRegistrar<ExclusiveConsumer>>;
                 block_on(poll_fn(|cx| {
-                    Self::drive_input(&reader, input_ready.as_ref());
-                    // The reader task registers from ordinary task context.
-                    unsafe { input_source.register(cx.waker(), IoEvents::IN) };
-                    if let Some(output_source) = output_source.as_ref() {
-                        unsafe { output_source.register(cx.waker(), IoEvents::OUT) };
+                    if let Some(registrar) = registrar.as_mut() {
+                        registrar.reset(cx.waker());
                     }
-                    unsafe { worker_source.register(cx.waker(), IoEvents::OUT) };
+                    Self::drive_input(&reader, input_ready.as_ref());
+                    let registrar = registrar.get_or_insert_with(|| PollRegistrar::new(cx.waker()));
+                    unsafe { registrar.register_exclusive(&input_source, IoEvents::IN) };
+                    if let Some(output_source) = output_source.as_ref() {
+                        unsafe { registrar.register_exclusive(output_source, IoEvents::OUT) };
+                    }
+                    unsafe { registrar.register_exclusive(&worker_source, IoEvents::OUT) };
 
                     // Close the check/register race. block_on's stable AxWaker
                     // remembers a concurrent source wake before it parks.
@@ -611,16 +615,10 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         !self.buf_rx.is_empty() && (vmin == 0 || self.buf_rx.occupied_len() >= vmin)
     }
 
-    pub fn register_rx_waker(&self, waker: &Waker) {
+    pub fn rx_poll_source(&self) -> Arc<PollSet> {
         match &self.processor {
-            Processor::InterruptDriven(_) => {
-                // Registration happens from tty read poll context.
-                unsafe { self.input_ready.register(waker, IoEvents::IN) };
-            }
-            Processor::Passive(_, set) => {
-                // Registration happens from tty read poll context.
-                unsafe { set.register(waker, IoEvents::IN) };
-            }
+            Processor::InterruptDriven(_) => Arc::clone(&self.input_ready),
+            Processor::Passive(_, set) => Arc::clone(set),
         }
     }
 
@@ -697,7 +695,7 @@ mod tests {
     use alloc::{sync::Arc, vec, vec::Vec};
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use axpoll::PollSet;
+    use axpoll_set::PollSet;
     use ringbuf::traits::{Observer, Split};
 
     use super::{

@@ -166,34 +166,3 @@ impl Display for MmioRaw {
         )
     }
 }
-
-#[cfg(all(test, not(target_os = "none")))]
-mod tests {
-    use super::MmioRaw;
-
-    struct DummyMmioOp;
-    impl super::MmioOp for DummyMmioOp {
-        fn ioremap(&self, addr: super::MmioAddr, size: usize) -> Result<MmioRaw, super::MapError> {
-            Ok(MmioRaw {
-                phys: addr,
-                virt: core::ptr::NonNull::dangling(),
-                size,
-            })
-        }
-
-        fn iounmap(&self, _mmio: &MmioRaw) {}
-    }
-
-    #[test]
-    fn test_mmio_new() {
-        super::init(&DummyMmioOp);
-
-        let addr = MmioRaw {
-            phys: super::MmioAddr(0x1000),
-            virt: core::ptr::NonNull::dangling(),
-            size: 0x100,
-        };
-        println!("Mmio address: {:?}", addr);
-        println!("Mmio address display: {}", addr);
-    }
-}

@@ -3,21 +3,8 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
+use ax_cpu::capability::{CpuId, Hypervisor};
 use page_table_generic::PhysAddr;
-use x86::{
-    bits64::{rflags, segmentation::Descriptor64},
-    controlregs,
-    cpuid::CpuId,
-    dtables::{self, DescriptorTablePointer},
-    irq::PageFaultError,
-    msr::{self, rdmsr, wrmsr},
-    segmentation::{BuildDescriptor, DescriptorBuilder, GateDescriptorBuilder, cs},
-};
-
-use crate::mem::page_size;
-
-const IA32_EFER: u32 = 0xc000_0080;
-const IA32_EFER_NXE: u64 = 1 << 11;
 
 const PIT_CHANNEL2_PORT: u16 = 0x42;
 const PIT_COMMAND_PORT: u16 = 0x43;
@@ -35,45 +22,47 @@ const MAX_VALID_TSC_FREQ_HZ: u64 = 10_000_000_000;
 static TSC_FREQ_HZ: AtomicU64 = AtomicU64::new(0);
 static HAS_INVARIANT_TSC: AtomicBool = AtomicBool::new(false);
 static HAS_TSC_ADJUST: AtomicBool = AtomicBool::new(false);
+static HAS_RELIABLE_VIRTUAL_TSC: AtomicBool = AtomicBool::new(false);
 static TSC_INFO_STATE: AtomicU8 = AtomicU8::new(0);
 static TSC_ADJUST_REFERENCE_STATE: AtomicU8 = AtomicU8::new(0);
 static TSC_ADJUST_REFERENCE: AtomicU64 = AtomicU64::new(0);
-static TSC_ADJUST_CHANGED: AtomicBool = AtomicBool::new(false);
-static IDT_STATE: AtomicU8 = AtomicU8::new(0);
-
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct InterruptStackFrame {
-    instruction_pointer: u64,
-    code_segment: u64,
-    cpu_flags: u64,
-    stack_pointer: u64,
-    stack_segment: u64,
-}
-
-#[repr(C, align(16))]
-struct Idt([Descriptor64; 256]);
-
-static mut IDT: Idt = Idt([Descriptor64::NULL; 256]);
-
+static TSC_STABILITY: AtomicU8 = AtomicU8::new(0);
 pub fn setup() {
-    init_idt_once();
-    load_idt();
+    // SAFETY: BSP/AP boot paths use the same code selector, masked IRQs and
+    // permanent boot stacks. The callback only uses boot diagnostics.
+    unsafe { ax_cpu::boot::install_boot_vectors() };
 }
 
 pub fn trap_addr() -> usize {
-    let mut ptr: DescriptorTablePointer<Descriptor64> = Default::default();
-    unsafe {
-        dtables::sidt(&mut ptr);
+    ax_cpu::boot::current_vector_table()
+}
+
+struct BootTrap;
+#[trait_ffi::impl_extern_trait]
+impl ax_cpu::trap::boot::BootTrapHandler for BootTrap {
+    fn handle(exception: &ax_cpu::trap::boot::BootException) {
+        if exception.vector == 3 {
+            println!("x86_64 breakpoint: {exception:#x?}");
+            return;
+        }
+        panic!("x86_64 boot exception: {exception:#x?}");
     }
-    ptr.base as usize
 }
 
 pub fn init_local() {
+    // The BSP and AP entry paths must install the complete CR0 state before
+    // reaching this point. Check rather than repairing it late so an alternate
+    // or regressed entry path cannot run with write protection or caches off.
+    // SAFETY: boot runs at CPL0 before local IRQ enable or task creation.
+    unsafe { ax_cpu::boot::assert_kernel_cr0_state() };
     mask_legacy_pic();
-    enable_nxe();
-    enable_xsave_features();
+    // SAFETY: this CPU has no task-owned xstate and uses NX-capable mappings.
+    unsafe {
+        ax_cpu::boot::enable_execute_disable();
+        ax_cpu::boot::enable_xsave_features();
+    }
     init_tsc_freq();
+    validate_local_tsc();
 }
 
 pub fn tsc_freq() -> usize {
@@ -84,69 +73,62 @@ pub fn tsc_freq() -> usize {
     freq as usize
 }
 
-pub fn ticks_now() -> u64 {
-    unsafe { x86::time::rdtsc() }
-}
-
 pub fn scheduler_counter_stability() -> crate::timer::CounterStability {
-    let invariant_tsc = HAS_INVARIANT_TSC.load(Ordering::Acquire);
-    let cpu_count = crate::smp::cpu_count();
-    if !invariant_tsc || cpu_count != 1 {
-        return crate::timer::CounterStability::Unstable;
-    }
-    classify_scheduler_counter(invariant_tsc, cpu_count, tsc_adjust_is_unchanged())
-}
-
-fn tsc_adjust_is_unchanged() -> bool {
-    if !HAS_TSC_ADJUST.load(Ordering::Acquire) {
-        return true;
-    }
-
-    let current_adjust = unsafe { rdmsr(msr::IA32_TSC_ADJUST) };
-    if TSC_ADJUST_REFERENCE_STATE
-        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        TSC_ADJUST_REFERENCE.store(current_adjust, Ordering::Relaxed);
-        TSC_ADJUST_REFERENCE_STATE.store(2, Ordering::Release);
-    } else {
-        while TSC_ADJUST_REFERENCE_STATE.load(Ordering::Acquire) != 2 {
-            spin_loop();
-        }
-    }
-
-    if current_adjust != TSC_ADJUST_REFERENCE.load(Ordering::Acquire) {
-        TSC_ADJUST_CHANGED.store(true, Ordering::Release);
-    }
-    !TSC_ADJUST_CHANGED.load(Ordering::Acquire)
-}
-
-const fn classify_scheduler_counter(
-    invariant_tsc: bool,
-    cpu_count: usize,
-    tsc_adjust_unchanged: bool,
-) -> crate::timer::CounterStability {
-    if invariant_tsc && cpu_count == 1 && tsc_adjust_unchanged {
+    if TSC_STABILITY.load(Ordering::Acquire) == 1 {
         crate::timer::CounterStability::Stable
     } else {
         crate::timer::CounterStability::Unstable
     }
 }
 
-unsafe fn set_gate(
-    index: usize,
-    selector: x86::segmentation::SegmentSelector,
-    offset: u64,
-    trap: bool,
-) {
-    let builder = if trap {
-        DescriptorBuilder::trap_gate_descriptor(selector, offset)
+fn validate_local_tsc() {
+    let cpuid = CpuId::new();
+    let invariant_tsc = cpuid
+        .get_advanced_power_mgmt_info()
+        .is_some_and(|info| info.has_invariant_tsc());
+    let cpu_count = crate::smp::cpu_count();
+    let reliable_virtual_tsc = HAS_RELIABLE_VIRTUAL_TSC.load(Ordering::Acquire);
+    let rate_stable = invariant_tsc || reliable_virtual_tsc;
+    let synchronization_trusted = if HAS_TSC_ADJUST.load(Ordering::Acquire) {
+        tsc_adjust_matches_reference()
     } else {
-        DescriptorBuilder::interrupt_descriptor(selector, offset)
+        cpu_count == 1 || reliable_virtual_tsc
+    };
+    if classify_scheduler_counter(rate_stable, cpu_count, synchronization_trusted)
+        == crate::timer::CounterStability::Unstable
+    {
+        TSC_STABILITY.store(2, Ordering::Release);
+        return;
     }
-    .present();
-    unsafe {
-        IDT.0[index] = builder.finish();
+
+    let _ = TSC_STABILITY.compare_exchange(0, 1, Ordering::Release, Ordering::Relaxed);
+}
+
+fn tsc_adjust_matches_reference() -> bool {
+    let current_adjust = unsafe { ax_cpu::timer::read_adjustment() };
+    if TSC_ADJUST_REFERENCE_STATE
+        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        TSC_ADJUST_REFERENCE.store(current_adjust, Ordering::Relaxed);
+        TSC_ADJUST_REFERENCE_STATE.store(2, Ordering::Release);
+        return true;
+    }
+    while TSC_ADJUST_REFERENCE_STATE.load(Ordering::Acquire) != 2 {
+        spin_loop();
+    }
+    current_adjust == TSC_ADJUST_REFERENCE.load(Ordering::Acquire)
+}
+
+const fn classify_scheduler_counter(
+    rate_stable: bool,
+    cpu_count: usize,
+    synchronization_trusted: bool,
+) -> crate::timer::CounterStability {
+    if rate_stable && (cpu_count == 1 || synchronization_trusted) {
+        crate::timer::CounterStability::Stable
+    } else {
+        crate::timer::CounterStability::Unstable
     }
 }
 
@@ -180,9 +162,13 @@ fn init_tsc_freq() {
     let has_tsc_adjust = cpuid
         .get_extended_feature_info()
         .is_some_and(|info| info.has_tsc_adjust_msr());
+    let has_reliable_virtual_tsc = cpuid.get_hypervisor_info().is_some_and(|hypervisor| {
+        matches!(hypervisor.identify(), Hypervisor::KVM | Hypervisor::QEMU)
+    });
 
     HAS_INVARIANT_TSC.store(has_invariant_tsc, Ordering::Release);
     HAS_TSC_ADJUST.store(has_tsc_adjust, Ordering::Release);
+    HAS_RELIABLE_VIRTUAL_TSC.store(has_reliable_virtual_tsc, Ordering::Release);
 
     TSC_FREQ_HZ.store(freq_hz, Ordering::Release);
     TSC_INFO_STATE.store(2, Ordering::Release);
@@ -244,16 +230,16 @@ fn pit_calibrate_tsc_freq_hz() -> Option<u64> {
         x86::io::outb(PIT_CHANNEL2_PORT, (latch >> 8) as u8);
     }
 
-    let start = ticks_now();
+    let start = ax_cpu::timer::read_counter();
     let mut end = start;
     let mut done = false;
     for _ in 0..TSC_PIT_MAX_POLL_COUNT {
         if unsafe { x86::io::inb(PIT_CONTROL_PORT) } & PIT_CHANNEL2_OUT != 0 {
-            end = ticks_now();
+            end = ax_cpu::timer::read_counter();
             done = true;
             break;
         }
-        end = ticks_now();
+        end = ax_cpu::timer::read_counter();
         spin_loop();
     }
 
@@ -267,93 +253,6 @@ fn pit_calibrate_tsc_freq_hz() -> Option<u64> {
         .and_then(valid_tsc_freq_hz)
 }
 
-fn init_idt_once() {
-    if IDT_STATE.load(Ordering::Acquire) == 2 {
-        return;
-    }
-    if IDT_STATE
-        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        while IDT_STATE.load(Ordering::Acquire) != 2 {
-            spin_loop();
-        }
-        return;
-    }
-
-    // The boot IDT carries only exception entries: the kernel's runtime IDT
-    // owns every interrupt vector, and no interrupt can be delivered before
-    // it is loaded because the boot path runs with interrupts disabled.
-    unsafe {
-        let selector = cs();
-        set_gate(
-            3,
-            selector,
-            breakpoint_handler as *const () as usize as u64,
-            true,
-        );
-        set_gate(
-            13,
-            selector,
-            general_protection_handler as *const () as usize as u64,
-            false,
-        );
-        set_gate(
-            14,
-            selector,
-            page_fault_handler as *const () as usize as u64,
-            false,
-        );
-    }
-
-    IDT_STATE.store(2, Ordering::Release);
-}
-
-fn load_idt() {
-    unsafe {
-        let ptr = DescriptorTablePointer {
-            base: core::ptr::addr_of!(IDT.0).cast::<Descriptor64>(),
-            limit: (core::mem::size_of::<Idt>() - 1) as u16,
-        };
-        dtables::lidt(&ptr);
-    }
-}
-
-fn enable_nxe() {
-    let efer = unsafe { rdmsr(IA32_EFER) } | IA32_EFER_NXE;
-    unsafe {
-        wrmsr(IA32_EFER, efer);
-    }
-}
-
-/// Enable `CR4.OSXSAVE` and program `XCR0.{X87,SSE,AVX}` so userspace
-/// (VEX-encoded) AVX instructions don't fault with `#UD` even when the CPU
-/// reports `CPUID.01H:ECX.AVX`. Runs per-CPU from [`init_local`] (primary and,
-/// via [`per_cpu_trap_init`], every secondary core — `XCR0` is per-core).
-///
-/// Everything is gated on `CPUID.01H:ECX.XSAVE` (bit 26): setting `CR4.OSXSAVE`
-/// or executing `XSETBV` when XSAVE is unsupported `#GP`s, and the default
-/// `qemu64` model has no XSAVE (so this is a no-op there). `OSXSAVE` must be set
-/// before `XSETBV`; `X87` is mandatory and `SSE` must precede `AVX` in `XCR0`.
-fn enable_xsave_features() {
-    let Some(info) = CpuId::new().get_feature_info() else {
-        return;
-    };
-    if !info.has_xsave() {
-        return;
-    }
-    // SAFETY: XSAVE is supported (CPUID-checked above), so enabling CR4.OSXSAVE
-    // and the subsequent XSETBV are well-defined and will not #GP.
-    unsafe {
-        controlregs::cr4_write(controlregs::cr4() | controlregs::Cr4::CR4_ENABLE_OS_XSAVE);
-        let mut bits = controlregs::Xcr0::XCR0_FPU_MMX_STATE | controlregs::Xcr0::XCR0_SSE_STATE;
-        if info.has_avx() {
-            bits |= controlregs::Xcr0::XCR0_AVX_STATE;
-        }
-        controlregs::xcr0_write(bits);
-    }
-}
-
 fn mask_legacy_pic() {
     unsafe {
         x86::io::outb(0x21, 0xff);
@@ -361,42 +260,14 @@ fn mask_legacy_pic() {
     }
 }
 
-extern "x86-interrupt" fn breakpoint_handler(frame: InterruptStackFrame) {
-    println!("x86_64 breakpoint: {frame:#x?}");
-}
-
-extern "x86-interrupt" fn general_protection_handler(frame: InterruptStackFrame, error_code: u64) {
-    panic!("x86_64 general protection fault: error={error_code:#x}, frame={frame:#x?}");
-}
-
-extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_code: u64) {
-    let addr = unsafe { controlregs::cr2() };
-    let flags = PageFaultError::from_bits_truncate(error_code as u32);
-    panic!("x86_64 page fault @ {addr:#x}: {flags:?}, frame={frame:#x?}");
-}
-
-pub fn irq_local_enabled() -> bool {
-    rflags::read().contains(rflags::RFlags::FLAGS_IF)
-}
-
-pub fn irq_local_set_enabled(enable: bool) {
-    unsafe {
-        if enable {
-            x86::irq::enable();
-        } else {
-            x86::irq::disable();
-        }
-    }
-}
-
 pub fn current_cr3() -> PhysAddr {
-    let raw = unsafe { controlregs::cr3() } as usize & !(page_size() - 1);
-    raw.into()
+    ax_cpu::mmu::read_kernel_page_table()
 }
 
 pub fn set_cr3(addr: PhysAddr) {
+    // SAFETY: the boot mapping owner retains the root and executing mappings.
     unsafe {
-        controlregs::cr3_write(addr.as_usize() as u64);
+        ax_cpu::mmu::write_kernel_page_table(addr);
     }
 }
 
@@ -406,7 +277,7 @@ mod tests {
     use crate::timer::CounterStability;
 
     #[test]
-    fn only_proven_single_cpu_invariant_tsc_uses_the_stable_path() {
+    fn stable_tsc_rate_uses_stable_path_only_with_trusted_synchronization() {
         assert_eq!(
             classify_scheduler_counter(true, 1, true),
             CounterStability::Stable
@@ -417,35 +288,100 @@ mod tests {
         );
         assert_eq!(
             classify_scheduler_counter(true, 2, true),
-            CounterStability::Unstable
+            CounterStability::Stable
         );
         assert_eq!(
             classify_scheduler_counter(true, 1, false),
             CounterStability::Unstable
         );
     }
-}
 
-#[cfg(test)]
-mod coverage_tests {
-    use super::*;
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum TimerOperation {
+        Mask,
+        Unmask,
+        Serialize,
+        Clear,
+    }
+
+    struct RecordingTimerHardware {
+        operations: Cell<[Option<TimerOperation>; 4]>,
+        len: Cell<usize>,
+    }
+
+    impl RecordingTimerHardware {
+        const fn new() -> Self {
+            Self {
+                operations: Cell::new([None; 4]),
+                len: Cell::new(0),
+            }
+        }
+
+        fn record(&self, operation: TimerOperation) {
+            let len = self.len.get();
+            let mut operations = self.operations.get();
+            operations[len] = Some(operation);
+            self.operations.set(operations);
+            self.len.set(len + 1);
+        }
+
+        fn snapshot(&self) -> ([Option<TimerOperation>; 4], usize) {
+            (self.operations.get(), self.len.get())
+        }
+    }
+
+    impl OneShotTimerHardware for RecordingTimerHardware {
+        fn set_irq_masked(&self, masked: bool) {
+            self.record(if masked {
+                TimerOperation::Mask
+            } else {
+                TimerOperation::Unmask
+            });
+        }
+
+        fn serialize_lvt_update(&self) {
+            self.record(TimerOperation::Serialize);
+        }
+
+        fn clear_comparator(&self) {
+            self.record(TimerOperation::Clear);
+        }
+    }
 
     #[test]
-    fn trap_constants_hold() {
-        assert!(IA32_EFER == 0xc000_0080);
-        assert!(IA32_EFER_NXE == (1 << 11));
+    fn timer_shutdown_masks_source_before_clearing_comparator() {
+        let timer = RecordingTimerHardware::new();
 
-        assert!(PIT_CHANNEL2_PORT == 0x42);
-        assert!(PIT_COMMAND_PORT == 0x43);
-        assert!(PIT_CONTROL_PORT == 0x61);
-        assert!(PIT_CHANNEL2_GATE == 0x01);
-        assert!(PIT_SPEAKER_ENABLE == 0x02);
-        assert!(PIT_CHANNEL2_OUT == 0x20);
-        assert!(PIT_MODE0_CHANNEL2 == 0xb0);
-        assert!(PIT_TICK_RATE_HZ == 1_193_182);
-        assert!(TSC_PIT_CALIBRATION_MS == 50);
-        assert!(TSC_PIT_MAX_POLL_COUNT == 5_000_000);
-        assert!(MIN_VALID_TSC_FREQ_HZ == 10_000_000);
-        assert!(MAX_VALID_TSC_FREQ_HZ == 10_000_000_000);
+        stop_oneshot(&timer);
+
+        let (operations, len) = timer.snapshot();
+        assert_eq!(
+            &operations[..len],
+            &[Some(TimerOperation::Mask), Some(TimerOperation::Clear)]
+        );
+    }
+
+    #[test]
+    fn timer_unmask_is_serialized_before_comparator_programming() {
+        let timer = RecordingTimerHardware::new();
+
+        enable_timer_irq(&timer);
+
+        let (operations, len) = timer.snapshot();
+        assert_eq!(
+            &operations[..len],
+            &[
+                Some(TimerOperation::Unmask),
+                Some(TimerOperation::Serialize),
+            ]
+        );
+    }
+
+    #[test]
+    fn only_xapic_tsc_deadline_transition_requires_mfence() {
+        assert!(requires_lvt_deadline_fence(ApicMode::XApic, true));
+        assert!(!requires_lvt_deadline_fence(ApicMode::XApic, false));
+        assert!(!requires_lvt_deadline_fence(ApicMode::X2Apic, true));
+        assert!(!requires_lvt_deadline_fence(ApicMode::X2Apic, false));
     }
 }

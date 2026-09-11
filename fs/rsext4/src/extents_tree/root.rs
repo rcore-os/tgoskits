@@ -419,11 +419,11 @@ impl<'a> ExtentTree<'a> {
                 }
 
                 // Copy the serialized bytes back as 15 little-endian words.
-                for i in 0..15 {
+                for (i, block) in self.inode.i_block.iter_mut().enumerate() {
                     let off = i * 4;
                     let v =
                         u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
-                    self.inode.i_block[i] = v;
+                    *block = v;
                 }
             }
             ExtentNode::Index { header, entries } => {
@@ -438,11 +438,11 @@ impl<'a> ExtentTree<'a> {
                     idx.to_disk_bytes(&mut buf[off..off + idx_size]);
                 }
 
-                for i in 0..15 {
+                for (i, block) in self.inode.i_block.iter_mut().enumerate() {
                     let off = i * 4;
                     let v =
                         u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
-                    self.inode.i_block[i] = v;
+                    *block = v;
                 }
             }
         }

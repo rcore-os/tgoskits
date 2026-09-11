@@ -2,14 +2,31 @@ extern crate std;
 
 use core::ptr::NonNull;
 
-use sdmmc_host::{BusWidth, ClockSpeed, SignalVoltage};
+use sdmmc_host::{BusWidth, ClockSpeed, ProgressCause, RequestProgress, SignalVoltage};
 use tock_registers::interfaces::{Readable, Writeable};
 
 use super::*;
 use crate::{host2::AfterBusOp, platform::*};
 
+const REG_CLOCK_CONTROL: usize = 0x2c;
+const REG_SOFTWARE_RESET: usize = 0x2f;
+const CLOCK_INTERNAL_ENABLE: u16 = 1;
+const CLOCK_CONTROL_375MHZ_TO_25MHZ: u16 = (8 << 8) | CLOCK_INTERNAL_ENABLE;
+const CLOCK_INTERNAL_STABLE: u16 = 1 << 1;
+const REGISTER_RETRY_DELAY: core::time::Duration = core::time::Duration::from_micros(100);
+
 #[repr(align(4))]
 struct FakeMmio<const N: usize>([u8; N]);
+
+struct StaticTimer;
+
+impl sdhci_host::HostTimer for StaticTimer {
+    fn now_ms(&self) -> u64 {
+        0
+    }
+}
+
+static TIMER: StaticTimer = StaticTimer;
 
 impl<const N: usize> FakeMmio<N> {
     fn new() -> Self {
@@ -35,7 +52,118 @@ fn new_host<'a>(
     config: Cv181xConfig,
 ) -> Cv181xSdhci {
     let mmio = Cv181xMmio::new(core.base(), syscon.base());
-    unsafe { Cv181xSdhci::new(mmio, config) }
+    let mut host = unsafe { Cv181xSdhci::new(mmio, config) };
+    host.inner_mut().set_timer(&TIMER);
+    host
+}
+
+fn mark_clock_stable(core: &mut FakeMmio<0x400>) {
+    let clock_control = unsafe { core.base().as_ptr().add(REG_CLOCK_CONTROL).cast::<u16>() };
+    unsafe {
+        clock_control.write_volatile(clock_control.read_volatile() | CLOCK_INTERNAL_STABLE);
+    }
+}
+
+#[test]
+fn reset_hook_restores_vendor_phy_state() {
+    let mut core = FakeMmio::new();
+    let mut syscon = FakeMmio::new();
+    let mmio = Cv181xMmio::new(core.base(), syscon.base());
+    let mut host = new_host(&mut core, &mut syscon, Cv181xConfig::default());
+    let registers = mmio.core_registers();
+    registers.mshc_ctrl.set(0);
+    registers.phy_tx_rx_dly.set(0);
+    registers.phy_config.set(0);
+
+    let mut request = unsafe {
+        sdmmc_host::SdMmcHost::submit_bus_op(host.inner_mut(), sdmmc_host::BusOp::ResetAll)
+    }
+    .unwrap();
+    assert!(matches!(
+        sdmmc_host::SdMmcHost::advance_bus_op(
+            host.inner_mut(),
+            &mut request,
+            ProgressCause::Submitted,
+        )
+        .unwrap(),
+        RequestProgress::RegisterPending { .. }
+    ));
+    unsafe {
+        core.base()
+            .as_ptr()
+            .add(REG_SOFTWARE_RESET)
+            .write_volatile(0);
+    }
+    assert_eq!(
+        sdmmc_host::SdMmcHost::advance_bus_op(
+            host.inner_mut(),
+            &mut request,
+            ProgressCause::RegisterRetry,
+        )
+        .unwrap(),
+        RequestProgress::Complete(Ok(())),
+    );
+
+    assert_eq!(registers.phy_tx_rx_dly.get(), PHY_TX_RX_DLY_DS_HS);
+    assert_eq!(registers.phy_config.get(), PHY_CONFIG_DS_HS);
+    assert!(registers.mshc_ctrl.is_set(MSHC_CTRL::DS_HS_BIT_1));
+    assert!(registers.mshc_ctrl.is_set(MSHC_CTRL::DS_HS_BIT_8));
+    assert!(registers.mshc_ctrl.is_set(MSHC_CTRL::DS_HS_BIT_9));
+}
+
+#[test]
+fn sdio1_inner_reset_hook_does_not_replay_board_resources() {
+    let mut core = FakeMmio::<0x400>::new();
+    let mut syscon = FakeMmio::<0x2000>::new();
+    let mut crg = FakeMmio::<0x1000>::new();
+    let mut rtcsys_ctrl = FakeMmio::<0x1000>::new();
+    let mut rtcsys_io = FakeMmio::<0x1000>::new();
+    let host_mmio = Cv181xMmio::new(core.base(), syscon.base());
+    let sdio1_mmio =
+        Cv181xSdio1Mmio::new(host_mmio, crg.base(), rtcsys_ctrl.base(), rtcsys_io.base());
+    let mut host = unsafe { Cv181xSdhci::new_sdio1(sdio1_mmio, Cv181xConfig::default()) };
+
+    core.write_u32(0x200, 0);
+    core.write_u32(0x240, 0);
+    core.write_u32(0x24c, 0);
+    crg.write_u32(0, 0);
+    rtcsys_ctrl.write_u32(0x18, 0);
+    syscon.write_u32(0x294, 0);
+
+    let mut request = unsafe {
+        sdmmc_host::SdMmcHost::submit_bus_op(host.inner_mut(), sdmmc_host::BusOp::ResetAll)
+    }
+    .unwrap();
+    assert!(matches!(
+        sdmmc_host::SdMmcHost::advance_bus_op(
+            host.inner_mut(),
+            &mut request,
+            ProgressCause::Submitted,
+        )
+        .unwrap(),
+        RequestProgress::RegisterPending { .. }
+    ));
+    unsafe {
+        core.base()
+            .as_ptr()
+            .add(REG_SOFTWARE_RESET)
+            .write_volatile(0);
+    }
+    assert_eq!(
+        sdmmc_host::SdMmcHost::advance_bus_op(
+            host.inner_mut(),
+            &mut request,
+            ProgressCause::RegisterRetry,
+        )
+        .unwrap(),
+        RequestProgress::Complete(Ok(())),
+    );
+
+    assert_eq!(core.read_u32(0x240), PHY_TX_RX_DLY_DS_HS);
+    assert_eq!(core.read_u32(0x24c), PHY_CONFIG_DS_HS);
+    assert_eq!(crg.read_u32(0), 0);
+    assert_eq!(rtcsys_ctrl.read_u32(0x18), 0);
+    assert_eq!(syscon.read_u32(0x294), 0);
 }
 
 #[test]
@@ -235,19 +363,24 @@ fn no_1v8_rejects_uhs_clock_and_voltage_paths() {
         },
     );
 
-    assert_eq!(
-        host.set_clock_speed(ClockSpeed::Sdr50),
-        Err(sdmmc_host::Error::Unsupported)
-    );
+    let clock_result = unsafe {
+        sdmmc_host::SdMmcHost::submit_bus_op(
+            &mut host,
+            sdmmc_host::BusOp::SetClock(ClockSpeed::Sdr50),
+        )
+    };
+    assert!(matches!(clock_result, Err(sdmmc_host::Error::Unsupported)));
 
-    let result = unsafe {
+    let voltage_result = unsafe {
         sdmmc_host::SdMmcHost::submit_bus_op(
             &mut host,
             sdmmc_host::BusOp::SetSignalVoltage(SignalVoltage::V180),
         )
     };
-
-    assert!(matches!(result, Err(sdmmc_host::Error::Unsupported)));
+    assert!(matches!(
+        voltage_result,
+        Err(sdmmc_host::Error::Unsupported)
+    ));
 }
 
 #[test]
@@ -256,7 +389,18 @@ fn high_speed_mode_sets_host_timing_even_when_clock_is_capped() {
     let mut syscon = FakeMmio::new();
     let mut host = new_host(&mut core, &mut syscon, Cv181xConfig::default());
 
-    let _ = host.set_clock_speed(ClockSpeed::HighSpeed);
+    let mut request = unsafe {
+        sdmmc_host::SdMmcHost::submit_bus_op(
+            &mut host,
+            sdmmc_host::BusOp::SetClock(ClockSpeed::HighSpeed),
+        )
+    }
+    .unwrap();
+    assert!(matches!(
+        sdmmc_host::SdMmcHost::advance_bus_op(&mut host, &mut request, ProgressCause::Submitted,)
+            .unwrap(),
+        RequestProgress::RegisterPending { .. }
+    ));
 
     let mmio = Cv181xMmio::new(core.base(), syscon.base());
     let registers = mmio.core_registers();
@@ -265,5 +409,62 @@ fn high_speed_mode_sets_host_timing_even_when_clock_is_capped() {
         registers
             .host_control2
             .matches_all(HOST_CONTROL2::UHS_MODE::SDR25)
+    );
+    mark_clock_stable(&mut core);
+    assert_eq!(
+        sdmmc_host::SdMmcHost::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        )
+        .unwrap(),
+        RequestProgress::Complete(Ok(()))
+    );
+}
+
+#[test]
+fn clock_transition_observes_stable_after_submission() {
+    let mut core = FakeMmio::new();
+    let mut syscon = FakeMmio::new();
+    let mut host = new_host(&mut core, &mut syscon, Cv181xConfig::default());
+    let mut request = unsafe {
+        sdmmc_host::SdMmcHost::submit_bus_op(
+            &mut host,
+            sdmmc_host::BusOp::SetClock(ClockSpeed::Default),
+        )
+    }
+    .unwrap();
+
+    assert_eq!(
+        sdmmc_host::SdMmcHost::advance_bus_op(&mut host, &mut request, ProgressCause::Submitted,)
+            .unwrap(),
+        RequestProgress::RegisterPending {
+            retry_after: REGISTER_RETRY_DELAY,
+        },
+        "CV181x clock setup must use the SDHCI Host2 register state machine",
+    );
+    let clock_control = unsafe {
+        core.base()
+            .as_ptr()
+            .add(REG_CLOCK_CONTROL)
+            .cast::<u16>()
+            .read_volatile()
+    };
+    assert_eq!(
+        clock_control, CLOCK_CONTROL_375MHZ_TO_25MHZ,
+        "the generic divider must use the configured CV181x input clock",
+    );
+
+    mark_clock_stable(&mut core);
+
+    assert_eq!(
+        sdmmc_host::SdMmcHost::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        )
+        .unwrap(),
+        RequestProgress::Complete(Ok(())),
+        "a stable clock observed after submission must complete the same request",
     );
 }

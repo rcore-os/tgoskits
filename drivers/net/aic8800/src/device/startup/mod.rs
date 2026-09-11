@@ -22,12 +22,13 @@ use crate::{
     registers::{INTERRUPTS_ENABLED, interface_ready},
 };
 
+mod d80;
 mod dc;
 mod firmware;
 mod vendor;
 
+use d80::D80PatchStage;
 use dc::{DcStage, DcStartupState};
-use firmware::D80PatchStage;
 
 const START_STABILIZE: Duration = Duration::from_millis(200);
 const FUNCTION_READY_DELAY_V2: Duration = Duration::from_millis(10);
@@ -368,10 +369,12 @@ impl AicDevice {
                 }
                 self.lifecycle.startup = None;
                 self.lifecycle.state = AicState::Ready;
-                self.data
-                    .events
-                    .push_back(AicEvent::Started { mac_address });
-                AicAction::Event(self.data.events.pop_front().unwrap())
+                let _ = self.data.push_event(AicEvent::Started { mac_address });
+                AicAction::Event(
+                    self.data
+                        .pop_event()
+                        .expect("startup always publishes a Started event"),
+                )
             }
         }
     }

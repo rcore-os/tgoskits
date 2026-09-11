@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/rcore-os/tgoskits/compare/sdmmc-host-v0.1.7...sdmmc-host-v0.1.8) - 2026-09-09
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+
 ## [0.1.7](https://github.com/rcore-os/tgoskits/compare/sdio-host2-v0.1.6...sdio-host2-v0.1.7) - 2026-08-20
 
 ### Other

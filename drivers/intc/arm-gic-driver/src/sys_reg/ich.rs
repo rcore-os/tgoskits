@@ -2,10 +2,10 @@
 //
 // ICH (Interrupt Controller Hypervisor) System registers
 
-use aarch64_cpu::registers::{ReadWriteable, Readable, Writeable};
 use tock_registers::{
     LocalRegisterCopy,
     fields::{Field, FieldValue},
+    interfaces::{ReadWriteable, Readable, Writeable},
 };
 
 // Active Priority Group 0 寄存器 (EL2)
@@ -163,6 +163,7 @@ macro_rules! define_ich_lr_register {
            pub mod [<ich_lr $n _el2>] {
             use super::ICH_LR_EL2;
             use tock_registers::interfaces::*;
+            #[cfg(target_arch = "aarch64")]
             use core::arch::asm;
 
             pub struct Reg;
@@ -173,9 +174,14 @@ macro_rules! define_ich_lr_register {
 
                 #[inline(always)]
                 fn get(&self) -> Self::T {
-                    let reg: u64;
-                    unsafe { asm!(concat!("mrs {0}, ", stringify!( [<ICH_LR $n _EL2>])), out(reg) reg) }
-                    reg
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        let reg: u64;
+                        unsafe { asm!(concat!("mrs {0}, ", stringify!( [<ICH_LR $n _EL2>])), out(reg) reg) }
+                        reg
+                    }
+                    #[cfg(not(target_arch = "aarch64"))]
+                    { 0 }
                 }
             }
 
@@ -185,7 +191,10 @@ macro_rules! define_ich_lr_register {
 
                 #[inline(always)]
                 fn set(&self, value: Self::T) {
+                    #[cfg(target_arch = "aarch64")]
                     unsafe { asm!(concat!("msr ", stringify!([<ICH_LR $n _EL2>]), ", {0}"), in(reg) value) }
+                    #[cfg(not(target_arch = "aarch64"))]
+                    let _ = value;
                 }
             }
 

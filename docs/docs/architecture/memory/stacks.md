@@ -18,9 +18,9 @@ TGOSKits 没有把物理 RAM 静态切成一个“栈区”和一个“堆区”
 | 栈类型 | 默认大小 | 来源 | 生命周期 |
 | --- | --- | --- | --- |
 | CPU0 最早期 linker 栈 | `STACK_SIZE = 0x40000`，256 KiB | kernel `.bss` / `KImage` | 启动早期，镜像范围始终保留 |
-| 每 CPU boot/main 栈 | `someboot::mem::stack_size()`，默认 256 KiB | early bump 的 per-CPU 区 | 系统生命周期，`TaskStack::Borrowed` 不释放 |
-| 普通内核任务栈 | 默认 `0x40000`，可由构建配置覆盖 | `GlobalAlloc` 或显式页 allocation | task owner Drop 时释放 |
-| idle 特殊栈 | 取决于构建 feature，部分配置为 16 KiB | task allocator | idle task 生命周期 |
+| 每 CPU boot/main 栈 | `someboot::mem::stack_size()`，默认 256 KiB | early bump 的 per-CPU 区 | 系统生命周期，bootstrap resource 不持有可释放 stack handle |
+| 普通内核任务栈 | 默认 `0x40000`，可由构建配置覆盖 | `axruntime` 的 heap 或 `KernelVirtualAllocation` | thread resource reaper 释放 |
+| idle 栈 | 与运行时任务栈配置一致 | `axruntime` stack allocator | idle thread 生命周期 |
 | Starry 用户栈 | loader/应用程序二进制接口选择的虚拟内存区域大小 | 用户地址空间 backend，按需填页 | exec/exit/unmap 时回收 |
 
 栈大小不是物理连续 RAM 的全局配额。只有具体 stack allocation 会消耗页；用户栈预留的虚拟内存大小也不等于所有页面已经 resident。
@@ -31,13 +31,13 @@ TGOSKits 没有把物理 RAM 静态切成一个“栈区”和一个“堆区”
 
 ![内核与用户栈资源来源](./images/stack-architecture.svg)
 
-普通任务栈默认 256 KiB，超过 2048 B Slab 上限，因此 plain 模式最终由 Buddy 提供大对象页。启用 guard page 后则直接使用显式连续页 API。
+普通任务栈默认 256 KiB。未启用保护页和 `vmap-task-stack` 时使用 heap；启用任一配置后，由 `KernelVirtualAllocation` 预留连续虚拟区并逐页分配 backing。保护页仅占虚拟地址，物理页统计使用 `UsageKind::TaskStack`。
 
 ### 1.3 架构差异
 
 栈的 owner 与分配来源跨架构一致，架构入口仅负责把栈顶写入本架构栈寄存器并跳转：x86_64 使用 `rsp`，AArch64 和 RISC-V 使用 `sp`，LoongArch64 使用 `$sp`。启动 entry 必须在进入 Rust 前满足相应调用约定的栈对齐，栈 owner 不保存架构私有寄存器状态。
 
-Guard page 的区别来自地址转换缓存失效：AArch64 使用 inner-shareable 硬件广播，x86_64、RISC-V 和 LoongArch64 的默认实现只处理本地 CPU，需要上层远程失效。地址窗口和指令细节统一见[多架构内存实现](./architecture-support.md)，本章后续只说明栈特有的 owner 和 guard 时序。
+Guard page 的架构差异只在本地地址转换缓存指令；四架构的跨 CPU 覆盖都由上层软件 mask、远程失效和确认协议拥有。地址窗口和指令细节统一见[多架构内存实现](./architecture-support.md)，本章后续只说明栈特有的 owner 和 guard 时序。
 
 ## 2. CPU0 启动栈
 
@@ -88,71 +88,65 @@ CPU0 在 allocator、完整页表和 per-CPU 映射可用之前就需要栈。�
 
 ### 3.2 调度器借用
 
-动态平台的 `boot_stack_bounds(cpu_idx)` 从 `somehal::smp::cpu_meta()` 返回 stack bottom 和 size。非 host-test 构建中，`axtask::main_task_stack()` 用 `TaskStack::borrowed()` 包装该范围。
+动态平台的 `boot_stack_bounds(cpu_idx)` 从 `somehal::smp::cpu_meta()` 返回 stack bottom 和 size。调度器安装 bootstrap thread 时只接管当前架构 context 与 TLS；`create_bootstrap_resources()` 把 stack handle 设为 `StackHandle::NONE`，明确表示该 boot stack 仍由启动层拥有。
 
-| Owner 状态 | `TaskStackKind` | Drop 行为 |
+| Owner 状态 | 运行时表示 | 回收行为 |
 | --- | --- | --- |
-| boot/main/secondary stack | `Borrowed` | 不释放，仅由启动层持有物理范围 |
-| plain task allocation | `Alloc` | 用原 `Layout` 归还 `GlobalAlloc` |
-| guard-page task allocation | `GuardedAlloc` | 恢复 guard 页表项后归还全部页 |
+| boot/main/secondary stack | bootstrap `ThreadResources` 中为 `StackHandle::NONE` | 不释放，仅由启动层持有物理范围 |
+| plain task allocation | opaque `StackHandle` 指向 `StackBacking::Heap` | 用原 `Layout` 归还 runtime allocator |
+| guard-page task allocation | opaque `StackHandle` 指向 `StackBacking::VirtualPages` | 清除 usable PTE 并完成 TLB shootdown 后释放 backing 和 VA |
 
-`Borrowed` 表达“任务使用但不拥有”。这防止 scheduler 在 main task 结束或重建时把 early bump 的系统级 stack 错误释放给 Buddy。
+`StackHandle::NONE` 在 bootstrap resource bundle 中表达“任务正在使用，但 scheduler 没有获得该 stack 的回收所有权”。这防止 bootstrap thread 退休时把 early bump 的系统级 stack 错误释放给 Buddy。
 
 ## 4. 普通内核任务栈
 
-`os/arceos/modules/axtask/src/task.rs::TaskStack` 封装 task stack 的地址、大小和所有权类型。任务创建时会把请求大小向 4 KiB 对齐。
+`components/ax-task` 只持有运行时提供的 opaque `StackHandle`；分配策略和地址空间操作属于 `os/arceos/modules/axruntime/src/task/resources.rs::RuntimeStack`。普通任务创建先分配 stack/TLS/context，再把三个 handle 作为一个 `ThreadResources` bundle 转交给 scheduler；线程退出后由 resource reaper 按相反顺序销毁。
 
 ### 4.1 普通分配
 
-未启用 `stack-guard-page` 时，`TaskStack::alloc_plain()` 使用 `Layout::from_size_align(size, TASK_STACK_ALIGN)` 和 Rust allocator 分配。默认 256 KiB 请求走 Buddy 大对象路径。
+未启用 `stack-guard-page` 和 `vmap-task-stack` 时，`allocate_heap_stack()` 使用请求的 usable size 与 alignment 构造 `Layout`，再经 `ax_alloc::global_allocator()` 分配。ArceOS 传入 16 字节 alignment；默认 256 KiB 请求走 Buddy 大对象路径。
 
 | 操作 | 实现 | 失败语义 |
 | --- | --- | --- |
-| allocation | `alloc::alloc::alloc(layout)` | null 时当前代码 assert/panic |
-| bottom canary | `STACK_END_MAGIC` 写入 stack bottom | 调度检查可发现覆盖 |
-| release | `alloc::alloc::dealloc(ptr, layout)` | 必须使用原 size/align |
+| allocation | `global_allocator().alloc(layout)` | 返回 typed `RuntimeStatus` |
+| publication | `Box<RuntimeStack>` 转为唯一 non-zero `StackHandle` | handle 必须只转交和销毁一次 |
+| release | `global_allocator().dealloc(ptr, layout)` | 必须使用原 size/align |
 
-Canary 能检测已经写到栈底的溢出，但不能阻止继续破坏相邻内存。需要立即 fault 的配置应启用 guard page。
+plain stack 没有页级溢出隔离。需要越界后立即 fault 的配置应启用 guard page。
 
 ### 4.2 保护页分配
 
-启用 `stack-guard-page` 后，`TaskStack::alloc_guarded()` 申请 `usable pages + 1` 个连续 Normal 页，将最低一页从 kernel address space unmap，并把可用 bottom 设置在 guard page 之后。
+启用 `stack-guard-page` 或 `vmap-task-stack` 后，`allocate_virtual_stack()` 构造 `KernelVirtualAllocationLayout`。usable 和 guard 大小按请求对齐向上取整，`with_alignment()` 校验对齐约束。`KernelVirtualAllocation::allocate()` 从 kernel address space 的空洞预留整个区间，guard 范围始终没有 PTE，也没有对应物理页。
 
-![带保护页的内核任务栈布局](./images/guarded-stack-layout.svg)
-
-Drop 时先通过 `ax-mm::kernel_aspace().map_linear()` 恢复 guard 页映射，再按原页数和用途释放整段 allocation；分配对齐和地址区域不属于释放契约。先恢复映射可避免 Buddy 重用该页后内核 direct map 仍残留 hole。
+backing 的 `Vec`、`Arc` 和 data frame 在 kernel address-space 锁外准备；每个 PTE 通过 `plan_map_page()` 获取计划，在锁外准备 page-table deposit，再加锁重验并安装。并发改变目录会返回 stale deposit，失败的未发布页表页在锁外释放。任何部分安装失败均由已经创建的 token 把整段 reservation 标成 `Retiring`。
 
 ## 5. 栈保护一致性
 
-改变 kernel stack guard 页表项后必须让可能缓存该映射的 CPU 失效。单核与 多核 使用不同路径，但都在继续使用或释放页面前完成。
+`KernelVirtualAllocation` 和 `KernelVirtualAllocationBackend` 共同持有唯一虚拟区和 backing 生命周期。栈 token 的 `Drop` 只发布退休状态；同步释放与有界重试负责撤销页表和确认 TLB，resource reaper 才能最终释放内存。
 
-### 5.1 本地失效
+### 5.1 发布和退休
 
-未同时启用 多核 和 处理器间中断 时，`flush_stack_guard_tlb(vaddr)` 调用 `ax_hal::asm::flush_tlb(Some(vaddr))`。该路径假设没有其他 CPU 持有相关 kernel mapping。
+新 reservation 从未发布过有效 guard PTE，因此创建栈不需要撤销 direct-map 页，也不等待尚未上线的 CPU。usable 页全部建立后才把栈 handle 交给 scheduler。
 
-| 事件 | 页表项操作 | 地址转换后备缓冲区操作 |
-| --- | --- | --- |
-| stack 创建 | unmap guard 虚拟地址 | local address flush |
-| stack Drop | remap guard 虚拟地址 | local address flush |
-
-页表修改成功并不自动替代架构间的 Translation Lookaside Buffer（地址转换后备缓冲区，TLB）失效。guard stack 代码显式完成这一职责，因为它修改的是所有 CPU 可见的 kernel address space。
-
-### 5.2 远端失效
-
-同时启用 `stack-guard-page + smp + ipi` 时，代码在禁止抢占的 guard 内向所有 ready remote CPU 发送 flush closure，并以 Release/Acquire ack 计数等待完成，最后 flush 本 CPU。
-
-| 约束 | 当前实现 |
+| 阶段 | 页表与所有权 |
 | --- | --- |
-| CPU 选择 | 跳过 current CPU 和尚未 ready 的 CPU |
-| 顺序 | 修改映射后 fence，remote/local flush，再等待 ack |
-| 超时 | 5 秒后 panic，报告 ack 数和地址 |
-| 页面释放 | 仅在 remap 与 shootdown 完成后执行 |
+| prepare | 锁外申请 backing，元数据预留 VA，再逐页安装 usable PTE |
+| live | runtime 唯一 stack handle 持有 token，MM 元数据持有 backing |
+| retiring | token 已放弃使用；元数据仍保留 VA 和全部 frame |
+| quarantined | usable PTE 已分离，等待全 CPU TLB 确认 |
+| reclaimed | 移除元数据，锁外 Drop backing；VA 可再次使用 |
 
-超时 panic 是内核映射一致性失败，而不是可忽略的性能告警。若某架构提供硬件 broadcast，通用页表层可声明该 scope，但当前 stack guard 路径仍使用自己的 处理器间中断 协议。
+`prepare_kernel_virtual_release()` 保留共享 kernel 页表目录，仅清除属于本 allocation 的 leaf。局部失败或 TLB 超时不会释放物理页，也不会复用 reservation；`retry_kernel_virtual_quarantines()` 按有界扫描继续处理，每轮失败的区间不会阻止后续独立区间。
+
+### 5.2 调度与分配边界
+
+`components/ax-task` 负责线程资源生命周期，`ax-runtime` 负责消费 `StackHandle`，`ax-mm` 负责 VMA/PTE/backing。调度切换不运行虚拟栈最终释放；普通资源准备会先重试一批退休区间，再申请新栈。
+
+这与 Linux `vunmap_pte_range()` 保留页表目录、`finish_task_switch()` 在 runqueue 解锁后安排 MM 释放的责任划分一致。具体目标 CPU 的选择、上线同步和确认仍由 `ax_hal::cache::flush_tlb_range_all_cpus()` 负责。
 
 ## 6. Starry 用户栈
 
-Starry 用户栈属于用户虚拟地址空间，不是 `TaskStack`。loader 和进程内存策略建立 stack 虚拟内存区域，物理页由缺页或 populate 路径按需分配。
+Starry 用户栈属于用户虚拟地址空间，不是 runtime `StackHandle`。loader 和进程内存策略建立 stack 虚拟内存区域，物理页由缺页或 populate 路径按需分配。
 
 ### 6.1 虚拟区与驻留页
 
@@ -165,17 +159,17 @@ Starry 用户栈属于用户虚拟地址空间，不是 `TaskStack`。loader 和
 | `RssAnon` | 已驻留匿名页 | 包含实际 fault/populate 的 stack page |
 | kernel task stack | 内核态执行栈 | 不计入用户进程虚拟内存区域统计 |
 
-用户栈释放通过 address space unmap/clear 和 backend page owner 完成，不调用 `TaskStack::drop()`。
+用户栈释放通过 address space unmap/clear 和 backend page owner 完成，不调用 runtime kernel-stack deallocator。
 
 ### 6.2 保护边界
 
-用户访问权限由 Stage-1 页表项和 Starry 虚拟内存区域 flags 共同决定。kernel stack guard feature 只保护 `axtask` 内核栈，不会自动给所有 Starry 用户 stack 增加 guard 虚拟内存区域。
+用户访问权限由 Stage-1 页表项和 Starry 虚拟内存区域 flags 共同决定。kernel stack guard feature 只保护 `axruntime` 分配的内核栈，不会自动给所有 Starry 用户 stack 增加 guard 虚拟内存区域。
 
 | 边界 | 负责组件 | 故障处理 |
 | --- | --- | --- |
 | 用户 stack 虚拟内存区域权限 | Starry `AddrSpace` / backend | `handle_page_fault()` 返回是否成功，trap 层再处理 signal |
-| kernel task guard page | `axtask` + `ax-mm` | 诊断 `diagnose_stack_guard_page_fault()` |
-| CPU boot stack 范围 | `someboot` / `ax-hal` | 启动配置与 canary，当前无动态 guard |
+| kernel task guard page | `axruntime` + `ax-mm` | 诊断 `diagnose_current_stack_guard_page_fault()` |
+| CPU boot stack 范围 | `someboot` / `ax-hal` | 启动配置，当前无动态 guard |
 
 分析 stack overflow 时必须先确认 fault address 属于哪种 stack。把用户虚拟内存区域 fault 误判成 kernel guard，或把 boot stack 当作 allocator 泄漏，都会得出错误结论。
 
@@ -190,8 +184,7 @@ Starry 用户栈属于用户虚拟地址空间，不是 `TaskStack`。loader 和
 | 配置 | 当前默认 | 源码入口 |
 | --- | --- | --- |
 | someboot `STACK_SIZE` | `0x40000` | `platforms/someboot/src/ld/defaults.ld` |
-| axtask task stack | `0x40000` | `os/arceos/modules/axtask/build.rs` |
-| ax-runtime task stack | `0x40000` | `os/arceos/modules/axruntime/build.rs` |
+| ax-runtime task stack | `0x40000` | `os/arceos/modules/axruntime/build.rs`；作为 `StackRequest` 传给 runtime allocator |
 | API exposed task stack | `0x40000` | `arceos_api` / `arceos_posix_api` config |
 | user pthread compatibility default | 2 MiB | `os/arceos/ulib/axstd/src/os/libc_compat.rs` |
 
@@ -199,7 +192,7 @@ Starry 用户栈属于用户虚拟地址空间，不是 `TaskStack`。loader 和
 
 ### 7.2 源码检查点
 
-下面的文件覆盖 stack 从静态布局到释放的完整生命周期。owner 类型、canary 和 guard shootdown 的用例见[内存管理测试](./testing.md)。
+下面的文件覆盖 stack 从静态布局到释放的完整生命周期。resource handle owner 与 guard shootdown 的用例见[内存管理测试](./testing.md)。
 
 | 源码 | 审计重点 |
 | --- | --- |
@@ -207,11 +200,13 @@ Starry 用户栈属于用户虚拟地址空间，不是 `TaskStack`。loader 和
 | `platforms/someboot/src/smp/layout.rs` | 每 CPU offset、stride、总大小和 checked arithmetic |
 | `platforms/someboot/src/smp/mod.rs` | typed layout 初始化、CPU metadata 发布与 cache maintenance |
 | `platforms/axplat-dyn/src/boot.rs` | `boot_stack_bounds()` 元数据来源 |
-| `os/arceos/modules/axtask/src/run_queue.rs` | main/secondary task 借用 boot stack |
-| `os/arceos/modules/axtask/src/task.rs` | plain/guarded/borrowed Drop 与地址转换后备缓冲区 flush |
+| `os/arceos/modules/axruntime/src/task/bootstrap.rs` | bootstrap thread 如何保留外部 boot stack owner |
+| `components/ax-task/src/thread/spec.rs` | scheduler 如何持有并一次性释放 opaque resource handles |
+| `os/arceos/modules/axruntime/src/task/resources.rs` | heap/virtual stack 分配与回收 |
+| `os/arceos/modules/axmm/src/kernel_alloc.rs` | reservation、逐页安装、退休和全 CPU TLB shootdown |
 | `os/StarryOS/kernel/src/mm/stats.rs` | 用户 stack 虚拟内存区域统计分类 |
 
-容量计算应包含每 CPU 固定 stack 总开销、最大 task 数乘以配置栈大小、guard page 的额外一页以及 Starry 用户 stack 的虚拟内存大小/常驻内存集大小差异。
+容量计算应包含每 CPU 固定 stack 总开销、最大 task 数乘以配置栈大小、guard page 的虚拟地址开销以及 Starry 用户 stack 的虚拟内存大小/常驻内存集大小差异。
 
 ## 8. 栈布局实例
 
@@ -247,65 +242,36 @@ CPU3 0x8100_6000..0x8100_8000, stack top=0x8100_8000
 
 ### 8.2 保护页任务栈
 
-启用 `stack-guard-page` 后，请求 256 KiB task stack会把 usable size 对齐到 4 KiB，再额外申请一个 guard page，API request count为 65 页。当前 Buddy会把 65 页提升为 order 7 的 128 页 block；`TaskStack` 可见范围只使用前 65 页，剩余部分属于该 allocation 的内部碎片。可见范围第一页从 kernel address space unmap，`TaskStack::ptr` 指向第二页。
-
-```text
-base                                                           base + 0x41000
-| guard 4 KiB |--------------- usable stack 256 KiB ----------------|
-               ^ bottom / canary                         top / initial SP
-```
-
-关键分配代码直接使用显式页 API，而不是先从 `GlobalAlloc` 分配后再猜测页边界。
-
-```rust
-let usable_size = align_up_4k(size);
-let guarded_size = usable_size
-    .checked_add(PAGE_SIZE_4K)
-    .expect("guarded task stack size overflow");
-let pages = guarded_size / PAGE_SIZE_4K;
-let base = ax_alloc::global_allocator()
-    .alloc_pages(pages, PAGE_SIZE_4K, UsageKind::Global)
-.expect("guarded task stack allocation failed");
-```
-
-源码实际把 内存不足 作为 task creation 的不可恢复初始化失败处理。guard page建立后必须执行本地或远端地址转换后备缓冲区失效，不能只删除页表项。
+启用 `stack-guard-page` 后，256 KiB usable stack 加一个 4 KiB guard 预留 260 KiB 连续虚拟地址。backing 只分配 64 个独立物理页，不再将 65 页连续申请向上提升为 128 页 Buddy block。
 
 ```mermaid
-sequenceDiagram
-    participant Task as TaskStack::alloc_guarded
-    participant Alloc as ax-alloc
-    participant KAS as kernel AddrSpace
-    participant CPUs as local/remote 地址转换后备缓冲区
-
-    Task->>Alloc: allocate 65 contiguous pages
-    Alloc-->>Task: base
-    Task->>KAS: unmap first 4 KiB
-    KAS->>CPUs: flush guard 虚拟地址 and wait for required ack
-    Task-->>Task: publish usable bottom + canary
+flowchart LR
+    Reservation["260 KiB virtual reservation"] --> Guard["4 KiB guard: no PTE, no frame"]
+    Reservation --> Usable["256 KiB usable: 64 separate frames"]
+    Usable --> Stack["initial SP = usable end"]
 ```
 
-Drop 时顺序相反：先 remap guard page并完成地址转换后备缓冲区同步，再以原 `count=65` 返回对应 Buddy block。若先 free，其他 CPU 的 stale translation 可能写入已经复用的物理页。这个实例也说明非 2 次幂连续请求的成本；是否调整 stack size必须由最大栈深和物理开销共同决定。
+创建时每个 frame 和 page-table deposit 均在锁外准备。销毁时先清除 leaf，再完成 TLB 确认，最后在锁外释放 backing；guard hole 本身没有物理页需要归还。
 
 ### 8.3 普通任务栈
 
-未启用 guard feature 时，`TaskStack::alloc_plain()` 用 `Layout(size, TASK_STACK_ALIGN)` 进入 Rust allocator。默认 256 KiB 超过 Slab 上限，最终使用 Buddy large allocation，但所有权仍表现为 byte allocation。
+未启用上述两个 feature 时，`allocate_heap_stack()` 用 `Layout(usable_size, alignment)` 进入 runtime allocator。默认 256 KiB 超过 Slab 上限，使用 Buddy large allocation，但所有权仍表现为 byte allocation。
 
-| 属性 | Plain stack | Guarded stack |
+| 属性 | Heap stack | Virtual stack |
 | --- | --- | --- |
-| 入口 | `alloc::alloc::alloc(Layout)` | `global_allocator().alloc_pages(num, align, usage)` |
-| 下层 | large `GlobalAlloc` → Buddy | Buddy pages |
-| overflow 检测 | bottom canary | unmapped guard + canary |
-| Drop | `alloc::alloc::dealloc()` | remap guard后 raw page deallocation |
-| 可否混用释放 | 否 | 否 |
+| 入口 | `global_allocator().alloc(Layout)` | `KernelVirtualAllocation::allocate()` |
+| 物理连续要求 | 由 byte allocator 决定 | 每页独立分配 |
+| overflow 检测 | 无页级隔离 | 配置 guard 时为 unmapped hole |
+| 回收 | 原 `Layout` deallocation | leaf detach → TLB 确认 → 锁外释放 |
 
-`TaskStackKind::Borrowed` 两种 feature 下都不释放 backing。main task借用 someboot 预分配 stack，Drop 只能结束 task owner，不能把 early Reserved 区交给 runtime allocator。
+bootstrap resource bundle 的 stack handle 仍为 `NONE`；someboot 的 Reserved 区不进入 runtime allocator 的退休流程。
 
 ### 8.4 Starry 用户栈
 
-x86_64 当前用户栈顶部为 `0x0400_0000_0000`，虚拟内存区域大小为 8 MiB，因此起点是 `0x03ff_ff80_0000`。loader 先建立完整 `[stack]` 虚拟内存区域，再只 populate 初始 argv/envp/auxv 实际覆盖的尾部页。
+用户栈顶部来自当前 `AddrSpace` 捕获的不可变 `UserVirtualAddressLayout`。x86_64 的策略上限为 `0x0400_0000_0000`；LoongArch64 还会把该上限裁剪到 CPUCFG `VALEN` 给出的 lower canonical half，和 Linux 的 `STACK_TOP_MAX = TASK_SIZE64` 原理一致。例如实际 `VALEN=40` 时，`TASK_SIZE` 和栈顶都是 `0x80_0000_0000`。虚拟内存区域大小为 8 MiB；loader 先建立完整 `[stack]` 虚拟内存区域，再只 populate 初始 argv/envp/auxv 实际覆盖的尾部页。
 
 ```rust
-let ustack_top = VirtAddr::from_usize(crate::config::USER_STACK_TOP);
+let ustack_top = uspace.stack_top();
 let ustack_size = crate::config::USER_STACK_SIZE;
 let ustack_start = ustack_top - ustack_size;
 uspace.map(
@@ -313,7 +279,7 @@ uspace.map(
     ustack_size,
     MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
     false,
-    Backend::new_alloc(ustack_start, PageSize::Size4K, "[stack]"),
+    MappingOperation::new_alloc(ustack_start, PAGE_SIZE_4K, "[stack]"),
 )?;
 ```
 
@@ -324,6 +290,6 @@ uspace.map(
 | 虚拟内存区域 | 8 MiB |
 | 初始 stack data | 13 KiB |
 | 初始 resident upper bound | 16 KiB / 4 页 |
-| 初始 SP | `USER_STACK_TOP - 13 KiB`，再满足应用程序二进制接口 alignment |
+| 初始 SP | 当前 MM 的 `stack_top - 13 KiB`，再满足应用程序二进制接口 alignment |
 
 Starry 当前使用固定大小 stack 虚拟内存区域，不实现 Linux `VM_GROWSDOWN`。非 FIXED mmap 的上界还会避开 `STACK_GUARD_GAP`，但这不是一个已映射的物理 guard page；两种 guard 语义不能混用。

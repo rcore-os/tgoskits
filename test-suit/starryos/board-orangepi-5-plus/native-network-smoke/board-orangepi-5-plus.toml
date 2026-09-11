@@ -1,92 +1,4 @@
 board_type = "OrangePi-5-Plus"
-session_files = [
-  "iperf-smoke.sh",
-]
-shell_prefix = "root@starry:/root #"
-shell_init_cmd = '''
-suite=STARRY_NATIVE_NETWORK
-iperf_marker=STARRY_IPERF_SMOKE
-rtnl_marker=STARRY_RTNL
-ok=1
-
-echo RTL8125_NET_TEST_PASSED
-
-server_ip='${boardServerIp}'
-url='${sessionFile:iperf-smoke.sh}'
-script=/tmp/iperf-smoke.sh
-
-download_script() {
-  if command -v curl >/dev/null 2>&1; then
-    curl --connect-timeout 2 --max-time 5 -fsSL "$url" -o "$script"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -T 5 -O "$script" "$url"
-  else
-    return 1
-  fi
-}
-
-downloaded=0
-attempt=1
-while [ "$attempt" -le 30 ]; do
-  if download_script; then
-    downloaded=1
-    break
-  fi
-  sleep 1
-  attempt=$((attempt + 1))
-done
-if [ "$downloaded" != "1" ]; then
-  echo "${iperf_marker}_FAILED"
-  ok=0
-elif ! chmod +x "$script" || ! "$script" "$server_ip"; then
-  echo "${iperf_marker}_FAILED"
-  ok=0
-fi
-
-printf '\n%s_BEGIN\n' "$rtnl_marker"
-rtnl_ok=1
-ip addr del 192.168.10.2/24 dev eth1 >/tmp/starry-rtnl-cleanup 2>&1 || true
-ip link show dev eth1 || rtnl_ok=0
-if ip link show dev starry_missing0 >/tmp/starry-rtnl-missing 2>&1; then
-  echo "${rtnl_marker}_BAD_MISSING_LINK"
-  rtnl_ok=0
-else
-  cat /tmp/starry-rtnl-missing
-fi
-
-ip addr add 192.168.10.2/24 dev eth1 || rtnl_ok=0
-ip -o addr show dev eth1 || rtnl_ok=0
-ip addr del 192.168.10.2/24 dev eth1 || rtnl_ok=0
-if ip addr del 192.168.10.2/24 dev eth1 >/tmp/starry-rtnl-del-missing 2>&1; then
-  echo "${rtnl_marker}_BAD_DELADDR_MISSING"
-  rtnl_ok=0
-else
-  cat /tmp/starry-rtnl-del-missing
-fi
-
-if ip -o addr show dev eth1 | grep -q '192\.168\.10\.2/24'; then
-  echo "${rtnl_marker}_BAD_DELADDR"
-  rtnl_ok=0
-fi
-
-ip addr add 192.168.10.2/24 dev eth1 || rtnl_ok=0
-ip -o addr show dev eth1 || rtnl_ok=0
-
-if [ "$rtnl_ok" = "1" ]; then
-  echo "${rtnl_marker}_OK"
-else
-  echo "${rtnl_marker}_FAILED"
-  ok=0
-fi
-printf '\n%s_DONE\n' "$rtnl_marker"
-
-if [ "$ok" = "1" ]; then
-  echo ${suite}_OK
-else
-  echo ${suite}_FAILED
-fi
-'''
-success_regex = ['STARRY_NATIVE_NETWORK_OK']
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
   '(?i)segmentation fault',
@@ -100,3 +12,27 @@ fail_regex = [
   '(?m)^STARRY_NATIVE_NETWORK_FAILED\s*$',
 ]
 timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:/root #"
+shell_cmd = '''
+marker=STARRY_IPERF_SMOKE
+ready=0
+attempt=1
+while [ "$attempt" -le 30 ]; do
+  if command -v curl >/dev/null 2>&1; then
+    curl --connect-timeout 2 --max-time 5 -fsSL '${sessionFile:share/iperf2.tar.gz}' -o /tmp/iperf2.tar.gz && ready=1
+  elif command -v wget >/dev/null 2>&1; then
+    wget -T 5 -O /tmp/iperf2.tar.gz '${sessionFile:share/iperf2.tar.gz}' && ready=1
+  fi
+  if [ "$ready" = 1 ]; then break; fi
+  sleep 1
+  attempt=$((attempt + 1))
+done
+if [ "$ready" = 1 ] && mkdir -p /tmp/iperf2 && tar -xzf /tmp/iperf2.tar.gz -C /tmp/iperf2; then
+  PATH="/tmp/iperf2:$PATH" /tmp/iperf2/board-smoke.sh '${boardServerIp}'
+else
+  echo "${marker}_FAILED"
+fi
+'''
+success_regex = ['STARRY_NATIVE_NETWORK_OK']

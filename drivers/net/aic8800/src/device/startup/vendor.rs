@@ -61,15 +61,9 @@ impl AicDevice {
         else {
             return Err(AicError::CompletionMismatch);
         };
-        // The V3 wakeup write (index 2) commands the chip out of light sleep, so its CMD52
-        // RAW read-back byte reflects the register state the write is changing (0x01 while
-        // the chip is still asleep) rather than the written value 0x11. The reinitialize
-        // sequence repeats this same write on the same register, with the same read-back
-        // semantics. The interrupt-arm write (index 3) is similar: its read-back byte is
-        // the register's previous value (0x00 on the first write), not 0x07. The vendor
-        // driver never compares any of these bytes; wakeup effect is verified by the
-        // VendorReady sleep-status READY poll, and the interrupt arm takes effect when the
-        // ROM asserts CARD_INT for mailbox responses, so only the Byte shape is checked here.
+        // V3 wakeup and interrupt-enable writes can return the previous byte.
+        // Check transport completion here; VendorReady independently checks
+        // wakeup readiness. CCCR and ordinary configuration retain echo checks.
         if self.transport_generation() == crate::profile::TransportGeneration::V3
             && (index == 2 || (index == 3 && !reinitialize))
         {
@@ -89,10 +83,12 @@ mod tests {
     fn v3_wakeup_write_accepts_a_non_echoing_read_back_byte() {
         let device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
 
-        assert_eq!(
-            device.validate_vendor_setup_readback(2, false, SdioResponse::Byte(0x01)),
-            Ok(())
-        );
+        for reinitialize in [false, true] {
+            assert_eq!(
+                device.validate_vendor_setup_readback(2, reinitialize, SdioResponse::Byte(0x01)),
+                Ok(())
+            );
+        }
     }
 
     #[test]
@@ -106,16 +102,6 @@ mod tests {
                 actual: 0x00
             })
         ));
-    }
-
-    #[test]
-    fn v3_reinitialize_wakeup_write_accepts_a_non_echoing_read_back_byte() {
-        let device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
-
-        assert_eq!(
-            device.validate_vendor_setup_readback(2, true, SdioResponse::Byte(0x01)),
-            Ok(())
-        );
     }
 
     #[test]

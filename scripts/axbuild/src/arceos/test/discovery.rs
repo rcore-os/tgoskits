@@ -24,9 +24,16 @@ pub(super) fn discover_rust_qemu_cases(
     selected_case: Option<&str>,
     allow_missing_selected_case: bool,
 ) -> anyhow::Result<Vec<ArceosRustQemuCase>> {
+    if let Some(feature) = selected_case
+        && !super::rust_qemu_feature_supports_arch(feature, arch)
+        && !allow_missing_selected_case
+    {
+        bail!("ArceOS test {feature} does not support {arch}");
+    }
     let root = arceos_rust_test_dir(arceos);
     rust_qemu_features_for_run(selected_case, allow_missing_selected_case)?
         .into_iter()
+        .filter(|feature| super::rust_qemu_feature_supports_arch(feature, arch))
         .map(|feature| load_arceos_test_suit_qemu_case(&root, arch, target, feature))
         .collect()
 }
@@ -67,6 +74,7 @@ fn load_rust_qemu_case(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<Ar
             case_dir: case.case_dir,
             qemu_config_path: case.qemu_config_path,
             test_commands: Vec::new(),
+            grouped_command_selection: Default::default(),
             host_symbolize_success_regex: Vec::new(),
             host_http_server,
             subcases: Vec::new(),
@@ -95,6 +103,7 @@ pub(super) fn load_arceos_test_suit_qemu_case(
             case_dir: root.to_path_buf(),
             qemu_config_path,
             test_commands: Vec::new(),
+            grouped_command_selection: Default::default(),
             host_symbolize_success_regex: Vec::new(),
             host_http_server,
             subcases: Vec::new(),

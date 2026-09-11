@@ -54,6 +54,9 @@
 //! uart.write_byte(b'h');
 //! ```
 
+#[cfg(test)]
+extern crate std;
+
 pub mod ns16550;
 pub mod pl011;
 
@@ -126,3 +129,22 @@ pub struct TransBytesError {
 
 // Runtime capability types are re-exported for concrete driver consumers.
 pub use rdif_serial::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transferred_byte_error_preserves_transfer_source() {
+        let error = TransBytesError {
+            bytes_transferred: 7,
+            kind: TransferError::Framing,
+        };
+
+        assert_eq!(
+            std::format!("{error}"),
+            "transfer error after transferring 7 bytes: framing error"
+        );
+        assert!(core::error::Error::source(&error).is_some());
+    }
+}

@@ -7,12 +7,14 @@ keywords = ["os", "driver", "network"]
 license = "MIT"
 name = "rd-net"
 repository.workspace = true
-version = "0.3.1"
+version = "0.3.3"
 
 [dependencies]
 dma-api = { workspace = true, features = ["pool"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 rdif-eth.workspace = true
 
-[dev-dependencies]
-ax-sync = { path = "../../../os/arceos/modules/axsync", features = ["host-test"] }
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+# Path-only test support is stripped from published packages, avoiding a cycle
+# through the runtime's driver dependencies.
+ax-runtime = { path = "../../../os/arceos/modules/axruntime", features = ["host-test"] }

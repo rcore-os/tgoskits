@@ -83,6 +83,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]: https://github.com/arceos-hypervisor/buddy-slab-allocator/compare/v0.2.0...HEAD
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.5.0...buddy-slab-allocator-v0.6.0) - 2026-09-09
+
+### Fixed
+
+- *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.4.8...buddy-slab-allocator-v0.5.0) - 2026-08-20
 
 ### Other

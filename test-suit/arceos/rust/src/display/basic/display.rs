@@ -1,5 +1,4 @@
-use std::os::arceos::api::display as api;
-
+use ax_std::os::arceos::api::display as api;
 use embedded_graphics::{
     draw_target::DrawTarget,
     pixelcolor::Rgb888,

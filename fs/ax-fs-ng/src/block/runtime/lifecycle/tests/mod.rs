@@ -28,6 +28,7 @@ use rdif_block::{
 use super::{device::create_cpu_channels, *};
 use crate::os::{BlockIrqOutcome, BlockIrqRegistrar, install_dma_op, set_irq_registrar};
 
+mod async_submission;
 mod batching;
 mod flush_barrier;
 mod publication;
@@ -194,13 +195,27 @@ struct BatchingQueueCounters {
     fua_submitted: AtomicUsize,
     commits: AtomicUsize,
     largest_batch: AtomicUsize,
+    peak_pending: AtomicUsize,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum BatchingQueueEvent {
+    Accepted { count: usize, pending: usize },
+    Drained { count: usize },
+}
+
+struct BatchingQueueProbe {
+    events: mpsc::Sender<BatchingQueueEvent>,
+    release_first_submission: Option<mpsc::Receiver<()>>,
 }
 
 struct BatchingReadQueue {
     counters: Arc<BatchingQueueCounters>,
+    reported_info: QueueInfo,
     next_id: usize,
     pending: Vec<(RequestId, Option<InFlightDma>)>,
     fail_next_drain: bool,
+    probe: Option<BatchingQueueProbe>,
 }
 
 impl DriverGeneric for BatchingReadQueue {
@@ -215,7 +230,7 @@ impl HardwareQueue for BatchingReadQueue {
     }
 
     fn info(&self) -> QueueInfo {
-        batching_queue_info()
+        self.reported_info
     }
 
     fn submit_batch_owned(
@@ -246,6 +261,25 @@ impl HardwareQueue for BatchingReadQueue {
         self.counters
             .submitted
             .fetch_add(accepted, Ordering::AcqRel);
+        self.counters
+            .peak_pending
+            .fetch_max(self.pending.len(), Ordering::AcqRel);
+        if accepted != 0
+            && let Some(probe) = &mut self.probe
+        {
+            probe
+                .events
+                .send(BatchingQueueEvent::Accepted {
+                    count: accepted,
+                    pending: self.pending.len(),
+                })
+                .expect("batching test event receiver remains alive");
+            if let Some(release) = probe.release_first_submission.take() {
+                release
+                    .recv()
+                    .expect("batching test releases the first submission");
+            }
+        }
         let disposition = if requests.is_empty() {
             BatchSubmitDisposition::Continue
         } else {
@@ -260,6 +294,7 @@ impl HardwareQueue for BatchingReadQueue {
     }
 
     fn drain_completions(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        let drained = self.pending.len();
         let result = if core::mem::take(&mut self.fail_next_drain) {
             Err(BlkError::Io)
         } else {
@@ -268,6 +303,12 @@ impl HardwareQueue for BatchingReadQueue {
         for (id, data) in self.pending.drain(..) {
             let data = data.map(|in_flight| unsafe { in_flight.complete_after_quiesce() });
             sink.complete(CompletedRequest::new(id, result, data));
+        }
+        if let Some(probe) = &self.probe {
+            probe
+                .events
+                .send(BatchingQueueEvent::Drained { count: drained })
+                .expect("batching test event receiver remains alive");
         }
         Ok(())
     }
@@ -305,7 +346,11 @@ impl BlockController for BatchingReadController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().unwrap())],
-                vec![IrqEndpoint::new(0, 1, Box::new(QueueZeroHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(QueueZeroHandler),
+                )],
             )),
             ControllerEvent::Shutdown | ControllerEvent::Watchdog { .. } => {
                 Ok(ControllerUpdate::state(ControllerState::Shutdown))
@@ -368,7 +413,11 @@ impl BlockController for TerminalBeforeShutdownController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().unwrap())],
-                vec![IrqEndpoint::new(0, 1, Box::new(SpuriousHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(SpuriousHandler),
+                )],
             )),
             ControllerEvent::Watchdog { .. } => {
                 self.terminal = true;
@@ -431,7 +480,11 @@ impl BlockController for QuiesceFailureController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().ok_or(BlkError::Io)?)],
-                vec![IrqEndpoint::new(0, 1, Box::new(SpuriousHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(SpuriousHandler),
+                )],
             )),
             ControllerEvent::QuiesceIrqs => Err(BlkError::Io),
             ControllerEvent::Shutdown => Ok(ControllerUpdate::state(ControllerState::Shutdown)),
@@ -552,7 +605,11 @@ impl BlockController for LifecycleController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().unwrap())],
-                vec![IrqEndpoint::new(0, 1, Box::new(SpuriousHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(SpuriousHandler),
+                )],
             )),
             ControllerEvent::QuiesceIrqs => {
                 self.log.lock().unwrap().push("controller_quiesce");
@@ -723,7 +780,11 @@ impl BlockController for WaitingForIrqController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::WaitingForIrq,
                 Vec::new(),
-                vec![IrqEndpoint::new(0, 0, Box::new(SpuriousHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::none(),
+                    Box::new(SpuriousHandler),
+                )],
             )),
             ControllerEvent::Rearm { .. } => {
                 Ok(ControllerUpdate::state(ControllerState::WaitingForIrq))
@@ -764,7 +825,11 @@ impl BlockController for EndpointFirstController {
                     retry_after: Duration::from_millis(30),
                 },
                 Vec::new(),
-                vec![IrqEndpoint::new(0, 0, Box::new(SpuriousHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::none(),
+                    Box::new(SpuriousHandler),
+                )],
             )),
             ControllerEvent::RegisterRetry => {
                 self.register_retries.fetch_add(1, Ordering::Relaxed);
@@ -814,6 +879,22 @@ fn lock_test_irq_registrar() -> std::sync::MutexGuard<'static, ()> {
     TEST_IRQ_REGISTRAR_SERIAL
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn configure_test_irq_registrar(log: Arc<StdMutex<Vec<&'static str>>>) {
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(log);
+    *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
+    TEST_IRQ_REGISTRAR
+        .fail_registration
+        .store(false, Ordering::Release);
+    TEST_IRQ_REGISTRAR
+        .next_registration
+        .store(0, Ordering::Release);
+    TEST_IRQ_REGISTRAR
+        .fail_enable_at
+        .store(usize::MAX, Ordering::Release);
+    TEST_IRQ_FAIL_SYNCHRONIZE.store(false, Ordering::Release);
+    set_irq_registrar(&TEST_IRQ_REGISTRAR);
 }
 
 fn wait_for_device_teardown(device: &DeviceInner) {

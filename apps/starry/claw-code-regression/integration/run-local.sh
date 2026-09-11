@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build claw from source, inject into rootfs, and boot StarryOS.
-# Usage: docker run --rm -v "$(pwd)":/workspace -w /workspace starryos-dev:ubuntu-qemu10.2.1 \
+# Usage: docker run --rm -v "$(pwd)":/workspace -w /workspace starryos-dev:ubuntu-qemu11.1.1 \
 #   bash apps/starry/claw-code-regression/integration/run-local.sh
 set -eu
 

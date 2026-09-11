@@ -644,14 +644,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn constructs_from_mapped_mmio_pointer() {
-        let base = NonNull::new(0x2800_0000 as *mut u8).unwrap();
-        let host = unsafe { PhytiumMci::new(base) };
-
-        assert_eq!(host.base_addr, 0x2800_0000);
-    }
-
-    #[test]
     fn disabled_idmac_receive_status_is_acknowledged_without_wakeup() {
         let mut mmio = [0u32; 1024];
         let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();

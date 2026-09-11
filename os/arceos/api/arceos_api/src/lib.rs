@@ -144,18 +144,20 @@ pub mod task {
             until_condition: impl Fn() -> bool,
             timeout: Option<core::time::Duration>,
         ) -> bool;
+        /// Blocks until the condition becomes true or an absolute monotonic
+        /// deadline elapses. Returns `true` only when the deadline wins.
+        #[track_caller]
+        pub fn ax_wait_queue_wait_until_deadline(
+            wq: &AxWaitQueueHandle,
+            deadline: core::time::Duration,
+            until_condition: impl Fn() -> bool,
+        ) -> bool;
         /// Wakes up one or more tasks in the wait queue.
         ///
         /// The maximum number of tasks to wake up is specified by `count`. If
         /// `count` is `u32::MAX`, it will wake up all tasks in the wait queue.
-        pub fn ax_wait_queue_wake(wq: &AxWaitQueueHandle, count: u32);
-        /// Wakes up at most one task in the wait queue after performing an
-        /// operation on it via the provided callback `func`.
-        ///
-        /// The callback `func` is invoked while holding the wait-queue lock. If a
-        /// task is woken, `func` is called with an implementation-defined `u64`
-        /// value associated with that task.
-        pub fn ax_wait_queue_wake_one_with(wq: &AxWaitQueueHandle, func: impl Fn(u64));
+        /// Returns the number of waiters selected for wakeup.
+        pub fn ax_wait_queue_wake(wq: &AxWaitQueueHandle, count: u32) -> usize;
     }
 }
 
@@ -330,11 +332,6 @@ pub mod net {
 
         /// Resolves the host name to a list of IP addresses.
         pub fn ax_dns_query(domain_name: &str) -> ApiResult<alloc::vec::Vec<IpAddr>>;
-        /// Poll the network stack.
-        ///
-        /// It may receive packets from the NIC and process them, and transmit queued
-        /// packets to the NIC.
-        pub fn ax_poll_interfaces() -> ApiResult;
     }
 }
 

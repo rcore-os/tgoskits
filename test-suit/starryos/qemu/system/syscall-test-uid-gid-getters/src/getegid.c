@@ -21,25 +21,13 @@
  *    supporting 32-bit IDs. The glibc getuid() and geteuid() wrapper functions
  *    transparently deal with the variations across kernel versions."
  *
- * 5 维度覆盖 (a-e):
- *   (a) basic 返回值                       man §DESCRIPTION
+ * 4 维度覆盖 (b-e):
  *   (b) idempotent 纯查询无副作用           man §DESCRIPTION (隐含)
  *   (c) errno 不动                          man §ERRORS
  *   (d) raw syscall vs libc wrapper 一致    man §HISTORY (libc 透明处理)
  *   (e) 默认 egid == gid                    man §DESCRIPTION (无 setgid binary 时)
  */
 
-static void getegid_basic_returns_egid(void)
-{
-    /* 测什么: man §DESCRIPTION — getegid() returns effective group ID.
-     * 怎么测: 直接调 getegid(), 打印.
-     * 期望:   返回当前进程的 effective gid (root 启动时为 0).
-     * 为什么: 验证 syscall 不 panic / 不返错误指示符 (gid_t 是 unsigned, 无 -1
-     *         失败语义, 所以 "always succeeds" 体现为 "调用返回任意值都合法"). */
-    gid_t e = getegid();
-    CHECK(e == e, "getegid (a) basic: returned value (always succeeds)");
-    printf("  current effective gid = %u\n", (unsigned)e);
-}
 
 static void getegid_idempotent(void)
 {
@@ -93,7 +81,6 @@ static void getegid_default_equals_gid(void)
 int getegid_run(void)
 {
     printf("\n----- getegid -----\n");
-    getegid_basic_returns_egid();
     getegid_idempotent();
     getegid_does_not_modify_errno();
     getegid_raw_syscall_matches_libc();

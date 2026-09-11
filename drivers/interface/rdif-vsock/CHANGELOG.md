@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/rcore-os/tgoskits/compare/rdif-vsock-v0.2.0...rdif-vsock-v0.3.0) - 2026-09-09
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(repo)* remove nonfunctional test scaffolding ([#2303](https://github.com/rcore-os/tgoskits/pull/2303))
+
+### Changed
+
+- Added task-context send-capacity reporting so socket readiness can honor
+  virtio-vsock peer credit.
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/rdif-vsock-v0.1.4...rdif-vsock-v0.2.0) - 2026-08-20
 
 ### Other

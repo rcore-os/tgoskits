@@ -10,12 +10,13 @@ mod membership;
 mod namespace;
 mod node;
 mod pids;
+mod sync;
 
 use alloc::sync::Arc;
 use core::{fmt, num::NonZeroU64};
 
 use ax_lazyinit::LazyInit;
-pub use membership::{CgroupChildKind, CgroupForkGuard, CgroupProvider, CgroupTaskExit};
+pub use membership::{CgroupChildKind, CgroupForkGuard, CgroupTaskExit, ProcessMembership};
 pub use namespace::CgroupNamespace;
 pub use node::{CgroupNode, CgroupPin};
 
@@ -48,7 +49,7 @@ impl fmt::Display for ProcessId {
 /// Cgroup operation failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CgroupError {
-    /// The cgroup subsystem or its process provider is unavailable.
+    /// The cgroup subsystem is unavailable.
     #[error("cgroup subsystem is not initialized")]
     NotInitialized,
     /// The requested cgroup does not exist.
@@ -57,7 +58,7 @@ pub enum CgroupError {
     /// A child cgroup with the requested name already exists.
     #[error("cgroup already exists")]
     AlreadyExists,
-    /// The cgroup is still referenced, populated, or has a pending fork.
+    /// The cgroup is still referenced, populated, or has a conflicting member.
     #[error("cgroup is busy")]
     ResourceBusy,
     /// A task creation would exceed a pids limit in this cgroup hierarchy.
@@ -79,7 +80,7 @@ pub type CgroupResult<T> = Result<T, CgroupError>;
 
 static ROOT: LazyInit<Arc<CgroupNode>> = LazyInit::new();
 
-/// Initialize the global cgroup hierarchy and membership state.
+/// Initialize the global cgroup hierarchy.
 pub fn init() {
     ROOT.init_once(CgroupNode::new_root());
     membership::init();
@@ -91,11 +92,6 @@ pub fn root() -> Arc<CgroupNode> {
         // SAFE-EXPECT: kernel startup initializes the cgroup subsystem before any process exists.
         .expect("cgroup subsystem must be initialized before use")
         .clone()
-}
-
-/// Register the kernel process provider.
-pub fn register_provider(provider: &'static dyn CgroupProvider) {
-    membership::register_provider(provider);
 }
 
 /// Attach the first userspace process to the global root.
@@ -110,44 +106,6 @@ pub fn begin_process_at(
 ) -> CgroupResult<CgroupForkGuard> {
     membership::begin_task_at(target, child_pid, child_pid, CgroupChildKind::Process)
 }
-
-/// Resolve a process's current cgroup and reserve a task charge atomically.
-pub fn begin_task(
-    process_pid: ProcessId,
-    child_tid: ProcessId,
-    child_kind: CgroupChildKind,
-) -> CgroupResult<CgroupForkGuard> {
-    membership::begin_task(process_pid, child_tid, child_kind)
-}
-
-/// Move a live process to another cgroup.
-pub fn migrate_process(pid: ProcessId, target: Arc<CgroupNode>) -> CgroupResult<()> {
-    membership::migrate_process(pid, target)
-}
-
-/// Release membership for a process whose final thread is exiting.
-pub fn exit_process(pid: ProcessId) -> CgroupResult<()> {
-    membership::exit_task(pid, pid, CgroupTaskExit::LastProcessTask)
-}
-
-/// Release one task charge and, for the final task, process membership.
-pub fn exit_task(
-    process_pid: ProcessId,
-    task_tid: ProcessId,
-    exit_kind: CgroupTaskExit,
-) -> CgroupResult<()> {
-    membership::exit_task(process_pid, task_tid, exit_kind)
-}
-
-/// Rename a task identity after Linux de-threading during execve.
-pub fn rename_task(
-    process_pid: ProcessId,
-    old_tid: ProcessId,
-    new_tid: ProcessId,
-) -> CgroupResult<()> {
-    membership::rename_task(process_pid, old_tid, new_tid)
-}
-
 /// Render `target` relative to an arbitrary cgroup namespace root.
 pub fn relative_path(root: &Arc<CgroupNode>, target: &Arc<CgroupNode>) -> alloc::string::String {
     node::relative_path(root, target)

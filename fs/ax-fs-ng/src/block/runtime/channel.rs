@@ -1,6 +1,6 @@
 use alloc::{collections::VecDeque, sync::Arc};
 
-use super::waiters::CapacityWaiters;
+use super::waiters::{AsyncWaiter, AsyncWaiters, CapacityWaiters};
 use crate::{
     BlockError,
     os::{BlockNotification, runtime_ops, sync::IrqMutex},
@@ -13,13 +13,16 @@ pub(super) enum SendError<T> {
 
 pub(super) struct BoundedChannel<T> {
     state: IrqMutex<ChannelState<T>>,
+    capacity: usize,
     item_ready: Arc<dyn BlockNotification>,
     space_waiters: CapacityWaiters,
+    space_async_waiters: AsyncWaiters,
+    #[cfg(test)]
+    space_wait_hook: IrqMutex<Option<alloc::boxed::Box<dyn FnOnce() + Send>>>,
 }
 
 struct ChannelState<T> {
     queue: VecDeque<T>,
-    capacity: usize,
     closed: bool,
 }
 
@@ -38,31 +41,103 @@ impl<T> BoundedChannel<T> {
         Self {
             state: IrqMutex::new(ChannelState {
                 queue: VecDeque::with_capacity(capacity),
-                capacity,
                 closed: false,
             }),
+            capacity,
             item_ready,
             space_waiters: CapacityWaiters::new(),
+            space_async_waiters: AsyncWaiters::new(),
+            #[cfg(test)]
+            space_wait_hook: IrqMutex::new(None),
         }
     }
 
-    pub(super) fn send(&self, value: T, nowait: bool) -> Result<(), SendError<T>> {
-        loop {
-            let mut state = self.state.lock();
-            if state.closed {
-                return Err(SendError::Closed(value));
-            }
-            if state.queue.len() < state.capacity {
-                state.queue.push_back(value);
-                let available = state.capacity - state.queue.len();
-                drop(state);
-                self.item_ready.notify();
-                self.space_waiters.notify_available(available);
-                return Ok(());
-            }
-            drop(state);
+    pub(super) fn try_enqueue_no_notify(&self, value: T) -> Result<usize, SendError<T>> {
+        self.enqueue_no_notify(value, true)
+    }
 
+    pub(super) fn try_enqueue_no_notify_nowait(&self, value: T) -> Result<usize, SendError<T>> {
+        self.enqueue_no_notify(value, false)
+    }
+
+    fn enqueue_no_notify(&self, value: T, may_wait_for_lock: bool) -> Result<usize, SendError<T>> {
+        let mut state = if may_wait_for_lock {
+            self.state.lock()
+        } else {
+            let Some(state) = self.state.try_lock() else {
+                return Err(SendError::Full(value));
+            };
+            state
+        };
+        if state.closed {
+            return Err(SendError::Closed(value));
+        }
+        if state.queue.len() >= self.capacity {
+            return Err(SendError::Full(value));
+        }
+        state.queue.push_back(value);
+        Ok(self.capacity - state.queue.len())
+    }
+
+    pub(super) fn notify_enqueued(&self, available: usize) {
+        self.item_ready.notify();
+        self.space_waiters.notify_available(available);
+    }
+
+    pub(super) fn listen_for_space(&self) -> AsyncWaiter {
+        self.space_async_waiters.listen()
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_space_wait_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        let previous = self
+            .space_wait_hook
+            .lock()
+            .replace(alloc::boxed::Box::new(hook));
+        assert!(
+            previous.is_none(),
+            "channel space wait hook already installed"
+        );
+    }
+
+    #[cfg(test)]
+    pub(super) fn run_space_wait_hook(&self) {
+        let hook = self.space_wait_hook.lock().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_capacity_registration_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        self.space_waiters.set_registration_hook(hook);
+    }
+
+    #[cfg(test)]
+    pub(super) fn state_is_unlocked(&self) -> bool {
+        self.state.try_lock().is_some()
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_state_lock_held<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _state = self.state.lock();
+        f()
+    }
+
+    pub(super) fn send(&self, mut value: T, nowait: bool) -> Result<(), SendError<T>> {
+        loop {
             let can_block = runtime_ops().is_ok_and(|ops| ops.can_block());
+            match self.enqueue_no_notify(value, !nowait && can_block) {
+                Ok(available) => {
+                    self.notify_enqueued(available);
+                    return Ok(());
+                }
+                Err(SendError::Closed(value)) => return Err(SendError::Closed(value)),
+                Err(SendError::Full(next)) => {
+                    value = next;
+                }
+            }
+
             if nowait || !can_block {
                 return Err(SendError::Full(value));
             }
@@ -71,9 +146,9 @@ impl<T> BoundedChannel<T> {
                 .wait_for(1, || {
                     let state = self.state.lock();
                     if state.closed {
-                        state.capacity
+                        self.capacity
                     } else {
-                        state.capacity - state.queue.len()
+                        self.capacity - state.queue.len()
                     }
                 })
                 .is_err()
@@ -91,29 +166,35 @@ impl<T> BoundedChannel<T> {
         if values.is_empty() {
             return Ok(());
         }
-        if values.len() > self.state.lock().capacity {
+        if values.len() > self.capacity {
             return Err(SendError::Full(values));
         }
         loop {
+            let can_block = runtime_ops().is_ok_and(|ops| ops.can_block());
             let available = {
-                let mut state = self.state.lock();
+                let mut state = if nowait || !can_block {
+                    let Some(state) = self.state.try_lock() else {
+                        return Err(SendError::Full(values));
+                    };
+                    state
+                } else {
+                    self.state.lock()
+                };
                 if state.closed {
                     return Err(SendError::Closed(values));
                 }
-                if state.capacity - state.queue.len() >= values.len() {
+                if self.capacity - state.queue.len() >= values.len() {
                     state.queue.append(&mut values);
-                    Some(state.capacity - state.queue.len())
+                    Some(self.capacity - state.queue.len())
                 } else {
                     None
                 }
             };
             if let Some(available) = available {
-                self.item_ready.notify();
-                self.space_waiters.notify_available(available);
+                self.notify_enqueued(available);
                 return Ok(());
             }
 
-            let can_block = runtime_ops().is_ok_and(|ops| ops.can_block());
             if nowait || !can_block {
                 return Err(SendError::Full(values));
             }
@@ -122,9 +203,9 @@ impl<T> BoundedChannel<T> {
                 .wait_for(values.len(), || {
                     let state = self.state.lock();
                     if state.closed {
-                        state.capacity
+                        self.capacity
                     } else {
-                        state.capacity - state.queue.len()
+                        self.capacity - state.queue.len()
                     }
                 })
                 .is_err()
@@ -138,11 +219,12 @@ impl<T> BoundedChannel<T> {
         let (value, available) = {
             let mut state = self.state.lock();
             let value = state.queue.pop_front();
-            let available = state.capacity - state.queue.len();
+            let available = self.capacity - state.queue.len();
             (value, available)
         };
         if value.is_some() {
             self.space_waiters.notify_available(available);
+            self.space_async_waiters.notify_all();
         }
         value
     }
@@ -155,10 +237,11 @@ impl<T> BoundedChannel<T> {
             let mut state = self.state.lock();
             let received = limit.min(state.queue.len());
             values.extend(state.queue.drain(..received));
-            (received, state.capacity - state.queue.len())
+            (received, self.capacity - state.queue.len())
         };
         if received != 0 {
             self.space_waiters.notify_available(available);
+            self.space_async_waiters.notify_all();
         }
         received
     }
@@ -169,7 +252,7 @@ impl<T> BoundedChannel<T> {
             let received = {
                 let mut state = self.state.lock();
                 if let Some(value) = state.queue.pop_front() {
-                    Some((value, state.capacity - state.queue.len()))
+                    Some((value, self.capacity - state.queue.len()))
                 } else {
                     if state.closed {
                         return None;
@@ -179,6 +262,7 @@ impl<T> BoundedChannel<T> {
             };
             if let Some((value, available)) = received {
                 self.space_waiters.notify_available(available);
+                self.space_async_waiters.notify_all();
                 return Some(value);
             }
             self.item_ready.wait();
@@ -186,16 +270,29 @@ impl<T> BoundedChannel<T> {
     }
 
     pub(super) fn close(&self) {
-        self.state.lock().closed = true;
+        {
+            self.state.lock().closed = true;
+        }
         self.item_ready.notify();
         self.space_waiters.notify_all();
+        self.space_async_waiters.notify_all();
     }
 
     pub(super) fn is_closed(&self) -> bool {
+        #[cfg(test)]
+        assert!(
+            !crate::os::sync::current_thread_holds_irq_mutex(),
+            "channel state must be inspected without an outer runtime lock"
+        );
         self.state.lock().closed
     }
 
     pub(super) fn is_closed_and_empty(&self) -> bool {
+        #[cfg(test)]
+        assert!(
+            !crate::os::sync::current_thread_holds_irq_mutex(),
+            "channel state must be inspected without an outer runtime lock"
+        );
         let state = self.state.lock();
         state.closed && state.queue.is_empty()
     }
@@ -257,10 +354,6 @@ mod tests {
             self.publish();
         }
 
-        fn notify_from_irq(&self) {
-            self.publish();
-        }
-
         #[track_caller]
         fn wait(&self) {
             *self.entered_wait.lock().unwrap() += 1;
@@ -284,6 +377,17 @@ mod tests {
             }
             *pending = false;
             false
+        }
+    }
+
+    fn wait_for_blocked_sender_count<T>(channel: &BoundedChannel<T>, expected: usize) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while channel.blocked_sender_count() != expected {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "senders did not reach the expected capacity wait set size"
+            );
+            thread::yield_now();
         }
     }
 
@@ -330,6 +434,50 @@ mod tests {
     }
 
     #[test]
+    fn nowait_sender_never_sleeps_on_channel_owner() {
+        crate::os::task::install_test_runtime_ops();
+        let notification = Arc::new(WindowNotification::new());
+        let channel = BoundedChannel::with_item_notification(1, notification).unwrap();
+        let owner = channel.state.lock();
+
+        assert!(matches!(channel.send(1, true), Err(SendError::Full(1))));
+        drop(owner);
+        assert!(channel.send(1, true).is_ok());
+    }
+
+    #[test]
+    fn nonblocking_sender_never_waits_on_channel_owner() {
+        crate::os::task::install_test_runtime_ops();
+        let notification = Arc::new(WindowNotification::new());
+        let channel = Arc::new(BoundedChannel::with_item_notification(1, notification).unwrap());
+        let owner_channel = Arc::clone(&channel);
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let owner = thread::spawn(move || {
+            owner_channel.with_state_lock_held(|| {
+                locked_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            });
+        });
+        locked_rx.recv().unwrap();
+
+        let contender_channel = Arc::clone(&channel);
+        let (result_tx, result_rx) = mpsc::channel();
+        let contender = thread::spawn(move || {
+            let _can_block = crate::os::task::test_can_block(false);
+            let returned_full = matches!(contender_channel.send(1, false), Err(SendError::Full(1)));
+            result_tx.send(returned_full).unwrap();
+        });
+
+        let result_while_locked = result_rx.recv_timeout(Duration::from_secs(1));
+        release_tx.send(()).unwrap();
+        owner.join().unwrap();
+        contender.join().unwrap();
+
+        assert_eq!(result_while_locked, Ok(true));
+    }
+
+    #[test]
     fn batch_receive_releases_channel_capacity() {
         let item_ready: Arc<dyn BlockNotification> = Arc::new(WindowNotification::new());
         let channel = BoundedChannel::new(4, item_ready);
@@ -368,14 +516,7 @@ mod tests {
             }));
         }
         drop(done_tx);
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while channel.blocked_sender_count() != 4 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "senders did not enter the capacity wait set"
-            );
-            thread::yield_now();
-        }
+        wait_for_blocked_sender_count(&channel, 4);
 
         let mut received = VecDeque::new();
         assert_eq!(channel.try_recv_many(&mut received, 4), 4);
@@ -409,18 +550,14 @@ mod tests {
             }));
         }
         drop(done_tx);
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while channel.blocked_sender_count() != 4 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "senders did not enter the capacity wait set"
-            );
-            thread::yield_now();
-        }
+        wait_for_blocked_sender_count(&channel, 4);
 
         assert!(channel.try_recv().is_some());
         done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert_eq!(channel.blocked_sender_count(), 3);
+        // A sender may have registered but not yet completed its predicate
+        // recheck when the slot is released. Wait for that losing contender
+        // to re-register before observing the stable blocked set.
+        wait_for_blocked_sender_count(&channel, 3);
         assert!(done_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
         let mut received = VecDeque::new();
@@ -454,14 +591,7 @@ mod tests {
             );
             batch_tx.send(()).unwrap();
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while channel.blocked_sender_count() != 1 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "batch sender did not enter the capacity wait set"
-            );
-            thread::yield_now();
-        }
+        wait_for_blocked_sender_count(&channel, 1);
 
         let single_sender = Arc::clone(&channel);
         let (single_tx, single_rx) = mpsc::channel();
@@ -469,13 +599,7 @@ mod tests {
             assert!(single_sender.send(8, false).is_ok());
             single_tx.send(()).unwrap();
         });
-        while channel.blocked_sender_count() != 2 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "single sender did not enter the capacity wait set"
-            );
-            thread::yield_now();
-        }
+        wait_for_blocked_sender_count(&channel, 2);
 
         assert!(channel.try_recv().is_some());
         single_rx.recv_timeout(Duration::from_secs(1)).unwrap();

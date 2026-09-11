@@ -1,8 +1,10 @@
 use alloc::sync::Arc;
 use core::ops::Deref;
 
+use axpoll::Pollable;
+
 use super::NodeOps;
-use crate::{FsPollable, VfsError, VfsResult};
+use crate::{VfsError, VfsResult};
 
 /// Specifies whether preallocation may extend the visible file size.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,7 +58,7 @@ pub struct FileExtentMap {
     pub complete: bool,
 }
 
-pub trait FileNodeOps: NodeOps + FsPollable {
+pub trait FileNodeOps: NodeOps + Pollable {
     /// Reads a number of bytes starting from a given offset.
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize>;
 

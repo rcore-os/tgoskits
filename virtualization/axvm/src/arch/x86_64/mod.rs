@@ -1,7 +1,7 @@
 //! AxVM x86_64 adapter.
 //!
-//! This module owns the AxVM/ArceOS glue for the OS-neutral `x86_vcpu` and
-//! `x86_vlapic` cores.
+//! CPU mechanisms come from ax-cpu; this module owns VM policy, the ArceOS
+//! integration, and the x86_vlapic device model.
 
 use std::{
     arch::asm,
@@ -21,10 +21,14 @@ use ax_std::os::arceos::{
 use axdevice::*;
 use axdevice_base::*;
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
-use x86_vcpu::{
+use x86_vlapic::*;
+
+use crate::arch::x86_64::policy::{
     X86AccessWidth, X86GuestPhysAddr, X86HostPhysAddr, X86HostVirtAddr, X86MsrAddr, X86Port, *,
 };
-use x86_vlapic::*;
+
+mod control_memory;
+pub(crate) mod policy;
 
 use super::*;
 use crate::{
@@ -65,11 +69,18 @@ impl ArchOps for X86_64Arch {
     type NestedPageTable = nested_paging::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
-        x86_vcpu::initialize_hardware_support().is_ok()
+        crate::arch::x86_64::policy::initialize_hardware_support().is_ok()
+    }
+
+    fn enter_runtime(vm: &crate::AxVM) -> AxVmResult {
+        irq::start_deferred_irq_delivery(vm)
+    }
+
+    fn exit_runtime(vm: &crate::AxVM) -> AxVmResult {
+        irq::stop_deferred_irq_delivery(vm)
     }
 
     fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
-        irq::start_deferred_irq_delivery(vm);
         irq::enable_ioapic_irq_forwarding(vm, vcpu);
     }
 
@@ -80,14 +91,34 @@ impl ArchOps for X86_64Arch {
         Ok(())
     }
 
-    fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
-        Self::exit_runtime(vm)?;
-        irq::disable_ioapic_irq_forwarding_for_vm(vm);
-        irq::stop_deferred_irq_delivery(vm);
-        Ok(())
+    fn complete_pending_vcpu_exit(
+        _vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        vcpu.get_arch_vcpu().complete_pending_port_io_string()
     }
 
-    fn handle_vcpu_exit_bound(
+    fn wait_for_vcpu_event(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        runtime: &crate::vm::VmRuntimeHandle,
+    ) {
+        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        crate::vm::wait_for_vcpu_event_if_idle(
+            runtime,
+            &wait_snapshot,
+            || vm.running(),
+            || runtime.has_pending_interrupt(vcpu.id()) || vcpu.get_arch_vcpu().has_pending_event(),
+            |condition| runtime.wait_until(condition),
+        );
+    }
+
+    fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
+        irq::disable_ioapic_irq_forwarding_for_vm(vm);
+        Self::exit_runtime(vm)
+    }
+
+    fn handle_vcpu_exit_unbound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
@@ -197,14 +228,8 @@ impl ArchOps for X86_64Arch {
                     access_flags: x86_access_flags_to_ax(access_flags),
                 },
             ),
-            X86VmExit::ExternalInterrupt { vector } => {
-                debug!("VM[{}] run VCpu[{}] get irq {vector}", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Defer(DeferredRunWork::ExternalInterrupt {
-                    vector: vector as usize,
-                }))
-            }
             X86VmExit::PreemptionTimer => {
-                Ok(BoundVcpuExit::Defer(DeferredRunWork::PreemptionTimer))
+                Ok(BoundVcpuExit::Defer(DeferredRunWork::TimesliceExpired))
             }
             X86VmExit::InterruptEnd { vector } => {
                 Ok(BoundVcpuExit::Defer(DeferredRunWork::InterruptEnd {
@@ -240,10 +265,6 @@ impl ArchOps for X86_64Arch {
                 }))
             }
             X86VmExit::Nothing => Ok(BoundVcpuExit::Continue),
-            _ => Err(AxVmError::unsupported(
-                "handle x86 VM exit",
-                "unsupported VM exit reason",
-            )),
         }
     }
 
@@ -262,17 +283,6 @@ fn x86_halt_action() -> VcpuRunAction {
         stop_reason: None,
         resets_vm: false,
         exits_vcpu: false,
-    }
-}
-
-fn pit_ioapic_pending(interrupt: IoApicInterrupt) -> PendingVcpuInterrupt {
-    PendingVcpuInterrupt {
-        id: VirtualInterruptId(u32::from(interrupt.vector)),
-        trigger: if interrupt.level_triggered {
-            InterruptTriggerMode::LevelTriggered
-        } else {
-            InterruptTriggerMode::EdgeTriggered
-        },
     }
 }
 
@@ -362,6 +372,52 @@ impl X86VlapicHostOps for AxvmX86HostOps {
             .map_err(|_| X86VlapicError::TimerUnavailable)
     }
 
+    unsafe fn register_hard_timer(
+        deadline_nanos: u64,
+        mut callback: X86TimerCallback,
+    ) -> X86VlapicResult<Self::TimerHandle> {
+        let (vm_id, vcpu_id) =
+            with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| vcpu.map(|vcpu| (vcpu.vm_id(), vcpu.id())))
+                .ok_or(X86VlapicError::TimerUnavailable)?;
+        let (deferred_kick, vcpu_kick) = manager::with_vm(vm_id, |vm| {
+            let deferred = irq::vcpu_kick_for_vm(vm)?;
+            let runtime = vm.runtime_handle().ok()?;
+            let kick = runtime.vcpu_kick_handle(vcpu_id).ok()?;
+            Some((deferred, kick))
+        })
+        .flatten()
+        .ok_or(X86VlapicError::TimerUnavailable)?;
+        let timer_cpu = crate::host::task::current_cpu_id();
+        unsafe {
+            // SAFETY: x86_vlapic proves that its callback touches only atomic
+            // pending/deadline state and IRQ-safe registration locks. The
+            // owning vCPU kick capability and deferred remote-exit publisher
+            // are pre-bound in task context and explicitly safe to invoke
+            // from hard IRQ. A local host timer IRQ already exits the guest;
+            // only a vCPU still running on another CPU is handed to the
+            // task-context worker after the IRQ transaction releases its
+            // scheduler baton.
+            default_host().register_hard_restartable_timer(
+                Duration::from_nanos(deadline_nanos),
+                Box::new(move |now| {
+                    let action = callback(now.as_nanos() as u64);
+                    if vcpu_kick.kick_from_hard_irq(timer_cpu) == crate::runtime::HardIrqKick::Defer
+                    {
+                        let _ = deferred_kick.publish_from_irq(vcpu_id);
+                    }
+                    match action {
+                        X86TimerAction::Complete => HostHardTimerAction::Complete,
+                        X86TimerAction::Rearm(deadline) => {
+                            HostHardTimerAction::Rearm(Duration::from_nanos(deadline))
+                        }
+                    }
+                }),
+            )
+        }
+        .map(Into::into)
+        .map_err(|_| X86VlapicError::TimerUnavailable)
+    }
+
     fn cancel_timer(handle: Self::TimerHandle) -> X86VlapicResult {
         default_host()
             .cancel_timer(handle)
@@ -399,62 +455,108 @@ impl X86VlapicHostOps for AxvmX86HostOps {
     fn inject_pit_irq(vm_id: X86VmId, vcpu_id: X86VcpuId) -> X86VlapicResult {
         manager::with_vm(vm_id, |vm| {
             let devices = vm.get_devices().map_err(ax_error_to_vlapic)?;
-            if let Ok(pic) = devices.services().require::<X86PicServiceKey>()
-                && let Some(claim) = pic.claim_irq(0)
-            {
-                return dispatch_pic_claim(pic.as_ref(), claim, |vector| {
-                    manager::inject_interrupt(vm_id, vcpu_id, vector as usize)
-                        .map_err(ax_error_to_vlapic)
-                });
-            }
+            let pic = devices.services().require::<X86PicServiceKey>().ok();
+            let ioapic = devices.services().require::<X86InterruptDomainKey>().ok();
+            let ioapic_interrupts = [
+                ioapic.as_ref().and_then(|ioapic| ioapic.assert_gsi(0)),
+                ioapic.as_ref().and_then(|ioapic| ioapic.assert_gsi(2)),
+            ];
 
-            if let Some(interrupt) = devices
-                .services()
-                .require::<X86InterruptDomainKey>()
-                .ok()
-                .and_then(|ioapic| ioapic.assert_gsi(0))
-            {
-                return vm
-                    .runtime_handle()
-                    .map_err(ax_error_to_vlapic)?
-                    .dispatch_vcpu_interrupt(vcpu_id, pit_ioapic_pending(interrupt))
-                    .map_err(ax_error_to_vlapic);
-            }
-            Ok(())
+            route_pit_claims(
+                || pic.as_ref().and_then(|pic| pic.claim_irq(0)),
+                PicInterruptClaim::vector,
+                |claim| {
+                    pic.as_ref()
+                        .expect("a PIC claim must retain its originating controller")
+                        .restore_interrupt(claim)
+                },
+                ioapic_interrupts,
+                |vector, trigger| dispatch_pit_interrupt(vm, vcpu_id, vector, trigger),
+            )
         })
         .unwrap_or(Err(X86VlapicError::BadState))
     }
 }
 
+#[cfg(test)]
+fn route_pit_irq(
+    pulse_pic: impl FnOnce() -> Option<u8>,
+    assert_ioapic: impl FnOnce() -> Option<IoApicInterrupt>,
+    inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
+) -> X86VlapicResult {
+    route_pit_claim(
+        pulse_pic,
+        |vector| *vector,
+        |_vector| {},
+        assert_ioapic,
+        inject,
+    )
+}
+
+#[cfg(test)]
+fn route_pit_claim<C>(
+    claim_pic: impl FnOnce() -> Option<C>,
+    pic_vector: impl FnOnce(&C) -> u8,
+    restore_pic: impl FnOnce(C),
+    assert_ioapic: impl FnOnce() -> Option<IoApicInterrupt>,
+    inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
+) -> X86VlapicResult {
+    route_pit_claims(
+        claim_pic,
+        pic_vector,
+        restore_pic,
+        [assert_ioapic()],
+        inject,
+    )
+}
+
+fn route_pit_claims<C>(
+    claim_pic: impl FnOnce() -> Option<C>,
+    pic_vector: impl FnOnce(&C) -> u8,
+    restore_pic: impl FnOnce(C),
+    ioapic_interrupts: impl IntoIterator<Item = Option<IoApicInterrupt>>,
+    mut inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
+) -> X86VlapicResult {
+    // KVM fans GSI 0 out to both in-kernel irqchips. Each controller owns its
+    // mask/in-service state and independently decides whether this edge is
+    // currently deliverable. The second IOAPIC input preserves the standard
+    // MPS IRQ0 -> INTIN2 route while the first preserves the ACPI GSI0 route.
+    let pic_claim = claim_pic();
+    let mut first_error = None;
+
+    if let Some(claim) = pic_claim {
+        let vector = pic_vector(&claim);
+        if let Err(error) = inject(vector, InterruptTriggerMode::EdgeTriggered) {
+            restore_pic(claim);
+            first_error = Some(error);
+        }
+    }
+    for interrupt in ioapic_interrupts.into_iter().flatten() {
+        let trigger = if interrupt.level_triggered {
+            InterruptTriggerMode::LevelTriggered
+        } else {
+            InterruptTriggerMode::EdgeTriggered
+        };
+        if let Err(error) = inject(interrupt.vector, trigger)
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+
+    first_error.map_or(Ok(()), Err)
+}
+
+fn dispatch_pit_interrupt(
+    vm: &AxVM,
+    vcpu_id: X86VcpuId,
+    vector: u8,
+    trigger: InterruptTriggerMode,
+) -> X86VlapicResult {
+    dispatch_x86_interrupt(vm, vcpu_id, vector, trigger).map_err(ax_error_to_vlapic)
+}
+
 impl X86HostOps for AxvmX86HostOps {
-    fn alloc_frame() -> Option<X86HostPhysAddr> {
-        default_host()
-            .alloc_frame()
-            .map(|addr| X86HostPhysAddr::from_usize(addr.as_usize()))
-    }
-
-    fn dealloc_frame(paddr: X86HostPhysAddr) {
-        default_host().dealloc_frame(axvm_types::HostPhysAddr::from(paddr.as_usize()));
-    }
-
-    fn alloc_contiguous_frames(frame_count: usize, frame_align: usize) -> Option<X86HostPhysAddr> {
-        default_host()
-            .alloc_contiguous_frames(frame_count, frame_align)
-            .map(|addr| X86HostPhysAddr::from_usize(addr.as_usize()))
-    }
-
-    fn dealloc_contiguous_frames(start_paddr: X86HostPhysAddr, frame_count: usize) {
-        default_host().dealloc_contiguous_frames(
-            axvm_types::HostPhysAddr::from(start_paddr.as_usize()),
-            frame_count,
-        );
-    }
-
-    fn phys_to_virt(paddr: X86HostPhysAddr) -> X86HostVirtAddr {
-        let vaddr = default_host().phys_to_virt(axvm_types::HostPhysAddr::from(paddr.as_usize()));
-        X86HostVirtAddr::from_usize(vaddr.as_usize())
-    }
-
     fn read_guest_u8(paddr: X86GuestPhysAddr) -> X86VcpuResult<u8> {
         let vm_id = with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| vcpu.map(|vcpu| vcpu.vm_id()))
             .ok_or(X86VcpuError::BadState)?;
@@ -471,23 +573,76 @@ impl X86HostOps for AxvmX86HostOps {
         ax_std::os::arceos::modules::ax_hal::time::nanos_to_ticks(nanos)
     }
 
-    fn poll_host_interrupt() -> Option<u8> {
+    fn service_pending_host_interrupt() {
         let host_rflags = current_rflags();
         unsafe {
             asm!("sti", "nop", options(nomem, nostack));
         }
         restore_host_interrupt_flag(host_rflags);
-        None
+    }
+
+    fn dispatch_acknowledged_host_interrupt(vector: u8) {
+        crate::host::arceos::dispatch_host_irq(vector as usize);
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct AxvmX86Vcpu(X86Vcpu<AxvmX86HostOps>);
+struct PendingCompletion<T>(Option<T>);
+
+impl<T> Default for PendingCompletion<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T> PendingCompletion<T> {
+    fn stage(&mut self, completion: T) -> Result<(), T> {
+        if self.0.is_some() {
+            return Err(completion);
+        }
+        self.0 = Some(completion);
+        Ok(())
+    }
+
+    fn take(&mut self) -> Option<T> {
+        self.0.take()
+    }
+
+    fn restore(&mut self, completion: T) {
+        debug_assert!(self.0.is_none());
+        self.0 = Some(completion);
+    }
+}
+
+pub(crate) struct AxvmX86Vcpu(
+    X86Vcpu<AxvmX86HostOps, control_memory::ControlPages>,
+    PendingCompletion<X86PortIoStringExit>,
+);
 
 impl AxvmX86Vcpu {
-    fn complete_port_io_string(&mut self, exit: X86PortIoStringExit) -> AxVmResult {
-        x86_result(self.0.complete_port_io_string(exit))
-            .map_err(|error| crate::vcpu::map_vcpu_backend_error("complete x86 string I/O", error))
+    fn stage_port_io_string_completion(&mut self, exit: X86PortIoStringExit) -> AxVmResult {
+        self.1.stage(exit).map_err(|_| {
+            AxVmError::invalid_state(
+                "stage x86 string I/O completion",
+                "a previous string I/O completion is still pending",
+            )
+        })
+    }
+
+    fn complete_pending_port_io_string(&mut self) -> AxVmResult {
+        let Some(exit) = self.1.take() else {
+            return Ok(());
+        };
+        let result = x86_result(self.0.complete_port_io_string(exit))
+            .map_err(|error| crate::vcpu::map_vcpu_backend_error("complete x86 string I/O", error));
+        if result.is_err() {
+            self.1.restore(exit);
+        }
+        result
+    }
+
+    fn has_pending_event(&self) -> bool {
+        self.0.has_pending_event()
     }
 
     fn set_gpr_byte(&mut self, reg: X86ByteRegister, value: u8) {
@@ -509,7 +664,37 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
     type Exit = X86VmExit;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
-        x86_result(X86Vcpu::new_with_config(vm_id, vcpu_id, config)).map(Self)
+        use ax_cpu::virtualization::{SvmControlMemory, VcpuControlMemory, VmxControlMemory};
+        use control_memory::ControlPages;
+        let memory = match x86_result(crate::arch::x86_64::policy::selected_nested_paging_format())?
+        {
+            X86NestedPagingFormat::Ept => VcpuControlMemory::Vmx(VmxControlMemory {
+                vmcs: ControlPages::allocate(1)?,
+                io_bitmap_a: ControlPages::allocate(1)?,
+                io_bitmap_b: ControlPages::allocate(1)?,
+                msr_bitmap: ControlPages::allocate(1)?,
+            }),
+            X86NestedPagingFormat::Npt => VcpuControlMemory::Svm(SvmControlMemory {
+                guest: ControlPages::allocate(1)?,
+                host: ControlPages::allocate(1)?,
+                io_permissions: ControlPages::allocate(3)?,
+                msr_permissions: ControlPages::allocate(2)?,
+            }),
+        };
+        // SAFETY: VM construction executes at ring 0 on an initialized CPU.
+        // The CPU backend revalidates this layout on every pinned binding.
+        let layout = unsafe { ax_cpu::virtualization::XstateLayout::current() };
+        let pages = layout.byte_len().div_ceil(4096);
+        let xstate = ax_cpu::virtualization::GuestXstate::new(
+            layout,
+            ControlPages::allocate(pages)?,
+            ControlPages::allocate(pages)?,
+        )
+        .map_err(|_| VmBackendError::InvalidInput)?;
+        x86_result(X86Vcpu::new_with_config(
+            vm_id, vcpu_id, config, memory, xstate,
+        ))
+        .map(|vcpu| Self(vcpu, PendingCompletion::default()))
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
@@ -533,10 +718,12 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
     }
 
     fn bind(&mut self) -> BackendResult {
+        let _irqs = IrqSaveGuard::new();
         x86_result(self.0.bind())
     }
 
     fn unbind(&mut self) -> BackendResult {
+        let _irqs = IrqSaveGuard::new();
         x86_result(self.0.unbind())
     }
 
@@ -575,11 +762,27 @@ const fn x86_interrupt_is_level_triggered(trigger: InterruptTriggerMode) -> bool
     }
 }
 
-pub(crate) struct AxvmX86PerCpu(X86PerCpuState<AxvmX86HostOps>);
+pub(crate) struct AxvmX86PerCpu(ax_cpu::virtualization::PerCpu<control_memory::ControlPages>);
 
 impl VmArchPerCpuOps for AxvmX86PerCpu {
-    fn new(cpu_id: usize) -> BackendResult<Self> {
-        x86_result(X86PerCpuState::new(cpu_id)).map(Self)
+    fn new(_cpu_id: usize) -> BackendResult<Self> {
+        let memory = control_memory::ControlPages::allocate(1)?;
+        let cpu =
+            ax_cpu::virtualization::PerCpu::new(memory).map_err(|_| BackendError::Unsupported)?;
+        let format = x86_result(crate::arch::x86_64::policy::selected_nested_paging_format())?;
+        if !matches!(
+            (cpu.backend(), format),
+            (
+                ax_cpu::virtualization::Backend::Vmx,
+                X86NestedPagingFormat::Ept
+            ) | (
+                ax_cpu::virtualization::Backend::Svm,
+                X86NestedPagingFormat::Npt
+            )
+        ) {
+            return Err(BackendError::Unsupported);
+        }
+        Ok(Self(cpu))
     }
 
     fn is_enabled(&self) -> bool {
@@ -587,11 +790,22 @@ impl VmArchPerCpuOps for AxvmX86PerCpu {
     }
 
     fn hardware_enable(&mut self) -> BackendResult {
-        x86_result(self.0.hardware_enable())
+        let _irqs = IrqSaveGuard::new();
+        // SAFETY: AxVM's per-CPU initialization owns this physical CPU before
+        // guests can be scheduled. Its prepared control lease stays with self.
+        unsafe {
+            if self.0.backend() == ax_cpu::virtualization::Backend::Vmx {
+                ax_cpu::boot::authorize_vmx().map_err(|_| BackendError::Unsupported)?;
+            }
+            self.0.enable().map_err(|_| BackendError::InvalidState)
+        }
     }
 
     fn hardware_disable(&mut self) -> BackendResult {
-        x86_result(self.0.hardware_disable())
+        let _irqs = IrqSaveGuard::new();
+        // SAFETY: AxVM retires every guest binding on this CPU before teardown.
+        // A failure keeps the hardware owner and its memory lease active.
+        unsafe { self.0.disable() }.map_err(|_| BackendError::InvalidState)
     }
 }
 
@@ -676,12 +890,12 @@ impl X86InterruptDomain {
         }
     }
 
-    fn start_kick_worker(&self) {
-        self.wired.kick.start();
+    fn start_kick_worker(&self) -> AxVmResult {
+        self.wired.kick.start()
     }
 
-    fn stop_kick_worker(&self) {
-        self.wired.kick.stop();
+    fn stop_kick_worker(&self) -> AxVmResult {
+        self.wired.kick.stop()
     }
 
     fn take_pending_wired_gsis(&self) -> (usize, usize) {
@@ -699,6 +913,10 @@ impl X86InterruptDomain {
 
     pub(super) fn take_forwarding_hooks(&self) -> std::vec::Vec<host_irq::IrqHandle> {
         std::mem::take(&mut *self.forwarding_hooks())
+    }
+
+    fn vcpu_kick(&self) -> Arc<DeferredVcpuKick> {
+        Arc::clone(&self.wired.kick)
     }
 }
 
@@ -948,19 +1166,21 @@ fn declaration_range_error(operation: &'static str) -> DeviceManagerError {
 }
 
 pub(crate) fn x86_apic_access_page_addr() -> AxVmResult<axvm_types::HostPhysAddr> {
-    x86_result(x86_vcpu::apic_access_page_addr::<AxvmX86HostOps>())
-        .map(|addr| axvm_types::HostPhysAddr::from(addr.as_usize()))
-        .map_err(|error| AxVmError::vcpu("get x86 APIC access page", error))
+    x86_result(crate::arch::x86_64::policy::apic_access_page_addr::<
+        AxvmX86HostOps,
+    >())
+    .map(|addr| axvm_types::HostPhysAddr::from(addr.as_usize()))
+    .map_err(|error| AxVmError::vcpu("get x86 APIC access page", error))
 }
 
 pub(crate) fn x86_apic_access_page_gpa() -> AxVmResult<axvm_types::GuestPhysAddr> {
-    x86_result(x86_vcpu::apic_access_page_gpa())
+    x86_result(crate::arch::x86_64::policy::apic_access_page_gpa())
         .map(|addr| axvm_types::GuestPhysAddr::from(addr.as_usize()))
         .map_err(|error| AxVmError::vcpu("get x86 APIC access page", error))
 }
 
 pub(crate) fn x86_requires_apic_access_page() -> AxVmResult<bool> {
-    x86_result(x86_vcpu::requires_apic_access_page())
+    x86_result(crate::arch::x86_64::policy::requires_apic_access_page())
         .map_err(|error| AxVmError::vcpu("check x86 APIC access page", error))
 }
 
@@ -1081,33 +1301,110 @@ fn restore_host_interrupt_flag(host_rflags: u64) {
 
 #[cfg(test)]
 mod tests {
-    use ax_std::os::arceos::sync::IrqSafeMutex;
+    use core::cell::Cell;
 
     use super::*;
-
-    fn assert_x86_exit_type<T: VmArchVcpuOps<Exit = X86VmExit>>() {}
-
-    fn assert_irq_safe_lock<T: ?Sized>(_: &IrqSafeMutex<T>) {}
-
-    #[test]
-    fn axvm_x86_vcpu_uses_x86_exit_type() {
-        assert_x86_exit_type::<AxvmX86Vcpu>();
-    }
-
-    #[test]
-    fn interrupt_domain_shared_state_uses_irq_safe_locks() {
-        fn check(domain: &X86InterruptDomain) {
-            assert_irq_safe_lock(&domain.inputs);
-            assert_irq_safe_lock(&domain.forwarding);
-            assert_irq_safe_lock(&domain.forwarding_hooks);
-        }
-
-        let _ = check as fn(&X86InterruptDomain);
-    }
 
     #[test]
     fn x86_halt_waits_until_an_interrupt_or_lifecycle_event() {
         assert!(x86_halt_action().waits_for_event);
+    }
+
+    #[test]
+    fn pit_fans_out_gsi_zero_to_pic_and_ioapic() {
+        let pic_pulses = Cell::new(0);
+        let ioapic_asserts = Cell::new(0);
+        let injected = std::cell::RefCell::new(std::vec::Vec::new());
+
+        route_pit_irq(
+            || {
+                pic_pulses.set(pic_pulses.get() + 1);
+                Some(0x20)
+            },
+            || {
+                ioapic_asserts.set(ioapic_asserts.get() + 1);
+                Some(IoApicInterrupt {
+                    vector: 0x30,
+                    level_triggered: false,
+                })
+            },
+            |vector, trigger| {
+                injected.borrow_mut().push((vector, trigger));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(pic_pulses.get(), 1);
+        assert_eq!(ioapic_asserts.get(), 1);
+        assert_eq!(
+            injected.into_inner(),
+            [
+                (0x20, InterruptTriggerMode::EdgeTriggered),
+                (0x30, InterruptTriggerMode::EdgeTriggered),
+            ]
+        );
+    }
+
+    #[test]
+    fn pit_keeps_pic_delivery_when_ioapic_defers_the_edge() {
+        let injected = Cell::new(None);
+
+        route_pit_irq(
+            || Some(0x20),
+            || None,
+            |vector, trigger| {
+                injected.set(Some((vector, trigger)));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            injected.get(),
+            Some((0x20, InterruptTriggerMode::EdgeTriggered))
+        );
+    }
+
+    #[test]
+    fn pit_preserves_the_ioapic_trigger_mode() {
+        let injected_trigger = Cell::new(None);
+
+        route_pit_irq(
+            || None,
+            || {
+                Some(IoApicInterrupt {
+                    vector: 0x30,
+                    level_triggered: true,
+                })
+            },
+            |_vector, trigger| {
+                injected_trigger.set(Some(trigger));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            injected_trigger.get(),
+            Some(InterruptTriggerMode::LevelTriggered)
+        );
+    }
+
+    #[test]
+    fn failed_pic_dispatch_restores_the_claim() {
+        let restored = Cell::new(None);
+
+        let result = route_pit_claim(
+            || Some(0x68),
+            |vector| *vector,
+            |claim| restored.set(Some(claim)),
+            || None,
+            |_vector, _trigger| Err(X86VlapicError::BadState),
+        );
+
+        assert_eq!(result, Err(X86VlapicError::BadState));
+        assert_eq!(restored.get(), Some(0x68));
     }
 
     #[test]
@@ -1151,19 +1448,12 @@ mod tests {
     }
 
     #[test]
-    fn pit_ioapic_interrupt_preserves_trigger_mode() {
-        let level = pit_ioapic_pending(IoApicInterrupt {
-            vector: 0x31,
-            level_triggered: true,
-        });
-        assert_eq!(level.id, VirtualInterruptId(0x31));
-        assert_eq!(level.trigger, InterruptTriggerMode::LevelTriggered);
+    fn pending_completion_rejects_replacement_without_losing_the_owner() {
+        let mut pending = PendingCompletion::default();
 
-        let edge = pit_ioapic_pending(IoApicInterrupt {
-            vector: 0x32,
-            level_triggered: false,
-        });
-        assert_eq!(edge.id, VirtualInterruptId(0x32));
-        assert_eq!(edge.trigger, InterruptTriggerMode::EdgeTriggered);
+        assert_eq!(pending.stage(11), Ok(()));
+        assert_eq!(pending.stage(22), Err(22));
+        assert_eq!(pending.take(), Some(11));
+        assert_eq!(pending.take(), None);
     }
 }

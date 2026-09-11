@@ -52,10 +52,9 @@ impl Drop for TempEnvVar {
 
 fn fake_config() -> CaseAssetConfig {
     CaseAssetConfig {
-        grouped_runner: GroupedCaseRunnerConfig {
+        grouped_execution: GroupedCaseExecution::GuestInit(Box::new(GroupedCaseRunnerConfig {
             runner_name: "suite-run-case-tests".to_string(),
             runner_path: "/usr/bin/suite-run-case-tests".to_string(),
-            autorun_profile_script: None,
             begin_marker: "SUITE_GROUPED_TEST_BEGIN".to_string(),
             passed_marker: "SUITE_GROUPED_TEST_PASSED".to_string(),
             failed_marker: "SUITE_GROUPED_TEST_FAILED".to_string(),
@@ -63,7 +62,7 @@ fn fake_config() -> CaseAssetConfig {
             all_failed_marker: "SUITE_GROUPED_TESTS_FAILED".to_string(),
             success_regex: r"(?m)^SUITE_GROUPED_TESTS_PASSED\s*$".to_string(),
             fail_regex: r"(?m)^SUITE_GROUPED_TEST_FAILED:".to_string(),
-        },
+        })),
         script_env: CaseScriptEnvConfig {
             staging_root: "SUITE_STAGING_ROOT".to_string(),
             case_dir: "SUITE_CASE_DIR".to_string(),
@@ -78,6 +77,10 @@ fn fake_config() -> CaseAssetConfig {
     }
 }
 
+fn fake_runner(config: &CaseAssetConfig) -> &GroupedCaseRunnerConfig {
+    config.grouped_execution.runner().unwrap()
+}
+
 fn fake_case(root: &Path, name: &str) -> TestQemuCase {
     let case_dir = root.join("test-suite/example/default").join(name);
     fs::create_dir_all(&case_dir).unwrap();
@@ -87,19 +90,12 @@ fn fake_case(root: &Path, name: &str) -> TestQemuCase {
         case_dir: case_dir.clone(),
         qemu_config_path: case_dir.join("qemu-aarch64.toml"),
         test_commands: Vec::new(),
+        grouped_command_selection: Default::default(),
         host_symbolize_success_regex: Vec::new(),
         host_http_server: None,
         subcases: Vec::new(),
         grouped_subcase_filter: None,
     }
-}
-
-#[test]
-fn resolve_target_dir_uses_workspace_target_directory() {
-    let root = tempdir().unwrap();
-    let dir = resolve_target_dir(root.path(), "x86_64-unknown-none").unwrap();
-
-    assert_eq!(dir, root.path().join("target/x86_64-unknown-none"));
 }
 
 #[tokio::test]
@@ -133,107 +129,46 @@ async fn prepare_case_assets_plain_case_uses_shared_rootfs() {
 }
 
 #[test]
-fn grouped_runner_script_runs_all_commands_and_reports_summary() {
-    let root = tempdir().unwrap();
-    let overlay = root.path().join("overlay");
-    let commands = vec![
-        "/usr/bin/alpha".to_string(),
-        "/usr/bin/beta --flag".to_string(),
-    ];
-
-    let config = fake_config();
-    write_grouped_case_runner_script(&overlay, &commands, &config.grouped_runner).unwrap();
-
-    let runner = overlay.join("usr/bin/suite-run-case-tests");
-    let content = fs::read_to_string(&runner).unwrap();
-    assert!(content.contains("step=$((step + 1))"));
-    assert!(content.contains("'SUITE_GROUPED_TEST_BEGIN'"));
-    assert!(content.contains("'SUITE_GROUPED_TEST_PASSED'"));
-    assert!(content.contains("'SUITE_GROUPED_TEST_FAILED'"));
-    assert!(content.contains("'/usr/bin/alpha'"));
-    assert!(content.contains("'/usr/bin/beta --flag'"));
-    assert!(content.contains("SUITE_GROUPED_TESTS_PASSED"));
-}
-
-#[test]
-fn grouped_runner_script_hashes_multiline_command_labels() {
-    let root = tempdir().unwrap();
-    let overlay = root.path().join("overlay");
-    let commands = vec![
-        "failed=0\nif [ \"$failed\" -ne 0 ]; then\n    echo \"SUITE_GROUPED_TEST_FAILED: \
-         nested\"\nfi"
-            .to_string(),
-    ];
-
-    let config = fake_config();
-    write_grouped_case_runner_script(&overlay, &commands, &config.grouped_runner).unwrap();
-
-    let runner = overlay.join("usr/bin/suite-run-case-tests");
-    let content = fs::read_to_string(&runner).unwrap();
-    assert!(content.contains("sh -c 'failed=0"));
-    assert!(content.contains("'inline-command:"));
-    assert!(content.contains("'SUITE_GROUPED_TEST_FAILED'"));
-    assert!(!content.contains("command=failed=0"));
-    assert!(!content.contains("command=echo"));
-}
-
-#[test]
-fn grouped_runner_can_install_profile_autorun_without_interactive_guard() {
+fn external_grouped_execution_does_not_install_a_runner() {
     let root = tempdir().unwrap();
     let overlay = root.path().join("overlay");
     let commands = vec!["/usr/bin/alpha".to_string()];
     let mut config = fake_config();
-    config.grouped_runner.autorun_profile_script = Some("99-suite-run-case-tests.sh".into());
+    config.grouped_execution = GroupedCaseExecution::External;
 
-    write_grouped_case_runner_script(&overlay, &commands, &config.grouped_runner).unwrap();
+    write_grouped_case_runner(&overlay, &commands, &config.grouped_execution).unwrap();
 
-    let profile = overlay.join("etc/profile.d/99-suite-run-case-tests.sh");
-    let content = fs::read_to_string(&profile).unwrap();
-    assert!(content.contains("AXBUILD_GROUPED_AUTORUN_DONE"));
-    assert!(content.contains("/usr/bin/suite-run-case-tests"));
-    assert!(!content.contains("case \"$-\" in"));
-    assert!(!content.contains("set -u"));
+    assert!(!overlay.join("usr/bin/suite-run-case-tests").exists());
 }
 
 #[test]
-fn grouped_runner_profile_autorun_skips_shell_init() {
-    let mut config = fake_config();
-    config.grouped_runner.autorun_profile_script = Some("99-suite-run-case-tests.sh".into());
-    let mut qemu = QemuConfig::default();
-    let mut case = fake_case(tempdir().unwrap().path(), "grouped");
-    case.test_commands = vec!["/usr/bin/alpha".to_string()];
-
-    apply_grouped_qemu_config(&mut qemu, &case, &config.grouped_runner);
-
-    assert!(qemu.shell_init_cmd.is_none());
-}
-
-#[test]
-fn grouped_runner_shell_init_uses_short_exec_command_without_autorun() {
+fn guest_init_grouped_execution_skips_shell_init() {
     let config = fake_config();
     let mut qemu = QemuConfig::default();
     let mut case = fake_case(tempdir().unwrap().path(), "grouped");
     case.test_commands = vec!["/usr/bin/alpha".to_string()];
 
-    apply_grouped_qemu_config(&mut qemu, &case, &config.grouped_runner);
+    apply_grouped_qemu_config(&mut qemu, &case, &config.grouped_execution);
 
-    let command = qemu.shell_init_cmd.as_deref().unwrap();
-    assert_eq!(command, "exec /usr/bin/suite-run-case-tests");
-    assert!(
-        command.len() < 80,
-        "Starry canonical TTY input buffer is 80 bytes"
+    assert_eq!(qemu.shell_check_steps.len(), 1);
+    let step = &qemu.shell_check_steps[0];
+    assert_eq!(step.shell_prefix, None);
+    assert_eq!(step.shell_cmd, None);
+    assert_eq!(
+        step.success_regex,
+        Some(vec![fake_runner(&config).success_regex.clone()])
     );
 }
 
 #[test]
-fn grouped_cache_key_tracks_runner_autorun_config() {
+fn grouped_cache_key_tracks_execution_owner() {
     let root = tempdir().unwrap();
     let shared_img = root.path().join("rootfs.img");
     fs::write(&shared_img, b"rootfs").unwrap();
     let case = fake_case(root.path(), "grouped");
     let mut config = fake_config();
 
-    let without_autorun = case_asset_cache_key(
+    let guest_init = case_asset_cache_key(
         "x86_64",
         "x86_64-unknown-none",
         CasePipeline::Grouped,
@@ -243,8 +178,8 @@ fn grouped_cache_key_tracks_runner_autorun_config() {
     )
     .unwrap();
 
-    config.grouped_runner.autorun_profile_script = Some("99-suite-run-case-tests.sh".into());
-    let with_autorun = case_asset_cache_key(
+    config.grouped_execution = GroupedCaseExecution::External;
+    let external = case_asset_cache_key(
         "x86_64",
         "x86_64-unknown-none",
         CasePipeline::Grouped,
@@ -254,7 +189,7 @@ fn grouped_cache_key_tracks_runner_autorun_config() {
     )
     .unwrap();
 
-    assert_ne!(without_autorun, with_autorun);
+    assert_ne!(guest_init, external);
 }
 
 #[test]

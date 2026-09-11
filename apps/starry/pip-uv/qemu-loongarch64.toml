@@ -17,9 +17,6 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/test_pipuv.sh"
-success_regex = ["(?m)^STARRY_PIPUV_TESTS_PASSED\\s*$"]
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)page fault",
@@ -37,3 +34,8 @@ timeout = 10800
 bind = "127.0.0.1"
 port = 18390
 dir = "apps/starry/pip-uv/online-index"
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/test_pipuv.sh"
+success_regex = ["(?m)^STARRY_PIPUV_TESTS_PASSED\\s*$"]

@@ -15,8 +15,12 @@ args = [
 ]
 uefi = false
 to_bin = true
+fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', "(?m)^APT_HELLO_TEST_FAILED\\s*$"]
+timeout = 1200
+
+[[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_init_cmd = '''
+shell_cmd = '''
 rm -f /etc/apt/sources.list.d/*.sources && \
 apt_hello_test() { \
     printf 'deb %s trixie main\n' "$1" > /etc/apt/sources.list && \
@@ -33,5 +37,3 @@ else \
 fi
 '''
 success_regex = ["(?m)^Hello, world!\\s*$", "(?m)^APT_HELLO_TEST_PASSED\\s*$"]
-fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', "(?m)^APT_HELLO_TEST_FAILED\\s*$"]
-timeout = 1200

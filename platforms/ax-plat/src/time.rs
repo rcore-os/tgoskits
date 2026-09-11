@@ -1,5 +1,6 @@
 //! Time-related operations.
 
+use core::sync::atomic::{AtomicI64, Ordering};
 pub use core::time::Duration;
 
 /// A measurement of the system clock.
@@ -7,6 +8,8 @@ pub use core::time::Duration;
 /// Currently, it reuses the [`core::time::Duration`] type. But it does not
 /// represent a duration, but a clock time.
 pub type TimeValue = Duration;
+
+static WALL_TIME_ADJUSTMENT_NANOS: AtomicI64 = AtomicI64::new(0);
 
 /// Number of milliseconds in a second.
 pub const MILLIS_PER_SEC: u64 = 1_000;
@@ -51,6 +54,17 @@ pub enum SchedulerClockError {
     CpuOffline,
 }
 
+/// Failure to install a new wall-clock value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum WallTimeError {
+    /// The requested wall time precedes the current monotonic time.
+    #[error("wall time cannot precede the current monotonic time")]
+    BeforeMonotonic,
+    /// The requested adjustment cannot be represented by the wall-clock state.
+    #[error("wall-time adjustment is outside the supported range")]
+    AdjustmentOutOfRange,
+}
+
 /// Time-related interfaces.
 #[def_plat_interface]
 pub trait TimeIf {
@@ -59,6 +73,13 @@ pub trait TimeIf {
 
     /// Converts hardware ticks to nanoseconds.
     fn ticks_to_nanos(ticks: u64) -> u64;
+
+    /// Samples the raw scheduler clock directly in nanoseconds.
+    ///
+    /// The platform must read and convert one counter sample within this
+    /// operation. Scheduler clock correction is applied by `ax-plat` after
+    /// this raw sample crosses the platform boundary.
+    fn scheduler_clock_raw_nanos() -> u64;
 
     /// Converts nanoseconds to hardware ticks.
     fn nanos_to_ticks(nanos: u64) -> u64;
@@ -77,8 +98,32 @@ pub trait TimeIf {
     /// Set a one-shot timer.
     ///
     /// A timer interrupt will be triggered at the specified monotonic time
-    /// deadline (in nanoseconds).
+    /// deadline (in nanoseconds). This capability is infallible: an already
+    /// elapsed or sub-resolution deadline must be clamped to the device's
+    /// minimum non-zero delta before the method returns. Implementations must
+    /// not silently leave the previous event armed.
     fn set_oneshot_timer(deadline_ns: u64);
+
+    /// Returns whether a claimed timer IRQ must physically quiesce the
+    /// one-shot source before the interrupt controller completes the edge.
+    ///
+    /// Edge-triggered or rearm-cleared devices return `false`; level-triggered
+    /// devices whose expired comparator remains observable return `true`.
+    fn oneshot_timer_requires_irq_quiesce() -> bool;
+
+    /// Returns a stopped one-shot timer to its active state and programs it.
+    ///
+    /// The implementation owns the architecture-specific activation order.
+    /// Edge devices may need to unmask before programming a minimum delta;
+    /// level devices may need to replace an expired comparator before unmask
+    /// so controller EOI cannot latch the old level again.
+    fn resume_oneshot_timer(deadline_ns: u64);
+
+    /// Stops the current CPU's one-shot timer until it is programmed again.
+    ///
+    /// The interrupt source must become unobservable and its comparator must
+    /// be discarded so a later resume cannot inherit a stale event.
+    fn cancel_oneshot_timer();
 }
 
 /// Initializes the current CPU's scheduler-clock anchor before scheduler use.
@@ -94,7 +139,7 @@ pub trait TimeIf {
 /// interrupt that can access scheduler-clock state.
 pub unsafe fn init_scheduler_clock(cpu_id: usize) -> Result<(), SchedulerClockError> {
     let stability = scheduler_clock_stability();
-    let raw_clock = ticks_to_nanos(current_ticks());
+    let raw_clock = scheduler_clock_raw_nanos();
     // SAFETY: forwarded from this function's offline-CPU contract.
     unsafe { crate::scheduler_clock::online_current_cpu(cpu_id, raw_clock, stability) }
 }
@@ -114,34 +159,55 @@ pub unsafe fn shutdown_scheduler_clock(cpu_id: usize) -> Result<(), SchedulerClo
     unsafe { crate::scheduler_clock::offline_current_cpu(cpu_id) }
 }
 
-/// Samples `cpu_id`'s comparable wrapping scheduler clock in nanoseconds.
+/// Samples the current CPU's comparable wrapping scheduler clock in nanoseconds.
 ///
-/// Stable platforms use the calling CPU's synchronized system counter.
-/// Unstable platforms update the calling CPU's local publication, then couple
-/// it atomically with the target publication without reading the target raw
-/// counter.
+/// Stable platforms use the synchronized system counter. Unstable platforms
+/// update the current CPU's corrected local publication.
 ///
 /// # Errors
 ///
-/// Returns an error when the target or calling CPU clock is offline, or when
-/// `cpu_id` is outside the installed CPU-local layout.
+/// Returns an error when an unstable current CPU clock has no available
+/// CPU-local state.
 ///
 /// # Safety
 ///
-/// The caller must prevent migration for the complete operation. Scheduler
-/// callers normally satisfy this through the target runqueue IRQ-save lock.
+/// The caller must own an initialized scheduler CPU and prevent migration for
+/// the complete operation. Scheduler callers satisfy this through the owner
+/// runqueue IRQ-save lock.
 #[inline]
-pub unsafe fn scheduler_clock_source(cpu_id: usize) -> Result<u64, SchedulerClockError> {
-    let raw_clock = ticks_to_nanos(current_ticks());
+pub unsafe fn scheduler_clock_source() -> Result<u64, SchedulerClockError> {
+    let raw_clock = scheduler_clock_raw_nanos();
     // SAFETY: forwarded from this function's migration-exclusion contract.
-    unsafe { crate::scheduler_clock::source(cpu_id, raw_clock) }
+    unsafe { crate::scheduler_clock::source_current(raw_clock) }
+}
+
+/// Samples the current CPU's scheduler clock before an outer hard interrupt.
+///
+/// This is the only runtime boundary allowed to move a scheduler clock from
+/// the stable fast path to corrected per-CPU clocks. The transition therefore
+/// cannot split one hard-interrupt accounting interval across two clock
+/// epochs.
+///
+/// # Errors
+///
+/// Returns an error if the current CPU clock has not been initialized.
+///
+/// # Safety
+///
+/// The caller must exclude migration and local IRQ re-entry, and must invoke
+/// this function before starting the outer hard-interrupt time interval.
+#[inline]
+pub unsafe fn scheduler_clock_hardirq_sample() -> Result<u64, SchedulerClockError> {
+    let stability = scheduler_clock_stability();
+    let raw_clock = scheduler_clock_raw_nanos();
+    // SAFETY: forwarded from this function's outer hard-IRQ entry contract.
+    unsafe { crate::scheduler_clock::hardirq_sample(raw_clock, stability) }
 }
 
 /// Stamps the current CPU's scheduler clock from a local timer interrupt.
 ///
-/// The stability assessment is refreshed here so a late x86 TSC adjustment
-/// can move the owner from the direct fast path to corrected per-CPU clocks
-/// without a discontinuity.
+/// Clock stability transitions are deliberately excluded from this API. They
+/// are committed before outer hard-interrupt accounting begins.
 ///
 /// # Errors
 ///
@@ -153,10 +219,9 @@ pub unsafe fn scheduler_clock_source(cpu_id: usize) -> Result<u64, SchedulerCloc
 /// local timer interrupt path naturally satisfies both conditions.
 #[inline]
 pub unsafe fn scheduler_clock_tick() -> Result<u64, SchedulerClockError> {
-    let stability = scheduler_clock_stability();
-    let raw_clock = ticks_to_nanos(current_ticks());
+    let raw_clock = scheduler_clock_raw_nanos();
     // SAFETY: forwarded from this function's local tick contract.
-    unsafe { crate::scheduler_clock::tick(raw_clock, stability) }
+    unsafe { crate::scheduler_clock::tick(raw_clock) }
 }
 
 /// Returns nanoseconds elapsed since system boot.
@@ -171,12 +236,59 @@ pub fn monotonic_time() -> TimeValue {
 
 /// Returns nanoseconds elapsed since epoch (also known as realtime).
 pub fn wall_time_nanos() -> u64 {
-    monotonic_time_nanos() + epochoffset_nanos()
+    adjusted_wall_time_nanos(
+        base_wall_time_nanos(),
+        WALL_TIME_ADJUSTMENT_NANOS.load(Ordering::Acquire),
+    )
 }
 
 /// Returns the time elapsed since epoch (also known as realtime) in [`TimeValue`].
 pub fn wall_time() -> TimeValue {
-    TimeValue::from_nanos(monotonic_time_nanos() + epochoffset_nanos())
+    TimeValue::from_nanos(wall_time_nanos())
+}
+
+/// Sets the system-wide wall clock without changing the monotonic clock.
+///
+/// The platform epoch remains the boot-time reference. This function stores a
+/// signed adjustment relative to that reference so every wall-clock consumer
+/// observes the same value while scheduler and relative-time accounting remain
+/// tied to the monotonic counter.
+///
+/// # Errors
+///
+/// Returns [`WallTimeError::BeforeMonotonic`] if `new_time` is earlier than
+/// the current monotonic time. Returns
+/// [`WallTimeError::AdjustmentOutOfRange`] if either the timestamp or its
+/// adjustment cannot be represented by the shared clock state.
+pub fn set_wall_time(new_time: TimeValue) -> Result<(), WallTimeError> {
+    let monotonic_nanos = monotonic_time_nanos();
+    let requested_nanos =
+        u64::try_from(new_time.as_nanos()).map_err(|_| WallTimeError::AdjustmentOutOfRange)?;
+    // Match Linux do_settimeofday64 after its timespec validation:
+    // wall_to_monotonic = monotonic - old_realtime, so rejecting
+    // wall_to_monotonic > new_realtime - old_realtime rejects exactly
+    // new_realtime < monotonic. clock_settime(2) documents this since Linux 4.3.
+    if requested_nanos < monotonic_nanos {
+        return Err(WallTimeError::BeforeMonotonic);
+    }
+
+    let base_nanos = monotonic_nanos.saturating_add(epochoffset_nanos());
+    let adjustment = i128::from(requested_nanos) - i128::from(base_nanos);
+    let adjustment = i64::try_from(adjustment).map_err(|_| WallTimeError::AdjustmentOutOfRange)?;
+    WALL_TIME_ADJUSTMENT_NANOS.store(adjustment, Ordering::Release);
+    Ok(())
+}
+
+fn base_wall_time_nanos() -> u64 {
+    monotonic_time_nanos().saturating_add(epochoffset_nanos())
+}
+
+fn adjusted_wall_time_nanos(base_nanos: u64, adjustment_nanos: i64) -> u64 {
+    if adjustment_nanos >= 0 {
+        base_nanos.saturating_add(adjustment_nanos as u64)
+    } else {
+        base_nanos.saturating_sub(adjustment_nanos.unsigned_abs())
+    }
 }
 
 /// Busy waiting for the given duration.
@@ -188,5 +300,22 @@ pub fn busy_wait(dur: Duration) {
 pub fn busy_wait_until(deadline: TimeValue) {
     while monotonic_time() < deadline {
         core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wall_time_adjustment_moves_forward_and_backward() {
+        assert_eq!(adjusted_wall_time_nanos(20, 5), 25);
+        assert_eq!(adjusted_wall_time_nanos(20, -5), 15);
+    }
+
+    #[test]
+    fn wall_time_adjustment_saturates_at_clock_bounds() {
+        assert_eq!(adjusted_wall_time_nanos(u64::MAX - 1, 5), u64::MAX);
+        assert_eq!(adjusted_wall_time_nanos(1, -5), 0);
     }
 }

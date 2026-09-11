@@ -16,6 +16,5 @@ args = [
   "512M",
 ]
 fail_regex = []
-success_regex = []
 to_bin = true
 uefi = true

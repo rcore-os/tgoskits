@@ -22,8 +22,4 @@ if ! ip -4 -o addr show dev wlan0 | grep -q ' inet '; then
     fail
 fi
 
-command -v iperf3 >/dev/null 2>&1 || fail
-
-iperf3 -c "$server_ip" -t 3 -O 1 -P 1 -l 128K || fail
-
-echo STARRY_AKA_WIFI_IPERF_SMOKE_PASSED
+iperf2-smoke "$server_ip" 22 2 STARRY_AKA_WIFI_IPERF_SMOKE || fail

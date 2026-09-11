@@ -1,6 +1,6 @@
 [package]
 name = "cpu-local"
-version = "0.2.0"
+version = "0.3.0"
 description = "Architecture CPU-local register capability for TGOSKits"
 repository.workspace = true
 edition.workspace = true
@@ -12,11 +12,27 @@ license.workspace = true
 [features]
 # Enable task-owned kernel TLS. Backends with an independent current register
 # retain Linux current semantics; TP-aliased backends publish current through
-# the CPU runtime anchor while TP carries the TLS base.
-tls = []
+# the CPU runtime anchor while TP carries the TLS base, and their HAL adapter
+# excludes local IRQs across each unpinned current/preemption operation.
+tls = ["ax-cpu/tls"]
+
+# Select userspace register ownership, overriding `tls` when both are enabled.
+# User-space TLS itself is managed by the architecture user-context APIs.
+uspace = ["ax-cpu/uspace"]
 
 # Use a thread-local register model for host-side tests.
 host-test = []
 
+# Record per-CPU pin construction for scheduler qperf diagnostics.
+
 [dependencies]
+ax-cpu.workspace = true
 thiserror.workspace = true
+
+[package.metadata.docs.rs]
+targets = [
+    "x86_64-unknown-none",
+    "aarch64-unknown-none-softfloat",
+    "riscv64gc-unknown-none-elf",
+    "loongarch64-unknown-none-softfloat",
+]

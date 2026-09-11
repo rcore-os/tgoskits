@@ -1,0 +1,172 @@
+use alloc::vec::Vec;
+
+use super::*;
+use crate::time::{ClockDeadline, ClockSnapshot};
+
+static NEXT_ALARM_SLOT_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Debug)]
+pub(crate) struct AlarmSlot {
+    state: Arc<AlarmSlotState>,
+}
+
+#[derive(Debug)]
+struct AlarmSlotState {
+    id: u64,
+    generation_and_armed: AtomicU64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AlarmToken {
+    slot: AlarmSlot,
+    generation: u64,
+}
+
+impl AlarmSlot {
+    pub(crate) fn new() -> Self {
+        let id = NEXT_ALARM_SLOT_ID
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .unwrap_or_else(|_| panic!("alarm slot identity space exhausted"));
+        Self {
+            state: Arc::new(AlarmSlotState {
+                id,
+                generation_and_armed: AtomicU64::new(0),
+            }),
+        }
+    }
+
+    pub(crate) fn replace(&self, deadline: Option<ClockDeadline>) -> AlarmChange {
+        let armed = deadline.is_some();
+        let previous = self
+            .state
+            .generation_and_armed
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                let generation = state >> 1;
+                generation
+                    .checked_add(1)
+                    .filter(|next| *next <= u64::MAX >> 1)
+                    .map(|next| (next << 1) | u64::from(armed))
+            })
+            .unwrap_or_else(|_| panic!("alarm generation space exhausted"));
+        let token = AlarmToken {
+            slot: self.clone(),
+            generation: (previous >> 1) + 1,
+        };
+        match deadline {
+            Some(deadline) => AlarmChange::Schedule { deadline, token },
+            None => AlarmChange::Cancel(token),
+        }
+    }
+
+    pub(crate) fn matches(&self, token: &AlarmToken) -> bool {
+        self.id() == token.slot_id() && token.is_current_generation()
+    }
+
+    pub(super) fn id(&self) -> u64 {
+        self.state.id
+    }
+}
+
+impl Default for AlarmSlot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AlarmToken {
+    fn slot_id(&self) -> u64 {
+        self.slot.id()
+    }
+
+    fn is_current_generation(&self) -> bool {
+        self.slot.state.generation_and_armed.load(Ordering::Acquire) >> 1 == self.generation
+    }
+
+    fn is_armed(&self) -> bool {
+        self.slot.state.generation_and_armed.load(Ordering::Acquire) == (self.generation << 1) | 1
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum AlarmTarget {
+    Process(Weak<PidIdentity>),
+}
+
+struct Entry<T> {
+    deadline: ClockDeadline,
+    token: AlarmToken,
+    target: T,
+}
+
+struct AlarmQueue<T> {
+    entries: Vec<Entry<T>>,
+}
+
+enum AlarmQueueAction<T> {
+    Empty,
+    Wait(Duration),
+    Fire(Entry<T>),
+}
+
+impl<T> AlarmQueue<T> {
+    const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn schedule(&mut self, deadline: ClockDeadline, token: AlarmToken, target: T) {
+        if !token.is_armed() {
+            return;
+        }
+        let slot_id = token.slot_id();
+        self.entries
+            .retain(|entry| entry.token.slot_id() != slot_id);
+        if token.is_armed() {
+            self.entries.push(Entry {
+                deadline,
+                token,
+                target,
+            });
+        }
+    }
+
+    fn cancel(&mut self, cancellation: &AlarmToken) {
+        self.entries.retain(|entry| {
+            entry.token.slot_id() != cancellation.slot_id()
+                || entry.token.generation > cancellation.generation
+        });
+    }
+
+    fn next_action(&mut self, clocks: ClockSnapshot) -> AlarmQueueAction<T> {
+        self.entries.retain(|entry| entry.token.is_armed());
+        let Some((index, deadline)) = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (index, entry.deadline.resolve_monotonic(clocks)))
+            .min_by_key(|(_, deadline)| *deadline)
+        else {
+            return AlarmQueueAction::Empty;
+        };
+        if deadline > clocks.monotonic_now() {
+            AlarmQueueAction::Wait(deadline)
+        } else {
+            AlarmQueueAction::Fire(self.entries.swap_remove(index))
+        }
+    }
+}
+
+static ALARM_LIST: LazyLock<Mutex<AlarmQueue<AlarmTarget>>> =
+    LazyLock::new(|| Mutex::new(AlarmQueue::new()));
+static ALARM_WAIT: WaitQueue = WaitQueue::new();
+static ALARM_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+include!("alarm/change.rs");
+include!("alarm/worker.rs");
+include!("alarm/tests.rs");

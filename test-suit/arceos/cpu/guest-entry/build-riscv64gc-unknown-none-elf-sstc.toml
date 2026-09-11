@@ -1,0 +1,3 @@
+features = ["ax-std", "sstc"]
+log = "Info"
+max_cpu_num = 1

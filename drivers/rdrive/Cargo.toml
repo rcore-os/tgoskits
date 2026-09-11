@@ -7,7 +7,7 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdrive"
 repository.workspace = true
-version = "0.24.1"
+version = "0.24.2"
 
 [dependencies]
 acpi = "6.1.1"
@@ -34,14 +34,8 @@ rdif-pcie = { workspace = true }
 x86.workspace = true
 
 [features]
-# Pull ax-sync's std Spin/RwLock impls so the crate's host tests link off-target
-# under `cargo xtask test`.
+# Pull ax-sync's host-test interface for the crate's host-test composition.
 host-test = ["ax-sync/host-test"]
-
-[[test]]
-name = "std"
-path = "tests/std.rs"
-required-features = ["host-test"]
 
 [dev-dependencies]
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }

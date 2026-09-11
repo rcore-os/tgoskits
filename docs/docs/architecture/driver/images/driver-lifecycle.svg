@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="950" viewBox="0 0 1320 950" role="img" aria-labelledby="title desc">
+  <title id="title">网络设备发布阶段与停止边界</title>
+  <desc id="desc">驱动声明经过 probe 成为已注册对象，领域取走资源后建立 runtime 并发布服务。停止路径首先禁用同步 IRQ，再由固定 CPU 停止 DMA。同步或停止无法证明时隔离资源，不释放 backing。阶段是源码操作归纳，不是公共状态枚举。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#15805a"/></marker>
+    <marker id="error" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#ad5d25"/></marker>
+    <style>
+      text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #172b4d; }
+      .title { font-size: 27px; font-weight: 700; }
+      .heading { font-size: 21px; font-weight: 700; }
+      .label { font-size: 18px; }
+      .small { font-size: 17px; }
+      .edge { fill: none; stroke: #15805a; stroke-width: 2.5; marker-end: url(#arrow); }
+      .error { fill: none; stroke: #ad5d25; stroke-width: 2.3; marker-end: url(#error); }
+    </style>
+  </defs>
+  <rect width="1320" height="950" rx="16" fill="#f8fafc"/>
+  <text x="35" y="44" class="title">从“存在设备”到“服务可用”再到“可以释放”</text>
+  <text x="35" y="77" class="small">以网络交付为例；阶段由不同对象表达，不存在统一 DeviceState 枚举</text>
+  <g fill="#eaf0ff" stroke="#94a8d3">
+    <rect x="35" y="115" width="270" height="130" rx="12"/>
+    <rect x="350" y="115" width="280" height="130" rx="12"/>
+    <rect x="675" y="115" width="280" height="130" rx="12"/>
+    <rect x="1000" y="115" width="285" height="130" rx="12"/>
+  </g>
+  <text x="55" y="150" class="heading">驱动已声明</text>
+  <text x="55" y="187" class="label">DriverRegister</text>
+  <text x="55" y="219" class="small">可以尝试 probe</text>
+  <text x="370" y="150" class="heading">对象已注册</text>
+  <text x="370" y="187" class="label">PlatformNetDevice</text>
+  <text x="370" y="219" class="small">尚未建立队列运行时</text>
+  <text x="695" y="150" class="heading">资源已取走</text>
+  <text x="695" y="187" class="label">TakenNetDevice</text>
+  <text x="695" y="219" class="small">包装器内部 Option 清空</text>
+  <text x="1020" y="150" class="heading">部件已准备</text>
+  <text x="1020" y="187" class="label">PreparedNetDevice</text>
+  <text x="1020" y="219" class="small">DMA 池与队列部件</text>
+  <path class="edge" d="M305 180 H350"/>
+  <path class="edge" d="M630 180 H675"/>
+  <path class="edge" d="M955 180 H1000"/>
+  <path class="edge" d="M1140 245 V280 H370 V320"/>
+  <rect x="35" y="320" width="650" height="140" rx="12" fill="#fff5e5" stroke="#c4a36a"/>
+  <text x="55" y="355" class="heading">NetworkRuntimeBuilder</text>
+  <text x="55" y="392" class="label">校验 IRQ 拓扑 → worker 固定 CPU → 注册 / 使能 IRQ</text>
+  <text x="55" y="427" class="label">owner startup → 初始 refill / rearm → 启动 Wi-Fi 事务</text>
+  <path class="edge" d="M685 390 H770"/>
+  <rect x="770" y="320" width="515" height="140" rx="12" fill="#e7f3f0" stroke="#75a48a"/>
+  <text x="790" y="355" class="heading">协议服务发布</text>
+  <text x="790" y="392" class="label">runtime + 帧端口 → init_network()</text>
+  <text x="790" y="427" class="label">协议执行器、接口、路由和 socket 状态</text>
+  <path class="error" d="M370 460 V490 H220 V535"/>
+  <text x="388" y="491" class="small">已建立 owner 的初始化失败</text>
+  <path class="edge" d="M1030 460 V515 H220 V535"/>
+  <text x="1050" y="495" class="small">停止运行时</text>
+  <rect x="35" y="535" width="380" height="130" rx="12" fill="#edf2fa" stroke="#94a8d3"/>
+  <text x="55" y="570" class="heading">禁用并同步 IRQ</text>
+  <text x="55" y="608" class="label">disable_and_synchronize()</text>
+  <text x="55" y="640" class="small">只处理已取得的 registration</text>
+  <path class="edge" d="M415 600 H480"/>
+  <text x="422" y="583" class="small">成功</text>
+  <rect x="480" y="535" width="380" height="130" rx="12" fill="#edf2fa" stroke="#94a8d3"/>
+  <text x="500" y="570" class="heading">固定 CPU 停止设备</text>
+  <text x="500" y="608" class="label">取消事务 · quiesce / shutdown</text>
+  <text x="500" y="640" class="small">确认 DMA 不再访问队列内存</text>
+  <path class="edge" d="M860 600 H930"/>
+  <text x="870" y="583" class="small">确认</text>
+  <rect x="930" y="535" width="355" height="130" rx="12" fill="#e7f3f0" stroke="#75a48a"/>
+  <text x="950" y="570" class="heading">释放资源</text>
+  <text x="950" y="608" class="label">结束执行器与关联资源寿命</text>
+  <text x="950" y="640" class="small">队列 backing 可安全释放</text>
+  <path class="error" d="M220 665 V755"/>
+  <text x="238" y="706" class="small">IRQ 同步失败</text>
+  <path class="error" d="M670 665 V735 H520 V755"/>
+  <text x="687" y="706" class="small">DMA 停止无法确认</text>
+  <rect x="35" y="755" width="825" height="130" rx="12" fill="#fff2e8" stroke="#c78c63"/>
+  <text x="55" y="790" class="heading">隔离仍可能被访问的资源</text>
+  <text x="55" y="827" class="label">同步失败：保留 IRQ lease 与执行器资源；停止失败：保留队列 backing</text>
+  <text x="55" y="859" class="small">隔离会保留内存，不是成功卸载；尚无所有者的早期准备失败也可能保留部件</text>
+  <text x="35" y="923" class="small">释放条件：irq_synchronized &amp;&amp; dma_stopped。源码：ax-net/src/queue_runtime/mod.rs、executor/mod.rs</text>
+</svg>

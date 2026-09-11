@@ -11,5 +11,7 @@ args = [
 ]
 uefi = false
 to_bin = true
-success_regex = ["All tests passed"]
 fail_regex = ["Panicked:", "thread 'main' has overflowed its stack"]
+
+[[shell_check_steps]]
+success_regex = ["All tests passed"]

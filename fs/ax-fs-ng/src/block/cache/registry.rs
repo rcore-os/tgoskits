@@ -26,16 +26,27 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_lazyinit::LazyLock;
 
+#[cfg(feature = "vfs")]
+use super::address_space::BlockAddressSpace;
 use super::{address_space::FolioGeometry, device::BlockCacheShared};
-use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::SleepMutex as Mutex};
+use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::SleepMutex};
 
 struct DeviceCacheEntry {
     device_key: usize,
     cache: Weak<BlockCacheShared>,
+    #[cfg(feature = "vfs")]
+    reclaim: Weak<SleepMutex<BlockAddressSpace>>,
 }
 
-static BLOCK_CACHE_REGISTRY: LazyLock<Mutex<Vec<DeviceCacheEntry>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+impl DeviceCacheEntry {
+    #[cfg(feature = "vfs")]
+    fn reclaim_tree(&self) -> Option<Arc<SleepMutex<BlockAddressSpace>>> {
+        self.reclaim.upgrade()
+    }
+}
+
+static BLOCK_CACHE_REGISTRY: LazyLock<SleepMutex<Vec<DeviceCacheEntry>>> =
+    LazyLock::new(|| SleepMutex::new(Vec::new()));
 
 #[cfg(test)]
 static FAIL_REGISTRY_RESERVE_FOR_KEY: AtomicUsize = AtomicUsize::new(0);
@@ -90,6 +101,8 @@ pub(crate) fn shared_cache_for(
     let entry = DeviceCacheEntry {
         device_key,
         cache: Arc::downgrade(&shared),
+        #[cfg(feature = "vfs")]
+        reclaim: shared.reclaim_state(),
     };
     if let Some(index) = stale_index {
         registry[index] = entry;
@@ -185,7 +198,9 @@ pub(crate) fn reclaim_clean_folios(num_folios: usize) -> usize {
         let Some(shared) = try_live_tree(index) else {
             continue;
         };
-        reclaimed += shared.try_reclaim_clean_folios(num_folios - reclaimed);
+        if let Some(mut state) = shared.try_lock() {
+            reclaimed += state.reclaim_clean_folios(num_folios - reclaimed);
+        }
     }
     reclaimed
 }
@@ -196,9 +211,9 @@ pub(crate) fn reclaim_clean_folios(num_folios: usize) -> usize {
 /// removed or contended entry is skipped; the returned strong reference is
 /// dropped only after the registry guard has gone out of scope.
 #[cfg(feature = "vfs")]
-fn try_live_tree(index: usize) -> Option<Arc<BlockCacheShared>> {
+fn try_live_tree(index: usize) -> Option<Arc<SleepMutex<BlockAddressSpace>>> {
     let registry = BLOCK_CACHE_REGISTRY.try_lock()?;
-    registry.get(index)?.cache.upgrade()
+    registry.get(index)?.reclaim_tree()
 }
 
 fn prune_stale_entries(registry: &mut Vec<DeviceCacheEntry>) {
@@ -220,4 +235,65 @@ fn live_trees() -> BlockResult<Vec<Arc<BlockCacheShared>>> {
         }
     }
     Ok(trees)
+}
+
+#[cfg(all(test, feature = "vfs"))]
+mod tests {
+    use super::*;
+
+    struct EndpointDropProbe(Arc<AtomicUsize>);
+
+    impl Drop for EndpointDropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    impl FsBlockDevice for EndpointDropProbe {
+        fn name(&self) -> &str {
+            "endpoint-drop-probe"
+        }
+        fn block_size(&self) -> usize {
+            512
+        }
+        fn num_blocks(&self) -> u64 {
+            1
+        }
+        fn read_block(&mut self, _: u64, _: &mut [u8]) -> BlockResult<()> {
+            panic!("reclaim ownership must not perform device IO")
+        }
+        fn write_block(&mut self, _: u64, _: &[u8]) -> BlockResult<()> {
+            panic!("reclaim ownership must not perform device IO")
+        }
+        fn flush(&mut self) -> BlockResult<()> {
+            panic!("reclaim ownership must not perform device IO")
+        }
+    }
+
+    #[test]
+    fn reclaim_capability_does_not_defer_last_endpoint_drop() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        // A local registry entry isolates this controlled interleaving from
+        // unrelated global-sync tests. The same reclaim_tree capability is
+        // acquired by the production allocator callback.
+        let owner = Arc::new(BlockCacheShared::new(
+            usize::MAX,
+            FolioGeometry::new(512).unwrap(),
+            Box::new(EndpointDropProbe(drops.clone())),
+        ));
+        let entry = DeviceCacheEntry {
+            device_key: usize::MAX,
+            cache: Arc::downgrade(&owner),
+            reclaim: owner.reclaim_state(),
+        };
+        let reclaim = entry.reclaim_tree().unwrap();
+        drop(owner);
+        assert_eq!(
+            drops.load(Ordering::Acquire),
+            1,
+            "the last ordinary owner must release the device before reclaim drops its capability"
+        );
+        drop(reclaim);
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+    }
 }

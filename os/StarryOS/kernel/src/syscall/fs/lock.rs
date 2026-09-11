@@ -31,7 +31,6 @@ use alloc::{
 };
 use core::ffi::c_int;
 
-use ax_task::current;
 use linux_raw_sys::general::{
     F_GETLK, F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW, F_RDLCK, F_SETLK, F_SETLKW, F_UNLCK, F_WRLCK,
     LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY, SEEK_CUR, SEEK_END,
@@ -43,7 +42,7 @@ use crate::{
     file::{File, FileLike, get_file_like},
     mm::UserPtr,
     sync::RwLock,
-    task::{AsThread, PidIdentityId, PidNamespaceId, PidSnapshot, futex::WaitQueue},
+    task::{PidIdentityId, PidNamespaceId, PidSnapshot, futex::WaitQueue},
 };
 
 type InodeKey = (u64, u64); // (device, inode_no)
@@ -217,12 +216,12 @@ fn ofd_addr(arc: &Arc<dyn FileLike>) -> OfdAddr {
     Arc::as_ptr(arc) as *const () as usize
 }
 
-fn current_process_identity_id() -> PidIdentityId {
-    current().as_thread().proc_data.identity().id()
+fn current_process_identity_id(current: &crate::task::UserTaskRef) -> PidIdentityId {
+    current.as_thread().proc_data.identity().id()
 }
 
-fn current_process_pid_snapshot() -> PidSnapshot {
-    current().as_thread().proc_data.identity().snapshot()
+fn current_process_pid_snapshot(current: &crate::task::UserTaskRef) -> PidSnapshot {
+    current.as_thread().proc_data.identity().snapshot()
 }
 
 /// Resolve `fd` to an inode-keyed lockable file. Returns `EBADF` for fds
@@ -520,7 +519,7 @@ pub fn wake_flock_waiters(key: InodeKey) {
 /// inside the F_SETLKW retry loop because OFD owners snapshot the
 /// `Weak<dyn FileLike>` and Posix owners need the *current* pid (which
 /// won't change for a single thread, but cloning is trivial).
-fn make_owner(ofd: bool, file: &Arc<dyn FileLike>) -> FOwner {
+fn make_owner(current: &crate::task::UserTaskRef, ofd: bool, file: &Arc<dyn FileLike>) -> FOwner {
     if ofd {
         FOwner::Ofd {
             addr: ofd_addr(file),
@@ -528,7 +527,7 @@ fn make_owner(ofd: bool, file: &Arc<dyn FileLike>) -> FOwner {
         }
     } else {
         FOwner::Posix {
-            owner: current_process_pid_snapshot(),
+            owner: current_process_pid_snapshot(current),
         }
     }
 }
@@ -583,8 +582,16 @@ fn try_setlk_once(
 /// per-inode wait queue until the conflict clears or a signal arrives
 /// (returning `EINTR` per POSIX). When `wait` is false, conflicts return
 /// `EAGAIN` immediately.
-pub fn fcntl_setlk(fd: c_int, arg: usize, ofd: bool, wait: bool) -> StarryResult<isize> {
-    let fl = UserPtr::<flock64>::from(arg).get_as_mut()?;
+pub fn fcntl_setlk(
+    current: &crate::task::UserTaskRef,
+    fd: c_int,
+    arg: usize,
+    ofd: bool,
+    wait: bool,
+) -> crate::StarryResult<isize> {
+    // SAFETY: `flock64` contains only integer ABI fields, so every copied bit
+    // pattern is a valid Rust value before semantic validation below.
+    let fl = unsafe { UserPtr::<flock64>::from(arg).read_abi(current)? };
     // POSIX.1-2024 / Linux: F_OFD_SETLK{,W} require l_pid to be 0.
     if ofd && fl.l_pid != 0 {
         return Err(StarryError::InvalidInput);
@@ -609,7 +616,7 @@ pub fn fcntl_setlk(fd: c_int, arg: usize, ofd: bool, wait: bool) -> StarryResult
     }
 
     loop {
-        let owner = make_owner(ofd, &file);
+        let owner = make_owner(current, ofd, &file);
         match try_setlk_once(key, owner, start, end, kind) {
             SetlkAttempt::Done { woke_others } => {
                 if woke_others {
@@ -628,7 +635,7 @@ pub fn fcntl_setlk(fd: c_int, arg: usize, ofd: bool, wait: bool) -> StarryResult
                     end,
                     kind: want,
                 };
-                let waiter = (!ofd).then(current_process_identity_id);
+                let waiter = (!ofd).then(|| current_process_identity_id(current));
                 let mut wait_guard = None;
                 let mut deadlock = false;
 
@@ -640,8 +647,8 @@ pub fn fcntl_setlk(fd: c_int, arg: usize, ofd: bool, wait: bool) -> StarryResult
                 // this re-check says they will really sleep, avoiding stale
                 // graph edges for conflicts that already cleared.
                 let wq = lock_waiters(key);
-                wq.wait_if(!0u32, None, || {
-                    let owner = make_owner(ofd, &file);
+                wq.wait_if(current, !0u32, None, || {
+                    let owner = make_owner(current, ofd, &file);
                     if let Some(waiter) = waiter {
                         match PosixLockWaitGuard::try_new(waiter, waiting, &owner) {
                             Ok(Some(guard)) => wait_guard = Some(guard),
@@ -682,8 +689,16 @@ pub fn fcntl_setlk(fd: c_int, arg: usize, ofd: bool, wait: bool) -> StarryResult
 /// Common impl for `F_GETLK` (POSIX) and `F_OFD_GETLK` (OFD). Reports the
 /// first conflicting lock, or sets `l_type = F_UNLCK` if the requested
 /// range is free.
-pub fn fcntl_getlk(fd: c_int, arg: usize, ofd: bool) -> StarryResult<isize> {
-    let fl = UserPtr::<flock64>::from(arg).get_as_mut()?;
+pub fn fcntl_getlk(
+    current: &crate::task::UserTaskRef,
+    fd: c_int,
+    arg: usize,
+    ofd: bool,
+) -> crate::StarryResult<isize> {
+    let user_fl = UserPtr::<flock64>::from(arg);
+    // SAFETY: `flock64` contains only integer ABI fields, so every copied bit
+    // pattern is a valid Rust value before semantic validation below.
+    let mut fl = unsafe { user_fl.read_abi(current)? };
     // POSIX.1-2024 / Linux: F_OFD_GETLK requires l_pid to be 0.
     if ofd && fl.l_pid != 0 {
         return Err(StarryError::InvalidInput);
@@ -704,11 +719,11 @@ pub fn fcntl_getlk(fd: c_int, arg: usize, ofd: bool) -> StarryResult<isize> {
         }
     } else {
         FOwner::Posix {
-            owner: current_process_pid_snapshot(),
+            owner: current_process_pid_snapshot(current),
         }
     };
 
-    let observer = current().as_thread().active_pid_namespace().id();
+    let observer = current.as_thread().active_pid_namespace().id();
 
     let mut table = FCNTL_LOCKS.write();
     let (report, empty_after) = {
@@ -730,8 +745,9 @@ pub fn fcntl_getlk(fd: c_int, arg: usize, ofd: bool) -> StarryResult<isize> {
     if empty_after {
         table.remove(&key);
     }
+    drop(table);
 
-    if let Some((kind, pid, l_start, l_len)) = report {
+    if let Some((kind, owner, l_start, l_len)) = report {
         fl.l_type = (if kind == LockKind::Read {
             F_RDLCK
         } else {
@@ -740,25 +756,47 @@ pub fn fcntl_getlk(fd: c_int, arg: usize, ofd: bool) -> StarryResult<isize> {
         fl.l_whence = SEEK_SET as i16;
         fl.l_start = l_start;
         fl.l_len = l_len;
-        fl.l_pid = pid;
+        fl.l_pid = owner;
     } else {
         fl.l_type = F_UNLCK as i16;
     }
+    write_flock64_outputs(current, user_fl, &fl)?;
     Ok(0)
+}
+
+fn write_flock64_outputs(
+    current: &crate::task::UserTaskRef,
+    user_fl: UserPtr<flock64>,
+    fl: &flock64,
+) -> crate::StarryResult<()> {
+    let base = user_fl.address().as_usize();
+    UserPtr::<i16>::from(base + core::mem::offset_of!(flock64, l_type))
+        .write(current, fl.l_type)?;
+    UserPtr::<i16>::from(base + core::mem::offset_of!(flock64, l_whence))
+        .write(current, fl.l_whence)?;
+    UserPtr::<i64>::from(base + core::mem::offset_of!(flock64, l_start))
+        .write(current, fl.l_start)?;
+    UserPtr::<i64>::from(base + core::mem::offset_of!(flock64, l_len)).write(current, fl.l_len)?;
+    UserPtr::<i32>::from(base + core::mem::offset_of!(flock64, l_pid)).write(current, fl.l_pid)
 }
 
 /// Top-level dispatch from `sys_fcntl`. Returns `Some(result)` if `cmd`
 /// is one of the lock commands; otherwise `None` so the caller can fall
 /// through to other fcntl handling.
-pub fn dispatch_fcntl(fd: c_int, cmd: c_int, arg: usize) -> Option<StarryResult<isize>> {
+pub fn dispatch_fcntl(
+    current: &crate::task::UserTaskRef,
+    fd: c_int,
+    cmd: c_int,
+    arg: usize,
+) -> Option<crate::StarryResult<isize>> {
     let cmd = cmd as u32;
     Some(match cmd {
-        F_SETLK => fcntl_setlk(fd, arg, false, false),
-        F_SETLKW => fcntl_setlk(fd, arg, false, true),
-        F_OFD_SETLK => fcntl_setlk(fd, arg, true, false),
-        F_OFD_SETLKW => fcntl_setlk(fd, arg, true, true),
-        F_GETLK => fcntl_getlk(fd, arg, false),
-        F_OFD_GETLK => fcntl_getlk(fd, arg, true),
+        F_SETLK => fcntl_setlk(current, fd, arg, false, false),
+        F_SETLKW => fcntl_setlk(current, fd, arg, false, true),
+        F_OFD_SETLK => fcntl_setlk(current, fd, arg, true, false),
+        F_OFD_SETLKW => fcntl_setlk(current, fd, arg, true, true),
+        F_GETLK => fcntl_getlk(current, fd, arg, false),
+        F_OFD_GETLK => fcntl_getlk(current, fd, arg, true),
         _ => return None,
     })
 }
@@ -843,6 +881,7 @@ enum FlockAttempt {
 /// held if the only remaining `Arc` reference to the file is the one backing
 /// the `Weak` inside the entry itself.
 fn try_flock_once(
+    current: &crate::task::UserTaskRef,
     key: InodeKey,
     addr: OfdAddr,
     file: &Arc<dyn FileLike>,
@@ -859,7 +898,7 @@ fn try_flock_once(
     // Cross-pid entries are NOT pruned — only the owning pid can declare
     // its own entry stale, to avoid a racy process freeing another
     // process's still-valid lock.
-    let owner = current_process_identity_id();
+    let owner = current_process_identity_id(current);
     entries.retain(|entry| !(entry.owner == owner && entry.weak.strong_count() < 1));
     let outcome = match kind {
         None => {
@@ -882,7 +921,7 @@ fn try_flock_once(
                     addr,
                     weak: Arc::downgrade(file),
                     kind: want,
-                    owner: current_process_identity_id(),
+                    owner: current_process_identity_id(current),
                 });
                 FlockAttempt::Done
             }
@@ -949,7 +988,11 @@ pub fn release_pid_flock_locks(owner: PidIdentityId) {
 /// on the per-inode flock wait queue until the conflict clears or a signal
 /// arrives (returning `EINTR`). With `LOCK_NB`, conflicts return
 /// `EWOULDBLOCK` immediately.
-pub fn flock_op(fd: c_int, operation: c_int) -> StarryResult<isize> {
+pub fn flock_op(
+    current: &crate::task::UserTaskRef,
+    fd: c_int,
+    operation: c_int,
+) -> crate::StarryResult<isize> {
     let op = operation as u32;
     let nonblock = op & LOCK_NB != 0;
     let kind = match op & !LOCK_NB {
@@ -963,7 +1006,7 @@ pub fn flock_op(fd: c_int, operation: c_int) -> StarryResult<isize> {
     let addr = ofd_addr(&file);
 
     loop {
-        let (outcome, mutated) = try_flock_once(key, addr, &file, kind);
+        let (outcome, mutated) = try_flock_once(current, key, addr, &file, kind);
         if mutated {
             wake_flock_waiters(key);
         }
@@ -979,7 +1022,7 @@ pub fn flock_op(fd: c_int, operation: c_int) -> StarryResult<isize> {
                 // attempt and the sleep is not lost.
                 let want = kind.unwrap();
                 let wq = flock_waiters(key);
-                wq.wait_if(!0u32, None, || {
+                wq.wait_if(current, !0u32, None, || {
                     let table = FLOCK_LOCKS.read();
                     let Some(entries) = table.get(&key) else {
                         return false;

@@ -2,7 +2,12 @@
 
 use core::{pin::Pin, ptr::NonNull, sync::atomic::Ordering};
 
-use crate::{ContextSwitchError, CpuAreaRef, CpuLocalError, CpuPin, ExecutionContextHeader};
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+use crate::preempt::PreemptionState;
+use crate::{
+    ContextSwitchError, CpuAreaRef, CpuIndex, CpuLocalError, CpuPin, ExecutionContextHeader,
+    preempt::PreemptionSnapshot,
+};
 
 #[cfg(all(not(feature = "host-test"), target_arch = "aarch64"))]
 mod aarch64;
@@ -10,10 +15,7 @@ mod aarch64;
 mod host;
 #[cfg(all(not(feature = "host-test"), target_arch = "loongarch64"))]
 mod loongarch64;
-#[cfg(all(
-    not(feature = "host-test"),
-    any(target_arch = "riscv32", target_arch = "riscv64")
-))]
+#[cfg(all(not(feature = "host-test"), target_arch = "riscv64"))]
 mod riscv;
 #[cfg(all(not(feature = "host-test"), target_arch = "x86_64"))]
 mod x86_64;
@@ -24,10 +26,7 @@ use aarch64 as imp;
 use host as imp;
 #[cfg(all(not(feature = "host-test"), target_arch = "loongarch64"))]
 use loongarch64 as imp;
-#[cfg(all(
-    not(feature = "host-test"),
-    any(target_arch = "riscv32", target_arch = "riscv64")
-))]
+#[cfg(all(not(feature = "host-test"), target_arch = "riscv64"))]
 use riscv as imp;
 #[cfg(all(not(feature = "host-test"), target_arch = "x86_64"))]
 use x86_64 as imp;
@@ -37,7 +36,6 @@ use x86_64 as imp;
     not(any(
         target_arch = "x86_64",
         target_arch = "aarch64",
-        target_arch = "riscv32",
         target_arch = "riscv64",
         target_arch = "loongarch64"
     ))
@@ -68,6 +66,27 @@ impl ArchitectureCurrentModel {
     }
 }
 
+/// Architecture register boundary for current-state observations.
+///
+/// The execution-context implementation is the portable default. Backends may
+/// override it only when their current preemption owner has a cheaper native
+/// representation, while preserving the same advisory snapshot semantics.
+pub(super) trait ArchitectureRegisterBackend {
+    #[inline(always)]
+    fn current_cpu_index() -> Result<CpuIndex, CpuLocalError> {
+        default_current_cpu_index()
+    }
+
+    #[inline(always)]
+    fn current_preemption_snapshot() -> Result<PreemptionSnapshot, CpuLocalError> {
+        default_current_preemption_snapshot()
+    }
+}
+
+fn default_current_cpu_index() -> Result<CpuIndex, CpuLocalError> {
+    Ok(current_area()?.cpu_index())
+}
+
 /// Installs the final area of an offline CPU.
 ///
 /// # Safety
@@ -92,9 +111,20 @@ pub(crate) fn current_area() -> Result<CpuAreaRef, CpuLocalError> {
     if area_base == 0 {
         return Err(CpuLocalError::AreaNotInstalled);
     }
-    // SAFETY: only install_cpu_area writes the architecture-owned base, and
-    // its contract requires a shutdown-lifetime initialized area.
-    unsafe { CpuAreaRef::from_initialized_base(area_base) }
+    // SAFETY: only install_cpu_area writes the architecture-owned base after
+    // validating it, and its contract keeps that area mapped until shutdown.
+    Ok(unsafe { CpuAreaRef::from_installed_base(area_base) })
+}
+
+/// Reads the logical CPU index selected by the architecture register.
+///
+/// # Safety
+///
+/// Callers must retain the migration exclusion that makes the selected CPU
+/// area stable for the complete observation.
+#[inline(always)]
+pub unsafe fn current_cpu_index() -> Result<CpuIndex, CpuLocalError> {
+    imp::Backend::current_cpu_index()
 }
 
 /// Reads the architecture CPU-area base without validating current context.
@@ -115,6 +145,21 @@ pub(crate) unsafe fn current_cpu_area_base() -> Result<usize, CpuLocalError> {
     Ok(area_base)
 }
 
+#[inline(always)]
+pub(crate) fn current_preemption_snapshot() -> Result<PreemptionSnapshot, CpuLocalError> {
+    imp::Backend::current_preemption_snapshot()
+}
+
+#[inline(always)]
+fn default_current_preemption_snapshot() -> Result<PreemptionSnapshot, CpuLocalError> {
+    let current = unsafe { current_context_unpinned()? };
+    // SAFETY: the architecture current source identifies this executing
+    // context. An interrupt may migrate it before the dereference, but this
+    // instruction stream can resume only as the same live context, whose
+    // preemption word migrates with it.
+    Ok(unsafe { current.as_ref() }.preemption_state().snapshot())
+}
+
 /// Commits the current-context source before the architecture switch tail.
 ///
 /// # Safety
@@ -122,7 +167,7 @@ pub(crate) unsafe fn current_cpu_area_base() -> Result<usize, CpuLocalError> {
 /// The caller must own the final IRQ-disabled context-switch boundary. `value`
 /// must identify the prepared pinned header and remain alive while current.
 pub(crate) unsafe fn commit_current_context(_area: CpuAreaRef, _value: usize) {
-    match imp::CURRENT_MODEL.current_context_source(cfg!(feature = "tls")) {
+    match imp::CURRENT_MODEL.current_context_source(cfg!(kernel_tls)) {
         #[cfg(not(all(target_arch = "aarch64", not(feature = "host-test"))))]
         CurrentContextSource::RuntimeAnchor => _area
             .runtime_anchor()
@@ -140,9 +185,13 @@ pub(crate) unsafe fn commit_current_context(_area: CpuAreaRef, _value: usize) {
 }
 
 /// Returns the pinned header selected by this image's sole current source.
+///
+/// Context installation and switch preparation validate the header's CPU
+/// binding before publication. Like Linux `current`, this hot lookup trusts
+/// that published invariant while the caller's pin prevents migration.
 pub fn current_context(pin: &CpuPin<'_>) -> Result<NonNull<ExecutionContextHeader>, CpuLocalError> {
     let area = pin.area();
-    let raw = match imp::CURRENT_MODEL.current_context_source(cfg!(feature = "tls")) {
+    let raw = match imp::CURRENT_MODEL.current_context_source(cfg!(kernel_tls)) {
         #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
         CurrentContextSource::ArchitectureRegister => unsafe {
             imp::read_current_context(area.base())
@@ -150,16 +199,7 @@ pub fn current_context(pin: &CpuPin<'_>) -> Result<NonNull<ExecutionContextHeade
         #[cfg(not(all(target_arch = "aarch64", not(feature = "host-test"))))]
         CurrentContextSource::RuntimeAnchor => area.runtime_anchor().current_context_raw(),
     };
-    let pointer = validated_context_pointer(raw)?;
-    // SAFETY: context publication only accepts pinned headers that remain
-    // alive while current, and the caller retains the required CPU pin.
-    let context_area = unsafe { pointer.as_ref() }
-        .cpu_area()
-        .ok_or(CpuLocalError::CurrentContextMismatch)?;
-    if context_area != area {
-        return Err(CpuLocalError::CurrentContextMismatch);
-    }
-    Ok(pointer)
+    validated_context_pointer(raw)
 }
 
 /// Reads the current header before a caller can construct its migration guard.
@@ -170,7 +210,7 @@ pub fn current_context(pin: &CpuPin<'_>) -> Result<NonNull<ExecutionContextHeade
 /// dereference the result after a context switch.
 #[doc(hidden)]
 pub unsafe fn current_context_unpinned() -> Result<NonNull<ExecutionContextHeader>, CpuLocalError> {
-    match imp::CURRENT_MODEL.current_context_source(cfg!(feature = "tls")) {
+    match imp::CURRENT_MODEL.current_context_source(cfg!(kernel_tls)) {
         #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
         CurrentContextSource::ArchitectureRegister => {
             // The architecture current source does not require a sampled CPU
@@ -180,25 +220,35 @@ pub unsafe fn current_context_unpinned() -> Result<NonNull<ExecutionContextHeade
             validated_context_pointer(register)
         }
         #[cfg(not(all(target_arch = "aarch64", not(feature = "host-test"))))]
-        CurrentContextSource::RuntimeAnchor => loop {
-            // Architectures whose current source is also the kernel TLS base
-            // keep current in the CPU runtime anchor. Retry if migration
-            // changes the area before the guard can be constructed.
-            let area = current_area()?;
-            let register = unsafe { imp::read_current_context(area.base()) };
-            if unsafe { imp::read_cpu_base()? } != area.base() {
-                continue;
+        CurrentContextSource::RuntimeAnchor => {
+            #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+            {
+                // GS selects the CPU-owned current slot, but the value names
+                // the pinned execution context. An interrupt may migrate this
+                // instruction stream after the read; when it resumes, the
+                // same context and immutable publication are still live.
+                validated_context_pointer(unsafe { imp::read_current_context(0) })
             }
-            return validated_context_pointer(register);
-        },
+            #[cfg(not(all(target_arch = "x86_64", not(feature = "host-test"))))]
+            loop {
+                // Other anchor-backed architectures require the sampled area
+                // to remain stable until their current slot has been read.
+                let area = current_area()?;
+                let register = unsafe { imp::read_current_context(area.base()) };
+                if unsafe { imp::read_cpu_base()? } != area.base() {
+                    continue;
+                }
+                return validated_context_pointer(register);
+            }
+        }
     }
 }
 
-/// Reports whether `context` is the CPU area's permanent boot context.
+/// Reports whether `context` is the current CPU area's permanent boot context.
 ///
-/// Runtime layers use this distinction before they publish their first owned
-/// execution context. The check compares identities only; the boot context
-/// does not carry a runtime kind, task cookie, or consumer pointer.
+/// Runtime layers use this area-identity check before they publish their first
+/// owned execution context. Hot readers that already own a live context header
+/// can inspect [`ExecutionContextHeader::is_permanent_boot_context`] directly.
 #[doc(hidden)]
 pub fn is_permanent_boot_context(
     context: NonNull<ExecutionContextHeader>,
@@ -223,6 +273,8 @@ pub(crate) mod host_test {
         pub cpu_base: usize,
         /// Reads of the selected architecture current-context source.
         pub current_context: usize,
+        /// Stable observations of an execution context's CPU binding.
+        pub binding_observations: usize,
         /// Complete reconstructions and identity checks of an initialized area.
         pub initialized_area_validations: usize,
     }
@@ -239,6 +291,10 @@ pub(crate) mod host_test {
 
     pub(crate) fn record_initialized_area_validation() {
         super::imp::record_initialized_area_validation();
+    }
+
+    pub(crate) fn record_binding_observation() {
+        super::imp::record_binding_observation();
     }
 }
 
@@ -304,7 +360,7 @@ mod tests {
         assert_eq!(
             // SAFETY: both boot headers have process-lifetime storage.
             unsafe { current_context_unpinned() },
-            if cfg!(feature = "tls") {
+            if cfg!(kernel_tls) {
                 Ok(NonNull::from(second.prefix().boot_context().header()))
             } else {
                 Ok(NonNull::from(first_boot))
@@ -334,6 +390,8 @@ mod tests {
         // SAFETY: this host thread serially owns the leaked CPU fixture.
         unsafe { imp::install_cpu_base(area.base(), boot as *const _ as usize) };
 
+        assert!(boot.is_permanent_boot_context());
+        assert!(!runtime_context.is_permanent_boot_context());
         assert_eq!(is_permanent_boot_context(NonNull::from(boot)), Ok(true));
         assert_eq!(
             is_permanent_boot_context(runtime_context.as_ref().as_non_null()),
@@ -342,7 +400,72 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "tls"))]
+    fn installed_current_area_reuses_install_time_identity_validation() {
+        let area = modeled_area(0);
+        let boot = area.prefix().boot_context().header();
+
+        // SAFETY: this host thread serially owns the leaked CPU fixture.
+        unsafe { imp::install_cpu_base(area.base(), boot as *const _ as usize) };
+        host_test::reset_register_read_counts();
+
+        assert_eq!(current_area(), Ok(area));
+        assert_eq!(
+            host_test::register_read_counts(),
+            host_test::RegisterReadCounts {
+                cpu_base: 1,
+                current_context: 0,
+                binding_observations: 0,
+                initialized_area_validations: 0,
+            },
+            "a live installed base must not repeat shutdown-lifetime identity validation",
+        );
+    }
+
+    #[test]
+    fn pin_construction_trusts_published_area_and_context_identity() {
+        let area = modeled_area(0);
+        let boot = area.prefix().boot_context().header();
+
+        // SAFETY: this host thread serially owns the leaked CPU fixture.
+        unsafe { imp::install_cpu_base(area.base(), boot as *const _ as usize) };
+        host_test::reset_register_read_counts();
+
+        // SAFETY: the host fixture cannot migrate or switch during the call.
+        unsafe { crate::with_cpu_pin(|_| ()) }.unwrap();
+
+        assert_eq!(
+            host_test::register_read_counts().initialized_area_validations,
+            0,
+            "pin construction must reuse the area identity validated before installation",
+        );
+        assert_eq!(
+            host_test::register_read_counts().binding_observations,
+            0,
+            "pin construction must trust the current binding published by the switch boundary",
+        );
+        assert_eq!(
+            host_test::register_read_counts().current_context,
+            0,
+            "pin construction must not re-read the current context after publication",
+        );
+    }
+
+    #[test]
+    fn backend_default_observes_the_current_execution_context() {
+        let area = modeled_area(0);
+        let boot = area.prefix().boot_context().header();
+
+        // SAFETY: this host thread serially owns the leaked CPU fixture.
+        unsafe { imp::install_cpu_base(area.base(), boot as *const _ as usize) };
+
+        let snapshot = current_preemption_snapshot()
+            .expect("host backend default should observe its boot context");
+        assert_eq!(snapshot.depth(), 1);
+        assert!(!snapshot.is_pending());
+    }
+
+    #[test]
+    #[cfg(not(kernel_tls))]
     fn architecture_current_is_authoritative_when_anchor_is_stale() {
         let area = modeled_area(0);
         let boot = area.prefix().boot_context().header();
@@ -379,7 +502,7 @@ pub unsafe fn install_bootstrap_context(
 ) -> Result<(), ContextSwitchError> {
     let epoch = unsafe { header.bind_cpu(pin.area()) }?;
     let pointer = header.as_non_null().as_ptr() as usize;
-    match imp::CURRENT_MODEL.current_context_source(cfg!(feature = "tls")) {
+    match imp::CURRENT_MODEL.current_context_source(cfg!(kernel_tls)) {
         #[cfg(not(all(target_arch = "aarch64", not(feature = "host-test"))))]
         CurrentContextSource::RuntimeAnchor => unsafe {
             commit_current_context(pin.area(), pointer)
@@ -389,7 +512,7 @@ pub unsafe fn install_bootstrap_context(
             imp::write_current_context(pointer)
         },
     }
-    if current_context(pin) != Ok(header.as_non_null()) {
+    if current_context(pin) != Ok(header.as_non_null()) || !header.is_bound_to(pin.area()) {
         // The register is already committed, so continuing would make all
         // later Rust execution unsound. Rollback is intentionally impossible.
         let _ = epoch;
@@ -399,7 +522,7 @@ pub unsafe fn install_bootstrap_context(
 }
 
 /// Reads execution-context-owned kernel TLS under an explicit CPU pin.
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub fn kernel_tls(_pin: &CpuPin<'_>) -> usize {
     unsafe { imp::read_kernel_tls() }
 }
@@ -410,7 +533,7 @@ pub fn kernel_tls(_pin: &CpuPin<'_>) -> usize {
 ///
 /// The caller must own the offline CPU or IRQ-disabled final context switch, and
 /// `value` must remain a valid TLS base for the installed execution context.
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 #[doc(hidden)]
 pub unsafe fn install_kernel_tls(_pin: &CpuPin<'_>, value: usize) {
     unsafe { imp::write_kernel_tls(value) };
@@ -426,4 +549,54 @@ pub(crate) fn fatal_register_invariant() -> ! {
 #[inline(always)]
 pub(crate) unsafe fn enter_x86_preemption() {
     unsafe { imp::enter_preemption() };
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn current_x86_preemption_state() -> &'static PreemptionState {
+    // SAFETY: the caller has already incremented the GS-selected preemption
+    // word and retains that exclusion through the returned reference.
+    unsafe { imp::current_preemption_state() }
+}
+
+/// Compares one CPU-owned preemption transition without cross-CPU locking.
+///
+/// # Safety
+///
+/// `state` must be the live owner retained by a positive preemption depth on
+/// the current CPU. No remote CPU may access the word during this operation.
+#[cfg(all(test, target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn compare_exchange_x86_preemption_state(
+    state: &PreemptionState,
+    current: u32,
+    next: u32,
+) -> bool {
+    // SAFETY: the caller supplies the CPU-local ownership contract forwarded
+    // by this architecture boundary.
+    unsafe { imp::compare_exchange_preemption_state(state, current, next) }
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn read_current_x86_preemption_state_raw() -> u32 {
+    // SAFETY: forwarded by the caller's live preemption token.
+    unsafe { imp::read_preemption_state() }
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn compare_exchange_current_x86_preemption_state(
+    current: u32,
+    next: u32,
+) -> bool {
+    // SAFETY: forwarded by the caller's positive local preemption depth.
+    unsafe { imp::compare_exchange_current_preemption_state(current, next) }
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn decrement_current_x86_preemption_state() {
+    // SAFETY: forwarded by the caller's nested local preemption depth.
+    unsafe { imp::decrement_current_preemption_state() }
 }

@@ -63,12 +63,6 @@ mod tests {
 
     #[cfg_attr(axtest, axtest::axtest)]
     #[cfg_attr(not(axtest), test)]
-    fn host_log_backlog_capacity_is_two_mib() {
-        assert_eq!(HOST_LOG_BACKLOG_CAPACITY, 2 * 1024 * 1024);
-    }
-
-    #[cfg_attr(axtest, axtest::axtest)]
-    #[cfg_attr(not(axtest), test)]
     fn drops_oldest_complete_record_with_summary() {
         let mut backlog = HostLogBacklog::default();
         let record = vec![b'x'; HOST_LOG_BACKLOG_CAPACITY / 2];

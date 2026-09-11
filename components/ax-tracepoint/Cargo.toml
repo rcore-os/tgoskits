@@ -1,12 +1,11 @@
 [package]
 name = "ax-tracepoint"
-version = "0.6.0"
+version = "0.6.1"
 edition.workspace = true
 authors.workspace = true
 license = "MIT"
 repository.workspace = true
 documentation = "https://docs.rs/ax-tracepoint"
-readme = "README.md"
 keywords = ["tracepoint", "kernel", "tracing", "no-std"]
 description = "A Rust crate for implementing tracepoints in operating systems."
 build = "build.rs"

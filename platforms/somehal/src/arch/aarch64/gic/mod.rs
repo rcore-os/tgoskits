@@ -160,11 +160,9 @@ pub fn send_ipi(
 }
 
 fn controller_sync_barrier() {
-    // SAFETY: this only orders prior GIC MMIO/system-register writes before
-    // subsequent interrupt delivery on the current CPU.
-    unsafe {
-        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
-    }
+    // Complete prior GIC writes before subsequent local interrupt delivery.
+    ax_cpu::barrier::data_sync_system();
+    ax_cpu::barrier::instruction_sync();
 }
 
 fn hardware_cpu_id(cpu_idx: usize) -> Result<usize, crate::irq::IrqError> {
@@ -182,6 +180,16 @@ impl ActiveIrq {
             Self::V2(active) => active.id(),
             Self::V3(active) => active.id(),
         }
+    }
+
+    pub fn acknowledge_ipi(&mut self) {
+        match self {
+            Self::V2(active) => active.acknowledge_ipi(),
+            Self::V3(active) => active.acknowledge_ipi(),
+        }
+        // Linux completes the GIC priority drop before entering the logical
+        // IPI handler so a new SGI can become observable immediately.
+        ax_cpu::barrier::instruction_sync();
     }
 }
 

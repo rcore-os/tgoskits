@@ -87,28 +87,3 @@ impl RgaBufferBacking {
         self.len() == 0
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn imported_backing_reports_phys_and_len() {
-        let b = RgaBufferBacking::Imported {
-            phys_addr: 0x4000_0000,
-            len: 4096,
-        };
-        assert_eq!(b.phys_addr(), 0x4000_0000);
-        assert_eq!(b.len(), 4096);
-        assert!(!b.is_empty());
-    }
-
-    #[test]
-    fn empty_imported_backing_is_empty() {
-        let b = RgaBufferBacking::Imported {
-            phys_addr: 0,
-            len: 0,
-        };
-        assert!(b.is_empty());
-    }
-}

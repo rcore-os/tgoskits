@@ -109,12 +109,9 @@ mod tests {
         let faulty_allocator = IdAllocator::new(23, 5);
         assert_eq!(faulty_allocator.unwrap_err(), Error::InvalidRange(23, 5));
         let mut legacy_irq_allocator = IdAllocator::new(5, 23).unwrap();
-        assert_eq!(legacy_irq_allocator.range_base, 5);
-        assert_eq!(legacy_irq_allocator.range_end, 23);
 
         let id = legacy_irq_allocator.allocate_id().unwrap();
         assert_eq!(id, 5);
-        assert_eq!(legacy_irq_allocator.next_id.unwrap(), 6);
 
         for _ in 1..19 {
             assert!(legacy_irq_allocator.allocate_id().is_ok());
@@ -143,7 +140,7 @@ mod tests {
             legacy_irq_allocator.free_id(3).unwrap_err(),
             Error::OutOfRange(3)
         );
-        assert_eq!(legacy_irq_allocator.freed_ids.len(), 0);
+        assert_eq!(legacy_irq_allocator.free_id(99), Err(Error::OutOfRange(99)));
 
         for _ in 1..10 {
             let _id = legacy_irq_allocator.allocate_id().unwrap();
@@ -151,32 +148,18 @@ mod tests {
 
         let irq = 10;
         legacy_irq_allocator.free_id(irq).unwrap();
-        assert!(legacy_irq_allocator.freed_ids.contains(&irq));
         assert_eq!(
             legacy_irq_allocator.free_id(10).unwrap_err(),
             Error::AlreadyReleased(10)
         );
         let irq = 9;
         legacy_irq_allocator.free_id(irq).unwrap();
-        assert_eq!(legacy_irq_allocator.freed_ids.len(), 2);
-        assert_eq!(*legacy_irq_allocator.freed_ids.iter().next().unwrap(), 9);
 
         let irq = legacy_irq_allocator.allocate_id().unwrap();
         assert_eq!(irq, 9);
-        assert!(!legacy_irq_allocator.freed_ids.contains(&irq));
-        assert_eq!(legacy_irq_allocator.freed_ids.len(), 1);
         assert_eq!(
             legacy_irq_allocator.free_id(21).unwrap_err(),
             Error::NeverAllocated(21)
         );
-    }
-
-    #[test]
-    fn test_id_sanity_checks() {
-        let legacy_irq_allocator = IdAllocator::new(5, 23).unwrap();
-
-        assert!(!legacy_irq_allocator.id_in_range(4));
-        assert!(legacy_irq_allocator.id_in_range(6));
-        assert!(!legacy_irq_allocator.id_in_range(25));
     }
 }

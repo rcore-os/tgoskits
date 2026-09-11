@@ -2,41 +2,7 @@
 
 use std::vec::Vec;
 
-use ax_std::os::arceos::modules::ax_task::IrqNotify;
 use axvisor::console_mux::HostOutputQueue;
-
-/// Coalescing notification that blocks consumers until a producer publishes work.
-pub(crate) struct BlockingSignal {
-    notify: IrqNotify,
-}
-
-impl BlockingSignal {
-    pub(crate) const fn new() -> Self {
-        Self {
-            notify: IrqNotify::new(),
-        }
-    }
-
-    pub(crate) fn notify_irq(&self) {
-        if !self.notify.is_pending() {
-            self.notify.notify_irq();
-        }
-    }
-
-    pub(crate) fn notify(&self) {
-        if !self.notify.is_pending() {
-            self.notify.notify();
-        }
-    }
-
-    pub(crate) fn drain(&self) {
-        self.notify.drain();
-    }
-
-    pub(crate) fn wait(&self) {
-        self.notify.wait();
-    }
-}
 
 /// Fixed-capacity handoff from a console dispatcher to its WebSocket writer.
 pub(crate) struct DeliveryQueue<const CAPACITY: usize> {

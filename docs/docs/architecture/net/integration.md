@@ -55,19 +55,21 @@ register_unix_namespace();
 
 let config = parse_network_config();
 let devices = collect_net_devices();
+let active_cpus = crate::task::active_cpu_set()?;
 let (runtime, ports) = ax_net::NetworkRuntimeBuilder::new(
     devices,
     &crate::irq::NET_IRQ_REGISTRAR,
-    ax_hal::cpu_num(),
+    active_cpus,
 ).build()?;
-ax_net::init_network(Some(runtime), ports, config);
+ax_net::init_network(runtime, ports, config);
 ```
 
 这条路径完成三件事：
 
 - 将 runtime 发现的设备消费为 `PreparedNetDevice`，并把 source ID 精确解析为物理 `IrqId`。
+- 只从 scheduler active CPU mask 选择立即可运行的 queue/protocol owner；固定拓扑中尚未 online 的 CPU 不参与启动期放置。
 - 将结构化 `NetworkConfig` 交给 `ax-net`，由 `ax-net` 创建 `lo`、Ethernet 接口、路由、DHCP 状态和 DNS registry。
-- 在 worker pin、disabled IRQ registration、owner startup、initial refill/rearm 和 startup Wi-Fi transaction 全部成功后发布 service。
+- 在 worker pin、disabled IRQ registration 与 enable 完成后执行 owner startup；安全剔除不适用的候选设备，并在剩余设备 initial refill/rearm 和 startup Wi-Fi transaction 成功后发布 service。
 
 `parse_network_config()` 当前直接返回 `NetworkConfig::default()`，尚未接入系统配置。因此启动时所有未显式匹配的普通 NIC 都采用 `ax-net` 默认策略：`eth{order}`、metric 100、DHCP、无静态 fallback DNS。该函数是未来接入接口地址/DNS/metric 的预留转换点，不应把它描述成已经生效的配置解析器。
 
@@ -85,7 +87,7 @@ hard callback 只调用对应 `NetHardIrqEndpoint::handle_irq()`，将
 
 ### 2.3 Unix 命名空间
 
-Unix domain socket 的路径名绑定需要文件系统命名空间协助。`ax-runtime` 在启用 `fs-ng` 时注册 namespace adapter：
+Unix domain socket 的路径名绑定需要文件系统命名空间协助。`ax-runtime` 在启用 `net` 和 `fs` feature（`fs` 经 `ax-fs-ng` 提供文件系统）时注册 namespace adapter：
 
 ```rust
 ax_net::unix::register_unix_namespace(crate::unix_ns::AxFsUnixNamespace);
@@ -95,23 +97,46 @@ ax_net::unix::register_unix_namespace(crate::unix_ns::AxFsUnixNamespace);
 
 ### 2.4 Wi-Fi 与 SoftAP
 
-Wi-Fi 与有线设备走同一个 all-at-once builder。AIC probe 只识别 variant 并提取 IRQ
-source，固件与 FDRV 初始化经 `NetOwnerStartup` 在 worker pin、disabled IRQ registration
-之后由 owner CPU 执行。`NetDeviceParts` 中的 owned `WifiControl` 绑定该设备首个 poll
-group 的 owner CPU；startup transaction 只在 IRQ enable 完成后执行，service 尚未发布。运行期
+Wi-Fi 与有线设备走同一个 all-at-once builder。固定连接的 AIC 由板级配置选择，
+平台 probe 封装 host parts 和 IRQ source，并登记候选 `wlan0`。`AicOwnerStartup`
+在 worker pin、IRQ registration 和 enable 之后调用驱动的卡识别、固件与 FDRV
+初始化逻辑；总线协议由驱动组件处理，`ax-net` 只调度通用 `NetOwnerStartup`
+进度，不需要为卡识别建立独立执行线程。
+
+候选登记不等于接口可用。卡不包含 SDIO I/O Function 时，AIC startup 返回
+`DeviceNotPresent`；runtime 只有在取消成功并同步该 IRQ callback 后才剔除对应
+group。清理由持有队列的 owner 执行，同时删除对应 Wi-Fi slot 并重映射存活 slot
+的 group 索引；builder 等待清理确认并 join 没有存活 group 的 worker，再提交
+startup transaction。设备没有剩余 group 时不发布接口，其余网卡继续初始化。其他初始化错误
+仍返回失败。`NetDeviceParts` 中的 owned `WifiControl` 绑定该设备首个 poll
+group 的 owner CPU；startup transaction 只在设备 startup 完成后执行，service 尚未发布。运行期
 `reconfigure_wifi(ifname, WifiTransaction)` 进入有界 control queue：owner 先
 quiesce group，在同 CPU 执行 SDIO/MMIO 控制，再 rearm，最后由 protocol owner
 提交 STA DHCP 或 SoftAP 静态地址/DHCP server 状态。启动后不支持新增物理 Wi-Fi。
 
 ### 2.5 Vsock
 
-启用 `vsock` feature 后，runtime 收集 virtio-vsock 等设备并把列表交给 `init_vsock()`，由独立连接管理器与 poll task 负责后续事件。该路径不创建 smoltcp socket，也不经过 Ethernet `Router`；当前只消费列表末尾设备的选择规则需要由调用方明确接受。
+启用 `vsock` feature 后，runtime 收集 virtio-vsock 设备，同时一次性取得 typed IRQ
+binding、hard-IRQ endpoint 和 task-side rearm control。runtime 将 binding 解析成
+`IrqId`，再把完整的 `VsockDeviceInput` 交给 `init_vsock()`。该路径不创建 smoltcp
+socket，也不经过 Ethernet `Router`；它使用独立 connection manager 和固定 CPU IRQ
+worker 推进事件。
 
 ```rust
-ax_net::init_vsock(vsock_devs);
+ax_net::init_vsock(
+    vsock_inputs,
+    &crate::irq::NET_IRQ_REGISTRAR,
+    active_cpus,
+)?;
 ```
 
-`init_vsock()` 使用 `pop()` 注册传入列表的**最后一个**设备，其余设备忽略；空列表只会记录 warning，不建立额外的“无设备但已初始化”状态。没有注册设备时，AF_VSOCK 的 listen/connect/send 路径会在 `device::vsock_*()` 返回 `NotFound`。vsock 不参与 IP 路由、ARP、DNS 或 Ethernet dataplane；它只复用 `ax-net` 的 socket facade 和 poll 语义。
+当前 vsock runtime 只接受零个或恰好一个设备。空列表只记录 warning，不建立额外的
+“无设备但已初始化”状态；多设备、缺 IRQ、endpoint 已被转移、owner CPU 未 active 或
+IRQ registration 失败都会终止初始化。worker 固定在网络 protocol owner CPU：hard IRQ
+只 ACK/coalesce 并发布 sticky notification，worker 预算 drain event、更新
+`VSOCK_CONN_MANAGER`，再用 rearm/recheck 闭合 IRQ-versus-sleep 窗口。RX ring 释放空间时
+会精准重新调度 pending event；不存在周期 poll 或 sleep fallback。vsock 不参与 IP
+路由、ARP、DNS 或 Ethernet dataplane，只复用 `ax-net` 的 socket facade/readiness 形状。
 
 ## 3. ArceOS API 层
 
@@ -268,11 +293,15 @@ StarryOS 的 rtnetlink 与 procfs 都应从 `ax-net` 的接口、路由、ARP �
 `InterfaceId` 是跨 ArceOS、StarryOS 和 `ax-net` 的稳定接口身份，Linux ifindex 只是它在 ABI 边界的数值表示。接口名可以用于用户查询和设备绑定，但实现不能假定永远存在 `eth0`，也不能把列表位置当作持久身份。
 
 - `lo` 固定为 `InterfaceId::LOOPBACK`，Linux ifindex 为 1。
-- Ethernet 接口默认按发现顺序命名为 `eth0`、`eth1`。
+- 普通 Ethernet 接口的缺省名称使用发布端口列表的紧凑索引，形式为 `eth{order}`；Wi-Fi 沿用驱动登记的接口名。
 - Linux `ifindex` 和 `InterfaceId` 直接映射。
 - 外部系统不得把 Router 内部 `dev` 索引暴露为 ifindex。
 
 接口标识列表说明名称、ifindex 与内部 ID 的转换必须集中处理，不能依赖设备顺序。命名空间在这些稳定身份之上做可见性过滤，但不改变全局所有权。
+
+启动时剔除候选设备后，运行时句柄使用紧凑索引，`ByOrder` 配置匹配仍使用
+`NetworkQueueRuntime::discovery_order()` 恢复的原始发现顺序。两种索引不能混用；
+配置匹配规则见[网络配置](./configuration.md#23-接口匹配)。
 
 ### 6.4 命名空间限制
 

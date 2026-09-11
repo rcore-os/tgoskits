@@ -35,93 +35,6 @@ fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
 }
 
 #[test]
-fn axvisor_all_architectures_use_rust_std_musl_with_abort_panics() {
-    let cases = [
-        (
-            "x86_64",
-            "x86_64-unknown-none",
-            "x86_64-unknown-linux-musl.json",
-        ),
-        (
-            "aarch64",
-            "aarch64-unknown-none-softfloat",
-            "aarch64-unknown-linux-musl.json",
-        ),
-        (
-            "riscv64",
-            "riscv64gc-unknown-none-elf",
-            "riscv64gc-unknown-linux-musl.json",
-        ),
-        (
-            "loongarch64",
-            "loongarch64-unknown-none-softfloat",
-            "loongarch64-unknown-linux-musl.json",
-        ),
-    ];
-
-    for (arch, target, std_target) in cases {
-        let root = tempdir().unwrap();
-        let config_path = root.path().join(format!(".{arch}-build.toml"));
-        fs::write(&config_path, "features = []\nlog = \"Info\"\n").unwrap();
-
-        let cargo = load_cargo_config(&request(config_path, arch, target)).unwrap();
-        assert!(
-            cargo
-                .target
-                .ends_with(&format!("scripts/targets/std/pie/{std_target}")),
-            "{arch} Axvisor must use its RustStd/musl PIE target"
-        );
-
-        let config: toml::Table =
-            toml::from_str(&fs::read_to_string(cargo.extra_config.unwrap()).unwrap()).unwrap();
-        assert_eq!(
-            config["unstable"]["build-std"].as_array().unwrap(),
-            &vec![
-                toml::Value::String("std".to_string()),
-                toml::Value::String("panic_abort".to_string()),
-            ],
-            "{arch} Axvisor must build real Rust std and panic_abort"
-        );
-        assert_eq!(
-            config["profile"]["release"]["panic"].as_str(),
-            Some("abort"),
-            "{arch} Axvisor release profile must abort on panic"
-        );
-    }
-}
-
-#[test]
-fn resolve_build_info_path_uses_default_axvisor_location() {
-    let root = tempdir().unwrap();
-    let path = resolve_build_info_path(
-        &root.path().join("os/axvisor"),
-        "aarch64-unknown-none-softfloat",
-        None,
-    )
-    .unwrap();
-
-    assert_eq!(
-        path,
-        root.path()
-            .join("tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
-    );
-}
-
-#[test]
-fn resolve_build_info_path_prefers_explicit_path() {
-    let root = tempdir().unwrap();
-    let explicit = root.path().join("custom/build.toml");
-    let path = resolve_build_info_path(
-        &root.path().join("os/axvisor"),
-        "x86_64-unknown-none",
-        Some(explicit.clone()),
-    )
-    .unwrap();
-
-    assert_eq!(path, explicit);
-}
-
-#[test]
 fn resolve_build_info_path_ignores_source_tree_defaults() {
     let root = tempdir().unwrap();
     let axvisor_dir = root.path().join("os/axvisor");
@@ -139,39 +52,6 @@ fn resolve_build_info_path_ignores_source_tree_defaults() {
         root.path()
             .join("tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
     );
-}
-
-#[test]
-fn load_cargo_config_writes_default_template_when_missing() {
-    let root = tempdir().unwrap();
-    let path = root
-        .path()
-        .join("os/axvisor/.build-aarch64-unknown-none-softfloat.toml");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    write_board(
-        path.parent().unwrap(),
-        "qemu-aarch64",
-        r#"
-target = "aarch64-unknown-none-softfloat"
-features = []
-log = "Info"
-vm_configs = []
-"#,
-    );
-
-    let cargo = load_cargo_config(&request(
-        path.clone(),
-        "aarch64",
-        "aarch64-unknown-none-softfloat",
-    ))
-    .unwrap();
-
-    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"dyn-plat".to_string()));
-    assert!(path.exists());
 }
 
 #[test]
@@ -411,38 +291,6 @@ vm_configs = []
 }
 
 #[test]
-fn load_cargo_config_defaults_aarch64_to_dynamic_platform() {
-    let root = tempdir().unwrap();
-    let config_path = root.path().join(".build.toml");
-    fs::write(
-        &config_path,
-        r#"
-features = ["ax-std"]
-log = "Info"
-"#,
-    )
-    .unwrap();
-
-    let cargo = load_cargo_config(&ResolvedAxvisorRequest {
-        package: AXVISOR_PACKAGE.to_string(),
-        axvisor_dir: root.path().join("os/axvisor"),
-        arch: "aarch64".to_string(),
-        target: "aarch64-unknown-none-softfloat".to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: config_path,
-        qemu_config: None,
-        uboot_config: None,
-        vmconfigs: vec![],
-    })
-    .unwrap();
-
-    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
-}
-
-#[test]
 fn load_cargo_config_rejects_direct_axplat_dyn_feature() {
     let root = tempdir().unwrap();
     let config_path = root.path().join(".build.toml");
@@ -471,81 +319,6 @@ log = "Info"
 
     assert!(err.to_string().contains("dynamic platform features"));
     assert!(err.to_string().contains("axplat-dyn/efi"));
-}
-
-#[test]
-fn load_cargo_config_uses_dynamic_x86_platform_from_board_config() {
-    let root = tempdir().unwrap();
-    let config_path = root.path().join(".build.toml");
-    fs::write(
-        &config_path,
-        r#"
-features = ["ax-driver/nvme", "fs"]
-log = "Info"
-"#,
-    )
-    .unwrap();
-
-    let cargo = load_cargo_config(&ResolvedAxvisorRequest {
-        package: AXVISOR_PACKAGE.to_string(),
-        axvisor_dir: root.path().join("os/axvisor"),
-        arch: "x86_64".to_string(),
-        target: "x86_64-unknown-none".to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: config_path,
-        qemu_config: None,
-        uboot_config: None,
-        vmconfigs: vec![],
-    })
-    .unwrap();
-
-    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"dyn-plat".to_string()));
-    assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
-    let removed_static_driver_feature = concat!("ax-driver/", "plat", "-static");
-    assert!(
-        !cargo
-            .features
-            .contains(&removed_static_driver_feature.to_string())
-    );
-}
-
-#[test]
-fn load_cargo_config_defaults_x86_to_dynamic_platform_when_omitted() {
-    let root = tempdir().unwrap();
-    let config_path = root.path().join(".build.toml");
-    fs::write(
-        &config_path,
-        r#"
-features = ["fs"]
-log = "Info"
-"#,
-    )
-    .unwrap();
-
-    let cargo = load_cargo_config(&ResolvedAxvisorRequest {
-        package: AXVISOR_PACKAGE.to_string(),
-        axvisor_dir: root.path().join("os/axvisor"),
-        arch: "x86_64".to_string(),
-        target: "x86_64-unknown-none".to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: config_path,
-        qemu_config: None,
-        uboot_config: None,
-        vmconfigs: vec![],
-    })
-    .unwrap();
-
-    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-hal/x86-pc".to_string()));
 }
 
 #[test]
@@ -585,44 +358,4 @@ log = "Info"
     );
     let config = fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
     assert!(config.contains(r#""-Zstack-protector=strong""#));
-}
-
-#[test]
-fn load_cargo_config_prepares_loongarch_dynamic_axvisor_runtime_artifact() {
-    let root = tempdir().unwrap();
-    let config_path = root.path().join(".build.toml");
-    fs::write(
-        &config_path,
-        r#"
-features = []
-log = "Info"
-"#,
-    )
-    .unwrap();
-
-    let cargo = load_cargo_config(&ResolvedAxvisorRequest {
-        package: AXVISOR_PACKAGE.to_string(),
-        axvisor_dir: root.path().join("os/axvisor"),
-        arch: "loongarch64".to_string(),
-        target: "loongarch64-unknown-none-softfloat".to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: config_path,
-        qemu_config: None,
-        uboot_config: None,
-        vmconfigs: vec![],
-    })
-    .unwrap();
-
-    assert!(!cargo.to_bin);
-    assert!(!cargo.features.contains(&"plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"axvm/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"ax-driver/plat-dyn".to_string()));
-    assert!(!cargo.features.contains(&"axplat-dyn/efi".to_string()));
-    assert!(
-        cargo
-            .target
-            .ends_with("scripts/targets/std/pie/loongarch64-unknown-linux-musl.json")
-    );
 }

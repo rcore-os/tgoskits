@@ -64,7 +64,11 @@ impl Pollable for BpfProg {
         axpoll::IoEvents::empty()
     }
 
-    fn register(&self, _context: &mut core::task::Context<'_>, _events: axpoll::IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: axpoll::IoEvents,
+    ) {
         // No poll semantics on bpf prog fds.
     }
 }

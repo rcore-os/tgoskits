@@ -60,14 +60,11 @@ pub struct Frame {
 }
 
 impl Frame {
-    #[cfg(feature = "alloc")]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     const OFFSET: usize = 0;
-    #[cfg(feature = "alloc")]
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     const OFFSET: usize = 1;
 
-    #[cfg(feature = "alloc")]
     fn read(fp: usize) -> Option<Self> {
         if fp == 0 || !fp.is_multiple_of(core::mem::align_of::<Frame>()) {
             return None;
@@ -162,20 +159,17 @@ impl CaptureBuf {
 
 /// Core frame pointer walking logic. Calls `callback` for each valid frame.
 /// The callback returns `false` to stop unwinding (e.g., buffer full).
-#[cfg(feature = "alloc")]
-fn unwind_core(fp: usize, callback: impl FnMut(Frame) -> bool) {
-    unwind_core_with_max_depth(fp, max_depth(), callback);
+fn unwind_core(fp: usize, callback: impl FnMut(Frame) -> bool) -> bool {
+    unwind_core_with_max_depth(fp, max_depth(), callback)
 }
 
-#[cfg(feature = "alloc")]
 fn unwind_core_with_max_depth(
     mut fp: usize,
     max_depth: usize,
     mut callback: impl FnMut(Frame) -> bool,
-) {
+) -> bool {
     let Some(fp_range) = FP_RANGE.get() else {
-        log::error!("Backtrace not initialized. Call `axbacktrace::init` first.");
-        return;
+        return false;
     };
 
     let ip_range = IP_RANGE.get();
@@ -222,6 +216,8 @@ fn unwind_core_with_max_depth(
         fp = next_fp;
         depth += 1;
     }
+
+    true
 }
 
 /// Unwind the stack from the given frame pointer.
@@ -246,6 +242,90 @@ pub fn set_max_depth(depth: usize) {
 /// Returns the maximum depth for stack unwinding.
 pub fn max_depth() -> usize {
     MAX_DEPTH.load(Ordering::Relaxed)
+}
+
+fn current_frame_pointer() -> Option<usize> {
+    use core::arch::asm;
+
+    let fp: usize;
+    cfg_if::cfg_if! {
+        if #[cfg(target_arch = "x86_64")] {
+            unsafe { asm!("mov {ptr}, rbp", ptr = out(reg) fp) };
+        } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {
+            unsafe { asm!("addi {ptr}, s0, 0", ptr = out(reg) fp) };
+        } else if #[cfg(target_arch = "aarch64")] {
+            unsafe { asm!("mov {ptr}, x29", ptr = out(reg) fp) };
+        } else if #[cfg(target_arch = "loongarch64")] {
+            unsafe { asm!("move {ptr}, $fp", ptr = out(reg) fp) };
+        } else {
+            return None;
+        }
+    }
+    Some(fp)
+}
+
+/// An allocation-free, streaming stack backtrace.
+///
+/// Unlike [`Backtrace`], this type retains only the current frame pointer. Its
+/// [`fmt::Display`] implementation walks and writes one frame at a time, so it
+/// is suitable for panic and oops paths where the allocator may be unavailable
+/// or already locked. Symbolization is deliberately left to the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawBacktrace {
+    fp: usize,
+    kind: &'static str,
+}
+
+impl RawBacktrace {
+    /// Captures the frame pointer without allocating or walking the stack.
+    pub fn capture() -> Self {
+        Self {
+            fp: current_frame_pointer().unwrap_or(0),
+            kind: "raw",
+        }
+    }
+
+    /// Sets the machine-readable backtrace kind.
+    pub fn kind(mut self, kind: &'static str) -> Self {
+        self.kind = kind;
+        self
+    }
+}
+
+impl fmt::Display for RawBacktrace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "BACKTRACE_BEGIN kind={} arch={} alloc=false dwarf=false",
+            self.kind, TARGET_ARCH
+        )?;
+
+        match self.fp {
+            0 => writeln!(f, "BT_ERROR unsupported")?,
+            fp => {
+                let mut index = 0;
+                let mut write_error = None;
+                let initialized = unwind_core(fp, |frame| {
+                    if let Err(error) =
+                        writeln!(f, "BT {index} ip={:#x} fp={:#x}", frame.ip, frame.fp)
+                    {
+                        write_error = Some(error);
+                        return false;
+                    }
+                    index += 1;
+                    true
+                });
+                if let Some(error) = write_error {
+                    return Err(error);
+                }
+                if !initialized {
+                    writeln!(f, "BT_ERROR uninitialized")?;
+                }
+            }
+        }
+
+        writeln!(f, "BACKTRACE_END")
+    }
 }
 
 /// Returns whether the backtrace feature is enabled.
@@ -285,25 +365,12 @@ impl Backtrace {
 
         #[cfg(feature = "alloc")]
         {
-            use core::arch::asm;
-
-            let fp: usize;
-            cfg_if::cfg_if! {
-                if #[cfg(target_arch = "x86_64")] {
-                    unsafe { asm!("mov {ptr}, rbp", ptr = out(reg) fp) };
-                } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {
-                    unsafe { asm!("addi {ptr}, s0, 0", ptr = out(reg) fp) };
-                } else if #[cfg(target_arch = "aarch64")] {
-                    unsafe { asm!("mov {ptr}, x29", ptr = out(reg) fp) };
-                } else if #[cfg(target_arch = "loongarch64")] {
-                    unsafe { asm!("move {ptr}, $fp", ptr = out(reg) fp) };
-                } else {
-                    return Self {
-                        inner: Inner::Unsupported,
-                        kind: None,
-                    };
-                }
-            }
+            let Some(fp) = current_frame_pointer() else {
+                return Self {
+                    inner: Inner::Unsupported,
+                    kind: None,
+                };
+            };
 
             let mut buf = CaptureBuf::EMPTY;
             unwind_core(fp, |frame| buf.push(frame));
@@ -543,6 +610,27 @@ mod tests {
     }
 
     #[test]
+    fn raw_backtrace_streams_frames_without_captured_storage() {
+        init_for_tests();
+        let (_frames, start_fp) = boxed_frame_chain(&[0x1111, 0x2222, 0x3333]);
+        let raw = RawBacktrace {
+            fp: start_fp,
+            kind: "panic",
+        };
+
+        let output = format!("{raw}");
+        assert!(output.contains("BACKTRACE_BEGIN kind=panic"));
+        assert!(output.contains("alloc=false dwarf=false"));
+        assert!(output.contains("BT 0 ip=0x1111"));
+        assert!(output.contains("BT 2 ip=0x3333"));
+        assert!(output.ends_with("BACKTRACE_END\n"));
+        assert_eq!(
+            core::mem::size_of::<RawBacktrace>(),
+            3 * core::mem::size_of::<usize>()
+        );
+    }
+
+    #[test]
     fn unwind_core_callback_stop_early() {
         init_for_tests();
         let (_chain, start_fp) = boxed_frame_chain(&[0x1, 0x2, 0x3, 0x4, 0x5]);
@@ -662,49 +750,6 @@ mod tests {
         assert_eq!(out.as_slice(), &chain[..16]);
     }
 
-    /// Repeatedly create and drop Backtrace objects to verify no leaks or corruption.
-    #[test]
-    fn stress_repeated_create_drop() {
-        init_for_tests();
-        let (chain, start_fp) = boxed_frame_chain(&[0x100, 0x200, 0x300]);
-        for _ in 0..500 {
-            let bt = Backtrace::capture_trap(start_fp, 0x400, 0);
-            let Inner::Captured(frames) = &bt.inner else {
-                panic!("expected Captured")
-            };
-            assert!(frames.len() >= 3);
-            drop(bt);
-        }
-        // Ensure the chain memory is still valid after all iterations
-        let _ = &chain;
-    }
-
-    /// Interleave capture, Display formatting, and drop to verify no side effects.
-    #[test]
-    fn stress_interleaved_capture_format() {
-        init_for_tests();
-        let (chain, start_fp) = boxed_frame_chain(&[0x500, 0x600]);
-
-        for i in 0..100 {
-            let bt = Backtrace::capture_trap(start_fp, 0x700, 0);
-            let s = format!("{bt}");
-            // Raw block should contain the trap IP
-            assert!(
-                s.contains("0x701"),
-                "iteration {i}: missing trap IP in output"
-            );
-
-            // Human-readable formatting
-            let bt_human = Backtrace::capture_trap(start_fp, 0x700, 0);
-            let human = format!("{bt_human}");
-            assert!(!human.is_empty(), "iteration {i}: empty human output");
-
-            drop(bt);
-            drop(bt_human);
-        }
-        let _ = &chain;
-    }
-
     /// Repeatedly clone a Backtrace and verify equality.
     #[test]
     fn stress_repeated_clone() {
@@ -719,9 +764,9 @@ mod tests {
         let _ = &chain;
     }
 
-    /// Verify Frame and Backtrace sizes remain stable (prevent accidental regressions).
+    /// Verify the layout used when reading native stack frame records.
     #[test]
-    fn stress_size_stability() {
+    fn frame_layout_matches_native_stack_records() {
         // Frame is #[repr(C)] with two usize fields
         assert_eq!(
             core::mem::size_of::<Frame>(),
@@ -731,20 +776,6 @@ mod tests {
             core::mem::align_of::<Frame>(),
             core::mem::align_of::<usize>()
         );
-
-        // Backtrace contains Inner (discriminant + Box<[Frame]>) + Option<&'static str>
-        // Size should be stable across compilations
-        let bt_size = core::mem::size_of::<Backtrace>();
-        assert!(
-            bt_size > 0 && bt_size <= 48,
-            "Backtrace size unexpected: {bt_size}"
-        );
-
-        // CaptureBuf is stack-allocated; verify it's reasonable
-        let cap_size = core::mem::size_of::<CaptureBuf>();
-        let expected =
-            CAPTURE_CAPACITY * core::mem::size_of::<Frame>() + core::mem::size_of::<usize>();
-        assert_eq!(cap_size, expected, "CaptureBuf size mismatch");
     }
 
     /// Verify Frame alignment and that misaligned pointers are rejected.

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/rcore-os/tgoskits/compare/sg2002-tpu-v0.4.0...sg2002-tpu-v0.4.1) - 2026-09-09
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
 ## [0.4.0](https://github.com/rcore-os/tgoskits/compare/sg2002-tpu-v0.3.10...sg2002-tpu-v0.4.0) - 2026-08-20
 
 ### Added

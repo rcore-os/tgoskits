@@ -23,7 +23,6 @@ pub(super) struct SerialWorker {
     shared: Arc<RuntimeShared>,
     irq_rx: SpscConsumer<RxSample>,
     rx_output: SpscProducer<RxItem>,
-    log_subscription: SpscProducer<LogRecord>,
     pending_rx: Option<PendingRx>,
     port_rx_ready: bool,
     pending_frame: Option<TxFrameCursor>,
@@ -42,14 +41,12 @@ impl SerialWorker {
         shared: Arc<RuntimeShared>,
         irq_rx: SpscConsumer<RxSample>,
         rx_output: SpscProducer<RxItem>,
-        log_subscription: SpscProducer<LogRecord>,
     ) -> Self {
         let log_reader = shared.log_mailbox.reader();
         Self {
             shared,
             irq_rx,
             rx_output,
-            log_subscription,
             pending_rx: None,
             port_rx_ready: false,
             pending_frame: None,
@@ -66,8 +63,24 @@ impl SerialWorker {
 
     pub(super) fn run(mut self) {
         loop {
-            self.shared.bridge.notify.drain();
-            let force_service = self.process_control_commands();
+            // IRQ/atomic producers only ring the worker doorbell. Wake the
+            // subscription consumer from task context after releasing its gate.
+            if self
+                .shared
+                .log_subscription_active
+                .load(core::sync::atomic::Ordering::Acquire)
+            {
+                self.shared.console_progress.notify_all();
+            }
+            let register_retry = self.shared.bridge.take_register_retry();
+            if register_retry {
+                // The IRQ endpoint could not acquire the register gate, so the
+                // worker must poll the ordinary port and restore RX masking.
+                // TX submissions remain their own source of truth, while
+                // update_tx_idle below also recovers a missed TX-empty edge.
+                self.pending_rearm |= SerialEventSet::RX;
+            }
+            let force_service = self.process_control_commands() || register_retry;
             let mut events = core::mem::take(&mut self.immediate_events);
 
             if let Some(event) = self.shared.bridge.latch.take() {
@@ -103,9 +116,11 @@ impl SerialWorker {
                 }
                 let outcome = self.service_rx(path);
                 rx_blocked = outcome.blocked;
-                if outcome.budget_exhausted {
-                    ax_task::yield_now();
-                } else if !outcome.blocked && self.shared.bridge.latch.has_pending() {
+                if worker_budget_requires_yield(outcome.budget_exhausted) {
+                    yield_after_worker_budget();
+                    continue;
+                }
+                if !outcome.blocked && self.shared.bridge.latch.has_pending() {
                     continue;
                 }
             }
@@ -125,8 +140,8 @@ impl SerialWorker {
             }
 
             let drain_waiting_for_hardware = self.progress_tx_drain();
-            if budget_exhausted {
-                ax_task::yield_now();
+            if worker_budget_requires_yield(budget_exhausted) {
+                yield_after_worker_budget();
                 continue;
             }
             if self.port_rx_ready {
@@ -156,11 +171,11 @@ impl SerialWorker {
             }
 
             if drain_waiting_for_hardware {
-                ax_task::yield_now();
+                yield_after_worker_budget();
             } else if self.shared.polling {
-                ax_task::sleep(Duration::from_millis(1));
+                crate::task::thread::current::sleep(Duration::from_millis(1));
             } else {
-                self.shared.bridge.notify.wait();
+                self.shared.bridge.wait();
             }
         }
     }
@@ -298,7 +313,7 @@ impl SerialWorker {
             self.shared.rx_source.wake(IoEvents::ERR | IoEvents::HUP);
             self.shared.tx_source.wake(IoEvents::ERR | IoEvents::HUP);
         }
-        self.shared.tx_progress.notify_all(true);
+        self.shared.tx_progress.notify_all();
     }
 
     fn discard_tx(&mut self) -> RuntimeResult {
@@ -403,8 +418,8 @@ impl SerialWorker {
         }
 
         if published {
-            self.shared.rx_progress.notify_all(true);
-            self.shared.console_progress.notify_all(true);
+            self.shared.rx_progress.notify_all();
+            self.shared.console_progress.notify_all();
             // SAFETY: the worker Release-publishes ring entries before waking
             // task-context waiters.
             unsafe { self.shared.rx_source.wake(IoEvents::IN) };
@@ -533,6 +548,8 @@ impl SerialWorker {
         ) {
             return false;
         }
+        let shared = self.shared.clone();
+        let mut route = shared.log_subscription_gate.lock_irqsave();
         let Some(consumed) = self.log_reader.take(self.shared.index) else {
             return false;
         };
@@ -546,18 +563,14 @@ impl SerialWorker {
             consumed.record.kind() == LogRecordKind::Log,
             consumed.record.is_truncated(),
         );
-        let _route = self.shared.log_subscription_gate.lock_irqsave();
         let subscription_active = self
             .shared
             .log_subscription_active
             .load(core::sync::atomic::Ordering::Acquire);
-        match route_log_subscription(
-            subscription_active,
-            &mut self.log_subscription,
-            consumed.record,
-        ) {
+        match route_log_subscription(subscription_active, &mut route, consumed.record) {
             Ok(None) => {
-                self.shared.console_progress.notify_all(true);
+                drop(route);
+                self.shared.console_progress.notify_all();
                 return true;
             }
             Err(source_len) => {
@@ -569,7 +582,8 @@ impl SerialWorker {
                     .fetch_add(source_len, core::sync::atomic::Ordering::Relaxed);
                 self.shared.stats.add_log_dropped_records(1);
                 self.shared.stats.add_log_dropped(source_len);
-                self.shared.console_progress.notify_all(true);
+                drop(route);
+                self.shared.console_progress.notify_all();
                 return true;
             }
             Ok(Some(record)) => self.pending_log = Some(LogRecordCursor::new(record)),
@@ -611,7 +625,7 @@ impl SerialWorker {
     fn tx_bytes_pending(&self) -> bool {
         self.pending_frame.is_some()
             || self.pending_log.is_some()
-            || self.shared.ingress.has_pending()
+            || self.shared.ingress.drain_pending()
     }
 
     fn tx_work_pending(&self) -> bool {
@@ -691,17 +705,13 @@ const fn log_extraction_allowed(active_barriers: usize, pending_control: bool) -
 /// and `Err(source_len)` reports one whole-record overflow.
 fn route_log_subscription(
     active: bool,
-    subscription: &mut SpscProducer<LogRecord>,
+    subscription: &mut super::ordered_output::OrderedOutput,
     record: LogRecord,
 ) -> Result<Option<LogRecord>, usize> {
     if !active {
         return Ok(Some(record));
     }
-    let source_len = record.source_len();
-    subscription
-        .push(record)
-        .map(|()| None)
-        .map_err(|_| source_len)
+    subscription.push(record).map(|()| None)
 }
 
 fn discard_rx_sources(
@@ -794,6 +804,16 @@ struct RxServiceOutcome {
 struct TxServiceOutcome {
     blocked: bool,
     budget_exhausted: bool,
+}
+
+const fn worker_budget_requires_yield(budget_exhausted: bool) -> bool {
+    budget_exhausted
+}
+
+fn yield_after_worker_budget() {
+    crate::task::thread::current::yield_current_cpu().unwrap_or_else(|error| {
+        panic!("serial worker budget yield must run in schedulable task context: {error:?}")
+    });
 }
 
 fn rearm_drained_rx(
@@ -1129,8 +1149,14 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_serial_worker_budget_requires_a_scheduler_yield() {
+        assert!(worker_budget_requires_yield(true));
+        assert!(!worker_budget_requires_yield(false));
+    }
+
+    #[test]
     fn log_subscription_switches_only_complete_records() {
-        let (mut producer, mut consumer) = super::super::spsc::channel(2);
+        let mut producer = super::super::ordered_output::OrderedOutput::new(2);
         let first = LogRecord::format(
             0,
             0,
@@ -1155,12 +1181,12 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(consumer.pop().unwrap().bytes(), b":host\r\n");
+        assert_eq!(producer.pop().unwrap().bytes(), b":host\r\n");
     }
 
     #[test]
     fn full_log_subscription_drops_one_whole_record() {
-        let (mut producer, _consumer) = super::super::spsc::channel(1);
+        let mut producer = super::super::ordered_output::OrderedOutput::new(1);
         let record = |sequence, text| {
             LogRecord::format(
                 0,
@@ -1183,3 +1209,6 @@ mod tests {
         assert_eq!(overflow, "second".len());
     }
 }
+
+#[cfg(test)]
+mod handoff_tests;

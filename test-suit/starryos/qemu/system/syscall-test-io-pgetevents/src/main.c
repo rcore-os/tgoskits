@@ -38,9 +38,52 @@ struct aio_sigset_arg {
     size_t sigsetsize;
 };
 
+static void test_aio_read_completion_after_fd_close(void)
+{
+    static char buffer[8];
+    const char expected[8] = "aio-data";
+    int fd = (int)syscall(SYS_memfd_create, "aio-read-owner", 0);
+    CHECK(fd >= 0, "create AIO read source");
+    if (fd < 0)
+        return;
+    CHECK_RET(write(fd, expected, sizeof(expected)), sizeof(expected),
+              "initialize AIO read source");
+    aio_context_t ctx = 0;
+    CHECK_RET(syscall(SYS_io_setup, 4, &ctx), 0, "create read completion context");
+    if (ctx == 0) {
+        close(fd);
+        return;
+    }
+    memset(buffer, 0, sizeof(buffer));
+    struct iocb cb = {0};
+    cb.aio_data = 0x3344;
+    cb.aio_lio_opcode = 0; /* IOCB_CMD_PREAD */
+    cb.aio_fildes = (uint32_t)fd;
+    cb.aio_buf = (uint64_t)(uintptr_t)buffer;
+    cb.aio_nbytes = sizeof(buffer);
+    struct iocb *requests[] = {&cb};
+    long submitted = syscall(SYS_io_submit, ctx, 1, requests);
+    CHECK(submitted == 1, "submit real AIO read");
+    CHECK_RET(close(fd), 0, "close fd after request owns the source");
+    if (submitted == 1) {
+        struct io_event event = {0};
+        struct timespec timeout = {1, 0};
+        CHECK_RET(syscall(SYS_io_getevents, ctx, 1, 1, &event, &timeout), 1,
+                  "io_getevents returns real read completion");
+        CHECK(event.data == cb.aio_data && event.obj == (uint64_t)(uintptr_t)&cb,
+              "completion retains request identity");
+        CHECK(event.res == sizeof(buffer) && event.res2 == 0,
+              "completion reports exact byte count");
+        CHECK(memcmp(buffer, expected, sizeof(buffer)) == 0,
+              "request wrote the caller's address space after fd close");
+    }
+    CHECK_RET(syscall(SYS_io_destroy, ctx), 0, "retire completed read context");
+}
+
 int main(void)
 {
     TEST_START("io_pgetevents syscall semantics");
+    test_aio_read_completion_after_fd_close();
 
     aio_context_t ctx = 0;
     CHECK_RET(syscall(SYS_io_setup, 4, &ctx), 0,

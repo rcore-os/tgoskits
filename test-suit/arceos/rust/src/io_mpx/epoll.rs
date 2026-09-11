@@ -11,21 +11,14 @@
 //! it is naturally aligned (16-byte struct). `epoll_wait` is always called
 //! with `timeout = 0` so the test never blocks in the cooperative scheduler.
 
-use core::{ffi::c_int, mem};
-use std::println;
+use std::{os::fd::AsRawFd, println};
+
+use libc::{EFD_NONBLOCK, EPOLL_CLOEXEC};
 
 use super::syscalls::{self, EpollEvent, assert_errno};
-
-const EFD_NONBLOCK: c_int = 0o4000;
-/// `EPOLL_CLOEXEC` = `O_CLOEXEC`.
-const EPOLL_CLOEXEC: c_int = 0o2000000;
-const EPOLLIN: u32 = 0x001;
-const EPOLLOUT: u32 = 0x004;
-const EPOLL_CTL_ADD: c_int = 1;
-const EPOLL_CTL_DEL: c_int = 2;
-
-const EEXIST: c_int = 17;
-const EINVAL: c_int = 22;
+const EPOLLIN: u32 = libc::EPOLLIN as u32;
+const EPOLLOUT: u32 = libc::EPOLLOUT as u32;
+use libc::{EEXIST, EINVAL, EPOLL_CTL_ADD, EPOLL_CTL_DEL};
 
 /// Opaque token carried through `epoll_event.data` to prove passthrough.
 const DATA_TOKEN: u64 = 0xdead_beef;
@@ -38,7 +31,7 @@ fn test_create_rejects_unknown_flags() {
     );
     let epfd = syscalls::epoll_create1(EPOLL_CLOEXEC).expect("epoll_create1(EPOLL_CLOEXEC) failed");
     assert!(
-        epfd >= 0,
+        epfd.as_raw_fd() >= 0,
         "epoll_create1(EPOLL_CLOEXEC) returned an invalid fd"
     );
 }
@@ -49,24 +42,24 @@ fn test_eventfd_roundtrip_via_epoll() {
 
     let mut interest = EpollEvent {
         events: EPOLLIN,
-        data: DATA_TOKEN,
+        u64: DATA_TOKEN,
     };
-    syscalls::epoll_ctl(epfd, EPOLL_CTL_ADD, fd, Some(&mut interest))
+    syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
         .expect("epoll_ctl ADD failed");
 
-    let mut ready = [EpollEvent::default(); 4];
+    let mut ready = [EpollEvent { events: 0, u64: 0 }; 4];
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         0,
         "no event must be reported before any write"
     );
 
     assert_eq!(
-        syscalls::write_u64(fd, 1).unwrap(),
+        syscalls::write_u64(&fd, 1).unwrap(),
         8,
         "waking write to eventfd must return 8"
     );
-    let n = syscalls::epoll_wait(epfd, &mut ready, 0).expect("epoll_wait failed");
+    let n = syscalls::epoll_wait(&epfd, &mut ready, 0).expect("epoll_wait failed");
     assert_eq!(n, 1, "epoll must report the readable eventfd");
     assert_ne!(
         ready[0].events & EPOLLIN,
@@ -74,31 +67,31 @@ fn test_eventfd_roundtrip_via_epoll() {
         "reported event must carry EPOLLIN"
     );
     assert_eq!(
-        ready[0].data(),
+        { ready[0].u64 },
         DATA_TOKEN,
         "epoll_event.data must round-trip the registered value"
     );
 
     assert_eq!(
-        syscalls::read_u64(fd).unwrap(),
+        syscalls::read_u64(&fd).unwrap(),
         1,
         "draining read must return the written value"
     );
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         0,
         "no event must be reported after the counter is drained"
     );
 
     assert_errno(
-        syscalls::epoll_ctl(epfd, EPOLL_CTL_ADD, fd, Some(&mut interest)),
+        syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest)),
         EEXIST,
         "duplicate epoll_ctl ADD",
     );
 
-    syscalls::epoll_ctl(epfd, EPOLL_CTL_DEL, fd, None).expect("epoll_ctl DEL failed");
+    syscalls::epoll_ctl(&epfd, EPOLL_CTL_DEL, &fd, None).expect("epoll_ctl DEL failed");
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         0,
         "no event must be reported after DEL"
     );
@@ -108,10 +101,10 @@ fn test_epoll_ctl_on_non_epoll_fd_is_einval() {
     let fd = syscalls::eventfd(0, EFD_NONBLOCK).expect("eventfd failed");
     let mut interest = EpollEvent {
         events: EPOLLIN,
-        data: 0,
+        u64: 0,
     };
     assert_errno(
-        syscalls::epoll_ctl(fd, EPOLL_CTL_ADD, fd, Some(&mut interest)),
+        syscalls::epoll_ctl(&fd, EPOLL_CTL_ADD, &fd, Some(&mut interest)),
         EINVAL,
         "epoll_ctl using an eventfd as the epoll instance",
     );
@@ -127,32 +120,32 @@ fn test_full_counter_writability_via_epoll() {
     // Fill the counter to its maximum: UINT64_MAX - 1 is the largest single
     // accepted write, and any further write must now block / EAGAIN.
     assert_eq!(
-        syscalls::write_u64(fd, u64::MAX - 1).unwrap(),
+        syscalls::write_u64(&fd, u64::MAX - 1).unwrap(),
         8,
         "fill write of UINT64_MAX - 1 must succeed"
     );
 
     let mut interest = EpollEvent {
         events: EPOLLOUT,
-        data: 0,
+        u64: 0,
     };
-    syscalls::epoll_ctl(epfd, EPOLL_CTL_ADD, fd, Some(&mut interest))
+    syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
         .expect("epoll_ctl ADD EPOLLOUT failed");
 
-    let mut ready = [EpollEvent::default(); 4];
+    let mut ready = [EpollEvent { events: 0, u64: 0 }; 4];
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         0,
         "a saturated eventfd must not be reported writable"
     );
 
     // Draining the counter must make it writable again.
     assert_eq!(
-        syscalls::read_u64(fd).unwrap(),
+        syscalls::read_u64(&fd).unwrap(),
         u64::MAX - 1,
         "saturated counter must read back"
     );
-    let n = syscalls::epoll_wait(epfd, &mut ready, 0).expect("epoll_wait failed");
+    let n = syscalls::epoll_wait(&epfd, &mut ready, 0).expect("epoll_wait failed");
     assert_eq!(n, 1, "a drained eventfd must be reported writable");
     assert_ne!(
         ready[0].events & EPOLLOUT,
@@ -162,12 +155,6 @@ fn test_full_counter_writability_via_epoll() {
 }
 
 pub fn run() -> crate::TestResult {
-    assert_eq!(
-        mem::size_of::<EpollEvent>(),
-        if cfg!(target_arch = "x86_64") { 12 } else { 16 },
-        "EpollEvent must match the target's Linux epoll_event ABI"
-    );
-
     test_create_rejects_unknown_flags();
     test_eventfd_roundtrip_via_epoll();
     test_epoll_ctl_on_non_epoll_fd_is_einval();

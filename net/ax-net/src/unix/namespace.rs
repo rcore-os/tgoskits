@@ -13,6 +13,8 @@
 
 use alloc::{boxed::Box, sync::Arc};
 
+use ax_lazyinit::OnceLock;
+
 use super::BindSlot;
 use crate::{NetError, NetResult};
 
@@ -31,7 +33,7 @@ pub trait UnixNamespace: Send + Sync {
     fn unbind(&self, path: &str) -> NetResult<()>;
 }
 
-static UNIX_NS: ax_lazyinit::OnceLock<Box<dyn UnixNamespace>> = ax_lazyinit::OnceLock::new();
+static UNIX_NS: OnceLock<Box<dyn UnixNamespace>> = OnceLock::new();
 
 /// Register Unix namespace provider.
 ///

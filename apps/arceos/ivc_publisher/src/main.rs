@@ -10,7 +10,7 @@ fn main() {
     publisher::run();
 }
 
-#[cfg(any(feature = "arceos", test))]
+#[cfg(feature = "arceos")]
 mod demo_config {
     pub const CHANNEL_KEY: usize = 0x4956_4301;
     pub const CHANNEL_SIZE: usize = 0x1_0000;
@@ -230,19 +230,5 @@ mod publisher {
             // the shared region before subscribers can use the phase-2 rings.
             Some(&mut *(vaddr.as_mut_ptr() as *mut IvcRegion))
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn qemu_ivc_notify_irq_matches_guest_config() {
-        assert_eq!(demo_config::CHANNEL_KEY, 0x4956_4301);
-        assert_eq!(demo_config::CHANNEL_SIZE, 0x1_0000);
-        assert_eq!(demo_config::NOTIFY_IRQ, Some(160));
-        assert_eq!(demo_config::PUBLISHER_VM_ID, 1);
-        assert_eq!(demo_config::SUBSCRIBER_VM_ID, 2);
     }
 }

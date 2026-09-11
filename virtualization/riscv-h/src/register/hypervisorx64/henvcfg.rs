@@ -62,3 +62,22 @@ impl Henvcfg {
 
 read_csr_as!(Henvcfg, 0x60a);
 write_csr!(0x60a);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stce_bit_is_typed_without_changing_other_environment_bits() {
+        let original = 0x0123_4567_89ab_cdef;
+        let mut value = Henvcfg::from_bits(original);
+
+        value.set_stce(true);
+        assert!(value.stce());
+        assert_eq!(value.bits() & !(1usize << 63), original);
+
+        value.set_stce(false);
+        assert!(!value.stce());
+        assert_eq!(value.bits(), original);
+    }
+}

@@ -93,6 +93,7 @@ pub(crate) fn load_qemu_case_fields_with_write_policy(
         case_dir,
         qemu_config_path,
         test_commands,
+        grouped_command_selection: config.grouped_command_selection,
         host_symbolize_success_regex: config.host_symbolize_success_regex,
         host_http_server: config.host_http_server,
         subcases,
@@ -173,14 +174,9 @@ pub(crate) fn validate_grouped_qemu_commands(
     case: &TestQemuCase,
     suite_name: &str,
 ) -> anyhow::Result<()> {
-    let shell_init_cmd_set = qemu
-        .shell_init_cmd
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty());
-    if shell_init_cmd_set && !case.test_commands.is_empty() {
+    if !qemu.shell_check_steps.is_empty() && !case.test_commands.is_empty() {
         bail!(
-            "{suite_name} grouped qemu case `{}` cannot define both `shell_init_cmd` and \
+            "{suite_name} grouped qemu case `{}` cannot define both `shell_check_steps` and \
              `test_commands`",
             case.qemu_config_path.display()
         );

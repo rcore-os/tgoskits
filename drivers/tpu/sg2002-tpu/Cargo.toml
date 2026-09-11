@@ -1,6 +1,6 @@
 [package]
 name = "sg2002-tpu"
-version = "0.4.0"
+version = "0.4.1"
 edition.workspace = true
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
 license.workspace = true
@@ -14,5 +14,9 @@ ax-sync.workspace = true
 ax-memory-addr = { workspace = true }
 axklib.workspace = true
 dma-api.workspace = true
+bytemuck = { version = "1.24", default-features = false, features = [
+    "derive",
+    "min_const_generics",
+] }
 log = "0.4"
 thiserror.workspace = true

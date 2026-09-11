@@ -11,6 +11,13 @@ pub(crate) use journal::{ReservedJournalHandle, TransactionCredits, TransactionH
 pub use crate::io::BlockIo;
 use crate::{bmalloc::AbsoluteBN, error::Ext4Result, io::WriteFlags};
 
+/// Maximum number of filesystem blocks staged in one temporary write buffer.
+///
+/// The filesystem lock serializes these synchronous paths, so bounding one
+/// request also bounds the allocator pressure added by cache writeback and
+/// journal replay.
+pub(crate) const MAX_BUFFERED_WRITE_BLOCKS: usize = 16;
+
 /// Private filesystem-block I/O used by ext4 and JBD2 after sector mapping.
 pub(crate) trait FilesystemBlockIo {
     fn block_size(&self) -> usize;

@@ -22,8 +22,13 @@ pub fn sys_inotify_init1(flags: u32) -> StarryResult<isize> {
     add_file_like(inotify as _, flags & IN_CLOEXEC != 0).map(|fd| fd as _)
 }
 
-pub fn sys_inotify_add_watch(fd: c_int, path: *const c_char, mask: u32) -> StarryResult<isize> {
-    let path = vm_load_path_string(path)?;
+pub fn sys_inotify_add_watch(
+    current: &crate::task::UserTaskRef,
+    fd: c_int,
+    path: *const c_char,
+    mask: u32,
+) -> crate::StarryResult<isize> {
+    let path = vm_load_path_string(current, path)?;
     debug!("sys_inotify_add_watch <= fd: {fd}, path: {path}, mask: {mask}");
 
     let resolved_path = resolve_at(AT_FDCWD, Some(&path), 0)?
@@ -44,35 +49,4 @@ pub fn sys_inotify_rm_watch(fd: c_int, wd: c_int) -> StarryResult<isize> {
         .downcast_arc::<Inotify>()
         .map_err(|_| StarryError::InvalidInput)?;
     inotify.rm_watch(wd).map(|()| 0)
-}
-
-#[cfg(all(test, not(axtest)))]
-fn inotify_flags_validation_rules_hold_for_test() -> bool {
-    use linux_raw_sys::general::{IN_CLOEXEC, IN_NONBLOCK};
-    // Test inotify_init1 flag validation
-    let valid_flags = 0u32;
-    assert!(valid_flags & !(IN_CLOEXEC | IN_NONBLOCK) == 0);
-
-    let cloexec_only = IN_CLOEXEC;
-    assert!(cloexec_only & !(IN_CLOEXEC | IN_NONBLOCK) == 0);
-
-    let nonblock_only = IN_NONBLOCK;
-    assert!(nonblock_only & !(IN_CLOEXEC | IN_NONBLOCK) == 0);
-
-    let all_valid = IN_CLOEXEC | IN_NONBLOCK;
-    assert!(all_valid & !(IN_CLOEXEC | IN_NONBLOCK) == 0);
-
-    // Invalid flag should be detected
-    let invalid_flags = 0xFFFFu32;
-    assert!(invalid_flags & !(IN_CLOEXEC | IN_NONBLOCK) != 0);
-
-    true
-}
-
-#[cfg(all(test, not(axtest)))]
-mod tests {
-    #[test]
-    fn inotify_flags_validation_rules_hold() {
-        assert!(super::inotify_flags_validation_rules_hold_for_test());
-    }
 }

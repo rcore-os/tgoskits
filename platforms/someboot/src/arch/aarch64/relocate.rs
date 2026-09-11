@@ -1,4 +1,4 @@
-use aarch64_cpu_ext::cache::icache_flush_all;
+use ax_cpu::cache::flush_icache_all;
 
 use crate::{arch::head::_head, consts::VM_LOAD_ADDRESS};
 
@@ -28,7 +28,7 @@ pub fn apply() {
 pub fn reset() {
     unsafe {
         crate::elf::reset(R_AARCH64_RELATIVE);
-        icache_flush_all();
+        flush_icache_all();
     }
 }
 

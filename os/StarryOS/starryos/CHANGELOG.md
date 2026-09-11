@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.33](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.32...starryos-v0.5.33) - 2026-09-09
+
+### Other
+
+- update Cargo.lock dependencies
+
+## [0.5.32](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.31...starryos-v0.5.32) - 2026-09-09
+
+### Added
+
+- feat(StarryOS)：Enhance axivc IVC char devices and improve ioctl handling ([#2214](https://github.com/rcore-os/tgoskits/pull/2214))
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
 ## [0.5.31](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.30...starryos-v0.5.31) - 2026-08-27
 
 ### Other

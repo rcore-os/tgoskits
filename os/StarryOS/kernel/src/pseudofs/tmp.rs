@@ -10,15 +10,14 @@ use core::{
     borrow::Borrow,
     cmp::Ordering,
     sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
-    task::Context,
     time::Duration,
 };
 
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FileNodeOps,
-    FileRangeOperation, Filesystem, FilesystemOps, FsIoEvents, FsPollable, Metadata,
-    MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode, Reference,
-    RenameOptions, StatFs, VfsError, VfsResult, WeakDirEntry, XattrOps, XattrSetMode,
+    FileRangeOperation, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
+    NodePermission, NodeType, PreallocationMode, Reference, RenameOptions, StatFs, VfsError,
+    VfsResult, WeakDirEntry, XattrOps, XattrSetMode,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
@@ -32,14 +31,6 @@ const STATFS_BLOCK_SIZE: u64 = 4096;
 const DEFAULT_TMPFS_SIZE: u64 = 4 * 1024 * 1024 * 1024;
 
 const TMPFS_NESTED_DIR_ENTRIES_SUBCLASS: u32 = 1;
-
-fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
-    IoEvents::from_bits_truncate(events.bits())
-}
-
-fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
-    FsIoEvents::from_bits_truncate(events.bits())
-}
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 struct FileName(Arc<str>);
@@ -605,21 +596,16 @@ impl FileNodeOps for MemoryNode {
         }
     }
 }
-impl FsPollable for MemoryNode {
-    fn poll(&self) -> FsIoEvents {
-        FsIoEvents::IN | FsIoEvents::OUT
-    }
-
-    fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
-}
-
 impl Pollable for MemoryNode {
     fn poll(&self) -> IoEvents {
-        fs_events_to_io(FsPollable::poll(self))
+        IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        FsPollable::register(self, context, io_events_to_fs(events));
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
     }
 }
 

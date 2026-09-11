@@ -9,7 +9,7 @@ use core::fmt::{self, Write};
 
 use ax_lazyinit::OnceLock;
 use ax_sync::Mutex;
-use axpoll::PollSet;
+use axpoll_set::PollSet;
 
 pub use crate::serial::RxItem;
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
     raw_console::RawConsoleInput,
     serial,
     structured_log::{RuntimeLogContext, write_record},
-    sync::SpinLock,
+    task::sync::SpinLock,
 };
 
 static ACTIVATION: OnceLock<ConsoleActivation> = OnceLock::new();
@@ -482,6 +482,14 @@ pub struct ConsoleLogRecord {
 }
 
 impl ConsoleLogRecord {
+    /// Application routing tag for raw output; absent for kernel logs/prints.
+    pub fn output_tag(&self) -> Option<u128> {
+        match self.inner.kind() {
+            serial::LogRecordKind::Output(tag) => Some(tag),
+            _ => None,
+        }
+    }
+
     pub fn bytes(&self) -> &[u8] {
         self.inner.bytes()
     }
@@ -520,6 +528,16 @@ pub struct ConsoleLogSubscription {
 }
 
 impl ConsoleLogSubscription {
+    /// Enqueues raw bytes alongside kernel records in publication order.
+    ///
+    /// `tag` is opaque to the runtime and identifies the application stream and
+    /// its generation. Adjacent writes with the same tag may coalesce. This
+    /// operation allocates nothing and never sleeps; a full queue rejects the
+    /// entire write with `WouldBlock` and accounts it in `dropped()`.
+    pub fn write_output(&self, tag: u128, bytes: &[u8]) -> RuntimeResult {
+        self.inner.write_output(tag, bytes)
+    }
+
     pub fn try_read(&self) -> Option<ConsoleLogRecord> {
         self.inner
             .try_read()

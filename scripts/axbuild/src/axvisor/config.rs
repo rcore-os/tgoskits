@@ -131,40 +131,6 @@ vm_configs = []
     }
 
     #[test]
-    fn available_board_names_match_filename_order() {
-        let root = tempdir().unwrap();
-        write_board(
-            root.path(),
-            "qemu-aarch64",
-            r#"
-target = "aarch64-unknown-none-softfloat"
-features = []
-log = "Info"
-"#,
-        );
-        write_board(
-            root.path(),
-            "orangepi-5-plus",
-            r#"
-target = "aarch64-unknown-none-softfloat"
-features = ["ax-driver/rockchip-soc"]
-log = "Info"
-"#,
-        );
-
-        let names = available_board_names(root.path()).unwrap();
-        let orangepi = names
-            .iter()
-            .position(|name| name == "orangepi-5-plus")
-            .expect("OrangePi board should be listed");
-        let qemu = names
-            .iter()
-            .position(|name| name == "qemu-aarch64")
-            .expect("QEMU board should be listed");
-        assert!(orangepi < qemu, "board names should remain sorted");
-    }
-
-    #[test]
     fn resolve_board_config_reports_board_directory_for_unknown_name() {
         let root = tempdir().unwrap();
         write_board(

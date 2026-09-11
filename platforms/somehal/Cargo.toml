@@ -7,19 +7,24 @@ keywords.workspace = true
 license.workspace = true
 name = "somehal"
 repository.workspace = true
-version = "0.9.2"
+version = "0.10.1"
 
 [features]
 efi = ["someboot/efi"]
-hv = ["mmu", "someboot/hv", "dep:ax-cpu"]
+hv = ["mmu", "someboot/hv"]
 mmu = ["someboot/mmu"]
 thead-mae = ["someboot/thead-mae"]
+# Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["someboot/tls"]
+# Enable userspace support without kernel TLS, including when `tls` is enabled.
+# User-space TLS remains available through the userspace context APIs.
 uspace = ["mmu", "someboot/uspace"]
 
 [dependencies]
+ax-cpu.workspace = true
 anyhow = {workspace = true}
 ax-sync = { workspace = true }
+ax-percpu.workspace = true
 cpu-local.workspace = true
 irq-framework = { workspace = true }
 page-table-generic = {workspace = true}
@@ -38,7 +43,6 @@ mmio-api = {workspace = true}
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu = "11"
 arm-gic-driver = {workspace = true, features = ["rdif"]}
-ax-cpu = { workspace = true, features = ["arm-el2"], optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 ax-riscv-plic = { workspace = true }

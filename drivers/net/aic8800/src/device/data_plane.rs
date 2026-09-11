@@ -6,14 +6,17 @@ use crate::{
     lmac::{
         SM_CONNECT_IND, SM_DISCONNECT_IND, parse_connect_indication, parse_disconnect_indication,
     },
-    profile::DataTxFlowPolicy,
     protocol::{BLOCK_SIZE, ethernet_tx_frame},
     registers::ReceiveLength,
-    rx::{ParsedFrame, RX_CAPACITY, parse_fifo},
+    rx::{ParsedFrame, parse_fifo},
 };
 
 const IO_RETRY: Duration = Duration::from_millis(1);
+// The firmware reports packet buffers, not SDIO blocks. Keep two buffers
+// available for commands, as in the vendor DATA_FLOW_CTRL_THRESH contract.
+const DATA_TX_RESERVED_CREDITS: u8 = 2;
 const INTERNAL_TX_CAPACITY: usize = 2;
+const INTERNAL_TX_BYTE_CAPACITY: usize = 8 * 1024;
 const ETHERTYPE_EAPOL: [u8; 2] = [0x88, 0x8e];
 
 impl AicDevice {
@@ -56,30 +59,19 @@ impl AicDevice {
             return action;
         }
         self.prepare_next_transmit();
-        if self.data.active_tx.is_some() {
-            return match self.data_tx_flow_policy() {
-                DataTxFlowPolicy::Direct => {
-                    let wire_frame = self
-                        .data
-                        .active_tx
-                        .as_ref()
-                        .expect("active TX is present after preparation")
-                        .wire_frame
-                        .clone();
-                    self.emit(
-                        IoPurpose::TransmitData,
-                        write_fifo(
-                            self.data_function(),
-                            self.registers().write_fifo,
-                            wire_frame,
-                        ),
-                    )
+        if let Some(active) = self.data.active_tx.as_mut() {
+            if let Some(deadline) = active.retry_at {
+                if now < deadline {
+                    return AicAction::WaitForInterruptUntil(deadline);
                 }
-                DataTxFlowPolicy::CreditGated => self.emit(
-                    IoPurpose::TransmitFlow,
-                    read_byte(self.data_function(), self.registers().flow_control),
-                ),
-            };
+                active.retry_at = None;
+            }
+            // DC bypasses flow control only for its separate command mailbox.
+            // Every data packet must obtain firmware capacity before CMD53.
+            return self.emit(
+                IoPurpose::TransmitFlow,
+                read_byte(self.data_function(), self.registers().flow_control),
+            );
         }
         AicAction::WaitForInterrupt
     }
@@ -90,7 +82,7 @@ impl AicDevice {
             .events
             .iter()
             .position(|event| !matches!(event, AicEvent::Receive(_)))?;
-        self.data.events.remove(index)
+        self.data.remove_event(index)
     }
 
     pub(super) fn request_receive_scan(&mut self) {
@@ -240,28 +232,29 @@ impl AicDevice {
         response: SdioResponse,
     ) -> Result<(), AicError> {
         let receive_data = expect_data(response)?;
-        let frames = parse_fifo(&receive_data).map_err(|error| {
-            let header_length = receive_data.len().min(24);
-            let mut header = [0; 24];
-            header[..header_length].copy_from_slice(&receive_data[..header_length]);
-            let header_words = [
-                u64::from_le_bytes(header[0..8].try_into().expect("fixed header word")),
-                u64::from_le_bytes(header[8..16].try_into().expect("fixed header word")),
-                u64::from_le_bytes(header[16..24].try_into().expect("fixed header word")),
-            ];
-            log::error!(
-                "malformed AIC RX frame on {path:?}: transfer={} header={:02x?}",
-                receive_data.len(),
-                &receive_data[..header_length]
-            );
-            AicError::MalformedRxFrame {
-                offset: error.offset,
-                packet_type: error.packet_type,
-                declared_length: error.declared_length,
-                available_length: error.available_length,
-                header_words,
-            }
-        })?;
+        let frames =
+            parse_fifo(&receive_data, self.mailbox_confirmation_id()).map_err(|error| {
+                let header_length = receive_data.len().min(24);
+                let mut header = [0; 24];
+                header[..header_length].copy_from_slice(&receive_data[..header_length]);
+                let header_words = [
+                    u64::from_le_bytes(header[0..8].try_into().expect("fixed header word")),
+                    u64::from_le_bytes(header[8..16].try_into().expect("fixed header word")),
+                    u64::from_le_bytes(header[16..24].try_into().expect("fixed header word")),
+                ];
+                log::error!(
+                    "malformed AIC RX frame on {path:?}: transfer={} header={:02x?}",
+                    receive_data.len(),
+                    &receive_data[..header_length]
+                );
+                AicError::MalformedRxFrame {
+                    offset: error.offset,
+                    packet_type: error.packet_type,
+                    declared_length: error.declared_length,
+                    available_length: error.available_length,
+                    header_words,
+                }
+            })?;
         for frame in frames {
             match frame {
                 ParsedFrame::Data {
@@ -274,8 +267,8 @@ impl AicDevice {
                     for frame in frames {
                         if frame.get(12..14) == Some(&ETHERTYPE_EAPOL) {
                             self.consume_eapol(&frame)?;
-                        } else if self.data.events.len() < RX_CAPACITY {
-                            self.data.events.push_back(AicEvent::Receive(frame));
+                        } else {
+                            self.data.push_event(AicEvent::Receive(frame))?;
                         }
                     }
                 }
@@ -295,6 +288,17 @@ impl AicDevice {
                     message_id: SM_CONNECT_IND,
                     payload,
                 } => {
+                    // Firmware can leave an asynchronous association result in
+                    // the FIFO across host restart. Startup has no connection
+                    // transaction: its owner is handed to the network runtime
+                    // before a new Connect request can be submitted. Do not
+                    // interpret the old status or install its peer identity.
+                    if self.lifecycle.state == AicState::Starting {
+                        log::debug!(
+                            "[wifi] discarded pre-connection association indication during startup"
+                        );
+                        continue;
+                    }
                     let indication = parse_connect_indication(&payload)?;
                     log::info!(
                         "[wifi] association complete; learned firmware vif={} station={}",
@@ -331,18 +335,17 @@ impl AicDevice {
                         return Err(AicError::MalformedResponse);
                     }
                     self.data.link.clear_peer();
-                    self.data.internal_tx.clear();
+                    self.data.clear_internal_tx();
                     let resetting = self.lifecycle.control.as_ref().is_some_and(|control| {
                         matches!(&control.operation,
                             super::control::ControlOperation::Connect(connect)
                                 if connect.phase == super::control::ConnectPhase::Resetting)
                     });
                     if !resetting && self.lifecycle.control.take().is_some() {
-                        self.data.events.push_back(AicEvent::ControlFailed(
-                            AicError::Disconnected {
+                        self.data
+                            .push_event(AicEvent::ControlFailed(AicError::Disconnected {
                                 reason_code: indication.reason_code,
-                            },
-                        ));
+                            }))?;
                     }
                 }
                 ParsedFrame::Indication {
@@ -376,21 +379,16 @@ impl AicDevice {
         let active = self
             .data
             .active_tx
-            .as_ref()
+            .as_mut()
             .ok_or(AicError::CompletionMismatch)?;
-        // The vendor gate only requires a nonzero buffer count; one credit
-        // carries one frame rounded up to a whole SDIO block.
-        if credits == 0 || usize::from(credits) * BLOCK_SIZE < active.wire_frame.len() {
-            self.lifecycle.retry_at = Some(now.after(IO_RETRY));
+        if credits <= DATA_TX_RESERVED_CREDITS {
+            active.retry_at = Some(now.after(IO_RETRY));
             return Ok(());
         }
+        let frame = active.wire_frame.clone();
         self.io.next = Some((
             IoPurpose::TransmitData,
-            write_fifo(
-                self.data_function(),
-                self.registers().write_fifo,
-                active.wire_frame.clone(),
-            ),
+            write_fifo(self.data_function(), self.registers().write_fifo, frame),
         ));
         Ok(())
     }
@@ -403,10 +401,9 @@ impl AicDevice {
             .take()
             .ok_or(AicError::CompletionMismatch)?;
         match active.completion {
-            super::owner::TxCompletion::User(token) => self
-                .data
-                .events
-                .push_back(AicEvent::TransmitComplete(token)),
+            super::owner::TxCompletion::User(token) => {
+                self.data.push_event(AicEvent::TransmitComplete(token))?
+            }
             super::owner::TxCompletion::Internal(super::owner::InternalTxKind::M2) => {}
             super::owner::TxCompletion::Internal(super::owner::InternalTxKind::M4) => {
                 let (station_index, _) = self.data.link.peer().ok_or(AicError::WpaProtocol)?;
@@ -427,7 +424,7 @@ impl AicDevice {
         let Some((interface_index, station_index)) = self.data.link.tx_indices() else {
             return;
         };
-        if let Some(internal) = self.data.internal_tx.pop_front() {
+        if let Some(internal) = self.data.pop_internal_tx() {
             let Ok(wire_frame) = ethernet_tx_frame(
                 &internal.ethernet_frame,
                 interface_index,
@@ -437,6 +434,7 @@ impl AicDevice {
                 return;
             };
             self.data.active_tx = Some(ActiveTx {
+                retry_at: None,
                 completion: super::owner::TxCompletion::Internal(internal.kind),
                 wire_frame,
             });
@@ -452,6 +450,7 @@ impl AicDevice {
         match frame {
             Ok((token, wire_frame)) => {
                 self.data.active_tx = Some(ActiveTx {
+                    retry_at: None,
                     completion: super::owner::TxCompletion::User(token),
                     wire_frame,
                 });
@@ -498,7 +497,16 @@ impl AicDevice {
         kind: super::owner::InternalTxKind,
         eapol: Vec<u8>,
     ) -> Result<(), AicError> {
-        if self.data.internal_tx.len() >= INTERNAL_TX_CAPACITY {
+        let ethernet_length = 14usize
+            .checked_add(eapol.len())
+            .ok_or(AicError::TxQueueFull)?;
+        if self.data.internal_tx.len() >= INTERNAL_TX_CAPACITY
+            || self
+                .data
+                .internal_tx_bytes
+                .checked_add(ethernet_length)
+                .is_none_or(|bytes| bytes > INTERNAL_TX_BYTE_CAPACITY)
+        {
             return Err(AicError::TxQueueFull);
         }
         let local_mac = self
@@ -507,11 +515,12 @@ impl AicDevice {
             .mac_address()
             .ok_or(AicError::InvalidMacAddress)?;
         let (_, bssid) = self.data.link.peer().ok_or(AicError::WpaProtocol)?;
-        let mut ethernet = Vec::with_capacity(14 + eapol.len());
+        let mut ethernet = Vec::with_capacity(ethernet_length);
         ethernet.extend_from_slice(&bssid);
         ethernet.extend_from_slice(&local_mac);
         ethernet.extend_from_slice(&ETHERTYPE_EAPOL);
         ethernet.extend_from_slice(&eapol);
+        self.data.internal_tx_bytes += ethernet.len();
         self.data.internal_tx.push_back(super::owner::InternalTx {
             kind,
             ethernet_frame: ethernet,
@@ -622,8 +631,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        common::{ChipVariant, SDIO_TYPE_CFG_CMD_RSP, SDIO_TYPE_DATA},
-        rx::RX_CAPACITY,
+        common::{ChipVariant, SDIO_TYPE_CFG_CMD_RSP, SDIO_TYPE_CFG_PRINT, SDIO_TYPE_DATA},
+        rx::{RX_BYTE_CAPACITY, RX_CAPACITY},
     };
 
     fn indication_fifo(message_id: u16, payload: &[u8]) -> Vec<u8> {
@@ -672,6 +681,75 @@ mod tests {
         frame[header_len + 6..header_len + 8].copy_from_slice(&[0x08, 0x00]);
         frame[header_len + 8..].copy_from_slice(payload);
         frame
+    }
+
+    #[test]
+    fn startup_ignores_unowned_connect_results_and_keeps_mailbox_confirmation() {
+        for status in [1u16, 0] {
+            let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+            device.start(MonotonicTime::default()).unwrap();
+            device.lifecycle.mailbox =
+                Some(super::super::mailbox::MailboxState::confirmation_for_test(
+                    MonotonicTime::from_nanos(5_000_000_000),
+                ));
+            let mut payload = vec![0; 11];
+            payload[..2].copy_from_slice(&status.to_le_bytes());
+            let mut fifo = indication_fifo(SM_CONNECT_IND, &payload);
+            fifo.extend(indication_fifo(2, &[]));
+            device.io.pending = Some(PendingIo {
+                id: 7,
+                purpose: IoPurpose::ReceiveData(RxPath::Command),
+            });
+            let action = device.advance(AicInput {
+                now: MonotonicTime::default(),
+                event: Some(AicInputEvent::Sdio(SdioCompletion {
+                    request_id: 7,
+                    result: Ok(SdioResponse::Data(fifo)),
+                })),
+            });
+            assert!(
+                matches!(action, AicAction::SubmitSdio(_)),
+                "unowned connection result stopped startup: {action:?}"
+            );
+            assert_eq!(device.state(), AicState::Starting);
+            assert!(device.data.link.peer().is_none());
+            assert_eq!(
+                device.accept_mailbox_confirmation(2, Vec::new()),
+                Err(AicError::CompletionMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn active_connect_rejection_is_not_discarded_as_a_startup_indication() {
+        let mut device = ready_transmitter(ChipVariant::Aic8800DC, 60);
+        let mut control = super::super::control::build(
+            ControlRequest::Connect {
+                ssid: b"network".to_vec(),
+                pmk: None,
+                entropy: None,
+            },
+            [2, 0, 0, 0, 0, 1],
+            Some(0),
+        )
+        .unwrap();
+        if let super::super::control::ControlOperation::Connect(connect) = &mut control.operation {
+            connect.phase = super::super::control::ConnectPhase::AwaitIndication;
+        }
+        control.commands.clear();
+        device.lifecycle.control = Some(control);
+        let mut payload = vec![0; 11];
+        payload[0] = 1;
+        assert_eq!(
+            device.consume_receive_data(
+                RxPath::Command,
+                SdioResponse::Data(indication_fifo(SM_CONNECT_IND, &payload)),
+            ),
+            Err(AicError::FirmwareRejected {
+                message_id: SM_CONNECT_IND,
+                status: 1
+            })
+        );
     }
 
     #[test]
@@ -732,6 +810,41 @@ mod tests {
     }
 
     #[test]
+    fn mailbox_confirmation_survives_control_budget_exhaustion() {
+        const PRINT_PACKET_LENGTH: usize = 8;
+        const PRINT_AGGREGATE_LENGTH: usize = 4 + PRINT_PACKET_LENGTH;
+        const RESPONSE_PACKET_LENGTH: usize = 12;
+        const RESPONSE_AGGREGATE_LENGTH: usize = 4 + RESPONSE_PACKET_LENGTH;
+        const EXPECTED_MESSAGE_ID: u16 = 2;
+
+        let response_offset = crate::rx::CONTROL_RX_CAPACITY * PRINT_AGGREGATE_LENGTH;
+        let mut fifo = vec![0; response_offset + RESPONSE_AGGREGATE_LENGTH];
+        for index in 0..crate::rx::CONTROL_RX_CAPACITY {
+            let offset = index * PRINT_AGGREGATE_LENGTH;
+            fifo[offset..offset + 2].copy_from_slice(&(PRINT_PACKET_LENGTH as u16).to_le_bytes());
+            fifo[offset + 2] = SDIO_TYPE_CFG_PRINT;
+        }
+        fifo[response_offset..response_offset + 2]
+            .copy_from_slice(&(RESPONSE_PACKET_LENGTH as u16).to_le_bytes());
+        fifo[response_offset + 2] = SDIO_TYPE_CFG_CMD_RSP;
+        fifo[response_offset + 4..response_offset + 6]
+            .copy_from_slice(&EXPECTED_MESSAGE_ID.to_le_bytes());
+
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.mailbox = Some(MailboxState::confirmation_for_test(
+            MonotonicTime::from_nanos(10),
+        ));
+        device.io.receive.active = true;
+
+        device
+            .consume_receive_data(RxPath::Command, SdioResponse::Data(fifo))
+            .unwrap();
+
+        assert_eq!(device.mailbox_confirmation_id(), None);
+        assert!(!device.mailbox_waiting_for_receive());
+    }
+
+    #[test]
     fn receive_events_do_not_stall_after_the_first_bounded_window() {
         let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
         device.lifecycle.state = AicState::Ready;
@@ -740,7 +853,7 @@ mod tests {
             device
                 .consume_receive_data(RxPath::Command, SdioResponse::Data(data_fifo(marker as u8)))
                 .unwrap();
-            let event = device.data.events.pop_front();
+            let event = device.data.pop_event();
             assert!(
                 matches!(event, Some(AicEvent::Receive(frame)) if frame[0] == marker as u8),
                 "receive event {marker} was lost after the bounded window"
@@ -753,7 +866,7 @@ mod tests {
         let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
         device.lifecycle.state = AicState::Ready;
         device.io.receive.active = true;
-        device.data.events.push_back(AicEvent::ControlComplete);
+        device.data.push_event(AicEvent::ControlComplete).unwrap();
 
         assert!(matches!(
             device.drive_ready(MonotonicTime::from_nanos(0)),
@@ -767,7 +880,7 @@ mod tests {
         let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
         device.lifecycle.state = AicState::Ready;
         for _ in 0..RX_CAPACITY {
-            device.data.events.push_back(AicEvent::Receive(vec![0]));
+            device.data.push_event(AicEvent::Receive(vec![0])).unwrap();
         }
         device
             .data
@@ -778,6 +891,34 @@ mod tests {
             device.drive_ready(MonotonicTime::default()),
             AicAction::Event(AicEvent::TransmitComplete(token)) if token == TxToken::new(1)
         ));
+    }
+
+    #[test]
+    fn receive_event_queue_obeys_item_and_byte_limits() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        for _ in 0..RX_CAPACITY {
+            device
+                .data
+                .push_event(AicEvent::Receive(vec![0; 2048]))
+                .unwrap();
+        }
+        device
+            .data
+            .push_event(AicEvent::Receive(vec![0; 2048]))
+            .unwrap();
+
+        assert_eq!(device.data.events.len(), RX_CAPACITY);
+        assert_eq!(device.data.event_bytes, RX_BYTE_CAPACITY);
+
+        device.data.push_event(AicEvent::ControlComplete).unwrap();
+        assert_eq!(device.data.events.len(), RX_CAPACITY);
+        assert!(
+            device
+                .data
+                .events
+                .iter()
+                .any(|event| matches!(event, AicEvent::ControlComplete))
+        );
     }
 
     #[test]
@@ -880,9 +1021,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn dc_transmit_starts_without_reading_data_flow_credits() {
-        let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+    fn ready_transmitter(chip: ChipVariant, frame_len: usize) -> AicDevice {
+        let mut device = AicDevice::new(chip).unwrap();
         device.lifecycle.state = AicState::Ready;
         device.data.link.install_mac([2, 0, 0, 0, 0, 1]).unwrap();
         device.data.link.install_interface(0).unwrap();
@@ -894,36 +1034,140 @@ mod tests {
         device
             .data
             .tx
-            .enqueue(TxToken::new(1), vec![0; 60])
+            .enqueue(TxToken::new(1), vec![0; frame_len])
             .unwrap();
+        device
+    }
 
-        let AicAction::SubmitSdio(request) = device.drive_ready(MonotonicTime::default()) else {
-            panic!("expected a direct DC data write")
+    #[test]
+    fn transmit_backoff_services_card_irq_without_retrying_credits_early() {
+        let mut device = ready_transmitter(ChipVariant::Aic8800D80, 1414);
+        let now = MonotonicTime::default();
+        let AicAction::SubmitSdio(flow) = device.advance(AicInput::tick(now)) else {
+            panic!("expected credit read")
         };
-        assert!(
-            matches!(request.kind, SdioRequestKind::Write { function, .. } if function.get() == 1)
+        let wait = device.advance(complete(&flow, SdioResponse::Byte(0), now));
+        let deadline = now.after(IO_RETRY);
+        assert_eq!(wait, AicAction::WaitForInterruptUntil(deadline));
+        let AicAction::SubmitSdio(rx) = device.advance(AicInput {
+            now,
+            event: Some(AicInputEvent::Irq(IrqSnapshot {
+                sequence: 1,
+                card_interrupt: true,
+                transfer_complete: false,
+                error: None,
+            })),
+        }) else {
+            panic!("RX must run during TX backoff")
+        };
+        assert!(matches!(rx.kind, SdioRequestKind::ReadByte { address, .. }
+            if address.get() == device.registers().block_count));
+        assert_eq!(
+            device.advance(complete(&rx, SdioResponse::Byte(0), now)),
+            AicAction::WaitForInterruptUntil(deadline)
+        );
+        let AicAction::SubmitSdio(flow) = device.advance(AicInput::tick(deadline)) else {
+            panic!("credit retry must resume at its original deadline")
+        };
+        let AicAction::SubmitSdio(write) =
+            device.advance(complete(&flow, SdioResponse::Byte(128), deadline))
+        else {
+            panic!("D80 full-byte credit must permit transmission")
+        };
+        assert!(matches!(write.kind, SdioRequestKind::Write { .. }));
+        assert_eq!(
+            device.advance(complete(&write, SdioResponse::Unit, deadline)),
+            AicAction::Event(AicEvent::TransmitComplete(TxToken::new(1)))
         );
     }
 
     #[test]
-    fn v3_single_credit_sends_a_single_block_frame() {
-        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
-        device.lifecycle.state = AicState::Ready;
-        device.data.active_tx = Some(ActiveTx {
-            completion: super::owner::TxCompletion::User(TxToken::new(1)),
-            wire_frame: vec![0; BLOCK_SIZE],
-        });
+    fn dc_data_tx_checks_firmware_credits_before_writing() {
+        let mut device = ready_transmitter(ChipVariant::Aic8800DC, 60);
+        let AicAction::SubmitSdio(request) = device.advance(AicInput {
+            now: MonotonicTime::default(),
+            event: None,
+        }) else {
+            panic!("expected a DC data credit read")
+        };
+        assert!(matches!(request.kind,
+            SdioRequestKind::ReadByte { function, address }
+            if function.get() == 1 && address.get() == 0x0a));
+    }
 
-        // The vendor credit gate only requires a nonzero buffer count; a frame
-        // rounded to one SDIO block fits in one credit.
-        assert_eq!(
-            device.consume_transmit_flow(SdioResponse::Byte(1), MonotonicTime::from_nanos(0)),
-            Ok(())
-        );
-        assert!(matches!(
-            device.io.next,
-            Some((IoPurpose::TransmitData, SdioRequestKind::Write { .. }))
-        ));
+    #[test]
+    fn data_tx_retains_packet_until_credit_reserve_is_available() {
+        // One full-sized packet consumes one firmware buffer, not three
+        // 512-byte SDIO blocks. Two buffers remain reserved for commands.
+        for chip in [ChipVariant::Aic8800D80, ChipVariant::Aic8800DC] {
+            let mut device = ready_transmitter(chip, 1414);
+            let mut now = MonotonicTime::default();
+            let mut action = device.advance(AicInput { now, event: None });
+            for credits in [0, 1, 2, 3] {
+                let AicAction::SubmitSdio(request) = action else {
+                    panic!("expected a fresh credit read")
+                };
+                assert!(matches!(request.kind, SdioRequestKind::ReadByte { .. }));
+                action = device.advance(AicInput {
+                    now,
+                    event: Some(AicInputEvent::Sdio(SdioCompletion {
+                        request_id: request.id,
+                        result: Ok(SdioResponse::Byte(credits)),
+                    })),
+                });
+                if credits <= 2 {
+                    let AicAction::WaitForInterruptUntil(deadline) = action else {
+                        panic!("data TX must retain the packet while firmware buffers are reserved")
+                    };
+                    assert!(device.data.active_tx.is_some());
+                    assert!(device.data.events.is_empty());
+                    assert!(matches!(
+                        device.advance(AicInput { now, event: None }),
+                        AicAction::WaitForInterruptUntil(_)
+                    ));
+                    now = deadline;
+                    action = device.advance(AicInput { now, event: None });
+                }
+            }
+            let AicAction::SubmitSdio(write) = action else {
+                panic!("three packet credits must permit one full-sized data frame")
+            };
+            assert!(
+                matches!(&write.kind, SdioRequestKind::Write { bytes, .. } if bytes.len() == 1536)
+            );
+            let complete = device.advance(AicInput {
+                now,
+                event: Some(AicInputEvent::Sdio(SdioCompletion {
+                    request_id: write.id,
+                    result: Ok(SdioResponse::Unit),
+                })),
+            });
+            assert!(
+                matches!(complete, AicAction::Event(AicEvent::TransmitComplete(token)) if token == TxToken::new(1))
+            );
+            assert!(device.data.active_tx.is_none());
+            assert!(matches!(
+                device.advance(AicInput { now, event: None }),
+                AicAction::WaitForInterrupt
+            ));
+            let next = device.advance(AicInput {
+                now,
+                event: Some(AicInputEvent::Tx {
+                    token: TxToken::new(2),
+                    frame: vec![0; 60],
+                }),
+            });
+            assert!(
+                matches!(
+                    next,
+                    AicAction::SubmitSdio(SdioRequest {
+                        kind: SdioRequestKind::ReadByte { .. },
+                        ..
+                    })
+                ),
+                "each packet requires a fresh firmware credit check"
+            );
+        }
     }
 
     fn complete(request: &SdioRequest, response: SdioResponse, now: MonotonicTime) -> AicInput {

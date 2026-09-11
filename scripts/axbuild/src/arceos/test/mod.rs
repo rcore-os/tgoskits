@@ -7,6 +7,7 @@ mod generic_qemu;
 mod listing;
 mod runner;
 mod rust_qemu;
+mod serial_rx;
 mod types;
 
 pub use args::{ArgsTest, ArgsTestBoard, ArgsTestQemu, TestCommand};
@@ -26,9 +27,10 @@ const ARCEOS_RUST_DEBUG_BACKTRACE_FEATURE: &str = "debug-backtrace";
 const ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE: &str = "debug-panic-path";
 const ARCEOS_RUST_EXCEPTION_PAGE_FAULT_FEATURE: &str = "exception-page-fault";
 const ARCEOS_RUST_LOCKDEP_DETECT_FEATURE: &str = "lockdep-detect";
+const ARCEOS_RUST_MEM_STAGE1_TRANSITION_FEATURE: &str = "mem-stage1-transition";
 const ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE: &str = "task-stack-guard-page";
 const ARCEOS_RUST_TASK_IRQ_FEATURE: &str = "task-irq";
-const ARCEOS_RUST_STANDALONE_FEATURES: &[&str] = &[ARCEOS_RUST_TASK_IRQ_FEATURE];
+const ARCEOS_RUST_STANDALONE_FEATURES: &[&str] = &[ARCEOS_RUST_TASK_IRQ_FEATURE, "serial-rx"];
 
 const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     ARCEOS_RUST_ALL_FEATURE,
@@ -41,16 +43,26 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     "fs-basic",
     "lockdep-baseline",
     ARCEOS_RUST_LOCKDEP_DETECT_FEATURE,
+    ARCEOS_RUST_MEM_STAGE1_TRANSITION_FEATURE,
     "memtest",
     "net-loopback",
+    "serial-rx",
     "sched-cfs",
     "sched-rr",
     "task-affinity",
+    "task-fair-idle-pull",
+    "task-fair-wake-idle-sibling",
     "task-ipi",
     ARCEOS_RUST_TASK_IRQ_FEATURE,
+    "task-kernel-timer",
+    "task-executor",
     "task-mutex",
     "task-parallel",
+    "task-pi-mutex",
+    "task-preempt-guard",
     "task-priority",
+    "task-rt-policy",
+    "task-scheduler-irq-window",
     "task-sleep",
     "task-smp-online",
     ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE,
@@ -85,4 +97,9 @@ pub(super) async fn test(arceos: &mut ArceOS, args: ArgsTest) -> anyhow::Result<
         TestCommand::Qemu(args) => runner::test_qemu(arceos, args).await,
         TestCommand::Board(args) => arceos.test_board(args).await,
     }
+}
+
+/// PL011's controlled MMIO window is available on the AArch64 virt machine.
+fn rust_qemu_feature_supports_arch(feature: &str, arch: &str) -> bool {
+    feature != "serial-rx" || arch == "aarch64"
 }

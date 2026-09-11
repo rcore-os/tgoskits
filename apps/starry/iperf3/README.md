@@ -4,8 +4,8 @@ This board app runs a fixed TCP benchmark matrix on Orange Pi 5 Plus or AKA-00-S
 single-stream TX/RX, bidirectional traffic, 2/4/8-stream TX, and 4-stream RX.
 Every scenario runs three times. The native iperf3 text is shown as the test
 runs, followed by the parsed median and a final summary table. Per-run text and
-the machine-readable summary remain under `/tmp/starry-iperf3-bench/` for later
-inspection.
+the machine-readable summary remain under `${TMPDIR:-/tmp}/starry-iperf3-bench/` for later
+inspection. Set `TMPDIR` before running the script to keep results in a project directory.
 
 Run the complete benchmark from the repository root:
 
@@ -18,9 +18,9 @@ STARRY_WIFI_SSID='<ssid>' STARRY_WIFI_PASSWORD='<password>' \
 ```
 
 The board session provides both the address of the persistent iperf3 server and
-the script URL. The app's `init.sh` is merged into `shell_init_cmd`, where it
-downloads and starts the benchmark script. The xtask command therefore needs
-neither a fixed IP address nor a separate board launcher.
+the script URL. The app's `init.sh` is appended to the configured shell-check
+step, which downloads and starts the benchmark script. The xtask command
+therefore needs neither a fixed IP address nor a separate board launcher.
 
 The AKA build reads the two Wi-Fi environment variables at compile time. The
 `ax-driver` AIC glue validates them, derives the WPA2 PMK, and publishes a

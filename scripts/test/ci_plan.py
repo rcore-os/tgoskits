@@ -390,6 +390,9 @@ def _validate_suite_registrations(suite: Any, location: str) -> None:
         kind = registration.get("kind")
         if kind not in SUPPORTED_SUITE_KINDS:
             raise PlanError(f"{suite_location} has an unsupported kind")
+        group = registration.get("group")
+        if group is not None and (kind != "arceos-qemu" or group != "cpu"):
+            raise PlanError(f"{suite_location} has unsupported ArceOS group")
         is_qemu = kind.endswith("-qemu")
         arch = registration.get("arch")
         board = registration.get("board")

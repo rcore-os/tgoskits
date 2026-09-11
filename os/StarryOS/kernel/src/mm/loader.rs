@@ -6,7 +6,7 @@ use core::{ffi::CStr, iter, mem::size_of};
 use ax_fs_ng::vfs::{CachedFile, FileBackend};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, paging::MappingFlags};
-use axfs_ng_vfs::Location;
+use axfs_ng_vfs::{Location, NodeType};
 use kernel_elf_parser::{AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser};
 use ouroboros::self_referencing;
 use uluru::LRUCache;
@@ -14,9 +14,12 @@ use zerocopy::IntoBytes;
 
 use crate::{
     StarryError, StarryResult,
-    config::{USER_SPACE_BASE, USER_SPACE_SIZE},
-    mm::aspace::{AddrSpace, Backend},
+    mm::{
+        UserVirtualAddressLayout,
+        aspace::{AddrSpace, AddressSpaceId, MappingOperation, VmEpoch},
+    },
     sync::Mutex,
+    task::Cred,
 };
 
 /// Largest argv/envp stack image accepted by execve.
@@ -73,7 +76,64 @@ const MAX_INTERPRETER_PATH_LEN: u64 = 4096;
 
 /// Creates a new empty user address space.
 pub fn new_user_aspace_empty() -> StarryResult<AddrSpace> {
-    AddrSpace::new_empty(VirtAddr::from_usize(USER_SPACE_BASE), USER_SPACE_SIZE)
+    AddrSpace::new_user(UserVirtualAddressLayout::platform_default()?)
+}
+
+/// An exec address space that is still private to the loader.
+///
+/// The scheduler and process lifecycle APIs cannot consume this type.  A
+/// successful load must first turn it into [`PreparedUserImage`], mirroring
+/// Linux's nascent `bprm->mm` before `begin_new_exec()` installs it.
+#[must_use = "an unpublished user image must be loaded or explicitly discarded"]
+pub struct UserImageBuilder {
+    aspace: AddrSpace,
+}
+
+/// Proof that the current contents of one [`UserImageBuilder`] completed all
+/// loader steps.  Identity and epoch bind the token to that exact attempt, so
+/// a token from an earlier ENOEXEC retry cannot publish a later image.
+#[must_use = "a loaded image token must be consumed by UserImageBuilder::finish"]
+pub struct LoadedUserImage {
+    space_id: AddressSpaceId,
+    epoch: VmEpoch,
+    entry: VirtAddr,
+    stack: VirtAddr,
+    auxv: Vec<AuxEntry>,
+}
+
+/// A fully loaded image that has not yet crossed exec's point of no return.
+#[must_use = "a prepared user image must be installed or explicitly discarded"]
+pub struct PreparedUserImage {
+    aspace: AddrSpace,
+    entry: VirtAddr,
+    stack: VirtAddr,
+    auxv: Vec<AuxEntry>,
+}
+
+impl PreparedUserImage {
+    /// Consumes the unpublished typestate immediately before the caller creates
+    /// the first [`super::MmHandle`] and installs it in a process transaction.
+    pub fn into_parts(self) -> (AddrSpace, VirtAddr, VirtAddr, Vec<AuxEntry>) {
+        (self.aspace, self.entry, self.stack, self.auxv)
+    }
+}
+
+impl UserImageBuilder {
+    /// Consumes a successfully loaded attempt after verifying that no later
+    /// retry changed the builder contents represented by `loaded`.
+    pub fn finish(self, loaded: LoadedUserImage) -> StarryResult<PreparedUserImage> {
+        if self.aspace.address_space_id() != loaded.space_id
+            || self.aspace.vm_epoch() != loaded.epoch
+        {
+            return Err(StarryError::BadState);
+        }
+        Ok(PreparedUserImage {
+            aspace: self.aspace,
+            entry: loaded.entry,
+            stack: loaded.stack,
+            auxv: loaded.auxv,
+        })
+    }
 }
 
 /// If the target architecture requires it, the kernel portion of the address
@@ -87,16 +147,17 @@ pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> StarryResult {
         let kspace = ax_mm::kernel_aspace().lock();
         // SAFETY: the global kernel address space outlives every user address
         // space, whose managed regions are restricted to user-space addresses.
-        unsafe {
-            _aspace.page_table_mut().share_root_entries_from(
-                kspace.page_table(),
-                kspace.base(),
-                kspace.size(),
-            )
-        }
-        .map_err(|_| StarryError::BadState)?;
+        unsafe { _aspace.share_kernel_root_entries_from(kspace.root_entry_share()) }
+            .map_err(|_| StarryError::BadState)?;
     }
     Ok(())
+}
+
+/// Allocates the nascent address space used by one exec attempt.
+pub fn new_user_image_builder() -> StarryResult<UserImageBuilder> {
+    let mut aspace = new_user_aspace_empty()?;
+    copy_from_kernel(&mut aspace)?;
+    Ok(UserImageBuilder { aspace })
 }
 
 /// Map the signal trampoline to the user address space.
@@ -264,7 +325,7 @@ fn map_elf<'a>(
         } else {
             ph.offset + ph.file_size
         };
-        let backend = Backend::new_cow(
+        let backend = MappingOperation::new_cow(
             seg_start,
             PAGE_SIZE_4K,
             FileBackend::Cached(cache.clone()),
@@ -309,6 +370,41 @@ fn map_elf<'a>(
     }
 
     Ok(elf_parser)
+}
+
+/// Reproduce Linux v7.1's `load_elf_binary()` data-bound calculation for the
+/// main executable. `start_data` is the greatest PT_LOAD start, while
+/// `end_data` is the greatest PT_LOAD file end; the interpreter is excluded.
+fn executable_data_layout(elf: &ELFParser<'_>) -> StarryResult<(usize, usize)> {
+    let mut start_data = 0usize;
+    let mut end_data = 0usize;
+    let mut found_load = false;
+    for header in elf
+        .headers()
+        .ph
+        .iter()
+        .filter(|header| header.get_type() == Ok(xmas_elf::program::Type::Load))
+    {
+        found_load = true;
+        let segment_start = elf
+            .base()
+            .checked_add(
+                usize::try_from(header.virtual_addr)
+                    .map_err(|_| StarryError::MalformedExecutable)?,
+            )
+            .ok_or(StarryError::MalformedExecutable)?;
+        let file_end = segment_start
+            .checked_add(
+                usize::try_from(header.file_size).map_err(|_| StarryError::MalformedExecutable)?,
+            )
+            .ok_or(StarryError::MalformedExecutable)?;
+        start_data = start_data.max(segment_start);
+        end_data = end_data.max(file_end);
+    }
+    if !found_load || end_data < start_data {
+        return Err(StarryError::MalformedExecutable);
+    }
+    Ok((start_data, end_data))
 }
 
 /// Convert a virtual address to a file offset using PT_LOAD segments.
@@ -595,7 +691,12 @@ impl ElfLoader {
         Self(LRUCache::new())
     }
 
-    fn load(&mut self, uspace: &mut AddrSpace, loc: Location) -> StarryResult<LoadResult> {
+    fn load(
+        &mut self,
+        uspace: &mut AddrSpace,
+        loc: Location,
+        cred: &Cred,
+    ) -> StarryResult<LoadResult> {
         if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
             match ElfCacheEntry::load(loc)? {
                 Ok(e) => {
@@ -607,7 +708,7 @@ impl ElfLoader {
             }
         }
 
-        uspace.clear();
+        uspace.reset_uninstalled_for_loader()?;
         map_trampoline(uspace)?;
 
         let entry = self.0.front().unwrap();
@@ -645,6 +746,7 @@ impl ElfLoader {
 
         let (elf, ldso) = if let Some(ldso) = ldso {
             let loc = ax_fs_ng::vfs::current_fs_context().lock().resolve(ldso)?;
+            check_executable_access(&loc, cred)?;
             if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
                 let e = ElfCacheEntry::load(loc)?.map_err(|_| StarryError::InvalidInput)?;
                 self.0.insert(e);
@@ -658,13 +760,14 @@ impl ElfLoader {
             (entry, None)
         };
 
-        let elf = map_elf(uspace, crate::config::USER_SPACE_BASE, elf)?;
+        let elf = map_elf(uspace, uspace.base().as_usize(), elf)?;
+        let (start_data, end_data) = executable_data_layout(&elf)?;
+        uspace.set_executable_data_layout(start_data, end_data)?;
         let ldso = if ldso.is_some() {
             let max_end = uspace
-                .areas()
-                .map(|area| area.end().as_usize())
-                .max()
-                .unwrap_or(crate::config::USER_SPACE_BASE);
+                .max_mapped_end()
+                .map(VirtAddr::as_usize)
+                .unwrap_or_else(|| uspace.base().as_usize());
             let interp_base = (max_end + 0x100000 - 1) & !(0x100000 - 1);
             ldso.map(|elf| map_elf(uspace, interp_base, elf))
                 .transpose()?
@@ -682,7 +785,7 @@ impl ElfLoader {
             .collect::<Vec<_>>();
         auxv.push(AuxEntry::new(
             AuxType::HWCAP,
-            ax_runtime::hal::cpu::cap::elf_hwcap(),
+            crate::cpu_capabilities::elf_hwcap(),
         ));
         auxv.push(AuxEntry::new(AuxType::UID, 0));
         auxv.push(AuxEntry::new(AuxType::EUID, 0));
@@ -740,15 +843,65 @@ pub fn clear_elf_cache() {
 /// - The entry point of the user app.
 /// - The stack pointer of the user app.
 pub fn load_user_app(
-    uspace: &mut AddrSpace,
+    builder: &mut UserImageBuilder,
     loc: Location,
     path: &str,
     args: &[String],
     envs: &[String],
-) -> StarryResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
-    validate_exec_arg_size(args, envs)?;
+    cred: &Cred,
+) -> StarryResult<LoadedUserImage> {
+    let result = validate_exec_arg_size(args, envs).and_then(|()| {
+        load_user_app_with_depth(&mut builder.aspace, loc, path, args, envs, cred, 0)
+    });
+    match result {
+        Ok((entry, stack, auxv)) => Ok(LoadedUserImage {
+            space_id: builder.aspace.address_space_id(),
+            epoch: builder.aspace.vm_epoch(),
+            entry,
+            stack,
+            auxv,
+        }),
+        Err(load_error) => {
+            // This is an explicit, fallible abort in process context.  Drop is
+            // intentionally not responsible for backend/page-table cleanup.
+            // If cleanup itself fails, return that stronger ownership error so
+            // the caller cannot reuse a partially cleared builder as ENOEXEC.
+            match builder.aspace.reset_uninstalled_for_loader() {
+                Ok(()) => Err(load_error),
+                Err(abort_error) => {
+                    warn!(
+                        "failed to abort unpublished user image after load error {load_error}: \
+                         {abort_error}"
+                    );
+                    Err(abort_error)
+                }
+            }
+        }
+    }
+}
 
-    load_user_app_with_depth(uspace, loc, path, args, envs, 0)
+/// Checks each executable and interpreter even when its ELF image is cached.
+fn check_executable_access(loc: &Location, cred: &Cred) -> StarryResult<()> {
+    let metadata = loc.metadata()?;
+    if metadata.node_type != NodeType::RegularFile
+        || loc.mountpoint().mount_flags() & linux_raw_sys::general::MS_NOEXEC != 0
+    {
+        return Err(StarryError::PermissionDenied);
+    }
+    let mode = metadata.mode.bits();
+    let selected = if cred.fsuid == metadata.uid {
+        mode >> 6
+    } else if cred.fsgid == metadata.gid || cred.groups.contains(&metadata.gid) {
+        mode >> 3
+    } else {
+        mode
+    };
+    // CAP_DAC_OVERRIDE may bypass DAC only if some execute bit is set.
+    if selected & 1 != 0 || (mode & 0o111 != 0 && cred.has_cap_dac_override()) {
+        Ok(())
+    } else {
+        Err(StarryError::PermissionDenied)
+    }
 }
 
 fn load_user_app_with_depth(
@@ -757,32 +910,12 @@ fn load_user_app_with_depth(
     path: &str,
     args: &[String],
     envs: &[String],
+    cred: &Cred,
     interpreter_depth: usize,
 ) -> StarryResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
-    // `/proc/self/exe` is available in procfs; busybox can `readlink` it
-    // to re-exec itself as a shell on ENOEXEC, provided the busybox build
-    // includes that fallback (Alpine's prebuilt binary may not).
-    if path.ends_with(".sh") {
-        if interpreter_depth >= MAX_INTERPRETER_RECURSION {
-            return Err(StarryError::FilesystemLoop);
-        }
-        let new_args: Vec<String> = iter::once("/bin/sh".to_owned())
-            .chain(args.iter().cloned())
-            .collect();
-        let sh = ax_fs_ng::vfs::current_fs_context()
-            .lock()
-            .resolve("/bin/sh")?;
-        return load_user_app_with_depth(
-            uspace,
-            sh,
-            "/bin/sh",
-            &new_args,
-            envs,
-            interpreter_depth + 1,
-        );
-    }
+    check_executable_access(&loc, cred)?;
 
-    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc)? } {
+    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc, cred)? } {
         Ok((entry, auxv)) => (entry, auxv),
         Err(data) => {
             if data.starts_with(b"#!") {
@@ -812,6 +945,7 @@ fn load_user_app_with_depth(
                     &new_args[0],
                     &new_args,
                     envs,
+                    cred,
                     interpreter_depth + 1,
                 );
             }
@@ -819,7 +953,7 @@ fn load_user_app_with_depth(
         }
     };
 
-    let ustack_top = VirtAddr::from_usize(crate::config::USER_STACK_TOP);
+    let ustack_top = uspace.stack_top();
     let ustack_size = crate::config::USER_STACK_SIZE;
     let ustack_start = ustack_top - ustack_size;
     debug!("Mapping user stack: {ustack_start:#x?} -> {ustack_top:#x?}");
@@ -829,7 +963,7 @@ fn load_user_app_with_depth(
         ustack_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         false,
-        Backend::new_alloc(ustack_start, PAGE_SIZE_4K, "[stack]"),
+        MappingOperation::new_alloc(ustack_start, PAGE_SIZE_4K, "[stack]"),
     )?;
 
     let stack_data = app_stack_region(args, envs, &auxv, ustack_top.into());
@@ -849,7 +983,7 @@ fn load_user_app_with_depth(
         heap_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         true,
-        Backend::new_alloc(heap_start, PAGE_SIZE_4K, "[heap]"),
+        MappingOperation::new_alloc(heap_start, PAGE_SIZE_4K, "[heap]"),
     )?;
 
     Ok((entry, user_sp, auxv))

@@ -229,10 +229,10 @@ impl LioIntcController {
 
     fn initialize(&self) {
         let registers = self.registers();
-        for raw in 0..LIO_INPUT_COUNT {
+        for (raw, route) in registers.route.iter().enumerate() {
             // The loop bound guarantees construction succeeds.
             if let Ok(input) = LioInput::new(raw) {
-                registers.route[raw].set(self.config.route_value(input));
+                route.set(self.config.route_value(input));
             }
         }
         registers.disable.set(u32::MAX);

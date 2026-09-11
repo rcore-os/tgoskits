@@ -3,7 +3,7 @@ set -euo pipefail
 
 workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
-image="${STARRYOS_DOCKER_IMAGE:-starryos-dev:ubuntu-qemu10.2.1}"
+image="${STARRYOS_DOCKER_IMAGE:-starryos-dev:ubuntu-qemu11.1.1}"
 rootfs="${PICOCLAW_USER_ROOTFS:-tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-user.img}"
 qemu_config="${PICOCLAW_USER_QEMU_CONFIG:-apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-interactive.toml}"
 provider="${PICOCLAW_PROVIDER:-openai}"
@@ -16,12 +16,12 @@ usage() {
     cat <<EOF
 Usage: $0 [--rebuild-rootfs] [--no-prepare] [--prepare-only]
 
-Start an interactive StarryOS x86_64 QEMU shell with PicoClaw ready to use.
+Run PicoClaw offline smoke checks in StarryOS x86_64 QEMU.
 
 Default behavior:
   - reuse ${rootfs} when it already exists;
   - create it when it is missing;
-  - keep QEMU running so you can type PicoClaw commands yourself.
+  - exit QEMU after the offline smoke checks pass (legacy script name).
 
 Options:
   --rebuild-rootfs  Recreate the user rootfs even if it already exists.
@@ -41,11 +41,8 @@ Optional environment:
   PICOCLAW_API_BASE     default: ${api_base}
   PICOCLAW_USER_ROOTFS  default: ${rootfs}
 
-Inside StarryOS, try:
-  picoclaw status
-  picoclaw agent
-
-Exit QEMU with Ctrl-a x.
+The default QEMU config runs offline checks and exits on the pass marker.
+Exit early with Ctrl-a x.
 
 The generated rootfs contains online config and secret material. Keep it local.
 EOF
@@ -169,7 +166,7 @@ if [[ "$should_prepare" -eq 1 ]]; then
     echo "model:     $model"
     echo "api_base:  $api_base"
     echo "rootfs:    $rootfs"
-    run_docker "export PATH=/opt/qemu-10.2.1/bin:\$PATH; apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh --rootfs '$rootfs'"
+    run_docker "export PATH=/opt/qemu-11.1.1/bin:\$PATH; apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh --rootfs '$rootfs'"
 else
     say "复用已有 PicoClaw rootfs"
     echo "rootfs: $rootfs"
@@ -180,11 +177,11 @@ if [[ "$prepare_mode" == "only" ]]; then
     exit 0
 fi
 
-say "启动交互式 StarryOS PicoClaw 环境"
-echo "进入 StarryOS 后可以直接输入："
-echo "  picoclaw status"
-echo "  picoclaw agent"
+say "启动 StarryOS PicoClaw 离线检查"
+echo "默认配置自动检查版本、帮助、初始化配置和状态。"
+echo "匹配 STARRY_PICOCLAW_OFFLINE_PASSED 后退出 QEMU。"
+echo "当前 QEMU 配置：$qemu_config"
 echo
-echo "退出 QEMU：Ctrl-a x"
+echo "提前退出 QEMU：Ctrl-a x"
 
-run_docker_interactive "export PATH=/opt/qemu-10.2.1/bin:/opt/x86_64-linux-musl-cross/bin:\$PATH; cargo xtask starry qemu --arch x86_64 --qemu-config '$qemu_config' --rootfs '$rootfs'"
+run_docker_interactive "export PATH=/opt/qemu-11.1.1/bin:/opt/x86_64-linux-musl-cross/bin:\$PATH; cargo xtask starry qemu --arch x86_64 --qemu-config '$qemu_config' --rootfs '$rootfs'"

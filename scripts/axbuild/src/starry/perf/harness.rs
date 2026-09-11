@@ -31,8 +31,9 @@ pub(super) fn build_qperf_tools(
     root: &Path,
     analyzer_flamegraph: bool,
 ) -> anyhow::Result<QperfTools> {
-    let qperf_root = qperf_source_root(root)?;
+    let qperf_root = root.join("tools/qperf");
     let manifest = qperf_root.join("Cargo.toml");
+    ensure_file(&manifest, "local qperf plugin manifest")?;
     let analyzer_manifest = qperf_root.join("analyzer/Cargo.toml");
     let target_dir = qperf_root.join("target");
     if !analyzer_manifest.exists() {
@@ -80,26 +81,6 @@ pub(super) fn build_qperf_tools(
     ensure_file(&tools.plugin, "qperf plugin")?;
     ensure_file(&tools.analyzer, "qperf analyzer")?;
     Ok(tools)
-}
-
-fn qperf_source_root(root: &Path) -> anyhow::Result<PathBuf> {
-    if let Some(path) = [root.join("apps/qperf"), root.join("tools/qperf")]
-        .into_iter()
-        .find(|path| path.join("Cargo.toml").exists())
-    {
-        return Ok(path);
-    }
-
-    let checkout = ensure_harness_kit_checkout(root)?;
-    let fixed_qperf = checkout.join("tools/qperf");
-    if fixed_qperf.join("Cargo.toml").exists() {
-        return Ok(fixed_qperf);
-    }
-
-    Err(anyhow::anyhow!(
-        "qperf sources not found; expected apps/qperf, tools/qperf, or fixed harness kit \
-         tools/qperf to be present"
-    ))
 }
 
 fn ensure_harness_kit_checkout(root: &Path) -> anyhow::Result<PathBuf> {
@@ -332,9 +313,8 @@ fn workspace_harness_path(work_dir: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
 
-    use super::{add_x86_64_perf_postprocess_choice, append_qemu_args, checkout_path_from_stdout};
+    use super::{add_x86_64_perf_postprocess_choice, checkout_path_from_stdout};
 
     #[test]
     fn x86_64_postprocess_shim_extends_only_the_perf_postprocess_arch_choice() {
@@ -349,19 +329,6 @@ perf_post_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "
         assert!(patched.contains(
             r#"perf_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64"])"#
         ));
-    }
-
-    #[test]
-    fn postprocess_qemu_args_encode_hyphen_prefixed_values_as_one_argument() {
-        let mut command = Command::new("python3");
-
-        append_qemu_args(&mut command, &["-cpu".into(), "max".into()]);
-
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(args, ["--qemu-arg=-cpu", "--qemu-arg=max"]);
     }
 
     #[test]

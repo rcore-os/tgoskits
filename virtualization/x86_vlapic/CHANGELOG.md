@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4](https://github.com/rcore-os/tgoskits/compare/x86_vlapic-v0.5.3...x86_vlapic-v0.5.4) - 2026-09-09
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
 ## [0.5.3](https://github.com/rcore-os/tgoskits/compare/x86_vlapic-v0.5.2...x86_vlapic-v0.5.3) - 2026-08-27
 
 ### Fixed

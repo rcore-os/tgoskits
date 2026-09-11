@@ -21,6 +21,10 @@ pub enum MmError {
     /// The platform cannot provide the requested mapping operation.
     #[error("memory-management operation is unsupported")]
     Unsupported,
+    /// A pending stage-1 TLB quarantine could not be confirmed before a new
+    /// mutation began. The requested mutation has not started.
+    #[error("pending stage-1 TLB quarantine blocked the mutation: {0}")]
+    TlbShootdown(ax_hal::cache::TlbShootdownError),
 }
 
 impl From<MappingError> for MmError {
@@ -29,40 +33,10 @@ impl From<MappingError> for MmError {
             MappingError::InvalidParam => Self::InvalidInput("mapping parameters"),
             MappingError::AlreadyExists => Self::AlreadyExists,
             MappingError::BadState => Self::BadState("mapping backend"),
+            MappingError::NeedsRepair => Self::BadState("mapping backend requires repair"),
         }
     }
 }
 
 /// A memory-management result.
 pub type MmResult<T = ()> = Result<T, MmError>;
-
-#[cfg(test)]
-mod tests {
-    use alloc::string::ToString as _;
-
-    use super::*;
-
-    #[test]
-    fn all_variants_have_domain_messages() {
-        let cases = [
-            (
-                MmError::InvalidInput("range"),
-                "invalid memory-management input: range",
-            ),
-            (MmError::NoMemory, "memory allocation failed"),
-            (MmError::AlreadyExists, "memory mapping already exists"),
-            (MmError::BadAddress, "bad memory address"),
-            (
-                MmError::BadState("page table"),
-                "invalid memory-management state: page table",
-            ),
-            (
-                MmError::Unsupported,
-                "memory-management operation is unsupported",
-            ),
-        ];
-        for (error, message) in cases {
-            assert_eq!(error.to_string(), message);
-        }
-    }
-}

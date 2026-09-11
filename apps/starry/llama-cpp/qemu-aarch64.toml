@@ -9,9 +9,6 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/llama-cpp-test.sh"
-success_regex = ["(?m)^LLAMA_TEST_PASSED\\s*$"]
 fail_regex = [
     "(?m)^LLAMA_TEST_FAILED:",
     "(?i)kernel panic",
@@ -22,3 +19,8 @@ fail_regex = [
     "(?i)out of memory",
 ]
 timeout = 600
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/llama-cpp-test.sh"
+success_regex = ["(?m)^LLAMA_TEST_PASSED\\s*$"]

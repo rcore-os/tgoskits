@@ -10,8 +10,6 @@ def main():
     print(f"CWD: {os.getcwd()}")
     print(f"Platform: {sys.platform}")
 
-    # Basic sanity checks
-    assert 1 + 1 == 2, "math is broken"
     assert isinstance(os.getpid(), int), "getpid failed"
     assert len(os.getcwd()) > 0, "getcwd failed"
 

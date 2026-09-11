@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.3.0...rockchip-npu-v0.4.0) - 2026-09-09
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
 ## [0.3.0](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.13...rockchip-npu-v0.3.0) - 2026-08-20
 
 ### Added

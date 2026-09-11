@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/irq-framework-v0.4.0...irq-framework-v0.5.0) - 2026-09-09
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
 ## [0.4.0](https://github.com/rcore-os/tgoskits/compare/irq-framework-v0.3.2...irq-framework-v0.4.0) - 2026-08-20
 
 ### Other

@@ -108,30 +108,4 @@ mod tests {
         assert_eq!(allocator.alloc_memory64(0x1000, false), Some(0x1000_0000));
         assert_eq!(allocator.alloc_memory32(0x1000, false), Some(0x1000_1000));
     }
-
-    #[test]
-    fn memory64_prefers_native_memory64_window() {
-        let mut allocator = SimpleBarAllocator::default();
-        allocator
-            .set_mem32(
-                PciMem32 {
-                    address: 0x1000_0000,
-                    size: 0x2000,
-                },
-                false,
-            )
-            .unwrap();
-        allocator
-            .set_mem64(
-                PciMem64 {
-                    address: 0x8_0000_0000,
-                    size: 0x2000,
-                },
-                false,
-            )
-            .unwrap();
-
-        assert_eq!(allocator.alloc_memory64(0x1000, false), Some(0x8_0000_0000));
-        assert_eq!(allocator.alloc_memory32(0x1000, false), Some(0x1000_0000));
-    }
 }

@@ -18,17 +18,14 @@
 //! - `smp`: Enable SMP (symmetric multiprocessing) support.
 //! - `fp-simd`: Enable floating-point and SIMD support.
 //! - `paging`: Enable page table manipulation.
-//! - `tls`: Enable kernel space thread-local storage support.
+//! - `tls`: Request kernel TLS; `uspace` takes precedence and disables it.
 //! - `rtc`: Enable real-time clock support.
-//! - `uspace`: Enable user space support.
+//! - `uspace`: Enable user space support, including user TLS, without kernel TLS.
 //!
 //! [ArceOS]: https://github.com/arceos-org/arceos
 //! [cargo test]: https://doc.rust-lang.org/cargo/guide/tests.html
 
 #![no_std]
-
-#[cfg(all(feature = "uspace", feature = "tls"))]
-compile_error!("ax-hal features `uspace` and `tls` select incompatible register ownership modes");
 
 #[allow(unused_imports)]
 #[macro_use]
@@ -46,15 +43,19 @@ mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
 }
 
+mod address_space;
 pub mod boot;
 pub mod cache;
+mod cpu_diagnostics;
+#[cfg(target_arch = "x86_64")]
+mod cpu_trap_storage;
 pub mod dtb;
 pub mod mem;
 pub mod percpu;
 pub mod pmu;
 pub mod time;
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub mod tls;
 
 pub mod irq;
@@ -89,26 +90,14 @@ pub mod topology {
 
     #[cfg(not(any(test, feature = "host-test")))]
     pub use ax_plat::cpu::resolve_cpu_index;
-
-    #[cfg(test)]
-    mod tests {
-        use super::resolve_cpu_index;
-
-        #[test]
-        fn dummy_topology_only_maps_the_boot_cpu() {
-            assert_eq!(resolve_cpu_index(0), Some(0));
-            assert_eq!(resolve_cpu_index(1), None);
-        }
-    }
 }
 
 /// Trap handling.
 pub mod trap {
-    #[cfg(target_arch = "x86_64")]
-    pub use ax_cpu::trap::debug_handler;
     pub use ax_cpu::trap::{
-        PageFaultFlags, breakpoint_handler, dispatch_irq, dispatch_page_fault, irq_handler,
-        page_fault_handler, set_irq_handler, set_page_fault_handler,
+        BreakpointHandler, DebugHandler, PageFaultFlags, breakpoint_handler, debug_handler,
+        dispatch_irq, dispatch_page_fault, irq_handler, page_fault_handler, set_breakpoint_handler,
+        set_debug_handler, set_irq_handler, set_page_fault_handler,
     };
 }
 
@@ -116,33 +105,65 @@ pub mod trap {
 ///
 /// There are two types of context:
 ///
-/// - [`TaskContext`][ax_cpu::TaskContext]: The context of a task.
-/// - [`UserRegisters`][ax_cpu::UserRegisters]: User-owned registers saved at a trap boundary.
-/// - [`KernelTrapFrame`][ax_cpu::KernelTrapFrame]: A CPU-pinned view of a kernel trap.
+/// - [`TaskContext`][ax_cpu::context::TaskContext]: The context of a task.
+/// - [`UserRegisters`][ax_cpu::context::UserRegisters]: User-owned registers saved at a trap boundary.
+/// - [`KernelTrapFrame`][ax_cpu::context::KernelTrapFrame]: A CPU-pinned view of a kernel trap.
 pub mod context {
-    pub use ax_cpu::{KernelTlsBase, KernelTrapFrame, TaskContext, UserRegisters};
+    pub use ax_cpu::{
+        PhysAddr,
+        context::{KernelTlsBase, KernelTrapFrame, TaskContext, UserRegisters},
+        mmu::HardwareAddressSpace,
+    };
+
+    pub use crate::address_space::{InstalledAddressSpace, InstalledAddressSpaceMode};
 }
 
 pub use ax_cpu as cpu;
-pub use ax_cpu::asm;
-#[cfg(feature = "uspace")]
-pub use ax_cpu::uspace;
 #[cfg(feature = "smp")]
 pub use ax_plat::init::init_later_secondary;
 pub use ax_plat::{init::init_later, platform::platform_name};
+
+core::cfg_select! {
+    all(target_arch = "aarch64", feature = "hv") => {
+        /// Kernel translation regime selected by the platform's EL2 handoff.
+        pub use ax_cpu::mmu::El2 as KernelMmu;
+    }
+    _ => {
+        /// Kernel translation regime selected by the native platform handoff.
+        pub use ax_cpu::mmu::Native as KernelMmu;
+    }
+}
+
+fn init_cpu_traps() {
+    core::cfg_select! {
+        all(target_arch = "aarch64", feature = "hv") => {
+            // SAFETY: someboot's hypervisor handoff retains non-VHE EL2,
+            // masks IRQs and installs the runtime CPU anchor before HAL init.
+            unsafe { ax_cpu::boot::El2::init_trap() };
+        }
+        target_arch = "aarch64" => {
+            // SAFETY: the normal handoff enters EL1 on the high kernel mapping
+            // with IRQs masked and the runtime CPU anchor already installed.
+            unsafe { ax_cpu::boot::El1::init_trap() };
+        }
+        _ => {
+            ax_cpu::boot::init_trap();
+        }
+    }
+}
 
 /// Initializes the platform and boot argument.
 /// This function should be called as early as possible.
 pub fn init_early(cpu_id: usize, arg: usize) {
     dtb::init(arg);
-    ax_cpu::init::init_trap();
+    init_cpu_traps();
     ax_plat::init::init_early(cpu_id, arg);
 }
 
 /// Initializes the CPU trap vector and platform early state for a secondary CPU.
 #[cfg(feature = "smp")]
 pub fn init_early_secondary(cpu_id: usize) {
-    ax_cpu::init::init_trap();
+    init_cpu_traps();
     ax_plat::init::init_early_secondary(cpu_id);
 }
 
@@ -192,5 +213,5 @@ macro_rules! addr_of_sym {
         $e as *const () as usize
     };
 }
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(crate) use addr_of_sym;

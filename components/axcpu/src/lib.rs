@@ -1,11 +1,7 @@
-#![cfg_attr(not(test), no_std)]
+#![no_std]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![feature(extern_item_impls)]
 #![deny(missing_docs)]
 #![doc = include_str!("../README.md")]
-
-#[cfg(all(feature = "uspace", feature = "tls"))]
-compile_error!("ax-cpu userspace requires LinuxCurrent and cannot enable kernel TLS mode");
 
 #[macro_use]
 extern crate log;
@@ -13,49 +9,21 @@ extern crate log;
 #[macro_use]
 extern crate ax_memory_addr;
 
+pub use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
+
 #[macro_use]
 pub mod trap;
 
-pub use trap::TrapOrigin;
+pub(crate) use trap::TrapOrigin;
 
+#[cfg(feature = "context")]
 mod task_local;
-pub use task_local::TaskLocalState;
+#[cfg(feature = "context")]
+pub(crate) use task_local::TaskLocalState;
 
-pub mod cap;
+pub mod capability;
 
 pub mod paging;
-
-/// Kernel task-local storage base owned by one execution context.
-///
-/// This value follows a task across CPUs. It must never be used as a CPU-local
-/// anchor or initialized from an architecture per-CPU register.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct KernelTlsBase(usize);
-
-impl KernelTlsBase {
-    /// Creates a kernel TLS base from its virtual address.
-    pub const fn new(address: usize) -> Self {
-        Self(address)
-    }
-
-    /// Returns the virtual address represented by this TLS base.
-    pub const fn as_usize(self) -> usize {
-        self.0
-    }
-
-    pub(crate) fn for_task_context(requested: Self) -> Self {
-        if cfg!(feature = "tls") {
-            requested
-        } else {
-            assert!(
-                requested.0 == 0,
-                "LinuxCurrent task contexts must not own a kernel TLS register"
-            );
-            Self(0)
-        }
-    }
-}
 
 #[cfg(feature = "exception-table")]
 mod exception_table;
@@ -64,22 +32,30 @@ mod user_access;
 #[cfg(feature = "uspace")]
 mod uspace_common;
 #[cfg(feature = "uspace")]
-pub use user_access::{
-    UserAccessError, UserAtomicError, UserAtomicU32Op, user_atomic_u32, user_read_u32,
-};
+pub(crate) use user_access::UserAccessType;
 
-cfg_if::cfg_if! {
-    if #[cfg(target_arch = "x86_64")] {
-        mod x86_64;
-        pub use self::x86_64::*;
-    } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {
-        mod riscv;
-        pub use self::riscv::*;
-    } else if #[cfg(target_arch = "aarch64")]{
-        mod aarch64;
-        pub use self::aarch64::*;
-    } else if #[cfg(any(target_arch = "loongarch64"))] {
-        mod loongarch64;
-        pub use self::loongarch64::*;
-    }
-}
+mod arch;
+pub mod boot;
+pub mod cache;
+pub mod context;
+pub mod interrupt;
+pub mod mmu;
+pub mod registers;
+pub mod timer;
+
+#[cfg(all(target_arch = "aarch64", feature = "pmu"))]
+pub mod pmu;
+pub(crate) use arch::current::asm;
+#[cfg(feature = "uspace")]
+pub(crate) use arch::current::uspace;
+
+#[cfg(feature = "uspace")]
+pub mod user;
+
+pub mod barrier;
+
+#[cfg(feature = "context")]
+pub(crate) use context::KernelTlsBase;
+
+#[cfg(feature = "virtualization")]
+pub mod virtualization;

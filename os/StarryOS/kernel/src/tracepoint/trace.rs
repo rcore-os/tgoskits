@@ -1,3 +1,5 @@
+use core::sync::atomic::Ordering;
+
 use ax_tracepoint::TraceCmdLineCacheSnapshot;
 use axfs_ng_vfs::VfsResult;
 
@@ -59,6 +61,7 @@ impl DirectRwFsFileOps for TraceFile {
         let mut state = self.0.lock();
         state.snapshot = None;
         state.drain.reset();
+        super::TRACE_STATE.raw_epoch.fetch_add(1, Ordering::AcqRel);
         let mut trace_raw_pipe = super::TRACE_STATE.raw_pipe.lock();
         trace_raw_pipe.clear();
         Ok(buf.len())

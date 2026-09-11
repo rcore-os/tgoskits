@@ -35,8 +35,6 @@ pub(crate) use future_incompat::{
     FutureIncompatReportSession, cargo_target_dir_for, finish_future_incompat_report_session,
     finish_future_incompat_report_status, start_future_incompat_report_session,
 };
-#[cfg(test)]
-pub(crate) use info::toolchain_rustflags_for_features;
 pub(crate) use info::{
     ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, BuildInfo, append_cargo_rustflags,
     build_info_enables_backtrace_path, env_truthy, toolchain_rustflags,
@@ -51,6 +49,7 @@ pub(crate) use platform::{
     apply_makefile_features, cached_workspace_metadata, default_build_info_path_in_workspace,
     makefile_features_from_env,
 };
+pub(crate) use std_build::std_check_target_for;
 use std_build::*;
 
 #[cfg(test)]

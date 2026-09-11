@@ -1,0 +1,5 @@
+error: duplicate trait-ffi option
+ --> tests/ui/duplicate_option.rs:1:42
+  |
+1 | #[trait_ffi::def_extern_trait(abi = "C", abi = "Rust")]
+  |                                          ^^^

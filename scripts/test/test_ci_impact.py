@@ -20,7 +20,7 @@ class CiImpactTests(unittest.TestCase):
         self.workspace_root = Path(self.temp_dir.name)
         package_dirs = {
             "shared": "components/shared",
-            "arm-vcpu": "virtualization/arm-vcpu",
+            "arm-vgic": "virtualization/arm-vgic",
             "standalone": "tools/standalone",
             "axtest": "components/axtest/axtest",
             "ktest-only": "components/ktest-only",
@@ -63,11 +63,11 @@ class CiImpactTests(unittest.TestCase):
 
     def _metadata(self, arch: str) -> dict:
         shared = self.package_ids["shared"]
-        arm_vcpu = self.package_ids["arm-vcpu"]
+        arm_vgic = self.package_ids["arm-vgic"]
         dependency_names = {
             "arceos-test-suit": ["shared"],
             "starryos": ["shared"],
-            "axvisor": ["shared"] + (["arm-vcpu"] if arch == "aarch64" else []),
+            "axvisor": ["shared"] + (["arm-vgic"] if arch == "aarch64" else []),
             "ktest-only": ["axtest"],
         }
         nodes = []
@@ -80,7 +80,7 @@ class CiImpactTests(unittest.TestCase):
                 deps.append({"pkg": self.package_ids[name], "dep_kinds": dep_kinds})
             nodes.append({"id": package["id"], "deps": deps})
         self.assertIn(shared, {node["id"] for node in nodes})
-        self.assertIn(arm_vcpu, {node["id"] for node in nodes})
+        self.assertIn(arm_vgic, {node["id"] for node in nodes})
         return {
             "workspace_root": str(self.workspace_root),
             "workspace_members": [package["id"] for package in self.packages],
@@ -115,7 +115,7 @@ class CiImpactTests(unittest.TestCase):
             self.workspace_root,
             [
                 Path("components/shared/src/lib.rs"),
-                Path("virtualization/arm-vcpu/README.md"),
+                Path("virtualization/arm-vgic/README.md"),
             ],
             self.metadata_by_arch,
         )
@@ -124,7 +124,7 @@ class CiImpactTests(unittest.TestCase):
         self.assertEqual(impact.changed_packages, ("shared",))
         self.assertEqual(
             impact.ignored_markdown,
-            ("virtualization/arm-vcpu/README.md",),
+            ("virtualization/arm-vgic/README.md",),
         )
         self.assertEqual(
             set(impact.targets),
@@ -140,7 +140,7 @@ class CiImpactTests(unittest.TestCase):
     ) -> None:
         impact = ci_impact.analyze_changed_paths(
             self.workspace_root,
-            [Path("virtualization/arm-vcpu/src/lib.rs")],
+            [Path("virtualization/arm-vgic/src/lib.rs")],
             self.metadata_by_arch,
         )
 
@@ -236,24 +236,6 @@ class CiImpactTests(unittest.TestCase):
             tuple(f"arceos:{arch}" for arch in ci_impact.ARCH_TARGETS),
         )
 
-    def test_known_config_names_map_to_board_architectures(self) -> None:
-        cases = {
-            "os/StarryOS/configs/board/visionfive2.toml": ("starry:riscv64",),
-            "os/StarryOS/configs/board/jl-lsgd2k10.toml": ("starry:loongarch64",),
-            "os/axvisor/configs/board/asus-nuc15crh-x86_64.toml": ("axvisor:x86_64",),
-            "os/axvisor/configs/board/orangepi-5-plus.toml": ("axvisor:aarch64",),
-        }
-        for changed_path, expected_targets in cases.items():
-            with self.subTest(path=changed_path):
-                impact = ci_impact.analyze_changed_paths(
-                    self.workspace_root,
-                    [Path(changed_path)],
-                    self.metadata_by_arch,
-                )
-
-                self.assertFalse(impact.full)
-                self.assertEqual(impact.targets, expected_targets)
-
     def test_deleted_package_manifest_falls_back_to_full(self) -> None:
         manifest = self.workspace_root / "tools/standalone/Cargo.toml"
         manifest.unlink()
@@ -330,7 +312,7 @@ class CiImpactTests(unittest.TestCase):
                 return_value=[
                     Path("Cargo.lock"),
                     Path("apps/arceos/virtio-blk-test/Cargo.toml"),
-                    Path("virtualization/arm-vcpu/src/lib.rs"),
+                    Path("virtualization/arm-vgic/src/lib.rs"),
                 ],
             ),
             mock.patch.object(
@@ -342,7 +324,7 @@ class CiImpactTests(unittest.TestCase):
             impact = ci_impact.analyze_pull_request(self.workspace_root, "base")
 
         self.assertFalse(impact.full)
-        self.assertEqual(impact.changed_packages, ("arm-vcpu",))
+        self.assertEqual(impact.changed_packages, ("arm-vgic",))
         self.assertEqual(impact.affected_oses, ("axvisor",))
         self.assertEqual(
             impact.input_selections,

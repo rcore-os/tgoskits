@@ -2,6 +2,7 @@ mod args;
 mod assets;
 mod board;
 mod board_assets;
+mod nixos;
 mod qemu_discovery;
 mod qemu_run;
 mod suite;
@@ -11,18 +12,17 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-pub use args::{ArgsTest, ArgsTestBoard, ArgsTestQemu, TestCommand};
+pub use args::{ArgsTest, ArgsTestBoard, ArgsTestNixos, ArgsTestQemu, TestCommand};
 pub(crate) use assets::starry_case_asset_config;
 pub(crate) use board::collect_board_test_groups;
 pub(in crate::starry) use board_assets::{
     PreparedBoardSessionAssets, collect_upload_paths, copy_declared_session_files,
 };
+pub(crate) use nixos::{run as run_nixos, supported_cases};
 pub(crate) use qemu_discovery::{
     direct_starry_qemu_case_exists, discover_qemu_cases, parse_starry_qemu_case_selection,
     parse_test_target,
 };
-#[cfg(test)]
-pub(crate) use suite::render_qemu_case_summary;
 pub(crate) use suite::{
     discover_all_qemu_cases_with_archs, discover_board_test_groups, finalize_qemu_case_run,
     require_test_suite_dir,
@@ -41,6 +41,7 @@ pub(super) async fn test(starry: &mut Starry, args: ArgsTest) -> anyhow::Result<
     match args.command {
         TestCommand::Qemu(args) => starry.test_qemu(args).await,
         TestCommand::Board(args) => starry.test_board(args).await,
+        TestCommand::Nixos(args) => nixos::run(starry, args).await,
     }
 }
 

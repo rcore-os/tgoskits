@@ -1,6 +1,6 @@
 [package]
 name = "starry-vm"
-version = "0.5.14"
+version = "0.6.0"
 edition.workspace = true
 authors = ["朝倉水希 <asakuramizu111@gmail.com>", "Mivik <mivikq@gmail.com>"]
 description = "Virtual memory management library for Starry OS"
@@ -18,7 +18,6 @@ bytemuck = { version = "1.24", features = [
     "const_zeroed",
     "zeroable_maybe_uninit",
 ] }
-extern-trait = { workspace = true }
 thiserror.workspace = true
 
 [dev-dependencies]

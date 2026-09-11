@@ -7,10 +7,11 @@ keywords = ["os", "usb", "xhci", "driver"]
 license.workspace = true
 name = "crab-usb"
 repository.workspace = true
-version = "0.11.0"
+version = "0.12.0"
 
 [features]
 default = []
+host-test = ["ax-sync/host-test"]
 libusb = ["umod"]
 umod = ["libusb1-sys"]
 
@@ -32,7 +33,7 @@ nb = "1.1"
 num_enum = {version = "0.7", default-features = false}
 thiserror = {workspace = true}
 tock-registers.workspace = true
-trait-ffi = "0.2.4"
+trait-ffi.workspace = true
 usb-if = {workspace = true}
 xhci = "0.9"
 libusb1-sys = {version = "0.7", optional = true}

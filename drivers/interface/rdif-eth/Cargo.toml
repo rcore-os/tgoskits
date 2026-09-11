@@ -7,7 +7,7 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-eth"
 repository.workspace = true
-version = "0.4.1"
+version = "0.6.0"
 
 [dependencies]
 dma-api = { workspace = true }
@@ -16,7 +16,11 @@ thiserror = { version = "2", default-features = false }
 zeroize.workspace = true
 
 [dev-dependencies]
-ax-sync = { path = "../../../os/arceos/modules/axsync", features = ["host-test"] }
 dma-api = { workspace = true, features = ["pool"] }
 
 [features]
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+# Path-only test support is stripped from published packages, avoiding a cycle
+# through the runtime's driver dependencies.
+ax-runtime = { path = "../../../os/arceos/modules/axruntime", features = ["host-test"] }

@@ -20,7 +20,7 @@
 ```mermaid
 flowchart TD
     GA["GlobalAllocator"] --> B["SpinMutex<BuddyAllocator>"]
-    GA --> EI["eii hooks"]
+    GA --> EI["BuddySlabIf"]
     EI --> SP["slab_pool()"]
 
     B --> PM["PageMeta[]"]
@@ -83,15 +83,14 @@ sequenceDiagram
 
 ```toml
 [dependencies]
-buddy-slab-allocator = "0.2.0"
+ax-crate-interface = "0.5"
+buddy-slab-allocator = "0.5"
 ```
 
 ## 使用 `GlobalAllocator`
 
 ```rust
-#![feature(extern_item_impls)]
-
-use buddy_slab_allocator::eii::{slab_pool_impl, virt_to_phys_impl};
+use buddy_slab_allocator::interface::BuddySlabIf;
 use buddy_slab_allocator::{GlobalAllocator, PerCpuSlab, SlabPoolTrait, StaticSlabPool};
 use core::alloc::Layout;
 
@@ -104,14 +103,17 @@ fn current_cpu_id() -> usize {
 static SLAB_POOL: StaticSlabPool<PAGE_SIZE, 1> =
     StaticSlabPool::new([PerCpuSlab::new(0)], current_cpu_id);
 
-#[virt_to_phys_impl]
-fn virt_to_phys(vaddr: usize) -> usize {
-    vaddr
-}
+struct PlatformBuddySlabIf;
 
-#[slab_pool_impl]
-fn slab_pool() -> &'static dyn SlabPoolTrait {
-    &SLAB_POOL
+#[ax_crate_interface::impl_interface]
+impl BuddySlabIf for PlatformBuddySlabIf {
+    fn virt_to_phys(vaddr: usize) -> usize {
+        vaddr
+    }
+
+    fn slab_pool() -> &'static dyn SlabPoolTrait {
+        &SLAB_POOL
+    }
 }
 
 let allocator = GlobalAllocator::<PAGE_SIZE>::new();
@@ -217,8 +219,9 @@ unsafe {
   `dealloc` 默认路由。
 - `SlabPoolExt`
   callback 风格辅助接口：`with_current_slab()` 和 `with_owner_slab()`。
-- `eii`
-  声明 `slab_pool()` 与 `virt_to_phys()`，供平台侧实现。
+- `interface::BuddySlabIf`
+  声明平台侧提供的 `slab_pool()` 与 `virt_to_phys()` 服务，并通过
+  `ax-crate-interface` 生成分配器侧调用入口。
 
 `managed_bytes` 只统计可分配 heap，不包含 region 前缀 metadata。
 `allocated_bytes` 表示后端页占用，不是用户请求的 `layout.size()` 精确求和。

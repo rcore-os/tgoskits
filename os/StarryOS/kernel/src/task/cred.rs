@@ -7,10 +7,12 @@
 
 use alloc::sync::Arc;
 
+#[cfg(feature = "rga")]
+use linux_raw_sys::general::CAP_SYS_RAWIO;
 use linux_raw_sys::general::{
-    CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_LAST_CAP, CAP_NET_RAW, CAP_SETGID, CAP_SETPCAP,
-    CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_RAWIO,
-    CAP_SYS_RESOURCE,
+    CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_IPC_LOCK, CAP_KILL, CAP_LAST_CAP, CAP_NET_RAW,
+    CAP_PERFMON, CAP_SETGID, CAP_SETPCAP, CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE,
+    CAP_SYS_NICE, CAP_SYS_PTRACE, CAP_SYS_RESOURCE, CAP_SYS_TIME,
 };
 
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
@@ -96,7 +98,8 @@ impl Cred {
     /// The bounding set remains full so future privileged transitions can
     /// still be represented, but the effective/permitted/ambient sets start
     /// empty.
-    pub fn unprivileged(uid: u32, gid: u32) -> Self {
+    #[cfg(all(test, not(axtest)))]
+    fn unprivileged(uid: u32, gid: u32) -> Self {
         Self {
             uid,
             gid,
@@ -115,6 +118,18 @@ impl Cred {
             securebits: 0,
             keep_capabilities: false,
         }
+    }
+
+    /// Builds the subjective credential used by access checks with real IDs.
+    /// The live credential is never changed while resolving a path.
+    pub fn for_real_id_access(&self) -> Self {
+        let mut access = self.clone();
+        access.fsuid = self.uid;
+        access.fsgid = self.gid;
+        if self.securebits & SECBIT_NO_SETUID_FIXUP == 0 {
+            access.cap_effective = if self.uid == 0 { self.cap_permitted } else { 0 };
+        }
+        access
     }
 
     /// Check whether a capability is present in the effective set.
@@ -196,6 +211,17 @@ impl Cred {
         self.has_cap(CAP_SYS_RESOURCE)
     }
 
+    /// Check whether this credential may set the system clock
+    /// (equivalent to `CAP_SYS_TIME`).
+    pub fn has_cap_sys_time(&self) -> bool {
+        self.has_cap(CAP_SYS_TIME)
+    }
+
+    /// Check whether this credential may bypass `RLIMIT_MEMLOCK`.
+    pub fn has_cap_ipc_lock(&self) -> bool {
+        self.has_cap(CAP_IPC_LOCK)
+    }
+
     /// Check whether this credential may bypass file read/write/execute
     /// permission checks (equivalent to `CAP_DAC_OVERRIDE`).
     pub fn has_cap_dac_override(&self) -> bool {
@@ -206,6 +232,19 @@ impl Cred {
     /// operations (equivalent to `CAP_SYS_ADMIN`).
     pub fn has_cap_sys_admin(&self) -> bool {
         self.has_cap(CAP_SYS_ADMIN)
+    }
+
+    /// Check whether this credential may bypass perf monitoring restrictions.
+    ///
+    /// Linux keeps `CAP_SYS_ADMIN` as a compatibility fallback for
+    /// `CAP_PERFMON`.
+    pub fn has_cap_perfmon(&self) -> bool {
+        self.has_cap(CAP_PERFMON) || self.has_cap_sys_admin()
+    }
+
+    /// Check whether this credential may send signals across UID boundaries.
+    pub fn has_cap_kill(&self) -> bool {
+        self.has_cap(CAP_KILL)
     }
 
     /// Check whether this credential may reboot the system
@@ -219,6 +258,7 @@ impl Cred {
     /// capability Linux requires for `/dev/mem`-class access). Gates handing a
     /// raw physical address to a DMA engine, which can otherwise reach arbitrary
     /// system memory.
+    #[cfg(feature = "rga")]
     pub fn has_cap_sys_rawio(&self) -> bool {
         self.has_cap(CAP_SYS_RAWIO)
     }
@@ -229,10 +269,9 @@ impl Cred {
         self.has_cap(CAP_SYS_MODULE)
     }
 
-    /// Check whether this credential may inspect another process
-    /// (equivalent to `CAP_SYS_PTRACE` — approximated as euid == 0).
+    /// Check whether this credential may inspect another process.
     pub fn has_cap_sys_ptrace(&self) -> bool {
-        self.euid == 0
+        self.has_cap(CAP_SYS_PTRACE)
     }
 
     /// Check whether this credential has the privilege to change file
@@ -314,36 +353,49 @@ fn credential_capability_rules_hold_for_test() -> bool {
 
     // Exercise every has_cap_* helper at least once on a root credential so
     // the bit checks are covered. All of these must be true for root.
+    #[cfg(feature = "rga")]
+    let root_rawio = root.has_cap_sys_rawio();
+    #[cfg(not(feature = "rga"))]
+    let root_rawio = true;
     let root_capability_helpers = root.has_cap_setuid()
         && root.has_cap_setgid()
         && root.has_cap_net_raw()
         && root.has_cap_sys_nice()
         && root.has_cap_sys_resource()
+        && root.has_cap_sys_time()
+        && root.has_cap_ipc_lock()
         && root.has_cap_sys_admin()
         && root.has_cap_sys_boot()
-        && root.has_cap_sys_rawio()
+        && root_rawio
         && root.has_cap_sys_module()
         && root.has_cap_chown()
         && root.has_cap_dac_override()
         && root.has_cap_fowner()
         && root.has_cap_setpcap();
 
-    // euid == 0 grants CAP_SYS_PTRACE under the StarryOS approximation.
+    // Root starts with every known effective capability, including
+    // CAP_SYS_PTRACE.
     let root_ptrace = root.has_cap_sys_ptrace();
 
     // Build a credential with only CAP_NET_RAW effective to confirm the
     // remaining capability helpers report false for non-root.
     let mut net_raw_only = Cred::unprivileged(1000, 100);
     net_raw_only.cap_effective = cap_bit(CAP_NET_RAW);
+    #[cfg(feature = "rga")]
+    let net_raw_lacks_rawio = !net_raw_only.has_cap_sys_rawio();
+    #[cfg(not(feature = "rga"))]
+    let net_raw_lacks_rawio = true;
     let selective_capability_helpers = net_raw_only.has_cap_net_raw()
         && !net_raw_only.has_cap_setuid()
         && !net_raw_only.has_cap_setgid()
         && !net_raw_only.has_cap_sys_admin()
         && !net_raw_only.has_cap_sys_boot()
-        && !net_raw_only.has_cap_sys_rawio()
+        && net_raw_lacks_rawio
         && !net_raw_only.has_cap_sys_module()
         && !net_raw_only.has_cap_sys_nice()
         && !net_raw_only.has_cap_sys_resource()
+        && !net_raw_only.has_cap_sys_time()
+        && !net_raw_only.has_cap_ipc_lock()
         && !net_raw_only.has_cap_chown()
         && !net_raw_only.has_cap_dac_override()
         && !net_raw_only.has_cap_fowner()
@@ -372,6 +424,33 @@ fn credential_capability_rules_hold_for_test() -> bool {
 
 #[cfg(all(test, not(axtest)))]
 mod tests {
+    use super::{Cred, SECBIT_NO_SETUID_FIXUP};
+
+    #[test]
+    fn real_id_access_applies_identity_and_capability_fixups() {
+        let mut setuid_root = Cred::root();
+        setuid_root.uid = 1000;
+        setuid_root.gid = 100;
+        let access = setuid_root.for_real_id_access();
+        assert_eq!((access.fsuid, access.fsgid), (1000, 100));
+        assert_eq!(access.cap_effective, 0);
+
+        let mut dropped_effective = Cred::root();
+        dropped_effective.euid = 1000;
+        dropped_effective.fsuid = 1000;
+        dropped_effective.egid = 100;
+        dropped_effective.fsgid = 100;
+        dropped_effective.cap_effective = 0;
+        let access = dropped_effective.for_real_id_access();
+        assert_eq!((access.fsuid, access.fsgid), (0, 0));
+        assert_eq!(access.cap_effective, access.cap_permitted);
+
+        setuid_root.securebits = SECBIT_NO_SETUID_FIXUP;
+        let access = setuid_root.for_real_id_access();
+        assert_eq!((access.fsuid, access.fsgid), (1000, 100));
+        assert_eq!(access.cap_effective, setuid_root.cap_effective);
+    }
+
     #[test]
     fn credential_capability_rules_hold() {
         assert!(super::credential_capability_rules_hold_for_test());

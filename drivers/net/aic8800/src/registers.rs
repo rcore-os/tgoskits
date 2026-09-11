@@ -34,7 +34,7 @@ pub(crate) const INTERRUPTS_ENABLED: u8 = INTERRUPT_ENABLE::DATA::SET.value
     | INTERRUPT_ENABLE::ERROR::SET.value;
 
 #[derive(Clone, Copy)]
-enum ReceiveLengthEncoding {
+enum RegisterLayout {
     V1,
     V3,
 }
@@ -58,7 +58,7 @@ pub(crate) struct RegisterMap {
     pub sleep_status: Option<u32>,
     pub wakeup: Option<u32>,
     pub write_fifo: u32,
-    receive_length_encoding: ReceiveLengthEncoding,
+    layout: RegisterLayout,
 }
 
 impl RegisterMap {
@@ -73,7 +73,7 @@ impl RegisterMap {
             sleep_status: Some(0x01),
             wakeup: Some(0x02),
             write_fifo: 0x10,
-            receive_length_encoding: ReceiveLengthEncoding::V3,
+            layout: RegisterLayout::V3,
         }
     }
 
@@ -88,18 +88,18 @@ impl RegisterMap {
             sleep_status: None,
             wakeup: Some(0x09),
             write_fifo: 0x07,
-            receive_length_encoding: ReceiveLengthEncoding::V1,
+            layout: RegisterLayout::V1,
         }
     }
 
     pub(crate) fn receive_length(self, value: u8) -> ReceiveLength {
-        match self.receive_length_encoding {
-            ReceiveLengthEncoding::V1 => match value {
+        match self.layout {
+            RegisterLayout::V1 => match value {
                 0 => ReceiveLength::Empty,
                 1..64 => ReceiveLength::Blocks(value),
                 _ => ReceiveLength::ByteMode,
             },
-            ReceiveLengthEncoding::V3 => {
+            RegisterLayout::V3 => {
                 if value & INTERRUPT_STATUS::OTHER::SET.value != 0 {
                     ReceiveLength::OtherInterrupt
                 } else if value == 0 {
@@ -107,7 +107,7 @@ impl RegisterMap {
                 } else {
                     // Vendor D80 IRQ handler composite encoding: the status
                     // byte folds the function-2 queue sentinel into bit 3.
-                    // 120 (and 127) are byte-mode markers, 113..118 and
+                    // 119, 120 and 127 are byte-mode markers, 113..118 and
                     // 121..126 belong to the function-2 queue (1..6 blocks),
                     // and only 1..112 are plain function-1 block counts.
                     let function_two = value | (1 << 3);
@@ -139,9 +139,9 @@ impl RegisterMap {
     /// drained mailbox reports 128 (0x80), which a seven-bit mask would read
     /// as zero and stall the TX path forever.
     pub(crate) fn flow_credits(self, value: u8) -> u8 {
-        match self.receive_length_encoding {
-            ReceiveLengthEncoding::V3 => value,
-            ReceiveLengthEncoding::V1 => {
+        match self.layout {
+            RegisterLayout::V3 => value,
+            RegisterLayout::V1 => {
                 (value & FLOW_CONTROL::CREDITS.mask) >> FLOW_CONTROL::CREDITS.shift
             }
         }

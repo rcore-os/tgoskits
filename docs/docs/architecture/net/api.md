@@ -21,7 +21,7 @@ pub use self::{
         NetQueueStats, NetworkDeviceInput, NetworkQueueRuntime,
         NetworkRuntimeBuilder, NetworkRuntimeError, PinnedNetIrqAction,
         PinnedNetIrqError, PinnedNetIrqOutcome, PinnedNetIrqRegistrar,
-        PinnedNetIrqRegistration, ResolvedNetIrqSource,
+        PinnedNetIrqRegistration, ResolvedNetIrqSource, TxQueueDiscipline,
     },
     socket::{
         CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions,
@@ -112,7 +112,7 @@ pub struct StaticIpConfig {
 
 ```rust
 pub fn init_network(
-    queue_runtime: Option<NetworkQueueRuntime>,
+    queue_runtime: NetworkQueueRuntime,
     frame_ports: EthernetFramePortList,
     config: NetworkConfig,
 );
@@ -127,6 +127,9 @@ pub fn init_network(
 - 安装已经通过 fixed-affinity 握手并完成 IRQ rearm 的 queue runtime。
 - 在选定 CPU 启动唯一 protocol executor。
 
+`NetworkQueueRuntime` 是必选参数：物理 NIC 必须已经完成 typed IRQ source 解析、
+fixed-affinity worker 启动和初始 rearm，网络栈没有 no-IRQ 或周期轮询降级路径。
+loopback 可以作为唯一接口存在，但仍由同一个 runtime 选择并持有唯一 protocol owner。
 `init_network()` 是一次性初始化入口，重复初始化会触发全局单例保护。
 
 ### 2.3 轮询触发
@@ -141,31 +144,51 @@ pub fn request_poll();
 
 ```rust
 pub fn request_poll() {
-    publish_poll_request(&NET_POLL_REQUESTED, || {
-        NET_POLL_WAKE.notify_one(true);
-    });
+    let _ = PROTOCOL_POLL.request();
 }
 ```
 
-`publish_poll_request()` 使用 `swap(false→true)` 合并重复请求：只有从未 pending 变为 pending 的第一次调用会真正 `notify_one()`。这样 socket 热路径可以频繁请求协议推进，而不会在 worker 尚未消费请求时制造重复唤醒。
+`ProtocolPollRuntime::request()` 先对 `requested` generation 做 `fetch_add`，再由
+`schedule()` 用 `swap(false→true)` 合并重复请求：只有从未 scheduled 变为 scheduled
+的第一次调用会真正唤醒固定 CPU 的 protocol executor。这样 socket 热路径可以频繁请求
+协议推进，而不会在 worker 尚未消费请求时制造重复唤醒。
 
 ### 2.4 Vsock 初始化
 
-`init_vsock()` 只负责发布 vsock 设备并启动其连接管理运行时，不参与 Ethernet `Router` 或 smoltcp `Interface` 的初始化。当前实现从传入列表末尾取一个设备，因此调用方必须把设备选择视为显式约束，而不能假定函数会注册列表中的第一个或全部设备。
+`init_vsock()` 只负责发布 vsock 设备并启动其连接管理运行时，不参与 Ethernet
+`Router` 或 smoltcp `Interface` 的初始化。设备输入必须同时携带已解析的 IRQ 和从
+driver 一次性转移的 hard-IRQ/task-rearm capability；当前拓扑只允许零个或恰好一个
+设备，多个设备会显式失败，不能再静默丢弃列表成员。
 
 ```rust
 #[cfg(feature = "vsock")]
-pub fn init_vsock(vsock_devs: VsockDeviceList);
+pub fn init_vsock(
+    devices: VsockDeviceList,
+    registrar: &dyn PinnedNetIrqRegistrar,
+    active_cpus: CpuSet,
+) -> Result<(), VsockRuntimeError>;
 
 #[cfg(feature = "vsock")]
 pub type VsockDevice = Box<dyn rdif_vsock::Interface>;
 #[cfg(feature = "vsock")]
-pub type VsockDeviceList = Vec<VsockDevice>;
+pub type VsockDeviceList = Vec<VsockDeviceInput>;
+
+pub struct VsockDeviceInput {
+    pub name: String,
+    pub device: VsockDevice,
+    pub irq: IrqId,
+    pub endpoints: VsockIrqEndpoints,
+}
 ```
 
-vsock 不进入 smoltcp `SocketSet`，也不实现 `ax-net` 内部 IP `Device` trait。它通过 `rdif_vsock::Interface` 和 vsock connection manager 进入 AF_VSOCK socket backend。
+vsock 不进入 smoltcp `SocketSet`，也不实现 `ax-net` 内部 IP `Device` trait。它通过
+`rdif_vsock::Interface` 和 vsock connection manager 进入 AF_VSOCK socket backend。
+固定 worker 复用 Ethernet runtime 选定的 protocol owner CPU；hard IRQ 只 ACK/coalesce，
+worker 在 task context 预算 drain 后执行 rearm/recheck，没有 timer fallback。
 
-`init_vsock()` 内部用 `pop()` 取传入列表的**最后一个**设备并注册，其余设备忽略；列表为空时仅记录 warning，不创建“已初始化但无设备”的独立状态位。AF_VSOCK 后续操作若没有设备，会在 `device::vsock_*()` 路径返回 `NotFound`。
+列表为空时仅记录 warning，不创建“已初始化但无设备”的独立状态位。没有注册设备时，
+AF_VSOCK 后续操作会在 `device::vsock_*()` 路径返回 `NotFound`。设备、IRQ binding、
+endpoint transfer、worker affinity 或 registration 任一步不完整都会 fail closed。
 
 ## 3. 运行时查询
 
@@ -195,7 +218,7 @@ pub fn remove_interface_ipv4(
 
 `set_interface_ipv4()` / `remove_interface_ipv4()` 是 StarryOS rtnetlink 使用的运行期控制入口。当前每个 Ethernet 接口最多保存一个 IPv4 地址：设置第二个地址返回 `AlreadyExists`，删除必须与现有地址和 prefix 完全一致。设置操作会移除该接口的 DHCP 状态、安装 connected route，但不会创建 default route 或 gateway；删除也会关闭该接口 DHCP 并移除它贡献的路由和 DHCP DNS。
 
-`NetDevStats` 按接口返回累计的 `rx/tx bytes`、`packets`、`errors` 和 `dropped`。Ethernet 的字节口径是“不含 FCS 的 L2 frame”，loopback 则按 IP packet 长度；见[多设备实现](devices.md#9-网卡统计)。
+`NetDevStats` 按接口返回累计的 `rx/tx bytes`、`packets`、`errors` 和 `dropped`。Ethernet 的字节口径是“不含 FCS 的 L2 frame”，loopback 则按 IP packet 长度；统计快照由 `net/ax-net/src/router.rs` 的 `Router::net_dev_stats()` 汇总。
 
 `InterfaceId` 是稳定接口 ID，同时作为 StarryOS/Linux ifindex 来源：
 
@@ -520,7 +543,7 @@ pub struct TcpInfo {
 | `SendBuffer` / `ReceiveBuffer` | TCP/UDP/raw/Unix stream 等具体 backend | IP socket 返回固定 buffer 预算；`GeneralOptions` 只接受 set buffer TODO，不实际调整已分配缓冲区 |
 | `SendBufferForce` | 当前未实现 | 返回 `ENOPROTOOPT` |
 | `KeepAlive` | TCP | TCP backend 同步到 smoltcp keep-alive 配置；非 TCP backend 返回不支持 |
-| `SendTimeout` / `ReceiveTimeout` | `GeneralOptions` | 被 `send_poller*` / `recv_poller*` 使用，决定阻塞等待超时 |
+| `SendTimeout` / `ReceiveTimeout` | `GeneralOptions` | 形成 `SocketWaitPolicy`；由 ArceOS/StarryOS 驱动 `poll_socket_io()` 时执行，`ax-net` 不解释用户信号或自行 park task |
 | `PassCredentials` | Unix stream/datagram/seqpacket | 接收端启用时传递发送任务的真实 credentials |
 | `ReceiveTimestamp` | Unix datagram/seqpacket | 在消息入队时记录 wall-clock timestamp，并作为 `SocketCmsg::Timestamp` 返回 |
 | `PeerCredentials` | Unix stream/datagram/seqpacket | 返回 transport 保存的 `UnixCredentials`；StarryOS 还投影稳定进程身份到调用者 PID namespace |
@@ -595,9 +618,10 @@ task-context `NetPollIrqControl` 和一个或多个 move-only
 `NetHardIrqEndpoint`。driver core 不暴露动态 queue 创建、设备级 IRQ 开关或 raw
 完整设备 handle。
 
-group 还可以携带 move-only `NetOwnerStartup`。它只在 worker 已固定到 owner CPU、IRQ
-callback 已注册但仍 disabled 时执行，供固件下载或 bus 创建等不能在任意 probe CPU
-运行的初始化使用。
+group 还可以携带 move-only `NetOwnerStartup`。它在 worker 已固定到 owner CPU、IRQ
+callback 已注册并 enable 后、initial refill 和队列发布前执行。驱动可以在此完成
+传输层初始化、身份确认和固件下载，复用数据面的 owner 约束；runtime 只消费
+`start / advance / cancel` 的结果，不解释具体设备协议。
 
 ### 7.1 DMA 与提交错误
 
@@ -660,10 +684,19 @@ pub trait PinnedNetIrqRegistrar: Sync {
 backlog；`Fifo` 的 `max_frames` 是 packet limit，存储只在第一次 busy 入队时分配。
 该接口当前按设备生效，不是 per-hardware-queue 配置。
 
-`NetworkRuntimeBuilder` 一次性消费全部设备，构造 shared-IRQ affinity domain，等待
-worker pin-ready，再以 fixed owner CPU 注册 disabled IRQ。owner startup、initial
-refill/rearm、IRQ enable 与 startup transaction 任一步失败都会反向回滚；没有运行时
-新增/删除物理 NIC 的公共入口。
+`NetworkRuntimeBuilder` 一次性消费候选设备，构造 shared-IRQ affinity domain，等待
+worker pin-ready，再以 fixed owner CPU 注册 disabled IRQ 并 enable。IRQ enable、
+initial refill/rearm 与 startup transaction 失败都会回滚。owner startup 的结果
+决定候选设备是否可以继续发布：
+
+- `Ready`：执行 initial refill/rearm，准备发布队列。
+- `WaitForInterrupt`、`WaitForInterruptUntil` 或 `RetryAt`：按中断或 deadline 等待，尚未完成启动。
+- `DeviceNotPresent`：只有 `cancel()` 成功并 disable+synchronize 对应 IRQ callback 后才剔除该 group；设备没有剩余 group 时不发布接口，剩余设备继续初始化。
+- 其他错误、取消失败或 IRQ 同步失败：返回初始化错误；资源释放仍要求 IRQ 与 DMA 安全证明，不能确认时隔离。
+
+`DeviceNotPresent` 的非致命处理仅适用于 owner startup 的发布前阶段，不是运行期
+忽略设备错误的通用策略。候选登记不保证接口可用；没有运行时新增或删除物理
+NIC 的公共入口。
 
 ### 7.4 Wi-Fi 控制
 
@@ -709,7 +742,7 @@ cfg80211 WEXT backend 的兼容承诺。passphrase 到 PMK 的 PBKDF2 属于产�
 Unix path socket 需要外部文件系统 namespace provider：
 
 ```rust
-pub fn register_unix_namespace(ns: impl UnixNamespace + 'static);
+ax_net::unix::register_unix_namespace(ns: impl UnixNamespace + 'static);
 ```
 
 abstract Unix socket 使用 `ax-net` 内部内存 namespace；path socket 通过注册的 `UnixNamespace` 完成路径绑定和解析。

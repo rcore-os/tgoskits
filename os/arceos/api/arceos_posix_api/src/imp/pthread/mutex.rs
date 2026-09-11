@@ -3,7 +3,6 @@ use core::{
     ffi::c_int,
     mem,
     ptr::{self, NonNull},
-    sync::atomic::{AtomicBool, Ordering},
 };
 
 use ax_lazyinit::LazyLock;
@@ -11,7 +10,7 @@ use ax_lazyinit::LazyLock;
 use crate::{PosixError, PosixResult, ctypes, sync::Mutex, utils::check_null_mut_ptr};
 
 const STATIC_MUTEX_SENTINEL: usize = usize::MAX;
-static STATIC_MUTEX_INIT_LOCK: AtomicBool = AtomicBool::new(false);
+static STATIC_MUTEX_INIT_LOCK: Mutex<()> = Mutex::new(());
 static MUTEXES: LazyLock<Mutex<BTreeMap<usize, ForceSendSync<NonNull<PthreadMutex>>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
@@ -44,17 +43,8 @@ impl PthreadMutex {
 }
 
 fn with_static_mutex_init_lock<R>(f: impl FnOnce() -> R) -> R {
-    while STATIC_MUTEX_INIT_LOCK
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        while STATIC_MUTEX_INIT_LOCK.load(Ordering::Acquire) {
-            core::hint::spin_loop();
-        }
-    }
-    let result = f();
-    STATIC_MUTEX_INIT_LOCK.store(false, Ordering::Release);
-    result
+    let _init = STATIC_MUTEX_INIT_LOCK.lock();
+    f()
 }
 
 #[derive(Clone, Copy)]

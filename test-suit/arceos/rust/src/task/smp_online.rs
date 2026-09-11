@@ -1,8 +1,4 @@
 use std::{
-    os::arceos::{
-        api::task::{AxCpuMask, ax_set_current_affinity},
-        modules::{ax_hal::percpu::this_cpu_id, ax_ipi},
-    },
     println,
     sync::{
         Arc,
@@ -12,9 +8,27 @@ use std::{
     vec::Vec,
 };
 
+use ax_std::os::arceos::{
+    api::task::{AxCpuMask, ax_set_current_affinity},
+    modules::{
+        ax_hal::{irq::CpuId, percpu::this_cpu_id},
+        ax_ipi,
+    },
+};
+
 static IPI_ACKS: AtomicUsize = AtomicUsize::new(0);
 
 const IPI_WAIT_POLLS: usize = 100_000;
+
+unsafe fn acknowledge_ipi(argument: *mut ()) {
+    let expected_cpu = argument.addr();
+    assert_eq!(
+        this_cpu_id(),
+        expected_cpu,
+        "IPI hard call ran on the wrong CPU"
+    );
+    IPI_ACKS.fetch_add(1, Ordering::Relaxed);
+}
 
 fn pin_current_to_cpu(cpu_id: usize) {
     assert!(
@@ -45,7 +59,7 @@ fn wait_for_ipi_acks(expected: usize) -> bool {
 }
 
 pub fn run() -> crate::TestResult {
-    let cpu_num = thread::available_parallelism().unwrap().get();
+    let cpu_num = ax_std::os::arceos::task::sched::cpu_topology_len().unwrap();
     println!("task_smp_online: cpu_num={cpu_num}");
     assert!(
         cpu_num >= 2,
@@ -78,16 +92,10 @@ pub fn run() -> crate::TestResult {
     IPI_ACKS.store(0, Ordering::Relaxed);
     let remote_count = cpu_num - 1;
     for remote_cpu in 1..cpu_num {
-        let expected_cpu = remote_cpu;
-        ax_ipi::legacy::run_on_cpu(remote_cpu, move || {
-            assert_eq!(
-                this_cpu_id(),
-                expected_cpu,
-                "IPI callback ran on the wrong CPU"
-            );
-            IPI_ACKS.fetch_add(1, Ordering::Relaxed);
-        })
-        .expect("failed to send SMP online callback IPI");
+        // SAFETY: the CPU id is encoded as pointer provenance-free data; the
+        // thunk neither dereferences it nor performs blocking work.
+        unsafe { ax_ipi::call_on_cpu(CpuId(remote_cpu), acknowledge_ipi, remote_cpu as *mut ()) }
+            .expect("online-CPU hard call failed");
     }
 
     if !wait_for_ipi_acks(remote_count) {

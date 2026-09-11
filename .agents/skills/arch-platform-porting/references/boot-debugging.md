@@ -10,7 +10,7 @@
 | 构建编排 | `scripts/axbuild/src/{build.rs,context,test/qemu.rs,*}` | 体系结构到目标映射、功能、统一可扩展固件接口模式、QEMU 命令、根文件系统映像 |
 | 测试数据 | `test-suit/{arceos,starryos,axvisor}/**` | 运行与构建 TOML、匹配规则、处理器数量、固件模式 |
 | 启动加载器 | `platforms/someboot/src/**` | 入口二进制接口、重定位、内存映射、分页、陷阱、对称多处理、电源 |
-| 处理器运行时 | `components/axcpu/src/<arch>/**` | 陷阱帧布局、上下文切换、浮点或向量、用户返回、运行时第一阶段页表格式和地址转换缓存语义 |
+| 处理器运行时 | `components/axcpu/src/arch/<arch>/**` | 陷阱帧布局、上下文切换、浮点或向量、用户返回、页表格式和地址转换缓存语义 |
 | 动态平台 | `platforms/{axplat-dyn,somehal}/**` | 从固件取得的运行时内存、中断、定时器和电源事实 |
 | 驱动 | `drivers/**`、`patches/virtio-drivers/**` | 设备资源映射、直接内存访问、外围部件互连总线命令位、虚拟输入输出传输 |
 
@@ -46,7 +46,7 @@ AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步
 
 ## 处理器局部寄存器所有权
 
-`cpu-local` 是宿主处理器区域、当前上下文、内核线程局部存储寄存器、上下文绑定和体系结构选择抢占语义的唯一所有者。`ax-percpu` 只提供类型化模板、布局和区域实现，不能独立选择体系结构寄存器。最终映像的两种模式互斥：
+`cpu-local` 是宿主处理器区域、当前上下文、内核线程局部存储绑定和体系结构选择抢占语义的唯一所有者。实际寄存器指令由 `ax_cpu::registers` 提供，CPU 层不解释运行期头或抢占位。x86 GS 相对操作接收由 `cpu-local` 提供的常量偏移，保留单指令本核操作；不能将无 LOCK 的比较交换用于跨核共享状态。`ax-percpu` 只提供类型化模板、布局和区域实现，不能独立选择体系结构寄存器。最终映像的两种模式互斥：
 
 | 体系结构 | 处理器区域 | Linux 当前上下文映像 | 单内核线程局部存储映像 |
 | --- | --- | --- | --- |
@@ -65,22 +65,26 @@ AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步
 
 调试时先确认类型化逐处理器布局已最终确定并冻结，再绑定处理器。次处理器同时检查体系结构寄存器及其定义镜像，例如 RISC-V `sscratch` 或 LoongArch KS3。第二个逐处理器当前上下文变量可能掩盖普通执行中的陈旧寄存器，却在陷阱或虚拟处理器退出时失败，因此不得作为后备。
 
+RISC-V H 扩展的异常探测由 `ax_cpu::capability::has_hypervisor_extension` 维护。探测仅在固定 CSR 指令窗口借用 `sscratch`，正常路径和非法指令路径都必须在返回 Rust 前恢复原值，再恢复宿主向量和中断状态。检查迁移时运行 ArceOS `cpu/hypervisor-probe` 的 H 开启和关闭配置；ISA 字符串或 H 开启后的启动成功不能证明异常返回路径。宿主与客户机整数寄存器共用 `ax_cpu::registers::GeneralRegisters`，汇编偏移通过 `GprIndex::byte_offset` 获取。客户机入口位于 `axcpu/src/arch/riscv64/entry/guest.S`，在返回 Rust 前保存退出 CSR 并恢复宿主 FP、FCSR、TLS 和 scratch。ArceOS `cpu/guest-entry` 覆盖可信 VS 代码的两次进入与退出；Bare 翻译用例不能替代二阶段隔离和绑定生命周期验证。
+
 ## 最终映像运行模式
 
 - Starry 使用原裸机目标，以 `build-std=core,alloc` 构建 `no_std`、`no_main` 位置无关可执行文件；对称多处理是构建能力，运行时处理器上限另行配置。最终文件必须为 `ET_DYN`，且没有 `PT_TLS`、`.tdata` 或 `.tbss`。
 - Axvisor 保持标准库与 musl 位置无关可执行文件，并从 axruntime、axhal、`cpu-local`、axvm、axplat-dyn、somehal 到 someboot 显式选择完整线程局部存储链。AxVM 在每次客户机转换前后保存宿主内核线程局部存储值，并验证精确处理器区域。
-- ArceOS 默认保留线程局部存储。用户空间构建使用同一体系结构寄存器保存 Linux 当前上下文，因此 `uspace + tls` 是配置错误。
+- ArceOS 默认保留线程局部存储。用户空间构建使用同一体系结构寄存器保存 Linux 当前上下文，因此 `uspace + tls` 按 `uspace` 处理，`build.rs` 不输出 `kernel_tls` cfg，链接脚本也不启用内核 TLS。
 - someboot 分别生成线程局部存储与无线程局部存储链接布局。可重定位直接映像应在多个加载偏移检查最终文件，只接受体系结构支持的相对重定位类型。
 
 ## AArch64 Axvisor 异常级 2 检查
 
-- `arm_vcpu` 替换当前物理处理器正在使用的 `VBAR_EL2` 时，先发布当前异常级宿主中断处理函数，再写入 `VBAR_EL2` 并执行指令同步屏障，随后更新 `HCR_EL2` 并再次执行指令同步屏障。否则异常可能观察到从未设计为同时生效的向量、处理函数和控制寄存器组合。当前异常级同步异常的内核恐慌报告至少包含 `ESR_EL2`、`FAR_EL2`、`ELR_EL2`、`SPSR_EL2` 和 `HCR_EL2`，以便把偶发宿主地址转换错误追溯到第一次无效访问，而不是只根据综合征分类。
-- Axvisor `hv` 功能链只在 AArch64 选择 `ax-cpu/arm-el2`。保持 `ax-hal/hv -> axplat-dyn/hv -> somehal/hv`；`somehal` 的 AArch64 可选 `ax-cpu` 依赖拥有 `arm-el2` 边。编译成功不证明已选中异常级 2 寄存器实现，无条件依赖又会错误影响其他体系结构。
+- `ax_cpu::virtualization::PerCpu` 替换当前物理处理器正在使用的 `VBAR_EL2` 时，先发布当前异常级宿主中断处理函数，再写入 `VBAR_EL2` 并执行指令同步屏障，随后更新 `HCR_EL2` 并再次执行指令同步屏障。否则异常可能观察到从未设计为同时生效的向量、处理函数和控制寄存器组合。当前异常级同步异常的内核恐慌报告至少包含 `ESR_EL2`、`FAR_EL2`、`ELR_EL2`、`SPSR_EL2` 和 `HCR_EL2`，以便把偶发宿主地址转换错误追溯到第一次无效访问，而不是只根据综合征分类。
+- 保持 `ax-hal/hv -> axplat-dyn/hv -> somehal/hv` 的平台交接链。AArch64 的 `ax-hal::KernelMmu` 在该模式选择 `ax_cpu::mmu::El2`，页表选择 `El2PagingMeta`，向量安装调用 `boot::El2::init_trap`。CPU 同时提供 EL1/EL2 类型，没有 `arm-el2` feature；不得恢复以全包 feature 改变 PTE 编码的方式。
 - 异常级 2 映像若编译了异常级 1 页表路径，`ax-mm` 可能看似成功初始化，却把新页表根写入 `TTBR1_EL1`。活动 `TTBR0_EL2` 仍指向 someboot 页表，第一次访问动态映射设备时就会错误或挂起。PhytiumPi 的典型停点是 `rdrive` 扁平设备树初始化消息后的第一次 GIC 分发器读取。
-- 确认运行时报告 `EL: 2`，检查已解析的 `ax-cpu` 功能集含 `arm-el2`，并在插桩驱动前验证 `ioremap` 后的设备访问。
+- 确认运行时报告 `EL: 2`，检查 `ax-hal::KernelMmu`、页表元数据与向量安装均选择 EL2，并在插桩驱动前验证 `ioremap` 后的设备访问。
 - Axvisor QEMU 和板卡用例独占处理器数量契约。测试请求必须丢弃交互快照中的 `smp`，否则陈旧 `tmp/axbuild/.axvisor.toml` 会静默缩小宿主。Phytium 客户机分配逻辑处理器 2 时会退回处理器 0，并可能停在第一次虚拟定时中断，即使虚拟处理器切换本身正确。
 
 ## 动态统一可扩展固件接口平台
+
+StarryOS 的 x86_64 裸机产物是位置无关可执行映像，不带 QEMU 直接 ELF 加载所需的 Xen PVH note。若出现 `Error loading uncompressed kernel without PVH ELF Note`，说明尚未进入内核；随后出现的 shell check 未完成只是启动失败的结果。`apps/starry/mysql/qemu-x86_64*.toml` 与 `apps/starry/llvm22/qemu-x86_64.toml` 使用 `uefi = true`、`to_bin = true`，由项目运行器完成固件交接。该路径不使用 `-kernel`，因此也不能保留 QEMU 的 `-append` 参数；MySQL 配置由现有根文件系统发现机制选择唯一的 NVMe 根盘。不要通过调整 shell 成功匹配规则处理该加载错误。
 
 - 动态平台表示平台事实由 `someboot`、`somehal` 和 `axplat-dyn` 从固件或运行时发现，不表示可以省略体系结构特定页表、陷阱、定时器、中断和电源代码。
 - 调试时分离页表阶段：`someboot` 负责启动页表和内存管理单元交接；`ax-cpu` 负责运行时第一阶段页表项与地址转换缓存；虚拟化组件负责第二阶段。三者可以使用 `page-table-generic` 执行通用操作，但该软件包不能选择活动体系结构。
@@ -156,9 +160,11 @@ cargo xtask starry board \
 
 ## LoongArch 经验
 
+- `cargo xtask starry perf --arch loongarch64` 必须消费用例的 `uefi` 和 `to_bin` 契约。当前动态内核是 UEFI PE 镜像，不能绕过 OVMF 直接传给 `-kernel`。`perf::qemu::prepare_boot_args` 使用共享 OVMF 缓存、独立 VARS 副本及 `EFI/BOOT/BOOTLOONGARCH64.EFI`；未进入内核且没有样本时先检查这条启动链路，再检查插件 ABI。x86_64 复用同一 ESP 准备逻辑，使用 `BOOTX64.EFI`。
 - LS2K1000 在块硬件上下文激活后重复输出 `failed to lock LS2K1000 LIOINTC when claiming LIOINTC IRQ`，表示硬中断与控制器锁次序反转，不是无害伪中断。按 AArch64 GIC 模式拆分：`rdif_intc` 控制器和配置寄存器归任务，独立 LIOINTC 处理器接口只含中断状态、域、父线路和原子启用状态。硬中断查找或锁住控制器会在被中断任务释放设备保护前因电平中断不断重入。
 - U-Boot FIT 启动中，生产与交接契约保持一致：使用规范体系结构名 `loongarch`；U-Boot 以符合设备树规范的 8 字节对齐地址传递设备树；FIT 提供的设备树通过 UHI 约定传给 someboot，即 `a0 = -2`、`a1 = fdt`。检查 `legacy_hdr_os` 的厂商 `CONFIG_LOONGSON_BOOT_FIXUP` 不能作用于 FIT 映像。
 - 地址转换缓存填充入口和普通异常入口使用不同寄存器，可能需要不同地址形式。需要物理填充向量时，不能复用高地址虚拟符号。
+- 启动与运行期共用 `ax_cpu::boot::tlb_refill_entry()`，不再保留 someboot 向量表中的第二份 walker。最终链接产物应只有一个 `__ax_cpu_tlb_refill`；改变普通向量间距不得改变填充入口选择。
 - 重定位符号按正在运行的映像解析。LoongArch 多处理器次处理器异常向量使用 `sym_running_addr!(__exception_vectors)` 等运行时辅助函数，填充入口使用对应物理地址。
 - 次处理器在串口可用前就可能陷入。在直接映射窗口、切栈、页表寄存器、陷阱向量和跳入公共入口前后放标记。
 - 每个处理器都初始化陷阱向量，不只启动处理器。
@@ -199,12 +205,23 @@ docker run --rm -v "$PWD:/workspace" -w /workspace \
 注意：
 
 - 在容器内构建并运行 `cargo xtask`。宿主构建的 `target/debug/tg-xtask` 可能固化容器中不存在的 `CARGO_MANIFEST_DIR`。
+- 只借用容器的 QEMU 时，可由宿主 `cargo xtask arceos test qemu --arch loongarch64 --test-group cpu` 通过 PATH 包装器执行容器内的 QEMU；将工作区产物与 `/tmp/ostool` 按相同绝对路径挂载。此模式不运行容器内的 `xtask`，因此不存在固化工作区路径错配。不要直接复制 QEMU 到宿主运行：容器二进制可能要求宿主缺失的 GLIBC 或 libslirp 符号版本。
+- LVZ 在 EFI 交接后看似停止时，先用 QEMU `-d int,guest_errors` 核对是否已进入高地址内核。若在 FP 保存指令触发 Floating Point Disabled，检查 `hv` 是否同时启用了运行期 `fp-simd` 与平台 FP 初始化；不能通过关闭状态保存绕过故障。
 - 认定内核错误前检查 `/opt/qemu-lvz/bin/qemu-system-loongarch64`、`/tmp/ostool/ovmf/loongarch64` 下固件和 musl 工具链。
 - 输出到 `Exiting UEFI boot services...` 后停止时，在 `ExitBootServices`、内存映射交接、退出后第一次控制台调用和内存管理单元或陷阱设置前后立即插桩。
 - 容器通过后，如果持续集成或开发流程依赖该映像，仍需编写与宿主无关的文档。
 - 客户机控制台失败时区分宿主串口和机器所有客户机串口。宿主串口不得进入客户机直通集合。先检查固定 LoongArch 客户机资源、生成的扁平设备树或固件表、虚拟 PCH-PIC 电平状态和 Axvisor 控制台多路复用器，再修改宿主中断路由。
 
 ## QEMU 调试模式
+
+### axloader UEFI 网络启动
+
+- axloader 控制面只使用固件提供的网络协议。`SimpleNetwork`、`Ip4Config2`、`UDP4 Service Binding` 和 `HTTP Service Binding` 必须来自同一个 UEFI 控制器；发现、MAC 和 HTTP 分别来自不同网卡不算可用实现。
+- `ConOut` 只输出诊断；不要从 `ConIn` 或 `SerialIo` 解析 READY/BOOT、AT 命令或字符匹配协议。目标映像接管后，串口才作为交互终端。
+- 每次固件启动重新执行 UDP 2998 发现并取得新的 `registration_id`。多 server 响应必须拒绝，未绑定和空闲状态继续轮询，失败使用有上限退避，不回退串口。
+- QEMU smoke 要走真实 UEFI UDP/HTTP。SLiRP 可承担 DHCP 与 HTTP；需要把二层广播交给宿主测试服务时，用 `filter-mirror` 捕获客户机发包、用独立 `filter-redirector` 注入响应，并验证四字节大端帧长、IPv4/UDP 校验和、目标 MAC/IP/端口。
+- UEFI HTTP JSON POST 必须显式携带 `Content-Type: application/json` 与准确的 `Content-Length`；只有请求体字节但没有长度头时，HTTP/1.1 server 会把请求解析为空 body。对同一网卡连续创建 HTTP 子协议时，上一请求的 protocol guard 必须先完成关闭，避免 OVMF 将相同 OpenProtocol 键合并后在析构期返回 `NOT_FOUND`。
+- 成功证据必须同时包含真实内核 GET、长度和 SHA-256 校验、`ready_to_handoff` 状态及 ELF 装载。`ready_to_handoff` 后先析构 UDP、HTTP、IP 配置及其事件和子句柄，再调用 `ExitBootServices`；退出后不能再调用固件网络或控制台服务。
 
 - 首条可靠输出前失败时加入 `-S -s`，在复位处停止并连接 GDB。
 - 加入 `-d int,cpu_reset,guest_errors` 记录陷阱、复位和无效客户机访问。
@@ -223,7 +240,7 @@ docker run --rm -v "$PWD:/workspace" -w /workspace \
 | 次处理器无输出 | 先检查逐处理器 `KICKED/ALIVE/SHOULD_ONLINE` 与活动启动句柄；再查体系结构唤醒、启动参数、缓存刷新、栈、逐处理器基址、陷阱和逻辑标识。第二次 `start_secondary_cpu` 必须返回 `StartupInProgress`，不能自旋。x86 的 SIPI 必须是 `APIC_DM_STARTUP` 即 `0x600`，句柄丢弃或超时后不能清除所有者。 |
 | ArceOS 工作但 Starry 失败 | 根文件系统准备、标准库或 musl 二进制接口、控制台输入功能、终端假设、控制程序尺寸 |
 | Starry 命令行工作但分组测试失败 | 生成运行器路径、复制文件、成功匹配规则、`shell_init_cmd` 与 `test_commands` |
-| AArch64 Axvisor 停在第一次动态设备读取 | 缺少 `ax-cpu/arm-el2`、活动页表错误、陈旧 `TTBR0_EL2` 启动页表 |
+| AArch64 Axvisor 停在第一次动态设备读取 | `KernelMmu` 未选择 EL2、活动页表错误、陈旧 `TTBR0_EL2` 启动页表 |
 | Phytium 客户机停在 `arch_timer` 后 | 继承的板卡测试处理器上限、虚拟处理器掩码后备、虚拟定时路由 |
 | Axvisor 构建成功但 QEMU 挂起 | 固件路径、虚拟化扩展 QEMU、客户机映像、动态平台内存映射、退出固件后的转换 |
 | 虚拟输入输出块设备缺失 | 外围部件互连总线命令启用、传输、设备映射、直接内存访问转换、根磁盘参数 |
@@ -257,3 +274,36 @@ cargo xtask clippy --package ax-driver
 ```
 
 软件包集合按实际差异调整。只修改技能文档时不需要运行静态检查。
+
+Starry 的 `apps/starry/deepseek-tui/qemu-x86_64-shell.toml`、`apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-interactive.toml` 以及 eBPF `kret`、`mytrace`、`rawtp`、`upb`、`upb2` 的 x86_64 配置同样使用 `uefi = true`、`to_bin = true`。这些配置的结果判断必须晚于内核启动：CLI 等待离线检查通过标记，eBPF 常驻示例等待加载和附着后的就绪输出；就绪输出不证明探针事件已正确处理。
+
+Starry `qemu/system` 在 AArch64、RISC-V 与 x86_64 上要求 xHCI 使用传统 PCI 中断时，配置 `nec-usb-xhci,id=xhci,msi=off,msix=off`。QEMU 8.2.2 的 `qemu-xhci` 不暴露 `msi`、`msix` 属性，不能把上述开关加到该模型；用 `qemu-system-aarch64 -device nec-usb-xhci,help` 核对属性。单个 `qemu/system/test-dup2` 等子用例仍继承分组设备拓扑，设备参数错误会在子用例运行前终止 QEMU。
+## ax-cpu 的启动与客体翻译边界
+
+AArch64 的 `ax_cpu::boot::El1::enter`、`El2::enter` 负责异常级寄存器及最终 ERET，并在最后机器窗口用 x0 传递启动参数。someboot 继续拥有主次核栈、元数据发布、计时器模式选择和固件编排；不得依赖普通 Rust 调用后 x0 恰好保留次核元数据地址。早期向量由 `BootTrapHandler` 提供策略，CPU 向量按实际 EL 捕获 ESR/FAR，不能在 EL2 分派时读 guest ESR_EL1。
+
+EL1/EL2 页表分别使用 `El1Pte`、`El2Pte`，启动 feature 只选择消费者采用的格式。EL2 stage-one 的 XN 与 EL1 PXN 不同；排查时同时检查实际取指和 someboot 描述符在运行期 CPU 格式中的解释。
+
+`El2::flush_tlb` 只维护宿主 EL2 stage-one。客户机表使用 `virtualization::invalidate_guest_translations_inner_shareable` 的客体域广播，或在已安装 VTTBR 上调用 `invalidate_current_guest_translations`。不能用 VAE2/ALLE2 失效客体映射。`guest-entry-stage2` 用例在 CPU 0 客户机已缓存数据翻译后，由 CPU 1 完成 break-before-make，并检查客体最终读取新物理页。开始客体前必须等更新线程完成 CPU 1 亲和性握手，避免继承 CPU 0 亲和性导致测试自身挂起。
+
+ArceOS 的用户态 CPU 集成镜像使用 `freestanding = true` 构建配置，经共享 `BareKernelLinkMode::Pie` 选择裸机 JSON、core/alloc 和真实内核链接脚本。普通 RustStd 镜像仍为默认值。不要用内核 TLS 存储绕过 `uspace` 的寄存器所有权契约，也不要用缺少 `-Tlinker.x` 的普通裸机链接替代完整启动映像。
+
+异常修复表保留链接时原位记录，不能在每核初始化时排序。AArch64、x86 和 LoongArch 的字段相对偏移会在原样移动表项后指向错误位置；RISC-V 当前格式以 section 起点为基址。CPU 使用只读查找，无需初始化锁或堆分配。`cpu/user-entry/src/fixup.rs` 用逆序记录和实际缺页验证这一契约，不能用源码字符串断言替代。
+
+
+x86 的启动异常由 `ax_cpu::boot::BootVectorTable` 和共享 GPR 保存片段维护。IDT 门保存绝对代码地址，因此必须在实际使用的映射下构造；不能在移除低地址启动映射后重装旧表。调用方保持表地址不变，恢复原 IDT 后才能释放。`cpu/paging` 通过实际 INT3、someboot 策略返回和恢复运行期 IDT 验证该契约。最终栈切换由 `boot::jump_to` 安装满足 ABI 对齐的零返回槽。
+
+LoongArch 和 RISC-V 的早期异常入口也归 CPU，someboot 仅实现 `BootTrapHandler` 的处理策略。LoongArch 启动与运行期使用同一四级 walker/refill；启动表安装和 DA/PG 转换分别通过 CPU boot 接口完成。RISC-V 的 T-Head 维护接收 `PhysicalCacheRange`，地址转换及 DMA 方向由平台决定，不能将虚拟地址直接交给物理 cache 指令。
+
+x86、RISC-V 和 LoongArch 的 AxVM 映射变更先关闭该 VM 的客户机进入通道，再请求在途客户机退出；尚未取得 quiescence 时不得持有 machine 锁或释放映射。后续每次 CPU 进入执行本核客体翻译失效。LoongArch 的客体域采用 `INVTLB_ALLGID`，不能将宿主 INVTLB 视为所有 guest ID 的失效证明。
+
+
+## AArch64 宿主虚拟化初始化与致命异常
+
+`AxvmRuntime::new` 必须在每 CPU 的 `PreemptIrqSaveGuard` 之前完成 `prepare_host_virtualization`。`gic::host::HostGic` 同时发布已发现的 CPU interface 与已解析的 maintenance IRQ；失败不发布、不启用硬件。IRQ、VGIC save/load 和 maintenance enable/disable 仅通过 `OnceLock::get` 读取完成态，不执行 FDT 解析、rdrive 查找或等待初始化。不要在 `init_vm` 或线程创建入口添加预热：VM 创建晚于宿主虚拟化启用，预热不能表达此生命周期约束。
+
+对照 Linux `8cd9520d35a6c38db6567e97dd93b1f11f185dc6` 的 `kvm_vgic_hyp_init`、`kvm_vgic_cpu_up` 和 `kvm_arch_enable_virtualization_cpu`：全局探测和 IRQ 解析先于每 CPU 硬件使能。AxVM 的 maintenance IRQ 仍沿现有退出路径折叠 VGIC 状态，本次不改变客户机 EOI/IRQ 退休协议。
+
+AArch64 客户机向量中的致命宿主异常通过 `ax_cpu::trap::fatal::FatalTrap` 静态交给 `ax-runtime::panic_output`。运行期屏蔽中断并读取已安装 CPU-local 区域，不能通过 `this_cpu_id()` 取得任务抢占守卫，不能依赖 `SP_EL0` 或 `TPIDR_EL0` 仍属于宿主任务。输出只使用 emergency console；递归和并发终止复用 `axpanic`，不进入应用的 Rust panic hook，不回溯未知栈，不仅停驻持锁 CPU。该路径要求有效宿主栈和 CPU-local 区域；它不实现 Linux nVHE 的独立 overflow stack 或异常表恢复/宿主现场切换。
+
+`cargo xtask axvisor test qemu --arch aarch64 --test-case el2-fatal` 覆盖真实四核 EL2 同步异常与应用 panic hook 绕过；同一命令选择 `--test-case el2-fatal-foreign-context` 验证清空 TLS/任务锚点后的终止诊断。验证需同时看到 `ARCEOS_PANIC_EMERGENCY` 与固定 BRK syndrome；命中 `EL2_FATAL_ENTERED_STD_PANIC` 必须使任务失败。常规 panic 与 browser-console 仍需分别验证，终止诊断不能证明长会话网络挂起已消除。

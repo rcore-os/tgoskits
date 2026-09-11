@@ -1,32 +1,30 @@
 //! Checked GICH/ICH register save and restore.
 
-use std::sync::OnceLock;
-
 use arm_gic_driver::v3::{
     ICH_AP1R0_EL2, ICH_AP1R1_EL2, ICH_AP1R2_EL2, ICH_AP1R3_EL2, ICH_HCR_EL2, ICH_LR_EL2,
     ICH_VMCR_EL2, ICH_VTR_EL2, LocalRegisterCopy, Readable, Writeable, ich_lr_el2_get,
     ich_lr_el2_set, ich_lr_el2_write,
 };
-use arm_vcpu::ArmHostIrqConfig;
 use arm_vgic::{
     CpuInterfaceState, GicV3BackendError, GicVcpuId, HostGicVersion, IntId, InterruptState,
     ListRegisterBacking, ListRegisterState, PhysicalIrqId, Priority, VgicBackendCapabilities,
 };
+use ax_cpu::virtualization::HostIrqConfig;
 use ax_std::os::arceos::sync::IrqSafeMutex;
 
 const V2_SGI_TOKEN: usize = 1usize << (usize::BITS as usize - 1);
 const V2_SGI_SOURCE_SHIFT: usize = 24;
 
-enum HostCpuInterface {
+pub(super) enum HostCpuInterface {
     V2 {
         hypervisor: IrqSafeMutex<arm_gic_driver::v2::HypervisorInterface>,
         trap: arm_gic_driver::v2::TrapOp,
         capabilities: VgicBackendCapabilities,
-        irq_config: ArmHostIrqConfig,
+        irq_config: HostIrqConfig,
     },
     V3 {
         capabilities: VgicBackendCapabilities,
-        irq_config: ArmHostIrqConfig,
+        irq_config: HostIrqConfig,
     },
 }
 
@@ -37,33 +35,34 @@ impl HostCpuInterface {
         }
     }
 
-    const fn irq_config(&self) -> ArmHostIrqConfig {
+    const fn irq_config(&self) -> HostIrqConfig {
         match self {
             Self::V2 { irq_config, .. } | Self::V3 { irq_config, .. } => *irq_config,
         }
     }
 }
 
-static HOST_CPU_INTERFACE: OnceLock<HostCpuInterface> = OnceLock::new();
-
 fn host_cpu_interface() -> Result<&'static HostCpuInterface, GicV3BackendError> {
-    // Discovery is the only operation that takes the `rdrive` device lock.
-    // The returned register capability is immutable, and every vCPU/IRQ hot
-    // path below uses it directly so a hard IRQ cannot re-enter `rdrive` while
-    // interrupted code already owns the same non-IRQ-safe device lock.
-    HOST_CPU_INTERFACE.get_or_try_init(discover_host_cpu_interface)
+    super::host::get()
+        .map(|host| &host.cpu_interface)
+        .ok_or_else(|| {
+            GicV3BackendError::new("access host GIC CPU interface", "host GIC is not prepared")
+        })
 }
 
-fn discover_host_cpu_interface() -> Result<HostCpuInterface, GicV3BackendError> {
+pub(super) fn discover() -> Result<HostCpuInterface, GicV3BackendError> {
     super::try_with_gic("inspect host VGIC capabilities", |intc| {
         if let Some(gic) = intc.typed_mut::<arm_gic_driver::v2::Gic>() {
-            let irq_config =
-                ArmHostIrqConfig::gicv2_mmio(usize::from(gic.gicc_addr())).map_err(|_| {
-                    GicV3BackendError::new(
-                        "inspect host VGIC capabilities",
-                        "the GICv2 CPU-interface address is invalid",
-                    )
-                })?;
+            let base = usize::from(gic.gicc_addr());
+            if base == 0 || !base.is_multiple_of(core::mem::align_of::<u32>()) {
+                return Err(GicV3BackendError::new(
+                    "inspect host VGIC capabilities",
+                    "the GICv2 CPU-interface address is invalid",
+                ));
+            }
+            // SAFETY: the registered GIC driver retains this mapped interface;
+            // the immutable host capability outlives all vCPU entry transactions.
+            let irq_config = unsafe { HostIrqConfig::gicv2(ax_cpu::VirtAddr::from_usize(base)) };
             let interface = gic.hypervisor_interface().ok_or_else(|| {
                 GicV3BackendError::new(
                     "inspect host VGIC capabilities",
@@ -91,7 +90,7 @@ fn discover_host_cpu_interface() -> Result<HostCpuInterface, GicV3BackendError> 
                     (ICH_VTR_EL2.read(ICH_VTR_EL2::PRIBITS) + 1) as u8,
                     false,
                 ),
-                irq_config: ArmHostIrqConfig::gicv3_sysreg(),
+                irq_config: HostIrqConfig::gicv3(),
             });
         }
         Err(GicV3BackendError::new(
@@ -105,7 +104,7 @@ pub(super) fn capabilities() -> Result<VgicBackendCapabilities, GicV3BackendErro
     host_cpu_interface().map(HostCpuInterface::capabilities)
 }
 
-pub(super) fn host_irq_config() -> Result<ArmHostIrqConfig, GicV3BackendError> {
+pub(super) fn host_irq_config() -> Result<HostIrqConfig, GicV3BackendError> {
     host_cpu_interface().map(HostCpuInterface::irq_config)
 }
 

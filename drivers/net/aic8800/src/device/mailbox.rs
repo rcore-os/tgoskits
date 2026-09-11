@@ -70,7 +70,15 @@ impl AicDevice {
 
     pub(super) fn mailbox_waiting_for_receive(&self) -> bool {
         self.lifecycle.mailbox.as_ref().is_some_and(|mailbox| {
-            mailbox.phase == MailboxPhase::Confirmation && self.io.receive.active
+            (mailbox.phase == MailboxPhase::Confirmation
+                || (self.lifecycle.state == AicState::Ready && mailbox.phase == MailboxPhase::Flow))
+                && self.io.receive.active
+        })
+    }
+
+    pub(super) fn mailbox_confirmation_id(&self) -> Option<u16> {
+        self.lifecycle.mailbox.as_ref().and_then(|mailbox| {
+            (mailbox.phase == MailboxPhase::Confirmation).then_some(mailbox.expected_message_id)
         })
     }
 
@@ -104,7 +112,11 @@ impl AicDevice {
         };
         if let Some(retry_at) = mailbox.retry_at {
             if now < retry_at {
-                return AicAction::RetryAt(retry_at);
+                return if self.lifecycle.state == AicState::Ready {
+                    AicAction::WaitForInterruptUntil(retry_at)
+                } else {
+                    AicAction::RetryAt(retry_at)
+                };
             }
             mailbox.retry_at = None;
         }
@@ -233,10 +245,10 @@ impl AicDevice {
     }
 
     fn complete_control_mailbox(&mut self, result: Vec<u8>) -> Result<(), AicError> {
-        use super::control::{APM_START_VIF_INDEX, ConnectPhase, ControlOperation};
+        use super::control::{ConnectPhase, ControlOperation};
         use crate::lmac::{
-            APM_SET_BEACON_IE_REQ, APM_START_CFM, APM_START_REQ, ME_SET_CONTROL_PORT_CFM,
-            MM_ADD_IF_CFM, MM_KEY_ADD_CFM, SM_CONNECT_CFM, SM_DISCONNECT_CFM,
+            APM_START_CFM, ME_SET_CONTROL_PORT_CFM, MM_ADD_IF_CFM, MM_KEY_ADD_CFM, SM_CONNECT_CFM,
+            SM_DISCONNECT_CFM,
         };
 
         let control = self
@@ -258,7 +270,7 @@ impl AicDevice {
                     if connect.phase == ConnectPhase::Resetting) =>
             {
                 crate::lmac::require_empty(SM_DISCONNECT_CFM, &result)?;
-                control.commands.pop_front();
+                control.pop_command();
                 let ControlOperation::Connect(connect) = &mut control.operation else {
                     return Err(AicError::CompletionMismatch);
                 };
@@ -277,7 +289,7 @@ impl AicDevice {
                     return Err(AicError::CompletionMismatch);
                 }
                 connect.phase = ConnectPhase::AwaitIndication;
-                control.commands.pop_front();
+                control.pop_command();
             }
             ME_SET_CONTROL_PORT_CFM => {
                 crate::lmac::require_empty(ME_SET_CONTROL_PORT_CFM, &result)?;
@@ -287,60 +299,32 @@ impl AicDevice {
                 if connect.phase != ConnectPhase::AwaitControlPort {
                     return Err(AicError::CompletionMismatch);
                 }
-                control.commands.pop_front();
+                control.pop_command();
                 open_control_port = true;
                 finish = true;
                 log::info!("[wifi] WPA2 keys installed and control port enabled");
             }
             MM_KEY_ADD_CFM => {
                 crate::lmac::parse_key_add_confirmation(&result)?;
-                control.commands.pop_front();
+                control.pop_command();
                 m4 = control.accept_key_confirmation()?;
             }
             SM_DISCONNECT_CFM => {
                 crate::lmac::require_empty(SM_DISCONNECT_CFM, &result)?;
-                control.commands.pop_front();
+                control.pop_command();
                 self.data.link.clear_peer();
                 finish = true;
             }
             MM_ADD_IF_CFM => {
-                // The AP interface index is assigned by the firmware: the
-                // startup station vif already holds index 0, so the beacon
-                // upload and APM_START requests must target the index this
-                // confirmation reports instead of a hard-coded constant.
-                let [status, inst_nbr, ..] = result.as_slice() else {
-                    return Err(AicError::MalformedResponse);
-                };
-                if *status != 0 {
-                    return Err(AicError::FirmwareRejected {
-                        message_id: MM_ADD_IF_CFM,
-                        status: u16::from(*status),
-                    });
-                }
-                control.commands.pop_front();
-                for command in &mut control.commands {
-                    match command.message_id {
-                        APM_SET_BEACON_IE_REQ => command.payload[0] = *inst_nbr,
-                        APM_START_REQ => command.payload[APM_START_VIF_INDEX] = *inst_nbr,
-                        _ => {}
-                    }
-                }
+                let index = crate::lmac::parse_add_interface(&result)?;
+                control.assign_ap_interface(index)?;
             }
             APM_START_CFM => {
-                let [status, ..] = result.as_slice() else {
-                    return Err(AicError::MalformedResponse);
-                };
-                if *status != 0 {
-                    return Err(AicError::FirmwareRejected {
-                        message_id: APM_START_CFM,
-                        status: u16::from(*status),
-                    });
-                }
-                control.commands.pop_front();
+                control.confirm_ap_start(&result)?;
                 finish = control.commands.is_empty();
             }
             _ => {
-                control.commands.pop_front();
+                control.pop_command();
                 finish = control.commands.is_empty();
             }
         }
@@ -352,7 +336,7 @@ impl AicDevice {
         }
         if finish {
             self.lifecycle.control = None;
-            self.data.events.push_back(AicEvent::ControlComplete);
+            self.data.push_event(AicEvent::ControlComplete)?;
         }
         Ok(())
     }
@@ -504,6 +488,52 @@ mod tests {
             result: Some(result),
         });
         device
+    }
+
+    #[test]
+    fn ready_mailbox_backoff_drains_rx_before_retrying_command_credits() {
+        let now = MonotonicTime::default();
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.data.link.install_mac([2, 0, 0, 0, 0, 1]).unwrap();
+        device.data.link.install_interface(0).unwrap();
+        let AicAction::SubmitSdio(flow) = device.advance(AicInput {
+            now,
+            event: Some(AicInputEvent::Control(ControlRequest::Disconnect)),
+        }) else {
+            panic!("expected command credit read")
+        };
+        let deadline = now.after(MAILBOX_FLOW_RETRY);
+        assert_eq!(
+            device.advance(complete(&flow, SdioResponse::Byte(0), now)),
+            AicAction::WaitForInterruptUntil(deadline)
+        );
+        let AicAction::SubmitSdio(rx) = device.advance(AicInput {
+            now,
+            event: Some(AicInputEvent::Irq(IrqSnapshot {
+                sequence: 1,
+                card_interrupt: true,
+                ..IrqSnapshot::default()
+            })),
+        }) else {
+            panic!("RX must run during command credit backoff")
+        };
+        assert!(matches!(rx.kind, SdioRequestKind::ReadByte { address, .. }
+            if address.get() == device.registers().block_count));
+        assert_eq!(
+            device.advance(complete(&rx, SdioResponse::Byte(0), now)),
+            AicAction::WaitForInterruptUntil(deadline)
+        );
+        let AicAction::SubmitSdio(flow) = device.advance(AicInput::tick(deadline)) else {
+            panic!("command credit retry must resume at the same deadline")
+        };
+        assert!(matches!(
+            device.advance(complete(&flow, SdioResponse::Byte(128), deadline)),
+            AicAction::SubmitSdio(SdioRequest {
+                kind: SdioRequestKind::Write { .. },
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -710,6 +740,49 @@ mod tests {
     }
 
     #[test]
+    fn ap_add_interface_rejects_invalid_identity_before_followup_commands() {
+        for payload in [vec![0, 255], vec![0, 1, 0]] {
+            let payload_length = payload.len();
+            let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+            device.lifecycle.state = AicState::Ready;
+            device.lifecycle.control = Some(
+                super::control::build(
+                    ControlRequest::StartOpenAccessPoint {
+                        ssid: b"test".to_vec(),
+                        channel: 6,
+                    },
+                    [2, 0, 0, 0, 0, 1],
+                    Some(0),
+                )
+                .unwrap(),
+            );
+            device.lifecycle.mailbox = Some(MailboxState {
+                frame: Vec::new(),
+                request: MailboxRequest::Lmac {
+                    message_id: crate::lmac::MM_ADD_IF_REQ,
+                },
+                expected_message_id: crate::lmac::MM_ADD_IF_CFM,
+                phase: MailboxPhase::Complete,
+                deadline: MonotonicTime::from_nanos(1),
+                retry_at: None,
+                flow_retries: 0,
+                result: Some(payload),
+            });
+            assert_eq!(
+                device.advance(AicInput::tick(MonotonicTime::default())),
+                AicAction::Event(AicEvent::Failed(AicError::MalformedMailboxResponse {
+                    request: MailboxRequest::Lmac {
+                        message_id: crate::lmac::MM_ADD_IF_REQ
+                    },
+                    expected_message_id: crate::lmac::MM_ADD_IF_CFM,
+                    payload_length,
+                }))
+            );
+            assert!(device.lifecycle.control.is_none());
+        }
+    }
+
+    #[test]
     fn ap_add_if_rejection_surfaces_the_firmware_status() {
         let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
         device.lifecycle.state = AicState::Ready;
@@ -778,7 +851,7 @@ mod tests {
             deadline: MonotonicTime::from_nanos(1),
             retry_at: None,
             flow_retries: 0,
-            result: Some(vec![5]),
+            result: Some(vec![5, 0, 0, 0]),
         });
 
         assert!(matches!(

@@ -18,6 +18,13 @@ pub struct PreemptionSnapshot {
 }
 
 impl PreemptionSnapshot {
+    pub(crate) const fn from_raw(state: u32) -> Self {
+        Self {
+            depth: state & PREEMPT_DEPTH_MASK,
+            pending: state & PREEMPT_NO_PENDING == 0,
+        }
+    }
+
     /// Returns the number of active preemption exclusions.
     pub const fn depth(self) -> u32 {
         self.depth
@@ -32,6 +39,7 @@ impl PreemptionSnapshot {
 /// Linear proof of one entered preemption exclusion.
 #[must_use = "every entered preemption token must be finished exactly once"]
 pub struct PreemptionToken {
+    #[cfg(any(test, not(target_arch = "x86_64"), feature = "host-test"))]
     owner: NonNull<PreemptionState>,
     _not_send_or_sync: PhantomData<*mut ()>,
 }
@@ -73,12 +81,8 @@ impl PreemptionState {
         Self(AtomicU32::new(PREEMPT_NO_PENDING | 1))
     }
 
-    fn snapshot(&self) -> PreemptionSnapshot {
-        let state = self.0.load(Ordering::Relaxed);
-        PreemptionSnapshot {
-            depth: state & PREEMPT_DEPTH_MASK,
-            pending: state & PREEMPT_NO_PENDING == 0,
-        }
+    pub(crate) fn snapshot(&self) -> PreemptionSnapshot {
+        PreemptionSnapshot::from_raw(self.0.load(Ordering::Relaxed))
     }
 
     fn set_pending(&self) {
@@ -87,6 +91,30 @@ impl PreemptionState {
 
     fn clear_pending(&self) {
         self.0.fetch_or(PREEMPT_NO_PENDING, Ordering::Relaxed);
+    }
+
+    #[cfg(all(test, target_arch = "x86_64", not(feature = "host-test")))]
+    pub(crate) fn as_mut_ptr(&self) -> *mut u32 {
+        self.0.as_ptr()
+    }
+
+    #[cfg(any(test, not(target_arch = "x86_64"), feature = "host-test"))]
+    #[inline(always)]
+    fn compare_exchange_local(&self, current: u32, next: u32) -> bool {
+        #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+        {
+            // SAFETY: a live token retains positive depth on this exact
+            // CPU-owned word. No remote CPU may update it; a local interrupt
+            // can update it only before or after the single instruction.
+            unsafe { crate::register::compare_exchange_x86_preemption_state(self, current, next) }
+        }
+
+        #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+        {
+            self.0
+                .compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        }
     }
 
     #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
@@ -99,6 +127,7 @@ impl PreemptionState {
         );
     }
 
+    #[cfg(any(test, not(target_arch = "x86_64"), feature = "host-test"))]
     fn finish(&self) -> PreemptionExit {
         loop {
             let state = self.0.load(Ordering::Relaxed);
@@ -109,12 +138,10 @@ impl PreemptionState {
                 return PreemptionExit::Pending(PendingPreemption::new(self));
             }
 
-            let next = state - 1;
-            if self
-                .0
-                .compare_exchange_weak(state, next, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
+            // A local interrupt may update the sticky pending bit, and weak
+            // LL/SC compare-exchange may also fail spuriously. Retry at a
+            // fixed stack depth, matching Linux's bounded IRQ-return loop.
+            if self.compare_exchange_local(state, state - 1) {
                 return if depth == 1 {
                     PreemptionExit::Enabled
                 } else {
@@ -134,16 +161,20 @@ impl PreemptionState {
     }
 
     fn release_bootstrap(&self) {
-        assert_eq!(
-            self.0.compare_exchange(
-                PREEMPT_NO_PENDING | 1,
-                PREEMPT_NO_PENDING,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ),
-            Ok(PREEMPT_NO_PENDING | 1),
-            "bootstrap preemption depth must be released exactly once"
-        );
+        loop {
+            let state = self.0.load(Ordering::Relaxed);
+            assert!(
+                state == (PREEMPT_NO_PENDING | 1) || state == 1,
+                "bootstrap preemption depth must be released exactly once"
+            );
+            if self
+                .0
+                .compare_exchange_weak(state, state - 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return;
+            }
+        }
     }
 
     #[cfg(any(all(target_arch = "x86_64", not(feature = "host-test")), test))]
@@ -177,9 +208,17 @@ impl PreemptionState {
 }
 
 impl PreemptionToken {
+    #[cfg(any(test, not(target_arch = "x86_64"), feature = "host-test"))]
     fn new(owner: &PreemptionState) -> Self {
         Self {
             owner: NonNull::from(owner),
+            _not_send_or_sync: PhantomData,
+        }
+    }
+
+    #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+    fn new_current() -> Self {
+        Self {
             _not_send_or_sync: PhantomData,
         }
     }
@@ -188,8 +227,16 @@ impl PreemptionToken {
     /// guard state as one machine word.
     #[doc(hidden)]
     pub fn into_raw(self) -> usize {
-        let token = ManuallyDrop::new(self);
-        token.owner.as_ptr() as usize
+        #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+        {
+            let _token = ManuallyDrop::new(self);
+            1
+        }
+        #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+        {
+            let token = ManuallyDrop::new(self);
+            token.owner.as_ptr() as usize
+        }
     }
 
     /// Reconstructs a token produced by [`Self::into_raw`].
@@ -200,15 +247,23 @@ impl PreemptionToken {
     /// preemption owner, and be reconstructed and finished exactly once.
     #[doc(hidden)]
     pub unsafe fn from_raw(raw: usize) -> Option<Self> {
-        if !raw.is_multiple_of(core::mem::align_of::<PreemptionState>()) {
-            return None;
+        #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+        {
+            (raw == 1).then(Self::new_current)
         }
-        NonNull::new(raw as *mut PreemptionState).map(|owner| Self {
-            owner,
-            _not_send_or_sync: PhantomData,
-        })
+        #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+        {
+            if !raw.is_multiple_of(core::mem::align_of::<PreemptionState>()) {
+                return None;
+            }
+            NonNull::new(raw as *mut PreemptionState).map(|owner| Self {
+                owner,
+                _not_send_or_sync: PhantomData,
+            })
+        }
     }
 
+    #[cfg(any(test, not(target_arch = "x86_64"), feature = "host-test"))]
     fn state(&self) -> &PreemptionState {
         // SAFETY: construction and raw reconstruction require the selected
         // owner to remain live through this token's single finish operation.
@@ -217,13 +272,21 @@ impl PreemptionToken {
 
     #[cfg(any(all(target_arch = "x86_64", not(feature = "host-test")), test))]
     fn handoff_after_context_switch(self, resumed_owner: &PreemptionState) -> Self {
-        if self.owner == NonNull::from(resumed_owner) {
+        #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+        {
+            let _ = resumed_owner;
             self
-        } else {
-            // The old CPU's incoming context consumed the depth represented by
-            // this proof. Consume the proof itself and adopt the equivalent
-            // depth left by the outgoing context on the resumed CPU.
-            Self::new(resumed_owner)
+        }
+        #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+        {
+            if self.owner == NonNull::from(resumed_owner) {
+                self
+            } else {
+                // The old CPU's incoming context consumed the depth represented by
+                // this proof. Consume the proof itself and adopt the equivalent
+                // depth left by the outgoing context on the resumed CPU.
+                Self::new(resumed_owner)
+            }
         }
     }
 }
@@ -251,11 +314,7 @@ pub fn enter_preemption() -> PreemptionToken {
         // Increment through GS before resolving the token owner. Once the
         // increment is visible this execution cannot migrate away from it.
         unsafe { crate::register::enter_x86_preemption() };
-        let owner = crate::register::current_area()
-            .unwrap_or_else(|_| crate::register::fatal_register_invariant())
-            .runtime_anchor()
-            .preemption_state();
-        PreemptionToken::new(owner)
+        PreemptionToken::new_current()
     }
 
     #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
@@ -274,25 +333,76 @@ pub fn enter_preemption() -> PreemptionToken {
 }
 
 /// Observes the current architecture-selected preemption state.
+#[inline(always)]
 pub fn preemption_snapshot(pin: &CpuPin<'_>) -> Result<PreemptionSnapshot, CpuLocalError> {
     Ok(selected_state(pin)?.snapshot())
 }
 
+/// Tests the current execution context's advisory preemption-pending state.
+///
+/// This is an architecture-local safe-point query. It neither publishes nor
+/// consumes external work. A `false` result is only a snapshot; a later
+/// interrupt may publish work immediately after the observation.
+#[inline(always)]
+pub fn current_preemption_pending() -> Result<bool, CpuLocalError> {
+    Ok(crate::register::current_preemption_snapshot()?.is_pending())
+}
+
 /// Marks work pending at the current preemptible boundary.
+#[inline(always)]
 pub fn set_preemption_pending(pin: &CpuPin<'_>) -> Result<(), CpuLocalError> {
     selected_state(pin)?.set_pending();
     Ok(())
 }
 
 /// Clears the pending mark after the external owner has drained its work.
+#[inline(always)]
 pub fn clear_preemption_pending(pin: &CpuPin<'_>) -> Result<(), CpuLocalError> {
     selected_state(pin)?.clear_pending();
     Ok(())
 }
 
 /// Finishes the exact owner captured by [`enter_preemption`].
+#[inline(always)]
 pub fn finish_preemption(token: PreemptionToken) -> PreemptionExit {
-    token.state().finish()
+    #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+    {
+        let _token = ManuallyDrop::new(token);
+        finish_current_x86_preemption()
+    }
+    #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+    {
+        token.state().finish()
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+fn finish_current_x86_preemption() -> PreemptionExit {
+    // SAFETY: the consumed token proves a positive depth on the GS-selected
+    // word until this transition completes.
+    let state = unsafe { crate::register::read_current_x86_preemption_state_raw() };
+    let depth = state & PREEMPT_DEPTH_MASK;
+    assert!(depth > 0, "unbalanced preemption exit");
+
+    if depth == 1 {
+        if state & PREEMPT_NO_PENDING == 0 {
+            // SAFETY: the retained final depth still pins the current owner.
+            let owner = unsafe { crate::register::current_x86_preemption_state() };
+            return PreemptionExit::Pending(PendingPreemption::new(owner));
+        }
+        return if unsafe {
+            crate::register::compare_exchange_current_x86_preemption_state(state, state - 1)
+        } {
+            PreemptionExit::Enabled
+        } else {
+            finish_current_x86_preemption()
+        };
+    }
+
+    // SAFETY: a nested depth remains positive after the single local update.
+    unsafe { crate::register::decrement_current_x86_preemption_state() };
+    PreemptionExit::Nested
 }
 
 /// Transfers a CPU-owned switch exclusion to the CPU where its context resumed.
@@ -368,6 +478,7 @@ pub fn release_initial_context_preemption(pin: &CpuPin<'_>) -> Result<bool, CpuL
     }
 }
 
+#[inline(always)]
 fn selected_state(pin: &CpuPin<'_>) -> Result<&'static PreemptionState, CpuLocalError> {
     #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
     {
@@ -424,6 +535,17 @@ mod tests {
         let state = PreemptionState::bootstrap_disabled();
         assert_eq!(state.snapshot().depth(), 1);
         assert!(!state.snapshot().is_pending());
+    }
+
+    #[test]
+    fn bootstrap_release_preserves_pending_external_work() {
+        let state = PreemptionState::bootstrap_disabled();
+        state.set_pending();
+
+        state.release_bootstrap();
+
+        assert_eq!(state.snapshot().depth(), 0);
+        assert!(state.snapshot().is_pending());
     }
 
     #[test]

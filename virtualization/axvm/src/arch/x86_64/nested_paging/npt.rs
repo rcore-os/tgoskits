@@ -1,144 +1,93 @@
-//! AMD Nested Page Table entry encoding.
+//! AMD nested-paging policy using the CPU's long-mode descriptor encoding.
 
-use std::fmt;
-
+use ax_cpu::paging::{DescriptorFlags, NptEntry as Pte, PageTableEntry};
 use axvm_types::{HostPhysAddr, MappingFlags};
 use page_table_generic as ptg;
 
 use super::runtime::flush_nested_page_table;
 
-bitflags::bitflags! {
-    /// AMD SVM nested page table entry flags.
-    struct NptFlags: u64 {
-        const PRESENT =       1 << 0;
-        const WRITE =         1 << 1;
-        const USER =          1 << 2;
-        const WRITE_THROUGH = 1 << 3;
-        const NO_CACHE =      1 << 4;
-        const ACCESSED =      1 << 5;
-        const DIRTY =         1 << 6;
-        const HUGE_PAGE =     1 << 7;
-        const GLOBAL =        1 << 8;
-        const NO_EXECUTE =    1 << 63;
+fn descriptor_flags(flags: MappingFlags) -> DescriptorFlags {
+    let mut result = DescriptorFlags::PRESENT;
+    result.set(
+        DescriptorFlags::WRITABLE,
+        flags.contains(MappingFlags::WRITE),
+    );
+    result.set(DescriptorFlags::USER, flags.contains(MappingFlags::USER));
+    result.set(
+        DescriptorFlags::NO_EXECUTE,
+        !flags.contains(MappingFlags::EXECUTE),
+    );
+    if flags.intersects(MappingFlags::DEVICE | MappingFlags::UNCACHED) {
+        result |= DescriptorFlags::NO_CACHE | DescriptorFlags::WRITE_THROUGH;
     }
+    result
 }
 
-impl From<MappingFlags> for NptFlags {
-    fn from(flags: MappingFlags) -> Self {
-        // A non-present NPT entry is represented by zero. Permission flags are
-        // meaningful only after PRESENT has been set.
-        if flags.is_empty() {
-            return Self::empty();
-        }
-        let mut result = Self::PRESENT;
-        if flags.contains(MappingFlags::WRITE) {
-            result |= Self::WRITE;
-        }
-        if flags.contains(MappingFlags::USER) {
-            result |= Self::USER;
-        }
-        if !flags.contains(MappingFlags::EXECUTE) {
-            result |= Self::NO_EXECUTE;
-        }
-        if flags.contains(MappingFlags::DEVICE) || flags.contains(MappingFlags::UNCACHED) {
-            result |= Self::NO_CACHE | Self::WRITE_THROUGH;
-        }
-        result
+fn mapping_flags(flags: DescriptorFlags) -> MappingFlags {
+    if !flags.contains(DescriptorFlags::PRESENT) {
+        return MappingFlags::empty();
     }
+    let mut result = MappingFlags::READ;
+    result.set(
+        MappingFlags::WRITE,
+        flags.contains(DescriptorFlags::WRITABLE),
+    );
+    result.set(MappingFlags::USER, flags.contains(DescriptorFlags::USER));
+    result.set(
+        MappingFlags::EXECUTE,
+        !flags.contains(DescriptorFlags::NO_EXECUTE),
+    );
+    result.set(
+        MappingFlags::DEVICE,
+        flags.contains(DescriptorFlags::NO_CACHE),
+    );
+    result
 }
 
-impl From<NptFlags> for MappingFlags {
-    fn from(flags: NptFlags) -> Self {
-        if !flags.contains(NptFlags::PRESENT) {
-            return Self::empty();
-        }
-        let mut result = MappingFlags::READ;
-        if flags.contains(NptFlags::WRITE) {
-            result |= MappingFlags::WRITE;
-        }
-        if flags.contains(NptFlags::USER) {
-            result |= MappingFlags::USER;
-        }
-        if !flags.contains(NptFlags::NO_EXECUTE) {
-            result |= MappingFlags::EXECUTE;
-        }
-        if flags.contains(NptFlags::NO_CACHE) {
-            result |= MappingFlags::DEVICE;
-        }
-        result
-    }
-}
-
-#[derive(Clone, Copy)]
+/// Binds VM mapping policy to the shared long-mode hardware descriptor.
+/// NPT and native paging have the same encoding but distinct table owners.
+#[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
-/// Raw NPT entry using the AMD long-mode page-table encoding.
-pub(super) struct NptEntry(u64);
+pub(super) struct NptEntry(Pte);
 
-impl NptEntry {
-    // NPT follows the long-mode page-table address layout: the host physical
-    // page number occupies bits 12 through 51 and must exclude flag bits.
-    const PHYS_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
-
-    fn paddr(self) -> HostPhysAddr {
-        HostPhysAddr::from((self.0 & Self::PHYS_ADDR_MASK) as usize)
-    }
-
-    fn flags(self) -> MappingFlags {
-        NptFlags::from_bits_truncate(self.0).into()
-    }
-}
-
-impl ptg::PageTableEntry for NptEntry {
+impl PageTableEntry for NptEntry {
     type PteConfig = MappingFlags;
 
-    fn new_page(paddr: HostPhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
+    fn new_page(paddr: HostPhysAddr, config: MappingFlags, is_huge: bool) -> Self {
         if config.is_empty() {
-            return Self(0);
+            return Self(Pte::default());
         }
-        let mut flags = NptFlags::from(config);
-        if is_huge {
-            flags |= NptFlags::HUGE_PAGE;
-        }
-        Self(flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
+        let mut flags = descriptor_flags(config);
+        flags.set(DescriptorFlags::HUGE_PAGE, is_huge);
+        Self(Pte::from_parts(paddr, flags))
     }
 
     fn new_table(paddr: HostPhysAddr) -> Self {
-        let flags = NptFlags::PRESENT | NptFlags::WRITE | NptFlags::USER;
-        Self(flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
+        Self(Pte::new_table(paddr))
     }
 
-    fn paddr(&self, _is_dir: bool) -> HostPhysAddr {
-        NptEntry::paddr(*self)
+    fn paddr(&self, is_dir: bool) -> HostPhysAddr {
+        self.0.paddr(is_dir)
     }
 
-    fn config(&self, _is_dir: bool) -> Self::PteConfig {
-        self.flags()
+    fn config(&self, _is_dir: bool) -> MappingFlags {
+        mapping_flags(self.0.flags())
     }
 
     fn present(&self) -> bool {
-        NptFlags::from_bits_truncate(self.0).contains(NptFlags::PRESENT)
+        self.0.present()
     }
 
     fn huge(&self, is_dir: bool) -> bool {
-        is_dir && NptFlags::from_bits_truncate(self.0).contains(NptFlags::HUGE_PAGE)
+        self.0.huge(is_dir)
     }
 
     fn unused(&self) -> bool {
-        self.0 == 0
+        self.0.unused()
     }
 
     fn clear(&mut self) {
-        self.0 = 0;
-    }
-}
-
-impl fmt::Debug for NptEntry {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NptEntry")
-            .field("raw", &self.0)
-            .field("hpaddr", &self.paddr())
-            .field("flags", &self.flags())
-            .finish()
+        self.0.clear();
     }
 }
 

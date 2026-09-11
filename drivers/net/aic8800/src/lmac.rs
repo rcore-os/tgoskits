@@ -170,6 +170,17 @@ pub(crate) fn parse_add_interface(payload: &[u8]) -> Result<u8, AicError> {
         .ok_or(AicError::MalformedResponse)
 }
 
+pub(crate) fn parse_ap_start(payload: &[u8], interface_index: u8) -> Result<(), AicError> {
+    if payload.len() != 4 {
+        return Err(AicError::MalformedResponse);
+    }
+    require_status_ok(APM_START_CFM, payload)?;
+    if payload[1] != interface_index || payload[2] == u8::MAX || payload[3] == u8::MAX {
+        return Err(AicError::MalformedResponse);
+    }
+    Ok(())
+}
+
 pub(crate) fn parse_connect_indication(payload: &[u8]) -> Result<ConnectIndication, AicError> {
     if payload.len() < 11 {
         return Err(AicError::MalformedResponse);
@@ -417,6 +428,27 @@ mod tests {
         assert_eq!(
             parse_add_interface(&[0, u8::MAX]),
             Err(AicError::MalformedResponse)
+        );
+    }
+
+    #[test]
+    fn ap_start_confirmation_requires_the_requested_vif_and_complete_firmware_layout() {
+        assert_eq!(parse_ap_start(&[0, 1, 2, 3], 1), Ok(()));
+        for payload in [
+            &[0][..],
+            &[0, 1, 2, 3, 0],
+            &[0, 2, 2, 3],
+            &[0, 1, 255, 3],
+            &[0, 1, 2, 255],
+        ] {
+            assert_eq!(parse_ap_start(payload, 1), Err(AicError::MalformedResponse));
+        }
+        assert_eq!(
+            parse_ap_start(&[5, 1, 2, 3], 1),
+            Err(AicError::FirmwareRejected {
+                message_id: APM_START_CFM,
+                status: 5
+            })
         );
     }
 

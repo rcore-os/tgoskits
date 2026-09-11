@@ -1,9 +1,8 @@
 use core::hint::spin_loop;
 
-use aarch64_cpu::asm::barrier;
 use tock_registers::{interfaces::*, register_bitfields, register_structs, registers::*};
 
-use crate::VirtAddr;
+use crate::{VirtAddr, arch};
 
 pub const GITS_TRANSLATER_OFFSET: u64 = 0x10040;
 pub const ITS_COMMAND_SIZE: usize = core::mem::size_of::<ItsCommand>();
@@ -304,12 +303,12 @@ impl Its {
                 + CBASER::InnerCache::RaWaWb
                 + CBASER::OuterCache::RaWaWb,
         );
-        barrier::dsb(barrier::SY);
+        arch::dsb();
     }
 
     pub fn program_baser(&self, index: usize, value: u64) {
         self.regs().BASER[index].set(value);
-        barrier::dsb(barrier::SY);
+        arch::dsb();
     }
 
     pub fn baser_value(
@@ -333,12 +332,12 @@ impl Its {
 
     pub fn enable(&self) {
         self.regs().CTLR.modify(CTLR::Enabled::SET);
-        barrier::isb(barrier::SY);
+        arch::isb();
     }
 
     pub fn disable(&self) {
         self.regs().CTLR.modify(CTLR::Enabled::CLEAR);
-        barrier::isb(barrier::SY);
+        arch::isb();
         while !self.regs().CTLR.is_set(CTLR::Quiescent) {
             spin_loop();
         }
@@ -348,7 +347,7 @@ impl Its {
         self.regs()
             .CWRITER
             .write(CWRITER::Offset.val((byte_offset >> 5) as u64));
-        barrier::dsb(barrier::SY);
+        arch::dsb();
     }
 
     pub fn creadr_offset(&self) -> usize {

@@ -142,7 +142,7 @@ impl Axvisor {
         // embedded VM configuration, so a later build would otherwise replace
         // the executable belonging to an earlier group.
         for (index, build_group) in build_groups.iter_mut().enumerate() {
-            rootfs::ensure_qemu_rootfs_ready(&build_group.request, self.app.workspace_root(), None)
+            rootfs::ensure_qemu_assets_ready(&build_group.request, self.app.workspace_root(), None)
                 .await?;
             build_group.cargo = build::load_cargo_config(&build_group.request)?;
             prepare_configured_busybox_initramfs(
@@ -248,7 +248,6 @@ impl Axvisor {
                         case.case.display_name
                     )
                 })?;
-            test_qemu::validate_grouped_qemu_commands(&qemu, &case.case, "Axvisor")?;
             prepared.push(PreparedAxvisorQemuCase { case, qemu });
         }
 
@@ -296,11 +295,6 @@ impl Axvisor {
         asset_config: &test_case::CaseAssetConfig,
     ) -> anyhow::Result<(QemuConfig, test_case::PreparedCaseAssets)> {
         let mut qemu = case.qemu.clone();
-        test_case::apply_grouped_qemu_config(
-            &mut qemu,
-            &case.case.case,
-            &asset_config.grouped_runner,
-        );
         test_qemu::apply_timeout_scale(&mut qemu);
         if !qemu
             .fail_regex

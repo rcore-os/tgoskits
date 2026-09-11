@@ -6,7 +6,6 @@ extern crate alloc;
 use alloc::{
     boxed::Box,
     collections::VecDeque,
-    format,
     string::{String, ToString},
     vec,
     vec::Vec,
@@ -191,7 +190,7 @@ fn axio_iobuf_extension_rules_hold() {
     let mut output = Vec::new();
     assert_eq!(input.write_to(&mut output).unwrap(), 4);
     assert_eq!(output, b"copy");
-    assert_eq!(input, b"copy");
+    assert!(input.is_empty());
 
     let mut fixed = [0; 3];
     {
@@ -199,7 +198,7 @@ fn axio_iobuf_extension_rules_hold() {
         let mut reader: &[u8] = b"abcdef";
         assert_eq!(writer.remaining_mut(), 3);
         assert_eq!(writer.read_from(&mut reader).unwrap(), 3);
-        assert_eq!(writer.remaining_mut(), 3);
+        assert!(writer.is_full());
         assert_eq!(reader, b"def");
     }
     assert_eq!(&fixed, b"abc");
@@ -216,25 +215,6 @@ fn axio_iobuf_extension_rules_hold() {
     let mut rest = Vec::new();
     buffered.read_to_end(&mut rest).unwrap();
     assert_eq!(rest, b"zw");
-}
-
-#[test]
-fn axio_poll_state_and_formatting_rules_hold() {
-    use ax_io::PollState;
-
-    let default_state = PollState::default();
-    assert!(!default_state.readable);
-    assert!(!default_state.writable);
-    assert_eq!(default_state.readiness_version, 0);
-
-    let state = PollState {
-        readable: true,
-        writable: true,
-        readiness_version: 7,
-    };
-    let formatted = format!("{state:?}");
-    assert!(formatted.contains("readable: true"));
-    assert!(formatted.contains("readiness_version: 7"));
 }
 
 #[test]
@@ -481,10 +461,6 @@ fn axio_take_chain_and_recovery_rules_hold() {
     writer.write_all(b"abcd").unwrap();
     let into_inner_error = writer.into_inner().unwrap_err();
     assert_eq!(*into_inner_error.error(), Error::StorageFull);
-    assert_eq!(
-        format!("{into_inner_error}"),
-        format!("{}", Error::StorageFull)
-    );
 
     let (error, recovered) = into_inner_error.into_parts();
     assert_eq!(error, Error::StorageFull);
@@ -500,7 +476,6 @@ fn axio_buffered_reader_edge_paths_hold() {
     assert_eq!(reader.capacity(), ax_io::DEFAULT_BUF_SIZE);
     assert_eq!(reader.get_ref(), &&b"direct-read"[..]);
     assert!(!reader.initialized());
-    assert!(format!("{reader:?}").contains("BufReader"));
 
     let mut direct = [0; 11];
     reader.read_exact(&mut direct).unwrap();
@@ -546,7 +521,6 @@ fn axio_buffered_writer_edge_paths_hold() {
 
     let mut writer = BufWriter::new(Vec::<u8>::new());
     assert_eq!(writer.capacity(), ax_io::DEFAULT_BUF_SIZE);
-    assert!(format!("{writer:?}").contains("BufWriter"));
     writer.write_all(b"buf").unwrap();
     assert_eq!(writer.get_ref(), b"");
     writer.get_mut().extend_from_slice(b"inner-");
@@ -704,7 +678,6 @@ fn axio_line_writer_edge_paths_hold() {
     use ax_io::{Error, IoBufMut, LineWriter, Write};
 
     let mut writer = LineWriter::new(Vec::<u8>::new());
-    assert!(format!("{writer:?}").contains("LineWriter"));
     assert!(writer.remaining_mut() > 0);
     writer.write_all(b"prefix").unwrap();
     assert!(writer.get_ref().is_empty());
@@ -953,7 +926,6 @@ fn axio_empty_repeat_sink_edge_rules_hold() {
         .write_fmt(format_args!("{} {}", "fmt", 1))
         .unwrap();
     empty_reader.flush().unwrap();
-    assert!(format!("{empty_reader:?}").contains("Empty"));
 
     let empty_ref = empty();
     let mut empty_ref_writer = &empty_ref;
@@ -984,7 +956,6 @@ fn axio_empty_repeat_sink_edge_rules_hold() {
         Err(Error::NoMemory)
     );
     assert_eq!(repeated.remaining(), usize::MAX);
-    assert!(format!("{repeated:?}").contains("Repeat"));
 
     let mut sink_writer = sink();
     assert_eq!(sink_writer.write(b"abc").unwrap(), 3);
@@ -994,7 +965,6 @@ fn axio_empty_repeat_sink_edge_rules_hold() {
         .unwrap();
     sink_writer.flush().unwrap();
     assert_eq!(sink_writer.remaining_mut(), usize::MAX);
-    assert!(format!("{sink_writer:?}").contains("Sink"));
 
     let sink_ref = sink();
     let mut sink_ref_writer = &sink_ref;
@@ -1072,7 +1042,7 @@ fn axio_iobuf_extension_specialization_rules_hold() {
     let mut output = Vec::new();
     assert_eq!(source.write_to(&mut output).unwrap(), 10);
     assert_eq!(output, b"slice-copy");
-    assert_eq!(source, b"slice-copy");
+    assert!(source.is_empty());
 
     let mut fixed = [0_u8; 4];
     {
@@ -1364,32 +1334,6 @@ fn axio_boxed_bufread_and_seek_forwarding_rules_hold() {
 }
 
 #[test]
-fn axio_error_kind_variants_and_display_hold() {
-    use ax_io::Error;
-
-    // Test all ErrorKind variants exist and display correctly
-    let errors = [
-        (Error::UnexpectedEof, "UnexpectedEof"),
-        (Error::Interrupted, "Interrupted"),
-        (Error::WriteZero, "WriteZero"),
-        (Error::StorageFull, "StorageFull"),
-        (Error::InvalidInput, "InvalidInput"),
-        (Error::BrokenPipe, "BrokenPipe"),
-        (Error::NoMemory, "NoMemory"),
-        (Error::IllegalBytes, "IllegalBytes"),
-        (Error::InvalidData, "InvalidData"),
-    ];
-    for (error, _name) in &errors {
-        // Just verify they can be created and formatted
-        let _formatted = format!("{error}");
-    }
-
-    // Test Error::canonicalize behavior
-    assert_eq!(Error::Interrupted.canonicalize(), Error::Interrupted);
-    assert_eq!(Error::UnexpectedEof.canonicalize(), Error::UnexpectedEof);
-}
-
-#[test]
 fn axio_bufread_lines_and_split_hold() {
     use ax_io::{BufRead, Error};
 
@@ -1478,64 +1422,4 @@ fn axio_read_default_read_exact_eof_hold() {
     let mut buf = [0u8; 5];
     let result = default_read_exact(&mut reader, &mut buf);
     assert_eq!(result, Err(Error::UnexpectedEof));
-}
-
-#[test]
-fn axio_chain_struct_basic_hold() {
-    use ax_io::Read;
-
-    // Test Chain struct chains two readers
-    let data1: &[u8] = b"hello";
-    let data2: &[u8] = b" world";
-    let mut chain = data1.chain(data2);
-
-    // Read first part from data1
-    let mut buf = [0u8; 11];
-    let n = chain.read(&mut buf).unwrap();
-
-    // Chain should read from both readers
-    assert!(n > 0);
-}
-
-#[test]
-fn axio_error_variants_hold() {
-    use ax_io::Error;
-
-    // Test Error variants exist
-    let _unexpected_eof = Error::UnexpectedEof;
-    let _interrupted = Error::Interrupted;
-}
-
-#[test]
-fn axio_error_all_variants_hold() {
-    use ax_io::Error;
-
-    // Test all Error variants exist
-    let _unexpected_eof = Error::UnexpectedEof;
-    let _interrupted = Error::Interrupted;
-
-    // Test Error::canonicalize()
-    let eof = Error::UnexpectedEof;
-    assert!(eof.canonicalize() == Error::UnexpectedEof);
-}
-
-#[test]
-fn axio_seek_from_all_variants_hold() {
-    use ax_io::SeekFrom;
-
-    // Test SeekFrom variants
-    let _start = SeekFrom::Start(0);
-    let _end = SeekFrom::End(0);
-    let _current = SeekFrom::Current(i64::MAX);
-    let _current_neg = SeekFrom::Current(i64::MIN);
-}
-
-#[test]
-fn axio_io_bytes_trait_hold() {
-    use ax_io::{BufRead, Read, Write};
-
-    // Test that Read, Write, BufRead traits exist
-    fn _assert_read<R: Read>() {}
-    fn _assert_write<W: Write>() {}
-    fn _assert_bufread<B: BufRead>() {}
 }

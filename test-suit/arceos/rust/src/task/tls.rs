@@ -1,78 +1,86 @@
-#![allow(unused_unsafe)]
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    thread,
+};
 
-use std::{ptr::addr_of, str::from_utf8_unchecked, thread, vec::Vec};
-
-#[thread_local]
-static mut BOOL: bool = true;
-#[thread_local]
-static mut U8: u8 = 0xAA;
-#[thread_local]
-static mut U16: u16 = 0xcafe;
-#[thread_local]
-static mut U32: u32 = 0xdeadbeed;
-#[thread_local]
-static mut U64: u64 = 0xa2ce05_a2ce05;
-#[thread_local]
-static mut STR: [u8; 13] = *b"Hello, world!";
-
-const STR_LEN: usize = 13;
-
-macro_rules! get {
-    ($var:expr) => {
-        unsafe { $var }
-    };
+#[derive(Debug, PartialEq)]
+struct Values {
+    boolean: bool,
+    byte: u8,
+    half: u16,
+    word: u32,
+    double: u64,
+    text: [u8; 13],
 }
 
-macro_rules! set {
-    ($var:expr, $value:expr) => {
-        unsafe { $var = $value }
-    };
+impl Values {
+    const fn initial() -> Self {
+        Self {
+            boolean: true,
+            byte: 0xAA,
+            half: 0xcafe,
+            word: 0xdeadbeed,
+            double: 0xa2ce05_a2ce05,
+            text: *b"Hello, world!",
+        }
+    }
 }
 
-macro_rules! add {
-    ($var:expr, $value:expr) => {
-        unsafe { $var += $value }
-    };
+struct DropProbe(Arc<AtomicUsize>);
+
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::Release);
+    }
+}
+
+thread_local! {
+    static VALUES: RefCell<Values> = const { RefCell::new(Values::initial()) };
+    static DROP_PROBE: RefCell<Option<DropProbe>> = const { RefCell::new(None) };
 }
 
 pub fn run() -> crate::TestResult {
-    assert!(get!(BOOL));
-    assert_eq!(get!(U8), 0xAA);
-    assert_eq!(get!(U16), 0xcafe);
-    assert_eq!(get!(U32), 0xdeadbeed);
-    assert_eq!(get!(U64), 0xa2ce05_a2ce05);
-    assert_eq!(get!(&*addr_of!(STR)), b"Hello, world!");
-
-    let mut tasks = Vec::new();
+    VALUES.with_borrow(|values| assert_eq!(*values, Values::initial()));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mut workers = Vec::new();
     for i in 1..=10 {
-        tasks.push(thread::spawn(move || {
-            set!(BOOL, i % 2 == 0);
-            add!(U8, i as u8);
-            add!(U16, i as u16);
-            add!(U32, i as u32);
-            add!(U64, i as u64);
-            set!(STR[5], 48 + i as u8);
-
+        let drops = Arc::clone(&drops);
+        workers.push(thread::spawn(move || {
+            VALUES.with_borrow(|values| assert_eq!(*values, Values::initial()));
+            DROP_PROBE.with_borrow_mut(|slot| *slot = Some(DropProbe(drops)));
+            VALUES.with_borrow_mut(|values| {
+                values.boolean = i % 2 == 0;
+                values.byte += i as u8;
+                values.half += i as u16;
+                values.word += i as u32;
+                values.double += i as u64;
+                values.text[5] = 48 + i as u8;
+            });
             thread::yield_now();
-
-            assert_eq!(get!(BOOL), i % 2 == 0);
-            assert_eq!(get!(U8), 0xAA + i as u8);
-            assert_eq!(get!(U16), 0xcafe + i as u16);
-            assert_eq!(get!(U32), 0xdeadbeed + i as u32);
-            assert_eq!(get!(U64), 0xa2ce05_a2ce05 + i as u64);
-            assert_eq!(get!(STR[5]), 48 + i as u8);
-            assert_eq!(STR_LEN, 13);
-            let _ = get!(from_utf8_unchecked(&*addr_of!(STR)));
+            VALUES.with_borrow(|values| {
+                assert_eq!(values.boolean, i % 2 == 0);
+                assert_eq!(values.byte, 0xAA + i as u8);
+                assert_eq!(values.half, 0xcafe + i as u16);
+                assert_eq!(values.word, 0xdeadbeed + i as u32);
+                assert_eq!(values.double, 0xa2ce05_a2ce05 + i as u64);
+                let mut expected_text = *b"Hello, world!";
+                expected_text[5] = 48 + i as u8;
+                assert_eq!(values.text, expected_text);
+            });
         }));
     }
-
-    tasks.into_iter().for_each(|task| task.join().unwrap());
-
-    assert!(get!(BOOL));
-    assert_eq!(get!(U8), 0xAA);
-    assert_eq!(get!(U16), 0xcafe);
-    assert_eq!(get!(U32), 0xdeadbeed);
-    assert_eq!(get!(U64), 0xa2ce05_a2ce05);
-    assert_eq!(get!(&*addr_of!(STR)), b"Hello, world!");
+    for worker in workers {
+        worker.join().expect("TLS worker panicked");
+    }
+    VALUES.with_borrow(|values| assert_eq!(*values, Values::initial()));
+    assert_eq!(
+        drops.load(Ordering::Acquire),
+        10,
+        "pthread exit must run std TLS destructors"
+    );
     Ok(())
 }

@@ -1,9 +1,13 @@
-timeout = 0
-shell_prefix = "root@starry:"
-uefi = false
-to_bin = false
-success_regex = []
-fail_regex = []
+timeout = 2400
+# StarryOS PIE images require the UEFI handoff; direct ELF loading requires a PVH note.
+uefi = true
+to_bin = true
+fail_regex = [
+    '(?i)\bpanic(?:ked)?\b',
+    '(?i)page fault',
+    '(?i)segmentation fault',
+    '(?m)^MYSQL_TEST_FAILED(?:[: ].*)?$',
+]
 
 args = [
     "-machine",
@@ -19,8 +23,9 @@ args = [
     "virtio-net-pci,netdev=net0",
     "-netdev",
     "user,id=net0",
-    "-append",
-    "root=/dev/nvme0n1",
 ]
 
-shell_init_cmd = "/usr/bin/mysql-interactive.sh"
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/mysql-test.sh"
+success_regex = ['(?m)^MYSQL_TEST_PASSED\s*$']

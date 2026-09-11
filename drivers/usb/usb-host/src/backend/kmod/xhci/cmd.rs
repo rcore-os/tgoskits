@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 
 use ax_sync::{SpinLock as Mutex, SpinRwLock as RwLock};
+use dma_api::DmaDirection;
 use mbarrier::wmb;
 use usb_if::err::TransferError;
 use xhci::{
@@ -16,7 +17,7 @@ pub struct CommandRing(Arc<Mutex<Inner>>);
 
 impl CommandRing {
     pub fn new(
-        direction: crate::osal::DmaDirection,
+        direction: DmaDirection,
         dma: &Kernel,
         reg: Arc<RwLock<XhciRegisters>>,
     ) -> crate::err::Result<Self> {

@@ -410,6 +410,15 @@ pub trait DeviceContext {
     /// Returns the identity of the device currently handling this access.
     fn device_id(&self) -> DeviceId;
 
+    /// Returns the vCPU that issued this trapped access, when applicable.
+    ///
+    /// Management-path and device-originated callbacks return `None`. Devices
+    /// with banked per-vCPU registers must reject a missing accessor instead of
+    /// consulting host CPU-local state.
+    fn accessing_vcpu(&self) -> Option<DeviceVcpuId> {
+        None
+    }
+
     /// Reads guest memory on behalf of the currently dispatched device.
     ///
     /// This capability is valid only for this access and is denied by default.
@@ -466,18 +475,32 @@ pub trait DeviceContext {
 /// A no-permission device context for tests and adapter-only callers.
 pub struct NoopDeviceContext {
     device_id: DeviceId,
+    accessing_vcpu: Option<DeviceVcpuId>,
 }
 
 impl NoopDeviceContext {
     /// Creates a no-permission context for `device_id`.
     pub const fn new(device_id: DeviceId) -> Self {
-        Self { device_id }
+        Self {
+            device_id,
+            accessing_vcpu: None,
+        }
+    }
+
+    /// Associates this no-permission context with a trapped vCPU access.
+    pub const fn with_vcpu(mut self, vcpu_id: DeviceVcpuId) -> Self {
+        self.accessing_vcpu = Some(vcpu_id);
+        self
     }
 }
 
 impl DeviceContext for NoopDeviceContext {
     fn device_id(&self) -> DeviceId {
         self.device_id
+    }
+
+    fn accessing_vcpu(&self) -> Option<DeviceVcpuId> {
+        self.accessing_vcpu
     }
 }
 

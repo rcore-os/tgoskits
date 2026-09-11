@@ -7,7 +7,6 @@ use alloc::{
 };
 use core::{
     ffi::c_int,
-    future::poll_fn,
     mem::{MaybeUninit, offset_of, size_of},
     slice,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -15,23 +14,27 @@ use core::{
 
 use ax_fs_ng::vfs::FileFlags;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
-use ax_runtime::hal::{paging::MappingFlags, time::wall_time};
-use ax_task::{
-    WaitQueue,
-    future::{block_on, interruptible, timeout_at_wall},
-};
-use axpoll::{IoEvents, PollSet};
+use ax_runtime::hal::{paging::MappingFlags, time::monotonic_time};
+use ax_std::os::arceos::task::sync::WaitQueue;
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 use linux_raw_sys::general::timespec;
 use starry_signal::SignalSet;
-use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     Errno, StarryError, StarryResult,
     file::{Directory, File, FileLike, event::EventFd, get_file_like, memfd::Memfd},
-    mm::{AddrSpace, Backend, IoVec},
+    mm::{AddrSpace, IoVec, MappingOperation, MmPin, VmMutPtr, VmPtr},
     sync::{Mutex, RwLock},
     syscall::signal::check_sigset_size,
-    task::{AsThread, PidIdentityId, with_blocked_signals},
+    task::{
+        PidIdentityId,
+        future::{
+            UserWaitOutcome, block_on, block_on_user_until, monotonic_deadline_from_time,
+            poll_shared,
+        },
+        with_blocked_signals,
+    },
     time::TimeValueLike,
 };
 
@@ -70,7 +73,7 @@ const IOCB_FLAG_IOPRIO: u32 = 1 << 1;
 const AIO_MAX_WORKERS: usize = 4;
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct IoEvent {
     data: u64,
     obj: u64,
@@ -173,7 +176,7 @@ struct AioContextInner {
 struct AioContext {
     id: AioContextId,
     owner: PidIdentityId,
-    aspace: Arc<Mutex<AddrSpace>>,
+    aspace: MmPin,
     ring_vaddr: VirtAddr,
     ring_size: usize,
     ring_events: u32,
@@ -193,7 +196,7 @@ impl AioContext {
     fn new(
         id: AioContextId,
         owner: PidIdentityId,
-        aspace: Arc<Mutex<AddrSpace>>,
+        aspace: MmPin,
         ring_vaddr: VirtAddr,
         ring_size: usize,
         ring_events: u32,
@@ -233,8 +236,8 @@ static NEXT_AIO_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 static AIO_CONTEXTS: RwLock<BTreeMap<AioContextId, Arc<AioContext>>> = RwLock::new(BTreeMap::new());
 
 // Return the process id that owns newly created or looked-up contexts.
-fn current_process_identity_id() -> PidIdentityId {
-    ax_task::current().as_thread().proc_data.identity().id()
+fn current_process_identity_id(current: &crate::task::UserTaskRef) -> PidIdentityId {
+    current.as_thread().proc_data.identity().id()
 }
 
 // Use Linux EINVAL for all invalid AIO context handles.
@@ -283,7 +286,7 @@ fn allocate_aio_ring(aspace: &mut AddrSpace, ring_size: usize) -> StarryResult<V
         )
         .ok_or(StarryError::NoMemory)?;
 
-    let backend = Backend::new_alloc(ring_vaddr, PAGE_SIZE_4K, "aio_ring");
+    let backend = MappingOperation::new_alloc(ring_vaddr, PAGE_SIZE_4K, "aio_ring");
     let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
     aspace.map(ring_vaddr, ring_size, flags, true, backend)?;
     Ok(ring_vaddr)
@@ -324,10 +327,13 @@ fn typed_as_bytes_mut<T>(value: &mut MaybeUninit<T>) -> &mut [u8] {
 }
 
 // Read the ring header through the caller's user pointer.
-fn read_ring_user(ctx: AioContextId) -> StarryResult<AioRing> {
+fn read_ring_user(
+    current: &crate::task::UserTaskRef,
+    ctx: AioContextId,
+) -> crate::StarryResult<AioRing> {
     let ring = ring_ptr(ctx)
         .cast_const()
-        .vm_read_uninit()
+        .vm_read_uninit(current)
         .map_err(|_| invalid_context())?;
     Ok(unsafe { ring.assume_init() })
 }
@@ -377,9 +383,12 @@ fn write_event_context(context: &AioContext, index: u32, event: &IoEvent) -> Sta
 }
 
 // Validate a userspace context handle and return its kernel object.
-fn lookup_context(ctx: AioContextId) -> StarryResult<Arc<AioContext>> {
-    let owner = current_process_identity_id();
-    let ring = read_ring_user(ctx)?;
+fn lookup_context(
+    current: &crate::task::UserTaskRef,
+    ctx: AioContextId,
+) -> StarryResult<Arc<AioContext>> {
+    let owner = current_process_identity_id(current);
+    let ring = read_ring_user(current, ctx)?;
     let contexts = AIO_CONTEXTS.read();
     let ctx_id = ring.id as usize;
     match contexts.get(&ctx_id) {
@@ -418,7 +427,7 @@ fn u64_to_offset(value: i64) -> StarryResult<u64> {
 
 // Fault in and validate a user memory range before worker access.
 fn prepare_user_region(
-    aspace: &Arc<Mutex<AddrSpace>>,
+    aspace: &MmPin,
     start: VirtAddr,
     len: usize,
     flags: MappingFlags,
@@ -440,11 +449,7 @@ fn prepare_user_region(
 }
 
 // Copy a linear user buffer into owned kernel memory.
-fn read_user_region(
-    aspace: &Arc<Mutex<AddrSpace>>,
-    start: VirtAddr,
-    len: usize,
-) -> StarryResult<Vec<u8>> {
+fn read_user_region(aspace: &MmPin, start: VirtAddr, len: usize) -> StarryResult<Vec<u8>> {
     prepare_user_region(aspace, start, len, MappingFlags::READ)?;
     let mut data = vec![0; len];
     if len != 0 {
@@ -459,7 +464,7 @@ fn read_user_region(
 
 // Build a one-segment user buffer descriptor.
 fn user_buffer_from_linear(
-    aspace: &Arc<Mutex<AddrSpace>>,
+    aspace: &MmPin,
     ptr: u64,
     len: usize,
     flags: MappingFlags,
@@ -477,13 +482,17 @@ fn user_buffer_from_linear(
 }
 
 // Read an iovec array and normalize zero-length entries away.
-fn read_iov(iov: *const IoVec, iovcnt: usize) -> StarryResult<Vec<UserSegment>> {
+fn read_iov(
+    current: &crate::task::UserTaskRef,
+    iov: *const IoVec,
+    iovcnt: usize,
+) -> crate::StarryResult<Vec<UserSegment>> {
     if iovcnt > 1024 {
         return Err(StarryError::InvalidInput);
     }
     let mut segments = Vec::with_capacity(iovcnt);
     for i in 0..iovcnt {
-        let iov = iov.wrapping_add(i).vm_read()?;
+        let iov = iov.wrapping_add(i).vm_read(current)?;
         if iov.iov_len < 0 {
             return Err(StarryError::InvalidInput);
         }
@@ -500,12 +509,13 @@ fn read_iov(iov: *const IoVec, iovcnt: usize) -> StarryResult<Vec<UserSegment>> 
 
 // Build a multi-segment user buffer from an iovec array.
 fn user_buffer_from_iov(
-    aspace: &Arc<Mutex<AddrSpace>>,
+    current: &crate::task::UserTaskRef,
+    aspace: &MmPin,
     iov: *const IoVec,
     iovcnt: usize,
     flags: MappingFlags,
-) -> StarryResult<UserBuffer> {
-    let segments = read_iov(iov, iovcnt)?;
+) -> crate::StarryResult<UserBuffer> {
+    let segments = read_iov(current, iov, iovcnt)?;
     let mut total = 0usize;
     for segment in &segments {
         prepare_user_region(aspace, segment.start, segment.len, flags)?;
@@ -521,7 +531,7 @@ fn user_buffer_from_iov(
 }
 
 // Copy all user segments into a contiguous kernel buffer.
-fn read_user_segments(aspace: &Arc<Mutex<AddrSpace>>, buf: &UserBuffer) -> StarryResult<Vec<u8>> {
+fn read_user_segments(aspace: &MmPin, buf: &UserBuffer) -> StarryResult<Vec<u8>> {
     let mut data = vec![0; buf.len];
     let mut offset = 0usize;
     let guard = aspace.lock();
@@ -536,11 +546,7 @@ fn read_user_segments(aspace: &Arc<Mutex<AddrSpace>>, buf: &UserBuffer) -> Starr
 }
 
 // Copy a kernel buffer back into user segments.
-fn write_user_segments(
-    aspace: &Arc<Mutex<AddrSpace>>,
-    buf: &UserBuffer,
-    data: &[u8],
-) -> StarryResult<()> {
+fn write_user_segments(aspace: &MmPin, buf: &UserBuffer, data: &[u8]) -> StarryResult<()> {
     let mut offset = 0usize;
     let guard = aspace.lock();
     for segment in &buf.segments {
@@ -629,6 +635,7 @@ fn validate_iocb_common(cb: &Iocb) -> StarryResult<()> {
 
 // Translate a userspace iocb into an owned request for worker execution.
 fn prepare_request(
+    current: &crate::task::UserTaskRef,
     context: &Arc<AioContext>,
     cb: &Iocb,
     cb_ptr: *const Iocb,
@@ -694,6 +701,7 @@ fn prepare_request(
                 file: read_file_from_fd(fd)?,
                 offset: u64_to_offset(cb.offset)?,
                 dst: user_buffer_from_iov(
+                    current,
                     &context.aspace,
                     cb.buf as *const IoVec,
                     u64_to_usize(cb.nbytes)?,
@@ -706,6 +714,7 @@ fn prepare_request(
                 return Err(StarryError::OperationNotSupported);
             }
             let src = user_buffer_from_iov(
+                current,
                 &context.aspace,
                 cb.buf as *const IoVec,
                 u64_to_usize(cb.nbytes)?,
@@ -735,10 +744,8 @@ fn prepare_request(
 }
 
 // Signal an eventfd completion counter when IOCB_FLAG_RESFD is set.
-fn notify_resfd(resfd: &EventFd) -> StarryResult<()> {
-    let data = 1u64.to_ne_bytes();
-    resfd.write(&mut data.as_slice())?;
-    Ok(())
+fn notify_resfd(resfd: &EventFd) -> crate::StarryResult<()> {
+    resfd.signal_kernel(1)
 }
 
 // Execute a positioned read and copy the bytes into the original user buffer.
@@ -795,31 +802,24 @@ fn poll_result(
     context: &AioContext,
     file: &Arc<dyn FileLike>,
     interested: IoEvents,
-) -> StarryResult<isize> {
-    block_on(interruptible(poll_fn(|cx| {
-        // Check before registration so already-ready fds complete immediately.
-        if context.destroying.load(Ordering::Acquire) {
-            return core::task::Poll::Ready(Err(StarryError::Interrupted));
-        }
-        if let Some(ready) = ready_poll_events(file, interested) {
-            return core::task::Poll::Ready(Ok(ready));
-        }
-        file.register(cx, interested);
-        // Registration happens from AIO worker/wait task context.
-        unsafe {
-            context
-                .completion_wakers
-                .register(cx.waker(), IoEvents::IN | IoEvents::ERR | IoEvents::HUP)
-        };
-        // Re-check after registration to avoid losing a destroy or readiness wake.
-        if context.destroying.load(Ordering::Acquire) {
-            return core::task::Poll::Ready(Err(StarryError::Interrupted));
-        }
-        if let Some(ready) = ready_poll_events(file, interested) {
-            return core::task::Poll::Ready(Ok(ready));
-        }
-        core::task::Poll::Pending
-    })))?
+) -> crate::StarryResult<isize> {
+    block_on(poll_shared(
+        || {
+            if context.destroying.load(Ordering::Acquire) {
+                return core::task::Poll::Ready(Err(StarryError::Interrupted));
+            }
+            ready_poll_events(file, interested).map_or(core::task::Poll::Pending, |ready| {
+                core::task::Poll::Ready(Ok(ready))
+            })
+        },
+        |registrar| unsafe {
+            file.register_shared(registrar, interested);
+            registrar.register(
+                &context.completion_wakers,
+                IoEvents::IN | IoEvents::ERR | IoEvents::HUP,
+            );
+        },
+    ))
 }
 
 // Dispatch one prepared request to the matching operation implementation.
@@ -969,7 +969,7 @@ fn finish_request(context: &AioContext, request: &AioRequest, event: IoEvent) {
             inner.pending.len()
         );
     }
-    context.inflight_wq.notify_all(true);
+    context.inflight_wq.notify_all();
     // Request accounting/completion state is published before waking waiters.
     unsafe {
         context
@@ -1063,33 +1063,23 @@ fn enqueue_request(context: &Arc<AioContext>, request: Arc<AioRequest>) -> Starr
 
     if spawn_worker {
         let worker_context = context.clone();
-        ax_task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             move || aio_worker(worker_context),
             String::from("aio-worker"),
         );
     }
-    context.work_wq.notify_one(true);
+    context.work_wq.notify_one();
     Ok(())
 }
 
 // Wait for at least one completion or for the optional deadline to expire.
 fn wait_for_completion(
+    current: &crate::task::UserTaskRef,
     context: &AioContext,
     deadline: Option<core::time::Duration>,
 ) -> StarryResult<bool> {
-    let wait = poll_fn(|cx| {
-        // Register then re-check to avoid a completion wake racing this waiter.
-        if context.ready_count.load(Ordering::Acquire) != 0
-            || context.destroying.load(Ordering::Acquire)
-        {
-            core::task::Poll::Ready(())
-        } else {
-            // Registration happens from AIO wait task context.
-            unsafe {
-                context
-                    .completion_wakers
-                    .register(cx.waker(), IoEvents::IN | IoEvents::ERR | IoEvents::HUP)
-            };
+    let wait = poll_shared(
+        || {
             if context.ready_count.load(Ordering::Acquire) != 0
                 || context.destroying.load(Ordering::Acquire)
             {
@@ -1097,51 +1087,60 @@ fn wait_for_completion(
             } else {
                 core::task::Poll::Pending
             }
-        }
-    });
+        },
+        |registrar| unsafe {
+            registrar.register(
+                &context.completion_wakers,
+                IoEvents::IN | IoEvents::ERR | IoEvents::HUP,
+            )
+        },
+    );
 
-    match block_on(interruptible(timeout_at_wall(deadline, wait))) {
-        Ok(Ok(())) => Ok(true),
-        Ok(Err(_)) => Ok(false),
-        Err(_) => Err(StarryError::Interrupted),
+    let task = current;
+    match block_on_user_until(task, deadline.map(monotonic_deadline_from_time), wait) {
+        UserWaitOutcome::Ready(()) => Ok(true),
+        UserWaitOutcome::TimedOut => Ok(false),
+        UserWaitOutcome::Interrupted => Err(crate::StarryError::Interrupted),
     }
 }
 
 // Wait until io_destroy sees every running request finish.
 fn wait_for_inflight_drain(context: &AioContext) {
-    block_on(poll_fn(|cx| {
-        let inflight = context.inner.lock().inflight;
-        if inflight == 0 {
-            return core::task::Poll::Ready(());
-        }
-
-        debug!("sys_io_destroy: still waiting, inflight={}", inflight);
-        // Registration happens from io_destroy task context.
-        unsafe {
-            context
-                .completion_wakers
-                .register(cx.waker(), IoEvents::IN | IoEvents::ERR | IoEvents::HUP)
-        };
-        // Re-check after registration so the final completion cannot be missed.
-        if context.inner.lock().inflight == 0 {
-            core::task::Poll::Ready(())
-        } else {
-            core::task::Poll::Pending
-        }
-    }))
+    block_on(poll_shared(
+        || {
+            let inflight = context.inner.lock().inflight;
+            if inflight == 0 {
+                core::task::Poll::Ready(())
+            } else {
+                debug!("sys_io_destroy: still waiting, inflight={}", inflight);
+                core::task::Poll::Pending
+            }
+        },
+        |registrar| unsafe {
+            registrar.register(
+                &context.completion_wakers,
+                IoEvents::IN | IoEvents::ERR | IoEvents::HUP,
+            )
+        },
+    ))
 }
 
 // Read an optional relative timeout from userspace.
-fn read_timeout(timeout: *const timespec) -> StarryResult<Option<core::time::Duration>> {
+fn read_timeout(
+    current: &crate::task::UserTaskRef,
+    timeout: *const timespec,
+) -> crate::StarryResult<Option<core::time::Duration>> {
     if timeout.is_null() {
         return Ok(None);
     }
-    let timeout = unsafe { timeout.vm_read_uninit()?.assume_init() }.try_into_time_value()?;
+    let timeout =
+        unsafe { timeout.vm_read_uninit(current)?.assume_init() }.try_into_time_value()?;
     Ok(Some(timeout))
 }
 
 // Drain completion events from the ring into the userspace output array.
 fn copy_completed_events(
+    current: &crate::task::UserTaskRef,
     context: &AioContext,
     max: usize,
     events: *mut IoEvent,
@@ -1158,7 +1157,7 @@ fn copy_completed_events(
         // If a later copy fails, keep the events already delivered visible.
         if let Err(err) = events
             .wrapping_add(completed_offset + copied)
-            .vm_write(event)
+            .vm_write(current, event)
         {
             if copied > 0 {
                 write_ring_head_context(context, head)?;
@@ -1188,6 +1187,7 @@ fn copy_completed_events(
 
 // Shared implementation for io_getevents and io_pgetevents.
 fn do_io_getevents(
+    current: &crate::task::UserTaskRef,
     context: Arc<AioContext>,
     min_nr: isize,
     nr: isize,
@@ -1203,12 +1203,13 @@ fn do_io_getevents(
 
     let min_nr = min_nr as usize;
     let nr = nr as usize;
-    let deadline = read_timeout(timeout)?.and_then(|duration| wall_time().checked_add(duration));
+    let deadline =
+        read_timeout(current, timeout)?.and_then(|duration| monotonic_time().checked_add(duration));
     let mut completed = 0usize;
 
     loop {
         // First drain everything already ready before sleeping.
-        let copied = copy_completed_events(&context, nr - completed, events, completed)?;
+        let copied = copy_completed_events(current, &context, nr - completed, events, completed)?;
         completed += copied;
         if completed >= min_nr || completed == nr || min_nr == 0 {
             return Ok(completed as isize);
@@ -1218,7 +1219,7 @@ fn do_io_getevents(
         }
 
         // Sleep only when min_nr still requires more events.
-        match wait_for_completion(&context, deadline) {
+        match wait_for_completion(current, &context, deadline) {
             Ok(true) => {}
             Ok(false) => return Ok(completed as isize),
             Err(_) if completed > 0 => return Ok(completed as isize),
@@ -1228,7 +1229,11 @@ fn do_io_getevents(
 }
 
 // Create an AIO context and expose its ring address to userspace.
-pub fn sys_io_setup(nr_events: u32, ctxp: *mut AioContextId) -> StarryResult<isize> {
+pub fn sys_io_setup(
+    current: &crate::task::UserTaskRef,
+    nr_events: u32,
+    ctxp: *mut AioContextId,
+) -> crate::StarryResult<isize> {
     debug!(
         "sys_io_setup called: nr_events={}, ctxp={:p}",
         nr_events, ctxp
@@ -1236,8 +1241,8 @@ pub fn sys_io_setup(nr_events: u32, ctxp: *mut AioContextId) -> StarryResult<isi
     if nr_events == 0 {
         return Err(StarryError::InvalidInput);
     }
-    if ctxp.cast_const().vm_read()? != 0 {
-        return Err(StarryError::InvalidInput);
+    if ctxp.cast_const().vm_read(current)? != 0 {
+        return Err(crate::StarryError::InvalidInput);
     }
 
     let ctx_id = NEXT_AIO_CONTEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -1246,8 +1251,8 @@ pub fn sys_io_setup(nr_events: u32, ctxp: *mut AioContextId) -> StarryResult<isi
     }
     // Allocate the user ring before publishing the context globally.
     let (ring_size, ring_events) = aio_ring_layout(nr_events)?;
-    let curr = ax_task::current();
-    let aspace = curr.as_thread().proc_data.aspace();
+    let curr = current;
+    let aspace = curr.as_thread().proc_data.pin_aspace()?;
     let ring_vaddr = {
         let mut guard = aspace.lock();
         allocate_aio_ring(&mut guard, ring_size)?
@@ -1257,19 +1262,19 @@ pub fn sys_io_setup(nr_events: u32, ctxp: *mut AioContextId) -> StarryResult<isi
 
     let context = Arc::new(AioContext::new(
         ctx_id,
-        current_process_identity_id(),
-        aspace.clone(),
+        current_process_identity_id(current),
+        aspace,
         ring_vaddr,
         ring_size,
         ring_events,
     ));
-    AIO_CONTEXTS.write().insert(ctx_id, context);
+    AIO_CONTEXTS.write().insert(ctx_id, context.clone());
 
     // If writing ctxp fails, roll back both the global entry and mapping.
     let ctx_value = ring_vaddr.as_usize();
-    if let Err(err) = ctxp.vm_write(ctx_value) {
+    if let Err(err) = ctxp.vm_write(current, ctx_value) {
         AIO_CONTEXTS.write().remove(&ctx_id);
-        let _ = aspace.lock().unmap(ring_vaddr, ring_size);
+        let _ = context.aspace.lock().unmap(ring_vaddr, ring_size);
         return Err(err.into());
     }
     debug!(
@@ -1297,7 +1302,7 @@ fn destroy_context(context: Arc<AioContext>) {
             inner.pending.len()
         );
     }
-    context.work_wq.notify_all(true);
+    context.work_wq.notify_all();
     // Destroying state is published before waking waiters.
     unsafe {
         context
@@ -1336,9 +1341,12 @@ pub fn cleanup_aio_contexts_for_process(owner: PidIdentityId) {
 }
 
 // Destroy an AIO context after cancelling queued work and draining workers.
-pub fn sys_io_destroy(ctx: AioContextId) -> StarryResult<isize> {
+pub fn sys_io_destroy(
+    current: &crate::task::UserTaskRef,
+    ctx: AioContextId,
+) -> crate::StarryResult<isize> {
     debug!("sys_io_destroy called: ctx={:#x}", ctx);
-    let context = lookup_context(ctx)?;
+    let context = lookup_context(current, ctx)?;
     let context = AIO_CONTEXTS
         .write()
         .remove(&context.id)
@@ -1349,19 +1357,20 @@ pub fn sys_io_destroy(ctx: AioContextId) -> StarryResult<isize> {
 
 // Submit a batch of iocbs to the target AIO context.
 pub fn sys_io_submit(
+    current: &crate::task::UserTaskRef,
     ctx: AioContextId,
     nr: isize,
     iocbpp: *const *const Iocb,
-) -> StarryResult<isize> {
+) -> crate::StarryResult<isize> {
     debug!("sys_io_submit <= ctx: {ctx:#x}, nr: {nr}, iocbpp: {iocbpp:p}");
     if nr < 0 {
         return Err(StarryError::InvalidInput);
     }
     if nr == 0 {
-        lookup_context(ctx)?;
+        lookup_context(current, ctx)?;
         return Ok(0);
     }
-    let context = lookup_context(ctx)?;
+    let context = lookup_context(current, ctx)?;
     if context.destroying.load(Ordering::Acquire) {
         return Err(invalid_context());
     }
@@ -1369,12 +1378,12 @@ pub fn sys_io_submit(
     let mut submitted = 0isize;
     for i in 0..nr as usize {
         // Linux returns a partial count once at least one request was queued.
-        let cb_ptr = match iocbpp.wrapping_add(i).vm_read() {
+        let cb_ptr = match iocbpp.wrapping_add(i).vm_read(current) {
             Ok(ptr) => ptr,
             Err(_) if submitted > 0 => return Ok(submitted),
             Err(err) => return Err(err.into()),
         };
-        let cb = match cb_ptr.vm_read_uninit() {
+        let cb = match cb_ptr.vm_read_uninit(current) {
             Ok(cb) => unsafe { cb.assume_init() },
             Err(_) if submitted > 0 => return Ok(submitted),
             Err(err) => return Err(err.into()),
@@ -1383,7 +1392,7 @@ pub fn sys_io_submit(
             "sys_io_submit: opcode={}, fd={}, offset={}, nbytes={}",
             cb.lio_opcode, cb.fildes, cb.offset, cb.nbytes
         );
-        let request = match prepare_request(&context, &cb, cb_ptr) {
+        let request = match prepare_request(current, &context, &cb, cb_ptr) {
             Ok(request) => request,
             Err(_) if submitted > 0 => return Ok(submitted),
             Err(err) => return Err(err),
@@ -1403,6 +1412,7 @@ pub fn sys_io_submit(
 
 // Retrieve completed events from an AIO context.
 pub fn sys_io_getevents(
+    current: &crate::task::UserTaskRef,
     ctx: AioContextId,
     min_nr: isize,
     nr: isize,
@@ -1410,29 +1420,30 @@ pub fn sys_io_getevents(
     timeout: *const timespec,
 ) -> StarryResult<isize> {
     debug!("sys_io_getevents <= ctx: {ctx:#x}, min_nr: {min_nr}, nr: {nr}, events: {events:p}");
-    let context = lookup_context(ctx)?;
-    let result = do_io_getevents(context, min_nr, nr, events, timeout)?;
+    let context = lookup_context(current, ctx)?;
+    let result = do_io_getevents(current, context, min_nr, nr, events, timeout)?;
     debug!("sys_io_getevents => result={}", result);
     Ok(result)
 }
 
 // Retrieve events while temporarily applying a signal mask.
 pub fn sys_io_pgetevents(
+    current: &crate::task::UserTaskRef,
     ctx: AioContextId,
     min_nr: isize,
     nr: isize,
     events: *mut IoEvent,
     timeout: *const timespec,
     sigmask: usize,
-) -> StarryResult<isize> {
-    let context = lookup_context(ctx)?;
+) -> crate::StarryResult<isize> {
+    let context = lookup_context(current, ctx)?;
     if sigmask == 0 {
-        return do_io_getevents(context, min_nr, nr, events, timeout);
+        return do_io_getevents(current, context, min_nr, nr, events, timeout);
     }
 
     let sigset = unsafe {
         (sigmask as *const AioSigSet)
-            .vm_read_uninit()?
+            .vm_read_uninit(current)?
             .assume_init()
     };
     check_sigset_size(sigset.sigsetsize)?;
@@ -1440,21 +1451,22 @@ pub fn sys_io_pgetevents(
     let blocked = if sigset.sigmask.is_null() {
         None
     } else {
-        Some(unsafe { sigset.sigmask.vm_read_uninit()?.assume_init() })
+        Some(unsafe { sigset.sigmask.vm_read_uninit(current)?.assume_init() })
     };
     with_blocked_signals(blocked, || {
-        do_io_getevents(context, min_nr, nr, events, timeout)
+        do_io_getevents(current, context, min_nr, nr, events, timeout)
     })
 }
 
 // Cancel a queued request that has not started running.
 pub fn sys_io_cancel(
+    current: &crate::task::UserTaskRef,
     ctx: AioContextId,
     iocb: *const Iocb,
     result: *mut IoEvent,
 ) -> StarryResult<isize> {
     debug!("sys_io_cancel <= ctx: {ctx:#x}, iocb: {iocb:p}, result: {result:p}");
-    let context = lookup_context(ctx)?;
+    let context = lookup_context(current, ctx)?;
     let cb_ptr = iocb as usize;
 
     let event = {
@@ -1488,9 +1500,9 @@ pub fn sys_io_cancel(
         }
     };
 
-    result.vm_write(event)?;
-    context.inflight_wq.notify_all(true);
-    context.work_wq.notify_one(true);
+    result.vm_write(current, event)?;
+    context.inflight_wq.notify_all();
+    context.work_wq.notify_one();
     // Cancellation/accounting state is published before waking waiters.
     unsafe {
         context

@@ -21,16 +21,15 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     sync::atomic::{AtomicBool, Ordering},
-    task::Context,
     time::Duration,
 };
 
 use async_channel::TryRecvError;
-use async_trait::async_trait;
 use ax_hal::time::wall_time;
 use ax_io::{Read, Write};
-use ax_sync::{Mutex, SpinRwLock as RwLock};
-use axpoll::{IoEvents, PollSet, Pollable};
+use ax_sync::{SpinLock, SpinRwLock as RwLock};
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 
 use crate::{
     CMsgData, NetError, NetResult, RecvFlags, RecvOptions, SendOptions, SocketAddrEx, SocketCmsg,
@@ -170,7 +169,7 @@ impl SeqBind {
 /// Datagram transport for Unix domain sockets.
 pub struct DgramTransport {
     /// Receiver installed when the socket is bound or paired.
-    data_rx: Mutex<Option<(async_channel::Receiver<Packet>, Arc<PollSet>)>>,
+    data_rx: SpinLock<Option<(async_channel::Receiver<Packet>, Arc<PollSet>)>>,
     /// Direct peer channel for connected datagram sockets.
     connected: RwLock<Option<Channel>>,
     /// Address reported as sender on outgoing datagrams.
@@ -180,12 +179,12 @@ pub struct DgramTransport {
     /// The async channel has no peek primitive, so a peeking receiver pops one
     /// packet, copies it out, and parks it here; the next recv drains this slot
     /// before touching the channel, preserving record boundaries and order.
-    peeked: Mutex<Option<Packet>>,
+    peeked: SpinLock<Option<Packet>>,
     /// True for `SOCK_SEQPACKET`, which is connection-oriented (bind/listen/
     /// accept/connect) unlike connectionless `SOCK_DGRAM`.
     is_seqpacket: bool,
     /// Connection-request queue installed by a seqpacket listener's bind.
-    conn_rx: Mutex<Option<(async_channel::Receiver<SeqConnRequest>, Arc<PollSet>)>>,
+    conn_rx: SpinLock<Option<(async_channel::Receiver<SeqConnRequest>, Arc<PollSet>)>>,
     /// True after a bound seqpacket socket enters listening state.
     listening: Arc<AtomicBool>,
     /// Poll set for local state changes.
@@ -223,12 +222,12 @@ impl DgramTransport {
 
     fn new_typed(credentials: UnixCredentials, socket_type: i32) -> Self {
         DgramTransport {
-            data_rx: Mutex::new(None),
+            data_rx: SpinLock::new(None),
             connected: RwLock::new(None),
             local_addr: RwLock::new(UnixSocketAddr::Unnamed),
-            peeked: Mutex::new(None),
+            peeked: SpinLock::new(None),
             is_seqpacket: socket_type == 5,
-            conn_rx: Mutex::new(None),
+            conn_rx: SpinLock::new(None),
             listening: Arc::new(AtomicBool::new(false)),
             poll_state: Arc::default(),
             general: GeneralOptions::new(socket_type, 1, 0),
@@ -247,12 +246,12 @@ impl DgramTransport {
         receive_credentials: Arc<AtomicBool>,
     ) -> Self {
         DgramTransport {
-            data_rx: Mutex::new(Some(data_rx)),
+            data_rx: SpinLock::new(Some(data_rx)),
             connected: RwLock::new(Some(connected)),
             local_addr: RwLock::new(UnixSocketAddr::Unnamed),
-            peeked: Mutex::new(None),
+            peeked: SpinLock::new(None),
             is_seqpacket: socket_type == 5,
-            conn_rx: Mutex::new(None),
+            conn_rx: SpinLock::new(None),
             listening: Arc::new(AtomicBool::new(false)),
             poll_state: Arc::default(),
             general: GeneralOptions::new(socket_type, 1, 0),
@@ -356,7 +355,6 @@ impl Configurable for DgramTransport {
         Ok(true)
     }
 }
-#[async_trait]
 impl TransportOps for DgramTransport {
     fn bind(&self, slot: &super::BindSlot, local_addr: &UnixSocketAddr) -> NetResult {
         if self.is_seqpacket {
@@ -467,32 +465,6 @@ impl TransportOps for DgramTransport {
         Ok(None)
     }
 
-    async fn accept(&self) -> NetResult<(Transport, UnixSocketAddr)> {
-        if !self.is_seqpacket {
-            // Connectionless SOCK_DGRAM has no accept: Linux net/unix/af_unix.c
-            // `unix_dgram_ops.accept = sock_no_accept` returns -EOPNOTSUPP.
-            return Err(NetError::OperationNotSupported);
-        }
-        if !self.is_listening() {
-            return Err(NetError::InvalidInput);
-        }
-        let Some((rx, _)) = self.conn_rx.lock().clone() else {
-            // Not a listening seqpacket socket: accept requires listen(). Linux
-            // returns EINVAL for accept on a non-listening socket.
-            return Err(NetError::InvalidInput);
-        };
-        let req = rx.recv().await.map_err(|_| NetError::ConnectionReset)?;
-        let transport = DgramTransport::new_connected(
-            req.data_rx,
-            req.connected,
-            req.credentials,
-            5,
-            req.receive_timestamp,
-            req.receive_credentials,
-        );
-        Ok((Transport::Dgram(transport), req.addr))
-    }
-
     fn try_accept(&self) -> NetResult<(Transport, UnixSocketAddr)> {
         if !self.is_seqpacket {
             // Connectionless SOCK_DGRAM has no accept: Linux net/unix/af_unix.c
@@ -525,7 +497,7 @@ impl TransportOps for DgramTransport {
         }
     }
 
-    fn send(&self, mut src: impl Read, options: SendOptions) -> NetResult<usize> {
+    fn try_send(&self, mut src: impl Read, options: &mut SendOptions) -> NetResult<usize> {
         // Unix datagram/seqpacket sockets do not carry out-of-band data.
         // Linux `unix_dgram_sendmsg` rejects MSG_OOB with EOPNOTSUPP.
         if options.flags.contains(crate::SendFlags::OOB) {
@@ -542,10 +514,10 @@ impl TransportOps for DgramTransport {
         }
         let len = message.len();
         let sender = self.local_addr.read().clone();
-        let mut cmsg = options.cmsg;
-        let sender_credentials = options.sender_credentials;
+        let mut cmsg = core::mem::take(&mut options.cmsg);
+        let sender_credentials = options.sender_credentials.clone();
 
-        let wake_poll = if let Some(addr) = options.to {
+        let wake_poll = if let Some(addr) = options.to.clone() {
             let addr = addr.into_unix()?;
             with_slot(&addr, |slot| {
                 if let Some(bind) = slot.dgram.lock().as_ref() {
@@ -598,76 +570,74 @@ impl TransportOps for DgramTransport {
         Ok(len)
     }
 
-    fn recv(&self, mut dst: impl Write, mut options: RecvOptions) -> NetResult<usize> {
+    fn try_recv(&self, mut dst: impl Write, options: &mut RecvOptions) -> NetResult<usize> {
         // Unix datagram/seqpacket sockets do not carry out-of-band data.
         // Linux `unix_dgram_recvmsg` rejects MSG_OOB with EOPNOTSUPP.
         if options.flags.contains(RecvFlags::OOB) {
             return Err(NetError::OperationNotSupported);
         }
-        let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
         let peek = options.flags.contains(RecvFlags::PEEK);
-        self.general.recv_poller_with(self, extra_nb, move || {
-            // Drain a packet parked by a previous MSG_PEEK before the channel,
-            // preserving record order.
-            let mut peeked = self.peeked.lock();
-            let mut packet = if let Some(p) = peeked.take() {
-                p
-            } else {
-                let mut guard = self.data_rx.lock();
-                let Some((rx, _)) = guard.as_mut() else {
-                    return Err(NetError::NotConnected);
-                };
-                match rx.try_recv() {
-                    Ok(packet) => packet,
-                    Err(TryRecvError::Empty) => return Err(NetError::WouldBlock),
-                    Err(TryRecvError::Closed) => return Ok(0),
-                }
+        // Drain a packet parked by a previous MSG_PEEK before the channel,
+        // preserving record order.
+        let mut peeked = self.peeked.lock();
+        let mut packet = if let Some(p) = peeked.take() {
+            p
+        } else {
+            let mut guard = self.data_rx.lock();
+            let Some((rx, _)) = guard.as_mut() else {
+                return Err(NetError::NotConnected);
             };
+            match rx.try_recv() {
+                Ok(packet) => packet,
+                Err(TryRecvError::Empty) => return Err(NetError::WouldBlock),
+                Err(TryRecvError::Closed) if self.is_seqpacket => return Ok(0),
+                Err(TryRecvError::Closed) => return Err(NetError::WouldBlock),
+            }
+        };
 
-            let count = dst.write(&packet.data)?;
-            let full_len = packet.data.len();
-            // Surface truncation in the returned `msg_flags` (MSG_TRUNC).
-            if count < full_len
-                && let Some(t) = options.truncated.as_mut()
-            {
-                **t = true;
-            }
-            if let Some(from) = options.from.as_mut() {
-                **from = SocketAddrEx::Unix(packet.sender.clone());
-            }
-            let receive_timestamp = self.receive_timestamp.load(Ordering::Acquire);
-            if receive_timestamp && packet.received_at.is_none() {
-                // Linux fills the current time when SO_TIMESTAMP was enabled
-                // after this datagram entered the receive queue. Persist the
-                // fallback on the packet so MSG_PEEK and the consuming recv
-                // observe the same timestamp.
-                packet.received_at = Some(wall_time());
-            }
-            if peek {
-                // MSG_PEEK does not consume the record: deliver a duplicate of
-                // the ancillary data (SCM_RIGHTS fds are cloned via Arc, sharing
-                // the open file description like Linux `unix_peek_fds` /
-                // `scm_fp_dup`) and re-park the packet so the next recv delivers
-                // the rights again.
-                if let Some(dst) = options.cmsg.as_mut() {
-                    dst.extend(packet.cmsg.iter().map(|c| c.clone_box()));
-                    if receive_timestamp && let Some(timestamp) = packet.received_at {
-                        dst.push(Box::new(SocketCmsg::Timestamp(timestamp)));
-                    }
-                }
-                *peeked = Some(packet);
-            } else if let Some(dst) = options.cmsg.as_mut() {
-                dst.extend(packet.cmsg);
+        let count = dst.write(&packet.data)?;
+        let full_len = packet.data.len();
+        // Surface truncation in the returned `msg_flags` (MSG_TRUNC).
+        if count < full_len
+            && let Some(t) = options.truncated.as_mut()
+        {
+            **t = true;
+        }
+        if let Some(from) = options.from.as_mut() {
+            **from = SocketAddrEx::Unix(packet.sender.clone());
+        }
+        let receive_timestamp = self.receive_timestamp.load(Ordering::Acquire);
+        if receive_timestamp && packet.received_at.is_none() {
+            // Linux fills the current time when SO_TIMESTAMP was enabled
+            // after this datagram entered the receive queue. Persist the
+            // fallback on the packet so MSG_PEEK and the consuming recv
+            // observe the same timestamp.
+            packet.received_at = Some(wall_time());
+        }
+        if peek {
+            // MSG_PEEK does not consume the record: deliver a duplicate of
+            // the ancillary data (SCM_RIGHTS fds are cloned via Arc, sharing
+            // the open file description like Linux `unix_peek_fds` /
+            // `scm_fp_dup`) and re-park the packet so the next recv delivers
+            // the rights again.
+            if let Some(dst) = options.cmsg.as_mut() {
+                dst.extend(packet.cmsg.iter().map(|c| c.clone_box()));
                 if receive_timestamp && let Some(timestamp) = packet.received_at {
                     dst.push(Box::new(SocketCmsg::Timestamp(timestamp)));
                 }
             }
+            *peeked = Some(packet);
+        } else if let Some(dst) = options.cmsg.as_mut() {
+            dst.extend(packet.cmsg);
+            if receive_timestamp && let Some(timestamp) = packet.received_at {
+                dst.push(Box::new(SocketCmsg::Timestamp(timestamp)));
+            }
+        }
 
-            Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
-                full_len
-            } else {
-                count
-            })
+        Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
+            full_len
+        } else {
+            count
         })
     }
 }
@@ -677,6 +647,9 @@ impl Pollable for DgramTransport {
         let mut events = IoEvents::OUT;
         if let Some((rx, _)) = self.data_rx.lock().as_ref() {
             events.set(IoEvents::IN, !rx.is_empty());
+            if self.is_seqpacket && rx.is_closed() {
+                events.insert(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP);
+            }
         }
         // A packet parked by MSG_PEEK is immediately readable.
         if self.peeked.lock().is_some() {
@@ -691,17 +664,46 @@ impl Pollable for DgramTransport {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        if !events.contains(IoEvents::IN) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_shared(poll, interests)
+        });
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_exclusive(poll, interests)
+        });
+    }
+}
+
+impl DgramTransport {
+    fn register_poll_sources(
+        &self,
+        events: IoEvents,
+        mut register: impl FnMut(&PollSet, IoEvents),
+    ) {
+        let receive_events = if self.is_seqpacket {
+            IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP
+        } else {
+            IoEvents::IN
+        };
+        let interests = events & receive_events;
+        if interests.is_empty() {
             return;
         }
-        // Registration happens from socket poll task context.
         if let Some((_, poll)) = self.data_rx.lock().as_ref() {
-            unsafe { poll.register(context.waker(), IoEvents::IN) };
+            register(poll, interests);
         }
         // Seqpacket listener waits for incoming connections.
-        if let Some((_, poll)) = self.conn_rx.lock().as_ref() {
-            unsafe { poll.register(context.waker(), IoEvents::IN) };
+        if events.contains(IoEvents::IN)
+            && let Some((_, poll)) = self.conn_rx.lock().as_ref()
+        {
+            register(poll, IoEvents::IN);
         }
     }
 }
@@ -709,16 +711,46 @@ impl Pollable for DgramTransport {
 impl Drop for DgramTransport {
     fn drop(&mut self) {
         if let Some(chan) = self.connected.write().take() {
-            // Connection teardown is visible before waking the peer.
-            unsafe { chan.poll_update.wake(IoEvents::IN | IoEvents::OUT) };
+            let peer_poll = chan.poll_update.clone();
+
+            // Publish channel closure before a woken reader can retry. On SMP,
+            // waking first lets the reader observe `Empty`, park again, and
+            // miss the sender's subsequent terminal drop forever.
+            drop(chan);
+            if self.is_seqpacket {
+                // Only connection-oriented sockets publish peer shutdown.
+                unsafe {
+                    peer_poll.wake(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP | IoEvents::HUP)
+                };
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::task::Wake;
+    use core::{
+        sync::atomic::{AtomicBool, Ordering},
+        task::Waker,
+    };
+
+    use axpoll::{PollRegistrar, SharedObserver};
+
     use super::*;
     use crate::unix::BindSlot;
+
+    struct PeerCloseProbe {
+        receiver: async_channel::Receiver<Packet>,
+        saw_closed_channel: AtomicBool,
+    }
+
+    impl Wake for PeerCloseProbe {
+        fn wake(self: Arc<Self>) {
+            self.saw_closed_channel
+                .store(self.receiver.is_closed(), Ordering::Release);
+        }
+    }
 
     #[test]
     fn datagram_connect_does_not_lock_a_mutex_with_preemption_disabled() {
@@ -728,5 +760,66 @@ mod tests {
 
         let client = DgramTransport::new(2);
         client.connect(&slot, &UnixSocketAddr::Unnamed).unwrap();
+    }
+
+    #[test]
+    fn peer_channel_is_closed_before_reader_is_notified() {
+        let (closing, receiver) = DgramTransport::new_pair_seqpacket(1);
+        let receiver = Arc::new(receiver);
+        let channel_rx = receiver.data_rx.lock().as_ref().unwrap().0.clone();
+        let probe = Arc::new(PeerCloseProbe {
+            receiver: channel_rx,
+            saw_closed_channel: AtomicBool::new(false),
+        });
+        let waker = Waker::from(probe.clone());
+        let mut registrar = PollRegistrar::<SharedObserver>::new(&waker);
+        // SAFETY: this task-context observer remains registered until after
+        // peer close; its owned channel probe does not borrow the transport.
+        unsafe { receiver.register_shared(&mut registrar, IoEvents::IN) };
+        drop(closing);
+
+        assert!(probe.saw_closed_channel.load(Ordering::Acquire));
+        assert!(receiver.poll().contains(IoEvents::IN));
+    }
+
+    #[test]
+    fn datagram_peer_close_is_not_readable_eof() {
+        let (closing, receiver) = DgramTransport::new_pair(1);
+        drop(closing);
+
+        assert!(
+            !receiver
+                .poll()
+                .intersects(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP)
+        );
+    }
+
+    #[test]
+    fn seqpacket_close_wakes_terminal_only_waiters() {
+        for interest in [IoEvents::RDHUP, IoEvents::HUP] {
+            let (closing, receiver) = DgramTransport::new_pair_seqpacket(1);
+            let probe = Arc::new(PeerCloseProbe {
+                receiver: receiver.data_rx.lock().as_ref().unwrap().0.clone(),
+                saw_closed_channel: AtomicBool::new(false),
+            });
+            let waker = Waker::from(probe.clone());
+            let mut registrar = PollRegistrar::<SharedObserver>::new(&waker);
+            // SAFETY: the local registrar owns cancellation and is dropped
+            // before the receiver; notification only inspects the channel.
+            unsafe { receiver.register_shared(&mut registrar, interest) };
+            drop(closing);
+
+            assert!(
+                probe.saw_closed_channel.load(Ordering::Acquire),
+                "{interest:?}"
+            );
+            for _ in 0..2 {
+                assert!(
+                    receiver
+                        .poll()
+                        .contains(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP)
+                );
+            }
+        }
     }
 }

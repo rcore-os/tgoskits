@@ -20,6 +20,8 @@ const BROWSER_INPUT_CAPACITY: usize = 4096;
 pub(super) fn router() -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/assets/xterm.js", get(xterm_javascript))
+        .route("/assets/xterm.css", get(xterm_stylesheet))
         .route("/api/consoles", get(console_descriptions))
         .route("/ws/{endpoint}", get(upgrade_console))
 }
@@ -30,11 +32,33 @@ async fn index() -> impl IntoResponse {
             (header::CACHE_CONTROL, "no-store"),
             (
                 header::CONTENT_SECURITY_POLICY,
-                "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
             ),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         ],
         Html(page::INDEX_HTML),
+    )
+}
+
+async fn xterm_javascript() -> impl IntoResponse {
+    (
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        page::XTERM_JAVASCRIPT,
+    )
+}
+
+async fn xterm_stylesheet() -> impl IntoResponse {
+    (
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        page::XTERM_STYLESHEET,
     )
 }
 
@@ -100,23 +124,22 @@ async fn bridge_console(
     mut console_input: crate::network_console::BrowserConsoleInput,
     console_output: crate::network_console::BrowserConsoleOutput,
 ) -> Result<()> {
-    let (mut browser_sender, mut browser_receiver) = browser.split();
-    browser_sender
-        .send(Message::Binary(
-            console_input.greeting().into_bytes().into(),
-        ))
-        .await
-        .context("failed to write the browser console greeting")?;
+    let (browser_sender, mut browser_receiver) = browser.split();
+    let greeting = Message::Binary(console_input.greeting().into_bytes().into());
 
     std::thread::Builder::new()
         .name("browser-console-output".into())
         .spawn(move || {
-            if let Err(error) = run_browser_output(browser_sender, console_output) {
+            crate::network_console::pin_current_task();
+            if let Err(error) = run_browser_output(browser_sender, console_output, greeting) {
                 warn!("browser console output stopped: {error:#}");
             }
         })
         .context("failed to start browser console output task")?;
 
+    // The worker publishes the greeting only after it owns the output half and
+    // has crossed the same scheduler boundary as all subsequent output. This
+    // makes the greeting a protocol-level readiness edge for the input half.
     read_browser_input(&mut browser_receiver, &mut console_input).await
 }
 
@@ -141,13 +164,17 @@ async fn read_browser_input(
 fn run_browser_output(
     mut browser_sender: futures_util::stream::SplitSink<WebSocket, Message>,
     mut console_output: crate::network_console::BrowserConsoleOutput,
+    greeting: Message,
 ) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .build()
         .context("failed to build browser console output runtime")?;
 
-    while let Some(output) = console_output.receive() {
+    runtime
+        .block_on(browser_sender.send(greeting))
+        .context("failed to write the browser console greeting")?;
+    while let Some(output) = console_output.receive()? {
         runtime
             .block_on(browser_sender.send(Message::Binary(output.into())))
             .context("failed to write the browser console")?;

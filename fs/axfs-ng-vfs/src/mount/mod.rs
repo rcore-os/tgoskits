@@ -10,18 +10,19 @@ use core::{
     any::Any,
     iter,
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
-    task::Context,
     time::Duration,
 };
 
+use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
 
 use crate::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, DirectoryReadState,
-    Filesystem, FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard,
-    NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions, Reference, ReferenceKey,
-    RenameOptions, TypeMap, VfsError, VfsResult, WeakDirEntry, XattrSetMode,
+    Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps, Metadata,
+    MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions,
+    Reference, ReferenceKey, RenameOptions, TypeMap, VfsError, VfsResult, WeakDirEntry,
+    XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -44,10 +45,67 @@ static MOUNT_TOPOLOGY_VERSION: AtomicU64 = AtomicU64::new(1);
 ///
 /// Callers acquire this outer guard before node-local locks. Node-local locks
 /// are never held while acquiring this guard.
-// Mount-tree transactions can resolve nodes, invoke filesystem callbacks, and
-// drop filesystem-owned objects. They therefore require a sleepable lock;
-// individual mountpoint fields below retain their short spin-locked updates.
-static MOUNT_TOPOLOGY_MUTATION: ax_sync::Mutex<()> = ax_sync::Mutex::new(());
+// Host tests exercise only the topology algorithm and have no kernel task
+// context in which a PI mutex could sleep. Keep that test boundary on the
+// existing non-sleeping VFS lock instead of installing a fake task runtime.
+#[cfg(test)]
+struct MountTopologyMutex<T> {
+    inner: Mutex<T>,
+}
+
+#[cfg(test)]
+struct MountTopologyGuard<'a, T> {
+    inner: Option<MutexGuard<'a, T>>,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// Tracks ownership by the current host-test thread. `SpinLock::is_locked`
+    /// is process-wide and therefore cannot distinguish a callback made by
+    /// this owner from an unrelated parallel test holding the topology lock.
+    static MOUNT_TOPOLOGY_OWNED_BY_CURRENT: core::cell::Cell<bool> =
+        const { core::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+impl<T> MountTopologyMutex<T> {
+    const fn new(value: T) -> Self {
+        Self {
+            inner: Mutex::new(value),
+        }
+    }
+
+    fn lock(&self) -> MountTopologyGuard<'_, T> {
+        MOUNT_TOPOLOGY_OWNED_BY_CURRENT.with(|owned| {
+            assert!(
+                !owned.get(),
+                "mount topology lock cannot be acquired recursively"
+            );
+        });
+        let inner = self.inner.lock();
+        MOUNT_TOPOLOGY_OWNED_BY_CURRENT.with(|owned| owned.set(true));
+        MountTopologyGuard { inner: Some(inner) }
+    }
+
+    fn is_owned_by_current(&self) -> bool {
+        MOUNT_TOPOLOGY_OWNED_BY_CURRENT.with(core::cell::Cell::get)
+    }
+}
+
+#[cfg(test)]
+impl<T> Drop for MountTopologyGuard<'_, T> {
+    fn drop(&mut self) {
+        drop(self.inner.take());
+        MOUNT_TOPOLOGY_OWNED_BY_CURRENT.with(|owned| owned.set(false));
+    }
+}
+
+#[cfg(all(not(test), feature = "host-test"))]
+type MountTopologyMutex<T> = Mutex<T>;
+#[cfg(all(not(test), not(feature = "host-test")))]
+type MountTopologyMutex<T> = ax_sync::Mutex<T>;
+
+static MOUNT_TOPOLOGY_MUTATION: MountTopologyMutex<()> = MountTopologyMutex::new(());
 
 struct SyntheticMountDir {
     parent: DirEntry,
@@ -212,6 +270,7 @@ pub struct Mountpoint {
     peer_group_id: AtomicU64,
     /// Read-only flag for this mountpoint.
     readonly: AtomicBool,
+    filesystem_state: Arc<FilesystemMountState>,
     /// Mount option flags (Linux MS_* bits: MS_NOSUID=2, MS_NODEV=4,
     /// MS_NOEXEC=8, MS_NOATIME=0x400, MS_RELATIME=0x800000,
     /// MS_STRICTATIME=0x1000000). MS_RDONLY is tracked separately via
@@ -230,6 +289,8 @@ pub struct Mountpoint {
     /// Resource ownership tied to the active mount rather than the cached
     /// lifetime of this mountpoint object.
     lifetime_guard: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
+    // Declared last: dentries retire before the filesystem drains its caches.
+    _filesystem_lease: Option<Arc<dyn FilesystemMountLease>>,
 }
 
 impl Mountpoint {
@@ -239,7 +300,8 @@ impl Mountpoint {
         location_in_parent: Option<Location>,
         device: u64,
     ) -> Arc<Self> {
-        Self::new_with_root_and_source(root, location_in_parent, device, "none".into())
+        let state = Arc::new(FilesystemMountState::new(root.filesystem().is_readonly()));
+        Self::new_with_root_and_source(root, location_in_parent, device, "none".into(), state)
     }
 
     fn new_with_root_and_source(
@@ -247,7 +309,9 @@ impl Mountpoint {
         location_in_parent: Option<Location>,
         device: u64,
         source: String,
+        filesystem_state: Arc<FilesystemMountState>,
     ) -> Arc<Self> {
+        let filesystem_lease = root.filesystem().mount_lease();
         Arc::new(Self {
             root,
             location: Mutex::new(location_in_parent),
@@ -257,6 +321,7 @@ impl Mountpoint {
             mount_id: MOUNT_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             peer_group_id: AtomicU64::new(0),
             readonly: AtomicBool::new(false),
+            filesystem_state,
             mount_flags: AtomicU32::new(0),
             expired: AtomicBool::new(false),
             propagation: Mutex::new(PropagationType::Private),
@@ -264,6 +329,7 @@ impl Mountpoint {
             slaves: Mutex::default(),
             masters: Mutex::default(),
             lifetime_guard: Mutex::new(None),
+            _filesystem_lease: filesystem_lease,
         })
     }
 
@@ -282,6 +348,7 @@ impl Mountpoint {
             location_in_parent,
             DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
             source.to_owned(),
+            fs.mount_state.clone(),
         );
         result.readonly.store(fs.is_readonly(), Ordering::Release);
         result
@@ -302,6 +369,7 @@ impl Mountpoint {
             Some(location_in_parent),
             source.mountpoint.device(),
             source.mountpoint.source.clone(),
+            source.mountpoint.filesystem_state.clone(),
         );
         result
             .readonly
@@ -325,6 +393,7 @@ impl Mountpoint {
             location_in_parent,
             source.device(),
             source.source.clone(),
+            source.filesystem_state.clone(),
         );
         result
             .readonly
@@ -581,6 +650,16 @@ impl Mountpoint {
         self.readonly.load(Ordering::Acquire)
     }
 
+    /// Returns the superblock write restriction shared across namespace copies.
+    pub fn is_filesystem_readonly(&self) -> bool {
+        self.filesystem_state.is_readonly()
+    }
+
+    /// Updates the shared VFS superblock state, not a bind mount's local flags.
+    pub fn set_filesystem_readonly(&self, readonly: bool) {
+        self.filesystem_state.set_readonly(readonly);
+    }
+
     pub fn set_readonly(&self, readonly: bool) {
         self.readonly.store(readonly, Ordering::Release);
     }
@@ -737,7 +816,7 @@ impl Location {
     }
 
     pub fn is_readonly(&self) -> bool {
-        self.mountpoint.is_readonly()
+        self.mountpoint.is_readonly() || self.mountpoint.is_filesystem_readonly()
     }
 
     pub fn entry(&self) -> &DirEntry {
@@ -1154,13 +1233,13 @@ impl Location {
         assert!(self.entry.ptr_eq(&self.mountpoint.root));
 
         let plan = self.mountpoint.plan_unmount(UnmountKind::Normal)?;
-        self.filesystem().flush()?;
-        self.mountpoint.commit_normal_after_flush(plan)?;
-        self.finish_unmount();
-        Ok(())
+        self.commit_unmount(plan)
     }
 
-    /// Flushes this mount once and commits an already admitted unmount plan.
+    /// Flushes this mount once and commits an already admitted normal unmount.
+    ///
+    /// The original attachments and complete propagation set must still match
+    /// admission. Unrelated namespace mutations do not invalidate the plan.
     pub fn commit_unmount(&self, plan: UnmountPlan) -> VfsResult<()> {
         if !self.is_root_of_mount()
             || !plan
@@ -1170,7 +1249,7 @@ impl Location {
             return Err(VfsError::InvalidInput);
         }
         self.filesystem().flush()?;
-        plan.commit()?;
+        self.mountpoint.commit_normal_after_flush(plan)?;
         self.finish_unmount();
         Ok(())
     }
@@ -1178,7 +1257,7 @@ impl Location {
     fn finish_unmount(&self) {
         self.mountpoint.clear_expired();
         if let Ok(directory) = self.entry.as_dir() {
-            directory.forget();
+            directory.clear_cached_entries();
         }
     }
 
@@ -1202,10 +1281,20 @@ impl Location {
 }
 
 #[inherit_methods(from = "self.entry")]
-impl FsPollable for Location {
-    fn poll(&self) -> FsIoEvents;
+impl Pollable for Location {
+    fn poll(&self) -> IoEvents;
 
-    fn register(&self, context: &mut Context<'_>, events: FsIoEvents);
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    );
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    );
 }
 
 #[cfg(test)]
@@ -1250,6 +1339,10 @@ mod tests {
 
     static MOCK_FS: MockFs = MockFs;
 
+    fn current_thread_owns_mount_topology_guard() -> bool {
+        MOUNT_TOPOLOGY_MUTATION.is_owned_by_current()
+    }
+
     impl FilesystemOps for MockFs {
         fn name(&self) -> &str {
             "mock"
@@ -1269,9 +1362,8 @@ mod tests {
         }
 
         fn root_dir(&self) -> DirEntry {
-            assert_eq!(
-                ax_sync::host_preempt_depth(),
-                0,
+            assert!(
+                !current_thread_owns_mount_topology_guard(),
                 "filesystem callbacks must run outside the mount topology guard"
             );
             make_dir_entry("mounted-root")
@@ -1575,12 +1667,17 @@ mod tests {
         }
     }
 
-    impl FsPollable for SymlinkFile {
-        fn poll(&self) -> FsIoEvents {
-            FsIoEvents::IN
+    impl Pollable for SymlinkFile {
+        fn poll(&self) -> IoEvents {
+            IoEvents::IN
         }
 
-        fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+        unsafe fn register_shared(
+            &self,
+            _sink: &mut dyn axpoll::SharedRegistrationSink,
+            _events: IoEvents,
+        ) {
+        }
     }
 
     impl FileNodeOps for SymlinkFile {
@@ -1691,6 +1788,35 @@ mod tests {
             "/complete-target"
         );
         assert_eq!(symlink_create_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn topology_guard_ownership_check_is_thread_local() {
+        struct ReleaseTopologyGuard(std::sync::mpsc::Sender<()>);
+
+        impl Drop for ReleaseTopologyGuard {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+                locked_tx.send(()).expect("publish topology lock ownership");
+                release_rx.recv().expect("release topology lock");
+            });
+
+            locked_rx.recv().expect("observe topology lock ownership");
+            let _release = ReleaseTopologyGuard(release_tx);
+            assert!(
+                !current_thread_owns_mount_topology_guard(),
+                "another test thread must not look like the current topology owner"
+            );
+        });
     }
 
     #[test]

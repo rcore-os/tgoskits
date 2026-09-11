@@ -1,6 +1,6 @@
 [package]
 name = "ax-libc"
-version = "0.5.33"
+version = "0.5.35"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -58,6 +58,3 @@ ax-posix-api.workspace = true
 ax-io.workspace = true
 ax-runtime.workspace = true
 syscalls.workspace = true
-
-[build-dependencies]
-bindgen.workspace = true
