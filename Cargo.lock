@@ -1650,7 +1650,7 @@ dependencies = [
 
 [[package]]
 name = "axvm"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -7239,7 +7239,7 @@ dependencies = [
 
 [[package]]
 name = "scope-local"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "ax-lazyinit",
  "ax-percpu",
