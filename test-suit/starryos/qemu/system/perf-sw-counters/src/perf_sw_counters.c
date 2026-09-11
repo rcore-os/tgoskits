@@ -93,19 +93,27 @@ static int test_counting_sample_type(void) {
     return 0;
 }
 
-static int test_inherited_control(void) {
-    int command[2], reply[2];
-    if (pipe(command) || pipe(reply)) return 1;
-    int fd = open_sw(PERF_COUNT_SW_PAGE_FAULTS, ATTR_INHERIT);
-    if (fd < 0) return 1;
+static int test_inherited_control(int grouped) {
+    int command[2] = {-1, -1}, reply[2] = {-1, -1};
+    int leader = -1, fd = -1;
+    if (pipe(command) || pipe(reply)) goto setup_failed;
+    if (grouped) {
+        leader = open_sw(PERF_COUNT_SW_PAGE_FAULTS, ATTR_DISABLED | ATTR_INHERIT);
+        if (leader < 0) goto setup_failed;
+    }
+    struct perf_event_attr attr = {.type = PERF_TYPE_SOFTWARE, .size = sizeof(attr),
+        .config = PERF_COUNT_SW_PAGE_FAULTS, .flags = ATTR_INHERIT};
+    fd = (int)syscall(SYS_perf_event_open, &attr, 0, -1, leader, 0ul);
+    if (fd < 0) goto setup_failed;
+    int control = grouped ? leader : fd;
     pid_t child = fork();
-    if (child < 0) return 1;
+    if (child < 0) goto setup_failed;
     if (child == 0) {
         close(command[1]);
         close(reply[0]);
         char byte = 'r';
         if (write(reply[1], &byte, 1) != 1) _exit(2);
-        for (int phase = 0; phase < 2; ++phase) {
+        for (int phase = 0; phase < 3; ++phase) {
             if (read(command[0], &byte, 1) != 1) _exit(3);
             volatile char *pages = mmap(NULL, 64 * 4096, PROT_READ | PROT_WRITE,
                                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -118,23 +126,39 @@ static int test_inherited_control(void) {
     close(command[0]);
     close(reply[1]);
     char byte = 0;
-    uint64_t before = 0, disabled = 0, enabled = 0;
+    uint64_t before = 0, disabled = 0, enabled = 0, stopped = 0;
     int failed = read(reply[0], &byte, 1) != 1 ||
-        ioctl(fd, PERF_EVENT_IOC_DISABLE, 0) || read(fd, &before, 8) != 8 ||
+        ioctl(control, PERF_EVENT_IOC_DISABLE, 0) || read(fd, &before, 8) != 8 ||
         write(command[1], &byte, 1) != 1 || read(reply[0], &byte, 1) != 1 ||
         read(fd, &disabled, 8) != 8;
-    failed |= ioctl(fd, PERF_EVENT_IOC_ENABLE, 0) ||
+    /* Control only the leader: an enabled member must follow its inherited
+     * child leader, without an explicit enable/disable of the member itself. */
+    failed |= ioctl(control, PERF_EVENT_IOC_ENABLE, 0) ||
         write(command[1], &byte, 1) != 1 || read(reply[0], &byte, 1) != 1 ||
-        ioctl(fd, PERF_EVENT_IOC_DISABLE, 0) || read(fd, &enabled, 8) != 8;
+        ioctl(control, PERF_EVENT_IOC_DISABLE, 0) || read(fd, &enabled, 8) != 8;
+    failed |= write(command[1], &byte, 1) != 1 || read(reply[0], &byte, 1) != 1 ||
+        read(fd, &stopped, 8) != 8;
     int status = 0;
     if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status)) failed = 1;
     close(fd);
+    if (leader >= 0) close(leader);
     close(command[1]);
     close(reply[0]);
-    printf("inherit-control before=%llu disabled=%llu enabled=%llu\n",
+    printf("inherit-control grouped=%d before=%llu disabled=%llu enabled=%llu stopped=%llu\n",
+           grouped,
            (unsigned long long)before, (unsigned long long)disabled,
-           (unsigned long long)enabled);
-    return failed || disabled != before || enabled <= disabled;
+           (unsigned long long)enabled, (unsigned long long)stopped);
+    return failed || (grouped && before != 0) || disabled != before ||
+        enabled <= disabled || stopped != enabled;
+
+setup_failed:
+    if (fd >= 0) close(fd);
+    if (leader >= 0) close(leader);
+    for (int i = 0; i < 2; ++i) {
+        if (command[i] >= 0) close(command[i]);
+        if (reply[i] >= 0) close(reply[i]);
+    }
+    return 1;
 }
 
 static int test_fault_mode_filter(void) {
@@ -601,7 +625,7 @@ int main(int argc, char **argv) {
         printf("perf-sw-counters FAILED: exec/inherit/systemwide\n");
         return 1;
     }
-    int review_failures = test_inherited_control();
+    int review_failures = test_inherited_control(0) + test_inherited_control(1);
     review_failures += test_fault_mode_filter();
     review_failures += test_remote_clock_enable();
     review_failures += test_stopped_task_clock();
