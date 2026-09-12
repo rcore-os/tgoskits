@@ -239,13 +239,14 @@ pub const DRM_IOCTL_MODE_ATOMIC: u32 = iowr::<DrmModeAtomic>(DRM_TYPE, 0xBC);
 pub const DRM_IOCTL_MODE_CREATEPROPBLOB: u32 = iowr::<DrmModeCreateBlob>(DRM_TYPE, 0xBD);
 pub const DRM_IOCTL_MODE_DESTROYPROPBLOB: u32 = iowr::<DrmModeDestroyBlob>(DRM_TYPE, 0xBE);
 pub const DRM_IOCTL_MODE_GETPROPBLOB: u32 = iowr::<DrmModeGetBlob>(DRM_TYPE, 0xAC);
-// WAIT_VBLANK is a union of request/reply, size = 24 bytes on 64-bit.
 pub const DRM_IOCTL_WAIT_VBLANK: u32 = ioc(
     IOC_READ | IOC_WRITE,
     DRM_TYPE,
     0x3A,
     core::mem::size_of::<DrmWaitVblank>() as u16,
 );
+pub const DRM_IOCTL_CRTC_GET_SEQUENCE: u32 = iowr::<DrmModeCrtcGetSequence>(DRM_TYPE, 0x3b);
+pub const DRM_IOCTL_CRTC_QUEUE_SEQUENCE: u32 = iowr::<DrmModeCrtcQueueSequence>(DRM_TYPE, 0x3c);
 
 /// 32 bytes — Linux's `DRM_DISPLAY_MODE_LEN`.
 pub const DRM_MODE_NAME_LEN: usize = 32;
@@ -509,6 +510,62 @@ pub struct DrmWaitVblank {
 /// `_DRM_VBLANK_ABSOLUTE = 0`, `_DRM_VBLANK_RELATIVE = 1`. The low bits
 /// of `type` are a CRTC index (unused here — we have one CRTC).
 pub const DRM_VBLANK_RELATIVE: u32 = 0x1;
+/// `_DRM_VBLANK_EVENT` — deliver a `DRM_EVENT_VBLANK` on the fd instead
+/// of blocking inside the ioctl.
+pub const DRM_VBLANK_EVENT: u32 = 0x400_0000;
+/// `_DRM_VBLANK_NEXTONMISS` — if the target already passed, jump to the
+/// next edge instead of firing immediately.
+pub const DRM_VBLANK_NEXTONMISS: u32 = 0x1000_0000;
+/// `_DRM_VBLANK_SECONDARY` — select the second CRTC (none on this card).
+pub const DRM_VBLANK_SECONDARY: u32 = 0x2000_0000;
+/// `_DRM_VBLANK_SIGNAL` — signal-based delivery, rejected as EINVAL by
+/// modern Linux.
+pub const DRM_VBLANK_SIGNAL: u32 = 0x4000_0000;
+/// `_DRM_VBLANK_HIGH_CRTC_MASK` — bits 1..6 carry a CRTC index beyond
+/// the secondary bit.
+pub const DRM_VBLANK_HIGH_CRTC_MASK: u32 = 0x3e;
+/// `_DRM_VBLANK_TYPES_MASK` — the absolute/relative selector bits.
+pub const DRM_VBLANK_TYPES_MASK: u32 = DRM_VBLANK_RELATIVE;
+/// `_DRM_VBLANK_FLAGS_MASK` — every flag bit of `type`.
+pub const DRM_VBLANK_FLAGS_MASK: u32 =
+    DRM_VBLANK_EVENT | DRM_VBLANK_SIGNAL | DRM_VBLANK_SECONDARY | DRM_VBLANK_NEXTONMISS;
+
+// ---- CRTC vblank sequence clock (Linux 4.19+ `drm_crtc_get_sequence`) ----
+
+/// `DRM_IOCTL_CRTC_GET_SEQUENCE` payload: query the current vblank
+/// sequence and the timestamp of its edge.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmModeCrtcGetSequence {
+    pub crtc_id: u32,
+    /// Return: 1 while the CRTC is actively scanning out.
+    pub active: u32,
+    /// Return: most recent vblank sequence.
+    pub sequence: u64,
+    /// Return: time of the sequence's first pixel out, in
+    /// `CLOCK_MONOTONIC` nanoseconds.
+    pub sequence_ns: i64,
+}
+
+/// `DRM_IOCTL_CRTC_QUEUE_SEQUENCE` payload: deliver a
+/// `DRM_EVENT_CRTC_SEQUENCE` when the counter reaches `sequence`.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmModeCrtcQueueSequence {
+    pub crtc_id: u32,
+    pub flags: u32,
+    /// Input: target sequence. Output: target (or the actual counter
+    /// when the target had already passed).
+    pub sequence: u64,
+    pub user_data: u64,
+}
+
+/// `DRM_CRTC_SEQUENCE_RELATIVE` — `sequence` counts from the current
+/// counter value.
+pub const DRM_CRTC_SEQUENCE_RELATIVE: u32 = 0x0000_0001;
+/// `DRM_CRTC_SEQUENCE_NEXT_ON_MISS` — use the next edge if the target
+/// was missed.
+pub const DRM_CRTC_SEQUENCE_NEXT_ON_MISS: u32 = 0x0000_0002;
 
 // ---- event delivery ----
 //
@@ -535,7 +592,19 @@ pub struct DrmEventVblank {
     pub crtc_id: u32,
 }
 
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmEventCrtcSequence {
+    pub base: DrmEvent,
+    pub user_data: u64,
+    /// `CLOCK_MONOTONIC` nanoseconds of the delivery edge.
+    pub tv_ns: i64,
+    pub sequence: u64,
+}
+
+pub const DRM_EVENT_VBLANK: u32 = 0x01;
 pub const DRM_EVENT_FLIP_COMPLETE: u32 = 0x02;
+pub const DRM_EVENT_CRTC_SEQUENCE: u32 = 0x03;
 
 // ======== M4c: atomic KMS + property blobs ========
 

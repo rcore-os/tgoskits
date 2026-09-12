@@ -21,8 +21,12 @@
 //!   - Property validation is permissive: value ranges aren't rigorously
 //!     enforced (tests drive sensible values). Atomic rejects only
 //!     unknown `(obj, prop)` pairs and obviously-bad object/blob refs.
-//!   - `WAIT_VBLANK` returns immediately with a bumped sequence number;
-//!     there's no real vblank source to wait on.
+//!   - `WAIT_VBLANK` and the `CRTC_GET_SEQUENCE` / `CRTC_QUEUE_SEQUENCE`
+//!     pair run on a synthesized 60 Hz vblank clock
+//!     ([`super::vblank`]): the sequence is derived from elapsed
+//!     monotonic time while the CRTC is active, queued events are
+//!     delivered on the next `poll`, and event timestamps carry the
+//!     synthesized edge time.
 //!   - Mode list: one mode matching axdisplay's resolution at a
 //!     synthesized 60 Hz.
 
@@ -42,7 +46,7 @@ use core::{
 
 use ax_alloc::GlobalPage;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddrRange};
-use ax_runtime::hal::{mem::virt_to_phys, time::monotonic_time};
+use ax_runtime::hal::{mem::virt_to_phys, time::monotonic_time_nanos};
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use axpoll_set::PollSet;
@@ -51,30 +55,38 @@ use linux_raw_sys::general::O_CLOEXEC;
 
 use super::drm::{
     DRM_CAP_ADDFB2_MODIFIERS, DRM_CAP_CRTC_IN_VBLANK_EVENT, DRM_CAP_DUMB_BUFFER, DRM_CAP_PRIME,
-    DRM_CAP_TIMESTAMP_MONOTONIC, DRM_EVENT_FLIP_COMPLETE, DRM_FORMAT_ARGB8888,
+    DRM_CAP_TIMESTAMP_MONOTONIC, DRM_CRTC_SEQUENCE_NEXT_ON_MISS, DRM_CRTC_SEQUENCE_RELATIVE,
+    DRM_EVENT_CRTC_SEQUENCE, DRM_EVENT_FLIP_COMPLETE, DRM_EVENT_VBLANK, DRM_FORMAT_ARGB8888,
     DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_XRGB8888, DRM_IOCTL_AUTH_MAGIC,
-    DRM_IOCTL_DROP_MASTER, DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_MAGIC, DRM_IOCTL_GET_UNIQUE,
-    DRM_IOCTL_MODE_ADDFB2, DRM_IOCTL_MODE_ATOMIC, DRM_IOCTL_MODE_CREATE_DUMB,
-    DRM_IOCTL_MODE_CREATEPROPBLOB, DRM_IOCTL_MODE_DESTROY_DUMB, DRM_IOCTL_MODE_DESTROYPROPBLOB,
-    DRM_IOCTL_MODE_DIRTYFB, DRM_IOCTL_MODE_GETCONNECTOR, DRM_IOCTL_MODE_GETCRTC,
-    DRM_IOCTL_MODE_GETENCODER, DRM_IOCTL_MODE_GETPLANE, DRM_IOCTL_MODE_GETPLANERESOURCES,
-    DRM_IOCTL_MODE_GETPROPBLOB, DRM_IOCTL_MODE_GETPROPERTY, DRM_IOCTL_MODE_GETRESOURCES,
-    DRM_IOCTL_MODE_MAP_DUMB, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, DRM_IOCTL_MODE_PAGE_FLIP,
-    DRM_IOCTL_MODE_RMFB, DRM_IOCTL_MODE_SETCRTC, DRM_IOCTL_PRIME_FD_TO_HANDLE,
-    DRM_IOCTL_PRIME_HANDLE_TO_FD, DRM_IOCTL_SET_CLIENT_CAP, DRM_IOCTL_SET_MASTER,
-    DRM_IOCTL_SET_VERSION, DRM_IOCTL_VERSION, DRM_IOCTL_WAIT_VBLANK, DRM_MODE_ATOMIC_ALLOW_MODESET,
-    DRM_MODE_ATOMIC_NONBLOCK, DRM_MODE_ATOMIC_TEST_ONLY, DRM_MODE_CONNECTED,
-    DRM_MODE_CONNECTOR_VIRTUAL, DRM_MODE_ENCODER_VIRTUAL, DRM_MODE_FB_MODIFIERS,
-    DRM_MODE_OBJECT_CONNECTOR, DRM_MODE_OBJECT_CRTC, DRM_MODE_OBJECT_PLANE,
-    DRM_MODE_PAGE_FLIP_EVENT, DRM_MODE_PROP_ATOMIC, DRM_MODE_PROP_BLOB, DRM_MODE_PROP_ENUM,
-    DRM_MODE_PROP_IMMUTABLE, DRM_MODE_PROP_OBJECT, DRM_MODE_PROP_RANGE, DRM_PLANE_TYPE_PRIMARY,
-    DRM_PRIME_CAP_EXPORT, DRM_PRIME_CAP_IMPORT, DRM_PROP_NAME_LEN, DrmAuth, DrmEvent,
-    DrmEventVblank, DrmGetCap, DrmModeAtomic, DrmModeCardRes, DrmModeCreateBlob, DrmModeCreateDumb,
-    DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeDestroyBlob, DrmModeDestroyDumb, DrmModeDirtyFB,
+    DRM_IOCTL_CRTC_GET_SEQUENCE, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, DRM_IOCTL_DROP_MASTER,
+    DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_MAGIC, DRM_IOCTL_GET_UNIQUE, DRM_IOCTL_MODE_ADDFB2,
+    DRM_IOCTL_MODE_ATOMIC, DRM_IOCTL_MODE_CREATE_DUMB, DRM_IOCTL_MODE_CREATEPROPBLOB,
+    DRM_IOCTL_MODE_DESTROY_DUMB, DRM_IOCTL_MODE_DESTROYPROPBLOB, DRM_IOCTL_MODE_DIRTYFB,
+    DRM_IOCTL_MODE_GETCONNECTOR, DRM_IOCTL_MODE_GETCRTC, DRM_IOCTL_MODE_GETENCODER,
+    DRM_IOCTL_MODE_GETPLANE, DRM_IOCTL_MODE_GETPLANERESOURCES, DRM_IOCTL_MODE_GETPROPBLOB,
+    DRM_IOCTL_MODE_GETPROPERTY, DRM_IOCTL_MODE_GETRESOURCES, DRM_IOCTL_MODE_MAP_DUMB,
+    DRM_IOCTL_MODE_OBJ_GETPROPERTIES, DRM_IOCTL_MODE_PAGE_FLIP, DRM_IOCTL_MODE_RMFB,
+    DRM_IOCTL_MODE_SETCRTC, DRM_IOCTL_PRIME_FD_TO_HANDLE, DRM_IOCTL_PRIME_HANDLE_TO_FD,
+    DRM_IOCTL_SET_CLIENT_CAP, DRM_IOCTL_SET_MASTER, DRM_IOCTL_SET_VERSION, DRM_IOCTL_VERSION,
+    DRM_IOCTL_WAIT_VBLANK, DRM_MODE_ATOMIC_ALLOW_MODESET, DRM_MODE_ATOMIC_NONBLOCK,
+    DRM_MODE_ATOMIC_TEST_ONLY, DRM_MODE_CONNECTED, DRM_MODE_CONNECTOR_VIRTUAL,
+    DRM_MODE_ENCODER_VIRTUAL, DRM_MODE_FB_MODIFIERS, DRM_MODE_OBJECT_CONNECTOR,
+    DRM_MODE_OBJECT_CRTC, DRM_MODE_OBJECT_PLANE, DRM_MODE_PAGE_FLIP_EVENT,
+    DRM_MODE_PROP_ATOMIC, DRM_MODE_PROP_BLOB, DRM_MODE_PROP_ENUM, DRM_MODE_PROP_IMMUTABLE,
+    DRM_MODE_PROP_OBJECT, DRM_MODE_PROP_RANGE, DRM_PLANE_TYPE_PRIMARY, DRM_PRIME_CAP_EXPORT,
+    DRM_PRIME_CAP_IMPORT, DRM_PROP_NAME_LEN, DRM_VBLANK_EVENT, DRM_VBLANK_FLAGS_MASK,
+    DRM_VBLANK_HIGH_CRTC_MASK, DRM_VBLANK_NEXTONMISS, DRM_VBLANK_RELATIVE, DRM_VBLANK_SECONDARY,
+    DRM_VBLANK_SIGNAL, DRM_VBLANK_TYPES_MASK, DrmAuth, DrmEvent, DrmEventCrtcSequence,
+    DrmEventVblank, DrmGetCap, DrmModeAtomic, DrmModeCardRes, DrmModeCreateBlob,
+    DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcGetSequence, DrmModeCrtcPageFlip,
+    DrmModeCrtcQueueSequence, DrmModeDestroyBlob, DrmModeDestroyDumb, DrmModeDirtyFB,
     DrmModeFbCmd2, DrmModeGetBlob, DrmModeGetConnector, DrmModeGetEncoder, DrmModeGetPlane,
     DrmModeGetPlaneRes, DrmModeGetProperty, DrmModeMapDumb, DrmModeModeInfo,
-    DrmModeObjGetProperties, DrmModePropertyEnum, DrmPrimeHandle, DrmSetClientCap, DrmSetVersion,
-    DrmUnique, DrmVersion, DrmWaitVblank,
+    DrmModeObjGetProperties, DrmModePropertyEnum, DrmPrimeHandle, DrmSetClientCap,
+    DrmSetVersion, DrmUnique, DrmVersion, DrmWaitVblank,
+};
+use super::vblank::{
+    PendingVblankEvent, QueuedVblankEvent, VblankScheduler, vblank_passed, widen_32_to_64,
 };
 use crate::{
     StarryError, StarryResult,
@@ -158,6 +170,19 @@ const SUPPORTED_FORMATS: &[u32] = &[DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888];
 /// Upper bound on the pending-event queue. Matches Linux's
 /// `file->event_space` of 4 KB ≈ 128 `drm_event_vblank`s.
 const MAX_EVENTS: usize = 128;
+
+/// Storage slot for a queued DRM event. `DRM_EVENT_VBLANK` and
+/// `DRM_EVENT_CRTC_SEQUENCE` are both exactly 32 bytes on 64-bit; events
+/// are serialized on enqueue so `read` can copy payloads of either type
+/// from one queue without Rust enum layout leaking into the ABI.
+const EVENT_SLOT_BYTES: usize = core::mem::size_of::<DrmEventVblank>();
+
+/// Fixed-size serialized event slot for the card's event queue.
+type EventSlot = [u8; EVENT_SLOT_BYTES];
+
+const _: () = {
+    assert!(EVENT_SLOT_BYTES == core::mem::size_of::<DrmEventCrtcSequence>());
+};
 
 /// First blob id we hand out from `CREATEPROPBLOB`.
 const FIRST_BLOB_ID: u32 = 0x1000;
@@ -305,7 +330,7 @@ struct LegacyCrtcState {
 /// single-connector / single-plane layout. Guarded by one mutex because
 /// atomic commits touch multiple fields at once and userspace expects
 /// the commit to be all-or-nothing.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 struct ModesetState {
     crtc_active: u64,
     crtc_mode_id: u32,
@@ -323,13 +348,16 @@ struct ModesetState {
 }
 
 pub struct Card0 {
-    /// Queue of pending DRM events waiting to be delivered via `read()`.
-    events: Mutex<VecDeque<DrmEventVblank>>,
+    /// Queue of serialized DRM events waiting to be delivered via
+    /// `read()` (flip completion, `WAIT_VBLANK` events, and
+    /// `CRTC_QUEUE_SEQUENCE` events).
+    events: Mutex<VecDeque<EventSlot>>,
     /// Wakes up `poll`-waiters blocked on `read()` when a new event
     /// arrives.
     poll_rx: PollSet,
-    /// Monotonically-increasing vblank sequence.
-    sequence: AtomicU32,
+    /// Synthesized 60 Hz vblank clock and the queue of events waiting
+    /// for future vblank edges.
+    vblank: VblankScheduler,
     /// Current values of all atomic-tunable properties.
     state: Mutex<ModesetState>,
     /// Legacy `SETCRTC` binding readable via `GETCRTC`. Atomic commits
@@ -387,7 +415,7 @@ impl Card0 {
         let card = Arc::new(Self {
             events: Mutex::new(VecDeque::with_capacity(MAX_EVENTS)),
             poll_rx: PollSet::new(),
-            sequence: AtomicU32::new(0),
+            vblank: VblankScheduler::new(monotonic_time_nanos()),
             state: Mutex::new(ModesetState::default()),
             legacy_crtc: Mutex::new(LegacyCrtcState::default()),
             dumbs: Mutex::new(BTreeMap::new()),
@@ -571,18 +599,20 @@ impl DeviceOps for Card0 {
         if buf.is_empty() {
             return Ok(0);
         }
-        let evsz = core::mem::size_of::<DrmEventVblank>();
-        if buf.len() < evsz {
+        if buf.len() < EVENT_SLOT_BYTES {
             return Err(VfsError::InvalidInput);
         }
+        // Serve any queued sequence events whose edge has passed before
+        // draining, so a reader that never polls still observes them.
+        self.serve_pending_vblank_events();
         let mut events = self.events.lock();
         let mut written = 0;
-        while written + evsz <= buf.len() {
+        while written + EVENT_SLOT_BYTES <= buf.len() {
             let Some(ev) = events.pop_front() else {
                 break;
             };
-            buf[written..written + evsz].copy_from_slice(bytes_of(&ev));
-            written += evsz;
+            buf[written..written + EVENT_SLOT_BYTES].copy_from_slice(&ev);
+            written += EVENT_SLOT_BYTES;
         }
         if written == 0 {
             Err(VfsError::WouldBlock)
@@ -621,6 +651,8 @@ impl DeviceOps for Card0 {
             DRM_IOCTL_MODE_GETPROPERTY => handle_get_property(current, arg),
             DRM_IOCTL_MODE_PAGE_FLIP => self.handle_page_flip(current, arg),
             DRM_IOCTL_WAIT_VBLANK => self.handle_wait_vblank(current, arg),
+            DRM_IOCTL_CRTC_GET_SEQUENCE => self.handle_crtc_get_sequence(current, arg),
+            DRM_IOCTL_CRTC_QUEUE_SEQUENCE => self.handle_crtc_queue_sequence(current, arg),
 
             DRM_IOCTL_MODE_ATOMIC => self.handle_atomic(current, arg),
             DRM_IOCTL_MODE_CREATEPROPBLOB => self.handle_create_blob(current, arg),
@@ -671,6 +703,11 @@ impl DeviceOps for Card0 {
 
 impl Pollable for Card0 {
     fn poll(&self) -> IoEvents {
+        // Real hardware raises a vblank IRQ when an edge passes; the
+        // emulation's equivalent observation point is this poll, which
+        // also makes lazily-queued sequence events readable without a
+        // kernel timer thread.
+        self.serve_pending_vblank_events();
         let mut events = IoEvents::empty();
         events.set(IoEvents::IN, !self.events.lock().is_empty());
         events
@@ -1574,31 +1611,21 @@ impl Card0 {
         Ok(0)
     }
 
-    /// Enqueue a `drm_event_vblank` for the next `read()`, wake pollers.
-    /// Shared by legacy PAGE_FLIP and atomic commits.
-    fn queue_flip_event(&self, user_data: u64) {
-        let seq = self
-            .sequence
-            .fetch_add(1, Ordering::Relaxed)
-            .wrapping_add(1);
-        let now = monotonic_time();
-        let ev = DrmEventVblank {
-            base: DrmEvent {
-                event_type: DRM_EVENT_FLIP_COMPLETE,
-                length: core::mem::size_of::<DrmEventVblank>() as u32,
-            },
-            user_data,
-            tv_sec: now.as_secs() as u32,
-            tv_usec: now.subsec_micros(),
-            sequence: seq,
-            crtc_id: CRTC_ID,
-        };
+    /// Serializes and enqueues a DRM event payload, waking pollers.
+    /// Every event type on this card is `EVENT_SLOT_BYTES` long (asserted
+    /// at compile time), so a flat byte-slot queue serves `read()` for
+    /// both `DrmEventVblank` and `DrmEventCrtcSequence` payloads.
+    fn enqueue_event<E: bytemuck::NoUninit>(&self, ev: &E) {
+        let bytes = bytes_of(ev);
+        debug_assert_eq!(bytes.len(), EVENT_SLOT_BYTES);
+        let mut slot: EventSlot = [0; EVENT_SLOT_BYTES];
+        slot[..bytes.len()].copy_from_slice(bytes);
         let enqueued = {
             let mut queue = self.events.lock();
             if queue.len() >= MAX_EVENTS {
                 false
             } else {
-                queue.push_back(ev);
+                queue.push_back(slot);
                 true
             }
         };
@@ -1608,47 +1635,304 @@ impl Card0 {
         }
     }
 
-    /// `WAIT_VBLANK` — user asks to block until a given vblank sequence.
-    /// We don't have a real vblank source, so just bump the sequence and
-    /// return immediately with the current timestamp.
+    /// Moves every queued vblank event whose target edge has passed onto
+    /// the event queue. Called from `poll` and `read`.
+    fn serve_pending_vblank_events(&self) {
+        let now_ns = monotonic_time_nanos();
+        for pending in self.vblank.take_expired(now_ns) {
+            let sequence = self.vblank.clock().sequence_at(now_ns);
+            let edge_ns = self.vblank.clock().edge_ns_of(pending.target_sequence) as i64;
+            match pending.event {
+                QueuedVblankEvent::Vblank { user_data } => {
+                    let ev = DrmEventVblank {
+                        base: DrmEvent {
+                            event_type: DRM_EVENT_VBLANK,
+                            length: core::mem::size_of::<DrmEventVblank>() as u32,
+                        },
+                        user_data,
+                        tv_sec: (edge_ns / 1_000_000_000) as u32,
+                        tv_usec: ((edge_ns % 1_000_000_000) / 1_000) as u32,
+                        sequence: sequence as u32,
+                        crtc_id: CRTC_ID,
+                    };
+                    self.enqueue_event(&ev);
+                }
+                QueuedVblankEvent::CrtcSequence { user_data } => {
+                    let ev = DrmEventCrtcSequence {
+                        base: DrmEvent {
+                            event_type: DRM_EVENT_CRTC_SEQUENCE,
+                            length: core::mem::size_of::<DrmEventCrtcSequence>() as u32,
+                        },
+                        user_data,
+                        tv_ns: edge_ns,
+                        sequence: sequence as u64,
+                    };
+                    self.enqueue_event(&ev);
+                }
+            }
+        }
+    }
+
+    /// Whether the CRTC is currently scanning out: true once a legacy
+    /// `SETCRTC` bound an fb or an atomic commit set `ACTIVE`. Mirrors
+    /// the `active` visibility `CRTC_GET_SEQUENCE` reports.
+    fn crtc_active(&self) -> bool {
+        *self.state.lock() != ModesetState::default()
+            || self.legacy_crtc.lock().fb_id != 0
+    }
+
+    /// Enqueue a `drm_event_vblank` flip-completion for the next `read()`.
+    /// Shared by legacy PAGE_FLIP and atomic commits. The sequence and
+    /// timestamp come from the synthesized vblank clock, matching what
+    /// `CRTC_GET_SEQUENCE` would report for the same instant.
+    fn queue_flip_event(&self, user_data: u64) {
+        let now_ns = monotonic_time_nanos();
+        let sequence = self.vblank.clock().sequence_at(now_ns);
+        let ev = DrmEventVblank {
+            base: DrmEvent {
+                event_type: DRM_EVENT_FLIP_COMPLETE,
+                length: core::mem::size_of::<DrmEventVblank>() as u32,
+            },
+            user_data,
+            tv_sec: (now_ns / 1_000_000_000) as u32,
+            tv_usec: ((now_ns % 1_000_000_000) / 1_000) as u32,
+            sequence: sequence as u32,
+            crtc_id: CRTC_ID,
+        };
+        self.enqueue_event(&ev);
+    }
+
+    /// `CRTC_GET_SEQUENCE` — report the synthesized counter's most recent
+    /// edge, mirroring `drm_crtc_get_sequence_ioctl()` (Linux 4.19
+    /// `drm_vblank.c`): `active` reflects the CRTC's scanout state,
+    /// `sequence` the most recent vblank, `sequence_ns` that edge's
+    /// `CLOCK_MONOTONIC` timestamp. An inactive CRTC fails with `EINVAL`
+    /// like Linux's failed `drm_crtc_vblank_get`.
+    fn handle_crtc_get_sequence(
+        &self,
+        current: &crate::task::UserTaskRef,
+        arg: usize,
+    ) -> VfsResult<usize> {
+        let ptr = arg as *mut DrmModeCrtcGetSequence;
+        let mut g: DrmModeCrtcGetSequence = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
+        if g.crtc_id != CRTC_ID {
+            return Err(VfsError::NotFound);
+        }
+        if !self.crtc_active() {
+            return Err(VfsError::InvalidInput);
+        }
+        let now_ns = monotonic_time_nanos();
+        let sequence = self.vblank.clock().sequence_at(now_ns);
+        g.active = u32::from(self.crtc_active());
+        g.sequence = sequence;
+        g.sequence_ns = self.vblank.clock().edge_ns_of(sequence) as i64;
+        ptr.vm_write(current, g).map_err(|_| VfsError::BadAddress)?;
+        Ok(0)
+    }
+
+    /// `CRTC_QUEUE_SEQUENCE` — deliver a `DRM_EVENT_CRTC_SEQUENCE` when
+    /// the counter reaches the target, mirroring
+    /// `drm_crtc_queue_sequence_ioctl()` + `drm_queue_vblank_event()`
+    /// (Linux 4.19): unknown flags → `EINVAL`, unknown CRTC → `ENOENT`,
+    /// inactive CRTC → `EINVAL`, a missed target fires immediately, and
+    /// the reply's `sequence` reports the target (or the current counter
+    /// when it fired immediately).
+    fn handle_crtc_queue_sequence(
+        &self,
+        current: &crate::task::UserTaskRef,
+        arg: usize,
+    ) -> VfsResult<usize> {
+        let ptr = arg as *mut DrmModeCrtcQueueSequence;
+        let mut q: DrmModeCrtcQueueSequence =
+            ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
+        if q.crtc_id != CRTC_ID {
+            return Err(VfsError::NotFound);
+        }
+        if q.flags & !(DRM_CRTC_SEQUENCE_RELATIVE | DRM_CRTC_SEQUENCE_NEXT_ON_MISS) != 0 {
+            return Err(VfsError::InvalidInput);
+        }
+        if !self.crtc_active() {
+            return Err(VfsError::InvalidInput);
+        }
+
+        let now_ns = monotonic_time_nanos();
+        let current_sequence = self.vblank.clock().sequence_at(now_ns);
+        let mut target = if q.flags & DRM_CRTC_SEQUENCE_RELATIVE != 0 {
+            current_sequence.wrapping_add(q.sequence)
+        } else {
+            q.sequence
+        };
+        if q.flags & DRM_CRTC_SEQUENCE_NEXT_ON_MISS != 0
+            && vblank_passed(current_sequence, target)
+        {
+            target = current_sequence + 1;
+        }
+
+        if vblank_passed(current_sequence, target) {
+            // Missed: fire synchronously with the current counter, like
+            // Linux's immediate `send_vblank_event`.
+            self.serve_pending_vblank_events();
+            let edge_ns = self.vblank.clock().edge_ns_of(current_sequence) as i64;
+            let ev = DrmEventCrtcSequence {
+                base: DrmEvent {
+                    event_type: DRM_EVENT_CRTC_SEQUENCE,
+                    length: core::mem::size_of::<DrmEventCrtcSequence>() as u32,
+                },
+                user_data: q.user_data,
+                tv_ns: edge_ns,
+                sequence: current_sequence,
+            };
+            self.enqueue_event(&ev);
+            q.sequence = current_sequence;
+        } else {
+            let queued = self.vblank.queue(PendingVblankEvent {
+                event: QueuedVblankEvent::CrtcSequence {
+                    user_data: q.user_data,
+                },
+                target_sequence: target,
+            });
+            if !queued {
+                // Linux's event reservation fails with -ENOMEM once the
+                // client's 4 KB event space is exhausted.
+                return Err(VfsError::NoMemory);
+            }
+            q.sequence = target;
+        }
+        ptr.vm_write(current, q).map_err(|_| VfsError::BadAddress)?;
+        Ok(0)
+    }
+
+    /// `WAIT_VBLANK` — wait for the synthesized counter to reach a
+    /// target, mirroring `drm_wait_vblank_ioctl()` (Linux 4.19
+    /// `drm_vblank.c`): `_DRM_VBLANK_SIGNAL` and unknown type bits →
+    /// `EINVAL`, an inactive CRTC → `EINVAL` (Linux's `drm_vblank_get`
+    /// fails when the counter is disabled), the query variant
+    /// (relative + zero + no flags) short-circuits, `_DRM_VBLANK_EVENT`
+    /// queues a `DRM_EVENT_VBLANK` instead of blocking, and the blocking
+    /// variant sleeps until the target edge. Replies carry the vblank
+    /// timestamp like `drm_wait_vblank_reply()`.
     fn handle_wait_vblank(
         &self,
         current: &crate::task::UserTaskRef,
         arg: usize,
     ) -> VfsResult<usize> {
         let ptr = arg as *mut DrmWaitVblank;
-        let request: DrmWaitVblank = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
+        let mut req: DrmWaitVblank = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
 
-        let is_relative = request.rep_type & crate::pseudofs::dev::drm::DRM_VBLANK_RELATIVE != 0;
-        let current_sequence = self.sequence.load(Ordering::Acquire);
-        let target = if is_relative {
-            current_sequence.wrapping_add(request.sequence)
-        } else {
-            request.sequence
-        };
-        let raw_wait = target.wrapping_sub(current_sequence);
-        let wait_count = if raw_wait == 0 || raw_wait >= i32::MAX as u32 {
-            1
-        } else {
-            raw_wait
-        };
+        if req.rep_type & DRM_VBLANK_SIGNAL != 0 {
+            return Err(VfsError::InvalidInput);
+        }
+        if req.rep_type & !(DRM_VBLANK_TYPES_MASK | DRM_VBLANK_FLAGS_MASK | DRM_VBLANK_HIGH_CRTC_MASK)
+            != 0
+        {
+            return Err(VfsError::InvalidInput);
+        }
+        // Bits 1..6 of `type` are a CRTC index; the secondary flag picks
+        // CRTC 1. This card exposes exactly one CRTC at index 0.
+        if req.rep_type & (DRM_VBLANK_HIGH_CRTC_MASK | DRM_VBLANK_SECONDARY) != 0 {
+            return Err(VfsError::InvalidInput);
+        }
+        if !self.crtc_active() {
+            return Err(VfsError::InvalidInput);
+        }
 
-        const FRAME_PERIOD_NS: u64 = 1_000_000_000 / 60;
-        let delay =
-            core::time::Duration::from_nanos(FRAME_PERIOD_NS.saturating_mul(wait_count as u64));
-        crate::task::sleep(delay);
-        self.sequence.fetch_add(wait_count, Ordering::AcqRel);
+        let vtype = req.rep_type;
+        let now_ns = monotonic_time_nanos();
+        let current_sequence = self.vblank.clock().sequence_at(now_ns);
 
-        let now = monotonic_time();
-        let reply = DrmWaitVblank {
-            rep_type: 0,
-            sequence: self.sequence.load(Ordering::Acquire),
-            tv_sec: now.as_secs() as i64,
-            tv_usec: now.subsec_micros() as i64,
+        // Query short-circuit: relative with a zero target and no event
+        // or next-on-miss flags just reports the current counter.
+        if req.sequence == 0
+            && (vtype & (DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT | DRM_VBLANK_NEXTONMISS))
+                == DRM_VBLANK_RELATIVE
+        {
+            let reply = self.wait_vblank_reply(vtype, current_sequence);
+            ptr.vm_write(current, reply).map_err(|_| VfsError::BadAddress)?;
+            return Ok(0);
+        }
+
+        let mut target = match vtype & DRM_VBLANK_TYPES_MASK {
+            DRM_VBLANK_RELATIVE => current_sequence.wrapping_add(u64::from(req.sequence)),
+            // Absolute: widen the u32 counter against the current u64.
+            0 => widen_32_to_64(req.sequence, current_sequence),
+            _ => return Err(VfsError::InvalidInput),
         };
-        ptr.vm_write(current, reply)
-            .map_err(|_| VfsError::BadAddress)?;
+        // Linux converts relative requests to absolute and clears the
+        // bit in the echoed-back type.
+        if vtype & DRM_VBLANK_RELATIVE != 0 {
+            req.rep_type &= !DRM_VBLANK_RELATIVE;
+        }
+        req.sequence = target as u32;
+        if vtype & DRM_VBLANK_NEXTONMISS != 0 && vblank_passed(current_sequence, target) {
+            target = current_sequence + 1;
+            req.sequence = target as u32;
+            req.rep_type &= !DRM_VBLANK_NEXTONMISS;
+        }
+
+        if vtype & DRM_VBLANK_EVENT != 0 {
+            // `_DRM_VBLANK_EVENT`: `request.signal` (overlaid on
+            // `tv_sec`) is the user_data of the delivered event.
+            let user_data = req.tv_sec as u64;
+            let fired = vblank_passed(current_sequence, target);
+            self.serve_pending_vblank_events();
+            if fired {
+                self.queue_vblank_event(user_data, current_sequence);
+            } else if !self.vblank.queue(PendingVblankEvent {
+                event: QueuedVblankEvent::Vblank { user_data },
+                target_sequence: target,
+            }) {
+                return Err(VfsError::NoMemory);
+            }
+            let reply_sequence = if fired { current_sequence } else { target };
+            let mut reply = self.wait_vblank_reply(req.rep_type, current_sequence);
+            reply.sequence = reply_sequence as u32;
+            ptr.vm_write(current, reply).map_err(|_| VfsError::BadAddress)?;
+            return Ok(0);
+        }
+
+        // Blocking wait: sleep until the target edge. An already-passed
+        // target returns immediately, matching Linux's passed check.
+        if !vblank_passed(current_sequence, target) {
+            let edge_ns = self.vblank.clock().edge_ns_of(target);
+            crate::task::sleep(core::time::Duration::from_nanos(
+                edge_ns.saturating_sub(monotonic_time_nanos()),
+            ));
+        }
+        let after_ns = monotonic_time_nanos();
+        let sequence = self.vblank.clock().sequence_at(after_ns);
+        let reply = self.wait_vblank_reply(req.rep_type, sequence);
+        ptr.vm_write(current, reply).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
+    }
+
+    /// Builds a `WAIT_VBLANK` reply reporting `sequence`'s edge time,
+    /// mirroring `drm_wait_vblank_reply()`: the truncated counter plus
+    /// the timestamp of the most recent vblank edge.
+    fn wait_vblank_reply(&self, rep_type: u32, sequence: u64) -> DrmWaitVblank {
+        let edge_ns = self.vblank.clock().edge_ns_of(sequence) as i64;
+        DrmWaitVblank {
+            rep_type,
+            sequence: sequence as u32,
+            tv_sec: edge_ns / 1_000_000_000,
+            tv_usec: (edge_ns % 1_000_000_000) / 1_000,
+        }
+    }
+
+    /// Queues an immediate `DRM_EVENT_VBLANK` for a fired target.
+    fn queue_vblank_event(&self, user_data: u64, sequence: u64) {
+        let edge_ns = self.vblank.clock().edge_ns_of(sequence);
+        let ev = DrmEventVblank {
+            base: DrmEvent {
+                event_type: DRM_EVENT_VBLANK,
+                length: core::mem::size_of::<DrmEventVblank>() as u32,
+            },
+            user_data,
+            tv_sec: (edge_ns / 1_000_000_000) as u32,
+            tv_usec: ((edge_ns % 1_000_000_000) / 1_000) as u32,
+            sequence: sequence as u32,
+            crtc_id: CRTC_ID,
+        };
+        self.enqueue_event(&ev);
     }
 
     // ======== M4c: atomic commit + blob properties ========

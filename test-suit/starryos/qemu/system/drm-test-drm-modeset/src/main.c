@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 struct drm_mode_create_dumb {
@@ -109,6 +110,8 @@ struct drm_event_vblank {
 #define DRM_IOCTL_MODE_ADDFB2            _IOWR('d', 0xB8, struct drm_mode_fb_cmd2)
 #define DRM_IOCTL_MODE_OBJ_GETPROPERTIES _IOWR('d', 0xB9, struct drm_mode_obj_get_properties)
 #define DRM_IOCTL_WAIT_VBLANK            _IOWR('d', 0x3A, union drm_wait_vblank)
+#define DRM_IOCTL_CRTC_GET_SEQUENCE      _IOWR('d', 0x3B, struct drm_crtc_get_sequence)
+#define DRM_IOCTL_CRTC_QUEUE_SEQUENCE    _IOWR('d', 0x3C, struct drm_crtc_queue_sequence)
 
 #define DRM_MODE_OBJECT_PLANE       0xeeeeeeee
 #define DRM_PLANE_TYPE_PRIMARY      1
@@ -116,6 +119,26 @@ struct drm_event_vblank {
 #define DRM_MODE_PROP_ENUM          (1 << 3)
 #define DRM_EVENT_FLIP_COMPLETE     0x02
 #define DRM_FORMAT_XRGB8888         0x34325258
+
+/* CRTC vblank sequence clock uapi（include/uapi/drm/drm.h，Linux 4.12+）。 */
+struct drm_crtc_get_sequence {
+    uint32_t crtc_id; uint32_t active;
+    uint64_t sequence; int64_t sequence_ns;
+};
+struct drm_crtc_queue_sequence {
+    uint32_t crtc_id; uint32_t flags;
+    uint64_t sequence; uint64_t user_data;
+};
+struct drm_event_crtc_sequence {
+    struct drm_event base; int64_t user_data; int64_t tv_ns; uint64_t sequence;
+};
+
+#define DRM_CRTC_SEQUENCE_RELATIVE     0x00000001
+#define DRM_CRTC_SEQUENCE_NEXT_ON_MISS 0x00000002
+#define DRM_EVENT_VBLANK               0x01
+#define DRM_EVENT_CRTC_SEQUENCE        0x03
+#define _DRM_VBLANK_RELATIVE           0x0000001
+#define _DRM_VBLANK_EVENT              0x4000000
 
 int main(void)
 {
@@ -255,12 +278,112 @@ int main(void)
     char buf[64] = {0};
     CHECK_ERR(read(fd, buf, sizeof(buf)), EAGAIN, "empty read returns EAGAIN");
 
-    /* --- WAIT_VBLANK 单调递增 --- */
+    /* --- WAIT_VBLANK 查询不回退 ---
+     * type=0（absolute，target=0）是纯查询：真实时钟下同一周期内两次
+     * 查询返回相同序列号，跨周期则 +1，因此只要求不回退。 */
     union drm_wait_vblank wv1 = {0}, wv2 = {0};
     CHECK_RET(ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wv1), 0, "WAIT_VBLANK 1");
     CHECK_RET(ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wv2), 0, "WAIT_VBLANK 2");
-    CHECK(wv2.reply.sequence > wv1.reply.sequence, "vblank seq monotonic");
-    CHECK(wv2.reply.sequence > seq1, "vblank seq > flip seq");
+    CHECK(wv2.reply.sequence >= wv1.reply.sequence, "vblank seq monotonic");
+    CHECK(wv2.reply.sequence >= seq1, "vblank seq >= flip seq");
+
+    /* --- CRTC_GET_SEQUENCE：active 报告 + 序列号推进率 --- */
+    struct timespec ts1, ts2;
+    struct drm_crtc_get_sequence gseq1 = { .crtc_id = crtc_ids[0] };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &gseq1), 0,
+              "CRTC_GET_SEQUENCE works");
+    CHECK(gseq1.active == 1, "GET_SEQUENCE active == 1 after SETCRTC");
+    CHECK(gseq1.sequence_ns > 0, "GET_SEQUENCE timestamp positive");
+    CHECK(gseq1.sequence >= seq1, "GET_SEQUENCE sequence >= flip seq");
+
+    usleep(120000); /* 约 7 个 vblank 周期 */
+    struct drm_crtc_get_sequence gseq2 = { .crtc_id = crtc_ids[0] };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &gseq2), 0,
+              "CRTC_GET_SEQUENCE second query");
+    uint64_t seq_delta = gseq2.sequence - gseq1.sequence;
+    CHECK(seq_delta >= 5 && seq_delta <= 9,
+          "sequence advances at ~60 Hz over 120 ms");
+    CHECK(gseq2.sequence_ns > gseq1.sequence_ns, "sequence_ns monotonic");
+
+    struct drm_crtc_get_sequence gseq_bad = { .crtc_id = 0xdeadbeef };
+    CHECK_ERR(ioctl(fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &gseq_bad), ENOENT,
+              "GET_SEQUENCE rejects unknown crtc");
+
+    /* --- CRTC_QUEUE_SEQUENCE：相对目标两个周期后投递事件 --- */
+    struct drm_crtc_queue_sequence qseq = {
+        .crtc_id = crtc_ids[0],
+        .flags = DRM_CRTC_SEQUENCE_RELATIVE,
+        .sequence = 2,
+        .user_data = 0xfeedfacefeedfaceULL,
+    };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &qseq), 0,
+              "QUEUE_SEQUENCE accepts relative target");
+    struct pollfd qpfd = { .fd = fd, .events = POLLIN };
+    pr = poll(&qpfd, 1, 1000);
+    CHECK(pr == 1, "poll wakes for queued sequence event");
+    struct drm_event_crtc_sequence seq_ev = {0};
+    n = read(fd, &seq_ev, sizeof(seq_ev));
+    CHECK(n == (ssize_t)sizeof(seq_ev), "read returns drm_event_crtc_sequence");
+    CHECK(seq_ev.base.type == DRM_EVENT_CRTC_SEQUENCE,
+          "event type == CRTC_SEQUENCE");
+    CHECK(seq_ev.base.length == sizeof(seq_ev),
+          "crtc_sequence event length == sizeof(struct)");
+    CHECK((uint64_t)seq_ev.user_data == 0xfeedfacefeedfaceULL,
+          "sequence event user_data round-trips");
+    CHECK(seq_ev.sequence >= qseq.sequence,
+          "sequence event fired at or after target");
+    CHECK(seq_ev.tv_ns >= gseq2.sequence_ns, "sequence event timestamp monotonic");
+
+    /* --- QUEUE_SEQUENCE 错误路径 --- */
+    struct drm_crtc_queue_sequence bad_flags = {
+        .crtc_id = crtc_ids[0], .flags = 0x80000000, .sequence = 1,
+    };
+    CHECK_ERR(ioctl(fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &bad_flags), EINVAL,
+              "QUEUE_SEQUENCE rejects unknown flags");
+    struct drm_crtc_queue_sequence bad_crtc = {
+        .crtc_id = 0xdeadbeef, .flags = DRM_CRTC_SEQUENCE_RELATIVE, .sequence = 1,
+    };
+    CHECK_ERR(ioctl(fd, DRM_IOCTL_CRTC_QUEUE_SEQUENCE, &bad_crtc), ENOENT,
+              "QUEUE_SEQUENCE rejects unknown crtc");
+
+    /* --- WAIT_VBLANK _DRM_VBLANK_EVENT：入队而非阻塞 --- */
+    union drm_wait_vblank wev = {0};
+    wev.req.type = _DRM_VBLANK_EVENT | _DRM_VBLANK_RELATIVE;
+    wev.req.sequence = 1;
+    wev.req.signal = 0xcafef00dcafebabeULL;
+    CHECK_RET(ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wev), 0,
+              "WAIT_VBLANK EVENT returns immediately");
+    struct pollfd wpfd = { .fd = fd, .events = POLLIN };
+    pr = poll(&wpfd, 1, 1000);
+    CHECK(pr == 1, "poll wakes for vblank event");
+    struct drm_event_vblank vev = {0};
+    n = read(fd, &vev, sizeof(vev));
+    CHECK(n == (ssize_t)sizeof(vev), "read returns drm_event_vblank");
+    CHECK(vev.base.type == DRM_EVENT_VBLANK, "event type == VBLANK");
+    CHECK(vev.user_data == 0xcafef00dcafebabeULL,
+          "vblank event user_data == request.signal");
+    CHECK(vev.crtc_id == crtc_ids[0], "vblank event crtc_id matches");
+
+    /* --- 相对阻塞等待按周期睡眠 --- */
+    union drm_wait_vblank wblock = {0};
+    wblock.req.type = _DRM_VBLANK_RELATIVE;
+    wblock.req.sequence = 2;
+    clock_gettime(CLOCK_MONOTONIC, &ts1);
+    CHECK_RET(ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wblock), 0,
+              "WAIT_VBLANK relative 2 blocks");
+    clock_gettime(CLOCK_MONOTONIC, &ts2);
+    long elapsed_ms = (ts2.tv_sec - ts1.tv_sec) * 1000
+                      + (ts2.tv_nsec - ts1.tv_nsec) / 1000000;
+    /* 相对等待语义与真实 DRM 一致：从当前时刻数 N 个边沿。若调用发生在
+     * 边沿刚过后，第 N 个边沿不足 N 个整周期（最短 ≈(N-1) 周期），
+     * 因此接受 [1, 3.5] 个周期的时间窗。 */
+    CHECK(elapsed_ms >= 16 && elapsed_ms <= 60,
+          "relative wait 2 spans 1-2 vblank periods");
+    CHECK(wblock.reply.sequence > wev.reply.sequence,
+          "blocking wait advanced the counter");
+
+    /* --- 队列再次清空 --- */
+    CHECK_ERR(read(fd, buf, sizeof(buf)), EAGAIN, "event queue drained");
 
     /* --- legacy GETCRTC readback matches the SETCRTC we ran above --- */
     uint32_t readback_conns[4] = {0};
@@ -308,6 +431,11 @@ int main(void)
     CHECK(getc.fb_id == 0, "GETCRTC fb_id == 0 after RMFB clears binding");
     CHECK(getc.count_connectors == 0,
           "GETCRTC count_connectors == 0 after RMFB");
+
+    /* CRTC 失活后 vblank 时钟应拒绝服务（Linux drm_vblank_get 失败 → EINVAL）。 */
+    struct drm_crtc_get_sequence gseq_off = { .crtc_id = crtc_ids[0] };
+    CHECK_ERR(ioctl(fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &gseq_off), EINVAL,
+              "GET_SEQUENCE rejects inactive CRTC");
 
     struct drm_mode_crtc bad_fb = {
         .crtc_id = crtc_ids[0], .fb_id = old_fb_id,
