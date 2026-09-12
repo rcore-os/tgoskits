@@ -188,6 +188,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "aicp-rust-protocol"
+version = "0.1.0"
+
+[[package]]
 name = "aliasable"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7845,8 +7849,6 @@ dependencies = [
  "ax-tracepoint",
  "axbacktrace",
  "axfs-ng-vfs",
- "axhvc",
- "axivc",
  "axklib",
  "axplat-dyn",
  "axpoll",
