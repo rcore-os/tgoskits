@@ -1,0 +1,7 @@
+features = [
+  "qemu",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+]
+log = "Warn"
+target = "aarch64-unknown-none-softfloat"
