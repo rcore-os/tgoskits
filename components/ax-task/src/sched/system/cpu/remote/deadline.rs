@@ -473,13 +473,6 @@ fn expiration_matches_registration(
         && event.kind() == Some(registration.kind())
 }
 
-impl CpuRemote {
-    pub(in crate::sched::system::cpu) fn deadline_is_quiescent_for_offline(&self) -> bool {
-        self.read_active_deadline_base(DeadlineBaseGuardSource::Lifecycle)
-            .is_none_or(|deadlines| !deadlines.has_active_work())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

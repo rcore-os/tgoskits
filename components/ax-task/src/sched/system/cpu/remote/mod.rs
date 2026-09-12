@@ -115,20 +115,11 @@ impl CpuRemote {
         unsafe { self.run_queue.lock_irq_disabled() }
     }
 
-    /// Locks this CPU's hrtimer-style task-deadline base.
-    ///
-    /// The rq lock precedes this lock when both are required. Timer IRQ code
-    /// takes only this lock; soft-timer callbacks release it before acquiring a
-    /// task control lock or rq lock.
-    pub(crate) fn read_deadline_base(
-        &self,
-        source: DeadlineBaseGuardSource,
-    ) -> CpuDeadlineReadGuard<'_> {
-        self.deadline.read(source)
-    }
-
     /// Skips the IRQ-disabled deadline-base read when no timer, expiration, or
     /// softirq ownership has been published.
+    /// The rq lock precedes this lock when both are required. Timer IRQ code
+    /// takes only this lock; soft-timer callbacks release it before acquiring
+    /// a task control lock or rq lock.
     pub(crate) fn read_active_deadline_base(
         &self,
         source: DeadlineBaseGuardSource,
