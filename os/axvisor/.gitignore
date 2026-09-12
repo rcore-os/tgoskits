@@ -46,6 +46,9 @@ downloads/
 eggs/
 .eggs/
 lib/
+# The dashboard sources live under web-ui/src/lib/; keep them tracked
+# despite the Python-boilerplate pattern above.
+!web-ui/src/lib/
 lib64/
 parts/
 sdist/

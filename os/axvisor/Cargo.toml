@@ -18,6 +18,13 @@ include = [
     "xtask/src/**",
     "README.md",
     "LICENSE*",
+    # The `web-ui` feature builds the dashboard from these sources: build.rs
+    # embeds `web-ui/dist`, which a consumer produces with the frontend
+    # toolchain. Installed dependencies and the build output are reproducible
+    # from the manifest and the lockfile, so they stay out of the package.
+    "web-ui/**",
+    "!web-ui/node_modules/**",
+    "!web-ui/dist/**",
 ]
 
 [[bin]]
@@ -74,6 +81,13 @@ browser-console = [
   "dep:serde_json",
   "dep:tokio",
 ]
+# React dashboard served from the same listener. Assets are compiled in with
+# `include_bytes!` and served from memory — cargo never invokes npm, so
+# `os/axvisor/web-ui/dist` must be produced by hand before enabling this.
+# Enabling `web-ui` alone selects the dashboard URL ownership (the console page
+# yields `/` and `/assets/*`); the UI router itself stays empty until the
+# dashboard assets land.
+web-ui = ["http-axum"]
 # Do not auto-boot the default VMs at startup; the HTTP control plane starts
 # and stops them on demand (VMs are created and stay in `Ready`).
 no-auto-start = []

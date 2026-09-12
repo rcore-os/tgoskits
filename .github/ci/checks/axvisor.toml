@@ -32,7 +32,7 @@ cases = ["smoke", "gicv2-timer-stress", "gicv3-timer-stress"]
 id = "test-axvisor-aarch64-qemu-panic-http-control-plane-ivc"
 impact_targets = ["axvisor:aarch64"]
 name = "QEMU aarch64 · Panic modes + HTTP control-plane + browser console + IVC"
-timeout_minutes = 30
+timeout_minutes = 40
 command = '''
 echo "==> axvisor aarch64 backtrace panic"
 cargo xtask axvisor test qemu --arch aarch64 --test-case backtrace-panic
@@ -47,6 +47,32 @@ echo "==> axvisor aarch64 HTTP control-plane (incl. pause/resume)"
 cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 echo "==> axvisor aarch64 browser console"
 cargo xtask axvisor test qemu --arch aarch64 --test-case browser-console
+echo "==> ensure Node.js 24 for the dashboard bundle (cargo never invokes npm)"
+if ! command -v node >/dev/null 2>&1 || [ "$(node -v | sed 's/^v//' | cut -d. -f1)" -lt 24 ]; then
+  NODE_VERSION=24.21.0
+  # Each branch pins the matching SHA-256 from the upstream SHASUMS256.txt.
+  # HTTPS authenticates the channel but not the bytes, and the tarball is
+  # executed on a self-hosted runner, so both the primary download and the
+  # mirror fallback must match this digest before anything is unpacked.
+  case "$(uname -m)" in
+    x86_64) NODE_ARCH=x64; NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 ;;
+    aarch64) NODE_ARCH=arm64; NODE_SHA256=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2 ;;
+    *) echo "unsupported architecture for the pinned Node toolchain: $(uname -m)"; exit 1 ;;
+  esac
+  NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
+  curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}" -o "/tmp/${NODE_TARBALL}" \
+    || curl -fsSL "https://registry.npmmirror.com/-/binary/node/v${NODE_VERSION}/${NODE_TARBALL}" -o "/tmp/${NODE_TARBALL}"
+  echo "${NODE_SHA256}  /tmp/${NODE_TARBALL}" | sha256sum -c -
+  mkdir -p /tmp/node-toolchain
+  tar -xf "/tmp/${NODE_TARBALL}" -C /tmp/node-toolchain --strip-components=1
+  export PATH="/tmp/node-toolchain/bin:$PATH"
+fi
+node -v
+npm -v
+echo "==> build the dashboard bundle (cargo never invokes npm)"
+(cd os/axvisor/web-ui && npm ci && npm run build)
+echo "==> axvisor aarch64 web-ui dashboard (assets + lifecycle)"
+cargo xtask axvisor test qemu --arch aarch64 --test-case web-ui
 echo "==> axvisor aarch64 IVC"
 cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
 '''
@@ -54,7 +80,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qem
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["backtrace-panic", "no-backtrace", "el2-fatal", "el2-fatal-foreign-context", "http-control-plane", "browser-console", "qemu-ivc"]
+cases = ["backtrace-panic", "no-backtrace", "el2-fatal", "el2-fatal-foreign-context", "http-control-plane", "browser-console", "web-ui", "qemu-ivc"]
 
 [[check]]
 id = "test-axvisor-riscv64-qemu-smoke-panic-modes"

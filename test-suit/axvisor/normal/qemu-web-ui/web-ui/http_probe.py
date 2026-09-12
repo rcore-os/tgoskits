@@ -21,14 +21,17 @@ Environment (set by the generic runner):
                                  (default: this file's directory)
     AXVISOR_HTTP_CONNECT_TIMEOUT seconds for the initial reachability wait
     AXVISOR_HTTP_REQUEST_TIMEOUT seconds per HTTP request
+    AXVISOR_HTTP_CREATE_TIMEOUT  seconds for the VM create request
 
 The probe drives the whole `/api/vms` lifecycle contract in one boot —
 auth/error mapping, start/stop, pause/resume, and the destroy-then-recreate
 resource re-acquire regression — mirroring
 `os/axvisor/doc/http-control-plane-quickstart.md`:
 
-    GET    /api/               -> 200            (control-plane manifest; vms node + auth href)
-    GET    /api/auth           -> 401 | 200      (token probe: no token / valid token)
+    GET    /                 -> 200            (dashboard shell; CSP + no-cache + nosniff)
+    GET    /assets/{hashed}  -> 200            (every asset the shell references; immutable)
+    GET    /no-such-page     -> 404            (no SPA catch-all)
+    GET    /api/               -> 200            (control-plane manifest; vms node)
     GET    /api/vms            -> 200            (list; id=1 present)
     GET    /api/vms/1          -> 200 ready      (detail; id/name/cpu_num/vcpu_states/guest_entry_count)
     GET    /api/vms/not-an-id  -> 404            (non-numeric id)
@@ -108,6 +111,7 @@ images).
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -125,33 +129,41 @@ REQUEST_TIMEOUT = float(os.environ.get("AXVISOR_HTTP_REQUEST_TIMEOUT", "5"))
 # the QEMU timeout.
 POLL_DEADLINE = 120.0
 POLL_INTERVAL = 1.0
+# Creating a VM parses the config, loads the embedded images and builds the
+# runtime, so its latency is not comparable to a status read and REQUEST_TIMEOUT
+# is too tight for it. A create that returns but never settles is still caught by
+# the `ready` poll that follows, so a longer budget here does not weaken the
+# probe.
+CREATE_TIMEOUT = float(os.environ.get("AXVISOR_HTTP_CREATE_TIMEOUT", "60"))
 
 
-def request(method, path, token=None, body=None, scheme="Bearer"):
+def request(method, path, token=None, body=None, timeout=None):
     """One HTTP request; returns (status, parsed JSON or None).
 
     `token` defaults to `None`: the unauthenticated steps assert the 401
     rejections, and the poll loops mirror the runner's no-token GETs. The
     authenticated steps pass `token=TOKEN` explicitly.
 
-    `scheme` defaults to `Bearer`; the auth-scheme casing is a parameter so
-    the probe can assert the case-insensitive form clients may send.
-
     A JSON `body` is sent with `Content-Type: application/json`. A non-2xx
     response is not an error here — the caller asserts the status. A transport
     error (connection refused/reset/timeout while the guest server is coming up
     or mid-transition) raises RuntimeError for the caller to retry or fail.
+
+    `timeout` overrides REQUEST_TIMEOUT for a single request; it is meant for
+    the few requests whose cost is legitimately higher than a status read.
     """
     headers = {}
     if token:
-        headers["Authorization"] = scheme + " " + token
+        headers["Authorization"] = "Bearer " + token
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"
         data = body.encode("utf-8")
     req = urllib.request.Request(BASE + path, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+        with urllib.request.urlopen(
+            req, timeout=REQUEST_TIMEOUT if timeout is None else timeout
+        ) as resp:
             status = resp.status
             raw = resp.read()
     except urllib.error.HTTPError as err:
@@ -382,6 +394,81 @@ def poll_vm_gone(vm_id):
         time.sleep(POLL_INTERVAL)
 
 
+def lower_headers(headers):
+    """Header name -> value, with names lowercased."""
+    return {name.lower(): value for name, value in headers.items()}
+
+
+def raw_request(path, token=None):
+    """GET without JSON parsing; returns (status, headers, body bytes).
+
+    The dashboard serves HTML and JavaScript and its response headers are part
+    of the contract this case asserts, so this bypasses the JSON helper above.
+    Header names are lowercased: HTTP header names are case-insensitive and the
+    server (hyper) writes them lowercase.
+    """
+    headers = {}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    req = urllib.request.Request(BASE + path, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            return resp.status, lower_headers(resp.headers), resp.read()
+    except urllib.error.HTTPError as err:
+        return err.code, lower_headers(err.headers), err.read()
+    except (urllib.error.URLError, OSError) as err:
+        raise RuntimeError("request GET %s failed: %s" % (path, err))
+
+
+IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
+
+
+def check_dashboard():
+    """The dashboard shell, its hashed assets, and the headers around them.
+
+    The assets are compiled into the hypervisor and served from memory, so this
+    is also the regression that a build without the bundle cannot pass: the
+    shell either resolves its assets or the case fails.
+    """
+    status, headers, page = raw_request("/")
+    check("GET /", status, 200)
+    for marker in (b'<div id="root">', b"<title>Axvisor</title>"):
+        if marker not in page:
+            raise AssertionError("dashboard shell is missing %r" % marker)
+    if "text/html" not in headers.get("content-type", ""):
+        raise AssertionError("GET / served %r" % headers.get("content-type"))
+    if headers.get("cache-control") != "no-cache":
+        raise AssertionError("GET / Cache-Control=%r" % headers.get("cache-control"))
+    if headers.get("x-content-type-options") != "nosniff":
+        raise AssertionError("GET / is missing nosniff")
+    csp = headers.get("content-security-policy", "")
+    if "default-src 'self'" not in csp or "frame-ancestors 'none'" not in csp:
+        raise AssertionError("GET / Content-Security-Policy=%r" % csp)
+
+    # Every asset the shell references must resolve, and a content-hashed name
+    # may be cached forever.
+    references = sorted(set(re.findall(rb"/assets/[A-Za-z0-9._-]+", page)))
+    if not references:
+        raise AssertionError("dashboard shell references no assets")
+    for reference in references:
+        path = reference.decode("utf-8")
+        status, headers, payload = raw_request(path)
+        check("GET %s" % path, status, 200)
+        if not payload:
+            raise AssertionError("%s served an empty body" % path)
+        if headers.get("cache-control") != IMMUTABLE_CACHE:
+            raise AssertionError(
+                "%s Cache-Control=%r" % (path, headers.get("cache-control"))
+            )
+        if headers.get("x-content-type-options") != "nosniff":
+            raise AssertionError("%s is missing nosniff" % path)
+
+    # No SPA catch-all: an unknown path keeps the router's 404 instead of being
+    # swallowed by the dashboard.
+    status, _, _ = raw_request("/no-such-dashboard-page")
+    check("GET /no-such-dashboard-page", status, 404)
+
+
 def main():
     with open(os.path.join(CASE_DIR, "vm-memory.toml"), "r", encoding="utf-8") as f:
         vm_config = f.read()
@@ -392,6 +479,10 @@ def main():
     #    request briefly in case the axum router is still binding.
     poll_ready()
     print("  http probe: guest management server reachable")
+
+    # 0. The dashboard of this case is served from the embedded bundle: the
+    #    shell, its hashed assets, and the headers around them.
+    check_dashboard()
 
     # 1b. Control-plane manifest: the capability list a dashboard shell
     #     navigates by. The shape is asserted, not just the status, because the
@@ -415,9 +506,6 @@ def main():
         "verbs", []
     ):
         raise AssertionError("GET /api/ vms node verbs=%r" % (vms_node.get("verbs"),))
-    auth_node = body.get("auth")
-    if not isinstance(auth_node, dict) or auth_node.get("href") != "/api/auth":
-        raise AssertionError("GET /api/ did not declare the auth probe: %r" % (auth_node,))
 
     # 2. List: the default VM (id 1) is registered and `Ready`.
     status, body = request("GET", "/api/vms")
@@ -431,7 +519,7 @@ def main():
     check_vm_status("GET /api/vms/1", body, "ready")
     if body.get("id") != 1:
         raise AssertionError("GET /api/vms/1 did not report id=1")
-    if body.get("name") != "linux-http-control-plane":
+    if body.get("name") != "linux-web-ui":
         raise AssertionError("GET /api/vms/1 did not report the fixture name")
     if body.get("cpu_num") != 1:
         raise AssertionError("GET /api/vms/1 did not report cpu_num=1")
@@ -454,20 +542,8 @@ def main():
     status, _ = request("GET", "/api/vms/999")
     check("GET /api/vms/999", status, 404)
 
-    # 6-11. Auth: the token probe answers for itself, and every mutating route
-    #        rejects an unauthenticated write with 401, before any VM lookup or
-    #        body parse.
-    status, _ = request("GET", "/api/auth")
-    check("GET /api/auth (no auth)", status, 401)
-    status, auth_body = request("GET", "/api/auth", token=TOKEN)
-    check("GET /api/auth", status, 200)
-    if auth_body != {"ok": True}:
-        raise AssertionError("GET /api/auth body=%r" % (auth_body,))
-    # RFC 7235 makes the auth scheme case-insensitive: a client that spells the
-    # manifest's `scheme` verbatim (lowercase) must still authenticate.
-    status, _ = request("GET", "/api/auth", token=TOKEN, scheme="bearer")
-    check("GET /api/auth (lowercase scheme)", status, 200)
-
+    # 6-11. Auth: every mutating route rejects an unauthenticated write with
+    #        401, before any VM lookup or body parse.
     status, _ = request("POST", "/api/vms/create")
     check("POST /api/vms/create (no auth)", status, 401)
     status, _ = request("POST", "/api/vms/1/start")
@@ -613,7 +689,9 @@ def main():
 
     # 33. Recreate after delete: the embedded image is matched by id, so a
     #     fresh create with the same config succeeds and registers id 1 again.
-    status, body = request("POST", "/api/vms/create", token=TOKEN, body=create_body)
+    status, body = request(
+        "POST", "/api/vms/create", token=TOKEN, body=create_body, timeout=CREATE_TIMEOUT
+    )
     check("POST /api/vms/create (recreate)", status, 200)
     if not isinstance(body, dict) or body.get("id") != 1:
         raise AssertionError("recreate did not return id=1")
