@@ -258,9 +258,9 @@ fn perf_event_open_hw_per_task(
         }
     };
 
-    // Logical flexible events own no slot yet; fixed fallbacks must release
-    // their reservation if the overflow IRQ cannot be installed.
-    // Inherited copies are flexible even when this root owns the cycle counter.
+    // Logical flexible events own no slot yet. Inherited copies are flexible
+    // even when the root owns the native cycle counter; release that fixed
+    // reservation if inheritance requires an unavailable overflow IRQ.
     if (counter.programmable_index().is_some() || attr.inherit() != 0)
         && sampling::ensure_pmu_irq_registered().is_err()
     {

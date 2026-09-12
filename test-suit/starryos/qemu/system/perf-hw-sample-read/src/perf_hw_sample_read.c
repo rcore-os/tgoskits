@@ -61,13 +61,8 @@ static void ring_copy(const uint8_t *ring, uint64_t size, uint64_t at,
         ((uint8_t *)dst)[i] = ring[(at + i) % size];
     }
 }
-#endif
 
 static int check_sample_read(int system) {
-#if !defined(__aarch64__)
-    puts("STARRY_PERF_SAMPLE_READ_OK");
-    return 0;
-#else
     struct perf_event_attr_v0 attr = {
         .type = PERF_TYPE_RAW,
         .size = sizeof(attr),
@@ -141,11 +136,15 @@ static int check_sample_read(int system) {
         return 1;
     }
     return 0;
-#endif
 }
+#endif
 
 int main(void) {
+#if defined(__aarch64__)
     if (check_sample_read(0) || check_sample_read(1)) return 1;
+#else
+    puts("SKIP: AArch64 PMU sample reads");
+#endif
     puts("STARRY_PERF_SAMPLE_READ_OK");
     return 0;
 }
