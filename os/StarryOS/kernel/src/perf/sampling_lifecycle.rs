@@ -326,11 +326,11 @@ mod tests {
     fn cancelled_arm_returns_to_the_detached_state() {
         let cpu = PerfCpuId::new(0);
         let mut state = PmuRunState::new();
-        let arm = state.begin_arm(cpu, TEST_COUNTER).unwrap();
+        let arm = state.begin_arm(cpu, Counter::Cycle).unwrap();
 
         state.cancel_arm(arm);
 
-        assert!(state.begin_arm(cpu, TEST_COUNTER).is_some());
+        assert!(state.begin_arm(cpu, Counter::Cycle).is_some());
     }
 
     #[test]

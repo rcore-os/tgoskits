@@ -1,6 +1,6 @@
 # StarryOS AArch64 Linux perf 设计
 
-本文定义 StarryOS 在 AArch64 上兼容 Linux `perf_event_open(2)` 与 upstream `perf` 的实现边界。Linux 语义基线为 v7.1，当前整合的 TGOSKits `dev` 提交为 `3651c52aa775c062018021e1dae2066dac0302eb`。来源实现为 JosephJoshua 的 PR #1577、#1601、#1602、#1603 及其间的调用链提交。来源分支只提供行为与测试参考，不直接合并；实现遵循当前 CPU-local、IRQ、timer、PID、地址空间和锁模型。
+本文定义 StarryOS 在 AArch64 上兼容 Linux `perf_event_open(2)` 与 upstream `perf` 的实现边界。Linux 语义基线为 v7.1，当前整合的 TGOSKits `dev` 提交为 `3b769254b0fb3fb49215f4141cd909fae8ce4ef9`。来源实现为 JosephJoshua 的 PR #1577、#1601、#1602、#1603 及其间的调用链提交。来源分支只提供行为与测试参考，不直接合并；实现遵循当前 CPU-local、IRQ、timer、PID、地址空间和锁模型。
 
 ## 1. 兼容范围
 
