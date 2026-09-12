@@ -20,7 +20,7 @@ keywords = [
 license = "Apache-2.0"
 name = "buddy-slab-allocator"
 repository = "https://github.com/arceos-hypervisor/buddy-slab-allocator"
-version = "0.6.0"
+version = "0.6.1"
 
 [[bench]]
 harness = false

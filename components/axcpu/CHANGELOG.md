@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.9.1...ax-cpu-v0.10.0) - 2026-09-11
+
+### Fixed
+
+- *(axvm)* prepare host GIC before CPU enable and centralize fatal traps ([#2356](https://github.com/rcore-os/tgoskits/pull/2356))
+
+### Other
+
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+- *(ax-cpu)* [**breaking**] centralize CPU mechanisms and architecture backends ([#2363](https://github.com/rcore-os/tgoskits/pull/2363))
+
 ## [0.9.1](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.9.0...ax-cpu-v0.9.1) - 2026-09-09
 
 ### Fixed

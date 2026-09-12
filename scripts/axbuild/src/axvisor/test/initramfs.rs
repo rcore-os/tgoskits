@@ -29,6 +29,9 @@ const X86_PCI_MEMORY_APERTURE_END: &str = "0xd0000000";
 const INIT_SCRIPT_TEMPLATE: &str = r#"#!/bin/busybox sh
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 /bin/busybox mount -t proc proc /proc 2>/dev/null || true
+# Keep informational printk output in dmesg rather than the assertion stream.
+# Warnings and errors remain visible, and panic restores verbose console output.
+echo 5 > /proc/sys/kernel/printk || exit 1
 /bin/busybox mount -t sysfs sysfs /sys 2>/dev/null || true
 export HOME=/root
 export PATH=/bin

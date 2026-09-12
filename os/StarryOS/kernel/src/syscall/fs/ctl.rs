@@ -565,6 +565,13 @@ pub fn sys_linkat(
     if old.is_dir() {
         return Err(StarryError::OperationNotPermitted);
     }
+    // An absolute destination path is rooted at the process filesystem and
+    // ignores new_dirfd, including an invalid or non-directory descriptor.
+    let new_dirfd = if new_path.starts_with('/') {
+        AT_FDCWD
+    } else {
+        new_dirfd
+    };
     let (new_dir, new_name) = with_fs(new_dirfd, |fs| {
         Ok(fs.resolve_nonexistent(Path::new(&new_path))?)
     })?;

@@ -59,6 +59,7 @@ fn idle_cpu_reservation_round_trip() {
     current::set_current_thread_affinity(coordinator).unwrap();
     let mut target = CpuSet::empty(ax_hal::cpu_num());
     target.insert(CpuId::new(1));
+    offline_waits_for_owner_publication();
     for activate in [false, true] {
         let prepared = ax_runtime::thread::builder("hotplug-reservation".into())
             .affinity(target.clone())
@@ -82,7 +83,8 @@ fn idle_cpu_reservation_round_trip() {
         request_idle_cpu_round_trip(1).unwrap();
         assert!(
             wait_for_idle_cycle(),
-            "released reservation must permit idle CPU cycle"
+            "released reservation must permit idle CPU cycle: {:?}",
+            ax_task::runtime::cpu::idle_offline_rejection()
         );
         let resumed = ax_runtime::thread::builder("after-reonline".into())
             .affinity(target.clone())
@@ -120,7 +122,7 @@ fn idle_cpu_reservation_round_trip() {
 
 fn offline_does_not_lock_global_mm() {
     use ax_runtime::thread::creation_probe::{
-        request_idle_cpu_round_trip, take_idle_cpu_round_trip_result,
+        request_idle_cpu_round_trip_after_work, take_idle_cpu_round_trip_result,
     };
     use ax_std::os::arceos::task::sched::{CpuId, CpuSet};
     let held = Arc::new(AtomicBool::new(false));
@@ -140,7 +142,7 @@ fn offline_does_not_lock_global_mm() {
         })
         .unwrap();
     wait_for(|| held.load(Ordering::Acquire));
-    request_idle_cpu_round_trip(1).unwrap();
+    request_idle_cpu_round_trip_after_work(1).unwrap();
     let started = std::time::Instant::now();
     let mut result = None;
     while result.is_none() && started.elapsed() < Duration::from_secs(2) {
@@ -158,6 +160,44 @@ fn offline_does_not_lock_global_mm() {
     assert_eq!(
         result,
         Some(true),
-        "CPU offline must not acquire the global kernel MM lock"
+        "CPU offline must drain owner work while the global kernel MM lock is held: {:?}",
+        ax_task::runtime::cpu::idle_offline_rejection()
     );
+}
+
+fn offline_waits_for_owner_publication() {
+    use ax_runtime::thread::creation_probe::{
+        request_idle_cpu_round_trip, take_idle_cpu_round_trip_result,
+    };
+    use ax_task::runtime::cpu::{
+        IdleOfflineReader, IdleOfflineRejection, RuntimeCpuId, idle_offline_rejection,
+        with_idle_offline_reader,
+    };
+
+    // CPU 0 retains the real publication guard until CPU 1 has attempted
+    // admission. No command is republished and no offline result is retried.
+    for reader in [
+        IdleOfflineReader::OwnerDelivery,
+        IdleOfflineReader::IdleBalance,
+    ] {
+        with_idle_offline_reader(RuntimeCpuId::new(1), reader, |remote| {
+            request_idle_cpu_round_trip(1).unwrap();
+            wait_for(|| !matches!(idle_offline_rejection(), IdleOfflineRejection::Unclassified));
+            assert_eq!(
+                remote.lifecycle_state(),
+                ax_task::runtime::cpu::CpuLifecycleState::Inactive,
+                "new placement must be closed while the existing publisher is retained"
+            );
+            assert_eq!(
+                take_idle_cpu_round_trip_result(),
+                None,
+                "an in-flight owner publication must not complete the offline request"
+            );
+        })
+        .unwrap();
+        assert!(
+            wait_for_idle_cycle(),
+            "offline must complete after the publisher releases its lease"
+        );
+    }
 }

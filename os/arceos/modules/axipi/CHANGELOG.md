@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.6.0...ax-ipi-v0.6.1) - 2026-09-11
+
+### Other
+
+- updated the following local packages: ax-hal
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.31...ax-ipi-v0.6.0) - 2026-09-09
 
 ### Other

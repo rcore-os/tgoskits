@@ -153,6 +153,12 @@ pub fn sys_writev(
         file_like.validate_write_len(len)
     })?;
     memfd_checks_before_stream_write(&file_like, source.byte_len() as u64)?;
+    if let Some(pipe) = file_like.downcast_ref::<Pipe>() {
+        // Pipe writes account for committed chunks before reporting copy faults.
+        // Let available capacity bound user-memory access, including fault-in.
+        return pipe.write(&mut source.into_io()).map(|n| n as _);
+    }
+    // Other backends still require a stable payload before publishing state.
     let data = copy_user_iov_read_buf(source)?;
     file_like.write(&mut data.as_slice()).map(|n| n as _)
 }

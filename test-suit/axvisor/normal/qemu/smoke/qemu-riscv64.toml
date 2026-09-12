@@ -18,17 +18,44 @@ args = [
   "4G",
 ]
 fail_regex = [
+  "(?m)^VIRTIO_BLK_MOUNT_FAIL:",
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",
   "(?i)login incorrect",
   "(?i)permission denied",
   "(?m)^(?:echo|cat|rm):\\s",
 ]
-shell_check_steps = [{ shell_prefix = "axvisor:/$", shell_cmd = '''
+timeout = 300
+to_bin = true
+uefi = false
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = '''
 echo AXVISOR_NVME_RW_PAYLOAD > /tmp/axvisor-nvme-rw
 cat /tmp/axvisor-nvme-rw
 rm -f /tmp/axvisor-nvme-rw
 echo AXVISOR_NVME_ROOTFS_RW_PASSED
-''', success_regex = ['(?m)^AXVISOR_NVME_RW_PAYLOAD\s*$', '(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\s*$'] }]
-to_bin = true
-uefi = false
+'''
+success_regex = ['(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\s*$']
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = ['(?m)^test pass!\s*$']
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "mkdir -p /mnt/v"
+
+[[shell_check_steps]]
+shell_cmd = "mount -t ext4 -o ro /dev/vda /mnt/v"
+success_regex = ['EXT4-fs \(vda\): mounted filesystem .* ro ']
+fail_regex = ['mount:']
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "cat /mnt/v/etc/alpine-release"
+success_regex = ['(?m)^3\.23\.5\s*$']
+fail_regex = ['cat:']
+timeout = 60

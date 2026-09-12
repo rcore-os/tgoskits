@@ -8,7 +8,7 @@ use core::{
 
 use ax_sync::SpinLock;
 use buddy_slab_allocator::{
-    GlobalAllocator as InnerAllocator, SizeClass, SlabAllocResult, SlabAllocator,
+    GlobalAllocator as InnerAllocator, RemoteFreeHint, SizeClass, SlabAllocResult, SlabAllocator,
     SlabDeallocResult, SlabPoolTrait, SlabTrait, interface::BuddySlabIf,
 };
 
@@ -34,6 +34,7 @@ static SLAB_POOL: SlabPool = SlabPool;
 struct PercpuSlab<const PAGE_SIZE: usize = 0x1000> {
     cpu_id: Option<u16>,
     inner: SpinLock<SlabAllocator<PAGE_SIZE>>,
+    remote_hint: RemoteFreeHint,
 }
 
 impl<const PAGE_SIZE: usize> PercpuSlab<PAGE_SIZE> {
@@ -41,6 +42,7 @@ impl<const PAGE_SIZE: usize> PercpuSlab<PAGE_SIZE> {
         Self {
             cpu_id: None,
             inner: SpinLock::new(SlabAllocator::new()),
+            remote_hint: RemoteFreeHint::new(),
         }
     }
 
@@ -52,6 +54,7 @@ impl<const PAGE_SIZE: usize> PercpuSlab<PAGE_SIZE> {
         );
         self.cpu_id = Some(cpu_id);
         *self.inner.get_mut() = SlabAllocator::new();
+        self.remote_hint.clear();
     }
 
     fn cpu_id_checked(&self) -> u16 {
@@ -70,7 +73,9 @@ impl<const PAGE_SIZE: usize> SlabTrait for PercpuSlab<PAGE_SIZE> {
     }
 
     fn alloc(&self, layout: Layout) -> buddy_slab_allocator::AllocResult<SlabAllocResult> {
-        self.inner.lock_irqsave().alloc(layout)
+        self.inner
+            .lock_irqsave()
+            .alloc_hinted(layout, Some(&self.remote_hint))
     }
 
     fn add_slab(&self, size_class: SizeClass, base: usize, bytes: usize) {
@@ -81,6 +86,10 @@ impl<const PAGE_SIZE: usize> SlabTrait for PercpuSlab<PAGE_SIZE> {
 
     fn dealloc_local(&self, ptr: NonNull<u8>, layout: Layout) -> SlabDeallocResult {
         self.inner.lock_irqsave().dealloc(ptr, layout)
+    }
+
+    fn remote_free_hint(&self) -> Option<&RemoteFreeHint> {
+        Some(&self.remote_hint)
     }
 }
 

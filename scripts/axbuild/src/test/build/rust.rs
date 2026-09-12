@@ -90,10 +90,9 @@ pub(crate) fn prepare_rust_case_overlay_sync(
     (config.prepare_staging_root)(&layout.staging_root)?;
     write_musl_loader_search_path(arch, &layout.staging_root)?;
 
-    // Build a qemu-user wrapper for the cross-linker from the Alpine sysroot.
+    // Resolve the cross-linker through the shared binutils wrapper pipeline.
     let spec = cross_compile_spec(arch)?;
-    let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
-    write_cross_bin_wrappers(layout, spec, &qemu_runner)?;
+    write_cross_bin_wrappers(layout, spec)?;
 
     // Run prebuild.sh if present — runs inside the Alpine staging root via
     // qemu-user, same as C cases.  Use this to install native deps (e.g.

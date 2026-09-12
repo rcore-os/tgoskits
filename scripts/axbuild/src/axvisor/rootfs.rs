@@ -31,6 +31,7 @@ struct VmRootfsProbe {
 #[derive(Deserialize)]
 struct VmKernelRootfsProbe {
     kernel_path: Option<String>,
+    ramdisk_path: Option<String>,
 }
 
 pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow::Result<()> {
@@ -190,42 +191,47 @@ fn guest_image_references(
         let probe: VmRootfsProbe = toml::from_str(&content).map_err(|error| {
             anyhow!("failed to parse vm config {}: {error}", vmconfig.display())
         })?;
-        let Some(kernel_path) = probe.kernel.and_then(|kernel| kernel.kernel_path) else {
+        let Some(kernel) = probe.kernel else {
             continue;
         };
-        let required_path = resolve_vm_asset_path(vmconfig, workspace_root, &kernel_path);
-        let Ok(relative) = required_path.strip_prefix(&image_dir) else {
-            continue;
-        };
-        let components = relative.components().collect::<Vec<_>>();
-        if components.is_empty()
-            || components
-                .iter()
-                .any(|component| !matches!(component, Component::Normal(_)))
+        for kernel_path in [kernel.kernel_path, kernel.ramdisk_path]
+            .into_iter()
+            .flatten()
         {
-            bail!(
-                "invalid managed Axvisor guest image path `{}` in {}",
-                kernel_path,
-                vmconfig.display()
-            );
-        }
-        let image_name = components[0]
-            .as_os_str()
-            .to_str()
-            .ok_or_else(|| {
-                anyhow!(
-                    "Axvisor guest image name in {} is not valid UTF-8",
+            let required_path = resolve_vm_asset_path(vmconfig, workspace_root, &kernel_path);
+            let Ok(relative) = required_path.strip_prefix(&image_dir) else {
+                continue;
+            };
+            let components = relative.components().collect::<Vec<_>>();
+            if components.is_empty()
+                || components
+                    .iter()
+                    .any(|component| !matches!(component, Component::Normal(_)))
+            {
+                bail!(
+                    "invalid managed Axvisor guest image path `{}` in {}",
+                    kernel_path,
                     vmconfig.display()
-                )
-            })?
-            .to_string();
-        references
-            .entry(image_name)
-            .or_default()
-            .push(GuestImageReference {
-                vmconfig: vmconfig.clone(),
-                required_path,
-            });
+                );
+            }
+            let image_name = components[0]
+                .as_os_str()
+                .to_str()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Axvisor guest image name in {} is not valid UTF-8",
+                        vmconfig.display()
+                    )
+                })?
+                .to_string();
+            references
+                .entry(image_name)
+                .or_default()
+                .push(GuestImageReference {
+                    vmconfig: vmconfig.clone(),
+                    required_path,
+                });
+        }
     }
     Ok(references)
 }

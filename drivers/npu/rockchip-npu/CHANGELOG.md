@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.4.0...rockchip-npu-v0.5.0) - 2026-09-11
+
+### Fixed
+
+- *(rknpu)* add timeout error handling and update ioctl error mapping ([#2324](https://github.com/rcore-os/tgoskits/pull/2324))
+
+### Other
+
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+
 ## [0.4.0](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.3.0...rockchip-npu-v0.4.0) - 2026-09-09
 
 ### Other

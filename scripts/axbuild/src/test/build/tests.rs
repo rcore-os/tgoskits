@@ -212,44 +212,6 @@ fn grouped_c_subcases_reject_missing_direct_usr_bin_commands() {
 }
 
 #[test]
-fn write_cross_bin_wrappers_generates_prefixed_and_plain_tools() {
-    let root = tempdir().unwrap();
-    let layout =
-        case_assets::case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb")
-            .unwrap();
-    fs::create_dir_all(
-        layout
-            .staging_root
-            .join("usr/aarch64-alpine-linux-musl/bin"),
-    )
-    .unwrap();
-    for tool in [
-        "ld", "as", "ar", "ranlib", "strip", "nm", "objcopy", "objdump", "readelf",
-    ] {
-        let path = layout
-            .staging_root
-            .join("usr/aarch64-alpine-linux-musl/bin")
-            .join(tool);
-        fs::write(path, b"").unwrap();
-    }
-
-    write_cross_bin_wrappers(
-        &layout,
-        cross_compile_spec("aarch64").unwrap(),
-        Path::new("/usr/bin/qemu-aarch64-static"),
-    )
-    .unwrap();
-
-    let plain = fs::read_to_string(layout.cross_bin_dir.join("ld")).unwrap();
-    let prefixed = fs::read_to_string(layout.cross_bin_dir.join("aarch64-linux-musl-ld")).unwrap();
-    assert!(plain.contains("qemu-aarch64-static"));
-    assert!(plain.contains("LD_LIBRARY_PATH"));
-    assert!(plain.contains("usr/aarch64-alpine-linux-musl/bin/ld"));
-    assert!(prefixed.contains("usr/aarch64-alpine-linux-musl/bin/ld"));
-    assert!(prefixed.contains("-0"));
-}
-
-#[test]
 fn write_cmake_toolchain_file_contains_clang_cross_settings() {
     let root = tempdir().unwrap();
     let layout =

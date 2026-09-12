@@ -4,34 +4,66 @@ pub(crate) fn cross_compile_spec(arch: &str) -> anyhow::Result<CrossCompileSpec>
     crate::context::cross_compile_spec_for_arch_checked(arch)
 }
 
+/// Shares provider selection between wrapper generation and asset caching.
+pub(crate) fn find_cross_tool_qemu(
+    spec: CrossCompileSpec,
+    mut find: impl FnMut(&str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    spec.qemu_user_binaries.iter().find_map(|name| find(name))
+}
+
+/// Generates the same cross-tool names for emulated and host-native binutils.
 pub(crate) fn write_cross_bin_wrappers(
     layout: &case_assets::CaseAssetLayout,
     spec: CrossCompileSpec,
-    qemu_runner: &Path,
 ) -> anyhow::Result<()> {
+    write_cross_bin_wrappers_with_lookup(
+        layout,
+        spec,
+        crate::support::process::find_optional_host_binary,
+    )
+}
+
+fn write_cross_bin_wrappers_with_lookup(
+    layout: &case_assets::CaseAssetLayout,
+    spec: CrossCompileSpec,
+    mut find: impl FnMut(&str) -> Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let qemu_runner = find_cross_tool_qemu(spec, &mut find);
     fs::create_dir_all(&layout.cross_bin_dir)
         .with_context(|| format!("failed to create {}", layout.cross_bin_dir.display()))?;
     for tool in CROSS_BINUTILS {
+        let prefixed = format!("{}-{tool}", spec.gnu_tool_prefix);
         let guest_relative_path = format!("{}/{tool}", spec.guest_tool_dir);
-        ensure_guest_tool_exists(&layout.staging_root, &guest_relative_path)?;
-        write_guest_exec_wrapper(
-            &layout.cross_bin_dir.join(tool),
-            qemu_runner,
-            &layout.staging_root,
-            &guest_relative_path,
-            None,
-        )?;
-        write_guest_exec_wrapper(
-            &layout
-                .cross_bin_dir
-                .join(format!("{}-{tool}", spec.gnu_tool_prefix)),
-            qemu_runner,
-            &layout.staging_root,
-            &guest_relative_path,
-            None,
-        )?;
+        let tool_path = if qemu_runner.is_some() {
+            ensure_guest_tool_exists(&layout.staging_root, &guest_relative_path)?;
+            layout.staging_root.join(&guest_relative_path)
+        } else {
+            find(&prefixed).with_context(|| {
+                format!(
+                    "no qemu-user ({}); required native cross tool `{prefixed}` was not found; \
+                     install qemu-user or the {} cross binutils",
+                    spec.qemu_user_binaries.join(", "),
+                    spec.gnu_tool_prefix,
+                )
+            })?
+        };
+        for name in [*tool, prefixed.as_str()] {
+            let path = layout.cross_bin_dir.join(name);
+            if let Some(qemu_runner) = &qemu_runner {
+                write_guest_exec_wrapper(
+                    &path,
+                    qemu_runner,
+                    &layout.staging_root,
+                    &guest_relative_path,
+                    None,
+                )?;
+            } else {
+                let body = format!("exec {} \"$@\"\n", wrappers::shell_single_quote(&tool_path));
+                wrappers::write_wrapper_script(&path, &body)?;
+            }
+        }
     }
-
     Ok(())
 }
 
@@ -160,4 +192,82 @@ pub(super) fn parse_gcc_runtime_version(dir_name: &str) -> Option<Vec<u64>> {
         version.push(digits.parse().ok()?);
     }
     Some(version)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cross_wrappers_select_tools_and_preserve_process_contract() {
+        let root = tempfile::tempdir().unwrap();
+        let layout = case_assets::case_asset_layout(
+            root.path(),
+            "aarch64-unknown-none-softfloat",
+            "cross tools' case",
+        )
+        .unwrap();
+        let spec = cross_compile_spec("aarch64").unwrap();
+        let host_tool = root.path().join("host tool's executable");
+        wrappers::write_wrapper_script(&host_tool, "printf '%s\\n' \"$@\"\nexit 7\n").unwrap();
+
+        // Native tools must not require guest binutils to be installed.
+        write_cross_bin_wrappers_with_lookup(&layout, spec, |name| {
+            name.starts_with(spec.gnu_tool_prefix)
+                .then(|| host_tool.clone())
+        })
+        .unwrap();
+        for name in ["ld", "aarch64-linux-musl-ld"] {
+            let output = Command::new(layout.cross_bin_dir.join(name))
+                .args(["space separated", "quote'argument", ""])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(7));
+            assert_eq!(output.stdout, b"space separated\nquote'argument\n\n");
+        }
+        let error = write_cross_bin_wrappers_with_lookup(&layout, spec, |_| None).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("required native cross tool `aarch64-linux-musl-ld`")
+        );
+
+        for tool in CROSS_BINUTILS {
+            let path = layout.staging_root.join(spec.guest_tool_dir).join(tool);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"").unwrap();
+        }
+        // With both providers available, only qemu is selected. Record its
+        // actual argv and environment, without depending on a host installation.
+        wrappers::write_wrapper_script(
+            &host_tool,
+            "printf '%s\\n' \"$QEMU_LD_PREFIX\" \"$LD_LIBRARY_PATH\" \"$@\"\nexit 7\n",
+        )
+        .unwrap();
+        write_cross_bin_wrappers_with_lookup(&layout, spec, |_| Some(host_tool.clone())).unwrap();
+        let guest_ld = layout.staging_root.join(spec.guest_tool_dir).join("ld");
+        for name in ["ld", "aarch64-linux-musl-ld"] {
+            let output = Command::new(layout.cross_bin_dir.join(name))
+                .arg("guest argument")
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(7));
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!(
+                    "{}\n{}\n-0\n{}\n-L\n{}\n{}\nguest argument\n",
+                    layout.staging_root.display(),
+                    guest_library_path(&layout.staging_root),
+                    guest_ld.display(),
+                    layout.staging_root.display(),
+                    guest_ld.display(),
+                )
+            );
+        }
+        fs::remove_file(guest_ld).unwrap();
+        let error =
+            write_cross_bin_wrappers_with_lookup(&layout, spec, |_| Some(host_tool.clone()))
+                .unwrap_err();
+        assert!(error.to_string().contains("missing required guest tool"));
+    }
 }

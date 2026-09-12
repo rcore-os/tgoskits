@@ -122,6 +122,9 @@ pub struct SlabCache {
     empty: ListHead,
     /// Number of empty slabs cached (we keep at most 1).
     empty_count: usize,
+    /// Full-list nodes walked while looking for remote frees.
+    #[cfg(feature = "host-test")]
+    full_walk_steps: usize,
 }
 
 /// Result of a per-cache deallocation.
@@ -140,19 +143,36 @@ impl SlabCache {
             full: ListHead::empty(SlabListState::Full),
             empty: ListHead::empty(SlabListState::Empty),
             empty_count: 0,
+            #[cfg(feature = "host-test")]
+            full_walk_steps: 0,
         }
+    }
+
+    /// Full-list nodes this cache has walked looking for remote frees.
+    #[cfg(feature = "host-test")]
+    pub fn full_walk_steps(&self) -> usize {
+        self.full_walk_steps
     }
 
     /// Try to allocate one object.  Returns `Some(obj_addr)` or `None` if no slabs available.
     pub fn alloc_object<const PAGE_SIZE: usize>(&mut self) -> Option<usize> {
+        self.alloc_object_hinted::<PAGE_SIZE>(|| true)
+    }
+
+    /// Like [`Self::alloc_object`], walking the full list only if `remote_pending`
+    /// reports a cross-CPU free. It is asked only once the partial slab is spent,
+    /// because asking consumes the announcement.
+    pub(crate) fn alloc_object_hinted<const PAGE_SIZE: usize>(
+        &mut self,
+        remote_pending: impl FnOnce() -> bool,
+    ) -> Option<usize> {
         // 1. Try the first partial slab (drain remote frees first).
         if let Some(addr) = self.try_alloc_from_partial::<PAGE_SIZE>() {
             return Some(addr);
         }
 
         // 2. A full slab may have gained free objects via lock-free remote frees.
-        if let Some(base) = self.reclaim_full_with_remote_frees() {
-            unsafe { self.partial.push_front(base) };
+        if remote_pending() && self.reclaim_full_with_remote_frees() {
             return self.try_alloc_from_partial::<PAGE_SIZE>();
         }
 
@@ -168,21 +188,29 @@ impl SlabCache {
         None
     }
 
-    /// Drain remote frees from the first full slab that has them and move it
-    /// back to the partial list.
-    fn reclaim_full_with_remote_frees(&mut self) -> Option<usize> {
+    /// Drain remote frees from every full slab that has them and move those
+    /// slabs back to the partial list. One announcement can cover several slabs.
+    fn reclaim_full_with_remote_frees(&mut self) -> bool {
+        let mut reclaimed = false;
         let mut base = self.full.first;
         while base != 0 {
+            #[cfg(feature = "host-test")]
+            {
+                self.full_walk_steps += 1;
+            }
             let next = unsafe { (*(base as *const SlabPageHeader)).list_next };
             let hdr = unsafe { &mut *(base as *mut SlabPageHeader) };
             if hdr.has_remote_frees() {
                 hdr.drain_remote_frees(base);
-                unsafe { self.full.remove(base) };
-                return Some(base);
+                unsafe {
+                    self.full.remove(base);
+                    self.partial.push_front(base);
+                }
+                reclaimed = true;
             }
             base = next;
         }
-        None
+        reclaimed
     }
 
     /// Attempt allocation from the first partial slab.

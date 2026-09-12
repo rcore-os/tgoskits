@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.9.1...axplat-dyn-v0.10.0) - 2026-09-11
+
+### Other
+
+- *(ax-cpu)* [**breaking**] centralize CPU mechanisms and architecture backends ([#2363](https://github.com/rcore-os/tgoskits/pull/2363))
+
 ## [0.9.1](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.9.0...axplat-dyn-v0.9.1) - 2026-09-09
 
 ### Fixed

@@ -48,3 +48,5 @@ futex_wait03 1
 # LTP 20260529 source-derived lock testcase completion counts.
 getcwd01 5
 getcwd02 3
+# linkat01.c: twenty-two basic path, descriptor, flag and error cases.
+linkat01 22

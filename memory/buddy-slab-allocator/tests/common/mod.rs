@@ -1,17 +1,71 @@
 #![allow(dead_code)]
 
-use core::ptr::NonNull;
+use core::{
+    panic::Location,
+    ptr::NonNull,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use std::{
     alloc::{Layout, alloc, dealloc},
     cell::Cell,
     sync::{Mutex, MutexGuard, OnceLock},
 };
 
+use ax_sync::interface::{AcquireResult, ContextState, LockMetadata};
 use buddy_slab_allocator::{
     __reset_global_allocator_singleton_for_tests, GlobalAllocator, PerCpuSlab, SlabPoolTrait,
     interface::BuddySlabIf,
 };
 use rand::{SeedableRng, rngs::StdRng};
+
+/// Spin-lock backend for host test binaries; the kernel runtime links the real one.
+struct HostSpinOps;
+
+#[ax_crate_interface::impl_interface]
+impl ax_sync::interface::SpinOps for HostSpinOps {
+    fn acquire(
+        locked: &AtomicBool,
+        _metadata: &LockMetadata,
+        _lock_addr: usize,
+        _context: u8,
+        _subclass: u32,
+        _caller: &'static Location<'static>,
+    ) -> ContextState {
+        while locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        ContextState::new(0, 0)
+    }
+
+    fn try_acquire(
+        locked: &AtomicBool,
+        _metadata: &LockMetadata,
+        _lock_addr: usize,
+        _context: u8,
+        _subclass: u32,
+        _caller: &'static Location<'static>,
+    ) -> AcquireResult {
+        let acquired = locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok();
+        AcquireResult::new(acquired, ContextState::new(0, 0))
+    }
+
+    fn release(locked: &AtomicBool, _lock_addr: usize, _context: u8, _state: ContextState) {
+        locked.store(false, Ordering::Release);
+    }
+
+    fn force_release(locked: &AtomicBool, _lock_addr: usize, _context: u8) {
+        locked.store(false, Ordering::Release);
+    }
+
+    fn is_locked(locked: &AtomicBool) -> bool {
+        locked.load(Ordering::Acquire)
+    }
+}
 
 thread_local! {
     static CURRENT_CPU: Cell<usize> = const { Cell::new(0) };

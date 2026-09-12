@@ -2,7 +2,7 @@ use std::{
     collections::BTreeSet,
     fs,
     io::{Read, Seek, SeekFrom},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use anyhow::Context;
@@ -25,12 +25,49 @@ pub(super) fn case_asset_cache_key(
     shared_rootfs: &Path,
     config: &CaseAssetConfig,
 ) -> anyhow::Result<String> {
+    case_asset_cache_key_with_lookup(
+        arch,
+        target,
+        pipeline,
+        case,
+        shared_rootfs,
+        config,
+        crate::support::process::find_optional_host_binary,
+    )
+}
+
+fn case_asset_cache_key_with_lookup(
+    arch: &str,
+    target: &str,
+    pipeline: CasePipeline,
+    case: &TestQemuCase,
+    shared_rootfs: &Path,
+    config: &CaseAssetConfig,
+    find: impl FnMut(&str) -> Option<PathBuf>,
+) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
     hash_token(&mut hasher, "v3");
     hash_token(&mut hasher, arch);
     hash_token(&mut hasher, target);
     hash_token(&mut hasher, case.display_name.as_str());
     hash_token(&mut hasher, pipeline.as_str());
+    if matches!(
+        pipeline,
+        CasePipeline::C | CasePipeline::Grouped | CasePipeline::Rust
+    ) {
+        let spec = crate::context::cross_compile_spec_for_arch_checked(arch)?;
+        let qemu = crate::test::build::find_cross_tool_qemu(spec, find);
+        // Cached images contain linked binaries. Never reuse them across
+        // providers, even when the source tree and shared rootfs are unchanged.
+        hash_token(
+            &mut hasher,
+            if qemu.is_some() {
+                "binutils-emulated-v1"
+            } else {
+                "binutils-native-v1"
+            },
+        );
+    }
     for var in &config.cache_env_vars {
         hash_token(&mut hasher, var);
         hash_token(&mut hasher, std::env::var(var).unwrap_or_default().as_str());
@@ -181,4 +218,56 @@ fn hash_file(hasher: &mut Sha256, path: &Path) -> anyhow::Result<()> {
 fn hash_token(hasher: &mut Sha256, value: &str) {
     hasher.update(value.len().to_le_bytes());
     hasher.update(value.as_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        super::{
+            cache::is_valid_rootfs_cache_image,
+            tests::{fake_case, fake_config},
+        },
+        *,
+    };
+
+    #[test]
+    fn asset_cache_isolates_cross_tool_providers() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = root.path().join("shared.img");
+        fs::write(&shared, b"rootfs").unwrap();
+        let case = fake_case(root.path(), "compiled");
+        let config = fake_config();
+        for pipeline in [CasePipeline::C, CasePipeline::Grouped, CasePipeline::Rust] {
+            let key = |emulated| {
+                case_asset_cache_key_with_lookup(
+                    "aarch64",
+                    "aarch64-unknown-none-softfloat",
+                    pipeline,
+                    &case,
+                    &shared,
+                    &config,
+                    |name| {
+                        (emulated && name == "qemu-aarch64-static").then(|| root.path().join(name))
+                    },
+                )
+                .unwrap()
+            };
+            // Switching either way must miss the previous provider's image;
+            // an unchanged provider must retain its cache hit.
+            for emulated in [false, true] {
+                let image = root.path().join(format!("{}.img", key(emulated)));
+                fs::File::create(&image)
+                    .unwrap()
+                    .set_len(1024 * 1024)
+                    .unwrap();
+                assert!(is_valid_rootfs_cache_image(
+                    &root.path().join(format!("{}.img", key(emulated)))
+                ));
+                assert!(!is_valid_rootfs_cache_image(
+                    &root.path().join(format!("{}.img", key(!emulated)))
+                ));
+                fs::remove_file(image).unwrap();
+            }
+        }
+    }
 }

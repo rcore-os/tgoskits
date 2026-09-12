@@ -683,8 +683,9 @@ fn init_global(
 
 #[test]
 fn global_reinit_same_instance_rejected() {
-    let allocator = GlobalAllocator::<PAGE_SIZE>::new();
+    // Held until the allocators drop: their Drop clears the singleton flag.
     let _ctx = global_test_context::<PAGE_SIZE>(1);
+    let allocator = GlobalAllocator::<PAGE_SIZE>::new();
     let mut first = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
     let mut second = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
 
@@ -695,9 +696,9 @@ fn global_reinit_same_instance_rejected() {
 
 #[test]
 fn global_second_live_instance_rejected() {
+    let _ctx = global_test_context::<PAGE_SIZE>(1);
     let first_allocator = GlobalAllocator::<PAGE_SIZE>::new();
     let second_allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = global_test_context::<PAGE_SIZE>(1);
     let mut first = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
     let mut second = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
 
@@ -708,9 +709,9 @@ fn global_second_live_instance_rejected() {
 
 #[test]
 fn global_failed_init_rolls_back_singleton() {
+    let _ctx = global_test_context::<PAGE_SIZE>(1);
     let bad_allocator = GlobalAllocator::<PAGE_SIZE>::new();
     let good_allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = global_test_context::<PAGE_SIZE>(1);
     let mut bad = HostRegion::new(PAGE_SIZE - 1, PAGE_SIZE);
     let mut good = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
 
@@ -1073,10 +1074,10 @@ fn global_unaligned_region_start() {
 
 #[test]
 fn global_rejects_region_without_one_managed_page() {
+    let _ctx = global_test_context::<PAGE_SIZE>(1);
     let region_size = PAGE_SIZE - 1;
     let mut region = HostRegion::new(region_size, PAGE_SIZE);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = global_test_context::<PAGE_SIZE>(1);
 
     let err = unsafe { allocator.init(region.as_mut_slice()) }.unwrap_err();
     assert_eq!(err, AllocError::InvalidParam);

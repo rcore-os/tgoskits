@@ -41,6 +41,7 @@ futex_wait_bitset01
 getcpu01
 getcwd01
 getcwd02
+linkat01
 getpgid01
 getpgid02
 getsid01

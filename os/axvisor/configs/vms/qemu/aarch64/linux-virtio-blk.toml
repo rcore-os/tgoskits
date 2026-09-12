@@ -1,0 +1,29 @@
+[base]
+id = 1
+name = "linux-virtio-blk-mount-aarch64"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [1]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "${workspace}/tmp/axbuild/images/qemu-aarch64/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+ramdisk_path = "${workspace}/tmp/axbuild/images/initramfs-aarch64-busybox.cpio.gz/initramfs-aarch64-busybox.cpio.gz"
+ramdisk_load_addr = 0x8400_0000
+cmdline = "console=ttyAMA0 earlycon rdinit=/init devtmpfs.mount=1"
+memory_regions = [
+    [0x8000_0000, 0x4000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "virtblk0"
+model = "virtio-blk"
+path = "/guest/rootfs-aarch64-alpine.img"
+filesystem = "ext4"

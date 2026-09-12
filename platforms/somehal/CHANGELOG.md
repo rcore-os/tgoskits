@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/rcore-os/tgoskits/compare/somehal-v0.10.1...somehal-v0.11.0) - 2026-09-11
+
+### Other
+
+- *(ax-cpu)* [**breaking**] centralize CPU mechanisms and architecture backends ([#2363](https://github.com/rcore-os/tgoskits/pull/2363))
+
 ## [0.10.1](https://github.com/rcore-os/tgoskits/compare/somehal-v0.10.0...somehal-v0.10.1) - 2026-09-09
 
 ### Fixed

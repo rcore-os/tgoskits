@@ -39,6 +39,22 @@ use crate::{
     },
 };
 
+/// Linux `new_idmap_permitted`: without the capability in the initial user
+/// namespace, a writer may map only its own id.
+fn may_map_id(
+    outside: u32,
+    count: u32,
+    own_id: impl Fn(&Cred) -> u32,
+    privileged: impl Fn(&Cred) -> bool,
+) -> bool {
+    let writer = current_user_task();
+    let thread = writer.as_thread();
+    let cred = thread.cred();
+    let cred: &Cred = &cred;
+    (count == 1 && outside == own_id(cred))
+        || (privileged(cred) && thread.proc_data.namespace_snapshot().in_initial_user_ns())
+}
+
 fn upgrade_proc_task(task: &WeakUserTaskRef) -> VfsResult<Option<UserTaskRef>> {
     (*task).upgrade().map_err(|_| VfsError::BadState)
 }
@@ -1648,8 +1664,12 @@ impl SimpleDirOps for ThreadDir {
                             let _mapped: u32 =
                                 parts[0].parse().map_err(|_| VfsError::InvalidInput)?;
                             let orig: u32 = parts[1].parse().map_err(|_| VfsError::InvalidInput)?;
-                            let _count: u32 =
+                            let count: u32 =
                                 parts[2].parse().map_err(|_| VfsError::InvalidInput)?;
+                            if !may_map_id(orig, count, |cred| cred.euid, Cred::has_cap_setuid)
+                            {
+                                return Err(VfsError::OperationNotPermitted);
+                            }
                             let thr = task.as_thread();
                             let mut cred = (*thr.cred()).clone();
                             cred.uid = orig;
@@ -1708,8 +1728,12 @@ impl SimpleDirOps for ThreadDir {
                             let _mapped: u32 =
                                 parts[0].parse().map_err(|_| VfsError::InvalidInput)?;
                             let orig: u32 = parts[1].parse().map_err(|_| VfsError::InvalidInput)?;
-                            let _count: u32 =
+                            let count: u32 =
                                 parts[2].parse().map_err(|_| VfsError::InvalidInput)?;
+                            if !may_map_id(orig, count, |cred| cred.egid, Cred::has_cap_setgid)
+                            {
+                                return Err(VfsError::OperationNotPermitted);
+                            }
                             let thr = task.as_thread();
                             let mut cred = (*thr.cred()).clone();
                             cred.gid = orig;

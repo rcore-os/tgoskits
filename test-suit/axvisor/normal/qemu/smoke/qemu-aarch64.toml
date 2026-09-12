@@ -1,5 +1,6 @@
 args = [
   "-nographic",
+  "-snapshot",
   "-cpu",
   "cortex-a72",
   "-machine",
@@ -16,20 +17,60 @@ args = [
   "8g",
 ]
 fail_regex = [
-  "(?i)\\bpanic(?:ked)?\\b",
-  "(?i)kernel panic",
-  "(?i)login incorrect",
-  "(?i)permission denied",
-  "(?m)^(?:echo|cat|rm): (?:can't (?:open|remove) |cannot remove |/tmp/axvisor-nvme-rw:)",
+    "(?m)^VIRTIO_BLK_MOUNT_FAIL:",
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)login incorrect",
+    "(?i)permission denied",
+    "(?m)^(?:echo|cat|rm): (?:can't (?:open|remove) |cannot remove |/tmp/axvisor-nvme-rw:)",
 ]
-shell_check_steps = [{ shell_prefix = "axvisor:/$", shell_cmd = """
-echo 'AXVISOR SHLEX' "" EMPTY
-'help' vm start
-echo "unterminated
-echo AXVISOR_NVME_RW_PAYLOAD > /tmp/axvisor-nvme-rw
-cat /tmp/axvisor-nvme-rw
-rm -f /tmp/axvisor-nvme-rw
-echo AXVISOR_NVME_ROOTFS_RW_PASSED
-""", success_regex = ["(?m)^AXVISOR SHLEX  EMPTY\\s*$", "(?m)^Command: vm start\\s*$", "(?m)^Error: Invalid command syntax\\s*$", "(?m)^AXVISOR_NVME_RW_PAYLOAD\\s*$", "(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\\s*$"] }]
+timeout = 300
 to_bin = true
 uefi = false
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = """echo 'AXVISOR SHLEX' "" EMPTY"""
+success_regex = ['(?m)^AXVISOR SHLEX  EMPTY\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "'help' vm start"
+success_regex = ['(?m)^Command: vm start\s*$']
+
+[[shell_check_steps]]
+shell_cmd = 'echo "unterminated'
+success_regex = ['(?m)^Error: Invalid command syntax\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "echo AXVISOR_NVME_RW_PAYLOAD > /tmp/axvisor-nvme-rw"
+
+[[shell_check_steps]]
+shell_cmd = "cat /tmp/axvisor-nvme-rw"
+success_regex = ['(?m)^AXVISOR_NVME_RW_PAYLOAD\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "rm -f /tmp/axvisor-nvme-rw"
+
+[[shell_check_steps]]
+shell_cmd = "echo AXVISOR_NVME_ROOTFS_RW_PASSED"
+success_regex = ['(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\s*$']
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = ['(?m)^test pass!\s*$']
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "mkdir -p /mnt/v"
+
+[[shell_check_steps]]
+shell_cmd = "mount -t ext4 -o ro /dev/vda /mnt/v"
+success_regex = ['EXT4-fs \(vda\): mounted filesystem .* ro ']
+fail_regex = ['mount:']
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "cat /mnt/v/etc/alpine-release"
+success_regex = ['(?m)^3\.23\.5\s*$']
+fail_regex = ['cat:']
+timeout = 60

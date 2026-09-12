@@ -27,6 +27,16 @@ const SUPPORTED_NS_FLAGS: u32 = UNSHARE_NAMESPACE_FLAGS | CLONE_FS | CLONE_FILES
 
 const SUPPORTED_SETNS_FLAGS: u32 = SUPPORTED_NS_FLAGS & !CLONE_FILES;
 
+/// Capabilities are not scoped to user namespaces yet, so only CAP_SYS_ADMIN
+/// held in the initial user namespace may join a namespace.
+fn may_join(thread: &Thread) -> bool {
+    thread.cred().has_cap_sys_admin()
+        && thread
+            .proc_data
+            .namespace_snapshot()
+            .in_initial_user_ns()
+}
+
 type SharedFileTable = Arc<RwLock<FileTable>>;
 
 struct PreparedUnshare {
@@ -202,7 +212,7 @@ fn setns_via_nsfd(
     let curr = current;
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
-    if fd_type == CLONE_NEWCGROUP && !thread.cred().has_cap_sys_admin() {
+    if !may_join(thread) {
         return Err(StarryError::OperationNotPermitted);
     }
 
@@ -294,7 +304,7 @@ fn setns_via_pidfd(
     let curr = current;
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
-    if nstype & CLONE_NEWCGROUP != 0 && !thread.cred().has_cap_sys_admin() {
+    if !may_join(thread) {
         return Err(StarryError::OperationNotPermitted);
     }
 

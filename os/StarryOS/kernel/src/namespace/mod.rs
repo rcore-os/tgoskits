@@ -57,6 +57,11 @@ impl NsProxy {
         }
     }
 
+    /// Whether these namespaces still belong to the initial user namespace.
+    pub fn in_initial_user_ns(&self) -> bool {
+        Arc::ptr_eq(&self.user_ns, &ROOT_USER_NS)
+    }
+
     /// Clone all namespace references (shallow `Arc` clone).
     ///
     /// Used by `fork` / `clone` (without `CLONE_NEW*` flags) so the child

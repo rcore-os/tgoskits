@@ -157,9 +157,9 @@ STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.012
 [`MIGRATION.md`](../../scripts/test/ltp-syscalls/MIGRATION.md) 与
 [`migration.csv`](../../scripts/test/ltp-syscalls/migration.csv)。该清单包含待审计项，
 不能把候选数量当成已经完成的迁移数量；每项迁移保留独立提交。已合入的 PR #2322
-处理了 13 个原程序（9 项部分替代、4 项无等效清理）。续迁批次另部分替代 7 个原程序，
-详细断言损失与失败记录见 [`NEXT.md`](../../scripts/test/ltp-syscalls/NEXT.md)。当前实际清单
-包含 84 个共同 LTP 用例，x86_64 另有 2 个旧入口用例；这是累计执行集合，两个 native
+处理了 13 个原程序（9 项部分替代、4 项无等效清理）。先前续迁批次另部分替代 7 个原程序；当前轮追加
+`bug-linkat-flags-symlink` 的 `linkat01` 部分替代并修复绝对目标路径的 `newdirfd` 语义，详细断言损失与失败记录见 [`NEXT.md`](../../scripts/test/ltp-syscalls/NEXT.md)。当前实际清单
+包含 85 个共同 LTP 用例，x86_64 另有 2 个旧入口用例；这是累计执行集合，两个 native
 隔离回归单独计数。IPv6 等先前失败项，以及本批 fcntl14/16 对应的原测试继续保留。
 
 `qemu/system/ltp-syscalls` 使用 rootfs 中固定的 Linux Test Project
@@ -311,6 +311,13 @@ Pipeline 创建的副本只负责资产注入，不承担 QEMU 运行期写隔�
 `CAP_CHOWN`。只有能完整恢复 guest ownership 时才直接提取，否则预先进入
 `fakeroot`，避免产生大量权限警告。如果此时缺少 `fakeroot`，xtask 会在启动
 `debugfs` 前明确失败，不会先执行再过滤警告或静默回退。
+
+C、分组 C 和 Rust 资产通过 `write_cross_bin_wrappers()` 统一选择 binutils：优先使用
+qemu-user 执行 staging root 内的工具，否则使用宿主原生 `<gnu_tool_prefix>-<tool>`
+交叉工具。原生模式仍需要目标 sysroot；缺少任一所需工具会在构建前失败。
+`prebuild.sh` 仍由 `prepare_guest_prebuild_env()` 要求 qemu-user，不能因为缺少模拟器
+而跳过脚本或依赖其产物的测试。当前 `qemu/system` 有共享 prebuild，仍需要 qemu-user；
+完整套件应在具备该能力的 Linux 环境执行。
 
 ## QEMU TOML
 
