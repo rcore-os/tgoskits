@@ -447,6 +447,10 @@ fn vcpu_task_cpu_mask(vm_id: usize, vcpu_id: usize, requested_mask: usize) -> us
     fallback_mask
 }
 
+fn yield_after_vcpu_exit(policy: crate::host::task::SchedulePolicy) -> bool {
+    matches!(policy, crate::host::task::SchedulePolicy::Fifo { .. })
+}
+
 /// The main routine for VCpu task.
 /// This function is the entry point for the VCpu tasks, which are spawned for each VCpu of a VM.
 ///
@@ -663,11 +667,12 @@ fn vcpu_run() {
             break;
         }
 
-        // AxVM may run on ArceOS's cooperative FIFO scheduler. Yield after
-        // every completed VM exit so host services such as the management
-        // console and virtual serial input can make progress alongside a
-        // continuously runnable guest.
-        crate::host::task::yield_now();
+        // FIFO tasks must cooperate with same-priority peers. Fair/RR/DL
+        // already have scheduler-enforced service budgets: yielding on each
+        // device exit forfeits a Fair request and penalizes IRQ-heavy guests.
+        if yield_after_vcpu_exit(curr.base_policy()) {
+            crate::host::task::yield_now();
+        }
     }
 
     info!("VM[{}] VCpu[{}] exiting...", vm_id, vcpu_id);
