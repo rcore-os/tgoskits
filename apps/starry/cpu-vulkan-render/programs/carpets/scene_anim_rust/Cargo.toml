@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "scene_anim_rust"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "scene_anim_rust"
+path = "src/main.rs"
+
+[dependencies]
+ash = "0.38"
+
+[profile.release]
+opt-level = 3
