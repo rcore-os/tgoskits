@@ -65,6 +65,24 @@ impl<T> SamplingRegistry<T> {
             .map(|entry| &mut entry.value)
     }
 
+    /// Replaces the value owned by one exact live generation.
+    pub(crate) fn replace(
+        &mut self,
+        counter: usize,
+        generation: u64,
+        value: T,
+    ) -> Result<T, UnregisterError> {
+        let slot = self
+            .slots
+            .get_mut(counter)
+            .ok_or(UnregisterError::InvalidCounter)?;
+        let entry = slot
+            .as_mut()
+            .filter(|entry| entry.generation == generation)
+            .ok_or(UnregisterError::Stale)?;
+        Ok(core::mem::replace(&mut entry.value, value))
+    }
+
     /// Removes exactly one generation and returns its owned value.
     pub(crate) fn unregister(
         &mut self,

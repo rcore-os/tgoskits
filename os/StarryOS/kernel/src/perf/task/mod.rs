@@ -55,13 +55,18 @@
 //!
 //! ## Scope / deferrals
 //!
-//! There is no counter multiplexing (so `time_running == time_enabled`).
-//! Generation-bearing owner leases follow task migration across CPUs, and an
-//! optional CPU filter limits eligibility. Sampling supports fixed-period
-//! (`-c <period>`) and frequency mode (`-F`, `sample_freq`); inherited child
-//! events share the root output through the same owned redirect boundary.
+//! Flexible programmable counters are multiplexed at scheduler boundaries:
+//! every eligible task-context slice advances `time_enabled`, while only a
+//! hardware-programmed slice advances `time_running`. Generation-bearing owner
+//! leases follow task migration across CPUs, and an optional CPU filter limits
+//! eligibility. Sampling supports fixed-period (`-c <period>`) and frequency
+//! mode (`-F`, `sample_freq`); inherited child events share the root output
+//! through the same owned redirect boundary.
 
-use alloc::sync::Arc;
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     any::Any,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -79,7 +84,10 @@ use super::{
     output::{PerfOutputRoute, PerfRingOutput},
     rdpmc::{RdpmcMapping, RdpmcSnapshot, mapping_result},
     resource_lifecycle::{PmuResourceClaim, PmuResourceRelease},
-    sampling::{self, SampleOutput, SampleSlot, SampleSlotConfig},
+    sampling::{
+        self, MAX_SAMPLE_READ_EVENTS, SampleOutput, SampleReadEntry, SampleReadValue, SampleSlot,
+        SampleSlotConfig,
+    },
     sampling_lifecycle::{PmuCloseAction, PmuRunLease, PmuRunState, PmuStopClaim},
     sideband::{self, SidebandTarget},
     target::PerfCpuId,
@@ -108,4 +116,4 @@ pub use model::PerTaskCounter;
 pub(crate) use model::SamplingAnchors;
 pub(crate) use read::{read_counter, read_task_on_owner};
 pub(crate) use scheduling::stop_requested_on_owner;
-pub use scheduling::{perf_sched_in, perf_sched_out};
+pub use scheduling::{perf_sched_in, perf_sched_out, perf_sched_tick};

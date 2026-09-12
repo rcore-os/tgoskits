@@ -1,21 +1,10 @@
 //! CPU-local ARM PMUv3 operations and value-only rendezvous requests.
 
+pub(super) use super::sampling_lifecycle::Counter;
 use super::{
-    sampling::{self, SampleSlot},
+    sampling::{self, SampleOutput, SampleSlot},
     sampling_lifecycle::SampleRegistration,
 };
-
-// Starry owns the complete PMU domain on every CPU. Initialize it once before
-// the first reserved-slot operation; subsequent events must preserve live peers.
-#[ax_percpu::def_percpu]
-static INITIALIZED: bool = false;
-
-/// Hardware counter selected for one PMU event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Counter {
-    Cycle,
-    Programmable(usize),
-}
 
 impl Counter {
     pub(super) fn configure(
@@ -81,7 +70,14 @@ impl Counter {
         }
     }
 
-
+    pub(super) const fn mmap_metadata(self) -> (u32, u16) {
+        match self {
+            // Linux publishes `event->hw.idx + 1`; the architectural cycle
+            // counter is index 31.
+            Self::Cycle => (32, 64),
+            Self::Programmable(n) => (n as u32 + 1, 32),
+        }
+    }
 }
 
 /// Value-only request to configure a system-wide PMU event on its owner CPU.
@@ -119,6 +115,7 @@ pub(super) struct SystemPmuDisableResult {
 /// Value-only owner-CPU read request.
 pub(super) struct SystemPmuRead {
     pub(super) counter: Counter,
+    pub(super) sampling: Option<alloc::sync::Arc<sampling::SamplingCount>>,
 }
 
 /// Owner-consistent raw count and timestamp.
@@ -131,6 +128,12 @@ pub(super) struct SystemPmuReadResult {
 pub(super) struct SystemPmuReset {
     pub(super) counter: Counter,
     pub(super) sampling_period: Option<u32>,
+}
+
+/// Owner-CPU request to publish a newly attached output ring to one live slot.
+pub(super) struct SystemPmuReplaceOutput {
+    pub(super) registration: SampleRegistration,
+    pub(super) output: SampleOutput,
 }
 
 /// Configures one reserved counter on the current owner CPU.
@@ -149,7 +152,7 @@ pub(super) fn enable_system_on_owner(
             return Err(crate::StarryError::BadState);
         };
         sampling::enable_local_pmu_irq().map_err(|_| crate::StarryError::NoSuchDevice)?;
-        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.preload(id, u64::from(period)));
+        slot.count.preload(n, period);
         let registration =
             sampling::register(n, slot).map_err(|_| crate::StarryError::ResourceBusy)?;
         crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.enable_overflow_irq(id));
@@ -194,7 +197,16 @@ pub(super) fn read_system_on_owner(
     request: SystemPmuRead,
 ) -> crate::StarryResult<SystemPmuReadResult> {
     Ok(SystemPmuReadResult {
-        value: request.counter.read(),
+        value: if let Some(sampling) = request.sampling {
+            sampling.update(
+                request
+                    .counter
+                    .programmable_index()
+                    .ok_or(crate::StarryError::BadState)?,
+            )
+        } else {
+            request.counter.read()
+        },
         observed_at: ax_runtime::hal::time::monotonic_time_nanos(),
     })
 }
@@ -209,6 +221,14 @@ pub(super) fn reset_system_on_owner(request: SystemPmuReset) -> crate::StarryRes
         (Counter::Cycle, Some(_)) => return Err(crate::StarryError::BadState),
     }
     Ok(())
+}
+
+/// Replaces only the IRQ-visible output for one live sampling generation.
+pub(super) fn replace_system_output_on_owner(
+    request: SystemPmuReplaceOutput,
+) -> crate::StarryResult<()> {
+    sampling::replace_output(request.registration, request.output)
+        .map_err(|_| crate::StarryError::BadState)
 }
 
 fn pmu_error(error: ax_cpu::pmu::PmuError) -> crate::StarryError {
@@ -229,21 +249,8 @@ pub(in crate::perf) fn on_pmu<R>(operation: impl FnOnce(&mut ax_cpu::pmu::Pmu) -
     // SAFETY: the guard prevents migration, scheduling and IRQ reentry. Starry
     // is the PMU domain owner, and all event register access passes through
     // this function; the initializer has no remote or recursive access.
-    unsafe {
-        ax_percpu::with_cpu_pin(|pin| {
-            let mut pmu = ax_cpu::pmu::Pmu::current()
-                .expect("reserved PMU must remain available");
-            if !INITIALIZED.read_current(pin) {
-                // No Starry event has touched this CPU's PMU yet. Retire
-                // firmware enables/IRQs and EL0 access before publishing
-                // initial state; never reset another live event.
-                pmu.reset();
-                INITIALIZED.write_current(pin, true);
-            }
-            operation(&mut pmu)
-        })
-    }
-    .expect("perf PMU owner must have an installed CPU area")
+    unsafe { ax_hal::pmu::with_current(operation) }
+        .expect("reserved PMU must remain available on its owner CPU")
 }
 
 pub(in crate::perf) fn on_counter<R>(
@@ -259,4 +266,26 @@ pub(in crate::perf) fn on_counter<R>(
             .expect("owner reserved a valid PMU counter");
         operation(pmu, counter).expect("operation on reserved PMU counter")
     })
+}
+
+/// A whole-domain snapshot whose callbacks use separate bounded PMU sessions.
+/// IRQ exclusion spans pause, reads and restoration; no session is borrowed
+/// while a callback opens its own session through `on_counter`.
+pub(in crate::perf) fn with_counters_paused<R>(operation: impl FnOnce() -> R) -> R {
+    let _guard = crate::sync::NoPreemptIrqSave::new();
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if self.0 {
+                on_pmu(|pmu| pmu.start());
+            }
+        }
+    }
+    let running = on_pmu(|pmu| {
+        let running = pmu.is_running();
+        pmu.stop();
+        running
+    });
+    let _restore = Restore(running);
+    operation()
 }

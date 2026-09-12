@@ -24,10 +24,19 @@
 //! The trailer is part of `header.size`; omitting it would desync `perf`'s parser.
 //! [`push_trailer`] appends it when [`SidebandTarget::sample_id_all`] is set.
 
-use alloc::vec::Vec;
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+use ax_lazyinit::LazyInit;
 
 use super::output::PerfRingOutput;
-use crate::task::{TgidNumber, TidNumber};
+use crate::{
+    sync::IrqMutex,
+    task::{PidNamespaceId, TgidNumber, Thread, TidNumber},
+};
 
 /// `PERF_RECORD_COMM`.
 const PERF_RECORD_COMM: u32 = 3;
@@ -42,16 +51,152 @@ const PERF_RECORD_MISC_USER: u16 = 2;
 /// `PERF_RECORD_MISC_COMM_EXEC`: this `COMM` came from `execve` (not `prctl`).
 const PERF_RECORD_MISC_COMM_EXEC: u16 = 1 << 13;
 
-// `sample_type` bits relevant to the `sample_id_all` trailer.
-const PERF_SAMPLE_TID: u64 = 1 << 1;
-const PERF_SAMPLE_TIME: u64 = 1 << 2;
-const PERF_SAMPLE_ID: u64 = 1 << 6;
-const PERF_SAMPLE_CPU: u64 = 1 << 7;
-const PERF_SAMPLE_STREAM_ID: u64 = 1 << 9;
-const PERF_SAMPLE_IDENTIFIER: u64 = 1 << 16;
-
 /// `comm` is capped at Linux's `TASK_COMM_LEN` (16, including the NUL).
 const COMM_MAX: usize = 15;
+
+static SYSTEM_SOURCES: LazyInit<IrqMutex<Vec<Weak<SystemSidebandSource>>>> = LazyInit::new();
+static SYSTEM_SOURCE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+pub fn initialize() {
+    SYSTEM_SOURCES.init_once(IrqMutex::new(Vec::new()));
+}
+
+/// Side-band-only subscription for one fixed CPU perf context.
+pub struct SystemSidebandSource {
+    owner_cpu: usize,
+    observer: PidNamespaceId,
+    sample_type: u64,
+    sample_id_all: bool,
+    want_comm: bool,
+    want_mmap2: bool,
+    want_task: bool,
+    sample_id: AtomicU64,
+    enabled: AtomicBool,
+    redirect: IrqMutex<Option<PerfRingOutput>>,
+}
+
+impl SystemSidebandSource {
+    pub fn register(
+        owner_cpu: usize,
+        sample_type: u64,
+        sample_id_all: bool,
+        want_comm: bool,
+        want_mmap2: bool,
+        want_task: bool,
+    ) -> Option<Arc<Self>> {
+        if !(want_comm || want_mmap2 || want_task) {
+            return None;
+        }
+        let source = Arc::new(Self {
+            owner_cpu,
+            observer: crate::task::current_user_task()
+                .as_thread()
+                .active_pid_namespace()
+                .id(),
+            sample_type,
+            sample_id_all,
+            want_comm,
+            want_mmap2,
+            want_task,
+            sample_id: AtomicU64::new(0),
+            enabled: AtomicBool::new(false),
+            redirect: IrqMutex::new(None),
+        });
+        SYSTEM_SOURCES
+            .get()
+            .expect("perf side-band registry not initialized")
+            .lock()
+            .push(Arc::downgrade(&source));
+        SYSTEM_SOURCE_COUNT.fetch_add(1, Ordering::AcqRel);
+        Some(source)
+    }
+
+    pub fn set_sample_id(&self, id: u64) {
+        self.sample_id.store(id, Ordering::Release);
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Release);
+    }
+
+    pub fn set_redirect(&self, redirect: Option<PerfRingOutput>) {
+        *self.redirect.lock() = redirect;
+    }
+
+    pub fn output_scope(&self) -> super::output::PerfOutputScope {
+        super::output::PerfOutputScope::Cpu(self.owner_cpu)
+    }
+
+    fn target(&self, thread: &Thread) -> Option<SystemSidebandTarget> {
+        if !self.enabled.load(Ordering::Acquire) {
+            return None;
+        }
+        let ring = self.redirect.lock().clone()?;
+        let pid = thread
+            .proc_data
+            .identity()
+            .visible_number_in(self.observer)
+            .map(TgidNumber::from)?;
+        let tid = thread
+            .pid_identity()
+            .visible_number_in(self.observer)
+            .map(TidNumber::from)?;
+        Some(SystemSidebandTarget {
+            observer: self.observer,
+            target: SidebandTarget {
+                ring,
+                sample_type: self.sample_type,
+                sample_id_all: self.sample_id_all,
+                id: self.sample_id.load(Ordering::Acquire),
+                stream_id: self.sample_id.load(Ordering::Acquire),
+                pid,
+                tid,
+            },
+            comm: self.want_comm,
+            mmap2: self.want_mmap2,
+            task: self.want_task,
+        })
+    }
+}
+
+impl Drop for SystemSidebandSource {
+    fn drop(&mut self) {
+        SYSTEM_SOURCE_COUNT.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+pub struct SystemSidebandTarget {
+    pub observer: PidNamespaceId,
+    pub target: SidebandTarget,
+    pub comm: bool,
+    pub mmap2: bool,
+    pub task: bool,
+}
+
+/// Snapshots enabled fixed-CPU side-band sources for the executing CPU.
+pub fn system_targets(thread: &Thread) -> Vec<SystemSidebandTarget> {
+    if SYSTEM_SOURCE_COUNT.load(Ordering::Acquire) == 0 {
+        return Vec::new();
+    }
+    let cpu = ax_hal::percpu::this_cpu_id();
+    let Some(sources) = SYSTEM_SOURCES.get() else {
+        return Vec::new();
+    };
+    let mut sources = sources.lock();
+    let mut targets = Vec::new();
+    sources.retain(|weak| {
+        let Some(source) = weak.upgrade() else {
+            return false;
+        };
+        if source.owner_cpu == cpu
+            && let Some(target) = source.target(thread)
+        {
+            targets.push(target);
+        }
+        true
+    });
+    targets
+}
 
 /// Where a side-band record is written, plus the parameters of its
 /// `sample_id_all` trailer. Built per monitored event from its `PerTaskCounter`.
@@ -64,6 +209,8 @@ pub struct SidebandTarget {
     pub sample_id_all: bool,
     /// Event id (for the trailer's `ID` / `IDENTIFIER` fields).
     pub id: u64,
+    /// Concrete event identity for the trailer's STREAM_ID field.
+    pub stream_id: u64,
     /// Process id of the monitored task in the event's captured view.
     pub pid: TgidNumber,
     /// Thread id of the monitored task in the event's captured view.
@@ -113,27 +260,17 @@ fn push_trailer(b: &mut Vec<u8>, t: &SidebandTarget) {
     if !t.sample_id_all {
         return;
     }
-    let st = t.sample_type;
-    if st & PERF_SAMPLE_TID != 0 {
-        push_u32(b, t.pid.get());
-        push_u32(b, t.tid.get());
-    }
-    if st & PERF_SAMPLE_TIME != 0 {
-        push_u64(b, ax_runtime::hal::time::monotonic_time_nanos());
-    }
-    if st & PERF_SAMPLE_ID != 0 {
-        push_u64(b, t.id);
-    }
-    if st & PERF_SAMPLE_STREAM_ID != 0 {
-        push_u64(b, 0);
-    }
-    if st & PERF_SAMPLE_CPU != 0 {
-        push_u32(b, ax_hal::percpu::this_cpu_id() as u32);
-        push_u32(b, 0);
-    }
-    if st & PERF_SAMPLE_IDENTIFIER != 0 {
-        push_u64(b, t.id);
-    }
+    let identity = super::sample_id::SampleId {
+        pid: t.pid.get(),
+        tid: t.tid.get(),
+        time: ax_runtime::hal::time::monotonic_time_nanos(),
+        id: t.id,
+        stream_id: t.stream_id,
+        cpu: ax_hal::percpu::this_cpu_id() as u32,
+    };
+    let mut trailer = [0u8; super::sample_id::SAMPLE_ID_MAX_LEN];
+    let length = identity.encode(t.sample_type, &mut trailer);
+    b.extend_from_slice(&trailer[..length]);
 }
 
 /// Back-patch the 8-byte header (reserved at the front of `b`) once the full

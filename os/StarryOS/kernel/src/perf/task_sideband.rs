@@ -59,16 +59,15 @@ fn collect_exec_maps(thr: &Thread) -> Vec<Mmap2Info> {
 
 /// Emits COMM and executable MMAP2 records after a task commits exec.
 pub(crate) fn on_exec_sideband(thr: &Thread) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
     struct WantTarget {
         target: SidebandTarget,
         comm: bool,
         mmap2: bool,
     }
 
-    let targets: Vec<WantTarget> = {
+    let mut targets: Vec<WantTarget> = if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        Vec::new()
+    } else {
         let counters = thr.perf_context().snapshot();
         counters
             .iter()
@@ -81,6 +80,15 @@ pub(crate) fn on_exec_sideband(thr: &Thread) {
             })
             .collect()
     };
+    targets.extend(
+        sideband::system_targets(thr)
+            .into_iter()
+            .map(|target| WantTarget {
+                target: target.target,
+                comm: target.comm,
+                mmap2: target.mmap2,
+            }),
+    );
     if targets.is_empty() {
         return;
     }
@@ -114,10 +122,9 @@ pub(crate) fn on_mmap_sideband(
     shared: bool,
     filename: &str,
 ) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
-    let targets: Vec<SidebandTarget> = {
+    let mut targets: Vec<SidebandTarget> = if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        Vec::new()
+    } else {
         let counters = thr.perf_context().snapshot();
         counters
             .iter()
@@ -125,6 +132,12 @@ pub(crate) fn on_mmap_sideband(
             .filter_map(|counter| sideband_target(counter, thr))
             .collect()
     };
+    targets.extend(
+        sideband::system_targets(thr)
+            .into_iter()
+            .filter(|target| target.mmap2)
+            .map(|target| target.target),
+    );
     if targets.is_empty() {
         return;
     }
@@ -150,25 +163,41 @@ pub(crate) fn on_clone_sideband(
     child_process: &PidIdentity,
     child_thread: &PidIdentity,
 ) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
-    let targets: Vec<(SidebandTarget, TgidNumber, TidNumber, TgidNumber, TidNumber)> = {
-        let counters = parent_thr.perf_context().snapshot();
-        counters
-            .iter()
-            .filter(|counter| counter.wants_task())
-            .filter_map(|counter| {
-                Some((
-                    sideband_target(counter, parent_thr)?,
-                    visible_tgid(counter, child_process)?,
-                    visible_tid(counter, child_thread)?,
-                    visible_tgid(counter, &parent_thr.proc_data.identity())?,
-                    visible_tid(counter, &parent_thr.pid_identity())?,
-                ))
-            })
-            .collect()
-    };
+    let mut targets: Vec<(SidebandTarget, TgidNumber, TidNumber, TgidNumber, TidNumber)> =
+        if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+            Vec::new()
+        } else {
+            let counters = parent_thr.perf_context().snapshot();
+            counters
+                .iter()
+                .filter(|counter| counter.wants_task())
+                .filter_map(|counter| {
+                    Some((
+                        sideband_target(counter, parent_thr)?,
+                        visible_tgid(counter, child_process)?,
+                        visible_tid(counter, child_thread)?,
+                        visible_tgid(counter, &parent_thr.proc_data.identity())?,
+                        visible_tid(counter, &parent_thr.pid_identity())?,
+                    ))
+                })
+                .collect()
+        };
+    targets.extend(
+        sideband::system_targets(parent_thr)
+            .into_iter()
+            .filter(|target| target.task)
+            .filter_map(|target| {
+                let child_pid = child_process
+                    .visible_number_in(target.observer)
+                    .map(TgidNumber::from)?;
+                let child_tid = child_thread
+                    .visible_number_in(target.observer)
+                    .map(TidNumber::from)?;
+                let parent_pid = target.target.pid;
+                let parent_tid = target.target.tid;
+                Some((target.target, child_pid, child_tid, parent_pid, parent_tid))
+            }),
+    );
     for (target, child_pid, child_tid, parent_pid, parent_tid) in &targets {
         sideband::emit_fork(target, *child_pid, *parent_pid, *child_tid, *parent_tid);
     }

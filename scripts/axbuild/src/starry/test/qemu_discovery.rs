@@ -67,7 +67,7 @@ fn load_qemu_cases_for_selection(
     selected_case: Option<&str>,
     grouped_subcase_filter: Option<BTreeSet<String>>,
 ) -> anyhow::Result<Vec<StarryQemuCase>> {
-    qemu_test::discover_qemu_cases(
+    let cases = qemu_test::discover_qemu_cases(
         test_suite_dir,
         arch,
         target,
@@ -77,7 +77,12 @@ fn load_qemu_cases_for_selection(
     )?
     .into_iter()
     .map(|case| load_qemu_case(case, grouped_subcase_filter.clone()))
-    .collect()
+    .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut expanded = Vec::new();
+    for case in cases {
+        expanded.extend(super::qemu_profiles::expand(case)?);
+    }
+    Ok(expanded)
 }
 
 pub(crate) fn direct_starry_qemu_case_exists(

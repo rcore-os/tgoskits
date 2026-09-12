@@ -174,6 +174,13 @@ impl PerfOutputRoute {
             .or_else(|| self.owned().map(|output| (output, false)))
     }
 
+    /// Returns the currently selected output for use as another event's
+    /// redirect target. This follows an existing redirect, matching Linux's
+    /// output-chain semantics.
+    pub(crate) fn effective_output(&self) -> Option<PerfRingOutput> {
+        self.effective().map(|(output, _)| output)
+    }
+
     /// Atomically replaces the redirect target.
     pub(crate) fn redirect(&mut self, output: PerfRingOutput) {
         self.redirect = Some(output);

@@ -18,6 +18,9 @@ pub struct InterruptedContext {
     pub sp: usize,
     /// Saved frame pointer.
     pub fp: usize,
+    /// Saved AArch64 link register for user frame-pointer sampling.
+    #[cfg(target_arch = "aarch64")]
+    pub lr: usize,
     /// Privilege of the interrupted context.
     pub privilege: InterruptedPrivilege,
 }

@@ -7,14 +7,14 @@
  * buffer and are told apart by the `PERF_SAMPLE_ID` field (each event's unique
  * `PERF_EVENT_IOC_ID`).
  *
- * This test opens two system-wide sampling events (both CPU_CYCLES, so both count
- * under QEMU TCG), mmaps the first (A), redirects the second (B) into A's ring
- * with SET_OUTPUT, reads each event's id with IOC_ID, runs a busy loop, then
- * walks A's ring and confirms it contains samples tagged with BOTH ids — proving
- * B's overflow samples really landed in A's ring and stayed distinguishable.
+ * This test opens three system-wide sampling events (all CPU_CYCLES, so they
+ * count under QEMU TCG), mmaps the first (A), then uses
+ * PERF_FLAG_FD_OUTPUT | PERF_FLAG_FD_NO_GROUP to redirect B into A and C into
+ * B. Linux resolves the target event's current ring, so all three sources must
+ * write into A without forming an event group.
  *
- * SUCCESS == distinct non-zero ids AND A's ring holds >=1 sample with id==id_A
- * AND >=1 with id==id_B. Prints the single sentinel STARRY_PERF_RING_MERGE_OK.
+ * SUCCESS == distinct non-zero ids AND A's ring holds >=1 sample from A, B and
+ * C. Prints the single sentinel STARRY_PERF_RING_MERGE_OK.
  */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -52,6 +52,8 @@
 #ifndef PERF_EVENT_IOC_SET_OUTPUT
 #define PERF_EVENT_IOC_SET_OUTPUT _IO('$', 5)
 #endif
+#define PERF_FLAG_FD_NO_GROUP (1ul << 0)
+#define PERF_FLAG_FD_OUTPUT (1ul << 1)
 #define PERF_ATTR_FLAG_DISABLED (1ull << 0)
 #ifndef PERF_RECORD_SAMPLE
 #define PERF_RECORD_SAMPLE 9u
@@ -175,9 +177,28 @@ int main(void) {
     }
     struct perf_event_mmap_page *meta = (struct perf_event_mmap_page *)base;
 
-    /* Second event B: system-wide on cpu0, NOT mmap'd — redirected into A. */
+    /* Linux treats FD_OUTPUT alone as both an output redirect and a group
+     * link. Starry does not support groups for direct CPU sampling events, so
+     * this combination must report that limitation instead of silently
+     * dropping the group relationship. FD_NO_GROUP below requests the
+     * independent redirected-event behavior used by perf record. */
     init_attr(&attr);
-    long lb = perf_event_open(&attr, -1, 0, -1, 0ul);
+    errno = 0;
+    long grouped_output =
+        perf_event_open(&attr, -1, 0, afd, PERF_FLAG_FD_OUTPUT);
+    if (grouped_output >= 0 || errno != EOPNOTSUPP) {
+        if (grouped_output >= 0) {
+            close((int)grouped_output);
+        }
+        munmap(base, PERF_MMAP_TOTAL_BYTES);
+        close(afd);
+        return fail("FD_OUTPUT alone must retain group semantics");
+    }
+
+    /* B is independent but shares A's output ring at open time. */
+    init_attr(&attr);
+    long lb = perf_event_open(&attr, -1, 0, afd,
+                              PERF_FLAG_FD_OUTPUT | PERF_FLAG_FD_NO_GROUP);
     if (lb < 0) {
         munmap(base, PERF_MMAP_TOTAL_BYTES);
         close(afd);
@@ -185,24 +206,38 @@ int main(void) {
     }
     int bfd = (int)lb;
 
-    uint64_t id_a = 0, id_b = 0;
+    /* C targets B. Since B already points at A, C must also resolve A's ring. */
+    init_attr(&attr);
+    long lc = perf_event_open(&attr, -1, 0, bfd,
+                              PERF_FLAG_FD_OUTPUT | PERF_FLAG_FD_NO_GROUP);
+    if (lc < 0) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "perf_event_open(C redirect chain) errno=%d",
+                 errno);
+        close(bfd);
+        munmap(base, PERF_MMAP_TOTAL_BYTES);
+        close(afd);
+        return fail(msg);
+    }
+    int cfd = (int)lc;
+
+    uint64_t id_a = 0, id_b = 0, id_c = 0;
     if (ioctl(afd, PERF_EVENT_IOC_ID, &id_a) != 0 || id_a == 0) {
         return fail("PERF_EVENT_IOC_ID(A)");
     }
     if (ioctl(bfd, PERF_EVENT_IOC_ID, &id_b) != 0 || id_b == 0) {
         return fail("PERF_EVENT_IOC_ID(B)");
     }
-    if (id_a == id_b) {
-        return fail("event ids not distinct");
+    if (ioctl(cfd, PERF_EVENT_IOC_ID, &id_c) != 0 || id_c == 0) {
+        return fail("PERF_EVENT_IOC_ID(C)");
     }
-    if (ioctl(bfd, PERF_EVENT_IOC_SET_OUTPUT, afd) != 0) {
-        char msg[96];
-        snprintf(msg, sizeof(msg), "PERF_EVENT_IOC_SET_OUTPUT errno=%d", errno);
-        return fail(msg);
+    if (id_a == id_b || id_a == id_c || id_b == id_c) {
+        return fail("event ids not distinct");
     }
 
     if (ioctl(afd, PERF_EVENT_IOC_ENABLE, 0) != 0 ||
-        ioctl(bfd, PERF_EVENT_IOC_ENABLE, 0) != 0) {
+        ioctl(bfd, PERF_EVENT_IOC_ENABLE, 0) != 0 ||
+        ioctl(cfd, PERF_EVENT_IOC_ENABLE, 0) != 0) {
         return fail("ioctl(ENABLE)");
     }
     volatile uint64_t spin = 0;
@@ -212,6 +247,7 @@ int main(void) {
     (void)spin;
     (void)ioctl(afd, PERF_EVENT_IOC_DISABLE, 0);
     (void)ioctl(bfd, PERF_EVENT_IOC_DISABLE, 0);
+    (void)ioctl(cfd, PERF_EVENT_IOC_DISABLE, 0);
 
     uint64_t data_head = meta->data_head;
     __sync_synchronize();
@@ -220,7 +256,7 @@ int main(void) {
     uint64_t data_size = meta->data_size;
     const uint8_t *data_base = (const uint8_t *)base + data_offset;
 
-    uint64_t n_a = 0, n_b = 0, n_other = 0;
+    uint64_t n_a = 0, n_b = 0, n_c = 0, n_other = 0;
     uint64_t off = data_tail;
     while (off < data_head && data_size != 0) {
         uint64_t rel = off % data_size;
@@ -242,6 +278,8 @@ int main(void) {
                 n_a++;
             } else if (id == id_b) {
                 n_b++;
+            } else if (id == id_c) {
+                n_c++;
             } else {
                 n_other++;
             }
@@ -249,10 +287,11 @@ int main(void) {
         off += hdr.size;
     }
 
-    printf("STARRY_PERF_RING_MERGE id_a=%llu id_b=%llu n_a=%llu n_b=%llu "
-           "n_other=%llu\n",
+    printf("STARRY_PERF_RING_MERGE id_a=%llu id_b=%llu id_c=%llu n_a=%llu "
+           "n_b=%llu n_c=%llu n_other=%llu\n",
            (unsigned long long)id_a, (unsigned long long)id_b,
-           (unsigned long long)n_a, (unsigned long long)n_b,
+           (unsigned long long)id_c, (unsigned long long)n_a,
+           (unsigned long long)n_b, (unsigned long long)n_c,
            (unsigned long long)n_other);
 
     int rc = 0;
@@ -260,9 +299,12 @@ int main(void) {
         rc = fail("no leader (A) samples in the ring");
     } else if (n_b == 0) {
         rc = fail("no redirected (B) samples in the leader's ring");
+    } else if (n_c == 0) {
+        rc = fail("no chained redirected (C) samples in the leader's ring");
     }
 
     munmap(base, PERF_MMAP_TOTAL_BYTES);
+    close(cfd);
     close(bfd);
     close(afd);
     if (rc == 0) {

@@ -59,6 +59,7 @@
 
 /* sysfs/procfs paths that upstream perf consults at startup. */
 #define PATH_PARANOID "/proc/sys/kernel/perf_event_paranoid"
+#define PATH_SOFTWARE_TYPE "/sys/bus/event_source/devices/software/type"
 #define PMU_DIR "/sys/bus/event_source/devices/armv8_pmuv3_0"
 #define PATH_PMU_TYPE PMU_DIR "/type"
 #define PATH_PMU_CPUS PMU_DIR "/cpus"
@@ -133,6 +134,9 @@ struct perf_event_attr {
 
 /* perf_event_attr.flags bit 0 */
 #define PERF_ATTR_FLAG_DISABLED (1ull << 0)
+#define PERF_TYPE_HARDWARE 0u
+#define PERF_COUNT_HW_CPU_CYCLES 0ull
+#define PERF_SAMPLE_IP (1ull << 0)
 
 /* Compile-time guards: the ABI offsets that make this layout correct. */
 _Static_assert(offsetof(struct perf_event_attr, config) == 8,
@@ -155,6 +159,55 @@ static long perf_event_open(struct perf_event_attr *attr, pid_t pid, int cpu,
 static int fail(const char *reason) {
     printf("perf-pmu-sysfs FAILED: %s\n", reason);
     return 1;
+}
+
+static void burn_cycles(void) {
+    volatile uint64_t spin = 0;
+    for (uint64_t i = 0; i < 20000000ull; i++) {
+        spin += i;
+    }
+    (void)spin;
+}
+
+static int check_second_open_preserves_running_counter(void) {
+    struct perf_event_attr cycles = {0};
+    cycles.type = PERF_TYPE_HARDWARE;
+    cycles.config = PERF_COUNT_HW_CPU_CYCLES;
+    cycles.size = (uint32_t)sizeof(cycles);
+    cycles.flags = PERF_ATTR_FLAG_DISABLED;
+
+    long first = perf_event_open(&cycles, -1, 0, -1, 0ul);
+    if (first < 0) {
+        return fail("system cycle event open failed");
+    }
+    (void)ioctl((int)first, PERF_EVENT_IOC_RESET, 0);
+    (void)ioctl((int)first, PERF_EVENT_IOC_ENABLE, 0);
+    burn_cycles();
+
+    uint64_t before = 0;
+    if (read((int)first, &before, sizeof(before)) != (ssize_t)sizeof(before)) {
+        close((int)first);
+        return fail("system cycle event first read failed");
+    }
+
+    struct perf_event_attr sampling = cycles;
+    sampling.sample_period = 100000;
+    sampling.sample_type = PERF_SAMPLE_IP;
+    long second = perf_event_open(&sampling, -1, 0, -1, 0ul);
+    if (second < 0) {
+        close((int)first);
+        return fail("second system PMU event open failed");
+    }
+
+    uint64_t after = 0;
+    ssize_t read_len = read((int)first, &after, sizeof(after));
+    close((int)second);
+    (void)ioctl((int)first, PERF_EVENT_IOC_DISABLE, 0);
+    close((int)first);
+    if (read_len != (ssize_t)sizeof(after) || after < before) {
+        return fail("opening a second event reset a running PMU counter");
+    }
+    return 0;
 }
 
 /*
@@ -263,6 +316,50 @@ static int parse_event_config(const char *body, uint64_t *out) {
     return 0;
 }
 
+static int check_optional_cluster_source(const char *name) {
+    char path[192];
+    char buf[128];
+    snprintf(path, sizeof(path), "/sys/bus/event_source/devices/%s/type", name);
+    if (read_small_file(path, buf, sizeof(buf)) < 0) {
+        return errno == ENOENT ? 0 : fail("cluster PMU type read failed");
+    }
+    long type = 0;
+    if (parse_int(buf, &type) != 0 || type <= 0) {
+        return fail("cluster PMU type is invalid");
+    }
+
+    snprintf(path, sizeof(path), "/sys/bus/event_source/devices/%s/cpus", name);
+    if (read_small_file(path, buf, sizeof(buf)) < 0) {
+        return fail("cluster PMU CPU mask read failed");
+    }
+    long cpu = -1;
+    if (parse_int(buf, &cpu) != 0 || cpu < 0) {
+        return fail("cluster PMU CPU mask is invalid");
+    }
+
+    snprintf(path, sizeof(path),
+             "/sys/bus/event_source/devices/%s/events/cpu_cycles", name);
+    if (read_small_file(path, buf, sizeof(buf)) < 0) {
+        return fail("cluster PMU cycles alias read failed");
+    }
+    uint64_t config = 0;
+    if (parse_event_config(buf, &config) != 0) {
+        return fail("cluster PMU cycles alias is invalid");
+    }
+
+    struct perf_event_attr attr = {0};
+    attr.type = (uint32_t)type;
+    attr.config = config;
+    attr.size = (uint32_t)sizeof(attr);
+    attr.flags = PERF_ATTR_FLAG_DISABLED;
+    long fd = perf_event_open(&attr, -1, (int)cpu, -1, 0ul);
+    if (fd < 0) {
+        return fail("sysfs cluster PMU type could not be opened");
+    }
+    close((int)fd);
+    return 0;
+}
+
 int main(void) {
 #if !defined(__aarch64__)
     /* Hardware-PMU perf is aarch64-only (ARM PMUv3); skip-as-pass on other
@@ -293,6 +390,25 @@ int main(void) {
             /* Readable but unparseable is still "supported"; just echo raw. */
             printf("STARRY_PERF_PMU_SYSFS paranoid_raw=\"%s\"\n", buf);
         }
+    }
+
+    /* Linux registers perf_swevent as the `software` PMU with fixed type 1.
+     * Upstream perf requires this sysfs source to resolve names such as
+     * `task-clock`, even though perf_event_open itself uses the fixed type. */
+    n = read_small_file(PATH_SOFTWARE_TYPE, buf, sizeof(buf));
+    if (n < 0) {
+        char msg[160];
+        snprintf(msg, sizeof(msg), "open(%s) failed errno=%d",
+                 PATH_SOFTWARE_TYPE, errno);
+        return fail(msg);
+    }
+    rstrip(buf);
+    long software_type = 0;
+    if (parse_int(buf, &software_type) != 0 || software_type != 1) {
+        char msg[160];
+        snprintf(msg, sizeof(msg), "invalid %s contents=\"%.48s\"",
+                 PATH_SOFTWARE_TYPE, buf);
+        return fail(msg);
     }
 
     /*
@@ -406,11 +522,7 @@ int main(void) {
     (void)ioctl(efd, PERF_EVENT_IOC_RESET, 0);
     (void)ioctl(efd, PERF_EVENT_IOC_ENABLE, 0);
 
-    volatile uint64_t spin = 0;
-    for (uint64_t i = 0; i < 20000000ull; i++) {
-        spin += i;
-    }
-    (void)spin;
+    burn_cycles();
 
     (void)ioctl(efd, PERF_EVENT_IOC_DISABLE, 0);
 
@@ -438,6 +550,16 @@ int main(void) {
     }
 
     close(efd);
+
+    if (ok && check_second_open_preserves_running_counter() != 0) {
+        ok = 0;
+    }
+    if (ok && check_optional_cluster_source("armv8_cortex_a55") != 0) {
+        ok = 0;
+    }
+    if (ok && check_optional_cluster_source("armv8_cortex_a76") != 0) {
+        ok = 0;
+    }
 
     if (ok) {
         /* Exactly one success sentinel line. */

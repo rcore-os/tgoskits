@@ -1,0 +1,14 @@
+# Serialize PMU timer/EL-transition updates on the icount execution timeline.
+# Other system tests retain the default MTTCG clock and execution model.
+args = [
+    "-icount", "shift=auto,align=off,sleep=on",
+    "-nographic", "-machine", "virt,gic-version=3,its=on",
+    "-m", "512M", "-cpu", "cortex-a53,pmu=on", "-smp", "4",
+    "-device", "nvme,serial=deadbeef,drive=nvm,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+]
+uefi = false
+to_bin = true
+test_commands = ["exec /usr/bin/starry-run-system-tests"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
+timeout = 1800

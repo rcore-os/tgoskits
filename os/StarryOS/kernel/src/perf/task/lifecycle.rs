@@ -10,14 +10,15 @@ pub fn on_exec(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let now = now_ns();
+    let _guard = crate::sync::NoPreemptIrqSave::new();
+    perf_sched_out(thr);
     thr.perf_context().with_counters(|counters| {
         for ptc in counters.iter() {
             if ptc.run_state.lock().is_stopping() {
                 continue;
             }
-            if ptc.enable_on_exec && !ptc.enabled.swap(true, Ordering::AcqRel) {
-                ptc.enabled_at_ns.store(now, Ordering::Release);
+            if ptc.enable_on_exec.swap(false, Ordering::AcqRel) {
+                ptc.enabled.store(true, Ordering::Release);
             }
         }
     });
@@ -61,6 +62,7 @@ pub(in crate::perf) fn sideband_target(
         sample_type: ptc.sample_type,
         sample_id_all: ptc.sample_id_all,
         id: ptc.sample_id.load(Ordering::Relaxed),
+        stream_id: ptc.stream_id.load(Ordering::Relaxed),
         pid,
         tid,
     })
@@ -76,12 +78,24 @@ pub(in crate::perf) fn sideband_target(
 /// `free_hw` is idempotent per counter; safe even if the perf fd is still open
 /// (its `Drop` will call `free_hw` again and find it already freed).
 pub fn on_task_exit(thr: &Thread) {
+    let system_exit = sideband::system_targets(thr);
+
     // Closing and snapshotting share the same lock as attach. An open either
     // commits into this exact snapshot or observes the tombstone and returns
     // ESRCH; no counter can appear after cleanup has selected its ownership set.
     let counters = thr.perf_context().close_and_snapshot();
-    if counters.is_empty() {
-        return;
+    for target in system_exit.into_iter().filter(|target| target.task) {
+        let parent = thr.proc_data.proc.parent().and_then(|parent| {
+            let number = parent.identity().visible_number_in(target.observer)?;
+            Some((TgidNumber::from(number), TidNumber::from(number)))
+        });
+        sideband::emit_exit(
+            &target.target,
+            target.target.pid,
+            parent.map(|(parent_pid, _)| parent_pid),
+            target.target.tid,
+            parent.map(|(_, parent_tid)| parent_tid),
+        );
     }
     for ptc in &counters {
         if ptc.want_task
@@ -165,7 +179,9 @@ pub(crate) fn free_hw(ptc: &Arc<PerTaskCounter>) -> crate::StarryResult<()> {
         }
         ptc.clear_family_output();
     }
-    crate::perf::hw_allocation::free_counter(ptc.counter);
+    if !ptc.flexible {
+        crate::perf::hw_allocation::free_counter(ptc.counter);
+    }
     if resource_claim == PmuResourceClaim::Published {
         let previous = PERF_TASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
         assert!(previous > 0, "task perf active count underflow");

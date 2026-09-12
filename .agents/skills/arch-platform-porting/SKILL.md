@@ -13,6 +13,10 @@ description: 为 ArceOS、StarryOS、Axvisor、someboot、动态统一可扩展�
 
 ## 初步检查
 
+Starry AArch64 Linux perf 的 `perf-*` 子用例通过 `grouped_qemu_profiles` 使用独立的 `perf-aarch64.toml`；该配置与 `apps/starry/linux-perf` 使用 `-icount shift=auto,align=off,sleep=on`，避免 QEMU PMU 定时器插入异常返回前后计数基线转换的空窗。不得把 icount 加到整个 system suite：普通时间与设备测试保留默认 MTTCG 配置。保留 guest SMP4，但不把 icount 结果解释成 MTTCG 宿主并行或真实 PMU 性能证明；计数跳变时检查 `docs/design/starry-aarch64-linux-perf.md` 的模拟器边界，不放宽组计数断言。
+
+Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 与 cluster 策略保留在 `perf::event_map`，不恢复已删除的 `ax_cpu::pmu::counter/cycles/overflow` 自由函数。IRQ 现场由 `ax_cpu::trap::InterruptedContext` 经 HAL 按值保留，AArch64 LR 必须来自入口保存的 x30，不能另建 PMU 专属逐核现场。计数器停止后先结算 pending wrap，再调用会清除标志的 `disable_overflow_irq()`。Starry 的 32 位软件扩展要求首次 reset 后、发布任何事件前选择短计数模式；其他 PMU 消费者继续使用自己的宽度策略。
+
 1. 确定变化层：目标规格、axbuild、测试套件配置、someboot、axcpu、axplat-dyn 或 somehal、设备驱动或操作系统配置。
 2. 先检查最接近且已工作的体系结构。动态统一可扩展固件接口路径优先与 x86_64 比较，不要直接创造新行为。
 3. 从 QEMU 参数一直追踪到内核入口的完整启动契约。固件、目标二进制接口、加载器和运行时平台不一致时，只改 QEMU 配置不能解决问题。
