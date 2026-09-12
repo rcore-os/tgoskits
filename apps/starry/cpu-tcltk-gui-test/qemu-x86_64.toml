@@ -1,0 +1,21 @@
+# cpu-tcltk-gui-test x86_64 - the "pyte for GUI widgets" carpet for Tcl/Tk: real Tk widgets/canvas/photo
+# rendering against a headless X server (Xvfb, virtual framebuffer - no physical display), asserting
+# CLOSED-FORM goldens: exact photo-image pixels, exact canvas item geometry (coords/bbox), exact
+# pack/grid/place child geometry, exact font measure/metrics, and post-event widget state from injected
+# `event generate` mouse/key events. Tcl/Tk is interpreted (the carpet TESTS Tk, it does not reimplement
+# widgets); the tcl/tk runtime + Xvfb are staged into the overlay by prebuild via apk. No GPU.
+# run_all.sh brings up Xvfb on :99 and runs each .tcl cell under wish. -smp 1: single vCPU.
+# 1024M: the Xorg (Xvfb) server + Tk font/photo engines need headroom beyond a text parser.
+args = [
+    "-nographic", "-cpu", "Haswell", "-m", "1024M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 30000

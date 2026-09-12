@@ -1,0 +1,18 @@
+# cpu-tcltk-gui-test aarch64 - "pyte for GUI widgets" for Tcl/Tk. Real Tk widgets/canvas/photo against a
+# headless Xvfb X server (no display); closed-form photo pixels, canvas item geometry (coords/bbox),
+# pack/grid/place geometry, font measure/metrics, and injected `event generate` interaction state. Tcl/Tk
+# interpreted (carpet tests Tk); tcl/tk runtime + Xvfb staged into the overlay. -cpu max exposes the full
+# AArch64 feature set. -smp 1: single vCPU. 1024M: Xvfb server + Tk engines.
+args = [
+    "-nographic", "-cpu", "max", "-m", "1024M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 30000
