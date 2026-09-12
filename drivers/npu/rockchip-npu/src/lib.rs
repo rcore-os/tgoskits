@@ -325,9 +325,16 @@ impl Rknpu {
         self.iommu_enabled
     }
 
-    /// Enable or disable IOMMU
+    /// Enable or disable IOMMU-backed submissions.
+    ///
+    /// Enabling the flag cannot make a direct DMA domain safe, so it is only
+    /// recorded when the device DMA capability is translated.
     pub fn set_iommu_enabled(&mut self, enabled: bool) {
-        self.iommu_enabled = enabled;
+        self.iommu_enabled = enabled
+            && matches!(
+                self.dma.info().domain(),
+                dma_api::DmaDomainId::Translated(_)
+            );
     }
 
     // /// Commit a prepared job descriptor to the hardware command parser.

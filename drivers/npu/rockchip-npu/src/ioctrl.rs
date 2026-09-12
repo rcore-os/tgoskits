@@ -229,6 +229,21 @@ impl Rknpu {
         tasks: &mut [RknpuTask],
         clock: &mut impl FnMut() -> u64,
     ) -> Result<(), RknpuError> {
+        // The command stream can contain DMA addresses that are not visible in
+        // the task descriptor itself.  A direct DMA domain therefore cannot be
+        // made safe by checking the GEM containing the command buffer; require
+        // both an enabled IOMMU and a translated device domain before touching
+        // any submission state or MMIO.
+        if !self.iommu_enabled
+            || !matches!(
+                self.dma.info().domain(),
+                dma_api::DmaDomainId::Translated(_)
+            )
+        {
+            warn!("rknpu submit rejected: translated IOMMU domain is unavailable");
+            return Err(RknpuError::IommuError);
+        }
+
         if args.flags & 1 << 1 > 0 {
             debug!("Nonblock task");
         }
@@ -492,7 +507,88 @@ impl Rknpu {
 
 #[cfg(test)]
 mod tests {
+    use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
+
+    use dma_api::{
+        DeviceDma, DmaAllocHandle, DmaConstraints, DmaDeviceInfo, DmaDirection, DmaError,
+        DmaMapHandle, DmaOp,
+    };
+
     use super::*;
+
+    struct NoopDmaOp;
+
+    impl DmaOp for NoopDmaOp {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _constraints: DmaConstraints,
+            _layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            None
+        }
+
+        unsafe fn dealloc_contiguous(&self, _handle: DmaAllocHandle) {}
+
+        unsafe fn alloc_coherent(
+            &self,
+            _constraints: DmaConstraints,
+            _layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            None
+        }
+
+        unsafe fn dealloc_coherent(&self, _handle: DmaAllocHandle) -> Result<(), DmaError> {
+            Ok(())
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: DmaConstraints,
+            _addr: NonNull<u8>,
+            _size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            Err(DmaError::NoMemory)
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
+    }
+
+    static NOOP_DMA_OP: NoopDmaOp = NoopDmaOp;
+
+    fn direct_dma() -> DeviceDma {
+        DeviceDma::new(
+            DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::Coherent,
+                DmaConstraints::new(u32::MAX as u64),
+            ),
+            &NOOP_DMA_OP,
+        )
+    }
+
+    #[test]
+    fn direct_dma_submit_is_rejected_before_hardware_access() {
+        let mut npu = Rknpu::new(
+            &[NonNull::dangling()],
+            crate::RknpuConfig {
+                rknpu_type: crate::RknpuType::Rk3588,
+            },
+            direct_dma(),
+        )
+        .expect("direct DMA is valid for non-submit GEM operations");
+        npu.set_iommu_enabled(true);
+
+        let mut args = RknpuSubmit::default();
+        let mut tasks = [];
+        let result = npu.submit_ioctrl(&mut args, &mut tasks, &mut || 0);
+
+        assert_eq!(result, Err(RknpuError::IommuError));
+    }
 
     #[test]
     fn abi_timeout_is_converted_from_microseconds_to_nanoseconds() {
