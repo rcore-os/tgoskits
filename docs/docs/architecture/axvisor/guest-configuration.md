@@ -158,6 +158,8 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 
 Machine 的默认 selector 不经过 `PhysicalDeviceRef` 反序列化，因此可以使用内部发现根 `/`。这不放宽用户 schema：在 TOML 中写 `{ path = "/" }` 仍会由 `InvalidPhysicalDevicePath` 拒绝。只有 `guest_type = "passthrough"` 且用户 `passthrough` 为空时，应用层才可能采用 Machine 默认值；用户提供任何具体 path 后就不会注入该默认 selector。
 
+实体板卡使用 `browser-console` 时，`disabled` 还必须覆盖 Axvisor 实体网卡的完整宿主资源闭包。PCIe Host Bridge 被隐式过滤不代表独立 PHY、USB/DP Combo PHY、共享复位和时钟不会进入客户机；Orange Pi 5 Plus 的精确节点、失联现象和验证配置见[客户机控制台的实体板卡网络资源](./guest-console.md#8-实体板卡网络资源)。
+
 一项 `[[devices.virtual]]` 包含固定字段和开放 options：
 
 | 字段 | 类型 | 校验位置 |

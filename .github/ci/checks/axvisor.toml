@@ -324,3 +324,17 @@ cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
 [[check.suite]]
 kind = "axvisor-board"
 board = "orangepi-5-plus-robot-linux"
+
+[[check]]
+id = "test-orangepi-5-plus-dualguest-robot"
+impact_targets = ["axvisor:aarch64", "starry:aarch64"]
+name = "Board OrangePi 5 Plus DualGuest robot · Linux/StarryOS + Zephyr"
+runner = "board"
+timeout_minutes = 30
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-dualguest-robot
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-dualguest-robot"
