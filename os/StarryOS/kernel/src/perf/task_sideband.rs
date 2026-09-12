@@ -18,20 +18,6 @@ const PROT_EXEC: u32 = 4;
 const MAP_SHARED: u32 = 1;
 const MAP_PRIVATE: u32 = 2;
 
-pub(in crate::perf) fn system_subject(thr: &Thread) -> Option<(TgidNumber, TidNumber)> {
-    let observer = thr.active_pid_namespace().id();
-    let pid = thr
-        .proc_data
-        .identity()
-        .visible_number_in(observer)
-        .map(TgidNumber::from)?;
-    let tid = thr
-        .pid_identity()
-        .visible_number_in(observer)
-        .map(TidNumber::from)?;
-    Some((pid, tid))
-}
-
 /// Snapshots executable file-backed mappings without retaining the address-space
 /// lock across ring publication.
 fn collect_exec_maps(thr: &Thread) -> Vec<Mmap2Info> {
@@ -94,17 +80,15 @@ pub(crate) fn on_exec_sideband(thr: &Thread) {
             })
             .collect()
     };
-    if let Some((pid, tid)) = system_subject(thr) {
-        targets.extend(
-            sideband::system_targets(pid, tid)
-                .into_iter()
-                .map(|target| WantTarget {
-                    target: target.target,
-                    comm: target.comm,
-                    mmap2: target.mmap2,
-                }),
-        );
-    }
+    targets.extend(
+        sideband::system_targets(thr)
+            .into_iter()
+            .map(|target| WantTarget {
+                target: target.target,
+                comm: target.comm,
+                mmap2: target.mmap2,
+            }),
+    );
     if targets.is_empty() {
         return;
     }
@@ -148,14 +132,12 @@ pub(crate) fn on_mmap_sideband(
             .filter_map(|counter| sideband_target(counter, thr))
             .collect()
     };
-    if let Some((pid, tid)) = system_subject(thr) {
-        targets.extend(
-            sideband::system_targets(pid, tid)
-                .into_iter()
-                .filter(|target| target.mmap2)
-                .map(|target| target.target),
-        );
-    }
+    targets.extend(
+        sideband::system_targets(thr)
+            .into_iter()
+            .filter(|target| target.mmap2)
+            .map(|target| target.target),
+    );
     if targets.is_empty() {
         return;
     }
@@ -200,23 +182,22 @@ pub(crate) fn on_clone_sideband(
                 })
                 .collect()
         };
-    let observer = parent_thr.active_pid_namespace().id();
-    if let (Some((parent_pid, parent_tid)), Some(child_pid), Some(child_tid)) = (
-        system_subject(parent_thr),
-        child_process
-            .visible_number_in(observer)
-            .map(TgidNumber::from),
-        child_thread
-            .visible_number_in(observer)
-            .map(TidNumber::from),
-    ) {
-        targets.extend(
-            sideband::system_targets(parent_pid, parent_tid)
-                .into_iter()
-                .filter(|target| target.task)
-                .map(|target| (target.target, child_pid, child_tid, parent_pid, parent_tid)),
-        );
-    }
+    targets.extend(
+        sideband::system_targets(parent_thr)
+            .into_iter()
+            .filter(|target| target.task)
+            .filter_map(|target| {
+                let child_pid = child_process
+                    .visible_number_in(target.observer)
+                    .map(TgidNumber::from)?;
+                let child_tid = child_thread
+                    .visible_number_in(target.observer)
+                    .map(TidNumber::from)?;
+                let parent_pid = target.target.pid;
+                let parent_tid = target.target.tid;
+                Some((target.target, child_pid, child_tid, parent_pid, parent_tid))
+            }),
+    );
     for (target, child_pid, child_tid, parent_pid, parent_tid) in &targets {
         sideband::emit_fork(target, *child_pid, *parent_pid, *child_tid, *parent_tid);
     }

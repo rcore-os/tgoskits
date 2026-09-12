@@ -35,7 +35,7 @@ use ax_lazyinit::LazyInit;
 use super::output::PerfRingOutput;
 use crate::{
     sync::IrqMutex,
-    task::{TgidNumber, TidNumber},
+    task::{PidNamespaceId, TgidNumber, Thread, TidNumber},
 };
 
 /// `PERF_RECORD_COMM`.
@@ -64,6 +64,7 @@ pub fn initialize() {
 /// Side-band-only subscription for one fixed CPU perf context.
 pub struct SystemSidebandSource {
     owner_cpu: usize,
+    observer: PidNamespaceId,
     sample_type: u64,
     sample_id_all: bool,
     want_comm: bool,
@@ -88,6 +89,10 @@ impl SystemSidebandSource {
         }
         let source = Arc::new(Self {
             owner_cpu,
+            observer: crate::task::current_user_task()
+                .as_thread()
+                .active_pid_namespace()
+                .id(),
             sample_type,
             sample_id_all,
             want_comm,
@@ -122,12 +127,22 @@ impl SystemSidebandSource {
         super::output::PerfOutputScope::Cpu(self.owner_cpu)
     }
 
-    fn target(&self, pid: TgidNumber, tid: TidNumber) -> Option<SystemSidebandTarget> {
+    fn target(&self, thread: &Thread) -> Option<SystemSidebandTarget> {
         if !self.enabled.load(Ordering::Acquire) {
             return None;
         }
         let ring = self.redirect.lock().clone()?;
+        let pid = thread
+            .proc_data
+            .identity()
+            .visible_number_in(self.observer)
+            .map(TgidNumber::from)?;
+        let tid = thread
+            .pid_identity()
+            .visible_number_in(self.observer)
+            .map(TidNumber::from)?;
         Some(SystemSidebandTarget {
+            observer: self.observer,
             target: SidebandTarget {
                 ring,
                 sample_type: self.sample_type,
@@ -151,6 +166,7 @@ impl Drop for SystemSidebandSource {
 }
 
 pub struct SystemSidebandTarget {
+    pub observer: PidNamespaceId,
     pub target: SidebandTarget,
     pub comm: bool,
     pub mmap2: bool,
@@ -158,7 +174,7 @@ pub struct SystemSidebandTarget {
 }
 
 /// Snapshots enabled fixed-CPU side-band sources for the executing CPU.
-pub fn system_targets(pid: TgidNumber, tid: TidNumber) -> Vec<SystemSidebandTarget> {
+pub fn system_targets(thread: &Thread) -> Vec<SystemSidebandTarget> {
     if SYSTEM_SOURCE_COUNT.load(Ordering::Acquire) == 0 {
         return Vec::new();
     }
@@ -173,7 +189,7 @@ pub fn system_targets(pid: TgidNumber, tid: TidNumber) -> Vec<SystemSidebandTarg
             return false;
         };
         if source.owner_cpu == cpu
-            && let Some(target) = source.target(pid, tid)
+            && let Some(target) = source.target(thread)
         {
             targets.push(target);
         }

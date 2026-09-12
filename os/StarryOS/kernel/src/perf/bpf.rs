@@ -163,6 +163,8 @@ pub struct BpfPerfEventWrapper {
     #[cfg(target_arch = "aarch64")]
     sideband: Option<Arc<SystemSidebandSource>>,
     #[cfg(target_arch = "aarch64")]
+    sideband_enable_at_open: bool,
+    #[cfg(target_arch = "aarch64")]
     inert_tracking_output: bool,
 }
 
@@ -185,12 +187,15 @@ impl BpfPerfEventWrapper {
             #[cfg(target_arch = "aarch64")]
             sideband: None,
             #[cfg(target_arch = "aarch64")]
+            sideband_enable_at_open: false,
+            #[cfg(target_arch = "aarch64")]
             inert_tracking_output: false,
         }
     }
 
     #[cfg(target_arch = "aarch64")]
     fn with_system_sideband(mut self, owner_cpu: usize, attr: &perf_event_attr) -> Self {
+        self.sideband_enable_at_open = attr.disabled() == 0;
         self.sideband = SystemSidebandSource::register(
             owner_cpu,
             attr.sample_type,
@@ -257,6 +262,16 @@ impl Debug for BpfPerfEventWrapper {
 }
 
 impl PerfEventOps for BpfPerfEventWrapper {
+    fn finish_open(&mut self) -> StarryResult<()> {
+        // The generic fd constructor has assigned the event ID by this point.
+        // Publish eager tracking only after that identity is initialized.
+        #[cfg(target_arch = "aarch64")]
+        if let Some(sideband) = &self.sideband {
+            sideband.set_enabled(self.sideband_enable_at_open);
+        }
+        Ok(())
+    }
+
     fn enable(&mut self) -> StarryResult<()> {
         self.state.lock().inner.enable().into_starry_result()?;
         #[cfg(target_arch = "aarch64")]

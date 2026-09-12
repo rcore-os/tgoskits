@@ -19,7 +19,7 @@
 | task target | `pid >= 0,cpu == -1` 跟随线程；`cpu >= 0` 时限定运行 CPU | `PerfTarget::Task` |
 | CPU target | `pid == -1,cpu >= 0` 为 system-wide；`-1/-1` 返回 `EINVAL` | `PerfTarget::Cpu` |
 | group | 默认 ioctl 只控制指定 event，`PERF_IOC_FLAG_GROUP` 才控制整组；读快照 leader-first；跨上下文 link 返回 `EINVAL` | `PerfEvent::{members,group_leader,read_group}`、`PerTaskCounter::link_group()`；缺少统一 coordinator 的 fixed-CPU hardware group、mixed software/hardware group 和 direct system-wide sampling group 在资源分配前返回 `EOPNOTSUPP` |
-| output | `FD_OUTPUT` 与 `SET_OUTPUT` 只允许相同 perf context；`SET_OUTPUT(-1)` 解除重定向 | `PerfEvent::{redirect_to,set_output}`、`PerfEventOps::{redirect_output,detach_output}` |
+| output | `FD_OUTPUT` 与 `SET_OUTPUT` 只允许相同 perf context；`SET_OUTPUT(-1)` 解除重定向 | `PerfEvent::set_output()`、`PerfEventOps::{redirect_output,detach_output}` |
 | read | 支持 value、ID、`time_enabled`、`time_running`、LOST 与 GROUP | `PerfReadValues` |
 | RESET | 清零事件值，保留累计 `time_enabled/time_running`；停止事务必须先完成 | `SystemFlexCounter::{finish_slice,reset}`、`SwEventState::reset()`、`SwClock` |
 | sample | 支持 `PERF_SAMPLE_READ`、TID、CPU、period 和 kernel/user FP callchain；AArch64 `PERF_SAMPLE_REGS_USER` 接受零 mask 或 LR mask `1 << 30`，分别输出 ABI_NONE 或 ABI_64 与真实 LR | `sampling::{SampleSlot,SampleReadEntry,build_sample}`、`perf::unwind`、`perf::uapi::validate_perf_event_attr()` |
@@ -55,7 +55,7 @@ PMU 寄存器、IRQ PPI 和计数器槽天然属于 CPU。task event 的 fd 只�
 
 ### 2.1 每核状态
 
-`percpu::CPU_STATES` 按 CPU 缓存 `PmuInfo` 和复用游标；`PmuInfo` 包含 `MIDR_EL1`、counter 数量与宽度以及 `PMCEID0/1_EL0`。`hw_allocation::HwAlloc` 在同一个 `IrqMutex` 内维护可迁移 task-fixed 事件的全局保留 bitmap，以及 system event 与 flexible slice 共用的每 CPU bitmap。task-fixed 申请检查所有 CPU 的在用槽，CPU-local 申请只检查本核与全局保留，两者在锁内原子提交。system cycle counter 也逐 CPU 保留；全局 task cycle 保留与任何本核 cycle 保留互斥。system event 的分配、失败回滚与关闭都携带同一个 `PerfCpuId`，并从目标 CPU 的能力缓存校验事件，不再读取 opener CPU 的 PMU 能力。分配数量使用本次已验证目标的参数，不通过可被另一 opener 覆盖的全局数量传递。sysfs 从同一探测结果发布 event source 与 CPU mask。
+`percpu::CPU_STATES` 按 CPU 缓存 `PmuInfo` 和复用游标；`PmuInfo` 包含 `MIDR_EL1`、counter 数量与宽度以及 `PMCEID0/1_EL0`。`hw_allocation::HwAlloc` 在同一个 `IrqMutex` 内维护可迁移 task cycle 的全局保留状态，以及 system sampling 与 flexible slice 共用的每 CPU programmable bitmap。programmable counting 不在 open 时保留固定槽；generic/named cycles 优先申请专用 cycle，耗尽时也进入 flexible 队列。system cycle counter 也逐 CPU 保留；全局 task cycle 保留与任何本核 cycle 保留互斥。system event 的分配、失败回滚与关闭都携带同一个 `PerfCpuId`，并从目标 CPU 的能力缓存校验事件，不再读取 opener CPU 的 PMU 能力。分配数量使用本次已验证目标的参数，不通过可被另一 opener 覆盖的全局数量传递。sysfs 从同一探测结果发布 event source 与 CPU mask。
 
 `perf-hw-cpu-slots` 在四个 CPU 上各启用两个 system event，分别测试 sampling 与 counting。总数超过 QEMU 单核六个 programmable slot，但每核需求仍有余量。所有事件同时存在时读取非零计数，关闭后重复整个流程，验证独立容量与槽回收；旧全局 bitmap 在第七次 open 返回 `EBUSY`。
 
@@ -69,6 +69,8 @@ flowchart LR
 ```
 
 task event 用 `PmuRunState` 和携带 owner CPU、counter、registration 的 `PmuRunLease` 约束当前硬件代。RESET 先禁止重新调入并完成当前代停表，再清值和恢复原启用意图。disable、close 和线程退出先在 owner CPU 撤下 counter 与 `SampleSlot`，再释放保存 ring 生命周期的锚点，避免旧事件清除已经复用的槽或让 IRQ 看到失效指针。
+
+`hw_open::perf_event_open_hw()` 只对需要 programmable overflow 的路径要求 PMU IRQ；无 IRQ 描述的平台仍可使用 64 位专用 cycle 做非继承计数。sampling、programmable counting、cycle 回退和 task inherit 在缺少 IRQ 时返回 `ENODEV`，检查在创建 worker 前完成，已保留的专用槽在失败时回收。Linux v7.1 的 [`arm_pmu_platform.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/perf/arm_pmu_platform.c#L93-L114) 也保留无 IRQ 的 PMU，但仅对 sampling 返回 `EOPNOTSUPP`；Starry 的 programmable 软件扩展依赖 overflow，故这部分支持范围和错误码仍有明确差异。
 
 ### 2.2 调度与复用
 
@@ -103,6 +105,8 @@ stateDiagram-v2
 
 RESET 的精确清零由 kernel PMU 回归在 `exclude_kernel` 的活动槽上验证，同时检查硬件 enable 位、slot 起点及累计时间保持不变。用户态远端 RESET 回归主动覆盖调用者延后读取的合法状态：目标继续计数后，首次读数可以大于 RESET 前读数，不能用这个跨时间比较判断是否清零；用户态只验证控制返回、连续计数与时间不倒退，不弱化内核的精确清零检查。
 
+`HwPerfEventState::flexible_snapshot()` 为 system flexible 事件从 `SystemFlexCounter::read()` 取得逻辑累计值，并刷新 mmap 页的 offset 和时间；mmap、read 和控制操作都使用同一来源，不读取占位 counter 0。页的用户直接读能力保持关闭。`perf-hw-fifo-stop` 在停表后逐项比较 mmap 与 read 的值和时间。
+
 ### 2.3 group 与继承
 
 文件层 `PerfEvent::{members,group_leader}` 和硬件层 `PerTaskCounter` / `SystemCounter` 的双向 group link 都使用 `Weak`，避免关闭顺序形成引用环；fd 表、task 的 `perf_counters` 和 event backend 提供实际强所有权。link 时验证 task identity 或 CPU context 完全相同；控制传播先收集仍存活的成员，再逐一操作。与 Linux v7.1 一致，普通 ioctl 只作用于指定 event，只有 `PERF_IOC_FLAG_GROUP` 才从 leader 传播到 siblings；member 自己的 `attr.disabled` 状态不会在 link 时被改写。
@@ -121,7 +125,7 @@ software inherit 使用“每线程 slice + 共享 aggregate”结构。child �
 
 硬件 inherited child 使用独立的 flexible 资源，在每个 slice 从执行 CPU 取得物理槽，不复制 parent 的固定槽。`on_clone_inherit()` 在发布 child 前重建其 leader/sibling 关系。硬件与软件 binding 的 `enable_on_exec` 使用一次性原子状态；首次 exec 消费标志，后续 disable 不会被第二次 exec 撤销。fork 在 family ioctl 串行化边界内读取 parent 的实际启用状态，以保留 exec 对单个 binding 的影响。
 
-per-task sampling group 由 `PerTaskCounter` 统一调度并预构建 `PERF_SAMPLE_READ` 表。fixed-CPU flexible hardware event 目前各自拥有 `SystemFlexCounter` worker，mixed software/hardware group 也没有 Linux 的 PMU-context migration coordinator；这两类组合与 direct system-wide sampling group 都在创建 member backend 前返回 `EOPNOTSUPP`。这项显式拒绝防止“文件层已成组、硬件层却各自运行”的静默错误，也保证失败路径不残留 PMU 槽、worker 或调度注册。后续若补齐 fixed-CPU group，必须用同一个 coordinator 事务式取得全部槽并生成一次 leader-first read snapshot，不能恢复当前被拒绝的 no-op link。
+per-task sampling group 由 `PerTaskCounter` 统一调度并预构建 `PERF_SAMPLE_READ` 表。fixed-CPU flexible hardware event 目前各自拥有 `SystemFlexCounter` worker，mixed software/hardware group 也没有 Linux 的 PMU-context migration coordinator；这两类组合、direct system-wide sampling group，以及缺少计数组实现的 DUMMY/probe tracking backend 与其他事件建组，都在创建 member backend 前返回 `EOPNOTSUPP`。这项显式拒绝防止“文件层已成组、硬件层却各自运行”的静默错误，也保证失败路径不残留 PMU 槽、worker 或调度注册。后续若补齐 fixed-CPU group，必须用同一个 coordinator 事务式取得全部槽并生成一次 leader-first read snapshot，不能恢复当前被拒绝的 no-op link。
 
 ## 3. 中断与采样
 
@@ -135,7 +139,7 @@ AArch64 kernel IRQ 和 user IRQ 入口按值构造 `InterruptedContext { pc, sp,
 
 ### 3.2 ring 与 LOST
 
-`sampling::RingEndpoint` 同时拥有 cacheable `GlobalPage`、固定 mapping geometry 和 `IrqMutex` producer gate。VMA anchor 与 redirect source 对 endpoint 持 `Arc`；活动 `SampleSlot` 的裸 endpoint 指针只在 event 持有的强引用存续期内注册。所有 PMU、sideband 与 redirect writer 经过同一个串行化入口。
+`output::PerfRingOutput` 强持有 backing anchor、固定 mapping geometry 和原子 producer gate。VMA anchor、redirect source 与活动 `SampleSlot` 保持输出对象的强引用；尝试写入只执行一次 CAS，竞争时不等待。所有 PMU、sideband 与 redirect writer 经过同一个串行化入口。
 
 ring 无空间或 producer gate 竞争时增加 event 的 pending lost 数。下一次能够写入时先提交 `PERF_RECORD_LOST`，成功后才清零 pending 数，再尝试当前 record；任一步失败都保留累计值。该过程不等待消费者，因此满环测试能在有限时间内结束。
 
@@ -147,7 +151,7 @@ ring 无空间或 producer gate 竞争时增加 event 的 pending lost 数。下
 
 `PERF_SAMPLE_READ` 在 arm 前构建有容量上限的 `[SampleReadEntry; MAX_SAMPLE_READ_EVENTS]` 并存入 `SampleSlot`。数组按 leader-first 保存稳定 callback context 和 event ID，IRQ 只做 owner-local PMU/原子读取与定长编码，不遍历可变 group 列表，也不进行分配。`build_sample()` 按 Linux 顺序先编码 `ID/STREAM_ID/CPU/PERIOD/READ`，再编码 callchain 和 `REGS_USER` ABI word；`SAMPLE_RECORD_MAX_LEN` 为每个支持字段保留固定上界。group member 保留自己的 `attr.disabled` 状态；仅 leader disabled、member enabled 的常见 perf 模式会在 leader 启用时整体装载。
 
-task 的 `SampleReadEntry::owned()` 强持有回调对象，直到注册代被撤销。`ThreadPerfContext::attach()` 保留仍被 sampling slot 引用的已关闭 counter，使 scheduler 撤销 slot 时不会执行 counter 的最后析构；后续 task-context attach 或线程释放完成回收。非 GROUP 采样只读取 source；GROUP 采样保持 leader-first 顺序。各 event 的 `SamplingCount` 独立累计 raw delta，回调只读取累计快照，不通过数组位置推断 overflow 归属。
+`SampleReadEntry::owned()` 强持有回调对象，直到注册代被撤销。system sampling 独立分配 `Arc<SamplingReadState>`，IRQ 只访问其中的计数与原子时间，不从 callback 裸指针借用正在控制锁下修改的 `HwPerfEventState`。task 的回调同样保留强引用。`ThreadPerfContext::attach()` 保留仍被 sampling slot 引用的已关闭 counter，使 scheduler 撤销 slot 时不会执行 counter 的最后析构；后续 task-context attach 或线程释放完成回收。非 GROUP 采样只读取 source；GROUP 采样保持 leader-first 顺序。各 event 的 `SamplingCount` 独立累计 raw delta，回调只读取累计快照，不通过数组位置推断 overflow 归属。
 
 `SamplingCountState::remaining` 跟踪逻辑周期剩余事件数，每次 raw 更新扣除已观察的 delta。单次硬件装载由 `hardware_period()` 限制为 `u32::MAX >> 1`，为中断延迟留出余量。中间片段 IRQ 只重装计数器；仅 `period_complete()` 为真时输出样本，`PERF_SAMPLE_PERIOD` 仍是请求的逻辑周期。`rearm()` 保留溢出后的超额计数，避免丢失整个 32 位回绕或提前产生样本。
 
@@ -192,6 +196,8 @@ CPU-wide 软件事件通过 `SYSTEM_CONTEXTS` 共享每 CPU 一个可睡眠控�
 
 software event 同样参加 group 控制和 sample read。关闭 leader、先关闭成员或 child 先退出均不得留下悬空引用；退出路径先复制事件 `Arc` 列表并释放 thread lock，再执行可能等待 owner CPU 的 teardown。
 
+system sideband 的 `SystemSidebandSource::observer` 捕获 opener 的 PID namespace；`system_targets()` 和 clone/exit hook 按该 namespace 解析每条记录及 sample-id 尾部的身份，不采用被观察任务自己的 namespace。`BpfPerfEventWrapper::finish_open()` 在发布 event ID 后应用 `disabled=0`。`perf-hw-sideband` 在子任务进入新 PID namespace 后验证 COMM、MMAP2、EXIT 的外层身份，同时覆盖显式 ENABLE 和初始启用。
+
 ## 5. 验证边界
 
 验证分成确定性 host contract、Starry QEMU system case、upstream perf app 和真实板卡四层。每层证明不同事实，QEMU 绿色不能被解释成真实 PMU 性能正确。
@@ -215,6 +221,8 @@ cargo xtask starry app qemu -t linux-perf --arch aarch64
 ```
 
 system cases 覆盖 target 矩阵、SMP 迁移、超槽复用、group 生命周期、ring wrap/redirect、有限时长 LOST、四层用户 FP callchain、software inherit、enable-on-exec、HW_CACHE 支持矩阵以及 attr/flags 错误顺序。upstream perf smoke 只依赖 cycles 和 software events，不用默认 instructions 作为成功条件。
+
+无 IRQ 回归使用 `perf-hw-cycles --no-pmu-irq`：用与 profile 相同的 QEMU virt、A53、4 CPU 和 512M 参数导出 DTB，再以 `fdtput -d <dtb> /pmu interrupts` 删除中断描述。在临时 profile 中增加 `-dtb <dtb>` 并定向执行该程序，结束后恢复 profile。测试要求 task/system 专用 cycle 正常计数与关闭后重开，同时确认 sampling、inherit 和反复回退失败不会泄漏槽。这是定向手工环境，常规 CI profile 不声称覆盖它。纯计数扩展、target 和生命周期模型测试位于生产模块末尾，不通过集成测试包含私有源码。
 
 ### 5.2 OrangePi 5 Plus
 

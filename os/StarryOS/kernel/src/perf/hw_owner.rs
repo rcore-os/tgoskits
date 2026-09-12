@@ -1,16 +1,10 @@
 //! CPU-local ARM PMUv3 operations and value-only rendezvous requests.
 
+pub(super) use super::sampling_lifecycle::Counter;
 use super::{
     sampling::{self, SampleOutput, SampleSlot},
     sampling_lifecycle::SampleRegistration,
 };
-
-/// Hardware counter selected for one PMU event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Counter {
-    Cycle,
-    Programmable(usize),
-}
 
 impl Counter {
     pub(super) fn configure(

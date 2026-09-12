@@ -112,3 +112,49 @@ impl PerfTarget {
         }
     }
 }
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linux_perf_target_matrix_distinguishes_task_and_cpu_contexts() {
+        assert_ne!(PerfTargetKind::Task, PerfTargetKind::Cpu);
+        let PerfTarget::Task { task, cpu } = PerfTarget::parse(0, -1).unwrap() else {
+            panic!("pid 0 must select a task context");
+        };
+        assert_eq!(task, PerfTaskTarget::Current);
+        assert_eq!(cpu.resolve_optional(4).unwrap(), None);
+
+        let PerfTarget::Task { task, cpu } = PerfTarget::parse(42, 2).unwrap() else {
+            panic!("a positive pid must select a task context");
+        };
+        assert_eq!(task, PerfTaskTarget::Tid(42));
+        assert_eq!(cpu.resolve_optional(4).unwrap(), Some(PerfCpuId::new(2)));
+
+        let PerfTarget::Cpu(cpu) = PerfTarget::parse(-1, 3).unwrap() else {
+            panic!("pid -1 must select a CPU context");
+        };
+        assert_eq!(cpu.resolve_required(4).unwrap(), PerfCpuId::new(3));
+    }
+
+    #[test]
+    fn linux_perf_target_matrix_rejects_invalid_tuples() {
+        assert_eq!(
+            PerfTarget::parse(-2, 0),
+            Err(PerfTargetError::NoSuchProcess)
+        );
+
+        let PerfTarget::Cpu(cpu) = PerfTarget::parse(-1, -1).unwrap() else {
+            panic!("pid -1 must select a CPU context before CPU validation");
+        };
+        assert_eq!(cpu.resolve_required(4), Err(PerfTargetError::InvalidTuple));
+
+        for (pid, cpu) in [(0, -2), (1, 4)] {
+            let PerfTarget::Task { cpu, .. } = PerfTarget::parse(pid, cpu).unwrap() else {
+                panic!("pid={pid} must select a task before CPU validation");
+            };
+            assert_eq!(cpu.resolve_optional(4), Err(PerfTargetError::InvalidTuple));
+        }
+    }
+}

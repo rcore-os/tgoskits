@@ -63,7 +63,7 @@ static void ring_copy(const uint8_t *ring, uint64_t size, uint64_t at,
 }
 #endif
 
-int main(void) {
+static int check_sample_read(int system) {
 #if !defined(__aarch64__)
     puts("STARRY_PERF_SAMPLE_READ_OK");
     return 0;
@@ -76,7 +76,7 @@ int main(void) {
         .sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_READ,
         .flags = PERF_ATTR_FLAG_DISABLED,
     };
-    int fd = (int)syscall(SYS_PERF_EVENT_OPEN, &attr, 0, -1, -1, 0ul);
+    int fd = (int)syscall(SYS_PERF_EVENT_OPEN, &attr, system ? -1 : 0, system ? 0 : -1, -1, 0ul);
     if (fd < 0) {
         printf("perf-sample-read FAILED: open errno=%d\n", errno);
         return 1;
@@ -140,7 +140,12 @@ int main(void) {
         puts("perf-sample-read FAILED: non-monotonic sample read values");
         return 1;
     }
-    puts("STARRY_PERF_SAMPLE_READ_OK");
     return 0;
 #endif
+}
+
+int main(void) {
+    if (check_sample_read(0) || check_sample_read(1)) return 1;
+    puts("STARRY_PERF_SAMPLE_READ_OK");
+    return 0;
 }

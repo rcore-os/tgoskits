@@ -414,6 +414,22 @@ int main(void) {
     }
     close(member);
 
+    /* Tracking/probe backends have no counting-group coordinator. Reject
+     * both orders before publication instead of installing a no-op link. */
+    for (int order = 0; order < 2; ++order) {
+        leader = open_sw(order ? 9u : PERF_COUNT_SW_CPU_CLOCK, 0, -1);
+        errno = 0;
+        member = open_sw(order ? PERF_COUNT_SW_CPU_CLOCK : 9u, 0, leader);
+        int saved_errno = errno;
+        if (member >= 0) close(member);
+        if (leader >= 0) close(leader);
+        if (leader < 0 || member >= 0 || saved_errno != EOPNOTSUPP) {
+            printf("perf-event-group FAILED: tracking group order=%d member=%d errno=%d\n",
+                   order, member, saved_errno);
+            return 1;
+        }
+    }
+
     /* Fixed-CPU flexible hardware events currently have independent workers.
      * Reject the member until one transactional group coordinator owns their
      * slots and snapshots; a file-level group alone would be misleading. */

@@ -58,7 +58,9 @@ use super::{
     cpu_worker,
     hw_allocation::free_system,
     hw_owner::{Counter, SystemPmuDisable, SystemPmuEnable, SystemPmuRead, SystemPmuReset},
-    hw_sampling::{SamplingState, alloc_sampling_ring, device_mmap_per_task, ring_has_data},
+    hw_sampling::{
+        SamplingReadState, SamplingState, alloc_sampling_ring, device_mmap_per_task, ring_has_data,
+    },
     inheritance::PerfInheritanceFamily,
     output::{PerfOutputScope, PerfRingOutput},
     rdpmc::{RdpmcMapping, RdpmcSnapshot, mapping_result},
@@ -72,7 +74,7 @@ use super::{
 use crate::sync::Mutex;
 
 #[cfg(target_arch = "aarch64")]
-fn system_sampling_snapshot(sampling: &SamplingState, now: u64) -> SampleReadValue {
+fn system_sampling_snapshot(sampling: &SamplingReadState, now: u64) -> SampleReadValue {
     let mut time_enabled = sampling.time_enabled_ns.load(Ordering::Acquire);
     let mut time_running = sampling.time_running_ns.load(Ordering::Acquire);
     let enabled_at = sampling.enabled_at_ns.load(Ordering::Acquire);
@@ -95,12 +97,10 @@ unsafe fn system_sample_read_irq(
     source_slot: usize,
     now: u64,
 ) -> SampleReadValue {
-    // SAFETY: the system event retains its state until synchronous unregister.
-    let state = unsafe { &*context.cast::<HwPerfEventState>() };
-    let sampling = state
-        .sampling
-        .as_ref()
-        .expect("sampling callback belongs to sampling state");
+    // SAFETY: the registry entry owns this independently allocated SamplingReadState
+    // through an Arc. Control only shares it, and the fields read by this IRQ
+    // callback use atomics or the owner-CPU SamplingCount lock.
+    let sampling = unsafe { &*context.cast::<SamplingReadState>() };
     sampling.sample_count.update(source_slot);
     system_sampling_snapshot(sampling, now)
 }
@@ -192,8 +192,8 @@ pub(super) struct TaskEventInit {
 #[cfg(target_arch = "aarch64")]
 impl HwPerfEventState {
     fn system_sample_read_entry(&self) -> SampleReadEntry {
-        SampleReadEntry::new(
-            core::ptr::from_ref(self).cast(),
+        SampleReadEntry::owned(
+            Arc::clone(&self.sampling.as_ref().expect("system sampling event").read),
             system_sample_read_irq,
             self.sample_id,
         )
@@ -212,10 +212,30 @@ impl HwPerfEventState {
         }
     }
 
+    fn flexible_snapshot(
+        &self,
+        flexible: &super::system_flex::SystemFlexCounter,
+    ) -> crate::StarryResult<RdpmcSnapshot> {
+        let (offset, time_enabled, time_running) = flexible.read()?;
+        let snapshot = RdpmcSnapshot {
+            offset,
+            time_enabled,
+            time_running,
+        };
+        // Direct reads remain disabled. Publish only the logical event's owner-
+        // consistent snapshot, never the placeholder physical counter index.
+        self.rdpmc.publish_inactive(snapshot);
+        Ok(snapshot)
+    }
+
     fn device_mmap_system_rdpmc(
         &self,
         len: usize,
     ) -> crate::StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+        if let Some(flexible) = &self.system_flexible {
+            let snapshot = self.flexible_snapshot(flexible)?;
+            return self.rdpmc.install(len, snapshot).map(mapping_result);
+        }
         let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         let hardware = cpu_worker::read_system(
             owner,
@@ -248,7 +268,9 @@ impl HwPerfEventState {
             return family.close();
         }
         if let Some(flexible) = &self.system_flexible {
-            return flexible.close();
+            flexible.close()?;
+            self.flexible_snapshot(flexible)?;
+            return Ok(());
         }
         let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         let stopped = cpu_worker::disable_system(
@@ -322,6 +344,7 @@ impl HwPerfEventState {
         }
         if let Some(flexible) = &self.system_flexible {
             flexible.enable();
+            self.flexible_snapshot(flexible)?;
             return Ok(());
         }
         if self.enabled_since.is_some() {
@@ -335,7 +358,7 @@ impl HwPerfEventState {
             let period = sampling.period;
             let mut read_entries = [const { SampleReadEntry::EMPTY }; MAX_SAMPLE_READ_EVENTS];
             read_entries[0] = self.system_sample_read_entry();
-            sampling.enabled_at_ns.store(
+            sampling.read.enabled_at_ns.store(
                 ax_runtime::hal::time::monotonic_time_nanos(),
                 Ordering::Release,
             );
@@ -347,9 +370,9 @@ impl HwPerfEventState {
             Some((
                 period,
                 SampleSlot::new(
-                    SampleOutput::new(ring, notify, Arc::clone(&sampling.loss)),
+                    SampleOutput::new(ring, notify, Arc::clone(&sampling.read.loss)),
                     SampleSlotConfig {
-                        count: Arc::clone(&sampling.sample_count),
+                        count: Arc::clone(&sampling.read.sample_count),
                         period,
                         sample_type: sampling.sample_type,
                         sample_id_all: sampling.sample_id_all,
@@ -389,7 +412,9 @@ impl HwPerfEventState {
             return family.disable();
         }
         if let Some(flexible) = &self.system_flexible {
-            return flexible.disable();
+            flexible.disable()?;
+            self.flexible_snapshot(flexible)?;
+            return Ok(());
         }
         let Some(since) = self.enabled_since else {
             return Ok(());
@@ -408,13 +433,15 @@ impl HwPerfEventState {
         self.time_enabled = self.time_enabled.saturating_add(elapsed);
         self.time_running = self.time_running.saturating_add(elapsed);
         if let Some(sampling) = &self.sampling {
-            let since = sampling.enabled_at_ns.swap(0, Ordering::AcqRel);
+            let since = sampling.read.enabled_at_ns.swap(0, Ordering::AcqRel);
             if since != 0 {
                 let elapsed = stopped.stopped_at.saturating_sub(since);
                 sampling
+                    .read
                     .time_enabled_ns
                     .fetch_add(elapsed, Ordering::AcqRel);
                 sampling
+                    .read
                     .time_running_ns
                     .fetch_add(elapsed, Ordering::AcqRel);
             }
@@ -429,7 +456,9 @@ impl HwPerfEventState {
             return family.reset();
         }
         if let Some(flexible) = &self.system_flexible {
-            return flexible.reset();
+            flexible.reset()?;
+            self.flexible_snapshot(flexible)?;
+            return Ok(());
         }
         if self.sampling.is_some() {
             let was_enabled = self.enabled_since.is_some();
@@ -437,6 +466,7 @@ impl HwPerfEventState {
             self.sampling
                 .as_ref()
                 .expect("sampling event")
+                .read
                 .sample_count
                 .reset_value();
             if was_enabled {
@@ -474,11 +504,11 @@ impl HwPerfEventState {
             });
         }
         if let Some(flexible) = &self.system_flexible {
-            let (value, time_enabled, time_running) = flexible.read()?;
+            let snapshot = self.flexible_snapshot(flexible)?;
             return Ok(PerfReadValues {
-                value,
-                time_enabled,
-                time_running,
+                value: snapshot.offset,
+                time_enabled: snapshot.time_enabled,
+                time_running: snapshot.time_running,
                 lost: 0,
                 read_format: self.read_format,
             });
@@ -490,17 +520,17 @@ impl HwPerfEventState {
                     owner,
                     SystemPmuRead {
                         counter: self.counter,
-                        sampling: Some(Arc::clone(&sampling.sample_count)),
+                        sampling: Some(Arc::clone(&sampling.read.sample_count)),
                     },
                 )?;
                 (snapshot.value, snapshot.observed_at)
             } else {
                 (
-                    sampling.sample_count.value(),
+                    sampling.read.sample_count.value(),
                     ax_runtime::hal::time::monotonic_time_nanos(),
                 )
             };
-            let snapshot = system_sampling_snapshot(sampling, observed_at);
+            let snapshot = system_sampling_snapshot(&sampling.read, observed_at);
             return Ok(PerfReadValues {
                 value,
                 time_enabled: snapshot.time_enabled,
@@ -529,7 +559,7 @@ impl HwPerfEventState {
             lost: self
                 .sampling
                 .as_ref()
-                .map_or(0, |sampling| sampling.loss.total()),
+                .map_or(0, |sampling| sampling.read.loss.total()),
             read_format: self.read_format,
         })
     }
@@ -643,7 +673,7 @@ impl HwPerfEventState {
                 self.system_owner.ok_or(crate::StarryError::BadState)?,
                 super::hw_owner::SystemPmuReplaceOutput {
                     registration,
-                    output: SampleOutput::new(ring, notify, Arc::clone(&sampling.loss)),
+                    output: SampleOutput::new(ring, notify, Arc::clone(&sampling.read.loss)),
                 },
             )?;
         }

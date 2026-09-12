@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <sched.h>
+#include <time.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/syscall.h>
@@ -39,8 +41,26 @@ static int check_cpu_slots(int sampling) {
             break;
         }
     }
+    /* Flexible counting is scheduled asynchronously. Wait for actual running
+     * time before stopping; immediate disable may legitimately precede a slice. */
+    struct timespec start, now;
+    clock_gettime(CLOCK_MONOTONIC, &start);
     for (unsigned i = 0; i < opened; ++i) {
-        uint64_t values[3];
+        uint64_t values[3] = {0};
+        while (!failed) {
+            if (read(fds[i], values, sizeof(values)) != sizeof(values)) {
+                failed = 1;
+                break;
+            }
+            if (values[0] && values[2]) break;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (now.tv_sec - start.tv_sec >= 10) {
+                printf("CPU slot did not run index=%u sampling=%d\n", i, sampling);
+                failed = 1;
+                break;
+            }
+            sched_yield();
+        }
         if (syscall(SYS_ioctl, fds[i], 0x2401, 0) != 0 ||
             syscall(SYS_read, fds[i], values, sizeof(values)) != sizeof(values) ||
             values[0] == 0 || values[2] == 0)

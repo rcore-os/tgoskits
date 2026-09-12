@@ -10,7 +10,7 @@ mod access;
 mod access_policy;
 pub mod bpf;
 mod control;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", test))]
 mod counting;
 mod cpu_id;
 #[cfg(target_arch = "aarch64")]
@@ -49,7 +49,7 @@ mod sample_id;
 /// tracing paths are arch-agnostic, but sampling depends on CPU PMU registers.
 #[cfg(target_arch = "aarch64")]
 pub mod sampling;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", test))]
 mod sampling_lifecycle;
 #[cfg(target_arch = "aarch64")]
 mod sampling_registry;
@@ -998,7 +998,13 @@ pub fn perf_event_open(
             }
             let mut leader_backend = leader.event.lock();
             let leader_group_backend = leader_backend.group_backend();
-            if direct_system_sampling || !leader_backend.supports_group_link() {
+            if direct_system_sampling
+                || !leader_backend.supports_group_link()
+                || new_group_backend == PerfGroupBackend::Other
+                || leader_group_backend == PerfGroupBackend::Other
+            {
+                // A tracking/probe backend has no group counter or effective-
+                // enable coordinator. Its default link must not publish success.
                 return Err(crate::StarryError::OperationNotSupported);
             }
             if (new_group_backend == PerfGroupBackend::Hardware

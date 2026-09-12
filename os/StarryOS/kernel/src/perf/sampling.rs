@@ -316,16 +316,7 @@ impl SampleReadEntry {
         _owner: None,
     };
 
-    pub fn new(context: *const (), callback: SampleReadCallback, id: u64) -> Self {
-        Self {
-            context,
-            callback: Some(callback),
-            id,
-            _owner: None,
-        }
-    }
-
-    /// Retains the callback's task object for this entire registry generation.
+    /// Retains the callback context for this entire registry generation.
     pub(crate) fn owned<T: core::any::Any + Send + Sync>(
         owner: Arc<T>,
         callback: SampleReadCallback,

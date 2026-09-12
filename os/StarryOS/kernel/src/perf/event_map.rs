@@ -1,9 +1,6 @@
 //! Linux perf event selection and CPU-cluster policy.
 use ax_cpu::pmu::{EventSupport, PmuInfo};
 
-pub(super) fn event_supported(event: u16) -> bool {
-    ax_hal::pmu::info().is_some_and(|info| event_supported_by(info, event))
-}
 pub(super) const fn event_supported_by(info: PmuInfo, event: u16) -> bool {
     !matches!(info.event_support(event), EventSupport::Unsupported)
 }

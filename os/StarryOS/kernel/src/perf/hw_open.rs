@@ -13,10 +13,14 @@ use super::{
         ARMV8_CORTEX_A55_PERF_TYPE, ARMV8_CORTEX_A76_PERF_TYPE, ARMV8_PMUV3_PERF_TYPE,
         ValidatedHwCounter, ValidatedHwOpen,
     },
-    hw_allocation::{alloc_preferred_cycle, alloc_system, free_system},
+    hw_allocation::{
+        alloc_cycle_counter, alloc_system, alloc_system_cycle, free_counter, free_system,
+    },
     hw_event::{HwPerfEvent, SystemEventInit, TaskEventInit},
     hw_owner::SystemPmuConfigure,
-    hw_sampling::{SamplingState, resolve_sampling, start_sampling_notify_worker},
+    hw_sampling::{
+        SamplingReadState, SamplingState, resolve_sampling, start_sampling_notify_worker,
+    },
     inheritance::PerfInheritanceFamily,
     output::PerfOutputRoute,
     sampling,
@@ -131,36 +135,38 @@ pub(super) fn perf_event_open_hw(
     let exclude_user = attr.exclude_user() != 0;
     let exclude_kernel = attr.exclude_kernel() != 0;
 
-    sampling::ensure_pmu_irq_registered().map_err(|_| crate::StarryError::NoSuchDevice)?;
-
-    let (counter, event, flexible) = match validated.counter {
-        ValidatedHwCounter::SystemPreferredCycle(event) => {
-            let counter = alloc_system(owner_cpu, event, true, validated.num_counters)?;
-            let programmed_event = counter.programmable_index().map(|_| event);
-            (counter, programmed_event, None)
-        }
-        ValidatedHwCounter::SystemProgrammable(event) if !validated.is_sampling => {
-            let flexible = super::system_flex::SystemFlexCounter::new(
+    let (counter, event) = match validated.counter {
+        ValidatedHwCounter::SystemPreferredCycle(event) => (alloc_system_cycle(owner_cpu), event),
+        ValidatedHwCounter::SystemProgrammable(event) if !validated.is_sampling => (None, event),
+        ValidatedHwCounter::SystemProgrammable(event) => (
+            Some(alloc_system(
                 owner_cpu,
                 event,
-                exclude_user,
-                exclude_kernel,
-            );
-            (
-                super::hw_owner::Counter::Programmable(0),
-                Some(event),
-                Some(flexible),
-            )
-        }
-        ValidatedHwCounter::SystemProgrammable(event) => (
-            alloc_system(owner_cpu, event, false, validated.num_counters)?,
-            Some(event),
-            None,
+                false,
+                validated.num_counters,
+            )?),
+            event,
         ),
         ValidatedHwCounter::TaskPreferredCycle(_) | ValidatedHwCounter::TaskProgrammable(_) => {
             return Err(crate::StarryError::BadState);
         }
     };
+    // All programmable counting events are logical, including cycle fallbacks.
+    // Check before constructing a worker; only a native 64-bit counter can run
+    // without overflow delivery. Sampling's fixed reservation rolls back here.
+    if counter.is_none_or(|counter| counter.programmable_index().is_some())
+        && sampling::ensure_pmu_irq_registered().is_err()
+    {
+        if let Some(counter) = counter {
+            free_system(owner_cpu, counter);
+        }
+        return Err(crate::StarryError::NoSuchDevice);
+    }
+    let flexible = counter.is_none().then(|| {
+        super::system_flex::SystemFlexCounter::new(owner_cpu, event, exclude_user, exclude_kernel)
+    });
+    let counter = counter.unwrap_or(super::hw_owner::Counter::Programmable(0));
+    let event = counter.programmable_index().map(|_| event);
     if flexible.is_none()
         && let Err(error) = cpu_worker::configure_system(
             owner_cpu,
@@ -200,11 +206,13 @@ pub(super) fn perf_event_open_hw(
             notify,
             poll_alive,
             output: PerfOutputRoute::new(),
-            loss: Arc::new(sampling::LossState::new()),
-            sample_count: Arc::new(sampling::SamplingCount::new()),
-            enabled_at_ns: core::sync::atomic::AtomicU64::new(0),
-            time_enabled_ns: core::sync::atomic::AtomicU64::new(0),
-            time_running_ns: core::sync::atomic::AtomicU64::new(0),
+            read: Arc::new(SamplingReadState {
+                loss: Arc::new(sampling::LossState::new()),
+                sample_count: Arc::new(sampling::SamplingCount::new()),
+                enabled_at_ns: core::sync::atomic::AtomicU64::new(0),
+                time_enabled_ns: core::sync::atomic::AtomicU64::new(0),
+                time_running_ns: core::sync::atomic::AtomicU64::new(0),
+            }),
         }
     });
 
@@ -231,14 +239,15 @@ fn perf_event_open_hw_per_task(
     let exclude_user = attr.exclude_user() != 0;
     let exclude_kernel = attr.exclude_kernel() != 0;
 
-    sampling::ensure_pmu_irq_registered().map_err(|_| crate::StarryError::NoSuchDevice)?;
-
     let (counter, event, flexible) = match validated.counter {
-        ValidatedHwCounter::TaskPreferredCycle(event) => (
-            alloc_preferred_cycle(event, validated.num_counters)?,
-            event,
-            false,
-        ),
+        ValidatedHwCounter::TaskPreferredCycle(event) => {
+            let counter = alloc_cycle_counter();
+            (
+                counter.unwrap_or(super::hw_owner::Counter::Programmable(0)),
+                event,
+                counter.is_none(),
+            )
+        }
         ValidatedHwCounter::TaskProgrammable(event) => {
             // Flexible events are logical until a scheduler slice acquires one
             // of the executing CPU's physical programmable slots.
@@ -248,6 +257,18 @@ fn perf_event_open_hw_per_task(
             return Err(crate::StarryError::BadState);
         }
     };
+
+    // Logical flexible events own no slot yet; fixed fallbacks must release
+    // their reservation if the overflow IRQ cannot be installed.
+    // Inherited copies are flexible even when this root owns the cycle counter.
+    if (counter.programmable_index().is_some() || attr.inherit() != 0)
+        && sampling::ensure_pmu_irq_registered().is_err()
+    {
+        if !flexible {
+            free_counter(counter);
+        }
+        return Err(crate::StarryError::NoSuchDevice);
+    }
 
     let enabled = attr.disabled() == 0;
     let observer = crate::task::current_user_task()

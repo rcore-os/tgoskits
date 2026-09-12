@@ -35,6 +35,13 @@ pub(super) struct SamplingState {
     pub(super) notify: Arc<IrqNotify>,
     pub(super) poll_alive: Arc<AtomicBool>,
     pub(super) output: PerfOutputRoute,
+    pub(super) read: Arc<SamplingReadState>,
+}
+
+/// IRQ-visible counters are independently owned; mutable output routing stays
+/// in the event's sleepable control state.
+#[derive(Debug)]
+pub(super) struct SamplingReadState {
     pub(super) loss: Arc<sampling::LossState>,
     pub(super) sample_count: Arc<sampling::SamplingCount>,
     pub(super) enabled_at_ns: AtomicU64,

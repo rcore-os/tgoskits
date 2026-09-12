@@ -56,6 +56,12 @@ int main(void) {
     puts("STARRY_SMP_ROTATE_OK");
     return 0;
 #endif
+    unsigned named_type;
+    FILE *type_file = fopen("/sys/bus/event_source/devices/armv8_pmuv3_0/type", "r");
+    if (!type_file || fscanf(type_file, "%u", &named_type) != 1) {
+        return 1;
+    }
+    fclose(type_file);
     cpu_set_t set;
     int gate[2];
     if (pipe(gate) != 0) {
@@ -80,6 +86,10 @@ int main(void) {
     };
     long fds[EVENT_COUNT];
     for (int i = 0; i < EVENT_COUNT; ++i) {
+        /* Cover raw slots and cycle-preferred generic/named encodings in the
+         * same overcommitted context: none may fail merely at slot exhaustion. */
+        attr.type = i < 2 ? PERF_TYPE_RAW : (i % 2 ? 0u : named_type);
+        attr.config = attr.type == 0 ? 0 : 0x11;
         fds[i] = perf_open(&attr, child, -1);
         if (fds[i] < 0 || ioctl((int)fds[i], PERF_IOC_ENABLE, 0) != 0) {
             printf("rotate FAILED: event=%d errno=%d\n", i, errno);
@@ -125,6 +135,10 @@ int main(void) {
         return 1;
     }
     for (int i = 0; i < EVENT_COUNT; ++i) {
+        /* Cover raw slots and cycle-preferred generic/named encodings in the
+         * same overcommitted context: none may fail merely at slot exhaustion. */
+        attr.type = i < 2 ? PERF_TYPE_RAW : (i % 2 ? 0u : named_type);
+        attr.config = attr.type == 0 ? 0 : 0x11;
         fds[i] = perf_open(&attr, -1, 0);
         if (fds[i] < 0 || ioctl((int)fds[i], PERF_IOC_ENABLE, 0) != 0) {
             printf("system rotate FAILED: event=%d errno=%d\n", i, errno);

@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -106,7 +107,13 @@ static int check_stop(unsigned operation, int remote) {
         .read_format = 3, .flags = 1,
     };
     int fd = syscall(SYS_perf_event_open, &attr, -1, 0, -1, 0);
-    if (fd < 0 || syscall(SYS_ioctl, fd, 0x2400, 0) != 0 ||
+    if (fd < 0)
+        return -1;
+    long page_size = sysconf(_SC_PAGESIZE);
+    void *metadata = mmap(NULL, (size_t)page_size, PROT_READ, MAP_SHARED, fd, 0);
+    if (metadata == MAP_FAILED)
+        return -1;
+    if (syscall(SYS_ioctl, fd, 0x2400, 0) != 0 ||
         acquire_slice(fd) != 0)
         return -1;
 
@@ -142,6 +149,16 @@ static int check_stop(unsigned operation, int remote) {
             if (first[0] == 0 || first[2] == 0 ||
                 memcmp(first, second, sizeof(first)) != 0)
                 return -1;
+            /* DISABLE has synchronously committed the logical event's value
+             * and times. Its mmap page must not describe a placeholder slot. */
+            volatile uint64_t *fields = (volatile uint64_t *)((char *)metadata + 16);
+            if (fields[0] != first[0] || fields[1] != first[1] || fields[2] != first[2]) {
+                printf("metadata mismatch offset=%llu read=%llu enabled=%llu/%llu running=%llu/%llu\n",
+                       (unsigned long long)fields[0], (unsigned long long)first[0],
+                       (unsigned long long)fields[1], (unsigned long long)first[1],
+                       (unsigned long long)fields[2], (unsigned long long)first[2]);
+                return -1;
+            }
         } else if (operation == 0x10000) {
             if (first[0] <= before[0] || second[0] <= first[0] ||
                 first[2] < before[2] || second[2] <= first[2])
@@ -162,6 +179,8 @@ static int check_stop(unsigned operation, int remote) {
         if (pin_cpu(0) != 0 || syscall(SYS_close, fd) != 0)
             return -1;
     }
+    if (munmap(metadata, (size_t)page_size) != 0)
+        return -1;
     if (remote && write(stop[1], "s", 1) != 1)
         return -1;
     if (policy(SCHED_OTHER) != 0)
