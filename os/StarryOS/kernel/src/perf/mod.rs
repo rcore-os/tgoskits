@@ -10,7 +10,7 @@ mod access;
 mod access_policy;
 pub mod bpf;
 mod control;
-#[cfg(any(target_arch = "aarch64", test))]
+#[cfg(any(target_arch = "aarch64", all(test, not(axtest))))]
 mod counting;
 mod cpu_id;
 #[cfg(target_arch = "aarch64")]
@@ -49,7 +49,7 @@ mod sample_id;
 /// tracing paths are arch-agnostic, but sampling depends on CPU PMU registers.
 #[cfg(target_arch = "aarch64")]
 pub mod sampling;
-#[cfg(any(target_arch = "aarch64", test))]
+#[cfg(any(target_arch = "aarch64", all(test, not(axtest))))]
 mod sampling_lifecycle;
 #[cfg(target_arch = "aarch64")]
 mod sampling_registry;
