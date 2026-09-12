@@ -1,0 +1,18 @@
+# dnsmasq x86_64 - DNS/DHCP carpet. x86_64 boots the ELF kernel via the dynamic platform +
+# OVMF (xtask prepares firmware automatically; no PVH note needed). The gate provisions
+# dnsmasq on-target with `apk add` (branch-matched to the rootfs, current version) - or runs
+# the staged binary directly - then drives every DNS session single-node over 127.0.0.1. The
+# rootfs is the per-app rootfs-x86_64-alpine.img which prebuild.sh grows to 1.5G.
+args = [
+    "-nographic", "-m", "1024M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-dnsmasq.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 1800
