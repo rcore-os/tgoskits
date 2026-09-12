@@ -1032,12 +1032,15 @@ impl FsContext {
         let trimmed = path.as_str().trim_end_matches('/');
         let last = trimmed.rsplit('/').next().unwrap_or("");
         if matches!(last, "." | "..") {
-            let parent =
-                trimmed.rsplit_once('/').map_or(
-                    ".",
-                    |(parent, _)| if parent.is_empty() { "/" } else { parent },
-                );
-            self.resolve(parent)?.check_is_dir()?;
+            // Resolve the parent with the same search checks as a normal
+            // mutation. The final `.`/`..` entry is classified below, but an
+            // inaccessible directory must fail with EACCES first.
+            match self.resolve_parent_with_search_checked(path, |directory| {
+                self.check_search_path(directory, self.permission_root.as_ref(), credentials)
+            }) {
+                Ok(_) | Err(VfsError::InvalidInput) => {}
+                Err(error) => return Err(error),
+            }
             return Err(if last == "." {
                 VfsError::InvalidInput
             } else {
@@ -1318,7 +1321,18 @@ impl FsContext {
             credentials,
         )?;
         let old_metadata = old.metadata()?;
-        if !credentials.cap_fowner && credentials.fsuid != old_metadata.uid {
+        let safe_source = old_metadata.node_type == NodeType::RegularFile
+            && !old_metadata.mode.intersects(NodePermission::SET_UID)
+            && !old_metadata
+                .mode
+                .contains(NodePermission::SET_GID | NodePermission::GROUP_EXEC)
+            && Self::check_permission(
+                old,
+                credentials,
+                NodePermission::OTHER_READ | NodePermission::OTHER_WRITE,
+            )
+            .is_ok();
+        if !credentials.cap_fowner && credentials.fsuid != old_metadata.uid && !safe_source {
             return Err(VfsError::OperationNotPermitted);
         }
         new_dir.link(new_name, old)

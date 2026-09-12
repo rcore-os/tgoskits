@@ -310,27 +310,38 @@ impl OpenOptions {
                     context.permission_boundary(),
                     credentials,
                 )?;
-                // If the path ends with '/', Linux never creates regular
-                // files via O_CREAT here — the path explicitly requests a
-                // directory, and open() cannot create directories. Suppress
-                // create flags BEFORE open_file to avoid creating an inode
-                // that the post-check would then reject (codex P1: original
-                // ordering left a stale file on disk for failing calls).
-                let effective_create = self.create && !must_be_dir;
-                let effective_create_new = self.create_new && !must_be_dir;
-                if effective_create || effective_create_new {
-                    match parent.lookup_no_follow(&name) {
-                        Ok(_) => {}
-                        Err(VfsError::NotFound) => {
+                // An existing directory named by a trailing-slash pathname
+                // must return EISDIR. For a missing final entry, suppress
+                // creation so the pathname cannot leave a regular file
+                // behind before producing its ENOENT result.
+                let (effective_create, effective_create_new) = match parent.lookup_no_follow(&name)
+                {
+                    Ok(location) => {
+                        if must_be_dir && self.create && location.is_dir() && !self.path {
+                            return Err(VfsError::IsADirectory);
+                        }
+                        if must_be_dir {
+                            // Let the trailing-slash type check decide
+                            // between an existing directory (EISDIR) and
+                            // a non-directory (ENOTDIR), before O_EXCL
+                            // can turn the lookup into EEXIST.
+                            (false, false)
+                        } else {
+                            (self.create, self.create_new)
+                        }
+                    }
+                    Err(VfsError::NotFound) => {
+                        if (self.create || self.create_new) && !must_be_dir {
                             context.check_mutation_parent_with_search(
                                 &parent,
                                 &searched,
                                 credentials,
                             )?;
                         }
-                        Err(error) => return Err(error),
+                        (!must_be_dir && self.create, !must_be_dir && self.create_new)
                     }
-                }
+                    Err(error) => return Err(error),
+                };
                 let mut loc = parent.open_file(
                     &name,
                     &axfs_ng_vfs::OpenOptions {

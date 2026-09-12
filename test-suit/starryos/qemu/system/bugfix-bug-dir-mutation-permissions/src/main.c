@@ -65,6 +65,8 @@ static const char *const base = "/tmp/bug-dir-mutation-permissions";
 static const char *const protected_dir = "/tmp/bug-dir-mutation-permissions/protected";
 static const char *const sticky_dir = "/tmp/bug-dir-mutation-permissions/sticky";
 static const char *const source = "/tmp/bug-dir-mutation-permissions/source";
+static const char *const safe_hardlink_source =
+    "/tmp/bug-dir-mutation-permissions/safe-hardlink-source";
 static const char *const protected_file = "/tmp/bug-dir-mutation-permissions/protected/file";
 static const char *const protected_dangling_middle =
     "/tmp/bug-dir-mutation-permissions/protected/dangling-middle";
@@ -97,6 +99,10 @@ static const char *const nonempty_empty_flag_link =
     "/tmp/bug-dir-mutation-permissions/public/nonempty-empty-flag-link";
 static const char *const dirfd_existing =
     "/tmp/bug-dir-mutation-permissions/dirfd-parent/opened/existing";
+static const char *const dirfd_existing_dir =
+    "/tmp/bug-dir-mutation-permissions/dirfd-parent/opened/existing-dir";
+static const char *const dirfd_regular =
+    "/tmp/bug-dir-mutation-permissions/dirfd-parent/opened/regular";
 static const char *const dirfd_created_by_openat =
     "/tmp/bug-dir-mutation-permissions/dirfd-parent/opened/created-by-openat";
 static const char *const dirfd_created_by_mkdirat =
@@ -161,6 +167,8 @@ static void cleanup_dirfd_tree(void)
     remove_if_present(dirfd_rename_source);
     remove_if_present(dirfd_rename_target);
     remove_if_present(dirfd_existing);
+    remove_if_present(dirfd_existing_dir);
+    remove_if_present(dirfd_regular);
     remove_if_present(dirfd_root);
     remove_if_present(dirfd_parent);
 }
@@ -222,6 +230,11 @@ static int run_unprivileged_checks(void)
           "rmdir checks an unsearchable parent before a missing final entry");
 
     errno = 0;
+    check(rmdir("/tmp/bug-dir-mutation-permissions/protected/.") < 0
+              && errno == EACCES,
+          "rmdir checks an unsearchable parent before classifying final dot");
+
+    errno = 0;
     int dangling_middle = open(protected_dangling_path, O_RDONLY);
     check(dangling_middle < 0 && errno == EACCES,
           "an unsearchable parent beats ENOENT from a dangling intermediate symlink");
@@ -248,6 +261,85 @@ static int run_unprivileged_checks(void)
     }
     if (openat2_root >= 0) {
         close(openat2_root);
+    }
+
+    if (dirfd >= 0) {
+        const struct open_how openat2_dirfd_how = {
+            .flags = O_RDONLY | O_DIRECTORY,
+            .mode = 0,
+            .resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS,
+        };
+        int dot_slash = (int)syscall(SYS_openat2, dirfd, "./", &openat2_dirfd_how,
+                                     sizeof(openat2_dirfd_how));
+        check(dot_slash >= 0,
+              "openat2 treats ./ as the opened dirfd without rechecking its parent");
+        if (dot_slash >= 0) {
+            close(dot_slash);
+        }
+        errno = 0;
+        int dot_double_slash = (int)syscall(SYS_openat2, dirfd, ".//",
+                                            &openat2_dirfd_how,
+                                            sizeof(openat2_dirfd_how));
+        check(dot_double_slash >= 0,
+              "openat2 treats .// as the opened dirfd without rechecking its parent");
+        if (dot_double_slash >= 0) {
+            close(dot_double_slash);
+        }
+
+        const struct open_how openat2_existing_how = {
+            .flags = O_RDONLY | O_CREAT | O_EXCL,
+            .mode = 0600,
+            .resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS,
+        };
+        errno = 0;
+        int dot_exclusive = (int)syscall(SYS_openat2, dirfd, ".",
+                                         &openat2_existing_how,
+                                         sizeof(openat2_existing_how));
+        check(dot_exclusive < 0 && errno == EEXIST,
+              "openat2 reports EEXIST for exclusive creation of the opened dirfd");
+        if (dot_exclusive >= 0) {
+            close(dot_exclusive);
+        }
+
+        const struct open_how openat2_trailing_how = {
+            .flags = O_RDONLY | O_CREAT,
+            .mode = 0600,
+            .resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS,
+        };
+        errno = 0;
+        int regular_slash = (int)syscall(SYS_openat2, dirfd, "regular/",
+                                          &openat2_trailing_how,
+                                          sizeof(openat2_trailing_how));
+        check(regular_slash < 0 && errno == ENOTDIR,
+              "openat2 preserves trailing-slash ENOTDIR for a regular file");
+        if (regular_slash >= 0) {
+            close(regular_slash);
+        }
+
+        errno = 0;
+        int existing_dir_create = (int)syscall(SYS_openat2, dirfd, "existing-dir/",
+                                                &openat2_trailing_how,
+                                                sizeof(openat2_trailing_how));
+        check(existing_dir_create < 0 && errno == EISDIR,
+              "openat2 reports EISDIR for O_CREAT on an existing directory");
+        if (existing_dir_create >= 0) {
+            close(existing_dir_create);
+        }
+
+        const struct open_how openat2_trailing_exclusive_how = {
+            .flags = O_RDONLY | O_CREAT | O_EXCL,
+            .mode = 0600,
+            .resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS,
+        };
+        errno = 0;
+        int existing_dir_exclusive = (int)syscall(SYS_openat2, dirfd, "existing-dir/",
+                                                  &openat2_trailing_exclusive_how,
+                                                  sizeof(openat2_trailing_exclusive_how));
+        check(existing_dir_exclusive < 0 && errno == EISDIR,
+              "openat2 reports EISDIR for O_CREAT|O_EXCL on an existing directory");
+        if (existing_dir_exclusive >= 0) {
+            close(existing_dir_exclusive);
+        }
     }
 
     errno = 0;
@@ -383,6 +475,11 @@ static int run_unprivileged_checks(void)
                  "/tmp/bug-dir-mutation-permissions/sticky/root-link", 0) < 0
               && errno == EPERM,
           "linkat rejects a hard link to another user's file");
+
+    errno = 0;
+    check(linkat(AT_FDCWD, safe_hardlink_source, AT_FDCWD,
+                 "/tmp/bug-dir-mutation-permissions/public/safe-hardlink", 0) == 0,
+          "linkat permits a non-owner to link a safe readable writable file");
 
     if (empty_path_source_fd >= 0) {
         errno = 0;
@@ -592,6 +689,10 @@ int main(void)
           "create existing target in searchable read-only directory");
     check(chmod(readonly_dir, 0555) == 0, "make read-only directory unwritable");
     check(create_file(source) == 0, "create hard-link source");
+    check(create_file(safe_hardlink_source) == 0,
+          "create protected-hardlinks safe source");
+    check(chmod(safe_hardlink_source, 0666) == 0,
+          "make protected-hardlinks safe source readable and writable");
     check(create_file(empty_path_source) == 0, "create AT_EMPTY_PATH source");
     check(chown(empty_path_source, 1000, 1000) == 0,
           "assign AT_EMPTY_PATH source to the unprivileged user");
@@ -620,6 +721,8 @@ int main(void)
     check(mkdir(dirfd_root, 0700) == 0, "create dirfd target");
     check(chown(dirfd_root, 1000, 1000) == 0, "assign dirfd target to unprivileged user");
     check(create_file(dirfd_existing) == 0, "create dirfd existing entry");
+    check(mkdir(dirfd_existing_dir, 0700) == 0, "create dirfd existing directory");
+    check(create_file(dirfd_regular) == 0, "create dirfd regular entry");
     check(chown(dirfd_existing, 1000, 1000) == 0,
           "assign dirfd source entry to unprivileged user");
     check(chmod(dirfd_existing, 0644) == 0, "make dirfd existing entry readable");
@@ -670,12 +773,14 @@ int main(void)
     remove_if_present(protected_new_file);
     remove_if_present(protected_file);
     remove_if_present(public_link_new);
+    remove_if_present("/tmp/bug-dir-mutation-permissions/public/safe-hardlink");
     remove_if_present(readonly_dir);
     remove_if_present(protected_link);
     remove_if_present(protected_dir);
     remove_if_present(empty_path_link);
     remove_if_present(public_dir);
     remove_if_present(source);
+    remove_if_present(safe_hardlink_source);
     if (empty_path_source_fd >= 0) {
         close(empty_path_source_fd);
     }

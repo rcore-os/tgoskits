@@ -592,7 +592,7 @@ pub fn sys_linkat(
     // genuinely empty pathname. With a non-empty pathname it is ignored by
     // linkat(), so ordinary path-based linking remains unprivileged.
     if flags & AT_EMPTY_PATH != 0
-        && old_path.as_deref().map_or(true, |path| path.is_empty())
+        && old_path.as_deref().is_none_or(str::is_empty)
     {
         // Linux requires CAP_DAC_READ_SEARCH for AT_EMPTY_PATH and reports
         // ENOENT when the caller does not have it.

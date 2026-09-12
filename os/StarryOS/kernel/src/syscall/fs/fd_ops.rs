@@ -9,6 +9,7 @@ use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenRe
 use ax_memory_addr::PAGE_SIZE_4K;
 use axfs_ng_vfs::{
     DirEntry, FileNode, Location, MutationCredentials, NodeType, Reference, VfsError,
+    path::{Component, Path},
 };
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
@@ -78,6 +79,15 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
             .append(false);
     }
     options
+}
+
+fn is_dot_path(path: &str) -> bool {
+    let mut has_component = false;
+    let only_dots = Path::new(path).components().all(|component| {
+        has_component = true;
+        matches!(component, Component::CurDir)
+    });
+    has_component && only_dots
 }
 
 fn add_to_fd(
@@ -641,10 +651,13 @@ pub fn sys_openat2(
         // A final `.` names the already-open dirfd itself. Resolving it
         // directly avoids manufacturing a lookup through the dirfd's parent,
         // which may be intentionally inaccessible.
-        if path == "." {
+        if is_dot_path(&path) {
             let (location, _) = fs.resolve_with_search_checked(axfs_ng_vfs::path::Path::new(&path), |directory| {
                 fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
             })?;
+            if (uflags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL) && uflags & O_PATH == 0 {
+                return Err(StarryError::AlreadyExists);
+            }
             options.no_follow(true);
             return Ok(options.open_loc(location)?);
         }
@@ -661,7 +674,12 @@ pub fn sys_openat2(
         }
         let fs = fs.with_current_dir(parent)?;
         options.no_follow(true);
-        Ok(options.open_with_credentials(&fs, name.as_ref(), &mutation_cred)?)
+        let open_name = if Path::new(&path).has_trailing_slash() {
+            format!("{}/", name.as_ref())
+        } else {
+            name.to_string()
+        };
+        Ok(options.open_with_credentials(&fs, &open_name, &mutation_cred)?)
     })?;
     let mount_table_namespace = mount_table_namespace(current, &result);
     add_to_fd(current, result, flags as u32, mount_table_namespace).map(|fd| fd as isize)
