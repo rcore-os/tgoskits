@@ -764,7 +764,7 @@ dependencies = [
 
 [[package]]
 name = "ax-api"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "ax-alloc",
  "ax-cpumask",
@@ -866,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "ahci-driver",
  "aic8800",
@@ -973,7 +973,7 @@ dependencies = [
 
 [[package]]
 name = "ax-hal"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -1018,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "ax-ipi"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "ax-hal",
  "ax-lazyinit",
@@ -1031,7 +1031,7 @@ version = "0.5.1"
 
 [[package]]
 name = "ax-libc"
-version = "0.5.37"
+version = "0.5.38"
 dependencies = [
  "ax-driver",
  "ax-hal",
@@ -1070,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "ax-mm"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net"
-version = "0.13.2"
+version = "0.13.3"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -1164,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.13.1"
+version = "0.13.2"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -1244,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1271,7 +1271,7 @@ dependencies = [
 
 [[package]]
 name = "ax-task"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "axpanic",
  "cfg-if",
@@ -1376,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "axdevice"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "ax-runtime",
  "ax-sync",
@@ -1473,7 +1473,7 @@ version = "0.1.1"
 
 [[package]]
 name = "axplat-dyn"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "ax-cpu",
@@ -1585,7 +1585,7 @@ dependencies = [
 
 [[package]]
 name = "axvirtio-blk"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ax-memory-addr",
  "ax-runtime",
@@ -1599,7 +1599,7 @@ dependencies = [
 
 [[package]]
 name = "axvirtio-common"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "ax-memory-addr",
  "ax-runtime",
@@ -1626,7 +1626,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "ax-api",
@@ -1656,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "axvm"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -4461,9 +4461,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jiff"
-version = "0.2.35"
+version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "668b7183bd07af9a4885f5c35b0cc5c83c4607a913c16b7e17291832910d2dcc"
+checksum = "0ab1baf72f08796de0260609515130699b890ac25f30e610ad894bc5856cafdb"
 dependencies = [
  "defmt 1.1.1",
  "jiff-core",
@@ -4478,18 +4478,19 @@ dependencies = [
 
 [[package]]
 name = "jiff-core"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7feca88439efe53da3754500c1851dedf3cb36c524dd5cf8225cc0794de95d09"
+checksum = "5e52fe76043ccecc9005d2305ebaadf7d7fc0cc89ca6baa10a94d6bc68c7128c"
 dependencies = [
  "defmt 1.1.1",
+ "log",
 ]
 
 [[package]]
 name = "jiff-static"
-version = "0.2.35"
+version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a69dcb3a21cfb32ce1cd056169337ca284af0766dd766e7878819b251a49204"
+checksum = "378268a1116ad67ae6228701118ac9f491d78fda38a40a1f1a9e1348de6f7212"
 dependencies = [
  "jiff-core",
  "proc-macro2",
@@ -6916,7 +6917,7 @@ dependencies = [
 
 [[package]]
 name = "rockchip-npu"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aarch64-cpu-ext",
  "bitflags 2.13.2",
@@ -7822,7 +7823,7 @@ dependencies = [
 
 [[package]]
 name = "starry-kernel"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "ax-alloc",
  "ax-cgroup",
@@ -7912,7 +7913,7 @@ dependencies = [
 
 [[package]]
 name = "starry-signal"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "ax-cpu",
  "ax-runtime",
@@ -7939,7 +7940,7 @@ dependencies = [
 
 [[package]]
 name = "starryos"
-version = "0.5.35"
+version = "0.5.36"
 dependencies = [
  "anyhow",
  "ax-driver",

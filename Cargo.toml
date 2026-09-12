@@ -149,10 +149,10 @@ ax-cgroup = { version = "0.3", path = "components/ax-cgroup" }
 ax-ctor-bare = { version = "0.4", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4", path = "components/ctor_bare/ctor_bare_macros" }
 ax-display = { version = "0.6", path = "os/arceos/modules/axdisplay" }
-ax-driver = { version = "0.15", path = "drivers/ax-driver" }
+ax-driver = { version = "0.16", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 ax-fs-ng = { version = "0.10", path = "fs/ax-fs-ng" }
-ax-hal = { version = "0.8.0", path = "os/arceos/modules/axhal" }
+ax-hal = { version = "0.8.1", path = "os/arceos/modules/axhal" }
 irq-framework = { version = "0.5", path = "components/irq-framework" }
 ax-input = { version = "0.6", path = "os/arceos/modules/axinput" }
 ax-io = { version = "0.7", path = "components/axio" }
@@ -171,10 +171,10 @@ ax-percpu = { version = "0.4", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4", path = "components/percpu/percpu_macros" }
 ax-plat = { version = "0.14", path = "platforms/ax-plat" }
 ax-plat-macros = { version = "0.3", path = "platforms/ax-plat-macros" }
-ax-posix-api = { version = "0.6.4", path = "os/arceos/api/arceos_posix_api" }
+ax-posix-api = { version = "0.6.5", path = "os/arceos/api/arceos_posix_api" }
 ax-riscv-plic = { version = "0.4", path = "drivers/intc/riscv_plic" }
-ax-runtime = { version = "0.13.1", path = "os/arceos/modules/axruntime" }
-ax-std = { version = "0.7.1", path = "os/arceos/ulib/axstd", default-features = false }
+ax-runtime = { version = "0.13.2", path = "os/arceos/modules/axruntime" }
+ax-std = { version = "0.7.2", path = "os/arceos/ulib/axstd", default-features = false }
 ax-sync = { version = "0.6", path = "os/arceos/modules/axsync" }
 ax-task = { version = "0.8", path = "components/ax-task" }
 ax-tracepoint = { version = "0.6", path = "components/ax-tracepoint" }
@@ -190,7 +190,7 @@ axfs-ng-vfs = { version = "0.7", path = "fs/axfs-ng-vfs" }
 axhvc = { version = "0.5", path = "virtualization/axhvc" }
 axivc = { version = "0.1", path = "virtualization/axivc" }
 axklib = { version = "0.9", path = "components/axklib" }
-axplat-dyn = { version = "0.10.0", path = "platforms/axplat-dyn", default-features = false }
+axplat-dyn = { version = "0.10.1", path = "platforms/axplat-dyn", default-features = false }
 axpoll = { version = "0.7", path = "components/axpoll" }
 axvirtio-blk = { version = "0.3", path = "virtualization/axvirtio-blk" }
 axvirtio-common = { version = "0.2", path = "virtualization/axvirtio-common" }
@@ -231,7 +231,7 @@ rdif-reset = { version = "0.2", path = "drivers/interface/rdif-reset" }
 rdif-serial = { version = "0.10", path = "drivers/interface/rdif-serial" }
 rdif-vsock = { version = "0.3", path = "drivers/interface/rdif-vsock" }
 rk3588-pci = { version = "0.2", path = "drivers/pci/rk3588-pci" }
-rockchip-npu = { version = "0.5", path = "drivers/npu/rockchip-npu" }
+rockchip-npu = { version = "0.6", path = "drivers/npu/rockchip-npu" }
 rockchip-rga = { version = "0.3", path = "drivers/gpu/rockchip-rga" }
 rockchip-jpeg = { version = "0.2", path = "drivers/vpu/rockchip-jpeg" }
 rockchip-pwm = { version = "0.1", path = "drivers/pwm/rockchip-pwm" }
