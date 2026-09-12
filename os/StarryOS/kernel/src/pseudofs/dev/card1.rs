@@ -1,19 +1,16 @@
-use alloc::{borrow::Cow, sync::Arc};
+use alloc::{borrow::Cow, collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use core::{
     any::Any,
     convert::TryFrom,
     ffi::CStr,
-    mem::MaybeUninit,
-    slice,
-    sync::atomic::{AtomicUsize, Ordering},
+    mem,
 };
 
 use ax_driver::rknpu::{
     self, GemCachePolicy, RknpuAction, RknpuMemCreate, RknpuMemDestroy, RknpuMemMap, RknpuMemSync,
-    RknpuSubmit,
+    RknpuSubmit, RknpuTask, RKNPU_CORE0_MASK, RKNPU_CORE1_MASK, RKNPU_CORE2_MASK,
 };
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
-use ax_runtime::hal::time::monotonic_time_nanos;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use bytemuck::{AnyBitPattern, NoUninit};
@@ -23,16 +20,18 @@ use super::drm::{DrmUnique, DrmVersion};
 use crate::{
     StarryError, StarryResult,
     file::{
-        FileLike,
+        add_file_like, current_fd_table, release_locks_on_close, File as KernelFile, FileLike,
+        IoDst, IoSrc, Kstat,
         dmabuf::{ContiguousDmaBuf, resolve_contiguous_dmabuf},
     },
-    mm::{UserConstPtr, UserPtr, vm_read_slice, vm_write_slice},
+    mm::{vm_load, vm_write_slice},
     pseudofs::{
         DeviceOps,
         dev::drm::{io_size, ioctl_nr, is_driver_ioctl},
         device::DeviceMmap,
     },
     task::UserTaskRef,
+    sync::Mutex,
 };
 
 /// Driver name for DRM device
@@ -51,6 +50,11 @@ const PAGE_SHIFT: u32 = 12;
 const MAX_IOCTL_NR: u32 = 0xcf;
 /// Stack data buffer size
 const STACK_DATA_SIZE: usize = 128;
+
+/// Storage for DRM ioctl arguments whose ABI contains 64-bit fields or pointers.
+#[repr(align(8))]
+struct AlignedIoctlData([u8; STACK_DATA_SIZE]);
+
 /// DRM ioctl version command number
 const DRM_IOCTL_VERSION_NR: u32 = 0;
 /// DRM ioctl get unique command number
@@ -61,14 +65,11 @@ const DRM_IOCTL_GEM_FLINK_NR: u32 = 10;
 const DRM_IOCTL_PRIME_HANDLE_TO_FD_NR: u32 = 0x2d;
 /// DRM ioctl prime fd to handle command number (import an external dma-buf)
 const DRM_IOCTL_PRIME_FD_TO_HANDLE_NR: u32 = 0x2e;
-const RKNPU_ACTION_LOG_LIMIT: usize = 16;
-const RKNPU_MEM_CREATE_LOG_LIMIT: usize = 16;
-const RKNPU_MEM_SYNC_LOG_LIMIT: usize = 32;
-const RKNPU_SUBMIT_LOG_LIMIT: usize = 16;
-static RKNPU_ACTION_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
-static RKNPU_MEM_CREATE_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
-static RKNPU_MEM_SYNC_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
-static RKNPU_SUBMIT_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// GEM handles whose destruction could not acquire the global NPU lock yet.
+/// The backing allocations remain owned by the driver until a later card1
+/// operation retries these handles.
+static DEFERRED_GEM_DESTROYS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 /// RKNPU command types
 #[repr(u32)]
@@ -183,67 +184,16 @@ impl DeviceOps for Card1 {
     }
 
     /// Handles ioctl commands for the device
-    fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
-        if arg == 0 {
-            warn!("[rknpu]: ioctl received null arg pointer");
-            return Err(VfsError::InvalidData);
-        }
-        let nr = ioctl_nr(cmd);
-        info!("card1: cmd {cmd:#x}, nr {nr:#x}, arg {arg:#x}");
-
-        let is_driver_ioctl = is_driver_ioctl(ioctl_nr(cmd));
-        info!("card1: is_driver_ioctl = {}", is_driver_ioctl);
-
-        if is_driver_ioctl {
-            if let Ok(op) = RknpuCmd::try_from(nr) {
-                rknpu_driver_ioctl(current, op, arg)?;
-            } else {
-                warn!("Unknown RKNPU cmd: {:#x}", cmd);
-                return Err(VfsError::NotATty);
-            }
-        } else {
-            assert!(nr <= MAX_IOCTL_NR, "card1: unsupported ioctl nr {nr}");
-            // The in-kernel handlers cast this storage to 64-bit ABI records.
-            // Keep the byte buffer explicitly aligned even though user copies
-            // themselves are byte-granular.
-            #[repr(align(8))]
-            struct AlignedIoctlData([u8; STACK_DATA_SIZE]);
-            let mut stack_data = AlignedIoctlData([0u8; STACK_DATA_SIZE]);
-
-            let in_size = io_size(cmd) as usize;
-            let out_size = in_size;
-
-            if in_size > stack_data.0.len() {
-                return Err(VfsError::InvalidInput);
-            }
-            read_user_bytes(current, &mut stack_data.0[..in_size], arg)?;
-            match nr {
-                DRM_IOCTL_VERSION_NR => {
-                    info!("drm get version");
-                    drm_version(current, &mut stack_data.0)?;
-                }
-                DRM_IOCTL_GET_UNIQUE_NR => {
-                    info!("drm get unique");
-                    drm_get_unique(&mut stack_data.0)?;
-                }
-                DRM_IOCTL_GEM_FLINK_NR => {
-                    drm_gem_flink_ioctl(&mut stack_data.0)?;
-                }
-                DRM_IOCTL_PRIME_HANDLE_TO_FD_NR => {
-                    drm_prime_handle_to_fd_ioctl(&mut stack_data.0)?;
-                }
-                DRM_IOCTL_PRIME_FD_TO_HANDLE_NR => {
-                    drm_prime_fd_to_handle_ioctl(&mut stack_data.0)?;
-                }
-
-                _ => {
-                    panic!("card1: unsupported ioctl nr {nr:#x}");
-                }
-            }
-            write_user_bytes(current, arg, &stack_data.0[..out_size])?;
-        }
-
-        Ok(0)
+    fn ioctl(
+        &self,
+        _current: &UserTaskRef,
+        _cmd: u32,
+        _arg: usize,
+    ) -> VfsResult<usize> {
+        // A bare device node has no per-open GEM namespace. Opens are wrapped
+        // by `Card1File` below, which supplies the Linux `file->private_data`
+        // equivalent and owns all handles visible to that open.
+        Err(VfsError::NotATty)
     }
 
     /// Returns a reference to the object as Any for dynamic type checking
@@ -256,17 +206,714 @@ impl DeviceOps for Card1 {
         NodeFlags::NON_CACHEABLE
     }
 
-    /// Maps an exported GEM buffer selected by `handle << PAGE_SHIFT`.
-    fn mmap(&self, offset: u64, _length: u64) -> DeviceMmap {
-        let Some(handle) = map_handle_from_offset(offset) else {
-            warn!("card1: mmap received invalid offset {offset:#x}");
-            return DeviceMmap::None;
+    /// The node itself is not mappable because it has no open-file handle
+    /// namespace. `Card1File::device_mmap` performs the owned lookup.
+    fn mmap(&self, _offset: u64, _length: u64) -> DeviceMmap {
+        DeviceMmap::None
+    }
+}
+
+/// True if `inner` is the `/dev/dri/card1` node.
+pub(crate) fn is_card1_device(inner: &dyn Any) -> bool {
+    inner.is::<Card1>()
+}
+
+/// Build the per-open card1 file. The returned `Arc` is shared by `dup` and
+/// `fork`, so its GEM namespace has the same lifetime as the open file
+/// description rather than a process id.
+pub(crate) fn open_card1_file(
+    file: ax_fs_ng::File,
+    open_flags: u32,
+) -> StarryResult<Arc<dyn FileLike>> {
+    retry_deferred_gem_destroys();
+    Ok(Arc::new(Card1File::new(KernelFile::new(file, open_flags))))
+}
+
+struct Card1File {
+    base: KernelFile,
+    /// Local handles are translated to global driver handles. This prevents a
+    /// handle obtained from another card1 open from reaching the NPU GEM pool.
+    handles: Mutex<BTreeMap<u32, u32>>,
+    next_handle: Mutex<u32>,
+    /// Serializes operations that validate and then use a GEM buffer. In
+    /// particular, `MemDestroy` cannot free a buffer between submit validation
+    /// and programming its DMA address.
+    operation: Mutex<()>,
+}
+
+const RKNPU_CORE_MASKS: [u32; 3] = [
+    RKNPU_CORE0_MASK,
+    RKNPU_CORE1_MASK,
+    RKNPU_CORE2_MASK,
+];
+
+impl Card1File {
+    fn new(base: KernelFile) -> Self {
+        Self {
+            base,
+            handles: Mutex::new(BTreeMap::new()),
+            next_handle: Mutex::new(1),
+            operation: Mutex::new(()),
+        }
+    }
+
+    fn add_handle(&self, global_handle: u32) -> VfsResult<u32> {
+        let mut handles = self.handles.lock();
+        let mut next = self.next_handle.lock();
+        for _ in 0..=u32::MAX {
+            let handle = *next;
+            *next = handle.wrapping_add(1);
+            if handle == 0 || handles.contains_key(&handle) {
+                continue;
+            }
+            handles.insert(handle, global_handle);
+            return Ok(handle);
+        }
+        Err(VfsError::NoMemory)
+    }
+
+    fn global_handle(&self, handle: u32) -> VfsResult<u32> {
+        self.handles
+            .lock()
+            .get(&handle)
+            .copied()
+            .ok_or(VfsError::InvalidInput)
+    }
+
+    fn remove_handle(&self, handle: u32) -> VfsResult<u32> {
+        self.handles
+            .lock()
+            .remove(&handle)
+            .ok_or(VfsError::InvalidInput)
+    }
+
+    fn exported_gem_buffer(&self, handle: u32) -> StarryResult<ExportedGemBuffer> {
+        let global_handle = self.global_handle(handle)?;
+        exported_gem_buffer(global_handle)
+    }
+
+    fn find_dma_range(&self, address: u64, length: u64) -> bool {
+        let handles: Vec<u32> = self.handles.lock().values().copied().collect();
+        handles.into_iter().any(|global_handle| {
+            let Ok(info) = rknpu::buffer_info(global_handle) else {
+                return false;
+            };
+            range_contains(info.dma_addr, info.size, address, length)
+        })
+    }
+
+    fn find_cpu_range(&self, address: u64, offset: u64, length: u64) -> bool {
+        let handles: Vec<u32> = self.handles.lock().values().copied().collect();
+        handles.into_iter().any(|global_handle| {
+            let Ok((base, size)) = rknpu::obj_addr_and_size(global_handle) else {
+                return false;
+            };
+            let Some(address_offset) = address.checked_sub(base as u64) else {
+                return false;
+            };
+            if address_offset >= size as u64 {
+                return false;
+            }
+            let Some(total_offset) = address_offset.checked_add(offset) else {
+                return false;
+            };
+            range_contains(0, size, total_offset, length)
+        })
+    }
+
+    fn submit_task_span(args: &RknpuSubmit, core_mask: u32) -> VfsResult<(usize, usize)> {
+        const MAX_TASKS: usize = 4095;
+        let mut first = usize::MAX;
+        let mut end = 0usize;
+        let mut add_range = |start: u32, number: u32| -> VfsResult<()> {
+            if number == 0 {
+                return Ok(());
+            }
+            let start = start as usize;
+            let range_end = start.checked_add(number as usize).ok_or(VfsError::InvalidData)?;
+            first = first.min(start);
+            end = end.max(range_end);
+            Ok(())
         };
-        let Ok(exported) = exported_gem_buffer(handle) else {
-            warn!("card1: mmap could not resolve handle {handle}");
-            return DeviceMmap::None;
+
+        let active_core_count = Self::active_core_count(core_mask);
+        for subcore_idx in Self::active_subcore_task_indices(core_mask) {
+            let subcore = args
+                .subcore_task
+                .get(subcore_idx)
+                .ok_or(VfsError::InvalidData)?;
+            if subcore.task_number != 0 {
+                add_range(subcore.task_start, subcore.task_number)?;
+            } else if active_core_count == 1 && args.task_number != 0 {
+                add_range(args.task_start, args.task_number)?;
+            } else {
+                return Err(VfsError::InvalidData);
+            }
+        }
+        if first == usize::MAX || end.checked_sub(first).is_none_or(|len| len > MAX_TASKS) {
+            return Err(VfsError::InvalidData);
+        }
+        Ok((first, end))
+    }
+
+    fn active_core_count(core_mask: u32) -> usize {
+        RKNPU_CORE_MASKS
+            .into_iter()
+            .filter(|core_bit| core_mask & core_bit != 0)
+            .count()
+    }
+
+    fn active_subcore_task_indices(core_mask: u32) -> impl Iterator<Item = usize> {
+        let active_core_count = Self::active_core_count(core_mask);
+        RKNPU_CORE_MASKS
+            .into_iter()
+            .enumerate()
+            .filter_map(move |(core_idx, core_bit)| {
+                (core_mask & core_bit != 0).then_some(if active_core_count == 3 {
+                    // This is the layout consumed by rockchip-npu::submit_ioctrl:
+                    // three-core submissions use slots 2..=4, while one- and
+                    // two-core submissions use the corresponding core slots.
+                    core_idx + 2
+                } else {
+                    core_idx
+                })
+            })
+    }
+
+    fn load_tasks(
+        &self,
+        current: &UserTaskRef,
+        args: &RknpuSubmit,
+        core_mask: u32,
+    ) -> VfsResult<(usize, Vec<RknpuTask>)> {
+        let (first, end) = Self::submit_task_span(args, core_mask)?;
+        let task_size = mem::size_of::<RknpuTask>();
+        let byte_offset = first.checked_mul(task_size).ok_or(VfsError::BadAddress)?;
+        let byte_len = (end - first)
+            .checked_mul(task_size)
+            .ok_or(VfsError::BadAddress)?;
+        let task_addr = (args.task_obj_addr as usize)
+            .checked_add(byte_offset)
+            .ok_or(VfsError::BadAddress)?;
+        if task_addr == 0 {
+            return Err(VfsError::BadAddress);
+        }
+
+        let bytes: Vec<u8> = vm_load(current, task_addr as *const u8, byte_len)
+            .map_err(|_| VfsError::BadAddress)?;
+        let mut tasks = Vec::with_capacity(end - first);
+        for bytes in bytes.chunks_exact(task_size) {
+            // `RknpuTask` is `repr(C, packed)` and contains integer fields only.
+            // The source is an initialized kernel-owned byte vector, so an
+            // unaligned read is the exact operation needed to decode the ABI.
+            let task = unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<RknpuTask>()) };
+            tasks.push(task);
+        }
+        Ok((first, tasks))
+    }
+
+    fn validate_submit_dma(
+        &self,
+        args: &RknpuSubmit,
+        tasks: &[RknpuTask],
+        task_bytes: u64,
+    ) -> VfsResult<()> {
+        if args.task_base_addr != 0
+            && !task_base_addr_is_valid(
+                args.task_base_addr,
+                self.find_dma_range(args.task_base_addr, task_bytes),
+            )
+        {
+            return Err(VfsError::InvalidData);
+        }
+        for task in tasks {
+            let command_bytes = (task.regcfg_amount as u64)
+                .checked_mul(mem::size_of::<u64>() as u64)
+                .ok_or(VfsError::InvalidData)?;
+            if command_bytes == 0
+                || task.regcmd_addr > u32::MAX as u64
+                || !self.find_dma_range(task.regcmd_addr, command_bytes)
+            {
+                return Err(VfsError::InvalidData);
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_submit(&self, current: &UserTaskRef, args: &mut RknpuSubmit) -> VfsResult<()> {
+        if !rknpu::submit_available().map_err(map_rknpu_err)? {
+            return Err(VfsError::OperationNotSupported);
+        }
+        let core_mask = rknpu::normalize_core_mask(args.core_mask).map_err(map_rknpu_err)?;
+        let (first, mut tasks) = self.load_tasks(current, args, core_mask)?;
+        let task_bytes = (tasks.len() as u64)
+            .checked_mul(mem::size_of::<RknpuTask>() as u64)
+            .ok_or(VfsError::BadAddress)?;
+        self.validate_submit_dma(args, &tasks, task_bytes)?;
+
+        let mut driver_args = *args;
+        driver_args.core_mask = core_mask;
+        let active_core_count = Self::active_core_count(core_mask);
+        let active_subcore_indices = Self::active_subcore_task_indices(core_mask);
+        let active_subcore_indices = active_subcore_indices.collect::<Vec<_>>();
+        let only_active_subcore_idx = active_subcore_indices
+            .first()
+            .copied()
+            .ok_or(VfsError::InvalidData)?;
+        if active_core_count == 1
+            && driver_args.task_number != 0
+            && driver_args.subcore_task[only_active_subcore_idx].task_number == 0
+        {
+            driver_args.task_start = driver_args
+                .task_start
+                .checked_sub(first as u32)
+                .ok_or(VfsError::InvalidData)?;
+        }
+        for subcore_idx in active_subcore_indices {
+            let subcore = &mut driver_args.subcore_task[subcore_idx];
+            if subcore.task_number != 0 {
+                subcore.task_start = subcore
+                    .task_start
+                    .checked_sub(first as u32)
+                    .ok_or(VfsError::InvalidData)?;
+            }
+        }
+        rknpu::submit(&mut driver_args, &mut tasks).map_err(map_rknpu_err)?;
+        args.task_counter = driver_args.task_counter;
+        args.hw_elapse_time = driver_args.hw_elapse_time;
+
+        let task_addr = (args.task_obj_addr as usize)
+            .checked_add(first.checked_mul(mem::size_of::<RknpuTask>()).ok_or(VfsError::BadAddress)?)
+            .ok_or(VfsError::BadAddress)?;
+        // SAFETY: `tasks` is an initialized, contiguous vector of packed ABI
+        // records, and `task_bytes` is exactly its byte length.
+        let task_bytes = unsafe {
+            core::slice::from_raw_parts(tasks.as_ptr().cast::<u8>(), task_bytes as usize)
         };
-        exported.device_mmap_kind()
+        vm_write_slice(current, task_addr as *mut u8, task_bytes)
+            .map_err(|_| VfsError::BadAddress)?;
+        Ok(())
+    }
+}
+
+/// Return whether `[address, address + length)` is fully contained in a GEM
+/// buffer. All arithmetic is checked because both values originate in ioctl
+/// data and are later programmed into a device-visible address register.
+fn range_contains(base: u64, size: usize, address: u64, length: u64) -> bool {
+    let Some(buffer_end) = base.checked_add(size as u64) else {
+        return false;
+    };
+    let Some(end) = address.checked_add(length) else {
+        return false;
+    };
+    address >= base && end <= buffer_end
+}
+
+fn task_base_addr_is_valid(address: u64, dma_range_valid: bool) -> bool {
+    address == 0 || (address <= u32::MAX as u64 && dma_range_valid)
+}
+
+impl FileLike for Card1File {
+    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
+        self.base.read(dst)
+    }
+
+    fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
+        self.base.write(src)
+    }
+
+    fn stat(&self) -> StarryResult<Kstat> {
+        self.base.stat()
+    }
+
+    fn path(&self) -> Cow<'_, str> {
+        self.base.path()
+    }
+
+    fn ioctl(
+        &self,
+        current: &UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> StarryResult<usize> {
+        if arg == 0 {
+            return Err(StarryError::BadAddress);
+        }
+        let _operation = self.operation.lock();
+        retry_deferred_gem_destroys();
+        let nr = ioctl_nr(cmd);
+        info!("card1: cmd {cmd:#x}, nr {nr:#x}, arg {arg:#x}");
+        if is_driver_ioctl(nr) {
+            let op = RknpuCmd::try_from(nr).map_err(|_| StarryError::NotATty)?;
+            return Ok(self.rknpu_driver_ioctl(current, op, arg)?);
+        }
+
+        if nr > MAX_IOCTL_NR {
+            return Err(StarryError::NotATty);
+        }
+        let mut stack_data = AlignedIoctlData([0u8; STACK_DATA_SIZE]);
+        let in_size = io_size(cmd) as usize;
+        if in_size > stack_data.0.len() {
+            return Err(StarryError::InvalidInput);
+        }
+        copy_from_user(current, &mut stack_data.0[..in_size], arg)?;
+        let mut prime_rollback = None;
+        match nr {
+            DRM_IOCTL_VERSION_NR => drm_version(current, &mut stack_data.0)?,
+            DRM_IOCTL_GET_UNIQUE_NR => drm_get_unique(&mut stack_data.0)?,
+            DRM_IOCTL_GEM_FLINK_NR => {
+                drm_gem_flink_ioctl(&mut stack_data.0)?;
+            }
+            DRM_IOCTL_PRIME_HANDLE_TO_FD_NR => {
+                prime_rollback = Some(self.drm_prime_handle_to_fd_ioctl(&mut stack_data.0)?);
+            }
+            DRM_IOCTL_PRIME_FD_TO_HANDLE_NR => {
+                prime_rollback = Some(self.drm_prime_fd_to_handle_ioctl(&mut stack_data.0)?);
+            }
+            _ => return Err(VfsError::NotATty.into()),
+        }
+        // PRIME handlers publish an fd or local GEM handle before this common
+        // copy-back. The guard remains armed until the user-visible result has
+        // been copied successfully, so a bad output pointer cannot commit a
+        // resource that userspace never received.
+        copy_to_user(current, arg, &stack_data.0[..in_size])?;
+        if let Some(rollback) = prime_rollback {
+            rollback.commit();
+        }
+        Ok(0)
+    }
+
+    fn device_mmap(&self, offset: u64, _length: u64) -> StarryResult<DeviceMmap> {
+        let _operation = self.operation.lock();
+        retry_deferred_gem_destroys();
+        let handle = map_handle_from_offset(offset).ok_or(StarryError::InvalidInput)?;
+        Ok(self.exported_gem_buffer(handle)?.device_mmap_kind_resolved())
+    }
+
+    fn open_flags(&self) -> u32 {
+        self.base.open_flags()
+    }
+
+    fn nonblocking(&self) -> bool {
+        self.base.nonblocking()
+    }
+
+    fn set_nonblocking(&self, nonblocking: bool) -> StarryResult {
+        self.base.set_nonblocking(nonblocking)
+    }
+}
+
+impl Pollable for Card1File {
+    /// The engine is driven synchronously inside `ioctl`, so the fd is always ready.
+    fn poll(&self) -> IoEvents {
+        IoEvents::IN | IoEvents::OUT
+    }
+
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
+}
+
+impl Card1File {
+    fn rknpu_driver_ioctl(
+        &self,
+        current: &UserTaskRef,
+        op: RknpuCmd,
+        arg: usize,
+    ) -> VfsResult<usize> {
+        info!("rknpu_driver_ioctl: op = {:?}", op);
+        match op {
+            RknpuCmd::Submit => {
+                let mut submit_args = RknpuSubmit::default();
+                copy_from_user(
+                    current,
+                    bytemuck::bytes_of_mut(&mut submit_args),
+                    arg,
+                )?;
+                let submit_result = self.handle_submit(current, &mut submit_args);
+                copy_to_user(
+                    current,
+                    arg,
+                    bytemuck::bytes_of(&submit_args),
+                )?;
+                submit_result?;
+            }
+            RknpuCmd::MemCreate => {
+                let mut mem_create_args = RknpuMemCreate::default();
+                copy_from_user(
+                    current,
+                    bytemuck::bytes_of_mut(&mut mem_create_args),
+                    arg,
+                )?;
+                rknpu::mem_create(&mut mem_create_args).map_err(map_rknpu_err)?;
+                let global_handle = mem_create_args.handle;
+                let local_handle = match self.add_handle(global_handle) {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        destroy_gem_or_defer(global_handle);
+                        return Err(error);
+                    }
+                };
+                mem_create_args.handle = local_handle;
+                if let Err(error) = copy_to_user(
+                    current,
+                    arg,
+                    bytemuck::bytes_of(&mem_create_args),
+                ) {
+                    let global_handle = self.remove_handle(local_handle)?;
+                    destroy_gem_or_defer(global_handle);
+                    return Err(error);
+                }
+            }
+            RknpuCmd::MemMap => {
+                let mut mem_map = RknpuMemMap::default();
+                copy_from_user(
+                    current,
+                    bytemuck::bytes_of_mut(&mut mem_map),
+                    arg,
+                )?;
+                self.global_handle(mem_map.handle)?;
+                mem_map.offset = (mem_map.handle as u64) << PAGE_SHIFT;
+                copy_to_user(
+                    current,
+                    arg,
+                    bytemuck::bytes_of(&mem_map),
+                )?;
+            }
+            RknpuCmd::MemDestroy => {
+                let mut mem_destroy = RknpuMemDestroy::default();
+                copy_from_user(
+                    current,
+                    bytemuck::bytes_of_mut(&mut mem_destroy),
+                    arg,
+                )?;
+                let global_handle = self.global_handle(mem_destroy.handle)?;
+                rknpu::mem_destroy(global_handle).map_err(map_rknpu_err)?;
+                self.remove_handle(mem_destroy.handle)?;
+            }
+            RknpuCmd::MemSync => {
+                let mut mem_sync = RknpuMemSync::default();
+                copy_from_user(
+                    current,
+                    bytemuck::bytes_of_mut(&mut mem_sync),
+                    arg,
+                )?;
+                if !self.find_cpu_range(mem_sync.obj_addr, mem_sync.offset, mem_sync.size) {
+                    return Err(VfsError::InvalidData);
+                }
+                rknpu::mem_sync(&mut mem_sync).map_err(map_rknpu_err)?;
+                copy_to_user(
+                    current,
+                    arg,
+                    bytemuck::bytes_of(&mem_sync),
+                )?;
+            }
+            RknpuCmd::Action => {
+                let mut action = RknpuUserAction { flags: 0, value: 0 };
+                copy_from_user(
+                    current,
+                    bytemuck::bytes_of_mut(&mut action),
+                    arg,
+                )?;
+                let action_kind = decode_rknpu_action(action.flags)?;
+                action.value = rknpu::action(action_kind).map_err(map_rknpu_err)?;
+                copy_to_user(
+                    current,
+                    arg,
+                    bytemuck::bytes_of(&action),
+                )?;
+            }
+        }
+        Ok(0)
+    }
+
+    fn drm_prime_handle_to_fd_ioctl(&self, data: &mut [u8]) -> VfsResult<PrimeRollback<'_>> {
+        let data = unsafe { &mut *(data.as_mut_ptr() as *mut DrmPrimeHande) };
+        let exported: Arc<dyn FileLike> = Arc::new(
+            self.exported_gem_buffer(data.handle)
+                .map_err(|_| VfsError::NotFound)?,
+        );
+        data.fd = add_file_like(exported.clone(), prime_fd_cloexec(data.flags))
+            .map_err(|_| VfsError::NoMemory)?;
+        Ok(PrimeRollback::new_fd(data.fd, exported))
+    }
+
+    fn drm_prime_fd_to_handle_ioctl(&self, data: &mut [u8]) -> VfsResult<PrimeRollback<'_>> {
+        let req = unsafe { &mut *(data.as_mut_ptr() as *mut DrmPrimeHande) };
+        let buf = resolve_contiguous_dmabuf(req.fd).ok_or(VfsError::InvalidInput)?;
+        let global_handle = rknpu::mem_import(
+            buf.dma_phys_base() as u64,
+            buf.dma_cpu_base().ok_or(VfsError::InvalidInput)?,
+            buf.dma_size(),
+            0,
+            buf.dma_retainer(),
+        )
+        .map_err(map_rknpu_err)?;
+        req.handle = match self.add_handle(global_handle) {
+            Ok(handle) => handle,
+            Err(error) => {
+                destroy_gem_or_defer(global_handle);
+                return Err(error);
+            }
+        };
+        Ok(PrimeRollback::new_import(self, req.handle, global_handle))
+    }
+}
+
+enum PrimeRollbackAction<'a> {
+    CloseFd {
+        fd: i32,
+        file: Arc<dyn FileLike>,
+    },
+    DestroyImportedGem {
+        file: &'a Card1File,
+        local_handle: u32,
+        global_handle: u32,
+    },
+}
+
+struct PrimeRollback<'a> {
+    action: PrimeRollbackAction<'a>,
+    committed: bool,
+}
+
+impl<'a> PrimeRollback<'a> {
+    fn new_fd(fd: i32, file: Arc<dyn FileLike>) -> Self {
+        Self {
+            action: PrimeRollbackAction::CloseFd { fd, file },
+            committed: false,
+        }
+    }
+
+    fn new_import(file: &'a Card1File, local_handle: u32, global_handle: u32) -> Self {
+        Self {
+            action: PrimeRollbackAction::DestroyImportedGem {
+                file,
+                local_handle,
+                global_handle,
+            },
+            committed: false,
+        }
+    }
+
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PrimeRollback<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        match &self.action {
+            PrimeRollbackAction::CloseFd { fd, file } => close_exported_fd(*fd, file),
+            PrimeRollbackAction::DestroyImportedGem {
+                file,
+                local_handle,
+                global_handle,
+            } => match file.remove_handle(*local_handle) {
+                Ok(removed) if removed == *global_handle => destroy_gem_or_defer(*global_handle),
+                Ok(removed) => {
+                    warn!(
+                        "rknpu: PRIME rollback handle mismatch: local={local_handle}, \
+                         expected={global_handle}, actual={removed}"
+                    );
+                    destroy_gem_or_defer(removed);
+                    destroy_gem_or_defer(*global_handle);
+                }
+                Err(error) => {
+                    // Keep the global allocation recoverable even if local
+                    // bookkeeping has already been changed unexpectedly.
+                    warn!(
+                        "rknpu: PRIME rollback could not remove local handle {local_handle}: \
+                         {error:?}"
+                    );
+                    defer_gem_destroy(*global_handle);
+                }
+            },
+        }
+    }
+}
+
+fn close_exported_fd(fd: i32, expected: &Arc<dyn FileLike>) {
+    let removed = {
+        let table = current_fd_table();
+        let mut table = table.write();
+        let matches = table
+            .get(fd as usize)
+            .is_some_and(|descriptor| Arc::ptr_eq(&descriptor.inner, expected));
+        matches.then(|| table.remove(fd as usize)).flatten()
+    };
+    if let Some(descriptor) = removed {
+        release_locks_on_close(descriptor);
+    } else {
+        // Another thread may have closed or reused the freshly exported fd;
+        // its normal close path then owns the descriptor cleanup.
+        warn!("rknpu: PRIME fd rollback skipped fd {fd} after descriptor changed");
+    }
+}
+
+impl Drop for Card1File {
+    fn drop(&mut self) {
+        let handles = core::mem::take(&mut *self.handles.lock());
+        for global_handle in handles.into_values() {
+            destroy_gem_or_defer(global_handle);
+        }
+    }
+}
+
+fn enqueue_deferred_gem_destroy(pending: &mut Vec<u32>, handle: u32) {
+    if !pending.contains(&handle) {
+        pending.push(handle);
+    }
+}
+
+fn defer_gem_destroy(handle: u32) {
+    enqueue_deferred_gem_destroy(&mut DEFERRED_GEM_DESTROYS.lock(), handle);
+}
+
+fn destroy_gem_or_defer(handle: u32) {
+    match rknpu::mem_destroy(handle) {
+        Ok(()) => {}
+        Err(error @ (rknpu::Error::Busy | rknpu::Error::Quarantined)) => {
+            warn!(
+                "rknpu: GEM destroy for handle {} deferred after {:?}",
+                handle, error
+            );
+            defer_gem_destroy(handle);
+        }
+        Err(error) => {
+            warn!(
+                "rknpu: GEM destroy for handle {} could not be completed: {:?}",
+                handle, error
+            );
+        }
+    }
+}
+
+fn retry_deferred_gem_destroys() {
+    let pending = core::mem::take(&mut *DEFERRED_GEM_DESTROYS.lock());
+    for handle in pending {
+        match rknpu::mem_destroy(handle) {
+            Ok(()) => {}
+            Err(error @ (rknpu::Error::Busy | rknpu::Error::Quarantined)) => {
+                warn!(
+                    "rknpu: deferred GEM destroy for handle {} still unavailable: {:?}",
+                    handle, error
+                );
+                defer_gem_destroy(handle);
+            }
+            Err(error) => {
+                warn!(
+                    "rknpu: deferred GEM destroy for handle {} was discarded: {:?}",
+                    handle, error
+                );
+            }
+        }
     }
 }
 
@@ -302,6 +949,21 @@ impl ExportedGemBuffer {
             // non-cacheable instead of accidentally upgrading it to cached.
             GemCachePolicy::NonCacheable | GemCachePolicy::WriteCombine => {
                 DeviceMmap::Physical(self.range, anchor)
+            }
+        }
+    }
+
+    /// Returns a mapping whose physical range has already been selected by the
+    /// GEM handle encoded in the file offset. The mmap layer must not add that
+    /// selector offset to the physical address a second time.
+    fn device_mmap_kind_resolved(&self) -> DeviceMmap {
+        let anchor = Some(self.retainer.clone());
+        match self.cache_policy {
+            GemCachePolicy::Cacheable => {
+                DeviceMmap::PhysicalCachedResolvedPageCapped(self.range, anchor)
+            }
+            GemCachePolicy::NonCacheable | GemCachePolicy::WriteCombine => {
+                DeviceMmap::PhysicalResolvedPageCapped(self.range, anchor)
             }
         }
     }
@@ -371,261 +1033,26 @@ fn map_rknpu_err(err: rknpu::Error) -> VfsError {
         rknpu::Error::TimedOut => VfsError::TimedOut,
         rknpu::Error::Quarantined => VfsError::Io,
         rknpu::Error::InvalidData => VfsError::InvalidData,
+        rknpu::Error::NotSupported => VfsError::OperationNotSupported,
     }
 }
 
-fn elapsed_us(start_ns: u64, end_ns: u64) -> u64 {
-    end_ns.saturating_sub(start_ns) / 1000
+/// Copies data from user space to a kernel-owned byte slice.
+fn copy_from_user(current: &UserTaskRef, dst: &mut [u8], src: usize) -> Result<(), VfsError> {
+    let bytes = vm_load(current, src as *const u8, dst.len()).map_err(|err| {
+        warn!("[rknpu]: copy_from_user failed: {err:?}");
+        VfsError::BadAddress
+    })?;
+    dst.copy_from_slice(&bytes);
+    Ok(())
 }
 
-fn read_user_bytes(current: &UserTaskRef, dst: &mut [u8], src: usize) -> VfsResult<()> {
-    // SAFETY: MaybeUninit<u8> has the same layout as u8 and `dst` is uniquely
-    // borrowed for the duration of the copy. A failed copy leaves only u8
-    // values, for which every bit pattern remains valid.
-    let dst =
-        unsafe { slice::from_raw_parts_mut(dst.as_mut_ptr().cast::<MaybeUninit<u8>>(), dst.len()) };
-    vm_read_slice(current, src as *const u8, dst).map_err(|_| VfsError::InvalidData)
-}
-
-fn write_user_bytes(current: &UserTaskRef, dst: usize, src: &[u8]) -> VfsResult<()> {
-    vm_write_slice(current, dst as *mut u8, src).map_err(|_| VfsError::InvalidData)
-}
-
-fn read_user_value<T: AnyBitPattern>(current: &UserTaskRef, src: usize) -> VfsResult<T> {
-    UserConstPtr::<T>::from(src)
-        .read(current)
-        .map_err(|_| VfsError::InvalidData)
-}
-
-fn write_user_value<T: NoUninit>(current: &UserTaskRef, dst: usize, value: T) -> VfsResult<()> {
-    UserPtr::<T>::from(dst)
-        .write(current, value)
-        .map_err(|_| VfsError::InvalidData)
-}
-
-/// Handles RKNPU action ioctl commands
-pub fn rknpu_driver_ioctl(current: &UserTaskRef, op: RknpuCmd, arg: usize) -> VfsResult<usize> {
-    info!("rknpu_driver_ioctl: op = {:?}", op);
-    match op {
-        RknpuCmd::Submit => {
-            let mut submit_args = read_user_value::<RknpuSubmit>(current, arg)?;
-            let log_index = RKNPU_SUBMIT_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-            if log_index < RKNPU_SUBMIT_LOG_LIMIT {
-                warn!(
-                    "rknpu submit ioctl[{log_index}]: flags={:#x} timeout={} task_start={} \
-                     task_number={} task_counter={} core_mask={:#x} task_obj_addr={:#x} \
-                     task_base_addr={:#x} subcore_task={:?}",
-                    submit_args.flags,
-                    submit_args.timeout,
-                    submit_args.task_start,
-                    submit_args.task_number,
-                    submit_args.task_counter,
-                    submit_args.core_mask,
-                    submit_args.task_obj_addr,
-                    submit_args.task_base_addr,
-                    submit_args.subcore_task
-                );
-            }
-            info!("rknpu submit ioctl {submit_args:#x?}");
-
-            let submit_start_ns = monotonic_time_nanos();
-            let submit_result = rknpu::submit(&mut submit_args).map_err(map_rknpu_err);
-            match &submit_result {
-                Ok(()) => {
-                    let submit_end_ns = monotonic_time_nanos();
-                    if log_index < RKNPU_SUBMIT_LOG_LIMIT {
-                        warn!(
-                            "rknpu submit ioctl[{log_index}] done: task_counter={} \
-                             hw_elapse_time={} core_mask={:#x} elapsed_us={}",
-                            submit_args.task_counter,
-                            submit_args.hw_elapse_time,
-                            submit_args.core_mask,
-                            elapsed_us(submit_start_ns, submit_end_ns)
-                        );
-                    }
-                }
-                Err(e) => {
-                    let submit_end_ns = monotonic_time_nanos();
-                    warn!("rknpu submit ioctl failed: {:?}", e);
-                    if log_index < RKNPU_SUBMIT_LOG_LIMIT {
-                        warn!(
-                            "rknpu submit ioctl[{log_index}] failed: task_counter={} \
-                             hw_elapse_time={} core_mask={:#x} elapsed_us={}",
-                            submit_args.task_counter,
-                            submit_args.hw_elapse_time,
-                            submit_args.core_mask,
-                            elapsed_us(submit_start_ns, submit_end_ns)
-                        );
-                    }
-                }
-            }
-            debug!("rknpu submit ioctl result: {:#x?}", submit_args);
-
-            write_user_value(current, arg, submit_args)?;
-            submit_result?;
-        }
-        RknpuCmd::MemCreate => {
-            info!("rknpu mem_create ioctl");
-            let mut mem_create_args = read_user_value::<RknpuMemCreate>(current, arg)?;
-
-            let log_index = RKNPU_MEM_CREATE_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-            if log_index < RKNPU_MEM_CREATE_LOG_LIMIT {
-                warn!(
-                    "rknpu mem_create ioctl[{log_index}]: flags={:#x} size={} core_mask={:#x}",
-                    mem_create_args.flags, mem_create_args.size, mem_create_args.core_mask
-                );
-            }
-
-            let create_start_ns = monotonic_time_nanos();
-            match rknpu::mem_create(&mut mem_create_args).map_err(map_rknpu_err) {
-                Ok(()) => {
-                    let create_end_ns = monotonic_time_nanos();
-                    if log_index < RKNPU_MEM_CREATE_LOG_LIMIT {
-                        warn!(
-                            "rknpu mem_create ioctl[{log_index}] done: handle={} flags={:#x} \
-                             size={} sram_size={} obj_addr={:#x} dma_addr={:#x} \
-                             iommu_domain_id={} core_mask={:#x} elapsed_us={}",
-                            mem_create_args.handle,
-                            mem_create_args.flags,
-                            mem_create_args.size,
-                            mem_create_args.sram_size,
-                            mem_create_args.obj_addr,
-                            mem_create_args.dma_addr,
-                            mem_create_args.iommu_domain_id,
-                            mem_create_args.core_mask,
-                            elapsed_us(create_start_ns, create_end_ns)
-                        );
-                    }
-                }
-                Err(e) => {
-                    let create_end_ns = monotonic_time_nanos();
-                    warn!("rknpu mem_create ioctl failed: {:?}", e);
-                    if log_index < RKNPU_MEM_CREATE_LOG_LIMIT {
-                        warn!(
-                            "rknpu mem_create ioctl[{log_index}] failed: flags={:#x} size={} \
-                             core_mask={:#x} elapsed_us={}",
-                            mem_create_args.flags,
-                            mem_create_args.size,
-                            mem_create_args.core_mask,
-                            elapsed_us(create_start_ns, create_end_ns)
-                        );
-                    }
-                }
-            }
-
-            write_user_value(current, arg, mem_create_args)?;
-        }
-        RknpuCmd::MemMap => {
-            info!("rknpu mem_map ioctl");
-            let mut mem_map = read_user_value::<RknpuMemMap>(current, arg)?;
-
-            match rknpu::mem_map_offset(mem_map.handle).map_err(map_rknpu_err) {
-                Ok(offset) => {
-                    mem_map.offset = offset;
-                    info!(
-                        "mem_map: handle={} -> offset=0x{:x}",
-                        mem_map.handle, mem_map.offset
-                    );
-                }
-                Err(e) => {
-                    warn!("mem_map: invalid handle={}", mem_map.handle);
-                    warn!("rknpu mem_map ioctl failed: {:?}", e);
-                    return Err(e);
-                }
-            }
-
-            write_user_value(current, arg, mem_map)?;
-        }
-        RknpuCmd::MemDestroy => {
-            let mem_destroy = read_user_value::<RknpuMemDestroy>(current, arg)?;
-            info!("rknpu mem_destroy ioctl: handle={}", mem_destroy.handle);
-            rknpu::mem_destroy(mem_destroy.handle).map_err(map_rknpu_err)?;
-        }
-        RknpuCmd::MemSync => {
-            let mut mem_sync = read_user_value::<RknpuMemSync>(current, arg)?;
-            let log_index = RKNPU_MEM_SYNC_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-            if log_index < RKNPU_MEM_SYNC_LOG_LIMIT {
-                warn!(
-                    "rknpu mem_sync ioctl[{log_index}]: flags={:#x} obj_addr={:#x} offset={} \
-                     size={}",
-                    mem_sync.flags, mem_sync.obj_addr, mem_sync.offset, mem_sync.size
-                );
-            }
-            info!("rknpu mem_sync ioctl {mem_sync:#x?}");
-
-            let sync_start_ns = monotonic_time_nanos();
-            match rknpu::mem_sync(&mut mem_sync).map_err(map_rknpu_err) {
-                Ok(()) => {
-                    let sync_end_ns = monotonic_time_nanos();
-                    if log_index < RKNPU_MEM_SYNC_LOG_LIMIT {
-                        warn!(
-                            "rknpu mem_sync ioctl[{log_index}] done: flags={:#x} offset={} \
-                             size={} elapsed_us={}",
-                            mem_sync.flags,
-                            mem_sync.offset,
-                            mem_sync.size,
-                            elapsed_us(sync_start_ns, sync_end_ns)
-                        );
-                    }
-                }
-                Err(e) => {
-                    let sync_end_ns = monotonic_time_nanos();
-                    warn!("rknpu mem_sync ioctl failed: {:?}", e);
-                    if log_index < RKNPU_MEM_SYNC_LOG_LIMIT {
-                        warn!(
-                            "rknpu mem_sync ioctl[{log_index}] failed: flags={:#x} offset={} \
-                             size={} elapsed_us={}",
-                            mem_sync.flags,
-                            mem_sync.offset,
-                            mem_sync.size,
-                            elapsed_us(sync_start_ns, sync_end_ns)
-                        );
-                    }
-                    return Err(e);
-                }
-            }
-
-            write_user_value(current, arg, mem_sync)?;
-        }
-        RknpuCmd::Action => {
-            info!("rknpu action ioctl");
-            let mut action = read_user_value::<RknpuUserAction>(current, arg)?;
-            let action_kind = decode_rknpu_action(action.flags)?;
-
-            let log_index = RKNPU_ACTION_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-            let value_in = action.value;
-            info!(
-                "rknpu action ioctl: flags = {:?}, value = {}",
-                action.flags, action.value
-            );
-
-            match rknpu::action(action_kind).map_err(map_rknpu_err) {
-                Ok(val) => {
-                    action.value = val;
-                    if log_index < RKNPU_ACTION_LOG_LIMIT {
-                        warn!(
-                            "rknpu action ioctl[{log_index}]: flags={:?} value_in={} \
-                             result=Ok({}) value_out={}",
-                            action.flags, value_in, val, action.value
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!("rknpu action ioctl failed: {:?}", e);
-                    if log_index < RKNPU_ACTION_LOG_LIMIT {
-                        warn!(
-                            "rknpu action ioctl[{log_index}]: flags={:?} value_in={} \
-                             result=Err({:?}) value_out={}",
-                            action.flags, value_in, e, action.value
-                        );
-                    }
-                }
-            }
-
-            write_user_value(current, arg, action)?;
-        }
-    }
-    Ok(0)
+/// Copies a kernel-owned byte slice to user space.
+fn copy_to_user(current: &UserTaskRef, dst: usize, src: &[u8]) -> Result<(), VfsError> {
+    vm_write_slice(current, dst as *mut u8, src).map_err(|err| {
+        warn!("[rknpu]: copy_to_user failed: {err:?}");
+        VfsError::BadAddress
+    })
 }
 
 /// DRM_IOCTL_GEM_FLINK ioctl argument type
@@ -657,56 +1084,16 @@ struct DrmPrimeHande {
     fd: i32,
 }
 
-/// Handles DRM prime handle to fd ioctl command
-fn drm_prime_handle_to_fd_ioctl(data: &mut [u8]) -> VfsResult<usize> {
-    let data = unsafe { &mut *(data.as_mut_ptr() as *mut DrmPrimeHande) };
-    info!("drm_prime_handle_to_fd_ioctl {data:#x?}");
-    let exported = exported_gem_buffer(data.handle).map_err(|err| {
-        warn!(
-            "drm_prime_handle_to_fd_ioctl: invalid handle {}: {err}",
-            data.handle
-        );
-        VfsError::NotFound
-    })?;
-    data.fd = exported
-        .add_to_fd_table(prime_fd_cloexec(data.flags))
-        .map_err(|err| {
-            warn!("drm_prime_handle_to_fd_ioctl: failed to allocate fd: {err}");
-            VfsError::NoMemory
-        })?;
-    Ok(0)
-}
-
-/// Handles DRM prime fd to handle ioctl: imports an external dma-buf fd (e.g. a
-/// `/dev/dma_heap` buffer that a vendor lib decoded into) as a GEM handle, so the
-/// NPU can read it zero-copy. The buffer's allocation is retained for the
-/// handle's lifetime, so closing the source fd does not free it (UAF-safe).
-fn drm_prime_fd_to_handle_ioctl(data: &mut [u8]) -> VfsResult<usize> {
-    let req = unsafe { &mut *(data.as_mut_ptr() as *mut DrmPrimeHande) };
-    info!("drm_prime_fd_to_handle_ioctl {req:#x?}");
-
-    let buf = resolve_contiguous_dmabuf(req.fd).ok_or_else(|| {
-        warn!(
-            "drm_prime_fd_to_handle_ioctl: fd {} is not a contiguous dma-buf",
-            req.fd
-        );
-        VfsError::InvalidInput
-    })?;
-    let dma_addr = buf.dma_phys_base() as u64;
-    let obj_addr = buf.dma_cpu_base().ok_or(VfsError::InvalidInput)?;
-    let size = buf.dma_size();
-    let retainer = buf.dma_retainer();
-
-    // flags = 0 -> NonCacheable mmap, correct for the coherent dma-heap buffer.
-    let handle = rknpu::mem_import(dma_addr, obj_addr, size, 0, retainer).map_err(map_rknpu_err)?;
-    req.handle = handle;
-    Ok(0)
-}
-
 /// Rust implementation of Linux kernel's drm_copy_field function
 ///
 /// This function safely copies a string value to user space buffer,
 /// similar to the Linux kernel implementation with proper error handling.
+///
+/// # Safety
+///
+/// The caller must provide a valid mutable kernel reference for `buf_len` and
+/// a valid, initialized, NUL-terminated kernel string at `value`. `buf` is a
+/// user address and is only passed to the checked user-memory writer.
 unsafe fn drm_copy_field(
     current: &UserTaskRef,
     buf: *mut u8,
@@ -745,10 +1132,10 @@ unsafe fn drm_copy_field(
 
     // Finally, try filling in the userbuf (same logic as kernel)
     if copy_len > 0 && !buf.is_null() {
-        // SAFETY: the caller guarantees `value` points to a NUL-terminated
-        // kernel string, and the scan above established `copy_len <= len`.
-        let value = unsafe { slice::from_raw_parts(value, copy_len) };
-        write_user_bytes(current, buf as usize, value)?;
+        // SAFETY: `value` points to a NUL-terminated kernel string and the scan
+        // above established that `copy_len` bytes are within that string.
+        let value = unsafe { core::slice::from_raw_parts(value, copy_len) };
+        copy_to_user(current, buf as usize, value)?;
     }
 
     Ok(())
@@ -872,5 +1259,81 @@ mod tests {
         assert!(
             matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, Some(_)) if actual == range)
         );
+    }
+
+    #[test]
+    fn card1_selector_mmap_resolves_the_range_without_shifting_it() {
+        let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::Cacheable, Arc::new(()));
+
+        assert!(matches!(
+            exported.device_mmap_kind_resolved(),
+            DeviceMmap::PhysicalCachedResolvedPageCapped(actual, Some(_)) if actual == range
+        ));
+    }
+
+    #[test]
+    fn dma_range_requires_full_containment() {
+        assert!(range_contains(0x1000, 0x1000, 0x1800, 0x800));
+        assert!(!range_contains(0x1000, 0x1000, 0x2000, 1));
+        assert!(!range_contains(0x1000, 0x1000, 0x3000, 1));
+    }
+
+    #[test]
+    fn dma_range_rejects_integer_wraparound() {
+        assert!(!range_contains(u64::MAX - 1, 4, u64::MAX - 1, 4));
+        assert!(!range_contains(0x1000, 0x1000, u64::MAX - 1, 4));
+    }
+
+    #[test]
+    fn submit_task_span_rejects_empty_and_unbounded_ranges() {
+        assert!(Card1File::submit_task_span(&RknpuSubmit::default(), RKNPU_CORE0_MASK).is_err());
+
+        let mut args = RknpuSubmit {
+            task_start: u32::MAX,
+            task_number: u32::MAX,
+            ..RknpuSubmit::default()
+        };
+        assert!(Card1File::submit_task_span(&args, RKNPU_CORE0_MASK).is_err());
+
+        args.task_start = 0;
+        args.task_number = 4096;
+        assert!(Card1File::submit_task_span(&args, RKNPU_CORE0_MASK).is_err());
+    }
+
+    #[test]
+    fn submit_task_span_ignores_unselected_subcore_slots() {
+        let mut args = RknpuSubmit {
+            task_start: 17,
+            task_number: 1,
+            core_mask: RKNPU_CORE0_MASK,
+            ..RknpuSubmit::default()
+        };
+        args.subcore_task[1].task_start = u32::MAX;
+        args.subcore_task[1].task_number = u32::MAX;
+        args.subcore_task[4].task_start = u32::MAX;
+        args.subcore_task[4].task_number = u32::MAX;
+
+        assert_eq!(
+            Card1File::submit_task_span(&args, RKNPU_CORE0_MASK).unwrap(),
+            (17, 18)
+        );
+    }
+
+    #[test]
+    fn zero_task_base_addr_is_valid_abi_input() {
+        assert!(task_base_addr_is_valid(0, false));
+        assert!(!task_base_addr_is_valid(1, false));
+        assert!(task_base_addr_is_valid(1, true));
+    }
+
+    #[test]
+    fn deferred_destroy_queue_keeps_each_handle_once() {
+        let mut pending = Vec::new();
+        enqueue_deferred_gem_destroy(&mut pending, 7);
+        enqueue_deferred_gem_destroy(&mut pending, 7);
+        enqueue_deferred_gem_destroy(&mut pending, 9);
+
+        assert_eq!(pending.as_slice(), &[7, 9]);
     }
 }

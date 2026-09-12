@@ -33,16 +33,18 @@ impl CpuLocal {
 
     pub(crate) fn is_quiescent_for_offline(&self) -> bool {
         let run_queue = self.remote.lock_run_queue(RunQueueGuardSource::Lifecycle);
+        // Inspect the complete task/kernel timer base under one guard.
+        // Re-entering it through the remote check would self-lock when a
+        // kernel timer keeps the active-base snapshot set.
         let deadlines = self
             .remote
-            .read_deadline_base(DeadlineBaseGuardSource::Lifecycle);
+            .read_active_deadline_base(DeadlineBaseGuardSource::Lifecycle);
         (run_queue.current_thread().is_none() || run_queue.current_thread() == run_queue.idle())
             && run_queue.nr_running() == 0
             && run_queue.deadline_members_are_empty()
-            && deadlines.queue.is_empty()
-            && deadlines.expired_count == 0
-            && !deadlines.has_claimed_task_expiration()
-            && !deadlines.softirq_activated
+            && deadlines
+                .as_ref()
+                .is_none_or(|base| !base.has_active_work())
             && self.dispatch.switch_handoff.is_none()
             && self.remote.is_quiescent_for_offline()
     }

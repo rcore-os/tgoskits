@@ -19,10 +19,13 @@ pub fn run() -> crate::TestResult {
 
 fn wait_for(condition: impl Fn() -> bool) {
     let started = std::time::Instant::now();
-    while !condition() && started.elapsed() < Duration::from_secs(2) {
+    while !condition() {
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "CPU lifecycle event must complete"
+        );
         thread::yield_now();
     }
-    assert!(condition(), "CPU lifecycle event must complete");
 }
 
 fn wait_for_idle_cycle() -> bool {
@@ -59,7 +62,7 @@ fn idle_cpu_reservation_round_trip() {
     current::set_current_thread_affinity(coordinator).unwrap();
     let mut target = CpuSet::empty(ax_hal::cpu_num());
     target.insert(CpuId::new(1));
-    offline_waits_for_owner_publication();
+    offline_waits_for_owner_publication(&target);
     for activate in [false, true] {
         let prepared = ax_runtime::thread::builder("hotplug-reservation".into())
             .affinity(target.clone())
@@ -165,27 +168,58 @@ fn offline_does_not_lock_global_mm() {
     );
 }
 
-fn offline_waits_for_owner_publication() {
+fn offline_waits_for_owner_publication(target: &ax_task::sched::CpuSet) {
     use ax_runtime::thread::creation_probe::{
         request_idle_cpu_round_trip, take_idle_cpu_round_trip_result,
     };
-    use ax_task::runtime::cpu::{
-        IdleOfflineReader, IdleOfflineRejection, RuntimeCpuId, idle_offline_rejection,
-        with_idle_offline_reader,
+    use ax_task::{
+        runtime::cpu::{
+            CpuLifecycleState, IdleOfflineReader, RuntimeCpuId, with_idle_offline_reader,
+        },
+        time::{
+            MonotonicDeadline,
+            timer::{KernelTimerCancelOutcome, cancel_kernel_timer, register_kernel_timer},
+        },
     };
 
-    // CPU 0 retains the real publication guard until CPU 1 has attempted
-    // admission. No command is republished and no offline result is retried.
+    // This is the scheduler's final offline transaction, not Linux's full
+    // hotplug orchestration: it cannot migrate an outstanding kernel timer.
+    // Establish a known veto instead of assuming reader release alone makes
+    // every task and timer on the target quiescent.
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let registrar = ax_runtime::thread::builder("offline-timer-owner".into())
+        .affinity(target.clone())
+        .spawn(move || {
+            let deadline = MonotonicDeadline::from_duration(
+                ax_std::os::arceos::api::time::ax_monotonic_time() + Duration::from_secs(60),
+            );
+            let timer = register_kernel_timer(
+                deadline,
+                Box::new(|_| panic!("offline test must cancel its timer")),
+            )
+            .unwrap();
+            sender.send(timer).unwrap();
+        })
+        .unwrap();
+    registrar.wait().unwrap();
+    wait_for(|| registrar.execution_reclaimed());
+    registrar.join().unwrap();
+    let timer = receiver.recv().unwrap();
+
+    // Retain the reader until placement closes. Inactive is stable while
+    // this reader exists; the last diagnostic rejection is only a snapshot.
+    // Like Linux cpu-on-off-test.sh, check the resulting state after each
+    // operation, then remove the veto before expecting a successful cycle.
     for reader in [
         IdleOfflineReader::OwnerDelivery,
         IdleOfflineReader::IdleBalance,
     ] {
         with_idle_offline_reader(RuntimeCpuId::new(1), reader, |remote| {
             request_idle_cpu_round_trip(1).unwrap();
-            wait_for(|| !matches!(idle_offline_rejection(), IdleOfflineRejection::Unclassified));
+            wait_for(|| remote.lifecycle_state() == CpuLifecycleState::Inactive);
             assert_eq!(
                 remote.lifecycle_state(),
-                ax_task::runtime::cpu::CpuLifecycleState::Inactive,
+                CpuLifecycleState::Inactive,
                 "new placement must be closed while the existing publisher is retained"
             );
             assert_eq!(
@@ -196,8 +230,26 @@ fn offline_waits_for_owner_publication() {
         })
         .unwrap();
         assert!(
-            wait_for_idle_cycle(),
-            "offline must complete after the publisher releases its lease"
+            !wait_for_idle_cycle(),
+            "reader release must not bypass an outstanding kernel timer"
         );
+        // A rejected offline operation must restore placement admission.
+        with_idle_offline_reader(
+            RuntimeCpuId::new(1),
+            IdleOfflineReader::OwnerDelivery,
+            |remote| {
+                assert_eq!(remote.lifecycle_state(), CpuLifecycleState::Online);
+            },
+        )
+        .unwrap();
     }
+    assert_eq!(
+        cancel_kernel_timer(timer),
+        Ok(KernelTimerCancelOutcome::Cancelled)
+    );
+    request_idle_cpu_round_trip(1).unwrap();
+    assert!(
+        wait_for_idle_cycle(),
+        "removing the timer veto must permit offline after both readers were released"
+    );
 }
