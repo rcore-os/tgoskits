@@ -1,4 +1,7 @@
-use axfs_ng_vfs::{Location, NodeFlags, NodePermission, NodeType, VfsError, VfsResult, path::Path};
+use axfs_ng_vfs::{
+    Location, MutationCredentials, NodeFlags, NodePermission, NodeType, VfsError, VfsResult,
+    path::Path,
+};
 
 use super::handle::{File, FileBackend};
 use crate::fs_core::FsContext;
@@ -268,6 +271,16 @@ impl OpenOptions {
 
     /// Opens a file at the given path relative to the provided [`FsContext`].
     pub fn open(&self, context: &FsContext, path: impl AsRef<Path>) -> VfsResult<OpenResult> {
+        self.open_with_credentials(context, path, &MutationCredentials::root())
+    }
+
+    /// Opens a file while authorizing any file creation against its parent.
+    pub fn open_with_credentials(
+        &self,
+        context: &FsContext,
+        path: impl AsRef<Path>,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<OpenResult> {
         if !self.is_valid() {
             return Err(VfsError::InvalidInput);
         }
@@ -288,16 +301,47 @@ impl OpenOptions {
         // it. Fixes bug-open-trailing-slash.
         let must_be_dir = path.as_ref().has_trailing_slash();
 
-        let loc = match context.resolve_parent(path.as_ref()) {
-            Ok((parent, name)) => {
-                // If the path ends with '/', Linux never creates regular
-                // files via O_CREAT here — the path explicitly requests a
-                // directory, and open() cannot create directories. Suppress
-                // create flags BEFORE open_file to avoid creating an inode
-                // that the post-check would then reject (codex P1: original
-                // ordering left a stale file on disk for failing calls).
-                let effective_create = self.create && !must_be_dir;
-                let effective_create_new = self.create_new && !must_be_dir;
+        let loc = match context.resolve_parent_with_search_checked(path.as_ref(), |directory| {
+            context.check_search_path(directory, context.permission_boundary(), credentials)
+        }) {
+            Ok((parent, name, searched)) => {
+                context.check_search_trace(
+                    &searched,
+                    context.permission_boundary(),
+                    credentials,
+                )?;
+                // An existing directory named by a trailing-slash pathname
+                // must return EISDIR. For a missing final entry, suppress
+                // creation so the pathname cannot leave a regular file
+                // behind before producing its ENOENT result.
+                let (effective_create, effective_create_new) = match parent.lookup_no_follow(&name)
+                {
+                    Ok(location) => {
+                        if must_be_dir && self.create && location.is_dir() && !self.path {
+                            return Err(VfsError::IsADirectory);
+                        }
+                        if must_be_dir {
+                            // Let the trailing-slash type check decide
+                            // between an existing directory (EISDIR) and
+                            // a non-directory (ENOTDIR), before O_EXCL
+                            // can turn the lookup into EEXIST.
+                            (false, false)
+                        } else {
+                            (self.create, self.create_new)
+                        }
+                    }
+                    Err(VfsError::NotFound) => {
+                        if (self.create || self.create_new) && !must_be_dir {
+                            context.check_mutation_parent_with_search(
+                                &parent,
+                                &searched,
+                                credentials,
+                            )?;
+                        }
+                        (!must_be_dir && self.create, !must_be_dir && self.create_new)
+                    }
+                    Err(error) => return Err(error),
+                };
                 let mut loc = parent.open_file(
                     &name,
                     &axfs_ng_vfs::OpenOptions {
@@ -320,8 +364,13 @@ impl OpenOptions {
                     let parent_for_resolve = parent.clone();
                     match context
                         .with_current_dir(parent_for_resolve)?
-                        .try_resolve_symlink(loc, &mut 0)
-                    {
+                        .try_resolve_symlink_checked(loc, &mut 0, |directory| {
+                            context.check_search_path(
+                                directory,
+                                context.permission_boundary(),
+                                credentials,
+                            )
+                        }) {
                         Ok(resolved) => loc = resolved,
                         Err(VfsError::NotFound) if self.create && symlink_target.is_some() => {
                             // O_CREAT on a dangling symlink: man — Linux follows
@@ -330,7 +379,11 @@ impl OpenOptions {
                             // symlink target as the new path.
                             // Fixes bug-open-creat-dangling-no-create.
                             let target = symlink_target.unwrap();
-                            return self.open(&context.with_current_dir(parent)?, &target);
+                            return self.open_with_credentials(
+                                &context.with_current_dir(parent)?,
+                                &target,
+                                credentials,
+                            );
                         }
                         Err(e) => return Err(e),
                     }

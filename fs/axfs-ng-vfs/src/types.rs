@@ -103,6 +103,50 @@ pub struct Metadata {
     pub ctime: Duration,
 }
 
+/// Credentials used by filesystem mutation authorization.
+///
+/// The VFS does not own a task or a credential namespace, so callers must
+/// provide a snapshot for each mutation.  The snapshot deliberately contains
+/// only the identity and capabilities needed by DAC and sticky-directory
+/// checks; filesystem implementations must not infer these values from the
+/// host or a global default.
+#[derive(Clone, Copy, Debug)]
+pub struct MutationCredentials<'a> {
+    /// Filesystem user ID used for DAC and ownership checks.
+    pub fsuid: u32,
+    /// Filesystem group ID used for DAC checks.
+    pub fsgid: u32,
+    /// Supplementary groups used for DAC group selection.
+    pub supplementary_gids: &'a [u32],
+    /// Whether the caller has `CAP_DAC_OVERRIDE`.
+    pub cap_dac_override: bool,
+    /// Whether the caller has `CAP_DAC_READ_SEARCH`.
+    pub cap_dac_read_search: bool,
+    /// Whether the caller has `CAP_FOWNER`.
+    pub cap_fowner: bool,
+}
+
+impl MutationCredentials<'static> {
+    /// Credentials for trusted filesystem initialization paths.
+    pub const fn root() -> Self {
+        Self {
+            fsuid: 0,
+            fsgid: 0,
+            supplementary_gids: &[],
+            cap_dac_override: true,
+            cap_dac_read_search: true,
+            cap_fowner: true,
+        }
+    }
+}
+
+impl MutationCredentials<'_> {
+    /// Returns whether the credential is a member of `gid`.
+    pub fn in_group(&self, gid: u32) -> bool {
+        self.fsgid == gid || self.supplementary_gids.contains(&gid)
+    }
+}
+
 /// Filesystem node metadata update.
 #[derive(Default, Clone, Debug)]
 pub struct MetadataUpdate {

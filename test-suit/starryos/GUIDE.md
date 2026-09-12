@@ -276,7 +276,7 @@ cargo xtask starry test qemu --arch loongarch64 -c qemu/system/test-tty-termios-
   `max_ioqpairs=64,msix_qsize=65`，不回退到 `virtio-blk`。
 - `virtio-net` 提供基础网络。
 - `virtio-gpu`、`virtio-keyboard`、`virtio-tablet` 支持 DRM/evdev。
-- `qemu-xhci,id=xhci,msi=off,msix=off`、`usb-audio`、`usb-storage` 支持 USB 回归。
+- `nec-usb-xhci,id=xhci,msi=off,msix=off`、`usb-audio`、`usb-storage` 支持 USB 回归。
 - USB storage 第二盘使用 `${workspace}/tmp/axbuild/rootfs/rootfs-<arch>-busybox.img`。
 
 `system/qemu-loongarch64.toml` 不带 xHCI、USB audio 或 USB storage。对应 build config

@@ -38,9 +38,11 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
     }
 
     fn unbind(&self, path: &str) -> ax_net::NetResult<()> {
+        use axfs_ng_vfs::MutationCredentials;
+
         ax_fs_ng::vfs::current_fs_context()
             .lock()
-            .remove_file(path)
+            .remove_file(path, &MutationCredentials::root())
             .map_err(namespace_vfs_error)
     }
 }
