@@ -1,0 +1,9 @@
+#version 450
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer IN { float src[]; };
+layout(std430, binding = 1) writeonly buffer OUT { float dst[]; };
+layout(push_constant) uniform PC { float k; uint n; } pc;
+void main(){
+  uint i = gl_GlobalInvocationID.x;
+  if (i < pc.n) dst[i] = src[i] * pc.k + 1.0;
+}
