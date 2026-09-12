@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.5.0...rockchip-npu-v0.6.0) - 2026-09-12
+
+### Fixed
+
+- *(rknpu)* copy and validate user task arrays before NPU submit ([#2327](https://github.com/rcore-os/tgoskits/pull/2327))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.4.0...rockchip-npu-v0.5.0) - 2026-09-11
 
 ### Fixed
