@@ -48,19 +48,18 @@ See `iperf3/README.md` for the fixed T01--T07 profile.
 
 ## AArch64 Linux perf
 
-The `linux-perf` app runs Alpine's upstream `perf 6.19.14` inside StarryOS on
-AArch64 QEMU and Orange Pi 5 Plus. It validates the guest `perf_event_open`
-ABI, sampling ring, user frame-pointer callchains, system-wide recording, and
-real-board PMUv3 events. This is separate from `tools/qperf`, which profiles
-QEMU translation blocks on the host.
+`linux-perf` 应用在 AArch64 QEMU 和 OrangePi 5 Plus 的 StarryOS 客户机内运行
+Alpine 上游 `perf 6.19.14`，验证 `perf_event_open`、采样 ring、用户 FP 调用链、
+system-wide record，以及实体板卡的 PMUv3 事件。宿主机的 `tools/qperf` 则分析
+QEMU translation blocks，两者的计数来源和验收目标不同。
 
 ```bash
 cargo xtask starry app qemu -t linux-perf --arch aarch64
 cargo xtask starry app board -t linux-perf -b OrangePi-5-Plus
 ```
 
-See `linux-perf/README.md` for the locked Alpine package closure and the QEMU
-versus physical-board acceptance boundary.
+锁定的 Alpine 依赖闭包及 QEMU、实体板卡各自的验收边界见
+`linux-perf/README.md`。
 
 ## Resource Monitor
 
