@@ -188,7 +188,7 @@ ax-runtime = { workspace = true, features = ["host-test", "smp"] }
 name = "axtest_kernel"
 path = "src/axtest_kernel.rs"
 harness = false
-required-features = ["axtest", "smp"]
+required-features = ["axtest", "smp", "input"]
 
 [package.metadata.axtest]
 runtime = "starry"

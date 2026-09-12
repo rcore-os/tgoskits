@@ -2,7 +2,7 @@ use alloc::{collections::VecDeque, format, string::ToString, sync::Arc, vec, vec
 use core::{
     any::Any,
     mem::offset_of,
-    sync::atomic::{AtomicU8, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering},
     time::Duration,
 };
 
@@ -18,7 +18,10 @@ pub fn input_device_count() -> u32 {
 
 use ax_input::{ErasedInputDevice, Event, EventType, InputDevice, InputDeviceId, InputError};
 use ax_lazyinit::OnceLock;
-use ax_runtime::hal::{irq::IrqId, time::wall_time};
+use ax_runtime::hal::{
+    irq::{IrqError, IrqHandle, IrqId, IrqRequest},
+    time::wall_time,
+};
 use ax_std::os::arceos::{
     task as scheduler,
     task::sync::{
@@ -55,6 +58,11 @@ const READ_AHEAD_CAP: usize = 256;
 const IRQ_SERVICE_STOPPED: u8 = 0;
 const IRQ_SERVICE_STARTING: u8 = 1;
 const IRQ_SERVICE_STARTED: u8 = 2;
+
+/// Drain interval for the polling fallback used when no usable IRQ line could
+/// be claimed. Small enough that pointer/key input feels immediate, large
+/// enough to keep the idle wakeup cost negligible.
+const IRQ_POLL_INTERVAL: Duration = Duration::from_millis(15);
 
 struct Inner {
     device: ErasedInputDevice,
@@ -137,6 +145,9 @@ pub struct EventDev {
     irq_notify: IrqWaitCell,
     irq_service_park: WaitQueue,
     irq_service_state: AtomicU8,
+    /// Set when no usable IRQ line could be claimed, so the IRQ service thread
+    /// runs as a timed polling drain instead of waiting to be notified.
+    irq_polling: AtomicBool,
     ev_bits: Bitmap<{ EventType::COUNT as usize }>,
     /// Cached `EVIOCGPROP` bitmap. Computed once at probe from the driver's
     /// raw bits with a synthesized `INPUT_PROP_POINTER` for absolute or
@@ -201,6 +212,7 @@ impl EventDev {
             irq_notify: IrqWaitCell::new(),
             irq_service_park: WaitQueue::new(),
             irq_service_state: AtomicU8::new(IRQ_SERVICE_STOPPED),
+            irq_polling: AtomicBool::new(false),
             ev_bits,
             prop_bits,
             abs_bits,
@@ -246,6 +258,14 @@ impl EventDev {
     }
 
     fn register_irq(self: &Arc<Self>) {
+        self.register_irq_with(ax_runtime::hal::irq::request_irq);
+    }
+
+    /// Takes the IRQ request function so a test can present a line another device already owns.
+    fn register_irq_with(
+        self: &Arc<Self>,
+        request_irq: impl FnOnce(IrqId, IrqRequest) -> Result<IrqHandle, IrqError>,
+    ) {
         let Some(irq) = self.irq else {
             return;
         };
@@ -253,7 +273,7 @@ impl EventDev {
         let request = ax_runtime::hal::irq::IrqRequest::new(move |_| event_dev.handle_irq())
             .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
             .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
-        match ax_runtime::hal::irq::request_irq(irq, request) {
+        match request_irq(irq, request) {
             Ok(handle) => {
                 if !self.start_irq_service() {
                     warn!("failed to start evdev IRQ service for irq {irq:?}");
@@ -269,8 +289,19 @@ impl EventDev {
                 }
             }
             Err(err) => {
-                warn!("failed to register evdev irq handler for irq {irq:?}: {err:?}");
+                // No usable IRQ line (on q35 every virtio device shares one
+                // ACPI INTx GSI, and only the first requester wins it). Without
+                // a fallback the queue would never be drained and input would be
+                // dead, so run the service thread as a timed polling drain.
+                warn!(
+                    "failed to register evdev irq handler for irq {irq:?}: {err:?}; falling back \
+                     to polling"
+                );
                 self.inner.lock().device.disable_irq();
+                self.irq_polling.store(true, Ordering::Release);
+                if !self.start_irq_service() {
+                    warn!("failed to start evdev polling service for irq {irq:?}");
+                }
             }
         }
     }
@@ -308,6 +339,16 @@ impl EventDev {
     }
 
     fn run_irq_service(self: Arc<Self>) {
+        if self.irq_polling.load(Ordering::Acquire) {
+            // No IRQ will ever notify us, so drain on a timer. drain_irq_events
+            // wakes any registered libinput waiter, which is the only path that
+            // delivers input to userspace once the IRQ line is unavailable.
+            loop {
+                self.drain_irq_events();
+                self.irq_service_park.wait_timeout(IRQ_POLL_INTERVAL);
+            }
+        }
+
         let current = scheduler::thread::current::current_thread_handle()
             .unwrap_or_else(|error| panic!("evdev IRQ service has no scheduler thread: {error}"));
         let waiter = EventIrqWaiter::new(&current);
@@ -721,4 +762,81 @@ pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
 
     EVENT_DEVICE_COUNT.store(input_id, Ordering::Release);
     inputs
+}
+
+#[cfg(all(test, axtest))]
+mod tests {
+    use ax_runtime::hal::irq::{HwIrq, IrqDomainId};
+
+    use super::*;
+
+    /// A device whose input is already queued and whose IRQ never fires.
+    struct QueuedInput(Arc<IrqMutex<VecDeque<Event>>>);
+
+    impl InputDevice for QueuedInput {
+        fn name(&self) -> &str {
+            "axtest-queued-input"
+        }
+
+        fn device_id(&self) -> InputDeviceId {
+            InputDeviceId {
+                bus_type: 0,
+                vendor: 0,
+                product: 0,
+                version: 0,
+            }
+        }
+
+        fn physical_location(&self) -> &str {
+            ""
+        }
+
+        fn unique_id(&self) -> &str {
+            ""
+        }
+
+        fn irq_id(&self) -> Option<IrqId> {
+            Some(IrqId::new(IrqDomainId(0), HwIrq(0)))
+        }
+
+        fn get_event_bits(
+            &mut self,
+            _ty: EventType,
+            _out: &mut [u8],
+        ) -> ax_input::InputResult<bool> {
+            Ok(false)
+        }
+
+        fn read_event(&mut self) -> ax_input::InputResult<Event> {
+            self.0.lock().pop_front().ok_or(InputError::Again)
+        }
+    }
+
+    #[axtest::axtest]
+    fn busy_irq_line_still_drains_queued_input() {
+        let key = |value| Event {
+            event_type: EventType::Key as u16,
+            code: 30,
+            value,
+        };
+        let queued = Arc::new(IrqMutex::new(VecDeque::from([key(1), key(0)])));
+        let dev = Arc::new(EventDev::new(ErasedInputDevice::new(QueuedInput(
+            queued.clone(),
+        ))));
+
+        // On q35 every virtio device shares one INTx line and only the first requester wins it.
+        dev.register_irq_with(|_, _| Err(IrqError::Busy));
+
+        for _ in 0..200 {
+            if queued.lock().is_empty() {
+                break;
+            }
+            crate::task::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            queued.lock().is_empty(),
+            "input stayed queued after the IRQ line was busy"
+        );
+        assert_eq!(dev.inner.lock().read_ahead.len(), 2);
+    }
 }
