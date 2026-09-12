@@ -1,0 +1,20 @@
+# cpu-unknow-infer riscv64 - llama.cpp (ggml) CPU greedy-decode inference correctness carpet. The
+# carpet greedy-decodes qwen3-0.6b.gguf (temperature=0, argmax sampler, n_gpu_layers=0) and asserts
+# the generated token IDs equal the committed golden token-by-token. No GPU. -smp 1: single vCPU
+# (llama.cpp pinned to one thread). 6144M: qwen3-0.6b weights + ggml buffers + KV cache. The model
+# rides an nvme drive (ax-driver/nvme, not virtio-blk). NOTE: riscv64 llama.cpp cross-compile /
+# static-PIE loading feasibility is a per-arch provisioning question (see README) - Alpine has no
+# llama.cpp package for riscv64 and the StarryOS ELF loader does not process static-PIE relocations.
+args = [
+    "-nographic", "-cpu", "rv64", "-m", "6144M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 30000

@@ -1,0 +1,21 @@
+# cpu-unknow-infer x86_64 - llama.cpp (ggml) CPU greedy-decode inference correctness carpet. The
+# carpet greedy-decodes qwen3-0.6b.gguf (temperature=0, argmax sampler, n_gpu_layers=0) and asserts
+# the generated token IDs equal the committed golden token-by-token; a diverging ggml CPU kernel
+# argmax fails the gate. No GPU. -cpu Haswell exposes AVX2 to userspace (ggml CPU backend dispatches
+# to it); the kernel CR4.OSXSAVE + XCR0 enable lives in dev. -smp 1: single vCPU (llama.cpp pinned to
+# one thread). 6144M: the qwen3-0.6b weights (~600 MiB) + ggml compute buffers + KV cache are
+# heap-heavy. The model rides an nvme drive (ax-driver/nvme, not virtio-blk).
+args = [
+    "-machine", "q35",
+    "-nographic", "-cpu", "Haswell", "-m", "6144M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 18000
