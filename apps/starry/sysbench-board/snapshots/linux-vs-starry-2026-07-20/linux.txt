@@ -1,0 +1,10 @@
+CMP_BEGIN Linux 6.1.43-rockchip-rk3588 aarch64
+CMP cpu t=1 ev=973.90
+CMP cpu t=2 ev=1953.89
+CMP cpu t=4 ev=3894.25
+CMP cpu t=8 ev=5322.01
+CMP threads t=8 events=50595
+CMP mutex t=8 total_time=0.4631s
+CMP mem write 8192.00 MiB transferred (54983.53 MiB/sec)
+CMP mem read 8192.00 MiB transferred (55598.93 MiB/sec)
+CMP_DONE

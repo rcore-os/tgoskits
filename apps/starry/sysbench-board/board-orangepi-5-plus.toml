@@ -1,0 +1,18 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+# ostool tears down on the FIRST success_regex match — gate on the single unique
+# final sentinel, never an intermediate result line.
+success_regex = [
+  '(?m)^SYSBENCH_BOARD_DONE$',
+]
+# NOTE: fail patterns must NOT appear in shell_init_cmd/init.sh — the runner
+# echoes the whole command to the console, so an unanchored `.*not found` would
+# false-match the echoed `echo ...`. Use anchored, unique markers only.
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?m)^SYSBENCH_MISSING\s*$',
+  '(?m)^SYSBENCH_BOARD_FAILED\s*$',
+  '(?i)error while loading shared libraries',
+  '(?m)^FATAL:',
+]
+timeout = 900

@@ -1,0 +1,22 @@
+# sysbench aarch64 SMP-4 smoke on StarryOS.
+# Mirrors the proven qemu-smp4/system/qemu-aarch64.toml device set (nvme root +
+# virtio-net user-net) so `apk add sysbench` has outbound networking, then runs a
+# 4-thread sysbench CPU smoke. This first checkpoint de-risks the question of
+# whether sysbench (LuaJIT-linked) runs at all under StarryOS.
+args = [
+    "-nographic",
+    "-cpu", "cortex-a53",
+    "-m", "1024M",
+    "-smp", "4",
+    "-device", "nvme,serial=deadbeef,drive=nvm",
+    "-drive", "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sed -i -e 's|https://dl-cdn.alpinelinux.org/alpine|http://mirrors.tuna.tsinghua.edu.cn/alpine|g' -e 's|http://dl-cdn.alpinelinux.org/alpine|http://mirrors.tuna.tsinghua.edu.cn/alpine|g' -e 's|https://mirrors.cernet.edu.cn/alpine|http://mirrors.tuna.tsinghua.edu.cn/alpine|g' -e 's|http://mirrors.cernet.edu.cn/alpine|http://mirrors.tuna.tsinghua.edu.cn/alpine|g' /etc/apk/repositories; sed -i 's|^#* *\\(http.*/community.*\\)|\\1|' /etc/apk/repositories; grep -q '^[^#].*/community' /etc/apk/repositories || sed -n 's|/main$|/community|p' /etc/apk/repositories >> /etc/apk/repositories; (apk add sysbench || (apk update && apk add sysbench)) && sysbench cpu --cpu-max-prime=20000 --threads=4 --time=5 run && echo SYSBENCH_SMOKE_OK || printf 'SYSBENCH_%s\\n' HAS_FAILURES"
+success_regex = ["(?m)^SYSBENCH_SMOKE_OK\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^SYSBENCH_HAS_FAILURES\s*$']
+timeout = 900

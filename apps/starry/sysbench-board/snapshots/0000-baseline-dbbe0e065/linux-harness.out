@@ -1,0 +1,55 @@
+START Wed 15 Jul 2026 18:57:12 CST
+Warning: Permanently added '169.254.50.2' (ED25519) to the list of known hosts.
+HARNESS_LINUX_BEGIN
+HL_UNAME 6.1.43-rockchip-rk3588 aarch64
+== core map (0xd05=A55 0xd0b=A76) ==
+HL_CORE cpu0 part=0xd05
+HL_CORE cpu1 part=0xd05
+HL_CORE cpu2 part=0xd05
+HL_CORE cpu3 part=0xd05
+HL_CORE cpu4 part=0xd0b
+HL_CORE cpu5 part=0xd0b
+HL_CORE cpu6 part=0xd0b
+HL_CORE cpu7 part=0xd0b
+== reference curves: cpuprobe.ips + sysbench.ev vs frequency, per cluster ==
+HL_REF cl=0 setkhz=408000 curkhz=408000 ips=28141249 sb=77.75
+HL_REF cl=0 setkhz=600000 curkhz=600000 ips=42280575 sb=117.06
+HL_REF cl=0 setkhz=816000 curkhz=816000 ips=58044666 sb=160.91
+HL_REF cl=0 setkhz=1008000 curkhz=1008000 ips=72848742 sb=202.08
+HL_REF cl=0 setkhz=1200000 curkhz=1200000 ips=86947996 sb=241.27
+HL_REF cl=0 setkhz=1416000 curkhz=1416000 ips=99895916 sb=277.25
+HL_REF cl=0 setkhz=1608000 curkhz=1608000 ips=115105843 sb=319.50
+HL_REF cl=0 setkhz=1800000 curkhz=1800000 ips=129378071 sb=359.24
+HL_REF cl=4 setkhz=408000 curkhz=408000 ips=37634038 sb=170.73
+HL_REF cl=4 setkhz=600000 curkhz=600000 ips=56490946 sb=256.60
+HL_REF cl=4 setkhz=816000 curkhz=816000 ips=76431394 sb=346.86
+HL_REF cl=4 setkhz=1008000 curkhz=1008000 ips=95159993 sb=432.07
+HL_REF cl=4 setkhz=1200000 curkhz=1200000 ips=113197427 sb=514.54
+HL_REF cl=4 setkhz=1416000 curkhz=1416000 ips=137242615 sb=624.04
+HL_REF cl=4 setkhz=1608000 curkhz=1608000 ips=154315143 sb=701.10
+HL_REF cl=4 setkhz=1800000 curkhz=1800000 ips=174597377 sb=794.36
+HL_REF cl=4 setkhz=2016000 curkhz=2016000 ips=191893151 sb=871.94
+HL_REF cl=4 setkhz=2208000 curkhz=2208000 ips=208806680 sb=950.17
+HL_REF cl=4 setkhz=2256000 curkhz=2256000 ips=215075128 sb=978.74
+== per-core probe (default governor) ==
+HL_PC req=0 landed=0 cntfrq=24000000 iters=64000000 sec=0.4953 ips=129218683 midr_ok=1 part=0xd05 pmc_ok=0 mhz_pmc=0.0 sink=524d9a31a5f4f5fa
+HL_PC req=1 landed=1 cntfrq=24000000 iters=64000000 sec=0.4951 ips=129260777 midr_ok=1 part=0xd05 pmc_ok=0 mhz_pmc=0.0 sink=402eb1eb325b58e
+HL_PC req=2 landed=2 cntfrq=24000000 iters=64000000 sec=0.4953 ips=129222336 midr_ok=1 part=0xd05 pmc_ok=0 mhz_pmc=0.0 sink=b8e930e2835eb7c8
+HL_PC req=3 landed=3 cntfrq=24000000 iters=64000000 sec=0.4951 ips=129274028 midr_ok=1 part=0xd05 pmc_ok=0 mhz_pmc=0.0 sink=31e9c0bd613018b6
+HL_PC req=4 landed=4 cntfrq=24000000 iters=128000000 sec=0.5952 ips=215047516 midr_ok=1 part=0xd0b pmc_ok=0 mhz_pmc=0.0 sink=b2ed86b19f1e6317
+HL_PC req=5 landed=5 cntfrq=24000000 iters=128000000 sec=0.5951 ips=215091678 midr_ok=1 part=0xd0b pmc_ok=0 mhz_pmc=0.0 sink=e6cb8c8c2407b927
+HL_PC req=6 landed=6 cntfrq=24000000 iters=128000000 sec=0.5939 ips=215541602 midr_ok=1 part=0xd0b pmc_ok=0 mhz_pmc=0.0 sink=a1ee05cdeabcb423
+HL_PC req=7 landed=7 cntfrq=24000000 iters=128000000 sec=0.5940 ips=215490800 midr_ok=1 part=0xd0b pmc_ok=0 mhz_pmc=0.0 sink=8cd7993a0519f41e
+HL_PM core=0 landed=0 mb=256 firsttouch_s=0.3006 memcpy_GBps=6.283 read_GBps=4.259 acc=404040404000000
+HL_PM core=4 landed=4 mb=256 firsttouch_s=0.1733 memcpy_GBps=11.617 read_GBps=8.984 acc=404040404000000
+== sysbench matrix ==
+HL_MX cpu t=1 ev=977.61
+HL_MX cpu t=2 ev=1955.61
+HL_MX cpu t=4 ev=3892.11
+HL_MX cpu t=8 ev=5320.20
+HL_MX thr t=4 ev=49492
+HL_MX thr t=8 ev=31555
+HL_MX mutex t=8 0.4630s
+HL_MX mem 4096.00 MiB transferred (8039.90 MiB/sec)
+HARNESS_LINUX_END
+EXIT 0 Wed 15 Jul 2026 18:59:11 CST

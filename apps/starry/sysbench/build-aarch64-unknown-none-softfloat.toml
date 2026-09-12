@@ -1,0 +1,19 @@
+# sysbench aarch64 SMP-4 build.
+# Mirrors test-suit/starryos/qemu/build-aarch64-unknown-none-softfloat.toml
+# (proven to boot 4 cores): max_cpu_num=4 + nvme root + virtio-net so
+# `apk add sysbench` has networking. Feature names must match what the
+# `starryos` package accepts (ax-runtime/*, not ax-feat/*).
+features = [
+  "ax-runtime/display",
+  "ax-runtime/rtc",
+  "ax-driver/nvme",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+  "starry-kernel/input",
+  "starry-kernel/vsock",
+]
+max_cpu_num = 4
+log = "Warn"
+target = "aarch64-unknown-none-softfloat"
