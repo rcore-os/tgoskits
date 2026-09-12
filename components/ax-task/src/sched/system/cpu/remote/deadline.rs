@@ -400,10 +400,6 @@ impl CpuDeadlineState {
         true
     }
 
-    pub(crate) const fn has_claimed_task_expiration(&self) -> bool {
-        self.claimed_task_expiration.is_some()
-    }
-
     pub(crate) fn select_service_claim_class(
         &mut self,
         kernel_pending: bool,
@@ -514,7 +510,7 @@ mod tests {
 
         assert!(state.cancel_expired_task_deadline(&registration));
         assert_eq!(state.complete_claimed_task_expiration(event), Some(true));
-        assert!(!state.has_claimed_task_expiration());
+        assert!(!state.has_active_work());
     }
 
     #[test]
