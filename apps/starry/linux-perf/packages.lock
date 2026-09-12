@@ -26,6 +26,6 @@ e7c549a9871334c3fb95aaa943b552cdc5bf1807e5e523893cb63e4057bba810 python3-3.12.14
 70d288a6c3d8daf19b10fb220120d2ebd6f154011c96ca5bc84923b658cb21f7 readline-8.3.1-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/readline-8.3.1-r0.apk
 c90decd3546bc1f8e16e81dd085edcde391495cb785da2a67a62b78af7517031 slang-2.3.3-r3.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/slang-2.3.3-r3.apk
 badbc86e4586a716f98a1da9087a694a276a002e3c9f73d4a8efd14f3a9881e2 sqlite-libs-3.53.4-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/sqlite-libs-3.53.4-r0.apk
-6123d4fc5be222318236887639047b844214f609e75abee6b4e6528f44d76be4 xz-libs-5.8.3-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/xz-libs-5.8.3-r0.apk
+55cec0880e1d06049147cd295a7c8a2909a668fc58a00c187741f3a16c25c55d xz-libs-5.8.4-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/xz-libs-5.8.4-r0.apk
 ecda4cc94fd18f90182f1d3a615889df5e0db9cf78926d11627dd23e06d2e6e8 zlib-1.3.2-r0.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/zlib-1.3.2-r0.apk
 50a998e56e4bf31504996e49c1b4a23eed5e0cd4e24b8a1356a54daf1a6eabbe zstd-libs-1.5.7-r2.apk https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/zstd-libs-1.5.7-r2.apk
