@@ -91,7 +91,7 @@ fn create_device_node(
         }
     };
     if matches!(&transport, VirtioBlkTransport::Pci)
-        && !matches!(&backend_config, BackendConfig::RamDisk)
+        && !matches!(&backend_config, BackendConfig::RamDisk { .. })
     {
         return Err(invalid_options(
             request,
@@ -99,7 +99,7 @@ fn create_device_node(
         ));
     }
     let vm_id = match &backend_config {
-        BackendConfig::RamDisk => None,
+        BackendConfig::RamDisk { .. } => None,
         BackendConfig::File { .. } => {
             Some(
                 context
@@ -154,6 +154,7 @@ fn validate_known_options(request: &VirtualDeviceRequest) -> Result<(), Configur
                 | "capacity"
                 | "capacity_sectors"
                 | "path"
+                | "image_path"
                 | "read_only"
                 | "filesystem"
         ) {
@@ -463,9 +464,13 @@ impl VirtioBlkBackend {
         vm_id: Option<usize>,
     ) -> DeviceManagerResult<Self> {
         match config {
-            BackendConfig::RamDisk => {
-                let capacity = capacity_bytes.unwrap_or(DEFAULT_CAPACITY_BYTES);
-                Ok(Self::RamDisk(RamDiskBackend::new(capacity)?))
+            BackendConfig::RamDisk { image_path } => {
+                if let Some(path) = image_path {
+                    open_ramdisk_image(path, capacity_bytes)
+                } else {
+                    let capacity = capacity_bytes.unwrap_or(DEFAULT_CAPACITY_BYTES);
+                    Ok(Self::RamDisk(RamDiskBackend::new(capacity)?))
+                }
             }
             BackendConfig::File { path, filesystem } => {
                 let vm_id = vm_id.ok_or_else(|| {
@@ -486,6 +491,89 @@ impl VirtioBlkBackend {
             Self::File(backend) => backend.capacity_sectors,
         }
     }
+}
+
+#[cfg(any(feature = "fs", test))]
+fn validate_ramdisk_image_size(
+    image_size: u64,
+    configured_capacity: Option<u64>,
+) -> DeviceManagerResult<()> {
+    if image_size == 0 {
+        return Err(invalid_device_config(
+            "validate virtio-blk ramdisk image",
+            "backing image must not be empty",
+        ));
+    }
+    if !image_size.is_multiple_of(SECTOR_SIZE as u64) {
+        return Err(invalid_device_config(
+            "validate virtio-blk ramdisk image",
+            "backing image length must be a multiple of 512 bytes",
+        ));
+    }
+    if let Some(configured_capacity) = configured_capacity
+        && configured_capacity != image_size
+    {
+        return Err(invalid_device_config(
+            "validate virtio-blk ramdisk image",
+            &format!(
+                "configured capacity {configured_capacity} does not match backing image length \
+                 {image_size}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "fs")]
+fn open_ramdisk_image(
+    path: &str,
+    configured_capacity: Option<u64>,
+) -> DeviceManagerResult<VirtioBlkBackend> {
+    let mut options = ax_api::fs::AxOpenOptions::new();
+    options.read(true);
+    let file = ax_api::fs::ax_open_file(path, &options).map_err(|error| {
+        invalid_device_config(
+            "open virtio-blk ramdisk image",
+            &format!("failed to open `{path}`: {error}"),
+        )
+    })?;
+    let image_size = ax_api::fs::ax_file_attr(&file)
+        .map_err(|error| {
+            invalid_device_config(
+                "inspect virtio-blk ramdisk image",
+                &format!("failed to inspect `{path}`: {error}"),
+            )
+        })?
+        .size;
+    validate_ramdisk_image_size(image_size, configured_capacity)?;
+    let mut image = allocate_zeroed_backend_buffer(image_size, "load virtio-blk ramdisk image")?;
+    let read = ax_api::fs::ax_read_file_at(&file, 0, &mut image).map_err(|error| {
+        invalid_device_config(
+            "load virtio-blk ramdisk image",
+            &format!("failed to read `{path}`: {error}"),
+        )
+    })?;
+    if read != image.len() {
+        return Err(invalid_device_config(
+            "load virtio-blk ramdisk image",
+            &format!(
+                "backing image `{path}` returned {read} bytes, expected {}",
+                image.len()
+            ),
+        ));
+    }
+    Ok(VirtioBlkBackend::RamDisk(RamDiskBackend::from_bytes(image)))
+}
+
+#[cfg(not(feature = "fs"))]
+fn open_ramdisk_image(
+    path: &str,
+    _configured_capacity: Option<u64>,
+) -> DeviceManagerResult<VirtioBlkBackend> {
+    Err(invalid_device_config(
+        "open virtio-blk ramdisk image",
+        &format!("ramdisk image `{path}` requires the AxVM `fs` feature"),
+    ))
 }
 
 #[cfg(feature = "fs")]
@@ -611,13 +699,17 @@ struct RamDiskBackend {
 
 impl RamDiskBackend {
     fn new(capacity_bytes: u64) -> DeviceManagerResult<Self> {
-        Ok(Self {
-            bytes: Mutex::new(allocate_zeroed_backend_buffer(
-                capacity_bytes,
-                "allocate virtio-blk ramdisk",
-            )?),
-            capacity_sectors: capacity_bytes / SECTOR_SIZE as u64,
-        })
+        Ok(Self::from_bytes(allocate_zeroed_backend_buffer(
+            capacity_bytes,
+            "allocate virtio-blk ramdisk",
+        )?))
+    }
+
+    fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self {
+            capacity_sectors: bytes.len() as u64 / SECTOR_SIZE as u64,
+            bytes: Mutex::new(bytes),
+        }
     }
 
     fn range(&self, sector: u64, len: usize) -> VirtioResult<core::ops::Range<usize>> {
@@ -915,6 +1007,27 @@ mod tests {
     #[test]
     fn oversized_backend_capacity_returns_configuration_error() {
         assert!(allocate_zeroed_backend_buffer(u64::MAX, "test virtio-blk allocation").is_err());
+    }
+
+    #[test]
+    fn ramdisk_image_size_must_be_nonempty_aligned_and_match_capacity() {
+        assert!(validate_ramdisk_image_size(0, None).is_err());
+        assert!(validate_ramdisk_image_size(513, None).is_err());
+        assert!(validate_ramdisk_image_size(1024, Some(512)).is_err());
+        assert!(validate_ramdisk_image_size(1024, Some(1536)).is_err());
+        assert!(validate_ramdisk_image_size(1024, Some(1024)).is_ok());
+    }
+
+    #[test]
+    fn ramdisk_initialized_from_bytes_serves_the_image() {
+        let mut bytes = vec![0; 1024];
+        bytes[512..].fill(0xa5);
+        let backend = RamDiskBackend::from_bytes(bytes);
+        let mut sector = [0; 512];
+
+        assert_eq!(backend.read(1, &mut sector), Ok(512));
+        assert!(sector.iter().all(|byte| *byte == 0xa5));
+        assert_eq!(backend.capacity_sectors, 2);
     }
 
     #[test]

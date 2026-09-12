@@ -19,8 +19,10 @@ use super::{
     },
     host_probe,
     initramfs::prepare_configured_busybox_initramfs,
+    ovmf::prepare_configured_x86_ovmf,
     parse_target,
     types::{AxvisorHttpProbeConfig, PreparedAxvisorQemuCase},
+    uefi_disk::prepare_configured_uefi_disk_image,
 };
 use crate::{
     axvisor::{ArgsTestQemu, Axvisor, build, rootfs},
@@ -151,6 +153,17 @@ impl Axvisor {
                 self.app.workspace_root(),
             )
             .await?;
+            prepare_configured_x86_ovmf(
+                &build_group.request,
+                &build_group.cargo,
+                self.app.workspace_root(),
+            )
+            .await?;
+            prepare_configured_uefi_disk_image(
+                &build_group.request,
+                &build_group.cargo,
+                self.app.workspace_root(),
+            )?;
             let output = self
                 .app
                 .build(

@@ -73,6 +73,7 @@ pub fn get_vm_config_template(params: VmTemplateParams) -> GuestConfig {
             kernel_load_addr: params.kernel_load_addr,
             enable_bios: false,
             boot_protocol: None,
+            boot_source: VMBootSource::Kernel,
             bios_path: None, // BIOS not used in most configurations
             uefi_firmware_path: None,
             bios_load_addr: None,

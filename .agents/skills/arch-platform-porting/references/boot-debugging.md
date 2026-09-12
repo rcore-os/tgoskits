@@ -42,6 +42,10 @@ Axvisor x86 嵌套 OVMF 用例按下列顺序调试：
 
 这些嵌套开放虚拟机固件用例仍通过 `fw_cfg` 提供 Linux 内核、初始内存文件系统和命令行，不证明客户机外围部件互连总线启动磁盘、固件系统分区或 Linux 固件存根启动路径。后续能力失败不能通过修改这些只用于验证的用例解决。
 
+Axvisor x86 UEFI PCI 磁盘启动使用另一条内核来源链路。客户机配置选择 `boot_protocol = "uefi"` 和 `boot_source = "pci-disk"` 时，加载器只放置 OVMF，不再加载配置中的 kernel 或 initramfs；平台 ACPI 仍必须通过 `fw_cfg` 发布，不能用空 blobs 代替。启动盘由 image-backed ramdisk 从 Axvisor rootfs 预加载，并以只读 modern VirtIO PCI block 暴露给客户机。`image_path` 指向 Axvisor rootfs 内的文件，不是运行测试的宿主路径。
+
+稳定回归为 `normal/uefi-disk-vmx` 和 `normal/uefi-disk-svm`。过渡期仓库资产是 `test-suit/axvisor/normal/qemu-uefi-disk/assets/uefi-guest.img.gz`；CI 先校验 gzip，解压到 workspace 的 `tmp/axbuild/axvisor/qemu-uefi-disk/uefi-guest.img`，再校验 raw digest。`axbuild` 只消费和注入 raw image，不识别 gzip。内层 initramfs 自行检查 `/dev/vda`、`/dev/vda1`、只读状态和首扇区读取，并输出 `AXVISOR_X86_UEFI_DISK_PASSED`；测试运行器只执行一次 `vm console 1`，不得恢复 BusyBox shell 命令注入或排查期的 PE、LBA、queue 和 VM-exit 日志。tgosimage 发布等价 raw asset 后，只替换 CI 资产准备来源并删除解压步骤，保持客户机配置和 marker 不变。
+
 AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步长，与传给运行时的 `ArmVgicConfig` 比较。不得通过向下转换已注册 GIC 前端推断配置。宿主 GIC 内存映射区域保持陷入，客户机写入不能改变宿主 GICD 或 GICR。
 
 ## 处理器局部寄存器所有权

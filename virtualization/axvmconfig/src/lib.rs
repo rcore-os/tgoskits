@@ -184,6 +184,19 @@ impl From<&VMBootProtocol> for VMBootProtocolSerde {
     }
 }
 
+/// Selects the source from which the guest firmware obtains its boot program.
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum VMBootSource {
+    /// Load the configured guest kernel through the architecture boot path.
+    #[serde(rename = "kernel")]
+    #[default]
+    Kernel,
+    /// Let UEFI discover and load the fallback application from a PCI disk.
+    #[serde(rename = "pci-disk")]
+    PciDisk,
+}
+
 mod vm_boot_protocol_option_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -313,6 +326,9 @@ pub struct VMKernelConfig {
     )]
     #[serde(with = "vm_boot_protocol_option_serde")]
     pub boot_protocol: Option<VMBootProtocol>,
+    /// Source from which the guest firmware obtains its boot program.
+    #[serde(default)]
+    pub boot_source: VMBootSource,
     /// The file path of the BIOS image, `None` if not used.
     #[serde(default)]
     pub bios_path: Option<String>,
@@ -357,6 +373,11 @@ impl VMKernelConfig {
         })
     }
 
+    /// Returns whether UEFI should discover the boot program from a PCI disk.
+    pub const fn boots_from_pci_disk(&self) -> bool {
+        matches!(self.boot_source, VMBootSource::PciDisk)
+    }
+
     /// Returns the configured boot firmware image path.
     ///
     /// For UEFI, prefer the explicit UEFI firmware path and fall back to the
@@ -378,6 +399,18 @@ impl VMKernelConfig {
 
     fn validate_boot_config_for_arch(&self, arch: &str) -> AxVmConfigResult {
         let protocol = self.effective_boot_protocol();
+        if self.boots_from_pci_disk() && arch != "x86_64" {
+            return Err(AxVmConfigError::UnsupportedBootSource {
+                boot_source: self.boot_source,
+                arch: arch.into(),
+            });
+        }
+        if self.boots_from_pci_disk() && protocol != VMBootProtocol::Uefi {
+            return Err(AxVmConfigError::BootSourceConflict {
+                boot_source: self.boot_source,
+                protocol,
+            });
+        }
         if !self.enable_bios {
             if protocol != VMBootProtocol::Direct {
                 return Err(AxVmConfigError::BootProtocolConflict {

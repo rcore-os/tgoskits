@@ -11,7 +11,9 @@ pub(crate) enum FilesystemFormat {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum BackendConfig {
-    RamDisk,
+    RamDisk {
+        image_path: Option<String>,
+    },
     File {
         path: String,
         filesystem: FilesystemFormat,
@@ -44,10 +46,24 @@ fn parse_ramdisk_backend(request: &VirtualDeviceRequest) -> Result<BackendConfig
     if request.options.contains_key("filesystem") {
         return Err("`filesystem` is only valid for the file backend");
     }
-    Ok(BackendConfig::RamDisk)
+    let image_path = request
+        .options
+        .get("image_path")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|path| !path.is_empty())
+                .ok_or("`image_path` must be a non-empty string")
+        })
+        .transpose()?
+        .map(str::to_owned);
+    Ok(BackendConfig::RamDisk { image_path })
 }
 
 fn parse_file_backend(request: &VirtualDeviceRequest) -> Result<BackendConfig, &'static str> {
+    if request.options.contains_key("image_path") {
+        return Err("`image_path` is only valid for the ramdisk backend");
+    }
     let path = request
         .options
         .get("path")
@@ -139,7 +155,53 @@ filesystem = "ext4"
     fn ramdisk_without_filesystem_remains_valid() {
         let request = request_with_options(r#"backend = "ramdisk""#);
 
-        assert_eq!(parse_backend(&request), Ok(BackendConfig::RamDisk));
+        assert_eq!(
+            parse_backend(&request),
+            Ok(BackendConfig::RamDisk { image_path: None })
+        );
+    }
+
+    #[test]
+    fn ramdisk_accepts_an_image_path() {
+        let request = request_with_options(
+            r#"
+backend = "ramdisk"
+image_path = "/uefi/guest.img"
+"#,
+        );
+
+        assert_eq!(
+            parse_backend(&request),
+            Ok(BackendConfig::RamDisk {
+                image_path: Some("/uefi/guest.img".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn image_path_is_rejected_for_file_and_when_empty() {
+        let file = request_with_options(
+            r#"
+backend = "file"
+filesystem = "ext4"
+image_path = "/images/guest.img"
+"#,
+        );
+        assert_eq!(
+            parse_backend(&file),
+            Err("`image_path` is only valid for the ramdisk backend")
+        );
+
+        let empty = request_with_options(
+            r#"
+backend = "ramdisk"
+image_path = ""
+"#,
+        );
+        assert_eq!(
+            parse_backend(&empty),
+            Err("`image_path` must be a non-empty string")
+        );
     }
 
     fn request_with_options(options: &str) -> VirtualDeviceRequest {

@@ -8,7 +8,7 @@ use std::{
     collections::BTreeSet,
     fs,
     io::Write,
-    path::{Component, Path, PathBuf},
+    path::{Component, Path},
 };
 
 use anyhow::{Context, bail, ensure};
@@ -19,7 +19,6 @@ use tempfile::NamedTempFile;
 use crate::{axvisor::rootfs, context::ResolvedAxvisorRequest, rootfs::inject::read_binary_file};
 
 const OUTPUT_ENV: &str = "AXVISOR_TEST_BUSYBOX_INITRAMFS";
-const OVMF_OUTPUT_ENV: &str = "AXVISOR_TEST_X86_OVMF_OUTPUT";
 const BUSYBOX_PATH: &str = "/bin/busybox";
 // These bounds are the fixed Q35 guest aperture used by the x86 AxVM provider;
 // the end bound is exclusive.
@@ -616,7 +615,8 @@ pub(super) async fn prepare_configured_busybox_initramfs(
     workspace_root: &Path,
 ) -> anyhow::Result<()> {
     if let Some(configured_output) = cargo.env.get(OUTPUT_ENV) {
-        let output_path = resolve_output_path(workspace_root, configured_output, OUTPUT_ENV)?;
+        let output_path =
+            super::assets::resolve_workspace_path(workspace_root, configured_output, OUTPUT_ENV)?;
         let rootfs_path = rootfs::qemu_rootfs_path(request, workspace_root, None)?;
         prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch)?;
         println!(
@@ -624,32 +624,7 @@ pub(super) async fn prepare_configured_busybox_initramfs(
             output_path.display()
         );
     }
-    if let Some(configured_output) = cargo.env.get(OVMF_OUTPUT_ENV) {
-        ensure!(
-            request.arch == "x86_64",
-            "{OVMF_OUTPUT_ENV} is only valid for x86_64 Axvisor tests"
-        );
-        let output_path = resolve_output_path(workspace_root, configured_output, OVMF_OUTPUT_ENV)?;
-        let evidence = super::ovmf::prepare_x86_ovmf(&output_path).await?;
-        println!("{evidence}");
-    }
     Ok(())
-}
-
-fn resolve_output_path(
-    workspace_root: &Path,
-    configured_output: &str,
-    variable: &str,
-) -> anyhow::Result<PathBuf> {
-    let configured_output = Path::new(configured_output);
-    ensure!(
-        !configured_output.is_absolute()
-            && configured_output
-                .components()
-                .all(|component| matches!(component, Component::CurDir | Component::Normal(_))),
-        "{variable} must be a workspace-relative path without parent traversal"
-    );
-    Ok(workspace_root.join(configured_output))
 }
 
 fn prepare_busybox_initramfs(
@@ -853,18 +828,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-
-    #[test]
-    fn configured_output_must_stay_inside_workspace() {
-        let root = tempdir().unwrap();
-
-        assert_eq!(
-            resolve_output_path(root.path(), "tmp/initramfs.cpio.gz", OUTPUT_ENV).unwrap(),
-            root.path().join("tmp/initramfs.cpio.gz")
-        );
-        assert!(resolve_output_path(root.path(), "../outside", OUTPUT_ENV).is_err());
-        assert!(resolve_output_path(root.path(), "/tmp/outside", OUTPUT_ENV).is_err());
-    }
 
     #[test]
     fn generated_archive_packs_busybox_loader_and_applet_links() {

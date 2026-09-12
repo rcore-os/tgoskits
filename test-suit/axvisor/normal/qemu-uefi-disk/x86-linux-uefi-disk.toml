@@ -1,0 +1,36 @@
+# The current config shape still requires a kernel entry, but pci-disk boot
+# neither loads this image nor publishes it through fw_cfg.
+[base]
+id = 1
+name = "linux-x86-uefi-disk"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [1]
+
+[kernel]
+entry_point = 0xffff_fff0
+image_location = "memory"
+kernel_path = "${workspace}/tmp/axbuild/images/qemu-x86_64/linux/linux-qemu"
+kernel_load_addr = 0x20_0000
+enable_bios = true
+boot_protocol = "uefi"
+boot_source = "pci-disk"
+uefi_firmware_path = "${workspace}/tmp/axbuild/axvisor/qemu-uefi-disk/OVMF_CODE_4M.fd"
+bios_load_addr = 0xffc0_0000
+cmdline = "console=ttyS0"
+memory_regions = [
+  [0x0000_0000, 0x2000_0000, 0x7, 0],
+  [0xffc0_0000, 0x0040_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "uefi-boot-disk"
+model = "virtio-blk"
+transport = "pci"
+backend = "ramdisk"
+image_path = "/uefi/uefi-guest.img"
+read_only = true

@@ -3,3 +3,5 @@
 *.jpg binary
 *.bin binary
 *.img binary
+*.fd binary
+*.img.gz binary
