@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "opencl_rust"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "opencl_rust_full_api"
+path = "src/main.rs"
+
+[dependencies]
+opencl3 = { version = "0.9", features = ["CL_VERSION_2_1"] }
+
+[profile.release]
+opt-level = 3
