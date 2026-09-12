@@ -55,6 +55,8 @@ __pycache__/
 
 # Tooling artifacts
 .direnv/
+.devenv/
+.devenv.flake.nix
 .ci-cache/
 .codex
 /.agents/*
