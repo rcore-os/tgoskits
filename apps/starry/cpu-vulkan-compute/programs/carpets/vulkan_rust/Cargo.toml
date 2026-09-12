@@ -1,0 +1,18 @@
+[workspace]
+
+[package]
+name = "vulkan_rust"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "vulkan_rust_full_api"
+path = "src/main.rs"
+
+[dependencies]
+# "linked": bind libvulkan at build time (like the C/C++ cells) instead of the default dlopen path -
+# StarryOS runs static musl binaries with no dynamic loader, so ash's Entry::load() is unavailable.
+ash = { version = "0.38", features = ["linked"] }
+
+[profile.release]
+opt-level = 3
