@@ -1,0 +1,11 @@
+target = "x86_64-unknown-none"
+log = "Warn"
+features = [
+  "ax-driver/nvme",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+  "ax-driver/xhci-pci",
+  "starry-kernel/input",
+]

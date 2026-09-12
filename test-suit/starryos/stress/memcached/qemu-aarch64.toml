@@ -1,0 +1,263 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-cpu",
+    "cortex-a53",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-device",
+    "virtio-gpu-pci",
+    "-device",
+    "virtio-keyboard-pci",
+    "-device",
+    "virtio-tablet-pci",
+    "-device",
+    "qemu-xhci,id=xhci,msi=off,msix=off",
+    "-audiodev",
+    "none,id=audio0",
+    "-device",
+    "usb-audio,bus=xhci.0,audiodev=audio0",
+    "-drive",
+    "id=usbdisk,if=none,format=raw,snapshot=on,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-busybox.img",
+    "-device",
+    "usb-storage,bus=xhci.0,drive=usbdisk,serial=starry-usb-storage",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+set +e
+
+echo "MEMCACHED_TEST_BEGIN"
+
+apk update >/dev/null 2>&1
+APK_UPDATE_RC=$?
+echo "APK_UPDATE_RC=$APK_UPDATE_RC"
+if [ "$APK_UPDATE_RC" != "0" ]; then
+    echo "MEMCACHED_TEST_FAILED"
+    exit 1
+fi
+
+apk add memcached busybox-extras 2>&1
+APK_ADD_RC=$?
+echo "APK_ADD_RC=$APK_ADD_RC"
+if [ "$APK_ADD_RC" != "0" ]; then
+    echo "MEMCACHED_TEST_FAILED"
+    exit 1
+fi
+
+echo "TOOL_VERSION_BEGIN"
+memcached -h 2>&1 | head -5 || true
+nc -h 2>&1 | head -5 || true
+echo "TOOL_VERSION_END"
+
+echo "LOOPBACK_NC_TEST_BEGIN"
+rm -f /tmp/nc-server.out
+
+nc -l -p 12345 > /tmp/nc-server.out 2>&1 &
+NC_SERVER_PID=$!
+echo "NC_SERVER_PID=$NC_SERVER_PID"
+
+sleep 2
+
+printf "hello_loopback\n" | timeout 10 nc 127.0.0.1 12345
+NC_CLIENT_RC=$?
+echo "NC_CLIENT_RC=$NC_CLIENT_RC"
+
+sleep 2
+
+echo "NC_SERVER_OUTPUT_BEGIN"
+cat /tmp/nc-server.out 2>&1 || true
+echo "NC_SERVER_OUTPUT_END"
+
+if ! grep -q "hello_loopback" /tmp/nc-server.out 2>/dev/null; then
+    echo "LOOPBACK_NC_TEST_FAILED"
+    echo "MEMCACHED_TEST_FAILED"
+    kill -9 "$NC_SERVER_PID" 2>/dev/null || true
+    exit 1
+fi
+
+kill -9 "$NC_SERVER_PID" 2>/dev/null || true
+echo "LOOPBACK_NC_TEST_OK"
+echo "LOOPBACK_NC_TEST_END"
+
+echo "MEMCACHED_START_BEGIN"
+rm -f /tmp/memcached.log
+rm -f /tmp/memcached-version.out
+rm -f /tmp/memcached.out
+rm -f /tmp/memcached-delete.out
+rm -f /tmp/memcached-stats.out
+
+memcached -u root -l 127.0.0.1 -p 11211 -m 16 -c 16 -t 1 -vv > /tmp/memcached.log 2>&1 &
+MEMCACHED_PID=$!
+echo "MEMCACHED_PID=$MEMCACHED_PID"
+
+sleep 3
+
+echo "PROCESS_CHECK_BEGIN"
+ps 2>&1 | grep memcached || true
+pidof memcached 2>&1 || true
+echo "PROCESS_CHECK_END"
+
+if ! kill -0 "$MEMCACHED_PID" 2>/dev/null; then
+    echo "MEMCACHED_PROCESS_NOT_ALIVE"
+    echo "MEMCACHED_LOG_BEGIN"
+    cat /tmp/memcached.log 2>&1 || true
+    echo "MEMCACHED_LOG_END"
+    echo "MEMCACHED_TEST_FAILED"
+    exit 1
+fi
+
+echo "MEMCACHED_START_OK"
+echo "MEMCACHED_START_END"
+
+echo "MEMCACHED_VERSION_CMD_BEGIN"
+{
+    printf "version\r\n"
+    printf "quit\r\n"
+    sleep 1
+} | timeout 10 nc 127.0.0.1 11211 > /tmp/memcached-version.out 2>&1
+MEMCACHED_VERSION_RC=$?
+echo "MEMCACHED_VERSION_RC=$MEMCACHED_VERSION_RC"
+
+echo "MEMCACHED_VERSION_OUTPUT_BEGIN"
+cat /tmp/memcached-version.out 2>&1 || true
+echo "MEMCACHED_VERSION_OUTPUT_END"
+
+echo "MEMCACHED_LOG_AFTER_VERSION_BEGIN"
+cat /tmp/memcached.log 2>&1 || true
+echo "MEMCACHED_LOG_AFTER_VERSION_END"
+
+if ! grep -q "VERSION" /tmp/memcached-version.out 2>/dev/null; then
+    echo "MEMCACHED_VERSION_FAILED"
+    echo "MEMCACHED_TEST_FAILED"
+    kill -9 "$MEMCACHED_PID" 2>/dev/null || true
+    pkill -9 memcached 2>/dev/null || true
+    exit 1
+fi
+
+echo "MEMCACHED_VERSION_OK"
+
+echo "MEMCACHED_SET_GET_BEGIN"
+{
+    printf "set starry_key 0 60 12\r\n"
+    printf "hello_starry\r\n"
+    printf "get starry_key\r\n"
+    printf "quit\r\n"
+    sleep 1
+} | timeout 10 nc 127.0.0.1 11211 > /tmp/memcached.out 2>&1
+MEMCACHED_SET_GET_RC=$?
+echo "MEMCACHED_SET_GET_RC=$MEMCACHED_SET_GET_RC"
+
+echo "MEMCACHED_SET_GET_OUTPUT_BEGIN"
+cat /tmp/memcached.out 2>&1 || true
+echo "MEMCACHED_SET_GET_OUTPUT_END"
+
+echo "MEMCACHED_LOG_AFTER_SET_GET_BEGIN"
+cat /tmp/memcached.log 2>&1 || true
+echo "MEMCACHED_LOG_AFTER_SET_GET_END"
+
+if ! grep -q "STORED" /tmp/memcached.out 2>/dev/null; then
+    echo "MEMCACHED_STORED_MISSING"
+    echo "MEMCACHED_TEST_FAILED"
+    kill -9 "$MEMCACHED_PID" 2>/dev/null || true
+    pkill -9 memcached 2>/dev/null || true
+    exit 1
+fi
+
+if ! grep -q "VALUE starry_key" /tmp/memcached.out 2>/dev/null; then
+    echo "MEMCACHED_VALUE_HEADER_MISSING"
+    echo "MEMCACHED_TEST_FAILED"
+    kill -9 "$MEMCACHED_PID" 2>/dev/null || true
+    pkill -9 memcached 2>/dev/null || true
+    exit 1
+fi
+
+if ! grep -q "hello_starry" /tmp/memcached.out 2>/dev/null; then
+    echo "MEMCACHED_VALUE_BODY_MISSING"
+    echo "MEMCACHED_TEST_FAILED"
+    kill -9 "$MEMCACHED_PID" 2>/dev/null || true
+    pkill -9 memcached 2>/dev/null || true
+    exit 1
+fi
+
+echo "MEMCACHED_SET_GET_OK"
+echo "MEMCACHED_SET_GET_END"
+
+echo "MEMCACHED_DELETE_BEGIN"
+{
+    printf "delete starry_key\r\n"
+    printf "get starry_key\r\n"
+    printf "quit\r\n"
+    sleep 1
+} | timeout 10 nc 127.0.0.1 11211 > /tmp/memcached-delete.out 2>&1
+MEMCACHED_DELETE_RC=$?
+echo "MEMCACHED_DELETE_RC=$MEMCACHED_DELETE_RC"
+
+echo "MEMCACHED_DELETE_OUTPUT_BEGIN"
+cat /tmp/memcached-delete.out 2>&1 || true
+echo "MEMCACHED_DELETE_OUTPUT_END"
+
+if ! grep -q "DELETED" /tmp/memcached-delete.out 2>/dev/null; then
+    echo "MEMCACHED_DELETE_MISSING"
+    echo "MEMCACHED_TEST_FAILED"
+    kill -9 "$MEMCACHED_PID" 2>/dev/null || true
+    pkill -9 memcached 2>/dev/null || true
+    exit 1
+fi
+
+if grep -q "VALUE starry_key" /tmp/memcached-delete.out 2>/dev/null; then
+    echo "MEMCACHED_DELETE_VALUE_STILL_EXISTS"
+    echo "MEMCACHED_TEST_FAILED"
+    kill -9 "$MEMCACHED_PID" 2>/dev/null || true
+    pkill -9 memcached 2>/dev/null || true
+    exit 1
+fi
+
+echo "MEMCACHED_DELETE_OK"
+echo "MEMCACHED_DELETE_END"
+
+echo "MEMCACHED_STATS_BEGIN"
+{
+    printf "stats\r\n"
+    printf "quit\r\n"
+    sleep 1
+} | timeout 10 nc 127.0.0.1 11211 > /tmp/memcached-stats.out 2>&1
+MEMCACHED_STATS_RC=$?
+echo "MEMCACHED_STATS_RC=$MEMCACHED_STATS_RC"
+
+echo "MEMCACHED_STATS_OUTPUT_BEGIN"
+cat /tmp/memcached-stats.out 2>&1 || true
+echo "MEMCACHED_STATS_OUTPUT_END"
+
+if ! grep -q "STAT pid" /tmp/memcached-stats.out 2>/dev/null; then
+    echo "MEMCACHED_STATS_PID_MISSING"
+    echo "MEMCACHED_TEST_FAILED"
+    kill -9 "$MEMCACHED_PID" 2>/dev/null || true
+    pkill -9 memcached 2>/dev/null || true
+    exit 1
+fi
+
+echo "MEMCACHED_STATS_OK"
+echo "MEMCACHED_STATS_END"
+
+echo "MEMCACHED_CLEANUP_BEGIN"
+echo "KILLING_MEMCACHED=$MEMCACHED_PID"
+kill -9 "$MEMCACHED_PID" 2>/dev/null || true
+sleep 1
+pkill -9 memcached 2>/dev/null || true
+sleep 1
+echo "MEMCACHED_CLEANUP_END"
+
+echo "MEMCACHED_TEST_DONE=$(date +%s)"
+'''
+success_regex = ["(?m)^MEMCACHED_TEST_DONE=\\d+\\s*$"]
+fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', '(?m)^MEMCACHED_TEST_FAILED\s*$']
+timeout = 1800
