@@ -137,6 +137,14 @@ fn add_to_fd(
                     }
                     return add_file_like(wrapped, flags & O_CLOEXEC != 0);
                 }
+                #[cfg(feature = "rknpu")]
+                if crate::pseudofs::dev::card1::is_card1_device(inner) {
+                    let wrapped = crate::pseudofs::dev::card1::open_card1_file(file, flags)?;
+                    if flags & O_NONBLOCK != 0 {
+                        wrapped.set_nonblocking(true)?;
+                    }
+                    return add_file_like(wrapped, flags & O_CLOEXEC != 0);
+                }
                 // `/dev/rga` is served by a per-open `RgaFile` holding this open's handle/
                 // request session; `dup`/`fork` share its Arc and it is freed at last close.
                 #[cfg(feature = "rga")]

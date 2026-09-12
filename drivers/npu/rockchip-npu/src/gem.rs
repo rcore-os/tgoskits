@@ -86,10 +86,17 @@ impl GemPool {
     }
 
     pub fn create(&mut self, args: &mut RknpuMemCreate) -> Result<(), RknpuError> {
+        let requested_size =
+            usize::try_from(args.size).map_err(|_| RknpuError::InvalidParameter)?;
+        // Owned GEMs are exposed through mmap as device mappings. Allocate and
+        // zero the complete final page so that mmap never publishes bytes past
+        // the initialized DMA backing. Imported buffers keep their exact size
+        // and are capped to complete pages by the mmap path.
+        let allocation_size = page_align_size(requested_size, self.dma.page_size())?;
         let data = self
             .dma
             .contiguous_array_zero_with_align::<u8>(
-                args.size as _,
+                allocation_size,
                 0x1000,
                 DmaDirection::Bidirectional,
             )
@@ -258,6 +265,15 @@ impl GemPool {
     }
 }
 
+fn page_align_size(size: usize, page_size: usize) -> Result<usize, RknpuError> {
+    if page_size == 0 || !page_size.is_power_of_two() {
+        return Err(RknpuError::InvalidParameter);
+    }
+    size.checked_add(page_size - 1)
+        .map(|size| size & !(page_size - 1))
+        .ok_or(RknpuError::InvalidParameter)
+}
+
 #[cfg(test)]
 mod tests {
     use core::{
@@ -374,6 +390,21 @@ mod tests {
         assert_eq!(info.dma_addr, 0x8000_0000);
         assert_eq!(info.obj_addr, 0x1234_0000);
         assert_eq!(info.size, 0x2000);
+    }
+
+    #[test]
+    fn owned_gem_backing_is_page_aligned_before_mmap_export() {
+        assert_eq!(page_align_size(0x1000, 0x1000), Ok(0x1000));
+        assert_eq!(page_align_size(0x1001, 0x1000), Ok(0x2000));
+        assert_eq!(page_align_size(0, 0x1000), Ok(0));
+        assert_eq!(
+            page_align_size(usize::MAX, 0x1000),
+            Err(RknpuError::InvalidParameter)
+        );
+        assert_eq!(
+            page_align_size(0x1001, 0),
+            Err(RknpuError::InvalidParameter)
+        );
     }
 
     #[test]
