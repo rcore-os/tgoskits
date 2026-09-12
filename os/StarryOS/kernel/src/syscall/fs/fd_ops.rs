@@ -84,48 +84,20 @@ fn add_to_fd(
     flags: u32,
     mount_table_namespace: Option<Arc<MountNamespace>>,
 ) -> StarryResult<i32> {
-    // FIFO + O_NONBLOCK + O_WRONLY (no reader) → ENXIO.
-    //
-    // man 2 open §"ENXIO" 第 1 variant：
-    //   "O_NONBLOCK | O_WRONLY is set, the named file is a FIFO, and no
-    //    process has the FIFO open for reading."
-    //
-    // TODO: 当前实现假设「FIFO 始终无 reader」(conservative assumption)。
-    //
-    //   原因 / 妥协：starry 的 vfs 目前不为 FIFO 节点维护 reader/writer
-    //   count（实现完整 FIFO IPC state machine 超出 open/openat 修复
-    //   范围 — 是独立的 IPC 子系统功能补全）。
-    //
-    //   假设的理由：在测试环境里，bug-open-fifo-wronly-no-reader-no-enxio
-    //   只覆盖「无 reader」这一确定状态。对此状态本实现行为正确（返 ENXIO）。
-    //   若 FIFO 真存在 reader 进程并已 open(FIFO, O_RDONLY)，本实现仍会返
-    //   ENXIO —— 此时与 Linux 行为不符（Linux 应返 fd>=0）。
-    //
-    //   完整修复（待独立 PR）：FIFO node 加 reader_count / writer_count 字段
-    //   （AtomicU32 + 同步原语），open(FIFO) 路径根据 access mode 增减计数，
-    //   close 时递减，本检查改为：
-    //     if let Some(fifo) = inner.downcast_ref::<Fifo>() {
-    //         if fifo.reader_count() == 0 { return Err(...ENXIO...); }
-    //     }
-    //   同时阻塞模式（非 NONBLOCK）的 WRONLY 应等待 reader 到来（更复杂）。
-    //   该完整修复需联动 axfs-ng-vfs::Fifo 节点定义（目前无独立类型，FIFO 走通用
-    //   File backend 即不区分 reader / writer），属 IPC 子系统专项。
-    //
-    // Fixes bug-open-fifo-wronly-no-reader-no-enxio (no-reader case only).
-    if flags & O_PATH == 0
-        && flags & O_NONBLOCK != 0
-        && flags & 0b11 == O_WRONLY
-        && let OpenResult::File(ref f) = result
-        && let Ok(meta) = f.location().metadata()
-        && meta.node_type == NodeType::Fifo
-    {
-        return Err(StarryError::NoSuchDeviceOrAddress);
-    }
-
     let f: Arc<dyn FileLike> = match result {
         OpenResult::File(mut file) => {
             if flags & O_PATH != 0 {
                 return add_file_like(Arc::new(File::new(file, flags)), flags & O_CLOEXEC != 0);
+            }
+            if file.location().node_type() == NodeType::Fifo {
+                let reservation = crate::file::FileDescriptorReservation::new()?;
+                let pipe = Pipe::open_fifo(current, file, flags)?;
+                let fd = reservation.fd();
+                reservation.install(crate::file::FileDescriptor {
+                    inner: Arc::new(pipe),
+                    cloexec: flags & O_CLOEXEC != 0,
+                });
+                return Ok(fd);
             }
             // /dev/xx handling
             if let Ok(device) = file.location().entry().downcast::<Device>() {
@@ -266,6 +238,9 @@ fn try_reopen_self_pipe(path: &str, flags: u32) -> Option<StarryResult<isize>> {
     };
     let pipe = file.downcast_ref::<Pipe>()?;
 
+    if pipe.named_file().is_some() {
+        return None;
+    }
     let requested_access = flags & O_ACCMODE;
     let expected_access = if pipe.is_read() { O_RDONLY } else { O_WRONLY };
     if requested_access != expected_access {
@@ -276,12 +251,12 @@ fn try_reopen_self_pipe(path: &str, flags: u32) -> Option<StarryResult<isize>> {
     Some(add_file_like(pipe, flags & O_CLOEXEC != 0).map(|fd| fd as isize))
 }
 
-/// Reopens a filesystem-backed regular file through `/proc/self/fd/<n>`.
+/// Reopens a filesystem-backed file through `/proc/self/fd/<n>`.
 ///
 /// Proc fd entries are magic links to the referenced inode, not ordinary
 /// pathname symlinks. Reopening must therefore keep working after unlink or
 /// mount-tree changes make the file's former pathname unresolvable.
-fn try_reopen_self_regular_file(
+fn try_reopen_self_file(
     current: &crate::task::UserTaskRef,
     path: &str,
     flags: u32,
@@ -295,9 +270,14 @@ fn try_reopen_self_regular_file(
         Ok(file) => file,
         Err(_) => return Some(Err(StarryError::NotFound)),
     };
-    let file = file_like.downcast_ref::<File>()?;
+    let file = file_like.downcast_ref::<File>().or_else(|| {
+        file_like
+            .downcast_ref::<Pipe>()?
+            .named_file()
+            .map(Arc::as_ref)
+    })?;
     let location = file.inner().location();
-    if location.node_type() != NodeType::RegularFile {
+    if !matches!(location.node_type(), NodeType::RegularFile | NodeType::Fifo) {
         return None;
     }
 
@@ -514,7 +494,7 @@ pub fn sys_openat(
     if let Some(result) = try_reopen_self_pipe(&path, uflags) {
         return result;
     }
-    if let Some(result) = try_reopen_self_regular_file(current, &path, uflags) {
+    if let Some(result) = try_reopen_self_file(current, &path, uflags) {
         return result;
     }
 

@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use inherit_methods_macro::inherit_methods;
 
@@ -59,15 +59,26 @@ pub trait FilesystemOps: Send + Sync {
     }
 }
 
+/// Stable identity shared by every mount of one filesystem instance.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FilesystemId(u64);
+
+static NEXT_FILESYSTEM_ID: AtomicU64 = AtomicU64::new(1);
+
 /// VFS superblock flags shared by every mount of a filesystem instance.
 #[derive(Debug)]
 pub(crate) struct FilesystemMountState {
+    pub(crate) id: FilesystemId,
     readonly: AtomicBool,
 }
 
 impl FilesystemMountState {
     pub(crate) fn new(readonly: bool) -> Self {
+        let id = NEXT_FILESYSTEM_ID
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .expect("filesystem identity space exhausted");
         Self {
+            id: FilesystemId(id),
             readonly: AtomicBool::new(readonly),
         }
     }

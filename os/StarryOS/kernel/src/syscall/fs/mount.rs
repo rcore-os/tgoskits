@@ -171,6 +171,10 @@ fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<axfs_ng_vfs::Mountpoint>) -> b
     fd.downcast_ref::<File>()
         .is_some_and(|f| Arc::ptr_eq(f.inner().location().mountpoint(), mp))
         || fd
+            .downcast_ref::<crate::file::Pipe>()
+            .and_then(crate::file::Pipe::named_file)
+            .is_some_and(|f| Arc::ptr_eq(f.inner().location().mountpoint(), mp))
+        || fd
             .downcast_ref::<Directory>()
             .is_some_and(|d| Arc::ptr_eq(d.inner().mountpoint(), mp))
 }

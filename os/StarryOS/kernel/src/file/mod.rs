@@ -644,6 +644,60 @@ pub fn current_fd_table() -> Arc<RwLock<FileTable>> {
 #[cfg(all(test, axtest))]
 static FD_TABLE_LOOKUP_READ_LOCKS: AtomicUsize = AtomicUsize::new(0);
 
+/// An unpublished fd slot reserved before an operation can block.
+pub(crate) struct FileDescriptorReservation {
+    table: Arc<RwLock<FileTable>>,
+    fd: Option<usize>,
+}
+
+impl FileDescriptorReservation {
+    /// Reserves a slot in the originating fd table without exposing a file.
+    pub(crate) fn new() -> StarryResult<Self> {
+        let limit = current_user_task()
+            .as_thread()
+            .proc_data
+            .rlimit_current(RLIMIT_NOFILE);
+        let table = current_fd_table();
+        let fd = {
+            let mut slots = table.write();
+            let fd = slots.reserve().ok_or(StarryError::TooManyOpenFiles)?;
+            // The bitmap chooses the lowest free number. Keep FIFO's fd-number
+            // limit without allocating a separate reservation under the raw lock.
+            if fd as u64 >= limit {
+                slots.release_reserved(fd);
+                return Err(StarryError::TooManyOpenFiles);
+            }
+            fd
+        };
+        Ok(Self {
+            table,
+            fd: Some(fd),
+        })
+    }
+
+    pub(crate) const fn fd(&self) -> c_int {
+        self.fd.expect("installed fd reservation queried") as c_int
+    }
+
+    pub(crate) fn install(mut self, descriptor: FileDescriptor) {
+        let fd = self.fd.take().expect("fd reservation installed twice");
+        let install = self.table.write().install_reserved(fd, descriptor);
+        if let Err(descriptor) = install {
+            // Destruction may wake waiters; keep it outside the table lock.
+            drop(descriptor);
+            panic!("prepared file descriptor lost its reservation before install");
+        }
+    }
+}
+
+impl Drop for FileDescriptorReservation {
+    fn drop(&mut self) {
+        if let Some(fd) = self.fd.take() {
+            self.table.write().release_reserved(fd);
+        }
+    }
+}
+
 /// A file descriptor number prepared by a fallible syscall transaction.
 ///
 /// Dropping it before [`PreparedFileDescriptor::install`] rolls the descriptor
@@ -833,7 +887,13 @@ fn fd_tables_contain_file(file: &Arc<dyn FileLike>) -> bool {
 
 fn notify_close_write(fd: &FileDescriptor) {
     let access = fd.inner.open_flags() & O_ACCMODE;
-    if (access == O_WRONLY || access == O_RDWR) && fd.inner.is::<File>() {
+    let filesystem_backed = fd.inner.is::<File>()
+        || fd
+            .inner
+            .downcast_ref::<Pipe>()
+            .and_then(Pipe::named_file)
+            .is_some();
+    if (access == O_WRONLY || access == O_RDWR) && filesystem_backed {
         let path = fd.inner.path();
         inotify::notify_close_write_path(path.as_ref());
     }

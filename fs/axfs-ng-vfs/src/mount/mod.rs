@@ -249,6 +249,32 @@ enum PropagationType {
     Unbindable,
 }
 
+#[derive(Debug, Default)]
+struct MountUseState {
+    users: usize,
+    normally_unmounted: bool,
+}
+
+/// Owns one counted mount use, released automatically on drop.
+///
+/// Unlike an ordinary `Arc<Mountpoint>`, this guard prevents normal unmount
+/// while an operation or open file is active. Lazy detachment remains allowed.
+#[derive(Debug)]
+pub struct MountUseGuard {
+    mountpoint: Arc<Mountpoint>,
+}
+
+impl Drop for MountUseGuard {
+    fn drop(&mut self) {
+        // Release the state lock before dropping the mount/filesystem owner.
+        {
+            let mut state = self.mountpoint.active_uses.lock();
+            debug_assert!(state.users > 0);
+            state.users -= 1;
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Mountpoint {
     /// Root dir entry in the mountpoint.
@@ -271,6 +297,7 @@ pub struct Mountpoint {
     /// Read-only flag for this mountpoint.
     readonly: AtomicBool,
     filesystem_state: Arc<FilesystemMountState>,
+    active_uses: Mutex<MountUseState>,
     /// Mount option flags (Linux MS_* bits: MS_NOSUID=2, MS_NODEV=4,
     /// MS_NOEXEC=8, MS_NOATIME=0x400, MS_RELATIME=0x800000,
     /// MS_STRICTATIME=0x1000000). MS_RDONLY is tracked separately via
@@ -294,6 +321,25 @@ pub struct Mountpoint {
 }
 
 impl Mountpoint {
+    /// Identifies the filesystem independently of mount-local device numbers.
+    pub fn filesystem_id(&self) -> crate::FilesystemId {
+        self.filesystem_state.id
+    }
+
+    /// Admits an active use atomically with normal-unmount commit.
+    /// A resolved path cannot acquire a use after its mount was normally removed.
+    pub fn acquire_use(self: &Arc<Self>) -> VfsResult<MountUseGuard> {
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        let mut state = self.active_uses.lock();
+        if state.normally_unmounted {
+            return Err(VfsError::NotFound);
+        }
+        state.users += 1;
+        Ok(MountUseGuard {
+            mountpoint: self.clone(),
+        })
+    }
+
     #[cfg(test)]
     fn new_with_root(
         root: DirEntry,
@@ -322,6 +368,7 @@ impl Mountpoint {
             peer_group_id: AtomicU64::new(0),
             readonly: AtomicBool::new(false),
             filesystem_state,
+            active_uses: Mutex::new(MountUseState::default()),
             mount_flags: AtomicU32::new(0),
             expired: AtomicBool::new(false),
             propagation: Mutex::new(PropagationType::Private),
@@ -735,7 +782,7 @@ impl Mountpoint {
     /// movable mount handle.
     pub fn attach_detached(self: &Arc<Self>, new_location: &Location) -> VfsResult<()> {
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        if self.location.lock().is_some() {
+        if self.active_uses.lock().normally_unmounted || self.location.lock().is_some() {
             return Err(VfsError::InvalidInput);
         }
         if new_location.is_mountpoint() {

@@ -14,7 +14,7 @@ pub enum UnmountCommitError {
     /// The mount topology changed after the plan was created and must be
     /// planned and admitted again.
     TopologyChanged,
-    /// A normal unmount target gained a child mount before commit.
+    /// A normal unmount target gained a child mount or active use before commit.
     ResourceBusy,
 }
 
@@ -46,6 +46,11 @@ impl UnmountPlan {
         self.targets
             .iter()
             .any(|target| !target.mountpoint.children.lock().is_empty())
+    }
+
+    fn has_active_uses(&self) -> bool {
+        self.targets()
+            .any(|mount| mount.active_uses.lock().users != 0)
     }
 
     fn has_same_targets(&self, expected: &Self) -> bool {
@@ -81,7 +86,7 @@ impl UnmountPlan {
                 return Err(UnmountCommitError::TopologyChanged);
             }
         }
-        if self.kind == UnmountKind::Normal && self.has_children() {
+        if self.kind == UnmountKind::Normal && (self.has_children() || self.has_active_uses()) {
             return Err(UnmountCommitError::ResourceBusy);
         }
         Ok(())
@@ -101,6 +106,9 @@ impl UnmountPlan {
         for target in &self.targets {
             Mountpoint::detach_from_parent_locked(&target.mountpoint)
                 .map_err(|_| UnmountCommitError::TopologyChanged)?;
+            if self.kind == UnmountKind::Normal {
+                target.mountpoint.active_uses.lock().normally_unmounted = true;
+            }
         }
         for target in &self.targets {
             target.mountpoint.leave_propagation_relations_locked();
@@ -182,7 +190,7 @@ impl Mountpoint {
             topology_version: MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire),
             targets,
         };
-        if kind == UnmountKind::Normal && plan.has_children() {
+        if kind == UnmountKind::Normal && (plan.has_children() || plan.has_active_uses()) {
             return Err(VfsError::ResourceBusy);
         }
         Ok(plan)

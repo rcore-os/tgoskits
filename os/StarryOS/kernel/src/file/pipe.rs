@@ -9,7 +9,8 @@ use ax_memory_addr::PAGE_SIZE_4K;
 use ax_std::os::arceos::task::{
     executor::wake_waker_sync,
     sync::{
-        WaitQueueRegistration, WaitQueueWakeOutcome, WaitQueueWakeToken, wait_until_registered,
+        WaitQueue, WaitQueueRegistration, WaitQueueWakeOutcome, WaitQueueWakeToken,
+        wait_until_registered,
     },
 };
 use axpoll::{IoEvents, PollRegistration, PollSource, Pollable, RegistrationMode};
@@ -31,6 +32,8 @@ use crate::{
     sync::Mutex,
     task::{current_user_task, send_signal_to_process},
 };
+
+mod named;
 
 const RING_BUFFER_INIT_SIZE: usize = 65536; // 64 KiB
 
@@ -541,6 +544,7 @@ struct Shared {
     wait_rx: PipeWaitSet,
     wait_tx: PipeWaitSet,
     poll_usage: AtomicBool,
+    open_wait: WaitQueue,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -551,6 +555,8 @@ struct PipeState {
     buffers: VecDeque<PipeBuffer>,
     readers: usize,
     writers: usize,
+    reader_generation: u64,
+    writer_generation: u64,
 }
 
 struct PipeBuffer {
@@ -606,6 +612,7 @@ impl Shared {
             wait_rx: PipeWaitSet::new(),
             wait_tx: PipeWaitSet::new(),
             poll_usage: AtomicBool::new(false),
+            open_wait: WaitQueue::new(),
         }
     }
 
@@ -673,6 +680,28 @@ impl PipeReadiness {
 }
 
 impl PipeState {
+    fn empty() -> Self {
+        Self {
+            buffer: HeapRb::new(RING_BUFFER_INIT_SIZE),
+            buffers: VecDeque::new(),
+            readers: 0,
+            writers: 0,
+            reader_generation: 0,
+            writer_generation: 0,
+        }
+    }
+
+    fn add_endpoint(&mut self, access: PipeAccess) {
+        if access.reads() {
+            self.readers += 1;
+            self.reader_generation = self.reader_generation.wrapping_add(1);
+        }
+        if access.writes() {
+            self.writers += 1;
+            self.writer_generation = self.writer_generation.wrapping_add(1);
+        }
+    }
+
     #[cfg(all(test, axtest))]
     fn new(capacity: usize) -> Self {
         Self {
@@ -680,6 +709,8 @@ impl PipeState {
             buffers: VecDeque::new(),
             readers: 1,
             writers: 1,
+            reader_generation: 1,
+            writer_generation: 1,
         }
     }
 
@@ -772,34 +803,51 @@ impl PipeState {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PipeAccess {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+impl PipeAccess {
+    const fn reads(self) -> bool {
+        !matches!(self, Self::Write)
+    }
+
+    const fn writes(self) -> bool {
+        !matches!(self, Self::Read)
+    }
+}
+
 pub struct Pipe {
-    read_side: bool,
+    access: PipeAccess,
     shared: Arc<Shared>,
     non_blocking: AtomicBool,
+    named: Option<named::NamedFile>,
 }
 
 impl Drop for Pipe {
     fn drop(&mut self) {
-        if self.read_side {
-            let wake_writers = self.shared.update_state(|state| {
+        let (wake_writers, wake_readers) = self.shared.update_state(|state| {
+            if self.is_read() {
                 debug_assert!(state.readers > 0);
-                state.readers = state.readers.saturating_sub(1);
-                state.readers == 0
-            });
-            if wake_writers {
-                // Reader count is published before waking blocked writers.
-                wake_pipe_waiters_all(&self.shared.wait_tx, IoEvents::ERR | IoEvents::OUT);
+                state.readers -= 1;
             }
-            return;
-        }
-
-        let wake_readers = self.shared.update_state(|state| {
-            debug_assert!(state.writers > 0);
-            state.writers = state.writers.saturating_sub(1);
-            state.writers == 0
+            if self.is_write() {
+                debug_assert!(state.writers > 0);
+                state.writers -= 1;
+            }
+            (
+                self.is_read() && state.readers == 0,
+                self.is_write() && state.writers == 0,
+            )
         });
+        // Both endpoint counts are published together before any notification.
+        if wake_writers {
+            wake_pipe_waiters_all(&self.shared.wait_tx, IoEvents::ERR | IoEvents::OUT);
+        }
         if wake_readers {
-            // Writer count is published before waking blocked readers.
             wake_pipe_waiters_all(&self.shared.wait_rx, IoEvents::HUP | IoEvents::IN);
         }
     }
@@ -807,21 +855,20 @@ impl Drop for Pipe {
 
 impl Pipe {
     pub fn new() -> (Pipe, Pipe) {
-        let shared = Arc::new(Shared::new(PipeState {
-            buffer: HeapRb::new(RING_BUFFER_INIT_SIZE),
-            buffers: VecDeque::new(),
-            readers: 1,
-            writers: 1,
-        }));
+        let mut state = PipeState::empty();
+        state.add_endpoint(PipeAccess::ReadWrite);
+        let shared = Arc::new(Shared::new(state));
         let read_end = Pipe {
-            read_side: true,
+            access: PipeAccess::Read,
             shared: shared.clone(),
             non_blocking: AtomicBool::new(false),
+            named: None,
         };
         let write_end = Pipe {
-            read_side: false,
+            access: PipeAccess::Write,
             shared,
             non_blocking: AtomicBool::new(false),
+            named: None,
         };
         (read_end, write_end)
     }
@@ -833,27 +880,23 @@ impl Pipe {
     /// endpoint count must therefore be incremented so closing either file
     /// description cannot prematurely report EOF or a broken pipe.
     pub(crate) fn reopen(&self, non_blocking: bool) -> Pipe {
-        self.shared.update_state(|state| {
-            if self.read_side {
-                state.readers += 1;
-            } else {
-                state.writers += 1;
-            }
-        });
-
+        debug_assert!(self.named.is_none());
+        self.shared
+            .update_state(|state| state.add_endpoint(self.access));
         Pipe {
-            read_side: self.read_side,
+            access: self.access,
             shared: self.shared.clone(),
             non_blocking: AtomicBool::new(non_blocking),
+            named: None,
         }
     }
 
     pub const fn is_read(&self) -> bool {
-        self.read_side
+        self.access.reads()
     }
 
     pub const fn is_write(&self) -> bool {
-        !self.read_side
+        self.access.writes()
     }
 
     pub fn capacity(&self) -> usize {
@@ -1058,9 +1101,10 @@ impl Pipe {
         assert!(self.is_read());
         self.shared.update_state(|state| state.readers += 1);
         Pipe {
-            read_side: true,
+            access: PipeAccess::Read,
             shared: self.shared.clone(),
             non_blocking: AtomicBool::new(self.nonblocking()),
+            named: None,
         }
     }
 
@@ -1069,9 +1113,10 @@ impl Pipe {
         assert!(self.is_write());
         self.shared.update_state(|state| state.writers += 1);
         Pipe {
-            read_side: false,
+            access: PipeAccess::Write,
             shared: self.shared.clone(),
             non_blocking: AtomicBool::new(self.nonblocking()),
+            named: None,
         }
     }
 
@@ -1299,22 +1344,54 @@ impl FileLike for Pipe {
     }
 
     fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
-        self.write_with_broken_pipe_handler(src, raise_pipe)
+        let result = self.write_with_broken_pipe_handler(src, raise_pipe);
+        if let Ok(bytes) = result
+            && bytes > 0
+            && let Some(file) = self.named_file()
+        {
+            super::inotify::notify_modify_path(file.path().as_ref());
+        }
+        result
     }
 
     fn stat(&self) -> StarryResult<Kstat> {
+        if let Some(file) = self.named_file() {
+            return file.stat();
+        }
         Ok(Kstat {
             mode: S_IFIFO | if self.is_read() { 0o444 } else { 0o222 },
             ..Default::default()
         })
     }
 
+    fn inode_key(&self) -> Option<(u64, u64)> {
+        self.named_file().and_then(|file| file.inode_key())
+    }
+
     fn path(&self) -> Cow<'_, str> {
+        if let Some(file) = self.named_file() {
+            return file.path();
+        }
         format!("pipe:[{}]", self as *const _ as usize).into()
     }
 
     fn open_flags(&self) -> u32 {
+        if let Some(file) = self.named_file() {
+            return file.open_flags()
+                & !(linux_raw_sys::general::O_NONBLOCK | linux_raw_sys::general::O_APPEND);
+        }
         if self.is_read() { O_RDONLY } else { O_WRONLY }
+    }
+
+    fn append(&self) -> bool {
+        self.named_file().is_some_and(|file| file.append())
+    }
+
+    fn set_append(&self, append: bool) -> StarryResult {
+        if let Some(file) = self.named_file() {
+            file.set_append(append)?;
+        }
+        Ok(())
     }
 
     fn set_nonblocking(&self, nonblocking: bool) -> StarryResult {
@@ -1349,7 +1426,29 @@ impl Pollable for Pipe {
     fn poll(&self) -> IoEvents {
         // Linux reports POLLOUT when the pipe has a free PIPE_BUF-sized slot,
         // independently of whether the reader has already closed.
-        self.shared.readiness().poll_events(self.read_side)
+        let (readiness, suppress_hup) = if let Some(generation) = self
+            .named
+            .as_ref()
+            .and_then(|named| named.initial_writer_generation)
+        {
+            // Peer presence and its generation must describe the same instant:
+            // mixing snapshots could report HUP as the first writer arrives.
+            let state = self.shared.state.lock();
+            (state.readiness(), state.writer_generation == generation)
+        } else {
+            (self.shared.readiness(), false)
+        };
+        let mut events = IoEvents::empty();
+        if self.is_read() {
+            events |= readiness.poll_events(true);
+        }
+        if self.is_write() {
+            events |= readiness.poll_events(false);
+        }
+        if suppress_hup {
+            events.remove(IoEvents::HUP);
+        }
+        events
     }
 
     unsafe fn register_shared(
@@ -1377,33 +1476,26 @@ impl Pipe {
     fn register_poll_source(
         &self,
         events: IoEvents,
-        register: impl FnOnce(&dyn PollSource, IoEvents),
+        mut register: impl FnMut(&dyn PollSource, IoEvents),
     ) {
-        // Linux publishes poll_usage for every pipe_poll() attempt, including
-        // exclusive consumers, so non-empty writes keep notifying pollers.
         self.shared.poll_usage.store(true, Ordering::Release);
-        let read_ready = events.intersects(IoEvents::IN | IoEvents::RDNORM);
-        let write_ready = events.intersects(IoEvents::OUT | IoEvents::WRNORM);
-        let mut interests = if self.read_side {
-            events & IoEvents::HUP
-        } else {
-            events & IoEvents::ERR
-        };
-        if self.read_side && read_ready {
-            interests.insert(IoEvents::IN);
-            interests.insert(IoEvents::HUP);
+        if self.is_read() {
+            let mut interests = events & IoEvents::HUP;
+            if events.intersects(IoEvents::IN | IoEvents::RDNORM) {
+                interests |= IoEvents::IN | IoEvents::HUP;
+            }
+            if !interests.is_empty() {
+                register(&self.shared.wait_rx, interests);
+            }
         }
-        if !self.read_side && write_ready {
-            interests.insert(IoEvents::OUT);
-            interests.insert(IoEvents::ERR);
-        }
-        if interests.is_empty() {
-            return;
-        }
-        if self.read_side {
-            register(&self.shared.wait_rx, interests);
-        } else {
-            register(&self.shared.wait_tx, interests);
+        if self.is_write() {
+            let mut interests = events & IoEvents::ERR;
+            if events.intersects(IoEvents::OUT | IoEvents::WRNORM) {
+                interests |= IoEvents::OUT | IoEvents::ERR;
+            }
+            if !interests.is_empty() {
+                register(&self.shared.wait_tx, interests);
+            }
         }
     }
 }
