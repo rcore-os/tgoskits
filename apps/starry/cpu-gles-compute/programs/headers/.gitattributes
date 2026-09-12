@@ -1,0 +1,4 @@
+# Vendored Khronos API headers imported verbatim from the Khronos registry:
+# keep upstream bytes intact and exempt them from git's whitespace checks.
+* linguist-vendored
+* -whitespace

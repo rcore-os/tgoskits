@@ -1,0 +1,18 @@
+[workspace]
+
+[package]
+name = "gles_rust"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "gles_rust_full_api"
+path = "src/main.rs"
+
+[dependencies]
+glow = "0.13"
+khronos-egl = { version = "6", features = ["dynamic"] }
+libloading = "0.8"
+
+[profile.release]
+opt-level = 3
