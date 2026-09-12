@@ -1,3 +1,6 @@
+use alloc::sync::Arc;
+use core::fmt;
+
 use axfs_ng_vfs::{Location, NodeFlags, NodePermission, NodeType, VfsError, VfsResult, path::Path};
 
 use super::handle::{File, FileBackend};
@@ -59,6 +62,18 @@ impl OpenResult {
     }
 }
 
+type AccessFn = dyn Fn(&Location, FileFlags) -> VfsResult<()> + Send + Sync;
+
+/// Open-time permission policy, supplied by the kernel that owns credentials.
+#[derive(Clone)]
+struct AccessCheck(Arc<AccessFn>);
+
+impl fmt::Debug for AccessCheck {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("AccessCheck")
+    }
+}
+
 /// Options and flags which can be used to configure how a file is opened.
 #[derive(Debug, Clone)]
 pub struct OpenOptions {
@@ -73,6 +88,7 @@ pub struct OpenOptions {
     no_follow: bool,
     direct: bool,
     user: Option<(u32, u32)>,
+    may_open: Option<AccessCheck>,
     path: bool,
     node_type: NodeType,
     // system-specific
@@ -94,6 +110,7 @@ impl OpenOptions {
             no_follow: false,
             direct: false,
             user: None,
+            may_open: None,
             path: false,
             node_type: NodeType::RegularFile,
             // system-specific
@@ -165,6 +182,18 @@ impl OpenOptions {
         self
     }
 
+    /// Sets the permission check for opening an existing node (`truncate`
+    /// counts as write). Like Linux `may_open`, it skips path-only opens and
+    /// files this open creates.
+    #[cfg(feature = "vfs")]
+    pub fn may_open(
+        &mut self,
+        check: impl Fn(&Location, FileFlags) -> VfsResult<()> + Send + Sync + 'static,
+    ) -> &mut Self {
+        self.may_open = Some(AccessCheck(Arc::new(check)));
+        self
+    }
+
     /// Sets the option for path only access.
     #[cfg(feature = "vfs")]
     pub fn path(&mut self, path: bool) -> &mut Self {
@@ -188,7 +217,7 @@ impl OpenOptions {
         self
     }
 
-    fn _open(&self, loc: Location) -> VfsResult<OpenResult> {
+    fn _open(&self, loc: Location, created: bool) -> VfsResult<OpenResult> {
         let flags = self.to_flags()?;
 
         // O_CREAT on an existing directory → EISDIR (Linux behavior;
@@ -210,6 +239,18 @@ impl OpenOptions {
             loc.check_is_dir()?;
         }
 
+        // Linux `may_open` reports writing a directory before permission bits.
+        if loc.is_dir() && (self.truncate || flags.contains(FileFlags::WRITE)) {
+            return Err(VfsError::IsADirectory);
+        }
+        if let Some(check) = self.may_open.as_ref().filter(|_| !created && !self.path) {
+            let mut access = flags & (FileFlags::READ | FileFlags::WRITE);
+            if self.truncate {
+                access |= FileFlags::WRITE;
+            }
+            (check.0)(&loc, access)?;
+        }
+
         // ENXIO on opening a UNIX-domain-socket file. man 2 open §"ENXIO":
         // "The file is a UNIX domain socket." Two exclusions:
         //   (1) O_PATH bypass: socket file can still be O_PATH-opened to get a
@@ -227,12 +268,6 @@ impl OpenOptions {
         }
 
         Ok(if loc.is_dir() {
-            if self.truncate {
-                return Err(VfsError::IsADirectory);
-            }
-            if flags.contains(FileFlags::WRITE) {
-                return Err(VfsError::IsADirectory);
-            }
             OpenResult::Dir(loc)
         } else {
             // TODO(mivik): is this correct?
@@ -263,7 +298,7 @@ impl OpenOptions {
         if !self.is_valid() {
             return Err(VfsError::InvalidInput);
         }
-        self._open(loc)
+        self._open(loc, false)
     }
 
     /// Opens a file at the given path relative to the provided [`FsContext`].
@@ -288,7 +323,7 @@ impl OpenOptions {
         // it. Fixes bug-open-trailing-slash.
         let must_be_dir = path.as_ref().has_trailing_slash();
 
-        let loc = match context.resolve_parent(path.as_ref()) {
+        let (loc, created) = match context.resolve_parent(path.as_ref()) {
             Ok((parent, name)) => {
                 // If the path ends with '/', Linux never creates regular
                 // files via O_CREAT here — the path explicitly requests a
@@ -298,7 +333,7 @@ impl OpenOptions {
                 // ordering left a stale file on disk for failing calls).
                 let effective_create = self.create && !must_be_dir;
                 let effective_create_new = self.create_new && !must_be_dir;
-                let mut loc = parent.open_file(
+                let (mut loc, created) = parent.open_or_create(
                     &name,
                     &axfs_ng_vfs::OpenOptions {
                         create: effective_create,
@@ -353,14 +388,14 @@ impl OpenOptions {
                     // Fixes bug-open-nofollow-sym.
                     return Err(VfsError::FilesystemLoop);
                 }
-                loc
+                (loc, created)
             }
             Err(VfsError::InvalidInput) => {
                 // `resolve_parent()` has no parent to return for either `/` or
                 // a relative `.` whose current directory is a detached mount
                 // root. Resolve the path itself so openat(dirfd, ".") keeps
                 // the supplied directory instead of falling back to `/`.
-                context.resolve(path.as_ref())?
+                (context.resolve(path.as_ref())?, false)
             }
             Err(err) => return Err(err),
         };
@@ -372,7 +407,7 @@ impl OpenOptions {
             return Err(VfsError::NotADirectory);
         }
 
-        self._open(loc)
+        self._open(loc, created)
     }
 
     pub(crate) fn to_flags(&self) -> VfsResult<FileFlags> {

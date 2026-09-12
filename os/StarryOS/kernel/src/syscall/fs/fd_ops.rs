@@ -5,7 +5,7 @@ use core::{
     ops::DerefMut,
 };
 
-use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenResult};
+use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, MountNamespace, OpenOptions, OpenResult};
 use ax_memory_addr::PAGE_SIZE_4K;
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference, VfsError};
 use bitflags::bitflags;
@@ -15,22 +15,36 @@ use crate::{
     StarryError, StarryResult,
     file::{
         Directory, FD_TABLE, File, FileDescriptor, FileLike, MountTableFile, NsFd, Pipe,
-        add_file_like, close_file_like, get_file_like, memfd::Memfd, with_fs,
+        add_file_like, close_file_like, get_file_like, memfd::Memfd, metadata_to_kstat, with_fs,
     },
     mm::{VmMutPtr, VmPtr, vm_load, vm_load_path_string},
     pseudofs::{Device, dev::tty},
     sync::RawSpinRwLock,
     task::{
-        TgidNumber, TidNumber, current_pid_view, get_user_process_data_by_number,
+        Cred, TgidNumber, TidNumber, current_pid_view, get_user_process_data_by_number,
         get_user_task_by_number,
     },
 };
 
 /// Convert open flags to [`OpenOptions`].
-fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32)) -> OpenOptions {
+fn flags_to_options(flags: c_int, mode: __kernel_mode_t, cred: &Arc<Cred>) -> OpenOptions {
     let flags = flags as u32;
     let mut options = OpenOptions::new();
-    options.mode(mode).user(uid, gid);
+    let opener = cred.clone();
+    options
+        .mode(mode)
+        .user(cred.fsuid, cred.fsgid)
+        .may_open(move |loc, access| {
+            let mut want = 0;
+            if access.contains(FileFlags::READ) {
+                want |= R_OK;
+            }
+            if access.contains(FileFlags::WRITE) {
+                want |= W_OK;
+            }
+            let kstat = metadata_to_kstat(&loc.metadata()?);
+            super::stat::check_dac_access(&opener, &kstat, want).map_err(VfsError::from)
+        });
     match flags & 0b11 {
         O_RDONLY => options.read(true),
         O_WRONLY => options.write(true),
@@ -302,7 +316,7 @@ fn try_reopen_self_regular_file(
     }
 
     let cred = current.as_thread().cred();
-    let options = flags_to_options(flags as i32, 0, (cred.fsuid, cred.fsgid));
+    let options = flags_to_options(flags as i32, 0, &cred);
     Some(
         options
             .open_loc(location.clone())
@@ -538,7 +552,7 @@ pub fn sys_openat(
     }
 
     let cred = thread.cred();
-    let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
+    let options = flags_to_options(flags, mode, &cred);
     let should_notify_create = uflags & O_CREAT != 0
         && uflags & O_PATH == 0
         && with_fs(dirfd, |fs| match fs.resolve_no_follow(&path) {
@@ -626,7 +640,7 @@ pub fn sys_openat2(
     let thread = curr.as_thread();
     let mode = mode & !thread.proc_data.umask();
     let cred = thread.cred();
-    let mut options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
+    let mut options = flags_to_options(flags, mode, &cred);
     let result = with_fs(dirfd, |fs| {
         let (parent, name) = fs.resolve_parent_beneath_no_symlinks(path.as_ref())?;
         match parent.lookup_no_follow(name.as_ref()) {

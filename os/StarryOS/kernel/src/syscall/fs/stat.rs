@@ -255,7 +255,7 @@ pub fn sys_faccessat2(
     Ok(0)
 }
 
-fn check_dac_access(
+pub(super) fn check_dac_access(
     cred: &crate::task::Cred,
     kstat: &crate::file::Kstat,
     mode: u32,
