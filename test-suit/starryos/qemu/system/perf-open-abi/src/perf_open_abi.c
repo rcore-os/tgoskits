@@ -17,6 +17,7 @@
 #endif
 
 #define PERF_TYPE_HARDWARE 0u
+#define PERF_TYPE_RAW 4u
 #define PERF_COUNT_HW_CPU_CYCLES 0u
 #define PERF_SAMPLE_IP (1ull << 0)
 #define PERF_SAMPLE_REGS_USER (1ull << 12)
@@ -114,6 +115,28 @@ int main(void) {
     unsigned char extended[PERF_ATTR_SIZE_VER9 + 8];
     int failures = 0;
     long online = sysconf(_SC_NPROCESSORS_ONLN);
+
+    /* QEMU's common-event bitmap does not implement event 0x3f. Starry
+     * rejects it before publishing either a task or CPU event because its
+     * PMU configure operation rejects explicitly absent common events.
+     * Disabled opens expose the validation gap without crashing the guest. */
+    init_attr(&attr, PERF_ATTR_SIZE_VER0);
+    attr.type = PERF_TYPE_RAW;
+    attr.config = 0x3f;
+    failures += expect_errno("unsupported-task-raw", &attr, 0, -1, -1, 0,
+                             ENOENT) != 0;
+    failures += expect_errno("unsupported-cpu-raw", &attr, -1, 0, -1, 0,
+                             ENOENT) != 0;
+    /* Linux masks raw config to 16 bits. Encodings outside PMCEID remain
+     * implementation-defined rather than being treated as absent. */
+    attr.config = 0x10011;
+    failures += expect_open("masked-task-raw", &attr, 0, -1, 0) != 0;
+    failures += expect_open("masked-cpu-raw", &attr, -1, 0, 0) != 0;
+    attr.config = 0xfffe;
+    failures += expect_open("implementation-defined-task-raw", &attr, 0, -1,
+                            0) != 0;
+    failures += expect_open("implementation-defined-cpu-raw", &attr, -1, 0,
+                            0) != 0;
 
     init_attr(&attr, PERF_ATTR_SIZE_VER0);
     attr.flags |= 1ull << 2; /* pinned: unsupported until priority/error scheduling exists */

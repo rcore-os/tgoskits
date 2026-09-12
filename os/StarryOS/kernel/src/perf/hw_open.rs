@@ -80,9 +80,10 @@ pub(super) fn validate_perf_event_open_hw(
         return Err(crate::StarryError::Unsupported);
     };
 
-    if (is_generic_hw || is_hw_cache || is_named_pmu)
-        && !super::percpu::event_supported_for_target(target_cpu, required_cluster, event)
-    {
+    // RAW must satisfy the same capability contract as Pmu::configure before
+    // publication. Implementation-defined encodings remain accepted; only
+    // explicitly absent common events are rejected, including on task targets.
+    if !super::percpu::event_supported_for_target(target_cpu, required_cluster, event) {
         return Err(crate::StarryError::NotFound);
     }
     let prefer_cycle = !is_sampling

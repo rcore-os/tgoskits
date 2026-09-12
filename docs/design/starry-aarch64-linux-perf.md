@@ -1,6 +1,6 @@
 # StarryOS AArch64 Linux perf 设计
 
-本文定义 StarryOS 在 AArch64 上兼容 Linux `perf_event_open(2)` 与 upstream `perf` 的实现边界。Linux 语义基线为 v7.1，当前整合的 TGOSKits `dev` 提交为 `e8c2e66466682528d64e4b8102d5940333beaabb`。来源实现为 JosephJoshua 的 PR #1577、#1601、#1602、#1603 及其间的调用链提交。来源分支只提供行为与测试参考，不直接合并；实现遵循当前 CPU-local、IRQ、timer、PID、地址空间和锁模型。
+本文定义 StarryOS 在 AArch64 上兼容 Linux `perf_event_open(2)` 与 upstream `perf` 的实现边界。Linux 语义基线为 v7.1，当前整合的 TGOSKits `dev` 提交为 `3651c52aa775c062018021e1dae2066dac0302eb`。来源实现为 JosephJoshua 的 PR #1577、#1601、#1602、#1603 及其间的调用链提交。来源分支只提供行为与测试参考，不直接合并；实现遵循当前 CPU-local、IRQ、timer、PID、地址空间和锁模型。
 
 ## 1. 兼容范围
 
@@ -10,7 +10,7 @@
 
 `sys_perf_event_open()` 先执行 flags 与 `perf_event_attr` 版本拷贝，再解析目标和 group。下表记录本分支必须保持的用户可见语义，错误码由 `perf::uapi` 的显式校验转换，不依赖 `kbpf` 当前结构体大小。
 
-对照源码是本地 `~/linux-src` 的精确标签 v7.1（`8cd9520d35a6c38db6567e97dd93b1f11f185dc6`）：[`perf_copy_attr()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L13544-L13611)、[`perf_event_open()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L13844-L14172)、[`_perf_ioctl()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L6598-L6704)、[`group_sched_in()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L2859-L2897) 和 [`perf_output_read_group()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L8128-L8175) 分别约束 attr、target、ioctl、组调度与采样读布局；ARM event 映射以 [`arm_pmuv3.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/perf/arm_pmuv3.c#L1195-L1273) 为准。
+对照源码是本地 `/home/zhourui/opensource/linux/linux` 的精确标签 v7.1（`8cd9520d35a6c38db6567e97dd93b1f11f185dc6`）：[`perf_copy_attr()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L13544-L13611)、[`perf_event_open()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L13844-L14172)、[`_perf_ioctl()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L6598-L6704)、[`group_sched_in()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L2859-L2897) 和 [`perf_output_read_group()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L8128-L8175) 分别约束 attr、target、ioctl、组调度与采样读布局；ARM event 映射以 [`arm_pmuv3.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/perf/arm_pmuv3.c#L1195-L1273) 为准。
 
 | 能力 | Linux v7.1 语义 | StarryOS 实现锚点 |
 | --- | --- | --- |
@@ -25,7 +25,9 @@
 | sample | 支持 `PERF_SAMPLE_READ`、TID、CPU、period 和 kernel/user FP callchain；AArch64 `PERF_SAMPLE_REGS_USER` 接受零 mask 或 LR mask `1 << 30`，分别输出 ABI_NONE 或 ABI_64 与真实 LR | `sampling::{SampleSlot,SampleReadEntry,build_sample}`、`perf::unwind`、`perf::uapi::validate_perf_event_attr()` |
 | mmap page | 沿用最新 dev 的授权边界：未建立逐事件用户直接读授权时，`index` 与用户读能力均为零，使用 read(2) | `PerfRdpmcPage::publish()`、`Pmu::disable_user_access()` |
 
-硬件事件若事件编码合法但目标 CPU 的 `PMCEID` 未实现，返回 Linux ARM PMUv3 backend 对应的 unsupported 错误；格式错误返回 `EINVAL`，错误 fd 返回 `EBADF`，目标线程消失返回 `ESRCH`。不能把未知字段、未知事件或输出关系静默忽略。
+`hw_open::validate_perf_event_open_hw()` 在创建事件和分配计数器前，使用 `percpu::event_supported_for_target()` 检查目标 PMU 能力。通用硬件、缓存、RAW 和命名 PMU 类型均拒绝 `PmuInfo::event_support()` 明确报告为 `Unsupported` 的编码，返回 `ENOENT`；可迁移 task 检查全部目标 CPU，fixed-CPU 事件检查指定 CPU。这样 open 接受的事件不会在调度时因底层 `Pmu::configure()` 拒绝编码而触发断言。格式错误返回 `EINVAL`，错误 fd 返回 `EBADF`，目标线程消失返回 `ESRCH`。
+
+RAW 和命名 PMU 的 `config` 仍取低 16 位，超出 PMCEID 覆盖范围的编码仍按 `ImplementationDefined` 接受。这里的拒绝边界比 Linux v7.1 更严格：[Linux `armpmu_map_event()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/perf/arm_pmu.c#L178-L203) 的 RAW/命名 PMU 路径直接掩码编码，并不统一拒绝缺失 PMCEID 位。当前 Starry 保留底层驱动的能力约束，不宣称这类拒绝行为与 Linux 完全一致。既有 `perf-open-abi` 在 QEMU 上检查 task/system 的明确拒绝、低位掩码和实现自定义编码接受行为。
 
 `uapi::read_zero_extended()` 对截在字段中间的 `attr.size` 保留已传入字节，仅将缺失字节补零，和 `perf_copy_attr()` 的完整结构零填充一致。`perf-open-abi` 分别用 111、117 字节的属性检查部分 `reserved_2` 与 AUX 保留位返回 `EINVAL`，并保留部分字段全零时可以成功打开的对照。
 
