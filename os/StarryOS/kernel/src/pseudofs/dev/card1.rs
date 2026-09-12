@@ -441,6 +441,9 @@ impl Card1File {
     }
 
     fn handle_submit(&self, current: &UserTaskRef, args: &mut RknpuSubmit) -> VfsResult<()> {
+        if !rknpu::submit_available().map_err(map_rknpu_err)? {
+            return Err(VfsError::OperationNotSupported);
+        }
         let core_mask = rknpu::normalize_core_mask(args.core_mask).map_err(map_rknpu_err)?;
         let (first, mut tasks) = self.load_tasks(current, args, core_mask)?;
         let task_bytes = (tasks.len() as u64)
@@ -1030,6 +1033,7 @@ fn map_rknpu_err(err: rknpu::Error) -> VfsError {
         rknpu::Error::TimedOut => VfsError::TimedOut,
         rknpu::Error::Quarantined => VfsError::Io,
         rknpu::Error::InvalidData => VfsError::InvalidData,
+        rknpu::Error::NotSupported => VfsError::OperationNotSupported,
     }
 }
 

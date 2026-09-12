@@ -582,6 +582,7 @@ mod tests {
         )
         .expect("direct DMA is valid for non-submit GEM operations");
         npu.set_iommu_enabled(true);
+        assert!(!npu.user_submit_supported());
 
         let mut args = RknpuSubmit::default();
         let mut tasks = [];

@@ -35,6 +35,8 @@ pub enum Error {
     Quarantined,
     #[error("Rockchip NPU request contains invalid data")]
     InvalidData,
+    #[error("Rockchip NPU user task submission is not supported by this DMA setup")]
+    NotSupported,
 }
 
 crate::model_register!(
@@ -209,6 +211,9 @@ pub fn submit(args: &mut RknpuSubmit, tasks: &mut [RknpuTask]) -> Result<(), Err
         .try_lock()
         .map_err(|_| Error::Busy)?;
     npu.ensure_available()?;
+    if !npu.core.user_submit_supported() {
+        return Err(Error::NotSupported);
+    }
     let mut clock = axklib::time::monotonic_nanos;
     match npu.core.submit_ioctrl(args, tasks, &mut clock) {
         Ok(()) => Ok(()),
@@ -218,6 +223,16 @@ pub fn submit(args: &mut RknpuSubmit, tasks: &mut [RknpuTask]) -> Result<(), Err
         }
         Err(_) => Err(Error::InvalidData),
     }
+}
+
+/// Reports whether the current RKNPU instance can safely accept user tasks.
+///
+/// The capability is separate from GEM allocation and mapping: those paths
+/// remain available for the direct DMA domain used by RK3588, while user task
+/// submission stays disabled until a translated IOMMU domain and a matching
+/// CPU physical-address mapping are wired together.
+pub fn submit_available() -> Result<bool, Error> {
+    with_npu(|npu| Ok(npu.user_submit_supported()))
 }
 
 /// Resolve the core mask using the same device state as a later submission.

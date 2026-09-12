@@ -107,6 +107,9 @@ impl Rknpu {
     /// Returns [`RknpuError::IommuError`] when the DMA device uses a translated
     /// domain. GEM mmap currently needs a physical address, which this driver
     /// cannot derive from an IOVA.
+    ///
+    /// A direct DMA domain is accepted for GEM allocation and mapping, but it
+    /// does not enable user-controlled task submission.
     pub fn new(
         base_addrs: &[NonNull<u8>],
         config: RknpuConfig,
@@ -323,6 +326,16 @@ impl Rknpu {
     /// Convenience method to check IOMMU status using action interface
     pub fn is_iommu_enabled(&self) -> bool {
         self.iommu_enabled
+    }
+
+    /// Returns whether user-controlled task submission has a translated DMA
+    /// domain and an enabled IOMMU to contain command-stream addresses.
+    pub fn user_submit_supported(&self) -> bool {
+        self.iommu_enabled
+            && matches!(
+                self.dma.info().domain(),
+                dma_api::DmaDomainId::Translated(_)
+            )
     }
 
     /// Enable or disable IOMMU-backed submissions.
