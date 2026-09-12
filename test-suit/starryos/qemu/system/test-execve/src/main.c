@@ -324,10 +324,9 @@ static int copy_file_into(int dst_fd, const char *src_path)
 
 /*
  * systemd's pattern: stage an executable into an anonymous memfd, seal it
- * write-only-once, then execveat(fd, "", AT_EMPTY_PATH). Sealing with
- * F_SEAL_WRITE before exec mirrors systemd and is what Linux's
- * deny_write_access requires (an unsealed, still-writable memfd would
- * otherwise exec with ETXTBSY), so this case passes identically on real Linux.
+ * write-only-once, then execveat(fd, "", AT_EMPTY_PATH). The initial anonymous
+ * memfd description does not acquire pathname-open write access on Linux;
+ * sealing protects contents independently of executable/write exclusion.
  */
 static void test_execveat_memfd_sealed_exec(void)
 {

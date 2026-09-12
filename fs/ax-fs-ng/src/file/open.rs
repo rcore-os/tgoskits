@@ -1,6 +1,11 @@
+use alloc::sync::Arc;
+
 use axfs_ng_vfs::{Location, NodeFlags, NodePermission, NodeType, VfsError, VfsResult, path::Path};
 
-use super::handle::{File, FileBackend};
+use super::{
+    WriteAccess,
+    handle::{File, FileBackend},
+};
 use crate::fs_core::FsContext;
 
 bitflags::bitflags! {
@@ -235,6 +240,16 @@ impl OpenOptions {
             }
             OpenResult::Dir(loc)
         } else {
+            // Acquire before truncation and retain the lease for writable open
+            // descriptions. O_RDONLY|O_TRUNC needs only a temporary lease.
+            let write_access = if !self.path
+                && loc.node_type() == NodeType::RegularFile
+                && (flags.contains(FileFlags::WRITE) || self.truncate)
+            {
+                Some(Arc::new(WriteAccess::acquire(loc.clone())?))
+            } else {
+                None
+            };
             // TODO(mivik): is this correct?
             let non_cacheable_type = matches!(
                 loc.metadata()?.node_type,
@@ -250,10 +265,15 @@ impl OpenOptions {
             } else {
                 FileBackend::new_direct(loc)
             };
-            if self.truncate {
+            if self.truncate && !self.path {
                 backend.set_len(0)?;
             }
-            OpenResult::File(File::new(backend, flags))
+            let write_access = if flags.contains(FileFlags::WRITE) {
+                write_access
+            } else {
+                None
+            };
+            OpenResult::File(File::with_write_access(backend, flags, write_access))
         })
     }
 

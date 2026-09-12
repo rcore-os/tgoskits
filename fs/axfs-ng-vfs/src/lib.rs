@@ -75,6 +75,8 @@ pub enum VfsError {
     ResourceBusy,
     #[error("filesystem storage is full")]
     StorageFull,
+    #[error("executable file is busy")]
+    TextFileBusy,
     #[error("filesystem operation timed out")]
     TimedOut,
     #[error("filesystem object has too many links")]

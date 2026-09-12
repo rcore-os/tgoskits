@@ -147,6 +147,7 @@ fn vfs_error_to_errno(error: VfsError) -> Errno {
         VfsError::ReadOnlyFilesystem => Errno::EROFS,
         VfsError::ResourceBusy => Errno::EBUSY,
         VfsError::StorageFull => Errno::ENOSPC,
+        VfsError::TextFileBusy => Errno::ETXTBSY,
         VfsError::TimedOut => Errno::ETIMEDOUT,
         VfsError::TooManyLinks => Errno::EMLINK,
         VfsError::Unsupported => Errno::ENOSYS,

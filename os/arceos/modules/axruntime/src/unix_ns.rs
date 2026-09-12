@@ -82,6 +82,7 @@ fn namespace_vfs_error(error: axfs_ng_vfs::VfsError) -> ax_net::NetError {
         VfsError::ReadOnlyFilesystem => NetError::ReadOnlyFilesystem,
         VfsError::ResourceBusy => NetError::ResourceBusy,
         VfsError::StorageFull => NetError::StorageFull,
+        VfsError::TextFileBusy => NetError::ResourceBusy,
         VfsError::TimedOut => NetError::TimedOut,
         VfsError::TooManyLinks => NetError::OperationNotSupported,
         VfsError::Unsupported => NetError::Unsupported,

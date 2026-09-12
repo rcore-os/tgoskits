@@ -833,8 +833,10 @@ impl MmHandle {
     /// Releases this handle's process ownership while retaining a non-owning
     /// view of the address space.  This is the operation used by process exit;
     /// unlike cloning and dropping a temporary handle, it cannot keep the
-    /// owner count artificially non-zero.
+    /// owner count artificially non-zero. The last release may sleep to end
+    /// executable/writer exclusion; callers must not hold the address-space lock.
     pub fn release_user_ref(&self) -> Option<RetirePermit> {
+        let mut last_user = false;
         {
             let _gate = self.inner.lifecycle_gate.lock();
             if self.owner.swap(false, Ordering::Relaxed) {
@@ -842,6 +844,7 @@ impl MmHandle {
                 debug_assert!(previous > 0, "MmHandle user reference underflow");
                 self.inner.user_refs.store(previous - 1, Ordering::Release);
                 if previous == 1 {
+                    last_user = true;
                     let _ = self.inner.state.compare_exchange(
                         MmState::Live as u8,
                         MmState::Retiring as u8,
@@ -851,6 +854,15 @@ impl MmHandle {
                 }
                 self.inner.maybe_retire_locked();
             }
+        }
+        if last_user {
+            // Linux releases mm->exe_file when the last process owner exits,
+            // independently of deferred page-table/CPU reclamation. No new
+            // user owner can appear after the Retiring transition. Detach this
+            // MM's executable and VMA writer leases under its metadata lock,
+            // then drop them outside both MM locks because destruction may block.
+            let file_accesses = self.inner.aspace.lock().take_file_accesses();
+            drop(file_accesses);
         }
         self.retire_if_quiescent()
     }
