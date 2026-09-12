@@ -2,7 +2,7 @@
 name = "axvisor"
 authors = ["Keyang Hu <keyang.hu@qq.com>", "周睿 <zrufo747@outlook.com>"]
 edition.workspace = true
-version = "0.7.3"
+version = "0.7.4"
 description = "A lightweight type-1 hypervisor based on ArceOS"
 repository = "https://github.com/arceos-hypervisor/axvisor"
 documentation = "https://docs.rs/axvisor"

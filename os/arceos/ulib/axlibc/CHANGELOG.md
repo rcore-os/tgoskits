@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.37](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.36...ax-libc-v0.5.37) - 2026-09-12
+
+### Other
+
+- updated the following local packages: ax-runtime, ax-posix-api
+
 ## [0.5.36](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.35...ax-libc-v0.5.36) - 2026-09-11
 
 ### Other

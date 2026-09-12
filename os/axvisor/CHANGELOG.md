@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.7.3...axvisor-v0.7.4) - 2026-09-12
+
+### Added
+
+- *(axvisor)* validate RISC-V virtio-blk guest ([#2379](https://github.com/rcore-os/tgoskits/pull/2379))
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.7.2...axvisor-v0.7.3) - 2026-09-11
 
 ### Added

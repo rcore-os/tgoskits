@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.10.0...starry-kernel-v0.10.1) - 2026-09-12
+
+### Fixed
+
+- *(starry-kernel)* scope setns and id-map privileges to the initial user namespace. ([#2266](https://github.com/rcore-os/tgoskits/pull/2266))
+
 ## [0.10.0](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.9.0...starry-kernel-v0.10.0) - 2026-09-11
 
 ### Added

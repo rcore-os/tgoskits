@@ -746,7 +746,7 @@ dependencies = [
 
 [[package]]
 name = "ax-alloc"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ax-crate-interface",
  "ax-memory-addr",
@@ -764,7 +764,7 @@ dependencies = [
 
 [[package]]
 name = "ax-api"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "ax-alloc",
  "ax-cpumask",
@@ -1031,7 +1031,7 @@ version = "0.5.1"
 
 [[package]]
 name = "ax-libc"
-version = "0.5.36"
+version = "0.5.37"
 dependencies = [
  "ax-driver",
  "ax-hal",
@@ -1164,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -1244,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1271,7 +1271,7 @@ dependencies = [
 
 [[package]]
 name = "ax-task"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "axpanic",
  "cfg-if",
@@ -1328,7 +1328,7 @@ dependencies = [
 
 [[package]]
 name = "axbuild"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "addr2line 0.26.1",
  "anyhow",
@@ -1376,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "axdevice"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "ax-runtime",
  "ax-sync",
@@ -1585,7 +1585,7 @@ dependencies = [
 
 [[package]]
 name = "axvirtio-blk"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ax-memory-addr",
  "ax-runtime",
@@ -1599,7 +1599,7 @@ dependencies = [
 
 [[package]]
 name = "axvirtio-common"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "ax-memory-addr",
  "ax-runtime",
@@ -1626,7 +1626,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "anyhow",
  "ax-api",
@@ -1656,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "axvm"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -1728,7 +1728,7 @@ dependencies = [
 
 [[package]]
 name = "axvmconfig"
-version = "0.8.7"
+version = "0.8.8"
 dependencies = [
  "axvm-types",
  "clap",
@@ -1967,7 +1967,7 @@ dependencies = [
 
 [[package]]
 name = "buddy-slab-allocator"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "ax-crate-interface",
  "ax-sync",
@@ -2019,9 +2019,9 @@ dependencies = [
 
 [[package]]
 name = "bytemuck_derive"
-version = "1.12.0"
+version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc0e56a716f1e132ff6bf4bdac1c944a3fcdc1cae65f70a4a2a1ac3b401d2d1f"
+checksum = "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7822,7 +7822,7 @@ dependencies = [
 
 [[package]]
 name = "starry-kernel"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "ax-alloc",
  "ax-cgroup",
@@ -7912,7 +7912,7 @@ dependencies = [
 
 [[package]]
 name = "starry-signal"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "ax-cpu",
  "ax-runtime",
@@ -7939,7 +7939,7 @@ dependencies = [
 
 [[package]]
 name = "starryos"
-version = "0.5.34"
+version = "0.5.35"
 dependencies = [
  "anyhow",
  "ax-driver",

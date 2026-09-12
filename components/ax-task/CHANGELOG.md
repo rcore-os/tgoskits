@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.8.0...ax-task-v0.8.1) - 2026-09-12
+
+### Fixed
+
+- *(ax-task)* allow per-CPU timer wakes during CPU deactivation ([#2382](https://github.com/rcore-os/tgoskits/pull/2382))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.7.1...ax-task-v0.8.0) - 2026-09-11
 
 ### Fixed

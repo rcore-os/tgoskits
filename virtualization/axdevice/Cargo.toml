@@ -1,6 +1,6 @@
 [package]
 name = "axdevice"
-version = "0.8.0"
+version = "0.8.1"
 description = "A reusable, OS-agnostic device abstraction layer designed for virtual machines."
 repository = "https://github.com/arceos-hypervisor/axdevice"
 keywords = ["hypervisor"]
