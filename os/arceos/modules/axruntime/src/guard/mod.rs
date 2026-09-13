@@ -68,7 +68,7 @@ pub(crate) fn prepare_user_return() -> Result<(), ax_task::thread::TaskError> {
             return Err(ax_task::thread::TaskError::UnsafeContext);
         }
         ax_cpu::interrupt::disable_irqs();
-        let pending = with_current_cpu_pin(|pin| {
+        let observe = |pin: &cpu_local::CpuPin<'_>| {
             let state = RUNTIME_GUARD_STATE.with_current(pin, |state| *state);
             if !state.irq.is_clear()
                 || !state.preempt.is_clear()
@@ -78,7 +78,11 @@ pub(crate) fn prepare_user_return() -> Result<(), ax_task::thread::TaskError> {
                 return Err(ax_task::thread::TaskError::UnsafeContext);
             }
             crate::thread::current_cpu_needs_reschedule_pinned(pin)
-        });
+        };
+        // SAFETY: local IRQs were disabled above and stay disabled throughout
+        // this non-escaping observation, preventing migration and re-entry.
+        let pending = unsafe { cpu_local::with_cpu_pin(observe) }
+            .unwrap_or_else(|error| panic!("runtime CPU-local state is invalid: {error}"));
         let pending = match pending {
             Ok(pending) => pending,
             Err(error) => {
