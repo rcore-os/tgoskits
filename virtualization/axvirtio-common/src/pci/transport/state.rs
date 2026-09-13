@@ -98,6 +98,7 @@ pub(super) struct QueueState {
     pub(super) queue: VirtioQueue<NoGuestMemoryAccessor>,
     pub(super) enabled: bool,
     pub(super) processing: bool,
+    pub(super) notification_pending: bool,
 }
 
 pub(super) struct TransportState {
@@ -122,6 +123,7 @@ impl TransportState {
                 queue: VirtioQueue::new(index, queue_size_max, Arc::new(NoGuestMemoryAccessor)),
                 enabled: false,
                 processing: false,
+                notification_pending: false,
             })
             .collect();
         Self {
@@ -155,6 +157,7 @@ impl TransportState {
         for queue in &mut self.queues {
             queue.enabled = false;
             queue.processing = false;
+            queue.notification_pending = false;
             queue.queue.reset();
         }
     }

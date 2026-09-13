@@ -388,6 +388,20 @@ impl EndpointRouter {
         Ok(token)
     }
 
+    pub(super) fn acquire_irq_permit(&self, device: DeviceId) -> DeviceResult<IrqPermitLease> {
+        let admission = self
+            .state
+            .lock_irqsave()
+            .endpoints
+            .get(&device)
+            .map(|endpoint| endpoint.token.admission.clone())
+            .ok_or(DeviceError::InvalidState {
+                operation: "publish PCI endpoint interrupt state",
+                detail: "PCI endpoint route is not bound".into(),
+            })?;
+        admission.acquire_irq_permit()
+    }
+
     pub(super) fn invalidate(&self, token: &EndpointRouteToken) -> Option<Arc<dyn PciFunction>> {
         let mut state = self.state.lock_irqsave();
         if state

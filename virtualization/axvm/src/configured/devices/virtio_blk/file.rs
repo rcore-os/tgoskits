@@ -6,7 +6,10 @@
 
 use std::{
     format,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::JoinHandle,
     vec::Vec,
 };
@@ -24,6 +27,7 @@ const WORKER_STACK_BYTES: usize = 1024 * 1024;
 pub(super) struct FileBackend {
     shared: Arc<Mutex<Shared>>,
     worker: Option<JoinHandle<()>>,
+    queue_pending: Arc<AtomicBool>,
     pub(super) capacity_sectors: u64,
 }
 
@@ -135,7 +139,7 @@ impl FileBackend {
         capacity_sectors: u64,
         vm_id: usize,
     ) -> axdevice::DeviceManagerResult<Self> {
-        Self::spawn(AxStorage(file), capacity_sectors, pin_worker, move || {
+        Self::spawn(AxStorage(file), capacity_sectors, pin_worker, move |_| {
             // notify_vm publishes device work and requests execution on vCPU0.
             if let Err(error) = crate::AxvmRuntime::notify_vm(vm_id) {
                 log::warn!("failed to notify VM[{vm_id}] of file I/O completion: {error}");
@@ -151,10 +155,12 @@ impl FileBackend {
         mut storage: S,
         capacity_sectors: u64,
         start: fn(),
-        notify: impl Fn() + Send + 'static,
+        notify: impl Fn(&AtomicBool) + Send + 'static,
     ) -> std::io::Result<Self> {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let worker_shared = shared.clone();
+        let queue_pending = Arc::new(AtomicBool::new(false));
+        let worker_queue_pending = Arc::clone(&queue_pending);
         let worker = std::thread::Builder::new()
             .name("virtio-blk-file".into())
             .stack_size(WORKER_STACK_BYTES)
@@ -176,7 +182,10 @@ impl FileBackend {
                             .lock()
                             .expect("file state mutex poisoned")
                             .finish(operation, result);
-                        notify();
+                        // A wake is only a hint. Publish the level state first
+                        // so an immediately running poller observes the work.
+                        worker_queue_pending.store(true, Ordering::Release);
+                        notify(&worker_queue_pending);
                     } else {
                         // unpark retains a token when it races this call.
                         std::thread::park();
@@ -189,6 +198,7 @@ impl FileBackend {
         Ok(Self {
             shared,
             worker: Some(worker),
+            queue_pending,
             capacity_sectors,
         })
     }
@@ -260,6 +270,10 @@ impl FileBackend {
         if let Some(worker) = &self.worker {
             worker.thread().unpark();
         }
+    }
+
+    pub(super) fn queue_pending(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.queue_pending)
     }
 }
 
@@ -359,6 +373,7 @@ mod tests {
         FileBackend {
             shared: Arc::new(Mutex::new(Shared::default())),
             worker: None,
+            queue_pending: Arc::new(AtomicBool::new(false)),
             capacity_sectors: (1 << 40) / 512,
         }
     }
@@ -696,7 +711,11 @@ mod tests {
             HostFile(file),
             capacity / 512,
             || {},
-            move || {
+            move |queue_pending| {
+                assert!(
+                    queue_pending.load(Ordering::Acquire),
+                    "completion state must be published before the wake callback"
+                );
                 let _ = send.send(());
             },
         )
@@ -707,9 +726,14 @@ mod tests {
             Err(VirtioError::WouldBlock)
         );
         receive.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            backend.queue_pending.swap(false, Ordering::Acquire),
+            "completion state must be published before the wake callback"
+        );
         assert_eq!(backend.write(sector, &[0x4b; 512]), Ok(512));
         assert_eq!(backend.flush(), Err(VirtioError::WouldBlock));
         receive.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(backend.queue_pending.swap(false, Ordering::Acquire));
         assert_eq!(backend.flush(), Ok(()));
         let mut bytes = [0; 512];
         assert_eq!(observer.read_at(&mut bytes, capacity - 512).unwrap(), 512);
@@ -719,6 +743,7 @@ mod tests {
             Err(VirtioError::WouldBlock)
         );
         receive.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(backend.queue_pending.swap(false, Ordering::Acquire));
         assert_eq!(backend.read(sector, &mut bytes), Ok(512));
         assert_eq!(bytes, [0x4b; 512]);
         drop(backend);

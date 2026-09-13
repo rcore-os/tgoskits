@@ -23,7 +23,7 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
         memory: &mut dyn GuestMemory,
     ) -> DeviceResult<VirtioPciWriteOutcome> {
         let selected = {
-            let state = self.state.lock();
+            let mut state = self.state.lock();
             if queue_index as usize >= state.queues.len() {
                 return Err(invalid_queue(queue_index));
             }
@@ -33,11 +33,12 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
             if !state.queues[queue_index as usize].enabled {
                 return Ok(self.idle_notification());
             }
-            if state.queues[queue_index as usize].processing {
-                return Ok(self.idle_notification());
-            }
             if !dma_enabled {
                 return Ok(self.idle_notification());
+            }
+            if state.queues[queue_index as usize].processing {
+                state.queues[queue_index as usize].notification_pending = true;
+                return Ok(self.retry_notification());
             }
             (
                 queue_index as usize,
@@ -56,7 +57,7 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
                 detail: "queue generation is resetting".into(),
             })?;
 
-        let mut queue = {
+        let queue = {
             let mut state = self.state.lock();
             // The first snapshot was taken before activity admission. A
             // reset may have completed in that gap, so validate every
@@ -67,10 +68,16 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
                 || !queue_processing_enabled(state.status)
                 || !dma_enabled;
             let queue = &mut state.queues[selected];
-            if stale_admission || !queue.enabled || queue.processing {
+            if stale_admission || !queue.enabled {
                 drop(state);
                 drop(activity);
                 return Ok(self.idle_notification());
+            }
+            if queue.processing {
+                queue.notification_pending = true;
+                drop(state);
+                drop(activity);
+                return Ok(self.retry_notification());
             }
             queue.processing = true;
             queue.queue.set_ready(true);
@@ -95,7 +102,77 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
             return Ok(fault);
         }
 
-        let result = self.core.notify_queue(&mut queue, memory);
+        self.process_queue(selected, queue, memory, activity, false)
+    }
+
+    /// Retries a previously deferred queue using a scoped guest-memory grant.
+    pub fn poll_queue(
+        &self,
+        queue_index: u16,
+        memory: &mut dyn GuestMemory,
+    ) -> DeviceResult<VirtioPciWriteOutcome> {
+        let selected = queue_index as usize;
+        let generation = {
+            let state = self.state.lock();
+            if selected >= state.queues.len() {
+                return Err(invalid_queue(queue_index));
+            }
+            VirtioQueueGeneration(state.queue_generation)
+        };
+        let activity = self
+            .activity
+            .acquire(generation)
+            .ok_or(DeviceError::InvalidState {
+                operation: "virtio-pci queue poll",
+                detail: "queue generation is resetting".into(),
+            })?;
+        let queue = {
+            let mut state = self.state.lock();
+            if state.queue_generation != generation.value()
+                || !queue_processing_enabled(state.status)
+                || !state.queues[selected].enabled
+            {
+                drop(state);
+                drop(activity);
+                return Ok(self.idle_notification());
+            }
+            if state.queues[selected].processing {
+                drop(state);
+                drop(activity);
+                return Ok(self.retry_notification());
+            }
+            let queue = &mut state.queues[selected];
+            queue.processing = true;
+            let queue_size = queue.queue.size;
+            core::mem::replace(
+                &mut queue.queue,
+                VirtioQueue::new(queue_index, queue_size, Arc::new(NoGuestMemoryAccessor)),
+            )
+        };
+        if let Err(error) = queue
+            .validate_layout_with_memory(memory)
+            .map_err(map_pci_error)
+        {
+            let fault = self.queue_fault(error, activity);
+            self.restore_queue(selected, queue);
+            return Ok(fault);
+        }
+        self.process_queue(selected, queue, memory, activity, true)
+    }
+
+    fn process_queue(
+        &self,
+        selected: usize,
+        mut queue: VirtioQueue<NoGuestMemoryAccessor>,
+        memory: &mut dyn GuestMemory,
+        activity: ActivityPermit,
+        poll: bool,
+    ) -> DeviceResult<VirtioPciWriteOutcome> {
+        let result = if poll {
+            self.core.poll_queue(&mut queue, memory)
+        } else {
+            self.core.notify_queue(&mut queue, memory)
+        };
         let outcome = match result {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -104,26 +181,19 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
                 return Ok(fault);
             }
         };
-        if matches!(outcome, QueueNotifyOutcome::Deferred { .. }) {
-            let fault = self.queue_fault(
-                DeviceError::Unsupported {
-                    operation: "virtio-pci queue notify",
-                    detail: "asynchronous queue processing is not supported by this transport"
-                        .into(),
-                },
-                activity,
-            );
-            self.restore_queue(selected, queue);
-            return Ok(fault);
-        }
-        self.restore_queue(selected, queue);
-        let kind = if matches!(outcome, QueueNotifyOutcome::Completed { notify: true }) {
+        let retry_required = self.restore_queue(selected, queue);
+        let kind = if matches!(
+            outcome,
+            QueueNotifyOutcome::Completed { notify: true }
+                | QueueNotifyOutcome::Deferred { notify: true }
+        ) {
             Some(InterruptPublicationKind::Queue)
         } else {
             None
         };
         Ok(VirtioPciWriteOutcome::QueueNotified(QueueNotification {
             outcome,
+            retry_required,
             publication: InterruptPublicationRequest::new(
                 Arc::clone(&self.interrupts),
                 kind,
@@ -135,6 +205,15 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
     fn idle_notification(&self) -> VirtioPciWriteOutcome {
         VirtioPciWriteOutcome::QueueNotified(QueueNotification {
             outcome: QueueNotifyOutcome::Idle,
+            retry_required: false,
+            publication: InterruptPublicationRequest::new(Arc::clone(&self.interrupts), None, None),
+        })
+    }
+
+    fn retry_notification(&self) -> VirtioPciWriteOutcome {
+        VirtioPciWriteOutcome::QueueNotified(QueueNotification {
+            outcome: QueueNotifyOutcome::Idle,
+            retry_required: true,
             publication: InterruptPublicationRequest::new(Arc::clone(&self.interrupts), None, None),
         })
     }
@@ -166,12 +245,13 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
         }
     }
 
-    fn restore_queue(&self, selected: usize, queue: VirtioQueue<NoGuestMemoryAccessor>) {
+    fn restore_queue(&self, selected: usize, queue: VirtioQueue<NoGuestMemoryAccessor>) -> bool {
         let mut state = self.state.lock();
         let queue_state = &mut state.queues[selected];
         debug_assert!(queue_state.processing);
         queue_state.queue = queue;
         queue_state.processing = false;
+        core::mem::take(&mut queue_state.notification_pending)
     }
 }
 

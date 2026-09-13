@@ -209,6 +209,17 @@ impl DeviceBundle {
         self.dma_pollable.push((device_index, pollable, grant));
     }
 
+    /// Adds asynchronous DMA polling to an already-added bundle-local device.
+    pub fn grant_dma_polling_to_device(
+        &mut self,
+        device_index: usize,
+        pollable: Arc<dyn DmaPollableDeviceOps>,
+        grant: DmaGrant,
+    ) {
+        self.grant_guest_memory_to_device(device_index, grant.clone());
+        self.dma_pollable.push((device_index, pollable, grant));
+    }
+
     /// Adds a timer-capable device with an explicit grant token.
     pub fn add_timer_device_with_grant(&mut self, device: Arc<dyn Device>, grant: TimerGrant) {
         let device_index = self.add_device(device);

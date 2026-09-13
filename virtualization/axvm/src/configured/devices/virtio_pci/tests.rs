@@ -164,6 +164,7 @@ impl VirtualInterruptController for TestInterruptController {
 
 struct TestCore {
     fail_notify: bool,
+    defer_notify: bool,
 }
 
 impl VirtioDeviceCore for TestCore {
@@ -206,6 +207,19 @@ impl VirtioDeviceCore for TestCore {
         memory
             .write(GuestPhysAddr::from_usize(0x5000), &input)
             .map_err(|_| DeviceError::Internal)?;
+        if self.defer_notify {
+            Ok(axvirtio_common::pci::QueueNotifyOutcome::Deferred { notify: true })
+        } else {
+            Ok(axvirtio_common::pci::QueueNotifyOutcome::Completed { notify: true })
+        }
+    }
+
+    fn poll_queue(
+        &self,
+        queue: &mut axvirtio_common::VirtioQueue<axvirtio_common::NoGuestMemoryAccessor>,
+        memory: &mut dyn axvirtio_common::GuestMemory,
+    ) -> DeviceResult<axvirtio_common::pci::QueueNotifyOutcome> {
+        self.notify_queue(queue, memory)?;
         Ok(axvirtio_common::pci::QueueNotifyOutcome::Completed { notify: true })
     }
 }
@@ -331,6 +345,7 @@ impl DeviceModel for HostModel {
 
 struct EndpointModel {
     fail_notify: bool,
+    defer_notify: bool,
     command_revision_hook: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -363,6 +378,7 @@ impl DeviceModel for EndpointModel {
             VirtioPciFunction::try_new(
                 TestCore {
                     fail_notify: self.fail_notify,
+                    defer_notify: self.defer_notify,
                 },
                 grant.clone(),
                 irq_line,
@@ -373,8 +389,8 @@ impl DeviceModel for EndpointModel {
             function.set_command_revision_hook(move || hook());
         }
         let mut bundle = DeviceBundle::new();
-        let device_index = bundle.add_pci_function(function)?;
-        bundle.grant_guest_memory_to_device(device_index, grant);
+        let device_index = bundle.add_pci_function(function.clone())?;
+        bundle.grant_dma_polling_to_device(device_index, function, grant);
         Ok(bundle)
     }
 }
@@ -404,6 +420,20 @@ fn build_bound_endpoint_with_options(
 fn build_bound_endpoint_with_command_hook(
     fail_notify: bool,
     command_revision_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+) -> (
+    Arc<axdevice::PciRootState>,
+    Arc<PciRootBinding>,
+    axdevice::PciBdf,
+    axdevice::DeviceRuntime,
+    Arc<TestIrqSink>,
+) {
+    build_bound_endpoint_with_deferred(fail_notify, command_revision_hook, false)
+}
+
+fn build_bound_endpoint_with_deferred(
+    fail_notify: bool,
+    command_revision_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+    defer_notify: bool,
 ) -> (
     Arc<axdevice::PciRootState>,
     Arc<PciRootBinding>,
@@ -443,6 +473,7 @@ fn build_bound_endpoint_with_command_hook(
             node("virtio-pci"),
             Arc::new(EndpointModel {
                 fail_notify,
+                defer_notify,
                 command_revision_hook,
             }),
         ))
@@ -511,3 +542,78 @@ fn configure_running_endpoint(
 
 mod config;
 mod integration;
+
+impl axdevice_base::GuestMemoryAccess for TestEndpointContext {
+    fn read(&mut self, _addr: GuestPhysAddr, data: &mut [u8]) -> DeviceResult {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        data.fill(0xa5);
+        Ok(())
+    }
+
+    fn write(&mut self, _addr: GuestPhysAddr, _data: &[u8]) -> DeviceResult {
+        self.writes.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+#[test]
+fn deferred_poll_pauses_without_bus_mastering_and_resumes_without_notify() {
+    let (root, binding, bdf, runtime, _) = build_bound_endpoint_with_deferred(false, None, true);
+    let bar = root
+        .topology()
+        .function(&node("virtio-pci"))
+        .unwrap()
+        .bar(PciBarIndex::new(0).unwrap())
+        .unwrap()
+        .address();
+    let mut context = TestEndpointContext::new();
+    configure_running_endpoint(&root, &binding, bdf, bar, &mut context);
+    binding
+        .write_bar_with_context(bar + 0x100, AccessWidth::Word, 0, &mut context)
+        .unwrap();
+    root.write_config(bdf, ConfigOffset::new(4).unwrap(), AccessWidth::Word, 2)
+        .unwrap();
+    let reads = context.reads.load(Ordering::Relaxed);
+    let writes = context.writes.load(Ordering::Relaxed);
+    runtime.poll_dma_devices(0, &mut context, |result| result.unwrap());
+    assert_eq!(context.reads.load(Ordering::Relaxed), reads);
+    assert_eq!(context.writes.load(Ordering::Relaxed), writes);
+    root.write_config(bdf, ConfigOffset::new(4).unwrap(), AccessWidth::Word, 6)
+        .unwrap();
+    runtime.poll_dma_devices(0, &mut context, |result| result.unwrap());
+    assert!(context.reads.load(Ordering::Relaxed) > reads);
+    assert!(context.writes.load(Ordering::Relaxed) > writes);
+}
+
+#[test]
+fn guest_reset_cancels_deferred_poll_until_a_new_notification() {
+    let (root, binding, bdf, runtime, _) = build_bound_endpoint_with_deferred(false, None, true);
+    let bar = root
+        .topology()
+        .function(&node("virtio-pci"))
+        .unwrap()
+        .bar(PciBarIndex::new(0).unwrap())
+        .unwrap()
+        .address();
+    let mut context = TestEndpointContext::new();
+    configure_running_endpoint(&root, &binding, bdf, bar, &mut context);
+    binding
+        .write_bar_with_context(bar + 0x100, AccessWidth::Word, 0, &mut context)
+        .unwrap();
+    binding
+        .write_bar_with_context(bar + 0x14, AccessWidth::Byte, 0, &mut context)
+        .unwrap();
+    configure_running_endpoint(&root, &binding, bdf, bar, &mut context);
+    let reads = context.reads.load(Ordering::Relaxed);
+    let writes = context.writes.load(Ordering::Relaxed);
+    runtime.poll_dma_devices(0, &mut context, |result| result.unwrap());
+    assert_eq!(context.reads.load(Ordering::Relaxed), reads);
+    assert_eq!(context.writes.load(Ordering::Relaxed), writes);
+    assert_eq!(binding.read_bar(bar + 0x14, AccessWidth::Byte), Ok(0x0f));
+    binding
+        .write_bar_with_context(bar + 0x100, AccessWidth::Word, 0, &mut context)
+        .unwrap();
+    let writes = context.writes.load(Ordering::Relaxed);
+    runtime.poll_dma_devices(0, &mut context, |result| result.unwrap());
+    assert!(context.writes.load(Ordering::Relaxed) > writes);
+}

@@ -96,7 +96,7 @@ fn invalidate_returns_none_for_unknown_or_stale_tokens() {
 }
 
 #[test]
-fn invalidation_closes_new_irq_permits_but_does_not_revoke_an_acquired_one() {
+fn device_irq_permit_lookup_tracks_route_invalidation() {
     let router = router();
     let function: Arc<dyn PciFunction> = Arc::new(StubFunction {
         fail_command: false,
@@ -104,18 +104,59 @@ fn invalidation_closes_new_irq_permits_but_does_not_revoke_an_acquired_one() {
     let token = router
         .activate(DeviceId::new(4), function)
         .expect("test route activation succeeds");
-    let permit = token
-        .admission
-        .clone()
-        .acquire_irq_permit()
+    let permit = router
+        .acquire_irq_permit(DeviceId::new(4))
         .expect("permit is admitted before teardown");
 
     drop(router.invalidate(&token));
     assert!(matches!(
-        token.admission.clone().acquire_irq_permit(),
+        router.acquire_irq_permit(DeviceId::new(4)),
         Err(DeviceError::InvalidState { .. })
     ));
+    assert!(matches!(
+        token.admission.wait_for_irq_permits_with_budget(0),
+        Err(DeviceManagerError::InvalidState { .. })
+    ));
     drop(permit);
+    token.admission.wait_for_irq_permits_with_budget(0).unwrap();
+}
+
+#[test]
+fn device_irq_permit_lookup_uses_the_current_reset_epoch() {
+    let router = router();
+    let function: Arc<dyn PciFunction> = Arc::new(StubFunction {
+        fail_command: false,
+    });
+    let device = DeviceId::new(5);
+    let original = router
+        .activate(device, function)
+        .expect("test route activation succeeds");
+
+    let replacements = router.reset_admissions().unwrap();
+    assert_eq!(replacements.len(), 1);
+    let current = replacements[0].1.clone();
+    assert!(matches!(
+        original.admission.acquire_irq_permit(),
+        Err(DeviceError::InvalidState { .. })
+    ));
+    assert!(matches!(
+        router.acquire_irq_permit(device),
+        Err(DeviceError::InvalidState { .. })
+    ));
+
+    router.open_admissions();
+    let permit = router
+        .acquire_irq_permit(device)
+        .expect("the reopened reset epoch admits runtime polling");
+    assert!(matches!(
+        current.admission.wait_for_irq_permits_with_budget(0),
+        Err(DeviceManagerError::InvalidState { .. })
+    ));
+    drop(permit);
+    current
+        .admission
+        .wait_for_irq_permits_with_budget(0)
+        .unwrap();
 }
 
 #[test]

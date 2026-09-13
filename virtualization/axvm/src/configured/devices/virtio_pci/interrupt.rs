@@ -1,5 +1,9 @@
-use axdevice::{EndpointIrqTransitionPermit, PciEndpointContext};
-use axdevice_base::{AccessWidth, DeviceError, DeviceResult};
+use core::sync::atomic::Ordering;
+
+use axdevice::{
+    DeviceManagerResult, DmaPollableDeviceOps, EndpointIrqTransitionPermit, PciEndpointContext,
+};
+use axdevice_base::{AccessWidth, DeviceContext, DeviceError, DeviceResult, DmaGrant};
 use axvirtio_common::{
     DeviceContextMemory,
     pci::{
@@ -17,6 +21,27 @@ enum TransitionResult {
 }
 
 impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
+    fn execute_polled_transition(&self, transition: InterruptTransition) -> DeviceResult {
+        // DeviceRuntime holds the endpoint IRQ permit across the DMA poll.
+        let result = match transition {
+            InterruptTransition::Assert => self.irq_line.assert(),
+            InterruptTransition::Deassert => self.irq_line.deassert(),
+            InterruptTransition::None => Ok(()),
+        };
+        result.map_err(|error| DeviceError::Backend {
+            operation: "publish polled VirtIO PCI interrupt",
+            detail: std::format!("{error}"),
+        })
+    }
+
+    fn record_queue_pending(&self, notification: &axvirtio_common::pci::QueueNotification) {
+        if notification.requires_poll() {
+            // Only the poller consumes this flag. Clearing it here could lose
+            // a concurrent notification that deferred after this operation.
+            self.queue_pending.store(true, Ordering::Release);
+        }
+    }
+
     fn execute_permitted_transition(
         &self,
         permit: &mut EndpointIrqTransitionPermit,
@@ -173,6 +198,9 @@ impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
                     self.transport.abort_reset();
                     return Err(error);
                 }
+                // Reset has drained old queue activity. Clear its pending
+                // work before reopening admission for new notifications.
+                self.queue_pending.store(false, Ordering::Release);
                 self.transport.complete_reset();
                 Ok(())
             }
@@ -181,8 +209,38 @@ impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
                 Err(error)
             }
             VirtioPciWriteOutcome::QueueNotified(notification) => {
+                self.record_queue_pending(&notification);
                 self.publish_queue_notification(notification, context)
             }
+        }
+    }
+}
+
+impl<D: VirtioDeviceCore> DmaPollableDeviceOps for VirtioPciFunction<D> {
+    fn poll_dma(
+        &self,
+        _now_ns: u64,
+        context: &mut dyn DeviceContext,
+        grant: &DmaGrant,
+    ) -> DeviceManagerResult {
+        if !self.queue_pending.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let outcome = {
+            let mut memory = DeviceContextMemory::new(context, grant);
+            self.transport.poll_queue(0, &mut memory)?
+        };
+        match outcome {
+            VirtioPciWriteOutcome::QueueNotified(notification) => {
+                self.record_queue_pending(&notification);
+                notification.publish(|transition| self.execute_polled_transition(transition))?;
+                Ok(())
+            }
+            VirtioPciWriteOutcome::Fault { error, publication } => {
+                publication.publish(|transition| self.execute_polled_transition(transition))?;
+                Err(error.into())
+            }
+            VirtioPciWriteOutcome::None | VirtioPciWriteOutcome::Reset { .. } => Ok(()),
         }
     }
 }

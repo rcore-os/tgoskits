@@ -148,7 +148,7 @@ pub struct DeviceRuntime {
     /// Devices that require periodic polling.
     pollable_devices: Vec<Arc<dyn PollableDeviceOps>>,
     /// Devices whose periodic progress requires scoped guest-memory DMA.
-    dma_pollable_devices: Vec<(DeviceId, Arc<dyn DmaPollableDeviceOps>, DmaGrant)>,
+    dma_pollable_devices: Vec<DmaPollableRuntimeDevice>,
     /// Optional lifecycle capabilities in contribution registration order.
     lifecycle_devices: Vec<Arc<dyn DeviceLifecycle>>,
     /// Typed capabilities contributed during VM preparation.
@@ -174,6 +174,13 @@ pub struct DeviceRuntime {
     sealed: bool,
     pci_roots: BTreeMap<DeviceNodeId, Arc<PciRootBinding>>,
     pci_binding_leases: Vec<crate::pci::PciBindingLease>,
+}
+
+struct DmaPollableRuntimeDevice {
+    device_id: DeviceId,
+    pollable: Arc<dyn DmaPollableDeviceOps>,
+    grant: DmaGrant,
+    pci_binding: Option<Arc<PciRootBinding>>,
 }
 
 /// Stack-scoped metadata for one routed device access.
@@ -580,7 +587,7 @@ impl DeviceRuntime {
             if self
                 .dma_pollable_devices
                 .iter()
-                .map(|(_, existing, _)| existing)
+                .map(|registered| &registered.pollable)
                 .chain(
                     bundle.dma_pollable[..index]
                         .iter()
@@ -647,8 +654,11 @@ impl DeviceRuntime {
                 bundle
                     .dma_pollable
                     .into_iter()
-                    .map(|(index, pollable, grant)| {
-                        (DeviceId::new((saved_len + index) as u32), pollable, grant)
+                    .map(|(index, pollable, grant)| DmaPollableRuntimeDevice {
+                        device_id: DeviceId::new((saved_len + index) as u32),
+                        pollable,
+                        grant,
+                        pci_binding: None,
                     }),
             );
         self.lifecycle_devices.extend(bundle.lifecycle);
@@ -782,6 +792,11 @@ impl DeviceRuntime {
                 function,
                 &mut transaction.runtime.routed_grants,
             )?;
+            for registered in &mut transaction.runtime.dma_pollable_devices {
+                if registered.device_id == device {
+                    registered.pci_binding = Some(binding.clone());
+                }
+            }
             transaction.runtime.pci_binding_leases.push(endpoint);
         }
         transaction.commit();
@@ -1125,19 +1140,28 @@ impl DeviceRuntime {
         memory: &mut dyn GuestMemoryAccess,
         mut observe: impl FnMut(DeviceManagerResult),
     ) {
-        for (device_id, pollable, grant) in &self.dma_pollable_devices {
-            let mut context = RuntimeDeviceContext {
-                device_id: *device_id,
-                routed_context: RoutedContextKind::Root,
-                memory: Some(&mut *memory),
-                dma_grants: &self.dma_grants,
-                timer_grants: &self.timer_grants,
-                wake_grants: &self.wake_grants,
-                stop_grants: &self.stop_grants,
-                routed_grants: &self.routed_grants,
-                access_ports: &self.access_ports,
+        for registered in &self.dma_pollable_devices {
+            let mut poll = || {
+                let mut context = RuntimeDeviceContext {
+                    device_id: registered.device_id,
+                    routed_context: RoutedContextKind::Root,
+                    memory: Some(&mut *memory),
+                    dma_grants: &self.dma_grants,
+                    timer_grants: &self.timer_grants,
+                    wake_grants: &self.wake_grants,
+                    stop_grants: &self.stop_grants,
+                    routed_grants: &self.routed_grants,
+                    access_ports: &self.access_ports,
+                };
+                registered
+                    .pollable
+                    .poll_dma(now_ns, &mut context, &registered.grant)
             };
-            observe(pollable.poll_dma(now_ns, &mut context, grant));
+            let result = match &registered.pci_binding {
+                Some(binding) => binding.with_endpoint_irq_permit(registered.device_id, &mut poll),
+                None => poll(),
+            };
+            observe(result);
         }
     }
 
