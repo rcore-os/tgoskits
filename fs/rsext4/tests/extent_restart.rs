@@ -186,6 +186,127 @@ struct RemovedLegacyExpectation<'a> {
 }
 
 #[test]
+fn paused_large_truncate_resumes_cleanup_after_publishing_the_new_size() {
+    let mut fixture = build_large_extent_fixture("/background-truncate");
+    install_small_journal(&mut fixture);
+    fixture.journal.enable_background_commits().unwrap();
+    let mut paused_after_resize = false;
+    let mut completed = false;
+    for _ in 0..1024 {
+        match truncate_inode(
+            &mut fixture.journal,
+            &mut fixture.filesystem,
+            fixture.inode_number,
+            0,
+        ) {
+            Ok(()) => {
+                completed = true;
+                break;
+            }
+            Err(error) => {
+                assert!(
+                    error.requires_journal_progress(),
+                    "unexpected error: {error:?}"
+                );
+                let inode = fixture
+                    .filesystem
+                    .get_inode_by_num(&mut fixture.journal, fixture.inode_number)
+                    .unwrap();
+                paused_after_resize |= inode.size() == 0;
+                // This fixture drives the portable progress boundary itself;
+                // adapter concurrency is covered by detached-commit tests.
+                fixture.journal.disable_background_commits().unwrap();
+                fixture.journal.flush().unwrap();
+                fixture.journal.enable_background_commits().unwrap();
+            }
+        }
+    }
+    assert!(completed, "bounded removal must finish");
+    assert!(
+        paused_after_resize,
+        "the fixture must exercise the already-resized continuation"
+    );
+    assert_eq!(fixture.filesystem.superblock.s_last_orphan, 0);
+    assert_removed_extent_state(
+        &mut fixture.journal,
+        &mut fixture.filesystem,
+        RemovedExtentExpectation {
+            inode_number: fixture.inode_number,
+            logical_blocks: fixture.logical_blocks,
+            data_blocks: &fixture.data_blocks,
+            gap_blocks: &fixture.gap_blocks,
+            external_blocks: &fixture.external_blocks,
+            free_before: fixture.free_before,
+            expected_size: 0,
+        },
+    );
+}
+
+#[test]
+fn truncating_an_open_unlinked_inode_preserves_final_reap_ownership() {
+    let mut fixture = build_large_extent_fixture("/unlinked-truncate");
+    let outcome = unlink(
+        &mut fixture.filesystem,
+        &mut fixture.journal,
+        "/unlinked-truncate",
+    )
+    .unwrap();
+    assert_eq!(outcome.inode, fixture.inode_number);
+    assert!(outcome.requires_reap());
+    let inode = fixture
+        .filesystem
+        .get_inode_by_num(&mut fixture.journal, fixture.inode_number)
+        .unwrap();
+    assert_eq!(inode.i_links_count, 0);
+    // Publish the orphan before constraining the journal: unlink reserves more
+    // credits than the small transactions whose truncate/reap ownership we test.
+    fixture
+        .filesystem
+        .sync_filesystem(&mut fixture.journal)
+        .expect("orphan fixture sync failed");
+    fixture
+        .journal
+        .flush()
+        .expect("orphan fixture checkpoint failed");
+    install_small_journal(&mut fixture);
+    fixture.power_cut.reset_observation();
+    truncate_inode(
+        &mut fixture.journal,
+        &mut fixture.filesystem,
+        fixture.inode_number,
+        0,
+    )
+    .unwrap();
+    assert!(
+        fixture.power_cut.commit_writes.get() >= 1,
+        "truncate must cross a commit boundary while preserving the orphan"
+    );
+    assert_eq!(
+        fixture.filesystem.superblock.s_last_orphan,
+        fixture.inode_number.raw()
+    );
+    assert!(
+        fixture
+            .filesystem
+            .inode_num_already_allocated(&mut fixture.journal, fixture.inode_number)
+            .unwrap()
+    );
+    reap_unlinked_inode(
+        &mut fixture.filesystem,
+        &mut fixture.journal,
+        fixture.inode_number,
+    )
+    .unwrap();
+    assert_eq!(fixture.filesystem.superblock.s_last_orphan, 0);
+    assert!(
+        !fixture
+            .filesystem
+            .inode_num_already_allocated(&mut fixture.journal, fixture.inode_number)
+            .unwrap()
+    );
+}
+
+#[test]
 fn large_extent_range_removal_restarts_across_small_journal_transactions() {
     assert_large_extent_removal_restarts("/large-punch", ExtentRemovalOperation::Punch);
     assert_large_extent_removal_restarts("/large-truncate", ExtentRemovalOperation::Truncate);

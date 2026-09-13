@@ -265,7 +265,7 @@ struct LegacyIndirectRoot {
 }
 
 struct LegacyTruncatePlanner<'fs, 'dev, 'plan, B: BlockIo> {
-    reader: LegacyBlockReader<'fs, 'dev, B>,
+    reader: LegacyBlockReader<'fs, 'dev, Jbd2Dev<B>>,
     removal: LogicalRemovalRange,
     plan: &'plan mut LegacyTruncatePlan,
 }

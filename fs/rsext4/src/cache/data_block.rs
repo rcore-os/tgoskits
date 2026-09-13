@@ -7,6 +7,12 @@ use crate::{blockdev::*, bmalloc::AbsoluteBN, config::USE_MULTILEVEL_CACHE, erro
 /// Cache key for one physical data block.
 pub type BlockCacheKey = AbsoluteBN;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum DataCacheMode {
+    Standalone,
+    SharedDevice,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DirtyBlock {
     block_num: AbsoluteBN,
@@ -64,6 +70,7 @@ pub struct DataBlockCache {
     max_entries: usize,
     access_counter: u64,
     block_size: usize,
+    mode: DataCacheMode,
 }
 
 impl DataBlockCache {
@@ -75,7 +82,42 @@ impl DataBlockCache {
             max_entries,
             access_counter: 0,
             block_size,
+            mode: DataCacheMode::Standalone,
         }
+    }
+
+    /// Delegates ordinary file-data caching to the coherent device endpoint.
+    /// Directory metadata still uses transaction-local images and is flushed
+    /// through metadata handles. Transition only before publishing the mount.
+    pub(crate) fn use_shared_device_cache<B: BlockIo>(
+        &mut self,
+        device: &mut Jbd2Dev<B>,
+    ) -> Ext4Result<()> {
+        self.flush_all(device)?;
+        self.cache.clear();
+        self.lru_order.clear();
+        self.mode = DataCacheMode::SharedDevice;
+        Ok(())
+    }
+
+    pub(crate) fn uses_shared_device_cache(&self) -> bool {
+        self.mode == DataCacheMode::SharedDevice
+    }
+
+    /// Transfers a clean ordinary-data image to a detached write. Dirty
+    /// metadata is never discarded, even if a corrupt mapping aliases it.
+    pub(crate) fn take_clean_file_image(
+        &mut self,
+        block: AbsoluteBN,
+    ) -> Ext4Result<Option<Arc<Vec<u8>>>> {
+        if self.cache.get(&block).is_some_and(|cached| cached.dirty) {
+            return Err(Ext4Error::busy().with_operation("write:dirty_private_image"));
+        }
+        let image = self.cache.remove(&block).map(|cached| cached.data);
+        if image.is_some() {
+            self.remove_from_lru(block);
+        }
+        Ok(image)
     }
 
     /// Loads one block from disk using a caller-provided buffer.
@@ -95,6 +137,12 @@ impl DataBlockCache {
         block_dev: &mut Jbd2Dev<B>,
         block_num: AbsoluteBN,
     ) -> Ext4Result<CachedBlock> {
+        if self.mode == DataCacheMode::SharedDevice && !self.cache.contains_key(&block_num) {
+            return Ok(CachedBlock::new(
+                self.load_block(block_dev, block_num)?,
+                block_num,
+            ));
+        }
         self.ensure_loaded(block_dev, block_num)?;
         self.touch(block_num);
         self.cache
@@ -282,6 +330,12 @@ impl DataBlockCache {
         B: BlockIo,
         F: FnOnce(&mut [u8]),
     {
+        if !is_metadata && self.mode == DataCacheMode::SharedDevice {
+            let mut block = self.get_or_load(block_dev, block_num)?;
+            f(Arc::make_mut(&mut block.data).as_mut_slice());
+            self.write_run(block_dev, block_num, 1, &block.data)?;
+            return Ok(());
+        }
         self.ensure_loaded(block_dev, block_num)?;
         self.touch(block_num);
 
@@ -317,6 +371,11 @@ impl DataBlockCache {
         B: BlockIo,
         F: FnOnce(&mut [u8]),
     {
+        if self.mode == DataCacheMode::SharedDevice {
+            let mut block = alloc::vec![0; self.block_size];
+            f(&mut block);
+            return self.write_run(block_dev, block_num, 1, &block);
+        }
         self.create_new(block_dev, block_num)?;
         self.modify(block_dev, block_num, f)
     }

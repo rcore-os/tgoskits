@@ -23,7 +23,7 @@ use smallvec::SmallVec;
 
 use crate::{
     FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeType, VfsError, VfsResult,
-    path::PathBuf,
+    WritebackPolicy, path::PathBuf,
 };
 
 bitflags! {
@@ -85,6 +85,13 @@ pub trait NodeOps: Send + Sync + 'static {
     /// Returns the flags of the node.
     fn flags(&self) -> NodeFlags {
         NodeFlags::empty()
+    }
+
+    /// Queries inode-owned persistence flags. Mount policy is applied by the
+    /// caller separately. Returns storage errors instead of hiding a failed
+    /// inode read behind a buffered default.
+    fn writeback_policy(&self) -> VfsResult<WritebackPolicy> {
+        Ok(WritebackPolicy::empty())
     }
 
     /// Returns the optional persistent extended-attribute capability.
@@ -257,6 +264,8 @@ impl DirEntry {
     pub fn len(&self) -> VfsResult<u64>;
 
     pub fn flags(&self) -> NodeFlags;
+
+    pub fn writeback_policy(&self) -> VfsResult<WritebackPolicy>;
 
     pub fn sync(&self, data_only: bool) -> VfsResult<()>;
 }

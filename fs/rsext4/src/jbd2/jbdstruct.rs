@@ -1,6 +1,6 @@
 //! Core JBD2 on-disk and in-memory data structures.
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::convert::TryInto;
 
 use crate::{
@@ -83,6 +83,7 @@ impl Jbd2ChecksumMode {
 }
 #[repr(C)]
 /// One journaled metadata update: `(target physical block, serialized block)`.
+#[derive(Debug)]
 pub struct Jbd2Update(pub AbsoluteBN, pub Box<[u8]>);
 
 /// Admission phase of the transaction that owns new journal handles.
@@ -112,22 +113,24 @@ pub(crate) enum Jbd2CommitPhase {
 }
 
 /// One closed transaction while its journal commit record is being published.
+#[derive(Clone, Debug)]
 pub(crate) struct Jbd2CommittingTransaction {
     pub(crate) sequence: u32,
     pub(crate) log_start: u32,
     pub(crate) phase: Jbd2CommitPhase,
-    pub(crate) updates: Vec<Jbd2Update>,
-    pub(crate) revoked_blocks: Vec<AbsoluteBN>,
+    pub(crate) updates: Arc<[Jbd2Update]>,
+    pub(crate) revoked_blocks: Arc<[AbsoluteBN]>,
 }
 
 /// One transaction whose commit record is durable but whose home writes may
 /// still be pending.
+#[derive(Clone, Debug)]
 pub(crate) struct Jbd2CheckpointTransaction {
     pub(crate) sequence: u32,
     pub(crate) log_start: u32,
     pub(crate) log_records: usize,
-    pub(crate) updates: Vec<Jbd2Update>,
-    pub(crate) revoked_blocks: Vec<AbsoluteBN>,
+    pub(crate) updates: Arc<[Jbd2Update]>,
+    pub(crate) revoked_blocks: Arc<[AbsoluteBN]>,
 }
 
 #[repr(C)]

@@ -97,6 +97,35 @@ mod tests {
     }
 
     #[test]
+    fn device_number_roundtrip_preserves_migrated_adapter_boundaries() {
+        for (major, minor) in [(1, 3), (255, 255), (0, 0), (1, 256), (1, 1040), (8, 511)] {
+            let expected = DeviceNumber::new(major, minor).unwrap();
+            let mut inode = Ext4Inode {
+                i_mode: Ext4Inode::S_IFCHR | 0o600,
+                ..Default::default()
+            };
+            inode.set_device_number(expected).unwrap();
+            assert_eq!(inode.device_number().unwrap(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn literal_linux_device_encodings_decode_without_the_encoder() {
+        for (legacy, modern, major, minor) in [(259, 0, 1, 3), (0, 0x100100, 1, 256)] {
+            let mut inode = Ext4Inode {
+                i_mode: Ext4Inode::S_IFBLK | 0o600,
+                ..Default::default()
+            };
+            inode.i_block[0] = legacy;
+            inode.i_block[1] = modern;
+            assert_eq!(
+                inode.device_number().unwrap(),
+                Some(DeviceNumber::new(major, minor).unwrap())
+            );
+        }
+    }
+
+    #[test]
     fn chmod_preserves_inode_type_bits() {
         let mut inode = Ext4Inode::default();
         inode.set_mode_full(Ext4Inode::S_IFREG | Ext4Inode::S_ISUID | 0o755);

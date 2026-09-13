@@ -10,7 +10,7 @@ use crate::{
     ext4::*,
     extents_tree::*,
     hashtree::*,
-    indirect::{resolve_legacy_inode_block, resolve_legacy_inode_blocks},
+    indirect::{resolve_legacy_inode_block_with_reader, resolve_legacy_inode_blocks_with_reader},
 };
 
 /// Resolves a logical block number to an absolute physical block number.
@@ -21,14 +21,30 @@ pub fn resolve_inode_block<B: BlockIo>(
     inode: &mut Ext4Inode,
     logical_block: u32,
 ) -> Ext4Result<Option<AbsoluteBN>> {
+    resolve_inode_block_with_reader(
+        BlockMapContext::from_filesystem(fs),
+        block_dev,
+        inode_num,
+        inode,
+        logical_block,
+    )
+}
+
+pub(crate) fn resolve_inode_block_with_reader<R: MetadataBlockRead>(
+    context: BlockMapContext<'_>,
+    reader: &mut R,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+    logical_block: u32,
+) -> Ext4Result<Option<AbsoluteBN>> {
     if inode.uses_extents() {
-        let mut tree = ExtentTree::with_filesystem(inode, fs, inode_num);
-        match tree.map_block(block_dev, logical_block)? {
+        let mut tree = ExtentTree::with_context(inode, context, inode_num);
+        match tree.map_block_with_reader(reader, logical_block)? {
             ExtentBlockMapping::Hole | ExtentBlockMapping::Unwritten(_) => Ok(None),
             ExtentBlockMapping::Initialized(physical) => Ok(Some(physical)),
         }
     } else {
-        resolve_legacy_inode_block(fs, block_dev, inode_num, inode, logical_block)
+        resolve_legacy_inode_block_with_reader(context, reader, inode_num, inode, logical_block)
     }
 }
 
@@ -42,12 +58,26 @@ pub fn resolve_inode_blocks<B: BlockIo>(
     inode_num: InodeNumber,
     inode: &mut Ext4Inode,
 ) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
+    resolve_inode_blocks_with_reader(
+        BlockMapContext::from_filesystem(fs),
+        block_dev,
+        inode_num,
+        inode,
+    )
+}
+
+pub(crate) fn resolve_inode_blocks_with_reader<R: MetadataBlockRead>(
+    context: BlockMapContext<'_>,
+    reader: &mut R,
+    inode_num: InodeNumber,
+    inode: &mut Ext4Inode,
+) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
     if !inode.uses_extents() {
-        return resolve_legacy_inode_blocks(fs, block_dev, inode_num, inode);
+        return resolve_legacy_inode_blocks_with_reader(context, reader, inode_num, inode);
     }
 
-    let mut tree = ExtentTree::with_filesystem(inode, fs, inode_num);
-    let runs = tree.initialized_runs_in_range(block_dev, 0, u32::MAX)?;
+    let mut tree = ExtentTree::with_context(inode, context, inode_num);
+    let runs = tree.initialized_runs_with_reader(reader, 0, u32::MAX)?;
     let mut out = BTreeMap::new();
     for run in runs {
         for offset in 0..run.len {

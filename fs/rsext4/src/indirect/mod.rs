@@ -8,10 +8,12 @@ use core::mem::size_of;
 
 use crate::{
     BlockIo, Ext4FileSystem, Jbd2Dev,
+    blockdev::MetadataBlockRead,
     bmalloc::{AbsoluteBN, InodeNumber},
     disknode::Ext4Inode,
     endian::{read_u32_le, write_u32_le},
     error::{Ext4Error, Ext4Result},
+    ext4::BlockMapContext,
     superblock::Ext4Superblock,
 };
 
@@ -52,19 +54,19 @@ impl IndirectPath {
 }
 
 /// Resolves one logical block through the ext2/ext3 direct/indirect layout.
-pub(crate) fn resolve_legacy_inode_block<B: BlockIo>(
-    filesystem: &Ext4FileSystem,
-    device: &mut Jbd2Dev<B>,
+pub(crate) fn resolve_legacy_inode_block_with_reader<R: MetadataBlockRead>(
+    context: BlockMapContext<'_>,
+    device: &mut R,
     inode_number: InodeNumber,
     inode: &Ext4Inode,
     logical_block: u32,
 ) -> Ext4Result<Option<AbsoluteBN>> {
-    if is_fast_symlink(filesystem, inode) {
+    if is_fast_symlink_in_context(context, inode) {
         return Ok(None);
     }
 
-    let path = block_to_path(filesystem.block_size(), logical_block)?;
-    let mut reader = LegacyBlockReader::new(filesystem, device, inode_number)?;
+    let path = block_to_path(context.block_size(), logical_block)?;
+    let mut reader = LegacyBlockReader::with_context(context, device, inode_number)?;
     reader.resolve_path(inode, path)
 }
 
@@ -83,14 +85,28 @@ pub(crate) fn resolve_legacy_inode_blocks<B: BlockIo>(
     inode_number: InodeNumber,
     inode: &Ext4Inode,
 ) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
-    let inode_size = filesystem.inode_size(inode);
-    if inode_size == 0 || is_fast_symlink(filesystem, inode) {
+    resolve_legacy_inode_blocks_with_reader(
+        BlockMapContext::from_filesystem(filesystem),
+        device,
+        inode_number,
+        inode,
+    )
+}
+
+pub(crate) fn resolve_legacy_inode_blocks_with_reader<R: MetadataBlockRead>(
+    context: BlockMapContext<'_>,
+    device: &mut R,
+    inode_number: InodeNumber,
+    inode: &Ext4Inode,
+) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
+    let inode_size = context.inode_size(inode);
+    if inode_size == 0 || is_fast_symlink_in_context(context, inode) {
         return Ok(BTreeMap::new());
     }
 
-    let block_size = filesystem.block_size();
+    let block_size = context.block_size();
     let logical_blocks = inode_size.div_ceil(block_size as u64);
-    let mut reader = LegacyBlockReader::new(filesystem, device, inode_number)?;
+    let mut reader = LegacyBlockReader::with_context(context, device, inode_number)?;
     if logical_blocks > reader.maximum_logical_blocks()? {
         return Err(Ext4Error::file_too_large().with_operation("indirect:file_size"));
     }
@@ -460,26 +476,38 @@ fn error_after_legacy_cleanup(operation_error: Ext4Error, cleanup: Ext4Result<()
     }
 }
 
-struct LegacyBlockReader<'fs, 'dev, B: BlockIo> {
-    filesystem: &'fs Ext4FileSystem,
-    device: &'dev mut Jbd2Dev<B>,
+struct LegacyBlockReader<'fs, 'dev, R: MetadataBlockRead> {
+    context: BlockMapContext<'fs>,
+    device: &'dev mut R,
     inode_number: InodeNumber,
     pointers_per_block: u64,
     metadata_path: Vec<AbsoluteBN>,
 }
 
-impl<'fs, 'dev, B: BlockIo> LegacyBlockReader<'fs, 'dev, B> {
+impl<'fs, 'dev, R: MetadataBlockRead> LegacyBlockReader<'fs, 'dev, R> {
     fn new(
         filesystem: &'fs Ext4FileSystem,
-        device: &'dev mut Jbd2Dev<B>,
+        device: &'dev mut R,
         inode_number: InodeNumber,
     ) -> Ext4Result<Self> {
-        let block_size = filesystem.block_size();
+        Self::with_context(
+            BlockMapContext::from_filesystem(filesystem),
+            device,
+            inode_number,
+        )
+    }
+
+    fn with_context(
+        context: BlockMapContext<'fs>,
+        device: &'dev mut R,
+        inode_number: InodeNumber,
+    ) -> Ext4Result<Self> {
+        let block_size = context.block_size();
         if block_size < size_of::<u32>() || !block_size.is_multiple_of(size_of::<u32>()) {
             return Err(Ext4Error::bad_superblock().with_operation("indirect:pointers_per_block"));
         }
         Ok(Self {
-            filesystem,
+            context,
             device,
             inode_number,
             pointers_per_block: (block_size / size_of::<u32>()) as u64,
@@ -592,7 +620,9 @@ impl<'fs, 'dev, B: BlockIo> LegacyBlockReader<'fs, 'dev, B> {
         self.validate_data_block(physical)?;
         Ok(LegacyMappingState::Mapped(physical))
     }
+}
 
+impl<'fs, 'dev, B: BlockIo> LegacyBlockReader<'fs, 'dev, Jbd2Dev<B>> {
     fn replace_pointer(
         &mut self,
         metadata: AbsoluteBN,
@@ -659,7 +689,9 @@ impl<'fs, 'dev, B: BlockIo> LegacyBlockReader<'fs, 'dev, B> {
         self.metadata_path.pop();
         Ok(())
     }
+}
 
+impl<R: MetadataBlockRead> LegacyBlockReader<'_, '_, R> {
     fn resolve_path(
         &mut self,
         inode: &Ext4Inode,
@@ -803,16 +835,16 @@ impl<'fs, 'dev, B: BlockIo> LegacyBlockReader<'fs, 'dev, B> {
     fn validate_physical_block(&self, block: AbsoluteBN) -> Ext4Result<()> {
         let raw = block.raw();
         let limit = self
-            .filesystem
+            .context
             .superblock
             .blocks_count()
             .min(self.device.total_blocks());
-        if raw <= u64::from(self.filesystem.superblock.s_first_data_block) || raw >= limit {
+        if raw <= u64::from(self.context.superblock.s_first_data_block) || raw >= limit {
             return Err(Ext4Error::corrupted().with_operation("indirect:physical_range"));
         }
-        if !self.filesystem.system_zones.is_empty()
+        if !self.context.system_zones.is_empty()
             && !self
-                .filesystem
+                .context
                 .system_zones
                 .allows_range(raw, 1, self.inode_number)
         {
@@ -829,15 +861,14 @@ impl<'fs, 'dev, B: BlockIo> LegacyBlockReader<'fs, 'dev, B> {
     }
 
     fn read_pointer_block(&mut self, metadata: AbsoluteBN) -> Ext4Result<Vec<u32>> {
-        self.device.read_block(metadata)?;
-        let pointers: Vec<u32> = self
-            .device
-            .buffer()
-            .as_chunks::<{ size_of::<u32>() }>()
-            .0
-            .iter()
-            .map(|bytes| read_u32_le(bytes))
-            .collect();
+        let pointers: Vec<u32> = self.device.with_block(metadata, |bytes| {
+            Ok(bytes
+                .as_chunks::<{ size_of::<u32>() }>()
+                .0
+                .iter()
+                .map(|bytes| read_u32_le(bytes))
+                .collect())
+        })?;
 
         // Linux validates every non-zero entry when an indirect block is
         // read, not only the entry selected by the current lookup. Otherwise
@@ -900,12 +931,16 @@ fn block_to_path(block_size: usize, logical_block: u32) -> Ext4Result<IndirectPa
 }
 
 fn is_fast_symlink(filesystem: &Ext4FileSystem, inode: &Ext4Inode) -> bool {
-    let huge_file = filesystem
+    is_fast_symlink_in_context(BlockMapContext::from_filesystem(filesystem), inode)
+}
+
+fn is_fast_symlink_in_context(context: BlockMapContext<'_>, inode: &Ext4Inode) -> bool {
+    let huge_file = context
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
     inode.is_symlink()
-        && filesystem.inode_size(inode) <= 60
-        && inode.blocks_count(filesystem.block_size() as u32, huge_file) == 0
+        && context.inode_size(inode) <= 60
+        && inode.blocks_count(context.block_size() as u32, huge_file) == 0
 }
 
 #[cfg(test)]

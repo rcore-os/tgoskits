@@ -4,13 +4,34 @@ use core::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorContext {
-    BlockRange { block_id: u32, max_blocks: u64 },
-    BlockSize { size: usize, expected: usize },
-    BufferSize { provided: usize, required: usize },
-    Alignment { offset: u64, alignment: u32 },
-    Operation { op: &'static str },
-    Feature { set: FeatureSet, bits: u32 },
-    Capability { name: &'static str },
+    BlockRange {
+        block_id: u32,
+        max_blocks: u64,
+    },
+    BlockSize {
+        size: usize,
+        expected: usize,
+    },
+    BufferSize {
+        provided: usize,
+        required: usize,
+    },
+    Alignment {
+        offset: u64,
+        alignment: u32,
+    },
+    Operation {
+        op: &'static str,
+    },
+    Feature {
+        set: FeatureSet,
+        bits: u32,
+    },
+    Capability {
+        name: &'static str,
+    },
+    /// A completed transaction boundary requires lock-external progress.
+    JournalProgress,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +59,7 @@ impl fmt::Display for ErrorContext {
             ErrorContext::Operation { op } => write!(f, "op={op}"),
             ErrorContext::Feature { set, bits } => write!(f, "set={set:?}, bits={bits:#x}"),
             ErrorContext::Capability { name } => write!(f, "capability={name}"),
+            ErrorContext::JournalProgress => write!(f, "journal requires lock-external progress"),
         }
     }
 }

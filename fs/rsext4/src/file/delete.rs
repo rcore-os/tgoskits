@@ -21,15 +21,6 @@ const REAP_MAX_TRANSACTION_DATA: u64 = 64;
 // one group-descriptor block, and the superblock.
 const EMPTY_REAP_TRANSACTION_CREDITS: usize = 5;
 
-/// A directory entry located by a single parent-directory scan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ParentDirEntry {
-    pub ino: InodeNumber,
-    pub phys: AbsoluteBN,
-    pub offset: usize,
-    pub file_type: u8,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DentryReplacement {
     pub inode: InodeNumber,
@@ -436,44 +427,6 @@ pub fn unlink<B: BlockIo>(
     )
 }
 
-fn find_dentry_in_dir_block(data: &[u8], name_bytes: &[u8]) -> Option<(u32, u8, usize)> {
-    let block_bytes = data.len();
-    let mut offset: usize = 0;
-    while offset + 8 <= block_bytes {
-        let inode = u32::from_le_bytes([
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            data[offset + 3],
-        ]);
-        let rec_len = decode_directory_record_length(
-            u16::from_le_bytes([data[offset + 4], data[offset + 5]]),
-            block_bytes,
-        );
-        if rec_len < 8 || !rec_len.is_multiple_of(4) {
-            break;
-        }
-        let name_len = data[offset + 6] as usize;
-        let Some(entry_end) = offset.checked_add(rec_len) else {
-            break;
-        };
-        if entry_end > block_bytes {
-            break;
-        }
-        if name_len > 0 && offset + 8 + name_len <= entry_end {
-            let name = &data[offset + 8..offset + 8 + name_len];
-            if inode != 0 && name == name_bytes {
-                return Some((inode, data[offset + 7], offset));
-            }
-        }
-        if entry_end >= block_bytes {
-            break;
-        }
-        offset = entry_end;
-    }
-    None
-}
-
 fn remove_dentry_in_dir_block(
     superblock: &Ext4Superblock,
     parent_ino_num: InodeNumber,
@@ -587,40 +540,6 @@ fn try_remove_dentry_in_block<B: BlockIo>(
     Ok(removed)
 }
 
-fn parent_dir_data_blocks<B: BlockIo>(
-    fs: &mut Ext4FileSystem,
-    block_dev: &mut Jbd2Dev<B>,
-    parent_ino: InodeNumber,
-    parent_inode: &mut Ext4Inode,
-) -> Ext4Result<alloc::vec::Vec<AbsoluteBN>> {
-    let mut blocks: alloc::vec::Vec<AbsoluteBN> = if parent_inode.uses_extents() {
-        resolve_inode_blocks(fs, block_dev, parent_ino, parent_inode)?
-            .into_values()
-            .collect()
-    } else {
-        let total_size = usize::try_from(fs.inode_size(parent_inode))
-            .map_err(|_| Ext4Error::file_too_large())?;
-        let block_bytes = fs.block_size();
-        let total_blocks = if total_size == 0 {
-            0
-        } else {
-            total_size.div_ceil(block_bytes)
-        };
-        let mut collected = alloc::vec::Vec::new();
-        for lbn in 0..total_blocks {
-            if let Some(phys) =
-                resolve_inode_block(fs, block_dev, parent_ino, parent_inode, lbn as u32)?
-            {
-                collected.push(phys);
-            }
-        }
-        collected
-    };
-    blocks.sort_unstable();
-    blocks.dedup();
-    Ok(blocks)
-}
-
 /// Finds a child name in `parent_inode` with one directory scan (htree or linear).
 pub(crate) fn find_named_entry_in_parent<B: BlockIo>(
     fs: &mut Ext4FileSystem,
@@ -629,69 +548,8 @@ pub(crate) fn find_named_entry_in_parent<B: BlockIo>(
     parent_inode: &Ext4Inode,
     name_bytes: &[u8],
 ) -> Ext4Result<ParentDirEntry> {
-    use crate::hashtree::{Ext4InodeHashTreeExt, HashTreeError, lookup_directory_entry};
-
-    if !parent_inode.is_dir() {
-        return Err(Ext4Error::not_dir());
-    }
-
-    if parent_inode.is_htree_indexed() {
-        match lookup_directory_entry(fs, block_dev, parent_ino, parent_inode, name_bytes) {
-            Ok(result) => {
-                return Ok(ParentDirEntry {
-                    ino: result.inode,
-                    phys: result.block_num,
-                    offset: result.offset,
-                    file_type: result.file_type,
-                });
-            }
-            Err(HashTreeError::EntryNotFound) => return Err(Ext4Error::not_found()),
-            Err(error) => return Err(error.into_ext4("htree:parent_lookup")),
-        }
-    }
-
-    let mut parent_inode = *parent_inode;
-    for phys in parent_dir_data_blocks(fs, block_dev, parent_ino, &mut parent_inode)? {
-        let cached = fs.datablock_cache.get_or_load(block_dev, phys)?;
-        let data = &cached.data;
-        let checksum_ok = if parent_inode.is_htree_indexed() {
-            crate::checksum::verify_ext4_dx_checksum(
-                &fs.superblock,
-                parent_ino.raw(),
-                parent_inode.i_generation,
-                data,
-            )
-            .unwrap_or_else(|| {
-                crate::checksum::verify_ext4_dirblock_checksum(
-                    &fs.superblock,
-                    parent_ino.raw(),
-                    parent_inode.i_generation,
-                    data,
-                )
-            })
-        } else {
-            crate::checksum::verify_ext4_dirblock_checksum(
-                &fs.superblock,
-                parent_ino.raw(),
-                parent_inode.i_generation,
-                data,
-            )
-        };
-        if !checksum_ok {
-            return Err(Ext4Error::checksum().with_operation("directory:lookup_block"));
-        }
-        if let Some((inode, file_type, offset)) = find_dentry_in_dir_block(data, name_bytes) {
-            let ino = InodeNumber::new(inode).map_err(|_| Ext4Error::corrupted())?;
-            return Ok(ParentDirEntry {
-                ino,
-                phys,
-                offset,
-                file_type,
-            });
-        }
-    }
-
-    Err(Ext4Error::not_found())
+    let mut reader = MountedDirectoryRead::new(fs, block_dev, parent_ino, *parent_inode);
+    find_named_entry(&mut reader, name_bytes)
 }
 
 /// Removes a dentry on a block returned by [`find_named_entry_in_parent`].

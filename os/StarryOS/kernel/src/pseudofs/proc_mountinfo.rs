@@ -5,7 +5,7 @@ use alloc::{
 };
 
 use ax_fs_ng::vfs::FsContext;
-use axfs_ng_vfs::DeviceId;
+use axfs_ng_vfs::{DeviceId, WritebackPolicy};
 
 const MS_NOSUID: u32 = 2;
 const MS_NODEV: u32 = 4;
@@ -30,7 +30,8 @@ pub fn render_mountinfo(fs_context: &FsContext) -> String {
         let dev = DeviceId(mp.device());
 
         let options = render_options(mp.is_readonly(), mp.mount_flags());
-        let super_options = render_options(mp.is_filesystem_readonly(), 0);
+        let mut super_options = render_options(mp.is_filesystem_readonly(), 0);
+        append_writeback_options(&mut super_options, mp.filesystem_writeback_policy());
 
         let optional_fields = if mp.is_shared() {
             let gid = mp.peer_group_id();
@@ -75,7 +76,8 @@ pub fn render_mounts(fs_context: &FsContext) -> String {
 
         let fstype = root_loc.filesystem().name();
         let source = mp.source();
-        let options = render_options(root_loc.is_readonly(), mp.mount_flags());
+        let mut options = render_options(root_loc.is_readonly(), mp.mount_flags());
+        append_writeback_options(&mut options, mp.filesystem_writeback_policy());
 
         let _ = writeln!(&mut buf, "{source} {mount_point} {fstype} {options} 0 0",);
     }
@@ -104,6 +106,15 @@ fn render_options(readonly: bool, flags: u32) -> String {
         opts.push("strictatime");
     }
     opts.join(",")
+}
+
+fn append_writeback_options(options: &mut String, policy: WritebackPolicy) {
+    if policy.contains(WritebackPolicy::SYNCHRONOUS) {
+        options.push_str(",sync");
+    }
+    if policy.contains(WritebackPolicy::DIRECTORY_SYNC) {
+        options.push_str(",dirsync");
+    }
 }
 
 use core::fmt::Write as _;

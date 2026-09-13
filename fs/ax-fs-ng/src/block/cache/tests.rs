@@ -159,6 +159,11 @@ impl RecordingDevice {
 }
 
 impl FsBlockDevice for RecordingDevice {
+    #[cfg(feature = "ext4")]
+    fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
+        Ok(Box::new(self.clone()))
+    }
+
     fn name(&self) -> &str {
         "recording"
     }
@@ -622,6 +627,41 @@ fn shared_wrappers_observe_dirty_and_direct_updates_without_stale_reads() {
     first.read_block(3, &mut block).unwrap();
     assert!(block.iter().all(|&byte| byte == 0x5A));
     assert_eq!(count_ops(&state, IoOp::is_read), 0);
+}
+
+#[cfg(feature = "ext4")]
+#[test]
+fn forked_region_preserves_cache_coherence_bounds_and_last_owner_writeback() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut original =
+        RegionBlockDevice::new(buffered(KEY_A + 29, device), BlockRegion::new(8, 16));
+    let mut detached = original.fork_region().unwrap();
+    original.write_block(0, &[0x11; 512]).unwrap();
+    let mut block = [0; 512];
+    detached.read_block(0, &mut block).unwrap();
+    assert_eq!(block, [0x11; 512]);
+    assert!(state.lock().unwrap().log.is_empty());
+
+    assert_eq!(
+        detached.write_block(16, &[0x77; 512]),
+        Err(BlockError::InvalidRequest)
+    );
+    assert!(state.lock().unwrap().log.is_empty());
+    detached.write_block(0, &[0x33; 16 * 512]).unwrap();
+    original.read_block(0, &mut block).unwrap();
+    assert_eq!(block, [0x33; 512]);
+
+    detached.write_block(0, &[0x55; 512]).unwrap();
+    let flushes = count_ops(&state, IoOp::is_flush);
+    drop(original);
+    assert_eq!(count_ops(&state, IoOp::is_flush), flushes);
+    drop(detached);
+    assert_eq!(count_ops(&state, IoOp::is_flush), flushes + 1);
+    assert_eq!(
+        &state.lock().unwrap().storage[8 * 512..9 * 512],
+        &[0x55; 512]
+    );
 }
 
 #[test]

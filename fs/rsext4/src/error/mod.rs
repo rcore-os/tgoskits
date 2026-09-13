@@ -133,6 +133,17 @@ impl Ext4Error {
         Self::new(Ext4ErrorKind::Busy)
     }
 
+    pub(crate) const fn journal_progress() -> Self {
+        Self::busy().with_context(ErrorContext::JournalProgress)
+    }
+
+    /// Distinguishes journal backpressure from ordinary busy/error conditions.
+    /// Callers must release filesystem exclusion before driving progress and
+    /// resume only operations whose continuation contract they own.
+    pub const fn requires_journal_progress(self) -> bool {
+        matches!(self.context, Some(ErrorContext::JournalProgress))
+    }
+
     pub const fn not_empty() -> Self {
         Self::new(Ext4ErrorKind::NotEmpty)
     }

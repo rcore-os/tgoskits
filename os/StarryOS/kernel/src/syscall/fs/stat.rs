@@ -4,7 +4,7 @@ use core::{
 };
 
 use ax_fs_ng::vfs::current_fs_context;
-use axfs_ng_vfs::Location;
+use axfs_ng_vfs::{Location, WritebackPolicy};
 use linux_raw_sys::general::{
     __kernel_fsid_t, AT_EACCESS, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE,
     AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW, CAP_DAC_READ_SEARCH, R_OK, S_IFBLK, S_IFCHR, S_IFDIR,
@@ -35,6 +35,7 @@ const MS_NOATIME: u32 = 1 << 10;
 const MS_RELATIME: u32 = 1 << 21;
 
 const ST_RDONLY: u32 = 1;
+const ST_SYNCHRONOUS: u32 = 1 << 4;
 
 const ST_RELATIME: u32 = 1 << 12;
 
@@ -313,6 +314,12 @@ fn statfs_mount_flags(loc: &Location) -> u32 {
     }
     if mount_flags & MS_RELATIME != 0 {
         statfs_flags |= ST_RELATIME;
+    }
+    if mountpoint
+        .filesystem_writeback_policy()
+        .contains(WritebackPolicy::SYNCHRONOUS)
+    {
+        statfs_flags |= ST_SYNCHRONOUS;
     }
     statfs_flags
 }

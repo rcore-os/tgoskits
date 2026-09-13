@@ -100,6 +100,63 @@ mod directory_functional_tests {
     use super::*;
 
     #[test]
+    fn indexed_directory_growth_accounts_for_extent_tree_blocks() {
+        use rsext4::extents_tree::{ExtentNode, ExtentTree};
+
+        let device = MockBlockDevice::new(64 * 1024 * 1024);
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut journal).expect("format directory accounting fixture");
+        let mut fs = Ext4FileSystem::mount(&mut journal).expect("mount accounting fixture");
+        let root = fs.root_inode;
+        let block_size = fs.superblock.block_size();
+        let huge_file = fs.superblock.has_feature_ro_compat(
+            rsext4::superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE,
+        );
+        let mut expected_sectors = None;
+        let payload = vec![0x5a; block_size as usize];
+
+        for index in 0..128 {
+            // Each real file allocates its payload before adding its directory
+            // entry. These owned blocks separate directory growth allocations,
+            // forcing extent fragmentation without orphaning allocated blocks.
+            let name = format!("/{index:03}{}", "a".repeat(252));
+            mkfile(&mut journal, &mut fs, &name, Some(&payload), None)
+                .expect("grow indexed directory through the public create path");
+            let mut inode = fs.get_inode_by_num(&mut journal, root).unwrap();
+            let tree = ExtentTree::with_filesystem(&mut inode, &fs, root)
+                .load_root_from_inode()
+                .unwrap();
+            let ExtentNode::Index { header, entries } = tree else {
+                continue;
+            };
+            assert_ne!(inode.i_flags & Ext4Inode::EXT4_INDEX_FL, 0);
+            assert_eq!(header.eh_depth, 1, "fixture stops at the first root split");
+            assert_eq!(entries.len(), 2, "the split must allocate both leaf blocks");
+            let sectors =
+                (inode.size().div_ceil(block_size) + entries.len() as u64) * (block_size / 512);
+            assert_eq!(
+                inode.blocks_count(block_size as u32, huge_file),
+                sectors,
+                "directory data accounting must retain extent-tree allocation increments"
+            );
+            expected_sectors = Some(sectors);
+            break;
+        }
+        let expected_sectors = expected_sectors.expect("fixture must split the inline extent root");
+
+        fs.umount(&mut journal)
+            .expect("persist directory accounting");
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, journal.into_inner(), false);
+        let mut fs = Ext4FileSystem::mount(&mut journal).expect("remount directory accounting");
+        let inode = fs.get_inode_by_num(&mut journal, root).unwrap();
+        assert_eq!(
+            inode.blocks_count(block_size as u32, huge_file),
+            expected_sectors,
+            "the persisted inode must include both external extent blocks"
+        );
+    }
+
+    #[test]
     fn indexed_directory_link_count_uses_dir_nlink_sentinel_at_linux_limit() {
         let device = MockBlockDevice::new(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);

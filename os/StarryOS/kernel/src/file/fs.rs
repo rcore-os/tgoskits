@@ -5,12 +5,15 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext};
+use ax_fs_ng::{
+    file::WriteSync,
+    vfs::{FileBackend, FileFlags, FsContext},
+};
 use ax_io::{Seek, SeekFrom};
 use axfs_ng_vfs::{DirectoryCursor, DirectoryReadState, Location, Metadata, NodeFlags, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
-    general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
+    general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_DSYNC, O_EXCL, O_SYNC},
     ioctl::TIOCSCTTY,
 };
 
@@ -166,8 +169,15 @@ pub struct File {
 
 impl File {
     pub fn new(inner: ax_fs_ng::File, open_flags: u32) -> Self {
+        let policy = if open_flags & O_SYNC == O_SYNC {
+            WriteSync::All
+        } else if open_flags & O_DSYNC != 0 {
+            WriteSync::Data
+        } else {
+            WriteSync::Buffered
+        };
         Self {
-            inner,
+            inner: inner.with_write_sync(policy),
             open_flags,
             nonblock: AtomicBool::new(false),
             append: AtomicBool::new(open_flags & O_APPEND != 0),

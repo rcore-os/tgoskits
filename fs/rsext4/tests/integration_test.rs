@@ -465,7 +465,10 @@ fn sync_cycle_keeps_dirty_clean_and_unmount_io_boundaries_distinct() {
     assert_eq!(clean_sync.writes, 0);
     assert_eq!(clean_sync.flushes, 1);
     assert!(unmount.writes > 0);
-    assert_eq!(unmount.primary_superblock_writes, 1);
+    assert_eq!(
+        unmount.primary_superblock_writes, 2,
+        "checkpoint preserves RECOVER before the separate final clean publication"
+    );
     assert_eq!(unmount.primary_gdt_writes, 1);
     assert_eq!(unmount.flushes, 4);
 }

@@ -2,7 +2,7 @@ use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::ffi::{c_char, c_void};
 
 use ax_fs_ng::vfs::is_mount_busy as fs_is_mount_busy;
-use axfs_ng_vfs::{Filesystem, MetadataUpdate, Mountpoint, NodePermission};
+use axfs_ng_vfs::{Filesystem, MetadataUpdate, Mountpoint, NodePermission, WritebackPolicy};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
     AT_EMPTY_PATH, FSMOUNT_CLOEXEC, FSOPEN_CLOEXEC, MOUNT_ATTR__ATIME, MOUNT_ATTR_NOATIME,
@@ -38,6 +38,8 @@ const MS_RDONLY: i32 = 1;
 const MS_NOSUID: i32 = 2;
 const MS_NODEV: i32 = 4;
 const MS_NOEXEC: i32 = 8;
+const MS_SYNCHRONOUS: i32 = 1 << 4;
+const MS_DIRSYNC: i32 = 1 << 7;
 const MS_NOATIME: i32 = 1 << 10;
 const MS_RELATIME: i32 = 1 << 21;
 const MS_STRICTATIME: i32 = 1 << 24;
@@ -671,6 +673,7 @@ pub fn sys_mount(
         let mp = target.mountpoint();
         if flags & MS_BIND == 0 {
             mp.set_filesystem_readonly(flags & MS_RDONLY != 0);
+            mp.set_filesystem_synchronous(flags & MS_SYNCHRONOUS != 0);
         }
         mp.set_readonly((flags & MS_RDONLY) != 0);
         mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
@@ -705,6 +708,7 @@ pub fn sys_mount(
             if flags & MS_RDONLY != 0 {
                 fs.set_readonly(true);
             }
+            configure_mount_writeback(&fs, flags);
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
@@ -717,6 +721,7 @@ pub fn sys_mount(
             if flags & MS_RDONLY != 0 {
                 fs.set_readonly(true);
             }
+            configure_mount_writeback(&fs, flags);
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
@@ -732,6 +737,7 @@ pub fn sys_mount(
             if flags & MS_RDONLY != 0 {
                 fs.set_readonly(true);
             }
+            configure_mount_writeback(&fs, flags);
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
@@ -744,6 +750,7 @@ pub fn sys_mount(
             if flags & MS_RDONLY != 0 {
                 fs.set_readonly(true);
             }
+            configure_mount_writeback(&fs, flags);
             let mp = target.mount(&fs)?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
@@ -762,6 +769,7 @@ pub fn sys_mount(
             if flags & MS_RDONLY != 0 {
                 fs.set_readonly(true);
             }
+            configure_mount_writeback(&fs, flags);
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             mp.set_lifetime_guard(Arc::new(cgroup_root_pin));
             if (flags & MS_RDONLY) != 0 {
@@ -793,6 +801,7 @@ pub fn sys_mount(
             if readonly || flags & MS_RDONLY != 0 {
                 fs.set_readonly(true);
             }
+            configure_mount_writeback(&fs, flags);
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
@@ -805,6 +814,13 @@ pub fn sys_mount(
 
 fn mount_source(source: &str) -> &str {
     if source.is_empty() { "none" } else { source }
+}
+
+fn configure_mount_writeback(filesystem: &Filesystem, flags: i32) {
+    let mut policy = WritebackPolicy::empty();
+    policy.set(WritebackPolicy::SYNCHRONOUS, flags & MS_SYNCHRONOUS != 0);
+    policy.set(WritebackPolicy::DIRECTORY_SYNC, flags & MS_DIRSYNC != 0);
+    filesystem.set_writeback_policy(policy);
 }
 
 #[cfg(feature = "ext4")]
@@ -847,6 +863,7 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
     // The filesystem owns the lease, including across lazy detach and open files.
     // No filesystem-context lock is held during superblock or backing-file I/O.
     let fs = new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease)?;
+    configure_mount_writeback(&fs, flags);
     let mount = target_location.mount_with_source(&fs, source)?;
     mount.set_readonly(readonly || fs.is_readonly());
     mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);

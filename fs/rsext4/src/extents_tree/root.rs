@@ -1,8 +1,9 @@
 use super::*;
 use crate::{
+    blockdev::MetadataBlockRead,
     bmalloc::InodeNumber,
     crc32c::{ext4_crc32c_seed_from_superblock, ext4_superblock_has_metadata_csum},
-    ext4::{Ext4FileSystem, SystemZoneMap},
+    ext4::{BlockMapContext, Ext4FileSystem, SystemZoneMap},
     superblock::Ext4Superblock,
 };
 
@@ -64,8 +65,20 @@ impl<'a> ExtentTree<'a> {
         filesystem: &Ext4FileSystem,
         inode_num: InodeNumber,
     ) -> Self {
-        let mut tree = Self::with_checksum(inode, &filesystem.superblock, inode_num);
-        tree.system_zones = filesystem.system_zones.clone();
+        Self::with_context(
+            inode,
+            BlockMapContext::from_filesystem(filesystem),
+            inode_num,
+        )
+    }
+
+    pub(crate) fn with_context(
+        inode: &'a mut Ext4Inode,
+        context: BlockMapContext<'_>,
+        inode_num: InodeNumber,
+    ) -> Self {
+        let mut tree = Self::with_checksum(inode, context.superblock, inode_num);
+        tree.system_zones = context.system_zones.clone();
         tree
     }
 
@@ -217,26 +230,28 @@ impl<'a> ExtentTree<'a> {
         Ok(())
     }
 
-    pub(super) fn read_child_node<B: BlockIo>(
+    pub(super) fn read_child_node<R: MetadataBlockRead>(
         &self,
-        dev: &mut Jbd2Dev<B>,
+        dev: &mut R,
         index: &Ext4ExtentIdx,
         expected_depth: u16,
     ) -> Ext4Result<ExtentNode> {
         let child_block =
             AbsoluteBN::new(((index.ei_leaf_hi as u64) << 32) | u64::from(index.ei_leaf_lo));
-        self.validate_physical_range(child_block.raw(), 1, dev.total_blocks())?;
-        dev.read_block(child_block)?;
-        let child = Self::parse_node_from_bytes(dev.buffer())?;
-        self.validate_node(
-            &child,
-            Some(expected_depth),
-            Some(index.ei_block),
-            dev.total_blocks(),
-            false,
-        )?;
-        self.verify_extent_block_checksum(dev.buffer(), child.header())?;
-        Ok(child)
+        let total_blocks = dev.total_blocks();
+        self.validate_physical_range(child_block.raw(), 1, total_blocks)?;
+        dev.with_block(child_block, |bytes| {
+            let child = Self::parse_node_from_bytes(bytes)?;
+            self.validate_node(
+                &child,
+                Some(expected_depth),
+                Some(index.ei_block),
+                total_blocks,
+                false,
+            )?;
+            self.verify_extent_block_checksum(bytes, child.header())?;
+            Ok(child)
+        })
     }
 
     fn huge_file_feature(fs: &Ext4FileSystem) -> bool {

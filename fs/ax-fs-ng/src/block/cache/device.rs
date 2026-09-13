@@ -208,6 +208,18 @@ impl<T: FsBlockDevice> FsBlockDevice for BufferedBlockDevice<T> {
         self.inner.supports_fua()
     }
 
+    #[cfg(feature = "ext4")]
+    fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
+        let inner = self.inner.fork_io()?;
+        // Detached I/O must observe dirty buffered blocks and update the same
+        // cache as its parent. Each endpoint owns one drop-time consumer vote.
+        self.shared.acquire_consumer()?;
+        Ok(Box::new(BufferedBlockDevice {
+            inner,
+            shared: Arc::clone(&self.shared),
+        }))
+    }
+
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult<()> {
         let (first, count) = self.split_request(block_id, buf.len())?;
         let mut state = self.shared.state.lock();

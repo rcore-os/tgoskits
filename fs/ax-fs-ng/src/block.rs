@@ -64,6 +64,12 @@ pub(crate) trait FsBlockDevice: Send {
     fn supports_fua(&self) -> bool {
         false
     }
+    /// Creates an independently owned I/O endpoint in the same coherence domain.
+    /// The endpoint must preserve geometry, region bounds and durability support.
+    #[cfg(feature = "ext4")]
+    fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
+        Err(BlockError::Unsupported)
+    }
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult;
     #[cfg(any(feature = "ext4", feature = "fat"))]
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult;
@@ -108,6 +114,11 @@ impl<T: FsBlockDevice + ?Sized> FsBlockDevice for Box<T> {
         (**self).supports_fua()
     }
 
+    #[cfg(feature = "ext4")]
+    fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
+        (**self).fork_io()
+    }
+
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult {
         (**self).read_block(block_id, buf)
     }
@@ -148,6 +159,11 @@ impl NativeHandleBlockDevice {
 impl<T: FsBlockDevice> RegionBlockDevice<T> {
     pub const fn new(inner: T, region: BlockRegion) -> Self {
         Self { inner, region }
+    }
+
+    #[cfg(feature = "ext4")]
+    pub(crate) fn fork_region(&self) -> BlockResult<RegionBlockDevice<Box<dyn FsBlockDevice>>> {
+        Ok(RegionBlockDevice::new(self.inner.fork_io()?, self.region))
     }
 
     fn check_io_bounds(&self, block_id: u64, buf_len: usize) -> BlockResult {
@@ -200,6 +216,11 @@ impl<T: FsBlockDevice> FsBlockDevice for RegionBlockDevice<T> {
     #[cfg(feature = "ext4")]
     fn supports_fua(&self) -> bool {
         self.inner.supports_fua()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
+        Ok(Box::new(self.fork_region()?))
     }
 
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult {
@@ -271,6 +292,11 @@ impl FsBlockDevice for NativeHandleBlockDevice {
     #[cfg(feature = "ext4")]
     fn supports_fua(&self) -> bool {
         self.handle.supports_fua()
+    }
+
+    #[cfg(feature = "ext4")]
+    fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
+        Ok(Box::new(Self::new(Arc::clone(&self.handle))))
     }
 
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult {

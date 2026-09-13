@@ -7,7 +7,7 @@ use crate::{
     Ext4Error, Ext4Result,
     blockdev::{BlockIo, Jbd2Dev},
     bmalloc::InodeNumber,
-    dir::FileName,
+    dir::{DirectoryBlockRead, FileName, MountedDirectoryRead},
     disknode::Ext4Inode,
     entries::decode_directory_record_length,
     ext4::Ext4FileSystem,
@@ -47,23 +47,28 @@ pub(crate) fn read_indexed_directory_range<B: BlockIo>(
     start: (u32, u32, u32),
 ) -> Ext4Result<IndexedDirectoryRange> {
     let manager = HashTreeManager::new(fs.superblock.s_hash_seed);
+    let mut reader = MountedDirectoryRead::new(fs, block_dev, directory, *inode);
+    read_indexed_range(&manager, &mut reader, start)
+}
+
+fn read_indexed_range<R: DirectoryBlockRead>(
+    manager: &HashTreeManager,
+    reader: &mut R,
+    start: (u32, u32, u32),
+) -> Ext4Result<IndexedDirectoryRange> {
     let (mut search, root) = manager
-        .prepare_search(fs, block_dev, directory, inode, b"")
+        .prepare_search(reader, b"")
         .map_err(hash_tree_error)?;
     if !matches!(root, HashTreeNode::Root { .. }) {
         return Err(Ext4Error::corrupted().with_operation("htree:readdir_root"));
     }
     search.target_hash = start.0;
     let mut path = manager
-        .probe_path(fs, block_dev, search, &root)
+        .probe_path(reader, search, &root)
         .map_err(hash_tree_error)?;
 
-    let root_block = manager
-        .get_root_block(fs, block_dev, directory, inode)
-        .map_err(hash_tree_error)?;
-    let root_data = manager
-        .read_block_data(fs, block_dev, root_block)
-        .map_err(hash_tree_error)?;
+    let root_block = manager.get_root_block(reader).map_err(hash_tree_error)?;
+    let root_data = reader.read_block(root_block)?;
     let specials = [
         parse_root_record(&root_data, 0, 0)?,
         parse_root_record(&root_data, 12, 2)?,
@@ -71,26 +76,17 @@ pub(crate) fn read_indexed_directory_range<B: BlockIo>(
     let mut seen_leaves = BTreeSet::new();
     let mut range = Vec::new();
     range.extend(specials);
-    read_current_leaf_records(
-        fs,
-        block_dev,
-        &manager,
-        search,
-        &path,
-        &mut seen_leaves,
-        &mut range,
-    )?;
+    read_current_leaf_records(reader, manager, search, &path, &mut seen_leaves, &mut range)?;
 
     let next_start = loop {
         match manager
-            .advance_path(fs, block_dev, search, &mut path)
+            .advance_path(reader, search, &mut path)
             .map_err(hash_tree_error)?
         {
             Some(boundary_hash) if boundary_hash & 1 != 0 => {
                 read_current_leaf_records(
-                    fs,
-                    block_dev,
-                    &manager,
+                    reader,
+                    manager,
                     search,
                     &path,
                     &mut seen_leaves,
@@ -109,9 +105,8 @@ pub(crate) fn read_indexed_directory_range<B: BlockIo>(
     })
 }
 
-fn read_current_leaf_records<B: BlockIo>(
-    fs: &mut Ext4FileSystem,
-    block_dev: &mut Jbd2Dev<B>,
+fn read_current_leaf_records<R: DirectoryBlockRead>(
+    reader: &mut R,
     manager: &HashTreeManager,
     search: HashSearch<'_>,
     path: &super::lookup::HashTreePath,
@@ -123,7 +118,7 @@ fn read_current_leaf_records<B: BlockIo>(
         return Err(Ext4Error::corrupted().with_operation("htree:readdir_cycle"));
     }
     let (_, data) = manager
-        .read_current_leaf_data(fs, block_dev, search, path)
+        .read_current_leaf_data(reader, path)
         .map_err(hash_tree_error)?;
     parse_leaf_records(&data, search, manager, output)
 }

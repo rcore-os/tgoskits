@@ -1,4 +1,5 @@
 use super::*;
+use crate::blockdev::MetadataBlockRead;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExtentRun {
@@ -124,15 +125,23 @@ impl<'a> ExtentTree<'a> {
         dev: &mut Jbd2Dev<B>,
         lblock: u32,
     ) -> Ext4Result<Option<Ext4Extent>> {
+        self.find_extent_with_reader(dev, lblock)
+    }
+
+    fn find_extent_with_reader<R: MetadataBlockRead>(
+        &mut self,
+        dev: &mut R,
+        lblock: u32,
+    ) -> Ext4Result<Option<Ext4Extent>> {
         let root = self.load_root_from_inode()?;
         self.validate_node(&root, None, None, dev.total_blocks(), true)?;
         self.find_in_node(dev, &root, lblock)
     }
 
     /// Finds the extent covering `lblock`, or the first extent after it.
-    pub(crate) fn find_extent_at_or_after<B: BlockIo>(
+    pub(crate) fn find_extent_at_or_after<R: MetadataBlockRead>(
         &mut self,
-        dev: &mut Jbd2Dev<B>,
+        dev: &mut R,
         lblock: u32,
     ) -> Ext4Result<Option<Ext4Extent>> {
         let root = self.load_root_from_inode()?;
@@ -142,9 +151,9 @@ impl<'a> ExtentTree<'a> {
 
     /// Returns the external leaf block that owns `lblock`; inline leaves have
     /// no block identity.
-    pub(crate) fn external_leaf_block<B: BlockIo>(
+    pub(crate) fn external_leaf_block<R: MetadataBlockRead>(
         &mut self,
-        dev: &mut Jbd2Dev<B>,
+        dev: &mut R,
         lblock: u32,
     ) -> Ext4Result<Option<AbsoluteBN>> {
         let root = self.load_root_from_inode()?;
@@ -158,7 +167,15 @@ impl<'a> ExtentTree<'a> {
         dev: &mut Jbd2Dev<B>,
         lblock: u32,
     ) -> Ext4Result<ExtentBlockMapping> {
-        let Some(extent) = self.find_extent(dev, lblock)? else {
+        self.map_block_with_reader(dev, lblock)
+    }
+
+    pub(crate) fn map_block_with_reader<R: MetadataBlockRead>(
+        &mut self,
+        dev: &mut R,
+        lblock: u32,
+    ) -> Ext4Result<ExtentBlockMapping> {
+        let Some(extent) = self.find_extent_with_reader(dev, lblock)? else {
             return Ok(ExtentBlockMapping::Hole);
         };
         let offset = lblock
@@ -178,6 +195,15 @@ impl<'a> ExtentTree<'a> {
         start_lbn: u32,
         end_lbn: u32,
     ) -> Ext4Result<Vec<ExtentRun>> {
+        self.initialized_runs_with_reader(dev, start_lbn, end_lbn)
+    }
+
+    pub(crate) fn initialized_runs_with_reader<R: MetadataBlockRead>(
+        &mut self,
+        dev: &mut R,
+        start_lbn: u32,
+        end_lbn: u32,
+    ) -> Ext4Result<Vec<ExtentRun>> {
         if start_lbn > end_lbn {
             return Ok(Vec::new());
         }
@@ -189,16 +215,16 @@ impl<'a> ExtentTree<'a> {
     }
 
     /// Returns every initialized or unwritten extent in logical order.
-    pub(crate) fn all_extents<B: BlockIo>(
+    pub(crate) fn all_extents<R: MetadataBlockRead>(
         &mut self,
-        dev: &mut Jbd2Dev<B>,
+        dev: &mut R,
     ) -> Ext4Result<Vec<Ext4Extent>> {
         let root = self.load_root_from_inode()?;
         self.validate_node(&root, None, None, dev.total_blocks(), true)?;
 
-        fn collect<B: BlockIo>(
+        fn collect<R: MetadataBlockRead>(
             tree: &ExtentTree<'_>,
-            dev: &mut Jbd2Dev<B>,
+            dev: &mut R,
             node: &ExtentNode,
             output: &mut Vec<Ext4Extent>,
         ) -> Ext4Result<()> {
@@ -221,9 +247,9 @@ impl<'a> ExtentTree<'a> {
 
     /// Recursively searches one node for the extent covering `lblock`.
     #[allow(clippy::only_used_in_recursion)]
-    fn find_in_node<B: BlockIo>(
+    fn find_in_node<R: MetadataBlockRead>(
         &mut self,
-        dev: &mut Jbd2Dev<B>,
+        dev: &mut R,
         node: &ExtentNode,
         lblock: u32,
     ) -> Ext4Result<Option<Ext4Extent>> {
@@ -259,9 +285,9 @@ impl<'a> ExtentTree<'a> {
         }
     }
 
-    fn find_at_or_after_in_node<B: BlockIo>(
+    fn find_at_or_after_in_node<R: MetadataBlockRead>(
         &self,
-        dev: &mut Jbd2Dev<B>,
+        dev: &mut R,
         node: &ExtentNode,
         lblock: u32,
     ) -> Ext4Result<Option<Ext4Extent>> {
@@ -291,9 +317,9 @@ impl<'a> ExtentTree<'a> {
         }
     }
 
-    fn external_leaf_block_in_node<B: BlockIo>(
+    fn external_leaf_block_in_node<R: MetadataBlockRead>(
         &self,
-        dev: &mut Jbd2Dev<B>,
+        dev: &mut R,
         node: &ExtentNode,
         lblock: u32,
         physical_node: Option<AbsoluteBN>,
@@ -325,9 +351,9 @@ impl<'a> ExtentTree<'a> {
         }
     }
 
-    fn collect_runs_in_node<B: BlockIo>(
+    fn collect_runs_in_node<R: MetadataBlockRead>(
         &self,
-        dev: &mut Jbd2Dev<B>,
+        dev: &mut R,
         node: &ExtentNode,
         start_lbn: u32,
         end_lbn: u32,

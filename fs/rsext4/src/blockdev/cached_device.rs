@@ -163,21 +163,33 @@ impl<B: BlockIo> BlockDev<B> {
         block_id: AbsoluteBN,
         count: u32,
     ) -> Ext4Result<()> {
+        let (sector, sector_count, required_size) =
+            self.read_window(buffer.len(), block_id, count)?;
+        self.dev
+            .read(&mut buffer[..required_size], sector, sector_count)
+    }
+
+    /// Validates the same read boundary even when a journal image supplies
+    /// the bytes. Cached metadata must not hide geometry or unpublished edits.
+    pub(crate) fn read_window(
+        &self,
+        buffer_len: usize,
+        block_id: AbsoluteBN,
+        count: u32,
+    ) -> Ext4Result<(SectorId, u32, usize)> {
         let block_size = self.filesystem_block_size;
         let required_size = block_size
             .checked_mul(count as usize)
             .ok_or_else(Ext4Error::overflow)?;
 
-        if buffer.len() < required_size {
-            return Err(Ext4Error::buffer_too_small(buffer.len(), required_size));
+        if buffer_len < required_size {
+            return Err(Ext4Error::buffer_too_small(buffer_len, required_size));
         }
         if self.held.dirty && self.range_contains(block_id, count, self.held.block_id) {
             return Err(Ext4Error::busy().with_operation("device:read_unpublished_block"));
         }
 
-        let (sector, sector_count, _) = self.filesystem_io(block_id, count)?;
-        self.dev
-            .read(&mut buffer[..required_size], sector, sector_count)
+        self.filesystem_io(block_id, count)
     }
 
     /// Writes `count` blocks directly from `buffer` (bypasses the cache).

@@ -307,6 +307,7 @@ dma-api = { version = "0.10", path = "memory/dma-api" }
 mmio-api = { version = "0.3", path = "memory/mmio-api" }
 cvi-vdec-uapi = { version = "0.1", path = "drivers/interface/cvi-vdec-uapi" }
 lock_api = { version = "0.4", default-features = false }
+spinning_top = { version = "0.3", default-features = false }
 log = "0.4"
 loom = "0.7.2"
 ostool = { version = "0.29" }

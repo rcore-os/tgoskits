@@ -17,7 +17,7 @@ extern crate std;
 mod test_contracts;
 
 // Re-export shared configuration constants for external callers.
-pub use blockdev::Jbd2Dev;
+pub use blockdev::{CommitReceipt, ForkBlockIo, Jbd2Dev, PreparedCommit, SyncTicket};
 pub use bmalloc::InodeNumber;
 pub use config::{
     BITMAP_CACHE_MAX, BLOCK_SIZE, BLOCK_SIZE_U32, DATABLOCK_CACHE_MAX, DEFAULT_FEATURE_COMPAT,
@@ -31,18 +31,24 @@ pub use disknode::{DeviceNumber, Ext4TimeSpec, Ext4Timestamp};
 // Re-export the unified error model.
 pub use error::{ErrorContext, Ext4Error, Ext4ErrorKind, Ext4Result, FeatureSet};
 pub use ext4::{
-    DirectoryCursor, DirectoryEntry, DirectoryEntryType, DirectoryReader, Ext4, Ext4FileSystem,
-    FilePermissions, InodeFlags, InodeInfo, InodeMetadataUpdate, MkfsOptions, MountOptions,
-    MutationContext, SpecialInodeKind, format, mkfs, mkfs_with_options, umount,
+    CompletedDirectoryLookup, CompletedInodeRead, CompletedInodeTableRead, CompletedInodeWrite,
+    CompletedLiveInodeRead, DirectoryBlockRequest, DirectoryCursor, DirectoryEntry,
+    DirectoryEntryType, DirectoryLookupOutcome, DirectoryLookupPreparation, DirectoryReadCache,
+    DirectoryReader, Ext4, Ext4FileSystem, FilePermissions, InodeBlockRequest, InodeDataRequest,
+    InodeFlags, InodeInfo, InodeMetadataReader, InodeMetadataUpdate, InodeReadCache,
+    InodeReadPreparation, LiveInodeRead, MkfsOptions, MountOptions, MutationContext,
+    PreparedDirectoryLookup, PreparedInodeRead, PreparedInodeTableRead, PreparedInodeWrite,
+    PreparedLiveInodeRead, PreparedUnmount, SpecialInodeKind, UnmountReceipt, ValidatedInodeRead,
+    format, mkfs, mkfs_with_options, umount,
 };
 pub use file::{
-    FileExtent, FileExtentMap, FileExtentState, FileExtentTarget, PreallocationOptions,
-    RangeOperation, RenameOptions, RenameOutcome, UnlinkOutcome, XattrName, XattrNamespace,
-    XattrSetMode, ZeroRangeOptions, create_symbol_link, create_symbol_link_with_owner, delete_dir,
-    delete_file, inspect_inode_extents, is_dir_empty, link, mkfile, mkfile_with_owner,
-    operate_inode_range, preallocate_inode, punch_hole_inode, read_file, read_inode_data_into,
-    reap_unlinked_inode, rename, truncate, truncate_inode, unlink, write_file, write_inode_data,
-    zero_range_inode,
+    FileExtent, FileExtentMap, FileExtentState, FileExtentTarget, InodeResize,
+    PreallocationOptions, RangeOperation, RenameOptions, RenameOutcome, UnlinkOutcome, XattrName,
+    XattrNamespace, XattrSetMode, ZeroRangeOptions, create_symbol_link,
+    create_symbol_link_with_owner, delete_dir, delete_file, inspect_inode_extents, is_dir_empty,
+    link, mkfile, mkfile_with_owner, operate_inode_range, preallocate_inode, punch_hole_inode,
+    read_file, read_inode_data_into, reap_unlinked_inode, rename, truncate, truncate_inode, unlink,
+    write_file, write_inode_data, zero_range_inode,
 };
 pub use io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId, WriteFlags};
 pub use metadata::{chmod, chown, set_flags, set_project, utimens};

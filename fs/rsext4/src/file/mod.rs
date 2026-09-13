@@ -26,7 +26,9 @@ mod delete;
 mod extent_map;
 mod io;
 mod link;
+mod read_plan;
 mod rename;
+mod write;
 mod xattr;
 mod xattr_extent;
 
@@ -36,8 +38,8 @@ pub(crate) use create::{
 };
 pub use create::{create_symbol_link, create_symbol_link_with_owner, mkfile, mkfile_with_owner};
 pub(crate) use delete::{
-    DentryReplacement, ParentDirEntry, find_named_entry_in_parent, preflight_inode_free,
-    remove_named_entry_at, replace_named_entry_at, unlink_empty_directory_at, unlink_inode_at,
+    DentryReplacement, find_named_entry_in_parent, preflight_inode_free, remove_named_entry_at,
+    replace_named_entry_at, unlink_empty_directory_at, unlink_inode_at,
 };
 pub use delete::{
     UnlinkOutcome, delete_dir, delete_file, is_dir_empty, reap_unlinked_inode, unlink,
@@ -46,17 +48,23 @@ pub use extent_map::{
     FileExtent, FileExtentMap, FileExtentState, FileExtentTarget, inspect_inode_extents,
 };
 pub use io::{
-    PreallocationOptions, RangeOperation, ZeroRangeOptions, collapse_range_inode,
+    InodeResize, PreallocationOptions, RangeOperation, ZeroRangeOptions, collapse_range_inode,
     insert_range_inode, operate_inode_range, preallocate_inode, punch_hole_inode, read_file,
-    read_inode_data_into, truncate, truncate_inode, write_file, write_inode_data, zero_range_inode,
+    read_inode_data_into, truncate, truncate_inode, zero_range_inode,
 };
 pub(crate) use io::{recover_linked_truncate_inode, truncate_inode_for_reap};
 pub use link::link;
 pub(crate) use link::link_inode_at;
+pub use read_plan::{CompletedFileRead, PreparedFileRead};
+pub(crate) use read_plan::{FileBlockRead, FileReadMapping, MAX_READ_BYTES};
 pub(crate) use rename::{RenameEntryRequest, rename_inode_at};
 pub use rename::{RenameOptions, RenameOutcome, rename};
+pub(crate) use write::{CompletedFileWrite, PreparedFileWrite};
+pub use write::{write_file, write_inode_data};
 pub use xattr::{XattrName, XattrNamespace, XattrSetMode};
 pub(crate) use xattr::{get_inode_xattr, list_inode_xattrs, remove_inode_xattr, set_inode_xattr};
+
+pub(crate) use crate::dir::ParentDirEntry;
 
 /// Returns the directory-entry type Linux derives from a recognized inode mode.
 pub(crate) const fn directory_entry_type_for_mode(mode: u16) -> Option<u8> {

@@ -2,11 +2,17 @@
 
 mod buffer;
 mod cached_device;
+mod data;
 mod journal;
+mod read;
 
 pub use buffer::BlockBuffer;
-pub use journal::{Jbd2Dev, Jbd2RunState};
-pub(crate) use journal::{ReservedJournalHandle, TransactionCredits, TransactionHandleExtension};
+pub(crate) use data::FileDataEndpoint;
+pub use journal::{CommitReceipt, ForkBlockIo, Jbd2Dev, Jbd2RunState, PreparedCommit, SyncTicket};
+pub(crate) use journal::{
+    MetadataReadVersion, ReservedJournalHandle, TransactionCredits, TransactionHandleExtension,
+};
+pub(crate) use read::MetadataBlockRead;
 
 pub use crate::io::BlockIo;
 use crate::{bmalloc::AbsoluteBN, error::Ext4Result, io::WriteFlags};

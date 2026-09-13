@@ -23,6 +23,7 @@ use crate::{
 
 mod alloc;
 mod fs;
+mod geometry;
 mod lookup;
 mod mkfs;
 mod mmp;
@@ -34,13 +35,20 @@ mod system_zone;
 
 pub(crate) use fs::GroupCounters;
 pub use fs::{Ext4FileSystem, FileSystemStats};
+pub(crate) use geometry::BlockMapContext;
 pub use mkfs::{
     BlockGroupLayout, FsLayoutInfo, MkfsOptions, compute_fs_layout, mkfs, mkfs_with_options,
 };
 pub use mount::MountOptions;
 pub use owned::{
-    DirectoryCursor, DirectoryEntry, DirectoryEntryType, DirectoryReader, Ext4, FilePermissions,
-    InodeFlags, InodeInfo, InodeMetadataUpdate, MutationContext, SpecialInodeKind, format,
+    CompletedDirectoryLookup, CompletedInodeRead, CompletedInodeTableRead, CompletedInodeWrite,
+    CompletedLiveInodeRead, DirectoryBlockRequest, DirectoryCursor, DirectoryEntry,
+    DirectoryEntryType, DirectoryLookupOutcome, DirectoryLookupPreparation, DirectoryReadCache,
+    DirectoryReader, Ext4, FilePermissions, InodeBlockRequest, InodeDataRequest, InodeFlags,
+    InodeInfo, InodeMetadataReader, InodeMetadataUpdate, InodeReadCache, InodeReadPreparation,
+    LiveInodeRead, MutationContext, PreparedDirectoryLookup, PreparedInodeRead,
+    PreparedInodeTableRead, PreparedInodeWrite, PreparedLiveInodeRead, PreparedUnmount,
+    SpecialInodeKind, UnmountReceipt, ValidatedInodeRead, format,
 };
 pub use sync::umount;
 pub(crate) use system_zone::SystemZoneMap;

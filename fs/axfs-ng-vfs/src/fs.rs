@@ -1,9 +1,9 @@
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use inherit_methods_macro::inherit_methods;
 
-use crate::{DirEntry, VfsResult};
+use crate::{CachedWriteAdmission, DirEntry, VfsResult, WritebackPolicy};
 
 pub struct StatFs {
     pub fs_type: u32,
@@ -45,6 +45,12 @@ pub trait FilesystemOps: Send + Sync {
         None
     }
 
+    /// Returns the optional boundary used to drain buffered writes and mmap
+    /// dirtying before shutdown. Internal writeback uses a separate boundary.
+    fn cached_write_admission(&self) -> Option<&dyn CachedWriteAdmission> {
+        None
+    }
+
     /// Returns statistics about the filesystem
     fn stat(&self) -> VfsResult<StatFs>;
 
@@ -63,12 +69,14 @@ pub trait FilesystemOps: Send + Sync {
 #[derive(Debug)]
 pub(crate) struct FilesystemMountState {
     readonly: AtomicBool,
+    writeback_policy: AtomicU8,
 }
 
 impl FilesystemMountState {
     pub(crate) fn new(readonly: bool) -> Self {
         Self {
             readonly: AtomicBool::new(readonly),
+            writeback_policy: AtomicU8::new(WritebackPolicy::empty().bits()),
         }
     }
 
@@ -78,6 +86,27 @@ impl FilesystemMountState {
 
     pub(crate) fn set_readonly(&self, readonly: bool) {
         self.readonly.store(readonly, Ordering::Release);
+    }
+
+    pub(crate) fn writeback_policy(&self) -> WritebackPolicy {
+        WritebackPolicy::from_bits_retain(self.writeback_policy.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn set_writeback_policy(&self, policy: WritebackPolicy) {
+        self.writeback_policy
+            .store(policy.bits(), Ordering::Release);
+    }
+
+    pub(crate) fn set_synchronous(&self, synchronous: bool) {
+        // Only this bit is mutable on Linux remount. Preserve directory sync,
+        // including when another mount concurrently updates the shared policy.
+        if synchronous {
+            self.writeback_policy
+                .fetch_or(WritebackPolicy::SYNCHRONOUS.bits(), Ordering::AcqRel);
+        } else {
+            self.writeback_policy
+                .fetch_and(!WritebackPolicy::SYNCHRONOUS.bits(), Ordering::AcqRel);
+        }
     }
 }
 
@@ -114,5 +143,11 @@ impl Filesystem {
     /// This does not change the capabilities of the backing device.
     pub fn set_readonly(&self, readonly: bool) {
         self.mount_state.set_readonly(readonly);
+    }
+
+    /// Sets persistence requirements before publishing the initial mount.
+    /// Clones and bind mounts share this policy rather than copying its value.
+    pub fn set_writeback_policy(&self, policy: WritebackPolicy) {
+        self.mount_state.set_writeback_policy(policy);
     }
 }

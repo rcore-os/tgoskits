@@ -22,7 +22,7 @@ use crate::{
     Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps, Metadata,
     MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions,
     Reference, ReferenceKey, RenameOptions, TypeMap, VfsError, VfsResult, WeakDirEntry,
-    XattrSetMode,
+    WritebackPolicy, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -660,6 +660,17 @@ impl Mountpoint {
         self.filesystem_state.set_readonly(readonly);
     }
 
+    /// Returns the persistence policy shared by every mount of this filesystem.
+    pub fn filesystem_writeback_policy(&self) -> WritebackPolicy {
+        self.filesystem_state.writeback_policy()
+    }
+
+    /// Updates the shared synchronous-write requirement for an ordinary remount.
+    /// This preserves directory-sync policy and must not be used for bind-remount.
+    pub fn set_filesystem_synchronous(&self, synchronous: bool) {
+        self.filesystem_state.set_synchronous(synchronous);
+    }
+
     pub fn set_readonly(&self, readonly: bool) {
         self.readonly.store(readonly, Ordering::Release);
     }
@@ -819,6 +830,33 @@ impl Location {
         self.mountpoint.is_readonly() || self.mountpoint.is_filesystem_readonly()
     }
 
+    /// Combines inode and filesystem persistence requirements at completion.
+    pub fn writeback_policy(&self) -> VfsResult<WritebackPolicy> {
+        Ok(self.entry.writeback_policy()? | self.mountpoint.filesystem_writeback_policy())
+    }
+
+    fn sync_mounted_metadata(&self) -> VfsResult<()> {
+        if self
+            .mountpoint
+            .filesystem_writeback_policy()
+            .contains(WritebackPolicy::SYNCHRONOUS)
+        {
+            self.entry.sync(false)?;
+        }
+        Ok(())
+    }
+
+    fn sync_mounted_directory(&self) -> VfsResult<()> {
+        if self
+            .mountpoint
+            .filesystem_writeback_policy()
+            .syncs_directory()
+        {
+            self.entry.sync(false)?;
+        }
+        Ok(())
+    }
+
     pub fn entry(&self) -> &DirEntry {
         &self.entry
     }
@@ -831,21 +869,24 @@ impl Location {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        self.entry.update_metadata(update)
+        self.entry.update_metadata(update)?;
+        self.sync_mounted_metadata()
     }
 
     pub fn set_xattr(&self, name: &[u8], value: &[u8], mode: XattrSetMode) -> VfsResult<()> {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        self.entry.set_xattr(name, value, mode)
+        self.entry.set_xattr(name, value, mode)?;
+        self.sync_mounted_metadata()
     }
 
     pub fn remove_xattr(&self, name: &[u8]) -> VfsResult<()> {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        self.entry.remove_xattr(name)
+        self.entry.remove_xattr(name)?;
+        self.sync_mounted_metadata()
     }
 
     /// Returns the entry name.
@@ -975,10 +1016,12 @@ impl Location {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        self.entry
+        let entry = self
+            .entry
             .as_dir()?
-            .create(name, node_type, permission, uid, gid)
-            .map(|entry| self.wrap(entry))
+            .create(name, node_type, permission, uid, gid)?;
+        self.sync_mounted_directory()?;
+        Ok(self.wrap(entry))
     }
 
     pub fn create_symlink(
@@ -992,10 +1035,12 @@ impl Location {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        self.entry
+        let entry = self
+            .entry
             .as_dir()?
-            .create_symlink(name, target, permission, uid, gid)
-            .map(|entry| self.wrap(entry))
+            .create_symlink(name, target, permission, uid, gid)?;
+        self.sync_mounted_directory()?;
+        Ok(self.wrap(entry))
     }
 
     /// Creates an in-memory directory entry that exists only as a mount target.
@@ -1054,10 +1099,9 @@ impl Location {
         if !Arc::ptr_eq(&self.mountpoint, &node.mountpoint) {
             return Err(VfsError::CrossesDevices);
         }
-        self.entry
-            .as_dir()?
-            .link(name, &node.entry)
-            .map(|entry| self.wrap(entry))
+        let entry = self.entry.as_dir()?.link(name, &node.entry)?;
+        self.sync_mounted_directory()?;
+        Ok(self.wrap(entry))
     }
 
     pub fn rename(&self, src_name: &str, dst_dir: &Self, dst_name: &str) -> VfsResult<()> {
@@ -1101,24 +1145,34 @@ impl Location {
             dst_dir.entry.as_dir()?,
             dst_name,
             options,
-        )
+        )?;
+        self.sync_mounted_directory()?;
+        if !self.ptr_eq(dst_dir) {
+            dst_dir.sync_mounted_directory()?;
+        }
+        Ok(())
     }
 
     pub fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        self.entry.as_dir()?.unlink(name, is_dir)
+        self.entry.as_dir()?.unlink(name, is_dir)?;
+        self.sync_mounted_directory()
     }
 
     pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<Location> {
         if self.is_readonly() && (options.create || options.create_new) {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        self.entry
+        let opened = self
+            .entry
             .as_dir()?
-            .open_file(name, options)
-            .map(|entry| self.wrap(entry).resolve_mountpoint())
+            .open_file_with_creation(name, options)?;
+        if opened.created {
+            self.sync_mounted_directory()?;
+        }
+        Ok(self.wrap(opened.entry).resolve_mountpoint())
     }
 
     pub fn read_dir(

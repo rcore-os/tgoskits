@@ -8,11 +8,15 @@ mod mount;
 mod node;
 pub mod path;
 mod types;
+mod write_admission;
+mod writeback_policy;
 
 pub use fs::*;
 pub use mount::*;
 pub use node::*;
 pub use types::*;
+pub use write_admission::*;
+pub use writeback_policy::*;
 
 /// Errors owned by the virtual-filesystem domain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

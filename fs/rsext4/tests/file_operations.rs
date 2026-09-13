@@ -5,6 +5,9 @@
 
 use std::{cell::Cell, rc::Rc};
 
+#[path = "file_operations/read_plan.rs"]
+mod read_plan;
+
 use rsext4::{
     error::{Ext4Error, Ext4Result},
     *,

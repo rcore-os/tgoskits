@@ -685,7 +685,7 @@ impl JBD2DEVSYSTEM {
         Ok(())
     }
 
-    fn start_committing_transaction(&mut self) -> Ext4Result<bool> {
+    pub(crate) fn start_committing_transaction(&mut self) -> Ext4Result<bool> {
         if self.committing_transaction.is_some() {
             return Err(Ext4Error::busy().with_operation("jbd2:commit_already_running"));
         }
@@ -715,8 +715,8 @@ impl JBD2DEVSYSTEM {
             sequence: self.sequence,
             log_start: self.head,
             phase: Jbd2CommitPhase::Flush,
-            updates: running.updates,
-            revoked_blocks: running.revoked_blocks,
+            updates: running.updates.into(),
+            revoked_blocks: running.revoked_blocks.into(),
         });
         Ok(true)
     }
@@ -746,6 +746,16 @@ impl JBD2DEVSYSTEM {
         if !self.start_committing_transaction()? {
             return Ok(false);
         }
+        self.write_committing_transaction(block_dev, journal_blocks, commit_time)
+    }
+
+    /// Performs the sealed transaction's I/O using only its detached owner.
+    pub(crate) fn write_committing_transaction<D: FilesystemBlockIo>(
+        &mut self,
+        block_dev: &mut D,
+        journal_blocks: &[AbsoluteBN],
+        commit_time: Jbd2CommitTimestamp,
+    ) -> Ext4Result<bool> {
         let (tid, update_count, revoked_blocks) = {
             let transaction = self.committing_transaction.as_ref().ok_or_else(|| {
                 Ext4Error::corrupted().with_operation("jbd2:missing_committing_transaction")
@@ -1040,7 +1050,7 @@ impl JBD2DEVSYSTEM {
             .rev()
             .enumerate()
         {
-            for update in &transaction.updates {
+            for update in transaction.updates.iter() {
                 if !later_blocks.contains(&update.0) {
                     block_dev.write(&update.1[..], update.0, 1)?;
                 }

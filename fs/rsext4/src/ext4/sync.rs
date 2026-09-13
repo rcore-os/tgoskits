@@ -1,7 +1,7 @@
 use super::{mkfs::write_superblock, *};
 
 impl Ext4FileSystem {
-    fn clean_state(superblock: &Ext4Superblock) -> u16 {
+    pub(crate) fn clean_state(superblock: &Ext4Superblock) -> u16 {
         (superblock.s_state & Ext4Superblock::EXT4_ERROR_FS) | Ext4Superblock::EXT4_VALID_FS
     }
 
@@ -16,12 +16,22 @@ impl Ext4FileSystem {
         block_dev: &mut Jbd2Dev<B>,
         _observer: &mut O,
     ) -> Ext4Result<()> {
+        self.stage_sync_metadata(block_dev)?;
+        block_dev.commit_for_filesystem_sync()?;
+        Ok(())
+    }
+
+    /// Publishes cached metadata before sealing a durability target.
+    /// Journal commit/checkpoint I/O belongs to the separate commit owner.
+    pub(crate) fn stage_sync_metadata<B: BlockIo>(
+        &mut self,
+        block_dev: &mut Jbd2Dev<B>,
+    ) -> Ext4Result<()> {
         self.datablock_cache.flush_all(block_dev)?;
         self.inodetable_cache.flush_all(block_dev)?;
         self.bitmap_cache.flush_all(block_dev)?;
         self.sync_group_descriptors(block_dev)?;
         self.sync_superblock_if_dirty(block_dev)?;
-        block_dev.commit_for_filesystem_sync()?;
         Ok(())
     }
 
@@ -47,30 +57,23 @@ impl Ext4FileSystem {
 
         observer.event(Event::Mount(MountEvent::UnmountStarted));
 
-        let previous_superblock = self.superblock;
-        let previous_superblock_dirty = self.superblock_dirty;
-
-        // Mark clean in memory first so that sync_filesystem writes the
-        // superblock with s_state = EXT4_VALID_FS through the journal.
-        self.superblock.s_state = Self::clean_state(&self.superblock);
-        self.superblock.s_feature_incompat &= !Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
-        self.mark_superblock_dirty();
-
-        let persistence = (|| {
-            self.sync_filesystem_with_observer(block_dev, observer)?;
-
-            // Commit the journal transaction so all queued metadata (including
-            // the superblock with s_state = VALID_FS) is checkpointed to disk.
-            block_dev.umount_commit()
-        })();
-        if let Err(error) = persistence {
-            self.superblock = previous_superblock;
-            self.superblock_dirty = previous_superblock_dirty;
-            return Err(error);
-        }
+        // Keep RECOVER set while any home write or journal-tail update can
+        // still fail. A clean superblock must never be an early checkpoint
+        // member: a crash there could suppress replay of the remaining homes.
+        self.sync_filesystem_with_observer(block_dev, observer)?;
+        block_dev.umount_commit()?;
         observer.event(Event::Journal(JournalEvent::Committed));
 
+        // From the first clean-publication attempt onwards this mount is
+        // terminal, even if the device reports an uncertain write failure.
         self.mounted = false;
+        let clean = clean_superblock(self.superblock);
+        if let Err(error) = write_clean_superblock(block_dev, &clean) {
+            self.mmp.mark_failed(error);
+            return Err(error);
+        }
+        self.superblock = clean;
+        self.superblock_dirty = false;
         observer.event(Event::Mount(MountEvent::Unmounted));
         Ok(())
     }
@@ -216,6 +219,40 @@ impl Ext4FileSystem {
         self.mark_superblock_dirty();
         self.sync_superblock(block_dev)
     }
+}
+
+pub(crate) fn clean_superblock(mut superblock: Ext4Superblock) -> Ext4Superblock {
+    superblock.s_state = Ext4FileSystem::clean_state(&superblock);
+    superblock.s_feature_incompat &= !Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER;
+    superblock.update_checksum();
+    superblock
+}
+
+/// Publishes only after every journal transaction has checkpointed. Preserve
+/// the rest of the filesystem block around the 1024-byte primary superblock.
+pub(crate) fn write_clean_superblock<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    superblock: &Ext4Superblock,
+) -> Ext4Result<()> {
+    device.ensure_clean_publication_ready()?;
+    let block_size = device.block_size() as usize;
+    let offset = Ext4Superblock::SUPERBLOCK_OFFSET as usize;
+    let block = AbsoluteBN::new((offset / block_size) as u64);
+    let in_block = offset % block_size;
+    let end = in_block
+        .checked_add(Ext4Superblock::SUPERBLOCK_SIZE)
+        .ok_or_else(Ext4Error::overflow)?;
+    if end > block_size {
+        return Err(Ext4Error::bad_superblock().with_operation("unmount:superblock_geometry"));
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(block_size)
+        .map_err(|_| Ext4Error::no_memory())?;
+    bytes.resize(block_size, 0);
+    device.read_blocks_uncached(&mut bytes, block, 1)?;
+    superblock.to_disk_bytes(&mut bytes[in_block..end]);
+    device.write_blocks_durable(&bytes, block, 1)
 }
 
 pub fn umount<B: BlockIo>(fs: Ext4FileSystem, block_dev: &mut Jbd2Dev<B>) -> Ext4Result<()> {

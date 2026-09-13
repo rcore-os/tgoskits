@@ -23,6 +23,7 @@ impl HashTreeManager {
         dir_inode: &crate::disknode::Ext4Inode,
         target_name: &[u8],
     ) -> Result<crate::hashtree::HashTreeSearchResult, crate::hashtree::HashTreeError> {
-        super::lookup::lookup(self, fs, block_dev, dir_ino, dir_inode, target_name)
+        let mut reader = crate::dir::MountedDirectoryRead::new(fs, block_dev, dir_ino, *dir_inode);
+        super::lookup::lookup(self, &mut reader, target_name)
     }
 }

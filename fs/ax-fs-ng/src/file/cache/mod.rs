@@ -15,7 +15,7 @@ use core::{
 };
 
 use ax_io::prelude::*;
-use axfs_ng_vfs::{FileNode, FilesystemOps, Location, VfsError, VfsResult};
+use axfs_ng_vfs::{CachedWriteGuard, FileNode, FilesystemOps, Location, VfsError, VfsResult};
 use lru::LruCache;
 use readahead::ReadAheadState;
 #[cfg(feature = "vfs")]
@@ -941,6 +941,7 @@ impl CachedFile {
         if self.in_memory {
             return Ok(());
         }
+        let _write = CachedWriteGuard::acquire(self.inner.filesystem())?;
         if self
             .shared
             .mapping_update_in_progress
@@ -1137,6 +1138,7 @@ impl CachedFile {
 
     /// Writes `buf` to the file at `offset`.
     pub fn write_at(&self, buf: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
+        let _write = CachedWriteGuard::acquire(self.inner.filesystem())?;
         let _layout = self.shared.mapping_layout_lock.lock();
         let _io = self.shared.io_lock.lock();
         self.write_at_locked(buf, offset)
@@ -1144,6 +1146,7 @@ impl CachedFile {
 
     /// Appends `buf` to the end of the file. Returns `(bytes_written, new_end)`.
     pub fn append(&self, buf: impl Read + IoBuf) -> VfsResult<(usize, u64)> {
+        let _write = CachedWriteGuard::acquire(self.inner.filesystem())?;
         let _layout = self.shared.mapping_layout_lock.lock();
         let _io = self.shared.io_lock.lock();
         let len = self.shared.len();
@@ -1232,12 +1235,7 @@ fn publish_inode_cached_file(
 /// The filesystem serializes this operation against acquiring a new lease.
 #[cfg(feature = "ext4")]
 pub(crate) fn retire_filesystem_cache(filesystem: &dyn FilesystemOps) -> VfsResult<()> {
-    let key = filesystem_key(filesystem);
-    let files: Vec<_> = CACHED_FILE_BY_INODE
-        .lock()
-        .range((key, 0)..=(key, u64::MAX))
-        .filter_map(|(_, cached)| cached.upgrade())
-        .collect();
+    let files = filesystem_cached_files(filesystem)?;
     let mut first_error = None;
     for file in files {
         if let Err(error) = file.writeback_dirty_for_global_sync() {
@@ -1253,6 +1251,37 @@ pub(crate) fn retire_filesystem_cache(filesystem: &dyn FilesystemOps) -> VfsResu
         }
     }
     first_error.map_or(Ok(()), Err)
+}
+
+/// Drains a finite snapshot of this filesystem's dirty pages without syncing
+/// metadata. Callers must not hold its metadata lock or journal commit gate.
+#[cfg(feature = "ext4")]
+pub(crate) fn writeback_filesystem_pages(filesystem: &dyn FilesystemOps) -> VfsResult<()> {
+    let files = filesystem_cached_files(filesystem)?;
+    let mut first_error = None;
+    for file in files {
+        if let Err(error) = file.writeback_dirty_for_global_sync() {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+#[cfg(feature = "ext4")]
+fn filesystem_cached_files(
+    filesystem: &dyn FilesystemOps,
+) -> VfsResult<Vec<Arc<CachedFileShared>>> {
+    let key = filesystem_key(filesystem);
+    let index = CACHED_FILE_BY_INODE.lock();
+    let entries = index.range((key, 0)..=(key, u64::MAX));
+    let mut files = Vec::new();
+    files
+        .try_reserve(entries.clone().count())
+        .map_err(|_| VfsError::NoMemory)?;
+    // Unlinked open files retain their inode key until the final backing
+    // owner is reaped. This index also remains visible during reclaim pruning.
+    files.extend(entries.filter_map(|(_, cached)| cached.upgrade()));
+    Ok(files)
 }
 
 #[cfg(feature = "ext4")]

@@ -10,6 +10,8 @@
 
 #define BUF_SIZE 65536
 
+int verify_mount_sync_policy(void);
+
 static long remount_tmp(unsigned long flags) {
     return syscall(SYS_mount, NULL, "/tmp", NULL, MS_REMOUNT | flags, NULL);
 }
@@ -51,6 +53,9 @@ static int verify_remount_readonly_transition(void) {
 }
 
 int main(void) {
+    if (verify_mount_sync_policy() != 0) {
+        return 1;
+    }
     if (verify_remount_readonly_transition() != 0) {
         return 1;
     }

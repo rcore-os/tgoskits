@@ -299,6 +299,11 @@ pub struct OpenOptions {
     pub user: Option<(u32, u32)>, // (uid, gid)
 }
 
+pub(crate) struct OpenedEntry {
+    pub(crate) entry: DirEntry,
+    pub(crate) created: bool,
+}
+
 impl Default for OpenOptions {
     fn default() -> Self {
         Self {
@@ -682,6 +687,16 @@ impl DirNode {
 
     /// Opens (or creates) a file in the directory.
     pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<DirEntry> {
+        self.open_file_with_creation(name, options)
+            .map(|opened| opened.entry)
+    }
+
+    /// Retains the creation outcome so mount policy only commits actual mutations.
+    pub(crate) fn open_file_with_creation(
+        &self,
+        name: &str,
+        options: &OpenOptions,
+    ) -> VfsResult<OpenedEntry> {
         verify_entry_name(name)?;
 
         match self.lookup(name) {
@@ -689,18 +704,22 @@ impl DirNode {
                 if options.create_new {
                     return Err(VfsError::AlreadyExists);
                 }
-                return Ok(val);
+                return Ok(OpenedEntry {
+                    entry: val,
+                    created: false,
+                });
             }
             Err(VfsError::NotFound) if options.create => {}
             Err(err) => return Err(err),
         }
         let (uid, gid) = options.user.unwrap_or((0, 0));
-        let entry = match self.create_entry(name, options.node_type, options.permission, uid, gid) {
-            Ok(entry) => entry,
-            Err(VfsError::AlreadyExists) if !options.create_new => self.lookup(name)?,
-            Err(err) => return Err(err),
-        };
-        Ok(entry)
+        let (entry, created) =
+            match self.create_entry(name, options.node_type, options.permission, uid, gid) {
+                Ok(entry) => (entry, true),
+                Err(VfsError::AlreadyExists) if !options.create_new => (self.lookup(name)?, false),
+                Err(err) => return Err(err),
+            };
+        Ok(OpenedEntry { entry, created })
     }
 
     pub fn mountpoint(&self) -> Option<Arc<Mountpoint>> {
