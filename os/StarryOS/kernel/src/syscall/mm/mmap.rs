@@ -374,7 +374,7 @@ pub fn sys_mmap(
         let limit = VirtAddrRange::new(aspace.base(), VirtAddr::from(upper));
         aspace
             .find_free_area(VirtAddr::from(aligned), length, limit, align)
-            .or(aspace.find_free_area(aspace.base(), length, limit, align))
+            .or_else(|| aspace.find_free_area(aspace.base(), length, limit, align))
             .ok_or(StarryError::NoMemory)?
     };
 

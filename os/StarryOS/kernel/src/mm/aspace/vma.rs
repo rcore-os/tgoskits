@@ -810,16 +810,14 @@ struct VmaNode {
     left: Option<Arc<VmaNode>>,
     right: Option<Arc<VmaNode>>,
     height: u8,
+    first_start: VirtAddr,
+    last_end: VirtAddr,
+    max_gap: usize,
 }
 
 impl VmaNode {
     fn new(entry: Arc<VmaEntry>) -> Arc<Self> {
-        Arc::new(Self {
-            entry,
-            left: None,
-            right: None,
-            height: 1,
-        })
+        Self::with_children(entry, None, None)
     }
 
     fn with_children(
@@ -827,12 +825,79 @@ impl VmaNode {
         left: Option<Arc<VmaNode>>,
         right: Option<Arc<VmaNode>>,
     ) -> Arc<Self> {
+        let range = entry.snapshot.range;
+        let first_start = left.as_ref().map_or(range.start, |node| node.first_start);
+        let last_end = right.as_ref().map_or(range.end, |node| node.last_end);
+        // All path-copy mutations and rotations come through this constructor.
+        // Ordered, non-overlapping children make each boundary subtraction safe.
+        let left_gap = left.as_ref().map_or(0, |node| {
+            node.max_gap
+                .max(range.start.as_usize() - node.last_end.as_usize())
+        });
+        let right_gap = right.as_ref().map_or(0, |node| {
+            node.max_gap
+                .max(node.first_start.as_usize() - range.end.as_usize())
+        });
         Arc::new(Self {
             entry,
             height: 1 + node_height(&left).max(node_height(&right)),
             left,
             right,
+            first_start,
+            last_end,
+            max_gap: left_gap.max(right_gap),
         })
+    }
+}
+
+/// A forward-only search over one immutable VMA root. The cursor is aligned;
+/// reaching the exclusive upper bound represents an exhausted search.
+struct FreeAreaSearch {
+    cursor: usize,
+    upper: usize,
+    size: usize,
+    align: usize,
+}
+
+impl FreeAreaSearch {
+    fn before(&self, end: usize) -> Option<VirtAddr> {
+        self.cursor
+            .checked_add(self.size)
+            .filter(|&last| last <= end.min(self.upper))
+            .map(|_| VirtAddr::from_usize(self.cursor))
+    }
+
+    fn advance(&mut self, end: usize) {
+        if end > self.cursor {
+            self.cursor = end.checked_add(self.align - 1).map_or(self.upper, |value| {
+                (value & !(self.align - 1)).min(self.upper)
+            });
+        }
+    }
+
+    fn in_tree(&mut self, node: Option<&VmaNode>, visit: &mut impl FnMut()) -> Option<VirtAddr> {
+        let node = node?;
+        visit();
+        if node.last_end.as_usize() <= self.cursor || self.before(self.upper).is_none() {
+            return None;
+        }
+        if let Some(address) = self.before(node.first_start.as_usize()) {
+            return Some(address);
+        }
+        // An unaligned gap is an upper bound on usable space. It is safe to
+        // reject a subtree here; a large summary still requires exact checks.
+        if node.max_gap < self.size {
+            self.advance(node.last_end.as_usize());
+            return None;
+        }
+        if let Some(address) = self.in_tree(node.left.as_deref(), visit) {
+            return Some(address);
+        }
+        if let Some(address) = self.before(node.entry.snapshot.range.start.as_usize()) {
+            return Some(address);
+        }
+        self.advance(node.entry.snapshot.range.end.as_usize());
+        self.in_tree(node.right.as_deref(), visit)
     }
 }
 
@@ -1069,17 +1134,14 @@ impl VmaMap {
         };
         *visited += 1;
         let vma = current.entry.snapshot.range;
-        if range.start < vma.start
-            && !Self::visit_overlapping(&current.left, range, visited, visit)
+        if range.start < vma.start && !Self::visit_overlapping(&current.left, range, visited, visit)
         {
             return false;
         }
         if vma.overlaps(range) && !visit(&current.entry) {
             return false;
         }
-        if range.end > vma.end
-            && !Self::visit_overlapping(&current.right, range, visited, visit)
-        {
+        if range.end > vma.end && !Self::visit_overlapping(&current.right, range, visited, visit) {
             return false;
         }
         true
@@ -1532,6 +1594,19 @@ impl VmaMap {
         limit: VirtAddrRange,
         align: usize,
     ) -> Option<VirtAddr> {
+        self.search_free_area(hint, size, limit, align, || {})
+    }
+
+    // The visitor makes the cost of the production search testable without
+    // exposing instrumentation or retaining counters in the running kernel.
+    fn search_free_area(
+        &self,
+        hint: VirtAddr,
+        size: usize,
+        limit: VirtAddrRange,
+        align: usize,
+        mut visit: impl FnMut(),
+    ) -> Option<VirtAddr> {
         // An empty/invalid search interval must never be treated as an
         // unbounded one.  In particular `start == end` used to let the final
         // candidate check succeed after arithmetic was rounded, returning an
@@ -1550,34 +1625,19 @@ impl VmaMap {
                 .checked_add(align - 1)
                 .map(|value| VirtAddr::from_usize(value & !(align - 1)))
         };
-        let mut candidate = align_up(hint.max(limit.start))?;
+        let candidate = align_up(hint.max(limit.start))?;
         if candidate < limit.start || candidate >= limit.end {
             return None;
         }
-        for vma in self.iter() {
-            if vma.range.end <= candidate {
-                continue;
-            }
-            if vma.range.start > candidate
-                && candidate >= limit.start
-                && candidate
-                    .checked_add(size)
-                    .is_some_and(|end| end <= vma.range.start)
-                && candidate
-                    .checked_add(size)
-                    .is_some_and(|end| end <= limit.end)
-            {
-                return Some(candidate);
-            }
-            candidate = align_up(vma.range.end.max(limit.start))?;
-            if candidate >= limit.end {
-                return None;
-            }
-        }
-        candidate
-            .checked_add(size)
-            .is_some_and(|end| end <= limit.end)
-            .then_some(candidate)
+        let mut search = FreeAreaSearch {
+            cursor: candidate.as_usize(),
+            upper: limit.end.as_usize(),
+            size,
+            align,
+        };
+        search
+            .in_tree(self.root.as_deref(), &mut visit)
+            .or_else(|| search.before(search.upper))
     }
 
     pub(super) fn insert_entry(&self, entry: Arc<VmaEntry>) -> Option<Self> {
@@ -1811,6 +1871,105 @@ mod tests {
             visited <= 24,
             "a one-VMA lookup walked {visited} nodes of a 256-VMA tree",
         );
+    }
+
+    #[cfg(not(axtest))]
+    #[test]
+    fn free_area_search_skips_subtrees_without_a_large_enough_gap() {
+        let original = map_of(256);
+        let limit = VirtAddrRange::from_start_size(VirtAddr::from_usize(0x1000), 0x30_0000);
+        let mut visited = 0;
+        let tail = original.search_free_area(limit.start, 0x4000, limit, 0x1000, || visited += 1);
+        assert_eq!(tail, Some(VirtAddr::from_usize(0x20_0000)));
+        assert!(visited <= 24, "tail search visited {visited} of 256 VMAs");
+
+        let hole = 0x1000 + 128 * 0x2000;
+        let changed = original
+            .without_range(VirtAddrRange::from_start_size(
+                VirtAddr::from_usize(hole),
+                0x5000,
+            ))
+            .unwrap();
+        visited = 0;
+        let found = changed.search_free_area(limit.start, 0x4000, limit, 0x1000, || visited += 1);
+        assert_eq!(found, Some(VirtAddr::from_usize(hole - 0x1000)));
+        assert!(visited <= 32, "interior search visited {visited} VMAs");
+        assert_eq!(
+            original.find_free_area(limit.start, 0x4000, limit, 0x1000),
+            tail
+        );
+    }
+
+    #[cfg(not(axtest))]
+    #[test]
+    fn free_area_search_matches_first_fit_after_path_copy_mutations() {
+        for occupied in 0u32..64 {
+            let mut map = VmaMap::default();
+            // Non-monotonic insertion exercises both directions of rotation.
+            for slot in [2, 0, 5, 1, 4, 3] {
+                if occupied & (1 << slot) != 0 {
+                    map = insert(&map, (2 + slot * 3) * 0x1000, 0x1000).unwrap();
+                }
+            }
+            assert_first_fit(&map);
+            for entry in map.iter() {
+                let (successor, _) = map.remove(entry.range.start).unwrap();
+                assert_first_fit(&successor);
+            }
+            assert_first_fit(&map);
+        }
+
+        let map = VmaMap::default();
+        let limit = VirtAddrRange::from_start_size(VirtAddr::from_usize(0x1000), 0x8000);
+        for (size, align) in [(0, 0x1000), (0x1000, 0), (0x1000, 3), (1, 0x1000)] {
+            assert_eq!(map.find_free_area(limit.start, size, limit, align), None);
+        }
+        let empty = VirtAddrRange::new(limit.start, limit.start);
+        assert_eq!(map.find_free_area(limit.start, 0x1000, empty, 0x1000), None);
+        let top = VirtAddrRange::new(
+            VirtAddr::from_usize(usize::MAX - 0x7fff),
+            VirtAddr::from_usize(usize::MAX),
+        );
+        assert_eq!(
+            map.find_free_area(VirtAddr::from_usize(usize::MAX - 1), 0x1000, top, 0x1000),
+            None
+        );
+        assert_eq!(map.find_free_area(top.start, 0x8000, top, 0x1000), None);
+    }
+
+    #[cfg(not(axtest))]
+    fn assert_first_fit(map: &VmaMap) {
+        let ranges: Vec<_> = map.iter().map(|entry| entry.range).collect();
+        for (lower, upper) in [(0x800, 0x9000), (0x3000, 0x18000)] {
+            let limit =
+                VirtAddrRange::new(VirtAddr::from_usize(lower), VirtAddr::from_usize(upper));
+            for align in [0x1000, 0x2000, 0x4000] {
+                for size in [align, align * 2] {
+                    for hint in (0..0x19000).step_by(0x800) {
+                        // Exhaustive candidates form an independent oracle:
+                        // no tree summaries or tree-search helpers are used.
+                        let expected = (0..upper)
+                            .step_by(align)
+                            .find(|&address| {
+                                address >= lower
+                                    && address >= hint
+                                    && address + size <= upper
+                                    && ranges.iter().all(|range| {
+                                        address + size <= range.start.as_usize()
+                                            || address >= range.end.as_usize()
+                                    })
+                            })
+                            .map(VirtAddr::from_usize);
+                        assert_eq!(
+                            map.find_free_area(VirtAddr::from_usize(hint), size, limit, align),
+                            expected,
+                            "hint={hint:#x} size={size:#x} align={align:#x} limit={limit:?} \
+                             ranges={ranges:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[cfg(all(test, not(axtest)))]
