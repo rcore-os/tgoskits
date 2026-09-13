@@ -650,17 +650,22 @@ fn run_debugfs_script(
     commands: &[String],
     context_message: &str,
 ) -> anyhow::Result<()> {
-    run_debugfs_script_with_program(Path::new("debugfs"), rootfs_img, commands, context_message)
+    run_debugfs_script_with_command(
+        Command::new("debugfs"),
+        rootfs_img,
+        commands,
+        context_message,
+    )
 }
 
-fn run_debugfs_script_with_program(
-    debugfs_program: &Path,
+fn run_debugfs_script_with_command(
+    mut debugfs_command: Command,
     rootfs_img: &Path,
     commands: &[String],
     context_message: &str,
 ) -> anyhow::Result<()> {
     eprintln!("debugfs -w {}", rootfs_img.display());
-    let mut child = Command::new(debugfs_program)
+    let mut child = debugfs_command
         .arg("-w")
         .arg(rootfs_img)
         .stdin(Stdio::piped())
@@ -1081,23 +1086,27 @@ mod tests {
         let root = executable_helper_tempdir();
         let debugfs = root.path().join("debugfs");
         let received_commands = root.path().join("received-commands");
-        let _stale_writer = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&debugfs)
-            .unwrap();
         write_executable(
             &debugfs,
             &format!(
-                "#!/bin/sh\ntest \"$(readlink /proc/$$/fd/1)\" = /dev/null || exit 91\ncat > '{}'
+                "#!/bin/sh\ntest \"$#\" = 2 && test \"$1\" = -w && test \"$2\" = rootfs.img || \
+                 exit 90\ntest \"$(readlink /proc/$$/fd/1)\" = /dev/null || exit 91\ncat > '{}'
 ",
                 received_commands.display()
             ),
         );
 
-        run_debugfs_script_with_program(
-            &debugfs,
+        // Model a writable descriptor inherited by a concurrent child before exec.
+        // It keeps this exact inode busy, even after the publishing rename.
+        let _inherited_writer = OpenOptions::new().write(true).open(&debugfs).unwrap();
+
+        // Execute the installed shell, which reads the fixture as data. Direct
+        // execution can return ETXTBSY while another test's child holds a writer
+        // inherited during publication, even when our own writer is closed.
+        let mut debugfs_command = Command::new("/bin/sh");
+        debugfs_command.arg(&debugfs);
+        run_debugfs_script_with_command(
+            debugfs_command,
             Path::new("rootfs.img"),
             &["rm /usr/bin/app".into(), "write app /usr/bin/app".into()],
             "failed to inject test overlay",
@@ -1136,9 +1145,9 @@ mod tests {
 
         fs::write(&staged_path, contents).unwrap();
         fs::set_permissions(&staged_path, fs::Permissions::from_mode(0o755)).unwrap();
-        // Publish a fully closed and executable inode. A stale writer may still
-        // hold the previous destination inode, but it cannot make the newly
-        // published helper fail exec with ETXTBSY.
+        // Replace the destination inode so writers of the old helper cannot
+        // block execution of the new one. This does not prevent concurrent
+        // children from inheriting a writer of the staged inode before close.
         fs::rename(staged_path, path).unwrap();
     }
 }
