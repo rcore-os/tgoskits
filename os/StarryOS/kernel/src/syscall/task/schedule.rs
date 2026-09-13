@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 
 use ax_runtime::hal::{self, time::TimeValue};
-use ax_std::os::arceos::{task as scheduler, task::sync::WaitQueue};
+use ax_std::os::arceos::task as scheduler;
 use bytemuck::{Pod, Zeroable};
 #[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
 use linux_raw_sys::general::__kernel_timespec;
@@ -96,18 +96,31 @@ fn sleep_until(
             };
         }
     };
-    let interrupted = core::cell::Cell::new(false);
-    let timed_out = WaitQueue::new().wait_until_deadline(deadline, || {
-        let pending = current.take_interrupt();
-        interrupted.set(pending);
-        pending
-    });
-    if interrupted.get() {
-        Err(crate::StarryError::Interrupted)
-    } else if timed_out {
-        Ok(())
-    } else {
-        unreachable!("a scheduler sleep must end by timeout or interruption")
+    loop {
+        let now = scheduler::time::MonotonicInstant::from_nanos(hal::time::monotonic_time_nanos())
+            .expect("platform monotonic clock exceeded the signed ktime domain");
+        if current.take_interrupt() {
+            return Err(StarryError::Interrupted);
+        }
+        if now.reached(deadline) {
+            return Ok(());
+        }
+        // Interruption publishes its bit before the scheduler wake. The park
+        // handshake consumes an earlier wake or prevents the later commit
+        // from blocking, so this task-local sleep needs no external wait queue.
+        let mut park = match scheduler::thread::current::begin_current_park()
+            .expect("user sleep must satisfy scheduler invariants")
+        {
+            scheduler::thread::current::CurrentParkStart::Notified => continue,
+            scheduler::thread::current::CurrentParkStart::Prepared(park) => park,
+        };
+        if let Err(error) = park.arm_deadline(deadline) {
+            park.cancel()
+                .expect("failed user sleep must cancel its prepared park");
+            panic!("user sleep deadline must satisfy scheduler invariants: {error}");
+        }
+        park.commit()
+            .expect("user sleep must satisfy scheduler invariants");
     }
 }
 
