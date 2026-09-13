@@ -15,8 +15,10 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/redis-app-tests.sh"
-success_regex = ["(?m)^REDIS_APP_TEST_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^REDIS_APP_TEST_FAILED\\s*$"]
 timeout = 900
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/redis-app-tests.sh"
+success_regex = ["(?m)^REDIS_APP_TEST_PASSED\\s*$"]

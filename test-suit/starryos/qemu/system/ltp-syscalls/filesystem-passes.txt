@@ -1,0 +1,6 @@
+# Assertions required in each upstream all_filesystems run.
+readdir01 ext4 1
+rename03 ext4 8
+rename04 ext4 1
+rename05 ext4 1
+rename07 ext4 1

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Markdown 技术文档写作"
+  short_description: "撰写结构清楚且以源代码事实为依据的项目维护技术文档"
+  default_prompt: "请使用 $markdown-doc-writer 起草一份结构清楚、具有代码依据的 Markdown 技术文档。"

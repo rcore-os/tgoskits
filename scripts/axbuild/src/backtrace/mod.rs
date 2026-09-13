@@ -15,8 +15,6 @@ pub(crate) use capture::write_raw_blocks_from_output;
 pub(crate) use capture::{
     BacktraceBlockCapture, BacktraceQemuCapture, flush_pending_stream_symbolize,
 };
-#[cfg(test)]
-pub(crate) use paths::arceos_rust_elf_path;
 pub(crate) use paths::std_test_elf_path;
 pub(crate) use symbolize::{
     BacktraceSymbolizeSession, SymbolizeAfterQemuOutcome, keep_qemu_log_from_env,

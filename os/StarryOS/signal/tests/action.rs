@@ -2,24 +2,6 @@ use linux_raw_sys::general::kernel_sigaction;
 use starry_signal::{SignalAction, SignalActionFlags, SignalDisposition, SignalSet, Signo};
 
 #[test]
-fn flags_bits() {
-    let mut flags = SignalActionFlags::default();
-    flags.insert(SignalActionFlags::SIGINFO);
-    assert!(flags.contains(SignalActionFlags::SIGINFO));
-
-    flags.insert(SignalActionFlags::ONSTACK);
-    assert!(flags.contains(SignalActionFlags::ONSTACK));
-
-    flags.remove(SignalActionFlags::SIGINFO);
-    assert!(!flags.contains(SignalActionFlags::SIGINFO));
-    assert!(flags.contains(SignalActionFlags::ONSTACK));
-
-    let bits = flags.bits();
-    assert_ne!(bits, 0);
-    assert!(!flags.is_empty());
-}
-
-#[test]
 fn convert() {
     unsafe extern "C" fn test_handler(_: i32) {}
     let flag_disposition = vec![

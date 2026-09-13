@@ -3,7 +3,7 @@
 use alloc::{boxed::Box, string::String};
 
 use axdevice_base::*;
-use x86_vlapic::{EmulatedPic, X86Port};
+use x86_vlapic::{EmulatedPic, PicInterruptClaim, X86Port};
 
 use super::{X86PicDeviceOps, port_resource, x86_access_width};
 
@@ -35,8 +35,16 @@ impl Default for X86PicDevice {
 }
 
 impl X86PicDeviceOps for X86PicDevice {
-    fn pulse_irq(&self, irq: u8) -> Option<u8> {
-        self.inner.pulse_irq(irq)
+    fn claim_irq(&self, irq: u8) -> Option<PicInterruptClaim> {
+        self.inner.claim_irq(irq)
+    }
+
+    fn claim_pending_interrupt(&self) -> Option<PicInterruptClaim> {
+        self.inner.claim_pending_interrupt()
+    }
+
+    fn restore_interrupt(&self, claim: PicInterruptClaim) {
+        self.inner.restore_interrupt(claim);
     }
 }
 
@@ -49,31 +57,38 @@ impl Device for X86PicDevice {
         &self.resources
     }
 
-    fn access(
-        &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        if access.kind != BusKind::Port {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
-        }
-        let port = X86Port::new(
-            u16::try_from(access.addr)
-                .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?,
-        );
-        let width = x86_access_width(access.width);
-        if access.is_read {
-            self.inner
-                .handle_read(port, width)
-                .map(|value| BusResponse::Read {
-                    value: value as u64,
-                })
-                .map_err(|_| DeviceError::Internal)
-        } else {
-            self.inner
-                .handle_write(port, width, access.data as usize)
-                .map(|()| BusResponse::Write)
-                .map_err(|_| DeviceError::Internal)
-        }
+    fn read(&self, access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+        let (port, width) = decode_access(access)?;
+        self.inner
+            .handle_read(port, width)
+            .map(|value| value as u64)
+            .map_err(|_| DeviceError::Internal)
     }
+
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> DeviceResult {
+        let (port, width) = decode_access(access)?;
+        self.inner
+            .handle_write(port, width, value as usize)
+            .map_err(|_| DeviceError::Internal)
+    }
+}
+
+fn decode_access(access: &DeviceAccess) -> DeviceResult<(X86Port, x86_vlapic::X86AccessWidth)> {
+    if access.bus() != BusKind::Port {
+        return Err(DeviceError::OutOfRange {
+            addr: access.address(),
+        });
+    }
+    let port =
+        X86Port::new(
+            u16::try_from(access.address()).map_err(|_| DeviceError::OutOfRange {
+                addr: access.address(),
+            })?,
+        );
+    Ok((port, x86_access_width(access.width())))
 }

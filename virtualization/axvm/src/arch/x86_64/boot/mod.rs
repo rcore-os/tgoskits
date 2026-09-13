@@ -10,7 +10,7 @@ use super::X86_64Arch;
 #[cfg(not(any(feature = "fs", feature = "host-fs")))]
 use crate::ax_err;
 use crate::{
-    architecture::*,
+    architecture::{capabilities::adjustable_guest_boot_policy, *},
     boot::{acpi::*, images::*, *},
     *,
 };
@@ -21,29 +21,6 @@ mod linux;
 mod linux_boot;
 mod mptable;
 mod multiboot;
-
-pub struct ImageLoader<'a>(ImageLoaderCore<'a>);
-
-impl<'a> ImageLoader<'a> {
-    pub fn new(
-        main_memory: crate::VMMemoryRegion,
-        config: axvmconfig::GuestConfig,
-        vm: crate::AxVMRef,
-        provider: &'a dyn BootImageProvider,
-    ) -> Self {
-        Self(ImageLoaderCore::new(
-            main_memory,
-            config,
-            vm,
-            provider,
-            None,
-        ))
-    }
-
-    pub fn load(&mut self) -> AxVmResult {
-        self.0.load()
-    }
-}
 
 impl BootImagePlatform for X86_64Arch {
     fn default_boot_firmware_load_gpa(config: &axvmconfig::GuestConfig) -> Option<GuestPhysAddr> {
@@ -113,14 +90,14 @@ impl BootImagePlatform for X86_64Arch {
         Ok(())
     }
 
-    fn is_x86_linux_image_config(
+    fn guest_boot_policy(
         config: &axvmconfig::GuestConfig,
         provider: &dyn BootImageProvider,
-    ) -> bool {
+    ) -> crate::config::GuestBootPolicy {
         if !should_direct_boot_linux(config) {
-            return false;
+            return adjustable_guest_boot_policy(config);
         }
-        match config.kernel.image_location.as_deref() {
+        let is_linux_image = match config.kernel.image_location.as_deref() {
             Some("memory") => provider
                 .static_vm_images()
                 .iter()
@@ -135,6 +112,11 @@ impl BootImagePlatform for X86_64Arch {
                     .is_some()
             }
             _ => false,
+        };
+        if is_linux_image {
+            crate::config::GuestBootPolicy::KeepConfigured
+        } else {
+            adjustable_guest_boot_policy(config)
         }
     }
 }
@@ -391,8 +373,14 @@ fn prepare_x86_firmware(
     loader: &ImageLoaderCore<'_>,
     payload: X86FwCfgPayload,
 ) -> AxVmResult<PreparedX86Firmware> {
+    let passthrough_intx_routes = x86_passthrough_intx_routes()?;
     let plan = loader.vm.with_planned_device_graph(|graph| {
-        acpi::X86FirmwarePlan::from_graph(graph, loader.config.base.cpu_num).map_err(|error| {
+        acpi::X86FirmwarePlan::from_graph(
+            graph,
+            loader.config.base.cpu_num,
+            &passthrough_intx_routes,
+        )
+        .map_err(|error| {
             AxVmError::invalid_config(format!(
                 "failed to derive x86 firmware resources from the device graph: {error}"
             ))
@@ -425,6 +413,33 @@ fn prepare_x86_firmware(
         },
     })?;
     Ok(PreparedX86Firmware { plan, direct_acpi })
+}
+
+fn x86_passthrough_intx_routes() -> AxVmResult<std::vec::Vec<acpi::X86PciIntxRoute>> {
+    #[cfg(feature = "host-fs")]
+    {
+        let mut routes = std::vec::Vec::new();
+        let (device, function, pin, guest_gsi) =
+            crate::boot::images::x86_qemu_passthrough_block_intx();
+        if function != 0 || !(1..=4).contains(&pin) {
+            return Err(AxVmError::invalid_config(
+                "x86 passthrough PCI INTx contribution is not a bus-0 function-0 pin",
+            ));
+        }
+        let gsi = u8::try_from(guest_gsi).map_err(|_| {
+            AxVmError::invalid_config("x86 passthrough PCI INTx GSI exceeds firmware encoding")
+        })?;
+        routes.push(acpi::X86PciIntxRoute {
+            device,
+            pin: pin - 1,
+            gsi,
+        });
+        Ok(routes)
+    }
+    #[cfg(not(feature = "host-fs"))]
+    {
+        Ok(std::vec::Vec::new())
+    }
 }
 
 fn fw_cfg_ram_regions(loader: &ImageLoaderCore<'_>) -> Arc<[FwCfgRamRegion]> {
@@ -490,6 +505,7 @@ fn load_linux_layout(
             firmware.plan.apic_ids(),
             firmware.plan.local_apic_base(),
             firmware.plan.io_apic_base(),
+            firmware.plan.pci_intx_routes(),
         ),
         mptable::MP_TABLE_GPA.into(),
         loader.vm.clone(),
@@ -661,7 +677,46 @@ fn write_u64(buffer: &mut [u8], offset: usize, value: u64) {
 
 #[cfg(test)]
 mod tests {
+    use std::boxed::Box;
+
     use super::*;
+
+    struct MemoryImageProvider {
+        images: &'static [StaticVmImage],
+    }
+
+    impl BootImageProvider for MemoryImageProvider {
+        fn static_vm_images(&self) -> &'static [StaticVmImage] {
+            self.images
+        }
+
+        #[cfg(any(feature = "fs", feature = "host-fs"))]
+        fn read_file(&self, _file_name: &str) -> AxVmResult<Vec<u8>> {
+            ax_err!(NotFound, "the policy test provider has no filesystem")
+        }
+    }
+
+    fn memory_provider_with_kernel(kernel: Vec<u8>) -> MemoryImageProvider {
+        let kernel = Box::leak(kernel.into_boxed_slice());
+        let images = Box::leak(
+            vec![StaticVmImage {
+                id: 0,
+                kernel,
+                bios: None,
+                ramdisk: None,
+                dtb: None,
+            }]
+            .into_boxed_slice(),
+        );
+        MemoryImageProvider { images }
+    }
+
+    fn linux_header_image() -> Vec<u8> {
+        let mut image = vec![0u8; linux::HEADER_READ_SIZE];
+        image[0x1fe..0x200].copy_from_slice(&0xaa55u16.to_le_bytes());
+        image[0x202..0x206].copy_from_slice(b"HdrS");
+        image
+    }
 
     #[test]
     fn built_in_bios_uses_default_gpa_when_unspecified() {
@@ -714,5 +769,69 @@ mod tests {
 
         config.kernel.enable_bios = false;
         assert!(should_direct_boot_linux(&config));
+    }
+
+    #[test]
+    fn typed_boot_policy_distinguishes_direct_kernel_images() {
+        let mut config = axvmconfig::GuestConfig::default();
+        config.kernel.image_location = Some("memory".into());
+        let linux_provider = memory_provider_with_kernel(linux_header_image());
+
+        assert_eq!(
+            X86_64Arch::guest_boot_policy(&config, &linux_provider),
+            crate::config::GuestBootPolicy::KeepConfigured
+        );
+        let other_provider = memory_provider_with_kernel(vec![0u8; linux::HEADER_READ_SIZE]);
+        assert_eq!(
+            X86_64Arch::guest_boot_policy(&config, &other_provider),
+            crate::config::GuestBootPolicy::AdjustKernelForBootProtocol {
+                protocol: VMBootProtocol::Direct,
+            }
+        );
+    }
+
+    #[cfg(feature = "host-fs")]
+    #[test]
+    fn host_fs_passthrough_route_is_contributed_to_firmware() {
+        assert_eq!(
+            x86_passthrough_intx_routes().unwrap(),
+            vec![acpi::X86PciIntxRoute {
+                device: 3,
+                pin: 0,
+                gsi: 19,
+            }]
+        );
+    }
+
+    #[cfg(feature = "host-fs")]
+    #[test]
+    fn host_fs_passthrough_route_reaches_the_final_firmware_tables() {
+        use crate::vm::prepare::device_plan::ArchitectureVmPlan;
+
+        let config = AxVMConfig::default_for_test(0, "host-fs-firmware-route");
+        let device_plan = super::vm::test_plan_devices(&config).unwrap();
+        let graph = ArchitectureVmPlan::devices(&device_plan).graph();
+        let routes = x86_passthrough_intx_routes().unwrap();
+        let firmware = acpi::X86FirmwarePlan::from_graph(graph, 1, &routes).unwrap();
+        let route = routes[0];
+
+        let dsdt = acpi::build_dsdt(&firmware).unwrap();
+        assert!(
+            dsdt.windows(4)
+                .any(|window| window == route.acpi_address().to_le_bytes())
+        );
+
+        let mp_table = mptable::build(
+            firmware.apic_ids(),
+            firmware.local_apic_base(),
+            firmware.io_apic_base(),
+            firmware.pci_intx_routes(),
+        );
+        assert!(mp_table.windows(8).any(|entry| {
+            entry[0] == 3
+                && entry[4] == 0
+                && entry[5] == route.mp_source_irq()
+                && entry[7] == route.gsi
+        }));
     }
 }

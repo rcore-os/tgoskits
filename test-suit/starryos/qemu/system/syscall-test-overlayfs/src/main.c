@@ -139,6 +139,12 @@ static void setup_tree(void)
     CHECK(make_path(path, sizeof(path), lower, "xattr_me"),
           "build lower xattr path");
     write_file(path, "lower xattr\n");
+    CHECK(make_path(path, sizeof(path), lower, "readonly_xattr"),
+          "build read-only xattr path");
+    write_file(path, "read-only xattr\n");
+    CHECK(make_path(path, sizeof(path), lower, "missing_xattr"),
+          "build missing xattr path");
+    write_file(path, "missing xattr\n");
     CHECK(make_path(path, sizeof(path), lower, "lower_only"),
           "build lower-only path");
     write_file(path, "lower visible\n");
@@ -162,14 +168,34 @@ static void setup_tree(void)
     write_file(path2, "visible\n");
 }
 
-static void mount_overlay(void)
+static void mount_overlay(unsigned long flags)
 {
     char opts[PATH_MAX * 3];
     int ret = snprintf(opts, sizeof(opts), "lowerdir=%s,upperdir=%s,workdir=%s",
                        lower, upper, work);
     CHECK(ret > 0 && (size_t)ret < sizeof(opts), "build overlay mount data");
-    CHECK(mount("overlay", merged, "overlay", 0, opts) == 0,
+    CHECK(mount("overlay", merged, "overlay", flags, opts) == 0,
           "mount overlay filesystem");
+}
+
+static void test_readonly_xattr_does_not_copy_up(void)
+{
+    char merged_path[PATH_MAX];
+    char upper_path[PATH_MAX];
+
+    CHECK(make_path(merged_path, sizeof(merged_path), merged,
+                    "readonly_xattr"),
+          "build merged read-only xattr path");
+    CHECK(make_path(upper_path, sizeof(upper_path), upper, "readonly_xattr"),
+          "build upper read-only xattr path");
+
+    errno = 0;
+    CHECK(setxattr(merged_path, "user.readonly", "value", 5, 0) == -1 &&
+              errno == EROFS,
+          "read-only setxattr returns EROFS");
+    errno = 0;
+    CHECK(access(upper_path, F_OK) == -1 && errno == ENOENT,
+          "read-only setxattr does not copy up lower file");
 }
 
 static void test_read_dir_merge(void)
@@ -236,6 +262,25 @@ static void test_xattr_copy_up(void)
           "removed xattr stays absent after path relookup");
 }
 
+static void test_missing_removexattr_does_not_copy_up(void)
+{
+    char merged_path[PATH_MAX];
+    char upper_path[PATH_MAX];
+
+    CHECK(make_path(merged_path, sizeof(merged_path), merged,
+                    "missing_xattr"),
+          "build merged missing xattr path");
+    CHECK(make_path(upper_path, sizeof(upper_path), upper, "missing_xattr"),
+          "build upper missing xattr path");
+
+    errno = 0;
+    CHECK(removexattr(merged_path, "user.missing") == -1 && errno == ENODATA,
+          "missing removexattr returns ENODATA");
+    errno = 0;
+    CHECK(access(upper_path, F_OK) == -1 && errno == ENOENT,
+          "missing removexattr does not copy up lower file");
+}
+
 static void test_whiteout_lookup(void)
 {
     char path[PATH_MAX];
@@ -279,10 +324,15 @@ int main(void)
 
     setup_paths();
     setup_tree();
-    mount_overlay();
+    mount_overlay(MS_RDONLY);
+    test_readonly_xattr_does_not_copy_up();
+    CHECK(umount(merged) == 0, "unmount read-only overlay filesystem");
+
+    mount_overlay(0);
     test_read_dir_merge();
     test_copy_up_write();
     test_xattr_copy_up();
+    test_missing_removexattr_does_not_copy_up();
     test_whiteout_lookup();
     test_opaque_lookup();
     CHECK(umount(merged) == 0, "unmount overlay filesystem");

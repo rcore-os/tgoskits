@@ -15,8 +15,10 @@ args = [
 ]
 uefi = false
 to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/mosquitto-smoke-tests.sh"
-success_regex = ["(?m)^MOSQUITTO_SMOKE_TEST_PASSED\\s*$"]
 fail_regex = ['(?i)\\bpanic(?:ked)?\\b', "(?m)^MOSQUITTO_SMOKE_TEST_FAILED\\s*$"]
 timeout = 3600
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/mosquitto-smoke-tests.sh"
+success_regex = ["(?m)^MOSQUITTO_SMOKE_TEST_PASSED\\s*$"]

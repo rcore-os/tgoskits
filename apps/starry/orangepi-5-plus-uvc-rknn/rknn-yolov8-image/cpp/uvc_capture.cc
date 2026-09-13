@@ -130,10 +130,16 @@ static int decode_mjpeg(const LatestFrame &frame, image_buffer_t *image)
         return -1;
     }
 
-    const int size = width * height * 3;
-    unsigned char *buf = reinterpret_cast<unsigned char *>(malloc(size));
+    UvcRgbImageLayout layout;
+    if (!uvc_rgb_image_layout(width, height, &layout)) {
+        printf("invalid MJPEG dimensions: width=%d height=%d\n", width, height);
+        tjDestroy(handle);
+        return -1;
+    }
+
+    unsigned char *buf = reinterpret_cast<unsigned char *>(malloc(layout.size));
     if (buf == NULL) {
-        printf("malloc RGB buffer failed: size=%d\n", size);
+        printf("malloc RGB buffer failed: size=%d\n", layout.size);
         tjDestroy(handle);
         return -1;
     }
@@ -143,9 +149,9 @@ static int decode_mjpeg(const LatestFrame &frame, image_buffer_t *image)
         const_cast<unsigned char *>(frame.data.data()),
         (unsigned long)frame.data.size(),
         buf,
-        width,
-        0,
-        height,
+        layout.width,
+        layout.row_stride,
+        layout.height,
         TJPF_RGB,
         0);
     if (ret != 0 && tjGetErrorCode(handle) != 0) {
@@ -157,13 +163,13 @@ static int decode_mjpeg(const LatestFrame &frame, image_buffer_t *image)
 
     tjDestroy(handle);
     memset(image, 0, sizeof(*image));
-    image->width = width;
-    image->height = height;
-    image->width_stride = width * 3;
-    image->height_stride = height;
+    image->width = layout.width;
+    image->height = layout.height;
+    image->width_stride = layout.row_stride;
+    image->height_stride = layout.height;
     image->format = IMAGE_FORMAT_RGB888;
     image->virt_addr = buf;
-    image->size = size;
+    image->size = layout.size;
     return 0;
 }
 
@@ -171,8 +177,9 @@ static int copy_yuyv_as_rgb(const LatestFrame &frame, image_buffer_t *image)
 {
     const int width = frame.width;
     const int height = frame.height;
-    const size_t min_size = (size_t)width * (size_t)height * 2;
-    if (width <= 0 || height <= 0 || frame.data.size() < min_size) {
+    UvcRgbImageLayout layout;
+    size_t min_size = 0;
+    if (!uvc_yuyv_image_layout(width, height, &layout, &min_size) || frame.data.size() < min_size) {
         printf("invalid YUYV frame size=%zu expected_at_least=%zu width=%d height=%d\n",
                frame.data.size(),
                min_size,
@@ -181,16 +188,16 @@ static int copy_yuyv_as_rgb(const LatestFrame &frame, image_buffer_t *image)
         return -1;
     }
 
-    const int rgb_size = width * height * 3;
-    unsigned char *rgb = reinterpret_cast<unsigned char *>(malloc(rgb_size));
+    unsigned char *rgb = reinterpret_cast<unsigned char *>(malloc(layout.size));
     if (rgb == NULL) {
-        printf("malloc YUYV RGB buffer failed: size=%d\n", rgb_size);
+        printf("malloc YUYV RGB buffer failed: size=%d\n", layout.size);
         return -1;
     }
 
     const unsigned char *src = frame.data.data();
     unsigned char *dst = rgb;
-    for (int i = 0; i < width * height; i += 2) {
+    const size_t pixel_count = static_cast<size_t>(layout.size) / 3;
+    for (size_t i = 0; i < pixel_count; i += 2) {
         int y0 = src[0];
         int u = src[1] - 128;
         int y1 = src[2];
@@ -216,13 +223,13 @@ static int copy_yuyv_as_rgb(const LatestFrame &frame, image_buffer_t *image)
     }
 
     memset(image, 0, sizeof(*image));
-    image->width = width;
-    image->height = height;
-    image->width_stride = width * 3;
-    image->height_stride = height;
+    image->width = layout.width;
+    image->height = layout.height;
+    image->width_stride = layout.row_stride;
+    image->height_stride = layout.height;
     image->format = IMAGE_FORMAT_RGB888;
     image->virt_addr = rgb;
-    image->size = rgb_size;
+    image->size = layout.size;
     return 0;
 }
 

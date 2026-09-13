@@ -19,11 +19,6 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/block-io-bench.sh"
-success_regex = [
-    "(?m)^BLOCK_BENCH_APP_PASSED\\s*$",
-]
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)segmentation fault",
@@ -32,3 +27,10 @@ fail_regex = [
     "(?m)^BLOCK_BENCH_APP_FAILED\\s*$",
 ]
 timeout = 900
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/block-io-bench.sh"
+success_regex = [
+    "(?m)^BLOCK_BENCH_APP_PASSED\\s*$",
+]

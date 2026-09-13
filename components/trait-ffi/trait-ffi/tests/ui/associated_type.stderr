@@ -1,0 +1,5 @@
+error: trait-ffi interfaces only support associated functions
+ --> tests/ui/associated_type.rs:2:23
+  |
+2 | pub trait Interface { type Value; }
+  |                       ^^^^^^^^^^^

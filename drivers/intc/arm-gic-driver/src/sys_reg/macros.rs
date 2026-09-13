@@ -35,7 +35,7 @@ macro_rules! __readable {
                     }
 
                     #[cfg(not(target_arch = "aarch64"))]
-                    () => unimplemented!(),
+                    () => 0,
                 }
             }
         }
@@ -49,7 +49,6 @@ macro_rules! __writeable {
             type R = $register::Register;
 
             #[inline(always)]
-            #[allow(unused_variables)]
             fn set(&self, value: Self::T) {
                 match () {
                     #[cfg(target_arch = "aarch64")]
@@ -58,7 +57,7 @@ macro_rules! __writeable {
                     }
 
                     #[cfg(not(target_arch = "aarch64"))]
-                    () => unimplemented!(),
+                    () => { let _ = value; },
                 }
             }
         }

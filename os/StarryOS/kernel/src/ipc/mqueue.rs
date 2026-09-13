@@ -11,19 +11,20 @@
 use alloc::{
     borrow::Cow,
     collections::{BTreeMap, VecDeque},
+    format,
     string::String,
     sync::Arc,
     vec::Vec,
 };
 use core::{
     sync::atomic::{AtomicU32, AtomicUsize, Ordering},
-    task::Context,
     time::Duration,
 };
 
+use ax_io::SeekFrom;
 use ax_runtime::hal::time::wall_time;
-use ax_task::future::{block_on, poll_io, timeout_at_wall};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use linux_raw_sys::general::{
     O_ACCMODE, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, S_IFREG, SIGEV_NONE, SIGEV_SIGNAL,
     SIGEV_THREAD,
@@ -33,9 +34,10 @@ use starry_signal::{SignalInfo, Signo};
 use crate::{
     Errno, StarryError, StarryResult,
     file::{FileLike, IoDst, IoSrc, Kstat},
-    sync::{IrqMutex, Mutex},
+    sync::{IrqMutex, Mutex, RawSpinLock},
     task::{
-        AsThread, PidIdentity, PidIdentityId, PidNumber, current_pid_view,
+        PidIdentity, PidIdentityId, PidNumber, current_pid_view, current_user_task,
+        future::{UserWaitOutcome, block_on_user_until_wall, poll_io},
         send_signal_to_process_data,
     },
 };
@@ -160,7 +162,7 @@ fn mq_bytes(max_msg: usize, msg_size: usize) -> Option<u64> {
 /// `ucounts` (`inc_rlimit_ucounts(UCOUNT_RLIMIT_MSGQUEUE, ...)`); with no
 /// ucounts abstraction here, a global uid-keyed map is the faithful
 /// equivalent. Entries are removed when a user's charge returns to zero.
-static MQ_USER_BYTES: Mutex<BTreeMap<u32, u64>> = Mutex::new(BTreeMap::new());
+static MQ_USER_BYTES: RawSpinLock<BTreeMap<u32, u64>> = RawSpinLock::new(BTreeMap::new());
 
 /// Charge `bytes` for `uid` against `limit` (the caller's `RLIMIT_MSGQUEUE`
 /// soft limit). Returns `EMFILE` without mutating state when the charge would
@@ -392,6 +394,8 @@ struct Inner {
 /// the name registry. `PollSet`s drive the blocking `mq_timedsend` /
 /// `mq_timedreceive` paths the same way `EventFd` does.
 pub struct MessageQueue {
+    /// Sleepable task-context state. Hard IRQ paths never inspect POSIX
+    /// message queues; they publish into their own bounded endpoints instead.
     inner: Mutex<Inner>,
     /// Owner uid, captured from `current_fsuid` at creation and checked against
     /// the caller on a later `mq_open`. Linux keeps it in the mqueue inode.
@@ -500,6 +504,17 @@ impl MessageQueue {
         }
     }
 
+    /// Reject a send larger than this queue's fixed `mq_msgsize` before its
+    /// caller copies the user payload. Linux performs this check before
+    /// `load_msg()` in `do_mq_timedsend` so an oversize send is `EMSGSIZE`, even
+    /// when its user pointer is otherwise invalid.
+    pub fn check_send_len(&self, msg_len: usize) -> StarryResult<()> {
+        if msg_len > self.inner.lock().msg_size {
+            return Err(Errno::EMSGSIZE.into());
+        }
+        Ok(())
+    }
+
     /// Send a message. Blocks while full unless `O_NONBLOCK`, honoring the
     /// optional absolute `CLOCK_REALTIME` deadline.
     ///
@@ -515,12 +530,7 @@ impl MessageQueue {
         if priority >= MQ_PRIO_MAX {
             return Err(Errno::EINVAL.into());
         }
-        {
-            let inner = self.inner.lock();
-            if data.len() > inner.msg_size {
-                return Err(Errno::EMSGSIZE.into());
-            }
-        }
+        self.check_send_len(data.len())?;
 
         let op = || {
             let mut inner = self.inner.lock();
@@ -566,11 +576,16 @@ impl MessageQueue {
             Ok(())
         };
 
-        block_on(timeout_at_wall(
+        let task = current_user_task();
+        match block_on_user_until_wall(
+            &task,
             deadline,
             poll_io(self, IoEvents::OUT, non_blocking, op),
-        ))
-        .map_err(|_| StarryError::from(Errno::ETIMEDOUT))?
+        ) {
+            UserWaitOutcome::Ready(result) => result,
+            UserWaitOutcome::Interrupted => Err(crate::StarryError::Interrupted),
+            UserWaitOutcome::TimedOut => Err(crate::Errno::ETIMEDOUT.into()),
+        }
     }
 
     /// Receive the highest-priority, earliest message. Blocks while empty
@@ -629,15 +644,17 @@ impl MessageQueue {
             }
         };
 
-        // Flatten the outer timeout error (`Elapsed` -> ETIMEDOUT) and the inner
-        // `poll_io` result (Ok, or Err(Interrupted)=EINTR, or Err(WouldBlock)=
-        // EAGAIN for O_NONBLOCK) into one result.
-        let result = match block_on(timeout_at_wall(
+        // Preserve operation, interruption, and timeout as distinct outcomes
+        // until the Linux errno boundary.
+        let task = current_user_task();
+        let result = match block_on_user_until_wall(
+            &task,
             deadline,
             poll_io(self, IoEvents::IN, non_blocking, op),
-        )) {
-            Ok(inner_result) => inner_result,
-            Err(_) => Err(StarryError::from(Errno::ETIMEDOUT)),
+        ) {
+            UserWaitOutcome::Ready(result) => result,
+            UserWaitOutcome::Interrupted => Err(crate::StarryError::Interrupted),
+            UserWaitOutcome::TimedOut => Err(crate::Errno::ETIMEDOUT.into()),
         };
 
         match result {
@@ -786,16 +803,32 @@ impl MessageQueue {
         let now = wall_time();
         inner.atime = now;
         inner.ctime = now;
-        let qsize = Self::qsize_of(&inner);
-        match &inner.notify {
-            // Linux prints SIGNO only for a `SIGEV_SIGNAL` registration; any
-            // other kind reports 0 (ipc/mqueue.c `mqueue_read_file`).
-            Some(n) => {
-                let signo = if n.notify == SIGEV_SIGNAL { n.signo } else { 0 };
-                (qsize, n.notify, signo, n.owner_number.get())
-            }
-            None => (qsize, 0, 0, 0),
-        }
+        Self::status_fields(&inner)
+    }
+
+    /// Render the status line exposed through `/dev/mqueue/<name>`. The
+    /// padded columns match Linux's `mqueue_read_file` format exactly.
+    pub fn status_line(&self) -> String {
+        let (qsize, notify, signo, notify_pid) = self.report();
+        format_status_line(qsize, notify, signo, notify_pid)
+    }
+
+    /// Render one status-line snapshot without changing timestamps. An mqueue
+    /// descriptor updates atime+ctime only after a successful non-empty
+    /// `read(2)`, so it uses this before writing the caller's buffer.
+    fn status_line_snapshot(&self) -> String {
+        let inner = self.inner.lock();
+        let (qsize, notify, signo, notify_pid) = Self::status_fields(&inner);
+        format_status_line(qsize, notify, signo, notify_pid)
+    }
+
+    /// Record a successful status-file read, corresponding to Linux's
+    /// `inode_set_atime_to_ts(inode, inode_set_ctime_current(inode))`.
+    fn touch_status_read(&self) {
+        let now = wall_time();
+        let mut inner = self.inner.lock();
+        inner.atime = now;
+        inner.ctime = now;
     }
 
     /// The queue's owner uid (creator `fsuid`), for `/dev/mqueue` stat.
@@ -855,6 +888,19 @@ impl MessageQueue {
             .sum()
     }
 
+    /// The four Linux `mqueue_read_file` fields, in printed order. `SIGNO` is
+    /// reported only for `SIGEV_SIGNAL` registrations.
+    fn status_fields(inner: &Inner) -> (usize, u32, u32, u32) {
+        let qsize = Self::qsize_of(inner);
+        match &inner.notify {
+            Some(n) => {
+                let signo = if n.notify == SIGEV_SIGNAL { n.signo } else { 0 };
+                (qsize, n.notify, signo, n.owner_number.get())
+            }
+            None => (qsize, 0, 0, 0),
+        }
+    }
+
     /// Bump atime+ctime to now, for the `mq_setattr` path which Linux
     /// timestamps with `inode_set_atime_to_ts(inode,
     /// inode_set_ctime_current(inode))` (ipc/mqueue.c:1420).
@@ -895,6 +941,12 @@ impl Inner {
     }
 }
 
+/// Linux's `mqueue_read_file` uses these minimum field widths. Values wider
+/// than a field are intentionally not truncated, just as `snprintf` does.
+fn format_status_line(qsize: usize, notify: u32, signo: u32, notify_pid: u32) -> String {
+    format!("QSIZE:{qsize:<10} NOTIFY:{notify:<5} SIGNO:{signo:<5} NOTIFY_PID:{notify_pid:<6}\n")
+}
+
 /// Fire an `mq_notify` delivery on the empty -> non-empty edge, per
 /// `__do_notify` (ipc/mqueue.c:777). `SIGEV_SIGNAL` raises a signal,
 /// `SIGEV_THREAD` pushes the `NOTIFY_WOKENUP` cookie over the netlink socket,
@@ -909,7 +961,7 @@ fn deliver_notification(n: &Notification) {
             // that enqueued the message driving the empty -> non-empty edge) and
             // si_value to the registrant's `sigev_value`. This runs in the
             // sender's context (`send` drives it on the current task).
-            let sender = ax_task::current();
+            let sender = crate::task::current_user_task();
             let sender_identity = sender.as_thread().proc_data.identity();
             let sender_pid = current_pid_view()
                 .visible_number(&sender_identity)
@@ -990,12 +1042,29 @@ impl Pollable for MessageQueue {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
-            unsafe { self.poll_recv.register(context.waker(), IoEvents::IN) };
+            unsafe { sink.register_shared(&self.poll_recv, IoEvents::IN) };
         }
         if events.contains(IoEvents::OUT) {
-            unsafe { self.poll_send.register(context.waker(), IoEvents::OUT) };
+            unsafe { sink.register_shared(&self.poll_send, IoEvents::OUT) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { sink.register_exclusive(&self.poll_recv, IoEvents::IN) };
+        }
+        if events.contains(IoEvents::OUT) {
+            unsafe { sink.register_exclusive(&self.poll_send, IoEvents::OUT) };
         }
     }
 }
@@ -1013,6 +1082,10 @@ pub struct MqDescriptor {
     /// `O_NONBLOCK` is the only bit `mq_setattr` may toggle. Atomic so a
     /// `mq_setattr` here never disturbs a sibling descriptor of the same queue.
     flags: AtomicU32,
+    /// The status-file read offset carried by this open file description. Linux
+    /// backs `mqd_t` with an mqueuefs file, whose `read(2)` and `lseek(2)` share
+    /// `file->f_pos`; sibling `mq_open` descriptors must not share it.
+    read_offset: Mutex<u64>,
 }
 
 impl MqDescriptor {
@@ -1020,6 +1093,7 @@ impl MqDescriptor {
         Self {
             queue,
             flags: AtomicU32::new(flags),
+            read_offset: Mutex::new(0),
         }
     }
 
@@ -1057,9 +1131,59 @@ impl MqDescriptor {
     pub fn flags(&self) -> u32 {
         self.flags.load(Ordering::Acquire)
     }
+
+    /// Seek the mqueue status-file offset, matching Linux's `default_llseek`
+    /// attached to `mqueue_file_operations`. `SEEK_END` is relative to the
+    /// mqueue inode's fixed `FILENT_SIZE`, not the rendered line length.
+    pub fn seek_status(&self, pos: SeekFrom) -> StarryResult<u64> {
+        let mut offset = self.read_offset.lock();
+        let next = match pos {
+            SeekFrom::Start(next) => next,
+            SeekFrom::Current(delta) => offset.checked_add_signed(delta).ok_or(Errno::EINVAL)?,
+            SeekFrom::End(delta) => self
+                .queue
+                .inode_size()
+                .checked_add_signed(delta)
+                .ok_or(Errno::EINVAL)?,
+        };
+        if next > i64::MAX as u64 {
+            return Err(Errno::EOVERFLOW.into());
+        }
+        *offset = next;
+        Ok(next)
+    }
 }
 
 impl FileLike for MqDescriptor {
+    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
+        // The VFS rejects reads through an O_WRONLY file before dispatching to
+        // `mqueue_read_file`; StarryOS's generic `sys_read` dispatches directly
+        // to FileLike, so the descriptor must provide that gate itself.
+        if self.access() == O_WRONLY {
+            return Err(Errno::EBADF.into());
+        }
+
+        // Linux rebuilds the status line for each `mqueue_read_file` call, then
+        // `simple_read_from_buffer` copies from the current file offset. Take
+        // the queue snapshot before touching user memory and hold only this
+        // descriptor's offset lock across the copy; never hold `inner` while a
+        // user-buffer write can fault.
+        let status = self.queue.status_line_snapshot();
+        let copied = {
+            let mut offset = self.read_offset.lock();
+            let start = (*offset as usize).min(status.len());
+            let copied = dst.write(&status.as_bytes()[start..])?;
+            *offset += copied as u64;
+            copied
+        };
+        if copied != 0 {
+            // Linux updates atime+ctime only after `simple_read_from_buffer`
+            // copied at least one byte successfully.
+            self.queue.touch_status_read();
+        }
+        Ok(copied)
+    }
+
     fn stat(&self) -> StarryResult<Kstat> {
         // `fstat(mqd)` reports the underlying mqueue inode (Linux returns the
         // mqueuefs inode's mode/uid/gid/size/times).
@@ -1095,13 +1219,27 @@ impl Pollable for MqDescriptor {
         self.queue.poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.queue.register(context, events)
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.queue.register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.queue.register_exclusive(sink, events) };
     }
 }
 
 /// Global `name -> queue` registry. `mq_open` binds names here; `mq_unlink`
-/// removes the binding while descriptors keep the `Arc` alive.
+/// removes the binding while descriptors keep the `Arc` alive. Name lookup and
+/// mutation only run from syscall/VFS task context, so contention may sleep
+/// instead of extending an IRQ-disabled critical section.
 pub static MQ_REGISTRY: Mutex<BTreeMap<String, Arc<MessageQueue>>> = Mutex::new(BTreeMap::new());
 
 /// Validate a POSIX message-queue name.

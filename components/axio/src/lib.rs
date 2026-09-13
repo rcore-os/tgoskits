@@ -10,10 +10,6 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-#[cfg(all(axtest, feature = "axtest"))]
-/// Coverage tests for I/O traits and adapters.
-pub mod axtest;
-
 mod error;
 
 pub use error::{Error, ErrorKind, IoError, IoResult, Result};
@@ -38,6 +34,10 @@ pub struct PollState {
     pub readable: bool,
     /// Object can be writen now.
     pub writable: bool,
-    /// Monotonic token changed when the object's readiness may have changed.
-    pub readiness_version: u64,
+    /// Monotonic token changed when the object's read readiness may have
+    /// changed.
+    pub read_readiness_version: u64,
+    /// Monotonic token changed when the object's write readiness may have
+    /// changed.
+    pub write_readiness_version: u64,
 }

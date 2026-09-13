@@ -11,7 +11,6 @@ args = [
 # Keep the boot contract explicit instead of relying on axbuild rewriting it.
 uefi = true
 to_bin = true
-success_regex = ["ArceOS C test suite run OK!"]
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "ARCEOS_C_TEST_FAIL"]
 timeout = 120
 
@@ -19,3 +18,6 @@ timeout = 120
 bind = "127.0.0.1"
 port = 18280
 body = "ArceOS C test suite host fixture\n"
+
+[[shell_check_steps]]
+success_regex = ["ArceOS C test suite run OK!"]

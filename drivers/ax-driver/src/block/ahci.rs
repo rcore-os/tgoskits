@@ -70,7 +70,8 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     });
     let name = format!("ahci-pci-{:?}", probe.info().address);
     let mmio = map_mmio(bar.start, bar.count().max(1))?;
-    let host = create_host(name, mmio, AhciConfig::generic())?;
+    let dma = crate::pci::device_dma(probe.info(), u64::MAX);
+    let host = create_host(name, mmio, dma, AhciConfig::generic())?;
     probe.register_block_group(host, PciIrqRequirement::Required)?;
     Ok(())
 }
@@ -96,7 +97,12 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let config = fdt_profile(info);
     let name = format!("ahci-fdt-{}-{address:x}", info.node.name());
     let mmio = map_mmio(address, size)?;
-    let host = create_host(name, mmio, config)?;
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+        dma_api::DmaConstraints::new(u64::MAX),
+    ));
+    let host = create_host(name, mmio, dma, config)?;
     let (_, platform) = probe.into_parts();
     platform.register_block_group_with_info(host, binding);
     Ok(())
@@ -137,8 +143,12 @@ fn map_mmio(address: usize, size: usize) -> Result<Mmio, OnProbeError> {
         .map_err(|error| OnProbeError::other(format!("AHCI MMIO mapping failed: {error:?}")))
 }
 
-fn create_host(name: String, mmio: Mmio, config: AhciConfig) -> Result<AhciHost, OnProbeError> {
-    let dma: DeviceDma = axklib::dma::device_with_mask(u64::MAX);
+fn create_host(
+    name: String,
+    mmio: Mmio,
+    dma: DeviceDma,
+    config: AhciConfig,
+) -> Result<AhciHost, OnProbeError> {
     let host = AhciHost::new(name, mmio, dma, config)
         .map_err(|error| OnProbeError::other(format!("AHCI host creation failed: {error}")))?;
     info!("registered portable AHCI controller group {}", host.name());

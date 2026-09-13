@@ -46,11 +46,11 @@ sidebar_label: "贡献指南"
 #### 代码规范
 - 遵循 [Rust 官方代码风格](https://rust-lang.github.io/api-guidelines/)
 - 使用 `cargo fmt` 格式化代码
-- 使用 `cargo clippy` 检查代码质量
+- 使用 `cargo xtask clippy` 检查代码质量
 - 提交前建议额外运行 `cargo xtask sync-lint`，检查可疑的原子同步内存序用法；如果被该检查阻止，可参考[同步内存序检查](/community/sync-lint)
 - 对系统构建、运行和测试，优先使用 `cargo xtask` 提供的统一入口
 - 为公共 API 编写文档注释
-- 为新功能添加测试
+- 优先复用或增强已有完整功能测试，缺少独立行为证明时才新增；规则见仓库 [test-quality](https://github.com/rcore-os/tgoskits/blob/dev/.agents/skills/test-quality/SKILL.md)
 
 #### 提交 Pull Request
 1. 确保您的代码与主分支保持最新：
@@ -82,12 +82,14 @@ sidebar_label: "贡献指南"
 - 改进文档结构和导航
 
 ### 测试贡献
-测试是确保代码质量的关键：
+测试贡献以最少且充分的用例验证完整通用功能，按仓库 [test-quality](https://github.com/rcore-os/tgoskits/blob/dev/.agents/skills/test-quality/SKILL.md) 选择层级与去重；不以测试数量或覆盖率增长作为目标。
 
-- 编写单元测试
-- 添加集成测试
-- 改进测试覆盖率
-- 报告测试相关问题
+- 算法、数据结构和业务逻辑的单元测试放在对应源码末尾的 `#[cfg(test)] mod tests`。
+- `{crate}/tests/` 的集成测试只通过公开 API 验证能力，不用 `#[path]` 或其他源码包含方式引入生产实现，也不为测试扩大公开接口。
+- 删除独立参数回读、默认值复述和固定配置清单检查；有实际后果的错误输入并入所属功能验证。
+- 修复错误优先复用或增强已有测试，保留同一测试在错误实现上失败、修复后通过的证据；新增配置、取值或历史问题不自动新增测试。
+
+测试应验证真实实现及可观察结果。系统调用、调度和硬件行为通过相应项目测试套件取得真实运行证据，发现与失败传播要求继续遵循 `AGENTS.md`。
 
 ## 开发指南
 

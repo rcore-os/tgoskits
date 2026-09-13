@@ -75,29 +75,6 @@ macro_rules! def_test_sched {
             }
 
             #[test]
-            fn bench_yield() {
-                const NUM_TASKS: usize = 1_000_000;
-                const COUNT: usize = NUM_TASKS * 3;
-
-                let mut scheduler = <$scheduler>::new();
-                for i in 0..NUM_TASKS {
-                    scheduler.add_task(Arc::new(<$task>::new(i)));
-                }
-
-                let t0 = std::time::Instant::now();
-                for _ in 0..COUNT {
-                    let next = scheduler.pick_next_task().unwrap();
-                    scheduler.put_prev_task(next, false);
-                }
-                let t1 = std::time::Instant::now();
-                println!(
-                    "  {}: task yield speed: {:?}/task",
-                    stringify!($scheduler),
-                    (t1 - t0) / (COUNT as u32)
-                );
-            }
-
-            #[test]
             fn bench_remove() {
                 const NUM_TASKS: usize = 10_000;
 

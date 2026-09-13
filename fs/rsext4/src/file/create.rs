@@ -1,32 +1,71 @@
 use super::*;
+use crate::dir::{CreateEntryRequest, FileName, insert_dir_entry_raw};
 
-fn discard_unpublished_inode_blocks<B: BlockDevice>(
+// Linux ext4_create/ext4_mkdir/ext4_symlink reserve DATA_TRANS_BLOCKS,
+// INDEX_EXTRA_TRANS_BLOCKS, and three inode-allocation buffers. Writable quota
+// is not implemented, so extent filesystems reserve 24 + 12 + 3 blocks.
+const CREATE_TRANSACTION_CREDITS: usize = 39;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CreateInodePayload<'a> {
+    Empty,
+    Data(&'a [u8]),
+    Device(DeviceNumber),
+}
+
+struct CreatedInode {
+    number: InodeNumber,
+    inode: Ext4Inode,
+    data_blocks: Vec<AbsoluteBN>,
+}
+
+pub(crate) fn discard_unpublished_inode_blocks<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
     data_blocks: &[AbsoluteBN],
-) {
+) -> Ext4Result<()> {
+    let mut first_error = None;
     for &blk in data_blocks {
         fs.datablock_cache.invalidate(blk);
-        if let Err(e) = fs.free_block(device, blk) {
-            warn!("discard unpublished file block failed block={blk} err={e:?} ({e})");
+        if let Err(error) = fs.free_block(device, blk)
+            && first_error.is_none()
+        {
+            first_error = Some(error);
         }
+    }
+    match first_error {
+        Some(error) => Err(error.with_operation("rollback:file_blocks")),
+        None => Ok(()),
     }
 }
 
-fn discard_unpublished_inode<B: BlockDevice>(
+pub(crate) fn discard_unpublished_inode<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
     inode_num: InodeNumber,
     data_blocks: &[AbsoluteBN],
-) {
-    discard_unpublished_inode_blocks(fs, device, data_blocks);
-    if let Err(e) = fs.free_inode(device, inode_num) {
-        warn!("discard unpublished inode failed ino={inode_num} err={e:?} ({e})");
+) -> Ext4Result<()> {
+    let block_result = discard_unpublished_inode_blocks(fs, device, data_blocks);
+    let inode_result = fs.free_inode(device, inode_num);
+    match (block_result, inode_result) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(error.with_operation("rollback:file_inode")),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+pub(crate) fn error_after_cleanup(
+    operation_error: Ext4Error,
+    cleanup: Ext4Result<()>,
+) -> Ext4Error {
+    match cleanup {
+        Ok(()) => operation_error,
+        Err(cleanup_error) => cleanup_error,
     }
 }
 
 /// Create a symbolic link (root-owned).
-pub fn create_symbol_link<B: BlockDevice>(
+pub fn create_symbol_link<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     src_path: &str,
@@ -36,7 +75,7 @@ pub fn create_symbol_link<B: BlockDevice>(
 }
 
 /// Create a symbolic link with explicit uid/gid ownership.
-pub fn create_symbol_link_with_owner<B: BlockDevice>(
+pub fn create_symbol_link_with_owner<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     src_path: &str,
@@ -68,122 +107,33 @@ pub fn create_symbol_link_with_owner<B: BlockDevice>(
         ("/".to_string(), dst_norm)
     };
 
-    let (parent_ino_num, parent_inode) =
-        match get_inode_with_num(fs, device, &parent).ok().flatten() {
-            Some(v) => v,
-            None => return Err(Ext4Error::invalid_input()),
-        };
+    let (parent_ino_num, parent_inode) = match get_inode_with_num(fs, device, &parent)? {
+        Some(v) => v,
+        None => return Err(Ext4Error::invalid_input()),
+    };
     if !parent_inode.is_dir() {
         return Err(Ext4Error::invalid_input());
     }
 
-    // Allocate and populate the new symlink inode.
-    let new_ino = fs.alloc_inode(device)?;
-
-    let target_bytes = src_path.as_bytes();
-    let target_len = target_bytes.len();
-    let size_lo = (target_len as u64 & 0xffffffff) as u32;
-    let size_hi = ((target_len as u64) >> 32) as u32;
     let symlink_mode = Ext4Inode::S_IFLNK | 0o777;
-
-    let mut new_inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
-    new_inode.i_links_count = 1;
-    new_inode.i_size_lo = size_lo;
-    new_inode.i_size_high = size_hi;
-    new_inode.i_flags = Ext4Inode::mask_flags_for_mode(
-        symlink_mode,
-        parent_inode.i_flags & Ext4Inode::EXT4_FL_INHERITED,
-    );
-
-    if target_len == 0 {
-        new_inode.i_blocks_lo = 0;
-        new_inode.l_i_blocks_high = 0;
-        new_inode.i_block = [0; 15];
-    } else if target_len < 60 {
-        // Fast symlink: store the target directly inside `i_block`.
-        let mut raw = [0u8; 60];
-        raw[..target_len].copy_from_slice(target_bytes);
-        for i in 0..15 {
-            new_inode.i_block[i] =
-                u32::from_le_bytes([raw[i * 4], raw[i * 4 + 1], raw[i * 4 + 2], raw[i * 4 + 3]]);
-        }
-        new_inode.i_blocks_lo = 0;
-        new_inode.l_i_blocks_high = 0;
-    } else {
-        // Long symlink: spill the target path into data blocks.
-        let mut data_blocks: Vec<AbsoluteBN> = Vec::new();
-        let mut remaining = target_len;
-        let mut src_off = 0usize;
-
-        while remaining > 0 {
-            if !fs.superblock.has_extents() && data_blocks.len() >= 12 {
-                discard_unpublished_inode(fs, device, new_ino, &data_blocks);
-                return Err(Ext4Error::unsupported());
-            }
-
-            let blk = fs.alloc_block(device)?;
-            let write_len = core::cmp::min(remaining, BLOCK_SIZE);
-            if let Err(e) = fs.datablock_cache.modify_new(device, blk, |data| {
-                for b in data.iter_mut() {
-                    *b = 0;
-                }
-                let end = src_off + write_len;
-                data[..write_len].copy_from_slice(&target_bytes[src_off..end]);
-            }) {
-                fs.datablock_cache.invalidate(blk);
-                if let Err(free_err) = fs.free_block(device, blk) {
-                    warn!(
-                        "discard failed symlink block failed block={blk} err={free_err:?} \
-                         ({free_err})"
-                    );
-                }
-                discard_unpublished_inode(fs, device, new_ino, &data_blocks);
-                return Err(e);
-            }
-
-            data_blocks.push(blk);
-            remaining -= write_len;
-            src_off += write_len;
-        }
-
-        let used_datablocks = data_blocks.len() as u64;
-        let iblocks_used = used_datablocks.saturating_mul(BLOCK_SIZE as u64 / 512) as u32;
-        new_inode.i_blocks_lo = iblocks_used;
-        new_inode.l_i_blocks_high = 0; // iblocks_used is u32, so high part is 0
-
-        build_file_block_mapping_with_inode_num(fs, &mut new_inode, new_ino, &data_blocks, device)?;
-    }
-
-    let mut create_update = Ext4InodeMetadataUpdate::create(symlink_mode);
-    create_update.uid = Some(uid);
-    create_update.gid = Some(gid);
-    if fs
-        .superblock
-        .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_PROJECT)
-        && parent_inode.i_flags & Ext4Inode::EXT4_PROJINHERIT_FL != 0
-    {
-        create_update.projid = Some(parent_inode.i_projid);
-    }
-
-    fs.finalize_inode_update(device, new_ino, &mut new_inode, create_update)?;
-
-    // Publish the new symlink by inserting its directory entry.
-    let mut parent_inode_copy = parent_inode;
-    insert_dir_entry(
-        fs,
+    create_inode_at(
         device,
-        parent_ino_num,
-        &mut parent_inode_copy,
-        new_ino,
-        &child,
+        fs,
+        CreateEntryRequest {
+            parent: parent_ino_num,
+            name: FileName::new(child.as_bytes())?,
+            mode: symlink_mode,
+            uid,
+            gid,
+        },
+        CreateInodePayload::Data(src_path.as_bytes()),
         Ext4DirEntry2::EXT4_FT_SYMLINK,
-    )?;
-
-    Ok(())
+    )
+    .map(|_| ())
 }
 
 /// Create a file entry, creating missing parent directories on demand (root-owned).
-pub fn mkfile<B: BlockDevice>(
+pub fn mkfile<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -193,100 +143,137 @@ pub fn mkfile<B: BlockDevice>(
     mkfile_with_owner(device, fs, path, initial_data, file_type, 0, 0)
 }
 
-/// Create a file entry with explicit uid/gid ownership.
-pub fn mkfile_with_owner<B: BlockDevice>(
+/// Creates one non-directory inode below an already resolved parent.
+pub(crate) fn create_inode_at<B: BlockIo>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
-    path: &str,
-    initial_data: Option<&[u8]>,
-    file_type: Option<u8>,
-    uid: u32,
-    gid: u32,
+    request: CreateEntryRequest<'_>,
+    payload: CreateInodePayload<'_>,
+    file_type: u8,
 ) -> Ext4Result<Ext4Inode> {
-    // Normalize first so all later path splitting uses one canonical form.
-    let norm_path = normalize_path(path);
-    if norm_path.is_empty() || norm_path == "/" {
+    let counters_before = fs.group_counter_snapshot();
+    fs.with_metadata_transaction(device, CREATE_TRANSACTION_CREDITS, |fs, device| {
+        let created = create_inode_at_inner(device, fs, request, payload, file_type)?;
+
+        // Ordered create writes initialized payload blocks before the metadata
+        // transaction can commit their inode mapping and directory entry.
+        for &block in &created.data_blocks {
+            fs.datablock_cache.flush(device, block)?;
+        }
+        fs.inodetable_cache.flush(device, created.number)?;
+        fs.inodetable_cache.flush(device, request.parent)?;
+        fs.flush_changed_group_metadata(device, &counters_before)?;
+        fs.sync_superblock(device)?;
+        Ok(created.inode)
+    })
+}
+
+fn create_inode_at_inner<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    request: CreateEntryRequest<'_>,
+    payload: CreateInodePayload<'_>,
+    file_type: u8,
+) -> Ext4Result<CreatedInode> {
+    if request.name.is_reserved() || request.mode & Ext4Inode::S_IFMT == Ext4Inode::S_IFDIR {
         return Err(Ext4Error::invalid_input());
     }
-
-    // Refuse to overwrite an existing entry.
-    if get_file_inode(fs, device, &norm_path)?.is_some() {
-        return Err(Ext4Error::already_exists());
+    let inode_type = request.mode & Ext4Inode::S_IFMT;
+    if directory_entry_type_for_mode(request.mode) != Some(file_type) {
+        return Err(Ext4Error::invalid_input().with_operation("inode:create_file_type"));
     }
-
-    // Split the normalized path into parent directory and leaf name.
-    let mut valid_path = norm_path;
-    let split_point = match valid_path.rfind('/') {
-        Some(v) => v,
-        None => return Err(Ext4Error::invalid_input()),
+    let supports_data_mapping = matches!(inode_type, Ext4Inode::S_IFREG | Ext4Inode::S_IFLNK);
+    let (initial_data, device_number, fast_symlink) = match (inode_type, payload) {
+        (Ext4Inode::S_IFREG, CreateInodePayload::Empty) => (None, None, None),
+        (Ext4Inode::S_IFREG, CreateInodePayload::Data(data)) => (Some(data), None, None),
+        (Ext4Inode::S_IFLNK, CreateInodePayload::Empty) => (None, None, Some(&[][..])),
+        (Ext4Inode::S_IFLNK, CreateInodePayload::Data(data)) if data.len() < 60 => {
+            (None, None, Some(data))
+        }
+        (Ext4Inode::S_IFLNK, CreateInodePayload::Data(data)) => (Some(data), None, None),
+        (Ext4Inode::S_IFCHR | Ext4Inode::S_IFBLK, CreateInodePayload::Device(device)) => {
+            (None, Some(device), None)
+        }
+        (Ext4Inode::S_IFIFO | Ext4Inode::S_IFSOCK, CreateInodePayload::Empty) => (None, None, None),
+        _ => return Err(Ext4Error::invalid_input().with_operation("inode:create_payload")),
     };
-    let child = valid_path.split_off(split_point)[1..].to_string();
-    if child.is_empty() {
-        return Err(Ext4Error::invalid_input());
+    let uses_extent_mapping = supports_data_mapping && fast_symlink.is_none();
+    let parent_inode = fs.get_inode_by_num(device, request.parent)?;
+    if !parent_inode.is_dir() {
+        return Err(Ext4Error::not_dir());
     }
-    let parent = if valid_path.is_empty() {
-        "/".to_string()
-    } else {
-        valid_path
-    };
-
-    // Create missing parent directories before allocating the file inode.
-    ensure_directory(device, fs, &parent, uid, gid)?;
-
-    // Reload the parent inode after directory creation so we use the final
-    // parent metadata and inode number.
-    let (parent_ino_num, parent_inode) =
-        get_inode_with_num(fs, device, &parent)?.ok_or(Ext4Error::not_found())?;
+    match find_named_entry_in_parent(
+        fs,
+        device,
+        request.parent,
+        &parent_inode,
+        request.name.as_bytes(),
+    ) {
+        Ok(_) => return Err(Ext4Error::already_exists()),
+        Err(error) if error.kind() == Ext4ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
 
     // Allocate the inode before writing any initial data blocks.
     let new_file_ino = fs.alloc_inode(device)?;
 
     // Materialize the initial file payload block by block.
+    let block_size = fs.block_size();
     let mut data_blocks: Vec<AbsoluteBN> = Vec::new();
-    let mut total_written: usize = 0;
+    let total_written = fast_symlink
+        .map(|target| target.len())
+        .or_else(|| initial_data.map(|data| data.len()))
+        .unwrap_or(0);
     if let Some(buf) = initial_data {
-        let mut remaining = buf.len();
+        let mut remaining = if inode_type == Ext4Inode::S_IFLNK {
+            buf.len().checked_add(1).ok_or_else(Ext4Error::overflow)?
+        } else {
+            buf.len()
+        };
         let mut src_off = 0usize;
 
         while remaining > 0 {
             // Non-extent files only support the 12 direct pointers here.
             if !fs.superblock.has_extents() && data_blocks.len() >= 12 {
-                discard_unpublished_inode(fs, device, new_file_ino, &data_blocks);
-                return Err(Ext4Error::unsupported());
+                let error = error_after_cleanup(
+                    Ext4Error::unsupported(),
+                    discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
+                );
+                return Err(error);
             }
 
             let blk = match fs.alloc_block(device) {
                 Ok(b) => b,
                 Err(e) => {
-                    error!("mkfile alloc_block failed path={path} err={e:?} ({e})");
-                    discard_unpublished_inode(fs, device, new_file_ino, &data_blocks);
-                    return Err(e);
+                    let error = error_after_cleanup(
+                        e,
+                        discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
+                    );
+                    return Err(error);
                 }
             };
 
-            let write_len = core::cmp::min(remaining, BLOCK_SIZE);
+            let write_len = core::cmp::min(remaining, block_size);
 
             // Zero-fill each new block and copy the live payload prefix into it.
             if let Err(e) = fs.datablock_cache.modify_new(device, blk, |data| {
                 for b in data.iter_mut() {
                     *b = 0;
                 }
-                let end = src_off + write_len;
-                data[..write_len].copy_from_slice(&buf[src_off..end]);
+                let copy_len = core::cmp::min(write_len, buf.len().saturating_sub(src_off));
+                let end = src_off + copy_len;
+                data[..copy_len].copy_from_slice(&buf[src_off..end]);
             }) {
                 fs.datablock_cache.invalidate(blk);
-                if let Err(free_err) = fs.free_block(device, blk) {
-                    warn!(
-                        "discard failed file block failed path={path} block={blk} \
-                         err={free_err:?} ({free_err})"
-                    );
-                }
-                discard_unpublished_inode(fs, device, new_file_ino, &data_blocks);
-                return Err(e);
+                data_blocks.push(blk);
+                let error = error_after_cleanup(
+                    e,
+                    discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
+                );
+                return Err(error);
             }
 
             data_blocks.push(blk);
-            total_written += write_len;
             remaining -= write_len;
             src_off += write_len;
         }
@@ -295,26 +282,29 @@ pub fn mkfile_with_owner<B: BlockDevice>(
     // Build the final inode image in memory, then persist it through the
     // unified metadata finalization path.
     let mut new_inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
-    let imode = if let Some(ft) = file_type {
-        match ft {
-            Ext4DirEntry2::EXT4_FT_SYMLINK => Ext4Inode::S_IFLNK | 0o777,
-            Ext4DirEntry2::EXT4_FT_REG_FILE => Ext4Inode::S_IFREG | 0o644,
-            Ext4DirEntry2::EXT4_FT_DIR => Ext4Inode::S_IFDIR | 0o755,
-            Ext4DirEntry2::EXT4_FT_BLKDEV => Ext4Inode::S_IFBLK | 0o600,
-            Ext4DirEntry2::EXT4_FT_CHRDEV => Ext4Inode::S_IFCHR | 0o600,
-            Ext4DirEntry2::EXT4_FT_FIFO => Ext4Inode::S_IFIFO | 0o644,
-            Ext4DirEntry2::EXT4_FT_SOCK => Ext4Inode::S_IFSOCK | 0o644,
-            _ => Ext4Inode::S_IFREG | 0o644,
+    new_inode.set_mode_full(request.mode);
+    new_inode.i_flags = Ext4Inode::mask_flags_for_mode(
+        request.mode,
+        parent_inode.i_flags & Ext4Inode::EXT4_FL_INHERITED,
+    );
+    if let Some(device_number) = device_number
+        && let Err(error) = new_inode.set_device_number(device_number)
+    {
+        return Err(error_after_cleanup(
+            error,
+            discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
+        ));
+    }
+    if let Some(target) = fast_symlink {
+        let mut inline = [0u8; 60];
+        inline[..target.len()].copy_from_slice(target);
+        for (word, bytes) in new_inode.i_block.iter_mut().zip(inline.as_chunks::<4>().0) {
+            *word = u32::from_le_bytes(*bytes);
         }
-    } else {
-        Ext4Inode::S_IFREG | 0o644
-    };
-
-    new_inode.i_flags =
-        Ext4Inode::mask_flags_for_mode(imode, parent_inode.i_flags & Ext4Inode::EXT4_FL_INHERITED);
+    }
 
     // Extent-enabled files start with an embedded extent root.
-    if fs.superblock.has_extents() {
+    if uses_extent_mapping && fs.superblock.has_extents() {
         new_inode.write_extend_header();
     }
 
@@ -326,37 +316,54 @@ pub fn mkfile_with_owner<B: BlockDevice>(
     if !data_blocks.is_empty() {
         // File starts with allocated data blocks.
         let used_databyte = data_blocks.len() as u64;
-        let iblocks_used = used_databyte.saturating_mul(BLOCK_SIZE as u64 / 512);
-        let used_blocks_lo = iblocks_used as u32;
+        let iblocks_used = used_databyte
+            .checked_mul(block_size as u64 / 512)
+            .ok_or_else(Ext4Error::overflow);
         new_inode.i_size_lo = size_lo;
         new_inode.i_size_high = size_hi;
-        new_inode.i_blocks_lo = used_blocks_lo;
-        new_inode.l_i_blocks_high = (iblocks_used >> 32) as u16;
+        let huge_file_feature = fs
+            .superblock
+            .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
+        if let Err(error) = iblocks_used.and_then(|sectors| {
+            new_inode.set_blocks_count(sectors, block_size as u32, huge_file_feature)
+        }) {
+            let error = error_after_cleanup(
+                error,
+                discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
+            );
+            return Err(error);
+        }
 
-        build_file_block_mapping_with_inode_num(
+        if let Err(error) = build_file_block_mapping_with_inode_num(
             fs,
             &mut new_inode,
             new_file_ino,
             &data_blocks,
             device,
-        )?;
+        ) {
+            let error = error_after_cleanup(
+                error,
+                discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
+            );
+            return Err(error);
+        }
     } else {
         // Empty file starts with no data blocks.
-        new_inode.i_size_lo = 0;
-        new_inode.i_size_high = 0;
+        new_inode.i_size_lo = size_lo;
+        new_inode.i_size_high = size_hi;
         new_inode.i_blocks_lo = 0;
         new_inode.l_i_blocks_high = 0;
-        if fs.superblock.has_extents() {
+        if uses_extent_mapping && fs.superblock.has_extents() {
             new_inode.i_flags |= Ext4Inode::EXT4_EXTENTS_FL;
             new_inode.write_extend_header();
-        } else {
+        } else if device_number.is_none() && fast_symlink.is_none() {
             new_inode.i_block = [0; 15];
         }
     }
 
-    let mut create_update = Ext4InodeMetadataUpdate::create(imode);
-    create_update.uid = Some(uid);
-    create_update.gid = Some(gid);
+    let mut create_update = Ext4InodeMetadataUpdate::create(request.mode);
+    create_update.uid = Some(request.uid);
+    create_update.gid = Some(request.gid);
     if fs
         .superblock
         .has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_PROJECT)
@@ -365,32 +372,113 @@ pub fn mkfile_with_owner<B: BlockDevice>(
         create_update.projid = Some(parent_inode.i_projid);
     }
 
-    fs.finalize_inode_update(device, new_file_ino, &mut new_inode, create_update)?;
-
-    // Finally publish the file by linking it into the parent directory.
-    let file_type = match file_type {
-        Some(ft) => ft,
-        None => Ext4DirEntry2::EXT4_FT_REG_FILE,
-    };
-
-    let mut parent_inode_copy = parent_inode;
-    if insert_dir_entry(
-        fs,
-        device,
-        parent_ino_num,
-        &mut parent_inode_copy,
-        new_file_ino,
-        &child,
-        file_type,
-    )
-    .is_err()
+    if let Err(error) =
+        fs.finalize_inode_update(device, new_file_ino, &mut new_inode, create_update)
     {
-        error!(
-            "mkfile insert_dir_entry failed path={path} parent_ino={parent_ino_num} child={child} \
-             ino={new_file_ino}"
+        let error = error_after_cleanup(
+            error,
+            discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
         );
-        return Err(Ext4Error::corrupted());
+        return Err(error);
     }
 
-    fs.get_inode_by_num(device, new_file_ino)
+    let mut parent_inode_copy = parent_inode;
+    if let Err(error) = insert_dir_entry_raw(
+        fs,
+        device,
+        request.parent,
+        &mut parent_inode_copy,
+        new_file_ino,
+        request.name,
+        file_type,
+    ) {
+        let entry_absent = matches!(
+            find_named_entry_in_parent(
+                fs,
+                device,
+                request.parent,
+                &parent_inode_copy,
+                request.name.as_bytes(),
+            ),
+            Err(lookup_error) if lookup_error.kind() == Ext4ErrorKind::NotFound
+        );
+        if !entry_absent {
+            return Err(error);
+        }
+        let error = error_after_cleanup(
+            error,
+            discard_unpublished_inode(fs, device, new_file_ino, &data_blocks),
+        );
+        return Err(error);
+    }
+
+    let inode = fs.get_inode_by_num(device, new_file_ino)?;
+    Ok(CreatedInode {
+        number: new_file_ino,
+        inode,
+        data_blocks,
+    })
+}
+
+/// Create a file entry with explicit uid/gid ownership.
+pub fn mkfile_with_owner<B: BlockIo>(
+    device: &mut Jbd2Dev<B>,
+    fs: &mut Ext4FileSystem,
+    path: &str,
+    initial_data: Option<&[u8]>,
+    file_type: Option<u8>,
+    uid: u32,
+    gid: u32,
+) -> Ext4Result<Ext4Inode> {
+    let norm_path = normalize_path(path);
+    if norm_path.is_empty() || norm_path == "/" {
+        return Err(Ext4Error::invalid_input());
+    }
+    if get_file_inode(fs, device, &norm_path)?.is_some() {
+        return Err(Ext4Error::already_exists());
+    }
+
+    let mut valid_path = norm_path;
+    let split_point = valid_path.rfind('/').ok_or_else(Ext4Error::invalid_input)?;
+    let child = valid_path.split_off(split_point)[1..].to_string();
+    let parent = if valid_path.is_empty() {
+        "/".to_string()
+    } else {
+        valid_path
+    };
+    let child = FileName::new(child.as_bytes())?;
+
+    ensure_directory(device, fs, &parent, uid, gid)?;
+    let (parent_ino_num, _) =
+        get_inode_with_num(fs, device, &parent)?.ok_or_else(Ext4Error::not_found)?;
+    let file_type = file_type.unwrap_or(Ext4DirEntry2::EXT4_FT_REG_FILE);
+    let imode = match file_type {
+        Ext4DirEntry2::EXT4_FT_SYMLINK => Ext4Inode::S_IFLNK | 0o777,
+        Ext4DirEntry2::EXT4_FT_REG_FILE => Ext4Inode::S_IFREG | 0o644,
+        Ext4DirEntry2::EXT4_FT_BLKDEV => Ext4Inode::S_IFBLK | 0o600,
+        Ext4DirEntry2::EXT4_FT_CHRDEV => Ext4Inode::S_IFCHR | 0o600,
+        Ext4DirEntry2::EXT4_FT_FIFO => Ext4Inode::S_IFIFO | 0o644,
+        Ext4DirEntry2::EXT4_FT_SOCK => Ext4Inode::S_IFSOCK | 0o644,
+        _ => return Err(Ext4Error::invalid_input().with_operation("inode:create_file_type")),
+    };
+    let payload = match file_type {
+        Ext4DirEntry2::EXT4_FT_CHRDEV | Ext4DirEntry2::EXT4_FT_BLKDEV => match initial_data {
+            Some(data) => CreateInodePayload::Data(data),
+            None => CreateInodePayload::Device(DeviceNumber::ZERO),
+        },
+        _ => initial_data.map_or(CreateInodePayload::Empty, CreateInodePayload::Data),
+    };
+    create_inode_at(
+        device,
+        fs,
+        CreateEntryRequest {
+            parent: parent_ino_num,
+            name: child,
+            mode: imode,
+            uid,
+            gid,
+        },
+        payload,
+        file_type,
+    )
 }

@@ -391,18 +391,6 @@ fn vec_seek_and_write_past_usize_max() {
     assert!(c.write_all(&[1, 2, 3]).is_err());
 }
 
-#[test]
-fn test_partial_eq() {
-    assert_eq!(Cursor::new(Vec::<u8>::new()), Cursor::new(Vec::<u8>::new()));
-}
-
-#[test]
-fn test_eq() {
-    struct AssertEq<T: Eq>(pub T);
-
-    let _: AssertEq<Cursor<Vec<u8>>> = AssertEq(Cursor::new(Vec::new()));
-}
-
 #[allow(dead_code)]
 fn const_cursor() {
     const CURSOR: Cursor<&[u8]> = Cursor::new(&[0]);

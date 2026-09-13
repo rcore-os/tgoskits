@@ -1,71 +1,69 @@
+use ax_cpu::registers;
+
 use super::*;
 
 pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentModel {
-    current_source_aliases_kernel_tls: true,
+    linux_current: CurrentContextSource::ArchitectureRegister,
+    unikernel_tls: CurrentContextSource::RuntimeAnchor,
 };
+
+pub(super) struct Backend;
+
+impl ArchitectureRegisterBackend for Backend {}
 
 pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
     Ok(())
 }
 
-pub(super) unsafe fn install_cpu_base(area_base: usize, boot_thread: usize) {
-    if cfg!(feature = "tls") {
-        unsafe { core::arch::asm!("csrw sscratch, {base}", base = in(reg) area_base) };
-    } else {
-        unsafe {
-            core::arch::asm!(
-                "mv tp, {current}",
-                "csrw sscratch, zero",
-                current = in(reg) boot_thread,
-            )
-        };
+pub(super) unsafe fn install_cpu_base(area_base: usize, boot_context: usize) {
+    // SAFETY: the caller owns offline CPU initialization with traps disabled.
+    unsafe {
+        if cfg!(kernel_tls) {
+            registers::write_sscratch(area_base);
+        } else {
+            registers::write_tp(boot_context);
+            registers::write_sscratch(0);
+        }
     }
 }
 
 pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
-    if cfg!(feature = "tls") {
-        let area_base: usize;
-        unsafe { core::arch::asm!("csrr {base}, sscratch", base = out(reg) area_base) };
-        Ok(area_base)
+    if cfg!(kernel_tls) {
+        Ok(registers::read_sscratch())
     } else {
-        let current: usize;
-        unsafe { core::arch::asm!("mv {current}, tp", current = out(reg) current) };
+        let current = registers::read_tp();
         if current == 0 {
             return Ok(0);
         }
         // SAFETY: LinuxCurrent tp is written only with a pinned current header.
-        unsafe { &*(current as *const CurrentThreadHeader) }
+        unsafe { &*(current as *const ExecutionContextHeader) }
             .cpu_area_base()
-            .ok_or(CpuLocalError::CurrentThreadMismatch)
+            .ok_or(CpuLocalError::CurrentContextMismatch)
     }
 }
 
-pub(super) unsafe fn read_current_thread(area_base: usize) -> usize {
-    if cfg!(feature = "tls") {
-        unsafe { area_runtime_anchor(area_base) }.current_thread_raw()
+pub(super) unsafe fn read_current_context(area_base: usize) -> usize {
+    if cfg!(kernel_tls) {
+        unsafe { area_runtime_anchor(area_base) }.current_context_raw()
     } else {
-        let current: usize;
-        unsafe { core::arch::asm!("mv {current}, tp", current = out(reg) current) };
-        current
+        registers::read_tp()
     }
 }
 
-pub(super) unsafe fn write_current_thread(value: usize) {
-    if !cfg!(feature = "tls") {
-        unsafe { core::arch::asm!("mv tp, {value}", value = in(reg) value) };
+pub(super) unsafe fn write_current_context(value: usize) {
+    if !cfg!(kernel_tls) {
+        unsafe { registers::write_tp(value) };
     }
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) unsafe fn read_kernel_tls() -> usize {
-    let value: usize;
-    unsafe { core::arch::asm!("mv {value}, tp", value = out(reg) value) };
-    value
+    registers::read_thread_pointer().as_usize()
 }
 
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub(super) unsafe fn write_kernel_tls(value: usize) {
-    unsafe { core::arch::asm!("mv tp, {value}", value = in(reg) value) };
+    unsafe { registers::write_thread_pointer(ax_cpu::context::KernelTlsBase::new(value)) };
 }
 
 unsafe fn area_runtime_anchor(area_base: usize) -> &'static crate::CpuRuntimeAnchor {

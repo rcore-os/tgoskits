@@ -91,8 +91,8 @@ impl Gic {
         self.cpu_targets = Some(cpu_targets);
     }
 
-    /// Returns the target bit associated with a host hardware CPU identifier.
-    pub fn target_for_hardware_cpu(&self, hardware_cpu_id: usize) -> Option<TargetList> {
+    /// Returns the target capability associated with a host hardware CPU identifier.
+    pub fn target_for_hardware_cpu(&self, hardware_cpu_id: usize) -> Option<CpuInterfaceTarget> {
         self.cpu_targets?.for_hardware_cpu(hardware_cpu_id)
     }
 
@@ -145,14 +145,9 @@ impl Gic {
         })
     }
 
-    /// Initializes the GIC according to the GICv2 specification.
-    ///
-    /// This includes both Distributor and CPU Interface initialization. Use
-    /// [`Self::try_init`] when target-discovery failures must be reported to a
-    /// platform probe instead of treated as a one-time initialization failure.
-    pub fn init(&mut self) {
-        self.try_init()
-            .unwrap_or_else(|error| panic!("failed to discover boot GICv2 CPU target: {error}"));
+    /// Initializes the GIC with an already discovered CPU-interface target.
+    pub fn init(&mut self, boot_target: CpuInterfaceTarget) {
+        self.init_with_target(boot_target);
     }
 
     /// Discovers the boot CPU-interface target and initializes the GIC.
@@ -482,20 +477,6 @@ impl CpuTargetMap {
         &self,
         logical_cpu: usize,
         hardware_cpu_id: usize,
-        target: TargetList,
-    ) -> Result<(), CpuTargetMapError> {
-        self.record_cpu_interface_target(
-            logical_cpu,
-            hardware_cpu_id,
-            CpuInterfaceTarget::Explicit(target),
-        )
-    }
-
-    /// Records one logical/hardware CPU association with its target capability.
-    pub fn record_cpu_interface_target(
-        &self,
-        logical_cpu: usize,
-        hardware_cpu_id: usize,
         target: CpuInterfaceTarget,
     ) -> Result<(), CpuTargetMapError> {
         if logical_cpu >= MAX_CPU_INTERFACES {
@@ -520,6 +501,16 @@ impl CpuTargetMap {
         let result = self.record_locked(logical_cpu, hardware_cpu_id, target);
         self.registration_lock.store(false, Ordering::Release);
         result
+    }
+
+    /// Records one logical/hardware CPU association with its target capability.
+    pub fn record_cpu_interface_target(
+        &self,
+        logical_cpu: usize,
+        hardware_cpu_id: usize,
+        target: CpuInterfaceTarget,
+    ) -> Result<(), CpuTargetMapError> {
+        self.record(logical_cpu, hardware_cpu_id, target)
     }
 
     fn record_locked(
@@ -560,12 +551,10 @@ impl CpuTargetMap {
         Ok(())
     }
 
-    /// Looks up the target bit for a host logical CPU index.
-    pub fn for_logical_cpu(&self, logical_cpu: usize) -> Option<TargetList> {
-        match self.cpu_interface_target_for_logical_cpu(logical_cpu)? {
-            CpuInterfaceTarget::Explicit(target) => Some(target),
-            CpuInterfaceTarget::ImplicitUniprocessor => None,
-        }
+    /// Looks up the target capability for a host logical CPU index.
+    pub fn for_logical_cpu(&self, logical_cpu: usize) -> Option<CpuInterfaceTarget> {
+        let target = self.routes.get(logical_cpu)?.target.load(Ordering::Acquire);
+        decode_cpu_target(target)
     }
 
     /// Looks up the target capability for a host logical CPU index.
@@ -573,23 +562,11 @@ impl CpuTargetMap {
         &self,
         logical_cpu: usize,
     ) -> Option<CpuInterfaceTarget> {
-        let target = self.routes.get(logical_cpu)?.target.load(Ordering::Acquire);
-        decode_cpu_target(target)
-    }
-
-    /// Looks up the target bit for a host hardware CPU identifier.
-    pub fn for_hardware_cpu(&self, hardware_cpu_id: usize) -> Option<TargetList> {
-        match self.cpu_interface_target_for_hardware_cpu(hardware_cpu_id)? {
-            CpuInterfaceTarget::Explicit(target) => Some(target),
-            CpuInterfaceTarget::ImplicitUniprocessor => None,
-        }
+        self.for_logical_cpu(logical_cpu)
     }
 
     /// Looks up the target capability for a host hardware CPU identifier.
-    pub fn cpu_interface_target_for_hardware_cpu(
-        &self,
-        hardware_cpu_id: usize,
-    ) -> Option<CpuInterfaceTarget> {
+    pub fn for_hardware_cpu(&self, hardware_cpu_id: usize) -> Option<CpuInterfaceTarget> {
         self.routes.iter().find_map(|route| {
             let target = route.target.load(Ordering::Acquire);
             if route.hardware_cpu_id.load(Ordering::Relaxed) != hardware_cpu_id {
@@ -597,6 +574,14 @@ impl CpuTargetMap {
             }
             decode_cpu_target(target)
         })
+    }
+
+    /// Looks up the target capability for a host hardware CPU identifier.
+    pub fn cpu_interface_target_for_hardware_cpu(
+        &self,
+        hardware_cpu_id: usize,
+    ) -> Option<CpuInterfaceTarget> {
+        self.for_hardware_cpu(hardware_cpu_id)
     }
 }
 
@@ -637,12 +622,24 @@ mod cpu_target_map_tests {
         let routes = CpuTargetMap::new();
         let target = TargetList::from_raw(0x40);
 
-        routes.record(5, 0x102, target).unwrap();
+        routes
+            .record(5, 0x102, CpuInterfaceTarget::Explicit(target))
+            .unwrap();
 
-        assert_eq!(routes.for_logical_cpu(5), Some(target));
-        assert_eq!(routes.for_hardware_cpu(0x102), Some(target));
+        assert_eq!(
+            routes.for_logical_cpu(5),
+            Some(CpuInterfaceTarget::Explicit(target))
+        );
+        assert_eq!(
+            routes.for_hardware_cpu(0x102),
+            Some(CpuInterfaceTarget::Explicit(target))
+        );
         assert_eq!(
             routes.cpu_interface_target_for_logical_cpu(5),
+            Some(CpuInterfaceTarget::Explicit(target))
+        );
+        assert_eq!(
+            routes.cpu_interface_target_for_hardware_cpu(0x102),
             Some(CpuInterfaceTarget::Explicit(target))
         );
         assert!(routes.for_logical_cpu(4).is_none());
@@ -654,19 +651,19 @@ mod cpu_target_map_tests {
         let routes = CpuTargetMap::new();
 
         assert_eq!(
-            routes.record(0, 0, TargetList::from_raw(0)),
+            routes.record(0, 0, CpuInterfaceTarget::Explicit(TargetList::from_raw(0))),
             Err(CpuTargetMapError::InvalidTarget)
         );
         assert_eq!(
-            routes.record(0, 0, TargetList::from_raw(3)),
+            routes.record(0, 0, CpuInterfaceTarget::Explicit(TargetList::from_raw(3))),
             Err(CpuTargetMapError::InvalidTarget)
         );
         assert_eq!(
-            routes.record(8, 0, TargetList::from_raw(1)),
+            routes.record(8, 0, CpuInterfaceTarget::Explicit(TargetList::from_raw(1))),
             Err(CpuTargetMapError::InvalidLogicalCpu)
         );
 
-        let target_80 = TargetList::from_raw(0x80);
+        let target_80 = CpuInterfaceTarget::Explicit(TargetList::from_raw(0x80));
         routes.record(2, 0x102, target_80).unwrap();
         routes.record(2, 0x102, target_80).unwrap();
         assert_eq!(
@@ -674,7 +671,11 @@ mod cpu_target_map_tests {
             Err(CpuTargetMapError::ConflictingRoute)
         );
         assert_eq!(
-            routes.record(3, 0x102, TargetList::from_raw(0x20)),
+            routes.record(
+                3,
+                0x102,
+                CpuInterfaceTarget::Explicit(TargetList::from_raw(0x20))
+            ),
             Err(CpuTargetMapError::ConflictingRoute)
         );
         assert_eq!(
@@ -698,20 +699,34 @@ mod cpu_target_map_tests {
             routes.cpu_interface_target_for_hardware_cpu(0),
             Some(CpuInterfaceTarget::ImplicitUniprocessor)
         );
-        assert!(routes.for_logical_cpu(0).is_none());
-        assert!(routes.for_hardware_cpu(0).is_none());
+        assert_eq!(
+            routes.for_logical_cpu(0),
+            Some(CpuInterfaceTarget::ImplicitUniprocessor)
+        );
+        assert_eq!(
+            routes.for_hardware_cpu(0),
+            Some(CpuInterfaceTarget::ImplicitUniprocessor)
+        );
         assert_eq!(
             routes.record_cpu_interface_target(1, 1, CpuInterfaceTarget::ImplicitUniprocessor),
             Err(CpuTargetMapError::InvalidTarget)
         );
         assert_eq!(
-            routes.record(1, 1, TargetList::from_raw(0x02)),
+            routes.record(
+                1,
+                1,
+                CpuInterfaceTarget::Explicit(TargetList::from_raw(0x02))
+            ),
             Err(CpuTargetMapError::ConflictingRoute)
         );
 
         let explicit_routes = CpuTargetMap::new();
         explicit_routes
-            .record(1, 1, TargetList::from_raw(0x02))
+            .record(
+                1,
+                1,
+                CpuInterfaceTarget::Explicit(TargetList::from_raw(0x02)),
+            )
             .unwrap();
         assert_eq!(
             explicit_routes.record_cpu_interface_target(
@@ -1572,7 +1587,7 @@ mod tests {
             )
         };
 
-        gic.init();
+        assert_eq!(gic.try_init(), Ok(CpuInterfaceTarget::ImplicitUniprocessor));
 
         assert_eq!(gic.gicd().ITARGETSR[32].get(), 0x55);
     }

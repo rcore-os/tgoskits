@@ -11,13 +11,13 @@ mod elx;
 mod elx;
 
 mod addrspace;
-mod context;
 mod entry;
 mod head;
 pub(crate) mod irq;
 pub mod paging;
 mod power;
 pub mod relocate;
+mod systimer;
 mod trap;
 
 use aarch64_cpu::registers::*;
@@ -28,7 +28,7 @@ pub use paging::Entry;
 pub(crate) use relocate::apply as relocate;
 
 use crate::{
-    ArchTrait,
+    ArchTrait, SystimerArch,
     arch::{addrspace::PAGE_OFFSET, trap::trap_addr},
     consts::VM_LOAD_ADDRESS,
     mem::{__kimage_va_to_pa, PageTableInfo},
@@ -64,41 +64,16 @@ impl ArchTrait for Arch {
         elx::flush_tlb(None);
     }
 
-    fn systimer_enable() {
-        elx::systick_enable();
-    }
-
-    fn systimer_irq_disable() {
-        // debug!("Disable systick irq");
-        elx::systick_irq_disable();
-    }
-
-    fn systimer_irq_enable() {
-        // debug!("Enable systick irq");
-        elx::systick_irq_enable();
-    }
-
-    fn systimer_irq_is_enabled() -> bool {
-        elx::systick_irq_is_enabled()
-    }
-
-    fn systimer_set_interval(ticks: usize) {
-        elx::systick_set_interval(ticks);
-    }
-
-    fn systimer_ack() {
-        // ARM generic timer doesn't need explicit ACK
-        // The interrupt is cleared when a new timer value is set
-    }
-
     fn systimer_freq() -> usize {
-        CNTFRQ_EL0.get() as _
+        ax_cpu::timer::counter_frequency() as _
     }
 
     fn systimer_tick() -> usize {
         match timer::aarch64_timer_mode() {
-            ArchTimerMode::El1Virt => CNTVCT_EL0.get() as _,
-            ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => CNTPCT_EL0.get() as _,
+            ArchTimerMode::El1Virt => ax_cpu::timer::virtual_counter() as _,
+            ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => {
+                ax_cpu::timer::physical_counter() as _
+            }
         }
     }
 
@@ -118,18 +93,6 @@ impl ArchTrait for Arch {
 
     fn secondary_entry_fn_address() -> *const () {
         _secondary_entry as *const ()
-    }
-
-    fn irq_all_is_enabled() -> bool {
-        !DAIF.is_set(DAIF::I)
-    }
-
-    fn irq_all_set_enable(enable: bool) {
-        DAIF.modify(if enable {
-            DAIF::I::CLEAR
-        } else {
-            DAIF::I::Masked
-        });
     }
 
     fn kernel_page_table() -> PageTableInfo {
@@ -156,14 +119,6 @@ impl ArchTrait for Arch {
         false
     }
 
-    fn irq_is_enabled(_irq: crate::irq::IrqId) -> bool {
-        unimplemented!()
-    }
-
-    fn irq_set_enable(_irq: crate::irq::IrqId, _enable: bool) {
-        unimplemented!()
-    }
-
     fn virt_to_phys(vaddr: *const u8) -> usize {
         if crate::mem::mmu::is_kernel_relocated() {
             if cpu_area_virtual_region().contains(&(vaddr as usize)) {
@@ -183,15 +138,9 @@ impl ArchTrait for Arch {
     }
 
     fn jump_to(entry: usize, sp: usize) -> ! {
-        unsafe {
-            core::arch::asm!(
-                "mov sp, {sp}",
-                "br {entry}",
-                sp = in(reg) sp,
-                entry = in(reg) entry,
-                options(noreturn)
-            );
-        }
+        // SAFETY: the boot owner has prepared the entry mapping and aligned,
+        // exclusive stack; this terminal transfer abandons the bootstrap frame.
+        unsafe { ax_cpu::boot::jump_to(entry.into(), sp.into()) }
     }
 
     fn cpu_current_hartid() -> usize {
@@ -205,8 +154,12 @@ impl ArchTrait for Arch {
         MPIDR_EL1.get() as usize & MASK
     }
 
-    fn kernel_space() -> core::ops::Range<usize> {
-        PAGE_OFFSET..usize::MAX
+    fn virtual_address_space()
+    -> Result<crate::mem::VirtualAddressSpaceLayout, crate::mem::VirtualAddressSpaceError> {
+        crate::mem::VirtualAddressSpaceLayout::try_new(
+            crate::mem::configured_user_space(1usize << 48),
+            PAGE_OFFSET..usize::MAX,
+        )
     }
 
     fn is_mmu_enabled() -> bool {
@@ -229,21 +182,25 @@ impl ArchTrait for Arch {
     }
 
     fn dcache_range(op: crate::DCacheOp, addr: usize, size: usize) {
-        aarch64_cpu_ext::cache::dcache_range(op.into(), addr, size);
+        let range = ax_cpu::cache::CacheRange::new(addr.into(), size)
+            .expect("boot cache range must not wrap");
+        // SAFETY: the boot/DMA owner retains the mapped range and excludes
+        // conflicting CPU or device access for the requested transfer phase.
+        unsafe { ax_cpu::cache::maintain_dcache_to_poc(op.into(), range) };
     }
 
-    fn dma_coherent_before_make_uncached(addr: usize, size: usize) {
+    fn dma_coherent_before_map_uncached(addr: usize, size: usize) {
         Self::dcache_range(crate::DCacheOp::CleanInvalidate, addr, size);
-        aarch64_dsb_sy();
+        ax_cpu::barrier::data_sync_system();
     }
 
-    fn dma_coherent_before_restore_cached(_addr: usize, _size: usize) {
-        aarch64_dsb_sy();
+    fn dma_coherent_before_unmap_uncached(_addr: usize, _size: usize) {
+        ax_cpu::barrier::data_sync_system();
     }
 
     fn dma_coherent_after_mapping_update() {
-        aarch64_dsb_sy();
-        aarch64_isb_sy();
+        ax_cpu::barrier::data_sync_system();
+        ax_cpu::barrier::instruction_sync();
     }
 
     // Safety: the EFI stub guarantees the same contract as the trait docs.
@@ -261,22 +218,63 @@ impl ArchTrait for Arch {
     }
 }
 
-#[inline]
-fn aarch64_dsb_sy() {
-    aarch64_cpu::asm::barrier::dsb(aarch64_cpu::asm::barrier::SY);
+impl SystimerArch for Arch {
+    fn systimer_irq_id() -> crate::irq::IrqId {
+        // Arm architectural timer INTIDs (GIC PPI range): 30 = EL1 physical,
+        // 27 = EL1 virtual, 26 = EL2 hypervisor physical.
+        let intid = match timer::aarch64_timer_mode() {
+            ArchTimerMode::El1Phys => 30,
+            ArchTimerMode::El1Virt => 27,
+            ArchTimerMode::El2HypPhys => 26,
+        };
+        crate::irq::IrqId::new(intid)
+    }
+
+    fn systimer_enable() {
+        systimer::stop_oneshot();
+        systimer::enable();
+    }
+
+    fn systimer_irq_disable() {
+        systimer::mask();
+    }
+
+    fn systimer_irq_enable() {
+        systimer::unmask();
+    }
+
+    fn systimer_irq_is_enabled() -> bool {
+        systimer::irq_enabled()
+    }
+
+    fn systimer_set_deadline(deadline_ticks: u64) {
+        systimer::set_deadline(deadline_ticks);
+    }
+
+    fn systimer_requires_irq_quiesce() -> bool {
+        true
+    }
+
+    fn systimer_cancel_oneshot() {
+        systimer::stop_oneshot();
+    }
+
+    fn systimer_resume_oneshot(deadline_ticks: u64) {
+        // The Arm timer is level-triggered. Replace the expired compare value
+        // before unmasking it so controller EOI cannot expose a stale level.
+        timer::resume_masked_level_oneshot(
+            || systimer::set_deadline(deadline_ticks),
+            systimer::unmask,
+        );
+    }
 }
 
-#[inline]
-fn aarch64_isb_sy() {
-    aarch64_cpu::asm::barrier::isb(aarch64_cpu::asm::barrier::SY);
-}
-
-impl From<crate::DCacheOp> for aarch64_cpu_ext::cache::CacheOp {
+impl From<crate::DCacheOp> for ax_cpu::cache::DataCacheOperation {
     fn from(value: crate::DCacheOp) -> Self {
         match value {
             crate::DCacheOp::Clean => Self::Clean,
             crate::DCacheOp::Invalidate => Self::Invalidate,
-            crate::DCacheOp::CleanInvalidate => Self::CleanAndInvalidate,
+            crate::DCacheOp::CleanInvalidate => Self::CleanInvalidate,
         }
     }
 }

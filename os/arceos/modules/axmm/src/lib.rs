@@ -5,10 +5,14 @@
 #[macro_use]
 extern crate log;
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 mod aspace;
 mod backend;
 mod error;
+mod kernel_alloc;
+mod tlb;
 
 use ax_hal::{
     mem::{IomapAttrs, IomapDecision, IomapError, MemRegionFlags, phys_to_virt},
@@ -18,10 +22,15 @@ use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_sync::SpinLock;
 
+#[cfg(feature = "copy")]
+pub use self::aspace::RootEntryShare;
 pub use self::{
     aspace::AddrSpace,
-    backend::Backend,
     error::{MmError, MmResult},
+    kernel_alloc::{
+        KernelVirtualAllocation, KernelVirtualAllocationLayout, KernelVirtualQuarantineRetry,
+        KernelVirtualReleaseError, retry_kernel_virtual_quarantines,
+    },
 };
 
 static KERNEL_ASPACE: LazyInit<SpinLock<AddrSpace>> = LazyInit::new();
@@ -60,9 +69,17 @@ pub fn new_user_aspace(base: VirtAddr, size: usize) -> MmResult<AddrSpace> {
 
 /// Creates a new address space for kernel itself.
 pub fn new_kernel_aspace() -> MmResult<AddrSpace> {
-    let (base, size) = ax_hal::mem::kernel_aspace();
-    let boot_page_table =
-        PageTableRef::from_paddr(ax_hal::asm::read_kernel_page_table(), PagingAllocator);
+    let kernel = ax_hal::mem::virtual_address_space()
+        .map_err(|_| MmError::Unsupported)?
+        .kernel();
+    let base = kernel.start;
+    let size = kernel.size();
+    // SAFETY: the architecture boot code installed this root before entering
+    // Rust. It stays mapped for the lifetime of the kernel address space, and
+    // initialization runs before concurrent page-table mutation begins.
+    let boot_page_table = unsafe {
+        PageTableRef::from_paddr(ax_hal::KernelMmu::read_kernel_page_table(), PagingAllocator)
+    };
     let mut aspace = AddrSpace::new_empty(base, size)?;
     for r in ax_hal::mem::memory_regions() {
         // mapped range should contain the whole region if it is not aligned.
@@ -76,7 +93,7 @@ pub fn new_kernel_aspace() -> MmResult<AddrSpace> {
         // inserted into this address space because their low VA bits can alias
         // real page-table mappings such as vmap.
         if aspace.contains_range(vaddr, size) {
-            aspace.map_linear(vaddr, start, size, reg_flag_to_map_flag(r.flags))?;
+            aspace.map_boot_linear(vaddr, start, size, reg_flag_to_map_flag(r.flags))?;
         }
     }
     aspace
@@ -86,6 +103,19 @@ pub fn new_kernel_aspace() -> MmResult<AddrSpace> {
             PagingError::NoMemory => MmError::NoMemory,
             _ => MmError::BadState("failed to clone boot page-table entries"),
         })?;
+    if ax_hal::mem::user_aspace_needs_kernel_mappings() {
+        // x86_64 and RISC-V process roots borrow the kernel half once. Keep
+        // every top-level directory stable so later vmap/ioremap mutations are
+        // made below shared directories, matching Linux's preallocated
+        // vmalloc-directory invariant without a second address-space registry.
+        aspace
+            .page_table_mut()
+            .preallocate_shared_root_entries(base, size)
+            .map_err(|err| match err {
+                PagingError::NoMemory => MmError::NoMemory,
+                _ => MmError::BadState("failed to preallocate shared kernel root entries"),
+            })?;
+    }
     Ok(aspace)
 }
 
@@ -94,8 +124,7 @@ pub fn kernel_aspace() -> &'static SpinLock<AddrSpace> {
     &KERNEL_ASPACE
 }
 
-/// Returns the root physical address of the kernel page table.
-pub fn kernel_page_table_root() -> PhysAddr {
+fn kernel_page_table_root() -> PhysAddr {
     KERNEL_ASPACE.lock_irqsave().page_table_root()
 }
 
@@ -110,16 +139,16 @@ pub fn init_memory_management() {
     debug!("kernel address space init OK: {kernel_aspace:#x?}");
     KERNEL_ASPACE.init_once(SpinLock::new(kernel_aspace));
     unsafe {
-        ax_hal::asm::write_kernel_page_table(kernel_page_table_root());
-        ax_hal::asm::flush_tlb(None);
+        ax_hal::KernelMmu::write_kernel_page_table(kernel_page_table_root());
+        ax_hal::KernelMmu::flush_tlb(None);
     }
 }
 
 /// Initializes kernel paging for secondary CPUs.
 pub fn init_memory_management_secondary() {
     unsafe {
-        ax_hal::asm::write_kernel_page_table(kernel_page_table_root());
-        ax_hal::asm::flush_tlb(None);
+        ax_hal::KernelMmu::write_kernel_page_table(kernel_page_table_root());
+        ax_hal::KernelMmu::flush_tlb(None);
     }
 }
 
@@ -133,8 +162,36 @@ pub fn iomap(addr: PhysAddr, size: usize) -> MmResult<VirtAddr> {
         .ok_or(MmError::InvalidInput("physical address range overflows"))?;
     match ax_hal::mem::prepare_iomap(addr, size, IomapAttrs::DEVICE).map_err(map_iomap_error)? {
         IomapDecision::Mapped(vaddr) => Ok(vaddr),
-        IomapDecision::UseGeneric(paddr) => iomap_generic(paddr, size),
+        IomapDecision::UseGeneric(paddr) => iomap_generic(paddr, size, MappingFlags::DEVICE),
     }
+}
+
+/// Maps CPU-owned shared RAM as Normal Write-Back memory.
+///
+/// This is intended for coherent shared-memory windows whose peers also use
+/// cacheable Normal mappings. Device MMIO should continue to use [`iomap`].
+pub fn iomap_cached(addr: PhysAddr, size: usize) -> MmResult<VirtAddr> {
+    if size == 0 {
+        return Err(MmError::InvalidInput("mapping size is zero"));
+    }
+    addr.as_usize()
+        .checked_add(size)
+        .ok_or(MmError::InvalidInput("physical address range overflows"))?;
+    iomap_generic(addr, size, MappingFlags::empty())
+}
+
+/// Maps a physical memory region as Normal Non-cacheable memory.
+///
+/// This is intended for CPU-owned shared RAM, such as an inter-VM shared-memory
+/// window. Device MMIO should continue to use [`iomap`].
+pub fn iomap_uncached(addr: PhysAddr, size: usize) -> MmResult<VirtAddr> {
+    if size == 0 {
+        return Err(MmError::InvalidInput("mapping size is zero"));
+    }
+    addr.as_usize()
+        .checked_add(size)
+        .ok_or(MmError::InvalidInput("physical address range overflows"))?;
+    iomap_generic(addr, size, MappingFlags::UNCACHED)
 }
 
 fn map_iomap_error(err: IomapError) -> MmError {
@@ -152,7 +209,7 @@ fn checked_align_up_4k(addr: usize) -> MmResult<PhysAddr> {
     Ok(PhysAddr::from_usize(aligned))
 }
 
-fn iomap_generic(addr: PhysAddr, size: usize) -> MmResult<VirtAddr> {
+fn iomap_generic(addr: PhysAddr, size: usize, mem_flags: MappingFlags) -> MmResult<VirtAddr> {
     let end = addr
         .as_usize()
         .checked_add(size)
@@ -164,7 +221,7 @@ fn iomap_generic(addr: PhysAddr, size: usize) -> MmResult<VirtAddr> {
     let size_aligned = checked_align_up_4k(end)? - addr_aligned;
     let offset = addr - addr_aligned;
 
-    let flags = MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE;
+    let flags = mem_flags | MappingFlags::READ | MappingFlags::WRITE;
     let mut tb = kernel_aspace().lock_irqsave();
 
     let mapped = if tb.contains_range(virt_aligned, size_aligned) {

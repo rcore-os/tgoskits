@@ -23,7 +23,8 @@
 //! The crate contains the following key components:
 //!
 //! - [`Device`]: The unified V3 device trait used by the runtime hot path.
-//! - [`DeviceAccess`]: The access-scoped capability context passed to devices.
+//! - [`DeviceAccess`]: Immutable metadata for one guest device access.
+//! - [`DeviceContext`]: Access-scoped runtime capabilities passed to devices.
 //! - [`Resource`]: Static device resource declarations used for registration
 //!   validation and bus dispatch.
 //! - [`VirtualInterruptController`], [`WiredIrqInput`], and [`IrqLine`]:
@@ -32,12 +33,12 @@
 //! # Usage
 //!
 //! New emulated devices should implement [`Device`] directly and receive all
-//! sensitive runtime abilities through [`DeviceAccess`].
+//! sensitive runtime abilities through [`DeviceContext`].
 //!
 //! ```rust,ignore
 //! use axdevice_base::{
-//!     AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess,
-//!     DeviceError, Resource,
+//!     AccessWidth, BusKind, Device, DeviceAccess, DeviceContext, DeviceError,
+//!     DeviceVcpuId, Resource,
 //! };
 //!
 //! struct MyDevice {
@@ -55,15 +56,30 @@
 //!         &self.resources
 //!     }
 //!
-//!     fn access(
+//!     fn read(
 //!         &self,
-//!         access: &BusAccess,
-//!         context: &mut dyn DeviceAccess,
-//!     ) -> Result<BusResponse, DeviceError> {
-//!         match (access.kind, access.is_read) {
-//!             (BusKind::Mmio, true) => Ok(BusResponse::Read { value: 0 }),
-//!             (BusKind::Mmio, false) => Ok(BusResponse::Write),
-//!             _ => Err(DeviceError::OutOfRange { addr: access.addr }),
+//!         access: &DeviceAccess,
+//!         _context: &mut dyn DeviceContext,
+//!     ) -> Result<u64, DeviceError> {
+//!         match access.bus() {
+//!             BusKind::Mmio => Ok(0),
+//!             _ => Err(DeviceError::OutOfRange {
+//!                 addr: access.address(),
+//!             }),
+//!         }
+//!     }
+//!
+//!     fn write(
+//!         &self,
+//!         access: &DeviceAccess,
+//!         _value: u64,
+//!         _context: &mut dyn DeviceContext,
+//!     ) -> Result<(), DeviceError> {
+//!         match access.bus() {
+//!             BusKind::Mmio => Ok(()),
+//!             _ => Err(DeviceError::OutOfRange {
+//!                 addr: access.address(),
+//!             }),
 //!         }
 //!     }
 //! }
@@ -88,12 +104,13 @@ extern crate alloc;
 mod device;
 
 use alloc::{string::String, sync::Arc};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, InterruptTriggerMode, IrqLineId};
 
 pub use crate::device::{
-    AccessWidth, BusAccess, BusKind, BusResponse, DeviceAddr, DeviceAddrRange, DeviceError,
-    DeviceResult, Port, PortRange, SysRegAddr, SysRegAddrRange,
+    AccessWidth, BusKind, DeviceAccess, DeviceAddr, DeviceAddrRange, DeviceError, DeviceResult,
+    Port, PortRange, SysRegAddr, SysRegAddrRange,
 };
 
 // ---------------------------------------------------------------------------
@@ -113,6 +130,26 @@ impl DeviceId {
 
     /// Returns the raw `u32` value.
     pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+/// VM-local identity of the vCPU that issued one trapped device access.
+///
+/// This value describes the architectural accessor, not the physical CPU that
+/// happens to execute the device callback. It remains valid when exit handling
+/// is preempted or migrates between host CPUs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeviceVcpuId(usize);
+
+impl DeviceVcpuId {
+    /// Creates a device-access vCPU identifier from its VM-local value.
+    pub const fn new(id: usize) -> Self {
+        Self(id)
+    }
+
+    /// Returns the VM-local numeric identifier.
+    pub const fn as_usize(self) -> usize {
         self.0
     }
 }
@@ -271,8 +308,9 @@ pub enum RegistryError {
 ///
 /// Every emulated device (interrupt controller, UART, virtio-blk, …)
 /// implements this trait.  The device manager calls [`resources`](Device::resources)
-/// at registration time for conflict detection and [`access`](Device::access)
-/// on the hot path whenever a vCPU exit is dispatched to this device.
+/// at registration time for conflict detection and [`read`](Device::read) or
+/// [`write`](Device::write) on the hot path whenever a vCPU exit is dispatched
+/// to this device.
 ///
 /// Concrete collaboration between devices and architecture code should be
 /// exposed through typed services registered with the VM device runtime, not
@@ -290,12 +328,16 @@ pub trait Device: Send + Sync {
     /// path without allocation.
     fn resources(&self) -> &[Resource];
 
-    /// Handles a single bus access with runtime-scoped device context.
-    fn access(
+    /// Handles one guest read with runtime-scoped device capabilities.
+    fn read(&self, access: &DeviceAccess, context: &mut dyn DeviceContext) -> DeviceResult<u64>;
+
+    /// Handles one guest write with runtime-scoped device capabilities.
+    fn write(
         &self,
-        access: &BusAccess,
-        context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError>;
+        access: &DeviceAccess,
+        value: u64,
+        context: &mut dyn DeviceContext,
+    ) -> DeviceResult;
 }
 
 macro_rules! define_grant {
@@ -345,16 +387,303 @@ define_grant!(
     StopGrant
 );
 
-/// Context scoped to one device bus access.
+/// Binding generation for one routed-device grant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RoutedBindingGeneration(u64);
+
+impl RoutedBindingGeneration {
+    /// Creates a binding generation value.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the numeric generation value for diagnostics and comparisons.
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Admission epoch for one routed-device grant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RoutedAdmissionEpoch(u64);
+
+impl RoutedAdmissionEpoch {
+    /// Creates an admission epoch value.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the numeric epoch value for diagnostics and comparisons.
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Runtime-created capability for entering one routed device context.
 ///
-/// A [`BusRouter`] creates this context immediately before calling
-/// [`Device::access`] and drops it before returning to the architecture exit
-/// handler. Sensitive abilities such as guest-memory DMA, timer scheduling,
-/// vCPU wake, and VM stop requests are denied by default and become available
-/// only when the current device presents the matching registration-time grant.
-pub trait DeviceAccess {
+/// The constructor only creates an inert handle. The device runtime gives a
+/// handle authority by registering the exact token for one final device,
+/// binding generation, and admission epoch. The DMA flag is a root-side
+/// snapshot: it never replaces the endpoint's separately registered
+/// [`DmaGrant`].
+struct RoutedGrantAdmission {
+    open: AtomicBool,
+    epoch: AtomicU64,
+}
+
+impl RoutedGrantAdmission {
+    #[cfg(feature = "runtime-internal")]
+    fn new(epoch: RoutedAdmissionEpoch) -> Self {
+        Self {
+            open: AtomicBool::new(true),
+            epoch: AtomicU64::new(epoch.value()),
+        }
+    }
+
+    fn is_open_at(&self, epoch: RoutedAdmissionEpoch) -> bool {
+        self.epoch.load(Ordering::Acquire) == epoch.value() && self.open.load(Ordering::Acquire)
+    }
+
+    #[cfg(feature = "runtime-internal")]
+    fn close(&self) {
+        self.open.store(false, Ordering::Release);
+    }
+
+    #[cfg(feature = "runtime-internal")]
+    fn reopen(&self, epoch: RoutedAdmissionEpoch) {
+        self.epoch.store(epoch.value(), Ordering::Release);
+        self.open.store(true, Ordering::Release);
+    }
+}
+
+/// Lifetime state for a grant that has already passed routed admission.
+///
+/// This state is deliberately separate from [`RoutedGrantAdmission`]. The
+/// latter controls whether a new callback may be admitted; this state keeps
+/// one callback admitted until its runtime-owned scope guard is dropped.
+struct ScopedRoutedGrantAdmission {
+    active: AtomicBool,
+}
+
+impl ScopedRoutedGrantAdmission {
+    #[cfg(feature = "runtime-internal")]
+    fn new() -> Self {
+        Self {
+            active: AtomicBool::new(true),
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        // Acquire observes the Release performed by the scope guard's Drop.
+        self.active.load(Ordering::Acquire)
+    }
+
+    #[cfg(feature = "runtime-internal")]
+    fn close(&self) {
+        self.active.store(false, Ordering::Release);
+    }
+}
+
+/// Runtime-owned guard that keeps an admitted routed grant valid.
+///
+/// This type is only constructed by the device runtime after a route
+/// admission succeeds. Cloning the associated grant does not extend this
+/// guard's lifetime: every clone observes the same active bit.
+#[cfg(feature = "runtime-internal")]
+#[doc(hidden)]
+#[must_use = "the scope guard keeps an admitted routed grant valid"]
+pub struct RoutedGrantScope {
+    admission: Arc<ScopedRoutedGrantAdmission>,
+}
+
+#[cfg(feature = "runtime-internal")]
+impl Drop for RoutedGrantScope {
+    fn drop(&mut self) {
+        self.admission.close();
+    }
+}
+
+/// An inert or scope-bound handle for temporarily entering one runtime-routed
+/// device.
+#[derive(Clone)]
+pub struct RoutedDeviceGrant {
+    device_id: DeviceId,
+    binding_generation: RoutedBindingGeneration,
+    admission_epoch: RoutedAdmissionEpoch,
+    dma_enabled: bool,
+    token: Arc<()>,
+    admission: Arc<RoutedGrantAdmission>,
+    scoped_admission: Option<Arc<ScopedRoutedGrantAdmission>>,
+}
+
+impl RoutedDeviceGrant {
+    /// Creates an inert routed-device handle for a binding snapshot.
+    #[cfg(feature = "runtime-internal")]
+    #[doc(hidden)]
+    pub fn new(
+        device_id: DeviceId,
+        binding_generation: RoutedBindingGeneration,
+        admission_epoch: RoutedAdmissionEpoch,
+        dma_enabled: bool,
+    ) -> Self {
+        Self {
+            device_id,
+            binding_generation,
+            admission_epoch,
+            dma_enabled,
+            token: Arc::new(()),
+            admission: Arc::new(RoutedGrantAdmission::new(admission_epoch)),
+            scoped_admission: None,
+        }
+    }
+
+    /// Returns the final device identity selected by this route.
+    pub const fn device_id(&self) -> DeviceId {
+        self.device_id
+    }
+
+    /// Returns the binding generation selected by this route.
+    pub const fn binding_generation(&self) -> RoutedBindingGeneration {
+        self.binding_generation
+    }
+
+    /// Returns the admission epoch selected by this route.
+    pub const fn admission_epoch(&self) -> RoutedAdmissionEpoch {
+        self.admission_epoch
+    }
+
+    /// Returns the root's bus-master-enable snapshot.
+    pub const fn dma_enabled(&self) -> bool {
+        self.dma_enabled
+    }
+
+    /// Returns whether two handles carry the same routing authority.
+    pub fn same_token(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.token, &other.token)
+    }
+
+    /// Returns whether this snapshot may enter a routed device context.
+    ///
+    /// Ordinary snapshots require their shared admission epoch to remain
+    /// open. A snapshot produced by the runtime's admission conversion
+    /// instead remains valid until its scope guard is dropped, so closing the
+    /// shared admission does not revoke an already admitted callback.
+    pub fn admission_is_open(&self) -> bool {
+        self.scoped_admission.as_ref().map_or_else(
+            || self.admission.is_open_at(self.admission_epoch),
+            |admission| admission.is_active(),
+        )
+    }
+
+    /// Converts an already validated, currently admitted grant into a
+    /// scope-bound grant.
+    ///
+    /// The caller must retain the returned guard for the full callback
+    /// lifetime. Dropping it invalidates this grant and all of its clones.
+    #[cfg(feature = "runtime-internal")]
+    #[doc(hidden)]
+    pub fn admit(mut self) -> Option<(Self, RoutedGrantScope)> {
+        if self.scoped_admission.is_some() || !self.admission.is_open_at(self.admission_epoch) {
+            return None;
+        }
+        let admission = Arc::new(ScopedRoutedGrantAdmission::new());
+        self.scoped_admission = Some(admission.clone());
+        Some((self, RoutedGrantScope { admission }))
+    }
+
+    /// Closes validation for this grant's current epoch.
+    #[cfg(feature = "runtime-internal")]
+    #[doc(hidden)]
+    pub fn close_admission(&self) {
+        self.admission.close();
+    }
+
+    /// Creates the next admission-epoch snapshot without changing binding
+    /// generation or routing identity.
+    #[cfg(feature = "runtime-internal")]
+    #[doc(hidden)]
+    pub fn with_admission_epoch(&self, admission_epoch: RoutedAdmissionEpoch) -> Self {
+        Self {
+            device_id: self.device_id,
+            binding_generation: self.binding_generation,
+            admission_epoch,
+            dma_enabled: self.dma_enabled,
+            token: self.token.clone(),
+            admission: self.admission.clone(),
+            scoped_admission: None,
+        }
+    }
+
+    /// Reopens this grant's shared admission at a fresh epoch.
+    #[cfg(feature = "runtime-internal")]
+    #[doc(hidden)]
+    pub fn reopen_admission(&self, admission_epoch: RoutedAdmissionEpoch) {
+        self.admission.reopen(admission_epoch);
+    }
+
+    /// Copies this route with a freshly captured bus-master-enable snapshot.
+    #[cfg(feature = "runtime-internal")]
+    #[doc(hidden)]
+    pub fn with_dma_enabled(&self, dma_enabled: bool) -> Self {
+        Self {
+            device_id: self.device_id,
+            binding_generation: self.binding_generation,
+            admission_epoch: self.admission_epoch,
+            dma_enabled,
+            token: self.token.clone(),
+            admission: self.admission.clone(),
+            scoped_admission: self.scoped_admission.clone(),
+        }
+    }
+}
+
+/// Guest-memory operations made available to a device runtime.
+///
+/// This boundary deliberately carries no device identity or grant. The
+/// runtime validates those before delegating to this VM-owned memory port.
+pub trait GuestMemoryAccess {
+    /// Reads bytes from guest physical memory.
+    fn read(&mut self, addr: GuestPhysAddr, data: &mut [u8]) -> DeviceResult;
+
+    /// Writes bytes to guest physical memory.
+    fn write(&mut self, addr: GuestPhysAddr, data: &[u8]) -> DeviceResult;
+}
+
+/// Runtime capability context scoped to one device callback.
+///
+/// The device runtime creates this context immediately before calling
+/// [`Device::read`] or [`Device::write`] and drops it before returning to the
+/// architecture exit handler. Sensitive abilities such as guest-memory DMA,
+/// timer scheduling, vCPU wake, and VM stop requests are denied by default and
+/// become available only when the current device presents the matching
+/// registration-time grant.
+pub trait DeviceContext {
     /// Returns the identity of the device currently handling this access.
     fn device_id(&self) -> DeviceId;
+
+    /// Enters a runtime-created routed device context.
+    ///
+    /// The default implementation is deliberately denied. Only the sealed
+    /// device runtime can validate and materialize a routed context.
+    fn with_routed_device(
+        &mut self,
+        _grant: &RoutedDeviceGrant,
+        _callback: &mut dyn FnMut(&mut dyn DeviceContext) -> DeviceResult,
+    ) -> DeviceResult {
+        Err(DeviceError::Unsupported {
+            operation: "enter routed device context",
+            detail: "this device access has no routed-device grant".into(),
+        })
+    }
+
+    /// Returns the vCPU that issued this trapped access, when applicable.
+    ///
+    /// Management-path and device-originated callbacks return `None`. Devices
+    /// with banked per-vCPU registers must reject a missing accessor instead of
+    /// consulting host CPU-local state.
+    fn accessing_vcpu(&self) -> Option<DeviceVcpuId> {
+        None
+    }
 
     /// Reads guest memory on behalf of the currently dispatched device.
     ///
@@ -409,21 +738,35 @@ pub trait DeviceAccess {
     }
 }
 
-/// A no-permission access context for tests and adapter-only callers.
-pub struct NoopDeviceAccess {
+/// A no-permission device context for tests and adapter-only callers.
+pub struct NoopDeviceContext {
     device_id: DeviceId,
+    accessing_vcpu: Option<DeviceVcpuId>,
 }
 
-impl NoopDeviceAccess {
+impl NoopDeviceContext {
     /// Creates a no-permission context for `device_id`.
     pub const fn new(device_id: DeviceId) -> Self {
-        Self { device_id }
+        Self {
+            device_id,
+            accessing_vcpu: None,
+        }
+    }
+
+    /// Associates this no-permission context with a trapped vCPU access.
+    pub const fn with_vcpu(mut self, vcpu_id: DeviceVcpuId) -> Self {
+        self.accessing_vcpu = Some(vcpu_id);
+        self
     }
 }
 
-impl DeviceAccess for NoopDeviceAccess {
+impl DeviceContext for NoopDeviceContext {
     fn device_id(&self) -> DeviceId {
         self.device_id
+    }
+
+    fn accessing_vcpu(&self) -> Option<DeviceVcpuId> {
+        self.accessing_vcpu
     }
 }
 
@@ -438,20 +781,6 @@ pub trait DeviceRegistry {
     /// On success the device is assigned a unique [`DeviceId`] and inserted
     /// into the manager's lookup structures.
     fn register(&mut self, device: Arc<dyn Device>) -> Result<DeviceId, RegistryError>;
-}
-
-/// Bus dispatch interface — the runtime hot-path half of a
-/// [`DeviceRuntime`].
-///
-/// Called on every vCPU exit that targets an emulated device (MMIO / Port /
-/// SysReg).
-pub trait BusRouter {
-    /// Looks up the device responsible for `access` and forwards the access
-    /// to it, returning the result.
-    fn dispatch(&self, access: &BusAccess) -> Result<BusResponse, DeviceError>;
-
-    /// Looks up the device responsible for `access` without handling the access.
-    fn lookup(&self, access: &BusAccess) -> Result<Arc<dyn Device>, DeviceError>;
 }
 
 // ---------------------------------------------------------------------------

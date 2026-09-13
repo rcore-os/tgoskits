@@ -1,0 +1,8 @@
+args = ["-machine", "virt,virtualization=on,gic-version=3", "-cpu", "cortex-a53", "-m", "1G", "-smp", "1", "-display", "none", "-serial", "mon:stdio"]
+timeout = 60
+uefi = false
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+
+[[shell_check_steps]]
+success_regex = ["CPU_GUEST_ENTRY_OK"]

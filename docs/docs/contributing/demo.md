@@ -4,7 +4,7 @@ TGOSKits 的顶层 `examples/` 目录用于放置可运行的场景示例，而�
 workspace 组件模板。系统级或组件级示例仍应优先放在对应子系统目录中，例如
 `apps/arceos/`、`components/*/examples/` 或 `test-suit/`。
 
-## StarryOS 板端示例
+本文中的数学组件仅演示贡献流程；测试设计遵循仓库 [test-quality](https://github.com/rcore-os/tgoskits/blob/dev/.agents/skills/test-quality/SKILL.md)，不要求为每个函数同时创建单元与集成测试。
 
 ---
 
@@ -96,7 +96,6 @@ apps/starry/<case>/
 ```bash
 # 本演示放在 examples/ 下；正式贡献请替换为对应目录（如 components/）
 mkdir -p examples/tgmath/src
-mkdir -p examples/tgmath/tests
 mkdir -p examples/tgmath/scripts
 mkdir -p examples/tgmath/.github/workflows
 ```
@@ -157,83 +156,30 @@ pub fn gcd(a: u64, b: u64) -> u64 {
     a
 }
 
-/// Compute the least common multiple.
-pub fn lcm(a: u64, b: u64) -> u64 {
-    if a == 0 || b == 0 {
-        0
-    } else {
-        a / gcd(a, b) * b
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_add() {
-        assert_eq!(add(2, 3), 5);
-        assert_eq!(add(-1, 1), 0);
-    }
-
-    #[test]
-    fn test_sub() {
-        assert_eq!(sub(5, 3), 2);
-    }
-
-    #[test]
-    fn test_clamp() {
+    fn clamp_preserves_in_range_and_bounds_outside_values() {
         assert_eq!(clamp(5, 0, 10), 5);
         assert_eq!(clamp(-1, 0, 10), 0);
         assert_eq!(clamp(15, 0, 10), 10);
     }
 
     #[test]
-    fn test_gcd() {
+    fn gcd_finds_common_divisor_and_handles_zero() {
         assert_eq!(gcd(12, 8), 4);
         assert_eq!(gcd(7, 0), 7);
     }
-
-    #[test]
-    fn test_lcm() {
-        assert_eq!(lcm(4, 6), 12);
-        assert_eq!(lcm(0, 5), 0);
-        assert_eq!(lcm(7, 0), 0);
-        assert_eq!(lcm(3, 7), 21);
-    }
 }
 ```
 
-### 2.5 编写集成测试
+### 2.5 判断集成测试是否必要
 
-创建 `examples/tgmath/tests/integration.rs`：
+上述 `clamp` 和 `gcd` 单元测试验证算法规则；具体数字用于触发保留、限制和零操作数等行为，不为更多普通取值增加用例。`add`、`sub` 只是语言算术运算的直接封装，本示例不重复验证语言本身。
 
-```rust
-use tgmath::{add, clamp, gcd, lcm, sub};
-
-#[test]
-fn integration_add_sub() {
-    assert_eq!(add(100, 200), 300);
-    assert_eq!(sub(300, 200), 100);
-}
-
-#[test]
-fn integration_clamp_boundary() {
-    assert_eq!(clamp(0, 0, 100), 0);
-    assert_eq!(clamp(100, 0, 100), 100);
-}
-
-#[test]
-fn integration_gcd_coprime() {
-    assert_eq!(gcd(13, 7), 1);
-}
-
-#[test]
-fn integration_lcm() {
-    assert_eq!(lcm(12, 8), 24);
-    assert_eq!(lcm(3, 7), 21);
-}
-```
+这里没有额外的组件协作或外部调用风险，不再复制同一算法断言到 `tests/`。确有公开 API 能力需要集成验证时，在 `{crate}/tests/` 通过正常依赖调用；禁止用 `#[path]` 或其他源码包含方式重新编译生产实现，也不为测试扩大公开接口。场景 B 演示如何选择公开 API 集成验证。
 
 ### 2.6 注册到 Workspace
 
@@ -251,11 +197,7 @@ members = [
 ]
 ```
 
-添加后可以验证 workspace 是否识别到新 crate：
-
-```bash
-cargo test -p tgmath
-```
+注册后按 [标准库测试维护流程](../build/test) 判断软件包是否适合进入宿主允许列表。通过正式 profile 验证后再维护白名单；不为进入白名单补无独立价值的测试。
 
 ### 2.7 Subtree 组件（可选）
 
@@ -292,38 +234,22 @@ pub fn lcm(a: u64, b: u64) -> u64 {
 }
 ```
 
-### 3.2 添加单元测试
+### 3.2 选择功能证明
 
-在 `#[cfg(test)]` 模块中添加测试：
+先检查已有算法测试能否证明新增公开能力。`gcd` 正确不代表 `lcm` 的零操作数处理和结果正确，因此本例选择一个公开 API 集成测试；不再为同一 `lcm` 行为复制源码内单元测试。
 
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
+### 3.3 验证公开能力
 
-    // ... 已有测试 ...
-
-    #[test]
-    fn test_lcm() {
-        assert_eq!(lcm(4, 6), 12);
-        assert_eq!(lcm(0, 5), 0);
-        assert_eq!(lcm(7, 0), 0);
-        assert_eq!(lcm(3, 7), 21);
-    }
-}
-```
-
-### 3.3 添加集成测试
-
-在 `tests/integration.rs` 中添加测试用例：
+创建 `examples/tgmath/tests/integration.rs`，通过外部消费者可用的入口验证最小公倍数。共享因子和零操作数是该算法的代表性行为，合在同一功能测试中；新增普通取值不再新增测试。
 
 ```rust
-use tgmath::{add, clamp, gcd, lcm, sub};
+use tgmath::lcm;
 
 #[test]
-fn integration_lcm() {
-    assert_eq!(lcm(12, 8), 24);
-    assert_eq!(lcm(3, 7), 21);
+fn least_common_multiple_handles_shared_factors_and_zero() {
+    assert_eq!(lcm(4, 6), 12);
+    assert_eq!(lcm(0, 6), 0);
+    assert_eq!(lcm(6, 0), 0);
 }
 ```
 
@@ -331,108 +257,31 @@ fn integration_lcm() {
 
 因为 `examples/tgmath` 已经在 workspace members 中，不需要重复添加。直接修改源码文件即可。
 
-### 3.5 运行测试验证修改
+### 3.5 验证修改
+
+按下一节的仓库入口运行实际测试。输出必须表明目标功能被发现并执行，失败能够传播；不把固定测试数量作为验收条件。若这是错误修复，先确认同一功能测试在错误实现上必然失败，再确认修复后通过。
+
+## 4. 本地验证
+
+按实际改动和仓库 `AGENTS.md` 选择验证范围。测试已能充分证明功能时不重复扩展；纯文档修改只检查差异、引用和文档格式。
+
+### 4.1 组件验证
+
+修改 Rust 后使用项目格式化和静态检查入口。示例软件包进入 std 允许列表后，`cargo xtask test` 会运行其源码内单元测试和 `tests/` 集成测试，无需重复执行相同测试。
 
 ```bash
-cargo test -p tgmath
-```
-
-预期输出：
-
-```
-running 5 tests
-test tests::test_add ... ok
-test tests::test_sub ... ok
-test tests::test_clamp ... ok
-test tests::test_gcd ... ok
-test tests::test_lcm ... ok
-
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-
-running 4 tests
-test integration_add_sub ... ok
-test integration_clamp_boundary ... ok
-test integration_gcd_coprime ... ok
-test integration_lcm ... ok
-
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-```
-
----
-
-## 4. 本地测试
-
-无论时新增组件还是，修改已有组件，都必须进行完整的本地开发测试。TGOSKits 采用**渐进式验证策略**：从最小消费者开始，逐步扩大验证范围。
-
-### 4.1 第一步：单元测试和 Clippy
-
-首先运行单元测试和静态检查：
-
-```bash
-# 运行该 crate 的单元测试
-cargo test -p tgmath
-
-# 运行 Clippy 检查（项目约定：不使用 allow 跳过警告，修复根因）
-cargo clippy -p tgmath -- -D warnings
-
-# 格式化代码（项目约定：修改代码后必须运行）
 cargo fmt
-```
-
-预期输出：
-
-```
-running 4 tests
-test tests::test_add ... ok
-test tests::test_sub ... ok
-test tests::test_clamp ... ok
-test tests::test_gcd ... ok
-
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-```
-
-### 4.2 第二步：集成测试
-
-```bash
-cargo test -p tgmath --test integration
-```
-
-### 4.3 第三步：运行最小系统验证
-
-修改基础组件后，需要确认不影响现有系统。从最轻量的入口开始：
-
-```bash
-# ArceOS 最小验证
-cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf
-```
-
-如果改动涉及特定功能（网络、块设备等），换对应示例：
-
-```bash
-# 带网络的验证
-cargo arceos qemu --package arceos-httpclient --target riscv64gc-unknown-none-elf
-```
-
-### 4.4 第四步：运行统一测试
-
-确认改动稳定后，运行完整的 CI 测试矩阵：
-
-```bash
-# Host / std crate 测试（等价于 CI 中的 test_std job）
+cargo xtask clippy --package tgmath
 cargo xtask test
-
-# ArceOS 测试（等价于 CI 中的 test_os_target job）
-cargo arceos test qemu --target riscv64gc-unknown-none-elf
-cargo arceos test qemu --target aarch64-unknown-none-softfloat
-
-# StarryOS 测试
-cargo starry test qemu --target riscv64
-
-# Axvisor 测试
-cargo axvisor test qemu --target aarch64
 ```
 
----
+已有可信基线且只需验证受影响软件包时，可按 `AGENTS.md` 使用 `cargo xtask test --since <REF>`。尚未进入允许列表的候选按 `update-std-tests` 技能验证，不用新增形式测试换取准入。
+
+### 4.2 系统验证
+
+纯数学算法不要求额外启动内核。改动影响真实调度、系统调用、设备或其他集成行为时，复用对应套件的完整功能测试，通过 `cargo xtask arceos test qemu`、`cargo xtask starry test qemu` 或相应 `ktest` 入口取得实际环境证据，具体目标和选择器参见各系统测试指南。
+
+运行矩阵按受影响能力与架构选择，不机械为每种参数增加用例。检查通过后，仅在新增改动、失败或未解决风险需要时扩大或重复验证。
 
 ## 5. 提交代码
 
@@ -459,7 +308,6 @@ git add examples/tgmath/
 # 或逐个添加
 git add examples/tgmath/Cargo.toml
 git add examples/tgmath/src/lib.rs
-git add examples/tgmath/tests/integration.rs
 ```
 
 **场景 B：**
@@ -498,9 +346,8 @@ TGOSKits 遵循 [Conventional Commits](https://www.conventionalcommits.org/) 规
 ```bash
 git commit -s -m "feat(tgmath): add tgmath utility crate to examples
 
-Add a tiny math utility crate providing add, sub, clamp, gcd and lcm
-functions. The crate is no_std compatible and includes unit tests
-and integration tests."
+提供 add、sub、clamp 和 gcd 函数，保持 no_std。
+单元测试验证限制范围和最大公约数规则，不重复测试算术转发。"
 ```
 
 **场景 B：**
@@ -508,8 +355,7 @@ and integration tests."
 ```bash
 git commit -s -m "feat(tgmath): add lcm function to examples/tgmath
 
-Add least common multiple (lcm) function to the tgmath demo.
-Includes unit and integration tests."
+增加最小公倍数能力，通过公开 API 验证共享因子和零操作数的结果。"
 ```
 
 > `-s` 参数会自动添加 `Signed-off-by:` 行，表示你同意 Developer Certificate of Origin (DCO)。

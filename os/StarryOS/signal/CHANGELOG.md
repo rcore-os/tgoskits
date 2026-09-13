@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.10.0...starry-signal-v0.10.1) - 2026-09-12
+
+### Other
+
+- updated the following local packages: ax-runtime
+
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.9.0...starry-signal-v0.10.0) - 2026-09-11
+
+### Other
+
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+- *(ax-cpu)* [**breaking**] centralize CPU mechanisms and architecture backends ([#2363](https://github.com/rcore-os/tgoskits/pull/2363))
+
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.15...starry-signal-v0.9.0) - 2026-09-09
+
+### Fixed
+
+- *(starry-kernel)* support setting the realtime clock ([#2237](https://github.com/rcore-os/tgoskits/pull/2237))
+
+### Other
+
+- *(ax-task)* [**breaking**] organize scheduler namespaces and unify runtime APIs ([#2313](https://github.com/rcore-os/tgoskits/pull/2313))
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
+## [0.8.15](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.14...starry-signal-v0.8.15) - 2026-08-27
+
+### Other
+
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+
+## [0.8.14](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.13...starry-signal-v0.8.14) - 2026-08-20
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(repo)* move starry-process, starry-signal, and starry-vm to os/StarryOS ([#1974](https://github.com/rcore-os/tgoskits/pull/1974))
+
 ## [0.8.13](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.12...starry-signal-v0.8.13) - 2026-08-09
 
 ### Other

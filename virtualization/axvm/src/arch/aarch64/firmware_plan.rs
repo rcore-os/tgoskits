@@ -9,7 +9,7 @@ pub(super) struct Aarch64FirmwarePlan {
     console: GuestSerialProfile,
     serials: std::vec::Vec<ResolvedSerialDevice>,
     serial_identity: Option<GuestSerialFdtIdentity>,
-    ivc_channels: std::vec::Vec<GuestIvcChannel>,
+    devices: std::vec::Vec<crate::boot::fdt::device::ResolvedFdtDevice>,
     timer: GuestTimerProfile,
 }
 
@@ -19,7 +19,7 @@ impl Aarch64FirmwarePlan {
         vgic: &ArmVgicConfig,
         graph: &axdevice::ResolvedDeviceGraph,
     ) -> AxVmResult<Self> {
-        let gic = match config.gic_profile() {
+        let mut gic = match config.gic_profile() {
             Some(profile) => profile.clone(),
             None => fallback_gic_profile(vgic)?,
         };
@@ -27,7 +27,8 @@ impl Aarch64FirmwarePlan {
             AxVmError::invalid_config("AArch64 machine profile has no architectural timer")
         })?;
         let serials = resolved_serial_devices(graph)?;
-        let ivc_channels = resolved_ivc_channels(graph)?;
+        let firmware = crate::boot::fdt::device::resolve_fdt_firmware(graph)?;
+        apply_gic_contribution(&firmware.specials, &serials, vgic, &mut gic)?;
         let console = serials
             .iter()
             .find(|serial| serial.id() == "console0")
@@ -46,7 +47,7 @@ impl Aarch64FirmwarePlan {
             console: console_profile,
             serials,
             serial_identity,
-            ivc_channels,
+            devices: firmware.devices,
             timer,
         })
     }
@@ -71,9 +72,128 @@ impl Aarch64FirmwarePlan {
         &self.serials
     }
 
-    pub(super) fn ivc_channels(&self) -> &[GuestIvcChannel] {
-        &self.ivc_channels
+    pub(super) fn devices(&self) -> &[crate::boot::fdt::device::ResolvedFdtDevice] {
+        &self.devices
     }
+}
+
+fn apply_gic_contribution(
+    specials: &[crate::boot::fdt::device::ResolvedFdtSpecial],
+    serials: &[ResolvedSerialDevice],
+    vgic: &ArmVgicConfig,
+    profile: &mut GuestGicProfile,
+) -> AxVmResult {
+    use crate::boot::fdt::device::ResolvedFdtSpecialKind;
+
+    let mut controllers = specials
+        .iter()
+        .filter(|special| matches!(special.kind, ResolvedFdtSpecialKind::InterruptController(_)));
+    let controller = controllers.next().ok_or_else(|| {
+        AxVmError::invalid_config("AArch64 FDT has no interrupt-controller contribution")
+    })?;
+    if controllers.next().is_some() {
+        return Err(AxVmError::unsupported(
+            "resolve AArch64 FDT topology",
+            "multiple interrupt-controller contributions are not supported",
+        ));
+    }
+    if controller.kind != ResolvedFdtSpecialKind::InterruptController(vgic.controller_id()) {
+        return Err(AxVmError::invalid_config(
+            "AArch64 FDT controller identity differs from the VGIC runtime",
+        ));
+    }
+    let expected_registers = gic_registers(profile)?;
+    if controller.node_name != "interrupt-controller"
+        || controller.registers != expected_registers
+        || !controller.interrupts.is_empty()
+        || !controller.properties.is_empty()
+    {
+        return Err(AxVmError::invalid_config(
+            "AArch64 FDT controller resources differ from the VGIC runtime plan",
+        ));
+    }
+    let [compatible] = controller.compatible.as_slice() else {
+        return Err(AxVmError::invalid_config(
+            "AArch64 FDT controller must declare exactly one compatible string",
+        ));
+    };
+    let expected_compatible = match vgic {
+        ArmVgicConfig::V2(_) => "arm,gic-400",
+        ArmVgicConfig::V3(_) => "arm,gic-v3",
+    };
+    if compatible != expected_compatible {
+        return Err(AxVmError::invalid_config(std::format!(
+            "AArch64 FDT controller compatible '{compatible}' differs from {expected_compatible}"
+        )));
+    }
+    profile.compatible.clone_from(compatible);
+
+    let consoles = specials
+        .iter()
+        .filter(|special| special.kind == ResolvedFdtSpecialKind::Console)
+        .collect::<std::vec::Vec<_>>();
+    if consoles.len() != serials.len()
+        || serials
+            .iter()
+            .any(|serial| consoles.iter().all(|console| console.id != serial.id()))
+        || consoles.iter().any(|console| {
+            serials
+                .iter()
+                .find(|serial| serial.id() == console.id)
+                .is_none_or(|serial| {
+                    !crate::boot::fdt::device::fdt_console_matches_serial(
+                        console,
+                        serial,
+                        vgic.controller_id(),
+                    )
+                })
+        })
+    {
+        return Err(AxVmError::invalid_config(
+            "AArch64 console contributions differ from resolved serial devices",
+        ));
+    }
+    if specials.len() != 1 + consoles.len() {
+        return Err(AxVmError::unsupported(
+            "resolve AArch64 FDT topology",
+            "the graph contains an unsupported special contribution",
+        ));
+    }
+    Ok(())
+}
+
+fn gic_registers(profile: &GuestGicProfile) -> AxVmResult<std::vec::Vec<(u64, u64)>> {
+    let mut registers = std::vec![gic_register(profile.distributor)?];
+    match &profile.cpu_region {
+        GuestGicCpuRegion::CpuInterface(region) => registers.push(gic_register(*region)?),
+        GuestGicCpuRegion::Redistributors(redistributors) => {
+            registers.extend(
+                redistributors
+                    .regions
+                    .iter()
+                    .copied()
+                    .map(gic_register)
+                    .collect::<AxVmResult<std::vec::Vec<_>>>()?,
+            );
+        }
+    }
+    registers.extend(
+        profile
+            .its
+            .iter()
+            .map(|its| gic_register(its.registers))
+            .collect::<AxVmResult<std::vec::Vec<_>>>()?,
+    );
+    Ok(registers)
+}
+
+fn gic_register(region: GuestMmioRegion) -> AxVmResult<(u64, u64)> {
+    Ok((
+        u64::try_from(region.base)
+            .map_err(|_| AxVmError::invalid_config("GIC base exceeds u64"))?,
+        u64::try_from(region.length)
+            .map_err(|_| AxVmError::invalid_config("GIC length exceeds u64"))?,
+    ))
 }
 
 fn fallback_gic_profile(config: &ArmVgicConfig) -> AxVmResult<GuestGicProfile> {

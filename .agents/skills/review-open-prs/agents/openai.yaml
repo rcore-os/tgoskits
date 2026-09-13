@@ -1,0 +1,4 @@
+interface:
+  display_name: "审查开放拉取请求"
+  short_description: "筛选开放拉取请求并按当前提交证据分派完整逐项审查任务"
+  default_prompt: "请使用 $review-open-prs 找出符合条件的开放拉取请求，再对每个需要审查的项目调用 $review-single-pr。"

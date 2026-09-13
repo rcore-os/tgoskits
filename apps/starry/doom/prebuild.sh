@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # Overridable defaults for Docker container environment
-: "${STARRY_ROOTFS:=/tmp/.tgos-images/rootfs-x86_64-alpine.img/rootfs-x86_64-alpine.img}"
+: "${STARRY_ROOTFS:=/tmp/.tgos-images/rootfs-x86_64-alpine.img}"
 : "${STARRY_STAGING_ROOT:=/workspace/tmp/doom-staging}"
 : "${STARRY_OVERLAY_DIR:=/workspace/tmp/doom-overlay}"
 : "${STARRY_ARCH:=x86_64}"

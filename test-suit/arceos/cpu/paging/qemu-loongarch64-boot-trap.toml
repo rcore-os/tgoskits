@@ -1,0 +1,8 @@
+args = [ "-m", "1G", "-smp", "4", "-display", "none", "-serial", "mon:stdio"]
+timeout = 60
+uefi = true
+to_bin = true
+fail_regex = ["boot vector unexpectedly returned"]
+
+[[shell_check_steps]]
+success_regex = ["unexpected LoongArch exception before runtime setup: BootException"]

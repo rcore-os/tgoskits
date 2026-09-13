@@ -67,7 +67,7 @@ impl<'a> DirEntryIterator<'a> {
 }
 
 impl<'a> Iterator for DirEntryIterator<'a> {
-    type Item = (Ext4DirEntryInfo<'a>, u16);
+    type Item = (Ext4DirEntryInfo<'a>, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.offset < self.data.len() {
@@ -81,11 +81,12 @@ impl<'a> Iterator for DirEntryIterator<'a> {
                 return None;
             }
 
+            let entry_offset = self.offset;
             let entry_data = &remaining[..rec_len as usize];
             self.offset += rec_len as usize;
 
             if let Some(entry_info) = Ext4DirEntryInfo::parse_from_bytes(entry_data) {
-                return Some((entry_info, rec_len));
+                return Some((entry_info, entry_offset));
             }
         }
 

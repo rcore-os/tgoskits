@@ -17,8 +17,10 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/bin/sh /usr/bin/redis-stress-tests.sh"
-success_regex = ["(?m)^REDIS_STRESS_TEST_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^REDIS_STRESS_TEST_FAILED\\s*$"]
 timeout = 1800
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/bin/sh /usr/bin/redis-stress-tests.sh"
+success_regex = ["(?m)^REDIS_STRESS_TEST_PASSED\\s*$"]

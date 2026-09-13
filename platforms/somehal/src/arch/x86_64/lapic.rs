@@ -1,32 +1,48 @@
-use super::vector::{APIC_IPI_VECTOR, lapic_ipi_irq_id};
+//! Runtime local-APIC glue for somehal.
+//!
+//! Register operations live in `x86-apic-driver`; this file owns one
+//! initialized handle and timer profile in each runtime CPU area. Capability
+//! discovery and APIC-page translation happen during that CPU's early init,
+//! matching Linux's per-CPU LAPIC clockevent ownership.
+
+use x86_apic_driver::{
+    ApicError, LocalApicConfig, TimerDivide, TimerMode, VirtAddr, X86LocalApic,
+    local_apic::apic_phys_base,
+};
+
+use super::vector::{
+    APIC_ERROR_VECTOR, APIC_IPI_VECTOR, APIC_TIMER_VECTOR, SPURIOUS_VECTOR, lapic_ipi_irq_id,
+};
 use crate::irq::{IrqError, IrqId};
 
-const LAPIC_REG_EOI: u32 = 0x0b0;
-const LAPIC_REG_ICR_LOW: u32 = 0x300;
-const LAPIC_REG_ICR_HIGH: u32 = 0x310;
-const ICR_DELIVERY_PENDING: u32 = 1 << 12;
-pub(super) const ICR_FIXED_BASE: u32 = 0x0000_4000;
-pub(super) const ICR_DEST_SELF: u32 = 0x0004_0000;
-const IPI_DELIVERY_WAIT_SPINS: usize = 1_000_000;
+#[ax_percpu::def_percpu]
+static LOCAL_APIC: CpuLocalApic = CpuLocalApic::offline();
 
-const IA32_APIC_BASE_MSR: u32 = 0x1b;
-const IA32_APIC_BASE_X2APIC_ENABLE: u64 = 1 << 10;
-const IA32_X2APIC_EOI: u32 = 0x80b;
-const IA32_X2APIC_ICR: u32 = 0x830;
+#[derive(Clone, Copy)]
+pub(super) struct LocalTimerProfile {
+    pub(super) tsc_deadline: bool,
+    pub(super) apic_counts_per_tsc_q32: u64,
+}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ApicMode {
-    XApic,
-    X2Apic,
+struct CpuLocalApic {
+    device: Option<X86LocalApic>,
+    timer: LocalTimerProfile,
+}
+
+impl CpuLocalApic {
+    const fn offline() -> Self {
+        Self {
+            device: None,
+            timer: LocalTimerProfile {
+                tsc_deadline: false,
+                apic_counts_per_tsc_q32: 0,
+            },
+        }
+    }
 }
 
 pub(super) fn eoi() {
-    unsafe {
-        match current_apic_mode() {
-            ApicMode::X2Apic => x86::msr::wrmsr(IA32_X2APIC_EOI, 0),
-            ApicMode::XApic => lapic_write(LAPIC_REG_EOI, 0),
-        }
-    }
+    with_current_lapic(|lapic, _timer| lapic.eoi());
 }
 
 pub(super) fn ipi_vector(irq: IrqId) -> Result<u8, IrqError> {
@@ -37,92 +53,82 @@ pub(super) fn ipi_vector(irq: IrqId) -> Result<u8, IrqError> {
     }
 }
 
-fn current_apic_mode() -> ApicMode {
-    let base = unsafe { x86::msr::rdmsr(IA32_APIC_BASE_MSR) };
-    if base & IA32_APIC_BASE_X2APIC_ENABLE != 0 {
-        ApicMode::X2Apic
-    } else {
-        ApicMode::XApic
-    }
+pub(super) fn send_ipi_to_apic_id(apic_id: u32, vector: u8) -> Result<(), IrqError> {
+    with_current_lapic(|lapic, _timer| {
+        lapic
+            .send_fixed_ipi(apic_id, vector)
+            .map_err(map_apic_error)
+    })
 }
 
-pub(super) fn xapic_destination(apic_id: u32) -> Result<u32, IrqError> {
-    let dest = u8::try_from(apic_id).map_err(|_| IrqError::InvalidCpu)?;
-    Ok(u32::from(dest) << 24)
+pub(super) fn send_ipi(vector: u8) -> Result<(), IrqError> {
+    with_current_lapic(|lapic, _timer| lapic.send_self_ipi(vector).map_err(map_apic_error))
 }
 
-pub(super) fn x2apic_icr(apic_id: u32, icr_low: u32) -> u64 {
-    (u64::from(apic_id) << 32) | u64::from(icr_low)
+/// Builds an offline local-APIC handle for the current CPU's early init.
+pub(super) fn new_current_lapic(tsc_deadline: bool) -> X86LocalApic {
+    let mmio_base = VirtAddr::new(someboot::mem::phys_to_virt(apic_phys_base()) as usize);
+    // SAFETY: `apic_phys_base` reads the LAPIC page from IA32_APIC_BASE, and
+    // someboot's permanent direct mapping keeps the complete page valid for
+    // the kernel lifetime. The driver dereferences it only in xAPIC mode.
+    unsafe { X86LocalApic::new(lapic_config(tsc_deadline), mmio_base) }
 }
 
-pub(super) fn send_ipi_to_apic_id(apic_id: u32, icr_low: u32) -> Result<(), IrqError> {
-    match current_apic_mode() {
-        ApicMode::X2Apic => send_x2apic_ipi(x2apic_icr(apic_id, icr_low)),
-        ApicMode::XApic => send_xapic_ipi(xapic_destination(apic_id)?, icr_low),
-    }
-}
-
-pub(super) fn send_ipi(destination: u32, icr_low: u32) -> Result<(), IrqError> {
-    match current_apic_mode() {
-        ApicMode::X2Apic => send_x2apic_ipi(u64::from(icr_low)),
-        ApicMode::XApic => send_xapic_ipi(destination, icr_low),
-    }
-}
-
-fn send_xapic_ipi(destination: u32, icr_low: u32) -> Result<(), IrqError> {
-    // x86 TSO orders earlier write-back stores before the APIC's UC MMIO
-    // doorbell, so no additional publication fence is required here.
+pub(super) fn install_current_lapic(device: X86LocalApic, timer: LocalTimerProfile) {
+    // SAFETY: early per-CPU init runs with scheduling and local interrupts
+    // offline. No runtime accessor can observe this slot until init returns.
     unsafe {
-        lapic_write(LAPIC_REG_ICR_HIGH, destination);
-        lapic_write(LAPIC_REG_ICR_LOW, icr_low);
+        LOCAL_APIC.with_current_cpu_area_mut(|slot| {
+            assert!(
+                slot.device.is_none(),
+                "local APIC may only be installed once per CPU"
+            );
+            slot.device = Some(device);
+            slot.timer = timer;
+        })
     }
-    wait_xapic_delivery()
+    .unwrap_or_else(|error| panic!("local APIC CPU area is unavailable during init: {error}"));
 }
 
-fn send_x2apic_ipi(icr: u64) -> Result<(), IrqError> {
-    // WRMSR preserves the required x86 publication order for the x2APIC
-    // doorbell; an MFENCE would add serialization without strengthening it.
+pub(super) fn with_current_lapic<R>(
+    operation: impl FnOnce(&X86LocalApic, LocalTimerProfile) -> R,
+) -> R {
+    // SAFETY: callers are early boot, IRQ handling, or clockevent/IPI paths
+    // that already exclude migration and context switches. The installed
+    // device is immutable after early init and targets only the current CPU.
     unsafe {
-        x86::msr::wrmsr(IA32_X2APIC_ICR, icr);
+        LOCAL_APIC.with_current_cpu_area(|slot| {
+            let device = slot
+                .device
+                .as_ref()
+                .expect("local APIC must be installed before runtime access");
+            operation(device, slot.timer)
+        })
     }
-    wait_x2apic_delivery()
+    .unwrap_or_else(|error| panic!("local APIC CPU area is unavailable at runtime: {error}"))
 }
 
-fn wait_xapic_delivery() -> Result<(), IrqError> {
-    for _ in 0..IPI_DELIVERY_WAIT_SPINS {
-        if unsafe { lapic_read(LAPIC_REG_ICR_LOW) } & ICR_DELIVERY_PENDING == 0 {
-            return Ok(());
-        }
-        core::hint::spin_loop();
-    }
-    Err(IrqError::Timeout)
-}
-
-fn wait_x2apic_delivery() -> Result<(), IrqError> {
-    for _ in 0..IPI_DELIVERY_WAIT_SPINS {
-        if unsafe { x86::msr::rdmsr(IA32_X2APIC_ICR) } & u64::from(ICR_DELIVERY_PENDING) == 0 {
-            return Ok(());
-        }
-        core::hint::spin_loop();
-    }
-    Err(IrqError::Timeout)
-}
-
-unsafe fn lapic_read(offset: u32) -> u32 {
-    let ptr = lapic_ptr(offset) as *const u32;
-    unsafe { ptr.read_volatile() }
-}
-
-unsafe fn lapic_write(offset: u32, value: u32) {
-    let ptr = lapic_ptr(offset);
-    unsafe {
-        ptr.write_volatile(value);
+fn lapic_config(tsc_deadline: bool) -> LocalApicConfig {
+    LocalApicConfig {
+        timer_vector: APIC_TIMER_VECTOR as u8,
+        error_vector: APIC_ERROR_VECTOR as u8,
+        spurious_vector: SPURIOUS_VECTOR as u8,
+        timer_mode: if tsc_deadline {
+            TimerMode::TscDeadline
+        } else {
+            TimerMode::OneShot
+        },
+        timer_divide: TimerDivide::Div16,
+        timer_initial: 0,
     }
 }
 
-fn lapic_ptr(offset: u32) -> *mut u32 {
-    const IA32_APIC_BASE: u32 = 0x1b;
-    const LAPIC_BASE_MASK: u64 = 0xffff_f000;
-    let base = unsafe { x86::msr::rdmsr(IA32_APIC_BASE) & LAPIC_BASE_MASK } as usize;
-    unsafe { someboot::mem::phys_to_virt(base).add(offset as usize) }.cast()
+fn map_apic_error(error: ApicError) -> IrqError {
+    match error {
+        ApicError::XapicDestinationOverflow(_) => IrqError::InvalidCpu,
+        ApicError::IpiDeliveryTimeout => IrqError::Timeout,
+        ApicError::LocalInterruptPinsUnmasked { .. } => IrqError::Controller,
+        ApicError::ApicUnsupported(_) => IrqError::Unsupported,
+        ApicError::InvalidIoApicInput(_) => IrqError::InvalidIrq,
+    }
 }

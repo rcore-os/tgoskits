@@ -19,15 +19,12 @@
 //! with the next message's ancillary data.
 
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
-use core::{
-    sync::atomic::{AtomicBool, Ordering},
-    task::Context,
-};
+use core::sync::atomic::{AtomicBool, Ordering};
 
-use async_trait::async_trait;
 use ax_io::{IoBuf, Read, Write};
-use ax_sync::Mutex;
-use axpoll::{IoEvents, PollSet, Pollable};
+use ax_sync::SpinLock;
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 use ringbuf::{
     HeapCons, HeapProd, HeapRb,
     traits::{Consumer, Observer, Producer, Split},
@@ -60,7 +57,7 @@ struct PendingCmsg {
     cmsg: Vec<CMsgData>,
 }
 
-type CmsgQueue = Arc<Mutex<VecDeque<PendingCmsg>>>;
+type CmsgQueue = Arc<SpinLock<VecDeque<PendingCmsg>>>;
 
 fn new_uni_channel() -> (HeapProd<u8>, HeapCons<u8>) {
     let rb = HeapRb::new(BUF_SIZE);
@@ -73,7 +70,9 @@ fn new_channels(
 ) -> (Channel, Channel) {
     let (client_tx, server_rx) = new_uni_channel();
     let (server_tx, client_rx) = new_uni_channel();
-    let poll_update = Arc::new(PollSet::new());
+    // Per-endpoint wait sets, so I/O wakes only the peer, as on Linux.
+    let client_poll = Arc::new(PollSet::new());
+    let server_poll = Arc::new(PollSet::new());
     let c2s_cmsg = CmsgQueue::default();
     let s2c_cmsg = CmsgQueue::default();
     // Cross-wired close flags: each side's my_tx_closed is the other's peer_tx_closed.
@@ -89,7 +88,8 @@ fn new_channels(
             rx_bytes_total: 0,
             my_tx_closed: client_tx_closed.clone(),
             peer_tx_closed: server_tx_closed.clone(),
-            poll_update: poll_update.clone(),
+            poll_update: client_poll.clone(),
+            peer_poll_update: server_poll.clone(),
             peer_credentials: credentials.clone(),
             peer_receive_credentials: second_receive_credentials,
         },
@@ -102,7 +102,8 @@ fn new_channels(
             rx_bytes_total: 0,
             my_tx_closed: server_tx_closed,
             peer_tx_closed: client_tx_closed,
-            poll_update,
+            poll_update: server_poll,
+            peer_poll_update: client_poll,
             peer_credentials: credentials,
             peer_receive_credentials: first_receive_credentials,
         },
@@ -128,6 +129,8 @@ struct Channel {
     /// Set to true by the peer's Drop before it wakes us.
     peer_tx_closed: Arc<AtomicBool>,
     poll_update: Arc<PollSet>,
+    /// The peer endpoint's `poll_update`.
+    peer_poll_update: Arc<PollSet>,
     peer_credentials: UnixCredentials,
     /// Peer receiver's `SO_PASSCRED` state.
     peer_receive_credentials: Arc<AtomicBool>,
@@ -192,9 +195,9 @@ struct ConnRequest {
 /// Stream transport for Unix domain sockets.
 pub struct StreamTransport {
     /// Connected channel, if this endpoint is connected or accepted.
-    channel: Mutex<Option<Channel>>,
+    channel: SpinLock<Option<Channel>>,
     /// Listener receive queue installed by bind/listen.
-    conn_rx: Mutex<Option<(async_channel::Receiver<ConnRequest>, Arc<PollSet>)>>,
+    conn_rx: SpinLock<Option<(async_channel::Receiver<ConnRequest>, Arc<PollSet>)>>,
     /// True after `listen` publishes the bound endpoint for connection attempts.
     listening: Arc<AtomicBool>,
     /// Poll set for local stream state.
@@ -222,8 +225,8 @@ impl StreamTransport {
         receive_credentials: Arc<AtomicBool>,
     ) -> Self {
         StreamTransport {
-            channel: Mutex::new(channel),
-            conn_rx: Mutex::new(None),
+            channel: SpinLock::new(channel),
+            conn_rx: SpinLock::new(None),
             listening: Arc::new(AtomicBool::new(false)),
             poll_state: PollSet::new(),
             general: GeneralOptions::new(1, 1, 0), // SOCK_STREAM
@@ -299,7 +302,6 @@ impl Configurable for StreamTransport {
         Ok(true)
     }
 }
-#[async_trait]
 impl TransportOps for StreamTransport {
     fn bind(&self, slot: &super::BindSlot, _local_addr: &UnixSocketAddr) -> NetResult<()> {
         let mut slot = slot.stream.lock();
@@ -360,31 +362,6 @@ impl TransportOps for StreamTransport {
         Ok(Some(accept_poll))
     }
 
-    async fn accept(&self) -> NetResult<(Transport, UnixSocketAddr)> {
-        if !self.is_listening() {
-            return Err(NetError::InvalidInput);
-        }
-        let Some((rx, _)) = self.conn_rx.lock().clone() else {
-            // Not a listening socket: accept requires a prior listen(). Linux
-            // returns EINVAL for accept on a non-listening socket.
-            return Err(NetError::InvalidInput);
-        };
-        let ConnRequest {
-            channel,
-            addr: peer_addr,
-            credentials,
-            receive_credentials,
-        } = rx.recv().await.map_err(|_| NetError::ConnectionReset)?;
-        Ok((
-            Transport::Stream(StreamTransport::new_channel(
-                Some(channel),
-                credentials,
-                receive_credentials,
-            )),
-            peer_addr,
-        ))
-    }
-
     fn try_accept(&self) -> NetResult<(Transport, UnixSocketAddr)> {
         if !self.is_listening() {
             return Err(NetError::InvalidInput);
@@ -413,99 +390,68 @@ impl TransportOps for StreamTransport {
         }
     }
 
-    fn send(&self, mut src: impl Read + IoBuf, mut options: SendOptions) -> NetResult<usize> {
+    fn try_send(&self, mut src: impl Read + IoBuf, options: &mut SendOptions) -> NetResult<usize> {
         if options.to.is_some() {
             return Err(NetError::InvalidInput);
         }
         let size = src.remaining();
-        let mut total = 0;
-        let dontwait = options.flags.contains(crate::SendFlags::DONTWAIT);
-        let non_blocking = self.general.nonblocking() || dontwait;
-        // Attach any incoming cmsg to the first byte written on this send
-        // call (Linux semantics: cmsg is delivered with the first byte of
-        // the message). We stash the vec here and push into the peer's
-        // cmsg queue once some bytes actually got written.
-        if self
-            .channel
-            .lock()
-            .as_ref()
-            .is_some_and(|channel| channel.peer_receive_credentials.load(Ordering::Acquire))
-            && let Some(credentials) = options.sender_credentials
-        {
-            options
-                .cmsg
-                .push(Box::new(crate::SocketCmsg::Credentials(credentials)));
+        if size == 0 {
+            return Ok(0);
         }
-        let pending_cmsg = core::mem::take(&mut options.cmsg);
-        let had_cmsg = !pending_cmsg.is_empty();
-        let mut cmsg_slot: Option<Vec<CMsgData>> = had_cmsg.then_some(pending_cmsg);
 
-        self.general.send_poller_with(self, dontwait, || {
-            let mut wake_poll = None;
-            let mut guard = self.channel.lock();
-            let result = {
-                let Some(chan) = guard.as_mut() else {
-                    return Err(NetError::NotConnected);
-                };
-                if !chan.tx.read_is_held() {
-                    return Err(NetError::BrokenPipe);
-                }
-
-                let count = {
-                    let (left, right) = chan.tx.vacant_slices_mut();
-                    let mut count = src.read(unsafe { left.assume_init_mut() })?;
-                    if count >= left.len() {
-                        count += src.read(unsafe { right.assume_init_mut() })?;
-                    }
-                    unsafe { chan.tx.advance_write_index(count) };
-                    count
-                };
-                total += count;
-                if count > 0 {
-                    // Attach cmsg (if any) to the first write of this send
-                    // call.  Continuations of the same multi-iter send extend
-                    // the just-pushed entry; back-to-back separate send calls
-                    // (no cmsg) must NOT extend a prior call's cmsg, otherwise
-                    // a non-cmsg send glued to a preceding cmsg send would
-                    // appear to peer as a single oversized cmsg-bearing
-                    // message.
-                    if let Some(cmsg) = cmsg_slot.take() {
-                        let start_byte = chan.tx_bytes_total.saturating_add(1);
-                        let end_byte = chan.tx_bytes_total.saturating_add(count as u64);
-                        chan.tx_cmsg.lock().push_back(PendingCmsg {
-                            start_byte,
-                            end_byte,
-                            cmsg,
-                        });
-                    } else if had_cmsg
-                        && let Some(last) = chan.tx_cmsg.lock().back_mut()
-                        && last.end_byte == chan.tx_bytes_total
-                    {
-                        last.end_byte = last.end_byte.saturating_add(count as u64);
-                    }
-                    chan.tx_bytes_total = chan.tx_bytes_total.saturating_add(count as u64);
-                    wake_poll = Some(chan.poll_update.clone());
-                }
-
-                if count == size || non_blocking {
-                    Ok(total)
-                } else {
-                    Err(NetError::WouldBlock)
-                }
+        let mut wake_poll = None;
+        let mut guard = self.channel.lock();
+        let result = {
+            let Some(chan) = guard.as_mut() else {
+                return Err(NetError::NotConnected);
             };
-            drop(guard);
-            if let Some(poll) = wake_poll {
-                // Peer-visible bytes and cmsg state are published before wake.
-                unsafe { poll.wake(IoEvents::IN | IoEvents::OUT) };
+            if !chan.tx.read_is_held() {
+                return Err(NetError::BrokenPipe);
             }
-            result
-        })
+
+            let count = {
+                let (left, right) = chan.tx.vacant_slices_mut();
+                let mut count = src.read(unsafe { left.assume_init_mut() })?;
+                if count >= left.len() {
+                    count += src.read(unsafe { right.assume_init_mut() })?;
+                }
+                unsafe { chan.tx.advance_write_index(count) };
+                count
+            };
+            if count == 0 {
+                Err(NetError::WouldBlock)
+            } else {
+                if chan.peer_receive_credentials.load(Ordering::Acquire)
+                    && let Some(credentials) = options.sender_credentials.clone()
+                {
+                    options
+                        .cmsg
+                        .push(Box::new(crate::SocketCmsg::Credentials(credentials)));
+                }
+                let cmsg = core::mem::take(&mut options.cmsg);
+                if !cmsg.is_empty() {
+                    chan.tx_cmsg.lock().push_back(PendingCmsg {
+                        start_byte: chan.tx_bytes_total.saturating_add(1),
+                        end_byte: chan.tx_bytes_total.saturating_add(count as u64),
+                        cmsg,
+                    });
+                }
+                chan.tx_bytes_total = chan.tx_bytes_total.saturating_add(count as u64);
+                wake_poll = Some(chan.peer_poll_update.clone());
+                Ok(count)
+            }
+        };
+        drop(guard);
+        if let Some(poll) = wake_poll {
+            // Peer-visible bytes and cmsg state are published before wake.
+            unsafe { poll.wake(IoEvents::IN) };
+        }
+        result
     }
 
-    fn recv(&self, mut dst: impl Write, mut options: RecvOptions) -> NetResult<usize> {
-        let dontwait = options.flags.contains(crate::RecvFlags::DONTWAIT);
+    fn try_recv(&self, mut dst: impl Write, options: &mut RecvOptions) -> NetResult<usize> {
         let peek = options.flags.contains(crate::RecvFlags::PEEK);
-        let recv_count = self.general.recv_poller_with(self, dontwait, || {
+        let recv_count = {
             let mut wake_poll = None;
             let mut guard = self.channel.lock();
             let result = {
@@ -544,7 +490,7 @@ impl TransportOps for StreamTransport {
                 if count > 0 {
                     if !peek {
                         chan.rx_bytes_total = chan.rx_bytes_total.saturating_add(count as u64);
-                        wake_poll = Some(chan.poll_update.clone());
+                        wake_poll = Some(chan.peer_poll_update.clone());
                     }
                     Ok(count)
                 } else if !chan.rx.write_is_held() || chan.peer_tx_closed.load(Ordering::Acquire) {
@@ -560,7 +506,7 @@ impl TransportOps for StreamTransport {
                 unsafe { poll.wake(IoEvents::OUT) };
             }
             result
-        })?;
+        }?;
 
         if peek {
             // MSG_PEEK delivers ancillary data without consuming the record.
@@ -621,14 +567,14 @@ impl TransportOps for StreamTransport {
             self.tx_closed.store(true, Ordering::Release);
             if let Some(chan) = self.channel.lock().as_ref() {
                 chan.my_tx_closed.store(true, Ordering::Release);
-                peer_poll = Some(chan.poll_update.clone());
+                peer_poll = Some(chan.peer_poll_update.clone());
             }
         }
         if self.rx_closed.load(Ordering::Acquire)
             && self.tx_closed.load(Ordering::Acquire)
             && let Some(chan) = self.channel.lock().take()
         {
-            peer_poll.get_or_insert(chan.poll_update);
+            peer_poll.get_or_insert(chan.peer_poll_update);
         }
         if let Some(poll) = peer_poll {
             // The peer-visible write closure is published before waking readers.
@@ -668,7 +614,29 @@ impl Pollable for StreamTransport {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_shared(poll, interests)
+        });
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_exclusive(poll, interests)
+        });
+    }
+}
+
+impl StreamTransport {
+    fn register_poll_sources(
+        &self,
+        events: IoEvents,
+        mut register: impl FnMut(&PollSet, IoEvents),
+    ) {
         let chan_poll = if events.intersects(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP) {
             self.channel
                 .lock()
@@ -678,16 +646,13 @@ impl Pollable for StreamTransport {
             None
         };
         if let Some(poll) = chan_poll {
-            // Registration happens from socket poll task context.
-            unsafe { poll.register(context.waker(), events) };
+            register(&poll, events);
         } else if let Some((_, poll_new_conn)) = self.conn_rx.lock().as_ref()
             && events.contains(IoEvents::IN)
         {
-            // Registration happens from socket poll task context.
-            unsafe { poll_new_conn.register(context.waker(), IoEvents::IN) };
+            register(poll_new_conn, IoEvents::IN);
         }
-        // Registration happens from socket poll task context.
-        unsafe { self.poll_state.register(context.waker(), events) };
+        register(&self.poll_state, events);
     }
 }
 
@@ -700,7 +665,7 @@ impl Drop for StreamTransport {
             // and no data, reports no events, and parks forever waiting for data
             // that will never arrive.
             chan.my_tx_closed.store(true, Ordering::Release);
-            Some(chan.poll_update.clone())
+            Some(chan.peer_poll_update.clone())
         } else {
             None
         };
@@ -713,5 +678,103 @@ impl Drop for StreamTransport {
             self.poll_state
                 .wake(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP)
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::task::Wake;
+    use core::{
+        sync::atomic::{AtomicUsize, Ordering},
+        task::Waker,
+    };
+
+    use axpoll::{PollRegistrar, SharedObserver};
+
+    use super::*;
+
+    struct WakeCount(AtomicUsize);
+
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    struct Observer {
+        count: Arc<WakeCount>,
+        _registrar: PollRegistrar<SharedObserver>,
+    }
+
+    impl Observer {
+        fn woke(&self) -> usize {
+            self.count.0.load(Ordering::Acquire)
+        }
+    }
+
+    fn observe(transport: &StreamTransport, events: IoEvents) -> Observer {
+        let count = Arc::new(WakeCount(AtomicUsize::new(0)));
+        let waker = Waker::from(count.clone());
+        let mut registrar = PollRegistrar::<SharedObserver>::new(&waker);
+        // SAFETY: the registrar is owned by the returned observer, which every
+        // test drops before the transport it watches.
+        unsafe { transport.register_shared(&mut registrar, events) };
+        Observer {
+            count,
+            _registrar: registrar,
+        }
+    }
+
+    #[test]
+    fn send_wakes_only_the_peer_reader() {
+        let (writer, reader) = StreamTransport::new_pair(1);
+        let writer_out = observe(&writer, IoEvents::OUT);
+        let reader_in = observe(&reader, IoEvents::IN);
+        let reader_out = observe(&reader, IoEvents::OUT);
+
+        let sent = writer
+            .try_send(&b"ping"[..], &mut SendOptions::default())
+            .unwrap();
+        assert_eq!(sent, 4);
+
+        assert_eq!(reader_in.woke(), 1);
+        assert_eq!(writer_out.woke(), 0, "send re-armed the writer's own OUT");
+        assert_eq!(
+            reader_out.woke(),
+            0,
+            "incoming data re-armed the reader's OUT"
+        );
+    }
+
+    #[test]
+    fn recv_wakes_only_the_peer_writer() {
+        let (writer, reader) = StreamTransport::new_pair(1);
+        writer
+            .try_send(&b"ping"[..], &mut SendOptions::default())
+            .unwrap();
+        let writer_out = observe(&writer, IoEvents::OUT);
+        let reader_out = observe(&reader, IoEvents::OUT);
+
+        let mut buf = [0u8; 4];
+        let received = reader
+            .try_recv(&mut buf[..], &mut RecvOptions::default())
+            .unwrap();
+        assert_eq!(received, 4);
+
+        assert_eq!(writer_out.woke(), 1);
+        assert_eq!(reader_out.woke(), 0, "recv re-armed the reader's own OUT");
+    }
+
+    #[test]
+    fn write_shutdown_and_drop_wake_the_peer() {
+        let (writer, reader) = StreamTransport::new_pair(1);
+        let reader_hup = observe(&reader, IoEvents::IN | IoEvents::RDHUP);
+        writer.shutdown(Shutdown::Write).unwrap();
+        assert_eq!(reader_hup.woke(), 1);
+
+        let (closing, peer) = StreamTransport::new_pair(1);
+        let peer_hup = observe(&peer, IoEvents::IN | IoEvents::RDHUP);
+        drop(closing);
+        assert_eq!(peer_hup.woke(), 1);
     }
 }

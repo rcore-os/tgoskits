@@ -270,6 +270,8 @@ pub struct PerCpuMeta {
 
     pub boot_table_paddr: usize,
     pub primary_table_paddr: usize,
+    /// Immutable boot capacity in the Linux 0..=1024 scale.
+    pub capacity: u16,
 }
 
 /// Immutable CPU identity resolved from the allocated per-CPU metadata table.
@@ -349,6 +351,15 @@ pub fn runtime_cpu_target(idx: usize) -> Result<RuntimeCpuTarget, RuntimeCpuTarg
         logical_index: idx,
         hardware_id: meta.cpu_id,
     })
+}
+
+/// Returns the immutable boot capacity for one logical CPU, in `0..=1024`.
+///
+/// Missing or incomplete firmware capacity data gives 1024 for every CPU.
+/// Returns `None` before metadata publication or for an invalid logical index.
+/// Reads only published metadata; no firmware parsing or allocation occurs.
+pub fn cpu_capacity(cpu_index: usize) -> Option<u16> {
+    cpu_meta(cpu_index).map(|meta| meta.capacity)
 }
 
 /// Returns the number of CPU slots published by [`alloc_percpu`].
@@ -633,7 +644,11 @@ fn initialize_runtime_metadata() {
     let entry_phys =
         crate::mem::virt_to_phys(crate::entry::secondary_entry as *const () as *const u8);
     let entry_virt = crate::mem::__kimage_va(entry_phys) as usize;
-    for (cpu_index, hardware_id) in __cpu_id_list().enumerate() {
+    let cpu_ids = cpu_iter::cpu_id_list();
+    let capacities = cpu_ids
+        .capacity_fdt(crate::fdt::fdt_base)
+        .and_then(|fdt| crate::fdt::CpuCapacities::from_fdt(fdt, cpu_ids.clone()));
+    for (cpu_index, hardware_id) in cpu_ids.enumerate() {
         let meta_start = cpu_meta_addr(cpu_index)
             .expect("reserved per-CPU metadata slot must remain addressable");
         let stack_top = layout::cpu_stack_top(cpu_index)
@@ -646,6 +661,10 @@ fn initialize_runtime_metadata() {
             entry_virt,
             boot_table_paddr: 0,
             primary_table_paddr: 0,
+            capacity: capacities
+                .as_ref()
+                .and_then(|caps| caps.get(hardware_id))
+                .unwrap_or(crate::fdt::CPU_CAPACITY_SCALE),
         };
         let sync_start = layout::cpu_boot_sync_addr(cpu_index)
             .expect("reserved per-CPU boot synchronization slot must remain addressable");
@@ -698,6 +717,7 @@ mod tests {
             entry_virt: 0,
             boot_table_paddr: 0,
             primary_table_paddr: 0,
+            capacity: crate::fdt::CPU_CAPACITY_SCALE,
         })
     }
 

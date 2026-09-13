@@ -81,8 +81,8 @@ impl X86AcpiPmTimerDevice {
         pm_timer_counter((self.monotonic_nanos)())
     }
 
-    fn access_size(access: &BusAccess) -> Result<u64, DeviceError> {
-        match access.width {
+    fn access_size(access: &DeviceAccess) -> Result<u64, DeviceError> {
+        match access.width() {
             AccessWidth::Byte => Ok(1),
             AccessWidth::Word => Ok(2),
             AccessWidth::Dword => Ok(4),
@@ -93,18 +93,22 @@ impl X86AcpiPmTimerDevice {
         }
     }
 
-    fn offset(&self, access: &BusAccess, width: u64) -> Result<u64, DeviceError> {
+    fn offset(&self, access: &DeviceAccess, width: u64) -> Result<u64, DeviceError> {
         let offset = access
-            .addr
+            .address()
             .checked_sub(u64::from(Self::PORT_BASE))
-            .ok_or(DeviceError::OutOfRange { addr: access.addr })?;
+            .ok_or(DeviceError::OutOfRange {
+                addr: access.address(),
+            })?;
         if offset + width > u64::from(Self::PORT_SIZE) {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
         Ok(offset)
     }
 
-    fn read(&self, access: &BusAccess) -> Result<u64, DeviceError> {
+    fn read_registers(&self, access: &DeviceAccess) -> Result<u64, DeviceError> {
         let width = Self::access_size(access)?;
         let offset = self.offset(access, width)?;
         let timer = self.counter().to_le_bytes();
@@ -126,7 +130,12 @@ impl X86AcpiPmTimerDevice {
         Ok(value)
     }
 
-    fn write(&self, access: &BusAccess, context: &mut dyn DeviceAccess) -> Result<(), DeviceError> {
+    fn write_registers(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        context: &mut dyn DeviceContext,
+    ) -> Result<(), DeviceError> {
         let width = Self::access_size(access)?;
         let offset = self.offset(access, width)?;
         let mut status_clear = 0u16;
@@ -136,7 +145,7 @@ impl X86AcpiPmTimerDevice {
         let mut control_value = 0u16;
         for index in 0..width {
             let register = offset + index;
-            let byte = ((access.data >> (index * 8)) & 0xff) as u16;
+            let byte = ((value >> (index * 8)) & 0xff) as u16;
             match register {
                 0..=1 => status_clear |= byte << (register * 8),
                 2..=3 => {
@@ -187,19 +196,27 @@ impl Device for X86AcpiPmTimerDevice {
         &self.resources
     }
 
-    fn access(
+    fn read(&self, access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+        if access.bus() != BusKind::Port {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
+        }
+        self.read_registers(access)
+    }
+
+    fn write(
         &self,
-        access: &BusAccess,
-        context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        if access.kind != BusKind::Port {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
+        access: &DeviceAccess,
+        value: u64,
+        context: &mut dyn DeviceContext,
+    ) -> DeviceResult {
+        if access.bus() != BusKind::Port {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
-        if access.is_read {
-            self.read(access).map(|value| BusResponse::Read { value })
-        } else {
-            self.write(access, context).map(|()| BusResponse::Write)
-        }
+        self.write_registers(access, value, context)
     }
 }
 
@@ -227,7 +244,7 @@ mod tests {
 
     struct NoMemory;
 
-    impl DeviceAccess for NoMemory {
+    impl DeviceContext for NoMemory {
         fn device_id(&self) -> DeviceId {
             DeviceId::new(0)
         }
@@ -238,7 +255,7 @@ mod tests {
         requested: bool,
     }
 
-    impl DeviceAccess for StopAccess {
+    impl DeviceContext for StopAccess {
         fn device_id(&self) -> DeviceId {
             DeviceId::new(0)
         }
@@ -282,22 +299,16 @@ mod tests {
         NOW_NANOS.store(0, Ordering::Relaxed);
         let timer = X86AcpiPmTimerDevice::new(now_nanos, sci_line(), StopGrant::new()).unwrap();
         let mut memory = NoMemory;
-        let access = BusAccess {
-            kind: BusKind::Port,
-            is_read: true,
-            addr: u64::from(X86AcpiPmTimerDevice::PORT_BASE) + X86AcpiPmTimerDevice::TIMER_OFFSET,
-            width: AccessWidth::Dword,
-            data: 0,
-        };
+        let access = DeviceAccess::new(
+            DeviceVcpuId::new(0),
+            BusKind::Port,
+            u64::from(X86AcpiPmTimerDevice::PORT_BASE) + X86AcpiPmTimerDevice::TIMER_OFFSET,
+            AccessWidth::Dword,
+        );
 
-        let BusResponse::Read { value: first } = timer.access(&access, &mut memory).unwrap() else {
-            panic!("PM timer read returned a write response");
-        };
+        let first = timer.read(&access, &mut memory).unwrap();
         NOW_NANOS.store(NANOSECONDS_PER_SECOND, Ordering::Relaxed);
-        let BusResponse::Read { value: second } = timer.access(&access, &mut memory).unwrap()
-        else {
-            panic!("PM timer read returned a write response");
-        };
+        let second = timer.read(&access, &mut memory).unwrap();
 
         assert_eq!(first, 0);
         assert_eq!(second, PM_TIMER_FREQUENCY_HZ);
@@ -312,15 +323,15 @@ mod tests {
             requested: false,
         };
         timer
-            .access(
-                &BusAccess {
-                    kind: BusKind::Port,
-                    is_read: false,
-                    addr: u64::from(X86AcpiPmTimerDevice::PORT_BASE)
+            .write(
+                &DeviceAccess::new(
+                    DeviceVcpuId::new(0),
+                    BusKind::Port,
+                    u64::from(X86AcpiPmTimerDevice::PORT_BASE)
                         + X86AcpiPmTimerDevice::CONTROL_OFFSET,
-                    width: AccessWidth::Word,
-                    data: 1 << 13,
-                },
+                    AccessWidth::Word,
+                ),
+                1 << 13,
                 &mut access_context,
             )
             .unwrap();

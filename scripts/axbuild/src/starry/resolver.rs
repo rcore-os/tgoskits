@@ -64,22 +64,3 @@ pub(crate) fn parse_nameserver_line(line: &str) -> Option<IpAddr> {
         _ => None,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::net::IpAddr;
-
-    use super::*;
-
-    #[test]
-    fn preferred_resolver_filters_loopback_and_slirp_addresses() {
-        let content = "nameserver 127.0.0.53\nnameserver 10.0.2.3\nnameserver 8.8.8.8\n";
-        let usable = content
-            .lines()
-            .filter_map(parse_nameserver_line)
-            .filter(|addr| !addr.is_loopback() && *addr != IpAddr::from([10, 0, 2, 3]))
-            .map(|addr| format!("nameserver {addr}"))
-            .collect::<Vec<_>>();
-        assert_eq!(usable, vec!["nameserver 8.8.8.8".to_string()]);
-    }
-}

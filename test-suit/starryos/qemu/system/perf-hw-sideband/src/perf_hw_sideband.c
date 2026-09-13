@@ -7,11 +7,13 @@
  * per executable mapping (the exec image + dynamic loader) into the same mmap
  * ring as the samples, gated by attr.comm / attr.mmap2.
  *
- * This test drives exactly that: fork a child, open a per-task sampling event on
- * it with attr.comm = attr.mmap2 = attr.sample_id_all = 1 and enable_on_exec,
- * mmap the ring, release the child (it execs itself in --busy mode), then walk
- * the ring and confirm a COMM record (non-empty name) and an MMAP2 record
- * (non-empty filename) are present. sample_id_all is set with a non-trivial
+ * This test drives the path used by upstream `perf record -a`: open a CPU-0
+ * hardware sampling event, then open PERF_COUNT_SW_DUMMY with attr.comm,
+ * attr.mmap2 and attr.sample_id_all and redirect the dummy event into the
+ * hardware ring with PERF_EVENT_IOC_SET_OUTPUT. It polls the dummy before mmap
+ * to cover the tracking-event lifetime, enables both events, then releases a
+ * child which execs itself in --busy mode. Finally it walks the shared ring and
+ * confirms a COMM record and executable MMAP2 records. sample_id_all uses a
  * sample_type (IP|TID|TIME) so each record carries the trailer, exercising the
  * size accounting the ring walk relies on.
  *
@@ -23,18 +25,26 @@
 #endif
 
 #include <errno.h>
+#include <poll.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sched.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #ifndef PERF_TYPE_RAW
 #define PERF_TYPE_RAW 4u
+#endif
+#ifndef PERF_TYPE_SOFTWARE
+#define PERF_TYPE_SOFTWARE 1u
+#endif
+#ifndef PERF_COUNT_SW_DUMMY
+#define PERF_COUNT_SW_DUMMY 9ull
 #endif
 #ifndef ARM_PMU_EVT_CPU_CYCLES
 #define ARM_PMU_EVT_CPU_CYCLES 0x11ull
@@ -50,14 +60,21 @@
 #ifndef PERF_EVENT_IOC_DISABLE
 #define PERF_EVENT_IOC_DISABLE 0x2401u
 #endif
+#ifndef PERF_EVENT_IOC_ENABLE
+#define PERF_EVENT_IOC_ENABLE 0x2400u
+#endif
+#ifndef PERF_EVENT_IOC_SET_OUTPUT
+#define PERF_EVENT_IOC_SET_OUTPUT 0x2405u
+#endif
 /* perf_event_attr flag bit positions (see the bitfield in <linux/perf_event.h>). */
 #define PERF_ATTR_FLAG_DISABLED (1ull << 0)
 #define PERF_ATTR_FLAG_COMM (1ull << 9)
-#define PERF_ATTR_FLAG_ENABLE_ON_EXEC (1ull << 12)
+#define PERF_ATTR_FLAG_TASK (1ull << 13)
 #define PERF_ATTR_FLAG_SAMPLE_ID_ALL (1ull << 18)
 #define PERF_ATTR_FLAG_MMAP2 (1ull << 23)
 
 #define PERF_RECORD_COMM 3u
+#define PERF_RECORD_EXIT 4u
 #define PERF_RECORD_MMAP2 10u
 
 struct perf_event_attr {
@@ -166,25 +183,29 @@ static size_t ring_cstr(const uint8_t *data_base, uint64_t data_size, uint64_t a
     return n;
 }
 
-int main(int argc, char **argv) {
-#if !defined(__aarch64__)
-    /* Hardware-PMU perf is aarch64-only (ARM PMUv3); skip-as-pass on other
-     * architectures so the cross-arch grouped C build/run stays green. */
-    printf("STARRY_PERF_SIDEBAND_OK\n");
-    return 0;
-#endif
-    if (argc > 1 && strcmp(argv[1], "--busy") == 0) {
-        volatile uint64_t spin = 0;
-        for (uint64_t i = 0; i < 200000000ull; i++) {
-            spin += i;
-        }
-        return (int)(spin & 1);
+static uint32_t ring_u32(const uint8_t *data, uint64_t size, uint64_t at) {
+    uint32_t value;
+    for (size_t i = 0; i < sizeof(value); ++i)
+        ((uint8_t *)&value)[i] = data[(at + i) % size];
+    return value;
+}
+
+static int run_check(const char *program, int eager) {
+    cpu_set_t affinity;
+    CPU_ZERO(&affinity);
+    CPU_SET(0, &affinity);
+    if (sched_setaffinity(0, sizeof(affinity), &affinity) != 0) {
+        return fail("sched_setaffinity CPU 0");
     }
 
     int go[2];
     if (pipe(go) != 0) {
         return fail("pipe");
     }
+    /* The observer remains in its current namespace; the child is PID 1 in
+     * a nested namespace. Records must retain the opener's visible IDs. */
+    if (syscall(SYS_unshare, CLONE_NEWPID) != 0)
+        return fail("unshare PID namespace");
     pid_t child = fork();
     if (child < 0) {
         return fail("fork");
@@ -194,8 +215,8 @@ int main(int argc, char **argv) {
         char b;
         (void)!read(go[0], &b, 1);
         close(go[0]);
-        char *av[] = {argv[0], (char *)"--busy", NULL};
-        execv(argv[0], av);
+        char *av[] = {(char *)program, (char *)"--busy", NULL};
+        execv(program, av);
         _exit(127);
     }
     close(go[0]);
@@ -207,11 +228,9 @@ int main(int argc, char **argv) {
     attr.size = (uint32_t)sizeof(attr);
     attr.sample_period = SAMPLE_PERIOD;
     attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME;
-    attr.flags = PERF_ATTR_FLAG_DISABLED | PERF_ATTR_FLAG_ENABLE_ON_EXEC |
-                 PERF_ATTR_FLAG_COMM | PERF_ATTR_FLAG_MMAP2 |
-                 PERF_ATTR_FLAG_SAMPLE_ID_ALL;
+    attr.flags = PERF_ATTR_FLAG_DISABLED;
 
-    long fd = perf_event_open(&attr, child, -1, -1, 0ul);
+    long fd = perf_event_open(&attr, -1, 0, -1, 0ul);
     if (fd < 0) {
         (void)!write(go[1], "g", 1);
         close(go[1]);
@@ -231,12 +250,42 @@ int main(int argc, char **argv) {
     }
     struct perf_event_mmap_page *meta = (struct perf_event_mmap_page *)base;
 
+    /* Match upstream perf record: COMM/MMAP2/TASK subscriptions live on a
+     * PERF_COUNT_SW_DUMMY event which redirects into the PMU event's ring. */
+    struct perf_event_attr tracking;
+    memset(&tracking, 0, sizeof(tracking));
+    tracking.type = PERF_TYPE_SOFTWARE;
+    tracking.config = PERF_COUNT_SW_DUMMY;
+    tracking.size = (uint32_t)sizeof(tracking);
+    tracking.sample_period = SAMPLE_PERIOD;
+    tracking.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_TIME;
+    tracking.flags = (eager ? 0 : PERF_ATTR_FLAG_DISABLED) | PERF_ATTR_FLAG_COMM |
+                     PERF_ATTR_FLAG_MMAP2 | PERF_ATTR_FLAG_TASK | PERF_ATTR_FLAG_SAMPLE_ID_ALL;
+    long tracking_fd = perf_event_open(&tracking, -1, 0, -1, 0ul);
+    if (tracking_fd < 0) {
+        return fail("open software tracking event");
+    }
+    struct pollfd pfd = {.fd = (int)tracking_fd, .events = POLLIN};
+    if (poll(&pfd, 1, 0) < 0) {
+        return fail("poll unmapped tracking event");
+    }
+    if (ioctl((int)tracking_fd, PERF_EVENT_IOC_SET_OUTPUT, efd) != 0) {
+        return fail("redirect tracking output");
+    }
+    if (!eager && ioctl((int)tracking_fd, PERF_EVENT_IOC_ENABLE, 0) != 0) {
+        return fail("enable software tracking event");
+    }
+    if (ioctl(efd, PERF_EVENT_IOC_ENABLE, 0) != 0) {
+        return fail("enable system-wide event");
+    }
+
     /* Release the child: it execs (-> COMM + MMAP2 emitted) and runs. */
     (void)!write(go[1], "g", 1);
     close(go[1]);
     int status = 0;
     waitpid(child, &status, 0);
     (void)ioctl(efd, PERF_EVENT_IOC_DISABLE, 0);
+    (void)ioctl((int)tracking_fd, PERF_EVENT_IOC_DISABLE, 0);
 
     uint64_t data_head = meta->data_head;
     __sync_synchronize();
@@ -245,7 +294,8 @@ int main(int argc, char **argv) {
     uint64_t data_size = meta->data_size;
     const uint8_t *data_base = (const uint8_t *)base + data_offset;
 
-    uint64_t n_comm = 0, n_mmap2 = 0, n_sample = 0;
+    uint64_t n_comm = 0, n_mmap2 = 0, n_sample = 0, n_exit = 0;
+    int wrong_identity = 0;
     char comm_name[64] = {0};
     char mmap_file[256] = {0};
     uint64_t off = data_tail;
@@ -258,7 +308,23 @@ int main(int argc, char **argv) {
         if (hdr.size == 0 || off + hdr.size > data_head) {
             break;
         }
-        if (hdr.type == PERF_RECORD_COMM) {
+        if (hdr.type == PERF_RECORD_COMM || hdr.type == PERF_RECORD_MMAP2 ||
+            hdr.type == PERF_RECORD_EXIT) {
+            uint32_t pid = ring_u32(data_base, data_size, rel + 8);
+            uint32_t tid = ring_u32(data_base, data_size,
+                                    rel + (hdr.type == PERF_RECORD_EXIT ? 16 : 12));
+            uint32_t trailer_pid = ring_u32(data_base, data_size, rel + hdr.size - 16);
+            uint32_t trailer_tid = ring_u32(data_base, data_size, rel + hdr.size - 12);
+            if (pid != (uint32_t)child || tid != (uint32_t)child ||
+                trailer_pid != pid || trailer_tid != tid) {
+                printf("sideband identity type=%u pid/tid=%u/%u trailer=%u/%u expected=%d\n",
+                       hdr.type, pid, tid, trailer_pid, trailer_tid, child);
+                wrong_identity = 1;
+            }
+        }
+        if (hdr.type == PERF_RECORD_EXIT) {
+            n_exit++;
+        } else if (hdr.type == PERF_RECORD_COMM) {
             if (n_comm == 0) {
                 ring_cstr(data_base, data_size, rel + COMM_NAME_OFF, comm_name,
                           sizeof(comm_name));
@@ -284,7 +350,9 @@ int main(int argc, char **argv) {
            (unsigned long long)n_sample, comm_name, mmap_file);
 
     int rc = 0;
-    if (n_comm == 0) {
+    if (wrong_identity || n_exit == 0) {
+        rc = fail("sideband observer identity or EXIT record");
+    } else if (n_comm == 0) {
         rc = fail("no PERF_RECORD_COMM record");
     } else if (comm_name[0] == '\0') {
         rc = fail("COMM record has empty name");
@@ -295,10 +363,32 @@ int main(int argc, char **argv) {
     }
 
     (void)munmap(base, PERF_MMAP_TOTAL_BYTES);
+    close((int)tracking_fd);
     close(efd);
     if (rc == 0) {
-        printf("STARRY_PERF_SIDEBAND_OK\n");
+        printf("STARRY_PERF_SIDEBAND_CASE_OK eager=%d\n", eager);
         return 0;
     }
     return rc;
+}
+
+int main(int argc, char **argv) {
+#if !defined(__aarch64__)
+    /* Hardware-PMU perf is aarch64-only (ARM PMUv3); skip-as-pass on other
+     * architectures so the cross-arch grouped C build/run stays green. */
+    printf("STARRY_PERF_SIDEBAND_OK\n");
+    return 0;
+#endif
+    if (argc > 1 && strcmp(argv[1], "--busy") == 0) {
+        volatile uint64_t spin = 0;
+        for (uint64_t i = 0; i < 200000000ull; i++) {
+            spin += i;
+        }
+        return (int)(spin & 1);
+    }
+
+    if (run_check(argv[0], 0) != 0 || run_check(argv[0], 1) != 0)
+        return 1;
+    puts("STARRY_PERF_SIDEBAND_OK");
+    return 0;
 }

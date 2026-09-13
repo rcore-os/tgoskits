@@ -6,7 +6,11 @@ use core::{
 use ax_lazyinit::OnceLock;
 
 pub trait BlockTimeProvider: Send + Sync {
+    /// Returns realtime since the Unix epoch for persistent timestamps.
     fn wall_time(&self) -> Duration;
+
+    /// Returns monotonic time since boot for deadlines and elapsed durations.
+    fn monotonic_time(&self) -> Duration;
 }
 
 static TIME_PROVIDER: OnceLock<&'static dyn BlockTimeProvider> = OnceLock::new();
@@ -21,6 +25,13 @@ pub fn wall_time() -> Duration {
     TIME_PROVIDER
         .get()
         .map(|provider| provider.wall_time())
+        .unwrap_or_else(|| Duration::new(0, 0))
+}
+
+pub fn monotonic_time() -> Duration {
+    TIME_PROVIDER
+        .get()
+        .map(|provider| provider.monotonic_time())
         .unwrap_or_else(|| Duration::new(0, 0))
 }
 

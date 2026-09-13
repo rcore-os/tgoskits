@@ -1,10 +1,103 @@
+#[cfg(test)]
+use alloc::boxed::Box;
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::{
+    future::Future,
+    pin::Pin,
+    sync::atomic::{AtomicUsize, Ordering},
+    task::{Context, Poll},
+};
+
+use atomic_waker::AtomicWaker;
 
 use crate::{
     BlockResult,
     os::{BlockNotification, runtime_ops, sync::IrqMutex},
 };
+
+struct AsyncWaiterState {
+    notified: core::sync::atomic::AtomicBool,
+    waker: AtomicWaker,
+}
+
+struct AsyncWaiterInner {
+    waiters: IrqMutex<Vec<Arc<AsyncWaiterState>>>,
+}
+
+/// A lock-safe asynchronous waiter registry.
+pub(super) struct AsyncWaiters {
+    inner: Arc<AsyncWaiterInner>,
+}
+
+/// One one-shot asynchronous wait registration.
+pub(super) struct AsyncWaiter {
+    inner: Arc<AsyncWaiterInner>,
+    state: Arc<AsyncWaiterState>,
+}
+
+impl AsyncWaiters {
+    pub(super) fn new() -> Self {
+        Self {
+            inner: Arc::new(AsyncWaiterInner {
+                waiters: IrqMutex::new(Vec::new()),
+            }),
+        }
+    }
+
+    pub(super) fn listen(&self) -> AsyncWaiter {
+        let state = Arc::new(AsyncWaiterState {
+            notified: core::sync::atomic::AtomicBool::new(false),
+            waker: AtomicWaker::new(),
+        });
+        self.inner.waiters.lock().push(Arc::clone(&state));
+        AsyncWaiter {
+            inner: Arc::clone(&self.inner),
+            state,
+        }
+    }
+
+    pub(super) fn notify_all(&self) {
+        let waiters = core::mem::take(&mut *self.inner.waiters.lock());
+        for waiter in waiters {
+            waiter.notified.store(true, Ordering::Release);
+            waiter.waker.wake();
+        }
+    }
+}
+
+impl AsyncWaiter {
+    fn remove(&self) {
+        let mut waiters = self.inner.waiters.lock();
+        if let Some(index) = waiters
+            .iter()
+            .position(|waiter| Arc::ptr_eq(waiter, &self.state))
+        {
+            waiters.swap_remove(index);
+        }
+    }
+}
+
+impl Future for AsyncWaiter {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        self.state.waker.register(context.waker());
+        if self.state.notified.load(Ordering::Acquire) {
+            self.remove();
+            drop(self.state.waker.take());
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+impl Drop for AsyncWaiter {
+    fn drop(&mut self) {
+        self.remove();
+        drop(self.state.waker.take());
+    }
+}
 
 /// Task-context waiters whose wakeups must not be coalesced with each other.
 ///
@@ -13,12 +106,16 @@ use crate::{
 /// before rechecking the predicate closes the transition-to-sleep race.
 pub(super) struct TaskWaiters {
     notifications: IrqMutex<Vec<Arc<dyn BlockNotification>>>,
+    #[cfg(test)]
+    registration_hook: IrqMutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl TaskWaiters {
     pub(super) const fn new() -> Self {
         Self {
             notifications: IrqMutex::new(Vec::new()),
+            #[cfg(test)]
+            registration_hook: IrqMutex::new(None),
         }
     }
 
@@ -29,6 +126,8 @@ impl TaskWaiters {
     pub(super) fn wait_while(&self, should_wait: impl FnOnce() -> bool) -> BlockResult {
         let notification = runtime_ops()?.notification();
         self.notifications.lock().push(Arc::clone(&notification));
+        #[cfg(test)]
+        self.run_registration_hook();
 
         if should_wait() {
             notification.wait();
@@ -74,6 +173,26 @@ impl TaskWaiters {
     pub(super) fn len(&self) -> usize {
         self.notifications.lock().len()
     }
+
+    #[cfg(test)]
+    pub(super) fn set_registration_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        let previous = self
+            .registration_hook
+            .lock()
+            .replace(alloc::boxed::Box::new(hook));
+        assert!(
+            previous.is_none(),
+            "waiter registration hook already installed"
+        );
+    }
+
+    #[cfg(test)]
+    fn run_registration_hook(&self) {
+        let hook = self.registration_hook.lock().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
 }
 
 struct CapacityWaiter {
@@ -89,6 +208,8 @@ struct CapacityWaiter {
 pub(super) struct CapacityWaiters {
     waiters: IrqMutex<Vec<CapacityWaiter>>,
     count: AtomicUsize,
+    #[cfg(test)]
+    registration_hook: IrqMutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl CapacityWaiters {
@@ -96,6 +217,8 @@ impl CapacityWaiters {
         Self {
             waiters: IrqMutex::new(Vec::new()),
             count: AtomicUsize::new(0),
+            #[cfg(test)]
+            registration_hook: IrqMutex::new(None),
         }
     }
 
@@ -113,6 +236,8 @@ impl CapacityWaiters {
             });
             self.count.store(waiters.len(), Ordering::Release);
         }
+        #[cfg(test)]
+        self.run_registration_hook();
 
         let available = available();
         if available >= required {
@@ -174,5 +299,72 @@ impl CapacityWaiters {
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.count.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_registration_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        let previous = self
+            .registration_hook
+            .lock()
+            .replace(alloc::boxed::Box::new(hook));
+        assert!(
+            previous.is_none(),
+            "capacity registration hook already installed"
+        );
+    }
+
+    #[cfg(test)]
+    fn run_registration_hook(&self) {
+        let hook = self.registration_hook.lock().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::{
+        future::Future,
+        task::{Context, Poll, Waker},
+    };
+    use std::{sync::mpsc, task::Wake, time::Duration};
+
+    use super::*;
+
+    struct ReentrantWake {
+        waiters: Arc<AsyncWaiters>,
+        done: mpsc::Sender<()>,
+    }
+
+    impl Wake for ReentrantWake {
+        fn wake(self: Arc<Self>) {
+            let waiter = self.waiters.listen();
+            drop(waiter);
+            self.done.send(()).unwrap();
+        }
+    }
+
+    #[test]
+    fn async_waiter_wake_allows_reentrant_registration() {
+        let waiters = Arc::new(AsyncWaiters::new());
+        let mut listener = Box::pin(waiters.listen());
+        let (done_tx, done_rx) = mpsc::channel();
+        let waker = Waker::from(Arc::new(ReentrantWake {
+            waiters: Arc::clone(&waiters),
+            done: done_tx,
+        }));
+        let mut context = Context::from_waker(&waker);
+        assert!(matches!(
+            listener.as_mut().poll(&mut context),
+            Poll::Pending
+        ));
+
+        let publisher = Arc::clone(&waiters);
+        std::thread::spawn(move || publisher.notify_all());
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("waiter wake must release the registry before calling Waker");
     }
 }

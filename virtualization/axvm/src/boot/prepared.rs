@@ -47,6 +47,6 @@ pub fn prepare_guest_boot(
     mut config: GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> AxVmResult<PreparedGuestBoot> {
-    let guest_dtb = crate::arch::prepare_guest_boot(vm_config, &mut config, provider)?;
+    let guest_dtb = crate::arch::current::prepare_guest_boot(vm_config, &mut config, provider)?;
     Ok(PreparedGuestBoot { config, guest_dtb })
 }

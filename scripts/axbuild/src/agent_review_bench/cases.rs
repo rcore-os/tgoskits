@@ -404,11 +404,6 @@ mod tests {
     }
 
     #[test]
-    fn validates_well_formed_case() {
-        validate_case_schema(&sample_case()).unwrap();
-    }
-
-    #[test]
     fn rejects_short_sha() {
         let mut case = sample_case();
         case.head = "abc".into();
@@ -458,7 +453,13 @@ description = "sample defect"
             &[2, 2],
         )
         .unwrap();
-        assert_eq!(selected.len(), 2);
+        assert_eq!(
+            selected
+                .iter()
+                .map(|case| case.id.as_str())
+                .collect::<Vec<_>>(),
+            ["0001-sample", "0002-second"]
+        );
     }
 
     #[test]

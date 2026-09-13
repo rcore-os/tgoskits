@@ -78,9 +78,9 @@ impl Sdhci {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-        cause: sdio_host2::ProgressCause,
+        cause: sdmmc_host::ProgressCause,
     ) -> Result<DataCommandProgress, Error> {
-        let acknowledged_irq = cause == sdio_host2::ProgressCause::AcknowledgedIrq;
+        let acknowledged_irq = cause == sdmmc_host::ProgressCause::AcknowledgedIrq;
         let Some(active) = request.as_ref() else {
             return Err(Error::InvalidArgument);
         };
@@ -204,7 +204,7 @@ impl Sdhci {
                 let mut backing =
                     CpuDmaBuffer::new_zero(dma, size, alignment, DmaDirection::ToDevice)
                         .map_err(map_dma_error)?;
-                backing.copy_to_device_from_slice(unsafe {
+                backing.copy_from_slice_cpu(unsafe {
                     core::slice::from_raw_parts(cpu_buffer.as_ptr(), len)
                 });
                 let dma_addr = backing.dma_addr().as_u64();
@@ -283,7 +283,7 @@ impl Sdhci {
                 return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
             }
         };
-        if buffer.direction() != expected_direction || buffer.domain_id() != dma.domain_id() {
+        if buffer.direction() != expected_direction || buffer.domain_id() != dma.info().domain() {
             return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
         }
         let len = buffer.len().get();
@@ -496,8 +496,7 @@ impl Sdhci {
         let active = request.take().ok_or(Error::InvalidArgument)?;
         let recovery = self.recover_after_adma2_error();
         let completed_dma = self.finish_block_request_with_quiesce(active, recovery.is_ok())?;
-        drop(completed_dma);
-        slot.complete(id)?;
+        slot.complete_with_dma(id, completed_dma)?;
         recovery
     }
 
@@ -505,8 +504,7 @@ impl Sdhci {
         let was_irq_enabled = self.completion_irq_enabled();
         self.active_data_cmd = 0;
         self.command_state = CommandState::Idle;
-        self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
-        self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
+        self.write_interrupt_status(NORMAL_INT_CLEAR_ALL, ERROR_INT_CLEAR_ALL);
         self.clear_cached_irq_status();
 
         let cmd = self.reset_cmd();
@@ -515,8 +513,7 @@ impl Sdhci {
             (Ok(()), Ok(())) => Ok(()),
             (Err(err), _) | (_, Err(err)) => {
                 let fallback = self.reset_all();
-                self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
-                self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
+                self.write_interrupt_status(NORMAL_INT_CLEAR_ALL, ERROR_INT_CLEAR_ALL);
                 self.clear_cached_irq_status();
                 self.restore_completion_irq_after_reset(was_irq_enabled);
                 fallback.map_err(|_| err)

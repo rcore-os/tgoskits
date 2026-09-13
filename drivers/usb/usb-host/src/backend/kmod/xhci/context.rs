@@ -152,7 +152,7 @@ impl ScratchpadBufferArray {
                     DmaDirection::Bidirectional,
                 )
                 .map_err(|_| USBError::NoMemory)?;
-            page.prepare_for_device_all();
+            page.prepare_for_device(0..page.bytes_len());
             pages.push(page);
         }
 

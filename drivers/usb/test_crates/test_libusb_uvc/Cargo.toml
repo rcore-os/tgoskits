@@ -1,6 +1,6 @@
 [package]
 authors = ["周睿 <zrufo747@outlook.com>"]
-name = "test_libusb_uvc"
+name = "test-libusb-uvc"
 version = "0.1.1"
 edition.workspace = true
 license.workspace = true

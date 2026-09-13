@@ -84,6 +84,12 @@ static long raw_tgkill(pid_t tgid, pid_t tid, int signo)
     return syscall(SYS_tgkill, tgid, tid, signo);
 }
 
+static long raw_tgkill_words(long tgid, long tid, int signo)
+{
+    errno = 0;
+    return syscall(SYS_tgkill, tgid, tid, signo);
+}
+
 static void reset_handler_state(void)
 {
     handled_count = 0;
@@ -180,6 +186,18 @@ static void test_tgkill_errors(void)
           "tgkill missing tid returns ESRCH");
     CHECK(raw_tgkill(MISSING_PID, (pid_t)tid, 0) == -1 && errno == ESRCH,
           "tgkill missing tgid returns ESRCH");
+    CHECK(raw_tgkill(0, (pid_t)tid, 0) == -1 && errno == EINVAL,
+          "tgkill zero tgid returns EINVAL");
+    CHECK(raw_tgkill(getpid(), 0, 0) == -1 && errno == EINVAL,
+          "tgkill zero tid returns EINVAL");
+    CHECK(raw_tgkill_words(-1, tid, 0) == -1 && errno == EINVAL,
+          "tgkill rejects a negative tgid before process lookup");
+    CHECK(raw_tgkill_words(getpid(), -1, 0) == -1 && errno == EINVAL,
+          "tgkill rejects a negative tid before thread lookup");
+    CHECK(raw_tgkill_words(1ULL << 32, tid, 0) == -1 && errno == EINVAL,
+          "tgkill rejects an upper-word tgid that narrows to zero");
+    CHECK(raw_tgkill_words(getpid(), 1ULL << 32, 0) == -1 && errno == EINVAL,
+          "tgkill rejects an upper-word tid that narrows to zero");
 }
 
 int main(void)

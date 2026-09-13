@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 680" role="img" aria-labelledby="title desc">
+  <title id="title">ax-net socket 子系统架构</title>
+  <desc id="desc">系统调用通过 Socket enum 与 SocketOps 统一外观进入 TCP、UDP、raw、Unix 和 vsock；INET socket 共享 SocketSet、NetControl 与 poll，具体协议另有绑定或监听 side table。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#50657d"/></marker>
+    <style>
+      .facade{fill:#f0edff;stroke:#7457b6;stroke-width:2}.transport{fill:#eaf3ff;stroke:#3478c0;stroke-width:2}
+      .shared{fill:#eaf8ef;stroke:#398a55;stroke-width:2}.side{fill:#fff4df;stroke:#c98216;stroke-width:2}
+      .panel{fill:#f8fafc;stroke:#91a0b2;stroke-width:2}.title{font:700 24px sans-serif;fill:#213247}
+      .heading{font:700 18px sans-serif;fill:#31465f}.text{font:600 15px sans-serif;fill:#26384d}.small{font:14px sans-serif;fill:#455a72}
+      .edge{fill:none;stroke:#50657d;stroke-width:2.1;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <text class="title" x="35" y="40">统一外观之下，各 transport 保持独立语义</text>
+  <rect class="facade" x="350" y="70" width="540" height="72" rx="14"/>
+  <text class="text" x="510" y="99">syscall / ABI → Socket enum + SocketOps</text>
+  <text class="small" x="492" y="122">GeneralOptions · Pollable · shutdown / close</text>
+
+  <rect class="panel" x="30" y="180" width="1180" height="205" rx="18"/>
+  <text class="heading" x="55" y="212">Transport 实现</text>
+  <rect class="transport" x="70" y="245" width="195" height="92" rx="12"/>
+  <text class="text" x="135" y="276">TCP</text><text class="small" x="99" y="302">stream / listen / accept</text><text class="small" x="119" y="323">orphan reaper</text>
+  <rect class="transport" x="300" y="245" width="195" height="92" rx="12"/>
+  <text class="text" x="365" y="276">UDP</text><text class="small" x="330" y="302">datagram / reuseport</text><text class="small" x="326" y="323">Drop flush_egress</text>
+  <rect class="transport" x="530" y="245" width="195" height="92" rx="12"/>
+  <text class="text" x="591" y="276">Raw</text><text class="small" x="559" y="302">IP protocol / ping socket</text><text class="small" x="575" y="323">TTL / traffic class</text>
+  <rect class="transport" x="760" y="245" width="195" height="92" rx="12"/>
+  <text class="text" x="815" y="276">Unix</text><text class="small" x="783" y="302">stream / dgram / seqpacket</text><text class="small" x="799" y="323">path + abstract ns</text>
+  <rect class="transport" x="990" y="245" width="180" height="92" rx="12"/>
+  <text class="text" x="1054" y="276">Vsock</text><text class="small" x="1022" y="302">guest/host transport</text><text class="small" x="1025" y="323">connection manager</text>
+
+  <rect class="panel" x="30" y="420" width="720" height="220" rx="18"/>
+  <text class="heading" x="55" y="452">INET 共享服务</text>
+  <rect class="shared" x="70" y="490" width="195" height="92" rx="12"/>
+  <text class="text" x="105" y="521">SocketSetWrapper</text><text class="small" x="103" y="547">smoltcp SocketSet</text><text class="small" x="105" y="568">handle 生命周期</text>
+  <rect class="shared" x="300" y="490" width="195" height="92" rx="12"/>
+  <text class="text" x="348" y="521">NetControl</text><text class="small" x="329" y="547">route / local binding</text><text class="small" x="336" y="568">device readiness</text>
+  <rect class="shared" x="530" y="490" width="180" height="92" rx="12"/>
+  <text class="text" x="582" y="521">net-poll</text><text class="small" x="559" y="547">request_poll</text><text class="small" x="557" y="568">PollOwnership</text>
+
+  <rect class="panel" x="790" y="420" width="420" height="220" rx="18"/>
+  <text class="heading" x="815" y="452">协议专属索引</text>
+  <rect class="side" x="830" y="490" width="155" height="92" rx="12"/>
+  <text class="text" x="854" y="521">TCP side state</text><text class="small" x="850" y="547">bound ports</text><text class="small" x="847" y="568">ListenTable</text>
+  <rect class="side" x="1015" y="490" width="155" height="92" rx="12"/>
+  <text class="text" x="1040" y="521">UDP side table</text><text class="small" x="1044" y="547">udp_binds</text><text class="small" x="1030" y="568">reuseport groups</text>
+
+  <path class="edge" d="M620 142 V220 H167 V245"/><path class="edge" d="M620 142 V220 H397 V245"/>
+  <path class="edge" d="M620 142 V245"/><path class="edge" d="M620 142 V220 H857 V245"/><path class="edge" d="M620 142 V220 H1080 V245"/>
+  <path class="edge" d="M167 337 V490"/><path class="edge" d="M397 337 V490"/><path class="edge" d="M627 337 V490"/>
+  <path class="edge" d="M167 337 V405 H907 V490"/><path class="edge" d="M397 337 V405 H1092 V490"/>
+</svg>

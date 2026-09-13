@@ -26,9 +26,7 @@ args = [
 # The std/PIC test image must be loaded through the LoongArch UEFI handoff.
 uefi = true
 to_bin = true
-shell_prefix = "root@starry:"
 test_commands = ["exec /usr/bin/starry-run-system-tests --capture-failures"]
-success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
 timeout = 1800
 

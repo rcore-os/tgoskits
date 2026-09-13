@@ -33,9 +33,6 @@ args = [
 ]
 uefi = true
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/test_ffplay.sh"
-success_regex = ["FFPLAY_TEST_PASSED"]
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)page fault",
@@ -43,3 +40,8 @@ fail_regex = [
     "FFPLAY_TEST_FAILED",
 ]
 timeout = 3600
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/test_ffplay.sh"
+success_regex = ["FFPLAY_TEST_PASSED"]

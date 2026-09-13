@@ -15,10 +15,14 @@ pub(crate) fn append_configured_devices(
     nodes: &mut Vec<DeviceNodeSpec>,
     default_controller_node: &DeviceNodeId,
     default_controller: InterruptControllerId,
+    default_pci_host_key: Option<PciHostKey>,
 ) -> AxVmResult {
     let base_context = DeviceInstantiationContext::new()
         .with_vm_id(config.id())
         .with_default_wired_controller(default_controller_node.clone(), default_controller);
+    let base_context = default_pci_host_key.map_or(base_context.clone(), |host| {
+        base_context.clone().with_default_pci_host_key(host)
+    });
     let default = default_serial_intent(config, default_controller)?;
     let request = config
         .virtual_device_requests()
@@ -71,14 +75,7 @@ pub(crate) fn append_configured_devices(
                 false,
             )
         } else {
-            match config
-                .virtual_device_catalog()
-                .default_fixed_resources(&request.model, &base_context)
-                .map_err(configured_error)?
-            {
-                Some(fixed) => base_context.clone().with_fixed_bindings(fixed),
-                None => base_context.clone(),
-            }
+            base_context.clone()
         };
         nodes.push(
             config
@@ -209,6 +206,10 @@ mod tests {
             Ok(DeviceRequirements::new())
         }
 
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            DeviceFirmwareSpec::None
+        }
+
         fn build(
             &self,
             _context: &mut DeviceBuildContext<'_>,
@@ -227,10 +228,17 @@ mod tests {
         DeviceNodeSpec::virtual_device(id, Arc::new(TestInterruptControllerModel))
     }
 
+    fn registered_catalog() -> Arc<ConfiguredDeviceCatalog> {
+        let mut catalog = ConfiguredDeviceCatalog::new();
+        crate::machine::register_devices(&mut catalog).unwrap();
+        Arc::new(catalog)
+    }
+
     #[test]
     fn console_override_and_extra_serial_share_deterministic_planning() {
         let config = AxVMConfig::new(AxVMConfigParams {
             phys_cpu_ls: PhysCpuList::new(1, None, None),
+            virtual_device_catalog: registered_catalog(),
             virtual_device_requests: vec![
                 VirtualDeviceRequest {
                     id: "serial1".into(),
@@ -252,6 +260,7 @@ mod tests {
             &mut nodes,
             &controller,
             InterruptControllerId::new(0),
+            None,
         )
         .unwrap();
 
@@ -288,6 +297,7 @@ mod tests {
     fn ivc_channel_uses_resolved_notify_irq_and_planned_mmio_aperture() {
         let config = AxVMConfig::new(AxVMConfigParams {
             phys_cpu_ls: PhysCpuList::new(1, None, None),
+            virtual_device_catalog: registered_catalog(),
             virtual_device_requests: vec![VirtualDeviceRequest {
                 id: "ivc0".into(),
                 model: "ivc-channel".into(),
@@ -302,6 +312,7 @@ mod tests {
             &mut nodes,
             &controller,
             InterruptControllerId::new(0),
+            None,
         )
         .unwrap();
 
@@ -310,7 +321,9 @@ mod tests {
             graph.add(node).unwrap();
         }
         let mut pools = ResourcePools::new();
-        pools.add_auto_mmio(0x1000_0000..0x1001_0000).unwrap();
+        pools
+            .add_auto_mmio(0x1000_0000..0x1000_0000 + super::devices::IVC_CHANNEL_SHARED_RANGE_SIZE)
+            .unwrap();
         pools.allow_fixed_pio(0x3f8..0x400).unwrap();
         pools
             .allow_fixed_controller_inputs(
@@ -333,7 +346,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             ivc.mmio(&registers).unwrap(),
-            (0x1000_0000, super::ivc::IVC_CHANNEL_SHARED_RANGE_SIZE)
+            (0x1000_0000, super::devices::IVC_CHANNEL_SHARED_RANGE_SIZE,)
         );
         assert_eq!(ivc.wired_irq(&notify).unwrap().input().value(), 32);
 

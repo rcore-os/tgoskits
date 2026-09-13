@@ -12,9 +12,9 @@ use core::{
     any::{Any, TypeId},
     fmt, iter,
     ops::Deref,
-    task::Context,
 };
 
+use axpoll::{IoEvents, Pollable};
 use bitflags::bitflags;
 pub use dir::*;
 pub use file::*;
@@ -22,8 +22,8 @@ use inherit_methods_macro::inherit_methods;
 use smallvec::SmallVec;
 
 use crate::{
-    FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeType,
-    VfsError, VfsResult, path::PathBuf,
+    FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeType, VfsError, VfsResult,
+    path::PathBuf,
 };
 
 bitflags! {
@@ -86,6 +86,30 @@ pub trait NodeOps: Send + Sync + 'static {
     fn flags(&self) -> NodeFlags {
         NodeFlags::empty()
     }
+
+    /// Returns the optional persistent extended-attribute capability.
+    fn xattr_ops(&self) -> Option<&dyn XattrOps> {
+        None
+    }
+}
+
+/// Persistent extended-attribute capability owned by a filesystem inode.
+pub trait XattrOps: Send + Sync {
+    fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>>;
+
+    fn list_xattrs(&self) -> VfsResult<Vec<Vec<u8>>>;
+
+    fn set_xattr(&self, name: &[u8], value: &[u8], mode: XattrSetMode) -> VfsResult<()>;
+
+    fn remove_xattr(&self, name: &[u8]) -> VfsResult<()>;
+}
+
+/// Create/replace policy passed through VFS without Linux flag bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XattrSetMode {
+    Upsert,
+    Create,
+    Replace,
 }
 
 enum Node {
@@ -382,19 +406,66 @@ impl DirEntry {
     pub fn user_data(&self) -> MutexGuard<'_, TypeMap> {
         self.0.user_data.lock()
     }
+
+    pub fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>> {
+        self.0
+            .node
+            .xattr_ops()
+            .ok_or(VfsError::OperationNotSupported)?
+            .get_xattr(name)
+    }
+
+    pub fn list_xattrs(&self) -> VfsResult<Vec<Vec<u8>>> {
+        self.0
+            .node
+            .xattr_ops()
+            .ok_or(VfsError::OperationNotSupported)?
+            .list_xattrs()
+    }
+
+    pub fn set_xattr(&self, name: &[u8], value: &[u8], mode: XattrSetMode) -> VfsResult<()> {
+        self.0
+            .node
+            .xattr_ops()
+            .ok_or(VfsError::OperationNotSupported)?
+            .set_xattr(name, value, mode)
+    }
+
+    pub fn remove_xattr(&self, name: &[u8]) -> VfsResult<()> {
+        self.0
+            .node
+            .xattr_ops()
+            .ok_or(VfsError::OperationNotSupported)?
+            .remove_xattr(name)
+    }
 }
 
-impl FsPollable for DirEntry {
-    fn poll(&self) -> FsIoEvents {
+impl Pollable for DirEntry {
+    fn poll(&self) -> IoEvents {
         match &self.0.node {
             Node::File(file) => file.poll(),
-            Node::Dir(_dir) => FsIoEvents::IN | FsIoEvents::OUT,
+            Node::Dir(_dir) => IoEvents::IN | IoEvents::OUT,
         }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: FsIoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         match &self.0.node {
-            Node::File(file) => file.register(context, events),
+            Node::File(file) => unsafe { file.register_shared(sink, events) },
+            Node::Dir(_) => {}
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        match &self.0.node {
+            Node::File(file) => unsafe { file.register_exclusive(sink, events) },
             Node::Dir(_) => {}
         }
     }

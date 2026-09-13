@@ -1,6 +1,6 @@
 [package]
 name = "ax-mm"
-version = "0.5.31"
+version = "0.8.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -11,6 +11,7 @@ license.workspace = true
 copy = ["dep:page-table-generic", "page-table-generic/copy-from"]
 
 [dependencies]
+ax-cpu.workspace = true
 ax-alloc = { workspace = true }
 ax-hal = { workspace = true, features = ["paging"] }
 ax-sync.workspace = true
@@ -20,3 +21,6 @@ ax-memory-addr.workspace = true
 ax-memory-set.workspace = true
 page-table-generic = { workspace = true, optional = true }
 thiserror.workspace = true
+
+[dev-dependencies]
+ax-hal = { path = "../axhal", features = ["host-test"] }

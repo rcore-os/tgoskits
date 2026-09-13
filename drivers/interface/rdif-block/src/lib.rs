@@ -10,9 +10,6 @@ mod irq;
 mod planner;
 mod request;
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
-
 pub use dma_api;
 pub use error::BlkError;
 pub use group::{

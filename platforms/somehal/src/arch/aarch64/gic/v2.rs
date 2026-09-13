@@ -96,18 +96,33 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 pub struct ActiveIrq {
     irq: rdrive::IrqId,
     ack: Ack,
+    priority_drop_pending: bool,
+    two_step_eoi: bool,
 }
 
 impl ActiveIrq {
     pub fn id(&self) -> rdrive::IrqId {
         self.irq
     }
+
+    pub fn acknowledge_ipi(&mut self) {
+        if self.two_step_eoi {
+            self.drop_priority();
+        }
+    }
+
+    fn drop_priority(&mut self) {
+        if self.priority_drop_pending {
+            TRAP.eoi(self.ack);
+            self.priority_drop_pending = false;
+        }
+    }
 }
 
 impl Drop for ActiveIrq {
     fn drop(&mut self) {
-        TRAP.eoi(self.ack);
-        if TRAP.eoi_mode_ns() {
+        self.drop_priority();
+        if self.two_step_eoi {
             TRAP.dir(self.ack);
         }
     }
@@ -128,6 +143,8 @@ pub fn begin_irq() -> Option<ActiveIrq> {
     Some(ActiveIrq {
         irq: (irq_num as usize).into(),
         ack,
+        priority_drop_pending: true,
+        two_step_eoi: TRAP.eoi_mode_ns(),
     })
 }
 

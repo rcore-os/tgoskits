@@ -63,7 +63,7 @@ cover OrangePi 5 Plus, LicheeRV Nano SG2002, AKA-00 SG2002, VisionFive2,
 PhytiumPi, ROC-RK3568-PC DWCMSHC eMMC, Rock 4D RK3576 DWCMSHC eMMC, and
 JL-LSGD2K10 AHCI.
 
-Each board profile uses its `shell_init_cmd` as a parameter prelude with the
+Each board profile uses its `shell_cmd` as a parameter prelude with the
 expected root device, controller, hardware transfer limit, and unique success
 marker. Axbuild injects that prelude before the shared `init.sh`;
 the guest does not guess a board from `/proc/device-tree`. The helper verifies

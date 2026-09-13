@@ -193,9 +193,7 @@ pub fn send_ipi_to_cpu(cpu_id: usize) -> Result<(), crate::irq::IrqError> {
     // An SBI IPI is only a doorbell. Complete the shared-memory publication
     // before entering firmware, whose later MMIO/IMSIC operation may otherwise
     // become visible to the target hart first under RVWMO.
-    unsafe {
-        core::arch::asm!("fence rw, rw", options(nostack, preserves_flags));
-    }
+    ax_cpu::barrier::data_fence();
     let res = sbi_rt::send_ipi(HartMask::from_mask_base(1, hart_id));
     if res.is_ok() {
         Ok(())

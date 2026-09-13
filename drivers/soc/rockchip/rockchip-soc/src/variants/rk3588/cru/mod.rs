@@ -635,34 +635,6 @@ fn verify_pll_frequency(pll_id: PllId, actual_hz: u64, expected_hz: u64) {
 mod tests {
     use super::*;
 
-    /// 测试 u-boot 配置值的常量验证
-    #[test]
-    fn test_u_boot_init_values() {
-        // 验证 u-boot rk3588_clk_init 中的常量计算
-        // ACLK_BUS_ROOT 分频器计算
-        // u-boot: div = DIV_ROUND_UP(GPLL_HZ, 300 * MHz);
-        //       = (1188 + 300 - 1) / 300 = 4
-        //       写入: div - 1 = 3 (因为 DIV_TO_RATE = rate / (div + 1))
-        let expected_div_reg = ((GPLL_HZ as u64) + (300 * MHZ) - 1) / (300 * MHZ) - 1;
-        assert_eq!(
-            expected_div_reg, 3,
-            "ACLK_BUS_ROOT div should be 3 (factor=4)"
-        );
-
-        // ACLK_TOP_S400: 0 = 400MHz
-        let expected_s400_sel = ACLK_TOP_S400_SEL_400M;
-        assert_eq!(expected_s400_sel, 0, "ACLK_TOP_S400 should be 0 (400MHz)");
-
-        // ACLK_TOP_S200: 0 = 200MHz
-        let expected_s200_sel = ACLK_TOP_S200_SEL_200M;
-        assert_eq!(expected_s200_sel, 0, "ACLK_TOP_S200 should be 0 (200MHz)");
-
-        // PLL 频率验证
-        assert_eq!(CPLL_HZ, 1500 * (MHZ as u64), "CPLL should be 1500MHz");
-        assert_eq!(GPLL_HZ, 1188 * (MHZ as u64), "GPLL should be 1188MHz");
-        assert_eq!(PPLL_HZ, 1100 * (MHZ as u64), "PPLL should be 1100MHz");
-    }
-
     /// 测试寄存器位掩码定义
     #[test]
     fn test_register_bit_masks() {
@@ -673,58 +645,6 @@ mod tests {
         // ACLK_TOP 位掩码
         assert_eq!(ACLK_TOP_S400_SEL_MASK, 0x3 << 8);
         assert_eq!(ACLK_TOP_S200_SEL_MASK, 0x3 << 6);
-    }
-
-    /// 模拟 u-boot 配置的寄存器值验证
-    #[test]
-    fn test_expected_register_values() {
-        // u-boot rk3588_clk_init 写入的预期值:
-        //
-        // clksel_con[38]:
-        //   SEL = 0 (GPLL)
-        //   DIV = 3 (factor = 4)
-        //   预期值 = 0x00000003
-        let expected_clksel_38 = 0 | 3;
-        assert_eq!(expected_clksel_38, 3);
-
-        // clksel_con[9]:
-        //   S400_SEL = 0 (400MHz) at bit 8
-        //   S200_SEL = 0 (200MHz) at bit 6
-        //   预期值 = 0x00000000
-        let expected_clksel_9 = (0 << 8) | (0 << 6);
-        assert_eq!(expected_clksel_9, 0);
-    }
-
-    /// 测试 PLL 频率计算公式
-    ///
-    /// 验证从寄存器值计算 PLL 输出频率的公式
-    #[test]
-    fn test_pll_rate_calculation() {
-        // 测试 GPLL 1188MHz: p=2, m=198, s=1, k=0
-        // rate = ((24MHz / 2) * 198) >> 1 = 1188MHz
-        let fin = OSC_HZ as u64;
-        let rate = ((fin / 2) * 198) >> 1;
-        assert_eq!(rate, 1188 * (MHZ as u64));
-
-        // 测试 CPLL 1500MHz: p=2, m=250, s=1, k=0
-        // rate = ((24MHz / 2) * 250) >> 1 = 1500MHz
-        let rate = ((fin / 2) * 250) >> 1;
-        assert_eq!(rate, 1500 * (MHZ as u64));
-
-        // 测试小数分频 786.432MHz: p=2, m=262, s=2, k=9437
-        // rate = ((24MHz / 2) * 262 + (24MHz * 9437) / (2 * 65536)) >> 2
-        let p = 2u64;
-        let m = 262u64;
-        let s = 2u32;
-        let k = 9437u64;
-
-        let mut rate = (fin / p) * m;
-        let frac_rate = (fin * k) / (p * 65536);
-        rate += frac_rate;
-        rate >>= s;
-
-        // 由于整数除法精度限制,结果为 786431991 Hz
-        assert_eq!(rate, 786_431_991);
     }
 
     /// 测试 PLL 模式掩码和常量

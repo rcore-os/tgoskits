@@ -1,17 +1,16 @@
 [package]
 name = "dwmmc-host"
-version = "0.3.5"
+version = "0.4.2"
 repository.workspace = true
 edition = "2024"
 license = "Apache-2.0"
 description = "Synopsys DesignWare Mobile Storage Host Controller backend for sdmmc-protocol (no_std, FIFO/IDMAC)"
-readme = "README.md"
 keywords = ["sd", "mmc", "dwmmc", "embedded", "no_std"]
 categories = ["embedded", "no-std", "hardware-support"]
 
 [dependencies]
 sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio"] }
-sdio-host2.workspace = true
+sdmmc-host.workspace = true
 embedded-hal = "1"
 bitfield-struct = "0.11"
 volatile = { version = "0.6", features = ["derive"] }

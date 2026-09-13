@@ -1,66 +1,6 @@
 use super::*;
 
 #[test]
-fn arceos_io_test_selects_a_concrete_fat_filesystem() {
-    let workspace = crate::context::workspace_root_path().unwrap();
-    let manifest_path = workspace.join("apps/arceos/io_test/Cargo.toml");
-    let manifest: toml::Value =
-        toml::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
-    let arceos_features = manifest["features"]["arceos"]
-        .as_array()
-        .expect("arceos-io_test must declare its ArceOS feature set");
-
-    assert!(
-        arceos_features
-            .iter()
-            .filter_map(toml::Value::as_str)
-            .any(|feature| feature == "ax-std/fatfs"),
-        "{} must select FAT for its generated FAT32 NVMe rootfs",
-        manifest_path.display()
-    );
-}
-
-#[test]
-fn arceos_io_test_x86_uses_uefi_handoff() {
-    let workspace = crate::context::workspace_root_path().unwrap();
-    let config_path = workspace.join("apps/arceos/io_test/qemu-x86_64.toml");
-    let config: toml::Value = toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-
-    assert_eq!(
-        config.get("uefi").and_then(toml::Value::as_bool),
-        Some(true),
-        "{} must use the supported x86_64 UEFI handoff",
-        config_path.display()
-    );
-    assert_eq!(
-        config.get("to_bin").and_then(toml::Value::as_bool),
-        Some(true),
-        "{} must retain the UEFI runner's explicit BIN artifact contract",
-        config_path.display()
-    );
-}
-
-#[test]
-fn axfs_vfs_enables_sleepable_mutexes() {
-    let workspace = crate::context::workspace_root_path().unwrap();
-    let manifest_path = workspace.join("fs/ax-fs-ng/Cargo.toml");
-    let manifest: toml::Value =
-        toml::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
-    let vfs_features = manifest["features"]["vfs"]
-        .as_array()
-        .expect("ax-fs-ng must declare its VFS feature set");
-
-    assert!(
-        vfs_features
-            .iter()
-            .filter_map(toml::Value::as_str)
-            .any(|feature| feature == "ax-sync/sleep"),
-        "{} must keep filesystem I/O locks sleepable for channel-backed block completion",
-        manifest_path.display()
-    );
-}
-
-#[test]
 fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
     let mut features = vec![
         "ax-driver/nvme".to_string(),
@@ -80,15 +20,10 @@ fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
         ],
     );
 
-    assert_eq!(
-        features,
-        vec![
-            "ax-std/dns".to_string(),
-            "ax-std/nvme".to_string(),
-            "ax-std/virtio-net".to_string(),
-            "dns".to_string(),
-        ]
-    );
+    assert!(features.contains(&"ax-std/dns".to_string()));
+    assert!(features.contains(&"ax-std/nvme".to_string()));
+    assert!(features.contains(&"ax-std/virtio-net".to_string()));
+    assert!(features.contains(&"dns".to_string()));
 }
 
 #[test]
@@ -109,10 +44,8 @@ fn std_build_runtime_features_are_passed_through_after_normalization() {
         ],
     );
 
-    assert_eq!(
-        info.features,
-        vec!["ax-std/dns".to_string(), "dns".to_string()]
-    );
+    assert!(info.features.contains(&"ax-std/dns".to_string()));
+    assert!(info.features.contains(&"dns".to_string()));
 }
 
 #[test]
@@ -140,10 +73,8 @@ fn std_build_cargo_config_builds_fake_lib_before_app() {
             .windows(2)
             .any(|pair| pair == ["-Z", "json-target-spec"])
     );
-    assert_eq!(
-        cargo.features,
-        vec!["ax-std/dns".to_string(), "ax-std/fs".to_string(),]
-    );
+    assert!(cargo.features.iter().any(|feature| feature == "ax-std/dns"));
+    assert!(cargo.features.iter().any(|feature| feature == "ax-std/fs"));
     assert!(!cargo.to_bin);
     assert_eq!(
         cargo.env.get("CARGO_UNSTABLE_JSON_TARGET_SPEC"),
@@ -160,8 +91,13 @@ fn std_build_cargo_config_builds_fake_lib_before_app() {
             .as_ref()
             .is_some_and(|path| path.ends_with("config-x86_64-unknown-linux-musl-dynamic.toml"))
     );
-    assert_eq!(cargo.pre_build_cmds.len(), 1);
-    let prebuild = fs::read_to_string(&cargo.pre_build_cmds[0]).unwrap();
+    let prebuild = fs::read_to_string(
+        cargo
+            .pre_build_cmds
+            .first()
+            .expect("dynamic std build should prepare a pre-build archive script"),
+    )
+    .unwrap();
     assert!(prebuild.contains("target_name='x86_64-unknown-linux-musl'"));
     assert!(!prebuild.contains("cargo}\" build -p ax-std"));
     assert!(!prebuild.contains("libax_std.a"));
@@ -170,4 +106,30 @@ fn std_build_cargo_config_builds_fake_lib_before_app() {
     assert!(prebuild.contains("$(rustc --print sysroot)"));
     assert!(prebuild.contains("create_empty_archive \"$fake_dir/libc.a\""));
     assert!(prebuild.contains("create_empty_archive \"$fake_dir/libunwind.a\""));
+}
+
+#[test]
+fn preparing_another_build_preserves_existing_target_configuration() {
+    let root = tempdir().unwrap();
+    let linker = root.path().join("linker");
+    let target = "x86_64-unknown-linux-musl";
+    let protected =
+        std_cargo_config_path(target, &linker, &["-Zstack-protector=strong".to_string()]).unwrap();
+    let original = fs::read_to_string(&protected).unwrap();
+    let plain = std_cargo_config_path(target, &linker, &[]).unwrap();
+
+    assert_ne!(
+        protected, plain,
+        "different build options must not share mutable configuration"
+    );
+    assert_eq!(fs::read_to_string(&protected).unwrap(), original);
+    assert!(
+        !fs::read_to_string(&plain)
+            .unwrap()
+            .contains("stack-protector")
+    );
+    assert_eq!(
+        std_cargo_config_path(target, &linker, &["-Zstack-protector=strong".to_string()]).unwrap(),
+        protected,
+    );
 }

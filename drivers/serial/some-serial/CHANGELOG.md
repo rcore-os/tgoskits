@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.7](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.6...some-serial-v0.7.7) - 2026-09-11
+
+### Fixed
+
+- *(some-serial)* preserve PL011 RX interrupts and add a real QEMU regression ([#2328](https://github.com/rcore-os/tgoskits/pull/2328))
+
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.5...some-serial-v0.7.6) - 2026-09-09
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
+## [0.7.5](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.4...some-serial-v0.7.5) - 2026-08-27
+
+### Fixed
+
+- *(some-serial)* bound PL011 RX discard ([#2203](https://github.com/rcore-os/tgoskits/pull/2203))
+
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.3...some-serial-v0.7.4) - 2026-08-20
+
+### Fixed
+
+- *(console)* unify sleepable runtime console arbitration ([#2113](https://github.com/rcore-os/tgoskits/pull/2113))
+- *(some-serial)* bound PL011 early-console startup ([#1983](https://github.com/rcore-os/tgoskits/pull/1983))
+- *(tty)* handle input flush and wakeups ([#1922](https://github.com/rcore-os/tgoskits/pull/1922))
+
+### Other
+
+- *(serial)* establish bounded owner-affine UART runtime ([#2076](https://github.com/rcore-os/tgoskits/pull/2076))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.2...some-serial-v0.7.3) - 2026-08-09
 
 ### Other

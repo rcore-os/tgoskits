@@ -46,14 +46,6 @@ static int create_and_stat(struct file_identity *id)
         return fail_errno("open O_CREAT|O_EXCL");
     }
 
-    if (write(id->fd, id->path, strlen(id->path)) < 0) {
-        return fail_errno("write marker");
-    }
-
-    if (fsync(id->fd) != 0) {
-        return fail_errno("fsync marker");
-    }
-
     if (stat(id->path, &id->st_path) != 0) {
         return fail_errno("stat path");
     }

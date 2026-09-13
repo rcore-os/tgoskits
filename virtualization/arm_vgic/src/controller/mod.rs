@@ -12,7 +12,7 @@ use alloc::{
     vec::Vec,
 };
 
-use ax_sync::SpinLock;
+use ax_sync::{SpinLock, SpinLockIrqSaveGuard};
 use axdevice_base::ItsId;
 pub use binding::GicV3VcpuBinding;
 
@@ -57,7 +57,23 @@ struct ControllerInner {
     // while the vCPU run path is folding LR state on the same CPU. Saving
     // local IRQ state before taking the canonical state lock prevents that
     // re-entry from spinning on a lock interrupted code already owns.
-    state: SpinLock<ControllerState>,
+    state: ControllerStateLock,
+}
+
+struct ControllerStateLock(SpinLock<ControllerState>);
+
+impl ControllerStateLock {
+    const fn new(state: ControllerState) -> Self {
+        Self(SpinLock::new(state))
+    }
+
+    fn lock(&self) -> SpinLockIrqSaveGuard<'_, ControllerState> {
+        self.0.lock_irqsave()
+    }
+
+    fn lock_irqsave(&self) -> SpinLockIrqSaveGuard<'_, ControllerState> {
+        self.lock()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -214,7 +230,7 @@ impl GicV3Controller {
                 gicv3_config: Some(config),
                 backend,
                 guest_memory,
-                state: SpinLock::new(ControllerState {
+                state: ControllerStateLock::new(ControllerState {
                     distributor,
                     redistributors: BTreeMap::new(),
                     spi_backings: BTreeMap::new(),
@@ -255,7 +271,7 @@ impl GicV3Controller {
                 gicv3_config,
                 backend,
                 guest_memory,
-                state: SpinLock::new(ControllerState {
+                state: ControllerStateLock::new(ControllerState {
                     distributor,
                     redistributors: BTreeMap::new(),
                     spi_backings: BTreeMap::new(),

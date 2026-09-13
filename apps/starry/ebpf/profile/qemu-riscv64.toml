@@ -15,8 +15,10 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/profile"
-success_regex = ["(?m)^PROFILE_PASS"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^PROFILE_FAIL"]
 timeout = 240
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/profile"
+success_regex = ["(?m)^PROFILE_PASS"]

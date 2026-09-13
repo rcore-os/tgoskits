@@ -43,6 +43,7 @@ pub(crate) struct Ext4InodeMetadataUpdate {
     pub ctime: Option<Ext4TimeSpec>,
     pub crtime: Option<Ext4TimeSpec>,
     pub dtime: Ext4DtimeUpdate,
+    pub increment_version: bool,
     pub clear_suid_sgid_on_write: bool,
     pub clear_suid_sgid_on_chown: bool,
 }
@@ -60,6 +61,7 @@ impl Default for Ext4InodeMetadataUpdate {
             ctime: None,
             crtime: None,
             dtime: Ext4DtimeUpdate::Keep,
+            increment_version: false,
             clear_suid_sgid_on_write: false,
             clear_suid_sgid_on_chown: false,
         }
@@ -157,6 +159,7 @@ impl Ext4InodeMetadataUpdate {
             reason: Ext4MetadataReason::ParentDir,
             mtime: Some(Ext4TimeSpec::Now),
             ctime: Some(Ext4TimeSpec::Now),
+            increment_version: true,
             ..Default::default()
         }
     }

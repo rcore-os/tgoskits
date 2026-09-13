@@ -3,14 +3,15 @@ use alloc::{
     sync::{Arc, Weak},
 };
 use core::{
-    any::Any,
+    any::{Any, TypeId},
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicI64, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use rdif_base::DriverGeneric;
 
-use crate::{Descriptor, Pid, get_pid};
+use crate::{Descriptor, Pid, get_pid, relax};
 
 pub struct DeviceOwner {
     lock: Arc<LockInner>,
@@ -19,7 +20,7 @@ pub struct DeviceOwner {
 impl DeviceOwner {
     pub fn new<T: DriverGeneric>(descriptor: Descriptor, device: T) -> Self {
         Self {
-            lock: Arc::new(LockInner::new(descriptor, Box::into_raw(Box::new(device)))),
+            lock: Arc::new(LockInner::new(descriptor, device)),
         }
     }
 
@@ -28,69 +29,69 @@ impl DeviceOwner {
     }
 
     pub fn is<T: DriverGeneric>(&self) -> bool {
-        unsafe { &*self.lock.ptr }.is::<T>()
+        self.lock.type_id == TypeId::of::<T>()
     }
 }
 
 impl Drop for LockInner {
     fn drop(&mut self) {
-        unsafe {
-            let ptr = self.ptr;
-            let _ = Box::from_raw(ptr);
-        }
+        // SAFETY: new transfers one Box into this pointer. The final Arc is
+        // gone, so no guard can still access the allocation.
+        unsafe { drop(Box::from_raw(self.ptr)) };
     }
 }
 
 struct LockInner {
-    borrowed: AtomicI64,
+    borrowed: AtomicUsize,
     ptr: *mut dyn Any,
+    type_id: TypeId,
     descriptor: Descriptor,
 }
 
+// SAFETY: construction requires a Send driver. The allocation remains owned
+// by the Arc; mutable access requires the exclusive borrow bit. Type checks
+// read separate immutable metadata without borrowing the driver.
 unsafe impl Send for LockInner {}
+// SAFETY: shared handles only access immutable metadata and the atomic gate.
 unsafe impl Sync for LockInner {}
 
 impl LockInner {
-    fn new(descriptor: Descriptor, ptr: *mut dyn Any) -> Self {
+    fn new<T: DriverGeneric>(descriptor: Descriptor, device: T) -> Self {
         Self {
-            borrowed: AtomicI64::new(-1),
-            ptr,
+            borrowed: AtomicUsize::new(Pid::NOT_SET),
+            ptr: Box::into_raw(Box::new(device)),
+            type_id: TypeId::of::<T>(),
             descriptor,
         }
     }
 
-    pub fn try_lock(self: &Arc<Self>, pid: Pid) -> Result<(), GetDeviceError> {
-        let mut pid = pid;
-        if pid.is_not_set() {
-            pid = Pid::INVALID.into();
-        }
-
-        let id: usize = pid.into();
-
-        match self.borrowed.compare_exchange(
-            Pid::NOT_SET as _,
-            id as _,
-            Ordering::Acquire,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => Ok(()),
-            Err(old) => {
-                if old as usize == Pid::INVALID {
-                    Err(GetDeviceError::UsedByUnknown)
+    /// Acquire exclusive access. The PID is diagnostic metadata only.
+    fn try_lock(&self, pid: Pid) -> Result<(), GetDeviceError> {
+        let owner = if pid.is_not_set() {
+            Pid::INVALID
+        } else {
+            pid.raw()
+        };
+        // Acquire observes device writes published by the previous guard's Drop.
+        self.borrowed
+            .compare_exchange(Pid::NOT_SET, owner, Ordering::Acquire, Ordering::Relaxed)
+            .map(|_| ())
+            .map_err(|owner| {
+                if owner == Pid::INVALID {
+                    GetDeviceError::UsedByUnknown
                 } else {
-                    let pid: Pid = (old as usize).into();
-                    Err(GetDeviceError::UsedByOthers(pid))
+                    GetDeviceError::UsedByOthers(owner.into())
                 }
-            }
-        }
+            })
     }
 
-    pub fn lock(self: &Arc<Self>) -> Result<(), GetDeviceError> {
+    fn lock(&self) -> Result<(), GetDeviceError> {
         let pid = get_pid();
         loop {
             match self.try_lock(pid) {
-                Ok(guard) => return Ok(guard),
+                Ok(()) => return Ok(()),
                 Err(GetDeviceError::UsedByOthers(_)) | Err(GetDeviceError::UsedByUnknown) => {
+                    relax();
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -99,18 +100,29 @@ impl LockInner {
     }
 }
 
+/// Exclusive device borrow. Only dropping this guard releases the borrow.
+///
+/// Non-Send projections must not cross threads:
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<rdrive::DeviceGuard<std::rc::Rc<()>>>();
+/// ```
+///
+/// Moving it to a worker transfers the borrow; the acquiring process's exit
+/// does not revoke it. Leaking a guard keeps the device borrowed.
 pub struct DeviceGuard<T> {
     lock: Arc<LockInner>,
     ptr: *mut T,
 }
 
-unsafe impl<T> Send for DeviceGuard<T> {}
+// SAFETY: the guard transfers exclusive access and pins the driver allocation.
+// A projected target must itself permit transfer between threads.
+unsafe impl<T: Send> Send for DeviceGuard<T> {}
 
 impl<T> Drop for DeviceGuard<T> {
     fn drop(&mut self) {
-        self.lock
-            .borrowed
-            .store(Pid::NOT_SET as _, Ordering::Release);
+        // No other path can unlock while this guard or its references exist.
+        self.lock.borrowed.store(Pid::NOT_SET, Ordering::Release);
     }
 }
 
@@ -118,12 +130,15 @@ impl<T> Deref for DeviceGuard<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
+        // SAFETY: this guard pins the allocation and retains the exclusive gate.
         unsafe { &*self.ptr }
     }
 }
 
 impl<T> DerefMut for DeviceGuard<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: the gate excludes other guards, and &mut self excludes other
+        // references derived from this guard during this borrow.
         unsafe { &mut *self.ptr }
     }
 }
@@ -134,6 +149,12 @@ impl<T> DeviceGuard<T> {
     }
 }
 
+/// Weak access to a registered device. Subtype projection requires a guard.
+/// ```compile_fail
+/// fn project(device: rdrive::Device<rdrive::driver::Empty>) {
+///     let _ = device.downcast::<u32>();
+/// }
+/// ```
 pub struct Device<T> {
     lock: Weak<LockInner>,
     descriptor: Descriptor,
@@ -150,15 +171,19 @@ impl<T> Clone for Device<T> {
     }
 }
 
-unsafe impl<T> Send for Device<T> {}
-unsafe impl<T> Sync for Device<T> {}
+// SAFETY: weak handles only dereference after upgrading and acquiring the gate.
+unsafe impl<T: Send> Send for Device<T> {}
+// SAFETY: concurrent callers serialize access through the shared borrow gate.
+unsafe impl<T: Send> Sync for Device<T> {}
 
 impl<T: Any> Device<T> {
     fn new(lock: &Arc<LockInner>) -> Result<Self, GetDeviceError> {
-        let ptr = match unsafe { &*lock.ptr }.downcast_ref::<T>() {
-            Some(v) => v as *const T as *mut T,
-            None => return Err(GetDeviceError::TypeNotMatch),
-        };
+        if lock.type_id != TypeId::of::<T>() {
+            return Err(GetDeviceError::TypeNotMatch);
+        }
+        // The recorded TypeId proves this erased allocation contains T. Do not
+        // create a reference here: an existing guard may be mutably borrowing it.
+        let ptr = lock.ptr.cast::<T>();
 
         Ok(Self {
             lock: Arc::downgrade(lock),
@@ -214,23 +239,23 @@ impl<T: Any> Device<T> {
     }
 }
 
-impl<T: DriverGeneric> Device<T> {
-    pub fn downcast<T2: 'static>(&self) -> Result<Device<T2>, GetDeviceError> {
-        let lock = self.lock.upgrade().ok_or(GetDeviceError::DeviceReleased)?;
-
-        let t2_any = unsafe { &mut *self.ptr }
+impl<T: DriverGeneric> DeviceGuard<T> {
+    /// Project this exclusive borrow into a driver's subtype.
+    ///
+    /// The original guard is consumed, so the outer driver cannot replace the
+    /// subtype while it is borrowed. On mismatch this guard is dropped and the
+    /// device becomes available again.
+    pub fn downcast<T2: 'static>(mut self) -> Result<DeviceGuard<T2>, GetDeviceError> {
+        let ptr = self
             .raw_any_mut()
-            .ok_or(GetDeviceError::TypeNotMatch)?;
-
-        let t2_type = t2_any
-            .downcast_mut::<T2>()
-            .ok_or(GetDeviceError::TypeNotMatch)?;
-
-        Ok(Device {
-            lock: Arc::downgrade(&lock),
-            descriptor: self.descriptor.clone(),
-            ptr: t2_type as *mut T2,
-        })
+            .and_then(|subtype| subtype.downcast_mut::<T2>())
+            .ok_or(GetDeviceError::TypeNotMatch)? as *mut T2;
+        let guard = ManuallyDrop::new(self);
+        // SAFETY: move the owning Arc without dropping the old guard (which
+        // would release the gate). The new guard owns the same acquisition and
+        // keeps the outer driver, including its projected subtype, alive.
+        let lock = unsafe { core::ptr::read(&guard.lock) };
+        Ok(DeviceGuard { lock, ptr })
     }
 }
 
@@ -246,4 +271,98 @@ pub enum GetDeviceError {
     DeviceReleased,
     #[error("Device not found")]
     NotFound,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::driver::Empty;
+
+    #[test]
+    fn projection_retains_borrow_and_releases_on_mismatch() {
+        struct Outer(u32);
+        impl DriverGeneric for Outer {
+            fn name(&self) -> &str {
+                "outer"
+            }
+            fn raw_any_mut(&mut self) -> Option<&mut dyn Any> {
+                Some(&mut self.0)
+            }
+        }
+        let owner = DeviceOwner::new(Descriptor::new(), Outer(7));
+        let device = owner.weak::<Outer>().unwrap();
+        let mut projected = device.lock().unwrap().downcast::<u32>().unwrap();
+        *projected = 9;
+        assert!(device.try_lock().is_err());
+        drop(projected);
+        assert_eq!(device.lock().unwrap().0, 9);
+        assert!(matches!(
+            device.lock().unwrap().downcast::<u64>(),
+            Err(GetDeviceError::TypeNotMatch)
+        ));
+        assert!(device.try_lock().is_ok());
+    }
+
+    #[test]
+    fn diagnostic_pid_does_not_grant_recursive_access() {
+        let owner = DeviceOwner::new(Descriptor::new(), Empty);
+        let device = owner.weak::<Empty>().unwrap();
+        owner.lock.try_lock(42usize.into()).unwrap();
+        let guard = DeviceGuard {
+            lock: owner.lock.clone(),
+            ptr: device.ptr,
+        };
+        assert!(
+            matches!(owner.lock.try_lock(42usize.into()), Err(GetDeviceError::UsedByOthers(pid)) if pid.raw() == 42)
+        );
+        assert!(matches!(
+            owner.lock.try_lock(43usize.into()),
+            Err(GetDeviceError::UsedByOthers(_))
+        ));
+        drop(guard);
+        assert!(device.try_lock().is_ok());
+    }
+
+    #[test]
+    fn unset_pid_still_acquires_exclusively() {
+        let owner = DeviceOwner::new(Descriptor::new(), Empty);
+        owner.lock.try_lock(Pid::NOT_SET.into()).unwrap();
+        assert!(matches!(
+            owner.lock.try_lock(1usize.into()),
+            Err(GetDeviceError::UsedByUnknown)
+        ));
+    }
+
+    #[test]
+    fn pid_metadata_preserves_pointer_width() {
+        let owner = DeviceOwner::new(Descriptor::new(), Empty);
+        let pid = usize::MAX - 2;
+        owner.lock.try_lock(pid.into()).unwrap();
+        assert!(
+            matches!(owner.lock.try_lock(1usize.into()), Err(GetDeviceError::UsedByOthers(held)) if held.raw() == pid)
+        );
+    }
+
+    #[test]
+    fn transferred_guard_keeps_device_alive_and_exclusive() {
+        extern crate std;
+        let owner = DeviceOwner::new(Descriptor::new(), Empty);
+        let device = owner.weak::<Empty>().unwrap();
+        let guard = device.lock().unwrap();
+        drop(owner);
+        std::thread::spawn(move || {
+            assert_eq!(guard.name(), "Empty Driver");
+            assert!(matches!(
+                device.try_lock(),
+                Err(GetDeviceError::UsedByUnknown) | Err(GetDeviceError::UsedByOthers(_))
+            ));
+            drop(guard);
+            assert!(matches!(
+                device.try_lock(),
+                Err(GetDeviceError::DeviceReleased)
+            ));
+        })
+        .join()
+        .unwrap();
+    }
 }

@@ -3,7 +3,7 @@
 //! `perf_event_open(PERF_TYPE_UPROBE)` carries the target ELF path (`name`), an
 //! in-file `offset`, and the target `pid`. We resolve the offset to a live user
 //! virtual address by finding the VMA in the target process that is backed by
-//! that ELF (`Backend::file_info().path`), then register a uprobe on
+//! that ELF (`MappingOperation::file_info().path`), then register a uprobe on
 //! `vma.start() + offset` in that process' per-process manager.
 //!
 //! Out-of-line single-step, breakpoint insertion and the eBPF callback are
@@ -14,44 +14,35 @@
 use kbpf_basic::perf::{PerfProbeArgs, PerfProbeConfig};
 use kprobe::ProbeBuilder;
 
-use super::{
-    PerfEventTarget,
-    kprobe::{PROBE_CONFIG_ENTRY, PROBE_CONFIG_RETURN, ProbePerfEvent, ProbeTy},
-};
+use super::kprobe::{PROBE_CONFIG_ENTRY, PROBE_CONFIG_RETURN, ProbePerfEvent, ProbeTy};
 use crate::{
     StarryError, StarryResult,
     kprobe::{KprobeAuxiliary, UprobeTargetLease},
-    task::{AsThread, get_user_task_by_number},
+    task::UserTaskRef,
 };
 
 /// Resolve the target ELF's mapped base in the target process and build a
 /// uprobe `ProbeBuilder` for `base + offset`.
 fn perf_probe_arg_to_uprobe_builder(
     args: &PerfProbeArgs,
-    target: PerfEventTarget,
+    target_task: Option<&UserTaskRef>,
 ) -> StarryResult<(ProbeBuilder<KprobeAuxiliary>, UprobeTargetLease)> {
     let elf = &args.name;
     let offset = args.offset as usize;
 
-    let task = match target {
-        PerfEventTarget::AllTasks => {
-            // An all-process shared-library uprobe needs a global
-            // file-to-address registry that Starry does not maintain.
-            warn!("uprobe: all-process / shared-lib target is unsupported");
-            return Err(StarryError::Unsupported);
-        }
-        PerfEventTarget::Current => ax_task::current().clone(),
-        PerfEventTarget::Thread(tid) => get_user_task_by_number(tid)?,
+    let Some(target_task) = target_task else {
+        // An all-process shared-library uprobe needs a global file-to-address
+        // registry that Starry does not maintain.
+        warn!("uprobe: all-process / shared-lib target is unsupported");
+        return Err(StarryError::Unsupported);
     };
-    let target = UprobeTargetLease::register(task.as_thread().pid_identity())?;
-    let aspace = task.as_thread().proc_data.aspace();
+    let target = UprobeTargetLease::register(target_task.as_thread().pid_identity())?;
+    let aspace = target_task.as_thread().proc_data.pin_aspace()?;
     let mm = aspace.lock();
 
     let mut virt_base = None;
-    for area in mm.areas() {
-        if let Ok(info) = area.backend().file_info()
-            && &info.path == elf
-        {
+    for area in mm.vma_inspection_records()? {
+        if &area.file_info().path == elf {
             virt_base = Some(area.start());
             break;
         }
@@ -83,11 +74,11 @@ fn perf_probe_arg_to_uprobe_builder(
 /// Build a uprobe perf event from `perf_event_open` args.
 pub fn perf_event_open_uprobe(
     args: PerfProbeArgs,
-    target: PerfEventTarget,
+    target_task: Option<&UserTaskRef>,
 ) -> StarryResult<ProbePerfEvent> {
     let (probe, target) = match args.config {
         PerfProbeConfig::Raw(PROBE_CONFIG_ENTRY) => {
-            let (builder, target) = perf_probe_arg_to_uprobe_builder(&args, target)?;
+            let (builder, target) = perf_probe_arg_to_uprobe_builder(&args, target_task)?;
             (
                 ProbeTy::Uprobe(crate::uprobe::register_uprobe(builder)),
                 target,

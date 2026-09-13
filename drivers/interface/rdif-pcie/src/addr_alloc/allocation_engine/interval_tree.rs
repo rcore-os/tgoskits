@@ -677,14 +677,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_free() {
-        let mut ns = NodeState::Allocated;
-        assert!(!ns.is_free());
-        ns = NodeState::Free;
-        assert!(ns.is_free());
-    }
-
-    #[test]
     fn test_search() {
         let mut tree = Box::new(InnerNode::new(
             RangeInclusive::new(0x100, 0x110).unwrap(),

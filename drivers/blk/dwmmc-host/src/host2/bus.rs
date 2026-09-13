@@ -77,27 +77,27 @@ const DWMMC_CLOCK_POLLS: u32 = host::DWMMC_HW_POLL_LIMIT;
 impl DwMmc {
     pub(super) fn prepare_host2_bus_op(
         &self,
-        op: sdio_host2::BusOp,
-    ) -> Result<BusRequestState, sdio_host2::Error> {
+        op: sdmmc_host::BusOp,
+    ) -> Result<BusRequestState, sdmmc_host::Error> {
         match op {
-            sdio_host2::BusOp::ResetAll => Ok(BusRequestState::ResetAll {
+            sdmmc_host::BusOp::ResetAll => Ok(BusRequestState::ResetAll {
                 state: DwMmcResetState::Start,
                 restore_completion_irq: self.completion_irq_enabled(),
             }),
-            sdio_host2::BusOp::ResetCommandLine => Err(sdio_host2::Error::Unsupported),
-            sdio_host2::BusOp::ResetDataLine => Ok(BusRequestState::ResetDataLine {
+            sdmmc_host::BusOp::ResetCommandLine => Err(sdmmc_host::Error::Unsupported),
+            sdmmc_host::BusOp::ResetDataLine => Ok(BusRequestState::ResetDataLine {
                 started: false,
                 polls: 0,
             }),
-            sdio_host2::BusOp::PowerOn => Ok(BusRequestState::PowerOn {
+            sdmmc_host::BusOp::PowerOn => Ok(BusRequestState::PowerOn {
                 state: DwMmcResetState::Start,
                 restore_completion_irq: self.completion_irq_enabled(),
             }),
-            sdio_host2::BusOp::PowerOff => Ok(BusRequestState::PowerOff),
-            sdio_host2::BusOp::SetClock(speed) => {
+            sdmmc_host::BusOp::PowerOff => Ok(BusRequestState::PowerOff),
+            sdmmc_host::BusOp::SetClock(speed) => {
                 let target_hz = clock_hz_for_speed(speed);
                 if target_hz == 0 {
-                    return Err(sdio_host2::Error::Unsupported);
+                    return Err(sdmmc_host::Error::Unsupported);
                 }
                 Ok(BusRequestState::SetClock(DwMmcClockState::Start {
                     speed: Some(speed),
@@ -105,27 +105,27 @@ impl DwMmc {
                     wait_prvdata_complete: true,
                 }))
             }
-            sdio_host2::BusOp::SetClockHz(sdio_host2::ClockHz(hz)) => {
+            sdmmc_host::BusOp::SetClockHz(sdmmc_host::ClockHz(hz)) => {
                 Ok(BusRequestState::SetClock(DwMmcClockState::Start {
                     speed: None,
                     target_hz: hz,
                     wait_prvdata_complete: true,
                 }))
             }
-            sdio_host2::BusOp::SetBusWidth(width) => Ok(BusRequestState::SetBusWidth(width)),
-            sdio_host2::BusOp::SetSignalVoltage(voltage) => match volt_mask_for_signal(voltage) {
+            sdmmc_host::BusOp::SetBusWidth(width) => Ok(BusRequestState::SetBusWidth(width)),
+            sdmmc_host::BusOp::SetSignalVoltage(voltage) => match volt_mask_for_signal(voltage) {
                 Ok(_) => Ok(BusRequestState::SetSignalVoltage(voltage)),
                 Err(err) => Err(map_protocol_error(err)),
             },
-            sdio_host2::BusOp::ExecuteTuning { .. } => Err(sdio_host2::Error::Unsupported),
-            _ => Err(sdio_host2::Error::Unsupported),
+            sdmmc_host::BusOp::ExecuteTuning { .. } => Err(sdmmc_host::Error::Unsupported),
+            _ => Err(sdmmc_host::Error::Unsupported),
         }
     }
 
     pub(super) fn advance_host2_bus_state(
         &mut self,
         state: &mut BusRequestState,
-    ) -> Result<sdio_host2::RequestProgress<()>, sdio_host2::Error> {
+    ) -> Result<sdmmc_host::RequestProgress<()>, sdmmc_host::Error> {
         match state {
             BusRequestState::ResetAll {
                 state,
@@ -140,17 +140,17 @@ impl DwMmc {
             } => self.advance_host2_power_on(state, *restore_completion_irq),
             BusRequestState::PowerOff => {
                 self.regs.pwren().write(0);
-                Ok(sdio_host2::RequestProgress::Complete(Ok(())))
+                Ok(sdmmc_host::RequestProgress::Complete(Ok(())))
             }
             BusRequestState::SetClock(clock) => self.advance_host2_clock(clock),
             BusRequestState::SetBusWidth(width) => {
                 self.set_card_type(*width);
-                Ok(sdio_host2::RequestProgress::Complete(Ok(())))
+                Ok(sdmmc_host::RequestProgress::Complete(Ok(())))
             }
             BusRequestState::SetSignalVoltage(voltage) => {
                 self.set_signal_voltage(*voltage)
                     .map_err(map_protocol_error)?;
-                Ok(sdio_host2::RequestProgress::Complete(Ok(())))
+                Ok(sdmmc_host::RequestProgress::Complete(Ok(())))
             }
         }
     }
@@ -159,7 +159,7 @@ impl DwMmc {
         &mut self,
         state: &mut DwMmcResetState,
         restore_completion_irq: bool,
-    ) -> Result<sdio_host2::RequestProgress<()>, sdio_host2::Error> {
+    ) -> Result<sdmmc_host::RequestProgress<()>, sdmmc_host::Error> {
         match state {
             DwMmcResetState::Start => {
                 self.regs.clkena().write(crate::regs::ClkEna::new());
@@ -174,7 +174,7 @@ impl DwMmc {
                         .with_dma_reset(true)
                 });
                 *state = DwMmcResetState::WaitReset { polls: 0 };
-                Ok(sdio_host2::RequestProgress::WaitingForIrq)
+                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
             DwMmcResetState::WaitReset { polls } => {
                 let ctrl = self.regs.ctrl().read();
@@ -189,10 +189,10 @@ impl DwMmc {
                             self.start_second_fifo_reset();
                             *state = DwMmcResetState::WaitSecondFifoReset { polls: 0 };
                         }
-                        return Ok(sdio_host2::RequestProgress::WaitingForIrq);
+                        return Ok(sdmmc_host::RequestProgress::WaitingForIrq);
                     }
                     self.finish_host2_reset_all(restore_completion_irq);
-                    return Ok(sdio_host2::RequestProgress::Complete(Ok(())));
+                    return Ok(sdmmc_host::RequestProgress::Complete(Ok(())));
                 }
                 if *polls >= DWMMC_RESET_POLLS {
                     self.log_host2_timeout("reset-all");
@@ -201,13 +201,13 @@ impl DwMmc {
                     ))));
                 }
                 *polls += 1;
-                Ok(sdio_host2::RequestProgress::WaitingForIrq)
+                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
             DwMmcResetState::WaitDmaRequest { polls } => {
                 if !self.regs.status().read().dma_req() {
                     self.start_second_fifo_reset();
                     *state = DwMmcResetState::WaitSecondFifoReset { polls: 0 };
-                    return Ok(sdio_host2::RequestProgress::WaitingForIrq);
+                    return Ok(sdmmc_host::RequestProgress::WaitingForIrq);
                 }
                 if *polls >= DWMMC_RESET_POLLS {
                     self.log_host2_timeout("reset-all-dma-request");
@@ -216,12 +216,12 @@ impl DwMmc {
                     ))));
                 }
                 *polls += 1;
-                Ok(sdio_host2::RequestProgress::WaitingForIrq)
+                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
             DwMmcResetState::WaitSecondFifoReset { polls } => {
                 if !self.regs.ctrl().read().fifo_reset() {
                     self.finish_host2_reset_all(restore_completion_irq);
-                    return Ok(sdio_host2::RequestProgress::Complete(Ok(())));
+                    return Ok(sdmmc_host::RequestProgress::Complete(Ok(())));
                 }
                 if *polls >= DWMMC_RESET_POLLS {
                     self.log_host2_timeout("reset-all-second-fifo");
@@ -230,7 +230,7 @@ impl DwMmc {
                     ))));
                 }
                 *polls += 1;
-                Ok(sdio_host2::RequestProgress::WaitingForIrq)
+                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
         }
     }
@@ -259,7 +259,7 @@ impl DwMmc {
         &mut self,
         state: &mut DwMmcResetState,
         restore_completion_irq: bool,
-    ) -> Result<sdio_host2::RequestProgress<()>, sdio_host2::Error> {
+    ) -> Result<sdmmc_host::RequestProgress<()>, sdmmc_host::Error> {
         if matches!(state, DwMmcResetState::Start) {
             self.regs.pwren().write(1);
         }
@@ -270,13 +270,13 @@ impl DwMmc {
         &mut self,
         started: &mut bool,
         polls: &mut u32,
-    ) -> Result<sdio_host2::RequestProgress<()>, sdio_host2::Error> {
+    ) -> Result<sdmmc_host::RequestProgress<()>, sdmmc_host::Error> {
         if !*started {
             self.regs.ctrl().update(|r| r.with_fifo_reset(true));
             *started = true;
         }
         if !self.regs.ctrl().read().fifo_reset() {
-            return Ok(sdio_host2::RequestProgress::Complete(Ok(())));
+            return Ok(sdmmc_host::RequestProgress::Complete(Ok(())));
         }
         if *polls >= DWMMC_RESET_POLLS {
             return Err(map_protocol_error(Error::Timeout(ErrorContext::new(
@@ -284,13 +284,13 @@ impl DwMmc {
             ))));
         }
         *polls += 1;
-        Ok(sdio_host2::RequestProgress::WaitingForIrq)
+        Ok(sdmmc_host::RequestProgress::WaitingForIrq)
     }
 
     fn advance_host2_clock(
         &mut self,
         state: &mut DwMmcClockState,
-    ) -> Result<sdio_host2::RequestProgress<()>, sdio_host2::Error> {
+    ) -> Result<sdmmc_host::RequestProgress<()>, sdmmc_host::Error> {
         match state {
             DwMmcClockState::Start {
                 speed,
@@ -303,7 +303,7 @@ impl DwMmc {
                         target_hz: *target_hz,
                         wait_prvdata_complete: *wait_prvdata_complete,
                     };
-                    return Ok(sdio_host2::RequestProgress::WaitingForIrq);
+                    return Ok(sdmmc_host::RequestProgress::WaitingForIrq);
                 }
                 if let Some(speed) = *speed {
                     self.set_uhs_timing(speed);
@@ -315,14 +315,14 @@ impl DwMmc {
                     polls: 0,
                     target_hz: *target_hz,
                 };
-                Ok(sdio_host2::RequestProgress::WaitingForIrq)
+                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
             DwMmcClockState::ExternalSetClock {
                 speed,
                 target_hz,
                 wait_prvdata_complete,
             } => {
-                let clock = self.ext_clock.take().ok_or(sdio_host2::Error::Controller)?;
+                let clock = self.ext_clock.take().ok_or(sdmmc_host::Error::Controller)?;
                 let result = clock.set_clock(*target_hz);
                 self.ext_clock = Some(clock);
                 let bus_hz = result.map_err(map_protocol_error)?;
@@ -337,7 +337,7 @@ impl DwMmc {
                     polls: 0,
                     target_hz: *target_hz,
                 };
-                Ok(sdio_host2::RequestProgress::WaitingForIrq)
+                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
             DwMmcClockState::WaitGate { polls, target_hz } => {
                 if self.poll_update_clock_complete(polls)? {
@@ -345,7 +345,7 @@ impl DwMmc {
                         target_hz: *target_hz,
                     };
                 }
-                Ok(sdio_host2::RequestProgress::WaitingForIrq)
+                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
             DwMmcClockState::ProgramDivider { target_hz } => {
                 let div = dwmmc_clock_divisor(self.ref_clock_hz, *target_hz);
@@ -354,13 +354,13 @@ impl DwMmc {
                     .write(crate::regs::ClkDiv::new().with_clk_divider0(div));
                 self.start_update_clock(false, true);
                 *state = DwMmcClockState::WaitDivider { polls: 0 };
-                Ok(sdio_host2::RequestProgress::WaitingForIrq)
+                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
             DwMmcClockState::WaitDivider { polls } => {
                 if self.poll_update_clock_complete(polls)? {
                     *state = DwMmcClockState::Enable;
                 }
-                Ok(sdio_host2::RequestProgress::WaitingForIrq)
+                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
             DwMmcClockState::Enable => {
                 self.regs
@@ -368,13 +368,13 @@ impl DwMmc {
                     .write(crate::regs::ClkEna::new().with_cclk_enable(1));
                 self.start_update_clock(false, true);
                 *state = DwMmcClockState::WaitEnable { polls: 0 };
-                Ok(sdio_host2::RequestProgress::WaitingForIrq)
+                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
             DwMmcClockState::WaitEnable { polls } => {
                 if self.poll_update_clock_complete(polls)? {
-                    return Ok(sdio_host2::RequestProgress::Complete(Ok(())));
+                    return Ok(sdmmc_host::RequestProgress::Complete(Ok(())));
                 }
-                Ok(sdio_host2::RequestProgress::WaitingForIrq)
+                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
         }
     }
@@ -390,7 +390,7 @@ impl DwMmc {
         );
     }
 
-    fn poll_update_clock_complete(&self, polls: &mut u32) -> Result<bool, sdio_host2::Error> {
+    fn poll_update_clock_complete(&self, polls: &mut u32) -> Result<bool, sdmmc_host::Error> {
         if !self.regs.cmd().read().start_cmd() {
             return Ok(true);
         }
@@ -428,15 +428,15 @@ impl DwMmc {
     pub(super) fn check_host2_bus_request(
         &self,
         request: &BusRequest,
-    ) -> Result<(), sdio_host2::AdvanceRequestError> {
+    ) -> Result<(), sdmmc_host::AdvanceRequestError> {
         if request.done {
-            return Err(sdio_host2::AdvanceRequestError::AlreadyCompleted);
+            return Err(sdmmc_host::AdvanceRequestError::AlreadyCompleted);
         }
         if request.owner != self.host2_owner() {
-            return Err(sdio_host2::AdvanceRequestError::WrongOwner);
+            return Err(sdmmc_host::AdvanceRequestError::WrongOwner);
         }
         if self.host2_active_id != Some(request.id) {
-            return Err(sdio_host2::AdvanceRequestError::StaleGeneration);
+            return Err(sdmmc_host::AdvanceRequestError::StaleGeneration);
         }
         Ok(())
     }
@@ -448,7 +448,7 @@ impl DwMmc {
     pub(super) fn abort_host2_bus_state(
         &mut self,
         state: &mut BusRequestState,
-    ) -> Result<(), sdio_host2::Error> {
+    ) -> Result<(), sdmmc_host::Error> {
         match state {
             BusRequestState::ResetAll { .. }
             | BusRequestState::SetClock(_)

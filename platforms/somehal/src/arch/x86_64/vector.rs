@@ -2,6 +2,9 @@ use crate::irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqError, IrqId, X86_LAPIC_DOMAIN}
 
 pub(super) const APIC_TIMER_VECTOR: usize = 0x20;
 pub(super) const APIC_IPI_VECTOR: usize = 0xf3;
+/// LVT vector for local-APIC internal errors; dedicated by the driver's
+/// bring-up (LVT error entry programming) and never routed to a handler.
+pub(super) const APIC_ERROR_VECTOR: usize = 0xf4;
 pub(super) const SPURIOUS_VECTOR: usize = 0xff;
 
 pub(super) fn lapic_timer_irq_id() -> IrqId {
@@ -34,7 +37,7 @@ pub(super) fn validate_external_vector(vector: usize) -> Result<u8, IrqError> {
     if vector < 0x20
         || matches!(
             vector,
-            APIC_TIMER_VECTOR | APIC_IPI_VECTOR | SPURIOUS_VECTOR
+            APIC_TIMER_VECTOR | APIC_IPI_VECTOR | APIC_ERROR_VECTOR | SPURIOUS_VECTOR
         )
     {
         return Err(IrqError::Busy);

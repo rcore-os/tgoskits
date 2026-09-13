@@ -1,4 +1,4 @@
-//! Structured error context carried alongside an errno.
+//! Structured context carried alongside an ext4 domain error.
 
 use core::fmt;
 
@@ -9,6 +9,14 @@ pub enum ErrorContext {
     BufferSize { provided: usize, required: usize },
     Alignment { offset: u64, alignment: u32 },
     Operation { op: &'static str },
+    Feature { set: FeatureSet, bits: u32 },
+    Capability { name: &'static str },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeatureSet {
+    Incompatible,
+    ReadOnlyCompatible,
 }
 
 impl fmt::Display for ErrorContext {
@@ -28,6 +36,8 @@ impl fmt::Display for ErrorContext {
                 write!(f, "offset={offset}, alignment={alignment}")
             }
             ErrorContext::Operation { op } => write!(f, "op={op}"),
+            ErrorContext::Feature { set, bits } => write!(f, "set={set:?}, bits={bits:#x}"),
+            ErrorContext::Capability { name } => write!(f, "capability={name}"),
         }
     }
 }

@@ -1,0 +1,4 @@
+features = ["test-el2-fatal-foreign-context"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []

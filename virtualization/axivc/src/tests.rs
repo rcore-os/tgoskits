@@ -90,6 +90,151 @@ fn send_fails_when_ring_is_full() {
 }
 
 #[test]
+fn endpoint_readiness_tracks_ring_occupancy_without_consuming() {
+    let mut region = new_region(PUBLISHER_VM_ID, CHANNEL_KEY);
+    region.initialize();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (mut producer, _reply_consumer) = unsafe { region.publisher_endpoints() }.into_parts();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (_reply_producer, mut consumer) = unsafe { region.subscriber_endpoints() }.into_parts();
+
+    assert!(producer.can_send());
+    assert!(!consumer.can_recv());
+
+    for sequence in 0..IVC_RING_CAPACITY as u64 {
+        producer
+            .send(IvcMessageKind::Request, sequence, b"x")
+            .unwrap();
+    }
+    assert!(!producer.can_send());
+    assert!(consumer.can_recv());
+
+    let mut payload = [0; IVC_SLOT_PAYLOAD_SIZE];
+    let message = consumer.try_recv(&mut payload).unwrap().unwrap();
+    assert_eq!(message.sequence(), 0);
+    assert!(producer.can_send());
+    assert!(consumer.can_recv());
+}
+
+#[test]
+fn region_headers_survive_ring_wraparound() {
+    let mut region = new_region(PUBLISHER_VM_ID, CHANNEL_KEY);
+    region.initialize();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (mut producer, _reply_consumer) = unsafe { region.publisher_endpoints() }.into_parts();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (_reply_producer, mut consumer) = unsafe { region.subscriber_endpoints() }.into_parts();
+
+    let mut payload = [0; IVC_SLOT_PAYLOAD_SIZE];
+    for sequence in 0..(IVC_RING_CAPACITY * 4) as u64 {
+        producer
+            .send(IvcMessageKind::Request, sequence, b"x")
+            .unwrap();
+        let message = consumer.try_recv(&mut payload).unwrap().unwrap();
+        assert_eq!(message.sequence(), sequence);
+        assert!(region.channel_header_matches(PUBLISHER_VM_ID, CHANNEL_KEY));
+        assert!(region.protocol_header_matches());
+    }
+
+    assert_eq!(consumer.try_recv(&mut payload), Ok(None));
+}
+
+#[test]
+fn protocol_headers_survive_full_ring_cycles() {
+    let mut region = new_region(PUBLISHER_VM_ID, CHANNEL_KEY);
+    region.initialize();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (mut producer, _reply_consumer) = unsafe { region.publisher_endpoints() }.into_parts();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (_reply_producer, mut consumer) = unsafe { region.subscriber_endpoints() }.into_parts();
+
+    let mut payload = [0; IVC_SLOT_PAYLOAD_SIZE];
+    for cycle in 0..4 {
+        for slot in 0..IVC_RING_CAPACITY {
+            let sequence = (cycle * IVC_RING_CAPACITY + slot) as u64;
+            producer
+                .send(IvcMessageKind::Request, sequence, b"x")
+                .unwrap();
+        }
+        assert_eq!(
+            producer.send(IvcMessageKind::Request, u64::MAX, b"x"),
+            Err(IvcRingError::Full)
+        );
+
+        for slot in 0..IVC_RING_CAPACITY {
+            let sequence = (cycle * IVC_RING_CAPACITY + slot) as u64;
+            let message = consumer.try_recv(&mut payload).unwrap().unwrap();
+            assert_eq!(message.sequence(), sequence);
+        }
+        assert!(region.channel_header_matches(PUBLISHER_VM_ID, CHANNEL_KEY));
+        assert!(region.protocol_header_matches());
+    }
+}
+
+#[test]
+fn bidirectional_endpoints_deliver_concurrent_streams() {
+    use std::{boxed::Box, thread};
+
+    const MESSAGES: u64 = 20_000;
+
+    let region = Box::leak(Box::new(new_region(PUBLISHER_VM_ID, CHANNEL_KEY)));
+    region.initialize();
+    let region: &'static IvcRegion = region;
+    // SAFETY: this test attaches each channel role exactly once.
+    let (mut pub_producer, mut pub_consumer) = unsafe { region.publisher_endpoints() }.into_parts();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (mut sub_producer, mut sub_consumer) =
+        unsafe { region.subscriber_endpoints() }.into_parts();
+
+    let publisher = thread::spawn(move || {
+        let payload = [0xa5; IVC_SLOT_PAYLOAD_SIZE];
+        let mut received = [0; IVC_SLOT_PAYLOAD_SIZE];
+        for sequence in 0..MESSAGES {
+            while pub_producer
+                .send(IvcMessageKind::Request, sequence, &payload)
+                .is_err()
+            {
+                thread::yield_now();
+            }
+            loop {
+                if let Some(message) = pub_consumer.try_recv(&mut received).unwrap() {
+                    assert_eq!(message.kind(), IvcMessageKind::Ack);
+                    assert_eq!(message.sequence(), sequence);
+                    break;
+                }
+                thread::yield_now();
+            }
+        }
+    });
+
+    let subscriber = thread::spawn(move || {
+        let payload = [0x5a; IVC_SLOT_PAYLOAD_SIZE];
+        let mut received = [0; IVC_SLOT_PAYLOAD_SIZE];
+        for sequence in 0..MESSAGES {
+            loop {
+                if let Some(message) = sub_consumer.try_recv(&mut received).unwrap() {
+                    assert_eq!(message.kind(), IvcMessageKind::Request);
+                    assert_eq!(message.sequence(), sequence);
+                    break;
+                }
+                thread::yield_now();
+            }
+            while sub_producer
+                .send(IvcMessageKind::Ack, sequence, &payload)
+                .is_err()
+            {
+                thread::yield_now();
+            }
+        }
+    });
+
+    publisher.join().expect("publisher thread panicked");
+    subscriber.join().expect("subscriber thread panicked");
+    assert!(region.channel_header_matches(PUBLISHER_VM_ID, CHANNEL_KEY));
+    assert!(region.protocol_header_matches());
+}
+
+#[test]
 fn send_rejects_payload_larger_than_one_slot() {
     let mut region = new_region(PUBLISHER_VM_ID, CHANNEL_KEY);
     region.initialize();

@@ -1,0 +1,11 @@
+error[E0200]: the trait `Interface` requires an `unsafe impl` declaration
+ --> tests/ui/impl_missing_unsafe.rs:5:1
+  |
+5 | impl Interface for Provider { fn read() {} }
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: the trait `Interface` enforces invariants that the compiler can't check. Review the trait documentation and make sure this implementation upholds those invariants before adding the `unsafe` keyword
+help: add `unsafe` to this trait implementation
+  |
+5 | unsafe impl Interface for Provider { fn read() {} }
+  | ++++++

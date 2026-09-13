@@ -1,6 +1,8 @@
 //! vCPU CPU-interface lifecycle binding.
 
-use super::{GicV3Controller, state::DeliveryRetirement};
+use ax_sync::SpinLockIrqSaveGuard;
+
+use super::{ControllerState, GicV3Controller, state::DeliveryRetirement};
 use crate::{CpuInterfaceState, GicVcpuId, IntId, VgicError, VgicResult, backend_result};
 
 /// Per-vCPU lifecycle handle returned by [`GicV3Controller::attach_vcpu`].
@@ -25,7 +27,7 @@ impl core::fmt::Debug for GicV3VcpuBinding {
 
 impl Drop for GicV3VcpuBinding {
     fn drop(&mut self) {
-        let mut state = self.controller.inner.state.lock_irqsave();
+        let mut state = self.controller_state();
         state.active_vcpus.remove(&self.vcpu);
         state.redistributors.remove(&self.vcpu);
     }
@@ -41,10 +43,14 @@ impl GicV3VcpuBinding {
         self.vcpu
     }
 
+    fn controller_state(&self) -> SpinLockIrqSaveGuard<'_, ControllerState> {
+        self.controller.inner.state.lock_irqsave()
+    }
+
     /// Restores ICH state and refills empty LRs.
     pub fn load(&self) -> VgicResult {
         let state = {
-            let mut controller = self.controller.inner.state.lock_irqsave();
+            let mut controller = self.controller_state();
             controller.redistributor(self.vcpu, "load CPU interface")?;
             if !controller.active_vcpus.insert(self.vcpu) {
                 return Err(VgicError::ResourceConflict {
@@ -68,7 +74,7 @@ impl GicV3VcpuBinding {
                 .backend
                 .load_cpu_interface(self.vcpu, &state),
         ) {
-            let mut controller = self.controller.inner.state.lock_irqsave();
+            let mut controller = self.controller_state();
             let rollback = controller.rollback_cpu_interface_load(self.vcpu);
             controller.active_vcpus.remove(&self.vcpu);
             rollback?;
@@ -92,12 +98,7 @@ impl GicV3VcpuBinding {
                 .and_then(|retirements| self.apply_retirements(retirements)),
             Err(error) => Err(error),
         };
-        self.controller
-            .inner
-            .state
-            .lock()
-            .active_vcpus
-            .remove(&self.vcpu);
+        self.controller_state().active_vcpus.remove(&self.vcpu);
         merge_result
     }
 
@@ -128,7 +129,7 @@ impl GicV3VcpuBinding {
     /// delivery is software-owned or backed by an assigned physical IRQ.
     pub fn deactivate(&self, intid: IntId) -> VgicResult {
         let mut saved = {
-            let controller = self.controller.inner.state.lock_irqsave();
+            let controller = self.controller_state();
             if !controller.active_vcpus.contains(&self.vcpu) {
                 return Err(VgicError::InvalidStateTransition {
                     intid,
@@ -153,7 +154,7 @@ impl GicV3VcpuBinding {
         )?;
 
         let (retirements, state) = {
-            let mut controller = self.controller.inner.state.lock_irqsave();
+            let mut controller = self.controller_state();
             let mut retirements = controller.merge_cpu_interface(self.vcpu, saved, false)?;
             if let Some(retirement) = controller.deactivate_interrupt(self.vcpu, intid)? {
                 retirements.push(retirement);
@@ -173,7 +174,7 @@ impl GicV3VcpuBinding {
     /// Applies a trapped DIR after the run loop has already saved ICH state.
     pub fn deactivate_saved(&self, intid: IntId) -> VgicResult {
         let retirements = {
-            let mut controller = self.controller.inner.state.lock_irqsave();
+            let mut controller = self.controller_state();
             if controller.active_vcpus.contains(&self.vcpu) {
                 return Err(VgicError::InvalidStateTransition {
                     intid,
@@ -199,10 +200,7 @@ impl GicV3VcpuBinding {
     /// Reads the common guest ICC control register from saved state.
     pub fn read_icc_control(&self) -> VgicResult<u64> {
         Ok(self
-            .controller
-            .inner
-            .state
-            .lock()
+            .controller_state()
             .redistributor(self.vcpu, "read ICC_CTLR_EL1")?
             .cpu_interface()
             .icc_control())
@@ -210,10 +208,7 @@ impl GicV3VcpuBinding {
 
     /// Writes the common guest ICC control register in saved state.
     pub fn write_icc_control(&self, value: u64) -> VgicResult {
-        self.controller
-            .inner
-            .state
-            .lock()
+        self.controller_state()
             .redistributor_mut(self.vcpu, "write ICC_CTLR_EL1")?
             .cpu_interface_mut()
             .set_icc_control(value);
@@ -223,10 +218,7 @@ impl GicV3VcpuBinding {
     /// Reads the guest virtual priority mask from saved state.
     pub fn read_icc_priority_mask(&self) -> VgicResult<u64> {
         Ok(u64::from(
-            self.controller
-                .inner
-                .state
-                .lock()
+            self.controller_state()
                 .redistributor(self.vcpu, "read ICC_PMR_EL1")?
                 .cpu_interface()
                 .icc_priority_mask(),
@@ -235,10 +227,7 @@ impl GicV3VcpuBinding {
 
     /// Writes the guest virtual priority mask in saved state.
     pub fn write_icc_priority_mask(&self, value: u64) -> VgicResult {
-        self.controller
-            .inner
-            .state
-            .lock()
+        self.controller_state()
             .redistributor_mut(self.vcpu, "write ICC_PMR_EL1")?
             .cpu_interface_mut()
             .set_icc_priority_mask(value as u8);
@@ -248,10 +237,7 @@ impl GicV3VcpuBinding {
     /// Reads the virtual running priority from saved LR state.
     pub fn read_icc_running_priority(&self) -> VgicResult<u64> {
         Ok(u64::from(
-            self.controller
-                .inner
-                .state
-                .lock()
+            self.controller_state()
                 .redistributor(self.vcpu, "read ICC_RPR_EL1")?
                 .cpu_interface()
                 .icc_running_priority()
@@ -262,10 +248,7 @@ impl GicV3VcpuBinding {
     /// Returns a snapshot useful to checked architecture adapters and tests.
     pub fn cpu_interface_snapshot(&self) -> VgicResult<CpuInterfaceState> {
         Ok(self
-            .controller
-            .inner
-            .state
-            .lock()
+            .controller_state()
             .redistributor(self.vcpu, "snapshot CPU interface")?
             .cpu_interface()
             .clone())
@@ -281,10 +264,7 @@ impl GicV3VcpuBinding {
         saved: CpuInterfaceState,
         refill: bool,
     ) -> VgicResult<alloc::vec::Vec<DeliveryRetirement>> {
-        self.controller
-            .inner
-            .state
-            .lock()
+        self.controller_state()
             .merge_cpu_interface(self.vcpu, saved, refill)
     }
 
@@ -315,5 +295,51 @@ impl GicV3VcpuBinding {
             Some(error) => Err(error),
             None => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+
+    use super::*;
+    use crate::{
+        GicAffinity, GicV3Config, GicV3MmioRegion, GicV3SpiOwnership, SoftwareGicV3Backend,
+    };
+
+    struct NoopWake;
+
+    impl crate::GicV3VcpuWake for NoopWake {
+        fn wake(&self) -> VgicResult {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn controller_state_access_requires_irq_save_guard() {
+        let config = GicV3Config::new(
+            GicV3SpiOwnership::AllGuestOwned,
+            GicV3MmioRegion::new(0x0800_0000, 0x1_0000).unwrap(),
+            GicV3MmioRegion::new(0x080a_0000, 0x2_0000).unwrap(),
+            0x2_0000,
+            1,
+        )
+        .unwrap();
+        let controller = GicV3Controller::new(config, Arc::new(SoftwareGicV3Backend)).unwrap();
+        let binding = controller
+            .attach_vcpu(
+                GicVcpuId::new(0),
+                GicAffinity::new(0, 0, 0, 0),
+                Arc::new(NoopWake),
+            )
+            .unwrap();
+
+        let guard = binding.controller_state();
+        let irq_state = ax_sync::irq_save_and_disable();
+        // SAFETY: `irq_state` is restored exactly once on the same test thread.
+        unsafe { ax_sync::irq_restore(irq_state) };
+        drop(guard);
+
+        assert_eq!(irq_state, 0, "controller state access left IRQs enabled");
     }
 }

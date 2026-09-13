@@ -26,6 +26,30 @@ const LSR_DATA_READY: u8 = 1 << 0;
 const LSR_OVERRUN_ERROR: u8 = 1 << 1;
 const LSR_RX_ERROR_MASK: u8 = 0x1e;
 
+fn decode_irq_events(iir: u8, lsr: u8) -> u32 {
+    if iir & IIR_NO_INTERRUPT_PENDING != 0 {
+        return 0;
+    }
+
+    let mut events = match iir & IIR_INTERRUPT_ID_MASK {
+        IIR_RECEIVED_DATA_AVAILABLE | IIR_CHARACTER_TIMEOUT => crate::console::CONSOLE_IRQ_RX_READY,
+        IIR_RECEIVER_LINE_STATUS => crate::console::CONSOLE_IRQ_RX_ERROR,
+        _ => return 0,
+    };
+
+    if lsr & LSR_DATA_READY != 0 {
+        events |= crate::console::CONSOLE_IRQ_RX_READY;
+    }
+    if lsr & LSR_OVERRUN_ERROR != 0 {
+        events |= crate::console::CONSOLE_IRQ_OVERRUN;
+    }
+    if lsr & LSR_RX_ERROR_MASK != 0 {
+        events |= crate::console::CONSOLE_IRQ_RX_ERROR;
+    }
+
+    events
+}
+
 impl crate::console::ArchConsoleOps for Console {
     fn init() -> bool {
         // someboot runs before the normal allocator is available, so the early
@@ -82,30 +106,33 @@ impl crate::console::ArchConsoleOps for Console {
     fn handle_irq() -> u32 {
         let iir = unsafe { x86::io::inb(COM1_PORT + UART_IIR) };
         let lsr = unsafe { x86::io::inb(COM1_PORT + UART_LSR) };
-        let mut events = 0;
+        decode_irq_events(iir, lsr)
+    }
+}
 
-        if lsr & LSR_DATA_READY != 0 {
-            events |= crate::console::CONSOLE_IRQ_RX_READY;
-        }
-        if lsr & LSR_OVERRUN_ERROR != 0 {
-            events |= crate::console::CONSOLE_IRQ_OVERRUN;
-        }
-        if lsr & LSR_RX_ERROR_MASK != 0 {
-            events |= crate::console::CONSOLE_IRQ_RX_ERROR;
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        if iir & IIR_NO_INTERRUPT_PENDING == 0 {
-            match iir & IIR_INTERRUPT_ID_MASK {
-                IIR_RECEIVED_DATA_AVAILABLE | IIR_CHARACTER_TIMEOUT => {
-                    events |= crate::console::CONSOLE_IRQ_RX_READY;
-                }
-                IIR_RECEIVER_LINE_STATUS => {
-                    events |= crate::console::CONSOLE_IRQ_RX_ERROR;
-                }
-                _ => {}
-            }
-        }
+    #[test]
+    fn no_pending_interrupt_does_not_claim_a_shared_irq() {
+        assert_eq!(decode_irq_events(0xff, 0xff), 0);
+    }
 
-        events
+    #[test]
+    fn receive_interrupt_reports_data_and_line_status() {
+        assert_eq!(
+            decode_irq_events(IIR_RECEIVED_DATA_AVAILABLE, LSR_DATA_READY),
+            crate::console::CONSOLE_IRQ_RX_READY
+        );
+        assert_eq!(
+            decode_irq_events(IIR_RECEIVER_LINE_STATUS, LSR_OVERRUN_ERROR),
+            crate::console::CONSOLE_IRQ_RX_ERROR | crate::console::CONSOLE_IRQ_OVERRUN
+        );
+    }
+
+    #[test]
+    fn unrelated_interrupt_id_does_not_claim_a_shared_irq() {
+        assert_eq!(decode_irq_events(0x02, 0xff), 0);
     }
 }

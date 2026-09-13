@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/rockchip-jpeg-v0.1.6...rockchip-jpeg-v0.2.0) - 2026-09-09
+
+### Fixed
+
+- *(jpeg)* validate MPP DMA ranges against imported dma-bufs ([#2289](https://github.com/rcore-os/tgoskits/pull/2289))
+
+### Other
+
+- *(repo)* remove duplicated tests and configuration snapshots ([#2326](https://github.com/rcore-os/tgoskits/pull/2326))
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+
+## [0.1.6](https://github.com/rcore-os/tgoskits/compare/rockchip-jpeg-v0.1.5...rockchip-jpeg-v0.1.6) - 2026-08-20
+
+### Other
+
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+
 ## [0.1.5](https://github.com/rcore-os/tgoskits/compare/rockchip-jpeg-v0.1.4...rockchip-jpeg-v0.1.5) - 2026-08-09
 
 ### Other

@@ -18,7 +18,7 @@ pub(crate) fn publish_before_fatal_stop_release<T>(
     publication
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use core::cell::Cell;
 

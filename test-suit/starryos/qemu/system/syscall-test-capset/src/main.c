@@ -61,6 +61,16 @@
 #ifndef PR_CAP_AMBIENT_CLEAR_ALL
 #define PR_CAP_AMBIENT_CLEAR_ALL 4
 #endif
+#ifndef PR_GET_SECUREBITS
+#define PR_GET_SECUREBITS 27
+#endif
+#ifndef PR_SET_SECUREBITS
+#define PR_SET_SECUREBITS 28
+#endif
+#define SECBIT_NOROOT (1U << 0)
+#define SECBIT_NOROOT_LOCKED (1U << 1)
+#define SECBIT_NO_SETUID_FIXUP (1U << 2)
+#define SECBIT_KEEP_CAPS (1U << 4)
 
 typedef uint32_t __u32;
 struct __user_cap_header_struct {
@@ -208,6 +218,38 @@ static void ambient_cap_child(void)
     child_expect(prctl_raw(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, CAP_CHOWN,
                            0, 0) == 0,
                  "ambient CAP_CHOWN is clear after clear-all");
+}
+
+static void securebits_child(void)
+{
+    const unsigned long requested = SECBIT_NO_SETUID_FIXUP | SECBIT_KEEP_CAPS;
+
+    errno = 0;
+    child_expect(prctl_raw(PR_GET_SECUREBITS, 0, 0, 0, 0) == 0,
+                 "securebits start clear");
+
+    errno = 0;
+    child_expect(prctl_raw(PR_SET_SECUREBITS, requested, 0, 0, 0) == 0,
+                 "set securebits used by service executors");
+    child_expect(prctl_raw(PR_GET_SECUREBITS, 0, 0, 0, 0) ==
+                     (long)requested,
+                 "get securebits returns the stored value");
+
+    errno = 0;
+    child_expect(prctl_raw(PR_SET_SECUREBITS, requested, 1, 2, 3) == 0,
+                 "set securebits ignores unused trailing arguments");
+
+    errno = 0;
+    child_expect(prctl_raw(PR_SET_SECUREBITS,
+                           requested | SECBIT_NOROOT |
+                               SECBIT_NOROOT_LOCKED,
+                           0, 0, 0) == 0,
+                 "set and lock a securebit");
+
+    errno = 0;
+    long ret = prctl_raw(PR_SET_SECUREBITS, requested, 0, 0, 0);
+    child_expect(ret == -1 && errno == EPERM,
+                 "locked securebit cannot be cleared");
 }
 
 static void setuid_clears_caps_child(void)
@@ -606,6 +648,15 @@ int main(void)
         printf("\n--- C3. setuid clears capabilities (child isolated) ---\n");
         expect_child_success(setuid_clears_caps_child,
                              "C3: setuid(1000) clears permitted/effective caps");
+    }
+
+    /* ============================================================== */
+    /* C4. prctl securebits state and locking                           */
+    /* ============================================================== */
+    {
+        printf("\n--- C4. PR_GET/SET_SECUREBITS (child isolated) ---\n");
+        expect_child_success(securebits_child,
+                             "C4: securebits set/get/lock semantics");
     }
 
     if (__fail == 0) {

@@ -115,6 +115,12 @@ Axvisor 是基于 ArceOS 的统一组件化 Type-I Hypervisor，建立在 ArceOS
 
 → 详细设计见 [网络栈架构](./net/overview)
 
+## 文件系统架构
+
+文件系统由 `axfs-ng-vfs` 和 `ax-fs-ng` 共同组成。前者维护节点、目录项、路径位置和 namespace-local mount topology，后者提供文件句柄、页缓存、ext4/FAT、卷扫描、根盘选择以及 IRQ 驱动的多队列块运行时。ArceOS 注入页、DMA、IRQ、任务和时间能力，StarryOS 在公共 VFS 之上实现 Linux 文件 syscall 与伪文件系统。
+
+→ 详细设计见 [文件系统架构](./fs/overview)
+
 ## 核心层次
 
 TGOSKits 按职责将 crate 组织为七个核心层次和一个辅助层，每一层都面向明确的职责边界。上层依赖下层，但下层不感知上层——这一原则使得同一套组件可以同时服务于多个系统。

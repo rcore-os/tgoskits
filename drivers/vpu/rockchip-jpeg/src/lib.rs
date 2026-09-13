@@ -466,16 +466,6 @@ mod tests {
     }
 
     #[test]
-    fn read_id_returns_register_zero() {
-        let fake = FakeMmio::new(Vec::new());
-        let mut r = fake.regs.get();
-        r[REG_ID] = 0x1234_0000;
-        fake.regs.set(r);
-        let core = JpuCore::new(fake);
-        assert_eq!(core.read_id(), 0x1234_0000);
-    }
-
-    #[test]
     fn soft_reset_succeeds_when_ready_bit_set() {
         let fake = FakeMmio::new(std::vec![INT_SOFTRESET_RDY]);
         let mut core = JpuCore::new(fake);

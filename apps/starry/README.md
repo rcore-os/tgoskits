@@ -46,6 +46,21 @@ cargo xtask starry app board -t iperf3 -b OrangePi-5-Plus
 
 See `iperf3/README.md` for the fixed T01--T07 profile.
 
+## AArch64 Linux perf
+
+`linux-perf` 应用在 AArch64 QEMU 和 OrangePi 5 Plus 的 StarryOS 客户机内运行
+Alpine 上游 `perf 6.19.14`，验证 `perf_event_open`、采样 ring、用户 FP 调用链、
+system-wide record，以及实体板卡的 PMUv3 事件。宿主机的 `tools/qperf` 则分析
+QEMU translation blocks，两者的计数来源和验收目标不同。
+
+```bash
+cargo xtask starry app qemu -t linux-perf --arch aarch64
+cargo xtask starry app board -t linux-perf -b OrangePi-5-Plus
+```
+
+锁定的 Alpine 依赖闭包及 QEMU、实体板卡各自的验收边界见
+`linux-perf/README.md`。
+
 ## Resource Monitor
 
 The `resource-monitor` case provides an offline user-space collector and a static
@@ -96,7 +111,7 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
   cargo xtask starry app qemu -t k230-kpu-nncase --arch riscv64
 ```
 
-See `k230-kpu-nncase/README.md` and `docs/docs/architecture/driver/k230-kpu-nncase-runtime.md` for the
+See `k230-kpu-nncase/README.md` and `docs/docs/runtime/k230-kpu-nncase-runtime.md` for the
 asset preparation flow.
 
 ## macOS AArch64 Self-Build
@@ -115,7 +130,7 @@ qemu-system-aarch64 \
   -m 512M \
   -smp 1 \
   -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 \
-  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
+  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
   -netdev user,id=net0
 ```

@@ -6,9 +6,8 @@ use sg200x_bsp::soc::TOP_BASE;
 use sg200x_jpu::{
     FrameLayout, FrameLayoutError, JpuCreateError, JpuDecodeError, JpuDecoder, JpuMmio, JpuScale,
 };
-use starry_vm::vm_write_slice;
 
-use crate::{StarryError, StarryResult, sync::Mutex};
+use crate::{StarryError, StarryResult, mm::vm_write_slice, sync::Mutex, task::UserTaskRef};
 
 const JPU_REG_BASE: usize = 0x0b00_0000;
 const VC_REG_BASE: usize = 0x0b03_0000;
@@ -65,21 +64,22 @@ impl CviJpu {
         self.state.lock().vdec_owned = false;
     }
 
-    pub fn decode_camera_to_user(&self, jpeg: &[u8], destination: *mut u8) -> StarryResult<usize> {
-        let yuv_data = {
-            let mut state = self.state.lock();
-            if state.vdec_owned {
-                return Err(StarryError::ResourceBusy);
-            }
-            state
-                .decoder()?
-                .decode(jpeg)
-                .map_err(|error| map_decode_error(&error))?
-                .yuv_data
-                .to_vec()
-        };
-        vm_write_slice(destination, &yuv_data)?;
-        Ok(yuv_data.len())
+    pub fn decode_camera_to_user(
+        &self,
+        current: &UserTaskRef,
+        jpeg: &[u8],
+        destination: *mut u8,
+    ) -> StarryResult<usize> {
+        let mut state = self.state.lock();
+        if state.vdec_owned {
+            return Err(crate::StarryError::ResourceBusy);
+        }
+        let result = state
+            .decoder()?
+            .decode(jpeg)
+            .map_err(|error| map_decode_error(&error))?;
+        vm_write_slice(current, destination, result.yuv_data)?;
+        Ok(result.yuv_data.len())
     }
 
     pub fn decode_vdec(&self, jpeg: &[u8], scale: JpuScale) -> StarryResult<DecodedJpuFrame> {
@@ -129,7 +129,11 @@ fn create_decoder() -> StarryResult<JpuDecoder> {
         map_mmio(TOP_BASE, TOP_MMIO_SIZE)?,
         map_mmio(VC_REG_BASE, REG_MMIO_SIZE)?,
     );
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        dma_api::DmaCoherency::NonCoherent,
+        dma_api::DmaConstraints::new(u32::MAX as u64),
+    ));
     // SAFETY: the mappings above cover the documented JPU, TOP, and VC
     // register spans for the lifetime of this global service. `CviJpu` is the
     // sole accessor and serializes every decode through its mutex.

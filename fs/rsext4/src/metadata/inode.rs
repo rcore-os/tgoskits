@@ -5,7 +5,7 @@ use super::{
     time::{get_now, resolve_time_spec},
 };
 use crate::{
-    blockdev::{BlockDevice, Jbd2Dev},
+    blockdev::{BlockIo, Jbd2Dev},
     disknode::{Ext4Inode, Ext4Timestamp},
     error::{Ext4Error, Ext4Result},
     ext4::Ext4FileSystem,
@@ -70,7 +70,7 @@ impl Ext4FileSystem {
     /// The update order mirrors Linux-style setattr handling: grow extra inode
     /// space for requested fields, apply identity and mode changes, resolve
     /// timestamps lazily from the device clock, and finally maintain `i_dtime`.
-    pub(crate) fn apply_loaded_inode_metadata<B: BlockDevice>(
+    pub(crate) fn apply_loaded_inode_metadata<B: BlockIo>(
         &self,
         device: &Jbd2Dev<B>,
         inode: &mut Ext4Inode,
@@ -121,6 +121,10 @@ impl Ext4FileSystem {
         if let Some(projid) = update.projid {
             self.ensure_extra_isize_for_field(inode, Ext4Inode::FIELD_END_I_PROJID)?;
             inode.i_projid = projid;
+        }
+
+        if update.increment_version {
+            inode.increment_version(inode_size);
         }
 
         // Resolve `Now` only once even when multiple timestamps in the same update need it.

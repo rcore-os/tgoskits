@@ -1,12 +1,7 @@
-use core::arch::asm;
-
+use ax_cpu::paging::{DescriptorFlags, Pte};
 use num_align::NumAlign;
 use page_table_generic::{MapConfig, TableMeta, VirtAddr};
-use x86::{
-    controlregs::{self, Cr0, Cr4},
-    msr::{rdmsr, wrmsr},
-    tlb,
-};
+use x86::msr::rdmsr;
 
 use crate::{
     arch::addrspace::{KERNEL_BASE, PERCPU_BASE, PHYS_VIRT_OFFSET},
@@ -14,23 +9,10 @@ use crate::{
     mem::{__kimage_va, MemAttributes, PageTableInfo, PteConfig, cpu_area_phys_to_virt, page_size},
 };
 
-const IA32_EFER: u32 = 0xc000_0080;
-const IA32_EFER_NXE: u64 = 1 << 11;
-
-const PTE_PRESENT: u64 = 1 << 0;
-const PTE_WRITABLE: u64 = 1 << 1;
-const PTE_USER: u64 = 1 << 2;
-const PTE_WRITE_THROUGH: u64 = 1 << 3;
-const PTE_CACHE_DISABLE: u64 = 1 << 4;
-const PTE_ACCESSED: u64 = 1 << 5;
-const PTE_DIRTY: u64 = 1 << 6;
-const PTE_HUGE: u64 = 1 << 7;
-const PTE_GLOBAL: u64 = 1 << 8;
-const PTE_NO_EXECUTE: u64 = 1 << 63;
-const PTE_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
-
+/// Boot mapping policy over the CPU-owned native descriptor.
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Entry(u64);
+pub struct Entry(Pte);
 
 impl page_table_generic::PageTableEntry for Entry {
     type PteConfig = PteConfig;
@@ -40,75 +22,66 @@ impl page_table_generic::PageTableEntry for Entry {
         config: Self::PteConfig,
         is_huge: bool,
     ) -> Self {
-        let mut bits = (paddr.as_usize() as u64) & PTE_ADDR_MASK;
-        bits |= PTE_PRESENT;
-        if config.writable {
-            bits |= PTE_WRITABLE;
+        let mut flags = DescriptorFlags::PRESENT | DescriptorFlags::ACCESSED;
+        flags.set(DescriptorFlags::WRITABLE, config.writable);
+        flags.set(DescriptorFlags::USER, config.lower);
+        flags.set(DescriptorFlags::DIRTY, config.dirty);
+        flags.set(DescriptorFlags::GLOBAL, config.global);
+        flags.set(DescriptorFlags::HUGE_PAGE, is_huge);
+        if matches!(
+            config.mem_attr,
+            MemAttributes::Device | MemAttributes::Uncached
+        ) {
+            flags |= DescriptorFlags::NO_CACHE | DescriptorFlags::WRITE_THROUGH;
         }
-        if config.lower {
-            bits |= PTE_USER;
-        }
-        if config.dirty {
-            bits |= PTE_DIRTY;
-        }
-        if config.global {
-            bits |= PTE_GLOBAL;
-        }
-        if is_huge {
-            bits |= PTE_HUGE;
-        }
-        match config.mem_attr {
-            MemAttributes::Device | MemAttributes::Uncached => {
-                bits |= PTE_CACHE_DISABLE | PTE_WRITE_THROUGH;
-            }
-            _ => {}
-        }
-        if !config.executable {
-            bits |= PTE_NO_EXECUTE;
-        }
-        bits |= PTE_ACCESSED;
-        Self(bits)
+        flags.set(DescriptorFlags::NO_EXECUTE, !config.executable);
+        Self(Pte::from_parts(paddr, flags))
     }
 
     fn new_table(paddr: page_table_generic::PhysAddr) -> Self {
-        Self((paddr.as_usize() as u64 & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_ACCESSED)
+        Self(Pte::from_parts(
+            paddr,
+            DescriptorFlags::PRESENT | DescriptorFlags::WRITABLE | DescriptorFlags::ACCESSED,
+        ))
     }
 
-    fn paddr(&self, _is_dir: bool) -> page_table_generic::PhysAddr {
-        ((self.0 & PTE_ADDR_MASK) as usize).into()
+    fn paddr(&self, is_dir: bool) -> page_table_generic::PhysAddr {
+        self.0.paddr(is_dir)
     }
 
     fn config(&self, _is_dir: bool) -> Self::PteConfig {
-        let mem_attr = if (self.0 & (PTE_CACHE_DISABLE | PTE_WRITE_THROUGH)) != 0 {
-            MemAttributes::Device
-        } else {
-            MemAttributes::Normal
-        };
+        let flags = self.0.flags();
+        let mem_attr =
+            if flags.intersects(DescriptorFlags::NO_CACHE | DescriptorFlags::WRITE_THROUGH) {
+                MemAttributes::Device
+            } else {
+                MemAttributes::Normal
+            };
         PteConfig {
-            read: (self.0 & PTE_PRESENT) != 0,
-            writable: (self.0 & PTE_WRITABLE) != 0,
-            executable: (self.0 & PTE_NO_EXECUTE) == 0,
-            lower: (self.0 & PTE_USER) != 0,
-            dirty: (self.0 & PTE_DIRTY) != 0,
-            global: (self.0 & PTE_GLOBAL) != 0,
+            read: flags.contains(DescriptorFlags::PRESENT),
+            writable: flags.contains(DescriptorFlags::WRITABLE),
+            executable: !flags.contains(DescriptorFlags::NO_EXECUTE),
+            lower: flags.contains(DescriptorFlags::USER),
+            dirty: flags.contains(DescriptorFlags::DIRTY),
+            global: flags.contains(DescriptorFlags::GLOBAL),
             mem_attr,
         }
     }
 
     fn present(&self) -> bool {
-        (self.0 & PTE_PRESENT) != 0
+        self.0.present()
     }
 
     fn huge(&self, is_dir: bool) -> bool {
-        is_dir && (self.0 & PTE_HUGE) != 0
+        self.0.huge(is_dir)
     }
 
     fn unused(&self) -> bool {
-        self.0 == 0
+        self.0.unused()
     }
 
     fn clear(&mut self) {
-        self.0 = 0;
+        self.0.clear();
     }
 }
 
@@ -123,13 +96,7 @@ impl TableMeta for Generic {
     const MAX_BLOCK_LEVEL: usize = 2;
 
     fn flush(vaddr: Option<VirtAddr>) {
-        unsafe {
-            if let Some(vaddr) = vaddr {
-                tlb::flush(vaddr.as_usize());
-            } else {
-                tlb::flush_all();
-            }
-        }
+        ax_cpu::mmu::flush_tlb(vaddr);
     }
 }
 
@@ -145,15 +112,8 @@ pub fn enable_mmu() -> ! {
 
     super::relocate::reset();
 
-    unsafe {
-        asm!(
-            "mov rsp, {sp}",
-            "jmp {entry}",
-            sp = in(reg) v_sp,
-            entry = in(reg) v_entry,
-            options(noreturn)
-        );
-    }
+    // SAFETY: the final high-half mapping and reserved primary stack are live.
+    unsafe { ax_cpu::boot::jump_to(v_entry, v_sp) }
 }
 
 fn setup_page_table() -> anyhow::Result<()> {
@@ -323,27 +283,12 @@ fn setup_page_table() -> anyhow::Result<()> {
     crate::mem::mmu::set_boot_table(table);
     // The boot page tables contain NX leaf mappings. Enable NXE before
     // loading them, otherwise x86_64 treats the NX bit as reserved.
-    enable_no_execute();
+    // SAFETY: early CPL0 boot owns NX-capable page tables.
+    unsafe { ax_cpu::boot::enable_execute_disable() };
     super::trap::set_cr3(root);
-    enable_page_features();
+    // SAFETY: the new boot tables are installed before tasks or IRQs exist.
+    unsafe { ax_cpu::boot::configure_paging() };
     Ok(())
-}
-
-fn enable_no_execute() {
-    unsafe {
-        let efer = rdmsr(IA32_EFER) | IA32_EFER_NXE;
-        wrmsr(IA32_EFER, efer);
-    }
-}
-
-fn enable_page_features() {
-    unsafe {
-        let cr0 = controlregs::cr0() | Cr0::CR0_WRITE_PROTECT;
-        controlregs::cr0_write(cr0);
-
-        let cr4 = controlregs::cr4() | Cr4::CR4_ENABLE_GLOBAL_PAGES;
-        controlregs::cr4_write(cr4);
-    }
 }
 
 pub fn current_table() -> PageTableInfo {

@@ -65,6 +65,10 @@ impl PlatOp for Plat {
         gic_irq_id(HwIrq(raw as u32))
     }
 
+    fn acknowledge_ipi(active: &mut Self::ActiveIrq) {
+        active.acknowledge_ipi();
+    }
+
     fn systick_irq() -> IrqId {
         systick::systick_irq()
     }

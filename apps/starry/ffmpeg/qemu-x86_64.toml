@@ -17,9 +17,6 @@ args = [
 ]
 uefi = false
 to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/test_ffmpeg.sh"
-success_regex = ["(?m)^={2,}\\s*ALL FFMPEG TESTS PASSED\\s*={2,}\\s*$"]
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",
     "(?m)^FFMPEG_SMOKE_TEST_FAILED\\s*$",
@@ -29,3 +26,8 @@ fail_regex = [
     "(?m)^FFMPEG_NETWORK_TEST_FAILED\\s*$",
 ]
 timeout = 3600
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/test_ffmpeg.sh"
+success_regex = ["(?m)^={2,}\\s*ALL FFMPEG TESTS PASSED\\s*={2,}\\s*$"]

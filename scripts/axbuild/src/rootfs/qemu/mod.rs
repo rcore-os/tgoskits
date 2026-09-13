@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::bail;
 use args::{DeviceArg, DriveArg};
+use clap::ValueEnum;
 use ostool::run::qemu::QemuConfig;
 use serde::Deserialize;
 
@@ -16,10 +17,6 @@ const DEFAULT_ROOTFS_WIRING: RootfsQemuWiring = RootfsQemuWiring {
     disk_id: "disk0",
     default_block_device: "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     netdev_id: "net0",
-    net_devices: &[
-        "virtio-net-pci,netdev=net0",
-        "virtio-net-device,netdev=net0",
-    ],
     default_net_device: "virtio-net-pci,netdev=net0",
 };
 
@@ -28,7 +25,6 @@ struct RootfsQemuWiring {
     disk_id: &'static str,
     default_block_device: &'static str,
     netdev_id: &'static str,
-    net_devices: &'static [&'static str],
     default_net_device: &'static str,
 }
 
@@ -44,7 +40,7 @@ impl RootfsQemuWiring {
     }
 
     fn net_device_matches(self, value: &str) -> bool {
-        self.net_devices.contains(&value)
+        DeviceArg::parse(value).netdev() == Some(self.netdev_id)
     }
 
     fn netdev_arg(self) -> String {
@@ -67,10 +63,10 @@ pub(crate) enum RootfsPatchMode {
     EnsureDiskBootNet,
 }
 
-/// Controls whether writes to the selected managed rootfs survive QEMU exit.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+/// Controls whether writes to the selected rootfs survive QEMU exit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum RootfsWritePolicy {
+pub enum RootfsWritePolicy {
     /// Keep all guest writes in a temporary per-drive snapshot.
     #[default]
     Discard,

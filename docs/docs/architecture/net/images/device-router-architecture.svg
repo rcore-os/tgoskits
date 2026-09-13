@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 650" role="img" aria-labelledby="title desc">
+  <title id="title">Router 与设备工作线程架构</title>
+  <desc id="desc">Service 将 Router 作为唯一 smoltcp Device；Router 拥有协议侧缓冲区和设备句柄，通过共享 RX 队列、每设备 TX 队列及独立工作线程连接 loopback 和以太网驱动。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#50657d"/></marker>
+    <style>
+      .panel{fill:#f8fafc;stroke:#91a0b2;stroke-width:2}.service{fill:#eaf8ef;stroke:#398a55;stroke-width:2}
+      .router{fill:#eaf3ff;stroke:#3478c0;stroke-width:2}.queue{fill:#fff4df;stroke:#c98216;stroke-width:2}
+      .worker{fill:#e9f7f8;stroke:#2b8792;stroke-width:2}.device{fill:#fff0f0;stroke:#bf5555;stroke-width:2}
+      .title{font:700 24px sans-serif;fill:#213247}.heading{font:700 18px sans-serif;fill:#31465f}
+      .text{font:600 15px sans-serif;fill:#26384d}.small{font:14px sans-serif;fill:#455a72}
+      .edge{fill:none;stroke:#50657d;stroke-width:2.1;marker-end:url(#arrow)}
+      .wake{fill:none;stroke:#7457b6;stroke-width:2.1;stroke-dasharray:7 5;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <text class="title" x="35" y="40">Router 隔离协议核心与并行设备 I/O</text>
+  <rect class="service" x="370" y="70" width="500" height="75" rx="14"/>
+  <text class="text" x="526" y="101">Service::poll()</text><text class="small" x="472" y="125">smoltcp Interface + SocketSet（串行）</text>
+
+  <rect class="panel" x="45" y="180" width="1150" height="210" rx="18"/>
+  <text class="heading" x="70" y="212">Router：smoltcp::phy::Device</text>
+  <rect class="router" x="85" y="240" width="205" height="100" rx="12"/>
+  <text class="text" x="145" y="270">rx_buffer</text><text class="small" x="112" y="296">smoltcp-facing IP packet</text><text class="small" x="124" y="319">metadata 在 drain 时构造</text>
+  <rect class="router" x="330" y="240" width="205" height="100" rx="12"/>
+  <text class="text" x="390" y="270">tx_buffer</text><text class="small" x="357" y="296">smoltcp 生成的 IP packet</text><text class="small" x="370" y="319">dispatch 后选择设备</text>
+  <rect class="router" x="575" y="240" width="205" height="100" rx="12"/>
+  <text class="text" x="618" y="270">SharedRouteTable</text><text class="small" x="608" y="296">目标 + 源地址 + metric</text><text class="small" x="625" y="319">共享控制面快照</text>
+  <rect class="router" x="820" y="240" width="330" height="100" rx="12"/>
+  <text class="text" x="925" y="270">DeviceHandle[]</text><text class="small" x="860" y="296">loopback / EthernetDevice / worker state</text><text class="small" x="880" y="319">每设备 TX queue，共享 RX queue</text>
+
+  <rect class="panel" x="45" y="425" width="1150" height="185" rx="18"/>
+  <text class="heading" x="70" y="457">设备运行时</text>
+  <rect class="device" x="85" y="485" width="205" height="82" rx="12"/>
+  <text class="text" x="128" y="517">LoopbackDevice</text><text class="small" x="119" y="542">直接回注 rx_buffer</text>
+  <rect class="worker" x="330" y="485" width="205" height="82" rx="12"/>
+  <text class="text" x="368" y="517">device RX worker</text><text class="small" x="365" y="542">batch 16 + 10 ms fallback</text>
+  <rect class="queue" x="575" y="485" width="205" height="82" rx="12"/>
+  <text class="text" x="621" y="517">bounded queues</text><text class="small" x="606" y="542">shared RX / per-device TX</text>
+  <rect class="worker" x="820" y="485" width="155" height="82" rx="12"/>
+  <text class="text" x="842" y="517">TX worker</text><text class="small" x="843" y="542">drain + retry</text>
+  <rect class="device" x="1015" y="485" width="145" height="82" rx="12"/>
+  <text class="text" x="1032" y="517">Ethernet / NIC</text><text class="small" x="1038" y="542">ARP · IRQ · DMA</text>
+
+  <path class="edge" d="M620 145 V180"/><path class="edge" d="M535 290 H575"/>
+  <path class="edge" d="M290 290 H330"/><path class="edge" d="M985 340 V405 H187 V485"/>
+  <path class="edge" d="M1015 526 H975"/><path class="edge" d="M820 526 H780"/>
+  <path class="edge" d="M575 526 H535"/><path class="edge" d="M432 485 V410 H187 V340"/>
+  <path class="edge" d="M677 485 V410 H432 V340"/>
+  <path class="wake" d="M1087 485 V400 H1125 V340"/>
+  <text class="small" x="1025" y="397">IRQ/OOB 只唤醒</text>
+</svg>

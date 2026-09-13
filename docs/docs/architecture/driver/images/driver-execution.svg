@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" role="img" aria-labelledby="title desc">
+<title id="title">驱动事件与运行时：并列的执行合同</title>
+<desc id="desc">各卡片表示实际领域模型，不存在统一替代所有实现的 poll group 或工作线程。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#2563eb"/></marker></defs>
+<rect width="1200" height="900" rx="16" fill="#f8fafc"/>
+<g font-family="Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+<text x="40" y="49" font-size="26" font-weight="700" fill="#0f172a">驱动事件与运行时：并列的执行合同</text>
+<text x="40" y="80" font-size="15" fill="#475569">各卡片表示实际领域模型，不存在统一替代所有实现的 poll group 或工作线程。</text>
+<rect x="40" y="110" width="340" height="140" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="141" font-size="19" font-weight="700" fill="#0f172a">调用输入</text>
+<text x="58" y="171" font-size="15" fill="#334155">配置、请求、字节、帧与连接</text>
+<text x="58" y="196" font-size="15" fill="#334155">消费者使用已交付能力</text>
+<text x="58" y="221" font-size="15" fill="#334155">不为每次操作重新枚举设备</text>
+<rect x="430" y="110" width="340" height="140" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="141" font-size="19" font-weight="700" fill="#0f172a">事件输入</text>
+<text x="448" y="171" font-size="15" fill="#334155">局部 source → BindingIrq</text>
+<text x="448" y="196" font-size="15" fill="#334155">域 IrqId → 已注册 callback</text>
+<text x="448" y="221" font-size="15" fill="#334155">事件内容由设备合同解释</text>
+<rect x="820" y="110" width="340" height="140" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="141" font-size="19" font-weight="700" fill="#0f172a">完成与可见性</text>
+<text x="838" y="171" font-size="15" fill="#334155">结果、latch、队列或 waker</text>
+<text x="838" y="196" font-size="15" fill="#334155">发布状态不等于请求终态</text>
+<text x="838" y="221" font-size="15" fill="#334155">等待、背压与释放分别处理</text>
+<rect x="40" y="345" width="340" height="165" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="376" font-size="19" font-weight="700" fill="#0f172a">块：控制器与 hctx</text>
+<text x="58" y="406" font-size="15" fill="#334155">HardIrqHandler ack → latch</text>
+<text x="58" y="431" font-size="15" fill="#334155">维护者 drain_completions</text>
+<text x="58" y="456" font-size="15" fill="#334155">批量接受前缀 → commit</text>
+<text x="58" y="481" font-size="15" fill="#334155">寄存器重试不轮询完成源</text>
+<rect x="430" y="345" width="340" height="165" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="376" font-size="19" font-weight="700" fill="#0f172a">串口：端点与 worker</text>
+<text x="448" y="406" font-size="15" fill="#334155">UartIrq 有界接收报告</text>
+<text x="448" y="431" font-size="15" fill="#334155">SerialWorker：RX / TX / 控制</text>
+<text x="448" y="456" font-size="15" fill="#334155">rearm 返回立即就绪的源</text>
+<text x="448" y="481" font-size="15" fill="#334155">紧急输出使用独立寄存器 gate</text>
+<rect x="820" y="345" width="340" height="165" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="376" font-size="19" font-weight="700" fill="#0f172a">USB：异步与事件环</text>
+<text x="838" y="406" font-size="15" fill="#334155">EventHandler 消费硬件事件</text>
+<text x="838" y="431" font-size="15" fill="#334155">命令完成 / 端点路由 / 端口变化</text>
+<text x="838" y="456" font-size="15" fill="#334155">Finished 与 TWaiter 唤醒任务</text>
+<text x="838" y="481" font-size="15" fill="#334155">事件状态使用锁，并非全无锁</text>
+<rect x="40" y="605" width="340" height="155" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="636" font-size="19" font-weight="700" fill="#0f172a">provider 与显示输入</text>
+<text x="58" y="666" font-size="15" fill="#334155">provider 按局部资源 ID 操作</text>
+<text x="58" y="691" font-size="15" fill="#334155">显示：framebuffer / flush</text>
+<text x="58" y="716" font-size="15" fill="#334155">输入：能力与事件读取</text>
+<text x="58" y="741" font-size="15" fill="#334155">是否轮询由实际消费策略决定</text>
+<rect x="430" y="605" width="340" height="155" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="636" font-size="19" font-weight="700" fill="#0f172a">网络：固定 CPU group</text>
+<text x="448" y="666" font-size="15" fill="#334155">硬 IRQ 发布目标组调度</text>
+<text x="448" y="691" font-size="15" fill="#334155">owner 按预算推进 TX / RX</text>
+<text x="448" y="716" font-size="15" fill="#334155">rearm 与驱动精确 deadline</text>
+<text x="448" y="741" font-size="15" fill="#334155">网络合同不允许 IRQ 轮询后备</text>
+<rect x="820" y="605" width="340" height="155" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="636" font-size="19" font-weight="700" fill="#0f172a">vsock 与服务消费</text>
+<text x="838" y="666" font-size="15" fill="#334155">CID / 连接 / 数据 / 事件</text>
+<text x="838" y="691" font-size="15" fill="#334155">独立于物理以太网队列</text>
+<text x="838" y="716" font-size="15" fill="#334155">上层消费领域可见状态</text>
+<text x="838" y="741" font-size="15" fill="#334155">关闭条件不能由一次 wake 代替</text>
+<text x="40" y="835" font-size="15" fill="#475569">上方表示执行输入与输出维度，下方六类为并列实现；它们不是串联调用步骤。</text>
+<text x="40" y="860" font-size="15" fill="#475569">公共边界：发布可用状态、保持明确所有者、按合同处理回调与等待者。</text>
+</g>
+</svg>

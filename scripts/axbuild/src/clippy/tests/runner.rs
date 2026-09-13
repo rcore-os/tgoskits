@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::common::FakeCargoRunner;
 use crate::clippy::{
-    check::{ClippyCheck, ClippyCheckKind, ClippyDepsMode},
+    check::{ClippyCheck, ClippyCheckKind},
     runner::run_clippy_checks,
 };
 
@@ -13,21 +13,18 @@ fn package_failures_abort_remaining_checks() {
         ClippyCheck {
             package: "alpha".into(),
             kind: ClippyCheckKind::Base,
-            deps_mode: ClippyDepsMode::NoDeps,
             target: None,
             env: Vec::new(),
         },
         ClippyCheck {
             package: "alpha".into(),
             kind: ClippyCheckKind::Feature("feat-a".into()),
-            deps_mode: ClippyDepsMode::NoDeps,
             target: None,
             env: Vec::new(),
         },
         ClippyCheck {
             package: "beta".into(),
             kind: ClippyCheckKind::Base,
-            deps_mode: ClippyDepsMode::NoDeps,
             target: None,
             env: Vec::new(),
         },
@@ -50,5 +47,36 @@ fn package_failures_abort_remaining_checks() {
             (root.clone(), checks[0].clone()),
             (root.clone(), checks[1].clone()),
         ]
+    );
+}
+
+#[test]
+fn aarch64_clippy_rejects_unapproved_current_future_incompat_report() {
+    let root = tempfile::tempdir().unwrap();
+    let check = ClippyCheck {
+        package: "starry-kernel".into(),
+        kind: ClippyCheckKind::Base,
+        target: Some("aarch64-unknown-none-softfloat".into()),
+        env: Vec::new(),
+    };
+    let report = serde_json::json!({
+        "version": 0,
+        "next_id": 2,
+        "reports": [{
+            "id": 1,
+            "suggestion_message": "other@1.0.0",
+            "per_package": {
+                "other@1.0.0": "unexpected diagnostic",
+            },
+        }],
+    });
+    let mut runner =
+        FakeCargoRunner::new(&[(check.clone(), true)]).with_future_incompat_report(report);
+
+    let error = run_clippy_checks(&mut runner, root.path(), &[check]).unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("unapproved future-incompatible package"),
+        "{error:#}"
     );
 }

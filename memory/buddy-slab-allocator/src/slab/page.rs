@@ -198,16 +198,30 @@ impl SlabPageHeader {
     /// - `owner_cpu` must match the slab header's owner CPU.
     /// - `page_size` must be the slab allocator's page size.
     pub unsafe fn remote_free_object(ptr: NonNull<u8>, owner_cpu: u16, page_size: usize) {
+        unsafe { Self::queue_remote_free(ptr, owner_cpu, page_size) };
+    }
+
+    /// Like [`Self::remote_free_object`], returning the size class the object
+    /// was queued into so the caller can announce it to the owner.
+    ///
+    /// # Safety
+    /// Same as [`Self::remote_free_object`].
+    pub(crate) unsafe fn queue_remote_free(
+        ptr: NonNull<u8>,
+        owner_cpu: u16,
+        page_size: usize,
+    ) -> Option<SizeClass> {
         let obj_addr = ptr.as_ptr() as usize;
         let Some(base) = Self::base_from_obj_addr_unknown_with_page_size(obj_addr, page_size)
         else {
             debug_assert!(false, "object address does not belong to a live slab");
-            return;
+            return None;
         };
         let hdr = unsafe { &*(base as *const SlabPageHeader) };
         debug_assert_eq!(hdr.magic, SLAB_MAGIC);
         debug_assert_eq!(hdr.owner_cpu, owner_cpu);
         unsafe { hdr.remote_free(obj_addr) };
+        Some(hdr.size_class)
     }
 
     // ------------------------------------------------------------------
@@ -328,38 +342,43 @@ impl SlabPageHeader {
     }
 }
 
-#[cfg(axtest)]
-pub(crate) fn slab_page_constants_and_header_helpers_hold_for_test() -> bool {
-    // Test constants
-    assert!(SLAB_MAGIC == 0x534C_4142);
-    assert!(MAX_OBJECTS_PER_SLAB == 512);
-    assert!(BITMAP_WORDS == 8);
-    assert!(MAX_SLAB_PAGES == 4);
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
 
-    // Test SlabListState variants
-    use core::mem::size_of;
-    assert!(size_of::<SlabListState>() > 0);
+    fn slab_page_constants_and_header_helpers_hold_for_test() -> bool {
+        const {
+            assert!(SLAB_MAGIC == 0x534C_4142);
+            assert!(MAX_OBJECTS_PER_SLAB == 512);
+            assert!(BITMAP_WORDS == 8);
+            assert!(MAX_SLAB_PAGES == 4);
+            assert!(core::mem::size_of::<SlabListState>() > 0);
+            assert!(SlabPageHeader::HEADER_SIZE > 0);
+        }
 
-    // Test HEADER_SIZE is non-zero
-    assert!(SlabPageHeader::HEADER_SIZE > 0);
+        // Test data_offset with various sizes (must be power of 2)
+        // For size=16, offset should be aligned up to 16
+        let offset_16 = SlabPageHeader::data_offset(16);
+        assert!(offset_16.is_multiple_of(16));
+        assert!(offset_16 >= SlabPageHeader::HEADER_SIZE);
 
-    // Test data_offset with various sizes (must be power of 2)
-    // For size=16, offset should be aligned up to 16
-    let offset_16 = SlabPageHeader::data_offset(16);
-    assert!(offset_16 % 16 == 0);
-    assert!(offset_16 >= SlabPageHeader::HEADER_SIZE);
+        let offset_32 = SlabPageHeader::data_offset(32);
+        assert!(offset_32.is_multiple_of(32));
+        assert!(offset_32 >= SlabPageHeader::HEADER_SIZE);
 
-    let offset_32 = SlabPageHeader::data_offset(32);
-    assert!(offset_32 % 32 == 0);
-    assert!(offset_32 >= SlabPageHeader::HEADER_SIZE);
+        let offset_64 = SlabPageHeader::data_offset(64);
+        assert!(offset_64.is_multiple_of(64));
+        assert!(offset_64 >= SlabPageHeader::HEADER_SIZE);
 
-    let offset_64 = SlabPageHeader::data_offset(64);
-    assert!(offset_64 % 64 == 0);
-    assert!(offset_64 >= SlabPageHeader::HEADER_SIZE);
+        // Test that data_offset for size=1 returns HEADER_SIZE (no alignment needed)
+        let offset_1 = SlabPageHeader::data_offset(1);
+        assert!(offset_1 >= SlabPageHeader::HEADER_SIZE);
 
-    // Test that data_offset for size=1 returns HEADER_SIZE (no alignment needed)
-    let offset_1 = SlabPageHeader::data_offset(1);
-    assert!(offset_1 >= SlabPageHeader::HEADER_SIZE);
+        true
+    }
 
-    true
+    #[test]
+    fn slab_page_constants_and_header_helpers_hold() {
+        assert!(slab_page_constants_and_header_helpers_hold_for_test());
+    }
 }

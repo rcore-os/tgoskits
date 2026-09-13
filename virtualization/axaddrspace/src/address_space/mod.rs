@@ -110,7 +110,7 @@ impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
 
         let offset = start_vaddr.as_usize() as i128 - start_paddr.as_usize() as i128;
         let area = MemoryArea::new(start_vaddr, size, flags, Backend::new_linear(offset));
-        self.areas.map(area, &mut self.pt, false)?;
+        self.areas.map(area, &mut (), &mut self.pt, false)?;
         Ok(())
     }
 
@@ -131,7 +131,7 @@ impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
         validate_alignment("mapping size", size)?;
 
         let area = MemoryArea::new(start, size, flags, Backend::new_alloc(populate));
-        self.areas.map(area, &mut self.pt, false)?;
+        self.areas.map(area, &mut (), &mut self.pt, false)?;
         Ok(())
     }
 
@@ -141,13 +141,13 @@ impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
         validate_alignment("guest physical address", start.as_usize())?;
         validate_alignment("mapping size", size)?;
 
-        self.areas.unmap(start, size, &mut self.pt)?;
+        self.areas.unmap(start, size, &mut (), &mut self.pt)?;
         Ok(())
     }
 
     /// Removes all mappings in the address space.
     pub fn clear(&mut self) {
-        self.areas.clear(&mut self.pt).unwrap();
+        self.areas.clear(&mut (), &mut self.pt).unwrap();
     }
 
     /// Handles a page fault at the given address.

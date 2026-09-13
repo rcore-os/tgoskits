@@ -1,10 +1,14 @@
 use alloc::sync::Arc;
-use core::{
-    marker::PhantomData,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use core::marker::PhantomData;
 
-use crate::{host::*, lock::SpinMutex as Mutex, *};
+use crate::{
+    host::*,
+    lock::SpinMutex as Mutex,
+    timer_registration::{
+        TimerRegistration, limit_periodic_timer_period_ns, restart_periodic_deadline_ns,
+    },
+    *,
+};
 
 const PIT_CHANNEL0: u16 = 0x40;
 const PIT_CHANNEL2: u16 = 0x42;
@@ -270,8 +274,7 @@ pub struct EmulatedPit<H: X86VlapicHostOps> {
 }
 
 struct PitIrqTimer<H: X86VlapicHostOps> {
-    generation: Arc<AtomicUsize>,
-    token: Option<usize>,
+    registration: Arc<TimerRegistration<H>>,
     vm_id: X86VmId,
     vcpu_id: X86VcpuId,
     _host: PhantomData<fn() -> H>,
@@ -290,38 +293,6 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
             irq0_timer: Mutex::new(PitIrqTimer::new(vm_id, vcpu_id)),
             _host: PhantomData,
         }
-    }
-
-    /// Return whether channel 0 has reached its next IRQ0 deadline.
-    ///
-    /// When a deadline is reached, this advances the deadline by whole periods so the timer
-    /// remains periodic without queueing a burst of missed ticks.
-    pub fn consume_irq0_if_due(&self, now_ns: u64) -> bool {
-        if self.irq0_timer.lock().is_scheduled() {
-            return false;
-        }
-        let mut state = self.state.lock();
-        let channel = &mut state.channel0;
-        let Some(period_ns) = channel.period_ns else {
-            return false;
-        };
-        if now_ns < channel.next_deadline_ns {
-            return false;
-        }
-
-        if channel.mode.is_periodic_irq() {
-            let elapsed = now_ns.saturating_sub(channel.next_deadline_ns);
-            let missed_periods = elapsed / period_ns;
-            channel.next_deadline_ns = channel
-                .next_deadline_ns
-                .saturating_add((missed_periods + 1).saturating_mul(period_ns));
-        } else {
-            if channel.irq_fired {
-                return false;
-            }
-            channel.irq_fired = true;
-        }
-        true
     }
 
     fn channel_mut(state: &mut PitState, channel: u8) -> Option<&mut PitChannel> {
@@ -393,76 +364,58 @@ impl<H: X86VlapicHostOps> Default for EmulatedPit<H> {
 impl<H: X86VlapicHostOps> PitIrqTimer<H> {
     fn new(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
         Self {
-            generation: Arc::new(AtomicUsize::new(0)),
-            token: None,
+            registration: Arc::new(TimerRegistration::new()),
             vm_id,
             vcpu_id,
             _host: PhantomData,
         }
     }
 
-    fn is_scheduled(&self) -> bool {
-        self.token.is_some()
-    }
-
-    fn schedule(&mut self, deadline_ns: u64, period_ns: Option<u64>) {
-        self.cancel();
-        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
-        self.token = schedule_irq0::<H>(
+    fn schedule(&mut self, deadline_ns: u64, period_ns: Option<u64>) -> X86VlapicResult {
+        self.registration.invalidate_and_cancel()?;
+        schedule_irq0::<H>(
             deadline_ns,
             period_ns,
-            Arc::clone(&self.generation),
-            generation,
+            Arc::clone(&self.registration),
             self.vm_id,
             self.vcpu_id,
-        );
+        )
     }
 
-    fn cancel(&mut self) {
-        self.generation.fetch_add(1, Ordering::AcqRel);
-        if let Some(token) = self.token.take() {
-            host::cancel_timer::<H>(token);
-        }
+    fn cancel(&mut self) -> X86VlapicResult {
+        self.registration.invalidate_and_cancel()
     }
 }
 
 impl<H: X86VlapicHostOps> Drop for PitIrqTimer<H> {
     fn drop(&mut self) {
-        self.cancel();
+        if let Err(error) = self.cancel() {
+            log::warn!("failed to cancel x86 PIT timer during teardown: {error:?}");
+        }
     }
 }
 
 fn schedule_irq0<H: X86VlapicHostOps>(
     deadline_ns: u64,
     period_ns: Option<u64>,
-    generation_state: Arc<AtomicUsize>,
-    generation: usize,
+    registration: Arc<TimerRegistration<H>>,
     vm_id: X86VmId,
     vcpu_id: X86VcpuId,
-) -> Option<usize> {
-    host::register_timer::<H>(
+) -> X86VlapicResult {
+    let mut next_deadline_ns = deadline_ns;
+    registration.register(
         deadline_ns,
         alloc::boxed::Box::new(move |_| {
-            if generation_state.load(Ordering::Acquire) != generation {
-                return;
-            }
             let _ = H::inject_pit_irq(vm_id, vcpu_id);
-            if let Some(period_ns) = period_ns
-                && generation_state.load(Ordering::Acquire) == generation
-            {
-                let now_ns = host::current_time_nanos::<H>();
-                let elapsed = now_ns.saturating_sub(deadline_ns);
-                let periods = elapsed / period_ns + 1;
-                let next = deadline_ns.saturating_add(period_ns.saturating_mul(periods));
-                let _ = schedule_irq0::<H>(
-                    next,
-                    Some(period_ns),
-                    generation_state,
-                    generation,
-                    vm_id,
-                    vcpu_id,
+            if let Some(period_ns) = period_ns {
+                next_deadline_ns = restart_periodic_deadline_ns(
+                    next_deadline_ns,
+                    period_ns,
+                    host::current_time_nanos::<H>(),
                 );
+                return X86TimerAction::Rearm(next_deadline_ns);
             }
+            X86TimerAction::Complete
         }),
     )
 }
@@ -521,7 +474,8 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
                     .mode
                     .is_periodic_irq()
                     .then_some(period_ns)
-                    .flatten();
+                    .flatten()
+                    .map(limit_periodic_timer_period_ns);
                 Some((state.channel0.next_deadline_ns, repeat_ns))
             }
             PIT_CHANNEL0 => None,
@@ -541,7 +495,7 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
         };
         drop(state);
         if let Some((deadline_ns, period_ns)) = irq0_schedule {
-            self.irq0_timer.lock().schedule(deadline_ns, period_ns);
+            self.irq0_timer.lock().schedule(deadline_ns, period_ns)?;
         }
         Ok(())
     }

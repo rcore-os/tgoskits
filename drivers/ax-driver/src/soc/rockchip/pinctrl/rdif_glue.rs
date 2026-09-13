@@ -210,106 +210,10 @@ pub(super) fn gpio_bank_index(node: &Node) -> Option<u32> {
 mod tests {
     use alloc::vec;
 
-    #[cfg(not(feature = "pci"))]
-    use axklib::{
-        BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId, Klib, KlibError,
-        KlibResult, PhysAddr, VirtAddr, impl_trait,
-    };
     use fdt_edit::{Node, Property};
     use rdif_pinctrl::{FdtPinctrl, StateName};
 
     use super::*;
-
-    #[cfg(not(feature = "pci"))]
-    struct KlibImpl;
-
-    #[cfg(not(feature = "pci"))]
-    impl_trait! {
-        impl Klib for KlibImpl {
-            fn mem_iomap(_addr: PhysAddr, _size: usize) -> KlibResult<VirtAddr> {
-                Err(KlibError::Unsupported)
-            }
-
-            fn mem_virt_to_phys(addr: VirtAddr) -> PhysAddr {
-                PhysAddr::from_usize(addr.as_usize())
-            }
-
-            fn mem_make_dma_coherent_uncached(
-                _addr: VirtAddr,
-                _size: usize,
-            ) -> axklib::DmaCoherentMappingOutcome {
-                axklib::DmaCoherentMappingOutcome::NotStarted(KlibError::Unsupported)
-            }
-
-            fn mem_restore_dma_cached(_addr: VirtAddr, _size: usize) -> KlibResult {
-                Err(KlibError::Unsupported)
-            }
-
-            fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
-
-            fn dma_cache_invalidate(_addr: VirtAddr, _size: usize) {}
-
-            fn dma_cache_clean_invalidate(_addr: VirtAddr, _size: usize) {}
-
-            fn dma_alloc_pages(
-                _dma_mask: u64,
-                _num_pages: usize,
-                _align: usize,
-            ) -> KlibResult<VirtAddr> {
-                Err(KlibError::Unsupported)
-            }
-
-            fn dma_dealloc_pages(_addr: VirtAddr, _num_pages: usize) {}
-
-            fn time_busy_wait(_dur: core::time::Duration) {}
-
-            fn time_monotonic_nanos() -> u64 {
-                0
-            }
-
-            fn time_try_init_epoch_offset(_epoch_time_nanos: u64) -> bool {
-                false
-            }
-
-            fn irq_set_enable(_irq: IrqId, _enabled: bool) -> axklib::KlibResult {
-                Ok(())
-            }
-
-            fn irq_request_shared(
-                _irq: IrqId,
-                _handler: BoxedIrqHandler,
-            ) -> KlibResult<IrqHandle> {
-                Err(KlibError::Unsupported)
-            }
-
-            fn irq_request_shared_disabled(
-                _irq: IrqId,
-                _handler: BoxedIrqHandler,
-            ) -> KlibResult<IrqHandle> {
-                Err(KlibError::Unsupported)
-            }
-
-            fn irq_request_percpu(
-                _irq: IrqId,
-                _cpus: IrqCpuMask,
-                _handler: ConcurrentBoxedIrqHandler,
-            ) -> KlibResult<IrqHandle> {
-                Err(KlibError::Unsupported)
-            }
-
-            fn irq_free(_handle: IrqHandle) -> axklib::KlibResult {
-                Ok(())
-            }
-
-            fn irq_enable(_handle: IrqHandle) -> axklib::KlibResult {
-                Ok(())
-            }
-
-            fn irq_disable(_handle: IrqHandle) -> axklib::KlibResult {
-                Ok(())
-            }
-        }
-    }
 
     #[test]
     fn rockchip_pins_state_preserves_raw_mux_value() {

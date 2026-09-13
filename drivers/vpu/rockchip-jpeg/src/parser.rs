@@ -494,7 +494,7 @@ fn parse_sof0(body: &[u8], info: &mut JpegInfo) -> Result<(), ParseError> {
     info.nb_components = nc as u8;
     let mut h_max = 1u8;
     let mut v_max = 1u8;
-    for c in 0..nc {
+    for (c, component) in info.components.iter_mut().enumerate().take(nc) {
         let off = 6 + c * 3;
         let hv = body[off + 1];
         let h = hv >> 4;
@@ -506,7 +506,7 @@ fn parse_sof0(body: &[u8], info: &mut JpegInfo) -> Result<(), ParseError> {
         if h == 0 || v == 0 {
             return Err(ParseError::UnsupportedSubsampling);
         }
-        info.components[c] = Component {
+        *component = Component {
             id: body[off],
             h,
             v,

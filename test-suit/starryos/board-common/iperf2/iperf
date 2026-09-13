@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+for loader in "$root"/ld-musl-*.so.1; do
+    exec "$loader" --library-path "$root" "$root/iperf.bin" "$@"
+done

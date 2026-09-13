@@ -11,8 +11,10 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "sh /usr/bin/run-pysci2.sh"
-success_regex = ['(?m)^PYSCI2_OK=2/2\s*$', '(?m)^TEST PASSED\s*$']
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
 timeout = 86400
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "sh /usr/bin/run-pysci2.sh"
+success_regex = ['(?m)^PYSCI2_OK=2/2\s*$', '(?m)^TEST PASSED\s*$']

@@ -5,7 +5,10 @@
 
 [ArceOS](https://github.com/arceos-org/arceos) Inter-Processor Interrupt (IPI) management module.
 
-Provides primitives to run callbacks on a specific CPU or on all other CPUs via IPI, and to handle IPI events (e.g. in the kernel's IPI handler).
+Provides one coalesced physical IPI edge for typed logical owners, plus bounded
+synchronous hard-IRQ calls to a specific CPU. Subsystems retain and drain their
+own pending state; the IPI transport does not allocate callback payloads or own
+multicast work.
 
 ## License
 
