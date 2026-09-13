@@ -70,3 +70,33 @@ pub(in crate::starry) async fn prepare_app_board_session_assets(
 
     Ok(Some(assets))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn board_apps_reject_ambiguous_assets_before_preparing_a_rootfs() {
+        let root = tempfile::tempdir().unwrap();
+        let case_dir = root.path().join("case");
+        fs::create_dir_all(case_dir.join("c")).unwrap();
+        fs::create_dir_all(case_dir.join("sh")).unwrap();
+        fs::write(case_dir.join("c/CMakeLists.txt"), "project(probe C)").unwrap();
+        let case = StarryAppBoardCase {
+            name: "probe".into(),
+            init_path: case_dir.join("init.sh"),
+            init_cmd: "echo probe".into(),
+            build_config_path: case_dir.join("build.toml"),
+            board_config_path: case_dir.join("board.toml"),
+            target: "aarch64-unknown-none-softfloat".into(),
+            case_dir,
+        };
+        let result =
+            prepare_app_board_session_assets(root.path(), "aarch64", &case.target, &case, &[])
+                .await;
+        let error = result.expect_err("a board app must not silently ignore its C assets");
+        assert!(error.to_string().contains("multiple asset pipelines"));
+    }
+}
