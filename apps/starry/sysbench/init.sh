@@ -1,5 +1,4 @@
-(
-set -eu
+sh -eu <<'SYSBENCH_SCRIPT'
 work=$(mktemp -d /tmp/sysbench.XXXXXX)
 trap 'rm -rf "$work"' EXIT
 url='${sessionFile:share/sysbench.tar.gz}'
@@ -15,4 +14,9 @@ export SYSBENCH_BUNDLE_SHA256
 mkdir "$work/tools"
 tar -xzf "$work/bundle.tar.gz" -C "$work/tools"
 sh "$work/tools/run.sh" board
-) || printf '\nSYSBENCH_%s\n' BOARD_FAILED
+SYSBENCH_SCRIPT
+status=$?
+if [ "$status" -ne 0 ]; then
+    printf '\nSYSBENCH_%s\n' BOARD_FAILED
+    exit "$status"
+fi

@@ -11,6 +11,7 @@ cargo fmt --all -- --check
 cargo publish --workspace --dry-run --no-verify
 python3 scripts/test/check_posix_bindings.py
 python3 scripts/test/check_kernel_tls_modes.py
+sh apps/starry/sysbench/tests/check.sh
 '''
 
 [[check]]

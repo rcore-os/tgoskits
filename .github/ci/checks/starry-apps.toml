@@ -31,6 +31,7 @@ apk_region = "us"
 container_preflight = "qemu-user"
 command = '''
 cargo xtask starry app qemu --all --arch aarch64
+cargo xtask starry app qemu -t sysbench --arch aarch64 --qemu-config qemu-aarch64-matrix.toml
 '''
 
 [[check]]

@@ -11,7 +11,7 @@ if [ "$mode" = board ]; then
     set -- $cpus
     count=$#
 else
-    bench=sysbench
+    bench="$dir/sysbench"
     cpus=unprobed
     count=4
 fi

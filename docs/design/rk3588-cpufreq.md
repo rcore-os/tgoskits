@@ -162,7 +162,7 @@ cpufreq: busy attribution cpu0->A76b0 cpu1->A55 ...
 运行期每次 OPP 迁移输出
 `gov: <cluster> peak=<n>% opp <i>-><j> = <mhz> MHz @ <mv> mV`。精确送达频率可用
 `cpuprobe` 的 `mhz_pmc` 读取（PMU 周期计数器在启动时使能）；配套的
-`apps/starry/sysbench-board` harness（PR #1658）驱动全核负载并与 Linux 基线对比。
+`apps/starry/sysbench` harness驱动全核负载并与 Linux 基线对比。
 
 ### 5.2 频率读数
 

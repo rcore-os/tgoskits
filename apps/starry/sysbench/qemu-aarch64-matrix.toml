@@ -15,5 +15,5 @@ fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^SYSBENCH_HAS_FAILURES\s*$', '(?m)^S
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_cmd = "apk add sysbench && sh /usr/bin/sysbench-run matrix || printf 'SYSBENCH_%s\\n' HAS_FAILURES"
+shell_cmd = "sh -eu -c 'work=$(mktemp -d); trap '\"'\"'rm -rf \"$work\"'\"'\"' EXIT; tar -xzf /share/sysbench.tar.gz -C \"$work\"; sh \"$work/run.sh\" matrix' || printf 'SYSBENCH_%s\\n' HAS_FAILURES"
 success_regex = ['(?m)^SYSBENCH_DONE\s*$']

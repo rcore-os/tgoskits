@@ -37,9 +37,13 @@ file(COPY_FILE "${STARRY_STAGING_ROOT}/usr/bin/sysbench" "${bundle}/sysbench.bin
 file(COPY "${harness}/sysbench" "${harness}/run.sh" DESTINATION "${bundle}"
     FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 file(CHMOD "${bundle}/sysbench.bin" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+find_program(TAR_EXECUTABLE tar REQUIRED)
+find_program(GZIP_EXECUTABLE gzip REQUIRED)
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sysbench.tar.gz"
-    COMMAND "${CMAKE_COMMAND}" -E tar czf "${CMAKE_CURRENT_BINARY_DIR}/sysbench.tar.gz"
-        "--mtime=1970-01-01 00:00:00 UTC" -- .
+    COMMAND "${TAR_EXECUTABLE}" --sort=name --mtime=@0 --owner=0 --group=0
+        --numeric-owner --mode=u+rwX,go+rX,go-w
+        -cf "${CMAKE_CURRENT_BINARY_DIR}/sysbench.tar" -- .
+    COMMAND "${GZIP_EXECUTABLE}" -n -f "${CMAKE_CURRENT_BINARY_DIR}/sysbench.tar"
     WORKING_DIRECTORY "${bundle}"
     DEPENDS cpuprobe membw "${harness}/run.sh" "${harness}/sysbench")
 add_custom_target(bundle ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sysbench.tar.gz")

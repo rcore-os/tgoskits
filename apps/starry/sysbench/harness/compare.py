@@ -90,7 +90,7 @@ def main():
     parser.add_argument("starry", type=Path)
     args = parser.parse_args()
     try:
-        print(compare(args.linux.read_text(), args.starry.read_text()))
+        print(compare(args.linux.read_text(errors="replace"), args.starry.read_text(errors="replace")))
     except (ValueError, KeyError, OSError) as error:
         parser.exit(1, f"comparison rejected: {error}\n")
 
