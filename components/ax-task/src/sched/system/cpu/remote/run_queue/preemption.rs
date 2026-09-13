@@ -71,15 +71,16 @@ impl CpuRunQueueState {
             }
             return WakePreemptionDecision::WakeeSelected;
         }
+        // Linux's wakeup preemption compares `rq->curr` in place through its
+        // class hooks; no entity snapshot crosses this boundary.
         let current_entity = self
             .current_scheduling_entity()
-            .cloned()
             .expect("current dispatch must have one rq-owned scheduling entity");
 
         let preempts = if context.intent.is_sync() {
             crate::sched::algorithm::default_sync_wakeup_preempts(
                 current_policy,
-                &current_entity,
+                current_entity,
                 false,
                 policy,
                 entity,
@@ -88,7 +89,7 @@ impl CpuRunQueueState {
         } else {
             crate::sched::algorithm::wakeup_preempts(
                 current_policy,
-                &current_entity,
+                current_entity,
                 false,
                 policy,
                 entity,
@@ -109,7 +110,7 @@ impl CpuRunQueueState {
             _ => WakePreemptionDecision::WakeeSelected,
         };
         if decision == WakePreemptionDecision::WakeeSelected
-            && fair_preemption_cancels_protection(current_policy, &current_entity, policy, entity)
+            && fair_preemption_cancels_protection(current_policy, current_entity, policy, entity)
             && let Some(SchedulingEntity::Fair(current)) = self.current_scheduling_entity_mut()
         {
             current.cancel_slice_protection();

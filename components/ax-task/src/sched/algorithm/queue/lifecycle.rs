@@ -493,6 +493,28 @@ impl RunQueue {
         }
     }
 
+    /// Snapshots the current dispatch's full scheduling entity.
+    ///
+    /// Only rare consumers such as the class tick hook need the wide linked
+    /// Deadline variant; ordinary accounting settles through the Fair
+    /// contender snapshot returned by [`Self::charge_current`].
+    pub(crate) fn current_entity_snapshot(&self, id: ThreadId) -> Option<SchedulingEntity> {
+        match self.membership_class(id) {
+            Some(QueueMembershipClass::Deadline(key)) => {
+                self.deadline.get(key).map(QueuedThread::entity_snapshot)
+            }
+            Some(QueueMembershipClass::Realtime(key)) => {
+                self.rt.get(key).map(QueuedThread::entity_snapshot)
+            }
+            _ => self
+                .current
+                .as_ref()
+                .filter(|current| current.thread() == id)
+                .and_then(CurrentDispatch::owned_scheduling_entity_ref)
+                .cloned(),
+        }
+    }
+
     /// Rebuilds the active EDF key after Linux-style boosted replenishment.
     pub(crate) fn requeue_replenished_deadline_current(
         &mut self,
