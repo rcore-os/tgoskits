@@ -1064,6 +1064,7 @@ pub fn take_virtio_transport(
     expected: DeviceType,
 ) -> Result<impl Transport + 'static, OnProbeError> {
     take_virtio_transport_with_intx_policy(endpoint, expected, false)
+        .map(|(transport, _)| transport)
 }
 
 #[cfg(virtio_dev)]
@@ -1071,7 +1072,45 @@ pub fn take_virtio_transport_masked(
     endpoint: &mut EndpointRc,
     expected: DeviceType,
 ) -> Result<impl Transport + 'static, OnProbeError> {
-    take_virtio_transport_with_intx_policy(endpoint, expected, true)
+    take_virtio_transport_with_intx_policy(endpoint, expected, true).map(|(transport, _)| transport)
+}
+
+/// Transfers the masked input function together with its INTx ownership.
+#[cfg(feature = "virtio-input")]
+pub(crate) fn take_virtio_input_transport(
+    endpoint: &mut EndpointRc,
+) -> Result<(impl Transport + 'static, InputIntxControl), OnProbeError> {
+    let (transport, access) =
+        take_virtio_transport_with_intx_policy(endpoint, DeviceType::Input, true)?;
+    Ok((transport, InputIntxControl(access)))
+}
+
+/// Keeps PCI input interrupts masked until the consumer installs its action.
+#[cfg(feature = "virtio-input")]
+pub(crate) struct InputIntxControl(EndpointConfigAccess);
+
+#[cfg(feature = "virtio-input")]
+impl InputIntxControl {
+    pub(crate) fn enable(&mut self) {
+        self.0.update_command(|mut command| {
+            command.remove(CommandRegister::INTERRUPT_DISABLE);
+            command
+        });
+    }
+
+    pub(crate) fn disable(&mut self) {
+        self.0.update_command(|mut command| {
+            command.insert(CommandRegister::INTERRUPT_DISABLE);
+            command
+        });
+    }
+}
+
+#[cfg(feature = "virtio-input")]
+impl Drop for InputIntxControl {
+    fn drop(&mut self) {
+        self.disable();
+    }
 }
 
 #[cfg(virtio_dev)]
@@ -1079,7 +1118,7 @@ fn take_virtio_transport_with_intx_policy(
     endpoint: &mut EndpointRc,
     expected: DeviceType,
     mask_intx_after_match: bool,
-) -> Result<impl Transport + 'static, OnProbeError> {
+) -> Result<(PciTransport, EndpointConfigAccess), OnProbeError> {
     match (endpoint.vendor_id(), endpoint.device_id()) {
         (0x1af4, 0x1000..=0x107f) => {}
         _ => return Err(OnProbeError::NotMatch),
@@ -1100,12 +1139,13 @@ fn take_virtio_transport_with_intx_policy(
     let config_access = EndpointConfigAccess::new(bdf, endpoint.take());
     remember_taken_endpoint_config(&config_access);
 
-    let mut root = PciRoot::new(config_access);
-    PciTransport::new::<VirtIoHalImpl, _>(&mut root, bdf).map_err(|err| {
+    let mut root = PciRoot::new(config_access.clone_for_handoff());
+    let transport = PciTransport::new::<VirtIoHalImpl, _>(&mut root, bdf).map_err(|err| {
         OnProbeError::other(format!(
             "failed to create VirtIO PCI transport at {bdf}: {err:?}"
         ))
-    })
+    })?;
+    Ok((transport, config_access))
 }
 
 #[cfg(virtio_dev)]

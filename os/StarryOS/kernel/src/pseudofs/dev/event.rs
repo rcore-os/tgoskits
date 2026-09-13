@@ -260,13 +260,17 @@ impl EventDev {
                     return;
                 }
                 self.irq_handle.call_once(|| handle);
-                self.inner.lock().device.enable_irq();
-                if let Some(handle) = self.irq_handle.get().copied()
-                    && let Err(err) = ax_runtime::hal::irq::enable_irq(handle)
-                {
+                // Keep shared IRQ callbacks from acknowledging queued input
+                // before the device's software and hardware gates are enabled.
+                let mut inner = self.inner.lock();
+                if let Err(err) = ax_runtime::hal::irq::enable_irq(handle) {
                     warn!("failed to enable evdev irq handler for irq {irq:?}: {err:?}");
-                    self.inner.lock().device.disable_irq();
+                    return;
                 }
+                // A configuration query can leave a pending PCI INTx. Publish
+                // the enabled action before unmasking the device, including
+                // when another device already enabled the shared IRQ line.
+                inner.device.enable_irq();
             }
             Err(err) => {
                 warn!("failed to register evdev irq handler for irq {irq:?}: {err:?}");
