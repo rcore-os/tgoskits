@@ -296,6 +296,16 @@ pub fn sys_futex(
         FutexCommand::Wait | FutexCommand::WaitBitset => {
             let deadline = futex_wait_timeout(current, &op, timeout)?;
 
+            // A private-key mismatch can finish at this nofault read without
+            // acquiring MM ownership or publishing a waiter. Possible sleepers
+            // still recheck under the bucket lock before entering the wait queue.
+            if matches!(op.key_mode, FutexKeyMode::Private)
+                && let Ok(observed) = futex_read_user_nofault(uaddr)
+                && observed != value
+            {
+                return Err(StarryError::WouldBlock);
+            }
+
             let bitset = if op.command == FutexCommand::WaitBitset {
                 value3
             } else {
