@@ -48,3 +48,18 @@ fn rdrive_empty_driver_and_static_platform_are_lightweight_values() {
     ax_assert!(matches!(Platform::Static, Platform::Static));
     ax_assert!(matches!(PlatformSource::Static, PlatformSource::Static));
 }
+
+#[axtest]
+fn rdrive_guard_owns_exclusive_borrow() {
+    let owner = crate::DeviceOwner::new(Descriptor::new(), Empty);
+    let device = owner.weak::<Empty>().unwrap();
+    let guard = device.lock().unwrap();
+    ax_assert!(device.try_lock().is_err());
+    drop(guard);
+    ax_assert!(device.try_lock().is_ok());
+    drop(owner);
+    ax_assert!(matches!(
+        device.try_lock(),
+        Err(crate::GetDeviceError::DeviceReleased)
+    ));
+}

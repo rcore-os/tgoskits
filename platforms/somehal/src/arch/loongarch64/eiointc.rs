@@ -112,12 +112,12 @@ fn with_eiointc<R>(op: &str, f: impl FnOnce(&mut EioIntc) -> R) -> Option<R> {
     }
 
     for intc in rdrive::get_list::<rdif_intc::Intc>() {
-        let Ok(intc) = intc.downcast::<EioIntc>() else {
-            continue;
-        };
-        let Ok(mut intc) = intc.try_lock() else {
+        let Ok(guard) = intc.try_lock() else {
             warn!("failed to lock Loongson EIOINTC when {op}");
             return None;
+        };
+        let Ok(mut intc) = guard.downcast::<EioIntc>() else {
+            continue;
         };
         return Some(f(&mut intc));
     }

@@ -170,12 +170,12 @@ fn pch_pic_controller_for_route(
     }
 
     for intc in rdrive::get_list::<rdif_intc::Intc>() {
-        let Ok(pic) = intc.downcast::<PchPic>() else {
-            continue;
-        };
-        let Ok(guard) = pic.try_lock() else {
+        let Ok(guard) = intc.try_lock() else {
             warn!("failed to lock Loongson PCH-PIC when resolving ACPI route");
             return Err(rdif_intc::IrqError::Busy);
+        };
+        let Ok(guard) = guard.downcast::<PchPic>() else {
+            continue;
         };
         let supported = guard.supports_acpi_gsi(route);
         drop(guard);

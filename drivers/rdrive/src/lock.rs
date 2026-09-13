@@ -3,9 +3,10 @@ use alloc::{
     sync::{Arc, Weak},
 };
 use core::{
-    any::Any,
+    any::{Any, TypeId},
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use rdif_base::DriverGeneric;
@@ -19,7 +20,7 @@ pub struct DeviceOwner {
 impl DeviceOwner {
     pub fn new<T: DriverGeneric>(descriptor: Descriptor, device: T) -> Self {
         Self {
-            lock: Arc::new(LockInner::new(descriptor, Box::into_raw(Box::new(device)))),
+            lock: Arc::new(LockInner::new(descriptor, device)),
         }
     }
 
@@ -28,138 +29,67 @@ impl DeviceOwner {
     }
 
     pub fn is<T: DriverGeneric>(&self) -> bool {
-        unsafe { &*self.lock.ptr }.is::<T>()
-    }
-
-    /// Frees this device's lock if it is currently held by `pid`.
-    ///
-    /// Thin visibility shim over [`LockInner::reclaim_if_held_by`] so the
-    /// registry (`manager.rs`) can reclaim locks without reaching into the
-    /// otherwise-private `lock` field.
-    pub(crate) fn reclaim_if_held_by(&self, pid: u32) -> bool {
-        self.lock.reclaim_if_held_by(pid)
+        self.lock.type_id == TypeId::of::<T>()
     }
 }
 
 impl Drop for LockInner {
     fn drop(&mut self) {
-        unsafe {
-            let ptr = self.ptr;
-            let _ = Box::from_raw(ptr);
-        }
-    }
-}
-
-/// Marks a token's owner field as "no one holds this lock".
-const OWNER_FREE: u32 = 0xFFFF_FFFF;
-/// Marks a token's owner field as "held, but by an unknown/untracked pid"
-/// (e.g. no `Osal` wired up yet, or acquired outside of a process context).
-const OWNER_INVALID: u32 = 0xFFFF_FFFE;
-
-/// Pack a generation counter and an owner into a single atomic word.
-///
-/// Low 32 bits: owner (`OWNER_FREE`, `OWNER_INVALID`, or a pid as `u32`).
-/// High 32 bits: generation, bumped on every successful acquire/release so a
-/// stale token (captured before a reclaim + re-acquire cycle) can never
-/// CAS-succeed against a newer owner.
-fn pack(generation: u32, owner: u32) -> u64 {
-    ((generation as u64) << 32) | (owner as u64)
-}
-
-/// Inverse of [`pack`]: returns `(generation, owner)`.
-fn unpack(token: u64) -> (u32, u32) {
-    ((token >> 32) as u32, token as u32)
-}
-
-/// Encode a [`Pid`] as the owner half of a token.
-fn owner_from_pid(pid: Pid) -> u32 {
-    if pid.is_not_set() {
-        OWNER_FREE
-    } else if pid.is_invalid() {
-        OWNER_INVALID
-    } else {
-        // A tracked pid must round-trip through the 32-bit owner field. A pid that
-        // does not fit in `u32`, or that collides with the reserved `OWNER_FREE` /
-        // `OWNER_INVALID` sentinels, cannot be encoded faithfully: `as u32`
-        // truncation would alias a different pid (`0x1_0000_0001` -> pid 1), and
-        // `OWNER_FREE` would make a held lock read back as free — letting a
-        // concurrent caller acquire it. Degrade such a pid to `OWNER_INVALID`
-        // (held, but untracked) so the lock stays held and never aliases. Real
-        // pids sit far below this boundary; this only guards the soundness edge.
-        match u32::try_from(pid.raw()) {
-            Ok(owner) if owner != OWNER_FREE && owner != OWNER_INVALID => owner,
-            _ => OWNER_INVALID,
-        }
-    }
-}
-
-/// Decode the owner half of a token back into a [`Pid`].
-///
-/// Only meaningful for a non-`OWNER_FREE` owner (callers check that first).
-fn pid_from_owner(owner: u32) -> Pid {
-    if owner == OWNER_INVALID {
-        Pid::INVALID.into()
-    } else {
-        (owner as usize).into()
+        // SAFETY: new transfers one Box into this pointer. The final Arc is
+        // gone, so no guard can still access the allocation.
+        unsafe { drop(Box::from_raw(self.ptr)) };
     }
 }
 
 struct LockInner {
-    borrowed: AtomicU64,
+    borrowed: AtomicUsize,
     ptr: *mut dyn Any,
+    type_id: TypeId,
     descriptor: Descriptor,
 }
 
+// SAFETY: construction requires a Send driver. The allocation remains owned
+// by the Arc; mutable access requires the exclusive borrow bit. Type checks
+// read separate immutable metadata without borrowing the driver.
 unsafe impl Send for LockInner {}
+// SAFETY: shared handles only access immutable metadata and the atomic gate.
 unsafe impl Sync for LockInner {}
 
 impl LockInner {
-    fn new(descriptor: Descriptor, ptr: *mut dyn Any) -> Self {
+    fn new<T: DriverGeneric>(descriptor: Descriptor, device: T) -> Self {
         Self {
-            borrowed: AtomicU64::new(pack(0, OWNER_FREE)),
-            ptr,
+            borrowed: AtomicUsize::new(Pid::NOT_SET),
+            ptr: Box::into_raw(Box::new(device)),
+            type_id: TypeId::of::<T>(),
             descriptor,
         }
     }
 
-    /// Try to acquire the lock for `pid`, returning the exact token acquired
-    /// on success so the caller (a [`DeviceGuard`]) can release precisely
-    /// that acquisition later.
-    pub fn try_lock(self: &Arc<Self>, pid: Pid) -> Result<u64, GetDeviceError> {
-        let mut pid = pid;
-        if pid.is_not_set() {
-            pid = Pid::INVALID.into();
-        }
-        let owner = owner_from_pid(pid);
-
-        loop {
-            let current = self.borrowed.load(Ordering::Relaxed);
-            let (generation, cur_owner) = unpack(current);
-            if cur_owner != OWNER_FREE {
-                return Err(if cur_owner == OWNER_INVALID {
+    /// Acquire exclusive access. The PID is diagnostic metadata only.
+    fn try_lock(&self, pid: Pid) -> Result<(), GetDeviceError> {
+        let owner = if pid.is_not_set() {
+            Pid::INVALID
+        } else {
+            pid.raw()
+        };
+        // Acquire observes device writes published by the previous guard's Drop.
+        self.borrowed
+            .compare_exchange(Pid::NOT_SET, owner, Ordering::Acquire, Ordering::Relaxed)
+            .map(|_| ())
+            .map_err(|owner| {
+                if owner == Pid::INVALID {
                     GetDeviceError::UsedByUnknown
                 } else {
-                    GetDeviceError::UsedByOthers(pid_from_owner(cur_owner))
-                });
-            }
-
-            let new = pack(generation.wrapping_add(1), owner);
-            match self
-                .borrowed
-                .compare_exchange(current, new, Ordering::Acquire, Ordering::Relaxed)
-            {
-                Ok(_) => return Ok(new),
-                // Someone else raced us for the free slot; reload and re-check.
-                Err(_) => continue,
-            }
-        }
+                    GetDeviceError::UsedByOthers(owner.into())
+                }
+            })
     }
 
-    pub fn lock(self: &Arc<Self>) -> Result<u64, GetDeviceError> {
+    fn lock(&self) -> Result<(), GetDeviceError> {
         let pid = get_pid();
         loop {
             match self.try_lock(pid) {
-                Ok(token) => return Ok(token),
+                Ok(()) => return Ok(()),
                 Err(GetDeviceError::UsedByOthers(_)) | Err(GetDeviceError::UsedByUnknown) => {
                     relax();
                     continue;
@@ -168,61 +98,31 @@ impl LockInner {
             }
         }
     }
-
-    /// Free this lock if it is currently held by `pid`.
-    ///
-    /// Used by the death-reclaim path (`reclaim_all_held_by`, via
-    /// [`DeviceOwner::reclaim_if_held_by`]) so a process that dies while
-    /// holding a device lock doesn't wedge it forever. The CAS uses the
-    /// exact token observed by this call, so a pid reused by a brand-new
-    /// process can never be reclaimed out from under it: any intervening
-    /// acquire/release bumps the generation and the CAS here simply fails,
-    /// harmlessly.
-    pub fn reclaim_if_held_by(&self, pid: u32) -> bool {
-        let current = self.borrowed.load(Ordering::Relaxed);
-        let (generation, owner) = unpack(current);
-        if owner != pid {
-            return false;
-        }
-
-        let freed = pack(generation.wrapping_add(1), OWNER_FREE);
-        // The Release half is load-bearing: the dead holder's device writes
-        // reach the reaper via the exit path's scheduler barriers, and this
-        // Release is what carries them onward to the next acquirer's
-        // Acquire-CAS. Do not weaken below AcqRel's Release half.
-        self.borrowed
-            .compare_exchange(current, freed, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-    }
 }
 
+/// Exclusive device borrow. Only dropping this guard releases the borrow.
+///
+/// Non-Send projections must not cross threads:
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<rdrive::DeviceGuard<std::rc::Rc<()>>>();
+/// ```
+///
+/// Moving it to a worker transfers the borrow; the acquiring process's exit
+/// does not revoke it. Leaking a guard keeps the device borrowed.
 pub struct DeviceGuard<T> {
     lock: Arc<LockInner>,
     ptr: *mut T,
-    /// The exact token observed at acquire time; released with a CAS against
-    /// this precise value so a reclaim that already freed (and possibly
-    /// re-acquired) this lock is never stomped.
-    token: u64,
 }
 
-unsafe impl<T> Send for DeviceGuard<T> {}
+// SAFETY: the guard transfers exclusive access and pins the driver allocation.
+// A projected target must itself permit transfer between threads.
+unsafe impl<T: Send> Send for DeviceGuard<T> {}
 
 impl<T> Drop for DeviceGuard<T> {
     fn drop(&mut self) {
-        let (generation, _owner) = unpack(self.token);
-        let released = pack(generation.wrapping_add(1), OWNER_FREE);
-        if self
-            .lock
-            .borrowed
-            .compare_exchange(self.token, released, Ordering::Release, Ordering::Relaxed)
-            .is_err()
-        {
-            warn!(
-                "device lock (id={:?}) token stale on drop, likely reclaimed from a dead holder; \
-                 not releasing to avoid stomping a newer owner",
-                self.lock.descriptor.device_id()
-            );
-        }
+        // No other path can unlock while this guard or its references exist.
+        self.lock.borrowed.store(Pid::NOT_SET, Ordering::Release);
     }
 }
 
@@ -230,12 +130,15 @@ impl<T> Deref for DeviceGuard<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
+        // SAFETY: this guard pins the allocation and retains the exclusive gate.
         unsafe { &*self.ptr }
     }
 }
 
 impl<T> DerefMut for DeviceGuard<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: the gate excludes other guards, and &mut self excludes other
+        // references derived from this guard during this borrow.
         unsafe { &mut *self.ptr }
     }
 }
@@ -246,6 +149,12 @@ impl<T> DeviceGuard<T> {
     }
 }
 
+/// Weak access to a registered device. Subtype projection requires a guard.
+/// ```compile_fail
+/// fn project(device: rdrive::Device<rdrive::driver::Empty>) {
+///     let _ = device.downcast::<u32>();
+/// }
+/// ```
 pub struct Device<T> {
     lock: Weak<LockInner>,
     descriptor: Descriptor,
@@ -262,15 +171,19 @@ impl<T> Clone for Device<T> {
     }
 }
 
-unsafe impl<T> Send for Device<T> {}
-unsafe impl<T> Sync for Device<T> {}
+// SAFETY: weak handles only dereference after upgrading and acquiring the gate.
+unsafe impl<T: Send> Send for Device<T> {}
+// SAFETY: concurrent callers serialize access through the shared borrow gate.
+unsafe impl<T: Send> Sync for Device<T> {}
 
 impl<T: Any> Device<T> {
     fn new(lock: &Arc<LockInner>) -> Result<Self, GetDeviceError> {
-        let ptr = match unsafe { &*lock.ptr }.downcast_ref::<T>() {
-            Some(v) => v as *const T as *mut T,
-            None => return Err(GetDeviceError::TypeNotMatch),
-        };
+        if lock.type_id != TypeId::of::<T>() {
+            return Err(GetDeviceError::TypeNotMatch);
+        }
+        // The recorded TypeId proves this erased allocation contains T. Do not
+        // create a reference here: an existing guard may be mutably borrowing it.
+        let ptr = lock.ptr.cast::<T>();
 
         Ok(Self {
             lock: Arc::downgrade(lock),
@@ -287,22 +200,20 @@ impl<T: Any> Device<T> {
     /// rdrive device.
     pub fn lock(&self) -> Result<DeviceGuard<T>, GetDeviceError> {
         let lock = self.lock.upgrade().ok_or(GetDeviceError::DeviceReleased)?;
-        let token = lock.lock()?;
+        lock.lock()?;
 
         Ok(DeviceGuard {
             lock,
             ptr: self.ptr,
-            token,
         })
     }
     pub fn try_lock(&self) -> Result<DeviceGuard<T>, GetDeviceError> {
         let lock = self.lock.upgrade().ok_or(GetDeviceError::DeviceReleased)?;
-        let token = lock.try_lock(get_pid())?;
+        lock.try_lock(get_pid())?;
 
         Ok(DeviceGuard {
             lock,
             ptr: self.ptr,
-            token,
         })
     }
 
@@ -328,23 +239,23 @@ impl<T: Any> Device<T> {
     }
 }
 
-impl<T: DriverGeneric> Device<T> {
-    pub fn downcast<T2: 'static>(&self) -> Result<Device<T2>, GetDeviceError> {
-        let lock = self.lock.upgrade().ok_or(GetDeviceError::DeviceReleased)?;
-
-        let t2_any = unsafe { &mut *self.ptr }
+impl<T: DriverGeneric> DeviceGuard<T> {
+    /// Project this exclusive borrow into a driver's subtype.
+    ///
+    /// The original guard is consumed, so the outer driver cannot replace the
+    /// subtype while it is borrowed. On mismatch this guard is dropped and the
+    /// device becomes available again.
+    pub fn downcast<T2: 'static>(mut self) -> Result<DeviceGuard<T2>, GetDeviceError> {
+        let ptr = self
             .raw_any_mut()
-            .ok_or(GetDeviceError::TypeNotMatch)?;
-
-        let t2_type = t2_any
-            .downcast_mut::<T2>()
-            .ok_or(GetDeviceError::TypeNotMatch)?;
-
-        Ok(Device {
-            lock: Arc::downgrade(&lock),
-            descriptor: self.descriptor.clone(),
-            ptr: t2_type as *mut T2,
-        })
+            .and_then(|subtype| subtype.downcast_mut::<T2>())
+            .ok_or(GetDeviceError::TypeNotMatch)? as *mut T2;
+        let guard = ManuallyDrop::new(self);
+        // SAFETY: move the owning Arc without dropping the old guard (which
+        // would release the gate). The new guard owns the same acquisition and
+        // keeps the outer driver, including its projected subtype, alive.
+        let lock = unsafe { core::ptr::read(&guard.lock) };
+        Ok(DeviceGuard { lock, ptr })
     }
 }
 
@@ -367,170 +278,66 @@ mod tests {
     use super::*;
     use crate::driver::Empty;
 
-    fn new_owner() -> DeviceOwner {
-        DeviceOwner::new(Descriptor::new(), Empty)
-    }
-
     #[test]
-    fn pid_outside_u32_or_reserved_range_degrades_to_untracked() {
-        // A normal pid round-trips through the 32-bit owner field.
-        let normal: Pid = 4242usize.into();
-        assert_eq!(owner_from_pid(normal), 4242);
-
-        // A pid whose low 32 bits equal a reserved sentinel must NOT be encoded as
-        // that sentinel: `OWNER_FREE` would make a held lock read back as free and
-        // let a concurrent caller acquire it. Both reserved encodings degrade to
-        // `OWNER_INVALID` (held, but untracked).
-        let as_free: Pid = (OWNER_FREE as usize).into();
-        assert_ne!(owner_from_pid(as_free), OWNER_FREE);
-        assert_eq!(owner_from_pid(as_free), OWNER_INVALID);
-        let as_invalid: Pid = (OWNER_INVALID as usize).into();
-        assert_eq!(owner_from_pid(as_invalid), OWNER_INVALID);
-
-        // A pid above `u32::MAX` must not truncate and alias a small pid
-        // (`0x1_0000_0001` would otherwise collide with pid 1).
-        #[cfg(target_pointer_width = "64")]
-        {
-            let huge: Pid = 0x1_0000_0001usize.into();
-            let small: Pid = 1usize.into();
-            assert_ne!(owner_from_pid(huge), owner_from_pid(small));
-            assert_eq!(owner_from_pid(huge), OWNER_INVALID);
-        }
-    }
-
-    #[test]
-    fn reacquire_after_normal_drop_bumps_generation() {
-        let owner = new_owner();
-        let lock = owner.lock.clone();
-        let device: Device<Empty> = owner.weak::<Empty>().unwrap();
-
-        let pid_a: Pid = 100usize.into();
-        let token_a = lock.try_lock(pid_a).expect("first acquire succeeds");
-        let (gen_a, owner_a) = unpack(token_a);
-        assert_eq!(owner_a, 100);
-
+    fn diagnostic_pid_does_not_grant_recursive_access() {
+        let owner = DeviceOwner::new(Descriptor::new(), Empty);
+        let device = owner.weak::<Empty>().unwrap();
+        owner.lock.try_lock(42usize.into()).unwrap();
         let guard = DeviceGuard {
-            lock: lock.clone(),
+            lock: owner.lock.clone(),
             ptr: device.ptr,
-            token: token_a,
         };
+        assert!(
+            matches!(owner.lock.try_lock(42usize.into()), Err(GetDeviceError::UsedByOthers(pid)) if pid.raw() == 42)
+        );
+        assert!(matches!(
+            owner.lock.try_lock(43usize.into()),
+            Err(GetDeviceError::UsedByOthers(_))
+        ));
         drop(guard);
+        assert!(device.try_lock().is_ok());
+    }
 
-        let pid_b: Pid = 200usize.into();
-        let token_b = lock.try_lock(pid_b).expect("reacquire after drop succeeds");
-        let (gen_b, owner_b) = unpack(token_b);
-        assert_eq!(owner_b, 200);
+    #[test]
+    fn unset_pid_still_acquires_exclusively() {
+        let owner = DeviceOwner::new(Descriptor::new(), Empty);
+        owner.lock.try_lock(Pid::NOT_SET.into()).unwrap();
+        assert!(matches!(
+            owner.lock.try_lock(1usize.into()),
+            Err(GetDeviceError::UsedByUnknown)
+        ));
+    }
+
+    #[test]
+    fn pid_metadata_preserves_pointer_width() {
+        let owner = DeviceOwner::new(Descriptor::new(), Empty);
+        let pid = usize::MAX - 2;
+        owner.lock.try_lock(pid.into()).unwrap();
         assert!(
-            gen_b > gen_a,
-            "generation must strictly increase across acquire cycles"
+            matches!(owner.lock.try_lock(1usize.into()), Err(GetDeviceError::UsedByOthers(held)) if held.raw() == pid)
         );
     }
 
     #[test]
-    fn reclaim_frees_only_matching_pid() {
-        let owner = new_owner();
-        let lock = owner.lock.clone();
-
-        let pid: Pid = 42usize.into();
-        let token = lock.try_lock(pid).unwrap();
-
-        assert!(
-            !lock.reclaim_if_held_by(43),
-            "reclaim for a non-matching pid must be a no-op"
-        );
-        let (_, owner_after) = unpack(lock.borrowed.load(Ordering::Relaxed));
-        assert_eq!(
-            owner_after, 42,
-            "non-matching reclaim must not touch the lock"
-        );
-
-        assert!(
-            lock.reclaim_if_held_by(42),
-            "reclaim for the matching pid must free the lock"
-        );
-        let (_, owner_after2) = unpack(lock.borrowed.load(Ordering::Relaxed));
-        assert_eq!(owner_after2, OWNER_FREE);
-
-        let _ = token;
-    }
-
-    #[test]
-    fn stale_token_cas_is_noop_after_recycled_pid_reacquire() {
-        let owner = new_owner();
-        let lock = owner.lock.clone();
-
-        let dead_pid: Pid = 7usize.into();
-        let stale_token = lock.try_lock(dead_pid).expect("dead process acquires");
-
-        // The reaper frees the lock at do_exit.
-        assert!(lock.reclaim_if_held_by(7));
-
-        // pid 7 gets recycled by the OS and a brand-new, unrelated process
-        // legitimately re-acquires the very same device.
-        let recycled_pid: Pid = 7usize.into();
-        let new_token = lock
-            .try_lock(recycled_pid)
-            .expect("recycled pid re-acquires");
-        assert_ne!(
-            stale_token, new_token,
-            "generation must differ across acquisitions even with an identical numeric pid"
-        );
-
-        // A late/duplicate reclaim-style CAS using the stale (pre-recycle)
-        // token must not be able to free the new legitimate holder's lock.
-        let (stale_gen, _) = unpack(stale_token);
-        let stale_release = pack(stale_gen.wrapping_add(1), OWNER_FREE);
-        assert!(
-            lock.borrowed
-                .compare_exchange(
-                    stale_token,
-                    stale_release,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed
-                )
-                .is_err(),
-            "stale token must not CAS-succeed against the recycled holder's live token"
-        );
-
-        let (_, owner_now) = unpack(lock.borrowed.load(Ordering::Relaxed));
-        assert_eq!(owner_now, 7);
-        assert_eq!(lock.borrowed.load(Ordering::Relaxed), new_token);
-    }
-
-    #[test]
-    fn guard_drop_after_reclaim_does_not_stomp() {
-        let owner = new_owner();
-        let lock = owner.lock.clone();
-        let device: Device<Empty> = owner.weak::<Empty>().unwrap();
-
-        let dead_pid: Pid = 9usize.into();
-        let token = lock.try_lock(dead_pid).expect("dead process acquires");
-        let guard = DeviceGuard {
-            lock: lock.clone(),
-            ptr: device.ptr,
-            token,
-        };
-
-        // The process holding `guard` dies; the reaper reclaims its lock
-        // before the guard itself is ever dropped.
-        assert!(lock.reclaim_if_held_by(9));
-
-        // pid 9 is recycled and a brand-new process legitimately acquires
-        // the same device.
-        let recycled_pid: Pid = 9usize.into();
-        let new_token = lock
-            .try_lock(recycled_pid)
-            .expect("recycled pid re-acquires");
-
-        // The dead process's guard is finally dropped (e.g. late task
-        // teardown): it must not stomp the new legitimate holder.
-        drop(guard);
-
-        let (_, owner_now) = unpack(lock.borrowed.load(Ordering::Relaxed));
-        assert_eq!(
-            owner_now, 9,
-            "guard drop must not free the new holder's lock"
-        );
-        assert_eq!(lock.borrowed.load(Ordering::Relaxed), new_token);
+    fn transferred_guard_keeps_device_alive_and_exclusive() {
+        extern crate std;
+        let owner = DeviceOwner::new(Descriptor::new(), Empty);
+        let device = owner.weak::<Empty>().unwrap();
+        let guard = device.lock().unwrap();
+        drop(owner);
+        std::thread::spawn(move || {
+            assert_eq!(guard.name(), "Empty Driver");
+            assert!(matches!(
+                device.try_lock(),
+                Err(GetDeviceError::UsedByUnknown) | Err(GetDeviceError::UsedByOthers(_))
+            ));
+            drop(guard);
+            assert!(matches!(
+                device.try_lock(),
+                Err(GetDeviceError::DeviceReleased)
+            ));
+        })
+        .join()
+        .unwrap();
     }
 }
