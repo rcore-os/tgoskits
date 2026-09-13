@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1](https://github.com/rcore-os/tgoskits/compare/somehal-v0.11.0...somehal-v0.11.1) - 2026-09-13
+
+### Other
+
+- *(rdrive)* bind device borrows to guard lifetimes ([#2387](https://github.com/rcore-os/tgoskits/pull/2387))
+
 ## [0.11.0](https://github.com/rcore-os/tgoskits/compare/somehal-v0.10.1...somehal-v0.11.0) - 2026-09-11
 
 ### Other

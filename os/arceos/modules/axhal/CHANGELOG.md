@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.8.0...ax-hal-v0.8.1) - 2026-09-13
+
+### Other
+
+- *(someboot)* publish Linux-style CPU capacity through topology ([#2386](https://github.com/rcore-os/tgoskits/pull/2386))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.7.1...ax-hal-v0.8.0) - 2026-09-11
 
 ### Other

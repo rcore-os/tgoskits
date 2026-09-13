@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.2](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.1...ax-runtime-v0.13.2) - 2026-09-13
+
+### Other
+
+- updated the following local packages: ax-cpu, rdrive, ax-plat, ax-driver, ax-hal, cpu-local
+
 ## [0.13.1](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.0...ax-runtime-v0.13.1) - 2026-09-12
 
 ### Fixed

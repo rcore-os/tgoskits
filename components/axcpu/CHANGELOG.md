@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.10.0...ax-cpu-v0.10.1) - 2026-09-13
+
+### Added
+
+- *(starry)* add AArch64 Linux perf support ([#2274](https://github.com/rcore-os/tgoskits/pull/2274))
+
 ## [0.10.0](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.9.1...ax-cpu-v0.10.0) - 2026-09-11
 
 ### Fixed

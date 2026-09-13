@@ -1,6 +1,6 @@
 [package]
 name = "axvirtio-blk"
-version = "0.3.1"
+version = "0.3.2"
 edition.workspace = true
 authors = ["Debin <luodeb@outlook.com>"]
 license.workspace = true

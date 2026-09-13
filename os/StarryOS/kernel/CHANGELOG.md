@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.10.1...starry-kernel-v0.10.2) - 2026-09-13
+
+### Added
+
+- *(starry)* add AArch64 Linux perf support ([#2274](https://github.com/rcore-os/tgoskits/pull/2274))
+
+### Fixed
+
+- *(rknpu)* copy and validate user task arrays before NPU submit ([#2327](https://github.com/rcore-os/tgoskits/pull/2327))
+
+### Other
+
+- *(rdrive)* bind device borrows to guard lifetimes ([#2387](https://github.com/rcore-os/tgoskits/pull/2387))
+
 ## [0.10.1](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.10.0...starry-kernel-v0.10.1) - 2026-09-12
 
 ### Fixed

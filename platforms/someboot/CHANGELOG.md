@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/someboot-v0.6.0...someboot-v0.7.0) - 2026-09-13
+
+### Other
+
+- *(someboot)* publish Linux-style CPU capacity through topology ([#2386](https://github.com/rcore-os/tgoskits/pull/2386))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/someboot-v0.5.1...someboot-v0.6.0) - 2026-09-11
 
 ### Other

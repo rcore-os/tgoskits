@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.10.0...axplat-dyn-v0.10.1) - 2026-09-13
+
+### Other
+
+- *(someboot)* publish Linux-style CPU capacity through topology ([#2386](https://github.com/rcore-os/tgoskits/pull/2386))
+
 ## [0.10.0](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.9.1...axplat-dyn-v0.10.0) - 2026-09-11
 
 ### Other
