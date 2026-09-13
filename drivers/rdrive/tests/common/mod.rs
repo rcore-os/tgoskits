@@ -63,7 +63,7 @@ fn try_rwlock(state: &AtomicUsize, mode: u8) -> bool {
             .is_ok();
     }
     state
-        .fetch_update(Ordering::Acquire, Ordering::Relaxed, |readers| {
+        .try_update(Ordering::Acquire, Ordering::Relaxed, |readers| {
             (readers < WRITER - 1).then(|| readers + 1)
         })
         .is_ok()
