@@ -809,11 +809,12 @@ impl FutexDomainOwner {
     }
 }
 
-/// Per-syscall futex ownership captured from the calling thread once.
+/// Futex ownership bound to one user execution loop's MM generation.
 ///
-/// A syscall may retry its nofault user access, but it cannot change process
-/// identity while the syscall is active. Shared keys are intentionally
-/// re-resolved after a fault because their VMA backing may have changed.
+/// Sibling exec waits for this thread to leave the thread group, after which
+/// it cannot issue another syscall. The caller rebuilds this binding alongside
+/// the user execution context after its own exec handoff. Shared keys are still
+/// re-resolved after a fault because VMA backing within the MM may have changed.
 pub(crate) struct FutexContext<'task> {
     task: &'task UserTaskRef,
     memory: ProcessMemoryShare,

@@ -22,7 +22,7 @@ pub use self::{
 };
 use crate::{
     Errno, StarryError,
-    task::{SeccompDecision, UserTaskRef, do_exit, seccomp_errno},
+    task::{FutexContext, SeccompDecision, UserTaskRef, do_exit, seccomp_errno},
 };
 
 /// Whether an interrupted syscall result may be restarted by SA_RESTART.
@@ -119,7 +119,11 @@ ax_tracepoint::define_event_trace!(
 /// operations instead of reacquiring `current` through the mutable runqueue
 /// owner. This mirrors Linux's syscall-local use of `current` while preserving
 /// the Rust lifetime that pins the Starry extension and scheduler record.
-pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) -> SyscallRestart {
+pub fn handle_syscall(
+    current: &UserTaskRef,
+    uctx: &mut UserContext,
+    futex_context: &FutexContext<'_>,
+) -> SyscallRestart {
     let thread = current.as_thread();
     let raw_sysno = uctx.sysno();
     if thread.has_seccomp_syscall_work() {
@@ -1170,7 +1174,7 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) -> SyscallR
         ),
         Sysno::sigaltstack => sys_sigaltstack(current, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::futex => sys_futex(
-            current,
+            futex_context,
             uctx.arg0() as _,
             uctx.arg1() as _,
             uctx.arg2() as _,
@@ -1565,11 +1569,12 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) -> SyscallR
 }
 
 #[cfg(feature = "axtest")]
-const _: fn(&crate::task::UserTaskRef, &mut UserContext) -> SyscallRestart = handle_syscall;
+const _: fn(&crate::task::UserTaskRef, &mut UserContext, &FutexContext<'_>) -> SyscallRestart =
+    handle_syscall;
 
 #[cfg(feature = "axtest")]
 const _: fn(
-    &crate::task::UserTaskRef,
+    &FutexContext<'_>,
     *const u32,
     u32,
     u32,

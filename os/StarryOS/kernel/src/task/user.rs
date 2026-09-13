@@ -12,7 +12,7 @@ use syscalls::Sysno;
 #[cfg(target_arch = "loongarch64")]
 use super::unaligned::{UnalignedEmulationResult, emulate_user_unaligned};
 use super::{
-    SignalCheckOutcome, SyscallRestartInfo, SyscallTraceState, Thread, TidNumber, check_signals,
+    FutexContext, SignalCheckOutcome, SyscallRestartInfo, SyscallTraceState, Thread, TidNumber, check_signals,
     check_signals_with_outcome, current_user_task, ptrace_stop_current,
     ptrace_syscall_stop_current, raise_signal_fatal, wait_existing_ptrace_stop_current,
 };
@@ -74,6 +74,7 @@ pub fn new_user_task(
         let curr = current_user_task();
         let mut uctx = UserExecutionContext::bind(uctx)
             .expect("user register image must bind to its current runtime context");
+        let mut futex_context = FutexContext::new(&curr);
 
         if let Some(tid) = (set_child_tid as *mut u32).nullable() {
             tid.vm_write(&curr, child_tid.get()).ok();
@@ -167,10 +168,11 @@ pub fn new_user_task(
                         let _ = ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx);
                     }
 
-                    syscall_restart = handle_syscall(&curr, &mut uctx);
+                    syscall_restart = handle_syscall(&curr, &mut uctx, &futex_context);
                     if address_space_replaced {
                         uctx.refresh_address_space()
                             .expect("execve must leave a valid current address space");
+                        futex_context = FutexContext::new(&curr);
                     }
                     if let Some((tid, _)) = ptrace_trace {
                         if stop_for_pending_ptrace_event(thr, &mut uctx) {
