@@ -2,8 +2,6 @@ app-c = "c"
 features = [
     "alloc",
     "paging",
-    "multitask",
-    "irq",
     "fd",
     "pipe",
     "epoll",
@@ -12,4 +10,3 @@ features = [
 ]
 log = "Info"
 max_cpu_num = 4
-

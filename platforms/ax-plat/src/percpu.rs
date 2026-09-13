@@ -6,7 +6,7 @@ static IS_BSP: bool = false;
 /// Returns the ID of the current CPU.
 #[inline]
 pub fn this_cpu_id() -> usize {
-    let _guard = ax_kernel_guard::NoPreempt::new();
+    let _guard = ax_sync::PreemptGuard::new();
     // SAFETY: NoPreempt prevents migration until the pinned lookup returns.
     unsafe { ax_percpu::with_cpu_pin(this_cpu_id_pinned) }
         .expect("the current CPU-local area must remain bound")
@@ -22,7 +22,7 @@ pub fn this_cpu_id_pinned(pin: &ax_percpu::CpuPin<'_>) -> usize {
 /// processor or BSP).
 #[inline]
 pub fn this_cpu_is_bsp() -> bool {
-    let _guard = ax_kernel_guard::NoPreempt::new();
+    let _guard = ax_sync::PreemptGuard::new();
     // SAFETY: NoPreempt prevents migration until the pinned lookup returns.
     unsafe { ax_percpu::with_cpu_pin(this_cpu_is_bsp_pinned) }
         .expect("the current CPU-local area must remain bound")

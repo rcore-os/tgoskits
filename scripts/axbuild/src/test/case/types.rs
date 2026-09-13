@@ -23,9 +23,6 @@ pub(super) const GROUPED_RUNNER_SCRIPT_FORMAT_VERSION: &str =
     "grouped-runner-safe-command-label-v2";
 pub(super) const PYTHON_PIPELINE_CACHE_VERSION: &str = "python-apk-lib-closure-v2";
 pub(super) const RUST_PIPELINE_CACHE_VERSION: &str = "rust-cross-v1";
-/// QEMU global snapshot flag -- all disk writes go to a temporary file and are
-/// never committed back to the image, keeping the source image pristine.
-pub(super) const QEMU_SNAPSHOT_ARG: &str = "-snapshot";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TestQemuCase {
@@ -34,10 +31,19 @@ pub(crate) struct TestQemuCase {
     pub(crate) case_dir: PathBuf,
     pub(crate) qemu_config_path: PathBuf,
     pub(crate) test_commands: Vec<String>,
+    pub(crate) grouped_command_selection: GroupedCommandSelection,
     pub(crate) host_symbolize_success_regex: Vec<String>,
     pub(crate) host_http_server: Option<HostHttpServerConfig>,
     pub(crate) subcases: Vec<TestQemuSubcase>,
     pub(crate) grouped_subcase_filter: Option<BTreeSet<String>>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GroupedCommandSelection {
+    #[default]
+    DirectSubcases,
+    PreserveAll,
 }
 
 impl TestQemuCase {
@@ -94,7 +100,6 @@ pub(crate) struct TestQemuSubcase {
 pub(crate) struct GroupedCaseRunnerConfig {
     pub(crate) runner_name: String,
     pub(crate) runner_path: String,
-    pub(crate) autorun_profile_script: Option<String>,
     pub(crate) begin_marker: String,
     pub(crate) passed_marker: String,
     pub(crate) failed_marker: String,
@@ -102,6 +107,21 @@ pub(crate) struct GroupedCaseRunnerConfig {
     pub(crate) all_failed_marker: String,
     pub(crate) success_regex: String,
     pub(crate) fail_regex: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GroupedCaseExecution {
+    GuestInit(Box<GroupedCaseRunnerConfig>),
+    External,
+}
+
+impl GroupedCaseExecution {
+    pub(crate) fn runner(&self) -> Option<&GroupedCaseRunnerConfig> {
+        match self {
+            Self::GuestInit(config) => Some(config),
+            Self::External => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,7 +139,7 @@ pub(crate) type GuestPackageEnvPrepareFn =
 
 #[derive(Debug, Clone)]
 pub(crate) struct CaseAssetConfig {
-    pub(crate) grouped_runner: GroupedCaseRunnerConfig,
+    pub(crate) grouped_execution: GroupedCaseExecution,
     pub(crate) script_env: CaseScriptEnvConfig,
     pub(crate) cache_env_vars: Vec<String>,
     pub(crate) prepare_staging_root: fn(&std::path::Path) -> anyhow::Result<()>,
@@ -132,7 +152,6 @@ pub(crate) struct PreparedCaseAssets {
     /// pipeline injection this points directly to the shared source image; for
     /// cases that need injection it points to the per-case temporary copy.
     pub(crate) rootfs_path: PathBuf,
-    pub(crate) extra_qemu_args: Vec<String>,
     /// Path of the temporary per-case rootfs copy to remove after the QEMU run,
     /// or `None` when the shared image was used directly (no injection needed).
     pub(crate) rootfs_copy_to_remove: Option<PathBuf>,
@@ -149,7 +168,6 @@ pub(crate) struct RunPreparedQemuCaseOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PreparedCaseAssetParts {
-    pub(crate) extra_qemu_args: Vec<String>,
     pub(crate) rootfs_path: PathBuf,
     pub(crate) rootfs_copy_to_remove: Option<PathBuf>,
     pub(crate) run_dir_to_remove: Option<PathBuf>,
@@ -196,6 +214,7 @@ pub(crate) struct CaseAssetLayout {
     pub(crate) apk_cache_dir: PathBuf,
     /// Per-case copy of the shared rootfs image, used only when the case needs
     /// pipeline injection (C / shell / Python / grouped). For plain cases no
-    /// copy is created and QEMU's `-snapshot` flag keeps the shared image clean.
+    /// copy is created and the rootfs patcher's discard policy keeps the shared
+    /// image clean.
     pub(crate) case_rootfs_copy: PathBuf,
 }

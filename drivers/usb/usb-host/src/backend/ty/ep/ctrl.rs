@@ -6,9 +6,9 @@ use usb_if::{
     transfer::{Recipient, Request, RequestType},
 };
 
-use super::Endpoint;
+use super::EndpointHandle;
 
-impl Endpoint {
+impl EndpointHandle {
     pub async fn control_in(
         &mut self,
         param: usb_if::host::ControlSetup,
@@ -67,8 +67,16 @@ impl Endpoint {
 
     pub async fn get_device_descriptor(&mut self) -> Result<DeviceDescriptor, USBError> {
         let mut buff = alloc::vec![0u8; DeviceDescriptor::LEN];
-        self.get_descriptor(DescriptorType::DEVICE, 0, 0, &mut buff)
+        let actual = self
+            .get_descriptor(DescriptorType::DEVICE, 0, 0, &mut buff)
             .await?;
+        if actual != buff.len() {
+            return Err(anyhow!(
+                "short device descriptor: expected {} bytes, got {actual}",
+                buff.len()
+            )
+            .into());
+        }
         trace!("data: {buff:?}");
         let desc = DeviceDescriptor::parse(&buff).ok_or(anyhow!("device descriptor parse err"))?;
 

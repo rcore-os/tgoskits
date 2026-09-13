@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 650" role="img" aria-labelledby="title desc">
+  <title id="title">ax-net 控制面架构</title>
+  <desc id="desc">静态配置、DHCP、动态设备和无线模式更新汇入 NetControl；接口、路由与 DNS 快照服务于查询、路由选择、socket 和 Router dispatch，DeviceBinding 单独约束接口选择。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#52667d"/>
+    </marker>
+    <style>
+      .panel{fill:#f8fafc;stroke:#91a0b2;stroke-width:2}
+      .source{fill:#f0edff;stroke:#7457b6;stroke-width:2}
+      .commit{fill:#fff0f0;stroke:#bf5555;stroke-width:2}
+      .state{fill:#fff4df;stroke:#c98216;stroke-width:2}
+      .consumer{fill:#eaf3ff;stroke:#3478c0;stroke-width:2}
+      .binding{fill:#e9f7f8;stroke:#2b8792;stroke-width:2}
+      .title{font:700 24px sans-serif;fill:#213247}
+      .heading{font:700 18px sans-serif;fill:#31465f}
+      .text{font:600 15px sans-serif;fill:#26384d}
+      .small{font:14px sans-serif;fill:#455a72}
+      .edge{fill:none;stroke:#52667d;stroke-width:2.1;marker-end:url(#arrow)}
+      .bind-edge{fill:none;stroke:#2b8792;stroke-width:2.1;stroke-dasharray:7 5;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <text class="title" x="35" y="40">控制面是共享状态快照，不是独立协议栈</text>
+
+  <rect class="panel" x="30" y="65" width="300" height="535" rx="18"/>
+  <text class="heading" x="55" y="98">状态来源</text>
+  <rect class="source" x="65" y="125" width="230" height="62" rx="11"/>
+  <text class="text" x="101" y="152">NetworkConfig / static</text>
+  <text class="small" x="105" y="174">启动时接口、路由与 DNS</text>
+  <rect class="source" x="65" y="215" width="230" height="62" rx="11"/>
+  <text class="text" x="128" y="242">DHCP ACK / NAK</text>
+  <text class="small" x="113" y="264">lease 绑定或失效事件</text>
+  <rect class="source" x="65" y="305" width="230" height="62" rx="11"/>
+  <text class="text" x="92" y="332">register_device_with_config</text>
+  <text class="small" x="117" y="354">动态设备配置</text>
+  <rect class="source" x="65" y="395" width="230" height="62" rx="11"/>
+  <text class="text" x="107" y="422">reconfigure_wifi</text>
+  <text class="small" x="107" y="444">STA / AP 模式切换</text>
+  <rect class="binding" x="65" y="500" width="230" height="68" rx="11"/>
+  <text class="text" x="111" y="527">DeviceBinding</text>
+  <text class="small" x="91" y="550">bind(addr) / SO_BINDTODEVICE</text>
+
+  <rect class="panel" x="380" y="65" width="420" height="535" rx="18"/>
+  <text class="heading" x="405" y="98">NetControl 与提交边界</text>
+  <rect class="commit" x="425" y="125" width="330" height="70" rx="12"/>
+  <text class="text" x="483" y="153">commit_interface_update()</text>
+  <text class="small" x="479" y="177">一次提交同步接口、路由和 DNS</text>
+  <rect class="state" x="425" y="235" width="330" height="84" rx="12"/>
+  <text class="text" x="500" y="267">Interface registry</text>
+  <text class="small" x="478" y="293">NetInterface / IPv4Config 快照</text>
+  <rect class="state" x="425" y="345" width="330" height="84" rx="12"/>
+  <text class="text" x="492" y="377">SharedRouteTable</text>
+  <text class="small" x="472" y="403">metric + source + interface 选路</text>
+  <rect class="state" x="425" y="455" width="330" height="84" rx="12"/>
+  <text class="text" x="512" y="487">DNS registry</text>
+  <text class="small" x="468" y="513">按来源接口与 metric 排序去重</text>
+
+  <rect class="panel" x="850" y="65" width="360" height="535" rx="18"/>
+  <text class="heading" x="875" y="98">消费者</text>
+  <rect class="consumer" x="895" y="125" width="270" height="72" rx="11"/>
+  <text class="text" x="942" y="153">查询与 Linux ABI</text>
+  <text class="small" x="931" y="177">interfaces / routes / DNS / proc</text>
+  <rect class="consumer" x="895" y="235" width="270" height="72" rx="11"/>
+  <text class="text" x="951" y="263">Socket 路由决策</text>
+  <text class="small" x="931" y="287">local_binding / select_route</text>
+  <rect class="consumer" x="895" y="345" width="270" height="72" rx="11"/>
+  <text class="text" x="955" y="373">Router dispatch</text>
+  <text class="small" x="927" y="397">select_route_for_source</text>
+  <rect class="consumer" x="895" y="455" width="270" height="72" rx="11"/>
+  <text class="text" x="956" y="483">DNS resolver</text>
+  <text class="small" x="930" y="507">server snapshot + timeout</text>
+
+  <path class="edge" d="M295 156 H425"/>
+  <path class="edge" d="M295 246 H360 V160 H425"/>
+  <path class="edge" d="M295 336 H360 V160 H425"/>
+  <path class="edge" d="M295 426 H360 V160 H425"/>
+  <path class="edge" d="M590 195 V235"/>
+  <path class="edge" d="M610 195 V345"/>
+  <path class="edge" d="M630 195 V455"/>
+  <path class="edge" d="M755 277 H895 V161"/>
+  <path class="edge" d="M755 387 H895 V271"/>
+  <path class="edge" d="M755 387 H895"/>
+  <path class="edge" d="M755 497 H895"/>
+  <path class="bind-edge" d="M295 534 H825 V271 H895"/>
+</svg>

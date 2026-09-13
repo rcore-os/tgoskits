@@ -10,8 +10,10 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/procps-test.sh"
-success_regex = ["(?m)^PROCPS_TEST_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^PROCPS_TEST_FAILED\\s*$"]
 timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/procps-test.sh"
+success_regex = ["(?m)^PROCPS_TEST_PASSED\\s*$"]

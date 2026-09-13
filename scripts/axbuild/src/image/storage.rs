@@ -2,7 +2,6 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, anyhow, bail};
@@ -12,146 +11,74 @@ use tar::Archive;
 use xz2::read::XzDecoder;
 
 use super::{
-    config::{ImageConfig, fallback_registry_url},
+    config::ImageConfig,
     registry::{ImageEntry, ImageRegistry},
     spec::ImageSpecRef,
 };
-use crate::support::download::{download_file_verified_sha256, http_client};
+use crate::support::download::{
+    DownloadOutcome, acquire_path_lock, download_file_verified_sha256, http_client,
+};
 
 pub const REGISTRY_FILENAME: &str = "images.toml";
-const LAST_SYNC_FILENAME: &str = ".last_sync";
-const EXTRACTED_SHA256_FILENAME: &str = ".archive.sha256";
 
 #[derive(Debug)]
 pub struct Storage {
-    pub path: PathBuf,
+    download_dir: PathBuf,
+    extract_dir: PathBuf,
     pub image_registry: ImageRegistry,
 }
 
 impl Storage {
-    pub fn new(path: PathBuf) -> anyhow::Result<Self> {
-        let registry_filepath = registry_filepath(&path);
-        let image_registry = ImageRegistry::load_from_file(&registry_filepath)?;
-        Ok(Self {
-            path,
-            image_registry,
-        })
-    }
+    pub async fn new_from_config(config: &ImageConfig) -> anyhow::Result<Self> {
+        fs::create_dir_all(&config.download_dir)
+            .with_context(|| format!("failed to create {}", config.download_dir.display()))?;
+        fs::create_dir_all(&config.extract_dir)
+            .with_context(|| format!("failed to create {}", config.extract_dir.display()))?;
 
-    pub async fn new_from_registry(registry: String, path: PathBuf) -> anyhow::Result<Self> {
-        fs::create_dir_all(&path).map_err(|e| anyhow!("Failed to create directory: {e}"))?;
         let client = http_client()?;
-        let source =
-            ImageRegistry::resolve_bootstrap_source(&client, &registry, &fallback_registry_url())
-                .await?;
-        println!(
-            "bootstrapping local image registry from {}: {}",
-            source.kind, source.url
-        );
-        let image_registry = ImageRegistry::fetch_with_includes(&client, &source.url).await?;
-        Self::write_registry_to_path(path, image_registry)
-    }
-
-    fn write_registry_to_path(
-        path: PathBuf,
-        image_registry: ImageRegistry,
-    ) -> anyhow::Result<Self> {
-        let registry_filepath = registry_filepath(&path);
+        println!("syncing image registry from {}...", config.registry);
+        let image_registry = ImageRegistry::fetch_with_includes(&client, &config.registry).await?;
+        let registry_filepath = registry_filepath(&config.download_dir);
         let toml_content = toml::to_string_pretty(&image_registry)
             .map_err(|e| anyhow!("Failed to serialize registry: {e}"))?;
         fs::write(&registry_filepath, toml_content)
             .map_err(|e| anyhow!("Failed to write registry file: {e}"))?;
-        write_last_sync_time(&path)?;
+
         Ok(Self {
-            path,
+            download_dir: config.download_dir.clone(),
+            extract_dir: config.extract_dir.clone(),
             image_registry,
         })
-    }
-
-    pub async fn new_with_auto_sync(
-        path: PathBuf,
-        registry: String,
-        auto_sync_threshold: u64,
-    ) -> anyhow::Result<Self> {
-        let storage = match Self::new(path.clone()) {
-            Ok(storage) => storage,
-            Err(err) => {
-                println!("error while loading local storage: {err}");
-                println!("auto syncing from registry {registry}...");
-                return Self::new_from_registry(registry, path).await;
-            }
-        };
-
-        if auto_sync_threshold == 0 {
-            return Ok(storage);
-        }
-
-        let now = current_unix_timestamp()?;
-        let last_sync = read_last_sync_time(&storage.path);
-        let need_sync = match last_sync {
-            None => true,
-            Some(ts) => now.saturating_sub(ts) >= auto_sync_threshold,
-        };
-        if !need_sync {
-            return Ok(storage);
-        }
-
-        let registry_path = registry_filepath(&storage.path);
-        let backup = fs::read_to_string(&registry_path)
-            .with_context(|| format!("Failed to read {}", registry_path.display()))?;
-        match Self::new_from_registry(registry, path).await {
-            Ok(storage) => Ok(storage),
-            Err(err) => {
-                println!("auto sync failed: {err}");
-                fs::write(&registry_path, backup)
-                    .with_context(|| format!("Failed to restore {}", registry_path.display()))?;
-                Self::new(storage.path)
-            }
-        }
-    }
-
-    pub async fn new_from_config(config: &ImageConfig) -> anyhow::Result<Self> {
-        if config.auto_sync {
-            Self::new_with_auto_sync(
-                config.local_storage.clone(),
-                config.registry.clone(),
-                config.auto_sync_threshold,
-            )
-            .await
-        } else {
-            Self::new(config.local_storage.clone())
-        }
     }
 
     pub async fn pull_image(
         &self,
         spec: ImageSpecRef<'_>,
-        output_dir: Option<&Path>,
         extract: bool,
     ) -> anyhow::Result<PathBuf> {
-        let output_dir = output_dir.unwrap_or(&self.path);
         let image = self.resolve_image(spec)?;
-        fs::create_dir_all(output_dir)
-            .with_context(|| format!("failed to create {}", output_dir.display()))?;
-
-        let archive_path = output_dir.join(image_archive_filename(image, spec));
-        self.ensure_archive(image, &archive_path).await?;
+        let archive_path = self.download_dir.join(image_archive_filename(image, spec));
+        let archive_outcome = self.ensure_archive(image, &archive_path).await?;
 
         if !extract {
             println!("image archive ready at {}", archive_path.display());
             return Ok(archive_path);
         }
 
-        let extract_dir = output_dir.join(image_extract_dir_name(spec));
-        if extracted_archive_matches(&extract_dir, &image.sha256)? {
+        let extract_dir = self.extract_dir.join(image_extract_dir_name(spec));
+        if archive_outcome == DownloadOutcome::Reused && extract_dir.is_dir() {
             println!(
-                "image already extracted and up to date at {}",
+                "image archive is unchanged; keeping extracted image at {}",
                 extract_dir.display()
             );
             return Ok(extract_dir);
         }
 
-        extract_archive(&archive_path, &extract_dir, &image.sha256).await?;
+        let _lock = acquire_path_lock(&extract_dir).await?;
+        if archive_outcome == DownloadOutcome::Reused && extract_dir.is_dir() {
+            return Ok(extract_dir);
+        }
+        extract_archive(&archive_path, &extract_dir).await?;
         println!("image extracted to {}", extract_dir.display());
         Ok(extract_dir)
     }
@@ -159,8 +86,22 @@ impl Storage {
     pub async fn pull_rootfs_image(&self, spec: ImageSpecRef<'_>) -> anyhow::Result<PathBuf> {
         let image = self.resolve_image(spec)?;
         ensure_rootfs_image_name(&image.name)?;
-        let extract_dir = self.pull_image(spec, None, true).await?;
-        find_extracted_rootfs_image(&extract_dir, &image.name)
+        let archive_path = self.download_dir.join(image_archive_filename(image, spec));
+        let archive_outcome = self.ensure_archive(image, &archive_path).await?;
+        let rootfs_path = self.extract_dir.join(&image.name);
+        let _lock = acquire_path_lock(&rootfs_path).await?;
+
+        if archive_outcome == DownloadOutcome::Reused && rootfs_path.is_file() {
+            println!(
+                "image archive is unchanged; keeping rootfs at {}",
+                rootfs_path.display()
+            );
+            return Ok(rootfs_path);
+        }
+
+        extract_rootfs_archive(&archive_path, &rootfs_path, &image.name).await?;
+        println!("image extracted to {}", rootfs_path.display());
+        Ok(rootfs_path)
     }
 
     pub(crate) fn resolve_image<'a>(
@@ -175,39 +116,16 @@ impl Storage {
         })
     }
 
-    async fn ensure_archive(&self, image: &ImageEntry, archive_path: &Path) -> anyhow::Result<()> {
+    async fn ensure_archive(
+        &self,
+        image: &ImageEntry,
+        archive_path: &Path,
+    ) -> anyhow::Result<DownloadOutcome> {
         let client = http_client()?;
-        download_file_verified_sha256(&client, &image.url, archive_path, &image.sha256).await?;
+        let outcome =
+            download_file_verified_sha256(&client, &image.url, archive_path, &image.sha256).await?;
         println!("image archive verified at {}", archive_path.display());
-        Ok(())
-    }
-
-    #[cfg(test)]
-    async fn new_with_auto_sync_for_test(
-        path: PathBuf,
-        auto_sync_threshold: u64,
-        image_registry: ImageRegistry,
-    ) -> anyhow::Result<Self> {
-        let storage = match Self::new(path.clone()) {
-            Ok(storage) => storage,
-            Err(_) => return Self::write_registry_to_path(path, image_registry),
-        };
-
-        if auto_sync_threshold == 0 {
-            return Ok(storage);
-        }
-
-        let now = current_unix_timestamp()?;
-        let last_sync = read_last_sync_time(&storage.path);
-        let need_sync = match last_sync {
-            None => true,
-            Some(ts) => now.saturating_sub(ts) >= auto_sync_threshold,
-        };
-        if !need_sync {
-            return Ok(storage);
-        }
-
-        Self::write_registry_to_path(path, image_registry)
+        Ok(outcome)
     }
 }
 
@@ -216,25 +134,23 @@ pub(crate) fn default_rootfs_image(arch: &str) -> Option<&'static str> {
     crate::context::default_rootfs_image_for_arch(arch)
 }
 
-/// Returns the local storage directory used for image-managed files.
+/// Returns the directory containing mutable, extracted rootfs images.
 pub(crate) fn rootfs_dir(workspace_root: &Path) -> anyhow::Result<PathBuf> {
-    Ok(ImageConfig::read_config(workspace_root)?.local_storage)
+    Ok(ImageConfig::read_config(workspace_root)?.extract_dir)
 }
 
-/// Resolves a QEMU rootfs path into the canonical image storage path.
+/// Resolves a QEMU rootfs reference into the configured extraction directory.
 ///
-/// Checked-in QEMU configs may still refer to the historical
-/// `tmp/axbuild/rootfs/rootfs-*.img` location. That path is treated only as a
-/// reference to an image-managed rootfs; the actual file remains in image
-/// storage.
+/// Checked-in QEMU configs use the default workspace rootfs directory as a
+/// portable reference. A configured extraction directory replaces that prefix.
 pub(crate) fn resolve_managed_rootfs_path(
     workspace_root: &Path,
     path: &Path,
 ) -> anyhow::Result<Option<PathBuf>> {
     let path = resolve_workspace_path(workspace_root, path);
     let rootfs_dir = rootfs_dir(workspace_root)?;
-    let legacy_rootfs_dir = crate::context::axbuild_tmp_dir(workspace_root).join("rootfs");
-    if !path.starts_with(&rootfs_dir) && !path.starts_with(&legacy_rootfs_dir) {
+    let default_rootfs_dir = crate::context::axbuild_tmp_dir(workspace_root).join("rootfs");
+    if !path.starts_with(&rootfs_dir) && !path.starts_with(&default_rootfs_dir) {
         return Ok(None);
     }
 
@@ -381,57 +297,7 @@ fn registry_filepath(storage_path: &Path) -> PathBuf {
     storage_path.join(REGISTRY_FILENAME)
 }
 
-fn last_sync_filepath(storage_path: &Path) -> PathBuf {
-    storage_path.join(LAST_SYNC_FILENAME)
-}
-
-fn current_unix_timestamp() -> anyhow::Result<u64> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| anyhow!("System time error: {e}"))
-        .map(|d| d.as_secs())
-}
-
-fn read_last_sync_time(storage_path: &Path) -> Option<u64> {
-    let path = last_sync_filepath(storage_path);
-    let s = fs::read_to_string(path).ok()?;
-    s.trim().parse::<u64>().ok()
-}
-
-fn write_last_sync_time(storage_path: &Path) -> anyhow::Result<()> {
-    let now = current_unix_timestamp()?;
-    fs::write(last_sync_filepath(storage_path), now.to_string())
-        .map_err(|e| anyhow!("Failed to write last sync file: {e}"))
-}
-
-fn extracted_archive_matches(extract_dir: &Path, expected_sha256: &str) -> anyhow::Result<bool> {
-    if !extract_dir.exists() {
-        return Ok(false);
-    }
-    if !extract_dir.is_dir() {
-        return Ok(false);
-    }
-
-    let marker_path = extract_dir.join(EXTRACTED_SHA256_FILENAME);
-    let actual_sha256 = match fs::read_to_string(&marker_path) {
-        Ok(actual_sha256) => actual_sha256,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => {
-            return Err(anyhow!(
-                "failed to read extraction marker {}: {err}",
-                marker_path.display()
-            ));
-        }
-    };
-
-    Ok(actual_sha256.trim() == expected_sha256)
-}
-
-async fn extract_archive(
-    archive_path: &Path,
-    extract_dir: &Path,
-    expected_sha256: &str,
-) -> anyhow::Result<()> {
+async fn extract_archive(archive_path: &Path, extract_dir: &Path) -> anyhow::Result<()> {
     if extract_dir.exists() {
         if extract_dir.is_dir() {
             fs::remove_dir_all(extract_dir)
@@ -447,7 +313,6 @@ async fn extract_archive(
     let extract_dir = extract_dir.to_path_buf();
     let archive_path_for_task = archive_path.clone();
     let extract_dir_for_task = extract_dir.clone();
-    let expected_sha256 = expected_sha256.to_string();
     let progress = ProgressBar::new_spinner();
     progress.set_message(format!("extracting {}", archive_path.display()));
     progress.enable_steady_tick(std::time::Duration::from_millis(100));
@@ -460,16 +325,6 @@ async fn extract_archive(
             &mut archive_file,
             &extract_dir_for_task,
         )?;
-        fs::write(
-            extract_dir_for_task.join(EXTRACTED_SHA256_FILENAME),
-            expected_sha256,
-        )
-        .with_context(|| {
-            format!(
-                "failed to write extraction marker in {}",
-                extract_dir_for_task.display()
-            )
-        })?;
         Ok(())
     })
     .await
@@ -485,6 +340,83 @@ async fn extract_archive(
             let _ = fs::remove_dir_all(extract_dir);
             Err(err)
         }
+    }
+}
+
+async fn extract_rootfs_archive(
+    archive_path: &Path,
+    rootfs_path: &Path,
+    image_name: &str,
+) -> anyhow::Result<()> {
+    let archive_path = archive_path.to_path_buf();
+    let rootfs_path = rootfs_path.to_path_buf();
+    let image_name = image_name.to_string();
+    let progress = ProgressBar::new_spinner();
+    progress.set_message(format!("extracting {}", archive_path.display()));
+    progress.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    let archive_path_for_task = archive_path.clone();
+    let rootfs_path_for_task = rootfs_path.clone();
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let extract_parent = rootfs_path_for_task.parent().ok_or_else(|| {
+            anyhow!(
+                "rootfs output path has no parent: {}",
+                rootfs_path_for_task.display()
+            )
+        })?;
+        let temp_dir = tempfile::Builder::new()
+            .prefix(".rootfs-extract-")
+            .tempdir_in(extract_parent)
+            .with_context(|| {
+                format!(
+                    "failed to create temporary extraction directory in {}",
+                    extract_parent.display()
+                )
+            })?;
+        let mut archive_file = fs::File::open(&archive_path_for_task)
+            .with_context(|| format!("failed to open {}", archive_path_for_task.display()))?;
+        unpack_archive(&archive_path_for_task, &mut archive_file, temp_dir.path())?;
+        let extracted_rootfs = find_extracted_rootfs_image(temp_dir.path(), &image_name)?;
+        replace_extracted_rootfs(&extracted_rootfs, &rootfs_path_for_task)
+    })
+    .await
+    .context("rootfs extraction task failed")?;
+
+    match result {
+        Ok(()) => {
+            progress.finish_with_message(format!("extracted {}", rootfs_path.display()));
+            Ok(())
+        }
+        Err(err) => {
+            progress.abandon_with_message(format!("failed to extract {}", archive_path.display()));
+            Err(err)
+        }
+    }
+}
+
+fn replace_extracted_rootfs(extracted_rootfs: &Path, rootfs_path: &Path) -> anyhow::Result<()> {
+    match fs::rename(extracted_rootfs, rootfs_path) {
+        Ok(()) => Ok(()),
+        Err(_) if rootfs_path.exists() => {
+            if rootfs_path.is_dir() {
+                fs::remove_dir_all(rootfs_path)
+            } else {
+                fs::remove_file(rootfs_path)
+            }
+            .with_context(|| format!("failed to remove {}", rootfs_path.display()))?;
+            fs::rename(extracted_rootfs, rootfs_path).with_context(|| {
+                format!(
+                    "failed to move extracted rootfs to {}",
+                    rootfs_path.display()
+                )
+            })
+        }
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "failed to move extracted rootfs to {}",
+                rootfs_path.display()
+            )
+        }),
     }
 }
 
@@ -533,11 +465,7 @@ fn unpack_archive(
 fn rootfs_image_path(workspace_root: &Path, image_name: &str) -> anyhow::Result<PathBuf> {
     ensure_rootfs_image_name(image_name)?;
     let config = ImageConfig::read_config(workspace_root)?;
-    let spec = ImageSpecRef::parse(image_name);
-    Ok(config
-        .local_storage
-        .join(image_extract_dir_name(spec))
-        .join(image_name))
+    Ok(config.extract_dir.join(image_name))
 }
 
 fn resolve_workspace_path(workspace_root: &Path, path: &Path) -> PathBuf {

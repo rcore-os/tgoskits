@@ -2,7 +2,7 @@
 
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_sync::SpinLock as Mutex;
 
 use super::{
     error::{IonError, IonResult},
@@ -31,7 +31,7 @@ impl IonBufferManager {
 
     /// 注册缓冲区
     pub fn register_buffer(&self, buffer: Arc<IonBuffer>) -> IonResult<()> {
-        let mut buffers = self.buffers.lock();
+        let mut buffers = self.buffers.lock_irqsave();
         let handle = buffer.handle;
 
         if buffers.contains_key(&handle) {
@@ -45,7 +45,7 @@ impl IonBufferManager {
 
     /// 取消注册缓冲区
     pub fn unregister_buffer(&self, handle: IonHandle) -> IonResult<Arc<IonBuffer>> {
-        let mut buffers = self.buffers.lock();
+        let mut buffers = self.buffers.lock_irqsave();
         let buffer = buffers.remove(&handle).ok_or(IonError::BufferNotFound)?;
 
         debug!("Unregistered Ion buffer with handle: {:?}", handle);
@@ -54,7 +54,7 @@ impl IonBufferManager {
 
     /// 获取缓冲区
     pub fn get_buffer(&self, handle: IonHandle) -> IonResult<Arc<IonBuffer>> {
-        let buffers = self.buffers.lock();
+        let buffers = self.buffers.lock_irqsave();
         buffers
             .get(&handle)
             .cloned()
@@ -63,7 +63,7 @@ impl IonBufferManager {
 
     /// 清理所有缓冲区
     pub fn cleanup_all(&self) {
-        let mut buffers = self.buffers.lock();
+        let mut buffers = self.buffers.lock_irqsave();
         let count = buffers.len();
         buffers.clear();
         if count > 0 {

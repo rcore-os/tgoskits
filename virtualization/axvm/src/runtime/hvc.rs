@@ -12,17 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, string::ToString};
+use std::{format, string::ToString};
 
 use axhvc::{HyperCallCode, HyperCallError, HyperCallResult};
 
 use crate::{
-    AsVCpuTask, AxVmError, GuestPhysAddr, MappingFlags,
-    runtime::{
-        VMRef,
-        ivc::{self, IVCChannel},
-        vcpus,
-    },
+    runtime::{ivc::*, *},
+    *,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +50,7 @@ fn is_psci_code(code: HyperCallCode) -> bool {
 }
 const PSCI_RET_SUCCESS: usize = 0;
 const PSCI_VERSION_0_2: usize = 0x0000_0002;
+const ARM_SMCCC_VERSION_FUNC_ID: u64 = 0x8000_0000;
 const PSCI_RET_NOT_SUPPORTED: usize = usize::MAX;
 const PSCI_RET_INVALID_PARAMETERS: usize = (-2isize) as usize;
 const PSCI_RET_DENIED: usize = (-3isize) as usize;
@@ -153,19 +150,40 @@ where
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HyperCallOutcome {
     Return(usize),
+    Deferred(DeferredHyperCall),
     CpuSuspendStandby { return_value: usize },
     CpuOff,
     SystemOff,
     SystemReset,
 }
 
-#[allow(dead_code)]
 fn psci_cpu_on_result(result: Result<(), vcpus::VcpuOnError>) -> usize {
     match result {
         Ok(()) => PSCI_RET_SUCCESS,
         Err(vcpus::VcpuOnError::AlreadyOn) => PSCI_RET_ALREADY_ON,
         Err(vcpus::VcpuOnError::OnPending) => PSCI_RET_ON_PENDING,
         Err(vcpus::VcpuOnError::StartFailed) => PSCI_RET_INTERNAL_FAILURE,
+    }
+}
+
+/// Hypercall work that may block and therefore must run after the vCPU has
+/// released its host-CPU publication and architecture binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeferredHyperCall {
+    PsciCpuOn {
+        target_vcpu_id: usize,
+        entry_point: GuestPhysAddr,
+        context_id: usize,
+    },
+}
+
+pub(crate) fn finish_deferred_hypercall(vm: VMRef, work: DeferredHyperCall) -> usize {
+    match work {
+        DeferredHyperCall::PsciCpuOn {
+            target_vcpu_id,
+            entry_point,
+            context_id,
+        } => psci_cpu_on_result(vcpus::vcpu_on(vm, target_vcpu_id, entry_point, context_id)),
     }
 }
 
@@ -189,6 +207,10 @@ fn decode_hypercall_code(raw_code: u64, abi: HyperCallAbi) -> HyperCallResult<Hy
 }
 
 fn psci_feature_result(function_id: u64) -> usize {
+    if function_id == ARM_SMCCC_VERSION_FUNC_ID {
+        return PSCI_RET_SUCCESS;
+    }
+
     match decode_hypercall_code(function_id, HyperCallAbi::AArch64) {
         Ok(
             HyperCallCode::PSCIVersion
@@ -284,9 +306,11 @@ impl HyperCall {
                     return Ok(HyperCallOutcome::Return(PSCI_RET_INVALID_PARAMETERS));
                 };
 
-                let result =
-                    vcpus::vcpu_on(self.vm.clone(), target_vcpu_id, entry_point, context_id);
-                Ok(HyperCallOutcome::Return(psci_cpu_on_result(result)))
+                Ok(HyperCallOutcome::Deferred(DeferredHyperCall::PsciCpuOn {
+                    target_vcpu_id,
+                    entry_point,
+                    context_id,
+                }))
             }
             HyperCallCode::PSCICpuSuspend | HyperCallCode::PSCICpuSuspend64 => {
                 let power_state = self.args[0];
@@ -312,13 +336,14 @@ impl HyperCall {
             }
             HyperCallCode::PSCICpuOff => {
                 info!("VM[{}] PSCI_CPU_OFF", self.vm.id());
-                let current = crate::host::task::current_task();
+                let current = crate::host::task::current_thread();
                 let cpu_off_reserved = current
                     .try_as_vcpu_task()
                     .map(|task| task.vcpu.id())
                     .and_then(|vcpu_id| {
                         self.vm
-                            .with_runtime(|runtime| Ok(runtime.try_reserve_cpu_off(vcpu_id)))
+                            .runtime_handle()
+                            .map(|runtime| runtime.try_reserve_cpu_off(vcpu_id))
                             .ok()
                     })
                     .unwrap_or(false);
@@ -408,7 +433,7 @@ impl HyperCall {
                     shm_base_gpa,
                     ivc_channel.base_hpa(),
                     actual_size,
-                    MappingFlags::READ | MappingFlags::WRITE,
+                    shared_memory_mapping_flags(),
                 ) {
                     if let Err(release_err) =
                         self.vm.release_ivc_channel(shm_base_gpa, shm_region_size)
@@ -481,18 +506,16 @@ impl HyperCall {
                     self.code,
                     key
                 );
-                let (base_gpa, size) = ivc::unpublish_channel(self.vm.id(), key)
+                let teardown = ivc::unpublish_channel(self.vm.id(), key)
                     .map_err(|error| self.operation_error("unpublish IVC channel", error))?;
-                // The publisher's GPA mapping is always unmapped; subscribers keep their own
-                // GPA views. The shared HPA frame is freed when the last subscriber leaves.
-                self.vm.unmap_region(base_gpa, size).map_err(|error| {
-                    self.operation_error("unmap unpublished IVC channel", error)
-                })?;
-                self.vm
-                    .release_ivc_channel(base_gpa, size)
-                    .map_err(|error| {
-                        self.operation_error("release unpublished IVC channel", error)
-                    })?;
+                if !crate::vm::release_ivc_teardown_for_vm(self.vm.id(), teardown, &self.vm) {
+                    return Err(HyperCallError::Internal {
+                        code: self.code,
+                        operation: "release unpublished IVC channel",
+                        detail: "failed to unmap guest GPA or release the IVC aperture range"
+                            .into(),
+                    });
+                }
 
                 Ok(HyperCallOutcome::Return(0))
             }
@@ -540,33 +563,38 @@ impl HyperCall {
                     }
                 };
 
-                // TODO: separate the mapping flags of metadata and data.
                 if let Err(err) = self.vm.map_region(
                     shm_base_gpa,
                     base_hpa,
                     actual_size,
-                    MappingFlags::READ | MappingFlags::WRITE,
+                    shared_memory_mapping_flags(),
                 ) {
-                    if let Err(unsub_err) = ivc::unsubscribe_from_channel_of_publisher(
+                    match ivc::unsubscribe_from_channel_of_publisher(
                         publisher_vm_id,
                         key,
                         self.vm.id(),
                     ) {
-                        warn!(
-                            "VM[{}] failed to rollback IVC subscription to VM[{}] key {key:#x} \
-                             after mapping failure: {unsub_err:?}",
-                            self.vm.id(),
-                            publisher_vm_id
-                        );
-                    }
-                    if let Err(release_err) =
-                        self.vm.release_ivc_channel(shm_base_gpa, shm_region_size)
-                    {
-                        warn!(
-                            "VM[{}] failed to release IVC GPA {shm_base_gpa:#x} after subscribe \
-                             mapping failure: {release_err:?}",
-                            self.vm.id()
-                        );
+                        Ok(teardown) => {
+                            if let Err(release_err) =
+                                self.vm.release_ivc_channel(shm_base_gpa, shm_region_size)
+                            {
+                                warn!(
+                                    "VM[{}] failed to release IVC GPA {shm_base_gpa:#x} after \
+                                     subscribe mapping failure: {release_err:?}",
+                                    self.vm.id()
+                                );
+                            } else {
+                                teardown.commit();
+                            }
+                        }
+                        Err(unsub_err) => {
+                            warn!(
+                                "VM[{}] failed to rollback IVC subscription to VM[{}] key \
+                                 {key:#x} after mapping failure: {unsub_err:?}",
+                                self.vm.id(),
+                                publisher_vm_id
+                            );
+                        }
                     }
                     return Err(self.operation_error("map subscriber IVC channel", err));
                 }
@@ -576,33 +604,26 @@ impl HyperCall {
                     .write_to_guest_of(shm_base_gpa_ptr, &shm_base_gpa.as_usize())
                     .and_then(|_| self.vm.write_to_guest_of(shm_size_ptr, &actual_size))
                 {
-                    if let Err(unmap_err) = self.vm.unmap_region(shm_base_gpa, actual_size) {
-                        warn!(
-                            "VM[{}] failed to unmap IVC GPA {shm_base_gpa:#x} after subscribe \
-                             guest write failure: {unmap_err:?}",
-                            self.vm.id()
-                        );
-                    }
-                    if let Err(unsub_err) = ivc::unsubscribe_from_channel_of_publisher(
+                    match ivc::unsubscribe_from_channel_of_publisher(
                         publisher_vm_id,
                         key,
                         self.vm.id(),
                     ) {
-                        warn!(
-                            "VM[{}] failed to rollback IVC subscription to VM[{}] key {key:#x} \
-                             after guest write failure: {unsub_err:?}",
-                            self.vm.id(),
-                            publisher_vm_id
-                        );
-                    }
-                    if let Err(release_err) =
-                        self.vm.release_ivc_channel(shm_base_gpa, shm_region_size)
-                    {
-                        warn!(
-                            "VM[{}] failed to release IVC GPA {shm_base_gpa:#x} after subscribe \
-                             guest write failure: {release_err:?}",
-                            self.vm.id()
-                        );
+                        Ok(teardown) => {
+                            crate::vm::release_ivc_teardown_for_vm(
+                                self.vm.id(),
+                                teardown,
+                                &self.vm,
+                            );
+                        }
+                        Err(unsub_err) => {
+                            warn!(
+                                "VM[{}] failed to rollback IVC subscription to VM[{}] key \
+                                 {key:#x} after guest write failure: {unsub_err:?}",
+                                self.vm.id(),
+                                publisher_vm_id
+                            );
+                        }
                     }
                     return Err(self.guest_memory_error(
                         "write subscribed IVC channel result",
@@ -630,19 +651,55 @@ impl HyperCall {
                     self.code,
                     publisher_vm_id
                 );
-                let (base_gpa, size) =
+                let teardown =
                     ivc::unsubscribe_from_channel_of_publisher(publisher_vm_id, key, self.vm.id())
                         .map_err(|error| {
                             self.operation_error("unsubscribe from IVC channel", error)
                         })?;
-                self.vm.unmap_region(base_gpa, size).map_err(|error| {
-                    self.operation_error("unmap unsubscribed IVC channel", error)
+                if !crate::vm::release_ivc_teardown_for_vm(self.vm.id(), teardown, &self.vm) {
+                    return Err(HyperCallError::Internal {
+                        code: self.code,
+                        operation: "release unsubscribed IVC channel",
+                        detail: "failed to unmap guest GPA or release the IVC aperture range"
+                            .into(),
+                    });
+                }
+
+                Ok(HyperCallOutcome::Return(0))
+            }
+            HyperCallCode::HIVCNotify => {
+                let publisher_vm_id = self.args[0] as usize;
+                let key = self.args[1] as usize;
+                let target_vm_id = self.args[2] as usize;
+
+                let route =
+                    ivc::prepare_notify_channel(publisher_vm_id, key, self.vm.id(), target_vm_id)
+                        .map_err(|error| self.operation_error("prepare IVC notify route", error))?;
+                let target_vm = crate::get_vm_by_id(route.target_vm_id).ok_or_else(|| {
+                    HyperCallError::ResourceNotFound {
+                        code: self.code,
+                        resource: format!("VM {}", route.target_vm_id),
+                        detail: "IVC notify target VM does not exist".into(),
+                    }
                 })?;
-                self.vm
-                    .release_ivc_channel(base_gpa, size)
-                    .map_err(|error| {
-                        self.operation_error("release unsubscribed IVC channel", error)
-                    })?;
+                let target_devices = target_vm.get_devices().map_err(|error| {
+                    self.operation_error("get IVC notify target devices", error)
+                })?;
+                let notify_irq = ivc::notify_peer(&target_devices).map_err(|error| {
+                    self.operation_error("notify IVC peer interrupt", error.into())
+                })?;
+                let target_runtime = target_vm
+                    .runtime_handle()
+                    .map_err(|error| self.operation_error("kick IVC notify target VM", error))?;
+                target_runtime.kick_all_vcpus();
+                info!(
+                    "IVC notify source VM[{}] target VM[{}] publisher VM[{}] key {:#x} irq={:?}",
+                    route.source_vm_id,
+                    route.target_vm_id,
+                    route.publisher_vm_id,
+                    route.key,
+                    notify_irq
+                );
 
                 Ok(HyperCallOutcome::Return(0))
             }
@@ -700,6 +757,9 @@ impl HyperCall {
             | AxVmError::Boot { .. }
             | AxVmError::Memory { .. }
             | AxVmError::Device { .. }
+            | AxVmError::DeviceResourcePlanning(_)
+            | AxVmError::GuestGicProfile(_)
+            | AxVmError::GuestPlicProfile(_)
             | AxVmError::Vcpu { .. }
             | AxVmError::Interrupt { .. }
             | AxVmError::Host { .. } => HyperCallError::Internal {
@@ -1000,6 +1060,14 @@ mod tests {
                 Some(Ok(PSCI_RET_NOT_SUPPORTED))
             );
         }
+    }
+
+    #[test]
+    fn hvc_psci_features_advertises_smccc_version_query() {
+        assert_eq!(
+            psci_feature_result(ARM_SMCCC_VERSION_FUNC_ID),
+            PSCI_RET_SUCCESS
+        );
     }
 
     #[test]

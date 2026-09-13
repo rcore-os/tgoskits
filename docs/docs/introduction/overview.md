@@ -52,7 +52,7 @@ TGOSKits 的工程组织由统一构建基线、分层运行时架构、领域�
 | Workspace 成员 | 184 |
 | 协议 | Apache-2.0 |
 | Rust Edition | 2024（Resolver v3） |
-| 工具链 | `nightly-2026-07-15`（minimal profile） |
+| 工具链 | `nightly-2026-09-04`（minimal profile） |
 | 构建 | Release 默认禁用 LTO |
 
 ### 2.3 核心架构
@@ -129,7 +129,7 @@ tgoskits/
 ├── virtualization/            # VM、vCPU、虚拟中断控制器与虚拟设备
 ├── os/
 │   ├── arceos/                # ArceOS 模块化 unikernel
-│   │   ├── modules/           # 12 个内核模块（axhal, axtask, axmm...）
+│   │   ├── modules/           # 内核模块（axhal, axruntime, axmm...）
 │   │   ├── api/               # API 聚合层（arceos_api, posix_api）
 │   │   ├── ulib/              # 用户态库（axstd, axlibc）
 │   │   └── tools/             # 构建与板级辅助工具
@@ -176,7 +176,7 @@ flowchart LR
     end
     subgraph mods["内核模块"]
         hal["axhal"]
-        task["axtask"]
+        task["ax-runtime::task"]
         mm["axmm"]
         fs["axfs-ng"]
         sync["axsync"]
@@ -190,7 +190,7 @@ flowchart LR
 
 | 层次 | 内容 | 职责 |
 |------|------|------|
-| 内核模块 (`modules/`) | `axhal`, `axtask`, `axmm`, `axfs-ng`, `axsync`, `axlog`, `axruntime` 等 | 硬件抽象、调度、内存管理、文件系统、同步原语与运行时初始化；DMA 能力由 `dma-api` 与 `axklib` 提供 |
+| 内核模块 (`modules/`) | `axhal`, `axruntime`, `axmm`, `axfs-ng`, `axsync`, `axlog` 等 | 硬件抽象、任务 runtime、内存管理、文件系统、同步原语与运行时初始化；DMA 能力由 `dma-api` 与 `axklib` 提供 |
 | API 聚合层 (`api/`) | `arceos_api`, `arceos_posix_api` | 向上提供统一 API 接口与 POSIX 兼容层 |
 | 用户态库 (`ulib/`) | `axstd`, `axlibc` | Rust 标准库子集与 C 库兼容层 |
 
@@ -200,8 +200,7 @@ StarryOS 建立在 ArceOS 基础设施之上，通过组件化方式实现 Linux
 
 ```mermaid
 flowchart TD
-    subgraph starry_components["Starry 专用组件"]
-        proc["starry-process<br/>进程抽象"]
+    subgraph starry_components["StarryOS 领域 crate"]
         sig["starry-signal<br/>信号框架"]
         vm["starry-vm<br/>地址空间"]
     end
@@ -219,12 +218,12 @@ flowchart TD
     kernel --> rootfs["rootfs 用户态"]
 ```
 
-图中的 Starry 专用组件负责提供进程、信号和地址空间等领域抽象，Kernel 层则组合这些抽象并实现 Linux syscall 语义。下表按用户可见能力归纳对应的维护重点。
+图中的 StarryOS 领域 crate 提供信号和地址空间抽象，Kernel 层组合这些抽象并实现 Linux syscall 语义。它们位于 `os/StarryOS/{signal,vm}`，并保留独立发布能力。进程拓扑与 PID namespace 由 `kernel/src/task` 和 `kernel/src/namespace` 统一管理。下表按用户可见能力归纳对应的维护重点。
 
 | 能力域 | 实现要点 |
 |--------|---------|
 | Syscall 兼容 | Linux syscall 语义等价实现（`kernel/src/syscall/`，覆盖进程、文件、内存、信号、网络、IPC） |
-| 进程模型 | 多进程地址空间、进程树、`/proc` 伪文件系统（`starry-process`） |
+| 进程模型 | 稳定 PID identity、进程树、PID namespace 与 `/proc` 伪文件系统（`kernel/src/task`） |
 | 线程与信号 | POSIX 线程、信号传递与处理（`starry-signal`） |
 | 用户态验证 | 基于 Alpine rootfs 的完整用户态执行链路 |
 

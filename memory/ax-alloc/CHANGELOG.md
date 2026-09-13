@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.9.1...ax-alloc-v0.9.2) - 2026-09-13
+
+### Other
+
+- updated the following local packages: ax-plat
+
+## [0.9.1](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.9.0...ax-alloc-v0.9.1) - 2026-09-12
+
+### Other
+
+- *(buddy-slab-allocator)* skip the full-list walk when no cross-CPU free is pending. ([#2301](https://github.com/rcore-os/tgoskits/pull/2301))
+
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.16...ax-alloc-v0.9.0) - 2026-09-09
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+
+## [0.8.16](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.15...ax-alloc-v0.8.16) - 2026-08-20
+
+### Other
+
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
+## [0.8.15](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.14...ax-alloc-v0.8.15) - 2026-08-09
+
+### Other
+
+- *(memory)* remove ax-allocator and bitmap-allocator crates ([#1878](https://github.com/rcore-os/tgoskits/pull/1878))
+
 ## [0.8.14](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.13...ax-alloc-v0.8.14) - 2026-08-03
 
 ### Other

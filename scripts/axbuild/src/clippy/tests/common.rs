@@ -6,12 +6,7 @@ use std::{
 use cargo_metadata::{Metadata, Package};
 use serde_json::Value;
 
-use crate::clippy::{
-    check::{ClippyCheck, ClippyDepsMode},
-    expand::expand_clippy_checks,
-    runner::CargoRunner,
-    selection::SelectedClippyPackage,
-};
+use crate::clippy::{check::ClippyCheck, expand::expand_clippy_checks, runner::CargoRunner};
 
 pub(super) fn pkg(
     name: &str,
@@ -178,15 +173,7 @@ pub(super) fn metadata_for_packages(packages: &[Package]) -> Metadata {
 }
 
 pub(super) fn expand(packages: &[Package]) -> Vec<ClippyCheck> {
-    let selected = packages
-        .iter()
-        .cloned()
-        .map(|package| SelectedClippyPackage {
-            package,
-            deps_mode: ClippyDepsMode::NoDeps,
-        })
-        .collect::<Vec<_>>();
-    expand_clippy_checks(&selected, &metadata_for_packages(packages))
+    expand_clippy_checks(packages, &metadata_for_packages(packages))
         .expect("test package clippy checks should expand")
 }
 
@@ -204,6 +191,7 @@ pub(super) fn args(all: bool, packages: &[&str]) -> crate::ClippyArgs {
 pub(super) struct FakeCargoRunner {
     results: HashMap<ClippyCheck, bool>,
     pub(super) invocations: Vec<(PathBuf, ClippyCheck)>,
+    future_incompat_report: Option<String>,
 }
 
 impl FakeCargoRunner {
@@ -211,7 +199,13 @@ impl FakeCargoRunner {
         Self {
             results: results.iter().cloned().collect(),
             invocations: Vec::new(),
+            future_incompat_report: None,
         }
+    }
+
+    pub(super) fn with_future_incompat_report(mut self, report: serde_json::Value) -> Self {
+        self.future_incompat_report = Some(report.to_string());
+        self
     }
 }
 
@@ -219,6 +213,13 @@ impl CargoRunner for FakeCargoRunner {
     fn run_clippy(&mut self, workspace_root: &Path, check: &ClippyCheck) -> anyhow::Result<bool> {
         self.invocations
             .push((workspace_root.to_path_buf(), check.clone()));
+        if let Some(report) = &self.future_incompat_report {
+            std::fs::create_dir_all(workspace_root.join("target"))?;
+            std::fs::write(
+                workspace_root.join("target/.future-incompat-report.json"),
+                report,
+            )?;
+        }
         Ok(*self.results.get(check).unwrap_or(&true))
     }
 }

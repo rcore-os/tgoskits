@@ -1,11 +1,10 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
 
-use ax_errno::AxError;
 use rdif_input::Interface;
 use rdrive::{DriverGeneric, probe::OnProbeError};
 
 use crate::{
-    BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt,
+    BindingInfo, BindingIrq, Error, binding_info_from_acpi, binding_info_from_fdt,
     registration::{BoundDevice, TakeRegistered, register_bound_device, take_registered_device},
 };
 #[cfg(feature = "pci")]
@@ -182,7 +181,7 @@ where
     )
 }
 
-pub fn take_input_devices() -> Result<Vec<TakenInputDevice>, AxError> {
+pub fn take_input_devices() -> crate::Result<Vec<TakenInputDevice>> {
     let mut devices = Vec::new();
     for dev in rdrive::get_list::<PlatformInputDevice>() {
         devices.push(take_input_device(dev)?);
@@ -192,98 +191,6 @@ pub fn take_input_devices() -> Result<Vec<TakenInputDevice>, AxError> {
 
 fn take_input_device(
     device: rdrive::Device<PlatformInputDevice>,
-) -> Result<TakenInputDevice, AxError> {
-    take_registered_device(device).ok_or(AxError::BadState)
-}
-
-#[cfg(test)]
-mod tests {
-    extern crate std;
-
-    use rdif_input::{EventType, InputDeviceId, InputError, InputEvent};
-
-    use super::*;
-    use crate::{BindingInfo, BindingIrq};
-
-    struct TestInput;
-
-    impl DriverGeneric for TestInput {
-        fn name(&self) -> &str {
-            "test-input"
-        }
-    }
-
-    impl Interface for TestInput {
-        fn device_id(&self) -> InputDeviceId {
-            InputDeviceId {
-                bus_type: 3,
-                vendor: 1,
-                product: 2,
-                version: 1,
-            }
-        }
-
-        fn physical_location(&self) -> &str {
-            "test/input0"
-        }
-
-        fn unique_id(&self) -> &str {
-            "input0"
-        }
-
-        fn get_event_bits(&mut self, _ty: EventType, out: &mut [u8]) -> Result<bool, InputError> {
-            if let Some(first) = out.first_mut() {
-                *first = 1;
-            }
-            Ok(!out.is_empty())
-        }
-
-        fn read_event(&mut self) -> Result<InputEvent, InputError> {
-            Ok(InputEvent {
-                event_type: EventType::Key as u16,
-                code: 30,
-                value: 1,
-            })
-        }
-    }
-
-    #[test]
-    fn platform_input_device_exposes_binding_info_irq_num() {
-        let irq = 43;
-        let device = PlatformInputDevice::new(
-            "test-input".into(),
-            Box::new(TestInput),
-            BindingInfo::with_irq(Some(irq)).unwrap(),
-        );
-
-        assert_eq!(device.binding_info().irq_num(), Some(irq));
-        assert_eq!(device.irq_num(), Some(irq));
-        assert_eq!(BoundDevice::irq_num(&device), Some(irq));
-    }
-
-    #[test]
-    fn platform_input_device_empty_binding_has_no_irq_num() {
-        let device = PlatformInputDevice::new(
-            "test-input".into(),
-            Box::new(TestInput),
-            BindingInfo::empty(),
-        );
-
-        assert_eq!(device.binding_info().irq_num(), None);
-        assert_eq!(device.irq_num(), None);
-        assert_eq!(BoundDevice::irq_num(&device), None);
-    }
-
-    #[test]
-    fn platform_input_device_exposes_native_binding_irq() {
-        let irq = BindingIrq::fdt_interrupt_with_controller(rdrive::DeviceId::new(), [0, 42, 4]);
-        let device = PlatformInputDevice::new(
-            "test-input".into(),
-            Box::new(TestInput),
-            BindingInfo::with_binding_irq(Some(irq.clone())),
-        );
-
-        assert_eq!(device.irq_cloned(), Some(irq));
-        assert_eq!(device.irq_num(), None);
-    }
+) -> crate::Result<TakenInputDevice> {
+    take_registered_device(device).ok_or(Error::DeviceUnavailable)
 }

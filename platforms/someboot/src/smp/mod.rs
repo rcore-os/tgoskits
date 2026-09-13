@@ -1,7 +1,7 @@
 use core::{
     alloc::Layout,
     mem::size_of,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
 };
 
 use kernutil::memory::MemoryType;
@@ -22,6 +22,98 @@ static CPU_AREA_LAYOUT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static CPU_AREA_RUNTIME_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 const PERCPU_INIT_OK: u32 = 0;
+
+const CPU_BOOT_DEAD: u32 = 0;
+const CPU_BOOT_KICKED: u32 = 1;
+const CPU_BOOT_ALIVE: u32 = 2;
+const CPU_BOOT_SHOULD_ONLINE: u32 = 3;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CpuBootStatus {
+    WaitingForAlive,
+    Alive,
+}
+
+/// Per-CPU synchronization owned by the generic secondary-boot core.
+///
+/// This object is deliberately separate from [`PerCpuMeta`]. Metadata is an
+/// immutable trampoline ABI after publication, while this object is the sole
+/// mutable owner of the `DEAD -> KICKED -> ALIVE -> SHOULD_ONLINE` handshake.
+#[repr(C)]
+pub(crate) struct CpuBootSync {
+    state: AtomicU32,
+}
+
+impl CpuBootSync {
+    const fn new() -> Self {
+        Self {
+            state: AtomicU32::new(CPU_BOOT_DEAD),
+        }
+    }
+
+    fn prepare_kick(&self) -> Result<(), CpuBootPrepareError> {
+        self.state
+            .compare_exchange(
+                CPU_BOOT_DEAD,
+                CPU_BOOT_KICKED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|state| CpuBootPrepareError::UnexpectedState { state })
+    }
+
+    fn report_alive(&self) -> Result<(), CpuBootPrepareError> {
+        self.state
+            .compare_exchange(
+                CPU_BOOT_KICKED,
+                CPU_BOOT_ALIVE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|state| CpuBootPrepareError::UnexpectedState { state })
+    }
+
+    fn status(&self) -> Result<CpuBootStatus, CpuBootPrepareError> {
+        match self.state.load(Ordering::Acquire) {
+            CPU_BOOT_KICKED => Ok(CpuBootStatus::WaitingForAlive),
+            CPU_BOOT_ALIVE => Ok(CpuBootStatus::Alive),
+            state => Err(CpuBootPrepareError::UnexpectedState { state }),
+        }
+    }
+
+    fn release_alive(&self) -> Result<(), CpuBootPrepareError> {
+        self.state
+            .compare_exchange(
+                CPU_BOOT_ALIVE,
+                CPU_BOOT_SHOULD_ONLINE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|state| CpuBootPrepareError::UnexpectedState { state })
+    }
+
+    fn wait_until_released(&self) {
+        while self.state.load(Ordering::Acquire) != CPU_BOOT_SHOULD_ONLINE {
+            core::hint::spin_loop();
+        }
+    }
+
+    #[cfg(test)]
+    fn state(&self) -> u32 {
+        self.state.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum CpuBootPrepareError {
+    #[error("logical CPU {cpu_index} has no published boot synchronization")]
+    Missing { cpu_index: usize },
+    #[error("CPU boot synchronization is in unexpected state {state}")]
+    UnexpectedState { state: u32 },
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 enum PerCpuLayoutError {
@@ -178,6 +270,8 @@ pub struct PerCpuMeta {
 
     pub boot_table_paddr: usize,
     pub primary_table_paddr: usize,
+    /// Immutable boot capacity in the Linux 0..=1024 scale.
+    pub capacity: u16,
 }
 
 /// Immutable CPU identity resolved from the allocated per-CPU metadata table.
@@ -259,6 +353,15 @@ pub fn runtime_cpu_target(idx: usize) -> Result<RuntimeCpuTarget, RuntimeCpuTarg
     })
 }
 
+/// Returns the immutable boot capacity for one logical CPU, in `0..=1024`.
+///
+/// Missing or incomplete firmware capacity data gives 1024 for every CPU.
+/// Returns `None` before metadata publication or for an invalid logical index.
+/// Reads only published metadata; no firmware parsing or allocation occurs.
+pub fn cpu_capacity(cpu_index: usize) -> Option<u16> {
+    cpu_meta(cpu_index).map(|meta| meta.capacity)
+}
+
 /// Returns the number of CPU slots published by [`alloc_percpu`].
 ///
 /// Unlike [`cpu_count`], this accessor never revisits firmware tables.
@@ -269,6 +372,53 @@ pub fn runtime_cpu_count() -> usize {
 /// Physical address of cpu meta
 pub(crate) fn cpu_meta_addr(idx: usize) -> Option<usize> {
     layout::cpu_meta_addr(idx)
+}
+
+fn cpu_boot_sync(idx: usize) -> Option<&'static CpuBootSync> {
+    if idx >= runtime_cpu_count() {
+        return None;
+    }
+    let sync_start = layout::cpu_boot_sync_addr(idx)?;
+    let sync_va = phys_to_virt(sync_start);
+    // SAFETY: initialization constructs one CpuBootSync in every reserved
+    // slot before the Release publication of CPU_AREA_RUNTIME_COUNT. Its
+    // address remains stable until shutdown and all mutation is atomic.
+    Some(unsafe { &*sync_va.cast::<CpuBootSync>() })
+}
+
+pub(crate) fn prepare_secondary_boot(cpu_index: usize) -> Result<(), CpuBootPrepareError> {
+    cpu_boot_sync(cpu_index)
+        .ok_or(CpuBootPrepareError::Missing { cpu_index })?
+        .prepare_kick()
+}
+
+pub(crate) fn secondary_boot_status(
+    cpu_index: usize,
+) -> Result<CpuBootStatus, CpuBootPrepareError> {
+    cpu_boot_sync(cpu_index)
+        .ok_or(CpuBootPrepareError::Missing { cpu_index })?
+        .status()
+}
+
+pub(crate) fn release_secondary_boot(cpu_index: usize) -> Result<(), CpuBootPrepareError> {
+    release_secondary_boot_from(cpu_boot_sync(cpu_index), cpu_index)
+}
+
+fn release_secondary_boot_from(
+    sync: Option<&CpuBootSync>,
+    cpu_index: usize,
+) -> Result<(), CpuBootPrepareError> {
+    sync.ok_or(CpuBootPrepareError::Missing { cpu_index })?
+        .release_alive()
+}
+
+pub(crate) fn synchronize_secondary_boot(cpu_index: usize) {
+    let sync = cpu_boot_sync(cpu_index)
+        .unwrap_or_else(|| panic!("missing boot synchronization for CPU {cpu_index}"));
+    sync.report_alive().unwrap_or_else(|error| {
+        panic!("CPU {cpu_index} reported alive from an invalid boot state: {error}")
+    });
+    sync.wait_until_released();
 }
 
 pub(crate) fn cpu_area_phys(idx: usize) -> Option<usize> {
@@ -494,7 +644,11 @@ fn initialize_runtime_metadata() {
     let entry_phys =
         crate::mem::virt_to_phys(crate::entry::secondary_entry as *const () as *const u8);
     let entry_virt = crate::mem::__kimage_va(entry_phys) as usize;
-    for (cpu_index, hardware_id) in __cpu_id_list().enumerate() {
+    let cpu_ids = cpu_iter::cpu_id_list();
+    let capacities = cpu_ids
+        .capacity_fdt(crate::fdt::fdt_base)
+        .and_then(|fdt| crate::fdt::CpuCapacities::from_fdt(fdt, cpu_ids.clone()));
+    for (cpu_index, hardware_id) in cpu_ids.enumerate() {
         let meta_start = cpu_meta_addr(cpu_index)
             .expect("reserved per-CPU metadata slot must remain addressable");
         let stack_top = layout::cpu_stack_top(cpu_index)
@@ -507,12 +661,22 @@ fn initialize_runtime_metadata() {
             entry_virt,
             boot_table_paddr: 0,
             primary_table_paddr: 0,
+            capacity: capacities
+                .as_ref()
+                .and_then(|caps| caps.get(hardware_id))
+                .unwrap_or(crate::fdt::CPU_CAPACITY_SCALE),
         };
+        let sync_start = layout::cpu_boot_sync_addr(cpu_index)
+            .expect("reserved per-CPU boot synchronization slot must remain addressable");
         let meta_va = phys_to_virt(meta_start);
+        let sync_va = phys_to_virt(sync_start);
         debug_assert_eq!((meta_va as usize) % meta_align(), 0);
         // SAFETY: early allocation reserved this unique raw metadata slot and
         // no consumer can observe it before runtime count publication.
         unsafe { meta_va.cast::<PerCpuMeta>().write(meta) };
+        // SAFETY: every CPU area owns exactly one disjoint synchronization
+        // slot and runtime publication has not occurred yet.
+        unsafe { sync_va.cast::<CpuBootSync>().write(CpuBootSync::new()) };
     }
 }
 
@@ -553,7 +717,77 @@ mod tests {
             entry_virt: 0,
             boot_table_paddr: 0,
             primary_table_paddr: 0,
+            capacity: crate::fdt::CPU_CAPACITY_SCALE,
         })
+    }
+
+    #[test]
+    fn boot_sync_release_requires_the_matching_cpu_to_report_alive() {
+        let first = CpuBootSync::new();
+        let second = CpuBootSync::new();
+
+        first.prepare_kick().unwrap();
+        second.prepare_kick().unwrap();
+        second.report_alive().unwrap();
+
+        assert_eq!(
+            first.release_alive(),
+            Err(CpuBootPrepareError::UnexpectedState {
+                state: CPU_BOOT_KICKED
+            })
+        );
+        second.release_alive().unwrap();
+        assert_eq!(first.state(), CPU_BOOT_KICKED);
+        assert_eq!(second.state(), CPU_BOOT_SHOULD_ONLINE);
+    }
+
+    #[test]
+    fn boot_sync_observation_does_not_release_an_alive_cpu() {
+        let sync = CpuBootSync::new();
+
+        sync.prepare_kick().unwrap();
+        assert_eq!(sync.status(), Ok(CpuBootStatus::WaitingForAlive));
+
+        sync.report_alive().unwrap();
+        assert_eq!(sync.status(), Ok(CpuBootStatus::Alive));
+        assert_eq!(sync.state(), CPU_BOOT_ALIVE);
+    }
+
+    #[test]
+    fn boot_sync_rejects_a_cpu_already_released_to_online_startup() {
+        let sync = CpuBootSync::new();
+        sync.prepare_kick().unwrap();
+        sync.report_alive().unwrap();
+        sync.release_alive().unwrap();
+
+        assert_eq!(
+            sync.prepare_kick(),
+            Err(CpuBootPrepareError::UnexpectedState {
+                state: CPU_BOOT_SHOULD_ONLINE
+            })
+        );
+    }
+
+    #[test]
+    fn boot_sync_rejects_alive_before_the_cpu_is_kicked() {
+        let sync = CpuBootSync::new();
+
+        assert_eq!(
+            sync.report_alive(),
+            Err(CpuBootPrepareError::UnexpectedState {
+                state: CPU_BOOT_DEAD
+            })
+        );
+    }
+
+    #[test]
+    fn releasing_an_unpublished_cpu_returns_a_typed_error() {
+        assert_eq!(
+            release_secondary_boot_from(None, usize::MAX),
+            Err(CpuBootPrepareError::Missing {
+                cpu_index: usize::MAX
+            })
+        );
     }
 
     #[test]

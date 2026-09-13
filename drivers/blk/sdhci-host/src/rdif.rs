@@ -6,23 +6,27 @@ pub use rdif_block::{
     ControllerUpdate, HardIrqHandler, HardwareQueue, OwnedRequest, QueueInfo, QueueLimits,
     RequestFlags, RequestId as RdifRequestId, RequestOp, SubmitError,
 };
+use sdmmc_host::HostParts;
 #[cfg(test)]
 use sdmmc_protocol::rdif::config as protocol_rdif_config;
 pub use sdmmc_protocol::rdif::{config::BlockConfig, device::BlockDevice, queue::BlockQueue};
-use sdmmc_protocol::sdio::card::SdioSdmmc;
+use sdmmc_protocol::sdio::native::SdMmcCard;
 
 use crate::{ADMA2_MAX_BLOCKS, ADMA2_MAX_TRANSFER_SIZE, DWC_MSHC_ADMA_BOUNDARY, Sdhci};
 
-pub fn device(card: SdioSdmmc<Sdhci>, config: BlockConfig) -> BlockDevice<Sdhci> {
-    BlockDevice::new(card, config)
+pub fn device(
+    parts: HostParts<Sdhci, crate::SdhciIrqHandle, crate::SdhciCardIrqHandle>,
+    config: BlockConfig,
+) -> BlockDevice<Sdhci> {
+    BlockDevice::new(SdMmcCard::new(parts.bus), parts.irq, config)
 }
 
 pub fn initializing_device(
-    card: SdioSdmmc<Sdhci>,
+    parts: HostParts<Sdhci, crate::SdhciIrqHandle, crate::SdhciCardIrqHandle>,
     config: BlockConfig,
     preference: sdmmc_protocol::sdio::init::CardInitPreference,
 ) -> BlockDevice<Sdhci> {
-    BlockDevice::new_initializing(card, config, preference)
+    BlockDevice::new_initializing(SdMmcCard::new(parts.bus), parts.irq, config, preference)
 }
 
 pub fn dma_config(name: &'static str, capacity_blocks: u64, dma: &DeviceDma) -> BlockConfig {
@@ -38,13 +42,26 @@ mod tests {
 
     #[test]
     fn dma_config_advertises_adma_window() {
-        let dma = dma_api::DeviceDma::new_legacy(u32::MAX as u64, &TEST_DMA);
+        let dma = dma_api::DeviceDma::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(u32::MAX as u64),
+            ),
+            &TEST_DMA,
+        );
         let config = dma_config("sdhci", 16, &dma);
         let limits = protocol_rdif_config::queue_limits(&config);
 
         assert_eq!(limits.max_blocks_per_request, ADMA2_MAX_BLOCKS);
-        assert_eq!(limits.max_segment_size, ADMA2_MAX_TRANSFER_SIZE);
-        assert_eq!(limits.segment_boundary, Some(DWC_MSHC_ADMA_BOUNDARY));
+        assert_eq!(
+            limits.dma.constraints().max_segment_size,
+            Some(ADMA2_MAX_TRANSFER_SIZE)
+        );
+        assert_eq!(
+            limits.dma.constraints().boundary,
+            Some(DWC_MSHC_ADMA_BOUNDARY)
+        );
         assert_eq!(limits.max_inflight, 1);
         assert!(config.uses_dma());
     }

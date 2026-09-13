@@ -19,9 +19,8 @@ keywords = [
 ]
 license = "Apache-2.0"
 name = "buddy-slab-allocator"
-readme = "README.md"
 repository = "https://github.com/arceos-hypervisor/buddy-slab-allocator"
-version = "0.4.7"
+version = "0.6.1"
 
 [[bench]]
 harness = false
@@ -36,15 +35,12 @@ harness = false
 name = "global_allocator"
 
 [dependencies]
-ax-kspin = { workspace = true }
-axtest = { workspace = true, optional = true }
+ax-crate-interface = { workspace = true }
+ax-sync = { workspace = true }
 log = "0.4"
 
 [features]
-axtest = ["dep:axtest"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+host-test = ["ax-sync/host-test"]
 
 [dev-dependencies]
 divan = "0.1.21"

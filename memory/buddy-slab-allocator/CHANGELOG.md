@@ -83,6 +83,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]: https://github.com/arceos-hypervisor/buddy-slab-allocator/compare/v0.2.0...HEAD
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.6.0...buddy-slab-allocator-v0.6.1) - 2026-09-12
+
+### Other
+
+- *(buddy-slab-allocator)* skip the full-list walk when no cross-CPU free is pending. ([#2301](https://github.com/rcore-os/tgoskits/pull/2301))
+
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.5.0...buddy-slab-allocator-v0.6.0) - 2026-09-09
+
+### Fixed
+
+- *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.4.8...buddy-slab-allocator-v0.5.0) - 2026-08-20
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
+## [0.4.8](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.4.7...buddy-slab-allocator-v0.4.8) - 2026-08-09
+
+### Other
+
+- updated the following local packages: axtest, ax-kspin
+
 ## [0.4.7](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.4.6...buddy-slab-allocator-v0.4.7) - 2026-08-03
 
 ### Other

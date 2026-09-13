@@ -16,7 +16,7 @@
 //!
 //! This module provides functionality to generate VM configuration templates
 //! with sensible defaults based on user-provided parameters.
-use crate::{GuestConfig, GuestDevices, GuestType, VMBaseConfig, VMKernelConfig};
+use crate::*;
 
 /// Configuration parameters for generating a VM template.
 ///
@@ -82,7 +82,6 @@ pub fn get_vm_config_template(params: VmTemplateParams) -> GuestConfig {
             ramdisk_load_addr: None,
             image_location: Some(params.image_location),
             cmdline: params.cmdline, // Optional kernel command line
-            disk_path: None,         // No disk image by default
             memory_regions: vec![],  // Memory regions to be defined per architecture
             configured_memory_region_count: 0,
         },

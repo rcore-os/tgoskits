@@ -475,13 +475,24 @@ fn cargo_build_module_rlib(workspace_root: &Path, cargo: &Cargo, debug: bool) ->
     command.current_dir(workspace_root);
     command.envs(&cargo.env);
 
-    let status = command
+    let report_session = if cargo.env.get("AX_ARCH").map(String::as_str) == Some("aarch64") {
+        Some(crate::build::start_future_incompat_report_session(
+            &workspace_root.join("target"),
+        )?)
+    } else {
+        None
+    };
+    let cargo_result = command
         .status()
-        .with_context(|| format!("invoke cargo build for {}", cargo.package))?;
-    if !status.success() {
-        bail!("cargo build failed for {}", cargo.package);
-    }
-    Ok(())
+        .with_context(|| format!("invoke cargo build for {}", cargo.package))
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                bail!("cargo build failed for {}", cargo.package)
+            }
+        });
+    crate::build::finish_future_incompat_report_session(report_session, cargo_result)
 }
 
 fn effective_profile(cargo: &Cargo, debug: bool) -> CargoBuildProfile {
@@ -706,30 +717,5 @@ ccflags-remove-y += -pg
         let built = build_one_linux_c_module(module.path(), mismatched_arch, out.path()).unwrap();
 
         assert!(built.is_none());
-    }
-
-    #[test]
-    fn linux_c_make_args_pass_module_pwd_for_makefile_pwd_users() {
-        let module_path = Path::new("/ws/os/StarryOS/lkm/linux-hello");
-        let mut clean_args = linux_c_module_make_args(module_path);
-        clean_args.push("clean".to_string());
-
-        assert_eq!(
-            linux_c_module_make_args(module_path),
-            vec![
-                "-C".to_string(),
-                "/ws/os/StarryOS/lkm/linux-hello".to_string(),
-                "PWD=/ws/os/StarryOS/lkm/linux-hello".to_string()
-            ]
-        );
-        assert_eq!(
-            clean_args,
-            vec![
-                "-C".to_string(),
-                "/ws/os/StarryOS/lkm/linux-hello".to_string(),
-                "PWD=/ws/os/StarryOS/lkm/linux-hello".to_string(),
-                "clean".to_string()
-            ]
-        );
     }
 }

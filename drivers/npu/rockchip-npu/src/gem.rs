@@ -86,10 +86,17 @@ impl GemPool {
     }
 
     pub fn create(&mut self, args: &mut RknpuMemCreate) -> Result<(), RknpuError> {
+        let requested_size =
+            usize::try_from(args.size).map_err(|_| RknpuError::InvalidParameter)?;
+        // Owned GEMs are exposed through mmap as device mappings. Allocate and
+        // zero the complete final page so that mmap never publishes bytes past
+        // the initialized DMA backing. Imported buffers keep their exact size
+        // and are capped to complete pages by the mmap path.
+        let allocation_size = page_align_size(requested_size, self.dma.page_size())?;
         let data = self
             .dma
             .contiguous_array_zero_with_align::<u8>(
-                args.size as _,
+                allocation_size,
                 0x1000,
                 DmaDirection::Bidirectional,
             )
@@ -210,10 +217,10 @@ impl GemPool {
                     }
 
                     if args.flags & RKNPU_MEM_SYNC_TO_DEVICE != 0 {
-                        data.prepare_for_device(offset, size);
+                        data.prepare_for_device(offset..offset + size);
                     }
                     if args.flags & RKNPU_MEM_SYNC_FROM_DEVICE != 0 {
-                        data.complete_for_cpu(offset, size);
+                        data.complete_for_cpu(offset..offset + size);
                     }
                     return Ok(());
                 }
@@ -242,7 +249,7 @@ impl GemPool {
     pub fn comfirm_write_all(&mut self) -> Result<(), RknpuError> {
         for buffer in self.pool.values_mut() {
             if let GemBuffer::Owned { data, .. } = buffer {
-                data.prepare_for_device_all();
+                data.prepare_for_device(0..data.bytes_len());
             }
         }
         Ok(())
@@ -251,11 +258,20 @@ impl GemPool {
     pub fn prepare_read_all(&mut self) -> Result<(), RknpuError> {
         for buffer in self.pool.values_mut() {
             if let GemBuffer::Owned { data, .. } = buffer {
-                data.complete_for_cpu_all();
+                data.complete_for_cpu(0..data.bytes_len());
             }
         }
         Ok(())
     }
+}
+
+fn page_align_size(size: usize, page_size: usize) -> Result<usize, RknpuError> {
+    if page_size == 0 || !page_size.is_power_of_two() {
+        return Err(RknpuError::InvalidParameter);
+    }
+    size.checked_add(page_size - 1)
+        .map(|size| size & !(page_size - 1))
+        .ok_or(RknpuError::InvalidParameter)
 }
 
 #[cfg(test)]
@@ -309,7 +325,14 @@ mod tests {
 
     fn import_only_pool() -> GemPool {
         static OP: NoAllocOp = NoAllocOp;
-        GemPool::new(DeviceDma::new_legacy(u32::MAX as u64, &OP))
+        GemPool::new(DeviceDma::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(u32::MAX as u64),
+            ),
+            &OP,
+        ))
     }
 
     /// A retainer whose drop is observable, standing in for an exporter's backing
@@ -367,6 +390,21 @@ mod tests {
         assert_eq!(info.dma_addr, 0x8000_0000);
         assert_eq!(info.obj_addr, 0x1234_0000);
         assert_eq!(info.size, 0x2000);
+    }
+
+    #[test]
+    fn owned_gem_backing_is_page_aligned_before_mmap_export() {
+        assert_eq!(page_align_size(0x1000, 0x1000), Ok(0x1000));
+        assert_eq!(page_align_size(0x1001, 0x1000), Ok(0x2000));
+        assert_eq!(page_align_size(0, 0x1000), Ok(0));
+        assert_eq!(
+            page_align_size(usize::MAX, 0x1000),
+            Err(RknpuError::InvalidParameter)
+        );
+        assert_eq!(
+            page_align_size(0x1001, 0),
+            Err(RknpuError::InvalidParameter)
+        );
     }
 
     #[test]

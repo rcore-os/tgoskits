@@ -13,8 +13,10 @@ args = [
 ]
 uefi = false
 to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "sh /usr/bin/run_node_carpet.sh"
-success_regex = ['(?m)^TEST PASSED\s*$']
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
 timeout = 6000
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "sh /usr/bin/run_node_carpet.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']

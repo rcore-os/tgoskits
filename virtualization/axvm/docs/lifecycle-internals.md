@@ -3,8 +3,8 @@
 实现者视角的内部细节文档，配套 [`lifecycle.md`](lifecycle.md)（API 使用指南，面向调用公共 API 的
 VMM/控制面）。本文档回答四类实现问题：**状态到底带着什么资源跑**（§1 双维度）、**Machine 的完整
 内部转换图**（§2）、**runtime 何时创建/回收/被取走**（§3 runtime 生命周期）、**哪些状态在锁内
-不可观测**（§4）；并附**逐条对照源码的转换规则表**（§5）与**外部接口文件对照**（§6）。所有行号
-指向提交 **`31f341abc`**（dev 分支，2026-07-31）；dev 前进导致行号漂移时，需对照最新代码修正。
+不可观测**（§4）；并附**逐条对照源码的转换规则表**（§5）与**外部接口文件对照**（§6）。源码定位
+以符号名和相对路径为准；开发分支持续前进，文中行号仅用于辅助定位，不能代替对当前实现的核对。
 
 > **定位：** 本文档的读者是修改 `src/lifecycle/`、`src/runtime/`、`src/vm/` 的开发者与上层 VMM
 > 中需要深入状态内部（而非只消费 `VmStatus` 投影）的实现者。只消费公共 API 的控制面开发者读
@@ -19,15 +19,17 @@ VMM/控制面）。本文档回答四类实现问题：**状态到底带着什�
   teardown 路径要能丢弃）；进入 `Failed`/`Destroyed` 后随状态一起被丢弃（`Failed(String)`
   只带错误字符串）。
 - **H（runtime 资源，`Arc<VmRuntimeHandle>`）**：只在运行态存活。结构定义于
-  `src/vm/mod.rs:180-186`，字段：
+  `src/vm/mod.rs`，关键字段：
   - `wait_queue`：vCPU park/唤醒队列。**pause 不主动 park vCPU**：vCPU 在下一次 VM-exit
     观察到 `suspending()` 后自行 `wait_for(!suspending)` 入队（vcpus.rs:342-350）；resume 时
-    `notify_all_vcpus` 才唤醒（runtime/mod.rs:106）；
-  - `vcpu_task_list`：`Mutex<BTreeMap<usize, AxTaskRef>>`，vCPU task 注册表（中断注入按
-    vCPU id 查表）;
-  - `pending_interrupts`：`Mutex<BTreeMap<usize, Vec<PendingInterrupt>>>`，未注入的中断缓冲
+    runtime 的 `notify_all` 才唤醒；`notification_generation` 同时封住“检查后、入睡前”发布事件的
+    lost-wakeup 窗口；
+  - `vcpu_threads`：`Mutex<VcpuThreadRegistry>`，分开保存 `active` 与 `retired` vCPU thread；后者
+    暂存不能由自身 join 的退出 thread，交给后续 CPU_ON 或 VM 清理路径回收；
+  - `irq_dispatcher`：`VcpuIrqDispatcher`，是 runtime 中唯一的 vCPU 中断缓冲。每个 vCPU 队列绑定
+    当前 thread id 形成的 owner generation，同时持有逻辑 pending 队列与 `kick_pending` 物理
+    doorbell 边；vCPU drain 逻辑队列时即确认该边，entry 前的 IRQ 关闭区负责封住新的发布竞态
     （生命周期见 §3.2）；
-  - `irq_dispatcher`：`VcpuIrqDispatcher`，vCPU task 的中断路由；
   - `running_halting_vcpu_count`：`AtomicUsize`，正在退出的 vCPU 计数（`finish_stop` 依赖它）。
 
 ### 1.1 各状态携带的资源（`src/lifecycle/machine.rs:6-34`）
@@ -131,18 +133,17 @@ stateDiagram-v2
 
 ## 3. Runtime 生命周期
 
-### 3.1 runtime 由 `start_with` 的闭包**创建**，不是被取入
+### 3.1 runtime 由 `AxVM::start` 新建，再由 `start_with` 提交
 
-`start_with`（machine.rs:108-168）的签名是 `F: FnOnce(&mut R) -> AxVmResult<H>`——闭包
-**返回一个新建的 H**。在 vm 层（vm/mod.rs:779-809）这个闭包：
-- 校验 `vcpu_list`/devices/`interrupt_fabric`（vm/mod.rs:793-804）；
-- 构造 `VmRuntimeHandle::new()`（vm/mod.rs:791）；
-- `spawn_task` 建主 vCPU task（:806）、`add_vcpu_task` 注册（:807）。
+`start_with` 的签名是 `F: FnOnce(&mut R) -> AxVmResult<H>`，闭包负责返回待提交的 runtime。
+vm 层 `AxVM::start` 先创建主 vCPU task 与 `VmRuntimeHandle`，随后校验
+`vcpu_list`/devices/`interrupt_controller`，激活架构设备，再把新 runtime 交给
+`start_with` 完成状态转换；转换成功后才 spawn 并登记主 vCPU task。
 
-因此 `start_with` **只接受 `Stopped{runtime: None}`**（machine.rs:142-157）；`{runtime: Some}`
-返回 `InvalidTransition`。vm 层 `start` 在调 `start_with` 之前先 `take_stopped_runtime`
-（vm/mod.rs:781）清空旧 runtime，保证满足该前置条件。**"把旧 runtime 清掉 + 新建一个"两步
-合并成了外部视角的一次 `start()`**。
+`start_with` 接受 `Ready` 或 `Stopped{resources: Some, runtime: None}`；
+`Stopped{runtime: Some}` 返回 `InvalidTransition`。vm 层从 `Stopped` 启动时先调用
+`take_stopped_runtime()` 并 join 旧 vCPU task，再重新 prepare。**“回收旧 runtime + 重建设备资源 +
+新建 runtime”被合并成外部视角的一次 `start()`**。
 
 ### 3.2 runtime 只在运行态存活
 
@@ -151,21 +152,51 @@ lifecycle states"（vm/mod.rs:179）。它随 `start_with` 创建、随 `take_st
 teardown 回收，`Ready`/`Failed`/`Destroyed` 一律不携带。`reset()` 的"旧 runtime teardown"
 即走 `stop_and_join_runtime(Forced)` + `take_stopped_runtime`。
 
-**`pending_interrupts` 随 runtime 生死：** `queue_interrupt`（runtime 层**内部接口**，
-`pub(crate)`，vcpus.rs:86，由 crate 内设备模拟/中断控制器经 manager.rs:79-81 的 `inject_interrupt`
-调用，**非 `AxVM` 公共 API**）只在 VM 处于 `Running`/`Paused` 时接受新中断（vcpus.rs:89，否则
-返回 `BadState`——即 `AxVmError::InvalidState` 的宏关键字，error.rs:360-362；lifecycle.md §5 用
-`InvalidState` 指同一变体），入队后 `notify_all` + host IPI（vcpus.rs:96-102）；vCPU 在每次 run
-前 `drain_pending_interrupts` 并注入 guest（vcpus.rs:134-152）。**并发时序**：准入检查调
-`vm.status()`（vcpus.rs:89）→ **同一把 machine lock**（§4），**不存在独立于 machine lock 的
-原子标志**——若 `request_stop_with` 此刻正持锁转换，`queue_interrupt` 自旋等锁释放后读到
-`Stopping` 而拒绝；时序是"stop 转换持锁 → queue 等锁 → 读到已翻转状态 → 拒绝"，两操作无状态
-翻转竞态（最终以转换完成后的状态为准）。因此：
+**观察性计数器（VM 级聚合，非 per-vCPU）**：`VmRuntimeHandle` 持有一对 VM 级单调计数器
+`guest_entry_count` / `guest_park_count`（均 `AtomicU64`），由 VM 内**所有** vCPU thread 共享
+递增，不是每个 vCPU 各一份：
+- `guest_entry_count`：仅在 `run_vcpu` **成功返回后**由 vCPU run loop 调用 `inc_guest_entry`
+  递增；`Err` 分支（bind/`before_vcpu_run`/`vcpu.run()`/退出处理失败、guest 从未运行）**不**
+  递增。reset 重建 runtime 时归零。
+- `guest_park_count`：仅当 vCPU 在 suspend wait 的等待条件中真正 park（持锁、入队前发布，
+  vcpus.rs 的 `wait_for` 闭包内 `inc_guest_park`）时递增；resume 抢跑使 vCPU 从未 park，则不递增。
+- 语义边界：两者都是 VM 级聚合弱信号——证明"至少一个 vCPU 有进展"，**不是**"全部 vCPU/设备/
+  timer 已 quiesce"的强保证，也**不是**暂停完成确认 API（与 lifecycle.md §3 `pause()` 无确认 API
+  一致）。HTTP 控制面用它们区分"真实重入/真实 park"与"仅状态翻转"，但不应据此断言执行面已静默。
+
+**dispatcher 随 runtime 生死：** `queue_interrupt`（runtime 层**内部接口**，`pub(crate)`，由 crate
+内设备模拟/中断控制器调用，**非 `AxVM` 公共 API**）只在 VM 处于 `Running`/`Paused` 时接受新中断，
+否则返回 `BadState`（即 `AxVmError::InvalidState` 的宏关键字；lifecycle.md §5 用 `InvalidState` 指同一
+变体）。`VmInterruptSender` 只保存 `Weak<AxVM>`，每次发送都在同一把 machine lock 下取得当前
+runtime，不缓存可能跨 stop/start/reset 失效的 dispatcher。
+
+每个 vCPU thread 注册时，runtime 先把 `thread.id().as_u64()` 作为 owner generation 注册到
+dispatcher，再将 thread 发布到 `vcpu_threads.active`。中断发送先从 active 表取得
+`(owner, pCPU)`，再用同一个 owner 入队；若 vCPU 已退出并以同一 vCPU id 重建，dispatcher 会拒绝旧
+producer 的过时代次，避免把旧生命周期的中断发布进新队列。退出时对应 owner 的 pending 与 kick
+状态一并清理；自身不能 join 的 thread 先移入 `retired`，由后续 CPU_ON 或 VM-wide cleanup 在其他
+thread 上 join。
+
+发送顺序是 **publish logical pending → notify wait queue → physical IPI doorbell**。队列把同一中断源
+合并为一个逻辑 pending owner，并以 `kick_pending` 合并物理 doorbell：只有 `false → true` 的发送者
+需要发 IPI；同一轮 drain 前的重复发布不会重复敲物理 IPI。vCPU 每次 guest entry 前在自身 thread 上
+drain dispatcher，通过架构注入接口把事件转交给 VGIC/vLAPIC 等 backend，并在 drain 时确认本轮
+`kick_pending`；backend pending 与物理 doorbell 生命周期彼此独立。随后 vCPU 关闭本地 IRQ，再在
+dispatcher 锁下复查队列：复查前发布的事件使本次 entry 重试，复查后发布的事件所触发的 IPI 保持
+pending 并迫使 guest 退出。这与 Linux KVM 的“关闭 IRQ → 发布 in-guest → 复查 request”顺序等价，
+封住“最后一次 drain 后、真正 VM-entry 前”的 lost-kick 窗口。所有跨 CPU doorbell 最终都经
+axruntime/ax-ipi 的共享 DeliveryEdge，逻辑 pending 状态与物理 IPI 不形成第二套计数路径。
+
+**并发时序**：准入检查调用 `vm.status()` → **同一把 machine lock**（§4），**不存在独立于 machine
+lock 的生命周期原子标志**——若 `request_stop_with` 此刻正持锁转换，`queue_interrupt` 等锁释放后
+读到 `Stopping` 而拒绝；时序是“stop 转换持锁 → queue 等锁 → 读到已翻转状态 → 拒绝”，两操作无
+状态翻转竞态（最终以转换完成后的状态为准）。因此：
 - 调用者收到 `BadState` 表示 VM 不再接受中断，应**丢弃**该中断（不重试）。
 - pause 后中断仍被缓冲、resume 后注入。
 - 进入 `Stopping` 后**新中断被拒**，但**已缓冲中断不会在进入时立即丢弃**——`Stopping` 期间
-  runtime 仍为 `Some`（§1.1），缓冲仍在；vCPU 若在退出前再跑一次仍会 drain 剩余中断。真正丢弃
-  发生在 **runtime 被回收时**（`take_stopped_runtime` 或 destroy 清理闭包），而非状态翻转时。
+  runtime 仍为 `Some`（§1.1），dispatcher 仍在；vCPU 若在退出前再跑一次仍会 drain 剩余中断。
+  真正丢弃发生在 vCPU owner 清理或 **runtime 被回收时**（`take_stopped_runtime` 或 destroy 清理
+  闭包），而非状态翻转时。
 - start/reset 重建 runtime → 空缓冲。
 
 ### 3.3 destroy 前置条件：必须已把 runtime 取走
@@ -215,14 +246,15 @@ vCPU 退出，不重复请求 stop。API 使用指南把这段概括为"`destroy
 （vm/mod.rs:929-940）对运行态先强制静默到 `Stopped`，再走 `reset_with` → `Ready` 内部瞬态 →
 prepare → `start`，所以外部视角 `reset()` 的终态是 `Running`（`Ready` 只是不可观测的中间态）。
 
-**start 与 reset（从 `Stopped` 出发）的实现层差别：** 两者都经 `prepare()` → `complete_vm_init`
-（prepare.rs:107-148）重建 vCPU/设备/中断结构并 `reset_transient_resources`（prepare.rs:125）。
+**start 与 reset（从 `Stopped` 出发）的实现层差别：** 两者都经 `AxVM::prepare()` →
+crate 内部的 `AxVM::prepare_resources_with()` 重建 vCPU/设备/中断结构并执行
+`AxVMResources::reset_transient_resources()`。
 差别：`reset()` 额外多走一次 `reset_with`（→`Ready` 瞬态），其闭包显式调
-`reset_transient_resources`（vm/mod.rs:933-937）；`start()` 不经过 `Ready`，靠 `prepare()`
-内部的 `complete_vm_init` 完成同等重建（vm/mod.rs:784）。即 `reset` 路径
+`reset_transient_resources`；`start()` 不经过 `Ready`，靠 `AxVM::prepare()` 内部的架构初始化
+最终调用 `AxVM::prepare_resources_with()` 完成同等重建。即 `reset` 路径
 `reset_transient_resources` 会执行两次（幂等）。幂等性由实现保证：每次调用都是**完全重建、非
-增量**——`devices.take()` 后重置（vm/mod.rs:407-411）、`address_space.clear()` 后按 `memory_regions`
-全量重映射（:412-428）、`vcpu_list`/`interrupt_fabric`/`address_layout` 置 `None`（:429-431）；
+增量**——`devices.take()` 后重置、`address_space.clear()` 后按 `memory_regions`
+全量重映射、`vcpu_list`/`interrupt_controller`/`address_layout` 置 `None`；
 重复调用等价于单次调用，不积累状态。外部视角二者都是 warm reboot——lifecycle.md §4
 已写明 start()-from-Stopped 同样"重新初始化 vCPU/设备/中断架构"、"重映射复用同一批 backing page"，
 两份文档一致（不存在"仅重建 runtime"的旧表述）。
@@ -239,7 +271,7 @@ prepare → `start`，所以外部视角 `reset()` 的终态是 `Running`（`Rea
 | `Destroying` | **destroy 入口瞬态**：`destroy_with` 第一行 `replace(self, Machine::Destroying)`（machine.rs:476），执行期间持锁、`status()` 不可观测；`destroy_with` 内也不调用 `status()`。**但清理闭包失败时不回滚**：`f(Some(resources))?` 出错即返回，machine 停在 `Destroying`（resources 已被闭包消费）——锁释放后 `status()` 可观测到 `Destroying`。这是三个"不可观测"态中**唯一可达的泄漏路径**：重试 `destroy()` 走 `f(None)` 到 `Destroyed`（machine.rs:552-556；对应 lifecycle.md §4 ②） | machine.rs:476、:483/:548/:553 |
 
 **锁语义：** `status()`（vm/mod.rs:621）与所有转换方法走**同一把 machine lock**——
-`Mutex<Machine<..>>`（vm/mod.rs:580，`ax_kspin::SpinNoIrq`），**不可重入**。因此
+`IrqSafeMutex<Machine<..>>`（由 `ax_std::os::arceos::sync` 导出），**不可重入**。因此
 "转换期间锁被持有 → `status()` 阻塞"是保证不可观测性的机制，不是巧合。这也意味着外部代码
 **只能观测到稳定态**（`Ready`/`Running`/`Paused`/`Stopping`/`Stopped`/`Destroyed`）、
 **确实失败后**的 `Failed`（machine.rs:120/:217 的闭包失败路径），以及 **destroy 清理失败后的
@@ -248,9 +280,8 @@ prepare → `start`，所以外部视角 `reset()` 的终态是 `Running`（`Rea
 
 `wait_until_stopped`（vm/mod.rs:873-893）在 machine 锁**外**执行：每次迭代 `status()` 单次取锁、
 其余时间 `yield_now`，锁不跨迭代持有——因此 `destroy()`/`reset()` 的等待期间，同一 VM 上其他
-task 调 `status()` 可正常返回 `Stopping`（与 lifecycle.md §4 一致）。`SpinNoIrq`
-（= `BaseSpinLock<NoPreemptIrqSave>`，ax_kspin/src/lib.rs:69）获取时**关本地中断并保存状态**
-（`local_irq_save_and_disable`，kernel_guard/src/lib.rs:177-192）、释放时恢复——持锁期间本地中断
+task 调 `status()` 可正常返回 `Stopping`（与 lifecycle.md §4 一致）。`IrqSafeMutex`
+获取时禁止抢占并保存/关闭本地中断，释放时恢复——持锁期间本地中断
 被屏蔽；转换函数与 `status()` 持锁均为短暂（`status()` **持锁后**为 O(1) match；获取锁的等待时间
 取决于当前持锁者的剩余执行时间，通常微秒级），对延迟敏感的设备中断影响有限。
 
@@ -273,7 +304,7 @@ API 使用指南（lifecycle.md §4）只给外部操作语义；此处给出每
 | 转换 | 源码 | 语义 |
 |------|------|------|
 | `Ready → Running` | `start_with` machine.rs:108 | 同步、原子；无 "starting" 过渡态 |
-| `Stopped → Running` | 同上 :124 | 重启 runtime——vm 层 `prepare()` → `complete_vm_init`（prepare.rs:107-148）重建 vCPU/设备/中断结构并 `reset_transient_resources`（prepare.rs:125，RAM backing 保留），与 lifecycle.md §4 的 **warm reboot** 一致；vm 层先 `take_stopped_runtime`（vm/mod.rs:781）满足 `Stopped{runtime: None}` 前置 |
+| `Stopped → Running` | 同上 :124 | 重启 runtime——vm 层 `AxVM::prepare()` → `AxVM::prepare_resources_with()` 重建 vCPU/设备/中断结构并执行 `AxVMResources::reset_transient_resources()`（RAM backing 保留），与 lifecycle.md §4 的 **warm reboot** 一致；vm 层先 `take_stopped_runtime()` 满足 `Stopped{runtime: None}` 前置 |
 | `Ready → Stopped` | `request_stop_with` :281 | 同步直达；`Stopped` = runtime 未运行，不表示曾运行过（未启动的 VM 可停止） |
 | `Running/Paused → Stopping` | `request_stop_with` :290 | 异步：只置标志即返回 |
 | `Stopping → Stopped` | `finish_stop` :346 | 由 vCPU 退出路径调用（vcpus.rs:359-371）。**判定机制**：`mark_vcpu_exiting()` 用 `running_halting_vcpu_count` 原子计数（vCPU 进入运行循环 `mark_vcpu_running` +1、退出 -1，vm/mod.rs:319-330），命中判定条件（`try_update` 结果为 `1`）的那个 vCPU 调 `finish_stop`；失败仅 `warn!`（vcpus.rs:362-364），vCPU 照常退出。该路径依赖 vCPU 真正执行到 VM-exit：若 vCPU task **非正常退出**（如 runtime 缺失，vcpus.rs:301-304）或永不 VM-exit（掩中断忙循环），`finish_stop` 不被调用 → **长期停留 Stopping**（wedged） |

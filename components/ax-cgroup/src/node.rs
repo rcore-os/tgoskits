@@ -4,21 +4,24 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use ax_kspin::SpinNoIrq;
-
-use crate::{CgroupError, CgroupResult, ProcessId};
+use crate::{CgroupError, CgroupResult, ProcessId, pids::PidsState, sync::CgroupMutex};
 
 static NEXT_CGROUP_ID: AtomicU64 = AtomicU64::new(2);
+const NESTED_CHILDREN_LOCK_SUBCLASS: u32 = 1;
+const PIDS_CONTROLLER: &[&str] = &["pids"];
+const NO_CONTROLLERS: &[&str] = &[];
 
 /// A stable node in the cgroup v2 hierarchy.
 pub struct CgroupNode {
     id: u64,
     name: String,
     parent: Option<Weak<Self>>,
-    children: SpinNoIrq<BTreeMap<String, Arc<Self>>>,
-    members: SpinNoIrq<BTreeSet<ProcessId>>,
+    children: CgroupMutex<BTreeMap<String, Arc<Self>>>,
+    members: CgroupMutex<BTreeSet<ProcessId>>,
+    pids: PidsState,
+    pids_enabled_for_children: AtomicBool,
     pins: AtomicUsize,
 }
 
@@ -33,8 +36,10 @@ impl CgroupNode {
             id: 1,
             name: String::new(),
             parent: None,
-            children: SpinNoIrq::new(BTreeMap::new()),
-            members: SpinNoIrq::new(BTreeSet::new()),
+            children: CgroupMutex::new(BTreeMap::new()),
+            members: CgroupMutex::new(BTreeSet::new()),
+            pids: PidsState::new(),
+            pids_enabled_for_children: AtomicBool::new(false),
             pins: AtomicUsize::new(0),
         })
     }
@@ -54,13 +59,84 @@ impl CgroupNode {
         self.parent.as_ref().and_then(Weak::upgrade)
     }
 
+    /// Return controllers this cgroup may enable for its direct children.
+    pub fn available_controllers(&self) -> &'static [&'static str] {
+        if self.parent.is_none()
+            || self
+                .parent()
+                .is_some_and(|parent| parent.pids_enabled_for_children.load(Ordering::Acquire))
+        {
+            PIDS_CONTROLLER
+        } else {
+            NO_CONTROLLERS
+        }
+    }
+
+    /// Return controllers enabled for direct child cgroups.
+    pub fn enabled_subtree_controllers(&self) -> &'static [&'static str] {
+        if self.pids_enabled_for_children.load(Ordering::Acquire) {
+            PIDS_CONTROLLER
+        } else {
+            NO_CONTROLLERS
+        }
+    }
+
+    /// Enable pids for direct children.
+    ///
+    /// The first controller increment intentionally supports only `+pids`.
+    /// Other controller updates remain unsupported until their domain behavior
+    /// is implemented and independently validated.
+    pub fn write_subtree_control(&self, data: &str) -> CgroupResult<()> {
+        if data.trim() != "+pids" || !self.available_controllers().contains(&"pids") {
+            return Err(CgroupError::InvalidInput);
+        }
+        self.pids_enabled_for_children
+            .store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Return whether this non-root cgroup exposes pids interface files.
+    pub fn has_pids_interface(&self) -> bool {
+        self.parent.is_some() && self.available_controllers().contains(&"pids")
+    }
+
+    /// Render `pids.max`.
+    pub fn pids_max_text(&self) -> CgroupResult<String> {
+        self.require_pids_interface()?;
+        Ok(self.pids.maximum_text())
+    }
+
+    /// Render `pids.current`.
+    pub fn pids_current_text(&self) -> CgroupResult<String> {
+        self.require_pids_interface()?;
+        Ok(self.pids.current_text())
+    }
+
+    /// Render the lifetime high-water mark from `pids.peak`.
+    pub fn pids_peak_text(&self) -> CgroupResult<String> {
+        self.require_pids_interface()?;
+        Ok(self.pids.peak_text())
+    }
+
+    /// Render `pids.events`.
+    pub fn pids_events_text(&self) -> CgroupResult<String> {
+        self.require_pids_interface()?;
+        Ok(self.pids.events_text())
+    }
+
+    /// Update `pids.max`.
+    pub fn write_pids_max(&self, data: &str) -> CgroupResult<()> {
+        self.require_pids_interface()?;
+        self.pids.set_maximum(data)
+    }
+
     /// Create a direct child.
     pub fn create_child(self: &Arc<Self>, name: &str) -> CgroupResult<Arc<Self>> {
         if name.is_empty() || name == "." || name == ".." || name.contains('/') {
             return Err(CgroupError::InvalidInput);
         }
 
-        let mut children = self.children.lock();
+        let mut children = self.children.lock_irqsave();
         if children.contains_key(name) {
             return Err(CgroupError::AlreadyExists);
         }
@@ -68,8 +144,10 @@ impl CgroupNode {
             id: NEXT_CGROUP_ID.fetch_add(1, Ordering::Relaxed),
             name: name.to_string(),
             parent: Some(Arc::downgrade(self)),
-            children: SpinNoIrq::new(BTreeMap::new()),
-            members: SpinNoIrq::new(BTreeSet::new()),
+            children: CgroupMutex::new(BTreeMap::new()),
+            members: CgroupMutex::new(BTreeSet::new()),
+            pids: PidsState::new(),
+            pids_enabled_for_children: AtomicBool::new(false),
             pins: AtomicUsize::new(0),
         });
         children.insert(name.to_string(), Arc::clone(&child));
@@ -79,7 +157,7 @@ impl CgroupNode {
     /// Look up a direct child.
     pub fn lookup_child(&self, name: &str) -> CgroupResult<Arc<Self>> {
         self.children
-            .lock()
+            .lock_irqsave()
             .get(name)
             .cloned()
             .ok_or(CgroupError::NotFound)
@@ -87,17 +165,23 @@ impl CgroupNode {
 
     /// List direct child names.
     pub fn child_names(&self) -> Vec<String> {
-        self.children.lock().keys().cloned().collect()
+        self.children.lock_irqsave().keys().cloned().collect()
     }
 
     /// Remove an empty, unpinned direct child.
     pub fn remove_child(&self, name: &str) -> CgroupResult<()> {
-        let mut children = self.children.lock();
+        let mut children = self.children.lock_irqsave();
         let child = children.get(name).cloned().ok_or(CgroupError::NotFound)?;
-        if !child.children.lock().is_empty() {
+        // Parent and child nodes share the `children` lock class. Hierarchy
+        // removal always acquires the direct child's lock below its parent's.
+        if !child
+            .children
+            .lock_irqsave_nested(NESTED_CHILDREN_LOCK_SUBCLASS)
+            .is_empty()
+        {
             return Err(CgroupError::DirectoryNotEmpty);
         }
-        if !child.members.lock().is_empty() || child.pins.load(Ordering::Acquire) != 0 {
+        if !child.members.lock_irqsave().is_empty() || child.pins.load(Ordering::Acquire) != 0 {
             return Err(CgroupError::ResourceBusy);
         }
         children.remove(name);
@@ -106,19 +190,35 @@ impl CgroupNode {
 
     /// Return a sorted snapshot of member process IDs.
     pub fn members(&self) -> Vec<ProcessId> {
-        self.members.lock().iter().copied().collect()
+        self.members.lock_irqsave().iter().copied().collect()
     }
 
-    pub(crate) fn add_member(&self, pid: ProcessId) {
-        self.members.lock().insert(pid);
+    pub(crate) fn add_member(&self, pid: ProcessId) -> bool {
+        self.members.lock_irqsave().insert(pid)
     }
 
     pub(crate) fn remove_member(&self, pid: ProcessId) -> bool {
-        self.members.lock().remove(&pid)
+        self.members.lock_irqsave().remove(&pid)
     }
 
     pub(crate) fn has_member(&self, pid: ProcessId) -> bool {
-        self.members.lock().contains(&pid)
+        self.members.lock_irqsave().contains(&pid)
+    }
+
+    pub(crate) fn try_charge_pids(&self) -> CgroupResult<()> {
+        self.pids.try_charge()
+    }
+
+    pub(crate) fn charge_pids_unchecked(&self, count: u64) {
+        self.pids.charge_unchecked(count);
+    }
+
+    pub(crate) fn uncharge_pids(&self, count: u64) {
+        self.pids.uncharge(count);
+    }
+
+    pub(crate) fn record_pids_max_event(&self) {
+        self.pids.record_max_event();
     }
 
     /// Pin this node as a namespace or mounted hierarchy root.
@@ -127,6 +227,12 @@ impl CgroupNode {
         CgroupPin {
             node: Arc::clone(self),
         }
+    }
+
+    fn require_pids_interface(&self) -> CgroupResult<()> {
+        self.has_pids_interface()
+            .then_some(())
+            .ok_or(CgroupError::NotFound)
     }
 }
 
@@ -217,5 +323,33 @@ mod tests {
         drop(pin);
         assert_eq!(root.remove_child("child"), Ok(()));
         assert_eq!(incidental_reference.name(), "child");
+    }
+
+    #[test]
+    fn exposes_pids_only_after_the_parent_enables_it() {
+        let root = CgroupNode::new_root();
+        let child = root.create_child("child").unwrap();
+
+        assert_eq!(root.available_controllers(), ["pids"]);
+        assert!(!child.has_pids_interface());
+        assert_eq!(child.pids_max_text(), Err(CgroupError::NotFound));
+        assert_eq!(child.pids_peak_text(), Err(CgroupError::NotFound));
+
+        root.write_subtree_control("+pids").unwrap();
+
+        assert!(child.has_pids_interface());
+        assert_eq!(child.pids_max_text(), Ok(String::from("max\n")));
+        assert_eq!(child.pids_peak_text(), Ok(String::from("0\n")));
+    }
+
+    #[test]
+    fn removes_empty_child_from_dynamic_parent() {
+        let root = CgroupNode::new_root();
+        let parent = root.create_child("parent").unwrap();
+        let child = parent.create_child("child").unwrap();
+        assert!(parent.child_names().contains(&"child".to_string()));
+        assert!(child.child_names().is_empty());
+
+        assert_eq!(parent.remove_child("child"), Ok(()));
     }
 }

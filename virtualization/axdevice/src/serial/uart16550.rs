@@ -2,7 +2,7 @@
 
 use alloc::sync::Arc;
 
-use ax_kspin::SpinRaw;
+use ax_sync::{RawSpinLockGuard, SpinLock};
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult, IrqLine};
 
 use super::{SerialBackend, SerialEndpoint, fifo::ByteFifo};
@@ -116,7 +116,7 @@ impl Uart16550State {
 
 /// 16550-compatible UART core with an external byte backend and virtual IRQ.
 pub struct Uart16550 {
-    state: SpinRaw<Uart16550State>,
+    state: SpinLock<Uart16550State>,
     endpoint: SerialEndpoint,
 }
 
@@ -124,15 +124,21 @@ impl Uart16550 {
     /// Creates a powered-on 16550 UART.
     pub fn new(backend: Arc<dyn SerialBackend>, irq: IrqLine) -> Self {
         Self {
-            state: SpinRaw::new(Uart16550State::new()),
+            state: SpinLock::new(Uart16550State::new()),
             endpoint: SerialEndpoint::new(backend, irq, "signal 16550 IRQ"),
         }
+    }
+
+    fn state(&self) -> RawSpinLockGuard<'_, Uart16550State> {
+        // SAFETY: the virtual UART frontend serializes a vCPU's MMIO/poll
+        // entry and the raw lock excludes other vCPUs.
+        unsafe { self.state.lock_raw() }
     }
 
     /// Polls backend input into the receive FIFO and refreshes the level IRQ.
     pub fn poll(&self) -> DeviceResult {
         self.endpoint.poll_rx(|bytes| {
-            let mut state = self.state.lock();
+            let mut state = self.state();
             for &byte in bytes {
                 state.push_rx(byte);
             }
@@ -150,7 +156,7 @@ impl Uart16550 {
         }
 
         let (value, asserted) = {
-            let mut state = self.state.lock();
+            let mut state = self.state();
             let value = match register {
                 REG_RBR_THR_DLL if state.dlab() => state.dll,
                 REG_RBR_THR_DLL => state.rx_fifo.pop().unwrap_or(0),
@@ -187,7 +193,7 @@ impl Uart16550 {
 
         let byte = value as u8;
         let (output, completes_tx, asserted) = {
-            let mut state = self.state.lock();
+            let mut state = self.state();
             let mut output = None;
             let mut completes_tx = false;
             match register {
@@ -243,7 +249,7 @@ impl Uart16550 {
         // consumed before it can deliver the next empty interrupt. Deferring this phase
         // to DeviceRuntime::poll would make TX progress depend on unrelated RX polling.
         let completed_asserted = {
-            let mut state = self.state.lock();
+            let mut state = self.state();
             state.tx_interrupt_pending = true;
             state.irq_asserted()
         };

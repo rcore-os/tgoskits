@@ -10,14 +10,13 @@
 use alloc::{borrow::Cow, sync::Arc};
 use core::{any::Any, ffi::c_int};
 
-use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange};
 use axpoll::{IoEvents, Pollable};
 use dma_api::{CoherentArray, DmaError};
 use linux_raw_sys::general::O_RDWR;
 
 use super::{FileLike, Kstat};
-use crate::pseudofs::DeviceMmap;
+use crate::{StarryError, StarryResult, pseudofs::DeviceMmap};
 
 const DMA_BUF_MASK: u64 = u32::MAX as u64;
 
@@ -35,15 +34,22 @@ pub struct DmaBufFile {
 
 impl DmaBufFile {
     /// Allocate a page-aligned contiguous buffer of at least `len` bytes.
-    pub fn alloc(len: usize) -> AxResult<Self> {
-        Self::alloc_with_device(len, &axklib::dma::device_with_mask(DMA_BUF_MASK))
+    pub fn alloc(len: usize) -> StarryResult<Self> {
+        Self::alloc_with_device(
+            len,
+            &axklib::dma::device(dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(DMA_BUF_MASK),
+            )),
+        )
     }
 
-    fn alloc_with_device(len: usize, dma: &dma_api::DeviceDma) -> AxResult<Self> {
+    fn alloc_with_device(len: usize, dma: &dma_api::DeviceDma) -> StarryResult<Self> {
         let align = PAGE_SIZE_4K;
         let size = len
             .checked_next_multiple_of(align)
-            .ok_or(AxError::InvalidInput)?
+            .ok_or(StarryError::InvalidInput)?
             .max(align);
         // The accelerators that consume these buffers (JPU/RGA/NPU) run with the
         // IOMMU bypassed and program raw 32-bit physical DMA addresses, so the
@@ -53,8 +59,8 @@ impl DmaBufFile {
         let dma = dma
             .coherent_array_zero_with_align::<u8>(size, align)
             .map_err(|err| match err {
-                DmaError::LayoutError(_) => AxError::InvalidInput,
-                _ => AxError::NoMemory,
+                DmaError::LayoutError(_) => StarryError::InvalidInput,
+                _ => StarryError::NoMemory,
             })?;
         Ok(Self {
             alloc: Arc::new(DmaBufAlloc { dma, size }),
@@ -76,10 +82,8 @@ impl DmaBufFile {
 
     /// Size of the allocation in bytes (page-rounded up from the request).
     ///
-    /// The NPU import seam ([`ContiguousDmaBuf`]) needs it, and the RGA path uses it to
-    /// bound-check every imported buffer before an MMU-off DMA (a plane must not address
-    /// past its buffer). The jpeg-only build resolves buffers through [`Self::phys_base`].
-    #[cfg(any(feature = "rknpu", feature = "rga"))]
+    /// Accelerator import paths use this to bound-check every imported buffer before
+    /// an MMU-off DMA (a plane must not address past its buffer).
     pub fn size(&self) -> usize {
         self.alloc.size
     }
@@ -141,11 +145,16 @@ impl Pollable for DmaBufFile {
         IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut core::task::Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
 
 impl FileLike for DmaBufFile {
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         Ok(Kstat {
             size: self.alloc.size as u64,
             ..Default::default()
@@ -163,7 +172,7 @@ impl FileLike for DmaBufFile {
         O_RDWR
     }
 
-    fn device_mmap(&self, _offset: u64, _length: u64) -> AxResult<DeviceMmap> {
+    fn device_mmap(&self, _offset: u64, _length: u64) -> StarryResult<DeviceMmap> {
         // Retain the allocation for the lifetime of the mapping so the pages are
         // not freed if userspace closes the fd while it is still mapped.
         let retainer: Arc<dyn Any + Send + Sync> = self.alloc.clone();
@@ -171,7 +180,7 @@ impl FileLike for DmaBufFile {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     extern crate std;
 
@@ -217,7 +226,7 @@ mod tests {
         ) -> Option<DmaAllocHandle> {
             ALLOC_MASK.store(constraints.addr_mask, Ordering::SeqCst);
             let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
-            Some(unsafe { DmaAllocHandle::new(ptr, 0x2000_u64.into(), layout) })
+            Some(unsafe { DmaAllocHandle::new(ptr, ptr, 0x2000_u64.into(), layout) })
         }
 
         unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
@@ -243,7 +252,14 @@ mod tests {
     fn dma_buf_preserves_dma32_size_address_and_arc_lifetime() {
         RELEASES.store(0, Ordering::SeqCst);
         ALLOC_MASK.store(0, Ordering::SeqCst);
-        let device = DeviceDma::new_legacy(DMA_BUF_MASK, &TEST_DMA);
+        let device = DeviceDma::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(DMA_BUF_MASK),
+            ),
+            &TEST_DMA,
+        );
         let file = DmaBufFile::alloc_with_device(1, &device).unwrap();
 
         assert_eq!(file.alloc.size, PAGE_SIZE_4K);

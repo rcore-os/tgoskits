@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="1160" viewBox="0 0 1320 1160" role="img" aria-labelledby="title desc">
+  <title id="title">TGOSKits 宿主驱动总体架构</title>
+  <desc id="desc">平台来源和驱动声明进入 rdrive 探测，OS glue 构造核心对象并注册到 Manager。系统适配查询或取走设备，交付块、网络、显示输入和平台能力消费方。rdif 是贯穿构造与运行时的契约，不是设备注册表。</desc>
+  <defs>
+    <marker id="call" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#2563eb"/></marker>
+    <marker id="move" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#15805a"/></marker>
+    <marker id="contract" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker>
+    <style>
+      text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #172b4d; }
+      .title { font-size: 28px; font-weight: 700; }
+      .heading { font-size: 22px; font-weight: 700; }
+      .label { font-size: 19px; }
+      .small { font-size: 17px; }
+      .call { fill: none; stroke: #2563eb; stroke-width: 2.5; marker-end: url(#call); }
+      .move { fill: none; stroke: #15805a; stroke-width: 2.5; marker-end: url(#move); }
+      .contract { fill: none; stroke: #64748b; stroke-width: 2; stroke-dasharray: 7 5; marker-end: url(#contract); }
+    </style>
+  </defs>
+  <rect width="1320" height="1160" rx="16" fill="#f8fafc"/>
+  <text x="40" y="47" class="title">宿主驱动总体架构</text>
+  <text x="40" y="76" class="small">设备发现与交付主链；运行期 I/O 由各领域队列和服务处理</text>
+  <rect x="40" y="100" width="1240" height="110" rx="12" fill="#eaf0ff" stroke="#94a8d3"/>
+  <text x="62" y="135" class="heading">驱动声明与构建选择</text>
+  <text x="62" y="173" class="label">feature → module_driver! → .driver.register</text>
+  <text x="735" y="135" class="heading">平台来源</text>
+  <text x="735" y="173" class="label">Static 显式事实 · FDT · ACPI</text>
+  <path class="call" d="M230 210 V260"/>
+  <path class="call" d="M755 210 V260"/>
+  <rect x="40" y="260" width="380" height="130" rx="12" fill="#edf2fa" stroke="#94a8d3"/>
+  <text x="62" y="298" class="heading">rdrive 注册声明</text>
+  <text x="62" y="334" class="label">DriverRegister / RegisterContainer</text>
+  <text x="62" y="364" class="small">level · priority · probe_kinds</text>
+  <path class="call" d="M420 325 H460"/>
+  <rect x="460" y="260" width="590" height="130" rx="12" fill="#edf2fa" stroke="#94a8d3"/>
+  <text x="482" y="298" class="heading">来源 backend 与 probe 分发</text>
+  <text x="482" y="334" class="label">Static / FDT / ACPI：分阶段、按优先级探测</text>
+  <text x="482" y="364" class="small">PCI：在主控制器可用后枚举 endpoint</text>
+  <path class="call" d="M755 390 V417 H280 V450"/>
+  <rect x="40" y="450" width="480" height="170" rx="12" fill="#fff5e5" stroke="#c4a36a"/>
+  <text x="62" y="488" class="heading">OS glue · ax-driver / 平台适配</text>
+  <text x="62" y="525" class="label">FDT / ACPI / PCI 资源解释</text>
+  <text x="62" y="558" class="label">MMIO 映射 · DeviceDma · BindingInfo</text>
+  <text x="62" y="591" class="small">构造硬件对象与可注册的平台封装</text>
+  <path class="call" d="M520 500 H570"/>
+  <rect x="570" y="450" width="480" height="170" rx="12" fill="#eaf5ef" stroke="#75a48a"/>
+  <text x="592" y="488" class="heading">驱动核心 · 硬件逻辑</text>
+  <text x="592" y="525" class="label">寄存器 · 描述符 · 队列 · 状态机</text>
+  <text x="592" y="558" class="label">注入资源能力，不选择 OS 或平台</text>
+  <text x="592" y="591" class="small">直接实现领域接口，或由 glue 包装</text>
+  <path class="move" d="M280 620 V665"/>
+  <path class="move" d="M810 620 V665"/>
+  <rect x="40" y="665" width="1010" height="130" rx="12" fill="#e7f3f0" stroke="#75a48a"/>
+  <text x="62" y="703" class="heading">rdrive Manager · 类型化设备注册表</text>
+  <text x="62" y="740" class="label">DeviceContainer：DeviceId → 多个不同外层类型的 DeviceOwner</text>
+  <text x="62" y="772" class="small">PlatformNetDevice / PlatformBlockDevice / 显示输入封装 / 平台 provider</text>
+  <rect x="1090" y="260" width="190" height="535" rx="12" fill="#f0edf8" stroke="#a59abf"/>
+  <text x="1108" y="298" class="heading">rdif-* 契约</text>
+  <text x="1108" y="347" class="label">领域操作</text>
+  <text x="1108" y="379" class="label">类型化错误</text>
+  <text x="1108" y="411" class="label">队列与控制端点</text>
+  <text x="1108" y="443" class="label">资源所有权</text>
+  <text x="1108" y="475" class="label">停止前置条件</text>
+  <text x="1108" y="562" class="small">rdif-block</text>
+  <text x="1108" y="594" class="small">rdif-eth</text>
+  <text x="1108" y="626" class="small">display / input</text>
+  <text x="1108" y="658" class="small">vsock / intc</text>
+  <text x="1108" y="690" class="small">clk / pinctrl / …</text>
+  <text x="1108" y="756" class="small">不持有全局设备表</text>
+  <path class="contract" d="M1090 535 H1050"/>
+  <path class="contract" d="M1090 730 H1050"/>
+  <path class="move" d="M545 795 V835"/>
+  <rect x="40" y="835" width="1240" height="90" rx="12" fill="#e7f3f0" stroke="#75a48a"/>
+  <text x="62" y="869" class="heading">系统适配 · 查询或取走设备，解析 IRQ，建立领域运行时</text>
+  <text x="62" y="902" class="label">ax-runtime / 文件系统启动适配 / HAL：资源接入，不复制协议或挂载策略</text>
+  <path class="contract" d="M1185 795 V835"/>
+  <path class="move" d="M185 925 V965"/>
+  <path class="move" d="M505 925 V965"/>
+  <path class="move" d="M825 925 V965"/>
+  <path class="move" d="M1145 925 V965"/>
+  <g fill="#ffffff" stroke="#75a48a">
+    <rect x="40" y="965" width="290" height="120" rx="10"/>
+    <rect x="360" y="965" width="290" height="120" rx="10"/>
+    <rect x="680" y="965" width="290" height="120" rx="10"/>
+    <rect x="1000" y="965" width="280" height="120" rx="10"/>
+  </g>
+  <text x="58" y="997" class="heading">块设备</text>
+  <text x="58" y="1032" class="small">ax-fs-ng::block::runtime</text>
+  <text x="58" y="1062" class="small">hctx → volume → 文件系统</text>
+  <text x="378" y="997" class="heading">网络</text>
+  <text x="378" y="1032" class="small">rd-net → ax-net 队列运行时</text>
+  <text x="378" y="1062" class="small">帧端口 → 协议 → socket</text>
+  <text x="698" y="997" class="heading">显示 / 输入 / vsock</text>
+  <text x="698" y="1032" class="small">ax-display / ax-input</text>
+  <text x="698" y="1062" class="small">ax-net::vsock 独立传输</text>
+  <text x="1018" y="997" class="heading">平台能力</text>
+  <text x="1018" y="1032" class="small">HAL / SoC / 宿主虚拟化</text>
+  <text x="1018" y="1062" class="small">中断 · 时钟 · 总线控制</text>
+  <path class="call" d="M42 1120 H92"/><text x="104" y="1126" class="small">初始化调用</text>
+  <path class="move" d="M300 1120 H350"/><text x="362" y="1126" class="small">设备或资源交付</text>
+  <path class="contract" d="M610 1120 H660"/><text x="672" y="1126" class="small">能力契约</text>
+  <text x="905" y="1126" class="small">客户机模拟设备不在宿主 probe 主链中</text>
+</svg>

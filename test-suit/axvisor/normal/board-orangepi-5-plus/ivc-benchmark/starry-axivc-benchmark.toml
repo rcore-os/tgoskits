@@ -1,0 +1,33 @@
+[base]
+id = 1
+name = "starry-axivc-benchmark"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [0x00]
+
+[kernel]
+entry_point = 0x4008_0000
+image_location = "fs"
+kernel_load_addr = 0x4008_0000
+kernel_path = "/guest/starry/orangepi-5-plus-ivc"
+dtb_load_addr = 0x4000_0000
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 cma=128M init=/usr/bin/ivc-starry-bench"
+
+memory_regions = [
+  [0x4000_0000, 0x1000_0000, 0x7, 2],
+  [0x2_4000_0000, 0x8000_0000, 0x7, 1],
+]
+
+[devices]
+passthrough = []
+disabled = [
+  { path = "/pcie@fe150000" },
+  { path = "/pcie@fe160000" },
+  { path = "/pcie@fe170000" },
+  { path = "/pcie@fe180000" },
+  { path = "/pcie@fe190000" },
+]
+
+[[devices.virtual]]
+id = "ivc0"
+model = "ivc-channel"

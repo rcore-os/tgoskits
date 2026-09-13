@@ -52,7 +52,7 @@ fn set_by_stdout() -> Option<()> {
         match com {
             "arm,pl011" | "arm,primecell" => {
                 let mut serial = pl011::Pl011::new(addr, clock);
-                serial.open();
+                serial.open().ok()?;
                 crate::console::set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Pl011(
                     serial,
                 )));

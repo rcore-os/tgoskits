@@ -48,7 +48,7 @@ mod transport;
 
 use alloc::sync::Arc;
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 pub use transport::{Smc, Transport};
 
 type Data<T> = Arc<Mutex<ScmiData<T>>>;
@@ -124,7 +124,9 @@ impl Scmi<Smc> {
     /// This is a fast-path that avoids the `Xfer` / `FuturePoll` machinery
     /// entirely, suitable for synchronous SMC transports.
     pub fn clock_rate_get_direct(&self, clock_id: u32) -> Result<u64, ScmiError> {
-        let mut data = self.data.lock();
+        // SAFETY: the transport serializes SCMI transactions and excludes
+        // same-context re-entry while shared memory is owned by this request.
+        let mut data = unsafe { self.data.lock_raw() };
         if data.shmem.size < SHMEM_PAYLOAD_OFFSET + 12 {
             return Err(ScmiError::ProtocolError);
         }
@@ -145,7 +147,8 @@ impl Scmi<Smc> {
 
     /// Set a clock rate by writing directly to shared memory (bypasses Xfer).
     pub fn clock_rate_set_direct(&self, clock_id: u32, rate: u64) -> Result<(), ScmiError> {
-        let mut data = self.data.lock();
+        // SAFETY: see the transaction acquisition above.
+        let mut data = unsafe { self.data.lock_raw() };
         if data.shmem.size < SHMEM_PAYLOAD_OFFSET + 16 {
             return Err(ScmiError::ProtocolError);
         }

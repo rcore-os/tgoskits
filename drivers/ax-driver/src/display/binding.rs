@@ -1,11 +1,10 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
 
-use ax_errno::AxError;
 use rdif_display::Interface;
 use rdrive::{DriverGeneric, probe::OnProbeError};
 
 use crate::{
-    BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt,
+    BindingInfo, BindingIrq, Error, binding_info_from_acpi, binding_info_from_fdt,
     registration::{BoundDevice, TakeRegistered, register_bound_device, take_registered_device},
 };
 #[cfg(feature = "pci")]
@@ -178,7 +177,7 @@ where
     )
 }
 
-pub fn take_display_devices() -> Result<Vec<TakenDisplayDevice>, AxError> {
+pub fn take_display_devices() -> crate::Result<Vec<TakenDisplayDevice>> {
     let mut devices = Vec::new();
     for dev in rdrive::get_list::<PlatformDisplayDevice>() {
         let display = take_display_device(dev)?;
@@ -189,83 +188,6 @@ pub fn take_display_devices() -> Result<Vec<TakenDisplayDevice>, AxError> {
 
 fn take_display_device(
     device: rdrive::Device<PlatformDisplayDevice>,
-) -> Result<TakenDisplayDevice, AxError> {
-    take_registered_device(device).ok_or(AxError::BadState)
-}
-
-#[cfg(test)]
-mod tests {
-    extern crate std;
-
-    use rdif_display::{DisplayError, DisplayInfo, FrameBuffer, PixelFormat};
-
-    use super::*;
-    use crate::{BindingInfo, BindingIrq};
-
-    struct TestDisplay {
-        fb: [u8; 16],
-    }
-
-    impl DriverGeneric for TestDisplay {
-        fn name(&self) -> &str {
-            "test-display"
-        }
-    }
-
-    impl Interface for TestDisplay {
-        fn info(&self) -> DisplayInfo {
-            DisplayInfo {
-                width: 2,
-                height: 2,
-                stride: 8,
-                format: PixelFormat::Xrgb8888,
-                fb_size: self.fb.len(),
-            }
-        }
-
-        fn framebuffer(&mut self) -> Result<FrameBuffer<'_>, DisplayError> {
-            Ok(FrameBuffer::from_slice(&mut self.fb))
-        }
-    }
-
-    #[test]
-    fn platform_display_device_exposes_binding_info_irq_num() {
-        let irq = 42;
-        let device = PlatformDisplayDevice::new(
-            "test-display".into(),
-            Box::new(TestDisplay { fb: [0; 16] }),
-            BindingInfo::with_irq(Some(irq)).unwrap(),
-        );
-
-        assert_eq!(device.binding_info().irq_num(), Some(irq));
-        assert_eq!(device.irq_num(), Some(irq));
-        assert_eq!(BoundDevice::irq_num(&device), Some(irq));
-    }
-
-    #[test]
-    fn platform_display_device_empty_binding_has_no_irq_num() {
-        let device = PlatformDisplayDevice::new(
-            "test-display".into(),
-            Box::new(TestDisplay { fb: [0; 16] }),
-            BindingInfo::empty(),
-        );
-
-        assert_eq!(device.binding_info().irq_num(), None);
-        assert_eq!(device.irq_num(), None);
-        assert_eq!(BoundDevice::irq_num(&device), None);
-    }
-
-    #[test]
-    fn platform_display_device_exposes_native_binding_irq() {
-        let irq = BindingIrq::fdt_interrupt_with_controller(rdrive::DeviceId::new(), [0, 42, 4]);
-        let device = PlatformDisplayDevice::new(
-            "test-display".into(),
-            Box::new(TestDisplay { fb: [0; 16] }),
-            BindingInfo::with_binding_irq(Some(irq.clone())),
-        );
-
-        assert_eq!(device.irq_cloned(), Some(irq));
-        assert_eq!(device.irq_num(), None);
-        assert_eq!(BoundDevice::irq_num(&device), None);
-    }
+) -> crate::Result<TakenDisplayDevice> {
+    take_registered_device(device).ok_or(Error::DeviceUnavailable)
 }

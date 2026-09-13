@@ -119,19 +119,16 @@ fn write_tokens(out_file: &mut fs::File, tokens: proc_macro2::TokenStream) -> an
     Ok(())
 }
 
-// Convert relative path to absolute path
-fn convert_to_absolute(configs_path: impl AsRef<Path>, path: &str) -> PathBuf {
+fn resolve_config_path(configs_path: impl AsRef<Path>, path: &str) -> PathBuf {
     let path = Path::new(path);
-    let configs_path = configs_path
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    configs_path
         .as_ref()
         .parent()
         .map(|parent| parent.join(path))
-        .unwrap_or_else(|| path.to_path_buf());
-    if path.is_relative() {
-        fs::canonicalize(configs_path).unwrap_or_else(|_| path.to_path_buf())
-    } else {
-        path.to_path_buf()
-    }
+        .unwrap_or_else(|| path.to_path_buf())
 }
 
 struct MemoryImage {
@@ -181,14 +178,14 @@ fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
 
     let kernel_path = config.get("kernel")?.as_table()?.get("kernel_path")?;
 
-    let kernel = convert_to_absolute(&config_file.path, kernel_path.as_str()?);
+    let kernel = resolve_config_path(&config_file.path, kernel_path.as_str()?);
 
     let dtb = config
         .get("kernel")?
         .as_table()?
         .get("dtb_path")
         .and_then(|v| v.as_str())
-        .map(|v| convert_to_absolute(&config_file.path, v));
+        .map(|v| resolve_config_path(&config_file.path, v));
 
     let enable_bios = config
         .get("kernel")?
@@ -200,12 +197,12 @@ fn parse_config_file(config_file: &ConfigFile) -> Option<MemoryImage> {
     let kernel_config = config.get("kernel")?.as_table()?;
 
     let bios = boot_firmware_path(kernel_config, enable_bios)
-        .map(|v| convert_to_absolute(&config_file.path, v));
+        .map(|v| resolve_config_path(&config_file.path, v));
 
     let ramdisk = kernel_config
         .get("ramdisk_path")
         .and_then(|v| v.as_str())
-        .map(|v| convert_to_absolute(&config_file.path, v));
+        .map(|v| resolve_config_path(&config_file.path, v));
 
     Some(MemoryImage {
         id,
@@ -225,7 +222,7 @@ fn parse_firmware_config_file(config_file: &ConfigFile) -> Option<FirmwareImage>
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let bios = boot_firmware_path(kernel_config, enable_bios)
-        .map(|v| convert_to_absolute(&config_file.path, v))?;
+        .map(|v| resolve_config_path(&config_file.path, v))?;
 
     Some(FirmwareImage { id, bios })
 }

@@ -33,6 +33,7 @@
 #include <sched.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <signal.h>
@@ -45,6 +46,7 @@
 
 #define STK (64 * 1024)
 #define NTHREAD 8
+#define TLS_SWITCH_ROUNDS 64
 
 static long my_gettid(void) { return syscall(SYS_gettid); }
 static long my_set_tid_address(int *p) { return syscall(SYS_set_tid_address, p); }
@@ -125,6 +127,19 @@ static int test_parent_settid(void)
         CHECK(ptid == c, "ptid 在父内存被写为子 TID(clone 返回前)");
         waitpid(c, NULL, 0);
     }
+    int *invalid_outputs[] = {NULL, (int *)-1};
+    for (size_t i = 0; i < sizeof(invalid_outputs) / sizeof(invalid_outputs[0]); ++i) {
+        long child = syscall(SYS_clone, CLONE_PARENT_SETTID | SIGCHLD, 0,
+                             invalid_outputs[i], 0, 0);
+        if (child == 0) _exit(42);
+        CHECK(child > 0, "parent_tid copyout failure does not cancel a published child");
+        if (child > 0) {
+            int status = 0;
+            CHECK(waitpid((pid_t)child, &status, 0) == child
+                  && WIFEXITED(status) && WEXITSTATUS(status) == 42,
+                  "child runs after parent_tid copyout failure");
+        }
+    }
     TEST_DONE();
 }
 
@@ -166,8 +181,17 @@ static int test_pthread_join(void)
 
 /* ===== E. __thread 隔离 = CLONE_SETTLS per-thread TLS ===== */
 static __thread int tls_var = 42;
+static __thread unsigned long tls_switch_value;
 static volatile int child_tls_after_set;
 static volatile int child_saw_parent_write;
+static int tls_switch_ready;
+static int tls_switch_start;
+
+struct tls_switch_arg {
+    unsigned long expected;
+    int failures;
+};
+
 static void *tls_thr(void *a)
 {
     (void)a;
@@ -176,6 +200,21 @@ static void *tls_thr(void *a)
     child_tls_after_set = tls_var;
     return NULL;
 }
+
+static void *tls_switch_thr(void *opaque)
+{
+    struct tls_switch_arg *arg = opaque;
+    tls_switch_value = arg->expected;
+    __atomic_add_fetch(&tls_switch_ready, 1, __ATOMIC_RELEASE);
+    while (!__atomic_load_n(&tls_switch_start, __ATOMIC_ACQUIRE)) sched_yield();
+    for (int round = 0; round < TLS_SWITCH_ROUNDS; round++) {
+        if (tls_switch_value != arg->expected) arg->failures++;
+        sched_yield();
+        if (tls_switch_value != arg->expected) arg->failures++;
+    }
+    return NULL;
+}
+
 static int test_pthread_tls(void)
 {
     TEST_START("E. __thread 隔离(CLONE_SETTLS per-thread TLS)");
@@ -191,6 +230,25 @@ static int test_pthread_tls(void)
         CHECK(child_tls_after_set == 99, "子线程改自己 __thread 为 99");
         CHECK(tls_var == 7, "主线程 __thread 不受子影响(SETTLS 隔离)");
     }
+
+    pthread_t workers[NTHREAD];
+    struct tls_switch_arg args[NTHREAD];
+    __atomic_store_n(&tls_switch_ready, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&tls_switch_start, 0, __ATOMIC_RELAXED);
+    int created = 0;
+    for (int i = 0; i < NTHREAD; i++) {
+        args[i].expected = 0x10000UL + (unsigned long)i;
+        args[i].failures = 0;
+        if (pthread_create(&workers[i], NULL, tls_switch_thr, &args[i]) != 0) break;
+        created++;
+    }
+    CHECK(created == NTHREAD, "创建多线程 TLS 切换压力任务成功");
+    while (__atomic_load_n(&tls_switch_ready, __ATOMIC_ACQUIRE) != created) sched_yield();
+    __atomic_store_n(&tls_switch_start, 1, __ATOMIC_RELEASE);
+    for (int i = 0; i < created; i++) pthread_join(workers[i], NULL);
+    int failures = 0;
+    for (int i = 0; i < created; i++) failures += args[i].failures;
+    CHECK(failures == 0, "反复 sched_yield 后每线程 TLS 仍保持隔离");
     TEST_DONE();
 }
 
@@ -209,6 +267,59 @@ static int test_pidfd_parent_settid_einval(void)
     TEST_DONE();
 }
 
+static int test_pidfd_copyout_rollback(void)
+{
+    TEST_START("G. CLONE_PIDFD copyout failure rolls back before child activation");
+    int *invalid_outputs[] = {NULL, (int *)-1};
+    long child;
+    for (size_t i = 0; i < sizeof(invalid_outputs) / sizeof(invalid_outputs[0]); ++i) {
+        errno = 0;
+        child = syscall(SYS_clone, CLONE_PIDFD | SIGCHLD, 0, invalid_outputs[i], 0, 0);
+        if (child == 0) _exit(42);
+        int error = errno;
+        CHECK(child == -1 && error == EFAULT,
+              "NULL and unmapped pidfd outputs return EFAULT");
+        if (child > 0) waitpid((pid_t)child, NULL, 0);
+        errno = 0;
+        CHECK(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD,
+              "failed clone publishes no waitable child");
+    }
+
+    struct rlimit limit;
+    int limit_result = syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, NULL, &limit);
+    CHECK(limit_result == 0, "read original fd limit");
+    if (limit_result != 0) { TEST_DONE(); }
+    struct rlimit exhausted = limit;
+    exhausted.rlim_cur = 0;
+    for (size_t i = 0; i < sizeof(invalid_outputs) / sizeof(invalid_outputs[0]); ++i) {
+        limit_result = syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, &exhausted, NULL);
+        CHECK(limit_result == 0, "exhaust fd numbers before pidfd creation");
+        if (limit_result != 0) { TEST_DONE(); }
+        errno = 0;
+        child = syscall(SYS_clone, CLONE_PIDFD | SIGCHLD, 0, invalid_outputs[i], 0, 0);
+        if (child == 0) _exit(42);
+        int error = errno;
+        limit_result = syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, &limit, NULL);
+        CHECK(limit_result == 0, "restore fd limit after failed clone");
+        CHECK(child == -1 && error == EMFILE,
+              "pidfd reservation returns EMFILE before invalid output gives EFAULT");
+        if (child > 0) waitpid((pid_t)child, NULL, 0);
+    }
+
+    int pidfd = -1;
+    child = syscall(SYS_clone, CLONE_PIDFD | SIGCHLD, 0, &pidfd, 0, 0);
+    if (child == 0) _exit(42);
+    CHECK(child > 0 && pidfd >= 0, "clone with valid pidfd succeeds after rollback");
+    if (child > 0) {
+        int status = 0;
+        CHECK(waitpid((pid_t)child, &status, 0) == child
+              && WIFEXITED(status) && WEXITSTATUS(status) == 42,
+              "only the committed child executes and becomes waitable");
+    }
+    if (pidfd >= 0) close(pidfd);
+    TEST_DONE();
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -221,6 +332,7 @@ int main(void)
     fail |= test_pthread_join();
     fail |= test_pthread_tls();
     fail |= test_pidfd_parent_settid_einval();
+    fail |= test_pidfd_copyout_rollback();
     printf("\n==== test-clone-tls 汇总: %s ====\n", fail ? "FAIL" : "PASS");
     return fail;
 }

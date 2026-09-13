@@ -9,16 +9,19 @@ Axvisor 的 QEMU 流程把 host 启动配置、hypervisor 构建配置、VM 描�
 
 ## 1. QEMU 启动
 
-Axvisor QEMU 运行先选择 rootfs，再读取 host 启动 TOML 并检查产物格式；VM 配置只提供 guest 语义。下图对应 `axvisor/rootfs.rs::qemu()` 的主要步骤。
+Axvisor QEMU 运行先解析 VM 镜像路径，再用同一组配置选择 rootfs，随后读取 host 启动
+TOML 并检查产物格式；VM 配置只提供 guest 语义。下图对应 `axvisor/rootfs.rs::qemu()`
+的主要步骤。
 
 ```mermaid
 flowchart TD
     A["axvisor qemu"] --> B["解析 Build Config / --vmconfigs"]
-    B --> C["选择并确保 rootfs"]
-    C --> D["加载 --qemu-config 或 configs/qemu/qemu-<arch>.toml"]
-    D --> E["替换或插入 rootfs -drive"]
-    E --> F["检查 UEFI + to_bin"]
-    F --> G["ostool cargo_run"]
+    B --> C["展开 VM 镜像路径变量"]
+    C --> D["从解析后配置选择并确保 rootfs"]
+    D --> E["加载 --qemu-config 或 configs/qemu/qemu-<arch>.toml"]
+    E --> F["替换或插入 rootfs -drive"]
+    F --> G["检查 UEFI + to_bin"]
+    G --> H["ostool cargo_run"]
 ```
 
 默认 QEMU 模板位于：
@@ -47,7 +50,9 @@ QEMU rootfs 路径的选择顺序为：
 - `to_bin = false` 时直接保留 ELF；
 - `uefi = true` 且 `to_bin = false` 是明确错误。Axvisor 在启动前报告该错误，要求配置显式设置 `to_bin = true`。
 
-仓库的 Axvisor x86_64 和 loongarch64 默认 QEMU 配置均将 UEFI 和 BIN 选择写在 TOML 中。guest UEFI firmware 的路径属于 VM config（例如 `boot_protocol = "uefi"` 与 `uefi_firmware_path`），不由 axbuild 运行时重写。
+仓库的 Axvisor x86_64 和 loongarch64 默认 QEMU 配置均将 UEFI 和 BIN 选择写在 TOML 中。
+guest UEFI firmware 的路径属于 VM config（例如 `boot_protocol = "uefi"` 与
+`uefi_firmware_path`）；axbuild 只在构建前展开受支持的路径变量，不改变 guest 固件 ABI。
 
 ### 1.3 LVZ QEMU
 

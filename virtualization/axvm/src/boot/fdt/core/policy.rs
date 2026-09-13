@@ -1,6 +1,6 @@
 //! Static target policies consumed by common guest FDT operations.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use axdevice_base::InterruptTriggerMode;
 use axvmconfig::GuestConfig;

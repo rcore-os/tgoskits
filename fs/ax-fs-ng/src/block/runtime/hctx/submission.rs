@@ -189,18 +189,19 @@ fn drain_submission_channels(
     if limit == 0 {
         return 0;
     }
-    let channels = state.submission_channels.lock();
-    if channels.is_empty() {
+    let channel_count = state.submission_channels.lock().len();
+    if channel_count == 0 {
         return 0;
     }
 
-    let quantum = limit.div_ceil(channels.len()).max(1);
+    let quantum = limit.div_ceil(channel_count).max(1);
     let mut received = 0;
     let mut empty_channels = 0;
-    while received < limit && empty_channels < channels.len() {
-        let index = *next_channel % channels.len();
-        let count = channels[index].try_recv_many(submissions, quantum.min(limit - received));
-        *next_channel = (index + 1) % channels.len();
+    while received < limit && empty_channels < channel_count {
+        let Some(channel) = clone_submission_channel(state, next_channel) else {
+            break;
+        };
+        let count = channel.try_recv_many(submissions, quantum.min(limit - received));
         received += count;
         if count == 0 {
             empty_channels += 1;
@@ -303,18 +304,27 @@ fn pending_from_metadata(metadata: SubmissionMetadata, deadline: Duration) -> Pe
 }
 
 fn try_recv_submission(state: &HctxState, next_channel: &mut usize) -> Option<Submission> {
-    let channels = state.submission_channels.lock();
-    if channels.is_empty() {
-        return None;
-    }
-    for offset in 0..channels.len() {
-        let index = (*next_channel + offset) % channels.len();
-        if let Some(submission) = channels[index].try_recv() {
-            *next_channel = (index + 1) % channels.len();
+    let channel_count = state.submission_channels.lock().len();
+    for _ in 0..channel_count {
+        let channel = clone_submission_channel(state, next_channel)?;
+        if let Some(submission) = channel.try_recv() {
             return Some(submission);
         }
     }
     None
+}
+
+fn clone_submission_channel(
+    state: &HctxState,
+    next_channel: &mut usize,
+) -> Option<Arc<BoundedChannel<Submission>>> {
+    let channels = state.submission_channels.lock();
+    if channels.is_empty() {
+        return None;
+    }
+    let index = *next_channel % channels.len();
+    *next_channel = (index + 1) % channels.len();
+    Some(Arc::clone(&channels[index]))
 }
 
 pub(super) fn reject_unsubmitted(submission: Submission, observer: &Weak<dyn HctxObserver>) {

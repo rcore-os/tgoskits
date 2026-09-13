@@ -1,6 +1,6 @@
 //! Architecture-neutral guest image loading and source access.
 
-use alloc::format;
+use std::format;
 
 use axvmconfig::GuestConfig;
 use byte_unit::Byte;
@@ -10,17 +10,9 @@ use crate::{AxVMRef, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err, ax_err_t
 
 mod linux;
 
-pub use crate::arch::ImageLoader;
-
-/// Return whether an x86 configuration selects direct Linux bzImage boot.
-///
-/// This returns `false` on non-x86 targets.
-pub fn is_x86_linux_image_config(config: &GuestConfig, provider: &dyn BootImageProvider) -> bool {
-    crate::arch::is_x86_linux_image_config(config, provider)
-}
-
 /// Return the q35 PCI INTx route reserved for the passthrough block device.
-pub const fn x86_qemu_passthrough_block_intx() -> (u8, u8, u8, usize) {
+#[cfg(all(target_arch = "x86_64", feature = "host-fs"))]
+pub(crate) const fn x86_qemu_passthrough_block_intx() -> (u8, u8, u8, usize) {
     (3, 0, 1, 19)
 }
 
@@ -84,10 +76,10 @@ impl<'a> ImageLoaderCore<'a> {
         match self.config.kernel.image_location.as_deref() {
             Some("memory") => {
                 let images = memory_images_for_vm(&self.config, self.provider)?;
-                crate::arch::load_images_from_memory(self, images)
+                crate::arch::current::load_images_from_memory(self, images)
             }
             #[cfg(any(feature = "fs", feature = "host-fs"))]
-            Some("fs") => crate::arch::load_images_from_filesystem(self),
+            Some("fs") => crate::arch::current::load_images_from_filesystem(self),
             _ => ax_err!(
                 InvalidInput,
                 "Unsupported image_location; use \"memory\" or enable fs feature for \"fs\""
@@ -251,13 +243,16 @@ pub fn load_vm_image_from_memory(
         // SAFETY: The destination comes from `get_image_load_region`, the source
         // contains `bytes_to_write` bytes, and guest memory cannot overlap the image.
         unsafe {
-            core::ptr::copy_nonoverlapping(
+            std::ptr::copy_nonoverlapping(
                 image_buffer[buffer_pos..].as_ptr(),
                 region.as_mut_ptr().cast(),
                 bytes_to_write,
             );
         }
-        crate::clean_dcache_range((region.as_ptr() as usize).into(), bytes_to_write);
+        crate::arch::current::make_guest_memory_visible(
+            (region.as_ptr() as usize).into(),
+            bytes_to_write,
+        );
         buffer_pos += bytes_to_write;
         if buffer_pos == image_size {
             break;
@@ -276,7 +271,7 @@ pub fn load_vm_image_from_memory(
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
 pub mod fs {
-    use alloc::{format, vec::Vec};
+    use std::{format, vec::Vec};
 
     use axvmconfig::GuestConfig;
 
@@ -309,7 +304,10 @@ pub mod fs {
             })?;
             buffer.copy_from_slice(data);
             offset = end;
-            crate::clean_dcache_range((buffer.as_ptr() as usize).into(), buffer.len());
+            crate::arch::current::make_guest_memory_visible(
+                (buffer.as_ptr() as usize).into(),
+                buffer.len(),
+            );
         }
         Ok(())
     }

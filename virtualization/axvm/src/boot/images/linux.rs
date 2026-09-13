@@ -85,10 +85,10 @@ impl ARM64Header {
     const MAGIC: u32 = 0x644d5241; // 'ARMd' in little-endian
 
     fn parse(buffer: &[u8]) -> Option<Self> {
-        if buffer.len() < core::mem::size_of::<Self>() {
+        if buffer.len() < std::mem::size_of::<Self>() {
             return None;
         }
-        let hdr: Self = unsafe { core::ptr::read_unaligned(buffer.as_ptr() as *const _) };
+        let hdr: Self = unsafe { std::ptr::read_unaligned(buffer.as_ptr() as *const _) };
         if hdr.magic != Self::MAGIC {
             return None;
         }
@@ -146,10 +146,10 @@ impl RiscvHeader {
     const MAGIC2: u32 = 0x56534905; // secondary magic
 
     fn parse(buffer: &[u8]) -> Option<Self> {
-        if buffer.len() < core::mem::size_of::<Self>() {
+        if buffer.len() < std::mem::size_of::<Self>() {
             return None;
         }
-        let hdr: Self = unsafe { core::ptr::read_unaligned(buffer.as_ptr() as *const _) };
+        let hdr: Self = unsafe { std::ptr::read_unaligned(buffer.as_ptr() as *const _) };
         if hdr.magic != Self::MAGIC || hdr.magic2 != Self::MAGIC2 {
             return None;
         }

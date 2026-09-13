@@ -6,7 +6,12 @@ use axfs_ng_vfs::{
 };
 use slab::Slab;
 
-use super::{dir::FatDirNode, disk::SeekableDisk, ff, util::into_vfs_err};
+use super::{
+    dir::FatDirNode,
+    disk::{SeekableDisk, SeekableDiskFlusher},
+    ff,
+    util::into_vfs_err,
+};
 use crate::{
     block::{BlockRegion, FsBlockDevice},
     os::sync::{IrqMutex, SleepMutex, SleepMutexGuard},
@@ -30,12 +35,14 @@ impl FatFilesystemInner {
 
 pub struct FatFilesystem {
     inner: SleepMutex<FatFilesystemInner>,
+    disk_flusher: SeekableDiskFlusher,
     root_dir: IrqMutex<Option<DirEntry>>,
 }
 
 impl FatFilesystem {
     pub fn new(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
         let disk = SeekableDisk::new(dev, region);
+        let disk_flusher = disk.flusher();
         let mut inner = FatFilesystemInner {
             inner: ff::FileSystem::new(disk, fatfs::FsOptions::new())
                 .expect("failed to initialize FAT filesystem"),
@@ -45,7 +52,8 @@ impl FatFilesystem {
         let root_inode = inner.alloc_inode();
         let result = Arc::new(Self {
             inner: SleepMutex::new(inner),
-            root_dir: IrqMutex::default(),
+            disk_flusher,
+            root_dir: IrqMutex::new(None),
         });
 
         let root_dir = DirEntry::new_dir(
@@ -100,5 +108,16 @@ impl FilesystemOps for FatFilesystem {
             fragment_size: 0,
             mount_flags: 0,
         })
+    }
+
+    fn flush(&self) -> VfsResult<()> {
+        let _state = self.inner.lock();
+        self.disk_flusher
+            .flush()
+            .map_err(crate::block_error_to_vfs_error)
+    }
+
+    fn shutdown(&self) -> VfsResult<()> {
+        self.flush()
     }
 }

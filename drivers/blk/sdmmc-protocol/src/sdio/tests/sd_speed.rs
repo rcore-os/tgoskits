@@ -15,7 +15,7 @@ fn sd_init_automatically_selects_sdr104_when_card_and_host_agree() {
         switch_status_payload(3, 1 << 3),
     ];
 
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     poll_init_to_completion(&mut driver).expect("SD init succeeds with SDR104");
 
     assert_eq!(driver.host().last_voltage, Some(SignalVoltage::V180));
@@ -52,7 +52,7 @@ fn sd_init_can_limit_speed_selection_to_legacy_high_speed() {
         switch_status_payload(1, (1 << 3) | (1 << 1)),
     ];
 
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     driver.set_sd_uhs_selection_enabled(false);
     poll_init_to_completion(&mut driver)
         .expect("SD init selects legacy HighSpeed without trying UHS");
@@ -105,7 +105,7 @@ fn sd_init_falls_back_to_high_speed_when_uhs_voltage_switch_fails() {
     ];
     host.voltage_switch_result = Some(Error::UnsupportedCommand);
 
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     poll_init_to_completion(&mut driver).expect("SD init falls back when UHS voltage switch fails");
 
     assert_eq!(driver.host().last_voltage, Some(SignalVoltage::V180));
@@ -125,7 +125,7 @@ fn sd_init_falls_back_to_high_speed_when_uhs_voltage_switch_fails() {
 fn init_voltage_reset_only_ignores_unsupported() {
     let mut host = MockHost::with_results(Vec::new());
     host.voltage_switch_result = Some(Error::Busy);
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     let mut request = driver.submit_init().unwrap();
 
     for _ in 0..4 {
@@ -138,14 +138,14 @@ fn init_voltage_reset_only_ignores_unsupported() {
         advance_init_once(&mut driver, &mut request),
         Err(Error::Busy)
     ));
-    assert!(matches!(request.state, SdioInitState::ResetVoltage));
+    assert!(matches!(request.state, SdMmcInitState::ResetVoltage));
 }
 
 #[test]
 fn sd_speed_selection_can_be_disabled_for_default_speed_bringup() {
     let replies = sd_init_replies_with_ocr(ocr_ready_sdhc_s18a());
     let host = MockHost::with_results(replies);
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     driver.set_sd_speed_selection_enabled(false);
 
     poll_init_to_completion(&mut driver).expect("SD init succeeds without CMD6 speed switching");
@@ -176,7 +176,7 @@ fn sd_speed_selection_can_be_disabled_for_default_speed_bringup() {
 fn sd_init_keeps_default_speed_when_switch_function_is_unsupported() {
     let replies = sd_init_replies_with_ocr(ocr_ready_sdhc_s18a());
     let host = MockHost::with_results(replies);
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
 
     poll_init_to_completion(&mut driver)
         .expect("optional CMD6 rejection must not fail SD initialization");

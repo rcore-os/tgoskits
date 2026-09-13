@@ -194,7 +194,7 @@ fn publish_controller_event(target: Option<&ControllerIrqTarget>, event: GroupIr
         return false;
     }
     target.latch.publish(needs_rearm, control.bits());
-    target.notification.notify_from_irq();
+    target.notification.notify();
     true
 }
 
@@ -216,16 +216,20 @@ fn publish_device_event(
         // drains the completion source before the controller observes it.
         let control_bits = if control_deferred { 0 } else { control.bits() };
         target.latch.publish(true, needs_rearm, control_bits);
-        target.notification.notify_from_irq();
+        target.notification.notify();
         activated = true;
         control_deferred |= control_bits != 0;
     }
-    if !control_deferred
+    // A queue target owns the complete drain-then-rearm transaction. Publishing
+    // the same rearm to the controller worker would let it unmask the source
+    // before the hctx has consumed the completions. Controller-only events,
+    // such as an admin IRQ without a queue target, still use this fallback.
+    if !activated
         && (!control.is_empty() || needs_rearm)
         && let Some(target) = controller_target
     {
         target.latch.publish(needs_rearm, control.bits());
-        target.notification.notify_from_irq();
+        target.notification.notify();
         activated = true;
     }
     activated
@@ -339,14 +343,14 @@ mod tests {
     }
 
     impl BlockNotification for TestNotification {
-        fn notify(&self) {}
-
-        fn notify_from_irq(&self) {
+        fn notify(&self) {
             self.irq_notifications.fetch_add(1, Ordering::AcqRel);
         }
 
+        #[track_caller]
         fn wait(&self) {}
 
+        #[track_caller]
         fn wait_timeout(&self, _duration: core::time::Duration) -> bool {
             false
         }
@@ -489,6 +493,61 @@ mod tests {
                 queue_ready: true,
                 needs_rearm: true,
                 control: ControlEvent::new(11, 0x80),
+            }
+        );
+        assert_eq!(
+            controller_latch.take(),
+            LatchedControllerIrq {
+                needs_rearm: false,
+                control: ControlEvent::new(11, 0),
+            }
+        );
+    }
+
+    #[test]
+    fn queue_coupled_rearm_is_owned_only_by_hctx() {
+        let queue_latch = Arc::new(IrqEventLatch::new(11));
+        let queue_notification = Arc::new(TestNotification {
+            irq_notifications: AtomicUsize::new(0),
+        });
+        let controller_latch = Arc::new(ControllerIrqLatch::new(11));
+        let controller_notification = Arc::new(TestNotification {
+            irq_notifications: AtomicUsize::new(0),
+        });
+        let handler = FixedHandler {
+            ack: IrqAck::masked_needs_rearm(IrqQueueMask::from_queue(2), ControlEvent::new(11, 0)),
+        };
+        let mut action = BlockIrqAction::new(
+            Box::new(handler),
+            vec![IrqTarget::new(
+                2,
+                queue_latch.clone(),
+                queue_notification.clone(),
+            )],
+        )
+        .with_controller_target(ControllerIrqTarget::new(
+            controller_latch.clone(),
+            controller_notification.clone(),
+        ));
+
+        assert_eq!(action.run(), BlockIrqOutcome::Wake);
+        assert_eq!(
+            queue_notification.irq_notifications.load(Ordering::Acquire),
+            1
+        );
+        assert_eq!(
+            controller_notification
+                .irq_notifications
+                .load(Ordering::Acquire),
+            0,
+            "the controller must not race the hctx by rearming the same masked source"
+        );
+        assert_eq!(
+            queue_latch.take(),
+            LatchedIrqEvent {
+                queue_ready: true,
+                needs_rearm: true,
+                control: ControlEvent::new(11, 0),
             }
         );
         assert_eq!(

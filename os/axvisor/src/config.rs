@@ -23,20 +23,10 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail};
-use axvm::{
-    AxVM, GuestPhysAddr,
-    boot::{
-        BootImageProvider, StaticVmImage, boot_firmware_load_gpa, get_image_header,
-        guest_boot_policy, init_guest_boot_resources, prepare_guest_boot,
-    },
-    config::{
-        AxVCpuConfig, AxVMConfig, AxVMConfigParams, GuestBootPolicy, PhysCpuList, RamdiskInfo,
-        VMImageConfig,
-    },
-};
 #[cfg(feature = "fs")]
 use axvm::{AxVmError, AxVmResult};
-use axvmconfig::{GuestConfig, GuestType, PassThroughDeviceConfig};
+use axvm::{boot::*, config::*, *};
+use axvmconfig::{GuestConfig, GuestType, HostDeviceAssignment};
 
 #[cfg(all(
     feature = "fs",
@@ -134,7 +124,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         );
     }
 
-    let mut vm_config = build_axvm_config(&vm_create_config);
+    let mut vm_config = build_axvm_config(&vm_create_config)?;
     let prepared_boot = prepare_guest_boot(&mut vm_config, vm_create_config, &image_provider)
         .with_context(|| format!("prepare boot resources for VM[{configured_vm_id}]"))?;
     let prepared_config = prepared_boot.config();
@@ -165,12 +155,9 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     vm.prepare()
         .with_context(|| format!("prepare devices and vCPUs for VM[{vm_id}]"))?;
 
-    // Keep the local `Arc` for architecture-specific post-registration setup.
     if !axvm::register_vm(vm.clone()) {
         bail!("register VM[{vm_id}]: a VM with this ID already exists");
     }
-    #[cfg(target_arch = "loongarch64")]
-    crate::manager::register_loongarch_passthrough_irq_routes(vm_id);
 
     #[cfg(all(
         feature = "fs",
@@ -181,31 +168,34 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         )
     ))]
     if release_host_filesystem {
-        #[cfg(target_arch = "x86_64")]
-        axvm::host::x86::register_qemu_block_passthrough_irq(&vm)
-            .context("register x86 QEMU block passthrough IRQ route")?;
+        axvm::host::register_block_passthrough_irq(&vm)
+            .context("register host block passthrough IRQ route")?;
         HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
     }
 
     Ok(vm_id)
 }
 
-pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
+pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> Result<AxVMConfig> {
     let machine = axvm::machine::current_machine_profile(cfg.base.cpu_num);
     let serial_profile = machine.serial;
-    let mut passthrough_devices = cfg.devices.unresolved_passthrough_devices();
+    let mut passthrough_devices = cfg.devices.unresolved_host_devices();
     if cfg.base.guest_type == GuestType::Passthrough
+        && passthrough_devices.is_empty()
         && let Some(path) = machine.default_passthrough_device_path
     {
         passthrough_devices.insert(
             0,
-            PassThroughDeviceConfig {
+            HostDeviceAssignment {
                 name: path.into(),
                 ..Default::default()
             },
         );
     }
-    AxVMConfig::new(AxVMConfigParams {
+    let mut virtual_device_catalog = axvm::ConfiguredDeviceCatalog::new();
+    axvm::machine::register_devices(&mut virtual_device_catalog)
+        .context("register AxVM virtual-device models")?;
+    Ok(AxVMConfig::new(AxVMConfigParams {
         id: cfg.base.id,
         name: cfg.base.name.clone(),
         phys_cpu_ls: PhysCpuList::new(
@@ -227,7 +217,6 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
                 size: None,
             }),
         },
-        emu_devices: machine.emulated_devices,
         pass_through_devices: passthrough_devices,
         excluded_devices: cfg.devices.disabled_device_paths(),
         pass_through_addresses: Vec::new(),
@@ -236,10 +225,11 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
         address_space_policy: cfg.base.guest_type.address_space_policy(),
         memory_regions: cfg.kernel.memory_regions.clone(),
         boot_policy: GuestBootPolicy::KeepConfigured,
-        interrupt_mode: cfg.base.guest_type.interrupt_mode(),
         serial_profile: Some(serial_profile),
         serial_backend_factory: Some(crate::guest_console::serial_backend_factory(cfg.base.id)),
-    })
+        virtual_device_requests: cfg.devices.virtual_device_requests().to_vec(),
+        virtual_device_catalog: alloc::sync::Arc::new(virtual_device_catalog),
+    }))
 }
 
 fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &GuestConfig) {
@@ -337,7 +327,7 @@ mod tests {
             0x200000,
             VmMemMappingType::MapIdentical,
         ));
-        let mut vm_config = build_axvm_config(&crate_config);
+        let mut vm_config = build_axvm_config(&crate_config).unwrap();
 
         crate_config.kernel.memory_regions.push(memory_region(
             0x110000,
@@ -353,15 +343,5 @@ mod tests {
         assert_eq!(regions[1].gpa, 0x110000);
         assert_eq!(regions[1].size, 0x10000);
         assert_eq!(regions[1].map_type, VmMemMappingType::MapReserved);
-    }
-
-    #[test]
-    fn build_axvm_config_copies_explicit_passthrough_irqs() {
-        let mut crate_config = AxVMCrateConfig::default();
-        crate_config.devices.passthrough_irqs = vec![4, 4, 17];
-
-        let vm_config = build_axvm_config(&crate_config);
-
-        assert_eq!(vm_config.pass_through_irqs(), &vec![4, 17]);
     }
 }

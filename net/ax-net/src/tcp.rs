@@ -16,7 +16,7 @@
 //!
 //! Socket methods never synchronously drive the full interface poll loop.
 //! Instead they mutate the smoltcp socket, call `request_poll()`, register
-//! wakers through `PollSet`, and let the dedicated net-poll worker advance
+//! wakers through `PollSet`, and let the unique protocol executor advance
 //! timers, handshakes, retransmission, and close states.
 //!
 //! # Related Side Tables
@@ -29,13 +29,14 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
     net::{Ipv4Addr, SocketAddr},
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
-    task::{Context, Waker},
+    task::Waker,
 };
 
-use ax_errno::{AxError, AxResult, LinuxError, ax_bail, ax_err_type};
 use ax_io::prelude::*;
-use ax_sync::Mutex;
-use axpoll::{IoEvents, PollSet, Pollable};
+use ax_lazyinit::LazyLock;
+use ax_sync::SpinLock;
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 use hashbrown::HashMap;
 use smoltcp::{
     iface::SocketHandle,
@@ -43,19 +44,21 @@ use smoltcp::{
     time::Duration,
     wire::{IpEndpoint, IpListenEndpoint, IpProtocol},
 };
-use spin::LazyLock;
 
 use crate::{
-    DeferPollWake, LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket,
-    SocketAddrEx, SocketOps,
+    ConnectStatus, LISTEN_TABLE, NetError, NetResult, ReadinessVersion, RecvFlags, RecvOptions,
+    SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx, SocketDeferPollWake, SocketOps,
     addr::{allocate_ephemeral_port, listen_addrs_conflict},
     config::{DeviceBinding, InterfaceId},
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
     general::GeneralOptions,
     get_control, get_service, interface_by_id,
     ip_tos::{EgressIpTosKey, clear_egress_ip_tos, set_egress_ip_tos},
-    options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
-    request_poll,
+    options::{
+        Configurable, GetSocketOption, SetSocketOption, TcpCongestionControl, TcpInfo,
+        TcpInfoOptions, TcpState,
+    },
+    receive_starts_next_edge, request_poll,
     state::*,
 };
 
@@ -78,11 +81,11 @@ pub struct TcpSocket {
     /// Handle into the global smoltcp socket set.
     handle: SocketHandle,
     /// Bound listen endpoint, or an empty endpoint before bind/connect.
-    bound_endpoint: Mutex<IpListenEndpoint>,
+    bound_endpoint: SpinLock<IpListenEndpoint>,
     /// Connected peer endpoint once established.
-    peer_endpoint: Mutex<Option<IpEndpoint>>,
+    peer_endpoint: SpinLock<Option<IpEndpoint>>,
     /// Currently registered egress IP_TOS policy for this TCP socket.
-    tos_key: Mutex<Option<EgressIpTosKey>>,
+    tos_key: SpinLock<Option<EgressIpTosKey>>,
     /// Whether `bound_endpoint` is registered in `TCP_BOUND_PORTS`.
     bound_registered: AtomicBool,
 
@@ -106,6 +109,8 @@ pub struct TcpSocket {
     poll_tx: Arc<PollSet>,
     /// Wakes waiters when the receive side becomes closed.
     poll_rx_closed: PollSet,
+    /// Generation published for each socket readiness wake.
+    readiness_version: ReadinessVersion,
 }
 
 unsafe impl Sync for TcpSocket {}
@@ -119,9 +124,9 @@ impl TcpSocket {
                 smol::SocketBuffer::new(vec![0; TCP_RX_BUF_LEN]),
                 smol::SocketBuffer::new(vec![0; TCP_TX_BUF_LEN]),
             )),
-            bound_endpoint: Mutex::new(empty_endpoint()),
-            peer_endpoint: Mutex::new(None),
-            tos_key: Mutex::new(None),
+            bound_endpoint: SpinLock::new(empty_endpoint()),
+            peer_endpoint: SpinLock::new(None),
+            tos_key: SpinLock::new(None),
             bound_registered: AtomicBool::new(false),
 
             general: GeneralOptions::new(1, 2, 6), // SOCK_STREAM
@@ -134,13 +139,14 @@ impl TcpSocket {
             poll_rx: Arc::new(PollSet::new()),
             poll_tx: Arc::new(PollSet::new()),
             poll_rx_closed: PollSet::new(),
+            readiness_version: ReadinessVersion::new(),
         }
     }
 
     /// Restricts this socket to one interface for route selection.
-    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult {
+    pub fn bind_device(&self, interface_id: InterfaceId) -> NetResult {
         if interface_by_id(interface_id).is_none() {
-            return Err(AxError::NoSuchDevice);
+            return Err(NetError::NoSuchDevice);
         }
         self.general.set_device_binding(DeviceBinding {
             bound_if: Some(interface_id),
@@ -157,9 +163,9 @@ impl TcpSocket {
         let result = Self {
             state: StateLock::new(State::Connected),
             handle,
-            bound_endpoint: Mutex::new(empty_endpoint()),
-            peer_endpoint: Mutex::new(Some(remote_endpoint)),
-            tos_key: Mutex::new(None),
+            bound_endpoint: SpinLock::new(empty_endpoint()),
+            peer_endpoint: SpinLock::new(Some(remote_endpoint)),
+            tos_key: SpinLock::new(None),
             bound_registered: AtomicBool::new(false),
 
             general: GeneralOptions::new(1, 2, 6), // SOCK_STREAM
@@ -172,6 +178,7 @@ impl TcpSocket {
             poll_rx: Arc::new(PollSet::new()),
             poll_tx: Arc::new(PollSet::new()),
             poll_rx_closed: PollSet::new(),
+            readiness_version: ReadinessVersion::new(),
         };
         let endpoint = IpListenEndpoint {
             addr: Some(local_endpoint.addr),
@@ -184,6 +191,11 @@ impl TcpSocket {
                 .unwrap_or_default(),
         );
         result
+    }
+
+    /// Returns the latest readiness wake generation for edge-triggered pollers.
+    pub fn readiness_version(&self) -> u64 {
+        self.readiness_version.current()
     }
 }
 
@@ -280,10 +292,10 @@ impl TcpSocket {
         })
     }
 
-    fn bound_endpoint(&self) -> AxResult<IpListenEndpoint> {
+    fn bound_endpoint(&self) -> NetResult<IpListenEndpoint> {
         let endpoint = *self.bound_endpoint.lock();
         if endpoint.port == 0 {
-            ax_bail!(InvalidInput, "not bound");
+            return Err(NetError::InvalidInput);
         }
         Ok(endpoint)
     }
@@ -308,7 +320,7 @@ impl TcpSocket {
             state => {
                 *self.peer_endpoint.lock() = None;
                 self.pending_error
-                    .store(LinuxError::ECONNREFUSED.code(), Ordering::Release);
+                    .store(syscalls::Errno::ECONNREFUSED.into_raw(), Ordering::Release);
                 self.state.set(State::Closed); // connection failed
                 debug!(
                     "TCP socket {}: connect failed in state {:?}",
@@ -348,7 +360,7 @@ impl TcpSocket {
 }
 
 impl Configurable for TcpSocket {
-    fn get_option_inner(&self, option: &mut GetSocketOption) -> AxResult<bool> {
+    fn get_option_inner(&self, option: &mut GetSocketOption) -> NetResult<bool> {
         use GetSocketOption as O;
 
         if let O::Error(error) = option {
@@ -392,12 +404,18 @@ impl Configurable for TcpSocket {
             O::TcpInfo(info) => {
                 **info = self.tcp_info_snapshot();
             }
+            O::TcpCongestionControl(congestion_control) => {
+                **congestion_control =
+                    self.with_smol_socket(|socket| match socket.congestion_control() {
+                        smol::CongestionControl::None => TcpCongestionControl::None,
+                    });
+            }
             _ => return Ok(false),
         }
         Ok(true)
     }
 
-    fn set_option_inner(&self, option: SetSocketOption) -> AxResult<bool> {
+    fn set_option_inner(&self, option: SetSocketOption) -> NetResult<bool> {
         use SetSocketOption as O;
 
         if let O::IpTos(tos) = option {
@@ -425,7 +443,7 @@ impl Configurable for TcpSocket {
             }
             O::TcpKeepIdle(keep_idle) => {
                 if *keep_idle == 0 || *keep_idle > TCP_KEEPIDLE_MAX_SECS {
-                    return Err(AxError::InvalidInput);
+                    return Err(NetError::InvalidInput);
                 }
                 self.keep_idle_secs.store(*keep_idle, Ordering::Relaxed);
                 let interval = Duration::from_secs(*keep_idle as u64);
@@ -437,14 +455,14 @@ impl Configurable for TcpSocket {
             }
             O::TcpKeepInterval(keep_interval) => {
                 if *keep_interval == 0 || *keep_interval > TCP_KEEPINTVL_MAX_SECS {
-                    return Err(AxError::InvalidInput);
+                    return Err(NetError::InvalidInput);
                 }
                 self.keep_interval_secs
                     .store(*keep_interval, Ordering::Relaxed);
             }
             O::TcpKeepCount(keep_count) => {
                 if *keep_count == 0 || *keep_count > TCP_KEEPCNT_MAX {
-                    return Err(AxError::InvalidInput);
+                    return Err(NetError::InvalidInput);
                 }
                 self.keep_count.store(*keep_count, Ordering::Relaxed);
             }
@@ -452,24 +470,31 @@ impl Configurable for TcpSocket {
                 self.user_timeout_millis
                     .store(*user_timeout, Ordering::Relaxed);
             }
+            O::TcpCongestionControl(congestion_control) => {
+                self.with_smol_socket(|socket| match congestion_control {
+                    TcpCongestionControl::None => {
+                        socket.set_congestion_control(smol::CongestionControl::None);
+                    }
+                });
+            }
             _ => return Ok(false),
         }
         Ok(true)
     }
 }
 impl SocketOps for TcpSocket {
-    fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
+    fn bind(&self, local_addr: SocketAddrEx) -> NetResult {
         let mut local_addr = local_addr.into_ip()?;
         self.state
             .lock(State::Idle)
-            .map_err(|_| ax_err_type!(InvalidInput, "already bound"))?
+            .map_err(|_| NetError::InvalidInput)?
             .transit(State::Idle, || {
                 // TODO: check addr is available
                 if local_addr.port() == 0 {
                     local_addr.set_port(get_ephemeral_port()?);
                 }
                 if self.bound_endpoint.lock().port != 0 {
-                    return Err(AxError::InvalidInput);
+                    return Err(NetError::InvalidInput);
                 }
                 let endpoint = IpListenEndpoint {
                     addr: if local_addr.ip().is_unspecified() {
@@ -483,7 +508,7 @@ impl SocketOps for TcpSocket {
                     && !self.general.reuse_port()
                     && !LISTEN_TABLE.can_listen(endpoint)
                 {
-                    return Err(AxError::AddrInUse);
+                    return Err(NetError::AddrInUse);
                 }
                 let binding = get_control().local_binding_for(&endpoint)?;
                 self.register_bound_endpoint(endpoint)?;
@@ -496,29 +521,32 @@ impl SocketOps for TcpSocket {
             })
     }
 
-    fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
+    fn start_connect(&self, remote_addr: SocketAddrEx) -> NetResult<ConnectStatus> {
         let remote_addr = remote_addr.into_ip()?;
-        self.start_connect(remote_addr)?;
+        self.begin_connect(remote_addr)?;
         request_poll();
-
-        // Here our state must be `CONNECTING`, and only one thread can run here.
-        self.general.send_poller(self, || {
-            request_poll();
-            let events = self.poll_connect();
-            if !events.contains(IoEvents::OUT) {
-                Err(AxError::WouldBlock)
-            } else if self.state.get() == State::Connected {
-                Ok(())
-            } else {
-                Err(
-                    LinuxError::try_from(self.pending_error.load(Ordering::Acquire))
-                        .map_or(AxError::ConnectionRefused, AxError::from),
-                )
-            }
-        })
+        Ok(ConnectStatus::InProgress)
     }
 
-    fn listen(&self, backlog: usize) -> AxResult {
+    fn connect_status(&self) -> NetResult<ConnectStatus> {
+        match self.state.get() {
+            State::Connected => return Ok(ConnectStatus::Connected),
+            State::Connecting => {}
+            State::Closed => return Err(NetError::ConnectionRefused),
+            _ => return Err(NetError::InvalidInput),
+        }
+        request_poll();
+        let events = self.poll_connect();
+        if !events.contains(IoEvents::OUT) {
+            Ok(ConnectStatus::InProgress)
+        } else if self.state.get() == State::Connected {
+            Ok(ConnectStatus::Connected)
+        } else {
+            Err(NetError::ConnectionRefused)
+        }
+    }
+
+    fn listen(&self, backlog: usize) -> NetResult {
         if let Ok(guard) = self.state.lock(State::Idle) {
             guard.transit(State::Listening, || {
                 let mut bound_endpoint = *self.bound_endpoint.lock();
@@ -547,131 +575,129 @@ impl SocketOps for TcpSocket {
         self.state.get() == State::Listening
     }
 
-    fn accept(&self) -> AxResult<Socket> {
+    fn try_accept(&self) -> NetResult<Socket> {
         if self.state.get() != State::Listening {
-            ax_bail!(InvalidInput, "not listening");
+            return Err(NetError::InvalidInput);
         }
 
         let bound_endpoint = self.bound_endpoint()?;
-        self.general.recv_poller(self, || {
-            request_poll();
-            let accepted = {
-                let mut sockets = SOCKET_SET.inner.lock();
-                LISTEN_TABLE.accept(bound_endpoint, &mut sockets)?
-            };
-            Ok({
-                let socket = TcpSocket::new_connected(
-                    accepted.handle,
-                    accepted.local_endpoint,
-                    accepted.remote_endpoint,
-                );
-                socket.general.set_ip_tos(self.general.ip_tos());
-                socket.sync_egress_ip_tos();
-                debug!(
-                    "accepted connection from {}, {}",
-                    accepted.handle, accepted.remote_endpoint
-                );
-                socket.into()
-            })
+        request_poll();
+        let accepted = {
+            let mut sockets = SOCKET_SET.inner.lock();
+            let accepted = LISTEN_TABLE.accept(bound_endpoint, &mut sockets)?;
+            if matches!(LISTEN_TABLE.can_accept(bound_endpoint, &sockets), Ok(false)) {
+                // Preserve the empty interval for EPOLLET even when another
+                // connection arrives before the next poll. Holding SOCKET_SET
+                // prevents protocol progress between draining and publication.
+                // A concurrent unlisten must not turn an already accepted
+                // child's ownership into an error after it left the queue.
+                self.readiness_version.publish();
+            }
+            accepted
+        };
+        Ok({
+            let socket = TcpSocket::new_connected(
+                accepted.handle,
+                accepted.local_endpoint,
+                accepted.remote_endpoint,
+            );
+            socket.general.set_ip_tos(self.general.ip_tos());
+            socket.sync_egress_ip_tos();
+            debug!(
+                "accepted connection from {}, {}",
+                accepted.handle, accepted.remote_endpoint
+            );
+            socket.into()
         })
     }
 
-    fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
-        // SAFETY: `self.handle` should be initialized in a connected socket.
-        let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
-        // A partial send on a non-blocking socket must report the bytes already
-        // enqueued rather than `WouldBlock`. The poller treats the socket as
-        // non-blocking when either `O_NONBLOCK` or `MSG_DONTWAIT` is set, so
-        // `finish_tcp_send_step` has to use the same effective flag: otherwise a
-        // partial send returns EAGAIN after `src` was already consumed, and the
-        // caller retransmits those bytes and corrupts the stream.
-        let nonblocking = self.general.nonblocking() || extra_nb;
-        let target_len = src.remaining();
-        if target_len == 0 {
+    fn try_send(&self, mut src: impl Read + IoBuf, _options: &mut SendOptions) -> NetResult<usize> {
+        if src.remaining() == 0 {
             return Ok(0);
         }
-        let mut total_sent = 0;
-        let result = self.general.send_poller_with(self, extra_nb, || {
-            request_poll();
-            let step = self.with_smol_socket(|socket| {
-                if !socket.is_active() {
-                    Err(AxError::NotConnected)
-                } else if !socket.can_send() {
-                    Err(AxError::WouldBlock)
-                } else {
-                    // connected, and the tx buffer is not full
-                    let len = socket
-                        .send(|buffer| {
-                            let result = src.read(buffer);
-                            let len = result.unwrap_or(0);
-                            (len, result)
-                        })
-                        .map_err(|_| ax_err_type!(NotConnected, "not connected?"))??;
-                    Ok(len)
-                }
-            });
-            if step.as_ref().is_ok_and(|sent| *sent > 0) {
-                request_poll();
+        request_poll();
+        let result = self.with_smol_socket(|socket| {
+            if !socket.is_active() {
+                Err(NetError::NotConnected)
+            } else if !socket.can_send() {
+                Err(NetError::WouldBlock)
+            } else {
+                let len = socket
+                    .send(|buffer| {
+                        let result = src.read(buffer);
+                        let len = result.unwrap_or(0);
+                        (len, result)
+                    })
+                    .map_err(|_| NetError::NotConnected)??;
+                Ok(len)
             }
-            finish_tcp_send_step(&mut total_sent, target_len, nonblocking, step)
         });
-        if result.is_ok() {
+        if result.as_ref().is_ok_and(|sent| *sent > 0) {
             request_poll();
         }
         result
     }
 
-    fn recv(&self, mut dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize> {
+    fn try_recv(
+        &self,
+        mut dst: impl Write + IoBufMut,
+        options: &mut RecvOptions<'_>,
+    ) -> NetResult<usize> {
         if self.rx_closed.load(Ordering::Acquire) {
-            return Err(AxError::NotConnected);
+            return Err(NetError::NotConnected);
         }
         if self.state.get() == State::Closed {
-            return Err(AxError::NotConnected);
+            return Err(NetError::NotConnected);
         }
-        let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
-        self.general.recv_poller_with(self, extra_nb, || {
-            request_poll();
-            self.with_smol_socket(|socket| {
-                if socket.recv_queue() > 0 {
-                    if options.flags.contains(RecvFlags::PEEK) {
-                        dst.write(
-                            socket
-                                .peek(dst.remaining_mut())
-                                .map_err(|_| ax_err_type!(NotConnected, "not connected?"))?,
-                        )
-                    } else {
-                        // Drain currently available bytes from RX queue without waiting.
-                        // This loop copies across smoltcp's internal buffer segments to fill
-                        // the user buffer with as many bytes as are ready, but does not block
-                        // waiting for more data to arrive.
-                        let mut total = 0;
-                        while socket.recv_queue() > 0 && dst.remaining_mut() > 0 {
-                            let len = socket
-                                .recv(|buf| {
-                                    let result = dst.write(buf);
-                                    let len = result.unwrap_or(0);
-                                    (len, result)
-                                })
-                                .map_err(|_| ax_err_type!(NotConnected, "not connected?"))??;
-                            if len == 0 {
-                                break;
-                            }
-                            total += len;
-                        }
-                        Ok(total)
-                    }
-                } else if !socket.may_recv() {
-                    Ok(0)
+        request_poll();
+        self.with_smol_socket(|socket| {
+            if socket.recv_queue() > 0 {
+                if options.flags.contains(RecvFlags::PEEK) {
+                    dst.write(
+                        socket
+                            .peek(dst.remaining_mut())
+                            .map_err(|_| NetError::NotConnected)?,
+                    )
+                    .map_err(NetError::from)
                 } else {
-                    Err(AxError::WouldBlock)
+                    // Drain currently available bytes from RX queue without waiting.
+                    // This loop copies across smoltcp's internal buffer segments to fill
+                    // the user buffer with as many bytes as are ready, but does not block
+                    // waiting for more data to arrive.
+                    let mut total = 0;
+                    while socket.recv_queue() > 0 && dst.remaining_mut() > 0 {
+                        let len = socket
+                            .recv(|buf| {
+                                let result = dst.write(buf).map_err(NetError::from);
+                                let len = result.unwrap_or(0);
+                                (len, result)
+                            })
+                            .map_err(|_| NetError::NotConnected)??;
+                        if len == 0 {
+                            break;
+                        }
+                        total += len;
+                    }
+                    if receive_starts_next_edge(total, socket.recv_queue()) {
+                        // Linux EPOLLET treats data arriving after the receive
+                        // queue was drained as a new edge even if epoll did not
+                        // sample the empty interval. Preserve that epoch for
+                        // the polling POSIX epoll adapter.
+                        self.readiness_version.publish();
+                    }
+                    Ok(total)
                 }
-            })
+            } else if !socket.may_recv() {
+                Ok(0)
+            } else {
+                Err(NetError::WouldBlock)
+            }
         })
     }
 
-    fn recv_available(&self) -> AxResult<usize> {
+    fn recv_available(&self) -> NetResult<usize> {
         if self.state.get() == State::Listening {
-            return Err(AxError::InvalidInput);
+            return Err(NetError::InvalidInput);
         }
         let available = self.with_smol_socket(|socket| socket.recv_queue());
         if available > 0 {
@@ -681,7 +707,7 @@ impl SocketOps for TcpSocket {
         Ok(self.with_smol_socket(|socket| socket.recv_queue()))
     }
 
-    fn local_addr(&self) -> AxResult<SocketAddrEx> {
+    fn local_addr(&self) -> NetResult<SocketAddrEx> {
         let endpoint = self.with_smol_socket(|socket| {
             socket
                 .local_endpoint()
@@ -699,23 +725,24 @@ impl SocketOps for TcpSocket {
         )))
     }
 
-    fn peer_addr(&self) -> AxResult<SocketAddrEx> {
+    fn peer_addr(&self) -> NetResult<SocketAddrEx> {
         self.with_smol_socket(|socket| {
             Ok(SocketAddrEx::Ip(
                 socket
                     .remote_endpoint()
                     .or_else(|| *self.peer_endpoint.lock())
-                    .ok_or(AxError::NotConnected)?
+                    .ok_or(NetError::NotConnected)?
                     .into(),
             ))
         })
     }
 
-    fn shutdown(&self, how: Shutdown) -> AxResult {
+    fn shutdown(&self, how: Shutdown) -> NetResult {
         // TODO(mivik): shutdown
         if how.has_read() {
             self.rx_closed.store(true, Ordering::Release);
             // rx_closed is visible before waking RDHUP/EOF waiters.
+            self.readiness_version.publish();
             unsafe { self.poll_rx_closed.wake(IoEvents::RDHUP | IoEvents::IN) };
         }
 
@@ -772,7 +799,29 @@ impl Pollable for TcpSocket {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_shared(poll, interests)
+        });
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_exclusive(poll, interests)
+        });
+    }
+}
+
+impl TcpSocket {
+    fn register_poll_sources(
+        &self,
+        events: IoEvents,
+        mut register: impl FnMut(&PollSet, IoEvents),
+    ) {
         let mut accept_registration = None;
         if self.state.get() == State::Listening && events.intersects(IoEvents::IN | IoEvents::RDHUP)
         {
@@ -782,7 +831,7 @@ impl Pollable for TcpSocket {
                 if let Some(accept_poll) = LISTEN_TABLE.accept_poll(endpoint) {
                     // accept registration runs from task poll context after
                     // releasing the listen-table lock.
-                    unsafe { accept_poll.register(context.waker(), IoEvents::IN) };
+                    register(&accept_poll, IoEvents::IN);
                     let accept_waker = LISTEN_TABLE.accept_waker(accept_poll.clone());
                     accept_registration = Some((endpoint, accept_poll, accept_waker));
                 }
@@ -791,25 +840,24 @@ impl Pollable for TcpSocket {
         let recv_waker = if events.intersects(IoEvents::IN | IoEvents::RDHUP) {
             // Socket registration runs from task poll context before taking the
             // socket-set lock.
-            unsafe {
-                self.poll_rx
-                    .register(context.waker(), IoEvents::IN | IoEvents::RDHUP)
-            };
-            Some(Waker::from(Arc::new(DeferPollWake {
-                poll: self.poll_rx.clone(),
-                ready: IoEvents::IN | IoEvents::RDHUP,
-            })))
+            register(&self.poll_rx, IoEvents::IN | IoEvents::RDHUP);
+            Some(Waker::from(Arc::new(SocketDeferPollWake::new(
+                self.poll_rx.clone(),
+                IoEvents::IN | IoEvents::RDHUP,
+                self.readiness_version.clone(),
+            ))))
         } else {
             None
         };
         let send_waker = if events.contains(IoEvents::OUT) {
             // Socket registration runs from task poll context before taking the
             // socket-set lock.
-            unsafe { self.poll_tx.register(context.waker(), IoEvents::OUT) };
-            Some(Waker::from(Arc::new(DeferPollWake {
-                poll: self.poll_tx.clone(),
-                ready: IoEvents::OUT,
-            })))
+            register(&self.poll_tx, IoEvents::OUT);
+            Some(Waker::from(Arc::new(SocketDeferPollWake::new(
+                self.poll_tx.clone(),
+                IoEvents::OUT,
+                self.readiness_version.clone(),
+            ))))
         } else {
             None
         };
@@ -831,14 +879,17 @@ impl Pollable for TcpSocket {
             }
         });
         if events.intersects(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP) {
-            self.general.register_waker(context.waker());
+            register(&self.poll_rx, events);
+            self.general
+                .register_waker(&Waker::from(Arc::new(SocketDeferPollWake::new(
+                    self.poll_rx.clone(),
+                    events,
+                    self.readiness_version.clone(),
+                ))));
         }
         if events.contains(IoEvents::RDHUP) {
-            // Registration happens from socket poll task context.
-            unsafe {
-                self.poll_rx_closed
-                    .register(context.waker(), IoEvents::RDHUP | IoEvents::IN)
-            };
+            // Registration happens from the OS-owned socket wait context.
+            register(&self.poll_rx_closed, IoEvents::RDHUP | IoEvents::IN);
         }
     }
 }
@@ -893,7 +944,7 @@ impl Drop for TcpSocket {
             SOCKET_SET.remove(self.handle);
         }
 
-        // Wake net-poll worker to process teardown
+        // Ask the unique protocol executor to process teardown.
         crate::request_poll();
     }
 }
@@ -926,16 +977,16 @@ const fn empty_endpoint() -> IpListenEndpoint {
 }
 
 impl TcpSocket {
-    /// Starts an active open and leaves completion to the net-poll worker.
-    fn start_connect(&self, remote_addr: SocketAddr) -> AxResult {
+    /// Starts an active open and leaves completion to the protocol executor.
+    fn begin_connect(&self, remote_addr: SocketAddr) -> NetResult {
         self.state
             .lock(State::Idle)
             .map_err(|state| {
                 if state == State::Connecting {
-                    AxError::InProgress
+                    NetError::InProgress
                 } else {
                     // TODO(mivik): error code
-                    ax_err_type!(AlreadyConnected)
+                    NetError::AlreadyConnected
                 }
             })?
             .transit(State::Connecting, || {
@@ -975,14 +1026,10 @@ impl TcpSocket {
                         socket
                             .connect(context, remote_endpoint, bound_endpoint)
                             .map_err(|e| match e {
-                                smol::ConnectError::InvalidState => {
-                                    ax_err_type!(AlreadyConnected)
-                                }
-                                smol::ConnectError::Unaddressable => {
-                                    ax_err_type!(ConnectionRefused, "unaddressable")
-                                }
+                                smol::ConnectError::InvalidState => NetError::AlreadyConnected,
+                                smol::ConnectError::Unaddressable => NetError::ConnectionRefused,
                             })?;
-                        Ok::<(), AxError>(())
+                        Ok::<(), NetError>(())
                     })
                 })?;
                 *self.bound_endpoint.lock() = bound_endpoint;
@@ -1001,7 +1048,7 @@ impl TcpSocket {
     }
 
     /// Registers the public TCP bind side table if not already registered.
-    fn register_bound_endpoint(&self, endpoint: IpListenEndpoint) -> AxResult {
+    fn register_bound_endpoint(&self, endpoint: IpListenEndpoint) -> NetResult {
         if !self.bound_registered.load(Ordering::Acquire) {
             register_tcp_bound(endpoint, self.general.reuse_port())?;
             self.bound_registered.store(true, Ordering::Release);
@@ -1012,8 +1059,8 @@ impl TcpSocket {
     fn with_bound_endpoint_registered<R>(
         &self,
         endpoint: IpListenEndpoint,
-        f: impl FnOnce() -> AxResult<R>,
-    ) -> AxResult<R> {
+        f: impl FnOnce() -> NetResult<R>,
+    ) -> NetResult<R> {
         let register_bound = !self.bound_registered.load(Ordering::Acquire);
         if register_bound {
             register_tcp_bound(endpoint, self.general.reuse_port())?;
@@ -1050,15 +1097,15 @@ struct TcpBoundEntry {
     reuse_port: bool,
 }
 
-static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, Vec<TcpBoundEntry>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static TCP_BOUND_PORTS: LazyLock<SpinLock<HashMap<u16, Vec<TcpBoundEntry>>>> =
+    LazyLock::new(|| SpinLock::new(HashMap::new()));
 
 /// Registers TCP bind ownership with wildcard/specific address conflicts.
 ///
 /// A binder joins an existing reuseport group only when it and every colliding
 /// owner requested SO_REUSEPORT on the exact same local address; any other
 /// address overlap on the port is rejected with `EADDRINUSE`.
-fn register_tcp_bound(endpoint: IpListenEndpoint, reuse_port: bool) -> AxResult {
+fn register_tcp_bound(endpoint: IpListenEndpoint, reuse_port: bool) -> NetResult {
     if endpoint.port == 0 {
         return Ok(());
     }
@@ -1069,7 +1116,7 @@ fn register_tcp_bound(endpoint: IpListenEndpoint, reuse_port: bool) -> AxResult 
         if listen_addrs_conflict(entry.addr, endpoint.addr)
             && !(reuse_port && entry.reuse_port && entry.addr == endpoint.addr)
         {
-            return Err(AxError::AddrInUse);
+            return Err(NetError::AddrInUse);
         }
     }
     entries.push(TcpBoundEntry {
@@ -1104,242 +1151,6 @@ fn tcp_port_available(port: u16) -> bool {
         && !TCP_BOUND_PORTS.lock().contains_key(&port)
 }
 
-fn finish_tcp_send_step(
-    total_sent: &mut usize,
-    target_len: usize,
-    extra_nonblocking: bool,
-    step: AxResult<usize>,
-) -> AxResult<usize> {
-    match step {
-        Ok(sent) => {
-            *total_sent += sent;
-            if *total_sent >= target_len || extra_nonblocking {
-                Ok(*total_sent)
-            } else {
-                Err(AxError::WouldBlock)
-            }
-        }
-        Err(AxError::WouldBlock) if *total_sent > 0 && extra_nonblocking => Ok(*total_sent),
-        Err(AxError::WouldBlock) => Err(AxError::WouldBlock),
-        Err(_) if *total_sent > 0 => Ok(*total_sent),
-        Err(err) => Err(err),
-    }
-}
-
-fn get_ephemeral_port() -> AxResult<u16> {
+fn get_ephemeral_port() -> NetResult<u16> {
     allocate_ephemeral_port(tcp_port_available)
-}
-
-#[cfg(test)]
-mod tests {
-    use core::net::{IpAddr, SocketAddr};
-
-    use super::*;
-    use crate::{
-        options::{Configurable, GetSocketOption, SetSocketOption, TcpState},
-        test_support::{
-            LOCAL_ADDR, LOCAL_IF, PEER_ADDR, PEER_IF, init_split_route_network, network_test_guard,
-        },
-    };
-
-    #[test]
-    fn blocking_tcp_send_waits_after_partial_write() {
-        let mut total = 0;
-
-        assert_eq!(
-            finish_tcp_send_step(&mut total, 10, false, Ok(4)),
-            Err(AxError::WouldBlock),
-        );
-        assert_eq!(total, 4);
-        assert_eq!(finish_tcp_send_step(&mut total, 10, false, Ok(6)), Ok(10),);
-        assert_eq!(total, 10);
-    }
-
-    #[test]
-    fn dontwait_tcp_send_returns_first_partial_write() {
-        let mut total = 0;
-
-        assert_eq!(finish_tcp_send_step(&mut total, 10, true, Ok(4)), Ok(4),);
-        assert_eq!(total, 4);
-    }
-
-    #[test]
-    fn tcp_send_returns_partial_count_after_later_error() {
-        let mut total = 4;
-
-        assert_eq!(
-            finish_tcp_send_step(&mut total, 10, false, Err(AxError::NotConnected)),
-            Ok(4),
-        );
-        assert_eq!(total, 4);
-    }
-
-    #[test]
-    fn blocking_tcp_send_keeps_waiting_after_partial_wouldblock() {
-        let mut total = 4;
-
-        assert_eq!(
-            finish_tcp_send_step(&mut total, 10, false, Err(AxError::WouldBlock)),
-            Err(AxError::WouldBlock),
-        );
-        assert_eq!(total, 4);
-    }
-
-    #[test]
-    fn tcp_info_reports_default_socket_metrics() {
-        let _guard = network_test_guard();
-        init_split_route_network();
-
-        let socket = TcpSocket::new();
-        let mut info = TcpInfo::default();
-
-        socket
-            .get_option(GetSocketOption::TcpInfo(&mut info))
-            .unwrap();
-
-        assert_eq!(info.state, TcpState::Closed);
-        assert_eq!(info.snd_mss, TCP_INFO_DEFAULT_MSS);
-        assert_eq!(info.rcv_mss, TCP_INFO_DEFAULT_MSS);
-        assert_eq!(info.pmtu, TCP_INFO_DEFAULT_PMTU);
-        assert_eq!(info.notsent_bytes, 0);
-        assert_eq!(info.snd_wnd, 0);
-        assert_eq!(info.snd_cwnd, 0);
-        assert_eq!(info.rcv_space, 0);
-        assert_eq!(info.rcv_wnd, 0);
-    }
-
-    #[test]
-    fn connect_preserves_bound_interface() {
-        let _guard = network_test_guard();
-        init_split_route_network();
-
-        let socket = TcpSocket::new();
-        let nonblocking = true;
-        socket
-            .set_option(SetSocketOption::NonBlocking(&nonblocking))
-            .unwrap();
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(LOCAL_ADDR), 0)))
-            .unwrap();
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(LOCAL_IF)
-            }
-        );
-
-        // Connect to different network - should NOT change interface binding
-        // because we're bound to a specific local address
-        socket
-            .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
-            .unwrap();
-
-        // Interface binding should remain LOCAL_IF (not changed to PEER_IF)
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(LOCAL_IF)
-            }
-        );
-    }
-
-    #[test]
-    fn connect_uses_peer_route_when_unbound() {
-        let _guard = network_test_guard();
-        init_split_route_network();
-
-        let socket = TcpSocket::new();
-        let nonblocking = true;
-        socket
-            .set_option(SetSocketOption::NonBlocking(&nonblocking))
-            .unwrap();
-
-        // Bind to 0.0.0.0 (unspecified) - interface should be determined by route
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                0,
-            )))
-            .unwrap();
-
-        socket
-            .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
-            .unwrap();
-
-        // Interface binding should use route decision (PEER_IF)
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(PEER_IF)
-            }
-        );
-    }
-
-    #[test]
-    fn connect_rejects_unroutable_bound_device() {
-        let _guard = network_test_guard();
-        init_split_route_network();
-
-        let socket = TcpSocket::new();
-        let nonblocking = true;
-        socket
-            .set_option(SetSocketOption::NonBlocking(&nonblocking))
-            .unwrap();
-        socket.bind_device(LOCAL_IF).unwrap();
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                0,
-            )))
-            .unwrap();
-
-        assert!(
-            socket
-                .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
-                .is_err()
-        );
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(LOCAL_IF)
-            }
-        );
-    }
-
-    #[test]
-    fn reuseport_group_shares_a_port_while_plain_binders_conflict() {
-        let _guard = network_test_guard();
-
-        let endpoint = IpListenEndpoint {
-            addr: None,
-            port: 0xB70F,
-        };
-
-        // A plain binder owns the port exclusively.
-        register_tcp_bound(endpoint, false).unwrap();
-        assert_eq!(
-            register_tcp_bound(endpoint, false).unwrap_err(),
-            AxError::AddrInUse
-        );
-        // SO_REUSEPORT cannot join a group started by a non-reuseport owner.
-        assert_eq!(
-            register_tcp_bound(endpoint, true).unwrap_err(),
-            AxError::AddrInUse
-        );
-        unregister_tcp_bound(endpoint);
-
-        // Two reuseport binders share the port, mirroring Linux's group model.
-        register_tcp_bound(endpoint, true).unwrap();
-        register_tcp_bound(endpoint, true).unwrap();
-        // A plain binder still cannot steal a reuseport-owned port.
-        assert_eq!(
-            register_tcp_bound(endpoint, false).unwrap_err(),
-            AxError::AddrInUse
-        );
-
-        // Each unregister drops exactly one group member.
-        unregister_tcp_bound(endpoint);
-        unregister_tcp_bound(endpoint);
-        assert!(!TCP_BOUND_PORTS.lock().contains_key(&endpoint.port));
-    }
 }

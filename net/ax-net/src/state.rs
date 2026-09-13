@@ -15,7 +15,7 @@
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use ax_errno::AxResult;
+use crate::NetResult;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +83,7 @@ impl StateLock {
 pub struct StateGuard<'a>(&'a StateLock, u8);
 impl StateGuard<'_> {
     /// Runs a transition body and commits the new state only on success.
-    pub fn transit<R>(self, new: State, f: impl FnOnce() -> AxResult<R>) -> AxResult<R> {
+    pub fn transit<R>(self, new: State, f: impl FnOnce() -> NetResult<R>) -> NetResult<R> {
         match f() {
             Ok(result) => {
                 self.0.0.store(new as u8, Ordering::Release);
@@ -94,5 +94,41 @@ impl StateGuard<'_> {
                 Err(err)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::NetError;
+
+    #[test]
+    fn transition_commits_success_and_rolls_back_errors() {
+        let lock = StateLock::new(State::Idle);
+        let guard = lock.lock(State::Idle).unwrap();
+        assert_eq!(lock.get(), State::Busy);
+
+        assert_eq!(
+            guard
+                .transit(State::Connected, || Ok::<_, NetError>(9))
+                .unwrap(),
+            9
+        );
+        assert_eq!(lock.get(), State::Connected);
+
+        lock.set(State::Idle);
+        let guard = lock.lock(State::Idle).unwrap();
+        assert_eq!(
+            guard.transit(State::Listening, || Err::<(), _>(NetError::BadState)),
+            Err(NetError::BadState)
+        );
+        assert_eq!(lock.get(), State::Idle);
+    }
+
+    #[test]
+    fn state_encoding_rejects_unknown_values() {
+        assert_eq!(State::try_from(0), Ok(State::Idle));
+        assert_eq!(State::try_from(5), Ok(State::Closed));
+        assert_eq!(State::try_from(6), Err(()));
     }
 }

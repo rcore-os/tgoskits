@@ -7,6 +7,8 @@ sidebar_label: "板卡管理"
 
 `cargo xtask board` 是顶层板卡管理命令，封装了与 `ostool-server` 的交互。`ostool-server` 运行在连接物理板卡的宿主机上，提供板卡分配、固件部署和串口交互的 API。本命令用于**分配/查看/连接**远程板卡，与 `cargo xtask <os> board`（在板卡上运行 OS，详见 [Axvisor 运行](./axvisor/runtime) 或 [StarryOS 运行](./starry/runtime)）是两个不同层次：前者管板子，后者把编译产物刷到板子上跑。
 
+公网开发板租赁平台涉及普通用户账号、OAuth 浏览器授权、租赁和管理员后台操作，相关说明见[开发板租赁平台](../bbdsp/overview.md)；本文仍是 TGOSKits `cargo xtask board` 的命令参考。
+
 ## 1. 服务架构
 
 板卡管理涉及三个角色：开发者的 axbuild 进程、ostool-server（板卡宿主机上的服务）、物理板卡。`cargo xtask board` 命令是前两者的桥梁，通过 HTTP API 与 ostool-server 交互完成板卡分配和串口连接。
@@ -55,13 +57,14 @@ struct BoardServerArgs {
 struct ArgsConnect {
     board_type: String,         // 板卡类型（如 OrangePi-5-Plus）
     server: BoardServerArgs,    // 服务器参数
+    session_files: Vec<SessionFileArg>,  // 连接会话开始前上传的临时文件映射
 }
 ```
 
 | 子命令 | 参数 | 说明 |
 |--------|------|------|
 | `ls` | `--server <H>` `--port <P>`（可选） | 列出 ostool-server 上可用的远程板卡类型 |
-| `connect` | `-b/--board-type <TYPE>`（必需）、`--server <H>` `--port <P>`（可选） | 分配一块指定类型的板卡并连接到它的串口终端 |
+| `connect` | `-b/--board-type <TYPE>`（必需）、`--server <H>` `--port <P>`、`--session-file <REL=LOCAL>`（可重复） | 分配一块指定类型的板卡并连接到它的串口终端 |
 | `config` | 无 | 编辑默认的板卡服务器配置（ostool 全局配置） |
 
 ## 3. 服务配置
@@ -84,7 +87,9 @@ struct ArgsConnect {
 
 `Command::Connect` 是最常用的交互命令。流程：加载全局配置 → 解析服务器 → `connect_board` 向 ostool-server 请求分配一块指定类型的板卡 → 分配成功后把板卡串口透传到当前终端（stdin/stdout 透传），开发者获得与板卡串口的直接交互能力。
 
-`connect` 会**占用**板卡资源（其他用户在该板卡被释放前无法使用），因此使用完毕后需通过退出终端（Ctrl+C / Ctrl+D）释放板卡。
+`connect` 会**占用**板卡资源（其他用户在该板卡被释放前无法使用）。进入 ostool 串口终端后，按 `Ctrl+A`，松开后再按 `x` 退出，使客户端有机会正常释放开发板。
+
+`--session-file RELATIVE_PATH=LOCAL_PATH` 可在串口会话开始前上传一个本地文件，并在终端输出板卡可访问的 HTTP URL。该参数可重复，适合临时把内核、脚本或诊断资产挂到一次手工调试会话中。
 
 ### 4.3 管理配置
 
@@ -104,13 +109,16 @@ cargo xtask board config
 # 分配一块 OrangePi-5-Plus 并连接串口
 cargo xtask board connect -b OrangePi-5-Plus
 
+# 连接前上传临时文件并打印板卡可访问 URL
+cargo xtask board connect -b OrangePi-5-Plus --session-file boot/Image=target/Image
+
 # 临时指定其他 ostool-server 实例
 cargo xtask board ls --server board-host.local --port 1234
 ```
 
 ## 6. 系统运行关系
 
-`cargo xtask <os> board`（如 `cargo starry board`、`cargo axvisor board`）在内部也会调用 ostool-server，但它假定板卡分配由 ostool 自动协商，并额外完成"编译 → 刷写固件 → 收集串口输出"的完整流程。`cargo xtask board connect` 用于**人工**串口调试：你想手动进入 U-Boot、观察引导日志、或在板卡 Linux 上准备文件时使用它。两者共用同一份服务器配置。
+`cargo xtask <os> board`（如 `cargo xtask starry board`、`cargo xtask axvisor board`）在内部也会调用 ostool-server，但它假定板卡分配由 ostool 自动协商，并额外完成"编译 → 刷写固件 → 收集串口输出"的完整流程。`cargo xtask board connect` 用于**人工**串口调试：你想手动进入 U-Boot、观察引导日志、或在板卡 Linux 上准备文件时使用它。两者共用同一份服务器配置。
 
 板卡相关的物理操作（如 U-Boot fsck 修复、Linux 侧 rootfs 部署）属于更专门的运维流程，详见相关技能文档。
 

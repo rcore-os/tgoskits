@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -263,6 +264,8 @@ static void check_errno_filter(void)
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR_OFF),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_getpid, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EACCES),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_getppid, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EINTR),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
 
@@ -279,8 +282,15 @@ static void check_errno_filter(void)
     expect_syscall_ret(syscall(SYS_getpid), -1, EACCES,
                        "filter returns configured errno for getpid");
 
+    /* This is a configured result, not a signal-interrupted blocking call. */
+    puts("checking seccomp EINTR is returned without restarting");
+    fflush(stdout);
     errno = 0;
-    long ret = syscall(SYS_getppid);
+    expect_syscall_ret(syscall(SYS_getppid), -1, EINTR,
+                       "filter returns EINTR without restarting getppid");
+
+    errno = 0;
+    long ret = syscall(SYS_gettid);
     expect_true(ret > 0 && errno == 0, "filter allows unrelated syscall");
 }
 
@@ -394,7 +404,10 @@ static void check_fork_inherits_filter(void)
 }
 
 struct tsync_state {
-    volatile int start;
+    atomic_int ready;
+    atomic_int start;
+    long nnp_before;
+    long nnp_after;
     long ret;
     int err;
 };
@@ -403,10 +416,13 @@ static void *tsync_worker(void *arg)
 {
     struct tsync_state *state = (struct tsync_state *)arg;
 
-    while (!state->start) {
+    state->nnp_before = syscall(SYS_prctl, PR_GET_NO_NEW_PRIVS, 0, 0, 0);
+    atomic_store_explicit(&state->ready, 1, memory_order_release);
+    while (!atomic_load_explicit(&state->start, memory_order_acquire)) {
         sched_yield();
     }
 
+    state->nnp_after = syscall(SYS_prctl, PR_GET_NO_NEW_PRIVS, 0, 0, 0);
     errno = 0;
     state->ret = syscall(SYS_getpid);
     state->err = errno;
@@ -417,6 +433,7 @@ static void check_tsync_filter(void)
 {
     pthread_t thread;
     struct tsync_state state = {
+        .ready = 0,
         .start = 0,
         .ret = 0,
         .err = 0,
@@ -433,9 +450,14 @@ static void check_tsync_filter(void)
         return;
     }
 
+    while (!atomic_load_explicit(&state.ready, memory_order_acquire)) {
+        sched_yield();
+    }
+    expect_true(state.nnp_before == 0,
+                "TSYNC peer starts without no_new_privs");
     if (set_no_new_privs() != 0) {
         failed++;
-        state.start = 1;
+        atomic_store_explicit(&state.start, 1, memory_order_release);
         pthread_join(thread, NULL);
         return;
     }
@@ -445,10 +467,12 @@ static void check_tsync_filter(void)
                                       SECCOMP_FILTER_FLAG_TSYNC),
                        0, 0, "install TSYNC filter");
 
-    state.start = 1;
+    atomic_store_explicit(&state.start, 1, memory_order_release);
     pthread_join(thread, NULL);
     expect_true(state.ret == -1 && state.err == EACCES,
                 "TSYNC applies filter to peer thread");
+    expect_true(state.nnp_after == 1,
+                "TSYNC propagates no_new_privs to peer thread");
 }
 
 static void expect_child_killed_after_marker(pid_t pid, int read_fd,

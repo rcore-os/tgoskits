@@ -28,6 +28,13 @@ impl SerialIrqLatch {
     pub(super) fn has_pending(&self) -> bool {
         self.packed.load(Ordering::Acquire) != 0
     }
+
+    pub(super) fn discard_rx(&self) {
+        let rx = SerialEventSet::RX.bits()
+            | (RxErrorFlags::all().bits() << ERROR_SHIFT)
+            | (SerialEventSet::RX.bits() << REARM_SHIFT);
+        self.packed.fetch_and(!rx, Ordering::AcqRel);
+    }
 }
 
 const fn pack(event: SerialIrqEvent) -> u32 {
@@ -60,6 +67,14 @@ pub(super) struct SerialStatsAtomic {
     rx_dropped: AtomicU64,
     tx_bytes: AtomicU64,
     log_dropped: AtomicU64,
+    log_dropped_records: AtomicU64,
+    log_sequence_gaps: AtomicU64,
+    log_records: AtomicU64,
+    structured_log_records: AtomicU64,
+    task_log_records: AtomicU64,
+    truncated_log_records: AtomicU64,
+    last_log_cpu: AtomicU64,
+    last_log_timestamp_nanos: AtomicU64,
 }
 
 impl SerialStatsAtomic {
@@ -73,6 +88,14 @@ impl SerialStatsAtomic {
             rx_dropped: AtomicU64::new(0),
             tx_bytes: AtomicU64::new(0),
             log_dropped: AtomicU64::new(0),
+            log_dropped_records: AtomicU64::new(0),
+            log_sequence_gaps: AtomicU64::new(0),
+            log_records: AtomicU64::new(0),
+            structured_log_records: AtomicU64::new(0),
+            task_log_records: AtomicU64::new(0),
+            truncated_log_records: AtomicU64::new(0),
+            last_log_cpu: AtomicU64::new(0),
+            last_log_timestamp_nanos: AtomicU64::new(0),
         }
     }
 
@@ -108,6 +131,36 @@ impl SerialStatsAtomic {
         self.log_dropped.fetch_add(count as u64, Ordering::Relaxed);
     }
 
+    pub(super) fn add_log_dropped_records(&self, count: usize) {
+        self.log_dropped_records
+            .fetch_add(count as u64, Ordering::Relaxed);
+    }
+
+    pub(super) fn add_log_sequence_gaps(&self, count: u64) {
+        self.log_sequence_gaps.fetch_add(count, Ordering::Relaxed);
+    }
+
+    pub(super) fn observe_log_record(
+        &self,
+        cpu_id: usize,
+        timestamp_nanos: u64,
+        has_task: bool,
+        structured: bool,
+        truncated: bool,
+    ) {
+        self.log_records.fetch_add(1, Ordering::Relaxed);
+        self.structured_log_records
+            .fetch_add(u64::from(structured), Ordering::Relaxed);
+        self.task_log_records
+            .fetch_add(u64::from(has_task), Ordering::Relaxed);
+        self.truncated_log_records
+            .fetch_add(u64::from(truncated), Ordering::Relaxed);
+        self.last_log_cpu.store(cpu_id as u64, Ordering::Relaxed);
+        self.last_log_timestamp_nanos
+            .store(timestamp_nanos, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
     pub(super) fn snapshot(&self) -> SerialStats {
         SerialStats {
             handled_irq: self.handled_irq.load(Ordering::Relaxed),
@@ -118,12 +171,21 @@ impl SerialStatsAtomic {
             rx_dropped: self.rx_dropped.load(Ordering::Relaxed),
             tx_bytes: self.tx_bytes.load(Ordering::Relaxed),
             log_dropped: self.log_dropped.load(Ordering::Relaxed),
+            log_dropped_records: self.log_dropped_records.load(Ordering::Relaxed),
+            log_sequence_gaps: self.log_sequence_gaps.load(Ordering::Relaxed),
+            log_records: self.log_records.load(Ordering::Relaxed),
+            structured_log_records: self.structured_log_records.load(Ordering::Relaxed),
+            task_log_records: self.task_log_records.load(Ordering::Relaxed),
+            truncated_log_records: self.truncated_log_records.load(Ordering::Relaxed),
+            last_log_cpu: self.last_log_cpu.load(Ordering::Relaxed),
+            last_log_timestamp_nanos: self.last_log_timestamp_nanos.load(Ordering::Relaxed),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SerialStats {
+#[cfg(test)]
+pub(super) struct SerialStats {
     pub handled_irq: u64,
     pub spurious_irq: u64,
     pub fault_irq: u64,
@@ -132,6 +194,14 @@ pub struct SerialStats {
     pub rx_dropped: u64,
     pub tx_bytes: u64,
     pub log_dropped: u64,
+    pub log_dropped_records: u64,
+    pub log_sequence_gaps: u64,
+    pub log_records: u64,
+    pub structured_log_records: u64,
+    pub task_log_records: u64,
+    pub truncated_log_records: u64,
+    pub last_log_cpu: u64,
+    pub last_log_timestamp_nanos: u64,
 }
 
 #[cfg(test)]
@@ -207,5 +277,22 @@ mod tests {
         assert_eq!(events, SerialEventSet::RX_DATA | SerialEventSet::TX_SPACE);
         assert_eq!(errors, RxErrorFlags::PARITY);
         assert_eq!(rearm, SerialEventSet::TX_SPACE);
+    }
+
+    #[test]
+    fn discard_rx_preserves_unrelated_irq_state() {
+        let latch = SerialIrqLatch::new();
+        latch.publish(SerialIrqEvent {
+            events: SerialEventSet::RX_DATA | SerialEventSet::TX_SPACE,
+            rx_errors: RxErrorFlags::PARITY,
+            rearm: SerialEventSet::RX | SerialEventSet::TX_SPACE,
+        });
+
+        latch.discard_rx();
+
+        let event = latch.take().unwrap();
+        assert_eq!(event.events, SerialEventSet::TX_SPACE);
+        assert!(event.rx_errors.is_empty());
+        assert_eq!(event.rearm, SerialEventSet::TX_SPACE);
     }
 }

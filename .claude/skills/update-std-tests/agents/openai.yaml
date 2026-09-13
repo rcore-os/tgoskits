@@ -1,4 +1,0 @@
-interface:
-  display_name: "Update Std Tests"
-  short_description: "Audit and refresh std test CSV"
-  default_prompt: "Use $update-std-tests to audit scripts/test/std_crates.csv and update the std test whitelist after confirmation."

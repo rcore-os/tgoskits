@@ -133,7 +133,7 @@ mod tests {
     }
 
     fn valid_header() -> X86LinuxHeader {
-        let mut image = alloc::vec![0u8; CMDLINE_SIZE_OFFSET + 4];
+        let mut image = std::vec![0u8; CMDLINE_SIZE_OFFSET + 4];
         image[SETUP_SECTS_OFFSET] = 5;
         write_header_u16(&mut image, BOOT_FLAG_OFFSET, 0xaa55);
         write_header_u32(&mut image, HEADER_OFFSET, u32::from_le_bytes(*b"HdrS"));

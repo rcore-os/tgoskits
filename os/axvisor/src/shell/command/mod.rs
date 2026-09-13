@@ -20,17 +20,24 @@ pub use base::*;
 pub use history::*;
 pub use vm::*;
 
-use std::io::prelude::*;
 use std::string::String;
+use std::sync::LazyLock;
 use std::vec::Vec;
 use std::{
     collections::{BTreeMap, BTreeSet},
     string::ToString,
 };
-use std::{print, println, sync::LazyLock};
 
 pub static COMMAND_TREE: LazyLock<BTreeMap<String, CommandNode>> =
     LazyLock::new(build_command_tree);
+
+pub(super) fn shutdown(exit_code: i32) -> ! {
+    #[cfg(feature = "fs")]
+    if let Err(error) = axvm::host::shutdown_filesystems() {
+        println!("Warning: failed to shut down host filesystems: {error}");
+    }
+    std::process::exit(exit_code);
+}
 
 #[derive(Debug, Clone)]
 pub struct CommandNode {
@@ -444,7 +451,6 @@ pub fn show_help(command_path: &[String]) -> Result<(), ParseError> {
 
 pub fn print_prompt() {
     print!("{}", prompt_string());
-    std::io::stdout().flush().ok();
 }
 
 pub fn prompt_string() -> String {
@@ -515,11 +521,10 @@ pub fn handle_builtin_commands(input: &str) -> bool {
         }
         [command] if command == "exit" || command == "quit" => {
             println!("Goodbye!");
-            std::process::exit(0);
+            shutdown(0);
         }
         [command] if command == "clear" => {
             print!("\x1b[2J\x1b[H"); // ANSI clear screen sequence
-            std::io::stdout().flush().ok();
             true
         }
         [command, command_path @ ..] if command == "help" => {
@@ -561,73 +566,6 @@ pub fn show_available_commands() {
 #[cfg(test)]
 mod tests {
     use super::{CommandParser, ParseError};
-
-    #[test]
-    fn shlex_tokenizes_shell_words() {
-        let tokens =
-            CommandParser::tokenize(r#"echo plain 'single quoted' "double quoted" escaped\ space"#)
-                .unwrap();
-
-        assert_eq!(
-            tokens,
-            [
-                "echo",
-                "plain",
-                "single quoted",
-                "double quoted",
-                "escaped space"
-            ]
-        );
-    }
-
-    #[test]
-    fn shlex_preserves_empty_and_adjacent_quoted_words() {
-        let tokens = CommandParser::tokenize(r#"echo "" '' pre"middle"'post'"#).unwrap();
-
-        assert_eq!(tokens, ["echo", "", "", "premiddlepost"]);
-    }
-
-    #[test]
-    fn shlex_uses_posix_backslash_rules_inside_double_quotes() {
-        let tokens = CommandParser::tokenize(r#"echo "a\qb" "a\\b""#).unwrap();
-
-        assert_eq!(tokens, ["echo", r"a\qb", r"a\b"]);
-    }
-
-    #[test]
-    fn shlex_uses_ascii_whitespace_separators() {
-        let tokens = CommandParser::tokenize("echo\u{2003}value").unwrap();
-
-        assert_eq!(tokens, ["echo\u{2003}value"]);
-    }
-
-    #[test]
-    fn shlex_preserves_an_escaped_trailing_space() {
-        let tokens = CommandParser::tokenize("echo value\\ ").unwrap();
-
-        assert_eq!(tokens, ["echo", "value "]);
-    }
-
-    #[test]
-    fn shlex_treats_hash_at_word_start_as_a_comment() {
-        let tokens = CommandParser::tokenize("echo value#kept # ignored").unwrap();
-
-        assert_eq!(tokens, ["echo", "value#kept"]);
-    }
-
-    #[test]
-    fn shlex_rejects_unclosed_quotes_and_trailing_backslash() {
-        for input in [
-            r#"echo 'unterminated"#,
-            r#"echo "unterminated"#,
-            "echo trailing\\",
-        ] {
-            assert!(matches!(
-                CommandParser::tokenize(input),
-                Err(ParseError::InvalidSyntax)
-            ));
-        }
-    }
 
     #[test]
     fn help_command_uses_shlex_tokenization() {

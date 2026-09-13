@@ -1,0 +1,25 @@
+[base]
+id = 1
+name = "linux"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [0x00]
+
+[kernel]
+entry_point = 0x2_4008_0000
+image_location = "fs"
+kernel_load_addr = 0x2_4008_0000
+kernel_path = "/guest/linux/orangepi-5-plus"
+cmdline = "root=/dev/mmcblk1p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 ignore_loglevel loglevel=8 cma=128M"
+dtb_load_addr = 0x2_4000_0000
+ramdisk_path = "/guest/linux/initramfs.cpio"
+ramdisk_load_addr = 0xc000_0000
+memory_regions = [
+    [0xb000_0000, 0x1000_0000, 0x7, 2],
+    [0xc000_0000, 0x3000_0000, 0x7, 2],
+    [0x2_4000_0000, 0x8000_0000, 0x7, 1],
+]
+
+[devices]
+passthrough = []
+disabled = []

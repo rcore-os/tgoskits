@@ -1,0 +1,13 @@
+[Unit]
+Description=iperf2 shared board test server
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/bin/iperf --server --port 5001 --interval 1
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

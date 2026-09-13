@@ -11,13 +11,16 @@
 extern crate ax_log;
 extern crate ax_runtime;
 
-#[cfg(feature = "alloc")]
 extern crate alloc;
 
 #[macro_use]
 pub mod utils;
 
+mod error;
 mod imp;
+mod sync;
+
+pub use error::{PosixError, PosixResult};
 
 /// Platform-specific constants and parameters.
 pub mod config {
@@ -38,7 +41,8 @@ pub use imp::eventfd::sys_eventfd;
 pub use imp::fd_ops::{sys_close, sys_dup, sys_dup2, sys_fcntl};
 #[cfg(feature = "fs")]
 pub use imp::fs::{
-    sys_fstat, sys_getcwd, sys_getdents64, sys_lseek, sys_lstat, sys_open, sys_rename, sys_stat,
+    sys_fstat, sys_futimens, sys_getcwd, sys_getdents64, sys_lseek, sys_lstat, sys_open,
+    sys_rename, sys_stat,
 };
 #[cfg(feature = "poll")]
 pub use imp::io_mpx::sys_poll;
@@ -53,16 +57,17 @@ pub use imp::net::{
     sys_shutdown, sys_socket,
 };
 #[cfg(feature = "pipe")]
-pub use imp::pipe::sys_pipe;
-#[cfg(feature = "multitask")]
-pub use imp::pthread::mutex::{
-    sys_pthread_mutex_destroy, sys_pthread_mutex_init, sys_pthread_mutex_lock,
-    sys_pthread_mutex_trylock, sys_pthread_mutex_unlock,
-};
-#[cfg(feature = "multitask")]
-pub use imp::pthread::{sys_pthread_create, sys_pthread_exit, sys_pthread_join, sys_pthread_self};
+pub use imp::pipe::{sys_pipe, sys_pipe2};
 pub use imp::{
     io::{sys_read, sys_write, sys_writev},
+    pthread::{
+        mutex::{
+            sys_pthread_mutex_destroy, sys_pthread_mutex_init, sys_pthread_mutex_lock,
+            sys_pthread_mutex_trylock, sys_pthread_mutex_unlock,
+        },
+        sys_pthread_create, sys_pthread_detach, sys_pthread_exit, sys_pthread_join,
+        sys_pthread_self,
+    },
     resources::{sys_getrlimit, sys_setrlimit},
     sys::sys_sysconf,
     task::{sys_exit, sys_getpid, sys_sched_yield},

@@ -1,6 +1,6 @@
 //! Architecture-neutral guest device-tree preparation.
 
-use alloc::{format, vec::Vec};
+use std::{format, vec::Vec};
 
 use axvmconfig::{GuestConfig, VMBootProtocol};
 
@@ -23,6 +23,7 @@ pub(crate) mod tree;
 #[cfg(test)]
 mod tree_tests;
 
+#[cfg(test)]
 pub use create::update_fdt;
 pub use parser::*;
 pub use policy::{DecodedInterrupt, GuestFdtPolicy};
@@ -60,19 +61,18 @@ fn resolve_machine_resources_from_host(
     })?;
     let machine = crate::machine::current_machine_profile(vm_config.phys_cpu_ls.cpu_num());
     let current = vm_config.serial_profile();
-    if let Some(interrupt_encoding) = machine.serial_fdt_interrupt {
-        if let Some(resolved) =
+    if let Some(interrupt_encoding) = machine.serial_fdt_interrupt
+        && let Some(resolved) =
             serial::host_selected_serial(&host_fdt, current, interrupt_encoding)?
-        {
-            if resolved.profile != current {
-                info!(
-                    "VM[{}] virtual UART follows the host-selected UART: {:?}",
-                    vm_config.id(),
-                    resolved.profile
-                );
-            }
-            vm_config.replace_machine_serial(resolved.profile, Some(resolved.identity))?;
+    {
+        if resolved.profile != current {
+            info!(
+                "VM[{}] virtual UART follows the host-selected UART: {:?}",
+                vm_config.id(),
+                resolved.profile
+            );
         }
+        vm_config.replace_machine_serial(resolved.profile, Some(resolved.identity))?;
     }
 
     if let Some(gic) = interrupt::host_gic_profile(&host_fdt)? {
@@ -182,8 +182,8 @@ fn enrich_guest_config(
     };
 
     parse_reserved_memory_regions(vm_create_config, dtb)?;
-    parse_vm_interrupt(vm_config, dtb)?;
-    parse_passthrough_devices_address(vm_config, vm_create_config, dtb)
+    parse_passthrough_devices_address(vm_config, vm_create_config, dtb)?;
+    parse_vm_interrupt(vm_config, vm_create_config, dtb)
 }
 
 fn clear_unresolved_dtb_config(vm_config: &mut AxVMConfig, vm_create_config: &mut GuestConfig) {

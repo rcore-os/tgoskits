@@ -9,7 +9,7 @@ pub(crate) mod irq;
 mod paging;
 pub(crate) mod power;
 pub(crate) mod relocate;
-mod trap;
+pub(crate) mod trap;
 
 use core::ptr::null;
 
@@ -46,29 +46,15 @@ impl ArchTrait for Arch {
     }
 
     fn cpu_current_hartid() -> usize {
-        x86::cpuid::CpuId::new()
+        ax_cpu::capability::CpuId::new()
             .get_feature_info()
             .map(|info| info.initial_local_apic_id() as usize)
             .unwrap_or(0)
     }
 
     fn jump_to(entry: usize, sp: usize) -> ! {
-        // `jmp` does not leave a return address for the kernel's top frame.
-        // Reserve one zero word so frame-pointer unwinders stop cleanly.
-        let sp = sp - core::mem::size_of::<usize>();
-        unsafe {
-            (sp as *mut usize).write(0);
-        }
-        unsafe {
-            core::arch::asm!(
-                "mov rsp, {sp}",
-                "xor rbp, rbp",
-                "jmp {entry}",
-                sp = in(reg) sp,
-                entry = in(reg) entry,
-                options(noreturn)
-            );
-        }
+        // SAFETY: the boot owner supplies the final mapped stack and entry.
+        unsafe { ax_cpu::boot::jump_to(entry, sp) }
     }
 
     fn post_allocator() {}
@@ -86,8 +72,12 @@ impl ArchTrait for Arch {
         paging::virt_to_phys(vaddr)
     }
 
-    fn kernel_space() -> core::ops::Range<usize> {
-        addrspace::KERNEL_SPACE_BASE..usize::MAX
+    fn virtual_address_space()
+    -> Result<crate::mem::VirtualAddressSpaceLayout, crate::mem::VirtualAddressSpaceError> {
+        crate::mem::VirtualAddressSpaceLayout::try_new(
+            crate::mem::configured_user_space(1usize << 47),
+            addrspace::KERNEL_SPACE_BASE..usize::MAX,
+        )
     }
 
     fn is_mmu_enabled() -> bool {
@@ -119,7 +109,7 @@ impl ArchTrait for Arch {
         }
 
         loop {
-            unsafe { x86::halt() };
+            ax_cpu::interrupt::halt();
         }
     }
 
@@ -130,7 +120,7 @@ impl ArchTrait for Arch {
         }
 
         loop {
-            unsafe { x86::halt() };
+            ax_cpu::interrupt::halt();
         }
     }
 
@@ -138,32 +128,8 @@ impl ArchTrait for Arch {
         _secondary_entry as *const ()
     }
 
-    fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError> {
-        power::cpu_on(hartid, entry, arg)
-    }
-
-    fn systimer_enable() {
-        trap::timer_enable();
-    }
-
-    fn systimer_irq_enable() {
-        trap::timer_irq_enable();
-    }
-
-    fn systimer_irq_disable() {
-        trap::timer_irq_disable();
-    }
-
-    fn systimer_irq_is_enabled() -> bool {
-        trap::timer_irq_is_enabled()
-    }
-
-    fn systimer_set_interval(ticks: usize) {
-        trap::timer_set_deadline_in_ticks(ticks);
-    }
-
-    fn systimer_ack() {
-        trap::timer_ack();
+    fn kick_secondary_cpu(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError> {
+        power::kick_secondary_cpu(hartid, entry, arg)
     }
 
     fn systimer_freq() -> usize {
@@ -171,39 +137,15 @@ impl ArchTrait for Arch {
     }
 
     fn systimer_tick() -> usize {
-        trap::ticks_now() as usize
+        ax_cpu::timer::read_counter() as usize
     }
 
     fn systimer_stability() -> crate::timer::CounterStability {
         trap::scheduler_counter_stability()
     }
 
-    fn irq_all_is_enabled() -> bool {
-        trap::irq_local_enabled()
-    }
-
-    fn irq_all_set_enable(enable: bool) {
-        trap::irq_local_set_enabled(enable);
-    }
-
-    fn irq_is_enabled(irq: crate::irq::IrqId) -> bool {
-        irq == irq::systimer_irq() && trap::timer_irq_is_enabled()
-    }
-
-    fn irq_set_enable(irq: crate::irq::IrqId, enable: bool) {
-        if irq == irq::systimer_irq() {
-            if enable {
-                trap::timer_irq_enable();
-            } else {
-                trap::timer_irq_disable();
-            }
-        }
-    }
-
     fn dcache_range(_op: DCacheOp, _addr: usize, _size: usize) {
-        unsafe {
-            core::arch::asm!("mfence", options(nomem, nostack, preserves_flags));
-        }
+        ax_cpu::barrier::data_fence();
     }
 
     // Safety: `system_table` is forwarded from the EFI stub and must satisfy

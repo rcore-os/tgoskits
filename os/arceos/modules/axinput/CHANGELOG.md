@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.11](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.6.10...ax-input-v0.6.11) - 2026-09-11
+
+### Other
+
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+
+## [0.6.10](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.6.9...ax-input-v0.6.10) - 2026-09-09
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+
+## [0.6.9](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.6.8...ax-input-v0.6.9) - 2026-08-20
+
+### Fixed
+
+- *(axbuild)* lint host-test targets with clippy ([#2022](https://github.com/rcore-os/tgoskits/pull/2022))
+
+### Other
+
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
+## [0.6.8](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.6.7...ax-input-v0.6.8) - 2026-08-09
+
+### Other
+
+- updated the following local packages: irq-framework, ax-lazyinit, rdif-input, ax-sync
+
 ## [0.6.7](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.6.6...ax-input-v0.6.7) - 2026-08-03
 
 ### Other

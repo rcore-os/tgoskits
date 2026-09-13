@@ -248,7 +248,7 @@ impl DwMmc {
     /// Advance one submitted request for an acknowledged IRQ or register retry.
     ///
     /// Command and data completion is consumed only for
-    /// [`sdio_host2::ProgressCause::AcknowledgedIrq`]. Register retries may
+    /// [`sdmmc_host::ProgressCause::AcknowledgedIrq`]. Register retries may
     /// only move the command issue state toward the point where hardware owns
     /// the command.
     pub fn advance_block_request_response(
@@ -256,9 +256,9 @@ impl DwMmc {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-        cause: sdio_host2::ProgressCause,
+        cause: sdmmc_host::ProgressCause,
     ) -> Result<DataCommandProgress, Error> {
-        let acknowledged_irq = cause == sdio_host2::ProgressCause::AcknowledgedIrq;
+        let acknowledged_irq = cause == sdmmc_host::ProgressCause::AcknowledgedIrq;
         loop {
             let Some(active) = request.as_ref() else {
                 return Err(Error::InvalidArgument);
@@ -404,7 +404,7 @@ impl DwMmc {
                 // SAFETY: The caller keeps the borrowed source alive until the
                 // returned request completes, and `byte_count` was validated
                 // against the submitted data phase.
-                backing.copy_to_device_from_slice(unsafe {
+                backing.copy_from_slice_cpu(unsafe {
                     core::slice::from_raw_parts(buffer.as_ptr(), transfer.byte_count.get())
                 });
                 None
@@ -431,7 +431,7 @@ impl DwMmc {
         id: RequestId,
     ) -> Result<BlockRequest, PreparedDmaSubmitError> {
         if buffer.direction() != transfer.dma_direction()
-            || buffer.domain_id() != dma.domain_id()
+            || buffer.domain_id() != dma.info().domain()
             || buffer.len() != transfer.byte_count
         {
             return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));

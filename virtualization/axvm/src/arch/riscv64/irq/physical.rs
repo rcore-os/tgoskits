@@ -1,19 +1,23 @@
 //! Deferred physical PLIC claims backing guest-owned vPLIC sources.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::{
+use std::{
+    boxed::Box,
     hint::spin_loop,
     ptr,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering},
+    },
+    vec::Vec,
 };
 
-use ax_kspin::SpinNoIrq;
-use ax_std::os::arceos::modules::ax_task::IrqNotify;
 use axvm_types::InterruptTriggerMode;
 use riscv_vplic::{PLIC_NUM_SOURCES, VPlicGlobal};
 
 use super::DeferredVcpuKick;
-use crate::{AxTaskRef, AxVmError, AxVmResult, TaskInner, ax_err};
+use crate::{
+    AxVmError, AxVmResult, ThreadHandle, ax_err, host::task::IrqNotification, sync::MutexExt,
+};
 
 const PHYSICAL_IRQ_WORKER_STACK_SIZE: usize = 0x20_000;
 const CLAIM_IDLE: u8 = 0;
@@ -34,8 +38,8 @@ pub(super) fn publish_physical_claim_from_irq(source: u32) -> bool {
 pub(super) struct PhysicalIrqBridge {
     shared: Arc<PhysicalBridgeShared>,
     bindings: Box<[Arc<PhysicalSourceBinding>]>,
-    registrations: SpinNoIrq<Vec<PhysicalRouteRegistration>>,
-    worker: SpinNoIrq<Option<AxTaskRef>>,
+    registrations: Mutex<Vec<PhysicalRouteRegistration>>,
+    worker: Mutex<Option<ThreadHandle>>,
     running: AtomicBool,
 }
 
@@ -53,7 +57,7 @@ impl PhysicalIrqBridge {
             vplic,
             kick,
             vcpu_count,
-            notify: IrqNotify::new(),
+            notify: IrqNotification::new(),
             stopping: AtomicBool::new(false),
         });
         let mut bindings = Vec::with_capacity(routes.len());
@@ -62,7 +66,7 @@ impl PhysicalIrqBridge {
             if source == 0 || source >= PLIC_NUM_SOURCES {
                 return ax_err!(
                     InvalidInput,
-                    alloc::format!(
+                    std::format!(
                         "RISC-V physical PLIC source {} is outside 1..{PLIC_NUM_SOURCES}",
                         route.source
                     )
@@ -74,7 +78,7 @@ impl PhysicalIrqBridge {
             {
                 return ax_err!(
                     AlreadyExists,
-                    alloc::format!("RISC-V physical PLIC source {source} is configured twice")
+                    std::format!("RISC-V physical PLIC source {source} is configured twice")
                 );
             }
             bindings.push(Arc::new(PhysicalSourceBinding {
@@ -89,8 +93,8 @@ impl PhysicalIrqBridge {
         Ok(Arc::new(Self {
             shared,
             bindings: bindings.into_boxed_slice(),
-            registrations: SpinNoIrq::new(Vec::new()),
-            worker: SpinNoIrq::new(None),
+            registrations: Mutex::new(Vec::new()),
+            worker: Mutex::new(None),
             running: AtomicBool::new(false),
         }))
     }
@@ -99,10 +103,19 @@ impl PhysicalIrqBridge {
         if self.running.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        self.start_worker();
-        if let Err(error) = self.install_and_activate_routes() {
-            self.rollback_start();
+        if let Err(error) = self.start_worker() {
+            self.running.store(false, Ordering::Release);
             return Err(error);
+        }
+        if let Err(error) = self.install_and_activate_routes() {
+            return match self.rollback_start() {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(AxVmError::lifecycle_rollback(
+                    "start RISC-V physical IRQ bridge",
+                    error,
+                    rollback,
+                )),
+            };
         }
         Ok(())
     }
@@ -123,12 +136,16 @@ impl PhysicalIrqBridge {
             {
                 first_error = Some(AxVmError::interrupt(
                     "deactivate RISC-V guest PLIC source",
-                    alloc::format!("{error:?}"),
+                    std::format!("{error:?}"),
                 ));
             }
         }
-        self.registrations.lock().clear();
-        self.stop_worker();
+        self.registrations.lock_unpoisoned().clear();
+        if let Err(error) = self.stop_worker()
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
         self.release_outstanding_claims();
 
         first_error.map_or(Ok(()), Err)
@@ -163,20 +180,24 @@ impl PhysicalIrqBridge {
         }
     }
 
-    fn start_worker(self: &Arc<Self>) {
+    fn start_worker(self: &Arc<Self>) -> AxVmResult {
         self.shared.stopping.store(false, Ordering::Release);
         let bridge = self.clone();
-        let task = TaskInner::new(
-            move || bridge.run_worker(),
-            alloc::format!("VM[{}]-plic-physical", self.shared.vm_id),
-            PHYSICAL_IRQ_WORKER_STACK_SIZE,
-        );
-        *self.worker.lock() = Some(crate::host::task::spawn_task(task));
+        let worker = {
+            // SAFETY: no OS extension or affinity capability is transferred;
+            // the worker closure and bridge reference move exactly once.
+            crate::host::task::builder(std::format!("VM[{}]-plic-physical", self.shared.vm_id))
+                .stack_size(PHYSICAL_IRQ_WORKER_STACK_SIZE)
+                .spawn(move || bridge.run_worker())
+        }
+        .map_err(|error| AxVmError::host("start RISC-V physical IRQ worker", error))?;
+        *self.worker.lock_unpoisoned() = Some(worker);
+        Ok(())
     }
 
     fn install_and_activate_routes(&self) -> AxVmResult {
         {
-            let mut registrations = self.registrations.lock();
+            let mut registrations = self.registrations.lock_unpoisoned();
             for binding in &self.bindings {
                 registrations.push(PhysicalRouteRegistration::install(binding)?);
             }
@@ -191,30 +212,33 @@ impl PhysicalIrqBridge {
                 binding.accepting.store(false, Ordering::Release);
                 return Err(AxVmError::interrupt(
                     "activate RISC-V guest PLIC source",
-                    alloc::format!("{error:?}"),
+                    std::format!("{error:?}"),
                 ));
             }
         }
         Ok(())
     }
 
-    fn rollback_start(&self) {
+    fn rollback_start(&self) -> AxVmResult {
         for binding in &self.bindings {
             binding.accepting.store(false, Ordering::Release);
             let _ = ax_plat::irq::riscv64_hv::deactivate_guest_plic_source(binding.source as u32);
         }
-        self.registrations.lock().clear();
-        self.stop_worker();
+        self.registrations.lock_unpoisoned().clear();
+        let stop_result = self.stop_worker();
         self.release_outstanding_claims();
         self.running.store(false, Ordering::Release);
+        stop_result
     }
 
-    fn stop_worker(&self) {
+    fn stop_worker(&self) -> AxVmResult {
         self.shared.stopping.store(true, Ordering::Release);
         self.shared.notify.notify();
-        if let Some(worker) = self.worker.lock().take() {
-            worker.join();
-        }
+        let worker = self.worker.lock_unpoisoned().take();
+        worker
+            .map_or(Ok(0), |worker| worker.join())
+            .map(|_exit_code| ())
+            .map_err(|error| AxVmError::host("join RISC-V physical IRQ worker", error))
     }
 
     fn run_worker(&self) {
@@ -269,7 +293,7 @@ struct PhysicalBridgeShared {
     vplic: Arc<VPlicGlobal>,
     kick: Arc<DeferredVcpuKick>,
     vcpu_count: usize,
-    notify: IrqNotify,
+    notify: IrqNotification,
     stopping: AtomicBool,
 }
 
@@ -297,7 +321,7 @@ impl PhysicalSourceBinding {
         {
             return false;
         }
-        self.shared.notify.notify_irq();
+        self.shared.notify.notify();
         true
     }
 
@@ -418,7 +442,7 @@ impl PhysicalRouteRegistration {
             drop(unsafe { Arc::from_raw(raw) });
             return Err(AxVmError::resource_conflict(
                 "RISC-V physical PLIC route",
-                alloc::format!("source {source} is already assigned to another VM"),
+                std::format!("source {source} is already assigned to another VM"),
             ));
         }
         Ok(Self {

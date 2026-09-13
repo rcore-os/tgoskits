@@ -1,8 +1,4 @@
 board_type = "VisionFive2"
-shell_prefix = "root@starry:"
-success_regex = [
-  '(?m)^VISIONFIVE2_BLOCK_RW_BENCH_PASSED$',
-]
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
   '(?m)^VISIONFIVE2_BLOCK_RW_BENCH_SESSION_FAILED$',
@@ -13,9 +9,15 @@ fail_regex = [
 ]
 timeout = 1200
 
-shell_init_cmd = """
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+
+shell_cmd = """
 export BLOCK_RW_BENCH_ROOT_DEVICE='/dev/blk0'
 export BLOCK_RW_BENCH_CONTROLLER='starfive-jh7110-mmc'
 export BLOCK_RW_BENCH_SUCCESS_MARKER='VISIONFIVE2_BLOCK_RW_BENCH_PASSED'
 export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='1044480'
 """
+success_regex = [
+  '(?m)^VISIONFIVE2_BLOCK_RW_BENCH_PASSED$',
+]

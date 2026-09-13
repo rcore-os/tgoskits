@@ -9,7 +9,7 @@
   - 框架：`framework_gin.go`（httptest）/`framework_grpc.go`（bufconn）/`framework_gozero.go`（rest httptest + zrpc bufconn + core 包）/`framework_gorm.go` + `framework_sqlite.go` + `framework_sqlite_comprehensive.go`（`modernc.org/sqlite` 纯 Go·CGO=0 驱动：虚表/DDL/事务/原子/权限）。
   - 聚合门控 `chk` 失败即 `os.Exit(1)`；全过打印 `GO_LANG_OK` + `GOLANG count=2018`。输出 100% 确定化（求和与顺序无关、map 经排序键、httptest/bufconn 内存驱动、时间用固定时刻、无地址/随机值泄漏），可逐字节比对。
 - `prebuild.sh` —— 用官方 **go1.26.3** 工具链 `CGO_ENABLED=0 GOOS=linux GOARCH=<target>` 把 `go/` 交叉编译为**全静态二进制**（无 libc、无 interpreter），装到 overlay `/usr/local/bin/golang-lang`，并把 host golden 装到 `/root/golang-lang-golden.txt`。框架依赖按 `go.mod`/`go.sum` 固定版本拉取（`modernc.org/libc v1.73.4` 含 loong64 支持，故四架构均可纯 Go 静态编译）。
-- `go/run-go.sh` —— on-target 门控脚本（作为 `shell_init_cmd` 整体调用，避免内联 echo 自匹配 `success_regex` 的假阳性）：跑 `golang-lang`，过滤 go-zero 在无 cgroup 内核下导入时打的非确定性 `@timestamp` JSON 诊断行，`grep GO_LANG_OK` 且 `cmp` host golden 通过才打印 `TEST PASSED`。
+- `go/run-go.sh` —— on-target 门控脚本（作为 `shell_cmd` 整体调用，避免内联 echo 自匹配 `success_regex` 的假阳性）：跑 `golang-lang`，过滤 go-zero 在无 cgroup 内核下导入时打的非确定性 `@timestamp` JSON 诊断行，`grep GO_LANG_OK` 且 `cmp` host golden 通过才打印 `TEST PASSED`。
 - `qemu-<arch>.toml` ×4 —— `success_regex = ^TEST PASSED$`，`fail_regex` 含 panic 与 `^TEST FAILED$`。
 - `build-<target>.toml` ×4 + `golden.txt`。
 

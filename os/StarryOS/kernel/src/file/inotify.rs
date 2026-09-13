@@ -8,13 +8,11 @@ use alloc::{
 use core::{
     mem::size_of,
     sync::atomic::{AtomicBool, Ordering},
-    task::Context,
 };
 
-use ax_errno::{AxError, AxResult};
-use ax_sync::Mutex;
-use ax_task::future::{block_on, poll_io};
-use axpoll::{IoEvents, PollSet, Pollable};
+use ax_lazyinit::LazyLock;
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use linux_raw_sys::{
     general::{
         IN_ALL_EVENTS, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE, IN_DELETE_SELF, IN_IGNORED, IN_ISDIR,
@@ -22,10 +20,17 @@ use linux_raw_sys::{
     },
     ioctl::FIONREAD,
 };
-use spin::LazyLock;
-use starry_vm::VmMutPtr;
 
-use crate::file::{FileLike, IoDst, IoSrc};
+use crate::{
+    StarryError, StarryResult,
+    file::{FileLike, IoDst, IoSrc},
+    mm::VmMutPtr,
+    sync::Mutex,
+    task::{
+        current_user_task,
+        future::{block_on_user, poll_io},
+    },
+};
 
 const INOTIFY_EVENT_SIZE: usize = 16;
 const MAX_QUEUED_EVENTS: usize = 1024;
@@ -66,9 +71,9 @@ impl Inotify {
         inotify
     }
 
-    pub fn add_watch(&self, path: String, mask: u32) -> AxResult<i32> {
+    pub fn add_watch(&self, path: String, mask: u32) -> StarryResult<i32> {
         if mask == 0 {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         let mut state = self.state.lock();
@@ -82,15 +87,15 @@ impl Inotify {
         }
 
         let wd = state.next_wd;
-        state.next_wd = state.next_wd.checked_add(1).ok_or(AxError::NoMemory)?;
+        state.next_wd = state.next_wd.checked_add(1).ok_or(StarryError::NoMemory)?;
         state.watches.insert(wd, Watch { path, mask });
         Ok(wd)
     }
 
-    pub fn rm_watch(&self, wd: i32) -> AxResult {
+    pub fn rm_watch(&self, wd: i32) -> StarryResult {
         let mut state = self.state.lock();
         if state.watches.remove(&wd).is_none() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         Self::push_event(&mut state.queue, wd, IN_IGNORED, None);
         drop(state);
@@ -188,38 +193,43 @@ impl Inotify {
 }
 
 impl FileLike for Inotify {
-    fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
+    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         if dst.remaining_mut() < INOTIFY_EVENT_SIZE {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let mut state = self.state.lock();
-            let mut written = 0;
-            while let Some(event) = state.queue.front() {
-                if dst.remaining_mut() < event.len() {
-                    break;
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io(self, IoEvents::IN, self.nonblocking(), || {
+                let mut state = self.state.lock();
+                let mut written = 0;
+                while let Some(event) = state.queue.front() {
+                    if dst.remaining_mut() < event.len() {
+                        break;
+                    }
+                    written += dst.write(event)?;
+                    state.queue.pop_front();
                 }
-                written += dst.write(event)?;
-                state.queue.pop_front();
-            }
-            if written == 0 {
-                Err(AxError::WouldBlock)
-            } else {
-                Ok(written)
-            }
-        }))
+                if written == 0 {
+                    Err(crate::StarryError::WouldBlock)
+                } else {
+                    Ok(written)
+                }
+            }),
+        )
+        .into_result()?
     }
 
-    fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {
-        Err(AxError::BadFileDescriptor)
+    fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
+        Err(StarryError::BadFileDescriptor)
     }
 
     fn nonblocking(&self) -> bool {
         self.non_blocking.load(Ordering::Acquire)
     }
 
-    fn set_nonblocking(&self, non_blocking: bool) -> AxResult {
+    fn set_nonblocking(&self, non_blocking: bool) -> StarryResult {
         self.non_blocking.store(non_blocking, Ordering::Release);
         Ok(())
     }
@@ -228,7 +238,12 @@ impl FileLike for Inotify {
         "anon_inode:[inotify]".into()
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+    fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> crate::StarryResult<usize> {
         match cmd {
             FIONREAD => {
                 let pending = self
@@ -239,10 +254,10 @@ impl FileLike for Inotify {
                     .map(Vec::len)
                     .sum::<usize>()
                     .min(u32::MAX as usize) as u32;
-                (arg as *mut u32).vm_write(pending)?;
+                (arg as *mut u32).vm_write(current, pending)?;
                 Ok(0)
             }
-            _ => Err(AxError::NotATty),
+            _ => Err(StarryError::NotATty),
         }
     }
 }
@@ -254,10 +269,23 @@ impl Pollable for Inotify {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
-            // Registration happens from file poll task context.
-            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
+            unsafe { sink.register_shared(&self.poll_rx, IoEvents::IN) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { sink.register_exclusive(&self.poll_rx, IoEvents::IN) };
         }
     }
 }
@@ -278,20 +306,31 @@ fn align_event_name_len(len: usize) -> usize {
     (len + align - 1) & !(align - 1)
 }
 
-fn notify_instances(path: &str, notify: impl Fn(&Inotify, &str)) {
-    if path == "<error>" {
-        return;
-    }
-
-    let mut instances = INOTIFY_INSTANCES.lock();
-    instances.retain(|watcher| {
-        if let Some(inotify) = watcher.upgrade() {
-            notify(&inotify, path);
+fn snapshot_live_instances<T>(instances: &mut Vec<Weak<T>>) -> Vec<Arc<T>> {
+    let mut live = Vec::with_capacity(instances.len());
+    instances.retain(|instance| {
+        if let Some(instance) = instance.upgrade() {
+            live.push(instance);
             true
         } else {
             false
         }
     });
+    live
+}
+
+fn notify_instances(path: &str, notify: impl Fn(&Inotify, &str)) {
+    if path == "<error>" {
+        return;
+    }
+
+    let instances = {
+        let mut registry = INOTIFY_INSTANCES.lock();
+        snapshot_live_instances(&mut registry)
+    };
+    for inotify in instances {
+        notify(&inotify, path);
+    }
 }
 
 pub fn notify_modify_path(path: &str) {
@@ -317,4 +356,26 @@ pub fn notify_delete_path(path: &str, is_dir: bool) {
     notify_instances(path, |inotify, path| {
         inotify.notify_delete(path, is_dir);
     });
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+
+    #[test]
+    fn live_instance_snapshot_is_owned_and_prunes_stale_entries() {
+        let live = Arc::new(7_u8);
+        let stale = Arc::new(9_u8);
+        let mut instances = vec![Arc::downgrade(&live), Arc::downgrade(&stale)];
+        drop(stale);
+
+        let snapshot = snapshot_live_instances(&mut instances);
+        instances.push(Arc::downgrade(&live));
+
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(*snapshot[0], 7);
+        assert_eq!(instances.len(), 2);
+    }
 }

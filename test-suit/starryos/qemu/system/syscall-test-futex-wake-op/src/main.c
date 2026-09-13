@@ -8,6 +8,7 @@
 #include <sched.h>
 #include <stdint.h>
 #include <stdatomic.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
@@ -394,10 +395,66 @@ static void test_wake_op_validation(void)
                         futex_count_arg(0), &op_word,
                         FUTEX_OP_ENCODE(0xf, 1, FUTEX_OP_CMP_EQ, 0)),
               ENOSYS, "WAKE_OP rejects an unknown arithmetic op");
+    op_word = 0x12345678;
     CHECK_ERR(raw_futex(&wake_word, FUTEX_WAKE_OP | FUTEX_PRIVATE_FLAG, 0,
                         futex_count_arg(0), &op_word,
                         FUTEX_OP_ENCODE(FUTEX_OP_ADD, 1, 0xf, 0)),
               ENOSYS, "WAKE_OP rejects an unknown comparison op");
+    CHECK(op_word == 0x12345678,
+          "invalid comparison is rejected before modifying uaddr2");
+}
+
+static void test_wake_op_fault_retry_and_transaction(void)
+{
+    printf("\n--- FUTEX_WAKE_OP nofault retry and failure transaction ---\n");
+    const size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+    uint32_t *lazy_word = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+                               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(lazy_word != MAP_FAILED, "mmap creates a lazy futex page");
+    if (lazy_word == MAP_FAILED) {
+        return;
+    }
+
+    reset_words(0, 0);
+    CHECK_RET(raw_futex(&wake_word, FUTEX_WAKE_OP | FUTEX_PRIVATE_FLAG, 0,
+                        futex_count_arg(0), lazy_word,
+                        FUTEX_OP_ENCODE(FUTEX_OP_SET, 37,
+                                        FUTEX_OP_CMP_EQ, 0)),
+              0, "WAKE_OP faults in uaddr2 outside queue locks and retries");
+    CHECK(*lazy_word == 37, "retried WAKE_OP commits the requested RMW");
+    CHECK(munmap(lazy_word, page_size) == 0, "munmap releases the lazy page");
+
+    pthread_t waiter;
+    struct waiter_args args;
+    reset_words(0, 0);
+    args = (struct waiter_args) {
+        .word = &wake_word,
+        .expected = 0,
+        .ready = &waiter1_ready,
+        .result = &waiter1_ret,
+    };
+    int err = pthread_create(&waiter, NULL, futex_waiter_thread, &args);
+    CHECK(err == 0, "pthread_create waiter for EFAULT transaction succeeds");
+    if (err != 0) {
+        return;
+    }
+    wait_until_ready(&waiter1_ready);
+    short_settle();
+
+    CHECK_ERR(raw_futex(&wake_word, FUTEX_WAKE_OP | FUTEX_PRIVATE_FLAG, 1,
+                        futex_count_arg(0), NULL,
+                        FUTEX_OP_ENCODE(FUTEX_OP_ADD, 1,
+                                        FUTEX_OP_CMP_EQ, 0)),
+              EFAULT, "WAKE_OP reports an inaccessible uaddr2");
+    short_settle();
+    CHECK(atomic_load_explicit(&waiter1_ret, memory_order_acquire) == INT_MIN,
+          "EFAULT does not wake the primary futex waiter");
+    CHECK_RET(raw_futex(&wake_word, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1,
+                        NULL, NULL, 0),
+              1, "manual wake releases the waiter after failed WAKE_OP");
+    join_thread(waiter);
+    CHECK(atomic_load_explicit(&waiter1_ret, memory_order_acquire) == 0,
+          "waiter returns only after the explicit wake");
 }
 
 int main(void)
@@ -409,6 +466,7 @@ int main(void)
     test_wake_op_comparison_controls_second_wake();
     test_wake_op_comparisons();
     test_wake_op_validation();
+    test_wake_op_fault_retry_and_transaction();
 
     TEST_DONE();
 }

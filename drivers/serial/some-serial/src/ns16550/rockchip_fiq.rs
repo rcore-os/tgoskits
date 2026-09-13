@@ -4,7 +4,7 @@ use core::ptr::NonNull;
 
 use heapless::{String, Vec};
 use rdif_serial::{
-    Config, ConfigError, RxSample, SerialEventSet, SplitUart, UartInfo, UartParts, UartPort,
+    Config, ConfigError, RxSample, SerialEventSet, SerialParts, SplitUart, UartInfo, UartPort,
 };
 
 use super::{
@@ -473,6 +473,8 @@ impl RockchipFiqPort {
 }
 
 impl Kind for RockchipFiqPort {
+    const TX_READY_IS_FIFO_EMPTY: bool = false;
+
     fn read_reg(&self, reg: u8) -> u8 {
         let mut value = (self.read_u32(reg) & 0xff) as u8;
         if reg == UART_LSR && self.read_u32(UART_USR) & UART_USR_TX_FIFO_NOT_FULL != 0 {
@@ -519,6 +521,7 @@ impl Ns16550<RockchipFiqPort> {
             base,
             clock_freq,
             saved_lsr: LineStatusFlags::empty(),
+            tx_load_size: 1,
         }
     }
 }
@@ -576,12 +579,24 @@ impl UartPort for RockchipFiqSerial {
         UartPort::read_rx(&mut self.serial)
     }
 
+    fn discard_rx(&mut self) {
+        UartPort::discard_rx(&mut self.serial)
+    }
+
     fn write_tx(&mut self, bytes: &[u8]) -> usize {
         UartPort::write_tx(&mut self.serial, bytes)
     }
 
+    fn discard_tx(&mut self) -> bool {
+        UartPort::discard_tx(&mut self.serial)
+    }
+
     fn tx_idle(&mut self) -> bool {
         self.serial.tx_idle()
+    }
+
+    fn mask(&mut self, sources: SerialEventSet) {
+        UartPort::mask(&mut self.serial, sources);
     }
 
     fn mask_all(&mut self) {
@@ -594,8 +609,9 @@ impl UartPort for RockchipFiqSerial {
 }
 
 impl SplitUart for RockchipFiqSerial {
-    type Port = Self;
+    type Control = Self;
     type Irq = Ns16550Irq<RockchipFiqPort>;
+    type EmergencyTx = super::Ns16550EmergencyTx<RockchipFiqPort>;
 
     fn runtime_info(&self) -> UartInfo {
         UartInfo {
@@ -605,12 +621,16 @@ impl SplitUart for RockchipFiqSerial {
         }
     }
 
-    fn split(self) -> UartParts<Self::Port, Self::Irq> {
+    fn split(mut self) -> SerialParts<Self::Control, Self::Irq, Self::EmergencyTx> {
+        self.serial.refresh_tx_load_size();
         let irq = Ns16550Irq {
             base: self.serial.base,
             saved_lsr: LineStatusFlags::empty(),
         };
-        UartParts::new(self, irq)
+        let emergency_tx = super::Ns16550EmergencyTx {
+            base: self.serial.base,
+        };
+        SerialParts::new(self, irq, emergency_tx)
     }
 }
 

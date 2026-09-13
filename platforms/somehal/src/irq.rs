@@ -1,17 +1,13 @@
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 
-#[cfg(not(test))]
-use ax_kspin::SpinNoIrq as IrqRouteMutex;
-use ax_kspin::SpinRaw as Mutex;
-#[cfg(test)]
-use ax_kspin::SpinRaw as IrqRouteMutex;
+use ax_sync::{RawSpinLockGuard, SpinLock, SpinLockIrqSaveGuard};
 pub use rdif_intc;
 use rdif_intc::Intc;
 pub type ControllerIrqId = irq_framework::IrqId;
 pub use irq_framework::{
-    AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, HwIrq, IrqDomainId, IrqError,
-    IrqId, IrqSource, IrqTrigger,
+    AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, CpuId, HwIrq, IrqDomainId,
+    IrqError, IrqId, IrqSource, IrqTrigger,
 };
 use rdrive::{Device, DeviceId};
 
@@ -68,13 +64,62 @@ struct IrqRoute {
     leaf: IrqId,
 }
 
-static IRQ_DOMAINS: Mutex<Vec<IrqDomain>> = Mutex::new(Vec::new());
-static IRQ_ROUTES: IrqRouteMutex<Vec<IrqRoute>> = IrqRouteMutex::new(Vec::new());
+static IRQ_DOMAINS: SpinLock<Vec<IrqDomain>> = SpinLock::new(Vec::new());
 
-#[cfg(not(test))]
-const _: fn(&IrqRouteMutex<Vec<IrqRoute>>) = |lock| {
-    let _: &ax_kspin::SpinNoIrq<Vec<IrqRoute>> = lock;
-};
+/// Global IRQ routes are resolved from hard-IRQ context.
+///
+/// Keep the IRQ-save policy at the field boundary so a future read-side call
+/// cannot accidentally reintroduce local interrupt re-entry while the route
+/// registry is locked.
+struct IrqRouteLock(SpinLock<Vec<IrqRoute>>);
+
+impl IrqRouteLock {
+    const fn new() -> Self {
+        Self(SpinLock::new(Vec::new()))
+    }
+
+    fn lock(&self) -> SpinLockIrqSaveGuard<'_, Vec<IrqRoute>> {
+        self.0.lock_irqsave()
+    }
+}
+
+static IRQ_ROUTES: IrqRouteLock = IrqRouteLock::new();
+const ROUTED_PARENT_DOMAIN_WORDS: usize = (u16::MAX as usize + 1) / usize::BITS as usize;
+static ROUTED_PARENT_DOMAINS: [AtomicUsize; ROUTED_PARENT_DOMAIN_WORDS] =
+    [const { AtomicUsize::new(0) }; ROUTED_PARENT_DOMAIN_WORDS];
+
+fn routed_parent_domain_slot(domain: IrqDomainId) -> (&'static AtomicUsize, usize) {
+    let domain = usize::from(domain.0);
+    (
+        &ROUTED_PARENT_DOMAINS[domain / usize::BITS as usize],
+        1usize << (domain % usize::BITS as usize),
+    )
+}
+
+fn domain_has_irq_routes(domain: IrqDomainId) -> bool {
+    let (word, mask) = routed_parent_domain_slot(domain);
+    word.load(Ordering::Acquire) & mask != 0
+}
+
+fn publish_routed_parent_domain(domain: IrqDomainId) {
+    let (word, mask) = routed_parent_domain_slot(domain);
+    word.fetch_or(mask, Ordering::Release);
+}
+
+fn withdraw_routed_parent_domain(domain: IrqDomainId) {
+    let (word, mask) = routed_parent_domain_slot(domain);
+    word.fetch_and(!mask, Ordering::Release);
+}
+
+fn irq_domains() -> RawSpinLockGuard<'static, Vec<IrqDomain>> {
+    // SAFETY: callers preserve the legacy raw-lock contract and exclude local
+    // re-entry while mutating the global domain registry.
+    unsafe { IRQ_DOMAINS.lock_raw() }
+}
+
+fn irq_routes() -> SpinLockIrqSaveGuard<'static, Vec<IrqRoute>> {
+    IRQ_ROUTES.lock()
+}
 static X86_IOAPIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static X86_MSI_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static AARCH64_GIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
@@ -118,7 +163,7 @@ fn register_domain(
     parent: Option<IrqDomainId>,
     kind: IrqDomainKind,
 ) -> Result<IrqDomainId, IrqError> {
-    let mut domains = IRQ_DOMAINS.lock();
+    let mut domains = irq_domains();
 
     match parent {
         Some(parent) => {
@@ -220,7 +265,7 @@ pub fn domain_by_id(id: IrqDomainId) -> Option<IrqDomain> {
 }
 
 pub fn domain_by_owner(owner: DeviceId) -> Option<IrqDomain> {
-    let domains = IRQ_DOMAINS.lock();
+    let domains = irq_domains();
     domains
         .iter()
         .find(|domain| domain.owner == owner && domain.parent.is_none())
@@ -266,6 +311,16 @@ pub struct ActiveIrq {
 impl ActiveIrq {
     pub fn id(&self) -> IrqId {
         resolve_irq_route(Plat::active_irq_id(&self.inner))
+    }
+
+    /// Acknowledges the controller state that must be cleared before an IPI
+    /// handler may make its logical delivery edge reusable.
+    ///
+    /// The remaining controller completion, if any, is still owned by this
+    /// token and is performed when it is dropped.
+    pub fn acknowledge_ipi(&mut self) {
+        debug_assert_eq!(self.id(), ipi_irq());
+        Plat::acknowledge_ipi(&mut self.inner);
     }
 
     /// Detaches one RISC-V PLIC completion from this trap transaction.
@@ -317,7 +372,7 @@ pub fn map_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
         return Err(IrqError::InvalidIrq);
     }
 
-    let domains = IRQ_DOMAINS.lock();
+    let domains = irq_domains();
     if !domains.iter().any(|domain| domain.id == parent.domain)
         || !domain_has_strict_ancestor(&domains, leaf.domain, parent.domain)
     {
@@ -325,7 +380,7 @@ pub fn map_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
     }
     drop(domains);
 
-    let mut routes = IRQ_ROUTES.lock();
+    let mut routes = irq_routes();
     if let Some(route) = routes.iter().find(|route| route.parent == parent) {
         return if route.leaf == leaf {
             Ok(())
@@ -337,6 +392,7 @@ pub fn map_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
         return Err(IrqError::Busy);
     }
     routes.push(IrqRoute { parent, leaf });
+    publish_routed_parent_domain(parent.domain);
     Ok(())
 }
 
@@ -365,7 +421,7 @@ fn domain_has_strict_ancestor(
 }
 
 pub fn unmap_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
-    let mut routes = IRQ_ROUTES.lock();
+    let mut routes = irq_routes();
     let Some(index) = routes
         .iter()
         .position(|route| route.parent == parent && route.leaf == leaf)
@@ -373,6 +429,12 @@ pub fn unmap_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
         return Err(IrqError::InvalidIrq);
     };
     routes.swap_remove(index);
+    if routes
+        .iter()
+        .all(|route| route.parent.domain != parent.domain)
+    {
+        withdraw_routed_parent_domain(parent.domain);
+    }
     Ok(())
 }
 
@@ -382,41 +444,29 @@ pub fn unmap_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
 /// masked or before it is enabled. The interrupt path only reads the stable
 /// mapping and never performs rdrive lookup, allocation, or free.
 pub fn resolve_irq_route(parent: IrqId) -> IrqId {
-    IRQ_ROUTES
-        .lock()
+    if !domain_has_irq_routes(parent.domain) {
+        return parent;
+    }
+    irq_routes()
         .iter()
         .find(|route| route.parent == parent)
         .map_or(parent, |route| route.leaf)
 }
 
 pub fn parent_irq_for_leaf(leaf: IrqId) -> Option<IrqId> {
-    IRQ_ROUTES
-        .lock()
+    irq_routes()
         .iter()
         .find(|route| route.leaf == leaf)
         .map(|route| route.parent)
 }
 
-/// Target specification for inter-processor interrupts.
-#[derive(Clone, Copy, Debug)]
+/// Target specification for one inter-processor interrupt delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IpiTarget {
     /// Send to the current CPU.
-    Current {
-        /// The logical CPU ID of the current CPU.
-        cpu_id: usize,
-    },
+    Current,
     /// Send to a specific CPU.
-    Other {
-        /// The logical CPU ID of the target CPU.
-        cpu_id: usize,
-    },
-    /// Send to all other CPUs.
-    AllExceptCurrent {
-        /// The logical CPU ID of the current CPU.
-        cpu_id: usize,
-        /// The total number of CPUs.
-        cpu_num: usize,
-    },
+    Cpu(CpuId),
 }
 
 /// Hardware routing preference for a global IRQ line.
@@ -472,8 +522,8 @@ pub fn irq_set_affinity(irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqErro
     Plat::irq_set_affinity(parent_irq_for_leaf(irq).unwrap_or(irq), affinity)
 }
 
-pub fn send_ipi(irq: IrqId, target: IpiTarget) {
-    Plat::send_ipi(irq, target);
+pub fn send_ipi(irq: IrqId, target: IpiTarget) -> Result<(), IrqError> {
+    Plat::send_ipi(irq, target)
 }
 
 pub fn ipi_irq() -> IrqId {
@@ -557,19 +607,21 @@ pub fn resolve_irq_source(source: IrqSource) -> Result<IrqId, IrqError> {
     Plat::resolve_irq_source(source)
 }
 
-pub fn send_ipi_to_cpu(cpu_id: usize) {
-    Plat::send_ipi_to_cpu(cpu_id);
+pub fn send_ipi_to_cpu(cpu_id: usize) -> Result<(), IrqError> {
+    Plat::send_ipi_to_cpu(cpu_id)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn reset_domains() {
-        IRQ_DOMAINS.lock().clear();
-        IRQ_ROUTES.lock().clear();
+        irq_domains().clear();
+        irq_routes().clear();
         for kind in [
             IrqDomainKind::X86IoApic,
             IrqDomainKind::X86Msi,
@@ -752,6 +804,17 @@ mod tests {
             unmap_irq_route(parent_irq, leaf_irq),
             Err(IrqError::InvalidIrq)
         );
+    }
+
+    #[test]
+    fn irq_route_access_requires_irq_save_guard() {
+        let guard = IRQ_ROUTES.lock();
+        let irq_state = ax_sync::irq_save_and_disable();
+        // SAFETY: `irq_state` is restored exactly once on the same test thread.
+        unsafe { ax_sync::irq_restore(irq_state) };
+        drop(guard);
+
+        assert_eq!(irq_state, 0, "IRQ route access left IRQs enabled");
     }
 
     #[test]

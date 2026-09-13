@@ -6,13 +6,30 @@ use core::{any::Any, fmt::Debug};
 // 重新导出常用类型
 pub use device::{HubDevice, PortState};
 use futures::future::BoxFuture;
-use id_arena::Id;
 use usb_if::{err::USBError, host::hub::Speed};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct HubId(usize);
+
+impl HubId {
+    pub(crate) const fn new(raw: usize) -> Self {
+        Self(raw)
+    }
+}
 
 pub trait HubOp: Send + 'static + Any {
     fn init<'a>(&'a mut self, info: HubInfo) -> BoxFuture<'a, Result<HubInfo, USBError>>;
-    fn changed_ports<'a>(&'a mut self) -> BoxFuture<'a, Result<Vec<PortChangeInfo>, USBError>>;
+    fn changed_ports<'a>(&'a mut self) -> BoxFuture<'a, Result<Vec<PortEvent>, USBError>>;
+    fn disconnect(&mut self) -> BoxFuture<'_, Result<(), USBError>> {
+        Box::pin(async { Ok(()) })
+    }
     fn slot_id(&self) -> u8;
+}
+
+#[derive(Debug, Clone)]
+pub enum PortEvent {
+    Connected(PortChangeInfo),
+    Disconnected { port_id: u8 },
 }
 
 #[derive(Debug, Clone)]
@@ -20,8 +37,6 @@ pub struct PortChangeInfo {
     pub root_port_id: u8,
     pub port_id: u8,
     pub port_speed: Speed,
-    /// 设备在 Hub 上的端口号（如果需要 Transaction Translator）
-    pub tt_port_on_hub: Option<u8>,
 }
 
 pub struct Hub {
@@ -31,9 +46,9 @@ pub struct Hub {
 impl Hub {
     pub fn new(
         backend: Box<dyn HubOp>,
-        infos: &BTreeMap<Id<Hub>, HubInfo>,
+        infos: &BTreeMap<HubId, HubInfo>,
         port_id: u8,
-        parent: Option<Id<Hub>>,
+        parent: Option<HubId>,
     ) -> Self {
         let slot_id;
         let mut hub_depth = 0;
@@ -74,7 +89,7 @@ impl Hub {
 #[derive(Debug, Clone)]
 pub struct HubInfo {
     /// 若为 None, 则表示 Root Hub
-    pub parent: Option<Id<Hub>>,
+    pub parent: Option<HubId>,
     pub slot_id: u8,
     pub hub_depth: isize,
     pub speed: Speed,

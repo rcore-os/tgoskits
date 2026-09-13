@@ -1,9 +1,12 @@
 //! Runtime allocation geometry for CPU areas, metadata, and boot stacks.
 
-use core::{alloc::Layout, mem::size_of};
+use core::{
+    alloc::Layout,
+    mem::{align_of, size_of},
+};
 
 use super::{
-    PerCpuLayoutError, PerCpuMeta, allocate_cpu_area_region, allocated_cpu_count,
+    CpuBootSync, PerCpuLayoutError, PerCpuMeta, allocate_cpu_area_region, allocated_cpu_count,
     checked_align_up_pow2, checked_allocation_layout, cpu_area_region, cpu_area_region_alignment,
     cpu_area_template_size, cpu_count, meta_align, set_cpu_area_region,
 };
@@ -14,6 +17,8 @@ struct LayoutRequirements {
     data_size: usize,
     metadata_size: usize,
     metadata_alignment: usize,
+    boot_sync_size: usize,
+    boot_sync_alignment: usize,
     stack_size: usize,
     page_alignment: usize,
     region_alignment: usize,
@@ -22,6 +27,7 @@ struct LayoutRequirements {
 #[derive(Clone, Copy, Debug)]
 struct LayoutInfo {
     meta_offset: usize,
+    boot_sync_offset: usize,
     stack_offset: usize,
     area_stride: usize,
     allocation_layout: Layout,
@@ -34,6 +40,8 @@ fn layout_info(cpu_count: usize) -> Result<LayoutInfo, PerCpuLayoutError> {
             data_size: cpu_area_template_size()?,
             metadata_size: size_of::<PerCpuMeta>(),
             metadata_alignment: meta_align(),
+            boot_sync_size: size_of::<CpuBootSync>(),
+            boot_sync_alignment: align_of::<CpuBootSync>(),
             stack_size: stack_size(),
             page_alignment: crate::mem::page_size(),
             region_alignment: cpu_area_region_alignment()?,
@@ -53,7 +61,11 @@ fn calculate_layout(
     let metadata_end = meta_offset
         .checked_add(requirements.metadata_size)
         .ok_or(PerCpuLayoutError::AddressOverflow)?;
-    let stack_offset = checked_align_up_pow2(metadata_end, requirements.page_alignment)?;
+    let boot_sync_offset = checked_align_up_pow2(metadata_end, requirements.boot_sync_alignment)?;
+    let boot_sync_end = boot_sync_offset
+        .checked_add(requirements.boot_sync_size)
+        .ok_or(PerCpuLayoutError::AddressOverflow)?;
+    let stack_offset = checked_align_up_pow2(boot_sync_end, requirements.page_alignment)?;
     let stack_end = stack_offset
         .checked_add(requirements.stack_size)
         .ok_or(PerCpuLayoutError::AddressOverflow)?;
@@ -65,6 +77,7 @@ fn calculate_layout(
 
     Ok(LayoutInfo {
         meta_offset,
+        boot_sync_offset,
         stack_offset,
         area_stride,
         allocation_layout,
@@ -115,6 +128,11 @@ pub(crate) fn cpu_meta_addr(cpu_index: usize) -> Option<usize> {
     cpu_area_start(cpu_index)?.checked_add(layout.meta_offset)
 }
 
+pub(crate) fn cpu_boot_sync_addr(cpu_index: usize) -> Option<usize> {
+    let layout = layout_info(allocated_cpu_count()).ok()?;
+    cpu_area_start(cpu_index)?.checked_add(layout.boot_sync_offset)
+}
+
 pub(crate) fn cpu_area_phys(cpu_index: usize) -> Option<usize> {
     cpu_area_start(cpu_index)
 }
@@ -134,6 +152,8 @@ mod tests {
         data_size: 128,
         metadata_size: 64,
         metadata_alignment: 64,
+        boot_sync_size: 4,
+        boot_sync_alignment: 4,
         stack_size: 4096,
         page_alignment: 4096,
         region_alignment: 4096,
@@ -159,6 +179,7 @@ mod tests {
     fn ordinary_layout_keeps_metadata_and_stack_inside_each_area() {
         let layout = calculate_layout(4, TEST_REQUIREMENTS).unwrap();
         assert_eq!(layout.meta_offset, 128);
+        assert_eq!(layout.boot_sync_offset, 192);
         assert_eq!(layout.stack_offset, 4096);
         assert_eq!(layout.area_stride, 8192);
         assert_eq!(layout.allocation_layout.size(), 4 * 8192);

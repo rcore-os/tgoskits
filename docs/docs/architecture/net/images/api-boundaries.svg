@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 620" role="img" aria-labelledby="title desc">
+  <title id="title">ax-net 公共 API 边界</title>
+  <desc id="desc">运行时、驱动、系统调用、Linux ABI 和解析器分别通过专用公共 API 进入共享的 Service、NetControl 与 Router 实现。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#52667d"/>
+    </marker>
+    <style>
+      .source{fill:#f0edff;stroke:#7457b6;stroke-width:2}
+      .boundary{fill:#eaf3ff;stroke:#3478c0;stroke-width:2}
+      .internal{fill:#eaf8ef;stroke:#398a55;stroke-width:2}
+      .group{fill:#f8fafc;stroke:#91a0b2;stroke-width:2}
+      .title{font:700 24px sans-serif;fill:#213247}
+      .heading{font:700 18px sans-serif;fill:#31465f}
+      .text{font:600 15px sans-serif;fill:#26384d}
+      .small{font:14px sans-serif;fill:#455a72}
+      .edge{fill:none;stroke:#52667d;stroke-width:2.1;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <text class="title" x="35" y="40">调用方只跨越面向能力的公共边界</text>
+  <text class="heading" x="55" y="82">调用方</text>
+  <text class="heading" x="415" y="82">公共 API</text>
+  <text class="heading" x="825" y="82">共享实现</text>
+
+  <rect class="group" x="30" y="95" width="300" height="475" rx="18"/>
+  <rect class="source" x="65" y="125" width="230" height="62" rx="11"/>
+  <text class="text" x="119" y="151">ax-runtime / platform</text>
+  <text class="small" x="107" y="173">启动与热插拔设备</text>
+  <rect class="source" x="65" y="211" width="230" height="62" rx="11"/>
+  <text class="text" x="127" y="237">NIC driver layer</text>
+  <text class="small" x="102" y="259">收发能力与 IRQ 注册</text>
+  <rect class="source" x="65" y="297" width="230" height="62" rx="11"/>
+  <text class="text" x="123" y="323">socket syscall</text>
+  <text class="small" x="115" y="345">创建、IO 与 options</text>
+  <rect class="source" x="65" y="383" width="230" height="62" rx="11"/>
+  <text class="text" x="103" y="409">ioctl / rtnetlink / proc</text>
+  <text class="small" x="103" y="431">查询与运行期地址更新</text>
+  <rect class="source" x="65" y="469" width="230" height="62" rx="11"/>
+  <text class="text" x="143" y="495">resolver</text>
+  <text class="small" x="117" y="517">DNS 查询与 server 快照</text>
+
+  <rect class="group" x="380" y="95" width="360" height="475" rx="18"/>
+  <rect class="boundary" x="420" y="125" width="280" height="62" rx="11"/>
+  <text class="text" x="467" y="151">init_network / init_vsock</text>
+  <text class="small" x="463" y="173">register_device_with_config</text>
+  <rect class="boundary" x="420" y="211" width="280" height="62" rx="11"/>
+  <text class="text" x="466" y="237">EthernetDriver boundary</text>
+  <text class="small" x="478" y="259">IRQ registrar capability</text>
+  <rect class="boundary" x="420" y="297" width="280" height="62" rx="11"/>
+  <text class="text" x="477" y="323">SocketOps / Socket</text>
+  <text class="small" x="465" y="345">TCP · UDP · raw · Unix · vsock</text>
+  <rect class="boundary" x="420" y="383" width="280" height="62" rx="11"/>
+  <text class="text" x="457" y="409">interface / route / ARP / stats</text>
+  <text class="small" x="461" y="431">set/remove_interface_ipv4</text>
+  <rect class="boundary" x="420" y="469" width="280" height="62" rx="11"/>
+  <text class="text" x="482" y="495">dns_query / servers</text>
+  <text class="small" x="478" y="517">metric-aware server order</text>
+
+  <rect class="group" x="790" y="95" width="340" height="475" rx="18"/>
+  <rect class="internal" x="830" y="155" width="260" height="88" rx="13"/>
+  <text class="text" x="918" y="187">Service</text>
+  <text class="small" x="868" y="213">smoltcp + SocketSet + DHCP</text>
+  <rect class="internal" x="830" y="290" width="260" height="88" rx="13"/>
+  <text class="text" x="903" y="322">NetControl</text>
+  <text class="small" x="872" y="348">interfaces + routes + DNS</text>
+  <rect class="internal" x="830" y="425" width="260" height="88" rx="13"/>
+  <text class="text" x="916" y="457">Router</text>
+  <text class="small" x="873" y="483">multi-device queues + dispatch</text>
+
+  <path class="edge" d="M295 156 H420"/>
+  <path class="edge" d="M295 242 H420"/>
+  <path class="edge" d="M295 328 H420"/>
+  <path class="edge" d="M295 414 H420"/>
+  <path class="edge" d="M295 500 H420"/>
+  <path class="edge" d="M700 156 H770 V199 H830"/>
+  <path class="edge" d="M700 242 H770 V469 H830"/>
+  <path class="edge" d="M700 328 H790 V199 H830"/>
+  <path class="edge" d="M700 414 H770 V334 H830"/>
+  <path class="edge" d="M700 500 H770 V334 H830"/>
+</svg>

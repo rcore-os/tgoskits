@@ -1,0 +1,73 @@
+//! Scheduler-backed local future execution.
+
+use core::{
+    future::{Future, IntoFuture, poll_fn},
+    pin::{Pin, pin},
+    task::Poll,
+    time::Duration,
+};
+
+use super::LocalExecutor;
+use crate::{sync::WaitQueue, thread::current::current_thread_handle, time::MonotonicDeadline};
+
+/// Error returned when a runtime-local future misses its monotonic deadline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum BlockOnError {
+    /// The requested relative timeout elapsed before the future completed.
+    #[error("future polling deadline elapsed")]
+    TimedOut,
+}
+
+/// Polls a future to completion on the calling runtime scheduler thread.
+///
+/// The executor is local to this call. Its waker may be invoked from another
+/// CPU or hard IRQ, while all future polling and destruction remain on the
+/// owner thread.
+#[track_caller]
+pub fn block_on<F: IntoFuture>(future: F) -> F::Output {
+    let thread = current_thread_handle()
+        .unwrap_or_else(|error| panic!("future polling requires a scheduler thread: {error}"));
+    let wait = WaitQueue::new();
+    let executor = LocalExecutor::new(thread.wake_handle())
+        .unwrap_or_else(|error| panic!("future executor requires its owner thread: {error}"));
+    let output = executor.run(future.into_future(), |condition| {
+        wait.wait_until(|| condition.should_abort());
+    });
+    drop(executor);
+    output
+}
+
+/// Polls a future until completion or a relative monotonic timeout.
+#[track_caller]
+pub fn block_on_timeout<F: IntoFuture>(
+    timeout: Duration,
+    future: F,
+) -> Result<F::Output, BlockOnError> {
+    let thread = current_thread_handle()
+        .unwrap_or_else(|error| panic!("future polling requires a scheduler thread: {error}"));
+    let wait = WaitQueue::new();
+    let executor = LocalExecutor::new(thread.wake_handle())
+        .unwrap_or_else(|error| panic!("future executor requires its owner thread: {error}"));
+    let deadline = crate::runtime::task_runtime::monotonic_now().deadline_after(timeout);
+    let mut future = pin!(future.into_future());
+    let timed = poll_fn(|context| poll_until_deadline(future.as_mut(), context, deadline));
+    let output = executor.run(timed, |condition| {
+        let _timed_out = wait.wait_until_deadline(deadline, || condition.should_abort());
+    });
+    drop(executor);
+    output
+}
+
+fn poll_until_deadline<F: Future>(
+    future: Pin<&mut F>,
+    context: &mut core::task::Context<'_>,
+    deadline: MonotonicDeadline,
+) -> Poll<Result<F::Output, BlockOnError>> {
+    if let Poll::Ready(output) = Future::poll(future, context) {
+        return Poll::Ready(Ok(output));
+    }
+    if crate::runtime::task_runtime::monotonic_now().reached(deadline) {
+        return Poll::Ready(Err(BlockOnError::TimedOut));
+    }
+    Poll::Pending
+}

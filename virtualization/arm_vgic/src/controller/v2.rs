@@ -38,7 +38,9 @@ impl GicV3Controller {
         match offset {
             GICD_CTLR => {
                 require_width(RegisterRegion::Distributor, offset, width, "read")?;
-                Ok(u64::from(self.inner.state.lock().distributor.enabled()))
+                Ok(u64::from(
+                    self.inner.state.lock_irqsave().distributor.enabled(),
+                ))
             }
             GICD_TYPER => {
                 require_width(RegisterRegion::Distributor, offset, width, "read")?;
@@ -101,7 +103,7 @@ impl GicV3Controller {
             }
             _ if is_private_register(offset) => {
                 let wakes = {
-                    let mut state = self.inner.state.lock();
+                    let mut state = self.inner.state.lock_irqsave();
                     let candidates = state
                         .redistributor_mut(vcpu, "write GICv2 private Distributor register")?
                         .write_private_register(offset, width, value, &self.inner.config)?;
@@ -228,7 +230,7 @@ impl GicV3Controller {
             GICV2_MAX_INTIDS,
             "read",
         )?;
-        let state = self.inner.state.lock();
+        let state = self.inner.state.lock_irqsave();
         let mut value = 0;
         for byte in 0..width.size() {
             let raw = (offset - GICD_ITARGETSR) as u32 + byte as u32;
@@ -254,7 +256,7 @@ impl GicV3Controller {
             "write",
         )?;
         let wakes = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             let mut wakes = Vec::new();
             for byte in 0..width.size() {
                 let raw = (offset - GICD_ITARGETSR) as u32 + byte as u32;
@@ -285,7 +287,7 @@ impl GicV3Controller {
         let targets = match (value >> 24) & 0b11 {
             0 => {
                 let mask = ((value >> 16) & 0xff) as u8;
-                let state = self.inner.state.lock();
+                let state = self.inner.state.lock_irqsave();
                 let affinities = state
                     .redistributors
                     .iter()
@@ -313,7 +315,7 @@ impl GicV3Controller {
             GICD_CPENDSGIR
         };
         validate_byte_array_access(RegisterRegion::Distributor, offset, width, bank, 16, "read")?;
-        let state = self.inner.state.lock();
+        let state = self.inner.state.lock_irqsave();
         let redistributor = state.redistributor(vcpu, "read SGI source-pending register")?;
         let mut value = 0;
         for byte in 0..width.size() {
@@ -341,7 +343,7 @@ impl GicV3Controller {
             "write",
         )?;
         let wakes = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             let mut wakes = Vec::new();
             for byte in 0..width.size() {
                 let sgi = SgiId::new((offset - bank) as u8 + byte as u8)?;
@@ -369,7 +371,7 @@ impl GicV3Controller {
     }
 
     fn highest_pending_v2(&self, vcpu: GicVcpuId) -> VgicResult<u64> {
-        let state = self.inner.state.lock();
+        let state = self.inner.state.lock_irqsave();
         let cpu = state
             .redistributor(vcpu, "read GICC_HPPIR")?
             .cpu_interface();
@@ -385,7 +387,7 @@ impl GicV3Controller {
     }
 
     fn acknowledge_v2(&self, vcpu: GicVcpuId) -> VgicResult<u64> {
-        let mut state = self.inner.state.lock();
+        let mut state = self.inner.state.lock_irqsave();
         if !state.distributor.enabled() {
             return Ok(GIC_SPURIOUS_INTID);
         }
@@ -441,7 +443,7 @@ impl GicV3Controller {
             return Ok(());
         };
         let retirement = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             let (priority_dropped, eoi_mode) = {
                 let cpu = state
                     .redistributor_mut(vcpu, "write GICC_EOIR")?
@@ -461,7 +463,11 @@ impl GicV3Controller {
         let Some(intid) = decode_eoi_intid(value) else {
             return Ok(());
         };
-        let retirement = self.inner.state.lock().deactivate_interrupt(vcpu, intid)?;
+        let retirement = self
+            .inner
+            .state
+            .lock_irqsave()
+            .deactivate_interrupt(vcpu, intid)?;
         self.apply_v2_retirement(vcpu, retirement)
     }
 

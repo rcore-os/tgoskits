@@ -1,0 +1,1303 @@
+use alloc::{vec, vec::Vec};
+use core::time::Duration;
+
+use super::*;
+use crate::{
+    lmac::{
+        SM_CONNECT_IND, SM_DISCONNECT_IND, parse_connect_indication, parse_disconnect_indication,
+    },
+    protocol::{BLOCK_SIZE, ethernet_tx_frame},
+    registers::ReceiveLength,
+    rx::{ParsedFrame, parse_fifo},
+};
+
+const IO_RETRY: Duration = Duration::from_millis(1);
+// The firmware reports packet buffers, not SDIO blocks. Keep two buffers
+// available for commands, as in the vendor DATA_FLOW_CTRL_THRESH contract.
+const DATA_TX_RESERVED_CREDITS: u8 = 2;
+const INTERNAL_TX_CAPACITY: usize = 2;
+const INTERNAL_TX_BYTE_CAPACITY: usize = 8 * 1024;
+const ETHERTYPE_EAPOL: [u8; 2] = [0x88, 0x8e];
+
+impl AicDevice {
+    pub(super) fn drive_ready(&mut self, now: MonotonicTime) -> AicAction {
+        if self.mailbox_timed_out(now) {
+            return self.drive_mailbox(now);
+        }
+        if self.lifecycle.mailbox.is_some() {
+            // LMAC confirmations arrive on the command/data FIFO and are
+            // announced through the level-sensitive CARD_INT source.  Once a
+            // mailbox write has completed, drain one bounded receive scan
+            // before waiting for the next interrupt; otherwise a pending
+            // confirmation would leave the mailbox parked while the control
+            // command at the front of the queue is submitted again.
+            if self.mailbox_waiting_for_receive()
+                && let Some(action) = self.drive_receive_scan()
+            {
+                return action;
+            }
+            return self.drive_mailbox(now);
+        }
+        if let Some(control) = self.lifecycle.control.as_ref()
+            && let Some(command) = control.commands.front()
+        {
+            let message_id = command.message_id;
+            let destination = command.destination;
+            let expected = command.expected_message_id;
+            let payload = command.payload.clone();
+            self.begin_lmac_mailbox(message_id, destination, &payload, expected, now);
+            return self.drive_mailbox(now);
+        }
+        // Deliver terminal/control events before starting another level-triggered
+        // receive scan.  CARD_INT may remain asserted while the firmware drains
+        // queued traffic; scanning first would indefinitely postpone the
+        // ControlComplete event that releases the Linux WEXT caller.
+        if let Some(event) = self.take_priority_event() {
+            return AicAction::Event(event);
+        }
+        if let Some(action) = self.drive_receive_scan() {
+            return action;
+        }
+        self.prepare_next_transmit();
+        if let Some(active) = self.data.active_tx.as_mut() {
+            if let Some(deadline) = active.retry_at {
+                if now < deadline {
+                    return AicAction::WaitForInterruptUntil(deadline);
+                }
+                active.retry_at = None;
+            }
+            // DC bypasses flow control only for its separate command mailbox.
+            // Every data packet must obtain firmware capacity before CMD53.
+            return self.emit(
+                IoPurpose::TransmitFlow,
+                read_byte(self.data_function(), self.registers().flow_control),
+            );
+        }
+        AicAction::WaitForInterrupt
+    }
+
+    fn take_priority_event(&mut self) -> Option<AicEvent> {
+        let index = self
+            .data
+            .events
+            .iter()
+            .position(|event| !matches!(event, AicEvent::Receive(_)))?;
+        self.data.remove_event(index)
+    }
+
+    pub(super) fn request_receive_scan(&mut self) {
+        // Firmware startup owns both SDIO functions until a mailbox
+        // confirmation is waiting.  The controller reports CARD_INT as a
+        // level source, so treating that status as a data-plane receive event
+        // during function setup would continually preempt the startup FSM.
+        // The first confirmation interrupt is the sole startup exception; it
+        // arms one bounded scan and subsequent level samples are coalesced.
+        if self.lifecycle.state == AicState::Starting && !self.startup_confirmation_waiting() {
+            return;
+        }
+        if self.io.receive.active {
+            // CARD_INT is level-triggered.  The in-flight scan drains every
+            // enabled function; rearm_and_check() observes a source that
+            // remains asserted and schedules the next scan after this one
+            // completes, so a second scan must never be queued here.
+            return;
+        }
+        self.io.receive.active = true;
+        self.io.receive.next_path = 0;
+    }
+
+    pub(super) fn drive_receive_scan(&mut self) -> Option<AicAction> {
+        if !self.io.receive.active {
+            return None;
+        }
+        if let Some(path) = self.receive_path(usize::from(self.io.receive.next_path)) {
+            let function = self.receive_function(path);
+            return Some(self.emit(
+                IoPurpose::ReceiveCount(path),
+                read_byte(function, self.registers().block_count),
+            ));
+        }
+        self.io.receive.active = false;
+        self.io.receive.next_path = 0;
+        None
+    }
+
+    pub(super) fn consume_receive_count(
+        &mut self,
+        path: RxPath,
+        response: SdioResponse,
+    ) -> Result<(), AicError> {
+        let count = expect_byte(response)?;
+        match self.registers().receive_length(count) {
+            ReceiveLength::Empty => self.advance_receive_path(),
+            ReceiveLength::OtherInterrupt => {
+                // The vendor D80 IRQ handler acknowledges the dev-to-host soft
+                // IRQ here: read the interrupt-pending register, clear bit 0,
+                // and write it back. Without the acknowledgement the pending
+                // bit keeps CARD_INT asserted, which both starves the owner
+                // loop and leaves the firmware waiting for its interrupt to
+                // be consumed.
+                self.io.next = Some((
+                    IoPurpose::ReceiveOtherAck(path),
+                    read_byte(
+                        self.receive_function(path),
+                        self.registers()
+                            .sleep_status
+                            .expect("v3 interrupt status implies a sleep-status register"),
+                    ),
+                ));
+            }
+            ReceiveLength::Blocks(blocks) => {
+                self.io.next = Some((
+                    IoPurpose::ReceiveData(path),
+                    read_fifo(
+                        self.receive_function(path),
+                        self.registers().read_fifo,
+                        usize::from(blocks) * BLOCK_SIZE,
+                    ),
+                ));
+            }
+            ReceiveLength::ByteMode => {
+                self.io.next = Some((
+                    IoPurpose::ReceiveByteLength(path),
+                    read_byte(
+                        self.receive_function(path),
+                        self.registers().byte_mode_length,
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn consume_receive_other_ack(
+        &mut self,
+        path: RxPath,
+        response: SdioResponse,
+    ) -> Result<(), AicError> {
+        let pending = expect_byte(response)?;
+        self.io.next = Some((
+            IoPurpose::ReceiveOtherClear(path),
+            write_byte(
+                self.receive_function(path),
+                self.registers()
+                    .sleep_status
+                    .expect("v3 interrupt status implies a sleep-status register"),
+                pending & !1,
+            ),
+        ));
+        Ok(())
+    }
+
+    pub(super) fn consume_receive_other_clear(
+        &mut self,
+        path: RxPath,
+        response: SdioResponse,
+    ) -> Result<(), AicError> {
+        // The write is issued with read-after-write; the read-back byte is the
+        // register's pre-write value and is not compared.
+        let _ = expect_byte(response)?;
+        // The vendor D80 handler re-reads the interrupt status after the soft
+        // IRQ acknowledgement; stay on the same path until it reads empty.
+        self.io.next = Some((
+            IoPurpose::ReceiveCount(path),
+            read_byte(self.receive_function(path), self.registers().block_count),
+        ));
+        Ok(())
+    }
+
+    pub(super) fn consume_receive_byte_length(
+        &mut self,
+        path: RxPath,
+        response: SdioResponse,
+    ) -> Result<(), AicError> {
+        let units = expect_byte(response)?;
+        if units == 0 || units > 128 {
+            return Err(AicError::InvalidRxByteLength { units });
+        }
+        self.io.next = Some((
+            IoPurpose::ReceiveData(path),
+            read_fifo(
+                self.receive_function(path),
+                self.registers().read_fifo,
+                usize::from(units) * 4,
+            ),
+        ));
+        Ok(())
+    }
+
+    pub(super) fn consume_receive_data(
+        &mut self,
+        path: RxPath,
+        response: SdioResponse,
+    ) -> Result<(), AicError> {
+        let receive_data = expect_data(response)?;
+        let frames =
+            parse_fifo(&receive_data, self.mailbox_confirmation_id()).map_err(|error| {
+                let header_length = receive_data.len().min(24);
+                let mut header = [0; 24];
+                header[..header_length].copy_from_slice(&receive_data[..header_length]);
+                let header_words = [
+                    u64::from_le_bytes(header[0..8].try_into().expect("fixed header word")),
+                    u64::from_le_bytes(header[8..16].try_into().expect("fixed header word")),
+                    u64::from_le_bytes(header[16..24].try_into().expect("fixed header word")),
+                ];
+                log::error!(
+                    "malformed AIC RX frame on {path:?}: transfer={} header={:02x?}",
+                    receive_data.len(),
+                    &receive_data[..header_length]
+                );
+                AicError::MalformedRxFrame {
+                    offset: error.offset,
+                    packet_type: error.packet_type,
+                    declared_length: error.declared_length,
+                    available_length: error.available_length,
+                    header_words,
+                }
+            })?;
+        for frame in frames {
+            match frame {
+                ParsedFrame::Data {
+                    frame,
+                    decryption_status,
+                } => {
+                    let Some(frames) = decapsulate_data_frames(&frame, decryption_status) else {
+                        continue;
+                    };
+                    for frame in frames {
+                        if frame.get(12..14) == Some(&ETHERTYPE_EAPOL) {
+                            self.consume_eapol(&frame)?;
+                        } else {
+                            self.data.push_event(AicEvent::Receive(frame))?;
+                        }
+                    }
+                }
+                ParsedFrame::Confirmation {
+                    message_id,
+                    payload,
+                } => {
+                    self.accept_mailbox_confirmation(message_id, payload)?;
+                }
+                ParsedFrame::DataConfirmation => {
+                    log::trace!("AIC firmware data confirmation");
+                }
+                ParsedFrame::FirmwarePrint { length } => {
+                    log::trace!("AIC firmware trace frame: {length} bytes");
+                }
+                ParsedFrame::Indication {
+                    message_id: SM_CONNECT_IND,
+                    payload,
+                } => {
+                    // Firmware can leave an asynchronous association result in
+                    // the FIFO across host restart. Startup has no connection
+                    // transaction: its owner is handed to the network runtime
+                    // before a new Connect request can be submitted. Do not
+                    // interpret the old status or install its peer identity.
+                    if self.lifecycle.state == AicState::Starting {
+                        log::debug!(
+                            "[wifi] discarded pre-connection association indication during startup"
+                        );
+                        continue;
+                    }
+                    let indication = parse_connect_indication(&payload)?;
+                    log::info!(
+                        "[wifi] association complete; learned firmware vif={} station={}",
+                        indication.interface_index,
+                        indication.station_index
+                    );
+                    self.data.link.install_peer(
+                        indication.interface_index,
+                        indication.station_index,
+                        indication.bssid,
+                    )?;
+                    let control = self
+                        .lifecycle
+                        .control
+                        .as_mut()
+                        .ok_or(AicError::CompletionMismatch)?;
+                    let local_mac = self
+                        .data
+                        .link
+                        .mac_address()
+                        .ok_or(AicError::InvalidMacAddress)?;
+                    control.accept_connect_indication(
+                        indication.station_index,
+                        indication.bssid,
+                        local_mac,
+                    )?;
+                }
+                ParsedFrame::Indication {
+                    message_id: SM_DISCONNECT_IND,
+                    payload,
+                } => {
+                    let indication = parse_disconnect_indication(&payload)?;
+                    if self.data.link.interface_index() != Some(indication.interface_index) {
+                        return Err(AicError::MalformedResponse);
+                    }
+                    self.data.link.clear_peer();
+                    self.data.clear_internal_tx();
+                    let resetting = self.lifecycle.control.as_ref().is_some_and(|control| {
+                        matches!(&control.operation,
+                            super::control::ControlOperation::Connect(connect)
+                                if connect.phase == super::control::ConnectPhase::Resetting)
+                    });
+                    if !resetting && self.lifecycle.control.take().is_some() {
+                        self.data
+                            .push_event(AicEvent::ControlFailed(AicError::Disconnected {
+                                reason_code: indication.reason_code,
+                            }))?;
+                    }
+                }
+                ParsedFrame::Indication {
+                    message_id,
+                    payload,
+                } => {
+                    log::trace!(
+                        "AIC indication id={message_id:#06x}, payload={} bytes",
+                        payload.len()
+                    );
+                }
+            }
+        }
+        self.io.next = Some((
+            IoPurpose::ReceiveCount(path),
+            read_byte(self.receive_function(path), self.registers().block_count),
+        ));
+        Ok(())
+    }
+
+    fn advance_receive_path(&mut self) {
+        self.io.receive.next_path = self.io.receive.next_path.saturating_add(1);
+    }
+
+    pub(super) fn consume_transmit_flow(
+        &mut self,
+        response: SdioResponse,
+        now: MonotonicTime,
+    ) -> Result<(), AicError> {
+        let credits = self.registers().flow_credits(expect_byte(response)?);
+        let active = self
+            .data
+            .active_tx
+            .as_mut()
+            .ok_or(AicError::CompletionMismatch)?;
+        if credits <= DATA_TX_RESERVED_CREDITS {
+            active.retry_at = Some(now.after(IO_RETRY));
+            return Ok(());
+        }
+        let frame = active.wire_frame.clone();
+        self.io.next = Some((
+            IoPurpose::TransmitData,
+            write_fifo(self.data_function(), self.registers().write_fifo, frame),
+        ));
+        Ok(())
+    }
+
+    pub(super) fn consume_transmit_data(&mut self, response: SdioResponse) -> Result<(), AicError> {
+        expect_unit(response)?;
+        let active = self
+            .data
+            .active_tx
+            .take()
+            .ok_or(AicError::CompletionMismatch)?;
+        match active.completion {
+            super::owner::TxCompletion::User(token) => {
+                self.data.push_event(AicEvent::TransmitComplete(token))?
+            }
+            super::owner::TxCompletion::Internal(super::owner::InternalTxKind::M2) => {}
+            super::owner::TxCompletion::Internal(super::owner::InternalTxKind::M4) => {
+                let (station_index, _) = self.data.link.peer().ok_or(AicError::WpaProtocol)?;
+                self.lifecycle
+                    .control
+                    .as_mut()
+                    .ok_or(AicError::CompletionMismatch)?
+                    .accept_m4_transmit(station_index)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn prepare_next_transmit(&mut self) {
+        if self.data.active_tx.is_some() {
+            return;
+        }
+        let Some((interface_index, station_index)) = self.data.link.tx_indices() else {
+            return;
+        };
+        if let Some(internal) = self.data.pop_internal_tx() {
+            let Ok(wire_frame) = ethernet_tx_frame(
+                &internal.ethernet_frame,
+                interface_index,
+                station_index,
+                self.transport_uses_header_crc(),
+            ) else {
+                return;
+            };
+            self.data.active_tx = Some(ActiveTx {
+                retry_at: None,
+                completion: super::owner::TxCompletion::Internal(internal.kind),
+                wire_frame,
+            });
+            return;
+        }
+        let Some(frame) = self.data.tx.take_wire_frame(
+            interface_index,
+            station_index,
+            self.transport_uses_header_crc(),
+        ) else {
+            return;
+        };
+        match frame {
+            Ok((token, wire_frame)) => {
+                self.data.active_tx = Some(ActiveTx {
+                    retry_at: None,
+                    completion: super::owner::TxCompletion::User(token),
+                    wire_frame,
+                });
+            }
+            Err(token) => self
+                .data
+                .events
+                .push_back(AicEvent::TransmitComplete(token)),
+        }
+    }
+
+    fn consume_eapol(&mut self, ethernet: &[u8]) -> Result<(), AicError> {
+        if ethernet.len() < 14 {
+            return Err(AicError::WpaProtocol);
+        }
+        let local_mac = self
+            .data
+            .link
+            .mac_address()
+            .ok_or(AicError::InvalidMacAddress)?;
+        let (station_index, bssid) = self.data.link.peer().ok_or(AicError::WpaProtocol)?;
+        let interface_index = self
+            .data
+            .link
+            .interface_index()
+            .ok_or(AicError::WpaProtocol)?;
+        if ethernet[..6] != local_mac || ethernet[6..12] != bssid {
+            return Err(AicError::WpaProtocol);
+        }
+        let effect = self
+            .lifecycle
+            .control
+            .as_mut()
+            .ok_or(AicError::WpaProtocol)?
+            .process_eapol(interface_index, station_index, &ethernet[14..])?;
+        if let super::control::ControlEffect::TransmitEapol(frame) = effect {
+            self.queue_internal_eapol(super::owner::InternalTxKind::M2, frame)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn queue_internal_eapol(
+        &mut self,
+        kind: super::owner::InternalTxKind,
+        eapol: Vec<u8>,
+    ) -> Result<(), AicError> {
+        let ethernet_length = 14usize
+            .checked_add(eapol.len())
+            .ok_or(AicError::TxQueueFull)?;
+        if self.data.internal_tx.len() >= INTERNAL_TX_CAPACITY
+            || self
+                .data
+                .internal_tx_bytes
+                .checked_add(ethernet_length)
+                .is_none_or(|bytes| bytes > INTERNAL_TX_BYTE_CAPACITY)
+        {
+            return Err(AicError::TxQueueFull);
+        }
+        let local_mac = self
+            .data
+            .link
+            .mac_address()
+            .ok_or(AicError::InvalidMacAddress)?;
+        let (_, bssid) = self.data.link.peer().ok_or(AicError::WpaProtocol)?;
+        let mut ethernet = Vec::with_capacity(ethernet_length);
+        ethernet.extend_from_slice(&bssid);
+        ethernet.extend_from_slice(&local_mac);
+        ethernet.extend_from_slice(&ETHERTYPE_EAPOL);
+        ethernet.extend_from_slice(&eapol);
+        self.data.internal_tx_bytes += ethernet.len();
+        self.data.internal_tx.push_back(super::owner::InternalTx {
+            kind,
+            ethernet_frame: ethernet,
+        });
+        Ok(())
+    }
+}
+
+/// Converts the firmware's 802.11 MPDU (after its 60-byte hardware header)
+/// into the Ethernet frame expected by the network stack.  The Linux AIC
+/// driver performs the same operation in `rwnx_rxdataind_aicwf`: management
+/// frames are consumed by the firmware control path, while station data is
+/// stripped of its MAC/crypto/LLC headers before delivery.
+fn decapsulate_data_frames(frame: &[u8], decryption_status: u8) -> Option<Vec<Vec<u8>>> {
+    if frame.len() < 24 {
+        return None;
+    }
+    let frame_control = u16::from_le_bytes([frame[0], frame[1]]);
+    if (frame_control >> 2) & 0x3 != 2 {
+        return None;
+    }
+    let to_ds = frame_control & 0x0100 != 0;
+    let from_ds = frame_control & 0x0200 != 0;
+    let qos = ((frame_control >> 4) & 0x0f) >= 8;
+    let has_ht_control = frame_control & 0x8000 != 0;
+    let address4_len = usize::from(to_ds && from_ds) * 6;
+    let qos_offset = 24 + address4_len;
+    let is_amsdu = qos && frame.get(qos_offset).is_some_and(|value| value & 0x80 != 0);
+    let header_len = qos_offset + usize::from(qos) * 2 + usize::from(has_ht_control) * 4;
+    let crypto_len = match decryption_status {
+        0 => 0,
+        1 => 4,
+        2 | 3 => 8,
+        7 => 18,
+        // The data path intentionally supports only the cipher suites that
+        // the firmware reports to this station driver.  Do not guess a
+        // header length for newer/unsupported suites.
+        _ => return None,
+    };
+    let payload = header_len.checked_add(crypto_len)?;
+    if frame.len() < payload {
+        return None;
+    }
+
+    if is_amsdu {
+        return decapsulate_amsdu(&frame[payload..]);
+    }
+
+    let (destination, source) = match (to_ds, from_ds) {
+        (false, false) => (&frame[4..10], &frame[10..16]),
+        (true, false) => (&frame[16..22], &frame[10..16]),
+        (false, true) => (&frame[4..10], &frame[16..22]),
+        (true, true) => (&frame[16..22], &frame[24..30]),
+    };
+    ethernet_from_llc(destination, source, &frame[payload..]).map(|frame| vec![frame])
+}
+
+fn decapsulate_amsdu(aggregate: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let mut frames = Vec::new();
+    let mut offset = 0usize;
+    while offset < aggregate.len() {
+        let header_end = offset.checked_add(14)?;
+        if header_end > aggregate.len() {
+            return None;
+        }
+        let msdu_len =
+            u16::from_be_bytes([aggregate[offset + 12], aggregate[offset + 13]]) as usize;
+        let end = header_end.checked_add(msdu_len)?;
+        if msdu_len < 8 || end > aggregate.len() {
+            return None;
+        }
+        frames.push(ethernet_from_llc(
+            &aggregate[offset..offset + 6],
+            &aggregate[offset + 6..offset + 12],
+            &aggregate[header_end..end],
+        )?);
+        if end == aggregate.len() {
+            break;
+        }
+        let subframe_len = 14usize.checked_add(msdu_len)?;
+        let aligned_len = subframe_len.checked_add(3)? & !3;
+        offset = offset.checked_add(aligned_len)?;
+        if offset >= aggregate.len() {
+            return None;
+        }
+    }
+    (!frames.is_empty()).then_some(frames)
+}
+
+fn ethernet_from_llc(destination: &[u8], source: &[u8], llc: &[u8]) -> Option<Vec<u8>> {
+    if destination.len() != 6
+        || source.len() != 6
+        || llc.len() < 8
+        || llc[..6] != [0xaa, 0xaa, 0x03, 0, 0, 0]
+    {
+        return None;
+    }
+    let mut ethernet = Vec::with_capacity(12 + llc.len() - 6);
+    ethernet.extend_from_slice(destination);
+    ethernet.extend_from_slice(source);
+    ethernet.extend_from_slice(&llc[6..]);
+    Some(ethernet)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+    use crate::{
+        common::{ChipVariant, SDIO_TYPE_CFG_CMD_RSP, SDIO_TYPE_CFG_PRINT, SDIO_TYPE_DATA},
+        rx::{RX_BYTE_CAPACITY, RX_CAPACITY},
+    };
+
+    fn indication_fifo(message_id: u16, payload: &[u8]) -> Vec<u8> {
+        let packet_len = 12 + payload.len();
+        let mut fifo = vec![0; 4 + packet_len.div_ceil(4) * 4];
+        fifo[..2].copy_from_slice(&(packet_len as u16).to_le_bytes());
+        fifo[2] = SDIO_TYPE_CFG_CMD_RSP;
+        fifo[4..6].copy_from_slice(&message_id.to_le_bytes());
+        fifo[10..12].copy_from_slice(&(payload.len() as u16).to_le_bytes());
+        fifo[16..16 + payload.len()].copy_from_slice(payload);
+        fifo
+    }
+
+    fn data_fifo(marker: u8) -> Vec<u8> {
+        const FRAME_LENGTH: usize = 24 + 6 + 2 + 1;
+        const HARDWARE_HEADER: usize = 60;
+        let mut fifo = vec![0; HARDWARE_HEADER + FRAME_LENGTH];
+        fifo[..2].copy_from_slice(&(FRAME_LENGTH as u16).to_le_bytes());
+        fifo[2] = SDIO_TYPE_DATA;
+        let frame = &mut fifo[HARDWARE_HEADER..];
+        // AP -> station data MPDU: address 1 is the Ethernet destination,
+        // address 2 is the transmitter/source, followed by LLC/SNAP.
+        frame[..2].copy_from_slice(&0x0208u16.to_le_bytes());
+        frame[4] = marker;
+        frame[5..10].copy_from_slice(&[0x10, 0x11, 0x12, 0x13, 0x14]);
+        frame[10..16].copy_from_slice(&[0x20, 0x21, 0x22, 0x23, 0x24, 0x25]);
+        frame[16..22].copy_from_slice(&[0x30, 0x31, 0x32, 0x33, 0x34, 0x35]);
+        frame[24..30].copy_from_slice(&[0xaa, 0xaa, 0x03, 0, 0, 0]);
+        frame[30..32].copy_from_slice(&[0x08, 0x00]);
+        frame[32] = marker;
+        fifo
+    }
+
+    fn data_mpdu(frame_control: u16, payload: &[u8]) -> Vec<u8> {
+        let qos = ((frame_control >> 4) & 0x0f) >= 8;
+        let header_len = 24 + usize::from(qos) * 2;
+        let mut frame = vec![0; header_len + 8 + payload.len()];
+        frame[..2].copy_from_slice(&frame_control.to_le_bytes());
+        frame[4..10].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        frame[10..16].copy_from_slice(&[0x11, 0x12, 0x13, 0x14, 0x15, 0x16]);
+        frame[16..22].copy_from_slice(&[0x21, 0x22, 0x23, 0x24, 0x25, 0x26]);
+        if qos {
+            frame[24..26].copy_from_slice(&0u16.to_le_bytes());
+        }
+        frame[header_len..header_len + 6].copy_from_slice(&[0xaa, 0xaa, 0x03, 0, 0, 0]);
+        frame[header_len + 6..header_len + 8].copy_from_slice(&[0x08, 0x00]);
+        frame[header_len + 8..].copy_from_slice(payload);
+        frame
+    }
+
+    #[test]
+    fn startup_ignores_unowned_connect_results_and_keeps_mailbox_confirmation() {
+        for status in [1u16, 0] {
+            let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+            device.start(MonotonicTime::default()).unwrap();
+            device.lifecycle.mailbox =
+                Some(super::super::mailbox::MailboxState::confirmation_for_test(
+                    MonotonicTime::from_nanos(5_000_000_000),
+                ));
+            let mut payload = vec![0; 11];
+            payload[..2].copy_from_slice(&status.to_le_bytes());
+            let mut fifo = indication_fifo(SM_CONNECT_IND, &payload);
+            fifo.extend(indication_fifo(2, &[]));
+            device.io.pending = Some(PendingIo {
+                id: 7,
+                purpose: IoPurpose::ReceiveData(RxPath::Command),
+            });
+            let action = device.advance(AicInput {
+                now: MonotonicTime::default(),
+                event: Some(AicInputEvent::Sdio(SdioCompletion {
+                    request_id: 7,
+                    result: Ok(SdioResponse::Data(fifo)),
+                })),
+            });
+            assert!(
+                matches!(action, AicAction::SubmitSdio(_)),
+                "unowned connection result stopped startup: {action:?}"
+            );
+            assert_eq!(device.state(), AicState::Starting);
+            assert!(device.data.link.peer().is_none());
+            assert_eq!(
+                device.accept_mailbox_confirmation(2, Vec::new()),
+                Err(AicError::CompletionMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn active_connect_rejection_is_not_discarded_as_a_startup_indication() {
+        let mut device = ready_transmitter(ChipVariant::Aic8800DC, 60);
+        let mut control = super::super::control::build(
+            ControlRequest::Connect {
+                ssid: b"network".to_vec(),
+                pmk: None,
+                entropy: None,
+            },
+            [2, 0, 0, 0, 0, 1],
+            Some(0),
+        )
+        .unwrap();
+        if let super::super::control::ControlOperation::Connect(connect) = &mut control.operation {
+            connect.phase = super::super::control::ConnectPhase::AwaitIndication;
+        }
+        control.commands.clear();
+        device.lifecycle.control = Some(control);
+        let mut payload = vec![0; 11];
+        payload[0] = 1;
+        assert_eq!(
+            device.consume_receive_data(
+                RxPath::Command,
+                SdioResponse::Data(indication_fifo(SM_CONNECT_IND, &payload)),
+            ),
+            Err(AicError::FirmwareRejected {
+                message_id: SM_CONNECT_IND,
+                status: 1
+            })
+        );
+    }
+
+    #[test]
+    fn successful_connect_indication_publishes_firmware_vif_and_station_indices() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.data.link.install_mac([2, 0, 0, 0, 0, 1]).unwrap();
+        device.data.link.install_interface(2).unwrap();
+        let mut control = super::super::control::build(
+            ControlRequest::Connect {
+                ssid: b"network".to_vec(),
+                pmk: None,
+                entropy: None,
+            },
+            [2, 0, 0, 0, 0, 1],
+            Some(2),
+        )
+        .unwrap();
+        if let super::super::control::ControlOperation::Connect(connect) = &mut control.operation {
+            connect.phase = super::super::control::ConnectPhase::AwaitIndication;
+        }
+        control.commands.clear();
+        device.lifecycle.control = Some(control);
+        let mut payload = vec![0; 11];
+        payload[2..8].copy_from_slice(&[2, 1, 2, 3, 4, 5]);
+        payload[9] = 2;
+        payload[10] = 7;
+        let fifo = indication_fifo(SM_CONNECT_IND, &payload);
+
+        device
+            .consume_receive_data(RxPath::Command, SdioResponse::Data(fifo))
+            .unwrap();
+
+        assert_eq!(device.data.link.tx_indices(), Some((2, 7)));
+    }
+
+    #[test]
+    fn asynchronous_disconnect_clears_the_learned_peer() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.data.link.install_mac([2, 0, 0, 0, 0, 1]).unwrap();
+        device.data.link.install_interface(2).unwrap();
+        device
+            .data
+            .link
+            .install_peer(2, 7, [2, 1, 2, 3, 4, 5])
+            .unwrap();
+        let payload = [3, 0, 2, 0, 0, 0];
+
+        device
+            .consume_receive_data(
+                RxPath::Command,
+                SdioResponse::Data(indication_fifo(crate::lmac::SM_DISCONNECT_IND, &payload)),
+            )
+            .unwrap();
+
+        assert_eq!(device.data.link.peer(), None);
+    }
+
+    #[test]
+    fn mailbox_confirmation_survives_control_budget_exhaustion() {
+        const PRINT_PACKET_LENGTH: usize = 8;
+        const PRINT_AGGREGATE_LENGTH: usize = 4 + PRINT_PACKET_LENGTH;
+        const RESPONSE_PACKET_LENGTH: usize = 12;
+        const RESPONSE_AGGREGATE_LENGTH: usize = 4 + RESPONSE_PACKET_LENGTH;
+        const EXPECTED_MESSAGE_ID: u16 = 2;
+
+        let response_offset = crate::rx::CONTROL_RX_CAPACITY * PRINT_AGGREGATE_LENGTH;
+        let mut fifo = vec![0; response_offset + RESPONSE_AGGREGATE_LENGTH];
+        for index in 0..crate::rx::CONTROL_RX_CAPACITY {
+            let offset = index * PRINT_AGGREGATE_LENGTH;
+            fifo[offset..offset + 2].copy_from_slice(&(PRINT_PACKET_LENGTH as u16).to_le_bytes());
+            fifo[offset + 2] = SDIO_TYPE_CFG_PRINT;
+        }
+        fifo[response_offset..response_offset + 2]
+            .copy_from_slice(&(RESPONSE_PACKET_LENGTH as u16).to_le_bytes());
+        fifo[response_offset + 2] = SDIO_TYPE_CFG_CMD_RSP;
+        fifo[response_offset + 4..response_offset + 6]
+            .copy_from_slice(&EXPECTED_MESSAGE_ID.to_le_bytes());
+
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.mailbox = Some(MailboxState::confirmation_for_test(
+            MonotonicTime::from_nanos(10),
+        ));
+        device.io.receive.active = true;
+
+        device
+            .consume_receive_data(RxPath::Command, SdioResponse::Data(fifo))
+            .unwrap();
+
+        assert_eq!(device.mailbox_confirmation_id(), None);
+        assert!(!device.mailbox_waiting_for_receive());
+    }
+
+    #[test]
+    fn receive_events_do_not_stall_after_the_first_bounded_window() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+
+        for marker in 0..=RX_CAPACITY {
+            device
+                .consume_receive_data(RxPath::Command, SdioResponse::Data(data_fifo(marker as u8)))
+                .unwrap();
+            let event = device.data.pop_event();
+            assert!(
+                matches!(event, Some(AicEvent::Receive(frame)) if frame[0] == marker as u8),
+                "receive event {marker} was lost after the bounded window"
+            );
+        }
+    }
+
+    #[test]
+    fn control_completion_precedes_a_persistent_card_interrupt_scan() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.io.receive.active = true;
+        device.data.push_event(AicEvent::ControlComplete).unwrap();
+
+        assert!(matches!(
+            device.drive_ready(MonotonicTime::from_nanos(0)),
+            AicAction::Event(AicEvent::ControlComplete)
+        ));
+        assert!(device.io.receive.active);
+    }
+
+    #[test]
+    fn transmit_completion_precedes_a_receive_backlog() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        for _ in 0..RX_CAPACITY {
+            device.data.push_event(AicEvent::Receive(vec![0])).unwrap();
+        }
+        device
+            .data
+            .events
+            .push_back(AicEvent::TransmitComplete(TxToken::new(1)));
+
+        assert!(matches!(
+            device.drive_ready(MonotonicTime::default()),
+            AicAction::Event(AicEvent::TransmitComplete(token)) if token == TxToken::new(1)
+        ));
+    }
+
+    #[test]
+    fn receive_event_queue_obeys_item_and_byte_limits() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        for _ in 0..RX_CAPACITY {
+            device
+                .data
+                .push_event(AicEvent::Receive(vec![0; 2048]))
+                .unwrap();
+        }
+        device
+            .data
+            .push_event(AicEvent::Receive(vec![0; 2048]))
+            .unwrap();
+
+        assert_eq!(device.data.events.len(), RX_CAPACITY);
+        assert_eq!(device.data.event_bytes, RX_BYTE_CAPACITY);
+
+        device.data.push_event(AicEvent::ControlComplete).unwrap();
+        assert_eq!(device.data.events.len(), RX_CAPACITY);
+        assert!(
+            device
+                .data
+                .events
+                .iter()
+                .any(|event| matches!(event, AicEvent::ControlComplete))
+        );
+    }
+
+    #[test]
+    fn management_frames_are_not_exposed_as_ethernet_events() {
+        let management = vec![
+            0x80, 0x00, 0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0, 7, 0, 8, 0, 9, 0, 10,
+        ];
+        assert_eq!(decapsulate_data_frames(&management, 0), None);
+    }
+
+    #[test]
+    fn qos_data_mpdu_is_decapsulated_to_ethernet() {
+        let frame = data_mpdu(0x0288, &[1, 2, 3]);
+        let [ethernet] = decapsulate_data_frames(&frame, 0)
+            .expect("valid QoS data")
+            .try_into()
+            .expect("one MSDU");
+        assert_eq!(&ethernet[..6], &[1, 2, 3, 4, 5, 6]);
+        assert_eq!(&ethernet[6..12], &[0x21, 0x22, 0x23, 0x24, 0x25, 0x26]);
+        assert_eq!(&ethernet[12..], &[0x08, 0x00, 1, 2, 3]);
+    }
+
+    #[test]
+    fn qos_amsdu_subframes_are_decapsulated_to_ethernet() {
+        let mut frame = data_mpdu(0x0288, &[]);
+        frame.truncate(26);
+        frame[24] = 0x80;
+        frame.extend_from_slice(&[1, 2, 3, 4, 5, 6]);
+        frame.extend_from_slice(&[0x21, 0x22, 0x23, 0x24, 0x25, 0x26]);
+        frame.extend_from_slice(&11u16.to_be_bytes());
+        frame.extend_from_slice(&[0xaa, 0xaa, 0x03, 0, 0, 0, 0x08, 0x00, 9, 8, 7]);
+        frame.extend_from_slice(&[0; 3]);
+        frame.extend_from_slice(&[6, 5, 4, 3, 2, 1]);
+        frame.extend_from_slice(&[0x26, 0x25, 0x24, 0x23, 0x22, 0x21]);
+        frame.extend_from_slice(&10u16.to_be_bytes());
+        frame.extend_from_slice(&[0xaa, 0xaa, 0x03, 0, 0, 0, 0x86, 0xdd, 6, 5]);
+
+        let ethernet = decapsulate_data_frames(&frame, 0).expect("valid A-MSDU subframes");
+        assert_eq!(
+            ethernet[0],
+            [
+                1, 2, 3, 4, 5, 6, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x08, 0x00, 9, 8, 7
+            ]
+        );
+        assert_eq!(
+            ethernet[1],
+            [
+                6, 5, 4, 3, 2, 1, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21, 0x86, 0xdd, 6, 5
+            ]
+        );
+    }
+
+    #[test]
+    fn encrypted_mpdu_skips_the_ccmp_header_before_llc() {
+        let mut frame = data_mpdu(0x0208, &[9, 8]);
+        let llc = 24;
+        frame.splice(llc..llc, [0, 1, 2, 3, 4, 5, 6, 7]);
+        let [ethernet] = decapsulate_data_frames(&frame, 3)
+            .expect("valid CCMP data")
+            .try_into()
+            .expect("one MSDU");
+        assert_eq!(&ethernet[12..], &[0x08, 0x00, 9, 8]);
+    }
+
+    #[test]
+    fn single_function_profile_is_probed_once_per_card_interrupt() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.request_receive_scan();
+
+        let Some(AicAction::SubmitSdio(count)) = device.drive_receive_scan() else {
+            panic!("expected the shared command/data function count")
+        };
+        assert!(matches!(
+            count.kind,
+            SdioRequestKind::ReadByte { function, .. } if function.get() == 1
+        ));
+        device.io.pending = None;
+        device
+            .consume_receive_count(RxPath::Command, SdioResponse::Byte(0))
+            .unwrap();
+
+        assert!(device.drive_receive_scan().is_none());
+        assert!(!device.io.receive.active);
+    }
+
+    #[test]
+    fn dc_byte_mode_interrupt_reads_the_length_register_before_the_fifo() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+
+        device
+            .consume_receive_count(RxPath::Command, SdioResponse::Byte(64))
+            .unwrap();
+
+        assert!(matches!(
+            device.io.next,
+            Some((
+                IoPurpose::ReceiveByteLength(RxPath::Command),
+            SdioRequestKind::ReadByte { function, address },
+        )) if function.get() == 2 && address.get() == 0x02
+        ));
+    }
+
+    fn ready_transmitter(chip: ChipVariant, frame_len: usize) -> AicDevice {
+        let mut device = AicDevice::new(chip).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.data.link.install_mac([2, 0, 0, 0, 0, 1]).unwrap();
+        device.data.link.install_interface(0).unwrap();
+        device
+            .data
+            .link
+            .install_peer(0, 0, [2, 1, 2, 3, 4, 5])
+            .unwrap();
+        device
+            .data
+            .tx
+            .enqueue(TxToken::new(1), vec![0; frame_len])
+            .unwrap();
+        device
+    }
+
+    #[test]
+    fn transmit_backoff_services_card_irq_without_retrying_credits_early() {
+        let mut device = ready_transmitter(ChipVariant::Aic8800D80, 1414);
+        let now = MonotonicTime::default();
+        let AicAction::SubmitSdio(flow) = device.advance(AicInput::tick(now)) else {
+            panic!("expected credit read")
+        };
+        let wait = device.advance(complete(&flow, SdioResponse::Byte(0), now));
+        let deadline = now.after(IO_RETRY);
+        assert_eq!(wait, AicAction::WaitForInterruptUntil(deadline));
+        let AicAction::SubmitSdio(rx) = device.advance(AicInput {
+            now,
+            event: Some(AicInputEvent::Irq(IrqSnapshot {
+                sequence: 1,
+                card_interrupt: true,
+                transfer_complete: false,
+                error: None,
+            })),
+        }) else {
+            panic!("RX must run during TX backoff")
+        };
+        assert!(matches!(rx.kind, SdioRequestKind::ReadByte { address, .. }
+            if address.get() == device.registers().block_count));
+        assert_eq!(
+            device.advance(complete(&rx, SdioResponse::Byte(0), now)),
+            AicAction::WaitForInterruptUntil(deadline)
+        );
+        let AicAction::SubmitSdio(flow) = device.advance(AicInput::tick(deadline)) else {
+            panic!("credit retry must resume at its original deadline")
+        };
+        let AicAction::SubmitSdio(write) =
+            device.advance(complete(&flow, SdioResponse::Byte(128), deadline))
+        else {
+            panic!("D80 full-byte credit must permit transmission")
+        };
+        assert!(matches!(write.kind, SdioRequestKind::Write { .. }));
+        assert_eq!(
+            device.advance(complete(&write, SdioResponse::Unit, deadline)),
+            AicAction::Event(AicEvent::TransmitComplete(TxToken::new(1)))
+        );
+    }
+
+    #[test]
+    fn dc_data_tx_checks_firmware_credits_before_writing() {
+        let mut device = ready_transmitter(ChipVariant::Aic8800DC, 60);
+        let AicAction::SubmitSdio(request) = device.advance(AicInput {
+            now: MonotonicTime::default(),
+            event: None,
+        }) else {
+            panic!("expected a DC data credit read")
+        };
+        assert!(matches!(request.kind,
+            SdioRequestKind::ReadByte { function, address }
+            if function.get() == 1 && address.get() == 0x0a));
+    }
+
+    #[test]
+    fn data_tx_retains_packet_until_credit_reserve_is_available() {
+        // One full-sized packet consumes one firmware buffer, not three
+        // 512-byte SDIO blocks. Two buffers remain reserved for commands.
+        for chip in [ChipVariant::Aic8800D80, ChipVariant::Aic8800DC] {
+            let mut device = ready_transmitter(chip, 1414);
+            let mut now = MonotonicTime::default();
+            let mut action = device.advance(AicInput { now, event: None });
+            for credits in [0, 1, 2, 3] {
+                let AicAction::SubmitSdio(request) = action else {
+                    panic!("expected a fresh credit read")
+                };
+                assert!(matches!(request.kind, SdioRequestKind::ReadByte { .. }));
+                action = device.advance(AicInput {
+                    now,
+                    event: Some(AicInputEvent::Sdio(SdioCompletion {
+                        request_id: request.id,
+                        result: Ok(SdioResponse::Byte(credits)),
+                    })),
+                });
+                if credits <= 2 {
+                    let AicAction::WaitForInterruptUntil(deadline) = action else {
+                        panic!("data TX must retain the packet while firmware buffers are reserved")
+                    };
+                    assert!(device.data.active_tx.is_some());
+                    assert!(device.data.events.is_empty());
+                    assert!(matches!(
+                        device.advance(AicInput { now, event: None }),
+                        AicAction::WaitForInterruptUntil(_)
+                    ));
+                    now = deadline;
+                    action = device.advance(AicInput { now, event: None });
+                }
+            }
+            let AicAction::SubmitSdio(write) = action else {
+                panic!("three packet credits must permit one full-sized data frame")
+            };
+            assert!(
+                matches!(&write.kind, SdioRequestKind::Write { bytes, .. } if bytes.len() == 1536)
+            );
+            let complete = device.advance(AicInput {
+                now,
+                event: Some(AicInputEvent::Sdio(SdioCompletion {
+                    request_id: write.id,
+                    result: Ok(SdioResponse::Unit),
+                })),
+            });
+            assert!(
+                matches!(complete, AicAction::Event(AicEvent::TransmitComplete(token)) if token == TxToken::new(1))
+            );
+            assert!(device.data.active_tx.is_none());
+            assert!(matches!(
+                device.advance(AicInput { now, event: None }),
+                AicAction::WaitForInterrupt
+            ));
+            let next = device.advance(AicInput {
+                now,
+                event: Some(AicInputEvent::Tx {
+                    token: TxToken::new(2),
+                    frame: vec![0; 60],
+                }),
+            });
+            assert!(
+                matches!(
+                    next,
+                    AicAction::SubmitSdio(SdioRequest {
+                        kind: SdioRequestKind::ReadByte { .. },
+                        ..
+                    })
+                ),
+                "each packet requires a fresh firmware credit check"
+            );
+        }
+    }
+
+    fn complete(request: &SdioRequest, response: SdioResponse, now: MonotonicTime) -> AicInput {
+        AicInput {
+            now,
+            event: Some(AicInputEvent::Sdio(SdioCompletion {
+                request_id: request.id,
+                result: Ok(response),
+            })),
+        }
+    }
+
+    #[test]
+    fn v3_other_interrupt_acknowledges_the_dev_to_host_soft_irq() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.request_receive_scan();
+
+        let AicAction::SubmitSdio(count) =
+            device.advance(AicInput::tick(MonotonicTime::from_nanos(0)))
+        else {
+            panic!("expected the receive count read")
+        };
+        assert!(matches!(
+            count.kind,
+            SdioRequestKind::ReadByte { function, address } if function.get() == 1
+                && address.get() == device.registers().block_count
+        ));
+
+        let AicAction::SubmitSdio(ack) = device.advance(complete(
+            &count,
+            SdioResponse::Byte(0x83),
+            MonotonicTime::from_nanos(1),
+        )) else {
+            panic!("expected the interrupt-pending ack read after an OTHER interrupt")
+        };
+        assert!(matches!(
+            ack.kind,
+            SdioRequestKind::ReadByte { function, address } if function.get() == 1
+                && address.get() == device.registers().sleep_status.expect("v3 sleep status")
+        ));
+
+        let AicAction::SubmitSdio(clear) = device.advance(complete(
+            &ack,
+            SdioResponse::Byte(0x11),
+            MonotonicTime::from_nanos(2),
+        )) else {
+            panic!("expected the soft-irq clear write after the pending read")
+        };
+        assert!(matches!(
+            clear.kind,
+            SdioRequestKind::WriteByte {
+                function,
+                address,
+                value: 0x10,
+                ..
+            } if function.get() == 1
+                && address.get() == device.registers().sleep_status.expect("v3 sleep status")
+        ));
+
+        let _ = device.advance(complete(
+            &clear,
+            SdioResponse::Byte(0x00),
+            MonotonicTime::from_nanos(3),
+        ));
+    }
+
+    #[test]
+    fn v1_receive_counts_never_trigger_the_v3_other_interrupt_ack() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800DC).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.request_receive_scan();
+
+        let AicAction::SubmitSdio(count) =
+            device.advance(AicInput::tick(MonotonicTime::from_nanos(0)))
+        else {
+            panic!("expected the receive count read")
+        };
+        let AicAction::SubmitSdio(next) = device.advance(complete(
+            &count,
+            SdioResponse::Byte(0x83),
+            MonotonicTime::from_nanos(1),
+        )) else {
+            panic!("expected the byte-mode length read")
+        };
+        assert!(matches!(
+            next.kind,
+            SdioRequestKind::ReadByte { address, .. } if address.get() == device.registers().byte_mode_length
+        ));
+    }
+
+    #[test]
+    fn v3_other_ack_re_reads_the_same_path_count_until_empty() {
+        let mut device = AicDevice::new(ChipVariant::Aic8800D80).unwrap();
+        device.lifecycle.state = AicState::Ready;
+        device.request_receive_scan();
+
+        let AicAction::SubmitSdio(count) =
+            device.advance(AicInput::tick(MonotonicTime::from_nanos(0)))
+        else {
+            panic!("expected the receive count read")
+        };
+        let AicAction::SubmitSdio(ack) = device.advance(complete(
+            &count,
+            SdioResponse::Byte(0x83),
+            MonotonicTime::from_nanos(1),
+        )) else {
+            panic!("expected the interrupt-pending ack read")
+        };
+        let AicAction::SubmitSdio(clear) = device.advance(complete(
+            &ack,
+            SdioResponse::Byte(0x11),
+            MonotonicTime::from_nanos(2),
+        )) else {
+            panic!("expected the soft-irq clear write")
+        };
+        // The vendor D80 handler re-reads the interrupt status after the soft
+        // IRQ acknowledgement; the scan must stay on the same path instead of
+        // advancing so queued data is drained before the scan ends.
+        let AicAction::SubmitSdio(recount) = device.advance(complete(
+            &clear,
+            SdioResponse::Byte(0x00),
+            MonotonicTime::from_nanos(3),
+        )) else {
+            panic!("expected the same-path count re-read after the soft IRQ acknowledgement")
+        };
+        assert!(matches!(
+            recount.kind,
+            SdioRequestKind::ReadByte { address, .. } if address.get()
+                == device.registers().block_count
+        ));
+    }
+}

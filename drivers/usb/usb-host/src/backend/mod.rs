@@ -1,13 +1,11 @@
 use alloc::boxed::Box;
-#[cfg(any(kmod, umod))]
-use alloc::vec::Vec;
 use core::any::Any;
 
 use futures::future::{BoxFuture, LocalBoxFuture};
 use usb_if::err::USBError;
 
 #[cfg(any(kmod, umod))]
-use crate::backend::ty::ProbedDeviceInfoOp;
+use crate::backend::ty::ProbeChangesOp;
 use crate::backend::ty::{DeviceInfoOp, DeviceOp};
 
 #[cfg(umod)]
@@ -40,7 +38,7 @@ pub(crate) trait BackendOp: Send + Any + 'static {
 
     #[cfg(any(kmod, umod))]
     /// 探测已连接的设备
-    fn device_list<'a>(&'a mut self) -> BoxFuture<'a, Result<Vec<ProbedDeviceInfoOp>, USBError>>;
+    fn device_list<'a>(&'a mut self) -> BoxFuture<'a, Result<ProbeChangesOp, USBError>>;
 
     fn open_device<'a>(
         &'a mut self,

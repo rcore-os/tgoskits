@@ -22,27 +22,27 @@ pub enum CpuLocalError {
         /// Architecture-specific live exception level.
         level: usize,
     },
-    /// The CPU runtime slot and architecture current-thread register disagree.
-    #[error("current-thread register and CPU runtime slot disagree")]
-    CurrentThreadMismatch,
+    /// The selected current-context source does not identify a valid context.
+    #[error("current-context source does not identify this CPU's execution context")]
+    CurrentContextMismatch,
 }
 
-/// Failure while preparing or completing a scheduler thread switch.
+/// Failure while preparing or completing an execution-context switch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum ThreadSwitchError {
+pub enum ContextSwitchError {
     /// CPU-local state could not be validated.
     #[error(transparent)]
     CpuLocal(#[from] CpuLocalError),
-    /// The outgoing header is not the thread currently published on this CPU.
-    #[error("outgoing task does not match the published current thread")]
-    CurrentThreadMismatch,
-    /// The incoming switch tail was paired with another previous task.
-    #[error("previous-task token does not match the supplied task header")]
-    PreviousThreadMismatch,
-    /// The next task is already running or is in another binding transition.
-    #[error("next task is already bound to a CPU")]
-    NextThreadAlreadyBound,
+    /// The outgoing header is not the context currently selected on this CPU.
+    #[error("outgoing context does not match the selected current context")]
+    CurrentContextMismatch,
+    /// The switch tail was paired with another previous context.
+    #[error("previous-context token does not match the supplied context header")]
+    PreviousContextMismatch,
+    /// The next context is already running or is in another binding transition.
+    #[error("next context is already bound to a CPU")]
+    NextContextAlreadyBound,
     /// The incoming switch tail attempted to consume an obsolete binding epoch.
-    #[error("previous-task binding epoch is stale")]
+    #[error("previous-context binding epoch is stale")]
     StalePreviousBinding,
 }

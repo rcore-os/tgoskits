@@ -1,0 +1,52 @@
+[package]
+name = "aic8800"
+version = "0.3.2"
+edition = "2024"
+license = "Apache-2.0"
+repository.workspace = true
+description = "OS-independent AIC8800 Wi-Fi driver core"
+# Vendor firmware blobs are not vendored into git or the package tarball; the
+# build script provisions them into OUT_DIR (from $AIC8800_FIRMWARE_DIR, the
+# optional in-tree `firmware/` cache, or the pinned upstream source) and
+# verifies each against its SHA-256. The leading slash restricts the exclusion
+# to the package-root firmware cache; source modules remain packaged.
+exclude = ["/firmware/"]
+
+[features]
+default = []
+host-test = []
+rdif = [
+    "dep:dma-api",
+    "dep:rdif-eth",
+    "dep:ringbuf",
+    "dep:sdmmc-host",
+]
+
+[[test]]
+name = "std"
+path = "tests/std.rs"
+required-features = ["host-test"]
+
+[[test]]
+name = "rdif"
+path = "tests/rdif.rs"
+required-features = ["host-test", "rdif"]
+
+[build-dependencies]
+ureq = "3"
+sha2 = "0.10"
+
+[dependencies]
+aes-kw.workspace = true
+dma-api = { workspace = true, optional = true }
+hmac.workspace = true
+log = { workspace = true }
+rdif-eth = { workspace = true, optional = true }
+ringbuf = { version = "0.4", default-features = false, features = ["alloc"], optional = true }
+sdmmc-host = { workspace = true, optional = true }
+sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio"] }
+sha1.workspace = true
+subtle.workspace = true
+thiserror = { workspace = true }
+tock-registers = { workspace = true }
+zeroize.workspace = true

@@ -1,136 +1,234 @@
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::{
     ffi::{c_char, c_int, c_void},
     mem::size_of,
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
 };
 
-use ax_errno::{LinuxError, LinuxResult};
 use ax_io::PollState;
 use ax_net::{
-    RecvOptions, SendOptions, Shutdown, SocketAddrEx, SocketOps,
+    ConnectStatus, NetError, RecvOptions, SendOptions, Shutdown, SocketAddrEx, SocketOps,
+    SocketWaitPolicy,
     options::{Configurable, SetSocketOption},
+    poll_socket_io,
     tcp::TcpSocket,
     udp::UdpSocket,
 };
-use ax_sync::Mutex;
 use axpoll::{IoEvents, Pollable};
 
 use super::fd_ops::FileLike;
-use crate::{ctypes, utils::char_ptr_to_str};
+use crate::{PosixError, PosixResult, ctypes, utils::char_ptr_to_str};
 
 pub enum Socket {
-    Udp(Mutex<UdpSocket>),
-    Tcp(Mutex<TcpSocket>),
+    Udp(Box<UdpSocket>),
+    Tcp(Box<TcpSocket>),
 }
 
 impl Socket {
-    fn add_to_fd_table(self) -> LinuxResult<c_int> {
+    fn add_to_fd_table(self) -> PosixResult<c_int> {
         super::fd_ops::add_file_like(Arc::new(self))
     }
 
-    fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>> {
+    fn from_fd(fd: c_int) -> PosixResult<Arc<Self>> {
         let f = super::fd_ops::get_file_like(fd)?;
         f.into_any()
             .downcast::<Self>()
-            .map_err(|_| LinuxError::EINVAL)
+            .map_err(|_| PosixError::EINVAL)
     }
 
-    fn send(&self, buf: &[u8]) -> LinuxResult<usize> {
+    fn send(&self, buf: &[u8]) -> PosixResult<usize> {
         match self {
-            Socket::Udp(udpsocket) => Ok(udpsocket.lock().send(buf, SendOptions::default())?),
-            Socket::Tcp(tcpsocket) => Ok(tcpsocket.lock().send(buf, SendOptions::default())?),
+            Socket::Udp(socket) => {
+                let src = buf;
+                let mut options = SendOptions::default();
+                let policy = socket.send_wait_policy(false)?;
+                wait_socket_io(
+                    socket.as_ref(),
+                    IoEvents::OUT,
+                    policy,
+                    NetError::WouldBlock,
+                    || socket.try_send(src, &mut options),
+                )
+            }
+            Socket::Tcp(socket) => {
+                let src = buf;
+                let mut options = SendOptions::default();
+                let policy = socket.send_wait_policy(false)?;
+                wait_socket_io(
+                    socket.as_ref(),
+                    IoEvents::OUT,
+                    policy,
+                    NetError::WouldBlock,
+                    || socket.try_send(src, &mut options),
+                )
+            }
         }
     }
 
-    fn recv(&self, buf: &mut [u8]) -> LinuxResult<usize> {
+    fn recv(&self, buf: &mut [u8]) -> PosixResult<usize> {
         match self {
-            Socket::Udp(udpsocket) => Ok(udpsocket.lock().recv(buf, RecvOptions::default())?),
-            Socket::Tcp(tcpsocket) => Ok(tcpsocket.lock().recv(buf, RecvOptions::default())?),
+            Socket::Udp(socket) => {
+                let mut dst = buf;
+                let mut options = RecvOptions::default();
+                let policy = socket.recv_wait_policy(false)?;
+                wait_socket_io(
+                    socket.as_ref(),
+                    IoEvents::IN,
+                    policy,
+                    NetError::WouldBlock,
+                    || socket.try_recv(&mut dst, &mut options),
+                )
+            }
+            Socket::Tcp(socket) => {
+                let mut dst = buf;
+                let mut options = RecvOptions::default();
+                let policy = socket.recv_wait_policy(false)?;
+                wait_socket_io(
+                    socket.as_ref(),
+                    IoEvents::IN,
+                    policy,
+                    NetError::WouldBlock,
+                    || socket.try_recv(&mut dst, &mut options),
+                )
+            }
         }
     }
 
-    pub fn poll(&self) -> LinuxResult<PollState> {
+    pub fn poll(&self) -> PosixResult<PollState> {
         match self {
-            Socket::Udp(udpsocket) => Ok(poll_state(udpsocket.lock().poll())),
-            Socket::Tcp(tcpsocket) => Ok(poll_state(tcpsocket.lock().poll())),
+            Socket::Udp(socket) => Ok(poll_state(socket.poll(), socket.readiness_version())),
+            Socket::Tcp(socket) => Ok(poll_state(socket.poll(), socket.readiness_version())),
         }
     }
 
-    fn local_addr(&self) -> LinuxResult<SocketAddr> {
+    fn local_addr(&self) -> PosixResult<SocketAddr> {
         match self {
-            Socket::Udp(udpsocket) => Ok(into_ip_addr(udpsocket.lock().local_addr()?)?),
-            Socket::Tcp(tcpsocket) => Ok(into_ip_addr(tcpsocket.lock().local_addr()?)?),
+            Socket::Udp(socket) => Ok(into_ip_addr(socket.local_addr()?)?),
+            Socket::Tcp(socket) => Ok(into_ip_addr(socket.local_addr()?)?),
         }
     }
 
-    fn peer_addr(&self) -> LinuxResult<SocketAddr> {
+    fn peer_addr(&self) -> PosixResult<SocketAddr> {
         match self {
-            Socket::Udp(udpsocket) => Ok(into_ip_addr(udpsocket.lock().peer_addr()?)?),
-            Socket::Tcp(tcpsocket) => Ok(into_ip_addr(tcpsocket.lock().peer_addr()?)?),
+            Socket::Udp(socket) => Ok(into_ip_addr(socket.peer_addr()?)?),
+            Socket::Tcp(socket) => Ok(into_ip_addr(socket.peer_addr()?)?),
         }
     }
 
-    fn bind(&self, addr: SocketAddr) -> LinuxResult {
+    fn bind(&self, addr: SocketAddr) -> PosixResult {
         match self {
-            Socket::Udp(udpsocket) => Ok(udpsocket.lock().bind(SocketAddrEx::Ip(addr))?),
-            Socket::Tcp(tcpsocket) => Ok(tcpsocket.lock().bind(SocketAddrEx::Ip(addr))?),
+            Socket::Udp(socket) => Ok(socket.bind(SocketAddrEx::Ip(addr))?),
+            Socket::Tcp(socket) => Ok(socket.bind(SocketAddrEx::Ip(addr))?),
         }
     }
 
-    fn connect(&self, addr: SocketAddr) -> LinuxResult {
+    fn connect(&self, addr: SocketAddr) -> PosixResult {
         match self {
-            Socket::Udp(udpsocket) => Ok(udpsocket.lock().connect(SocketAddrEx::Ip(addr))?),
-            Socket::Tcp(tcpsocket) => Ok(tcpsocket.lock().connect(SocketAddrEx::Ip(addr))?),
+            Socket::Udp(socket) => {
+                let status = socket.start_connect(SocketAddrEx::Ip(addr))?;
+                debug_assert_eq!(status, ConnectStatus::Connected);
+                Ok(())
+            }
+            Socket::Tcp(socket) => {
+                let policy = socket.send_wait_policy(false)?;
+                match socket.start_connect(SocketAddrEx::Ip(addr))? {
+                    ConnectStatus::Connected => Ok(()),
+                    ConnectStatus::InProgress if policy.nonblocking => {
+                        Err(NetError::InProgress.into())
+                    }
+                    ConnectStatus::InProgress => wait_socket_io(
+                        socket.as_ref(),
+                        IoEvents::OUT,
+                        policy,
+                        NetError::TimedOut,
+                        || match socket.connect_status()? {
+                            ConnectStatus::Connected => Ok(()),
+                            ConnectStatus::InProgress => Err(NetError::WouldBlock),
+                        },
+                    ),
+                }
+            }
         }
     }
 
-    fn sendto(&self, buf: &[u8], addr: SocketAddr) -> LinuxResult<usize> {
+    fn sendto(&self, buf: &[u8], addr: SocketAddr) -> PosixResult<usize> {
         match self {
             // diff: must bind before sendto
-            Socket::Udp(udpsocket) => Ok(udpsocket.lock().send(
-                buf,
-                SendOptions {
+            Socket::Udp(socket) => {
+                let src = buf;
+                let mut options = SendOptions {
                     to: Some(SocketAddrEx::Ip(addr)),
                     ..SendOptions::default()
-                },
-            )?),
-            Socket::Tcp(_) => Err(LinuxError::EISCONN),
+                };
+                let policy = socket.send_wait_policy(false)?;
+                wait_socket_io(
+                    socket.as_ref(),
+                    IoEvents::OUT,
+                    policy,
+                    NetError::WouldBlock,
+                    || socket.try_send(src, &mut options),
+                )
+            }
+            Socket::Tcp(_) => Err(PosixError::EISCONN),
         }
     }
 
-    fn recvfrom(&self, buf: &mut [u8]) -> LinuxResult<(usize, Option<SocketAddr>)> {
+    fn recvfrom(&self, buf: &mut [u8]) -> PosixResult<(usize, Option<SocketAddr>)> {
         match self {
             // diff: must bind before recvfrom
-            Socket::Udp(udpsocket) => {
+            Socket::Udp(socket) => {
                 let mut from = SocketAddrEx::Ip(SocketAddr::from(([0, 0, 0, 0], 0)));
-                let len = udpsocket.lock().recv(
-                    buf,
-                    RecvOptions {
-                        from: Some(&mut from),
-                        ..RecvOptions::default()
-                    },
+                let mut dst = buf;
+                let mut options = RecvOptions {
+                    from: Some(&mut from),
+                    ..RecvOptions::default()
+                };
+                let policy = socket.recv_wait_policy(false)?;
+                let len = wait_socket_io(
+                    socket.as_ref(),
+                    IoEvents::IN,
+                    policy,
+                    NetError::WouldBlock,
+                    || socket.try_recv(&mut dst, &mut options),
                 )?;
                 Ok((len, Some(into_ip_addr(from)?)))
             }
-            Socket::Tcp(tcpsocket) => {
-                Ok((tcpsocket.lock().recv(buf, RecvOptions::default())?, None))
+            Socket::Tcp(socket) => {
+                let mut dst = buf;
+                let mut options = RecvOptions::default();
+                let policy = socket.recv_wait_policy(false)?;
+                let len = wait_socket_io(
+                    socket.as_ref(),
+                    IoEvents::IN,
+                    policy,
+                    NetError::WouldBlock,
+                    || socket.try_recv(&mut dst, &mut options),
+                )?;
+                Ok((len, None))
             }
         }
     }
 
-    fn listen(&self, backlog: usize) -> LinuxResult {
+    fn listen(&self, backlog: usize) -> PosixResult {
         match self {
-            Socket::Udp(_) => Err(LinuxError::EOPNOTSUPP),
-            Socket::Tcp(tcpsocket) => Ok(tcpsocket.lock().listen(backlog)?),
+            Socket::Udp(_) => Err(PosixError::EOPNOTSUPP),
+            Socket::Tcp(socket) => Ok(socket.listen(backlog)?),
         }
     }
 
-    fn accept(&self) -> LinuxResult<TcpSocket> {
+    fn accept(&self) -> PosixResult<TcpSocket> {
         match self {
-            Socket::Udp(_) => Err(LinuxError::EOPNOTSUPP),
-            Socket::Tcp(tcpsocket) => {
-                let ax_net::Socket::Tcp(socket) = tcpsocket.lock().accept()? else {
+            Socket::Udp(_) => Err(PosixError::EOPNOTSUPP),
+            Socket::Tcp(listener) => {
+                let policy = listener.recv_wait_policy(false)?;
+                let accepted = wait_socket_io(
+                    listener.as_ref(),
+                    IoEvents::IN,
+                    policy,
+                    NetError::WouldBlock,
+                    || listener.try_accept(),
+                )?;
+                let ax_net::Socket::Tcp(socket) = accepted else {
                     unreachable!("TCP listener accepted a non-TCP socket");
                 };
                 Ok(*socket)
@@ -138,46 +236,40 @@ impl Socket {
         }
     }
 
-    fn shutdown(&self) -> LinuxResult {
+    fn shutdown(&self) -> PosixResult {
         match self {
-            Socket::Udp(udpsocket) => {
-                let udpsocket = udpsocket.lock();
-                udpsocket.peer_addr()?;
-                udpsocket.shutdown(Shutdown::Both)?;
+            Socket::Udp(socket) => {
+                socket.peer_addr()?;
+                socket.shutdown(Shutdown::Both)?;
                 Ok(())
             }
 
-            Socket::Tcp(tcpsocket) => {
-                let tcpsocket = tcpsocket.lock();
-                tcpsocket.peer_addr()?;
-                tcpsocket.shutdown(Shutdown::Both)?;
+            Socket::Tcp(socket) => {
+                socket.peer_addr()?;
+                socket.shutdown(Shutdown::Both)?;
                 Ok(())
             }
         }
     }
 
-    fn set_reuseaddr(&self, reuse: bool) -> LinuxResult {
+    fn set_reuseaddr(&self, reuse: bool) -> PosixResult {
         match self {
-            Socket::Udp(udpsocket) => Ok(udpsocket
-                .lock()
-                .set_option(SetSocketOption::ReuseAddress(&reuse))?),
-            Socket::Tcp(tcpsocket) => Ok(tcpsocket
-                .lock()
-                .set_option(SetSocketOption::ReuseAddress(&reuse))?),
+            Socket::Udp(socket) => Ok(socket.set_option(SetSocketOption::ReuseAddress(&reuse))?),
+            Socket::Tcp(socket) => Ok(socket.set_option(SetSocketOption::ReuseAddress(&reuse))?),
         }
     }
 }
 
 impl FileLike for Socket {
-    fn read(&self, buf: &mut [u8]) -> LinuxResult<usize> {
+    fn read(&self, buf: &mut [u8]) -> PosixResult<usize> {
         self.recv(buf)
     }
 
-    fn write(&self, buf: &[u8]) -> LinuxResult<usize> {
+    fn write(&self, buf: &[u8]) -> PosixResult<usize> {
         self.send(buf)
     }
 
-    fn stat(&self) -> LinuxResult<ctypes::stat> {
+    fn stat(&self) -> PosixResult<ctypes::stat> {
         // not really implemented
         let st_mode = 0o140000 | 0o777u32; // S_IFSOCK | rwxrwxrwx
         Ok(ctypes::stat {
@@ -195,18 +287,14 @@ impl FileLike for Socket {
         self
     }
 
-    fn poll(&self) -> LinuxResult<PollState> {
+    fn poll(&self) -> PosixResult<PollState> {
         self.poll()
     }
 
-    fn set_nonblocking(&self, nonblock: bool) -> LinuxResult {
+    fn set_nonblocking(&self, nonblock: bool) -> PosixResult {
         match self {
-            Socket::Udp(udpsocket) => Ok(udpsocket
-                .lock()
-                .set_option(SetSocketOption::NonBlocking(&nonblock))?),
-            Socket::Tcp(tcpsocket) => Ok(tcpsocket
-                .lock()
-                .set_option(SetSocketOption::NonBlocking(&nonblock))?),
+            Socket::Udp(socket) => Ok(socket.set_option(SetSocketOption::NonBlocking(&nonblock))?),
+            Socket::Tcp(socket) => Ok(socket.set_option(SetSocketOption::NonBlocking(&nonblock))?),
         }
     }
 }
@@ -227,15 +315,49 @@ impl From<SocketAddrV4> for ctypes::sockaddr_in {
     }
 }
 
-fn into_ip_addr(addr: SocketAddrEx) -> LinuxResult<SocketAddr> {
+fn into_ip_addr(addr: SocketAddrEx) -> PosixResult<SocketAddr> {
     Ok(addr.into_ip()?)
 }
 
-fn poll_state(events: IoEvents) -> PollState {
+fn poll_state(events: IoEvents, readiness_version: u64) -> PollState {
     PollState {
         readable: events.intersects(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP),
         writable: events.contains(IoEvents::OUT),
-        readiness_version: 0,
+        read_readiness_version: readiness_version,
+        write_readiness_version: readiness_version,
+    }
+}
+
+fn wait_socket_io<P, F, T>(
+    pollable: &P,
+    events: IoEvents,
+    policy: SocketWaitPolicy,
+    timeout_error: NetError,
+    mut operation: F,
+) -> PosixResult<T>
+where
+    P: Pollable + ?Sized,
+    F: FnMut() -> ax_net::NetResult<T>,
+{
+    if policy.nonblocking {
+        return Ok(ax_runtime::task::executor::block_on(poll_socket_io(
+            pollable,
+            events,
+            true,
+            &mut operation,
+        ))?);
+    }
+    match policy.timeout {
+        Some(timeout) => match ax_runtime::task::executor::block_on_timeout(
+            timeout,
+            poll_socket_io(pollable, events, false, &mut operation),
+        ) {
+            Ok(result) => Ok(result?),
+            Err(_) => Err(timeout_error.into()),
+        },
+        None => Ok(ax_runtime::task::executor::block_on(poll_socket_io(
+            pollable, events, false, operation,
+        ))?),
     }
 }
 
@@ -262,17 +384,17 @@ fn into_sockaddr(addr: SocketAddr) -> (ctypes::sockaddr, ctypes::socklen_t) {
 fn from_sockaddr(
     addr: *const ctypes::sockaddr,
     addrlen: ctypes::socklen_t,
-) -> LinuxResult<SocketAddr> {
+) -> PosixResult<SocketAddr> {
     if addr.is_null() {
-        return Err(LinuxError::EFAULT);
+        return Err(PosixError::EFAULT);
     }
     if addrlen != size_of::<ctypes::sockaddr>() as _ {
-        return Err(LinuxError::EINVAL);
+        return Err(PosixError::EINVAL);
     }
 
     let mid = unsafe { *(addr as *const ctypes::sockaddr_in) };
     if mid.sin_family != ctypes::AF_INET as _ {
-        return Err(LinuxError::EINVAL);
+        return Err(PosixError::EINVAL);
     }
 
     let res = SocketAddr::V4(mid.into());
@@ -290,13 +412,13 @@ pub fn sys_socket(domain: c_int, socktype: c_int, protocol: c_int) -> c_int {
         match (domain, socktype, protocol) {
             (ctypes::AF_INET, ctypes::SOCK_STREAM, ctypes::IPPROTO_TCP)
             | (ctypes::AF_INET, ctypes::SOCK_STREAM, 0) => {
-                Socket::Tcp(Mutex::new(TcpSocket::new())).add_to_fd_table()
+                Socket::Tcp(Box::new(TcpSocket::new())).add_to_fd_table()
             }
             (ctypes::AF_INET, ctypes::SOCK_DGRAM, ctypes::IPPROTO_UDP)
             | (ctypes::AF_INET, ctypes::SOCK_DGRAM, 0) => {
-                Socket::Udp(Mutex::new(UdpSocket::new())).add_to_fd_table()
+                Socket::Udp(Box::new(UdpSocket::new())).add_to_fd_table()
             }
-            _ => Err(LinuxError::EINVAL),
+            _ => Err(PosixError::EINVAL),
         }
     })
 }
@@ -356,7 +478,7 @@ pub fn sys_sendto(
     );
     syscall_body!(sys_sendto, {
         if buf_ptr.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(PosixError::EFAULT);
         }
         let addr = from_sockaddr(socket_addr, addrlen)?;
         let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len) };
@@ -379,7 +501,7 @@ pub fn sys_send(
     );
     syscall_body!(sys_send, {
         if buf_ptr.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(PosixError::EFAULT);
         }
         let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len) };
         Socket::from_fd(socket_fd)?.send(buf)
@@ -403,7 +525,7 @@ pub unsafe fn sys_recvfrom(
     );
     syscall_body!(sys_recvfrom, {
         if buf_ptr.is_null() || socket_addr.is_null() || addrlen.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(PosixError::EFAULT);
         }
         let socket = Socket::from_fd(socket_fd)?;
         let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
@@ -433,7 +555,7 @@ pub fn sys_recv(
     );
     syscall_body!(sys_recv, {
         if buf_ptr.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(PosixError::EFAULT);
         }
         let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
         Socket::from_fd(socket_fd)?.recv(buf)
@@ -447,7 +569,7 @@ pub fn sys_listen(socket_fd: c_int, backlog: c_int) -> c_int {
     debug!("sys_listen <= {socket_fd} {backlog}");
     syscall_body!(sys_listen, {
         if backlog < 0 && backlog != -1 {
-            return Err(LinuxError::EINVAL);
+            return Err(PosixError::EINVAL);
         }
         Socket::from_fd(socket_fd)?.listen(backlog as usize)?;
         Ok(0)
@@ -468,12 +590,12 @@ pub unsafe fn sys_accept(
     );
     syscall_body!(sys_accept, {
         if socket_addr.is_null() || socket_len.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(PosixError::EFAULT);
         }
         let socket = Socket::from_fd(socket_fd)?;
         let new_socket = socket.accept()?;
         let addr = into_ip_addr(new_socket.peer_addr()?)?;
-        let new_fd = Socket::add_to_fd_table(Socket::Tcp(Mutex::new(new_socket)))?;
+        let new_fd = Socket::add_to_fd_table(Socket::Tcp(Box::new(new_socket)))?;
         unsafe {
             (*socket_addr, *socket_len) = into_sockaddr(addr);
         }
@@ -515,7 +637,7 @@ pub unsafe fn sys_getaddrinfo(
             return Ok(0);
         }
         if res.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(PosixError::EFAULT);
         }
 
         let port = port.map_or(0, |p| p.parse::<u16>().unwrap_or(0));
@@ -597,10 +719,10 @@ pub unsafe fn sys_getsockname(
     );
     syscall_body!(sys_getsockname, {
         if addr.is_null() || addrlen.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(PosixError::EFAULT);
         }
         if unsafe { *addrlen } < size_of::<ctypes::sockaddr>() as u32 {
-            return Err(LinuxError::EINVAL);
+            return Err(PosixError::EINVAL);
         }
         unsafe {
             (*addr, *addrlen) = into_sockaddr(Socket::from_fd(sock_fd)?.local_addr()?);
@@ -621,10 +743,10 @@ pub unsafe fn sys_getpeername(
     );
     syscall_body!(sys_getpeername, {
         if addr.is_null() || addrlen.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(PosixError::EFAULT);
         }
         if unsafe { *addrlen } < size_of::<ctypes::sockaddr>() as u32 {
-            return Err(LinuxError::EINVAL);
+            return Err(PosixError::EINVAL);
         }
         unsafe {
             (*addr, *addrlen) = into_sockaddr(Socket::from_fd(sock_fd)?.peer_addr()?);
@@ -646,14 +768,14 @@ pub unsafe fn sys_setsockopt(
     );
     syscall_body!(sys_setsockopt, {
         if optval.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(PosixError::EFAULT);
         }
         let _socket = Socket::from_fd(socket_fd)?;
         if level == ctypes::SOL_SOCKET as _ {
             match optname as _ {
                 ctypes::SO_REUSEADDR => {
                     if optlen < size_of::<c_int>() as u32 {
-                        return Err(LinuxError::EINVAL);
+                        return Err(PosixError::EINVAL);
                     }
                     let flag = unsafe { *(optval as *const c_int) };
                     _socket.set_reuseaddr(flag != 0)?;
@@ -687,7 +809,7 @@ pub unsafe fn sys_setsockopt(
                         "sys_setsockopt: unsupported SOL_SOCKET option {:#x}",
                         optname
                     );
-                    Err(LinuxError::ENOPROTOOPT)
+                    Err(PosixError::ENOPROTOOPT)
                 }
             }
         } else if level == ctypes::IPPROTO_TCP as _ {
@@ -704,7 +826,7 @@ pub unsafe fn sys_setsockopt(
                         "sys_setsockopt: unsupported IPPROTO_TCP option {:#x}",
                         optname
                     );
-                    Err(LinuxError::ENOPROTOOPT)
+                    Err(PosixError::ENOPROTOOPT)
                 }
             }
         } else {
@@ -712,7 +834,21 @@ pub unsafe fn sys_setsockopt(
                 "sys_setsockopt: unsupported level {} option {:#x}",
                 level, optname
             );
-            Err(LinuxError::ENOPROTOOPT)
+            Err(PosixError::ENOPROTOOPT)
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn socket_poll_state_preserves_readiness_generation() {
+        let state = poll_state(IoEvents::IN, 7);
+
+        assert!(state.readable);
+        assert_eq!(state.read_readiness_version, 7);
+        assert_eq!(state.write_readiness_version, 7);
+    }
 }

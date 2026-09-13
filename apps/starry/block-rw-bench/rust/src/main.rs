@@ -139,8 +139,7 @@ fn run() -> io::Result<()> {
     fs::create_dir_all(dir)?;
     let diskstats = verify_root_device(&config)?;
     println!(
-        "block-rw-bench: io_model=buffered-file write_scope=write-syscalls fsync={} \
-         drop_caches={}",
+        "block-rw-bench: io_model=buffered-file write_scope=write-syscalls fsync={} drop_caches={}",
         config.fsync,
         env::var_os(DROP_CACHES_ENV).is_some()
     );
@@ -161,13 +160,7 @@ fn run() -> io::Result<()> {
             case.name, case.io_size, config.sequential_bytes
         );
         io::stdout().flush()?;
-        run_case(
-            dir,
-            case,
-            config.sequential_bytes,
-            config.fsync,
-            &diskstats,
-        )?;
+        run_case(dir, case, config.sequential_bytes, config.fsync, &diskstats)?;
     }
     println!(
         "block-rw-bench: start case=multitask tasks={} io_size={} bytes_per_task={}",
@@ -212,13 +205,21 @@ fn verify_root_device(config: &BenchConfig) -> io::Result<DiskstatsProbe> {
 }
 
 fn root_device_matches(root_source: &str, expected: &str) -> bool {
-    root_source == expected
-        || root_source
-            .strip_prefix(expected)
-            .and_then(|suffix| suffix.strip_prefix('p'))
-            .is_some_and(|partition| {
-                !partition.is_empty() && partition.bytes().all(|byte| byte.is_ascii_digit())
-            })
+    if root_source == expected {
+        return true;
+    }
+
+    let Some(suffix) = root_source.strip_prefix(expected) else {
+        return false;
+    };
+    let partition = if expected.as_bytes().last().is_some_and(u8::is_ascii_digit) {
+        suffix.strip_prefix('p')
+    } else {
+        Some(suffix)
+    };
+    partition.is_some_and(|partition| {
+        !partition.is_empty() && partition.bytes().all(|byte| byte.is_ascii_digit())
+    })
 }
 
 fn run_case(
@@ -487,5 +488,16 @@ mod tests {
         assert!(!root_device_matches("/dev/mmcblk0p", "/dev/mmcblk0"));
         assert!(!root_device_matches("/dev/mmcblk0p2x", "/dev/mmcblk0"));
         assert!(!root_device_matches("/dev/nvme0n1p2", "/dev/mmcblk0"));
+    }
+
+    #[test]
+    fn root_device_match_accepts_only_numeric_scsi_partition_suffixes() {
+        assert!(root_device_matches("/dev/sda", "/dev/sda"));
+        assert!(root_device_matches("/dev/sda1", "/dev/sda"));
+        assert!(root_device_matches("/dev/sda12", "/dev/sda"));
+        assert!(!root_device_matches("/dev/sdaa", "/dev/sda"));
+        assert!(!root_device_matches("/dev/sda1x", "/dev/sda"));
+        assert!(!root_device_matches("/dev/sdap1", "/dev/sda"));
+        assert!(!root_device_matches("/dev/sdb1", "/dev/sda"));
     }
 }

@@ -1,7 +1,7 @@
 //! Host IRQ facade for AxVM runtime glue.
 
 #[cfg(test)]
-use core::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_std::os::arceos::modules::ax_hal::irq as host_irq;
 

@@ -24,15 +24,14 @@ dynamic  = true
 | feature | 默认 | 启用的能力 |
 | --- | --- | --- |
 | `smp` | ✓ | 多核 boot；转发到 `ax-plat/smp` |
-| `irq` | ✓ | IRQ 接口；转发到 `ax-plat/irq` |
 | `rtc` | ✗ | LoongArch RTC epoch offset 初始化 |
 | `efi` | ✗ | `somehal/efi` → UEFI 启动路径 |
 | `fp-simd` | ✗ | `ax-cpu/fp-simd`，aarch64/loongarch64 启用 FP/SIMD |
 | `uspace` | ✗ | `somehal/uspace` + 用户态地址空间 |
-| `hv` | ✗ | `somehal/hv`；AArch64 目标再选择 `ax-cpu/arm-el2`，hypervisor 模式 |
-| `thead-mae` | ✗ | T-Head 扩展；`somehal/thead-mae` + `ax-cpu/xuantie-c9xx` |
+| `hv` | ✗ | `somehal/hv`；AArch64 平台交接到 EL2，`ax-hal::KernelMmu` 选择 `ax_cpu::mmu::El2` |
+| `thead-mae` | ✗ | T-Head 扩展；`somehal/thead-mae` + `ax-cpu/riscv-thead-mae` |
 
-依赖：`anyhow`、`ax-cpu`、`cpu-local`、`ax-driver`、`ax-errno`、`axklib`（`buddy-slab`）、`ax-plat`、`heapless`、`log`、`ax-memory-addr`、`ax-percpu`、`rdrive`、`someboot`、`somehal`、`spin`。
+依赖：`anyhow`、`ax-cpu`、`cpu-local`、`ax-driver`、`ax-lazyinit`、`axklib`（`buddy-slab`）、`ax-plat`、`heapless`、`log`、`ax-memory-addr`、`ax-percpu`、`rdrive`、`someboot`、`somehal`、`thiserror`。
 
 ## lib.rs 总览
 
@@ -52,7 +51,6 @@ mod console;
 pub mod drivers;
 mod generic_timer;
 mod init;
-#[cfg(feature = "irq")]
 mod irq;
 mod mem;
 mod platform;
@@ -61,15 +59,13 @@ mod power;
 pub use boot::{boot_stack_bounds, bootargs};
 pub use generic_timer::try_init_epoch_offset;
 
-#[cfg(feature = "irq")]
 pub fn enable_timer_irq() { somehal::timer::irq_enable(); }
 
-#[cfg(feature = "irq")]
 pub fn ipi_irq() -> ax_plat::irq::IrqId { somehal::irq::ipi_irq() }
-
-#[cfg(all(feature = "irq", target_arch = "riscv64", feature = "hv"))]
-pub use irq::register_virtual_irq_injector;
 ```
+
+IRQ 是动态平台的基础契约，不再出现在 feature 表中。四个真实架构后端都必须
+提供 interrupt controller、timer IRQ、dispatch 与 EOI 能力。
 
 注意：`extern crate ax_driver as _` 与 `extern crate somehal` 只是为了把它们拉入依赖图，并不在 `axplat-dyn` 内直接调用。
 
@@ -143,7 +139,7 @@ fn platform_name() -> &'static str {
 
 ## mem.rs — 内存视图构造
 
-`platforms/axplat-dyn/src/mem.rs` 在首次访问时通过 `spin::Once` + `heapless::Vec` 懒构造三张静态表：
+`platforms/axplat-dyn/src/mem.rs` 在首次访问时通过 `ax_lazyinit::OnceLock` + `heapless::Vec` 懒构造三张静态表：
 
 | 列表 | 容量 | 来源 |
 | --- | --- | --- |
@@ -176,8 +172,16 @@ x86_64 上特别处理：当 IRQ 向量落在 PCI INTx 区间时，通过 `ax_pl
 fn cpu_num() -> usize { somehal::smp::cpu_meta_list().count() }
 fn system_off() -> !  { somehal::power::shutdown() }
 fn system_reset() -> !{ somehal::power::reset() }
-fn cpu_boot(cpu_id, stack_top_paddr) { somehal::power::cpu_on(cpu_id, stack_top_paddr) }
+fn cpu_boot(cpu_id, _stack_top_paddr) {
+    let startup = somehal::power::start_secondary_cpu(cpu_id).unwrap();
+    while startup.status() != SecondaryCpuStartupStatus::Alive {
+        // axplat-dyn uses the somehal timer to enforce a 10-second deadline.
+    }
+    startup.release().unwrap()
+}
 ```
+
+`PowerIf::cpu_boot()` 的公共契约保持同步；`axplat-dyn` 负责轮询和 10 秒超时策略。someboot 只提供非阻塞 `start/status/release` 机制，因此未来具有真实 timer/waker 的上层可以自行包装异步等待。`stack_top_paddr` 继续由动态平台忽略，因为 secondary stack 已在 someboot 发布的 immutable `PerCpuMeta` 中确定。
 
 ## generic_timer.rs — TimeIf 实现
 
@@ -232,12 +236,13 @@ const LOONGARCH_IRQ_TRACE_LIMIT: usize = 80;
 整个模块只有一个函数 (`platforms/axplat-dyn/src/drivers/mod.rs`)：
 
 ```rust
-pub fn probe_all_devices() -> Result<(), AxError> {
+pub fn probe_all_devices() -> Result<(), PlatformProbeError> {
     if !rdrive::is_initialized() {
         warn!("rdrive is not initialized; skip platform device probe");
         return Ok(());
     }
-    rdrive::probe_all(false).map_err(|_| AxError::BadState)
+    rdrive::probe_all(false)?;
+    Ok(())
 }
 ```
 

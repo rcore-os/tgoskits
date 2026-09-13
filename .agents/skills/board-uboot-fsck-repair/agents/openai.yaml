@@ -1,0 +1,4 @@
+interface:
+  display_name: "通过 U-Boot 修复板卡文件系统"
+  short_description: "通过 U-Boot 修复板卡第四扩展文件系统并验证系统启动"
+  default_prompt: "请使用 $board-uboot-fsck-repair 通过 U-Boot 修复 OrangePi-5-Plus 根文件系统，并确认 Linux 能正常启动。"

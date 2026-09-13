@@ -26,10 +26,12 @@ use sdmmc_protocol::{
     Error,
     error::{ErrorContext, Phase},
     rdif::{config::BlockConfig, device::BlockDevice},
-    sdio::{card::SdioSdmmc, init::CardInitPreference},
+    sdio::{SdMmcIrqHost, native::SdMmcCard},
 };
 
-use super::clock::enable_node_clocks;
+use super::{
+    card_init_preference, clock::enable_node_clocks, media_name, supports_block_card_protocol,
+};
 use crate::{block::ProbeFdtBlock, mmio::iomap, soc::RockchipFdtPinctrlParser};
 
 const DWMMC_STABLE_REFERENCE_CLOCK: u32 = 50_000_000;
@@ -143,7 +145,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
              CRU rate"
         );
     }
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+        dma_api::DmaConstraints::new(u32::MAX as u64),
+    ));
     let block_config = BlockConfig::dma("rockchip-dwmmc", 0, &dma)
         .with_max_blocks_per_request(IDMAC_MAX_BLOCKS)
         .with_max_segment_size(IDMAC_MAX_TRANSFER_SIZE);
@@ -153,10 +159,19 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         ))
     })?;
 
-    info!("rockchip-dwmmc: defer protocol initialization to IRQ-driven hctx");
-    let mut card = SdioSdmmc::new(host);
+    let preference = card_init_preference(info.node.as_node());
+    let identity = format!("rockchip-dwmmc:{}", info.node.path());
+    info!(
+        "rockchip-dwmmc: defer protocol initialization controller={} media={} preference={:?}",
+        identity,
+        media_name(preference),
+        preference
+    );
+    let parts = host.into_parts();
+    let mut card = SdMmcCard::new(parts.bus);
+    card.set_diagnostic_identity(identity);
     card.set_sd_speed_selection_enabled(ENABLE_SD_SPEED_SELECTION);
-    let dev = BlockDevice::new_initializing(card, block_config, card_init_preference(info));
+    let dev = BlockDevice::new_initializing(card, parts.irq, block_config, preference);
     let irq = probe.register_block(dev)?;
     info!("rockchip-dwmmc block device registered irq={:?}", irq);
     Ok(())
@@ -187,10 +202,6 @@ fn apply_rockchip_sd_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
         }
     }
     Ok(())
-}
-
-fn supports_block_card_protocol(node: &Node) -> bool {
-    node.get_property("no-sd").is_none() || node.get_property("no-mmc").is_none()
 }
 
 fn enable_fixed_regulator_with_pinctrl(
@@ -257,17 +268,6 @@ fn regulator_has_fixed_gpio_enable(node: &Node) -> bool {
             || node.get_property("pinctrl-0").is_some())
 }
 
-fn card_init_preference(info: &FdtInfo<'_>) -> CardInitPreference {
-    let node = info.node.as_node();
-    if node.get_property("no-mmc").is_some() {
-        CardInitPreference::SdOnly
-    } else if node.get_property("no-sd").is_some() || node.get_property("non-removable").is_some() {
-        CardInitPreference::MmcFirst
-    } else {
-        CardInitPreference::SdFirst
-    }
-}
-
 fn dwmmc_clock_setup(info: &FdtInfo<'_>) -> Result<Option<DwMmcClockSetup>, OnProbeError> {
     let Some(clock) = info.find_clock_line_by_name("ciu")? else {
         warn!("[{}] ciu clock provider is not available", info.node.name());
@@ -312,6 +312,8 @@ fn validate_bus_clock(rate: u64) -> Result<u32, Error> {
 #[cfg(test)]
 mod tests {
     use alloc::{vec, vec::Vec};
+
+    use sdmmc_protocol::sdio::init::CardInitPreference;
 
     use super::*;
 
@@ -383,5 +385,33 @@ mod tests {
         node.add_property(fdt_edit::Property::new("no-mmc", Vec::new()));
 
         assert!(supports_block_card_protocol(&node));
+    }
+
+    #[test]
+    fn removable_sd_slot_never_falls_back_to_mmc_when_fdt_says_no_mmc() {
+        let mut node = Node::new("mmc@fe2c0000");
+        node.add_property(fdt_edit::Property::new("no-mmc", Vec::new()));
+
+        assert_eq!(card_init_preference(&node), CardInitPreference::SdOnly);
+        assert_eq!(media_name(card_init_preference(&node)), "SD");
+    }
+
+    #[test]
+    fn non_removable_emmc_controller_starts_with_mmc() {
+        let mut node = Node::new("mmc@fe2e0000");
+        node.add_property(fdt_edit::Property::new("no-sd", Vec::new()));
+        node.add_property(fdt_edit::Property::new("non-removable", Vec::new()));
+
+        assert_eq!(card_init_preference(&node), CardInitPreference::MmcFirst);
+        assert_eq!(media_name(card_init_preference(&node)), "MMC");
+    }
+
+    #[test]
+    fn non_removable_without_protocol_limit_keeps_linux_probe_order() {
+        let mut node = Node::new("mmc@10000000");
+        node.add_property(fdt_edit::Property::new("non-removable", Vec::new()));
+
+        assert_eq!(card_init_preference(&node), CardInitPreference::SdFirst);
+        assert_eq!(media_name(card_init_preference(&node)), "SD-or-MMC");
     }
 }

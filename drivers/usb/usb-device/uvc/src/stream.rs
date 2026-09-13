@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crab_usb::Endpoint;
+use crab_usb::EndpointHandle;
 use log::debug;
 use usb_if::{descriptor::EndpointDescriptor, endpoint::TransferRequest, err::USBError};
 
@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub struct VideoStream {
-    ep: Endpoint,
+    ep: EndpointHandle,
     frame_parser: FrameParser,
     pub vedio_format: VideoFormat,
     packets_per_transfer: usize,
@@ -21,7 +21,7 @@ pub struct VideoStream {
 unsafe impl Send for VideoStream {}
 
 impl VideoStream {
-    pub fn new(ep: Endpoint, desc: EndpointDescriptor, vfmt: VideoFormat) -> Self {
+    pub fn new(ep: EndpointHandle, desc: EndpointDescriptor, vfmt: VideoFormat) -> Self {
         let max_packet_size = desc.max_packet_size;
         // 参考libusb计算逻辑:
         // packets_per_transfer = (dwMaxVideoFrameSize + endpoint_bytes_per_packet - 1) / endpoint_bytes_per_packet

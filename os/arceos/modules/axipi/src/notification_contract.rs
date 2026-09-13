@@ -1,0 +1,156 @@
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::{
+    sync::{Arc, mpsc},
+    thread,
+    time::Duration,
+};
+
+use ax_hal::irq::{CpuId, IrqError};
+
+use crate::{IpiNotification, notification::DeliveryEdges};
+
+#[test]
+fn first_publication_sends_and_repeated_publication_coalesces() {
+    let edges = DeliveryEdges::<2>::new();
+    let sends = AtomicUsize::new(0);
+
+    assert_eq!(
+        edges.notify(CpuId(1), || {
+            sends.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }),
+        Ok(IpiNotification::Sent),
+    );
+    assert_eq!(
+        edges.notify(CpuId(1), || {
+            sends.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }),
+        Ok(IpiNotification::Coalesced),
+    );
+    assert_eq!(sends.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn handler_drains_latest_owner_generation_after_coalescing() {
+    let edges = DeliveryEdges::<2>::new();
+    let owner_generation = AtomicUsize::new(0);
+    let drained_generation = AtomicUsize::new(0);
+
+    owner_generation.store(1, Ordering::Release);
+    assert_eq!(edges.notify(CpuId(1), || Ok(())), Ok(IpiNotification::Sent),);
+
+    owner_generation.store(2, Ordering::Release);
+    assert_eq!(
+        edges.notify(CpuId(1), || panic!("physical edge is already armed")),
+        Ok(IpiNotification::Coalesced),
+    );
+    assert_eq!(drained_generation.load(Ordering::Acquire), 0);
+
+    edges.claim(CpuId(1));
+    drained_generation.store(owner_generation.load(Ordering::Acquire), Ordering::Release);
+    assert_eq!(
+        drained_generation.load(Ordering::Acquire),
+        2,
+        "the handler must drain owner state published behind a coalesced edge"
+    );
+}
+
+#[test]
+fn publication_after_claim_obtains_a_fresh_edge() {
+    let edges = DeliveryEdges::<2>::new();
+    let sends = AtomicUsize::new(0);
+
+    assert_eq!(
+        edges.notify(CpuId(1), || {
+            sends.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }),
+        Ok(IpiNotification::Sent),
+    );
+    edges.claim(CpuId(1));
+    assert_eq!(
+        edges.notify(CpuId(1), || {
+            sends.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }),
+        Ok(IpiNotification::Sent),
+    );
+    assert_eq!(sends.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn claim_during_controller_send_cannot_overwrite_a_fresh_edge() {
+    let edges = DeliveryEdges::<2>::new();
+    let sends = AtomicUsize::new(0);
+
+    assert_eq!(
+        edges.notify(CpuId(1), || {
+            sends.fetch_add(1, Ordering::Relaxed);
+            edges.claim(CpuId(1));
+            assert_eq!(
+                edges.notify(CpuId(1), || {
+                    sends.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                }),
+                Ok(IpiNotification::Sent),
+            );
+            Ok(())
+        }),
+        Ok(IpiNotification::Sent),
+    );
+    assert_eq!(sends.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        edges.notify(CpuId(1), || panic!("fresh edge must remain armed")),
+        Ok(IpiNotification::Coalesced),
+    );
+}
+
+#[test]
+fn publication_during_controller_send_coalesces_without_waiting() {
+    let edges = Arc::new(DeliveryEdges::<2>::new());
+    let worker_edges = Arc::clone(&edges);
+    let (nested_tx, nested_rx) = mpsc::channel();
+
+    let worker = thread::spawn(move || {
+        worker_edges.notify(CpuId(1), || {
+            let nested = worker_edges.notify(CpuId(1), || {
+                panic!("an in-flight controller send already owns the physical edge")
+            });
+            nested_tx.send(nested).unwrap();
+            Ok(())
+        })
+    });
+
+    assert_eq!(
+        nested_rx.recv_timeout(Duration::from_secs(1)),
+        Ok(Ok(IpiNotification::Coalesced)),
+        "an IRQ-side publication must not spin behind the controller sender it preempted",
+    );
+    assert_eq!(worker.join().unwrap(), Ok(IpiNotification::Sent));
+}
+
+#[test]
+fn delivery_failure_is_reported_and_does_not_consume_owner_pending() {
+    let edges = DeliveryEdges::<2>::new();
+    let owner_pending = AtomicBool::new(false);
+
+    owner_pending.store(true, Ordering::Release);
+    assert_eq!(
+        edges.notify(CpuId(1), || Err(IrqError::Controller)),
+        Err(IrqError::Controller),
+    );
+    assert!(owner_pending.load(Ordering::Acquire));
+
+    assert_eq!(edges.notify(CpuId(1), || Ok(())), Ok(IpiNotification::Sent),);
+}
+
+#[test]
+fn invalid_target_is_rejected_before_delivery() {
+    let edges = DeliveryEdges::<1>::new();
+
+    assert_eq!(
+        edges.notify(CpuId(1), || panic!("invalid target must not be sent")),
+        Err(IrqError::InvalidCpu),
+    );
+}

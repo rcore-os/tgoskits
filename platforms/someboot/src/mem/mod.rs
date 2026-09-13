@@ -10,6 +10,7 @@ pub mod mmu;
 pub(crate) mod ram;
 pub(crate) mod region;
 
+pub use mmu::{MemAttributes, PteConfig};
 pub use page_table_generic::*;
 
 use crate::{ArchTrait, DCacheOp, arch::Arch, smp::cpu_area_region};
@@ -19,13 +20,79 @@ pub const MB: usize = 1024 * KB;
 pub const GB: usize = 1024 * MB;
 pub const KIMAGE_MAP_ALIGN: usize = 2 * MB;
 
+/// Invalid platform virtual-address geometry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum VirtualAddressSpaceError {
+    /// One of the half-open address ranges has its end below its start.
+    #[error("invalid virtual-address-space range")]
+    InvalidRange,
+    /// The user-capable and kernel page-table ranges overlap.
+    #[error("user and kernel virtual-address-space ranges overlap")]
+    OverlappingRanges,
+    /// CPUCFG reports an address width unsupported by the configured walker.
+    #[error("unsupported virtual-address width: VALEN={valen}")]
+    UnsupportedAddressWidth {
+        /// Architectural VALEN value, including the sign bit.
+        valen: usize,
+    },
+}
+
+/// Platform-owned page-table virtual-address layout.
+///
+/// Direct-map windows that bypass the page-table walker are deliberately not
+/// part of `kernel`. An empty `user` range means that the current build does
+/// not expose a user page table even if the architecture could support one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VirtualAddressSpaceLayout {
+    user: Range<usize>,
+    kernel: Range<usize>,
+}
+
+impl VirtualAddressSpaceLayout {
+    /// Validates and constructs a platform layout.
+    pub fn try_new(
+        user: Range<usize>,
+        kernel: Range<usize>,
+    ) -> Result<Self, VirtualAddressSpaceError> {
+        if user.start > user.end || kernel.start > kernel.end {
+            return Err(VirtualAddressSpaceError::InvalidRange);
+        }
+        if user.start < kernel.end && kernel.start < user.end {
+            return Err(VirtualAddressSpaceError::OverlappingRanges);
+        }
+        Ok(Self { user, kernel })
+    }
+
+    /// Returns the lower range available to a user page table.
+    pub fn user(&self) -> Range<usize> {
+        self.user.clone()
+    }
+
+    /// Returns the page-table-backed kernel allocation range.
+    pub fn kernel(&self) -> Range<usize> {
+        self.kernel.clone()
+    }
+}
+
+pub(crate) fn configured_user_space(end: usize) -> Range<usize> {
+    #[cfg(uspace)]
+    {
+        0..end
+    }
+    #[cfg(not(uspace))]
+    {
+        let _ = end;
+        0..0
+    }
+}
+
 static mut VM_LOAD_OFFSET: isize = 0;
 static MEMORY_MAP: StaticCell<MemoryMap> = StaticCell::new(MemoryMap::new());
 
 /// Load address of the kernel start
 static mut KIMAGE_START: Option<PhysAddr> = None;
 /// Load address of the kernel end
-static mut KIMAGE_END: PhysAddr = PhysAddr::new(0);
+static mut KIMAGE_END: PhysAddr = PhysAddr::from_usize(0);
 
 const MEMORY_MAP_CAPACITY: usize = 512;
 
@@ -38,9 +105,9 @@ pub(crate) fn setup_entry(
 ) {
     unsafe {
         KIMAGE_START = Some(kernel_start);
-        KIMAGE_END = kernel_end.raw().align_up(KIMAGE_MAP_ALIGN).into();
+        KIMAGE_END = kernel_end.as_usize().align_up(KIMAGE_MAP_ALIGN).into();
 
-        VM_LOAD_OFFSET = kernel_start.raw() as isize - kernel_start_link.raw() as isize;
+        VM_LOAD_OFFSET = kernel_start.as_usize() as isize - kernel_start_link.as_usize() as isize;
     }
 }
 
@@ -87,63 +154,16 @@ pub fn dcache_range(op: DCacheOp, addr: *const u8, size: usize) {
     Arch::dcache_range(op, addr as _, size);
 }
 
-pub fn dma_coherent_before_make_uncached(addr: *const u8, size: usize) {
-    Arch::dma_coherent_before_make_uncached(addr as _, size);
+pub fn dma_coherent_before_map_uncached(addr: *const u8, size: usize) {
+    Arch::dma_coherent_before_map_uncached(addr as _, size);
 }
 
-pub fn dma_coherent_before_restore_cached(addr: *const u8, size: usize) {
-    Arch::dma_coherent_before_restore_cached(addr as _, size);
+pub fn dma_coherent_before_unmap_uncached(addr: *const u8, size: usize) {
+    Arch::dma_coherent_before_unmap_uncached(addr as _, size);
 }
 
 pub fn dma_coherent_after_mapping_update() {
     Arch::dma_coherent_after_mapping_update();
-}
-
-#[cfg(any(
-    test,
-    all(axtest, feature = "axtest"),
-    all(target_arch = "riscv64", feature = "thead-mae")
-))]
-pub(crate) fn cache_line_range(
-    addr: usize,
-    size: usize,
-    line_size: usize,
-) -> Option<(usize, usize)> {
-    if size == 0 || line_size == 0 || !line_size.is_power_of_two() {
-        return None;
-    }
-    let end = addr.checked_add(size)?;
-    Some((addr & !(line_size - 1), end))
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn mem_constants_and_cache_line_rules_hold_for_test() -> bool {
-    // KB/MB/GB constants
-    assert!(KB == 1024);
-    assert!(MB == 1024 * KB);
-    assert!(GB == 1024 * MB);
-
-    // KIMAGE_MAP_ALIGN
-    assert!(KIMAGE_MAP_ALIGN == 2 * MB);
-
-    // cache_line_range: valid inputs
-    let result = cache_line_range(0x1000, 64, 64).unwrap();
-    assert!(result.0 == 0x1000); // aligned down
-    assert!(result.1 == 0x1040); // addr + size
-
-    // cache_line_range: zero size returns None
-    assert!(cache_line_range(0x1000, 0, 64).is_none());
-
-    // cache_line_range: zero line_size returns None
-    assert!(cache_line_range(0x1000, 64, 0).is_none());
-
-    // cache_line_range: non-power-of-2 line_size returns None
-    assert!(cache_line_range(0x1000, 64, 63).is_none());
-
-    // cache_line_range: overflow returns None
-    assert!(cache_line_range(usize::MAX, 1, 64).is_none());
-
-    true
 }
 
 /// 物理RAM实际转换为的内核虚拟地址
@@ -234,7 +254,7 @@ pub(crate) fn kimage_range() -> core::ops::Range<usize> {
             panic!("Kernel image start is not set");
         };
         let end = KIMAGE_END;
-        start.raw()..end.raw()
+        start.as_usize()..end.as_usize()
     }
 }
 
@@ -283,50 +303,6 @@ pub(crate) fn add_memory_descriptor(
     unsafe { MEMORY_MAP.update(|mem| mem.merge_add(desc)) }
 }
 
-pub fn kernel_space() -> Range<usize> {
-    Arch::kernel_space()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cache_line_range_covers_unaligned_buffer() {
-        assert_eq!(cache_line_range(0x1003, 1, 64), Some((0x1000, 0x1004)));
-        assert_eq!(cache_line_range(0x103f, 2, 64), Some((0x1000, 0x1041)));
-    }
-
-    #[test]
-    fn cache_line_range_skips_empty_invalid_line_and_overflow() {
-        assert_eq!(cache_line_range(0x1000, 0, 64), None);
-        assert_eq!(cache_line_range(0x1000, 1, 0), None);
-        assert_eq!(cache_line_range(0x1000, 1, 63), None);
-        assert_eq!(cache_line_range(usize::MAX, 2, 64), None);
-    }
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn mem_constants_and_types_hold_for_test() -> bool {
-    // Test memory constants
-    assert_eq!(KB, 1024);
-    assert_eq!(MB, 1024 * 1024);
-    assert_eq!(GB, 1024 * 1024 * 1024);
-    assert_eq!(KIMAGE_MAP_ALIGN, 2 * MB);
-
-    // Test MemoryMap capacity
-    assert_eq!(MEMORY_MAP_CAPACITY, 512);
-
-    true
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn mem_byte_unit_types_hold_for_test() -> bool {
-    // Test byte_unit types exist
-    use byte_unit::Byte;
-
-    // Test that Byte can be created
-    let _byte = Byte::from_u64(1024);
-
-    true
+pub fn virtual_address_space() -> Result<VirtualAddressSpaceLayout, VirtualAddressSpaceError> {
+    Arch::virtual_address_space()
 }

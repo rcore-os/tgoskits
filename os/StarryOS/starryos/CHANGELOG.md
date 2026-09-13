@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.36](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.35...starryos-v0.5.36) - 2026-09-13
+
+### Other
+
+- updated the following local packages: ax-driver, axplat-dyn, ax-hal, axbuild, ax-runtime, ax-std
+
+## [0.5.35](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.34...starryos-v0.5.35) - 2026-09-12
+
+### Other
+
+- updated the following local packages: ax-runtime, axbuild, ax-std
+
+## [0.5.34](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.33...starryos-v0.5.34) - 2026-09-11
+
+### Other
+
+- update Cargo.lock dependencies
+
+## [0.5.33](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.32...starryos-v0.5.33) - 2026-09-09
+
+### Other
+
+- update Cargo.lock dependencies
+
+## [0.5.32](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.31...starryos-v0.5.32) - 2026-09-09
+
+### Added
+
+- feat(StarryOS)：Enhance axivc IVC char devices and improve ioctl handling ([#2214](https://github.com/rcore-os/tgoskits/pull/2214))
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
+## [0.5.31](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.30...starryos-v0.5.31) - 2026-08-27
+
+### Other
+
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+
+## [0.5.30](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.29...starryos-v0.5.30) - 2026-08-25
+
+### Other
+
+- *(test)* consolidate Starry and ArceOS test suites ([#2173](https://github.com/rcore-os/tgoskits/pull/2173))
+
+## [0.5.29](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.28...starryos-v0.5.29) - 2026-08-20
+
+### Added
+
+- *(starry-nixos)* add Stage-2 NixOS userspace baseline ([#1923](https://github.com/rcore-os/tgoskits/pull/1923))
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
+## [0.5.28](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.27...starryos-v0.5.28) - 2026-08-09
+
+### Other
+
+- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+
 ## [0.5.27](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.26...starryos-v0.5.27) - 2026-08-03
 
 ### Other

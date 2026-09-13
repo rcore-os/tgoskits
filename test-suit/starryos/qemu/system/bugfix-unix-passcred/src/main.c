@@ -1,11 +1,13 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -94,6 +96,113 @@ static int write_datagram(int fd, const char *payload)
     return write(fd, payload, length) == (ssize_t)length ? 0 : -1;
 }
 
+static void test_receiver_namespace_credential_projection(void)
+{
+    int sockets[2] = {-1, -1};
+    expect_true(socketpair(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0, sockets) == 0,
+                "create socketpair for PID namespace credential projection");
+    if (sockets[0] < 0 || sockets[1] < 0) {
+        return;
+    }
+
+    int enabled = 1;
+    expect_true(setsockopt(sockets[0], SOL_SOCKET, SO_PASSCRED, &enabled,
+                           sizeof(enabled)) == 0,
+                "enable SO_PASSCRED for namespace projection receiver");
+
+    int listener = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    expect_true(listener >= 0,
+                "create stream listener for peer credential projection");
+    if (listener < 0) {
+        close(sockets[0]);
+        close(sockets[1]);
+        return;
+    }
+    struct sockaddr_un address = {.sun_family = AF_UNIX};
+    snprintf(address.sun_path, sizeof(address.sun_path),
+             "/tmp/starry-passcred-%d.sock", getpid());
+    unlink(address.sun_path);
+    int listener_ready = bind(listener, (struct sockaddr *)&address,
+                              sizeof(address)) == 0 &&
+                         listen(listener, 1) == 0;
+    expect_true(listener_ready,
+                "bind and listen for peer credential projection");
+    if (!listener_ready) {
+        close(listener);
+        close(sockets[0]);
+        close(sockets[1]);
+        unlink(address.sun_path);
+        return;
+    }
+
+    int namespace_ready = unshare(CLONE_NEWPID) == 0;
+    expect_true(namespace_ready,
+                "create nested PID namespace for credential sender");
+    if (!namespace_ready) {
+        close(listener);
+        close(sockets[0]);
+        close(sockets[1]);
+        unlink(address.sun_path);
+        return;
+    }
+
+    pid_t child = fork();
+    if (child == 0) {
+        close(sockets[0]);
+        close(listener);
+        int client = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        int result = getpid() == 1 && client >= 0 &&
+                     connect(client, (struct sockaddr *)&address,
+                             sizeof(address)) == 0 &&
+                     send_datagram(sockets[1], "namespace") == 0;
+        if (client >= 0) {
+            close(client);
+        }
+        close(sockets[1]);
+        _exit(result ? EXIT_SUCCESS : EXIT_FAILURE);
+    }
+    expect_true(child >= 0,
+                "fork nested PID namespace credential sender");
+    if (child < 0) {
+        close(sockets[0]);
+        close(sockets[1]);
+        close(listener);
+        unlink(address.sun_path);
+        return;
+    }
+    expect_true(child > 1, "outer namespace assigns a non-init child PID");
+
+    close(sockets[1]);
+    int accepted = accept(listener, NULL, NULL);
+    expect_true(accepted >= 0, "accept nested PID namespace peer");
+    struct ucred peer = {0};
+    socklen_t peer_length = sizeof(peer);
+    expect_true(accepted >= 0 &&
+                    getsockopt(accepted, SOL_SOCKET, SO_PEERCRED, &peer,
+                               &peer_length) == 0 &&
+                    peer_length == sizeof(peer),
+                "read SO_PEERCRED for nested PID namespace peer");
+    expect_true(accepted >= 0 && peer.pid == child,
+                "SO_PEERCRED projects peer PID into receiver namespace");
+    if (accepted >= 0) {
+        close(accepted);
+    }
+    close(listener);
+    unlink(address.sun_path);
+
+    struct received_message received = receive_message(sockets[0], 0, 1);
+    expect_true(received.length == 9 && received.has_credentials,
+                "receive credentials from nested PID namespace sender");
+    expect_true(received.has_credentials && received.credentials.pid == child,
+                "SCM_CREDENTIALS projects sender PID into receiver namespace");
+
+    int status = 0;
+    expect_true(waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+                    WEXITSTATUS(status) == EXIT_SUCCESS,
+                "nested PID namespace sender exits successfully");
+    close(sockets[0]);
+}
+
 int main(void)
 {
     printf("=== bugfix-unix-passcred ===\n");
@@ -123,7 +232,8 @@ int main(void)
         int result = send_datagram(sockets[1], "first") |
                      send_datagram(sockets[1], "peek") |
                      send_datagram(sockets[1], "truncate") |
-                     write_datagram(sockets[1], "write");
+                     write_datagram(sockets[1], "write") |
+                     send_datagram(sockets[1], "reaped");
         close(sockets[1]);
         _exit(result == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
     }
@@ -178,6 +288,12 @@ int main(void)
                     WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS,
                 "credential sender exits successfully");
 
+    struct received_message reaped = receive_message(sockets[0], 0, 1);
+    expect_true(reaped.length == 6 && reaped.has_credentials,
+                "receive queued credentials after reaping sender");
+    expect_true(reaped.has_credentials && reaped.credentials.pid == child,
+                "queued credentials preserve reaped sender PID");
+
     enabled = 0;
     expect_true(setsockopt(sockets[0], SOL_SOCKET, SO_PASSCRED, &enabled,
                            sizeof(enabled)) == 0,
@@ -200,6 +316,8 @@ int main(void)
         close(sockets[0]);
         close(sockets[1]);
     }
+
+    test_receiver_namespace_credential_projection();
 
 finish:
     printf("=== Results: %d passed, %d failed ===\n", passed, failed);

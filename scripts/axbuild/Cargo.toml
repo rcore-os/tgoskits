@@ -6,7 +6,7 @@ keywords.workspace = true
 license.workspace = true
 name = "axbuild"
 repository.workspace = true
-version = "0.4.22"
+version = "0.8.0"
 description = "An OS build lib toolkit used by arceos"
 
 [lints.rust]
@@ -21,11 +21,15 @@ clap = { version = "4.6", features = ["derive"] }
 colored = { version = "3" }
 env_logger = { workspace = true }
 futures-util = "0.3"
+httpboot-protocol = { workspace = true }
+fdt-edit.workspace = true
 flate2 = { version = "1.0" }
+getrandom.workspace = true
 indicatif = "0.18"
 jkconfig = { version = "0.1" }
 log = "0.4"
 object = "0.38"
+os_pipe = "1"
 ostool = { workspace = true }
 regex = { version = "1.12" }
 regex-automata = "0.4.16"

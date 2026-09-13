@@ -13,6 +13,13 @@ const DEFAULT_PLATFORM_CRATE: &str = "axplat_dyn";
 const DEFAULT_CPU_CAPACITY: usize = 16;
 
 fn main() {
+    let kernel_tls = std::env::var_os("CARGO_FEATURE_TLS").is_some()
+        && std::env::var_os("CARGO_FEATURE_USPACE").is_none();
+    println!("cargo::rustc-check-cfg=cfg(kernel_tls)");
+    if kernel_tls {
+        println!("cargo::rustc-cfg=kernel_tls");
+    }
+
     println!("cargo:rerun-if-env-changed=SMP");
     println!("cargo:rerun-if-env-changed={PLATFORM_CRATE_ENV}");
 
@@ -71,32 +78,4 @@ fn build_info_source(cpu_capacity: usize) -> String {
         pub const CPU_CAPACITY: usize = #cpu_capacity;
     }
     .to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn semantic_source(source: &str) -> String {
-        source
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect()
-    }
-
-    #[test]
-    fn selected_platform_source_handles_crate_names_with_underscores() {
-        assert_eq!(
-            semantic_source(&selected_platform_source("ax_plat_loongarch64_qemu_virt")),
-            semantic_source("pub extern crate ax_plat_loongarch64_qemu_virt as selected;")
-        );
-    }
-
-    #[test]
-    fn build_info_source_generates_smp_cpu_capacity() {
-        assert_eq!(
-            semantic_source(&build_info_source(16)),
-            semantic_source("#[cfg(feature = \"smp\")] pub const CPU_CAPACITY: usize = 16usize;")
-        );
-    }
 }

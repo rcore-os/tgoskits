@@ -9,9 +9,6 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/gdb -q -batch -x /usr/bin/gdb-native-threads.gdb /usr/bin/gdb-native-thread-target"
-success_regex = ["GDB_NATIVE_THREADS_DONE"]
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',
     '(?m)FAIL',
@@ -25,3 +22,8 @@ fail_regex = [
     '(?i)Segmentation fault',
 ]
 timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/gdb -q -batch -x /usr/bin/gdb-native-threads.gdb /usr/bin/gdb-native-thread-target"
+success_regex = ["GDB_NATIVE_THREADS_DONE"]

@@ -1,10 +1,9 @@
 //! Core filesystem state, mount, allocation, and mkfs helpers.
 
-use ::alloc::{collections::VecDeque, vec::Vec};
-use log::{debug, error, info, trace, warn};
+use ::alloc::{collections::VecDeque, vec, vec::Vec};
 
 use crate::{
-    bitmap::InodeBitmap,
+    bitmap::{InodeBitmap, bitmap_utils::count_set_bits_in_bitmap},
     blockdev::*,
     blockgroup_description::*,
     bmalloc::*,
@@ -26,11 +25,22 @@ mod alloc;
 mod fs;
 mod lookup;
 mod mkfs;
+mod mmp;
 mod mount;
+mod orphan;
+mod owned;
 mod sync;
+mod system_zone;
 
+pub(crate) use fs::GroupCounters;
 pub use fs::{Ext4FileSystem, FileSystemStats};
-pub use lookup::{file_entry_exisr, file_entry_exist, find_file};
-pub use mkfs::{BlcokGroupLayout, BlockGroupLayout, FsLayoutInfo, compute_fs_layout, mkfs};
-pub use mount::{MountOptions, mount, mount_with_options};
+pub use mkfs::{
+    BlockGroupLayout, FsLayoutInfo, MkfsOptions, compute_fs_layout, mkfs, mkfs_with_options,
+};
+pub use mount::MountOptions;
+pub use owned::{
+    DirectoryCursor, DirectoryEntry, DirectoryEntryType, DirectoryReader, Ext4, FilePermissions,
+    InodeFlags, InodeInfo, InodeMetadataUpdate, MutationContext, SpecialInodeKind, format,
+};
 pub use sync::umount;
+pub(crate) use system_zone::SystemZoneMap;

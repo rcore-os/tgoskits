@@ -456,7 +456,7 @@ int main(void)
     }
 
     /* ============================================================== */
-    /* B3. Invalid pid → ESRCH                                        */
+    /* B3. Invalid pid                                                    */
     /* ============================================================== */
     {
         printf("\n--- B3. invalid pid (negative) ---\n");
@@ -476,15 +476,15 @@ int main(void)
         memset(&hdr, 0, sizeof(hdr));
         hdr.version = _LINUX_CAPABILITY_VERSION_3;
         hdr.pid = -1;
-        CHECK_ERR(syscall(SYS_capget, &hdr, data), ESRCH,
-                  "B3b: capget(pid=-1) -> ESRCH");
+        CHECK_ERR(syscall(SYS_capget, &hdr, data), EINVAL,
+                  "B3b: capget(pid=-1) -> EINVAL");
 
         /* B3c: pid=-2 */
         memset(&hdr, 0, sizeof(hdr));
         hdr.version = _LINUX_CAPABILITY_VERSION_3;
         hdr.pid = -2;
-        CHECK_ERR(syscall(SYS_capget, &hdr, data), ESRCH,
-                  "B3c: capget(pid=-2) -> ESRCH");
+        CHECK_ERR(syscall(SYS_capget, &hdr, data), EINVAL,
+                  "B3c: capget(pid=-2) -> EINVAL");
 
         /* B3d: 999999 */
         memset(&hdr, 0, sizeof(hdr));

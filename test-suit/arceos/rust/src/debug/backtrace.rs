@@ -1,6 +1,7 @@
 use std::println;
 
 pub fn run() -> crate::TestResult {
+    test_adjust_ip();
     println!("debug_backtrace: normal capture");
     emit_nested_backtrace();
 
@@ -12,6 +13,18 @@ pub fn run() -> crate::TestResult {
         axbacktrace::Backtrace::capture_trap(invalid_fp, 0, 0).kind("arceos-test-suit-raw-badfp")
     );
     Ok(())
+}
+
+fn test_adjust_ip() {
+    let frame = axbacktrace::Frame { fp: 0, ip: 0x1000 };
+    #[cfg(target_arch = "x86_64")]
+    let expected = 0x0fff;
+    #[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
+    let expected = 0x0ffc;
+    #[cfg(target_arch = "riscv64")]
+    let expected = 0x0ffe;
+
+    assert_eq!(frame.adjust_ip(), expected);
 }
 
 #[inline(never)]

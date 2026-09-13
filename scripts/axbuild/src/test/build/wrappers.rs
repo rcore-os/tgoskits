@@ -198,26 +198,6 @@ pub(super) fn write_wrapper_script(path: &Path, body: &str) -> anyhow::Result<()
     Ok(())
 }
 
-pub(super) fn find_host_binary_candidates(candidates: &[&str]) -> anyhow::Result<PathBuf> {
-    candidates
-        .iter()
-        .find_map(|candidate| find_optional_host_binary(candidate))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "required host binary was not found in PATH; tried: {}",
-                candidates.join(", ")
-            )
-        })
-}
-
-pub(super) fn find_optional_host_binary(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|path_var| {
-        std::env::split_paths(&path_var)
-            .map(|dir| dir.join(name))
-            .find(|candidate| candidate.is_file())
-    })
-}
-
 pub(super) fn shell_single_quote(path: impl AsRef<Path>) -> String {
     let value = path.as_ref().display().to_string().replace('\'', "'\\''");
     format!("'{value}'")

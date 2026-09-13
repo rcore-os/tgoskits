@@ -3,11 +3,8 @@
 //! 参考 Linux kernel arch/loongarch/mm/tlb.c 和 arch/loongarch/include/asm/loongarch.h
 //! 实现页表寄存器初始化和相关数据类型定义。
 
-use core::arch::naked_asm;
-
-use loongArch64::register::{MemoryAccessType, crmd, pgdh, pgdl, pwch::*, pwcl::*, stlbps};
 use num_align::NumAlign;
-use page_table_generic::{MapConfig, MemAttributes, PteConfig, TableMeta, VirtAddr};
+use page_table_generic::{MapConfig, TableMeta, VirtAddr};
 
 // 导入 tock-registers 风格的页表项
 pub use super::pte::Entry;
@@ -15,90 +12,33 @@ use crate::{
     arch::addrspace::to_phys,
     console::print_mapping,
     consts::PAGE_SIZE,
-    mem::{__kimage_va, __va, MB, PageTableInfo},
+    mem::{__kimage_va, __va, MB, MemAttributes, PageTableInfo, PteConfig},
     smp::PerCpuMeta,
 };
-
-/// 4KB 页大小的 PS 值
-#[cfg(page_size_4k)]
-const PS: usize = 0x0c;
-/// 16KB 页大小的 PS 值
-#[cfg(page_size_16k)]
-const PS: u64 = 0x0e;
 
 /// 页内偏移位数
 pub const PAGE_SHIFT: usize = PAGE_SIZE.trailing_zeros() as usize;
 
-// ============================================================================
-// 页表层级配置
-// ============================================================================
-
 /// 每个页表索引的位数 = PAGE_SHIFT - 3 (页表项为8字节)
 pub const PTE_INDEX_BITS: usize = PAGE_SHIFT - 3;
 
-/// 无效化所有 TLB 条目
+/// Invalidates the local boot translation state through the CPU owner.
 #[inline(always)]
 pub fn local_flush_tlb_all() {
-    unsafe {
-        core::arch::asm!("dbar 0; tlbflush", options(nomem, nostack));
-    }
+    ax_cpu::mmu::flush_tlb(None);
 }
 
-/// 无效化指定虚拟地址的 TLB 条目
+/// Invalidates the current ASID's even/odd pair, including global mappings.
 #[inline(always)]
 pub fn local_flush_tlb_page(vaddr: usize) {
-    unsafe {
-        // invtlb op=0x5 (按地址无效化, 不考虑 ASID)
-        core::arch::asm!(
-            "invtlb 0x5, $zero, {}",
-            in(reg) vaddr,
-            options(nomem, nostack)
-        );
-    }
+    ax_cpu::mmu::flush_tlb(Some(vaddr.into()));
 }
 
-// /// 无效化指定 ASID 的所有 TLB 条目
-// #[inline(always)]
-// pub fn local_flush_tlb_asid(asid: u64) {
-//     unsafe {
-//         // invtlb op=0x4 (按 ASID 无效化)
-//         core::arch::asm!(
-//             "invtlb 0x4, {}, $zero",
-//             in(reg) asid,
-//             options(nomem, nostack)
-//         );
-//     }
-// }
-
-// /// 无效化指定 ASID 和虚拟地址的 TLB 条目
-// #[inline(always)]
-// pub fn local_flush_tlb_page_asid(vaddr: usize, asid: u64) {
-//     unsafe {
-//         // invtlb op=0x6 (按地址和 ASID 无效化)
-//         core::arch::asm!(
-//             "invtlb 0x6, {}, {}",
-//             in(reg) asid,
-//             in(reg) vaddr,
-//             options(nomem, nostack)
-//         );
-//     }
-// }
-
-/// 简化的页表初始化 (仅设置页大小和遍历器)
-pub fn setup() {
-    stlbps::set_ps(PS);
-
-    set_dir3_base(12 + 9 + 9 + 9);
-    set_dir3_width(9);
-    set_dir2_base(12 + 9 + 9);
-    set_dir2_width(9);
-    set_dir1_base(12 + 9);
-    set_dir1_width(9);
-    set_ptbase(12);
-    set_ptwidth(9);
-    set_pte_width(8); // 64 bits -> 8 bytes
-
-    local_flush_tlb_all();
+#[cfg_attr(axtest_coverage, coverage(off))]
+fn setup(root_paddr: usize) {
+    assert_eq!(root_paddr & (PAGE_SIZE - 1), 0);
+    // SAFETY: the boot owner retains its complete 4-KiB tree and executing mappings.
+    unsafe { ax_cpu::boot::install_boot_page_table(root_paddr.into()) };
 }
 
 // ============================================================================
@@ -131,7 +71,7 @@ impl TableMeta for Generic {
     /// 刷新 TLB
     fn flush(vaddr: Option<VirtAddr>) {
         match vaddr {
-            Some(va) => local_flush_tlb_page(va.raw()),
+            Some(va) => local_flush_tlb_page(va.as_usize()),
             None => local_flush_tlb_all(),
         }
     }
@@ -142,7 +82,6 @@ pub fn relocate_kernel_to_vm_code() -> ! {
     let mut table = crate::mem::mmu::new_boot_table();
 
     let pte = PteConfig {
-        valid: true,
         read: true,
         writable: true,
         executable: true,
@@ -164,7 +103,7 @@ pub fn relocate_kernel_to_vm_code() -> ! {
 
     table
         .map(&MapConfig {
-            vaddr: v_start.into(),
+            vaddr: VirtAddr::from_usize(v_start as usize),
             paddr: k_start.into(),
             size,
             pte,
@@ -176,7 +115,10 @@ pub fn relocate_kernel_to_vm_code() -> ! {
     let tb_addr = table.root_paddr();
     crate::mem::mmu::set_boot_table(table);
 
-    println!("Boot page table at physical address: {:#x}", tb_addr.raw());
+    println!(
+        "Boot page table at physical address: {:#x}",
+        tb_addr.as_usize()
+    );
 
     // Use physical address to avoid virtual address mapping issues
     let mmu_entry_phys = to_phys(super::entry::mmu_entry as *const () as usize);
@@ -195,17 +137,9 @@ pub fn relocate_kernel_to_vm_code() -> ! {
 
     println!("Setting up page table...");
 
-    pgdh::set_base(tb.addr as _);
-    pgdl::set_base(tb.addr as _);
-
-    // 添加数据同步屏障，确保页表写入完成
-    unsafe {
-        core::arch::asm!("dbar 0", options(nomem, nostack));
-    }
-
     println!("Enabling MMU...");
     // 配置页大小并启用 MMU
-    setup();
+    setup(tb.addr);
 
     println!("MMU enabled, jumping to {v_entry:#x}, sp={v_sp:#x}");
 
@@ -213,57 +147,29 @@ pub fn relocate_kernel_to_vm_code() -> ! {
     // 这样可以避免修改正在执行的代码导致的指令缓存不一致问题
     crate::arch::relocate::reset();
 
-    // 刷新指令缓存，确保跳转后执行的是正确位置的指令
-    unsafe {
-        core::arch::asm!("ibar 0", options(nomem, nostack));
-        core::arch::asm!("dbar 0", options(nomem, nostack));
-    }
-
-    relocate_kernel(v_entry, v_sp);
-    unreachable!()
+    ax_cpu::cache::flush_icache_all();
+    // SAFETY: relocation completed and the owner retained the mapped entry/stack.
+    unsafe { ax_cpu::boot::jump_to(0, v_sp.into(), v_entry.into()) }
 }
 
+#[cfg_attr(axtest_coverage, coverage(off))]
 pub fn enable_mmu_secondary(cpu_meta_paddr: usize) -> ! {
     let meta = unsafe {
-        let meta_va = super::addrspace::to_cache(cpu_meta_paddr);
+        let phys_mask = (1usize << super::addrspace::PABITS) - 1;
+        let meta_va = (cpu_meta_paddr & phys_mask) | super::addrspace::CACHE_BASE;
         &*(meta_va as *const PerCpuMeta)
     };
-    pgdh::set_base(meta.boot_table_paddr);
-    pgdl::set_base(meta.boot_table_paddr);
-    setup();
+    setup(meta.boot_table_paddr);
     super::trap::init_entries_for_secondary();
 
-    let mut crmd_bits = crmd::read().raw();
-    crmd_bits &= !(1 << 3);
-    crmd_bits |= 1 << 4;
-    crmd_bits &= !(0b11 << 5);
-    crmd_bits |= (MemoryAccessType::CoherentCached as usize) << 5;
-    crmd_bits &= !(0b11 << 7);
-    crmd_bits |= (MemoryAccessType::CoherentCached as usize) << 7;
+    // SAFETY: setup installed the retained boot tree and secondary vectors;
+    // metadata remains live through the final stack and instruction transfer.
     unsafe {
-        core::arch::asm!("csrwr {}, {}", in(reg) crmd_bits, const 0x0);
+        ax_cpu::boot::enable_paged_translation();
+        ax_cpu::boot::jump_to(
+            cpu_meta_paddr,
+            meta.stack_top_virt.into(),
+            meta.entry_virt.into(),
+        )
     }
-    jump_to_secondary_entry(cpu_meta_paddr, meta.stack_top_virt, meta.entry_virt)
-}
-
-#[unsafe(naked)]
-extern "C" fn jump_to_secondary_entry(_arg: usize, _sp: usize, _entry: usize) -> ! {
-    naked_asm!(
-        "
-        ibar 0
-        dbar 0
-        move $sp, $a1
-        jr $a2
-        "
-    )
-}
-
-#[unsafe(naked)]
-extern "C" fn relocate_kernel(entry: usize, sp: usize) {
-    naked_asm!(
-        "
-        move $sp, $a1
-        jr $a0
-        ",
-    )
 }

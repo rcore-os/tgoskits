@@ -2,7 +2,25 @@ use alloc::format;
 #[cfg(virtio_dev)]
 use alloc::sync::Arc;
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
+#[cfg(any(
+    feature = "ahci",
+    feature = "intel-net",
+    feature = "nvme",
+    feature = "realtek-rtl8125",
+    feature = "xhci-pci",
+    all(feature = "net", feature = "pci")
+))]
+use dma_api::DeviceDma;
+#[cfg(any(
+    feature = "ahci",
+    feature = "intel-net",
+    feature = "nvme",
+    feature = "realtek-rtl8125",
+    feature = "xhci-pci",
+    all(feature = "net", feature = "pci")
+))]
+use dma_api::DmaCoherency;
 use heapless::Vec as ArrayVec;
 use mmio_api::MmioOp;
 #[cfg(any(test, virtio_dev))]
@@ -40,7 +58,45 @@ pub use msi::{PciIrqLease, PciMsiTarget, PciMsixAllocation};
 const MAX_PCIE_LEGACY_IRQS: usize = 8;
 #[cfg(virtio_dev)]
 const MAX_TAKEN_ENDPOINT_CONFIGS: usize = 16;
+
+fn raw_lock<T>(lock: &Mutex<T>) -> RawSpinLockGuard<'_, T> {
+    // SAFETY: PCI discovery/configuration excludes same-CPU re-entry around
+    // each transaction; the raw lock serializes concurrent CPUs.
+    unsafe { lock.lock_raw() }
+}
 const PCI_INTX_LINES: usize = 4;
+
+#[cfg(any(
+    feature = "ahci",
+    feature = "intel-net",
+    feature = "nvme",
+    feature = "realtek-rtl8125",
+    feature = "xhci-pci",
+    all(feature = "net", feature = "pci")
+))]
+pub(crate) fn device_dma(info: PciInfo, dma_mask: u64) -> DeviceDma {
+    axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        dma_coherency(info),
+        dma_api::DmaConstraints::new(dma_mask),
+    ))
+}
+
+#[cfg(any(
+    feature = "ahci",
+    feature = "intel-net",
+    feature = "nvme",
+    feature = "realtek-rtl8125",
+    feature = "xhci-pci",
+    all(feature = "net", feature = "pci")
+))]
+pub(crate) const fn dma_coherency(info: PciInfo) -> DmaCoherency {
+    if info.dma_coherent {
+        DmaCoherency::Coherent
+    } else {
+        DmaCoherency::NonCoherent
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct LegacyIrq {
@@ -229,6 +285,7 @@ pub fn register_ecam_controller(
     ecam_size: usize,
     mem32: Option<PciMem32>,
     mem64: Option<PciMem64>,
+    dma_coherent: bool,
 ) -> Result<(), OnProbeError> {
     register_ecam_controller_with_mmio_op(
         plat_dev,
@@ -236,6 +293,7 @@ pub fn register_ecam_controller(
         ecam_size,
         mem32,
         mem64,
+        dma_coherent,
         axklib::mmio::op(),
     )
 }
@@ -246,6 +304,7 @@ pub fn register_ecam_controller_with_mmio_op(
     ecam_size: usize,
     mem32: Option<PciMem32>,
     mem64: Option<PciMem64>,
+    dma_coherent: bool,
     mmio_op: &'static dyn MmioOp,
 ) -> Result<(), OnProbeError> {
     if !has_pci_endpoint_drivers() {
@@ -258,6 +317,7 @@ pub fn register_ecam_controller_with_mmio_op(
 
     let mut controller = rdrive::probe::pci::new_driver_generic(ecam_base, ecam_size, mmio_op)
         .map_err(|err| OnProbeError::other(format!("failed to create PCIe controller: {err:?}")))?;
+    controller.set_dma_coherent(dma_coherent);
 
     if let Some(mem32) = mem32 {
         controller.set_mem32(mem32, false);
@@ -294,7 +354,7 @@ pub fn prepare_intx_passthrough(info: PciInfo) -> Result<(), OnProbeError> {
         }
 
         let bdf = as_device_function(info.address);
-        let configs = TAKEN_ENDPOINT_CONFIGS.lock();
+        let configs = raw_lock(&TAKEN_ENDPOINT_CONFIGS);
         let config = configs
             .iter()
             .find(|config| config.bdf == bdf)
@@ -327,7 +387,7 @@ pub fn unmask_intx_passthrough(info: PciInfo) -> Result<(), OnProbeError> {
         }
 
         let bdf = as_device_function(info.address);
-        let configs = TAKEN_ENDPOINT_CONFIGS.lock();
+        let configs = raw_lock(&TAKEN_ENDPOINT_CONFIGS);
         let config = configs
             .iter()
             .find(|config| config.bdf == bdf)
@@ -456,15 +516,13 @@ fn select_dynamic_pci_irq_source(has_acpi: bool, has_fdt: bool) -> Option<Dynami
 }
 
 pub fn legacy_irq_for_endpoint(info: PciInfo) -> Option<usize> {
-    LEGACY_IRQ_ROUTES
-        .lock()
+    raw_lock(&LEGACY_IRQ_ROUTES)
         .iter()
         .find_map(|route| route.irq_for(info))
 }
 
 fn native_legacy_binding_for_endpoint(info: PciInfo) -> Option<BindingIrq> {
-    LEGACY_IRQ_ROUTES
-        .lock()
+    raw_lock(&LEGACY_IRQ_ROUTES)
         .iter()
         .find_map(|route| route.native_binding_for(info))
 }
@@ -474,6 +532,7 @@ pub fn legacy_irq_for_address(address: PciAddress) -> Option<usize> {
         address,
         interrupt_pin: 1,
         interrupt_line: 0,
+        dma_coherent: false,
         intx_route: Some(rdrive::probe::pci::PciIntxRoute {
             root_device: address.device(),
             root_function: address.function(),
@@ -504,10 +563,6 @@ mod tests {
     use alloc::string::ToString;
     use core::cell::Cell;
 
-    use axklib::{
-        AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle,
-        IrqId, Klib, PhysAddr, VirtAddr, impl_trait,
-    };
     use rdrive::probe::{
         OnProbeError,
         pci::{PciAddress, PciInfo, PciIntxRoute},
@@ -520,94 +575,6 @@ mod tests {
         unmask_intx_passthrough_command,
     };
     use crate::{BindingIrq, BindingIrqSource};
-    struct KlibImpl;
-    impl_trait! {
-        impl Klib for KlibImpl {
-            fn mem_iomap(_addr: PhysAddr, _size: usize) -> AxResult<VirtAddr> {
-                Err(AxError::Unsupported)
-            }
-
-            fn mem_virt_to_phys(addr: VirtAddr) -> PhysAddr {
-                PhysAddr::from_usize(addr.as_usize())
-            }
-
-            fn mem_make_dma_coherent_uncached(
-                _addr: VirtAddr,
-                _size: usize,
-            ) -> axklib::DmaCoherentMappingOutcome {
-                axklib::DmaCoherentMappingOutcome::NotStarted(AxError::Unsupported)
-            }
-
-            fn mem_restore_dma_cached(_addr: VirtAddr, _size: usize) -> AxResult {
-                Err(AxError::Unsupported)
-            }
-
-            fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
-
-            fn dma_cache_invalidate(_addr: VirtAddr, _size: usize) {}
-
-            fn dma_cache_clean_invalidate(_addr: VirtAddr, _size: usize) {}
-
-            fn dma_alloc_pages(
-                _dma_mask: u64,
-                _num_pages: usize,
-                _align: usize,
-            ) -> AxResult<VirtAddr> {
-                Err(AxError::Unsupported)
-            }
-
-            fn dma_dealloc_pages(_addr: VirtAddr, _num_pages: usize) {}
-
-            fn time_busy_wait(_dur: core::time::Duration) {}
-
-            fn time_monotonic_nanos() -> u64 {
-                0
-            }
-
-            fn time_try_init_epoch_offset(_epoch_time_nanos: u64) -> bool {
-                false
-            }
-
-            fn irq_set_enable(_irq: IrqId, _enabled: bool) -> axklib::AxResult {
-                Ok(())
-            }
-
-            fn irq_request_shared(
-                _irq: IrqId,
-                _handler: BoxedIrqHandler,
-            ) -> AxResult<IrqHandle> {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_request_shared_disabled(
-                _irq: IrqId,
-                _handler: BoxedIrqHandler,
-            ) -> AxResult<IrqHandle> {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_request_percpu(
-                _irq: IrqId,
-                _cpus: IrqCpuMask,
-                _handler: ConcurrentBoxedIrqHandler,
-            ) -> AxResult<IrqHandle> {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_free(_handle: IrqHandle) -> AxResult {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_enable(_handle: IrqHandle) -> AxResult {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_disable(_handle: IrqHandle) -> AxResult {
-                Err(AxError::Unsupported)
-            }
-        }
-    }
-
     #[test]
     fn x86_64_legacy_line_uses_dynamic_ioapic_base() {
         assert_eq!(legacy_line_to_irq_for_platform(9, true), 0x39);
@@ -625,6 +592,7 @@ mod tests {
             address: PciAddress::new(0, 2, 7, 0),
             interrupt_pin: 1,
             interrupt_line: 0,
+            dma_coherent: false,
             intx_route: Some(PciIntxRoute {
                 root_device: 2,
                 root_function: 0,
@@ -642,6 +610,7 @@ mod tests {
             address: PciAddress::new(0, 2, 7, 0),
             interrupt_pin: 1,
             interrupt_line: 0,
+            dma_coherent: false,
             intx_route: None,
         };
 
@@ -1030,6 +999,7 @@ mod tests {
             address: PciAddress::new(0, 2, 7, 0),
             interrupt_pin: 1,
             interrupt_line: 9,
+            dma_coherent: false,
             intx_route: Some(PciIntxRoute {
                 root_device: 2,
                 root_function: 0,
@@ -1047,7 +1017,7 @@ pub fn register_legacy_irq_routes(bus_start: u8, bus_end: u8, irqs: &[usize]) {
         return;
     };
 
-    let mut routes = LEGACY_IRQ_ROUTES.lock();
+    let mut routes = raw_lock(&LEGACY_IRQ_ROUTES);
     if routes
         .iter()
         .any(|route| route.matches_irqs(bus_start, bus_end, irqs))
@@ -1074,7 +1044,7 @@ pub fn register_native_legacy_irq_route(
         return;
     };
 
-    let mut routes = LEGACY_IRQ_ROUTES.lock();
+    let mut routes = raw_lock(&LEGACY_IRQ_ROUTES);
     if routes
         .iter()
         .any(|route| route.matches_legacy_irqs(bus_start, bus_end, core::slice::from_ref(&irq)))
@@ -1140,7 +1110,7 @@ fn take_virtio_transport_with_intx_policy(
 
 #[cfg(virtio_dev)]
 fn remember_taken_endpoint_config(access: &EndpointConfigAccess) {
-    let mut configs = TAKEN_ENDPOINT_CONFIGS.lock();
+    let mut configs = raw_lock(&TAKEN_ENDPOINT_CONFIGS);
     if let Some(config) = configs.iter_mut().find(|config| config.bdf == access.bdf) {
         config.access = access.clone_for_handoff();
         return;
@@ -1239,7 +1209,7 @@ impl EndpointConfigAccess {
     where
         F: FnOnce(CommandRegister) -> CommandRegister,
     {
-        self.endpoint.lock().update_command(f);
+        raw_lock(&self.endpoint).update_command(f);
     }
 }
 
@@ -1247,12 +1217,12 @@ impl EndpointConfigAccess {
 impl ConfigurationAccess for EndpointConfigAccess {
     fn read_word(&self, device_function: DeviceFunction, register_offset: u8) -> u32 {
         self.assert_same_function(device_function);
-        self.endpoint.lock().read(register_offset.into())
+        raw_lock(&self.endpoint).read(register_offset.into())
     }
 
     fn write_word(&mut self, device_function: DeviceFunction, register_offset: u8, data: u32) {
         self.assert_same_function(device_function);
-        self.endpoint.lock().write(register_offset.into(), data);
+        raw_lock(&self.endpoint).write(register_offset.into(), data);
     }
 
     unsafe fn unsafe_clone(&self) -> Self {

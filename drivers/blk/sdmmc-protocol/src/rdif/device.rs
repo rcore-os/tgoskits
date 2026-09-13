@@ -1,9 +1,9 @@
-use alloc::{boxed::Box, sync::Arc, vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 use rdif_block::{
     BlkError, BlockController, ControllerEvent, ControllerState, ControllerUpdate, DeviceInfo,
-    DriverGeneric, HardIrqHandler, HardwareQueue, IrqEndpoint,
+    DriverGeneric, HardIrqHandler, HardwareQueue, IrqEndpoint, IrqQueueMask,
 };
 
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
         irq::BlockIrqHandler,
         queue::BlockQueue,
     },
-    sdio::{card::SdioSdmmc, host::SdioIrqHost, init::CardInitPreference},
+    sdio::{host::SdMmcIrqHost, init::CardInitPreference, native::SdMmcCard},
 };
 
 const INIT_INITIALIZING: u8 = 0;
@@ -75,29 +75,31 @@ impl BlockInitStatus {
 /// Interrupt-driven single-queue SD/MMC controller.
 pub struct BlockDevice<H>
 where
-    H: SdioIrqHost + Send + 'static,
+    H: SdMmcIrqHost + Send + 'static,
     H::TransactionRequest<'static>: Send,
     H::BusRequest: Send,
 {
-    card: Option<SdioSdmmc<H>>,
+    card: Option<SdMmcCard<H>>,
     config: BlockConfig,
     irq_handler: Option<Box<dyn HardIrqHandler>>,
     init_preference: Option<CardInitPreference>,
     init_status: Arc<BlockInitStatus>,
+    diagnostic_identity: Option<String>,
     started: bool,
     stopped: bool,
 }
 
 impl<H> BlockDevice<H>
 where
-    H: SdioIrqHost + Send + 'static,
+    H: SdMmcIrqHost + Send + 'static,
     H::TransactionRequest<'static>: Send,
     H::BusRequest: Send,
 {
-    pub fn new(mut card: SdioSdmmc<H>, config: BlockConfig) -> Self {
+    pub fn new(card: SdMmcCard<H>, irq: H::IrqHandle, config: BlockConfig) -> Self {
+        let diagnostic_identity = card.diagnostic_identity().map(String::from);
         let init_status = Arc::new(BlockInitStatus::initialized(config.capacity_blocks()));
         let irq_handler = Box::new(BlockIrqHandler::<H> {
-            irq: SdioIrqHost::irq_handle(card.host_mut()),
+            irq,
             init_status: Arc::clone(&init_status),
         });
         Self {
@@ -106,6 +108,7 @@ where
             irq_handler: Some(irq_handler),
             init_preference: None,
             init_status,
+            diagnostic_identity,
             started: false,
             stopped: false,
         }
@@ -114,13 +117,15 @@ where
     /// Creates a controller whose eMMC/SD protocol initialization is owned by
     /// the hctx task and advances command/data states only after IRQ ack.
     pub fn new_initializing(
-        mut card: SdioSdmmc<H>,
+        card: SdMmcCard<H>,
+        irq: H::IrqHandle,
         config: BlockConfig,
         preference: CardInitPreference,
     ) -> Self {
+        let diagnostic_identity = card.diagnostic_identity().map(String::from);
         let init_status = Arc::new(BlockInitStatus::initializing());
         let irq_handler = Box::new(BlockIrqHandler::<H> {
-            irq: SdioIrqHost::irq_handle(card.host_mut()),
+            irq,
             init_status: Arc::clone(&init_status),
         });
         Self {
@@ -129,6 +134,7 @@ where
             irq_handler: Some(irq_handler),
             init_preference: Some(preference),
             init_status,
+            diagnostic_identity,
             started: false,
             stopped: false,
         }
@@ -160,7 +166,7 @@ where
         let mut update = ControllerUpdate::with_resources(
             state,
             vec![queue],
-            vec![IrqEndpoint::new(0, 1, handler)],
+            vec![IrqEndpoint::new(0, IrqQueueMask::from_queue(0), handler)],
         );
         if state == ControllerState::Ready {
             update = update.with_device_info(self.device_info());
@@ -180,18 +186,20 @@ where
 
 impl<H> DriverGeneric for BlockDevice<H>
 where
-    H: SdioIrqHost + Send + 'static,
+    H: SdMmcIrqHost + Send + 'static,
     H::TransactionRequest<'static>: Send,
     H::BusRequest: Send,
 {
     fn name(&self) -> &str {
-        self.config.name()
+        self.diagnostic_identity
+            .as_deref()
+            .unwrap_or_else(|| self.config.name())
     }
 }
 
 impl<H> BlockController for BlockDevice<H>
 where
-    H: SdioIrqHost + Send + 'static,
+    H: SdMmcIrqHost + Send + 'static,
     H::TransactionRequest<'static>: Send,
     H::BusRequest: Send,
 {

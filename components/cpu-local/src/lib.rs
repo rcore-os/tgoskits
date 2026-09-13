@@ -5,11 +5,12 @@
 extern crate std;
 
 mod area;
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+mod cpu_entry;
 mod error;
 mod identity;
-#[cfg(target_arch = "loongarch64")]
-pub mod loongarch64;
 mod pin;
+mod preempt;
 mod register;
 mod switch;
 mod symbol;
@@ -19,15 +20,30 @@ pub use area::*;
 pub use error::*;
 pub use identity::*;
 pub use pin::*;
-pub use register::current_thread;
-#[cfg(feature = "tls")]
+pub use preempt::*;
+pub use register::current_context;
+#[doc(hidden)]
+pub use register::current_cpu_index;
+#[cfg(kernel_tls)]
 #[doc(hidden)]
 pub use register::install_kernel_tls;
-#[cfg(feature = "tls")]
+#[cfg(kernel_tls)]
 pub use register::kernel_tls;
 #[doc(hidden)]
-pub use register::{install_bootstrap_thread, install_cpu_area, scheduler_current_thread};
-pub use switch::{PreparedThreadSwitch, PreviousThreadBinding, prepare_thread_switch};
+pub use register::{
+    current_context_unpinned, install_bootstrap_context, install_cpu_area,
+    is_permanent_boot_context,
+};
+pub use switch::{PreparedContextSwitch, PreviousContextBinding, prepare_context_switch};
 #[doc(hidden)]
 pub use symbol::{cpu_area_template_base, cpu_area_template_size};
 pub use thread::*;
+
+/// Host-only observations of the modeled architecture-register boundary.
+#[cfg(feature = "host-test")]
+#[doc(hidden)]
+pub mod host_test {
+    pub use crate::register::host_test::{
+        RegisterReadCounts, register_read_counts, reset_register_read_counts,
+    };
+}

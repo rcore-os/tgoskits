@@ -4,6 +4,9 @@
 pub mod elf_image;
 
 pub mod boot_offer;
+pub mod integrity;
+pub mod network_policy;
+pub mod smbios;
 
 #[cfg(any(windows, unix))]
 pub use elf_image::{

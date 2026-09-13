@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.22](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.21...ax-percpu-v0.4.22) - 2026-09-13
+
+### Other
+
+- updated the following local packages: cpu-local
+
+## [0.4.21](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.20...ax-percpu-v0.4.21) - 2026-09-11
+
+### Other
+
+- updated the following local packages: cpu-local
+
+## [0.4.20](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.19...ax-percpu-v0.4.20) - 2026-09-10
+
+### Fixed
+
+- Publish the workspace `cpu-local 0.3` dependency so registry consumers use the
+  same CPU-local types as the current workspace.
+
+## [0.4.19](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.18...ax-percpu-v0.4.19) - 2026-09-09
+
+### Other
+
+- *(repo)* remove duplicated tests and configuration snapshots ([#2326](https://github.com/rcore-os/tgoskits/pull/2326))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
+## [0.4.18](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.17...ax-percpu-v0.4.18) - 2026-08-20
+
+### Added
+
+- *(percpu)* add scheduler-owned CPU access ([#2081](https://github.com/rcore-os/tgoskits/pull/2081))
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
+### Added
+
+- Add non-escaping current-CPU-area callbacks for future CPU-owned access before
+  a `CpuPin` exists; there is no runtime caller yet.
+
+## [0.4.17](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.16...ax-percpu-v0.4.17) - 2026-08-09
+
+### Other
+
+- updated the following local packages: ax-percpu-macros, ax-lazyinit
+
 ## [0.4.16](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.15...ax-percpu-v0.4.16) - 2026-08-03
 
 ### Other

@@ -363,7 +363,7 @@ CONFIG_EOF
 
 # Pre-fetch cargo deps for offline build (all architectures).
 # The full workspace contains arch-specific crates that don't resolve for
-# other targets (e.g., arm_vcpu → aarch64-cpu on x86_64).  Temporarily
+# other targets (e.g., arm_vgic → aarch64-cpu on x86_64).  Temporarily
 # filter the workspace members to only those relevant to this target,
 # run cargo fetch, then restore the original Cargo.toml.
 info "Pre-fetching cargo dependencies for ${TARGET} (~10-30 min)..."
@@ -371,8 +371,8 @@ info "Pre-fetching cargo dependencies for ${TARGET} (~10-30 min)..."
 # Build a sed pattern to remove arch-incompatible workspace members.
 # Each arch keeps its own prefix + common crates.
 case "$ARCH" in
-    riscv64) EXCLUDE_ARCH="arm_vcpu\|aarch64\|x86_64\|loongarch64\|kasm-aarch64\|arm_vgic" ;;
-    x86_64)  EXCLUDE_ARCH="arm_vcpu\|aarch64\|riscv\|loongarch64\|kasm-aarch64\|arm_vgic\|sg2002\|bsta1000b\|phytium\|raspi" ;;
+    riscv64) EXCLUDE_ARCH="aarch64\|x86_64\|loongarch64\|kasm-aarch64\|arm_vgic" ;;
+    x86_64)  EXCLUDE_ARCH="aarch64\|riscv\|loongarch64\|kasm-aarch64\|arm_vgic\|sg2002\|bsta1000b\|phytium\|raspi" ;;
     arm)     EXCLUDE_ARCH="riscv\|x86_64\|loongarch64\|sg2002\|bsta1000b" ;;
 esac
 

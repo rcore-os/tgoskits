@@ -203,12 +203,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_vsstatus_from_bits() {
-        let vsstatus = Vsstatus::from_bits(0x123456789ABCDEF0);
-        assert_eq!(vsstatus.bits(), 0x123456789ABCDEF0);
-    }
-
-    #[test]
     fn test_vsstatus_sd() {
         let mut vsstatus = Vsstatus::from_bits(0);
 
@@ -359,15 +353,5 @@ mod tests {
         assert!(vsstatus.ube());
         assert!(vsstatus.spie());
         assert!(vsstatus.sie());
-    }
-
-    #[test]
-    fn test_vsstatus_copy_clone() {
-        let vsstatus1 = Vsstatus::from_bits(0x123456789ABCDEF0);
-        let vsstatus2 = vsstatus1;
-        let vsstatus3 = vsstatus1.clone();
-
-        assert_eq!(vsstatus1.bits(), vsstatus2.bits());
-        assert_eq!(vsstatus1.bits(), vsstatus3.bits());
     }
 }

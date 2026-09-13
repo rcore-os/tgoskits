@@ -60,8 +60,6 @@ extern crate std;
 pub mod ns16550;
 pub mod pl011;
 
-use core::fmt::Display;
-
 use bitflags::bitflags;
 
 /// Allocation-free polling interface used by early consoles.
@@ -121,23 +119,32 @@ pub enum TransferError {
     Closed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
+#[error("transfer error after transferring {bytes_transferred} bytes: {kind}")]
 pub struct TransBytesError {
     pub bytes_transferred: usize,
+    #[source]
     pub kind: TransferError,
 }
 
-impl Display for TransBytesError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "transfer error after transferring {} bytes: {}",
-            self.bytes_transferred, self.kind
-        )
-    }
-}
-
-impl core::error::Error for TransBytesError {}
-
 // Runtime capability types are re-exported for concrete driver consumers.
 pub use rdif_serial::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transferred_byte_error_preserves_transfer_source() {
+        let error = TransBytesError {
+            bytes_transferred: 7,
+            kind: TransferError::Framing,
+        };
+
+        assert_eq!(
+            std::format!("{error}"),
+            "transfer error after transferring 7 bytes: framing error"
+        );
+        assert!(core::error::Error::source(&error).is_some());
+    }
+}

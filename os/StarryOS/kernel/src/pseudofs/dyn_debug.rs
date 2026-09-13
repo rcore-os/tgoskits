@@ -1,6 +1,5 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 
-use ax_sync::Mutex;
 use axfs_ng_vfs::{NodePermission, VfsError, VfsResult};
 use ddebug::ControlFile;
 
@@ -8,6 +7,7 @@ use super::SimpleFs;
 use crate::{
     dyn_debug::{DynamicDebugOps, dynamic_debug_init},
     pseudofs::{DirectRwFsFileOps, SpecialFsFile},
+    sync::Mutex,
 };
 
 pub struct DynDebugControlObj {

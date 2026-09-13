@@ -30,8 +30,6 @@ docs/
 │   ├── architecture/      # 架构设计
 │   ├── build/             # 构建与运行
 │   ├── contributing/      # 贡献
-│   ├── development/       # 开发指南
-│   ├── components/        # 组件库
 │   └── debug/             # 在线调试
 ├── blog/                  # 博客文章
 │   └── 2026/
@@ -106,13 +104,13 @@ const sidebars = {
 
 ```json
 {
-  "label": "组件库",
+  "label": "架构设计",
   "position": 7,
   "link": {
     "type": "generated-index",
-    "title": "组件库",
-    "slug": "/components",
-    "description": "组件概述与各组件文档。"
+    "title": "架构设计",
+    "slug": "/architecture",
+    "description": "系统与组件的架构关系。"
   }
 }
 ```
@@ -184,8 +182,8 @@ Docusaurus 支持三种链接方式：
 
 | 类型 | 格式 | 说明 |
 |------|------|------|
-| 绝对路径 | `[文本](/docs/components/overview)` | 推荐跨章节引用 |
-| 相对路径 | `[文本](../components/overview)` | 同一章节内引用 |
+| 绝对路径 | `[文本](/docs/architecture/overview)` | 推荐跨章节引用 |
+| 相对路径 | `[文本](../architecture/overview)` | 同一章节内引用 |
 | 外部链接 | `[文本](https://...)` | 外部 URL |
 
 ### 5.3 Mermaid 图表
@@ -223,6 +221,17 @@ sidebar_label: "自定义标签"
 title: "自定义标题"
 ---
 ```
+
+### 5.6 内容边界
+
+架构和参考文档直接描述当前实现、接口、约束、命令与故障现象。临时项目管理内容放在 Issue 或 PR 中，不进入长期文档，包括：
+
+- 推荐阅读顺序、重复的章节导航和“本文将介绍”等元说明
+- PR 状态、分阶段待办、完成记录和面向审阅者的通过条件
+- 与正文约束重复的操作核对表或文档维护步骤
+- 没有测试环境和基线依据的性能阈值
+
+测试、构建和调试页面可以保留可直接执行的命令、输入、预期输出与失败定位方法；接口前置条件、安全约束和硬件初始化顺序也不属于上述临时内容。
 
 ## 6. 部署
 

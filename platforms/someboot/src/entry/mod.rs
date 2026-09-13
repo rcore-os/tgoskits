@@ -17,6 +17,7 @@ pub fn primary_init_early(params: PrimaryCpuInitInfo) {
 
     crate::fdt::setup_earlycon();
     let _ = crate::acpi::earlycon::acpi_setup_earlycon();
+    crate::entropy::capture();
 
     #[cfg(efi)]
     if crate::efi_stub::is_uefi_available() {
@@ -38,6 +39,7 @@ pub(crate) fn secondary_entry(cpu_meta_paddr: usize) {
         let virt = crate::mem::phys_to_virt(cpu_meta_paddr);
         &*(virt as *const crate::smp::PerCpuMeta)
     };
+    crate::smp::synchronize_secondary_boot(cpu_meta.cpu_idx);
 
     unsafe extern "Rust" {
         fn __someboot_secondary(cpu_meta: &PerCpuMeta);

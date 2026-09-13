@@ -42,7 +42,7 @@ pub(crate) fn workspace_root_from_axvisor_dir(axvisor_dir: &Path) -> PathBuf {
 
 pub(crate) fn default_build_info_path(axvisor_dir: &Path, target: &str) -> PathBuf {
     crate::build::default_build_info_path_in_workspace(
-        &super::workspace_root_from_axvisor_dir(axvisor_dir),
+        &workspace_root_from_axvisor_dir(axvisor_dir),
         super::AXVISOR_PACKAGE,
         target,
     )

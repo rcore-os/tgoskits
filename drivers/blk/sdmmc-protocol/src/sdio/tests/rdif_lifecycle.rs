@@ -2,18 +2,32 @@ use core::{num::NonZeroUsize, time::Duration};
 
 use rdif_block::{
     BatchSubmitDisposition, BlockController, CompletedRequest, CompletionSink, ControllerEvent,
-    ControllerState, OwnedRequest, OwnedRequestBatch, RequestFlags, RequestId, RequestOp,
-    SubmissionSink,
+    ControllerState, DriverGeneric, OwnedRequest, OwnedRequestBatch, RequestFlags, RequestId,
+    RequestOp, SubmissionSink,
 };
 
 use super::*;
 use crate::rdif::{BlockConfig, BlockDevice};
 
 #[test]
+fn controller_uses_card_diagnostic_identity() {
+    let host = MockHost::new(Vec::new());
+    let config = BlockConfig::dma("sdmmc-test", 1, test_device_dma());
+    let parts = host.into_parts();
+    let mut card = SdMmcCard::new(parts.bus);
+    card.set_diagnostic_identity("rockchip-dwmmc:/mmc@fe2c0000");
+
+    let controller = BlockDevice::new(card, parts.irq, config);
+
+    assert_eq!(controller.name(), "rockchip-dwmmc:/mmc@fe2c0000");
+}
+
+#[test]
 fn controller_teardown_is_idempotent_after_watchdog_shutdown() {
     let host = MockHost::new(Vec::new());
     let config = BlockConfig::dma("sdmmc-test", 1, test_device_dma());
-    let mut controller = BlockDevice::new(SdioSdmmc::new(host), config);
+    let parts = host.into_parts();
+    let mut controller = BlockDevice::new(SdMmcCard::new(parts.bus), parts.irq, config);
 
     let start = controller
         .advance(ControllerEvent::Start { target_queues: 1 })
@@ -43,6 +57,32 @@ fn controller_teardown_is_idempotent_after_watchdog_shutdown() {
     );
 }
 
+#[test]
+fn ready_online_smp_repeats_info_without_reissuing_resources() {
+    let host = MockHost::new(Vec::new());
+    let config = BlockConfig::dma("sdmmc-test", 1, test_device_dma());
+    let parts = host.into_parts();
+    let mut controller = BlockDevice::new(SdMmcCard::new(parts.bus), parts.irq, config);
+    let mut start = controller
+        .advance(ControllerEvent::Start { target_queues: 1 })
+        .unwrap();
+    assert_eq!(start.controller_state(), ControllerState::Ready);
+    assert_eq!(start.take_queues().len(), 1);
+    assert_eq!(start.take_irq_endpoints().len(), 1);
+    let expected_info = start.take_device_info().unwrap();
+
+    for _ in 0..2 {
+        let mut update = controller
+            .advance(ControllerEvent::OnlineSmp { target_queues: 1 })
+            .unwrap();
+
+        assert_eq!(update.controller_state(), ControllerState::Ready);
+        assert!(update.take_queues().is_empty());
+        assert!(update.take_irq_endpoints().is_empty());
+        assert_eq!(update.take_device_info(), Some(expected_info));
+    }
+}
+
 #[derive(Default)]
 struct AcceptedIds(Vec<RequestId>);
 
@@ -66,7 +106,8 @@ fn queue_surfaces_register_retry_requested_after_a_data_irq() {
     let mut host = MockHost::new(Vec::from([ok_r1()]));
     host.complete_after_irq_register_retry = true;
     let config = BlockConfig::dma("sdmmc-test", 8, test_device_dma());
-    let mut controller = BlockDevice::new(SdioSdmmc::new(host), config);
+    let parts = host.into_parts();
+    let mut controller = BlockDevice::new(SdMmcCard::new(parts.bus), parts.irq, config);
     let mut start = controller
         .advance(ControllerEvent::Start { target_queues: 1 })
         .unwrap();

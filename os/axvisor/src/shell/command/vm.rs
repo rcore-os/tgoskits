@@ -14,7 +14,6 @@
 
 use std::{
     collections::btree_map::BTreeMap,
-    println,
     string::{String, ToString},
     thread,
     vec::Vec,
@@ -29,6 +28,7 @@ use crate::shell::command::{CommandNode, FlagDef, OptionDef, ParsedCommand};
 
 /// Check if a VM can transition to Running state.
 /// Returns Ok(()) if the transition is valid, Err with a message otherwise.
+#[cfg(feature = "fs")]
 fn can_start_vm(status: VmStatus) -> Result<(), &'static str> {
     match status {
         VmStatus::Ready | VmStatus::Stopped => Ok(()),
@@ -240,6 +240,7 @@ fn vm_start(cmd: &ParsedCommand) {
 
 /// Start a single VM by setting up vCPUs and calling boot.
 /// Returns Ok(()) if successful, Err otherwise.
+#[cfg(feature = "fs")]
 fn start_single_vm(vm: axvm::AxVMRef) -> anyhow::Result<()> {
     let vm_id = vm.id();
     let status = vm.status();
@@ -251,15 +252,23 @@ fn start_single_vm(vm: axvm::AxVMRef) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "fs")]
 fn start_vm_by_id(vm_id: usize, attach_console: bool) {
     match crate::manager::AxvmManager::with_vm(vm_id, |vm| start_single_vm(vm.clone())) {
         Some(Ok(_)) => {
             println!("✓ VM[{}] started successfully", vm_id);
             if attach_console {
                 match crate::guest_console::attach(vm_id) {
-                    Ok(()) => println!(
-                        "✓ Attached VM[{vm_id}] console; use Ctrl+Alt+H to return to the shell"
-                    ),
+                    Ok(crate::guest_console::ConsoleAttachment::Interactive) => {
+                        println!(
+                            "✓ Attached VM[{vm_id}] console; use Ctrl+X, then h to return to the \
+                             shell"
+                        );
+                        crate::guest_console::activate(vm_id);
+                    }
+                    Ok(crate::guest_console::ConsoleAttachment::Replayed) => {
+                        println!("✓ Replayed buffered VM[{vm_id}] console output");
+                    }
                     Err(error) => println!("✗ Failed to attach VM[{vm_id}] console: {error:#}"),
                 }
             }
@@ -606,9 +615,12 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
     // Remove VM from global list
     // Note: This drops the reference from the global list, but the VM object
     // will only be fully destroyed when all vCPU threads exit and drop their references
+    let console_backend = crate::guest_console::backend_identity(vm_id);
     match crate::manager::AxvmManager::remove_vm(vm_id) {
         Some(vm) => {
-            crate::guest_console::remove(vm_id);
+            if let Some(identity) = console_backend {
+                crate::guest_console::remove_if_backend(identity);
+            }
             if let Err(err) = vm.destroy() {
                 println!("⚠ VM[{vm_id}] destroy failed: {err}");
             }
@@ -648,8 +660,12 @@ fn vm_console(cmd: &ParsedCommand) {
     };
 
     match crate::guest_console::attach(vm_id) {
-        Ok(()) => {
-            println!("✓ Attached VM[{vm_id}] console; use Ctrl+Alt+H to return to the shell");
+        Ok(crate::guest_console::ConsoleAttachment::Interactive) => {
+            println!("✓ Attached VM[{vm_id}] console; use Ctrl+X, then h to return to the shell");
+            crate::guest_console::activate(vm_id);
+        }
+        Ok(crate::guest_console::ConsoleAttachment::Replayed) => {
+            println!("✓ Replayed buffered VM[{vm_id}] console output");
         }
         Err(error) => println!("✗ Failed to attach VM[{vm_id}] console: {error:#}"),
     }
@@ -867,14 +883,24 @@ fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
         if show_config {
             println!();
             println!("Configuration:");
-            vm.with_config(|cfg| {
-                println!("  BSP Entry:      {:#x}", cfg.bsp_entry().as_usize());
-                println!("  AP Entry:       {:#x}", cfg.ap_entry().as_usize());
-                println!("  Interrupt Mode: {:?}", cfg.interrupt_mode());
-                if let Some(dtb_addr) = cfg.image_config().dtb_load_gpa {
-                    println!("  DTB Address:    {:#x}", dtb_addr.as_usize());
-                }
+            // Snapshot configuration values and release the config lock before
+            // console output, keeping the lock scope independent of formatting.
+            let (bsp_entry, ap_entry, address_space_policy, dtb_load_gpa) = vm.with_config(|cfg| {
+                (
+                    cfg.bsp_entry().as_usize(),
+                    cfg.ap_entry().as_usize(),
+                    cfg.address_space_policy(),
+                    cfg.image_config()
+                        .dtb_load_gpa
+                        .map(|address| address.as_usize()),
+                )
             });
+            println!("  BSP Entry:      {:#x}", bsp_entry);
+            println!("  AP Entry:       {:#x}", ap_entry);
+            println!("  Address Space:  {:?}", address_space_policy);
+            if let Some(dtb_addr) = dtb_load_gpa {
+                println!("  DTB Address:    {:#x}", dtb_addr);
+            }
         }
 
         // Device Summary
@@ -1031,80 +1057,82 @@ fn show_vm_full_details(vm_id: usize) {
         // Configuration
         println!();
         println!("Configuration:");
-        vm.with_config(|cfg| {
-            println!("  BSP Entry:      {:#x}", cfg.bsp_entry().as_usize());
-            println!("  AP Entry:       {:#x}", cfg.ap_entry().as_usize());
-            println!("  Interrupt Mode: {:?}", cfg.interrupt_mode());
-
-            if let Some(dtb_addr) = cfg.image_config().dtb_load_gpa {
-                println!("  DTB Address:    {:#x}", dtb_addr.as_usize());
-            }
-
-            // Show kernel info
-            println!(
-                "  Kernel GPA:     {:#x}",
-                cfg.image_config().kernel_load_gpa.as_usize()
-            );
-
-            // Show passthrough devices
-            if !cfg.pass_through_devices().is_empty() {
-                println!();
-                println!(
-                    "  Passthrough Devices: ({} device(s))",
-                    cfg.pass_through_devices().len()
-                );
-                for device in cfg.pass_through_devices() {
-                    println!(
-                        "    - {}: GPA[{:#x}~{:#x}] -> HPA[{:#x}~{:#x}] ({})",
-                        device.name,
-                        device.base_gpa,
-                        device.base_gpa + device.length,
-                        device.base_hpa,
-                        device.base_hpa + device.length,
-                        format_memory_size(device.length)
-                    );
-                }
-            }
-
-            // Show passthrough addresses
-            if !cfg.pass_through_addresses().is_empty() {
-                println!();
-                println!(
-                    "  Passthrough Memory Regions: ({} region(s))",
-                    cfg.pass_through_addresses().len()
-                );
-                for pt_addr in cfg.pass_through_addresses() {
-                    println!(
-                        "    - GPA[{:#x}~{:#x}] ({})",
-                        pt_addr.base_gpa,
-                        pt_addr.base_gpa + pt_addr.length,
-                        format_memory_size(pt_addr.length)
-                    );
-                }
-            }
-
-            // Show physical IRQs routed through the virtual GIC.
-            #[cfg(target_arch = "aarch64")]
-            {
-                let irqs = cfg.pass_through_irqs();
-                if !irqs.is_empty() {
-                    println!();
-                    println!("  Physical IRQ Routes: {:?}", irqs);
-                }
-            }
-
-            // Show emulated devices
-            if !cfg.emu_devices().is_empty() {
-                println!();
-                println!(
-                    "  Emulated Devices: ({} device(s))",
-                    cfg.emu_devices().len()
-                );
-                for (idx, device) in cfg.emu_devices().iter().enumerate() {
-                    println!("    {}. {:?}", idx + 1, device);
-                }
-            }
+        // Snapshot the values needed for output, then release the config lock
+        // before taking console locks while formatting the details.
+        let (
+            bsp_entry,
+            ap_entry,
+            address_space_policy,
+            dtb_load_gpa,
+            kernel_load_gpa,
+            pass_through_devices,
+            pass_through_addresses,
+        ) = vm.with_config(|cfg| {
+            (
+                cfg.bsp_entry().as_usize(),
+                cfg.ap_entry().as_usize(),
+                cfg.address_space_policy(),
+                cfg.image_config()
+                    .dtb_load_gpa
+                    .map(|address| address.as_usize()),
+                cfg.image_config().kernel_load_gpa.as_usize(),
+                cfg.pass_through_devices().to_vec(),
+                cfg.pass_through_addresses().to_vec(),
+            )
         });
+        #[cfg(target_arch = "aarch64")]
+        let pass_through_irqs = vm.with_config(|cfg| cfg.pass_through_irqs().to_vec());
+
+        println!("  BSP Entry:      {:#x}", bsp_entry);
+        println!("  AP Entry:       {:#x}", ap_entry);
+        println!("  Address Space:  {:?}", address_space_policy);
+
+        if let Some(dtb_addr) = dtb_load_gpa {
+            println!("  DTB Address:    {:#x}", dtb_addr);
+        }
+
+        println!("  Kernel GPA:     {:#x}", kernel_load_gpa);
+
+        if !pass_through_devices.is_empty() {
+            println!();
+            println!(
+                "  Passthrough Devices: ({} device(s))",
+                pass_through_devices.len()
+            );
+            for device in &pass_through_devices {
+                println!(
+                    "    - {}: GPA[{:#x}~{:#x}] -> HPA[{:#x}~{:#x}] ({})",
+                    device.name,
+                    device.base_gpa,
+                    device.base_gpa + device.length,
+                    device.base_hpa,
+                    device.base_hpa + device.length,
+                    format_memory_size(device.length)
+                );
+            }
+        }
+
+        if !pass_through_addresses.is_empty() {
+            println!();
+            println!(
+                "  Passthrough Memory Regions: ({} region(s))",
+                pass_through_addresses.len()
+            );
+            for address in &pass_through_addresses {
+                println!(
+                    "    - GPA[{:#x}~{:#x}] ({})",
+                    address.base_gpa,
+                    address.base_gpa + address.length,
+                    format_memory_size(address.length)
+                );
+            }
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        if !pass_through_irqs.is_empty() {
+            println!();
+            println!("  Physical IRQ Routes: {:?}", pass_through_irqs);
+        }
 
         // Devices
         println!();

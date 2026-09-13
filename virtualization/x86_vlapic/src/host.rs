@@ -2,16 +2,16 @@
 
 use core::marker::PhantomData;
 
-use crate::{
-    X86HostPhysAddr, X86HostVirtAddr, X86InterruptVector, X86TimerCallback, X86VcpuId,
-    X86VlapicError, X86VlapicResult, X86VmId,
-};
+use crate::*;
 
 /// Size of a 4 KiB host frame.
 pub const X86_PAGE_SIZE_4K: usize = 0x1000;
 
 /// Host operations required by x86 vLAPIC and PIT emulation.
-pub trait X86VlapicHostOps {
+pub trait X86VlapicHostOps: 'static {
+    /// Stable handle for one host timer registration.
+    type TimerHandle: Copy + Send + 'static;
+
     /// Allocate one host frame.
     fn alloc_frame() -> Option<X86HostPhysAddr>;
 
@@ -28,10 +28,25 @@ pub trait X86VlapicHostOps {
     fn current_time_nanos() -> u64;
 
     /// Register a timer callback for an absolute host deadline in nanoseconds.
-    fn register_timer(deadline_nanos: u64, callback: X86TimerCallback) -> Option<usize>;
+    fn register_timer(
+        deadline_nanos: u64,
+        callback: X86TimerCallback,
+    ) -> X86VlapicResult<Self::TimerHandle>;
+
+    /// Register a stable timer callback that may run in hard IRQ context.
+    ///
+    /// # Safety
+    ///
+    /// The callback must be bounded, allocation-free, non-sleeping, and use
+    /// only IRQ-safe pre-bound capabilities. It may not perform destruction or
+    /// registry lookup.
+    unsafe fn register_hard_timer(
+        deadline_nanos: u64,
+        callback: X86TimerCallback,
+    ) -> X86VlapicResult<Self::TimerHandle>;
 
     /// Cancel a timer callback.
-    fn cancel_timer(token: usize);
+    fn cancel_timer(handle: Self::TimerHandle) -> X86VlapicResult;
 
     /// Return the current VM ID.
     fn current_vm_id() -> X86VmId;
@@ -51,6 +66,11 @@ pub trait X86VlapicHostOps {
         vcpu_id: X86VcpuId,
         vector: X86InterruptVector,
     ) -> X86VlapicResult;
+
+    /// Route a PIT IRQ0 edge through the VM's selected legacy or I/O APIC path.
+    fn inject_pit_irq(_vm_id: X86VmId, _vcpu_id: X86VcpuId) -> X86VlapicResult {
+        Err(X86VlapicError::Unsupported)
+    }
 }
 
 /// RAII host frame used by x86 virtual interrupt-controller structures.
@@ -109,12 +129,19 @@ pub(crate) fn current_time_nanos<H: X86VlapicHostOps>() -> u64 {
 pub(crate) fn register_timer<H: X86VlapicHostOps>(
     deadline_nanos: u64,
     callback: X86TimerCallback,
-) -> Option<usize> {
+) -> X86VlapicResult<H::TimerHandle> {
     H::register_timer(deadline_nanos, callback)
 }
 
-pub(crate) fn cancel_timer<H: X86VlapicHostOps>(token: usize) {
-    H::cancel_timer(token);
+pub(crate) unsafe fn register_hard_timer<H: X86VlapicHostOps>(
+    deadline_nanos: u64,
+    callback: X86TimerCallback,
+) -> X86VlapicResult<H::TimerHandle> {
+    unsafe { H::register_hard_timer(deadline_nanos, callback) }
+}
+
+pub(crate) fn cancel_timer<H: X86VlapicHostOps>(handle: H::TimerHandle) -> X86VlapicResult {
+    H::cancel_timer(handle)
 }
 
 pub(crate) fn current_vm_vcpu_num<H: X86VlapicHostOps>() -> usize {

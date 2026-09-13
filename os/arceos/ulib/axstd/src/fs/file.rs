@@ -2,7 +2,10 @@ use core::fmt;
 
 use ax_api::fs as api;
 
-use crate::io::{Result, SeekFrom, prelude::*};
+use crate::{
+    StdResult,
+    io::{self, SeekFrom, prelude::*},
+};
 
 /// A structure representing a type of file with accessors for each file type.
 /// It is returned by [`Metadata::file_type`] method.
@@ -66,8 +69,10 @@ impl OpenOptions {
     }
 
     /// Opens a file at `path` with the options specified by `self`.
-    pub fn open(&self, path: &str) -> Result<File> {
-        api::ax_open_file(path, &self.0).map(|inner| File { inner })
+    pub fn open(&self, path: &str) -> StdResult<File> {
+        Ok(File {
+            inner: api::ax_open_file(path, &self.0)?,
+        })
     }
 }
 
@@ -132,12 +137,12 @@ impl fmt::Debug for Metadata {
 
 impl File {
     /// Attempts to open a file in read-only mode.
-    pub fn open(path: &str) -> Result<Self> {
+    pub fn open(path: &str) -> StdResult<Self> {
         OpenOptions::new().read(true).open(path)
     }
 
     /// Opens a file in write-only mode.
-    pub fn create(path: &str) -> Result<Self> {
+    pub fn create(path: &str) -> StdResult<Self> {
         OpenOptions::new()
             .write(true)
             .create(true)
@@ -146,7 +151,7 @@ impl File {
     }
 
     /// Creates a new file in read-write mode; error if the file exists.
-    pub fn create_new(path: &str) -> Result<Self> {
+    pub fn create_new(path: &str) -> StdResult<Self> {
         OpenOptions::new()
             .read(true)
             .write(true)
@@ -161,34 +166,36 @@ impl File {
 
     /// Truncates or extends the underlying file, updating the size of
     /// this file to become `size`.
-    pub fn set_len(&self, size: u64) -> Result<()> {
-        api::ax_truncate_file(&self.inner, size)
+    pub fn set_len(&self, size: u64) -> StdResult {
+        api::ax_truncate_file(&self.inner, size)?;
+        Ok(())
     }
 
     /// Queries metadata about the underlying file.
-    pub fn metadata(&self) -> Result<Metadata> {
-        api::ax_file_attr(&self.inner).map(Metadata)
+    pub fn metadata(&self) -> StdResult<Metadata> {
+        Ok(Metadata(api::ax_file_attr(&self.inner)?))
     }
 }
 
 impl Read for File {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        api::ax_read_file(&mut self.inner, buf)
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        Ok(api::ax_read_file(&mut self.inner, buf)?)
     }
 }
 
 impl Write for File {
-    fn write(&mut self, buf: &[u8]) -> Result<usize> {
-        api::ax_write_file(&mut self.inner, buf)
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        Ok(api::ax_write_file(&mut self.inner, buf)?)
     }
 
-    fn flush(&mut self) -> Result<()> {
-        api::ax_flush_file(&self.inner)
+    fn flush(&mut self) -> io::Result<()> {
+        api::ax_flush_file(&self.inner)?;
+        Ok(())
     }
 }
 
 impl Seek for File {
-    fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
-        api::ax_seek_file(&mut self.inner, pos)
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        Ok(api::ax_seek_file(&mut self.inner, pos)?)
     }
 }

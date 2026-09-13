@@ -7,6 +7,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.10.1...ax-fs-ng-v0.10.2) - 2026-09-11
+
+### Added
+
+- *(ax-fs-ng)* add async block request runtime ([#2349](https://github.com/rcore-os/tgoskits/pull/2349))
+
+## [0.10.1](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.10.0...ax-fs-ng-v0.10.1) - 2026-09-09
+
+### Other
+
+- *(starry)* migrate syscall regressions to LTP ([#2322](https://github.com/rcore-os/tgoskits/pull/2322))
+
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.9.3...ax-fs-ng-v0.10.0) - 2026-09-09
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+- *(virtio)* implement split-ring event index ([#2255](https://github.com/rcore-os/tgoskits/pull/2255))
+
+### Fixed
+
+- *(ax-fs-ng)* linearize block runtime lifecycle ([#2256](https://github.com/rcore-os/tgoskits/pull/2256))
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(rsext4)* [**breaking**] align ext4 semantics with Linux 7.1 ([#1957](https://github.com/rcore-os/tgoskits/pull/1957))
+
+### Added
+
+- Route typed ext4 preallocation, range mutation, extent inspection, and xattr
+  operations through the page-cache and inode adapters.
+- Propagate native block geometry, read-only, flush, and FUA capabilities
+  through the shared filesystem block cache.
+
+### Fixed
+
+- Serialize collapse/insert range mapping shifts with cached I/O and invalidate
+  pages from the shift point after stable-length revalidation.
+- Send FUA writes directly through the block runtime after overlapping dirty
+  cache writeback, then refresh or invalidate shared cache state from the
+  completion result.
+- Keep unlinked inode page-cache lifetime out of the global reclaim registry.
+
+## [0.9.3](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.9.2...ax-fs-ng-v0.9.3) - 2026-08-27
+
+### Added
+
+- *(ax-fs-ng)* add shared block cache between block and filesystem layers ([#2171](https://github.com/rcore-os/tgoskits/pull/2171))
+
+## [0.9.2](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.9.1...ax-fs-ng-v0.9.2) - 2026-08-25
+
+### Other
+
+- *(test)* consolidate Starry and ArceOS test suites ([#2173](https://github.com/rcore-os/tgoskits/pull/2173))
+
+## [0.9.1](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.9.0...ax-fs-ng-v0.9.1) - 2026-08-25
+
+### Fixed
+
+- *(ax-fs-ng)* release reclaim registry lock before file locks ([#2170](https://github.com/rcore-os/tgoskits/pull/2170))
+- *(starry)* keep parent traversal inside chroot ([#2037](https://github.com/rcore-os/tgoskits/pull/2037))
+- *(ax-fs-ng)* stabilize block runtime lifecycle publication ([#2135](https://github.com/rcore-os/tgoskits/pull/2135))
+
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.7...ax-fs-ng-v0.9.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+- *(starry-nixos)* add Stage-2 NixOS userspace baseline ([#1923](https://github.com/rcore-os/tgoskits/pull/1923))
+
+### Fixed
+
+- *(sdmmc)* align Rockchip reset failure lifecycle ([#1987](https://github.com/rcore-os/tgoskits/pull/1987))
+- *(rsext4)* propagate journal I/O failures without panicking ([#1967](https://github.com/rcore-os/tgoskits/pull/1967))
+- *(ax-std)* implement futimens for regular files ([#1950](https://github.com/rcore-os/tgoskits/pull/1950))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
+## [0.8.7](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.6...ax-fs-ng-v0.8.7) - 2026-08-09
+
+### Fixed
+
+- *(axvisor)* correct shell filesystem command handling ([#1616](https://github.com/rcore-os/tgoskits/pull/1616))
+- *(starry-fs)* complete mount contexts and notifications ([#1902](https://github.com/rcore-os/tgoskits/pull/1902))
+- *(ax-fs-ng)* arm shared IRQ before device sources ([#1879](https://github.com/rcore-os/tgoskits/pull/1879))
+
+### Other
+
+- *(repo)* move filesystem crates to fs/ directory ([#1867](https://github.com/rcore-os/tgoskits/pull/1867))
+
 ## [0.8.6](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.5...ax-fs-ng-v0.8.6) - 2026-08-03
 
 ### Added

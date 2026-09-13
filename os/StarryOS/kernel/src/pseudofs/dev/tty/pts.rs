@@ -1,14 +1,16 @@
 use alloc::{borrow::Cow, boxed::Box, string::ToString, sync::Arc, vec::Vec};
 use core::sync::atomic::Ordering;
 
-use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodeOps, NodePermission, NodeType, VfsResult};
 use flatten_objects::FlattenObjects;
 
-use crate::pseudofs::{
-    Device, NodeOpsMux, SimpleDirOps, SimpleFs,
-    dev::tty::{Ptmx, pty::PtyDriver},
+use crate::{
+    StarryError, StarryResult,
+    pseudofs::{
+        Device, NodeOpsMux, SimpleDirOps, SimpleFs,
+        dev::tty::{Ptmx, pty::PtyDriver},
+    },
+    sync::IrqMutex,
 };
 
 /// Per-mount devpts configuration.
@@ -48,15 +50,15 @@ pub(crate) enum DevPtsMount {
 
 /// PTY index space and mount options owned by one devpts filesystem instance.
 pub(crate) struct PtsInstance {
-    options: SpinNoIrq<DevPtsOptions>,
-    table: SpinNoIrq<FlattenObjects<Arc<Device>, 16>>,
+    options: IrqMutex<DevPtsOptions>,
+    table: IrqMutex<FlattenObjects<Arc<Device>, 16>>,
 }
 
 impl PtsInstance {
     pub(crate) fn new(options: DevPtsOptions) -> Arc<Self> {
         Arc::new(Self {
-            options: SpinNoIrq::new(options),
-            table: SpinNoIrq::new(FlattenObjects::new()),
+            options: IrqMutex::new(options),
+            table: IrqMutex::new(FlattenObjects::new()),
         })
     }
 
@@ -64,7 +66,7 @@ impl PtsInstance {
         *self.options.lock() = options;
     }
 
-    pub(crate) fn add_slave(&self, fs: Arc<SimpleFs>, pty: Arc<PtyDriver>) -> AxResult<u32> {
+    pub(crate) fn add_slave(&self, fs: Arc<SimpleFs>, pty: Arc<PtyDriver>) -> StarryResult<u32> {
         let options = *self.options.lock();
         let terminal = pty.terminal.clone();
         let device = Device::new(fs, NodeType::CharacterDevice, DeviceId::default(), pty);
@@ -75,7 +77,9 @@ impl PtsInstance {
         })?;
 
         let mut table = self.table.lock();
-        let pty_number = table.add(device).map_err(|_| AxError::TooManyOpenFiles)? as u32;
+        let pty_number = table
+            .add(device)
+            .map_err(|_| StarryError::TooManyOpenFiles)? as u32;
         terminal.pty_number.store(pty_number, Ordering::Release);
         table
             .get(pty_number as usize)
@@ -133,13 +137,15 @@ impl SimpleDirOps for PtsDir {
                 .map(|device| NodeOpsMux::File(device));
         }
 
-        let id = name.parse::<usize>().map_err(|_| AxError::InvalidData)?;
+        let id = name
+            .parse::<usize>()
+            .map_err(|_| StarryError::InvalidData)?;
         let pty = self
             .instance
             .table
             .lock()
             .get(id)
-            .ok_or(AxError::NotFound)?
+            .ok_or(StarryError::NotFound)?
             .clone();
         Ok(NodeOpsMux::File(pty))
     }

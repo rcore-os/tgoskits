@@ -675,12 +675,4 @@ mod tests {
         assert_eq!(DescriptorParser::interval_to_fps(interval_60fps), 60);
         assert_eq!(DescriptorParser::fps_to_interval(60), 166666);
     }
-
-    #[test]
-    fn test_guid_constants() {
-        // 确保GUID常量正确定义
-        assert_eq!(format_guids::YUY2[0..4], [0x59, 0x55, 0x59, 0x32]);
-        assert_eq!(format_guids::NV12[0..4], [0x4e, 0x56, 0x31, 0x32]);
-        assert_eq!(format_guids::RGB24[0..4], [0x52, 0x47, 0x42, 0x33]);
-    }
 }

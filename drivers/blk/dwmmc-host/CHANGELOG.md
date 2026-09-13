@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/rcore-os/tgoskits/compare/dwmmc-host-v0.4.1...dwmmc-host-v0.4.2) - 2026-09-09
+
+### Fixed
+
+- *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+
+## [0.4.1](https://github.com/rcore-os/tgoskits/compare/dwmmc-host-v0.4.0...dwmmc-host-v0.4.1) - 2026-08-27
+
+### Other
+
+- *(sdmmc)* unify SDIO protocol and AIC8800 driver ([#2201](https://github.com/rcore-os/tgoskits/pull/2201))
+
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/dwmmc-host-v0.3.5...dwmmc-host-v0.4.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+
+### Fixed
+
+- *(sdmmc)* align Rockchip reset failure lifecycle ([#1987](https://github.com/rcore-os/tgoskits/pull/1987))
+
+## [0.3.5](https://github.com/rcore-os/tgoskits/compare/dwmmc-host-v0.3.4...dwmmc-host-v0.3.5) - 2026-08-09
+
+### Fixed
+
+- *(dwmmc)* restore RK3588 SD card boot ([#1830](https://github.com/rcore-os/tgoskits/pull/1830))
+
 ## [0.3.4](https://github.com/rcore-os/tgoskits/compare/dwmmc-host-v0.3.3...dwmmc-host-v0.3.4) - 2026-08-03
 
 ### Fixed
@@ -22,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace per-request descriptor allocation and DMA reset with one reusable
   4 KiB IDMAC descriptor ring owned by the controller.
 - Advance command and data requests only after acknowledged IRQ events, and
-  expose physical IRQ enable/disable through `SdioIrqHost`.
+  expose physical IRQ enable/disable through `SdMmcIrqHost`.
 - Build only the active IDMAC chain for each request and route acknowledgement
   exclusively through the owned IRQ endpoint.
 - Match all shared protocol progress and bus-width states exhaustively instead

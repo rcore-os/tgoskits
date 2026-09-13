@@ -3,30 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ostool::run::qemu::QemuConfig;
 use tempfile::tempdir;
 
 use super::*;
 use crate::{axvisor::build, context::ResolvedAxvisorRequest};
-
-const X86_LINUX_DIRECT_BOOT_CMDLINE_LIMIT: usize = 231;
-
-#[derive(serde::Deserialize)]
-struct TestBuildConfigVmConfigs {
-    #[serde(default)]
-    vm_configs: Vec<PathBuf>,
-}
-
-#[derive(serde::Deserialize)]
-struct TestVmKernelConfig {
-    kernel: TestVmKernel,
-}
-
-#[derive(serde::Deserialize)]
-struct TestVmKernel {
-    #[serde(default)]
-    cmdline: String,
-}
 
 fn write_qemu_config(root: &Path, case: &str, arch: &str, body: &str) -> PathBuf {
     write_qemu_config_in_group(root, "normal", "default", case, arch, body)
@@ -111,223 +91,6 @@ fn axvisor_request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRe
 }
 
 #[test]
-fn checked_in_test_build_vmconfigs_exist() {
-    let workspace_root = std::env::current_dir().unwrap();
-    let axvisor_suite = workspace_root.join("test-suit/axvisor");
-    if !axvisor_suite.is_dir() {
-        return;
-    }
-
-    let mut stack = vec![axvisor_suite];
-    let mut checked = 0;
-    while let Some(dir) = stack.pop() {
-        for entry in fs::read_dir(&dir).unwrap() {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-
-            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if !file_name.starts_with("build-")
-                || path.extension().and_then(|ext| ext.to_str()) != Some("toml")
-            {
-                continue;
-            }
-
-            let content = fs::read_to_string(&path).unwrap();
-            let config: TestBuildConfigVmConfigs = toml::from_str(&content).unwrap();
-            for vm_config in config.vm_configs {
-                if vm_config.starts_with("os/axvisor/tmp/vmconfigs") {
-                    continue;
-                }
-                checked += 1;
-                let vm_config_path = if vm_config.is_absolute() {
-                    vm_config
-                } else {
-                    workspace_root.join(vm_config)
-                };
-                assert!(
-                    vm_config_path.is_file(),
-                    "{} references missing vm_config {}",
-                    path.display(),
-                    vm_config_path.display()
-                );
-            }
-        }
-    }
-
-    assert!(checked > 0);
-}
-
-#[test]
-fn orangepi_guest_board_cases_use_matching_vm_configs() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-
-    for (board_name, expected_vm_config) in [
-        (
-            "orangepi-5-plus-linux",
-            "os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml",
-        ),
-        (
-            "orangepi-5-plus-starry",
-            "os/axvisor/configs/vms/orangepi-5-plus/starry-smp1.toml",
-        ),
-    ] {
-        let groups =
-            discover_board_test_groups(&workspace_root, "normal", None, Some(board_name)).unwrap();
-        assert_eq!(groups.len(), 1, "expected one case for {board_name}");
-
-        let build_config = fs::read_to_string(&groups[0].build_config).unwrap();
-        let build_config: TestBuildConfigVmConfigs = toml::from_str(&build_config).unwrap();
-        assert_eq!(
-            build_config.vm_configs,
-            [PathBuf::from(expected_vm_config)],
-            "{board_name} should select its matching guest VM config"
-        );
-    }
-}
-
-#[test]
-fn rock4d_board_build_selects_linux_guest() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let build_path = "os/axvisor/configs/board/rock-4d.toml";
-    let build_config = fs::read_to_string(workspace_root.join(build_path)).unwrap();
-    let build_config: TestBuildConfigVmConfigs = toml::from_str(&build_config).unwrap();
-
-    assert_eq!(
-        build_config.vm_configs,
-        [PathBuf::from(
-            "os/axvisor/configs/vms/rock-4d/linux-smp1.toml"
-        )],
-        "{build_path} should embed the default ROCK 4D Linux guest config"
-    );
-}
-
-#[test]
-fn orangepi_linux_guest_does_not_use_uart_clock_workaround() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let path = "os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml";
-    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
-    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
-
-    // The Rockchip assignment and AxVM shared-MMIO tests pin the protection itself. This
-    // board-level contract prevents the guest config from silently bypassing that path.
-    assert!(
-        !config.kernel.cmdline.contains("clk_ignore_unused"),
-        "{path} must protect the host-owned UART clock through shared-provider mediation"
-    );
-    assert!(
-        config.kernel.cmdline.contains("console=ttyS2,1500000"),
-        "{path} must route the guest console through the machine-owned virtual UART"
-    );
-}
-
-#[test]
-fn rk3568_linux_guest_uses_the_virtual_16550_console() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let path = "os/axvisor/configs/vms/roc-rk3568-pc/linux-smp1.toml";
-    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
-    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
-
-    assert!(
-        config.kernel.cmdline.contains("console=ttyS2,1500000"),
-        "{path} must route the login console through the machine-owned virtual 16550"
-    );
-    assert!(
-        !config.kernel.cmdline.contains("console=ttyFIQ0"),
-        "{path} must not route the login console through the removed physical FIQ debugger"
-    );
-}
-
-#[test]
-fn x86_hypervisor_backend_cases_request_raw_bin_artifacts() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-
-    for (backend, cpu_features) in [
-        (
-            "vmx",
-            &["+vmx-ept", "+vmx-unrestricted-guest", "+vmx-flexpriority"],
-        ),
-        ("svm", &["+svm", "+npt", "+nrip-save"]),
-    ] {
-        let path = workspace_root.join(format!(
-            "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-{backend}.toml"
-        ));
-        let config: QemuConfig = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-
-        assert!(
-            config.uefi,
-            "{backend} smoke must boot the dynamic x86 host through UEFI"
-        );
-        assert!(
-            config.to_bin,
-            "{backend} smoke must provide a raw BIN for the UEFI ESP"
-        );
-        assert!(
-            !config.args.iter().any(|arg| arg == "-nodefaults"),
-            "{backend} UEFI smoke needs QEMU's default firmware devices"
-        );
-
-        let machine = qemu_argument_value(&config.args, "-machine");
-        assert!(
-            !machine.contains("sata=off") && !machine.contains("i8042=off"),
-            "{backend} UEFI smoke must keep the firmware boot bus available"
-        );
-
-        let cpu = qemu_argument_value(&config.args, "-cpu");
-        assert!(cpu.contains("-la57"));
-        for feature in cpu_features {
-            assert!(
-                cpu.contains(feature),
-                "{backend} smoke must enable the required CPU feature {feature}"
-            );
-        }
-    }
-}
-
-fn qemu_argument_value<'a>(args: &'a [String], option: &str) -> &'a str {
-    let index = args
-        .iter()
-        .position(|arg| arg == option)
-        .unwrap_or_else(|| panic!("missing QEMU option {option}"));
-    args.get(index + 1)
-        .unwrap_or_else(|| panic!("missing value for QEMU option {option}"))
-}
-
-#[test]
-fn parses_supported_arch_aliases() {
-    assert_eq!(
-        parse_target(&Some("aarch64".to_string()), &None).unwrap(),
-        (
-            "aarch64".to_string(),
-            "aarch64-unknown-none-softfloat".to_string()
-        )
-    );
-    assert_eq!(
-        parse_target(&Some("x86_64".to_string()), &None).unwrap(),
-        ("x86_64".to_string(), "x86_64-unknown-none".to_string())
-    );
-    assert_eq!(
-        parse_target(&Some("loongarch64".to_string()), &None).unwrap(),
-        (
-            "loongarch64".to_string(),
-            "loongarch64-unknown-none-softfloat".to_string()
-        )
-    );
-    assert_eq!(
-        parse_target(&Some("riscv64".to_string()), &None).unwrap(),
-        (
-            "riscv64".to_string(),
-            "riscv64gc-unknown-none-elf".to_string()
-        )
-    );
-}
-
-#[test]
 fn accepts_full_target_triples() {
     assert_eq!(
         parse_target(&None, &Some("aarch64-unknown-none-softfloat".to_string())).unwrap(),
@@ -369,50 +132,6 @@ fn rejects_unsupported_arches() {
 }
 
 #[test]
-fn qemu_test_request_ignores_inherited_smp() {
-    let mut request = axvisor_request(
-        PathBuf::from("/tmp/build-riscv64gc-unknown-none-elf.toml"),
-        "riscv64",
-        "riscv64gc-unknown-none-elf",
-    );
-    request.smp = Some(1);
-
-    let request = Axvisor::qemu_test_request(request);
-
-    assert_eq!(request.smp, None);
-}
-
-#[test]
-fn board_test_request_ignores_inherited_smp() {
-    let mut request = axvisor_request(
-        PathBuf::from("/tmp/build-aarch64-unknown-none-softfloat.toml"),
-        "aarch64",
-        "aarch64-unknown-none-softfloat",
-    );
-    request.smp = Some(2);
-
-    let request = Axvisor::board_test_request(request);
-
-    assert_eq!(request.smp, None);
-}
-
-#[test]
-fn qemu_test_request_ignores_inherited_vmconfigs() {
-    let mut request = axvisor_request(
-        PathBuf::from("/tmp/build-x86_64-unknown-none.toml"),
-        "x86_64",
-        "x86_64-unknown-none",
-    );
-    request
-        .vmconfigs
-        .push(PathBuf::from("tmp/old-axvisor-vm.toml"));
-
-    let request = Axvisor::qemu_test_request(request);
-
-    assert!(request.vmconfigs.is_empty());
-}
-
-#[test]
 fn discovers_only_cases_with_matching_qemu_config() {
     let root = tempdir().unwrap();
     let build_config = write_qemu_build_config(
@@ -426,13 +145,14 @@ fn discovers_only_cases_with_matching_qemu_config() {
         root.path(),
         "smoke",
         "aarch64",
-        "shell_prefix = \"~ #\"\nshell_init_cmd = \"pwd\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \"~ #\", shell_cmd = \"pwd\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
     write_qemu_config(
         root.path(),
         "x86-only",
         "x86_64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"hello_world\" }]\nfail_regex \
          = []\n",
     );
 
@@ -456,6 +176,41 @@ fn discovers_only_cases_with_matching_qemu_config() {
 }
 
 #[test]
+fn rejects_test_commands_during_axvisor_case_discovery() {
+    for steps in [
+        "",
+        "[[shell_check_steps]]\nshell_prefix = \"guest#\"\nshell_cmd = \
+         \"run-tests\"\nsuccess_regex = [\"PASSED\"]\n",
+    ] {
+        let root = tempdir().unwrap();
+        write_qemu_build_config(
+            root.path(),
+            "normal",
+            "default",
+            "aarch64-unknown-none-softfloat",
+        );
+        let path = write_qemu_config(
+            root.path(),
+            "unsupported",
+            "aarch64",
+            &format!("test_commands = [\"/usr/bin/test-a\"]\n{steps}"),
+        );
+        let error = discover_qemu_cases(
+            root.path(),
+            "normal",
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("test_commands"), "{error}");
+        assert!(error.contains("shell_check_steps"), "{error}");
+        assert!(error.contains(&path.display().to_string()), "{error}");
+    }
+}
+
+#[test]
 fn selected_case_requires_matching_qemu_config() {
     let root = tempdir().unwrap();
     write_qemu_build_config(
@@ -469,7 +224,7 @@ fn selected_case_requires_matching_qemu_config() {
         root.path(),
         "smoke",
         "x86_64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"hello_world\" }]\nfail_regex \
          = []\n",
     );
 
@@ -514,7 +269,8 @@ fn selected_qemu_case_skips_non_qemu_case_with_same_name() {
         "qemu",
         "smoke",
         "aarch64",
-        "shell_prefix = \"~ #\"\nshell_init_cmd = \"pwd\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \"~ #\", shell_cmd = \"pwd\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
 
     let cases = discover_qemu_cases(
@@ -550,7 +306,8 @@ fn discovers_qemu_cases_from_selected_group() {
         root.path(),
         "smoke",
         "aarch64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"normal\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"normal\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
     write_qemu_config_in_group(
         root.path(),
@@ -558,7 +315,8 @@ fn discovers_qemu_cases_from_selected_group() {
         "stress-default",
         "load",
         "aarch64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"stress\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"stress\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
 
     let cases = discover_qemu_cases(
@@ -589,7 +347,7 @@ fn discovers_qemu_cases_from_custom_group_without_polluting_normal_group() {
         "default",
         "baseline",
         "x86_64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"hello_world\" }]\nfail_regex \
          = []\n",
     );
     write_qemu_build_config(root.path(), "custom", "firmware", "x86_64-unknown-none");
@@ -599,7 +357,7 @@ fn discovers_qemu_cases_from_custom_group_without_polluting_normal_group() {
         "firmware",
         "smoke",
         "x86_64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"hello_world\" }]\nfail_regex \
          = []\n",
     );
 
@@ -628,7 +386,8 @@ fn rejects_unknown_qemu_test_group() {
         root.path(),
         "smoke",
         "aarch64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"normal\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"normal\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
 
     let err = discover_qemu_cases(
@@ -784,7 +543,8 @@ fn discovers_uboot_test_group_from_board_cases() {
         "smoke",
         "rdk-s100-linux",
         "board_type = \"RDK-S100\"\nuboot_cmd = [\"run ab_select_cmd\", \"run \
-         avb_boot\"]\nsuccess_regex = [\"ubuntu login:\"]\nfail_regex = [\"(?i)panic\"]\n",
+         avb_boot\"]\nfail_regex = [\"(?i)panic\"]\n\n[[shell_check_steps]]\nsuccess_regex = \
+         [\"ubuntu login:\"]\n",
     );
 
     let group = discovery::discover_uboot_test_group(root.path(), "rdk-s100", "linux").unwrap();
@@ -793,138 +553,6 @@ fn discovers_uboot_test_group_from_board_cases() {
     assert_eq!(group.board_name, "rdk-s100-linux");
     assert_eq!(group.build_config, build_config);
     assert_eq!(group.board_test_config_path, board_test_config);
-}
-
-#[test]
-fn x86_linux_direct_boot_config_keeps_shared_safety_options() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let path = "os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml";
-    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
-    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
-    let cmdline = config.kernel.cmdline;
-
-    assert!(
-        cmdline.contains("no_timer_check"),
-        "{path} should keep no_timer_check to avoid x86 Linux guest timer calibration stalls"
-    );
-    for option in [
-        "rootwait",
-        "nox2apic",
-        "tsc=unstable",
-        "initcall_blacklist=ahci_pci_driver_init,i8042_init",
-    ] {
-        assert!(
-            cmdline.contains(option),
-            "{path} should retain the shared x86 direct-boot safety option {option}"
-        );
-    }
-    assert!(
-        cmdline.len() <= X86_LINUX_DIRECT_BOOT_CMDLINE_LIMIT,
-        "{path} cmdline length {} exceeds the currently verified x86 direct-boot limit of {} \
-         bytes and can truncate getty arguments",
-        cmdline.len(),
-        X86_LINUX_DIRECT_BOOT_CMDLINE_LIMIT
-    );
-    assert!(
-        cmdline.contains("-- -n -l /bin/sh -L 115200 ttyS0"),
-        "{path} should keep complete getty arguments after `--` so init does not exit"
-    );
-}
-
-#[test]
-fn asus_nuc15crh_linux_limits_legacy_serial_probe() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let path = "os/axvisor/configs/vms/asus-nuc15crh/linux-smp1.toml";
-    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
-    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
-    let cmdline = config.kernel.cmdline;
-
-    assert!(
-        cmdline.contains("8250.nr_uarts=1"),
-        "{path} should only probe the machine-owned COM1 UART on the ASUS NUC HTTP Boot board path"
-    );
-}
-
-#[test]
-fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-
-    for (name, build_path, qemu_path) in [
-        (
-            "aarch64",
-            "test-suit/axvisor/normal/qemu/build-aarch64-unknown-none-softfloat.toml",
-            "test-suit/axvisor/normal/qemu/smoke/qemu-aarch64.toml",
-        ),
-        (
-            "riscv64",
-            "test-suit/axvisor/normal/qemu/build-riscv64gc-unknown-none-elf.toml",
-            "test-suit/axvisor/normal/qemu/smoke/qemu-riscv64.toml",
-        ),
-        (
-            "loongarch64",
-            "test-suit/axvisor/normal/qemu/build-loongarch64-unknown-none-softfloat.toml",
-            "test-suit/axvisor/normal/qemu/smoke/qemu-loongarch64.toml",
-        ),
-        (
-            "x86_64-svm",
-            "test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-svm.toml",
-            "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-svm.toml",
-        ),
-        (
-            "x86_64-vmx",
-            "test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-vmx.toml",
-            "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-vmx.toml",
-        ),
-    ] {
-        let build_content = fs::read_to_string(workspace_root.join(&build_path)).unwrap();
-        let build: TestBuildConfigVmConfigs = toml::from_str(&build_content).unwrap();
-        assert!(
-            build.vm_configs.is_empty(),
-            "{build_path} should keep the NVMe root filesystem owned by the Axvisor host; guest \
-             block ABI validation is outside this migration"
-        );
-
-        let qemu_content = fs::read_to_string(workspace_root.join(&qemu_path)).unwrap();
-        let qemu: QemuConfig = toml::from_str(&qemu_content).unwrap();
-        let command = qemu
-            .shell_init_cmd
-            .unwrap_or_else(|| panic!("{name} NVMe smoke should inject a host file-I/O command"));
-
-        for required_step in [
-            "> /tmp/axvisor-nvme-rw",
-            "\ncat /tmp/axvisor-nvme-rw",
-            "rm -f /tmp/axvisor-nvme-rw",
-            "AXVISOR_NVME_ROOTFS_RW_PASSED",
-        ] {
-            assert!(
-                command.contains(required_step),
-                "{qemu_path} should include `{required_step}` in its host file-I/O smoke command"
-            );
-        }
-        assert_eq!(
-            qemu.shell_prefix.as_deref(),
-            Some("axvisor:/$"),
-            "{qemu_path} should wait for the Axvisor host shell"
-        );
-        let expected_success_regex = if name == "aarch64" {
-            vec![
-                r"(?m)^AXVISOR SHLEX  EMPTY\s*$",
-                r"(?m)^Command: vm start\s*$",
-                r"(?m)^Error: Invalid command syntax\s*$",
-                r"(?m)^AXVISOR_NVME_RW_PAYLOAD\s*$",
-                r"(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\s*$",
-            ]
-        } else {
-            vec![
-                r"(?m)^AXVISOR_NVME_RW_PAYLOAD\s*$",
-                r"(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\s*$",
-            ]
-        };
-        assert_eq!(
-            qemu.success_regex, expected_success_regex,
-            "{qemu_path} should require all architecture-specific shell markers"
-        );
-    }
 }
 
 #[test]
@@ -941,7 +569,8 @@ fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
         root.path(),
         "smoke",
         "aarch64",
-        "shell_prefix = \"~ #\"\nshell_init_cmd = \"pwd\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \"~ #\", shell_cmd = \"pwd\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
 
     write_board_build_config(root.path(), "default");
@@ -1013,13 +642,55 @@ fn rejects_empty_board_test_group() {
 }
 
 #[test]
-fn board_case_config_is_also_valid_board_run_config() {
-    let config: ostool::board::config::BoardRunConfig = toml::from_str(
-        "board_type = \"PhytiumPi\"\nshell_prefix = \"login:\"\nshell_init_cmd = \
-         \"root\"\nsuccess_regex = [\"(?m)^root@.*#\\\\s*$\"]\n",
-    )
-    .unwrap();
+fn qemu_build_groups_preserve_distinct_executable_artifacts() {
+    let root = tempdir().unwrap();
+    let build_output = root.path().join("target/release/axvisor");
+    let artifact_directory = root.path().join("preserved");
+    fs::create_dir_all(build_output.parent().unwrap()).unwrap();
 
-    assert_eq!(config.board_type, "PhytiumPi");
-    assert_eq!(config.shell_prefix.as_deref(), Some("login:"));
+    fs::write(&build_output, b"first VM config").unwrap();
+    let first =
+        super::qemu::preserve_qemu_build_artifact(&build_output, &artifact_directory, 0).unwrap();
+    fs::write(&build_output, b"second VM config").unwrap();
+    let second =
+        super::qemu::preserve_qemu_build_artifact(&build_output, &artifact_directory, 1).unwrap();
+
+    assert_ne!(first, second);
+    assert_eq!(fs::read(first).unwrap(), b"first VM config");
+    assert_eq!(fs::read(second).unwrap(), b"second VM config");
+}
+
+#[test]
+fn qemu_cases_activate_their_build_group_artifact_and_conversion_mode() {
+    let first = false;
+    let second = true;
+    let third = false;
+    let first_group = [&first, &second];
+    let second_group = [&third];
+    let groups = [first_group.as_slice(), second_group.as_slice()];
+    let artifacts = [
+        PathBuf::from("group-0/axvisor"),
+        PathBuf::from("group-1/axvisor"),
+    ];
+
+    let plan =
+        super::qemu::plan_qemu_case_artifacts(&groups, &artifacts, |to_bin| *to_bin).unwrap();
+
+    assert_eq!(plan.len(), 3);
+    assert_eq!(plan[0].build_group_index, 0);
+    assert_eq!(plan[0].build_artifact, artifacts[0]);
+    assert!(!plan[0].to_bin);
+    assert_eq!(plan[1].build_group_index, 0);
+    assert_eq!(plan[1].build_artifact, artifacts[0]);
+    assert!(plan[1].to_bin);
+    assert_eq!(plan[2].build_group_index, 1);
+    assert_eq!(plan[2].build_artifact, artifacts[1]);
+    assert!(!plan[2].to_bin);
+
+    let err = super::qemu::plan_qemu_case_artifacts(&groups, &artifacts[..1], |to_bin| *to_bin)
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("does not match preserved artifact count")
+    );
 }

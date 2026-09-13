@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.6.1...ax-ipi-v0.6.2) - 2026-09-13
+
+### Other
+
+- updated the following local packages: ax-hal
+
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.6.0...ax-ipi-v0.6.1) - 2026-09-11
+
+### Other
+
+- updated the following local packages: ax-hal
+
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.31...ax-ipi-v0.6.0) - 2026-09-09
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
+## [0.5.31](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.30...ax-ipi-v0.5.31) - 2026-08-20
+
+### Other
+
+- *(arceos)* guard task IPI progress under constrained TCG ([#2019](https://github.com/rcore-os/tgoskits/pull/2019))
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
+## [0.5.30](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.29...ax-ipi-v0.5.30) - 2026-08-09
+
+### Other
+
+- *(ax-ipi)* establish typed IPI publication transport ([#1916](https://github.com/rcore-os/tgoskits/pull/1916))
+- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+
 ## [0.5.29](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.5.28...ax-ipi-v0.5.29) - 2026-08-03
 
 ### Other

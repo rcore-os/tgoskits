@@ -27,7 +27,7 @@ impl GicV3Controller {
     /// Writes a Distributor register and schedules newly deliverable SPIs.
     pub fn write_distributor(&self, offset: u64, width: AccessWidth, value: u64) -> VgicResult {
         let (wakes, physical_state_changes) = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             let physical_snapshot = state.physical_interrupt_snapshot()?;
             let write = state
                 .distributor
@@ -85,7 +85,7 @@ impl GicV3Controller {
         value: u64,
     ) -> VgicResult {
         let wakes = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             let candidates = state
                 .redistributor_mut(vcpu, "write Redistributor")?
                 .write(offset, width, value, &self.inner.config)?;
@@ -114,7 +114,7 @@ impl GicV3Controller {
         if let Some(value) = component_id(offset, GicComponent::Its) {
             return Ok(value);
         }
-        let state = self.inner.state.lock();
+        let state = self.inner.state.lock_irqsave();
         let its = state
             .its
             .get(&its_id)
@@ -157,7 +157,7 @@ impl GicV3Controller {
     ) -> VgicResult {
         validate_its_access(self, its_id, offset, width, "write")?;
         let actions = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             if let Some(base) = wide_register_base(offset) {
                 let current = match base {
                     GITS_TYPER => its_typer(self.inner.config.lpi_limit()),
@@ -254,7 +254,7 @@ impl GicV3Controller {
 
     fn apply_its_actions(&self, actions: Vec<ItsAction>) -> VgicResult {
         let wakes = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             let mut wakes = Vec::new();
             for action in actions {
                 match action {

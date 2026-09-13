@@ -11,15 +11,16 @@ surface separates three different concepts that should not be mixed:
 - `ContiguousArray<T>` / `ContiguousBox<T>`: owned device-address-contiguous
   DMA memory using normal CPU mapping. Use these for data buffers and buffer
   pools. CPU-only accessors are named with a `_cpu` suffix; ownership transfer
-  is explicit via `prepare_for_device(_all)` / `complete_for_cpu(_all)` or the
+  is explicit via `prepare_for_device(range)` / `complete_for_cpu(range)` or the
   higher-level `*_for_device` / `*_from_device` helpers.
 - `StreamingMap<T>`: RAII mapping of an existing caller-owned buffer. Use this
-  for one transfer of a buffer not owned by `dma-api`. Explicit sync methods
-  handle cache maintenance and bounce-buffer copy, and `Drop` unmaps.
+  for one transfer of a buffer not owned by `dma-api`. Explicit ownership
+  transfer handles cache maintenance and bounce-buffer copy, and `Drop`
+  unmaps.
 
 The `*_for_device` and `*_from_device` helpers are convenience ownership
 transfer APIs. They wrap the same synchronization operations as
-`prepare_for_device(_all)` and `complete_for_cpu(_all)`: CPU writes are made
+`prepare_for_device(range)` and `complete_for_cpu(range)`: CPU writes are made
 visible before the device runs, and device writes are made visible before CPU
 reads. They do not detect device completion, place MMIO doorbells, or provide
 hardware ordering barriers. Drivers still decide when a transfer is submitted
@@ -42,15 +43,56 @@ pub struct DmaConstraints {
 }
 ```
 
-`DeviceDma::new_legacy(dma_mask, op)` is shorthand for
-`DmaConstraints::new(dma_mask)`. Use `with_constraints` when a specific queue
-or transfer has stronger alignment, boundary, or segment-size requirements.
+`DmaDeviceInfo` keeps a device's address domain, cache coherency, and constraints
+together. Construct `DeviceDma` from that complete description and the platform
+operation implementation:
+
+```rust,ignore
+let info = DmaDeviceInfo::new(
+    DmaDomainId::Direct,
+    coherency,
+    DmaConstraints::new(dma_mask),
+);
+let dma = DeviceDma::new(info, op);
+```
+
+Use `DmaDomainId::Direct` only when device addresses are physical addresses.
+Use `DmaDomainId::Translated(id)` only with an ID supplied by a real IOMMU
+domain. `coherency` is a required device property obtained from firmware or the
+bus; it is separate from address and layout constraints. Use `with_constraints`
+when a specific queue or transfer has stronger requirements.
+
+### Migrating from 0.9
+
+This release intentionally replaces the legacy global-domain API instead of
+keeping a second compatibility path:
+
+- Replace `DmaDomainId::legacy_global()` and `DmaDomainId::from_raw(0)` with
+  `DmaDomainId::Direct` only for devices whose DMA addresses are physical
+  addresses.
+- Replace a nonzero raw domain value with `DmaDomainId::Translated(id)` only
+  when `id` comes from a real IOMMU domain already attached to the device.
+- Build one `DmaDeviceInfo` from the device domain, coherency property, and
+  constraints, then call `DeviceDma::new(info, op)`.
+- Replace public `sync_for_device` / `sync_for_cpu` calls with
+  `prepare_for_device(range)` / `complete_for_cpu(range)` ownership
+  transitions.
+
+There is no automatic translation from an arbitrary legacy domain number: a
+direct device and an IOMMU-translated device have different address semantics,
+so callers must select the case supported by their platform.
 
 Backends must never hand a driver a DMA address outside the requested mask. For
-example, a device created with `DeviceDma::new_legacy(u32::MAX as u64, op)` must only
-return 32-bit reachable DMA addresses. Streaming mappings may use a fast path
-when the original buffer already satisfies the constraints; otherwise they
-should allocate an in-mask bounce buffer.
+example, a device whose constraints use `u32::MAX as u64` must only return
+32-bit reachable DMA addresses. Streaming mappings may use a fast path when the
+original buffer already satisfies the constraints; otherwise they should
+allocate an in-mask bounce buffer.
+
+For `DmaCoherency::Coherent`, coherent allocations retain the normal contiguous
+CPU mapping and explicit cache synchronization is skipped. For
+`DmaCoherency::NonCoherent`, the backend creates and later removes the coherent
+CPU mapping. Bounce-buffer copies occur for either property; only non-coherent
+devices perform cache maintenance around those copies.
 
 ## Backend Contract
 
@@ -59,7 +101,7 @@ Implement `DmaOp` once for the platform:
 ```rust,ignore
 use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
 use dma_api::{
-    DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
+    DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
 };
 
 struct MyDma;
@@ -86,10 +128,10 @@ impl DmaOp for MyDma {
         constraints: DmaConstraints,
         layout: Layout,
     ) -> Option<DmaAllocHandle> {
-        todo!("allocate the same constrained memory and apply coherent policy")
+        todo!("create the coherent CPU mapping required by a non-coherent device")
     }
 
-    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
         todo!("restore mapping policy and free alloc_coherent memory")
     }
 
@@ -109,9 +151,10 @@ impl DmaOp for MyDma {
 }
 ```
 
-The default sync methods perform cache maintenance and handle bounce-buffer
-copying. Platforms can override them if the architecture needs a different
-policy.
+The default streaming sync methods accept the device coherency property,
+perform cache maintenance only for non-coherent devices, and handle
+bounce-buffer copying for both. Platforms can override them if the architecture
+needs a different policy.
 
 ## Driver Usage
 
@@ -154,7 +197,7 @@ Streaming mappings:
 let map = dma.map_streaming_slice_for_device(buffer, 64, DmaDirection::Bidirectional)?;
 submit(map.dma_addr());
 wait_complete();
-map.complete_for_cpu_all();
+map.complete_for_cpu(0..map.bytes_len());
 ```
 
 Buffer pools use `ContiguousBufferPool` and return `ContiguousBuffer` values.

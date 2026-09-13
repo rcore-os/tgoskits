@@ -48,8 +48,8 @@ TGOSKits 在工程层面强调几件事：
 1. [项目概览](/docs/introduction/overview)
 2. [快速开始](/docs/quickstart/overview)
 3. [仓库结构](/docs/contributing/repo)
-4. [组件开发指南](/docs/development/components)
-5. 对应系统指南：[ArceOS](/docs/development/arceos)、[StarryOS](/docs/development/starryos)、[Axvisor](/docs/development/axvisor)
+4. [架构设计](/docs/architecture/overview)
+5. 对应系统上手指南：[ArceOS](/docs/quickstart/arceos)、[StarryOS](/docs/quickstart/starryos)、[Axvisor](/docs/quickstart/axvisor)
 
 ## 后续会在 Blog 中写什么
 

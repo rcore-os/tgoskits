@@ -37,7 +37,6 @@ dtb_path = "/path/to/dtb"
 ## The load address of the ramdisk image.
 # ramdisk_load_addr = 0
 ## The path of the disk image.
-# disk_path = "disk.img"
 
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.

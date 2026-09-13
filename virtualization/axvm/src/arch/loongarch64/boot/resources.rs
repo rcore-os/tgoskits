@@ -1,17 +1,13 @@
-use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
+use std::{collections::BTreeMap, format, string::String, sync::OnceLock, vec::Vec};
 
-use ax_kspin::SpinNoIrq as Mutex;
-use ax_lazyinit::LazyInit;
+use ax_std::os::arceos::{driver as ax_driver, modules::ax_hal, sync::IrqSafeMutex as Mutex};
 use axvmconfig::GuestConfig;
 
 use super::UEFI_FIRMWARE_FDT_BASE;
-use crate::{
-    AxVMRef, AxVmResult, ax_err_type,
-    config::{AxVMConfig, PassThroughDeviceConfig},
-};
+use crate::{config::*, *};
 
-static LOONGARCH_GUEST_IRQ_ROUTES: LazyInit<Mutex<BTreeMap<usize, Vec<LoongArchGuestIrqRoute>>>> =
-    LazyInit::new();
+static LOONGARCH_GUEST_IRQ_ROUTES: OnceLock<Mutex<BTreeMap<usize, Vec<LoongArchGuestIrqRoute>>>> =
+    OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LoongArchGuestIrqRoute {
@@ -20,7 +16,7 @@ pub struct LoongArchGuestIrqRoute {
 }
 
 pub fn init() {
-    LOONGARCH_GUEST_IRQ_ROUTES.init_once(Mutex::new(BTreeMap::new()));
+    let _ = LOONGARCH_GUEST_IRQ_ROUTES.set(Mutex::new(BTreeMap::new()));
 }
 
 pub fn store_guest_irq_routes(vm_id: usize, routes: Vec<LoongArchGuestIrqRoute>) {
@@ -54,8 +50,9 @@ pub fn prepare_uefi_fdt_config(
     Ok(())
 }
 
-pub fn prepare_uefi_runtime_config(vm: &AxVMRef, vm_create_config: &GuestConfig) {
-    store_guest_irq_routes(vm.id(), super::guest_irq_routes(vm, vm_create_config));
+pub fn prepare_uefi_runtime_config(vm: &AxVMRef, vm_create_config: &GuestConfig) -> AxVmResult {
+    store_guest_irq_routes(vm.id(), super::guest_irq_routes(vm, vm_create_config)?);
+    Ok(())
 }
 
 fn expand_root_passthrough(
@@ -79,12 +76,11 @@ fn expand_root_passthrough(
         .into_iter()
         .filter(|range| !passthrough_range_is_occupied(range, vm_create_config))
     {
-        vm_config.add_pass_through_device(PassThroughDeviceConfig {
+        vm_config.add_pass_through_device(HostDeviceAssignment {
             name: range.name,
             base_gpa: range.base,
             base_hpa: range.base,
             length: range.size,
-            irq_id: 0,
         });
         added += 1;
     }
@@ -108,10 +104,6 @@ fn passthrough_range_is_occupied(
         .memory_regions
         .iter()
         .any(|memory| ranges_overlap(range.base, range.size, memory.gpa, memory.size))
-        || crate::machine::current_machine_profile(vm_create_config.base.cpu_num)
-            .emulated_devices
-            .iter()
-            .any(|device| ranges_overlap(range.base, range.size, device.base_gpa, device.length))
 }
 
 fn ranges_overlap(base: usize, size: usize, other_base: usize, other_size: usize) -> bool {

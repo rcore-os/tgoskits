@@ -1,0 +1,114 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.3.2](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.3.1...aic8800-v0.3.2) - 2026-09-11
+
+### Fixed
+
+- *(aic8800)* restore D80 transport semantics within the owner state machine ([#2276](https://github.com/rcore-os/tgoskits/pull/2276))
+
+## [0.3.1](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.3.0...aic8800-v0.3.1) - 2026-09-09
+
+### Fixed
+
+- *(ax-net)* skip absent devices after owner startup ([#2288](https://github.com/rcore-os/tgoskits/pull/2288))
+
+## [0.3.0](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.9...aic8800-v0.3.0) - 2026-09-09
+
+### Added
+
+- *(aic8800)* integrate AKA WPA2 Wi-Fi and iperf validation ([#2222](https://github.com/rcore-os/tgoskits/pull/2222))
+
+### Fixed
+
+- *(net)* preserve ARP replies and stabilize board WiFi tests ([#2309](https://github.com/rcore-os/tgoskits/pull/2309))
+- *(aic8800)* bound queue memory with item and byte budgets ([#2290](https://github.com/rcore-os/tgoskits/pull/2290))
+- *(aic8800)* honor firmware data packet credits ([#2305](https://github.com/rcore-os/tgoskits/pull/2305))
+- *(net)* prevent Wi-Fi transmit and receive starvation ([#2299](https://github.com/rcore-os/tgoskits/pull/2299))
+- *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
+
+### Other
+
+- *(repo)* narrow SDIO rearm and TX queue policies ([#2250](https://github.com/rcore-os/tgoskits/pull/2250))
+
+## [0.2.9](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.8...aic8800-v0.2.9) - 2026-08-27
+
+### Other
+
+- *(sdmmc)* unify SDIO protocol and AIC8800 driver ([#2201](https://github.com/rcore-os/tgoskits/pull/2201))
+- *(ax-net)* add queue-level NAPI runtime ([#2178](https://github.com/rcore-os/tgoskits/pull/2178))
+
+## [0.2.8](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.7...aic8800-v0.2.8) - 2026-08-20
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+- *(repo)* move block and net driver crates to drivers/ directory ([#1951](https://github.com/rcore-os/tgoskits/pull/1951))
+
+## [0.2.7](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.6...aic8800-v0.2.7) - 2026-08-09
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api, rdif-eth, rd-net
+
+## [0.2.6](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.5...aic8800-v0.2.6) - 2026-08-03
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api, rdif-eth, rd-net
+
+## [0.2.5](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.4...aic8800-v0.2.5) - 2026-07-23
+
+### Other
+
+- *(axbuild)* 将构建与启动能力收敛到显式配置 ([#1620](https://github.com/rcore-os/tgoskits/pull/1620))
+
+## [0.2.4](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.3...aic8800-v0.2.4) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api, rdif-eth, rd-net
+
+## [0.2.3](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.2...aic8800-v0.2.3) - 2026-07-07
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api, rdif-eth, rd-net
+
+## [0.2.2](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.1...aic8800-v0.2.2) - 2026-07-02
+
+### Other
+
+- updated the following local packages: ax-kspin, rdif-eth, rd-net, dma-api
+
+## [0.2.1](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.0...aic8800-v0.2.1) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.1.1...aic8800-v0.2.0) - 2026-06-23
+
+### Added
+
+- *(aic8800)* AIC8800DC SoftAP for SG2002 — boot AP, SSH + HTTP, client reconnect ([#1318](https://github.com/rcore-os/tgoskits/pull/1318))
+
+### Other
+
+- *(ax-net)* add locking and concurrency documentation and remove deprecated interfaces ([#1340](https://github.com/rcore-os/tgoskits/pull/1340))
+
+## [0.1.1](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.1.0...aic8800-v0.1.1) - 2026-06-22
+
+### Added
+
+- runtime Wi-Fi AP/STA mode switch for AIC8800 on SG2002 (LicheeRV Nano) ([#1266](https://github.com/rcore-os/tgoskits/pull/1266))
+
+### Fixed
+
+- *(wifi)* D80 EAPOL TX + SDIO bus recovery, quiet per-frame logging ([#1276](https://github.com/rcore-os/tgoskits/pull/1276))

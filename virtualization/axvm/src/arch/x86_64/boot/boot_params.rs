@@ -14,11 +14,9 @@
 
 //! Linux x86 `boot_params` / zero page construction.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
-use super::linux::{
-    BOOT_PARAMS_SIZE, X86LinuxHeader, X86LinuxLayoutError, X86LinuxLoadLayout, X86LinuxRange,
-};
+use super::linux::*;
 
 const SETUP_HEADER_START: usize = 0x1f1;
 const SETUP_HEADER_END: usize = 0x290;
@@ -26,6 +24,7 @@ const SETUP_HEADER_END: usize = 0x290;
 const EXT_RAMDISK_IMAGE_OFFSET: usize = 0x0c0;
 const EXT_RAMDISK_SIZE_OFFSET: usize = 0x0c4;
 const EXT_CMD_LINE_PTR_OFFSET: usize = 0x0c8;
+const ACPI_RSDP_ADDR_OFFSET: usize = 0x070;
 const E820_ENTRIES_OFFSET: usize = 0x1e8;
 const SENTINEL_OFFSET: usize = 0x1ef;
 const TYPE_OF_LOADER_OFFSET: usize = 0x210;
@@ -59,6 +58,7 @@ pub struct BootParamsBuilder<'a> {
     ram_ranges: Vec<X86LinuxRange>,
     reserved_ranges: Vec<X86LinuxRange>,
     command_line: Option<&'a str>,
+    acpi_rsdp_addr: Option<u64>,
 }
 
 impl<'a> BootParamsBuilder<'a> {
@@ -72,13 +72,14 @@ impl<'a> BootParamsBuilder<'a> {
             kernel_image,
             header,
             layout,
-            ram_ranges: alloc::vec![main_memory],
-            reserved_ranges: alloc::vec![
+            ram_ranges: std::vec![main_memory],
+            reserved_ranges: std::vec![
                 layout.boot_params,
                 layout.boot_stub,
                 X86LinuxRange::new(LEGACY_RESERVED_START, LEGACY_RESERVED_SIZE),
             ],
             command_line: None,
+            acpi_rsdp_addr: None,
         }
     }
 
@@ -98,6 +99,11 @@ impl<'a> BootParamsBuilder<'a> {
         if range.size != 0 {
             self.reserved_ranges.push(range);
         }
+    }
+
+    /// Publishes the ACPI RSDP through Linux's zero-page handoff field.
+    pub fn set_acpi_rsdp_addr(&mut self, address: u64) {
+        self.acpi_rsdp_addr = Some(address);
     }
 
     pub fn build(mut self) -> Result<[u8; BOOT_PARAMS_SIZE], BootParamsError> {
@@ -139,6 +145,9 @@ impl<'a> BootParamsBuilder<'a> {
             self.layout.kernel.start as u32,
         );
         write_u64(boot_params, SETUP_DATA_OFFSET, 0);
+        if let Some(address) = self.acpi_rsdp_addr {
+            write_u64(boot_params, ACPI_RSDP_ADDR_OFFSET, address);
+        }
 
         let cmdline_ptr = self
             .layout
@@ -378,6 +387,10 @@ mod tests {
         u32::from_le_bytes(buffer[offset..offset + 4].try_into().unwrap())
     }
 
+    fn read_u64(buffer: &[u8], offset: usize) -> u64 {
+        u64::from_le_bytes(buffer[offset..offset + 8].try_into().unwrap())
+    }
+
     fn read_e820_entry(buffer: &[u8], idx: usize) -> E820Entry {
         let offset = E820_TABLE_OFFSET + idx * E820_ENTRY_SIZE;
         E820Entry {
@@ -396,7 +409,7 @@ mod tests {
     }
 
     fn valid_image() -> Vec<u8> {
-        let mut image = alloc::vec![0u8; SETUP_HEADER_END + 0x1000];
+        let mut image = std::vec![0u8; SETUP_HEADER_END + 0x1000];
         image[SETUP_SECTS_OFFSET] = 5;
         write_header_u16(&mut image, BOOT_FLAG_OFFSET, 0xaa55);
         write_header_u32(&mut image, HEADER_OFFSET, u32::from_le_bytes(*b"HdrS"));
@@ -456,6 +469,22 @@ mod tests {
     }
 
     #[test]
+    fn publishes_acpi_rsdp_address_to_linux() {
+        const RSDP_GPA: u64 = 0x000e_0000;
+
+        let image = valid_image();
+        let header = X86LinuxHeader::parse(&image).unwrap();
+        let layout = valid_layout(&header);
+        let mut builder =
+            BootParamsBuilder::new(&image, header, layout, X86LinuxRange::new(0, 0x80_0000));
+        builder.set_command_line("console=ttyS0").unwrap();
+        builder.set_acpi_rsdp_addr(RSDP_GPA);
+        let params = builder.build().unwrap();
+
+        assert_eq!(read_u64(&params, ACPI_RSDP_ADDR_OFFSET), RSDP_GPA);
+    }
+
+    #[test]
     fn rejects_missing_command_line() {
         let image = valid_image();
         let header = X86LinuxHeader::parse(&image).unwrap();
@@ -475,7 +504,7 @@ mod tests {
         let layout = valid_layout(&header);
         let mut builder =
             BootParamsBuilder::new(&image, header, layout, X86LinuxRange::new(0, 0x20_0000));
-        let long_command_line = alloc::string::String::from_utf8(alloc::vec![
+        let long_command_line = std::string::String::from_utf8(std::vec![
             b'a';
             BOOT_PARAMS_SIZE - COMMAND_LINE_OFFSET
         ])

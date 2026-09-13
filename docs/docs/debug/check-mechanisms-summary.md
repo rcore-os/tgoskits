@@ -27,18 +27,18 @@ sidebar_label: "检查机制总览"
 
 当前实现还没有完整覆盖所有“不能睡眠”的语义来源。特别是：
 
-- `SpinRaw` / `SpinRwLock<NoOp>` 这类 non-sleep lock 不一定改变 IRQ 或 preempt 状态；当前 lockdep build 已能在其他 atomic 条件触发时打印 held-lock stack，但还没有把 held non-sleep lock 本身作为直接触发条件。
+- raw `SpinLock` / `SpinRwLock` 这类 non-sleep lock 不一定改变 IRQ 或 preempt 状态；当前 lockdep build 已能在其他 atomic 条件触发时打印 held-lock stack，但还没有把 held non-sleep lock 本身作为直接触发条件。
 - 用户内存 fault、可能触发 reclaim 的分配、必须原子执行的 hook 入口还缺少独立语义注解。
 - preempt-disable 来源仍需后续阶段补充到诊断中。
 
 典型覆盖路径包括：
 
-- `ax_task::yield_now`
+- `ax_task::yield_current_cpu`
 - `ax_task::sleep_until`
-- `ax_task::exit`
+- `ax_task::exit_current_thread`
 - `WaitQueue::wait*`
-- `TaskInner::join`
-- `future::block_on`
+- `ax_runtime::task::join_thread`
+- `ax_runtime::task::block_on`
 - `ax-sync::Mutex::lock`
 - Starry 用户内存访问和 page fault slow path
 
@@ -46,31 +46,30 @@ sidebar_label: "检查机制总览"
 
 主要入口：
 
-- `os/arceos/modules/axtask/src/api.rs`
-- `os/arceos/modules/axtask/src/wait_queue.rs`
-- `os/arceos/modules/axtask/src/future/mod.rs`
+- `components/ax-task/src/facade.rs`
+- `components/ax-task/src/wait_queue.rs`
+- `components/ax-task/src/runtime.rs`
+- `os/arceos/modules/axruntime/src/guard.rs`
+- `os/arceos/modules/axruntime/src/task.rs`
 - `os/arceos/modules/axsync/src/mutex.rs`
 - `os/arceos/modules/axhal/src/irq.rs`
 - `platforms/ax-plat/src/irq.rs`
 - `os/StarryOS/kernel/src/mm/access.rs`
 
-默认 CI 的 `Test with std` job 会通过 `cargo xtask test` 运行两组 `ax-task`
-专项 host profile：`host-test,multitask` 覆盖未启用 IRQ feature 时的基础行为，
-`host-test,multitask,preempt,lockdep` 覆盖 preempt-disabled 与 held-lock 诊断。
-每组 profile 都先用 `--list` 校验预期的 `might_sleep` 测试集合，再只执行
-`might_sleep` 过滤项，避免完整 `preempt+lockdep` host suite 的既有不稳定路径。
-这部分覆盖不经过 QEMU 或真实 IRQ handler；显式 IRQ context 的 QEMU 回归仍是后续工作。
+默认 CI 的 `Test with std` job 会通过 `cargo xtask test` 运行 `ax-task` 的
+`host-test` profile，并精确校验 task 初始化、timer 与 `might_sleep` 测试确实被发现；
+`ax-hal` 的 `host-test` profile 同样校验 IRQ entry 测试集合。IRQ 与多任务调度已是
+基础能力，不再维护 no-IRQ 或单任务 host profile。host-test dummy 不代表真实平台；
+真实 IRQ context 的 QEMU 回归仍由对应系统测试覆盖。
 
 后续改进方向：
 
 - 继续补 QEMU 级 IRQ handler 回归，验证显式 IRQ context 路径。
-- 继续实现 held non-sleep lock 的直接判定，特别是 `SpinRaw`、`SpinRwLock<NoOp>` 和后续项目内 non-sleep rwlock。
+- 继续实现 held non-sleep lock 的直接判定，特别是 raw `SpinLock`、`SpinRwLock` 和后续项目内 non-sleep rwlock。
 - 继续改进 panic 信息，输出 preempt-disable 来源。
 - 增加 `might_fault()`、`might_alloc()`、`cant_sleep()` / non-block scope 等语义注解，减少跨模块间接阻塞路径的盲区。
 - 明确启动阶段 sleepability，区分早期启动限制和真实运行期 atomic sleep bug。
 - 补充针对性回归，覆盖 IRQ handler、持 non-sleep lock、faultable user copy、阻塞式分配和 `try_lock` 非阻塞语义。
-
-详细计划和逐项讨论状态见 [`might_sleep` 后续增强计划](./might-sleep-followups.md)。本文只保留机制级总览，避免与详细计划重复维护。
 
 ## 2. `sync-lint` 原子内存序静态检查
 
@@ -108,7 +107,7 @@ task stack canary 用来发现任务栈溢出或栈底被破坏。
 
 启用 `stack canary` 后，任务栈底会写入固定 magic 值。每次任务切换时，调度器检查上一个任务的 canary 是否仍完整；如果 magic 被覆盖，说明栈可能已经越界或被破坏，系统会 panic 并打印任务名、栈范围和期望 magic。
 
-当前 `ax-task` 的 `multitask` feature 会启用 `stack canary`。`stack-guard-page` 是额外的硬件页表保护机制：动态任务栈创建时会在栈底保留一页 guard page，并在栈向下越界触达该页时触发 page fault 诊断。
+`ax-task` 的基础多任务实现会启用 `stack canary`。`stack-guard-page` 是额外的硬件页表保护机制：动态任务栈创建时会在栈底保留一页 guard page，并在栈向下越界触达该页时触发 page fault 诊断。
 
 `stack-guard-page` 当前是 opt-in hardening feature，默认构建和普通回归测试不会启用。ArceOS Rust 应用通常通过 `ax-std/stack-guard-page` 手动启用；StarryOS 应通过 `starry-kernel/stack-guard-page` 启用，以同时打开 Starry fault handler 中的 guard page 诊断路径和底层 `ax-runtime/stack-guard-page`。项目 xtask/axbuild 流程可使用 `FEATURES=...` 注入这些 feature。
 
@@ -156,8 +155,8 @@ guard：x86_64、riscv64、aarch64 可结合各自 percpu / thread pointer /
 
 主要入口：
 
-- `os/arceos/modules/axtask/src/task.rs`
-- `os/arceos/modules/axtask/src/run_queue.rs`
+- `os/arceos/modules/axruntime/src/task.rs`
+- `components/ax-task/src/system/task_system.rs`
 - `os/arceos/modules/axruntime/src/mp.rs`
 - `platforms/axplat-dyn/src/boot.rs`
 
@@ -202,7 +201,7 @@ panic/oops 递归保护用于提升异常路径健壮性，避免主故障之后
 
 ## 5. [Backtrace Host 符号化](./backtrace-host-symbolize.md)
 
-Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtrace 块（`BACKTRACE_BEGIN` / `BT` / `BACKTRACE_END`）做离线符号化，与 Issue #146、PR #635 / #646 配套。当前需 QEMU 后手动执行 symbolize；跑完测试自动 symbolize 计划在 #635 与 #646 合入后由后续 PR 提供。
+Host 端 `cargo xtask backtrace symbolize` 对 target 输出的 raw backtrace 块（`BACKTRACE_BEGIN` / `BT` / `BACKTRACE_END`）做离线符号化。当前流程在 QEMU 运行结束后手动执行 symbolize。
 
 主要实现：`scripts/axbuild/src/backtrace.rs`。
 
@@ -218,7 +217,8 @@ Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtr
 - held-lock 栈溢出。
 - spin lock 与 mutex 混合使用时的锁顺序反转。
 
-当前实现已经抽出独立 `ax-lockdep` 组件，使用 task-held tracking 记录当前任务持有的锁，并通过 lock class / lock instance 区分锁顺序关系和具体锁实例。
+当前实现把 lockdep 状态机内聚到 `ax-sync`，并通过 runtime capability 维护当前任务的
+held-lock stack。lock class 与 lock instance 仍分别表示锁顺序关系和具体锁实例。
 
 检查流程大致是：
 
@@ -230,8 +230,7 @@ Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtr
 
 接入范围包括：
 
-- `ax-kspin` spin lock。
-- `ax-sync` mutex。
+- `ax-sync` spin lock、spin rwlock 和 sleep mutex。
 - POSIX pthread mutex lockdep-aware 布局。
 - ArceOS lockdep QEMU 回归用例。
 
@@ -241,7 +240,8 @@ Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtr
 - `components/lockdep/src/trace.rs`
 - `components/kspin/src/lockdep.rs`
 - `os/arceos/modules/axsync/src/lockdep.rs`
-- `os/arceos/modules/axtask/src/api.rs`
+- `components/ax-task/src/facade.rs`
+- `os/arceos/modules/axruntime/src/guard.rs`
 - [`test-suit/arceos/rust/task/lockdep/`](https://github.com/rcore-os/tgoskits/tree/dev/test-suit/arceos/rust/task/lockdep)
 
 后续改进方向：
@@ -256,8 +256,6 @@ Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtr
 
 ## CI 默认启用边界
 
-这些机制已进入默认 CI 覆盖范围：`sync-lint` 作为独立 CI job 运行，panic/oops 递归保护随 runtime 默认编译；`might_sleep` 与 task stack canary 在默认 CI 的 `multitask` 构建中启用。此外，默认 std job 会运行上述两组 `ax-task` 专项 host profile，其中诊断 profile 显式启用 `lockdep`，但只执行经过发现校验的 `might_sleep` 过滤测试。
-
-需要注意的是，`might_sleep` 与 task stack canary 并不是对所有单线程 ArceOS 测试包无条件启用。它们覆盖 StarryOS、Axvisor 以及多数 ArceOS QEMU 测试，但不覆盖未启用 `multitask` 的单线程测试包。
+这些机制已进入默认 CI 覆盖范围：`sync-lint` 作为独立 CI job 运行，panic/oops 递归保护随 runtime 默认编译；`might_sleep`、task stack canary、IRQ entry 和 timer 由合并后的 host profile 校验测试发现与执行。所有 ArceOS、StarryOS 与 Axvisor 构建都具备多任务和 IRQ 基础能力。
 
 `lockdep` 由于运行时开销、诊断输出和行为侵入性更强，当前仍不作为 runtime 或完整测试套件的全局默认 feature；默认 CI 仅在专项 host profile 和专门回归用例中显式启用。

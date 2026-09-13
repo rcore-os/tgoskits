@@ -113,6 +113,9 @@ pub fn def_mod(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// This macro accepts an inline module. Functions marked with Rust's standard
 /// `#[test]` attribute are registered as axtest cases, while the generated
 /// test target entry point runs the common axtest kernel runner.
+///
+/// An optional `setup = path::to::function` argument runs target-owned
+/// initialization once before the first test case.
 #[proc_macro_attribute]
 pub fn tests(attr: TokenStream, item: TokenStream) -> TokenStream {
     match expand_tests_module(attr.into(), item.into()) {
@@ -339,9 +342,26 @@ fn expand_tests_module(
     attr: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    if !attr.is_empty() {
-        return Err(Error::new_spanned(attr, "tests does not accept arguments"));
-    }
+    let setup = if attr.is_empty() {
+        None
+    } else {
+        let meta: Meta = syn::parse2(attr)?;
+        match meta {
+            Meta::NameValue(value) if value.path.is_ident("setup") => match value.value {
+                syn::Expr::Path(path) if path.qself.is_none() => Some(path.path),
+                other => {
+                    return Err(Error::new_spanned(other, "`setup` expects a function path"));
+                }
+            },
+            other => {
+                return Err(Error::new_spanned(
+                    other,
+                    "unsupported tests argument, expected `setup = path::to::function`",
+                ));
+            }
+        }
+    };
+    let run_setup = setup.map(|setup| quote! { #setup(); });
 
     let mut module: ItemMod = syn::parse2(item)?;
     if module.content.is_none() {
@@ -368,7 +388,7 @@ fn expand_tests_module(
     Ok(quote! {
         #module
 
-        #[cfg_attr(any(feature = "ax-std", target_os = "none"), unsafe(no_mangle))]
+        #[unsafe(no_mangle)]
         fn main() {
             fn __axtest_print(args: core::fmt::Arguments<'_>) {
                 ax_std::print!("{}", args);
@@ -382,8 +402,12 @@ fn expand_tests_module(
                 }
             }
 
+            #run_setup
             axtest::run_kernel_tests(
-                axtest::KernelTestConfig::new(__axtest_print, ax_hal::power::system_off)
+                axtest::KernelTestConfig::new(
+                    __axtest_print,
+                    ax_std::os::arceos::api::sys::ax_terminate,
+                )
                     .with_coverage_wait(__axtest_wait_for_coverage_extraction),
             );
         }
@@ -507,10 +531,28 @@ mod tests {
         let expanded = expanded.to_string();
 
         assert!(expanded.contains("fn main"));
-        assert!(expanded.contains("feature = \"ax-std\""));
+        assert!(expanded.contains("no_mangle"));
         assert!(expanded.contains("run_kernel_tests"));
         assert!(expanded.contains("__axtest_descriptor_smoke"));
         assert!(expanded.contains("__axtest_descriptor_ignored"));
         assert!(expanded.contains("hardware only"));
+    }
+
+    #[test]
+    fn tests_module_runs_target_setup_before_the_suite() {
+        let input = quote! { mod tests {} };
+        let attr = quote! { setup = init_kernel_test_services };
+
+        let expanded = super::expand_tests_module(attr, input)
+            .expect("tests module setup should expand")
+            .to_string();
+        let setup = expanded
+            .find("init_kernel_test_services ()")
+            .expect("generated entry should call target setup");
+        let run = expanded
+            .find("axtest :: run_kernel_tests")
+            .expect("generated entry should run the suite");
+
+        assert!(setup < run);
     }
 }

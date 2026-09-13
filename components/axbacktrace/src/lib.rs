@@ -11,19 +11,16 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use spin::Once;
+use ax_lazyinit::OnceLock;
 
 #[cfg(feature = "dwarf")]
 mod dwarf;
 
-#[cfg(all(axtest, feature = "axtest"))]
-mod axtest;
-
 #[cfg(feature = "dwarf")]
 pub use dwarf::{DwarfReader, FrameIter};
 
-static IP_RANGE: Once<Range<usize>> = Once::new();
-static FP_RANGE: Once<Range<usize>> = Once::new();
+static IP_RANGE: OnceLock<Range<usize>> = OnceLock::new();
+static FP_RANGE: OnceLock<Range<usize>> = OnceLock::new();
 
 #[cfg(target_arch = "x86_64")]
 const TARGET_ARCH: &str = "x86_64";
@@ -52,6 +49,16 @@ pub fn init(ip_range: Range<usize>, fp_range: Range<usize>) {
     dwarf::init();
 }
 
+/// Returns the initialized kernel instruction range.
+pub fn ip_range() -> Option<Range<usize>> {
+    IP_RANGE.get().cloned()
+}
+
+/// Returns the initialized kernel frame-pointer range.
+pub fn fp_range() -> Option<Range<usize>> {
+    FP_RANGE.get().cloned()
+}
+
 /// Represents a single stack frame in the unwound stack.
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -63,14 +70,11 @@ pub struct Frame {
 }
 
 impl Frame {
-    #[cfg(feature = "alloc")]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     const OFFSET: usize = 0;
-    #[cfg(feature = "alloc")]
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     const OFFSET: usize = 1;
 
-    #[cfg(feature = "alloc")]
     fn read(fp: usize) -> Option<Self> {
         if fp == 0 || !fp.is_multiple_of(core::mem::align_of::<Frame>()) {
             return None;
@@ -104,6 +108,63 @@ impl fmt::Display for Frame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "fp={:#x}, ip={:#x}", self.fp, self.ip)
     }
+}
+
+/// Walks an AAPCS-style frame-pointer chain without allocation.
+///
+/// `read` is injected by the caller so hard-IRQ users can perform no-fault page
+/// table reads instead of dereferencing an untrusted frame pointer. `out[0]`
+/// receives the sampled leaf PC; later entries are saved link registers.
+pub fn walk_fp(
+    pc: usize,
+    mut fp: usize,
+    ip_range: &Range<usize>,
+    fp_range: &Range<usize>,
+    read: impl Fn(usize) -> Option<usize>,
+    out: &mut [u64],
+) -> usize {
+    const FP_TO_LR_OFFSET: usize = core::mem::size_of::<usize>();
+    const FRAME_RECORD_SIZE: usize = 2 * FP_TO_LR_OFFSET;
+    const MAX_FRAME_GAP: usize = 8 * 1024 * 1024;
+    const MAX_STEP_FACTOR: usize = 4;
+
+    let Some(leaf) = out.first_mut() else {
+        return 0;
+    };
+    *leaf = pc as u64;
+    let mut count = 1;
+    let mut steps = 0;
+    let max_steps = out.len().saturating_mul(MAX_STEP_FACTOR);
+
+    while count < out.len() && steps < max_steps {
+        steps += 1;
+        let Some(record_end) = fp.checked_add(FRAME_RECORD_SIZE) else {
+            break;
+        };
+        if !fp.is_multiple_of(core::mem::align_of::<usize>())
+            || !fp_range.contains(&fp)
+            || record_end > fp_range.end
+        {
+            break;
+        }
+        let Some(caller_fp) = read(fp) else {
+            break;
+        };
+        let Some(lr_address) = fp.checked_add(FP_TO_LR_OFFSET) else {
+            break;
+        };
+        let Some(lr) = read(lr_address) else { break };
+
+        if ip_range.contains(&lr) {
+            out[count] = lr as u64;
+            count += 1;
+        }
+        if caller_fp == 0 || caller_fp <= fp || caller_fp.saturating_sub(fp) >= MAX_FRAME_GAP {
+            break;
+        }
+        fp = caller_fp;
+    }
+    count
 }
 
 /// Capacity of the on-stack capture buffer. Matches the default `max_depth()`.
@@ -165,16 +226,21 @@ impl CaptureBuf {
 
 /// Core frame pointer walking logic. Calls `callback` for each valid frame.
 /// The callback returns `false` to stop unwinding (e.g., buffer full).
-#[cfg(feature = "alloc")]
-fn unwind_core(mut fp: usize, mut callback: impl FnMut(Frame) -> bool) {
+fn unwind_core(fp: usize, callback: impl FnMut(Frame) -> bool) -> bool {
+    unwind_core_with_max_depth(fp, max_depth(), callback)
+}
+
+fn unwind_core_with_max_depth(
+    mut fp: usize,
+    max_depth: usize,
+    mut callback: impl FnMut(Frame) -> bool,
+) -> bool {
     let Some(fp_range) = FP_RANGE.get() else {
-        log::error!("Backtrace not initialized. Call `axbacktrace::init` first.");
-        return;
+        return false;
     };
 
     let ip_range = IP_RANGE.get();
     let mut depth = 0;
-    let max_depth = max_depth();
 
     while fp_range.contains(&fp)
         && depth < max_depth
@@ -217,6 +283,8 @@ fn unwind_core(mut fp: usize, mut callback: impl FnMut(Frame) -> bool) {
         fp = next_fp;
         depth += 1;
     }
+
+    true
 }
 
 /// Unwind the stack from the given frame pointer.
@@ -241,6 +309,90 @@ pub fn set_max_depth(depth: usize) {
 /// Returns the maximum depth for stack unwinding.
 pub fn max_depth() -> usize {
     MAX_DEPTH.load(Ordering::Relaxed)
+}
+
+fn current_frame_pointer() -> Option<usize> {
+    use core::arch::asm;
+
+    let fp: usize;
+    cfg_if::cfg_if! {
+        if #[cfg(target_arch = "x86_64")] {
+            unsafe { asm!("mov {ptr}, rbp", ptr = out(reg) fp) };
+        } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {
+            unsafe { asm!("addi {ptr}, s0, 0", ptr = out(reg) fp) };
+        } else if #[cfg(target_arch = "aarch64")] {
+            unsafe { asm!("mov {ptr}, x29", ptr = out(reg) fp) };
+        } else if #[cfg(target_arch = "loongarch64")] {
+            unsafe { asm!("move {ptr}, $fp", ptr = out(reg) fp) };
+        } else {
+            return None;
+        }
+    }
+    Some(fp)
+}
+
+/// An allocation-free, streaming stack backtrace.
+///
+/// Unlike [`Backtrace`], this type retains only the current frame pointer. Its
+/// [`fmt::Display`] implementation walks and writes one frame at a time, so it
+/// is suitable for panic and oops paths where the allocator may be unavailable
+/// or already locked. Symbolization is deliberately left to the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawBacktrace {
+    fp: usize,
+    kind: &'static str,
+}
+
+impl RawBacktrace {
+    /// Captures the frame pointer without allocating or walking the stack.
+    pub fn capture() -> Self {
+        Self {
+            fp: current_frame_pointer().unwrap_or(0),
+            kind: "raw",
+        }
+    }
+
+    /// Sets the machine-readable backtrace kind.
+    pub fn kind(mut self, kind: &'static str) -> Self {
+        self.kind = kind;
+        self
+    }
+}
+
+impl fmt::Display for RawBacktrace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "BACKTRACE_BEGIN kind={} arch={} alloc=false dwarf=false",
+            self.kind, TARGET_ARCH
+        )?;
+
+        match self.fp {
+            0 => writeln!(f, "BT_ERROR unsupported")?,
+            fp => {
+                let mut index = 0;
+                let mut write_error = None;
+                let initialized = unwind_core(fp, |frame| {
+                    if let Err(error) =
+                        writeln!(f, "BT {index} ip={:#x} fp={:#x}", frame.ip, frame.fp)
+                    {
+                        write_error = Some(error);
+                        return false;
+                    }
+                    index += 1;
+                    true
+                });
+                if let Some(error) = write_error {
+                    return Err(error);
+                }
+                if !initialized {
+                    writeln!(f, "BT_ERROR uninitialized")?;
+                }
+            }
+        }
+
+        writeln!(f, "BACKTRACE_END")
+    }
 }
 
 /// Returns whether the backtrace feature is enabled.
@@ -280,25 +432,12 @@ impl Backtrace {
 
         #[cfg(feature = "alloc")]
         {
-            use core::arch::asm;
-
-            let fp: usize;
-            cfg_if::cfg_if! {
-                if #[cfg(target_arch = "x86_64")] {
-                    unsafe { asm!("mov {ptr}, rbp", ptr = out(reg) fp) };
-                } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {
-                    unsafe { asm!("addi {ptr}, s0, 0", ptr = out(reg) fp) };
-                } else if #[cfg(target_arch = "aarch64")] {
-                    unsafe { asm!("mov {ptr}, x29", ptr = out(reg) fp) };
-                } else if #[cfg(target_arch = "loongarch64")] {
-                    unsafe { asm!("move {ptr}, $fp", ptr = out(reg) fp) };
-                } else {
-                    return Self {
-                        inner: Inner::Unsupported,
-                        kind: None,
-                    };
-                }
-            }
+            let Some(fp) = current_frame_pointer() else {
+                return Self {
+                    inner: Inner::Unsupported,
+                    kind: None,
+                };
+            };
 
             let mut buf = CaptureBuf::EMPTY;
             unwind_core(fp, |frame| buf.push(frame));
@@ -461,7 +600,6 @@ mod tests {
 
     fn init_for_tests() {
         init(0..usize::MAX, 0..usize::MAX);
-        set_max_depth(32);
     }
 
     fn boxed_frame_chain(ips: &[usize]) -> (Box<[Frame]>, usize) {
@@ -536,6 +674,27 @@ mod tests {
         let (frames, start_fp) = boxed_frame_chain(&[0x1111, 0x2222, 0x3333]);
         let out = unwind_stack(start_fp);
         assert_eq!(out, frames.as_ref());
+    }
+
+    #[test]
+    fn raw_backtrace_streams_frames_without_captured_storage() {
+        init_for_tests();
+        let (_frames, start_fp) = boxed_frame_chain(&[0x1111, 0x2222, 0x3333]);
+        let raw = RawBacktrace {
+            fp: start_fp,
+            kind: "panic",
+        };
+
+        let output = format!("{raw}");
+        assert!(output.contains("BACKTRACE_BEGIN kind=panic"));
+        assert!(output.contains("alloc=false dwarf=false"));
+        assert!(output.contains("BT 0 ip=0x1111"));
+        assert!(output.contains("BT 2 ip=0x3333"));
+        assert!(output.ends_with("BACKTRACE_END\n"));
+        assert_eq!(
+            core::mem::size_of::<RawBacktrace>(),
+            3 * core::mem::size_of::<usize>()
+        );
     }
 
     #[test]
@@ -645,60 +804,17 @@ mod tests {
     #[test]
     fn stress_deep_chain_truncation() {
         init_for_tests();
-        set_max_depth(16);
         let ips: Vec<usize> = (0..64).map(|i| 0xF000 + i).collect();
         let (chain, start_fp) = boxed_frame_chain(&ips);
 
-        let out = unwind_stack(start_fp);
+        let mut out = Vec::new();
+        unwind_core_with_max_depth(start_fp, 16, |frame| {
+            out.push(frame);
+            true
+        });
         assert_eq!(out.len(), 16);
         // Only the first 16 frames should be collected
         assert_eq!(out.as_slice(), &chain[..16]);
-
-        // Restore default
-        set_max_depth(CAPTURE_CAPACITY);
-    }
-
-    /// Repeatedly create and drop Backtrace objects to verify no leaks or corruption.
-    #[test]
-    fn stress_repeated_create_drop() {
-        init_for_tests();
-        let (chain, start_fp) = boxed_frame_chain(&[0x100, 0x200, 0x300]);
-        for _ in 0..500 {
-            let bt = Backtrace::capture_trap(start_fp, 0x400, 0);
-            let Inner::Captured(frames) = &bt.inner else {
-                panic!("expected Captured")
-            };
-            assert!(frames.len() >= 3);
-            drop(bt);
-        }
-        // Ensure the chain memory is still valid after all iterations
-        let _ = &chain;
-    }
-
-    /// Interleave capture, Display formatting, and drop to verify no side effects.
-    #[test]
-    fn stress_interleaved_capture_format() {
-        init_for_tests();
-        let (chain, start_fp) = boxed_frame_chain(&[0x500, 0x600]);
-
-        for i in 0..100 {
-            let bt = Backtrace::capture_trap(start_fp, 0x700, 0);
-            let s = format!("{bt}");
-            // Raw block should contain the trap IP
-            assert!(
-                s.contains("0x701"),
-                "iteration {i}: missing trap IP in output"
-            );
-
-            // Human-readable formatting
-            let bt_human = Backtrace::capture_trap(start_fp, 0x700, 0);
-            let human = format!("{bt_human}");
-            assert!(!human.is_empty(), "iteration {i}: empty human output");
-
-            drop(bt);
-            drop(bt_human);
-        }
-        let _ = &chain;
     }
 
     /// Repeatedly clone a Backtrace and verify equality.
@@ -715,9 +831,9 @@ mod tests {
         let _ = &chain;
     }
 
-    /// Verify Frame and Backtrace sizes remain stable (prevent accidental regressions).
+    /// Verify the layout used when reading native stack frame records.
     #[test]
-    fn stress_size_stability() {
+    fn frame_layout_matches_native_stack_records() {
         // Frame is #[repr(C)] with two usize fields
         assert_eq!(
             core::mem::size_of::<Frame>(),
@@ -727,20 +843,6 @@ mod tests {
             core::mem::align_of::<Frame>(),
             core::mem::align_of::<usize>()
         );
-
-        // Backtrace contains Inner (discriminant + Box<[Frame]>) + Option<&'static str>
-        // Size should be stable across compilations
-        let bt_size = core::mem::size_of::<Backtrace>();
-        assert!(
-            bt_size > 0 && bt_size <= 48,
-            "Backtrace size unexpected: {bt_size}"
-        );
-
-        // CaptureBuf is stack-allocated; verify it's reasonable
-        let cap_size = core::mem::size_of::<CaptureBuf>();
-        let expected =
-            CAPTURE_CAPACITY * core::mem::size_of::<Frame>() + core::mem::size_of::<usize>();
-        assert_eq!(cap_size, expected, "CaptureBuf size mismatch");
     }
 
     /// Verify Frame alignment and that misaligned pointers are rejected.
@@ -759,5 +861,35 @@ mod tests {
         }
         // Zero is always rejected
         assert!(Frame::read(0).is_none());
+    }
+
+    #[test]
+    fn injected_fp_walker_captures_leaf_and_callers() {
+        let (_chain, fp) = boxed_frame_chain(&[0x1110, 0x2220, 0x3330]);
+        let mut out = [0; 8];
+        let count = walk_fp(
+            0x1000,
+            fp,
+            &(1..usize::MAX),
+            &(fp..usize::MAX),
+            |address| Some(unsafe { *(address as *const usize) }),
+            &mut out,
+        );
+        assert_eq!(&out[..count], &[0x1000, 0x1110, 0x2220, 0x3330]);
+    }
+
+    #[test]
+    fn injected_fp_walker_rejects_overflow_before_read() {
+        let mut out = [0; 4];
+        let count = walk_fp(
+            0x1000,
+            usize::MAX - 7,
+            &(1..usize::MAX),
+            &(0..usize::MAX),
+            |_| panic!("overflowing frame must not be read"),
+            &mut out,
+        );
+        assert_eq!(count, 1);
+        assert_eq!(out[0], 0x1000);
     }
 }

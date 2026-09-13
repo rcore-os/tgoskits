@@ -1,7 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
 
-#[cfg(all(axtest, feature = "axtest"))]
+#[cfg(test)]
 extern crate alloc;
 
 use core::{
@@ -12,10 +12,6 @@ use core::{
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicU8, Ordering},
 };
-
-#[cfg(all(axtest, feature = "axtest"))]
-/// Coverage tests for lazy initialization primitives.
-pub mod axtest;
 
 /// Not initialized yet.
 const UNINIT: u8 = 0;
@@ -58,6 +54,7 @@ impl<T> LazyInit<T> {
     ///
     /// If the value is already initialized, the function will not be called
     /// and a [`None`] will be returned.
+    #[inline]
     pub fn call_once<F>(&self, f: F) -> Option<&T>
     where
         F: FnOnce() -> T,
@@ -74,14 +71,19 @@ impl<T> LazyInit<T> {
                 Ordering::Relaxed,
             ) {
                 Ok(_) => {
+                    let mut reset = InitializationReset::new(&self.inited);
                     let value = f();
                     unsafe { (*self.data.get()).as_mut_ptr().write(value) };
                     self.inited.store(INITED, Ordering::Release);
+                    reset.disarm();
                     return Some(unsafe { self.force_get() });
                 }
                 Err(INITIALIZING) => {
                     while self.inited.load(Ordering::Acquire) == INITIALIZING {
                         spin_loop();
+                    }
+                    if self.inited.load(Ordering::Acquire) == UNINIT {
+                        continue;
                     }
                     return None;
                 }
@@ -101,6 +103,7 @@ impl<T> LazyInit<T> {
     /// If another CPU or thread is initializing the value concurrently, this
     /// method waits until that initialization completes and then returns the
     /// initialized value. The initializer is executed at most once.
+    #[inline]
     pub fn get_or_init<F>(&self, f: F) -> &T
     where
         F: FnOnce() -> T,
@@ -115,6 +118,64 @@ impl<T> LazyInit<T> {
         }
     }
 
+    /// Gets a reference to the value, initializing it with `f` if needed.
+    ///
+    /// Unlike storing a `Result<T, E>` in this cell, an initialization error
+    /// leaves the cell uninitialized so a later caller can retry. Concurrent
+    /// callers wait for the current attempt and retry with their own
+    /// initializer if that attempt fails.
+    pub fn get_or_try_init<F, E>(&self, f: F) -> Result<&T, E>
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        if self.is_inited() {
+            // SAFETY: the acquire load above observed the published value.
+            return Ok(unsafe { self.force_get() });
+        }
+
+        let mut initializer = Some(f);
+        loop {
+            match self.inited.compare_exchange_weak(
+                UNINIT,
+                INITIALIZING,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    let mut reset = InitializationReset::new(&self.inited);
+                    let initializer = initializer
+                        .take()
+                        .expect("initializer is consumed only by the winning caller");
+                    let value = initializer()?;
+                    // SAFETY: this caller exclusively owns the INITIALIZING
+                    // state and publishes the initialized value below.
+                    unsafe { (*self.data.get()).as_mut_ptr().write(value) };
+                    self.inited.store(INITED, Ordering::Release);
+                    reset.disarm();
+                    // SAFETY: this caller initialized and published the value.
+                    return Ok(unsafe { self.force_get() });
+                }
+                Err(INITIALIZING) => {
+                    while self.inited.load(Ordering::Acquire) == INITIALIZING {
+                        spin_loop();
+                    }
+                    if self.inited.load(Ordering::Acquire) == UNINIT {
+                        continue;
+                    }
+                    // SAFETY: the acquire load observed INITED.
+                    return Ok(unsafe { self.force_get() });
+                }
+                Err(INITED) => {
+                    // SAFETY: compare_exchange observed INITED with acquire
+                    // ordering.
+                    return Ok(unsafe { self.force_get() });
+                }
+                Err(UNINIT) => continue,
+                _ => unreachable!(),
+            }
+        }
+    }
+
     /// Checks whether the value is initialized.
     #[inline]
     pub fn is_inited(&self) -> bool {
@@ -124,6 +185,7 @@ impl<T> LazyInit<T> {
     /// Gets a reference to the value.
     ///
     /// Returns [`None`] if the value is not initialized.
+    #[inline]
     pub fn get(&self) -> Option<&T> {
         if self.is_inited() {
             Some(unsafe { self.force_get() })
@@ -183,6 +245,29 @@ impl<T> LazyInit<T> {
     }
 }
 
+struct InitializationReset<'a> {
+    state: &'a AtomicU8,
+    armed: bool,
+}
+
+impl<'a> InitializationReset<'a> {
+    fn new(state: &'a AtomicU8) -> Self {
+        Self { state, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for InitializationReset<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.state.store(UNINIT, Ordering::Release);
+        }
+    }
+}
+
 impl<T: fmt::Debug> fmt::Debug for LazyInit<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.get() {
@@ -231,23 +316,127 @@ impl<T> Drop for LazyInit<T> {
     }
 }
 
+/// A value which can be initialized exactly once.
+///
+/// Unlike [`LazyInit::init_once`], repeated [`call_once`](Self::call_once)
+/// calls are idempotent and return the value selected by the first successful
+/// initializer.
+#[repr(transparent)]
+pub struct OnceLock<T>(LazyInit<T>);
+
+impl<T> OnceLock<T> {
+    /// Creates an empty cell.
+    pub const fn new() -> Self {
+        Self(LazyInit::new())
+    }
+
+    /// Returns the stored value, running `initializer` at most once.
+    #[inline]
+    pub fn call_once<F>(&self, initializer: F) -> &T
+    where
+        F: FnOnce() -> T,
+    {
+        self.0.get_or_init(initializer)
+    }
+
+    /// Returns the stored value, retrying initialization after errors.
+    pub fn get_or_try_init<F, E>(&self, initializer: F) -> Result<&T, E>
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        self.0.get_or_try_init(initializer)
+    }
+
+    /// Returns the stored value, or `None` before initialization completes.
+    #[inline]
+    pub fn get(&self) -> Option<&T> {
+        self.0.get()
+    }
+
+    /// Returns mutable access when initialized.
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        self.0.get_mut()
+    }
+
+    /// Returns whether initialization completed successfully.
+    pub fn is_initialized(&self) -> bool {
+        self.0.is_inited()
+    }
+}
+
+impl<T> Default for OnceLock<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for OnceLock<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// A value initialized on first access.
+pub struct LazyLock<T, F = fn() -> T> {
+    value: OnceLock<T>,
+    initializer: UnsafeCell<Option<F>>,
+}
+
+// SAFETY: `OnceLock` publishes `T` once with release/acquire ordering. Only
+// the thread which wins initialization takes `F` from the UnsafeCell.
+unsafe impl<T: Send + Sync, F: Send> Sync for LazyLock<T, F> {}
+// SAFETY: exclusive ownership permits moving both the cell and initializer.
+unsafe impl<T: Send, F: Send> Send for LazyLock<T, F> {}
+
+impl<T, F> LazyLock<T, F> {
+    /// Creates a lazily initialized value.
+    pub const fn new(initializer: F) -> Self {
+        Self {
+            value: OnceLock::new(),
+            initializer: UnsafeCell::new(Some(initializer)),
+        }
+    }
+}
+
+impl<T, F: FnOnce() -> T> LazyLock<T, F> {
+    fn force(&self) -> &T {
+        self.value.call_once(|| {
+            // SAFETY: OnceLock executes this closure on exactly one thread;
+            // initialization owns the only access to the initializer slot.
+            let initializer = unsafe { &mut *self.initializer.get() }
+                .take()
+                .expect("LazyLock initializer was consumed before publication");
+            initializer()
+        })
+    }
+}
+
+impl<T, F: FnOnce() -> T> Deref for LazyLock<T, F> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.force()
+    }
+}
+
+impl<T: fmt::Debug, F: FnOnce() -> T> fmt::Debug for LazyLock<T, F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.value.get() {
+            Some(value) => f.debug_tuple("LazyLock").field(value).finish(),
+            None => f.debug_tuple("LazyLock").field(&"<uninitialized>").finish(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{thread, time::Duration};
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        thread,
+        time::Duration,
+    };
 
     use super::*;
-
-    #[test]
-    fn lazyinit_basic() {
-        static VALUE: LazyInit<u32> = LazyInit::new();
-        assert!(!VALUE.is_inited());
-        assert_eq!(VALUE.get(), None);
-
-        VALUE.init_once(233);
-        assert!(VALUE.is_inited());
-        assert_eq!(*VALUE, 233);
-        assert_eq!(VALUE.get(), Some(&233));
-    }
 
     #[test]
     #[should_panic]
@@ -289,26 +478,39 @@ mod tests {
     }
 
     #[test]
-    fn lazyinit_get_or_init() {
-        static VALUE: LazyInit<u32> = LazyInit::new();
-        assert_eq!(*VALUE.get_or_init(|| 123), 123);
-        assert_eq!(*VALUE.get_or_init(|| 456), 123);
+    fn fallible_initialization_does_not_publish_an_error() {
+        let value = OnceLock::new();
+
+        assert_eq!(
+            value.get_or_try_init(|| Err::<u32, _>("transient")),
+            Err("transient")
+        );
+        assert!(!value.is_initialized());
+        assert_eq!(value.get_or_try_init(|| Ok::<_, &str>(123)), Ok(&123));
+        assert_eq!(value.get_or_try_init(|| Ok::<_, &str>(456)), Ok(&123));
     }
 
     #[test]
-    fn lazyinit_get_unchecked() {
-        static VALUE: LazyInit<u32> = LazyInit::new();
-        VALUE.init_once(123);
-        let v = unsafe { VALUE.get_unchecked() };
-        assert_eq!(*v, 123);
+    fn once_lock_retries_after_initializer_panic() {
+        static VALUE: OnceLock<u32> = OnceLock::new();
+
+        assert!(
+            std::panic::catch_unwind(|| VALUE.call_once(|| panic!("initializer failed"))).is_err()
+        );
+        assert!(!VALUE.is_initialized());
+        assert_eq!(*VALUE.call_once(|| 789), 789);
     }
 
     #[test]
-    fn lazyinit_get_mut_unchecked() {
-        let mut value: LazyInit<u32> = LazyInit::new();
-        value.init_once(123);
-        let v = unsafe { value.get_mut_unchecked() };
-        *v += 3;
-        assert_eq!(*v, 126);
+    fn lazy_lock_initializes_once() {
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        static VALUE: LazyLock<u32> = LazyLock::new(|| {
+            CALLS.fetch_add(1, Ordering::Relaxed);
+            42
+        });
+
+        assert_eq!(*VALUE, 42);
+        assert_eq!(*VALUE, 42);
+        assert_eq!(CALLS.load(Ordering::Relaxed), 1);
     }
 }

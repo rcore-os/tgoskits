@@ -41,7 +41,7 @@ impl GicV3Controller {
     /// Queues an acknowledged assigned SPI for hardware-backed LR delivery.
     pub fn forward_physical_spi(&self, spi: SpiId) -> VgicResult {
         let wake = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             let binding = match state.spi_backings.get(&spi).copied() {
                 Some(SpiBacking::Physical(binding)) => binding,
                 _ => {
@@ -90,7 +90,7 @@ impl GicV3Controller {
         trigger: InterruptTrigger,
     ) -> VgicResult {
         let affinity = {
-            let state = self.inner.state.lock();
+            let state = self.inner.state.lock_irqsave();
             state
                 .redistributors
                 .get(&target)
@@ -103,7 +103,7 @@ impl GicV3Controller {
         let binding =
             PhysicalInterruptBinding::new(IntId::Spi(spi), host, target, affinity, trigger);
         {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             if state.spi_backings.contains_key(&spi) {
                 return Err(VgicError::ResourceConflict {
                     resource: "GICv3 SPI backing",
@@ -138,7 +138,7 @@ impl GicV3Controller {
             state.physical_spi_acknowledged.insert(spi, false);
         }
         if let Err(error) = backend_result(self.inner.backend.bind_physical_interrupt(binding)) {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             state.spi_backings.remove(&spi);
             state.physical_spi_acknowledged.remove(&spi);
             if let Err(rollback_error) = state.distributor.release_spi_claim(spi) {
@@ -158,7 +158,7 @@ impl GicV3Controller {
     /// canonical binding and distributor claim intact so callers can retry.
     pub fn unbind_physical_spi(&self, spi: SpiId) -> VgicResult {
         let binding = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             let binding = match state.spi_backings.get(&spi).copied() {
                 Some(SpiBacking::Physical(binding)) => binding,
                 _ => {
@@ -179,11 +179,15 @@ impl GicV3Controller {
         };
 
         if let Err(error) = backend_result(self.inner.backend.unbind_physical_interrupt(binding)) {
-            self.inner.state.lock().releasing_physical_spis.remove(&spi);
+            self.inner
+                .state
+                .lock_irqsave()
+                .releasing_physical_spis
+                .remove(&spi);
             return Err(error);
         }
 
-        let mut state = self.inner.state.lock();
+        let mut state = self.inner.state.lock_irqsave();
         state.spi_backings.remove(&spi);
         state.physical_spi_acknowledged.remove(&spi);
         state.releasing_physical_spis.remove(&spi);
@@ -203,7 +207,7 @@ impl GicV3Controller {
     /// method never deactivates the same activation twice.
     pub fn teardown_physical_spi(&self, spi: SpiId) -> VgicResult {
         let (binding, needs_deactivation) = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             let binding = match state.spi_backings.get(&spi).copied() {
                 Some(SpiBacking::Physical(binding)) => binding,
                 _ => {
@@ -234,7 +238,11 @@ impl GicV3Controller {
                 .backend
                 .set_physical_interrupt_enabled(binding, false),
         ) {
-            self.inner.state.lock().releasing_physical_spis.remove(&spi);
+            self.inner
+                .state
+                .lock_irqsave()
+                .releasing_physical_spis
+                .remove(&spi);
             return Err(error);
         }
         if needs_deactivation
@@ -244,7 +252,11 @@ impl GicV3Controller {
                     .deactivate_physical_interrupt(binding.target(), binding),
             )
         {
-            self.inner.state.lock().releasing_physical_spis.remove(&spi);
+            self.inner
+                .state
+                .lock_irqsave()
+                .releasing_physical_spis
+                .remove(&spi);
             return Err(error);
         }
 
@@ -258,11 +270,15 @@ impl GicV3Controller {
             .clear_physical_spi_delivery(spi, binding);
 
         if let Err(error) = backend_result(self.inner.backend.unbind_physical_interrupt(binding)) {
-            self.inner.state.lock().releasing_physical_spis.remove(&spi);
+            self.inner
+                .state
+                .lock_irqsave()
+                .releasing_physical_spis
+                .remove(&spi);
             return Err(error);
         }
 
-        let mut state = self.inner.state.lock();
+        let mut state = self.inner.state.lock_irqsave();
         state.spi_backings.remove(&spi);
         state.physical_spi_acknowledged.remove(&spi);
         state.releasing_physical_spis.remove(&spi);
@@ -365,7 +381,7 @@ impl GicV3Controller {
             return Err(VgicError::InvalidIntId { raw: lpi.raw() });
         }
         let affinity = {
-            let state = self.inner.state.lock();
+            let state = self.inner.state.lock_irqsave();
             state
                 .redistributors
                 .get(&target)
@@ -377,7 +393,7 @@ impl GicV3Controller {
         };
         let binding = PhysicalMsiBinding::new(its, device, event, lpi, target, affinity);
         {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             if state.msi_backings.contains_key(&(its, device, event)) {
                 return Err(VgicError::ResourceConflict {
                     resource: "GICv3 MSI backing",
@@ -530,7 +546,7 @@ impl ControllerState {
 impl Drop for ControllerInner {
     fn drop(&mut self) {
         let (interrupts, retained_interrupts, msi) = {
-            let state = self.state.lock();
+            let state = self.state.lock_irqsave();
             (
                 state
                     .spi_backings

@@ -1,10 +1,10 @@
 //! DTB (Device Tree Blob) related functionality.
 use core::ptr::NonNull;
 
+use ax_lazyinit::{LazyLock, OnceLock};
 use fdt_parser::Fdt;
-use spin::{LazyLock, Once};
 
-static BOOTARG: Once<usize> = Once::new();
+static BOOTARG: OnceLock<usize> = OnceLock::new();
 
 /// Returns the physical address to probe for DTB.
 fn dtb_paddr_from_boot_context() -> Option<usize> {

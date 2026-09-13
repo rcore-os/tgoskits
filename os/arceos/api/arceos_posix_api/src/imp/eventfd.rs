@@ -9,12 +9,10 @@
 use alloc::sync::Arc;
 use core::ffi::{c_int, c_uint};
 
-use ax_errno::{LinuxError, LinuxResult};
 use ax_io::PollState;
-use ax_sync::Mutex;
 
 use super::fd_ops::{FileLike, add_file_like};
-use crate::ctypes;
+use crate::{PosixError, PosixResult, ctypes, sync::Mutex};
 
 const EFD_SUPPORTED_FLAGS: u32 = ctypes::EFD_SEMAPHORE | ctypes::EFD_CLOEXEC | ctypes::EFD_NONBLOCK;
 
@@ -26,7 +24,8 @@ struct EventFdInner {
     counter: u64,
     semaphore: bool,
     nonblocking: bool,
-    readiness_version: u64,
+    read_readiness_version: u64,
+    write_readiness_version: u64,
 }
 
 impl EventFd {
@@ -36,22 +35,23 @@ impl EventFd {
                 counter: initval as u64,
                 semaphore,
                 nonblocking,
-                readiness_version: 0,
+                read_readiness_version: 0,
+                write_readiness_version: 0,
             }),
         }
     }
 }
 
 impl FileLike for EventFd {
-    fn read(&self, buf: &mut [u8]) -> LinuxResult<usize> {
+    fn read(&self, buf: &mut [u8]) -> PosixResult<usize> {
         if buf.len() < 8 {
-            return Err(LinuxError::EINVAL);
+            return Err(PosixError::EINVAL);
         }
         loop {
             let mut inner = self.inner.lock();
             if inner.counter == 0 {
                 if inner.nonblocking {
-                    return Err(LinuxError::EAGAIN);
+                    return Err(PosixError::EAGAIN);
                 }
                 // Busy-wait: there is no wait queue to park on, so a blocking
                 // reader just yields to the cooperative scheduler and re-checks.
@@ -63,7 +63,12 @@ impl FileLike for EventFd {
             }
             // The counter was `> 0` on entry (guarded above), so the drain makes
             // it readable→unreadable exactly when it hits zero. Only that
-            // transition must bump the readiness version.
+            // transition must bump the read version.
+            if inner.counter == u64::MAX - 1 {
+                // The pre-read counter sat at the saturation ceiling, so this
+                // drain is the one read that flips writability false -> true.
+                inner.write_readiness_version = inner.write_readiness_version.wrapping_add(1);
+            }
             let value = if inner.semaphore {
                 inner.counter -= 1;
                 1
@@ -73,35 +78,34 @@ impl FileLike for EventFd {
                 v
             };
             if inner.counter == 0 {
-                inner.readiness_version = inner.readiness_version.wrapping_add(1);
+                inner.read_readiness_version = inner.read_readiness_version.wrapping_add(1);
             }
             buf[..8].copy_from_slice(&value.to_ne_bytes());
             return Ok(8);
         }
     }
 
-    fn write(&self, buf: &[u8]) -> LinuxResult<usize> {
+    fn write(&self, buf: &[u8]) -> PosixResult<usize> {
         // Linux requires the write buffer to be exactly 8 bytes (fs/eventfd.c:
         // `if (count != sizeof(ucnt)) return -EINVAL;`). Unlike read, which
         // accepts any buffer of at least 8 bytes, a longer write fails too.
         if buf.len() != 8 {
-            return Err(LinuxError::EINVAL);
+            return Err(PosixError::EINVAL);
         }
         let value = u64::from_ne_bytes(buf[..8].try_into().unwrap());
         // A write of UINT64_MAX always fails with EINVAL (fs/eventfd.c).
         if value == u64::MAX {
-            return Err(LinuxError::EINVAL);
+            return Err(PosixError::EINVAL);
         }
         loop {
             let mut inner = self.inner.lock();
-            let old_readable = inner.counter > 0;
             // The counter saturates at UINT64_MAX - 1; a write whose addition
             // would reach or exceed UINT64_MAX blocks, or fails with EAGAIN
             // if nonblocking. `u64::MAX - value` never underflows because
             // `value` is at most UINT64_MAX - 1.
             if inner.counter >= u64::MAX - value {
                 if inner.nonblocking {
-                    return Err(LinuxError::EAGAIN);
+                    return Err(PosixError::EAGAIN);
                 }
                 // Busy-wait, same as read(): TODO park on a wait queue.
                 drop(inner);
@@ -109,15 +113,28 @@ impl FileLike for EventFd {
                 continue;
             }
             inner.counter += value;
-            let new_readable = inner.counter > 0;
-            if old_readable != new_readable {
-                inner.readiness_version = inner.readiness_version.wrapping_add(1);
+            // Every accepted write is a read-readiness wakeup event, not only
+            // the one that flips the counter from zero to non-zero: Linux
+            // `eventfd_write` calls `wake_up_locked_poll(&ctx->wqh, EPOLLIN)`
+            // on every write (fs/eventfd.c), unconditionally, so a waiter must
+            // observe one edge per write. Bumping only when readability flips
+            // drops every wake after the first while the counter stays
+            // non-zero -- which is exactly how an async runtime uses its
+            // `mio::Waker` eventfd (it never drains it), hanging the second and
+            // later `spawn_blocking` calls behind an `epoll_wait` that never
+            // returns.
+            inner.read_readiness_version = inner.read_readiness_version.wrapping_add(1);
+            if inner.counter == u64::MAX - 1 {
+                // Reaching the saturation ceiling is the only write that flips
+                // writability (true -> false); a plain write must not spoof a
+                // writable edge for an `EPOLLOUT` watcher.
+                inner.write_readiness_version = inner.write_readiness_version.wrapping_add(1);
             }
             return Ok(8);
         }
     }
 
-    fn stat(&self) -> LinuxResult<ctypes::stat> {
+    fn stat(&self) -> PosixResult<ctypes::stat> {
         let st_mode = 0o100000 | 0o600u32; // S_IFREG | rw-------
         Ok(ctypes::stat {
             st_ino: 1,
@@ -131,7 +148,7 @@ impl FileLike for EventFd {
         self
     }
 
-    fn poll(&self) -> LinuxResult<PollState> {
+    fn poll(&self) -> PosixResult<PollState> {
         let inner = self.inner.lock();
         // Matches Linux `eventfd_poll`: writable only while
         // `count < ULLONG_MAX - 1`, i.e. while a 1-unit write can still
@@ -141,11 +158,12 @@ impl FileLike for EventFd {
         Ok(PollState {
             readable: inner.counter > 0,
             writable: inner.counter < u64::MAX - 1,
-            readiness_version: inner.readiness_version,
+            read_readiness_version: inner.read_readiness_version,
+            write_readiness_version: inner.write_readiness_version,
         })
     }
 
-    fn set_nonblocking(&self, nonblocking: bool) -> LinuxResult {
+    fn set_nonblocking(&self, nonblocking: bool) -> PosixResult {
         self.inner.lock().nonblocking = nonblocking;
         Ok(())
     }
@@ -157,7 +175,7 @@ pub fn sys_eventfd(initval: c_uint, flags: c_int) -> c_int {
     syscall_body!(sys_eventfd, {
         let flags = flags as u32;
         if flags & !EFD_SUPPORTED_FLAGS != 0 {
-            return Err(LinuxError::EINVAL);
+            return Err(PosixError::EINVAL);
         }
         // `EFD_CLOEXEC` is validated above but deliberately not stored: ArceOS
         // has no `exec`, so there is no child fd table to close it from.

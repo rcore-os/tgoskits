@@ -1,6 +1,6 @@
 [package]
 name = "ax-std"
-version = "0.5.30"
+version = "0.7.2"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -23,25 +23,34 @@ default = ["alloc", "tls", "fd"]
 
 # Baseline required by every ArceOS Rust application. Applications enable this
 # through their own `arceos` feature instead of axbuild completing it at runtime.
-arceos = ["irq", "paging", "std-compat", "smp"]
+arceos = ["paging", "std-compat", "smp"]
+
+# Host-side implementations for OS-specific ArceOS capabilities.
+host-test = [
+    "ax-api/host-test",
+    "ax-hal/host-test",
+    "ax-percpu/host-test",
+    "ax-runtime/host-test",
+]
 
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
 std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
 
 # Multicore
-smp = ["ax-runtime/smp", "ax-kspin/smp", "ax-posix-api/smp"]
+smp = ["ax-runtime/smp", "ax-posix-api/smp"]
 
 # Floating point/SIMD
-fp-simd = ["ax-hal/fp-simd"]
+fp-simd = ["ax-hal/fp-simd", "ax-runtime/fp-simd"]
 
 # User space support
+# Enable userspace support without kernel TLS, including when `tls` is enabled.
+# User-space TLS remains available through the userspace context APIs.
 uspace = ["ax-runtime/uspace"]
 
 # Hypervisor support
-hv = ["ax-hal/hv"]
+hv = ["ax-hal/hv", "fp-simd"]
 
-# Interrupts
-irq = ["ax-api/irq", "ax-posix-api/irq", "ax-runtime/irq"]
+# Inter-processor interrupts
 ipi = ["ax-api/ipi", "ax-runtime/ipi"]
 wake-ipi = ["ax-runtime/wake-ipi"]
 
@@ -50,15 +59,14 @@ ext-ld = ["ax-runtime/ext-ld"]
 # Memory
 alloc = ["ax-api/alloc", "ax-io/alloc", "ax-posix-api/alloc"]
 paging = ["alloc", "ax-runtime/paging"]
+# Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["ax-runtime/tls"]
 
-# Multi-threading and scheduler
-multitask = ["ax-api/multitask", "ax-posix-api/multitask", "ax-runtime/multitask"]
-lockdep = ["multitask", "ax-posix-api/lockdep", "ax-runtime/lockdep"]
-task-ext = ["ax-task/task-ext"]
-tracepoint-hooks = ["ax-task/tracepoint-hooks"]
-sched-rr = ["irq", "multitask", "ax-task/sched-rr"]
-sched-cfs = ["irq", "multitask", "ax-task/sched-cfs"]
+# Scheduler configuration
+lockdep = ["ax-posix-api/lockdep", "ax-runtime/lockdep"]
+qperf-metrics = ["ax-runtime/qperf-metrics"]
+task-ext = []
+tracepoint-hooks = []
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 
@@ -82,13 +90,13 @@ net = [
     "fd",
 ]
 vsock = ["ax-runtime/vsock"]
-aic8800-wifi = ["ax-runtime/aic8800-wifi"]
 dns = ["net"]
 
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
 fd = [
   "ax-posix-api/fd",
   "ax-posix-api/poll",
+  "ax-posix-api/pipe",
   "ax-posix-api/epoll",
   "ax-posix-api/eventfd",
 ]
@@ -107,12 +115,10 @@ display = ["ax-api/display", "ax-runtime/display"]
 input = ["ax-runtime/input"]
 
 # USB
-usb = ["irq", "ax-driver/usb"]
+usb = ["ax-driver/usb"]
 
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-runtime/rtc"]
-serial = ["ax-api/serial", "ax-posix-api/serial", "ax-runtime/serial"]
-
 # Backtrace
 backtrace = ["axbacktrace/alloc"]
 dwarf = ["axbacktrace/dwarf"]
@@ -122,14 +128,12 @@ ax-api.workspace = true
 ax-alloc.workspace = true
 axbacktrace.workspace = true
 ax-driver.workspace = true
-ax-errno.workspace = true
 ax-hal.workspace = true
 ax-io.workspace = true
-ax-kspin.workspace = true
 ax-lazyinit.workspace = true
+ax-percpu.workspace = true
 ax-posix-api.workspace = true
 ax-runtime.workspace = true
-ax-task.workspace = true
 libc.workspace = true
-lock_api.workspace = true
-spin.workspace = true
+syscalls.workspace = true
+thiserror.workspace = true

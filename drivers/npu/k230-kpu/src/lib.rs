@@ -58,10 +58,13 @@ pub const KPU_INFO_F_IRQ_WAIT: u32 = 0x2;
 pub const KPU_INFO_F_FAKE_OUTPUT: u32 = 0x4;
 pub const KPU_INFO_F_RUNTIME_SCRATCH: u32 = 0x8;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    #[error("KPU command range crosses a 4 GiB boundary")]
     CommandRangeCrosses4G,
+    #[error("KPU command range is empty")]
     CommandRangeEmpty,
+    #[error("KPU command timed out")]
     TimedOut,
 }
 

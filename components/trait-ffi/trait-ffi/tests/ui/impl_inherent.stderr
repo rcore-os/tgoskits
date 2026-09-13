@@ -1,0 +1,5 @@
+error: impl_extern_trait requires a trait implementation
+ --> tests/ui/impl_inherent.rs:3:6
+  |
+3 | impl Provider { fn read() {} }
+  |      ^^^^^^^^

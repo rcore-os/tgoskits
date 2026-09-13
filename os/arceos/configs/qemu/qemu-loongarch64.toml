@@ -12,5 +12,4 @@ args = [
 ]
 uefi = true
 to_bin = true
-success_regex = []
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]

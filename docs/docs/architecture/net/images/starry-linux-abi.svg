@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 560" role="img" aria-labelledby="title desc">
+  <title id="title">StarryOS Linux 网络 ABI 适配</title>
+  <desc id="desc">Linux 用户程序经 StarryOS syscall/net 分流到 AF_INET、AF_PACKET、AF_NETLINK、接口 ioctl 和 procfs，再映射到 ax-net 的 SocketOps、接口查询、运行时地址配置和统计 API。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#50657d"/></marker>
+    <style>
+      .user{fill:#f0edff;stroke:#7457b6;stroke-width:2}.sys{fill:#eaf3ff;stroke:#3478c0;stroke-width:2}
+      .abi{fill:#fff4df;stroke:#c98216;stroke-width:2}.api{fill:#eaf8ef;stroke:#398a55;stroke-width:2}
+      .title{font:700 24px sans-serif;fill:#213247}.text{font:600 15px sans-serif;fill:#26384d}.small{font:14px sans-serif;fill:#455a72}
+      .edge{fill:none;stroke:#50657d;stroke-width:2.1;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <text class="title" x="35" y="40">StarryOS 在 ABI 边界翻译，不复制协议栈状态</text>
+  <rect class="user" x="420" y="70" width="380" height="62" rx="13"/>
+  <text class="text" x="526" y="98">Linux user program</text><text class="small" x="507" y="119">socket / iproute2 / ioctl / proc reader</text>
+  <rect class="sys" x="420" y="165" width="380" height="62" rx="13"/>
+  <text class="text" x="512" y="193">StarryOS syscall/net</text><text class="small" x="491" y="214">fd、用户内存、errno 与 Linux 数据结构</text>
+
+  <rect class="abi" x="30" y="280" width="205" height="82" rx="12"/>
+  <text class="text" x="74" y="312">AF_INET / INET6</text><text class="small" x="69" y="338">TCP · UDP · raw ping</text>
+  <rect class="abi" x="270" y="280" width="205" height="82" rx="12"/>
+  <text class="text" x="321" y="312">AF_PACKET</text><text class="small" x="302" y="338">接口选择与 L2 frame</text>
+  <rect class="abi" x="510" y="280" width="205" height="82" rx="12"/>
+  <text class="text" x="558" y="312">AF_NETLINK</text><text class="small" x="544" y="338">route dump · addr add/del</text>
+  <rect class="abi" x="750" y="280" width="205" height="82" rx="12"/>
+  <text class="text" x="799" y="312">SIOCGIF* ioctl</text><text class="small" x="782" y="338">name / index / addr / flags</text>
+  <rect class="abi" x="990" y="280" width="205" height="82" rx="12"/>
+  <text class="text" x="1040" y="312">/proc/net/*</text><text class="small" x="1017" y="338">dev counters / arp snapshot</text>
+
+  <rect class="api" x="30" y="430" width="205" height="82" rx="12"/>
+  <text class="text" x="75" y="462">ax_net::SocketOps</text><text class="small" x="78" y="488">socket state and I/O</text>
+  <rect class="api" x="270" y="430" width="205" height="82" rx="12"/>
+  <text class="text" x="308" y="462">interface query API</text><text class="small" x="308" y="488">id / name / address</text>
+  <rect class="api" x="510" y="430" width="205" height="82" rx="12"/>
+  <text class="text" x="535" y="462">runtime IPv4 API</text><text class="small" x="525" y="488">set/remove + route snapshots</text>
+  <rect class="api" x="750" y="430" width="205" height="82" rx="12"/>
+  <text class="text" x="788" y="462">interface query API</text><text class="small" x="800" y="488">cross-family lookup</text>
+  <rect class="api" x="990" y="430" width="205" height="82" rx="12"/>
+  <text class="text" x="1014" y="462">ARP / NetDevStats</text><text class="small" x="1029" y="488">read-only snapshots</text>
+
+  <path class="edge" d="M610 132 V165"/>
+  <path class="edge" d="M610 227 V250 H132 V280"/><path class="edge" d="M610 227 V250 H372 V280"/>
+  <path class="edge" d="M610 227 V280"/><path class="edge" d="M610 227 V250 H852 V280"/><path class="edge" d="M610 227 V250 H1092 V280"/>
+  <path class="edge" d="M132 362 V430"/><path class="edge" d="M372 362 V430"/><path class="edge" d="M612 362 V430"/>
+  <path class="edge" d="M852 362 V430"/><path class="edge" d="M1092 362 V430"/>
+</svg>

@@ -14,24 +14,13 @@
 
 //! RISC-V virtual PLIC interrupt backend.
 
-use alloc::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, vec::Vec};
 
-use ax_kspin::SpinNoIrq;
-use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerResult,
-    DeviceRegistration, ServiceCardinality, ServiceKey, VirtualInterruptControllerKey,
-    validate_device_config,
-};
-use axdevice_base::{
-    BusAccess, BusKind, BusResponse, ControllerInputId, Device, DeviceAccess, DeviceError,
-    InterruptControllerId, InterruptEndpoint, IrqError, IrqResult, VirtualInterruptController,
-    WiredIrqInput, WiredIrqSink,
-};
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, InterruptTriggerMode};
-use riscv_vplic::{
-    PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE,
-    PLIC_NUM_SOURCES, VPlicGlobal,
-};
+use ax_std::os::arceos::sync::IrqSafeMutex;
+use axdevice::*;
+use axdevice_base::*;
+use axvm_types::{GuestPhysAddr, InterruptTriggerMode};
+use riscv_vplic::*;
 
 use crate::{AxVmError, AxVmResult, ax_err, ax_err_type, irq::deferred::DeferredVcpuKick};
 
@@ -53,9 +42,10 @@ impl ServiceKey for RiscvPlicRuntimeKey {
 /// threshold, and level state. The deferred kick bitmap carries only the
 /// identity of vCPUs that must re-evaluate that state.
 pub(crate) struct RiscvPlicRuntime {
+    vm_id: usize,
     vplic: Arc<VPlicGlobal>,
     sink: Arc<RiscvPlicWiredSink>,
-    inputs: SpinNoIrq<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
+    inputs: IrqSafeMutex<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
     kick: Arc<DeferredVcpuKick>,
     physical: Arc<physical::PhysicalIrqBridge>,
     vcpu_count: usize,
@@ -75,7 +65,7 @@ impl RiscvPlicRuntime {
         if vcpu_count > usize::BITS as usize {
             return ax_err!(
                 Unsupported,
-                alloc::format!(
+                std::format!(
                     "RISC-V VM has {vcpu_count} vCPUs, but deferred IRQ wake supports at most {}",
                     usize::BITS
                 )
@@ -96,9 +86,10 @@ impl RiscvPlicRuntime {
             physical_target_cpu,
         )?;
         Ok(Arc::new(Self {
+            vm_id,
             vplic,
             sink,
-            inputs: SpinNoIrq::new(BTreeMap::new()),
+            inputs: IrqSafeMutex::new(BTreeMap::new()),
             kick,
             physical,
             vcpu_count,
@@ -106,18 +97,32 @@ impl RiscvPlicRuntime {
     }
 
     pub(crate) fn activate(self: &Arc<Self>) -> AxVmResult {
-        self.kick.start();
+        self.kick.start()?;
         if let Err(error) = self.physical.start() {
-            self.kick.stop();
-            return Err(error);
+            return match self.kick.stop() {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(AxVmError::lifecycle_rollback(
+                    "activate RISC-V PLIC runtime",
+                    error,
+                    rollback,
+                )),
+            };
         }
         Ok(())
     }
 
     pub(crate) fn deactivate(&self) -> AxVmResult {
-        let result = self.physical.stop();
-        self.kick.stop();
-        result
+        let physical = self.physical.stop();
+        let kick = self.kick.stop();
+        match (physical, kick) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(rollback)) => Err(AxVmError::lifecycle_rollback(
+                "deactivate RISC-V PLIC runtime",
+                error,
+                rollback,
+            )),
+        }
     }
 
     /// Returns the controller-derived VSEIP state for one vCPU.
@@ -125,7 +130,7 @@ impl RiscvPlicRuntime {
         if vcpu_id >= self.vcpu_count {
             return ax_err!(
                 InvalidInput,
-                alloc::format!(
+                std::format!(
                     "RISC-V vCPU {vcpu_id} is outside the configured range 0..{}",
                     self.vcpu_count
                 )
@@ -149,7 +154,7 @@ impl RiscvPlicRuntime {
 impl Drop for RiscvPlicRuntime {
     fn drop(&mut self) {
         let _ = self.physical.stop();
-        self.kick.stop();
+        let _ = self.kick.stop();
     }
 }
 
@@ -171,7 +176,7 @@ impl VirtualInterruptController for RiscvPlicRuntime {
                     input,
                 },
                 operation: "open RISC-V vPLIC input",
-                detail: alloc::format!(
+                detail: std::format!(
                     "source {source} is outside the valid range 1..{PLIC_NUM_SOURCES}"
                 ),
             });
@@ -186,7 +191,7 @@ impl VirtualInterruptController for RiscvPlicRuntime {
                         input,
                     },
                     operation: "open RISC-V vPLIC input",
-                    detail: alloc::format!(
+                    detail: std::format!(
                         "source {source} is already registered as {registered_trigger:?}"
                     ),
                 });
@@ -218,12 +223,12 @@ impl RiscvPlicWiredSink {
     fn backend_error(
         input: ControllerInputId,
         operation: &'static str,
-        error: impl core::fmt::Display,
+        error: impl std::fmt::Display,
     ) -> IrqError {
         IrqError::Backend {
             endpoint: Self::endpoint(input),
             operation,
-            detail: alloc::format!("{error}"),
+            detail: std::format!("{error}"),
         }
     }
 
@@ -254,8 +259,13 @@ impl WiredIrqSink for RiscvPlicWiredSink {
 }
 
 struct RiscvPlicFactory {
-    expected: EmulatedDeviceConfig,
-    runtime: Arc<RiscvPlicRuntime>,
+    vm_id: usize,
+    vcpu_count: usize,
+    base: usize,
+    length: usize,
+    contexts_num: usize,
+    physical_irqs: Vec<crate::config::PassthroughInterrupt>,
+    physical_target_cpu: usize,
 }
 
 struct RiscvPlicDevice {
@@ -271,135 +281,191 @@ impl Device for RiscvPlicDevice {
         self.runtime.vplic.resources()
     }
 
-    fn access(
-        &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        if access.kind != BusKind::Mmio {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
+    fn read(&self, access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
-        let addr = GuestPhysAddr::from_usize(access.addr as usize);
-        if access.is_read {
-            self.runtime
-                .vplic
-                .read_register(addr, access.width)
-                .map(|value| BusResponse::Read {
-                    value: value as u64,
-                })
-        } else {
-            let completion = self.runtime.vplic.write_register_with_completion(
-                addr,
-                access.width,
-                access.data as usize,
-            )?;
-            if let Some(completion) = completion {
-                self.runtime.physical.complete_source(completion.source());
-            }
-            Ok(BusResponse::Write)
-        }
-    }
-}
-
-impl DeviceFactory for RiscvPlicFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::PPPTGlobal
-    }
-
-    fn build(
-        &self,
-        config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
-        validate_device_config(&self.expected, config, "build RISC-V virtual PLIC")?;
-        let device: Arc<dyn Device> = Arc::new(RiscvPlicDevice {
-            runtime: self.runtime.clone(),
-        });
-        let controller: Arc<dyn VirtualInterruptController> = self.runtime.clone();
-        DeviceBundle::from_registration(DeviceRegistration::Device(device))
-            .with_service::<RiscvPlicRuntimeKey>(self.runtime.clone())?
-            .with_service::<VirtualInterruptControllerKey>(controller)
-    }
-}
-
-fn validate_vplic_config(config: &EmulatedDeviceConfig) -> AxVmResult<usize> {
-    let [contexts_num] = config.cfg_list.as_slice() else {
-        return ax_err!(
-            InvalidInput,
-            format_args!(
-                "virtual PLIC device '{}' requires exactly one context-count argument",
-                config.name
+        let value = self
+            .runtime
+            .vplic
+            .read_register(
+                GuestPhysAddr::from_usize(access.address() as usize),
+                access.width(),
             )
+            .map(|value| value as u64)?;
+        self.publish_vseip(access)?;
+        Ok(value)
+    }
+
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> DeviceResult {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
+        }
+        let completion = self.runtime.vplic.write_register_with_completion(
+            GuestPhysAddr::from_usize(access.address() as usize),
+            access.width(),
+            value as usize,
+        )?;
+        if let Some(completion) = completion {
+            self.runtime.physical.complete_source(completion.source());
+        }
+        self.publish_vseip(access)?;
+        Ok(())
+    }
+}
+
+impl RiscvPlicDevice {
+    fn publish_vseip(&self, access: &DeviceAccess) -> DeviceResult {
+        let vcpu_id = access.source_vcpu().as_usize();
+        let asserted = self
+            .runtime
+            .vcpu_has_deliverable_irq(vcpu_id)
+            .map_err(vplic_device_error)?;
+        let vm = crate::get_vm_by_id(self.runtime.vm_id).ok_or_else(|| DeviceError::Backend {
+            operation: "publish vPLIC VSEIP after device access",
+            detail: std::format!("VM[{}] is not registered", self.runtime.vm_id),
+        })?;
+        let vcpu = vm.vcpu(vcpu_id).ok_or_else(|| DeviceError::Backend {
+            operation: "publish vPLIC VSEIP after device access",
+            detail: std::format!("RISC-V vCPU {vcpu_id} is not registered"),
+        })?;
+        vcpu.get_arch_vcpu().set_vseip_level(asserted);
+        Ok(())
+    }
+}
+
+fn vplic_device_error(error: AxVmError) -> DeviceError {
+    DeviceError::Backend {
+        operation: "publish vPLIC VSEIP after device access",
+        detail: std::format!("{error}"),
+    }
+}
+
+impl DeviceModel for RiscvPlicFactory {
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+        DeviceRequirements::new().with_mmio(
+            ResourceSlot::new("registers")?,
+            self.length as u64,
+            1,
+            ResourceRequest::Fixed(self.base as u64),
+        )
+    }
+
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::interfaces(
+            Some(std::vec![FdtContributionSpec::InterruptController {
+                controller: axdevice_base::InterruptControllerId::new(0),
+                node: FdtNodeSpec::new("plic")
+                    .with_compatible("riscv,plic0")
+                    .with_register(
+                        ResourceSlot::new("registers").expect("static PLIC slot is valid"),
+                    ),
+            }]),
+            None,
+        )
+    }
+
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
+        let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
+        if base != self.base as u64 || length != self.length as u64 {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build RISC-V virtual PLIC",
+                detail: "planned MMIO range differs from the machine descriptor".into(),
+            });
+        }
+        let base = usize::try_from(base).map_err(|_| DeviceManagerError::InvalidConfig {
+            operation: "build RISC-V virtual PLIC",
+            detail: "planned MMIO base does not fit the target address width".into(),
+        })?;
+        let length = usize::try_from(length).map_err(|_| DeviceManagerError::InvalidConfig {
+            operation: "build RISC-V virtual PLIC",
+            detail: "planned MMIO length does not fit the target address width".into(),
+        })?;
+        let vplic = Arc::new(
+            VPlicGlobal::new(base.into(), Some(length), self.contexts_num).map_err(|error| {
+                DeviceManagerError::InvalidConfig {
+                    operation: "build RISC-V virtual PLIC",
+                    detail: std::format!("{error}"),
+                }
+            })?,
         );
-    };
+        let runtime = RiscvPlicRuntime::new(
+            self.vm_id,
+            self.vcpu_count,
+            vplic,
+            &self.physical_irqs,
+            self.physical_target_cpu,
+        )
+        .map_err(|error| DeviceManagerError::InvalidConfig {
+            operation: "build RISC-V virtual PLIC",
+            detail: std::format!("{error}"),
+        })?;
+        let device: Arc<dyn Device> = Arc::new(RiscvPlicDevice {
+            runtime: runtime.clone(),
+        });
+        let controller: Arc<dyn VirtualInterruptController> = runtime.clone();
+        let mut bundle = DeviceBundle::from_registration(DeviceRegistration::Device(device))
+            .with_service::<RiscvPlicRuntimeKey>(runtime.clone())?;
+        bundle.push(DeviceRegistration::InterruptController(
+            ControllerRegistration::new(runtime.id(), controller),
+        ));
+        Ok(bundle)
+    }
+}
+
+fn validate_vplic_layout(base: usize, length: usize, contexts_num: usize) -> AxVmResult {
     let context_end = contexts_num
         .checked_mul(PLIC_CONTEXT_STRIDE)
         .and_then(|offset| offset.checked_add(PLIC_CONTEXT_CTRL_OFFSET))
         .and_then(|offset| offset.checked_add(PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET))
-        .and_then(|offset| config.base_gpa.checked_add(offset))
+        .and_then(|offset| base.checked_add(offset))
         .ok_or_else(|| ax_err_type!(InvalidInput, "virtual PLIC context range overflow"))?;
-    let region_end = config
-        .base_gpa
-        .checked_add(config.length)
+    let region_end = base
+        .checked_add(length)
         .ok_or_else(|| ax_err_type!(InvalidInput, "virtual PLIC region range overflow"))?;
     if region_end <= context_end {
         return ax_err!(
             InvalidInput,
             format_args!(
-                "virtual PLIC device '{}' range [{:#x}, {:#x}) does not cover {} contexts",
-                config.name, config.base_gpa, region_end, contexts_num
+                "virtual PLIC range [{base:#x}, {region_end:#x}) does not cover {contexts_num} \
+                 contexts"
             )
         );
     }
-    Ok(*contexts_num)
+    Ok(())
 }
 
 /// Creates the canonical vPLIC and registers its only construction path.
-pub(crate) fn register_device_factory(
+pub(crate) fn model(
     vm_id: usize,
     vcpu_count: usize,
-    factories: &mut DeviceFactoryRegistry,
-    configs: &[EmulatedDeviceConfig],
+    base: usize,
+    length: usize,
     physical_irqs: &[crate::config::PassthroughInterrupt],
     physical_target_cpu: usize,
-) -> AxVmResult<Arc<RiscvPlicRuntime>> {
-    let mut vplic_configs = configs
-        .iter()
-        .filter(|config| config.emu_type == EmulatedDeviceType::PPPTGlobal);
-    let config = vplic_configs.next().ok_or_else(|| {
-        AxVmError::resource_unavailable(
-            "RISC-V virtual interrupt controller",
-            "the machine profile has no virtual PLIC",
-        )
-    })?;
-    if vplic_configs.next().is_some() {
-        return ax_err!(
-            AlreadyExists,
-            "a VM can register only one virtual PLIC global controller"
-        );
-    }
-
-    let contexts_num = validate_vplic_config(config)?;
+) -> AxVmResult<Arc<dyn DeviceModel>> {
     let expected_contexts = vcpu_count
         .checked_mul(2)
         .ok_or_else(|| ax_err_type!(InvalidInput, "RISC-V vPLIC context count overflow"))?;
-    if contexts_num != expected_contexts {
-        return Err(AxVmError::invalid_config(alloc::format!(
-            "virtual PLIC declares {contexts_num} contexts for {vcpu_count} vCPUs; expected \
-             {expected_contexts}"
-        )));
-    }
-    let vplic = Arc::new(
-        VPlicGlobal::new(config.base_gpa.into(), Some(config.length), contexts_num)
-            .map_err(AxVmError::invalid_config)?,
-    );
-    let runtime =
-        RiscvPlicRuntime::new(vm_id, vcpu_count, vplic, physical_irqs, physical_target_cpu)?;
-    factories.register(Arc::new(RiscvPlicFactory {
-        expected: config.clone(),
-        runtime: runtime.clone(),
-    }))?;
-    Ok(runtime)
+    validate_vplic_layout(base, length, expected_contexts)?;
+    Ok(Arc::new(RiscvPlicFactory {
+        vm_id,
+        vcpu_count,
+        base,
+        length,
+        contexts_num: expected_contexts,
+        physical_irqs: physical_irqs.to_vec(),
+        physical_target_cpu,
+    }))
 }
 
 struct RiscvPhysicalPlicIngress;

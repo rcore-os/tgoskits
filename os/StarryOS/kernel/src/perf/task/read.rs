@@ -1,0 +1,44 @@
+use super::*;
+
+/// Read back `(value, time_enabled, time_running)` for `read(perf_fd)`.
+///
+/// `value` is the accumulated delta plus the live slice if the counter is
+/// currently running. For `perf stat -- cmd` the child has already exited by the
+/// time the parent reads, so `running == false` and `accumulated` is final.
+pub(crate) fn read_counter(ptc: &Arc<PerTaskCounter>) -> crate::StarryResult<(u64, u64, u64)> {
+    let owner = ptc.run_state.lock().running().map(PmuRunLease::owner);
+    if let Some(owner) = owner {
+        cpu_worker::read_task_counter(Arc::clone(ptc), owner)
+    } else {
+        read_task_on_owner(ptc)
+    }
+}
+
+/// Reads a task-bound event from a pinned owner worker or a detached state.
+pub(crate) fn read_task_on_owner(ptc: &PerTaskCounter) -> crate::StarryResult<(u64, u64, u64)> {
+    let mut value = ptc.accumulated.load(Ordering::Acquire);
+    let now = now_ns();
+    let time_enabled = ptc
+        .time_enabled_ns
+        .load(Ordering::Acquire)
+        .saturating_add(ptc.live_enabled_time(now));
+    let mut time_running = ptc.time_running_ns.load(Ordering::Acquire);
+    let run_state = ptc.run_state.lock();
+    if let Some(lease) = run_state.running()
+        && lease.owner().as_usize() == ax_hal::percpu::this_cpu_id()
+    {
+        // Live slice: add the in-progress count and elapsed time. This is a
+        // local owner-CPU snapshot; remote reads are routed through the CPU
+        // worker in the complete PMU ownership path.
+        let live = if ptc.is_sampling {
+            ptc.sampling_count
+                .update(lease.counter().programmable_index().expect("sampling slot"))
+        } else {
+            ptc.read_counting_slice(lease.counter())
+        };
+        value = value.saturating_add(live);
+        let dt = now.saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
+        time_running += dt;
+    }
+    Ok((value, time_enabled, time_running))
+}

@@ -84,7 +84,7 @@ run_guest_apk_with_retry() {
 }
 
 extract_base_rootfs() {
-    debugfs -R "rdump / $staging_root" "$base_rootfs"
+    debugfs -R "rdump / $staging_root" "$base_rootfs" >/dev/null
 }
 
 install_mosquitto_package() {

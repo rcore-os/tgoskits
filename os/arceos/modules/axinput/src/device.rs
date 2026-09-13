@@ -6,15 +6,23 @@ use crate::{AbsInfo, Event, EventType, InputDeviceId};
 
 pub type InputResult<T = ()> = Result<T, InputError>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum InputError {
+    #[error("input device already exists")]
     AlreadyExists,
+    #[error("input device operation should be retried")]
     Again,
+    #[error("input device is in an invalid state")]
     BadState,
+    #[error("invalid input device argument")]
     InvalidInput,
+    #[error("input device I/O failed")]
     Io,
+    #[error("input device memory allocation failed")]
     NoMemory,
+    #[error("input device resource is busy")]
     ResourceBusy,
+    #[error("input device operation is not supported")]
     Unsupported,
 }
 

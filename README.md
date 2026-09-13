@@ -37,7 +37,7 @@ tgoskits/
 └── docs/                      # Docusaurus documentation site
 ```
 
-For subtree synchronization, component layering, and development conventions, see [repository structure and collaboration](https://rcore-os.cn/tgoskits/docs/contributing/repo) and the [component development guide](https://rcore-os.cn/tgoskits/docs/development/components).
+For subtree synchronization, component layering, and development conventions, see [repository structure and collaboration](https://rcore-os.cn/tgoskits/docs/contributing/repo) and the [architecture overview](https://rcore-os.cn/tgoskits/docs/architecture/overview).
 
 ## 3. Quick Experience
 
@@ -56,7 +56,7 @@ docker run -it --rm \
   ghcr.io/rcore-os/tgoskits-container:latest
 ```
 
-If you do not use the container, prepare at least Rust, basic build tools, and common QEMU packages. The recommended QEMU version is 10.2.1, matching the container and CI environment; distribution packages are usually enough for quick trials, but switch to the container if a target is missing or behavior differs:
+If you do not use the container, prepare at least Rust, basic build tools, and common QEMU packages. The recommended QEMU version is 11.1.1, matching the container and CI environment; distribution packages are usually enough for quick trials, but switch to the container if a target is missing or behavior differs:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -70,7 +70,7 @@ See [quick start overview](https://rcore-os.cn/tgoskits/docs/quickstart/overview
 
 ### 3.2 QEMU Verification
 
-First confirm that common QEMU commands are available, preferably matching QEMU 10.2.1 from the container and CI environment:
+First confirm that common QEMU commands are available, preferably matching QEMU 11.1.1 from the container and CI environment:
 
 ```bash
 qemu-system-riscv64 --version

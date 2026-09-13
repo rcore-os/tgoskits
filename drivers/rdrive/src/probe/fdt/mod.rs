@@ -5,11 +5,11 @@ use alloc::{
 };
 use core::ptr::NonNull;
 
-use ax_kspin::SpinNoPreempt as Mutex;
+use ax_lazyinit::OnceLock;
+use ax_sync::SpinLock as Mutex;
 use fdt_edit::Node;
 pub use fdt_edit::{ClockRef, Fdt, InterruptRef, NodeId, NodeType, Phandle, RegInfo, Status};
 use rdif_pinctrl::{PinctrlDevice, PinctrlError};
-use spin::Once;
 
 use super::ProbeError;
 use crate::{
@@ -19,7 +19,7 @@ use crate::{
     register::{DriverRegister, ProbeKind, ProbePriority},
 };
 
-static SYSTEM: Once<System> = Once::new();
+static SYSTEM: OnceLock<System> = OnceLock::new();
 
 pub fn init(fdt_addr: NonNull<u8>) -> Result<(), DriverError> {
     let sys = System::new(fdt_addr)?;
@@ -1404,8 +1404,19 @@ impl System {
             let phandle_map = self.phandle_2_device_id.clone();
 
             debug!("Probe [{}]->[{}]", node.name(), node_info.name);
-            let res = apply_assigned_clocks(node)
-                .and_then(|()| apply_power_domains(node))
+            // `assigned-clocks`/`assigned-clock-rates` defaults are best-effort,
+            // matching Linux `of_clk_set_defaults`: a rate the clock provider
+            // can't set (e.g. a VOP root clock the CRU doesn't implement) must
+            // not abort the device's probe. A driver that truly requires a rate
+            // opts into strict application via `prepare_resources`. Power domains
+            // and pinctrl remain required for probe.
+            if let Err(err) = apply_assigned_clocks(node) {
+                warn!(
+                    "[{}] assigned-clocks apply failed (best-effort, continuing to probe): {err}",
+                    node.name()
+                );
+            }
+            let res = apply_power_domains(node)
                 .and_then(|()| apply_default_pinctrl(node))
                 .and_then(|()| {
                     let descriptor = Descriptor {

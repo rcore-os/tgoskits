@@ -5,8 +5,8 @@ use alloc::{string::ToString, vec::Vec};
 
 use anyhow::bail;
 use crab_usb::{
-    Endpoint,
-    device::{Device, DeviceInfo},
+    EndpointHandle,
+    device::{Device, DeviceInfo, InterfaceSession},
     err::USBError,
 };
 use keyboard_types::{Key, Modifiers, NamedKey};
@@ -124,7 +124,8 @@ fn scancode_to_key(scancode: u8) -> Option<Key> {
 
 pub struct KeyBoard {
     _device: Device,
-    endpoint: Endpoint,
+    _interface_session: InterfaceSession,
+    endpoint: EndpointHandle,
     /// 上一次按键状态，用于检测按键变化
     previous_state: [u8; 8],
 }
@@ -176,14 +177,15 @@ impl KeyBoard {
         );
 
         // 声明接口
-        device
+        let interface_session = device
             .claim_interface(interface_number, alternate_setting)
             .await?;
 
-        let endpoint = device.endpoint(endpoint_address)?;
+        let endpoint = interface_session.endpoint(endpoint_address)?;
 
         Ok(Self {
             _device: device,
+            _interface_session: interface_session,
             endpoint,
             previous_state: [0; 8],
         })

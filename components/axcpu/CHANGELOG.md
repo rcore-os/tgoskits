@@ -2,6 +2,76 @@
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.10.0...ax-cpu-v0.10.1) - 2026-09-13
+
+### Added
+
+- *(starry)* add AArch64 Linux perf support ([#2274](https://github.com/rcore-os/tgoskits/pull/2274))
+
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.9.1...ax-cpu-v0.10.0) - 2026-09-11
+
+### Fixed
+
+- *(axvm)* prepare host GIC before CPU enable and centralize fatal traps ([#2356](https://github.com/rcore-os/tgoskits/pull/2356))
+
+### Other
+
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+- *(ax-cpu)* [**breaking**] centralize CPU mechanisms and architecture backends ([#2363](https://github.com/rcore-os/tgoskits/pull/2363))
+
+## [0.9.1](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.9.0...ax-cpu-v0.9.1) - 2026-09-09
+
+### Fixed
+
+- *(runtime)* prefer userspace over kernel TLS through build cfg ([#2339](https://github.com/rcore-os/tgoskits/pull/2339))
+
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.8...ax-cpu-v0.9.0) - 2026-09-09
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+
+### Fixed
+
+- *(release)* restore release-plz dependency updates ([#2329](https://github.com/rcore-os/tgoskits/pull/2329))
+- *(ax-cpu)* preserve AArch64 PTE memory type ([#2238](https://github.com/rcore-os/tgoskits/pull/2238))
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+
+## [0.8.8](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.7...ax-cpu-v0.8.8) - 2026-08-27
+
+### Added
+
+- *(loongarch-intc-driver)* extract OS-independent interrupt controllers ([#2174](https://github.com/rcore-os/tgoskits/pull/2174))
+
+## [0.8.7](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.6...ax-cpu-v0.8.7) - 2026-08-20
+
+### Added
+
+- *(starry-kernel)* consume user_access_ok_page in a lock-free user-copy fast path ([#2063](https://github.com/rcore-os/tgoskits/pull/2063))
+
+### Fixed
+
+- *(ax-cpu)* harden user access and architecture state transitions ([#2075](https://github.com/rcore-os/tgoskits/pull/2075))
+- *(cpu-local)* keep AArch64 current independent of TLS ([#1970](https://github.com/rcore-os/tgoskits/pull/1970))
+
+### Other
+
+- *(cpu-local)* define scheduler-neutral execution context boundary ([#2080](https://github.com/rcore-os/tgoskits/pull/2080))
+
+## [0.8.6](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.5...ax-cpu-v0.8.6) - 2026-08-09
+
+### Fixed
+
+- *(ax-cpu)* handle cross-page unaligned faults ([#1855](https://github.com/rcore-os/tgoskits/pull/1855))
+
+### Other
+
+- *(memory)* unify page-table execution on page-table-generic ([#1911](https://github.com/rcore-os/tgoskits/pull/1911))
+
 ## [0.8.5](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.4...ax-cpu-v0.8.5) - 2026-08-03
 
 ### Added

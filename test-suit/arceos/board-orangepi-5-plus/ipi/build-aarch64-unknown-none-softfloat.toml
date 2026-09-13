@@ -1,0 +1,8 @@
+package = "arceos-test-suit"
+target = "aarch64-unknown-none-softfloat"
+features = [
+    "task-ipi",
+    "task-smp-online",
+]
+log = "Info"
+max_cpu_num = 8

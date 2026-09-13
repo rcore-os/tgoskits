@@ -2,7 +2,7 @@
 
 use alloc::sync::Arc;
 
-use ax_kspin::SpinRaw;
+use ax_sync::{RawSpinLockGuard, SpinLock};
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult, IrqLine};
 
 use super::{SerialBackend, SerialEndpoint, fifo::ByteFifo};
@@ -101,7 +101,7 @@ impl Pl011State {
 
 /// PL011 UART core with an external byte backend and virtual IRQ.
 pub struct Pl011 {
-    state: SpinRaw<Pl011State>,
+    state: SpinLock<Pl011State>,
     endpoint: SerialEndpoint,
 }
 
@@ -109,15 +109,21 @@ impl Pl011 {
     /// Creates a powered-on PL011 UART.
     pub fn new(backend: Arc<dyn SerialBackend>, irq: IrqLine) -> Self {
         Self {
-            state: SpinRaw::new(Pl011State::new()),
+            state: SpinLock::new(Pl011State::new()),
             endpoint: SerialEndpoint::new(backend, irq, "signal PL011 IRQ"),
         }
+    }
+
+    fn state(&self) -> RawSpinLockGuard<'_, Pl011State> {
+        // SAFETY: the virtual UART frontend serializes a vCPU's MMIO/poll
+        // entry and the raw lock excludes other vCPUs.
+        unsafe { self.state.lock_raw() }
     }
 
     /// Polls backend input into the receive FIFO and refreshes the level IRQ.
     pub fn poll(&self) -> DeviceResult {
         self.endpoint.poll_rx(|bytes| {
-            let mut state = self.state.lock();
+            let mut state = self.state();
             for &byte in bytes {
                 state.push_rx(byte);
             }
@@ -129,7 +135,7 @@ impl Pl011 {
     pub fn read(&self, offset: usize, width: AccessWidth) -> DeviceResult<u64> {
         validate_width(width)?;
         let (value, asserted) = {
-            let mut state = self.state.lock();
+            let mut state = self.state();
             let value = match offset {
                 REG_DR => state.rx_fifo.pop().unwrap_or(0) as u32 | state.receive_error,
                 REG_RSR_ECR => state.receive_error,
@@ -162,7 +168,7 @@ impl Pl011 {
         validate_width(width)?;
         let value = value as u32;
         let (output, asserted) = {
-            let mut state = self.state.lock();
+            let mut state = self.state();
             let mut output = None;
             match offset {
                 REG_DR => {

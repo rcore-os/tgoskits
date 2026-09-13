@@ -134,6 +134,11 @@ static void test_getcwd_success_and_erange(void)
     CHECK(getcwd(cwd, sizeof(cwd)) != NULL, "getcwd: read cwd");
     CHECK(strcmp(cwd, BASE) == 0, "getcwd: cwd equals BASE");
 
+    errno = 0;
+    long raw_len = syscall(SYS_getcwd, cwd, SIZE_MAX);
+    CHECK(raw_len == (long)strlen(BASE) + 1 && strcmp(cwd, BASE) == 0,
+          "getcwd: raw SIZE_MAX buffer size succeeds");
+
     char small[2];
     errno = 0;
     CHECK(getcwd(small, sizeof(small)) == NULL && errno == ERANGE, "getcwd: small buffer -> ERANGE");
@@ -186,6 +191,18 @@ static void test_unlinkat_success_and_failures(void)
     struct stat st;
     errno = 0;
     CHECK(fstatat(dfd, "workfile", &st, 0) == -1 && errno == ENOENT, "unlinkat: deleted file -> ENOENT");
+
+    fd = openat(dfd, "upper_word_flags", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    CHECK(fd >= 0, "unlinkat: create raw upper-word flags file");
+    if (fd >= 0) {
+        close(fd);
+        errno = 0;
+        long raw_rc = syscall(SYS_unlinkat, dfd, "upper_word_flags", 1ULL << 32);
+        CHECK(raw_rc == 0, "unlinkat: raw upper-word flags truncate to zero");
+        errno = 0;
+        CHECK(fstatat(dfd, "upper_word_flags", &st, 0) == -1 && errno == ENOENT,
+              "unlinkat: raw upper-word flags delete the file");
+    }
 
     mkdirat(dfd, "emptydir", 0755);
     CHECK_RET(unlinkat(dfd, "emptydir", AT_REMOVEDIR), 0, "unlinkat: delete empty dir (AT_REMOVEDIR)");

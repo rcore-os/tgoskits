@@ -1,0 +1,5 @@
+error: trait-ffi methods cannot have a self receiver
+ --> tests/ui/receiver.rs:2:31
+  |
+2 | pub trait Interface { fn read(&self); }
+  |                               ^^^^^

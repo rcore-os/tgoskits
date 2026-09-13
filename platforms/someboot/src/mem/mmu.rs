@@ -8,6 +8,32 @@ pub type ArchPageTable<A> = PageTable<<crate::arch::Arch as crate::ArchTrait>::P
 
 pub type ArchPte = <<crate::arch::Arch as crate::ArchTrait>::P as page_table_generic::TableMeta>::P;
 
+/// Cacheability used while constructing boot-time leaf descriptors.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MemAttributes {
+    /// Ordinary coherent memory.
+    #[default]
+    Normal,
+    /// Ordinary coherent memory with a dedicated CPU-local alias.
+    PerCpu,
+    /// Device memory.
+    Device,
+    /// Uncached ordinary memory.
+    Uncached,
+}
+
+/// Boot-time leaf descriptor attributes interpreted by each architecture.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PteConfig {
+    pub read: bool,
+    pub writable: bool,
+    pub executable: bool,
+    pub lower: bool,
+    pub dirty: bool,
+    pub global: bool,
+    pub mem_attr: MemAttributes,
+}
+
 static BOOT_TABLE: StaticCell<ArchPageTable<Ram>> = StaticCell::uninit();
 pub static mut BOOT_TABLE_ADDR: usize = 0;
 
@@ -50,7 +76,7 @@ pub(crate) fn is_kernel_relocated() -> bool {
 
 pub trait PageTableOp {
     /// 映射虚拟地址范围到物理地址范围
-    fn map(&mut self, config: &page_table_generic::MapConfig) -> PagingResult;
+    fn map(&mut self, config: &page_table_generic::MapConfig<PteConfig>) -> PagingResult;
 
     fn unmap(&mut self, start_vaddr: page_table_generic::VirtAddr, size: usize)
     -> PagingResult<()>;

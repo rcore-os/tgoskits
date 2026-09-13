@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use cargo_metadata::Package;
 use serde::Deserialize;
 
-use super::AX_HAL_PACKAGE;
+use super::{AX_HAL_PACKAGE, HOST_TEST_FEATURE};
 
 const CLIPPY_TARGET_ALIASES: &[(&str, &str)] = &[
     (
@@ -133,4 +133,29 @@ pub(super) fn feature_supported_on_clippy_target(
             .iter()
             .all(|target_arches| target_arches.contains(&arch))
     })
+}
+
+pub(super) fn feature_requires_host_target(package: &Package, feature: &str) -> bool {
+    fn requires_host_target<'a>(
+        package: &'a Package,
+        feature: &'a str,
+        visited: &mut BTreeSet<&'a str>,
+    ) -> bool {
+        if feature == HOST_TEST_FEATURE {
+            return true;
+        }
+        if !visited.insert(feature) {
+            return false;
+        }
+
+        package.features.get(feature).is_some_and(|dependencies| {
+            dependencies.iter().any(|dependency| {
+                dependency == HOST_TEST_FEATURE
+                    || (package.features.contains_key(dependency)
+                        && requires_host_target(package, dependency, visited))
+            })
+        })
+    }
+
+    requires_host_target(package, feature, &mut BTreeSet::new())
 }

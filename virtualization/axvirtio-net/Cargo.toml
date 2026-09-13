@@ -1,0 +1,25 @@
+[package]
+name = "axvirtio-net"
+version = "0.2.1"
+edition.workspace = true
+authors = ["Debin <luodeb@outlook.com>"]
+license.workspace = true
+repository.workspace = true
+description = "VirtIO network device implementation with MMIO transport for hypervisors"
+keywords = ["virtio", "net", "hypervisor", "no_std", "arceos"]
+categories = ["no-std", "embedded", "hardware-support", "network-programming"]
+
+[features]
+default = []
+
+[dependencies]
+axaddrspace.workspace = true
+axdevice_base.workspace = true
+axvm-types.workspace = true
+axvirtio-common.workspace = true
+ax-sync.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+ax-memory-addr = { path = "../../memory/memory_addr" }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }

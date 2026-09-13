@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/rcore-os/tgoskits/compare/somehal-macros-v0.1.6...somehal-macros-v0.1.7) - 2026-08-09
+
+### Other
+
+- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+
 ## [0.1.6](https://github.com/rcore-os/tgoskits/compare/somehal-macros-v0.1.5...somehal-macros-v0.1.6) - 2026-07-23
 
 ### Other

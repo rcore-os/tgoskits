@@ -1,18 +1,21 @@
-use core::{ffi::c_int, mem::size_of};
-
-use ax_errno::{AxError, AxResult, LinuxError};
-use linux_raw_sys::io_uring::{
-    IORING_ENTER_GETEVENTS, IORING_SETUP_CLAMP, IORING_SETUP_CQSIZE, io_uring_params,
+use core::{
+    ffi::c_int,
+    mem::{offset_of, size_of},
 };
-use starry_vm::{VmMutPtr, VmPtr};
+
+use linux_raw_sys::io_uring::{
+    IORING_ENTER_GETEVENTS, IORING_SETUP_CLAMP, IORING_SETUP_CQSIZE, io_cqring_offsets,
+    io_sqring_offsets, io_uring_params,
+};
 
 use super::io::{
     sys_fdatasync, sys_fsync, sys_pread64, sys_preadv2, sys_pwrite64, sys_pwritev2, sys_read,
     sys_write,
 };
 use crate::{
+    StarryError, StarryResult,
     file::{FileLike, IoUring, io_uring::IoUringSqe},
-    mm::IoVec,
+    mm::{IoVec, VmMutPtr, VmPtr},
 };
 
 const MAX_SQ_ENTRIES: u32 = 4096;
@@ -47,7 +50,7 @@ const SUPPORTED_OPS: [u8; 7] = [
 ];
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 struct IoUringProbeHeader {
     last_op: u8,
     ops_len: u8,
@@ -56,13 +59,22 @@ struct IoUringProbeHeader {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 struct IoUringProbeOp {
     op: u8,
     resv: u8,
     flags: u16,
     resv2: u32,
 }
+
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct InitializedIoUringParams(io_uring_params);
+
+// SAFETY: the UAPI structure consists only of initialized integer fields. The
+// assertions below prove that neither the nested offset records nor the outer
+// record contain implicit padding on the supported 64-bit architectures.
+unsafe impl bytemuck::NoUninit for InitializedIoUringParams {}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -73,19 +85,28 @@ struct KernelTimespec {
 
 const _: () = assert!(size_of::<IoUringProbeHeader>() == 16);
 const _: () = assert!(size_of::<IoUringProbeOp>() == 8);
+const _: () = {
+    assert!(size_of::<io_sqring_offsets>() == 40);
+    assert!(offset_of!(io_sqring_offsets, user_addr) == 32);
+    assert!(size_of::<io_cqring_offsets>() == 40);
+    assert!(offset_of!(io_cqring_offsets, user_addr) == 32);
+    assert!(size_of::<io_uring_params>() == 120);
+    assert!(offset_of!(io_uring_params, sq_off) == 40);
+    assert!(offset_of!(io_uring_params, cq_off) == 80);
+};
 
-fn round_ring_entries(requested: u32, max: u32, clamp: bool) -> AxResult<u32> {
+fn round_ring_entries(requested: u32, max: u32, clamp: bool) -> StarryResult<u32> {
     if requested == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let rounded = requested
         .checked_next_power_of_two()
-        .ok_or(AxError::InvalidInput)?;
+        .ok_or(StarryError::InvalidInput)?;
     if rounded > max {
         if clamp {
             Ok(max)
         } else {
-            Err(AxError::InvalidInput)
+            Err(StarryError::InvalidInput)
         }
     } else {
         Ok(rounded)
@@ -105,34 +126,38 @@ fn offset_hi(offset: i64) -> usize {
     }
 }
 
-fn result_to_cqe_res(result: AxResult<isize>) -> i32 {
+fn result_to_cqe_res(result: StarryResult<isize>) -> i32 {
     match result {
         Ok(value) => value.try_into().unwrap_or(i32::MAX),
-        Err(err) => -LinuxError::from(err).code(),
+        Err(err) => -err.linux_errno().into_raw(),
     }
 }
 
-fn execute_timeout(sqe: &IoUringSqe) -> AxResult<isize> {
+fn execute_timeout(
+    current: &crate::task::UserTaskRef,
+    sqe: &IoUringSqe,
+) -> crate::StarryResult<isize> {
     let ts = unsafe {
         (sqe.addr as *const KernelTimespec)
-            .vm_read_uninit()?
+            .vm_read_uninit(current)?
             .assume_init()
     };
     if ts.tv_sec < 0 || !(0..1_000_000_000).contains(&ts.tv_nsec) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok(0)
 }
 
-fn execute_sqe(sqe: &IoUringSqe) -> i32 {
+fn execute_sqe(current: &crate::task::UserTaskRef, sqe: &IoUringSqe) -> i32 {
     if sqe.flags != 0 {
-        return result_to_cqe_res(Err(AxError::OperationNotSupported));
+        return result_to_cqe_res(Err(StarryError::OperationNotSupported));
     }
 
     let offset = sqe.off as i64;
     let result = match sqe.opcode {
         IORING_OP_NOP => Ok(0),
         IORING_OP_READV => sys_preadv2(
+            current,
             sqe.fd,
             sqe.addr as *const IoVec,
             sqe.len as usize,
@@ -141,6 +166,7 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
             sqe.rw_flags,
         ),
         IORING_OP_WRITEV => sys_pwritev2(
+            current,
             sqe.fd,
             sqe.addr as *const IoVec,
             sqe.len as usize,
@@ -151,42 +177,54 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
         IORING_OP_FSYNC => match sqe.rw_flags {
             0 => sys_fsync(sqe.fd),
             IORING_FSYNC_DATASYNC => sys_fdatasync(sqe.fd),
-            _ => Err(AxError::InvalidInput),
+            _ => Err(StarryError::InvalidInput),
         },
-        IORING_OP_TIMEOUT => execute_timeout(sqe),
+        IORING_OP_TIMEOUT => execute_timeout(current, sqe),
         IORING_OP_READ => {
             if sqe.rw_flags != 0 {
-                Err(AxError::OperationNotSupported)
+                Err(StarryError::OperationNotSupported)
             } else if offset == -1 {
-                sys_read(sqe.fd, sqe.addr as *mut u8, sqe.len as usize)
+                sys_read(current, sqe.fd, sqe.addr as *mut u8, sqe.len as usize)
             } else {
-                sys_pread64(sqe.fd, sqe.addr as *mut u8, sqe.len as usize, offset)
+                sys_pread64(
+                    current,
+                    sqe.fd,
+                    sqe.addr as *mut u8,
+                    sqe.len as usize,
+                    offset,
+                )
             }
         }
         IORING_OP_WRITE => {
             if sqe.rw_flags != 0 {
-                Err(AxError::OperationNotSupported)
+                Err(StarryError::OperationNotSupported)
             } else if offset == -1 {
-                sys_write(sqe.fd, sqe.addr as *mut u8, sqe.len as usize)
+                sys_write(current, sqe.fd, sqe.addr as *mut u8, sqe.len as usize)
             } else {
-                sys_pwrite64(sqe.fd, sqe.addr as *const u8, sqe.len as usize, offset)
+                sys_pwrite64(
+                    current,
+                    sqe.fd,
+                    sqe.addr as *const u8,
+                    sqe.len as usize,
+                    offset,
+                )
             }
         }
-        _ => Err(AxError::OperationNotSupported),
+        _ => Err(StarryError::OperationNotSupported),
     };
 
     result_to_cqe_res(result)
 }
 
-fn setup_entries(entries: u32, params: &io_uring_params) -> AxResult<(u32, u32)> {
+fn setup_entries(entries: u32, params: &io_uring_params) -> StarryResult<(u32, u32)> {
     if params.flags & !SUPPORTED_SETUP_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let clamp = params.flags & IORING_SETUP_CLAMP != 0;
     let sq_entries = round_ring_entries(entries, MAX_SQ_ENTRIES, clamp)?;
     let cq_entries = if params.flags & IORING_SETUP_CQSIZE != 0 {
         if params.cq_entries < entries {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         round_ring_entries(params.cq_entries, MAX_CQ_ENTRIES, clamp)?
     } else {
@@ -198,36 +236,47 @@ fn setup_entries(entries: u32, params: &io_uring_params) -> AxResult<(u32, u32)>
     Ok((sq_entries, cq_entries))
 }
 
-pub fn sys_io_uring_setup(entries: u32, params: *mut io_uring_params) -> AxResult<isize> {
+pub fn sys_io_uring_setup(
+    current: &crate::task::UserTaskRef,
+    entries: u32,
+    params: *mut io_uring_params,
+) -> crate::StarryResult<isize> {
     debug!("sys_io_uring_setup <= entries: {entries}, params: {params:p}");
-    let mut params_value = unsafe { params.vm_read_uninit()?.assume_init() };
+    let mut params_value = unsafe { params.vm_read_uninit(current)?.assume_init() };
     let (sq_entries, cq_entries) = setup_entries(entries, &params_value)?;
 
     let ring = IoUring::new(sq_entries, cq_entries)?;
     ring.fill_params(&mut params_value);
-    params.vm_write(params_value)?;
+    params
+        .cast::<InitializedIoUringParams>()
+        .vm_write(current, InitializedIoUringParams(params_value))?;
     ring.add_to_fd_table(false).map(|fd| fd as isize)
 }
 
 pub fn sys_io_uring_enter(
+    current: &crate::task::UserTaskRef,
     fd: c_int,
     to_submit: usize,
     _min_complete: usize,
     flags: u32,
     _sig: usize,
     _sigsz: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!("sys_io_uring_enter <= fd: {fd}, to_submit: {to_submit}, flags: {flags:#x}");
     if flags & !SUPPORTED_ENTER_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
-    let to_submit = u32::try_from(to_submit).map_err(|_| AxError::InvalidInput)?;
+    let to_submit = u32::try_from(to_submit).map_err(|_| StarryError::InvalidInput)?;
     let ring = IoUring::from_fd(fd)?;
-    ring.submit(to_submit, execute_sqe)
+    ring.submit(to_submit, |sqe| execute_sqe(current, sqe))
         .map(|submitted| submitted as isize)
 }
 
-fn write_probe(arg: *mut u8, nr_args: usize) -> AxResult<isize> {
+fn write_probe(
+    current: &crate::task::UserTaskRef,
+    arg: *mut u8,
+    nr_args: usize,
+) -> crate::StarryResult<isize> {
     let last_op = IORING_OP_WRITE;
     let ops_len = (last_op as usize + 1).min(nr_args).min(u8::MAX as usize);
     let header = IoUringProbeHeader {
@@ -236,7 +285,7 @@ fn write_probe(arg: *mut u8, nr_args: usize) -> AxResult<isize> {
         resv: 0,
         resv2: [0; 3],
     };
-    (arg as *mut IoUringProbeHeader).vm_write(header)?;
+    (arg as *mut IoUringProbeHeader).vm_write(current, header)?;
 
     for idx in 0..ops_len {
         let op = idx as u8;
@@ -252,31 +301,32 @@ fn write_probe(arg: *mut u8, nr_args: usize) -> AxResult<isize> {
         };
         (arg.wrapping_add(size_of::<IoUringProbeHeader>())
             .wrapping_add(idx * size_of::<IoUringProbeOp>()) as *mut IoUringProbeOp)
-            .vm_write(probe_op)?;
+            .vm_write(current, probe_op)?;
     }
 
     Ok(0)
 }
 
 pub fn sys_io_uring_register(
+    current: &crate::task::UserTaskRef,
     fd: c_int,
     opcode: u32,
     arg: usize,
     nr_args: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!("sys_io_uring_register <= fd: {fd}, opcode: {opcode}, nr_args: {nr_args}");
     let _ring = IoUring::from_fd(fd)?;
     match opcode {
-        IORING_REGISTER_PROBE => write_probe(arg as *mut u8, nr_args),
+        IORING_REGISTER_PROBE => write_probe(current, arg as *mut u8, nr_args),
         IORING_REGISTER_EVENTFD | IORING_UNREGISTER_EVENTFD | IORING_REGISTER_EVENTFD_ASYNC => {
-            Err(AxError::OperationNotSupported)
+            Err(StarryError::OperationNotSupported)
         }
-        _ => Err(AxError::OperationNotSupported),
+        _ => Err(StarryError::OperationNotSupported),
     }
 }
 
-#[cfg(axtest)]
-pub(crate) fn io_uring_round_ring_entries_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn io_uring_round_ring_entries_rules_hold_for_test() -> bool {
     // Test round_ring_entries function
     // Zero should fail
     assert!(round_ring_entries(0, 4096, false).is_err());
@@ -297,4 +347,12 @@ pub(crate) fn io_uring_round_ring_entries_rules_hold_for_test() -> bool {
     assert!(round_ring_entries(8192, 4096, true).unwrap() == 4096);
 
     true
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn io_uring_round_ring_entries_rules_hold() {
+        assert!(super::io_uring_round_ring_entries_rules_hold_for_test());
+    }
 }

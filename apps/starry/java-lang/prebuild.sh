@@ -294,9 +294,9 @@ stage_test_sources() {
     install -m0644 "$PROG/BackCompat.java"     "$d/"
     install -m0644 "$PROG/java-cli-core.sh"    "$d/"
     install -m0644 "$PROG/java-toolchain-carpet.sh" "$d/"
-    # Stage the on-target gate script (invoked as the ENTIRE shell_init_cmd). Keeping the gate
+    # Stage the on-target gate script (invoked as the entire shell-check step command). Keeping the gate
     # in a staged script — not inline in the toml — avoids the harness false-positive where the
-    # echoed shell_init_cmd text containing `echo "TEST PASSED"` self-matches success_regex
+    # echoed step command text containing `echo "TEST PASSED"` self-matches success_regex
     # (FIX1), and carries the per-arch honest SKIP logic for JDKs that can't run on rv/loong
     # (FIX2). One script serves all 4 arches (it detects the arch + JDK set at run time).
     install -Dm0755 "$PROG/run-java.sh" "$overlay_dir/usr/bin/run-java.sh"

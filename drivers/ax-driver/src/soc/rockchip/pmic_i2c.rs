@@ -65,14 +65,14 @@ use core::{
 // task-switching on its CPU for the whole transaction (a scheduling-starvation
 // risk when the bus misbehaves). So the slow chip transactions are guarded by a
 // non-preempt-disabling bus-ownership flag (`BUS_BUSY` / [`BusGuard`]) and the
-// `SpinNoPreempt` `Mutex` below is used ONLY to store the controller handle
+// `SpinLock` `Mutex` below is used ONLY to store the controller handle
 // (`init`) or clone it out (`BusGuard::claim`) — a microsecond-scale window that
 // never spans a poll. Ownership is single-caller by construction (one governor
 // task; `init` runs before it), so `BusGuard::claim` takes ownership without
 // blocking and bails on the (never-expected) contended case rather than spinning.
-// `SpinNoPreempt` (not `SpinNoIrq`) keeps local IRQs enabled; the lock is never
+// `SpinLock` (not `SpinNoIrq`) keeps local IRQs enabled; the lock is never
 // taken from an interrupt handler, so no re-entrant self-deadlock is possible.
-use ax_kspin::SpinNoPreempt as Mutex;
+use ax_sync::SpinLock as Mutex;
 use log::{info, warn};
 use mmio_api::{MmioAddr, MmioRaw};
 use rdif_pinctrl::PinctrlDevice;
@@ -411,12 +411,12 @@ impl Rk3xI2c {
 // Public API — single global PMIC bus (mapped once)
 // ---------------------------------------------------------------------------
 
-/// Storage for the initialised controller handle. The `SpinNoPreempt` mutex is
+/// Storage for the initialised controller handle. The `SpinLock` mutex is
 /// held only for the microsecond-scale window that stores it (`init`) or clones
 /// it out ([`BusGuard::claim`]) — NEVER across a hardware poll.
 static CONTROLLER: Mutex<Option<Rk3xI2c>> = Mutex::new(None);
 
-/// Bus-ownership flag for the slow chip transactions. Unlike a `SpinNoPreempt`
+/// Bus-ownership flag for the slow chip transactions. Unlike a `SpinLock`
 /// guard, holding it does NOT disable preemption, so a `wait_ipd` poll (~100 ms
 /// budget, longer if the bus is dead) can be preempted and never starves the
 /// scheduler on that CPU — the blocking concern raised in review.
@@ -433,7 +433,7 @@ static BUS_BUSY: AtomicBool = AtomicBool::new(false);
 
 /// RAII ownership of the PMIC bus for one (possibly multi-step) transaction.
 /// Carries a clone of the controller handle so the slow poll runs with no
-/// `SpinNoPreempt` guard held. Releases ownership on drop.
+/// `SpinLock` guard held. Releases ownership on drop.
 struct BusGuard {
     i2c: Rk3xI2c,
 }

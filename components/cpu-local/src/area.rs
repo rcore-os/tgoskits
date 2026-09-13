@@ -1,49 +1,73 @@
+#[cfg(not(all(target_arch = "aarch64", not(feature = "host-test"))))]
+use core::sync::atomic::Ordering;
 use core::{
     mem::{MaybeUninit, align_of, offset_of, size_of},
     ptr::NonNull,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::AtomicUsize,
 };
 
-use crate::{CpuIndex, CpuLocalError, CurrentThreadHeader};
+use crate::{CpuIndex, CpuLocalError, ExecutionContextHeader, preempt::PreemptionState};
 
-/// CPU-local scalar state shared by trap entry and scheduler publication.
+const fn runtime_anchor_reserved_size() -> usize {
+    64 - 6 * size_of::<usize>() - size_of::<PreemptionState>()
+}
+
+/// CPU-local scalar state shared by trap entry and context publication.
 #[repr(C, align(64))]
 pub struct CpuRuntimeAnchor {
-    current_thread: AtomicUsize,
-    architecture_state: [AtomicUsize; 4],
-    reserved: [u8; 64 - 5 * size_of::<usize>()],
+    current_context: AtomicUsize,
+    architecture_state: [AtomicUsize; 5],
+    preemption_state: PreemptionState,
+    reserved: [u8; runtime_anchor_reserved_size()],
 }
 
 impl CpuRuntimeAnchor {
-    const fn for_boot_thread(boot_thread: usize) -> Self {
+    const fn for_boot_context(boot_context: usize) -> Self {
+        let current_context = if cfg!(all(target_arch = "x86_64", not(feature = "host-test")))
+            || cfg!(all(
+                kernel_tls,
+                not(all(target_arch = "aarch64", not(feature = "host-test")))
+            )) {
+            boot_context
+        } else {
+            0
+        };
         Self {
-            current_thread: AtomicUsize::new(boot_thread),
-            architecture_state: [const { AtomicUsize::new(0) }; 4],
-            reserved: [0; 64 - 5 * size_of::<usize>()],
+            current_context: AtomicUsize::new(current_context),
+            architecture_state: [const { AtomicUsize::new(0) }; 5],
+            preemption_state: PreemptionState::bootstrap_disabled(),
+            reserved: [0; runtime_anchor_reserved_size()],
         }
     }
 
-    /// Acquires the current-thread pointer published by the scheduler.
-    pub fn current_thread_raw(&self) -> usize {
-        self.current_thread.load(Ordering::Acquire)
+    /// Acquires the context pointer in an anchor-backed image mode.
+    #[cfg(not(all(target_arch = "aarch64", not(feature = "host-test"))))]
+    pub(crate) fn current_context_raw(&self) -> usize {
+        self.current_context.load(Ordering::Acquire)
     }
 
-    pub(crate) const fn current_thread_slot(&self) -> &AtomicUsize {
-        &self.current_thread
+    #[cfg(not(all(target_arch = "aarch64", not(feature = "host-test"))))]
+    pub(crate) const fn current_context_slot(&self) -> &AtomicUsize {
+        &self.current_context
+    }
+
+    #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+    pub(crate) const fn preemption_state(&self) -> &PreemptionState {
+        &self.preemption_state
     }
 }
 
-/// Permanent current header used before the scheduler publishes a task.
+/// Permanent context header used before the runtime publishes a context.
 #[repr(transparent)]
-pub struct BootThreadHeader(CurrentThreadHeader);
+pub struct BootContextHeader(ExecutionContextHeader);
 
-impl BootThreadHeader {
+impl BootContextHeader {
     const fn for_area(area_base: usize) -> Self {
-        Self(CurrentThreadHeader::boot(area_base))
+        Self(ExecutionContextHeader::boot(area_base))
     }
 
     /// Returns the permanent pinned header.
-    pub const fn header(&self) -> &CurrentThreadHeader {
+    pub const fn header(&self) -> &ExecutionContextHeader {
         &self.0
     }
 }
@@ -72,6 +96,7 @@ impl CpuAreaHeader {
     }
 
     /// Returns the logical CPU index assigned to this area.
+    #[inline(always)]
     pub const fn cpu_index(&self) -> CpuIndex {
         match CpuIndex::from_u32(self.cpu_index) {
             Some(index) => index,
@@ -90,7 +115,7 @@ impl CpuAreaHeader {
 pub struct CpuAreaPrefix {
     header: CpuAreaHeader,
     runtime: CpuRuntimeAnchor,
-    boot_thread: BootThreadHeader,
+    boot_context: BootContextHeader,
 }
 
 impl CpuAreaPrefix {
@@ -99,16 +124,16 @@ impl CpuAreaPrefix {
     /// # Errors
     ///
     /// Returns an address error when `area_base` is null, misaligned, or its
-    /// fixed boot-thread address overflows.
+    /// fixed boot-context address overflows.
     pub fn initialize(cpu_index: CpuIndex, area_base: usize) -> Result<Self, CpuLocalError> {
         validate_area_base(area_base)?;
         area_base
-            .checked_add(CPU_AREA_BOOT_THREAD_OFFSET)
+            .checked_add(CPU_AREA_BOOT_CONTEXT_OFFSET)
             .ok_or(CpuLocalError::AddressOverflow)?;
         Ok(Self {
             header: CpuAreaHeader::new(cpu_index, area_base),
-            runtime: CpuRuntimeAnchor::for_boot_thread(area_base + CPU_AREA_BOOT_THREAD_OFFSET),
-            boot_thread: BootThreadHeader::for_area(area_base),
+            runtime: CpuRuntimeAnchor::for_boot_context(area_base + CPU_AREA_BOOT_CONTEXT_OFFSET),
+            boot_context: BootContextHeader::for_area(area_base),
         })
     }
 
@@ -122,9 +147,9 @@ impl CpuAreaPrefix {
         &self.runtime
     }
 
-    /// Returns the permanent boot current-thread header.
-    pub const fn boot_thread(&self) -> &BootThreadHeader {
-        &self.boot_thread
+    /// Returns the permanent boot execution-context header.
+    pub const fn boot_context(&self) -> &BootContextHeader {
+        &self.boot_context
     }
 }
 
@@ -132,7 +157,6 @@ impl CpuAreaPrefix {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CpuAreaRef {
     prefix: NonNull<CpuAreaPrefix>,
-    cpu_index: CpuIndex,
 }
 
 // SAFETY: the initialization contract keeps the immutable prefix and runtime
@@ -152,54 +176,72 @@ impl CpuAreaRef {
     /// remains mapped until shutdown. No caller may mutate its identity fields.
     #[doc(hidden)]
     pub unsafe fn from_initialized_base(area_base: usize) -> Result<Self, CpuLocalError> {
+        #[cfg(feature = "host-test")]
+        crate::register::host_test::record_initialized_area_validation();
         validate_area_base(area_base)?;
         let prefix = NonNull::new(area_base as *mut CpuAreaPrefix)
             .ok_or(CpuLocalError::InvalidAreaBase { base: area_base })?;
         // SAFETY: forwarded caller contract provides a live initialized prefix.
         let header = unsafe { prefix.as_ref() }.header();
-        let cpu_index =
-            CpuIndex::from_u32(header.cpu_index).ok_or(CpuLocalError::AreaIdentityMismatch)?;
+        CpuIndex::from_u32(header.cpu_index).ok_or(CpuLocalError::AreaIdentityMismatch)?;
         if header.self_base != area_base {
             return Err(CpuLocalError::AreaIdentityMismatch);
         }
         let expected_boot = area_base
-            .checked_add(CPU_AREA_BOOT_THREAD_OFFSET)
+            .checked_add(CPU_AREA_BOOT_CONTEXT_OFFSET)
             .ok_or(CpuLocalError::AddressOverflow)?;
         if unsafe { prefix.as_ref() }
-            .runtime_anchor()
-            .current_thread_raw()
-            == 0
-            || unsafe { prefix.as_ref() }
-                .boot_thread()
-                .header()
-                .raw_cpu_binding()
-                .map(|(boot_area, _)| boot_area)
-                != Some(area_base)
+            .boot_context()
+            .header()
+            .raw_cpu_binding()
+            .map(|(boot_area, _)| boot_area)
+            != Some(area_base)
             || expected_boot
-                != core::ptr::addr_of!(unsafe { prefix.as_ref() }.boot_thread.0) as usize
+                != core::ptr::addr_of!(unsafe { prefix.as_ref() }.boot_context.0) as usize
         {
             return Err(CpuLocalError::AreaIdentityMismatch);
         }
-        Ok(Self { prefix, cpu_index })
+        Ok(Self { prefix })
+    }
+
+    /// Reconstructs the area selected by an already validated installed base.
+    ///
+    /// # Safety
+    ///
+    /// `area_base` must be the exact base of a [`CpuAreaRef`] previously
+    /// validated and installed through the architecture register boundary.
+    /// That area must retain its immutable identity and remain mapped until
+    /// shutdown.
+    pub(crate) unsafe fn from_installed_base(area_base: usize) -> Self {
+        debug_assert!(area_base != 0);
+        debug_assert!(area_base.is_multiple_of(align_of::<CpuAreaPrefix>()));
+        // SAFETY: the caller guarantees that the installed base is non-null
+        // and still names the previously validated shutdown-lifetime prefix.
+        let prefix = unsafe { NonNull::new_unchecked(area_base as *mut CpuAreaPrefix) };
+        Self { prefix }
     }
 
     /// Returns this area's logical CPU index.
+    #[inline(always)]
     pub const fn cpu_index(self) -> CpuIndex {
-        self.cpu_index
+        self.prefix().header().cpu_index()
     }
 
     /// Returns the exact runtime prefix address used as area identity.
+    #[inline(always)]
     pub fn base(self) -> usize {
         self.prefix.as_ptr() as usize
     }
 
     /// Returns the initialized fixed prefix.
-    pub fn prefix(self) -> &'static CpuAreaPrefix {
+    #[inline(always)]
+    pub const fn prefix(self) -> &'static CpuAreaPrefix {
         // SAFETY: construction requires a shutdown-lifetime mapping.
         unsafe { self.prefix.as_ref() }
     }
 
     /// Returns this area's runtime/trap anchor.
+    #[inline(always)]
     pub fn runtime_anchor(self) -> &'static CpuRuntimeAnchor {
         self.prefix().runtime_anchor()
     }
@@ -217,32 +259,35 @@ fn validate_area_base(area_base: usize) -> Result<(), CpuLocalError> {
 pub const CPU_AREA_HEADER_SIZE: usize = size_of::<CpuAreaHeader>();
 /// Byte offset of CPU runtime/trap state.
 pub const CPU_AREA_RUNTIME_ANCHOR_OFFSET: usize = offset_of!(CpuAreaPrefix, runtime);
-/// Byte offset of the permanent boot current-thread header.
-pub const CPU_AREA_BOOT_THREAD_OFFSET: usize = offset_of!(CpuAreaPrefix, boot_thread);
+/// Byte offset of the permanent boot execution-context header.
+pub const CPU_AREA_BOOT_CONTEXT_OFFSET: usize = offset_of!(CpuAreaPrefix, boot_context);
 /// Byte offset of the runtime self pointer.
 pub const CPU_AREA_SELF_BASE_OFFSET: usize = offset_of!(CpuAreaHeader, self_base);
 /// Byte offset of the logical CPU index.
 pub const CPU_AREA_CPU_INDEX_OFFSET: usize = offset_of!(CpuAreaHeader, cpu_index);
-/// Byte offset of the current-thread slot.
-pub const CPU_AREA_CURRENT_THREAD_OFFSET: usize =
-    CPU_AREA_RUNTIME_ANCHOR_OFFSET + offset_of!(CpuRuntimeAnchor, current_thread);
+/// Byte offset of the current-context slot used by anchor-backed image modes.
+pub const CPU_AREA_CURRENT_CONTEXT_OFFSET: usize =
+    CPU_AREA_RUNTIME_ANCHOR_OFFSET + offset_of!(CpuRuntimeAnchor, current_context);
 /// Byte offset of architecture-owned CPU trap state.
 pub const CPU_AREA_ARCH_STATE_OFFSET: usize =
     CPU_AREA_RUNTIME_ANCHOR_OFFSET + offset_of!(CpuRuntimeAnchor, architecture_state);
 /// Reserved bytes available to the architecture-owned CPU trap state.
-pub const CPU_AREA_ARCH_STATE_SIZE: usize = 4 * size_of::<usize>();
+pub const CPU_AREA_ARCH_STATE_SIZE: usize = 5 * size_of::<usize>();
+/// Byte offset of the x86_64 CPU-owned preemption word.
+pub const CPU_AREA_PREEMPTION_STATE_OFFSET: usize =
+    CPU_AREA_RUNTIME_ANCHOR_OFFSET + offset_of!(CpuRuntimeAnchor, preemption_state);
 
 const _: () = {
     assert!(size_of::<CpuAreaHeader>() == 64);
     assert!(align_of::<CpuAreaHeader>() == 64);
     assert!(size_of::<CpuRuntimeAnchor>() == 64);
     assert!(align_of::<CpuRuntimeAnchor>() == 64);
-    assert!(size_of::<BootThreadHeader>() == 64);
-    assert!(align_of::<BootThreadHeader>() == 64);
+    assert!(size_of::<BootContextHeader>() == 64);
+    assert!(align_of::<BootContextHeader>() == 64);
     assert!(size_of::<CpuAreaPrefix>() == 192);
     assert!(align_of::<CpuAreaPrefix>() == 64);
     assert!(CPU_AREA_RUNTIME_ANCHOR_OFFSET == 64);
-    assert!(CPU_AREA_BOOT_THREAD_OFFSET == 128);
+    assert!(CPU_AREA_BOOT_CONTEXT_OFFSET == 128);
 };
 
 #[doc(hidden)]
@@ -256,3 +301,14 @@ pub static mut __CPU_LOCAL_AREA_PREFIX: MaybeUninit<CpuAreaPrefix> = MaybeUninit
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".percpu.template.end")]
 pub static __CPU_LOCAL_TEMPLATE_END: u8 = 0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_area_ref_keeps_one_area_identity() {
+        assert_eq!(size_of::<CpuAreaRef>(), size_of::<usize>());
+        assert_eq!(size_of::<Option<CpuAreaRef>>(), size_of::<usize>());
+    }
+}

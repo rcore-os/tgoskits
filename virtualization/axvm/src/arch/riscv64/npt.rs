@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 
+use ax_cpu::paging::{DescriptorFlags, PageTableEntry, Pte};
+use axvm_types::MappingFlags;
 use page_table_generic as ptg;
 
 #[derive(Clone, Copy)]
@@ -17,11 +19,9 @@ impl ptg::TableMeta for Sv39x4MetaData {
     const STRICT_ADDRESS_WIDTH: bool = true;
 
     fn flush(_vaddr: Option<ptg::VirtAddr>) {
-        // SAFETY: `hfence.gvma` only orders guest-stage translations. It does
-        // not access memory directly and is required after G-stage PTE updates.
-        unsafe {
-            core::arch::asm!("hfence.gvma", options(nostack, preserves_flags));
-        }
+        // The VM owner retires all guests before mutation; the CPU entry
+        // fences G-stage translations on every later entry, including reentry
+        // within an existing VS register-bank binding.
     }
 }
 
@@ -41,67 +41,67 @@ impl ptg::TableMeta for Sv48x4MetaData {
     }
 }
 
+/// VM mapping policy over the CPU-owned Sv descriptor encoding.
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
-pub struct RiscvPte(usize);
+pub struct RiscvPte(Pte);
 
-impl RiscvPte {
-    const V: usize = 1 << 0;
-    const R: usize = 1 << 1;
-    const W: usize = 1 << 2;
-    const X: usize = 1 << 3;
-    const U: usize = 1 << 4;
-    const A: usize = 1 << 6;
-    const D: usize = 1 << 7;
-    const PPN_MASK: usize = (1usize << 54) - (1usize << 10);
-}
+impl PageTableEntry for RiscvPte {
+    type PteConfig = MappingFlags;
 
-impl ptg::PageTableEntry for RiscvPte {
-    fn from_config(config: ptg::PteConfig) -> Self {
-        if !config.valid {
-            return Self(0);
+    fn new_page(paddr: ptg::PhysAddr, config: MappingFlags, _is_huge: bool) -> Self {
+        if config.is_empty() {
+            return Self(Pte::default());
         }
-
-        let mut bits = (config.paddr.raw() >> 2) & Self::PPN_MASK;
-        bits |= Self::V;
-        if !config.is_dir || config.huge {
-            if config.read {
-                bits |= Self::R;
-            }
-            if config.writable {
-                bits |= Self::W | Self::R;
-            }
-            if config.executable {
-                bits |= Self::X;
-            }
-            if config.lower {
-                bits |= Self::U;
-            }
-            bits |= Self::A | Self::D;
-        }
-        Self(bits)
+        // G-stage uses the same descriptor layout as S-stage. The VM selects
+        // its own A/D and user-access policy, without S-stage vendor defaults.
+        let mut flags = DescriptorFlags::V | DescriptorFlags::A | DescriptorFlags::D;
+        flags.set(
+            DescriptorFlags::R,
+            config.intersects(MappingFlags::READ | MappingFlags::WRITE),
+        );
+        flags.set(DescriptorFlags::W, config.contains(MappingFlags::WRITE));
+        flags.set(DescriptorFlags::X, config.contains(MappingFlags::EXECUTE));
+        flags.set(DescriptorFlags::U, config.contains(MappingFlags::USER));
+        Self(Pte::from_parts(paddr, flags))
     }
 
-    fn to_config(&self, is_dir: bool) -> ptg::PteConfig {
-        let flags = self.0;
-        let leaf = flags & (Self::R | Self::W | Self::X) != 0;
-        ptg::PteConfig {
-            paddr: ptg::PhysAddr::new((flags & Self::PPN_MASK) << 2),
-            valid: flags & Self::V != 0,
-            read: flags & Self::R != 0,
-            writable: flags & Self::W != 0,
-            executable: flags & Self::X != 0,
-            lower: flags & Self::U != 0,
-            dirty: flags & Self::D != 0,
-            is_dir: is_dir && !leaf,
-            huge: is_dir && leaf,
-            mem_attr: ptg::MemAttributes::Normal,
-            ..Default::default()
-        }
+    fn new_table(paddr: ptg::PhysAddr) -> Self {
+        Self(Pte::from_parts(paddr, DescriptorFlags::V))
     }
 
-    fn valid(&self) -> bool {
-        self.0 & Self::V != 0
+    fn paddr(&self, is_dir: bool) -> ptg::PhysAddr {
+        self.0.paddr(is_dir)
+    }
+
+    fn config(&self, _is_dir: bool) -> MappingFlags {
+        let flags = self.0.flags();
+        let mut config = MappingFlags::empty();
+        config.set(MappingFlags::READ, flags.contains(DescriptorFlags::R));
+        config.set(MappingFlags::WRITE, flags.contains(DescriptorFlags::W));
+        config.set(MappingFlags::EXECUTE, flags.contains(DescriptorFlags::X));
+        config.set(MappingFlags::USER, flags.contains(DescriptorFlags::U));
+        config
+    }
+
+    fn present(&self) -> bool {
+        self.0.present()
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        is_dir
+            && self
+                .0
+                .flags()
+                .intersects(DescriptorFlags::R | DescriptorFlags::W | DescriptorFlags::X)
+    }
+
+    fn unused(&self) -> bool {
+        self.0.unused()
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
     }
 }
 

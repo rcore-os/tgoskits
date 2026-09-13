@@ -1,27 +1,37 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
 use core::{
-    alloc::Layout,
     cmp,
-    sync::atomic::{AtomicBool, Ordering},
+    num::NonZeroU32,
+    sync::atomic::{AtomicU32, Ordering},
 };
 
-use ax_kspin::SpinRaw as Mutex;
-use dma_api::{DmaAddr, DmaAllocHandle, DmaConstraints, DmaOp};
-use fxmac_rs::{FXmac, FXmacGetMacAddress, FXmacLwipPortTx, FXmacRecvHandler, xmac_init};
-use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
-use rdrive::{DriverGeneric, PlatformDevice};
+use ax_sync::SpinLock as Mutex;
+use dma_api::DeviceDma;
+use fxmac_rs::{
+    FXMAC_MMIO_REQUIRED_SIZE, FXmac, FXmacIrqStatus, FXmacLwipPortTx, FXmacRecvHandler,
+    FxmacHardwareConfig, FxmacIrqEndpoint, xmac_init,
+};
+use mmio_api::Mmio;
+use rd_net::{
+    DmaBuffer, FixedNetControl, IRxQueue, ITxQueue, NetDevice, NetDeviceInfo, NetDeviceParts,
+    NetError, NetHardIrqEndpoint, NetHardIrqHandler, NetHardIrqResult, NetIrqSnapshot,
+    NetIrqSourceId, NetPollGroupId, NetPollGroupParts, NetPollIrqControl, NetQueueId,
+    NetQueuePairParts, NetRearmResult, QueueConfig, RxCompletion, SubmitError,
+};
+use rdrive::{DriverGeneric, probe::fdt::ResourcePrepareConfig};
 
 use crate::{binding_info_from_fdt, net::PlatformDeviceNet};
 
 pub const DEVICE_NAME: &str = "fxmac";
 
 const DRIVER_NAME: &str = "cdns,phytium-gem-1.0";
-const QUEUE_ID: usize = 0;
+const QUEUE_ID: NetQueueId = NetQueueId::new(0);
+const GROUP_ID: NetPollGroupId = NetPollGroupId::new(0);
+const IRQ_SOURCE: NetIrqSourceId = NetIrqSourceId::new(0);
 const QUEUE_SIZE: usize = 64;
 const BUFFER_SIZE: usize = 2048;
 const DMA_ALIGN: usize = 0x1000;
 const DMA_MASK: u64 = u64::MAX;
-const PAGE_SIZE: usize = 0x1000;
 
 crate::model_register!(
     name: "FXMAC FDT Network",
@@ -34,19 +44,85 @@ crate::model_register!(
 );
 
 fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), rdrive::probe::OnProbeError> {
-    let info = binding_info_from_fdt(probe.info())?;
-    let dev = FxmacNet::new();
+    let probe_info = probe.info();
+    let info = binding_info_from_fdt(probe_info)?;
+    if info.irq().is_none() {
+        return Err(rdrive::probe::OnProbeError::other(alloc::format!(
+            "[{}] FXMAC requires an interrupt binding",
+            probe_info.node.name()
+        )));
+    }
+    let reg = probe_info.node.regs().into_iter().next().ok_or_else(|| {
+        rdrive::probe::OnProbeError::other(alloc::format!(
+            "[{}] has no FXMAC register aperture",
+            probe_info.node.name()
+        ))
+    })?;
+    let mmio_size = reg.size.ok_or_else(|| {
+        rdrive::probe::OnProbeError::other(alloc::format!(
+            "[{}] FXMAC register aperture has no size",
+            probe_info.node.name()
+        ))
+    })?;
+    let mmio_size = usize::try_from(mmio_size).map_err(|_| {
+        rdrive::probe::OnProbeError::other(alloc::format!(
+            "[{}] FXMAC register aperture is too large: {mmio_size:#x}",
+            probe_info.node.name()
+        ))
+    })?;
+    if mmio_size < FXMAC_MMIO_REQUIRED_SIZE {
+        return Err(rdrive::probe::OnProbeError::other(alloc::format!(
+            "[{}] FXMAC register aperture is too small: {mmio_size:#x} < \
+             {FXMAC_MMIO_REQUIRED_SIZE:#x}",
+            probe_info.node.name()
+        )));
+    }
+    let mmio_address = usize::try_from(reg.address).map_err(|_| {
+        rdrive::probe::OnProbeError::other(alloc::format!(
+            "[{}] FXMAC register address is not representable: {:#x}",
+            probe_info.node.name(),
+            reg.address
+        ))
+    })?;
+    let mmio = axklib::mmio::ioremap(mmio_address.into(), mmio_size).map_err(|err| {
+        rdrive::probe::OnProbeError::other(alloc::format!(
+            "failed to map FXMAC registers at {:#x}: {err}",
+            reg.address
+        ))
+    })?;
+    let resources = probe_info
+        .prepare_resources(ResourcePrepareConfig::default().with_named_clock_rate("pclk"))?;
+    let pclk_hz = resources.clock_rate("pclk").ok_or_else(|| {
+        rdrive::probe::OnProbeError::other(alloc::format!(
+            "[{}] has no prepared FXMAC pclk rate",
+            probe_info.node.name()
+        ))
+    })?;
+    let pclk_hz = u32::try_from(pclk_hz).map_err(|_| {
+        rdrive::probe::OnProbeError::other(alloc::format!(
+            "[{}] FXMAC pclk rate is out of range: {pclk_hz} Hz",
+            probe_info.node.name()
+        ))
+    })?;
+    let pclk_hz = NonZeroU32::new(pclk_hz).ok_or_else(|| {
+        rdrive::probe::OnProbeError::other(alloc::format!(
+            "[{}] FXMAC pclk rate is zero",
+            probe_info.node.name()
+        ))
+    })?;
+    let hardware = FxmacHardwareConfig::new(pclk_hz);
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        crate::binding_resolver::dma_coherency_from_fdt(probe_info),
+        dma_api::DmaConstraints::new(u64::MAX),
+    ));
+    let dev = FxmacNet::new(dma.clone(), mmio, hardware)
+        .map_err(|err| rdrive::probe::OnProbeError::Other(alloc::format!("{err}").into()))?;
     probe
         .into_platform_device()
-        .register_net_with_info(DRIVER_NAME, dev, info);
+        .register_net_with_info(DRIVER_NAME, dev, dma, info)?;
     log::info!("registered FXmac FDT network device");
     Ok(())
-}
-
-pub fn register(plat_dev: PlatformDevice) {
-    let dev = FxmacNet::new();
-    plat_dev.register_net(DRIVER_NAME, dev);
-    log::info!("registered FXmac network device");
 }
 
 struct FxmacNet {
@@ -54,19 +130,19 @@ struct FxmacNet {
     tx_state: Arc<Mutex<FxmacTxState>>,
     rx_state: Arc<Mutex<FxmacRxState>>,
     irq_state: Arc<FxmacIrqState>,
+    irq_endpoint: FxmacIrqEndpoint,
     hwaddr: [u8; 6],
-    tx_created: bool,
-    rx_created: bool,
-    irq_enabled: bool,
 }
 
 impl FxmacNet {
-    fn new() -> Self {
-        let mut hwaddr = [0; 6];
-        FXmacGetMacAddress(&mut hwaddr, 0);
-        let device = xmac_init(&hwaddr);
-        device.disable_irq();
-        Self {
+    fn new(
+        dma: DeviceDma,
+        mmio: Mmio,
+        hardware: FxmacHardwareConfig,
+    ) -> Result<Self, fxmac_rs::FxmacInitError> {
+        let (device, irq_endpoint) = xmac_init(dma, mmio, hardware)?;
+        let hwaddr = device.mac_address();
+        Ok(Self {
             hw: Arc::new(Mutex::new(FxmacHw { device })),
             tx_state: Arc::new(Mutex::new(FxmacTxState {
                 tx_done: VecDeque::with_capacity(QUEUE_SIZE),
@@ -76,11 +152,9 @@ impl FxmacNet {
                 rx_packets: VecDeque::with_capacity(QUEUE_SIZE),
             })),
             irq_state: Arc::new(FxmacIrqState::new()),
+            irq_endpoint,
             hwaddr,
-            tx_created: false,
-            rx_created: false,
-            irq_enabled: false,
-        }
+        })
     }
 }
 
@@ -90,157 +164,170 @@ impl DriverGeneric for FxmacNet {
     }
 }
 
-impl rd_net::Interface for FxmacNet {
-    fn mac_address(&self) -> [u8; 6] {
-        self.hwaddr
-    }
+impl NetDevice for FxmacNet {
+    fn into_parts(self: Box<Self>) -> Result<NetDeviceParts, NetError> {
+        let Self {
+            hw,
+            tx_state,
+            rx_state,
+            irq_state,
+            irq_endpoint,
+            hwaddr,
+        } = *self;
 
-    fn create_tx_queue(&mut self) -> Option<Box<dyn ITxQueue>> {
-        if self.tx_created {
-            return None;
-        }
-        self.tx_created = true;
-        Some(Box::new(FxmacTxQueue {
-            hw: Arc::clone(&self.hw),
-            tx_state: Arc::clone(&self.tx_state),
-            irq_state: Arc::clone(&self.irq_state),
-        }))
-    }
-
-    fn create_rx_queue(&mut self) -> Option<Box<dyn IRxQueue>> {
-        if self.rx_created {
-            return None;
-        }
-        self.rx_created = true;
-        Some(Box::new(FxmacRxQueue {
-            hw: Arc::clone(&self.hw),
-            rx_state: Arc::clone(&self.rx_state),
-            irq_state: Arc::clone(&self.irq_state),
-        }))
-    }
-
-    fn enable_irq(&mut self) {
-        self.hw.lock().device.enable_irq();
-        self.irq_enabled = true;
-    }
-
-    fn disable_irq(&mut self) {
-        self.hw.lock().device.disable_irq();
-        self.irq_enabled = false;
-    }
-
-    fn is_irq_enabled(&self) -> bool {
-        self.irq_enabled
-    }
-
-    fn handle_irq(&mut self) -> Event {
-        let mut handler = FxmacIrqHandler {
-            hw: Arc::clone(&self.hw),
-            irq_state: Arc::clone(&self.irq_state),
-        };
-        rd_net::InterfaceIrqHandler::handle_irq(&mut handler)
-    }
-
-    fn take_irq_handler(&mut self) -> Option<rd_net::BIrqHandler> {
-        Some(Box::new(FxmacIrqHandler {
-            hw: Arc::clone(&self.hw),
-            irq_state: Arc::clone(&self.irq_state),
-        }))
+        Ok(NetDeviceParts {
+            info: NetDeviceInfo::new(DRIVER_NAME, hwaddr),
+            control: Box::new(FixedNetControl::new(hwaddr)),
+            wifi_control: None,
+            poll_groups: vec![NetPollGroupParts {
+                id: GROUP_ID,
+                queues: NetQueuePairParts {
+                    tx: Box::new(FxmacTxQueue {
+                        hw: Arc::clone(&hw),
+                        tx_state,
+                        irq_state: Arc::clone(&irq_state),
+                    }),
+                    rx: Box::new(FxmacRxQueue {
+                        hw: Arc::clone(&hw),
+                        rx_state,
+                        irq_state: Arc::clone(&irq_state),
+                    }),
+                },
+                irq_control: Box::new(FxmacIrqControl {
+                    hw: Arc::clone(&hw),
+                    irq_state: Arc::clone(&irq_state),
+                }),
+                owner_startup: None,
+                irq_endpoints: vec![NetHardIrqEndpoint::new(
+                    IRQ_SOURCE,
+                    Box::new(FxmacIrqHandler {
+                        endpoint: irq_endpoint,
+                        irq_state,
+                    }),
+                )],
+            }],
+        })
     }
 }
 
 struct FxmacHw {
-    device: &'static mut FXmac,
+    device: FXmac,
 }
 
 unsafe impl Send for FxmacHw {}
 
 struct FxmacTxState {
-    tx_done: VecDeque<u64>,
+    tx_done: VecDeque<DmaBuffer>,
 }
 
 struct FxmacRxState {
-    rx_buffers: VecDeque<RuntimeNetBuffer>,
+    rx_buffers: VecDeque<DmaBuffer>,
     rx_packets: VecDeque<Vec<u8>>,
 }
 
 struct FxmacIrqState {
-    rx_pending: AtomicBool,
-    tx_pending: AtomicBool,
-    irq_ack_pending: AtomicBool,
+    pending_status: AtomicU32,
 }
 
 impl FxmacIrqState {
     fn new() -> Self {
         Self {
-            rx_pending: AtomicBool::new(false),
-            tx_pending: AtomicBool::new(false),
-            irq_ack_pending: AtomicBool::new(false),
+            pending_status: AtomicU32::new(0),
         }
     }
 
-    fn mark_irq_ack_pending(&self) {
-        self.irq_ack_pending.store(true, Ordering::Release);
+    fn drain_pending_irq(&self, hw: &mut FxmacHw) -> NetIrqSnapshot {
+        let status = self.take_pending_status();
+        if status.is_empty() {
+            return NetIrqSnapshot::empty();
+        }
+        hw.device.process_irq_snapshot(status);
+        Self::snapshot(status)
     }
 
-    fn drain_pending_irq_ack(&self, hw: &mut FxmacHw) {
-        if self.irq_ack_pending.swap(false, Ordering::AcqRel) {
-            let status = hw.device.handle_irq();
-            let _ = self.publish(status.tx_ready(), status.rx_ready());
+    fn publish(&self, status: FXmacIrqStatus) -> NetIrqSnapshot {
+        if status.is_empty() {
+            return NetIrqSnapshot::empty();
+        }
+        self.pending_status
+            .fetch_or(status.raw(), Ordering::Release);
+        Self::snapshot(status)
+    }
+
+    fn snapshot(status: FXmacIrqStatus) -> NetIrqSnapshot {
+        let mut snapshot = NetIrqSnapshot::empty();
+        if status.tx_ready() {
+            snapshot = snapshot.union(NetIrqSnapshot::TX);
+        }
+        if status.rx_ready() {
+            snapshot = snapshot.union(NetIrqSnapshot::RX);
+        }
+        if snapshot == NetIrqSnapshot::empty() {
+            NetIrqSnapshot::ERROR
+        } else {
+            snapshot
         }
     }
 
-    fn publish(&self, tx_ready: bool, rx_ready: bool) -> Event {
-        let mut event = Event::none();
-        if tx_ready {
-            self.tx_pending.store(true, Ordering::Release);
-            event.tx_queue.insert(QUEUE_ID);
-        }
-        if rx_ready {
-            self.rx_pending.store(true, Ordering::Release);
-            event.rx_queue.insert(QUEUE_ID);
-        }
-        event
+    fn pending_snapshot(&self) -> NetIrqSnapshot {
+        Self::snapshot(FXmacIrqStatus::from_raw(
+            self.pending_status.load(Ordering::Acquire),
+        ))
     }
 
-    fn take_rx_pending(&self) -> bool {
-        self.rx_pending.swap(false, Ordering::AcqRel)
-    }
-
-    fn take_tx_pending(&self) -> bool {
-        self.tx_pending.swap(false, Ordering::AcqRel)
+    fn take_pending_status(&self) -> FXmacIrqStatus {
+        FXmacIrqStatus::from_raw(self.pending_status.swap(0, Ordering::AcqRel))
     }
 }
 
 struct FxmacIrqHandler {
+    endpoint: FxmacIrqEndpoint,
+    irq_state: Arc<FxmacIrqState>,
+}
+
+impl NetHardIrqHandler for FxmacIrqHandler {
+    fn handle_irq(&mut self) -> NetHardIrqResult {
+        let status = self.endpoint.snapshot_and_mask();
+        if status.is_empty() {
+            return NetHardIrqResult::Spurious;
+        }
+        NetHardIrqResult::Schedule(self.irq_state.publish(status))
+    }
+}
+
+struct FxmacIrqControl {
     hw: Arc<Mutex<FxmacHw>>,
     irq_state: Arc<FxmacIrqState>,
 }
 
-impl rd_net::InterfaceIrqHandler for FxmacIrqHandler {
-    fn handle_irq(&mut self) -> Event {
-        if let Some(mut hw) = self.hw.try_lock() {
-            let status = hw.device.handle_irq();
-            return self.irq_state.publish(status.tx_ready(), status.rx_ready());
-        }
-        self.irq_state.mark_irq_ack_pending();
-        Event::none()
+impl NetPollIrqControl for FxmacIrqControl {
+    fn quiesce(&mut self) -> Result<(), NetError> {
+        // SAFETY: lifecycle calls are serialized on the group owner CPU.
+        unsafe { self.hw.lock_raw() }.device.disable_irq();
+        Ok(())
     }
-}
 
-#[derive(Clone, Copy)]
-struct RuntimeNetBuffer {
-    virt: usize,
-    bus_addr: u64,
-    len: usize,
-}
+    fn shutdown(&mut self) -> Result<(), NetError> {
+        // The current FXMAC core exposes no DMA-idle completion proof. Keep
+        // every descriptor and buffer quarantined after masking the source.
+        unsafe { self.hw.lock_raw() }.device.disable_irq();
+        Err(NetError::DmaShutdownUnconfirmed)
+    }
 
-impl From<DmaBuffer> for RuntimeNetBuffer {
-    fn from(buffer: DmaBuffer) -> Self {
-        Self {
-            virt: buffer.virt.as_ptr() as usize,
-            bus_addr: buffer.bus_addr,
-            len: buffer.len,
+    fn rearm_and_check(&mut self, _now_nanos: u64) -> Result<NetRearmResult, NetError> {
+        // SAFETY: queue polling and rearm share one non-reentrant owner.
+        let mut hw = unsafe { self.hw.lock_raw() };
+        let mut pending = self.irq_state.drain_pending_irq(&mut hw);
+        hw.device.enable_irq();
+        let status = hw.device.handle_irq();
+        pending = pending
+            .union(self.irq_state.publish(status))
+            .union(self.irq_state.pending_snapshot());
+        if pending == NetIrqSnapshot::empty() {
+            Ok(NetRearmResult::Idle)
+        } else {
+            hw.device.disable_irq();
+            Ok(NetRearmResult::WorkPending(pending))
         }
     }
 }
@@ -252,7 +339,7 @@ struct FxmacTxQueue {
 }
 
 impl ITxQueue for FxmacTxQueue {
-    fn id(&self) -> usize {
+    fn id(&self) -> NetQueueId {
         QUEUE_ID
     }
 
@@ -260,23 +347,31 @@ impl ITxQueue for FxmacTxQueue {
         fxmac_queue_config()
     }
 
-    fn submit(&mut self, buffer: DmaBuffer) -> Result<(), NetError> {
-        let packet = unsafe { core::slice::from_raw_parts(buffer.virt.as_ptr(), buffer.len) };
-        let mut hw = self.hw.lock();
-        self.irq_state.drain_pending_irq_ack(&mut hw);
-        let ret = FXmacLwipPortTx(hw.device, vec![packet.to_vec()]);
-        self.irq_state.drain_pending_irq_ack(&mut hw);
+    fn submit(&mut self, buffer: DmaBuffer) -> Result<(), SubmitError> {
+        let packet = buffer.read_with_cpu(buffer.len(), |packet| packet.to_vec());
+        // SAFETY: TX submission is serialized against local device re-entry.
+        let mut hw = unsafe { self.hw.lock_raw() };
+        let _ = self.irq_state.drain_pending_irq(&mut hw);
+        let ret = FXmacLwipPortTx(&mut hw.device, vec![packet]);
+        let _ = self.irq_state.drain_pending_irq(&mut hw);
         if ret < 0 {
-            return Err(NetError::Retry);
+            return Err(SubmitError::new(buffer, NetError::Retry));
         }
         drop(hw);
-        self.tx_state.lock().tx_done.push_back(buffer.bus_addr);
+        // SAFETY: the queue path excludes local re-entry while publishing completion.
+        unsafe { self.tx_state.lock_raw() }
+            .tx_done
+            .push_back(buffer);
         Ok(())
     }
 
-    fn reclaim(&mut self) -> Option<u64> {
-        let _ = self.irq_state.take_tx_pending();
-        self.tx_state.lock().tx_done.pop_front()
+    fn reclaim(&mut self) -> Option<DmaBuffer> {
+        // SAFETY: completion processing is serialized by the queue owner.
+        let mut hw = unsafe { self.hw.lock_raw() };
+        let _ = self.irq_state.drain_pending_irq(&mut hw);
+        drop(hw);
+        // SAFETY: the queue consumer excludes local re-entry.
+        unsafe { self.tx_state.lock_raw() }.tx_done.pop_front()
     }
 }
 
@@ -287,7 +382,7 @@ struct FxmacRxQueue {
 }
 
 impl IRxQueue for FxmacRxQueue {
-    fn id(&self) -> usize {
+    fn id(&self) -> NetQueueId {
         QUEUE_ID
     }
 
@@ -295,35 +390,40 @@ impl IRxQueue for FxmacRxQueue {
         fxmac_queue_config()
     }
 
-    fn submit(&mut self, buffer: DmaBuffer) -> Result<(), NetError> {
-        self.rx_state.lock().rx_buffers.push_back(buffer.into());
+    fn submit(&mut self, buffer: DmaBuffer) -> Result<(), SubmitError> {
+        // SAFETY: RX buffer installation is serialized by the queue owner.
+        unsafe { self.rx_state.lock_raw() }
+            .rx_buffers
+            .push_back(buffer);
         Ok(())
     }
 
-    fn reclaim(&mut self) -> Option<(u64, usize)> {
-        let mut rx_state = self.rx_state.lock();
+    fn reclaim(&mut self) -> Option<RxCompletion> {
+        // SAFETY: RX dequeue runs in the queue owner's non-reentrant context.
+        let mut rx_state = unsafe { self.rx_state.lock_raw() };
         if rx_state.rx_buffers.is_empty() {
             return None;
         }
 
-        let mut hw = self.hw.lock();
-        self.irq_state.drain_pending_irq_ack(&mut hw);
-        let rx_pending = self.irq_state.take_rx_pending();
-        if (rx_pending || rx_state.rx_packets.is_empty())
-            && let Some(packets) = FXmacRecvHandler(hw.device)
+        // SAFETY: RX polling excludes local device re-entry.
+        let mut hw = unsafe { self.hw.lock_raw() };
+        let pending = self.irq_state.drain_pending_irq(&mut hw);
+        if (pending.contains(NetIrqSnapshot::RX) || rx_state.rx_packets.is_empty())
+            && let Some(packets) = FXmacRecvHandler(&mut hw.device)
         {
             rx_state.rx_packets.extend(packets);
         }
-        self.irq_state.drain_pending_irq_ack(&mut hw);
+        let _ = self.irq_state.drain_pending_irq(&mut hw);
         drop(hw);
 
         let packet = rx_state.rx_packets.pop_front()?;
-        let buffer = rx_state.rx_buffers.pop_front()?;
-        let len = cmp::min(packet.len(), buffer.len);
-        unsafe {
-            core::ptr::copy_nonoverlapping(packet.as_ptr(), buffer.virt as *mut u8, len);
-        }
-        Some((buffer.bus_addr, len))
+        let mut buffer = rx_state.rx_buffers.pop_front()?;
+        let len = cmp::min(packet.len(), buffer.capacity());
+        buffer.write_with_cpu(|target| target[..len].copy_from_slice(&packet[..len]));
+        Some(RxCompletion {
+            buffer,
+            packet_len: len,
+        })
     }
 }
 
@@ -343,87 +443,48 @@ mod tests {
     #[test]
     fn irq_state_does_not_publish_empty_snapshot() {
         let state = FxmacIrqState::new();
-        let event = state.publish(false, false);
+        let snapshot = state.publish(FXmacIrqStatus::from_raw(0));
 
-        assert!(!event.tx_queue.contains(QUEUE_ID));
-        assert!(!event.rx_queue.contains(QUEUE_ID));
-        assert!(!state.take_tx_pending());
-        assert!(!state.take_rx_pending());
+        assert_eq!(snapshot, NetIrqSnapshot::empty());
+        assert!(state.take_pending_status().is_empty());
     }
 
     #[test]
     fn irq_state_publishes_only_reported_queues() {
         let state = FxmacIrqState::new();
 
-        let tx_event = state.publish(true, false);
-        assert!(tx_event.tx_queue.contains(QUEUE_ID));
-        assert!(!tx_event.rx_queue.contains(QUEUE_ID));
-        assert!(state.take_tx_pending());
-        assert!(!state.take_rx_pending());
+        let tx_status = FXmacIrqStatus::from_raw(1 << 7);
+        let tx_event = state.publish(tx_status);
+        assert!(tx_event.contains(NetIrqSnapshot::TX));
+        assert!(!tx_event.contains(NetIrqSnapshot::RX));
+        assert_eq!(state.take_pending_status(), tx_status);
 
-        let rx_event = state.publish(false, true);
-        assert!(!rx_event.tx_queue.contains(QUEUE_ID));
-        assert!(rx_event.rx_queue.contains(QUEUE_ID));
-        assert!(!state.take_tx_pending());
-        assert!(state.take_rx_pending());
-    }
-}
-
-struct FxmacKernelFunc;
-
-const _: FxmacKernelFunc = FxmacKernelFunc;
-
-#[ax_crate_interface::impl_interface]
-impl fxmac_rs::KernelFunc for FxmacKernelFunc {
-    fn virt_to_phys(addr: usize) -> usize {
-        axklib::mem::virt_to_phys(addr.into()).as_usize()
+        let rx_status = FXmacIrqStatus::from_raw(1 << 1);
+        let rx_event = state.publish(rx_status);
+        assert!(!rx_event.contains(NetIrqSnapshot::TX));
+        assert!(rx_event.contains(NetIrqSnapshot::RX));
+        assert_eq!(state.take_pending_status(), rx_status);
     }
 
-    fn phys_to_virt(addr: usize) -> usize {
-        let base = addr & !(PAGE_SIZE - 1);
-        let offset = addr - base;
-        axklib::mem::iomap(base.into(), PAGE_SIZE)
-            .map(|virt| virt.as_usize() + offset)
-            .unwrap_or(addr)
+    #[test]
+    fn control_status_schedules_the_deferred_owner() {
+        let state = FxmacIrqState::new();
+        let status = FXmacIrqStatus::from_raw(1 << 9);
+
+        let snapshot = state.publish(status);
+
+        assert_eq!(snapshot, NetIrqSnapshot::ERROR);
+        assert_eq!(state.take_pending_status(), status);
     }
 
-    fn dma_alloc_coherent(pages: usize) -> (usize, usize) {
-        let Some(size) = pages.checked_mul(PAGE_SIZE) else {
-            log::error!("FXmac DMA allocation size overflow: {pages} pages");
-            return (0, 0);
-        };
-        let Ok(layout) = Layout::from_size_align(size.max(1), DMA_ALIGN) else {
-            log::error!("FXmac DMA allocation layout is invalid: {size} bytes");
-            return (0, 0);
-        };
-        let Some(handle) =
-            (unsafe { axklib::dma::op().alloc_coherent(DmaConstraints::new(DMA_MASK), layout) })
-        else {
-            log::error!("FXmac DMA allocation failed: {pages} pages");
-            return (0, 0);
-        };
-        (
-            handle.as_ptr().as_ptr() as usize,
-            handle.dma_addr().as_u64() as usize,
-        )
-    }
+    #[test]
+    fn irq_state_coalesces_raw_status_for_the_deferred_owner() {
+        let state = FxmacIrqState::new();
 
-    fn dma_free_coherent(vaddr: usize, pages: usize) {
-        let Some(size) = pages.checked_mul(PAGE_SIZE) else {
-            log::error!("FXmac DMA free size overflow: {pages} pages");
-            return;
-        };
-        let Ok(layout) = Layout::from_size_align(size.max(1), DMA_ALIGN) else {
-            log::error!("FXmac DMA free layout is invalid: {size} bytes");
-            return;
-        };
-        let Some(vaddr) = core::ptr::NonNull::new(vaddr as *mut u8) else {
-            return;
-        };
-        let paddr = axklib::mem::virt_to_phys((vaddr.as_ptr() as usize).into()).as_usize();
-        let handle = unsafe { DmaAllocHandle::new(vaddr, DmaAddr::from(paddr as u64), layout) };
-        if let Err(err) = unsafe { axklib::dma::op().dealloc_coherent(handle) } {
-            log::error!("FXmac DMA release failed; allocation quarantined: {err}");
-        }
+        let _ = state.publish(FXmacIrqStatus::from_raw(0x20));
+        let _ = state.publish(FXmacIrqStatus::from_raw(0x80));
+
+        assert_eq!(state.take_pending_status().raw(), 0xa0);
+        assert!(state.take_pending_status().is_empty());
     }
 }

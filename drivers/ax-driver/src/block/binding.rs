@@ -4,13 +4,12 @@ use alloc::{
     vec::Vec,
 };
 
-use ax_errno::AxError;
 use log::warn;
 use rdif_block::{BlockController, BlockControllerGroup};
 use rdrive::{Device, probe::OnProbeError};
 
 use crate::{
-    BindingInfo, BindingIrq, IrqBindingLease, binding_info_from_acpi, binding_info_from_fdt,
+    BindingInfo, BindingIrq, Error, IrqBindingLease, binding_info_from_acpi, binding_info_from_fdt,
     registration::{BoundDevice, register_bound_device},
 };
 #[cfg(feature = "pci")]
@@ -130,13 +129,13 @@ impl RdifBlockDevice {
 }
 
 impl TryFrom<Device<PlatformBlockDevice>> for RdifBlockDevice {
-    type Error = AxError;
+    type Error = Error;
 
     fn try_from(base: Device<PlatformBlockDevice>) -> Result<Self, Self::Error> {
-        let mut device = base.lock().map_err(|_| AxError::BadState)?;
+        let mut device = base.lock().map_err(|_| Error::DeviceBusy)?;
         let name = device.name.clone();
         let irqs = device.info.irq_sources().to_vec();
-        let controller = device.controller.take().ok_or(AxError::BadState)?;
+        let controller = device.controller.take().ok_or(Error::DeviceAlreadyTaken)?;
         Ok(Self {
             name,
             irqs,
@@ -159,13 +158,13 @@ impl RdifBlockGroup {
 }
 
 impl TryFrom<Device<PlatformBlockGroup>> for RdifBlockGroup {
-    type Error = AxError;
+    type Error = Error;
 
     fn try_from(base: Device<PlatformBlockGroup>) -> Result<Self, Self::Error> {
-        let mut group = base.lock().map_err(|_| AxError::BadState)?;
+        let mut group = base.lock().map_err(|_| Error::DeviceBusy)?;
         let name = group.name.clone();
         let irqs = group.info.irq_sources().to_vec();
-        let controller = group.controller.take().ok_or(AxError::BadState)?;
+        let controller = group.controller.take().ok_or(Error::DeviceAlreadyTaken)?;
         Ok(Self {
             name,
             irqs,
@@ -410,18 +409,4 @@ pub fn take_rdif_block_groups() -> Vec<RdifBlockGroup> {
             }
         })
         .collect()
-}
-
-/// Maps a portable block error at the ArceOS integration boundary.
-pub fn map_blk_err_to_ax_err(error: rdif_block::BlkError) -> AxError {
-    match error {
-        rdif_block::BlkError::NotSupported => AxError::Unsupported,
-        rdif_block::BlkError::Retry => AxError::WouldBlock,
-        rdif_block::BlkError::NoMemory => AxError::NoMemory,
-        rdif_block::BlkError::InvalidBlockIndex(_) | rdif_block::BlkError::InvalidRequest => {
-            AxError::InvalidInput
-        }
-        rdif_block::BlkError::TimedOut => AxError::TimedOut,
-        rdif_block::BlkError::Io | rdif_block::BlkError::Other(_) => AxError::Io,
-    }
 }

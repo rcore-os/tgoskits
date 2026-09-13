@@ -1,25 +1,24 @@
 [package]
 name = "axklib"
-version = "0.7.7"
+version = "0.9.1"
 edition.workspace = true
 authors = ["周睿 <zrufo747@outlook.com>"]
 description = "Small kernel-helper abstractions used across the microkernel"
 repository = "https://github.com/arceos-hypervisor/axklib"
 keywords = ["arceos", "kernel"]
 categories = ["os", "no-std"]
-readme = "README.md"
 documentation = "https://arceos-hypervisor.github.io/axklib"
 license = "Apache-2.0"
 
 [dependencies]
 ax-alloc = { workspace = true }
-ax-errno = { workspace = true }
 ax-memory-addr = { workspace = true }
 dma-api = { workspace = true }
 irq-framework = { workspace = true }
 mbarrier = "0.1"
 mmio-api = { workspace = true }
-trait-ffi = "0.2"
+trait-ffi.workspace = true
+thiserror.workspace = true
 
 [features]
 default = []

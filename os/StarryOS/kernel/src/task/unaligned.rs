@@ -1,6 +1,6 @@
-use ax_cpu::{UnalignedAccess, UnalignedAccessType, UnalignedError};
+use ax_cpu::trap::{UnalignedAccess, UnalignedAccessType, UnalignedError};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-use ax_runtime::hal::paging::MappingFlags;
+use ax_runtime::hal::{cpu::trap::PageFaultFlags, paging::MappingFlags};
 
 use super::Thread;
 use crate::mm::AddrSpace;
@@ -9,20 +9,25 @@ pub(super) enum UnalignedEmulationResult {
     Complete,
     PageFault {
         address: VirtAddr,
-        flags: MappingFlags,
+        flags: PageFaultFlags,
     },
 }
 
 pub(super) fn emulate_user_unaligned(
     thread: &Thread,
-    context: &mut ax_cpu::uspace::UserContext,
+    context: &mut ax_cpu::user::UserContext,
     fault_address: usize,
 ) -> Result<UnalignedEmulationResult, UnalignedError> {
     let access = unsafe { context.decode_unaligned_access_at(fault_address as u64)? };
     let flags = page_fault_flags(access.access_type());
 
     let result = if access.access_type() == UnalignedAccessType::Write {
-        let aspace = thread.proc_data.aspace();
+        let Ok(aspace) = thread.proc_data.pin_aspace() else {
+            return Ok(UnalignedEmulationResult::PageFault {
+                address: VirtAddr::from_usize(fault_address),
+                flags,
+            });
+        };
         let mut aspace = aspace.lock();
         if let Err(address) = prepare_write_range(&mut aspace, &access) {
             return Ok(UnalignedEmulationResult::PageFault { address, flags });
@@ -46,12 +51,12 @@ pub(super) fn emulate_user_unaligned(
     }
 }
 
-fn page_fault_flags(access_type: UnalignedAccessType) -> MappingFlags {
+fn page_fault_flags(access_type: UnalignedAccessType) -> PageFaultFlags {
     let access = match access_type {
-        UnalignedAccessType::Read => MappingFlags::READ,
-        UnalignedAccessType::Write => MappingFlags::WRITE,
+        UnalignedAccessType::Read => PageFaultFlags::READ,
+        UnalignedAccessType::Write => PageFaultFlags::WRITE,
     };
-    access | MappingFlags::USER
+    access | PageFaultFlags::USER
 }
 
 fn prepare_write_range(aspace: &mut AddrSpace, access: &UnalignedAccess) -> Result<(), VirtAddr> {

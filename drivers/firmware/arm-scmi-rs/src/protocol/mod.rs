@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 use mbarrier::smp_mb;
 
 use crate::{Data, Transport, err::ScmiError};
@@ -124,18 +124,23 @@ impl<'a, T: Transport, R, F: Fn(&mut Xfer) -> Result<R, ScmiError>> FuturePoll
         trace!("Polling completion: xfer status={:?}", self.xfer.status);
         match self.xfer.status {
             XferStatus::Init => {
-                self.protocol.data.lock().send_message(&mut self.xfer)?;
+                // SAFETY: one protocol transfer owns the transport and shared
+                // memory window until this future completes.
+                unsafe { self.protocol.data.lock_raw() }.send_message(&mut self.xfer)?;
                 self.xfer.status = XferStatus::SendOk;
                 Err(nb::Error::WouldBlock)
             }
             XferStatus::SendOk => {
-                self.protocol.data.lock().fetch_response(&mut self.xfer)?;
+                // SAFETY: the in-flight transfer still owns this raw context.
+                unsafe { self.protocol.data.lock_raw() }.fetch_response(&mut self.xfer)?;
                 self.xfer.status = XferStatus::RespOk;
                 Err(nb::Error::WouldBlock)
             }
             XferStatus::RespOk => {
                 let res = (self.on_complete)(&mut self.xfer)?;
-                self.protocol.data.lock().shmem.reset();
+                // SAFETY: reset runs while the failed transfer retains sole
+                // ownership of the SCMI shared-memory window.
+                unsafe { self.protocol.data.lock_raw() }.shmem.reset();
                 Ok(res)
             }
         }
@@ -258,8 +263,8 @@ impl Xfer {
     /// receive buffer.
     pub fn new(msg_id: u8, rx_size: usize) -> Self {
         let transfer_id = TRANSFER_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let token = TOKEN_ALLOCATOR
-            .lock()
+        // SAFETY: token allocation is serialized by the SCMI request path.
+        let token = unsafe { TOKEN_ALLOCATOR.lock_raw() }
             .alloc(transfer_id)
             .expect("Alloc token fail");
 
@@ -289,7 +294,8 @@ impl Xfer {
 
 impl Drop for Xfer {
     fn drop(&mut self) {
-        TOKEN_ALLOCATOR.lock().release(self.hdr.seq);
+        // SAFETY: dropping the transfer owns its allocated token exclusively.
+        unsafe { TOKEN_ALLOCATOR.lock_raw() }.release(self.hdr.seq);
     }
 }
 

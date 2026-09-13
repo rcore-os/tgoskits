@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.7.0...axfs-ng-vfs-v0.7.1) - 2026-09-09
+
+### Other
+
+- *(starry)* migrate syscall regressions to LTP ([#2322](https://github.com/rcore-os/tgoskits/pull/2322))
+
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.6.1...axfs-ng-vfs-v0.7.0) - 2026-09-09
+
+### Fixed
+
+- *(axfs-ng-vfs)* validate admitted unmounts by affected topology ([#2321](https://github.com/rcore-os/tgoskits/pull/2321))
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(repo)* remove nonfunctional test scaffolding ([#2303](https://github.com/rcore-os/tgoskits/pull/2303))
+- *(rsext4)* [**breaking**] align ext4 semantics with Linux 7.1 ([#1957](https://github.com/rcore-os/tgoskits/pull/1957))
+
+### Added
+
+- Add typed atomic symlink creation, preallocation and range mutation,
+  filesystem extent inspection, inode xattrs, and directory cursors/rename
+  options without exposing ext4 disk structures through the VFS boundary.
+
+### Removed
+
+- Remove the file-level symlink target setter; symlink target publication is
+  part of the directory create transaction.
+
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.6.0...axfs-ng-vfs-v0.6.1) - 2026-08-25
+
+### Fixed
+
+- *(axfs-ng-vfs)* replan unmount after topology changes ([#2150](https://github.com/rcore-os/tgoskits/pull/2150))
+
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.8...axfs-ng-vfs-v0.6.0) - 2026-08-20
+
+### Added
+
+- *(starry-nixos)* add Stage-2 NixOS userspace baseline ([#1923](https://github.com/rcore-os/tgoskits/pull/1923))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
+## [0.5.8](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.7...axfs-ng-vfs-v0.5.8) - 2026-08-09
+
+### Fixed
+
+- *(axvisor)* correct shell filesystem command handling ([#1616](https://github.com/rcore-os/tgoskits/pull/1616))
+- *(starry-fs)* complete mount contexts and notifications ([#1902](https://github.com/rcore-os/tgoskits/pull/1902))
+
+### Other
+
+- *(repo)* move filesystem crates to fs/ directory ([#1867](https://github.com/rcore-os/tgoskits/pull/1867))
+
 ## [0.5.7](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.6...axfs-ng-vfs-v0.5.7) - 2026-08-03
 
 ### Added

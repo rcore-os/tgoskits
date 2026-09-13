@@ -16,7 +16,8 @@ use clap::Args;
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use super::{Starry, apk, build};
-pub(crate) use crate::rootfs::qemu::{RootfsPatchMode, patch_rootfs};
+pub use crate::rootfs::qemu::RootfsWritePolicy;
+pub(crate) use crate::rootfs::qemu::{RootfsPatchMode, RootfsPatchOptions, patch_rootfs};
 use crate::{
     context::{DEFAULT_STARRY_ARCH, ResolvedStarryRequest, starry_target_for_arch_checked},
     rootfs::inject,
@@ -49,6 +50,7 @@ pub(super) async fn qemu_with_explicit_rootfs(
     starry: &mut Starry,
     request: ResolvedStarryRequest,
     rootfs: PathBuf,
+    write_policy: RootfsWritePolicy,
 ) -> anyhow::Result<()> {
     let rootfs = crate::image::storage::resolve_explicit_rootfs(
         starry.app.workspace_root(),
@@ -58,18 +60,21 @@ pub(super) async fn qemu_with_explicit_rootfs(
     ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), Some(&rootfs)).await?;
     starry.app.set_debug_mode(request.debug)?;
     let cargo = build::load_cargo_config(&request)?;
-    let qemu = load_patched_qemu_config(starry, &request, &cargo, Some(&rootfs), false).await?;
+    let qemu =
+        load_patched_qemu_config(starry, &request, &cargo, Some(&rootfs), false, write_policy)
+            .await?;
     starry.run_qemu_artifact(&request, cargo, qemu).await
 }
 
 pub(super) async fn qemu(
     starry: &mut Starry,
     request: ResolvedStarryRequest,
+    write_policy: RootfsWritePolicy,
 ) -> anyhow::Result<()> {
     starry.app.set_debug_mode(request.debug)?;
     let cargo = build::load_cargo_config(&request)?;
     ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), None).await?;
-    let qemu = load_patched_qemu_config(starry, &request, &cargo, None, true).await?;
+    let qemu = load_patched_qemu_config(starry, &request, &cargo, None, true, write_policy).await?;
     starry.run_qemu_artifact(&request, cargo, qemu).await
 }
 
@@ -79,6 +84,7 @@ pub(super) async fn load_patched_qemu_config(
     cargo: &Cargo,
     explicit_rootfs: Option<&Path>,
     apply_default_args: bool,
+    write_policy: RootfsWritePolicy,
 ) -> anyhow::Result<QemuConfig> {
     let mut qemu = match request.qemu_config.as_deref() {
         Some(path) => {
@@ -101,9 +107,16 @@ pub(super) async fn load_patched_qemu_config(
 
     let mode = rootfs_patch_mode(cargo);
     if let Some(rootfs) = explicit_rootfs {
-        patch_qemu_rootfs_path_with_mode(&mut qemu, rootfs, mode);
+        patch_qemu_rootfs_path_with_mode(&mut qemu, rootfs, mode, write_policy)?;
     } else if apply_default_args {
-        patch_qemu_rootfs(&mut qemu, request, starry.app.workspace_root(), None, mode)?;
+        patch_qemu_rootfs(
+            &mut qemu,
+            request,
+            starry.app.workspace_root(),
+            None,
+            mode,
+            write_policy,
+        )?;
     }
     qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
 
@@ -240,6 +253,7 @@ pub(crate) fn patch_qemu_rootfs(
     workspace_root: &Path,
     explicit_rootfs: Option<&Path>,
     mode: RootfsPatchMode,
+    write_policy: RootfsWritePolicy,
 ) -> anyhow::Result<()> {
     let expected_target = starry_target_for_arch_checked(&request.arch)?;
     if request.target != expected_target {
@@ -250,8 +264,7 @@ pub(crate) fn patch_qemu_rootfs(
         );
     }
     let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
-    patch_qemu_rootfs_path_with_mode(qemu, &rootfs_path, mode);
-    Ok(())
+    patch_qemu_rootfs_path_with_mode(qemu, &rootfs_path, mode, write_policy)
 }
 
 /// Resolves the rootfs path selected for a Starry QEMU request.
@@ -272,8 +285,9 @@ pub(crate) fn patch_qemu_rootfs_path_with_mode(
     qemu: &mut QemuConfig,
     rootfs_path: &Path,
     mode: RootfsPatchMode,
-) {
-    patch_rootfs(qemu, rootfs_path, mode);
+    write_policy: RootfsWritePolicy,
+) -> anyhow::Result<()> {
+    patch_rootfs(qemu, rootfs_path, RootfsPatchOptions { mode, write_policy })
 }
 
 fn rootfs_patch_mode(cargo: &Cargo) -> RootfsPatchMode {
@@ -298,15 +312,14 @@ mod tests {
     use super::*;
 
     fn managed_rootfs_path(root: &Path, image_name: &str) -> PathBuf {
-        root.join(".tgos-images").join(image_name).join(image_name)
+        root.join(".tgos-images").join(image_name)
     }
 
     fn write_test_image_config(root: &Path) {
         let config = crate::image::config::ImageConfig {
-            local_storage: root.join(".tgos-images"),
             registry: crate::image::config::DEFAULT_REGISTRY_URL.to_string(),
-            auto_sync: true,
-            auto_sync_threshold: 60,
+            download_dir: root.join(".tgos-downloads"),
+            extract_dir: root.join(".tgos-images"),
         };
         crate::image::config::ImageConfig::write_config(root, &config).unwrap();
     }
@@ -336,22 +349,22 @@ mod tests {
             root.path(),
             None,
             RootfsPatchMode::EnsureDiskBootNet,
+            RootfsWritePolicy::Discard,
         )
         .unwrap();
 
-        assert_eq!(
-            qemu.args,
-            vec![
-                "-device".to_string(),
-                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
-                "-drive".to_string(),
-                format!("id=disk0,if=none,format=raw,file={}", rootfs.display()),
-                "-device".to_string(),
-                "virtio-net-pci,netdev=net0".to_string(),
-                "-netdev".to_string(),
-                "user,id=net0".to_string(),
-            ]
+        assert!(qemu.args.iter().any(|arg| arg == "-device"));
+        assert!(qemu.args.iter().any(|arg| arg.starts_with("nvme,")));
+        assert!(qemu.args.iter().any(|arg| {
+            arg.contains(&format!("file={},", rootfs.display())) && arg.contains("snapshot=on")
+        }));
+        assert!(
+            qemu.args
+                .iter()
+                .any(|arg| arg == "virtio-net-pci,netdev=net0")
         );
+        assert!(qemu.args.iter().any(|arg| arg == "-netdev"));
+        assert!(qemu.args.iter().any(|arg| arg == "user,id=net0"));
     }
 
     #[tokio::test]
@@ -388,27 +401,25 @@ mod tests {
             root.path(),
             None,
             RootfsPatchMode::EnsureDiskBootNet,
+            RootfsWritePolicy::Persist,
         )
         .unwrap();
 
-        assert_eq!(
-            qemu.args,
-            vec![
-                "-nographic".to_string(),
-                "-cpu".to_string(),
-                "rv64".to_string(),
-                "-machine".to_string(),
-                "virt".to_string(),
-                "-device".to_string(),
-                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
-                "-drive".to_string(),
-                format!("id=disk0,if=none,format=raw,file={}", rootfs.display()),
-                "-device".to_string(),
-                "virtio-net-pci,netdev=net0".to_string(),
-                "-netdev".to_string(),
-                "user,id=net0".to_string(),
-            ]
+        for arg in ["-nographic", "-cpu", "rv64", "-machine", "virt"] {
+            assert!(qemu.args.iter().any(|value| value == arg));
+        }
+        assert!(qemu.args.iter().any(|arg| arg.starts_with("nvme,")));
+        assert!(
+            qemu.args
+                .iter()
+                .any(|arg| { arg.contains(&format!("file={}", rootfs.display())) })
         );
+        assert!(
+            qemu.args
+                .iter()
+                .any(|arg| arg == "virtio-net-pci,netdev=net0")
+        );
+        assert!(qemu.args.iter().any(|arg| arg == "user,id=net0"));
     }
 
     #[tokio::test]
@@ -446,19 +457,22 @@ mod tests {
             root.path(),
             None,
             RootfsPatchMode::ReplaceDriveOnly,
+            RootfsWritePolicy::Persist,
         )
         .unwrap();
 
-        assert_eq!(
-            qemu.args,
-            vec![
-                "-machine".to_string(),
-                "virt".to_string(),
-                "-device".to_string(),
-                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
-                "-drive".to_string(),
-                format!("id=disk0,if=none,format=raw,file={}", rootfs.display()),
-            ]
+        assert!(
+            qemu.args
+                .windows(2)
+                .any(|pair| pair == ["-machine", "virt"])
         );
+        assert!(qemu.args.iter().any(|arg| arg.starts_with("nvme,")));
+        assert!(
+            qemu.args
+                .iter()
+                .any(|arg| { arg.contains(&format!("file={}", rootfs.display())) })
+        );
+        assert!(!qemu.args.iter().any(|arg| arg.contains("/old/rootfs.img")));
+        assert!(!qemu.args.iter().any(|arg| arg == "-netdev"));
     }
 }

@@ -30,6 +30,7 @@ extern int run_poll_multiple_fds(void);
 extern int run_poll_regular_file(void);
 extern int run_poll_closed_fd(void);
 extern int run_poll_pipe_hup(void);
+extern int run_poll_unknown_events(void);
 
 extern int run_pselect_sigmask_block(void);
 extern int run_pselect_sigmask_restore(void);
@@ -67,7 +68,7 @@ static void run_module(const char *name, int (*fn)(void)) {
 int main(void) {
     printf("================================================\n");
     printf("  TEST: select/poll/pselect6/ppoll deep suite\n");
-    printf("  43 modules, ~300+ checkpoints\n");
+    printf("  44 modules, ~300+ checkpoints\n");
     printf("================================================\n");
 
     printf("\n=== Phase 1: select basics ===\n");
@@ -100,6 +101,7 @@ int main(void) {
     run_module("poll_regular_file",        run_poll_regular_file);
     run_module("poll_closed_fd",           run_poll_closed_fd);
     run_module("poll_pipe_hup",            run_poll_pipe_hup);
+    run_module("poll_unknown_events",      run_poll_unknown_events);
 
     printf("\n=== Phase 3: signal interaction ===\n");
     run_module("pselect_sigmask_block",    run_pselect_sigmask_block);

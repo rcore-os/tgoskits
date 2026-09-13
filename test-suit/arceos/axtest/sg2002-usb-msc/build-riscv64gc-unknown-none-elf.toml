@@ -2,10 +2,8 @@ package = "arceos-axtest-sg2002-usb-msc"
 target = "riscv64gc-unknown-none-elf"
 features = [
   "ax-std",
-  "irq",
-  "multitask",
   "paging",
-  "ax-task/multitask",
+  "ax-std/std-compat",
   "axplat-dyn/thead-mae",
   "ax-driver/serial",
   "ax-driver/sg2002-dwc2",

@@ -37,20 +37,15 @@ pub(crate) fn build_c_app(
     request: &ResolvedBuildRequest,
     input: &ArceosCBuildInput,
 ) -> anyhow::Result<ArceosCBuildOutput> {
-    let mut cargo = build::load_c_app_cargo_config(request)?;
-    cargo.package = AX_LIBC_PACKAGE.to_string();
-    cargo.target = request.target.clone();
-    cargo.to_bin = false;
-    cargo.features = map_c_app_features(&input.features, &cargo.features)?;
+    let cargo = prepare_c_app_cargo_config(request, &input.features)?;
     let c_features = c_compiler_features(&cargo.features, &input.features);
     let dynamic_pie = dynamic_pie_for_c_app(&cargo.features);
-
     let mode = if request.debug { "debug" } else { "release" };
     let arch = request.arch.as_str();
     let arceos_dir = workspace_root.join("os/arceos");
     let axlibc_dir = arceos_dir.join("ulib/axlibc");
     let c_source_dir = axlibc_dir.join("c");
-    let include_dir = axlibc_dir.join("include");
+    let include_dir = arceos_dir.join("api/arceos_posix_api/include");
     let obj_root = input
         .target_dir
         .join("arceos-c")
@@ -125,4 +120,15 @@ pub(crate) fn build_c_app(
     )?;
 
     Ok(ArceosCBuildOutput { elf_path })
+}
+
+pub(crate) fn prepare_c_app_cargo_config(
+    request: &ResolvedBuildRequest,
+    input_features: &[String],
+) -> anyhow::Result<ostool::build::config::Cargo> {
+    let mut cargo = build::load_c_app_cargo_config(request)?;
+    cargo.package = AX_LIBC_PACKAGE.to_string();
+    cargo.to_bin = false;
+    cargo.features = map_c_app_features(input_features, &cargo.features)?;
+    Ok(cargo)
 }

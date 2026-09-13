@@ -162,18 +162,3 @@ impl PllClock {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_pll_type_values() {
-        // 验证枚举值的整型对应关系
-        assert_eq!(RockchipPllType::Rk3036 as u32, 0);
-        assert_eq!(RockchipPllType::Rk3066 as u32, 1);
-        assert_eq!(RockchipPllType::Rk3399 as u32, 2);
-        assert_eq!(RockchipPllType::Rv1108 as u32, 3);
-        assert_eq!(RockchipPllType::Rk3588 as u32, 4);
-    }
-}

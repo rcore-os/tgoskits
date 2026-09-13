@@ -1,6 +1,6 @@
 [package]
 name = "ax-libc"
-version = "0.5.30"
+version = "0.5.38"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -22,21 +22,17 @@ crate-type = ["staticlib"]
 default = []
 
 # Multicore
-smp = ["ax-runtime/smp", "ax-kspin/smp", "ax-posix-api/smp"]
+smp = ["ax-runtime/smp", "ax-posix-api/smp"]
 
 # Floating point/SIMD
 fp-simd = ["ax-hal/fp-simd"]
-
-# Interrupts
-irq = ["ax-posix-api/irq", "ax-runtime/irq"]
 
 # Memory
 alloc = ["ax-posix-api/alloc"]
 paging = ["ax-runtime/paging"]
 tls = ["alloc", "ax-runtime/tls"]
 
-# Multi-task
-multitask = ["ax-posix-api/multitask", "ax-runtime/multitask"]
+# Scheduler diagnostics
 lockdep = ["ax-posix-api/lockdep", "ax-runtime/lockdep"]
 stack-protector = ["ax-runtime/stack-protector"]
 
@@ -58,11 +54,7 @@ epoll = ["ax-posix-api/epoll", "fd"]
 [dependencies]
 ax-driver.workspace = true
 ax-hal.workspace = true
-ax-kspin.workspace = true
 ax-posix-api.workspace = true
-ax-errno.workspace = true
 ax-io.workspace = true
 ax-runtime.workspace = true
-
-[build-dependencies]
-bindgen.workspace = true
+syscalls.workspace = true

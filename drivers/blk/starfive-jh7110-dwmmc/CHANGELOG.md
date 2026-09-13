@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/rcore-os/tgoskits/compare/starfive-jh7110-dwmmc-v0.1.7...starfive-jh7110-dwmmc-v0.1.8) - 2026-09-09
+
+### Added
+
+- *(aic8800)* integrate AKA WPA2 Wi-Fi and iperf validation ([#2222](https://github.com/rcore-os/tgoskits/pull/2222))
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(repo)* narrow SDIO rearm and TX queue policies ([#2250](https://github.com/rcore-os/tgoskits/pull/2250))
+
+## [0.1.7](https://github.com/rcore-os/tgoskits/compare/starfive-jh7110-dwmmc-v0.1.6...starfive-jh7110-dwmmc-v0.1.7) - 2026-08-27
+
+### Other
+
+- *(sdmmc)* unify SDIO protocol and AIC8800 driver ([#2201](https://github.com/rcore-os/tgoskits/pull/2201))
+
+## [0.1.6](https://github.com/rcore-os/tgoskits/compare/starfive-jh7110-dwmmc-v0.1.5...starfive-jh7110-dwmmc-v0.1.6) - 2026-08-20
+
+### Other
+
+- updated the following local packages: dma-api, sdmmc-protocol, dwmmc-host
+
+## [0.1.5](https://github.com/rcore-os/tgoskits/compare/starfive-jh7110-dwmmc-v0.1.4...starfive-jh7110-dwmmc-v0.1.5) - 2026-08-09
+
+### Other
+
+- updated the following local packages: sdmmc-protocol, dwmmc-host, dma-api, sdio-host2
+
 ## [0.1.4](https://github.com/rcore-os/tgoskits/compare/starfive-jh7110-dwmmc-v0.1.3...starfive-jh7110-dwmmc-v0.1.4) - 2026-08-03
 
 ### Other

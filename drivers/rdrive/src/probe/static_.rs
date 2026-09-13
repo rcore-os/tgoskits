@@ -1,7 +1,7 @@
 use alloc::{collections::btree_set::BTreeSet, vec::Vec};
 
-use ax_kspin::SpinNoPreempt as Mutex;
-use spin::Once;
+use ax_lazyinit::OnceLock;
+use ax_sync::SpinLock as Mutex;
 
 use crate::{
     Descriptor, PlatformDevice,
@@ -10,7 +10,7 @@ use crate::{
     register::{DriverRegister, ProbeKind},
 };
 
-static SYSTEM: Once<System> = Once::new();
+static SYSTEM: OnceLock<System> = OnceLock::new();
 
 pub type FnOnProbe = fn(plat_dev: PlatformDevice) -> Result<(), OnProbeError>;
 

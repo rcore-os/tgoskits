@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(board_exec_cache C)
+add_executable(syscall-test-exec-cache ../../../qemu/system/syscall-test-exec-cache/src/main.c)
+target_compile_options(syscall-test-exec-cache PRIVATE -Wall -Wextra -Werror)
+target_link_options(syscall-test-exec-cache PRIVATE -static)
+install(TARGETS syscall-test-exec-cache RUNTIME DESTINATION usr/bin/starry-test-suit)

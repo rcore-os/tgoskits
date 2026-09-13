@@ -11,10 +11,79 @@
 pub mod arceos {
     /// ArceOS public API facade.
     pub use ax_api as api;
+
+    /// Guards for ArceOS interrupt and preemption contexts.
+    pub mod guard {
+        pub use ax_runtime::task::sync::{IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard};
+    }
+
     /// Lower-level ArceOS module facade for system components.
     #[doc(no_inline)]
     pub use ax_api::modules;
+    /// ArceOS host driver registry and firmware discovery capabilities.
+    #[doc(no_inline)]
+    pub use ax_driver as driver;
+    /// ArceOS per-CPU storage and CPU-pinning capabilities.
+    #[doc(no_inline)]
+    pub use ax_percpu as percpu;
+
+    /// Non-sleeping synchronization for ArceOS kernel contexts.
+    pub mod sync {
+        pub use ax_runtime::task::sync::*;
+
+        /// A mutex that disables preemption and local interrupts while held.
+        #[repr(transparent)]
+        pub struct IrqSafeMutex<T: ?Sized>(ax_runtime::task::sync::RawSpinLock<T>);
+
+        impl<T> IrqSafeMutex<T> {
+            /// Creates an unlocked IRQ-safe mutex.
+            #[track_caller]
+            pub const fn new(value: T) -> Self {
+                Self(ax_runtime::task::sync::RawSpinLock::new(value))
+            }
+
+            /// Acquires the lock after saving and disabling local interrupts.
+            #[track_caller]
+            pub fn lock(&self) -> IrqSafeMutexGuard<'_, T> {
+                self.0.lock_irqsave()
+            }
+
+            /// Attempts to acquire the lock with IRQ-save semantics.
+            #[track_caller]
+            pub fn try_lock(&self) -> Option<IrqSafeMutexGuard<'_, T>> {
+                self.0.try_lock_irqsave()
+            }
+        }
+
+        impl<T: Default> Default for IrqSafeMutex<T> {
+            fn default() -> Self {
+                Self::new(T::default())
+            }
+        }
+
+        impl<T: core::fmt::Debug> core::fmt::Debug for IrqSafeMutex<T> {
+            fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                self.0.fmt(formatter)
+            }
+        }
+
+        /// A guard returned by [`IrqSafeMutex::lock`].
+        pub type IrqSafeMutexGuard<'a, T> = ax_runtime::task::sync::RawSpinLockIrqSaveGuard<'a, T>;
+
+        /// A mutex that disables preemption while held.
+        ///
+        /// Callers must ensure the lock is not used by an interrupt handler.
+        pub type NoPreemptMutex<T> = ax_runtime::task::sync::RawSpinLock<T>;
+        /// A guard returned by [`NoPreemptMutex::lock`].
+        pub type NoPreemptMutexGuard<'a, T> = ax_runtime::task::sync::RawSpinLockGuard<'a, T>;
+    }
+
+    /// OS-independent task scheduler types and ArceOS runtime operations.
+    pub use ax_runtime::{diagnostics, irq, task, thread};
 }
 
 #[cfg(feature = "std-compat")]
 pub mod libc_compat;
+
+#[cfg(any(feature = "std-compat", all(test, feature = "host-test")))]
+mod futex;

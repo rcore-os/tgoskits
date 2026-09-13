@@ -1,20 +1,21 @@
 //! BPF map file-like wrapper and mmap glue. Ported from
 //! `Starry-OS/StarryOS:ebpf-kmod` (`kernel/src/bpf/map.rs`); imports adapted
-//! to tgoskits' `ax_hal` / `ax_kspin` / `ax_errno` / `ax_alloc` package
-//! names per `crate-fork-audit.md §6`.
+//! to tgoskits' current HAL, synchronization, and allocator package names per
+//! `crate-fork-audit.md §6`.
 
 use alloc::{borrow::Cow, sync::Arc, vec::Vec};
 use core::ops::{Deref, DerefMut};
 
-use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use kbpf_basic::{
     PollWaker,
     map::{BpfMapMeta, UnifiedMap, bpf_map_create},
 };
 
 use crate::{
+    StarryError, StarryResult,
     ebpf::transform::{EbpfKernelAuxiliary, PerCpuImpl},
     file::{FileLike, Kstat},
     kprobe::KernelRawMutex,
@@ -63,24 +64,37 @@ impl Pollable for BpfMap {
         events
     }
 
-    fn register(&self, context: &mut core::task::Context<'_>, events: axpoll::IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: axpoll::IoEvents,
+    ) {
         if !events.is_empty() {
-            // Registration happens from file poll task context.
-            unsafe { self.poll_ready.register(context.waker(), events) };
+            unsafe { sink.register_shared(&self.poll_ready.0, events) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: axpoll::IoEvents,
+    ) {
+        if !events.is_empty() {
+            unsafe { sink.register_exclusive(&self.poll_ready.0, events) };
         }
     }
 }
 
 impl FileLike for BpfMap {
-    fn read(&self, _dst: &mut crate::file::IoDst) -> AxResult<usize> {
-        Err(AxError::Unsupported)
+    fn read(&self, _dst: &mut crate::file::IoDst) -> StarryResult<usize> {
+        Err(StarryError::Unsupported)
     }
 
-    fn write(&self, _src: &mut crate::file::IoSrc) -> AxResult<usize> {
-        Err(AxError::Unsupported)
+    fn write(&self, _src: &mut crate::file::IoSrc) -> StarryResult<usize> {
+        Err(StarryError::Unsupported)
     }
 
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         Ok(Kstat::default())
     }
 
@@ -88,20 +102,20 @@ impl FileLike for BpfMap {
         "anon_inode:[bpf_map]".into()
     }
 
-    fn device_mmap(&self, offset: u64, length: u64) -> AxResult<crate::pseudofs::DeviceMmap> {
+    fn device_mmap(&self, offset: u64, length: u64) -> StarryResult<crate::pseudofs::DeviceMmap> {
         // for ringbuf maps, userland calls mmap on the map fd to get a pointer to the ringbuf;
         // the kernel must support this. For other map types, mmap is not meaningful and Linux rejects it with EINVAL.
         if !offset.is_multiple_of(PAGE_SIZE_4K as u64)
             || !length.is_multiple_of(PAGE_SIZE_4K as u64)
         {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
 
         let unified_map = self.unified_map();
         let map = unified_map.map();
         let phy_addrs = map
             .map_mmap(offset as usize, length as usize)
-            .map_err(|_| AxError::InvalidInput)?
+            .map_err(|_| StarryError::InvalidInput)?
             .iter()
             .map(|&phys_addr| PhysAddr::from_usize(phys_addr))
             .collect::<Vec<_>>();

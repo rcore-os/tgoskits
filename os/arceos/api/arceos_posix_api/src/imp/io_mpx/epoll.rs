@@ -6,13 +6,12 @@ use alloc::{
 };
 use core::{ffi::c_int, time::Duration};
 
-use ax_errno::{LinuxError, LinuxResult};
-use ax_hal::time::wall_time;
-use ax_sync::Mutex;
+use ax_hal::time::monotonic_time;
 
 use crate::{
-    ctypes,
+    PosixError, PosixResult, ctypes,
     imp::fd_ops::{FileLike, add_file_like, get_file_like},
+    sync::Mutex,
 };
 
 const EPOLL_READ_EVENTS: u32 =
@@ -31,8 +30,10 @@ pub struct EpollInstance {
 struct WatchedEvent {
     file: Weak<dyn FileLike>,
     event: ctypes::epoll_event,
-    last_ready: u32,
-    last_readiness_version: u64,
+    last_readable: bool,
+    last_writable: bool,
+    last_read_version: u64,
+    last_write_version: u64,
     disabled: bool,
 }
 
@@ -44,8 +45,10 @@ impl WatchedEvent {
         Self {
             file: Arc::downgrade(&file),
             event,
-            last_ready: 0,
-            last_readiness_version: 0,
+            last_readable: false,
+            last_writable: false,
+            last_read_version: 0,
+            last_write_version: 0,
             disabled: false,
         }
     }
@@ -53,8 +56,10 @@ impl WatchedEvent {
     fn update(&mut self, file: Arc<dyn FileLike>, event: ctypes::epoll_event) {
         self.file = Arc::downgrade(&file);
         self.event = event;
-        self.last_ready = 0;
-        self.last_readiness_version = 0;
+        self.last_readable = false;
+        self.last_writable = false;
+        self.last_read_version = 0;
+        self.last_write_version = 0;
         self.disabled = false;
     }
 
@@ -70,9 +75,9 @@ impl WatchedEvent {
         self.event.events & ctypes::EPOLLONESHOT != 0
     }
 
-    fn current_ready(&self) -> (u32, u64) {
+    fn current_ready(&self) -> (u32, ax_io::PollState) {
         let Some(file) = self.file.upgrade() else {
-            return (0, 0);
+            return (0, ax_io::PollState::default());
         };
         match file.poll() {
             Ok(state) => {
@@ -84,22 +89,53 @@ impl WatchedEvent {
                 if state.writable {
                     ready |= interest & EPOLL_WRITE_EVENTS;
                 }
-                (ready, state.readiness_version)
+                (ready, state)
             }
-            Err(_) => (ctypes::EPOLLERR, 0),
+            Err(_) => (
+                ctypes::EPOLLERR,
+                ax_io::PollState {
+                    readable: false,
+                    writable: false,
+                    ..Default::default()
+                },
+            ),
         }
     }
 
-    fn deliverable_events(&self, ready: u32, readiness_version: u64) -> u32 {
+    fn deliverable_events(&self, ready: u32, state: ax_io::PollState) -> u32 {
         if self.disabled {
             return 0;
         }
+        // Edge-triggered delivery tracks each event class independently.
+        //
+        // EPOLLIN is a read-readiness wake: driven by the file's read-readiness
+        // version (bumped on every read wake, e.g. each `eventfd` write, which
+        // the async waker path relies on) OR by a fresh false->true readability
+        // transition.
+        //
+        // EPOLLOUT mirrors it with the file's write-readiness version (bumped
+        // when writability changes, e.g. a pipe ring buffer going Full ->
+        // Normal) OR by a fresh false->true writability transition. The
+        // directions are independent: an `eventfd` write bumps only the read
+        // version, so it never spoofs a writable edge, and a single shared
+        // version gating both classes would re-fire EPOLLOUT on every write
+        // (see the review on the eventfd readiness PR).
+        //
+        // EPOLLERR / EPOLLHUP are always reported.
         let events = if self.is_edge_triggered() {
-            if readiness_version == self.last_readiness_version {
-                ready & !self.last_ready
-            } else {
-                ready
+            let epollin_edge = state.readable
+                && (!self.last_readable || state.read_readiness_version != self.last_read_version);
+            let epollout_edge = state.writable
+                && (!self.last_writable
+                    || state.write_readiness_version != self.last_write_version);
+            let mut e = ready & EPOLL_ERROR_EVENTS;
+            if epollin_edge {
+                e |= ready & EPOLL_READ_EVENTS;
             }
+            if epollout_edge {
+                e |= ready & EPOLL_WRITE_EVENTS;
+            }
+            e
         } else {
             ready
         };
@@ -108,18 +144,18 @@ impl WatchedEvent {
 }
 
 impl EpollInstance {
-    pub fn new(flags: usize) -> LinuxResult<Self> {
+    pub fn new(flags: usize) -> PosixResult<Self> {
         validate_create1_flags(flags)?;
         Ok(Self {
             events: Mutex::new(BTreeMap::new()),
         })
     }
 
-    fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>> {
+    fn from_fd(fd: c_int) -> PosixResult<Arc<Self>> {
         get_file_like(fd)?
             .into_any()
             .downcast::<EpollInstance>()
-            .map_err(|_| LinuxError::EINVAL)
+            .map_err(|_| PosixError::EINVAL)
     }
 
     fn control(
@@ -127,36 +163,36 @@ impl EpollInstance {
         op: c_int,
         fd: c_int,
         event: Option<&ctypes::epoll_event>,
-    ) -> LinuxResult<usize> {
+    ) -> PosixResult<usize> {
         match op as u32 {
             ctypes::EPOLL_CTL_ADD => {
-                let event = *event.ok_or(LinuxError::EFAULT)?;
+                let event = *event.ok_or(PosixError::EFAULT)?;
                 validate_event_flags(event.events)?;
                 let file = get_file_like(fd)?;
                 if is_epoll_file(&file) {
-                    return Err(LinuxError::ELOOP);
+                    return Err(PosixError::ELOOP);
                 }
                 let mut events = self.events.lock();
                 events.retain(|_, watch| !watch.is_closed());
                 if let Entry::Vacant(e) = events.entry(fd as usize) {
                     e.insert(WatchedEvent::new(file, event));
                 } else {
-                    return Err(LinuxError::EEXIST);
+                    return Err(PosixError::EEXIST);
                 }
             }
             ctypes::EPOLL_CTL_MOD => {
-                let event = *event.ok_or(LinuxError::EFAULT)?;
+                let event = *event.ok_or(PosixError::EFAULT)?;
                 validate_event_flags(event.events)?;
                 let file = get_file_like(fd)?;
                 if is_epoll_file(&file) {
-                    return Err(LinuxError::ELOOP);
+                    return Err(PosixError::ELOOP);
                 }
                 let mut events = self.events.lock();
                 events.retain(|_, watch| !watch.is_closed());
                 if let Entry::Occupied(mut ocp) = events.entry(fd as usize) {
                     ocp.get_mut().update(file, event);
                 } else {
-                    return Err(LinuxError::ENOENT);
+                    return Err(PosixError::ENOENT);
                 }
             }
             ctypes::EPOLL_CTL_DEL => {
@@ -164,17 +200,17 @@ impl EpollInstance {
                 if let Entry::Occupied(ocp) = events.entry(fd as usize) {
                     ocp.remove_entry();
                 } else {
-                    return Err(LinuxError::ENOENT);
+                    return Err(PosixError::ENOENT);
                 }
             }
             _ => {
-                return Err(LinuxError::EINVAL);
+                return Err(PosixError::EINVAL);
             }
         }
         Ok(0)
     }
 
-    fn poll_all(&self, events: &mut [ctypes::epoll_event]) -> LinuxResult<usize> {
+    fn poll_all(&self, events: &mut [ctypes::epoll_event]) -> PosixResult<usize> {
         let mut ready_list = self.events.lock();
         ready_list.retain(|_, watch| !watch.is_closed());
         let mut events_num = 0;
@@ -184,10 +220,12 @@ impl EpollInstance {
                 break;
             }
 
-            let (ready, readiness_version) = watch.current_ready();
-            let deliverable = watch.deliverable_events(ready, readiness_version);
-            watch.last_ready = ready;
-            watch.last_readiness_version = readiness_version;
+            let (ready, state) = watch.current_ready();
+            let deliverable = watch.deliverable_events(ready, state);
+            watch.last_read_version = state.read_readiness_version;
+            watch.last_write_version = state.write_readiness_version;
+            watch.last_readable = state.readable;
+            watch.last_writable = state.writable;
             if deliverable == 0 {
                 continue;
             }
@@ -207,22 +245,22 @@ impl EpollInstance {
         let mut ready_list = self.events.lock();
         ready_list.retain(|_, watch| !watch.is_closed());
         ready_list.values().any(|watch| {
-            let (ready, readiness_version) = watch.current_ready();
-            watch.deliverable_events(ready, readiness_version) != 0
+            let (ready, state) = watch.current_ready();
+            watch.deliverable_events(ready, state) != 0
         })
     }
 }
 
 impl FileLike for EpollInstance {
-    fn read(&self, _buf: &mut [u8]) -> LinuxResult<usize> {
-        Err(LinuxError::EINVAL)
+    fn read(&self, _buf: &mut [u8]) -> PosixResult<usize> {
+        Err(PosixError::EINVAL)
     }
 
-    fn write(&self, _buf: &[u8]) -> LinuxResult<usize> {
-        Err(LinuxError::EINVAL)
+    fn write(&self, _buf: &[u8]) -> PosixResult<usize> {
+        Err(PosixError::EINVAL)
     }
 
-    fn stat(&self) -> LinuxResult<ctypes::stat> {
+    fn stat(&self) -> PosixResult<ctypes::stat> {
         let st_mode = 0o600u32; // rw-------
         Ok(ctypes::stat {
             st_ino: 1,
@@ -236,15 +274,16 @@ impl FileLike for EpollInstance {
         self
     }
 
-    fn poll(&self) -> LinuxResult<ax_io::PollState> {
+    fn poll(&self) -> PosixResult<ax_io::PollState> {
         Ok(ax_io::PollState {
             readable: self.has_ready_events(),
             writable: false,
-            readiness_version: 0,
+            read_readiness_version: 0,
+            write_readiness_version: 0,
         })
     }
 
-    fn set_nonblocking(&self, _nonblocking: bool) -> LinuxResult {
+    fn set_nonblocking(&self, _nonblocking: bool) -> PosixResult {
         Ok(())
     }
 }
@@ -265,7 +304,7 @@ pub fn sys_epoll_create(size: c_int) -> c_int {
     debug!("sys_epoll_create <= {size}");
     syscall_body!(sys_epoll_create, {
         if size <= 0 {
-            return Err(LinuxError::EINVAL);
+            return Err(PosixError::EINVAL);
         }
         let epoll_instance = EpollInstance::new(0)?;
         add_file_like(Arc::new(epoll_instance))
@@ -282,12 +321,12 @@ pub unsafe fn sys_epoll_ctl(
     debug!("sys_epoll_ctl <= epfd: {epfd} op: {op} fd: {fd}");
     syscall_body!(sys_epoll_ctl, {
         if epfd == fd {
-            return Err(LinuxError::EINVAL);
+            return Err(PosixError::EINVAL);
         }
         let event = match op as u32 {
             ctypes::EPOLL_CTL_ADD | ctypes::EPOLL_CTL_MOD => {
                 if event.is_null() {
-                    return Err(LinuxError::EFAULT);
+                    return Err(PosixError::EFAULT);
                 }
                 Some(unsafe { &*event })
             }
@@ -310,14 +349,14 @@ pub unsafe fn sys_epoll_wait(
 
     syscall_body!(sys_epoll_wait, {
         if maxevents <= 0 {
-            return Err(LinuxError::EINVAL);
+            return Err(PosixError::EINVAL);
         }
         if events.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(PosixError::EFAULT);
         }
         let events = unsafe { core::slice::from_raw_parts_mut(events, maxevents as usize) };
-        let deadline =
-            (!timeout.is_negative()).then(|| wall_time() + Duration::from_millis(timeout as u64));
+        let deadline = (!timeout.is_negative())
+            .then(|| monotonic_time() + Duration::from_millis(timeout as u64));
         let epoll_instance = EpollInstance::from_fd(epfd)?;
         loop {
             #[cfg(feature = "net")]
@@ -327,7 +366,7 @@ pub unsafe fn sys_epoll_wait(
                 return Ok(events_num as c_int);
             }
 
-            if deadline.is_some_and(|ddl| wall_time() >= ddl) {
+            if deadline.is_some_and(|ddl| monotonic_time() >= ddl) {
                 debug!("    timeout!");
                 return Ok(0);
             }
@@ -336,16 +375,16 @@ pub unsafe fn sys_epoll_wait(
     })
 }
 
-fn validate_create1_flags(flags: usize) -> LinuxResult {
+fn validate_create1_flags(flags: usize) -> PosixResult {
     if (flags as u32) & !EPOLL_CREATE1_SUPPORTED_FLAGS != 0 {
-        return Err(LinuxError::EINVAL);
+        return Err(PosixError::EINVAL);
     }
     Ok(())
 }
 
-fn validate_event_flags(events: u32) -> LinuxResult {
+fn validate_event_flags(events: u32) -> PosixResult {
     if events & !EPOLL_SUPPORTED_EVENTS != 0 {
-        return Err(LinuxError::EINVAL);
+        return Err(PosixError::EINVAL);
     }
     Ok(())
 }

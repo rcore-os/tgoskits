@@ -1,7 +1,6 @@
 # Build-time config for the Orange Pi 5 Plus UVC + RKNN Starry example.
 target = "aarch64-unknown-none-softfloat"
 features = [
-  "ax-driver/irq",
   "ax-driver/list-pci-devices",
   "ax-driver/rk3588-pcie",
   "ax-driver/realtek-rtl8125",

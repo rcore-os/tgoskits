@@ -90,14 +90,25 @@ impl<C> Finished<C> {
         self.inner.clear_finished(addr);
     }
 
+    pub(crate) fn same_queue(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     pub fn set_finished(&self, addr: BusAddr, value: C) {
-        if let Some(slot) = self.inner.data.get(&addr) {
-            slot.set_finished(value);
-        } else if take_queue_log_budget() {
+        if !self.try_set_finished(addr, value) && take_queue_log_budget() {
             warn!(
                 "usb queue: completion address {:#x} is not registered",
                 addr.raw()
             );
+        }
+    }
+
+    pub fn try_set_finished(&self, addr: BusAddr, value: C) -> bool {
+        if let Some(slot) = self.inner.data.get(&addr) {
+            slot.set_finished(value);
+            true
+        } else {
+            false
         }
     }
 

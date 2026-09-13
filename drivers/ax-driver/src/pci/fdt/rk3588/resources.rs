@@ -288,6 +288,10 @@ pub(super) fn probe_rk3588(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     register_fdt_legacy_irq(&info, resources.logical_bus_end);
 
     let mut drv = PcieController::new(host);
+    drv.set_dma_coherent(matches!(
+        crate::binding_resolver::dma_coherency_from_fdt(&info),
+        dma_api::DmaCoherency::Coherent
+    ));
     for range in &resources.ranges {
         if is_config_range(range, resources.cfg_phys, resources.cfg_size) {
             continue;
@@ -366,7 +370,7 @@ fn enable_vpcie3v3_supply(supply: Option<Phandle>) -> Result<(), OnProbeError> {
         .map_err(|err| OnProbeError::other(format!("failed to lock PinctrlDevice: {err}")))?;
     FdtPinctrl::apply_fixed_regulator(
         &mut *pinctrl,
-        &fdt,
+        fdt,
         regulator.as_node(),
         &RockchipFdtPinctrlParser,
         "rk3588-pcie-regulator",

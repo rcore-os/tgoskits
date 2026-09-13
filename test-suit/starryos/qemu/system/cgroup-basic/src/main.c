@@ -4,12 +4,15 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static int __pass = 0;
@@ -40,6 +43,21 @@ static int __fail = 0;
 
 #define CGROUP2_PATH "/tmp/cg"
 #define CGROUP_V1_PATH "/tmp/cg-v1"
+#define CLONE_INTO_CGROUP (1ULL << 33)
+
+struct clone_args {
+    unsigned long long flags;
+    unsigned long long pidfd;
+    unsigned long long child_tid;
+    unsigned long long parent_tid;
+    unsigned long long exit_signal;
+    unsigned long long stack;
+    unsigned long long stack_size;
+    unsigned long long tls;
+    unsigned long long set_tid;
+    unsigned long long set_tid_size;
+    unsigned long long cgroup;
+};
 
 static void check_mkdir(const char *path, const char *msg)
 {
@@ -225,9 +243,47 @@ static void expect_chdir_ok(const char *path, const char *msg)
     CHECK(ret == 0, msg);
 }
 
+static void expect_clone_into_cgroup(const char *path, const char *msg)
+{
+    int cgroup_fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (cgroup_fd < 0) {
+        CHECK(0, msg);
+        return;
+    }
+
+    struct clone_args args = {
+        .flags = CLONE_INTO_CGROUP,
+        .exit_signal = SIGCHLD,
+        .cgroup = (unsigned long long)cgroup_fd,
+    };
+    errno = 0;
+    pid_t pid = (pid_t)syscall(SYS_clone3, &args, sizeof(args));
+    if (pid == 0) {
+        char buf[128];
+        ssize_t nread = read_text_file(CGROUP2_PATH "/into/cgroup.procs",
+                                       buf, sizeof(buf));
+        _exit(nread >= 0 && buffer_contains_pid(buf, getpid()) ? 0 : 1);
+    }
+
+    int saved_errno = errno;
+    int status = 0;
+    int waited = pid > 0 ? waitpid(pid, &status, 0) : -1;
+    close(cgroup_fd);
+    errno = saved_errno;
+    CHECK(pid > 0 && waited == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          msg);
+}
+
 int main(void)
 {
     TEST_START("cgroup-basic");
+
+    expect_mkdir_errno("/sys", EEXIST,
+                       "mkdir existing sysfs mount root fails with EEXIST");
+    expect_mkdir_errno("/sys/fs", EEXIST,
+                       "mkdir existing static sysfs directory fails with EEXIST");
+    expect_mkdir_errno("/sys/fs/cgroup", EEXIST,
+                       "mkdir existing sysfs cgroup mountpoint fails with EEXIST");
 
     check_mkdir(CGROUP2_PATH, "mkdir cgroup2 mountpoint");
 
@@ -242,6 +298,9 @@ int main(void)
         TEST_DONE();
     }
 
+    expect_mkdir_errno(CGROUP2_PATH, EEXIST,
+                       "mkdir cgroup2 mount root fails with EEXIST");
+
     char buf[4096];
     ssize_t nread = read_text_file(CGROUP2_PATH "/cgroup.procs", buf, sizeof(buf));
     CHECK(nread >= 0, "read root cgroup.procs");
@@ -253,7 +312,8 @@ int main(void)
     nread = read_text_file(CGROUP2_PATH "/cgroup.controllers", buf, sizeof(buf));
     CHECK(nread >= 0, "read root cgroup.controllers");
     if (nread >= 0) {
-        CHECK(nread == 0, "root cgroup.controllers is empty before controllers exist");
+        CHECK(strstr(buf, "pids") != NULL,
+              "root cgroup.controllers advertises the pids controller");
     }
 
     nread = read_text_file(CGROUP2_PATH "/cgroup.subtree_control", buf, sizeof(buf));
@@ -262,17 +322,25 @@ int main(void)
         CHECK(nread == 0, "root cgroup.subtree_control is initially empty");
     }
 
-    expect_write_errno(CGROUP2_PATH "/cgroup.subtree_control", "+pids",
-                       EINVAL, "writing +pids to subtree_control fails with EINVAL");
+    expect_write_errno(CGROUP2_PATH "/cgroup.subtree_control", "+not-a-controller",
+                       EINVAL, "unknown controller is rejected with EINVAL");
 
     expect_mkdir_ok(CGROUP2_PATH "/a", "mkdir child cgroup a succeeds");
     expect_path_exists(CGROUP2_PATH "/a", "child cgroup a exists");
     expect_empty_file(CGROUP2_PATH "/a/cgroup.procs",
                       "child cgroup.procs is empty before migration exists");
     expect_empty_file(CGROUP2_PATH "/a/cgroup.controllers",
-                      "child cgroup.controllers is empty before controllers exist");
+                      "child cgroup.controllers is empty before pids is enabled");
     expect_empty_file(CGROUP2_PATH "/a/cgroup.subtree_control",
                       "child cgroup.subtree_control is initially empty");
+    expect_path_missing(CGROUP2_PATH "/a/pids.max",
+                        "child pids.max is hidden before parent enables pids");
+    expect_path_missing(CGROUP2_PATH "/a/pids.current",
+                        "child pids.current is hidden before parent enables pids");
+    expect_path_missing(CGROUP2_PATH "/a/pids.peak",
+                        "child pids.peak is hidden before parent enables pids");
+    expect_path_missing(CGROUP2_PATH "/a/pids.events",
+                        "child pids.events is hidden before parent enables pids");
     expect_mkdir_errno(CGROUP2_PATH "/a", EEXIST,
                        "duplicate mkdir child cgroup fails with EEXIST");
 
@@ -285,6 +353,13 @@ int main(void)
     expect_path_missing(CGROUP2_PATH "/a/b", "removed nested cgroup is missing");
     expect_rmdir_ok(CGROUP2_PATH "/a", "rmdir empty child cgroup succeeds");
     expect_path_missing(CGROUP2_PATH "/a", "removed child cgroup is missing");
+
+    expect_mkdir_ok(CGROUP2_PATH "/into",
+                    "mkdir clone3 target cgroup succeeds");
+    expect_clone_into_cgroup(CGROUP2_PATH "/into",
+                             "clone3 CLONE_INTO_CGROUP starts child in target cgroup");
+    expect_rmdir_ok(CGROUP2_PATH "/into",
+                    "cleanup clone3 target cgroup succeeds after child exit");
 
     expect_mkdir_ok(CGROUP2_PATH "/cwd-cache", "mkdir cgroup for cwd cache regression");
     expect_chdir_ok(CGROUP2_PATH "/cwd-cache", "chdir into cgroup for cwd cache regression");

@@ -1,0 +1,8 @@
+features = []
+log = "Info"
+target = "x86_64-unknown-none"
+vm_configs = ["test-suit/axvisor/normal/qemu-acpi-ovmf/x86-linux-acpi-ovmf.toml"]
+
+[env]
+AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-acpi-ovmf/initramfs-x86_64.cpio.gz"
+AXVISOR_TEST_X86_OVMF_OUTPUT = "tmp/axbuild/axvisor/qemu-acpi-ovmf/OVMF_CODE_4M.fd"

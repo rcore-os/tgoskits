@@ -10,12 +10,9 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-#[cfg(all(axtest, feature = "axtest"))]
-/// Coverage tests for I/O traits and adapters.
-pub mod axtest;
+mod error;
 
-#[doc(no_inline)]
-pub use ax_errno::{AxError as Error, AxErrorKind as ErrorKind, AxResult as Result};
+pub use error::{Error, ErrorKind, IoError, IoResult, Result};
 
 /// Default buffer size for I/O operations.
 pub const DEFAULT_BUF_SIZE: usize = 1024 * 2;
@@ -37,6 +34,10 @@ pub struct PollState {
     pub readable: bool,
     /// Object can be writen now.
     pub writable: bool,
-    /// Monotonic token changed when the object's readiness may have changed.
-    pub readiness_version: u64,
+    /// Monotonic token changed when the object's read readiness may have
+    /// changed.
+    pub read_readiness_version: u64,
+    /// Monotonic token changed when the object's write readiness may have
+    /// changed.
+    pub write_readiness_version: u64,
 }

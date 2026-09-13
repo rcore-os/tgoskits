@@ -7,6 +7,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.2](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.1...ax-runtime-v0.13.2) - 2026-09-13
+
+### Other
+
+- updated the following local packages: ax-cpu, rdrive, ax-plat, ax-driver, ax-hal, cpu-local
+
+## [0.13.1](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.0...ax-runtime-v0.13.1) - 2026-09-12
+
+### Fixed
+
+- *(ax-task)* allow per-CPU timer wakes during CPU deactivation ([#2382](https://github.com/rcore-os/tgoskits/pull/2382))
+
+## [0.13.0](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.12.1...ax-runtime-v0.13.0) - 2026-09-11
+
+### Fixed
+
+- *(ax-task)* drain idle scheduler work before offline probes ([#2377](https://github.com/rcore-os/tgoskits/pull/2377))
+- *(axvm)* prepare host GIC before CPU enable and centralize fatal traps ([#2356](https://github.com/rcore-os/tgoskits/pull/2356))
+- *(axvisor)* restore COM1 console and preserve guest output order ([#2311](https://github.com/rcore-os/tgoskits/pull/2311))
+
+### Other
+
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+- *(ax-cpu)* [**breaking**] centralize CPU mechanisms and architecture backends ([#2363](https://github.com/rcore-os/tgoskits/pull/2363))
+
+## [0.12.1](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.12.0...ax-runtime-v0.12.1) - 2026-09-09
+
+### Fixed
+
+- *(runtime)* prefer userspace over kernel TLS through build cfg ([#2339](https://github.com/rcore-os/tgoskits/pull/2339))
+
+## [0.12.0](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.11.3...ax-runtime-v0.12.0) - 2026-09-09
+
+### Added
+
+- *(trait-ffi)* [**breaking**] maintain and extend static interfaces with syn 3 ([#2300](https://github.com/rcore-os/tgoskits/pull/2300))
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+- *(aic8800)* integrate AKA WPA2 Wi-Fi and iperf validation ([#2222](https://github.com/rcore-os/tgoskits/pull/2222))
+
+### Fixed
+
+- *(release)* restore release-plz dependency updates ([#2329](https://github.com/rcore-os/tgoskits/pull/2329))
+- *(axvisor)* preserve structured console output ([#2204](https://github.com/rcore-os/tgoskits/pull/2204))
+- *(axvisor)* stabilize physical console logs ([#2248](https://github.com/rcore-os/tgoskits/pull/2248))
+
+### Other
+
+- *(ax-task)* [**breaking**] organize scheduler namespaces and unify runtime APIs ([#2313](https://github.com/rcore-os/tgoskits/pull/2313))
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+- *(repo)* narrow SDIO rearm and TX queue policies ([#2250](https://github.com/rcore-os/tgoskits/pull/2250))
+- *(rsext4)* [**breaking**] align ext4 semantics with Linux 7.1 ([#1957](https://github.com/rcore-os/tgoskits/pull/1957))
+
+## [0.11.3](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.11.2...ax-runtime-v0.11.3) - 2026-08-27
+
+### Other
+
+- *(sdmmc)* unify SDIO protocol and AIC8800 driver ([#2201](https://github.com/rcore-os/tgoskits/pull/2201))
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+- *(axvm)* unify host timer ownership ([#2190](https://github.com/rcore-os/tgoskits/pull/2190))
+- *(ax-net)* add queue-level NAPI runtime ([#2178](https://github.com/rcore-os/tgoskits/pull/2178))
+
+## [0.11.2](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.11.1...ax-runtime-v0.11.2) - 2026-08-25
+
+### Fixed
+
+- *(ax-driver)* attribute RK3588 governor busy by FDT cpu topology ([#2165](https://github.com/rcore-os/tgoskits/pull/2165))
+
+### Other
+
+- *(test)* consolidate Starry and ArceOS test suites ([#2173](https://github.com/rcore-os/tgoskits/pull/2173))
+
+## [0.11.1](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.11.0...ax-runtime-v0.11.1) - 2026-08-25
+
+### Fixed
+
+- *(ax-runtime)* catch up expired periodic timer deadlines ([#2137](https://github.com/rcore-os/tgoskits/pull/2137))
+
+### Other
+
+- *(x86-apic-driver)* extract x86 interrupt controllers with rdif-intc support ([#2118](https://github.com/rcore-os/tgoskits/pull/2118))
+
+## [0.11.0](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.10.7...ax-runtime-v0.11.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+
+### Fixed
+
+- *(console)* unify sleepable runtime console arbitration ([#2113](https://github.com/rcore-os/tgoskits/pull/2113))
+- *(axtask)* preserve scheduler-frame ownership across switches ([#2101](https://github.com/rcore-os/tgoskits/pull/2101))
+- *(ax-cpu)* harden user access and architecture state transitions ([#2075](https://github.com/rcore-os/tgoskits/pull/2075))
+- *(tty)* handle input flush and wakeups ([#1922](https://github.com/rcore-os/tgoskits/pull/1922))
+
+### Other
+
+- *(serial)* establish bounded owner-affine UART runtime ([#2076](https://github.com/rcore-os/tgoskits/pull/2076))
+- *(cpu-local)* define scheduler-neutral execution context boundary ([#2080](https://github.com/rcore-os/tgoskits/pull/2080))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
+## [0.10.7](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.10.6...ax-runtime-v0.10.7) - 2026-08-09
+
+### Fixed
+
+- *(ax-plat)* add corrected scheduler clock source ([#1900](https://github.com/rcore-os/tgoskits/pull/1900))
+
+### Other
+
+- *(ax-ipi)* establish typed IPI publication transport ([#1916](https://github.com/rcore-os/tgoskits/pull/1916))
+- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+- *(axvm)* unify guest devices and AArch64 timer ownership ([#1717](https://github.com/rcore-os/tgoskits/pull/1717))
+
 ## [0.10.6](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.10.5...ax-runtime-v0.10.6) - 2026-08-03
 
 ### Added

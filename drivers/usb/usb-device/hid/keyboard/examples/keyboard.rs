@@ -13,7 +13,7 @@ async fn main() {
 
     let mut info: Option<DeviceInfo> = None;
 
-    'devices: for probed in ls {
+    'devices: for probed in ls.connected {
         println!("{probed}");
         let Some(device) = probed.into_device_info() else {
             continue;

@@ -1,8 +1,6 @@
 timeout = 600
-shell_prefix = "root@starry:"
 uefi = false
 to_bin = false
-success_regex = ["(?m)^STARRY_PICOCLAW_GATEWAY_PASSED\\s*$"]
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)page fault",
@@ -20,10 +18,12 @@ args = [
   "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
   "-device", "virtio-net-pci,netdev=net0",
   "-netdev", "user,id=net0,hostfwd=tcp::18790-:18790",
-  "-snapshot",
 ]
 
-shell_init_cmd = """
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+
+shell_cmd = """
 export HOME=/root
 export USER=root
 export SHELL=/bin/sh
@@ -67,3 +67,4 @@ kill "$gateway_pid" 2>/dev/null || true
 wait "$gateway_pid" 2>/dev/null || true
 printf 'STARRY_%s\n' PICOCLAW_GATEWAY_PASSED
 """
+success_regex = ["(?m)^STARRY_PICOCLAW_GATEWAY_PASSED\\s*$"]

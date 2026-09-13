@@ -1,9 +1,9 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use ax_lazyinit::OnceLock;
 use dma_api::DmaOp;
-use spin::Once;
 
-static DMA_OP: Once<&'static dyn DmaOp> = Once::new();
+static DMA_OP: OnceLock<&'static dyn DmaOp> = OnceLock::new();
 static DMA_READY: AtomicBool = AtomicBool::new(false);
 
 pub fn install_dma_op(op: &'static dyn DmaOp) {

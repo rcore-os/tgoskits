@@ -1,0 +1,48 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.2.4](https://github.com/rcore-os/tgoskits/compare/axvirtio-common-v0.2.3...axvirtio-common-v0.2.4) - 2026-09-13
+
+### Other
+
+- updated the following local packages: ax-runtime
+
+## [0.2.3](https://github.com/rcore-os/tgoskits/compare/axvirtio-common-v0.2.2...axvirtio-common-v0.2.3) - 2026-09-12
+
+### Other
+
+- updated the following local packages: ax-runtime
+
+## [0.2.2](https://github.com/rcore-os/tgoskits/compare/axvirtio-common-v0.2.1...axvirtio-common-v0.2.2) - 2026-09-11
+
+### Added
+
+- *(virtio)* add synchronized VirtIO block PCI ramdisk ([#2070](https://github.com/rcore-os/tgoskits/pull/2070))
+
+## [0.2.1](https://github.com/rcore-os/tgoskits/compare/axvirtio-common-v0.2.0...axvirtio-common-v0.2.1) - 2026-09-09
+
+### Added
+
+- *(virtio)* implement split-ring event index ([#2255](https://github.com/rcore-os/tgoskits/pull/2255))
+
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/axvirtio-common-v0.1.0...axvirtio-common-v0.2.0) - 2026-08-20
+
+### Added
+
+- *(axvirtio-blk)* add virtio-mmio block device core ([#1935](https://github.com/rcore-os/tgoskits/pull/1935))
+- *(axvisor)* add dual-guest virtio-net support ([#1927](https://github.com/rcore-os/tgoskits/pull/1927))
+
+### Fixed
+
+- *(axvirtio-common)* harden shared virtqueue against untrusted guests ([#1984](https://github.com/rcore-os/tgoskits/pull/1984))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))

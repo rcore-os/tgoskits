@@ -3,24 +3,63 @@
 use alloc::{borrow::ToOwned, collections::VecDeque, string::String, vec, vec::Vec};
 use core::{ffi::CStr, iter, mem::size_of};
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{CachedFile, FileBackend};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-use ax_runtime::hal::{
-    mem::virt_to_phys,
-    paging::{MappingFlags, PageSize},
-};
-use ax_sync::Mutex;
-use axfs_ng_vfs::Location;
+use ax_runtime::hal::{mem::virt_to_phys, paging::MappingFlags};
+use axfs_ng_vfs::{Location, NodeType};
 use kernel_elf_parser::{AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser};
 use ouroboros::self_referencing;
 use uluru::LRUCache;
 use zerocopy::IntoBytes;
 
 use crate::{
-    config::{USER_SPACE_BASE, USER_SPACE_SIZE},
-    mm::aspace::{AddrSpace, Backend},
+    StarryError, StarryResult,
+    mm::{
+        UserVirtualAddressLayout,
+        aspace::{AddrSpace, AddressSpaceId, MappingOperation, VmEpoch},
+    },
+    sync::Mutex,
+    task::Cred,
 };
+
+/// Largest argv/envp stack image accepted by execve.
+///
+/// Linux derives this from the process stack limit and allows argv/envp to use
+/// at most one quarter of it. StarryOS has a fixed 8 MiB user stack, so this
+/// yields a 2 MiB limit while leaving room for the ELF auxiliary vector and
+/// stack alignment.
+pub(crate) const MAX_EXEC_ARG_BYTES: usize = crate::config::USER_STACK_SIZE / 4;
+
+/// Reject argv/envp sets that cannot fit within the exec argument budget.
+///
+/// Count both C-string terminators and the two terminating pointer slots: all
+/// of them become part of the initial user stack image.
+pub(crate) fn validate_exec_arg_size(args: &[String], envs: &[String]) -> StarryResult {
+    let pointer_count = args
+        .len()
+        .checked_add(envs.len())
+        .and_then(|count| count.checked_add(2))
+        .ok_or(StarryError::ArgumentListTooLong)?;
+    let mut total = pointer_count
+        .checked_mul(size_of::<usize>())
+        .ok_or(StarryError::ArgumentListTooLong)?;
+
+    for value in args.iter().chain(envs.iter()) {
+        total = total
+            .checked_add(
+                value
+                    .len()
+                    .checked_add(1)
+                    .ok_or(StarryError::ArgumentListTooLong)?,
+            )
+            .ok_or(StarryError::ArgumentListTooLong)?;
+    }
+
+    if total > MAX_EXEC_ARG_BYTES {
+        return Err(StarryError::ArgumentListTooLong);
+    }
+    Ok(())
+}
 
 // RISC-V relocation types
 #[cfg(target_arch = "riscv64")]
@@ -32,31 +71,97 @@ const R_RISCV_64: u32 = 2;
 #[cfg(target_arch = "riscv64")]
 const R_RISCV_COPY: u32 = 4;
 
+// Linux rejects PT_INTERP paths outside PATH_MAX before allocation.
+const MAX_INTERPRETER_PATH_LEN: u64 = 4096;
+
 /// Creates a new empty user address space.
-pub fn new_user_aspace_empty() -> AxResult<AddrSpace> {
-    AddrSpace::new_empty(VirtAddr::from_usize(USER_SPACE_BASE), USER_SPACE_SIZE)
+pub fn new_user_aspace_empty() -> StarryResult<AddrSpace> {
+    AddrSpace::new_user(UserVirtualAddressLayout::platform_default()?)
+}
+
+/// An exec address space that is still private to the loader.
+///
+/// The scheduler and process lifecycle APIs cannot consume this type.  A
+/// successful load must first turn it into [`PreparedUserImage`], mirroring
+/// Linux's nascent `bprm->mm` before `begin_new_exec()` installs it.
+#[must_use = "an unpublished user image must be loaded or explicitly discarded"]
+pub struct UserImageBuilder {
+    aspace: AddrSpace,
+}
+
+/// Proof that the current contents of one [`UserImageBuilder`] completed all
+/// loader steps.  Identity and epoch bind the token to that exact attempt, so
+/// a token from an earlier ENOEXEC retry cannot publish a later image.
+#[must_use = "a loaded image token must be consumed by UserImageBuilder::finish"]
+pub struct LoadedUserImage {
+    space_id: AddressSpaceId,
+    epoch: VmEpoch,
+    entry: VirtAddr,
+    stack: VirtAddr,
+    auxv: Vec<AuxEntry>,
+}
+
+/// A fully loaded image that has not yet crossed exec's point of no return.
+#[must_use = "a prepared user image must be installed or explicitly discarded"]
+pub struct PreparedUserImage {
+    aspace: AddrSpace,
+    entry: VirtAddr,
+    stack: VirtAddr,
+    auxv: Vec<AuxEntry>,
+}
+
+impl PreparedUserImage {
+    /// Consumes the unpublished typestate immediately before the caller creates
+    /// the first [`super::MmHandle`] and installs it in a process transaction.
+    pub fn into_parts(self) -> (AddrSpace, VirtAddr, VirtAddr, Vec<AuxEntry>) {
+        (self.aspace, self.entry, self.stack, self.auxv)
+    }
+}
+
+impl UserImageBuilder {
+    /// Consumes a successfully loaded attempt after verifying that no later
+    /// retry changed the builder contents represented by `loaded`.
+    pub fn finish(self, loaded: LoadedUserImage) -> StarryResult<PreparedUserImage> {
+        if self.aspace.address_space_id() != loaded.space_id
+            || self.aspace.vm_epoch() != loaded.epoch
+        {
+            return Err(StarryError::BadState);
+        }
+        Ok(PreparedUserImage {
+            aspace: self.aspace,
+            entry: loaded.entry,
+            stack: loaded.stack,
+            auxv: loaded.auxv,
+        })
+    }
 }
 
 /// If the target architecture requires it, the kernel portion of the address
 /// space will be copied to the user address space.
-pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> AxResult {
+pub fn copy_from_kernel(_aspace: &mut AddrSpace) -> StarryResult {
     #[cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))]
     {
         // ARMv8 (aarch64) and LoongArch64 use separate page tables for user space
         // (aarch64: TTBR0_EL1, LoongArch64: PGDL), so there is no need to copy the
         // kernel portion to the user page table.
         let kspace = ax_mm::kernel_aspace().lock();
-        _aspace.page_table_mut().cursor().copy_from(
-            kspace.page_table(),
-            kspace.base(),
-            kspace.size(),
-        );
+        // SAFETY: the global kernel address space outlives every user address
+        // space, whose managed regions are restricted to user-space addresses.
+        unsafe { _aspace.share_kernel_root_entries_from(kspace.root_entry_share()) }
+            .map_err(|_| StarryError::BadState)?;
     }
     Ok(())
 }
 
+/// Allocates the nascent address space used by one exec attempt.
+pub fn new_user_image_builder() -> StarryResult<UserImageBuilder> {
+    let mut aspace = new_user_aspace_empty()?;
+    copy_from_kernel(&mut aspace)?;
+    Ok(UserImageBuilder { aspace })
+}
+
 /// Map the signal trampoline to the user address space.
-pub fn map_trampoline(aspace: &mut AddrSpace) -> AxResult {
+pub fn map_trampoline(aspace: &mut AddrSpace) -> StarryResult {
     let signal_trampoline_paddr =
         virt_to_phys(starry_signal::arch::signal_trampoline_address().into());
     aspace.map_linear(
@@ -157,8 +262,9 @@ fn map_elf<'a>(
     uspace: &mut AddrSpace,
     base: usize,
     entry: &'a ElfCacheEntry,
-) -> AxResult<ELFParser<'a>> {
-    let elf_parser = ELFParser::new(entry.borrow_elf(), base).map_err(|_| AxError::InvalidData)?;
+) -> StarryResult<ELFParser<'a>> {
+    let elf_parser =
+        ELFParser::new(entry.borrow_elf(), base).map_err(|_| StarryError::InvalidData)?;
     let cache = entry.borrow_cache();
 
     // PT_TLS init image may extend beyond the last PT_LOAD's file range.
@@ -199,7 +305,14 @@ fn map_elf<'a>(
             ph.flags
         );
         let seg_pad = vaddr.align_offset_4k();
-        assert_eq!(seg_pad, ph.offset as usize % PAGE_SIZE_4K);
+        // ELF requires each loadable segment's virtual address and file
+        // offset to have the same page offset. This is untrusted executable
+        // metadata, so reject a mismatch instead of panicking in the kernel.
+        // Use a distinct error from InvalidExecutable: execve uses that error
+        // to opt into its legacy shell fallback for a non-ELF file.
+        if seg_pad != ph.offset as usize % PAGE_SIZE_4K {
+            return Err(StarryError::MalformedExecutable);
+        }
 
         let seg_align_size =
             (ph.mem_size as usize + seg_pad + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
@@ -212,9 +325,9 @@ fn map_elf<'a>(
         } else {
             ph.offset + ph.file_size
         };
-        let backend = Backend::new_cow(
+        let backend = MappingOperation::new_cow(
             seg_start,
-            PageSize::Size4K,
+            PAGE_SIZE_4K,
             FileBackend::Cached(cache.clone()),
             ph.offset,
             Some(file_end),
@@ -259,6 +372,41 @@ fn map_elf<'a>(
     Ok(elf_parser)
 }
 
+/// Reproduce Linux v7.1's `load_elf_binary()` data-bound calculation for the
+/// main executable. `start_data` is the greatest PT_LOAD start, while
+/// `end_data` is the greatest PT_LOAD file end; the interpreter is excluded.
+fn executable_data_layout(elf: &ELFParser<'_>) -> StarryResult<(usize, usize)> {
+    let mut start_data = 0usize;
+    let mut end_data = 0usize;
+    let mut found_load = false;
+    for header in elf
+        .headers()
+        .ph
+        .iter()
+        .filter(|header| header.get_type() == Ok(xmas_elf::program::Type::Load))
+    {
+        found_load = true;
+        let segment_start = elf
+            .base()
+            .checked_add(
+                usize::try_from(header.virtual_addr)
+                    .map_err(|_| StarryError::MalformedExecutable)?,
+            )
+            .ok_or(StarryError::MalformedExecutable)?;
+        let file_end = segment_start
+            .checked_add(
+                usize::try_from(header.file_size).map_err(|_| StarryError::MalformedExecutable)?,
+            )
+            .ok_or(StarryError::MalformedExecutable)?;
+        start_data = start_data.max(segment_start);
+        end_data = end_data.max(file_end);
+    }
+    if !found_load || end_data < start_data {
+        return Err(StarryError::MalformedExecutable);
+    }
+    Ok((start_data, end_data))
+}
+
 /// Convert a virtual address to a file offset using PT_LOAD segments.
 ///
 /// This function searches through the program headers to find which PT_LOAD
@@ -293,7 +441,7 @@ fn apply_relocations(
     base: usize,
     cache: &CachedFile,
     ph: &[xmas_elf::program::ProgramHeader64],
-) -> AxResult {
+) -> StarryResult {
     // Find PT_DYNAMIC segment
     let dynamic_ph = ph
         .iter()
@@ -310,7 +458,7 @@ fn apply_relocations(
 
     if dyn_offset + dyn_size > (cache.location().len().unwrap_or(0) as usize) {
         debug!("Dynamic section extends beyond file");
-        return Err(AxError::InvalidData);
+        return Err(StarryError::InvalidData);
     }
 
     let mut dyn_data = vec![0u8; dyn_size];
@@ -348,7 +496,7 @@ fn apply_relocations(
 
     // Process .rela.dyn (R_RISCV_RELATIVE)
     if rela_addr != 0 && rela_size != 0 {
-        let rela_offset = vaddr_to_file_offset(rela_addr, ph).ok_or(AxError::InvalidData)?;
+        let rela_offset = vaddr_to_file_offset(rela_addr, ph).ok_or(StarryError::InvalidData)?;
         let rela_entry_size = 24; // sizeof(Rela<u64>) = 24 bytes
         let rela_count = rela_size as usize / rela_entry_size;
         let mut copy_count: usize = 0;
@@ -388,7 +536,7 @@ fn apply_relocations(
                     }
 
                     let sym_file_offset =
-                        vaddr_to_file_offset(symtab_addr, ph).ok_or(AxError::InvalidData)?;
+                        vaddr_to_file_offset(symtab_addr, ph).ok_or(StarryError::InvalidData)?;
                     let sym_entry_offset = sym_file_offset + sym_idx * 24;
                     let file_len = cache.location().len().unwrap_or(0) as usize;
                     if sym_entry_offset + 24 > file_len {
@@ -422,7 +570,8 @@ fn apply_relocations(
 
     // Process .rela.plt (R_RISCV_JUMP_SLOT)
     if jmprel_addr != 0 && jmprel_size != 0 {
-        let jmprel_offset = vaddr_to_file_offset(jmprel_addr, ph).ok_or(AxError::InvalidData)?;
+        let jmprel_offset =
+            vaddr_to_file_offset(jmprel_addr, ph).ok_or(StarryError::InvalidData)?;
         let rela_entry_size = 24; // sizeof(Rela<u64>) = 24 bytes
         let jmprel_count = jmprel_size as usize / rela_entry_size;
 
@@ -456,7 +605,7 @@ fn apply_relocations(
 
                     // Read symbol from .dynsym
                     let sym_file_offset =
-                        vaddr_to_file_offset(symtab_addr, ph).ok_or(AxError::InvalidData)?;
+                        vaddr_to_file_offset(symtab_addr, ph).ok_or(StarryError::InvalidData)?;
                     let sym_entry_offset = sym_file_offset + sym_idx * 24;
                     let file_len = cache.location().len().unwrap_or(0) as usize;
                     if sym_entry_offset + 24 > file_len {
@@ -490,13 +639,13 @@ fn apply_relocations(
     _base: usize,
     _cache: &CachedFile,
     _ph: &[xmas_elf::program::ProgramHeader64],
-) -> AxResult {
+) -> StarryResult {
     Ok(())
 }
 
-fn map_elf_error(err: &'static str) -> AxError {
+fn map_elf_error(err: &'static str) -> StarryError {
     debug!("Failed to parse ELF file: {err}");
-    AxError::InvalidExecutable
+    StarryError::InvalidExecutable
 }
 
 #[self_referencing]
@@ -509,13 +658,13 @@ struct ElfCacheEntry {
 }
 
 impl ElfCacheEntry {
-    fn load(loc: Location) -> AxResult<Result<Self, Vec<u8>>> {
+    fn load(loc: Location) -> StarryResult<Result<Self, Vec<u8>>> {
         let cache = CachedFile::get_or_create(loc)?;
 
         let mut data = vec![0; 4096];
         let read = cache.read_at(&mut data[..], 0)?;
         data.truncate(read);
-        match ElfCacheEntry::try_new_or_recover::<AxError>(cache.clone(), data, |data| {
+        match ElfCacheEntry::try_new_or_recover::<StarryError>(cache.clone(), data, |data| {
             let builder = ELFHeadersBuilder::new(data).map_err(map_elf_error)?;
             let range = builder.ph_range();
             if range.end as usize <= data.len() {
@@ -542,7 +691,12 @@ impl ElfLoader {
         Self(LRUCache::new())
     }
 
-    fn load(&mut self, uspace: &mut AddrSpace, loc: Location) -> AxResult<LoadResult> {
+    fn load(
+        &mut self,
+        uspace: &mut AddrSpace,
+        loc: Location,
+        cred: &Cred,
+    ) -> StarryResult<LoadResult> {
         if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
             match ElfCacheEntry::load(loc)? {
                 Ok(e) => {
@@ -554,7 +708,7 @@ impl ElfLoader {
             }
         }
 
-        uspace.clear();
+        uspace.reset_uninstalled_for_loader()?;
         map_trampoline(uspace)?;
 
         let entry = self.0.front().unwrap();
@@ -565,14 +719,25 @@ impl ElfLoader {
             .find(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Interp))
         {
             let cache = entry.borrow_cache();
-            let mut data = vec![0; header.file_size as usize];
+            let interp_len = header.file_size;
+            let interp_end = header
+                .offset
+                .checked_add(interp_len)
+                .ok_or(StarryError::MalformedExecutable)?;
+            if !(2..=MAX_INTERPRETER_PATH_LEN).contains(&interp_len) || interp_end > cache.len() {
+                return Err(StarryError::MalformedExecutable);
+            }
+
+            let mut data = vec![0; interp_len as usize];
             let read = cache.read_at(&mut data[..], header.offset)?;
-            assert_eq!(data.len(), read);
+            if read != data.len() {
+                return Err(StarryError::MalformedExecutable);
+            }
 
             let ldso = CStr::from_bytes_with_nul(&data)
                 .ok()
                 .and_then(|cstr| cstr.to_str().ok())
-                .ok_or(AxError::InvalidInput)?;
+                .ok_or(StarryError::MalformedExecutable)?;
             debug!("Loading dynamic linker: {ldso}");
             Some(ldso.to_owned())
         } else {
@@ -581,8 +746,9 @@ impl ElfLoader {
 
         let (elf, ldso) = if let Some(ldso) = ldso {
             let loc = ax_fs_ng::vfs::current_fs_context().lock().resolve(ldso)?;
+            check_executable_access(&loc, cred)?;
             if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
-                let e = ElfCacheEntry::load(loc)?.map_err(|_| AxError::InvalidInput)?;
+                let e = ElfCacheEntry::load(loc)?.map_err(|_| StarryError::InvalidInput)?;
                 self.0.insert(e);
             }
 
@@ -594,13 +760,14 @@ impl ElfLoader {
             (entry, None)
         };
 
-        let elf = map_elf(uspace, crate::config::USER_SPACE_BASE, elf)?;
+        let elf = map_elf(uspace, uspace.base().as_usize(), elf)?;
+        let (start_data, end_data) = executable_data_layout(&elf)?;
+        uspace.set_executable_data_layout(start_data, end_data)?;
         let ldso = if ldso.is_some() {
             let max_end = uspace
-                .areas()
-                .map(|area| area.end().as_usize())
-                .max()
-                .unwrap_or(crate::config::USER_SPACE_BASE);
+                .max_mapped_end()
+                .map(VirtAddr::as_usize)
+                .unwrap_or_else(|| uspace.base().as_usize());
             let interp_base = (max_end + 0x100000 - 1) & !(0x100000 - 1);
             ldso.map(|elf| map_elf(uspace, interp_base, elf))
                 .transpose()?
@@ -618,7 +785,7 @@ impl ElfLoader {
             .collect::<Vec<_>>();
         auxv.push(AuxEntry::new(
             AuxType::HWCAP,
-            ax_runtime::hal::cpu::cap::elf_hwcap(),
+            crate::cpu_capabilities::elf_hwcap(),
         ));
         auxv.push(AuxEntry::new(AuxType::UID, 0));
         auxv.push(AuxEntry::new(AuxType::EUID, 0));
@@ -641,6 +808,11 @@ impl ElfLoader {
 }
 
 static ELF_LOADER: Mutex<ElfLoader> = Mutex::new(ElfLoader::new());
+
+// Linux's exec path bounds chained binary-format rewrites and returns ELOOP
+// for a too-deep interpreter chain. Give StarryOS's recursive script loader
+// the same bounded failure behavior.
+const MAX_INTERPRETER_RECURSION: usize = 5;
 
 /// Clear the ELF cache.
 ///
@@ -671,32 +843,89 @@ pub fn clear_elf_cache() {
 /// - The entry point of the user app.
 /// - The stack pointer of the user app.
 pub fn load_user_app(
+    builder: &mut UserImageBuilder,
+    loc: Location,
+    path: &str,
+    args: &[String],
+    envs: &[String],
+    cred: &Cred,
+) -> StarryResult<LoadedUserImage> {
+    let result = validate_exec_arg_size(args, envs).and_then(|()| {
+        load_user_app_with_depth(&mut builder.aspace, loc, path, args, envs, cred, 0)
+    });
+    match result {
+        Ok((entry, stack, auxv)) => Ok(LoadedUserImage {
+            space_id: builder.aspace.address_space_id(),
+            epoch: builder.aspace.vm_epoch(),
+            entry,
+            stack,
+            auxv,
+        }),
+        Err(load_error) => {
+            // This is an explicit, fallible abort in process context.  Drop is
+            // intentionally not responsible for backend/page-table cleanup.
+            // If cleanup itself fails, return that stronger ownership error so
+            // the caller cannot reuse a partially cleared builder as ENOEXEC.
+            match builder.aspace.reset_uninstalled_for_loader() {
+                Ok(()) => Err(load_error),
+                Err(abort_error) => {
+                    warn!(
+                        "failed to abort unpublished user image after load error {load_error}: \
+                         {abort_error}"
+                    );
+                    Err(abort_error)
+                }
+            }
+        }
+    }
+}
+
+/// Checks each executable and interpreter even when its ELF image is cached.
+fn check_executable_access(loc: &Location, cred: &Cred) -> StarryResult<()> {
+    let metadata = loc.metadata()?;
+    if metadata.node_type != NodeType::RegularFile
+        || loc.mountpoint().mount_flags() & linux_raw_sys::general::MS_NOEXEC != 0
+    {
+        return Err(StarryError::PermissionDenied);
+    }
+    let mode = metadata.mode.bits();
+    let selected = if cred.fsuid == metadata.uid {
+        mode >> 6
+    } else if cred.fsgid == metadata.gid || cred.groups.contains(&metadata.gid) {
+        mode >> 3
+    } else {
+        mode
+    };
+    // CAP_DAC_OVERRIDE may bypass DAC only if some execute bit is set.
+    if selected & 1 != 0 || (mode & 0o111 != 0 && cred.has_cap_dac_override()) {
+        Ok(())
+    } else {
+        Err(StarryError::PermissionDenied)
+    }
+}
+
+fn load_user_app_with_depth(
     uspace: &mut AddrSpace,
     loc: Location,
     path: &str,
     args: &[String],
     envs: &[String],
-) -> AxResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
-    // `/proc/self/exe` is available in procfs; busybox can `readlink` it
-    // to re-exec itself as a shell on ENOEXEC, provided the busybox build
-    // includes that fallback (Alpine's prebuilt binary may not).
-    if path.ends_with(".sh") {
-        let new_args: Vec<String> = iter::once("/bin/sh".to_owned())
-            .chain(args.iter().cloned())
-            .collect();
-        let sh = ax_fs_ng::vfs::current_fs_context()
-            .lock()
-            .resolve("/bin/sh")?;
-        return load_user_app(uspace, sh, "/bin/sh", &new_args, envs);
-    }
+    cred: &Cred,
+    interpreter_depth: usize,
+) -> StarryResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
+    check_executable_access(&loc, cred)?;
 
-    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc)? } {
+    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc, cred)? } {
         Ok((entry, auxv)) => (entry, auxv),
         Err(data) => {
             if data.starts_with(b"#!") {
+                if interpreter_depth >= MAX_INTERPRETER_RECURSION {
+                    return Err(StarryError::FilesystemLoop);
+                }
                 let head = &data[2..data.len().min(256)];
                 let pos = head.iter().position(|c| *c == b'\n').unwrap_or(head.len());
-                let line = core::str::from_utf8(&head[..pos]).map_err(|_| AxError::InvalidInput)?;
+                let line =
+                    core::str::from_utf8(&head[..pos]).map_err(|_| StarryError::InvalidInput)?;
 
                 let new_args: Vec<String> = line
                     .trim()
@@ -710,13 +939,21 @@ pub fn load_user_app(
                 let interp = ax_fs_ng::vfs::current_fs_context()
                     .lock()
                     .resolve(&new_args[0])?;
-                return load_user_app(uspace, interp, &new_args[0], &new_args, envs);
+                return load_user_app_with_depth(
+                    uspace,
+                    interp,
+                    &new_args[0],
+                    &new_args,
+                    envs,
+                    cred,
+                    interpreter_depth + 1,
+                );
             }
-            return Err(AxError::InvalidExecutable);
+            return Err(StarryError::InvalidExecutable);
         }
     };
 
-    let ustack_top = VirtAddr::from_usize(crate::config::USER_STACK_TOP);
+    let ustack_top = uspace.stack_top();
     let ustack_size = crate::config::USER_STACK_SIZE;
     let ustack_start = ustack_top - ustack_size;
     debug!("Mapping user stack: {ustack_start:#x?} -> {ustack_top:#x?}");
@@ -726,7 +963,7 @@ pub fn load_user_app(
         ustack_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         false,
-        Backend::new_alloc(ustack_start, PageSize::Size4K, "[stack]"),
+        MappingOperation::new_alloc(ustack_start, PAGE_SIZE_4K, "[stack]"),
     )?;
 
     let stack_data = app_stack_region(args, envs, &auxv, ustack_top.into());
@@ -746,7 +983,7 @@ pub fn load_user_app(
         heap_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         true,
-        Backend::new_alloc(heap_start, PageSize::Size4K, "[heap]"),
+        MappingOperation::new_alloc(heap_start, PAGE_SIZE_4K, "[heap]"),
     )?;
 
     Ok((entry, user_sp, auxv))

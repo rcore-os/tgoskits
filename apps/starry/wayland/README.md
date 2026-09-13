@@ -59,7 +59,7 @@ The automated test exercises these kernel paths:
 
 ## Manual Reproduction with VNC
 
-The manual flow intentionally avoids the app test's `shell_init_cmd`; it boots
+The manual flow intentionally avoids the app test's `shell_cmd`; it boots
 the same kernel and Alpine rootfs directly so you can type commands at the
 StarryOS shell and interact with GTK through VNC. The guest-side Weston and GTK
 commands are the same for the direct riscv64 and x86_64 flows. Only the

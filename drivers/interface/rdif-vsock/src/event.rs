@@ -9,18 +9,3 @@ pub enum VsockEvent {
     CreditUpdate(VsockConnId),
     Unknown,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Event {
-    pub connection_changed: bool,
-    pub data_available: bool,
-}
-
-impl Event {
-    pub const fn none() -> Self {
-        Self {
-            connection_changed: false,
-            data_available: false,
-        }
-    }
-}

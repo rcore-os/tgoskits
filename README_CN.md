@@ -37,7 +37,7 @@ tgoskits/
 └── docs/                      # Docusaurus 文档站点
 ```
 
-更多关于 subtree 同步、组件分层和开发约定的说明，请参考 [仓库结构与协作方式](https://rcore-os.cn/tgoskits/docs/contributing/repo) 和 [组件开发指南](https://rcore-os.cn/tgoskits/docs/development/components)。
+更多关于 subtree 同步、组件分层和开发约定的说明，请参考 [仓库结构与协作方式](https://rcore-os.cn/tgoskits/docs/contributing/repo) 和 [架构设计概览](https://rcore-os.cn/tgoskits/docs/architecture/overview)。
 
 ## 3. 快速体验
 
@@ -56,7 +56,7 @@ docker run -it --rm \
   ghcr.io/rcore-os/tgoskits-container:latest
 ```
 
-如果不使用容器，请至少准备 Rust、基础构建工具和常用 QEMU。推荐使用与容器和 CI 一致的 QEMU 10.2.1；发行版自带 QEMU 可用于快速体验，但如果遇到架构缺失或运行差异，请优先切换到容器环境：
+如果不使用容器，请至少准备 Rust、基础构建工具和常用 QEMU。推荐使用与容器和 CI 一致的 QEMU 11.1.1；发行版自带 QEMU 可用于快速体验，但如果遇到架构缺失或运行差异，请优先切换到容器环境：
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -70,7 +70,7 @@ cargo install cargo-binutils
 
 ### 3.2 QEMU 验证
 
-先确认常用 QEMU 命令可用，并尽量与容器和 CI 使用的 QEMU 10.2.1 对齐：
+先确认常用 QEMU 命令可用，并尽量与容器和 CI 使用的 QEMU 11.1.1 对齐：
 
 ```bash
 qemu-system-riscv64 --version

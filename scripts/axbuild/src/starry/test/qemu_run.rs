@@ -17,7 +17,7 @@ use super::{
     start_qemu_case_host_http_server,
 };
 use crate::{
-    build::{append_encoded_rustflags, env_truthy},
+    build::{append_cargo_rustflags, env_truthy},
     context::{ResolvedStarryRequest, SnapshotPersistence},
     starry::{Starry, board, build, rootfs},
     test::{case, qemu as qemu_test, timing},
@@ -357,7 +357,7 @@ impl Starry {
         let request = Self::request_for_qemu_case_build_config(request, build_config_path);
         let mut cargo = build::load_cargo_config(&request)?;
         if env_truthy(&cargo.env, "AXTEST") {
-            append_encoded_rustflags(&mut cargo, AXTEST_RUSTFLAGS);
+            append_cargo_rustflags(&mut cargo, AXTEST_RUSTFLAGS);
         }
         if crate::support::axtest_coverage::enabled(&cargo) {
             crate::support::axtest_coverage::prepare_cargo(&mut cargo);
@@ -390,7 +390,7 @@ impl Starry {
     ) -> anyhow::Result<()> {
         let case = &prepared_case.case;
         let mut qemu = prepared_case.qemu.clone();
-        case::apply_grouped_qemu_config(&mut qemu, case, &asset_config.grouped_runner);
+        case::apply_grouped_qemu_config(&mut qemu, case, &asset_config.grouped_execution);
 
         qemu_test::apply_smp_qemu_arg(&mut qemu, Some(prepared_case.requirements.smp));
         qemu_test::apply_timeout_scale(&mut qemu);
@@ -495,16 +495,12 @@ impl Starry {
         rootfs::patch_rootfs(
             &mut qemu,
             &prepared_assets.rootfs_path,
-            rootfs::RootfsPatchMode::EnsureDiskBootNet,
-        );
+            rootfs::RootfsPatchOptions {
+                mode: rootfs::RootfsPatchMode::EnsureDiskBootNet,
+                write_policy: rootfs::RootfsWritePolicy::Discard,
+            },
+        )?;
         timing_stage.finish();
-        qemu.args.extend(prepared_assets.extra_qemu_args.clone());
-        // UEFI uses a writable ESP for the kernel image. A global `-snapshot`
-        // makes QEMU treat the VVFAT drive as read-only, so keep snapshot
-        // isolation on each ordinary disk instead.
-        if qemu.uefi {
-            qemu_test::apply_drive_snapshot_without_global_snapshot(&mut qemu);
-        }
         let timing_stage = timing::TimingStage::new(
             "qemu-case",
             [

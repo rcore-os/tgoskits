@@ -20,6 +20,94 @@
 #include <time.h>
 #include <unistd.h>
 
+static int expired_timerfd(clockid_t clockid, time_t interval) {
+    int fd = timerfd_create(clockid, TFD_NONBLOCK | TFD_CLOEXEC);
+    CHECK(fd >= 0, "create timerfd for expired-state query");
+    if (fd < 0)
+        return -1;
+    struct itimerspec setting = {
+        .it_interval = {interval, 0},
+        .it_value = {0, 10 * 1000 * 1000},
+    };
+    int ret = timerfd_settime(fd, 0, &setting, NULL);
+    CHECK(ret == 0, "arm timerfd for expired-state query");
+    struct pollfd ready = {.fd = fd, .events = POLLIN};
+    if (ret == 0)
+        ret = poll(&ready, 1, 1000);
+    CHECK(ret == 1 && (ready.revents & POLLIN),
+          "poll observes expiration before query, without reading ticks");
+    if (ret != 1 || !(ready.revents & POLLIN)) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static void check_expired_timer_value(const struct itimerspec *value,
+                                     time_t interval) {
+    CHECK(value->it_interval.tv_sec == interval &&
+              value->it_interval.tv_nsec == 0,
+          "query preserves the old interval");
+    if (interval != 0) {
+        CHECK(value->it_value.tv_sec > 0 || value->it_value.tv_nsec > 0,
+              "expired periodic timer reports its next expiration");
+        CHECK(value->it_value.tv_sec < interval ||
+                  (value->it_value.tv_sec == interval &&
+                   value->it_value.tv_nsec == 0),
+              "next expiration is at most one interval away");
+    } else {
+        CHECK(value->it_value.tv_sec == 0 && value->it_value.tv_nsec == 0,
+              "expired one-shot timer reports zero remaining time");
+    }
+}
+
+static void test_expired_timerfd_gettime(clockid_t clockid, time_t interval) {
+    int fd = expired_timerfd(clockid, interval);
+    if (fd < 0)
+        return;
+    /* Linux v6.16 do_timerfd_gettime forwards/restarts periodic timers and
+     * preserves unread ticks. A long interval keeps the next callback outside
+     * this query sequence; poll above establishes expiration without a sleep. */
+    for (int query = 0; query < 2; ++query) {
+        struct itimerspec value = {0};
+        CHECK_RET(timerfd_gettime(fd, &value), 0, "gettime after expiration");
+        check_expired_timer_value(&value, interval);
+        printf("gettime clock=%d interval=%lld remaining=%lld.%09ld\n",
+               clockid, (long long)interval,
+               (long long)value.it_value.tv_sec, value.it_value.tv_nsec);
+    }
+    struct pollfd ready = {.fd = fd, .events = POLLIN};
+    CHECK(poll(&ready, 1, 0) == 1 && (ready.revents & POLLIN),
+          "gettime leaves pending ticks readable");
+    uint64_t ticks = 0;
+    CHECK_RET(read(fd, &ticks, sizeof(ticks)), sizeof(ticks),
+              "read after gettime receives the pending expiration");
+    CHECK(ticks >= 1, "gettime does not consume expiration counts");
+    close(fd);
+}
+
+static void test_expired_timerfd_old_value(clockid_t clockid, time_t interval) {
+    int fd = expired_timerfd(clockid, interval);
+    if (fd < 0)
+        return;
+    /* No read/gettime precedes this replacement. Linux do_timerfd_settime
+     * forwards the old periodic deadline before collecting old_value. */
+    struct itimerspec disarm = {0}, old_value = {0};
+    CHECK_RET(timerfd_settime(fd, 0, &disarm, &old_value), 0,
+              "settime replaces expired timer and returns old_value");
+    check_expired_timer_value(&old_value, interval);
+    printf("settime clock=%d interval=%lld old_remaining=%lld.%09ld\n",
+           clockid, (long long)interval,
+           (long long)old_value.it_value.tv_sec, old_value.it_value.tv_nsec);
+    uint64_t ticks = 0;
+    CHECK_ERR(read(fd, &ticks, sizeof(ticks)), EAGAIN,
+              "settime clears unread ticks from the old setting");
+    struct itimerspec current = {0};
+    CHECK_RET(timerfd_gettime(fd, &current), 0, "gettime after disarm");
+    check_expired_timer_value(&current, 0);
+    close(fd);
+}
+
 int main(void) {
     TEST_START("timerfd");
 
@@ -273,6 +361,14 @@ int main(void) {
     struct itimerspec cdisarm = {.it_interval = {0, 0}, .it_value = {0, 0}};
     timerfd_settime(cfd, 0, &cdisarm, NULL);
     close(cfd);
+
+    const clockid_t query_clocks[] = {CLOCK_MONOTONIC, CLOCK_REALTIME};
+    for (size_t i = 0; i < sizeof(query_clocks) / sizeof(query_clocks[0]); ++i) {
+        test_expired_timerfd_gettime(query_clocks[i], 60);
+        test_expired_timerfd_old_value(query_clocks[i], 60);
+        test_expired_timerfd_gettime(query_clocks[i], 0);
+        test_expired_timerfd_old_value(query_clocks[i], 0);
+    }
 
     TEST_DONE();
 }

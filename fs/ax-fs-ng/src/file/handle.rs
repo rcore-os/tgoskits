@@ -1,18 +1,21 @@
 #[cfg(test)]
 use core::sync::atomic::AtomicUsize;
-use core::{
-    sync::atomic::{AtomicU8, Ordering},
-    task::Context,
-};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use ax_io::{SeekFrom, prelude::*};
-use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, NodeFlags, VfsError, VfsResult, path::Path};
+use axfs_ng_vfs::{
+    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, PreallocationMode,
+    VfsError, VfsResult, path::Path,
+};
+use axpoll::{IoEvents, Pollable};
 
 use super::{
     cache::CachedFile,
     open::{FileFlags, OpenOptions, OpenResult},
 };
-use crate::{fs_core::FsContext, os::sync::SleepMutex as Mutex};
+use crate::{
+    fs_core::FsContext, io_error_to_vfs_error, os::sync::SleepMutex as Mutex, vfs_error_to_io_error,
+};
 
 /// Low-level interface for file operations.
 #[derive(Clone)]
@@ -52,11 +55,19 @@ impl FileBackend {
             Self::Direct(loc) => {
                 let mut total = 0;
                 while !dst.is_full() {
-                    let read = match dst.read_from(&mut ax_io::read_fn(|buf| {
-                        loc.entry().as_file()?.read_at(buf, offset).inspect(|read| {
-                            offset += *read as u64;
-                        })
-                    })) {
+                    let read = match dst
+                        .read_from(&mut ax_io::read_fn(|buf| {
+                            loc.entry()
+                                .as_file()
+                                .map_err(vfs_error_to_io_error)?
+                                .read_at(buf, offset)
+                                .map_err(vfs_error_to_io_error)
+                                .inspect(|read| {
+                                    offset += *read as u64;
+                                })
+                        }))
+                        .map_err(io_error_to_vfs_error)
+                    {
                         Ok(read) => read,
                         Err(VfsError::WouldBlock) if total > 0 => break,
                         Err(err) => return Err(err),
@@ -80,7 +91,7 @@ impl FileBackend {
                 let mut buf = [0; ax_io::DEFAULT_BUF_SIZE];
                 while !src.is_empty() {
                     let limit = src.remaining().min(buf.len());
-                    let read = src.read(&mut buf[..limit])?;
+                    let read = src.read(&mut buf[..limit]).map_err(io_error_to_vfs_error)?;
                     if read == 0 {
                         break;
                     }
@@ -117,12 +128,20 @@ impl FileBackend {
                 let mut end = loc.entry().as_file()?.len()?;
                 while src.remaining() > 0 {
                     let chunk = src.remaining().min(ax_io::DEFAULT_BUF_SIZE);
-                    let written = match src.write_to(&mut ax_io::write_fn(|buf| {
-                        loc.entry().as_file()?.append(buf).map(|(n, offset)| {
-                            end = offset;
-                            n
-                        })
-                    })) {
+                    let written = match src
+                        .write_to(&mut ax_io::write_fn(|buf| {
+                            loc.entry()
+                                .as_file()
+                                .map_err(vfs_error_to_io_error)?
+                                .append(buf)
+                                .map_err(vfs_error_to_io_error)
+                                .map(|(n, offset)| {
+                                    end = offset;
+                                    n
+                                })
+                        }))
+                        .map_err(io_error_to_vfs_error)
+                    {
                         Ok(written) => written,
                         Err(VfsError::WouldBlock) if total > 0 => break,
                         Err(err) => return Err(err),
@@ -162,6 +181,38 @@ impl FileBackend {
             Self::Cached(cached) => cached.set_len(len),
             Self::Direct(loc) => loc.entry().as_file()?.set_len(len),
         }
+    }
+
+    /// Reserves backing storage for a byte range.
+    pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+        self.operate_range(offset, len, FileRangeOperation::Allocate(mode))
+    }
+
+    /// Applies a storage or mapping operation to a byte range.
+    pub fn operate_range(
+        &self,
+        offset: u64,
+        len: u64,
+        operation: FileRangeOperation,
+    ) -> VfsResult<()> {
+        match self {
+            Self::Cached(cached) => cached.operate_range(offset, len, operation),
+            Self::Direct(loc) => loc.entry().as_file()?.operate_range(offset, len, operation),
+        }
+    }
+
+    /// Queries the backing filesystem's allocated extent mappings.
+    pub fn map_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: FileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<FileExtentMap> {
+        self.location()
+            .entry()
+            .as_file()?
+            .map_extents(offset, len, target, extent_limit)
     }
 }
 
@@ -281,6 +332,34 @@ impl File {
         self.access(FileFlags::WRITE)?.set_len(len)
     }
 
+    /// Reserves backing storage for a byte range.
+    pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+        self.operate_range(offset, len, FileRangeOperation::Allocate(mode))
+    }
+
+    /// Applies a storage or mapping operation to a byte range.
+    pub fn operate_range(
+        &self,
+        offset: u64,
+        len: u64,
+        operation: FileRangeOperation,
+    ) -> VfsResult<()> {
+        self.access(FileFlags::WRITE)?
+            .operate_range(offset, len, operation)
+    }
+
+    /// Queries allocated file-to-device mappings without changing file state.
+    pub fn map_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: FileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<FileExtentMap> {
+        self.access(FileFlags::empty())?
+            .map_extents(offset, len, target, extent_limit)
+    }
+
     /// Attempts to sync OS-internal file content and metadata to disk.
     ///
     /// If `data_only` is `true`, only the file data is synced, not the
@@ -295,11 +374,13 @@ impl File {
         self.access_flags.fetch_or(1, Ordering::AcqRel);
         if let Some(pos) = self.position.as_ref() {
             let mut pos = pos.lock();
-            self.read_at(dst, *pos).inspect(|n| {
-                *pos += *n as u64;
-            })
+            self.read_at(dst, *pos)
+                .map_err(vfs_error_to_io_error)
+                .inspect(|n| {
+                    *pos += *n as u64;
+                })
         } else {
-            self.read_at(dst, 0)
+            self.read_at(dst, 0).map_err(vfs_error_to_io_error)
         }
     }
 
@@ -310,27 +391,33 @@ impl File {
         // APPEND is set. Otherwise O_RDONLY|O_APPEND fd would silently
         // succeed writes (since access(APPEND) only checks the APPEND bit).
         // Fixes bug-open-rdonly-append-promotes-rw (the part inside axfs).
-        self.access(FileFlags::WRITE)?;
+        self.access(FileFlags::WRITE)
+            .map_err(vfs_error_to_io_error)?;
         if let Some(pos) = self.position.as_ref() {
             let mut pos = pos.lock();
             if let Ok(f) = self.access(FileFlags::APPEND) {
-                f.append(src).map(|(written, new_size)| {
-                    *pos = new_size;
-                    written
-                })
+                f.append(src)
+                    .map_err(vfs_error_to_io_error)
+                    .map(|(written, new_size)| {
+                        *pos = new_size;
+                        written
+                    })
             } else {
-                self.write_at(src, *pos).inspect(|n| {
-                    *pos += *n as u64;
-                })
+                self.write_at(src, *pos)
+                    .map_err(vfs_error_to_io_error)
+                    .inspect(|n| {
+                        *pos += *n as u64;
+                    })
             }
         } else {
-            self.write_at(src, 0)
+            self.write_at(src, 0).map_err(vfs_error_to_io_error)
         }
     }
 
     /// Flushes any internally buffered data. Currently a no-op.
     pub fn flush(&self) -> ax_io::Result {
-        self.access(FileFlags::empty())?;
+        self.access(FileFlags::empty())
+            .map_err(vfs_error_to_io_error)?;
         Ok(())
     }
 }
@@ -353,19 +440,21 @@ impl Write for &File {
 
 impl Seek for &File {
     fn seek(&mut self, pos: SeekFrom) -> ax_io::Result<u64> {
-        self.access(FileFlags::empty())?;
+        self.access(FileFlags::empty())
+            .map_err(vfs_error_to_io_error)?;
 
         if let Some(guard) = self.position.as_ref() {
             let mut guard = guard.lock();
             let new_pos = match pos {
                 SeekFrom::Start(pos) => pos,
                 SeekFrom::End(off) => {
-                    let size = self.inner.len()?;
-                    size.checked_add_signed(off).ok_or(VfsError::InvalidInput)?
+                    let size = self.inner.len().map_err(vfs_error_to_io_error)?;
+                    size.checked_add_signed(off)
+                        .ok_or(ax_io::Error::InvalidInput)?
                 }
                 SeekFrom::Current(off) => guard
                     .checked_add_signed(off)
-                    .ok_or(VfsError::InvalidInput)?,
+                    .ok_or(ax_io::Error::InvalidInput)?,
             };
             *guard = new_pos;
             Ok(new_pos)
@@ -375,13 +464,25 @@ impl Seek for &File {
     }
 }
 
-impl FsPollable for File {
-    fn poll(&self) -> FsIoEvents {
+impl Pollable for File {
+    fn poll(&self) -> IoEvents {
         self.inner.location().poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: FsIoEvents) {
-        self.inner.location().register(context, events)
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.location().register_shared(sink, events) }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.location().register_exclusive(sink, events) }
     }
 }
 
@@ -418,15 +519,14 @@ mod tests {
     use core::{
         any::Any,
         sync::atomic::{AtomicUsize, Ordering},
-        task::Context,
         time::Duration,
     };
 
     use axfs_ng_vfs::{
-        DeviceId, DirEntry, FileNode, FileNodeOps, Filesystem, FilesystemOps, FsIoEvents,
-        FsPollable, Metadata, MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType,
-        Reference, StatFs,
+        DeviceId, DirEntry, FileNode, FileNodeOps, Filesystem, FilesystemOps, Metadata,
+        MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType, Reference, StatFs,
     };
+    use axpoll::{IoEvents, Pollable};
 
     use super::*;
 
@@ -528,12 +628,17 @@ mod tests {
         }
     }
 
-    impl FsPollable for MetadataTrackingTestFile {
-        fn poll(&self) -> FsIoEvents {
-            FsIoEvents::IN | FsIoEvents::OUT
+    impl Pollable for MetadataTrackingTestFile {
+        fn poll(&self) -> IoEvents {
+            IoEvents::IN | IoEvents::OUT
         }
 
-        fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+        unsafe fn register_shared(
+            &self,
+            _sink: &mut dyn axpoll::SharedRegistrationSink,
+            _events: IoEvents,
+        ) {
+        }
     }
 
     impl FileNodeOps for MetadataTrackingTestFile {
@@ -557,10 +662,6 @@ mod tests {
         }
 
         fn set_len(&self, _len: u64) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn set_symlink(&self, _target: &str) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
     }

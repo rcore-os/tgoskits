@@ -4,12 +4,39 @@ use std::{
     process::Command,
 };
 
-use anyhow::Context;
+use anyhow::{Context, ensure};
 
-use super::{super::rootfs, types::StarryAppCase};
+use super::{
+    super::rootfs,
+    types::{AppOwnedRootfsPreparation, RootfsPreparation, StarryAppCase},
+};
 use crate::{rootfs::inject, support::process::ProcessExt};
 
 pub(super) async fn prepare_qemu_app_rootfs(
+    workspace_root: &Path,
+    app: &StarryAppCase,
+    arch: &str,
+    target: &str,
+    configured_rootfs: Option<&Path>,
+    preparation: &RootfsPreparation,
+) -> anyhow::Result<PathBuf> {
+    match preparation {
+        RootfsPreparation::Default => {
+            prepare_default_qemu_app_rootfs(workspace_root, app, arch, target, configured_rootfs)
+                .await
+        }
+        RootfsPreparation::AppOwned(config) => prepare_app_owned_qemu_rootfs(
+            workspace_root,
+            app,
+            arch,
+            target,
+            configured_rootfs,
+            config,
+        ),
+    }
+}
+
+async fn prepare_default_qemu_app_rootfs(
     workspace_root: &Path,
     app: &StarryAppCase,
     arch: &str,
@@ -80,6 +107,61 @@ pub(super) async fn prepare_qemu_app_rootfs(
     })();
     prepare_result?;
     Ok(rootfs_path)
+}
+
+fn prepare_app_owned_qemu_rootfs(
+    workspace_root: &Path,
+    app: &StarryAppCase,
+    arch: &str,
+    target: &str,
+    configured_rootfs: Option<&Path>,
+    config: &AppOwnedRootfsPreparation,
+) -> anyhow::Result<PathBuf> {
+    ensure!(
+        config.target_arch == arch,
+        "app-owned rootfs for `{}` targets `{}` but QEMU requested `{arch}`",
+        app.name,
+        config.target_arch
+    );
+    let rootfs_path = configured_rootfs.with_context(|| {
+        format!(
+            "app-owned rootfs for `{}` requires a managed rootfs drive in its QEMU config",
+            app.name
+        )
+    })?;
+    if let Some(parent) = rootfs_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let mut command = Command::new("bash");
+    command
+        .arg(&config.builder_path)
+        .current_dir(&app.case_dir)
+        .env("STARRY_APP_NAME", &app.name)
+        .env("STARRY_APP_DIR", &app.case_dir)
+        .env("STARRY_WORKSPACE", workspace_root)
+        .env("STARRY_ARCH", arch)
+        .env("STARRY_TARGET", target)
+        .env("STARRY_ROOTFS", rootfs_path);
+    command
+        .exec()
+        .with_context(|| format!("failed to run {}", config.builder_path.display()))?;
+
+    let metadata = fs::metadata(rootfs_path).with_context(|| {
+        format!(
+            "app-owned rootfs builder {} did not publish {}",
+            config.builder_path.display(),
+            rootfs_path.display()
+        )
+    })?;
+    ensure!(
+        metadata.is_file() && metadata.len() > 0,
+        "app-owned rootfs builder {} published invalid output {}",
+        config.builder_path.display(),
+        rootfs_path.display()
+    );
+    Ok(rootfs_path.to_path_buf())
 }
 
 fn reset_dir(path: &Path) -> anyhow::Result<()> {

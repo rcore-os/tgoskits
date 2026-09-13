@@ -1,0 +1,45 @@
+schema_version = 3
+phase = "test"
+group = "Workspace"
+default_runner = "qcs"
+
+[[check]]
+id = "run-clippy"
+name = "Incremental Clippy"
+fetch_depth = "100"
+download_xtask_bin_artifact = true
+command = '''
+cargo xtask clippy --since "$SINCE_REF"
+'''
+
+[[check]]
+id = "test-with-std"
+name = "std tests"
+command = '''
+cargo xtask test
+'''
+pull_request_command = '''
+cargo xtask test --since "$SINCE_REF"
+'''
+
+[[check]]
+id = "test-qperf"
+name = "qperf QEMU 11.1.1 ABI and sampling"
+runner = "ubuntu-base"
+timeout_minutes = 10
+command = '''
+apps/qperf/prebuild.sh cargo build --release -p qperf -p qperf-analyzer --target-dir tools/qperf/target
+apps/qperf/prebuild.sh cargo test -p qperf --test reg
+python3 tools/qperf/tests/prebuild.py
+python3 tools/qperf/tests/qemu_load.py tools/qperf/target/release/libqperf.so
+python3 tools/qperf/tests/qemu_sample.py tools/qperf/target/release/libqperf.so tools/qperf/target/release/qperf-analyzer
+'''
+
+[[check]]
+id = "test-linux-perf-download"
+name = "Linux perf session download contract"
+runner = "ubuntu-base"
+timeout_minutes = 5
+command = '''
+bash apps/starry/linux-perf/test-download.sh
+'''

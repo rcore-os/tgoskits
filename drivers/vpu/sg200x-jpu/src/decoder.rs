@@ -5,8 +5,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use dma_api::{CpuDmaBuffer, DeviceDma, DmaDirection, DmaError, InFlightDma};
-use thiserror::Error;
+use dma_api::{CpuDmaBuffer, DeviceDma, DmaDirection, InFlightDma};
 
 use super::{
     engine::{
@@ -14,8 +13,12 @@ use super::{
         checked_dma_offset, checked_dma_region, checked_frame_dma_addresses, configure_stream_regs,
         gram_setup, poll_decode_done, start_decode, upload_huff_tables, upload_quant_tables,
     },
+    error::{
+        JpegHeaderError, JpuBufferError, JpuCreateError, JpuDecodeError, JpuDmaAddressError,
+        JpuInspectError,
+    },
     header::{JpegHeaderInfo, parse_jpeg_header},
-    layout::{FrameLayout, FrameLayoutError, JpuPixelFormat, JpuScale, PlaneLayout},
+    layout::{FrameLayout, JpuPixelFormat, JpuScale, PlaneLayout},
     regs::hardware_init_at,
 };
 
@@ -45,87 +48,6 @@ impl JpuMmio {
     }
 }
 
-/// Error returned while acquiring the singleton JPU engine.
-#[derive(Debug, Error, Eq, PartialEq)]
-pub enum JpuCreateError {
-    /// Another live decoder already owns the hardware engine.
-    #[error("SG200x JPU is already owned by another decoder")]
-    AlreadyOwned,
-    /// Clock/reset initialization did not reach its ready state.
-    #[error("SG200x JPU initialization failed: {0}")]
-    Initialization(&'static str),
-}
-
-/// Error returned while inspecting a JPEG without accessing JPU hardware.
-#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
-pub enum JpuInspectError {
-    /// The compressed input is empty.
-    #[error("JPEG stream is empty")]
-    EmptyStream,
-    /// JPEG marker or table parsing failed.
-    #[error("invalid JPEG stream: {0}")]
-    InvalidJpeg(&'static str),
-    /// The requested scale or planar layout is unsupported.
-    #[error("invalid JPU frame layout: {0}")]
-    Layout(#[from] FrameLayoutError),
-}
-
-/// Error returned by JPEG decode operations.
-#[derive(Debug, Error)]
-pub enum JpuDecodeError {
-    /// A previous decode failure or partial DMA setup left hardware ownership unknown.
-    #[error("SG200x JPU is poisoned after an incomplete DMA operation; reboot is required")]
-    Poisoned,
-    /// The compressed input is empty.
-    #[error("JPEG stream is empty")]
-    EmptyStream,
-    /// JPEG marker or table parsing failed.
-    #[error("invalid JPEG stream: {0}")]
-    InvalidJpeg(&'static str),
-    /// The requested scale or planar layout is unsupported.
-    #[error("invalid JPU frame layout: {0}")]
-    Layout(#[from] FrameLayoutError),
-    /// A stream or frame DMA allocation failed.
-    #[error("JPU DMA allocation failed: {0}")]
-    Dma(#[from] DmaError),
-    /// An internal buffer length invariant was violated.
-    #[error("invalid JPU buffer state: {0}")]
-    BufferInvariant(&'static str),
-    /// A DMA address cannot be represented by the 32-bit JPU registers.
-    #[error("invalid JPU DMA address: {0}")]
-    DmaAddress(&'static str),
-    /// Register or GRAM setup failed after DMA ownership was prepared.
-    #[error("JPU hardware setup failed: {0}")]
-    HardwareSetup(&'static str),
-    /// The JPU reported an error before DMA quiescence could be proven.
-    #[error(
-        "SG200x JPU reported a decode error before DMA quiescence was proven; reboot is required"
-    )]
-    DecodeFailed,
-    /// The JPU did not reach a terminal state before the poll limit.
-    #[error("SG200x JPU decode timed out; reboot is required")]
-    Timeout,
-}
-
-impl From<JpuInspectError> for JpuDecodeError {
-    fn from(error: JpuInspectError) -> Self {
-        match error {
-            JpuInspectError::EmptyStream => Self::EmptyStream,
-            JpuInspectError::InvalidJpeg(error) => Self::InvalidJpeg(error),
-            JpuInspectError::Layout(error) => Self::Layout(error),
-        }
-    }
-}
-
-impl From<PollError> for JpuDecodeError {
-    fn from(error: PollError) -> Self {
-        match error {
-            PollError::Decode => Self::DecodeFailed,
-            PollError::Timeout => Self::Timeout,
-        }
-    }
-}
-
 struct JpegInspection {
     header: JpegHeaderInfo,
     layout: FrameLayout,
@@ -136,22 +58,16 @@ fn inspect_jpeg(jpeg_data: &[u8], scale: JpuScale) -> Result<JpegInspection, Jpu
         return Err(JpuInspectError::EmptyStream);
     }
     if !jpeg_data.starts_with(&[0xff, 0xd8]) {
-        return Err(JpuInspectError::InvalidJpeg(
-            "JPEG stream does not start with SOI",
-        ));
+        return Err(JpegHeaderError::MissingSoi.into());
     }
 
-    let header = parse_jpeg_header(jpeg_data).map_err(JpuInspectError::InvalidJpeg)?;
+    let header = parse_jpeg_header(jpeg_data)?;
     let entropy = jpeg_data
         .get(header.ecs_offset..)
-        .ok_or(JpuInspectError::InvalidJpeg(
-            "JPEG ECS offset is out of bounds",
-        ))?;
+        .ok_or(JpegHeaderError::EcsOffsetOutOfBounds)?;
     let eoi_offset = entropy.windows(2).position(|marker| marker == [0xff, 0xd9]);
     if !matches!(eoi_offset, Some(offset) if offset > 0) {
-        return Err(JpuInspectError::InvalidJpeg(
-            "JPEG stream has no entropy data followed by EOI",
-        ));
+        return Err(JpegHeaderError::MissingEntropyDataAndEoi.into());
     }
     let format = JpuPixelFormat::from_raw(header.format)?;
     let layout = FrameLayout::new(header.width, header.height, format, scale)?;
@@ -276,19 +192,16 @@ impl JpuDecoder {
         let JpegInspection { header, layout } = inspect_jpeg(jpeg_data, scale)?;
         let format = layout.format;
         self.completed_frame_len = None;
-        let stream_len = required_stream_capacity(jpeg_data.len(), header.ecs_offset)
-            .map_err(JpuDecodeError::InvalidJpeg)?;
-        validate_dma_allocation_len(stream_len).map_err(JpuDecodeError::DmaAddress)?;
-        validate_dma_allocation_len(layout.total_len).map_err(JpuDecodeError::DmaAddress)?;
+        let stream_len = required_stream_capacity(jpeg_data.len(), header.ecs_offset)?;
+        validate_dma_allocation_len(stream_len)?;
+        validate_dma_allocation_len(layout.total_len)?;
         self.ensure_buffers(stream_len, layout.total_len)?;
         self.write_stream(jpeg_data, stream_len)?;
 
         let stream_dma = self.stream_dma_region(stream_len)?;
         let frame_dma = self.frame_dma_region(layout.total_len)?;
-        let stream_data_end = checked_dma_offset(stream_dma, jpeg_data.len(), true)
-            .map_err(JpuDecodeError::DmaAddress)?;
-        let frame_planes =
-            checked_frame_dma_addresses(frame_dma, &layout).map_err(JpuDecodeError::DmaAddress)?;
+        let stream_data_end = checked_dma_offset(stream_dma, jpeg_data.len(), true)?;
+        let frame_planes = checked_frame_dma_addresses(frame_dma, &layout)?;
         let hardware = HardwareDecodeInfo::for_format(format);
 
         configure_stream_regs(
@@ -300,13 +213,13 @@ impl JpuDecoder {
             &layout,
             hardware,
         );
-        upload_huff_tables(self.mmio.jpu_base, &header).map_err(JpuDecodeError::HardwareSetup)?;
-        upload_quant_tables(self.mmio.jpu_base, &header).map_err(JpuDecodeError::HardwareSetup)?;
+        upload_huff_tables(self.mmio.jpu_base, &header);
+        upload_quant_tables(self.mmio.jpu_base, &header);
 
         let (stream_in_flight, frame_in_flight) = self.begin_dma()?;
         if let Err(error) = gram_setup(self.mmio.jpu_base, stream_dma, &header) {
             self.quarantine_after_incomplete_dma(stream_in_flight, frame_in_flight);
-            return Err(JpuDecodeError::HardwareSetup(error));
+            return Err(error.into());
         }
         start_decode(self.mmio.jpu_base, frame_planes, &header, &layout);
 
@@ -325,16 +238,11 @@ impl JpuDecoder {
         let frame = self
             .frame_buffer
             .as_ref()
-            .ok_or(JpuDecodeError::BufferInvariant(
-                "missing completed frame buffer",
-            ))?;
-        let yuv_data =
-            frame
-                .as_slice_cpu()
-                .get(..layout.total_len)
-                .ok_or(JpuDecodeError::BufferInvariant(
-                    "frame view exceeds its DMA allocation",
-                ))?;
+            .ok_or(JpuBufferError::MissingCompletedFrameBuffer)?;
+        let yuv_data = frame
+            .as_slice_cpu()
+            .get(..layout.total_len)
+            .ok_or(JpuBufferError::FrameViewExceedsAllocation)?;
 
         Ok(DecodeResult {
             width: layout.visible.width,
@@ -358,18 +266,18 @@ impl JpuDecoder {
     ) -> Result<usize, JpuDecodeError> {
         self.validate_decoder_ready()?;
         if self.completed_frame_len != Some(frame_len) {
-            return Err(JpuDecodeError::BufferInvariant(
-                "requested frame does not match the most recent decode",
-            ));
+            return Err(JpuBufferError::CompletedFrameMismatch.into());
         }
         let frame = self
             .frame_buffer
             .as_ref()
-            .ok_or(JpuDecodeError::BufferInvariant(
-                "missing completed frame buffer",
-            ))?;
-        copy_frame_range(frame.as_slice_cpu(), frame_len, offset, destination)
-            .map_err(JpuDecodeError::BufferInvariant)
+            .ok_or(JpuBufferError::MissingCompletedFrameBuffer)?;
+        Ok(copy_frame_range(
+            frame.as_slice_cpu(),
+            frame_len,
+            offset,
+            destination,
+        )?)
     }
 
     fn validate_decoder_ready(&self) -> Result<(), JpuDecodeError> {
@@ -397,10 +305,9 @@ impl JpuDecoder {
             return Ok(());
         }
 
-        let stream_len = NonZeroUsize::new(stream_len)
-            .ok_or(JpuDecodeError::BufferInvariant("zero-sized stream buffer"))?;
-        let frame_len = NonZeroUsize::new(frame_len)
-            .ok_or(JpuDecodeError::BufferInvariant("zero-sized frame buffer"))?;
+        let stream_len =
+            NonZeroUsize::new(stream_len).ok_or(JpuBufferError::ZeroSizedStreamBuffer)?;
+        let frame_len = NonZeroUsize::new(frame_len).ok_or(JpuBufferError::ZeroSizedFrameBuffer)?;
         let stream =
             CpuDmaBuffer::new_zero(&self.dma, stream_len, DMA_ALIGNMENT, DmaDirection::ToDevice)?;
         let frame = CpuDmaBuffer::new_zero(
@@ -418,11 +325,9 @@ impl JpuDecoder {
         let stream = self
             .stream_buffer
             .as_mut()
-            .ok_or(JpuDecodeError::BufferInvariant("missing stream buffer"))?;
+            .ok_or(JpuBufferError::MissingStreamBuffer)?;
         if stream_len > stream.len().get() || jpeg_data.len() > stream_len {
-            return Err(JpuDecodeError::BufferInvariant(
-                "stream data exceeds its DMA allocation",
-            ));
+            return Err(JpuBufferError::StreamDataExceedsAllocation.into());
         }
 
         // SAFETY: the buffer is CPU-owned until begin_dma consumes it. The
@@ -440,9 +345,12 @@ impl JpuDecoder {
         let stream = self
             .stream_buffer
             .as_ref()
-            .ok_or(JpuDecodeError::BufferInvariant("missing stream buffer"))?;
-        checked_dma_region(stream.dma_addr().as_u64(), stream.len().get(), stream_len)
-            .map_err(JpuDecodeError::DmaAddress)
+            .ok_or(JpuBufferError::MissingStreamBuffer)?;
+        Ok(checked_dma_region(
+            stream.dma_addr().as_u64(),
+            stream.len().get(),
+            stream_len,
+        )?)
     }
 
     fn frame_dma_region(
@@ -452,21 +360,24 @@ impl JpuDecoder {
         let frame = self
             .frame_buffer
             .as_ref()
-            .ok_or(JpuDecodeError::BufferInvariant("missing frame buffer"))?;
-        checked_dma_region(frame.dma_addr().as_u64(), frame.len().get(), frame_len)
-            .map_err(JpuDecodeError::DmaAddress)
+            .ok_or(JpuBufferError::MissingFrameBuffer)?;
+        Ok(checked_dma_region(
+            frame.dma_addr().as_u64(),
+            frame.len().get(),
+            frame_len,
+        )?)
     }
 
     fn begin_dma(&mut self) -> Result<(InFlightDma, InFlightDma), JpuDecodeError> {
         let stream = self
             .stream_buffer
             .take()
-            .ok_or(JpuDecodeError::BufferInvariant("missing stream buffer"))?;
+            .ok_or(JpuBufferError::MissingStreamBuffer)?;
         let frame = match self.frame_buffer.take() {
             Some(frame) => frame,
             None => {
                 self.stream_buffer = Some(stream);
-                return Err(JpuDecodeError::BufferInvariant("missing frame buffer"));
+                return Err(JpuBufferError::MissingFrameBuffer.into());
             }
         };
 
@@ -498,13 +409,11 @@ impl JpuDecoder {
         let frame = self
             .frame_buffer
             .as_mut()
-            .ok_or(JpuDecodeError::BufferInvariant(
-                "missing completed frame buffer",
-            ))?;
+            .ok_or(JpuBufferError::MissingCompletedFrameBuffer)?;
         // SAFETY: poll completion returned ownership to the CPU, and the
         // returned mutable slice does not outlive this exclusive decoder borrow.
         let bytes = unsafe { frame.as_mut_slice_cpu() };
-        clear_frame_padding(bytes, layout).map_err(JpuDecodeError::BufferInvariant)
+        Ok(clear_frame_padding(bytes, layout)?)
     }
 }
 
@@ -535,29 +444,29 @@ const fn buffer_plan(
     }
 }
 
-fn required_stream_capacity(jpeg_len: usize, ecs_offset: usize) -> Result<usize, &'static str> {
+fn required_stream_capacity(jpeg_len: usize, ecs_offset: usize) -> Result<usize, JpegHeaderError> {
     if ecs_offset >= jpeg_len {
-        return Err("JPEG entropy-coded data starts outside the stream");
+        return Err(JpegHeaderError::EntropyDataOutsideStream);
     }
     let prefetch_start = ecs_offset & !(BBC_STREAM_PAGE_SIZE - 1);
     let prefetch_len = BBC_STREAM_PAGE_SIZE * GRAM_PREFETCH_PAGES;
     let prefetch_end = prefetch_start
         .checked_add(prefetch_len)
-        .ok_or("JPU GRAM prefetch range overflow")?;
+        .ok_or(JpegHeaderError::GramPrefetchRangeOverflow)?;
     Ok(jpeg_len.max(prefetch_end))
 }
 
-fn validate_dma_allocation_len(len: usize) -> Result<(), &'static str> {
-    let len = u64::try_from(len).map_err(|_| "JPU DMA allocation length does not fit u64")?;
+fn validate_dma_allocation_len(len: usize) -> Result<(), JpuDmaAddressError> {
+    let len = u64::try_from(len).map_err(|_| JpuDmaAddressError::AllocationLengthDoesNotFitU64)?;
     if len > u32::MAX as u64 {
-        return Err("JPU DMA allocation exceeds the 32-bit address window");
+        return Err(JpuDmaAddressError::AllocationExceedsAddressWindow);
     }
     Ok(())
 }
 
-fn clear_frame_padding(buffer: &mut [u8], layout: &FrameLayout) -> Result<(), &'static str> {
+fn clear_frame_padding(buffer: &mut [u8], layout: &FrameLayout) -> Result<(), JpuBufferError> {
     if buffer.len() < layout.total_len {
-        return Err("JPU frame layout exceeds its DMA allocation");
+        return Err(JpuBufferError::FrameLayoutExceedsAllocation);
     }
     let buffer = &mut buffer[..layout.total_len];
     let mut previous_end = 0usize;
@@ -570,7 +479,7 @@ fn clear_frame_padding(buffer: &mut [u8], layout: &FrameLayout) -> Result<(), &'
     }
     buffer
         .get_mut(previous_end..)
-        .ok_or("JPU frame planes exceed total length")?
+        .ok_or(JpuBufferError::FramePlanesExceedTotalLength)?
         .fill(0);
     Ok(())
 }
@@ -580,10 +489,10 @@ fn copy_frame_range(
     frame_len: usize,
     offset: usize,
     destination: &mut [u8],
-) -> Result<usize, &'static str> {
+) -> Result<usize, JpuBufferError> {
     let frame = source
         .get(..frame_len)
-        .ok_or("logical frame exceeds its DMA allocation")?;
+        .ok_or(JpuBufferError::LogicalFrameExceedsAllocation)?;
     let Some(remaining) = frame.get(offset..) else {
         return Ok(0);
     };
@@ -596,34 +505,36 @@ fn clear_plane_and_gap_padding(
     buffer: &mut [u8],
     plane: PlaneLayout,
     previous_end: &mut usize,
-) -> Result<(), &'static str> {
+) -> Result<(), JpuBufferError> {
     let plane_end = plane
         .offset
         .checked_add(plane.len)
-        .ok_or("JPU plane end overflow")?;
+        .ok_or(JpuBufferError::PlaneEndOverflow)?;
     if plane.offset < *previous_end || plane_end > buffer.len() {
-        return Err("JPU frame planes overlap or exceed total length");
+        return Err(JpuBufferError::FramePlanesOverlapOrExceedTotalLength);
     }
     buffer[*previous_end..plane.offset].fill(0);
 
-    let stride = usize::try_from(plane.stride).map_err(|_| "JPU plane stride overflow")?;
-    let row_bytes = usize::try_from(plane.storage.width).map_err(|_| "JPU plane width overflow")?;
-    let rows = usize::try_from(plane.storage.height).map_err(|_| "JPU plane height overflow")?;
+    let stride = usize::try_from(plane.stride).map_err(|_| JpuBufferError::PlaneStrideOverflow)?;
+    let row_bytes =
+        usize::try_from(plane.storage.width).map_err(|_| JpuBufferError::PlaneWidthOverflow)?;
+    let rows =
+        usize::try_from(plane.storage.height).map_err(|_| JpuBufferError::PlaneHeightOverflow)?;
     let row_padding = stride
         .checked_sub(row_bytes)
-        .ok_or("JPU plane width exceeds its stride")?;
+        .ok_or(JpuBufferError::PlaneWidthExceedsStride)?;
     for row in 0..rows {
         let padding_start = row
             .checked_mul(stride)
             .and_then(|offset| offset.checked_add(plane.offset))
             .and_then(|offset| offset.checked_add(row_bytes))
-            .ok_or("JPU plane row padding offset overflow")?;
+            .ok_or(JpuBufferError::RowPaddingOffsetOverflow)?;
         let padding_end = padding_start
             .checked_add(row_padding)
-            .ok_or("JPU plane row padding end overflow")?;
+            .ok_or(JpuBufferError::RowPaddingEndOverflow)?;
         buffer
             .get_mut(padding_start..padding_end)
-            .ok_or("JPU plane row padding exceeds frame buffer")?
+            .ok_or(JpuBufferError::RowPaddingExceedsFrameBuffer)?
             .fill(0);
     }
 
@@ -636,9 +547,9 @@ mod tests {
     extern crate std;
 
     use super::{
-        BufferPlan, JpuInspectError, PollDisposition, buffer_plan, clear_frame_padding,
-        copy_frame_range, inspect_jpeg_layout, poll_disposition, required_stream_capacity,
-        validate_dma_allocation_len,
+        BufferPlan, JpegHeaderError, JpuInspectError, PollDisposition, buffer_plan,
+        clear_frame_padding, copy_frame_range, inspect_jpeg_layout, poll_disposition,
+        required_stream_capacity, validate_dma_allocation_len,
     };
     use crate::{FrameLayout, JpuPixelFormat, JpuScale, engine::PollError};
 
@@ -742,7 +653,7 @@ mod tests {
         assert_eq!(
             inspect_jpeg_layout(truncated, JpuScale::Full),
             Err(JpuInspectError::InvalidJpeg(
-                "JPEG stream has no entropy data followed by EOI"
+                JpegHeaderError::MissingEntropyDataAndEoi
             ))
         );
     }
@@ -751,9 +662,7 @@ mod tests {
     fn inspect_rejects_baseline_jpeg_without_soi() {
         assert_eq!(
             inspect_jpeg_layout(&BASELINE_JPEG[2..], JpuScale::Full),
-            Err(JpuInspectError::InvalidJpeg(
-                "JPEG stream does not start with SOI"
-            ))
+            Err(JpuInspectError::InvalidJpeg(JpegHeaderError::MissingSoi))
         );
     }
 

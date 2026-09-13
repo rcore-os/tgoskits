@@ -6,9 +6,15 @@ use super::{DirEntryIterator, Ext4DirEntryInfo};
 
 /// Finds an entry by name in a linear directory block.
 pub fn find_entry<'a>(block_data: &'a [u8], target_name: &[u8]) -> Option<Ext4DirEntryInfo<'a>> {
-    let iter = DirEntryIterator::new(block_data);
-    iter.map(|(entry, _)| entry)
-        .find(|entry| entry.name == target_name)
+    find_entry_with_offset(block_data, target_name).map(|(entry, _)| entry)
+}
+
+/// Finds an entry together with its byte offset in the directory block.
+pub fn find_entry_with_offset<'a>(
+    block_data: &'a [u8],
+    target_name: &[u8],
+) -> Option<(Ext4DirEntryInfo<'a>, usize)> {
+    DirEntryIterator::new(block_data).find(|(entry, _)| entry.name == target_name)
 }
 
 /// Returns all valid entries from a linear directory block.

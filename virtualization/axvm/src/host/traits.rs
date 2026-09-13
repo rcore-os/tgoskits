@@ -1,10 +1,28 @@
 //! Internal host capability traits used by the AxVM runtime.
 
-use core::time::Duration;
+use std::time::Duration;
 
 use axvm_types::{HostPhysAddr, HostVirtAddr};
 
 use crate::AxVmResult;
+
+/// Action returned by a restartable task-context host timer.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostTimerAction {
+    Complete,
+    Rearm(Duration),
+}
+
+/// Action returned by an explicitly hard-IRQ-safe host timer.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostHardTimerAction {
+    Complete,
+    #[cfg(target_arch = "aarch64")]
+    Disarm,
+    Rearm(Duration),
+}
 
 /// Host memory allocation and address translation.
 pub trait HostMemory {
@@ -31,13 +49,62 @@ pub trait HostMemory {
     fn virt_to_phys(&self, vaddr: HostVirtAddr) -> HostPhysAddr;
 }
 
-/// Host time and timer operations.
+/// Host monotonic time source.
 pub trait HostTime {
     /// Read monotonic host time.
     fn monotonic_time(&self) -> Duration;
+}
 
-    /// Publish an earlier deadline to the host's shared timer arbiter.
-    fn request_timer_deadline(&self, deadline_ns: u64);
+/// Completion state of non-blocking host timer cancellation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostTimerCancelOutcome {
+    /// Registration removed and payload reclaimed.
+    Cancelled,
+    /// Accepted, but callback execution or reclamation is still in flight.
+    CancellationDeferred,
+    /// No live registration remains.
+    AlreadyCompleted,
+}
+
+/// Typed host deadline capability used by AxVM architectural and device timers.
+pub trait HostTimer {
+    type TimerHandle: Copy + Send + Sync + 'static;
+    type HardTimerHandle: Copy + Send + Sync + Into<Self::TimerHandle> + 'static;
+
+    fn register_timer(
+        &self,
+        deadline: Duration,
+        callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+    ) -> AxVmResult<Self::TimerHandle>;
+
+    #[cfg(target_arch = "x86_64")]
+    fn register_restartable_timer(
+        &self,
+        deadline: Duration,
+        callback: Box<dyn FnMut(Duration) -> HostTimerAction + Send + 'static>,
+    ) -> AxVmResult<Self::TimerHandle>;
+
+    /// Registers one stable callback that may run in hard IRQ context.
+    ///
+    /// # Safety
+    ///
+    /// The callback must be bounded, allocation-free, non-sleeping, and use
+    /// only IRQ-safe pre-bound capabilities. It may not perform destruction or
+    /// registry lookup.
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    unsafe fn register_hard_restartable_timer(
+        &self,
+        deadline: Duration,
+        callback: Box<dyn FnMut(Duration) -> HostHardTimerAction + Send + 'static>,
+    ) -> AxVmResult<Self::HardTimerHandle>;
+
+    #[cfg(target_arch = "aarch64")]
+    fn arm_hard_timer(&self, handle: Self::HardTimerHandle, deadline: Duration) -> AxVmResult;
+
+    #[cfg(target_arch = "aarch64")]
+    fn disarm_hard_timer(&self, handle: Self::HardTimerHandle) -> AxVmResult;
+
+    fn cancel_timer(&self, handle: Self::TimerHandle) -> AxVmResult<HostTimerCancelOutcome>;
 }
 
 /// Host CPU topology and affinity operations.

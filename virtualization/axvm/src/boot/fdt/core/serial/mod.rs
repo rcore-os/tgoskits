@@ -1,6 +1,6 @@
 //! Machine-owned virtual serial description for guest device trees.
 
-use alloc::{format, string::String, vec, vec::Vec};
+use std::{format, string::String, vec, vec::Vec};
 
 use axdevice_base::AccessWidth;
 use fdt_edit::{Fdt, Node, Property, RegFixed};
@@ -11,20 +11,17 @@ use crate::{
     AxVmResult, ax_err_type,
     machine::{
         GuestClockReference, GuestMmioRegion, GuestSerialFdtIdentity, GuestSerialFdtInterrupt,
-        GuestSerialModel, GuestSerialProfile, GuestSerialTransport,
+        GuestSerialFirmwareIdentity, GuestSerialModel, GuestSerialProfile, GuestSerialTransport,
+        HostSerialSnapshot,
     },
 };
-
-pub(crate) struct HostSelectedSerial {
-    pub profile: GuestSerialProfile,
-    pub identity: GuestSerialFdtIdentity,
-}
 
 /// Replaces firmware-provided UARTs with the current machine's virtual UART.
 pub(crate) fn install_machine_serial(
     tree: &mut FdtTree,
     profile: GuestSerialProfile,
     identity: Option<&GuestSerialFdtIdentity>,
+    preserved_physical_selectors: &[String],
 ) -> AxVmResult {
     let machine = crate::machine::current_machine_profile(1);
     let GuestSerialTransport::Mmio { .. } = profile.transport else {
@@ -33,10 +30,32 @@ pub(crate) fn install_machine_serial(
     let Some(interrupt_encoding) = machine.serial_fdt_interrupt else {
         return Ok(());
     };
-    install_mmio_serial(tree, profile, interrupt_encoding, identity)
+    install_mmio_serial_preserving(
+        tree,
+        profile,
+        interrupt_encoding,
+        identity,
+        true,
+        preserved_physical_selectors,
+    )
 }
 
-/// Returns physical UART nodes that must remain owned by the host.
+/// Adds a non-console virtual UART without changing aliases or stdout-path.
+pub(crate) fn install_additional_serial(
+    tree: &mut FdtTree,
+    profile: GuestSerialProfile,
+) -> AxVmResult {
+    let machine = crate::machine::current_machine_profile(1);
+    let GuestSerialTransport::Mmio { .. } = profile.transport else {
+        return Ok(());
+    };
+    let Some(interrupt_encoding) = machine.serial_fdt_interrupt else {
+        return Ok(());
+    };
+    install_mmio_serial(tree, profile, interrupt_encoding, None, false)
+}
+
+/// Returns every physical UART node described by the firmware.
 pub(crate) fn physical_serial_paths(fdt: &Fdt) -> Vec<String> {
     let console_path = console_path(fdt);
     let mut paths = fdt
@@ -63,6 +82,11 @@ pub(crate) fn physical_serial_paths(fdt: &Fdt) -> Vec<String> {
     paths
 }
 
+/// Returns the firmware-selected UART that must remain owned by the host.
+pub(crate) fn host_owned_serial_paths(fdt: &Fdt) -> Vec<String> {
+    console_path(fdt).into_iter().collect()
+}
+
 /// Resolves the guest virtual UART identity from the firmware-selected host UART.
 ///
 /// Firmware-backed machines retain the selected host UART's register model and
@@ -71,7 +95,7 @@ pub(crate) fn host_selected_serial(
     fdt: &Fdt,
     fallback: GuestSerialProfile,
     interrupt_encoding: GuestSerialFdtInterrupt,
-) -> AxVmResult<Option<HostSelectedSerial>> {
+) -> AxVmResult<Option<HostSerialSnapshot>> {
     let Some((stdout_selector, path)) = console_selection(fdt) else {
         return Ok(None);
     };
@@ -182,7 +206,7 @@ pub(crate) fn host_selected_serial(
         .and_then(Property::get_u32);
     let clock_references = serial_clock_references(fdt, node, &path)?;
 
-    Ok(Some(HostSelectedSerial {
+    Ok(Some(HostSerialSnapshot {
         profile: GuestSerialProfile {
             model,
             transport: GuestSerialTransport::Mmio {
@@ -194,14 +218,14 @@ pub(crate) fn host_selected_serial(
             irq,
             clock_hz,
         },
-        identity: GuestSerialFdtIdentity {
+        identity: GuestSerialFirmwareIdentity::Fdt(GuestSerialFdtIdentity {
             node_path: path,
             node_phandle,
             interrupt_parent: interrupt.interrupt_parent.raw(),
             interrupt_specifier: interrupt.specifier,
             stdout_path: stdout_selector,
             clock_references,
-        },
+        }),
     }))
 }
 
@@ -353,6 +377,18 @@ fn install_mmio_serial(
     profile: GuestSerialProfile,
     interrupt_encoding: GuestSerialFdtInterrupt,
     identity: Option<&GuestSerialFdtIdentity>,
+    console: bool,
+) -> AxVmResult {
+    install_mmio_serial_preserving(tree, profile, interrupt_encoding, identity, console, &[])
+}
+
+fn install_mmio_serial_preserving(
+    tree: &mut FdtTree,
+    profile: GuestSerialProfile,
+    interrupt_encoding: GuestSerialFdtInterrupt,
+    identity: Option<&GuestSerialFdtIdentity>,
+    console: bool,
+    preserved_physical_selectors: &[String],
 ) -> AxVmResult {
     let GuestSerialTransport::Mmio {
         base,
@@ -371,10 +407,17 @@ fn install_mmio_serial(
         None => interrupt_controller_phandle(tree, interrupt_encoding)?,
     };
 
-    let mut old_paths = physical_serial_paths(tree.inner());
-    old_paths.sort_by_key(|path| core::cmp::Reverse(path.matches('/').count()));
-    for path in old_paths {
-        tree.inner_mut().remove_by_path(&path);
+    if console {
+        let mut old_paths = physical_serial_paths(tree.inner());
+        old_paths.retain(|path| {
+            !preserved_physical_selectors
+                .iter()
+                .any(|selector| super::device::selector_includes_path(selector, path))
+        });
+        old_paths.sort_by_key(|path| std::cmp::Reverse(path.matches('/').count()));
+        for path in old_paths {
+            tree.inner_mut().remove_by_path(&path);
+        }
     }
 
     let serial_path = match identity {
@@ -403,7 +446,7 @@ fn install_mmio_serial(
 
     match profile.model {
         GuestSerialModel::Pl011 => {
-            let clock = install_pl011_clock(tree, profile.clock_hz)?;
+            let clock = install_pl011_clock(tree, profile.clock_hz, base, console)?;
             tree.set_property(
                 serial_id,
                 prop_string_list("compatible", &["arm,pl011", "arm,primecell"]),
@@ -446,9 +489,12 @@ fn install_mmio_serial(
         tree.set_property(serial_id, prop_u32("linux,phandle", phandle))?;
     }
 
-    if identity.is_none() {
+    if console && identity.is_none() {
         let aliases = tree.ensure_path("/aliases")?;
         tree.set_property(aliases, prop_string("serial0", &serial_path))?;
+    }
+    if !console {
+        return Ok(());
     }
     let chosen = tree.ensure_path("/chosen")?;
     let stdout_path = identity
@@ -463,12 +509,21 @@ fn install_mmio_serial(
     Ok(())
 }
 
-fn install_pl011_clock(tree: &mut FdtTree, clock_hz: u32) -> AxVmResult<u32> {
-    const CLOCK_PATH: &str = "/vuart-clock";
-
-    tree.inner_mut().remove_by_path(CLOCK_PATH);
+fn install_pl011_clock(
+    tree: &mut FdtTree,
+    clock_hz: u32,
+    serial_base: usize,
+    console: bool,
+) -> AxVmResult<u32> {
+    let node_name = if console {
+        "vuart-clock".into()
+    } else {
+        format!("vuart-clock@{serial_base:x}")
+    };
+    let clock_path = format!("/{node_name}");
+    tree.inner_mut().remove_by_path(&clock_path);
     let phandle = next_phandle(tree.inner());
-    let clock = tree.add_node(tree.inner().root_id(), Node::new("vuart-clock"));
+    let clock = tree.add_node(tree.inner().root_id(), Node::new(&node_name));
 
     tree.set_property(clock, prop_string("compatible", "fixed-clock"))?;
     tree.set_property(clock, prop_u32("#clock-cells", 0))?;

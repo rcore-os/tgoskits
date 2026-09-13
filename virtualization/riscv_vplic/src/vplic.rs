@@ -5,7 +5,7 @@
 use alloc::vec::Vec;
 use core::option::Option;
 
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_sync::SpinLock as Mutex;
 use axdevice_base::Resource;
 use axvm_types::GuestPhysAddr;
 use bitmaps::Bitmap;

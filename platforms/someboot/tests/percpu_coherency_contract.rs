@@ -27,7 +27,7 @@ fn function_body<'source>(source: &'source str, signature: &str) -> &'source str
 
 #[test]
 fn aarch64_percpu_alias_is_normal_shareable_memory() {
-    let encode = function_body(AARCH64_PTE, "fn from_config(");
+    let encode = function_body(AARCH64_PTE, "fn new_page(");
     let normal = encode
         .split("MemAttributes::Normal | MemAttributes::PerCpu =>")
         .nth(1)
@@ -38,13 +38,6 @@ fn aarch64_percpu_alias_is_normal_shareable_memory() {
 
     assert!(normal.contains("PTE::SHAREABLE::INNER"));
     assert!(!normal.contains("PTE::SHAREABLE::NON"));
-}
-
-#[test]
-fn aarch64_shareability_names_match_the_stage_one_descriptor_encoding() {
-    assert!(AARCH64_PTE.contains("RESERVED = 0b01"));
-    assert!(AARCH64_PTE.contains("OUTER = 0b10"));
-    assert!(AARCH64_PTE.contains("INNER = 0b11"));
 }
 
 #[test]

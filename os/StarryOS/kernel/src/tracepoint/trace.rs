@@ -1,14 +1,15 @@
-use ax_sync::Mutex;
-use axfs_ng_vfs::VfsResult;
-use ktracepoint::{TraceCmdLineCacheSnapshot, TracePipeSnapshot};
+use core::sync::atomic::Ordering;
 
-use crate::pseudofs::DirectRwFsFileOps;
+use ax_tracepoint::TraceCmdLineCacheSnapshot;
+use axfs_ng_vfs::VfsResult;
+
+use crate::{pseudofs::DirectRwFsFileOps, sync::Mutex};
 
 /// File representing the trace content.
 pub struct TraceFile(Mutex<TraceFileState>);
 
 struct TraceFileState {
-    snapshot: Option<TracePipeSnapshot>,
+    snapshot: Option<super::IdentityTraceSnapshot>,
     drain: super::TextDrain,
 }
 
@@ -20,7 +21,7 @@ impl TraceFileState {
         }
     }
 
-    fn reset(&mut self, snapshot: TracePipeSnapshot) {
+    fn reset(&mut self, snapshot: super::IdentityTraceSnapshot) {
         self.snapshot = Some(snapshot);
         self.drain.reset();
     }
@@ -60,6 +61,7 @@ impl DirectRwFsFileOps for TraceFile {
         let mut state = self.0.lock();
         state.snapshot = None;
         state.drain.reset();
+        super::TRACE_STATE.raw_epoch.fetch_add(1, Ordering::AcqRel);
         let mut trace_raw_pipe = super::TRACE_STATE.raw_pipe.lock();
         trace_raw_pipe.clear();
         Ok(buf.len())

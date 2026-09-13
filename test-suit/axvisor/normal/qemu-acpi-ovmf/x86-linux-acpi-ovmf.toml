@@ -1,0 +1,27 @@
+[base]
+id = 1
+name = "linux-x86-acpi-ovmf"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [1]
+
+[kernel]
+entry_point = 0xffff_fff0
+image_location = "memory"
+kernel_path = "${workspace}/tmp/axbuild/images/qemu-x86_64/linux/linux-qemu"
+kernel_load_addr = 0x20_0000
+ramdisk_path = "${workspace}/tmp/axbuild/axvisor/qemu-acpi-ovmf/initramfs-x86_64.cpio.gz"
+ramdisk_load_addr = 0x1000_0000
+enable_bios = true
+boot_protocol = "uefi"
+uefi_firmware_path = "${workspace}/tmp/axbuild/axvisor/qemu-acpi-ovmf/OVMF_CODE_4M.fd"
+bios_load_addr = 0xffc0_0000
+cmdline = "console=ttyS0 rdinit=/init devtmpfs.mount=1 loglevel=7 nox2apic no_timer_check initcall_blacklist=ahci_pci_driver_init axvisor.acpi_case=ovmf"
+memory_regions = [
+  [0x0000_0000, 0x2000_0000, 0x7, 0],
+  [0xffc0_0000, 0x0040_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []

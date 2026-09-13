@@ -395,6 +395,14 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
         self.update_ppr();
     }
 
+    pub fn has_pending_timer_interrupt(&self) -> bool {
+        self.virtual_timer.has_pending_interrupt()
+    }
+
+    pub fn take_pending_timer_interrupt(&self) -> Option<u8> {
+        self.virtual_timer.take_pending_interrupt()
+    }
+
     fn inject_nmi(&mut self, vcpu_id: u32) {
         warn!("[VLAPIC] ignoring NMI IPI to vcpu {vcpu_id}: NMI injection is not implemented yet");
     }

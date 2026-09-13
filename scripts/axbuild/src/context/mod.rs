@@ -31,8 +31,9 @@ mod types;
 mod workspace;
 
 pub(crate) use arch::{
-    CrossCompileSpec, arch_for_target_checked, cross_compile_spec_for_arch_checked,
-    default_rootfs_image_for_arch, resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target,
+    CrossCompileSpec, arch_for_target_checked, arch_spec_for_target,
+    cross_compile_spec_for_arch_checked, default_rootfs_image_for_arch,
+    resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target,
     resolve_starry_arch_and_target, starry_arch_for_target_checked, starry_target_for_arch_checked,
     supported_arches, supported_targets, validate_supported_target,
 };
@@ -42,8 +43,8 @@ pub use types::{
     ArceosUbootSnapshot, AxvisorCliArgs, AxvisorCommandSnapshot, AxvisorQemuSnapshot,
     AxvisorUbootSnapshot, BuildCliArgs, DEFAULT_ARCEOS_ARCH, DEFAULT_ARCEOS_TARGET,
     DEFAULT_AXVISOR_ARCH, DEFAULT_AXVISOR_TARGET, DEFAULT_STARRY_ARCH, DEFAULT_STARRY_TARGET,
-    ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest, STARRY_PACKAGE,
-    STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
+    ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest, STARRY_KERNEL_PACKAGE,
+    STARRY_PACKAGE, STARRY_SNAPSHOT_FILE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot,
     StarryUbootSnapshot,
 };
 pub(crate) use workspace::{
@@ -139,6 +140,12 @@ impl AppContext {
                 .await?;
         stage.done();
         println!("[axbuild] cargo build elf={}", output.elf_path().display());
+        if cargo.to_bin {
+            println!(
+                "[axbuild] cargo build bin={}",
+                cargo_bin_path_for_elf(output.elf_path()).display()
+            );
+        }
         println!(
             "[axbuild] cargo build artifact_dir={}",
             output.cargo_artifact_dir().display()
@@ -193,30 +200,17 @@ impl AppContext {
         qemu: QemuConfig,
         capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
-        let _path_guard = self.scoped_qemu_path(cargo)?;
-        let success_regex = qemu.success_regex.clone();
+        let success_regex = crate::support::qemu_success::configured_success_regex(&qemu);
         let (capture_backtrace, success_output) =
             crate::support::qemu_success::capture_required_success_output(
                 &success_regex,
                 capture_backtrace,
             );
-        let output_capture = capture_backtrace
-            .as_ref()
-            .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
-            .transpose()
-            .context("failed to install QEMU output capture")?;
-        self.activate_cargo_build_context(cargo)?;
         let stage = StageLog::start(format!(
             "qemu run package={} target={}",
             cargo.package, cargo.target
         ));
-        let result = ostool_qemu::run_qemu(
-            &mut self.invocation,
-            &qemu,
-            RunQemuOptions { dtb_dump: false },
-        )
-        .await;
-        drop(output_capture);
+        let result = self.run_qemu_captured(cargo, qemu, capture_backtrace).await;
         let result = crate::support::qemu_success::verify_qemu_success_contract(
             result,
             success_output.as_ref(),
@@ -224,6 +218,29 @@ impl AppContext {
         if result.is_ok() {
             stage.done();
         }
+        result
+    }
+
+    async fn run_qemu_captured(
+        &mut self,
+        cargo: &Cargo,
+        qemu: QemuConfig,
+        capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
+    ) -> anyhow::Result<()> {
+        let _path_guard = self.scoped_qemu_path(cargo)?;
+        let output_capture = capture_backtrace
+            .as_ref()
+            .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
+            .transpose()
+            .context("failed to install QEMU output capture")?;
+        self.activate_cargo_build_context(cargo)?;
+        let result = ostool_qemu::run_qemu(
+            &mut self.invocation,
+            &qemu,
+            RunQemuOptions { dtb_dump: false },
+        )
+        .await;
+        drop(output_capture);
         result
     }
 
@@ -240,14 +257,40 @@ impl AppContext {
         let paths = crate::support::axtest_coverage::AxtestCoveragePaths::new(
             self.workspace_root(),
             &cargo.package,
+            cargo
+                .test
+                .as_deref()
+                .context("axtest coverage requires a Cargo test target")?,
             &cargo.target,
         )?;
         crate::support::axtest_coverage::apply_qemu_monitor(&mut qemu, &paths)?;
         crate::support::axtest_coverage::update_success_regex(&mut qemu);
-        let capture = crate::support::axtest_coverage::AxtestCoverageCaptureGuard::install(&paths)
-            .context("failed to install axtest coverage capture")?;
-        let result = self.run_qemu(cargo, qemu, capture_backtrace).await;
+        let success_regex = crate::support::qemu_success::configured_success_regex(&qemu);
+        let (capture_backtrace, success_output) =
+            crate::support::qemu_success::capture_required_success_output(
+                &success_regex,
+                capture_backtrace,
+            );
+        let success_output = success_output
+            .context("axtest coverage requires a host completion success contract")?;
+        let capture = crate::support::axtest_coverage::AxtestCoverageCaptureGuard::install(
+            &paths,
+            success_output.clone(),
+        )
+        .context("failed to install axtest coverage capture")?;
+        let stage = StageLog::start(format!(
+            "qemu run package={} target={}",
+            cargo.package, cargo.target
+        ));
+        let result = self.run_qemu_captured(cargo, qemu, capture_backtrace).await;
         capture.finish()?;
+        let result = crate::support::qemu_success::verify_qemu_success_contract(
+            result,
+            Some(&success_output),
+        );
+        if result.is_ok() {
+            stage.done();
+        }
         result
     }
 
@@ -256,7 +299,7 @@ impl AppContext {
         qemu: QemuConfig,
         capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
-        let success_regex = qemu.success_regex.clone();
+        let success_regex = crate::support::qemu_success::configured_success_regex(&qemu);
         let (capture_backtrace, success_output) =
             crate::support::qemu_success::capture_required_success_output(
                 &success_regex,
@@ -537,6 +580,10 @@ impl StageLog {
 fn display_optional_path(path: Option<&Path>) -> String {
     path.map(|path| path.display().to_string())
         .unwrap_or_else(|| "<default>".to_string())
+}
+
+pub(crate) fn cargo_bin_path_for_elf(elf_path: &Path) -> PathBuf {
+    elf_path.with_extension("bin")
 }
 
 struct EnvRestoreGuard {

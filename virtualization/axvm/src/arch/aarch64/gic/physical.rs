@@ -4,15 +4,19 @@
 //! enters this module. It publishes through a preallocated route slot directly
 //! into IRQ-safe canonical VGIC state; only the resulting vCPU kick is deferred.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::{
+use std::{
+    boxed::Box,
     hint::spin_loop,
     ptr,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
+    },
+    vec::Vec,
 };
 
 use arm_vgic::{GicV3BackendError, PhysicalIrqId, VgicCore};
-use ax_kspin::SpinNoIrq;
+use ax_std::os::arceos::sync::IrqSafeMutex;
 use axdevice_base::HostIrqId;
 
 use super::{deactivate_host_irq, dispatch_acknowledged_host_irq, host_irq_intid};
@@ -25,7 +29,7 @@ static ASSIGNED_SPI_ROUTES: [AssignedSpiRouteSlot; GIC_INTID_COUNT] =
 /// Owns every fixed host-INTID route installed for one VM.
 pub(crate) struct AssignedSpiRoutes {
     bindings: Box<[Arc<AssignedSpiBinding>]>,
-    registrations: SpinNoIrq<Vec<AssignedSpiRouteRegistration>>,
+    registrations: IrqSafeMutex<Vec<AssignedSpiRouteRegistration>>,
 }
 
 impl AssignedSpiRoutes {
@@ -39,14 +43,14 @@ impl AssignedSpiRoutes {
                     irq: assigned.host_irq(),
                     controller: controller.clone(),
                     accepting: AtomicBool::new(false),
-                    delivery: SpinNoIrq::new(AssignedSpiDelivery::Idle),
+                    delivery: IrqSafeMutex::new(AssignedSpiDelivery::Idle),
                 })
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
         let routes = Arc::new(Self {
             bindings,
-            registrations: SpinNoIrq::new(Vec::new()),
+            registrations: IrqSafeMutex::new(Vec::new()),
         });
 
         {
@@ -99,7 +103,7 @@ struct AssignedSpiBinding {
     irq: HostIrqId,
     controller: Arc<VgicCore>,
     accepting: AtomicBool,
-    delivery: SpinNoIrq<AssignedSpiDelivery>,
+    delivery: IrqSafeMutex<AssignedSpiDelivery>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -203,7 +207,7 @@ impl AssignedSpiRouteRegistration {
         let Some(route) = ASSIGNED_SPI_ROUTES.get(intid) else {
             return Err(GicV3BackendError::new(
                 "register assigned physical SPI route",
-                alloc::format!("host INTID {intid} is outside the assignable GIC range"),
+                std::format!("host INTID {intid} is outside the assignable GIC range"),
             ));
         };
         let raw = Arc::into_raw(binding.clone()) as *mut AssignedSpiBinding;
@@ -217,7 +221,7 @@ impl AssignedSpiRouteRegistration {
             drop(unsafe { Arc::from_raw(raw) });
             return Err(GicV3BackendError::new(
                 "register assigned physical SPI route",
-                alloc::format!("host INTID {intid} is already assigned to another VM"),
+                std::format!("host INTID {intid} is already assigned to another VM"),
             ));
         }
         Ok(Self {

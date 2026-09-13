@@ -16,7 +16,7 @@ async fn test() {
 
     let mut info: Option<DeviceInfo> = None;
 
-    'devices: for probed in ls {
+    'devices: for probed in ls.connected {
         println!("{probed:?}");
         let Some(device) = probed.into_device_info() else {
             continue;
@@ -52,7 +52,7 @@ async fn test() {
         let iface = iface.first_alt_setting();
 
         info!("Interface: {iface:?}");
-        device
+        let _interface_session = device
             .claim_interface(iface.interface_number, 0)
             .await
             .unwrap();

@@ -4,7 +4,7 @@ use cpu_local::{CpuAreaPrefix, CpuIndex};
 
 use crate::{PerCpuArea, PerCpuError, PerCpuRegion};
 
-static INSTALLED_LAYOUT: spin::Once<PerCpuLayout> = spin::Once::new();
+static INSTALLED_LAYOUT: ax_lazyinit::OnceLock<PerCpuLayout> = ax_lazyinit::OnceLock::new();
 
 /// Frozen process-wide layout of initialized runtime per-CPU areas.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

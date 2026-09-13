@@ -3,103 +3,18 @@
 //! This module provides interrupt handlers and ISR setup functions for
 //! handling TX/RX completion, errors, and link status changes.
 
-use alloc::boxed::Box;
-use core::sync::atomic::{AtomicPtr, Ordering};
-
 use crate::{FXmacIrqStatus, fxmac::*, fxmac_const::*, fxmac_dma::*};
 
-// XMAC
-pub const FXMAC_NUM: u32 = 4;
-pub const FXMAC0_ID: u32 = 0;
-pub const FXMAC1_ID: u32 = 1;
-pub const FXMAC2_ID: u32 = 2;
-pub const FXMAC3_ID: u32 = 3;
-pub const FXMAC0_BASE_ADDR: u32 = 0x3200C000;
-pub const FXMAC1_BASE_ADDR: u32 = 0x3200E000;
-pub const FXMAC2_BASE_ADDR: u32 = 0x32010000;
-pub const FXMAC3_BASE_ADDR: u32 = 0x32012000;
-pub const FXMAC0_MODE_SEL_BASE_ADDR: u32 = 0x3200DC00;
-pub const FXMAC0_LOOPBACK_SEL_BASE_ADDR: u32 = 0x3200DC04;
-pub const FXMAC1_MODE_SEL_BASE_ADDR: u32 = 0x3200FC00;
-pub const FXMAC1_LOOPBACK_SEL_BASE_ADDR: u32 = 0x3200FC04;
-pub const FXMAC2_MODE_SEL_BASE_ADDR: u32 = 0x32011C00;
-pub const FXMAC2_LOOPBACK_SEL_BASE_ADDR: u32 = 0x32011C04;
-pub const FXMAC3_MODE_SEL_BASE_ADDR: u32 = 0x32013C00;
-pub const FXMAC3_LOOPBACK_SEL_BASE_ADDR: u32 = 0x32013C04;
-pub const FXMAC0_PCLK: u32 = 50000000;
-pub const FXMAC1_PCLK: u32 = 50000000;
-pub const FXMAC2_PCLK: u32 = 50000000;
-pub const FXMAC3_PCLK: u32 = 50000000;
-pub const FXMAC0_HOTPLUG_IRQ_NUM: u32 = (53 + 30);
-pub const FXMAC1_HOTPLUG_IRQ_NUM: u32 = (54 + 30);
-pub const FXMAC2_HOTPLUG_IRQ_NUM: u32 = (55 + 30);
-pub const FXMAC3_HOTPLUG_IRQ_NUM: u32 = (56 + 30);
-pub const FXMAC_QUEUE_MAX_NUM: u32 = 16; // #define FXMAC_QUEUE_MAX_NUM 16U
-pub const FXMAC0_QUEUE0_IRQ_NUM: u32 = (57 + 30);
-pub const FXMAC0_QUEUE1_IRQ_NUM: u32 = (58 + 30);
-pub const FXMAC0_QUEUE2_IRQ_NUM: u32 = (59 + 30);
-pub const FXMAC0_QUEUE3_IRQ_NUM: u32 = (60 + 30);
-pub const FXMAC0_QUEUE4_IRQ_NUM: u32 = (30 + 30);
-pub const FXMAC0_QUEUE5_IRQ_NUM: u32 = (31 + 30);
-pub const FXMAC0_QUEUE6_IRQ_NUM: u32 = (32 + 30);
-pub const FXMAC0_QUEUE7_IRQ_NUM: u32 = (33 + 30);
-pub const FXMAC1_QUEUE0_IRQ_NUM: u32 = (61 + 30);
-pub const FXMAC1_QUEUE1_IRQ_NUM: u32 = (62 + 30);
-pub const FXMAC1_QUEUE2_IRQ_NUM: u32 = (63 + 30);
-pub const FXMAC1_QUEUE3_IRQ_NUM: u32 = (64 + 30);
-pub const FXMAC2_QUEUE0_IRQ_NUM: u32 = (66 + 30);
-pub const FXMAC2_QUEUE1_IRQ_NUM: u32 = (67 + 30);
-pub const FXMAC2_QUEUE2_IRQ_NUM: u32 = (68 + 30);
-pub const FXMAC2_QUEUE3_IRQ_NUM: u32 = (69 + 30);
-pub const FXMAC3_QUEUE0_IRQ_NUM: u32 = (70 + 30);
-pub const FXMAC3_QUEUE1_IRQ_NUM: u32 = (71 + 30);
-pub const FXMAC3_QUEUE2_IRQ_NUM: u32 = (72 + 30);
-pub const FXMAC3_QUEUE3_IRQ_NUM: u32 = (73 + 30);
-// pub const FXMAC_PHY_MAX_NUM:u32 = 32;
-// #define FXMAC_CLK_TYPE_0
-
-/// Global pointer to the active FXMAC instance.
-///
-/// This atomic pointer is set during initialization and used by the interrupt
-/// handler to access the controller instance.
-pub static XMAC: AtomicPtr<FXmac> = AtomicPtr::new(core::ptr::null_mut());
-
-/// Main interrupt handler for FXMAC controller.
-///
-/// Processes all pending interrupts for the specified FXMAC instance. This
-/// handler supports the following interrupt types:
-///
-/// - **FXMAC_HANDLER_DMARECV**: RX completion - calls `FXmacRecvIsrHandler`
-/// - **FXMAC_HANDLER_DMASEND**: TX completion - calls `FXmacSendHandler`
-/// - **FXMAC_HANDLER_ERROR**: Error conditions - calls `FXmacErrorHandler`
-/// - **FXMAC_HANDLER_LINKCHANGE**: Link status change - calls `FXmacLinkChange`
-///
-/// # Arguments
-///
-/// * `vector` - The IRQ vector number that triggered the interrupt.
-/// * `instance_p` - Mutable reference to the FXMAC instance.
-///
-/// # Note
-///
-/// Currently only single-queue operation is fully supported.
-pub fn FXmacIntrHandler(vector: i32, instance_p: &mut FXmac) {
-    let reg_isr: u32 = read_reg((instance_p.config.base_address + FXMAC_ISR_OFFSET) as *const u32);
-    FXmacIntrHandlerWithStatus(vector, instance_p, FXmacIrqStatus::from_raw(reg_isr));
-}
-
-pub(crate) fn FXmacIntrHandlerWithStatus(
-    vector: i32,
-    instance_p: &mut FXmac,
-    status: FXmacIrqStatus,
-) {
+pub(crate) fn FXmacIntrHandlerWithStatus(instance_p: &mut FXmac, status: FXmacIrqStatus) {
     assert!(instance_p.is_ready == FT_COMPONENT_IS_READY);
 
-    // 0 ~ FXMAC_QUEUE_MAX_NUM ,Index queue number
     let tx_queue_id = instance_p.tx_bd_queue.queue_id;
-    // 0 ~ FXMAC_QUEUE_MAX_NUM ,Index queue number
     let rx_queue_id = instance_p.rx_bd_queue.queue_id;
 
-    assert!((rx_queue_id < FXMAC_QUEUE_MAX_NUM) && (tx_queue_id < FXMAC_QUEUE_MAX_NUM));
+    assert!(
+        (rx_queue_id < instance_p.config.max_queue_num)
+            && (tx_queue_id < instance_p.config.max_queue_num)
+    );
 
     // This ISR will try to handle as many interrupts as it can in a single
     // call. However, in most of the places where the user's error handler
@@ -108,271 +23,196 @@ pub(crate) fn FXmacIntrHandlerWithStatus(
     let mut reg_isr: u32 = status.raw();
 
     info!(
-        "+++++++++ IRQ num vector={}, Interrupt Status ISR={:#x}, tx_queue_id={}, rx_queue_id={}",
-        vector, reg_isr, tx_queue_id, rx_queue_id
+        "+++++++++ Interrupt Status ISR={:#x}, tx_queue_id={}, rx_queue_id={}",
+        reg_isr, tx_queue_id, rx_queue_id
     );
 
-    if vector as u32 == instance_p.config.queue_irq_num[tx_queue_id as usize] {
-        if tx_queue_id == 0 {
-            if (reg_isr & FXMAC_IXR_TXCOMPL_MASK) != 0 {
-                // Clear TX status register TX complete indication but preserve error bits if there is any
-                write_reg(
-                    (instance_p.config.base_address + FXMAC_TXSR_OFFSET) as *mut u32,
-                    FXMAC_TXSR_TXCOMPL_MASK | FXMAC_TXSR_USEDREAD_MASK,
-                );
-
-                FXmacSendHandler(instance_p);
-
-                // add
-                if (instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0 {
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                        FXMAC_IXR_TXCOMPL_MASK,
-                    );
-                }
-            }
-
-            // Transmit error conditions interrupt
-            if ((reg_isr & FXMAC_IXR_TX_ERR_MASK) != 0) && ((reg_isr & FXMAC_IXR_TXCOMPL_MASK) == 0)
-            {
-                // Clear TX status register
-                let reg_txsr: u32 =
-                    read_reg((instance_p.config.base_address + FXMAC_TXSR_OFFSET) as *const u32);
-
-                write_reg(
-                    (instance_p.config.base_address + FXMAC_TXSR_OFFSET) as *mut u32,
-                    reg_txsr,
-                );
-
-                FXmacErrorHandler(instance_p, FXMAC_SEND as u8, reg_txsr);
-
-                // add
-                if (instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0 {
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                        FXMAC_IXR_TX_ERR_MASK,
-                    );
-                }
-            }
-
-            // add restart
-            if (reg_isr & FXMAC_IXR_TXUSED_MASK) != 0 {
-                // add
-                if (instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0 {
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                        FXMAC_IXR_TXUSED_MASK,
-                    );
-                }
-
-                // if (instance_p->restart_handler)
-                // {
-                // instance_p->restart_handler(instance_p->restart_args);
-                // }
-            }
-
-            // link changed
-            if (reg_isr & FXMAC_IXR_LINKCHANGE_MASK) != 0 {
-                FXmacLinkChange(instance_p);
-
-                if (instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0 {
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                        FXMAC_IXR_LINKCHANGE_MASK,
-                    );
-                }
-            }
-        } else
-        // use queue number more than 0
-        {
-            reg_isr = read_reg(
-                (instance_p.config.base_address
-                    + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_INTQ1_STS_OFFSET, tx_queue_id))
-                    as *const u32,
+    if tx_queue_id == 0 {
+        if (reg_isr & FXMAC_IXR_TXCOMPL_MASK) != 0 {
+            // Clear TX status register TX complete indication but preserve error bits if there is any
+            write_reg(
+                (instance_p.config.base_address + FXMAC_TXSR_OFFSET) as *mut u32,
+                FXMAC_TXSR_TXCOMPL_MASK | FXMAC_TXSR_USEDREAD_MASK,
             );
 
-            // Transmit Q1 complete interrupt
-            if ((reg_isr & FXMAC_INTQUESR_TXCOMPL_MASK) != 0) {
-                // Clear TX status register TX complete indication but preserve
-                // error bits if there is any
-                write_reg(
-                    (instance_p.config.base_address
-                        + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_INTQ1_STS_OFFSET, tx_queue_id))
-                        as *mut u32,
-                    FXMAC_INTQUESR_TXCOMPL_MASK,
-                );
-                write_reg(
-                    (instance_p.config.base_address + FXMAC_TXSR_OFFSET) as *mut u32,
-                    FXMAC_TXSR_TXCOMPL_MASK | FXMAC_TXSR_USEDREAD_MASK,
-                );
+            FXmacSendHandler(instance_p);
+        }
 
-                FXmacSendHandler(instance_p);
-            }
+        // Transmit error conditions interrupt
+        if ((reg_isr & FXMAC_IXR_TX_ERR_MASK) != 0) && ((reg_isr & FXMAC_IXR_TXCOMPL_MASK) == 0) {
+            // Clear TX status register
+            let reg_txsr: u32 =
+                read_reg((instance_p.config.base_address + FXMAC_TXSR_OFFSET) as *const u32);
 
-            // Transmit Q1 error conditions interrupt
-            if (((reg_isr & FXMAC_INTQ1SR_TXERR_MASK) != 0)
-                && ((reg_isr & FXMAC_INTQ1SR_TXCOMPL_MASK) != 0))
-            {
-                // Clear Interrupt Q1 status register
-                write_reg(
-                    (instance_p.config.base_address
-                        + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_INTQ1_STS_OFFSET, tx_queue_id))
-                        as *mut u32,
-                    reg_isr,
-                );
+            write_reg(
+                (instance_p.config.base_address + FXMAC_TXSR_OFFSET) as *mut u32,
+                reg_txsr,
+            );
 
-                FXmacErrorHandler(instance_p, FXMAC_SEND as u8, reg_isr);
-            }
+            FXmacErrorHandler(instance_p, FXMAC_SEND as u8, reg_txsr);
+        }
+
+        // add restart
+        if (reg_isr & FXMAC_IXR_TXUSED_MASK) != 0 {
+            // if (instance_p->restart_handler)
+            // {
+            // instance_p->restart_handler(instance_p->restart_args);
+            // }
+        }
+
+        // link changed
+        if (reg_isr & FXMAC_IXR_LINKCHANGE_MASK) != 0 {
+            FXmacLinkChange(instance_p);
+        }
+    } else {
+        reg_isr = read_reg(
+            (instance_p.config.base_address
+                + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_INTQ1_STS_OFFSET, tx_queue_id))
+                as *const u32,
+        );
+
+        // Transmit Q1 complete interrupt
+        if ((reg_isr & FXMAC_INTQUESR_TXCOMPL_MASK) != 0) {
+            // Clear TX status register TX complete indication but preserve
+            // error bits if there is any
+            write_reg(
+                (instance_p.config.base_address
+                    + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_INTQ1_STS_OFFSET, tx_queue_id))
+                    as *mut u32,
+                FXMAC_INTQUESR_TXCOMPL_MASK,
+            );
+            write_reg(
+                (instance_p.config.base_address + FXMAC_TXSR_OFFSET) as *mut u32,
+                FXMAC_TXSR_TXCOMPL_MASK | FXMAC_TXSR_USEDREAD_MASK,
+            );
+
+            FXmacSendHandler(instance_p);
+        }
+
+        // Transmit Q1 error conditions interrupt
+        if (((reg_isr & FXMAC_INTQ1SR_TXERR_MASK) != 0)
+            && ((reg_isr & FXMAC_INTQ1SR_TXCOMPL_MASK) != 0))
+        {
+            // Clear Interrupt Q1 status register
+            write_reg(
+                (instance_p.config.base_address
+                    + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_INTQ1_STS_OFFSET, tx_queue_id))
+                    as *mut u32,
+                reg_isr,
+            );
+
+            FXmacErrorHandler(instance_p, FXMAC_SEND as u8, reg_isr);
         }
     }
 
-    if vector as u32 == instance_p.config.queue_irq_num[rx_queue_id as usize] {
-        if rx_queue_id == 0 {
-            // Receive complete interrupt
-            if (reg_isr & FXMAC_IXR_RXCOMPL_MASK) != 0 {
-                // Clear RX status register RX complete indication but preserve
-                // error bits if there is any
-                write_reg(
-                    (instance_p.config.base_address + FXMAC_RXSR_OFFSET) as *mut u32,
-                    FXMAC_RXSR_FRAMERX_MASK | FXMAC_RXSR_BUFFNA_MASK,
-                );
-                FXmacRecvIsrHandler(instance_p);
+    if rx_queue_id == 0 {
+        // Receive complete interrupt
+        if (reg_isr & FXMAC_IXR_RXCOMPL_MASK) != 0 {
+            // Clear RX status register RX complete indication but preserve
+            // error bits if there is any
+            write_reg(
+                (instance_p.config.base_address + FXMAC_RXSR_OFFSET) as *mut u32,
+                FXMAC_RXSR_FRAMERX_MASK | FXMAC_RXSR_BUFFNA_MASK,
+            );
+            FXmacRecvIsrHandler(instance_p);
+        }
 
-                // add
-                if (instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0 {
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                        FXMAC_IXR_RXCOMPL_MASK,
-                    );
-                }
-            }
-
-            // Receive error conditions interrupt
-            if (reg_isr & FXMAC_IXR_RX_ERR_MASK) != 0 {
-                // Clear RX status register
-                let mut reg_rxsr: u32 =
-                    read_reg((instance_p.config.base_address + FXMAC_RXSR_OFFSET) as *const u32);
-                write_reg(
-                    (instance_p.config.base_address + FXMAC_RXSR_OFFSET) as *mut u32,
-                    reg_rxsr,
-                );
-
-                if (reg_isr & FXMAC_IXR_RXUSED_MASK) != 0 {
-                    let reg_ctrl: u32 = read_reg(
-                        (instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *const u32,
-                    );
-
-                    let mut reg_temp: u32 = reg_ctrl | FXMAC_NWCTRL_FLUSH_DPRAM_MASK;
-                    reg_temp &= !FXMAC_NWCTRL_RXEN_MASK;
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *mut u32,
-                        reg_temp,
-                    );
-
-                    // add
-                    reg_temp = reg_ctrl | FXMAC_NWCTRL_RXEN_MASK;
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *mut u32,
-                        reg_temp,
-                    );
-
-                    if (instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0 {
-                        write_reg(
-                            (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                            FXMAC_IXR_RXUSED_MASK,
-                        );
-                    }
-                }
-
-                // add
-                if ((reg_isr & FXMAC_IXR_RXOVR_MASK) != 0)
-                    && ((instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0)
-                {
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                        FXMAC_IXR_RXOVR_MASK,
-                    );
-                }
-
-                // add
-                if ((reg_isr & FXMAC_IXR_HRESPNOK_MASK) != 0)
-                    && ((instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0)
-                {
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                        FXMAC_IXR_HRESPNOK_MASK,
-                    );
-                }
-
-                if reg_rxsr != 0 {
-                    FXmacErrorHandler(instance_p, FXMAC_RECV as u8, reg_rxsr);
-                }
-            }
-        } else {
-            // use queue number more than 0
-            reg_isr = read_reg(
-                (instance_p.config.base_address
-                    + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_INTQ1_STS_OFFSET, rx_queue_id))
-                    as *const u32,
+        // Receive error conditions interrupt
+        if (reg_isr & FXMAC_IXR_RX_ERR_MASK) != 0 {
+            // Clear RX status register
+            let mut reg_rxsr: u32 =
+                read_reg((instance_p.config.base_address + FXMAC_RXSR_OFFSET) as *const u32);
+            write_reg(
+                (instance_p.config.base_address + FXMAC_RXSR_OFFSET) as *mut u32,
+                reg_rxsr,
             );
 
-            // Receive complete interrupt
-            if ((reg_isr & FXMAC_INTQUESR_RCOMP_MASK) != 0) {
-                // Clear RX status register RX complete indication but preserve
-                // error bits if there is any
+            if (reg_isr & FXMAC_IXR_RXUSED_MASK) != 0 {
+                let reg_ctrl: u32 =
+                    read_reg((instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *const u32);
+
+                let mut reg_temp: u32 = reg_ctrl | FXMAC_NWCTRL_FLUSH_DPRAM_MASK;
+                reg_temp &= !FXMAC_NWCTRL_RXEN_MASK;
                 write_reg(
-                    (instance_p.config.base_address
-                        + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_INTQ1_STS_OFFSET, rx_queue_id))
-                        as *mut u32,
-                    FXMAC_INTQUESR_RCOMP_MASK,
+                    (instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *mut u32,
+                    reg_temp,
                 );
-                FXmacRecvIsrHandler(instance_p);
+
+                // add
+                reg_temp = reg_ctrl | FXMAC_NWCTRL_RXEN_MASK;
+                write_reg(
+                    (instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *mut u32,
+                    reg_temp,
+                );
             }
 
-            // Receive error conditions interrupt
-            if (reg_isr & FXMAC_IXR_RX_ERR_MASK) != 0 {
-                let mut reg_ctrl: u32 =
+            if reg_rxsr != 0 {
+                FXmacErrorHandler(instance_p, FXMAC_RECV as u8, reg_rxsr);
+            }
+        }
+    } else {
+        // use queue number more than 0
+        reg_isr = read_reg(
+            (instance_p.config.base_address
+                + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_INTQ1_STS_OFFSET, rx_queue_id))
+                as *const u32,
+        );
+
+        // Receive complete interrupt
+        if ((reg_isr & FXMAC_INTQUESR_RCOMP_MASK) != 0) {
+            // Clear RX status register RX complete indication but preserve
+            // error bits if there is any
+            write_reg(
+                (instance_p.config.base_address
+                    + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_INTQ1_STS_OFFSET, rx_queue_id))
+                    as *mut u32,
+                FXMAC_INTQUESR_RCOMP_MASK,
+            );
+            FXmacRecvIsrHandler(instance_p);
+        }
+
+        // Receive error conditions interrupt
+        if (reg_isr & FXMAC_IXR_RX_ERR_MASK) != 0 {
+            let mut reg_ctrl: u32 =
+                read_reg((instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *const u32);
+            reg_ctrl &= !FXMAC_NWCTRL_RXEN_MASK;
+
+            write_reg(
+                (instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *mut u32,
+                reg_ctrl,
+            );
+
+            // Clear RX status register
+            let mut reg_rxsr =
+                read_reg((instance_p.config.base_address + FXMAC_RXSR_OFFSET) as *const u32);
+            write_reg(
+                (instance_p.config.base_address + FXMAC_RXSR_OFFSET) as *mut u32,
+                reg_rxsr,
+            );
+
+            if ((reg_isr & FXMAC_IXR_RXUSED_MASK) != 0) {
+                reg_ctrl =
                     read_reg((instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *const u32);
-                reg_ctrl &= !FXMAC_NWCTRL_RXEN_MASK;
+                reg_ctrl |= FXMAC_NWCTRL_FLUSH_DPRAM_MASK;
 
                 write_reg(
                     (instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *mut u32,
                     reg_ctrl,
                 );
+            }
 
-                // Clear RX status register
-                let mut reg_rxsr =
-                    read_reg((instance_p.config.base_address + FXMAC_RXSR_OFFSET) as *const u32);
-                write_reg(
-                    (instance_p.config.base_address + FXMAC_RXSR_OFFSET) as *mut u32,
-                    reg_rxsr,
-                );
+            // Clear RX status register RX complete indication but preserve
+            // error bits if there is any
+            write_reg(
+                (instance_p.config.base_address
+                    + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_INTQ1_STS_OFFSET, rx_queue_id))
+                    as *mut u32,
+                FXMAC_INTQUESR_RXUBR_MASK,
+            );
+            FXmacRecvIsrHandler(instance_p);
 
-                if ((reg_isr & FXMAC_IXR_RXUSED_MASK) != 0) {
-                    reg_ctrl = read_reg(
-                        (instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *const u32,
-                    );
-                    reg_ctrl |= FXMAC_NWCTRL_FLUSH_DPRAM_MASK;
-
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *mut u32,
-                        reg_ctrl,
-                    );
-                }
-
-                // Clear RX status register RX complete indication but preserve
-                // error bits if there is any
-                write_reg(
-                    (instance_p.config.base_address
-                        + FXMAC_QUEUE_REGISTER_OFFSET(FXMAC_INTQ1_STS_OFFSET, rx_queue_id))
-                        as *mut u32,
-                    FXMAC_INTQUESR_RXUBR_MASK,
-                );
-                FXmacRecvIsrHandler(instance_p);
-
-                if reg_rxsr != 0 {
-                    FXmacErrorHandler(instance_p, FXMAC_RECV as u8, reg_rxsr);
-                }
+            if reg_rxsr != 0 {
+                FXmacErrorHandler(instance_p, FXMAC_RECV as u8, reg_rxsr);
             }
         }
     }

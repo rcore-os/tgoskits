@@ -1,0 +1,8 @@
+[submodule "apps/starry/cpu-video-test/assets"]
+	path = apps/starry/cpu-video-test/assets
+	url = https://github.com/Lfan-ke/hw4os-s5d1t2
+	branch = media
+[submodule "apps/starry/cpu-audio-test/assets"]
+	path = apps/starry/cpu-audio-test/assets
+	url = https://github.com/Lfan-ke/hw4os-s5d1t2
+	branch = media

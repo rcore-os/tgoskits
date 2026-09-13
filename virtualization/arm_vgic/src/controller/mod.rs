@@ -12,7 +12,7 @@ use alloc::{
     vec::Vec,
 };
 
-use ax_kspin::SpinNoIrq;
+use ax_sync::{SpinLock, SpinLockIrqSaveGuard};
 use axdevice_base::ItsId;
 pub use binding::GicV3VcpuBinding;
 
@@ -57,7 +57,23 @@ struct ControllerInner {
     // while the vCPU run path is folding LR state on the same CPU. Saving
     // local IRQ state before taking the canonical state lock prevents that
     // re-entry from spinning on a lock interrupted code already owns.
-    state: SpinNoIrq<ControllerState>,
+    state: ControllerStateLock,
+}
+
+struct ControllerStateLock(SpinLock<ControllerState>);
+
+impl ControllerStateLock {
+    const fn new(state: ControllerState) -> Self {
+        Self(SpinLock::new(state))
+    }
+
+    fn lock(&self) -> SpinLockIrqSaveGuard<'_, ControllerState> {
+        self.0.lock_irqsave()
+    }
+
+    fn lock_irqsave(&self) -> SpinLockIrqSaveGuard<'_, ControllerState> {
+        self.lock()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -214,7 +230,7 @@ impl GicV3Controller {
                 gicv3_config: Some(config),
                 backend,
                 guest_memory,
-                state: SpinNoIrq::new(ControllerState {
+                state: ControllerStateLock::new(ControllerState {
                     distributor,
                     redistributors: BTreeMap::new(),
                     spi_backings: BTreeMap::new(),
@@ -255,7 +271,7 @@ impl GicV3Controller {
                 gicv3_config,
                 backend,
                 guest_memory,
-                state: SpinNoIrq::new(ControllerState {
+                state: ControllerStateLock::new(ControllerState {
                     distributor,
                     redistributors: BTreeMap::new(),
                     spi_backings: BTreeMap::new(),
@@ -295,7 +311,7 @@ impl GicV3Controller {
                 operation: "attach GICv3 vCPU",
             });
         }
-        let mut state = self.inner.state.lock();
+        let mut state = self.inner.state.lock_irqsave();
         if state.redistributors.contains_key(&vcpu) {
             return Err(VgicError::ResourceConflict {
                 resource: "vCPU attachment",
@@ -327,7 +343,7 @@ impl GicV3Controller {
 
     /// Validates and records the trigger mode of one software SPI input.
     pub fn configure_spi_input(&self, spi: SpiId, trigger: TriggerMode) -> VgicResult {
-        let mut state = self.inner.state.lock();
+        let mut state = self.inner.state.lock_irqsave();
         state.distributor.interrupt(spi)?;
         match state.spi_backings.get(&spi).copied() {
             Some(SpiBacking::Software) => {}
@@ -351,7 +367,7 @@ impl GicV3Controller {
     /// Updates the aggregate electrical level of one SPI input.
     pub fn set_spi_level(&self, spi: SpiId, asserted: bool) -> VgicResult {
         let wake = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             state.require_software_spi(spi, &self.inner.config, "set SPI level")?;
             state.distributor.set_level(spi, asserted)?;
             if !asserted {
@@ -372,7 +388,7 @@ impl GicV3Controller {
     /// Delivers one edge on an SPI input.
     pub fn pulse_spi(&self, spi: SpiId) -> VgicResult {
         let wake = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             state.require_software_spi(spi, &self.inner.config, "pulse SPI")?;
             state.distributor.pulse(spi)?;
             state.queue_spi_if_deliverable(spi)?
@@ -383,7 +399,7 @@ impl GicV3Controller {
     /// Updates one vCPU-private PPI input.
     pub fn set_ppi_level(&self, vcpu: GicVcpuId, ppi: PpiId, asserted: bool) -> VgicResult {
         let wake = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             let cpu_interface_loaded = state.active_vcpus.contains(&vcpu);
             state
                 .redistributor_mut(vcpu, "set PPI level")?
@@ -402,7 +418,7 @@ impl GicV3Controller {
     ) -> VgicResult {
         self.inner
             .state
-            .lock()
+            .lock_irqsave()
             .redistributor_mut(vcpu, "configure PPI input")?
             .set_ppi_trigger(ppi, trigger);
         Ok(())
@@ -411,7 +427,7 @@ impl GicV3Controller {
     /// Pulses one vCPU-private PPI input.
     pub fn pulse_ppi(&self, vcpu: GicVcpuId, ppi: PpiId) -> VgicResult {
         let wake = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             state.redistributor_mut(vcpu, "pulse PPI")?.pulse_ppi(ppi);
             state.queue_local_if_deliverable(vcpu, IntId::Ppi(ppi))?
         };
@@ -421,11 +437,11 @@ impl GicV3Controller {
     /// Sends an SGI using explicit architectural target semantics.
     pub fn send_sgi(&self, source: GicVcpuId, sgi: SgiId, targets: SgiTarget) -> VgicResult {
         let target_ids = {
-            let state = self.inner.state.lock();
+            let state = self.inner.state.lock_irqsave();
             state.resolve_sgi_targets(source, &targets)?.0
         };
         let wakes = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             let mut wakes = Vec::with_capacity(target_ids.len());
             for target in target_ids {
                 state
@@ -493,7 +509,7 @@ impl GicV3Controller {
                 detail: alloc::format!("this controller has no ITS {its:?} capability"),
             });
         }
-        let mut state = self.inner.state.lock();
+        let mut state = self.inner.state.lock_irqsave();
         match state.msi_backings.get(&(its, device, event)).copied() {
             Some(MsiBacking::Software {
                 reserved_lpi: existing,
@@ -532,7 +548,7 @@ impl GicV3Controller {
     /// Signals one MSI through a specific per-VM ITS.
     pub fn signal_msi_for(&self, its: ItsId, device: ItsDeviceId, event: EventId) -> VgicResult {
         let backing = {
-            let state = self.inner.state.lock();
+            let state = self.inner.state.lock_irqsave();
             state.msi_backings.get(&(its, device, event)).copied()
         };
         match backing {
@@ -553,7 +569,7 @@ impl GicV3Controller {
             }
         }
         let wake = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_irqsave();
             let (lpi, target) = state
                 .its
                 .get(&its)
@@ -590,7 +606,7 @@ impl GicV3Controller {
         vcpu: Option<GicVcpuId>,
         intid: IntId,
     ) -> VgicResult<InterruptState> {
-        self.inner.state.lock().interrupt_state(vcpu, intid)
+        self.inner.state.lock_irqsave().interrupt_state(vcpu, intid)
     }
 
     /// Returns the number of pending entries waiting for an LR on one vCPU.
@@ -598,7 +614,7 @@ impl GicV3Controller {
         Ok(self
             .inner
             .state
-            .lock()
+            .lock_irqsave()
             .redistributor(vcpu, "query pending count")?
             .pending_count())
     }
@@ -608,7 +624,7 @@ impl GicV3Controller {
         Ok(self
             .inner
             .state
-            .lock()
+            .lock_irqsave()
             .redistributor(vcpu, "query pending interrupt")?
             .has_pending_delivery())
     }

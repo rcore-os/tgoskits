@@ -1,11 +1,11 @@
 use core::arch::asm;
 
 use num_align::NumAlign;
-use page_table_generic::{MapConfig, MemAttributes, PteConfig};
+use page_table_generic::MapConfig;
 
 use crate::{
     console::print_mapping,
-    mem::{__kimage_va, __va, MB, PageTableInfo, cpu_area_phys_to_virt},
+    mem::{__kimage_va, __va, MB, MemAttributes, PageTableInfo, PteConfig, cpu_area_phys_to_virt},
     smp::PerCpuMeta,
 };
 
@@ -77,7 +77,6 @@ fn setup_page_table() -> anyhow::Result<()> {
     let mut table = crate::mem::mmu::new_boot_table();
 
     let ram_pte = PteConfig {
-        valid: true,
         read: true,
         writable: true,
         executable: true,
@@ -149,7 +148,6 @@ fn setup_page_table() -> anyhow::Result<()> {
             paddr: cpu_area_region.start.into(),
             size: cpu_area_region.len(),
             pte: PteConfig {
-                valid: true,
                 read: true,
                 writable: true,
                 executable: true,
@@ -162,13 +160,16 @@ fn setup_page_table() -> anyhow::Result<()> {
     }
 
     let tb_addr = table.root_paddr();
-    println!("Boot page table at physical address: {:#x}", tb_addr.raw());
+    println!(
+        "Boot page table at physical address: {:#x}",
+        tb_addr.as_usize()
+    );
 
     crate::mem::mmu::set_boot_table(table);
-    crate::set_kernel_page_table_paddr(tb_addr.raw());
+    crate::set_kernel_page_table_paddr(tb_addr.as_usize());
     let _ = PageTableInfo {
         asid: 0,
-        addr: tb_addr.raw(),
+        addr: tb_addr.as_usize(),
     };
 
     Ok(())

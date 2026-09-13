@@ -2,15 +2,20 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
+use alloc::{boxed::Box, sync::Arc, vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_sync::SpinLock as Mutex;
 use descriptor::{RING_END, RxDesc, TxDesc};
-use dma_api::{DeviceDma, DmaOp};
+use dma_api::DeviceDma;
 use log::info;
 use mmio_api::{Mmio, MmioAddr, MmioOp};
 use queue::{QueueStart, QueueStartState, Rtl8125RxQueue, Rtl8125TxQueue};
-use rdif_eth::{Event, IRxQueue, ITxQueue, Interface};
+use rdif_eth::{
+    FixedNetControl, NetDevice, NetDeviceInfo, NetDeviceParts, NetError, NetHardIrqEndpoint,
+    NetHardIrqHandler, NetHardIrqResult, NetIrqSnapshot, NetIrqSourceId, NetPollGroupId,
+    NetPollGroupParts, NetPollIrqControl, NetQueueId, NetQueuePairParts, NetRearmResult,
+};
 use registers::*;
 
 mod descriptor;
@@ -19,24 +24,21 @@ mod queue;
 mod registers;
 
 const DRIVER_NAME: &str = "realtek-rtl8125";
-const QUEUE_ID0: usize = 0;
+const QUEUE_ID0: NetQueueId = NetQueueId::new(0);
+const GROUP_ID0: NetPollGroupId = NetPollGroupId::new(0);
+const IRQ_SOURCE0: NetIrqSourceId = NetIrqSourceId::new(0);
 const QUEUE_SIZE: usize = 256;
 const RX_QUEUE_CONFIG_SIZE: usize = QUEUE_SIZE + 1;
 const RX_START_THRESHOLD: usize = QUEUE_SIZE;
 const MAX_PACKET: usize = 2048;
 const RX_BUF_SIZE: usize = 2048;
 const DMA_ALIGN: usize = 256;
-const DMA_CACHE_LINE_SIZE: usize = 64;
-const RX_DESC_PER_CACHE_LINE: usize = DMA_CACHE_LINE_SIZE / core::mem::size_of::<RxDesc>();
-const RX_DEFERRED_REFILL_CAPACITY: usize = QUEUE_SIZE;
 const LINK_DOWN_DROP_LOG_INTERVAL: u64 = 64;
-const EARLY_PACKET_LOG_COUNT: u64 = 8;
 const TX_SUBMIT_LOG_INTERVAL: u64 = 16;
 const TX_RECLAIM_LOG_INTERVAL: u64 = 64;
 const RX_RECLAIM_LOG_INTERVAL: u64 = 64;
 const RX_IDLE_LOG_INTERVAL: u64 = 262_144;
 const RX_OVERFLOW_REARM_IDLE_POLLS: u64 = 2048;
-const TX_LINK_SAMPLE_INTERVAL: u64 = 64;
 const OCP_STD_PHY_BASE: u32 = 0xa400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,10 +93,9 @@ pub struct Rtl8125 {
     dma: DeviceDma,
     mac: [u8; 6],
     chip: ChipVersion,
-    tx_created: bool,
-    rx_created: bool,
     phy_ocp_base: u32,
     queue_start: QueueStart,
+    link_up: Arc<AtomicBool>,
 }
 
 impl Rtl8125 {
@@ -105,14 +106,12 @@ impl Rtl8125 {
     pub fn new(
         bar_addr: impl Into<MmioAddr>,
         bar_size: usize,
-        dma_mask: u64,
-        dma_op: &'static dyn DmaOp,
+        dma: DeviceDma,
         mmio_op: &'static dyn MmioOp,
     ) -> Result<Self> {
         mmio_api::init(mmio_op);
         let mmio = mmio_api::ioremap(bar_addr.into(), bar_size.max(RTL8125_REGS_SIZE))?;
         let regs = Regs::new(mmio.as_nonnull_ptr());
-        let dma = DeviceDma::new_legacy(dma_mask, dma_op);
         let xid = rtl8125_xid(regs);
         let chip = chip_version(xid);
 
@@ -122,12 +121,12 @@ impl Rtl8125 {
             dma,
             mac: [0; 6],
             chip,
-            tx_created: false,
-            rx_created: false,
             phy_ocp_base: OCP_STD_PHY_BASE,
             queue_start: Arc::new(Mutex::new(QueueStartState::default())),
+            link_up: Arc::new(AtomicBool::new(false)),
         };
         dev.init()?;
+        dev.link_up.store(dev.regs.link_up(), Ordering::Release);
         info!(
             "RTL8125 device initialized: chip={:?}, xid={:#x}, \
              mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, status={:?}",
@@ -145,14 +144,15 @@ impl Rtl8125 {
     }
 
     pub fn init(&mut self) -> Result<()> {
-        self.disable_irq();
+        self.regs.write_interrupt_mask(0);
         self.ack_events(u32::MAX);
         self.reset()?;
         self.hw_init_8125()?;
 
         self.mac = self.read_mac_address()?;
         self.set_mac_address(self.mac);
-        self.regs.configure_cplus(self.dma.dma_mask());
+        self.regs
+            .configure_cplus(self.dma.info().constraints().addr_mask);
         self.regs.write_default_rx_config();
         self.regs.write_default_tx_config();
         self.regs.write_rx_max_size(RX_BUF_SIZE as u16 + 1);
@@ -216,21 +216,23 @@ impl rdif_eth::DriverGeneric for Rtl8125 {
     }
 }
 
-impl Interface for Rtl8125 {
-    fn mac_address(&self) -> [u8; 6] {
-        self.mac
-    }
+impl NetDevice for Rtl8125 {
+    fn into_parts(self: Box<Self>) -> core::result::Result<NetDeviceParts, NetError> {
+        let Rtl8125 {
+            regs,
+            _mmio,
+            dma,
+            mac,
+            chip: _,
+            phy_ocp_base: _,
+            queue_start,
+            link_up,
+        } = *self;
 
-    fn create_tx_queue(&mut self) -> Option<Box<dyn ITxQueue>> {
-        if self.tx_created {
-            return None;
-        }
-
-        let mut desc = self
-            .dma
+        let mut tx_desc = dma
             .coherent_array_zero_with_align::<TxDesc>(QUEUE_SIZE, DMA_ALIGN)
-            .ok()?;
-        desc.set_cpu(
+            .map_err(NetError::from)?;
+        tx_desc.set_cpu(
             QUEUE_SIZE - 1,
             TxDesc {
                 opts1: RING_END,
@@ -240,49 +242,42 @@ impl Interface for Rtl8125 {
         );
 
         {
-            let mut start = self.queue_start.lock();
-            start.tx_base = Some(desc.dma_addr().as_u64());
+            // SAFETY: queue servicing excludes local re-entry and this raw
+            // lock serializes concurrent queue state across CPUs.
+            let mut start = unsafe { queue_start.lock_raw() };
+            start.tx_base = Some(tx_desc.dma_addr().as_u64());
         }
-        self.tx_created = true;
-        self.maybe_start_queues();
 
-        Some(queue::boxed_tx(Rtl8125TxQueue {
-            regs: self.regs,
-            desc,
-            dma_mask: self.dma.dma_mask(),
-            bus_addrs: [None; QUEUE_SIZE],
+        let tx = Rtl8125TxQueue {
+            regs,
+            desc: tx_desc,
+            dma_mask: dma.info().constraints().addr_mask,
+            buffers: core::array::from_fn(|_| None),
             next_submit: 0,
             next_reclaim: 0,
-            link_up: None,
+            link_up: Arc::clone(&link_up),
             link_down_drops: 0,
             submitted: 0,
             reclaimed: 0,
-        }))
-    }
+            notification: queue::TxNotificationState::default(),
+        };
 
-    fn create_rx_queue(&mut self) -> Option<Box<dyn IRxQueue>> {
-        if self.rx_created {
-            return None;
-        }
-
-        let desc = self
-            .dma
+        let rx_desc = dma
             .coherent_array_zero_with_align::<RxDesc>(QUEUE_SIZE, DMA_ALIGN)
-            .ok()?;
+            .map_err(NetError::from)?;
 
         {
-            let mut start = self.queue_start.lock();
-            start.rx_base = Some(desc.dma_addr().as_u64());
+            // SAFETY: see the matching queue-start acquisition above.
+            let mut start = unsafe { queue_start.lock_raw() };
+            start.rx_base = Some(rx_desc.dma_addr().as_u64());
         }
-        self.rx_created = true;
-        self.maybe_start_queues();
 
-        Some(queue::boxed_rx(Rtl8125RxQueue {
-            regs: self.regs,
-            desc,
-            dma_mask: self.dma.dma_mask(),
-            start: self.queue_start.clone(),
-            bus_addrs: [None; QUEUE_SIZE],
+        let rx = Rtl8125RxQueue {
+            regs,
+            desc: rx_desc,
+            dma_mask: dma.info().constraints().addr_mask,
+            start: queue_start.clone(),
+            buffers: core::array::from_fn(|_| None),
             next_submit: 0,
             next_reclaim: 0,
             idle_polls: 0,
@@ -290,61 +285,136 @@ impl Interface for Rtl8125 {
             submitted: 0,
             reclaimed: 0,
             rx_errors: 0,
-            deferred_refill: VecDeque::with_capacity(RX_DEFERRED_REFILL_CAPACITY),
-        }))
-    }
+        };
 
-    fn enable_irq(&mut self) {
-        self.ack_events(u32::MAX);
-        self.regs.write_interrupt_mask(DEFAULT_IRQ_MASK);
+        Ok(NetDeviceParts {
+            info: NetDeviceInfo::new(DRIVER_NAME, mac),
+            control: Box::new(FixedNetControl::new(mac)),
+            wifi_control: None,
+            poll_groups: vec![NetPollGroupParts {
+                id: GROUP_ID0,
+                queues: NetQueuePairParts {
+                    tx: queue::boxed_tx(tx),
+                    rx: queue::boxed_rx(rx),
+                },
+                irq_control: Box::new(Rtl8125IrqControl {
+                    regs,
+                    _mmio,
+                    queue_start,
+                    link_up: Arc::clone(&link_up),
+                }),
+                owner_startup: None,
+                irq_endpoints: vec![NetHardIrqEndpoint::new(
+                    IRQ_SOURCE0,
+                    Box::new(Rtl8125IrqHandler { regs, link_up }),
+                )],
+            }],
+        })
     }
+}
 
-    fn disable_irq(&mut self) {
+struct Rtl8125IrqControl {
+    regs: Regs,
+    _mmio: Mmio,
+    queue_start: QueueStart,
+    link_up: Arc<AtomicBool>,
+}
+
+impl NetPollIrqControl for Rtl8125IrqControl {
+    fn quiesce(&mut self) -> core::result::Result<(), NetError> {
         self.regs.write_interrupt_mask(0);
+        self.regs.commit();
+        Ok(())
     }
 
-    fn is_irq_enabled(&self) -> bool {
-        self.regs.read_interrupt_mask() != 0
+    fn shutdown(&mut self) -> core::result::Result<(), NetError> {
+        self.regs.write_interrupt_mask(0);
+        self.regs.disable_tx_rx();
+        self.regs.commit();
+        self.regs.request_reset();
+        for _ in 0..100_000 {
+            if !self.regs.reset_pending() {
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
+        Err(NetError::DmaShutdownUnconfirmed)
     }
 
-    fn handle_irq(&mut self) -> Event {
-        rtl8125_irq_event(self.regs)
-    }
+    fn rearm_and_check(
+        &mut self,
+        _now_nanos: u64,
+    ) -> core::result::Result<NetRearmResult, NetError> {
+        let started = {
+            // SAFETY: the owner CPU is the only task-context mutator after
+            // publication; this read only checks initialization completion.
+            unsafe { self.queue_start.lock_raw() }.started
+        };
+        if !started {
+            return Err(NetError::InvalidParts);
+        }
 
-    fn take_irq_handler(&mut self) -> Option<rdif_eth::BIrqHandler> {
-        Some(Box::new(Rtl8125IrqHandler { regs: self.regs }))
+        let before_status = self.regs.read_interrupt_status();
+        let before = rtl8125_irq_snapshot(before_status);
+        self.regs.write_interrupt_status(u32::MAX);
+        self.regs.write_interrupt_mask(DEFAULT_IRQ_MASK);
+        self.regs.commit();
+        let after_status = self.regs.read_interrupt_status();
+        if irq_has_link_change(before_status | after_status) {
+            self.link_up.store(self.regs.link_up(), Ordering::Release);
+        }
+        let pending = before.union(rtl8125_irq_snapshot(after_status));
+        if pending == NetIrqSnapshot::empty() {
+            Ok(NetRearmResult::Idle)
+        } else {
+            self.regs.write_interrupt_mask(0);
+            self.regs.write_interrupt_status(after_status);
+            self.regs.commit();
+            Ok(NetRearmResult::WorkPending(pending))
+        }
     }
 }
 
 struct Rtl8125IrqHandler {
     regs: Regs,
+    link_up: Arc<AtomicBool>,
 }
 
-impl rdif_eth::IrqHandler for Rtl8125IrqHandler {
-    fn handle_irq(&mut self) -> Event {
-        rtl8125_irq_event(self.regs)
+impl NetHardIrqHandler for Rtl8125IrqHandler {
+    fn handle_irq(&mut self) -> NetHardIrqResult {
+        let status = self.regs.read_interrupt_status();
+        let snapshot = rtl8125_irq_snapshot(status);
+        if snapshot == NetIrqSnapshot::empty() {
+            return NetHardIrqResult::Spurious;
+        }
+
+        if irq_has_link_change(status) {
+            self.link_up.store(self.regs.link_up(), Ordering::Release);
+        }
+
+        self.regs.write_interrupt_mask(0);
+        self.regs.write_interrupt_status(status);
+        self.regs.commit();
+        NetHardIrqResult::Schedule(snapshot)
     }
 }
 
-fn rtl8125_irq_event(regs: Regs) -> Event {
-    let status = regs.read_interrupt_status();
+fn rtl8125_irq_snapshot(status: u32) -> NetIrqSnapshot {
     if status == 0 || status == u32::MAX {
-        return Event::none();
+        return NetIrqSnapshot::empty();
     }
 
-    regs.write_interrupt_status(status);
-
-    let mut event = Event::none();
+    let mut snapshot = NetIrqSnapshot::empty();
     if irq_has_tx_event(status) {
-        event.tx_queue.insert(QUEUE_ID0);
+        snapshot = snapshot.union(NetIrqSnapshot::TX);
     }
     if irq_has_rx_event(status) {
-        event.rx_queue.insert(QUEUE_ID0);
+        snapshot = snapshot.union(NetIrqSnapshot::RX);
     }
     if irq_has_link_change(status) {
-        info!("RTL8125 irq link change: status={:?}", read_status(regs));
+        snapshot = snapshot.union(NetIrqSnapshot::ERROR);
     }
-    event
+    snapshot
 }
 
 fn rtl8125_xid(regs: Regs) -> u16 {

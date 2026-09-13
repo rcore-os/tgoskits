@@ -2,18 +2,18 @@ use core::any::Any;
 use std::{
     string::ToString,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     vec::Vec,
 };
 
-use ax_kspin::{SpinNoIrq, SpinRaw};
+use ax_std::os::arceos::sync::{Mutex, RawSpinLock};
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FilesystemOps, Metadata, MetadataUpdate,
-    NodeFlags, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult,
-    WeakDirEntry,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FilesystemOps,
+    Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference,
+    RenameOptions, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
 
 const WAIT_UNTIL_RETRY_LIMIT: usize = 10_000_000;
@@ -33,17 +33,17 @@ pub fn run() -> crate::TestResult {
 }
 
 fn run_spin_no_irq_counter() {
-    static GLOBAL: SpinNoIrq<usize> = SpinNoIrq::new(0);
-    *GLOBAL.lock() = 0;
+    static GLOBAL: RawSpinLock<usize> = RawSpinLock::new(0);
+    *GLOBAL.lock_irqsave() = 0;
 
-    let shared = Arc::new(SpinNoIrq::new(0usize));
+    let shared = Arc::new(RawSpinLock::new(0usize));
     let mut tasks = Vec::new();
     for _ in 0..4 {
         let shared = shared.clone();
         tasks.push(thread::spawn(move || {
             for _ in 0..32 {
-                *shared.lock() += 1;
-                *GLOBAL.lock() += 1;
+                *shared.lock_irqsave() += 1;
+                *GLOBAL.lock_irqsave() += 1;
                 thread::yield_now();
             }
         }));
@@ -53,8 +53,8 @@ fn run_spin_no_irq_counter() {
         task.join().unwrap();
     }
 
-    assert_eq!(*shared.lock(), 4 * 32);
-    assert_eq!(*GLOBAL.lock(), 4 * 32);
+    assert_eq!(*shared.lock_irqsave(), 4 * 32);
+    assert_eq!(*GLOBAL.lock_irqsave(), 4 * 32);
 }
 
 fn wait_until(stage: &AtomicUsize, expected: usize) {
@@ -101,17 +101,19 @@ fn mutex_two_task_abba() {
     });
 
     wait_until(&stage, 1);
-    let _guard_b = lock_b.lock();
-    assert!(
-        lock_a.try_lock().is_some(),
-        "try_lock(A) unexpectedly failed without lockdep"
-    );
+    {
+        let _guard_b = lock_b.lock();
+        assert!(
+            lock_a.try_lock().is_some(),
+            "try_lock(A) unexpectedly failed without lockdep"
+        );
+    }
     handle.join().unwrap();
 }
 
 fn spin_single_task_abba() {
-    let lock_a = SpinRaw::new(0usize);
-    let lock_b = SpinRaw::new(0usize);
+    let lock_a = RawSpinLock::new(0usize);
+    let lock_b = RawSpinLock::new(0usize);
 
     {
         let _guard_a = lock_a.lock();
@@ -126,8 +128,8 @@ fn spin_single_task_abba() {
 }
 
 fn spin_two_task_abba() {
-    let lock_a = Arc::new(SpinRaw::new(0usize));
-    let lock_b = Arc::new(SpinRaw::new(0usize));
+    let lock_a = Arc::new(RawSpinLock::new(0usize));
+    let lock_b = Arc::new(RawSpinLock::new(0usize));
     let stage = Arc::new(AtomicUsize::new(0));
 
     let thread_lock_a = lock_a.clone();
@@ -135,22 +137,36 @@ fn spin_two_task_abba() {
     let thread_stage = stage.clone();
 
     let handle = thread::spawn(move || {
-        let _guard_a = thread_lock_a.lock();
-        let _guard_b = thread_lock_b.lock();
+        {
+            let _guard_a = thread_lock_a.lock();
+            let _guard_b = thread_lock_b.lock();
+        }
+        // The peer cannot touch either lock until stage 1 is published. Check
+        // this precondition here so early publication fails deterministically.
+        assert!(
+            thread_lock_a.try_lock().is_some(),
+            "stage 1 requires spin lock A to be released"
+        );
+        assert!(
+            thread_lock_b.try_lock().is_some(),
+            "stage 1 requires spin lock B to be released"
+        );
         thread_stage.store(1, Ordering::Release);
     });
 
     wait_until(&stage, 1);
-    let _guard_b = lock_b.lock();
-    assert!(
-        lock_a.try_lock().is_some(),
-        "try_lock(A) unexpectedly failed without lockdep"
-    );
+    {
+        let _guard_b = lock_b.lock();
+        assert!(
+            lock_a.try_lock().is_some(),
+            "try_lock(A) unexpectedly failed without lockdep"
+        );
+    }
     handle.join().unwrap();
 }
 
 fn mixed_single_task_abba() {
-    let lock_a = SpinRaw::new(0usize);
+    let lock_a = RawSpinLock::new(0usize);
     let lock_b = Mutex::new(0usize);
 
     {
@@ -166,7 +182,7 @@ fn mixed_single_task_abba() {
 }
 
 fn mixed_two_task_abba() {
-    let lock_a = Arc::new(SpinRaw::new(0usize));
+    let lock_a = Arc::new(RawSpinLock::new(0usize));
     let lock_b = Arc::new(Mutex::new(0usize));
     let stage = Arc::new(AtomicUsize::new(0));
 
@@ -183,17 +199,19 @@ fn mixed_two_task_abba() {
     });
 
     wait_until(&stage, 1);
-    let _guard_b = lock_b.lock();
-    assert!(
-        lock_a.try_lock().is_some(),
-        "try_lock(A) unexpectedly failed without lockdep"
-    );
+    {
+        let _guard_b = lock_b.lock();
+        assert!(
+            lock_a.try_lock().is_some(),
+            "try_lock(A) unexpectedly failed without lockdep"
+        );
+    }
     handle.join().unwrap();
 }
 
 fn mixed_ms_single_task_abba() {
     let lock_a = Mutex::new(0usize);
-    let lock_b = SpinRaw::new(0usize);
+    let lock_b = RawSpinLock::new(0usize);
 
     {
         let _guard_a = lock_a.lock();
@@ -209,7 +227,7 @@ fn mixed_ms_single_task_abba() {
 
 fn mixed_ms_two_task_abba() {
     let lock_a = Arc::new(Mutex::new(0usize));
-    let lock_b = Arc::new(SpinRaw::new(0usize));
+    let lock_b = Arc::new(RawSpinLock::new(0usize));
     let stage = Arc::new(AtomicUsize::new(0));
 
     let thread_lock_a = lock_a.clone();
@@ -225,11 +243,13 @@ fn mixed_ms_two_task_abba() {
     });
 
     wait_until(&stage, 1);
-    let _guard_b = lock_b.lock();
-    assert!(
-        lock_a.try_lock().is_some(),
-        "try_lock(A) unexpectedly failed without lockdep"
-    );
+    {
+        let _guard_b = lock_b.lock();
+        assert!(
+            lock_a.try_lock().is_some(),
+            "try_lock(A) unexpectedly failed without lockdep"
+        );
+    }
     handle.join().unwrap();
 }
 
@@ -331,7 +351,7 @@ impl NodeOps for TestDir {
 }
 
 impl DirNodeOps for TestDir {
-    fn read_dir(&self, _offset: u64, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+    fn read_dir(&self, _cursor: DirectoryCursor, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         Ok(0)
     }
 
@@ -353,6 +373,17 @@ impl DirNodeOps for TestDir {
         Err(VfsError::Unsupported)
     }
 
+    fn create_symlink(
+        &self,
+        _name: &str,
+        _target: &str,
+        _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
+    ) -> VfsResult<DirEntry> {
+        Err(VfsError::Unsupported)
+    }
+
     fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
         Err(VfsError::Unsupported)
     }
@@ -361,7 +392,13 @@ impl DirNodeOps for TestDir {
         Err(VfsError::Unsupported)
     }
 
-    fn rename(&self, _src_name: &str, _dst_dir: &DirNode, dst_name: &str) -> VfsResult<()> {
+    fn rename(
+        &self,
+        _src_name: &str,
+        _dst_dir: &DirNode,
+        dst_name: &str,
+        _options: RenameOptions,
+    ) -> VfsResult<()> {
         if dst_name == "new" {
             self.renamed.store(true, Ordering::Release);
         }

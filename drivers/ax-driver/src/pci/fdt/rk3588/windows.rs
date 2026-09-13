@@ -92,8 +92,8 @@ pub(super) fn prop_str_list(node: &Node, prop_name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub(super) fn live_fdt() -> Result<Fdt, OnProbeError> {
-    rdrive::with_fdt(Clone::clone).ok_or_else(|| OnProbeError::other("live FDT not found"))
+pub(super) fn live_fdt() -> Result<&'static Fdt, OnProbeError> {
+    rdrive::fdt_ref().ok_or_else(|| OnProbeError::other("live FDT not found"))
 }
 
 pub(super) fn align_up_4k(size: usize) -> usize {

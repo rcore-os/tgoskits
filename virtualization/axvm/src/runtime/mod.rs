@@ -13,17 +13,22 @@
 // limitations under the License.
 
 pub(crate) mod hvc;
-mod ivc;
+pub(crate) mod ivc;
 pub(crate) mod vcpus;
 
 mod dispatcher;
+mod kick;
 mod queue;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Re-exported for [`VmRuntimeHandle`](crate::vm::VmRuntimeHandle) which will
 // embed the dispatcher as a field and expose it to the vCPU run loop.
 #[allow(unused_imports)]
 pub(crate) use dispatcher::VcpuIrqDispatcher;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use kick::HardIrqKick;
+pub(crate) use kick::VcpuKickHandle;
+pub(crate) use queue::QueuedVcpuInterrupt;
 
 use crate::{AxVmError, AxVmResult, StopReason, VmStatus, ax_err};
 
@@ -49,9 +54,9 @@ pub fn start() {
 }
 
 /// Start all registered VMs and return the IDs that entered Running.
-pub fn launch_all() -> alloc::vec::Vec<usize> {
+pub fn launch_all() -> std::vec::Vec<usize> {
     info!("VMM starting, booting VMs...");
-    let mut started = alloc::vec::Vec::new();
+    let mut started = std::vec::Vec::new();
     for vm in crate::get_vm_list() {
         match vm.start() {
             Ok(_) => {
@@ -108,24 +113,78 @@ pub fn start_vm(vm_id: usize) -> AxVmResult {
     Ok(())
 }
 
-/// Wake the primary vCPU of a VM.
+/// Publishes device work and kicks the primary vCPU of a VM.
 pub fn notify_vm(vm_id: usize) -> AxVmResult {
     let vm = vm_by_id(vm_id)?;
-    notify_vm_with_device_poll(
-        || vcpus::poll_vm_devices(&vm),
-        || vcpus::notify_primary_vcpu(vm_id),
-    );
-    Ok(())
-}
-
-fn notify_vm_with_device_poll(poll_devices: impl FnOnce(), wake_vcpu: impl FnOnce()) {
-    poll_devices();
-    wake_vcpu();
+    // `WaitQueue::wait_until` evaluates the vCPU wake predicate while it
+    // holds both the wait-queue and run-queue locks. That predicate may read
+    // the VM lifecycle state and therefore lock `vm.machine`. Never retain
+    // `vm.machine` while notifying the same wait queue, or the notifier and a
+    // vCPU entering WFI can deadlock in opposite lock order.
+    let runtime = vm.runtime_handle()?;
+    runtime.publish_device_poll_request();
+    runtime.request_vcpu(0)
 }
 
 pub fn stop_vm(vm_id: usize) -> AxVmResult {
     let vm = vm_by_id(vm_id)?;
+    if matches!(vm.status(), VmStatus::Running) {
+        // `start_vm` flips the status to `Running` synchronously while the
+        // vCPU task may still be queued on another CPU. Requesting a stop in
+        // that window strands the task in its startup gate (which needs a
+        // `Running` window it already missed), so wait for the first vCPU
+        // entry before accepting the stop.
+        wait_until_vcpu_entered(|| vm.running_vcpu_count() > 0, || vm.stopping())?;
+    }
     vm.stop(StopReason::Forced)?;
+    vcpus::notify_all_vcpus(vm_id);
+    Ok(())
+}
+
+/// Boundedly wait for at least one vCPU task to enter the guest run loop
+/// before a request-stop is accepted.
+///
+/// `start_vm` flips the VM status to `Running` synchronously while the vCPU
+/// task may still be queued on another CPU. If the stop is accepted in that
+/// window, the task's startup gate blocks on a `Running` window it already
+/// missed and parks forever, so the VM never reaches `Stopped`. Waiting for
+/// the first vCPU entry closes that window.
+///
+/// The wait is bounded (`MAX_YIELDS`, mirroring the `wait_until_stopped`
+/// pattern): a vCPU task that never runs yields an error instead of hanging
+/// the caller, leaving the VM `Running` so the stop can be retried.
+///
+/// `pub(crate)` because the destroy/reset quiesce path
+/// (`AxVM::stop_and_join_runtime`) applies the same guard: a client may POST
+/// `/start` and then immediately DELETE the VM, so `destroy()` must hold the
+/// request-stop until the first vCPU entry just like `stop_vm`.
+pub(crate) fn wait_until_vcpu_entered(
+    vcpu_entered: impl Fn() -> bool,
+    vm_stopping: impl Fn() -> bool,
+) -> AxVmResult {
+    const MAX_YIELDS: usize = 10_000;
+    for _ in 0..MAX_YIELDS {
+        if vcpu_entered() || vm_stopping() {
+            return Ok(());
+        }
+        crate::host::task::yield_now();
+    }
+    ax_err!(
+        BadState,
+        "vCPU task did not enter the guest before request-stop"
+    )
+}
+
+/// Pause a running VM.
+///
+/// `vm.pause()` flips the status to `Paused` synchronously; the running vCPUs
+/// observe the flag at their next run-loop iteration and park in the
+/// suspend-wait (`!suspending()`), so the guest actually suspends
+/// asynchronously. The notify wakes any vCPU parked in a WFI/event wait so it
+/// can reach that check.
+pub fn pause_vm(vm_id: usize) -> AxVmResult {
+    let vm = vm_by_id(vm_id)?;
+    vm.pause()?;
     vcpus::notify_all_vcpus(vm_id);
     Ok(())
 }
@@ -167,8 +226,10 @@ const fn missing_vm_error(vm_id: usize) -> AxVmError {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
-    use core::cell::RefCell;
+    use std::{
+        cell::Cell,
+        sync::{Arc, atomic::AtomicBool},
+    };
 
     use super::*;
 
@@ -195,15 +256,78 @@ mod tests {
     }
 
     #[test]
-    fn console_notification_polls_devices_before_waking_vcpu() {
-        let steps = RefCell::new(Vec::new());
-        notify_vm_with_device_poll(
-            || steps.borrow_mut().push("poll"),
+    fn device_notification_publishes_a_primary_vcpu_poll_request() {
+        let runtime = crate::vm::VmRuntimeHandle::new();
+        runtime.publish_device_poll_request();
+
+        assert!(runtime.device_poll_requested());
+    }
+
+    #[test]
+    fn request_stop_wait_returns_immediately_once_a_vcpu_has_entered() {
+        assert!(wait_until_vcpu_entered(|| true, || false).is_ok());
+    }
+
+    #[test]
+    fn request_stop_wait_bails_out_when_vm_is_already_stopping() {
+        assert!(wait_until_vcpu_entered(|| false, || true).is_ok());
+    }
+
+    #[test]
+    fn request_stop_wait_times_out_instead_of_accepting_a_never_entering_vcpu() {
+        let err = wait_until_vcpu_entered(|| false, || false).unwrap_err();
+
+        assert!(matches!(err, AxVmError::InvalidState { .. }));
+    }
+
+    #[test]
+    fn request_stop_waits_for_vcpu_entry_when_stop_precedes_entry() {
+        // Force the scheduling order that previously stranded the vCPU task:
+        // the request-stop arrives while no vCPU task has entered the guest
+        // run loop, and the task only enters after the wait has begun. The
+        // stop must be held back until entry, never accepted-and-stranded.
+        let entered = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::new(AtomicBool::new(false));
+        let first_poll = Arc::new(std::sync::Barrier::new(2));
+        let release_entered = Arc::new(std::sync::Barrier::new(2));
+
+        let entered_for_task = entered.clone();
+        let first_poll_for_task = first_poll.clone();
+        let release_entered_for_task = release_entered.clone();
+        let vcpu_task = std::thread::spawn(move || {
+            // The vCPU task is queued but has not entered the guest yet.
+            first_poll_for_task.wait();
+            release_entered_for_task.wait();
+            entered_for_task.store(true, Ordering::Release);
+        });
+
+        let entered_for_wait = entered.clone();
+        let stopping_for_wait = stopping.clone();
+        let poll_count = Cell::new(0);
+        let result = wait_until_vcpu_entered(
             || {
-                assert_eq!(steps.borrow().as_slice(), ["poll"]);
-                steps.borrow_mut().push("wake");
+                let is_entered = entered_for_wait.load(Ordering::Acquire);
+                if poll_count.get() == 0 {
+                    // First poll observed the pre-entry state. Only now release
+                    // the vCPU task to enter the guest, deterministically
+                    // ordering stop-before-entry.
+                    poll_count.set(1);
+                    first_poll.wait();
+                    release_entered.wait();
+                }
+                is_entered
             },
+            || stopping_for_wait.load(Ordering::Acquire),
         );
-        assert_eq!(steps.into_inner(), ["poll", "wake"]);
+
+        vcpu_task.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "stop must wait for vCPU entry, not strand it"
+        );
+        assert!(
+            entered.load(Ordering::Acquire),
+            "vCPU task must have entered the guest run loop"
+        );
     }
 }

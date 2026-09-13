@@ -1,0 +1,23 @@
+args = [
+  "-machine", "virt,gic-version=2",
+  "-m", "512M",
+  "-smp", "4",
+  "-nographic",
+  "-cpu", "cortex-a53",
+  "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-device", "virtio-net-pci,netdev=net0",
+  "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?m)^lockdep fatal violation\\s*$",
+]
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "echo STARRY_AARCH64_GICV2_BOOT_PASSED"
+success_regex = ["(?m)^STARRY_AARCH64_GICV2_BOOT_PASSED\\s*$"]

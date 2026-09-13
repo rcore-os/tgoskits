@@ -14,17 +14,10 @@
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
-use axdevice_base::{
-    AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceAccess, DeviceError,
-    DeviceId, DeviceRegistry, DmaGrant, InvalidResourceReason, Port, RegistryError, Resource,
-    StopGrant, SysRegAddr, TimerGrant, WakeGrant,
-};
-use axvm_types::{EmulatedDeviceConfig, GuestPhysAddr};
+use axdevice_base::*;
+use axvm_types::GuestPhysAddr;
 
-use crate::{
-    DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceLifecycle, DeviceManagerError,
-    DeviceManagerResult, DeviceServices, GuestRangeAllocatorKey, PollableDeviceOps,
-};
+use crate::{runtime_resources::*, *};
 
 /// Runtime backend for access-scoped virtual timer requests.
 pub trait TimerAccessPort: Send + Sync {
@@ -140,8 +133,9 @@ fn validate_bundle_grant_indices<T>(
 ///
 /// Construction mutates the registry through [`DeviceRegistry`]. Once shared
 /// with vCPUs, routing is read-only and every access enters through
-/// [`BusRouter::dispatch`]. Production construction always uses a factory and
-/// an atomic [`DeviceBundle`] registration.
+/// [`DeviceRuntime::try_read`] or [`DeviceRuntime::try_write`]. Production
+/// construction always uses a factory and an atomic [`DeviceBundle`]
+/// registration.
 pub struct DeviceRuntime {
     /// Registered devices (append-only; index is the DeviceId).
     devices: Vec<Arc<dyn Device>>,
@@ -151,18 +145,20 @@ pub struct DeviceRuntime {
     port_index: BTreeMap<u16, RangeEntry>,
     /// System register address → range entry (slot, count).
     sysreg_index: BTreeMap<u32, RangeEntry>,
-    /// Exclusive IRQ line → owning device slot.
-    irq_line_index: BTreeMap<u32, DeviceId>,
     /// Devices that require periodic polling.
     pollable_devices: Vec<Arc<dyn PollableDeviceOps>>,
+    /// Devices whose periodic progress requires scoped guest-memory DMA.
+    dma_pollable_devices: Vec<(DeviceId, Arc<dyn DmaPollableDeviceOps>, DmaGrant)>,
     /// Optional lifecycle capabilities in contribution registration order.
     lifecycle_devices: Vec<Arc<dyn DeviceLifecycle>>,
     /// Typed capabilities contributed during VM preparation.
     services: DeviceServices,
+    /// Planned controller, endpoint, and lease state.
+    planned: PlannedRuntimeResources,
     /// Devices explicitly granted access to guest memory during a routed access.
     ///
-    /// The grant is intentionally narrow: it is supplied only by the VM's MMIO
-    /// write path and exists only for the duration of that one access.
+    /// The grant is intentionally narrow: the VM supplies a guest-memory port
+    /// only for the duration of one device write or DMA poll callback.
     dma_grants: Vec<(DeviceId, DmaGrant)>,
     /// Devices explicitly granted timer scheduling during a routed access.
     timer_grants: Vec<(DeviceId, TimerGrant)>,
@@ -172,34 +168,199 @@ pub struct DeviceRuntime {
     stop_grants: Vec<(DeviceId, StopGrant)>,
     /// VM runtime access ports used after grant verification.
     access_ports: RuntimeAccessPorts,
+    /// Routed endpoint grants minted by successful PCI endpoint binding.
+    routed_grants: Vec<RoutedDeviceGrant>,
     /// Whether this runtime topology has been frozen after VM preparation.
     sealed: bool,
+    pci_roots: BTreeMap<DeviceNodeId, Arc<PciRootBinding>>,
+    pci_binding_leases: Vec<crate::pci::PciBindingLease>,
 }
 
 /// Stack-scoped metadata for one routed device access.
-struct RuntimeDeviceAccess<'a> {
+struct RuntimeDeviceContext<'runtime, 'memory> {
     device_id: DeviceId,
-    memory: Option<&'a mut dyn DeviceAccess>,
-    dma_grants: &'a [(DeviceId, DmaGrant)],
-    timer_grants: &'a [(DeviceId, TimerGrant)],
-    wake_grants: &'a [(DeviceId, WakeGrant)],
-    stop_grants: &'a [(DeviceId, StopGrant)],
-    access_ports: &'a RuntimeAccessPorts,
+    routed_context: RoutedContextKind,
+    memory: Option<&'memory mut dyn GuestMemoryAccess>,
+    dma_grants: &'runtime [(DeviceId, DmaGrant)],
+    timer_grants: &'runtime [(DeviceId, TimerGrant)],
+    wake_grants: &'runtime [(DeviceId, WakeGrant)],
+    stop_grants: &'runtime [(DeviceId, StopGrant)],
+    routed_grants: &'runtime [RoutedDeviceGrant],
+    access_ports: &'runtime RuntimeAccessPorts,
 }
 
-impl DeviceAccess for RuntimeDeviceAccess<'_> {
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RoutedContextKind {
+    Root,
+    Nested,
+}
+
+struct RuntimeRegistrationCheckpoint {
+    devices_len: usize,
+    dma_grants_len: usize,
+    timer_grants_len: usize,
+    wake_grants_len: usize,
+    stop_grants_len: usize,
+    pollable_devices_len: usize,
+    dma_pollable_devices_len: usize,
+    lifecycle_devices_len: usize,
+    routed_grants_len: usize,
+    pci_binding_leases_len: usize,
+    services_len: usize,
+    planned: PlannedRuntimeCheckpoint,
+}
+
+struct RuntimeRegistrationTransaction<'runtime> {
+    runtime: &'runtime mut DeviceRuntime,
+    checkpoint: RuntimeRegistrationCheckpoint,
+    root_node: DeviceNodeId,
+    root_inserted: bool,
+    committed: bool,
+}
+
+impl<'runtime> RuntimeRegistrationTransaction<'runtime> {
+    fn new(runtime: &'runtime mut DeviceRuntime, root_node: DeviceNodeId) -> Self {
+        let checkpoint = RuntimeRegistrationCheckpoint {
+            devices_len: runtime.devices.len(),
+            dma_grants_len: runtime.dma_grants.len(),
+            timer_grants_len: runtime.timer_grants.len(),
+            wake_grants_len: runtime.wake_grants.len(),
+            stop_grants_len: runtime.stop_grants.len(),
+            pollable_devices_len: runtime.pollable_devices.len(),
+            dma_pollable_devices_len: runtime.dma_pollable_devices.len(),
+            lifecycle_devices_len: runtime.lifecycle_devices.len(),
+            routed_grants_len: runtime.routed_grants.len(),
+            pci_binding_leases_len: runtime.pci_binding_leases.len(),
+            services_len: runtime.services.len(),
+            planned: runtime.planned.checkpoint(),
+        };
+        Self {
+            runtime,
+            checkpoint,
+            root_node,
+            root_inserted: false,
+            committed: false,
+        }
+    }
+
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for RuntimeRegistrationTransaction<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        self.runtime
+            .pci_binding_leases
+            .truncate(self.checkpoint.pci_binding_leases_len);
+        self.runtime
+            .routed_grants
+            .truncate(self.checkpoint.routed_grants_len);
+        if self.root_inserted {
+            self.runtime.pci_roots.remove(&self.root_node);
+        }
+        self.runtime.truncate_devices(self.checkpoint.devices_len);
+        self.runtime
+            .dma_grants
+            .truncate(self.checkpoint.dma_grants_len);
+        self.runtime
+            .timer_grants
+            .truncate(self.checkpoint.timer_grants_len);
+        self.runtime
+            .wake_grants
+            .truncate(self.checkpoint.wake_grants_len);
+        self.runtime
+            .stop_grants
+            .truncate(self.checkpoint.stop_grants_len);
+        self.runtime
+            .pollable_devices
+            .truncate(self.checkpoint.pollable_devices_len);
+        self.runtime
+            .dma_pollable_devices
+            .truncate(self.checkpoint.dma_pollable_devices_len);
+        self.runtime
+            .lifecycle_devices
+            .truncate(self.checkpoint.lifecycle_devices_len);
+        self.runtime.services.truncate(self.checkpoint.services_len);
+        self.runtime
+            .planned
+            .rollback(self.checkpoint.planned.clone());
+    }
+}
+
+impl RuntimeDeviceContext<'_, '_> {
+    fn has_grant<T>(&self, grants: &[(DeviceId, T)], matches_token: impl Fn(&T) -> bool) -> bool {
+        grants.iter().any(|(device_id, registered)| {
+            *device_id == self.device_id && matches_token(registered)
+        })
+    }
+
+    fn has_routed_grant(&self, grant: &RoutedDeviceGrant) -> bool {
+        self.routed_grants.iter().any(|registered| {
+            registered.binding_generation() == grant.binding_generation()
+                && registered.device_id() == grant.device_id()
+                && registered.same_token(grant)
+                && grant.admission_is_open()
+        })
+    }
+}
+
+impl DeviceContext for RuntimeDeviceContext<'_, '_> {
     fn device_id(&self) -> DeviceId {
         self.device_id
     }
+
+    fn with_routed_device(
+        &mut self,
+        grant: &RoutedDeviceGrant,
+        callback: &mut dyn FnMut(&mut dyn DeviceContext) -> DeviceResult,
+    ) -> DeviceResult {
+        if self.routed_context == RoutedContextKind::Nested {
+            return Err(DeviceError::Unsupported {
+                operation: "enter routed device context",
+                detail: "routed device contexts are single-hop capabilities".into(),
+            });
+        }
+        if !self.has_routed_grant(grant) {
+            return Err(DeviceError::Unsupported {
+                operation: "enter routed device context",
+                detail: "device has no matching routed-device grant".into(),
+            });
+        }
+        let transfers_memory = grant.dma_enabled();
+        let memory = if transfers_memory {
+            self.memory.take()
+        } else {
+            None
+        };
+        let mut nested = RuntimeDeviceContext {
+            device_id: grant.device_id(),
+            routed_context: RoutedContextKind::Nested,
+            memory,
+            dma_grants: self.dma_grants,
+            timer_grants: self.timer_grants,
+            wake_grants: self.wake_grants,
+            stop_grants: self.stop_grants,
+            routed_grants: self.routed_grants,
+            access_ports: self.access_ports,
+        };
+        let result = callback(&mut nested);
+        if transfers_memory {
+            self.memory = nested.memory;
+        }
+        result
+    }
+
     fn read_guest_memory(
         &mut self,
         grant: &DmaGrant,
         addr: GuestPhysAddr,
         data: &mut [u8],
     ) -> Result<(), DeviceError> {
-        if !self.dma_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.dma_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "read guest memory from device access",
                 detail: "device has no DMA memory grant".into(),
@@ -212,7 +373,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
                 operation: "read guest memory from device access",
                 detail: "this bus access has no DMA memory port".into(),
             })?;
-        memory.read_guest_memory(grant, addr, data)
+        memory.read(addr, data)
     }
     fn write_guest_memory(
         &mut self,
@@ -220,9 +381,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
         addr: GuestPhysAddr,
         data: &[u8],
     ) -> Result<(), DeviceError> {
-        if !self.dma_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.dma_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "write guest memory from device access",
                 detail: "device has no DMA memory grant".into(),
@@ -235,13 +394,11 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
                 operation: "write guest memory from device access",
                 detail: "this bus access has no DMA memory port".into(),
             })?;
-        memory.write_guest_memory(grant, addr, data)
+        memory.write(addr, data)
     }
 
     fn schedule_timer(&mut self, grant: &TimerGrant, deadline_ns: u64) -> Result<(), DeviceError> {
-        if !self.timer_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.timer_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "schedule timer from device access",
                 detail: "device has no timer grant".into(),
@@ -261,9 +418,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
     }
 
     fn wake_vcpu(&mut self, grant: &WakeGrant, vcpu_id: usize) -> Result<(), DeviceError> {
-        if !self.wake_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.wake_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "wake vCPU from device access",
                 detail: "device has no wake grant".into(),
@@ -282,9 +437,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
     }
 
     fn request_vm_stop(&mut self, grant: &StopGrant, reason: &str) -> Result<(), DeviceError> {
-        if !self.stop_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.stop_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "request VM stop from device access",
                 detail: "device has no stop grant".into(),
@@ -310,42 +463,29 @@ impl DeviceRuntime {
             mmio_index: BTreeMap::new(),
             port_index: BTreeMap::new(),
             sysreg_index: BTreeMap::new(),
-            irq_line_index: BTreeMap::new(),
             pollable_devices: Vec::new(),
+            dma_pollable_devices: Vec::new(),
             lifecycle_devices: Vec::new(),
             services: DeviceServices::new(),
+            planned: PlannedRuntimeResources::new(),
             dma_grants: Vec::new(),
             timer_grants: Vec::new(),
             wake_grants: Vec::new(),
             stop_grants: Vec::new(),
             access_ports: RuntimeAccessPorts::new(),
+            routed_grants: Vec::new(),
             sealed: false,
+            pci_roots: BTreeMap::new(),
+            pci_binding_leases: Vec::new(),
         }
     }
 
-    /// Builds all configured devices through registered factories.
-    pub fn build_with_factories(
-        configs: &[EmulatedDeviceConfig],
-        factories: &DeviceFactoryRegistry,
-        context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<Self> {
-        Self::build_with_factories_and_ports(configs, factories, context, RuntimeAccessPorts::new())
+    pub(crate) fn attach_access_ports(&mut self, access_ports: RuntimeAccessPorts) {
+        self.access_ports = access_ports;
     }
 
-    /// Builds all configured devices and attaches VM runtime access ports.
-    pub fn build_with_factories_and_ports(
-        configs: &[EmulatedDeviceConfig],
-        factories: &DeviceFactoryRegistry,
-        context: &DeviceBuildContext<'_>,
-        access_ports: RuntimeAccessPorts,
-    ) -> DeviceManagerResult<Self> {
-        let mut this = Self::empty();
-        this.access_ports = access_ports;
-        for config in configs {
-            this.register_factory_device(config, factories, context)?;
-        }
-        this.seal();
-        Ok(this)
+    pub(crate) const fn interrupt_registry(&self) -> &crate::interrupt::InterruptRegistry {
+        &self.planned.interrupts
     }
 
     /// Freezes this runtime topology after VM preparation.
@@ -363,42 +503,47 @@ impl DeviceRuntime {
         Ok(())
     }
 
-    /// Builds and atomically registers one factory-managed device.
-    pub(crate) fn register_factory_device(
-        &mut self,
-        config: &EmulatedDeviceConfig,
-        factories: &DeviceFactoryRegistry,
-        context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult {
-        self.ensure_unsealed("register factory device")?;
-        let bundle = factories.build(config, context)?;
-        self.register_bundle(bundle)
-    }
-
-    /// Allocates an IVC (Inter-VM Communication) channel of the specified size.
-    pub fn alloc_ivc_channel(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr> {
-        self.services
-            .require::<GuestRangeAllocatorKey>()?
-            .allocate(size)
-    }
-
-    /// Releases an IVC channel at the specified address and size.
-    pub fn release_ivc_channel(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult {
-        self.services
-            .require::<GuestRangeAllocatorKey>()?
-            .release(addr, size)
+    /// Returns a typed service contributed by one emulated device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no provider exists for `K`, or when `K` is a
+    /// multi-provider service that must be queried through a future explicit
+    /// multi-provider runtime API.
+    pub fn service<K: ServiceKey>(&self) -> DeviceManagerResult<Arc<K::Service>> {
+        self.services.require::<K>()
     }
 
     /// Registers a bundle atomically.  If any device fails to register,
     /// already-registered devices in this bundle are rolled back via
     /// `pop()` + index-key removal.
     pub fn register_bundle(&mut self, bundle: DeviceBundle) -> DeviceManagerResult {
+        if bundle.pci_function.is_some() || !bundle.services.all::<PciRootBindingKey>().is_empty() {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "register device bundle",
+                detail: "PCI bindings require resolved graph-node registration".into(),
+            });
+        }
+        self.register_bundle_inner(bundle)
+    }
+
+    fn register_bundle_inner(&mut self, bundle: DeviceBundle) -> DeviceManagerResult {
         self.ensure_unsealed("register device bundle")?;
         validate_bundle_grant_indices(
             bundle.devices.len(),
             &bundle.guest_memory_devices,
             "register device guest-memory capability",
             "guest-memory capability",
+        )?;
+        validate_bundle_grant_indices(
+            bundle.devices.len(),
+            &bundle
+                .dma_pollable
+                .iter()
+                .map(|(index, _, grant)| (*index, grant.clone()))
+                .collect::<Vec<_>>(),
+            "register DMA-pollable device",
+            "DMA-pollable capability",
         )?;
         validate_bundle_grant_indices(
             bundle.devices.len(),
@@ -431,6 +576,24 @@ impl DeviceRuntime {
                 });
             }
         }
+        for (index, (_, pollable, _)) in bundle.dma_pollable.iter().enumerate() {
+            if self
+                .dma_pollable_devices
+                .iter()
+                .map(|(_, existing, _)| existing)
+                .chain(
+                    bundle.dma_pollable[..index]
+                        .iter()
+                        .map(|(_, existing, _)| existing),
+                )
+                .any(|existing| Arc::ptr_eq(existing, pollable))
+            {
+                return Err(DeviceManagerError::ResourceConflict {
+                    operation: "register DMA-pollable device",
+                    detail: "the same DMA-pollable capability is already registered".into(),
+                });
+            }
+        }
         for (index, lifecycle) in bundle.lifecycle.iter().enumerate() {
             if self
                 .lifecycle_devices
@@ -445,6 +608,7 @@ impl DeviceRuntime {
             }
         }
         self.services.validate_merge(&bundle.services)?;
+        self.planned.validate_bundle(&bundle.planned)?;
 
         let saved_len = self.devices.len();
         for device in &bundle.devices {
@@ -478,8 +642,149 @@ impl DeviceRuntime {
                 .map(|(index, grant)| (DeviceId::new((saved_len + index) as u32), grant.clone())),
         );
         self.pollable_devices.extend(bundle.pollable);
+        self.dma_pollable_devices
+            .extend(
+                bundle
+                    .dma_pollable
+                    .into_iter()
+                    .map(|(index, pollable, grant)| {
+                        (DeviceId::new((saved_len + index) as u32), pollable, grant)
+                    }),
+            );
         self.lifecycle_devices.extend(bundle.lifecycle);
         self.services.append(bundle.services);
+        self.planned.append(bundle.planned);
+        Ok(())
+    }
+
+    /// Registers one graph node's bundle with PCI identity validation.
+    ///
+    /// Host nodes must publish exactly one [`PciRootBindingKey`] service whose
+    /// owner and topology match the resolved node; endpoint bundles must bind
+    /// their resolved function through a dependency-hosted root. The binding
+    /// lease is retained by the runtime and its `Drop` unwinds the provisional
+    /// route (withdraw root route -> invalidate admission -> release the
+    /// endpoint reference), so any failure leaves no residue.
+    pub(crate) fn register_graph_bundle(
+        &mut self,
+        node: &ResolvedDeviceNode,
+        bundle: DeviceBundle,
+    ) -> DeviceManagerResult {
+        let root_services = bundle.services.all::<PciRootBindingKey>();
+        let root = match node.pci_host_topology() {
+            Some(topology) => {
+                if root_services.len() != 1 {
+                    return Err(DeviceManagerError::InvalidConfig {
+                        operation: "register PCI host bundle",
+                        detail: alloc::format!(
+                            "host {} must publish exactly one PciRootBinding",
+                            node.id()
+                        ),
+                    });
+                }
+                let root = root_services[0].clone();
+                if root.host() != node.id()
+                    || !root.matches_topology(topology)
+                    || self.pci_roots.contains_key(node.id())
+                {
+                    return Err(DeviceManagerError::InvalidConfig {
+                        operation: "register PCI host bundle",
+                        detail: alloc::format!(
+                            "host {} published a mismatched PCI root",
+                            node.id()
+                        ),
+                    });
+                }
+                Some(root)
+            }
+            None if root_services.is_empty() => None,
+            None => {
+                return Err(DeviceManagerError::InvalidConfig {
+                    operation: "register PCI host bundle",
+                    detail: alloc::format!("non-host node {} published a PCI root", node.id()),
+                });
+            }
+        };
+
+        let endpoint = match (node.pci_endpoint(), bundle.pci_function.as_ref()) {
+            (Some(endpoint), Some(function)) => {
+                if function.device_index >= bundle.devices.len()
+                    || !node.dependencies().contains(&endpoint.host)
+                {
+                    return Err(DeviceManagerError::InvalidConfig {
+                        operation: "register PCI endpoint bundle",
+                        detail: alloc::format!(
+                            "endpoint {} has an invalid PCI device binding",
+                            node.id()
+                        ),
+                    });
+                }
+                if !function.function.resources().is_empty() {
+                    return Err(DeviceManagerError::InvalidConfig {
+                        operation: "register PCI endpoint bundle",
+                        detail: alloc::format!(
+                            "endpoint {} must not publish ordinary device resources",
+                            node.id()
+                        ),
+                    });
+                }
+                let binding = self.pci_roots.get(&endpoint.host).ok_or_else(|| {
+                    DeviceManagerError::ResourceNotFound {
+                        operation: "register PCI endpoint bundle",
+                        resource: alloc::format!("PCI root dependency {}", endpoint.host),
+                    }
+                })?;
+                let device = DeviceId::new((self.devices.len() + function.device_index) as u32);
+                // Keep all endpoint metadata local until ordinary device,
+                // DMA, service, and planned-resource registration succeeds.
+                // The root route is deliberately published last below.
+                Some((
+                    binding.clone(),
+                    endpoint.function_node.clone(),
+                    device,
+                    function.function.clone(),
+                ))
+            }
+            (Some(_), None) => {
+                return Err(DeviceManagerError::InvalidConfig {
+                    operation: "register PCI endpoint bundle",
+                    detail: alloc::format!(
+                        "endpoint {} did not declare its bundled PCI function",
+                        node.id()
+                    ),
+                });
+            }
+            (None, Some(_)) => {
+                return Err(DeviceManagerError::InvalidConfig {
+                    operation: "register PCI endpoint bundle",
+                    detail: alloc::format!(
+                        "non-PCI node {} declared a bundled PCI function",
+                        node.id()
+                    ),
+                });
+            }
+            (None, None) => None,
+        };
+
+        let mut transaction = RuntimeRegistrationTransaction::new(self, node.id().clone());
+        transaction.runtime.register_bundle_inner(bundle)?;
+        if let Some(root) = root {
+            transaction
+                .runtime
+                .pci_roots
+                .insert(node.id().clone(), root);
+            transaction.root_inserted = true;
+        }
+        if let Some((binding, function_id, device, function)) = endpoint {
+            let endpoint = binding.bind_registered(
+                &function_id,
+                device,
+                function,
+                &mut transaction.runtime.routed_grants,
+            )?;
+            transaction.runtime.pci_binding_leases.push(endpoint);
+        }
+        transaction.commit();
         Ok(())
     }
 
@@ -505,9 +810,7 @@ impl DeviceRuntime {
                 Resource::SysReg { addr, .. } => {
                     self.sysreg_index.remove(&addr);
                 }
-                Resource::IrqLine { line, .. } => {
-                    self.irq_line_index.remove(&line);
-                }
+                Resource::IrqLine { .. } => {}
             }
         }
     }
@@ -533,12 +836,6 @@ impl DeviceRuntime {
                         return Err(RegistryError::InvalidResource {
                             resource: Resource::IrqLine { line, trigger },
                             reason: InvalidResourceReason::DuplicateIrqLine { line },
-                        });
-                    }
-                    if let Some(&existing) = self.irq_line_index.get(&line) {
-                        return Err(RegistryError::IrqLineConflict {
-                            line,
-                            existing_device: existing,
                         });
                     }
                 }
@@ -742,7 +1039,6 @@ impl DeviceRuntime {
     }
 
     fn insert_resources(&mut self, idx: usize, resources: &[Resource]) {
-        let device_id = DeviceId::new(idx as u32);
         for resource in resources {
             match *resource {
                 Resource::MmioRange { base, size } => {
@@ -766,9 +1062,7 @@ impl DeviceRuntime {
                         },
                     );
                 }
-                Resource::IrqLine { line, .. } => {
-                    self.irq_line_index.insert(line, device_id);
-                }
+                Resource::IrqLine { .. } => {}
             }
         }
     }
@@ -803,6 +1097,15 @@ impl DeviceRuntime {
         self.devices.len()
     }
 
+    /// Returns the guest-memory grant registered for a device in host tests.
+    #[cfg(feature = "host-test")]
+    pub fn dma_grant_for_test(&self, device_id: DeviceId) -> Option<DmaGrant> {
+        self.dma_grants
+            .iter()
+            .find(|(registered_id, _)| *registered_id == device_id)
+            .map(|(_, grant)| grant.clone())
+    }
+
     // ─── Iterator helpers ───────────────────────────────────────────
     //
     // NOTE: With the unified Device trait, [`devices()`] is the canonical
@@ -814,9 +1117,49 @@ impl DeviceRuntime {
         self.pollable_devices.iter()
     }
 
+    /// Polls asynchronous DMA devices with a guest-memory port scoped to each
+    /// individual callback.
+    pub fn poll_dma_devices(
+        &self,
+        now_ns: u64,
+        memory: &mut dyn GuestMemoryAccess,
+        mut observe: impl FnMut(DeviceManagerResult),
+    ) {
+        for (device_id, pollable, grant) in &self.dma_pollable_devices {
+            let mut context = RuntimeDeviceContext {
+                device_id: *device_id,
+                routed_context: RoutedContextKind::Root,
+                memory: Some(&mut *memory),
+                dma_grants: &self.dma_grants,
+                timer_grants: &self.timer_grants,
+                wake_grants: &self.wake_grants,
+                stop_grants: &self.stop_grants,
+                routed_grants: &self.routed_grants,
+                access_ports: &self.access_ports,
+            };
+            observe(pollable.poll_dma(now_ns, &mut context, grant));
+        }
+    }
+
     /// Returns VM-local typed device services.
     pub const fn services(&self) -> &DeviceServices {
         &self.services
+    }
+
+    /// Returns a registered wired interrupt-controller capability.
+    pub fn interrupt_controller(
+        &self,
+        id: axdevice_base::InterruptControllerId,
+    ) -> DeviceManagerResult<Arc<dyn axdevice_base::VirtualInterruptController>> {
+        self.planned.interrupts.wired_controller(id)
+    }
+
+    /// Returns a registered message interrupt-controller capability.
+    pub fn message_interrupt_controller(
+        &self,
+        id: axdevice_base::InterruptControllerId,
+    ) -> DeviceManagerResult<Arc<dyn axdevice_base::MessageInterruptController>> {
+        self.planned.interrupts.message_controller(id)
     }
 
     /// Resets lifecycle-capable devices in registration order.
@@ -843,278 +1186,112 @@ impl DeviceRuntime {
         Ok(())
     }
 
-    // ─── Find helpers ───────────────────────────────────────────────
+    // ─── Hot-path dispatch ──────────────────────────────────────────
 
-    /// Find specific MMIO device by ipa.
-    pub fn find_mmio_dev(&self, ipa: GuestPhysAddr) -> Option<Arc<dyn Device>> {
-        let access = BusAccess {
-            kind: BusKind::Mmio,
-            is_read: true,
-            addr: ipa.as_usize() as u64,
-            width: AccessWidth::Dword,
-            data: 0,
+    /// Reads from the device selected by `access`.
+    ///
+    /// A missing mapping is returned as `None`, allowing architecture fault
+    /// handlers to continue with their non-device policy without a second
+    /// interval lookup.
+    pub fn try_read(&self, access: &DeviceAccess) -> DeviceManagerResult<Option<u64>> {
+        let Some(index) = self
+            .lookup_access(access)
+            .map_err(|source| access_error("read", access, source))?
+        else {
+            return Ok(None);
         };
-        self.lookup(&access).ok()
+        let mut context = self.context_for(index, None);
+        self.devices[index]
+            .read(access, &mut context)
+            .map(Some)
+            .map_err(|source| access_error("read", access, source))
     }
 
-    /// Find specific system register device by address.
-    pub fn find_sys_reg_dev(&self, sys_reg_addr: SysRegAddr) -> Option<Arc<dyn Device>> {
-        let access = BusAccess {
-            kind: BusKind::SysReg,
-            is_read: true,
-            addr: sys_reg_addr.0 as u64,
-            width: AccessWidth::Qword,
-            data: 0,
-        };
-        self.lookup(&access).ok()
-    }
-
-    /// Find specific port device by port number.
-    pub fn find_port_dev(&self, port: Port) -> Option<Arc<dyn Device>> {
-        let access = BusAccess {
-            kind: BusKind::Port,
-            is_read: true,
-            addr: port.0 as u64,
-            width: AccessWidth::Byte,
-            data: 0,
-        };
-        self.lookup(&access).ok()
-    }
-
-    // ─── Hot-path dispatch handlers ─────────────────────────────────
-
-    /// Handle the MMIO read by GuestPhysAddr and data width.
-    pub fn handle_mmio_read(
+    /// Writes to the device selected by `access`.
+    ///
+    /// `memory` is an optional VM-owned guest-memory port. Devices still need
+    /// their matching [`DmaGrant`] before the context delegates to this port.
+    pub fn try_write(
         &self,
-        addr: GuestPhysAddr,
-        width: AccessWidth,
-    ) -> DeviceManagerResult<usize> {
-        let access = BusAccess {
-            kind: BusKind::Mmio,
-            is_read: true,
-            addr: addr.as_usize() as u64,
-            width,
-            data: 0,
+        access: &DeviceAccess,
+        value: u64,
+        memory: Option<&mut dyn GuestMemoryAccess>,
+    ) -> DeviceManagerResult<bool> {
+        let Some(index) = self
+            .lookup_access(access)
+            .map_err(|source| access_error("write", access, source))?
+        else {
+            return Ok(false);
         };
-        match self
-            .dispatch(&access)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "read",
-                bus: BusKind::Mmio,
-                addr: access.addr,
-                width,
-                source,
-            })? {
-            BusResponse::Read { value } => Ok(value as usize),
-            BusResponse::Write => Err(DeviceManagerError::UnexpectedResponse {
-                operation: "read MMIO device",
-                detail: "device returned a write acknowledgement".into(),
-            }),
+        let mut context = self.context_for(index, memory);
+        self.devices[index]
+            .write(access, value, &mut context)
+            .map(|()| true)
+            .map_err(|source| access_error("write", access, source))
+    }
+
+    fn lookup_access(&self, access: &DeviceAccess) -> DeviceResult<Option<usize>> {
+        match access.bus() {
+            BusKind::Mmio => Ok(self.lookup_mmio(access.address(), access.width())),
+            BusKind::Port => {
+                let port =
+                    u16::try_from(access.address()).map_err(|_| DeviceError::OutOfRange {
+                        addr: access.address(),
+                    })?;
+                Ok(self.lookup_port(port, access.width()))
+            }
+            BusKind::SysReg => {
+                let register =
+                    u32::try_from(access.address()).map_err(|_| DeviceError::OutOfRange {
+                        addr: access.address(),
+                    })?;
+                Ok(self.lookup_sysreg(register))
+            }
         }
     }
 
-    /// Handle the MMIO write by GuestPhysAddr, data width and the value need to write.
-    pub fn handle_mmio_write(
-        &self,
-        addr: GuestPhysAddr,
-        width: AccessWidth,
-        val: usize,
-    ) -> DeviceManagerResult {
-        let access = BusAccess {
-            kind: BusKind::Mmio,
-            is_read: false,
-            addr: addr.as_usize() as u64,
-            width,
-            data: val as u64,
-        };
-        let response = self
-            .dispatch(&access)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "write",
-                bus: BusKind::Mmio,
-                addr: access.addr,
-                width,
-                source,
-            })?;
-        Self::expect_write_response(response, "write MMIO device")
-    }
-
-    /// Returns whether this complete MMIO write access targets a device that
-    /// declared an access-scoped guest-memory capability.
-    pub fn mmio_write_needs_guest_memory(&self, addr: GuestPhysAddr, width: AccessWidth) -> bool {
-        self.lookup_mmio(addr.as_usize() as u64, width)
-            .map(|index| {
-                let id = DeviceId::new(index as u32);
-                self.dma_grants
-                    .iter()
-                    .any(|(device_id, _)| *device_id == id)
-            })
-            .unwrap_or(false)
-    }
-
-    /// Handles MMIO with a VM-provided, access-scoped guest-memory capability.
-    pub fn handle_mmio_write_with_memory(
-        &self,
-        addr: GuestPhysAddr,
-        width: AccessWidth,
-        val: usize,
-        memory: &mut dyn axdevice_base::DeviceAccess,
-    ) -> DeviceManagerResult {
-        let access = BusAccess {
-            kind: BusKind::Mmio,
-            is_read: false,
-            addr: addr.as_usize() as u64,
-            width,
-            data: val as u64,
-        };
-        let idx =
-            self.lookup_mmio(access.addr, access.width)
-                .ok_or(DeviceManagerError::Access {
-                    operation: "write",
-                    bus: BusKind::Mmio,
-                    addr: access.addr,
-                    width,
-                    source: DeviceError::NotFound,
-                })?;
-        let id = DeviceId::new(idx as u32);
-        let mut context = RuntimeDeviceAccess {
-            device_id: id,
-            memory: Some(memory),
+    fn context_for<'runtime, 'memory>(
+        &'runtime self,
+        index: usize,
+        memory: Option<&'memory mut dyn GuestMemoryAccess>,
+    ) -> RuntimeDeviceContext<'runtime, 'memory> {
+        RuntimeDeviceContext {
+            device_id: DeviceId::new(index as u32),
+            routed_context: RoutedContextKind::Root,
+            memory,
             dma_grants: &self.dma_grants,
             timer_grants: &self.timer_grants,
             wake_grants: &self.wake_grants,
             stop_grants: &self.stop_grants,
+            routed_grants: &self.routed_grants,
             access_ports: &self.access_ports,
-        };
-        let response = self.devices[idx]
-            .access(&access, &mut context)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "write",
-                bus: BusKind::Mmio,
-                addr: access.addr,
-                width,
-                source,
-            })?;
-        Self::expect_write_response(response, "write MMIO device")
-    }
-
-    fn expect_write_response(
-        response: BusResponse,
-        operation: &'static str,
-    ) -> DeviceManagerResult {
-        match response {
-            BusResponse::Write => Ok(()),
-            BusResponse::Read { .. } => Err(DeviceManagerError::UnexpectedResponse {
-                operation,
-                detail: "device returned read data for a write request".into(),
-            }),
         }
     }
 
-    /// Handle the system register read by SysRegAddr and data width.
-    pub fn handle_sys_reg_read(
-        &self,
-        addr: SysRegAddr,
-        width: AccessWidth,
-    ) -> DeviceManagerResult<usize> {
-        let access = BusAccess {
-            kind: BusKind::SysReg,
-            is_read: true,
-            addr: addr.0 as u64,
-            width,
-            data: 0,
-        };
-        match self
-            .dispatch(&access)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "read",
-                bus: BusKind::SysReg,
-                addr: access.addr,
-                width,
-                source,
-            })? {
-            BusResponse::Read { value } => Ok(value as usize),
-            BusResponse::Write => Err(DeviceManagerError::UnexpectedResponse {
-                operation: "read system register device",
-                detail: "device returned a write acknowledgement".into(),
-            }),
-        }
+    #[cfg(test)]
+    pub(crate) fn with_routed_grant_for_test<T>(
+        &mut self,
+        index: usize,
+        grant: RoutedDeviceGrant,
+        callback: impl FnOnce(&mut dyn DeviceContext) -> T,
+    ) -> T {
+        self.routed_grants.push(grant);
+        let mut context = self.context_for(index, None);
+        callback(&mut context)
     }
+}
 
-    /// Handle the system register write by SysRegAddr, data width and the value need to write.
-    pub fn handle_sys_reg_write(
-        &self,
-        addr: SysRegAddr,
-        width: AccessWidth,
-        val: usize,
-    ) -> DeviceManagerResult {
-        let access = BusAccess {
-            kind: BusKind::SysReg,
-            is_read: false,
-            addr: addr.0 as u64,
-            width,
-            data: val as u64,
-        };
-        self.dispatch(&access)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "write",
-                bus: BusKind::SysReg,
-                addr: access.addr,
-                width,
-                source,
-            })?;
-        Ok(())
-    }
-
-    /// Handle the port read by port number and data width.
-    pub fn handle_port_read(&self, port: Port, width: AccessWidth) -> DeviceManagerResult<usize> {
-        let access = BusAccess {
-            kind: BusKind::Port,
-            is_read: true,
-            addr: port.0 as u64,
-            width,
-            data: 0,
-        };
-        match self
-            .dispatch(&access)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "read",
-                bus: BusKind::Port,
-                addr: access.addr,
-                width,
-                source,
-            })? {
-            BusResponse::Read { value } => Ok(value as usize),
-            BusResponse::Write => Err(DeviceManagerError::UnexpectedResponse {
-                operation: "read port device",
-                detail: "device returned a write acknowledgement".into(),
-            }),
-        }
-    }
-
-    /// Handle the port write by port number, data width and the value need to write.
-    pub fn handle_port_write(
-        &self,
-        port: Port,
-        width: AccessWidth,
-        val: usize,
-    ) -> DeviceManagerResult {
-        let access = BusAccess {
-            kind: BusKind::Port,
-            is_read: false,
-            addr: port.0 as u64,
-            width,
-            data: val as u64,
-        };
-        self.dispatch(&access)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "write",
-                bus: BusKind::Port,
-                addr: access.addr,
-                width,
-                source,
-            })?;
-        Ok(())
+fn access_error(
+    operation: &'static str,
+    access: &DeviceAccess,
+    source: DeviceError,
+) -> DeviceManagerError {
+    DeviceManagerError::Access {
+        operation,
+        bus: access.bus(),
+        addr: access.address(),
+        width: access.width(),
+        source,
     }
 }
 
@@ -1145,82 +1322,414 @@ impl DeviceRegistry for DeviceRuntime {
     }
 }
 
-impl BusRouter for DeviceRuntime {
-    fn dispatch(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
-        let idx = match access.kind {
-            BusKind::Mmio => self.lookup_mmio(access.addr, access.width),
-            BusKind::Port => {
-                let port = u16::try_from(access.addr)
-                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
-                self.lookup_port(port, access.width)
-            }
-            BusKind::SysReg => {
-                let reg = u32::try_from(access.addr)
-                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
-                self.lookup_sysreg(reg)
-            }
-        }
-        .ok_or(DeviceError::NotFound)?;
-
-        let device = &self.devices[idx];
-        let mut context = RuntimeDeviceAccess {
-            device_id: DeviceId::new(idx as u32),
-            memory: None,
-            dma_grants: &self.dma_grants,
-            timer_grants: &self.timer_grants,
-            wake_grants: &self.wake_grants,
-            stop_grants: &self.stop_grants,
-            access_ports: &self.access_ports,
-        };
-        device.access(access, &mut context)
-    }
-
-    fn lookup(&self, access: &BusAccess) -> Result<Arc<dyn Device>, DeviceError> {
-        let idx = match access.kind {
-            BusKind::Mmio => self.lookup_mmio(access.addr, access.width),
-            BusKind::Port => {
-                let port = u16::try_from(access.addr)
-                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
-                self.lookup_port(port, access.width)
-            }
-            BusKind::SysReg => {
-                let reg = u32::try_from(access.addr)
-                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
-                self.lookup_sysreg(reg)
-            }
-        }
-        .ok_or(DeviceError::NotFound)?;
-
-        Ok(Arc::clone(&self.devices[idx]))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use axdevice_base::{
-        AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, ControllerInputId, Device,
-        DeviceAccess, DeviceError, DeviceId, DeviceRegistry, DmaGrant, InterruptControllerId,
-        InterruptTriggerMode, InvalidResourceReason, IrqResult, Port, RegistryError, Resource,
-        StopGrant, SysRegAddr, TimerGrant, VirtualInterruptController, WakeGrant, WiredIrqInput,
+        AccessWidth, BusKind, Device, DeviceAccess, DeviceContext, DeviceError, DeviceId,
+        DeviceRegistry, DeviceResult, DeviceVcpuId, DmaGrant, GuestMemoryAccess,
+        InvalidResourceReason, NoopDeviceContext, RegistryError, Resource, RoutedAdmissionEpoch,
+        RoutedBindingGeneration, RoutedDeviceGrant, StopGrant, TimerGrant, WakeGrant,
     };
-    use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
+    use axvm_types::GuestPhysAddr;
 
     use super::{
         DeviceRuntime, RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,
     };
     use crate::{
-        DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceLifecycle,
-        DeviceManagerError, DeviceManagerResult, DeviceRegistration, ServiceCardinality,
-        ServiceKey, register_builtin_factories,
+        ConfigOffset, DeviceBundle, DeviceLifecycle, DeviceManagerError, DeviceManagerResult,
+        DeviceNodeId, DeviceRegistration, DmaPollableDeviceOps, PciBarIndex, PciClass,
+        PciEndpointContext, PciEndpointIdentity, PciFunction, PciMemoryBar, PciRootBinding,
+        PciRootState, PciTopologyBuilder, ServiceCardinality, ServiceKey,
     };
 
     struct D {
         resources: alloc::vec::Vec<Resource>,
         n: &'static str,
     }
+
+    struct TestMemory {
+        reads: usize,
+        writes: usize,
+    }
+
+    impl GuestMemoryAccess for TestMemory {
+        fn read(&mut self, _addr: GuestPhysAddr, data: &mut [u8]) -> DeviceResult {
+            self.reads += 1;
+            data.fill(0x5a);
+            Ok(())
+        }
+
+        fn write(&mut self, _addr: GuestPhysAddr, _data: &[u8]) -> DeviceResult {
+            self.writes += 1;
+            Ok(())
+        }
+    }
+
+    struct RoutedDmaEndpoint {
+        grant: DmaGrant,
+        expected_device: DeviceId,
+        writes: AtomicUsize,
+    }
+
+    impl Device for RoutedDmaEndpoint {
+        fn name(&self) -> &str {
+            "routed-dma-endpoint"
+        }
+
+        fn resources(&self) -> &[Resource] {
+            &[]
+        }
+
+        fn read(
+            &self,
+            _access: &DeviceAccess,
+            _context: &mut dyn DeviceContext,
+        ) -> DeviceResult<u64> {
+            Ok(0)
+        }
+
+        fn write(
+            &self,
+            _access: &DeviceAccess,
+            _value: u64,
+            _context: &mut dyn DeviceContext,
+        ) -> DeviceResult {
+            Ok(())
+        }
+    }
+
+    impl PciFunction for RoutedDmaEndpoint {
+        fn reset(&self, _command: crate::PciCommandState) -> DeviceResult {
+            Ok(())
+        }
+
+        fn read_bar(
+            &self,
+            _access: crate::PciBarAccess,
+            _context: &mut dyn PciEndpointContext,
+        ) -> DeviceResult<u64> {
+            Ok(0)
+        }
+
+        fn write_bar(
+            &self,
+            _access: crate::PciBarAccess,
+            _value: u64,
+            context: &mut dyn PciEndpointContext,
+        ) -> DeviceResult {
+            assert_eq!(context.device_id(), self.expected_device);
+            let mut input = [0u8; 1];
+            context.read_guest_memory(
+                &self.grant,
+                GuestPhysAddr::from_usize(0x1000),
+                &mut input,
+            )?;
+            context.write_guest_memory(&self.grant, GuestPhysAddr::from_usize(0x2000), &input)?;
+            self.writes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn routed_context_rechecks_target_grants_and_preserves_memory_lifetime() {
+        let mut runtime = DeviceRuntime::empty();
+        let target = DeviceId::new(7);
+        let dma = DmaGrant::new();
+        let routed = RoutedDeviceGrant::new(
+            target,
+            RoutedBindingGeneration::new(1),
+            RoutedAdmissionEpoch::new(1),
+            true,
+        );
+        runtime.routed_grants.push(routed.clone());
+        runtime.dma_grants.push((target, dma.clone()));
+        let mut memory = TestMemory {
+            reads: 0,
+            writes: 0,
+        };
+        let mut context = runtime.context_for(0, Some(&mut memory));
+        let mut bytes = [0; 2];
+        let mut callback = |nested: &mut dyn DeviceContext| {
+            let mut nested_callback = |_next: &mut dyn DeviceContext| Ok(());
+            assert!(matches!(
+                nested.with_routed_device(&routed, &mut nested_callback),
+                Err(DeviceError::Unsupported { .. })
+            ));
+            nested.read_guest_memory(&dma, GuestPhysAddr::from_usize(0x1000), &mut bytes)
+        };
+        context.with_routed_device(&routed, &mut callback).unwrap();
+        assert_eq!(bytes, [0x5a; 2]);
+        assert_eq!(memory.reads, 1);
+    }
+
+    #[test]
+    fn routed_context_keeps_an_admitted_grant_alive_until_scope_drop() {
+        let mut runtime = DeviceRuntime::empty();
+        let target = DeviceId::new(7);
+        let ordinary = RoutedDeviceGrant::new(
+            target,
+            RoutedBindingGeneration::new(1),
+            RoutedAdmissionEpoch::new(1),
+            true,
+        );
+        runtime.routed_grants.push(ordinary.clone());
+        let (admitted, scope) = ordinary
+            .clone()
+            .admit()
+            .expect("open ordinary grant can be admitted");
+        let retained = admitted.clone();
+        ordinary.close_admission();
+        assert!(ordinary.clone().admit().is_none());
+        let dma_disabled = admitted.with_dma_enabled(false);
+        let next_epoch = admitted.with_admission_epoch(RoutedAdmissionEpoch::new(2));
+        assert!(!dma_disabled.dma_enabled());
+        assert!(dma_disabled.admission_is_open());
+        assert!(!next_epoch.admission_is_open());
+
+        let mut context = runtime.context_for(0, None);
+        let mut callback = |_nested: &mut dyn DeviceContext| Ok(());
+        context
+            .with_routed_device(&admitted, &mut callback)
+            .expect("an already admitted callback survives global close");
+        assert!(matches!(
+            context.with_routed_device(&ordinary, &mut callback),
+            Err(DeviceError::Unsupported { .. })
+        ));
+
+        drop(scope);
+        assert!(matches!(
+            context.with_routed_device(&retained, &mut callback),
+            Err(DeviceError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn routed_context_denies_dma_when_the_root_bme_snapshot_is_clear() {
+        let mut runtime = DeviceRuntime::empty();
+        let target = DeviceId::new(7);
+        let dma = DmaGrant::new();
+        let routed = RoutedDeviceGrant::new(
+            target,
+            RoutedBindingGeneration::new(1),
+            RoutedAdmissionEpoch::new(1),
+            false,
+        );
+        runtime.routed_grants.push(routed.clone());
+        runtime.dma_grants.push((DeviceId::new(0), dma.clone()));
+        runtime.dma_grants.push((target, dma.clone()));
+        let mut memory = TestMemory {
+            reads: 0,
+            writes: 0,
+        };
+        let bytes = {
+            let mut context = runtime.context_for(0, Some(&mut memory));
+            let mut bytes = [0; 2];
+            let mut callback = |nested: &mut dyn DeviceContext| {
+                nested.read_guest_memory(&dma, GuestPhysAddr::from_usize(0x1000), &mut bytes)
+            };
+            assert!(matches!(
+                context.with_routed_device(&routed, &mut callback),
+                Err(DeviceError::Unsupported { .. })
+            ));
+            // Denying DMA for the nested route must not consume the outer
+            // context's ordinary guest-memory port.
+            context
+                .read_guest_memory(&dma, GuestPhysAddr::from_usize(0x1000), &mut bytes)
+                .unwrap();
+            bytes
+        };
+        assert_eq!(bytes, [0x5a; 2]);
+        assert_eq!(memory.reads, 1);
+    }
+
+    #[test]
+    fn noop_context_explicitly_denies_routed_entry() {
+        let mut context = NoopDeviceContext::new(DeviceId::new(0));
+        let grant = RoutedDeviceGrant::new(
+            DeviceId::new(1),
+            RoutedBindingGeneration::new(1),
+            RoutedAdmissionEpoch::new(1),
+            true,
+        );
+        let mut callback = |_nested: &mut dyn DeviceContext| Ok(());
+        assert!(matches!(
+            context.with_routed_device(&grant, &mut callback),
+            Err(DeviceError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn bar_dispatch_enters_endpoint_context_with_bidirectional_dma() {
+        let function_id = DeviceNodeId::new("routed-dma-function").unwrap();
+        let function_spec = crate::PciFunctionSpec::new(
+            function_id.clone(),
+            PciEndpointIdentity::new(0x1af4, 0x1042, PciClass::new(0xff, 0, 0)),
+        )
+        .with_bar(PciMemoryBar::new(PciBarIndex::new(0).unwrap(), 0x100).unwrap())
+        .unwrap();
+        let mut topology_builder = PciTopologyBuilder::new();
+        topology_builder.add_function(function_spec).unwrap();
+        let topology = Arc::new(topology_builder.resolve(0x4000..0x8000).unwrap());
+        let function = topology.function(&function_id).unwrap();
+        let bar = function.bar(PciBarIndex::new(0).unwrap()).unwrap();
+        let bdf = function.bdf();
+        let bar_address = bar.address();
+        let root = Arc::new(PciRootState::new(Arc::clone(&topology)));
+        let binding = Arc::new(PciRootBinding::new(
+            DeviceNodeId::new("routed-dma-host").unwrap(),
+            root.clone(),
+        ));
+        let target = DeviceId::new(7);
+        let dma = DmaGrant::new();
+        let endpoint = Arc::new(RoutedDmaEndpoint {
+            grant: dma.clone(),
+            expected_device: target,
+            writes: AtomicUsize::new(0),
+        });
+        let mut runtime = DeviceRuntime::empty();
+        runtime.dma_grants.push((target, dma));
+        let _binding_lease = binding
+            .bind_registered(
+                &function_id,
+                target,
+                endpoint.clone(),
+                &mut runtime.routed_grants,
+            )
+            .unwrap();
+
+        root.write_config(
+            bdf,
+            ConfigOffset::new(4).unwrap(),
+            AccessWidth::Word,
+            0x0002,
+        )
+        .unwrap();
+        let mut memory = TestMemory {
+            reads: 0,
+            writes: 0,
+        };
+        {
+            let mut context = runtime.context_for(0, Some(&mut memory));
+            assert!(matches!(
+                binding.write_bar_with_context(bar_address, AccessWidth::Byte, 0x10, &mut context,),
+                Err(DeviceError::Unsupported { .. })
+            ));
+        }
+        assert_eq!(memory.reads, 0);
+        assert_eq!(memory.writes, 0);
+
+        root.write_config(
+            bdf,
+            ConfigOffset::new(4).unwrap(),
+            AccessWidth::Word,
+            0x0006,
+        )
+        .unwrap();
+        {
+            let mut context = runtime.context_for(0, Some(&mut memory));
+            binding
+                .write_bar_with_context(bar_address, AccessWidth::Byte, 0x10, &mut context)
+                .unwrap();
+        }
+        assert_eq!(memory.reads, 1);
+        assert_eq!(memory.writes, 1);
+        assert_eq!(endpoint.writes.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn reset_reopens_runtime_dispatch_with_a_fresh_epoch() {
+        let function_id = DeviceNodeId::new("reset-routed-dma-function").unwrap();
+        let function_spec = crate::PciFunctionSpec::new(
+            function_id.clone(),
+            PciEndpointIdentity::new(0x1af4, 0x1042, PciClass::new(0xff, 0, 0)),
+        )
+        .with_bar(PciMemoryBar::new(PciBarIndex::new(0).unwrap(), 0x100).unwrap())
+        .unwrap();
+        let mut topology_builder = PciTopologyBuilder::new();
+        topology_builder.add_function(function_spec).unwrap();
+        let topology = Arc::new(topology_builder.resolve(0x4000..0x8000).unwrap());
+        let function = topology.function(&function_id).unwrap();
+        let bar_address = function
+            .bar(PciBarIndex::new(0).unwrap())
+            .unwrap()
+            .address();
+        let bdf = function.bdf();
+        let root = Arc::new(PciRootState::new(Arc::clone(&topology)));
+        let binding = Arc::new(PciRootBinding::new(
+            DeviceNodeId::new("reset-routed-dma-host").unwrap(),
+            root.clone(),
+        ));
+        let target = DeviceId::new(7);
+        let dma = DmaGrant::new();
+        let endpoint = Arc::new(RoutedDmaEndpoint {
+            grant: dma.clone(),
+            expected_device: target,
+            writes: AtomicUsize::new(0),
+        });
+        let mut runtime = DeviceRuntime::empty();
+        runtime.dma_grants.push((target, dma));
+        let _binding_lease = binding
+            .bind_registered(
+                &function_id,
+                target,
+                endpoint.clone(),
+                &mut runtime.routed_grants,
+            )
+            .unwrap();
+        let old_grant = runtime.routed_grants[0].clone();
+
+        root.write_config(
+            bdf,
+            ConfigOffset::new(4).unwrap(),
+            AccessWidth::Word,
+            0x0006,
+        )
+        .unwrap();
+        let mut memory = TestMemory {
+            reads: 0,
+            writes: 0,
+        };
+        {
+            let mut context = runtime.context_for(0, Some(&mut memory));
+            binding
+                .write_bar_with_context(bar_address, AccessWidth::Byte, 0x10, &mut context)
+                .unwrap();
+        }
+        assert_eq!(endpoint.writes.load(Ordering::Relaxed), 1);
+
+        binding.reset_lifecycle().unwrap();
+        assert!(!old_grant.admission_is_open());
+
+        let mut stale_context = runtime.context_for(0, Some(&mut memory));
+        let mut stale_callback = |_nested: &mut dyn DeviceContext| Ok(());
+        assert!(matches!(
+            stale_context.with_routed_device(&old_grant, &mut stale_callback),
+            Err(DeviceError::Unsupported { .. })
+        ));
+
+        // Reset restores the root command register too, so the fresh route
+        // must be exercised through the normal config and BAR dispatch path.
+        root.write_config(
+            bdf,
+            ConfigOffset::new(4).unwrap(),
+            AccessWidth::Word,
+            0x0006,
+        )
+        .unwrap();
+        {
+            let mut context = runtime.context_for(0, Some(&mut memory));
+            binding
+                .write_bar_with_context(bar_address, AccessWidth::Byte, 0x20, &mut context)
+                .unwrap();
+        }
+        assert_eq!(endpoint.writes.load(Ordering::Relaxed), 2);
+        assert_eq!(memory.reads, 2);
+        assert_eq!(memory.writes, 2);
+    }
+
     impl D {
         fn new_mmio(a: u64, s: u64, n: &'static str) -> Self {
             Self {
@@ -1238,6 +1747,7 @@ mod tests {
 
     struct AccessAwareDevice {
         resources: alloc::vec::Vec<Resource>,
+        expected_vcpu: DeviceVcpuId,
     }
 
     struct GuestMemoryRequestDevice {
@@ -1304,12 +1814,21 @@ mod tests {
             &self.resources
         }
 
-        fn access(
+        fn read(
             &self,
-            _access: &BusAccess,
-            _context: &mut dyn DeviceAccess,
-        ) -> Result<BusResponse, DeviceError> {
-            Ok(BusResponse::Read { value: 0 })
+            _access: &DeviceAccess,
+            _context: &mut dyn DeviceContext,
+        ) -> Result<u64, DeviceError> {
+            Ok(0)
+        }
+
+        fn write(
+            &self,
+            _access: &DeviceAccess,
+            _value: u64,
+            _context: &mut dyn DeviceContext,
+        ) -> Result<(), DeviceError> {
+            Ok(())
         }
     }
 
@@ -1345,13 +1864,25 @@ mod tests {
             &self.resources
         }
 
-        fn access(
+        fn read(
             &self,
-            _access: &BusAccess,
-            context: &mut dyn DeviceAccess,
-        ) -> Result<BusResponse, DeviceError> {
+            access: &DeviceAccess,
+            context: &mut dyn DeviceContext,
+        ) -> Result<u64, DeviceError> {
             assert_eq!(context.device_id(), DeviceId::new(0));
-            Ok(BusResponse::Read { value: 0xfeed })
+            assert_eq!(access.source_vcpu(), self.expected_vcpu);
+            Ok(0xfeed)
+        }
+
+        fn write(
+            &self,
+            access: &DeviceAccess,
+            _value: u64,
+            context: &mut dyn DeviceContext,
+        ) -> Result<(), DeviceError> {
+            assert_eq!(context.device_id(), DeviceId::new(0));
+            assert_eq!(access.source_vcpu(), self.expected_vcpu);
+            Ok(())
         }
     }
 
@@ -1364,14 +1895,23 @@ mod tests {
             &self.resources
         }
 
-        fn access(
+        fn read(
             &self,
-            _access: &BusAccess,
-            context: &mut dyn DeviceAccess,
-        ) -> Result<BusResponse, DeviceError> {
+            _access: &DeviceAccess,
+            _context: &mut dyn DeviceContext,
+        ) -> Result<u64, DeviceError> {
+            Err(DeviceError::WriteOnly)
+        }
+
+        fn write(
+            &self,
+            _access: &DeviceAccess,
+            _value: u64,
+            context: &mut dyn DeviceContext,
+        ) -> Result<(), DeviceError> {
             let mut byte = [0u8; 1];
             context.read_guest_memory(&self.dma_grant, GuestPhysAddr::from_usize(0), &mut byte)?;
-            Ok(BusResponse::Write)
+            Ok(())
         }
     }
 
@@ -1384,11 +1924,20 @@ mod tests {
             &self.resources
         }
 
-        fn access(
+        fn read(
             &self,
-            _access: &BusAccess,
-            context: &mut dyn DeviceAccess,
-        ) -> Result<BusResponse, DeviceError> {
+            _access: &DeviceAccess,
+            _context: &mut dyn DeviceContext,
+        ) -> Result<u64, DeviceError> {
+            Err(DeviceError::WriteOnly)
+        }
+
+        fn write(
+            &self,
+            _access: &DeviceAccess,
+            _value: u64,
+            context: &mut dyn DeviceContext,
+        ) -> Result<(), DeviceError> {
             match self.kind {
                 SensitiveGrantKind::Timer => context.schedule_timer(&self.timer_grant, 42)?,
                 SensitiveGrantKind::Wake => context.wake_vcpu(&self.wake_grant, 0)?,
@@ -1396,48 +1945,43 @@ mod tests {
                     context.request_vm_stop(&self.stop_grant, "test stop request")?
                 }
             }
-            Ok(BusResponse::Write)
+            Ok(())
         }
     }
 
     struct TestMemoryPort;
 
-    impl DeviceAccess for TestMemoryPort {
-        fn device_id(&self) -> DeviceId {
-            DeviceId::new(0)
+    impl GuestMemoryAccess for TestMemoryPort {
+        fn read(&mut self, _addr: GuestPhysAddr, _data: &mut [u8]) -> Result<(), DeviceError> {
+            Ok(())
         }
 
-        fn read_guest_memory(
-            &mut self,
-            _grant: &DmaGrant,
-            _addr: GuestPhysAddr,
-            _data: &mut [u8],
-        ) -> Result<(), DeviceError> {
+        fn write(&mut self, _addr: GuestPhysAddr, _data: &[u8]) -> Result<(), DeviceError> {
             Ok(())
         }
     }
 
-    struct ReadOnWriteDevice {
-        resources: alloc::vec::Vec<Resource>,
+    struct TestDmaPoller {
+        grant: DmaGrant,
+        polls: Arc<AtomicUsize>,
     }
 
-    impl Device for ReadOnWriteDevice {
-        fn name(&self) -> &str {
-            "read-on-write"
-        }
-
-        fn resources(&self) -> &[Resource] {
-            &self.resources
-        }
-
-        fn access(
+    impl DmaPollableDeviceOps for TestDmaPoller {
+        fn poll_dma(
             &self,
-            _access: &BusAccess,
-            _context: &mut dyn DeviceAccess,
-        ) -> Result<BusResponse, DeviceError> {
-            Ok(BusResponse::Read { value: 0 })
+            _now_ns: u64,
+            context: &mut dyn DeviceContext,
+            _registered_grant: &DmaGrant,
+        ) -> DeviceManagerResult {
+            let mut byte = [0u8; 1];
+            context
+                .read_guest_memory(&self.grant, GuestPhysAddr::from_usize(0), &mut byte)
+                .map_err(DeviceManagerError::Device)?;
+            self.polls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
         }
     }
+
     impl Device for D {
         fn name(&self) -> &str {
             self.n
@@ -1445,46 +1989,21 @@ mod tests {
         fn resources(&self) -> &[Resource] {
             &self.resources
         }
-        fn access(
+        fn read(
             &self,
-            _a: &BusAccess,
-            _context: &mut dyn DeviceAccess,
-        ) -> Result<BusResponse, DeviceError> {
-            Ok(BusResponse::Read { value: 0 })
-        }
-    }
-
-    struct EmptyFactory {
-        device_type: EmulatedDeviceType,
-    }
-
-    impl DeviceFactory for EmptyFactory {
-        fn device_type(&self) -> EmulatedDeviceType {
-            self.device_type
+            _access: &DeviceAccess,
+            _context: &mut dyn DeviceContext,
+        ) -> Result<u64, DeviceError> {
+            Ok(0)
         }
 
-        fn build(
+        fn write(
             &self,
-            _config: &EmulatedDeviceConfig,
-            _context: &DeviceBuildContext<'_>,
-        ) -> DeviceManagerResult<DeviceBundle> {
-            Ok(DeviceBundle::new())
-        }
-    }
-
-    struct UnusedInterruptController;
-
-    impl VirtualInterruptController for UnusedInterruptController {
-        fn id(&self) -> InterruptControllerId {
-            InterruptControllerId::new(0)
-        }
-
-        fn wired_input(
-            &self,
-            _input: ControllerInputId,
-            _trigger: InterruptTriggerMode,
-        ) -> IrqResult<WiredIrqInput> {
-            unreachable!("empty factory never resolves an IRQ")
+            _access: &DeviceAccess,
+            _value: u64,
+            _context: &mut dyn DeviceContext,
+        ) -> Result<(), DeviceError> {
+            Ok(())
         }
     }
 
@@ -1533,27 +2052,84 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_uses_access_context_for_v3_devices() {
+    fn vcpu_mmio_dispatch_propagates_the_explicit_accessor() {
         let mut devices = DeviceRuntime::empty();
+        let vcpu_id = DeviceVcpuId::new(7);
         devices
             .register(Arc::new(AccessAwareDevice {
                 resources: alloc::vec![Resource::MmioRange {
                     base: 0x4000,
                     size: 0x100,
                 }],
+                expected_vcpu: vcpu_id,
             }))
             .unwrap();
 
-        assert!(matches!(
-            devices.dispatch(&BusAccess {
-                kind: BusKind::Mmio,
-                is_read: true,
-                addr: 0x4000,
-                width: AccessWidth::Dword,
-                data: 0,
-            }),
-            Ok(BusResponse::Read { value: 0xfeed })
-        ));
+        assert_eq!(
+            devices
+                .try_read(&DeviceAccess::new(
+                    vcpu_id,
+                    BusKind::Mmio,
+                    0x4000,
+                    AccessWidth::Dword,
+                ))
+                .unwrap(),
+            Some(0xfeed_u64)
+        );
+    }
+
+    #[test]
+    fn vcpu_port_dispatch_propagates_the_explicit_accessor() {
+        let mut devices = DeviceRuntime::empty();
+        let vcpu_id = DeviceVcpuId::new(7);
+        devices
+            .register(Arc::new(AccessAwareDevice {
+                resources: alloc::vec![Resource::PortRange {
+                    base: 0x4000,
+                    size: 0x100,
+                }],
+                expected_vcpu: vcpu_id,
+            }))
+            .unwrap();
+
+        assert_eq!(
+            devices
+                .try_read(&DeviceAccess::new(
+                    vcpu_id,
+                    BusKind::Port,
+                    0x4000,
+                    AccessWidth::Dword,
+                ))
+                .unwrap(),
+            Some(0xfeed_u64)
+        );
+    }
+
+    #[test]
+    fn vcpu_sysreg_dispatch_propagates_the_explicit_accessor() {
+        let mut devices = DeviceRuntime::empty();
+        let vcpu_id = DeviceVcpuId::new(7);
+        devices
+            .register(Arc::new(AccessAwareDevice {
+                resources: alloc::vec![Resource::SysReg {
+                    addr: 0x4000,
+                    count: 1,
+                }],
+                expected_vcpu: vcpu_id,
+            }))
+            .unwrap();
+
+        assert_eq!(
+            devices
+                .try_read(&DeviceAccess::new(
+                    vcpu_id,
+                    BusKind::SysReg,
+                    0x4000,
+                    AccessWidth::Qword,
+                ))
+                .unwrap(),
+            Some(0xfeed_u64)
+        );
     }
 
     #[test]
@@ -1571,11 +2147,15 @@ mod tests {
         let mut memory = TestMemoryPort;
 
         let error = devices
-            .handle_mmio_write_with_memory(
-                GuestPhysAddr::from_usize(0x5000),
-                AccessWidth::Dword,
+            .try_write(
+                &DeviceAccess::new(
+                    DeviceVcpuId::new(0),
+                    BusKind::Mmio,
+                    0x5000,
+                    AccessWidth::Dword,
+                ),
                 0,
-                &mut memory,
+                Some(&mut memory),
             )
             .unwrap_err();
 
@@ -1606,27 +2186,95 @@ mod tests {
             .unwrap();
         let mut memory = TestMemoryPort;
 
+        assert!(
+            devices
+                .try_write(
+                    &DeviceAccess::new(
+                        DeviceVcpuId::new(0),
+                        BusKind::Mmio,
+                        0x6000,
+                        AccessWidth::Dword,
+                    ),
+                    0,
+                    Some(&mut memory),
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn dma_polling_scopes_memory_to_the_registered_device_and_grant() {
+        let mut devices = DeviceRuntime::empty();
+        let grant = DmaGrant::new();
+        let polls = Arc::new(AtomicUsize::new(0));
         devices
-            .handle_mmio_write_with_memory(
-                GuestPhysAddr::from_usize(0x6000),
-                AccessWidth::Dword,
-                0,
-                &mut memory,
-            )
+            .register_bundle({
+                let mut bundle = DeviceBundle::new();
+                bundle.add_dma_pollable_device(
+                    Arc::new(D::new_mmio(0x7000, 0x100, "dma-poll-device")),
+                    Arc::new(TestDmaPoller {
+                        grant: grant.clone(),
+                        polls: polls.clone(),
+                    }),
+                    grant,
+                );
+                bundle
+            })
             .unwrap();
+        let mut memory = TestMemoryPort;
+        let mut result = None;
+
+        devices.poll_dma_devices(123, &mut memory, |poll_result| result = Some(poll_result));
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(polls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn dma_polling_rejects_a_different_grant_token() {
+        let mut devices = DeviceRuntime::empty();
+        let registered_grant = DmaGrant::new();
+        let polls = Arc::new(AtomicUsize::new(0));
+        devices
+            .register_bundle({
+                let mut bundle = DeviceBundle::new();
+                bundle.add_dma_pollable_device(
+                    Arc::new(D::new_mmio(0x7100, 0x100, "wrong-dma-grant")),
+                    Arc::new(TestDmaPoller {
+                        grant: DmaGrant::new(),
+                        polls: polls.clone(),
+                    }),
+                    registered_grant,
+                );
+                bundle
+            })
+            .unwrap();
+        let mut memory = TestMemoryPort;
+        let mut result = None;
+
+        devices.poll_dma_devices(123, &mut memory, |poll_result| result = Some(poll_result));
+
+        assert!(result.unwrap().is_err());
+        assert_eq!(polls.load(Ordering::Relaxed), 0);
     }
 
     fn dispatch_sensitive_grant_probe(
         devices: &DeviceRuntime,
         base: u64,
-    ) -> Result<BusResponse, DeviceError> {
-        devices.dispatch(&BusAccess {
-            kind: BusKind::Mmio,
-            is_read: false,
-            addr: base,
-            width: AccessWidth::Dword,
-            data: 0,
-        })
+    ) -> Result<(), DeviceError> {
+        devices
+            .try_write(
+                &DeviceAccess::new(
+                    DeviceVcpuId::new(0),
+                    BusKind::Mmio,
+                    base,
+                    AccessWidth::Dword,
+                ),
+                0,
+                None,
+            )
+            .map(|_| ())
+            .map_err(Into::into)
     }
 
     #[test]
@@ -1768,57 +2416,6 @@ mod tests {
         assert_eq!(stop_calls.load(Ordering::Relaxed), 1);
     }
 
-    #[test]
-    fn factory_built_runtime_rejects_late_registration_after_seal() {
-        let mut factories = DeviceFactoryRegistry::new();
-        factories
-            .register(Arc::new(EmptyFactory {
-                device_type: EmulatedDeviceType::Dummy,
-            }))
-            .unwrap();
-        let context = DeviceBuildContext::new(&UnusedInterruptController);
-        let mut runtime = DeviceRuntime::build_with_factories(
-            &[EmulatedDeviceConfig {
-                name: "seal-test".into(),
-                base_gpa: 0,
-                length: 0,
-                irq_id: 0,
-                emu_type: EmulatedDeviceType::Dummy,
-                cfg_list: alloc::vec![],
-            }],
-            &factories,
-            &context,
-        )
-        .unwrap();
-
-        assert!(matches!(
-            runtime.register_bundle(DeviceBundle::new()),
-            Err(DeviceManagerError::InvalidState { .. })
-        ));
-        assert!(matches!(
-            runtime.register(Arc::new(D::new_mmio(0x9000, 0x100, "late"))),
-            Err(RegistryError::InvalidState { .. })
-        ));
-    }
-
-    #[test]
-    fn mmio_write_rejects_a_read_response() {
-        let mut devices = DeviceRuntime::empty();
-        devices
-            .register(Arc::new(ReadOnWriteDevice {
-                resources: alloc::vec![Resource::MmioRange {
-                    base: 0x7000,
-                    size: 0x100,
-                }],
-            }))
-            .unwrap();
-
-        assert!(matches!(
-            devices.handle_mmio_write(GuestPhysAddr::from_usize(0x7000), AccessWidth::Dword, 0,),
-            Err(DeviceManagerError::UnexpectedResponse { .. })
-        ));
-    }
-
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn x86_ioapic_registration_publishes_typed_service() {
@@ -1902,59 +2499,6 @@ mod tests {
     }
 
     #[test]
-    fn test_read_request_rejects_write_response() {
-        // A device that incorrectly returns BusResponse::Write for a read
-        // should cause the handle_*_read methods to return an error.
-        // The device declares a resource on each bus so that the lookup
-        // actually finds it instead of returning NotFound.
-        struct WriteOnlyDevice;
-        impl Device for WriteOnlyDevice {
-            fn name(&self) -> &str {
-                "write-only"
-            }
-            fn resources(&self) -> &[Resource] {
-                static R: [Resource; 3] = [
-                    Resource::MmioRange {
-                        base: 0x1000,
-                        size: 0x100,
-                    },
-                    Resource::PortRange {
-                        base: 0x1000,
-                        size: 0x10,
-                    },
-                    Resource::SysReg {
-                        addr: 0x1000,
-                        count: 1,
-                    },
-                ];
-                &R
-            }
-            fn access(
-                &self,
-                _access: &BusAccess,
-                _context: &mut dyn DeviceAccess,
-            ) -> Result<BusResponse, DeviceError> {
-                Ok(BusResponse::Write)
-            }
-        }
-
-        let mut m = DeviceRuntime::empty();
-        m.register(Arc::new(WriteOnlyDevice)).unwrap();
-
-        // handle_mmio_read should detect the mismatched response.
-        let result = m.handle_mmio_read(GuestPhysAddr::from(0x1000), AccessWidth::Dword);
-        assert!(result.is_err());
-
-        // handle_sys_reg_read should also detect it.
-        let result = m.handle_sys_reg_read(SysRegAddr::new(0x1000), AccessWidth::Qword);
-        assert!(result.is_err());
-
-        // handle_port_read should also detect it.
-        let result = m.handle_port_read(Port::new(0x1000), AccessWidth::Byte);
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_zero_size_returns_invalid_resource() {
         let mut m = DeviceRuntime::empty();
         let result = m.register(Arc::new(D::new_mmio(0x1000, 0, "zero")));
@@ -1981,11 +2525,20 @@ mod tests {
                 }];
                 &R
             }
-            fn access(
+            fn read(
                 &self,
-                _: &BusAccess,
-                _context: &mut dyn DeviceAccess,
-            ) -> Result<BusResponse, DeviceError> {
+                _: &DeviceAccess,
+                _context: &mut dyn DeviceContext,
+            ) -> Result<u64, DeviceError> {
+                Err(DeviceError::NotFound)
+            }
+
+            fn write(
+                &self,
+                _: &DeviceAccess,
+                _value: u64,
+                _context: &mut dyn DeviceContext,
+            ) -> Result<(), DeviceError> {
                 Err(DeviceError::NotFound)
             }
         }
@@ -2006,27 +2559,26 @@ mod tests {
         let mut m = DeviceRuntime::empty();
         m.register(Arc::new(D::new_mmio(0x1000, 0x8, "small")))
             .unwrap();
-        assert!(matches!(
-            m.dispatch(&BusAccess {
-                kind: BusKind::Mmio,
-                is_read: false,
-                addr: 0x1004,
-                width: AccessWidth::Qword,
-                data: 0,
-            }),
-            Err(DeviceError::NotFound)
-        ));
+        let vcpu = DeviceVcpuId::new(0);
+        assert!(
+            !m.try_write(
+                &DeviceAccess::new(vcpu, BusKind::Mmio, 0x1004, AccessWidth::Qword),
+                0,
+                None,
+            )
+            .unwrap()
+        );
         // 0x1008 == base + size — NotFound.
-        assert!(matches!(
-            m.dispatch(&BusAccess {
-                kind: BusKind::Mmio,
-                is_read: true,
-                addr: 0x1008,
-                width: AccessWidth::Dword,
-                data: 0
-            }),
-            Err(DeviceError::NotFound)
-        ));
+        assert_eq!(
+            m.try_read(&DeviceAccess::new(
+                vcpu,
+                BusKind::Mmio,
+                0x1008,
+                AccessWidth::Dword,
+            ))
+            .unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -2035,16 +2587,16 @@ mod tests {
         m.register(Arc::new(D::new_port(0x80, 2, "small-port")))
             .unwrap();
 
-        assert!(matches!(
-            m.dispatch(&BusAccess {
-                kind: BusKind::Port,
-                is_read: true,
-                addr: 0x81,
-                width: AccessWidth::Word,
-                data: 0,
-            }),
-            Err(DeviceError::NotFound)
-        ));
+        assert_eq!(
+            m.try_read(&DeviceAccess::new(
+                DeviceVcpuId::new(0),
+                BusKind::Port,
+                0x81,
+                AccessWidth::Word,
+            ))
+            .unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -2070,16 +2622,17 @@ mod tests {
             ))
         ));
         assert_eq!(devices.device_count(), 1);
-        assert!(matches!(
-            devices.dispatch(&BusAccess {
-                kind: BusKind::Mmio,
-                is_read: true,
-                addr: 0x2000,
-                width: AccessWidth::Dword,
-                data: 0,
-            }),
-            Err(DeviceError::NotFound)
-        ));
+        assert_eq!(
+            devices
+                .try_read(&DeviceAccess::new(
+                    DeviceVcpuId::new(0),
+                    BusKind::Mmio,
+                    0x2000,
+                    AccessWidth::Dword,
+                ))
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -2136,59 +2689,5 @@ mod tests {
         assert_eq!(lifecycle.reset_calls.load(Ordering::Relaxed), 1);
         assert_eq!(lifecycle.suspend_calls.load(Ordering::Relaxed), 1);
         assert_eq!(lifecycle.resume_calls.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn factory_build_rejects_unregistered_device_type() {
-        let mut factories = DeviceFactoryRegistry::new();
-        factories
-            .register(Arc::new(EmptyFactory {
-                device_type: EmulatedDeviceType::FwCfg,
-            }))
-            .unwrap();
-        let context = DeviceBuildContext::new(&UnusedInterruptController);
-        let config = EmulatedDeviceConfig {
-            name: "fw-cfg".into(),
-            emu_type: EmulatedDeviceType::FwCfg,
-            ..Default::default()
-        };
-
-        assert!(DeviceRuntime::build_with_factories(&[config], &factories, &context).is_ok());
-
-        let unsupported = EmulatedDeviceConfig {
-            name: "unsupported".into(),
-            emu_type: EmulatedDeviceType::IVCChannel,
-            ..Default::default()
-        };
-        assert!(matches!(
-            DeviceRuntime::build_with_factories(&[unsupported], &factories, &context),
-            Err(crate::DeviceManagerError::Unsupported {
-                operation: "build emulated device",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn ivc_channel_factory_contributes_static_guest_range_allocator() {
-        let mut factories = DeviceFactoryRegistry::new();
-        register_builtin_factories(&mut factories).unwrap();
-        let context = DeviceBuildContext::new(&UnusedInterruptController);
-        let config = EmulatedDeviceConfig {
-            name: "ivc".into(),
-            emu_type: EmulatedDeviceType::IVCChannel,
-            base_gpa: 0x8000_0000,
-            length: 0x4000,
-            ..Default::default()
-        };
-
-        let devices = DeviceRuntime::build_with_factories(&[config], &factories, &context).unwrap();
-
-        let first = devices.alloc_ivc_channel(0x1000).unwrap();
-        let second = devices.alloc_ivc_channel(0x2000).unwrap();
-        assert_eq!(first.as_usize(), 0x8000_0000);
-        assert_eq!(second.as_usize(), 0x8000_1000);
-        devices.release_ivc_channel(first, 0x1000).unwrap();
-        assert_eq!(devices.alloc_ivc_channel(0x1000).unwrap(), first);
     }
 }

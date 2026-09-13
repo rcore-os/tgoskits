@@ -5,7 +5,7 @@ use core::{
     ptr::NonNull,
 };
 
-use ax_kspin::SpinNoIrq;
+use ax_sync::SpinLock;
 use rlsf::Tlsf;
 
 use super::{AllocResult, AllocatorOps, UsageKind, Usages};
@@ -40,8 +40,8 @@ impl TlsfInfo {
 
 /// The global allocator used by ArceOS when TLSF is enabled.
 pub struct GlobalAllocator {
-    inner: SpinNoIrq<TlsfInfo>,
-    usages: SpinNoIrq<Usages>,
+    inner: SpinLock<TlsfInfo>,
+    usages: SpinLock<Usages>,
 }
 
 impl Default for GlobalAllocator {
@@ -54,8 +54,8 @@ impl GlobalAllocator {
     /// Creates an empty [`GlobalAllocator`].
     pub const fn new() -> Self {
         Self {
-            inner: SpinNoIrq::new(TlsfInfo::new()),
-            usages: SpinNoIrq::new(Usages::new()),
+            inner: SpinLock::new(TlsfInfo::new()),
+            usages: SpinLock::new(Usages::new()),
         }
     }
 
@@ -66,7 +66,7 @@ impl GlobalAllocator {
 
     /// Initializes the allocator with the given region.
     pub fn init(&self, start_vaddr: usize, size: usize) -> AllocResult {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock_irqsave();
         unsafe {
             let pool = core::slice::from_raw_parts_mut(start_vaddr as *mut u8, size);
             inner
@@ -80,7 +80,7 @@ impl GlobalAllocator {
 
     /// Add the given region to the allocator.
     pub fn add_memory(&self, start_vaddr: usize, size: usize) -> AllocResult {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock_irqsave();
         unsafe {
             let pool = core::slice::from_raw_parts_mut(start_vaddr as *mut u8, size);
             inner
@@ -94,25 +94,32 @@ impl GlobalAllocator {
 
     /// Allocate arbitrary number of bytes.
     pub fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
-        let ptr = self
-            .inner
-            .lock()
-            .tlsf
-            .allocate(layout)
-            .ok_or(crate::AllocError::NoMemory)?;
-        self.inner.lock().used_bytes += layout.size();
-        self.usages.lock().alloc(UsageKind::RustHeap, layout.size());
+        let ptr =
+            crate::retry_after_registered_reclaim(crate::layout_reclaim_pages(layout), || {
+                self.inner
+                    .lock_irqsave()
+                    .tlsf
+                    .allocate(layout)
+                    .ok_or(crate::AllocError::NoMemory)
+            })?;
+        self.inner.lock_irqsave().used_bytes += layout.size();
+        self.usages
+            .lock_irqsave()
+            .alloc(UsageKind::RustHeap, layout.size());
         Ok(ptr)
     }
 
     /// Gives back the allocated region.
     pub fn dealloc(&self, pos: NonNull<u8>, layout: Layout) {
         unsafe {
-            self.inner.lock().tlsf.deallocate(pos, layout.align());
+            self.inner
+                .lock_irqsave()
+                .tlsf
+                .deallocate(pos, layout.align());
         }
-        self.inner.lock().used_bytes -= layout.size();
+        self.inner.lock_irqsave().used_bytes -= layout.size();
         self.usages
-            .lock()
+            .lock_irqsave()
             .dealloc(UsageKind::RustHeap, layout.size());
     }
 
@@ -123,19 +130,22 @@ impl GlobalAllocator {
         alignment: usize,
         kind: UsageKind,
     ) -> AllocResult<usize> {
-        let size = num_pages * PAGE_SIZE;
+        let size = num_pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(crate::AllocError::InvalidParam)?;
         let align = alignment.max(PAGE_SIZE);
         let layout =
             Layout::from_size_align(size, align).map_err(|_| crate::AllocError::InvalidParam)?;
-        let ptr = self
-            .inner
-            .lock()
-            .tlsf
-            .allocate(layout)
-            .ok_or(crate::AllocError::NoMemory)?;
-        self.inner.lock().used_bytes += size;
+        let ptr = crate::retry_after_registered_reclaim(num_pages, || {
+            self.inner
+                .lock_irqsave()
+                .tlsf
+                .allocate(layout)
+                .ok_or(crate::AllocError::NoMemory)
+        })?;
+        self.inner.lock_irqsave().used_bytes += size;
         if !matches!(kind, UsageKind::RustHeap) {
-            self.usages.lock().alloc(kind, size);
+            self.usages.lock_irqsave().alloc(kind, size);
         }
         Ok(ptr.as_ptr() as usize)
     }
@@ -166,20 +176,20 @@ impl GlobalAllocator {
         let size = num_pages * PAGE_SIZE;
         let ptr = NonNull::new(pos as *mut u8).expect("dealloc_pages null ptr");
         unsafe {
-            self.inner.lock().tlsf.deallocate(ptr, PAGE_SIZE);
+            self.inner.lock_irqsave().tlsf.deallocate(ptr, PAGE_SIZE);
         }
-        self.inner.lock().used_bytes -= size;
-        self.usages.lock().dealloc(kind, size);
+        self.inner.lock_irqsave().used_bytes -= size;
+        self.usages.lock_irqsave().dealloc(kind, size);
     }
 
     /// Returns the number of allocated bytes.
     pub fn used_bytes(&self) -> usize {
-        self.inner.lock().used_bytes
+        self.inner.lock_irqsave().used_bytes
     }
 
     /// Returns the number of available bytes.
     pub fn available_bytes(&self) -> usize {
-        let inner = self.inner.lock();
+        let inner = self.inner.lock_irqsave();
         inner.total_bytes.saturating_sub(inner.used_bytes)
     }
 
@@ -195,7 +205,7 @@ impl GlobalAllocator {
 
     /// Returns the usage statistics.
     pub fn usages(&self) -> Usages {
-        *self.usages.lock()
+        *self.usages.lock_irqsave()
     }
 }
 
@@ -309,7 +319,10 @@ unsafe impl GlobalAlloc for GlobalAllocator {
             if let Ok(ptr) = GlobalAllocator::alloc(self, layout) {
                 ptr.as_ptr()
             } else {
-                alloc::alloc::handle_alloc_error(layout)
+                // Let fallible containers observe allocation failure. The
+                // standard library still calls its allocation-error handler
+                // for infallible Box/Vec/Arc construction after a null result.
+                core::ptr::null_mut()
             }
         };
 
@@ -319,6 +332,9 @@ unsafe impl GlobalAlloc for GlobalAllocator {
                 None => inner(),
                 Some(state) => {
                     let ptr = inner();
+                    if ptr.is_null() {
+                        return ptr;
+                    }
                     let generation = state.generation;
                     state.generation += 1;
                     state.map.insert(

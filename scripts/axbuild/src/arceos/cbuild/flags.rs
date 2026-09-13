@@ -87,10 +87,6 @@ typedef struct {{
 }
 
 fn pthread_mutex_layout(features: &[String]) -> (usize, &'static str) {
-    if !has_feature(features, "multitask") {
-        return (1, "{0}");
-    }
-
     if has_feature(features, "lockdep") {
         if has_effective_smp(features) {
             return (10, "{-1, 0, 0, 0, 0, 0, 0, 0, 0, 0}");

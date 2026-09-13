@@ -9,22 +9,19 @@ use crate::{err::*, osal::Kernel};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct EventRingSte {
-    pub addr: u64,
-    pub size: u16,
+struct EventRingSte {
+    addr: u64,
+    size: u16,
     _reserved: [u8; 6],
 }
 
-pub struct EventRing {
+pub(crate) struct EventRing {
     segments: Vec<Ring>,
     segment_index: usize,
     trb_index: usize,
     cycle: bool,
-    pub ste: CoherentArray<EventRingSte>,
+    ste: CoherentArray<EventRingSte>,
 }
-
-unsafe impl Send for EventRing {}
-unsafe impl Sync for EventRing {}
 
 const EVENT_RING_SEGMENTS: usize = 2;
 
@@ -44,7 +41,7 @@ impl EventRing {
             ste.set_cpu(
                 index,
                 EventRingSte {
-                    addr: segment.trbs.dma_addr().as_u64(),
+                    addr: segment.bus_addr().raw(),
                     size: TRBS_PER_SEGMENT as _,
                     _reserved: [0; 6],
                 },
@@ -115,8 +112,7 @@ impl EventRing {
 
     fn current_data(&self) -> super::ring::TrbData {
         self.current_segment()
-            .trbs
-            .read_cpu(self.trb_index)
+            .read_trb(self.trb_index)
             .expect("event ring TRB index out of bounds")
     }
 
@@ -133,8 +129,8 @@ impl EventRing {
     }
 }
 
-pub struct EventRingInfo {
-    pub erstz: u16,
-    pub erdp: u64,
-    pub erstba: u64,
+pub(crate) struct EventRingInfo {
+    pub(crate) erstz: u16,
+    pub(crate) erdp: u64,
+    pub(crate) erstba: u64,
 }

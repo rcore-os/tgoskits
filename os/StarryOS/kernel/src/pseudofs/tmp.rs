@@ -1,5 +1,6 @@
 use alloc::{
     borrow::ToOwned,
+    collections::BTreeMap,
     string::String,
     sync::{Arc, Weak},
     vec::Vec,
@@ -9,20 +10,20 @@ use core::{
     borrow::Borrow,
     cmp::Ordering,
     sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
-    task::Context,
     time::Duration,
 };
 
-use ax_kspin::SpinNoIrq;
-use ax_sync::Mutex;
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-    FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-    NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FileNodeOps,
+    FileRangeOperation, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
+    NodePermission, NodeType, PreallocationMode, Reference, RenameOptions, StatFs, VfsError,
+    VfsResult, WeakDirEntry, XattrOps, XattrSetMode,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
+
+use crate::sync::{FsMutex, IrqMutex, Mutex};
 
 const TMPFS_MAGIC: u32 = 0x0102_1994;
 const RAMFS_MAGIC: u32 = 0x8584_58f6;
@@ -30,14 +31,6 @@ const STATFS_BLOCK_SIZE: u64 = 4096;
 const DEFAULT_TMPFS_SIZE: u64 = 4 * 1024 * 1024 * 1024;
 
 const TMPFS_NESTED_DIR_ENTRIES_SUBCLASS: u32 = 1;
-
-fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
-    IoEvents::from_bits_truncate(events.bits())
-}
-
-fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
-    FsIoEvents::from_bits_truncate(events.bits())
-}
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 struct FileName(Arc<str>);
@@ -84,10 +77,10 @@ pub struct MemoryFs {
     used_bytes: AtomicU64,
     // Inodes may be released from atomic cleanup paths, so the slab and
     // metadata locks must not sleep.
-    inodes: SpinNoIrq<Slab<Arc<Inode>>>,
+    inodes: IrqMutex<Slab<Arc<Inode>>>,
     // root_dir() is used while mounting pseudofs during early startup, before
     // Starry has reached a sleepable task context.
-    root: SpinNoIrq<Option<DirEntry>>,
+    root: IrqMutex<Option<DirEntry>>,
 }
 
 impl MemoryFs {
@@ -133,8 +126,8 @@ impl MemoryFs {
             fs_type,
             size_limit,
             used_bytes: AtomicU64::new(0),
-            inodes: SpinNoIrq::new(Slab::new()),
-            root: SpinNoIrq::new(None),
+            inodes: IrqMutex::new(Slab::new()),
+            root: IrqMutex::new(None),
         });
         let root_ino = Inode::new(
             &handle,
@@ -263,16 +256,16 @@ struct FileContent {
 
 struct DirContent {
     // VFS dentry-cache operations call tmpfs directory ops while holding
-    // SpinNoIrq guards, so this per-directory map must not use a blocking
+    // IrqMutex guards, so this per-directory map must not use a blocking
     // mutex.
-    entries: SpinNoIrq<HashMap<FileName, InodeRef>>,
+    entries: IrqMutex<HashMap<FileName, InodeRef>>,
     next_cookie: AtomicU64,
 }
 
 impl Default for DirContent {
     fn default() -> Self {
         Self {
-            entries: SpinNoIrq::new(HashMap::new()),
+            entries: IrqMutex::new(HashMap::new()),
             next_cookie: AtomicU64::new(3),
         }
     }
@@ -286,8 +279,12 @@ enum NodeContent {
 struct Inode {
     fs: Weak<MemoryFs>,
     ino: u64,
-    metadata: SpinNoIrq<Metadata>,
+    metadata: IrqMutex<Metadata>,
     content: NodeContent,
+    // Extended attributes belong to the inode so hard links observe the same
+    // values. Syscall xattr paths are sleepable and never hold a directory
+    // entries guard while acquiring this lock.
+    xattrs: FsMutex<BTreeMap<Vec<u8>, Vec<u8>>>,
 }
 
 impl Inode {
@@ -328,8 +325,9 @@ impl Inode {
         let result = Arc::new(Self {
             fs: Arc::downgrade(fs),
             ino,
-            metadata: SpinNoIrq::new(metadata),
+            metadata: IrqMutex::new(metadata),
             content,
+            xattrs: FsMutex::new(BTreeMap::new()),
         });
         entry.insert(result.clone());
         drop(inodes);
@@ -372,6 +370,48 @@ impl Drop for Inode {
         };
         let length = content.length.load(AtomicOrdering::Acquire);
         fs.used_bytes.fetch_sub(length, AtomicOrdering::AcqRel);
+    }
+}
+
+fn xattr_not_found() -> VfsError {
+    VfsError::DataMissing
+}
+
+impl XattrOps for Inode {
+    fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>> {
+        self.xattrs
+            .lock()
+            .get(name)
+            .cloned()
+            .ok_or_else(xattr_not_found)
+    }
+
+    fn list_xattrs(&self) -> VfsResult<Vec<Vec<u8>>> {
+        Ok(self.xattrs.lock().keys().cloned().collect())
+    }
+
+    fn set_xattr(&self, name: &[u8], value: &[u8], mode: XattrSetMode) -> VfsResult<()> {
+        if name.is_empty() {
+            return Err(VfsError::InvalidInput);
+        }
+
+        let mut xattrs = self.xattrs.lock();
+        let exists = xattrs.contains_key(name);
+        match mode {
+            XattrSetMode::Create if exists => return Err(VfsError::AlreadyExists),
+            XattrSetMode::Replace if !exists => return Err(xattr_not_found()),
+            XattrSetMode::Upsert | XattrSetMode::Create | XattrSetMode::Replace => {}
+        }
+        xattrs.insert(name.to_vec(), value.to_vec());
+        Ok(())
+    }
+
+    fn remove_xattr(&self, name: &[u8]) -> VfsResult<()> {
+        self.xattrs
+            .lock()
+            .remove(name)
+            .map(|_| ())
+            .ok_or_else(xattr_not_found)
     }
 }
 
@@ -503,6 +543,10 @@ impl NodeOps for MemoryNode {
     fn flags(&self) -> NodeFlags {
         NodeFlags::ALWAYS_CACHE
     }
+
+    fn xattr_ops(&self) -> Option<&dyn XattrOps> {
+        Some(self.inode.as_ref())
+    }
 }
 
 impl FileNodeOps for MemoryNode {
@@ -533,36 +577,41 @@ impl FileNodeOps for MemoryNode {
         Ok(())
     }
 
-    fn set_symlink(&self, target: &str) -> VfsResult<()> {
-        let file = self.inode.as_file()?;
-        let old_len = file.length.load(AtomicOrdering::Acquire);
-        let new_len = target.len() as u64;
-        self.fs.resize_usage(old_len, new_len)?;
-        file.length.store(new_len, AtomicOrdering::Release);
-        *file.symlink.lock() = Some(target.to_owned());
-        Ok(())
+    fn operate_range(&self, offset: u64, len: u64, operation: FileRangeOperation) -> VfsResult<()> {
+        let end = offset.checked_add(len).ok_or(VfsError::InvalidInput)?;
+        match operation {
+            FileRangeOperation::Allocate(PreallocationMode::KeepSize) => {
+                Err(VfsError::OperationNotSupported)
+            }
+            FileRangeOperation::Allocate(PreallocationMode::ExtendSize)
+            | FileRangeOperation::ZeroRange(PreallocationMode::ExtendSize) => {
+                let current = self.inode.as_file()?.length.load(AtomicOrdering::Acquire);
+                self.set_len(current.max(end))
+            }
+            FileRangeOperation::PunchHole
+            | FileRangeOperation::ZeroRange(PreallocationMode::KeepSize) => Ok(()),
+            FileRangeOperation::CollapseRange | FileRangeOperation::InsertRange => {
+                Err(VfsError::OperationNotSupported)
+            }
+        }
     }
 }
-impl FsPollable for MemoryNode {
-    fn poll(&self) -> FsIoEvents {
-        FsIoEvents::IN | FsIoEvents::OUT
-    }
-
-    fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
-}
-
 impl Pollable for MemoryNode {
     fn poll(&self) -> IoEvents {
-        fs_events_to_io(FsPollable::poll(self))
+        IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        FsPollable::register(self, context, io_events_to_fs(events));
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
     }
 }
 
 impl DirNodeOps for MemoryNode {
-    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        let offset = cursor.offset();
         let dir = self.inode.as_dir()?;
         let entries = loop {
             let entries = dir.entries.lock();
@@ -598,7 +647,12 @@ impl DirNodeOps for MemoryNode {
 
         let mut count = 0;
         for (cookie, name, ino, node_type) in entries {
-            if !sink.accept(name.as_ref(), ino, node_type, cookie + 1) {
+            if !sink.accept(
+                name.as_bytes(),
+                ino,
+                node_type,
+                DirectoryCursor::new(cookie + 1),
+            ) {
                 return Ok(count);
             }
             count += 1;
@@ -624,6 +678,9 @@ impl DirNodeOps for MemoryNode {
         uid: u32,
         gid: u32,
     ) -> VfsResult<DirEntry> {
+        if node_type == NodeType::Symlink {
+            return Err(VfsError::InvalidInput);
+        }
         let dir = self.inode.as_dir()?;
         let mut entries = dir.entries.lock();
 
@@ -645,6 +702,71 @@ impl DirNodeOps for MemoryNode {
             InodeRef::new(self.fs.clone(), inode.ino, node_type, cookie),
         );
         self.new_entry(name, node_type, inode)
+    }
+
+    fn create_symlink(
+        &self,
+        name: &str,
+        target: &str,
+        permission: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> VfsResult<DirEntry> {
+        let target = target.to_owned();
+        let target_len = target.len() as u64;
+        let dir = self.inode.as_dir()?;
+        {
+            let entries = dir.entries.lock();
+            if entries.contains_key(name) {
+                return Err(VfsError::AlreadyExists);
+            }
+        }
+        self.fs.resize_usage(0, target_len)?;
+        let inode = Inode::new(
+            &self.fs,
+            Some(self.inode.ino),
+            NodeType::Symlink,
+            permission,
+            uid,
+            gid,
+            TMPFS_NESTED_DIR_ENTRIES_SUBCLASS,
+        );
+        let NodeContent::File(file) = &inode.content else {
+            self.fs
+                .used_bytes
+                .fetch_sub(target_len, AtomicOrdering::AcqRel);
+            drop(self.fs.inodes.lock().remove(inode.ino as usize - 1));
+            return Err(VfsError::InvalidData);
+        };
+        file.length.store(target_len, AtomicOrdering::Release);
+        // The symlink payload uses a sleepable mutex. Initialize it before taking the
+        // IRQ-safe directory lock so no blocking lock is acquired in atomic context.
+        *file.symlink.lock() = Some(target);
+
+        let entry = DirEntry::new_file(
+            FileNode::new(MemoryNode::new(self.fs.clone(), inode.clone(), None)),
+            NodeType::Symlink,
+            Reference::new(
+                self.this.as_ref().and_then(WeakDirEntry::upgrade),
+                name.to_owned(),
+            ),
+        );
+        let mut entries = dir.entries.lock();
+        if entries.contains_key(name) {
+            drop(entries);
+            drop(entry);
+            self.fs
+                .used_bytes
+                .fetch_sub(target_len, AtomicOrdering::AcqRel);
+            release_inode(&self.fs, &inode, 0);
+            return Err(VfsError::AlreadyExists);
+        }
+        let cookie = dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
+        entries.insert(
+            name.into(),
+            InodeRef::new(self.fs.clone(), inode.ino, NodeType::Symlink, cookie),
+        );
+        Ok(entry)
     }
 
     fn link(&self, name: &str, target: &DirEntry) -> VfsResult<DirEntry> {
@@ -696,10 +818,22 @@ impl DirNodeOps for MemoryNode {
     }
 
     // TODO: atomicity
-    fn rename(&self, src_name: &str, dst_dir: &DirNode, dst_name: &str) -> VfsResult<()> {
+    fn rename(
+        &self,
+        src_name: &str,
+        dst_dir: &DirNode,
+        dst_name: &str,
+        options: RenameOptions,
+    ) -> VfsResult<()> {
+        if options.exchange() || options.whiteout() {
+            return Err(VfsError::OperationNotSupported);
+        }
         let dst_node = dst_dir.downcast::<Self>()?;
         if let Ok(entry) = dst_dir.lookup(dst_name) {
             let src_entry = self.lookup(src_name)?;
+            if options.no_replace() {
+                return Err(VfsError::AlreadyExists);
+            }
             if entry.inode() == src_entry.inode() {
                 return Ok(());
             }
@@ -733,5 +867,53 @@ impl DirNodeOps for MemoryNode {
 impl Drop for MemoryNode {
     fn drop(&mut self) {
         release_inode(&self.fs, &self.inode, 0);
+    }
+}
+
+#[cfg(all(test, axtest))]
+fn failed_symlink_capacity_reservation_does_not_publish_name_for_test() -> bool {
+    let filesystem = MemoryFs::new_with_size_limit(3);
+    let root = filesystem.root_dir();
+    let Ok(directory) = root.as_dir() else {
+        return false;
+    };
+
+    let capacity_failure_is_atomic =
+        matches!(
+            directory.create_symlink(
+                "link",
+                "four",
+                NodePermission::from_bits_truncate(0o777),
+                1000,
+                1001,
+            ),
+            Err(VfsError::StorageFull)
+        ) && matches!(directory.lookup("link"), Err(VfsError::NotFound));
+
+    let filesystem = MemoryFs::new_with_size_limit(64);
+    let root = filesystem.root_dir();
+    let Ok(directory) = root.as_dir() else {
+        return false;
+    };
+    let successful_create_is_readable = directory
+        .create_symlink(
+            "link",
+            "target",
+            NodePermission::from_bits_truncate(0o777),
+            1000,
+            1001,
+        )
+        .and_then(|entry| entry.read_link())
+        .is_ok_and(|target| target == "target");
+
+    capacity_failure_is_atomic && successful_create_is_readable
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn failed_symlink_capacity_reservation_does_not_publish_name() {
+        assert!(super::failed_symlink_capacity_reservation_does_not_publish_name_for_test());
     }
 }

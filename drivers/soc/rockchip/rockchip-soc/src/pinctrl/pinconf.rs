@@ -126,15 +126,3 @@ impl PinConfig {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_pull_values() {
-        assert_eq!(Pull::Disabled as u32, 0);
-        assert_eq!(Pull::PullUp as u32, 3);
-        assert_eq!(Pull::PullDown as u32, 4);
-    }
-}

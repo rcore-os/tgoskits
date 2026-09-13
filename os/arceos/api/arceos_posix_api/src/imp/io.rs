@@ -1,12 +1,11 @@
 use core::ffi::{c_int, c_void};
 
-use ax_errno::{LinuxError, LinuxResult};
 #[cfg(not(feature = "fd"))]
 use ax_io::prelude::*;
 
-use crate::ctypes;
 #[cfg(feature = "fd")]
 use crate::imp::fd_ops::get_file_like;
+use crate::{PosixError, PosixResult, ctypes};
 
 /// Read data from the file indicated by `fd`.
 ///
@@ -15,7 +14,7 @@ pub fn sys_read(fd: c_int, buf: *mut c_void, count: usize) -> ctypes::ssize_t {
     debug!("sys_read <= {} {:#x} {}", fd, buf as usize, count);
     syscall_body!(sys_read, {
         if buf.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(PosixError::EFAULT);
         }
         let dst = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, count) };
         #[cfg(feature = "fd")]
@@ -25,15 +24,15 @@ pub fn sys_read(fd: c_int, buf: *mut c_void, count: usize) -> ctypes::ssize_t {
         #[cfg(not(feature = "fd"))]
         match fd {
             0 => Ok(super::stdio::stdin().read(dst)? as ctypes::ssize_t),
-            1 | 2 => Err(LinuxError::EPERM),
-            _ => Err(LinuxError::EBADF),
+            1 | 2 => Err(PosixError::EPERM),
+            _ => Err(PosixError::EBADF),
         }
     })
 }
 
-fn write_impl(fd: c_int, buf: *const c_void, count: usize) -> LinuxResult<ctypes::ssize_t> {
+fn write_impl(fd: c_int, buf: *const c_void, count: usize) -> PosixResult<ctypes::ssize_t> {
     if buf.is_null() {
-        return Err(LinuxError::EFAULT);
+        return Err(PosixError::EFAULT);
     }
     let src = unsafe { core::slice::from_raw_parts(buf as *const u8, count) };
     #[cfg(feature = "fd")]
@@ -42,9 +41,9 @@ fn write_impl(fd: c_int, buf: *const c_void, count: usize) -> LinuxResult<ctypes
     }
     #[cfg(not(feature = "fd"))]
     match fd {
-        0 => Err(LinuxError::EPERM),
+        0 => Err(PosixError::EPERM),
         1 | 2 => Ok(super::stdio::stdout().write(src)? as ctypes::ssize_t),
-        _ => Err(LinuxError::EBADF),
+        _ => Err(PosixError::EBADF),
     }
 }
 
@@ -61,7 +60,7 @@ pub unsafe fn sys_writev(fd: c_int, iov: *const ctypes::iovec, iocnt: c_int) -> 
     debug!("sys_writev <= fd: {fd}");
     syscall_body!(sys_writev, {
         if !(0..=1024).contains(&iocnt) {
-            return Err(LinuxError::EINVAL);
+            return Err(PosixError::EINVAL);
         }
 
         let iovs = unsafe { core::slice::from_raw_parts(iov, iocnt as usize) };

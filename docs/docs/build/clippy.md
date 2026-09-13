@@ -53,7 +53,7 @@ Clippy 的代码按选择、展开、执行和报告划分，避免参数解析�
 |----------|------|
 | `scripts/axbuild/src/clippy/mod.rs` | CLI 入口、模块级常量（如 `AXSTD_STD_*`、`AX_HAL_PACKAGE`） |
 | `scripts/axbuild/src/clippy/selection.rs` | 参数校验、包选择（全量 / `--package` / `--since` 增量）、不支持的包过滤 |
-| `scripts/axbuild/src/clippy/check.rs` | `ClippyCheck` / `ClippyCheckKind` / `ClippyDepsMode` 数据模型与 `cargo_args` 构造 |
+| `scripts/axbuild/src/clippy/check.rs` | `ClippyCheck` / `ClippyCheckKind` 数据模型与 `cargo_args` 构造 |
 | `scripts/axbuild/src/clippy/configurations.rs` | 解析并校验 package metadata 中声明的命名 target 配置 |
 | `scripts/axbuild/src/clippy/expand.rs` | 把每个包按 feature × target 展开为 `ClippyCheck` 列表 |
 | `scripts/axbuild/src/clippy/env.rs` | 为特殊 check 计算所需环境变量；普通包当前不额外注入环境变量 |
@@ -69,11 +69,15 @@ Clippy 的代码按选择、展开、执行和报告划分，避免参数解析�
 
 | 模式 | 触发条件 | 行为 |
 |------|----------|------|
-| 全量 | `--all` 或不带任何参数 | 对全部 workspace 成员执行 `NoDeps` 检查 |
+| 全量 | `--all` 或不带任何参数 | 对全部 workspace 成员执行完整检查矩阵 |
 | 显式 | `--package <name>`（可多次） | 仅指定包，未知包名直接报错 |
-| 增量 | `--since <git-ref>` | 通过 `support::git::select_incremental_packages` 选出变更包及其反向依赖顶层包 |
+| 增量 | `--since <git-ref>` | 选择直接变更包，以及受影响的 `ax-std` / `starryos` OS 根 |
 
-`--since` 模式下，变更包以 `NoDeps` 检查，**被影响的反向依赖顶层包**以 `WithDeps` 检查（一并扫描依赖该包的代码）。当 git diff 失败或路径越出 workspace 时回退到全量扫描，并在终端打印回退原因。
+`--since` 模式先通过 `support::git::select_incremental_packages` 计算直接变更包和完整反向依赖闭包，再选择 `changed ∪ (affected ∩ {ax-std, starryos})`。中间路径和其他顶层包不会进入 Clippy 计划；直接变更的 OS 根会去重。所有选中包都使用 `--no-deps` 并展开完整 feature、target 和命名配置矩阵。当 git diff 失败或路径越出 workspace 时回退到全量扫描，并在终端打印回退原因。
+
+CI 为 Incremental Clippy 单独获取最近 100 层 Git 历史。增量基线或 merge-base 超出该范围，或者 force-push 使历史断开时，Clippy 会保守回退到全 workspace 扫描；其他 CI 检查保持各自的 checkout 深度。
+
+`--no-deps` 只禁止 Clippy 检查依赖 crate；Cargo 仍会编译选中包完成类型检查所需的依赖。
 
 `skip_unsupported_packages` 会跳过当前不能裸 clippy 的包，目前包括：
 
@@ -84,13 +88,13 @@ Clippy 的代码按选择、展开、执行和报告划分，避免参数解析�
 
 ## 4. 检查展开
 
-`expand_clippy_checks` 对每个 `SelectedClippyPackage` 按 (target × feature) 笛卡尔积展开：
+`expand_clippy_checks` 对每个选中的 workspace package 按 (target × feature) 笛卡尔积展开：
 
 1. **target** 来自 `docs_rs_targets(package)`，从 docs.rs metadata 读取包声明支持的 target；为空时取单个 `None`（host target）。
 2. **feature** 取包 `Cargo.toml` 中除 `default` 外的全部 feature；`ax-std` 额外注入一个名为 `default` 的特殊 feature。
-3. 每个 (target, base) 组合产生一个 base check；`NoDeps` 模式下再为每个该 target 支持的 feature 产生一个 feature check。
-4. feature check 使用对应 feature 名执行；普通包不额外注入构建环境变量。
-5. `NoDeps` 模式下，包还可以通过 `[package.metadata.clippy]` 声明命名配置；每条配置按一个明确 target、完整 feature 集和环境变量额外生成 check。`WithDeps` 仍只运行 base check，避免增量反向依赖扫描膨胀成完整配置矩阵。
+3. 每个 (target, base) 组合产生一个 base check，再为每个该 target 支持的 feature 产生一个 feature check。
+4. feature check 使用对应 feature 名执行；`host-test` 是 workspace 的宿主测试约定，不参与 docs.rs target 矩阵，而是在 host target 上单独检查一次并加上 `--tests`，让 Clippy 编译单元测试和集成测试目标。普通包不额外注入构建环境变量。
+5. 包还可以通过 `[package.metadata.clippy]` 声明命名配置；每条配置按一个明确 target、完整 feature 集和环境变量额外生成 check。
 
 命名配置用于 docs.rs target × 单 feature 矩阵无法表达的正式构建组合。它保留包的默认 feature，再额外启用配置中的完整 feature 集：
 
@@ -108,7 +112,7 @@ SMP = "4"
 
 配置名必须在包内唯一，名称、target 和 feature 必须非空且不能带首尾空白。配置与 feature 会排序去重，环境变量按键排序，因此 check 顺序、命令参数和日志在不同运行间保持一致。命名配置不会把包的所有单 feature 机械展开到目标架构；平台专属组合应显式声明，从而避免把 SG2002、K230 等 feature 编译到错误 target。
 
-`ax-std` 的 `default` feature 被特殊重写为 `std-compat,fs,multitask,irq,net`（常量 `AXSTD_STD_CLIPPY_FEATURES`），target 固定为 `x86_64-unknown-none`，以便在没有真实平台的情况下覆盖 std 兼容层。
+`ax-std` 的 `default` feature 被特殊重写为 `std-compat,fs,net`（常量 `AXSTD_STD_CLIPPY_FEATURES`），target 固定为 `x86_64-unknown-none`，以便在没有真实平台的情况下覆盖 std 兼容层。IRQ 与多任务调度属于基础能力，不再通过 feature 注入。
 
 ### 4.1 目标归一化
 
@@ -143,11 +147,11 @@ targets = ["aarch64-unknown-linux-gnu", "riscv64gc-unknown-none-elf"]
 
 `ClippyCheck::cargo_args()` 构造命令行：
 
-- Base check：`clippy -p <pkg>`
-- Feature check：`clippy -p <pkg> --no-default-features --features <feature>`
-- Named configuration check：`clippy -p <pkg> --features <feature-a>,<feature-b> --target <target>`，并注入配置声明的环境变量
-- `ax-std` default 特判：替换为 `--features std-compat,fs,multitask,irq,net`
-- `NoDeps`：在 `clippy` 后插入 `--no-deps`，避免依赖 crate 的告警污染结果
+- Base check：`clippy --no-deps -p <pkg>`
+- Feature check：`clippy --no-deps -p <pkg> --no-default-features --features <feature>`；当 feature 为 `host-test` 时额外传入 `--tests`
+- Named configuration check：`clippy --no-deps -p <pkg> --features <feature-a>,<feature-b> --target <target>`，并注入配置声明的环境变量
+- `ax-std` default 特判：替换为 `--features std-compat,fs,net`
+- 所有 check 都带 `--no-deps`，避免依赖 crate 的告警污染结果
 - 有 target：追加 `--target <target>`
 - 固定尾部：`-- -D warnings`（任何告警即失败）
 
@@ -199,10 +203,10 @@ cargo xtask clippy
 cargo xtask clippy --all
 
 # 只检查指定包
-cargo xtask clippy --package axcpu --package page_table_multiarch
+cargo xtask clippy --package ax-cpu --package page-table-generic
 
 # 增量：只检查自某个 git ref 以来变更及受影响的包
 cargo xtask clippy --since origin/main
 ```
 
-> 在执行 `starry`、`clippy` 等可能触发 `aic8800` 编译的命令前，`lib.rs::run_root_cli` 会调用 `firmware::ensure_aic8800_firmware` 预拉 Wi-Fi 固件 blob，因此 clippy 命令本身不要求用户预先准备固件。
+> `aic8800` 的 crate build script 会根据固定 manifest 从本地 cache 读取并校验 Wi-Fi 固件 blob；cache 缺失时才从固定 upstream 下载。首次构建因此需要网络或预置且校验通过的 cache，后续 `starry`、`clippy` 等命令复用同一供应路径。

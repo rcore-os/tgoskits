@@ -1,4 +1,4 @@
-use ax_kspin::SpinRwLock as RwLock;
+use ax_sync::SpinRwLock as RwLock;
 use rdif_base::custom_type;
 
 custom_type!(#[doc="Process ID"],Pid, usize, "{:?}");
@@ -17,25 +17,81 @@ impl Pid {
 }
 
 pub trait Osal: Sync + Send + 'static {
-    /// Get the current process ID.
+    /// Get a diagnostic process label. It does not own or revoke device borrows.
     fn get_pid(&self) -> Pid;
+
+    /// Called on every iteration of a contended blocking `lock()`.
+    ///
+    /// The default just hints the CPU that this is a spin-wait. An OS
+    /// integration may yield the current task when blocking device acquisition
+    /// is restricted to sleepable task context. This callback runs without the
+    /// OSAL registration lock held.
+    fn relax(&self) {
+        core::hint::spin_loop();
+    }
 }
 
-struct OsalImplEmplty;
+struct DefaultOsal;
 
-impl Osal for OsalImplEmplty {
+impl Osal for DefaultOsal {
     fn get_pid(&self) -> Pid {
         Pid::INVALID.into()
     }
 }
 
-static OSAL: RwLock<&dyn Osal> = RwLock::new(&OsalImplEmplty);
+struct OsalSlot(RwLock<&'static dyn Osal>);
 
+impl OsalSlot {
+    const fn new(osal: &'static dyn Osal) -> Self {
+        Self(RwLock::new(osal))
+    }
+
+    fn get_pid(&self) -> Pid {
+        let osal = *self.0.read();
+        osal.get_pid()
+    }
+
+    fn relax(&self) {
+        // Copy the static adapter before invoking arbitrary OS code, which
+        // may schedule or register an adapter itself.
+        let osal = *self.0.read();
+        osal.relax();
+    }
+}
+
+static OSAL: OsalSlot = OsalSlot::new(&DefaultOsal);
+
+/// Install an OS adapter. In-flight callbacks may finish on the old adapter.
 pub fn set_osal(osal: &'static dyn Osal) {
-    let mut guard = OSAL.write();
-    *guard = osal;
+    *OSAL.0.write() = osal;
 }
 
 pub(crate) fn get_pid() -> Pid {
-    OSAL.read().get_pid()
+    OSAL.get_pid()
+}
+
+pub(crate) fn relax() {
+    OSAL.relax();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn callbacks_run_outside_osal_lock() {
+        struct Probe;
+        static SLOT: OsalSlot = OsalSlot::new(&Probe);
+        impl Osal for Probe {
+            fn get_pid(&self) -> Pid {
+                assert!(SLOT.0.try_write().is_some(), "get_pid holds OSAL lock");
+                Pid::INVALID.into()
+            }
+            fn relax(&self) {
+                assert!(SLOT.0.try_write().is_some(), "relax holds OSAL lock");
+            }
+        }
+        SLOT.get_pid();
+        SLOT.relax();
+    }
 }

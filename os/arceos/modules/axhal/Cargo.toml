@@ -1,6 +1,6 @@
 [package]
 name = "ax-hal"
-version = "0.5.30"
+version = "0.8.1"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -12,51 +12,54 @@ smp = [
     "axplat-dyn/smp",
     "ax-plat/smp",
 ]
-irq = [
-    "ax-plat/irq",
-    "axplat-dyn/irq",
-    "dep:ax-kspin",
-]
 fp-simd = [
     "ax-cpu/fp-simd",
     "axplat-dyn/fp-simd",
 ]
-xuantie-c9xx = ["ax-cpu/xuantie-c9xx"]
+riscv-thead-mae = ["ax-cpu/riscv-thead-mae"]
 rtc = ["axplat-dyn/rtc"]
 paging = [
     "dep:ax-alloc",
-    "dep:ax-page-table-multiarch",
-    "ax-page-table-multiarch/ax-errno",
+    "dep:page-table-generic",
 ]
+# Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["ax-cpu/tls", "cpu-local/tls", "axplat-dyn/tls"]
-uspace = ["paging", "ax-cpu/uspace", "axplat-dyn/uspace"]
+# Enable userspace support without kernel TLS, including when `tls` is enabled.
+# User-space TLS remains available through the userspace context APIs.
+uspace = ["paging", "ax-cpu/uspace", "cpu-local/uspace", "axplat-dyn/uspace"]
 hv = [
-    "paging",
-    "ax-cpu/exception-table",
-    "axplat-dyn/hv",
+  "paging",
+  "fp-simd",
+  "ax-cpu/virtualization",
+  "axplat-dyn/hv",
 ]
-host-test = ["cpu-local/host-test", "ax-cpu/host-test", "ax-percpu/host-test"]
-
+host-test = [
+    "cpu-local/host-test",
+    "ax-percpu/host-test",
+    "ax-sync/host-test",
+]
+pmu = ["ax-cpu/pmu"]
 default = []
-ipi = ["irq"]
+ipi = []
 
 [dependencies]
+axbacktrace.workspace = true
 ax-alloc = { workspace = true, optional = true }
-ax-cpu.workspace = true
+ax-cpu = { workspace = true, features = ["context"] }
 cpu-local.workspace = true
-ax-kspin = { workspace = true, optional = true }
 ax-plat.workspace = true
+ax-lazyinit.workspace = true
 cfg-if.workspace = true
 fdt-parser = "0.4"
 heapless = "0.9"
-ax-kernel-guard.workspace = true
+ax-sync.workspace = true
 log.workspace = true
 ax-memory-addr.workspace = true
-ax-page-table-multiarch = { workspace = true, optional = true }
 ax-percpu.workspace = true
 axplat-dyn = { workspace = true, default-features = false }
+page-table-generic = { workspace = true, optional = true }
 rdrive.workspace = true
-spin.workspace = true
+thiserror.workspace = true
 
 [build-dependencies]
 quote = { workspace = true }

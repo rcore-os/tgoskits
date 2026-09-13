@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/rcore-os/tgoskits/compare/arm-scmi-rs-v0.1.10...arm-scmi-rs-v0.1.11) - 2026-09-09
+
+### Fixed
+
+- *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
+
+## [0.1.10](https://github.com/rcore-os/tgoskits/compare/arm-scmi-rs-v0.1.9...arm-scmi-rs-v0.1.10) - 2026-08-20
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
+## [0.1.9](https://github.com/rcore-os/tgoskits/compare/arm-scmi-rs-v0.1.8...arm-scmi-rs-v0.1.9) - 2026-08-09
+
+### Other
+
+- updated the following local packages: ax-kspin
+
 ## [0.1.8](https://github.com/rcore-os/tgoskits/compare/arm-scmi-rs-v0.1.7...arm-scmi-rs-v0.1.8) - 2026-08-03
 
 ### Other

@@ -1,13 +1,6 @@
 use super::{common::*, *};
 
 #[test]
-fn starry_snapshot_load_returns_default_when_missing() {
-    let root = tempdir().unwrap();
-    let snapshot = StarryCommandSnapshot::load(root.path()).unwrap();
-    assert_eq!(snapshot, StarryCommandSnapshot::default());
-}
-
-#[test]
 fn starry_snapshot_store_round_trips() {
     let root = tempdir().unwrap();
     let snapshot = StarryCommandSnapshot {

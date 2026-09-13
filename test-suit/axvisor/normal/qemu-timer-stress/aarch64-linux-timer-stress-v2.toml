@@ -1,0 +1,22 @@
+[base]
+id = 1
+name = "linux-timer-stress-v2"
+guest_type = "passthrough"
+cpu_num = 2
+phys_cpu_ids = [0, 1]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "${workspace}/tmp/axbuild/images/qemu-aarch64/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+ramdisk_path = "${workspace}/tmp/axbuild/axvisor/qemu-timer-stress/initramfs-aarch64.cpio.gz"
+ramdisk_load_addr = 0x8400_0000
+memory_regions = [
+  [0x8000_0000, 0x4000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []

@@ -16,18 +16,17 @@ use super::{
     prepare_sh_case_assets_sync,
     types::{
         CaseAssetConfig, CaseAssetLayout, CasePipeline, PreparedCaseAssetParts, PreparedCaseAssets,
-        QEMU_SNAPSHOT_ARG, TestQemuCase,
+        TestQemuCase,
     },
 };
 use crate::test::{build as case_builder, timing};
 
 /// Prepares any case-specific rootfs assets required by a QEMU test.
 ///
-/// QEMU's `-snapshot` flag is always included in the returned
-/// `extra_qemu_args` so that guest writes never persist to any image file.
 /// A per-case rootfs copy is created only when the case requires pre-boot
 /// injection (C / shell / Python / grouped pipelines); plain cases boot
-/// directly from the shared image.
+/// directly from the shared image. The rootfs patcher owns QEMU write
+/// isolation for both paths.
 pub(crate) async fn prepare_case_assets(
     workspace_root: &Path,
     arch: &str,
@@ -56,7 +55,6 @@ pub(crate) async fn prepare_case_assets(
 
     Ok(PreparedCaseAssets {
         rootfs_path: parts.rootfs_path,
-        extra_qemu_args: parts.extra_qemu_args,
         rootfs_copy_to_remove: parts.rootfs_copy_to_remove,
         run_dir_to_remove: parts.run_dir_to_remove,
         pipeline: parts.pipeline,
@@ -114,9 +112,7 @@ pub(crate) fn remove_case_run_dir(path: Option<&Path>) {
 
 /// Performs the synchronous part of QEMU case asset preparation.
 ///
-/// Returns `(extra_qemu_args, rootfs_path, rootfs_copy_to_remove)` where:
-/// - `extra_qemu_args` always contains `-snapshot` so QEMU guest writes never
-///   persist to any image file.
+/// Returns the prepared rootfs and cleanup metadata where:
 /// - `rootfs_path` is the image QEMU should boot from -- the shared source
 ///   image for plain cases, or a fresh per-case copy for pipeline cases.
 /// - `rootfs_copy_to_remove` is `Some(copy_path)` when a copy was created and
@@ -272,9 +268,8 @@ pub(crate) fn prepare_case_assets_sync(
             cache_hit,
         )
     } else {
-        // No injection needed -- boot directly from the shared image. QEMU's
-        // -snapshot (below) ensures the shared image is never modified by
-        // guest writes, so no copy is required at all.
+        // No injection needed -- boot directly from the shared image. The
+        // rootfs patcher isolates guest writes, so no copy is required here.
         timing::print_timing_line(
             "qemu-asset",
             &[
@@ -287,13 +282,7 @@ pub(crate) fn prepare_case_assets_sync(
         (shared_rootfs.to_path_buf(), None, None, false)
     };
 
-    // -snapshot is always passed: all QEMU guest writes go to a temporary file
-    // that QEMU auto-deletes on exit, keeping both the shared image and any
-    // injection copy pristine after the run.
-    let extra_qemu_args = vec![QEMU_SNAPSHOT_ARG.to_string()];
-
     Ok(PreparedCaseAssetParts {
-        extra_qemu_args,
         rootfs_path: case_rootfs,
         rootfs_copy_to_remove,
         run_dir_to_remove,

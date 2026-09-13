@@ -1,0 +1,5 @@
+error: trait-ffi methods cannot have generic parameters or where clauses
+ --> tests/ui/generic.rs:2:30
+  |
+2 | pub trait Interface { fn read<T>(value: T); }
+  |                              ^^^

@@ -186,6 +186,15 @@ int main(void)
         int seg = shmget(IPC_PRIVATE, SEG_SIZE, IPC_CREAT | 0660);
         CHECK(seg >= 0, "shmget for shmctl IPC_STAT/IPC_SET test");
 
+        struct shmid_ds created;
+        memset(&created, 0, sizeof(created));
+        CHECK_RET(shmctl(seg, IPC_STAT, &created), 0,
+                  "shmctl IPC_STAT before the first attach");
+        CHECK(created.shm_cpid == getpid(),
+              "new segment reports the creator pid");
+        CHECK(created.shm_lpid == 0,
+              "new segment has no last operator before first attach");
+
         void *p = shmat(seg, NULL, 0);
         CHECK(p != (void *)-1, "shmat before shmctl IPC_STAT");
 
@@ -202,6 +211,12 @@ int main(void)
 
         struct shmid_ds set = info;
         set.shm_perm.mode = (set.shm_perm.mode & ~0777u) | 0600u;
+        set.shm_perm.cuid += 1000;
+        set.shm_perm.cgid += 1000;
+        set.shm_segsz += SEG_SIZE;
+        set.shm_cpid += 1000;
+        set.shm_lpid += 1000;
+        set.shm_nattch += 7;
         CHECK_RET(shmctl(seg, IPC_SET, &set), 0,
                   "shmctl IPC_SET updates the segment");
 
@@ -211,6 +226,18 @@ int main(void)
                   "shmctl IPC_STAT after IPC_SET");
         CHECK((after.shm_perm.mode & 0777u) == 0600u,
               "IPC_SET applied the new permission bits");
+        CHECK(after.shm_perm.cuid == info.shm_perm.cuid,
+              "IPC_SET preserves creator uid");
+        CHECK(after.shm_perm.cgid == info.shm_perm.cgid,
+              "IPC_SET preserves creator gid");
+        CHECK(after.shm_segsz == info.shm_segsz,
+              "IPC_SET preserves segment size");
+        CHECK(after.shm_cpid == info.shm_cpid,
+              "IPC_SET preserves creator pid");
+        CHECK(after.shm_lpid == info.shm_lpid,
+              "IPC_SET preserves last operator pid");
+        CHECK(after.shm_nattch == info.shm_nattch,
+              "IPC_SET preserves attach count");
 
         if (p != (void *)-1)
         {

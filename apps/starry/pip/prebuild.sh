@@ -46,7 +46,7 @@ ensure_host_packages() {
 }
 
 extract_base_rootfs() {
-    debugfs -R "rdump / $staging_root" "$base_rootfs"
+    debugfs -R "rdump / $staging_root" "$base_rootfs" >/dev/null
 }
 
 install_pip_packages() {

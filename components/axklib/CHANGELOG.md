@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/rcore-os/tgoskits/compare/axklib-v0.9.0...axklib-v0.9.1) - 2026-09-11
+
+### Other
+
+- updated the following local packages: trait-ffi
+
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/axklib-v0.8.1...axklib-v0.9.0) - 2026-09-09
+
+### Added
+
+- *(trait-ffi)* [**breaking**] maintain and extend static interfaces with syn 3 ([#2300](https://github.com/rcore-os/tgoskits/pull/2300))
+
+### Fixed
+
+- *(repo)* remove redundant Cargo manifest declarations ([#2297](https://github.com/rcore-os/tgoskits/pull/2297))
+
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/axklib-v0.8.0...axklib-v0.8.1) - 2026-08-25
+
+### Fixed
+
+- *(ax-driver)* attribute RK3588 governor busy by FDT cpu topology ([#2165](https://github.com/rcore-os/tgoskits/pull/2165))
+
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/axklib-v0.7.8...axklib-v0.8.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+
+### Other
+
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- Fix UVC asynchronous transfer lifecycle ([#1924](https://github.com/rcore-os/tgoskits/pull/1924))
+
+## [0.7.8](https://github.com/rcore-os/tgoskits/compare/axklib-v0.7.7...axklib-v0.7.8) - 2026-08-09
+
+### Other
+
+- updated the following local packages: ax-errno, irq-framework, ax-alloc, dma-api, ax-memory-addr, mmio-api
+
 ## [0.7.7](https://github.com/rcore-os/tgoskits/compare/axklib-v0.7.6...axklib-v0.7.7) - 2026-08-03
 
 ### Fixed

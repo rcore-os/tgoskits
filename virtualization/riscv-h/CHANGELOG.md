@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.11](https://github.com/rcore-os/tgoskits/compare/riscv-h-v0.4.10...riscv-h-v0.4.11) - 2026-09-09
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
+## [0.4.10](https://github.com/rcore-os/tgoskits/compare/riscv-h-v0.4.9...riscv-h-v0.4.10) - 2026-08-27
+
+### Fixed
+
+- *(virtualization)* port isolated interrupt controller fixes ([#2199](https://github.com/rcore-os/tgoskits/pull/2199))
+
+## [0.4.9](https://github.com/rcore-os/tgoskits/compare/riscv-h-v0.4.8...riscv-h-v0.4.9) - 2026-08-09
+
+### Other
+
+- *(axvm)* unify guest devices and AArch64 timer ownership ([#1717](https://github.com/rcore-os/tgoskits/pull/1717))
+
 ## [0.4.8](https://github.com/rcore-os/tgoskits/compare/riscv-h-v0.4.7...riscv-h-v0.4.8) - 2026-06-03
 
 ### Fixed

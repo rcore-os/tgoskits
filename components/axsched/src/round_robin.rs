@@ -83,6 +83,33 @@ impl<T, const S: usize> RRScheduler<T, S> {
     pub fn scheduler_name() -> &'static str {
         "Round-robin"
     }
+
+    /// Returns the number of ready tasks currently in the ready queue.
+    pub fn len(&self) -> usize {
+        self.ready_queue.len()
+    }
+
+    /// Returns whether the ready queue is empty.
+    pub fn is_empty(&self) -> bool {
+        self.ready_queue.is_empty()
+    }
+
+    /// Removes and returns the first ready task for which `pred` (over the inner
+    /// task struct) holds, preserving the order of non-matching tasks. `None` if
+    /// no task matches.
+    pub fn pick_stealable_task(
+        &mut self,
+        mut pred: impl FnMut(&T) -> bool,
+    ) -> Option<Arc<RRTask<T, S>>> {
+        let mut cursor = self.ready_queue.cursor_front_mut();
+        loop {
+            let hit = pred(cursor.current()?.inner());
+            if hit {
+                return cursor.remove_current();
+            }
+            cursor.move_next();
+        }
+    }
 }
 
 impl<T, const S: usize> BaseScheduler for RRScheduler<T, S> {

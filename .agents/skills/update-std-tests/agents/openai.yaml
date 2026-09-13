@@ -1,0 +1,4 @@
+interface:
+  display_name: "更新标准库测试"
+  short_description: "审计工作区软件包并维护标准库测试候选软件包允许列表"
+  default_prompt: "请使用 $update-std-tests 审计 `scripts/test/std_crates.csv`，并在确认后更新标准库测试允许列表。"

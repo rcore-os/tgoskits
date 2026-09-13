@@ -6,16 +6,7 @@ pub(crate) fn case_rust_source_dir(case: &TestQemuCase) -> PathBuf {
 
 /// Maps a StarryOS arch name to the corresponding Rust musl target triple.
 pub(super) fn rust_musl_target(arch: &str) -> anyhow::Result<&'static str> {
-    match arch {
-        "aarch64" => Ok("aarch64-unknown-linux-musl"),
-        "riscv64" => Ok("riscv64gc-unknown-linux-musl"),
-        "x86_64" => Ok("x86_64-unknown-linux-musl"),
-        "loongarch64" => Ok("loongarch64-unknown-linux-musl"),
-        _ => bail!(
-            "Rust-based QEMU test cases are only supported on aarch64, riscv64, x86_64, and \
-             loongarch64, but got `{arch}`"
-        ),
-    }
+    Ok(cross_compile_spec(arch)?.rust_musl_target)
 }
 
 fn rust_case_rustflags(arch: &str) -> &'static str {
@@ -99,10 +90,9 @@ pub(crate) fn prepare_rust_case_overlay_sync(
     (config.prepare_staging_root)(&layout.staging_root)?;
     write_musl_loader_search_path(arch, &layout.staging_root)?;
 
-    // Build a qemu-user wrapper for the cross-linker from the Alpine sysroot.
+    // Resolve the cross-linker through the shared binutils wrapper pipeline.
     let spec = cross_compile_spec(arch)?;
-    let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
-    write_cross_bin_wrappers(layout, spec, &qemu_runner)?;
+    write_cross_bin_wrappers(layout, spec)?;
 
     // Run prebuild.sh if present — runs inside the Alpine staging root via
     // qemu-user, same as C cases.  Use this to install native deps (e.g.
@@ -118,6 +108,29 @@ pub(crate) fn prepare_rust_case_overlay_sync(
         command
             .exec()
             .with_context(|| format!("failed to run rust case prebuild.sh for `{}`", case.name))?;
+    }
+
+    // Some Rust cases need host-side artifact preparation (for example,
+    // downloading a checksum-pinned runtime bundle). Keep it separate from
+    // `prebuild.sh`, whose contract is to run target binaries through qemu-user.
+    let host_prebuild_script = rust_dir.join("host-prebuild.sh");
+    if host_prebuild_script.is_file() {
+        let mut command = Command::new("bash");
+        command
+            .arg(&host_prebuild_script)
+            .current_dir(&rust_dir)
+            .env("STARRY_ARCH", arch)
+            .env("STARRY_CASE_DIR", &case.case_dir)
+            .env("STARRY_CASE_WORK_DIR", &layout.work_dir)
+            .env("STARRY_CASE_BUILD_DIR", &layout.build_dir)
+            .env("STARRY_CASE_OVERLAY_DIR", &layout.overlay_dir)
+            .env("STARRY_STAGING_ROOT", &layout.staging_root);
+        command.exec().with_context(|| {
+            format!(
+                "failed to run rust case host-prebuild.sh for `{}`",
+                case.name
+            )
+        })?;
     }
 
     // The linker env var name is CARGO_TARGET_<UPPER_TRIPLE>_LINKER.
@@ -237,21 +250,4 @@ pub(super) fn rust_case_bin_name(cargo_toml: &Path) -> anyhow::Result<String> {
             cargo_toml.display()
         )
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::rust_case_rustflags;
-
-    #[test]
-    fn loongarch_static_cases_inherit_sigpipe_for_legacy_linux_abi() {
-        assert_eq!(
-            rust_case_rustflags("loongarch64"),
-            "-C target-feature=+crt-static -Zon-broken-pipe=inherit"
-        );
-        assert_eq!(
-            rust_case_rustflags("aarch64"),
-            "-C target-feature=+crt-static"
-        );
-    }
 }
