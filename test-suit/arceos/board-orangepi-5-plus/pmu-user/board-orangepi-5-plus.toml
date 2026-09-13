@@ -1,0 +1,6 @@
+board_type = "OrangePi-5-Plus"
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 300
+
+[[shell_check_steps]]
+success_regex = ["(?m)^CPU_PMU_USER_OK\\s*$"]

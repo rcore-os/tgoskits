@@ -1,13 +1,13 @@
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec, vec::Vec};
 use core::{
     ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     task::{Context, Poll},
     time::Duration,
 };
 
 use ax_sync::SpinLock as Mutex;
-use dma_api::{CoherentArray, CoherentBox};
+use dma_api::{CoherentArray, CoherentBox, DeviceDma};
 use futures::{
     FutureExt,
     future::{BoxFuture, poll_fn},
@@ -33,7 +33,7 @@ use super::{
 use crate::{
     DeviceAddressInfo, Mmio,
     backend::ty::{
-        DeviceOp, Event, EventHandlerOp, HubParams,
+        ControllerIrqState, DeviceOp, Event, EventHandlerOp, HubParams,
         ep::{EndpointHandle, EndpointOp},
         transfer::Transfer,
     },
@@ -349,9 +349,10 @@ impl EhciRegisters {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct EhciNewParams {
     pub mmio: Mmio,
+    pub dma: DeviceDma,
     pub kernel: &'static dyn KernelOp,
 }
 
@@ -700,12 +701,12 @@ impl QueueTransferDescriptor {
         }
 
         let first_page = dma_addr & !0xfff;
-        for index in 0..5 {
+        for (index, buffer) in self.buffer.iter_mut().enumerate() {
             let page = first_page + (index as u64 * 4096);
             if page >= dma_addr + len as u64 {
                 break;
             }
-            self.buffer[index] = if index == 0 {
+            *buffer = if index == 0 {
                 dma_addr as u32
             } else {
                 page as u32
@@ -750,6 +751,7 @@ pub struct Ehci {
     root_hub: Option<EhciRootHub>,
     event_handler: Option<EhciEventHandler>,
     next_addr: u8,
+    irq_state: ControllerIrqState,
 }
 
 unsafe impl Send for Ehci {}
@@ -758,11 +760,16 @@ unsafe impl Sync for Ehci {}
 impl Ehci {
     pub fn new(params: EhciNewParams) -> Result<Self> {
         let regs = EhciRegisters::new(params.mmio);
-        let kernel = Kernel::new(EHCI_DMA_MASK, params.kernel);
+        let kernel = Kernel::new(
+            crate::osal::narrow_dma_capability(&params.dma, EHCI_DMA_MASK),
+            params.kernel,
+        );
         let schedule = AsyncSchedule::new(&kernel, regs)?;
         let wakeups = TransferWakeups::new();
         let root_hub = EhciRootHub::new(regs, kernel.clone());
-        let event_handler = EhciEventHandler::new(regs, schedule.clone(), wakeups.clone());
+        let irq_state = ControllerIrqState::new(false);
+        let event_handler =
+            EhciEventHandler::new(regs, schedule.clone(), wakeups.clone(), irq_state.clone());
 
         Ok(Self {
             regs,
@@ -771,6 +778,7 @@ impl Ehci {
             root_hub: Some(root_hub),
             event_handler: Some(event_handler),
             next_addr: 1,
+            irq_state,
         })
     }
 
@@ -846,7 +854,7 @@ impl Ehci {
 }
 
 impl CoreOp for Ehci {
-    fn init<'a>(&'a mut self) -> BoxFuture<'a, Result<()>> {
+    fn prepare_controller<'a>(&'a mut self) -> BoxFuture<'a, Result<()>> {
         self.init_controller().boxed()
     }
 
@@ -874,15 +882,19 @@ impl CoreOp for Ehci {
     }
 
     fn enable_irq(&mut self) -> Result<()> {
-        self.regs.op_write32(
-            USBINTR,
-            USBINTR_USBINT | USBINTR_USBERRINT | USBINTR_PORT_CHANGE | USBINTR_ASYNC_ADVANCE,
-        );
+        self.irq_state.set_enabled(true, || {
+            self.regs.op_write32(
+                USBINTR,
+                USBINTR_USBINT | USBINTR_USBERRINT | USBINTR_PORT_CHANGE | USBINTR_ASYNC_ADVANCE,
+            );
+        });
         Ok(())
     }
 
     fn disable_irq(&mut self) -> Result<()> {
-        self.regs.op_write32(USBINTR, 0);
+        self.irq_state.set_enabled(false, || {
+            self.regs.op_write32(USBINTR, 0);
+        });
         Ok(())
     }
 
@@ -998,23 +1010,34 @@ struct EhciEventHandler {
     regs: EhciRegisters,
     schedule: AsyncSchedule,
     wakeups: TransferWakeups,
+    irq_state: ControllerIrqState,
+    pending_irqs: AtomicU32,
+    masked_irqs: AtomicU32,
 }
 
 unsafe impl Send for EhciEventHandler {}
 unsafe impl Sync for EhciEventHandler {}
 
 impl EhciEventHandler {
-    fn new(regs: EhciRegisters, schedule: AsyncSchedule, wakeups: TransferWakeups) -> Self {
+    fn new(
+        regs: EhciRegisters,
+        schedule: AsyncSchedule,
+        wakeups: TransferWakeups,
+        irq_state: ControllerIrqState,
+    ) -> Self {
         Self {
             regs,
             schedule,
             wakeups,
+            irq_state,
+            pending_irqs: AtomicU32::new(0),
+            masked_irqs: AtomicU32::new(0),
         }
     }
 }
 
 impl EventHandlerOp for EhciEventHandler {
-    fn handle_event(&self) -> Event {
+    fn acknowledge_irq(&self) -> bool {
         let sts = self.regs.op_read32(USBSTS);
         let pending = sts
             & (USBSTS_USBINT
@@ -1023,23 +1046,89 @@ impl EventHandlerOp for EhciEventHandler {
                 | USBSTS_HOST_SYSTEM_ERROR
                 | USBSTS_INTERRUPT_ASYNC_ADVANCE);
         if pending == 0 {
-            return Event::Nothing;
+            return false;
         }
 
         self.regs.op_write32(USBSTS, pending);
+        let interrupt_mask = self.regs.op_read32(USBINTR);
+        let maskable = pending
+            & (USBINTR_USBINT | USBINTR_USBERRINT | USBINTR_PORT_CHANGE | USBINTR_ASYNC_ADVANCE);
+        let enabled = self.irq_state.is_enabled();
+        self.regs.op_write32(
+            USBINTR,
+            if enabled {
+                interrupt_mask & !maskable
+            } else {
+                0
+            },
+        );
+        let observed_enabled = self.irq_state.is_enabled();
+        // Controller shutdown does not take the hard-IRQ path. Reconcile a
+        // lifecycle change that raced the first bounded MMIO update.
+        if observed_enabled != enabled {
+            self.regs.op_write32(
+                USBINTR,
+                if observed_enabled {
+                    interrupt_mask & !maskable
+                } else {
+                    0
+                },
+            );
+        }
+        self.masked_irqs.fetch_or(maskable, Ordering::AcqRel);
+        self.pending_irqs.fetch_or(pending, Ordering::Release);
+        true
+    }
+
+    fn drain_event(&self) -> Event {
+        let pending = self.pending_irqs.swap(0, Ordering::AcqRel);
+        if pending == 0 {
+            return Event::Nothing;
+        }
         if pending & USBSTS_INTERRUPT_ASYNC_ADVANCE != 0 {
             self.schedule.complete_async_advance();
         }
         if pending & USBSTS_PORT_CHANGE != 0 {
+            self.retain_pending(pending & !USBSTS_PORT_CHANGE);
             return Event::PortChange { port: 0 };
         }
         if pending & (USBSTS_USBINT | USBSTS_USBERRINT | USBSTS_INTERRUPT_ASYNC_ADVANCE) != 0 {
+            self.retain_pending(
+                pending & !(USBSTS_USBINT | USBSTS_USBERRINT | USBSTS_INTERRUPT_ASYNC_ADVANCE),
+            );
             self.wakeups.notify();
             return Event::TransferActivity {
                 count: self.wakeups.take().max(1),
             };
         }
         Event::Stopped
+    }
+
+    fn rearm_irq(&self) {
+        let masked = self.masked_irqs.swap(0, Ordering::AcqRel);
+        if masked != 0 {
+            self.irq_state.apply_enabled(|enabled| {
+                self.regs.op_write32(
+                    USBINTR,
+                    if enabled {
+                        USBINTR_USBINT
+                            | USBINTR_USBERRINT
+                            | USBINTR_PORT_CHANGE
+                            | USBINTR_ASYNC_ADVANCE
+                    } else {
+                        0
+                    },
+                );
+            });
+        }
+    }
+}
+
+impl EhciEventHandler {
+    fn retain_pending(&self, pending: u32) {
+        if pending != 0 {
+            self.pending_irqs.fetch_or(pending, Ordering::Release);
+        }
     }
 }
 
@@ -1622,7 +1711,7 @@ impl EhciEndpoint {
             return Err(TransferError::Other(anyhow!("EHCI transfer missing state")));
         };
         if actual_length > 0 && matches!(transfer.direction, Direction::In) {
-            transfer.complete_for_cpu_all();
+            transfer.complete_for_cpu();
         }
         Ok(TransferCompletion {
             request_id: id,
@@ -1647,7 +1736,7 @@ impl crate::backend::ty::ep::EndpointOp for EhciEndpoint {
 
         let transfer = Transfer::from_request(&self.kernel, request.clone())?;
         if transfer.buffer_len() > 0 && matches!(transfer.direction, Direction::Out) {
-            transfer.prepare_for_device_all();
+            transfer.prepare_for_device();
         }
         let mut submitted = self
             .build_qtds(&transfer, &request)
@@ -1780,6 +1869,7 @@ mod tests {
     use alloc::{
         alloc::{alloc_zeroed, dealloc},
         boxed::Box,
+        vec,
     };
     use core::{
         alloc::Layout,
@@ -1788,7 +1878,10 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp};
+    use dma_api::{
+        DeviceDma, DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection,
+        DmaDomainId, DmaError, DmaMapHandle, DmaOp,
+    };
     use usb_if::{
         descriptor::EndpointType,
         endpoint::TransferRequest,
@@ -1797,11 +1890,19 @@ mod tests {
     };
 
     use super::{
-        AsyncSchedule, ControlTdPlan, EHCI_DMA_MASK, EhciPortStatus, EhciRegisters, FRINDEX,
-        PERIODIC_UNLINK_SAFE_UFRAMES, QtdPid, QtdToken, QueueHead, UnlinkBoundary,
-        build_control_td_plan, split_bulk_lengths,
+        AsyncSchedule, ControlTdPlan, EHCI_DMA_MASK, EhciEventHandler, EhciPortStatus,
+        EhciRegisters, FRINDEX, PERIODIC_UNLINK_SAFE_UFRAMES, QtdPid, QtdToken, QueueHead,
+        TransferWakeups, USBINTR, USBINTR_ASYNC_ADVANCE, USBINTR_PORT_CHANGE, USBINTR_USBERRINT,
+        USBINTR_USBINT, USBSTS, USBSTS_USBINT, UnlinkBoundary, build_control_td_plan,
+        split_bulk_lengths,
     };
-    use crate::{backend::kmod::osal::Kernel, osal::KernelOp};
+    use crate::{
+        backend::{
+            kmod::osal::{Kernel, narrow_dma_capability},
+            ty::{ControllerIrqState, EventHandlerOp},
+        },
+        osal::KernelOp,
+    };
 
     struct TestKernel;
 
@@ -1842,7 +1943,7 @@ mod tests {
             let dma_addr = (current + align - 1) & !(align - 1);
             // SAFETY: `ptr`, `layout`, and the deterministic fake DMA address
             // describe the test allocation and never reach hardware.
-            Some(unsafe { DmaAllocHandle::new(ptr, dma_addr.into(), layout) })
+            Some(unsafe { DmaAllocHandle::new(ptr, ptr, dma_addr.into(), layout) })
         }
 
         unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
@@ -1873,6 +1974,40 @@ mod tests {
     }
 
     static TEST_KERNEL: TestKernel = TestKernel;
+
+    fn test_kernel() -> Kernel {
+        Kernel::new(
+            DeviceDma::new(
+                dma_api::DmaDeviceInfo::new(
+                    dma_api::DmaDomainId::Direct,
+                    dma_api::DmaCoherency::NonCoherent,
+                    dma_api::DmaConstraints::new(EHCI_DMA_MASK),
+                ),
+                &TEST_KERNEL,
+            ),
+            &TEST_KERNEL,
+        )
+    }
+
+    #[test]
+    fn ehci_dma_narrowing_preserves_domain_and_coherency() {
+        let domain = DmaDomainId::Translated(core::num::NonZeroU64::new(7).unwrap());
+        let supplied = DeviceDma::new(
+            DmaDeviceInfo::new(
+                domain,
+                DmaCoherency::Coherent,
+                DmaConstraints::new(u64::MAX).with_align(64),
+            ),
+            &TEST_KERNEL,
+        );
+
+        let narrowed = narrow_dma_capability(&supplied, EHCI_DMA_MASK);
+
+        assert_eq!(narrowed.info().domain(), domain);
+        assert_eq!(narrowed.info().coherency(), DmaCoherency::Coherent);
+        assert_eq!(narrowed.info().constraints().addr_mask, EHCI_DMA_MASK);
+        assert_eq!(narrowed.info().constraints().align, 64);
+    }
 
     #[test]
     fn port_status_reports_high_speed_only_when_enabled_and_line_status_is_k_state() {
@@ -1968,8 +2103,37 @@ mod tests {
     }
 
     #[test]
+    fn hard_irq_ack_preserves_controller_disable() {
+        let mut backing = vec![0u32; 64];
+        let regs = EhciRegisters {
+            op: NonNull::new(backing.as_mut_ptr().cast()).unwrap(),
+            ports: 1,
+        };
+        let kernel = test_kernel();
+        let schedule = AsyncSchedule::new(&kernel, regs).unwrap();
+        let handler = EhciEventHandler::new(
+            regs,
+            schedule,
+            TransferWakeups::new(),
+            ControllerIrqState::new(false),
+        );
+        let runtime_mask =
+            USBINTR_USBINT | USBINTR_USBERRINT | USBINTR_PORT_CHANGE | USBINTR_ASYNC_ADVANCE;
+        regs.op_write32(USBINTR, runtime_mask);
+        regs.op_write32(USBSTS, USBSTS_USBINT);
+
+        assert!(handler.acknowledge_irq());
+
+        assert_eq!(
+            regs.op_read32(USBINTR),
+            0,
+            "hard IRQ acknowledgement must not reopen a disabled controller"
+        );
+    }
+
+    #[test]
     fn async_schedule_accepts_multiple_endpoint_queue_heads() {
-        let kernel = Kernel::new(EHCI_DMA_MASK, &TEST_KERNEL);
+        let kernel = test_kernel();
         let mut mmio = Box::new([0u32; 64]);
         let regs = EhciRegisters::new(NonNull::new(mmio.as_mut_ptr().cast()).unwrap());
         let schedule = AsyncSchedule::new(&kernel, regs).unwrap();
@@ -1998,7 +2162,7 @@ mod tests {
 
     #[test]
     fn periodic_qh_waits_nine_microframes_before_reclaim() {
-        let kernel = Kernel::new(EHCI_DMA_MASK, &TEST_KERNEL);
+        let kernel = test_kernel();
         let mut mmio = Box::new([0u32; 64]);
         let regs = EhciRegisters::new(NonNull::new(mmio.as_mut_ptr().cast()).unwrap());
         let schedule = AsyncSchedule::new(&kernel, regs).unwrap();
@@ -2022,7 +2186,7 @@ mod tests {
 
     #[test]
     fn async_qh_waits_for_two_iaa_cycles_before_reclaim() {
-        let kernel = Kernel::new(EHCI_DMA_MASK, &TEST_KERNEL);
+        let kernel = test_kernel();
         let mut mmio = Box::new([0u32; 64]);
         let regs = EhciRegisters::new(NonNull::new(mmio.as_mut_ptr().cast()).unwrap());
         let schedule = AsyncSchedule::new(&kernel, regs).unwrap();

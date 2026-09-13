@@ -7,7 +7,7 @@ edition.workspace = true
 keywords.workspace = true
 license.workspace = true
 repository.workspace = true
-version = "0.2.2"
+version = "0.2.3"
 
 [lib]
 proc-macro = true

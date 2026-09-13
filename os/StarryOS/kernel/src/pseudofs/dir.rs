@@ -8,8 +8,9 @@ use alloc::{
 use core::any::Any;
 
 use axfs_ng_vfs::{
-    DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FilesystemOps, Metadata, MetadataUpdate,
-    NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
+    DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FilesystemOps,
+    Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, RenameOptions,
+    VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},
 };
 use inherit_methods_macro::inherit_methods;
@@ -172,7 +173,7 @@ impl<O: SimpleDirOps> NodeOps for SimpleDir<O> {
 }
 
 impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
-    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let children = [DOT, DOTDOT]
             .into_iter()
             .map(Cow::Borrowed)
@@ -182,7 +183,7 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
         let this_dir = this_entry.as_dir()?;
 
         let mut count = 0;
-        for (i, name) in children.enumerate().skip(offset as usize) {
+        for (i, name) in children.enumerate().skip(cursor.offset() as usize) {
             let metadata = match name.as_ref() {
                 DOT => this_entry.metadata(),
                 DOTDOT => this_entry
@@ -193,7 +194,12 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
                     entry.metadata()
                 }
             }?;
-            if !sink.accept(&name, metadata.inode, metadata.node_type, i as u64 + 1) {
+            if !sink.accept(
+                name.as_bytes(),
+                metadata.inode,
+                metadata.node_type,
+                DirectoryCursor::new(i as u64 + 1),
+            ) {
                 break;
             }
             count += 1;
@@ -231,6 +237,17 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
         Err(VfsError::OperationNotPermitted)
     }
 
+    fn create_symlink(
+        &self,
+        _name: &str,
+        _target: &str,
+        _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
+    ) -> VfsResult<DirEntry> {
+        Err(VfsError::OperationNotPermitted)
+    }
+
     fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
         Err(VfsError::OperationNotPermitted)
     }
@@ -239,7 +256,13 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
         Err(VfsError::OperationNotPermitted)
     }
 
-    fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
+    fn rename(
+        &self,
+        _src_name: &str,
+        _dst_dir: &DirNode,
+        _dst_name: &str,
+        _options: RenameOptions,
+    ) -> VfsResult<()> {
         Err(VfsError::OperationNotPermitted)
     }
 }

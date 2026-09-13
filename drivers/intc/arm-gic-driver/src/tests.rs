@@ -1,30 +1,29 @@
 extern crate std;
 
-#[cfg(target_arch = "aarch64")]
-use crate::version::v3::{LPI, RedistributorV3, RedistributorV4, SGI};
-use crate::{CheckedIntIdError, IntId, checked_intid, define::Trigger, fdt_parse_irq_config};
+use crate::{
+    CheckedIntIdError, IntId, checked_intid,
+    define::{NmiAttributeSlot, Trigger, nmi_attribute_slot},
+    fdt_parse_irq_config,
+    version::v3::gicr::{LPI, RedistributorV3, RedistributorV4, SGI},
+};
 
-#[cfg(target_arch = "aarch64")]
 #[test]
 fn size_lpi() {
     let size = size_of::<LPI>();
     assert_eq!(size, 0x10000);
 }
 
-#[cfg(target_arch = "aarch64")]
 #[test]
 fn size_sgi() {
     assert_eq!(size_of::<SGI>(), 0x10000);
 }
 
-#[cfg(target_arch = "aarch64")]
 #[test]
 fn test_v3_rd() {
     let size = size_of::<RedistributorV3>();
     assert_eq!(size, 0x20000);
 }
 
-#[cfg(target_arch = "aarch64")]
 #[test]
 fn test_v4_rd() {
     assert_eq!(size_of::<RedistributorV4>(), 0x40000);
@@ -61,4 +60,36 @@ fn fdt_spi_level_high_uses_gic_intid_numbering() {
 
     assert_eq!(config.id.to_u32(), 235);
     assert_eq!(config.trigger, Trigger::Level);
+}
+
+#[test]
+fn nmi_attribute_slots_follow_architectural_intid_numbering() {
+    assert_eq!(
+        nmi_attribute_slot(IntId::sgi(5)),
+        Some(NmiAttributeSlot::Redistributor { mask: 1 << 5 })
+    );
+    assert_eq!(
+        nmi_attribute_slot(IntId::ppi(14)),
+        Some(NmiAttributeSlot::Redistributor { mask: 1 << 30 })
+    );
+    assert_eq!(
+        nmi_attribute_slot(IntId::spi(0)),
+        Some(NmiAttributeSlot::Distributor {
+            register: 1,
+            mask: 1,
+        })
+    );
+    assert_eq!(
+        nmi_attribute_slot(IntId::spi(42)),
+        Some(NmiAttributeSlot::Distributor {
+            register: 2,
+            mask: 1 << 10,
+        })
+    );
+}
+
+#[test]
+fn nmi_attribute_slots_reject_non_standard_intids() {
+    assert_eq!(nmi_attribute_slot(unsafe { IntId::raw(1023) }), None);
+    assert_eq!(nmi_attribute_slot(unsafe { IntId::raw(4096) }), None);
 }

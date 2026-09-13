@@ -2,32 +2,44 @@
 
 use super::arceos;
 
-pub(crate) type AxTaskExt = arceos::ArceOsAxTaskExt;
-pub(crate) type AxTaskRef = arceos::ArceOsAxTaskRef;
-pub(crate) type CurrentTask = arceos::ArceOsCurrentTask;
-pub(crate) type TaskInner = arceos::ArceOsTaskInner;
+pub(crate) type ThreadHandle = arceos::ArceOsThreadHandle;
+pub(crate) type ThreadWakeHandle = arceos::ArceOsThreadWakeHandle;
+#[cfg(target_arch = "x86_64")]
+pub(crate) type WakeResult = arceos::ArceOsWakeResult;
+pub(crate) type IrqNotification = arceos::ArceOsIrqNotification;
 pub(crate) type WaitQueue = arceos::ArceOsWaitQueue;
 pub(crate) type WaitQueueHandle = arceos::ArceOsWaitQueueHandle;
-pub(crate) use arceos::ArceOsTaskExt as TaskExt;
+pub(crate) use arceos::{
+    ArceOsCpuSet as CpuSet, ArceOsSchedulePolicy as SchedulePolicy,
+    ArceOsSwitchReason as SwitchReason, ArceOsThreadExtension as ThreadExtension,
+    ArceOsThreadExtensionOps as ThreadExtensionOps, ArceOsThreadId as ThreadId,
+};
 
-pub(crate) fn current_task() -> CurrentTask {
-    arceos::current_task()
+pub(crate) fn current_thread() -> ThreadHandle {
+    arceos::current_thread()
 }
 
-pub(crate) fn spawn_task(task: TaskInner) -> AxTaskRef {
-    arceos::spawn_task(task)
-}
-
-pub(crate) fn spawn_task_with(task: TaskInner, initialize: impl FnOnce(&AxTaskRef)) -> AxTaskRef {
-    arceos::spawn_task_with(task, initialize)
-}
+pub(crate) use ax_std::os::arceos::{task::thread::StagedThread, thread::builder};
 
 pub(crate) fn yield_now() {
     arceos::yield_now();
 }
 
-pub(crate) fn cpu_mask_from_raw_bits(bits: usize) -> arceos::ArceOsCpuMask {
-    arceos::cpu_mask_from_raw_bits(bits)
+pub(crate) fn cpu_set_from_raw_bits(bits: usize) -> CpuSet {
+    arceos::cpu_set_from_raw_bits(bits)
+}
+
+pub(crate) fn current_cpu_id() -> usize {
+    arceos::current_cpu_id()
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn run_on_cpu_sync(
+    cpu_id: usize,
+    operation: unsafe fn(*mut ()),
+    argument: *mut (),
+) -> Result<(), arceos::ArceOsIrqError> {
+    arceos::run_on_cpu_sync(cpu_id, operation, argument)
 }
 
 pub(crate) fn wait_queue_wait_until(queue: &WaitQueueHandle, condition: impl Fn() -> bool) {
@@ -36,15 +48,6 @@ pub(crate) fn wait_queue_wait_until(queue: &WaitQueueHandle, condition: impl Fn(
 
 pub(crate) fn wait_queue_wake(queue: &WaitQueueHandle, count: u32) {
     arceos::wait_queue_wake(queue, count);
-}
-
-#[cfg(any(not(test), target_arch = "aarch64"))]
-pub(crate) fn run_on_cpu_sync(
-    cpu_id: usize,
-    f: unsafe fn(*mut ()),
-    arg: *mut (),
-) -> Result<(), arceos::ArceOsIrqError> {
-    arceos::run_on_cpu_sync(cpu_id, f, arg)
 }
 
 pub(crate) fn send_ipi(cpu_id: usize) {

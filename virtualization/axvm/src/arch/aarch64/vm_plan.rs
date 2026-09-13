@@ -36,6 +36,7 @@ impl Aarch64VmPlan {
             &mut nodes,
             &controller_id,
             vgic.config().controller_id(),
+            None,
         )?;
 
         let mut replacement_ranges = gic_ranges(profile)?;
@@ -74,8 +75,8 @@ impl Aarch64VmPlan {
         self.firmware.serials()
     }
 
-    pub(crate) fn ivc_channels(&self) -> &[GuestIvcChannel] {
-        self.firmware.ivc_channels()
+    pub(crate) fn firmware_devices(&self) -> &[crate::boot::fdt::device::ResolvedFdtDevice] {
+        self.firmware.devices()
     }
 
     pub(crate) const fn timer_profile(&self) -> &GuestTimerProfile {

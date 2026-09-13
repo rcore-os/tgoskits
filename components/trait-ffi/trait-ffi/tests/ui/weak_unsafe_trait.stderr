@@ -1,0 +1,5 @@
+error: weak defaults require a safe trait; unsafe traits need an explicit provider
+ --> tests/ui/weak_unsafe_trait.rs:3:18
+  |
+3 | pub unsafe trait Interface { fn read() -> u8 { 1 } }
+  |                  ^^^^^^^^^

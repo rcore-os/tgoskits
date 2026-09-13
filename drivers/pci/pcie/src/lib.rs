@@ -4,9 +4,6 @@ extern crate alloc;
 
 extern crate log;
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
-
 mod bar_alloc;
 mod chip;
 pub mod err;

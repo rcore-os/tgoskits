@@ -23,6 +23,7 @@ pub(crate) mod tree;
 #[cfg(test)]
 mod tree_tests;
 
+#[cfg(test)]
 pub use create::update_fdt;
 pub use parser::*;
 pub use policy::{DecodedInterrupt, GuestFdtPolicy};

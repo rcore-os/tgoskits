@@ -1,6 +1,6 @@
 <h1 align="center">axpoll</h1>
 
-<p align="center">A library for polling I/O events and waking up tasks</p>
+<p align="center">Scheduler-independent typed I/O readiness contracts</p>
 
 <div align="center">
 
@@ -15,7 +15,15 @@ English | [中文](README_CN.md)
 
 # Introduction
 
-`axpoll` provides A library for polling I/O events and waking up tasks. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+`axpoll` is the pure `no_std` readiness API used by TGOSKits. It defines event
+bits, readiness sources, owned registration leases, and typed shared-observer
+and exclusive-consumer registration. It deliberately does not own a wait queue,
+scheduler, lock implementation, or hard-IRQ wake path.
+
+Use [`axpoll-set`](../axpoll-set) when a task/deferred-context registration queue
+with Linux waitqueue selection semantics is required. An OS runtime composes
+that queue with its task blocking and IRQ-to-task delivery mechanisms; VFS and
+device interfaces continue to depend only on this crate's readiness contracts.
 
 ## Quick Start
 
@@ -25,7 +33,7 @@ Add this crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-axpoll = "0.3.2"
+axpoll = "0.5.4"
 ```
 
 ### Run Check and Test
@@ -49,13 +57,25 @@ cargo doc --no-deps
 
 ## Integration
 
-### Example
+### Example contract
 
 ```rust
-use axpoll as _;
+use axpoll::{IoEvents, Pollable, SharedRegistrationSink};
 
-fn main() {
-    // Integrate `axpoll` into your project here.
+struct ReadableObject;
+
+impl Pollable for ReadableObject {
+    fn poll(&self) -> IoEvents {
+        IoEvents::IN
+    }
+
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+        // A stateful source registers an owned lease in task/deferred context.
+    }
 }
 ```
 

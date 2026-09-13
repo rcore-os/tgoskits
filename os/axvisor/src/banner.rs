@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::println;
-
-/// Startup banner printed before the hypervisor begins initialization.
-const LOGO: &str = r#"
+/// Startup banner emitted after the runtime console owner is configured.
+pub(crate) const STARTUP: &[u8] = br#"
        d8888            888     888  d8b
       d88888            888     888  Y8P
      d88P888            888     888
@@ -24,13 +22,7 @@ const LOGO: &str = r#"
   d88P   888    X88K      Y88o88P    888  "Y8888b.  888  888  888
  d8888888888  .d8""8b.     Y888P     888       X88  Y88..88P  888
 d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
-"#;
 
-/// Prints the startup banner to the console.
-pub(crate) fn print_logo() {
-    println!();
-    println!("{}", LOGO);
-    println!();
-    println!("by AxVisor Team");
-    println!();
-}
+by AxVisor Team
+
+"#;

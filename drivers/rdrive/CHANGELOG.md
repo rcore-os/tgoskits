@@ -19,6 +19,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Invoke OSAL callbacks after releasing the registration lock.
 - Check immutable type metadata without aliasing a mutably borrowed driver.
 
+## [0.24.3](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.24.2...rdrive-v0.24.3) - 2026-09-11
+
+### Fixed
+
+- *(axvisor)* restore COM1 console and preserve guest output order ([#2311](https://github.com/rcore-os/tgoskits/pull/2311))
+
+## [0.24.2](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.24.1...rdrive-v0.24.2) - 2026-09-09
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(repo)* remove nonfunctional test scaffolding ([#2303](https://github.com/rcore-os/tgoskits/pull/2303))
+
+## [0.24.1](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.24.0...rdrive-v0.24.1) - 2026-08-27
+
+### Added
+
+- *(loongarch-intc-driver)* extract OS-independent interrupt controllers ([#2174](https://github.com/rcore-os/tgoskits/pull/2174))
+
+## [0.24.0](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.9...rdrive-v0.24.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+
+### Fixed
+
+- *(axbuild)* lint host-test targets with clippy ([#2022](https://github.com/rcore-os/tgoskits/pull/2022))
+- *(rdrive)* make FDT assigned-clocks best-effort, not probe-fatal ([#2002](https://github.com/rcore-os/tgoskits/pull/2002))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(rdrive)* add fdt_ref() to borrow the device tree without cloning ([#2004](https://github.com/rcore-os/tgoskits/pull/2004))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
 
 ## [0.23.9](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.8...rdrive-v0.23.9) - 2026-08-09
 

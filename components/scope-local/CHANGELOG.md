@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.6.1...scope-local-v0.6.2) - 2026-09-11
+
+### Other
+
+- updated the following local packages: cpu-local
+
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.5.0...scope-local-v0.6.0) - 2026-09-09
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
+### Changed
+
+- Run execution-context and CPU-pinned coverage through the real ArceOS axtest
+  runtime instead of a crate-local host context model.
+- Replace blocking `ScopeCell` lease operations with bounded `try_*` APIs and
+  typed `ScopeCellBusy` contention.
+- Restrict each `ScopeCell` to one published scheduler activation; a competing
+  CPU is rejected before its scope pointer becomes visible.
+- Distinguish an exclusive scope lease from a duplicate scheduler activation
+  through `ScopeActivationError`.
+
+### Fixed
+
+- Publish active-scope writer ownership before withdrawing the scheduler lease,
+  preventing reader admission races and read-to-write self-deadlock.
+- Prevent duplicate scheduler activation from turning a task-local mutation
+  into an unbounded retry loop.
+- Reserve compatible reader leases with one bounded atomic operation so a
+  concurrent reader-count update cannot be misreported as writer contention.
+
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.4.5...scope-local-v0.5.0) - 2026-08-20
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(cpu-local)* define scheduler-neutral execution context boundary ([#2080](https://github.com/rcore-os/tgoskits/pull/2080))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.4.5](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.4.4...scope-local-v0.4.5) - 2026-08-09
 
 ### Other

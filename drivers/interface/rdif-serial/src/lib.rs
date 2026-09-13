@@ -1,9 +1,9 @@
 //! Portable UART capability boundary.
 //!
 //! This crate contains no software queues, task policy, IRQ registration, or
-//! OS wakeups. Concrete drivers split into one task-owned data/control endpoint
-//! and one IRQ-owned event endpoint; the consuming runtime owns all buffering
-//! and scheduling policy.
+//! OS wakeups. Concrete drivers split into task-owned control, IRQ-owned event,
+//! and emergency-only TX endpoints; the consuming runtime owns all buffering,
+//! exclusion, and scheduling policy.
 
 #![no_std]
 
@@ -89,22 +89,5 @@ impl Config {
     pub const fn parity(mut self, parity: Parity) -> Self {
         self.parity = Some(parity);
         self
-    }
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn serial_event_reports_readiness_and_errors() {
-        let event = SerialEventSet::RX_DATA | SerialEventSet::FAULT;
-
-        assert!(event.has_rx());
-        assert!(!event.has_tx());
-        assert!(event.contains(SerialEventSet::FAULT));
     }
 }

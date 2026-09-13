@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.6.0...axpoll-v0.7.0) - 2026-09-09
+
+### Fixed
+
+- *(release)* restore release-plz dependency updates ([#2329](https://github.com/rcore-os/tgoskits/pull/2329))
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
+### Changed
+
+- Split the pure readiness contracts from the common queue implementation in
+  `axpoll-set`, with owned registration leases and typed shared/exclusive modes.
+- Restrict registration and waiter selection to task or deferred context; hard
+  IRQ delivery remains an OS/runtime capability.
+
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.5.4...axpoll-v0.6.0) - 2026-08-20
+
+### Fixed
+
+- *(starry-kernel)* align event notification semantics with Linux ([#1925](https://github.com/rcore-os/tgoskits/pull/1925))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.5.4](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.5.3...axpoll-v0.5.4) - 2026-08-09
 
 ### Other

@@ -5,13 +5,6 @@
 #![no_std]
 #![allow(unused_imports)]
 
-#[cfg(any(
-    feature = "alloc",
-    feature = "fs",
-    feature = "net",
-    feature = "multitask",
-    feature = "dummy-if-not-enabled"
-))]
 extern crate alloc;
 
 #[macro_use]
@@ -32,7 +25,7 @@ pub mod sys {
     define_api! {
         /// Returns the number of available logical CPUs.
         pub fn ax_get_cpu_num() -> usize;
-        /// Shutdown the whole system and all CPUs.
+        /// Drain task-console output, then shut down the whole system and all CPUs.
         pub fn ax_terminate() -> !;
     }
 }
@@ -86,15 +79,18 @@ pub mod stdio {
         pub fn ax_console_read_bytes(buf: &mut [u8]) -> crate::ApiResult<usize>;
         /// Writes a slice of bytes to the console, returns the number of bytes written.
         pub fn ax_console_write_bytes(buf: &[u8]) -> crate::ApiResult<usize>;
-        /// Writes a formatted string to the console.
+        /// Writes a formatted string through the sleepable TTY console path.
         pub fn ax_console_write_fmt(args: fmt::Arguments) -> fmt::Result;
+        /// Sleeps until task-console input becomes readable.
+        pub fn ax_console_wait_readable() -> crate::ApiResult;
+        /// Drains queued task output through the physical UART.
+        pub fn ax_console_flush() -> crate::ApiResult;
     }
 }
 
 /// Multi-threading management.
 pub mod task {
     define_api_type! {
-        @cfg "multitask";
         pub type AxTaskHandle;
         pub type AxWaitQueueHandle;
         pub type AxCpuMask;
@@ -103,15 +99,11 @@ pub mod task {
 
     define_api! {
         /// Current task is going to sleep, it will be woken up at the given monotonic deadline.
-        ///
-        /// If the feature `multitask` is not enabled, it uses busy-wait instead
         #[track_caller]
         pub fn ax_sleep_until(deadline: crate::time::AxTimeValue);
 
         /// Current task gives up the CPU time voluntarily, and switches to another
         /// ready task.
-        ///
-        /// If the feature `multitask` is not enabled, it does nothing.
         #[track_caller]
         pub fn ax_yield_now();
 
@@ -121,8 +113,6 @@ pub mod task {
     }
 
     define_api! {
-        @cfg "multitask";
-
         /// Returns the current task's ID.
         pub fn ax_current_task_id() -> u64;
         /// Spawns a new task with the given entry point and other arguments.
@@ -154,18 +144,20 @@ pub mod task {
             until_condition: impl Fn() -> bool,
             timeout: Option<core::time::Duration>,
         ) -> bool;
+        /// Blocks until the condition becomes true or an absolute monotonic
+        /// deadline elapses. Returns `true` only when the deadline wins.
+        #[track_caller]
+        pub fn ax_wait_queue_wait_until_deadline(
+            wq: &AxWaitQueueHandle,
+            deadline: core::time::Duration,
+            until_condition: impl Fn() -> bool,
+        ) -> bool;
         /// Wakes up one or more tasks in the wait queue.
         ///
         /// The maximum number of tasks to wake up is specified by `count`. If
         /// `count` is `u32::MAX`, it will wake up all tasks in the wait queue.
-        pub fn ax_wait_queue_wake(wq: &AxWaitQueueHandle, count: u32);
-        /// Wakes up at most one task in the wait queue after performing an
-        /// operation on it via the provided callback `func`.
-        ///
-        /// The callback `func` is invoked while holding the wait-queue lock. If a
-        /// task is woken, `func` is called with an implementation-defined `u64`
-        /// value associated with that task.
-        pub fn ax_wait_queue_wake_one_with(wq: &AxWaitQueueHandle, func: impl Fn(u64));
+        /// Returns the number of waiters selected for wakeup.
+        pub fn ax_wait_queue_wake(wq: &AxWaitQueueHandle, count: u32) -> usize;
     }
 }
 
@@ -340,11 +332,6 @@ pub mod net {
 
         /// Resolves the host name to a list of IP addresses.
         pub fn ax_dns_query(domain_name: &str) -> ApiResult<alloc::vec::Vec<IpAddr>>;
-        /// Poll the network stack.
-        ///
-        /// It may receive packets from the NIC and process them, and transmit queued
-        /// packets to the NIC.
-        pub fn ax_poll_interfaces() -> ApiResult;
     }
 }
 
@@ -391,7 +378,6 @@ pub mod modules {
     #[cfg(feature = "net")]
     pub use ax_net;
     pub use ax_runtime;
-    #[cfg(feature = "multitask")]
     pub use ax_task;
     pub use axklib;
     pub use dma_api;

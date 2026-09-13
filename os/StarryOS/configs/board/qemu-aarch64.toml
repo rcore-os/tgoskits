@@ -1,4 +1,6 @@
 features = [
+  "ax-runtime/display",
+  "ax-runtime/rtc",
   "ax-driver/nvme",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",

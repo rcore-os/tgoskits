@@ -9,7 +9,7 @@ use core::{
 };
 
 use dma_api::{CoherentArray, InFlightDma};
-use io_queue::{NvmeBlockQueue, alloc_prp_lists};
+use io_queue::{NvmeBlockQueue, NvmeBlockQueueConfig, alloc_prp_lists};
 use log::warn;
 use rdif_block::{
     BatchSubmitDisposition, BatchSubmitResult, BlkError, BlockController, CompletedRequest,
@@ -128,7 +128,7 @@ impl NvmeBlockDriver {
         let source_id = self.nvme.admin_interrupt_source();
         IrqEndpoint::new(
             source_id,
-            0,
+            IrqQueueMask::none(),
             Box::new(NvmeAdminIrqHandler {
                 registers: self.nvme.register_ptr(),
                 source_id,
@@ -171,13 +171,15 @@ impl NvmeBlockDriver {
         let depth = self.queue_depth.min(queue.depth().saturating_sub(1).max(1));
         let prp_lists = alloc_prp_lists(&self.nvme, depth).map_err(nvme_error_to_block)?;
         Ok(NvmeBlockQueue::new(
-            queue_id,
-            depth,
-            self.name,
-            namespace,
-            self.nvme.dma_mask(),
-            self.nvme.page_size(),
-            self.nvme.max_transfer_bytes(),
+            NvmeBlockQueueConfig {
+                id: queue_id,
+                depth,
+                name: self.name,
+                namespace,
+                dma: self.nvme.dma_info(),
+                page_size: self.nvme.page_size(),
+                max_transfer_bytes: self.nvme.max_transfer_bytes(),
+            },
             queue,
             prp_lists,
         ))
@@ -200,11 +202,7 @@ impl NvmeBlockDriver {
             io_ready: self.nvme.intx_io_ready(),
             intx_source: self.intx_source.clone(),
         };
-        Ok(IrqEndpoint::new(
-            source_id,
-            queue_mask.bits(),
-            Box::new(handler),
-        ))
+        Ok(IrqEndpoint::new(source_id, queue_mask, Box::new(handler)))
     }
 
     fn rearm_source(&mut self, source_id: usize) -> Result<(), BlkError> {
@@ -332,7 +330,11 @@ impl BlockController for NvmeBlockDriver {
             }
             ControllerEvent::Rearm { source_id } => {
                 self.rearm_source(source_id)?;
-                Ok(ControllerUpdate::state(ControllerState::Ready))
+                Ok(ControllerUpdate::state(if self.ready {
+                    ControllerState::Ready
+                } else {
+                    ControllerState::WaitingForIrq
+                }))
             }
             ControllerEvent::QuiesceIrqs => Ok(self.quiesce_interrupts()),
             ControllerEvent::Watchdog { .. } => self.stop_controller(),
@@ -424,3 +426,6 @@ fn device_info(name: &'static str, namespace: Namespace) -> DeviceInfo {
         ..DeviceInfo::new(namespace.lba_count as u64, namespace.lba_size)
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Starry 测试套件"
+  short_description: "新增、分组并验证 StarryOS 测试套件中的运行用例"
+  default_prompt: "请使用 $starry-test-suit 在本仓库中新增或适配一个 StarryOS 测试套件用例。"

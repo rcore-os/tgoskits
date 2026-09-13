@@ -1,8 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
+#include <limits.h>
 #include <math.h>
-#include <sys/time.h>
 
 #include "im2d.h"
 #include "drmrga.h"
@@ -35,72 +35,96 @@ static const char* filter_image_names[] = {
 static const char* subsampName[TJ_NUMSAMP] = {"4:4:4", "4:2:2", "4:2:0", "Grayscale", "4:4:0", "4:1:1"};
 static const char* colorspaceName[TJ_NUMCS] = {"RGB", "YCbCr", "GRAY", "CMYK", "YCCK"};
 
+static int jpeg_rgb_image_layout(int width, int height, int* row_stride, int* size)
+{
+    if (row_stride == NULL || size == NULL || width <= 0 || height <= 0 ||
+        width > INT_MAX / 3) {
+        return -1;
+    }
+
+    int stride = width * 3;
+    if (height > INT_MAX / stride) {
+        return -1;
+    }
+
+    *row_stride = stride;
+    *size = stride * height;
+    return 0;
+}
+
 static int read_image_jpeg(const char* path, image_buffer_t* image)
 {
     FILE* jpegFile = NULL;
-    unsigned long jpegSize;
+    unsigned long jpegSize = 0;
     int flags = 0;
-    int width, height;
-    int origin_width, origin_height;
-    unsigned char* imgBuf = NULL;
+    int width = 0;
+    int height = 0;
     unsigned char* jpegBuf = NULL;
-    unsigned long size;
+    unsigned char* sw_out_buf = NULL;
+    int owns_output = 0;
+    int output_stride = 0;
+    int output_size = 0;
+    long file_size = 0;
     unsigned short orientation = 1;
-    struct timeval tv1, tv2;
+    tjhandle handle = NULL;
+    int ret = -1;
 
     if ((jpegFile = fopen(path, "rb")) == NULL) {
         printf("fopen %s failure\n", path);
         printf("open input file failure\n");
+        goto out;
     }
-    if (fseek(jpegFile, 0, SEEK_END) < 0 || (size = ftell(jpegFile)) < 0 || fseek(jpegFile, 0, SEEK_SET) < 0) {
+    if (fseek(jpegFile, 0, SEEK_END) != 0 || (file_size = ftell(jpegFile)) < 0 ||
+        fseek(jpegFile, 0, SEEK_SET) != 0) {
         printf("determining input file size failure\n");
+        goto out;
     }
-    if (size == 0) {
+    if (file_size == 0) {
         printf("determining input file size, Input file contains no data\n");
+        goto out;
     }
-    jpegSize = (unsigned long)size;
-    if ((jpegBuf = (unsigned char*)malloc(jpegSize * sizeof(unsigned char))) == NULL) {
+    jpegSize = (unsigned long)file_size;
+    if ((jpegBuf = (unsigned char*)malloc(jpegSize)) == NULL) {
         printf("allocating JPEG buffer\n");
+        goto out;
     }
-    if (fread(jpegBuf, jpegSize, 1, jpegFile) < 1) {
-        printf("reading input file");
+    if (fread(jpegBuf, 1, jpegSize, jpegFile) != jpegSize) {
+        printf("reading input file\n");
+        goto out;
     }
     fclose(jpegFile);
     jpegFile = NULL;
 
-    tjhandle handle = NULL;
-    int subsample, colorspace;
-    int padding = 1;
-    int ret = 0;
+    int subsample = 0;
+    int colorspace = 0;
 
     handle = tjInitDecompress();
-    ret = tjDecompressHeader3(handle, jpegBuf, size, &origin_width, &origin_height, &subsample, &colorspace);
-    if (ret < 0) {
-        printf("header file error, errorStr:%s, errorCode:%d\n", tjGetErrorStr(), tjGetErrorCode(handle));
-        return -1;
+    if (handle == NULL) {
+        printf("tjInitDecompress failed\n");
+        goto out;
     }
 
-    // 对图像做裁剪16对齐，利于后续rga操作
-    int crop_width = origin_width / 16 * 16;
-    int crop_height = origin_height / 16 * 16;
-
-    printf("origin size=%dx%d crop size=%dx%d\n", origin_width, origin_height, crop_width, crop_height);
-
-    // gettimeofday(&tv1, NULL);
-    ret = tjDecompressHeader3(handle, jpegBuf, size, &width, &height, &subsample, &colorspace);
+    ret = tjDecompressHeader3(handle, jpegBuf, jpegSize, &width, &height, &subsample, &colorspace);
     if (ret < 0) {
         printf("header file error, errorStr:%s, errorCode:%d\n", tjGetErrorStr(), tjGetErrorCode(handle));
-        return -1;
+        goto out;
+    }
+
+    if (jpeg_rgb_image_layout(width, height, &output_stride, &output_size) != 0) {
+        printf("invalid JPEG dimensions: width=%d height=%d\n", width, height);
+        ret = -1;
+        goto out;
     }
     printf("input image: %d x %d, subsampling: %s, colorspace: %s, orientation: %d\n",
             width, height, subsampName[subsample], colorspaceName[colorspace], orientation);
-    int sw_out_size = width * height * 3;
-    unsigned char* sw_out_buf = image->virt_addr;
+    sw_out_buf = image->virt_addr;
     if (sw_out_buf == NULL) {
-        sw_out_buf = (unsigned char*)malloc(sw_out_size * sizeof(unsigned char));
+        sw_out_buf = (unsigned char*)malloc(output_size);
+        owns_output = 1;
     }
     if (sw_out_buf == NULL) {
         printf("sw_out_buf is NULL\n");
+        ret = -1;
         goto out;
     }
 
@@ -108,7 +132,7 @@ static int read_image_jpeg(const char* path, image_buffer_t* image)
 
     // 错误码为0时，表示警告，错误码为-1时表示错误
     int pixelFormat = TJPF_RGB;
-    ret = tjDecompress2(handle, jpegBuf, size, sw_out_buf, width, 0, height, pixelFormat, flags);
+    ret = tjDecompress2(handle, jpegBuf, jpegSize, sw_out_buf, width, output_stride, height, pixelFormat, flags);
     // ret = tjDecompressToYUV2(handle, jpeg_buf, size, dst_buf, *width, padding, *height, flags);
     if ((0 != tjGetErrorCode(handle)) && (ret < 0)) {
         printf("error : decompress to yuv failed, errorStr:%s, errorCode:%d\n", tjGetErrorStr(),
@@ -118,20 +142,29 @@ static int read_image_jpeg(const char* path, image_buffer_t* image)
     if ((0 == tjGetErrorCode(handle)) && (ret < 0)) {
         printf("warning : errorStr:%s, errorCode:%d\n", tjGetErrorStr(), tjGetErrorCode(handle));
     }
-    tjDestroy(handle);
-    // gettimeofday(&tv2, NULL);
-    // printf("decode time %ld ms\n", (tv2.tv_sec-tv1.tv_sec)*1000 + (tv2.tv_usec-tv1.tv_usec)/1000);
 
     image->width = width;
     image->height = height;
+    image->width_stride = output_stride;
+    image->height_stride = height;
     image->format = IMAGE_FORMAT_RGB888;
     image->virt_addr = sw_out_buf;
-    image->size = sw_out_size;
+    image->size = output_size;
+    ret = 0;
 out:
+    if (handle != NULL) {
+        tjDestroy(handle);
+    }
+    if (jpegFile != NULL) {
+        fclose(jpegFile);
+    }
     if (jpegBuf) {
         free(jpegBuf);
     }
-    return 0;
+    if (ret != 0 && owns_output) {
+        free(sw_out_buf);
+    }
+    return ret;
 }
 
 static int write_image_jpeg(const char* path, int quality, const image_buffer_t* image)

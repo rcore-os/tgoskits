@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/rcore-os/tgoskits/compare/rdif-pwm-v0.1.2...rdif-pwm-v0.1.3) - 2026-08-20
+
+### Other
+
+- updated the following local packages: rdif-base
+
 ## [0.1.2](https://github.com/rcore-os/tgoskits/compare/rdif-pwm-v0.1.1...rdif-pwm-v0.1.2) - 2026-08-09
 
 ### Other

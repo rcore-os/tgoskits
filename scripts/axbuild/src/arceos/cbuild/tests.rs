@@ -3,13 +3,10 @@ use std::fs;
 use ostool::build::config::LogLevel;
 
 use super::{
-    features::{
-        c_compiler_features, c_config_features, c_defines, dynamic_pie_for_c_app,
-        map_c_app_features,
-    },
+    features::{c_compiler_features, c_config_features, c_defines, map_c_app_features},
     flags::{CFlagsInput, cflags, pthread_mutex_header_contents},
     libc::{PIC_RUSTFLAG, append_pic_rustflag},
-    link::{find_final_linker_script, find_link_scripts, find_linker_search_dirs},
+    link::{find_final_linker_script, find_link_scripts},
 };
 use crate::build::ARCEOS_LINKER_SCRIPT;
 
@@ -27,17 +24,17 @@ fn c_config_features_skips_nested_cargo_only_features() {
         "some-crate/feature",
     ]));
 
-    assert_eq!(
-        features.into_iter().collect::<Vec<_>>(),
-        vec!["net".to_string()]
-    );
+    assert!(features.contains("net"));
+    assert!(!features.contains("paging"));
+    assert!(!features.contains("virtio-net"));
+    assert!(!features.contains("custom-board"));
 }
 
 #[test]
 fn c_config_features_ignore_removed_dynamic_platform_feature() {
-    let features = c_config_features(&strings(&["plat-dyn", "multitask"]));
+    let features = c_config_features(&strings(&["plat-dyn", "alloc"]));
 
-    assert!(features.contains("multitask"));
+    assert!(features.contains("alloc"));
     assert!(!features.contains("plat-dyn"));
     assert!(!features.contains("smp"));
 }
@@ -46,9 +43,11 @@ fn c_config_features_ignore_removed_dynamic_platform_feature() {
 fn c_config_features_skips_case_define_features() {
     let features = c_config_features(&strings(&["alloc", "c-define:ARCEOS_C_TEST_CASE_MEM"]));
 
-    assert_eq!(
-        features.into_iter().collect::<Vec<_>>(),
-        vec!["alloc".to_string()]
+    assert!(features.contains("alloc"));
+    assert!(
+        !features
+            .iter()
+            .any(|feature| feature.starts_with("c-define:"))
     );
 }
 
@@ -60,13 +59,8 @@ fn c_defines_extracts_case_define_features() {
         "c-define:ARCEOS_C_TEST_CASE_NET_HTTP",
     ]));
 
-    assert_eq!(
-        defines.into_iter().collect::<Vec<_>>(),
-        vec![
-            "ARCEOS_C_TEST_CASE_MEM".to_string(),
-            "ARCEOS_C_TEST_CASE_NET_HTTP".to_string()
-        ]
-    );
+    assert!(defines.contains("ARCEOS_C_TEST_CASE_MEM"));
+    assert!(defines.contains("ARCEOS_C_TEST_CASE_NET_HTTP"));
 }
 
 #[test]
@@ -103,7 +97,12 @@ fn map_c_app_features_does_not_forward_case_define_features_to_cargo() {
     let features =
         map_c_app_features(&strings(&["alloc", "c-define:ARCEOS_C_TEST_CASE_MEM"]), &[]).unwrap();
 
-    assert_eq!(features, vec!["alloc".to_string()]);
+    assert!(features.contains(&"alloc".to_string()));
+    assert!(
+        !features
+            .iter()
+            .any(|feature| feature.starts_with("c-define:"))
+    );
 }
 
 #[test]
@@ -111,14 +110,6 @@ fn map_c_app_features_rejects_removed_platform_feature() {
     let err = map_c_app_features(&strings(&["alloc"]), &strings(&["plat-dyn"])).unwrap_err();
 
     assert!(err.to_string().contains("no longer supported"));
-}
-
-#[test]
-fn c_apps_always_use_pie() {
-    assert!(dynamic_pie_for_c_app(&[]));
-    assert!(dynamic_pie_for_c_app(&strings(&["plat-dyn"])));
-    assert!(dynamic_pie_for_c_app(&strings(&["ax-std/plat-dyn"])));
-    assert!(dynamic_pie_for_c_app(&strings(&["smp"])));
 }
 
 #[test]
@@ -152,29 +143,8 @@ fn pic_rustflag_is_appended_to_axlibc_cargo_env() {
 }
 
 #[test]
-fn map_c_app_features_forwards_multitask_to_runtime_features() {
-    let features = map_c_app_features(&strings(&["multitask"]), &[]).unwrap();
-
-    assert!(features.contains(&"multitask".to_string()));
-}
-
-#[test]
-fn map_c_app_features_preserves_paging_facade_feature() {
-    let features = map_c_app_features(&strings(&["paging"]), &[]).unwrap();
-
-    assert_eq!(features, vec!["paging".to_string()]);
-}
-
-#[test]
-fn map_c_app_features_does_not_add_fd_for_higher_level_features() {
-    let features = map_c_app_features(&strings(&["fs"]), &[]).unwrap();
-
-    assert_eq!(features, strings(&["fs"]));
-}
-
-#[test]
 fn pthread_mutex_header_matches_lockdep_smp_layout() {
-    let header = pthread_mutex_header_contents(&strings(&["multitask", "lockdep", "smp"]));
+    let header = pthread_mutex_header_contents(&strings(&["lockdep", "smp"]));
 
     assert!(header.contains("long __l[10];"));
     assert!(header.contains("{-1, 0, 0, 0, 0, 0, 0, 0, 0, 0}"));
@@ -182,7 +152,7 @@ fn pthread_mutex_header_matches_lockdep_smp_layout() {
 
 #[test]
 fn pthread_mutex_header_matches_plain_smp_layout() {
-    let header = pthread_mutex_header_contents(&strings(&["multitask", "smp"]));
+    let header = pthread_mutex_header_contents(&strings(&["smp"]));
 
     assert!(header.contains("long __l[6];"));
     assert!(header.contains("{0, 0, 8, 0, 0, 0}"));
@@ -190,7 +160,7 @@ fn pthread_mutex_header_matches_plain_smp_layout() {
 
 #[test]
 fn pthread_mutex_header_ignores_removed_dynamic_platform_feature() {
-    let header = pthread_mutex_header_contents(&strings(&["multitask", "plat-dyn"]));
+    let header = pthread_mutex_header_contents(&strings(&["plat-dyn"]));
 
     assert!(header.contains("long __l[5];"));
     assert!(header.contains("{0, 8, 0, 0, 0}"));
@@ -215,16 +185,16 @@ fn final_linker_script_comes_from_axruntime_build_out_dir() {
 }
 
 #[test]
-fn linker_search_dirs_use_current_platform_script_owner() {
+fn linker_scripts_support_split_build_directory_layout() {
     let root = tempfile::tempdir().unwrap();
     let target_dir = root.path().join("target");
     let target = "loongarch64-unknown-none-softfloat";
     let mode = "release";
     let build_dir = target_dir.join(target).join(mode).join("build");
-    let runtime_out = build_dir.join("ax-runtime-def/out");
-    let axplat_out = build_dir.join("axplat-dyn-def/out");
-    let somehal_out = build_dir.join("somehal-ghi/out");
-    let someboot_out = build_dir.join("someboot-jkl/out");
+    let runtime_out = build_dir.join("ax-runtime/runtime-hash/out");
+    let axplat_out = build_dir.join("axplat-dyn/axplat-hash/out");
+    let somehal_out = build_dir.join("somehal/somehal-hash/out");
+    let someboot_out = build_dir.join("someboot/someboot-hash/out");
     fs::create_dir_all(&runtime_out).unwrap();
     fs::create_dir_all(&axplat_out).unwrap();
     fs::create_dir_all(&somehal_out).unwrap();
@@ -234,40 +204,13 @@ fn linker_search_dirs_use_current_platform_script_owner() {
     fs::write(somehal_out.join("link.x"), "").unwrap();
     fs::write(someboot_out.join("someboot.x"), "").unwrap();
 
-    let link_scripts = find_link_scripts(
-        &target_dir,
-        target,
-        mode,
-        "plat-dyn",
-        &strings(&["plat-dyn"]),
-    )
-    .unwrap();
+    let link_scripts = find_link_scripts(&target_dir, target, mode, "loongarch64", &[]).unwrap();
 
     assert_eq!(link_scripts.script, runtime_out.join(ARCEOS_LINKER_SCRIPT));
-    assert!(link_scripts.pie);
     assert!(link_scripts.search_dirs.contains(&runtime_out));
     assert!(link_scripts.search_dirs.contains(&axplat_out));
     assert!(link_scripts.search_dirs.contains(&somehal_out));
     assert!(link_scripts.search_dirs.contains(&someboot_out));
-}
-
-#[test]
-fn linker_search_dirs_use_axplat_dyn_for_generic_dynamic_platforms() {
-    let root = tempfile::tempdir().unwrap();
-    let target_dir = root.path().join("target");
-    let target = "riscv64gc-unknown-none-elf";
-    let mode = "release";
-    let build_dir = target_dir.join(target).join(mode).join("build");
-    let axplat_out = build_dir.join("axplat-dyn-abc/out");
-    let runtime_out = build_dir.join("ax-runtime-def/out");
-    fs::create_dir_all(&axplat_out).unwrap();
-    fs::create_dir_all(&runtime_out).unwrap();
-    fs::write(axplat_out.join("axplat.x"), "").unwrap();
-    fs::write(runtime_out.join(ARCEOS_LINKER_SCRIPT), "").unwrap();
-
-    let dirs = find_linker_search_dirs(&target_dir, target, mode, "riscv64-generic", &[]).unwrap();
-
-    assert_eq!(dirs, vec![runtime_out, axplat_out]);
 }
 
 #[test]

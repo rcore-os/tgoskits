@@ -1,4 +1,4 @@
-pub use sdio_host2::Command;
+pub use sdmmc_host::Command;
 
 use crate::response::ResponseType;
 
@@ -258,6 +258,11 @@ pub mod ext_csd {
 /// CMD5: IO_SEND_OP_COND (SDIO)
 pub const CMD5: Command = Command::new(5, 0, ResponseType::R4);
 
+/// CMD5 with an explicit host voltage window.
+pub fn cmd5(voltage_window: u32) -> Command {
+    Command::new(5, voltage_window & 0x00ff_ffff, ResponseType::R4)
+}
+
 /// CMD52: IO_RW_DIRECT
 ///
 /// `addr` is a 17-bit SDIO register address (bits 25:9 of the command argument).
@@ -336,19 +341,19 @@ mod tests {
     fn data_direction_classifies_block_commands() {
         assert_eq!(
             cmd17(0).data_direction(),
-            Some(sdio_host2::DataDirection::Read)
+            Some(sdmmc_host::DataDirection::Read)
         );
         assert_eq!(
             cmd18(0).data_direction(),
-            Some(sdio_host2::DataDirection::Read)
+            Some(sdmmc_host::DataDirection::Read)
         );
         assert_eq!(
             cmd24(0).data_direction(),
-            Some(sdio_host2::DataDirection::Write)
+            Some(sdmmc_host::DataDirection::Write)
         );
         assert_eq!(
             cmd25(0).data_direction(),
-            Some(sdio_host2::DataDirection::Write)
+            Some(sdmmc_host::DataDirection::Write)
         );
         // CMD6 is overloaded (ACMD6 vs SWITCH_FUNC); drivers tell the host
         // explicitly rather than relying on the index alone.

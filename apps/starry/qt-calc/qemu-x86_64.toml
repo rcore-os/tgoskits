@@ -29,9 +29,6 @@ args = [
 ]
 uefi = true
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/test-qcalc.sh"
-success_regex = ["(?m)^QT_CALC_TEST_PASSED\\s*$"]
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',
     '(?i)segfault',
@@ -39,3 +36,8 @@ fail_regex = [
     "(?m)^QT_CALC_TEST_FAILED(?:[: ].*)?$",
 ]
 timeout = 1200
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/test-qcalc.sh"
+success_regex = ["(?m)^QT_CALC_TEST_PASSED\\s*$"]

@@ -70,7 +70,7 @@ if [[ ! -f /.dockerenv && "${USE_DOCKER}" == "1" ]]; then
         exit 1
     fi
 
-    IMAGE=${K230_TEACHER_DEMO_IMAGE:-starryos-dev:ubuntu-qemu10.2.1}
+    IMAGE=${K230_TEACHER_DEMO_IMAGE:-starryos-dev:ubuntu-qemu11.1.1}
     CONTAINER_BASE=/workspace
     CONTAINER_REPO="${CONTAINER_BASE}${REPO_ROOT#"${BASE_ROOT}"}"
     CONTAINER_SCRIPT="${CONTAINER_REPO}/apps/starry/k230-kpu-nncase/demo-teacher.sh"
@@ -154,7 +154,7 @@ REPLAY_LOG="${LOG_DIR}/yolov8n-full-sequence-replay.log"
 K230_QEMU_CASE_DIR="${REPO_ROOT}/apps/starry/k230-qemu/qemu-k230"
 CAPTURE="${K230_QEMU_CASE_DIR}/kpu-smoke/c/assets/captures/yolov8n-full-sequence-delta.krun"
 
-export PATH="${BASE_ROOT}/target/qemu-k230-docker-build:${BASE_ROOT}/target/qemu-k230-docker-build/bin:/opt/qemu-10.2.1/bin:/opt/riscv64-linux-musl-cross/bin:/opt/x86_64-linux-musl-cross/bin:${PATH}"
+export PATH="${BASE_ROOT}/target/qemu-k230-docker-build:${BASE_ROOT}/target/qemu-k230-docker-build/bin:/opt/qemu-11.1.1/bin:/opt/riscv64-linux-musl-cross/bin:/opt/x86_64-linux-musl-cross/bin:${PATH}"
 
 section "Demo Goal"
 cat <<'EOF'

@@ -17,6 +17,7 @@ pub(crate) mod apk;
 pub mod app;
 mod args;
 pub mod board;
+mod boot_entropy;
 pub mod build;
 pub mod config;
 pub mod kmod;
@@ -65,6 +66,7 @@ impl Starry {
     }
 
     async fn qemu(&mut self, args: ArgsQemu) -> anyhow::Result<()> {
+        let write_policy = args.resolved_rootfs_write_policy();
         let request = self.prepare_request(
             (&args.build).into(),
             args.qemu_config,
@@ -73,9 +75,9 @@ impl Starry {
         )?;
         self.ensure_default_build_config_for_request(&request, "qemu")?;
         if let Some(rootfs) = args.rootfs {
-            rootfs::qemu_with_explicit_rootfs(self, request, rootfs).await
+            rootfs::qemu_with_explicit_rootfs(self, request, rootfs, write_policy).await
         } else {
-            self.run_qemu_request(request).await
+            self.run_qemu_request(request, write_policy).await
         }
     }
 
@@ -189,6 +191,18 @@ impl Starry {
     }
 
     async fn app_qemu_run(&mut self, args: app::ArgsAppQemu) -> anyhow::Result<()> {
+        if (args.nixos_case.is_some() || args.all_nixos_cases || args.list_nixos_cases)
+            && args.test_case.as_deref() != Some("nixos")
+        {
+            anyhow::bail!("NixOS case options require `-t nixos`");
+        }
+        if args.test_case.as_deref() == Some("nixos") {
+            let workspace = self.app.workspace_root().to_path_buf();
+            return app::run_nixos_app(&workspace, &args, async |request| {
+                test::run_nixos(self, request).await
+            })
+            .await;
+        }
         let apps = app::selected_apps(self.app.workspace_root(), &args, app::StarryAppKind::Qemu)?;
         let app_count = apps.len();
         for (index, app) in apps.into_iter().enumerate() {
@@ -240,7 +254,13 @@ impl Starry {
         )?;
 
         let Some(test_case) = app::app_qemu_test_case(&case, app.case_dir.clone()) else {
-            return rootfs::qemu_with_explicit_rootfs(self, request, case.rootfs_path).await;
+            return rootfs::qemu_with_explicit_rootfs(
+                self,
+                request,
+                case.rootfs_path,
+                case.rootfs_write_policy,
+            )
+            .await;
         };
         if app.prebuild_path.is_some()
             && test_case.test_commands.is_empty()
@@ -305,7 +325,11 @@ impl Starry {
             .app
             .read_qemu_config_from_path_for_cargo(&cargo, &test_case.qemu_config_path)
             .await?;
-        qemu_case::apply_grouped_qemu_config(&mut qemu, &test_case, &asset_config.grouped_runner);
+        qemu_case::apply_grouped_qemu_config(
+            &mut qemu,
+            &test_case,
+            &asset_config.grouped_execution,
+        );
         let prepare_started = std::time::Instant::now();
         let prepared_assets = qemu_case::prepare_case_assets(
             self.app.workspace_root(),
@@ -377,10 +401,7 @@ impl Starry {
         let (mut board_config, board_config_path) = self
             .load_board_config(&cargo, Some(case.board_config_path.as_path()))
             .await?;
-        board_config.shell_init_cmd = Some(app::merge_board_init_command(
-            &case.init_cmd,
-            board_config.shell_init_cmd.as_deref(),
-        ));
+        app::configure_board_init_step(&mut board_config, &case.init_cmd)?;
         let arch = arch_for_target_checked(&case.target)?;
         let session_assets = app::prepare_app_board_session_assets(
             self.app.workspace_root(),
@@ -534,11 +555,12 @@ impl Starry {
         &mut self,
         request: &ResolvedStarryRequest,
         cargo: Cargo,
-        board_config: BoardRunConfig,
+        mut board_config: BoardRunConfig,
         board_config_path: PathBuf,
         session_assets: Option<test::PreparedBoardSessionAssets>,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
+        let _boot_entropy = boot_entropy::prepare_for_secure_wifi(&mut board_config)?;
         let output = self.build_artifact(request, cargo.clone()).await?;
         let board_request = match session_assets {
             Some(assets) => {
@@ -561,8 +583,12 @@ impl Starry {
             .await
     }
 
-    async fn run_qemu_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
-        rootfs::qemu(self, request).await
+    async fn run_qemu_request(
+        &mut self,
+        request: ResolvedStarryRequest,
+        write_policy: rootfs::RootfsWritePolicy,
+    ) -> anyhow::Result<()> {
+        rootfs::qemu(self, request, write_policy).await
     }
 
     async fn run_build_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
@@ -617,7 +643,8 @@ impl Starry {
                     None,
                     SnapshotPersistence::Store,
                 )?;
-                self.run_qemu_request(request).await
+                self.run_qemu_request(request, rootfs::RootfsWritePolicy::Discard)
+                    .await
             }
         }
     }

@@ -1,4 +1,4 @@
-use ax_cpu::uspace::UserContext;
+use ax_cpu::user::UserContext;
 use linux_raw_sys::general::{SS_DISABLE, SS_ONSTACK};
 use starry_signal::{
     SignalActionFlags, SignalDisposition, SignalInfo, SignalOSAction, SignalSet, SignalStack, Signo,
@@ -11,11 +11,17 @@ use common::*;
 fn dequeue_signal() {
     let (proc, thr) = new_test_env();
 
+    // Exercise both pending queues as sigtimedwait would: the signals stay
+    // blocked rather than terminating this receiver before the second dequeue.
+    let mut blocked = SignalSet::default();
+    blocked.add(Signo::SIGINT);
+    blocked.add(Signo::SIGTERM);
+    thr.set_blocked(blocked);
     let sig1 = SignalInfo::new_user(Signo::SIGINT, 9, 9, 0);
-    assert!(thr.send_signal(sig1));
+    assert!(!thr.send_signal(sig1, false));
 
     let sig2 = SignalInfo::new_user(Signo::SIGTERM, 9, 9, 0);
-    assert_eq!(proc.send_signal(sig2), Some(TID));
+    assert_eq!(proc.send_signal(sig2, false), None);
 
     let mask = !SignalSet::default();
     assert_eq!(thr.dequeue_signal(&mask).unwrap().signo(), Signo::SIGINT);
@@ -36,8 +42,15 @@ fn handle_signal() {
     let initial = UserContext::new(0, initial_sp().into(), 0);
 
     let mut uctx = initial;
-    assert!(thr.send_signal(sig.clone()));
-    let (_si, result) = thr.check_signals(&mut uctx, None).unwrap();
+    assert!(thr.send_signal(sig.clone(), false));
+    let (_si, result) = thr
+        .check_signals(
+            &mut vm(),
+            &mut uctx,
+            None,
+            starry_signal::arch::SignalFpState::default,
+        )
+        .unwrap();
 
     assert_eq!(result, SignalOSAction::NoFurtherAction);
     assert_eq!(uctx.ip(), test_handler as *const () as usize);
@@ -50,15 +63,17 @@ fn block_ignore_send_signal() {
     let (proc, thr) = new_test_env();
 
     let signo = Signo::SIGINT;
+    unsafe extern "C" fn receiver(_: i32) {}
+    proc.actions().lock_irqsave()[signo].disposition = SignalDisposition::Handler(receiver);
     let sig = SignalInfo::new_user(signo, 0, 1, 0);
-    assert!(thr.send_signal(sig.clone()));
+    assert!(thr.send_signal(sig.clone(), false));
     assert_eq!(
         thr.dequeue_signal(&!SignalSet::default()).unwrap().signo(),
         sig.signo()
     );
 
     proc.actions().lock_irqsave()[signo].disposition = SignalDisposition::Ignore;
-    assert!(!thr.send_signal(sig.clone()));
+    assert!(!thr.send_signal(sig.clone(), false));
     assert!(!thr.pending().has(signo));
 
     // When a signal is both blocked AND SIG_IGN, POSIX requires it to be
@@ -67,7 +82,7 @@ fn block_ignore_send_signal() {
     set.add(signo);
     thr.set_blocked(set);
     assert!(thr.signal_blocked(signo));
-    assert!(!thr.send_signal(sig.clone()));
+    assert!(!thr.send_signal(sig.clone(), false));
     assert!(thr.pending().has(signo));
 
     // Drain the pending signal before testing the next disposition change.
@@ -77,7 +92,7 @@ fn block_ignore_send_signal() {
     );
 
     proc.actions().lock_irqsave()[signo].disposition = SignalDisposition::Default;
-    assert!(!thr.send_signal(sig.clone()));
+    assert!(!thr.send_signal(sig.clone(), false));
     assert!(thr.pending().has(signo));
 
     let empty = SignalSet::default();
@@ -86,21 +101,30 @@ fn block_ignore_send_signal() {
 }
 
 #[test]
-fn check_signals() {
-    let (proc, thr) = new_test_env();
-
-    let mut uctx = UserContext::new(0, initial_sp().into(), 0);
-
-    let signo = Signo::SIGTERM;
-    let sig = SignalInfo::new_user(signo, 0, 1, 0);
-
-    assert_eq!(proc.send_signal(sig.clone()), Some(TID));
-    let (si, _os_action) = thr.check_signals(&mut uctx, None).unwrap();
-    assert_eq!(si.signo(), signo);
-
-    assert!(thr.send_signal(sig.clone()));
-    let (si, _os_action) = thr.check_signals(&mut uctx, None).unwrap();
-    assert_eq!(si.signo(), signo);
+fn fatal_delivery_preserves_the_original_group_status() {
+    for process_directed in [false, true] {
+        let (proc, thr) = new_test_env();
+        let mut uctx = UserContext::new(0, initial_sp().into(), 0);
+        let signal = SignalInfo::new_user(Signo::SIGTERM, 0, 1, 0);
+        if process_directed {
+            assert_eq!(proc.send_signal(signal, false), Some(TID));
+        } else {
+            assert!(thr.send_signal(signal, false));
+        }
+        let (signal, action) = thr
+            .check_signals(
+                &mut vm(),
+                &mut uctx,
+                None,
+                starry_signal::arch::SignalFpState::default,
+            )
+            .unwrap();
+        assert_eq!(signal.signo(), Signo::SIGKILL);
+        assert_eq!(action, SignalOSAction::Terminate);
+        assert_eq!(proc.group_exit_status(), Some(Signo::SIGTERM as i32));
+        assert!(thr.send_signal(SignalInfo::new_kernel(Signo::SIGKILL), false));
+        assert_eq!(proc.group_exit_status(), Some(Signo::SIGTERM as i32));
+    }
 }
 
 #[test]
@@ -119,12 +143,18 @@ fn check_signals_with_reports_restartable_delivery() {
         actions[signo].flags = SignalActionFlags::RESTART;
     }
 
-    assert!(thr.send_signal(sig));
+    assert!(thr.send_signal(sig, false));
     let mut observed = None;
     let (si, os_action) = thr
-        .check_signals_with(&mut uctx, None, |_, delivered, restartable| {
-            observed = Some((delivered.signo(), restartable));
-        })
+        .check_signals_with(
+            &mut vm(),
+            &mut uctx,
+            None,
+            |_, delivered, restartable| {
+                observed = Some((delivered.signo(), restartable));
+            },
+            starry_signal::arch::SignalFpState::default,
+        )
         .unwrap();
 
     assert_eq!(si.signo(), signo);
@@ -145,12 +175,19 @@ fn restore() {
     let initial = UserContext::new(0x219, initial_sp().into(), 0);
 
     let mut uctx = initial;
-    assert!(thr.send_signal(sig.clone()));
-    let (_si, action) = thr.check_signals(&mut uctx, None).unwrap();
+    assert!(thr.send_signal(sig.clone(), false));
+    let (_si, action) = thr
+        .check_signals(
+            &mut vm(),
+            &mut uctx,
+            None,
+            starry_signal::arch::SignalFpState::default,
+        )
+        .unwrap();
     assert_eq!(action, SignalOSAction::NoFurtherAction);
 
     prepare_restore_context(&mut uctx);
-    thr.restore(&mut uctx).unwrap();
+    thr.restore(&mut vm(), &mut uctx).unwrap();
 
     assert_eq!(uctx.ip(), initial.ip());
     assert_eq!(uctx.sp(), initial.sp());
@@ -166,6 +203,7 @@ fn sigaltstack_reports_active_until_restore() {
     thr.set_stack(SignalStack {
         sp: alt_base,
         flags: 0,
+        __padding: 0,
         size: alt_size,
     });
 
@@ -179,8 +217,15 @@ fn sigaltstack_reports_active_until_restore() {
     }
 
     let mut uctx = UserContext::new(0x219, initial_sp().into(), 0);
-    assert!(thr.send_signal(SignalInfo::new_user(signo, 0, 1, 0)));
-    let (_si, action) = thr.check_signals(&mut uctx, None).unwrap();
+    assert!(thr.send_signal(SignalInfo::new_user(signo, 0, 1, 0), false));
+    let (_si, action) = thr
+        .check_signals(
+            &mut vm(),
+            &mut uctx,
+            None,
+            starry_signal::arch::SignalFpState::default,
+        )
+        .unwrap();
 
     assert_eq!(action, SignalOSAction::NoFurtherAction);
     assert!(uctx.sp() >= alt_base);
@@ -188,7 +233,7 @@ fn sigaltstack_reports_active_until_restore() {
     assert_ne!(thr.stack().flags & SS_ONSTACK, 0);
 
     prepare_restore_context(&mut uctx);
-    thr.restore(&mut uctx).unwrap();
+    thr.restore(&mut vm(), &mut uctx).unwrap();
 
     assert_eq!(thr.stack().flags & SS_ONSTACK, 0);
     assert_eq!(thr.stack().flags & SS_DISABLE, 0);

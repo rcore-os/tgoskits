@@ -1,8 +1,6 @@
 timeout = 120
-shell_prefix = "root@starry:"
 uefi = false
 to_bin = false
-success_regex = ["STARRY_CLAW_READY"]
 fail_regex = [
   "STARRY_CLAW_MISSING",
   "(?i)panic",
@@ -17,7 +15,7 @@ args = [
   "-netdev", "user,id=net0",
 ]
 
-shell_init_cmd = """
+shell_check_steps = [{ shell_prefix = "root@starry:", shell_cmd = """
 export HOME=/root
 export USER=root
 export SHELL=/bin/sh
@@ -28,4 +26,4 @@ if ! test -x /usr/bin/claw; then
   exit 1
 fi
 printf 'STARRY_%s\n' CLAW_READY
-"""
+""", success_regex = ["STARRY_CLAW_READY"] }]

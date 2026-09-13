@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="640" viewBox="0 0 1100 640" role="img" aria-labelledby="title desc">
+  <title id="title">页表分层架构</title><desc id="desc">通用页表算法由主机、客户机和启动三类适配器组合。</desc>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0L0 6L9 3Z" fill="#475569"/></marker><style>.h{font:700 24px sans-serif;fill:#0f172a}.t{font:600 18px sans-serif;fill:#0f172a}.s{font:14px sans-serif;fill:#334155}.core{fill:#eff6ff;stroke:#3b82f6;stroke-width:2}.ctx{fill:#f5f3ff;stroke:#8b5cf6;stroke-width:2}.cap{fill:#ecfdf5;stroke:#10b981;stroke-width:2}.addr{fill:#fff7ed;stroke:#f97316;stroke-width:2}.l{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#a)}.dash{stroke-dasharray:7 6}</style></defs>
+  <text x="550" y="36" text-anchor="middle" class="h">页表机制与执行上下文分层</text>
+  <rect x="320" y="75" width="460" height="105" rx="16" class="core"/><text x="550" y="110" text-anchor="middle" class="t">page-table-generic</text><text x="550" y="138" text-anchor="middle" class="s">PageTable / FrameAllocator / TableMeta / walker</text><text x="550" y="160" text-anchor="middle" class="s">不选择架构、执行阶段或系统 allocator</text>
+  <rect x="65" y="245" width="290" height="110" rx="16" class="ctx"/><text x="210" y="279" text-anchor="middle" class="t">Host Stage-1</text><text x="210" y="306" text-anchor="middle" class="s">ax-hal::paging::PageTable</text><text x="210" y="329" text-anchor="middle" class="s">axcpu::ArchPagingMeta</text>
+  <rect x="405" y="245" width="290" height="110" rx="16" class="ctx"/><text x="550" y="279" text-anchor="middle" class="t">Guest Stage-2</text><text x="550" y="306" text-anchor="middle" class="s">axvm nested page table</text><text x="550" y="329" text-anchor="middle" class="s">架构 entry 与 vCPU root</text>
+  <rect x="745" y="245" width="290" height="110" rx="16" class="ctx"/><text x="890" y="279" text-anchor="middle" class="t">Boot tables</text><text x="890" y="306" text-anchor="middle" class="s">someboot paging adapter</text><text x="890" y="329" text-anchor="middle" class="s">启动寄存器与地址布局</text>
+  <path d="M440 180L210 245M550 180V245M660 180L890 245" class="l"/>
+  <rect x="65" y="430" width="290" height="90" rx="16" class="cap"/><text x="210" y="463" text-anchor="middle" class="t">PagingAllocator</text><text x="210" y="489" text-anchor="middle" class="s">ax-alloc × PageTable</text>
+  <rect x="405" y="430" width="290" height="90" rx="16" class="cap"/><text x="550" y="463" text-anchor="middle" class="t">AxVM frame provider</text><text x="550" y="489" text-anchor="middle" class="s">HostPagingHandler</text>
+  <rect x="745" y="430" width="290" height="90" rx="16" class="cap"/><text x="890" y="463" text-anchor="middle" class="t">Ram provider</text><text x="890" y="489" text-anchor="middle" class="s">early bump，释放为 no-op</text>
+  <path d="M210 430V355M550 430V355M890 430V355" class="l dash"/>
+  <rect x="320" y="560" width="460" height="55" rx="14" class="addr"/><text x="550" y="584" text-anchor="middle" class="t">ax-memory-addr：PhysAddr / VirtAddr</text><text x="550" y="603" text-anchor="middle" class="s">三个上下文共享地址与范围基础类型</text>
+</svg>

@@ -26,3 +26,10 @@ case ",${STARRY_GROUPED_C_SUBCASES:-}," in
         test -x "$STARRY_STAGING_ROOT/usr/bin/curl"
         ;;
 esac
+
+case ",${STARRY_GROUPED_C_SUBCASES:-}," in
+    *,ltp-syscalls,*)
+        apk_add_with_retry e2fsprogs
+        test -x "$STARRY_STAGING_ROOT/sbin/mkfs.ext4"
+        ;;
+esac

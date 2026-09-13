@@ -21,6 +21,8 @@
 pub mod hcounteren;
 /// Hypervisor exception delegation register  
 pub mod hedeleg;
+/// Hypervisor environment configuration register
+pub mod henvcfg;
 /// Hypervisor guest address translation and protection register
 pub mod hgatp;
 /// Hypervisor guest external interrupt enable register

@@ -15,8 +15,10 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/git-test.sh"
-success_regex = ["(?m)^GIT_TEST_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^GIT_TEST_FAILED\\s*$"]
 timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/git-test.sh"
+success_regex = ["(?m)^GIT_TEST_PASSED\\s*$"]

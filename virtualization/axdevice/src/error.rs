@@ -4,7 +4,7 @@ use alloc::string::String;
 
 use axdevice_base::*;
 
-use crate::{DeviceGraphError, InterruptRegistrationError};
+use crate::{DeviceGraphError, InterruptRegistrationError, PciError};
 
 /// Result type returned by device manager operations.
 pub type DeviceManagerResult<T = ()> = Result<T, DeviceManagerError>;
@@ -66,14 +66,6 @@ pub enum DeviceManagerError {
         /// Diagnostic detail describing the limitation.
         detail: String,
     },
-    /// A device returned a response that does not match the request.
-    #[error("unexpected response during device operation {operation}: {detail}")]
-    UnexpectedResponse {
-        /// The operation that received the response.
-        operation: &'static str,
-        /// Diagnostic detail describing the response.
-        detail: String,
-    },
     /// A bus access failed with address and width context.
     #[error("device {operation} failed on {bus:?} bus at {addr:#x} with width {width:?}: {source}")]
     Access {
@@ -107,6 +99,9 @@ pub enum DeviceManagerError {
     /// Deterministic VM resource allocation failed.
     #[error(transparent)]
     ResourcePlanning(#[from] crate::ResourcePlanningError),
+    /// PCI declaration, topology, or config-state construction failed.
+    #[error(transparent)]
+    Pci(#[from] PciError),
 }
 
 impl From<DeviceManagerError> for DeviceError {
@@ -137,9 +132,6 @@ impl From<DeviceManagerError> for DeviceError {
                 operation,
                 resource: detail,
             },
-            DeviceManagerError::UnexpectedResponse { operation, detail } => {
-                Self::InvalidState { operation, detail }
-            }
             DeviceManagerError::Access { source, .. } => source,
             DeviceManagerError::Registry(error) => Self::InvalidInput {
                 operation: "register device",
@@ -159,6 +151,10 @@ impl From<DeviceManagerError> for DeviceError {
             },
             DeviceManagerError::ResourcePlanning(error) => Self::InvalidInput {
                 operation: "plan device resources",
+                detail: alloc::format!("{error}"),
+            },
+            DeviceManagerError::Pci(error) => Self::InvalidInput {
+                operation: "resolve PCI device graph",
                 detail: alloc::format!("{error}"),
             },
         }

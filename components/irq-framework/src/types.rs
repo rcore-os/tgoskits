@@ -314,6 +314,17 @@ pub struct IrqContext {
     pub irq: IrqId,
     /// CPU handling the IRQ.
     pub cpu: CpuId,
+    /// Privilege domain interrupted by this IRQ.
+    pub origin: IrqOrigin,
+}
+
+/// Privilege domain interrupted by an IRQ.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IrqOrigin {
+    /// The IRQ interrupted kernel execution.
+    Kernel,
+    /// The IRQ interrupted userspace execution.
+    User,
 }
 
 /// Boxed IRQ handler ABI.

@@ -27,6 +27,7 @@ mod lock;
 mod pit;
 mod regs;
 mod timer;
+mod timer_registration;
 mod types;
 mod utils;
 mod vioapic;
@@ -57,11 +58,11 @@ pub use self::{
     pit::EmulatedPit,
     types::{
         X86AccessWidth, X86GuestPhysAddr, X86GuestPhysAddrRange, X86HostPhysAddr, X86HostVirtAddr,
-        X86InterruptVector, X86MsrAddr, X86MsrAddrRange, X86Port, X86PortRange, X86TimerCallback,
-        X86VcpuId, X86VlapicError, X86VlapicResult, X86VmId,
+        X86InterruptVector, X86MsrAddr, X86MsrAddrRange, X86Port, X86PortRange, X86TimerAction,
+        X86TimerCallback, X86VcpuId, X86VlapicError, X86VlapicResult, X86VmId,
     },
     vioapic::{EmulatedIoApic, IoApicEoi, IoApicInterrupt},
-    vpic::EmulatedPic,
+    vpic::{EmulatedPic, PicInterruptClaim},
 };
 
 impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {
@@ -129,6 +130,16 @@ impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {
     pub fn accept_interrupt(&self, vector: u8, level_triggered: bool) {
         self.get_mut_vlapic_regs()
             .accept_interrupt(vector, level_triggered);
+    }
+
+    /// Returns whether the local APIC timer has an edge awaiting vCPU entry.
+    pub fn has_pending_timer_interrupt(&self) -> bool {
+        self.get_vlapic_regs().has_pending_timer_interrupt()
+    }
+
+    /// Coalesces expired local APIC timer periods into one pending vector.
+    pub fn take_pending_timer_interrupt(&self) -> Option<u8> {
+        self.get_vlapic_regs().take_pending_timer_interrupt()
     }
 
     /// Process a guest EOI and return the vector that needs an IO APIC EOI broadcast.

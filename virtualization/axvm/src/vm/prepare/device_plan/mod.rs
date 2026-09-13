@@ -16,13 +16,30 @@ pub(crate) struct VmDevicePlan {
 }
 
 impl VmDevicePlan {
+    #[cfg(any(not(target_arch = "x86_64"), test))]
     pub(crate) fn with_pools_for_vm(
         config: &AxVMConfig,
         nodes: Vec<DeviceNodeSpec>,
         replacement_ranges: &[Range<u64>],
         mut pools: ResourcePools,
     ) -> AxVmResult<Self> {
-        Self::build(config, nodes, replacement_ranges, &mut pools)
+        Self::build(config, nodes, replacement_ranges, &mut pools, None)
+    }
+
+    pub(crate) fn with_pci_host_for_vm(
+        config: &AxVMConfig,
+        nodes: Vec<DeviceNodeSpec>,
+        replacement_ranges: &[Range<u64>],
+        mut pools: ResourcePools,
+        pci_host: PciHostProvider,
+    ) -> AxVmResult<Self> {
+        Self::build(
+            config,
+            nodes,
+            replacement_ranges,
+            &mut pools,
+            Some(pci_host),
+        )
     }
 
     fn build(
@@ -30,10 +47,16 @@ impl VmDevicePlan {
         nodes: Vec<DeviceNodeSpec>,
         replacement_ranges: &[Range<u64>],
         pools: &mut ResourcePools,
+        pci_host: Option<PciHostProvider>,
     ) -> AxVmResult<Self> {
         let mut builder = DeviceGraphBuilder::new();
         for node in nodes {
             builder.add(node).map_err(DeviceManagerError::from)?;
+        }
+        if let Some(pci_host) = pci_host {
+            builder
+                .register_pci_host(pci_host)
+                .map_err(DeviceManagerError::from)?;
         }
 
         let configured_requests = builder.requests().map_err(DeviceManagerError::from)?;
@@ -86,7 +109,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        AxVmError,
+        AxVmError, ConfiguredDeviceCatalog,
         config::{AxVMConfigParams, PhysCpuList},
         configured::append_configured_devices,
     };
@@ -101,6 +124,10 @@ mod tests {
                 0x1000,
                 ResourceRequest::Fixed(0x8000_0000),
             )
+        }
+
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            DeviceFirmwareSpec::None
         }
 
         fn build(
@@ -123,6 +150,10 @@ mod tests {
             )
         }
 
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            DeviceFirmwareSpec::None
+        }
+
         fn build(
             &self,
             _context: &mut DeviceBuildContext<'_>,
@@ -131,10 +162,17 @@ mod tests {
         }
     }
 
+    fn registered_catalog() -> Arc<ConfiguredDeviceCatalog> {
+        let mut catalog = ConfiguredDeviceCatalog::new();
+        crate::machine::register_devices(&mut catalog).unwrap();
+        Arc::new(catalog)
+    }
+
     fn config_with_ivc() -> AxVMConfig {
         AxVMConfig::new(AxVMConfigParams {
             id: 1,
             phys_cpu_ls: PhysCpuList::new(1, None, None),
+            virtual_device_catalog: registered_catalog(),
             memory_regions: vec![VmMemConfig {
                 gpa: 0x8000_0000,
                 size: 0x1000_0000,
@@ -158,6 +196,7 @@ mod tests {
             &mut nodes,
             &controller,
             InterruptControllerId::new(0),
+            None,
         )
         .unwrap();
         nodes
@@ -168,7 +207,11 @@ mod tests {
         let config = config_with_ivc();
         let nodes = ivc_nodes(&config);
         let mut pools = ResourcePools::new();
-        pools.add_auto_mmio(0x1000_0000..0x1001_0000).unwrap();
+        pools
+            .add_auto_mmio(
+                0x1000_0000..0x1000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
+            )
+            .unwrap();
         pools
             .add_auto_controller_inputs(
                 InterruptControllerId::new(0),
@@ -184,7 +227,13 @@ mod tests {
             .mmio(&registers)
             .unwrap();
 
-        assert_eq!((base, size), (0x1000_0000, 0x1_0000));
+        assert_eq!(
+            (base, size),
+            (
+                0x1000_0000,
+                crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
+            )
+        );
         for memory in config.memory_regions() {
             let memory_base = memory.gpa as u64;
             let memory_end = memory_base + memory.size as u64;
@@ -206,7 +255,11 @@ mod tests {
             Arc::new(FixedMmioOccupantModel),
         ));
         let mut pools = ResourcePools::new();
-        pools.add_auto_mmio(0x1000_0000..0x1001_0000).unwrap();
+        pools
+            .add_auto_mmio(
+                0x1000_0000..0x1000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
+            )
+            .unwrap();
         pools.allow_fixed_mmio(0x1000_0000..0x1001_0000).unwrap();
         pools
             .add_auto_controller_inputs(
@@ -230,7 +283,11 @@ mod tests {
         let config = config_with_ivc();
         let nodes = ivc_nodes(&config);
         let mut pools = ResourcePools::new();
-        pools.add_auto_mmio(0x1000_0000..0x1001_0000).unwrap();
+        pools
+            .add_auto_mmio(
+                0x1000_0000..0x1000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
+            )
+            .unwrap();
         pools
             .add_auto_controller_inputs(
                 InterruptControllerId::new(0),

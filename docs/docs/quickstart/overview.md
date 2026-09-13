@@ -28,7 +28,7 @@ QEMU 构建和启动需要 Linux 宿主、仓库锁定的 Rust 工具链、基�
 |------|------|
 | 操作系统 | Linux x86_64（推荐 Ubuntu 22.04+ / Debian 12+） |
 | Rust 工具链 | 由仓库 `rust-toolchain.toml` 管理 |
-| QEMU | 推荐 10.2.1，与仓库容器镜像和 CI 环境一致 |
+| QEMU | 推荐 11.1.1，与仓库容器镜像和 CI 环境一致 |
 | 磁盘空间 | 建议至少 20 GB（工具链、QEMU、构建产物、rootfs、Guest 镜像） |
 
 ### 1.2 容器环境
@@ -61,7 +61,7 @@ docker run -it --rm -v "$(pwd)":/workspace -w /workspace tgoskits-env
 
 ### 1.4 手动安装
 
-不使用容器时，需要在宿主机安装 Rust、基础构建工具和各架构的 QEMU。QEMU 版本应与容器和 CI 使用的 10.2.1 保持一致：
+不使用容器时，需要在宿主机安装 Rust、基础构建工具和各架构的 QEMU。QEMU 版本应与容器和 CI 使用的 11.1.1 保持一致：
 
 ```bash
 # 1. 安装 Rust（会按仓库 toolchain 自动切换）
@@ -97,7 +97,7 @@ QEMU 运行需要同时满足板卡配置支持目标架构、Rust target 可用
 
 ### 2.2 验证 QEMU
 
-以下命令验证四种架构的模拟器是否存在并输出版本。仓库容器和 CI 使用 QEMU 10.2.1。
+以下命令验证四种架构的模拟器是否存在并输出版本。仓库容器和 CI 使用 QEMU 11.1.1。
 
 ```bash
 qemu-system-riscv64 --version

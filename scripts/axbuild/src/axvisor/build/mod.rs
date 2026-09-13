@@ -27,19 +27,32 @@ pub use crate::build::LogLevel;
 use crate::context::ResolvedAxvisorRequest;
 
 pub(crate) fn load_cargo_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<Cargo> {
+    let makefile_features = crate::build::makefile_features_from_env();
+    load_cargo_config_with_makefile_features(request, &makefile_features)
+}
+
+fn load_cargo_config_with_makefile_features(
+    request: &ResolvedAxvisorRequest,
+    makefile_features: &[String],
+) -> anyhow::Result<Cargo> {
     let metadata =
         crate::build::cached_workspace_metadata().context("failed to load workspace metadata")?;
-    to_cargo_config(load_build_config(request)?, request, metadata)
+    to_cargo_config(
+        load_build_config(request)?,
+        request,
+        metadata,
+        makefile_features,
+    )
 }
 
 fn to_cargo_config(
     mut config: LoadedAxvisorBuildConfig,
     request: &ResolvedAxvisorRequest,
     metadata: &cargo_metadata::Metadata,
+    makefile_features: &[String],
 ) -> anyhow::Result<Cargo> {
     config.target = request.target.clone();
-    let makefile_features = crate::build::makefile_features_from_env();
-    crate::build::apply_makefile_features(&mut config.build_info, &makefile_features)?;
+    crate::build::apply_makefile_features(&mut config.build_info, makefile_features)?;
     let known_platforms = platform_feature_names(metadata);
     reject_unsupported_nested_platform_features(&config.build_info.features, &known_platforms)?;
     let mut cargo = config

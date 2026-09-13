@@ -1,204 +1,119 @@
-use page_table_generic::{PageTableEntry, TableMeta};
-use tock_registers::{interfaces::*, register_bitfields, registers::ReadWrite};
+//! Boot mapping policy over the CPU-owned stage-one descriptor.
+
+#[cfg(not(feature = "hv"))]
+use ax_cpu::paging::El1Pte as Pte;
+#[cfg(feature = "hv")]
+use ax_cpu::paging::El2Pte as Pte;
+use ax_cpu::{
+    PhysAddr,
+    paging::{DescriptorFlags, PageTableEntry, TableMeta},
+};
 
 use crate::mem::{MemAttributes, PteConfig};
 
-register_bitfields![u64,
-    /// 4k 48-bit
-    PTE [
-        VALID OFFSET(0) NUMBITS(1) [],
-        NON_BLOCK OFFSET(1) NUMBITS(1) [],
-        MAIR OFFSET(2) NUMBITS(3) [],
-        NS OFFSET(5) NUMBITS(1) [],
-        AP_EL0 OFFSET(6) NUMBITS(1) [],
-        AP_RO OFFSET(7) NUMBITS(1) [],
-        SHAREABLE OFFSET(8) NUMBITS(2) [
-            NON = 0b00,
-            RESERVED = 0b01,
-            OUTER = 0b10,
-            INNER = 0b11
-        ],
-        AF OFFSET(10) NUMBITS(1) [],
-        NG OFFSET(11) NUMBITS(1) [],
-        PHYS_ADDR OFFSET(12) NUMBITS(36) [],
-        CONTIGUOUS OFFSET(52) NUMBITS(1) [],
-        PXN OFFSET(53) NUMBITS(1) [],
-        UXN OFFSET(54) NUMBITS(1) [],
-        PXN_TABLE OFFSET(59) NUMBITS(1) [],
-        XN_TABLE OFFSET(60) NUMBITS(1) [],
-        AP_NO_EL0_TABLE OFFSET(61) NUMBITS(1) [],
-        AP_NO_WRITE_TABLE OFFSET(62) NUMBITS(1) [],
-        NS_TABLE OFFSET(63) NUMBITS(1) [],
-    ],
-];
-
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct Entry(u64);
+pub struct Entry(Pte);
 
 impl Entry {
-    fn as_typed(&self) -> &ReadWrite<u64, PTE::Register> {
-        unsafe { &*(self as *const Self as *const ReadWrite<u64, PTE::Register>) }
-    }
-
-    /// 创建空页表项
+    /// Returns an unused descriptor.
     pub const fn empty() -> Self {
-        Self(0)
+        Self(Pte::from_parts(
+            PhysAddr::from_usize(0),
+            DescriptorFlags::empty(),
+        ))
     }
 }
 
 impl PageTableEntry for Entry {
     type PteConfig = PteConfig;
 
-    fn new_page(
-        paddr: page_table_generic::PhysAddr,
-        config: Self::PteConfig,
-        is_huge: bool,
-    ) -> Self {
-        let entry = Entry::empty();
-        let mut val = PTE::VALID::SET;
-
-        if config.read {
-            val += PTE::AF::SET;
-        }
-
-        val += PTE::PHYS_ADDR.val((paddr.as_usize() as u64) >> 12);
-
-        // 设置大页标志（NON_BLOCK=0 表示大页）
-        if !is_huge {
-            val += PTE::NON_BLOCK::SET;
-        }
-
-        if !config.writable {
-            val += PTE::AP_RO::SET;
-        }
-
+    fn new_page(paddr: PhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
+        let mut flags = DescriptorFlags::VALID;
+        flags.set(DescriptorFlags::AF, config.read || config.dirty);
+        flags.set(DescriptorFlags::NON_BLOCK, !is_huge);
+        flags.set(DescriptorFlags::AP_RO, !config.writable);
+        flags.set(DescriptorFlags::NON_GLOBAL, !config.global);
         #[cfg(not(feature = "hv"))]
         {
             if config.lower {
-                val += PTE::AP_EL0::SET + PTE::PXN::SET;
-                if !config.executable {
-                    val += PTE::UXN::SET;
-                }
+                flags |= DescriptorFlags::AP_EL0 | DescriptorFlags::PXN;
+                flags.set(DescriptorFlags::UXN, !config.executable);
             } else {
-                val += PTE::UXN::SET;
-                if !config.executable {
-                    val += PTE::PXN::SET;
-                }
+                flags |= DescriptorFlags::UXN;
+                flags.set(DescriptorFlags::PXN, !config.executable);
             }
         }
         #[cfg(feature = "hv")]
-        {
-            // 在虚拟化环境下，内核页表项对 EL2 可执行
-            if !config.executable {
-                val += PTE::PXN::SET;
-            }
-        }
+        flags.set(DescriptorFlags::UXN, !config.executable);
 
-        // 设置可执行标志（PXN=0 表示可执行）
-
-        // 设置全局标志（NG=0 表示全局）
-        if !config.global {
-            val += PTE::NG::SET;
-        }
-
-        // 设置脏位（复用 AF 位）
-        if config.dirty {
-            val += PTE::AF::SET;
-        }
-
-        // 设置内存属性
-        match config.mem_attr {
-            MemAttributes::Device => {
-                val += PTE::MAIR.val(0) + PTE::SHAREABLE::OUTER;
-            }
-            MemAttributes::Normal | MemAttributes::PerCpu => {
-                // CPU-local areas have a second virtual alias, but they remain
-                // ordinary coherent RAM: remote wake, migration, allocator,
-                // and diagnostic paths access another CPU's area directly.
-                // Both aliases therefore need the exact same cacheability and
-                // shareability attributes.
-                val += PTE::MAIR.val(1) + PTE::SHAREABLE::INNER;
-            }
-            MemAttributes::Uncached => {
-                val += PTE::MAIR.val(2) + PTE::SHAREABLE::OUTER;
-            }
-        }
-        entry.as_typed().write(val);
-        entry
+        let (slot, shareability) = match config.mem_attr {
+            MemAttributes::Device => (0, DescriptorFlags::SH_OUTER),
+            // CPU-local aliases remain ordinary coherent RAM, including when
+            // another CPU accesses their published runtime state.
+            MemAttributes::Normal | MemAttributes::PerCpu => (1, DescriptorFlags::SH_INNER),
+            MemAttributes::Uncached => (2, DescriptorFlags::SH_OUTER),
+        };
+        flags |= shareability;
+        flags = flags
+            .with_attribute_index(slot)
+            .expect("boot MAIR slots are 0..3");
+        Self(Pte::from_parts(paddr, flags))
     }
 
-    fn new_table(paddr: page_table_generic::PhysAddr) -> Self {
-        let entry = Entry::empty();
-        entry.as_typed().write(
-            PTE::VALID::SET
-                + PTE::NON_BLOCK::SET
-                + PTE::PHYS_ADDR.val((paddr.as_usize() as u64) >> 12),
-        );
-        entry
+    fn new_table(paddr: PhysAddr) -> Self {
+        Self(Pte::from_parts(
+            paddr,
+            DescriptorFlags::VALID | DescriptorFlags::NON_BLOCK,
+        ))
     }
 
-    fn paddr(&self, _is_dir: bool) -> page_table_generic::PhysAddr {
-        ((self.as_typed().read(PTE::PHYS_ADDR) << 12) as usize).into()
+    fn paddr(&self, is_dir: bool) -> PhysAddr {
+        self.0.paddr(is_dir)
     }
 
     fn config(&self, _is_dir: bool) -> Self::PteConfig {
-        let pte = self.as_typed();
-        let lower;
-        let executable;
+        let flags = self.0.flags();
+        let lower = flags.contains(DescriptorFlags::AP_EL0);
         #[cfg(not(feature = "hv"))]
-        {
-            lower = pte.is_set(PTE::AP_EL0);
-            if lower {
-                executable = !pte.is_set(PTE::UXN);
-            } else {
-                executable = !pte.is_set(PTE::PXN);
-            }
-        }
+        let executable = !flags.contains(if lower {
+            DescriptorFlags::UXN
+        } else {
+            DescriptorFlags::PXN
+        });
         #[cfg(feature = "hv")]
-        {
-            lower = pte.is_set(PTE::AP_EL0);
-            executable = !pte.is_set(PTE::PXN);
-        }
-
+        let executable = !flags.contains(DescriptorFlags::UXN);
         PteConfig {
-            read: pte.is_set(PTE::AF),
-            writable: pte.is_set(PTE::AP_RO),
+            read: flags.contains(DescriptorFlags::AF),
+            writable: !flags.contains(DescriptorFlags::AP_RO),
             executable,
             lower,
-            dirty: pte.is_set(PTE::AF),
-            global: !pte.is_set(PTE::NG),
-            mem_attr: {
-                match pte.read(PTE::MAIR) {
-                    0 => MemAttributes::Device,
-                    1 => MemAttributes::Normal,
-                    2 => MemAttributes::Uncached,
-                    _ => MemAttributes::Normal,
-                }
+            dirty: flags.contains(DescriptorFlags::AF),
+            global: !flags.contains(DescriptorFlags::NON_GLOBAL),
+            mem_attr: match flags.attribute_index() {
+                0 => MemAttributes::Device,
+                2 => MemAttributes::Uncached,
+                _ => MemAttributes::Normal,
             },
         }
     }
 
     fn present(&self) -> bool {
-        self.as_typed().is_set(PTE::VALID)
+        self.0.present()
     }
-
     fn huge(&self, is_dir: bool) -> bool {
-        is_dir && !self.as_typed().is_set(PTE::NON_BLOCK)
+        self.0.huge(is_dir)
     }
-
     fn unused(&self) -> bool {
-        self.0 == 0
+        self.0.unused()
     }
-
     fn clear(&mut self) {
-        self.0 = 0;
+        self.0.clear();
     }
 }
 
 impl core::fmt::Debug for Entry {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // Debug 输出默认使用页表项格式（is_dir=false）
         write!(f, "PTE {:?}", PageTableEntry::paddr(self, false))
     }
 }

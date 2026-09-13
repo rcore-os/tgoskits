@@ -107,7 +107,7 @@ impl PhytiumMci {
                 return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
             }
         };
-        if buffer.direction() != dma_direction || buffer.domain_id() != dma.domain_id() {
+        if buffer.direction() != dma_direction || buffer.domain_id() != dma.info().domain() {
             return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
         }
         let id = match slot.start(BlockTransferMode::Dma, transfer_direction) {
@@ -236,9 +236,8 @@ impl PhytiumMci {
         )
         .map_err(|_| Error::Misaligned)?;
         if direction == DataDirection::Write {
-            backing.copy_to_device_from_slice(unsafe {
-                core::slice::from_raw_parts(buffer.as_ptr(), len)
-            });
+            backing
+                .copy_from_slice_cpu(unsafe { core::slice::from_raw_parts(buffer.as_ptr(), len) });
         }
         let dma_addr = backing.dma_addr().as_u64();
         let desc_dma = self.prepare_idmac_ring(dma_addr, len)?;
@@ -290,7 +289,9 @@ impl PhytiumMci {
         dma: &DeviceDma,
         id: RequestId,
     ) -> Result<BlockRequest, PreparedDmaSubmitError> {
-        if buffer.direction() != DmaDirection::FromDevice || buffer.domain_id() != dma.domain_id() {
+        if buffer.direction() != DmaDirection::FromDevice
+            || buffer.domain_id() != dma.info().domain()
+        {
             return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
         }
         let block_count = match block_count(buffer.len()) {
@@ -320,7 +321,8 @@ impl PhytiumMci {
         dma: &DeviceDma,
         id: RequestId,
     ) -> Result<BlockRequest, PreparedDmaSubmitError> {
-        if buffer.direction() != DmaDirection::ToDevice || buffer.domain_id() != dma.domain_id() {
+        if buffer.direction() != DmaDirection::ToDevice || buffer.domain_id() != dma.info().domain()
+        {
             return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
         }
         let block_count = match block_count(buffer.len()) {

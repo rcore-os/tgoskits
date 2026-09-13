@@ -247,9 +247,9 @@ fn reports_relaxed_publish_before_task_wake() {
         r#"
 use core::sync::atomic::{AtomicBool, Ordering};
 
-fn demo(flag: &AtomicBool, task: &AxTaskRef) {
+fn demo(flag: &AtomicBool, wake: &ThreadWakeHandle) {
     flag.store(true, Ordering::Relaxed);
-    ax_task::wake_task(task);
+    wake.wake();
 }
 "#,
     );
@@ -455,9 +455,11 @@ fn stats_path(flag: &AtomicBool) {
     let mixed = findings
         .iter()
         .filter(|finding| finding.rule == Rule::MixedOrdering)
-        .collect::<Vec<_>>();
-
-    assert_eq!(mixed.len(), 1);
+        .count();
+    assert_eq!(
+        mixed, 1,
+        "the unrelated stats_path binding must not add a MixedOrdering finding"
+    );
 }
 
 #[test]
@@ -481,9 +483,11 @@ fn demo(flag: &AtomicBool, wq: WaitQueue) {
     let mixed = findings
         .iter()
         .filter(|finding| finding.rule == Rule::MixedOrdering)
-        .collect::<Vec<_>>();
-
-    assert_eq!(mixed.len(), 1);
+        .count();
+    assert_eq!(
+        mixed, 1,
+        "the shadowed inner binding must not add a MixedOrdering finding"
+    );
 }
 
 #[test]

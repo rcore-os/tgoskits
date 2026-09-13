@@ -19,7 +19,7 @@ as these stages:
 | Stage 1 | `prepare_host_tools.sh` | Prepares macOS host wrappers needed by the AArch64 seed-kernel build. |
 | Stage 2 | `cargo xtask starry app qemu -t macos-selfbuild --arch aarch64` | Uses the existing Starry app runner to build the seed kernel, ensure the rootfs, run `prebuild.sh`, inject the overlay through the internal `rootfs::inject::inject_overlay()` path, and launch QEMU/HVF. |
 | Stage 2 / prebuild | `cargo xtask image resize <ROOTFS> --size-mib 16384` | Host-side `prebuild.sh` grows the rootfs selected by the app runner before overlay injection. |
-| Stage 3 | QEMU/HVF guest Cargo build | After StarryOS boots, `shell_init_cmd` starts the guest runner, which runs `cargo build` directly inside the guest. |
+| Stage 3 | QEMU/HVF guest Cargo build | After StarryOS boots, `shell_cmd` starts the guest runner, which runs `cargo build` directly inside the guest. |
 | Stage 4 | `debugfs` artifact extraction | Extracts the guest-built kernel ELF and `.bin` from the app runner rootfs. |
 
 ## Script Roles
@@ -36,10 +36,10 @@ The rootfs is selected by axbuild image storage; this app does not maintain a
 separate rootfs copy. In a clean default run, the path is:
 
 ```text
-tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
+tmp/axbuild/rootfs/rootfs-aarch64-alpine.img
 ```
 
-If `TGOS_IMAGE_LOCAL_STORAGE` is set, axbuild uses that storage instead. `prebuild.sh` records the exact rootfs used by the app runner in:
+If `TGOS_IMAGE_EXTRACT_DIR` is set, axbuild uses that extraction directory instead. `prebuild.sh` records the exact rootfs used by the app runner in:
 
 ```text
 target/starry-macos-selfbuild/rootfs.path
@@ -101,7 +101,7 @@ qemu-system-aarch64 \
   -m 512M \
   -smp 1 \
   -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 \
-  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
+  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
   -netdev user,id=net0
 ```
@@ -152,7 +152,7 @@ qemu-system-aarch64 \
   -m 512M \
   -smp 1 \
   -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 \
-  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
+  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
   -netdev user,id=net0
 ```

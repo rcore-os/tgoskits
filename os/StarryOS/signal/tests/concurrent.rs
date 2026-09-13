@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ax_cpu::uspace::UserContext;
+use ax_cpu::user::UserContext;
 use starry_signal::{SignalDisposition, SignalInfo, SignalOSAction, SignalSet, Signo};
 
 mod common;
@@ -36,7 +36,7 @@ fn concurrent_send_signal() {
         let thr = thr.clone();
         move || {
             thread::sleep(Duration::from_millis(10));
-            let _ = thr.send_signal(sig);
+            let _ = thr.send_signal(sig, false);
         }
     });
 
@@ -62,7 +62,7 @@ fn concurrent_blocked() {
         let thr = thr.clone();
         move || {
             thread::sleep(Duration::from_millis(10));
-            let _ = thr.send_signal(sig);
+            let _ = thr.send_signal(sig, false);
         }
     });
 
@@ -73,7 +73,12 @@ fn concurrent_blocked() {
 
     let mut uctx = UserContext::new(0, 0.into(), 0);
     let res = wait_until(|| {
-        if let Some((si, _)) = thr.check_signals(&mut uctx, None) {
+        if let Some((si, _)) = thr.check_signals(
+            &mut vm(),
+            &mut uctx,
+            None,
+            starry_signal::arch::SignalFpState::default,
+        ) {
             assert_eq!(si.signo(), signo);
             true
         } else {
@@ -90,13 +95,24 @@ fn concurrent_check_signals() {
     unsafe extern "C" fn test_handler(_: i32) {}
     proc.actions().lock_irqsave()[Signo::SIGTERM].disposition =
         SignalDisposition::Handler(test_handler);
+    // Both deliveries must be catchable: default SIGINT commits group exit
+    // and Linux does not continue to a second user handler afterwards.
+    proc.actions().lock_irqsave()[Signo::SIGINT].disposition =
+        SignalDisposition::Handler(test_handler);
 
     let mut uctx = UserContext::new(0, initial_sp().into(), 0);
 
     let first = SignalInfo::new_user(Signo::SIGTERM, 9, 9, 0);
-    assert!(thr.send_signal(first.clone()));
+    assert!(thr.send_signal(first.clone(), false));
 
-    let (si, action) = thr.check_signals(&mut uctx, None).unwrap();
+    let (si, action) = thr
+        .check_signals(
+            &mut vm(),
+            &mut uctx,
+            None,
+            starry_signal::arch::SignalFpState::default,
+        )
+        .unwrap();
     assert_eq!(si.signo(), Signo::SIGTERM);
     assert_eq!(action, SignalOSAction::NoFurtherAction);
     assert!(thr.signal_blocked(Signo::SIGTERM));
@@ -104,8 +120,8 @@ fn concurrent_check_signals() {
     thread::spawn({
         let thr = thr.clone();
         move || {
-            let _ = thr.send_signal(SignalInfo::new_user(Signo::SIGINT, 2, 2, 0));
-            let _ = thr.send_signal(SignalInfo::new_user(Signo::SIGTERM, 3, 3, 0));
+            let _ = thr.send_signal(SignalInfo::new_user(Signo::SIGINT, 2, 2, 0), false);
+            let _ = thr.send_signal(SignalInfo::new_user(Signo::SIGTERM, 3, 3, 0), false);
         }
     });
 
@@ -113,13 +129,18 @@ fn concurrent_check_signals() {
     assert!(wait_until(|| thr.pending().has(Signo::SIGINT)));
 
     prepare_restore_context(&mut uctx);
-    thr.restore(&mut uctx).unwrap();
+    thr.restore(&mut vm(), &mut uctx).unwrap();
 
     assert!(!thr.signal_blocked(Signo::SIGTERM));
 
     let mut delivered = SignalSet::default();
     assert!(wait_until(|| {
-        if let Some((sig, _)) = thr.check_signals(&mut uctx, None) {
+        if let Some((sig, _)) = thr.check_signals(
+            &mut vm(),
+            &mut uctx,
+            None,
+            starry_signal::arch::SignalFpState::default,
+        ) {
             delivered.add(sig.signo());
         }
         delivered.has(Signo::SIGINT) && delivered.has(Signo::SIGTERM)

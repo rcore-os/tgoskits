@@ -1,12 +1,13 @@
 #[cfg(test)]
 use core::sync::atomic::AtomicUsize;
-use core::{
-    sync::atomic::{AtomicU8, Ordering},
-    task::Context,
-};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use ax_io::{SeekFrom, prelude::*};
-use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, NodeFlags, VfsError, VfsResult, path::Path};
+use axfs_ng_vfs::{
+    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, PreallocationMode,
+    VfsError, VfsResult, path::Path,
+};
+use axpoll::{IoEvents, Pollable};
 
 use super::{
     cache::CachedFile,
@@ -181,6 +182,38 @@ impl FileBackend {
             Self::Direct(loc) => loc.entry().as_file()?.set_len(len),
         }
     }
+
+    /// Reserves backing storage for a byte range.
+    pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+        self.operate_range(offset, len, FileRangeOperation::Allocate(mode))
+    }
+
+    /// Applies a storage or mapping operation to a byte range.
+    pub fn operate_range(
+        &self,
+        offset: u64,
+        len: u64,
+        operation: FileRangeOperation,
+    ) -> VfsResult<()> {
+        match self {
+            Self::Cached(cached) => cached.operate_range(offset, len, operation),
+            Self::Direct(loc) => loc.entry().as_file()?.operate_range(offset, len, operation),
+        }
+    }
+
+    /// Queries the backing filesystem's allocated extent mappings.
+    pub fn map_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: FileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<FileExtentMap> {
+        self.location()
+            .entry()
+            .as_file()?
+            .map_extents(offset, len, target, extent_limit)
+    }
 }
 
 /// Provides `std::fs::File`-like interface.
@@ -299,6 +332,34 @@ impl File {
         self.access(FileFlags::WRITE)?.set_len(len)
     }
 
+    /// Reserves backing storage for a byte range.
+    pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+        self.operate_range(offset, len, FileRangeOperation::Allocate(mode))
+    }
+
+    /// Applies a storage or mapping operation to a byte range.
+    pub fn operate_range(
+        &self,
+        offset: u64,
+        len: u64,
+        operation: FileRangeOperation,
+    ) -> VfsResult<()> {
+        self.access(FileFlags::WRITE)?
+            .operate_range(offset, len, operation)
+    }
+
+    /// Queries allocated file-to-device mappings without changing file state.
+    pub fn map_extents(
+        &self,
+        offset: u64,
+        len: u64,
+        target: FileExtentTarget,
+        extent_limit: usize,
+    ) -> VfsResult<FileExtentMap> {
+        self.access(FileFlags::empty())?
+            .map_extents(offset, len, target, extent_limit)
+    }
+
     /// Attempts to sync OS-internal file content and metadata to disk.
     ///
     /// If `data_only` is `true`, only the file data is synced, not the
@@ -403,13 +464,25 @@ impl Seek for &File {
     }
 }
 
-impl FsPollable for File {
-    fn poll(&self) -> FsIoEvents {
+impl Pollable for File {
+    fn poll(&self) -> IoEvents {
         self.inner.location().poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: FsIoEvents) {
-        self.inner.location().register(context, events)
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.location().register_shared(sink, events) }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.location().register_exclusive(sink, events) }
     }
 }
 
@@ -446,15 +519,14 @@ mod tests {
     use core::{
         any::Any,
         sync::atomic::{AtomicUsize, Ordering},
-        task::Context,
         time::Duration,
     };
 
     use axfs_ng_vfs::{
-        DeviceId, DirEntry, FileNode, FileNodeOps, Filesystem, FilesystemOps, FsIoEvents,
-        FsPollable, Metadata, MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType,
-        Reference, StatFs,
+        DeviceId, DirEntry, FileNode, FileNodeOps, Filesystem, FilesystemOps, Metadata,
+        MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType, Reference, StatFs,
     };
+    use axpoll::{IoEvents, Pollable};
 
     use super::*;
 
@@ -556,12 +628,17 @@ mod tests {
         }
     }
 
-    impl FsPollable for MetadataTrackingTestFile {
-        fn poll(&self) -> FsIoEvents {
-            FsIoEvents::IN | FsIoEvents::OUT
+    impl Pollable for MetadataTrackingTestFile {
+        fn poll(&self) -> IoEvents {
+            IoEvents::IN | IoEvents::OUT
         }
 
-        fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+        unsafe fn register_shared(
+            &self,
+            _sink: &mut dyn axpoll::SharedRegistrationSink,
+            _events: IoEvents,
+        ) {
+        }
     }
 
     impl FileNodeOps for MetadataTrackingTestFile {
@@ -585,10 +662,6 @@ mod tests {
         }
 
         fn set_len(&self, _len: u64) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn set_symlink(&self, _target: &str) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
     }

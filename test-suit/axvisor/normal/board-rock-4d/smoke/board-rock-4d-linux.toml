@@ -7,7 +7,7 @@ fail_regex = [
   "(?i)login incorrect",
   "(?i)permission denied",
 ]
-success_regex = [
-  "(?m)^rock-4d-spi login: ?$",
+shell_check_steps = [
+  { shell_prefix = "axvisor:/$", shell_cmd = "vm console 1", success_regex = ["(?m)^rock-4d-spi login: ?$"], fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?i)kernel panic", "(?i)\\bSError\\b", "(?i)login incorrect", "(?i)permission denied"] },
 ]
 timeout = 300

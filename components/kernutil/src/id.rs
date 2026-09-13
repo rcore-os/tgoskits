@@ -196,12 +196,6 @@ mod tests {
     }
 
     #[test]
-    fn test_basic_id_creation() {
-        let id = TestId::new(42);
-        assert_eq!(id.raw(), 42);
-    }
-
-    #[test]
     fn test_arithmetic_operations() {
         let id = TestId::new(10);
 

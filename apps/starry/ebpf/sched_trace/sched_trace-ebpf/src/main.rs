@@ -15,7 +15,7 @@ use sched_trace_common::SchedSwitchEvent;
 #[map]
 static EVENTS: PerfEventArray<SchedSwitchEvent> = PerfEventArray::new(0);
 
-// `sched:sched_switch` raw tracepoint. ktracepoint's `define_event_trace!`
+// `sched:sched_switch` raw tracepoint. ax-tracepoint's `define_event_trace!`
 // widens each `TP_PROTO` field to `u64` and hands the program that array as
 // its context, so the layout is:
 //   args[0] = prev_tid, args[1] = next_tid, args[2] = prev_state (u32 widened).

@@ -13,8 +13,18 @@ args = [
 ]
 uefi = true
 to_bin = true
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?m)ahci-pci-.*-p0: ready with .* NCQ depth 1\\s*$",
+  "(?m)ahci-pci-.*-p1: ready with .* NCQ depth 1\\s*$",
+  "(?m)^AHCI_DUAL_NCQ_RW_20M_FAILED\\s*$",
+]
+timeout = 900
+
+[[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_init_cmd = '''
+shell_cmd = '''
 fail() {
     echo 'AHCI_DUAL_NCQ_RW_20M_FAILED'
     exit 1
@@ -51,11 +61,3 @@ echo 'AHCI_DUAL_NCQ_RW_20M_PASSED'
 success_regex = [
   "(?m)^AHCI_DUAL_NCQ_RW_20M_PASSED\\s*$",
 ]
-fail_regex = [
-  "(?i)\\bpanic(?:ked)?\\b",
-  "(?i)kernel panic",
-  "(?m)ahci-pci-.*-p0: ready with .* NCQ depth 1\\s*$",
-  "(?m)ahci-pci-.*-p1: ready with .* NCQ depth 1\\s*$",
-  "(?m)^AHCI_DUAL_NCQ_RW_20M_FAILED\\s*$",
-]
-timeout = 900

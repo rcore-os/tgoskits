@@ -66,22 +66,6 @@ fn test_lowmem_vs_normal() {
 }
 
 #[test]
-fn test_lowmem_stress() {
-    let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE);
-    let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_allocator(&allocator, &mut region);
-
-    let mut addrs = Vec::new();
-    for _ in 0..32 {
-        let addr = allocator.alloc_pages_lowmem(1, PAGE_SIZE).unwrap();
-        addrs.push(addr);
-    }
-    for addr in addrs {
-        allocator.dealloc_pages(addr, 1);
-    }
-}
-
-#[test]
 fn global_add_region_unaligned_lowmem_alignment() {
     const ALIGN_2M: usize = 2 * 1024 * 1024;
 

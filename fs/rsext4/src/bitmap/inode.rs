@@ -1,7 +1,4 @@
 //! Inode bitmap wrappers.
-
-use log::warn;
-
 use crate::bitmap::BitmapError;
 
 /// Inode bitmap view with allocation helpers.
@@ -22,18 +19,23 @@ impl<'a> InodeBitmap<'a> {
 
     /// Returns whether the inode is allocated.
     pub fn is_allocated(&self, inode_idx: u32) -> Option<bool> {
-        if inode_idx >= self.inodes_per_group {
+        Self::is_allocated_in(self.data, self.inodes_per_group, inode_idx)
+    }
+
+    /// Checks one bit through an immutable bitmap view.
+    pub fn is_allocated_in(data: &[u8], inodes_per_group: u32, inode_idx: u32) -> Option<bool> {
+        if inode_idx >= inodes_per_group {
             return None;
         }
 
         let byte_idx = (inode_idx / 8) as usize;
         let bit_idx = (inode_idx % 8) as u8;
 
-        if byte_idx >= self.data.len() {
+        if byte_idx >= data.len() {
             return None;
         }
 
-        Some((self.data[byte_idx] & (1 << bit_idx)) != 0)
+        Some((data[byte_idx] & (1 << bit_idx)) != 0)
     }
 
     /// Returns whether the inode is free.
@@ -111,7 +113,6 @@ impl<'a> InodeBitmap<'a> {
         }
 
         if (self.data[byte_idx] & (1 << bit_idx)) == 0 {
-            warn!("Inode num:{inode_idx} already free!");
             return Err(BitmapError::AlreadyFree);
         }
 

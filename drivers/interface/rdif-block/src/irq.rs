@@ -34,9 +34,14 @@ impl IrqQueueMask {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Result of acknowledging one IRQ source or independently masked rearm domain.
 pub enum IrqDisposition {
+    /// The inspected source did not assert an interrupt.
     Spurious,
+    /// The source was acknowledged and remains able to deliver interrupts.
     Cleared,
+    /// The source was acknowledged but remains masked until deferred work
+    /// explicitly rearms it.
     MaskedNeedsRearm,
 }
 

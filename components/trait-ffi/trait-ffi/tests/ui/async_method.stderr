@@ -1,0 +1,5 @@
+error: trait-ffi requires synchronous non-const, non-variadic methods; select ABI on the trait
+ --> tests/ui/async_method.rs:2:23
+  |
+2 | pub trait Interface { async fn read(); }
+  |                       ^^^^^^^^^^^^^^^

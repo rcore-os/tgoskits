@@ -11,7 +11,7 @@ use alloc::sync::Arc;
 use ax_lazyinit::OnceLock;
 pub use device::IonDevice;
 // 从 sg2002-tpu 重新导出 OS 层实际使用的驱动类型
-pub use sg2002_tpu::ion::{IonBufferManager, IonHandleData, ioctl::ION_IOC_FREE};
+pub use sg2002_tpu::ion::IonBufferManager;
 
 /// 全局共享的 Ion Buffer 管理器
 static GLOBAL_ION_BUFFER_MANAGER: OnceLock<Arc<IonBufferManager>> = OnceLock::new();

@@ -1,4 +1,9 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::{
+    sync::{Arc, mpsc},
+    thread,
+    time::Duration,
+};
 
 use ax_hal::irq::{CpuId, IrqError};
 
@@ -99,6 +104,30 @@ fn claim_during_controller_send_cannot_overwrite_a_fresh_edge() {
         edges.notify(CpuId(1), || panic!("fresh edge must remain armed")),
         Ok(IpiNotification::Coalesced),
     );
+}
+
+#[test]
+fn publication_during_controller_send_coalesces_without_waiting() {
+    let edges = Arc::new(DeliveryEdges::<2>::new());
+    let worker_edges = Arc::clone(&edges);
+    let (nested_tx, nested_rx) = mpsc::channel();
+
+    let worker = thread::spawn(move || {
+        worker_edges.notify(CpuId(1), || {
+            let nested = worker_edges.notify(CpuId(1), || {
+                panic!("an in-flight controller send already owns the physical edge")
+            });
+            nested_tx.send(nested).unwrap();
+            Ok(())
+        })
+    });
+
+    assert_eq!(
+        nested_rx.recv_timeout(Duration::from_secs(1)),
+        Ok(Ok(IpiNotification::Coalesced)),
+        "an IRQ-side publication must not spin behind the controller sender it preempted",
+    );
+    assert_eq!(worker.join().unwrap(), Ok(IpiNotification::Sent));
 }
 
 #[test]

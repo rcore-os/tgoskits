@@ -1,0 +1,8 @@
+args = ["-nographic", "-cpu", "cortex-a72", "-machine", "virt,virtualization=on,gic-version=3", "-smp", "4", "-m", "512M"]
+fail_regex = ["EL2_FATAL_ENTERED_STD_PANIC", "unexpectedly returned"]
+timeout = 60
+to_bin = true
+uefi = false
+
+[[shell_check_steps]]
+success_regex = ["(?s)ARCEOS_PANIC_EMERGENCY.*EL2 synchronous trap: ESR=0xf2002356.*sp_el0: 0,"]

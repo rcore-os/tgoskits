@@ -169,34 +169,3 @@ pub(super) async fn qemu_with_explicit_rootfs(
         .qemu(cargo, request.build_info_path, Some(qemu))
         .await
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn arceos_rust_qemu_tests_isolate_rootfs_on_all_architectures() {
-        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .expect("axbuild manifest should live under scripts/axbuild")
-            .to_path_buf();
-
-        for arch in ["aarch64", "riscv64", "x86_64", "loongarch64"] {
-            let config_path = repo.join(format!("test-suit/arceos/rust/qemu-{arch}.toml"));
-            let mut qemu: QemuConfig =
-                toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-
-            isolate_qemu_test_rootfs(&mut qemu).unwrap();
-
-            assert!(
-                qemu.args
-                    .iter()
-                    .any(|argument| argument.contains("id=disk0")
-                        && argument.contains("snapshot=on")),
-                "{}",
-                config_path.display()
-            );
-        }
-    }
-}

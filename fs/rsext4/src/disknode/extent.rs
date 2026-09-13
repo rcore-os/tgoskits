@@ -76,6 +76,12 @@ impl Ext4Extent {
         }
     }
 
+    pub fn new_unwritten(logic_start: u32, start_phy_block: u64, len: u32) -> Option<Self> {
+        let mut extent = Self::new(logic_start, start_phy_block, 1);
+        extent.ee_len = Self::encode_len(len, true)?;
+        Some(extent)
+    }
+
     pub fn start_block(&self) -> u64 {
         (self.ee_start_hi as u64) << 32 | self.ee_start_lo as u64
     }
@@ -129,5 +135,32 @@ impl Ext4Extent {
 
     pub fn build_len_like(&self, len: u32) -> Option<u16> {
         Self::encode_len(len, self.is_unwritten())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Ext4Extent;
+
+    #[test]
+    fn extent_length_codec_matches_linux_unwritten_boundaries() {
+        assert_eq!(Ext4Extent::encode_len(1, false), Some(1));
+        assert_eq!(
+            Ext4Extent::encode_len(Ext4Extent::EXT_INIT_MAX_LEN.into(), false),
+            Some(0x8000)
+        );
+        assert_eq!(Ext4Extent::decode_len(0x8000), 32768);
+
+        assert_eq!(Ext4Extent::encode_len(1, true), Some(0x8001));
+        assert_eq!(Ext4Extent::decode_len(0x8001), 1);
+        assert_eq!(Ext4Extent::encode_len(32767, true), Some(0xffff));
+        assert_eq!(Ext4Extent::decode_len(0xffff), 32767);
+        assert_eq!(Ext4Extent::encode_len(0, true), None);
+        assert_eq!(Ext4Extent::encode_len(32768, true), None);
+
+        let initialized_max = Ext4Extent::new(0, 1, 0x8000);
+        assert!(initialized_max.is_initialized());
+        let unwritten = Ext4Extent::new_unwritten(0, 1, 1).expect("valid unwritten extent");
+        assert!(unwritten.is_unwritten());
     }
 }

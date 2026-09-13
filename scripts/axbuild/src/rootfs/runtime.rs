@@ -14,14 +14,21 @@ use std::{
 
 use anyhow::{Context, bail};
 
+use crate::{
+    context::cross_compile_spec_for_arch_checked, support::process::find_host_binary_candidates,
+};
+
 const RUNTIME_LIBRARY_DIRS: &[&str] = &["lib", "usr/lib", "usr/local/lib"];
 
 /// Copies any needed runtime shared libraries into an overlay tree.
 pub(crate) fn sync_runtime_dependencies(
+    arch: &str,
     staging_root: &Path,
     overlay_dir: &Path,
 ) -> anyhow::Result<()> {
-    let readelf = find_host_binary_candidates(&["readelf"])?;
+    let spec = cross_compile_spec_for_arch_checked(arch)?;
+    let cross_readelf = format!("{}-readelf", spec.gnu_tool_prefix);
+    let readelf = find_host_binary_candidates(&["readelf", "llvm-readelf", &cross_readelf])?;
     let mut pending = collect_regular_files(overlay_dir)?;
     let mut processed = std::collections::BTreeSet::new();
 
@@ -151,24 +158,4 @@ fn find_runtime_library_in_staging_root(
         }
     }
     Ok(None)
-}
-
-fn find_host_binary_candidates(candidates: &[&str]) -> anyhow::Result<PathBuf> {
-    candidates
-        .iter()
-        .find_map(|candidate| find_optional_host_binary(candidate))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "required host binary was not found in PATH; tried: {}",
-                candidates.join(", ")
-            )
-        })
-}
-
-fn find_optional_host_binary(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|path_var| {
-        std::env::split_paths(&path_var)
-            .map(|dir| dir.join(name))
-            .find(|candidate| candidate.is_file())
-    })
 }

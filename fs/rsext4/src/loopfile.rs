@@ -2,52 +2,33 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use log::{debug, error};
-
 use crate::{
     blockdev::*,
     bmalloc::{AbsoluteBN, InodeNumber},
-    checksum::{verify_ext4_dirblock_checksum, verify_ext4_dx_checksum},
-    config::*,
     disknode::*,
-    entries::*,
     error::*,
     ext4::*,
     extents_tree::*,
     hashtree::*,
+    indirect::{resolve_legacy_inode_block, resolve_legacy_inode_blocks},
 };
 
 /// Resolves a logical block number to an absolute physical block number.
-pub fn resolve_inode_block<B: BlockDevice>(
+pub fn resolve_inode_block<B: BlockIo>(
+    fs: &Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
+    inode_num: InodeNumber,
     inode: &mut Ext4Inode,
     logical_block: u32,
 ) -> Ext4Result<Option<AbsoluteBN>> {
-    if inode.have_extend_header_and_use_extend() {
-        let mut tree = ExtentTree::new(inode);
-        if let Some(ext) = tree.find_extent(block_dev, logical_block)? {
-            let len = ext.len();
-            if len == 0 {
-                return Ok(None);
-            }
-
-            let start_lbn = ext.ee_block;
-            if logical_block < start_lbn || logical_block >= start_lbn.saturating_add(len) {
-                return Ok(None);
-            }
-
-            if ext.is_unwritten() {
-                return Ok(None);
-            }
-
-            let base = ((ext.ee_start_hi as u64) << 32) | ext.ee_start_lo as u64;
-            let phys = base + (logical_block - start_lbn) as u64;
-            return Ok(Some(AbsoluteBN::new(phys)));
+    if inode.uses_extents() {
+        let mut tree = ExtentTree::with_filesystem(inode, fs, inode_num);
+        match tree.map_block(block_dev, logical_block)? {
+            ExtentBlockMapping::Hole | ExtentBlockMapping::Unwritten(_) => Ok(None),
+            ExtentBlockMapping::Initialized(physical) => Ok(Some(physical)),
         }
-        Ok(None)
     } else {
-        error!("Only Support Extend mode!");
-        Err(Ext4Error::unsupported())
+        resolve_legacy_inode_block(fs, block_dev, inode_num, inode, logical_block)
     }
 }
 
@@ -55,88 +36,39 @@ pub fn resolve_inode_block<B: BlockDevice>(
 ///
 /// The helper walks the entire extent tree, materializes every mapped block,
 /// and returns the final map sorted by logical block number.
-pub fn resolve_inode_blocks<B: BlockDevice>(
-    _fs: &mut Ext4FileSystem,
-    block_dev: &mut Jbd2Dev<B>,
-    inode: &mut Ext4Inode,
-) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
-    if !inode.have_extend_header_and_use_extend() {
-        return Ok(BTreeMap::new());
-    }
-
-    fn push_extent_blocks(out: &mut Vec<(u32, AbsoluteBN)>, ext: &Ext4Extent) {
-        if ext.is_unwritten() {
-            return;
-        }
-        let len = ext.len();
-        if len == 0 {
-            return;
-        }
-        let base = ((ext.ee_start_hi as u64) << 32) | ext.ee_start_lo as u64;
-        for i in 0..len {
-            let lbn = ext.ee_block.saturating_add(i);
-            out.push((lbn, AbsoluteBN::new(base + i as u64)));
-        }
-    }
-
-    fn walk_node<B: BlockDevice>(
-        dev: &mut Jbd2Dev<B>,
-        node: &ExtentNode,
-        out: &mut Vec<(u32, AbsoluteBN)>,
-    ) -> Ext4Result<()> {
-        match node {
-            ExtentNode::Leaf { entries, .. } => {
-                for ext in entries {
-                    push_extent_blocks(out, ext);
-                }
-                Ok(())
-            }
-            ExtentNode::Index { entries, .. } => {
-                // Depth-first traversal keeps the helper independent from the tree depth.
-                for idx in entries {
-                    let child_block = ((idx.ei_leaf_hi as u64) << 32) | (idx.ei_leaf_lo as u64);
-                    dev.read_block(AbsoluteBN::new(child_block))?;
-                    let buf = dev.buffer();
-                    let child = ExtentTree::parse_node(buf).ok_or(Ext4Error::corrupted())?;
-                    walk_node(dev, &child, out)?;
-                }
-                Ok(())
-            }
-        }
-    }
-
-    let tree = ExtentTree::new(inode);
-    let root = match tree.load_root_from_inode() {
-        Some(n) => n,
-        None => return Ok(BTreeMap::new()),
-    };
-
-    let mut blocks: Vec<(u32, AbsoluteBN)> = Vec::new();
-    walk_node(block_dev, &root, &mut blocks)?;
-    blocks.sort_unstable_by_key(|(lbn, _)| *lbn);
-    blocks.dedup_by_key(|(lbn, _)| *lbn);
-
-    let mut out = BTreeMap::new();
-    for (lbn, phys) in blocks {
-        out.insert(lbn, phys);
-    }
-    Ok(out)
-}
-
-/// Builds a logical-block map using the original misspelled API name.
-pub fn resolve_inode_block_allextend<B: BlockDevice>(
+pub fn resolve_inode_blocks<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
+    inode_num: InodeNumber,
     inode: &mut Ext4Inode,
 ) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
-    resolve_inode_blocks(fs, block_dev, inode)
+    if !inode.uses_extents() {
+        return resolve_legacy_inode_blocks(fs, block_dev, inode_num, inode);
+    }
+
+    let mut tree = ExtentTree::with_filesystem(inode, fs, inode_num);
+    let runs = tree.initialized_runs_in_range(block_dev, 0, u32::MAX)?;
+    let mut out = BTreeMap::new();
+    for run in runs {
+        for offset in 0..run.len {
+            let lbn = run
+                .logical_start
+                .checked_add(offset)
+                .ok_or_else(|| Ext4Error::corrupted().with_operation("extent:logical_overflow"))?;
+            let phys = run.physical_start.checked_add(offset)?;
+            if out.insert(lbn, phys).is_some() {
+                return Err(Ext4Error::corrupted().with_operation("extent:duplicate_mapping"));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Resolves a path to its inode number and inode contents.
 ///
 /// The path walk tries hash-tree lookup first for each component and falls back
 /// to a linear directory scan when the indexed lookup cannot answer the query.
-pub fn get_file_inode<B: BlockDevice>(
+pub fn get_file_inode<B: BlockIo>(
     fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     path: &str,
@@ -148,14 +80,15 @@ pub fn get_file_inode<B: BlockDevice>(
 
     let components = path.split('/').filter(|s| !s.is_empty());
 
-    let mut current_inode = fs.get_root(block_dev)?;
-    let mut current_ino_num = fs.root_inode;
-    let mut path_vec: Vec<Ext4Inode> = Vec::new();
-    path_vec.push(current_inode);
+    let root = (fs.root_inode, fs.get_root(block_dev)?);
+    let mut current = root;
+    let mut ancestors = Vec::from([root]);
 
-    // Walk the namespace one component at a time, carrying a small ancestor stack for `..`.
+    // Keep the inode number and contents in one path-stack element: pairing
+    // either value with a different directory would make block mapping and
+    // metadata checksums use different inode identities.
     for name in components {
-        if !current_inode.is_dir() {
+        if !current.1.is_dir() {
             return Ok(None);
         }
 
@@ -163,94 +96,24 @@ pub fn get_file_inode<B: BlockDevice>(
             continue;
         }
         if name == ".." {
-            if path_vec.len() > 1 {
-                path_vec.pop();
-                if let Some(parent_inode) = path_vec.last() {
-                    current_inode = *parent_inode;
-                }
+            if ancestors.len() > 1 {
+                ancestors.pop();
+                current = *ancestors.last().ok_or_else(Ext4Error::corrupted)?;
             }
             continue;
         }
 
         let target = name.as_bytes();
-        let mut found_inode_num: Option<InodeNumber> = None;
-
-        // Prefer the hashed directory path and fall back to a full scan only when needed.
-        match lookup_directory_entry(fs, block_dev, &current_inode, target) {
-            Ok(result) => {
-                found_inode_num =
-                    Some(InodeNumber::new(result.entry.inode).map_err(|_| Ext4Error::corrupted())?);
-            }
-            Err(_) => {
-                debug!("Hash tree lookup failed, falling back to linear search");
-
-                let total_size = current_inode.size() as usize;
-                let block_bytes = BLOCK_SIZE;
-                let blocks = resolve_inode_blocks(fs, block_dev, &mut current_inode)?;
-                debug!(
-                    "Directory inode size: {} bytes, blocks used: {}",
-                    total_size,
-                    blocks.len()
-                );
-
-                for (idx, phys) in blocks.iter().enumerate() {
-                    debug!("Scan dir block idx {} phys {}", idx, phys.1);
-                    let cached_block = fs.datablock_cache.get_or_load(block_dev, *phys.1)?;
-                    let block_data = &cached_block.data[..block_bytes];
-
-                    let checksum_ok = if current_inode.is_htree_indexed() {
-                        verify_ext4_dx_checksum(
-                            &fs.superblock,
-                            current_ino_num.raw(),
-                            current_inode.i_generation,
-                            block_data,
-                        )
-                        .unwrap_or_else(|| {
-                            verify_ext4_dirblock_checksum(
-                                &fs.superblock,
-                                current_ino_num.raw(),
-                                current_inode.i_generation,
-                                block_data,
-                            )
-                        })
-                    } else {
-                        verify_ext4_dirblock_checksum(
-                            &fs.superblock,
-                            current_ino_num.raw(),
-                            current_inode.i_generation,
-                            block_data,
-                        )
-                    };
-
-                    if !checksum_ok {
-                        error!(
-                            "dir block checksum mismatch: ino={} blk_idx={} phys={}",
-                            current_ino_num, idx, phys.1
-                        );
-                    }
-
-                    if let Some(entry) = classic_dir::find_entry(block_data, target)
-                        && entry.file_type != Ext4DirEntryTail::RESERVED_FT
-                    {
-                        found_inode_num = Some(
-                            InodeNumber::new(entry.inode).map_err(|_| Ext4Error::corrupted())?,
-                        );
-                        break;
-                    }
-                }
-            }
-        }
-
-        let inode_num = match found_inode_num {
-            Some(n) => n,
-            None => return Ok(None),
+        let inode_num = match lookup_directory_entry(fs, block_dev, current.0, &current.1, target) {
+            Ok(result) => result.inode,
+            Err(HashTreeError::EntryNotFound) => return Ok(None),
+            Err(error) => return Err(error.into_ext4("htree:path_lookup")),
         };
 
         // Refresh the current inode after each successful component resolution.
-        current_inode = fs.get_inode_by_num(block_dev, inode_num)?;
-        current_ino_num = inode_num;
-        path_vec.push(current_inode);
+        current = (inode_num, fs.get_inode_by_num(block_dev, inode_num)?);
+        ancestors.push(current);
     }
 
-    Ok(Some((current_ino_num, current_inode)))
+    Ok(Some(current))
 }

@@ -24,30 +24,30 @@ The driver uses a lock-free design based on TRB (Transfer Request Block) rings, 
 
 ### Basic Setup
 
-1. setup [dma-api](https://docs.rs/dma-api/latest/dma_api/)
+1. Create a device-scoped [`dma_api::DeviceDma`] in OS glue from the
+   controller's DMA domain, coherency, and address constraints.
 
-2. implement the `Kernel` trait for your system
+2. Implement the small `KernelOp` runtime capability for delays.
 
     ```rust
-    use crab_usb::*;
+    use crab_usb::{KernelOp, USBHost};
+    use dma_api::DeviceDma;
+    use core::time::Duration;
 
-    // Implement the Kernel trait for your system
-    struct KernelImpl;
-    impl_trait! {
-        impl Kernel for KernelImpl {
-            fn sleep<'a>(duration: Duration) -> BoxFuture<'a, ()> {
-                your_os::sleep(duration).boxed()
-            }
+    struct Runtime;
 
-            fn page_size() -> usize {
-                your_os::page_size()
-            }
+    impl KernelOp for Runtime {
+        fn delay(&self, duration: Duration) {
+            your_os::busy_wait(duration);
         }
     }
 
-    // Initialize USB host controller
-    let mut host = USBHost::new_xhci(mmio_base);
-    let handle = host.event_handler();
+    static RUNTIME: Runtime = Runtime;
+
+    // `device_dma` is constructed by OS glue with its `DmaOp` backend.
+    let device_dma: DeviceDma = your_os::usb_device_dma();
+    let mut host = USBHost::new_xhci(mmio_base, device_dma, &RUNTIME)?;
+    let handle = host.create_event_handler();
 
     // Handle USB events in your OS irq callback
     your_os::register_irq_handler(usb_irq, move || {

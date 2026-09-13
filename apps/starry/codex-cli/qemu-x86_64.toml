@@ -16,9 +16,7 @@ args = [
 ]
 uefi = false
 to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/codex-offline-smoke.sh"
-success_regex = ["(?m)^STARRY_CODEX_STAGE_G_CODEX_HELP_PASSED\\s*$"]
+shell_check_steps = [{ shell_prefix = "root@starry:", shell_cmd = "/usr/bin/codex-offline-smoke.sh", success_regex = ["(?m)^STARRY_CODEX_STAGE_G_CODEX_HELP_PASSED\\s*$"] }]
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)page fault",

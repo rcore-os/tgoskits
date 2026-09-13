@@ -1,7 +1,7 @@
 #[path = "../build_support/linker.rs"]
 mod linker;
 
-use linker::{LinkerArch, LinkerConfig, render_linker_script, source_paths};
+use linker::{LinkerArch, LinkerConfig, render_linker_script};
 
 const CONFIG: LinkerConfig = LinkerConfig {
     kernel_load_vaddr: 0xffff_ffff_8000_0000,
@@ -190,19 +190,4 @@ fn riscv_dynamic_metadata_does_not_split_the_tls_template() {
     assert!(dynamic < tdata);
     assert!(got < tdata);
     assert!(tdata < tbss);
-}
-
-#[test]
-fn tracks_arch_templates_and_shared_fragments_for_cargo_reruns() {
-    let paths = source_paths();
-
-    assert!(paths.contains(&"build_support/linker.rs"));
-    assert!(paths.contains(&"src/arch/aarch64/link.ld"));
-    assert!(paths.contains(&"src/arch/loongarch64/link.ld"));
-    assert!(paths.contains(&"src/arch/riscv64/link.ld"));
-    assert!(paths.contains(&"src/arch/x86_64/link.ld"));
-    assert!(paths.contains(&"src/ld/text.ld"));
-    assert!(paths.contains(&"src/ld/bss.ld"));
-    assert!(paths.contains(&"src/ld/bss-no-tls.ld"));
-    assert!(paths.contains(&"src/ld/discard-exit.ld"));
 }

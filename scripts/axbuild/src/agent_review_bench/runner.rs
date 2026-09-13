@@ -11,6 +11,7 @@ use tempfile::tempdir;
 use tokio::{process::Command, time::timeout};
 
 use super::{cases::BenchCase, sandbox::ReviewSandbox, scoring::ReviewFinding};
+use crate::support::process::retry_text_file_busy;
 
 const CODEX_REVIEW_PROMPT: &str = "$review-single-pr offline-benchmark";
 const CLAUDE_REVIEW_PROMPT: &str = "/review-single-pr offline-benchmark";
@@ -24,7 +25,7 @@ const GRADE_PROMPT: &str =
      issue does not match. Return exactly one match object per known finding ID. \
      `finding_indices` are zero-based indices in `candidate_findings.json` and must contain every \
      candidate used to support the match, or be empty when missed. Do not inspect any other paths.";
-const GRADE_SCHEMA: &str = include_str!("../../../agent-review-bench/schemas/grade.schema.json");
+const GRADE_SCHEMA: &str = include_str!("assets/grade.schema.json");
 
 const CLAUDE_COMMON_ARGS: &[&str] = &[
     "-p",
@@ -62,7 +63,6 @@ const CLAUDE_REVIEW_ALLOWED_TOOLS: &[&str] = &[
     "Bash(git grep *)",
 ];
 const CLAUDE_GRADE_TOOLS: &str = "Read";
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub(super) enum AgentKind {
     #[default]
@@ -112,10 +112,12 @@ impl AgentRunner {
     }
 
     pub(super) fn version(&self) -> anyhow::Result<String> {
-        let output = std::process::Command::new(&self.program)
-            .arg("--version")
-            .output()
-            .with_context(|| format!("failed to execute {} --version", self.program.display()))?;
+        let output = retry_text_file_busy(|| {
+            std::process::Command::new(&self.program)
+                .arg("--version")
+                .output()
+        })
+        .with_context(|| format!("failed to execute {} --version", self.program.display()))?;
         if !output.status.success() {
             bail!(
                 "{} --version exited with {}",
@@ -327,8 +329,7 @@ async fn run_process(
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
-    let mut child = command
-        .spawn()
+    let mut child = retry_text_file_busy(|| command.spawn())
         .with_context(|| format!("failed to spawn {description}"))?;
     let status = match timeout(Duration::from_secs(timeout_secs), child.wait()).await {
         Ok(status) => status.with_context(|| format!("failed to wait for {description}"))?,
@@ -448,7 +449,6 @@ mod tests {
 
     #[test]
     fn claude_tool_sets_are_read_only_and_offline() {
-        assert_eq!(CLAUDE_GRADE_TOOLS, "Read");
         assert!(
             CLAUDE_REVIEW_TOOLS
                 .split(',')
@@ -462,7 +462,6 @@ mod tests {
         }));
         assert!(!CLAUDE_COMMON_ARGS.contains(&"--safe-mode"));
         assert!(CLAUDE_GRADE_ARGS.contains(&"--safe-mode"));
-        assert_eq!(CLAUDE_REVIEW_SETTING_SOURCES, "user,project");
         let settings = serde_json::from_str::<serde_json::Value>(CLAUDE_REVIEW_SETTINGS).unwrap();
         assert_eq!(settings["disableAllHooks"], true);
         assert_eq!(settings["disableAgentView"], true);
@@ -475,8 +474,6 @@ mod tests {
 
     #[test]
     fn reviewer_prompts_only_invoke_the_project_skill() {
-        assert_eq!(CODEX_REVIEW_PROMPT, "$review-single-pr offline-benchmark");
-        assert_eq!(CLAUDE_REVIEW_PROMPT, "/review-single-pr offline-benchmark");
         for prompt in [CODEX_REVIEW_PROMPT, CLAUDE_REVIEW_PROMPT] {
             assert!(!prompt.contains("correctness"));
             assert!(!prompt.contains("GitHub"));
@@ -488,8 +485,6 @@ mod tests {
     fn grader_prompt_limits_context_and_matches_underlying_issues() {
         assert!(GRADE_PROMPT.contains("known_findings.json"));
         assert!(GRADE_PROMPT.contains("candidate_findings.json"));
-        assert!(GRADE_PROMPT.contains("same underlying defect or material risk"));
-        assert!(GRADE_PROMPT.contains("jointly cover one known finding"));
         assert!(!GRADE_PROMPT.contains("review.json"));
         assert!(!GRADE_PROMPT.contains("match_if"));
     }

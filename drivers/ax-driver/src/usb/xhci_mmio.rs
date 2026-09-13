@@ -5,7 +5,7 @@ use alloc::format;
 use log::info;
 use rdrive::{probe::OnProbeError, register::ProbeFdt};
 
-use super::{ProbeFdtUsbHost, usb_kernel};
+use super::{ProbeFdtUsbHost, usb_device_dma, usb_runtime};
 
 const DRIVER_NAME: &str = "usb-xhci-mmio";
 
@@ -20,6 +20,7 @@ crate::model_register!(
 );
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let dma_coherency = crate::binding_resolver::dma_coherency_from_fdt(probe.info());
     let node_name = probe.info().node.name();
     let base_reg = probe
         .info()
@@ -32,12 +33,13 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_size = base_reg.size.unwrap_or(0x1000) as usize;
     let mmio = crate::mmio::iomap(base_reg.address as usize, mmio_size)?;
 
-    let host = crab_usb::USBHost::new_xhci(mmio, usb_kernel()).map_err(|err| {
-        OnProbeError::other(format!(
-            "failed to create xHCI host for [{}]: {err}",
-            node_name
-        ))
-    })?;
+    let host = crab_usb::USBHost::new_xhci(mmio, usb_device_dma(dma_coherency), usb_runtime())
+        .map_err(|err| {
+            OnProbeError::other(format!(
+                "failed to create xHCI host for [{}]: {err}",
+                node_name
+            ))
+        })?;
 
     let irq = probe.register_usb_host(DRIVER_NAME, host)?;
     info!(

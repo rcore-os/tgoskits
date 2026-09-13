@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.12.0...crab-usb-v0.12.1) - 2026-09-11
+
+### Other
+
+- *(axbuild)* migrate test execution to shell check steps ([#2361](https://github.com/rcore-os/tgoskits/pull/2361))
+
+## [0.12.0](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.11.0...crab-usb-v0.12.0) - 2026-09-09
+
+### Added
+
+- *(trait-ffi)* [**breaking**] maintain and extend static interfaces with syn 3 ([#2300](https://github.com/rcore-os/tgoskits/pull/2300))
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(ci)* update Rust nightly to 2026-09-04 ([#2273](https://github.com/rcore-os/tgoskits/pull/2273))
+
+## [0.11.0](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.10.5...crab-usb-v0.11.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+
+### Fixed
+
+- *(crab-usb)* align HCD endpoint lifecycle with Linux ([#1980](https://github.com/rcore-os/tgoskits/pull/1980))
+- *(crab-usb)* restore host test build ([#1961](https://github.com/rcore-os/tgoskits/pull/1961))
+
+### Other
+
+- *(dwc2)* split monolithic DWC2 host driver into focused modules ([#2066](https://github.com/rcore-os/tgoskits/pull/2066))
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- Fix UVC asynchronous transfer lifecycle ([#1924](https://github.com/rcore-os/tgoskits/pull/1924))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.10.5](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.10.4...crab-usb-v0.10.5) - 2026-08-09
 
 ### Other

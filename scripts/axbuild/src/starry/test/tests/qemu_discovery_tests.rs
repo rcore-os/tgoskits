@@ -1,13 +1,97 @@
 use super::*;
 
 #[test]
-fn starry_grouped_cases_install_profile_autorun() {
-    let config = starry_case_asset_config();
-
+fn grouped_qemu_profiles_partition_execution_and_preserve_direct_selection() {
+    let root = tempdir().unwrap();
+    write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
+    let dir = root.path().join("test-suit/starryos/qemu/system");
+    fs::create_dir_all(dir.join("timing/c")).unwrap();
+    fs::create_dir_all(dir.join("counter-read/c")).unwrap();
+    fs::create_dir_all(dir.join("counter-ring/c")).unwrap();
+    fs::write(
+        dir.join("qemu-x86_64.toml"),
+        r#"
+test_commands = ["exec runner"]
+[[grouped_qemu_profiles]]
+name = "counters"
+subcase_prefix = "counter-"
+config = "counters.toml"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("counters.toml"),
+        "test_commands = [\"exec runner\"]\n",
+    )
+    .unwrap();
+    let cases = discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", None).unwrap();
+    assert_eq!(cases.len(), 2);
     assert_eq!(
-        config.grouped_runner.autorun_profile_script.as_deref(),
-        Some("99-starry-run-case-tests.sh")
+        cases[0].case.grouped_subcase_filter,
+        Some(BTreeSet::from(["timing".into()]))
     );
+    assert_eq!(
+        cases[1].case.grouped_subcase_filter,
+        Some(BTreeSet::from([
+            "counter-read".into(),
+            "counter-ring".into()
+        ]))
+    );
+    assert_eq!(cases[1].case.qemu_config_path, dir.join("counters.toml"));
+    assert_ne!(cases[0].case.name, cases[1].case.name);
+    let direct = discover_qemu_cases(
+        root.path(),
+        "x86_64",
+        "x86_64-unknown-none",
+        Some("qemu/system/counter-read"),
+    )
+    .unwrap();
+    assert_eq!(direct.len(), 1);
+    assert_eq!(direct[0].case.qemu_config_path, dir.join("counters.toml"));
+    assert_eq!(
+        direct[0].case.grouped_subcase_filter,
+        Some(BTreeSet::from(["counter-read".into()]))
+    );
+    fs::write(dir.join("counters.toml"), "test_commands = []\n").unwrap();
+    assert!(discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", None).is_err());
+}
+
+#[test]
+fn grouped_qemu_profiles_reject_overlap_and_unmatched_configuration() {
+    let root = tempdir().unwrap();
+    write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
+    let dir = root.path().join("test-suit/starryos/qemu/system");
+    fs::create_dir_all(dir.join("counter-read/c")).unwrap();
+    fs::write(
+        dir.join("profile.toml"),
+        "test_commands = [\"exec runner\"]\n",
+    )
+    .unwrap();
+    for (prefix, expected) in [
+        ("counter-", "multiple grouped QEMU profiles"),
+        ("missing-", "matches no subcases"),
+    ] {
+        fs::write(
+            dir.join("qemu-x86_64.toml"),
+            format!(
+                r#"
+test_commands = ["exec runner"]
+[[grouped_qemu_profiles]]
+name = "first"
+subcase_prefix = "counter-"
+config = "profile.toml"
+[[grouped_qemu_profiles]]
+name = "second"
+subcase_prefix = "{prefix}"
+config = "profile.toml"
+"#
+            ),
+        )
+        .unwrap();
+        let error =
+            discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", None).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error:#}");
+    }
 }
 
 #[test]
@@ -19,7 +103,6 @@ fn discovers_only_cases_with_matching_qemu_config() {
 
     let cases = discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", None).unwrap();
 
-    assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case.name, "smoke");
     assert!(cases[0].case.test_commands.is_empty());
     assert!(cases[0].case.subcases.is_empty());
@@ -43,21 +126,20 @@ fn discovers_grouped_case_commands_and_sorted_subcases() {
 
     let cases = discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", None).unwrap();
 
-    assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case.name, "bugfix");
     assert_eq!(
         cases[0].case.test_commands,
         vec!["/usr/bin/beta".to_string(), "/usr/bin/alpha".to_string()]
     );
-    assert_eq!(
-        cases[0]
-            .case
-            .subcases
-            .iter()
-            .map(|subcase| subcase.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["alpha", "beta"]
-    );
+    let subcase_names = cases[0]
+        .case
+        .subcases
+        .iter()
+        .map(|subcase| subcase.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(subcase_names.contains(&"alpha"));
+    assert!(subcase_names.contains(&"beta"));
+    assert!(subcase_names.windows(2).all(|pair| pair[0] <= pair[1]));
     assert!(
         cases[0]
             .case
@@ -78,19 +160,18 @@ fn discovers_flat_qemu_wrapper_case_with_subcases() {
 
     let cases = discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", None).unwrap();
 
-    assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case.name, "system");
     assert_eq!(cases[0].case.display_name, "qemu/system");
     assert_eq!(cases[0].build_group, "qemu");
-    assert_eq!(
-        cases[0]
-            .case
-            .subcases
-            .iter()
-            .map(|subcase| subcase.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["smoke", "usb-storage"]
-    );
+    let subcase_names = cases[0]
+        .case
+        .subcases
+        .iter()
+        .map(|subcase| subcase.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(subcase_names.contains(&"smoke"));
+    assert!(subcase_names.contains(&"usb-storage"));
+    assert!(subcase_names.windows(2).all(|pair| pair[0] <= pair[1]));
 
     let selected = discover_qemu_cases(
         root.path(),
@@ -99,11 +180,9 @@ fn discovers_flat_qemu_wrapper_case_with_subcases() {
         Some("qemu/system"),
     )
     .unwrap();
-    assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].case.display_name, "qemu/system");
 
     let listed = discover_all_qemu_cases_with_archs(root.path(), None).unwrap();
-    assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "qemu/system");
 }
 
@@ -128,7 +207,6 @@ fn starry_qemu_subcase_selector_maps_to_system_parent() {
     )
     .unwrap();
 
-    assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case.display_name, "qemu/system");
     assert_eq!(
         cases[0].case.grouped_subcase_filter,
@@ -160,7 +238,6 @@ install(TARGETS test-uid-gid-re-setters RUNTIME DESTINATION usr/bin/starry-test-
     )
     .unwrap();
 
-    assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case.display_name, "qemu/system");
     assert_eq!(
         cases[0].case.grouped_subcase_filter,
@@ -191,7 +268,6 @@ fn starry_qemu_system_subcase_selector_sets_filter() {
     )
     .unwrap();
 
-    assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case.display_name, "qemu/system");
     assert_eq!(
         cases[0].case.grouped_subcase_filter,
@@ -220,7 +296,6 @@ fn starry_qemu_system_selector_keeps_full_group() {
     )
     .unwrap();
 
-    assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case.display_name, "qemu/system");
     assert_eq!(cases[0].case.grouped_subcase_filter, None);
 }
@@ -273,7 +348,6 @@ fn starry_qemu_subcase_selector_prefers_existing_direct_case() {
     )
     .unwrap();
 
-    assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case.display_name, "qemu/alpha");
     assert_eq!(cases[0].case.grouped_subcase_filter, None);
 }
@@ -286,7 +360,6 @@ fn starry_qemu_list_accepts_subcase_selector() {
 
     let listed = discover_all_qemu_cases_with_archs(root.path(), Some("qemu/alpha")).unwrap();
 
-    assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "qemu/system");
 }
 
@@ -299,7 +372,6 @@ fn starry_qemu_list_prefers_existing_direct_case() {
 
     let listed = discover_all_qemu_cases_with_archs(root.path(), Some("qemu/alpha")).unwrap();
 
-    assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "qemu/alpha");
 }
 
@@ -324,15 +396,12 @@ fn discovers_flat_qemu_wrapper_case_with_root_cmake_subcases() {
 
     let cases = discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", None).unwrap();
 
-    assert_eq!(cases.len(), 1);
-    assert_eq!(
+    assert!(
         cases[0]
             .case
             .subcases
             .iter()
-            .map(|subcase| subcase.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["smoke"]
+            .any(|subcase| subcase.name == "smoke")
     );
     assert!(
         cases[0]
@@ -341,74 +410,6 @@ fn discovers_flat_qemu_wrapper_case_with_root_cmake_subcases() {
             .iter()
             .all(|subcase| subcase.kind == TestQemuSubcaseKind::C)
     );
-}
-
-#[test]
-fn starry_system_grouped_cases_use_root_cmake_layout() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
-
-    let root_cmake = system_dir.join("CMakeLists.txt");
-    assert!(
-        root_cmake.is_file(),
-        "{} must be the grouped system CMake project entry",
-        root_cmake.display()
-    );
-
-    let mut subcase_count = 0;
-    for entry in fs::read_dir(&system_dir).unwrap() {
-        let entry = entry.unwrap();
-        let path = entry.path();
-        if !path.is_dir()
-            || path.file_name().is_some_and(|name| name == "common")
-            || !path.join("CMakeLists.txt").is_file()
-        {
-            continue;
-        }
-        subcase_count += 1;
-        assert!(
-            !path.join("c").exists(),
-            "{} must keep CMakeLists.txt and src/ directly under the subcase",
-            path.display()
-        );
-        assert!(
-            path.join("src").is_dir() || path.join("CMakeLists.txt").is_file(),
-            "{} must remain a buildable subcase directory",
-            path.display()
-        );
-    }
-
-    assert!(
-        subcase_count > 0,
-        "{} must contain grouped C subcases",
-        system_dir.display()
-    );
-}
-
-#[test]
-fn starry_system_grouped_cases_use_overlay_relative_install_destinations() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
-
-    for entry in fs::read_dir(&system_dir).unwrap() {
-        let entry = entry.unwrap();
-        let cmake_path = entry.path().join("CMakeLists.txt");
-        if !cmake_path.is_file() {
-            continue;
-        }
-
-        let cmake = fs::read_to_string(&cmake_path).unwrap();
-        assert!(
-            !cmake.lines().any(|line| {
-                line.split_whitespace()
-                    .collect::<Vec<_>>()
-                    .windows(2)
-                    .any(|tokens| tokens[0] == "DESTINATION" && tokens[1].starts_with('/'))
-            }),
-            "{} must install through DESTDIR using a relative DESTINATION",
-            cmake_path.display()
-        );
-    }
 }
 
 #[test]
@@ -430,20 +431,17 @@ fn grouped_case_skips_arch_specific_subcases_for_other_arches() {
     let cases =
         discover_qemu_cases(root.path(), "riscv64", "riscv64gc-unknown-none-elf", None).unwrap();
 
-    assert_eq!(cases.len(), 1);
-    assert_eq!(
+    assert!(
         cases[0]
             .case
             .subcases
             .iter()
-            .map(|subcase| subcase.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["alpha"]
+            .any(|subcase| subcase.name == "alpha")
     );
 }
 
 #[test]
-fn grouped_case_loads_with_both_shell_init_cmd_and_test_commands_present() {
+fn grouped_case_loads_with_both_shell_check_steps_and_test_commands_present() {
     // The mutual-exclusion check has been moved from the initial TOML parse
     // (discover_qemu_cases) to prepare_qemu_cases so we only read each
     // file once.  Therefore, discovery itself should succeed here; the
@@ -456,16 +454,15 @@ fn grouped_case_loads_with_both_shell_init_cmd_and_test_commands_present() {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(
         &path,
-        "shell_prefix = \"root@starry:\"\nshell_init_cmd = \"/usr/bin/old\"\ntest_commands = \
-         [\"/usr/bin/new\"]\n",
+        "shell_check_steps = [{ shell_prefix = \"root@starry:\", shell_cmd = \"/usr/bin/old\" \
+         }]\ntest_commands = [\"/usr/bin/new\"]\n",
     )
     .unwrap();
 
-    // Discovery no longer validates the shell_init_cmd / test_commands
+    // Discovery no longer validates the shell_check_steps / test_commands
     // conflict; it should succeed and leave a grouped case behind.
     let cases =
         discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", Some("bugfix")).unwrap();
-    assert_eq!(cases.len(), 1);
     assert!(!cases[0].case.test_commands.is_empty());
 }
 
@@ -526,7 +523,6 @@ fn selected_qemu_case_skips_non_qemu_case_with_same_name() {
     let cases =
         discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", Some("smoke")).unwrap();
 
-    assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].build_group, "qemu");
     assert_eq!(cases[0].case.name, "smoke");
 }

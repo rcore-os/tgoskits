@@ -279,6 +279,31 @@ mod tests {
     use crate::driver::Empty;
 
     #[test]
+    fn projection_retains_borrow_and_releases_on_mismatch() {
+        struct Outer(u32);
+        impl DriverGeneric for Outer {
+            fn name(&self) -> &str {
+                "outer"
+            }
+            fn raw_any_mut(&mut self) -> Option<&mut dyn Any> {
+                Some(&mut self.0)
+            }
+        }
+        let owner = DeviceOwner::new(Descriptor::new(), Outer(7));
+        let device = owner.weak::<Outer>().unwrap();
+        let mut projected = device.lock().unwrap().downcast::<u32>().unwrap();
+        *projected = 9;
+        assert!(device.try_lock().is_err());
+        drop(projected);
+        assert_eq!(device.lock().unwrap().0, 9);
+        assert!(matches!(
+            device.lock().unwrap().downcast::<u64>(),
+            Err(GetDeviceError::TypeNotMatch)
+        ));
+        assert!(device.try_lock().is_ok());
+    }
+
+    #[test]
     fn diagnostic_pid_does_not_grant_recursive_access() {
         let owner = DeviceOwner::new(Descriptor::new(), Empty);
         let device = owner.weak::<Empty>().unwrap();

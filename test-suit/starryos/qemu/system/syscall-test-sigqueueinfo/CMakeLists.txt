@@ -8,6 +8,4 @@ set(CMAKE_C_EXTENSIONS OFF)
 add_executable(test-sigqueueinfo src/main.c)
 target_compile_options(test-sigqueueinfo PRIVATE -Wall -Wextra -Werror)
 
-# Build this stricter probe, but keep it out of the grouped CI pass condition
-# until queued signal delivery preserves siginfo.
-install(TARGETS test-sigqueueinfo RUNTIME DESTINATION usr/bin/starry-known-fail)
+install(TARGETS test-sigqueueinfo RUNTIME DESTINATION usr/bin/starry-test-suit)

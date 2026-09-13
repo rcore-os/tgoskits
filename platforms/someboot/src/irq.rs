@@ -1,22 +1,5 @@
-use crate::ArchTrait;
 #[allow(unused_imports)]
 pub use crate::arch::irq::*;
-
-pub fn irq_local_is_enabled() -> bool {
-    crate::arch::Arch::irq_all_is_enabled()
-}
-
-pub fn irq_local_set_enable(enabled: bool) {
-    crate::arch::Arch::irq_all_set_enable(enabled);
-}
-
-pub fn irq_is_enabled(irq: IrqId) -> bool {
-    crate::arch::Arch::irq_is_enabled(irq)
-}
-
-pub fn irq_set_enable(irq: IrqId, enable: bool) {
-    crate::arch::Arch::irq_set_enable(irq, enable);
-}
 
 /// 全局唯一的软件中断号，平台自行转换为本地硬件中断号或外部中断号
 #[repr(transparent)]

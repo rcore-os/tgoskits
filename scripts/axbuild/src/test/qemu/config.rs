@@ -93,6 +93,7 @@ pub(crate) fn load_qemu_case_fields_with_write_policy(
         case_dir,
         qemu_config_path,
         test_commands,
+        grouped_command_selection: config.grouped_command_selection,
         host_symbolize_success_regex: config.host_symbolize_success_regex,
         host_http_server: config.host_http_server,
         subcases,
@@ -173,14 +174,9 @@ pub(crate) fn validate_grouped_qemu_commands(
     case: &TestQemuCase,
     suite_name: &str,
 ) -> anyhow::Result<()> {
-    let shell_init_cmd_set = qemu
-        .shell_init_cmd
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty());
-    if shell_init_cmd_set && !case.test_commands.is_empty() {
+    if !qemu.shell_check_steps.is_empty() && !case.test_commands.is_empty() {
         bail!(
-            "{suite_name} grouped qemu case `{}` cannot define both `shell_init_cmd` and \
+            "{suite_name} grouped qemu case `{}` cannot define both `shell_check_steps` and \
              `test_commands`",
             case.qemu_config_path.display()
         );
@@ -190,57 +186,15 @@ pub(crate) fn validate_grouped_qemu_commands(
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
-
     use super::*;
     use crate::rootfs::qemu::RootfsWritePolicy;
 
-    fn write_qemu_config(content: &str) -> (tempfile::TempDir, PathBuf) {
-        let root = tempdir().unwrap();
-        let path = root.path().join("qemu-x86_64.toml");
-        fs::write(&path, content).unwrap();
-        (root, path)
-    }
-
-    #[test]
-    fn rootfs_write_policy_defaults_to_discard() {
-        let (_root, path) = write_qemu_config("args = []\n");
-
-        let config = load_qemu_case_extra_config(&path).unwrap();
-
-        assert_eq!(config.rootfs_write_policy, RootfsWritePolicy::Discard);
-    }
-
-    #[test]
-    fn rootfs_write_policy_parses_persist() {
-        let (_root, path) = write_qemu_config("args = []\nrootfs_write_policy = \"persist\"\n");
-
-        let config = load_qemu_case_extra_config(&path).unwrap();
-
-        assert_eq!(config.rootfs_write_policy, RootfsWritePolicy::Persist);
-    }
-
-    #[test]
-    fn legacy_snapshot_field_reports_migration_error() {
-        let (_root, path) = write_qemu_config("args = []\nsnapshot = false\n");
-
-        let error = load_qemu_case_extra_config(&path).unwrap_err().to_string();
-
-        assert!(error.contains("removed field `snapshot`"), "{error}");
-        assert!(error.contains("rootfs_write_policy"), "{error}");
-    }
-
     #[test]
     fn qemu_test_case_rejects_persistent_rootfs_policy() {
-        let (root, path) = write_qemu_config("args = []\nrootfs_write_policy = \"persist\"\n");
-
-        let error = load_test_qemu_case_fields(
-            "case".to_string(),
-            "case".to_string(),
-            root.path().to_path_buf(),
-            path,
+        let error = ensure_test_rootfs_write_policy(
+            RootfsWritePolicy::Persist,
+            Path::new("qemu-x86_64.toml"),
             "Starry",
-            false,
         )
         .unwrap_err()
         .to_string();

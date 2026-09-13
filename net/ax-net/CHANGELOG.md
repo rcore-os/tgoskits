@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.2](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.13.1...ax-net-v0.13.2) - 2026-09-11
+
+### Other
+
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+
+## [0.13.1](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.13.0...ax-net-v0.13.1) - 2026-09-09
+
+### Fixed
+
+- *(ax-net)* skip absent devices after owner startup ([#2288](https://github.com/rcore-os/tgoskits/pull/2288))
+
+## [0.13.0](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.10...ax-net-v0.13.0) - 2026-09-09
+
+### Added
+
+- *(aic8800)* integrate AKA WPA2 Wi-Fi and iperf validation ([#2222](https://github.com/rcore-os/tgoskits/pull/2222))
+
+### Fixed
+
+- *(net)* preserve ARP replies and stabilize board WiFi tests ([#2309](https://github.com/rcore-os/tgoskits/pull/2309))
+- *(net)* prevent Wi-Fi transmit and receive starvation ([#2299](https://github.com/rcore-os/tgoskits/pull/2299))
+- *(ax-net)* release queue backpressure before recycling RX frames ([#2294](https://github.com/rcore-os/tgoskits/pull/2294))
+- *(ax-net)* publish seqpacket EOF before waking readers ([#2269](https://github.com/rcore-os/tgoskits/pull/2269))
+
+### Other
+
+- *(repo)* remove duplicated tests and configuration snapshots ([#2326](https://github.com/rcore-os/tgoskits/pull/2326))
+- *(ax-task)* [**breaking**] organize scheduler namespaces and unify runtime APIs ([#2313](https://github.com/rcore-os/tgoskits/pull/2313))
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(net)* optimize RTL8125 data path and polling ([#2227](https://github.com/rcore-os/tgoskits/pull/2227))
+- *(repo)* narrow SDIO rearm and TX queue policies ([#2250](https://github.com/rcore-os/tgoskits/pull/2250))
+
+## [0.12.10](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.9...ax-net-v0.12.10) - 2026-08-27
+
+### Other
+
+- *(sdmmc)* unify SDIO protocol and AIC8800 driver ([#2201](https://github.com/rcore-os/tgoskits/pull/2201))
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+- *(ax-net)* add queue-level NAPI runtime ([#2178](https://github.com/rcore-os/tgoskits/pull/2178))
+
+## [0.12.9](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.8...ax-net-v0.12.9) - 2026-08-25
+
+### Fixed
+
+- *(ax-net)* validate packets before TCP snooping ([#2036](https://github.com/rcore-os/tgoskits/pull/2036))
+
+## [0.12.8](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.7...ax-net-v0.12.8) - 2026-08-20
+
+### Added
+
+- *(starry)* add reproducible iperf3 board benchmark ([#1948](https://github.com/rcore-os/tgoskits/pull/1948))
+
+### Fixed
+
+- *(starry-kernel)* unify PID namespace identity ownership ([#2023](https://github.com/rcore-os/tgoskits/pull/2023))
+- *(ax-net)* avoid sleeping mutex under datagram spin lock ([#1963](https://github.com/rcore-os/tgoskits/pull/1963))
+- *(starry-kernel)* support IPv4 ping syscall paths ([#1896](https://github.com/rcore-os/tgoskits/pull/1896))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.12.7](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.6...ax-net-v0.12.7) - 2026-08-09
 
 ### Fixed

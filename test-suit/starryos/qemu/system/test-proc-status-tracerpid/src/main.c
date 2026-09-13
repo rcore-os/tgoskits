@@ -84,17 +84,23 @@ static int exercise_remote_ptrace_kill(void)
         }
 
         int status = 0;
-        if (waitpid(child, &status, 0) != child || !WIFSTOPPED(status)
+        pid_t waited = waitpid(child, &status, 0);
+        int wait_error = waited < 0 ? errno : 0;
+        if (waited != child || !WIFSTOPPED(status)
             || WSTOPSIG(status) != SIGSTOP) {
-            printf("FAIL: remote round %d expected SIGSTOP, status=%#x\n", round, status);
+            printf("FAIL: remote round %d expected SIGSTOP, waited=%ld errno=%d status=%#x\n",
+                   round, (long)waited, wait_error, status);
             return 1;
         }
         if (kill(child, SIGKILL) != 0) {
             return fail("remote ptrace kill");
         }
-        if (waitpid(child, &status, 0) != child || !WIFSIGNALED(status)
+        waited = waitpid(child, &status, 0);
+        wait_error = waited < 0 ? errno : 0;
+        if (waited != child || !WIFSIGNALED(status)
             || WTERMSIG(status) != SIGKILL) {
-            printf("FAIL: remote round %d expected SIGKILL, status=%#x\n", round, status);
+            printf("FAIL: remote round %d expected SIGKILL, waited=%ld errno=%d status=%#x\n",
+                   round, (long)waited, wait_error, status);
             return 1;
         }
     }

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.4.0...rockchip-npu-v0.5.0) - 2026-09-11
+
+### Fixed
+
+- *(rknpu)* add timeout error handling and update ioctl error mapping ([#2324](https://github.com/rcore-os/tgoskits/pull/2324))
+
+### Other
+
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.3.0...rockchip-npu-v0.4.0) - 2026-09-09
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
+## [0.3.0](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.13...rockchip-npu-v0.3.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.2.13](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.2.12...rockchip-npu-v0.2.13) - 2026-08-09
 
 ### Other

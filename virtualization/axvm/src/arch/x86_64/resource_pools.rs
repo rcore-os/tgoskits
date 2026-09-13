@@ -15,8 +15,16 @@ pub(super) fn create(config: &AxVMConfig) -> AxVmResult<ResourcePools> {
     let controller = InterruptControllerId::new(0);
     let mut pools = ResourcePools::new();
     pools.add_auto_mmio(AUTO_MMIO)?;
+    pools.allow_fixed_mmio(
+        super::pci_config::PCI_MEMORY_BASE
+            ..super::pci_config::PCI_MEMORY_BASE + super::pci_config::PCI_MEMORY_SIZE,
+    )?;
     pools.add_auto_pio(AUTO_PIO)?;
     pools.add_auto_controller_inputs(controller, AUTO_GSI)?;
+    pools.allow_fixed_controller_inputs(
+        controller,
+        ControllerInputId::new(16)..ControllerInputId::new(20),
+    )?;
 
     for route in config.pass_through_irqs() {
         let input = ControllerInputId::new(route.source as usize);

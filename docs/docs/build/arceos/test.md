@@ -5,7 +5,7 @@ sidebar_label: "测试"
 
 # ArceOS 测试
 
-ArceOS 的测试覆盖两类用例：**Rust 用例**（统一入口为 `arceos-test-suit`，单个用例由 crate feature 控制）和 **C 用例**（通过 Makefile 构建的 C 语言程序，由 `test_cmd` 文件定义测试序列）。两类用例的发现和处理方式有所不同，但最终都通过 QEMU 运行并使用正则匹配判定结果。
+ArceOS 的 suite 测试覆盖两类用例：**Rust 用例**（统一入口为 `arceos-test-suit`，单个用例由 crate feature 控制）和 **C 用例**（通过 Makefile 构建的 C 语言程序，由 `test_cmd` 文件定义测试序列）。Cargo `[[test]]` 形式的 crate axtest 不再由本命令发现，统一使用 [`cargo xtask ktest qemu`](../ktest)。
 
 测试编排（用例发现、分组构建、资产准备、结果判定）由 `scripts/axbuild/src/test/` 提供统一框架，核心原则是 **OS 只构建一次，逐 case 运行**——具有相同构建配置的用例归入同一 build wrapper，组内共享一次内核编译，然后逐 case 准备资产、运行 QEMU、匹配结果。共享框架的完整说明见 [测试基础设施](../test_infra)；本文描述 ArceOS 特有的测试目录结构和两类用例的处理差异。
 
@@ -17,7 +17,7 @@ ArceOS 的测试覆盖两类用例：**Rust 用例**（统一入口为 `arceos-t
 cargo xtask arceos test qemu --arch <arch> [--test-group <group>] [--test-case <case>]
 ```
 
-ArceOS 测试命令支持通过 `--test-group` 选择测试组（`rust`、`c` 或自定义组），通过 `--test-case` 过滤特定用例。不指定 `--test-group` 时默认运行所有组。Rust 组中 `--test-case` 直接使用 feature 名，例如 `task-yield`；不指定时运行 `all` feature。
+ArceOS 测试命令支持通过 `--test-group` 选择测试组（`rust`、`c` 或自定义组），通过 `--test-case` 过滤特定用例。不指定 `--test-group` 时默认运行 Rust、C 和自定义组。Rust 组中 `--test-case` 直接使用 feature 名，例如 `task-yield`；不指定时运行 `all` feature。旧的 `--test-group axtest` 只返回迁移提示，不再做目录发现。
 
 ## 测试组
 
@@ -33,13 +33,12 @@ Rust 组和 C 组是预定义的标准组，分别用于验证 ArceOS 的 Rust �
 
 ### 组分发逻辑
 
-`runner.rs::selected_qemu_test_groups()` 根据 `--test-group` 决定要执行的 `QemuTestFlow` 集合。不指定 `--test-group` 时默认执行 `rust` 和 `c`（以及 `axtest` 和所有自定义组）。每个 flow 映射到独立的处理函数：
+`runner.rs::selected_qemu_test_groups()` 根据 `--test-group` 决定要执行的 `QemuTestFlow` 集合。不指定 `--test-group` 时默认执行 `rust`、`c` 和所有自定义组。每个 flow 映射到独立的处理函数：
 
 | QemuTestFlow | 处理函数 | 说明 |
 |--------------|----------|------|
 | `Rust` | `rust_qemu::test_rust_qemu()` | feature-based runner，共享编译 |
 | `C` | `c_qemu::test_c_qemu()` | 每个 feature 独立 CMake 编译 |
-| `Axtest` | `axtest_qemu::test_axtest_qemu()` | `harness=false` 的内核 axtest |
 | `Generic(group)` | `generic_qemu::test_generic_qemu()` | 自定义组，走共享发现流程 |
 
 分发后，每个 flow 独立打印进度（`[N/M] arceos <flow> qemu <case>`）和结果汇总（`QemuTestSummary`），最终由 `summary.finish_with_total_detail()` 统一判定退出码。
@@ -90,7 +89,7 @@ flowchart TD
 
 ### Feature 专属覆盖
 
-`apply_rust_qemu_feature_overrides()` 为部分 feature 覆盖 QEMU 的 `success_regex`、`fail_regex` 和 `timeout`，因为它们的判定语义与默认的 "内核启动成功" 不同：
+`apply_rust_qemu_feature_overrides()` 为部分 feature 覆盖 QEMU 最后一个 shell-check 步骤的 `success_regex`，并覆盖根 `fail_regex` 和 `timeout`，因为它们的判定语义与默认的 "内核启动成功" 不同：
 
 | Feature | 覆盖行为 |
 |---------|----------|
@@ -163,7 +162,7 @@ flowchart TD
 | Package 锁定 | `build_and_run_c_test()` | `prepare_request` 时 `package = "ax-libc"`，与 C app 路径绑定 |
 | C 编译 | `cbuild::build_c_app()` | 使用 CMake + musl 交叉工具链，注入 `c-define:<FEATURE>` 宏选择用例 |
 | 产物处理 | `prepare_elf_artifact()` | 根据 QEMU TOML 的 `to_bin` 决定是否从 ELF 生成 raw BIN |
-| 结果判定 | `run_prepared_qemu()` | 由 QEMU TOML 的 `success_regex`/`fail_regex` 判定，与 Rust 用例相同 |
+| 结果判定 | `run_prepared_qemu()` | 由 QEMU TOML 中 `shell_check_steps` 的 step-local `success_regex` 和根 `fail_regex` 判定，与 Rust 用例相同 |
 
 C 用例与 Rust 用例的核心区别：Rust 用例通过 axbuild 的标准发现和分组流程执行（相同 feature 的 case 共享编译），而 C 用例**每个 feature 独立编译独立运行**，使用 `cbuild.rs` 的 CMake/musl 管线而非共享 std-aware Cargo 路径。
 

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="620" viewBox="0 0 1100 620" role="img" aria-labelledby="title desc">
+  <title id="title">Axvisor 客户机地址空间架构</title><desc id="desc">展示 axaddrspace 策略、公共区域机制和 AxVM 页表适配边界。</desc>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0L0 6L9 3Z" fill="#475569"/></marker><style>.h{font:700 24px sans-serif;fill:#0f172a}.t{font:600 18px sans-serif;fill:#0f172a}.s{font:14px sans-serif;fill:#334155}.policy{fill:#f5f3ff;stroke:#8b5cf6;stroke-width:2}.core{fill:#eff6ff;stroke:#3b82f6;stroke-width:2}.vm{fill:#ecfdf5;stroke:#10b981;stroke-width:2}.l{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#a)}.dash{stroke-dasharray:7 6}</style></defs>
+  <text x="550" y="36" text-anchor="middle" class="h">Axvisor 客户机地址空间组件边界</text>
+  <rect x="330" y="75" width="440" height="100" rx="16" class="policy"/><text x="550" y="110" text-anchor="middle" class="t">axaddrspace</text><text x="550" y="137" text-anchor="middle" class="s">AddrSpace&lt;Npt&gt; + Linear / Alloc Backend</text><text x="550" y="158" text-anchor="middle" class="s">拥有 GPA 区域策略，不拥有 VM 生命周期</text>
+  <rect x="105" y="245" width="330" height="95" rx="16" class="core"/><text x="270" y="278" text-anchor="middle" class="t">axvm-types</text><text x="270" y="305" text-anchor="middle" class="s">GuestPhysAddr + MappingFlags</text><text x="270" y="326" text-anchor="middle" class="s">客户机地址与权限事实</text>
+  <rect x="665" y="245" width="330" height="95" rx="16" class="core"/><text x="830" y="278" text-anchor="middle" class="t">ax-memory-set</text><text x="830" y="305" text-anchor="middle" class="s">MemoryArea + 区间查找与拆分</text><text x="830" y="326" text-anchor="middle" class="s">直接调用 MappingBackend</text>
+  <path d="M460 175L270 245M640 175L830 245" class="l"/>
+  <rect x="70" y="420" width="960" height="150" rx="18" class="vm"/><text x="550" y="451" text-anchor="middle" class="t">AxVM 组合与生命周期层</text>
+  <rect x="105" y="485" width="210" height="55" rx="10" class="vm"/><text x="210" y="508" text-anchor="middle" class="t">VM layout</text><text x="210" y="528" text-anchor="middle" class="s">资源与销毁顺序</text>
+  <rect x="340" y="485" width="210" height="55" rx="10" class="vm"/><text x="445" y="508" text-anchor="middle" class="t">NestedPageTableOps</text><text x="445" y="528" text-anchor="middle" class="s">范围与单页操作</text>
+  <rect x="575" y="485" width="210" height="55" rx="10" class="vm"/><text x="680" y="508" text-anchor="middle" class="t">HostPagingHandler</text><text x="680" y="528" text-anchor="middle" class="s">宿主页能力</text>
+  <rect x="810" y="485" width="185" height="55" rx="10" class="vm"/><text x="902" y="508" text-anchor="middle" class="t">Stage-2 table</text><text x="902" y="528" text-anchor="middle" class="s">架构 entry / root</text>
+  <path d="M210 485V390H550V175M445 485V365H550V175M550 485H575M785 512H810" class="l dash"/>
+  <text x="550" y="603" text-anchor="middle" class="s">虚拟机必须先停止 vCPU 与设备访问，再清除 GPA 映射和释放 Host frame</text>
+</svg>

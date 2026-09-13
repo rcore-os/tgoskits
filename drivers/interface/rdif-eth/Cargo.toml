@@ -7,16 +7,20 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-eth"
 repository.workspace = true
-version = "0.3.10"
+version = "0.6.0"
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 dma-api = { workspace = true }
 rdif-base = { workspace = true }
 thiserror = { version = "2", default-features = false }
+zeroize.workspace = true
+
+[dev-dependencies]
+dma-api = { workspace = true, features = ["pool"] }
 
 [features]
-axtest = ["dep:axtest"]
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+# Path-only test support is stripped from published packages, avoiding a cycle
+# through the runtime's driver dependencies.
+ax-runtime = { path = "../../../os/arceos/modules/axruntime", features = ["host-test"] }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "多架构分层抽象"
+  short_description: "按共同性层级复用跨架构逻辑，并完整保留架构特异语义"
+  default_prompt: "请使用 $multi-arch-layering 设计或审查多架构分层边界，归纳最小共同能力、条件编译选择、默认实现与架构覆盖，并指出不应抽象的差异。"

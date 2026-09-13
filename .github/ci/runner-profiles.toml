@@ -1,0 +1,36 @@
+schema_version = 3
+
+[profile.ubuntu-base]
+runs_on = ["ubuntu-latest"]
+environment = "base"
+
+[profile.ubuntu-host]
+runs_on = ["ubuntu-latest"]
+environment = "host"
+
+[profile.ubuntu-axvisor-lvz]
+runs_on = ["ubuntu-latest"]
+environment = "axvisor-lvz"
+
+[profile.qcs]
+runs_on = ["self-hosted", "linux", "qcs"]
+environment = "host"
+self_hosted_owner = "rcore-os"
+fallback_environment = "base"
+
+[profile.board]
+runs_on = ["self-hosted", "linux", "board"]
+environment = "host"
+required_owner = "rcore-os"
+
+[profile.kvm-intel]
+runs_on = ["self-hosted", "linux", "intel", "kvm"]
+environment = "host"
+required_owner = "rcore-os"
+require_kvm = true
+
+[profile.kvm-amd]
+runs_on = ["self-hosted", "linux", "amd", "kvm"]
+environment = "host"
+required_owner = "rcore-os"
+require_kvm = true

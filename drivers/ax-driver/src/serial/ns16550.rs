@@ -1,6 +1,8 @@
 use alloc::format;
 
 use log::info;
+#[cfg(target_arch = "x86_64")]
+use rdrive::probe::acpi::AcpiResourceAddress;
 use rdrive::{
     probe::{
         OnProbeError,
@@ -10,6 +12,8 @@ use rdrive::{
 };
 use some_serial::ns16550 as serial_ns16550;
 
+#[cfg(target_arch = "x86_64")]
+use super::BindingIrq;
 use super::{
     PlatformSerialDevice, ProbedUart, acpi_serial_device_info, erase_uart, prop_u32,
     serial_device_info,
@@ -17,6 +21,10 @@ use super::{
 
 const ACPI_NS16550_CLOCK: u32 = 1_843_200;
 const ACPI_NS16550_REG_WIDTH: usize = 1;
+#[cfg(target_arch = "x86_64")]
+const LEGACY_COM1_PORT: u16 = 0x3f8;
+#[cfg(target_arch = "x86_64")]
+const LEGACY_COM1_ISA_IRQ: u8 = 4;
 
 model_register!(
     name: "NS16550 serial",
@@ -40,8 +48,40 @@ model_register!(
             ],
             on_probe: probe_acpi
         },
+        #[cfg(target_arch = "x86_64")]
+        ProbeKind::Acpi {
+            ids: &[],
+            on_probe: probe_legacy_com1
+        },
     ],
 );
+
+#[cfg(target_arch = "x86_64")]
+fn probe_legacy_com1(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
+    let route = probe
+        .info()
+        .root
+        .routing()
+        .resolve_isa_irq(LEGACY_COM1_ISA_IRQ)
+        .ok_or_else(|| OnProbeError::other("legacy COM1 IRQ4 has no ACPI I/O APIC route"))?;
+    let serial = erase_uart(serial_ns16550::Ns16550::new_port(
+        LEGACY_COM1_PORT,
+        ACPI_NS16550_CLOCK,
+    ));
+
+    info!("Legacy x86 COM1 fallback registered successfully");
+    probe.register_root_resource_device(
+        AcpiResourceAddress::io(u64::from(LEGACY_COM1_PORT)),
+        PlatformSerialDevice::new(
+            serial,
+            "legacy/com1".into(),
+            Some(0),
+            usize::from(LEGACY_COM1_PORT),
+            Some(BindingIrq::from(route)),
+        ),
+    );
+    Ok(())
+}
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let (info, plat_dev) = probe.into_parts();

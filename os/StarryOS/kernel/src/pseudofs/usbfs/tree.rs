@@ -1,9 +1,8 @@
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec::Vec};
-use core::{any::Any, task::Context};
+use core::any::Any;
 
 use axfs_ng_vfs::{NodeFlags, NodeType, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
-use starry_vm::VmMutPtr;
 
 use super::{
     descriptor::{
@@ -14,7 +13,7 @@ use super::{
     manager::UsbFsManager,
 };
 use crate::{
-    StarryError,
+    mm::VmMutPtr,
     pseudofs::{Device, DeviceOps, NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFs},
 };
 
@@ -133,7 +132,7 @@ impl DeviceOps for UsbDeviceOps {
         Err(VfsError::InvalidInput)
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
+    fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
         let snapshot = self
             .manager
             .device_snapshot(self.bus_num, self.device_num)
@@ -141,25 +140,27 @@ impl DeviceOps for UsbDeviceOps {
         match cmd {
             USBDEVFS_CONNECTINFO => {
                 (arg as *mut UsbdevfsConnectInfo)
-                    .vm_write(UsbdevfsConnectInfo {
-                        devnum: snapshot.device_num as u32,
-                        slow: 0,
-                        _padding: [0; 3],
-                    })
-                    .map_err(|error| VfsError::from(StarryError::from(error)))?;
+                    .vm_write(
+                        current,
+                        UsbdevfsConnectInfo {
+                            devnum: snapshot.device_num as u32,
+                            slow: 0,
+                            _padding: [0; 3],
+                        },
+                    )
+                    .map_err(|error| VfsError::from(crate::StarryError::from(error)))?;
                 Ok(0)
             }
             USBDEVFS_GET_CAPABILITIES => {
                 (arg as *mut u32)
-                    .vm_write(USBDEVFS_CAP_BULK_CONTINUATION)
-                    .map_err(|error| VfsError::from(StarryError::from(error)))?;
+                    .vm_write(current, USBDEVFS_CAP_BULK_CONTINUATION)
+                    .map_err(|error| VfsError::from(crate::StarryError::from(error)))?;
                 Ok(0)
             }
-            USBDEVFS_CONTROL => {
-                Ok(self
-                    .manager
-                    .snapshot_device_ioctl(self.bus_num, self.device_num, cmd, arg)?)
-            }
+            USBDEVFS_CONTROL => self
+                .manager
+                .snapshot_device_ioctl(current, self.bus_num, self.device_num, cmd, arg)
+                .map_err(Into::into),
             _ => Err(VfsError::Unsupported),
         }
     }
@@ -182,5 +183,10 @@ impl Pollable for UsbDeviceOps {
         IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }

@@ -10,10 +10,17 @@ use axvmconfig::VirtualDeviceRequest;
 use crate::{machine::GuestSerialFirmwareIdentity, *};
 
 mod append;
-mod ivc;
+mod devices;
 
 pub use append::DefaultVirtualDeviceIntent;
 pub(crate) use append::append_configured_devices;
+pub use devices::virtio_pci::{VirtioPciFunction, virtio_capabilities};
+
+pub(crate) fn register_devices(
+    catalog: &mut ConfiguredDeviceCatalog,
+) -> Result<(), ConfiguredDeviceError> {
+    devices::register_devices(catalog)
+}
 
 /// Creates one graph node from a validated, model-specific request.
 pub type ConfiguredModelConstructor = for<'a> fn(
@@ -22,16 +29,18 @@ pub type ConfiguredModelConstructor = for<'a> fn(
     &'a DeviceInstantiationContext,
 ) -> Result<DeviceNodeSpec, ConfiguredDeviceError>;
 
-pub type ConfiguredDefaultFixedResources =
-    fn(&DeviceInstantiationContext) -> Result<FixedDeviceBindings, ConfiguredDeviceError>;
-
 /// One explicit catalog entry. Adding a device changes its module and the
 /// catalog assembly site, not a framework-wide device enum.
 #[derive(Clone, Copy)]
 pub struct ConfiguredModelRegistration {
     pub model: &'static str,
     pub create: ConfiguredModelConstructor,
-    pub default_fixed_resources: Option<ConfiguredDefaultFixedResources>,
+}
+
+#[derive(Clone)]
+struct RegisteredModel {
+    owner: &'static str,
+    registration: ConfiguredModelRegistration,
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +93,7 @@ impl FixedDeviceBindings {
 pub struct DeviceInstantiationContext {
     vm_id: Option<usize>,
     default_wired_controller: Option<(DeviceNodeId, InterruptControllerId)>,
+    default_pci_host_key: Option<PciHostKey>,
     fixed: FixedDeviceBindings,
     firmware_binding: DeviceFirmwareBinding,
     serial_profile: Option<crate::machine::GuestSerialProfile>,
@@ -96,6 +106,7 @@ impl DeviceInstantiationContext {
         Self {
             vm_id: None,
             default_wired_controller: None,
+            default_pci_host_key: None,
             fixed: FixedDeviceBindings::default(),
             firmware_binding: DeviceFirmwareBinding::None,
             serial_profile: None,
@@ -128,6 +139,17 @@ impl DeviceInstantiationContext {
             .map(|(_, controller)| *controller)
     }
 
+    /// Selects the architecture-owned default PCI host for PCI-backed models.
+    pub fn with_default_pci_host_key(mut self, host: PciHostKey) -> Self {
+        self.default_pci_host_key = Some(host);
+        self
+    }
+
+    /// Returns the architecture-selected default PCI host, if one exists.
+    pub fn default_pci_host_key(&self) -> Option<&PciHostKey> {
+        self.default_pci_host_key.as_ref()
+    }
+
     /// Returns the graph node that must precede users of the default wired domain.
     pub fn default_wired_controller_node(&self) -> Option<&DeviceNodeId> {
         self.default_wired_controller.as_ref().map(|(node, _)| node)
@@ -135,11 +157,6 @@ impl DeviceInstantiationContext {
 
     pub fn fixed_bindings(&self) -> &FixedDeviceBindings {
         &self.fixed
-    }
-
-    pub(crate) fn with_fixed_bindings(mut self, fixed: FixedDeviceBindings) -> Self {
-        self.fixed = fixed;
-        self
     }
 
     pub fn firmware_binding(&self) -> &DeviceFirmwareBinding {
@@ -182,39 +199,52 @@ impl Default for DeviceInstantiationContext {
 }
 
 pub struct ConfiguredDeviceCatalog {
-    registrations: BTreeMap<String, ConfiguredModelRegistration>,
+    registrations: BTreeMap<String, RegisteredModel>,
 }
 
 impl ConfiguredDeviceCatalog {
+    /// Creates an empty catalog. Every owning layer must register explicitly.
     pub fn new() -> Self {
-        let mut catalog = Self {
+        Self {
             registrations: BTreeMap::new(),
-        };
-        for registration in crate::machine::SERIAL_REGISTRATIONS {
-            let previous = catalog
-                .registrations
-                .insert(registration.model.into(), *registration);
-            debug_assert!(previous.is_none());
         }
-        for registration in ivc::IVC_REGISTRATIONS {
-            let previous = catalog
-                .registrations
-                .insert(registration.model.into(), *registration);
-            debug_assert!(previous.is_none());
-        }
-        catalog
     }
 
+    /// Registers one model and records the source module for diagnostics.
     pub fn register(
         &mut self,
+        owner: &'static str,
         registration: ConfiguredModelRegistration,
     ) -> Result<(), ConfiguredDeviceError> {
         let name = registration.model;
         validate_model_name(name)?;
-        if self.registrations.contains_key(name) {
-            return Err(ConfiguredDeviceError::DuplicateModel { model: name.into() });
+        if let Some(existing) = self.registrations.get(name) {
+            return Err(ConfiguredDeviceError::DuplicateModel {
+                model: name.into(),
+                first_owner: existing.owner.into(),
+                duplicate_owner: owner.into(),
+            });
         }
-        self.registrations.insert(name.into(), registration);
+        self.registrations.insert(
+            name.into(),
+            RegisteredModel {
+                owner,
+                registration,
+            },
+        );
+        Ok(())
+    }
+
+    /// Commits one owning layer's complete registration batch or none of it.
+    pub(crate) fn register_transaction(
+        &mut self,
+        register: impl FnOnce(&mut Self) -> Result<(), ConfiguredDeviceError>,
+    ) -> Result<(), ConfiguredDeviceError> {
+        let mut staged = Self {
+            registrations: self.registrations.clone(),
+        };
+        register(&mut staged)?;
+        *self = staged;
         Ok(())
     }
 
@@ -234,19 +264,7 @@ impl ConfiguredDeviceCatalog {
                 model: request.model.clone(),
             }
         })?;
-        (registration.create)(id, request, context)
-    }
-
-    pub fn default_fixed_resources(
-        &self,
-        model: &str,
-        context: &DeviceInstantiationContext,
-    ) -> Result<Option<FixedDeviceBindings>, ConfiguredDeviceError> {
-        self.registrations
-            .get(model)
-            .and_then(|registration| registration.default_fixed_resources)
-            .map(|fixed| fixed(context))
-            .transpose()
+        (registration.registration.create)(id, request, context)
     }
 }
 
@@ -269,8 +287,15 @@ impl fmt::Debug for ConfiguredDeviceCatalog {
 pub enum ConfiguredDeviceError {
     #[error("unknown virtual device model '{model}'")]
     UnknownVirtualDeviceModel { model: String },
-    #[error("virtual device model '{model}' is registered more than once")]
-    DuplicateModel { model: String },
+    #[error(
+        "virtual device model '{model}' from '{duplicate_owner}' is already registered by \
+         '{first_owner}'"
+    )]
+    DuplicateModel {
+        model: String,
+        first_owner: String,
+        duplicate_owner: String,
+    },
     #[error("invalid virtual device model name '{model}'")]
     InvalidModelName { model: String },
     #[error("invalid options for virtual device '{device}' ({model}): {detail}")]

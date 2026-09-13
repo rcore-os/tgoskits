@@ -13,8 +13,13 @@ args = [
 ]
 to_bin = true
 uefi = true
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^NVME_ROOTFS_RW_20M_TEST_FAILED\\s*$"]
+# LoongArch TCG needs about 15 minutes for the complete write/copy/flush workload.
+timeout = 1200
+
+[[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_init_cmd = '''
+shell_cmd = '''
 fail() {
   echo 'NVME_ROOTFS_RW_20M_TEST_FAILED'
   exit 1
@@ -38,6 +43,3 @@ echo 'NVME_ROOTFS_RW_20M_VERIFY_DONE'
 echo 'NVME_ROOTFS_RW_20M_TEST_PASSED'
 '''
 success_regex = ["(?m)^NVME_ROOTFS_RW_20M_TEST_PASSED\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^NVME_ROOTFS_RW_20M_TEST_FAILED\\s*$"]
-# LoongArch TCG needs about 15 minutes for the complete write/copy/flush workload.
-timeout = 1200

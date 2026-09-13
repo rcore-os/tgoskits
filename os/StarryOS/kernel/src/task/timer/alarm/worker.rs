@@ -1,0 +1,79 @@
+struct AlarmWorkerSnapshot {
+    epoch: u64,
+    action: AlarmAction,
+}
+
+fn take_alarm_worker_snapshot(
+    epoch: &AtomicU64,
+    snapshot_action: impl FnOnce() -> AlarmAction,
+) -> AlarmWorkerSnapshot {
+    // Producers mutate ALARM_LIST before incrementing the epoch. Taking the
+    // baseline first means a producer racing the queue snapshot cannot be
+    // absorbed into the worker's sleep predicate.
+    let observed_epoch = epoch.load(Ordering::Acquire);
+    let action = snapshot_action();
+    AlarmWorkerSnapshot {
+        epoch: observed_epoch,
+        action,
+    }
+}
+
+fn alarm_task() {
+    loop {
+        let snapshot =
+            take_alarm_worker_snapshot(
+                &ALARM_EPOCH,
+                || next_alarm_action(ClockSnapshot::capture()),
+            );
+        match snapshot.action {
+            AlarmAction::AwaitNewTimer => {
+                ALARM_WAIT.wait_until(|| ALARM_EPOCH.load(Ordering::Acquire) != snapshot.epoch);
+            }
+            AlarmAction::Fire {
+                token,
+                target: AlarmTarget::Process(identity),
+            } => {
+                if let Some(identity) = identity.upgrade() {
+                    poll_process_timer_for_alarm(&identity, &token);
+                }
+            }
+            AlarmAction::AwaitDeadline(deadline) => {
+                let remaining = deadline.saturating_sub(ax_runtime::hal::time::monotonic_time());
+                if !remaining.is_zero() {
+                    let _timed_out = ALARM_WAIT.wait_timeout_until(remaining, || {
+                        ALARM_EPOCH.load(Ordering::Acquire) != snapshot.epoch
+                    });
+                }
+            }
+        }
+    }
+}
+
+enum AlarmAction {
+    AwaitNewTimer,
+    Fire {
+        token: AlarmToken,
+        target: AlarmTarget,
+    },
+    AwaitDeadline(Duration),
+}
+
+fn next_alarm_action(now: ClockSnapshot) -> AlarmAction {
+    let mut alarms = ALARM_LIST.lock();
+    match alarms.next_action(now) {
+        AlarmQueueAction::Empty => AlarmAction::AwaitNewTimer,
+        AlarmQueueAction::Wait(deadline) => AlarmAction::AwaitDeadline(deadline),
+        AlarmQueueAction::Fire(entry) => AlarmAction::Fire {
+            token: entry.token,
+            target: entry.target,
+        },
+    }
+}
+
+/// Spawns the alarm task.
+pub fn spawn_alarm_task() {
+    info!("Initialize alarm...");
+    crate::task::kernel_thread_builder("alarm_task".to_owned())
+        .spawn(alarm_task)
+        .unwrap_or_else(|error| panic!("failed to spawn alarm task: {error}"));
+}

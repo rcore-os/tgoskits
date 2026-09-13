@@ -1,12 +1,11 @@
 use super::*;
 use crate::{
-    BLOCK_SIZE,
+    BLOCK_SIZE, Ext4ErrorKind,
     bmalloc::InodeNumber,
     crc32c::ext4_crc32c_seed_from_superblock,
     disknode::Ext4Inode,
     endian::DiskFormat,
     entries::{Ext4DirEntryTail, Ext4DxEntry},
-    error::Errno,
     jbd2::jbdstruct::*,
     superblock::Ext4Superblock,
 };
@@ -80,7 +79,7 @@ fn superblock_checksum_round_trips_and_corruption_returns_euclean() {
     let mut corrupted = sb;
     corrupted.s_free_blocks_count_lo ^= 1;
     let err = corrupted.verify_superblock().unwrap_err();
-    assert_eq!(err.code, Errno::EUCLEAN);
+    assert_eq!(err.kind(), Ext4ErrorKind::ChecksumMismatch);
 }
 
 #[test]
@@ -94,9 +93,9 @@ fn inode_checksum_is_split_and_persisted_to_disk() {
     let mut inode = sample_inode();
     inode.i_generation = generation;
 
-    ext4_update_inode_checksum(&sb, inode_num, generation, &mut inode, inode_size);
+    ext4_update_inode_checksum(&sb, inode_num, generation, &mut inode, inode_size).unwrap();
 
-    let expected = ext4_inode_csum32(&sb, inode_num, generation, &inode, inode_size);
+    let expected = ext4_inode_csum32(&sb, inode_num, generation, &inode, inode_size).unwrap();
     assert_eq!(inode.l_i_checksum_lo, (expected & 0xFFFF) as u16);
     assert_eq!(inode.i_checksum_hi, ((expected >> 16) & 0xFFFF) as u16);
 
@@ -110,6 +109,28 @@ fn inode_checksum_is_split_and_persisted_to_disk() {
         u16::from_le_bytes(bytes[130..132].try_into().unwrap()),
         inode.i_checksum_hi
     );
+}
+
+#[test]
+fn inode_checksum_covers_unmodeled_inline_xattr_bytes() {
+    // Test idea: Linux protects the complete inode record, including the
+    // inline-xattr tail that is intentionally not modeled by Ext4Inode.
+    let sb = metadata_csum_superblock();
+    let inode_num = InodeNumber::new(42).unwrap();
+    let mut inode = sample_inode();
+    let mut first = [0u8; Ext4Inode::LARGE_INODE_SIZE as usize];
+    inode.to_disk_bytes(&mut first);
+    first[200] = 0x5a;
+    ext4_update_raw_inode_checksum(&sb, inode_num, &mut inode, &mut first).unwrap();
+    let first_checksum = (u32::from(inode.i_checksum_hi) << 16) | u32::from(inode.l_i_checksum_lo);
+
+    let mut second = first;
+    second[200] ^= 0xff;
+    ext4_update_raw_inode_checksum(&sb, inode_num, &mut inode, &mut second).unwrap();
+    let second_checksum = (u32::from(inode.i_checksum_hi) << 16) | u32::from(inode.l_i_checksum_lo);
+
+    assert_ne!(first_checksum, second_checksum);
+    assert_eq!(second[200], first[200] ^ 0xff);
 }
 
 #[test]
@@ -134,6 +155,30 @@ fn dirblock_checksum_is_stored_and_detects_corruption() {
 
     block[0] ^= 0x80;
     assert!(!verify_ext4_dirblock_checksum(&sb, ino, generation, &block));
+}
+
+#[test]
+fn metadata_csum_dirblock_without_tail_is_rejected() {
+    // Linux requires a valid ext4_dir_entry_tail on metadata-checksummed leaf blocks.
+    let sb = metadata_csum_superblock();
+    let block = [0u8; BLOCK_SIZE];
+
+    assert!(!verify_ext4_dirblock_checksum(&sb, 11, 0x5566_7788, &block));
+}
+
+#[test]
+fn empty_htree_leaf_is_not_misclassified_as_an_internal_node() {
+    let sb = metadata_csum_superblock();
+    let ino = 11;
+    let generation = 0x5566_7788;
+    let mut block = [0u8; BLOCK_SIZE];
+    let entries_end = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+    block[4..6].copy_from_slice(&(entries_end as u16).to_le_bytes());
+    Ext4DirEntryTail::new().to_disk_bytes(&mut block[entries_end..]);
+    update_ext4_dirblock_csum32(&sb, ino, generation, &mut block);
+
+    assert_eq!(verify_ext4_dx_checksum(&sb, ino, generation, &block), None);
+    assert!(verify_ext4_dirblock_checksum(&sb, ino, generation, &block));
 }
 
 #[test]
@@ -193,10 +238,45 @@ fn dx_checksum_uses_counted_entries_and_tail() {
 }
 
 #[test]
+fn dx_checksum_decodes_64k_internal_record_length() {
+    let sb = metadata_csum_superblock();
+    let ino = 704258_u32;
+    let generation = 7817325_u32;
+    let mut block = alloc::vec![0_u8; 65_536];
+    let count_offset = 8;
+    let entry_size = ::core::mem::size_of::<Ext4DxEntry>();
+    let limit = ((block.len() - count_offset - 8) / entry_size) as u16;
+    let tail_offset = count_offset + usize::from(limit) * entry_size;
+
+    block[..4].fill(0);
+    block[4..6].copy_from_slice(&0_u16.to_le_bytes());
+    block[count_offset..count_offset + 2].copy_from_slice(&limit.to_le_bytes());
+    block[count_offset + 2..count_offset + 4].copy_from_slice(&1_u16.to_le_bytes());
+    block[count_offset + 4..count_offset + 8].copy_from_slice(&1_u32.to_le_bytes());
+
+    let expected = ext4_metadata_csum32(
+        ext4_crc32c_seed_from_superblock(&sb),
+        &[
+            &ino.to_le_bytes(),
+            &generation.to_le_bytes(),
+            &block[..count_offset + entry_size],
+            &block[tail_offset..tail_offset + 4],
+            &[0, 0, 0, 0],
+        ],
+    );
+    block[tail_offset + 4..tail_offset + 8].copy_from_slice(&expected.to_le_bytes());
+
+    assert_eq!(
+        verify_ext4_dx_checksum(&sb, ino, generation, &block),
+        Some(true)
+    );
+}
+
+#[test]
 fn journal_superblock_checksum_uses_raw_crc_accumulator() {
     // Test idea: JBD2 stores the raw ext2fs_crc32c_le(~0, superblock) accumulator, not
     // the finalized CRC32C value. This keeps the value accepted by e2fsck.
-    let mut jsb = JournalSuperBllockS {
+    let mut jsb = JournalSuperBlock {
         s_blocksize: BLOCK_SIZE as u32,
         s_maxlen: 8192,
         s_first: 1,

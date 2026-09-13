@@ -91,8 +91,7 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     let nvme = Nvme::new(
         bar.start,
         bar.count().max(1),
-        u64::MAX,
-        axklib::dma::op(),
+        crate::pci::device_dma(probe.info(), u64::MAX),
         axklib::mmio::op(),
         Config::intx(DEFAULT_PAGE_SIZE),
     )
@@ -128,8 +127,7 @@ fn register_msix_block(
     let nvme = Nvme::new(
         bar.start,
         bar.count().max(1),
-        u64::MAX,
-        axklib::dma::op(),
+        crate::pci::device_dma(probe.info(), u64::MAX),
         axklib::mmio::op(),
         config,
     )

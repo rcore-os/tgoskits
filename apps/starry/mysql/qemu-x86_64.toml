@@ -12,14 +12,10 @@ args = [
     "virtio-net-pci,netdev=net0",
     "-netdev",
     "user,id=net0",
-    "-append",
-    "root=/dev/nvme0n1",
 ]
-uefi = false
-to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/mysql-test.sh"
-success_regex = ["(?m)^MYSQL_TEST_PASSED\\s*$"]
+# StarryOS PIE images require the UEFI handoff; direct ELF loading requires a PVH note.
+uefi = true
+to_bin = true
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)page fault",
@@ -27,3 +23,8 @@ fail_regex = [
     "(?m)^MYSQL_TEST_FAILED(?:[: ].*)?$",
 ]
 timeout = 2400
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/mysql-test.sh"
+success_regex = ["(?m)^MYSQL_TEST_PASSED\\s*$"]

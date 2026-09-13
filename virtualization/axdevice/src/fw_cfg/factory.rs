@@ -182,6 +182,38 @@ impl DeviceModel for FwCfgPayloadFactory {
         Ok(requirements)
     }
 
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        let registers = ResourceSlot::new("registers").expect("static fw_cfg slot is valid");
+        match self.transport {
+            FwCfgTransport::Mmio => DeviceFirmwareSpec::interfaces(
+                Some(alloc::vec![FdtContributionSpec::FirmwareTransport(
+                    FdtNodeSpec::new("fw_cfg")
+                        .with_compatible("qemu,fw-cfg-mmio")
+                        .with_register(registers)
+                        .with_empty_property("dma-coherent"),
+                )]),
+                Some(alloc::vec![AcpiContributionSpec::FirmwareTransport(
+                    AcpiDeviceSpec::new("FWCF", "QEMU0002").with_register(
+                        ResourceSlot::new("registers").expect("static fw_cfg slot is valid"),
+                    ),
+                )]),
+            ),
+            FwCfgTransport::Pio => DeviceFirmwareSpec::interfaces(
+                None,
+                Some(alloc::vec![AcpiContributionSpec::FirmwareTransport(
+                    AcpiDeviceSpec::new("FWCF", "QEMU0002")
+                        .with_register(
+                            ResourceSlot::new("selector-data")
+                                .expect("static fw_cfg slot is valid"),
+                        )
+                        .with_register(
+                            ResourceSlot::new("dma").expect("static fw_cfg slot is valid"),
+                        ),
+                )]),
+            ),
+        }
+    }
+
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let payload = self.payload()?;
         if self.base != payload.base || self.size != payload.size {
@@ -353,37 +385,43 @@ impl Device for FwCfgDmaDevice {
     fn resources(&self) -> &[Resource] {
         &self.resources
     }
-    fn access(
+    fn read(&self, access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
+        }
+        let addr = GuestPhysAddr::from_usize(access.address() as usize);
+        self.inner
+            .read_register(addr, access.width())
+            .map(|value| value as u64)
+    }
+
+    fn write(
         &self,
-        access: &BusAccess,
-        context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        if access.kind != BusKind::Mmio {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
+        access: &DeviceAccess,
+        value: u64,
+        context: &mut dyn DeviceContext,
+    ) -> DeviceResult {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
-        let addr = GuestPhysAddr::from_usize(access.addr as usize);
-        if access.is_read {
-            return self
-                .inner
-                .read_register(addr, access.width)
-                .map(|value| BusResponse::Read {
-                    value: value as u64,
-                });
-        }
+        let addr = GuestPhysAddr::from_usize(access.address() as usize);
         if !self.inner.is_dma_address(addr) {
             return self
                 .inner
-                .write_register(addr, access.width, access.data as usize)
-                .map(|_| BusResponse::Write);
+                .write_register(addr, access.width(), value as usize);
         }
         let Some(descriptor) = self
             .inner
-            .write_dma_address(addr, access.width, access.data as usize)
+            .write_dma_address(addr, access.width(), value as usize)
             .map_err(DeviceError::from)?
         else {
             // A 32-bit write of the descriptor's high half only updates the
             // latch; the low-half write starts the DMA transaction.
-            return Ok(BusResponse::Write);
+            return Ok(());
         };
         let context = RefCell::new(context);
         self.inner
@@ -403,6 +441,6 @@ impl Device for FwCfgDmaDevice {
                 },
             )
             .map_err(DeviceError::from)?;
-        Ok(BusResponse::Write)
+        Ok(())
     }
 }

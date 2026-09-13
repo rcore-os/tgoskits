@@ -1,0 +1,570 @@
+/* Linux v7.1 event-group control, read order, context, and lifetime test. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
+#include <errno.h>
+#include <sched.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <sys/ioctl.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#define PERF_TYPE_SOFTWARE 1u
+#define PERF_TYPE_RAW 4u
+#define PERF_COUNT_SW_CPU_CLOCK 0u
+#define PERF_COUNT_SW_TASK_CLOCK 1u
+#define PERF_SAMPLE_IP (1ull << 0)
+#define PERF_FORMAT_TOTAL_TIME_ENABLED (1ull << 0)
+#define PERF_FORMAT_TOTAL_TIME_RUNNING (1ull << 1)
+#define PERF_FORMAT_ID (1ull << 2)
+#define PERF_FORMAT_GROUP (1ull << 3)
+#define PERF_ATTR_DISABLED (1ull << 0)
+#define PERF_ATTR_PINNED (1ull << 2)
+#define PERF_IOC_ENABLE 0x2400u
+#define PERF_IOC_DISABLE 0x2401u
+#define PERF_IOC_RESET 0x2403u
+#define PERF_IOC_ID 0x80082407u
+#define PERF_IOC_FLAG_GROUP (1ul << 0)
+#define SYS_PERF_EVENT_OPEN 241
+
+struct perf_event_attr_v0 {
+    uint32_t type, size;
+    uint64_t config, sample_period, sample_type, read_format, flags;
+    uint32_t wakeup_events, bp_type;
+    uint64_t bp_addr;
+};
+
+#if defined(__aarch64__)
+static volatile uint64_t sink;
+
+static int open_sw_flags(uint64_t config, uint64_t read_format, int group_fd,
+                         uint64_t flags) {
+    struct perf_event_attr_v0 attr = {
+        .type = PERF_TYPE_SOFTWARE,
+        .size = sizeof(attr),
+        .config = config,
+        .read_format = read_format,
+        .flags = flags,
+    };
+    return (int)syscall(SYS_PERF_EVENT_OPEN, &attr, 0, -1, group_fd, 0ul);
+}
+
+static int open_sw(uint64_t config, uint64_t read_format, int group_fd) {
+    return open_sw_flags(config, read_format, group_fd, PERF_ATTR_DISABLED);
+}
+
+static int open_system_sw_flags(uint64_t config, uint64_t read_format,
+                                int group_fd, uint64_t flags) {
+    struct perf_event_attr_v0 attr = {
+        .type = PERF_TYPE_SOFTWARE,
+        .size = sizeof(attr),
+        .config = config,
+        .read_format = read_format,
+        .flags = flags,
+    };
+    return (int)syscall(SYS_PERF_EVENT_OPEN, &attr, -1, 0, group_fd, 0ul);
+}
+
+static int open_system_raw(uint64_t read_format, uint64_t flags, int group_fd) {
+    struct perf_event_attr_v0 attr = {
+        .type = PERF_TYPE_RAW,
+        .size = sizeof(attr),
+        .config = 0x11,
+        .read_format = read_format,
+        .flags = flags,
+    };
+    return (int)syscall(SYS_PERF_EVENT_OPEN, &attr, -1, 0, group_fd, 0ul);
+}
+
+static int open_system_raw_sampling(int group_fd) {
+    struct perf_event_attr_v0 attr = {
+        .type = PERF_TYPE_RAW,
+        .size = sizeof(attr),
+        .config = 0x11,
+        .sample_period = 100000,
+        .sample_type = PERF_SAMPLE_IP,
+        .flags = PERF_ATTR_DISABLED,
+    };
+    return (int)syscall(SYS_PERF_EVENT_OPEN, &attr, -1, 0, group_fd, 0ul);
+}
+
+static int open_task_raw_group(uint64_t flags, uint64_t format, int group) {
+    struct perf_event_attr_v0 attr = {
+        .type = PERF_TYPE_RAW,
+        .size = sizeof(attr),
+        .config = 0x11,
+        .read_format = format,
+        .flags = flags,
+    };
+    return (int)syscall(SYS_PERF_EVENT_OPEN, &attr, 0, -1, group, 0ul);
+}
+
+static int open_task_raw(uint64_t flags) {
+    return open_task_raw_group(flags, 0, -1);
+}
+
+static void work(void) {
+    for (uint64_t i = 0; i < 8000000; i++) {
+        sink += (i * 5u) ^ sink;
+    }
+}
+
+static int regroup_after_close(void) {
+    uint64_t format = PERF_FORMAT_GROUP | PERF_FORMAT_ID;
+    int leader = open_sw(PERF_COUNT_SW_TASK_CLOCK, 0, -1);
+    if (leader < 0) return 1;
+    int survivor = open_sw_flags(PERF_COUNT_SW_CPU_CLOCK, format, leader, 0);
+    if (survivor < 0) {
+        close(leader);
+        return 1;
+    }
+    int nested = open_sw_flags(PERF_COUNT_SW_TASK_CLOCK, 0, survivor, 0);
+    if (nested >= 0 || errno != EINVAL) {
+        if (nested >= 0) close(nested);
+        close(survivor);
+        close(leader);
+        puts("perf-event-group FAILED: live sibling accepted as leader");
+        return 1;
+    }
+    close(leader);
+    int member = open_sw_flags(PERF_COUNT_SW_TASK_CLOCK, 0, survivor, 0);
+    if (member < 0) {
+        printf("perf-event-group FAILED: regroup surviving member errno=%d\n", errno);
+        close(survivor);
+        return 1;
+    }
+    uint64_t ids[2] = {0}, values[5] = {0};
+    work();
+    int failed = ioctl(survivor, PERF_IOC_ID, &ids[0]) ||
+        ioctl(member, PERF_IOC_ID, &ids[1]) ||
+        ioctl(survivor, PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP) ||
+        read(survivor, values, sizeof(values)) != sizeof(values) ||
+        values[0] != 2 || values[1] == 0 || values[3] == 0 ||
+        values[2] != ids[0] || values[4] != ids[1];
+    close(member);
+    close(survivor);
+    printf("STARRY_PERF_REGROUP nr=%llu failed=%d\n", (unsigned long long)values[0], failed);
+    return failed;
+}
+#endif
+
+int main(void) {
+#if !defined(__aarch64__)
+    puts("STARRY_PERF_EVENT_GROUP_OK");
+    return 0;
+#else
+    if (regroup_after_close()) return 1;
+    /* Reading/control through a sibling still addresses the canonical group.
+     * A disabled sibling must retain its own OFF state on leader-only enable. */
+    const uint64_t sibling_format = PERF_FORMAT_GROUP | PERF_FORMAT_ID;
+    int control_leader = open_sw(PERF_COUNT_SW_TASK_CLOCK, 0, -1);
+    int control_member = open_sw(PERF_COUNT_SW_CPU_CLOCK, sibling_format,
+                                 control_leader);
+    uint64_t control_ids[2] = {0};
+    uint64_t control_values[5] = {0};
+    if (control_leader < 0 || control_member < 0 ||
+        ioctl(control_leader, PERF_IOC_ID, &control_ids[0]) != 0 ||
+        ioctl(control_member, PERF_IOC_ID, &control_ids[1]) != 0 ||
+        read(control_member, control_values, sizeof(control_values)) !=
+            (ssize_t)sizeof(control_values) || control_values[0] != 2 ||
+        control_values[2] != control_ids[0] ||
+        control_values[4] != control_ids[1]) {
+        puts("perf-event-group FAILED: sibling group read order");
+        return 1;
+    }
+    if (ioctl(control_leader, PERF_IOC_ENABLE, 0) != 0) return 1;
+    work();
+    if (ioctl(control_leader, PERF_IOC_DISABLE, 0) != 0 ||
+        read(control_member, control_values, sizeof(control_values)) !=
+            (ssize_t)sizeof(control_values) || control_values[1] == 0 ||
+        control_values[3] != 0) {
+        puts("perf-event-group FAILED: leader enabled disabled sibling");
+        return 1;
+    }
+    if (ioctl(control_member, PERF_IOC_ENABLE, PERF_IOC_FLAG_GROUP) != 0) return 1;
+    work();
+    if (ioctl(control_member, PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP) != 0 ||
+        read(control_member, control_values, sizeof(control_values)) !=
+            (ssize_t)sizeof(control_values) || control_values[3] == 0 ||
+        ioctl(control_member, PERF_IOC_RESET, PERF_IOC_FLAG_GROUP) != 0 ||
+        read(control_member, control_values, sizeof(control_values)) !=
+            (ssize_t)sizeof(control_values) || control_values[1] != 0 ||
+        control_values[3] != 0) {
+        puts("perf-event-group FAILED: sibling GROUP control");
+        return 1;
+    }
+    close(control_member);
+    close(control_leader);
+
+    /* Reserve all programmable slots, then leave exactly one free. A two
+     * member task group must wait as a unit, then run once capacity returns. */
+    cpu_set_t group_cpu;
+    CPU_ZERO(&group_cpu);
+    CPU_SET(0, &group_cpu);
+    if (sched_setaffinity(0, sizeof(group_cpu), &group_cpu) != 0) return 1;
+    int reservations[32];
+    int reserved = 0;
+    for (; reserved < 32; ++reserved) {
+        reservations[reserved] = open_system_raw_sampling(-1);
+        if (reservations[reserved] < 0) break;
+    }
+    if (reserved < 2 || reserved == 32 ||
+        (errno != ENOMEM && errno != EBUSY)) {
+        puts("perf-event-group FAILED: slot reservation setup");
+        return 1;
+    }
+    close(reservations[--reserved]);
+    control_leader = open_task_raw_group(PERF_ATTR_DISABLED, sibling_format, -1);
+    control_member = open_task_raw_group(PERF_ATTR_DISABLED, 0, control_leader);
+    if (control_leader < 0 || control_member < 0 ||
+        ioctl(control_leader, PERF_IOC_ENABLE, PERF_IOC_FLAG_GROUP) != 0) return 1;
+    work();
+    if (ioctl(control_leader, PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP) != 0 ||
+        read(control_leader, control_values, sizeof(control_values)) !=
+            (ssize_t)sizeof(control_values) || control_values[1] != 0 ||
+        control_values[3] != 0) {
+        puts("perf-event-group FAILED: hardware group ran partially");
+        return 1;
+    }
+    while (reserved != 0) close(reservations[--reserved]);
+    if (ioctl(control_leader, PERF_IOC_ENABLE, PERF_IOC_FLAG_GROUP) != 0) return 1;
+    work();
+    if (ioctl(control_leader, PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP) != 0 ||
+        read(control_leader, control_values, sizeof(control_values)) !=
+            (ssize_t)sizeof(control_values) || control_values[1] == 0 ||
+        control_values[3] == 0) {
+        puts("perf-event-group FAILED: hardware group did not resume");
+        return 1;
+    }
+    close(control_member);
+    close(control_leader);
+
+    /* An enabled sibling inherits the disabled leader's effective OFF state.
+     * Enabling only the sibling cannot bypass that gate; enabling the leader
+     * alone then schedules every sibling whose own state is enabled. */
+    int gated_leader = open_sw(PERF_COUNT_SW_TASK_CLOCK, 0, -1);
+    int eager_member = open_sw_flags(
+        PERF_COUNT_SW_CPU_CLOCK,
+        PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING,
+        gated_leader, 0);
+    if (gated_leader < 0 || eager_member < 0) {
+        printf("perf-event-group FAILED: disabled leader setup errno=%d\n",
+               errno);
+        return 1;
+    }
+    uint64_t gated_values[3] = {0};
+    work();
+    if (read(eager_member, gated_values, sizeof(gated_values)) !=
+            (ssize_t)sizeof(gated_values) ||
+        gated_values[0] != 0 || gated_values[1] != 0 || gated_values[2] != 0 ||
+        ioctl(eager_member, PERF_IOC_ENABLE, 0) != 0) {
+        printf("perf-event-group FAILED: member bypassed disabled leader "
+               "value=%llu enabled=%llu running=%llu errno=%d\n",
+               (unsigned long long)gated_values[0],
+               (unsigned long long)gated_values[1],
+               (unsigned long long)gated_values[2], errno);
+        return 1;
+    }
+    work();
+    if (read(eager_member, gated_values, sizeof(gated_values)) !=
+            (ssize_t)sizeof(gated_values) ||
+        gated_values[0] != 0 || gated_values[1] != 0 || gated_values[2] != 0 ||
+        ioctl(gated_leader, PERF_IOC_ENABLE, 0) != 0) {
+        puts("perf-event-group FAILED: member-only enable bypassed leader");
+        return 1;
+    }
+    work();
+    if (ioctl(gated_leader, PERF_IOC_DISABLE, 0) != 0 ||
+        read(eager_member, gated_values, sizeof(gated_values)) !=
+            (ssize_t)sizeof(gated_values) ||
+        gated_values[0] == 0 || gated_values[1] == 0 ||
+        gated_values[2] == 0) {
+        puts("perf-event-group FAILED: leader-only enable did not run member");
+        return 1;
+    }
+    close(eager_member);
+    close(gated_leader);
+
+    /* The same effective-state rule applies to a fixed-CPU software context. */
+    gated_leader = open_system_sw_flags(PERF_COUNT_SW_TASK_CLOCK, 0, -1,
+                                        PERF_ATTR_DISABLED);
+    eager_member = open_system_sw_flags(
+        PERF_COUNT_SW_CPU_CLOCK,
+        PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING,
+        gated_leader, 0);
+    if (gated_leader < 0 || eager_member < 0) {
+        printf("perf-event-group FAILED: system disabled leader errno=%d\n",
+               errno);
+        return 1;
+    }
+    work();
+    if (read(eager_member, gated_values, sizeof(gated_values)) !=
+            (ssize_t)sizeof(gated_values) ||
+        gated_values[0] != 0 || gated_values[1] != 0 || gated_values[2] != 0 ||
+        ioctl(gated_leader, PERF_IOC_ENABLE, 0) != 0) {
+        puts("perf-event-group FAILED: system member bypassed leader");
+        return 1;
+    }
+    work();
+    if (ioctl(gated_leader, PERF_IOC_DISABLE, 0) != 0 ||
+        read(eager_member, gated_values, sizeof(gated_values)) !=
+            (ssize_t)sizeof(gated_values) ||
+        gated_values[0] == 0 || gated_values[1] == 0 ||
+        gated_values[2] == 0) {
+        puts("perf-event-group FAILED: system leader did not run member");
+        return 1;
+    }
+    close(eager_member);
+    close(gated_leader);
+
+    const uint64_t format = PERF_FORMAT_GROUP | PERF_FORMAT_ID |
+                            PERF_FORMAT_TOTAL_TIME_ENABLED |
+                            PERF_FORMAT_TOTAL_TIME_RUNNING;
+    int leader = open_sw(PERF_COUNT_SW_TASK_CLOCK, format, -1);
+    int member = open_sw(PERF_COUNT_SW_CPU_CLOCK, 0, leader);
+    if (leader < 0 || member < 0) {
+        printf("perf-event-group FAILED: open errno=%d\n", errno);
+        return 1;
+    }
+    uint64_t leader_id = 0, member_id = 0;
+    if (ioctl(leader, PERF_IOC_ID, &leader_id) != 0 ||
+        ioctl(member, PERF_IOC_ID, &member_id) != 0) {
+        puts("perf-event-group FAILED: ids");
+        return 1;
+    }
+
+    pid_t child = fork();
+    if (child == 0) {
+        errno = 0;
+        int fd = open_sw(PERF_COUNT_SW_CPU_CLOCK, 0, leader);
+        if (fd >= 0) {
+            close(fd);
+            _exit(2);
+        }
+        _exit(errno == EINVAL ? 0 : 3);
+    }
+    int status = 0;
+    if (child < 0 || waitpid(child, &status, 0) != child ||
+        !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        puts("perf-event-group FAILED: cross-task member was not EINVAL");
+        return 1;
+    }
+
+    if (ioctl(leader, PERF_IOC_ENABLE, PERF_IOC_FLAG_GROUP) != 0) {
+        puts("perf-event-group FAILED: enable");
+        return 1;
+    }
+    work();
+    if (ioctl(leader, PERF_IOC_DISABLE, PERF_IOC_FLAG_GROUP) != 0) {
+        puts("perf-event-group FAILED: disable");
+        return 1;
+    }
+
+    uint64_t values[7] = {0};
+    if (read(leader, values, sizeof(values)) != (ssize_t)sizeof(values) ||
+        values[0] != 2 || values[2] > values[1] || values[3] == 0 ||
+        values[4] != leader_id || values[5] == 0 || values[6] != member_id) {
+        printf("perf-event-group FAILED: nr=%llu enabled=%llu running=%llu "
+               "leader=%llu/%llu member=%llu/%llu\n",
+               (unsigned long long)values[0],
+               (unsigned long long)values[1],
+               (unsigned long long)values[2],
+               (unsigned long long)values[3],
+               (unsigned long long)values[4],
+               (unsigned long long)values[5],
+               (unsigned long long)values[6]);
+        return 1;
+    }
+
+    /* Linux applies RESET to only the addressed event unless GROUP is set. */
+    const uint64_t member_before_reset = values[5];
+    if (ioctl(leader, PERF_IOC_RESET, 0) != 0 ||
+        read(leader, values, sizeof(values)) != (ssize_t)sizeof(values) ||
+        values[3] != 0 || values[5] != member_before_reset) {
+        printf("perf-event-group FAILED: reset without GROUP leader=%llu "
+               "member=%llu/%llu\n",
+               (unsigned long long)values[3],
+               (unsigned long long)values[5],
+               (unsigned long long)member_before_reset);
+        return 1;
+    }
+    if (ioctl(leader, PERF_IOC_RESET, PERF_IOC_FLAG_GROUP) != 0 ||
+        read(leader, values, sizeof(values)) != (ssize_t)sizeof(values) ||
+        values[3] != 0 || values[5] != 0) {
+        puts("perf-event-group FAILED: reset with GROUP");
+        return 1;
+    }
+
+    /* Closing the leader must not leave the member with a dangling owner. */
+    close(leader);
+    if (ioctl(member, PERF_IOC_ENABLE, 0) != 0) {
+        puts("perf-event-group FAILED: member enable after leader close");
+        return 1;
+    }
+    work();
+    uint64_t member_value = 0;
+    if (read(member, &member_value, sizeof(member_value)) !=
+            (ssize_t)sizeof(member_value) ||
+        member_value == 0) {
+        puts("perf-event-group FAILED: member read after leader close");
+        return 1;
+    }
+    close(member);
+
+    /* Tracking/probe backends have no counting-group coordinator. Reject
+     * both orders before publication instead of installing a no-op link. */
+    for (int order = 0; order < 2; ++order) {
+        leader = open_sw(order ? 9u : PERF_COUNT_SW_CPU_CLOCK, 0, -1);
+        errno = 0;
+        member = open_sw(order ? PERF_COUNT_SW_CPU_CLOCK : 9u, 0, leader);
+        int saved_errno = errno;
+        if (member >= 0) close(member);
+        if (leader >= 0) close(leader);
+        if (leader < 0 || member >= 0 || saved_errno != EOPNOTSUPP) {
+            printf("perf-event-group FAILED: tracking group order=%d member=%d errno=%d\n",
+                   order, member, saved_errno);
+            return 1;
+        }
+    }
+
+    /* Fixed-CPU flexible hardware events currently have independent workers.
+     * Reject the member until one transactional group coordinator owns their
+     * slots and snapshots; a file-level group alone would be misleading. */
+    leader = open_system_raw(format, PERF_ATTR_DISABLED, -1);
+    errno = 0;
+    member = open_system_raw(0, PERF_ATTR_DISABLED, leader);
+    if (leader < 0 || member >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: uncoordinated system group errno=%d\n",
+               errno);
+        if (member >= 0) {
+            close(member);
+        }
+        if (leader >= 0) {
+            close(leader);
+        }
+        return 1;
+    }
+    close(leader);
+
+    /* Starry also lacks Linux's context migration for mixed software/hardware
+     * groups. Both opening orders must fail identically instead of one order
+     * publishing a no-op hardware link. */
+    leader = open_system_sw_flags(PERF_COUNT_SW_CPU_CLOCK, 0, -1,
+                                  PERF_ATTR_DISABLED);
+    errno = 0;
+    member = open_system_raw(0, PERF_ATTR_DISABLED, leader);
+    if (leader < 0 || member >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: software/hardware group errno=%d\n",
+               errno);
+        return 1;
+    }
+    close(leader);
+    leader = open_system_raw(0, PERF_ATTR_DISABLED, -1);
+    errno = 0;
+    member = open_system_sw_flags(PERF_COUNT_SW_CPU_CLOCK, 0, leader,
+                                  PERF_ATTR_DISABLED);
+    if (leader < 0 || member >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: hardware/software group errno=%d\n",
+               errno);
+        return 1;
+    }
+    close(leader);
+
+    /* Direct system-wide sampling currently has no group-aware backend. It
+     * must reject every mixed or sampling-only group instead of publishing a
+     * file-level group whose PMU events still run independently. */
+    leader = open_system_raw_sampling(-1);
+    errno = 0;
+    member = open_system_raw_sampling(leader);
+    if (leader < 0 || member >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: system sampling group errno=%d\n",
+               errno);
+        if (member >= 0) {
+            close(member);
+        }
+        if (leader >= 0) {
+            close(leader);
+        }
+        return 1;
+    }
+    errno = 0;
+    member = open_system_raw(0, PERF_ATTR_DISABLED, leader);
+    if (member >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: sampling leader mixed group errno=%d\n",
+               errno);
+        if (member >= 0) {
+            close(member);
+        }
+        close(leader);
+        return 1;
+    }
+    close(leader);
+
+    leader = open_system_raw(0, PERF_ATTR_DISABLED, -1);
+    errno = 0;
+    member = open_system_raw_sampling(leader);
+    if (leader < 0 || member >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: sampling member mixed group errno=%d\n",
+               errno);
+        if (member >= 0) {
+            close(member);
+        }
+        if (leader >= 0) {
+            close(leader);
+        }
+        return 1;
+    }
+    close(leader);
+
+    /* Until pinned priority and ERROR/EOF are implemented, reject pinned
+     * events without disturbing existing flexible events. */
+    int flexible[6];
+    cpu_set_t affinity;
+    CPU_ZERO(&affinity);
+    CPU_SET(0, &affinity);
+    if (sched_setaffinity(0, sizeof(affinity), &affinity) != 0) {
+        puts("perf-event-group FAILED: pin test task to CPU0");
+        return 1;
+    }
+    for (int i = 0; i < 6; ++i) {
+        flexible[i] = open_system_raw(0, 0, -1);
+        if (flexible[i] < 0) {
+            printf("perf-event-group FAILED: flexible fill %d errno=%d\n", i,
+                   errno);
+            return 1;
+        }
+    }
+    int pinned_one =
+        open_system_raw(0, PERF_ATTR_DISABLED | PERF_ATTR_PINNED, -1);
+    if (pinned_one >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: unsupported CPU pinned accepted errno=%d\n",
+               errno);
+        return 1;
+    }
+    int task_pinned = open_task_raw(PERF_ATTR_DISABLED | PERF_ATTR_PINNED);
+    if (task_pinned >= 0 || errno != EOPNOTSUPP) {
+        printf("perf-event-group FAILED: unsupported task pinned accepted errno=%d\n", errno);
+        return 1;
+    }
+    work();
+    if (ioctl(flexible[0], PERF_IOC_DISABLE, 0) != 0 ||
+        read(flexible[0], &member_value, sizeof(member_value)) !=
+            (ssize_t)sizeof(member_value) ||
+        member_value == 0) {
+        puts("perf-event-group FAILED: rejected pinned event disturbed flexible");
+        return 1;
+    }
+    for (int i = 5; i >= 0; --i) {
+        close(flexible[i]);
+    }
+
+    printf("STARRY_PERF_EVENT_GROUP nr=%llu leader=%llu member=%llu\n",
+           (unsigned long long)values[0], (unsigned long long)values[3],
+           (unsigned long long)member_value);
+    puts("STARRY_PERF_EVENT_GROUP_OK");
+    return 0;
+#endif
+}

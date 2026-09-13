@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820" role="img" aria-labelledby="title description">
+  <title id="title">网络设备交付与固定 CPU 所有权</title>
+  <desc id="description">初始化链从 ax-driver 和 rdrive 经 ax-runtime、rd-net 到 NetworkRuntimeBuilder。运行期硬中断和队列执行器处于同一 owner CPU，通过四条 SPSC 令牌管道连接独立的协议 CPU。底部标示能力契约与释放条件。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/></marker>
+    <style>
+      text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #172b4d; }
+      .title { font-size: 25px; font-weight: 700; }
+      .heading { font-size: 20px; font-weight: 700; }
+      .label { font-size: 17px; }
+      .small { font-size: 15px; }
+      .edge { fill: none; stroke: #475569; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1200" height="820" rx="16" fill="#f8fafc"/>
+  <text x="36" y="45" class="title">网络设备交付与固定 CPU 所有权</text>
+  <rect x="30" y="70" width="1140" height="175" rx="12" fill="#eaf0f7" stroke="#94a3b8"/>
+  <text x="50" y="103" class="heading">初始化控制流 · 只在成功后向协议层交付端口</text>
+  <g fill="#ffffff" stroke="#94a3b8">
+    <rect x="50" y="125" width="225" height="85" rx="8"/>
+    <rect x="310" y="125" width="240" height="85" rx="8"/>
+    <rect x="585" y="125" width="225" height="85" rx="8"/>
+    <rect x="845" y="125" width="305" height="85" rx="8"/>
+  </g>
+  <text x="65" y="153" class="label">ax-driver → rdrive</text>
+  <text x="65" y="181" class="small">PlatformNetDevice</text>
+  <text x="325" y="153" class="label">ax-runtime</text>
+  <text x="325" y="181" class="small">take · DMA 准备 · IRQ 解析</text>
+  <text x="600" y="153" class="label">rd-net</text>
+  <text x="600" y="181" class="small">PreparedNetDevice</text>
+  <text x="860" y="153" class="label">NetworkRuntimeBuilder</text>
+  <text x="860" y="181" class="small">固定 CPU · 注册 IRQ · 启动组</text>
+  <path class="edge" d="M 275 167 H 310"/>
+  <path class="edge" d="M 550 167 H 585"/>
+  <path class="edge" d="M 810 167 H 845"/>
+  <rect x="30" y="270" width="425" height="360" rx="12" fill="#e6f4ee" stroke="#4b9474"/>
+  <text x="50" y="305" class="heading">队列 owner CPU</text>
+  <text x="50" y="332" class="small">同一物理 IRQ 亲和域 · 可包含多个组</text>
+  <rect x="50" y="352" width="385" height="77" rx="8" fill="#ffffff" stroke="#4b9474"/>
+  <text x="65" y="380" class="label">NetHardIrqEndpoint</text>
+  <text x="65" y="406" class="small">有界 mask / ack → 目标组状态</text>
+  <path class="edge" d="M 240 429 V 472"/>
+  <text x="255" y="454" class="small">同核通知</text>
+  <rect x="50" y="472" width="385" height="135" rx="8" fill="#ffffff" stroke="#4b9474"/>
+  <text x="65" y="501" class="label">QueueGroupExecutor</text>
+  <text x="65" y="530" class="small">TX / RX 队列 · DMA reclaim / refill</text>
+  <text x="65" y="557" class="small">预算 · 背压 · rearm_and_check</text>
+  <text x="65" y="584" class="small">owner startup · Wi-Fi 控制事务</text>
+  <rect x="770" y="270" width="400" height="360" rx="12" fill="#eaf0ff" stroke="#6b83ba"/>
+  <text x="790" y="305" class="heading">协议 owner CPU</text>
+  <text x="790" y="332" class="small">独立固定 CPU 选择 · 不要求与队列同核</text>
+  <rect x="790" y="352" width="360" height="77" rx="8" fill="#ffffff" stroke="#6b83ba"/>
+  <text x="805" y="380" class="label">唯一协议执行器</text>
+  <text x="805" y="406" class="small">smoltcp Interface / SocketSet</text>
+  <path class="edge" d="M 970 472 V 429"/>
+  <rect x="790" y="472" width="360" height="135" rx="8" fill="#ffffff" stroke="#6b83ba"/>
+  <text x="805" y="501" class="label">EthernetFramePort / Router</text>
+  <text x="805" y="530" class="small">帧与 IP 包消费 · TX 策略</text>
+  <text x="805" y="557" class="small">ProtocolRxFrame 持有接收令牌</text>
+  <text x="805" y="584" class="small">request_poll 发布协议代际请求</text>
+  <text x="484" y="447" class="heading">SPSC 所有权转移</text>
+  <path class="edge" d="M 435 495 H 790"/>
+  <text x="500" y="484" class="label">rx_ready：完成包 →</text>
+  <path class="edge" d="M 790 529 H 435"/>
+  <text x="482" y="518" class="label">← rx_recycle：回收令牌</text>
+  <path class="edge" d="M 790 563 H 435"/>
+  <text x="500" y="552" class="label">← tx_ready：发送请求</text>
+  <path class="edge" d="M 435 597 H 790"/>
+  <text x="500" y="586" class="label">tx_free：空闲令牌 →</text>
+  <rect x="30" y="655" width="1140" height="135" rx="12" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="50" y="690" class="heading">rdif-eth 能力契约</text>
+  <text x="50" y="721" class="label">NetDevice::into_parts → 控制端点 + 轮询组 + 硬中断端点</text>
+  <text x="50" y="751" class="small">DmaBuffer / SubmitError 只能移动；DMA backing 释放要求 IRQ 已同步且 DMA 停止已确认。</text>
+  <text x="50" y="775" class="small">源码：rdif-eth/src/lib.rs · rd-net/src/lib.rs · ax-net/src/queue_runtime · axruntime/src/irq.rs</text>
+</svg>

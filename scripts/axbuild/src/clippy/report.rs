@@ -74,20 +74,20 @@ pub(super) fn print_clippy_check_plan(
     total: usize,
     check: &ClippyCheck,
 ) {
-    let args = check.cargo_args();
+    let invocation = check.cargo_invocation();
     println!("[{}/{}] {}", index + 1, total, check.label());
-    if check.env.is_empty() {
+    if invocation.env.is_empty() {
         println!(
             "          cd {} && cargo {}",
             workspace_root.display(),
-            args.join(" ")
+            invocation.args.join(" ")
         );
     } else {
         println!(
             "          cd {} && {} cargo {}",
             workspace_root.display(),
             check.env_prefix(),
-            args.join(" ")
+            invocation.args.join(" ")
         );
     }
 }

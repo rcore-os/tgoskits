@@ -63,7 +63,8 @@ Rust guard 可以跨线程转移，因此这里沿用的是独占访问和资源
 
 宿主验证：`cargo test -p rdrive --features host-test`。标准测试 runner 已通过
 `scripts/test/std_crates.csv` 和 axbuild 的 `host-test` profile 收录 rdrive。
-内核借用用例位于 `src/axtest.rs`，由已有 Starry `axtest_kernel` 链接收集。
+借用和投影用例位于 `src/lock.rs`，OSAL 回调用例位于 `src/osal.rs`，
+均通过当前项目的 Cargo 单元测试布局发现执行。
 
 ## 快速开始
 

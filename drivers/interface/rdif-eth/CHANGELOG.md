@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.5.0...rdif-eth-v0.6.0) - 2026-09-09
+
+### Fixed
+
+- *(ax-net)* skip absent devices after owner startup ([#2288](https://github.com/rcore-os/tgoskits/pull/2288))
+
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.4.1...rdif-eth-v0.5.0) - 2026-09-09
+
+### Added
+
+- *(aic8800)* integrate AKA WPA2 Wi-Fi and iperf validation ([#2222](https://github.com/rcore-os/tgoskits/pull/2222))
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(net)* optimize RTL8125 data path and polling ([#2227](https://github.com/rcore-os/tgoskits/pull/2227))
+
+## [0.4.1](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.4.0...rdif-eth-v0.4.1) - 2026-08-27
+
+### Other
+
+- *(sdmmc)* unify SDIO protocol and AIC8800 driver ([#2201](https://github.com/rcore-os/tgoskits/pull/2201))
+- *(ax-net)* add queue-level NAPI runtime ([#2178](https://github.com/rcore-os/tgoskits/pull/2178))
+
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.10...rdif-eth-v0.4.0) - 2026-08-20
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+
 ## [0.3.10](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.9...rdif-eth-v0.3.10) - 2026-08-09
 
 ### Other

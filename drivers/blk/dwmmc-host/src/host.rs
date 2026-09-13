@@ -4,10 +4,10 @@
 //! This module owns the register block and implements reset, clock
 //! programming, IDMAC setup, and bus-width selection. Higher-level command
 //! issue lives in [`crate::command`]; the IDMAC data transfer state machine
-//! lives in [`crate::dma`]; the [`SdioHost`] wiring
+//! lives in [`crate::dma`]; the [`SdMmcHost`] wiring
 //! lives in [`crate::lib`].
 //!
-//! [`SdioHost`]: sdmmc_protocol::sdio::SdioHost
+//! [`SdMmcHost`]: sdmmc_protocol::sdio::SdMmcHost
 
 use alloc::{boxed::Box, sync::Arc};
 use core::{
@@ -49,7 +49,7 @@ pub(crate) struct PendingData {
 
 /// DesignWare Mobile Storage Host Controller backend.
 ///
-/// Implements [`sdmmc_protocol::sdio::SdioHost`] using the internal DMAC
+/// Implements [`sdmmc_protocol::sdio::SdMmcHost`] using the internal DMAC
 /// (IDMAC) state machine.
 ///
 /// # Safety
@@ -284,7 +284,7 @@ impl DwMmc {
 
     /// Tell the driver the reference clock fed to the controller, in Hz.
     ///
-    /// The clock divider in [`set_clock`](sdmmc_protocol::sdio::SdioHost::set_clock)
+    /// The clock divider in [`set_clock`](sdmmc_protocol::sdio::SdMmcHost::set_clock)
     /// is computed from this value: `divider = ceil(ref_clock_hz /
     /// (2 * target_hz))`. If the reference is left at `0` the driver
     /// falls back to a 1:1 passthrough (CLKDIV = 0) and assumes the
@@ -357,8 +357,8 @@ impl DwMmc {
             return Err(Error::Busy);
         }
 
-        let hardware_mask = dma.dma_mask().min(u32::MAX as u64);
-        let inherited = dma.constraints();
+        let hardware_mask = dma.info().constraints().addr_mask.min(u32::MAX as u64);
+        let inherited = dma.info().constraints();
         let constraints = DmaConstraints {
             addr_mask: hardware_mask,
             align: inherited.align.max(4),
@@ -680,42 +680,6 @@ mod tests {
     use core::ptr::NonNull;
 
     use super::*;
-
-    #[test]
-    fn constructs_from_mapped_mmio_pointer() {
-        let base = NonNull::new(0x1000_0000 as *mut u8).unwrap();
-        let host = unsafe { DwMmc::new(base) };
-
-        assert_eq!(host.base_addr, 0x1000_0000);
-    }
-
-    #[test]
-    fn legacy_addr_constructor_keeps_raw_mmio_boundary_explicit() {
-        let host = unsafe { DwMmc::new_from_addr(0x1000_0000) };
-
-        assert_eq!(host.base_addr, 0x1000_0000);
-    }
-
-    #[test]
-    fn external_clock_can_be_scoped_and_cleared() {
-        struct Clock;
-
-        impl HostClock for Clock {
-            fn set_clock(&self, target_hz: u32) -> Result<u32, Error> {
-                Ok(target_hz)
-            }
-        }
-
-        let mut mmio = [0u32; 256];
-        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
-        let mut host = unsafe { DwMmc::new(base) };
-
-        host.set_external_clock(Clock);
-        assert!(host.ext_clock.is_some());
-
-        host.clear_external_clock();
-        assert!(host.ext_clock.is_none());
-    }
 
     #[test]
     fn controller_card_detect_defaults_to_linux_active_low() {

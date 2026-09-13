@@ -6,25 +6,61 @@
 
 #![no_std]
 
+use core::num::NonZeroU32;
+
 use dma_api::DeviceDma;
-use sdhci_host::Sdhci;
+use sdhci_host::{HostResetHook, Sdhci};
 use sdmmc_protocol::Error as ProtocolError;
 
 mod board;
 mod clock;
 mod host2;
 mod platform;
-#[cfg(test)]
-mod tests;
+mod sdio1;
 
 pub use host2::BusRequest;
-pub use platform::{CV181X_SYSCON_REQUIRED_SIZE, CV181X_TOP_SYSCON_BASE, Cv181xConfig, Cv181xMmio};
+pub use platform::{Cv181xConfig, Cv181xMmio};
+pub use sdio1::{CV181X_SDIO1_RESET_SETTLE, Cv181xSdio1Mmio};
 
 /// CV181x SD-card host endpoint.
 pub struct Cv181xSdhci {
     inner: Sdhci,
     mmio: Cv181xMmio,
     config: Cv181xConfig,
+    controller: ControllerResources,
+}
+
+#[derive(Clone, Copy)]
+enum ControllerResources {
+    Sd,
+    Sdio1(Cv181xSdio1Mmio),
+}
+
+struct Cv181xResetHook {
+    mmio: Cv181xMmio,
+}
+
+impl Cv181xResetHook {
+    const fn new(mmio: Cv181xMmio) -> Self {
+        Self { mmio }
+    }
+}
+
+// SAFETY: The hook is owned by the corresponding `Sdhci` instance and is only
+// invoked while that host is exclusively borrowed for a controller reset. Its
+// MMIO pointer aliases the wrapper's mapping but all accesses are serialized by
+// the host's mutable request path.
+unsafe impl Send for Cv181xResetHook {}
+// SAFETY: See the `Send` implementation. Hook callbacks serialize writes
+// through the exclusively borrowed host even though the callback receiver is
+// shared by the generic capability contract.
+unsafe impl Sync for Cv181xResetHook {}
+
+impl HostResetHook for Cv181xResetHook {
+    fn after_reset(&self, _host: &mut Sdhci) -> Result<(), ProtocolError> {
+        board::restore_ds_hs_phy(self.mmio);
+        Ok(())
+    }
 }
 
 // SAFETY: The wrapper owns exclusive access to one SDHCI register file and the
@@ -40,13 +76,51 @@ impl Cv181xSdhci {
     /// `mmio.core` must point to an exclusively-owned CV181x SDHCI register
     /// block and `mmio.syscon` must cover TOP_BASE including the pinmux block.
     pub unsafe fn new(mmio: Cv181xMmio, config: Cv181xConfig) -> Self {
-        let inner = unsafe { Sdhci::new(mmio.core()) };
+        let config = config.normalized();
+        let mut inner = unsafe { Sdhci::new(mmio.core()) };
+        let source_clock = NonZeroU32::new(config.src_frequency_hz)
+            .expect("normalized CV181x source clock must be non-zero");
+        inner
+            .set_fixed_base_clock_hz(source_clock)
+            .expect("a newly constructed SDHCI host must be idle");
+        let controller = ControllerResources::Sd;
+        inner.set_reset_hook(Cv181xResetHook::new(mmio));
         let mut this = Self {
             inner,
             mmio,
-            config: config.normalized(),
+            config,
+            controller,
         };
         this.restore_ds_hs_phy();
+        this
+    }
+
+    /// Construct the SDIO1 instance after applying its SoC clock, reset,
+    /// pinmux, pull-up, and card-detect policy.
+    ///
+    /// # Safety
+    ///
+    /// Every mapping in `mmio` must be valid and exclusively owned for the
+    /// returned controller lifetime. The runtime must observe
+    /// [`CV181X_SDIO1_RESET_SETTLE`] before issuing the first card command.
+    pub unsafe fn new_sdio1(mmio: Cv181xSdio1Mmio, config: Cv181xConfig) -> Self {
+        let config = config.normalized();
+        let host = mmio.host();
+        let mut inner = unsafe { Sdhci::new(host.core()) };
+        let source_clock = NonZeroU32::new(config.src_frequency_hz)
+            .expect("normalized CV181x source clock must be non-zero");
+        inner
+            .set_fixed_base_clock_hz(source_clock)
+            .expect("a newly constructed SDHCI host must be idle");
+        let controller = ControllerResources::Sdio1(mmio);
+        inner.set_reset_hook(Cv181xResetHook::new(host));
+        let mut this = Self {
+            inner,
+            mmio: host,
+            config,
+            controller,
+        };
+        this.restore_controller_after_reset();
         this
     }
 
@@ -71,20 +145,5 @@ impl Cv181xSdhci {
     }
 }
 
-fn map_protocol_error(err: ProtocolError) -> sdio_host2::Error {
-    match err {
-        ProtocolError::Timeout(_) => sdio_host2::Error::Timeout,
-        ProtocolError::Crc(_) => sdio_host2::Error::Crc,
-        ProtocolError::NoCard => sdio_host2::Error::NoCard,
-        ProtocolError::Busy => sdio_host2::Error::Busy,
-        ProtocolError::UnsupportedCommand => sdio_host2::Error::Unsupported,
-        ProtocolError::Misaligned => sdio_host2::Error::Misaligned,
-        ProtocolError::InvalidArgument => sdio_host2::Error::InvalidArgument,
-        ProtocolError::BusError(_) => sdio_host2::Error::Bus,
-        ProtocolError::ReadError(_)
-        | ProtocolError::WriteError(_)
-        | ProtocolError::BadResponse(_) => sdio_host2::Error::Bus,
-        ProtocolError::CardError(_) | ProtocolError::CardLocked => sdio_host2::Error::Controller,
-        _ => sdio_host2::Error::Controller,
-    }
-}
+#[cfg(test)]
+mod tests;

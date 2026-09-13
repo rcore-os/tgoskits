@@ -223,18 +223,4 @@ ldp X29,X30,    [sp], #0x10
 
         assert_eq!(a_str.trim(), want.trim());
     }
-
-    #[test]
-    fn test_asm_fmt() {
-        let a = "
-            str    x8, [x0, {sp_addr}] // prev.sp = sp
-    ldr    x9, [x8, {lr_addr}] // x9 = prev.lr
-
-    "
-        .to_string();
-
-        let asm = a.fmt_asm();
-
-        println!("{asm:?}");
-    }
 }

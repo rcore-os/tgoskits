@@ -57,6 +57,15 @@ fn fdt_base() -> Option<fdt_raw::Fdt<'static>> {
     Some(fdt)
 }
 
+pub(crate) fn boot_entropy() -> Option<[u8; 32]> {
+    boot_entropy_from_fdt(fdt_base()?)
+}
+
+fn boot_entropy_from_fdt(fdt: fdt_raw::Fdt<'_>) -> Option<[u8; 32]> {
+    let property = fdt.chosen()?.find_property("rng-seed")?;
+    property.as_slice().try_into().ok()
+}
+
 pub(crate) fn init_with_alloc() -> Option<()> {
     let fdt_addr = fdt_addr()?;
     // SAFETY: the global FDT address points to firmware memory or the saved
@@ -171,23 +180,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn arch_default_canonicalize_paddr_keeps_identity() {
-        assert_eq!(
-            <crate::arch::Arch as crate::ArchTrait>::canonicalize_paddr(0x1234_5678),
-            0x1234_5678
-        );
-    }
-
-    #[test]
-    fn arch_default_ioremap_device_uses_generic_path() {
-        assert_eq!(
-            <crate::arch::Arch as crate::ArchTrait>::ioremap_device(0x1234_5678, 0x1000),
-            None
-        );
-        assert!(<crate::arch::Arch as crate::ArchTrait>::user_aspace_needs_kernel_mappings());
-    }
-
-    #[test]
     fn set_fdt_addr_phys_rejects_zero() {
         assert!(!set_fdt_addr_phys_if_valid(0));
     }
@@ -289,6 +281,37 @@ mod tests {
         let raw = fdt_raw::Fdt::from_bytes(fdt_data.as_ref()).expect("parse test fdt");
 
         assert_eq!(platform_name_from_fdt(raw), Some("qemu,virt"));
+    }
+
+    #[test]
+    fn boot_entropy_accepts_exactly_one_32_byte_rng_seed() {
+        let expected = *b"0123456789abcdef0123456789abcdef";
+        let mut fdt = minimal_cpu_fdt();
+        let chosen = fdt.add_node(fdt.root_id(), Node::new("chosen"));
+        fdt.node_mut(chosen)
+            .unwrap()
+            .set_property(Property::new("rng-seed", expected.to_vec()));
+        let fdt_data = fdt.encode();
+        let raw = fdt_raw::Fdt::from_bytes(fdt_data.as_ref()).expect("parse test fdt");
+
+        assert_eq!(boot_entropy_from_fdt(raw), Some(expected));
+    }
+
+    #[test]
+    fn boot_entropy_rejects_missing_or_malformed_rng_seed() {
+        let fdt = minimal_cpu_fdt();
+        let fdt_data = fdt.encode();
+        let raw = fdt_raw::Fdt::from_bytes(fdt_data.as_ref()).expect("parse test fdt");
+        assert_eq!(boot_entropy_from_fdt(raw), None);
+
+        let mut fdt = minimal_cpu_fdt();
+        let chosen = fdt.add_node(fdt.root_id(), Node::new("chosen"));
+        fdt.node_mut(chosen)
+            .unwrap()
+            .set_property(Property::new("rng-seed", vec![0x5a; 31]));
+        let fdt_data = fdt.encode();
+        let raw = fdt_raw::Fdt::from_bytes(fdt_data.as_ref()).expect("parse test fdt");
+        assert_eq!(boot_entropy_from_fdt(raw), None);
     }
 
     fn minimal_cpu_fdt() -> Fdt {

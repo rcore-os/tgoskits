@@ -5,30 +5,25 @@
 
 use rdrive::{Osal, Pid};
 
-use crate::task::AsThread;
+use crate::task::{try_current_user_task, yield_now};
 
 struct StarryOsal;
 
 impl Osal for StarryOsal {
     fn get_pid(&self) -> Pid {
-        // IRQ/atomic contexts may still carry the interrupted task's extension.
-        // Do not attribute their work to that userspace process.
-        if ax_task::in_atomic_context() {
+        // IRQ context can still carry the interrupted task's extension.
+        if ax_runtime::hal::irq::in_irq_context() {
             return Pid::INVALID.into();
         }
-        let Some(task) = ax_task::current_may_uninit() else {
-            return Pid::INVALID.into();
-        };
-        match task.try_as_thread() {
-            Some(thread) => (thread.proc_data.proc.pid().get() as usize).into(),
-            None => Pid::INVALID.into(),
+        match try_current_user_task() {
+            Ok(Some(task)) => (task.as_thread().proc_data.proc.pid().get() as usize).into(),
+            Ok(None) | Err(_) => Pid::INVALID.into(),
         }
     }
 
     fn relax(&self) {
-        // Blocking device acquisition requires sleepable task context. Retain
-        // the scheduler's might_sleep check instead of hiding atomic misuse.
-        ax_task::yield_now();
+        // Keep schedule-context validation in the Starry runtime facade.
+        yield_now();
     }
 }
 

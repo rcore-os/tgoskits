@@ -2,8 +2,6 @@ app-c = "c"
 features = [
     "alloc",
     "paging",
-    "multitask",
-    "irq",
     "fd",
     "pipe",
     "epoll",

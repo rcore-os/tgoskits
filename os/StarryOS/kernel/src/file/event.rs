@@ -1,15 +1,16 @@
 use alloc::{borrow::Cow, sync::Arc};
-use core::{
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    task::Context,
-};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use ax_task::future::{block_on, poll_io};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 
 use crate::{
     StarryError, StarryResult,
     file::{FileLike, IoDst, IoSrc},
+    task::{
+        current_user_task,
+        future::{block_on_user, poll_io},
+    },
 };
 
 pub struct EventFd {
@@ -32,6 +33,27 @@ impl EventFd {
             poll_tx: PollSet::new(),
         })
     }
+
+    /// Adds to the counter from a kernel producer without user-task signal semantics.
+    ///
+    /// This path never waits for counter space. It is intended for completion
+    /// producers such as Linux AIO workers, which must not impersonate the
+    /// submitting user thread or inherit its interruption state.
+    pub(crate) fn signal_kernel(&self, value: u64) -> StarryResult<()> {
+        if value == u64::MAX {
+            return Err(crate::StarryError::InvalidInput);
+        }
+        if value != 0 {
+            self.count
+                .try_update(Ordering::Release, Ordering::Acquire, |count| {
+                    (u64::MAX - count > value).then_some(count + value)
+                })
+                .map_err(|_| crate::StarryError::WouldBlock)?;
+            // Counter publication precedes task-context poll fan-out.
+            unsafe { self.poll_rx.wake(IoEvents::IN) };
+        }
+        Ok(())
+    }
 }
 
 impl FileLike for EventFd {
@@ -47,28 +69,33 @@ impl FileLike for EventFd {
             return Err(StarryError::InvalidInput);
         }
 
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let result = self
-                .count
-                .try_update(Ordering::Release, Ordering::Acquire, |count| {
-                    if count > 0 {
-                        let dec = if self.semaphore { 1 } else { count };
-                        Some(count - dec)
-                    } else {
-                        None
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io(self, IoEvents::IN, self.nonblocking(), || {
+                let result = self
+                    .count
+                    .try_update(Ordering::Release, Ordering::Acquire, |count| {
+                        if count > 0 {
+                            let dec = if self.semaphore { 1 } else { count };
+                            Some(count - dec)
+                        } else {
+                            None
+                        }
+                    });
+                match result {
+                    Ok(count) => {
+                        let value = if self.semaphore { 1 } else { count };
+                        dst.write(&value.to_ne_bytes())?;
+                        // Counter space is visible before waking writers.
+                        unsafe { self.poll_tx.wake(IoEvents::OUT) };
+                        Ok(size_of::<u64>())
                     }
-                });
-            match result {
-                Ok(count) => {
-                    let value = if self.semaphore { 1 } else { count };
-                    dst.write(&value.to_ne_bytes())?;
-                    // Counter space is visible before waking writers.
-                    unsafe { self.poll_tx.wake(IoEvents::OUT) };
-                    Ok(size_of::<u64>())
+                    Err(_) => Err(crate::StarryError::WouldBlock),
                 }
-                Err(_) => Err(StarryError::WouldBlock),
-            }
-        }))
+            }),
+        )
+        .into_result()?
     }
 
     fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
@@ -83,25 +110,14 @@ impl FileLike for EventFd {
             return Err(StarryError::InvalidInput);
         }
 
-        block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
-            let result = self
-                .count
-                .try_update(Ordering::Release, Ordering::Acquire, |count| {
-                    if u64::MAX - count > value {
-                        Some(count + value)
-                    } else {
-                        None
-                    }
-                });
-            match result {
-                Ok(_) => {
-                    // Counter increment is visible before waking readers.
-                    unsafe { self.poll_rx.wake(IoEvents::IN) };
-                    Ok(size_of::<u64>())
-                }
-                Err(_) => Err(StarryError::WouldBlock),
-            }
-        }))
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io(self, IoEvents::OUT, self.nonblocking(), || {
+                self.signal_kernel(value).map(|()| size_of::<u64>())
+            }),
+        )
+        .into_result()?
     }
 
     fn nonblocking(&self) -> bool {
@@ -127,14 +143,29 @@ impl Pollable for EventFd {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
-            // Registration happens from file poll task context.
-            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
+            unsafe { sink.register_shared(&self.poll_rx, IoEvents::IN) };
         }
         if events.contains(IoEvents::OUT) {
-            // Registration happens from file poll task context.
-            unsafe { self.poll_tx.register(context.waker(), IoEvents::OUT) };
+            unsafe { sink.register_shared(&self.poll_tx, IoEvents::OUT) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { sink.register_exclusive(&self.poll_rx, IoEvents::IN) };
+        }
+        if events.contains(IoEvents::OUT) {
+            unsafe { sink.register_exclusive(&self.poll_tx, IoEvents::OUT) };
         }
     }
 }

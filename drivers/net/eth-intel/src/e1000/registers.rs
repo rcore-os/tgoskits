@@ -49,14 +49,15 @@ impl Regs {
         }
     }
 
-    pub fn reset(&self) {
+    pub fn reset(&self) -> bool {
         self.write(CTRL, self.read(CTRL) | (1 << 26));
         for _ in 0..20000 {
             if self.read(CTRL) & (1 << 26) == 0 {
-                break;
+                return true;
             }
             core::hint::spin_loop();
         }
+        false
     }
 
     pub fn disable_all_irq(&self) {

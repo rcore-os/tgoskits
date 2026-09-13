@@ -1,27 +1,6 @@
-use std::{fs, thread, time::Duration};
+use std::{thread, time::Duration};
 
-use aya::{maps::HashMap, programs::KProbe};
-
-// Resolve the (possibly mangled) kallsyms entry for
-// `starry_kernel::syscall::sysno`, the `#[inline(never)]` helper whose first
-// argument is the raw syscall number. Probing it (rather than `handle_syscall`,
-// whose arg0 is `&UserContext`) lets the eBPF program read the number straight
-// off `arg(0)` on every arch. The mangled symbol contains both `syscall` (the
-// module) and `sysno`; requiring both excludes `handle_syscall` (no `sysno`)
-// and the `UserContext::sysno` accessor (no `syscall`). The kernel's kprobe
-// lookup matches the kallsyms name exactly, so hand aya the real symbol string.
-fn resolve_sysno() -> anyhow::Result<String> {
-    let table = fs::read_to_string("/proc/kallsyms")?;
-    for line in table.lines() {
-        if let Some(name) = line.split_whitespace().nth(2)
-            && name.contains("syscall")
-            && name.contains("sysno")
-        {
-            return Ok(name.to_string());
-        }
-    }
-    anyhow::bail!("syscall::sysno not found in /proc/kallsyms")
-}
+use aya::{maps::HashMap, programs::TracePoint};
 
 fn main() -> anyhow::Result<()> {
     // Bump RLIMIT_MEMLOCK so map allocation is not capped on kernels that
@@ -38,14 +17,13 @@ fn main() -> anyhow::Result<()> {
         "/profile"
     )))?;
 
-    let symbol = resolve_sysno()?;
-    let program: &mut KProbe = ebpf
+    let program: &mut TracePoint = ebpf
         .program_mut("profile")
         .expect("profile program missing")
         .try_into()?;
     program.load()?;
-    program.attach(&symbol, 0)?;
-    println!("PROFILE: attached kprobe to {symbol}");
+    program.attach("raw_syscalls", "sys_enter")?;
+    println!("PROFILE: attached raw_syscalls:sys_enter tracepoint");
 
     // Drive a varied syscall workload so the histogram spans many distinct
     // syscall numbers (not just one hot key).
@@ -105,7 +83,7 @@ fn dump_histogram(ebpf: &aya::Ebpf) -> anyhow::Result<()> {
          top1_count={top1_count} top1_pct={top1_pct:.1}"
     );
 
-    // Anti-fallback: a working `sysno` kprobe must produce a histogram with
+    // Anti-fallback: a working syscall tracepoint must produce a histogram with
     // many samples spanning several small, real syscall numbers (an earlier
     // version that dereferenced `&UserContext` recorded huge pointer-word keys).
     let all_small = rows.iter().all(|(sysno, _)| *sysno < 1024);

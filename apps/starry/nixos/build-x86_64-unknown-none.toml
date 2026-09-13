@@ -1,0 +1,7 @@
+target = "x86_64-unknown-none"
+env = { CONTAINER = "starryos" }
+log = "Info"
+features = [
+    "nixos",
+    "ax-driver/nvme",
+]

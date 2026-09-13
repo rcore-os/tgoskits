@@ -1,22 +1,25 @@
 //! Interrupt management.
 
 use ax_cpu::trap::set_irq_handler;
+pub use ax_cpu::trap::{InterruptedContext, InterruptedPrivilege, TrapOrigin};
 #[cfg(feature = "smp")]
 pub use ax_plat::irq::init_secondary_boot_irqs;
 pub use ax_plat::irq::{
     AARCH64_GIC_DOMAIN, AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger,
     AutoEnable, BoxedIrqHandler, CPU_LOCAL_IRQ_DOMAIN, CpuId, CpuMask, HwIrq, IrqAffinity,
-    IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle, IrqId, IrqNumber, IrqOutcome,
-    IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, IrqTrigger, LEGACY_IRQ_DOMAIN,
-    LOONGARCH_EIOINTC_DOMAIN, LOONGARCH_PCH_PIC_DOMAIN, RISCV_PLIC_DOMAIN, ShareMode, TrapVector,
-    X86_IOAPIC_DOMAIN, X86_LAPIC_DOMAIN, cpu_online, disable_irq, dispatch_irq, enable_irq,
-    free_irq, handle, in_irq_context, init_boot_irqs, irq_status, is_cpu_online, legacy_irq,
-    legacy_irq_raw, prepare_irq_context, request_irq, request_percpu_irq, request_shared_irq,
+    IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle, IrqId, IrqNumber, IrqOrigin,
+    IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, IrqTrigger,
+    LEGACY_IRQ_DOMAIN, LOONGARCH_EIOINTC_DOMAIN, LOONGARCH_PCH_PIC_DOMAIN, RISCV_PLIC_DOMAIN,
+    ShareMode, TrapVector, X86_IOAPIC_DOMAIN, X86_LAPIC_DOMAIN, cpu_online, disable_irq,
+    dispatch_irq, enable_irq, free_irq, in_irq_context, init_boot_irqs, irq_status, is_cpu_online,
+    legacy_irq, legacy_irq_raw, request_irq, request_percpu_irq, request_shared_irq,
     resolve_irq_source, resolve_percpu_irq, run_on_cpu_sync, set_enable, set_run_on_cpu_sync,
     set_trigger, synchronize_irq, try_legacy_irq,
 };
 #[cfg(feature = "ipi")]
 pub use ax_plat::irq::{IpiTarget, send_ipi};
+use ax_plat::irq::{handle, prepare_irq_context};
+pub use cpu_local::CpuPin;
 
 /// Returns the platform IRQ id used for inter-processor interrupts.
 #[cfg(feature = "ipi")]
@@ -33,34 +36,71 @@ pub fn ipi_irq() -> IrqId {
 /// # Warning
 ///
 /// Make sure called in an interrupt context or hypervisor VM exit handler.
-pub fn handle_irq(vector: usize) -> bool {
+pub fn handle_irq(vector: usize, origin: TrapOrigin) -> bool {
+    let origin = match origin {
+        TrapOrigin::Kernel => IrqOrigin::Kernel,
+        TrapOrigin::User => IrqOrigin::User,
+    };
     with_irq_entry(
         || prepare_irq_context(TrapVector(vector)),
-        || handle(TrapVector(vector)).is_some(),
+        || handle(TrapVector(vector), origin).is_some(),
     )
 }
 
+/// Dispatches an IRQ that was acknowledged by an architecture backend and
+/// completes its controller token before IRQ-return scheduling.
+///
+/// Hypervisors may consume the physical interrupt token while the guest is
+/// running and dispatch the already-resolved action only after dropping guest
+/// CPU ownership. This entry retains the same IRQ/preemption contract as a
+/// hardware trap without acknowledging the controller a second time.
+/// `complete` must finish the matching controller transaction without sleeping
+/// or enabling local IRQs.
+pub fn handle_acknowledged_irq(irq: IrqId, complete: impl FnOnce()) -> IrqOutcome {
+    with_irq_entry_and_completion(|| {}, || dispatch_irq(irq, IrqOrigin::Kernel), complete)
+}
+
 fn with_irq_entry<T>(prepare: impl FnOnce(), dispatch: impl FnOnce() -> T) -> T {
-    with_observed_irq_entry(prepare, dispatch, || {})
+    with_irq_entry_and_completion(prepare, dispatch, || {})
+}
+
+fn with_irq_entry_and_completion<T>(
+    prepare: impl FnOnce(),
+    dispatch: impl FnOnce() -> T,
+    complete: impl FnOnce(),
+) -> T {
+    with_observed_irq_entry(prepare, dispatch, complete, || {})
 }
 
 fn with_observed_irq_entry<T>(
     prepare: impl FnOnce(),
     dispatch: impl FnOnce() -> T,
+    complete: impl FnOnce(),
     after_preempt_release: impl FnOnce(),
 ) -> T {
-    // Keep IRQs disabled until the preemption guard has handed any pending
-    // reschedule back to the IRQ-return path. Hardware traps already enter in
-    // this state; IrqSave also covers deferred VM-exit dispatchers.
-    let irq_guard = ax_sync::IrqSaveGuard::new();
+    let mut irq_guard = ax_sync::IrqSaveGuard::new();
     prepare();
-    let preempt_guard = ax_sync::PreemptGuard::new();
+    let preempt_guard = irq_guard.disable_preempt_for_irq_return();
+    ax_sync::hardirq_enter();
     let result = dispatch();
+    ax_sync::hardirq_exit();
 
-    drop(preempt_guard); // rescheduling may occur when preemption is re-enabled.
+    finish_irq_entry(|| drop(preempt_guard), complete);
     after_preempt_release();
     drop(irq_guard);
     result
+}
+
+fn finish_irq_entry(release_preempt: impl FnOnce(), complete: impl FnOnce()) {
+    complete();
+    release_preempt(); // Explicit IRQ-return scheduling keeps local IRQs disabled.
+}
+
+/// Tests IRQ-action context for the explicitly pinned current CPU.
+#[doc(hidden)]
+#[inline(always)]
+pub fn in_irq_context_pinned(pin: &CpuPin<'_>) -> bool {
+    ax_plat::irq::in_irq_context_pinned(pin)
 }
 
 /// Installs the default ArceOS IRQ dispatcher into `ax-cpu`'s runtime hook.
@@ -69,28 +109,81 @@ fn with_observed_irq_entry<T>(
 /// [`ax_cpu::trap::dispatch_irq`] instead of relying on the `#[irq_handler]`
 /// link-time override path.
 pub fn init_common_irq_handler() {
-    let _ = set_irq_handler(handle_irq);
+    let _ = set_irq_handler(handle_trap_irq);
 }
 
-#[cfg(axtest)]
-pub(crate) struct IrqEntryStateObservation {
-    pub(crate) dispatch_irqs_enabled: bool,
-    pub(crate) after_preempt_release_irqs_enabled: bool,
-    pub(crate) return_irqs_enabled: bool,
+#[ax_percpu::def_percpu]
+static INTERRUPTED_CONTEXT: Option<ax_cpu::trap::InterruptedContext> = None;
+
+/// Returns the by-value snapshot for the current IRQ dispatch scope.
+pub fn interrupted_context() -> Option<InterruptedContext> {
+    let _irq = ax_sync::IrqSaveGuard::new();
+    // SAFETY: IRQ exclusion prevents migration and concurrent local mutation.
+    unsafe { crate::percpu::with_cpu_pin(|pin| INTERRUPTED_CONTEXT.with_current(pin, |v| *v)) }
+        .ok()
+        .flatten()
 }
 
-#[cfg(axtest)]
-pub(crate) fn observe_irq_entry_state_for_test() -> IrqEntryStateObservation {
-    let mut after_preempt_release_irqs_enabled = false;
-    let dispatch_irqs_enabled = with_observed_irq_entry(
-        || {},
-        crate::asm::irqs_enabled,
-        || after_preempt_release_irqs_enabled = crate::asm::irqs_enabled(),
-    );
+fn replace_interrupted_context(
+    next: Option<ax_cpu::trap::InterruptedContext>,
+) -> Option<ax_cpu::trap::InterruptedContext> {
+    // SAFETY: only the IRQ-dispatch closure and its guard call this function;
+    // both run with local interrupts disabled on the same CPU.
+    unsafe {
+        crate::percpu::with_cpu_pin(|pin| {
+            crate::percpu::with_exclusive_cpu(pin, |exclusive| {
+                INTERRUPTED_CONTEXT.with_current_mut(exclusive, |v| core::mem::replace(v, next))
+            })
+        })
+    }
+    .expect("IRQ dispatch requires an installed CPU area")
+}
 
-    IrqEntryStateObservation {
-        dispatch_irqs_enabled,
-        after_preempt_release_irqs_enabled,
-        return_irqs_enabled: crate::asm::irqs_enabled(),
+fn handle_trap_irq(
+    vector: usize,
+    origin: TrapOrigin,
+    context: Option<ax_cpu::trap::InterruptedContext>,
+) -> bool {
+    struct Snapshot(Option<ax_cpu::trap::InterruptedContext>);
+    impl Drop for Snapshot {
+        fn drop(&mut self) {
+            replace_interrupted_context(self.0);
+        }
+    }
+    let origin = match origin {
+        TrapOrigin::Kernel => IrqOrigin::Kernel,
+        TrapOrigin::User => IrqOrigin::User,
+    };
+    with_irq_entry(
+        || prepare_irq_context(TrapVector(vector)),
+        || {
+            let _snapshot = Snapshot(replace_interrupted_context(context));
+            handle(TrapVector(vector), origin).is_some()
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use std::{cell::RefCell, vec::Vec};
+
+    use super::finish_irq_entry;
+
+    #[test]
+    fn acknowledged_irq_completion_precedes_preempt_release() {
+        let events = RefCell::new(Vec::new());
+
+        finish_irq_entry(
+            || events.borrow_mut().push("preempt-release"),
+            || events.borrow_mut().push("controller-complete"),
+        );
+
+        assert_eq!(
+            *events.borrow(),
+            ["controller-complete", "preempt-release"],
+            "an acknowledged controller token must not remain active across IRQ-return scheduling",
+        );
     }
 }

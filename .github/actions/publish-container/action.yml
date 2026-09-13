@@ -1,0 +1,51 @@
+name: Publish container image
+description: Build and publish one TGOSKits container image with GHA caching.
+
+inputs:
+  image_name:
+    description: Full image name to publish.
+    required: true
+  dockerfile:
+    description: Dockerfile path relative to the repository root.
+    required: true
+  cache_scope:
+    description: GHA cache scope for docker build cache.
+    required: true
+  build_args:
+    description: Optional docker build arguments.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Normalize image name
+      id: prep
+      shell: bash
+      env:
+        IMAGE_NAME: ${{ inputs.image_name }}
+      run: |
+        set -euo pipefail
+        image="$(printf '%s' "$IMAGE_NAME" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+        echo "image=${image}" >> "$GITHUB_OUTPUT"
+
+    - name: Extract image metadata
+      id: meta
+      uses: docker/metadata-action@v6
+      with:
+        images: ${{ steps.prep.outputs.image }}
+        tags: |
+          type=ref,event=tag
+          type=raw,value=latest
+
+    - name: Build and push container image
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        file: ${{ inputs.dockerfile }}
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        build-args: ${{ inputs.build_args }}
+        cache-from: type=gha,scope=${{ inputs.cache_scope }}
+        cache-to: type=gha,mode=max,scope=${{ inputs.cache_scope }}

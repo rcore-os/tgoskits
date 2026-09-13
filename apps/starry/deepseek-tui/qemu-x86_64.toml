@@ -16,8 +16,18 @@ args = [
 ]
 uefi = false
 to_bin = false
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)page fault",
+    "(?i)segmentation fault",
+    "No such process \\(os error 3\\)",
+    "sys_prctl: unsupported option 23",
+]
+timeout = 120
+
+[[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_init_cmd = '''
+shell_cmd = '''
 export HOME=/root
 export USER=root
 export SHELL=/bin/sh
@@ -38,11 +48,3 @@ grep -q "deepseek" /tmp/deepseek-model-list.txt
 echo "STARRY_DEEPSEEK_STAGE_G_PASSED"
 '''
 success_regex = ["(?m)^STARRY_DEEPSEEK_STAGE_G_PASSED\\s*$"]
-fail_regex = [
-    "(?i)\\bpanic(?:ked)?\\b",
-    "(?i)page fault",
-    "(?i)segmentation fault",
-    "No such process \\(os error 3\\)",
-    "sys_prctl: unsupported option 23",
-]
-timeout = 120

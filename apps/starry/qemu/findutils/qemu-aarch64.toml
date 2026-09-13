@@ -15,8 +15,10 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/findutils-test"
-success_regex = ["(?m)^FINDUTILS TEST PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
 timeout = 15
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/findutils-test"
+success_regex = ["(?m)^FINDUTILS TEST PASSED\\s*$"]

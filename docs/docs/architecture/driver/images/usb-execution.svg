@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 920" role="img" aria-labelledby="title desc">
+<title id="title">USB 主机、拓扑与异步完成</title>
+<desc id="desc">系统提供执行器和 DMA 服务；任务、请求、TD 与 TRB 不是一一对应关系。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#2563eb"/></marker></defs>
+<rect width="1200" height="920" rx="16" fill="#f8fafc"/>
+<g font-family="Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+<text x="40" y="49" font-size="26" font-weight="700" fill="#0f172a">USB 主机、拓扑与异步完成</text>
+<text x="40" y="80" font-size="15" fill="#475569">系统提供执行器和 DMA 服务；任务、请求、TD 与 TRB 不是一一对应关系。</text>
+<rect x="40" y="110" width="340" height="150" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="141" font-size="19" font-weight="700" fill="#0f172a">系统主机管理</text>
+<text x="58" y="171" font-size="15" fill="#334155">PlatformUsbHost / USBFS</text>
+<text x="58" y="196" font-size="15" fill="#334155">初始化、设备变化与打开</text>
+<text x="58" y="221" font-size="15" fill="#334155">IRQ 绑定及 handler 接管</text>
+<text x="58" y="246" font-size="15" fill="#334155">不在 IRQ 内运行完整枚举</text>
+<rect x="430" y="110" width="340" height="150" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="141" font-size="19" font-weight="700" fill="#0f172a">USBHost 与 Core</text>
+<text x="448" y="171" font-size="15" fill="#334155">hubs / topology / inited_devices</text>
+<text x="448" y="196" font-size="15" fill="#334155">根 hub → 外部 hub → 设备</text>
+<text x="448" y="221" font-size="15" fill="#334155">DeviceAddressInfo 传递拓扑</text>
+<text x="448" y="246" font-size="15" fill="#334155">hub 增加后继续扫描下游</text>
+<rect x="820" y="110" width="340" height="150" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="141" font-size="19" font-weight="700" fill="#0f172a">Kernel / DeviceDma</text>
+<text x="838" y="171" font-size="15" fill="#334155">KernelOp 继承 DmaOp</text>
+<text x="838" y="196" font-size="15" fill="#334155">mask、coherency、domain</text>
+<text x="838" y="221" font-size="15" fill="#334155">环、上下文与数据缓冲</text>
+<text x="838" y="246" font-size="15" fill="#334155">CPU 地址不等于 BusAddr</text>
+<rect x="40" y="355" width="340" height="160" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="386" font-size="19" font-weight="700" fill="#0f172a">请求任务与设备端点</text>
+<text x="58" y="416" font-size="15" fill="#334155">控制 / 数据请求状态</text>
+<text x="58" y="441" font-size="15" fill="#334155">命令、取消及端点恢复</text>
+<text x="58" y="466" font-size="15" fill="#334155">保存缓冲与请求身份</text>
+<text x="58" y="491" font-size="15" fill="#334155">poll 等待后继续执行</text>
+<rect x="430" y="355" width="340" height="160" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="386" font-size="19" font-weight="700" fill="#0f172a">Command / Transfer Ring</text>
+<text x="448" y="416" font-size="15" fill="#334155">CoherentArray 保存 TRB</text>
+<text x="448" y="441" font-size="15" fill="#334155">Link TRB 与 cycle 回绕</text>
+<text x="448" y="466" font-size="15" fill="#334155">按 TD 发布并通知 doorbell</text>
+<text x="448" y="491" font-size="15" fill="#334155">SendRing 关联完成槽</text>
+<rect x="820" y="355" width="340" height="160" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="386" font-size="19" font-weight="700" fill="#0f172a">xHCI 硬件</text>
+<text x="838" y="416" font-size="15" fill="#334155">消费描述符并执行 DMA</text>
+<text x="838" y="441" font-size="15" fill="#334155">Slot Context 与 EP0</text>
+<text x="838" y="466" font-size="15" fill="#334155">根端口与 Route String 分离</text>
+<text x="838" y="491" font-size="15" fill="#334155">产生命令、传输和端口事件</text>
+<rect x="40" y="610" width="340" height="160" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="641" font-size="19" font-weight="700" fill="#0f172a">Finished 与 TWaiter</text>
+<text x="58" y="671" font-size="15" fill="#334155">按总线地址关联完成槽</text>
+<text x="58" y="696" font-size="15" fill="#334155">EMPTY / WRITING / READY</text>
+<text x="58" y="721" font-size="15" fill="#334155">登记 waker 后再次检查结果</text>
+<text x="58" y="746" font-size="15" fill="#334155">结果所有权与唤醒分离</text>
+<rect x="430" y="610" width="340" height="160" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="641" font-size="19" font-weight="700" fill="#0f172a">完成与端点路由</text>
+<text x="448" y="671" font-size="15" fill="#334155">cmd_finished</text>
+<text x="448" y="696" font-size="15" fill="#334155">TransferResultHandler</text>
+<text x="448" y="721" font-size="15" fill="#334155">slot / endpoint → 队列</text>
+<text x="448" y="746" font-size="15" fill="#334155">配置变化时替换完成路由</text>
+<rect x="820" y="610" width="340" height="160" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="641" font-size="19" font-weight="700" fill="#0f172a">EventHandler / Event Ring</text>
+<text x="838" y="671" font-size="15" fill="#334155">SpinLock 保护事件状态</text>
+<text x="838" y="696" font-size="15" fill="#334155">读取 cycle 与消费事件</text>
+<text x="838" y="721" font-size="15" fill="#334155">更新 ERDP 并处理 IRQ</text>
+<text x="838" y="746" font-size="15" fill="#334155">发布完成或端口变化通知</text>
+<polyline points="380,190 430,190" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="385" y="173" font-size="14" fill="#1d4ed8">管理</text>
+<polyline points="600,260 600,305 210,305 210,355" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="368" y="295" font-size="14" fill="#1d4ed8">设备操作</text>
+<polyline points="990,260 990,307 675,307 675,355" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="767" y="295" font-size="14" fill="#1d4ed8">DMA 能力</text>
+<polyline points="380,435 430,435" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="385" y="417" font-size="14" fill="#1d4ed8">提交</text>
+<polyline points="770,435 820,435" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="776" y="417" font-size="14" fill="#1d4ed8">发布</text>
+<polyline points="990,515 990,610" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1005" y="565" font-size="14" fill="#1d4ed8">事件</text>
+<polyline points="820,690 770,690" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="776" y="673" font-size="14" fill="#1d4ed8">分发</text>
+<polyline points="430,690 380,690" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="386" y="673" font-size="14" fill="#1d4ed8">完成</text>
+<polyline points="210,610 210,515" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="223" y="565" font-size="14" fill="#1d4ed8">wake</text>
+<text x="40" y="855" font-size="15" fill="#475569">EventHandler 有锁，完成槽有原子状态；异步接口不等于整条数据路径无锁。</text>
+<text x="40" y="880" font-size="15" fill="#475569">丢弃 future 不等于 DMA 停止；取消需要端点协议与终态资源交付。</text>
+</g>
+</svg>

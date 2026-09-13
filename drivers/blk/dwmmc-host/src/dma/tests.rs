@@ -81,14 +81,6 @@ fn block_request_slot_rejects_second_request_until_completed() {
 }
 
 #[test]
-fn block_request_can_cross_queue_thread_boundary() {
-    fn assert_send<T: Send>() {}
-
-    assert_send::<BlockRequest>();
-    assert_send::<BlockRequestSlot>();
-}
-
-#[test]
 fn stopping_idmac_preserves_controller_completion_irqs() {
     let mut mmio = [0u32; 256];
     let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();

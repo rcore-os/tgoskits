@@ -418,25 +418,6 @@ mod tests {
         assert!(recall_gate_failed(79.9, Some(80)));
     }
 
-    #[test]
-    fn agent_options_apply_to_review_and_grade() {
-        let args = RunArgs {
-            cases: Vec::new(),
-            prs: Vec::new(),
-            agent: AgentKind::Claude,
-            model: Some(String::new()),
-            reasoning_effort: "effort with spaces".into(),
-            timeout_secs: 7,
-            min_recall: None,
-            output: None,
-        };
-
-        let options = resolve_agent_options(&args);
-        assert_eq!(options.model.as_deref(), Some(""));
-        assert_eq!(options.reasoning_effort, "effort with spaces");
-        assert_eq!(options.timeout_secs, 7);
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn mock_agents_write_artifacts_and_reject_invalid_json() {
@@ -534,16 +515,16 @@ mod tests {
     fn create_test_case(workspace: &Path) -> BenchCase {
         fs::write(workspace.join("AGENTS.md"), "current rules\n").unwrap();
         fs::write(workspace.join("CLAUDE.md"), "see AGENTS.md\n").unwrap();
-        fs::create_dir_all(workspace.join("book/guideline")).unwrap();
+        fs::create_dir_all(workspace.join(".agents/skills/review-single-pr")).unwrap();
         fs::write(
-            workspace.join("book/guideline/code-quality.md"),
-            "current guideline\n",
+            workspace.join(".agents/skills/review-single-pr/SKILL.md"),
+            "current review skill\n",
         )
         .unwrap();
-        fs::create_dir_all(workspace.join(".claude/skills/review-single-pr")).unwrap();
+        fs::create_dir_all(workspace.join(".agents/skills/rust-code-quality")).unwrap();
         fs::write(
-            workspace.join(".claude/skills/review-single-pr/SKILL.md"),
-            "current review skill\n",
+            workspace.join(".agents/skills/rust-code-quality/SKILL.md"),
+            "current code-quality skill\n",
         )
         .unwrap();
         git(workspace, &["init", "--quiet"]);

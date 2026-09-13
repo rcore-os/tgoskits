@@ -5,7 +5,7 @@ use axdevice::*;
 use axvm_types::VmArchVcpuOps;
 
 use crate::{
-    InterruptTriggerMode,
+    AxVmResult, InterruptTriggerMode,
     arch::x86_64::{
         X86InterruptDomain, X86InterruptDomainRuntimeKey,
         host_irq::{self as irq, IrqSource},
@@ -16,6 +16,9 @@ use crate::{
 pub(super) const IOAPIC_GSI_COUNT: usize = 24;
 
 const PIT_TIMER_GSI: usize = 0;
+// MPS mixed PIC/IOAPIC tables conventionally route IRQ0 to INTIN2, while
+// the ACPI table used by the same machine routes it directly to GSI0.
+const MPS_PIT_TIMER_GSI: usize = 2;
 const COM1_GSI: usize = 4;
 type IoApicForwardingActivator = fn();
 
@@ -91,7 +94,7 @@ fn host_irq_forwarding_leases() -> IrqSafeMutexGuard<'static, Vec<HostIrqLease>>
 }
 
 fn should_register_ioapic_gsi_hook(gsi: usize) -> bool {
-    gsi < IOAPIC_GSI_COUNT && gsi != PIT_TIMER_GSI && gsi != COM1_GSI
+    gsi < IOAPIC_GSI_COUNT && gsi != PIT_TIMER_GSI && gsi != MPS_PIT_TIMER_GSI && gsi != COM1_GSI
 }
 
 fn host_irq_is_guest_assignable(
@@ -105,7 +108,7 @@ fn ioapic_irq_hook_gsis() -> impl Iterator<Item = usize> {
     (0..IOAPIC_GSI_COUNT).filter(|gsi| should_register_ioapic_gsi_hook(*gsi))
 }
 
-fn interrupt_domain_for_vm(vm: &crate::AxVMRef) -> Option<std::sync::Arc<X86InterruptDomain>> {
+fn interrupt_domain_for_vm(vm: &crate::AxVM) -> Option<std::sync::Arc<X86InterruptDomain>> {
     vm.get_devices()
         .ok()?
         .services()
@@ -113,6 +116,13 @@ fn interrupt_domain_for_vm(vm: &crate::AxVMRef) -> Option<std::sync::Arc<X86Inte
         .ok()
 }
 
+pub(super) fn vcpu_kick_for_vm(
+    vm: &crate::AxVM,
+) -> Option<std::sync::Arc<crate::irq::deferred::DeferredVcpuKick>> {
+    interrupt_domain_for_vm(vm).map(|domain| domain.vcpu_kick())
+}
+
+#[cfg(feature = "host-fs")]
 fn require_interrupt_domain(
     vm: &crate::AxVMRef,
     operation: &'static str,
@@ -123,6 +133,7 @@ fn require_interrupt_domain(
     })
 }
 
+#[cfg(feature = "host-fs")]
 fn forwarding_route_error(
     vm_id: usize,
     guest_gsi: usize,
@@ -207,6 +218,7 @@ impl X86InterruptDomain {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "host-fs"))]
     fn register_forwarding_activator(
         &self,
         guest_gsi: usize,
@@ -442,16 +454,18 @@ impl X86InterruptDomain {
     }
 }
 
-pub fn start_deferred_irq_delivery(vm: &VMRef) {
+pub fn start_deferred_irq_delivery(vm: &crate::AxVM) -> AxVmResult {
     if let Some(domain) = interrupt_domain_for_vm(vm) {
-        domain.start_kick_worker();
+        domain.start_kick_worker()?;
     }
+    Ok(())
 }
 
-pub fn stop_deferred_irq_delivery(vm: &VMRef) {
+pub fn stop_deferred_irq_delivery(vm: &crate::AxVM) -> AxVmResult {
     if let Some(domain) = interrupt_domain_for_vm(vm) {
-        domain.stop_kick_worker();
+        domain.stop_kick_worker()?;
     }
+    Ok(())
 }
 
 pub fn drain_pending_wired_irqs(vm: &VMRef, vcpu: &VCpuRef) {
@@ -504,20 +518,8 @@ pub fn drain_pending_wired_irqs(vm: &VMRef, vcpu: &VCpuRef) {
     }
 }
 
-pub fn register_ioapic_irq_forwarding_route(
-    vm: &crate::AxVMRef,
-    guest_gsi: usize,
-    host_irq: irq_framework::IrqId,
-) -> crate::AxVmResult {
-    register_ioapic_irq_forwarding_route_with_trigger(
-        vm,
-        guest_gsi,
-        host_irq,
-        InterruptTriggerMode::EdgeTriggered,
-    )
-}
-
-pub fn register_ioapic_irq_forwarding_route_with_trigger(
+#[cfg(feature = "host-fs")]
+pub(crate) fn register_ioapic_irq_forwarding_route_with_trigger(
     vm: &crate::AxVMRef,
     guest_gsi: usize,
     host_irq: irq_framework::IrqId,
@@ -542,7 +544,8 @@ pub fn register_ioapic_irq_forwarding_route_with_trigger(
     Ok(())
 }
 
-pub fn register_ioapic_irq_forwarding_activator(
+#[cfg(feature = "host-fs")]
+pub(crate) fn register_ioapic_irq_forwarding_activator(
     vm: &crate::AxVMRef,
     guest_gsi: usize,
     activator: IoApicForwardingActivator,
@@ -558,56 +561,6 @@ pub fn register_ioapic_irq_forwarding_activator(
     domain
         .register_forwarding_activator(guest_gsi, activator)
         .map_err(|error| forwarding_route_error(vm.id(), guest_gsi, "activator", error))
-}
-
-pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
-    if !vm.uses_passthrough_address_space() {
-        return;
-    }
-
-    let now_ns = ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos();
-    let Ok(devices) = vm.get_devices() else {
-        return;
-    };
-    if !devices
-        .services()
-        .require::<X86PitServiceKey>()
-        .is_ok_and(|pit| pit.consume_irq0_if_due(now_ns))
-    {
-        return;
-    }
-    if let Some(vector) = devices
-        .services()
-        .require::<X86PicServiceKey>()
-        .ok()
-        .and_then(|pic| pic.pulse_irq(PIT_TIMER_GSI as u8))
-    {
-        vcpu.get_arch_vcpu()
-            .inject_interrupt_with_trigger(vector as _, InterruptTriggerMode::EdgeTriggered)
-            .unwrap();
-        return;
-    }
-
-    let Some(irq) = devices
-        .services()
-        .require::<X86InterruptDomainKey>()
-        .ok()
-        .and_then(|ioapic| ioapic.assert_gsi(PIT_TIMER_GSI))
-    else {
-        trace!("x86 PIT IRQ0 due but vIOAPIC GSI0 is not ready");
-        return;
-    };
-
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            irq.vector as _,
-            if irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
@@ -973,15 +926,15 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use ax_std::os::arceos::sync::{IrqSafeMutex, RawSpinLock as Mutex};
+    use ax_std::os::arceos::sync::RawSpinLock as Mutex;
     use axdevice::X86IoApicDeviceOps;
 
     use super::{
-        COM1_GSI, IOAPIC_GSI_COUNT, PIT_TIMER_GSI, acquire_host_irq_forwarding_lease, gsi_bit,
-        host_irq_forwarding_lease_count, host_irq_is_guest_assignable, host_irq_to_raw,
-        ioapic_irq_hook_gsis, raw_to_host_irq, release_host_irq_forwarding_leases_for_vm,
-        reset_host_irq_forwarding_leases, should_rearm_forwarded_host_gsi_after_eoi,
-        should_register_ioapic_gsi_hook,
+        COM1_GSI, IOAPIC_GSI_COUNT, MPS_PIT_TIMER_GSI, PIT_TIMER_GSI,
+        acquire_host_irq_forwarding_lease, gsi_bit, host_irq_forwarding_lease_count,
+        host_irq_is_guest_assignable, host_irq_to_raw, ioapic_irq_hook_gsis, raw_to_host_irq,
+        release_host_irq_forwarding_leases_for_vm, reset_host_irq_forwarding_leases,
+        should_rearm_forwarded_host_gsi_after_eoi, should_register_ioapic_gsi_hook,
     };
     use crate::{InterruptTriggerMode, arch::x86_64::X86InterruptDomain};
 
@@ -1017,10 +970,13 @@ mod tests {
     }
 
     #[test]
-    fn host_irq_lease_table_uses_an_irq_safe_lock() {
-        fn assert_irq_safe_lock<T: ?Sized>(_: &IrqSafeMutex<T>) {}
+    fn local_apic_timer_reuses_the_vm_owned_deferred_kick_publisher() {
+        let domain = new_domain();
+        let timer_kick = domain.vcpu_kick();
 
-        assert_irq_safe_lock(&super::HOST_IRQ_FORWARDING_LEASES);
+        timer_kick.publish_from_irq(0).unwrap();
+
+        assert_eq!(domain.vcpu_kick().take_pending_for_test(), 1);
     }
 
     fn reset_forwarding_routes() {
@@ -1038,6 +994,7 @@ mod tests {
     #[test]
     fn pit_gsi_uses_synthetic_injection_not_host_irq_hook() {
         assert!(!should_register_ioapic_gsi_hook(PIT_TIMER_GSI));
+        assert!(!should_register_ioapic_gsi_hook(MPS_PIT_TIMER_GSI));
     }
 
     #[test]

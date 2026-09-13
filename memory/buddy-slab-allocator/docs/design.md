@@ -32,7 +32,7 @@
 flowchart TD
     GA["GlobalAllocator"] --> B["BuddyAllocator"]
     GA --> SP["SlabPoolTrait"]
-    GA --> EI["EII hooks"]
+    GA --> EI["BuddySlabIf"]
     EI --> SP
     EI --> V2P["virt_to_phys()"]
 
@@ -59,7 +59,8 @@ flowchart TD
 
 物理地址只在 `alloc_pages_lowmem()` 里参与判断：
 
-- 候选块的虚拟地址通过 `eii::virt_to_phys()` 翻译成物理地址。
+- 候选块的虚拟地址通过 `interface::virt_to_phys()` 翻译成物理地址；该入口由
+  `BuddySlabIf` 平台接口提供。
 - 只有物理地址低于 `4 GiB` 的块才会被当作 DMA32 候选。
 
 ### 2.2 容量统计语义
@@ -84,7 +85,7 @@ flowchart TD
 当前实现支持两种 region 进入 allocator 的方式：
 
 - `GlobalAllocator::init(region)`
-  注册首个 region；slab 池由外部通过 `eii::slab_pool()` 提供。
+  注册首个 region；slab 池由外部通过 `interface::slab_pool()` 提供。
 - `GlobalAllocator::add_region(region)`
   在运行时追加新的 region，只扩展 buddy 后端。
 
@@ -124,7 +125,8 @@ flowchart LR
 5. 将 allocator 标记为已初始化。
 
 当前实现按“系统里只有唯一一套全局 allocator”建模；slab 池通过
-`eii::slab_pool()` 接入，而不是存放在 `GlobalAllocator` 内部。
+`BuddySlabIf::slab_pool()` 的生成调用入口接入，而不是存放在
+`GlobalAllocator` 内部。
 
 `GlobalAllocator::add_region()` 的步骤更简单：
 

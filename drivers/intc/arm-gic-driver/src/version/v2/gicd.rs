@@ -94,8 +94,8 @@ impl DistributorReg {
         let num_regs = max_interrupts.div_ceil(32) as usize;
         let num_regs = num_regs.min(self.ICENABLER.len());
 
-        for i in 0..num_regs {
-            self.ICENABLER[i].set(u32::MAX);
+        for register in self.ICENABLER.iter().take(num_regs) {
+            register.set(u32::MAX);
         }
     }
 
@@ -105,8 +105,8 @@ impl DistributorReg {
         let num_regs = max_interrupts.div_ceil(32) as usize;
         let num_regs = num_regs.min(self.ICPENDR.len());
 
-        for i in 0..num_regs {
-            self.ICPENDR[i].set(u32::MAX);
+        for register in self.ICPENDR.iter().take(num_regs) {
+            register.set(u32::MAX);
         }
     }
 
@@ -116,8 +116,8 @@ impl DistributorReg {
         let num_regs = max_interrupts.div_ceil(32) as usize;
         let num_regs = num_regs.min(self.ICACTIVER.len());
 
-        for i in 0..num_regs {
-            self.ICACTIVER[i].set(u32::MAX);
+        for register in self.ICACTIVER.iter().take(num_regs) {
+            register.set(u32::MAX);
         }
     }
 
@@ -127,8 +127,8 @@ impl DistributorReg {
         let num_regs = max_interrupts.div_ceil(32) as usize;
         let num_regs = num_regs.min(self.IGROUPR.len());
 
-        for i in 0..num_regs {
-            self.IGROUPR[i].set(0);
+        for register in self.IGROUPR.iter().take(num_regs) {
+            register.set(0);
         }
     }
 
@@ -137,16 +137,16 @@ impl DistributorReg {
         // SGI and PPI: 32 interrupts
         let num_interrupts = 32;
 
-        for i in 0..num_interrupts {
-            self.IPRIORITYR[i].set(0xA0);
+        for register in self.IPRIORITYR.iter().take(num_interrupts) {
+            register.set(0xA0);
         }
     }
 
     /// Set default priorities for SPI (ID 32..max_interrupts-1)
     pub(crate) fn set_default_spi_priorities(&self, max_interrupts: u32) {
         let total_interrupts = (max_interrupts as usize).min(self.IPRIORITYR.len());
-        for i in 32..total_interrupts {
-            self.IPRIORITYR[i].set(0xA0);
+        for register in self.IPRIORITYR.iter().take(total_interrupts).skip(32) {
+            register.set(0xA0);
         }
     }
 
@@ -163,8 +163,8 @@ impl DistributorReg {
         }
 
         let total_interrupts = (max_interrupts as usize).min(self.ITARGETSR.len());
-        for i in 32..total_interrupts {
-            self.ITARGETSR[i].set(bsp_target.as_u8());
+        for register in self.ITARGETSR.iter().take(total_interrupts).skip(32) {
+            register.set(bsp_target.as_u8());
         }
     }
 
@@ -176,8 +176,8 @@ impl DistributorReg {
 
         // Configure all interrupts as level-sensitive (0x0) by default
         // SGIs are always edge-triggered, but we can set the bits anyway
-        for i in 0..num_regs {
-            self.ICFGR[i].set(0);
+        for register in self.ICFGR.iter().take(num_regs) {
+            register.set(0);
         }
     }
 

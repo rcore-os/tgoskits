@@ -105,20 +105,22 @@ pub(crate) fn prepare_grouped_case_assets_sync(
         result?;
     }
 
-    let timing_stage = timing::TimingStage::new(
-        "qemu-asset-grouped",
-        [
-            ("case", case.display_name.clone()),
-            ("phase", "write-grouped-runner".to_string()),
-        ],
-    );
-    let runner_commands = selected_grouped_runner_commands(case, &c_subcases)?;
-    case_assets::write_grouped_case_runner_script(
-        &layout.overlay_dir,
-        &runner_commands,
-        &config.grouped_runner,
-    )?;
-    timing_stage.finish();
+    if config.grouped_execution.runner().is_some() {
+        let timing_stage = timing::TimingStage::new(
+            "qemu-asset-grouped",
+            [
+                ("case", case.display_name.clone()),
+                ("phase", "write-grouped-runner".to_string()),
+            ],
+        );
+        let runner_commands = selected_grouped_runner_commands(case, &c_subcases)?;
+        case_assets::write_grouped_case_runner(
+            &layout.overlay_dir,
+            &runner_commands,
+            &config.grouped_execution,
+        )?;
+        timing_stage.finish();
+    }
     let timing_stage = timing::TimingStage::new(
         "qemu-asset-grouped",
         [
@@ -126,7 +128,11 @@ pub(crate) fn prepare_grouped_case_assets_sync(
             ("phase", "sync-runtime-deps".to_string()),
         ],
     );
-    crate::rootfs::runtime::sync_runtime_dependencies(&layout.staging_root, &layout.overlay_dir)?;
+    crate::rootfs::runtime::sync_runtime_dependencies(
+        arch,
+        &layout.staging_root,
+        &layout.overlay_dir,
+    )?;
     timing_stage.finish();
     let timing_stage = timing::TimingStage::new(
         "qemu-asset-grouped",
@@ -171,6 +177,10 @@ pub(super) fn selected_grouped_c_subcases<'a>(
             .collect());
     }
 
+    if case.grouped_command_selection == GroupedCommandSelection::PreserveAll {
+        return Ok(subcases);
+    }
+
     let Some(command_names) = direct_usr_bin_command_names(&case.test_commands) else {
         return Ok(subcases);
     };
@@ -213,6 +223,10 @@ pub(super) fn selected_grouped_runner_commands(
     else {
         return Ok(case.test_commands.clone());
     };
+
+    if case.grouped_command_selection == GroupedCommandSelection::PreserveAll {
+        return Ok(case.test_commands.clone());
+    }
 
     let Some(command_names) = direct_usr_bin_command_names(&case.test_commands) else {
         return Ok(case.test_commands.clone());
@@ -330,16 +344,6 @@ pub(super) fn prepare_grouped_c_subcases_sync(
     layout: &case_assets::CaseAssetLayout,
     config: &CaseAssetConfig,
 ) -> anyhow::Result<()> {
-    let timing_stage = timing::TimingStage::new(
-        "grouped-c",
-        [
-            ("case", case.display_name.clone()),
-            ("phase", "find-qemu-user".to_string()),
-        ],
-    );
-    let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
-    timing_stage.finish();
-
     let root_prebuild_script = case.case_dir.join(CASE_PREBUILD_SCRIPT_NAME);
     if root_prebuild_script.is_file() {
         let timing_stage = timing::TimingStage::new(
@@ -434,7 +438,7 @@ pub(super) fn prepare_grouped_c_subcases_sync(
             ("phase", "prepare-cross-env".to_string()),
         ],
     );
-    let build_env = prepare_host_cross_build_env(arch, layout, &qemu_runner)?;
+    let build_env = prepare_host_cross_build_env(arch, layout)?;
     timing_stage.finish();
 
     if grouped_c_root_project_path(case).is_file() {
@@ -653,6 +657,7 @@ pub(super) fn subcase_as_case(case: &TestQemuCase, subcase: &TestQemuSubcase) ->
         case_dir: subcase.case_dir.clone(),
         qemu_config_path: case.qemu_config_path.clone(),
         test_commands: Vec::new(),
+        grouped_command_selection: Default::default(),
         host_symbolize_success_regex: Vec::new(),
         host_http_server: case.host_http_server.clone(),
         subcases: Vec::new(),

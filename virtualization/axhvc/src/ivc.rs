@@ -8,6 +8,12 @@ use core::fmt;
 
 use crate::HyperCallCode;
 
+/// Special `target_vm_id` value asking Axvisor to notify the channel peer.
+///
+/// For publisher callers, Axvisor resolves this to the channel's sole
+/// subscriber. For subscriber callers, Axvisor resolves it to the publisher VM.
+pub const IVC_NOTIFY_PEER: usize = usize::MAX;
+
 /// A guest physical address passed through the Axvisor IVC ABI.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -304,5 +310,13 @@ mod tests {
 
         assert_eq!(invocation.code, HyperCallCode::HIVCNotify);
         assert_eq!(invocation.args, [1, 0x33, 2, 0, 0, 0]);
+    }
+
+    #[test]
+    fn notify_peer_invocation_uses_peer_sentinel() {
+        let invocation = notify_channel_invocation(1, 0x33, IVC_NOTIFY_PEER);
+
+        assert_eq!(invocation.code, HyperCallCode::HIVCNotify);
+        assert_eq!(invocation.args, [1, 0x33, usize::MAX, 0, 0, 0]);
     }
 }

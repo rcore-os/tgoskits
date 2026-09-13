@@ -68,7 +68,7 @@ test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-svm.toml
 
 这两个首阶段块运行时 smoke 配置不启动 guest，而是保留 VMX/SVM
 宿主初始化并直接验证 Axvisor 宿主 NVMe 根文件系统。guest block ABI
-继续由独立 VM 配置维护，不纳入本次 NVMe 运行时验收。
+继续由独立 VM 配置维护，不属于 NVMe 运行时配置。
 
 ## 4. 默认配置
 

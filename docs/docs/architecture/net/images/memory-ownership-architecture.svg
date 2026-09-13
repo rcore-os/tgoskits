@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 660" role="img" aria-labelledby="title desc">
+  <title id="title">ax-net packet 内存与所有权边界</title>
+  <desc id="desc">用户缓冲区、smoltcp socket buffer、Router 协议侧缓冲区、设备工作线程有界队列和驱动 DMA/ring 内存之间的所有权与复制边界。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#50657d"/></marker>
+    <style>
+      .panel{fill:#f8fafc;stroke:#91a0b2;stroke-width:2}.user{fill:#f0edff;stroke:#7457b6;stroke-width:2}
+      .socket{fill:#eaf3ff;stroke:#3478c0;stroke-width:2}.core{fill:#eaf8ef;stroke:#398a55;stroke-width:2}
+      .queue{fill:#fff4df;stroke:#c98216;stroke-width:2}.driver{fill:#fff0f0;stroke:#bf5555;stroke-width:2}
+      .title{font:700 24px sans-serif;fill:#213247}.heading{font:700 17px sans-serif;fill:#31465f}
+      .text{font:600 14px sans-serif;fill:#26384d}.small{font:13px sans-serif;fill:#455a72}
+      .rx{fill:none;stroke:#3478c0;stroke-width:2.2;marker-end:url(#arrow)}
+      .tx{fill:none;stroke:#c16d19;stroke-width:2.2;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <text class="title" x="35" y="40">packet 在五个所有权域之间移动</text>
+
+  <rect class="panel" x="25" y="75" width="225" height="500" rx="18"/><text class="heading" x="50" y="108">用户内存</text>
+  <rect class="user" x="55" y="165" width="165" height="78" rx="11"/><text class="text" x="91" y="196">recv/read buffer</text><text class="small" x="89" y="221">调用方提供可写 slice</text>
+  <rect class="user" x="55" y="395" width="165" height="78" rx="11"/><text class="text" x="91" y="426">send/write buffer</text><text class="small" x="88" y="451">调用期间只读借用</text>
+
+  <rect class="panel" x="280" y="75" width="225" height="500" rx="18"/><text class="heading" x="305" y="108">SocketSet</text>
+  <rect class="socket" x="310" y="165" width="165" height="78" rx="11"/><text class="text" x="334" y="196">TCP byte buffer</text><text class="small" x="330" y="221">stream ring ownership</text>
+  <rect class="socket" x="310" y="395" width="165" height="78" rx="11"/><text class="text" x="322" y="426">UDP / raw packet buffer</text><text class="small" x="335" y="451">packet metadata + bytes</text>
+
+  <rect class="panel" x="535" y="75" width="250" height="500" rx="18"/><text class="heading" x="560" y="108">串行协议核心</text>
+  <rect class="core" x="570" y="145" width="180" height="88" rx="11"/><text class="text" x="607" y="177">Router.rx_buffer</text><text class="small" x="596" y="202">InterfaceId + IP packet</text>
+  <rect class="core" x="570" y="275" width="180" height="88" rx="11"/><text class="text" x="601" y="307">Interface::poll</text><text class="small" x="594" y="332">协议解析与包生成</text>
+  <rect class="core" x="570" y="405" width="180" height="88" rx="11"/><text class="text" x="607" y="437">Router.tx_buffer</text><text class="small" x="594" y="462">dispatch 选择出口</text>
+
+  <rect class="panel" x="815" y="75" width="240" height="500" rx="18"/><text class="heading" x="840" y="108">设备 worker 队列</text>
+  <rect class="queue" x="850" y="165" width="170" height="88" rx="11"/><text class="text" x="876" y="197">shared RX queue</text><text class="small" x="873" y="222">RxPacket + inline bytes</text>
+  <rect class="queue" x="850" y="395" width="170" height="88" rx="11"/><text class="text" x="865" y="427">per-device TX queue</text><text class="small" x="874" y="452">TxPacket + next hop</text>
+
+  <rect class="panel" x="1085" y="75" width="210" height="500" rx="18"/><text class="heading" x="1110" y="108">驱动 / 网卡</text>
+  <rect class="driver" x="1115" y="165" width="150" height="88" rx="11"/><text class="text" x="1142" y="197">RX ring / DMA</text><text class="small" x="1141" y="222">NetRxBuffer</text>
+  <rect class="driver" x="1115" y="395" width="150" height="88" rx="11"/><text class="text" x="1142" y="427">TX ring / DMA</text><text class="small" x="1141" y="452">NetTxBuffer</text>
+
+  <path class="rx" d="M1115 209 H1020"/><path class="rx" d="M850 209 H750"/>
+  <path class="rx" d="M660 233 V275"/><path class="rx" d="M570 319 H500 V204 H475"/><path class="rx" d="M310 204 H220"/>
+  <path class="tx" d="M220 434 H310"/><path class="tx" d="M475 434 H535 V319 H570"/>
+  <path class="tx" d="M660 363 V405"/><path class="tx" d="M750 449 H850"/><path class="tx" d="M1020 439 H1115"/>
+
+  <text class="small" x="1030" y="192">copy</text><text class="small" x="765" y="192">copy</text>
+  <text class="small" x="506" y="190">protocol store</text><text class="small" x="237" y="190">copy</text>
+  <text class="small" x="237" y="421">copy</text><text class="small" x="500" y="420">socket TX</text>
+  <text class="small" x="765" y="436">dispatch copy</text><text class="small" x="1030" y="426">L2 frame copy</text>
+  <text class="small" x="35" y="625">蓝色为 RX 方向，橙色为 TX 方向；loopback 跳过设备队列和驱动内存，直接在 Router 内回注。</text>
+</svg>

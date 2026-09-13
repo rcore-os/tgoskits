@@ -80,6 +80,11 @@ impl<'a> IvcProducer<'a> {
     ) -> Result<(), IvcRingError> {
         self.ring.send(kind, sequence, payload)
     }
+
+    /// Returns whether at least one ring slot is currently available.
+    pub fn can_send(&self) -> bool {
+        self.ring.can_send()
+    }
 }
 
 /// Receiving end of one SPSC ring.
@@ -113,5 +118,10 @@ impl<'a> IvcConsumer<'a> {
     /// known by this protocol version.
     pub fn try_recv(&mut self, payload: &mut [u8]) -> Result<Option<IvcMessage>, IvcRingError> {
         self.ring.try_recv(payload)
+    }
+
+    /// Returns whether a pending message is currently visible.
+    pub fn can_recv(&self) -> bool {
+        self.ring.can_recv()
     }
 }

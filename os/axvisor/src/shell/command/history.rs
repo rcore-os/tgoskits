@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::io::prelude::*;
+use std::io::Write;
 use std::{string::String, vec::Vec};
 
 pub struct CommandHistory {
@@ -65,18 +65,19 @@ impl CommandHistory {
     }
 }
 
-#[allow(unused_must_use)]
-pub fn clear_line_and_redraw(
-    stdout: &mut dyn Write,
-    prompt: &str,
-    content: &str,
-    cursor_pos: usize,
-) {
-    write!(stdout, "\r");
-    write!(stdout, "\x1b[2K");
-    write!(stdout, "{prompt}{content}");
+pub fn redraw_line(prompt: &str, content: &str, cursor_pos: usize) -> Vec<u8> {
+    let mut output = Vec::with_capacity(
+        prompt
+            .len()
+            .saturating_add(content.len())
+            .saturating_add(16),
+    );
+    output.extend_from_slice(b"\r\x1b[2K");
+    output.extend_from_slice(prompt.as_bytes());
+    output.extend_from_slice(content.as_bytes());
     if cursor_pos < content.len() {
-        write!(stdout, "\x1b[{}D", content.len() - cursor_pos);
+        write!(output, "\x1b[{}D", content.len() - cursor_pos)
+            .expect("writing into Vec cannot fail");
     }
-    stdout.flush();
+    output
 }

@@ -1,8 +1,8 @@
 /*
  * clone3-badsize: trigger the StarryOS clone3 size handling bug.
  *
- * Linux-compatible behavior: clone3 should ignore unknown trailing bytes in
- * the user-supplied struct and either succeed or return a normal errno.
+ * Linux-compatible behavior: clone3 accepts a zero-filled unknown extension
+ * to the user-supplied struct.
  * StarryOS bug: a size larger than struct clone_args overflows the kernel
  * buffer slice and can panic the kernel.
  */
@@ -34,14 +34,18 @@ struct clone_args {
     uint64_t cgroup;
 };
 
+struct clone_args_extended {
+    struct clone_args args;
+    uint64_t extension;
+};
+
 static int do_clone3_overlong(void)
 {
-    struct clone_args args;
+    struct clone_args_extended args;
     memset(&args, 0, sizeof(args));
-    args.exit_signal = SIGCHLD;
+    args.args.exit_signal = SIGCHLD;
 
-    size_t size = sizeof(args) + 8;
-    long ret = syscall(SYS_clone3, &args, size);
+    long ret = syscall(SYS_clone3, &args, sizeof(args));
     if (ret < 0) {
         printf("clone3 returned errno=%d (%s)\n", errno, strerror(errno));
         return 1;
@@ -68,7 +72,7 @@ static int do_clone3_overlong(void)
 int main(void)
 {
     printf("=== clone3-badsize ===\n");
-    printf("Calling clone3 with size larger than struct clone_args...\n");
+    printf("Calling clone3 with a zero-filled extension...\n");
 
     if (do_clone3_overlong() != 0) {
         printf("TEST FAILED\n");

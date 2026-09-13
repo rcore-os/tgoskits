@@ -1,3 +1,6 @@
+#![feature(core_io_borrowed_buf)]
+#![feature(core_io)]
+
 use ax_io::{BufReader, BufWriter, Cursor, SeekFrom, empty, prelude::*, repeat, sink};
 
 #[test]
@@ -218,4 +221,45 @@ fn test_small_read_from() {
     let mut buf: &mut [u8] = &mut [0; 5];
 
     assert_eq!(buf.read_from(&mut reader).unwrap(), 3);
+}
+
+#[test]
+fn slice_transfers_advance_only_the_completed_prefix() {
+    let mut source = &b"abcdef"[..];
+    let mut prefix = [0; 2];
+    assert_eq!(source.write_to(&mut prefix.as_mut_slice()).unwrap(), 2);
+    assert_eq!(&prefix, b"ab");
+    assert_eq!(source, b"cdef");
+    assert_eq!(source.write_to(&mut [].as_mut_slice()).unwrap(), 0);
+    assert_eq!(source, b"cdef");
+    let mut suffix = [0; 4];
+    assert_eq!(source.write_to(&mut suffix.as_mut_slice()).unwrap(), 4);
+    assert_eq!(&suffix, b"cdef");
+    assert!(source.is_empty());
+}
+
+#[test]
+fn slice_reads_fill_successive_regions_and_stop_when_full() {
+    let mut storage = [0; 6];
+    let mut destination = storage.as_mut_slice();
+    assert_eq!(destination.read_from(&mut &b"ab"[..]).unwrap(), 2);
+    assert_eq!(destination.remaining_mut(), 4);
+    assert_eq!(destination.read_from(&mut &b""[..]).unwrap(), 0);
+    assert_eq!(destination.remaining_mut(), 4);
+    let mut remainder = &b"cdefgh"[..];
+    assert_eq!(destination.read_from(&mut remainder).unwrap(), 4);
+    assert!(destination.is_full());
+    assert_eq!(remainder, b"gh");
+    assert_eq!(&storage, b"abcdef");
+}
+
+#[test]
+fn borrowed_cursor_reports_each_transfer_count() {
+    let mut storage = [0; 6];
+    let mut buffer = core::io::BorrowedBuf::from(storage.as_mut_slice());
+    let mut cursor = buffer.unfilled();
+    assert_eq!(cursor.read_from(&mut &b"ab"[..]).unwrap(), 2);
+    assert_eq!(cursor.read_from(&mut &b"cd"[..]).unwrap(), 2);
+    assert_eq!(cursor.read_from(&mut &b""[..]).unwrap(), 0);
+    assert_eq!(buffer.filled(), b"abcd");
 }

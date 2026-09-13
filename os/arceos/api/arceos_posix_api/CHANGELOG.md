@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.6.3...ax-posix-api-v0.6.4) - 2026-09-12
+
+### Other
+
+- updated the following local packages: ax-runtime
+
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.6.2...ax-posix-api-v0.6.3) - 2026-09-11
+
+### Other
+
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.6.1...ax-posix-api-v0.6.2) - 2026-09-09
+
+### Fixed
+
+- *(arceos)* exercise real std and repair queued task affinity ([#2332](https://github.com/rcore-os/tgoskits/pull/2332))
+
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.34...ax-posix-api-v0.6.1) - 2026-09-09
+
+### Fixed
+
+- *(release)* make package baselines and CI inputs reproducible ([#2331](https://github.com/rcore-os/tgoskits/pull/2331))
+- *(starry-kernel)* support setting the realtime clock ([#2237](https://github.com/rcore-os/tgoskits/pull/2237))
+- *(ax-posix-api)* deliver EPOLLIN/EPOLLOUT edges via direction-split readiness versions ([#2235](https://github.com/rcore-os/tgoskits/pull/2235))
+
+### Other
+
+- release ([#2210](https://github.com/rcore-os/tgoskits/pull/2210))
+- *(ax-task)* [**breaking**] organize scheduler namespaces and unify runtime APIs ([#2313](https://github.com/rcore-os/tgoskits/pull/2313))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(rsext4)* [**breaking**] align ext4 semantics with Linux 7.1 ([#1957](https://github.com/rcore-os/tgoskits/pull/1957))
+
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.34...ax-posix-api-v0.6.0) - 2026-09-09
+
+### Fixed
+
+- *(starry-kernel)* support setting the realtime clock ([#2237](https://github.com/rcore-os/tgoskits/pull/2237))
+- *(ax-posix-api)* deliver EPOLLIN/EPOLLOUT edges via direction-split readiness versions ([#2235](https://github.com/rcore-os/tgoskits/pull/2235))
+
+### Other
+
+- *(ax-task)* [**breaking**] organize scheduler namespaces and unify runtime APIs ([#2313](https://github.com/rcore-os/tgoskits/pull/2313))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(rsext4)* [**breaking**] align ext4 semantics with Linux 7.1 ([#1957](https://github.com/rcore-os/tgoskits/pull/1957))
+
+## [0.5.34](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.33...ax-posix-api-v0.5.34) - 2026-08-27
+
+### Other
+
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+
+## [0.5.33](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.32...ax-posix-api-v0.5.33) - 2026-08-20
+
+### Fixed
+
+- *(console)* unify sleepable runtime console arbitration ([#2113](https://github.com/rcore-os/tgoskits/pull/2113))
+- *(ax-std)* implement futimens for regular files ([#1950](https://github.com/rcore-os/tgoskits/pull/1950))
+
+### Other
+
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.5.32](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.31...ax-posix-api-v0.5.32) - 2026-08-09
 
 ### Added

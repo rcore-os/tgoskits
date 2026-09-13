@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" role="img" aria-labelledby="title desc">
+<title id="title">设备生命周期：公共检查点与领域实现</title>
+<desc id="desc">阶段归纳自真实操作，不是框架提供的统一 DeviceState 或自动回滚事务。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#2563eb"/></marker></defs>
+<rect width="1200" height="900" rx="16" fill="#f8fafc"/>
+<g font-family="Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+<text x="40" y="49" font-size="26" font-weight="700" fill="#0f172a">设备生命周期：公共检查点与领域实现</text>
+<text x="40" y="80" font-size="15" fill="#475569">阶段归纳自真实操作，不是框架提供的统一 DeviceState 或自动回滚事务。</text>
+<rect x="40" y="110" width="340" height="145" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="141" font-size="19" font-weight="700" fill="#0f172a">描述与构造</text>
+<text x="58" y="171" font-size="15" fill="#334155">来源与 probe 注册项</text>
+<text x="58" y="196" font-size="15" fill="#334155">资源解析、映射与核心构造</text>
+<text x="58" y="221" font-size="15" fill="#334155">已有硬件副作用需要单独处理</text>
+<rect x="430" y="110" width="340" height="145" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="141" font-size="19" font-weight="700" fill="#0f172a">注册与发布</text>
+<text x="448" y="171" font-size="15" fill="#334155">DeviceOwner 保存实例</text>
+<text x="448" y="196" font-size="15" fill="#334155">FDT 父子可成对发布</text>
+<text x="448" y="221" font-size="15" fill="#334155">普通 register 不保证后续事务</text>
+<rect x="820" y="110" width="340" height="145" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="141" font-size="19" font-weight="700" fill="#0f172a">查询与接管</text>
+<text x="838" y="171" font-size="15" fill="#334155">provider 持续访问</text>
+<text x="838" y="196" font-size="15" fill="#334155">Option take 或端点交付</text>
+<text x="838" y="221" font-size="15" fill="#334155">注册身份可能保留在原位置</text>
+<rect x="40" y="350" width="340" height="155" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="381" font-size="19" font-weight="700" fill="#0f172a">运行与服务就绪</text>
+<text x="58" y="411" font-size="15" fill="#334155">按领域建立执行条件</text>
+<text x="58" y="436" font-size="15" fill="#334155">队列、主机、字节或事件操作</text>
+<text x="58" y="461" font-size="15" fill="#334155">服务可见性由领域确认</text>
+<text x="58" y="486" font-size="15" fill="#334155">注册成功不等于该阶段完成</text>
+<rect x="430" y="350" width="340" height="155" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="381" font-size="19" font-weight="700" fill="#0f172a">停止新的操作</text>
+<text x="448" y="411" font-size="15" fill="#334155">处理服务入口与控制请求</text>
+<text x="448" y="436" font-size="15" fill="#334155">未完成请求需要领域终态</text>
+<text x="448" y="461" font-size="15" fill="#334155">USB 断开、串口交接等各不同</text>
+<text x="448" y="486" font-size="15" fill="#334155">并非所有领域已有热插拔</text>
+<rect x="820" y="350" width="340" height="155" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="381" font-size="19" font-weight="700" fill="#0f172a">执行停止协议</text>
+<text x="838" y="411" font-size="15" fill="#334155">IRQ 禁用、同步与注销</text>
+<text x="838" y="436" font-size="15" fill="#334155">任务退出或端点停止</text>
+<text x="838" y="461" font-size="15" fill="#334155">硬件 DMA / FIFO / 控制状态</text>
+<text x="838" y="486" font-size="15" fill="#334155">顺序由实际领域合同决定</text>
+<rect x="40" y="600" width="340" height="160" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="58" y="631" font-size="19" font-weight="700" fill="#0f172a">资源可安全释放</text>
+<text x="58" y="661" font-size="15" fill="#334155">关联 callback 已处理</text>
+<text x="58" y="686" font-size="15" fill="#334155">硬件不再访问待释放 backing</text>
+<text x="58" y="711" font-size="15" fill="#334155">借用、任务和等待请求已处理</text>
+<text x="58" y="736" font-size="15" fill="#334155">再释放相应内存和 handle</text>
+<rect x="430" y="600" width="340" height="160" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="448" y="631" font-size="19" font-weight="700" fill="#0f172a">不能确认时的边界</text>
+<text x="448" y="661" font-size="15" fill="#334155">不得先释放仍会被访问的对象</text>
+<text x="448" y="686" font-size="15" fill="#334155">网络有明确隔离保留实现</text>
+<text x="448" y="711" font-size="15" fill="#334155">其他领域按其失败协议处理</text>
+<text x="448" y="736" font-size="15" fill="#334155">保留资源不等于成功卸载</text>
+<rect x="820" y="600" width="340" height="160" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="838" y="631" font-size="19" font-weight="700" fill="#0f172a">系统可见性与共享资源</text>
+<text x="838" y="661" font-size="15" fill="#334155">处理现有用户对象与请求</text>
+<text x="838" y="686" font-size="15" fill="#334155">共享时钟和 IRQ 线不任意关闭</text>
+<text x="838" y="711" font-size="15" fill="#334155">宿主直通与 guest 模型分开</text>
+<text x="838" y="736" font-size="15" fill="#334155">注册删除不能替代上述协议</text>
+<polyline points="380,185 430,185" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="385" y="168" font-size="14" fill="#1d4ed8">发布</text>
+<polyline points="770,185 820,185" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="775" y="168" font-size="14" fill="#1d4ed8">交付</text>
+<polyline points="990,255 990,295 210,295 210,350" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="510" y="284" font-size="14" fill="#1d4ed8">领域初始化</text>
+<polyline points="380,425 430,425" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="385" y="408" font-size="14" fill="#1d4ed8">停止</text>
+<polyline points="770,425 820,425" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="775" y="408" font-size="14" fill="#1d4ed8">协议</text>
+<polyline points="990,505 990,550 210,550 210,600" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="345" y="540" font-size="14" fill="#1d4ed8">确认安全</text>
+<polyline points="600,550 600,600" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="614" y="580" font-size="14" fill="#1d4ed8">未确认</text>
+<polyline points="990,550 990,600" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1003" y="580" font-size="14" fill="#1d4ed8">系统撤销</text>
+<text x="40" y="835" font-size="15" fill="#475569">块控制器 Shutdown、USB StopEndpoint、UART 配置恢复和网络 DMA 隔离是不同具体机制。</text>
+<text x="40" y="860" font-size="15" fill="#475569">该图表达需要核对的条件，不承诺每个驱动都实现统一同步、取消或卸载入口。</text>
+</g>
+</svg>
