@@ -47,7 +47,7 @@ impl SyscallRestart {
 }
 
 pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
-    // Linux never restarts fd-multiplexing waits or System V message-queue
+    // Linux never restarts sleep, fd-multiplexing waits, or System V message-queue
     // blocking calls, even when the delivered handler uses SA_RESTART. Keep
     // the classification here because signal delivery only sees the syscall
     // number and the interrupted -EINTR result.
@@ -57,7 +57,9 @@ pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
 
     if matches!(
         sysno,
-        Sysno::ppoll
+        Sysno::nanosleep
+            | Sysno::clock_nanosleep
+            | Sysno::ppoll
             | Sysno::pselect6
             | Sysno::epoll_pwait
             | Sysno::epoll_pwait2

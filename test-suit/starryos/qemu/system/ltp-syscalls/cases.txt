@@ -47,6 +47,7 @@ getpgid02
 getsid01
 getsid02
 membarrier01
+nanosleep02
 pipe2_02
 pipe2_04
 poll01

@@ -50,3 +50,8 @@ getcwd01 5
 getcwd02 3
 # linkat01.c: twenty-two basic path, descriptor, flag and error cases.
 linkat01 22
+
+# nanosleep02.c: EINTR and elapsed/remaining time after the signal handler.
+nanosleep02 2
+# clock_nanosleep04.c: MONOTONIC and REALTIME in raw and libc variants.
+clock_nanosleep04 4
