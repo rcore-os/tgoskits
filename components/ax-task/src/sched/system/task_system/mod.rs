@@ -323,7 +323,10 @@ impl TaskSystem {
         Self::create(config, |index| capacities[index])
     }
 
-    fn create(config: TaskSystemConfig, capacity: impl Fn(usize) -> u16) -> Result<Self, TaskError> {
+    fn create(
+        config: TaskSystemConfig,
+        capacity: impl Fn(usize) -> u16,
+    ) -> Result<Self, TaskError> {
         validate_config(config)?;
         let task_work = Arc::new(TaskWorkDoorbell::new());
         let cpu_remotes = (0..config.cpu_count())

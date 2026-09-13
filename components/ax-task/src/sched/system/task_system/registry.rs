@@ -409,15 +409,23 @@ impl TaskSystemState {
         preferred: Option<CpuId>,
     ) -> Option<CpuId> {
         ax_sched::select_initial_cpu(
-            self.cpus.iter().enumerate().filter_map(|(index, registration)| {
-                let cpu = CpuId::new(index as u32);
-                let remote = &registration.remote;
-                (remote.accepts_placement() && affinity.contains(cpu)).then(|| {
-                    (cpu.as_usize(), remote.placement_demand(), remote.cpu_capacity)
-                })
-            }),
+            self.cpus
+                .iter()
+                .enumerate()
+                .filter_map(|(index, registration)| {
+                    let cpu = CpuId::new(index as u32);
+                    let remote = &registration.remote;
+                    (remote.accepts_placement() && affinity.contains(cpu)).then(|| {
+                        (
+                            cpu.as_usize(),
+                            remote.placement_demand(),
+                            remote.cpu_capacity,
+                        )
+                    })
+                }),
             preferred.map(CpuId::as_usize),
-        ).map(|cpu| CpuId::new(cpu as u32))
+        )
+        .map(|cpu| CpuId::new(cpu as u32))
     }
 
     pub(super) fn publish_affinity_update(
