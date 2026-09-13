@@ -8,6 +8,7 @@ use super::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CrossCompileSpec {
     pub(crate) llvm_target: &'static str,
+    pub(crate) clang_target_flags: &'static [&'static str],
     pub(crate) rust_musl_target: &'static str,
     pub(crate) cmake_system_processor: &'static str,
     pub(crate) guest_tool_dir: &'static str,
@@ -30,6 +31,7 @@ const ARCH_SPECS: &[ArchSpec] = &[
         default_rootfs_image: "rootfs-aarch64-alpine.img",
         cross_compile: CrossCompileSpec {
             llvm_target: "aarch64-linux-musl",
+            clang_target_flags: &[],
             rust_musl_target: "aarch64-unknown-linux-musl",
             cmake_system_processor: "aarch64",
             guest_tool_dir: "usr/aarch64-alpine-linux-musl/bin",
@@ -43,6 +45,7 @@ const ARCH_SPECS: &[ArchSpec] = &[
         default_rootfs_image: "rootfs-x86_64-alpine.img",
         cross_compile: CrossCompileSpec {
             llvm_target: "x86_64-linux-musl",
+            clang_target_flags: &[],
             rust_musl_target: "x86_64-unknown-linux-musl",
             cmake_system_processor: "x86_64",
             guest_tool_dir: "usr/x86_64-alpine-linux-musl/bin",
@@ -56,6 +59,7 @@ const ARCH_SPECS: &[ArchSpec] = &[
         default_rootfs_image: "rootfs-riscv64-alpine.img",
         cross_compile: CrossCompileSpec {
             llvm_target: "riscv64-linux-musl",
+            clang_target_flags: &["-march=rv64gc", "-mabi=lp64d"],
             rust_musl_target: "riscv64gc-unknown-linux-musl",
             cmake_system_processor: "riscv64",
             guest_tool_dir: "usr/riscv64-alpine-linux-musl/bin",
@@ -69,6 +73,7 @@ const ARCH_SPECS: &[ArchSpec] = &[
         default_rootfs_image: "rootfs-loongarch64-alpine.img",
         cross_compile: CrossCompileSpec {
             llvm_target: "loongarch64-linux-musl",
+            clang_target_flags: &[],
             rust_musl_target: "loongarch64-unknown-linux-musl",
             cmake_system_processor: "loongarch64",
             guest_tool_dir: "usr/loongarch64-alpine-linux-musl/bin",

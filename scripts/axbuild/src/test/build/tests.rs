@@ -243,6 +243,26 @@ fn write_cmake_toolchain_file_contains_clang_cross_settings() {
 }
 
 #[test]
+fn write_riscv64_cmake_toolchain_file_constrains_guest_isa() {
+    let root = tempdir().unwrap();
+    let layout =
+        case_assets::case_asset_layout(root.path(), "riscv64gc-unknown-none-elf", "system")
+            .unwrap();
+    fs::create_dir_all(&layout.cross_bin_dir).unwrap();
+
+    write_cmake_toolchain_file(
+        &layout,
+        cross_compile_spec("riscv64").unwrap(),
+        Path::new("/usr/bin/clang"),
+    )
+    .unwrap();
+
+    let content = fs::read_to_string(&layout.cmake_toolchain_file).unwrap();
+    assert!(content.contains("-march=rv64gc"));
+    assert!(content.contains("-mabi=lp64d"));
+}
+
+#[test]
 fn detect_gcc_runtime_dir_prefers_highest_version() {
     let root = tempdir().unwrap();
     let sysroot = root.path().join("sysroot");

@@ -83,6 +83,7 @@ pub(crate) fn write_cmake_toolchain_file(
         format!("--gcc-toolchain={}", gcc_toolchain_root.display()),
         format!("-B{}", layout.cross_bin_dir.display()),
     ];
+    compile_flags.extend(spec.clang_target_flags.iter().map(ToString::to_string));
     let mut linker_flags = compile_flags.clone();
     if let Some(gcc_runtime_dir) = detect_gcc_runtime_dir(sysroot, spec.guest_tool_dir) {
         // Older host clang may miss Alpine GCC runtime dirs unless explicitly provided.
