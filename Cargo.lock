@@ -7897,6 +7897,7 @@ dependencies = [
  "sg200x-jpu",
  "slab",
  "some-serial",
+ "somehal",
  "starry-signal",
  "starry-vm",
  "static-keys",
