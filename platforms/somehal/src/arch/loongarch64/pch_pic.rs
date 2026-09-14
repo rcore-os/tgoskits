@@ -2,7 +2,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use kernutil::StaticCell;
 use loongarch_intc_driver::{EioVector, PchInput, PchPicConfig, PchPicCpuInterface, PchPicParts};
-use rdif_intc::{AcpiGsiController, Interface};
+use rdif_intc::AcpiGsiController;
 use rdrive::{
     PlatformDevice, module_driver,
     probe::{OnProbeError, acpi::AcpiPchPic},
@@ -87,7 +87,18 @@ pub fn set_irq_enabled(irq: crate::irq::IrqId, enabled: bool) -> Result<(), rdif
 pub fn resolve_acpi_route(
     route: &rdif_intc::AcpiGsiRoute,
 ) -> Result<rdif_intc::IrqId, rdif_intc::IrqError> {
-    let intc = pch_pic_controller_for_route(route)?;
+    if route.controller != AcpiGsiController::PchPic {
+        return Err(rdif_intc::IrqError::Unsupported);
+    }
+    if !rdrive::is_initialized() {
+        return Err(rdif_intc::IrqError::Controller);
+    }
+
+    // Root domains have one registered owner per kind. Select that owner
+    // before borrowing so unrelated controller activity cannot return Busy.
+    let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::LoongArchPchPic)
+        .ok_or(rdif_intc::IrqError::Unsupported)?;
+    let intc = crate::irq::intc_by_domain(domain)?;
     let mut intc = intc.try_lock().map_err(|_| rdif_intc::IrqError::Busy)?;
     if !intc.supports_acpi_gsi(route) {
         return Err(rdif_intc::IrqError::Unsupported);
@@ -103,10 +114,10 @@ fn runtime() -> Option<&'static PchRuntime> {
 
 fn external_vector_for_irq(irq: crate::irq::IrqId) -> Result<EioVector, rdif_intc::IrqError> {
     let intc = crate::irq::intc_by_domain(irq.domain)?;
+    let intc = intc.try_lock().map_err(|_| rdif_intc::IrqError::Busy)?;
     let intc = intc
         .downcast::<loongarch_intc_driver::PchPicController>()
         .map_err(|_| rdif_intc::IrqError::InvalidIrq)?;
-    let intc = intc.try_lock().map_err(|_| rdif_intc::IrqError::Busy)?;
     let input = PchInput::new(irq.hwirq.0 as usize).map_err(|_| rdif_intc::IrqError::InvalidIrq)?;
     intc.external_vector_for_input(input)
         .map_err(|_| rdif_intc::IrqError::InvalidIrq)
@@ -229,33 +240,4 @@ fn register_pch_pic(
         warn!("additional Loongson PCH-PIC registered without a hard-IRQ CPU interface");
     }
     Ok(())
-}
-
-fn pch_pic_controller_for_route(
-    route: &rdif_intc::AcpiGsiRoute,
-) -> Result<rdrive::Device<rdif_intc::Intc>, rdif_intc::IrqError> {
-    if route.controller != AcpiGsiController::PchPic {
-        return Err(rdif_intc::IrqError::Unsupported);
-    }
-    if !rdrive::is_initialized() {
-        return Err(rdif_intc::IrqError::Controller);
-    }
-
-    for intc in rdrive::get_list::<rdif_intc::Intc>() {
-        let Ok(pic) = intc.downcast::<loongarch_intc_driver::PchPicController>() else {
-            continue;
-        };
-        let guard = pic.try_lock().map_err(|_| rdif_intc::IrqError::Busy)?;
-        let supported = guard.supports_acpi_gsi(route);
-        drop(guard);
-        if supported {
-            return Ok(intc);
-        }
-    }
-
-    warn!(
-        "Loongson PCH-PIC is not registered for ACPI route controller={:?} address={:#x} input={}",
-        route.controller, route.controller_address, route.controller_input
-    );
-    Err(rdif_intc::IrqError::Unsupported)
 }

@@ -295,6 +295,10 @@ impl IoUring {
 }
 
 impl FileLike for IoUring {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         "anon_inode:[io_uring]".into()
     }

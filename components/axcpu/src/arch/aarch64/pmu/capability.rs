@@ -14,6 +14,8 @@ pub enum EventSupport {
 /// Immutable capabilities observed on one CPU.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PmuInfo {
+    /// MIDR of the CPU owning this PMU capability snapshot.
+    pub midr: u64,
     /// ID_AA64DFR0_EL1.PMUVer encoding.
     pub version: u8,
     /// Number of programmable counters, excluding fixed cycle/instruction counters.

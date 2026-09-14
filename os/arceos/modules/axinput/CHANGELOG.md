@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.11](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.6.10...ax-input-v0.6.11) - 2026-09-11
+
+### Other
+
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+
 ## [0.6.10](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.6.9...ax-input-v0.6.10) - 2026-09-09
 
 ### Other

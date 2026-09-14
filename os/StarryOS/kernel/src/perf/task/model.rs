@@ -22,21 +22,28 @@ pub struct PerTaskCounter {
     scheduler_id: ax_runtime::task::thread::ThreadId,
     /// Physical counter reservation used while this task is scheduled.
     pub(super) counter: Counter,
+    /// Programmable events acquire a physical slot only for each running slice.
+    pub(super) flexible: bool,
+    /// Keeps deferred scheduler ticks published while this logical event may
+    /// need multiplex rotation.
+    _scheduler_tick_lease: Option<crate::task::PerfSchedulerTickLease>,
     /// ARM PMUv3 event number. It is programmed only for a programmable
     /// counter; a dedicated cycle-counter reservation carries the same semantic
     /// event so an inherited child can fall back to a programmable slot.
-    event: u16,
+    pub(super) event: u16,
     /// `attr.exclude_user`: do not count EL0 (`PMEVTYPERn_EL0.U`).
     pub(super) exclude_user: bool,
     /// `attr.exclude_kernel`: do not count EL1 (`PMEVTYPERn_EL0.P`).
     pub(super) exclude_kernel: bool,
     /// `attr.read_format`, controlling which fields `read(perf_fd)` emits.
-    read_format: u64,
+    pub(super) read_format: u64,
     /// `attr.enable_on_exec`: start counting only when the attached task
     /// `execve`s a new image (consumed by [`on_exec`]).
-    pub(super) enable_on_exec: bool,
+    pub(super) enable_on_exec: AtomicBool,
     /// Optional Linux task-event CPU constraint (`cpu >= 0`).
     pub(super) cpu_filter: Option<PerfCpuId>,
+    /// PMU cluster selected by a cluster-specific sysfs event source.
+    pub(super) required_cluster: Option<crate::perf::event_map::ClusterId>,
 
     /// Userspace wants this event counting (see the struct-level state machine).
     pub(super) enabled: AtomicBool,
@@ -44,6 +51,17 @@ pub struct PerTaskCounter {
     pub(super) run_state: IrqMutex<PmuRunState>,
     /// Sum of completed-slice deltas (raw event count).
     pub(super) accumulated: AtomicU64,
+    /// Greatest raw value published through `PERF_SAMPLE_READ`.
+    ///
+    /// A live PMU read and the completed-slice accumulator are observed through
+    /// separate ownership transitions.  Keep the IRQ-visible result monotonic
+    /// across a multiplex boundary, as Linux perf event counts never move
+    /// backwards between samples unless userspace explicitly resets the event.
+    pub(super) sample_read_floor: AtomicU64,
+    /// Owner-CPU state extending the current finite-width hardware slice.
+    pub(super) counting_extender: Arc<IrqMutex<super::super::counting::CounterExtender>>,
+    /// Raw sampling deltas for this slice; reloads do not change its total.
+    pub(super) sampling_count: Arc<sampling::SamplingCount>,
     /// Accumulated enabled time across past windows (ns).
     pub(super) time_enabled_ns: AtomicU64,
     /// Accumulated running time across past windows (ns). Equal to
@@ -51,10 +69,10 @@ pub struct PerTaskCounter {
     pub(super) time_running_ns: AtomicU64,
     /// Monotonic ns timestamp of the last [`perf_sched_in`] (live slice start).
     pub(super) last_in_ns: AtomicU64,
-    /// Monotonic ns timestamp at which the event last became `enabled`.
-    /// Unused for the no-multiplexing timing math but kept for parity with the
-    /// system-wide path and future multiplexing accounting.
-    pub(super) enabled_at_ns: AtomicU64,
+    /// Monotonic ns timestamp at which the enabled event's current task-context
+    /// slice started. This advances `time_enabled` even when a flexible event
+    /// has no physical slot, matching Linux's INACTIVE event state.
+    pub(super) context_in_ns: AtomicU64,
     // --- Per-task sampling (`perf record -- cmd`) ---
     /// This event samples (`sample_period > 0`): the scheduler hooks arm/disarm
     /// the overflow-IRQ path each slice instead of plain counting.
@@ -65,6 +83,7 @@ pub struct PerTaskCounter {
     pub(super) sample_period: u32,
     /// Validated scalar `attr.sample_type`.
     pub(super) sample_type: u64,
+    pub(super) sample_user_lr: bool,
     /// Frequency mode (`attr.freq`): the overflow handler re-derives the period
     /// after each sample to converge on `freq_target` Hz. Fixed period when false.
     pub(super) freq: bool,
@@ -74,6 +93,10 @@ pub struct PerTaskCounter {
     /// once via [`set_sample_id`](Self::set_sample_id) from the `PerfEvent`
     /// wrapper, before any scheduler hook runs); `0` until then.
     pub(super) sample_id: AtomicU64,
+    /// Concrete event identity; inherited streams differ from the primary ID.
+    pub(super) stream_id: AtomicU64,
+    /// Samples dropped by this source because its selected ring was full.
+    loss: Arc<super::super::sampling::LossState>,
     /// `attr.comm`: this event wants `PERF_RECORD_COMM` side-band records.
     pub(super) want_comm: bool,
     /// `attr.mmap2`: this event wants `PERF_RECORD_MMAP2` side-band records.
@@ -87,6 +110,10 @@ pub struct PerTaskCounter {
     inherit: bool,
     /// PID namespace view captured when the root event was opened.
     pub(super) observer: PidNamespaceId,
+    /// Target task identity in the event's captured PID namespace.
+    pub(super) owner_ids: Option<(TgidNumber, TidNumber)>,
+    group_leader: IrqMutex<Option<Weak<PerTaskCounter>>>,
+    group_members: IrqMutex<Vec<Weak<PerTaskCounter>>>,
     /// Weak fd-owned family identity. The family owns members strongly, so a
     /// weak back-reference avoids a root/member cycle.
     family: IrqMutex<Option<FamilyBinding>>,
@@ -169,10 +196,14 @@ impl core::fmt::Debug for SamplingAnchors {
 /// is `0`; for a sampling event it is the fixed `-c` period and `sample_type` is
 /// `PERF_SAMPLE_IP`.
 pub(in crate::perf) struct PerTaskConfig {
+    /// Inherited output charges losses to the root event, as on Linux.
+    pub(in crate::perf) loss: Arc<sampling::LossState>,
     /// Generation-bearing scheduler identity of the target task.
     pub(in crate::perf) scheduler_id: ax_runtime::task::thread::ThreadId,
     /// Reserved physical PMU counter.
     pub(in crate::perf) counter: Counter,
+    pub(in crate::perf) flexible: bool,
+    pub(in crate::perf) scheduler_tick_lease: Option<crate::task::PerfSchedulerTickLease>,
     /// ARM PMUv3 event number.
     pub(in crate::perf) event: u16,
     /// `attr.exclude_user`.
@@ -187,11 +218,15 @@ pub(in crate::perf) struct PerTaskConfig {
     pub(in crate::perf) enable_on_exec: bool,
     /// Optional CPU on which this task event is eligible to run.
     pub(in crate::perf) cpu_filter: Option<PerfCpuId>,
+    /// PMU cluster selected by a cluster-specific sysfs event source.
+    pub(in crate::perf) required_cluster: Option<crate::perf::event_map::ClusterId>,
     /// Sampling period (`> 0` ⇒ sampling event); `0` ⇒ counting event. In
     /// frequency mode this is the initial estimate the overflow handler adapts.
     pub(in crate::perf) sample_period: u32,
     /// `attr.sample_type` (only meaningful when `sample_period > 0`).
     pub(in crate::perf) sample_type: u64,
+    /// Capture the saved user LR for PERF_SAMPLE_REGS_USER.
+    pub(in crate::perf) sample_user_lr: bool,
     /// Frequency mode (`attr.freq`): the overflow handler adapts the period each
     /// slice toward `target_freq` Hz. Fixed `-c` period when false.
     pub(in crate::perf) freq: bool,
@@ -209,6 +244,7 @@ pub(in crate::perf) struct PerTaskConfig {
     pub(in crate::perf) inherit: bool,
     /// PID namespace view captured when the root event was opened.
     pub(in crate::perf) observer: PidNamespaceId,
+    pub(in crate::perf) owner_ids: Option<(TgidNumber, TidNumber)>,
 }
 
 impl PerTaskCounter {
@@ -221,31 +257,45 @@ impl PerTaskCounter {
         PerTaskCounter {
             scheduler_id: cfg.scheduler_id,
             counter: cfg.counter,
+            flexible: cfg.flexible,
+            _scheduler_tick_lease: cfg.scheduler_tick_lease,
             event: cfg.event,
             exclude_user: cfg.exclude_user,
             exclude_kernel: cfg.exclude_kernel,
             read_format: cfg.read_format,
-            enable_on_exec: cfg.enable_on_exec,
+            enable_on_exec: AtomicBool::new(cfg.enable_on_exec),
             cpu_filter: cfg.cpu_filter,
+            required_cluster: cfg.required_cluster,
             enabled: AtomicBool::new(cfg.enabled),
             run_state: IrqMutex::new(PmuRunState::new()),
             accumulated: AtomicU64::new(0),
+            sampling_count: Arc::new(sampling::SamplingCount::new()),
+            sample_read_floor: AtomicU64::new(0),
+            counting_extender: Arc::new(IrqMutex::new(
+                super::super::counting::CounterExtender::new(),
+            )),
             time_enabled_ns: AtomicU64::new(0),
             time_running_ns: AtomicU64::new(0),
             last_in_ns: AtomicU64::new(0),
-            enabled_at_ns: AtomicU64::new(0),
+            context_in_ns: AtomicU64::new(0),
             is_sampling: cfg.sample_period > 0,
             sample_period: cfg.sample_period,
             sample_type: cfg.sample_type,
+            sample_user_lr: cfg.sample_user_lr,
             freq: cfg.freq,
             freq_target: cfg.target_freq,
             sample_id: AtomicU64::new(0),
+            stream_id: AtomicU64::new(0),
+            loss: cfg.loss,
             want_comm: cfg.want_comm,
             want_mmap2: cfg.want_mmap2,
             want_task: cfg.want_task,
             sample_id_all: cfg.sample_id_all,
             inherit: cfg.inherit,
             observer: cfg.observer,
+            owner_ids: cfg.owner_ids,
+            group_leader: IrqMutex::new(None),
+            group_members: IrqMutex::new(Vec::new()),
             family: IrqMutex::new(None),
             resources: PmuResourceRelease::new(),
             rdpmc: RdpmcMapping::new(),
@@ -260,20 +310,44 @@ impl PerTaskCounter {
         self.read_format
     }
 
+    pub(in crate::perf) fn is_flexible(&self) -> bool {
+        self.flexible
+    }
+
+    /// PID namespace used to expose this event's task identity to userspace.
+    pub(in crate::perf) fn observer(&self) -> PidNamespaceId {
+        self.observer
+    }
+
     /// Record the unique event id for `PERF_SAMPLE_ID` / `IDENTIFIER`. Called
     /// once at open (before the scheduler hooks run), so a relaxed store suffices.
     pub fn set_sample_id(&self, id: u64) {
         self.sample_id.store(id, Ordering::Relaxed);
+        self.stream_id.store(id, Ordering::Relaxed);
+    }
+
+    /// Initializes an inherited event before it is published to the scheduler.
+    pub(in crate::perf) fn set_inherited_sample_id(&self, primary_id: u64) {
+        self.sample_id.store(primary_id, Ordering::Relaxed);
+        self.stream_id
+            .store(super::super::allocate_event_id(), Ordering::Relaxed);
     }
 
     pub(in crate::perf) fn inherited_config(
         &self,
         scheduler_id: ax_runtime::task::thread::ThreadId,
         counter: Counter,
+        scheduler_tick_lease: Option<crate::task::PerfSchedulerTickLease>,
+        owner_ids: Option<(TgidNumber, TidNumber)>,
     ) -> PerTaskConfig {
         PerTaskConfig {
+            loss: Arc::clone(&self.loss),
             scheduler_id,
             counter,
+            // Every inherited copy obtains its own per-CPU reservation. The
+            // parent's fixed cycle/programmable reservation cannot be shared.
+            flexible: true,
+            scheduler_tick_lease,
             event: self.event,
             exclude_user: self.exclude_user,
             exclude_kernel: self.exclude_kernel,
@@ -281,10 +355,12 @@ impl PerTaskCounter {
             // Registration under the family relation lock publishes the current
             // root-fd control intent before the child becomes schedulable.
             enabled: false,
-            enable_on_exec: false,
+            enable_on_exec: self.enable_on_exec.load(Ordering::Acquire),
             cpu_filter: self.cpu_filter,
+            required_cluster: self.required_cluster,
             sample_period: self.sample_period,
             sample_type: self.sample_type,
+            sample_user_lr: self.sample_user_lr,
             freq: self.freq,
             target_freq: self.freq_target,
             want_comm: self.want_comm,
@@ -293,17 +369,32 @@ impl PerTaskCounter {
             sample_id_all: self.sample_id_all,
             inherit: true,
             observer: self.observer,
+            owner_ids,
         }
     }
 
-    pub(super) fn programmed_event(&self) -> Option<u16> {
-        self.counter.programmable_index().map(|_| self.event)
+    pub(super) fn programmed_event(&self, counter: Counter) -> Option<u16> {
+        counter.programmable_index().map(|_| self.event)
     }
 
-    pub(super) fn programmable_index(&self) -> usize {
-        self.counter
-            .programmable_index()
-            .expect("sampling events are validated onto programmable counters")
+    pub(super) fn reset_counting_slice(&self, counter: Counter) {
+        self.counting_extender.lock().reset();
+        if let Some(index) = counter.programmable_index() {
+            crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(1u64 << index));
+        }
+    }
+
+    pub(super) fn read_counting_slice(&self, counter: Counter) -> u64 {
+        let mut extender = self.counting_extender.lock();
+        if let Some(index) = counter.programmable_index() {
+            let bit = 1 << index;
+            if (crate::perf::hw_owner::on_pmu(|pmu| pmu.overflow_status()) as u32) & bit != 0 {
+                crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(u64::from(bit)));
+                extender.record_overflow();
+            }
+        }
+        let (_, width) = counter.mmap_metadata();
+        extender.value(counter.read(), width)
     }
 
     /// Joins event publication with the target CPU's scheduler order.
@@ -358,9 +449,10 @@ impl PerTaskCounter {
         if self.is_sampling {
             return Err(crate::StarryError::InvalidInput);
         }
-        let page = self
-            .rdpmc
-            .install(len, self.rdpmc_snapshot())?;
+        if self.flexible {
+            return Err(crate::StarryError::Unsupported);
+        }
+        let page = self.rdpmc.install(len, self.rdpmc_snapshot())?;
         // Close the publication-versus-sched-out race: whichever side runs
         // second republishes the completed accumulator after the weak page
         // reference is visible.
@@ -375,8 +467,29 @@ impl PerTaskCounter {
     /// Mark userspace-enabled (`ioctl(ENABLE)` / open-enabled). The target's next
     /// [`perf_sched_in`] programs the counter onto HW.
     pub fn set_enabled(&self) {
-        if !self.enabled.swap(true, Ordering::AcqRel) {
-            self.enabled_at_ns.store(now_ns(), Ordering::Relaxed);
+        self.enabled.store(true, Ordering::Release);
+    }
+
+    pub(super) fn begin_enabled_context(&self, now: u64) {
+        let _ = self
+            .context_in_ns
+            .compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire);
+    }
+
+    pub(super) fn finish_enabled_context(&self, now: u64) {
+        let since = self.context_in_ns.swap(0, Ordering::AcqRel);
+        if since != 0 {
+            self.time_enabled_ns
+                .fetch_add(now.saturating_sub(since), Ordering::AcqRel);
+        }
+    }
+
+    pub(super) fn live_enabled_time(&self, now: u64) -> u64 {
+        let since = self.context_in_ns.load(Ordering::Acquire);
+        if since == 0 {
+            0
+        } else {
+            now.saturating_sub(since)
         }
     }
 
@@ -445,8 +558,73 @@ impl PerTaskCounter {
         self.inherit && !self.run_state.lock().is_stopping()
     }
 
+    pub(in crate::perf) fn enabled_for_inheritance(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
+
     pub(in crate::perf) fn sample_id(&self) -> u64 {
         self.sample_id.load(Ordering::Relaxed)
+    }
+
+    pub(in crate::perf) fn lost_samples(&self) -> u64 {
+        self.loss.total()
+    }
+
+    fn sample_read_entry(self: &Arc<Self>) -> SampleReadEntry {
+        SampleReadEntry::owned(Arc::clone(self), per_task_sample_read_irq, self.sample_id())
+    }
+
+    pub(in crate::perf) fn link_group(
+        leader: &Arc<Self>,
+        member: &Arc<Self>,
+    ) -> crate::StarryResult<()> {
+        if leader.scheduler_id != member.scheduler_id
+            || leader.cpu_filter != member.cpu_filter
+            || leader.required_cluster != member.required_cluster
+        {
+            return Err(crate::StarryError::InvalidInput);
+        }
+        let mut members = leader.group_members.lock();
+        members.retain(|member| member.strong_count() != 0);
+        if members.len() + 1 >= MAX_SAMPLE_READ_EVENTS {
+            return Err(crate::StarryError::InvalidInput);
+        }
+        *member.group_leader.lock() = Some(Arc::downgrade(leader));
+        members.push(Arc::downgrade(member));
+        Ok(())
+    }
+
+    pub(in crate::perf) fn live_group_leader(&self) -> Option<Arc<Self>> {
+        self.group_leader
+            .lock()
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .filter(|leader| !leader.resources_released())
+    }
+
+    pub(super) fn sample_read_entries(
+        self: &Arc<Self>,
+    ) -> ([SampleReadEntry; MAX_SAMPLE_READ_EVENTS], u8) {
+        let mut entries = [const { SampleReadEntry::EMPTY }; MAX_SAMPLE_READ_EVENTS];
+        if self.read_format & super::super::PERF_FORMAT_GROUP == 0 {
+            entries[0] = self.sample_read_entry();
+            return (entries, 1);
+        }
+        let leader = self.live_group_leader();
+        let leader = leader.as_ref().unwrap_or(self);
+        entries[0] = leader.sample_read_entry();
+        let mut len = 1;
+        for member in leader.group_members.lock().iter().filter_map(Weak::upgrade) {
+            if member.resources_released() {
+                continue;
+            }
+            if len == MAX_SAMPLE_READ_EVENTS {
+                break;
+            }
+            entries[len] = member.sample_read_entry();
+            len += 1;
+        }
+        (entries, len as u8)
     }
 
     /// Record the ring buffer + notify/poll machinery for a sampling event.
@@ -486,10 +664,10 @@ impl PerTaskCounter {
         self.output.lock().owned().is_some()
     }
 
-    /// Expose this counter's mmap ring for a `PERF_EVENT_IOC_SET_OUTPUT` redirect
-    /// (target side). Only the event's own mmap ring may be shared.
+    /// Expose the effective ring for a `PERF_EVENT_IOC_SET_OUTPUT` redirect
+    /// target, following an existing redirect chain.
     pub(crate) fn output_ring(&self) -> Option<PerfRingOutput> {
-        self.output.lock().owned()
+        self.output.lock().effective_output()
     }
 
     /// Point this counter's samples at *another* event's ring
@@ -521,7 +699,11 @@ impl PerTaskCounter {
                 .as_ref()
                 .map(|anchors| Arc::clone(&anchors.notify))
         };
-        Some(SampleOutput::new(Some(ring), notify))
+        Some(SampleOutput::new(
+            Some(ring),
+            notify,
+            Arc::clone(&self.loss),
+        ))
     }
 
     /// Readiness for `poll(perf_fd)`: `true` when the ring has unread bytes.
@@ -561,5 +743,51 @@ impl PerTaskCounter {
         if let Some(anchors) = guard.as_ref() {
             unsafe { sink.register_exclusive(&anchors.poll_ready, axpoll::IoEvents::IN) };
         }
+    }
+}
+
+unsafe fn per_task_sample_read_irq(
+    context: *const (),
+    _source_slot: usize,
+    now: u64,
+) -> SampleReadValue {
+    // SAFETY: task context ownership keeps the counter alive until its sampling
+    // registration has been synchronously removed.
+    let counter = unsafe { &*context.cast::<PerTaskCounter>() };
+    // Retain the generation lock through the physical read, not merely while
+    // copying the lease: its slot and sampling baseline must describe the
+    // same scheduling generation throughout the snapshot.
+    let run_state = counter.run_state.lock();
+    let mut value = counter.accumulated.load(Ordering::Acquire);
+    let running = run_state.running();
+    if let Some(lease) = running
+        && lease.owner().as_usize() == ax_hal::percpu::this_cpu_id()
+    {
+        let physical = lease.counter();
+        let live = if counter.is_sampling {
+            counter
+                .sampling_count
+                .update(physical.programmable_index().expect("sampling slot"))
+        } else {
+            counter.read_counting_slice(physical)
+        };
+        value = value.saturating_add(live);
+    }
+    let time_enabled = counter
+        .time_enabled_ns
+        .load(Ordering::Acquire)
+        .saturating_add(counter.live_enabled_time(now));
+    let mut time_running = counter.time_running_ns.load(Ordering::Acquire);
+    if running.is_some() {
+        let elapsed = now.saturating_sub(counter.last_in_ns.load(Ordering::Acquire));
+        time_running = time_running.saturating_add(elapsed);
+    }
+    let previous = counter.sample_read_floor.fetch_max(value, Ordering::AcqRel);
+    value = value.max(previous);
+    SampleReadValue {
+        value,
+        time_enabled,
+        time_running,
+        lost: counter.loss.total(),
     }
 }

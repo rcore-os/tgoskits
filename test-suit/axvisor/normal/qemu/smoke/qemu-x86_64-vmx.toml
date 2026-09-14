@@ -11,7 +11,7 @@ args = [
   "-machine",
   "q35,smbus=off,usb=off,graphics=off",
   "-smp",
-  "1",
+  "2",
   "-accel",
   "kvm",
   "-device",
@@ -19,7 +19,7 @@ args = [
   "-drive",
   "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
   "-m",
-  "512M",
+  "1G",
   "-net",
   "none",
   "-vga",
@@ -31,13 +31,39 @@ fail_regex = [
   "(?i)kernel panic",
   "(?i)login incorrect",
   "(?i)permission denied",
+  "(?i)failed to initialize guest VM",
   "(?m)^(?:echo|cat|rm):\\s",
 ]
-shell_check_steps = [{ shell_prefix = "axvisor:/$", shell_cmd = """
+to_bin = true
+uefi = true
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = """
 echo AXVISOR_NVME_RW_PAYLOAD > /tmp/axvisor-nvme-rw
 cat /tmp/axvisor-nvme-rw
 rm -f /tmp/axvisor-nvme-rw
 echo AXVISOR_NVME_ROOTFS_RW_PASSED
-""", success_regex = ["(?m)^AXVISOR_NVME_RW_PAYLOAD\\s*$", "(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\\s*$"] }]
-to_bin = true
-uefi = true
+"""
+success_regex = ["(?m)^AXVISOR_NVME_RW_PAYLOAD\\s*$", "(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = ["(?m)^test pass!\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "mkdir -p /mnt/v"
+
+[[shell_check_steps]]
+shell_cmd = "mount -t ext4 -o ro /dev/vda /mnt/v"
+success_regex = ["EXT4-fs \\(vda\\): mounted filesystem .* ro "]
+fail_regex = ["mount:"]
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "cat /mnt/v/etc/alpine-release"
+success_regex = ["(?m)^3\\.23\\.5\\s*$"]
+fail_regex = ["cat:"]
+timeout = 60

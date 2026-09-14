@@ -1321,6 +1321,10 @@ impl UsbDeviceFile {
 }
 
 impl FileLike for UsbDeviceFile {
+    fn validate_write_access(&self) -> StarryResult {
+        self.base.validate_write_access()
+    }
+
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         self.base.read(dst)
     }

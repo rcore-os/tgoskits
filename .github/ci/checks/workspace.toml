@@ -34,3 +34,12 @@ python3 tools/qperf/tests/prebuild.py
 python3 tools/qperf/tests/qemu_load.py tools/qperf/target/release/libqperf.so
 python3 tools/qperf/tests/qemu_sample.py tools/qperf/target/release/libqperf.so tools/qperf/target/release/qperf-analyzer
 '''
+
+[[check]]
+id = "test-linux-perf-download"
+name = "Linux perf session download contract"
+runner = "ubuntu-base"
+timeout_minutes = 5
+command = '''
+bash apps/starry/linux-perf/test-download.sh
+'''

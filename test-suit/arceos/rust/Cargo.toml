@@ -12,13 +12,14 @@ ax-std = ["dep:ax-cpu", "dep:ax-driver", "dep:ax-hal", "dep:ax-std", "ax-std/arc
 memtest = ["ax-std", "dep:rand", "ax-std/alloc"]
 mem-stage1-transition = ["task-runtime", "ax-std/alloc", "ax-std/ipi", "ax-std/paging"]
 task-runtime = ["ax-std"]
+cpu-capacity = ["task-runtime"]
 serial-rx = ["task-runtime"]
 task-yield = ["task-runtime"]
 sched-rr = ["task-runtime", "ax-std/alloc"]
 sched-cfs = ["task-runtime", "ax-std/alloc"]
 task-affinity = ["task-runtime"]
 # Kept outside `all`: device workers have no CPU hotplug park contract.
-task-cpu-lifecycle = ["task-runtime", "dep:ax-runtime", "ax-runtime/fault-injection", "ax-std/paging", "dep:ax-mm"]
+task-cpu-lifecycle = ["dep:ax-task", "task-runtime", "dep:ax-runtime", "ax-runtime/fault-injection", "ax-std/paging", "dep:ax-mm"]
 task-fair-idle-pull = ["task-runtime", "ax-std/alloc"]
 task-fair-wake-idle-sibling = ["task-runtime"]
 task-wait-queue = ["task-runtime", "dep:ax-runtime", "ax-runtime/fault-injection", "ax-std/tls"]
@@ -60,6 +61,7 @@ lockdep-detect = [
 # under that scheduler. The xtask default run dispatches this existing selector
 # as a separate kernel after the `all` kernel.
 all = [
+    "cpu-capacity",
     "memtest",
     "mem-stage1-transition",
     "task-yield",

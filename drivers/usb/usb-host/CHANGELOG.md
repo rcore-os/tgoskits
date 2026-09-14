@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.12.0...crab-usb-v0.12.1) - 2026-09-11
+
+### Other
+
+- *(axbuild)* migrate test execution to shell check steps ([#2361](https://github.com/rcore-os/tgoskits/pull/2361))
+
 ## [0.12.0](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.11.0...crab-usb-v0.12.0) - 2026-09-09
 
 ### Added

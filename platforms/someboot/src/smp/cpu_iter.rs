@@ -1,43 +1,62 @@
 use crate::{ArchTrait, arch::Arch};
 
+#[derive(Clone)]
 enum CpuIdIterState {
-    Unknown,
     Acpi(CpuIdOrder),
     Fdt(CpuIdOrder),
     Default,
     Done,
 }
 
-pub(super) fn cpu_id_list() -> impl Iterator<Item = usize> {
+pub(super) fn cpu_id_list() -> CpuIdIter {
     CpuIdIter::new()
 }
 
-struct CpuIdIter {
+#[derive(Clone)]
+pub(super) struct CpuIdIter {
     state: CpuIdIterState,
 }
 
 impl CpuIdIter {
     fn new() -> Self {
-        Self {
-            state: CpuIdIterState::Unknown,
-        }
+        Self::from_sources(
+            Arch::cpu_current_hartid(),
+            crate::acpi::cpu_id_list(),
+            crate::fdt::cpu_id_list,
+        )
     }
 
-    fn select_source() -> CpuIdIterState {
-        let boot_cpu_id = Arch::cpu_current_hartid();
-        if let Some(cpu_ids) = crate::acpi::cpu_id_list()
+    fn from_sources<FdtIds: Iterator<Item = usize>>(
+        boot_cpu_id: usize,
+        acpi_cpu_ids: Option<impl Iterator<Item = usize>>,
+        fdt_cpu_ids: impl FnOnce() -> Option<FdtIds>,
+    ) -> Self {
+        let state = if let Some(cpu_ids) = acpi_cpu_ids
             && let Some(order) = CpuIdOrder::new(cpu_ids, boot_cpu_id)
         {
-            return CpuIdIterState::Acpi(order);
-        }
-
-        if let Some(cpu_ids) = crate::fdt::cpu_id_list()
+            CpuIdIterState::Acpi(order)
+        } else if let Some(cpu_ids) = fdt_cpu_ids()
             && let Some(order) = CpuIdOrder::new(cpu_ids, boot_cpu_id)
         {
-            return CpuIdIterState::Fdt(order);
-        }
+            CpuIdIterState::Fdt(order)
+        } else {
+            CpuIdIterState::Default
+        };
+        Self { state }
+    }
 
-        CpuIdIterState::Default
+    /// Capacity firmware must belong to the selected CPU identity namespace.
+    /// ACPI capacity discovery is not implemented, so that source keeps the
+    /// homogeneous default even when a conflicting FDT is also available.
+    pub(super) fn capacity_fdt<'a>(
+        &self,
+        read_fdt: impl FnOnce() -> Option<fdt_raw::Fdt<'a>>,
+    ) -> Option<fdt_raw::Fdt<'a>> {
+        if matches!(self.state, CpuIdIterState::Fdt(_)) {
+            read_fdt()
+        } else {
+            None
+        }
     }
 }
 
@@ -45,33 +64,27 @@ impl Iterator for CpuIdIter {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let next_cpu_id = match &mut self.state {
-                CpuIdIterState::Unknown => {
-                    self.state = Self::select_source();
-                    continue;
-                }
-                CpuIdIterState::Acpi(order) => {
-                    crate::acpi::cpu_id_list().and_then(|cpu_ids| order.next(cpu_ids))
-                }
-                CpuIdIterState::Fdt(order) => {
-                    crate::fdt::cpu_id_list().and_then(|cpu_ids| order.next(cpu_ids))
-                }
-                CpuIdIterState::Default => {
-                    self.state = CpuIdIterState::Done;
-                    return Some(0);
-                }
-                CpuIdIterState::Done => return None,
-            };
-
-            if next_cpu_id.is_some() {
-                return next_cpu_id;
+        let next_cpu_id = match &mut self.state {
+            CpuIdIterState::Acpi(order) => {
+                crate::acpi::cpu_id_list().and_then(|cpu_ids| order.next(cpu_ids))
             }
+            CpuIdIterState::Fdt(order) => {
+                crate::fdt::cpu_id_list().and_then(|cpu_ids| order.next(cpu_ids))
+            }
+            CpuIdIterState::Default => {
+                self.state = CpuIdIterState::Done;
+                return Some(0);
+            }
+            CpuIdIterState::Done => return None,
+        };
+        if next_cpu_id.is_none() {
             self.state = CpuIdIterState::Done;
         }
+        next_cpu_id
     }
 }
 
+#[derive(Clone)]
 enum CpuIdOrder {
     EmitBoot {
         boot_cpu_id: usize,
@@ -130,7 +143,47 @@ impl CpuIdOrder {
 mod tests {
     use alloc::vec::Vec;
 
-    use super::CpuIdOrder;
+    use super::{CpuIdIter, CpuIdOrder};
+
+    #[test]
+    fn capacity_uses_the_selected_firmware_source() {
+        use fdt_edit::{Fdt, Node, Property};
+
+        let mut tree = Fdt::new();
+        let cpus = tree.add_node(tree.root_id(), Node::new("cpus"));
+        let node = tree.node_mut(cpus).unwrap();
+        node.set_property(Property::new("#address-cells", 1u32.to_be_bytes().to_vec()));
+        node.set_property(Property::new("#size-cells", 0u32.to_be_bytes().to_vec()));
+        for (name, id, raw) in [("cpu@10", 16u32, 100u32), ("cpu@20", 32, 200)] {
+            let cpu = tree.add_node(cpus, Node::new(name));
+            let node = tree.node_mut(cpu).unwrap();
+            node.set_property(Property::new("reg", id.to_be_bytes().to_vec()));
+            node.set_property(Property::new(
+                "capacity-dmips-mhz",
+                raw.to_be_bytes().to_vec(),
+            ));
+        }
+        let bytes = tree.encode();
+        let raw = fdt_raw::Fdt::from_bytes(bytes.as_ref()).unwrap();
+        let capacities = |acpi_ids: Option<&[usize]>| {
+            let ids = CpuIdIter::from_sources(32, acpi_ids.map(|ids| ids.iter().copied()), || {
+                Some([16, 32].into_iter())
+            });
+            let caps = ids
+                .capacity_fdt(|| Some(raw.clone()))
+                .and_then(|fdt| crate::fdt::CpuCapacities::from_fdt(fdt, [32, 16].into_iter()));
+            [32, 16].map(|id| {
+                caps.as_ref()
+                    .and_then(|caps| caps.get(id))
+                    .unwrap_or(crate::fdt::CPU_CAPACITY_SCALE)
+            })
+        };
+        // Identical numeric IDs do not authorize using FDT capacity for ACPI.
+        assert_eq!(capacities(Some(&[16, 32])), [1024, 1024]);
+        // An absent or empty ACPI list permits the FDT topology and capacity.
+        assert_eq!(capacities(None), [1024, 512]);
+        assert_eq!(capacities(Some(&[])), [1024, 512]);
+    }
 
     #[test]
     fn nonzero_boot_cpu_becomes_logical_cpu_zero() {

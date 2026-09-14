@@ -101,6 +101,10 @@ impl ReadyFile {
 
 #[cfg(all(test, not(axtest)))]
 impl FileLike for ReadyFile {
+    fn validate_write_access(&self) -> crate::StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         "axtest:[epoll-ready-file]".into()
     }
@@ -160,6 +164,10 @@ impl CallbackBoundaryFile {
 
 #[cfg(all(test, not(axtest)))]
 impl FileLike for CallbackBoundaryFile {
+    fn validate_write_access(&self) -> crate::StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         "axtest:[epoll-callback-boundary-file]".into()
     }
@@ -326,6 +334,10 @@ impl ReadyDuringRegisterFile {
 
 #[cfg(all(test, not(axtest)))]
 impl FileLike for ReadyDuringRegisterFile {
+    fn validate_write_access(&self) -> crate::StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         "axtest:[epoll-rearm-race]".into()
     }

@@ -1,3 +1,6 @@
+#[cfg(feature = "cpu-capacity")]
+mod cpu_capacity;
+
 #[cfg(feature = "ax-std")]
 use ax_std as _;
 
@@ -92,6 +95,8 @@ macro_rules! test_runner {
         }
     };
 }
+
+test_runner!("cpu-capacity", run_cpu_capacity, cpu_capacity::run);
 
 test_runner!(
     "debug-backtrace",
@@ -202,6 +207,12 @@ test_runner!("task-yield", run_task_yield, task::yield_now::run);
 test_runner!("serial-rx", run_serial_rx, serial_rx::run);
 
 const SELECTED_TESTS: &[TestCase] = &[
+    #[cfg(feature = "cpu-capacity")]
+    TestCase::new(
+        "cpu-capacity",
+        "published CPU capacity across online CPUs",
+        run_cpu_capacity,
+    ),
     #[cfg(feature = "serial-rx")]
     TestCase::new("serial-rx", "serial IRQ receive continuity", run_serial_rx),
     #[cfg(feature = "debug-backtrace")]

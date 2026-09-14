@@ -90,6 +90,7 @@ fn queue_notification_keeps_activity_until_irq_publication() {
         .expect("activity should be admitted");
     let notification = QueueNotification {
         outcome: QueueNotifyOutcome::Completed { notify: true },
+        retry_required: false,
         publication: InterruptPublicationRequest::new(
             Arc::clone(&interrupts),
             Some(InterruptPublicationKind::Queue),

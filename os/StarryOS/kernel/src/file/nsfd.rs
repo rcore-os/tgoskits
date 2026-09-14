@@ -50,6 +50,10 @@ impl NsFd {
 }
 
 impl FileLike for NsFd {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(crate::StarryError::InvalidInput)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         match self {
             NsFd::Uts(_) => "anon_inode:[uts_ns]".into(),

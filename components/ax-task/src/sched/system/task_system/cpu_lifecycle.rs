@@ -170,8 +170,10 @@ impl TaskSystem {
     ///
     /// The caller must first migrate or retire every non-idle thread, cancel
     /// local task deadlines, and consume the CPU's scheduler IPI. The packed
-    /// remote lifecycle closes publication only when its active publisher count
-    /// is zero, so a successful transition cannot strand an inbox node between
+    /// remote lifecycle first closes placement, then waits for prior publishers
+    /// before closing owner delivery. `NotReady` retains `Inactive`: the owner
+    /// must service normal scheduler work and continue this operation. Other
+    /// errors roll back admission. Success cannot strand an inbox node between
     /// queue insertion and its doorbell.
     pub fn take_cpu_offline(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<(), TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
@@ -183,94 +185,134 @@ impl TaskSystem {
         if !Arc::ptr_eq(&remote, cpu.remote()) {
             return Err(TaskError::InvalidRuntimeHandle);
         }
-        match remote.lifecycle_state() {
-            crate::runtime::cpu::CpuLifecycleState::Offline => {
-                return Err(TaskError::CpuOffline(id.as_u32()));
+        let result = (|| {
+            match remote.lifecycle_state() {
+                crate::runtime::cpu::CpuLifecycleState::Offline => {
+                    return Err(TaskError::CpuOffline(id.as_u32()));
+                }
+                crate::runtime::cpu::CpuLifecycleState::Draining => {
+                    return Err(TaskError::CpuNotQuiescent(id.as_u32()));
+                }
+                crate::runtime::cpu::CpuLifecycleState::Online
+                | crate::runtime::cpu::CpuLifecycleState::Inactive => {}
             }
-            crate::runtime::cpu::CpuLifecycleState::Inactive
-            | crate::runtime::cpu::CpuLifecycleState::Draining => {
+            // A staged first activation is a persistent admission reservation, not
+            // an in-flight publication reader. Registry ownership serializes this
+            // check with stage/activate/cancel, before placement is closed.
+            if state
+                .slots
+                .iter()
+                .filter_map(|slot| slot.record.as_ref())
+                .any(|record| {
+                    record
+                        .activation
+                        .as_ref()
+                        .is_some_and(|activation| activation.target() == id)
+                })
+            {
+                #[cfg(feature = "fault-injection")]
+                crate::runtime::cpu::record_idle_offline_rejection(
+                    crate::runtime::cpu::IdleOfflineRejection::PlacementPublication,
+                );
                 return Err(TaskError::CpuNotQuiescent(id.as_u32()));
             }
-            crate::runtime::cpu::CpuLifecycleState::Online => {}
-        }
-        if root_domain.online.count() <= 1 {
-            return Err(TaskError::LastOnlineCpu(id.as_u32()));
-        }
-        if !root_domain.can_deactivate_cpu(id) {
-            return Err(TaskError::DeadlineAdmission);
-        }
-        let remaining_online = root_domain
-            .online
-            .count()
-            .checked_sub(1)
-            .ok_or(TaskError::InvalidConfiguration)?;
-        let deadline_rebuild = state.deadline_bandwidth_rebuild(remaining_online)?;
-        let rt_period_replacement = (0..root_domain.online.topology_len())
-            .map(|index| CpuId::new(index as u32))
-            .find(|candidate| *candidate != id && root_domain.online.contains(*candidate))
-            .ok_or(TaskError::LastOnlineCpu(id.as_u32()))?;
-
-        self.migrate_dormant_deadline_bandwidth_for_cpu_offline(&state, &root_domain, id)?;
-
-        if !remote.try_deactivate() {
-            #[cfg(feature = "fault-injection")]
-            crate::runtime::cpu::record_idle_offline_rejection(
-                crate::runtime::cpu::IdleOfflineRejection::PlacementPublication,
-            );
-            Err(TaskError::CpuNotQuiescent(id.as_u32()))
-        } else if !Self::prepare_thread_targets_for_cpu_offline(&state, &root_domain, id) {
-            #[cfg(feature = "fault-injection")]
-            crate::runtime::cpu::record_idle_offline_rejection(
-                crate::runtime::cpu::IdleOfflineRejection::ThreadTarget,
-            );
-            remote.cancel_deactivation();
-            Err(TaskError::CpuNotQuiescent(id.as_u32()))
-        } else if !remote.try_begin_draining() {
-            #[cfg(feature = "fault-injection")]
-            crate::runtime::cpu::record_idle_offline_rejection(
-                crate::runtime::cpu::IdleOfflineRejection::OwnerPublication,
-            );
-            remote.cancel_deactivation();
-            Err(TaskError::CpuNotQuiescent(id.as_u32()))
-        } else if !cpu.is_quiescent_for_offline() {
-            #[cfg(feature = "fault-injection")]
-            crate::runtime::cpu::record_idle_offline_rejection(
-                crate::runtime::cpu::IdleOfflineRejection::CpuState,
-            );
-            remote.cancel_draining();
-            Err(TaskError::CpuNotQuiescent(id.as_u32()))
-        } else if !Self::threads_allow_cpu_offline(&state, &root_domain, id) {
-            #[cfg(feature = "fault-injection")]
-            crate::runtime::cpu::record_idle_offline_rejection(
-                crate::runtime::cpu::IdleOfflineRejection::ThreadOwnership,
-            );
-            remote.cancel_draining();
-            Err(TaskError::CpuNotQuiescent(id.as_u32()))
-        } else if let Err(error) = ensure_runtime_success(task_runtime::prepare_cpu_offline(
-            RuntimeCpuId::new(id.as_u32()),
-        )) {
-            remote.cancel_draining();
-            Err(error)
-        } else if !root_domain.remove_online(id, deadline_rebuild) {
-            remote.cancel_draining();
-            Err(TaskError::InvalidConfiguration)
-        } else {
-            cpu.as_mut().clear_fair_balance();
-            self.root_domain.disable_rt_runtime(id);
-            remote.finish_offline();
-            remote
-                .lock_run_queue(RunQueueGuardSource::Lifecycle)
-                .invalidate_domain_publication();
-            self.root_domain.publish_offline(id);
-            if self
-                .root_domain
-                .rt_bandwidth()
-                .migrate_owner(id, rt_period_replacement)
-            {
-                self.cpu_remotes[rt_period_replacement.as_usize()].kick_scheduler_work();
+            if root_domain.online.count() <= 1 {
+                return Err(TaskError::LastOnlineCpu(id.as_u32()));
             }
-            Ok(())
+            if !root_domain.can_deactivate_cpu(id) {
+                return Err(TaskError::DeadlineAdmission);
+            }
+            let remaining_online = root_domain
+                .online
+                .count()
+                .checked_sub(1)
+                .ok_or(TaskError::InvalidConfiguration)?;
+            let deadline_rebuild = state.deadline_bandwidth_rebuild(remaining_online)?;
+            let rt_period_replacement = (0..root_domain.online.topology_len())
+                .map(|index| CpuId::new(index as u32))
+                .find(|candidate| *candidate != id && root_domain.online.contains(*candidate))
+                .ok_or(TaskError::LastOnlineCpu(id.as_u32()))?;
+
+            self.migrate_dormant_deadline_bandwidth_for_cpu_offline(&state, &root_domain, id)?;
+
+            if remote.lifecycle_state() == crate::runtime::cpu::CpuLifecycleState::Online
+                && !remote.try_deactivate()
+            {
+                #[cfg(feature = "fault-injection")]
+                crate::runtime::cpu::record_idle_offline_rejection(
+                    crate::runtime::cpu::IdleOfflineRejection::PlacementPublication,
+                );
+                Err(TaskError::CpuNotQuiescent(id.as_u32()))
+            } else if !remote.try_begin_draining() {
+                #[cfg(feature = "fault-injection")]
+                crate::runtime::cpu::record_idle_offline_rejection(
+                    crate::runtime::cpu::IdleOfflineRejection::OwnerPublication,
+                );
+                Err(TaskError::NotReady)
+            } else if !cpu.is_quiescent_for_offline() {
+                #[cfg(feature = "fault-injection")]
+                crate::runtime::cpu::record_idle_offline_rejection(
+                    if cpu.needs_reschedule() || cpu.has_remote_work() {
+                        crate::runtime::cpu::IdleOfflineRejection::SchedulerWork
+                    } else {
+                        crate::runtime::cpu::IdleOfflineRejection::CpuState
+                    },
+                );
+                if cpu.needs_reschedule() || cpu.has_remote_work() {
+                    Err(TaskError::NotReady)
+                } else {
+                    Err(TaskError::CpuNotQuiescent(id.as_u32()))
+                }
+            } else if !Self::prepare_thread_targets_for_cpu_offline(&state, &root_domain, id) {
+                #[cfg(feature = "fault-injection")]
+                crate::runtime::cpu::record_idle_offline_rejection(
+                    crate::runtime::cpu::IdleOfflineRejection::ThreadTarget,
+                );
+                Err(TaskError::CpuNotQuiescent(id.as_u32()))
+            } else if !Self::threads_allow_cpu_offline(&state, &root_domain, id) {
+                #[cfg(feature = "fault-injection")]
+                crate::runtime::cpu::record_idle_offline_rejection(
+                    crate::runtime::cpu::IdleOfflineRejection::ThreadOwnership,
+                );
+                Err(TaskError::CpuNotQuiescent(id.as_u32()))
+            } else if let Err(error) = ensure_runtime_success(task_runtime::prepare_cpu_offline(
+                RuntimeCpuId::new(id.as_u32()),
+            )) {
+                Err(error)
+            } else if !root_domain.remove_online(id, deadline_rebuild) {
+                Err(TaskError::InvalidConfiguration)
+            } else {
+                cpu.as_mut().clear_fair_balance();
+                self.root_domain.disable_rt_runtime(id);
+                remote.finish_offline();
+                remote
+                    .lock_run_queue(RunQueueGuardSource::Lifecycle)
+                    .invalidate_domain_publication();
+                self.root_domain.publish_offline(id);
+                if self
+                    .root_domain
+                    .rt_bandwidth()
+                    .migrate_owner(id, rt_period_replacement)
+                {
+                    self.cpu_remotes[rt_period_replacement.as_usize()].kick_scheduler_work();
+                }
+                Ok(())
+            }
+        })();
+        // Pending work resumes on an inactive CPU: placement stays closed
+        // across normal scheduling. Every terminal error reopens admission.
+        match (&result, remote.lifecycle_state()) {
+            (Err(TaskError::NotReady), crate::runtime::cpu::CpuLifecycleState::Draining) => {
+                remote.resume_owner_drain()
+            }
+            (Err(TaskError::NotReady), _) => {}
+            (Err(_), crate::runtime::cpu::CpuLifecycleState::Draining) => remote.cancel_draining(),
+            (Err(_), crate::runtime::cpu::CpuLifecycleState::Inactive) => {
+                remote.cancel_deactivation()
+            }
+            _ => {}
         }
+        result
     }
 
     /// Mirrors Linux `dl_task_offline_migration()` for blocked DL tasks.

@@ -53,6 +53,7 @@ ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos
 - 旧的 `--test-group` 和 `--stress` 入口已删除。大型应用、压力、K230、图形和基准图像工作负载位于 `apps/starry`，通过 `cargo xtask starry app ...` 或各自脚本运行。
 - `-l/--list` 列出所有发现的 Starry QEMU 或板卡用例。`qemu` 等构建包装目录本身没有运行配置时不进入列表。
 - `qemu/system` 是统一 QEMU 构建包装目录下的聚合用例。其子目录只保存文件，不得再放置 `qemu-<arch>.toml`。
+- 分组父配置可以用 `[[grouped_qemu_profiles]]` 的 `name`、`subcase_prefix`、`config` 将不同模拟器要求拆成互斥启动。`qemu_profiles::expand()` 保留全部未匹配项，并让定向子用例选择使用同一配置；不得用拆分跳过用例。AArch64 `perf-*` 独立使用 icount，普通 system 测试保留默认 MTTCG。
 
 ## QEMU 文件处理流水线
 
@@ -94,6 +95,7 @@ ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos
 - 逐程序超时后的进程标识命名空间清理另设上限，当前为 30 秒。无法回收命名空间初始化进程时，输出 `STARRY_SYSTEM_TEST_CLEANUP_TIMEOUT`，并在启动下一程序前终止套件。隔离回归中的逃逸后代应阻塞在原始管道等待上，以迫使内核在发布不可捕获终止信号后唤醒它。
 - CMake 配置、构建和安装命令成功时保持安静；失败时必须重放命令、标准输出、标准错误、退出状态和阶段上下文。预构建及客户机或 QEMU 输出保持实时。
 - 启动 `debugfs` 前先决定根文件系统解压权限。直接执行 `rdump` 需要完整宿主所有权权限，否则先进入 `fakeroot`。Linux 上检查有效用户标识、完整用户与组标识映射以及有效 `CAP_CHOWN`；需要 `fakeroot` 但不可用时，在启动 `debugfs` 前失败；不得先输出再过滤所有权警告，也不得用更弱语义静默重试。非 Linux Unix 宿主（如 macOS）没有可用的 fakeroot：常见打包是 shell shim，会拆坏 `-R` 的引号参数并假成功退出 0，因此这些宿主直接执行 `debugfs`，解包后必须校验镜像顶层条目在暂存目录中存在，不得只信任退出码。
+- `write_cross_bin_wrappers()` 统一选择交叉 binutils：存在 qemu-user 时执行 staging root 内的工具，否则执行宿主原生 `<gnu_tool_prefix>-<tool>`。原生模式仍需目标 sysroot，缺少工具必须失败。`prepare_guest_prebuild_env()` 对存在的 `prebuild.sh` 仍要求 qemu-user；不得跳过脚本或移除依赖产物的子用例来宣称完整套件通过。当前 `qemu/system` 有共享 prebuild，因此原生工具支持不代表该套件可在无 qemu-user 的宿主完整运行。
 - 只有测试输出清楚跳过标记，且审查或用例注释解释环境为何不能要求成功时，才允许显式跳过。错误修复和回归 QEMU 测试在行为缺失时必须明确失败。
 
 ## 编辑规则

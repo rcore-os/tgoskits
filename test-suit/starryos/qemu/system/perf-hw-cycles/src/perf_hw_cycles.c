@@ -6,9 +6,10 @@
  *   2. RESET + ENABLE it, burn cycles in a busy loop, DISABLE it,
  *   3. read() the counter back as a single u64.
  *
- * SUCCESS == the ABI behaves: fd >= 0 AND read() returns exactly 8 bytes.
- * The magnitude of the counter value is NOT asserted (under QEMU TCG the PMU
- * counter is being characterised, not validated), so val may legitimately be 0.
+ * SUCCESS requires task/system cycle counters to open, accept RESET/ENABLE/
+ * DISABLE, return a positive 64-bit count, and release their reservations.
+ * --no-pmu-irq additionally checks rollback of programmable fallbacks on a
+ * platform whose device tree provides no PMU interrupt.
  *
  * On success exactly one final line is printed:
  *     STARRY_PERF_HW_OK
@@ -26,6 +27,7 @@
 
 #include <errno.h>
 #include <stdint.h>
+#include <string.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -115,7 +117,7 @@ static long perf_event_open(struct perf_event_attr *attr, pid_t pid, int cpu,
     return syscall(SYS_perf_event_open, attr, pid, cpu, group_fd, flags);
 }
 
-int main(void) {
+static int check_cycles(int pid, int cpu, int no_irq) {
 #if !defined(__aarch64__)
     /* Hardware-PMU perf is aarch64-only (ARM PMUv3); skip-as-pass on other
      * architectures so the cross-arch grouped C build/run stays green. */
@@ -134,14 +136,60 @@ int main(void) {
     attr.read_format = 0;
     attr.flags = PERF_ATTR_FLAG_DISABLED; /* disabled = 1 */
 
-    /* pid=0 (self), cpu=-1 (any), group_fd=-1 (leader), flags=0 */
-    long fd = perf_event_open(&attr, 0, -1, -1, 0ul);
+    if (no_irq) {
+        /* Sampling must still reject the unavailable interrupt, even when
+         * counting can use the dedicated cycle counter. */
+        attr.sample_period = 100000;
+        attr.sample_type = 1; /* PERF_SAMPLE_IP */
+        long sample = perf_event_open(&attr, pid, cpu, -1, 0ul);
+        int error = errno;
+        if (sample >= 0 || error != ENODEV) {
+            if (sample >= 0) close((int)sample);
+            printf("sampling pid=%d cpu=%d fd=%ld errno=%d\n",
+                   pid, cpu, sample, error);
+            return 1;
+        }
+        attr.sample_period = 0;
+        attr.sample_type = 0;
+        if (pid >= 0) {
+            /* Child copies use programmable slots, so reject an inheritance
+             * promise that this no-IRQ backend cannot fulfill. */
+            attr.flags |= 1ull << 1;
+            long inherited = perf_event_open(&attr, pid, cpu, -1, 0ul);
+            int inherited_error = errno;
+            if (inherited >= 0 || inherited_error != ENODEV) {
+                if (inherited >= 0) close((int)inherited);
+                printf("inherit fd=%ld errno=%d\n", inherited, inherited_error);
+                return 1;
+            }
+            attr.flags = PERF_ATTR_FLAG_DISABLED;
+        }
+    }
+
+    /* Open an independent event in the requested task or CPU context. */
+    long fd = perf_event_open(&attr, pid, cpu, -1, 0ul);
     if (fd < 0) {
-        printf("perf_event_open failed errno=%d\n", errno);
+        printf("perf_event_open pid=%d cpu=%d failed errno=%d\n", pid, cpu, errno);
         return 1;
     }
 
     int efd = (int)fd;
+    if (no_irq) {
+        /* Holding the dedicated counter forces subsequent cycle opens onto
+         * programmable slots. More attempts than physical slots detect leaks
+         * when IRQ registration fails after a reservation. */
+        for (int i = 0; i < 40; ++i) {
+            long fallback = perf_event_open(&attr, pid, cpu, -1, 0ul);
+            int error = errno;
+            if (fallback >= 0 || error != ENODEV) {
+                if (fallback >= 0) close((int)fallback);
+                printf("fallback pid=%d cpu=%d attempt=%d fd=%ld errno=%d\n",
+                       pid, cpu, i, fallback, error);
+                close(efd);
+                return 1;
+            }
+        }
+    }
 
     /* config1.rdpmc is zero: Linux ARM PMUv3 must not publish direct
      * counter access for this ordinary counting event. The mmap reader must
@@ -163,8 +211,11 @@ int main(void) {
     }
     if (munmap(metadata, (size_t)page_size) != 0) return 1;
 
-    (void)ioctl(efd, PERF_EVENT_IOC_RESET, 0);
-    (void)ioctl(efd, PERF_EVENT_IOC_ENABLE, 0);
+    if (ioctl(efd, PERF_EVENT_IOC_RESET, 0) != 0 ||
+        ioctl(efd, PERF_EVENT_IOC_ENABLE, 0) != 0) {
+        close(efd);
+        return 1;
+    }
 
     /* Burn cycles so a working PMU counter would accrue a non-zero value. */
     volatile uint64_t spin = 0;
@@ -173,24 +224,31 @@ int main(void) {
     }
     (void)spin;
 
-    (void)ioctl(efd, PERF_EVENT_IOC_DISABLE, 0);
+    if (ioctl(efd, PERF_EVENT_IOC_DISABLE, 0) != 0) {
+        close(efd);
+        return 1;
+    }
 
     uint64_t val = 0;
     ssize_t n = read(efd, &val, sizeof(val));
 
-    /* Diagnostic line: counter value + bytes read (value is informational). */
-    printf("STARRY_PERF_HW_CYCLES=%llu n=%lld\n", (unsigned long long)val,
-           (long long)n);
+    /* Observe both the read ABI and actual counting after enable. */
+    printf("STARRY_PERF_HW_CYCLES pid=%d cpu=%d value=%llu n=%lld\n",
+           pid, cpu, (unsigned long long)val, (long long)n);
 
-    int ok = (fd >= 0) && (n == 8);
+    int ok = n == 8 && val > 0;
 
     close(efd);
 
-    if (ok) {
-        /* Exactly one success sentinel line. */
-        printf("STARRY_PERF_HW_OK\n");
-        return 0;
-    }
+    return ok ? 0 : 1;
+}
 
-    return 1;
+int main(int argc, char **argv) {
+    int no_irq = argc == 2 && strcmp(argv[1], "--no-pmu-irq") == 0;
+    int failures = check_cycles(0, -1, no_irq);
+    failures += check_cycles(-1, 0, no_irq);
+    /* Reopen after close to prove dedicated reservations are released. */
+    failures += check_cycles(0, -1, no_irq);
+    if (failures == 0) printf("STARRY_PERF_HW_OK\n");
+    return failures != 0;
 }

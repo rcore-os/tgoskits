@@ -442,6 +442,21 @@ fn concurrent_notify_same_queue_does_not_fault_or_replace_owner_queue() {
     });
     entered.wait();
 
+    let mut poll_memory = TestMemory {
+        reads: Cell::new(0),
+    };
+    let poll_outcome = transport
+        .poll_queue(0, &mut poll_memory)
+        .expect("a poll racing the queue owner should not fail");
+    let VirtioPciWriteOutcome::QueueNotified(notification) = poll_outcome else {
+        panic!("expected a deferred poll notification");
+    };
+    assert!(
+        notification.requires_poll(),
+        "a poll racing the queue owner must remain pending"
+    );
+    notification.complete();
+
     let second_transport = StdArc::clone(&transport);
     let second = thread::spawn(move || {
         let mut memory = TestMemory {
@@ -461,6 +476,10 @@ fn concurrent_notify_same_queue_does_not_fault_or_replace_owner_queue() {
         panic!("expected an idle queue notification");
     };
     assert_eq!(notification.outcome(), QueueNotifyOutcome::Idle);
+    assert!(
+        notification.requires_poll(),
+        "a notify racing the queue owner must request a later poll"
+    );
     notification.complete();
     assert_eq!(
         transport.status() & VIRTIO_STATUS_DEVICE_NEEDS_RESET as u8,
@@ -475,6 +494,10 @@ fn concurrent_notify_same_queue_does_not_fault_or_replace_owner_queue() {
     let VirtioPciWriteOutcome::QueueNotified(notification) = first_outcome else {
         panic!("expected first queue notification");
     };
+    assert!(
+        notification.requires_poll(),
+        "the queue owner must consume the latched notification"
+    );
     notification.complete();
     first.join().expect("first notify should finish");
 }

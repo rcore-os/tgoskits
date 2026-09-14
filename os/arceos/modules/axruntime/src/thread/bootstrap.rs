@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use super::*;
 
 static TASK_SYSTEM: LazyInit<Pin<Box<TaskSystem>>> = LazyInit::new();
@@ -66,7 +68,10 @@ pub(crate) fn initialize_primary(cpu_id: usize) -> Result<(), TaskError> {
     // of leaving an independent hard-coded 10 ms balance deadline active.
     let config = TaskSystemConfig::new(ax_hal::cpu_num())
         .with_balance_interval_ns(crate::build_info::SCHEDULER_TICK_INTERVAL_NANOS);
-    let system = Box::pin(TaskSystem::new(config)?);
+    let capacities = (0..config.cpu_count())
+        .map(|cpu| ax_hal::topology::cpu_capacity(cpu).ok_or(TaskError::InvalidConfiguration))
+        .collect::<Result<Vec<_>, _>>()?;
+    let system = Box::pin(TaskSystem::new_with_cpu_capacities(config, &capacities)?);
     TASK_SYSTEM.init_once(system);
     let bootstrap = initialize_current_cpu(cpu_id)?;
     PRIMARY_BOOTSTRAP_THREAD.init_once(PrimaryBootstrapThread(bootstrap));

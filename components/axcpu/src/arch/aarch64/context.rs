@@ -55,6 +55,7 @@ impl TrapFrame {
             pc: self.ip(),
             sp: self.sp as usize,
             fp: self.x[29] as usize,
+            lr: self.x[30] as usize,
             privilege: match self.origin() {
                 crate::trap::TrapOrigin::Kernel => InterruptedPrivilege::Kernel,
                 crate::trap::TrapOrigin::User => InterruptedPrivilege::User,

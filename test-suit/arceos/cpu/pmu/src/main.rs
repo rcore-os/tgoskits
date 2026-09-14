@@ -19,6 +19,22 @@ fn check_current_cpu() -> ax_cpu::pmu::PmuInfo {
         assert!(pmu.counter(pmu.info().num_counters).is_err());
         // SAFETY: no perf or guest exists in this test image; all counters are ours.
         unsafe { pmu.reset() };
+        // Starry selects short overflow arithmetic even on a long-capable PMU.
+        // Validate the actual register width, then restore the default domain.
+        // SAFETY: reset stopped the domain and no other event users exist.
+        unsafe { pmu.set_long_counters(false) }.unwrap();
+        assert_eq!(pmu.width(counter).unwrap(), 32);
+        pmu.preload(counter, 17).unwrap();
+        assert_eq!(pmu.read(counter).unwrap(), u64::from(u32::MAX - 16));
+        assert_eq!(pmu.info().midr, ax_cpu::capability::read_midr_el1());
+        if pmu.info().has_long_counters() {
+            // SAFETY: the PMU is stopped and this test owns all its counters.
+            unsafe { pmu.set_long_counters(true) }.unwrap();
+            pmu.preload(counter, 17).unwrap();
+            assert_eq!(pmu.read(counter).unwrap(), u64::MAX - 16);
+        }
+        // SAFETY: the test still exclusively owns the stopped PMU domain.
+        unsafe { pmu.reset() };
         // SAFETY: the test owns every PMU slot and the callback is bounded.
         unsafe {
             pmu.with_counting_paused(|paused| {

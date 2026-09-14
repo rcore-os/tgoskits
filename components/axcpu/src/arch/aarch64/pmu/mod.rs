@@ -106,6 +106,7 @@ impl Pmu {
         let pmcr = read_reg!("PMCR_EL0");
         Ok(Self {
             info: PmuInfo {
+                midr: crate::capability::read_midr_el1(),
                 version,
                 num_counters: ((pmcr >> 11) & 31) as usize,
                 has_instruction_counter: (read_reg!("ID_AA64DFR1_EL1") >> 36) & 15 != 0,
@@ -172,6 +173,25 @@ impl Pmu {
     /// Returns whether global PMU counting is enabled on this CPU.
     pub fn is_running(&self) -> bool {
         read_reg!("PMCR_EL0") & 1 != 0
+    }
+
+    /// Selects programmable overflow width while the PMU domain is stopped.
+    ///
+    /// # Safety
+    /// The caller must own every counter and have withdrawn all event users.
+    /// Changing width invalidates their preload and software extension state.
+    pub unsafe fn set_long_counters(&mut self, enabled: bool) -> Result<(), PmuError> {
+        if self.is_running() || (enabled && !self.info.has_long_counters()) {
+            return Err(PmuError::InvalidConfiguration);
+        }
+        if self.info.has_long_counters() {
+            // Preserve D/X/DP/LC; leave E/P/C clear and select LP below.
+            let value = (read_reg!("PMCR_EL0") & 0x78) | (u64::from(enabled) << 7);
+            write_reg!("PMCR_EL0", value);
+            isb();
+        }
+        self.info.counter_width = if enabled { 64 } else { 32 };
+        Ok(())
     }
 
     /// Pauses global counting for a bounded snapshot and restores its prior state.

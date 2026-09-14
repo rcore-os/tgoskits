@@ -226,20 +226,29 @@ impl Rknpu {
     pub fn submit_ioctrl(
         &mut self,
         args: &mut RknpuSubmit,
+        tasks: &mut [RknpuTask],
         clock: &mut impl FnMut() -> u64,
     ) -> Result<(), RknpuError> {
+        // The command stream can contain DMA addresses that are not visible in
+        // the task descriptor itself.  A direct DMA domain therefore cannot be
+        // made safe by checking the GEM containing the command buffer; require
+        // both an enabled IOMMU and a translated device domain before touching
+        // any submission state or MMIO.
+        if !self.iommu_enabled
+            || !matches!(
+                self.dma.info().domain(),
+                dma_api::DmaDomainId::Translated(_)
+            )
+        {
+            warn!("rknpu submit rejected: translated IOMMU domain is unavailable");
+            return Err(RknpuError::IommuError);
+        }
+
         if args.flags & 1 << 1 > 0 {
             debug!("Nonblock task");
         }
 
-        let core_mask = self.normalize_core_mask(args)?;
-        if core_mask > self.data.core_mask || !is_supported_core_mask(core_mask) {
-            warn!(
-                "rknpu submit: invalid core_mask={:#x}, supported_mask={:#x}",
-                args.core_mask, self.data.core_mask
-            );
-            return Err(RknpuError::InvalidParameter);
-        }
+        let core_mask = self.normalize_core_mask(args.core_mask)?;
 
         let use_core_num = active_core_count(core_mask);
         let mut states = Vec::new();
@@ -299,6 +308,20 @@ impl Rknpu {
             return Err(RknpuError::InvalidParameter);
         }
 
+        let required_tasks = states
+            .iter()
+            .map(|state| state.task_end)
+            .max()
+            .ok_or(RknpuError::InvalidParameter)?;
+        if required_tasks > tasks.len() {
+            warn!(
+                "rknpu submit: task array too short: need {}, got {}",
+                required_tasks,
+                tasks.len()
+            );
+            return Err(RknpuError::InvalidParameter);
+        }
+
         if !LOGGED_SUBMIT_CORE_LAYOUT.swap(true, Ordering::Relaxed) {
             warn!(
                 "rknpu submit: core_mask={:#x} active_cores={} subcore_layout={:?}",
@@ -309,14 +332,14 @@ impl Rknpu {
         let deadline = SubmitDeadline::from_timeout(clock(), args.timeout);
         for state in states.iter_mut() {
             self.clear_pending_interrupts(state.core_idx, deadline, clock)?;
-            self.submit_next_chunk(state, args)?;
+            self.submit_next_chunk(state, args, tasks)?;
         }
 
         let mut wait_count: u64 = 0;
         poll_until_ready(deadline, clock, || {
             let mut progressed = false;
             for state in states.iter_mut().filter(|state| state.inflight) {
-                progressed |= self.poll_core_completion(state, args)?;
+                progressed |= self.poll_core_completion(state, args, tasks)?;
             }
             if progressed {
                 wait_count = 0;
@@ -338,13 +361,25 @@ impl Rknpu {
         Ok(())
     }
 
-    fn normalize_core_mask(&mut self, args: &RknpuSubmit) -> Result<u32, RknpuError> {
-        match args.core_mask {
+    /// Normalizes and validates the core mask before a submission is read.
+    ///
+    /// Callers that need to inspect the per-core task layout must use the
+    /// returned mask, because automatic and all-core masks are resolved here.
+    pub fn normalize_core_mask(&mut self, requested_mask: u32) -> Result<u32, RknpuError> {
+        let core_mask = match requested_mask {
             RKNPU_CORE_AUTO_MASK => self.select_auto_core_mask(),
             RKNN_NPU_CORE_ALL => Ok(self.data.core_mask),
             mask if mask > self.data.core_mask => Err(RknpuError::InvalidParameter),
             mask => Ok(mask),
+        }?;
+        if !is_supported_core_mask(core_mask) {
+            warn!(
+                "rknpu submit: invalid core_mask={:#x}, supported_mask={:#x}",
+                requested_mask, self.data.core_mask
+            );
+            return Err(RknpuError::InvalidParameter);
         }
+        Ok(core_mask)
     }
 
     fn select_auto_core_mask(&mut self) -> Result<u32, RknpuError> {
@@ -391,16 +426,14 @@ impl Rknpu {
         &mut self,
         state: &mut CoreSubmitState,
         args: &mut RknpuSubmit,
+        tasks: &mut [RknpuTask],
     ) -> Result<(), RknpuError> {
-        let task_ptr = args.task_obj_addr as *mut RknpuTask;
-        if task_ptr.is_null() {
-            return Err(RknpuError::InvalidParameter);
-        }
         let max_submit_number = self.data.max_submit_number as usize;
 
         let task_number = (state.task_end - state.task_iter).min(max_submit_number);
-        let submit_tasks =
-            unsafe { core::slice::from_raw_parts_mut(task_ptr.add(state.task_iter), task_number) };
+        let submit_tasks = tasks
+            .get_mut(state.task_iter..state.task_iter + task_number)
+            .ok_or(RknpuError::InvalidParameter)?;
 
         let job = SubmitRef {
             base: SubmitBase {
@@ -433,6 +466,7 @@ impl Rknpu {
         &mut self,
         state: &mut CoreSubmitState,
         args: &mut RknpuSubmit,
+        tasks: &mut [RknpuTask],
     ) -> Result<bool, RknpuError> {
         let status = self.base[state.core_idx].pc().interrupt_status.get();
         let status = rknpu_fuzz_status(status);
@@ -451,18 +485,18 @@ impl Rknpu {
         let int_status = status;
         self.base[state.core_idx].pc().clean_interrupts();
 
-        let task_ptr = args.task_obj_addr as *mut RknpuTask;
-        if task_ptr.is_null() || state.current_number == 0 {
+        if state.current_number == 0 {
             return Err(RknpuError::InvalidParameter);
         }
         let last_task_index = state.current_start + state.current_number - 1;
-        unsafe {
-            (*task_ptr.add(last_task_index)).int_status = int_status;
-        }
+        tasks
+            .get_mut(last_task_index)
+            .ok_or(RknpuError::InvalidParameter)?
+            .int_status = int_status;
         state.completed = state.completed.saturating_add(state.current_number);
 
         if state.task_iter < state.task_end {
-            self.submit_next_chunk(state, args)?;
+            self.submit_next_chunk(state, args, tasks)?;
         } else {
             state.inflight = false;
         }
@@ -473,7 +507,89 @@ impl Rknpu {
 
 #[cfg(test)]
 mod tests {
+    use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
+
+    use dma_api::{
+        DeviceDma, DmaAllocHandle, DmaConstraints, DmaDeviceInfo, DmaDirection, DmaError,
+        DmaMapHandle, DmaOp,
+    };
+
     use super::*;
+
+    struct NoopDmaOp;
+
+    impl DmaOp for NoopDmaOp {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _constraints: DmaConstraints,
+            _layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            None
+        }
+
+        unsafe fn dealloc_contiguous(&self, _handle: DmaAllocHandle) {}
+
+        unsafe fn alloc_coherent(
+            &self,
+            _constraints: DmaConstraints,
+            _layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            None
+        }
+
+        unsafe fn dealloc_coherent(&self, _handle: DmaAllocHandle) -> Result<(), DmaError> {
+            Ok(())
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: DmaConstraints,
+            _addr: NonNull<u8>,
+            _size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            Err(DmaError::NoMemory)
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
+    }
+
+    static NOOP_DMA_OP: NoopDmaOp = NoopDmaOp;
+
+    fn direct_dma() -> DeviceDma {
+        DeviceDma::new(
+            DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::Coherent,
+                DmaConstraints::new(u32::MAX as u64),
+            ),
+            &NOOP_DMA_OP,
+        )
+    }
+
+    #[test]
+    fn direct_dma_submit_is_rejected_before_hardware_access() {
+        let mut npu = Rknpu::new(
+            &[NonNull::dangling()],
+            crate::RknpuConfig {
+                rknpu_type: crate::RknpuType::Rk3588,
+            },
+            direct_dma(),
+        )
+        .expect("direct DMA is valid for non-submit GEM operations");
+        npu.set_iommu_enabled(true);
+        assert!(!npu.user_submit_supported());
+
+        let mut args = RknpuSubmit::default();
+        let mut tasks = [];
+        let result = npu.submit_ioctrl(&mut args, &mut tasks, &mut || 0);
+
+        assert_eq!(result, Err(RknpuError::IommuError));
+    }
 
     #[test]
     fn completion_within_abi_millisecond_timeout_is_not_rejected() {

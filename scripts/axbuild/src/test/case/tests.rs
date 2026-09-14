@@ -50,7 +50,7 @@ impl Drop for TempEnvVar {
     }
 }
 
-fn fake_config() -> CaseAssetConfig {
+pub(super) fn fake_config() -> CaseAssetConfig {
     CaseAssetConfig {
         grouped_execution: GroupedCaseExecution::GuestInit(Box::new(GroupedCaseRunnerConfig {
             runner_name: "suite-run-case-tests".to_string(),
@@ -81,7 +81,7 @@ fn fake_runner(config: &CaseAssetConfig) -> &GroupedCaseRunnerConfig {
     config.grouped_execution.runner().unwrap()
 }
 
-fn fake_case(root: &Path, name: &str) -> TestQemuCase {
+pub(super) fn fake_case(root: &Path, name: &str) -> TestQemuCase {
     let case_dir = root.join("test-suite/example/default").join(name);
     fs::create_dir_all(&case_dir).unwrap();
     TestQemuCase {

@@ -204,7 +204,9 @@ fn apply_wake_op_without_waiters(
 fn parse_futex_op(futex_op: u32) -> StarryResult<ParsedFutexOp> {
     let flags = futex_op & !FUTEX_COMMAND_MASK;
     if flags & !SUPPORTED_FLAGS != 0 {
-        return Err(StarryError::InvalidInput);
+        // Linux leaves unknown flag bits in the decoded command and reports
+        // ENOSYS, rather than treating them as an EINVAL flag combination.
+        return Err(StarryError::Unsupported);
     }
 
     let command = match futex_op & FUTEX_COMMAND_MASK {
@@ -325,8 +327,10 @@ pub fn sys_futex(
             Ok(0)
         }
         FutexCommand::Wake | FutexCommand::WakeBitset => {
-            let wake_count = assert_non_negative_i32(value)? as usize;
             validate_futex_wake_key(current, uaddr, op.key_mode)?;
+            // The syscall ABI treats val as an unsigned wake limit. In
+            // particular, -1 is a very large limit, not EINVAL.
+            let wake_count = value as usize;
 
             let futex = FutexContext::new(current).resolve(uaddr.addr(), op.key_mode);
             let bitset = if op.command == FutexCommand::WakeBitset {
@@ -448,6 +452,12 @@ pub fn sys_set_robust_list(
 
 #[cfg(all(test, not(axtest)))]
 fn futex_op_and_compare_rules_hold_for_test() -> bool {
+    // Unknown flag bits follow Linux's ENOSYS result.
+    assert!(matches!(
+        parse_futex_op(FUTEX_WAIT | 0x4000_0000),
+        Err(StarryError::Unsupported)
+    ));
+
     // sign_extend_12: sign-extends a 12-bit value.
     assert!(sign_extend_12(0x000) == 0);
     assert!(sign_extend_12(0x7FF) == 2047); // max positive

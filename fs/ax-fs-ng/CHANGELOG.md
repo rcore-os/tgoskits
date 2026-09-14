@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.10.1...ax-fs-ng-v0.10.2) - 2026-09-11
+
+### Added
+
+- *(ax-fs-ng)* add async block request runtime ([#2349](https://github.com/rcore-os/tgoskits/pull/2349))
+
 ## [0.10.1](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.10.0...ax-fs-ng-v0.10.1) - 2026-09-09
 
 ### Other

@@ -512,6 +512,16 @@ impl PciRootState {
         self.state.lock_irqsave().bindings.clear();
     }
 
+    pub(crate) fn endpoint_bus_master_enabled(&self, device: DeviceId) -> bool {
+        let state = self.state.lock_irqsave();
+        state.bindings.iter().any(|(bdf, token)| {
+            token.device_id() == device
+                && state.functions.iter().any(|function| {
+                    function.bdf() == *bdf && function.command_state().bus_master_enable()
+                })
+        })
+    }
+
     /// Restores every function's root-owned power-on config and BAR route.
     ///
     /// # Errors

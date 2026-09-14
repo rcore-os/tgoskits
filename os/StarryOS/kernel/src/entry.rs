@@ -22,6 +22,9 @@ use crate::{
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
+    // Install task-context diagnostics and contention backoff before userspace.
+    crate::rdrive_osal::init();
+
     crate::stop_machine::init();
     crate::trap::init_handlers();
     static_keys::global_init();

@@ -341,14 +341,14 @@ fn try_new_rejects_invalid_core_configuration_without_panicking() {
         }),
         Err(DeviceError::InvalidInput { .. })
     ));
-    assert!(matches!(
+    assert!(
         VirtioPciTransport::try_new(InvalidCore {
             queue_num_max: 1,
             queue_size_max: 8,
             deferred: true,
-        }),
-        Err(DeviceError::Unsupported { .. })
-    ));
+        })
+        .is_ok()
+    );
     assert!(matches!(
         VirtioPciTransport::try_new(InvalidCore {
             queue_num_max: 2,

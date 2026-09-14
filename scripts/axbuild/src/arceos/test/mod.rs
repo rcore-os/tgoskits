@@ -40,6 +40,7 @@ const ARCEOS_RUST_STANDALONE_FEATURES: &[&str] = &[
 
 const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     ARCEOS_RUST_ALL_FEATURE,
+    "cpu-capacity",
     ARCEOS_RUST_DEBUG_BACKTRACE_FEATURE,
     ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE,
     "display-basic",

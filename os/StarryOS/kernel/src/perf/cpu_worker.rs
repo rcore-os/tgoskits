@@ -1,6 +1,6 @@
 //! Fixed task-context workers for CPU-owned PMU operations.
 
-use alloc::{collections::VecDeque, format, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, format, sync::Arc, vec::Vec};
 
 use ax_lazyinit::LazyInit;
 use ax_runtime::task::{
@@ -11,7 +11,8 @@ use ax_runtime::task::{
 use super::{
     hw::{
         self, SystemPmuConfigure, SystemPmuDisable, SystemPmuDisableResult, SystemPmuEnable,
-        SystemPmuEnableResult, SystemPmuRead, SystemPmuReadResult, SystemPmuReset,
+        SystemPmuEnableResult, SystemPmuRead, SystemPmuReadResult, SystemPmuReplaceOutput,
+        SystemPmuReset,
     },
     sampling_lifecycle::PmuRunLease,
     target::PerfCpuId,
@@ -52,6 +53,9 @@ impl<T> PerfCompletion<T> {
 }
 
 enum PerfCpuCommand {
+    Initialize {
+        completion: Arc<PerfCompletion<()>>,
+    },
     SyncTaskContext {
         completion: Arc<PerfCompletion<()>>,
     },
@@ -69,7 +73,7 @@ enum PerfCpuCommand {
         completion: Arc<PerfCompletion<()>>,
     },
     EnableSystem {
-        request: SystemPmuEnable,
+        request: Box<SystemPmuEnable>,
         completion: Arc<PerfCompletion<SystemPmuEnableResult>>,
     },
     DisableSystem {
@@ -84,11 +88,19 @@ enum PerfCpuCommand {
         request: SystemPmuReset,
         completion: Arc<PerfCompletion<()>>,
     },
+    ReplaceSystemOutput {
+        request: SystemPmuReplaceOutput,
+        completion: Arc<PerfCompletion<()>>,
+    },
 }
 
 impl PerfCpuCommand {
     fn execute(self) {
         match self {
+            Self::Initialize { completion } => {
+                super::percpu::ensure_current_cpu_initialized();
+                completion.finish(Ok(()));
+            }
             Self::SyncTaskContext { completion } => {
                 // Reaching this fixed per-CPU worker proves that a task which
                 // was running when the command was published crossed a
@@ -123,7 +135,7 @@ impl PerfCpuCommand {
                 request,
                 completion,
             } => {
-                let result = with_local_pmu_exclusion(|| hw::enable_system_on_owner(request));
+                let result = with_local_pmu_exclusion(|| hw::enable_system_on_owner(*request));
                 completion.finish(result);
             }
             Self::DisableSystem {
@@ -145,6 +157,14 @@ impl PerfCpuCommand {
                 completion,
             } => {
                 let result = with_local_pmu_exclusion(|| hw::reset_system_on_owner(request));
+                completion.finish(result);
+            }
+            Self::ReplaceSystemOutput {
+                request,
+                completion,
+            } => {
+                let result =
+                    with_local_pmu_exclusion(|| hw::replace_system_output_on_owner(request));
                 completion.finish(result);
             }
         }
@@ -235,6 +255,16 @@ pub(super) fn init() {
             .spawn(move || worker.run())
             .expect("failed to spawn kernel thread");
     }
+
+    for worker in CPU_WORKERS.iter() {
+        let completion = Arc::new(PerfCompletion::new());
+        worker.submit(PerfCpuCommand::Initialize {
+            completion: Arc::clone(&completion),
+        });
+        completion
+            .wait()
+            .expect("perf CPU worker initialization failed");
+    }
 }
 
 /// Forces the selected CPU through a scheduler boundary after task-event
@@ -317,7 +347,7 @@ pub(super) fn enable_system(
     }
     let completion = Arc::new(PerfCompletion::new());
     owner_worker(owner)?.submit(PerfCpuCommand::EnableSystem {
-        request: request.expect("remote PMU enable request"),
+        request: Box::new(request.expect("remote PMU enable request")),
         completion: Arc::clone(&completion),
     });
     completion.wait()
@@ -372,6 +402,27 @@ pub(super) fn reset_system(owner: PerfCpuId, request: SystemPmuReset) -> crate::
     let completion = Arc::new(PerfCompletion::new());
     owner_worker(owner)?.submit(PerfCpuCommand::ResetSystem {
         request: request.expect("remote PMU reset request"),
+        completion: Arc::clone(&completion),
+    });
+    completion.wait()
+}
+
+/// Rebinds an already-running system sampling slot to its newly mmap'd ring.
+pub(super) fn replace_system_output(
+    owner: PerfCpuId,
+    request: SystemPmuReplaceOutput,
+) -> crate::StarryResult<()> {
+    let mut request = Some(request);
+    if let Some(result) = try_local(owner, || {
+        hw::replace_system_output_on_owner(
+            request.take().expect("single local PMU output replacement"),
+        )
+    }) {
+        return result;
+    }
+    let completion = Arc::new(PerfCompletion::new());
+    owner_worker(owner)?.submit(PerfCpuCommand::ReplaceSystemOutput {
+        request: request.expect("remote PMU output replacement request"),
         completion: Arc::clone(&completion),
     });
     completion.wait()

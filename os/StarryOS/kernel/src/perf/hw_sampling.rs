@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use core::{
     any::Any,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use ax_alloc::GlobalPage;
@@ -28,11 +28,25 @@ pub(super) struct SamplingState {
     pub(super) freq: bool,
     pub(super) target_freq: u32,
     pub(super) sample_type: u64,
+    pub(super) sample_id_all: bool,
+    pub(super) sample_user_lr: bool,
     pub(super) observer: PidNamespaceId,
     pub(super) poll_ready: Arc<PollSet>,
     pub(super) notify: Arc<IrqNotify>,
     pub(super) poll_alive: Arc<AtomicBool>,
     pub(super) output: PerfOutputRoute,
+    pub(super) read: Arc<SamplingReadState>,
+}
+
+/// IRQ-visible counters are independently owned; mutable output routing stays
+/// in the event's sleepable control state.
+#[derive(Debug)]
+pub(super) struct SamplingReadState {
+    pub(super) loss: Arc<sampling::LossState>,
+    pub(super) sample_count: Arc<sampling::SamplingCount>,
+    pub(super) enabled_at_ns: AtomicU64,
+    pub(super) time_enabled_ns: AtomicU64,
+    pub(super) time_running_ns: AtomicU64,
 }
 
 impl core::fmt::Debug for SamplingState {

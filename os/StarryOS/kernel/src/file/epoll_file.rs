@@ -7,6 +7,10 @@ use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSi
 use super::{FileLike, epoll::Epoll};
 
 impl FileLike for Epoll {
+    fn validate_write_access(&self) -> crate::StarryResult {
+        Err(crate::StarryError::InvalidInput)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         "anon_inode:[eventpoll]".into()
     }

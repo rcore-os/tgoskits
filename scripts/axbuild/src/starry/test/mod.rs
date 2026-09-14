@@ -4,6 +4,7 @@ mod board;
 mod board_assets;
 mod nixos;
 mod qemu_discovery;
+mod qemu_profiles;
 mod qemu_run;
 mod suite;
 mod symbolize;

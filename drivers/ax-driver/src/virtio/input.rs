@@ -4,8 +4,6 @@ use alloc::{borrow::ToOwned, format, string::String};
 
 use rdif_input::{AbsInfo, Event, EventType, InputDeviceId, InputError, InputEvent};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-#[cfg(feature = "pci")]
-use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
     device::input::{InputConfigSelect, VirtIOInput},
@@ -28,10 +26,20 @@ crate::model_register!(
 
 #[cfg(feature = "pci")]
 fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeError> {
-    let transport =
-        crate::pci::take_virtio_transport_masked(probe.endpoint_mut(), DeviceType::Input)?;
+    // Linux installs the PCI IRQ action before querying input capabilities and
+    // setting DRIVER_OK. VirtIOInput::new completes device initialization here,
+    // so keep INTx masked until the OS has installed and enabled its action.
+    let (transport, intx) = crate::pci::take_virtio_input_transport(probe.endpoint_mut())?;
     let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Optional)?;
-    register_transport_with_info(probe.into_platform_device(), transport, info)
+    let mut dev = VirtIoInputDevice::new(transport).map_err(|err| {
+        OnProbeError::other(format!("failed to initialize virtio-input: {err:?}"))
+    })?;
+    dev.intx = Some(intx);
+    let irq = probe
+        .into_platform_device()
+        .register_input_with_info(dev, info);
+    log::info!("registered virtio input device irq={irq:?}");
+    Ok(())
 }
 
 pub fn register_transport<T: Transport + 'static>(
@@ -55,6 +63,8 @@ pub fn register_transport_with_info<T: Transport + 'static>(
 }
 
 struct VirtIoInputDevice<T: Transport + 'static> {
+    // Drop masks the function before the raw driver's queues are released.
+    intx: Option<crate::pci::InputIntxControl>,
     raw: VirtIOInput<VirtIoHalImpl, T>,
     device_id: InputDeviceId,
     name: String,
@@ -91,6 +101,7 @@ impl<T: Transport + 'static> VirtIoInputDevice<T> {
         let _ = raw.ack_interrupt();
 
         Ok(Self {
+            intx: None,
             raw,
             device_id,
             name,
@@ -157,9 +168,17 @@ impl<T: Transport + 'static> rdif_input::Interface for VirtIoInputDevice<T> {
 
     fn enable_irq(&mut self) {
         self.irq_enabled = true;
+        // The OS action must already be enabled: config queries and queued
+        // input may have left a pending ISR while this function was masked.
+        if let Some(intx) = &mut self.intx {
+            intx.enable();
+        }
     }
 
     fn disable_irq(&mut self) {
+        if let Some(intx) = &mut self.intx {
+            intx.disable();
+        }
         self.irq_enabled = false;
     }
 

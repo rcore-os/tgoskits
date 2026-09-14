@@ -3,7 +3,7 @@
 mod axivc;
 mod card0;
 #[cfg(feature = "rknpu")]
-mod card1;
+pub(crate) mod card1;
 // The real contiguous coherent dma-heap is shared by every accelerator that
 // exchanges buffers (JPU / NPU / RGA).
 #[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]

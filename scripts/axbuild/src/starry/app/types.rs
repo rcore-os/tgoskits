@@ -9,6 +9,7 @@ use crate::test::case::{GroupedCommandSelection, HostHttpServerConfig, TestQemuS
 pub enum StarryAppKind {
     Qemu,
     Board,
+    Both,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

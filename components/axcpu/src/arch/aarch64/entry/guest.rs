@@ -123,6 +123,7 @@ unsafe extern "C" fn __ax_cpu_arm_current_irq(frame: *const GuestContext) {
         pc: frame.elr as usize,
         sp: frame as *const GuestContext as usize + size_of::<GuestContext>(),
         fp: frame.gpr[29] as usize,
+        lr: frame.gpr[30] as usize,
         privilege: InterruptedPrivilege::Kernel,
     });
 }

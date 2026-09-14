@@ -1,16 +1,21 @@
 args = [
   "-nographic",
+  # The guest overwrites a raw sector; discard all host-disk writes on exit.
+  "-snapshot",
   "-cpu", "cortex-a72",
   "-machine", "virt,virtualization=on,gic-version=3",
   "-smp", "4",
+  "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-append", "root=/dev/nvme0n1 rw init=/bin/sh",
   "-m", "4g",
 ]
 fail_regex = ["ARCEOS_VIRTIO_BLK_FAIL", "(?i)panic"]
-timeout = 120
+timeout = 180
 to_bin = true
 uefi = false
 
 [[shell_check_steps]]
-shell_prefix = "axvisor:$"
+shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 1"
 success_regex = ["ARCEOS_VIRTIO_BLK_PASS"]

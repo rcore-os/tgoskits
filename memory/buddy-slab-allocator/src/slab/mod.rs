@@ -10,7 +10,11 @@ pub mod cache;
 pub mod page;
 pub mod size_class;
 
-use core::{alloc::Layout, ptr::NonNull};
+use core::{
+    alloc::Layout,
+    ptr::NonNull,
+    sync::atomic::{AtomicU16, Ordering},
+};
 
 use ax_sync::{RawSpinLockGuard, SpinLock};
 use cache::{CacheDeallocResult, SlabCache};
@@ -47,6 +51,49 @@ pub enum SlabPoolDeallocResult {
     FreeSlab { base: usize, pages: usize },
 }
 
+/// Size classes that took a cross-CPU free since the owner last walked their
+/// full list. It sits outside the slab lock so the lock-free free path can set
+/// it, letting the owner skip the linear walk when nothing was announced.
+pub struct RemoteFreeHint(AtomicU16);
+
+const _: () = assert!(
+    SizeClass::COUNT <= u16::BITS as usize,
+    "RemoteFreeHint needs one bit per size class",
+);
+
+impl RemoteFreeHint {
+    /// Create a hint with no pending class.
+    pub const fn new() -> Self {
+        Self(AtomicU16::new(0))
+    }
+
+    /// Announce a remote free queued for `size_class`.
+    #[inline]
+    pub fn mark(&self, size_class: SizeClass) {
+        self.0.fetch_or(1 << size_class.index(), Ordering::Release);
+    }
+
+    /// Clear `size_class`'s flag and report whether it was set. Clearing before
+    /// the walk keeps a racing free from being lost: it marks the class again.
+    #[inline]
+    pub fn take(&self, size_class: SizeClass) -> bool {
+        let bit = 1 << size_class.index();
+        self.0.fetch_and(!bit, Ordering::AcqRel) & bit != 0
+    }
+
+    /// Forget every pending class.
+    #[inline]
+    pub fn clear(&self) {
+        self.0.store(0, Ordering::Release);
+    }
+}
+
+impl Default for RemoteFreeHint {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Object-safe slab interface used by [`crate::GlobalAllocator`] EII hooks.
 pub trait SlabTrait: Sync {
     /// Logical CPU id this slab belongs to.
@@ -64,10 +111,20 @@ pub trait SlabTrait: Sync {
     /// Free an object on the owner CPU path.
     fn dealloc_local(&self, ptr: NonNull<u8>, layout: Layout) -> SlabDeallocResult;
 
+    /// Hint this slab publishes remote frees into; `None` walks on every allocation.
+    fn remote_free_hint(&self) -> Option<&RemoteFreeHint> {
+        None
+    }
+
     /// Free an object on the remote CPU path.
     fn dealloc_remote(&self, ptr: NonNull<u8>) {
         let owner_cpu = u16::try_from(self.cpu_id()).expect("CPU id exceeds slab owner range");
-        unsafe { SlabPageHeader::remote_free_object(ptr, owner_cpu, self.page_size()) };
+        let queued = unsafe { SlabPageHeader::queue_remote_free(ptr, owner_cpu, self.page_size()) };
+        if let Some(size_class) = queued
+            && let Some(hint) = self.remote_free_hint()
+        {
+            hint.mark(size_class);
+        }
     }
 }
 
@@ -134,6 +191,7 @@ pub struct SlabAllocator<const PAGE_SIZE: usize = 0x1000> {
 pub struct PerCpuSlab<const PAGE_SIZE: usize = 0x1000> {
     cpu_id: u16,
     inner: SpinLock<SlabAllocator<PAGE_SIZE>>,
+    remote_hint: RemoteFreeHint,
 }
 
 /// Default static slab-pool wrapper used by EII integrators.
@@ -148,6 +206,7 @@ impl<const PAGE_SIZE: usize> PerCpuSlab<PAGE_SIZE> {
         Self {
             cpu_id,
             inner: SpinLock::new(SlabAllocator::new()),
+            remote_hint: RemoteFreeHint::new(),
         }
     }
 
@@ -161,6 +220,7 @@ impl<const PAGE_SIZE: usize> PerCpuSlab<PAGE_SIZE> {
     /// Reset the inner slab allocator to an empty state.
     pub fn reset(&self) {
         *self.inner() = SlabAllocator::new();
+        self.remote_hint.clear();
     }
 
     /// Return this slab's logical CPU id.
@@ -170,7 +230,13 @@ impl<const PAGE_SIZE: usize> PerCpuSlab<PAGE_SIZE> {
 
     /// Allocate one object.
     pub fn alloc(&self, layout: Layout) -> AllocResult<SlabAllocResult> {
-        self.inner().alloc(layout)
+        self.inner().alloc_hinted(layout, Some(&self.remote_hint))
+    }
+
+    /// Full-list nodes this slab has walked looking for remote frees.
+    #[cfg(feature = "host-test")]
+    pub fn full_walk_steps(&self, size_class: SizeClass) -> usize {
+        self.inner().full_walk_steps(size_class)
     }
 
     /// Register a freshly allocated slab page.
@@ -185,7 +251,11 @@ impl<const PAGE_SIZE: usize> PerCpuSlab<PAGE_SIZE> {
 
     /// Queue an object onto this slab's remote-free list.
     pub fn dealloc_remote(&self, ptr: NonNull<u8>) {
-        unsafe { SlabPageHeader::remote_free_object(ptr, self.cpu_id, PAGE_SIZE) };
+        if let Some(size_class) =
+            unsafe { SlabPageHeader::queue_remote_free(ptr, self.cpu_id, PAGE_SIZE) }
+        {
+            self.remote_hint.mark(size_class);
+        }
     }
 }
 
@@ -230,10 +300,20 @@ impl<const PAGE_SIZE: usize> SlabAllocator<PAGE_SIZE> {
     /// If the matching cache is exhausted, [`SlabAllocResult::NeedsSlab`] is returned
     /// so the caller can supply pages and retry.
     pub fn alloc(&mut self, layout: Layout) -> AllocResult<SlabAllocResult> {
+        self.alloc_hinted(layout, None)
+    }
+
+    /// Allocate, consulting `hint` before walking the full list for remote
+    /// frees; `None` walks every time.
+    pub fn alloc_hinted(
+        &mut self,
+        layout: Layout,
+        hint: Option<&RemoteFreeHint>,
+    ) -> AllocResult<SlabAllocResult> {
         let sc = SizeClass::from_layout(layout).ok_or(AllocError::InvalidParam)?;
         let cache = &mut self.caches[sc.index()];
 
-        match cache.alloc_object::<PAGE_SIZE>() {
+        match cache.alloc_object_hinted::<PAGE_SIZE>(|| hint.is_none_or(|hint| hint.take(sc))) {
             Some(addr) => {
                 // SAFETY: `addr` is non-null, aligned, and within a live slab page.
                 let ptr = unsafe { NonNull::new_unchecked(addr as *mut u8) };
@@ -268,6 +348,13 @@ impl<const PAGE_SIZE: usize> SlabAllocator<PAGE_SIZE> {
     pub fn add_slab(&mut self, size_class: SizeClass, base: usize, bytes: usize, owner_cpu: u16) {
         self.caches[size_class.index()].add_slab(base, bytes, owner_cpu);
     }
+
+    /// Full-list nodes the cache for `size_class` has walked looking for
+    /// remote frees.
+    #[cfg(feature = "host-test")]
+    pub fn full_walk_steps(&self, size_class: SizeClass) -> usize {
+        self.caches[size_class.index()].full_walk_steps()
+    }
 }
 
 impl<const PAGE_SIZE: usize> SlabTrait for PerCpuSlab<PAGE_SIZE> {
@@ -289,6 +376,10 @@ impl<const PAGE_SIZE: usize> SlabTrait for PerCpuSlab<PAGE_SIZE> {
 
     fn dealloc_local(&self, ptr: NonNull<u8>, layout: Layout) -> SlabDeallocResult {
         PerCpuSlab::dealloc_local(self, ptr, layout)
+    }
+
+    fn remote_free_hint(&self) -> Option<&RemoteFreeHint> {
+        Some(&self.remote_hint)
     }
 }
 

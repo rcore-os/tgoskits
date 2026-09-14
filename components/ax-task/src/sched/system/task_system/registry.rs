@@ -408,22 +408,24 @@ impl TaskSystemState {
         affinity: &CpuSet,
         preferred: Option<CpuId>,
     ) -> Option<CpuId> {
-        self.cpus
-            .iter()
-            .enumerate()
-            .filter_map(|(index, registration)| {
-                let cpu = CpuId::new(index as u32);
-                if !registration.remote.accepts_placement() || !affinity.contains(cpu) {
-                    return None;
-                }
-                Some((
-                    registration.remote.placement_demand(),
-                    Some(cpu) != preferred,
-                    cpu,
-                ))
-            })
-            .min_by_key(|(load, not_preferred, cpu)| (*load, *not_preferred, cpu.as_u32()))
-            .map(|(_, _, cpu)| cpu)
+        ax_sched::select_initial_cpu(
+            self.cpus
+                .iter()
+                .enumerate()
+                .filter_map(|(index, registration)| {
+                    let cpu = CpuId::new(index as u32);
+                    let remote = &registration.remote;
+                    (remote.accepts_placement() && affinity.contains(cpu)).then(|| {
+                        (
+                            cpu.as_usize(),
+                            remote.placement_demand(),
+                            remote.cpu_capacity,
+                        )
+                    })
+                }),
+            preferred.map(CpuId::as_usize),
+        )
+        .map(|cpu| CpuId::new(cpu as u32))
     }
 
     pub(super) fn publish_affinity_update(

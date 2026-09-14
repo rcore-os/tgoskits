@@ -193,6 +193,10 @@ impl Inotify {
 }
 
 impl FileLike for Inotify {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::BadFileDescriptor)
+    }
+
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         if dst.remaining_mut() < INOTIFY_EVENT_SIZE {
             return Err(StarryError::InvalidInput);

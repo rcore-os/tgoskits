@@ -2,6 +2,7 @@
 
 use core::mem::size_of;
 
+use ax_sync::SpinLock;
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult};
 use axvirtio_common::{
     GuestMemory, NoGuestMemoryAccessor, VirtioDeviceID, VirtioQueue,
@@ -25,6 +26,7 @@ const DEVICE_CONFIG_SIZE: usize = 16;
 /// policy and translates queue notifications to the common VirtIO contract.
 pub struct VirtioBlockPciAdapter<B: BlockBackend> {
     core: VirtioBlockRequestCore<B>,
+    pending_head: SpinLock<Option<u16>>,
 }
 
 impl<B: BlockBackend> VirtioBlockPciAdapter<B> {
@@ -32,7 +34,30 @@ impl<B: BlockBackend> VirtioBlockPciAdapter<B> {
     pub const fn new(backend: B, config: VirtioBlockConfig) -> Self {
         Self {
             core: VirtioBlockRequestCore::new(backend, config),
+            pending_head: SpinLock::new(None),
         }
+    }
+
+    fn process_queue(
+        &self,
+        queue: &mut VirtioQueue<NoGuestMemoryAccessor>,
+        memory: &mut dyn GuestMemory,
+    ) -> DeviceResult<QueueNotifyOutcome> {
+        let pending_head = self.pending_head.lock().take();
+        self.core
+            .process_queue(queue, memory, pending_head)
+            .map(|outcome| match outcome {
+                BlockQueueOutcome::Idle => QueueNotifyOutcome::Idle,
+                BlockQueueOutcome::Completed { notify } => QueueNotifyOutcome::Completed { notify },
+                BlockQueueOutcome::Deferred {
+                    pending_head,
+                    notify,
+                } => {
+                    *self.pending_head.lock() = Some(pending_head);
+                    QueueNotifyOutcome::Deferred { notify }
+                }
+            })
+            .map_err(|error| map_virtio_error(error, "process VirtIO PCI block queue"))
     }
 }
 
@@ -82,19 +107,19 @@ impl<B: BlockBackend> VirtioDeviceCore for VirtioBlockPciAdapter<B> {
         queue: &mut VirtioQueue<NoGuestMemoryAccessor>,
         memory: &mut dyn GuestMemory,
     ) -> DeviceResult<QueueNotifyOutcome> {
-        self.core
-            .process_queue(queue, memory, None)
-            .map(|outcome| match outcome {
-                BlockQueueOutcome::Idle => QueueNotifyOutcome::Idle,
-                BlockQueueOutcome::Completed { notify } => QueueNotifyOutcome::Completed { notify },
-                BlockQueueOutcome::Deferred { notify, .. } => {
-                    QueueNotifyOutcome::Deferred { notify }
-                }
-            })
-            .map_err(|error| map_virtio_error(error, "process VirtIO PCI block queue"))
+        self.process_queue(queue, memory)
+    }
+
+    fn poll_queue(
+        &self,
+        queue: &mut VirtioQueue<NoGuestMemoryAccessor>,
+        memory: &mut dyn GuestMemory,
+    ) -> DeviceResult<QueueNotifyOutcome> {
+        self.process_queue(queue, memory)
     }
 
     fn reset(&self) -> DeviceResult {
+        self.pending_head.lock().take();
         self.core.reset();
         Ok(())
     }

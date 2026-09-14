@@ -15,6 +15,7 @@ pub(super) enum InterruptPublicationKind {
 /// endpoint has published or deliberately suppressed the completion interrupt.
 pub struct QueueNotification {
     pub(super) outcome: QueueNotifyOutcome,
+    pub(super) retry_required: bool,
     pub(super) publication: InterruptPublicationRequest,
 }
 
@@ -22,6 +23,14 @@ impl QueueNotification {
     /// Returns the device-core result.
     pub const fn outcome(&self) -> QueueNotifyOutcome {
         self.outcome
+    }
+
+    /// Returns whether the endpoint must schedule another queue poll.
+    ///
+    /// This covers both a device-core deferral and a guest notification that
+    /// arrived while another execution context owned the queue.
+    pub const fn requires_poll(&self) -> bool {
+        self.retry_required || matches!(self.outcome, QueueNotifyOutcome::Deferred { .. })
     }
 
     /// Returns whether publishing this notification requires an endpoint IRQ

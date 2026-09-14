@@ -32,6 +32,7 @@ pub(crate) mod policy;
 
 use super::*;
 use crate::{
+    AsVCpuTask,
     host::*,
     irq::{
         deferred::*,
@@ -376,9 +377,18 @@ impl X86VlapicHostOps for AxvmX86HostOps {
         deadline_nanos: u64,
         mut callback: X86TimerCallback,
     ) -> X86VlapicResult<Self::TimerHandle> {
-        let (vm_id, vcpu_id) =
-            with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| vcpu.map(|vcpu| (vcpu.vm_id(), vcpu.id())))
-                .ok_or(X86VlapicError::TimerUnavailable)?;
+        let bound_identity =
+            with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| vcpu.map(|vcpu| (vcpu.vm_id(), vcpu.id())));
+        // Local APIC exits are completed after the backend binding is released.
+        // The scheduler task remains the authoritative vCPU identity in that phase.
+        let task_identity = || {
+            let current = crate::host::task::current_thread();
+            let task = current.try_as_vcpu_task()?;
+            Some((task.vcpu.vm_id(), task.vcpu.id()))
+        };
+        let (vm_id, vcpu_id) = bound_identity
+            .or_else(task_identity)
+            .ok_or(X86VlapicError::TimerUnavailable)?;
         let (deferred_kick, vcpu_kick) = manager::with_vm(vm_id, |vm| {
             let deferred = irq::vcpu_kick_for_vm(vm)?;
             let runtime = vm.runtime_handle().ok()?;
@@ -818,12 +828,21 @@ pub(crate) fn ioapic_model(vm_id: usize, base: usize, length: usize) -> Arc<dyn 
     })
 }
 
+pub(crate) fn unassigned_mmio_model(base: usize, length: usize) -> Arc<dyn DeviceModel> {
+    Arc::new(X86UnassignedMmioModel { base, length })
+}
+
 pub(crate) fn pit_model(vm_id: usize) -> Arc<dyn DeviceModel> {
     Arc::new(X86PitModel { vm_id })
 }
 
 struct X86IoApicModel {
     vm_id: usize,
+    base: usize,
+    length: usize,
+}
+
+struct X86UnassignedMmioModel {
     base: usize,
     length: usize,
 }
@@ -1054,6 +1073,29 @@ impl DeviceModel for X86IoApicModel {
         bundle
             .with_service::<X86InterruptDomainKey>(domain)?
             .with_service::<X86InterruptDomainRuntimeKey>(runtime)
+    }
+}
+
+impl DeviceModel for X86UnassignedMmioModel {
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+        fixed_mmio_declaration(self.base, self.length, "declare x86 unassigned MMIO window")
+    }
+
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::None
+    }
+
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
+        let (base, length) = consume_mmio_config(
+            context,
+            self.base,
+            self.length,
+            "build x86 unassigned MMIO window",
+        )?;
+        let device = axdevice::X86UnassignedMmioDevice::new(base as u64, length as u64)?;
+        Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
+            Arc::new(device),
+        )))
     }
 }
 

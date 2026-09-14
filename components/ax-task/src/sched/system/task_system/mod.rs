@@ -299,10 +299,38 @@ impl TaskSystem {
     /// topology and [`TaskError::InvalidConfiguration`] for inconsistent fixed
     /// capacities or bandwidth values.
     pub fn new(config: TaskSystemConfig) -> Result<Self, TaskError> {
+        Self::create(config, |_| 1024)
+    }
+
+    /// Creates a scheduler with immutable firmware capacities in logical CPU order.
+    ///
+    /// Capacities use Linux's 1024 scale and may be zero after normalization.
+    /// They affect initial and explicit-affinity Fair placement, not frequency scaling,
+    /// wake affinity, RT/DL admission, or periodic balancing. Missing firmware
+    /// data must be resolved by the platform before calling this constructor.
+    ///
+    /// # Errors
+    ///
+    /// In addition to [`Self::new`] errors, rejects a topology length mismatch
+    /// or capacities above 1024 before publishing any scheduler state.
+    pub fn new_with_cpu_capacities(
+        config: TaskSystemConfig,
+        capacities: &[u16],
+    ) -> Result<Self, TaskError> {
+        if capacities.len() != config.cpu_count() || capacities.iter().any(|&c| c > 1024) {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        Self::create(config, |index| capacities[index])
+    }
+
+    fn create(
+        config: TaskSystemConfig,
+        capacity: impl Fn(usize) -> u16,
+    ) -> Result<Self, TaskError> {
         validate_config(config)?;
         let task_work = Arc::new(TaskWorkDoorbell::new());
         let cpu_remotes = (0..config.cpu_count())
-            .map(|index| CpuRemote::create(CpuId::new(index as u32), config))
+            .map(|index| CpuRemote::create(CpuId::new(index as u32), config, capacity(index)))
             .collect::<Result<Vec<_>, _>>()?;
         let cpu_registrations = cpu_remotes
             .iter()

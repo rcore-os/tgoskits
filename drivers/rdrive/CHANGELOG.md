@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.24.3...rdrive-v0.25.0) - 2026-09-13
+
+### Other
+
+- *(rdrive)* bind device borrows to guard lifetimes ([#2387](https://github.com/rcore-os/tgoskits/pull/2387))
+
+### Changed
+
+- Device borrows are released only by guard destruction; remove PID-based
+  revocation and generation tokens from the proposed exit-reclaim interface.
+- Replace `Device::downcast` with consuming `DeviceGuard::downcast`; projected
+  guards retain the outer borrow and require `Send` targets for thread transfer.
+
+### Fixed
+
+- Invoke OSAL callbacks after releasing the registration lock.
+- Check immutable type metadata without aliasing a mutably borrowed driver.
+
+## [0.24.3](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.24.2...rdrive-v0.24.3) - 2026-09-11
+
+### Fixed
+
+- *(axvisor)* restore COM1 console and preserve guest output order ([#2311](https://github.com/rcore-os/tgoskits/pull/2311))
+
 ## [0.24.2](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.24.1...rdrive-v0.24.2) - 2026-09-09
 
 ### Other

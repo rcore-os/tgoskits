@@ -74,3 +74,20 @@ fn infers_qemu_and_board_app_kinds() {
     assert_eq!(board.kind, StarryAppKind::Board);
     assert_eq!(qemu.kind, StarryAppKind::Qemu);
 }
+
+#[test]
+fn infers_combined_qemu_and_board_app_kind() {
+    let root = tempdir().unwrap();
+    write_case_file(
+        root.path(),
+        "linux-perf",
+        "qemu-aarch64.toml",
+        "args = []\n",
+    );
+    write_minimal_board_case(root.path(), "linux-perf");
+
+    let apps = discover_apps(root.path()).unwrap();
+    let app = apps.iter().find(|app| app.name == "linux-perf").unwrap();
+
+    assert_eq!(app.kind, StarryAppKind::Both);
+}

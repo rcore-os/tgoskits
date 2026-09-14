@@ -248,6 +248,10 @@ fn read_user_bytes<const N: usize>(
 }
 
 impl FileLike for PacketSocket {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn stat(&self) -> StarryResult<Kstat> {
         Ok(Kstat {
             mode: S_IFSOCK | 0o777u32,

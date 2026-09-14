@@ -400,10 +400,6 @@ impl CpuDeadlineState {
         true
     }
 
-    pub(crate) const fn has_claimed_task_expiration(&self) -> bool {
-        self.claimed_task_expiration.is_some()
-    }
-
     pub(crate) fn select_service_claim_class(
         &mut self,
         kernel_pending: bool,
@@ -473,13 +469,6 @@ fn expiration_matches_registration(
         && event.kind() == Some(registration.kind())
 }
 
-impl CpuRemote {
-    pub(in crate::sched::system::cpu) fn deadline_is_quiescent_for_offline(&self) -> bool {
-        self.read_active_deadline_base(DeadlineBaseGuardSource::Lifecycle)
-            .is_none_or(|deadlines| !deadlines.has_active_work())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,7 +510,7 @@ mod tests {
 
         assert!(state.cancel_expired_task_deadline(&registration));
         assert_eq!(state.complete_claimed_task_expiration(event), Some(true));
-        assert!(!state.has_claimed_task_expiration());
+        assert!(!state.has_active_work());
     }
 
     #[test]

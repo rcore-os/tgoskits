@@ -167,6 +167,7 @@ impl UserContext {
                         pc: self.tf.ip(),
                         sp: self.sp as usize,
                         fp: self.tf.x[29] as usize,
+                        lr: self.tf.x[30] as usize,
                         privilege: crate::trap::InterruptedPrivilege::User,
                     }),
                 );
