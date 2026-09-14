@@ -1014,6 +1014,12 @@ impl FsContext {
         if entry.ptr_eq(&self.root_dir) {
             return Err(VfsError::IsADirectory);
         }
+        // The final entry is already known to be a directory. Classify this
+        // before consulting its physical parent: an opened dirfd may remain
+        // usable after that parent loses search permission.
+        if entry.is_dir() {
+            return Err(VfsError::IsADirectory);
+        }
         let directory = entry.parent().ok_or(VfsError::IsADirectory)?;
         self.check_mutation_parent_with_search(&directory, &searched, credentials)?;
         Self::check_sticky(&directory, &entry, credentials)?;
@@ -1032,12 +1038,21 @@ impl FsContext {
         let trimmed = path.as_str().trim_end_matches('/');
         let last = trimmed.rsplit('/').next().unwrap_or("");
         if matches!(last, "." | "..") {
-            let parent =
-                trimmed.rsplit_once('/').map_or(
-                    ".",
-                    |(parent, _)| if parent.is_empty() { "/" } else { parent },
-                );
-            self.resolve(parent)?.check_is_dir()?;
+            // For an exact dirfd-relative `.`/`..`, the final object is
+            // determined at the open directory boundary. Do not walk its
+            // physical parent, which may have become unsearchable after the
+            // dirfd was opened.
+            if matches!(trimmed, "." | "..") {
+                return Err(if last == "." {
+                    VfsError::InvalidInput
+                } else {
+                    VfsError::DirectoryNotEmpty
+                });
+            }
+            let (_, searched) = self.resolve_no_follow_with_search_checked(path, |directory| {
+                self.check_search_path(directory, self.permission_root.as_ref(), credentials)
+            })?;
+            self.check_search_trace(&searched, self.permission_root.as_ref(), credentials)?;
             return Err(if last == "." {
                 VfsError::InvalidInput
             } else {
@@ -1164,6 +1179,12 @@ impl FsContext {
             Err(error) => return Err(error),
         };
 
+        // Once both final entries have been searched, an existing destination
+        // has priority over destination write permission for NOREPLACE.
+        if options.no_replace() && destination.is_some() {
+            return Err(VfsError::AlreadyExists);
+        }
+
         // Resolve both final entries before checking parent write access. A
         // missing source must remain ENOENT even when either mutation parent
         // is searchable but not writable.
@@ -1179,10 +1200,6 @@ impl FsContext {
             dst_boundary,
             credentials,
         )?;
-
-        if options.no_replace() && destination.is_some() {
-            return Err(VfsError::AlreadyExists);
-        }
 
         // Match the VFS no-op result before applying sticky-directory removal
         // rules to an unchanged ordinary rename.
@@ -1318,7 +1335,18 @@ impl FsContext {
             credentials,
         )?;
         let old_metadata = old.metadata()?;
-        if !credentials.cap_fowner && credentials.fsuid != old_metadata.uid {
+        let can_link_non_owned = credentials.cap_dac_override || {
+            let mode = if credentials.fsuid == old_metadata.uid {
+                old_metadata.mode.bits() >> 6
+            } else if credentials.in_group(old_metadata.gid) {
+                old_metadata.mode.bits() >> 3
+            } else {
+                old_metadata.mode.bits()
+            };
+            let access = NodePermission::from_bits_truncate(mode);
+            access.contains(NodePermission::OTHER_READ.union(NodePermission::OTHER_WRITE))
+        };
+        if !credentials.cap_fowner && credentials.fsuid != old_metadata.uid && !can_link_non_owned {
             return Err(VfsError::OperationNotPermitted);
         }
         new_dir.link(new_name, old)

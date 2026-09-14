@@ -626,10 +626,20 @@ pub fn sys_openat2(
     };
     let mut options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     let result = with_fs(dirfd, |fs| {
-        // A final `.` names the already-open dirfd itself. Resolving it
-        // directly avoids manufacturing a lookup through the dirfd's parent,
-        // which may be intentionally inaccessible.
-        if path == "." {
+        let path_ref = axfs_ng_vfs::path::Path::new(&path);
+        let must_be_dir = path_ref.has_trailing_slash();
+        let dot_only = path_ref
+            .components()
+            .all(|component| matches!(component, axfs_ng_vfs::path::Component::CurDir));
+
+        // A path made only of `.` components names the already-open dirfd.
+        // Resolving it directly avoids manufacturing a lookup through the
+        // dirfd's parent, which may be intentionally inaccessible. Preserve
+        // O_CREAT|O_EXCL's EEXIST precedence for this existing final entry.
+        if dot_only {
+            if uflags & (O_CREAT | O_EXCL) == (O_CREAT | O_EXCL) {
+                return Err(StarryError::AlreadyExists);
+            }
             let (location, _) = fs.resolve_with_search_checked(axfs_ng_vfs::path::Path::new(&path), |directory| {
                 fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
             })?;
@@ -644,7 +654,18 @@ pub fn sys_openat2(
             Ok(location) if location.node_type() == NodeType::Symlink => {
                 return Err(StarryError::FilesystemLoop);
             }
-            Err(VfsError::NotFound) | Ok(_) => {}
+            Ok(location) => {
+                if must_be_dir && !location.is_dir() {
+                    return Err(StarryError::NotADirectory);
+                }
+            }
+            Err(VfsError::NotFound) => {
+                // A trailing slash requires a directory and must not create a
+                // regular file while preparing the final lookup.
+                if must_be_dir {
+                    options.create(false).create_new(false);
+                }
+            }
             Err(error) => return Err(error.into()),
         }
         let fs = fs.with_current_dir(parent)?;

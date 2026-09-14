@@ -586,13 +586,32 @@ pub fn sys_linkat(
         (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
     };
 
+    // A source made only of `.`/`..` components resolves to a directory. Do
+    // this syntactic check before dirfd resolution: an already-open dirfd can
+    // intentionally sit below an unsearchable parent, and resolving its dot
+    // entry must still get linkat's mandatory EPERM result for directories.
+    let names_directory = old_path.as_deref().is_some_and(|path| {
+        let components = path.split('/').filter(|component| !component.is_empty());
+        let mut saw_component = false;
+        for component in components {
+            saw_component = true;
+            if component != "." && component != ".." {
+                return false;
+            }
+        }
+        saw_component
+    });
+    if names_directory {
+        return Err(StarryError::OperationNotPermitted);
+    }
+
     let cred = current.as_thread().cred();
     let mutation_cred = mutation_credentials(&cred);
     // AT_EMPTY_PATH changes `olddirfd` into an object fd only for the
     // genuinely empty pathname. With a non-empty pathname it is ignored by
     // linkat(), so ordinary path-based linking remains unprivileged.
     if flags & AT_EMPTY_PATH != 0
-        && old_path.as_deref().map_or(true, |path| path.is_empty())
+        && old_path.as_deref().is_none_or(|path| path.is_empty())
     {
         // Linux requires CAP_DAC_READ_SEARCH for AT_EMPTY_PATH and reports
         // ENOENT when the caller does not have it.
@@ -609,6 +628,10 @@ pub fn sys_linkat(
     let old = old
         .into_file()
         .ok_or(StarryError::BadFileDescriptor)?;
+    // Linux rejects hard links to directories before checking the source
+    // parent or the destination. Keep this check at the syscall boundary as
+    // well as in the VFS helper, because dirfd/`.` resolution is allowed to
+    // return an already-open directory without a normal parent walk.
     if old.is_dir() {
         return Err(StarryError::OperationNotPermitted);
     }

@@ -139,14 +139,13 @@ pub(crate) fn extract_rootfs(rootfs_img: &Path, output_dir: &Path) -> anyhow::Re
 ///
 /// `debugfs rdump` always attempts to restore inode ownership. Callers that
 /// cannot safely perform those `chown` calls therefore run it inside
-/// `fakeroot` before `debugfs` starts. There is intentionally no
-/// direct-execution fallback on Linux: a missing `fakeroot` fails before
-/// extraction instead of producing thousands of permission warnings and
-/// continuing with partially restored metadata. On non-Linux Unix hosts no
-/// usable `fakeroot` exists — the common packaging wraps `debugfs` in a shell
-/// shim that re-splits quoted requests and exits 0 after failed extractions —
-/// so `debugfs` runs directly and [`RootfsExtraction::run`] validates
-/// top-level completeness instead of trusting the exit status alone.
+/// `fakeroot` before `debugfs` starts. If that wrapper reports success without
+/// producing the tree, extraction is retried once directly after clearing the
+/// incomplete output. On non-Linux Unix hosts no usable `fakeroot` exists —
+/// the common packaging wraps `debugfs` in a shell shim that re-splits quoted
+/// requests and exits 0 after failed extractions — so `debugfs` runs directly
+/// and [`RootfsExtraction::run`] validates top-level completeness instead of
+/// trusting the exit status alone.
 struct RootfsExtraction<'a> {
     rootfs_img: &'a Path,
     output_dir: &'a Path,
@@ -167,36 +166,75 @@ impl RootfsExtraction<'_> {
         let rendered_command = format!("{command:?}");
         // A freshly published helper can still have a transient writable
         // reference. Retry only ETXTBSY before it starts, using the shared bound.
-        let output = retry_text_file_busy(|| output(&mut command)).with_context(|| {
-            if let Some(fakeroot) = self.fakeroot_program {
-                format!(
-                    "failed to spawn fakeroot `{}`; rootfs extraction without full host ownership \
-                     privileges requires fakeroot",
-                    fakeroot.display()
-                )
-            } else {
-                format!("failed to spawn debugfs for {}", self.rootfs_img.display())
-            }
-        })?;
+        let extraction_output =
+            retry_text_file_busy(|| output(&mut command)).with_context(|| {
+                if let Some(fakeroot) = self.fakeroot_program {
+                    format!(
+                        "failed to spawn fakeroot `{}`; rootfs extraction without full host \
+                         ownership privileges requires fakeroot",
+                        fakeroot.display()
+                    )
+                } else {
+                    format!("failed to spawn debugfs for {}", self.rootfs_img.display())
+                }
+            })?;
 
-        if output.status.success() {
-            self.validate_top_level_entries()?;
-            return Ok(());
+        if extraction_output.status.success() {
+            match self.validate_top_level_entries() {
+                Ok(()) => return Ok(()),
+                Err(validation_error) if self.fakeroot_program.is_some() => {
+                    // Some fakeroot implementations report a successful
+                    // debugfs invocation while suppressing the rdump writes.
+                    // Retry once without the wrapper after removing the
+                    // incomplete tree; otherwise the later tests see a
+                    // misleading, partially populated sysroot.
+                    eprintln!(
+                        "rootfs extraction under fakeroot was incomplete: {validation_error}; \
+                         retrying direct debugfs"
+                    );
+                    self.clear_output_dir()?;
+                    let direct = RootfsExtraction {
+                        rootfs_img: self.rootfs_img,
+                        output_dir: self.output_dir,
+                        debugfs_program: self.debugfs_program,
+                        fakeroot_program: None,
+                    };
+                    return direct.run_with_output(Command::output).with_context(|| {
+                        format!("fakeroot extraction failed: {validation_error}")
+                    });
+                }
+                Err(error) => return Err(error),
+            }
         }
 
         eprintln!("rootfs extraction command failed: {rendered_command}");
         io::stdout()
-            .write_all(&output.stdout)
+            .write_all(&extraction_output.stdout)
             .context("failed to replay rootfs extraction stdout")?;
         io::stderr()
-            .write_all(&output.stderr)
+            .write_all(&extraction_output.stderr)
             .context("failed to replay rootfs extraction stderr")?;
         bail!(
             "failed to extract {} into {}: command exited with status {}",
             self.rootfs_img.display(),
             self.output_dir.display(),
-            output.status
+            extraction_output.status
         );
+    }
+
+    fn clear_output_dir(&self) -> anyhow::Result<()> {
+        for entry in fs::read_dir(self.output_dir)
+            .with_context(|| format!("failed to read {}", self.output_dir.display()))?
+        {
+            let path = entry?.path();
+            let file_type = fs::symlink_metadata(&path)?.file_type();
+            if file_type.is_dir() {
+                fs::remove_dir_all(&path)?;
+            } else {
+                fs::remove_file(&path)?;
+            }
+        }
+        Ok(())
     }
 
     /// Guards against extraction wrappers that report success without

@@ -335,19 +335,23 @@ impl OpenOptions {
                 // create flags BEFORE open_file to avoid creating an inode
                 // that the post-check would then reject (codex P1: original
                 // ordering left a stale file on disk for failing calls).
-                let effective_create = self.create && !must_be_dir;
-                let effective_create_new = self.create_new && !must_be_dir;
+                let existing = match parent.lookup_no_follow(&name) {
+                    Ok(_) => true,
+                    Err(VfsError::NotFound) => false,
+                    Err(error) => return Err(error),
+                };
+                // A trailing slash prevents creation of a missing regular
+                // file, but an existing directory must still see the
+                // original O_CREAT flag so _open() returns EISDIR.
+                let effective_create = self.create && (!must_be_dir || existing);
+                let effective_create_new = self.create_new && (!must_be_dir || existing);
                 if effective_create || effective_create_new {
-                    match parent.lookup_no_follow(&name) {
-                        Ok(_) => {}
-                        Err(VfsError::NotFound) => {
-                            context.check_mutation_parent_with_search(
-                                &parent,
-                                &searched,
-                                credentials,
-                            )?;
-                        }
-                        Err(error) => return Err(error),
+                    if !existing {
+                        context.check_mutation_parent_with_search(
+                            &parent,
+                            &searched,
+                            credentials,
+                        )?;
                     }
                 }
                 let mut loc = parent.open_file(
