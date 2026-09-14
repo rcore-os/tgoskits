@@ -78,15 +78,31 @@ pub unsafe fn finish_current_cpu_idle_polling() -> Result<(), TaskError> {
 /// Executes one lossless idle publication/recheck/WFI iteration.
 pub fn idle_current_cpu_once() -> Result<(), TaskError> {
     validate_schedule_context(RuntimeScheduleOrigin::Preempt)?;
+    // Linux do_idle() keeps preemption disabled until polling is withdrawn.
+    // The IRQ guard below may otherwise schedule away from idle at its exit,
+    // leaving the CPU-global polling bit attached to an ordinary task. Wakers
+    // would then suppress the IPI/preemption fold for a poller no longer running.
+    let _preempt = PreemptScope::enter();
     let may_wait = {
         let cpu = runtime_current_cpu()?;
-        cpu.prepare_idle_wait()
+        let may_wait = cpu.prepare_idle_wait();
+        #[cfg(feature = "fault-injection")]
+        if may_wait {
+            idle_probe::wake_after_polling(cpu.owner());
+        }
+        may_wait
     };
     if may_wait {
         task_runtime::wait_for_interrupt();
     }
     Ok(())
 }
+
+#[cfg(feature = "fault-injection")]
+mod idle_probe;
+#[cfg(feature = "fault-injection")]
+pub use idle_probe::{IdlePollingWakeProbe, current_cpu_is_idle_polling};
+
 use crate::runtime::handle::opaque_handle;
 
 opaque_handle!(

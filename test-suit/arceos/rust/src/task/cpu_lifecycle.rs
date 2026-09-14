@@ -13,8 +13,46 @@ use std::{
 };
 
 pub fn run() -> crate::TestResult {
+    idle_polling_ends_before_task_execution();
     idle_cpu_reservation_round_trip();
     Ok(())
+}
+
+fn idle_polling_ends_before_task_execution() {
+    use ax_task::{
+        runtime::cpu::{
+            IdlePollingWakeProbe, RuntimeCpuId, current_cpu_is_idle_polling, notify_idle_cpu_probe,
+        },
+        sched::{CpuId, CpuSet},
+        sync::WaitQueue,
+        thread::{ThreadState, current},
+    };
+
+    let original = current::current_thread_handle()
+        .unwrap()
+        .affinity()
+        .unwrap();
+    let mut coordinator = CpuSet::empty(ax_hal::cpu_num());
+    coordinator.insert(CpuId::new(0));
+    current::set_current_thread_affinity(coordinator).unwrap();
+    let mut target = CpuSet::empty(ax_hal::cpu_num());
+    target.insert(CpuId::new(1));
+    let wakee = ax_runtime::thread::builder("idle-polling-wake".into())
+        .affinity(target)
+        .spawn(|| {
+            WaitQueue::new().wait();
+            assert!(
+                !current_cpu_is_idle_polling().unwrap(),
+                "idle polling must be withdrawn before a normal task runs"
+            );
+        })
+        .unwrap();
+    wait_for(|| wakee.state() == ThreadState::Blocked);
+    let probe = IdlePollingWakeProbe::arm(CpuId::new(1), wakee.wake_handle()).unwrap();
+    notify_idle_cpu_probe(RuntimeCpuId::new(1)).unwrap();
+    wakee.join().unwrap();
+    drop(probe);
+    current::set_current_thread_affinity(original).unwrap();
 }
 
 fn wait_for(condition: impl Fn() -> bool) {
