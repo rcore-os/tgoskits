@@ -1,3 +1,4 @@
+package = "arceos-vcpu-perf"
 features = []
 log = "Warn"
 target = "aarch64-unknown-none-softfloat"

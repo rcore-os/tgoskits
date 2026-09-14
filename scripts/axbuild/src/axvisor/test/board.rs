@@ -137,6 +137,7 @@ impl Axvisor {
             }
 
             let result = async {
+                super::guest_build::prepare(&mut self.app, &board_test_config).await?;
                 let request = self.prepare_request(
                     axvisor_board_test_build_args(&group),
                     None,

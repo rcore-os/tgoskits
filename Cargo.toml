@@ -120,6 +120,7 @@ members = [
     "test-suit/arceos/axtest/sg2002-usb-msc",
     "test-suit/arceos/rust",
     "apps/arceos/*",
+    "test-suit/axvisor/normal/board-orangepi-5-plus/vcpu-perf/guest",
     "apps/starry/qemu/rust-hello/rust",
     "tools/qperf",
     "tools/qperf/analyzer",

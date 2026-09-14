@@ -1,4 +1,4 @@
-//! Bounded test workload, independent of the network and console services.
+//! Test workload owned by the VM lifecycle, bounded by the board runner timeout.
 
 use std::{
     hint::black_box,
@@ -7,7 +7,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
-    time::{Duration, Instant},
 };
 
 pub(crate) struct PerformanceLoad {
@@ -27,18 +26,15 @@ pub(crate) fn start() -> PerformanceLoad {
             ax_set_current_affinity(AxCpuMask::one_shot(0)).expect("performance load CPU 0 exists");
             println!("VCPU_PERF_LOAD_READY cpu=0");
             worker_ready.wait();
-            let started = Instant::now();
             let mut checksum = 1u64;
-            while !worker_stop.load(Ordering::Acquire)
-                && started.elapsed() < Duration::from_secs(60)
-            {
+            while !worker_stop.load(Ordering::Acquire) {
                 for _ in 0..1024 {
                     checksum =
                         black_box(checksum.wrapping_mul(6364136223846793005).wrapping_add(1));
                 }
                 std::thread::yield_now();
             }
-            println!("VCPU_PERF_LOAD_STOPPED checksum={checksum}");
+            println!("VCPU_PERF_FAIL host_load_stopped checksum={checksum}");
         })
         .expect("performance load thread creation");
     ready.wait();
@@ -50,6 +46,9 @@ pub(crate) fn start() -> PerformanceLoad {
 
 impl Drop for PerformanceLoad {
     fn drop(&mut self) {
+        // Report invalidation before removing contention; a guest PASS alone
+        // must not accept a run whose host load ended early.
+        println!("VCPU_PERF_FAIL host_load_stopped");
         self.stop.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take() {
             worker.join().expect("performance load thread exit");

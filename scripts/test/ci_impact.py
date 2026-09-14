@@ -48,10 +48,7 @@ KNOWN_OS_CONFIG_PATHS = (
     (Path("os/StarryOS/configs"), "starry"),
     (Path("os/axvisor/configs"), "axvisor"),
 )
-CI_OWNED_APP_INPUTS = (
-    (Path("apps/arceos/virtio-blk-test"), "axvisor:qemu:aarch64"),
-    (Path("apps/arceos/vcpu-perf"), "axvisor:board:orangepi-5-plus-vcpu-perf"),
-)
+CI_OWNED_APP_INPUTS = ((Path("apps/arceos/virtio-blk-test"), "axvisor:qemu:aarch64"),)
 ARCH_PATH_ALIASES = {
     "aarch64": (
         "a1000",
