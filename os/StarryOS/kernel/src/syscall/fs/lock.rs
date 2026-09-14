@@ -39,7 +39,7 @@ use linux_raw_sys::general::{
 
 use crate::{
     Errno, StarryError, StarryResult,
-    file::{File, FileLike, get_file_like},
+    file::{File, FileLike, Pipe, get_file_like},
     mm::UserPtr,
     sync::RwLock,
     task::{PidIdentityId, PidNamespaceId, PidSnapshot, futex::WaitQueue},
@@ -224,9 +224,8 @@ fn current_process_pid_snapshot(current: &crate::task::UserTaskRef) -> PidSnapsh
     current.as_thread().proc_data.identity().snapshot()
 }
 
-/// Resolve `fd` to an inode-keyed lockable file. Returns `EBADF` for fds
-/// that have no inode (pipes, sockets, epoll, ...), matching Linux's
-/// behavior of rejecting flock/fcntl-locks on non-files.
+/// Resolve `fd` to an inode-keyed lockable file. Returns `EBADF` when the
+/// file description does not expose a lock identity.
 fn lockable(fd: c_int) -> StarryResult<(InodeKey, Arc<dyn FileLike>)> {
     let f = get_file_like(fd)?;
     let key = f.inode_key().ok_or(StarryError::BadFileDescriptor)?;
@@ -239,9 +238,9 @@ fn lockable(fd: c_int) -> StarryResult<(InodeKey, Arc<dyn FileLike>)> {
 ///   * `SEEK_CUR` — relative to the fd's current read/write cursor.
 ///   * `SEEK_END` — relative to the file's current size.
 ///
-/// `SEEK_CUR` / `SEEK_END` are only meaningful for regular files; on a
-/// directory fd (no cursor / size in the byte-offset sense) they return
-/// `EINVAL`. Overflow returns `EINVAL`.
+/// A named FIFO retains a zero file cursor; buffered bytes do not contribute
+/// to either its cursor or its inode size. Other descriptions without a
+/// supported backing file return `EINVAL`. Overflow returns `EINVAL`.
 fn resolve_l_start(file: &Arc<dyn FileLike>, l_whence: i16, l_start: i64) -> StarryResult<i64> {
     let whence = l_whence as u32;
     if whence == SEEK_SET {
@@ -250,16 +249,22 @@ fn resolve_l_start(file: &Arc<dyn FileLike>, l_whence: i16, l_start: i64) -> Sta
     if whence != SEEK_CUR && whence != SEEK_END {
         return Err(StarryError::InvalidInput);
     }
-    let regular = file
-        .downcast_ref::<File>()
+    let fifo = file.downcast_ref::<Pipe>().and_then(Pipe::named_file);
+    let backing = fifo
+        .map(Arc::as_ref)
+        .or_else(|| file.downcast_ref::<File>())
         .ok_or(StarryError::InvalidInput)?;
     let base = if whence == SEEK_CUR {
-        regular
-            .inner()
-            .position()
-            .ok_or(StarryError::InvalidInput)?
+        if fifo.is_some() {
+            0
+        } else {
+            backing
+                .inner()
+                .position()
+                .ok_or(StarryError::InvalidInput)?
+        }
     } else {
-        regular
+        backing
             .inner()
             .location()
             .len()
