@@ -42,9 +42,12 @@ pub mod __priv {
     /// Calculates one symbol's offset from the template prefix.
     #[inline(always)]
     pub fn symbol_offset(symbol_address: usize) -> usize {
-        symbol_address
-            .checked_sub(crate::template_base())
-            .expect("per-CPU symbol must follow the loaded template prefix")
+        let template_base = crate::template_base();
+        // Macro-generated symbols and the prefix share the immutable linked
+        // template. Descriptor resolution checks this subtraction and the full
+        // object range before any initialized CPU area can be published.
+        debug_assert!(symbol_address >= template_base);
+        symbol_address.wrapping_sub(template_base)
     }
 
     /// Calculates a symbol pointer covered by an explicit CPU pin.
