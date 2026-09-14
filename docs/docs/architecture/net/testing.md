@@ -166,11 +166,11 @@ Ethernet 发送回归检查 IPv4/IPv6 组播 MAC、有限广播和子网广播�
 
 StarryOS 系统测试在 QEMU 中运行真实用户态程序和 syscall 路径，覆盖单元测试无法观察的 ABI 编解码、fd 生命周期和 proc/netlink 输出。测试分组位于 `test-suit/starryos/qemu/system`，应通过 xtask 入口运行以保持镜像、参数和成功正则一致。
 
-`bugfix-bug-proc-comm-tcp-partial-send` 使用 `O_NONBLOCK`，不设置
-`MSG_DONTWAIT`。准备阶段以 4 KiB 分块填满固定容量的 socket，等待持续背压后，
-最多排空 64 KiB 来重新打开发送窗口，再检查 1 MiB 发送返回正的部分字节数。
-这样保留原 nonblocking 回归的断言，同时避免逐字节填充在仿真 CPU 上耗尽测试时限。
-排空过程同时等待接收数据和发送端可写，适配 Linux 大 loopback 分段的内存回收时机。
+2026-09-14 的 LTP 迁移允许部分覆盖，并在
+`scripts/test/ltp-syscalls/migration.csv` 记录未承接的行为。
+原 `bugfix-bug-proc-comm-tcp-partial-send` 已由 `prctl05` 部分替代，仅承接线程名与
+proc comm 内容一致性；其填满 socket、排空部分接收窗口后检查非阻塞 TCP 短发送的
+断言随原程序清理，不再由该项提供。
 
 ### 3.1 运行方式
 
@@ -196,7 +196,7 @@ Socket 数据面用例从 StarryOS 用户态调用真实 syscall，覆盖连接�
 | 测试 | 位置 | 覆盖点 |
 | --- | --- | --- |
 | `syscall-test-socket-dataplane` | `test-suit/starryos/qemu/system/syscall-test-socket-dataplane` | TCP/UDP/raw socket 数据面基础行为 |
-| `bugfix-bug-tcp-send-no-epoll-notify` | `test-suit/starryos/qemu/system/bugfix-bug-tcp-send-no-epoll-notify` | TCP send 后 epoll waiter 唤醒 |
+| LTP `epoll_wait01` | `test-suit/starryos/qemu/system/ltp-syscalls` | pipe LT 读写就绪、fd 与事件位；不承接原 TCP send 后对端 EPOLLET 通知 |
 | `test-tcp-napi-runtime` | `test-suit/starryos/qemu/system/test-tcp-napi-runtime` | blocking/nonblocking connect+accept、send/recv、poll/epoll、peer close、socket wait 的 signal/EINTR |
 | `bugfix-bug-ip-mtu-discover-udp-flush` | `test-suit/starryos/qemu/system/bugfix-bug-ip-mtu-discover-udp-flush` | `IP_MTU_DISCOVER` 读回和 UDP send 后立即 close 的交付 |
 | `syscall-test-so-reuseport` | `test-suit/starryos/qemu/system/syscall-test-so-reuseport` | TCP/UDP `SO_REUSEPORT` 共同绑定边界 |
@@ -214,11 +214,14 @@ Linux 管理 ABI 用例验证 ioctl、rtnetlink 和 procfs 是否观察到同一
 | `bugfix-bug-netlink-getaddr` | `test-suit/starryos/qemu/system/bugfix-bug-netlink-getaddr` | `RTM_GETADDR`、loopback address、link/address dump |
 | `c-regression-test-netlink-rtnetlink` | `test-suit/starryos/qemu/system/c-regression-test-netlink-rtnetlink` | route dump、IPv4 `RTM_NEWADDR/DELADDR` 及错误映射 |
 | `c-regression-test-socket-device-ioctl` | `test-suit/starryos/qemu/system/c-regression-test-socket-device-ioctl` | 跨 socket family 的 `SIOCGIFNAME`/device ioctl |
-| `syscall-test-netlink-recvmsg` | `test-suit/starryos/qemu/system/syscall-test-netlink-recvmsg` | netlink recvmsg 基础语义 |
 | `bugfix-bug-proc-net-arp` | `test-suit/starryos/qemu/system/bugfix-bug-proc-net-arp` | `/proc/net/arp` 格式和真实 device 字段 |
 | `syscall-test-procstats` | `test-suit/starryos/qemu/system/syscall-test-procstats` | `/proc/net/dev` 列格式与 loopback 真实计数增长 |
 
 管理 ABI 表要求多个接口共享 `InterfaceId` 和状态来源，能够捕获结构编码正确但数据源分裂的问题。AF_PACKET 使用二层地址与 frame 语义，因此需要在相同身份基础上另行验证。
+
+原 `syscall-test-netlink-recvmsg` 已部分迁移到 LTP `recvmsg02`，仅检查 IPv6 UDP 的
+`MSG_PEEK` 调用返回非负值。它不保留原 netlink 的消息消费、截断及错误边界；上游
+内容不匹配分支也会报告通过，因此该项不能作为消息内容正确的证明。
 
 ### 3.4 AF_PACKET
 
@@ -228,7 +231,14 @@ AF_PACKET 测试关注接口选择、二层地址和 frame 收发，与普通 `S
 | --- | --- | --- |
 | `bugfix-bug-packet-arping` | `test-suit/starryos/qemu/system/bugfix-bug-packet-arping` | `AF_PACKET` bind、`SIOCGIFINDEX`、`RTM_GETLINK` 一致性、模拟 gateway ARP reply |
 
-Unix 辅助数据与 record 语义由 `syscall-test-seqpacket`、`bugfix-unix-passcred`、`bugfix-socket-timestamp`、`test-unix-msg-peek`、`test-unix-scm-rights` 和 `test-unix-cmsg-byte-marks` 覆盖，均位于 `test-suit/starryos/qemu/system/`。
+Unix 辅助数据与 peek 相关回归包括 `bugfix-socket-timestamp`、`test-unix-msg-peek`、`test-unix-scm-rights` 和 `test-unix-cmsg-byte-marks`，均位于 `test-suit/starryos/qemu/system/`。
+原 `bugfix-unix-passcred` 已部分迁移到 LTP `getsockopt02`，只承接 `SO_PEERCRED` 的
+对端 PID 检查；其 `SO_PASSCRED`/`SCM_CREDENTIALS` 自动投递、PID namespace 映射等
+断言未被该用例保留。
+
+原 `syscall-test-seqpacket` 已部分迁移到 LTP `socketpair02`，仅检查 STREAM socketpair
+的 `CLOEXEC`/`NONBLOCK` 标志置位；原 SEQPACKET 的记录边界、截断、PEEK、EOF 和
+`SCM_RIGHTS` 等断言不再由该程序提供。
 
 这些 system 测试验证的是 StarryOS Linux ABI 层是否正确使用 `ax_net::interfaces()`、`InterfaceId`、`arp_entries()` 和 socket facade。它们不替代 `ax-net` crate 单元测试；两者覆盖层级不同。
 

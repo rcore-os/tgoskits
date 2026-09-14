@@ -91,7 +91,7 @@ ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos
 - `qemu/system` 中不同程序不能共享进程标识命名空间或 procfs 挂载。清理必须终止整个命名空间，不能只终止原始进程组或会话，否则后台化或 `setsid()` 后代会把锁和状态泄漏到下一用例。
 - 命令行包装脚本应在测试命令后立即保存 `$?`，再赋值、打印日志或清理。`status=failed` 等赋值会把 `$?` 重置为零，过早赋值会隐藏真实退出状态。
 - 日志保持紧凑且可追踪：每个程序前输出开始标记，结束时输出包含程序路径和耗时的一条通过或失败结果，最后只输出一次套件汇总。不要在末尾重复逐程序耗时。
-- 共享 `qemu/system` 运行器的逐程序默认超时保持 120 秒。只有确实同步密集的程序可以通过运行器内按名称匹配的明确条目延长，并通过运行器功能验证选择、生效和超时失败传播；复用通用规则测试，不按例外名称新增源码文本断言；不得提高默认值或把例外复制到各体系结构 TOML。`test-ext4-inode-unique` 和 `test-pagecache-cap` 为 240 秒。
+- 共享 `qemu/system` 运行器的逐程序默认超时保持 120 秒。只有确实同步密集的程序可以通过运行器内按名称匹配的明确条目延长，并通过运行器功能验证选择、生效和超时失败传播；复用通用规则测试，不按例外名称新增源码文本断言；不得提高默认值或把例外复制到各体系结构 TOML。`test-ext4-inode-unique` 为 240 秒。
 - 逐程序超时后的进程标识命名空间清理另设上限，当前为 30 秒。无法回收命名空间初始化进程时，输出 `STARRY_SYSTEM_TEST_CLEANUP_TIMEOUT`，并在启动下一程序前终止套件。隔离回归中的逃逸后代应阻塞在原始管道等待上，以迫使内核在发布不可捕获终止信号后唤醒它。
 - CMake 配置、构建和安装命令成功时保持安静；失败时必须重放命令、标准输出、标准错误、退出状态和阶段上下文。预构建及客户机或 QEMU 输出保持实时。
 - 启动 `debugfs` 前先决定根文件系统解压权限。直接执行 `rdump` 需要完整宿主所有权权限，否则先进入 `fakeroot`。Linux 上检查有效用户标识、完整用户与组标识映射以及有效 `CAP_CHOWN`；需要 `fakeroot` 但不可用时，在启动 `debugfs` 前失败；不得先输出再过滤所有权警告，也不得用更弱语义静默重试。非 Linux Unix 宿主（如 macOS）没有可用的 fakeroot：常见打包是 shell shim，会拆坏 `-R` 的引号参数并假成功退出 0，因此这些宿主直接执行 `debugfs`，解包后必须校验镜像顶层条目在暂存目录中存在，不得只信任退出码。
@@ -121,7 +121,7 @@ ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos
 ```bash
 cargo xtask starry test qemu --arch riscv64
 cargo xtask starry test qemu --arch aarch64 -c qemu/system
-cargo xtask starry test qemu --arch x86_64 -c qemu/syscall-test-uid-gid-re-setters
+cargo xtask starry test qemu --arch x86_64 -c qemu/syscall-test-prlimit64
 cargo xtask starry app qemu -t stress/git --arch riscv64
 cargo xtask starry test board --board orangepi-5-plus
 ```

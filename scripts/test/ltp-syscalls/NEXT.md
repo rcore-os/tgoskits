@@ -137,3 +137,44 @@ x86_64 修复前日志为 `/tmp/starry-ltp-next-evidence/` 中本轮基线输出
 | flock / x86_64:73；其他三架构:32 | [Linux v7.1 flock](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c#L2214) | OFD 间共享/排他冲突、非阻塞 EWOULDBLOCK、阻塞信号中断 EINTR | sys_flock → flock_op → try_flock_once → FLOCK_LOCKS 及 inode 等待队列 | 正确 | flock02/04/06/07，四架构验证通过 |
 | futex / x86_64:202；其他三架构:98 | [Linux v7.1 do_futex](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/futex/syscalls.c#L112) | 私有 WAIT 返回0，WAKE 的计数为1 | sys_futex → FutexContext::resolve → wait_nofault_until/wake，进程私有键及桶队列 | 正确 | 复用 futex_wait03，四架构验证通过 |
 | getcwd / x86_64:79；其他三架构:17 | [Linux v7.1 getcwd](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/d_path.c#L413) | 缓冲区过短先 ERANGE，足够长但地址无效 EFAULT；返回当前路径 | sys_getcwd → current_fs_context 当前目录 → absolute_path → vm_write_slice | 正确 | getcwd01/02，四架构验证通过；不证明 raw 成功长度 |
+
+## 5. 全量续迁
+
+2026-09-14 从 `51c2d5077938e535ea9b8a5ec468f33dbd3de765` 开始处理当前 `qemu/system` 中全部 139 个 `bugfix-*`、154 个 `syscall-*` 目录，共 295 个原程序。初始源码清单保存在本轮证据目录的 `inventory.json`，后续删除不改变清单范围。本节记录新的执行规则，不改变上文历史批次的事实。LTP 仍固定为 `20260529`、提交 `3a64d78f58bdceba93ed321e91215fb969a047ed`，本机上游源码检出干净。
+
+### 5.1 逐项处理
+
+按原目录名称先处理 bugfix，再处理 syscall。原程序只有在对应上游用例完成全部适用架构后才清理；LTP 部分承接时，未承接的断言写入 `migration.csv`，不补写自定义用例。完全没有对应项的程序保留，候选失败则恢复正式清单、保留原程序并继续下一项，不修改内核、上游测试、超时或通过门槛。本轮完成全部候选处置及必要验证后提交、推送并创建拉取请求；不创建缺陷议题。
+
+`cases.txt` 保存正式共同集合；探测时临时选择当前候选，结束后恢复正式集合。相同 LTP 用例的本轮结果可复用于多个原程序，失败结果也复用，不反复探测直到通过。架构范围只依据原源码限定，不能依据失败缩减。`syscall-test-vectored-io` 的三个可执行程序必须分别处置，不因主程序迁移而删除其余程序。
+
+全部 295 个原程序已逐项处置：134 个部分替代并清理、69 个无对应项保留、92 个失败跳过。`migration.csv` 中 `commit_subject` 为 `test(starry): migrate bugfix and syscall probes to LTP` 的 295 行属于本轮；其他行保留历史批次或范围外状态，不计入上述数量。混合目录保留 `test-special-fd-write-precedence`，仅删除已通过迁移的两个程序及它们的构建条目。
+
+### 5.2 本轮证据
+
+逐项命令、退出状态和失败输出写入 `migration.csv`，完整日志保存在实施机器 `/tmp/starry-ltp-5fb8-evidence/`。每个候选日志使用 `<LTP-ID>-<arch>.log`，历史日志不计入本轮通过证据。完成数量来自固定上游源码，并由 `minimum-passes.txt` 与现有 wrapper 检查；`TCONF`、`TBROK`、`TFAIL` 和零通过数均不能接入。
+
+逐项处置及最终四架构累计 LTP、完整 system 验证均已完成。初始 x86_64 累计 LTP 基线已通过，见 `baseline-x86_64.log`。正式集合为 172 个共同用例，x86_64 另有 3 个专有用例；每个架构还有两个独立计数的 native 隔离回归。
+
+`mprotect04` 在 aarch64 持续报告同一虚拟地址的页表映射冲突，未完成首条断言；本轮主动终止挂起的 QEMU 及同次 xtask，记录退出码 `-15`，不是自然超时。原程序保留，未重试；处置说明保存在 `mprotect04-abort.json`。
+
+宿主派生 rootfs 镜像缓存累积导致空间耗尽：`mq_notify01` 的 riscv64 镜像准备失败，退出 1；随后 `msgctl12` 的 x86_64 日志和退出码未能落盘，退出码记为未知。两项按环境失败或证据缺失跳过，不据此认定内核行为错误，也不重试。相关说明见 `mq_notify01-environment.json`、`msgctl12-environment.json` 与 `progress-172-285.log`。清理本工作树 275 份旧派生镜像后释放约 608 GiB，保留源码、原始 rootfs 和运行日志，再继续其余候选。
+
+最终整合基准为 `origin/dev 4a398bd618a5ad74b624d5668c3101d92a675839`，保留其新增 `nanosleep02` 及 `clock_nanosleep04` 完成门槛。重基前的累计验证仅作为阶段证据，日志统一为 `pre-rebase-*.log`；其中 aarch64 普通 system 分组通过，独立 system-perf 分组的 `perf-hw-sliced-period` 返回 1，协调器停止后未捕获该整条命令的退出码。重基后使用新的 `final-*.log` 和 `final-runs.json` 重新记录四架构结果。
+
+### 5.3 最终验证
+
+在整合基准上串行执行四架构定向 LTP，再执行四架构完整 `qemu/system`，八条命令退出码均为 0。定向计数包含两个 native 隔离回归；aarch64 完整套件分为普通 system 480 项和独立 system-perf 23 项，两组均通过。
+
+| 架构 | 定向 LTP 分组 | 完整 system | 日志文件 |
+| --- | --- | --- | --- |
+| x86_64 | 177/177 | 506/506 | `final-ltp-x86_64.log`、`final-system-x86_64.log` |
+| aarch64 | 174/174 | 480/480 + 23/23 | `final-ltp-aarch64.log`、`final-system-aarch64.log` |
+| riscv64 | 174/174 | 503/503 | `final-ltp-riscv64.log`、`final-system-riscv64.log` |
+| loongarch64 | 174/174 | 503/503 | `final-ltp-loongarch64.log`、`final-system-loongarch64.log` |
+
+上述文件均位于本轮证据目录。`final-runs.json` 保存完整命令、退出码及耗时；`final-ltp-audit.json` 核对每个用例的最少 TPASS、16 条文件系统阶段契约和零失败标记。用现有 `generate-common.sh` 从四份新日志生成公共清单，与正式 `cases.txt` 逐字节一致。
+
+`final-system-audit.json` 确认完整运行没有重复程序、已删除原程序残留或普通安装目录中的保留项遗漏。本轮保留的 161 个原程序中，155 个在普通套件实际执行，另 6 个维持既有 `starry-known-fail` 安装位置，不属于默认 system 执行集合。loongarch64 的 termios 测试在成功标记前输出 NUL 字节，离线核对解析时仅去除该前导字节，不修改原日志或运行器判定。
+
+`integrity-audit.json` 核对全部 295 条本轮处置、293 个原目录和 466 个删除文件的初始源码哈希；保留源文件、混合目录构建引用和正式清单一致。`git diff --check` 与文档站点 `npm run build` 通过。最终累计验证没有失败，不需要撤销已通过迁移；重基前的 aarch64 perf 失败保留为阶段记录，本次新基线完整验证通过。

@@ -96,11 +96,14 @@ StarryOS system 分组从用户态调用 Linux syscall，覆盖公共 VFS 无法
 | --- | --- | --- |
 | mount namespace | `test-unshare-fs` | clone/unshare 后 topology visibility |
 | sync | `test-syncfs`、`syscall-test-syncfs` | page cache + filesystem flush 和错误传播 |
-| overlay | `syscall-test-overlayfs` | 多层 lookup/copy-up/mount 行为 |
 | mount/umount | system mount cases | busy、flags、bind/move/lazy detach、mountinfo |
 | path/open | openat2、symlink、chroot/pivot cases | no-follow/beneath/root boundary |
 | file I/O | read/write/truncate/mmap/fsync cases | cache、EOF、MAP_SHARED 一致性 |
 | metadata | stat/xattr/link/rename cases | Linux-visible inode、mode、link count、errno |
+
+原 `syscall-test-overlayfs` 已部分迁移到 LTP `getxattr01`，仅承接扩展属性读取等行为。
+该程序的多层 lookup、copy-up 和 mount 断言随原程序清理，不再由这项替代提供；
+具体覆盖损失记录在 `scripts/test/ltp-syscalls/migration.csv`。
 
 基础运行入口：
 

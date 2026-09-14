@@ -20,7 +20,6 @@
 #define LTP_SYSCALLS_PREFIX "ltp-syscalls-"
 #define DEFAULT_CASE_TIMEOUT_SECONDS 120
 #define EXT4_INODE_UNIQUE_TIMEOUT_SECONDS 240
-#define PAGECACHE_CAP_TIMEOUT_SECONDS 240
 #define NAMESPACE_CLEANUP_TIMEOUT_SECONDS 30
 #define RUNNER_TIMEOUT_STATUS 124
 #define RUNNER_ERROR_STATUS 125
@@ -51,9 +50,6 @@ static unsigned case_timeout_seconds(const char *name)
 {
     if (strcmp(name, "test-ext4-inode-unique") == 0) {
         return EXT4_INODE_UNIQUE_TIMEOUT_SECONDS;
-    }
-    if (strcmp(name, "test-pagecache-cap") == 0) {
-        return PAGECACHE_CAP_TIMEOUT_SECONDS;
     }
     return DEFAULT_CASE_TIMEOUT_SECONDS;
 }

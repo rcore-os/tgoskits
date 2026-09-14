@@ -26,8 +26,8 @@ test-suit/starryos/<build_wrapper>/<case>/<runtime-config>.toml
   选择器；也可以写成 `qemu/system/<subcase>`。
 - `<subcase>` 优先使用 `system/` 下的子目录名；如果某个子测例安装的
   `usr/bin/starry-test-suit` binary / CMake target 名与目录名不同，也可以使用唯一的
-  binary / target 名，例如 `qemu/test-uid-gid-re-setters` 会映射到
-  `qemu/system/syscall-test-uid-gid-re-setters`。
+  binary / target 名，例如 `qemu/test-prlimit64` 会映射到
+  `qemu/system/syscall-test-prlimit64`。
 - `-l/--list` 列出根目录下发现的 Starry case；`qemu` 这类仅含 build config 的 wrapper 不会作为 root case 出现。
 
 旧的 Starry `--test-group` 和 `--stress` 入口已经移除。需要运行迁出的压力、K230、
@@ -156,11 +156,12 @@ STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.012
 后续 syscall 测试逐项迁移的断言映射、覆盖损失和验证状态记录在
 [`MIGRATION.md`](../../scripts/test/ltp-syscalls/MIGRATION.md) 与
 [`migration.csv`](../../scripts/test/ltp-syscalls/migration.csv)。该清单包含待审计项，
-不能把候选数量当成已经完成的迁移数量；每项迁移保留独立提交。已合入的 PR #2322
-处理了 13 个原程序（9 项部分替代、4 项无等效清理）。先前续迁批次另部分替代 7 个原程序；当前轮追加
-`bug-linkat-flags-symlink` 的 `linkat01` 部分替代并修复绝对目标路径的 `newdirfd` 语义，详细断言损失与失败记录见 [`NEXT.md`](../../scripts/test/ltp-syscalls/NEXT.md)。当前实际清单
-包含 85 个共同 LTP 用例，x86_64 另有 2 个旧入口用例；这是累计执行集合，两个 native
-隔离回归单独计数。IPv6 等先前失败项，以及本批 fcntl14/16 对应的原测试继续保留。
+不能把候选数量当成已经完成的迁移数量；每个原程序保留独立账本记录。已合入的 PR #2322
+处理了 13 个原程序（9 项部分替代、4 项无等效清理）。先前续迁批次及
+`bug-linkat-flags-symlink` 的 `linkat01` 部分替代见
+[`NEXT.md`](../../scripts/test/ltp-syscalls/NEXT.md)。2026-09-14 全量续迁从
+85 个共同 LTP 用例、2 个 x86_64 旧入口用例的基线开始；该数量是迁移前累计集合，
+不是本轮成功数量。两个 native 隔离回归单独计数，本轮结果见该文档第 5 节。
 
 `qemu/system/ltp-syscalls` 使用 rootfs 中固定的 Linux Test Project
 `20260529`（上游 commit `3a64d78f58bdceba93ed321e91215fb969a047ed`）。
@@ -203,8 +204,8 @@ STARRY_SYSTEM_PHASE_BEGIN: ltp-syscalls
 STARRY_SYSTEM_PHASE_END: ltp-syscalls
 ```
 
-`scripts/test/ltp-syscalls/probe-cases.txt` 保存从 PR #1775 所触及 C cases 对应到的
-官方 LTP families，包括
+`scripts/test/ltp-syscalls/probe-cases.txt` 保存历史批次及 bugfix/syscall 全量续迁审计过的
+官方 LTP 候选，包括
 process/namespace/pidfd/ptrace、futex/pipe/poll/epoll/socket、scheduler/affinity/timer/
 membarrier，以及 mmap/mprotect/memfd/perf。更新共同集时，先让候选集在四架构分别完成
 probe 并保存完整日志，再运行：
@@ -228,9 +229,12 @@ scripts/test/ltp-syscalls/generate-common.sh \
 性能基准 `apps/starry/wakeup-latency-bench` 作为独立 Starry app 保留，供后续调优使用。
 
 逐项 syscall 迁移以 `scripts/test/ltp-syscalls/migration.csv` 为账本。按当前工作约定，
-候选 LTP 出错时保留原测试，记录候选、失败架构、错误输出、证据路径及独立 issue 后暂缓，先处理
+候选 LTP 出错时保留原测试，记录候选、失败架构、错误输出和证据路径后暂缓，先处理
 无需修复且四架构通过的替换。暂缓不是通过，不删除失败候选，也不放宽 wrapper 的失败
-传播或完成数量检查。已完成替换仍须逐项记录未承接的断言。续迁批次遵循同一规则，测试失败时
+传播或完成数量检查。已完成替换仍须逐项记录未承接的断言。2026-09-14 续迁范围是当前
+`bugfix-*` 与 `syscall-*` 原程序：允许部分覆盖，不为覆盖缺口补写自定义测试；完全没有
+对应 LTP 的原程序保留。逐项按名称处理，失败后继续下一项，遍历完全部清单；本轮完成验证后提交拉取请求，不创建
+缺陷议题。续迁批次遵循同一规则，测试失败时
 不修改内核、上游逻辑、完成数量或超时来接入候选。停机同步对照本机 Linux v7.1 PREEMPT_RT 的命令锁、禁止抢占及阶段确认
 逻辑；wait 重启与信号通知确认修复的范围、源码依据和红绿证据分别记录在
 `MIGRATION.md` 第 7、8 节。
@@ -430,7 +434,7 @@ configure 入口，自动 `add_subdirectory()` 各个 subcase；每个 subcase �
 调试单个 system subcase 时，不需要新增 CLI 参数，直接复用 `-c/--test-case`：
 
 ```bash
-cargo xtask starry test qemu --arch x86_64 -c qemu/syscall-test-uid-gid-re-setters
+cargo xtask starry test qemu --arch x86_64 -c qemu/syscall-test-prlimit64
 cargo xtask starry test qemu --arch x86_64 -c qemu/test-futex-race
 ```
 
@@ -464,8 +468,8 @@ STARRY_GROUPED_TEST_PASSED: step=1/2 epoch=... status=0 command=/usr/bin/test-a
 `STARRY_SYSTEM_TEST_BEGIN/PASSED/FAILED`，但仍只在全部 binary 通过后打印既有的
 `STARRY_GROUPED_TESTS_PASSED`，失败时仍打印 `STARRY_GROUPED_TEST_FAILED`。
 共享 runner 默认限制每个 binary 最多运行 120 秒；同步写入密集型的
-`test-ext4-inode-unique` 和完成 1400 个磁盘文件清理的 `test-pagecache-cap` 通过显式名称表
-取得 240 秒预算。慢用例例外必须保留在共享 runner 中并由静态契约测试覆盖，不能放宽所有
+`test-ext4-inode-unique` 通过显式名称表取得 240 秒预算。
+慢用例例外必须保留在共享 runner 中并通过运行器功能验证，不能放宽所有
 binary 的默认预算。TOML `timeout` 约束整个 QEMU case，不替代上述单 binary 超时。
 单 binary 超时后的 PID namespace 清理另有 30 秒硬上限；清理失败必须打印
 `STARRY_SYSTEM_TEST_CLEANUP_TIMEOUT` 并立即中止 suite，不能继续运行下一个 binary，也不能
@@ -686,7 +690,7 @@ discovery 或 CI 启用。后续网络可用时移除 `.disabled` 后缀；其
 cargo xtask starry test qemu --arch riscv64
 cargo xtask starry test qemu --target riscv64gc-unknown-none-elf
 cargo xtask starry test qemu --arch x86_64 -c qemu/system
-cargo xtask starry test qemu --arch x86_64 -c qemu/syscall-test-uid-gid-re-setters
+cargo xtask starry test qemu --arch x86_64 -c qemu/syscall-test-prlimit64
 
 # 列出发现的用例
 cargo xtask starry test qemu -l

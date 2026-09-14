@@ -1,3 +1,4 @@
-# LTP 20260529 cases requiring legacy x86_64 syscall entrypoints.
+# LTP 20260529 cases for source-defined architecture-specific entrypoints.
+arch_prctl01
 epoll_create01
 epoll_create02
