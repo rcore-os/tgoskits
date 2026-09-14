@@ -58,6 +58,17 @@ impl InterfaceId {
 pub enum InterfaceKind {
     Loopback,
     Ethernet,
+    /// Layer-3 `/dev/net/tun` interface carrying bare IP packets.
+    Tun,
+    /// Layer-2 `/dev/net/tun` interface carrying Ethernet frames.
+    Tap,
+}
+
+impl InterfaceKind {
+    /// Whether a `/dev/net/tun` file drives this interface.
+    pub const fn is_tun_tap(self) -> bool {
+        matches!(self, Self::Tun | Self::Tap)
+    }
 }
 
 bitflags::bitflags! {
@@ -69,6 +80,8 @@ bitflags::bitflags! {
         const LOOPBACK = 1 << 2;
         const BROADCAST = 1 << 3;
         const MULTICAST = 1 << 4;
+        const POINTOPOINT = 1 << 5;
+        const NOARP = 1 << 6;
     }
 }
 

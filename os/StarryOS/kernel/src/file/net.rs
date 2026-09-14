@@ -25,14 +25,15 @@ use linux_raw_sys::{
     ioctl::{
         FIONREAD, SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR, SIOCGIFFLAGS,
         SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNETMASK,
-        SIOCGIFSLAVE, SIOCGIFTXQLEN, SIOCSIFFLAGS,
+        SIOCGIFSLAVE, SIOCGIFTXQLEN, SIOCSIFFLAGS, SIOCADDRT, SIOCDELRT, SIOCSIFADDR, SIOCSIFMTU,
+        SIOCSIFNETMASK,
     },
     net::{AF_INET, ifreq},
 };
 
 use super::{FileLike, Kstat};
 use crate::{
-    StarryError, StarryResult,
+    Errno, StarryError, StarryResult,
     file::{IoDst, IoSrc, get_file_like},
     mm::{VmMutPtr, vm_read_slice, vm_write_slice},
     task::{
@@ -43,9 +44,12 @@ use crate::{
 
 pub(super) const ARPHRD_ETHER: u16 = 1;
 pub(super) const ARPHRD_LOOPBACK: u16 = 772;
+const ARPHRD_NONE: u16 = 0xfffe;
 const IFF_UP: i16 = 0x0001;
 const IFF_BROADCAST: i16 = 0x0002;
 const IFF_LOOPBACK: i16 = 0x0008;
+const IFF_POINTOPOINT: i16 = 0x0010;
+const IFF_NOARP: i16 = 0x0080;
 const IFF_RUNNING: i16 = 0x0040;
 const IFF_MULTICAST: i16 = 0x1000;
 const IFREQ_NAME_LEN: usize = 16;
@@ -58,6 +62,15 @@ const SIOCETHTOOL: u32 = 0x8946;
 const SIOCGIFNAME: u32 = 0x8910;
 const IFCONF_LEN_OFFSET: usize = 0;
 const IFCONF_BUF_OFFSET: usize = 8;
+/// `struct rtentry` layout on the supported 64-bit targets.
+const RTENTRY_LEN: usize = 120;
+const RT_DST: usize = 8;
+const RT_GATEWAY: usize = 24;
+const RT_GENMASK: usize = 40;
+const RT_FLAGS: usize = 56;
+const RT_DEV: usize = 88;
+const RTF_GATEWAY: u16 = 0x0002;
+const RTF_HOST: u16 = 0x0004;
 const SOCKET_RECEIVE_STAGING_LIMIT: usize = 64 * 1024;
 
 pub struct Socket {
@@ -373,14 +386,38 @@ pub(super) fn device_ioctl(
                 write_ifreq_data(current, arg, &linux_flags(&info).to_ne_bytes())?;
             }
             SIOCSIFFLAGS => {
+                let flags = read_ifreq_flags(current, arg)?;
+                require_net_admin(current)?;
                 let info = read_ifreq_interface(current, arg)?;
-                if !current.as_thread().cred().has_cap(CAP_NET_ADMIN) {
-                    return Err(StarryError::OperationNotPermitted);
-                }
-                if read_ifreq_flags(current, arg)? != linux_flags(&info) {
+                if info.kind.is_tun_tap() {
+                    ax_net::set_interface_up(info.id, flags & IFF_UP != 0)?;
+                } else if flags != linux_flags(&info) {
                     return Err(StarryError::OperationNotSupported);
                 }
             }
+            SIOCSIFMTU => {
+                let mtu = i32::from_ne_bytes(read_user_bytes::<4>(
+                    current,
+                    (arg + IFREQ_DATA_OFFSET) as *const u8,
+                )?);
+                require_net_admin(current)?;
+                let info = read_ifreq_interface(current, arg)?;
+                let mtu = usize::try_from(mtu).map_err(|_| StarryError::InvalidInput)?;
+                ax_net::set_interface_mtu(info.id, mtu)?;
+            }
+            SIOCSIFADDR => {
+                let sockaddr = read_ifreq_sockaddr(current, arg)?;
+                require_net_admin(current)?;
+                let ip = sockaddr_in_address(&sockaddr)?;
+                set_interface_address(&read_ifreq_interface(current, arg)?, ip)?;
+            }
+            SIOCSIFNETMASK => {
+                let sockaddr = read_ifreq_sockaddr(current, arg)?;
+                require_net_admin(current)?;
+                let mask = sockaddr_in_address(&sockaddr)?;
+                set_interface_netmask(&read_ifreq_interface(current, arg)?, mask)?;
+            }
+            SIOCADDRT | SIOCDELRT => write_route(current, cmd, arg)?,
             SIOCGIFADDR => {
                 let info = read_ifreq_interface(current, arg)?;
                 write_ifreq_sockaddr(
@@ -391,7 +428,7 @@ pub(super) fn device_ioctl(
             }
             SIOCGIFDSTADDR => {
                 let info = read_ifreq_interface(current, arg)?;
-                let addr = if info.kind == InterfaceKind::Loopback {
+                let addr = if matches!(info.kind, InterfaceKind::Loopback | InterfaceKind::Tun) {
                     interface_ipv4(&info)?.address.address().octets()
                 } else {
                     [0, 0, 0, 0]
@@ -400,10 +437,12 @@ pub(super) fn device_ioctl(
             }
             SIOCGIFBRDADDR => {
                 let info = read_ifreq_interface(current, arg)?;
-                let addr = if info.kind == InterfaceKind::Loopback {
-                    interface_ipv4(&info)?.address.address().octets()
-                } else {
-                    ipv4_broadcast(interface_ipv4(&info)?)
+                let ipv4 = interface_ipv4(&info)?;
+                let addr = match info.kind {
+                    InterfaceKind::Loopback => ipv4.address.address().octets(),
+                    // A point-to-point address carries no broadcast.
+                    InterfaceKind::Tun => [0; 4],
+                    InterfaceKind::Ethernet | InterfaceKind::Tap => ipv4_broadcast(ipv4),
                 };
                 write_ifreq_sockaddr(current, arg, addr)?;
             }
@@ -418,13 +457,14 @@ pub(super) fn device_ioctl(
             SIOCGIFHWADDR => {
                 let info = read_ifreq_interface(current, arg)?;
                 match info.kind {
-                    InterfaceKind::Ethernet => {
+                    InterfaceKind::Ethernet | InterfaceKind::Tap => {
                         let mac = info.mac.ok_or(StarryError::NoSuchDevice)?;
                         write_ifreq_hwaddr(current, arg, ARPHRD_ETHER, &mac.0)?
                     }
                     InterfaceKind::Loopback => {
                         write_ifreq_hwaddr(current, arg, ARPHRD_LOOPBACK, &[])?
                     }
+                    InterfaceKind::Tun => write_ifreq_hwaddr(current, arg, ARPHRD_NONE, &[])?,
                 }
             }
             SIOCGIFMTU => {
@@ -481,6 +521,151 @@ pub(super) fn device_ioctl(
     }
 }
 
+/// `dev_ioctl` and `devinet_ioctl` require `CAP_NET_ADMIN` for changes.
+fn require_net_admin(current: &crate::task::UserTaskRef) -> StarryResult<()> {
+    if current.as_thread().cred().has_cap(CAP_NET_ADMIN) {
+        Ok(())
+    } else {
+        Err(StarryError::OperationNotPermitted)
+    }
+}
+
+fn read_ifreq_sockaddr(current: &crate::task::UserTaskRef, arg: usize) -> StarryResult<[u8; 16]> {
+    read_user_bytes::<16>(current, (arg + IFREQ_DATA_OFFSET) as *const u8)
+}
+
+/// The address of a `sockaddr_in`; `devinet_ioctl` rejects other families.
+fn sockaddr_in_address(sockaddr: &[u8; 16]) -> StarryResult<[u8; 4]> {
+    if u16::from_ne_bytes([sockaddr[0], sockaddr[1]]) != AF_INET as u16 {
+        return Err(StarryError::InvalidInput);
+    }
+    Ok([sockaddr[4], sockaddr[5], sockaddr[6], sockaddr[7]])
+}
+
+/// `inet_abc_len`: the classful prefix of an address, `None` for class D.
+fn classful_prefix(ip: [u8; 4]) -> Option<u8> {
+    let address = u32::from_be_bytes(ip);
+    if address & 0xff00_0000 == 0 || address == u32::MAX {
+        Some(0)
+    } else if address & 0x8000_0000 == 0 {
+        Some(8)
+    } else if address & 0xc000_0000 == 0x8000_0000 {
+        Some(16)
+    } else if address & 0xe000_0000 == 0xc000_0000 {
+        Some(24)
+    } else if address & 0xf000_0000 == 0xf000_0000 {
+        Some(32)
+    } else {
+        None
+    }
+}
+
+/// `bad_mask` and `inet_mask_len`: the prefix of a contiguous mask that leaves
+/// the host part of `address` clear.
+fn mask_prefix(mask: [u8; 4], address: [u8; 4]) -> Option<u8> {
+    let host = !u32::from_be_bytes(mask);
+    (u32::from_be_bytes(address) & host == 0 && host & host.wrapping_add(1) == 0)
+        .then(|| host.leading_zeros() as u8)
+}
+
+/// `SIOCSIFADDR` in `devinet_ioctl`: replaces the address, taking a classful
+/// prefix, or /32 on a point-to-point link.
+fn set_interface_address(info: &InterfaceInfo, ip: [u8; 4]) -> StarryResult<()> {
+    let classful = classful_prefix(ip).ok_or(StarryError::InvalidInput)?;
+    if let Some(current) = info.ipv4 {
+        let current = current.address;
+        if current.address().octets() == ip {
+            return Ok(());
+        }
+        let address = core::net::Ipv4Addr::from(current.address().octets());
+        ax_net::remove_interface_ipv4(info.id, address, current.prefix_len())?;
+    }
+    let address = core::net::Ipv4Addr::from(ip);
+    // `inet_insert_ifa` discards an all-zero local address.
+    if address.is_unspecified() {
+        return Ok(());
+    }
+    let prefix = if info.flags.contains(InterfaceFlags::POINTOPOINT) {
+        32
+    } else {
+        classful
+    };
+    Ok(ax_net::set_interface_ipv4(info.id, address, prefix)?)
+}
+
+/// `SIOCSIFNETMASK` in `devinet_ioctl`.
+fn set_interface_netmask(info: &InterfaceInfo, mask: [u8; 4]) -> StarryResult<()> {
+    let current = info
+        .ipv4
+        .ok_or(StarryError::from(Errno::EADDRNOTAVAIL))?
+        .address;
+    let prefix = mask_prefix(mask, [0; 4]).ok_or(StarryError::InvalidInput)?;
+    if prefix == current.prefix_len() {
+        return Ok(());
+    }
+    let address = core::net::Ipv4Addr::from(current.address().octets());
+    ax_net::remove_interface_ipv4(info.id, address, current.prefix_len())?;
+    Ok(ax_net::set_interface_ipv4(info.id, address, prefix)?)
+}
+
+/// `SIOCADDRT` and `SIOCDELRT`: `ip_rt_ioctl` over `rtentry_to_fib_config`.
+fn write_route(current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> StarryResult<()> {
+    let rt = read_user_bytes::<RTENTRY_LEN>(current, arg as *const u8)?;
+    require_net_admin(current)?;
+    let family = |offset: usize| u16::from_ne_bytes([rt[offset], rt[offset + 1]]);
+    let address = |offset: usize| [rt[offset + 4], rt[offset + 5], rt[offset + 6], rt[offset + 7]];
+    if family(RT_DST) != AF_INET as u16 {
+        return Err(Errno::EAFNOSUPPORT.into());
+    }
+    let destination = address(RT_DST);
+    let flags = u16::from_ne_bytes([rt[RT_FLAGS], rt[RT_FLAGS + 1]]);
+    let prefix = if flags & RTF_HOST != 0 {
+        32
+    } else {
+        let mask = address(RT_GENMASK);
+        if family(RT_GENMASK) != AF_INET as u16 && (family(RT_GENMASK) != 0 || mask != [0; 4]) {
+            return Err(Errno::EAFNOSUPPORT.into());
+        }
+        mask_prefix(mask, destination).ok_or(StarryError::InvalidInput)?
+    };
+
+    let device = usize::from_ne_bytes(core::array::from_fn(|index| rt[RT_DEV + index]));
+    // Without `rt_dev` Linux derives the device from the gateway, which the
+    // route table here cannot do.
+    if device == 0 {
+        return Err(StarryError::NoSuchDevice);
+    }
+    let name = read_user_bytes::<{ IFREQ_NAME_LEN - 1 }>(current, device as *const u8)?;
+    let len = name.iter().position(|&byte| byte == 0).unwrap_or(name.len());
+    // No interface carries alias labels, so a `name:label` device is absent.
+    let info = core::str::from_utf8(&name[..len])
+        .ok()
+        .filter(|name| !name.contains(':'))
+        .and_then(ax_net::interface_by_name)
+        .filter(|info| in_root_net_ns() || info.kind == InterfaceKind::Loopback)
+        .ok_or(StarryError::NoSuchDevice)?;
+
+    let gateway = (family(RT_GATEWAY) == AF_INET as u16 && address(RT_GATEWAY) != [0; 4])
+        .then(|| core::net::Ipv4Addr::from(address(RT_GATEWAY)));
+    let destination = core::net::Ipv4Addr::from(destination);
+    if cmd == SIOCDELRT {
+        return ax_net::del_route(info.id, destination, prefix, gateway).map_err(|error| {
+            match error {
+                NetError::NotFound => Errno::ESRCH.into(),
+                error => error.into(),
+            }
+        });
+    }
+    if flags & RTF_GATEWAY != 0 && gateway.is_none() {
+        return Err(StarryError::InvalidInput);
+    }
+    // `fib_check_nh` refuses a next hop through a device that is down.
+    if !info.flags.contains(InterfaceFlags::UP) {
+        return Err(Errno::ENETDOWN.into());
+    }
+    Ok(ax_net::add_route(info.id, destination, prefix, gateway)?)
+}
+
 fn sockaddr_in_bytes(ip: [u8; 4]) -> [u8; 16] {
     let mut addr = [0; 16];
     addr[..2].copy_from_slice(&(AF_INET as u16).to_ne_bytes());
@@ -524,7 +709,8 @@ fn write_ifconf_entry(
 }
 
 fn interface_ipv4(info: &InterfaceInfo) -> StarryResult<ax_net::Ipv4InterfaceConfig> {
-    info.ipv4.ok_or(StarryError::NoSuchDeviceOrAddress)
+    // `devinet_ioctl` answers a device without an IPv4 address this way.
+    info.ipv4.ok_or(StarryError::from(Errno::EADDRNOTAVAIL))
 }
 
 fn ipv4_netmask(prefix_len: u8) -> [u8; 4] {
@@ -556,6 +742,12 @@ fn linux_flags(info: &InterfaceInfo) -> i16 {
     }
     if info.flags.contains(InterfaceFlags::MULTICAST) {
         flags |= IFF_MULTICAST;
+    }
+    if info.flags.contains(InterfaceFlags::POINTOPOINT) {
+        flags |= IFF_POINTOPOINT;
+    }
+    if info.flags.contains(InterfaceFlags::NOARP) {
+        flags |= IFF_NOARP;
     }
     flags
 }
