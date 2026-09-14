@@ -246,7 +246,7 @@ impl OpenOptions {
                 && loc.node_type() == NodeType::RegularFile
                 && (flags.contains(FileFlags::WRITE) || self.truncate)
             {
-                Some(Arc::new(WriteAccess::acquire(loc.clone())?))
+                Some(WriteAccess::acquire(loc.clone())?)
             } else {
                 None
             };
@@ -270,7 +270,7 @@ impl OpenOptions {
             }
             let mut file = File::new(backend, flags);
             if flags.contains(FileFlags::WRITE) {
-                file.write_access = write_access;
+                file.write_access = write_access.map(Arc::new);
             }
             OpenResult::File(file)
         })

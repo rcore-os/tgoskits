@@ -292,7 +292,7 @@ pub fn sys_truncate(
         .write(true)
         .open_loc(location)?
         .into_file()?;
-    file.access(FileFlags::WRITE)?.set_len(length as _)?;
+    file.set_len(length as _)?;
     Ok(0)
 }
 
