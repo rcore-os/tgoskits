@@ -220,7 +220,7 @@ impl FileBackend {
 
 /// Provides `std::fs::File`-like interface.
 pub struct File {
-    write_access: Option<Arc<WriteAccess>>,
+    pub(super) write_access: Option<Arc<WriteAccess>>,
     inner: FileBackend,
     flags: AtomicU8,
     position: Option<Mutex<u64>>,
@@ -251,16 +251,6 @@ impl File {
             position,
             access_flags: AtomicU8::new(0),
         }
-    }
-
-    pub(super) fn with_write_access(
-        inner: FileBackend,
-        flags: FileFlags,
-        write_access: Option<Arc<WriteAccess>>,
-    ) -> Self {
-        let mut file = Self::new(inner, flags);
-        file.write_access = write_access;
-        file
     }
 
     /// Returns the writer lease retained by this open file description.

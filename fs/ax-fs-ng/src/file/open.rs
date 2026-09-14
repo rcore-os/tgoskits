@@ -268,12 +268,11 @@ impl OpenOptions {
             if self.truncate && !self.path {
                 backend.set_len(0)?;
             }
-            let write_access = if flags.contains(FileFlags::WRITE) {
-                write_access
-            } else {
-                None
-            };
-            OpenResult::File(File::with_write_access(backend, flags, write_access))
+            let mut file = File::new(backend, flags);
+            if flags.contains(FileFlags::WRITE) {
+                file.write_access = write_access;
+            }
+            OpenResult::File(file)
         })
     }
 
