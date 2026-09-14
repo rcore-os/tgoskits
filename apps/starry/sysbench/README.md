@@ -2,6 +2,8 @@
 
 这个应用同时提供 QEMU 功能验证和板卡测量，在同一块 OrangePi-5-Plus 上运行相同的 sysbench、动态库和测量工具，保留完整输出。它覆盖逐核绑核吞吐、内存首次接触、线程扩展、线程同步和顺序写内存。结果用于观察差异，不能单独证明差异来自调频、调度或内存管理。
 
+sysbench 仅手动执行，不接入 CI。`apps/.ignore` 将它排除在应用批量发现和 `app qemu --all` 之外；显式指定 `-t sysbench` 仍可运行下面的 QEMU 与板卡命令。工具回归也按需手动执行。
+
 ## 1. 运行流程
 
 `c/CMakeLists.txt` 经 `prepare_app_board_session_assets()` 复用板卡 C 资产流水线，生成一个 `share/sysbench.tar.gz` 会话文件。`c/prebuild.sh` 在隔离的 Alpine staging root 安装 sysbench；CMake 收集实际 ELF 依赖，拒绝引用宿主库。
@@ -76,6 +78,7 @@ cargo xtask starry app qemu -t sysbench --arch aarch64 --qemu-config qemu-aarch6
 编译后的 `cpuprobe` 和 `membw` 可以在目标系统直接测试，或在宿主通过 qemu-user 执行交叉编译产物。`--runner` 省略时直接运行本机程序。
 
 ```bash
+sh apps/starry/sysbench/tests/check.sh
 python3 apps/starry/sysbench/tests/test_helpers.py --bin-dir /path/to/tools --runner qemu-aarch64
 python3 apps/starry/sysbench/tests/test_compare.py
 cargo xtask clippy --package axbuild
