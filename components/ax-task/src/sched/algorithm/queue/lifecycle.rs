@@ -205,7 +205,6 @@ impl RunQueue {
         let class_enqueue =
             SchedulerClass::for_policy(policy).enqueue_task(self, entry, reason, current_fair)?;
         let membership_class = class_enqueue.membership;
-        let queued_entity = class_enqueue.entity;
         let reason = class_enqueue.reason;
         if matches!(
             reason,
@@ -223,7 +222,12 @@ impl RunQueue {
         if !matches!(reason, EnqueueReason::Preempted | EnqueueReason::Yield) {
             self.mark_publication_dirty();
         }
-        Ok(queued_entity)
+        Ok(self
+            .queued_thread_ref(id)
+            .expect("successful enqueue must retain its class-owned entity")
+            .active
+            .entity()
+            .clone())
     }
 
     /// Activates an already-throttled Deadline task without linking it into

@@ -201,7 +201,14 @@ fn test_direct_extension_lifetime(drop_in_sensitive_context: bool) {
         let _guard = ax_std::os::arceos::guard::PreemptIrqSaveGuard::new();
         drop(handle);
     } else {
+        let wake = handle.clone().into_wake_handle();
         handle.join().unwrap();
+        assert_eq!(
+            counters.dropped.load(Ordering::Acquire),
+            0,
+            "the converted wake handle must retain the OS extension"
+        );
+        drop(wake);
     }
     wait_for(|| counters.dropped.load(Ordering::Acquire) == 1);
     println!("task_wait_queue: direct extension switch/exit/drop lifetime OK");

@@ -537,6 +537,11 @@ impl FairRunQueue {
         true
     }
 
+    pub(super) fn get(&self, thread: ThreadId) -> Option<&QueuedThread> {
+        let key = self.membership(thread)?.key;
+        find_node(self.root.as_deref(), key).map(FairNode::thread)
+    }
+
     pub(super) fn find_first_matching(
         &self,
         predicate: &mut impl FnMut(&QueuedThread) -> bool,

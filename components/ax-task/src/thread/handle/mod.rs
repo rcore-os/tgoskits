@@ -165,6 +165,24 @@ impl ThreadHandle {
         ThreadWakeHandle::from_core(Arc::clone(&self.core))
     }
 
+    /// Transfers this handle into a direct wake handle without cloning it.
+    ///
+    /// The returned handle retains the same thread and external-lifetime
+    /// lease. Conversion does not change thread state or publish a wake.
+    pub fn into_wake_handle(self) -> ThreadWakeHandle {
+        let handle = ManuallyDrop::new(self);
+        // SAFETY: the consumed handle cannot run Drop or be used again. Move
+        // each owning field exactly once; the wake handle assumes the same
+        // core-before-lease release order without changing either Arc count
+        // or the external lease count.
+        unsafe {
+            ThreadWakeHandle {
+                core: core::ptr::read(&handle.core),
+                reap_signal: core::ptr::read(&handle.reap_signal),
+            }
+        }
+    }
+
     /// Returns the physical CPU that must cross a scheduler boundary.
     ///
     /// Unlike direct wake placement, this snapshot remains on the source CPU

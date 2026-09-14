@@ -1,6 +1,6 @@
 //! Futex implementation.
 
-use alloc::{collections::vec_deque::VecDeque, sync::Arc};
+use alloc::{borrow::Cow, collections::vec_deque::VecDeque, sync::Arc};
 use core::{
     cmp::Ordering,
     sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering as AtomicOrdering, fence},
@@ -162,7 +162,6 @@ struct WaitQueueInner {
 
 struct Waiter {
     task: UserTaskRef,
-    wake: scheduler::thread::ThreadWakeHandle,
     bitset: u32,
     generation: u64,
 }
@@ -446,7 +445,6 @@ impl WaitQueue {
             };
             inner.queue.push_back(Waiter {
                 task: task.clone(),
-                wake: task.wake_handle(),
                 bitset,
                 generation,
             });
@@ -568,7 +566,7 @@ impl WaitQueue {
     fn push_wake(wakes: &mut WakeBatch, waiter: Waiter) {
         // mark_woken already selected this generation under its queue lock.
         // The task-level wake_q node may still belong to an earlier selector.
-        wakes.push(waiter.wake);
+        wakes.push(waiter.task.into_wake_handle());
     }
 
     /// Wakes up at most `count` tasks whose bitset intersects with the given
@@ -809,6 +807,28 @@ impl FutexDomainOwner {
     }
 }
 
+enum FutexDomainAccess<'a> {
+    Private(Cow<'a, Arc<FutexDomain>>),
+    Shared,
+}
+
+impl FutexDomainAccess<'_> {
+    fn domain(&self) -> &FutexDomain {
+        match self {
+            Self::Private(domain) => domain,
+            Self::Shared => &SHARED_FUTEX_DOMAIN,
+        }
+    }
+
+    /// Retains the domain when a waiter route outlives syscall resolution.
+    fn retained(&self) -> FutexDomainOwner {
+        match self {
+            Self::Private(domain) => FutexDomainOwner::Private(Arc::clone(domain.as_ref())),
+            Self::Shared => FutexDomainOwner::Shared,
+        }
+    }
+}
+
 /// Futex ownership bound to one user execution loop's MM generation.
 ///
 /// Sibling exec waits for this thread to leave the thread group, after which
@@ -859,16 +879,16 @@ impl<'task> FutexContext<'task> {
         )
     }
 
-    fn domain_for(&self, key: &FutexKey) -> FutexDomainOwner {
+    fn domain_for(&self, key: &FutexKey) -> FutexDomainAccess<'_> {
         match key {
             FutexKey::Private { .. } => {
-                FutexDomainOwner::Private(Arc::clone(self.memory.private_futexes_ref()))
+                FutexDomainAccess::Private(Cow::Borrowed(self.memory.private_futexes_ref()))
             }
-            FutexKey::Shared { .. } => FutexDomainOwner::Shared,
+            FutexKey::Shared { .. } => FutexDomainAccess::Shared,
         }
     }
 
-    pub(crate) fn resolve(&self, address: usize, mode: FutexKeyMode) -> ResolvedFutex {
+    pub(crate) fn resolve(&self, address: usize, mode: FutexKeyMode) -> ResolvedFutex<'_> {
         let (key, None) = self.resolve_keys(address, None, mode) else {
             unreachable!("single futex resolution returned a second key")
         };
@@ -881,7 +901,7 @@ impl<'task> FutexContext<'task> {
         first_address: usize,
         second_address: usize,
         mode: FutexKeyMode,
-    ) -> (ResolvedFutex, ResolvedFutex) {
+    ) -> (ResolvedFutex<'_>, ResolvedFutex<'_>) {
         let (first_key, Some(second_key)) =
             self.resolve_keys(first_address, Some(second_address), mode)
         else {
@@ -903,15 +923,18 @@ impl<'task> FutexContext<'task> {
 }
 
 /// Key and ownership domain resolved together for one futex operation.
-pub(crate) struct ResolvedFutex {
+///
+/// Synchronous resolution borrows its context's pinned domain. Exit-time
+/// resolution and persistent waiter cleanup retain independent ownership.
+pub(crate) struct ResolvedFutex<'a> {
     key: FutexKey,
-    domain: FutexDomainOwner,
+    domain: FutexDomainAccess<'a>,
 }
 
-impl ResolvedFutex {
+impl ResolvedFutex<'_> {
     fn cleanup(&self) -> FutexWaitCleanup {
         FutexWaitCleanup {
-            domain: self.domain.clone(),
+            domain: self.domain.retained(),
             key: self.key.clone(),
         }
     }
@@ -963,7 +986,6 @@ impl ResolvedFutex {
                 key: self.key.clone(),
                 waiter: Waiter {
                     task: task.clone(),
-                    wake: task.wake_handle(),
                     bitset,
                     generation,
                 },
@@ -1279,7 +1301,7 @@ fn collect_futex_requeue(
     source_queue: (&FutexBucket, &mut VecDeque<FutexBucketWaiter>),
     source_key: &FutexKey,
     target_queue: (&FutexBucket, &mut VecDeque<FutexBucketWaiter>),
-    target: &ResolvedFutex,
+    target: &ResolvedFutex<'_>,
     request: FutexRequeueRequest,
     wakes: &mut WakeBatch,
 ) -> usize {
@@ -1328,7 +1350,7 @@ fn collect_futex_requeue_same_bucket(
     bucket: &FutexBucket,
     waiters: &mut VecDeque<FutexBucketWaiter>,
     source_key: &FutexKey,
-    target: &ResolvedFutex,
+    target: &ResolvedFutex<'_>,
     request: FutexRequeueRequest,
     wakes: &mut WakeBatch,
 ) -> usize {
@@ -1371,7 +1393,7 @@ struct FutexRequeueRequest {
 pub(crate) fn resolve_futex_for_process_teardown(
     proc_data: &ProcessData,
     address: usize,
-) -> ResolvedFutex {
+) -> ResolvedFutex<'static> {
     let memory = proc_data.memory_share();
     let private = memory.private_futexes();
     let aspace = memory.aspace();
@@ -1382,8 +1404,8 @@ pub(crate) fn resolve_futex_for_process_teardown(
         FutexKeyMode::Auto,
     );
     let domain = match key {
-        FutexKey::Private { .. } => FutexDomainOwner::Private(private),
-        FutexKey::Shared { .. } => FutexDomainOwner::Shared,
+        FutexKey::Private { .. } => FutexDomainAccess::Private(Cow::Owned(private)),
+        FutexKey::Shared { .. } => FutexDomainAccess::Shared,
     };
     ResolvedFutex { key, domain }
 }
@@ -1396,14 +1418,14 @@ fn empty_wake_op_leaves_fixed_buckets_empty_for_test() -> bool {
             mm_generation: domain.generation(),
             address: 0x1000,
         },
-        domain: FutexDomainOwner::Private(domain.clone()),
+        domain: FutexDomainAccess::Private(Cow::Owned(domain.clone())),
     };
     let target = ResolvedFutex {
         key: FutexKey::Private {
             mm_generation: domain.generation(),
             address: 0x2000,
         },
-        domain: FutexDomainOwner::Private(domain.clone()),
+        domain: FutexDomainAccess::Private(Cow::Owned(domain.clone())),
     };
     assert_eq!(source.wake_op(0, &target, 0, || Ok(false)), Ok(0));
     domain
@@ -1434,14 +1456,14 @@ fn futex_nofault_failure_is_transactional_for_test() -> bool {
             mm_generation: domain.generation(),
             address: 0x1000,
         },
-        domain: FutexDomainOwner::Private(domain.clone()),
+        domain: FutexDomainAccess::Private(Cow::Owned(domain.clone())),
     };
     let target = ResolvedFutex {
         key: FutexKey::Private {
             mm_generation: domain.generation(),
             address: 0x2000,
         },
-        domain: FutexDomainOwner::Private(domain.clone()),
+        domain: FutexDomainAccess::Private(Cow::Owned(domain.clone())),
     };
 
     if source.wake_op(1, &target, 1, || Err(FutexAccessError::UserFault))

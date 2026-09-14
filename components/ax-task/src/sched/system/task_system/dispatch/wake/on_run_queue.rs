@@ -62,13 +62,6 @@ impl TaskSystem {
                             task_runtime::fatal_invariant(0x574b_0018, owner.as_u32() as usize)
                         }
                     };
-                    if fair_wake
-                        && run_queue.current().is_some_and(|current| {
-                            matches!(current.schedule_policy(), SchedulePolicy::Fair { .. })
-                        })
-                    {
-                        let _ = run_queue.settle_current(0);
-                    }
                     let current_fair = fair_wake
                         .then(|| run_queue.current_fair_contender())
                         .flatten();
@@ -101,7 +94,17 @@ impl TaskSystem {
                         ),
                     };
 
-                    if fair_wake && matches!(action, OnRqWakeAction::ReactivateDelayedFair) {
+                    // Linux restores ENQUEUE_DELAYED placement before update_curr()
+                    // in wakeup_preempt_fair(), using the pre-charge virtual time.
+                    if fair_wake
+                        && run_queue.current().is_some_and(|current| {
+                            matches!(current.schedule_policy(), SchedulePolicy::Fair { .. })
+                        })
+                    {
+                        let _ = run_queue.settle_current(0);
+                    }
+                    if fair_wake {
+                        let current_fair = run_queue.current_fair_contender();
                         run_queue.update_fair_virtual_time(current_fair);
                     }
                     let fair_virtual_time = if fair_wake {
@@ -129,7 +132,11 @@ impl TaskSystem {
 
                     let reschedule = preemption.reschedule_kind(policy);
 
-                    core.publish_effective_schedule(policy, &wakeup_entity);
+                    // Fair reactivation changes placement, not the published
+                    // policy key. Policy/PI writers publish under the task lock.
+                    if matches!(policy, SchedulePolicy::Deadline(_)) {
+                        core.publish_effective_schedule(policy, &wakeup_entity);
+                    }
                     core.set_wake_cpu_hint(target);
                     if sched.transition(core, ThreadState::Running).is_err() {
                         task_runtime::fatal_invariant(0x574b_0015, core.id().as_u64() as usize);

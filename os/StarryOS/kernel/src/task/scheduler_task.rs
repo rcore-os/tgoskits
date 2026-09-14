@@ -191,6 +191,11 @@ impl UserTaskRef {
         self.scheduler.wake_handle()
     }
 
+    /// Transfers this task reference into a direct wake handle.
+    pub fn into_wake_handle(self) -> scheduler::thread::ThreadWakeHandle {
+        self.scheduler.into_wake_handle()
+    }
+
     /// Returns the scheduler lifecycle snapshot.
     pub fn state(&self) -> scheduler::thread::ThreadState {
         self.scheduler.state()
