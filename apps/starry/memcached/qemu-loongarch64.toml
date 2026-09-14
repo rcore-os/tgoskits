@@ -1,0 +1,26 @@
+args = [
+    "-machine",
+    "virt",
+    "-cpu",
+    "la464",
+    "-nographic",
+    "-m",
+    "2G",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = true
+to_bin = true
+fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', '(?m)^MEMCACHED_TEST_FAILED\s*$']
+timeout = 600
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "(apk add memcached python3 && python3 /usr/bin/memcached-test.py) || printf 'MEMCACHED_TEST_%s\\n' FAILED"
+success_regex = ['(?m)^MEMCACHED_TEST_PASSED\s*$']
