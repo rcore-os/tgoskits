@@ -6,10 +6,7 @@ use core::{
 
 use ax_hal::mem::PAGE_SIZE_4K;
 use ax_lazyinit::LazyLock;
-use linux_raw_sys::{
-    general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
-    system::{new_utsname, sysinfo},
-};
+use linux_raw_sys::system::{new_utsname, sysinfo};
 use ringbuf::{
     HeapRb,
     traits::{Consumer, Observer, Producer},
@@ -973,64 +970,51 @@ pub fn sys_syslog(
     }
 }
 
-bitflags::bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct GetRandomFlags: u32 {
-        const NONBLOCK = GRND_NONBLOCK;
-        const RANDOM = GRND_RANDOM;
-        const INSECURE = GRND_INSECURE;
-    }
-}
-
 pub fn sys_getrandom(
     current: &crate::task::UserTaskRef,
     buf: *mut u8,
     len: usize,
     flags: u32,
 ) -> crate::StarryResult<isize> {
-    if len == 0 {
-        return Ok(0);
-    }
-    let flags = GetRandomFlags::from_bits(flags).ok_or(StarryError::InvalidInput)?;
-    if flags.contains(GetRandomFlags::INSECURE) && flags.contains(GetRandomFlags::RANDOM) {
-        return Err(StarryError::InvalidInput);
-    }
+    debug!("sys_getrandom <= buf: {buf:p}, len: {len}, flags: {flags:#x}");
 
-    debug!("sys_getrandom <= buf: {buf:p}, len: {len}, flags: {flags:?}");
-
-    let path = if flags.contains(GetRandomFlags::RANDOM) {
-        "/dev/random"
-    } else {
-        "/dev/urandom"
-    };
+    if crate::random::getrandom_must_wait(flags, crate::random::rng_is_initialized())? {
+        crate::random::wait_for_random_bytes(current)?;
+    }
 
     // Linux `import_ubuf()` limits the iterator before feeding it to the
     // random source. Bound the request equivalently, and reject an address
-    // range that wraps before touching the random device.
+    // range that wraps before touching user memory.
     let len = len.min(GETRANDOM_MAX_LEN);
+    if len == 0 {
+        return Ok(0);
+    }
     (buf as usize).checked_add(len).ok_or(Errno::EFAULT)?;
 
-    let f = ax_fs_ng::vfs::current_fs_context().lock().resolve(path)?;
-    let file = f.entry().as_file()?;
-    let mut kbuf = [0u8; GETRANDOM_CHUNK_SIZE];
+    let mut stream = crate::random::random_stream();
+    let mut block = [0u8; GETRANDOM_CHUNK_SIZE];
     let mut written = 0;
     while written < len {
-        let chunk_len = (len - written).min(kbuf.len());
-        let read = file.read_at(&mut kbuf[..chunk_len], 0)?;
-        if read == 0 {
+        let dst = buf as usize + written;
+        // Ending chunks at page boundaries makes a fault return exactly the
+        // bytes copied before it, as `get_random_bytes_user()` does.
+        let chunk_len = (len - written)
+            .min(GETRANDOM_CHUNK_SIZE)
+            .min(PAGE_SIZE_4K - dst % PAGE_SIZE_4K);
+        let chunk = &mut block[..chunk_len];
+        stream.fill(chunk);
+        if vm_write_slice(current, dst as *mut u8, chunk).is_err() {
             break;
         }
-        let dst = (buf as usize).checked_add(written).ok_or(Errno::EFAULT)? as *mut u8;
-        vm_write_slice(current, dst, &kbuf[..read])?;
-        written += read;
-        // Preserve a short device read as the syscall result. Retrying after
-        // having copied a partial result could turn Linux's partial success
-        // into a later EAGAIN for a nonblocking random source.
-        if read < chunk_len {
+        written += chunk_len;
+        if written % PAGE_SIZE_4K == 0 && current.interrupted() {
             break;
         }
     }
 
+    if written == 0 {
+        return Err(Errno::EFAULT.into());
+    }
     Ok(written as _)
 }
 
