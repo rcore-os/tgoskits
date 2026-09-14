@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+set -- "$dir"/ld-musl-*.so.1 "$@"
+loader=$1
+shift
+exec "$loader" --library-path "$dir" "$dir/sysbench.bin" "$@"

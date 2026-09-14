@@ -89,23 +89,31 @@ impl CpuRemote {
     }
 
     pub(crate) fn try_deactivate(&self) -> bool {
-        // Matching the exact zero-valued Online state proves that no target-rq
-        // placement transaction spans the transition. Owner-directed control
-        // delivery remains allowed until final draining.
+        // Linux clears cpu_active before synchronizing prior placement readers.
+        // Preserve their leases while closing admission to new placement.
         let inactive = self
             .publication
             .state
-            .compare_exchange(
-                0,
-                CPU_LIFECYCLE_INACTIVE,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                (state & CPU_LIFECYCLE_MASK == 0).then_some(state | CPU_LIFECYCLE_INACTIVE)
+            })
             .is_ok();
         if inactive {
             self.cancel_idle_pull_if_uncommitted();
         }
         inactive
+    }
+
+    pub(crate) fn resume_owner_drain(&self) {
+        self.publication
+            .state
+            .compare_exchange(
+                CPU_LIFECYCLE_DRAINING,
+                CPU_LIFECYCLE_INACTIVE,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .expect("owner drain resumes only from a closed publication gate");
     }
 
     pub(crate) fn cancel_deactivation(&self) {
@@ -246,7 +254,6 @@ impl CpuRemote {
     pub(crate) fn is_quiescent_for_offline(&self) -> bool {
         self.publication.state.load(Ordering::Acquire) == CPU_LIFECYCLE_DRAINING
             && self.ktimer_is_quiescent_for_offline()
-            && self.deadline_is_quiescent_for_offline()
             && !self.needs_reschedule()
             && !self.has_remote_work()
             && !self.is_idle_polling()

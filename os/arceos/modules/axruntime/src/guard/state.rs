@@ -101,6 +101,7 @@ impl RuntimeGuardState {
             preempt: RuntimePreemptState::new(),
         }
     }
+    #[cfg(any(test, not(feature = "host-test")))]
     pub(super) fn enter_irq(&mut self, outer_irqs_enabled: bool) {
         if self.irq.depth == 0 {
             self.irq.outer_irqs_enabled = outer_irqs_enabled;
@@ -111,6 +112,7 @@ impl RuntimeGuardState {
             .checked_add(1)
             .expect("runtime IRQ guard nesting overflow");
     }
+    #[cfg(any(test, not(feature = "host-test")))]
     pub(super) fn exit_irq(&mut self, owner: &'static str) -> bool {
         assert!(
             self.irq.depth > 0,

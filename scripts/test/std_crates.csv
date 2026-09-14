@@ -3,6 +3,7 @@ aarch64_sysreg
 ax-arm-pl031
 axaddrspace
 axbacktrace
+axdevice
 axdevice_base
 axhvc
 ax-io
@@ -16,6 +17,7 @@ ax-percpu
 mmio-api
 page-table-generic
 ranges-ext
+rdrive
 rdif-base
 rdif-def
 rdif-eth
@@ -25,6 +27,7 @@ aic8800
 ax-sched
 axvm
 axvirtio-blk
+axvirtio-common
 virtualization-tests
 axvmconfig
 ax-cpumask
@@ -40,6 +43,7 @@ starry-kernel
 starry-vm
 ax-timer-list
 ax-alloc
+buddy-slab-allocator
 ax-display
 ax-hal
 ax-input

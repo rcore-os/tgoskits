@@ -86,6 +86,10 @@ impl Pollable for BpfMap {
 }
 
 impl FileLike for BpfMap {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::Unsupported)
+    }
+
     fn read(&self, _dst: &mut crate::file::IoDst) -> StarryResult<usize> {
         Err(StarryError::Unsupported)
     }

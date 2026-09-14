@@ -110,19 +110,19 @@ impl RuntimeContext {
         inner: ax_hal::context::TaskContext,
         stack: StackHandle,
         preemption: InitialPreemptionState,
-    ) -> *mut RuntimeContext {
-        let inner = Box::new(UnsafeCell::new(inner));
+    ) -> Result<*mut RuntimeContext, RuntimeStatus> {
+        let inner = super::allocation::try_box(UnsafeCell::new(inner))?;
         let header = match preemption {
             InitialPreemptionState::Enabled => ExecutionContextHeader::new(),
             InitialPreemptionState::BootstrapDisabled => ExecutionContextHeader::new_bootstrap(),
         };
-        Box::into_raw(Box::new(Self {
+        Ok(Box::into_raw(super::allocation::try_box(Self {
             header,
             publication: UnsafeCell::new(CurrentThreadPublication::NONE),
             inner,
             stack,
             switch_tail: UnsafeCell::new(None),
-        }))
+        })?))
     }
 
     fn header(&self) -> Pin<&ExecutionContextHeader> {
@@ -339,6 +339,10 @@ fn create_runtime_context_parts(
     entry: ax_task::runtime::resource::KernelEntry,
     tls_handle: ax_task::runtime::resource::TlsHandle,
 ) -> RuntimeHandleResult {
+    #[cfg(feature = "fault-injection")]
+    if super::creation_probe::record(super::creation_probe::CreationEvent::Context) {
+        return RuntimeHandleResult::failure(RuntimeStatus::NoMemory);
+    }
     if stack_handle.is_none() {
         return RuntimeHandleResult::failure(RuntimeStatus::InvalidHandle);
     }
@@ -351,10 +355,10 @@ fn create_runtime_context_parts(
         ax_memory_addr::VirtAddr::from(stack.usable_top),
         ax_hal::context::KernelTlsBase::new(tls_pointer),
     );
-    RuntimeHandleResult::success(
-        RuntimeContext::allocate(context, stack_handle, InitialPreemptionState::Enabled)
-            .expose_provenance(),
-    )
+    match RuntimeContext::allocate(context, stack_handle, InitialPreemptionState::Enabled) {
+        Ok(context) => RuntimeHandleResult::success(context.expose_provenance()),
+        Err(status) => RuntimeHandleResult::failure(status),
+    }
 }
 
 pub(super) fn create_bootstrap_context() -> ExecutionContextHandle {
@@ -363,7 +367,8 @@ pub(super) fn create_bootstrap_context() -> ExecutionContextHandle {
         context,
         StackHandle::NONE,
         InitialPreemptionState::BootstrapDisabled,
-    );
+    )
+    .expect("bootstrap context allocation failed");
     // SAFETY: Box::into_raw yields a non-null uniquely owned RuntimeContext
     // that stays live until destroy_runtime_context consumes the handle.
     unsafe { ExecutionContextHandle::from_raw(context.expose_provenance()) }
@@ -383,10 +388,16 @@ pub(super) fn destroy_runtime_context(handle: ExecutionContextHandle) -> Runtime
     // SAFETY: the scheduler proves this context cannot run again and consumes
     // its runtime handle exactly once.
     drop(unsafe { Box::from_raw(context) });
+    #[cfg(feature = "fault-injection")]
+    super::creation_probe::record(super::creation_probe::CreationEvent::DropContext);
     RuntimeStatus::Success
 }
 
 pub(super) fn bind_runtime_context_thread(binding: ContextThreadBinding) -> RuntimeStatus {
+    #[cfg(feature = "fault-injection")]
+    if super::creation_probe::record(super::creation_probe::CreationEvent::Bind) {
+        return RuntimeStatus::NoMemory;
+    }
     if !binding.publication.identity().is_bound() || binding.publication.owner().is_none() {
         return RuntimeStatus::InvalidArgument;
     }
@@ -432,7 +443,7 @@ pub(super) fn scheduler_current_thread_identity() -> ThreadIdentityV1 {
     scheduler_current_thread_publication().identity()
 }
 
-#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+#[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
 pub(super) fn validate_current_user_fp_clone_context() -> Result<(), TaskError> {
     if !ax_cpu::interrupt::irqs_enabled() || ax_hal::irq::in_irq_context() {
         return Err(TaskError::UnsafeContext);
@@ -451,21 +462,18 @@ pub(super) fn validate_current_user_fp_clone_context() -> Result<(), TaskError> 
     result
 }
 
-#[cfg(all(target_arch = "x86_64", feature = "fp-simd", feature = "uspace"))]
+#[cfg(all(not(target_arch = "riscv64"), feature = "fp-simd", feature = "uspace"))]
 pub(super) fn inherit_current_user_fp_state(child_context: usize) {
     assert!(
         ax_cpu::interrupt::irqs_enabled() && !ax_hal::irq::in_irq_context(),
-        "x86 FPU inheritance requires ordinary task context",
+        "FPU inheritance requires ordinary task context",
     );
-    assert_ne!(
-        child_context, 0,
-        "x86 FPU inheritance requires a child context"
-    );
+    assert_ne!(child_context, 0, "FPU inheritance requires a child context");
     let child = ptr::with_exposed_provenance_mut::<RuntimeContext>(child_context);
     ax_cpu::interrupt::disable_irqs();
     // SAFETY: the child allocation is exclusively owned by resource creation
     // and remains unpublished. IRQ exclusion pins the current parent context
-    // and its CPU-local FPU owner through the direct XSAVE into the child.
+    // and its CPU-local FPU owner through the architecture FP snapshot into the child.
     unsafe {
         with_current_cpu_pin(|cpu_pin| {
             let parent = current_runtime_context(cpu_pin)
@@ -719,12 +727,14 @@ mod tests {
                 ax_hal::context::TaskContext::new(),
                 StackHandle::NONE,
                 InitialPreemptionState::Enabled,
-            );
+            )
+            .unwrap();
             let next = RuntimeContext::allocate(
                 ax_hal::context::TaskContext::new(),
                 StackHandle::NONE,
                 InitialPreemptionState::Enabled,
-            );
+            )
+            .unwrap();
 
             // SAFETY: both leaked runtime contexts remain pinned for the
             // modeled switch, and this host thread cannot migrate.
@@ -775,12 +785,14 @@ mod tests {
                 ax_hal::context::TaskContext::new(),
                 StackHandle::NONE,
                 InitialPreemptionState::Enabled,
-            );
+            )
+            .unwrap();
             let next = RuntimeContext::allocate(
                 ax_hal::context::TaskContext::new(),
                 StackHandle::NONE,
                 InitialPreemptionState::Enabled,
-            );
+            )
+            .unwrap();
 
             // SAFETY: both leaked contexts remain pinned while the modeled CPU
             // validates and then rolls back this uncommitted switch.
@@ -830,7 +842,8 @@ mod tests {
                 ax_hal::context::TaskContext::new(),
                 StackHandle::NONE,
                 InitialPreemptionState::Enabled,
-            );
+            )
+            .unwrap();
 
             // SAFETY: the leaked runtime context remains pinned while this
             // host thread validates the modeled current publication.
@@ -872,7 +885,8 @@ mod tests {
                 ax_hal::context::TaskContext::new(),
                 StackHandle::NONE,
                 InitialPreemptionState::Enabled,
-            );
+            )
+            .unwrap();
 
             // SAFETY: the leaked runtime context remains pinned while this
             // host thread reads its immutable scheduler publication.

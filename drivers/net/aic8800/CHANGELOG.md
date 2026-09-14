@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.3.1...aic8800-v0.3.2) - 2026-09-11
+
+### Fixed
+
+- *(aic8800)* restore D80 transport semantics within the owner state machine ([#2276](https://github.com/rcore-os/tgoskits/pull/2276))
+
 ## [0.3.1](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.3.0...aic8800-v0.3.1) - 2026-09-09
 
 ### Fixed

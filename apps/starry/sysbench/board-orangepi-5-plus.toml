@@ -1,0 +1,8 @@
+board_type = "OrangePi-5-Plus"
+timeout = 900
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^SYSBENCH_BOARD_FAILED\s*$', '(?m)^SYSBENCH_FAILED\b']
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:/root #"
+shell_cmd = ":"
+success_regex = ['(?m)^SYSBENCH_DONE\s*$']

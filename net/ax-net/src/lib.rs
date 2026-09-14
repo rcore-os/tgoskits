@@ -857,7 +857,7 @@ fn start_protocol_executor(owner_cpu: usize) {
             protocol_executor_main();
         })
         .unwrap_or_else(|error| panic!("failed to spawn network protocol executor: {error}"));
-    worker.detach_permanent();
+    worker.detach();
     while PROTOCOL_AFFINITY_STATUS.load(Ordering::Acquire) == 0 {
         yield_network_thread();
     }

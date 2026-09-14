@@ -13,18 +13,16 @@ impl RunQueue {
         &self,
         id: ThreadId,
     ) -> Option<QueuedThreadSnapshot> {
+        self.queued_thread_ref(id).map(QueuedThreadSnapshot::from)
+    }
+
+    pub(super) fn queued_thread_ref(&self, id: ThreadId) -> Option<&QueuedThread> {
         match self.membership_class(id)? {
-            QueueMembershipClass::Stop => self.stop.as_ref().map(QueuedThreadSnapshot::from),
-            QueueMembershipClass::Deadline(key) => {
-                self.deadline.get(key).map(QueuedThreadSnapshot::from)
-            }
-            QueueMembershipClass::DeadlineThrottled => {
-                self.deadline.throttled(id).map(QueuedThreadSnapshot::from)
-            }
-            QueueMembershipClass::Realtime(key) => self.rt.get(key).map(QueuedThreadSnapshot::from),
-            QueueMembershipClass::Fair => {
-                self.fair.find_first_matching(&mut |thread| thread.id == id)
-            }
+            QueueMembershipClass::Stop => self.stop.as_ref(),
+            QueueMembershipClass::Deadline(key) => self.deadline.get(key),
+            QueueMembershipClass::DeadlineThrottled => self.deadline.throttled(id),
+            QueueMembershipClass::Realtime(key) => self.rt.get(key),
+            QueueMembershipClass::Fair => self.fair.get(id),
         }
     }
 

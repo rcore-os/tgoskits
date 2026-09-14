@@ -376,10 +376,9 @@ impl TpuDevice {
         {
             HW_PTR.store(Arc::as_ptr(&hw) as *mut Sg2002Tpu, Ordering::Release);
             let worker_hw = hw.clone();
-            crate::task::spawn_kernel_thread(
-                move || tpu_worker(worker_hw),
-                String::from("tpu-worker"),
-            );
+            crate::task::kernel_thread_builder(String::from("tpu-worker"))
+                .spawn(move || tpu_worker(worker_hw))
+                .expect("failed to spawn kernel thread");
         }
 
         Self {

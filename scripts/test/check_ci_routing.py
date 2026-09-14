@@ -329,6 +329,9 @@ def main() -> int:
         if not job:
             errors.append(f"missing grouped CI job: {job_id}")
             continue
+        # Starry and AxVisor combine independent QEMU and board targets. A failed board
+        # must not cancel the other targets and discard their test evidence.
+        fail_fast = "false" if output_prefix in ("starry", "axvisor") else "true"
         for fragment, message in (
             (f"name: {display_name}", "must expose the expected group name"),
             ("- plan_ci", "must depend on Plan CI"),
@@ -362,7 +365,7 @@ def main() -> int:
                 f"needs.plan_ci.outputs.{output_prefix}_matrix",
                 "must consume its planner matrix",
             ),
-            ("fail_fast: true", "must keep fail-fast within the group"),
+            (f"fail_fast: {fail_fast}", "must preserve its failure collection policy"),
             ("save_cache: >-", "must preserve cache-save routing"),
             (
                 "since_ref: ${{ needs.plan_ci.outputs.since_ref }}",

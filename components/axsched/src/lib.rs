@@ -3,6 +3,7 @@
 
 mod cfs;
 mod fifo;
+mod placement;
 mod round_robin;
 
 #[cfg(test)]
@@ -12,6 +13,7 @@ extern crate alloc;
 
 pub use cfs::{CFSTask, CFScheduler};
 pub use fifo::{FifoScheduler, FifoTask};
+pub use placement::select_initial_cpu;
 pub use round_robin::{RRScheduler, RRTask};
 
 /// The base scheduler trait that all schedulers should implement.

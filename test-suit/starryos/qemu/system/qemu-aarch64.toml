@@ -5,7 +5,7 @@ args = [
     "-m",
     "512M",
     "-cpu",
-    "cortex-a53",
+    "cortex-a53,pmu=on",
     "-smp",
     "4",
     "-device",
@@ -38,6 +38,11 @@ to_bin = true
 test_commands = ["exec /usr/bin/starry-run-system-tests"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
 timeout = 1800
+
+[[grouped_qemu_profiles]]
+name = "perf"
+subcase_prefix = "perf-"
+config = "perf-aarch64.toml"
 
 [host_http_server]
 bind = "127.0.0.1"

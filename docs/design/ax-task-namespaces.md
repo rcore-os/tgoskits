@@ -36,7 +36,7 @@ ax-task 只在根目录公开领域模块。ArceOS 使用 `pub use ax_task as ta
 | `runtime::service` | tick、task deadline、soft timer 与延迟回收服务 |
 | `runtime::sync` | OS 锁适配需要的存储视图与 PI/等待协议 |
 
-`ax_runtime::thread` 只提供 ArceOS 资源装配、地址空间绑定、OS 扩展和线程创建发布。物理 IPI 通知及固定 IRQ worker 信号归入 `ax_runtime::irq`，OS 切换跟踪和计时诊断归入 `ax_runtime::diagnostics`。Future 驱动使用既有 `TaskRuntime` 时钟，归入 ax-task，避免在运行时重复实现。
+`ax_runtime::thread` 只提供 ArceOS 栈默认配置、架构资源装配、地址空间绑定和用户 FP 初始化。`PreparedThread`、`StagedThread`、完成等待与 join 统一由 `ax-task::thread` 持有；OS 扩展直接挂入调度记录。物理 IPI 通知及固定 IRQ worker 信号归入 `ax_runtime::irq`，OS 切换跟踪和计时诊断归入 `ax_runtime::diagnostics`。Future 驱动使用既有 `TaskRuntime` 时钟，归入 ax-task，避免在运行时重复实现。
 
 ## 2. 内部实现
 
@@ -50,11 +50,11 @@ ax-task 只在根目录公开领域模块。ArceOS 使用 `pub use ax_task as ta
 
 ### 2.2 资源与复用
 
-`ThreadBuilder` 自身保存配置及 OS 扩展析构责任，删除并行的 `KernelThreadSpec` 配置入口与公开 spawn 自由函数。PI 存储容器 `PiMutexCore` 只负责初始化、借出视图和析构，获取、释放及交接算法统一在 `PiMutexCoreView`，删除逐项转发方法。
+`ThreadBuilder` 自身保存配置及 OS 扩展析构责任，通过 `prepare`、`stage`、`activate` 完成身份发布后首次入队。公共执行对象直接保存闭包及退出结果；删除内核线程和运行时线程外层扩展、`KernelThreadHandle` 及组合式 raw spawn 入口。`ThreadHandle::wait/join/detach` 区分等待、转交回收和放弃管理租约。PI 存储容器 `PiMutexCore` 只负责初始化、借出视图和析构，获取、释放及交接算法统一在 `PiMutexCoreView`，删除逐项转发方法。
 
 hard/soft timer 共用 `time::queue::kernel` 的登记、取消和队列所有权。hard callback 的能力类型、执行上下文和延迟析构边界继续独立。`KernelTimerCancelOutcome::CancellationDeferred` 不被折叠为成功布尔值，`AlreadyCompleted` 也不是资源回收栅栏。
 
-调度与内存分配相关路径不新增 `Box`、`Vec` 或 `Arc` 分配。队列容量仍在初始化或任务发布前准备，临界区不新增最后一个引用的释放；回调及资源最终析构继续由任务上下文负责。模块拆分不引入动态分派、第二份登记表或状态缓存。
+调度与内存分配相关路径不新增 `Box`、`Vec` 或 `Arc` 分配。队列容量仍在初始化或任务发布前准备，临界区不新增最后一个引用的释放；回调及资源最终析构继续由任务上下文负责。退出线程的 context、TLS 和栈在 switch tail 与回调结束后独立回收，不再等待所有管理句柄消失；OS 扩展与任务对象仍受句柄租约保护。模块拆分不引入动态分派、第二份登记表或状态缓存。
 
 ### 2.3 保持整体的算法
 

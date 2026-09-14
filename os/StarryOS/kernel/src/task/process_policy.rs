@@ -84,6 +84,7 @@ impl ResourceLimitUpdate<'_> {
 
 pub(super) struct ProcessPolicyState {
     rlimits: ProcessResourceLimits,
+    thread_group_update: Mutex<()>,
     umask: AtomicU32,
     dumpable: AtomicI32,
     personality: AtomicUsize,
@@ -93,6 +94,7 @@ impl ProcessPolicyState {
     pub(super) fn new() -> Self {
         Self {
             rlimits: ProcessResourceLimits::new(),
+            thread_group_update: Mutex::new(()),
             umask: AtomicU32::new(0o022),
             dumpable: AtomicI32::new(1),
             personality: AtomicUsize::new(0),
@@ -109,6 +111,15 @@ impl ProcessPolicyState {
 }
 
 impl ProcessData {
+    /// Serializes signal/exit decisions and filter updates with clone publication.
+    ///
+    /// Acquire before signal disposition, per-thread seccomp and membership locks.
+    /// This task-context gate may cover fallible snapshot reservation; it is
+    /// never held across scheduler activation or a userspace return.
+    pub(crate) fn thread_group_update(&self) -> MutexGuard<'_, ()> {
+        self.policy.thread_group_update.lock()
+    }
+
     pub fn rlimit(&self, resource: u32) -> Rlimit {
         self.policy.rlimit(resource)
     }
@@ -164,17 +175,15 @@ fn resource_limit_read_is_nonblocking_for_test() -> bool {
     let worker_started = Arc::clone(&started);
     let worker_completed = Arc::clone(&completed);
     let limits = policy.rlimits.writer.lock();
-    let worker = super::try_spawn_kernel_thread(
-        move || {
+    let worker = super::kernel_thread_builder(String::from("rlimit-read-fast-path"))
+        .spawn(move || {
             worker_started.store(true, Ordering::Release);
             worker_completed.store(
                 worker_policy.rlimit_current(RLIMIT_RTTIME) == u64::MAX,
                 Ordering::Release,
             );
-        },
-        String::from("rlimit-read-fast-path"),
-    )
-    .expect("failed to spawn resource-limit read test worker");
+        })
+        .expect("failed to spawn resource-limit read test worker");
 
     while !started.load(Ordering::Acquire) {
         super::yield_now();
@@ -185,7 +194,7 @@ fn resource_limit_read_is_nonblocking_for_test() -> bool {
     let completed_while_limits_locked = completed.load(Ordering::Acquire);
 
     drop(limits);
-    super::join_kernel_thread(worker);
+    worker.join().expect("failed to join kernel thread");
     completed_while_limits_locked
 }
 

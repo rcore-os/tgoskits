@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use super::*;
 
 static TASK_SYSTEM: LazyInit<Pin<Box<TaskSystem>>> = LazyInit::new();
@@ -66,7 +68,10 @@ pub(crate) fn initialize_primary(cpu_id: usize) -> Result<(), TaskError> {
     // of leaving an independent hard-coded 10 ms balance deadline active.
     let config = TaskSystemConfig::new(ax_hal::cpu_num())
         .with_balance_interval_ns(crate::build_info::SCHEDULER_TICK_INTERVAL_NANOS);
-    let system = Box::pin(TaskSystem::new(config)?);
+    let capacities = (0..config.cpu_count())
+        .map(|cpu| ax_hal::topology::cpu_capacity(cpu).ok_or(TaskError::InvalidConfiguration))
+        .collect::<Result<Vec<_>, _>>()?;
+    let system = Box::pin(TaskSystem::new_with_cpu_capacities(config, &capacities)?);
     TASK_SYSTEM.init_once(system);
     let bootstrap = initialize_current_cpu(cpu_id)?;
     PRIMARY_BOOTSTRAP_THREAD.init_once(PrimaryBootstrapThread(bootstrap));
@@ -149,6 +154,8 @@ pub(crate) fn run_idle() -> ! {
     loop {
         ax_task::runtime::switch::schedule_current_cpu()
             .unwrap_or_else(|error| panic!("idle scheduler safe point failed: {error}"));
+        #[cfg(feature = "fault-injection")]
+        super::creation_probe::service_idle_cpu_round_trip();
         ax_task::runtime::cpu::idle_current_cpu_once()
             .unwrap_or_else(|error| panic!("idle wait handshake failed: {error}"));
     }
@@ -306,42 +313,6 @@ fn with_current_cpu_local_mut_for_boot<R>(
                     operation(cpu.as_mut())
                 })
             })
-        })
-    }
-}
-
-struct RuntimeIrqScope;
-
-impl RuntimeIrqScope {
-    fn enter() -> Self {
-        crate::guard::enter_irq();
-        Self
-    }
-}
-
-impl Drop for RuntimeIrqScope {
-    fn drop(&mut self) {
-        crate::guard::exit_irq("runtime CPU owner");
-    }
-}
-
-pub(super) fn with_current_cpu_local_mut_owner<R>(
-    operation: impl for<'cpu> FnOnce(Pin<&'cpu mut CpuLocal>) -> Result<R, TaskError>,
-) -> Result<R, TaskError> {
-    let _irq = RuntimeIrqScope::enter();
-    // SAFETY: RuntimeIrqScope prevents migration and local re-entry for the
-    // complete pin and dynamically gated owner borrow.
-    unsafe {
-        with_current_cpu_pin(|pin| {
-            let remote = current_cpu_remote(pin).ok_or(TaskError::NotInitialized)?;
-            let raw = CPU_LOCAL_OWNER_HANDLE.read_current(pin);
-            if raw == 0 {
-                return Err(TaskError::NotInitialized);
-            }
-            // SAFETY: publication pairs this owner pointer with `remote`; its
-            // gate excludes every overlapping runtime-derived mutable borrow.
-            let mut cpu = remote.claim_local(ptr::with_exposed_provenance_mut::<CpuLocal>(raw))?;
-            operation(cpu.as_pin_mut())
         })
     }
 }

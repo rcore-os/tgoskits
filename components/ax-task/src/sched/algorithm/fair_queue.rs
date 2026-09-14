@@ -90,8 +90,8 @@ pub(crate) struct FairNode {
 }
 
 impl FairNode {
-    pub(crate) fn empty() -> Box<Self> {
-        Box::new(Self {
+    pub(crate) fn empty() -> Result<Box<Self>, crate::thread::TaskError> {
+        crate::thread::allocation::try_box(Self {
             key: FairQueueKey {
                 virtual_deadline: 0,
                 sequence: 0,
@@ -165,10 +165,10 @@ pub(super) struct FairRunQueue {
 }
 
 impl FairRunQueue {
-    pub(super) fn new() -> Self {
-        Self {
+    pub(super) fn new(thread_capacity: usize) -> Result<Self, crate::thread::TaskError> {
+        Ok(Self {
             root: None,
-            keys: Vec::new(),
+            keys: crate::thread::allocation::empty_slots(thread_capacity)?,
             zero_vruntime: 0,
             sum_weighted_delta: 0,
             total_weight: 0,
@@ -176,13 +176,7 @@ impl FairRunQueue {
             idle_count: 0,
             delayed_count: 0,
             len: 0,
-        }
-    }
-
-    pub(super) fn prepare_thread_slot(&mut self, slot: usize) {
-        if self.keys.len() <= slot {
-            self.keys.resize(slot.saturating_add(1), None);
-        }
+        })
     }
 
     pub(super) const fn is_empty(&self) -> bool {
@@ -543,6 +537,11 @@ impl FairRunQueue {
         true
     }
 
+    pub(super) fn get(&self, thread: ThreadId) -> Option<&QueuedThread> {
+        let key = self.membership(thread)?.key;
+        find_node(self.root.as_deref(), key).map(FairNode::thread)
+    }
+
     pub(super) fn find_first_matching(
         &self,
         predicate: &mut impl FnMut(&QueuedThread) -> bool,
@@ -559,6 +558,14 @@ impl FairRunQueue {
     }
 
     pub(super) fn update_virtual_time(&mut self, current: Option<FairEntity>) -> u64 {
+        if self.total_weight == 0 {
+            // With no queued entity, the weighted mean is exactly current's
+            // vruntime. No queued lag needs rebasing in this case.
+            if let Some(current) = current {
+                self.zero_vruntime = current.vruntime();
+            }
+            return self.zero_vruntime;
+        }
         let mut sum_weighted_delta = self.sum_weighted_delta;
         let mut total_weight = self.total_weight;
         if let Some(current) = current {

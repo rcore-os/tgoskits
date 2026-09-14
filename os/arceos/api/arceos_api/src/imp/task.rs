@@ -71,7 +71,7 @@ cfg_task! {
     where
         F: FnOnce() + Send + 'static,
     {
-        let inner = ax_runtime::thread::spawn_raw(f, name, stack_size)
+        let inner = ax_runtime::thread::builder(name).stack_size(stack_size).spawn(f)
             .unwrap_or_else(|error| panic!("failed to spawn task: {error}"));
         AxTaskHandle {
             id: inner.id().as_u64(),
@@ -81,7 +81,7 @@ cfg_task! {
 
     #[track_caller]
     pub fn ax_wait_for_exit(task: AxTaskHandle) -> i32 {
-        ax_runtime::thread::join_thread(task.inner)
+        (task.inner).join()
             .unwrap_or_else(|error| panic!("failed to join task: {error}"))
     }
 

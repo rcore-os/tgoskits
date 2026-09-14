@@ -1,0 +1,31 @@
+[base]
+id = 1
+name = "linux-virtio-blk-mount-riscv64"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [1]
+
+[kernel]
+entry_point = 0x9020_0000
+image_location = "memory"
+kernel_path = "${workspace}/tmp/axbuild/images/qemu-riscv64/linux/linux-qemu"
+kernel_load_addr = 0x9020_0000
+dtb_load_addr = 0x9300_0000
+ramdisk_path = "${workspace}/tmp/axbuild/images/initramfs-riscv64-busybox.cpio.gz/initramfs-riscv64-busybox.cpio.gz"
+ramdisk_load_addr = 0x9400_0000
+cmdline = "console=ttyS0,115200 rdinit=/init devtmpfs.mount=1"
+memory_regions = [
+    [0x9000_0000, 0x4000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+# The host PCI bridge and NVMe rootfs remain owned by Axvisor. The guest uses
+# only the dedicated virtio-mmio block device declared below.
+disabled = [{ path = "/soc/pci@30000000" }]
+
+[[devices.virtual]]
+id = "virtblk0"
+model = "virtio-blk"
+path = "/guest/rootfs-riscv64-alpine.img"
+filesystem = "ext4"

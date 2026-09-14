@@ -206,7 +206,11 @@ impl TaskSystem {
 
         #[cfg(feature = "qperf-metrics")]
         let preempts_current = reschedule.is_some();
-        core.publish_effective_schedule(policy, enqueue.entity());
+        // Policy/PI transactions already publish non-Deadline keys, even
+        // while blocked. Only Deadline activation changes an entity-owned key.
+        if matches!(policy, SchedulePolicy::Deadline(_)) {
+            core.publish_effective_schedule(policy, enqueue.entity());
+        }
         core.set_wake_cpu_hint(target);
         if sched.transition(core, ThreadState::Running).is_err() {
             task_runtime::fatal_invariant(0x574b_0006, core.id().as_u64() as usize);

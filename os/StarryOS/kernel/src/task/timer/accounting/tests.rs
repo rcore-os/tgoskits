@@ -11,7 +11,7 @@ mod tests {
             time::Duration as StdDuration,
         };
 
-        let accounting = Arc::new(CpuTimeAccounting::new());
+        let accounting = Arc::new(CpuTimeAccounting::new().unwrap());
         accounting.scheduler_switch_in_at(true, 0);
 
         let execution_writer = accounting.realtime.lock();
@@ -43,7 +43,7 @@ mod tests {
 
     #[test]
     fn preemption_and_yield_preserve_rttime_but_block_resets_it() {
-        let accounting = CpuTimeAccounting::new();
+        let accounting = CpuTimeAccounting::new().unwrap();
         accounting.scheduler_switch_in_at(true, 0);
         accounting.scheduler_switch_out_at(scheduler::thread::SwitchReason::Preempted, 500_000);
         assert_eq!(accounting.snapshot(500_000).realtime_continuous_ns, 500_000);
@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn switch_out_keeps_runtime_unpublished_until_group_accounting_requests_it() {
-        let accounting = CpuTimeAccounting::new();
+        let accounting = CpuTimeAccounting::new().unwrap();
         accounting.scheduler_switch_in_at(false, 0);
 
         accounting.scheduler_switch_out_at(scheduler::thread::SwitchReason::Blocked, 10);
@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn leaving_rt_policy_resets_continuous_runtime() {
-        let accounting = CpuTimeAccounting::new();
+        let accounting = CpuTimeAccounting::new().unwrap();
         accounting.scheduler_switch_in_at(true, 0);
         accounting.set_realtime_policy_at(false, 2_000_000);
         let fair = accounting.snapshot(3_000_000);
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn owner_policy_update_advances_the_rttime_generation() {
-        let accounting = CpuTimeAccounting::new();
+        let accounting = CpuTimeAccounting::new().unwrap();
         accounting.scheduler_switch_in_at(true, 0);
 
         accounting.set_realtime_policy_at(false, 1_000_000);
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn adjusted_cpu_time_matches_linux_monotonic_runtime_contract() {
-        let high_water = SpinLock::new(CpuTimeHighWater::ZERO);
+        let high_water = RawSpinLock::new(CpuTimeHighWater::ZERO);
 
         assert_eq!(
             adjust_cpu_time(0, 0, 10, &high_water),

@@ -5,11 +5,11 @@ use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::*;
 
 use super::{
-    IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, MSG_INFO,
-    MSG_STAT, has_ipc_permission, next_ipc_id,
+    IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, MSG_INFO, MSG_STAT,
 };
 use crate::{
     Errno, StarryError, StarryResult,
+    ipc::{IpcPerm, has_ipc_permission, next_ipc_id},
     mm::{VmMutPtr, VmPtr, vm_load, vm_write_slice},
     sync::Mutex,
     task::{PidNamespaceId, PidSnapshot, WaitQueue as MsgWaitQueue},

@@ -711,6 +711,8 @@ impl PipeState {
     }
 
     fn copy_from(&mut self, src: &mut IoSrc, limit: usize) -> StarryResult<usize> {
+        // Publish this chunk only after both reads succeed. A source fault may
+        // consume input bytes, but must not expose a partial chunk to readers.
         let (left, right) = self.buffer.vacant_slices_mut();
         let left_limit = left.len().min(limit);
         // `left` covers vacant ring storage and the following `read` initializes
@@ -936,7 +938,7 @@ impl Pipe {
         enum WriteStep {
             Closed,
             WouldBlock,
-            Wrote(usize),
+            Wrote,
         }
 
         let mut total_written = 0;
@@ -949,6 +951,9 @@ impl Pipe {
         let mut wait_recorded = false;
         let mut task = None;
         loop {
+            // Keep committed progress outside the fallible step: a later
+            // source fault must not discard bytes already published to readers.
+            let mut written = 0;
             let step = self
                 .shared
                 .update_state(|state| -> StarryResult<WriteStep> {
@@ -964,7 +969,6 @@ impl Pipe {
                         sample_initial_was_empty = false;
                     }
 
-                    let mut written = 0;
                     if merge_pending {
                         merge_pending = false;
                         if merge_bytes > 0 && state.can_merge(merge_bytes) {
@@ -981,15 +985,24 @@ impl Pipe {
                     if written == 0 {
                         Ok(WriteStep::WouldBlock)
                     } else {
-                        Ok(WriteStep::Wrote(written))
+                        Ok(WriteStep::Wrote)
                     }
                 });
 
+            total_written += written;
+            #[cfg(feature = "qperf-metrics")]
+            if written > 0 {
+                PIPE_WRITE_BYTES.fetch_add(written as u64, Ordering::Relaxed);
+            }
             let step = match step {
                 Ok(step) => step,
                 Err(error) => {
                     self.finish_write_wakes(was_empty, wake_next_writer);
-                    return Err(error);
+                    return if total_written > 0 {
+                        Ok(total_written)
+                    } else {
+                        Err(error)
+                    };
                 }
             };
             match step {
@@ -1002,10 +1015,7 @@ impl Pipe {
                     return Err(StarryError::BrokenPipe);
                 }
                 WriteStep::WouldBlock => {}
-                WriteStep::Wrote(written) => {
-                    #[cfg(feature = "qperf-metrics")]
-                    PIPE_WRITE_BYTES.fetch_add(written as u64, Ordering::Relaxed);
-                    total_written += written;
+                WriteStep::Wrote => {
                     if total_written == size || self.nonblocking() {
                         self.finish_write_wakes(was_empty, wake_next_writer);
                         return Ok(total_written);
@@ -1212,6 +1222,14 @@ fn raise_pipe() {
 }
 
 impl FileLike for Pipe {
+    fn validate_write_access(&self) -> StarryResult {
+        if self.is_write() {
+            Ok(())
+        } else {
+            Err(StarryError::BadFileDescriptor)
+        }
+    }
+
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         if !self.is_read() {
             return Err(StarryError::BadFileDescriptor);
@@ -1525,20 +1543,16 @@ mod tests {
         // SAFETY: the extension owns no data and only publishes bounded atomic
         // observations from scheduler switch callbacks.
         let extension = unsafe { ThreadExtension::new(0, &BLOCK_OBSERVER_OPS) };
-        // SAFETY: unique ownership of `extension` is transferred exactly once.
-        let direct = unsafe {
-            ax_std::os::arceos::thread::spawn_raw_with_extension(
-                move || {
+        let direct =
+            ax_std::os::arceos::thread::builder("pipe-direct-exclusive-waiter".to_string())
+                .stack_size(256 * 1024)
+                .extension(extension)
+                .spawn(move || {
                     DIRECT_WAIT_ARMED.store(true, Ordering::Release);
                     waiters.wait_until(|| DIRECT_READY.load(Ordering::Acquire));
                     DIRECT_WOKEN.store(true, Ordering::Release);
-                },
-                "pipe-direct-exclusive-waiter".to_string(),
-                256 * 1024,
-                Some(extension),
-            )
-        }
-        .expect("failed to spawn direct pipe waiter");
+                })
+                .expect("failed to spawn direct pipe waiter");
         wait_for(&DIRECT_BLOCKED, "direct pipe waiter did not block");
         direct
     }
@@ -1632,8 +1646,7 @@ mod tests {
         DIRECT_READY.store(true, Ordering::Release);
         wake_pipe_waiter_sync(waiters.as_ref(), IoEvents::IN);
         wait_for(&DIRECT_WOKEN, "direct pipe waiter was not selected");
-        ax_std::os::arceos::thread::join_thread(direct)
-            .expect("direct pipe waiter must exit cleanly");
+        direct.join().expect("direct pipe waiter must exit cleanly");
         drop(registration);
 
         assert_eq!(
@@ -1724,8 +1737,7 @@ mod tests {
 
         wake_pipe_waiter_sync(waiters.as_ref(), IoEvents::IN);
         wait_for(&DIRECT_WOKEN, "second wake did not select direct waiter");
-        ax_std::os::arceos::thread::join_thread(direct)
-            .expect("direct pipe waiter must exit cleanly");
+        direct.join().expect("direct pipe waiter must exit cleanly");
         drop(registration);
     }
 
@@ -1795,17 +1807,16 @@ mod tests {
         let contender_state = Arc::clone(&waiters.state);
         let contender_attempted = Arc::clone(&attempted);
         let contender_acquired = Arc::clone(&acquired);
-        let contender = ax_std::os::arceos::thread::spawn_raw_with_affinity(
-            move || {
-                contender_attempted.store(true, Ordering::Release);
-                let _state = contender_state.lock();
-                contender_acquired.store(true, Ordering::Release);
-            },
-            "pipe-wait-set-lock-contender".to_string(),
-            256 * 1024,
-            affinity,
-        )
-        .expect("failed to spawn pipe wait-set lock contender");
+        let contender =
+            ax_std::os::arceos::thread::builder("pipe-wait-set-lock-contender".to_string())
+                .stack_size(256 * 1024)
+                .affinity(affinity)
+                .spawn(move || {
+                    contender_attempted.store(true, Ordering::Release);
+                    let _state = contender_state.lock();
+                    contender_acquired.store(true, Ordering::Release);
+                })
+                .expect("failed to spawn pipe wait-set lock contender");
 
         for _ in 0..32 {
             scheduler::thread::current::yield_current_cpu()
@@ -1824,7 +1835,8 @@ mod tests {
         );
         drop(state);
 
-        ax_std::os::arceos::thread::join_thread(contender)
+        contender
+            .join()
             .expect("pipe wait-set lock contender must exit");
         scheduler::thread::current::set_current_thread_affinity(original_affinity)
             .expect("test task affinity must be restored");
@@ -1856,17 +1868,16 @@ mod tests {
         let waiter_started_flag = Arc::clone(&waiter_started);
         let waiter_ready = Arc::clone(&ready);
         let waiter_completed_flag = Arc::clone(&waiter_completed);
-        let waiter = ax_std::os::arceos::thread::spawn_raw_with_affinity(
-            move || {
-                waiter_started_flag.store(true, Ordering::Release);
-                waiter_set.wait_until(|| waiter_ready.load(Ordering::Acquire));
-                waiter_completed_flag.store(true, Ordering::Release);
-            },
-            "pipe-wait-registration-order".to_string(),
-            256 * 1024,
-            affinity,
-        )
-        .expect("failed to spawn pipe wait registration task");
+        let waiter =
+            ax_std::os::arceos::thread::builder("pipe-wait-registration-order".to_string())
+                .stack_size(256 * 1024)
+                .affinity(affinity)
+                .spawn(move || {
+                    waiter_started_flag.store(true, Ordering::Release);
+                    waiter_set.wait_until(|| waiter_ready.load(Ordering::Acquire));
+                    waiter_completed_flag.store(true, Ordering::Release);
+                })
+                .expect("failed to spawn pipe wait registration task");
 
         for _ in 0..32 {
             scheduler::thread::current::yield_current_cpu()
@@ -1883,7 +1894,8 @@ mod tests {
         ready.store(true, Ordering::Release);
         waiters.wake_all(IoEvents::IN);
 
-        ax_std::os::arceos::thread::join_thread(waiter)
+        waiter
+            .join()
             .expect("pipe wait registration task must exit");
         scheduler::thread::current::set_current_thread_affinity(original_affinity)
             .expect("test task affinity must be restored");

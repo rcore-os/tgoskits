@@ -1,6 +1,6 @@
 [package]
 name = "starry-kernel"
-version = "0.9.0"
+version = "0.10.2"
 edition.workspace = true
 description = "A Linux-compatible OS kernel built on ArceOS unikernel"
 authors = [
@@ -59,7 +59,7 @@ sg2002-cvi-usb-camera = [
 smp = ["ax-std/smp"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
-axtest = []
+axtest = ["ax-runtime/fault-injection"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, values("ax-std"))'] }
@@ -179,6 +179,9 @@ ax-std = { path = "../../arceos/ulib/axstd", default-features = false, features 
     "ext-ld",
     "fs",
 ] }
+
+[target.'cfg(target_arch = "loongarch64")'.dev-dependencies]
+somehal.workspace = true
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 loom.workspace = true

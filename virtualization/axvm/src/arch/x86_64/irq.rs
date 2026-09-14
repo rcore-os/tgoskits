@@ -564,10 +564,6 @@ pub(crate) fn register_ioapic_irq_forwarding_activator(
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
-    if !vm.uses_passthrough_address_space() {
-        return;
-    }
-
     let Ok(devices) = vm.get_devices() else {
         return;
     };
@@ -580,7 +576,8 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
         return;
     };
     let pending = eoi.pending;
-    if should_rearm_forwarded_host_gsi_after_eoi(pending)
+    if vm.uses_passthrough_address_space()
+        && should_rearm_forwarded_host_gsi_after_eoi(pending)
         && let Some(domain) = interrupt_domain_for_vm(vm)
     {
         unmask_forwarded_host_gsi(&domain, eoi.gsi);

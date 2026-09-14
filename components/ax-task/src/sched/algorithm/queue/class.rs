@@ -23,7 +23,6 @@ pub(crate) enum SchedulerClass {
 
 pub(super) struct ClassEnqueue {
     pub(super) membership: QueueMembershipClass,
-    pub(super) entity: SchedulingEntity,
     pub(super) reason: EnqueueReason,
 }
 
@@ -113,7 +112,6 @@ impl SchedulerClass {
                 fair.renew_request();
             }
         }
-        let entity = thread.active.entity().clone();
         let membership = match self {
             Self::Stop => {
                 thread.migration_capable = false;
@@ -137,11 +135,7 @@ impl SchedulerClass {
                 QueueMembershipClass::Fair
             }
         };
-        Ok(ClassEnqueue {
-            membership,
-            entity,
-            reason,
-        })
+        Ok(ClassEnqueue { membership, reason })
     }
 
     /// Linux `dequeue_task()` class hook. The caller owns `nr_running`,

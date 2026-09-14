@@ -44,7 +44,7 @@ use kprobe::{
 
 use crate::{
     StarryError, StarryResult,
-    sync::{IrqMutex, RawSpinNoIrq},
+    sync::{IrqMutex, RawIrqSaveMutex},
     task::PidIdentity,
 };
 
@@ -123,13 +123,13 @@ fn uprobe_target_task(opaque_id: i32) -> crate::task::UserTaskRef {
 /// concrete probe types parameterized on it — see [`KernelKprobe`] /
 /// [`KernelKretprobe`]).
 ///
-/// Backed by [`RawSpinNoIrq`], which disables kernel preemption and
+/// Backed by [`RawIrqSaveMutex`], which disables kernel preemption and
 /// local IRQs across the critical section (`PreemptIrqGuard` semantics, the
 /// same as the rest of the kernel's spin locks). This matters because the lock
 /// is taken on trap / kprobe-callback paths: a plain atomic spin lock that left
 /// preemption and IRQs enabled could be re-entered on the same CPU and would
 /// then deadlock spinning on a lock it already holds.
-pub type KernelRawMutex = RawSpinNoIrq;
+pub type KernelRawMutex = RawIrqSaveMutex;
 
 #[derive(Debug)]
 pub struct KernelKprobeOps;

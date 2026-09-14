@@ -4,6 +4,7 @@ mod board;
 mod board_assets;
 mod nixos;
 mod qemu_discovery;
+mod qemu_profiles;
 mod qemu_run;
 mod suite;
 mod symbolize;
@@ -16,7 +17,7 @@ pub use args::{ArgsTest, ArgsTestBoard, ArgsTestNixos, ArgsTestQemu, TestCommand
 pub(crate) use assets::starry_case_asset_config;
 pub(crate) use board::collect_board_test_groups;
 pub(in crate::starry) use board_assets::{
-    PreparedBoardSessionAssets, collect_upload_paths, copy_declared_session_files,
+    PreparedBoardSessionAssets, prepare_board_session_assets,
 };
 pub(crate) use nixos::{run as run_nixos, supported_cases};
 pub(crate) use qemu_discovery::{

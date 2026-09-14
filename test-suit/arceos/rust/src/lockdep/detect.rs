@@ -1,6 +1,6 @@
 use std::println;
 
-use ax_std::os::arceos::sync::SpinLock;
+use ax_std::os::arceos::sync::RawSpinLock;
 
 pub fn run() -> crate::TestResult {
     println!("lockdep_detect: triggering spin lock order inversion");
@@ -9,8 +9,8 @@ pub fn run() -> crate::TestResult {
 }
 
 fn spin_single_task_abba() {
-    let lock_a = SpinLock::new(0usize);
-    let lock_b = SpinLock::new(0usize);
+    let lock_a = RawSpinLock::new(0usize);
+    let lock_b = RawSpinLock::new(0usize);
 
     {
         let _guard_a = lock_a.lock();

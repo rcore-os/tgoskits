@@ -48,3 +48,7 @@ apps/starry/python-net
 apps/starry/qt-calc
 apps/starry/openssh
 apps/starry/qemu/ltp-hackbench
+apps/starry/qemu/ltp-netstress
+
+# Benchmarks run only when explicitly selected.
+apps/starry/sysbench

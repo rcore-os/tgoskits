@@ -154,6 +154,10 @@ impl Pollable for DmaBufFile {
 }
 
 impl FileLike for DmaBufFile {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn stat(&self) -> StarryResult<Kstat> {
         Ok(Kstat {
             size: self.alloc.size as u64,

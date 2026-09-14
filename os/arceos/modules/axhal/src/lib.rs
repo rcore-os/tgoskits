@@ -89,7 +89,13 @@ pub mod topology {
     }
 
     #[cfg(not(any(test, feature = "host-test")))]
-    pub use ax_plat::cpu::resolve_cpu_index;
+    pub use ax_plat::cpu::{cpu_capacity, resolve_cpu_index};
+
+    /// Returns the dummy boot CPU's capacity, or `None` for an invalid index.
+    #[cfg(any(test, feature = "host-test"))]
+    pub const fn cpu_capacity(cpu_index: usize) -> Option<u16> {
+        if cpu_index == 0 { Some(1024) } else { None }
+    }
 }
 
 /// Trap handling.

@@ -2,11 +2,17 @@
 
 ## 1. 范围与基准
 
-本批从 `dev cc8faa9222` 开始，继续上一轮已合入的 PR #2322。LTP 固定为 `20260529`、提交 `3a64d78f58bdceba93ed321e91215fb969a047ed`；Linux 对照仍为 v7.1、提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。本批不修改内核或复制上游测试，候选失败时保留原程序并记录暂缓原因。
+本轮从 `origin/dev e8c2e66466682528d64e4b8102d5940333beaabb` 开始，继续上一轮已合入的 PR #2322。LTP 固定为 `20260529`、提交 `3a64d78f58bdceba93ed321e91215fb969a047ed`；Linux 对照仍为 v7.1、提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。本轮先按名称审计 `bugfix-*`，首个可在现有功能内修复的普通缺陷为 `linkat` 绝对目标路径错误校验 `newdirfd`；完成该修复及此前成功迁移后停止新增候选。
 
 ### 1.1 执行与提交
 
 `cases.txt` 是实际累计执行集合，`probe-cases.txt` 保存候选。探测期间临时选择候选集合，探测日志与最终累计验证分别保存；失败候选保留在候选清单，不进入最终执行集合。每个原程序只在对应 LTP 完成四架构验证后单独提交，共用用例只安装一次；提交主题写入 `migration.csv` 以免变基使账本 hash 失效。
+
+### 1.3 本轮首个缺陷
+
+`bug-linkat-flags-symlink` 的原测试首先按固定 LTP `linkat01.c` 进行等效审计。LTP 用例第 11、15 项使用绝对目标路径，同时传入非目录或无效 `newdirfd`；Linux v7.1 的 `filename_linkat()` 通过 `filename_create()` 解析目标路径，绝对路径因此忽略该描述符。Starry 原实现直接以 `new_dirfd` 调用 `with_fs()`，修复前分别返回 `ENOTDIR`、`EBADF`，修复后把绝对目标路径的解析基准改为 `AT_FDCWD`。
+
+同一 LTP 用例提供确定性红绿证据：修复前累计 x86_64 集合 `total=90 passed=88 failed=2`，修复后移除不适用的 `linkat02` 后 `total=89 passed=89 failed=0`，`linkat01` 22 项全部 `TPASS`。原测试中 symlink 目标类型、坏用户指针的非法 flags 优先级和 `EEXIST` 等断言，以及 `linkat02` 依赖 ext2 工具的错误组合没有由 `linkat01` 承接，均记录为覆盖损失；不通过放宽 wrapper 或隐藏 `TCONF` 接入。
 
 ### 1.2 覆盖边界
 
@@ -15,6 +21,16 @@
 ## 2. 逐项映射
 
 每小节记录原程序的输入、生命周期断言和上游承接范围。上游源码链接固定到 LTP 提交；日志保存在实施机器 `/tmp/starry-ltp-next-evidence/`。
+
+### 2.8 linkat 路径与 flags
+
+`bug-linkat-flags-symlink` 部分替换为 [linkat01.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/linkat/linkat01.c)。该用例承接相对和绝对源/目标路径、目录描述符边界、跨设备链接、目录链接及非法 flags 的 22 项断言。固定 Linux v7.1 的 [`filename_linkat()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L5808-L5883) 先校验 flags，再解析源路径和目标路径；目标路径为绝对路径时，`newdfd` 不参与路径起点选择。
+
+Starry 调用链为 `sys_linkat` → `resolve_at` → `with_fs`/`FsContext::resolve_nonexistent` → `Location::link`。原实现只在源路径的 `resolve_at` 中处理绝对路径，目标路径无条件进入 `with_fs(new_dirfd, ...)`。修复后目标路径以 `/` 开头时改用 `AT_FDCWD`，所以 LTP `linkat01` 第 11、15 项从 `ENOTDIR`、`EBADF` 恢复为成功；这也是本轮首个普通可修复缺陷，之后停止探索新的候选。
+
+未承接的原断言包括：flags=0 对 symlink 本体的硬链接、`AT_SYMLINK_FOLLOW` 对目标文件的硬链接内容、坏 old/new 用户指针下非法 flags 的优先级以及已存在目标的 `EEXIST`。固定 LTP [linkat02.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/linkat/linkat02.c) 还覆盖过长路径、ELOOP、EACCES、EROFS、EMLINK，但当前镜像没有 `mkfs.ext2`，运行结果为 `TCONF`，因此没有接入累计集合；原测试只删除已被 `linkat01` 部分承接的专属程序，覆盖损失保留在账本中。
+
+x86_64 修复前日志为 `/tmp/starry-ltp-next-evidence/` 中本轮基线输出，显示累计 90 项中 88 项通过、`linkat01` 两项失败；修复后四架构日志 `linkat01-{x86_64,aarch64,riscv64,loongarch64}-green.log` 分别显示累计 `89/89`、`87/87`、`87/87`、`87/87`，且 `linkat01` 均为 22/22 `TPASS`。完整 `qemu/system` 日志 `full-system-{x86_64,aarch64,riscv64,loongarch64}.log` 分别显示 `515/515`、`513/513`、`513/513`、`513/513`，外层均为 `PASS`。
 
 ### 2.1 POSIX 锁死锁检测
 

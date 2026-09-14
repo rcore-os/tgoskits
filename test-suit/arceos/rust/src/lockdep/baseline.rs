@@ -9,7 +9,7 @@ use std::{
     vec::Vec,
 };
 
-use ax_std::os::arceos::sync::{Mutex, SpinLock};
+use ax_std::os::arceos::sync::{Mutex, RawSpinLock};
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FilesystemOps,
     Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference,
@@ -33,10 +33,10 @@ pub fn run() -> crate::TestResult {
 }
 
 fn run_spin_no_irq_counter() {
-    static GLOBAL: SpinLock<usize> = SpinLock::new(0);
+    static GLOBAL: RawSpinLock<usize> = RawSpinLock::new(0);
     *GLOBAL.lock_irqsave() = 0;
 
-    let shared = Arc::new(SpinLock::new(0usize));
+    let shared = Arc::new(RawSpinLock::new(0usize));
     let mut tasks = Vec::new();
     for _ in 0..4 {
         let shared = shared.clone();
@@ -112,8 +112,8 @@ fn mutex_two_task_abba() {
 }
 
 fn spin_single_task_abba() {
-    let lock_a = SpinLock::new(0usize);
-    let lock_b = SpinLock::new(0usize);
+    let lock_a = RawSpinLock::new(0usize);
+    let lock_b = RawSpinLock::new(0usize);
 
     {
         let _guard_a = lock_a.lock();
@@ -128,8 +128,8 @@ fn spin_single_task_abba() {
 }
 
 fn spin_two_task_abba() {
-    let lock_a = Arc::new(SpinLock::new(0usize));
-    let lock_b = Arc::new(SpinLock::new(0usize));
+    let lock_a = Arc::new(RawSpinLock::new(0usize));
+    let lock_b = Arc::new(RawSpinLock::new(0usize));
     let stage = Arc::new(AtomicUsize::new(0));
 
     let thread_lock_a = lock_a.clone();
@@ -166,7 +166,7 @@ fn spin_two_task_abba() {
 }
 
 fn mixed_single_task_abba() {
-    let lock_a = SpinLock::new(0usize);
+    let lock_a = RawSpinLock::new(0usize);
     let lock_b = Mutex::new(0usize);
 
     {
@@ -182,7 +182,7 @@ fn mixed_single_task_abba() {
 }
 
 fn mixed_two_task_abba() {
-    let lock_a = Arc::new(SpinLock::new(0usize));
+    let lock_a = Arc::new(RawSpinLock::new(0usize));
     let lock_b = Arc::new(Mutex::new(0usize));
     let stage = Arc::new(AtomicUsize::new(0));
 
@@ -211,7 +211,7 @@ fn mixed_two_task_abba() {
 
 fn mixed_ms_single_task_abba() {
     let lock_a = Mutex::new(0usize);
-    let lock_b = SpinLock::new(0usize);
+    let lock_b = RawSpinLock::new(0usize);
 
     {
         let _guard_a = lock_a.lock();
@@ -227,7 +227,7 @@ fn mixed_ms_single_task_abba() {
 
 fn mixed_ms_two_task_abba() {
     let lock_a = Arc::new(Mutex::new(0usize));
-    let lock_b = Arc::new(SpinLock::new(0usize));
+    let lock_b = Arc::new(RawSpinLock::new(0usize));
     let stage = Arc::new(AtomicUsize::new(0));
 
     let thread_lock_a = lock_a.clone();

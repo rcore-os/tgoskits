@@ -340,10 +340,11 @@ pub(crate) fn check_signals_with_outcome(
     restart_info: Option<&SyscallRestartInfo>,
 ) -> SignalCheckOutcome {
     let thr = current.as_thread();
+    if thr.signal().is_exiting() {
+        return SignalCheckOutcome::None;
+    }
     if thr.take_deadline_overrun() {
-        let _result = thr
-            .signal()
-            .send_signal(SignalInfo::new_kernel(Signo::SIGXCPU));
+        queue_thread_signal(thr, SignalInfo::new_kernel(Signo::SIGXCPU));
     }
 
     // Honor zap requests before consulting the signal queue. A sibling
@@ -406,7 +407,7 @@ pub(crate) fn check_signals_with_outcome(
             Some(new_signo) if new_signo != signo => {
                 thr.proc_data
                     .set_ptrace_resume_signal_bypass_for(thr.tid(), new_signo);
-                let _ = thr.signal().send_signal(SignalInfo::new_kernel(new_signo));
+                queue_thread_signal(thr, SignalInfo::new_kernel(new_signo));
                 return SignalCheckOutcome::HandledInKernel;
             }
             Some(_) => {}
@@ -466,7 +467,7 @@ pub(super) fn queue_rttime_limit_signal_from_scheduler_tick(thr: &Thread, _obser
         RttimeLimitAction::Soft => Signo::SIGXCPU,
         RttimeLimitAction::Hard => Signo::SIGKILL,
     };
-    let _queued = thr.signal().send_signal(SignalInfo::new_kernel(signo));
+    queue_thread_signal(thr, SignalInfo::new_kernel(signo));
 }
 
 /// Notify a process's parent of a job-control state change by sending it
@@ -632,6 +633,44 @@ pub fn send_signal_to_thread(
     send_signal_to_task(&task, expected_process, sig)
 }
 
+/// Queues a thread signal under the common clone/exit publication gate.
+/// All scheduler notifications happen after the gate and disposition lock.
+pub(crate) fn queue_thread_signal(thread: &Thread, sig: SignalInfo) -> bool {
+    let process = &thread.proc_data;
+    let deliverable = {
+        let _update = process.thread_group_update();
+        let defer_fatal = process.ptrace_tracer_identity().is_some() || process.is_job_stopped();
+        thread.signal().send_signal(sig, defer_fatal)
+    };
+    if !wake_exiting_signal_group(process)
+        && deliverable
+        && let Some(id) = thread.scheduler_id()
+        && let Ok(handle) = ax_runtime::task::thread::ThreadHandle::lookup(id)
+        && let Ok(Some(task)) = UserTaskRef::try_from_scheduler(handle)
+    {
+        task.interrupt();
+    }
+    deliverable
+}
+
+/// A group decision precedes every stop release and task wake. The per-thread
+/// SIGKILL bits were published by the signal owner before reaching this point.
+pub(super) fn wake_exiting_signal_group(process: &ProcessData) -> bool {
+    if process.signal.group_exit_status().is_none() {
+        return false;
+    }
+    process.clear_ptrace_stop();
+    process.clear_job_stop_for_kill();
+    for tid in process.proc.threads() {
+        if let Ok(task) = get_task_by_number(tid)
+            && Arc::ptr_eq(&task.as_thread().proc_data.identity(), &process.identity())
+        {
+            task.interrupt();
+        }
+    }
+    true
+}
+
 /// Sends a signal to one already-resolved stable thread generation.
 pub(crate) fn send_signal_to_task(
     task: &UserTaskRef,
@@ -653,9 +692,7 @@ pub(crate) fn send_signal_to_task(
         // (not blocked/not ignored).  Sending a blocked signal via
         // tkill/tgkill must NOT interrupt the target per POSIX; the signal
         // is queued as pending and stays invisible until unblocked.
-        if thread.signal().send_signal(sig) {
-            task.interrupt();
-        }
+        queue_thread_signal(thread, sig);
         // Always wake signalfd waiters — even blocked signals should be
         // visible via signalfd in an epoll event loop.
         thread.wake_signalfd();
@@ -738,10 +775,18 @@ fn publish_process_signal(
     sig: SignalInfo,
     ptrace_stop_tid: Option<TidNumber>,
 ) -> Option<TidNumber> {
-    let wake_tid = proc_data
-        .signal
-        .send_signal(sig)
-        .and_then(|tid| TidNumber::try_from(tid).ok());
+    let wake_tid = {
+        let _update = proc_data.thread_group_update();
+        let defer_fatal =
+            proc_data.ptrace_tracer_identity().is_some() || proc_data.is_job_stopped();
+        proc_data
+            .signal
+            .send_signal(sig, defer_fatal)
+            .and_then(|tid| TidNumber::try_from(tid).ok())
+    };
+    if wake_exiting_signal_group(proc_data) {
+        return wake_tid;
+    }
     if let Some(tid) = wake_tid
         && let Ok(task) = get_task_by_number(tid)
     {
@@ -854,9 +899,7 @@ pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> crate::StarryR
     // "no dump" sentinel — signo values start at 1.
     thread.set_fault_dump(signo as u8);
 
-    if thread.signal().send_signal(sig) {
-        curr.interrupt();
-    } else {
+    if !queue_thread_signal(thread, sig) {
         // send_signal returning false means the signal was rejected
         // (already pending). Either way the faulting thread is the
         // right one to terminate, so dump and exit here directly so

@@ -305,10 +305,10 @@ impl<G: GuardState, T: Default> Default for BaseSpinLock<G, T> {
 impl<G: GuardState, T: ?Sized + fmt::Debug> fmt::Debug for BaseSpinLock<G, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.try_lock() {
-            Some(guard) => write!(f, "SpinLock {{ data: ")
+            Some(guard) => write!(f, "RawSpinLock {{ data: ")
                 .and_then(|()| (*guard).fmt(f))
                 .and_then(|()| write!(f, "}}")),
-            None => write!(f, "SpinLock {{ <locked> }}"),
+            None => write!(f, "RawSpinLock {{ <locked> }}"),
         }
     }
 }

@@ -117,12 +117,11 @@ pub(crate) fn init() {
         let stopper = Arc::clone(&CPU_STOPPERS[cpu]);
         let mut affinity = CpuSet::empty(cpu_count);
         assert!(affinity.insert(CpuId::new(cpu as u32)));
-        crate::task::spawn_kernel_thread_with_policy_and_affinity(
-            move || stopper.run(),
-            format!("migration/{cpu}"),
-            SchedulePolicy::kernel_stop(),
-            affinity,
-        );
+        crate::task::kernel_thread_builder(format!("migration/{cpu}"))
+            .policy(SchedulePolicy::kernel_stop())
+            .affinity(affinity)
+            .spawn(move || stopper.run())
+            .expect("failed to spawn kernel thread");
     }
 }
 

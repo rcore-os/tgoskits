@@ -72,3 +72,33 @@ __axcpu_user_atomic_u32:
     _asm_nofault_extable 1b, .Luser_atomic_fault
     _asm_nofault_extable 2b, .Luser_atomic_fault
 .size __axcpu_user_atomic_u32, . - __axcpu_user_atomic_u32
+
+.global __axcpu_user_cmpxchg_u32
+.type __axcpu_user_cmpxchg_u32, @function
+__axcpu_user_cmpxchg_u32:
+    // LL.W sign-extends the loaded word, including FUTEX_WAITERS.
+    addi.w $a1, $a1, 0
+    li.w $t3, 128
+1:
+    ll.w $t0, $a0, 0
+    bne $t0, $a1, .Luser_cmpxchg_observed
+    move $t1, $a2
+2:
+    sc.w $t1, $a0, 0
+    bnez $t1, .Luser_cmpxchg_observed
+    addi.w $t3, $t3, -1
+    bnez $t3, 1b
+    dbar 0
+    addi.w $a0, $zero, 2
+    jr $ra
+.Luser_cmpxchg_observed:
+    dbar 0
+    st.w $t0, $a3, 0
+    move $a0, $zero
+    jr $ra
+.Luser_cmpxchg_fault:
+    addi.w $a0, $zero, 1
+    jr $ra
+    _asm_nofault_extable 1b, .Luser_cmpxchg_fault
+    _asm_nofault_extable 2b, .Luser_cmpxchg_fault
+.size __axcpu_user_cmpxchg_u32, . - __axcpu_user_cmpxchg_u32

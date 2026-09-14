@@ -68,7 +68,7 @@ pub(crate) fn prepare_user_return() -> Result<(), ax_task::thread::TaskError> {
             return Err(ax_task::thread::TaskError::UnsafeContext);
         }
         ax_cpu::interrupt::disable_irqs();
-        let pending = with_current_cpu_pin(|pin| {
+        let observe = |pin: &cpu_local::CpuPin<'_>| {
             let state = RUNTIME_GUARD_STATE.with_current(pin, |state| *state);
             if !state.irq.is_clear()
                 || !state.preempt.is_clear()
@@ -78,7 +78,11 @@ pub(crate) fn prepare_user_return() -> Result<(), ax_task::thread::TaskError> {
                 return Err(ax_task::thread::TaskError::UnsafeContext);
             }
             crate::thread::current_cpu_needs_reschedule_pinned(pin)
-        });
+        };
+        // SAFETY: local IRQs were disabled above and stay disabled throughout
+        // this non-escaping observation, preventing migration and re-entry.
+        let pending = unsafe { cpu_local::with_cpu_pin(observe) }
+            .unwrap_or_else(|error| panic!("runtime CPU-local state is invalid: {error}"));
         let pending = match pending {
             Ok(pending) => pending,
             Err(error) => {
@@ -183,12 +187,14 @@ pub(crate) fn in_atomic_context() -> bool {
     ax_cpu::interrupt::enable_irqs();
     guarded
 }
+#[cfg(not(any(test, feature = "host-test")))]
 pub(crate) fn enter_irq() {
     let outer_irqs_enabled = ax_cpu::interrupt::irqs_enabled();
     ax_cpu::interrupt::disable_irqs();
 
     with_guard_state_mut(|state| state.enter_irq(outer_irqs_enabled));
 }
+#[cfg(not(any(test, feature = "host-test")))]
 pub(crate) fn exit_irq(owner: &'static str) {
     let (must_schedule, restore_irqs) = with_current_cpu_pin(|pin| {
         let preempt_depth = current_preempt_depth_pinned(pin);
@@ -421,6 +427,7 @@ fn preempt_exit_needs_schedule(
         && (origin.is_irq_return() || irqs_were_enabled)
         && !in_hard_irq()
 }
+#[cfg(any(test, not(feature = "host-test")))]
 fn irq_guard_exit_needs_schedule(
     state: &RuntimeGuardState,
     preempt_depth: u32,

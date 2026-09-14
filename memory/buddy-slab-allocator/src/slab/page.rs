@@ -198,16 +198,30 @@ impl SlabPageHeader {
     /// - `owner_cpu` must match the slab header's owner CPU.
     /// - `page_size` must be the slab allocator's page size.
     pub unsafe fn remote_free_object(ptr: NonNull<u8>, owner_cpu: u16, page_size: usize) {
+        unsafe { Self::queue_remote_free(ptr, owner_cpu, page_size) };
+    }
+
+    /// Like [`Self::remote_free_object`], returning the size class the object
+    /// was queued into so the caller can announce it to the owner.
+    ///
+    /// # Safety
+    /// Same as [`Self::remote_free_object`].
+    pub(crate) unsafe fn queue_remote_free(
+        ptr: NonNull<u8>,
+        owner_cpu: u16,
+        page_size: usize,
+    ) -> Option<SizeClass> {
         let obj_addr = ptr.as_ptr() as usize;
         let Some(base) = Self::base_from_obj_addr_unknown_with_page_size(obj_addr, page_size)
         else {
             debug_assert!(false, "object address does not belong to a live slab");
-            return;
+            return None;
         };
         let hdr = unsafe { &*(base as *const SlabPageHeader) };
         debug_assert_eq!(hdr.magic, SLAB_MAGIC);
         debug_assert_eq!(hdr.owner_cpu, owner_cpu);
         unsafe { hdr.remote_free(obj_addr) };
+        Some(hdr.size_class)
     }
 
     // ------------------------------------------------------------------

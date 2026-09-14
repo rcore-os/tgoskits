@@ -41,6 +41,7 @@ mod mm;
 mod namespace;
 mod perf;
 mod pseudofs;
+mod rdrive_osal;
 mod stop_machine;
 mod sync;
 mod syscall;
@@ -52,6 +53,8 @@ mod uprobe;
 
 #[cfg(all(test, axtest))]
 mod block_runtime_axtest;
+#[cfg(all(test, axtest))]
+mod thread_lifecycle_axtest;
 
 pub use error::{DmaOperation, StarryError, StarryResult};
 // The staged MM ownership and transaction types are intentionally reachable

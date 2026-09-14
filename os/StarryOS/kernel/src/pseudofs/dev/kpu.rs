@@ -512,11 +512,7 @@ fn start_kpu_irq_service() -> bool {
         }
     }
 
-    match crate::task::try_spawn_kernel_thread_with_stack(
-        kpu_irq_service,
-        "kpu-irq-service".into(),
-        crate::task::default_task_stack_size(),
-    ) {
+    match crate::task::kernel_thread_builder("kpu-irq-service".into()).spawn(kpu_irq_service) {
         Ok(_service) => {
             KPU_SERVICE_STATE.store(KPU_SERVICE_STARTED, Ordering::Release);
             true

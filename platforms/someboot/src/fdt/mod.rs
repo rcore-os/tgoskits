@@ -1,3 +1,5 @@
+mod capacity;
+pub(crate) use capacity::{CPU_CAPACITY_SCALE, CpuCapacities};
 mod earlycon;
 mod memory;
 
@@ -48,7 +50,7 @@ pub(crate) fn set_fdt_addr_phys_if_valid(fdt_addr: usize) -> bool {
     true
 }
 
-fn fdt_base() -> Option<fdt_raw::Fdt<'static>> {
+pub(crate) fn fdt_base() -> Option<fdt_raw::Fdt<'static>> {
     let fdt_addr = fdt_addr()?;
     // SAFETY: the global FDT address points to firmware memory or the saved
     // early RAM copy, both of which stay valid for the boot lifetime.

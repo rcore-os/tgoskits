@@ -545,8 +545,8 @@ fn start_trace_pipe_notify_worker() -> ax_runtime::task::thread::ThreadHandle {
     if TRACE_PIPE_NOTIFY_WORKER.swap(true, Ordering::AcqRel) {
         panic!("trace pipe notify worker started twice");
     }
-    crate::task::spawn_kernel_thread(
-        || {
+    crate::task::kernel_thread_builder("trace-pipe-notify".into())
+        .spawn(|| {
             loop {
                 TRACE_STATE.pipe_notify.wait();
                 loop {
@@ -563,9 +563,8 @@ fn start_trace_pipe_notify_worker() -> ax_runtime::task::thread::ThreadHandle {
                     );
                 }
             }
-        },
-        "trace-pipe-notify".into(),
-    )
+        })
+        .expect("failed to spawn kernel thread")
 }
 
 fn publish_trace_worker_id(

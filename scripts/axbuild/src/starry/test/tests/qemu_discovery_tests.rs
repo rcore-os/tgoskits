@@ -1,6 +1,100 @@
 use super::*;
 
 #[test]
+fn grouped_qemu_profiles_partition_execution_and_preserve_direct_selection() {
+    let root = tempdir().unwrap();
+    write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
+    let dir = root.path().join("test-suit/starryos/qemu/system");
+    fs::create_dir_all(dir.join("timing/c")).unwrap();
+    fs::create_dir_all(dir.join("counter-read/c")).unwrap();
+    fs::create_dir_all(dir.join("counter-ring/c")).unwrap();
+    fs::write(
+        dir.join("qemu-x86_64.toml"),
+        r#"
+test_commands = ["exec runner"]
+[[grouped_qemu_profiles]]
+name = "counters"
+subcase_prefix = "counter-"
+config = "counters.toml"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("counters.toml"),
+        "test_commands = [\"exec runner\"]\n",
+    )
+    .unwrap();
+    let cases = discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", None).unwrap();
+    assert_eq!(cases.len(), 2);
+    assert_eq!(
+        cases[0].case.grouped_subcase_filter,
+        Some(BTreeSet::from(["timing".into()]))
+    );
+    assert_eq!(
+        cases[1].case.grouped_subcase_filter,
+        Some(BTreeSet::from([
+            "counter-read".into(),
+            "counter-ring".into()
+        ]))
+    );
+    assert_eq!(cases[1].case.qemu_config_path, dir.join("counters.toml"));
+    assert_ne!(cases[0].case.name, cases[1].case.name);
+    let direct = discover_qemu_cases(
+        root.path(),
+        "x86_64",
+        "x86_64-unknown-none",
+        Some("qemu/system/counter-read"),
+    )
+    .unwrap();
+    assert_eq!(direct.len(), 1);
+    assert_eq!(direct[0].case.qemu_config_path, dir.join("counters.toml"));
+    assert_eq!(
+        direct[0].case.grouped_subcase_filter,
+        Some(BTreeSet::from(["counter-read".into()]))
+    );
+    fs::write(dir.join("counters.toml"), "test_commands = []\n").unwrap();
+    assert!(discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", None).is_err());
+}
+
+#[test]
+fn grouped_qemu_profiles_reject_overlap_and_unmatched_configuration() {
+    let root = tempdir().unwrap();
+    write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");
+    let dir = root.path().join("test-suit/starryos/qemu/system");
+    fs::create_dir_all(dir.join("counter-read/c")).unwrap();
+    fs::write(
+        dir.join("profile.toml"),
+        "test_commands = [\"exec runner\"]\n",
+    )
+    .unwrap();
+    for (prefix, expected) in [
+        ("counter-", "multiple grouped QEMU profiles"),
+        ("missing-", "matches no subcases"),
+    ] {
+        fs::write(
+            dir.join("qemu-x86_64.toml"),
+            format!(
+                r#"
+test_commands = ["exec runner"]
+[[grouped_qemu_profiles]]
+name = "first"
+subcase_prefix = "counter-"
+config = "profile.toml"
+[[grouped_qemu_profiles]]
+name = "second"
+subcase_prefix = "{prefix}"
+config = "profile.toml"
+"#
+            ),
+        )
+        .unwrap();
+        let error =
+            discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", None).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error:#}");
+    }
+}
+
+#[test]
 fn discovers_only_cases_with_matching_qemu_config() {
     let root = tempdir().unwrap();
     write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");

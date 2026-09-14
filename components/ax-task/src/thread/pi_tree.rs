@@ -113,8 +113,8 @@ pub(crate) struct PiWaitNode {
 }
 
 impl PiWaitNode {
-    fn empty() -> Box<Self> {
-        Box::new(Self {
+    fn empty() -> Result<Box<Self>, crate::thread::TaskError> {
+        crate::thread::allocation::try_box(Self {
             key: PiWaitKey::new(
                 SchedulingUrgency::new(u8::MAX, u64::MAX),
                 u64::MAX,
@@ -163,11 +163,11 @@ pub(crate) struct PiWaitNodeStorage {
 }
 
 impl PiWaitNodeStorage {
-    pub(crate) fn new() -> Self {
-        Self {
-            lock_waiter: UnsafeCell::new(Some(PiWaitNode::empty())),
-            owner_donor: UnsafeCell::new(Some(PiWaitNode::empty())),
-        }
+    pub(crate) fn new() -> Result<Self, crate::thread::TaskError> {
+        Ok(Self {
+            lock_waiter: UnsafeCell::new(Some(PiWaitNode::empty()?)),
+            owner_donor: UnsafeCell::new(Some(PiWaitNode::empty()?)),
+        })
     }
 
     pub(crate) unsafe fn take_lock_waiter(&self) -> Box<PiWaitNode> {
@@ -492,7 +492,7 @@ mod tests {
     fn waiter_tree_snapshot_retains_the_committed_generation() {
         let key = PiWaitKey::new(SchedulingUrgency::new(3, 0), 7, ThreadId::from_parts(2, 0));
         let mut tree = PiWaitTree::new();
-        tree.insert(key, donation(11), PiWaitNode::empty());
+        tree.insert(key, donation(11), PiWaitNode::empty().unwrap());
 
         let (_, snapshot) = tree.first_entry().expect("inserted waiter must be first");
         assert_eq!(snapshot.wait_generation(), Some(11));

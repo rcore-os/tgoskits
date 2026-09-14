@@ -14,6 +14,7 @@ mod devices;
 
 pub use append::DefaultVirtualDeviceIntent;
 pub(crate) use append::append_configured_devices;
+pub use devices::virtio_pci::{VirtioPciFunction, virtio_capabilities};
 
 pub(crate) fn register_devices(
     catalog: &mut ConfiguredDeviceCatalog,
@@ -92,6 +93,7 @@ impl FixedDeviceBindings {
 pub struct DeviceInstantiationContext {
     vm_id: Option<usize>,
     default_wired_controller: Option<(DeviceNodeId, InterruptControllerId)>,
+    default_pci_host_key: Option<PciHostKey>,
     fixed: FixedDeviceBindings,
     firmware_binding: DeviceFirmwareBinding,
     serial_profile: Option<crate::machine::GuestSerialProfile>,
@@ -104,6 +106,7 @@ impl DeviceInstantiationContext {
         Self {
             vm_id: None,
             default_wired_controller: None,
+            default_pci_host_key: None,
             fixed: FixedDeviceBindings::default(),
             firmware_binding: DeviceFirmwareBinding::None,
             serial_profile: None,
@@ -134,6 +137,17 @@ impl DeviceInstantiationContext {
         self.default_wired_controller
             .as_ref()
             .map(|(_, controller)| *controller)
+    }
+
+    /// Selects the architecture-owned default PCI host for PCI-backed models.
+    pub fn with_default_pci_host_key(mut self, host: PciHostKey) -> Self {
+        self.default_pci_host_key = Some(host);
+        self
+    }
+
+    /// Returns the architecture-selected default PCI host, if one exists.
+    pub fn default_pci_host_key(&self) -> Option<&PciHostKey> {
+        self.default_pci_host_key.as_ref()
     }
 
     /// Returns the graph node that must precede users of the default wired domain.

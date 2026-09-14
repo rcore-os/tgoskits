@@ -157,9 +157,9 @@ STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=0.012
 [`MIGRATION.md`](../../scripts/test/ltp-syscalls/MIGRATION.md) 与
 [`migration.csv`](../../scripts/test/ltp-syscalls/migration.csv)。该清单包含待审计项，
 不能把候选数量当成已经完成的迁移数量；每项迁移保留独立提交。已合入的 PR #2322
-处理了 13 个原程序（9 项部分替代、4 项无等效清理）。续迁批次另部分替代 7 个原程序，
-详细断言损失与失败记录见 [`NEXT.md`](../../scripts/test/ltp-syscalls/NEXT.md)。当前实际清单
-包含 84 个共同 LTP 用例，x86_64 另有 2 个旧入口用例；这是累计执行集合，两个 native
+处理了 13 个原程序（9 项部分替代、4 项无等效清理）。先前续迁批次另部分替代 7 个原程序；当前轮追加
+`bug-linkat-flags-symlink` 的 `linkat01` 部分替代并修复绝对目标路径的 `newdirfd` 语义，详细断言损失与失败记录见 [`NEXT.md`](../../scripts/test/ltp-syscalls/NEXT.md)。当前实际清单
+包含 85 个共同 LTP 用例，x86_64 另有 2 个旧入口用例；这是累计执行集合，两个 native
 隔离回归单独计数。IPv6 等先前失败项，以及本批 fcntl14/16 对应的原测试继续保留。
 
 `qemu/system/ltp-syscalls` 使用 rootfs 中固定的 Linux Test Project
@@ -312,6 +312,13 @@ Pipeline 创建的副本只负责资产注入，不承担 QEMU 运行期写隔�
 `fakeroot`，避免产生大量权限警告。如果此时缺少 `fakeroot`，xtask 会在启动
 `debugfs` 前明确失败，不会先执行再过滤警告或静默回退。
 
+C、分组 C 和 Rust 资产通过 `write_cross_bin_wrappers()` 统一选择 binutils：优先使用
+qemu-user 执行 staging root 内的工具，否则使用宿主原生 `<gnu_tool_prefix>-<tool>`
+交叉工具。原生模式仍需要目标 sysroot；缺少任一所需工具会在构建前失败。
+`prebuild.sh` 仍由 `prepare_guest_prebuild_env()` 要求 qemu-user，不能因为缺少模拟器
+而跳过脚本或依赖其产物的测试。当前 `qemu/system` 有共享 prebuild，仍需要 qemu-user；
+完整套件应在具备该能力的 Linux 环境执行。
+
 ## QEMU TOML
 
 每个 `qemu-<arch>.toml` 定义运行配置，而不是构建配置。常用字段如下：
@@ -428,7 +435,12 @@ cargo xtask starry test qemu --arch x86_64 -c qemu/test-futex-race
 ```
 
 这会继续使用 `qemu/system/qemu-<arch>.toml`，但只配置、编译和注入指定 subcase
-目录。
+目录。若父配置声明 `[[grouped_qemu_profiles]]`，`qemu_profiles::expand()` 按
+`subcase_prefix` 将匹配项放入独立 QEMU 启动，使用 `config` 指定的同目录配置；
+`name` 用于独立日志和工作目录。各 profile 不能重名或匹配同一子用例，不能匹配空集，
+其配置必须声明 `test_commands`；未匹配项仍使用父配置执行。定向选择也经过同一分组，
+不会额外启动未选择的子用例。AArch64 的 `perf-*` 因此独立使用 icount，普通 system
+测试保留 MTTCG；两组都由原有 CI suite 命令运行，不需要复制测试源码或增大超时。
 
 在 `qemu-<arch>.toml` 中使用 `test_commands`：
 

@@ -58,6 +58,10 @@ impl Pollable for IonBufferFile {
 }
 
 impl FileLike for IonBufferFile {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn read(&self, _dst: &mut super::IoDst) -> StarryResult<usize> {
         // Ion buffer 不支持直接读取
         Err(StarryError::InvalidInput)

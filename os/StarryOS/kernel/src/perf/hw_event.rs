@@ -49,22 +49,61 @@ use super::PerfReadValues;
 use super::control::PerfControl;
 #[cfg(target_arch = "aarch64")]
 use super::target::PerfCpuId;
+#[cfg(target_arch = "aarch64")]
+use super::task::PerTaskCounter;
 #[cfg(not(target_arch = "aarch64"))]
 use super::{access::AuthorizedPerfTarget, hw::ValidatedHwOpen};
 #[cfg(target_arch = "aarch64")]
 use super::{
     cpu_worker,
-    hw_allocation::free_counter,
+    hw_allocation::free_system,
     hw_owner::{Counter, SystemPmuDisable, SystemPmuEnable, SystemPmuRead, SystemPmuReset},
-    hw_sampling::{SamplingState, alloc_sampling_ring, device_mmap_per_task, ring_has_data},
+    hw_sampling::{
+        SamplingReadState, SamplingState, alloc_sampling_ring, device_mmap_per_task, ring_has_data,
+    },
     inheritance::PerfInheritanceFamily,
     output::{PerfOutputScope, PerfRingOutput},
     rdpmc::{RdpmcMapping, RdpmcSnapshot, mapping_result},
-    sampling::{SampleOutput, SampleSlot, SampleSlotConfig},
+    sampling::{
+        MAX_SAMPLE_READ_EVENTS, SampleOutput, SampleReadEntry, SampleReadValue, SampleSlot,
+        SampleSlotConfig,
+    },
     sampling_lifecycle::SampleRegistration,
 };
 #[cfg(target_arch = "aarch64")]
 use crate::sync::Mutex;
+
+#[cfg(target_arch = "aarch64")]
+fn system_sampling_snapshot(sampling: &SamplingReadState, now: u64) -> SampleReadValue {
+    let mut time_enabled = sampling.time_enabled_ns.load(Ordering::Acquire);
+    let mut time_running = sampling.time_running_ns.load(Ordering::Acquire);
+    let enabled_at = sampling.enabled_at_ns.load(Ordering::Acquire);
+    if enabled_at != 0 {
+        let elapsed = now.saturating_sub(enabled_at);
+        time_enabled = time_enabled.saturating_add(elapsed);
+        time_running = time_running.saturating_add(elapsed);
+    }
+    SampleReadValue {
+        value: sampling.sample_count.value(),
+        time_enabled,
+        time_running,
+        lost: sampling.loss.total(),
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn system_sample_read_irq(
+    context: *const (),
+    source_slot: usize,
+    now: u64,
+) -> SampleReadValue {
+    // SAFETY: the registry entry owns this independently allocated SamplingReadState
+    // through an Arc. Control only shares it, and the fields read by this IRQ
+    // callback use atomics or the owner-CPU SamplingCount lock.
+    let sampling = unsafe { &*context.cast::<SamplingReadState>() };
+    sampling.sample_count.update(source_slot);
+    system_sampling_snapshot(sampling, now)
+}
 
 /// Dynamically-assigned `perf_event_attr.type` for the ARM PMUv3 CPU PMU,
 /// exposed at `/sys/bus/event_source/devices/armv8_pmuv3_0/type`.
@@ -80,6 +119,10 @@ use crate::sync::Mutex;
 /// [`perf_event_open_hw`] then treats it exactly like `PERF_TYPE_RAW`: the low
 /// 16 bits of `config` are the ARM event number on a programmable counter.
 pub const ARMV8_PMUV3_PERF_TYPE: u32 = 8;
+/// Sysfs-discovered type for the Cortex-A55 PMU instance.
+pub const ARMV8_CORTEX_A55_PERF_TYPE: u32 = 9;
+/// Sysfs-discovered type for the Cortex-A76 PMU instance.
+pub const ARMV8_CORTEX_A76_PERF_TYPE: u32 = 10;
 
 /// A hardware-PMU perf event: one allocated counter plus the timing
 /// accumulators `perf stat` reads back through `read_format`, and — for sampling
@@ -95,6 +138,8 @@ struct HwPerfEventState {
     counter: Counter,
     /// CPU that owns a system-wide event; task-bound events use scheduler leases.
     system_owner: Option<PerfCpuId>,
+    /// Logical flexible system counter, when no permanent physical slot exists.
+    system_flexible: Option<Arc<super::system_flex::SystemFlexCounter>>,
     /// Context used to validate `PERF_EVENT_IOC_SET_OUTPUT`.
     output_scope: PerfOutputScope,
     /// Unique event id emitted in `PERF_SAMPLE_ID` / `PERF_SAMPLE_IDENTIFIER`
@@ -132,6 +177,7 @@ pub(super) struct SystemEventInit {
     pub(super) owner: PerfCpuId,
     pub(super) read_format: u64,
     pub(super) sampling: Option<SamplingState>,
+    pub(super) flexible: Option<Arc<super::system_flex::SystemFlexCounter>>,
     pub(super) enable_at_open: bool,
 }
 
@@ -145,6 +191,13 @@ pub(super) struct TaskEventInit {
 
 #[cfg(target_arch = "aarch64")]
 impl HwPerfEventState {
+    fn system_sample_read_entry(&self) -> SampleReadEntry {
+        SampleReadEntry::owned(
+            Arc::clone(&self.sampling.as_ref().expect("system sampling event").read),
+            system_sample_read_irq,
+            self.sample_id,
+        )
+    }
     fn system_rdpmc_snapshot(&self, offset: u64, observed_at: u64) -> RdpmcSnapshot {
         let (mut time_enabled, mut time_running) = (self.time_enabled, self.time_running);
         if let Some(since) = self.enabled_since {
@@ -159,15 +212,36 @@ impl HwPerfEventState {
         }
     }
 
+    fn flexible_snapshot(
+        &self,
+        flexible: &super::system_flex::SystemFlexCounter,
+    ) -> crate::StarryResult<RdpmcSnapshot> {
+        let (offset, time_enabled, time_running) = flexible.read()?;
+        let snapshot = RdpmcSnapshot {
+            offset,
+            time_enabled,
+            time_running,
+        };
+        // Direct reads remain disabled. Publish only the logical event's owner-
+        // consistent snapshot, never the placeholder physical counter index.
+        self.rdpmc.publish_inactive(snapshot);
+        Ok(snapshot)
+    }
+
     fn device_mmap_system_rdpmc(
         &self,
         len: usize,
     ) -> crate::StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+        if let Some(flexible) = &self.system_flexible {
+            let snapshot = self.flexible_snapshot(flexible)?;
+            return self.rdpmc.install(len, snapshot).map(mapping_result);
+        }
         let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         let hardware = cpu_worker::read_system(
             owner,
             SystemPmuRead {
                 counter: self.counter,
+                sampling: None,
             },
         )?;
         let active = self.enabled_since.is_some();
@@ -193,6 +267,11 @@ impl HwPerfEventState {
         if let Some(family) = &self.per_task {
             return family.close();
         }
+        if let Some(flexible) = &self.system_flexible {
+            flexible.close()?;
+            self.flexible_snapshot(flexible)?;
+            return Ok(());
+        }
         let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         let stopped = cpu_worker::disable_system(
             owner,
@@ -209,7 +288,7 @@ impl HwPerfEventState {
         }
         self.rdpmc
             .publish_inactive(self.system_rdpmc_snapshot(stopped.value, stopped.stopped_at));
-        free_counter(self.counter);
+        free_system(owner, self.counter);
         if let Some(sampling) = &mut self.sampling {
             sampling.poll_alive.store(false, Ordering::Release);
             sampling.notify.notify();
@@ -263,6 +342,11 @@ impl HwPerfEventState {
         if let Some(family) = &self.per_task {
             return family.enable();
         }
+        if let Some(flexible) = &self.system_flexible {
+            flexible.enable();
+            self.flexible_snapshot(flexible)?;
+            return Ok(());
+        }
         if self.enabled_since.is_some() {
             return Ok(());
         }
@@ -272,6 +356,12 @@ impl HwPerfEventState {
                 return Err(crate::StarryError::BadState);
             };
             let period = sampling.period;
+            let mut read_entries = [const { SampleReadEntry::EMPTY }; MAX_SAMPLE_READ_EVENTS];
+            read_entries[0] = self.system_sample_read_entry();
+            sampling.read.enabled_at_ns.store(
+                ax_runtime::hal::time::monotonic_time_nanos(),
+                Ordering::Release,
+            );
             let (ring, redirected) = sampling
                 .output
                 .effective()
@@ -280,12 +370,20 @@ impl HwPerfEventState {
             Some((
                 period,
                 SampleSlot::new(
-                    SampleOutput::new(ring, notify),
+                    SampleOutput::new(ring, notify, Arc::clone(&sampling.read.loss)),
                     SampleSlotConfig {
+                        count: Arc::clone(&sampling.read.sample_count),
                         period,
                         sample_type: sampling.sample_type,
+                        sample_id_all: sampling.sample_id_all,
+                        sample_user_lr: sampling.sample_user_lr,
                         id: self.sample_id,
+                        stream_id: self.sample_id,
+                        read_format: self.read_format,
+                        read_entries,
+                        read_len: 1,
                         observer: sampling.observer,
+                        owner_ids: None,
                         freq: sampling.freq,
                         target_freq: sampling.target_freq,
                         last_time: 0,
@@ -313,6 +411,11 @@ impl HwPerfEventState {
         if let Some(family) = &self.per_task {
             return family.disable();
         }
+        if let Some(flexible) = &self.system_flexible {
+            flexible.disable()?;
+            self.flexible_snapshot(flexible)?;
+            return Ok(());
+        }
         let Some(since) = self.enabled_since else {
             return Ok(());
         };
@@ -329,6 +432,20 @@ impl HwPerfEventState {
         let elapsed = stopped.stopped_at.saturating_sub(since);
         self.time_enabled = self.time_enabled.saturating_add(elapsed);
         self.time_running = self.time_running.saturating_add(elapsed);
+        if let Some(sampling) = &self.sampling {
+            let since = sampling.read.enabled_at_ns.swap(0, Ordering::AcqRel);
+            if since != 0 {
+                let elapsed = stopped.stopped_at.saturating_sub(since);
+                sampling
+                    .read
+                    .time_enabled_ns
+                    .fetch_add(elapsed, Ordering::AcqRel);
+                sampling
+                    .read
+                    .time_running_ns
+                    .fetch_add(elapsed, Ordering::AcqRel);
+            }
+        }
         self.rdpmc
             .publish_inactive(self.system_rdpmc_snapshot(stopped.value, stopped.stopped_at));
         Ok(())
@@ -337,6 +454,25 @@ impl HwPerfEventState {
     fn reset(&mut self) -> crate::StarryResult<()> {
         if let Some(family) = &self.per_task {
             return family.reset();
+        }
+        if let Some(flexible) = &self.system_flexible {
+            flexible.reset()?;
+            self.flexible_snapshot(flexible)?;
+            return Ok(());
+        }
+        if self.sampling.is_some() {
+            let was_enabled = self.enabled_since.is_some();
+            self.disable()?;
+            self.sampling
+                .as_ref()
+                .expect("sampling event")
+                .read
+                .sample_count
+                .reset_value();
+            if was_enabled {
+                self.enable()?;
+            }
+            return Ok(());
         }
         let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         cpu_worker::reset_system(
@@ -363,14 +499,51 @@ impl HwPerfEventState {
                 value,
                 time_enabled,
                 time_running,
+                lost: root.lost_samples(),
                 read_format: root.read_format(),
             });
         }
+        if let Some(flexible) = &self.system_flexible {
+            let snapshot = self.flexible_snapshot(flexible)?;
+            return Ok(PerfReadValues {
+                value: snapshot.offset,
+                time_enabled: snapshot.time_enabled,
+                time_running: snapshot.time_running,
+                lost: 0,
+                read_format: self.read_format,
+            });
+        }
         let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
+        if let Some(sampling) = &self.sampling {
+            let (value, observed_at) = if self.enabled_since.is_some() {
+                let snapshot = cpu_worker::read_system(
+                    owner,
+                    SystemPmuRead {
+                        counter: self.counter,
+                        sampling: Some(Arc::clone(&sampling.read.sample_count)),
+                    },
+                )?;
+                (snapshot.value, snapshot.observed_at)
+            } else {
+                (
+                    sampling.read.sample_count.value(),
+                    ax_runtime::hal::time::monotonic_time_nanos(),
+                )
+            };
+            let snapshot = system_sampling_snapshot(&sampling.read, observed_at);
+            return Ok(PerfReadValues {
+                value,
+                time_enabled: snapshot.time_enabled,
+                time_running: snapshot.time_running,
+                lost: snapshot.lost,
+                read_format: self.read_format,
+            });
+        }
         let snapshot = cpu_worker::read_system(
             owner,
             SystemPmuRead {
                 counter: self.counter,
+                sampling: None,
             },
         )?;
         let (mut time_enabled, mut time_running) = (self.time_enabled, self.time_running);
@@ -383,6 +556,10 @@ impl HwPerfEventState {
             value: snapshot.value,
             time_enabled,
             time_running,
+            lost: self
+                .sampling
+                .as_ref()
+                .map_or(0, |sampling| sampling.read.loss.total()),
             read_format: self.read_format,
         })
     }
@@ -400,11 +577,15 @@ impl HwPerfEventState {
         if let Some(family) = &self.per_task {
             return family.root().output_ring();
         }
-        self.sampling.as_ref()?.output.owned()
+        self.sampling.as_ref()?.output.effective_output()
     }
 
     fn redirect_output(&mut self, output: PerfRingOutput) -> crate::StarryResult<()> {
-        if self.output_ring().is_some() {
+        if self
+            .sampling
+            .as_ref()
+            .is_some_and(|sampling| sampling.output.owned().is_some())
+        {
             return Err(crate::StarryError::InvalidInput);
         }
         if let Some(family) = &self.per_task {
@@ -424,7 +605,11 @@ impl HwPerfEventState {
     }
 
     fn detach_output(&mut self) -> crate::StarryResult<()> {
-        if self.output_ring().is_some() {
+        if self
+            .sampling
+            .as_ref()
+            .is_some_and(|sampling| sampling.output.owned().is_some())
+        {
             return Err(crate::StarryError::InvalidInput);
         }
         if let Some(family) = &self.per_task {
@@ -478,6 +663,20 @@ impl HwPerfEventState {
         let page_anchor: Arc<dyn Any + Send + Sync> = pages;
         let output = PerfRingOutput::new(ring_vaddr, len, page_anchor);
         sampling.output.publish_owned(&output);
+        if let Some(registration) = self.sampling_registration {
+            let (ring, redirected) = sampling
+                .output
+                .effective()
+                .map_or((None, false), |(ring, redirected)| (Some(ring), redirected));
+            let notify = (!redirected).then(|| Arc::clone(&sampling.notify));
+            cpu_worker::replace_system_output(
+                self.system_owner.ok_or(crate::StarryError::BadState)?,
+                super::hw_owner::SystemPmuReplaceOutput {
+                    registration,
+                    output: SampleOutput::new(ring, notify, Arc::clone(&sampling.read.loss)),
+                },
+            )?;
+        }
         Ok((paddr, output.mapping_anchor()))
     }
 }
@@ -595,6 +794,7 @@ impl PerfControl for HwPerfControl {
                 value,
                 time_enabled,
                 time_running,
+                lost: family.root().lost_samples(),
                 read_format: family.root().read_format(),
             });
         }
@@ -657,6 +857,7 @@ impl HwPerfEvent {
             HwPerfEventState {
                 counter: init.counter,
                 system_owner: Some(init.owner),
+                system_flexible: init.flexible,
                 output_scope: PerfOutputScope::Cpu(init.owner.as_usize()),
                 sample_id: 0,
                 read_format: init.read_format,
@@ -677,6 +878,7 @@ impl HwPerfEvent {
             HwPerfEventState {
                 counter: init.counter,
                 system_owner: None,
+                system_flexible: None,
                 output_scope: PerfOutputScope::Task(init.scheduler_id),
                 sample_id: 0,
                 read_format: init.read_format,
@@ -773,6 +975,45 @@ impl PerfEventOps for HwPerfEvent {
 
     fn set_sample_id(&mut self, id: u64) {
         self.control.state.lock().set_sample_id(id);
+    }
+
+    fn link_group(&mut self, leader: &mut dyn PerfEventOps) -> crate::StarryResult<()> {
+        let Some(leader) = leader.as_any_mut().downcast_mut::<HwPerfEvent>() else {
+            return Err(crate::StarryError::OperationNotSupported);
+        };
+        let leader_family = leader.control.state.lock().per_task.clone();
+        let member_family = self.control.state.lock().per_task.clone();
+        match (leader_family, member_family) {
+            (Some(leader), Some(member)) => {
+                PerTaskCounter::link_group(&leader.root(), &member.root())
+            }
+            (None, None) => Err(crate::StarryError::OperationNotSupported),
+            _ => Err(crate::StarryError::InvalidInput),
+        }
+    }
+
+    fn group_backend(&mut self) -> super::PerfGroupBackend {
+        super::PerfGroupBackend::Hardware
+    }
+
+    fn supports_group_link(&mut self) -> bool {
+        let state = self.control.state.lock();
+        !(state.per_task.is_none() && state.sampling.is_some())
+    }
+
+    fn programmable_slots(&mut self) -> usize {
+        let state = self.control.state.lock();
+        if state.system_flexible.is_some()
+            || state
+                .per_task
+                .as_ref()
+                .is_some_and(|family| family.root().is_flexible())
+            || matches!(state.counter, Counter::Programmable(_))
+        {
+            1
+        } else {
+            0
+        }
     }
 
     fn device_mmap(

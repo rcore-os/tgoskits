@@ -1,6 +1,6 @@
 [package]
 name = "ax-task"
-version = "0.7.1"
+version = "0.8.2"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -10,11 +10,13 @@ description = "OS-independent IRQ-safe SMP task scheduling core"
 [features]
 default = []
 qperf-metrics = []
+fault-injection = []
 host-test = ["smp"]
 lockdep = ["dep:axpanic"]
 smp = []
 
 [dependencies]
+ax-sched.workspace = true
 axpanic = { workspace = true, optional = true }
 cfg-if.workspace = true
 lock_api.workspace = true

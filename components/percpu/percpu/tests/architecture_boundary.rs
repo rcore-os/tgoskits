@@ -159,7 +159,6 @@ fn safe_current_access_requires_a_verified_scoped_cpu_pin() {
     assert!(value_api.contains("pin: &CpuPin<'_>"));
     assert!(library.contains("pin.area().base() + offset"));
     assert!(!library.contains("platform::current_cpu_binding()"));
-    assert!(library.contains("checked_sub(crate::template_base())"));
     assert!(!library.contains("current_area_base_raw"));
 }
 
@@ -174,11 +173,15 @@ fn typed_values_are_constructed_only_in_final_runtime_areas() {
             .join("percpu_macros/src/lib.rs"),
     );
     let initialization = read(&percpu_dir.join("src/initialization.rs"));
+    let descriptor = read(&percpu_dir.join("src/descriptor.rs"));
     let someboot = read(&workspace_dir.join("platforms/someboot/src/smp/mod.rs"));
     let layout = read(&workspace_dir.join("platforms/someboot/src/smp/layout.rs"));
 
     assert!(macro_api.contains("MaybeUninit<#storage_type>"));
     assert!(macro_api.contains("PerCpuInitRegistration"));
+    // Offset validation belongs to initialization before layout publication;
+    // current access can reuse the immutable, already validated geometry.
+    assert!(descriptor.contains("self.storage_address.checked_sub(template_base)"));
     assert!(initialization.contains("validate_init_records"));
     assert!(initialization.contains("validate_prefixes"));
     assert!(initialization.contains("initialize_area"));

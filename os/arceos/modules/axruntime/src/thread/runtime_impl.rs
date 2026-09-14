@@ -114,11 +114,10 @@ impl_task_runtime! {
             if cpu != unsafe { Self::current_cpu_id() } {
                 return RuntimeStatus::InvalidArgument;
             }
-            #[cfg(feature = "paging")]
-            if let Err(error) = crate::kernel_mapping::retry_kernel_tlb_reclaims() {
-                error!("failed to retry kernel TLB quarantine before CPU offline: {error}");
-                return RuntimeStatus::Platform;
-            }
+            // Global TLB quarantine retains its own frames until acknowledged.
+            // Its retries belong to ordinary MM mutation/reclaim paths: taking
+            // kernel_aspace or waiting for remote shootdowns here would invert
+            // the IRQ-off scheduler registry transaction against another CPU.
             // No recoverable work may follow this publication: it installs the
             // safe root, clears the CPU-local active handle, and releases the
             // logical address-space lease in one direction.
@@ -405,6 +404,20 @@ impl_task_runtime! {
                 ax_task::runtime::cpu::finish_current_cpu_idle_polling()
             }
             .expect("idle handoff requires an initialized current CPU");
+            #[cfg(feature = "fault-injection")]
+            let injected_probe = super::creation_probe::publish_idle_probe_at_wait();
+            #[cfg(feature = "fault-injection")]
+            if super::creation_probe::idle_probe_pending() {
+                // The probe mailbox is persistent work, like Linux's
+                // need_resched condition. An already-consumed IPI is not a
+                // substitute for this final IRQ-off observation before WFI.
+                crate::clock_event_runtime::restart_current_scheduler_tick_after_idle(
+                    crate::clock_event_runtime::monotonic_now(),
+                );
+                ax_cpu::interrupt::enable_irqs();
+                drop(idle_exit_guard);
+                return;
+            }
             let mut now = crate::clock_event_runtime::monotonic_now();
             let mut needs_reschedule = ax_task::runtime::cpu::current_cpu_needs_resched()
                 .expect("idle handoff requires an initialized current CPU");
@@ -434,6 +447,9 @@ impl_task_runtime! {
                 return;
             }
 
+            #[cfg(feature = "fault-injection")]
+            assert!(!injected_probe || !super::creation_probe::idle_probe_pending(),
+                "idle must recheck pending owner probe before WFI");
             ax_cpu::interrupt::wait_for_irqs_disabled();
 
             // A non-scheduling interrupt may leave the CPU in the idle loop,

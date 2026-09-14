@@ -24,6 +24,8 @@
 
 extern crate alloc;
 #[cfg(test)]
+extern crate ax_runtime as _;
+#[cfg(test)]
 extern crate std;
 #[macro_use]
 extern crate log;
@@ -81,10 +83,14 @@ pub use model::{
     FdtContributionSpec, FdtNodeSpec,
 };
 pub use pci::{
-    ConfigOffset, PciBarAccess, PciBarIndex, PciBarRoute, PciBdf, PciClass, PciEndpointIdentity,
-    PciError, PciFunction, PciFunctionRequirement, PciFunctionSpec, PciHostKey, PciHostProvider,
+    ConfigOffset, EndpointIrqTransitionPermit, PciBarAccess, PciBarIndex, PciBarRoute, PciBdf,
+    PciCapabilityByteMode, PciCapabilityEffectAccess, PciCapabilityEffectRegion, PciCapabilityId,
+    PciCapabilityLayout, PciCapabilitySnapshot, PciCapabilitySpec, PciClass, PciCommandRevision,
+    PciCommandState, PciConfigEffectId, PciConfigReadEffect, PciConfigWriteEffect,
+    PciEndpointContext, PciEndpointIdentity, PciError, PciFunction, PciFunctionRequirement,
+    PciFunctionSpec, PciHostKey, PciHostProvider, PciIntxPin, PciIntxRequirement, PciIntxRouter,
     PciMemoryBar, PciResult, PciRootBinding, PciRootBindingKey, PciRootState, PciSegment,
-    ResolvedPciBar, ResolvedPciFunction, ResolvedPciTopology,
+    ResolvedPciBar, ResolvedPciFunction, ResolvedPciIntx, ResolvedPciTopology,
 };
 pub(crate) use pci::{PciTopologyBuilder, all_ones, read_bytes};
 pub use registration::{
@@ -108,7 +114,7 @@ pub use x86::{
     PciMemoryApertureDevice, PciRootLifecycle, X86AcpiPmTimerDevice, X86CmosDevice,
     X86InterruptDomainKey, X86InterruptDomainOps, X86IoApicDevice, X86IoApicDeviceOps,
     X86IoApicServiceKey, X86MonotonicNanos, X86PciConfigFrontend, X86PicDevice, X86PicDeviceOps,
-    X86PicServiceKey, X86PitDevice,
+    X86PicServiceKey, X86PitDevice, X86UnassignedMmioDevice,
 };
 #[cfg(target_arch = "x86_64")]
 pub use x86_vlapic::IoApicInterrupt;

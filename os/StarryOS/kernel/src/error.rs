@@ -200,6 +200,7 @@ impl StarryError {
             Self::Errno(errno) => *errno,
             Self::Vm(error) => vm_errno(*error),
             Self::Signal(SignalError::UserMemory(error)) => vm_errno(*error),
+            Self::Signal(SignalError::NoMemory) => Errno::ENOMEM,
             Self::Mm(error) => mm_errno(*error),
             Self::Vfs(error) => vfs_errno(*error),
             Self::Mapping(error) => mapping_errno(error),
@@ -333,6 +334,11 @@ fn task_errno(error: TaskError) -> Errno {
         | TaskError::ThreadBusy => Errno::EBUSY,
         TaskError::StaleThreadId => Errno::ESRCH,
         TaskError::TimerCapacity => Errno::ENOMEM,
+        TaskError::RuntimeFailure(status)
+            if status == ax_runtime::task::runtime::RuntimeStatus::NoMemory as u32 =>
+        {
+            Errno::ENOMEM
+        }
         TaskError::UnsafeContext => Errno::EPERM,
         TaskError::CpuOwnerMismatch { .. }
         | TaskError::CpuOwnerBorrowed

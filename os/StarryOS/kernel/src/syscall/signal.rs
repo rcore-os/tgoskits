@@ -352,10 +352,7 @@ pub fn sys_rt_sigqueueinfo(
     tgid: u32,
     signo: u32,
     sig: *const SignalInfo,
-    sigsetsize: usize,
 ) -> StarryResult<isize> {
-    check_sigset_size(sigsetsize)?;
-
     let tgid = TgidNumber::try_from(tgid)?;
     let sig = make_queue_signal_info(current, tgid, signo, sig)?;
     let process = current_pid_view().resolve_process(tgid)?;
@@ -369,10 +366,7 @@ pub fn sys_rt_tgsigqueueinfo(
     tid: u32,
     signo: u32,
     sig: *const SignalInfo,
-    sigsetsize: usize,
 ) -> StarryResult<isize> {
-    check_sigset_size(sigsetsize)?;
-
     let tgid = TgidNumber::try_from(tgid)?;
     let sig = make_queue_signal_info(current, tgid, signo, sig)?;
     let process = current_pid_view().resolve_process(tgid)?;

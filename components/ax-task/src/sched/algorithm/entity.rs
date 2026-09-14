@@ -66,14 +66,17 @@ pub(crate) struct DetachedActivePublication<'a> {
 static DETACHED_ACTIVE_PUBLISHING: u8 = 0;
 
 impl ActiveSchedulingState {
-    pub(crate) fn new(policy: SchedulePolicy, entity: SchedulingEntity) -> Self {
-        Self {
-            record: Box::new(ActiveSchedulingRecord {
+    pub(crate) fn new(
+        policy: SchedulePolicy,
+        entity: SchedulingEntity,
+    ) -> Result<Self, crate::thread::TaskError> {
+        Ok(Self {
+            record: crate::thread::allocation::try_box(ActiveSchedulingRecord {
                 effective_policy: policy,
                 base_entity: entity,
                 inherited_entity: None,
-            }),
-        }
+            })?,
+        })
     }
 
     pub(crate) fn policy(&self) -> SchedulePolicy {

@@ -57,6 +57,10 @@ impl EventFd {
 }
 
 impl FileLike for EventFd {
+    fn validate_write_access(&self) -> StarryResult {
+        Ok(())
+    }
+
     fn validate_write_len(&self, len: usize) -> StarryResult {
         if len != size_of::<u64>() {
             return Err(StarryError::InvalidInput);

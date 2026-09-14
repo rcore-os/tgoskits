@@ -1,42 +1,43 @@
 //! Checked thread lifecycle transitions.
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU16, Ordering};
 
-use crate::thread::TaskError;
+use crate::thread::{TaskError, ThreadState};
 
-const STATE_MASK: u8 = 0b111;
-const WAKE_PENDING: u8 = 1 << 3;
-const PARK_NOTIFIED: u8 = 1 << 4;
-const WAKE_STATE_PUBLISHED: u8 = WAKE_PENDING | PARK_NOTIFIED;
+#[path = "state/rt_lock.rs"]
+mod rt_lock;
 
-/// Observable lifecycle state of a thread.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ThreadState {
-    /// Allocated but not admitted to a run queue.
-    New     = 0,
-    /// Linux-style `TASK_RUNNING`, whether queued or executing on a CPU.
-    Running = 2,
-    /// Publishing a block operation while racing with wake-up.
-    Parking = 3,
-    /// Asleep on a wait object.
-    Blocked = 4,
-    /// A wake operation won the block/wake race.
-    Waking  = 5,
-    /// Execution has terminated and resources await reaping.
-    Exited  = 6,
+const STATE_MASK: u16 = 0b111;
+const WAKE_PENDING: u16 = 1 << 3;
+const PARK_NOTIFIED: u16 = 1 << 4;
+const WAKE_STATE_PUBLISHED: u16 = WAKE_PENDING | PARK_NOTIFIED;
+const RTLOCK_ACTIVE: u16 = 1 << 5;
+const SAVED_SHIFT: u32 = 8;
+
+const fn publish_ordinary_notification(observed: u16) -> u16 {
+    let bits = if observed & RTLOCK_ACTIVE != 0 {
+        WAKE_STATE_PUBLISHED << SAVED_SHIFT
+    } else {
+        WAKE_STATE_PUBLISHED
+    };
+    observed | bits
+}
+
+const fn overlay_rt_lock_state(observed: u16) -> u16 {
+    RTLOCK_ACTIVE | (observed << SAVED_SHIFT) | ThreadState::Running as u16
 }
 
 /// Single atomic publication for task lifecycle and wake/schedule races.
 #[derive(Debug)]
 pub(crate) struct ThreadLifecycle {
-    state: AtomicU8,
+    state: AtomicU16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WakePublication {
     state: ThreadState,
     already_pending: bool,
+    saved_state_only: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,6 +47,10 @@ pub(crate) enum ParkPublication {
 }
 
 impl WakePublication {
+    pub(crate) const fn saved_state_only(self) -> bool {
+        self.saved_state_only
+    }
+
     pub(crate) const fn state(self) -> ThreadState {
         self.state
     }
@@ -58,7 +63,7 @@ impl WakePublication {
 impl ThreadLifecycle {
     pub(crate) const fn new() -> Self {
         Self {
-            state: AtomicU8::new(ThreadState::New as u8),
+            state: AtomicU16::new(ThreadState::New as u16),
         }
     }
 
@@ -87,7 +92,7 @@ impl ThreadLifecycle {
             } else {
                 observed & !STATE_MASK
             };
-            let updated = retained | next as u8;
+            let updated = retained | next as u16;
             match self.state.compare_exchange_weak(
                 observed,
                 updated,
@@ -102,10 +107,24 @@ impl ThreadLifecycle {
 
     #[track_caller]
     pub(crate) fn publish_wake(&self) -> WakePublication {
-        let previous = self.state.fetch_or(WAKE_STATE_PUBLISHED, Ordering::AcqRel);
+        // One CAS owns the choice of active versus saved notification bits.
+        // A separate flag load followed by fetch_or would race RT-lock entry.
+        let previous = self
+            .state
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |observed| {
+                Some(publish_ordinary_notification(observed))
+            })
+            .expect("wake publication cannot be rejected");
+        let saved_state_only = previous & RTLOCK_ACTIVE != 0;
+        let notification = if saved_state_only {
+            previous >> SAVED_SHIFT
+        } else {
+            previous
+        };
         WakePublication {
             state: decode_state(previous),
-            already_pending: previous & WAKE_PENDING != 0,
+            already_pending: notification & WAKE_PENDING != 0,
+            saved_state_only,
         }
     }
 
@@ -151,7 +170,7 @@ impl ThreadLifecycle {
             };
             let mut updated = observed & !consumed;
             if pending && next == Some(ThreadState::Waking) && current == ThreadState::Blocked {
-                updated = (updated & !STATE_MASK) | ThreadState::Waking as u8;
+                updated = (updated & !STATE_MASK) | ThreadState::Waking as u16;
             }
             if updated == observed {
                 return (current, pending);
@@ -182,12 +201,12 @@ impl ThreadLifecycle {
             }
             let (updated, publication) = if observed & PARK_NOTIFIED != 0 {
                 (
-                    (observed & !(STATE_MASK | WAKE_STATE_PUBLISHED)) | ThreadState::Running as u8,
+                    (observed & !(STATE_MASK | WAKE_STATE_PUBLISHED)) | ThreadState::Running as u16,
                     ParkPublication::Notified,
                 )
             } else {
                 (
-                    (observed & !(STATE_MASK | WAKE_STATE_PUBLISHED)) | ThreadState::Blocked as u8,
+                    (observed & !(STATE_MASK | WAKE_STATE_PUBLISHED)) | ThreadState::Blocked as u16,
                     ParkPublication::Blocked,
                 )
             };
@@ -205,7 +224,7 @@ impl ThreadLifecycle {
 }
 
 #[track_caller]
-pub(crate) fn decode_state(packed: u8) -> ThreadState {
+pub(crate) fn decode_state(packed: u16) -> ThreadState {
     match packed & STATE_MASK {
         0 => ThreadState::New,
         2 => ThreadState::Running,

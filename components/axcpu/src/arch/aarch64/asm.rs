@@ -186,10 +186,12 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
 #[inline]
 pub fn update_mmu_cache(_vaddr: VirtAddr) {}
 
-/// Flushes the entire instruction cache.
+/// Invalidates instruction caches in the Inner Shareable domain.
+/// Modified bytes must first be cleaned to PoU; remote execution must cross a
+/// context-synchronization event (such as exception return) after publication.
 #[inline]
 pub fn flush_icache_all() {
-    unsafe { asm!("ic iallu; dsb sy; isb") };
+    unsafe { asm!("ic ialluis; dsb ish; isb") };
 }
 
 #[inline]

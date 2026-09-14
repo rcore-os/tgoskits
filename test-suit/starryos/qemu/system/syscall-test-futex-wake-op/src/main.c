@@ -10,6 +10,7 @@
 #include <stdatomic.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -25,6 +26,10 @@
 #define FUTEX_WAKE_OP 5
 #endif
 
+#ifndef FUTEX_CMP_REQUEUE
+#define FUTEX_CMP_REQUEUE 4
+#endif
+
 #ifndef FUTEX_PRIVATE_FLAG
 #define FUTEX_PRIVATE_FLAG 128
 #endif
@@ -32,6 +37,8 @@
 #ifndef FUTEX_CLOCK_REALTIME
 #define FUTEX_CLOCK_REALTIME 256
 #endif
+
+#define FUTEX_UNKNOWN_OPTION 0x40000000
 
 #ifndef FUTEX_OP_SET
 #define FUTEX_OP_SET 0
@@ -404,6 +411,140 @@ static void test_wake_op_validation(void)
           "invalid comparison is rejected before modifying uaddr2");
 }
 
+static void test_wake_validation(void)
+{
+    printf("\n--- FUTEX_WAKE validation ---\n");
+    const size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+    uint32_t *bad_page = mmap(NULL, page_size, PROT_NONE,
+                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(bad_page != MAP_FAILED, "mmap creates an inaccessible futex page");
+    if (bad_page == MAP_FAILED) {
+        return;
+    }
+
+    CHECK_ERR(raw_futex(&wake_word,
+                        FUTEX_WAIT | FUTEX_PRIVATE_FLAG | FUTEX_UNKNOWN_OPTION,
+                        0, NULL, NULL, 0),
+              ENOSYS, "unknown futex option bits return ENOSYS");
+    CHECK_ERR(raw_futex(bad_page, FUTEX_WAKE, (uint32_t)-1,
+                        NULL, NULL, 0),
+              EFAULT, "invalid uaddr takes priority over the wake limit");
+    CHECK_RET(raw_futex((uint32_t *)(uintptr_t)0x10000,
+                        FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 0, NULL, NULL, 0),
+              0, "private wake on an unmapped address is a no-op");
+    CHECK_RET(raw_futex((uint32_t *)(uintptr_t)0x10000,
+                        FUTEX_WAKE | FUTEX_PRIVATE_FLAG, (uint32_t)-1,
+                        NULL, NULL, 0),
+              0, "private wake treats -1 as a large wake limit");
+    CHECK_RET(raw_futex(&wake_word, FUTEX_WAKE, (uint32_t)-1,
+                        NULL, NULL, 0),
+              0, "shared wake treats -1 as a large wake limit");
+    CHECK(munmap(bad_page, page_size) == 0,
+          "munmap releases the inaccessible futex page");
+}
+
+static int swap_shared_mappings(uint32_t *lower, uint32_t *upper,
+                                size_t page_size)
+{
+    void *scratch = mmap(NULL, page_size, PROT_NONE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (scratch == MAP_FAILED) {
+        return -1;
+    }
+    if (mremap(lower, page_size, page_size,
+               MREMAP_MAYMOVE | MREMAP_FIXED, scratch) != scratch) {
+        return -1;
+    }
+    if (mremap(upper, page_size, page_size,
+               MREMAP_MAYMOVE | MREMAP_FIXED, lower) != lower) {
+        return -1;
+    }
+    if (mremap(scratch, page_size, page_size,
+               MREMAP_MAYMOVE | MREMAP_FIXED, upper) != upper) {
+        return -1;
+    }
+    return 0;
+}
+
+static int run_shared_double_queue_ops(uint32_t *lower, uint32_t *upper)
+{
+    const uint32_t encoded_op =
+        FUTEX_OP_ENCODE(FUTEX_OP_SET, 0, FUTEX_OP_CMP_EQ, 0);
+
+    for (int iteration = 0; iteration < 256; iteration++) {
+        if (raw_futex(lower, FUTEX_WAKE_OP, 0, futex_count_arg(0),
+                      upper, encoded_op) != 0) {
+            return -1;
+        }
+        if (raw_futex(lower, FUTEX_CMP_REQUEUE, 0, futex_count_arg(0),
+                      upper, 0) != 0) {
+            return -1;
+        }
+        sched_yield();
+    }
+    return 0;
+}
+
+static void test_shared_reverse_mapping_lock_order(void)
+{
+    printf("\n--- shared futex lock order across reverse mappings ---\n");
+    const size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+    uint32_t *first = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+                           MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    uint32_t *second = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+                            MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    uint32_t *barrier = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+                             MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    CHECK(first != MAP_FAILED && second != MAP_FAILED && barrier != MAP_FAILED,
+          "create shared futex mappings and process barrier");
+    if (first == MAP_FAILED || second == MAP_FAILED || barrier == MAP_FAILED) {
+        return;
+    }
+
+    uint32_t *lower = (uintptr_t)first < (uintptr_t)second ? first : second;
+    uint32_t *upper = lower == first ? second : first;
+    *lower = 0;
+    *upper = 0;
+    barrier[0] = 0;
+    barrier[1] = 0;
+
+    pid_t pid = fork();
+    CHECK(pid >= 0, "fork reverse-mapping futex worker succeeds");
+    if (pid == 0) {
+        alarm(10);
+        if (swap_shared_mappings(lower, upper, page_size) != 0) {
+            __sync_lock_test_and_set(&barrier[0], UINT32_MAX);
+            _exit(1);
+        }
+        __sync_lock_test_and_set(&barrier[0], 1);
+        while (__atomic_load_n(&barrier[1], __ATOMIC_ACQUIRE) == 0) {
+            sched_yield();
+        }
+        _exit(run_shared_double_queue_ops(lower, upper) == 0 ? 0 : 1);
+    }
+    if (pid < 0) {
+        return;
+    }
+
+    alarm(10);
+    while (__atomic_load_n(&barrier[0], __ATOMIC_ACQUIRE) == 0) {
+        sched_yield();
+    }
+    CHECK(__atomic_load_n(&barrier[0], __ATOMIC_ACQUIRE) == 1,
+          "child creates reverse shared mappings");
+    __sync_lock_test_and_set(&barrier[1], 1);
+    CHECK(run_shared_double_queue_ops(lower, upper) == 0,
+          "parent completes double-queue operations");
+
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "child completes operations in reverse mapping order");
+    alarm(0);
+    CHECK(munmap(first, page_size) == 0, "munmap first shared futex page");
+    CHECK(munmap(second, page_size) == 0, "munmap second shared futex page");
+    CHECK(munmap(barrier, page_size) == 0, "munmap shared futex barrier");
+}
+
 static void test_wake_op_fault_retry_and_transaction(void)
 {
     printf("\n--- FUTEX_WAKE_OP nofault retry and failure transaction ---\n");
@@ -466,6 +607,8 @@ int main(void)
     test_wake_op_comparison_controls_second_wake();
     test_wake_op_comparisons();
     test_wake_op_validation();
+    test_wake_validation();
+    test_shared_reverse_mapping_lock_order();
     test_wake_op_fault_retry_and_transaction();
 
     TEST_DONE();

@@ -32,6 +32,10 @@ struct RuntimeTls {
 }
 
 pub(super) fn allocate_runtime_stack(request: StackRequest) -> Result<StackHandle, RuntimeStatus> {
+    #[cfg(feature = "fault-injection")]
+    if super::creation_probe::record(super::creation_probe::CreationEvent::Stack) {
+        return Err(RuntimeStatus::NoMemory);
+    }
     if request.usable_size == 0 || request.alignment == 0 || !request.alignment.is_power_of_two() {
         return Err(RuntimeStatus::InvalidArgument);
     }
@@ -53,17 +57,23 @@ pub(super) fn allocate_runtime_stack(request: StackRequest) -> Result<StackHandl
 fn allocate_heap_stack(request: StackRequest) -> Result<StackHandle, RuntimeStatus> {
     let layout = Layout::from_size_align(request.usable_size, request.alignment)
         .map_err(|_| RuntimeStatus::InvalidArgument)?;
+    let stack = super::allocation::try_box(core::mem::MaybeUninit::<RuntimeStack>::uninit())?;
+    super::allocation::allocation_point()?;
     let pointer = ax_alloc::global_allocator()
         .alloc(layout)
         .map_err(map_alloc_status)?;
     let base = pointer.as_ptr() as usize;
-    let usable_top = base
-        .checked_add(request.usable_size)
-        .ok_or(RuntimeStatus::InvalidArgument)?;
-    let stack = Box::new(RuntimeStack {
-        usable_top,
-        backing: StackBacking::Heap { pointer, layout },
-    });
+    let Some(usable_top) = base.checked_add(request.usable_size) else {
+        ax_alloc::global_allocator().dealloc(pointer, layout);
+        return Err(RuntimeStatus::InvalidArgument);
+    };
+    let stack = Box::write(
+        stack,
+        RuntimeStack {
+            usable_top,
+            backing: StackBacking::Heap { pointer, layout },
+        },
+    );
     // SAFETY: Box::into_raw yields a non-null uniquely owned RuntimeStack that
     // stays live until deallocate_runtime_stack consumes this exact handle.
     Ok(unsafe { StackHandle::from_raw(Box::into_raw(stack).expose_provenance()) })
@@ -94,15 +104,19 @@ fn allocate_virtual_stack(request: StackRequest) -> Result<StackHandle, RuntimeS
     // This is an ordinary resource-preparation path. A previous failed
     // shootdown may be retried here, before reserving another virtual range.
     ax_mm::retry_kernel_virtual_quarantines(8);
+    let stack = super::allocation::try_box(core::mem::MaybeUninit::<RuntimeStack>::uninit())?;
     let allocation =
         ax_mm::KernelVirtualAllocation::allocate(layout).map_err(|error| match error {
             ax_mm::MmError::NoMemory => RuntimeStatus::NoMemory,
             _ => RuntimeStatus::Platform,
         })?;
-    let stack = Box::new(RuntimeStack {
-        usable_top: allocation.usable_range().end.as_usize(),
-        backing: StackBacking::VirtualPages(allocation),
-    });
+    let stack = Box::write(
+        stack,
+        RuntimeStack {
+            usable_top: allocation.usable_range().end.as_usize(),
+            backing: StackBacking::VirtualPages(allocation),
+        },
+    );
     // SAFETY: the box uniquely owns the reservation and remains live until
     // the scheduler consumes this handle after the context has stopped.
     Ok(unsafe { StackHandle::from_raw(Box::into_raw(stack).expose_provenance()) })
@@ -132,16 +146,27 @@ pub(super) fn deallocate_runtime_stack(handle: StackHandle) -> RuntimeStatus {
             }
         }
     }
+    #[cfg(feature = "fault-injection")]
+    super::creation_probe::record(super::creation_probe::CreationEvent::DropStack);
     RuntimeStatus::Success
 }
 
 pub(super) fn allocate_runtime_tls() -> RuntimeHandleResult {
+    #[cfg(feature = "fault-injection")]
+    if super::creation_probe::record(super::creation_probe::CreationEvent::Tls) {
+        return RuntimeHandleResult::failure(RuntimeStatus::NoMemory);
+    }
     #[cfg(kernel_tls)]
     {
-        let tls = Box::new(RuntimeTls {
-            area: ax_hal::tls::TlsArea::alloc(),
-        });
-        RuntimeHandleResult::success(Box::into_raw(tls).expose_provenance())
+        let allocated = (|| {
+            super::allocation::allocation_point()?;
+            let area = ax_hal::tls::TlsArea::try_alloc().ok_or(RuntimeStatus::NoMemory)?;
+            super::allocation::try_box(RuntimeTls { area })
+        })();
+        match allocated {
+            Ok(tls) => RuntimeHandleResult::success(Box::into_raw(tls).expose_provenance()),
+            Err(status) => RuntimeHandleResult::failure(status),
+        }
     }
     #[cfg(not(kernel_tls))]
     {
@@ -150,6 +175,10 @@ pub(super) fn allocate_runtime_tls() -> RuntimeHandleResult {
 }
 
 pub(super) fn deallocate_runtime_tls(handle: TlsHandle) -> RuntimeStatus {
+    #[cfg(feature = "fault-injection")]
+    if !handle.is_none() {
+        super::creation_probe::record(super::creation_probe::CreationEvent::DropTls);
+    }
     if handle.is_none() {
         return RuntimeStatus::Success;
     }

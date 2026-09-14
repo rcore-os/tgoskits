@@ -3,24 +3,39 @@
 use super::*;
 
 impl TaskSystem {
-    /// Commits New -> Running and owner-local admission under one task lock.
-    pub(in crate::sched::system::task_system) fn start_owner_thread(
+    /// Activates TASK_NEW after publication, with the local rq fast path intact.
+    pub(crate) fn activate_staged_thread(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
-        core: Arc<ThreadCore>,
-    ) -> Result<(), TaskError> {
-        self.ensure_owner_cpu_online(&cpu)?;
+        handle: &ThreadHandle,
+    ) {
+        let mut state = self.state.lock();
+        let record = state
+            .thread_record_mut(handle.id())
+            .expect("staged task remains registered");
+        let core = Arc::clone(&record.core);
         let mut guard = core.sched().lock();
         let (sched, irq_owner) = guard.split_irq_owner();
-        if sched.lifecycle.state() != ThreadState::New {
-            return Err(TaskError::NotReady);
+        let reserved = record
+            .activation
+            .as_ref()
+            .expect("reserved first activation");
+        assert_eq!(sched.lifecycle.state(), ThreadState::New);
+        assert!(sched.affinity.affinity.contains(reserved.target()));
+        let mut delivery = record
+            .activation
+            .take()
+            .expect("validated first activation");
+        sched
+            .transition(&core, ThreadState::Running)
+            .expect("first activation");
+        if delivery.target() != cpu.owner() {
+            sched.placement.begin_remote_wakeup(delivery.target());
+            core.set_wake_cpu_hint(delivery.target());
+            delivery.refresh_placement_demand();
+            delivery.commit();
+            return;
         }
-        if !sched.affinity.affinity.contains(cpu.owner()) {
-            return Err(TaskError::InvalidCpu(cpu.owner().as_u32()));
-        }
-        sched.transition(&core, ThreadState::Running)?;
-        // All fallible admission checks precede the lifecycle publication.
-        // The task lock keeps affinity and lifecycle fixed through enqueue.
         let commit = self
             .enqueue_owner_thread_locked(
                 cpu.as_mut(),
@@ -30,22 +45,27 @@ impl TaskSystem {
                 EnqueueReason::Wake,
             )
             .unwrap_or_else(|_| {
-                task_runtime::fatal_invariant(0x5354_0002, core.id().as_u64() as usize)
+                task_runtime::fatal_invariant(0x5354_0003, core.id().as_u64() as usize)
             });
         let completed = Self::complete_affinity_if_satisfied_locked(&core, sched);
         drop(guard);
+        drop(state);
+        drop(delivery);
         if completed {
             core.notify_affinity_waiters();
         }
         self.finish_owner_enqueue(
-            cpu,
+            cpu.as_mut(),
             EnqueueReason::Wake,
             commit.reschedule,
             commit.scheduler_deadline_refresh_required,
             Some(commit.effective_policy),
             commit.push_class,
         );
-        Ok(())
+        self.program_local_timer(cpu, SchedulerDeadlineDerivationSource::Placement)
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x5354_0001, core.id().as_u64() as usize)
+            });
     }
 
     pub(in crate::sched::system::task_system) fn enqueue_owner_thread(

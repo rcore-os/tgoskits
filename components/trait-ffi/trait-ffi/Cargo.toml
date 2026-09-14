@@ -1,6 +1,6 @@
 [package]
 name = "trait-ffi"
-version = "0.3.0"
+version = "0.3.1"
 edition.workspace = true
 authors = ["周睿 <zrufo747@outlook.com>"]
 license = "MIT"

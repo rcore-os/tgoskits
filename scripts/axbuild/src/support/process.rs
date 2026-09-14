@@ -83,7 +83,7 @@ pub(crate) fn find_host_binary_candidates(candidates: &[&str]) -> Result<std::pa
         })
 }
 
-fn find_optional_host_binary(name: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn find_optional_host_binary(name: &str) -> Option<std::path::PathBuf> {
     std::env::var_os("PATH").and_then(|path_var| {
         std::env::split_paths(&path_var)
             .map(|dir| dir.join(name))

@@ -16,9 +16,9 @@ impl TaskSystem {
             Err(error) => return Err(error),
         };
         let completed = handle.core.complete_sleep_timer(event.token().generation());
-        let park_matches = event
-            .kind()
-            .is_some_and(|kind| kind.park_generation() == Some(handle.core.park_generation()));
+        let park_matches = event.kind().is_some_and(|kind| {
+            kind.park_generation() == Some(handle.core.ordinary_park_generation())
+        });
         if completed && park_matches {
             let _wake_result = handle.wake_handle().wake();
         }

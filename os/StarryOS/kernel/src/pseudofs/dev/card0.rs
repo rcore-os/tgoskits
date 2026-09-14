@@ -247,6 +247,10 @@ struct DmaBufGem {
 }
 
 impl FileLike for DmaBufGem {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         "anon_inode:dmabuf".into()
     }

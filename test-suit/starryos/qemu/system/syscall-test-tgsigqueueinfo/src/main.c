@@ -85,6 +85,15 @@ int main(void)
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("=== test-tgsigqueueinfo: rt_tgsigqueueinfo targets one thread ===\n");
 
+    siginfo_t unused_info;
+    fill_siginfo(&unused_info, 0, 0);
+    errno = 0;
+    /* The fifth register is not part of Linux's four-argument ABI. */
+    long probe_rc = syscall(SYS_rt_tgsigqueueinfo, (long)getpid(),
+                 (long)syscall(SYS_gettid), 0L, &unused_info, 0L);
+    CHECK("unused fifth argument is ignored", probe_rc == 0,
+          "got=%ld errno=%d (%s)", probe_rc, errno, strerror(errno));
+
     int signo = SIGRTMIN + 2;
     int value = 0x5447;
     CHECK("create ready pipe", pipe(ready_pipe) == 0, "errno=%d (%s)", errno,

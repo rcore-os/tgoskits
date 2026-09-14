@@ -561,11 +561,9 @@ fn ensure_timer_worker() {
     {
         return;
     }
-    if let Err(error) = super::try_spawn_kernel_thread_with_stack(
-        timer_worker,
-        String::from("starry-timer"),
-        crate::config::KERNEL_STACK_SIZE,
-    ) {
+    if let Err(error) =
+        super::kernel_thread_builder(String::from("starry-timer")).spawn(timer_worker)
+    {
         TIMER_WORKER_STARTED.store(false, Ordering::Release);
         panic!("failed to start Starry timer worker: {error}");
     }

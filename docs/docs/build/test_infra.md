@@ -168,9 +168,9 @@ Rust pipeline（`test/build/rust.rs`）交叉编译用例 `rust/` 目录下的 C
 
 1. `rust_musl_target(arch)` 把架构名映射到 musl target triple（如 `aarch64` → `aarch64-unknown-linux-musl`）；
 2. `rustup target add <triple>` 确保目标已安装；
-3. 解压 rootfs 获取 Alpine 交叉 linker（部分架构如 loongarch64 的 ELF 格式 host linker 无法处理）；
+3. 解压 rootfs 获取目标 sysroot，由 `write_cross_bin_wrappers()` 生成交叉工具包装器；
 4. 可选执行 `prebuild.sh`（在 Alpine staging root 内通过 qemu-user 运行，用于 `apk add` 原生依赖）；
-5. 设置 `CARGO_TARGET_<TRIPLE>_LINKER` 指向 staging root 中的 `ld`，执行 `cargo build --release`；
+5. 设置 `CARGO_TARGET_<TRIPLE>_LINKER` 指向 `cross-bin/ld`，执行 `cargo build --release`；
 6. 产物复制到 overlay 的 `/usr/bin/`。
 
 二进制名取自 `Cargo.toml` 的 `[[bin]]` name，缺失时回退到 package 名。
@@ -178,6 +178,19 @@ Rust pipeline（`test/build/rust.rs`）交叉编译用例 `rust/` 目录下的 C
 ### 6.2 Rootfs 解包完整性校验
 
 rootfs 解包（`debugfs rdump`）的权限决策：Linux 上按有效 uid、完整 uid/gid 映射与 `CAP_CHOWN` 决定是否进入 fakeroot，需要 fakeroot 但不可用时在启动 debugfs 前失败。非 Linux Unix 宿主（如 macOS）没有可用的 fakeroot（常见打包是 shell shim，会拆坏 `-R` 引号参数并假成功退出 0），因此直接执行 debugfs，并在解包后用 `debugfs -R "ls -p /"` 校验镜像顶层条目在暂存目录中全部存在，不得只信任退出码。`ls -p` 行格式为 `/inode/mode/uid/gid/name/`，文件条目末尾多一段 `/<size>/`，名字固定取第 5 段。
+
+### 6.3 宿主交叉工具
+
+`test/build/toolchain.rs` 的 `write_cross_bin_wrappers()` 统一为 C、分组 C 和 Rust 流水线生成普通名称及 `<gnu_tool_prefix>-<tool>` 包装器。架构信息继续来自 `CrossCompileSpec`，工具查找复用 `support::process`。
+
+| 宿主条件 | 工具执行方式 |
+| --- | --- |
+| 找到目标架构的 qemu-user | 保持现有路径，通过 qemu-user 执行 staging root 内的 binutils |
+| 没有 qemu-user | 查找宿主原生 `<gnu_tool_prefix>-<tool>`，包装器直接执行该工具；缺少工具立即失败 |
+
+两条路径均保留 staging root 作为目标 sysroot。宿主 binutils 版本必须能够处理该 sysroot 的 ELF 特性；例如旧工具不识别 `.relr.dyn` 时，链接错误会向外传播，需要升级交叉工具链。`rootfs::runtime::sync_runtime_dependencies()` 按 `readelf`、`llvm-readelf`、`<gnu_tool_prefix>-readelf` 的顺序选择宿主 ELF 检查工具，继续使用已有的递归依赖同步逻辑。
+
+原生 binutils 只能替代构建工具，不能执行客户机脚本。存在 `prebuild.sh` 的用例仍通过 `prepare_guest_prebuild_env()` 要求 qemu-user；缺失时在资产准备阶段报错，不跳过脚本或删去依赖其产物的子用例。因此不带 prebuild 的 C、分组 C 和 Rust 资产可以使用原生工具，当前 `qemu/system` 等带共享 prebuild 的套件仍需要 qemu-user。这项支持不代表 macOS 上完整 Starry 套件已经可用；需要完整套件时使用提供 qemu-user 的 Linux 环境。
 
 ## 7. 资产准备与 rootfs 缓存
 

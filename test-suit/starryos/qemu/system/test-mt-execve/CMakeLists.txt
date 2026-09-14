@@ -9,6 +9,4 @@ target_include_directories(test-mt-execve PRIVATE src)
 target_compile_options(test-mt-execve PRIVATE -Wall -Wextra -pthread)
 target_link_options(test-mt-execve PRIVATE -pthread)
 
-# Build this stricter probe, but keep it out of the grouped CI pass condition
-# until NULL argv/envp execve behavior is complete.
-install(TARGETS test-mt-execve RUNTIME DESTINATION usr/bin/starry-known-fail)
+install(TARGETS test-mt-execve RUNTIME DESTINATION usr/bin/starry-test-suit)

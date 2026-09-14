@@ -242,6 +242,24 @@ impl TaskContext {
         self.task_local.task_anchor()
     }
 
+    /// Saves the running parent's hardware FP image into an unpublished child.
+    ///
+    /// The runtime must pin the parent CPU while calling this method. Kernel
+    /// code uses the soft-float ABI; eager task switching keeps the parent's
+    /// user register image live across kernel entry and preemption.
+    #[cfg(all(feature = "fp-simd", feature = "uspace"))]
+    pub fn clone_user_fp_state_into(&self, child: &mut Self) {
+        assert!(
+            self.task_anchor().is_some(),
+            "FP clone parent must be bound"
+        );
+        assert!(
+            child.task_anchor().is_none(),
+            "FP clone child must be unpublished"
+        );
+        child.fpu.save();
+    }
+
     /// Completes FPU work before current-context publication.
     pub fn prepare_switch_to(&mut self, _next_ctx: &Self) {
         #[cfg(feature = "fp-simd")]

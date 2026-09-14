@@ -35,12 +35,27 @@ pub enum PciError {
         /// Diagnostic reason.
         detail: &'static str,
     },
+    /// A function's command snapshot revision cannot advance without wrapping.
+    #[error("PCI command snapshot revision exhausted")]
+    CommandRevisionExhausted,
     /// A platform-owned config byte conflicts with core-owned state.
     #[error("invalid PCI config patch at {offset:#x}: {detail}")]
     InvalidConfigPatch {
         /// Conventional config byte offset.
         offset: u16,
         /// Rejected invariant.
+        detail: &'static str,
+    },
+    /// A capability declaration or layout violates conventional config rules.
+    #[error("invalid PCI capability: {detail}")]
+    InvalidCapability {
+        /// Rejected declaration or layout invariant.
+        detail: alloc::string::String,
+    },
+    /// An endpoint-owned config effect was accessed without an active binding.
+    #[error("PCI config effect is unavailable: {detail}")]
+    ConfigEffectUnavailable {
+        /// Diagnostic reason.
         detail: &'static str,
     },
     /// The root memory aperture is malformed.
@@ -65,6 +80,18 @@ pub enum PciError {
     #[error("PCI function {function} already has an active runtime binding")]
     FunctionAlreadyBound {
         /// Already-bound graph function identity.
+        function: String,
+    },
+    /// A function is between endpoint activation and root binding publication.
+    #[error("PCI function {function} endpoint binding initialization is in progress")]
+    BindingInProgress {
+        /// Function whose binding is being initialized.
+        function: String,
+    },
+    /// A binding reservation no longer owns a pending root publication.
+    #[error("PCI function {function} binding reservation is no longer active")]
+    BindingReservationExpired {
+        /// Function whose reservation expired.
         function: String,
     },
     /// Two functions request the same BDF.
@@ -129,5 +156,13 @@ pub enum PciError {
         bar: PciBarIndex,
         /// Required BAR size.
         size: u64,
+    },
+    /// An endpoint requested INTx without an architecture-owned router.
+    #[error("PCI INTx route for {function} is unavailable: {detail}")]
+    IntxRouteUnavailable {
+        /// Stable endpoint identity.
+        function: String,
+        /// Diagnostic reason.
+        detail: String,
     },
 }

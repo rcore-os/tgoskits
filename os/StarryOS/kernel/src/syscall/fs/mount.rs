@@ -236,6 +236,10 @@ impl MountContext {
 }
 
 impl FileLike for MountContext {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         "anon_inode:[fscontext]".into()
     }

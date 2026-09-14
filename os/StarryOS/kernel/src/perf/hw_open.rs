@@ -9,13 +9,18 @@ use kbpf_basic::linux_bpf::{perf_event_attr, perf_hw_id, perf_type_id};
 use super::{
     access::AuthorizedPerfTarget,
     cpu_worker,
-    hw::{ARMV8_PMUV3_PERF_TYPE, ValidatedHwCounter, ValidatedHwOpen},
+    hw::{
+        ARMV8_CORTEX_A55_PERF_TYPE, ARMV8_CORTEX_A76_PERF_TYPE, ARMV8_PMUV3_PERF_TYPE,
+        ValidatedHwCounter, ValidatedHwOpen,
+    },
     hw_allocation::{
-        alloc_preferred_cycle, alloc_programmable, free_counter, set_programmable_counter_count,
+        alloc_cycle_counter, alloc_system, alloc_system_cycle, free_counter, free_system,
     },
     hw_event::{HwPerfEvent, SystemEventInit, TaskEventInit},
     hw_owner::SystemPmuConfigure,
-    hw_sampling::{SamplingState, resolve_sampling, start_sampling_notify_worker},
+    hw_sampling::{
+        SamplingReadState, SamplingState, resolve_sampling, start_sampling_notify_worker,
+    },
     inheritance::PerfInheritanceFamily,
     output::PerfOutputRoute,
     sampling,
@@ -31,10 +36,16 @@ const PERF_SAMPLE_IP: u64 = 1;
 pub(super) fn validate_perf_event_open_hw(
     attr: &perf_event_attr,
     target_kind: PerfTargetKind,
+    cpu_constraint: Option<PerfCpuId>,
 ) -> crate::StarryResult<ValidatedHwOpen> {
-    let Some(info) = ax_hal::pmu::info() else {
-        return Err(crate::StarryError::Unsupported);
+    let required_cluster = match attr.type_ {
+        ARMV8_CORTEX_A55_PERF_TYPE => Some(crate::perf::event_map::ClusterId::CortexA55),
+        ARMV8_CORTEX_A76_PERF_TYPE => Some(crate::perf::event_map::ClusterId::CortexA76),
+        _ => None,
     };
+    let target_cpu = cpu_constraint.map(PerfCpuId::as_usize);
+    let num_counters = super::percpu::counter_count_for_target(target_cpu, required_cluster)
+        .ok_or(crate::StarryError::NotFound)?;
 
     // SAFETY: both union arms are `u64` in the copied `repr(C)` attribute.
     let raw = unsafe { attr.__bindgen_anon_1.sample_period };
@@ -45,40 +56,62 @@ pub(super) fn validate_perf_event_open_hw(
         PerfTargetKind::Cpu => "sampling",
     };
     validate_sampling(attr, raw, is_freq, kind)?;
+    if attr.inherit() != 0
+        && attr.sample_type & sampling::PERF_SAMPLE_READ != 0
+        && attr.sample_type & sampling::PERF_SAMPLE_TID == 0
+    {
+        return Err(crate::StarryError::InvalidInput);
+    }
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 
-    let event = if attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
-        crate::perf::event_map::hardware_event(attr.config as u32)
-            .ok_or(crate::StarryError::Unsupported)?
-    } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32
-        || attr.type_ == ARMV8_PMUV3_PERF_TYPE
-    {
+    let is_generic_hw = attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32;
+    let is_hw_cache = attr.type_ == perf_type_id::PERF_TYPE_HW_CACHE as u32;
+    let is_named_pmu = matches!(
+        attr.type_,
+        ARMV8_PMUV3_PERF_TYPE | ARMV8_CORTEX_A55_PERF_TYPE | ARMV8_CORTEX_A76_PERF_TYPE
+    );
+    let event = if is_generic_hw {
+        super::percpu::generic_event_for_target(target_cpu, required_cluster, attr.config as u32)
+            .ok_or(crate::StarryError::NotFound)?
+    } else if is_hw_cache {
+        crate::perf::event_map::hw_cache_to_arm(attr.config).map_err(|error| match error {
+            crate::perf::event_map::CacheEventError::Invalid => crate::StarryError::InvalidInput,
+            crate::perf::event_map::CacheEventError::Unsupported => crate::StarryError::NotFound,
+        })?
+    } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32 || is_named_pmu {
         (attr.config & 0xFFFF) as u16
     } else {
         return Err(crate::StarryError::Unsupported);
     };
 
-    let cycle_event =
-        crate::perf::event_map::hardware_event(perf_hw_id::PERF_COUNT_HW_CPU_CYCLES as u32)
-            .ok_or(crate::StarryError::Unsupported)?;
-    let prefer_cycle = !is_sampling && event == cycle_event;
+    // RAW must satisfy the same capability contract as Pmu::configure before
+    // publication. Implementation-defined encodings remain accepted; only
+    // explicitly absent common events are rejected, including on task targets.
+    if !super::percpu::event_supported_for_target(target_cpu, required_cluster, event) {
+        return Err(crate::StarryError::NotFound);
+    }
+    let prefer_cycle = !is_sampling
+        && (is_generic_hw || is_named_pmu)
+        && super::percpu::generic_event_for_target(
+            target_cpu,
+            required_cluster,
+            perf_hw_id::PERF_COUNT_HW_CPU_CYCLES as u32,
+        ) == Some(event);
     let counter = match (target_kind, prefer_cycle) {
         (PerfTargetKind::Cpu, true) => ValidatedHwCounter::SystemPreferredCycle(event),
         (PerfTargetKind::Cpu, false) => ValidatedHwCounter::SystemProgrammable(event),
         (PerfTargetKind::Task, true) => ValidatedHwCounter::TaskPreferredCycle(event),
-        (PerfTargetKind::Task, false) if crate::perf::event_map::event_supported(event) => {
-            ValidatedHwCounter::TaskProgrammable(event)
-        }
-        (PerfTargetKind::Task, false) => return Err(crate::StarryError::Unsupported),
+        (PerfTargetKind::Task, false) => ValidatedHwCounter::TaskProgrammable(event),
     };
 
     Ok(ValidatedHwOpen {
-        num_counters: info.num_counters,
+        num_counters,
         counter,
         is_sampling,
         is_freq,
         sample_period,
         target_freq,
+        required_cluster,
     })
 }
 
@@ -93,8 +126,6 @@ pub(super) fn perf_event_open_hw(
     target: AuthorizedPerfTarget,
     validated: ValidatedHwOpen,
 ) -> crate::StarryResult<HwPerfEvent> {
-    set_programmable_counter_count(validated.num_counters);
-
     let owner_cpu = match target {
         AuthorizedPerfTarget::Task { task, cpu } => {
             return perf_event_open_hw_per_task(attr, task, cpu, validated);
@@ -104,31 +135,50 @@ pub(super) fn perf_event_open_hw(
     let exclude_user = attr.exclude_user() != 0;
     let exclude_kernel = attr.exclude_kernel() != 0;
 
-    if validated.is_sampling {
-        sampling::ensure_pmu_irq_registered().map_err(|_| crate::StarryError::NoSuchDevice)?;
-    }
-
     let (counter, event) = match validated.counter {
-        ValidatedHwCounter::SystemPreferredCycle(event) => {
-            let counter = alloc_preferred_cycle(event)?;
-            let programmed_event = counter.programmable_index().map(|_| event);
-            (counter, programmed_event)
-        }
-        ValidatedHwCounter::SystemProgrammable(event) => (alloc_programmable(event)?, Some(event)),
+        ValidatedHwCounter::SystemPreferredCycle(event) => (alloc_system_cycle(owner_cpu), event),
+        ValidatedHwCounter::SystemProgrammable(event) if !validated.is_sampling => (None, event),
+        ValidatedHwCounter::SystemProgrammable(event) => (
+            Some(alloc_system(
+                owner_cpu,
+                event,
+                false,
+                validated.num_counters,
+            )?),
+            event,
+        ),
         ValidatedHwCounter::TaskPreferredCycle(_) | ValidatedHwCounter::TaskProgrammable(_) => {
             return Err(crate::StarryError::BadState);
         }
     };
-    if let Err(error) = cpu_worker::configure_system(
-        owner_cpu,
-        SystemPmuConfigure {
-            counter,
-            event,
-            exclude_user,
-            exclude_kernel,
-        },
-    ) {
-        free_counter(counter);
+    // All programmable counting events are logical, including cycle fallbacks.
+    // Check before constructing a worker; only a native 64-bit counter can run
+    // without overflow delivery. Sampling's fixed reservation rolls back here.
+    if counter.is_none_or(|counter| counter.programmable_index().is_some())
+        && sampling::ensure_pmu_irq_registered().is_err()
+    {
+        if let Some(counter) = counter {
+            free_system(owner_cpu, counter);
+        }
+        return Err(crate::StarryError::NoSuchDevice);
+    }
+    let flexible = counter.is_none().then(|| {
+        super::system_flex::SystemFlexCounter::new(owner_cpu, event, exclude_user, exclude_kernel)
+    });
+    let counter = counter.unwrap_or(super::hw_owner::Counter::Programmable(0));
+    let event = counter.programmable_index().map(|_| event);
+    if flexible.is_none()
+        && let Err(error) = cpu_worker::configure_system(
+            owner_cpu,
+            SystemPmuConfigure {
+                counter,
+                event,
+                exclude_user,
+                exclude_kernel,
+            },
+        )
+    {
+        free_system(owner_cpu, counter);
         return Err(error);
     }
 
@@ -146,6 +196,8 @@ pub(super) fn perf_event_open_hw(
             freq: validated.is_freq,
             target_freq: validated.target_freq,
             sample_type: attr.sample_type,
+            sample_id_all: attr.sample_id_all() != 0,
+            sample_user_lr: attr.sample_regs_user == super::uapi::PERF_REG_ARM64_LR_MASK,
             observer: crate::task::current_user_task()
                 .as_thread()
                 .active_pid_namespace()
@@ -154,6 +206,13 @@ pub(super) fn perf_event_open_hw(
             notify,
             poll_alive,
             output: PerfOutputRoute::new(),
+            read: Arc::new(SamplingReadState {
+                loss: Arc::new(sampling::LossState::new()),
+                sample_count: Arc::new(sampling::SamplingCount::new()),
+                enabled_at_ns: core::sync::atomic::AtomicU64::new(0),
+                time_enabled_ns: core::sync::atomic::AtomicU64::new(0),
+                time_running_ns: core::sync::atomic::AtomicU64::new(0),
+            }),
         }
     });
 
@@ -162,6 +221,7 @@ pub(super) fn perf_event_open_hw(
         owner: owner_cpu,
         read_format: attr.read_format,
         sampling,
+        flexible,
         enable_at_open: attr.disabled() == 0,
     }))
 }
@@ -179,23 +239,60 @@ fn perf_event_open_hw_per_task(
     let exclude_user = attr.exclude_user() != 0;
     let exclude_kernel = attr.exclude_kernel() != 0;
 
-    if validated.is_sampling {
-        sampling::ensure_pmu_irq_registered().map_err(|_| crate::StarryError::NoSuchDevice)?;
-    }
-
-    let (counter, event) = match validated.counter {
-        ValidatedHwCounter::TaskPreferredCycle(event) => (alloc_preferred_cycle(event)?, event),
-        ValidatedHwCounter::TaskProgrammable(event) => (alloc_programmable(event)?, event),
+    let (counter, event, flexible) = match validated.counter {
+        ValidatedHwCounter::TaskPreferredCycle(event) => {
+            let counter = alloc_cycle_counter();
+            (
+                counter.unwrap_or(super::hw_owner::Counter::Programmable(0)),
+                event,
+                counter.is_none(),
+            )
+        }
+        ValidatedHwCounter::TaskProgrammable(event) => {
+            // Flexible events are logical until a scheduler slice acquires one
+            // of the executing CPU's physical programmable slots.
+            (super::hw_owner::Counter::Programmable(0), event, true)
+        }
         ValidatedHwCounter::SystemPreferredCycle(_) | ValidatedHwCounter::SystemProgrammable(_) => {
             return Err(crate::StarryError::BadState);
         }
     };
 
+    // Logical flexible events own no slot yet. Inherited copies are flexible
+    // even when the root owns the native cycle counter; release that fixed
+    // reservation if inheritance requires an unavailable overflow IRQ.
+    if (counter.programmable_index().is_some() || attr.inherit() != 0)
+        && sampling::ensure_pmu_irq_registered().is_err()
+    {
+        if !flexible {
+            free_counter(counter);
+        }
+        return Err(crate::StarryError::NoSuchDevice);
+    }
+
     let enabled = attr.disabled() == 0;
+    let observer = crate::task::current_user_task()
+        .as_thread()
+        .active_pid_namespace()
+        .id();
+    let owner_ids = thread
+        .proc_data
+        .identity()
+        .visible_number_in(observer)
+        .map(crate::task::TgidNumber::from)
+        .zip(
+            thread
+                .pid_identity()
+                .visible_number_in(observer)
+                .map(crate::task::TidNumber::from),
+        );
     let per_task_counter = Arc::new(super::task::PerTaskCounter::new(
         super::task::PerTaskConfig {
+            loss: Arc::new(sampling::LossState::new()),
             scheduler_id,
             counter,
+            flexible,
+            scheduler_tick_lease: flexible.then(|| thread.proc_data.acquire_perf_scheduler_tick()),
             event,
             exclude_user,
             exclude_kernel,
@@ -203,8 +300,10 @@ fn perf_event_open_hw_per_task(
             enabled,
             enable_on_exec: attr.enable_on_exec() != 0,
             cpu_filter,
+            required_cluster: validated.required_cluster,
             sample_period: validated.sample_period,
             sample_type: attr.sample_type,
+            sample_user_lr: attr.sample_regs_user == super::uapi::PERF_REG_ARM64_LR_MASK,
             freq: validated.is_freq,
             target_freq: validated.target_freq,
             want_comm: attr.comm() != 0,
@@ -212,10 +311,8 @@ fn perf_event_open_hw_per_task(
             want_task: attr.task() != 0,
             sample_id_all: attr.sample_id_all() != 0,
             inherit: attr.inherit() != 0,
-            observer: crate::task::current_user_task()
-                .as_thread()
-                .active_pid_namespace()
-                .id(),
+            observer,
+            owner_ids,
         },
     ));
     let family = PerfInheritanceFamily::new(Arc::clone(&per_task_counter), enabled);

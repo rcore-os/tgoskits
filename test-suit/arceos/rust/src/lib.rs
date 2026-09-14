@@ -1,3 +1,6 @@
+#[cfg(feature = "cpu-capacity")]
+mod cpu_capacity;
+
 #[cfg(feature = "ax-std")]
 use ax_std as _;
 
@@ -59,6 +62,7 @@ pub mod net;
         feature = "sched-cfs",
         feature = "sched-rr",
         feature = "task-affinity",
+        feature = "task-cpu-lifecycle",
         feature = "task-fair-idle-pull",
         feature = "task-fair-wake-idle-sibling",
         feature = "task-ipi",
@@ -91,6 +95,8 @@ macro_rules! test_runner {
         }
     };
 }
+
+test_runner!("cpu-capacity", run_cpu_capacity, cpu_capacity::run);
 
 test_runner!(
     "debug-backtrace",
@@ -132,6 +138,11 @@ test_runner!("net-loopback", run_net_loopback, net::loopback::run);
 test_runner!("sched-cfs", run_sched_cfs, task::priority::run_cfs);
 test_runner!("sched-rr", run_sched_rr, task::priority::run_rr);
 test_runner!("task-affinity", run_task_affinity, task::affinity::run);
+test_runner!(
+    "task-cpu-lifecycle",
+    run_task_cpu_lifecycle,
+    task::cpu_lifecycle::run
+);
 test_runner!(
     "task-fair-idle-pull",
     run_task_fair_idle_pull,
@@ -196,6 +207,12 @@ test_runner!("task-yield", run_task_yield, task::yield_now::run);
 test_runner!("serial-rx", run_serial_rx, serial_rx::run);
 
 const SELECTED_TESTS: &[TestCase] = &[
+    #[cfg(feature = "cpu-capacity")]
+    TestCase::new(
+        "cpu-capacity",
+        "published CPU capacity across online CPUs",
+        run_cpu_capacity,
+    ),
     #[cfg(feature = "serial-rx")]
     TestCase::new("serial-rx", "serial IRQ receive continuity", run_serial_rx),
     #[cfg(feature = "debug-backtrace")]
@@ -271,6 +288,12 @@ const SELECTED_TESTS: &[TestCase] = &[
         "sched-rr",
         "round-robin scheduling priority smoke",
         run_sched_rr,
+    ),
+    #[cfg(feature = "task-cpu-lifecycle")]
+    TestCase::new(
+        "task-cpu-lifecycle",
+        "CPU offline and activation reservations",
+        run_task_cpu_lifecycle,
     ),
     #[cfg(feature = "task-affinity")]
     TestCase::new("task-affinity", "task CPU affinity", run_task_affinity),

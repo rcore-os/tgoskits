@@ -37,7 +37,9 @@ pub struct DeferredTaskWorkBatch {
     pub(super) scheduler_tick_events: usize,
     pub(super) scheduler_tick_callbacks: usize,
     pub(super) exit_callbacks: usize,
+    pub(super) cancellation_events: usize,
     pub(super) reaped_threads: usize,
+    pub(super) execution_reclaims: usize,
     pub(super) coroutine_reclaims: usize,
     pub(super) address_space_reclaims: usize,
 }
@@ -48,7 +50,9 @@ impl DeferredTaskWorkBatch {
         self.deadline_events
             + self.scheduler_tick_events
             + self.exit_callbacks
+            + self.cancellation_events
             + self.reaped_threads
+            + self.execution_reclaims
             + self.coroutine_reclaims
             + self.address_space_reclaims
     }
@@ -56,6 +60,11 @@ impl DeferredTaskWorkBatch {
     /// Returns the number of Deadline extension callbacks invoked.
     pub const fn deadline_callbacks(self) -> usize {
         self.deadline_callbacks
+    }
+
+    /// Returns consumed creation-cancellation requests, including deferred retries.
+    pub const fn cancellation_events(self) -> usize {
+        self.cancellation_events
     }
 
     /// Returns the number of scheduler-tick extension callbacks invoked.
@@ -110,6 +119,7 @@ pub struct TaskSystem {
     pub(super) state: PreemptTicketLock<TaskSystemState>,
     pub(super) root_domain: RootDomain,
     pub(super) deferred_coroutine_reclaims: SchedulerInbox,
+    pub(super) deferred_thread_cancellations: SchedulerInbox,
     pub(super) deferred_deadline_callbacks: SchedulerInbox,
     pub(super) deferred_scheduler_ticks: SchedulerInbox,
     pub(super) task_work: Arc<TaskWorkDoorbell>,
@@ -164,6 +174,7 @@ pub(super) const FAIR_BALANCE_CONSTRAINED_BACKOFF_FACTOR: u64 = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DeferredTaskWorkClass {
+    Cancellation,
     Deadline,
     SchedulerTick,
     Exit,
@@ -172,15 +183,16 @@ pub(super) enum DeferredTaskWorkClass {
 }
 
 impl DeferredTaskWorkClass {
-    pub(super) const COUNT: usize = 5;
+    pub(super) const COUNT: usize = 6;
 
     pub(super) const fn next(self) -> Self {
         match self {
+            Self::Cancellation => Self::Deadline,
             Self::Deadline => Self::SchedulerTick,
             Self::SchedulerTick => Self::Exit,
             Self::Exit => Self::Reap,
             Self::Reap => Self::Reclaim,
-            Self::Reclaim => Self::Deadline,
+            Self::Reclaim => Self::Cancellation,
         }
     }
 }

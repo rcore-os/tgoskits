@@ -168,11 +168,9 @@ impl Timerfd {
         // Hand a weak reference to the task so the Timerfd can be freed
         // (and the task told to exit) when userspace closes the fd.
         let weak = Arc::downgrade(&this);
-        crate::task::spawn_kernel_thread_with_stack(
-            move || block_on(run_timer(weak)),
-            "timerfd".to_owned(),
-            crate::task::default_task_stack_size(),
-        );
+        crate::task::kernel_thread_builder("timerfd".to_owned())
+            .spawn(move || block_on(run_timer(weak)))
+            .expect("failed to spawn kernel thread");
         Ok(this)
     }
 
@@ -415,6 +413,10 @@ async fn run_timer(weak: alloc::sync::Weak<Timerfd>) {
 }
 
 impl FileLike for Timerfd {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         if dst.remaining_mut() < core::mem::size_of::<u64>() {
             return Err(StarryError::InvalidInput);
@@ -424,17 +426,10 @@ impl FileLike for Timerfd {
             &task,
             poll_io(self, IoEvents::IN, self.nonblocking(), || {
                 let n = self.take_expirations()?;
-                // Linux's timerfd_read(2): a failed read does not discard
-                // expirations. Restore the claimed count on copyout failure,
-                // and re-wake `poll_rx` so any reader or poller that
-                // entered its wait between claiming the count and this restore
-                // notices the fd is readable again.
-                if let Err(e) = dst.write(&n.to_ne_bytes()) {
-                    self.expire_count.fetch_add(n, Ordering::AcqRel);
-                    // Restored expire_count is visible before re-waking readers.
-                    unsafe { self.poll_rx.wake(IoEvents::IN) };
-                    return Err(e.into());
-                }
+                // Linux claims the expiration count before copyout. If copyout
+                // fails with EFAULT, that claimed count remains consumed; a
+                // following non-blocking read therefore observes EAGAIN.
+                dst.write(&n.to_ne_bytes())?;
                 Ok(core::mem::size_of::<u64>())
             }),
         )

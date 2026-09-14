@@ -4,6 +4,10 @@ use dma_api::{CompletedDma, PreparedDma};
 
 use crate::{BlkError, DeviceInfo, QueueInfo, QueueLimits};
 
+/// Queue-local key for one live transport request.
+///
+/// The queue may reuse this key after terminal completion, even while the
+/// caller retains the previous CompletedRequest and its independently owned DMA.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RequestId(usize);

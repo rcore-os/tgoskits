@@ -50,27 +50,25 @@ fn concurrent_reverse_add_is_serialized_for_test() -> bool {
         let left = Arc::clone(&left);
         let right = Arc::clone(&right);
         let results = Arc::clone(&results);
-        crate::task::spawn_kernel_thread(
-            move || {
+        crate::task::kernel_thread_builder("epoll-axtest-left".into())
+            .spawn(move || {
                 results.lock()[0] = left.add_nested_for_test(1, right).err();
-            },
-            "epoll-axtest-left".into(),
-        )
+            })
+            .expect("failed to spawn kernel thread")
     };
     let right_task = {
         let left = Arc::clone(&left);
         let right = Arc::clone(&right);
         let results = Arc::clone(&results);
-        crate::task::spawn_kernel_thread(
-            move || {
+        crate::task::kernel_thread_builder("epoll-axtest-right".into())
+            .spawn(move || {
                 results.lock()[1] = right.add_nested_for_test(2, left).err();
-            },
-            "epoll-axtest-right".into(),
-        )
+            })
+            .expect("failed to spawn kernel thread")
     };
 
-    crate::task::join_kernel_thread(left_task);
-    crate::task::join_kernel_thread(right_task);
+    left_task.join().expect("failed to join kernel thread");
+    right_task.join().expect("failed to join kernel thread");
     EPOLL_ADD_TEST_BARRIER_ENABLED.store(false, Ordering::Release);
 
     let results = results.lock();
@@ -103,6 +101,10 @@ impl ReadyFile {
 
 #[cfg(all(test, not(axtest)))]
 impl FileLike for ReadyFile {
+    fn validate_write_access(&self) -> crate::StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         "axtest:[epoll-ready-file]".into()
     }
@@ -162,6 +164,10 @@ impl CallbackBoundaryFile {
 
 #[cfg(all(test, not(axtest)))]
 impl FileLike for CallbackBoundaryFile {
+    fn validate_write_access(&self) -> crate::StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         "axtest:[epoll-callback-boundary-file]".into()
     }
@@ -328,6 +334,10 @@ impl ReadyDuringRegisterFile {
 
 #[cfg(all(test, not(axtest)))]
 impl FileLike for ReadyDuringRegisterFile {
+    fn validate_write_access(&self) -> crate::StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         "axtest:[epoll-rearm-race]".into()
     }

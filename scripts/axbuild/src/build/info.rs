@@ -680,10 +680,9 @@ impl BuildInfo {
     pub(crate) fn build_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String> {
         let bare_target = freestanding_build_target_for(target);
         let mut args = bare_target.cargo_args;
-        args.extend(Self::rustflags_cargo_args(
-            &bare_target.target,
-            extra_rustflags,
-        ));
+        let mut rustflags = bare_target.rustflags;
+        rustflags.extend_from_slice(extra_rustflags);
+        args.extend(Self::rustflags_cargo_args(&bare_target.target, &rustflags));
         args
     }
 

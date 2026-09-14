@@ -18,7 +18,7 @@ const OEM_ID: [u8; 6] = *b"AXVISR";
 const OEM_TABLE_ID: [u8; 8] = *b"AXVMX86 ";
 const OEM_REVISION: u32 = 1;
 
-pub(super) fn build_dsdt(plan: &X86FirmwarePlan) -> Result<Vec<u8>, AcpiBuildError> {
+pub(crate) fn build_dsdt(plan: &X86FirmwarePlan) -> Result<Vec<u8>, AcpiBuildError> {
     let mut aml = Vec::new();
     build_pci_device(plan, &mut aml);
     for serial in &plan.resources.serials {
@@ -69,12 +69,11 @@ fn build_pci_device(plan: &X86FirmwarePlan, aml: &mut Vec<u8>) {
         ]),
     );
     let mut routes = PackageBuilder::new();
-    for device in 0u32..4 {
-        for pin in 0u32..4 {
-            let address = (device << 16) | 0xffff;
-            let gsi = plan.pci.intx_gsis[((device + pin) & 3) as usize];
-            routes.add_element(&Package::new(std::vec![&address, &pin, &ZERO, &gsi]));
-        }
+    for route in &plan.pci.intx_routes {
+        let address = route.acpi_address();
+        let pin = u32::from(route.pin);
+        let gsi = u32::from(route.gsi);
+        routes.add_element(&Package::new(std::vec![&address, &pin, &ZERO, &gsi]));
     }
     let prt = Name::new("_PRT".into(), &routes);
     Device::new(
@@ -214,4 +213,36 @@ pub(super) const fn oem_table_id() -> [u8; 8] {
 
 pub(super) const fn oem_revision() -> u32 {
     OEM_REVISION
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arch::x86_64::boot::mptable;
+
+    #[test]
+    fn acpi_prt_and_mp_table_publish_the_same_pci_route() {
+        let route = super::super::config::X86PciIntxRoute {
+            device: 7,
+            pin: 2,
+            gsi: 18,
+        };
+        let mut plan = super::super::config::test_plan(1);
+        plan.pci.intx_routes.push(route);
+
+        let mut aml = Vec::new();
+        build_pci_device(&plan, &mut aml);
+        assert!(
+            aml.windows(4)
+                .any(|window| window == route.acpi_address().to_le_bytes())
+        );
+
+        let mp_table = mptable::build(&[0], 0xfee0_0000, 0xfec0_0000, &[route]);
+        assert!(mp_table.windows(8).any(|entry| {
+            entry[0] == 3
+                && entry[4] == 0
+                && entry[5] == route.mp_source_irq()
+                && entry[7] == route.gsi
+        }));
+    }
 }

@@ -162,8 +162,7 @@ deadline-base lock 或 owner CPU 裸指针。注册失败必须返回可匹配�
 `wait()` 才等待 owner-rq 排序；当前线程迁移和 `ThreadHandle::set_affinity_and_wait` 保留同步完成
 保证。`TaskSystem::start_thread` 合并 New 状态检查、调度准入和本地入队或远端投递，移除
 公开的 `make_ready` / `place_ready` 两步入口。所有可恢复错误发生在准入提交之前，提交后
-时钟发布失败按运行时不变量处理，不能回收已经入队的线程。上层 `PreparedThread::stage`
-仍保留 start gate，只有 `StagedThread::activate` 才允许进入调用者入口，OS 身份发布顺序不变。
+时钟发布失败按运行时不变量处理，不能回收已经入队的线程。上层创建统一使用 `ThreadBuilder`：`PreparedThread::stage` 预留首次投递及 CPU 热插拔租约，线程仍为 `New`；OS 身份发布后 `StagedThread::activate` 才完成首次入队。不再调度 trampoline 等待 start gate。发布期间的亲和性更新在调度记录中替换预留，旧预留在锁外释放。
 
 ### ParkTicket
 

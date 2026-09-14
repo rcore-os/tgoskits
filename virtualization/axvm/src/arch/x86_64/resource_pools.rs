@@ -21,6 +21,10 @@ pub(super) fn create(config: &AxVMConfig) -> AxVmResult<ResourcePools> {
     )?;
     pools.add_auto_pio(AUTO_PIO)?;
     pools.add_auto_controller_inputs(controller, AUTO_GSI)?;
+    pools.allow_fixed_controller_inputs(
+        controller,
+        ControllerInputId::new(16)..ControllerInputId::new(20),
+    )?;
 
     for route in config.pass_through_irqs() {
         let input = ControllerInputId::new(route.source as usize);

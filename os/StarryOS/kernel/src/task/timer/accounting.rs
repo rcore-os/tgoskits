@@ -11,9 +11,9 @@ pub struct CpuTimeAccounting {
     published_user_ns: AtomicU64,
     published_system_ns: AtomicU64,
     published_runtime_ns: AtomicU64,
-    adjusted: SpinLock<CpuTimeHighWater>,
+    adjusted: RawSpinLock<CpuTimeHighWater>,
     realtime_state: AtomicU8,
-    realtime: SpinLock<RealtimeCpuTime>,
+    realtime: RawSpinLock<RealtimeCpuTime>,
 }
 
 const REALTIME_POLICY_ACTIVE: u8 = 1 << 0;
@@ -27,30 +27,24 @@ struct RealtimeCpuTime {
     baseline_pending: bool,
 }
 
-impl Default for CpuTimeAccounting {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl CpuTimeAccounting {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new() -> crate::StarryResult<Self> {
         let scheduler_tick_cpu_time =
-            Arc::new(scheduler::runtime::service::SchedulerTickCpuTime::new());
-        Self {
+            crate::task::allocation::try_arc(scheduler::runtime::service::SchedulerTickCpuTime::new())?;
+        Ok(Self {
             scheduler_tick_cpu_time,
             published_user_ns: AtomicU64::new(0),
             published_system_ns: AtomicU64::new(0),
             published_runtime_ns: AtomicU64::new(0),
-            adjusted: SpinLock::new(CpuTimeHighWater::ZERO),
+            adjusted: RawSpinLock::new(CpuTimeHighWater::ZERO),
             realtime_state: AtomicU8::new(0),
-            realtime: SpinLock::new(RealtimeCpuTime {
+            realtime: RawSpinLock::new(RealtimeCpuTime {
                 policy: false,
                 baseline_runtime_ns: 0,
                 reset_generation: 0,
                 baseline_pending: false,
             }),
-        }
+        })
     }
 
     /// Returns the current user time and system time as a tuple of `TimeValue`.
@@ -298,7 +292,7 @@ fn adjust_cpu_time(
     raw_user_ns: u64,
     raw_system_ns: u64,
     runtime_ns: u64,
-    high_water: &SpinLock<CpuTimeHighWater>,
+    high_water: &RawSpinLock<CpuTimeHighWater>,
 ) -> CpuTimeHighWater {
     let mut previous = high_water.lock();
     if previous.user_ns.saturating_add(previous.system_ns) >= runtime_ns {
@@ -338,7 +332,7 @@ pub struct ProcessCpuTimeAccounting {
     raw_user_ns: AtomicU64,
     raw_system_ns: AtomicU64,
     runtime_ns: AtomicU64,
-    adjusted: SpinLock<CpuTimeHighWater>,
+    adjusted: RawSpinLock<CpuTimeHighWater>,
     #[cfg(axtest)]
     publication_rmws: AtomicU64,
 }
@@ -355,7 +349,7 @@ impl ProcessCpuTimeAccounting {
             raw_user_ns: AtomicU64::new(0),
             raw_system_ns: AtomicU64::new(0),
             runtime_ns: AtomicU64::new(0),
-            adjusted: SpinLock::new(CpuTimeHighWater::ZERO),
+            adjusted: RawSpinLock::new(CpuTimeHighWater::ZERO),
             #[cfg(axtest)]
             publication_rmws: AtomicU64::new(0),
         }
@@ -445,7 +439,7 @@ impl ProcessCpuTimeSnapshot {
 #[cfg(axtest)]
 pub(super) fn process_cpu_high_water_preserves_runtime_total_for_test() -> bool {
     let process = ProcessCpuTimeAccounting::new();
-    let accounting = CpuTimeAccounting::new();
+    let accounting = CpuTimeAccounting::new().unwrap();
     process.record_transition(|| {
         accounting.scheduler_switch_in_at(false, 0);
         CpuTimeDelta::ZERO

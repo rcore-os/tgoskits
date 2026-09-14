@@ -19,16 +19,9 @@ impl TaskSystem {
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<(), TaskError> {
         let runtime_deadline = cpu.scheduler_runtime_deadline_for_rq_observation(rq_observation);
-        if !cpu
-            .as_ref()
-            .get_ref()
-            .can_reuse_scheduler_deadline_for_rq_observation(rq_observation)
-            && let Some(update) = cpu
-                .as_mut()
-                .next_scheduler_deadline_update_if_changed_from_rq_observation(
-                    rq_observation,
-                    source,
-                )?
+        if let Some(update) = cpu
+            .as_mut()
+            .next_scheduler_deadline_update_if_changed(source)?
         {
             task_runtime::publish_scheduler_deadline(update);
         }

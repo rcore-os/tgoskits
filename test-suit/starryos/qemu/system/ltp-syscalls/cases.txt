@@ -41,11 +41,13 @@ futex_wait_bitset01
 getcpu01
 getcwd01
 getcwd02
+linkat01
 getpgid01
 getpgid02
 getsid01
 getsid02
 membarrier01
+nanosleep02
 pipe2_02
 pipe2_04
 poll01

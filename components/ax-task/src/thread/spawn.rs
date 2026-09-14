@@ -1,16 +1,11 @@
-//! Runtime-backed construction and ownership of portable kernel threads.
+//! Common thread construction, publication, completion, and join ownership.
 
-use alloc::{boxed::Box, string::String};
-use core::{
-    ptr,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use alloc::string::String;
 
 use crate::{
     runtime::{
         RuntimeStatus,
-        context::{RuntimeIrqGuard, runtime_current_cpu_mut, runtime_task_system},
-        lock::PreemptTicketLock,
+        context::runtime_task_system,
         resource::{
             ExecutionContextHandle, KernelContextRequest, StackHandle, StackRequest,
             ThreadResources, TlsHandle,
@@ -18,17 +13,16 @@ use crate::{
         task_runtime,
     },
     sched::{CpuSet, SchedulePolicy},
-    sync::WaitQueue,
     thread::{
-        SwitchReason, TaskError, ThreadExtension, ThreadExtensionOps, ThreadHandle, ThreadId,
-        ThreadSpec,
+        TaskError, ThreadExtension, ThreadHandle, ThreadSpec,
+        execution::{PreparedThread, ThreadExecution, thread_entry},
     },
 };
 
-/// Default stack size used by portable kernel service threads.
+/// Default usable stack size for portable kernel service threads.
 pub const DEFAULT_KERNEL_THREAD_STACK_SIZE: usize = 256 * 1024;
 
-/// Resource and diagnostic configuration for one kernel thread.
+/// Configuration shared by kernel and user execution contexts.
 #[derive(Debug)]
 pub struct ThreadBuilder {
     name: String,
@@ -41,7 +35,7 @@ pub struct ThreadBuilder {
 }
 
 impl ThreadBuilder {
-    /// Starts a builder with default portable stack requirements.
+    /// Starts a thread configuration with portable stack requirements.
     pub fn new(name: String) -> Self {
         Self {
             name,
@@ -53,126 +47,89 @@ impl ThreadBuilder {
             os_extension: None,
         }
     }
-
-    /// Selects the usable stack size in bytes.
-    pub fn stack_size(mut self, stack_size: usize) -> Self {
-        self.stack_size = stack_size;
+    /// Sets the usable stack size in bytes.
+    pub fn stack_size(mut self, size: usize) -> Self {
+        self.stack_size = size;
         self
     }
-
-    /// Selects the stack alignment in bytes.
-    pub fn stack_alignment(mut self, stack_alignment: usize) -> Self {
-        self.stack_alignment = stack_alignment;
+    /// Sets stack alignment in bytes.
+    pub fn stack_alignment(mut self, alignment: usize) -> Self {
+        self.stack_alignment = alignment;
         self
     }
-
-    /// Requests an inaccessible stack guard area from the runtime.
-    pub fn guard_size(mut self, guard_size: usize) -> Self {
-        self.guard_size = guard_size;
+    /// Sets the inaccessible guard size in bytes.
+    pub fn guard_size(mut self, size: usize) -> Self {
+        self.guard_size = size;
         self
     }
-
-    /// Selects the base scheduler policy.
+    /// Sets the scheduling policy.
     pub fn policy(mut self, policy: SchedulePolicy) -> Self {
         self.policy = policy;
         self
     }
-
-    /// Restricts placement to the supplied topology-sized CPU set.
+    /// Restricts initial and subsequent placement.
     pub fn affinity(mut self, affinity: CpuSet) -> Self {
         self.affinity = Some(affinity);
         self
     }
-
-    /// Composes one OS-owned extension inside the portable thread wrapper.
-    ///
-    /// # Safety
-    ///
-    /// `extension` transfers unique callback-data ownership into this builder.
-    /// The caller must not install another copy or invoke its drop callback.
-    /// This builder must be spawned or dropped in ordinary task context.
-    pub unsafe fn extension(mut self, extension: ThreadExtension) -> Self {
+    /// Transfers an OS extension directly to the scheduler record.
+    pub fn extension(mut self, extension: ThreadExtension) -> Self {
         self.os_extension = Some(extension);
         self
     }
 
-    /// Allocates, creates, and enqueues the configured thread.
-    ///
-    /// # Errors
-    ///
-    /// Returns scheduler validation or runtime resource errors from
-    /// runtime allocation and scheduler admission.
-    pub fn spawn<F>(self, entry: F) -> Result<KernelThreadHandle, TaskError>
-    where
-        F: FnOnce() + Send + 'static,
-    {
-        spawn_thread(self, entry)
-    }
-}
-
-/// Join capability for one runtime-backed kernel thread.
-///
-/// Callers must either [`join`](Self::join) a thread that may return or mark a
-/// shutdown-lifetime worker with [`detach_permanent`](Self::detach_permanent).
-#[derive(Debug)]
-#[must_use = "kernel threads must be joined or explicitly detached as permanent"]
-pub struct KernelThreadHandle {
-    thread: Option<ThreadHandle>,
-}
-
-impl KernelThreadHandle {
-    /// Returns the scheduler identity of this kernel thread.
-    pub fn id(&self) -> ThreadId {
-        self.thread
-            .as_ref()
-            .expect("kernel thread handle is consumed only by ownership methods")
-            .id()
-    }
-
-    /// Waits for logical thread exit and hands reclamation to the bounded reaper.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TaskError::InvalidConfiguration`] when joining the current
-    /// thread and propagates scheduler wait or resource teardown errors.
-    pub fn join(mut self) -> Result<(), TaskError> {
-        let handle = self.thread.take().ok_or(TaskError::InvalidConfiguration)?;
-        if crate::thread::current::current_thread_id()? == handle.id() {
-            return Err(TaskError::InvalidConfiguration);
+    /// Creates a new, non-runnable kernel thread.
+    pub fn prepare(
+        self,
+        entry: impl FnOnce() + Send + 'static,
+    ) -> Result<PreparedThread, TaskError> {
+        // SAFETY: the built-in allocator installs precisely the supplied trampoline
+        // and transfers one complete runtime-owned resource bundle.
+        unsafe {
+            self.prepare_with(entry, |request, _trampoline| {
+                allocate_thread_resources(runtime_task_system()?, request)
+            })
         }
-        let data = kernel_thread_data(&handle)?;
-        data.join_wait
-            .try_wait_until(|| data.exit_completed.load(Ordering::Acquire))?;
-        reap_joined_thread(handle)
     }
 
-    /// Marks a worker as intentionally live until scheduler shutdown.
+    /// Creates and activates a kernel thread without an external publication transaction.
+    pub fn spawn(self, entry: impl FnOnce() + Send + 'static) -> Result<ThreadHandle, TaskError> {
+        self.prepare(entry)?.publish()
+    }
+
+    /// Creates a thread using an architecture-specific resource constructor.
     ///
-    /// The entry closure must never return. Shutdown owns the remaining registry
-    /// record and runtime resources; this method performs no hidden reaping.
-    pub fn detach_permanent(mut self) {
-        let _thread = self.thread.take();
-    }
-}
-
-fn reap_joined_thread(mut handle: ThreadHandle) -> Result<(), TaskError> {
-    match runtime_task_system()?.reap_thread_handle(handle) {
-        Ok(()) => Ok(()),
-        Err(error)
-            if matches!(
-                error.task_error(),
-                TaskError::ThreadBusy | TaskError::NotExited
-            ) =>
-        {
-            handle = error.into_retry_handle();
-            drop(handle);
-            Ok(())
+    /// # Safety
+    /// The constructor must install the supplied trampoline as its initial entry,
+    /// return uniquely owned resources satisfying `ThreadResources::new`, and
+    /// release every partial allocation on failure. It must not publish the context.
+    pub unsafe fn prepare_with(
+        mut self,
+        entry: impl FnOnce() + Send + 'static,
+        resources: impl FnOnce(
+            StackRequest,
+            unsafe extern "C" fn() -> !,
+        ) -> Result<ThreadResources, TaskError>,
+    ) -> Result<PreparedThread, TaskError> {
+        validate_spec(&self)?;
+        let system = runtime_task_system()?;
+        let execution = crate::thread::allocation::try_arc(ThreadExecution::new(
+            crate::thread::allocation::try_box(entry)?,
+            core::mem::take(&mut self.name),
+        ))?;
+        let resources = resources(self.stack_request(), thread_entry)?;
+        // SAFETY: the integration constructor transfers the owning resource bundle.
+        let mut spec = unsafe { ThreadSpec::new(self.policy).with_resources(resources) };
+        spec.execution = Some(execution);
+        if let Some(extension) = self.os_extension.take() {
+            spec = spec.with_extension(extension);
         }
-        Err(error) => Err(error.task_error()),
+        if let Some(affinity) = self.affinity.take() {
+            spec = spec.with_affinity(affinity);
+        }
+        Ok(PreparedThread::new(system.create_thread(spec)?))
     }
-}
 
-impl ThreadBuilder {
     fn stack_request(&self) -> StackRequest {
         StackRequest {
             usable_size: self.stack_size,
@@ -182,195 +139,6 @@ impl ThreadBuilder {
     }
 }
 
-/// Creates and enqueues a joinable kernel service thread.
-///
-/// The closure remains inside ax-task-owned extension data. Only opaque stack,
-/// TLS, and context handles cross [`crate::runtime::TaskRuntime`].
-///
-/// # Errors
-///
-/// Returns [`TaskError::NotInitialized`] before the runtime publishes scheduler
-/// objects, [`TaskError::InvalidConfiguration`] for invalid stack requirements,
-/// and [`TaskError::RuntimeFailure`] when a runtime resource operation fails.
-fn spawn_thread<F>(mut spec: ThreadBuilder, entry: F) -> Result<KernelThreadHandle, TaskError>
-where
-    F: FnOnce() + Send + 'static,
-{
-    validate_spec(&spec)?;
-    let system = runtime_task_system()?;
-    let resources = allocate_thread_resources(system, spec.stack_request())?;
-    let extension_data = Box::into_raw(Box::new(KernelThreadData::new(
-        entry,
-        core::mem::take(&mut spec.name),
-        spec.os_extension.take(),
-    )))
-    .expose_provenance();
-    // SAFETY: the boxed data remains live until the scheduler reaper invokes
-    // `kernel_thread_drop` through this exact callback-table identity.
-    let extension = unsafe { ThreadExtension::new(extension_data, &KERNEL_THREAD_OPS) };
-    let mut thread_spec = unsafe {
-        // SAFETY: allocation above created one live, uniquely owned resource
-        // bundle and this specification is its sole installation path.
-        ThreadSpec::new(spec.policy)
-            .with_extension(extension)
-            .with_resources(resources)
-    };
-    if let Some(affinity) = spec.affinity.take() {
-        thread_spec = thread_spec.with_affinity(affinity);
-    }
-    let handle = system.create_thread(thread_spec)?;
-
-    let mut irq_guard = RuntimeIrqGuard::enter();
-    let result = runtime_current_cpu_mut(&mut irq_guard)
-        .and_then(|mut cpu| system.start_thread(cpu.as_mut(), handle.id()));
-    drop(irq_guard);
-    if let Err(error) = result {
-        cleanup_unstarted_thread(system, handle);
-        return Err(error);
-    }
-    Ok(KernelThreadHandle {
-        thread: Some(handle),
-    })
-}
-
-type KernelThreadEntry = Box<dyn FnOnce() + Send + 'static>;
-
-struct KernelThreadData {
-    entry: PreemptTicketLock<Option<KernelThreadEntry>>,
-    join_wait: WaitQueue,
-    exit_completed: AtomicBool,
-    os_extension: Option<ThreadExtension>,
-    _name: String,
-}
-
-impl KernelThreadData {
-    fn new(
-        entry: impl FnOnce() + Send + 'static,
-        name: String,
-        os_extension: Option<ThreadExtension>,
-    ) -> Self {
-        Self {
-            entry: PreemptTicketLock::new(Some(Box::new(entry))),
-            join_wait: WaitQueue::new(),
-            exit_completed: AtomicBool::new(false),
-            os_extension,
-            _name: name,
-        }
-    }
-}
-
-static KERNEL_THREAD_OPS: ThreadExtensionOps = ThreadExtensionOps {
-    on_switch_in: kernel_thread_switch_in,
-    on_switch_out: kernel_thread_switch_out,
-    on_exit: kernel_thread_exit,
-    on_deadline_overrun: kernel_thread_deadline_overrun,
-    drop: kernel_thread_drop,
-};
-
-unsafe extern "Rust" fn kernel_thread_switch_in(
-    data: usize,
-    thread: ThreadId,
-    policy: SchedulePolicy,
-    charged_runtime_ns: u64,
-) {
-    let data = unsafe { kernel_thread_data_from_raw(data) };
-    if let Some(extension) = data.os_extension.as_ref() {
-        // SAFETY: the outer extension owns and forwards the inner callback.
-        unsafe {
-            (extension.ops().on_switch_in)(extension.data(), thread, policy, charged_runtime_ns)
-        };
-    }
-}
-
-unsafe extern "Rust" fn kernel_thread_switch_out(
-    data: usize,
-    thread: ThreadId,
-    reason: SwitchReason,
-) {
-    let data = unsafe { kernel_thread_data_from_raw(data) };
-    if let Some(extension) = data.os_extension.as_ref() {
-        // SAFETY: the outer extension owns and forwards the inner callback.
-        unsafe { (extension.ops().on_switch_out)(extension.data(), thread, reason) };
-    }
-}
-
-unsafe extern "Rust" fn kernel_thread_exit(data: usize, thread: ThreadId) {
-    let data = unsafe { kernel_thread_data_from_raw(data) };
-    if let Some(extension) = data.os_extension.as_ref() {
-        // SAFETY: exit is already deferred to ordinary task context.
-        unsafe { (extension.ops().on_exit)(extension.data(), thread) };
-    }
-    publish_kernel_thread_exit_completion(data);
-}
-
-fn publish_kernel_thread_exit_completion(data: &KernelThreadData) {
-    if data
-        .exit_completed
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        data.join_wait.notify_all();
-    }
-}
-
-unsafe extern "Rust" fn kernel_thread_deadline_overrun(data: usize, thread: ThreadId) {
-    let data = unsafe { kernel_thread_data_from_raw(data) };
-    if let Some(extension) = data.os_extension.as_ref() {
-        // SAFETY: Deadline notification runs at a scheduler safe point.
-        unsafe { (extension.ops().on_deadline_overrun)(extension.data(), thread) };
-    }
-}
-
-unsafe extern "Rust" fn kernel_thread_drop(data: usize) {
-    // SAFETY: the extension owns the unique Box pointer until this callback.
-    drop(unsafe { Box::from_raw(ptr::with_exposed_provenance_mut::<KernelThreadData>(data)) });
-}
-
-unsafe fn kernel_thread_data_from_raw(data: usize) -> &'static KernelThreadData {
-    // SAFETY: every outer callback receives the live Box pointer installed with
-    // KERNEL_THREAD_OPS, which remains valid until its drop callback.
-    unsafe { &*ptr::with_exposed_provenance::<KernelThreadData>(data) }
-}
-
-unsafe extern "C" fn kernel_thread_entry() -> ! {
-    if let Err(error) = unsafe {
-        // SAFETY: this is the first operation in a fresh runtime context, which
-        // inherits exactly one scheduler switch guard and consumes it once.
-        crate::runtime::switch::finish_initial_context_switch()
-    } {
-        task_runtime::fatal_invariant(9, error_code(error));
-    }
-    let extension = crate::thread::current::current_thread_extension()
-        .unwrap_or_else(|error| task_runtime::fatal_invariant(10, error_code(error)))
-        .unwrap_or_else(|| task_runtime::fatal_invariant(11, 0));
-    if !core::ptr::eq(extension.ops(), &KERNEL_THREAD_OPS) {
-        task_runtime::fatal_invariant(12, extension.data());
-    }
-    let extension = unsafe {
-        // SAFETY: this trampoline is the running thread named by the lease;
-        // its registry record remains live until the non-returning exit below.
-        extension.release_for_current_thread_entry()
-    };
-    let data_raw = extension.data();
-    // SAFETY: the checked callback-table identity belongs only to
-    // `KernelThreadData`. The registry record retains the extension while the
-    // current thread runs, so the entry trampoline must release its temporary
-    // lease before entering a function that exits without unwinding.
-    let data = unsafe { &*ptr::with_exposed_provenance::<KernelThreadData>(data_raw) };
-    let Some(entry) = data.entry.lock().take() else {
-        task_runtime::fatal_invariant(13, data_raw);
-    };
-    entry();
-    let exit_permit = crate::thread::current::prepare_current_exit()
-        .unwrap_or_else(|error| task_runtime::fatal_invariant(15, error_code(error)));
-    // Logical completion is observable before the final non-returning
-    // schedule-out only after every recoverable scheduler precondition has
-    // been validated. Registry state, `on_cpu`, and the exit callback continue
-    // to gate physical reclamation independently.
-    publish_kernel_thread_exit_completion(data);
-    crate::thread::current::commit_current_exit(exit_permit)
-}
-
 fn validate_spec(spec: &ThreadBuilder) -> Result<(), TaskError> {
     if spec.stack_size == 0 || spec.stack_alignment == 0 || !spec.stack_alignment.is_power_of_two()
     {
@@ -378,19 +146,6 @@ fn validate_spec(spec: &ThreadBuilder) -> Result<(), TaskError> {
     } else {
         Ok(())
     }
-}
-
-fn kernel_thread_data(handle: &ThreadHandle) -> Result<&KernelThreadData, TaskError> {
-    let extension = runtime_task_system()?
-        .thread_extension(handle)?
-        .ok_or(TaskError::InvalidConfiguration)?;
-    if !core::ptr::eq(extension.ops(), &KERNEL_THREAD_OPS) {
-        return Err(TaskError::InvalidConfiguration);
-    }
-    // SAFETY: the checked ops identity belongs only to KernelThreadData, and
-    // the returned borrow is bounded by `handle`, which keeps the registry
-    // record live until the caller is finished with the data.
-    Ok(unsafe { &*ptr::with_exposed_provenance::<KernelThreadData>(extension.data()) })
 }
 
 fn allocate_thread_resources(
@@ -434,7 +189,7 @@ fn allocate_thread_resources(
     };
     let context_result = task_runtime::create_kernel_context(KernelContextRequest {
         stack,
-        entry: kernel_thread_entry,
+        entry: thread_entry,
         tls,
     });
     if context_result.status != RuntimeStatus::Success {
@@ -485,32 +240,18 @@ fn release_partial_thread_resources(
     creation_error
 }
 
-fn cleanup_unstarted_thread(system: &crate::runtime::TaskSystem, handle: ThreadHandle) {
-    let thread = handle.id();
-    let _result = system.mark_exited(thread);
-    drop(handle);
-    let _result = system.reap_thread(thread);
-}
-
 const fn runtime_error(status: RuntimeStatus) -> TaskError {
     TaskError::RuntimeFailure(status as u32)
 }
-
-const fn error_code(error: TaskError) -> usize {
-    match error {
-        TaskError::NotInitialized => 1,
-        TaskError::InvalidRuntimeHandle => 2,
-        TaskError::NoRunnableThread => 3,
-        TaskError::UnsafeContext => 4,
-        _ => 255,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::{
+        ptr,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
+    use crate::thread::{SwitchReason, ThreadExtensionOps, ThreadId};
 
     static TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
         on_switch_in: test_extension_switch_in,
@@ -530,10 +271,7 @@ mod tests {
                 &TEST_EXTENSION_OPS,
             )
         };
-        let builder = unsafe {
-            // SAFETY: this test transfers the sole callback ownership.
-            ThreadBuilder::new(String::from("drop-test")).extension(extension)
-        };
+        let builder = ThreadBuilder::new(String::from("drop-test")).extension(extension);
 
         drop(builder);
 
@@ -550,7 +288,7 @@ mod tests {
                 &TEST_EXTENSION_OPS,
             )
         };
-        let spec = unsafe {
+        let spec = {
             // SAFETY: this test transfers the sole callback ownership.
             ThreadBuilder::new(String::from("invalid-test"))
                 .stack_size(0)

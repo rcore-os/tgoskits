@@ -32,16 +32,16 @@ pub(crate) struct RunQueueNodeStorage {
 }
 
 impl RunQueueNodeStorage {
-    pub(crate) fn new() -> Self {
-        Self {
-            deadline: UnsafeCell::new(Some(deadline::DeadlineNode::empty())),
+    pub(crate) fn new() -> Result<Self, crate::thread::TaskError> {
+        Ok(Self {
+            deadline: UnsafeCell::new(Some(deadline::DeadlineNode::empty()?)),
             deadline_pushable: UnsafeCell::new(Some(
-                deadline_pushable::DeadlinePushableNode::empty(),
+                deadline_pushable::DeadlinePushableNode::empty()?,
             )),
-            fair: UnsafeCell::new(Some(crate::sched::algorithm::fair_queue::FairNode::empty())),
-            realtime: UnsafeCell::new(Some(realtime::RealtimeNode::empty())),
-            realtime_pushable: UnsafeCell::new(Some(realtime::RealtimePushableNode::empty())),
-        }
+            fair: UnsafeCell::new(Some(crate::sched::algorithm::fair_queue::FairNode::empty()?)),
+            realtime: UnsafeCell::new(Some(realtime::RealtimeNode::empty()?)),
+            realtime_pushable: UnsafeCell::new(Some(realtime::RealtimePushableNode::empty()?)),
+        })
     }
 
     pub(crate) unsafe fn take_deadline(&self) -> Box<deadline::DeadlineNode> {

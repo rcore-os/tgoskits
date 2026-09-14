@@ -3,8 +3,60 @@
 use super::*;
 
 impl ThreadCore {
+    pub(crate) fn enter_rt_lock_critical(&self) {
+        self.rt_lock_depth
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                depth.checked_add(1)
+            })
+            .expect("RT lock nesting exhausted");
+    }
+
+    pub(crate) fn leave_rt_lock_critical(&self) {
+        self.rt_lock_depth
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                depth.checked_sub(1)
+            })
+            .expect("RT lock nesting must balance");
+    }
+
+    pub(crate) fn holds_rt_lock(&self) -> bool {
+        self.rt_lock_depth.load(Ordering::Acquire) != 0
+    }
+
     pub(crate) fn publish_wake(&self) -> WakePublication {
         self.state.publish_wake()
+    }
+
+    /// The caller holds the task scheduler lock across saved-state changes.
+    pub(crate) fn enter_rt_lock_wait(&self) -> Result<(), TaskError> {
+        if self.state.in_rt_lock_wait() {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        self.state.enter_rt_lock_wait()
+    }
+
+    /// The task scheduler lock excludes exact-generation notification delivery.
+    pub(crate) fn restore_rt_lock_wait(&self) -> Result<(), TaskError> {
+        if !self.in_rt_lock_wait() || self.state() != ThreadState::Running {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        self.park_generation.store(
+            self.ordinary_park_generation.load(Ordering::Acquire),
+            Ordering::Release,
+        );
+        self.state.restore_rt_lock_wait()
+    }
+
+    pub(crate) fn in_rt_lock_wait(&self) -> bool {
+        self.state.in_rt_lock_wait()
+    }
+
+    pub(crate) fn ordinary_park_generation(&self) -> u64 {
+        self.ordinary_park_generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn publish_rt_lock_wake(&self) -> Option<WakePublication> {
+        self.state.publish_rt_lock_wake()
     }
 
     pub(crate) fn consume_wake_and_transition(
@@ -63,18 +115,24 @@ impl ThreadCore {
     }
 
     pub(crate) fn next_park_generation(&self) -> Result<u64, TaskError> {
-        let mut generation = self.park_generation.load(Ordering::Acquire);
+        let mut generation = self.park_sequence.load(Ordering::Acquire);
         loop {
             let next = generation
                 .checked_add(1)
                 .ok_or(TaskError::InvalidConfiguration)?;
-            match self.park_generation.compare_exchange_weak(
+            match self.park_sequence.compare_exchange_weak(
                 generation,
                 next,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Ok(next),
+                Ok(_) => {
+                    self.park_generation.store(next, Ordering::Release);
+                    if !self.in_rt_lock_wait() {
+                        self.ordinary_park_generation.store(next, Ordering::Release);
+                    }
+                    return Ok(next);
+                }
                 Err(observed) => generation = observed,
             }
         }

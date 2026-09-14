@@ -83,6 +83,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]: https://github.com/arceos-hypervisor/buddy-slab-allocator/compare/v0.2.0...HEAD
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.6.0...buddy-slab-allocator-v0.6.1) - 2026-09-12
+
+### Other
+
+- *(buddy-slab-allocator)* skip the full-list walk when no cross-CPU free is pending. ([#2301](https://github.com/rcore-os/tgoskits/pull/2301))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.5.0...buddy-slab-allocator-v0.6.0) - 2026-09-09
 
 ### Fixed

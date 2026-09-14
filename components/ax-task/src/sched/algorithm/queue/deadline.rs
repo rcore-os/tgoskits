@@ -172,8 +172,8 @@ pub(crate) struct DeadlineNode {
 }
 
 impl DeadlineNode {
-    pub(crate) fn empty() -> Box<Self> {
-        Box::new(Self {
+    pub(crate) fn empty() -> Result<Box<Self>, crate::thread::TaskError> {
+        crate::thread::allocation::try_box(Self {
             key: DeadlineQueueKey::empty(),
             thread: None,
             left: None,
@@ -220,26 +220,19 @@ pub(super) struct DeadlineRunQueue {
 }
 
 impl DeadlineRunQueue {
-    pub(super) fn new(max_bw_scaled: u64, thread_capacity: usize) -> Self {
-        Self {
+    pub(super) fn new(
+        max_bw_scaled: u64,
+        thread_capacity: usize,
+    ) -> Result<Self, crate::thread::TaskError> {
+        Ok(Self {
             root: None,
-            keys: Vec::new(),
-            throttled: Vec::new(),
-            members: Vec::with_capacity(thread_capacity),
+            keys: crate::thread::allocation::empty_slots(thread_capacity)?,
+            throttled: crate::thread::allocation::empty_slots(thread_capacity)?,
+            members: crate::thread::allocation::try_vec(thread_capacity)?,
             bandwidth: DeadlineRunQueueBandwidth::new(max_bw_scaled),
-            pushable: DeadlinePushableTasks::new(),
+            pushable: DeadlinePushableTasks::new(thread_capacity)?,
             len: 0,
-        }
-    }
-
-    pub(super) fn prepare_thread_slot(&mut self, slot: usize) {
-        if self.keys.len() <= slot {
-            self.keys.resize(slot.saturating_add(1), None);
-        }
-        if self.throttled.len() <= slot {
-            self.throttled.resize_with(slot.saturating_add(1), || None);
-        }
-        self.pushable.prepare_thread_slot(slot);
+        })
     }
 
     pub(super) const fn has_runnable(&self) -> bool {

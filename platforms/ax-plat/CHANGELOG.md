@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.14.0...ax-plat-v0.15.0) - 2026-09-13
+
+### Other
+
+- *(someboot)* publish Linux-style CPU capacity through topology ([#2386](https://github.com/rcore-os/tgoskits/pull/2386))
+
 ## [0.14.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.13.1...ax-plat-v0.14.0) - 2026-09-09
 
 ### Added

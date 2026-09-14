@@ -1,6 +1,6 @@
 //! Futex implementation.
 
-use alloc::{collections::vec_deque::VecDeque, sync::Arc};
+use alloc::{borrow::Cow, collections::vec_deque::VecDeque, sync::Arc};
 use core::{
     cmp::Ordering,
     sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering as AtomicOrdering, fence},
@@ -22,14 +22,38 @@ use ax_std::os::arceos::{
 
 use crate::{
     mm::{AddrSpace, SharedFutexIdentity, SharedFutexRegion},
-    sync::{LockdepMutexExt, Mutex, SpinLock},
+    sync::{LockdepMutexExt, Mutex, RawSpinLock},
     task::{ProcessData, UserTaskRef, future::WallClockWaiter, process_memory::ProcessMemoryShare},
     time::{ClockDeadline, ClockSnapshot},
 };
 
 const NESTED_FUTEX_BUCKET_LOCK_SUBCLASS: u32 = 1;
 const FUTEX_BUCKET_COUNT: usize = 64;
-type WakeBatch = ThreadWakeBatch;
+/// Counts selected wait generations independently of coalesced scheduler wakes.
+/// Linux futex_wake counts unqueued futex_q records even when wake_q_add_safe
+/// finds the task already queued by another wake owner.
+struct WakeBatch {
+    tasks: ThreadWakeBatch,
+    selected: usize,
+}
+
+impl WakeBatch {
+    fn new() -> Self {
+        Self {
+            tasks: ThreadWakeBatch::new(),
+            selected: 0,
+        }
+    }
+
+    fn push(&mut self, wake: scheduler::thread::ThreadWakeHandle) {
+        let _inserted = self.tasks.push(wake);
+        self.selected += 1;
+    }
+
+    fn len(&self) -> usize {
+        self.selected
+    }
+}
 
 fn scheduler_monotonic_now() -> MonotonicInstant {
     MonotonicInstant::from_nanos(
@@ -40,7 +64,8 @@ fn scheduler_monotonic_now() -> MonotonicInstant {
 }
 
 fn wake_batch(wakes: WakeBatch) -> usize {
-    wakes.wake_all()
+    wakes.tasks.wake_all();
+    wakes.selected
 }
 
 /// Retry outcome from a futex operation's nofault user-memory phase.
@@ -137,7 +162,6 @@ struct WaitQueueInner {
 
 struct Waiter {
     task: UserTaskRef,
-    wake: scheduler::thread::ThreadWakeHandle,
     bitset: u32,
     generation: u64,
 }
@@ -161,7 +185,7 @@ pub(crate) struct ThreadWaitState {
     // No IRQ path observes it and the guard is never held while taking the
     // table or wait-queue locks, so a short preemption-only spin lock is the
     // narrow capability this metadata needs.
-    cleanup: SpinLock<Option<FutexWaitCleanup>>,
+    cleanup: RawSpinLock<Option<FutexWaitCleanup>>,
 }
 
 impl ThreadWaitState {
@@ -170,7 +194,7 @@ impl ThreadWaitState {
         Self {
             generation: AtomicU64::new(0),
             phase: AtomicU8::new(WAIT_IDLE),
-            cleanup: SpinLock::new(None),
+            cleanup: RawSpinLock::new(None),
         }
     }
 
@@ -421,7 +445,6 @@ impl WaitQueue {
             };
             inner.queue.push_back(Waiter {
                 task: task.clone(),
-                wake: task.wake_handle(),
                 bitset,
                 generation,
             });
@@ -541,10 +564,9 @@ impl WaitQueue {
     }
 
     fn push_wake(wakes: &mut WakeBatch, waiter: Waiter) {
-        assert!(
-            wakes.push(waiter.wake),
-            "one futex wait generation cannot enter two live wake batches"
-        );
+        // mark_woken already selected this generation under its queue lock.
+        // The task-level wake_q node may still belong to an earlier selector.
+        wakes.push(waiter.task.into_wake_handle());
     }
 
     /// Wakes up at most `count` tasks whose bitset intersects with the given
@@ -785,11 +807,34 @@ impl FutexDomainOwner {
     }
 }
 
-/// Per-syscall futex ownership captured from the calling thread once.
+enum FutexDomainAccess<'a> {
+    Private(Cow<'a, Arc<FutexDomain>>),
+    Shared,
+}
+
+impl FutexDomainAccess<'_> {
+    fn domain(&self) -> &FutexDomain {
+        match self {
+            Self::Private(domain) => domain,
+            Self::Shared => &SHARED_FUTEX_DOMAIN,
+        }
+    }
+
+    /// Retains the domain when a waiter route outlives syscall resolution.
+    fn retained(&self) -> FutexDomainOwner {
+        match self {
+            Self::Private(domain) => FutexDomainOwner::Private(Arc::clone(domain.as_ref())),
+            Self::Shared => FutexDomainOwner::Shared,
+        }
+    }
+}
+
+/// Futex ownership bound to one user execution loop's MM generation.
 ///
-/// A syscall may retry its nofault user access, but it cannot change process
-/// identity while the syscall is active. Shared keys are intentionally
-/// re-resolved after a fault because their VMA backing may have changed.
+/// Sibling exec waits for this thread to leave the thread group, after which
+/// it cannot issue another syscall. The caller rebuilds this binding alongside
+/// the user execution context after its own exec handoff. Shared keys are still
+/// re-resolved after a fault because VMA backing within the MM may have changed.
 pub(crate) struct FutexContext<'task> {
     task: &'task UserTaskRef,
     memory: ProcessMemoryShare,
@@ -834,16 +879,16 @@ impl<'task> FutexContext<'task> {
         )
     }
 
-    fn domain_for(&self, key: &FutexKey) -> FutexDomainOwner {
+    fn domain_for(&self, key: &FutexKey) -> FutexDomainAccess<'_> {
         match key {
             FutexKey::Private { .. } => {
-                FutexDomainOwner::Private(Arc::clone(self.memory.private_futexes_ref()))
+                FutexDomainAccess::Private(Cow::Borrowed(self.memory.private_futexes_ref()))
             }
-            FutexKey::Shared { .. } => FutexDomainOwner::Shared,
+            FutexKey::Shared { .. } => FutexDomainAccess::Shared,
         }
     }
 
-    pub(crate) fn resolve(&self, address: usize, mode: FutexKeyMode) -> ResolvedFutex {
+    pub(crate) fn resolve(&self, address: usize, mode: FutexKeyMode) -> ResolvedFutex<'_> {
         let (key, None) = self.resolve_keys(address, None, mode) else {
             unreachable!("single futex resolution returned a second key")
         };
@@ -856,7 +901,7 @@ impl<'task> FutexContext<'task> {
         first_address: usize,
         second_address: usize,
         mode: FutexKeyMode,
-    ) -> (ResolvedFutex, ResolvedFutex) {
+    ) -> (ResolvedFutex<'_>, ResolvedFutex<'_>) {
         let (first_key, Some(second_key)) =
             self.resolve_keys(first_address, Some(second_address), mode)
         else {
@@ -878,15 +923,18 @@ impl<'task> FutexContext<'task> {
 }
 
 /// Key and ownership domain resolved together for one futex operation.
-pub(crate) struct ResolvedFutex {
+///
+/// Synchronous resolution borrows its context's pinned domain. Exit-time
+/// resolution and persistent waiter cleanup retain independent ownership.
+pub(crate) struct ResolvedFutex<'a> {
     key: FutexKey,
-    domain: FutexDomainOwner,
+    domain: FutexDomainAccess<'a>,
 }
 
-impl ResolvedFutex {
+impl ResolvedFutex<'_> {
     fn cleanup(&self) -> FutexWaitCleanup {
         FutexWaitCleanup {
-            domain: self.domain.clone(),
+            domain: self.domain.retained(),
             key: self.key.clone(),
         }
     }
@@ -938,7 +986,6 @@ impl ResolvedFutex {
                 key: self.key.clone(),
                 waiter: Waiter {
                     task: task.clone(),
-                    wake: task.wake_handle(),
                     bitset,
                     generation,
                 },
@@ -1254,7 +1301,7 @@ fn collect_futex_requeue(
     source_queue: (&FutexBucket, &mut VecDeque<FutexBucketWaiter>),
     source_key: &FutexKey,
     target_queue: (&FutexBucket, &mut VecDeque<FutexBucketWaiter>),
-    target: &ResolvedFutex,
+    target: &ResolvedFutex<'_>,
     request: FutexRequeueRequest,
     wakes: &mut WakeBatch,
 ) -> usize {
@@ -1303,7 +1350,7 @@ fn collect_futex_requeue_same_bucket(
     bucket: &FutexBucket,
     waiters: &mut VecDeque<FutexBucketWaiter>,
     source_key: &FutexKey,
-    target: &ResolvedFutex,
+    target: &ResolvedFutex<'_>,
     request: FutexRequeueRequest,
     wakes: &mut WakeBatch,
 ) -> usize {
@@ -1317,9 +1364,8 @@ fn collect_futex_requeue_same_bucket(
         wakes,
     );
     let woken = wakes.len() - wake_base;
-    if source_key.same(&target.key) {
-        return woken;
-    }
+    // Ordinary Linux requeue counts selected waiters even if the key stays
+    // unchanged. Only PI requeue rejects identical source and target keys.
     let mut requeued = 0;
     for entry in waiters.iter_mut() {
         if requeued == request.requeue_count {
@@ -1347,7 +1393,7 @@ struct FutexRequeueRequest {
 pub(crate) fn resolve_futex_for_process_teardown(
     proc_data: &ProcessData,
     address: usize,
-) -> ResolvedFutex {
+) -> ResolvedFutex<'static> {
     let memory = proc_data.memory_share();
     let private = memory.private_futexes();
     let aspace = memory.aspace();
@@ -1358,8 +1404,8 @@ pub(crate) fn resolve_futex_for_process_teardown(
         FutexKeyMode::Auto,
     );
     let domain = match key {
-        FutexKey::Private { .. } => FutexDomainOwner::Private(private),
-        FutexKey::Shared { .. } => FutexDomainOwner::Shared,
+        FutexKey::Private { .. } => FutexDomainAccess::Private(Cow::Owned(private)),
+        FutexKey::Shared { .. } => FutexDomainAccess::Shared,
     };
     ResolvedFutex { key, domain }
 }
@@ -1372,14 +1418,14 @@ fn empty_wake_op_leaves_fixed_buckets_empty_for_test() -> bool {
             mm_generation: domain.generation(),
             address: 0x1000,
         },
-        domain: FutexDomainOwner::Private(domain.clone()),
+        domain: FutexDomainAccess::Private(Cow::Owned(domain.clone())),
     };
     let target = ResolvedFutex {
         key: FutexKey::Private {
             mm_generation: domain.generation(),
             address: 0x2000,
         },
-        domain: FutexDomainOwner::Private(domain.clone()),
+        domain: FutexDomainAccess::Private(Cow::Owned(domain.clone())),
     };
     assert_eq!(source.wake_op(0, &target, 0, || Ok(false)), Ok(0));
     domain
@@ -1410,14 +1456,14 @@ fn futex_nofault_failure_is_transactional_for_test() -> bool {
             mm_generation: domain.generation(),
             address: 0x1000,
         },
-        domain: FutexDomainOwner::Private(domain.clone()),
+        domain: FutexDomainAccess::Private(Cow::Owned(domain.clone())),
     };
     let target = ResolvedFutex {
         key: FutexKey::Private {
             mm_generation: domain.generation(),
             address: 0x2000,
         },
-        domain: FutexDomainOwner::Private(domain.clone()),
+        domain: FutexDomainAccess::Private(Cow::Owned(domain.clone())),
     };
 
     if source.wake_op(1, &target, 1, || Err(FutexAccessError::UserFault))
@@ -1520,6 +1566,29 @@ mod axtests {
     use crate::mm::{MappingOperation, SharedMemoryObject};
 
     #[axtest::axtest]
+    fn coalesced_scheduler_wake_still_counts_each_selected_wait() {
+        let prepared = ax_runtime::thread::builder("futex-wake-coalescing".into())
+            .prepare(|| panic!("a wake batch must not activate a new thread"))
+            .unwrap();
+        let handle = prepared.thread_handle();
+        let mut first = WakeBatch::new();
+        let mut second = WakeBatch::new();
+        // A task may observe WAIT_WOKEN and begin another generation before
+        // the first selector drains its task-level wake_q node.
+        first.push(handle.wake_handle());
+        second.push(handle.wake_handle());
+        let second_count = wake_batch(second);
+        let first_count = wake_batch(first);
+        drop(prepared);
+        handle.join().unwrap();
+        assert_eq!(first_count, 1);
+        assert_eq!(
+            second_count, 1,
+            "coalescing scheduler delivery must not erase a selected futex wait"
+        );
+    }
+
+    #[axtest::axtest]
     fn empty_wake_op_leaves_fixed_buckets_empty() {
         assert!(super::empty_wake_op_leaves_fixed_buckets_empty_for_test());
     }
@@ -1594,5 +1663,48 @@ mod axtests {
 
         aspace.reset_uninstalled_for_loader().unwrap();
         assert_eq!(before, after, "VMA split changed shared futex identity");
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+mod wake_ordering_tests {
+    use loom::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering, fence},
+        },
+        thread,
+    };
+
+    // The wake_q store/load litmus: a coalesced selector must not be paired
+    // with a drainer that misses the state published before that selection.
+    #[test]
+    fn coalesced_wake_observes_published_state() {
+        loom::model(|| {
+            let linked = Arc::new(AtomicBool::new(true));
+            let wakeable = Arc::new(AtomicBool::new(false));
+            let selector = {
+                let linked = linked.clone();
+                let wakeable = wakeable.clone();
+                thread::spawn(move || {
+                    wakeable.store(true, Ordering::Release);
+                    fence(Ordering::SeqCst);
+                    linked
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_err()
+                })
+            };
+            let drainer = thread::spawn(move || {
+                linked.store(false, Ordering::Release);
+                fence(Ordering::SeqCst);
+                wakeable.load(Ordering::Acquire)
+            });
+            let coalesced = selector.join().unwrap();
+            let observed = drainer.join().unwrap();
+            assert!(
+                !coalesced || observed,
+                "coalesced wake missed the published wait state"
+            );
+        });
     }
 }

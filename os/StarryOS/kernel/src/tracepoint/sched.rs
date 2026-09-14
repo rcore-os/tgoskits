@@ -244,8 +244,8 @@ pub(super) fn publish_runtime_gate(
 }
 
 pub(super) fn start_worker() -> ax_runtime::task::thread::ThreadHandle {
-    crate::task::spawn_kernel_thread(
-        || {
+    crate::task::kernel_thread_builder("sched-switch-trace".into())
+        .spawn(|| {
             loop {
                 super::TRACE_STATE.sched_notify.wait();
                 while drain_deferred(DEFERRED_DRAIN_BATCH, replay_sched_switch) {
@@ -254,9 +254,8 @@ pub(super) fn start_worker() -> ax_runtime::task::thread::ThreadHandle {
                     );
                 }
             }
-        },
-        "sched-switch-trace".into(),
-    )
+        })
+        .expect("failed to spawn kernel thread")
 }
 
 fn on_sched_switch(record: SchedSwitchRecord) -> Option<fn()> {

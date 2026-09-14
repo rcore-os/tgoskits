@@ -5,7 +5,7 @@ use ax_io::{IoError, IoResult, prelude::*};
 use bytemuck::{AnyBitPattern, NoUninit};
 use starry_vm::VmError;
 
-use super::{VmPtr, check_access, vm_read_slice, vm_write_slice};
+use super::{VmPtr, vm_read_slice, vm_write_slice};
 use crate::{StarryError, StarryResult, task::UserTaskRef};
 
 #[repr(C)]
@@ -55,10 +55,15 @@ impl<'task> IoVectorBuf<'task> {
             owned_iovs.push(iov);
         }
         validate_len(len)?;
+        let aspace_pin = task.as_thread().proc_data.pin_aspace()?;
+        let task_size = aspace_pin.lock().end().as_usize();
         for iov in &owned_iovs {
             if iov.iov_len > 0 {
-                check_access(iov.iov_base as usize, iov.iov_len as usize)
-                    .map_err(|_| StarryError::BadAddress)?;
+                validate_iovec_address_range(
+                    iov.iov_base as usize,
+                    iov.iov_len as usize,
+                    task_size,
+                )?;
             }
         }
         Ok(Self {
@@ -89,6 +94,17 @@ impl<'task> IoVectorBuf<'task> {
             start: 0,
             offset: 0,
         }
+    }
+}
+
+fn validate_iovec_address_range(start: usize, len: usize, task_size: usize) -> StarryResult<()> {
+    // Linux import_iovec() performs access_ok(), which rejects addresses past
+    // the user limit but does not require the pages to be mapped. Page faults
+    // are therefore reported only if the file operation reaches this segment.
+    if start < task_size && len <= task_size - start {
+        Ok(())
+    } else {
+        Err(StarryError::BadAddress)
     }
 }
 

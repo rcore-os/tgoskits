@@ -41,7 +41,7 @@ use crate::{
     irq::FixedIrqWorkerSignal,
     task::{
         sched::{CpuId, CpuSet, FairMode, Nice, SchedulePolicy},
-        sync::{Mutex, SpinLock, WaitQueue},
+        sync::{Mutex, RawSpinLock, WaitQueue},
     },
 };
 
@@ -218,12 +218,12 @@ struct RuntimeShared {
     info: SerialDeviceInfo,
     owner_cpu: usize,
     polling: bool,
-    port: SpinLock<Box<dyn rdif_serial::UartPort>>,
+    port: RawSpinLock<Box<dyn rdif_serial::UartPort>>,
     register_gate: Arc<rdif_serial::UartRegisterGate<dyn rdif_serial::UartEmergencyTx>>,
     ingress: TxIngress,
     log_mailbox: Arc<LogMailbox>,
-    rx_subscription: SpinLock<Option<SpscConsumer<RxItem>>>,
-    log_subscription_gate: SpinLock<OrderedOutput>,
+    rx_subscription: RawSpinLock<Option<SpscConsumer<RxItem>>>,
+    log_subscription_gate: RawSpinLock<OrderedOutput>,
     log_subscription_active: AtomicBool,
     log_subscription_dropped_records: AtomicUsize,
     log_subscription_dropped_bytes: AtomicUsize,
@@ -943,12 +943,12 @@ fn build_runtime(
         info,
         owner_cpu: primary_cpu,
         polling,
-        port: SpinLock::new(port),
+        port: RawSpinLock::new(port),
         register_gate: register_gate.clone(),
         ingress: TxIngress::new(),
         log_mailbox,
-        rx_subscription: SpinLock::new(Some(rx_output_consumer)),
-        log_subscription_gate: SpinLock::new(OrderedOutput::new(LOG_SUBSCRIPTION_CAPACITY)),
+        rx_subscription: RawSpinLock::new(Some(rx_output_consumer)),
+        log_subscription_gate: RawSpinLock::new(OrderedOutput::new(LOG_SUBSCRIPTION_CAPACITY)),
         log_subscription_active: AtomicBool::new(false),
         log_subscription_dropped_records: AtomicUsize::new(0),
         log_subscription_dropped_bytes: AtomicUsize::new(0),
@@ -1025,20 +1025,18 @@ fn build_runtime(
         ));
     }
 
-    crate::thread::spawn_raw_with_policy_and_affinity(
-        move || worker.run(),
-        alloc::format!("serial{index}-maint"),
-        crate::thread::default_task_stack_size(),
-        serial_worker_policy(),
-        affinity,
-    )
-    .map_err(|error| {
-        warn!(
-            "failed to start serial maintenance worker for {}: {error}",
-            shared.info.name
-        );
-        RuntimeError::from(error)
-    })?;
+    crate::thread::builder(alloc::format!("serial{index}-maint"))
+        .stack_size(crate::thread::default_task_stack_size())
+        .policy(serial_worker_policy())
+        .affinity(affinity)
+        .spawn(move || worker.run())
+        .map_err(|error| {
+            warn!(
+                "failed to start serial maintenance worker for {}: {error}",
+                shared.info.name
+            );
+            RuntimeError::from(error)
+        })?;
     if let Some(registration) = pending_irq_registration {
         registration.commit();
     }

@@ -218,21 +218,22 @@ impl TracepointReclaimer {
         if self.started.swap(true, Ordering::AcqRel) {
             panic!("tracepoint reclaim worker started twice");
         }
-        crate::task::spawn_kernel_thread(
-            move || loop {
-                self.notify.wait();
+        crate::task::kernel_thread_builder("tracepoint-reclaim".into())
+            .spawn(move || {
                 loop {
-                    let drain = self.drain(TRACEPOINT_RECLAIM_BATCH);
-                    if !drain.pending || !drain.runnable {
-                        break;
+                    self.notify.wait();
+                    loop {
+                        let drain = self.drain(TRACEPOINT_RECLAIM_BATCH);
+                        if !drain.pending || !drain.runnable {
+                            break;
+                        }
+                        ax_runtime::task::thread::current::yield_current_cpu().unwrap_or_else(
+                            |error| panic!("tracepoint reclaim worker failed to yield: {error}"),
+                        );
                     }
-                    ax_runtime::task::thread::current::yield_current_cpu().unwrap_or_else(
-                        |error| panic!("tracepoint reclaim worker failed to yield: {error}"),
-                    );
                 }
-            },
-            "tracepoint-reclaim".into(),
-        )
+            })
+            .expect("failed to spawn kernel thread")
     }
 
     #[cfg(axtest)]

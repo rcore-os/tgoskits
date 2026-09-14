@@ -1,6 +1,8 @@
 //! x86_64 VM resource creation and initialization.
 
 use ax_memory_addr::PAGE_SIZE_4K;
+#[cfg(all(test, feature = "host-fs"))]
+use axdevice::FwCfgPayloadSlot;
 use axdevice::{DeviceFirmwareBinding, DeviceNodeId, DeviceNodeSpec};
 
 use super::*;
@@ -20,6 +22,10 @@ const ARCH_OWNED_REGIONS: [GuestOwnedRegion; 1] = [GuestOwnedRegion::new(
     X86_LOCAL_APIC_SIZE,
     crate::layout::VmRegionKind::Reserved,
 )];
+
+/// AMD FCH fixed system-management register aperture.
+const AMD_FCH_MMIO_BASE: usize = 0xfed8_0000;
+const AMD_FCH_MMIO_SIZE: usize = 0x1_0000;
 
 impl X86_64Arch {
     pub(crate) fn create_vm_resources(
@@ -95,6 +101,10 @@ fn plan_devices(
     let controller_id = DeviceNodeId::new("ioapic")?;
     let mut nodes = std::vec![
         DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("amd-fch-mmio")?,
+            super::unassigned_mmio_model(AMD_FCH_MMIO_BASE, AMD_FCH_MMIO_SIZE),
+        ),
+        DeviceNodeSpec::virtual_device(
             controller_id.clone(),
             super::ioapic_model(config.id(), 0xfec0_0000, 0x1000),
         )
@@ -138,6 +148,7 @@ fn plan_devices(
         &mut nodes,
         &controller_id,
         axdevice_base::InterruptControllerId::new(0),
+        Some(super::pci_config::host_key()),
     )?;
     Ok(SimpleVmPlan::new(VmDevicePlan::with_pci_host_for_vm(
         config,
@@ -146,6 +157,11 @@ fn plan_devices(
         super::resource_pools::create(config)?,
         super::pci_config::provider()?,
     )?))
+}
+
+#[cfg(all(test, feature = "host-fs"))]
+pub(crate) fn test_plan_devices(config: &AxVMConfig) -> AxVmResult<X86VmPlan> {
+    plan_devices(config, std::sync::Arc::new(FwCfgPayloadSlot::new()))
 }
 
 fn build_vcpu_setup_config(
@@ -246,6 +262,48 @@ fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn x86_device_plan_intercepts_the_amd_fch_mmio_window() {
+        use crate::vm::prepare::device_plan::ArchitectureVmPlan;
+
+        let mut catalog = crate::ConfiguredDeviceCatalog::new();
+        crate::machine::register_devices(&mut catalog).unwrap();
+        let config = AxVMConfig::new(AxVMConfigParams {
+            id: 1,
+            name: "x86-amd-fch-mmio-test".into(),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            memory_regions: std::vec![VmMemConfig {
+                gpa: 0,
+                size: 0x2000_0000,
+                flags: 0x7,
+                map_type: VmMemMappingType::MapAlloc,
+            }],
+            virtual_device_catalog: std::sync::Arc::new(catalog),
+            ..Default::default()
+        });
+        let device_plan = plan_devices(
+            &config,
+            std::sync::Arc::new(axdevice::FwCfgPayloadSlot::new()),
+        )
+        .unwrap();
+        let graph = ArchitectureVmPlan::devices(&device_plan).graph();
+        let resources = graph
+            .resources_for(&DeviceNodeId::new("amd-fch-mmio").unwrap())
+            .unwrap();
+
+        assert_eq!(
+            resources
+                .mmio_ranges()
+                .map(|(slot, base, size)| (slot.clone(), base, size))
+                .collect::<std::vec::Vec<_>>(),
+            std::vec![(
+                ResourceSlot::new("registers").unwrap(),
+                AMD_FCH_MMIO_BASE as u64,
+                AMD_FCH_MMIO_SIZE as u64,
+            )]
+        );
+    }
 
     #[test]
     fn svm_reserves_the_local_apic_trap_region() {

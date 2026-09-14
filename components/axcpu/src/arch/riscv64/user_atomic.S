@@ -80,3 +80,35 @@ __axcpu_user_atomic_u32:
 .size __axcpu_user_atomic_u32, . - __axcpu_user_atomic_u32
 
 .option pop
+
+.option push
+.option arch, +zalrsc
+.global __axcpu_user_cmpxchg_u32
+.type __axcpu_user_cmpxchg_u32, @function
+__axcpu_user_cmpxchg_u32:
+    // LR.W sign-extends; compare the same representation when bit 31 is set.
+    .if XLENB == 8
+    sext.w a1, a1
+    .endif
+    li t2, 128
+1:
+    lr.w t0, (a0)
+    bne t0, a1, .Luser_cmpxchg_observed
+2:
+    sc.w.aqrl t1, a2, (a0)
+    beqz t1, .Luser_cmpxchg_observed
+    addi t2, t2, -1
+    bnez t2, 1b
+    li a0, 2
+    ret
+.Luser_cmpxchg_observed:
+    sw t0, 0(a3)
+    li a0, 0
+    ret
+.Luser_cmpxchg_fault:
+    li a0, 1
+    ret
+    _asm_nofault_extable 1b, .Luser_cmpxchg_fault
+    _asm_nofault_extable 2b, .Luser_cmpxchg_fault
+.size __axcpu_user_cmpxchg_u32, . - __axcpu_user_cmpxchg_u32
+.option pop

@@ -44,16 +44,12 @@ impl DeferredVcpuKick {
         }
         self.stopping.store(false, Ordering::Release);
         let state = self.clone();
-        let thread = unsafe {
+        let thread = {
             // SAFETY: no OS extension or affinity capability is transferred;
             // the worker closure and VM-owned state move exactly once.
-            crate::host::task::spawn_thread_with_extension_and_affinity(
-                move || state.run_worker(),
-                std::format!("VM[{}]-irq-kick", self.vm_id),
-                KICK_WORKER_STACK_SIZE,
-                None,
-                None,
-            )
+            crate::host::task::builder(std::format!("VM[{}]-irq-kick", self.vm_id))
+                .stack_size(KICK_WORKER_STACK_SIZE)
+                .spawn(move || state.run_worker())
         }
         .map_err(|error| AxVmError::host("start deferred vCPU kick worker", error))?;
         *worker = Some(thread);
@@ -92,7 +88,7 @@ impl DeferredVcpuKick {
         self.stopping.store(true, Ordering::Release);
         self.notify.notify();
         let worker = self.worker.lock_unpoisoned().take();
-        let join_result = worker.map_or(Ok(0), crate::host::task::join_thread);
+        let join_result = worker.map_or(Ok(0), crate::ThreadHandle::join);
         self.pending_vcpus.store(0, Ordering::Release);
         join_result
             .map(|_exit_code| ())

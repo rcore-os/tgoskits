@@ -23,12 +23,10 @@ pub fn run() -> crate::TestResult {
          cpu_num={cpu_num}"
     );
 
-    ax_std::os::arceos::thread::spawn_raw(
-        move || hit_guard_page(target_cpu),
-        "stack-guard-page-overflow".into(),
-        STACK_SIZE,
-    )
-    .expect("failed to spawn the kernel stack guard probe");
+    ax_std::os::arceos::thread::builder("stack-guard-page-overflow".into())
+        .stack_size(STACK_SIZE)
+        .spawn(move || hit_guard_page(target_cpu))
+        .expect("failed to spawn the kernel stack guard probe");
 
     loop {
         thread::yield_now();

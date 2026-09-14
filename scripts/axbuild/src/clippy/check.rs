@@ -113,6 +113,7 @@ impl ClippyCheck {
             .iter()
             .position(|arg| arg == "--")
             .expect("clippy arguments must delimit rustc flags");
+        args.splice(rustc_args_index + 1..rustc_args_index + 1, target.rustflags);
         args.splice(rustc_args_index..rustc_args_index, target.cargo_args);
 
         let mut env = self.env.clone();

@@ -38,6 +38,8 @@ pub(crate) enum IdlePullReservation {
 pub(crate) struct IdlePullClaim<'remote> {
     remote: &'remote CpuRemote,
     state: u64,
+    // Drop clears the claim before this lease allows final CPU draining.
+    _publication: CpuRemotePublication<'remote>,
 }
 
 impl IdlePullClaim<'_> {
@@ -104,6 +106,9 @@ impl Drop for IdlePullWorkPublication<'_> {
 
 impl CpuRemote {
     pub(crate) fn begin_idle_pull(&self) -> IdlePullReservation {
+        let Some(_publication) = self.begin_publication() else {
+            return IdlePullReservation::Busy;
+        };
         let mut current = self.idle_pull.state.load(Ordering::Acquire);
         loop {
             if current & IDLE_PULL_PUBLISHER_MASK != 0 {
@@ -123,7 +128,16 @@ impl CpuRemote {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return IdlePullReservation::Started(pending),
+                Ok(_) => {
+                    // Inactivation can win after the read-side lease starts.
+                    // Withdraw a late reservation before releasing the lease;
+                    // one published earlier is cancelled by try_deactivate.
+                    if !self.accepts_placement() {
+                        self.cancel_idle_pull(pending);
+                        return IdlePullReservation::Busy;
+                    }
+                    return IdlePullReservation::Started(pending);
+                }
                 Err(actual) => current = actual,
             }
         }
@@ -202,6 +216,10 @@ impl CpuRemote {
     }
 
     pub(crate) fn claim_idle_pull(&self, reservation: u64) -> Option<IdlePullClaim<'_>> {
+        // Linux's CPU-deactivate grace period covers source-side balancing
+        // readers through their complete rq transaction. Keep the destination
+        // protected even after migration publication itself has completed.
+        let publication = self.begin_publication()?;
         if reservation & (IDLE_PULL_PHASE_MASK | IDLE_PULL_PUBLISHER_MASK) != IDLE_PULL_PENDING {
             return None;
         }
@@ -213,6 +231,7 @@ impl CpuRemote {
             .map(|_| IdlePullClaim {
                 remote: self,
                 state: claimed,
+                _publication: publication,
             })
     }
 

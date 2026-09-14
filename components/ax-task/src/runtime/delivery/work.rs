@@ -8,6 +8,12 @@ const WORKER_UNINSTALLED: u8 = 0;
 const WORKER_STARTING: u8 = 1;
 const WORKER_INSTALLED: u8 = 2;
 
+/// Task-work callbacks and destructors may acquire ordinary sleeping locks.
+pub(crate) fn validate_task_work_context() -> Result<(), TaskError> {
+    crate::thread::current::validate_blocking_context()?;
+    crate::thread::current::validate_sleeping_lock_context()
+}
+
 /// Allocation-free doorbell shared by scheduler producers and the reaper.
 #[derive(Debug)]
 pub(crate) struct TaskWorkDoorbell {
@@ -80,6 +86,7 @@ impl TaskWorkDoorbell {
     }
 
     pub(crate) fn try_claim_consumer(&self) -> Result<TaskWorkConsumerGuard<'_>, TaskError> {
+        validate_task_work_context()?;
         self.consumer_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| TaskError::ThreadBusy)?;

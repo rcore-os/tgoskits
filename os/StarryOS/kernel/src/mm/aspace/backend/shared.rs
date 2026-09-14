@@ -442,6 +442,7 @@ impl MappingExecution for SharedBackend {
             .map_err(|_| crate::StarryError::NoMemory)?;
         for vaddr in pages_in(range, self.leaf_size)? {
             let (page, paddr) = self.page_for_materialization(vaddr, self.leaf_size)?;
+            page.prepare_executable_mapping(paddr, self.leaf_size, flags);
             if let Err(error) = pt.map_page(vaddr, paddr, self.leaf_size, flags) {
                 for old_va in mapped.into_iter().rev() {
                     let _ = pt.unmap_page(old_va);
@@ -562,6 +563,7 @@ impl MappingExecution for SharedBackend {
                 }
                 Err(PagingError::NotMapped) => {
                     let (page, paddr) = self.page_for_materialization(vaddr, leaf_size)?;
+                    page.prepare_executable_mapping(paddr, leaf_size, flags);
                     if let Err(error) = pt.map_page(vaddr, paddr, leaf_size, flags) {
                         for old_va in installed.into_iter().rev() {
                             let _ = pt.unmap_page(old_va);
@@ -639,6 +641,7 @@ impl MappingExecution for SharedBackend {
                 .object
                 .resident_page(page_index)
                 .ok_or(crate::StarryError::BadState)?;
+            page.prepare_executable_mapping(paddr, leaf_size, pte_flags);
             if let Err(error) = new_pt.map_page(va, paddr, leaf_size, pte_flags) {
                 for old_va in installed.into_iter().rev() {
                     let _ = new_pt.unmap_page(old_va);

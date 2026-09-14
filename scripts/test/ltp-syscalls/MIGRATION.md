@@ -2,7 +2,7 @@
 
 ## 1. 迁移边界
 
-本轮以 `5a5e6693542ff780a25efa5b36006723ef4306d9` 为起点，逐个审计 Starry 用户态可见语义测试。`migration.csv` 保存原程序、处理状态、LTP 映射、覆盖损失和验证记录；状态为“待审计”的行不代表允许删除。目录扫描只建立候选清单，最终范围由测试断言决定，硬件验证和性能基准保留。
+本文件记录已合入的迁移批次；2026-09-11 新一轮从 `origin/dev e8c2e66466682528d64e4b8102d5940333beaabb` 继续逐项审计 Starry 用户态可见语义测试。`migration.csv` 保存原程序、处理状态、LTP 映射、覆盖损失和验证记录；状态为“待审计”的行不代表允许删除。目录扫描只建立候选清单，最终范围由测试断言决定，硬件验证和性能基准保留。
 
 ### 1.1 上游基准
 
@@ -10,9 +10,9 @@ LTP 固定为 `20260529`，提交为 `3a64d78f58bdceba93ed321e91215fb969a047ed`�
 
 ### 1.2 提交与证据
 
-每个原程序单独提交，提交主题记录在 `migration.csv` 中，可用 `git log --fixed-strings --grep='<主题>'` 定位提交。完整替代、部分替代后清理、无等效项清理必须分别记录；删除未承接的断言是本轮明确接受的覆盖收缩，不能称为等效覆盖。已提交修复保留原有红绿证据。2026-09-09起按用户调整后的规则，候选LTP执行出错时记录输入、失败结果、体系结构和日志，保留原测试并暂缓该项，不继续修复；优先完成无需修复的替换。暂缓项继续保留在候选清单，不计入迁移完成数，实际执行清单只接入已完成验证的替换。
+每个原程序单独提交，提交主题记录在 `migration.csv` 中，可用 `git log --fixed-strings --grep='<主题>'` 定位提交。完整替代、部分替代后清理、无等效项清理必须分别记录；删除未承接的断言是本轮明确接受的覆盖收缩，不能称为等效覆盖。已提交修复保留原有红绿证据。候选 LTP 执行出错时记录输入、失败结果、体系结构和日志，保留原测试并暂缓该项，不通过隐藏 `TCONF`、放宽完成门槛或增加超时接入。2026-09-11 本轮按用户停止条件在首个可修复普通缺陷 `linkat` 处暂停新候选探索，集中完成根因修复与此前累计验证。
 
-本 PR 范围随后按用户要求冻结为当前已完成的13项（9项部分替代、4项无等效清理）。其余候选保留现状，不继续迁移；IPv6不接入。后续只修复本 PR 持续集成问题并验证最终提交。
+上一轮 PR #2322 范围冻结为 13 项（9 项部分替代、4 项无等效清理）；其余候选保留现状，IPv6 不接入。本轮新增范围仅为 `bug-linkat-flags-symlink` 的 `linkat01` 部分替代及其必要的绝对目标路径修复，完成后停止新增迁移。
 
 上一轮 PR #2322 已合入。后续从最新 dev 继续的替换、失败暂缓与验证记录见 [`NEXT.md`](NEXT.md)；本文件的 13 项冻结范围是上一轮交付记录。
 
@@ -28,7 +28,13 @@ LTP 固定为 `20260529`，提交为 `3a64d78f58bdceba93ed321e91215fb969a047ed`�
 
 ### 2.2 验证状态
 
-本文件与 `migration.csv` 随每项迁移更新。未完成四架构运行的项目不能标为验证通过，未完成的迁移也不计入交付数量。定向入口为 `cargo xtask starry test qemu --arch <arch> -c qemu/ltp-syscalls`；最终还需四架构完整 `qemu/system` 及受影响用例验证。
+本文件与 `migration.csv` 随每项迁移更新。未完成四架构运行的项目不能标为验证通过，未完成的迁移也不计入交付数量。定向入口为 `cargo xtask starry test qemu --arch <arch> -c qemu/system/ltp-syscalls`；最终还需四架构完整 `qemu/system` 及受影响用例验证。
+
+### 2.8 linkat 路径与 flags
+
+`bug-linkat-flags-symlink` 部分替换为固定 LTP [linkat01.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/linkat/linkat01.c)，共 22 个源码规定的完成断言。它承接相对/绝对源与目标路径、目录描述符边界、跨设备链接、目录链接和非法 flags；不承接原测试的 symlink 本体与 `AT_SYMLINK_FOLLOW` 目标内容、坏用户指针优先级、`EEXIST`，也不承接需要 ext2 的 [linkat02.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/linkat/linkat02.c) 错误组合。`linkat02` 在当前镜像中因缺少 `mkfs.ext2` 返回 `TCONF`，未接入累计集合。
+
+固定 Linux v7.1 的 [`filename_linkat()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L5808-L5883) 通过 `filename_create()` 解析目标路径，绝对目标路径忽略 `newdfd`。Starry 的入口为 `sys_linkat`，源路径经 `resolve_at`，目标路径经 `with_fs`、`FsContext::resolve_nonexistent` 后调用 `Location::link`；修复把绝对目标路径的 `new_dirfd` 归一为 `AT_FDCWD`。同一 LTP 用例提供确定性红绿证据：x86_64 修复前累计 `total=90 passed=88 failed=2`，第 11、15 项分别得到 `ENOTDIR`、`EBADF`；修复后四架构 `linkat01` 均 22/22 `TPASS`，累计 `ltp-syscalls` 分别为 x86_64 `89/89`、aarch64 `87/87`、riscv64 `87/87`、loongarch64 `87/87`，外层 QEMU 均为 `PASS`。完整 `qemu/system` 分别为 x86_64 `515/515`、aarch64 `513/513`、riscv64 `513/513`、loongarch64 `513/513`，外层均为 `PASS`。
 
 首项迁移发现 loongarch64 的 `--capture-failures` 吞掉成功 LTP 用例的原始输出。四架构 QEMU 虽然都返回成功，`generate-common.sh` 却确定性返回 1，报告 `the four-architecture LTP intersection is empty`。`starry_system_test_runner.c` 现在在捕获模式下也回放 LTP 成功输出，使完成数量可以被离线复核；原生 C 用例的输出策略不变。修复后 loongarch64 QEMU 通过，同一生成命令返回 0，`cmp` 确认结果与实际 manifest 完全一致，未丢掉任何预期用例。完整日志保存在实施机器 `/tmp/starry-ltp-migration-evidence/01-affinity-*.log`；loongarch64 使用 `01-affinity-loongarch64-green.log`。
 
@@ -235,6 +241,7 @@ CMake读取`CMAKE_C_COMPILER_TARGET`的架构前缀，将可选的`cases-<arch>.
 | lremovexattr(共享只读观察) / x86_64:198；aarch64、riscv64、loongarch64:15 | [Linux v7.1 fs/xattr.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/xattr.c) | 已有写入门禁应观察当前路径共享文件系统的只读限制；本行不承诺其他错误顺序 | sys_lremovexattr → resolve_path(nofollow) → Location::remove_xattr → Location::is_readonly | 无法确认 | 改变来自共同状态所有者；本项权限探测不是该写入入口在共享SB切换下的直接证据 |
 | fremovexattr(共享只读观察) / x86_64:199；aarch64、riscv64、loongarch64:16 | [Linux v7.1 fs/xattr.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/xattr.c) | 已有写入门禁应观察当前路径共享文件系统的只读限制；本行不承诺其他错误顺序 | sys_fremovexattr → resolve_fd → Location::remove_xattr → Location::is_readonly | 无法确认 | 改变来自共同状态所有者；本项权限探测不是该写入入口在共享SB切换下的直接证据 |
 | linkat(AT_EMPTY_PATH当前目录) / x86_64:265；aarch64、riscv64、loongarch64:37 | [Linux v7.1 fs/namei.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 空路径与AT_FDCWD引用当前目录，后续类型及权限仍由各入口决定 | sys_linkat → resolve_at → FsContext::current_dir | 无法确认 | 已复核共享解析调用，未把faccessat2/fstatat运行证据外推到本入口 |
+| linkat(普通路径与绝对目标) / x86_64:265；aarch64、riscv64、loongarch64:37 | [Linux v7.1 filename_linkat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L5808-L5883) | flags 先校验；源路径按 `AT_SYMLINK_FOLLOW` 决定末级链接；绝对目标路径忽略 `newdfd`；目录链接返回 EPERM | sys_linkat → resolve_at → with_fs → FsContext::resolve_nonexistent → Location::link | 部分正确 | linkat01 22 项；x86_64 修复前第11/15项红、修复后22/22 TPASS；symlink、EEXIST、linkat02 ext2错误组合未覆盖 |
 | fchownat(AT_EMPTY_PATH当前目录) / x86_64:260；aarch64、riscv64、loongarch64:54 | [Linux v7.1 fs/namei.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 空路径与AT_FDCWD引用当前目录，后续类型及权限仍由各入口决定 | sys_fchownat → resolve_at → FsContext::current_dir | 无法确认 | 已复核共享解析调用，未把faccessat2/fstatat运行证据外推到本入口 |
 | fchmodat2(AT_EMPTY_PATH当前目录) / x86_64:452；aarch64、riscv64、loongarch64:452 | [Linux v7.1 fs/namei.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 空路径与AT_FDCWD引用当前目录，后续类型及权限仍由各入口决定 | sys_fchmodat → resolve_at → FsContext::current_dir | 无法确认 | 已复核共享解析调用，未把faccessat2/fstatat运行证据外推到本入口 |
 | name_to_handle_at(AT_EMPTY_PATH当前目录) / x86_64:303；aarch64、riscv64、loongarch64:264 | [Linux v7.1 fs/namei.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c) | 空路径与AT_FDCWD引用当前目录，后续类型及权限仍由各入口决定 | sys_name_to_handle_at → resolve_at → FsContext::current_dir | 无法确认 | 已复核共享解析调用，未把faccessat2/fstatat运行证据外推到本入口 |

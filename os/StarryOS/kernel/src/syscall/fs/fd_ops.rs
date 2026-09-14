@@ -19,7 +19,7 @@ use crate::{
     },
     mm::{VmMutPtr, VmPtr, vm_load, vm_load_path_string},
     pseudofs::{Device, dev::tty},
-    sync::SpinRwLock,
+    sync::RawSpinRwLock,
     task::{
         TgidNumber, TidNumber, current_pid_view, get_user_process_data_by_number,
         get_user_task_by_number,
@@ -132,6 +132,14 @@ fn add_to_fd(
                 let inner = device.inner().as_any();
                 if crate::pseudofs::usbfs::is_usbfs_device(inner) {
                     let wrapped = crate::pseudofs::usbfs::open_usbfs_file(inner, file, flags)?;
+                    if flags & O_NONBLOCK != 0 {
+                        wrapped.set_nonblocking(true)?;
+                    }
+                    return add_file_like(wrapped, flags & O_CLOEXEC != 0);
+                }
+                #[cfg(feature = "rknpu")]
+                if crate::pseudofs::dev::card1::is_card1_device(inner) {
+                    let wrapped = crate::pseudofs::dev::card1::open_card1_file(file, flags)?;
                     if flags & O_NONBLOCK != 0 {
                         wrapped.set_nonblocking(true)?;
                     }
@@ -691,7 +699,7 @@ pub fn sys_close_range(
     debug!("sys_close_range <= fds: [{first}, {last}], flags: {flags:?}");
     if flags.contains(CloseRangeFlags::UNSHARE) {
         let curr = current;
-        let new_files = Arc::new(SpinRwLock::new(
+        let new_files = Arc::new(RawSpinRwLock::new(
             crate::file::current_fd_table().read().clone(),
         ));
         curr.as_thread().with_current_scope_mut(|scope| {

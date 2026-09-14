@@ -642,6 +642,10 @@ impl NetlinkSocket {
 }
 
 impl FileLike for NetlinkSocket {
+    fn validate_write_access(&self) -> StarryResult {
+        Ok(())
+    }
+
     fn ioctl(
         &self,
         current: &crate::task::UserTaskRef,

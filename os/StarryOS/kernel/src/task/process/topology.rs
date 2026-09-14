@@ -21,9 +21,8 @@ type ThreadGroupLock<T> = Mutex<T>;
 
 #[derive(Default)]
 pub(crate) struct ThreadGroup {
+    last_exit_code: i32,
     pub(crate) threads: BTreeSet<TidNumber>,
-    pub(crate) exit_code: i32,
-    pub(crate) group_exited: bool,
     pub(crate) exited_cpu_time: ProcessCpuTime,
 }
 
@@ -116,6 +115,7 @@ pub struct Process {
     /// leaking the live/zombie ownership cycle.
     identity: Arc<PidIdentity>,
     is_child_subreaper: AtomicBool,
+    group_exit: Arc<starry_signal::api::GroupExit>,
     pub(crate) tg: ThreadGroupLock<ThreadGroup>,
 
     pub(crate) children: RelationLock<ChildRelations>,
@@ -354,15 +354,18 @@ impl Process {
         if !tg.threads.remove(&tid) {
             return ThreadExit::AlreadyExited;
         }
-        if !tg.group_exited {
-            tg.exit_code = exit_code;
+        if self.group_exit.status().is_none() {
+            tg.last_exit_code = exit_code;
         }
         tg.exited_cpu_time.add(cpu_time);
         if tg.threads.is_empty() {
-            tg.group_exited = true;
+            self.group_exit.begin(exit_code);
             ThreadExit::Last(LastThreadExitOwner {
                 process: self.clone(),
-                exit_code: tg.exit_code,
+                exit_code: self
+                    .group_exit
+                    .status()
+                    .expect("last thread committed exit"),
                 cpu_time: tg.exited_cpu_time,
             })
         } else {
@@ -388,24 +391,16 @@ impl Process {
         tg.threads.insert(new_tid);
     }
 
-    /// Starts a process-wide exit if one is not already in progress.
-    ///
-    /// Returns a snapshot of the thread group at the point where the group-exit
-    /// state was first published. Later exiting threads must not overwrite the
-    /// recorded process exit code.
-    pub fn start_group_exit(&self, exit_code: i32) -> Option<Vec<TidNumber>> {
-        let mut tg = self.tg.lock();
-        if tg.group_exited {
-            return None;
-        }
-        tg.group_exited = true;
-        tg.exit_code = exit_code;
-        Some(tg.threads.iter().copied().collect())
-    }
-
     /// The exit code of the [`Process`].
     pub fn exit_code(&self) -> i32 {
-        self.tg.lock().exit_code
+        self.group_exit
+            .status()
+            .unwrap_or_else(|| self.tg.lock().last_exit_code)
+    }
+
+    /// Shares the sole exit decision with the signal publication owner.
+    pub(crate) fn group_exit_state(&self) -> Arc<starry_signal::api::GroupExit> {
+        self.group_exit.clone()
     }
 }
 
@@ -467,11 +462,11 @@ impl fmt::Debug for Process {
         builder.field("pid", &self.pid);
 
         let tg = self.tg.lock();
-        if tg.group_exited {
-            builder.field("group_exited", &tg.group_exited);
-        }
-        if tg.threads.is_empty() {
-            builder.field("exit_code", &tg.exit_code);
+        if let Some(status) = self.group_exit.status() {
+            builder.field("group_exited", &true);
+            if tg.threads.is_empty() {
+                builder.field("exit_code", &status);
+            }
         }
 
         if let Some(parent) = self.parent() {
@@ -484,7 +479,10 @@ impl fmt::Debug for Process {
 
 /// Builder
 impl Process {
-    fn allocate(identity: Arc<PidIdentity>, parent: Option<&Arc<Process>>) -> Arc<Process> {
+    fn allocate(
+        identity: Arc<PidIdentity>,
+        parent: Option<&Arc<Process>>,
+    ) -> crate::StarryResult<Arc<Process>> {
         let pid = TgidNumber::from(identity.root_number());
         let group = parent.map_or_else(
             || {
@@ -496,58 +494,56 @@ impl Process {
             |p| p.group(),
         );
 
-        Arc::new(Process {
+        let group_exit =
+            crate::task::allocation::try_arc(starry_signal::api::GroupExit::default())?;
+        Ok(crate::task::allocation::try_arc(Process {
             pid,
             identity,
             is_child_subreaper: AtomicBool::new(false),
+            group_exit,
             tg: ThreadGroupLock::new(ThreadGroup::default()),
             children: RelationLock::new(ChildRelations::new()),
             parent: RelationLock::new(parent.map(Arc::downgrade).unwrap_or_default()),
             group: RelationLock::new(group),
-        })
+        })?)
     }
 
-    fn new(identity: Arc<PidIdentity>, parent: Option<Arc<Process>>) -> Arc<Process> {
-        let process = Self::allocate(identity, parent.as_ref());
-
-        if parent.is_some() {
-            assert!(
-                ProcessRelationTxn::publish(&process),
-                "new child PID must not already be visible"
-            );
-        } else {
-            ProcessRelationTxn::attach_group(&process);
-        }
-        process
+    fn new_bootstrap(identity: Arc<PidIdentity>) -> crate::StarryResult<Arc<Process>> {
+        let process = Self::allocate(identity, None)?;
+        ProcessRelationTxn::attach_group(&process);
+        Ok(process)
     }
 
-    /// Creates a init [`Process`].
-    ///
-    /// This function can be called multiple times, but
-    /// [`ProcessBuilder::build`] on the the result must be called only once.
-    pub fn new_init(identity: Arc<PidIdentity>) -> Arc<Process> {
-        Self::new(identity, None)
+    /// Prepares the bootstrap process and attaches its process group.
+    /// Linux task identity publication remains the caller's responsibility.
+    pub fn new_init(identity: Arc<PidIdentity>) -> crate::StarryResult<Arc<Process>> {
+        Self::new_bootstrap(identity)
     }
 
     /// Creates a child [`Process`].
     #[cfg(all(test, axtest))]
     pub fn fork(self: &Arc<Process>, identity: Arc<PidIdentity>) -> Arc<Process> {
         self.prepare_fork(identity)
+            .expect("failed to prepare test process")
             .publish()
             .expect("fork PID must not already be visible")
             .commit()
     }
 
-    pub fn prepare_fork(self: &Arc<Process>, identity: Arc<PidIdentity>) -> PreparedFork {
-        PreparedFork {
-            process: Self::allocate(identity, Some(self)),
-        }
+    /// Allocates private process state before any topology or task publication.
+    pub fn prepare_fork(
+        self: &Arc<Process>,
+        identity: Arc<PidIdentity>,
+    ) -> crate::StarryResult<PreparedFork> {
+        Ok(PreparedFork {
+            process: Self::allocate(identity, Some(self))?,
+        })
     }
 
     /// Creates an isolated process for kernel axtests without replacing init.
     #[cfg(axtest)]
     pub(crate) fn new_for_axtest(identity: Arc<PidIdentity>) -> Arc<Process> {
-        Self::new(identity, None)
+        Self::new_bootstrap(identity).expect("failed to prepare test process")
     }
 }
 
@@ -615,7 +611,7 @@ mod tests {
         }
 
         fn prepare_fork(&mut self, parent: &Arc<Process>) -> PreparedFork {
-            parent.prepare_fork(self.identity())
+            parent.prepare_fork(self.identity()).unwrap()
         }
     }
 
@@ -669,6 +665,24 @@ mod tests {
     fn prepared_fork_is_invisible_until_publication() {
         let mut fixture = TestProcessFixture::new();
         let init = fixture.init();
+        for failure in 0..2 {
+            let identity = fixture.identity();
+            let probe = ax_runtime::task::thread::ThreadAllocationProbe::fail_at(failure).unwrap();
+            let result = init.prepare_fork(identity);
+            assert_eq!(
+                result
+                    .err()
+                    .expect("process preparation allocation must fail")
+                    .linux_errno(),
+                syscalls::Errno::ENOMEM,
+            );
+            assert_eq!(probe.attempts(), failure + 1);
+            drop(probe);
+            assert!(
+                init.children().is_empty(),
+                "failed process preparation published a child"
+            );
+        }
         let prepared = fixture.prepare_fork(&init);
         let child = prepared.process();
 

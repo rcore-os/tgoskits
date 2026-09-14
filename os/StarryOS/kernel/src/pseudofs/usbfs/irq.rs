@@ -201,7 +201,9 @@ pub(super) fn start_event_pump() {
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        crate::task::spawn_kernel_thread(usbfs_event_service_task, "usbfs-event-worker".to_owned());
+        crate::task::kernel_thread_builder("usbfs-event-worker".to_owned())
+            .spawn(usbfs_event_service_task)
+            .expect("failed to spawn kernel thread");
         registry.deferred_notify.notify();
     }
 }

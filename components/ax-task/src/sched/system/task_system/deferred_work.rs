@@ -125,9 +125,7 @@ impl TaskSystem {
         &self,
         limit: usize,
     ) -> Result<DeferredTaskWorkBatch, TaskError> {
-        if task_runtime::in_hard_irq() {
-            return Err(TaskError::UnsafeContext);
-        }
+        crate::runtime::delivery::work::validate_task_work_context()?;
         let limit = limit.min(crate::runtime::config::DEFAULT_BATCH_LIMIT);
         if limit == 0 {
             return Ok(DeferredTaskWorkBatch::default());
@@ -144,6 +142,11 @@ impl TaskSystem {
                 let class = next_class;
                 next_class = class.next();
                 let processed = match class {
+                    DeferredTaskWorkClass::Cancellation => {
+                        let events = self.process_thread_cancellation()?;
+                        batch.cancellation_events += events;
+                        events
+                    }
                     DeferredTaskWorkClass::Deadline => {
                         let (events, callbacks) = self.dispatch_deadline_overruns_inner(1)?;
                         batch.deadline_events += events;
@@ -164,9 +167,14 @@ impl TaskSystem {
                         callbacks
                     }
                     DeferredTaskWorkClass::Reap => {
-                        let reaped = self.reap_unreferenced_exited_inner(1)?;
-                        batch.reaped_threads += reaped;
-                        reaped
+                        if self.reclaim_exited_execution()? {
+                            batch.execution_reclaims += 1;
+                            1
+                        } else {
+                            let reaped = self.reap_unreferenced_exited_inner(1)?;
+                            batch.reaped_threads += reaped;
+                            reaped
+                        }
                     }
                     DeferredTaskWorkClass::Reclaim => match self.reclaim_one_resource()? {
                         ResourceReclaim::None => 0,

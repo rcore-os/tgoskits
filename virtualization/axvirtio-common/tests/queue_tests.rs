@@ -5,6 +5,8 @@
 //! so the trait's default `read_obj`/`write_obj`/`read_buffer`/`write_buffer`
 //! operate on the same memory the test sets up and later inspects.
 
+extern crate ax_runtime as _;
+
 use std::sync::Arc;
 
 use ax_memory_addr::PhysAddr;

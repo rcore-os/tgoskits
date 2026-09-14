@@ -1,6 +1,6 @@
 [package]
 name = "starry-signal"
-version = "0.9.0"
+version = "0.10.2"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Signal management library for Starry OS"
@@ -28,3 +28,6 @@ thiserror.workspace = true
 [dev-dependencies]
 ax-runtime = { path = "../../arceos/modules/axruntime", features = ["host-test", "smp", "lockdep"] }
 extern-trait = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

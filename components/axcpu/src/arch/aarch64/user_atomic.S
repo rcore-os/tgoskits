@@ -72,3 +72,36 @@ __axcpu_user_atomic_u32:
     _asm_nofault_extable 1b, .Luser_atomic_fault
     _asm_nofault_extable 2b, .Luser_atomic_fault
 .size __axcpu_user_atomic_u32, . - __axcpu_user_atomic_u32
+
+.global __axcpu_user_cmpxchg_u32
+.type __axcpu_user_cmpxchg_u32, %function
+__axcpu_user_cmpxchg_u32:
+    mov w7, #128
+1:
+    ldxr w4, [x0]
+    cmp w4, w1
+    b.ne .Luser_cmpxchg_mismatch
+2:
+    stlxr w5, w2, [x0]
+    cbz w5, .Luser_cmpxchg_success
+    subs w7, w7, #1
+    b.ne 1b
+    dmb ish
+    mov w0, #2
+    ret
+.Luser_cmpxchg_success:
+    dmb ish
+    b .Luser_cmpxchg_observed
+.Luser_cmpxchg_mismatch:
+    clrex
+.Luser_cmpxchg_observed:
+    str w4, [x3]
+    mov w0, #0
+    ret
+.Luser_cmpxchg_fault:
+    clrex
+    mov w0, #1
+    ret
+    _asm_nofault_extable 1b, .Luser_cmpxchg_fault
+    _asm_nofault_extable 2b, .Luser_cmpxchg_fault
+.size __axcpu_user_cmpxchg_u32, . - __axcpu_user_cmpxchg_u32

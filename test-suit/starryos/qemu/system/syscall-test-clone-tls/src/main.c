@@ -33,6 +33,7 @@
 #include <sched.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <signal.h>
@@ -125,6 +126,19 @@ static int test_parent_settid(void)
     if (c > 0) {
         CHECK(ptid == c, "ptid 在父内存被写为子 TID(clone 返回前)");
         waitpid(c, NULL, 0);
+    }
+    int *invalid_outputs[] = {NULL, (int *)-1};
+    for (size_t i = 0; i < sizeof(invalid_outputs) / sizeof(invalid_outputs[0]); ++i) {
+        long child = syscall(SYS_clone, CLONE_PARENT_SETTID | SIGCHLD, 0,
+                             invalid_outputs[i], 0, 0);
+        if (child == 0) _exit(42);
+        CHECK(child > 0, "parent_tid copyout failure does not cancel a published child");
+        if (child > 0) {
+            int status = 0;
+            CHECK(waitpid((pid_t)child, &status, 0) == child
+                  && WIFEXITED(status) && WEXITSTATUS(status) == 42,
+                  "child runs after parent_tid copyout failure");
+        }
     }
     TEST_DONE();
 }
@@ -256,15 +270,41 @@ static int test_pidfd_parent_settid_einval(void)
 static int test_pidfd_copyout_rollback(void)
 {
     TEST_START("G. CLONE_PIDFD copyout failure rolls back before child activation");
-    errno = 0;
-    long child = syscall(SYS_clone, CLONE_PIDFD | SIGCHLD, 0, (int *)-1, 0, 0);
-    if (child == 0) _exit(42);
-    int error = errno;
-    CHECK(child == -1 && error == EFAULT, "invalid pidfd output returns EFAULT");
-    if (child > 0) waitpid((pid_t)child, NULL, 0);
-    errno = 0;
-    CHECK(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD,
-          "failed clone publishes no waitable child");
+    int *invalid_outputs[] = {NULL, (int *)-1};
+    long child;
+    for (size_t i = 0; i < sizeof(invalid_outputs) / sizeof(invalid_outputs[0]); ++i) {
+        errno = 0;
+        child = syscall(SYS_clone, CLONE_PIDFD | SIGCHLD, 0, invalid_outputs[i], 0, 0);
+        if (child == 0) _exit(42);
+        int error = errno;
+        CHECK(child == -1 && error == EFAULT,
+              "NULL and unmapped pidfd outputs return EFAULT");
+        if (child > 0) waitpid((pid_t)child, NULL, 0);
+        errno = 0;
+        CHECK(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD,
+              "failed clone publishes no waitable child");
+    }
+
+    struct rlimit limit;
+    int limit_result = syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, NULL, &limit);
+    CHECK(limit_result == 0, "read original fd limit");
+    if (limit_result != 0) { TEST_DONE(); }
+    struct rlimit exhausted = limit;
+    exhausted.rlim_cur = 0;
+    for (size_t i = 0; i < sizeof(invalid_outputs) / sizeof(invalid_outputs[0]); ++i) {
+        limit_result = syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, &exhausted, NULL);
+        CHECK(limit_result == 0, "exhaust fd numbers before pidfd creation");
+        if (limit_result != 0) { TEST_DONE(); }
+        errno = 0;
+        child = syscall(SYS_clone, CLONE_PIDFD | SIGCHLD, 0, invalid_outputs[i], 0, 0);
+        if (child == 0) _exit(42);
+        int error = errno;
+        limit_result = syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, &limit, NULL);
+        CHECK(limit_result == 0, "restore fd limit after failed clone");
+        CHECK(child == -1 && error == EMFILE,
+              "pidfd reservation returns EMFILE before invalid output gives EFAULT");
+        if (child > 0) waitpid((pid_t)child, NULL, 0);
+    }
 
     int pidfd = -1;
     child = syscall(SYS_clone, CLONE_PIDFD | SIGCHLD, 0, &pidfd, 0, 0);

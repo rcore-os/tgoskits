@@ -84,7 +84,9 @@ RISC-V H 扩展的异常探测由 `ax_cpu::capability::has_hypervisor_extension`
 
 ## 动态统一可扩展固件接口平台
 
-StarryOS 的 x86_64 裸机产物是位置无关可执行映像，不带 QEMU 直接 ELF 加载所需的 Xen PVH note。若出现 `Error loading uncompressed kernel without PVH ELF Note`，说明尚未进入内核；随后出现的 shell check 未完成只是启动失败的结果。`apps/starry/mysql/qemu-x86_64*.toml` 与 `apps/starry/llvm22/qemu-x86_64.toml` 使用 `uefi = true`、`to_bin = true`，由项目运行器完成固件交接。该路径不使用 `-kernel`，因此也不能保留 QEMU 的 `-append` 参数；MySQL 配置由现有根文件系统发现机制选择唯一的 NVMe 根盘。不要通过调整 shell 成功匹配规则处理该加载错误。
+StarryOS 的 x86_64 裸机产物是位置无关可执行映像，不带 QEMU 直接 ELF 加载所需的 Xen PVH note。若出现 `Error loading uncompressed kernel without PVH ELF Note`，说明尚未进入内核；随后出现的 shell check 未完成只是启动失败的结果。`apps/starry/mysql/qemu-x86_64*.toml`、`apps/starry/llvm22/qemu-x86_64.toml` 与 `apps/starry/memcached/qemu-x86_64.toml` 使用 `uefi = true`、`to_bin = true`，由项目运行器完成固件交接。该路径不使用 `-kernel`，因此也不能保留 QEMU 的 `-append` 参数；MySQL 配置由现有根文件系统发现机制选择唯一的 NVMe 根盘。不要通过调整 shell 成功匹配规则处理该加载错误。
+
+将历史 Starry 应用迁入 `apps/starry` 时，同时核对当前 `qemu/system` 的装载方式。memcached 的 LoongArch 配置同样使用 `uefi = true`、`to_bin = true`，AArch64 与 RISC-V 保持直接二进制启动。应用只保留自身需要的 NVMe 和网络设备，避免继承无关的 USB 磁盘镜像依赖；协议测试必须在内核与服务启动后完成。
 
 - 动态平台表示平台事实由 `someboot`、`somehal` 和 `axplat-dyn` 从固件或运行时发现，不表示可以省略体系结构特定页表、陷阱、定时器、中断和电源代码。
 - 调试时分离页表阶段：`someboot` 负责启动页表和内存管理单元交接；`ax-cpu` 负责运行时第一阶段页表项与地址转换缓存；虚拟化组件负责第二阶段。三者可以使用 `page-table-generic` 执行通用操作，但该软件包不能选择活动体系结构。
@@ -307,3 +309,9 @@ x86、RISC-V 和 LoongArch 的 AxVM 映射变更先关闭该 VM 的客户机进�
 AArch64 客户机向量中的致命宿主异常通过 `ax_cpu::trap::fatal::FatalTrap` 静态交给 `ax-runtime::panic_output`。运行期屏蔽中断并读取已安装 CPU-local 区域，不能通过 `this_cpu_id()` 取得任务抢占守卫，不能依赖 `SP_EL0` 或 `TPIDR_EL0` 仍属于宿主任务。输出只使用 emergency console；递归和并发终止复用 `axpanic`，不进入应用的 Rust panic hook，不回溯未知栈，不仅停驻持锁 CPU。该路径要求有效宿主栈和 CPU-local 区域；它不实现 Linux nVHE 的独立 overflow stack 或异常表恢复/宿主现场切换。
 
 `cargo xtask axvisor test qemu --arch aarch64 --test-case el2-fatal` 覆盖真实四核 EL2 同步异常与应用 panic hook 绕过；同一命令选择 `--test-case el2-fatal-foreign-context` 验证清空 TLS/任务锚点后的终止诊断。验证需同时看到 `ARCEOS_PANIC_EMERGENCY` 与固定 BRK syndrome；命中 `EL2_FATAL_ENTERED_STD_PANIC` 必须使任务失败。常规 panic 与 browser-console 仍需分别验证，终止诊断不能证明长会话网络挂起已消除。
+
+## 用户可执行页与指令缓存
+
+Starry 的可执行文件页、COW 拷贝及预填充由 `PageObject::prepare_executable_mapping` 在可执行 PTE 发布前完成缓存同步，mprotect 同样先同步被保留的叶子页。AArch64 使用直接映射别名清理 D-cache 到 PoU，再以 `ic ialluis; dsb ish; isb` 完成 Inner Shareable 指令缓存失效；远端 CPU 的用户异常返回提供 context synchronization。只执行 TLBI、加原子屏障或只在首次进入用户态清缓存不能覆盖后续缺页。
+
+对照 Linux `8cd9520d35a6c38db6567e97dd93b1f11f185dc6` 的 `__set_ptes_anysz -> __sync_cache_and_tags -> __sync_icache_dcache`。用 `cargo xtask starry test board --board orangepi-5-plus --test-case exec-cache` 验证文件页内核写入后的重新取指；QEMU 只作为执行路径检查，不作为 I-cache/D-cache 实机红绿证明。完整所有权与证据见 `docs/design/user-executable-cache-coherence.md`。

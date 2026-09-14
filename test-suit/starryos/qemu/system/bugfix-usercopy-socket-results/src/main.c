@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -153,6 +154,47 @@ static void socketpair_copyout_failure_preserves_fd_table(size_t page_size)
     munmap(output, page_size);
 }
 
+static void socketpair_preparation_order(size_t page_size)
+{
+    int pair[2] = {-1, -1};
+    int before = fd_count();
+    errno = 0;
+    long result = syscall(SYS_socketpair, -1, SOCK_DGRAM, 0, NULL);
+    CHECK(result == -1 && errno == EFAULT, "socketpair copyout precedes family validation");
+    errno = 0;
+    result = syscall(SYS_socketpair, -1, SOCK_DGRAM | 0x100, 0, NULL);
+    CHECK(result == -1 && errno == EINVAL, "socketpair rejects flags before reservation and copyout");
+
+    errno = 0;
+    result = syscall(SYS_socketpair, -1, SOCK_DGRAM, 0, pair);
+    CHECK(result == -1 && errno == EAFNOSUPPORT, "socketpair rejects unsupported family after copyout");
+    CHECK(pair[0] >= 0 && pair[1] >= 0 && pair[0] != pair[1],
+          "socketpair exposes reserved numbers even if socket creation fails");
+    CHECK(fd_count() == before, "socketpair creation failure releases both reservations");
+
+    unsigned char *pages = two_pages(page_size);
+    int *partial = (int *)(pages + page_size - sizeof(int));
+    *partial = -1;
+    REQUIRE(mprotect(pages + page_size, page_size, PROT_NONE) == 0);
+    errno = 0;
+    result = syscall(SYS_socketpair, AF_UNIX, SOCK_DGRAM, 0, partial);
+    CHECK(result == -1 && errno == EFAULT, "socketpair faults on second descriptor copyout");
+    CHECK(*partial >= 0, "socketpair preserves first copyout when second faults");
+    CHECK(fd_count() == before, "socketpair partial copyout releases both reservations");
+    munmap(pages, page_size * 2);
+
+    struct rlimit saved;
+    REQUIRE(getrlimit(RLIMIT_NOFILE, &saved) == 0);
+    struct rlimit exhausted = saved;
+    exhausted.rlim_cur = 0;
+    REQUIRE(setrlimit(RLIMIT_NOFILE, &exhausted) == 0);
+    errno = 0;
+    result = syscall(SYS_socketpair, -1, SOCK_DGRAM, 0, NULL);
+    int error = errno;
+    REQUIRE(setrlimit(RLIMIT_NOFILE, &saved) == 0);
+    CHECK(result == -1 && error == EMFILE, "socketpair fd exhaustion precedes copyout and creation");
+}
+
 static void scm_rights_fault_does_not_install_fd(size_t page_size)
 {
     int pair[2];
@@ -199,6 +241,7 @@ int main(void)
     recvmsg_writes_only_results(page_size, 1);
     scm_rights_fault_does_not_install_fd(page_size);
     socketpair_copyout_failure_preserves_fd_table(page_size);
+    socketpair_preparation_order(page_size);
     printf("USERCOPY_SOCKET_RESULTS_%s failures=%d\n", failures ? "FAILED" : "PASSED", failures);
     return failures != 0;
 }

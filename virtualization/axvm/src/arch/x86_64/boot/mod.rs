@@ -373,8 +373,14 @@ fn prepare_x86_firmware(
     loader: &ImageLoaderCore<'_>,
     payload: X86FwCfgPayload,
 ) -> AxVmResult<PreparedX86Firmware> {
+    let passthrough_intx_routes = x86_passthrough_intx_routes()?;
     let plan = loader.vm.with_planned_device_graph(|graph| {
-        acpi::X86FirmwarePlan::from_graph(graph, loader.config.base.cpu_num).map_err(|error| {
+        acpi::X86FirmwarePlan::from_graph(
+            graph,
+            loader.config.base.cpu_num,
+            &passthrough_intx_routes,
+        )
+        .map_err(|error| {
             AxVmError::invalid_config(format!(
                 "failed to derive x86 firmware resources from the device graph: {error}"
             ))
@@ -407,6 +413,33 @@ fn prepare_x86_firmware(
         },
     })?;
     Ok(PreparedX86Firmware { plan, direct_acpi })
+}
+
+fn x86_passthrough_intx_routes() -> AxVmResult<std::vec::Vec<acpi::X86PciIntxRoute>> {
+    #[cfg(feature = "host-fs")]
+    {
+        let mut routes = std::vec::Vec::new();
+        let (device, function, pin, guest_gsi) =
+            crate::boot::images::x86_qemu_passthrough_block_intx();
+        if function != 0 || !(1..=4).contains(&pin) {
+            return Err(AxVmError::invalid_config(
+                "x86 passthrough PCI INTx contribution is not a bus-0 function-0 pin",
+            ));
+        }
+        let gsi = u8::try_from(guest_gsi).map_err(|_| {
+            AxVmError::invalid_config("x86 passthrough PCI INTx GSI exceeds firmware encoding")
+        })?;
+        routes.push(acpi::X86PciIntxRoute {
+            device,
+            pin: pin - 1,
+            gsi,
+        });
+        Ok(routes)
+    }
+    #[cfg(not(feature = "host-fs"))]
+    {
+        Ok(std::vec::Vec::new())
+    }
 }
 
 fn fw_cfg_ram_regions(loader: &ImageLoaderCore<'_>) -> Arc<[FwCfgRamRegion]> {
@@ -472,6 +505,7 @@ fn load_linux_layout(
             firmware.plan.apic_ids(),
             firmware.plan.local_apic_base(),
             firmware.plan.io_apic_base(),
+            firmware.plan.pci_intx_routes(),
         ),
         mptable::MP_TABLE_GPA.into(),
         loader.vm.clone(),
@@ -754,5 +788,50 @@ mod tests {
                 protocol: VMBootProtocol::Direct,
             }
         );
+    }
+
+    #[cfg(feature = "host-fs")]
+    #[test]
+    fn host_fs_passthrough_route_is_contributed_to_firmware() {
+        assert_eq!(
+            x86_passthrough_intx_routes().unwrap(),
+            vec![acpi::X86PciIntxRoute {
+                device: 3,
+                pin: 0,
+                gsi: 19,
+            }]
+        );
+    }
+
+    #[cfg(feature = "host-fs")]
+    #[test]
+    fn host_fs_passthrough_route_reaches_the_final_firmware_tables() {
+        use crate::vm::prepare::device_plan::ArchitectureVmPlan;
+
+        let config = AxVMConfig::default_for_test(0, "host-fs-firmware-route");
+        let device_plan = super::vm::test_plan_devices(&config).unwrap();
+        let graph = ArchitectureVmPlan::devices(&device_plan).graph();
+        let routes = x86_passthrough_intx_routes().unwrap();
+        let firmware = acpi::X86FirmwarePlan::from_graph(graph, 1, &routes).unwrap();
+        let route = routes[0];
+
+        let dsdt = acpi::build_dsdt(&firmware).unwrap();
+        assert!(
+            dsdt.windows(4)
+                .any(|window| window == route.acpi_address().to_le_bytes())
+        );
+
+        let mp_table = mptable::build(
+            firmware.apic_ids(),
+            firmware.local_apic_base(),
+            firmware.io_apic_base(),
+            firmware.pci_intx_routes(),
+        );
+        assert!(mp_table.windows(8).any(|entry| {
+            entry[0] == 3
+                && entry[4] == 0
+                && entry[5] == route.mp_source_irq()
+                && entry[7] == route.gsi
+        }));
     }
 }

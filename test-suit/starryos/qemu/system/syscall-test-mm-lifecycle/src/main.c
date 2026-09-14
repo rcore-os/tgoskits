@@ -126,6 +126,8 @@ static void run_mm_owner(int ready_fd, int go_fd, int done_fd,
     _exit(0);
 }
 
+int test_membarrier_user_return(void);
+
 int main(void)
 {
     int ready_pipe[2];
@@ -198,6 +200,8 @@ int main(void)
     close(go_pipe[1]);
     close(done_pipe[0]);
     munmap((void *)shared_page, page_size);
+    if (test_membarrier_user_return() != 0)
+        return 1;
     printf("MM_LIFECYCLE_CLONE_VM_OWNER_EXIT_PASSED\n");
     return 0;
 }

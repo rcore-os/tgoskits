@@ -4,7 +4,7 @@ use rdif_serial::Config;
 
 use crate::{
     RuntimeError, RuntimeResult,
-    task::sync::{Mutex, SpinLock, WaitQueue},
+    task::sync::{Mutex, RawSpinLock, WaitQueue},
 };
 
 pub(super) const CONTROL_QUEUE_CAPACITY: usize = 32;
@@ -45,13 +45,13 @@ pub(super) enum ControlRequest {
 }
 
 pub(super) struct ControlQueue {
-    requests: SpinLock<VecDeque<ControlRequest>>,
+    requests: RawSpinLock<VecDeque<ControlRequest>>,
 }
 
 impl ControlQueue {
     pub(super) fn new() -> Self {
         Self {
-            requests: SpinLock::new(VecDeque::with_capacity(CONTROL_QUEUE_CAPACITY)),
+            requests: RawSpinLock::new(VecDeque::with_capacity(CONTROL_QUEUE_CAPACITY)),
         }
     }
 

@@ -1,0 +1,15 @@
+# Four-core QEMU configuration; board runs use the project board profile.
+features = [
+  "ax-runtime/display",
+  "ax-runtime/rtc",
+  "ax-driver/nvme",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+  "starry-kernel/input",
+  "starry-kernel/vsock",
+]
+max_cpu_num = 4
+log = "Warn"
+target = "aarch64-unknown-none-softfloat"

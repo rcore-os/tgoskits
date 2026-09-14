@@ -101,6 +101,10 @@ impl PidFd {
     }
 }
 impl FileLike for PidFd {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         "anon_inode:[pidfd]".into()
     }

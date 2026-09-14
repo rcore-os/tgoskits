@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use core::{
     any::Any,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use ax_alloc::GlobalPage;
@@ -28,11 +28,25 @@ pub(super) struct SamplingState {
     pub(super) freq: bool,
     pub(super) target_freq: u32,
     pub(super) sample_type: u64,
+    pub(super) sample_id_all: bool,
+    pub(super) sample_user_lr: bool,
     pub(super) observer: PidNamespaceId,
     pub(super) poll_ready: Arc<PollSet>,
     pub(super) notify: Arc<IrqNotify>,
     pub(super) poll_alive: Arc<AtomicBool>,
     pub(super) output: PerfOutputRoute,
+    pub(super) read: Arc<SamplingReadState>,
+}
+
+/// IRQ-visible counters are independently owned; mutable output routing stays
+/// in the event's sleepable control state.
+#[derive(Debug)]
+pub(super) struct SamplingReadState {
+    pub(super) loss: Arc<sampling::LossState>,
+    pub(super) sample_count: Arc<sampling::SamplingCount>,
+    pub(super) enabled_at_ns: AtomicU64,
+    pub(super) time_enabled_ns: AtomicU64,
+    pub(super) time_running_ns: AtomicU64,
 }
 
 impl core::fmt::Debug for SamplingState {
@@ -59,17 +73,18 @@ pub(super) fn start_sampling_notify_worker(
     notify: Arc<IrqNotify>,
     poll_alive: Arc<AtomicBool>,
 ) {
-    crate::task::spawn_kernel_thread(
-        move || loop {
-            notify.wait();
-            if !poll_alive.load(Ordering::Acquire) {
-                break;
+    crate::task::kernel_thread_builder("hw-perf-sample-notify".into())
+        .spawn(move || {
+            loop {
+                notify.wait();
+                if !poll_alive.load(Ordering::Acquire) {
+                    break;
+                }
+                // The overflow handler publishes the ring record before notifying.
+                unsafe { poll_ready.wake(IoEvents::IN) };
             }
-            // The overflow handler publishes the ring record before notifying.
-            unsafe { poll_ready.wake(IoEvents::IN) };
-        },
-        "hw-perf-sample-notify".into(),
-    );
+        })
+        .expect("failed to spawn kernel thread");
 }
 
 /// Allocates and initializes one Linux perf mmap ring.

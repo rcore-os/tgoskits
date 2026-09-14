@@ -7,9 +7,10 @@ use axdevice_base::{
     BusKind, Device, DeviceAccess, DeviceContext, DeviceError, InterruptTriggerMode, IrqLine,
     Resource,
 };
+use axvirtio_common::map_virtio_error;
 use axvm_types::GuestPhysAddr;
 
-use crate::{BlockBackend, BlockDeviceEvent, VirtioError, VirtioMmioBlockDevice};
+use crate::{BlockBackend, BlockDeviceEvent, VirtioMmioBlockDevice};
 
 /// A VirtIO block model registered in the unified emulated-device runtime.
 pub struct ManagedVirtioBlockDevice<B, T>
@@ -93,7 +94,7 @@ where
                 access.width(),
             )
             .map(|value| value as u64)
-            .map_err(map_virtio_error)
+            .map_err(|error| map_virtio_error(error, "access virtio-block MMIO transport"))
     }
 
     fn write(
@@ -116,7 +117,7 @@ where
                 access.width(),
                 value as usize,
             )
-            .map_err(map_virtio_error)?;
+            .map_err(|error| map_virtio_error(error, "access virtio-block MMIO transport"))?;
         let interrupt_after = self.model.interrupt_status();
         if reassert_interrupt == BlockDeviceEvent::InterruptPending
             || interrupt_after & !interrupt_before != 0
@@ -127,12 +128,5 @@ where
             })?;
         }
         Ok(())
-    }
-}
-
-fn map_virtio_error(error: VirtioError) -> DeviceError {
-    DeviceError::InvalidInput {
-        operation: "access virtio-block MMIO transport",
-        detail: alloc::format!("{error:?}"),
     }
 }

@@ -1,24 +1,40 @@
 //! Thread exit callbacks, registry reaping, and resource release.
 
+use core::sync::atomic::Ordering;
+
 use super::*;
 
 impl TaskSystem {
-    /// Marks a non-queued thread exited and queues its task-context exit hook.
+    /// Marks an unmanaged, non-queued thread exited and queues its exit hook.
+    /// Managed creation tokens exclusively own cancellation of their tasks.
     pub fn mark_exited(&self, thread: ThreadId) -> Result<(), TaskError> {
+        crate::runtime::delivery::work::validate_task_work_context()?;
         let core = {
             let state = self.state.lock();
             Arc::clone(&state.thread_record(thread)?.core)
         };
+        if core.execution.is_some() {
+            return Err(TaskError::NotReady);
+        }
+        self.mark_unqueued_exited(&core)
+    }
+
+    /// Consumes exit authority held by a validated caller or cancellation worker.
+    pub(super) fn mark_unqueued_exited(&self, core: &Arc<ThreadCore>) -> Result<(), TaskError> {
+        let thread = core.id();
         let mut scheduler_exit = core
             .close_owned_scheduler_activity()
             .ok_or(TaskError::ThreadBusy)?;
         let exited_core = {
             let mut state = self.state.lock();
             let record = state.thread_record_mut(thread)?;
-            if !Arc::ptr_eq(&record.core, &core) {
+            if !Arc::ptr_eq(&record.core, core) {
                 return Err(TaskError::StaleThreadId);
             }
             let mut sched = record.sched.lock();
+            if record.activation.is_some() {
+                return Err(TaskError::ThreadBusy);
+            }
             if sched.placement.queued_cpu().is_some() {
                 return Err(TaskError::AlreadyQueued);
             }
@@ -66,7 +82,7 @@ impl TaskSystem {
             scheduler_exit.seal();
             record
                 .callbacks
-                .prepare_exit(record.extension.is_some())
+                .prepare_exit(record.extension.is_some() || record.core.execution.is_some())
                 .unwrap_or_else(|_| {
                     task_runtime::fatal_invariant(0x4558_000b, core.id().as_u64() as usize)
                 });
@@ -110,13 +126,18 @@ impl TaskSystem {
                 let mut state = self.state.lock();
                 state.claim_pending_exit_callback()?
             };
-            let Some((extension, thread)) = callback else {
+            let Some(super::registry::ExitCallbackClaim { extension, core }) = callback else {
                 break;
             };
             // SAFETY: the registry record keeps the claimed extension live,
             // and ThreadExtension construction validated this callback table.
-            unsafe { (extension.ops().on_exit)(extension.data(), thread) };
-            self.state.lock().finish_exit_callback(thread)?;
+            if let Some(extension) = extension {
+                unsafe { (extension.ops().on_exit)(extension.data(), core.id()) };
+            }
+            if let Some(execution) = core.execution.as_ref() {
+                execution.finish();
+            }
+            self.state.lock().finish_exit_callback(core.id())?;
             dispatched += 1;
         }
         Ok(dispatched)
@@ -124,9 +145,7 @@ impl TaskSystem {
 
     /// Removes an exited registry record and makes its slot reusable.
     pub fn reap_thread(&self, thread: ThreadId) -> Result<(), TaskError> {
-        if task_runtime::in_hard_irq() {
-            return Err(TaskError::UnsafeContext);
-        }
+        crate::runtime::delivery::work::validate_task_work_context()?;
         let record = {
             let mut state = self.state.lock();
             let mut root_domain = self.root_domain.lock();
@@ -144,8 +163,8 @@ impl TaskSystem {
     /// reaper on another CPU from winning between a handle drop and an ID-based
     /// reap. Retryable failures return the same handle to the caller.
     pub fn reap_thread_handle(&self, handle: ThreadHandle) -> Result<(), OwnedThreadReapError> {
-        if task_runtime::in_hard_irq() {
-            return Err(OwnedThreadReapError::new(TaskError::UnsafeContext, handle));
+        if let Err(error) = crate::runtime::delivery::work::validate_task_work_context() {
+            return Err(OwnedThreadReapError::new(error, handle));
         }
         let record = {
             let mut state = self.state.lock();
@@ -198,8 +217,28 @@ impl TaskSystem {
         Ok(reaped)
     }
 
+    pub(super) fn reclaim_exited_execution(&self) -> Result<bool, TaskError> {
+        let detached = self.state.lock().take_exited_execution()?;
+        let Some(detached) = detached else {
+            return Ok(false);
+        };
+        let address_space = detached.resources.release();
+        self.release_address_space_token(address_space);
+        detached
+            .handle
+            .core
+            .execution_reclaimed
+            .store(true, Ordering::Release);
+        drop(detached.handle);
+        Ok(true)
+    }
+
     pub(super) fn release_thread_record(&self, mut record: ThreadRecord) {
         let address_space = record.resources.release();
+        record
+            .core
+            .execution_reclaimed
+            .store(true, Ordering::Release);
         drop(record.extension.take());
         self.release_address_space_token(address_space);
     }

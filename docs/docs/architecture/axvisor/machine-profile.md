@@ -188,7 +188,7 @@ RISC-V 在运行时从 graph 解析 `console0`、额外串口和普通 FDT contr
 
 `X86FirmwarePlan::from_graph()` 从 `ioapic`、`fw-cfg`、`acpi-pm-timer` 和所有 resolved serial 节点取最终资源。direct boot 在 `0xe0000..0x100000` 组成 RSDP、XSDT、FADT、FACS、DSDT、MADT 和 SPCR；firmware boot 使用相同逻辑内容生成 `etc/acpi/tables`、`etc/acpi/rsdp` 和 table-loader 命令，由 fw_cfg 完成地址重定位与 checksum。
 
-MADT 发布 vCPU APIC IDs、local APIC 和 IOAPIC；FADT/DSDT 发布 PM timer、电源端口、PCI 和 fw_cfg；SPCR/DSDT 发布最终 `console0` 以及额外串口；通用 ACPI composer 编码普通配置设备的 `_HID`、`_UID` 与 `_CRS`。兼容 SPCR snapshot 能保留 ACPI namespace binding；不兼容用户替换没有 host identity。FDT-only 设备会在选择 x86 ACPI 时明确失败。
+MADT 发布 vCPU APIC IDs、local APIC 和 IOAPIC；FADT/DSDT 发布 PM timer、电源端口、PCI 和 fw_cfg；SPCR/DSDT 发布最终 `console0` 以及额外串口；通用 ACPI composer 编码普通配置设备的 `_HID`、`_UID` 与 `_CRS`。PCI `_CRS` memory window、`_PRT` 中每个 resolved `(BDF, INTA)` 的 GSI，以及 MP table entry 均从同一 resolved PCI topology 生成，并与 endpoint-owned `IrqLine` 保持一致。兼容 SPCR snapshot 能保留 ACPI namespace binding；不兼容用户替换没有 host identity。FDT-only 设备会在选择 x86 ACPI 时明确失败。
 
 ### 5.3 LoongArch FDT 与 ACPI
 

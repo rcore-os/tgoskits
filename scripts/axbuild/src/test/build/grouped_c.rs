@@ -128,7 +128,11 @@ pub(crate) fn prepare_grouped_case_assets_sync(
             ("phase", "sync-runtime-deps".to_string()),
         ],
     );
-    crate::rootfs::runtime::sync_runtime_dependencies(&layout.staging_root, &layout.overlay_dir)?;
+    crate::rootfs::runtime::sync_runtime_dependencies(
+        arch,
+        &layout.staging_root,
+        &layout.overlay_dir,
+    )?;
     timing_stage.finish();
     let timing_stage = timing::TimingStage::new(
         "qemu-asset-grouped",
@@ -340,16 +344,6 @@ pub(super) fn prepare_grouped_c_subcases_sync(
     layout: &case_assets::CaseAssetLayout,
     config: &CaseAssetConfig,
 ) -> anyhow::Result<()> {
-    let timing_stage = timing::TimingStage::new(
-        "grouped-c",
-        [
-            ("case", case.display_name.clone()),
-            ("phase", "find-qemu-user".to_string()),
-        ],
-    );
-    let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
-    timing_stage.finish();
-
     let root_prebuild_script = case.case_dir.join(CASE_PREBUILD_SCRIPT_NAME);
     if root_prebuild_script.is_file() {
         let timing_stage = timing::TimingStage::new(
@@ -444,7 +438,7 @@ pub(super) fn prepare_grouped_c_subcases_sync(
             ("phase", "prepare-cross-env".to_string()),
         ],
     );
-    let build_env = prepare_host_cross_build_env(arch, layout, &qemu_runner)?;
+    let build_env = prepare_host_cross_build_env(arch, layout)?;
     timing_stage.finish();
 
     if grouped_c_root_project_path(case).is_file() {

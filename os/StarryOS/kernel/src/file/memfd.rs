@@ -496,6 +496,10 @@ pub(crate) fn prepare_aspace_replace_deltas(
 }
 
 impl FileLike for Memfd {
+    fn validate_write_access(&self) -> StarryResult {
+        self.inner.validate_write_access()
+    }
+
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         self.inner.read(dst)
     }

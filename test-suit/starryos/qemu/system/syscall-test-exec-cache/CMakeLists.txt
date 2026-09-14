@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.20)
+project(syscall-test-exec-cache C)
+add_executable(syscall-test-exec-cache src/main.c)
+target_compile_options(syscall-test-exec-cache PRIVATE -Wall -Wextra -Werror)
+install(TARGETS syscall-test-exec-cache RUNTIME DESTINATION usr/bin/starry-test-suit)

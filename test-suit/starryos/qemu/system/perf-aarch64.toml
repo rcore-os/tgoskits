@@ -1,0 +1,18 @@
+# Serialize PMU timer/EL-transition updates on the icount execution timeline.
+# CPU_CYCLES follows QEMU virtual time. Adaptive shift changes the cycles per
+# instruction with host load, so a short workload can exceed a sampling period
+# before its required stop/start boundary. Fix the rate at one ns per instruction
+# to keep the sliced-period test's workload bound independent of host speed.
+# Other system tests retain the default MTTCG clock and execution model.
+args = [
+    "-icount", "shift=0,align=off,sleep=on",
+    "-nographic", "-machine", "virt,gic-version=3,its=on",
+    "-m", "512M", "-cpu", "cortex-a53,pmu=on", "-smp", "4",
+    "-device", "nvme,serial=deadbeef,drive=nvm,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+]
+uefi = false
+to_bin = true
+test_commands = ["exec /usr/bin/starry-run-system-tests"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
+timeout = 1800

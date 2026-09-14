@@ -110,6 +110,7 @@ pub(crate) fn std_check_target_for(target: &str) -> Option<super::bare_build::Ca
     Some(super::bare_build::CargoBuildTarget {
         target: resolved.target,
         cargo_args: resolved.cargo_args,
+        rustflags: Vec::new(),
         env: resolved.env,
     })
 }

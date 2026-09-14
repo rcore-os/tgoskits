@@ -12,8 +12,6 @@ use core::{ffi::CStr, fmt::Write, iter, mem::size_of, sync::atomic::Ordering};
 use ax_fs_ng::vfs::{FS_CONTEXT, current_fs_context};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
-#[cfg(target_arch = "aarch64")]
-use ax_runtime::hal::pmu;
 use ax_runtime::hal::{
     paging::MappingFlags,
     time::{monotonic_time, wall_time},
@@ -40,6 +38,22 @@ use crate::{
         tasks,
     },
 };
+
+/// Linux `new_idmap_permitted`: without the capability in the initial user
+/// namespace, a writer may map only its own id.
+fn may_map_id(
+    outside: u32,
+    count: u32,
+    own_id: impl Fn(&Cred) -> u32,
+    privileged: impl Fn(&Cred) -> bool,
+) -> bool {
+    let writer = current_user_task();
+    let thread = writer.as_thread();
+    let cred = thread.cred();
+    let cred: &Cred = &cred;
+    (count == 1 && outside == own_id(cred))
+        || (privileged(cred) && thread.proc_data.namespace_snapshot().in_initial_user_ns())
+}
 
 fn upgrade_proc_task(task: &WeakUserTaskRef) -> VfsResult<Option<UserTaskRef>> {
     (*task).upgrade().map_err(|_| VfsError::BadState)
@@ -262,7 +276,11 @@ fn render_cpu_entry(buf: &mut String, idx: usize) {
     // tools key off implementer/part to identify the microarchitecture). On
     // RK3588 this yields A76 (0x41/0xd0b) and A55 (0x41/0xd05); under QEMU
     // cortex-a53 it reads 0x41/0xd03.
-    let midr = pmu::cpu_id_raw().unwrap_or(0);
+    // `render_cpuinfo()` walks logical CPUs from one caller. Reading MIDR_EL1
+    // here would therefore repeat that caller's core type for every stanza on
+    // a heterogeneous machine. Perf initializes and caches MIDR on each CPU;
+    // use the indexed snapshot just like Linux's per-CPU cpuinfo path.
+    let midr = crate::perf::cpu_midr(idx);
     let implementer = (midr >> 24) & 0xff;
     let variant = (midr >> 20) & 0xf;
     let part = (midr >> 4) & 0xfff;
@@ -1646,8 +1664,12 @@ impl SimpleDirOps for ThreadDir {
                             let _mapped: u32 =
                                 parts[0].parse().map_err(|_| VfsError::InvalidInput)?;
                             let orig: u32 = parts[1].parse().map_err(|_| VfsError::InvalidInput)?;
-                            let _count: u32 =
+                            let count: u32 =
                                 parts[2].parse().map_err(|_| VfsError::InvalidInput)?;
+                            if !may_map_id(orig, count, |cred| cred.euid, Cred::has_cap_setuid)
+                            {
+                                return Err(VfsError::OperationNotPermitted);
+                            }
                             let thr = task.as_thread();
                             let mut cred = (*thr.cred()).clone();
                             cred.uid = orig;
@@ -1706,8 +1728,12 @@ impl SimpleDirOps for ThreadDir {
                             let _mapped: u32 =
                                 parts[0].parse().map_err(|_| VfsError::InvalidInput)?;
                             let orig: u32 = parts[1].parse().map_err(|_| VfsError::InvalidInput)?;
-                            let _count: u32 =
+                            let count: u32 =
                                 parts[2].parse().map_err(|_| VfsError::InvalidInput)?;
+                            if !may_map_id(orig, count, |cred| cred.egid, Cred::has_cap_setgid)
+                            {
+                                return Err(VfsError::OperationNotPermitted);
+                            }
                             let thr = task.as_thread();
                             let mut cred = (*thr.cred()).clone();
                             cred.gid = orig;

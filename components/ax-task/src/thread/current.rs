@@ -9,9 +9,12 @@ pub use crate::{
         yield_current_cpu,
     },
     sync::wait_queue::{sleep, sleep_until},
-    thread::current::park::{
-        CurrentParkDisposition, CurrentParkResume, CurrentParkStart, PreparedCurrentPark,
-        begin_current_park,
+    thread::{
+        current::park::{
+            CurrentParkDisposition, CurrentParkResume, CurrentParkStart, PreparedCurrentPark,
+            begin_current_park,
+        },
+        execution::exit_current,
     },
 };
 use crate::{
@@ -114,6 +117,18 @@ pub fn validate_blocking_context() -> Result<(), TaskError> {
     acquire_blocking_permit().map(|_| ())
 }
 
+/// RT-lock contention may schedule inside another RT critical section.
+pub(crate) fn validate_rt_lock_context() -> Result<(), TaskError> {
+    validate_schedule_context(RuntimeScheduleOrigin::Block)
+}
+
+pub(crate) fn validate_sleeping_lock_context() -> Result<(), TaskError> {
+    if crate::runtime::task_runtime::in_hard_irq() || current_thread_core_arc()?.holds_rt_lock() {
+        return Err(TaskError::UnsafeContext);
+    }
+    Ok(())
+}
+
 /// One validated opportunity to publish a blocking handshake.
 pub(crate) struct BlockingPermit {
     _not_send: PhantomData<*mut ()>,
@@ -121,6 +136,10 @@ pub(crate) struct BlockingPermit {
 
 pub(crate) fn acquire_blocking_permit() -> Result<BlockingPermit, TaskError> {
     validate_schedule_context(RuntimeScheduleOrigin::Block)?;
+    let current = current_thread_core_arc()?;
+    if current.holds_rt_lock() && !current.in_rt_lock_wait() {
+        return Err(TaskError::UnsafeContext);
+    }
     Ok(BlockingPermit {
         _not_send: PhantomData,
     })
