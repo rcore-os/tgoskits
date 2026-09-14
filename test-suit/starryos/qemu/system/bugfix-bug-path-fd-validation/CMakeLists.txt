@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-path-fd-validation C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+add_executable(bug-path-fd-validation src/main.c)
+target_compile_options(bug-path-fd-validation PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bug-path-fd-validation RUNTIME DESTINATION usr/bin/starry-test-suit)

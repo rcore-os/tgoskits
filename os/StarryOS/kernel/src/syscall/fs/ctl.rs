@@ -586,25 +586,6 @@ pub fn sys_linkat(
         (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
     };
 
-    // A source made only of `.`/`..` components resolves to a directory. Do
-    // this syntactic check before dirfd resolution: an already-open dirfd can
-    // intentionally sit below an unsearchable parent, and resolving its dot
-    // entry must still get linkat's mandatory EPERM result for directories.
-    let names_directory = old_path.as_deref().is_some_and(|path| {
-        let components = path.split('/').filter(|component| !component.is_empty());
-        let mut saw_component = false;
-        for component in components {
-            saw_component = true;
-            if component != "." && component != ".." {
-                return false;
-            }
-        }
-        saw_component
-    });
-    if names_directory {
-        return Err(StarryError::OperationNotPermitted);
-    }
-
     let cred = current.as_thread().cred();
     let mutation_cred = mutation_credentials(&cred);
     // AT_EMPTY_PATH changes `olddirfd` into an object fd only for the

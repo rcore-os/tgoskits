@@ -345,14 +345,8 @@ impl OpenOptions {
                 // original O_CREAT flag so _open() returns EISDIR.
                 let effective_create = self.create && (!must_be_dir || existing);
                 let effective_create_new = self.create_new && (!must_be_dir || existing);
-                if effective_create || effective_create_new {
-                    if !existing {
-                        context.check_mutation_parent_with_search(
-                            &parent,
-                            &searched,
-                            credentials,
-                        )?;
-                    }
+                if (effective_create || effective_create_new) && !existing {
+                    context.check_mutation_parent_with_search(&parent, &searched, credentials)?;
                 }
                 let mut loc = parent.open_file(
                     &name,

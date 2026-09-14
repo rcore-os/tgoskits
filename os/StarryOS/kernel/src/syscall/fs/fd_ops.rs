@@ -569,6 +569,13 @@ pub fn sys_openat2(
     if how_value.flags & !OPENAT2_VALID_FLAGS != 0 {
         return Err(StarryError::InvalidInput);
     }
+    // Unlike openat, openat2 rejects flags incompatible with O_PATH instead
+    // of silently discarding them, including when resolve is zero.
+    if how_value.flags & O_PATH as u64 != 0
+        && how_value.flags & !((O_PATH | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW) as u64) != 0
+    {
+        return Err(StarryError::InvalidInput);
+    }
     if how_value.mode & !0o7777 != 0 {
         return Err(StarryError::InvalidInput);
     }

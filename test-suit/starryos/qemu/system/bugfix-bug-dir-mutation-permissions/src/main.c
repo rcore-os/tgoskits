@@ -270,17 +270,25 @@ static int run_unprivileged_checks(void)
               && errno == EEXIST,
           "linkat reports an existing target before destination write permission");
 
-    int dirfd_dot = open(dirfd_root, O_RDONLY | O_DIRECTORY);
     errno = 0;
-    check(dirfd_dot >= 0
-              && linkat(dirfd_dot, ".", AT_FDCWD,
+    check(dirfd >= 0
+              && linkat(dirfd, ".", AT_FDCWD,
                         "/tmp/bug-dir-mutation-permissions/public/directory-link", 0)
                          < 0
               && errno == EPERM,
           "linkat rejects a directory source before rechecking its dirfd parent");
-    if (dirfd_dot >= 0) {
-        close(dirfd_dot);
-    }
+
+    errno = 0;
+    check(dirfd >= 0 && unlinkat(dirfd, ".", 0) < 0 && errno == EISDIR,
+          "unlinkat dirfd dot reports a directory before checking its physical parent");
+    errno = 0;
+    check(dirfd >= 0 && unlinkat(dirfd, "..", AT_REMOVEDIR) < 0 && errno == ENOTEMPTY,
+          "rmdir dirfd parent reports non-empty before checking outside the dirfd boundary");
+
+    errno = 0;
+    check(renameat2_call(source, readonly_existing, RENAME_NOREPLACE) < 0
+              && errno == EEXIST,
+          "RENAME_NOREPLACE reports an existing target before read-only parent permission");
 
     int opened_dot = dirfd >= 0 ? openat(dirfd, ".", O_RDONLY | O_DIRECTORY) : -1;
     check(opened_dot >= 0, "openat accepts dot through an opened dirfd");
@@ -626,18 +634,6 @@ int main(void)
     dirfd = open(dirfd_root, O_RDONLY | O_DIRECTORY);
     check(dirfd >= 0, "open dirfd before restricting its parent");
     check(chmod(dirfd_parent, 0700) == 0, "remove search permission from dirfd parent");
-
-    errno = 0;
-    check(dirfd >= 0 && unlinkat(dirfd, ".", 0) < 0 && errno == EISDIR,
-          "unlinkat dirfd dot reports a directory before checking its physical parent");
-    errno = 0;
-    check(dirfd >= 0 && unlinkat(dirfd, "..", AT_REMOVEDIR) < 0 && errno == ENOTEMPTY,
-          "rmdir dirfd parent reports non-empty before checking outside the dirfd boundary");
-
-    errno = 0;
-    check(renameat2_call(source, readonly_existing, RENAME_NOREPLACE) < 0
-              && errno == EEXIST,
-          "RENAME_NOREPLACE reports an existing target before read-only parent permission");
 
     test_cross_mount_same_inode_rename();
 
