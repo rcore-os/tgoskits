@@ -56,9 +56,9 @@
 //! waker.wake();  // WRONG: potential self-deadlock
 //! ```
 
-use alloc::{string::String, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
 use core::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
     task::Waker,
     time::Duration,
 };
@@ -84,10 +84,17 @@ use crate::{
         InterfaceKind, Ipv4InterfaceConfig, RouteInfo,
     },
     consts::STANDARD_MTU,
-    device::ArpEntry,
+    device::{ArpEntry, Device, TunShared, create_tap, create_tun, tap_mac},
     dhcp_server::{DhcpServer, parse_dhcp_packet},
-    router::{NetDevStats, RouteDecision, Router, SharedRouteTable},
+    router::{NetDevStats, RouteDecision, Router, Rule, SharedRouteTable},
 };
+
+/// `IFNAMSIZ`, including the terminating NUL.
+const IFNAMSIZ: usize = 16;
+/// Indices `__dev_alloc_name` scans for a `%d` template (`8 * PAGE_SIZE`).
+const MAX_NAME_INDEX: usize = 8 * 4096;
+/// `ETH_MIN_MTU`, the smallest MTU `dev_validate_mtu` accepts for TUN and TAP.
+const MIN_MTU: usize = 68;
 
 fn now() -> Instant {
     Instant::from_micros_const((monotonic_time_nanos() / NANOS_PER_MICROS) as i64)
@@ -102,6 +109,8 @@ pub struct NetControl {
     state: RwLock<ControlState>,
     pub(crate) routes: SharedRouteTable,
     dhcp_bootstrap: DhcpBootstrap,
+    /// Interface indices are not reused while the system runs.
+    next_interface_id: AtomicU32,
 }
 
 struct DhcpBootstrap {
@@ -135,10 +144,17 @@ impl NetControl {
         routes: SharedRouteTable,
         dns: Vec<DnsServerEntry>,
     ) -> Self {
+        let next_interface_id = interfaces
+            .iter()
+            .map(|interface| interface.id.get())
+            .max()
+            .unwrap_or(InterfaceId::LOOPBACK.get())
+            + 1;
         Self {
             state: RwLock::new(ControlState { interfaces, dns }),
             routes,
             dhcp_bootstrap: DhcpBootstrap::new(),
+            next_interface_id: AtomicU32::new(next_interface_id),
         }
     }
 
@@ -295,6 +311,113 @@ impl NetControl {
             .write()
             .replace_ipv4_rules_for_interface(update.interface_id, routes);
     }
+
+    fn add_interface(&self, interface: NetInterface) {
+        self.state.write().interfaces.push(interface);
+    }
+
+    /// Removes an interface together with its routes and DNS servers.
+    fn remove_interface(&self, interface_id: InterfaceId) {
+        self.routes
+            .write()
+            .remove_ipv4_rules_for_interface(interface_id);
+        let mut state = self.state.write();
+        state
+            .interfaces
+            .retain(|interface| interface.id != interface_id);
+        state.dns.retain(|entry| entry.interface_id != interface_id);
+    }
+
+    fn allocate_interface_id(&self) -> InterfaceId {
+        InterfaceId::new(self.next_interface_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn contains_interface_name(&self, name: &str) -> bool {
+        self.state
+            .read()
+            .interfaces
+            .iter()
+            .any(|interface| interface.name == name)
+    }
+
+    /// `dev_valid_name` and `dev_alloc_name` for a TUN or TAP interface.
+    fn allocate_tun_name(&self, requested: &str, kind: InterfaceKind) -> NetResult<String> {
+        let template = match (requested, kind) {
+            ("", InterfaceKind::Tap) => "tap%d",
+            ("", _) => "tun%d",
+            (name, _) => name,
+        };
+        if !valid_interface_name(template) {
+            return Err(NetError::InvalidInput);
+        }
+        let Some((prefix, suffix)) = template.split_once('%') else {
+            return if self.contains_interface_name(template) {
+                Err(NetError::AlreadyExists)
+            } else {
+                Ok(template.into())
+            };
+        };
+        let suffix = suffix
+            .strip_prefix('d')
+            .filter(|rest| !rest.contains('%'))
+            .ok_or(NetError::InvalidInput)?;
+        (0..MAX_NAME_INDEX)
+            .map(|index| format!("{prefix}{index}{suffix}"))
+            .take_while(|name| name.len() < IFNAMSIZ)
+            .find(|name| !self.contains_interface_name(name))
+            .ok_or(NetError::StorageFull)
+    }
+
+    /// Records `IFF_UP` for a TUN or TAP interface and returns its name.
+    pub(crate) fn set_tun_up(&self, interface_id: InterfaceId, up: bool) -> NetResult<String> {
+        self.update_tun(interface_id, |interface| {
+            interface
+                .flags
+                .set(InterfaceFlags::UP | InterfaceFlags::RUNNING, up);
+        })
+    }
+
+    /// Records the MTU of a TUN or TAP interface and returns its name. The
+    /// shared protocol buffers hold at most a standard frame, so larger values
+    /// are refused.
+    pub(crate) fn set_tun_mtu(&self, interface_id: InterfaceId, mtu: usize) -> NetResult<String> {
+        if !(MIN_MTU..=STANDARD_MTU).contains(&mtu) {
+            return Err(NetError::InvalidInput);
+        }
+        self.update_tun(interface_id, |interface| interface.mtu = mtu)
+    }
+
+    fn update_tun(
+        &self,
+        interface_id: InterfaceId,
+        update: impl FnOnce(&mut NetInterface),
+    ) -> NetResult<String> {
+        let mut state = self.state.write();
+        let interface = state
+            .interfaces
+            .iter_mut()
+            .find(|interface| interface.id == interface_id)
+            .ok_or(NetError::NoSuchDevice)?;
+        if !interface.kind.is_tun_tap() {
+            return Err(NetError::OperationNotSupported);
+        }
+        update(interface);
+        Ok(interface.name.clone())
+    }
+}
+
+/// `dev_valid_name`.
+fn valid_interface_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() < IFNAMSIZ
+        && name != "."
+        && name != ".."
+        && !name.bytes().any(|byte| {
+            matches!(
+                byte,
+                b'/' | b':' | b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r'
+            )
+        })
 }
 
 pub struct Service {
@@ -535,6 +658,114 @@ impl Service {
         }
     }
 
+    /// Creates a TUN or TAP interface for `/dev/net/tun`, as `tun_set_iff`
+    /// does. The interface starts down with no address.
+    pub fn create_tun(&mut self, name: &str, kind: InterfaceKind) -> NetResult<Arc<TunShared>> {
+        let name = self.control.allocate_tun_name(name, kind)?;
+        let id = self.control.allocate_interface_id();
+        let (device, shared, mac, flags): (Box<dyn Device>, _, _, _) = match kind {
+            InterfaceKind::Tun => {
+                let (device, shared) = create_tun(name.clone());
+                let flags =
+                    InterfaceFlags::POINTOPOINT | InterfaceFlags::NOARP | InterfaceFlags::MULTICAST;
+                (Box::new(device), shared, None, flags)
+            }
+            InterfaceKind::Tap => {
+                let mac = tap_mac(id);
+                let (device, shared) = create_tap(name.clone(), mac);
+                let flags = InterfaceFlags::BROADCAST | InterfaceFlags::MULTICAST;
+                (Box::new(device), shared, Some(EthernetAddress(mac)), flags)
+            }
+            InterfaceKind::Loopback | InterfaceKind::Ethernet => {
+                return Err(NetError::InvalidInput);
+            }
+        };
+        self.router.add_device(id, device);
+        self.control.add_interface(NetInterface {
+            id,
+            name,
+            kind,
+            mac,
+            ipv4: None,
+            gateway: None,
+            mtu: STANDARD_MTU,
+            metric: 100,
+            flags,
+        });
+        Ok(shared)
+    }
+
+    /// Unregisters a TUN or TAP interface and everything that refers to its
+    /// router slot.
+    pub fn remove_tun_interface(&mut self, interface_id: InterfaceId) {
+        let Some(interface) = self.control.interface_by_id(interface_id) else {
+            return;
+        };
+        Self::set_interface_ipv4(
+            &mut self.iface,
+            interface.ipv4.map(|config| config.address),
+            None,
+        );
+        self.control.remove_interface(interface_id);
+        if let Some(dev) = self.router.remove_device(interface_id) {
+            self.dhcp.retain(|state| state.dev != dev);
+            if self
+                .dhcp_server
+                .as_ref()
+                .is_some_and(|server| server.dev == dev)
+            {
+                self.dhcp_server = None;
+            }
+            self.dhcp_server_replies
+                .retain(|(reply_dev, _)| *reply_dev != dev);
+        }
+    }
+
+    /// Adds an IPv4 route through an interface that has an address (`SIOCADDRT`).
+    pub fn add_route(
+        &mut self,
+        interface_id: InterfaceId,
+        destination: Ipv4Cidr,
+        gateway: Option<Ipv4Address>,
+    ) -> NetResult {
+        let dev = self
+            .router
+            .device_index_for_interface_id(interface_id)
+            .ok_or(NetError::NoSuchDevice)?;
+        let interface = self.interface_for_dev(dev).ok_or(NetError::NoSuchDevice)?;
+        let source = interface
+            .ipv4
+            .ok_or(NetError::NoSuchDeviceOrAddress)?
+            .address();
+        self.router.add_rule(Rule::new(
+            destination.into(),
+            gateway.map(IpAddress::Ipv4),
+            dev,
+            interface_id,
+            source.into(),
+            interface.metric,
+        ));
+        Ok(())
+    }
+
+    /// Removes an IPv4 route from an interface (`SIOCDELRT`).
+    pub fn del_route(
+        &mut self,
+        interface_id: InterfaceId,
+        destination: Ipv4Cidr,
+        gateway: Option<Ipv4Address>,
+    ) -> NetResult {
+        if self.router.remove_rule(
+            destination.into(),
+            gateway.map(IpAddress::Ipv4),
+            interface_id,
+        ) {
+            Ok(())
+        } else {
+            Err(NetError::NotFound)
+        }
+    }
+
     pub fn enable_dhcp(
         &mut self,
         interface_id: InterfaceId,
@@ -600,7 +831,7 @@ impl Service {
             .device_index_for_interface_id(interface_id)
             .ok_or(NetError::NoSuchDevice)?;
         let interface = self.interface_for_dev(dev).ok_or(NetError::NoSuchDevice)?;
-        if interface.kind != InterfaceKind::Ethernet {
+        if interface.kind == InterfaceKind::Loopback {
             return Err(NetError::OperationNotSupported);
         }
         if interface.ipv4.is_some() {

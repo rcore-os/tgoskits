@@ -13,6 +13,9 @@ use super::{
     cache::CachedFile,
     open::{FileFlags, OpenOptions, OpenResult},
 };
+/// Bounds the kernel copy of one write to a packet node.
+const MAX_PACKET_RECORD: usize = 1 << 17;
+
 use crate::{
     fs_core::FsContext, io_error_to_vfs_error, os::sync::SleepMutex as Mutex, vfs_error_to_io_error,
 };
@@ -53,6 +56,7 @@ impl FileBackend {
         match self {
             Self::Cached(cached) => cached.read_at(dst, offset),
             Self::Direct(loc) => {
+                let packet = loc.flags().contains(NodeFlags::PACKET);
                 let mut total = 0;
                 while !dst.is_full() {
                     let read = match dst
@@ -76,6 +80,9 @@ impl FileBackend {
                         break;
                     }
                     total += read;
+                    if packet {
+                        break;
+                    }
                 }
                 Ok(total)
             }
@@ -87,6 +94,15 @@ impl FileBackend {
         match self {
             Self::Cached(cached) => cached.write_at(src, offset),
             Self::Direct(loc) => {
+                if loc.flags().contains(NodeFlags::PACKET) {
+                    let len = src.remaining();
+                    if len > MAX_PACKET_RECORD {
+                        return Err(VfsError::InvalidInput);
+                    }
+                    let mut record = alloc::vec![0; len];
+                    src.read_exact(&mut record).map_err(io_error_to_vfs_error)?;
+                    return loc.entry().as_file()?.write_at(&record, offset);
+                }
                 let mut total = 0;
                 let mut buf = [0; ax_io::DEFAULT_BUF_SIZE];
                 while !src.is_empty() {

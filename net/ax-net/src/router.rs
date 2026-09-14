@@ -432,6 +432,25 @@ impl RouteTable {
             .collect()
     }
 
+    /// Removes the first route with this destination on one interface and,
+    /// when given, this gateway (`SIOCDELRT`). Returns whether one was removed.
+    pub fn remove_matching_rule(
+        &mut self,
+        filter: IpCidr,
+        via: Option<IpAddress>,
+        interface_id: InterfaceId,
+    ) -> bool {
+        let Some(index) = self.rules.iter().position(|rule| {
+            rule.interface_id == interface_id
+                && rule.filter == filter
+                && via.is_none_or(|via| rule.via == Some(via))
+        }) else {
+            return false;
+        };
+        self.rules.remove(index);
+        true
+    }
+
     /// Removes IPv4 routes owned by one interface.
     pub fn remove_ipv4_rules_for_interface(&mut self, interface_id: InterfaceId) {
         self.rules.retain(|rule| {
@@ -464,12 +483,14 @@ pub(crate) type SharedRouteTable = Arc<RwLock<RouteTable>>;
 pub struct Router {
     rx_buffer: RouterPacketBuffer,
     tx_buffer: RingBuffer<'static, TxPacket>,
-    /// Device indices still awaiting the head TX packet. Devices are append-only;
-    /// accepted or permanently failed ports leave this list before the next retry.
+    /// Device indices still awaiting the head TX packet. Accepted, permanently
+    /// failed and removed ports leave this list before the next retry.
     pending_fanout: Vec<usize>,
     /// DMA-backed packets waiting for smoltcp consumption.
     ready_rx: VecDeque<OwnedRxPacket>,
-    devices: Vec<DeviceHandle>,
+    /// Removed devices leave an empty slot that is never reused, so an index
+    /// held by a route or DHCP state cannot name a different device.
+    devices: Vec<Option<DeviceHandle>>,
     table: SharedRouteTable,
 }
 impl Router {
@@ -501,28 +522,55 @@ impl Router {
         self.table.write().add_rule(rule);
     }
 
+    /// Removes the route matching a destination and optional gateway on one
+    /// interface. Returns whether a route was removed.
+    pub fn remove_rule(
+        &mut self,
+        filter: IpCidr,
+        via: Option<IpAddress>,
+        interface_id: InterfaceId,
+    ) -> bool {
+        self.table
+            .write()
+            .remove_matching_rule(filter, via, interface_id)
+    }
+
     /// Registers a concrete device and returns its router device index.
     pub fn add_device(&mut self, interface_id: InterfaceId, device: Box<dyn Device>) -> usize {
-        self.devices.push(DeviceHandle::new(interface_id, device));
+        self.devices
+            .push(Some(DeviceHandle::new(interface_id, device)));
         self.devices.len() - 1
+    }
+
+    /// Unregisters the device behind `interface_id` and returns its index.
+    pub fn remove_device(&mut self, interface_id: InterfaceId) -> Option<usize> {
+        let dev = self.device_index_for_interface_id(interface_id)?;
+        self.devices[dev] = None;
+        self.pending_fanout.retain(|&index| index != dev);
+        Some(dev)
     }
 
     /// Returns the public interface id for a router device index.
     pub fn interface_id_for_dev(&self, dev: usize) -> Option<InterfaceId> {
-        self.devices.get(dev).map(|device| device.interface_id)
+        self.devices
+            .get(dev)
+            .and_then(Option::as_ref)
+            .map(|device| device.interface_id)
     }
 
     /// Finds the router device index for a public interface id.
     pub fn device_index_for_interface_id(&self, interface_id: InterfaceId) -> Option<usize> {
-        self.devices
-            .iter()
-            .position(|device| device.interface_id == interface_id)
+        self.devices.iter().position(|slot| {
+            slot.as_ref()
+                .is_some_and(|device| device.interface_id == interface_id)
+        })
     }
 
     /// Returns names of all registered devices.
     pub fn device_names(&self) -> Vec<String> {
         self.devices
             .iter()
+            .flatten()
             .map(|device| device.name.clone())
             .collect()
     }
@@ -551,7 +599,9 @@ impl Router {
         address: Option<Ipv4Cidr>,
         gateway: Option<IpAddress>,
     ) -> Vec<Rule> {
-        self.devices[dev].inner.set_ipv4_addr(address);
+        if let Some(device) = self.devices[dev].as_mut() {
+            device.inner.set_ipv4_addr(address);
+        }
 
         let mut rules = Vec::new();
         if let Some(address) = address {
@@ -591,7 +641,7 @@ impl Router {
             devices,
             ..
         } = self;
-        for device in devices {
+        for device in devices.iter_mut().flatten() {
             if device.interface_id == InterfaceId::LOOPBACK {
                 continue;
             }
@@ -684,7 +734,9 @@ impl Router {
         let Router {
             rx_buffer, devices, ..
         } = self;
-        let device = &mut devices[dev];
+        let Some(device) = devices.get_mut(dev).and_then(Option::as_mut) else {
+            return false;
+        };
         if device.interface_id == InterfaceId::LOOPBACK {
             // Loopback traffic is transmitted and received on the same
             // interface.  Count only after successful injection so that
@@ -711,7 +763,7 @@ impl Router {
     /// Collects ARP/neighbor entries from all devices.
     pub fn arp_entries(&self, timestamp: Instant) -> Vec<ArpEntry> {
         let mut entries = Vec::new();
-        for device in &self.devices {
+        for device in self.devices.iter().flatten() {
             entries.extend(device.inner.arp_entries(timestamp));
         }
         entries
@@ -719,7 +771,11 @@ impl Router {
 
     /// Returns a per-interface snapshot of RX/TX byte and packet counters.
     pub fn net_dev_stats(&self) -> Vec<NetDevStats> {
-        self.devices.iter().map(|device| device.stats()).collect()
+        self.devices
+            .iter()
+            .flatten()
+            .map(DeviceHandle::stats)
+            .collect()
     }
 
     /// Device IRQs schedule queue groups directly; socket-side registration
@@ -814,7 +870,7 @@ impl Router {
 }
 
 fn dispatch_link_local_fanout(
-    devices: &mut [DeviceHandle],
+    devices: &mut [Option<DeviceHandle>],
     pending: &mut Vec<usize>,
     dst_addr: IpAddress,
     packet: &[u8],
@@ -822,13 +878,17 @@ fn dispatch_link_local_fanout(
     if pending.is_empty() {
         // Snapshot the eligible ports once for this head packet. Reuse the
         // allocation across packets; no packet copy is needed for retry.
-        pending.extend(devices.iter().enumerate().filter_map(|(index, dev)| {
-            (dev.interface_id != InterfaceId::LOOPBACK).then_some(index)
+        pending.extend(devices.iter().enumerate().filter_map(|(index, slot)| {
+            slot.as_ref()
+                .is_some_and(|dev| dev.interface_id != InterfaceId::LOOPBACK)
+                .then_some(index)
         }));
     }
     let mut poll_next = false;
     pending.retain(|&index| {
-        let dev = &mut devices[index];
+        let Some(dev) = devices[index].as_mut() else {
+            return false;
+        };
         match dev.try_send(dst_addr, packet, now()) {
             Ok(consumed) => {
                 poll_next |= consumed;
@@ -858,7 +918,7 @@ enum DispatchOutcome {
 
 fn dispatch_unicast_packet(
     rx_buffer: &mut RouterPacketBuffer,
-    devices: &mut [DeviceHandle],
+    devices: &mut [Option<DeviceHandle>],
     table: &SharedRouteTable,
     src_addr: IpAddress,
     dst_addr: IpAddress,
@@ -882,7 +942,9 @@ fn dispatch_unicast_packet(
         route
     };
 
-    let dev = &mut devices[route.dev];
+    let Some(dev) = devices.get_mut(route.dev).and_then(Option::as_mut) else {
+        return DispatchOutcome::Consumed(false);
+    };
     if dev.interface_id == InterfaceId::LOOPBACK {
         // Loopback packets are copied directly from the TX buffer into the RX
         // buffer, bypassing hardware queue domains and their SPSC rings. Count
@@ -1334,8 +1396,8 @@ mod tests {
         assert!(!router.dispatch(Instant::from_millis(0), &mut sockets));
         assert_eq!(router.tx_buffer.len(), 1);
         assert_eq!(router.tx_buffer.get_allocated(0, 1)[0].as_bytes().len(), 20);
-        assert_eq!(router.devices[0].stats().tx_packets, 0);
-        assert_eq!(router.devices[0].stats().tx_dropped, 0);
+        assert_eq!(router.devices[0].as_ref().unwrap().stats().tx_packets, 0);
+        assert_eq!(router.devices[0].as_ref().unwrap().stats().tx_dropped, 0);
     }
 
     #[test]
@@ -1518,9 +1580,12 @@ mod tests {
         assert_eq!(probe.lock_irqsave().packets, expected);
         assert!(router.transmit(now).is_some());
         assert!(!router.dispatch(now, &mut sockets));
-        assert_eq!(router.devices[0].stats().tx_packets, expected.len() as u64);
-        assert_eq!(router.devices[0].stats().tx_errors, 0);
-        assert_eq!(router.devices[0].stats().tx_dropped, 0);
+        assert_eq!(
+            router.devices[0].as_ref().unwrap().stats().tx_packets,
+            expected.len() as u64
+        );
+        assert_eq!(router.devices[0].as_ref().unwrap().stats().tx_errors, 0);
+        assert_eq!(router.devices[0].as_ref().unwrap().stats().tx_dropped, 0);
     }
 
     #[test]
@@ -1626,7 +1691,7 @@ mod tests {
                 );
                 assert_eq!(probes[0].lock_irqsave().attempts, 1);
                 assert_eq!(probes[3].lock_irqsave().attempts, 1);
-                assert_eq!(router.devices[3].stats().tx_errors, 1);
+                assert_eq!(router.devices[3].as_ref().unwrap().stats().tx_errors, 1);
             }
             probes[1]
                 .lock_irqsave()
@@ -1648,10 +1713,13 @@ mod tests {
                 };
                 assert_eq!(probe.packets, expected);
                 assert_eq!(
-                    router.devices[index].stats().tx_packets,
+                    router.devices[index].as_ref().unwrap().stats().tx_packets,
                     expected.len() as u64
                 );
-                assert_eq!(router.devices[index].stats().tx_dropped, 0);
+                assert_eq!(
+                    router.devices[index].as_ref().unwrap().stats().tx_dropped,
+                    0
+                );
             }
             assert_eq!(probes[4].lock_irqsave().attempts, 0);
         }
@@ -1855,7 +1923,7 @@ mod tests {
         // Two devices with independent counters.
         let dev0 = test_device_handle(Box::new(EmptyDevice));
         let dev1 = DeviceHandle::new(IF1, Box::new(EmptyDevice));
-        let mut devices = vec![dev0, dev1];
+        let mut devices = vec![Some(dev0), Some(dev1)];
 
         // Route table: only a subnet route for dev0, which covers the
         // source address but NOT the destination.
@@ -1880,7 +1948,7 @@ mod tests {
         let dst_addr = IpAddress::Ipv4(Ipv4Address::new(203, 0, 113, 10));
         let packet = [0u8; 64];
 
-        let before: Vec<_> = devices.iter().map(|d| d.stats()).collect();
+        let before: Vec<_> = devices.iter().flatten().map(|d| d.stats()).collect();
 
         let outcome = dispatch_unicast_packet(
             &mut rx_buffer,
@@ -1898,7 +1966,7 @@ mod tests {
             "no-route dispatch must consume the packet without scheduling work"
         );
 
-        for (i, dev) in devices.iter().enumerate() {
+        for (i, dev) in devices.iter().flatten().enumerate() {
             let snap = dev.stats();
             assert_eq!(
                 snap.tx_dropped, before[i].tx_dropped,
