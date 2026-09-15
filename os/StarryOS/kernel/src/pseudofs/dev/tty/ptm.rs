@@ -19,9 +19,9 @@ impl Ptmx {
     }
 
     pub fn create_pty(&self) -> StarryResult<(Arc<Device>, u32)> {
-        let (master, slave) = super::pty::create_pty_pair();
-        self.instance.add_slave(self.fs.clone(), slave)?;
-        let pty_number = master.pty_number();
+        let (master, slave, link) = super::pty::create_pty_pair();
+        let pty_number = self.instance.add_slave(self.fs.clone(), slave)?;
+        link.bind(&self.instance, pty_number);
         let device = Device::new(
             self.fs.clone(),
             NodeType::CharacterDevice,
