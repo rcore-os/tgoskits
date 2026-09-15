@@ -406,7 +406,6 @@ impl DeviceModel for VirtioBlkModel {
                 Ok(bundle)
             }
             VirtioBlkTransportConfig::Pci { .. } => {
-                let deferred = backend.requires_deferred_processing();
                 let irq = context.irq(PCI_INTX_SLOT)?;
                 let grant = DmaGrant::new();
                 let function = Arc::new(
@@ -420,11 +419,10 @@ impl DeviceModel for VirtioBlkModel {
                 );
                 let mut bundle = DeviceBundle::new();
                 let device_index = bundle.add_pci_function(function.clone())?;
-                if deferred {
-                    bundle.grant_dma_polling_to_device(device_index, function, grant);
-                } else {
-                    bundle.grant_guest_memory_to_device(device_index, grant);
-                }
+                // Queue notifications can be deferred by the PCI transport
+                // itself when another vCPU notifies the queue while it is in
+                // flight, even when the block backend is synchronous.
+                bundle.grant_dma_polling_to_device(device_index, function, grant);
                 Ok(bundle)
             }
         }

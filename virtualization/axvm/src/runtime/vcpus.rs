@@ -143,6 +143,20 @@ pub(crate) fn queue_physical_interrupt(
     Ok(())
 }
 
+#[cfg(target_arch = "loongarch64")]
+pub(crate) fn queue_external_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
+    let vm = crate::get_vm_by_id(vm_id)
+        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
+    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
+        return Err(ax_err_type!(
+            BadState,
+            format!("VM[{vm_id}] is not accepting interrupts")
+        ));
+    }
+    vm.runtime_handle()?
+        .dispatch_external_vcpu_interrupt(vcpu_id, vector)
+}
+
 /// Wake a vCPU after its architecture backend has published canonical state,
 /// and send a guest-exit doorbell only while a remote CPU owns the guest.
 pub(crate) fn kick_vcpu_from_published_state(vm_id: usize, vcpu_id: usize) -> AxVmResult {
