@@ -30,12 +30,12 @@ impl axdevice::PchPicOutputSink for LoongArchPchPicOutputSink {
             );
             return Ok(());
         }
-        crate::runtime::vcpus::queue_interrupt(self.vm_id, 0, event.vector).map_err(|error| {
-            axdevice::DeviceManagerError::InvalidState {
+        crate::runtime::vcpus::queue_external_interrupt(self.vm_id, 0, event.vector).map_err(
+            |error| axdevice::DeviceManagerError::InvalidState {
                 operation: "publish LoongArch PCH-PIC output",
                 detail: std::format!("{error}"),
-            }
-        })
+            },
+        )
     }
 }
 
@@ -62,7 +62,7 @@ impl WiredIrqSink for LoongArchPchPicIrqSink {
         let Some(vector) = vector else {
             return Ok(());
         };
-        crate::runtime::vcpus::queue_interrupt(self.vm_id, 0, vector).map_err(|error| {
+        crate::runtime::vcpus::queue_external_interrupt(self.vm_id, 0, vector).map_err(|error| {
             IrqError::Backend {
                 endpoint: Self::endpoint(input),
                 operation: "queue LoongArch PCH-PIC output",

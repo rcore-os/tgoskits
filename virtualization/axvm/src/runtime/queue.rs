@@ -36,6 +36,9 @@ pub(crate) enum QueuedVcpuInterrupt {
     /// architecture-specific vCPU injection path consumes it.
     #[cfg(target_arch = "loongarch64")]
     Physical { vector: usize, physical_irq: usize },
+    /// A virtual LoongArch EIOINTC source produced by an emulated irqchip.
+    #[cfg(target_arch = "loongarch64")]
+    External { vector: usize },
 }
 
 impl QueuedVcpuInterrupt {
@@ -43,7 +46,7 @@ impl QueuedVcpuInterrupt {
         match self {
             Self::Virtual(interrupt) => Ok(interrupt),
             #[cfg(target_arch = "loongarch64")]
-            physical @ Self::Physical { .. } => Err(physical),
+            arch @ (Self::Physical { .. } | Self::External { .. }) => Err(arch),
         }
     }
 
@@ -60,6 +63,8 @@ impl QueuedVcpuInterrupt {
                     ..
                 },
             ) => left == right,
+            #[cfg(target_arch = "loongarch64")]
+            (Self::External { vector: left }, Self::External { vector: right }) => left == right,
             #[cfg(target_arch = "loongarch64")]
             _ => false,
         }
@@ -310,19 +315,17 @@ mod tests {
         let drained = q.drain(0, 1);
         assert_eq!(drained.len(), 2);
         assert_eq!(
-            match drained[0] {
-                QueuedVcpuInterrupt::Virtual(interrupt) => interrupt.trigger,
-                #[cfg(target_arch = "loongarch64")]
-                QueuedVcpuInterrupt::Physical { .. } => panic!("expected virtual interrupt"),
-            },
+            drained[0]
+                .into_virtual()
+                .expect("expected virtual interrupt")
+                .trigger,
             crate::InterruptTriggerMode::EdgeTriggered
         );
         assert_eq!(
-            match drained[1] {
-                QueuedVcpuInterrupt::Virtual(interrupt) => interrupt.trigger,
-                #[cfg(target_arch = "loongarch64")]
-                QueuedVcpuInterrupt::Physical { .. } => panic!("expected virtual interrupt"),
-            },
+            drained[1]
+                .into_virtual()
+                .expect("expected virtual interrupt")
+                .trigger,
             crate::InterruptTriggerMode::LevelTriggered
         );
     }

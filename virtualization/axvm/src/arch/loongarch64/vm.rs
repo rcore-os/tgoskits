@@ -58,11 +58,12 @@ impl LoongArch64Arch {
                     .map_err(|error| AxVmError::vcpu("create LoongArch IOCSR state", error))?;
             let dtb_addr = config.image_config().dtb_load_gpa.unwrap_or_default();
             let firmware_boot = uses_firmware_boot(config);
+            let boot_args = direct_boot_args(firmware_boot);
             let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
                 Ok(LoongArchVCpuCreateConfig {
                     cpu_id: placement.id,
                     dtb_addr: dtb_addr.as_usize(),
-                    boot_args: [0; 3],
+                    boot_args,
                     boot_stack_top: 0,
                     firmware_boot,
                     iocsr_state: iocsr_state.clone(),
@@ -113,13 +114,14 @@ fn plan_devices(
         &mut nodes,
         &controller_id,
         axdevice_base::InterruptControllerId::new(0),
-        None,
+        Some(super::pci_config::host_key()),
     )?;
-    Ok(SimpleVmPlan::new(VmDevicePlan::with_pools_for_vm(
+    Ok(SimpleVmPlan::new(VmDevicePlan::with_pci_host_for_vm(
         config,
         nodes,
         &[PCH_PIC_BASE as u64..(PCH_PIC_BASE + PCH_PIC_SIZE) as u64],
         super::resource_pools::create()?,
+        super::pci_config::provider()?,
     )?))
 }
 
@@ -140,11 +142,20 @@ fn build_vcpu_setup_config(
     config: &AxVMConfig,
     _memory_regions: &[crate::vm::VMMemoryRegion],
 ) -> AxVmResult<<super::AxvmLoongArchVcpu as VmArchVcpuOps>::SetupConfig> {
+    let firmware_boot = uses_firmware_boot(config);
     Ok(LoongArchVCpuSetupConfig {
-        boot_args: [0; 3],
+        boot_args: direct_boot_args(firmware_boot),
         boot_stack_top: 0,
-        firmware_boot: uses_firmware_boot(config),
+        firmware_boot,
     })
+}
+
+fn direct_boot_args(firmware_boot: bool) -> [usize; 3] {
+    if firmware_boot {
+        [0; 3]
+    } else {
+        super::boot::direct_linux_boot_args()
+    }
 }
 
 fn uses_firmware_boot(config: &AxVMConfig) -> bool {

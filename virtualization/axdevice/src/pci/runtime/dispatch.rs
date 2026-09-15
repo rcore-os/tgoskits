@@ -369,6 +369,7 @@ impl PciRootBinding {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn config_access_intersects_effect(
         &self,
         bdf: PciBdf,

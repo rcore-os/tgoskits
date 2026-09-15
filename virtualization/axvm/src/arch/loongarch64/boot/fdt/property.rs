@@ -16,6 +16,12 @@ pub(crate) fn prop_u32_array(name: &str, values: &[u32]) -> Property {
     prop
 }
 
+pub(crate) fn prop_u64(name: &str, value: u64) -> Property {
+    let mut prop = Property::new(name, Vec::new());
+    prop.set_u64(value);
+    prop
+}
+
 pub(crate) fn prop_string(name: &str, value: &str) -> Property {
     let mut prop = Property::new(name, Vec::new());
     prop.set_string(value);

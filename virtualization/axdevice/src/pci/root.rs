@@ -17,13 +17,14 @@ use core::{fmt, ops::Range};
 use ax_sync::SpinLock;
 use axdevice_base::DeviceId;
 
+#[cfg(target_arch = "x86_64")]
+use super::config_layout::CONFIG_SPACE_SIZE;
 use super::{
     EndpointRouteToken, FOUR_GIB, PciBarIndex, PciBdf, PciCommandState, PciConfigReadEffect,
     PciConfigWriteEffect, PciError, PciResult, ResolvedPciTopology,
     config::{BarWriteAction, FunctionState},
     config_layout::{
-        CONFIG_COMMAND_OFFSET, CONFIG_COMMAND_SIZE, CONFIG_SPACE_SIZE, CONFIG_STATUS_OFFSET,
-        STATUS_INTERRUPT_PENDING,
+        CONFIG_COMMAND_OFFSET, CONFIG_COMMAND_SIZE, CONFIG_STATUS_OFFSET, STATUS_INTERRUPT_PENDING,
     },
 };
 use crate::{AccessWidth, ConfigOffset};
@@ -266,6 +267,7 @@ impl PciRootState {
         })
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn config_access_intersects_effect(
         &self,
         bdf: PciBdf,

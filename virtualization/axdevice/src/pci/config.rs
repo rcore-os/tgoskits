@@ -217,6 +217,7 @@ impl FunctionState {
         Ok(None)
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn intersects_config_effect(&self, offset: usize, size: usize) -> bool {
         self.power_on
             .capabilities
