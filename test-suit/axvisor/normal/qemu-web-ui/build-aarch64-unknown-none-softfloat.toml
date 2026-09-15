@@ -1,0 +1,28 @@
+# Web dashboard build for the `qemu-web-ui` case.
+#
+# `web-ui` serves the React dashboard from assets embedded in the hypervisor at
+# build time (no rootfs, no runtime filesystem read), and it also makes the
+# legacy console page yield `/` and `/assets/*` to the dashboard.
+# `no-auto-start` keeps the default VM (`web-ui/vm-memory.toml`, a build-time
+# embedded `memory` guest) in `Ready` (registered but not booted): the typed
+# probe drives the whole lifecycle over HTTP while also asserting the dashboard
+# shell, its hashed assets, and their response headers.
+#
+# The bundle is NOT built by cargo — run
+# `cd os/axvisor/web-ui && npm ci && npm run build` before building this case,
+# otherwise the build fails with a message naming that command.
+features = [
+    "web-ui",
+    "no-auto-start",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["test-suit/axvisor/normal/qemu-web-ui/web-ui/vm-memory.toml"]
+
+# Control-plane auth + bind, same contract as the http-control-plane case. The
+# BusyBox initramfs is generated from the managed rootfs into the path the
+# fixture's `ramdisk_path` points at.
+[env]
+AXVM_HTTP_TOKEN = "axvisor-http-test-token"
+AXVM_HTTP_BIND = "0.0.0.0:8080"
+AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-web-ui/initramfs-aarch64.cpio.gz"

@@ -47,6 +47,8 @@ mod network_console;
 #[cfg(feature = "browser-console")]
 mod network_status;
 mod shell;
+#[cfg(feature = "web-ui")]
+mod web;
 
 /// Axvisor kernel entry point.
 ///
