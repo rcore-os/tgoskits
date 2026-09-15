@@ -463,14 +463,21 @@ dependencies = [
  "ax-hal",
  "ax-memory-addr",
  "ax-mm",
+ "ax-net",
  "ax-runtime",
  "ax-std",
+ "ax-sync",
  "ax-task",
  "axbacktrace",
  "axfs-ng-vfs",
+ "axpoll",
  "embedded-graphics",
+ "irq-framework",
  "libc",
  "rand 0.8.8",
+ "rdrive",
+ "virtio-drivers",
+ "zerocopy",
 ]
 
 [[package]]
@@ -9183,8 +9190,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "virtio-drivers"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfdc1c628cdd8ce7c3b9e65a8ed550d0338e9ef9f911e729666f1cce097de2f7"
+source = "git+https://github.com/rcore-os/virtio-drivers.git?rev=5dd42a8d850e1f9433687904ba6c60f388601079#5dd42a8d850e1f9433687904ba6c60f388601079"
 dependencies = [
  "bitflags 2.13.2",
  "enumn",

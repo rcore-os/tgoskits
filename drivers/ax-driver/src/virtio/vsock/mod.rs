@@ -25,10 +25,8 @@ use crate::{PciIrqRequirement, binding_info_from_pci};
 
 const DEFAULT_RX_BUFFER_CAPACITY: u32 = 32 * 1024;
 
-mod credit;
 mod irq;
 
-use credit::TxCreditBook;
 use irq::SharedVsockTransport;
 
 #[cfg(feature = "pci")]
@@ -72,7 +70,7 @@ pub fn register_transport_with_info<T: Transport + 'static>(
 
 struct VirtIoVsock<T: Transport + 'static> {
     inner: VsockConnectionManager<VirtIoHalImpl, SharedVsockTransport<T>>,
-    tx_credits: TxCreditBook,
+    pending_event: Option<Result<VsockEvent, VsockError>>,
     irq_endpoints: Option<VsockIrqEndpoints>,
 }
 
@@ -84,7 +82,7 @@ impl<T: Transport + 'static> VirtIoVsock<T> {
         let socket = VirtIOSocket::<VirtIoHalImpl, _>::new(transport)?;
         Ok(Self {
             inner: VsockConnectionManager::new_with_capacity(socket, DEFAULT_RX_BUFFER_CAPACITY),
-            tx_credits: TxCreditBook::default(),
+            pending_event: None,
             irq_endpoints: Some(irq_endpoints),
         })
     }
@@ -112,39 +110,29 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
         self.inner
             .connect(peer, local_port)
             .map_err(map_vsock_error)?;
-        self.tx_credits.open(id);
         Ok(())
     }
 
     fn send_capacity(&mut self, id: VsockConnId) -> Result<usize, VsockError> {
-        let _validated = map_conn_id(id)?;
-        self.tx_credits
-            .available(id, DEFAULT_RX_BUFFER_CAPACITY)
-            .ok_or(VsockError::NotConnected)
+        let (peer, local_port) = map_conn_id(id)?;
+        self.inner
+            .send_capacity(peer, local_port)
+            .map_err(map_vsock_error)
     }
 
     fn send(&mut self, id: VsockConnId, buf: &[u8]) -> Result<usize, VsockError> {
         if buf.is_empty() {
             return Ok(0);
         }
-        let capacity = self
-            .tx_credits
-            .available(id, DEFAULT_RX_BUFFER_CAPACITY)
-            .ok_or(VsockError::NotConnected)?;
+        let capacity = self.send_capacity(id)?;
         if capacity == 0 {
             return Err(VsockError::Retry);
         }
         let send_length = buf.len().min(capacity);
-        let length = u32::try_from(send_length).map_err(|_| VsockError::NotSupported)?;
         let (peer, local_port) = map_conn_id(id)?;
         self.inner
             .send(peer, local_port, &buf[..send_length])
             .map_err(map_vsock_error)?;
-        let recorded = self.tx_credits.record_sent(id, length);
-        debug_assert!(
-            recorded,
-            "a successful send must retain its opened credit entry"
-        );
         Ok(send_length)
     }
 
@@ -175,46 +163,36 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
 
     fn disconnect(&mut self, id: VsockConnId) -> Result<(), VsockError> {
         let (peer, local_port) = map_conn_id(id)?;
-        complete_local_disconnect(
-            &mut self.tx_credits,
-            id,
-            self.inner.shutdown(peer, local_port),
-        )
+        self.inner
+            .shutdown(peer, local_port)
+            .map_err(map_vsock_error)
     }
 
     fn abort(&mut self, id: VsockConnId) -> Result<(), VsockError> {
         let (peer, local_port) = map_conn_id(id)?;
         self.inner
             .force_close(peer, local_port)
-            .map_err(map_vsock_error)?;
-        self.tx_credits.close(id);
-        Ok(())
+            .map_err(map_vsock_error)
     }
 
     fn poll_event(&mut self) -> Result<Option<VsockEvent>, VsockError> {
-        let Some(event) = self.inner.poll().map_err(map_vsock_error)? else {
-            return Ok(None);
-        };
-        let connection = map_event_conn(&event);
-        let connected = matches!(
-            event.event_type,
-            VsockEventType::ConnectionRequest | VsockEventType::Connected
-        );
-        let disconnected = matches!(event.event_type, VsockEventType::Disconnected { .. });
-        if connected {
-            self.tx_credits.open(connection);
+        if let Some(event) = self.pending_event.take() {
+            return event.map(Some);
         }
-        if disconnected {
-            self.tx_credits.close(connection);
-        } else {
-            self.tx_credits.update_peer(
-                connection,
-                event.buffer_status.buffer_allocation,
-                event.buffer_status.forward_count,
-            );
-        }
-        let event = map_event(event);
-        Ok(Some(event))
+        let mut credit_update = None;
+        let event = self.inner.poll_with_credit_update(|peer, local_port| {
+            credit_update = Some(VsockConnId {
+                peer_addr: map_rdif_addr(peer),
+                local_port,
+            });
+        });
+        publish_polled_event(
+            event
+                .map(|event| event.map(map_event))
+                .map_err(map_vsock_error),
+            credit_update,
+            &mut self.pending_event,
+        )
     }
 
     fn take_irq_endpoints(&mut self) -> Result<VsockIrqEndpoints, VsockError> {
@@ -222,14 +200,29 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
     }
 }
 
-fn complete_local_disconnect(
-    tx_credits: &mut TxCreditBook,
-    connection: VsockConnId,
-    result: Result<(), VirtIoError>,
-) -> Result<(), VsockError> {
-    result.map_err(map_vsock_error)?;
-    tx_credits.close(connection);
-    Ok(())
+// Preserve both the protocol result and the credit notification without invoking
+// socket callbacks under the device gate. Deliver credit before an error, since
+// the worker stops draining on errors and may receive no further IRQ.
+fn publish_polled_event(
+    result: Result<Option<VsockEvent>, VsockError>,
+    credit_update: Option<VsockConnId>,
+    pending: &mut Option<Result<VsockEvent, VsockError>>,
+) -> Result<Option<VsockEvent>, VsockError> {
+    let Some(connection) = credit_update else {
+        return result;
+    };
+    let credit = VsockEvent::CreditUpdate(connection);
+    match result {
+        Ok(Some(event)) => {
+            *pending = Some(Ok(credit));
+            Ok(Some(event))
+        }
+        Ok(None) => Ok(Some(credit)),
+        Err(error) => {
+            *pending = Some(Err(error));
+            Ok(Some(credit))
+        }
+    }
 }
 
 fn validate_port(port: u32) -> Result<(), VsockError> {
@@ -320,18 +313,34 @@ mod tests {
     }
 
     #[test]
-    fn successful_local_disconnect_retires_transmit_credit() {
-        let mut credits = TxCreditBook::default();
-        credits.open(CONNECTION);
-        credits.update_peer(CONNECTION, 4096, 0);
-        assert_eq!(credits.available(CONNECTION, 4096), Some(4096));
+    fn consumed_credit_is_delivered_before_a_response_error() {
+        let mut pending = None;
+        for result in [Ok(None), Err(VsockError::Retry)] {
+            let failed = result.is_err();
+            let event = publish_polled_event(result, Some(CONNECTION), &mut pending).unwrap();
+            assert!(matches!(event, Some(VsockEvent::CreditUpdate(id)) if id == CONNECTION));
+            assert_eq!(pending.is_some(), failed);
+        }
+        assert!(matches!(pending.take(), Some(Err(VsockError::Retry))));
+        assert!(
+            publish_polled_event(Ok(None), None, &mut pending)
+                .unwrap()
+                .is_none()
+        );
+    }
 
-        complete_local_disconnect(&mut credits, CONNECTION, Ok(())).unwrap();
-
-        assert_eq!(
-            credits.available(CONNECTION, 4096),
-            None,
-            "a transport that accepted local disconnect must not remain writable"
+    #[test]
+    fn connection_event_precedes_its_credit_notification() {
+        let mut pending = None;
+        let event = publish_polled_event(
+            Ok(Some(VsockEvent::Connected(CONNECTION))),
+            Some(CONNECTION),
+            &mut pending,
+        )
+        .unwrap();
+        assert!(matches!(event, Some(VsockEvent::Connected(id)) if id == CONNECTION));
+        assert!(
+            matches!(pending.take(), Some(Ok(VsockEvent::CreditUpdate(id))) if id == CONNECTION)
         );
     }
 }
