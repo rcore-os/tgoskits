@@ -371,7 +371,10 @@ impl From<PollError> for JpuDecodeError {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use core::error::Error as _;
+    use std::string::ToString;
 
     use super::{
         JpegHeaderError, JpuDecodeError, JpuHardwareSetupError, JpuInspectError, JpuRegisterError,
@@ -392,6 +395,15 @@ mod tests {
             decode.to_string(),
             "JPU hardware setup failed: JPU BBC did not become idle"
         );
-        assert!(decode.source().and_then(|error| error.source()).is_some());
+        // The transparent Register variant has no further source.
+        assert_eq!(
+            decode
+                .source()
+                .unwrap()
+                .downcast_ref::<JpuHardwareSetupError>(),
+            Some(&JpuHardwareSetupError::Register(
+                JpuRegisterError::BbcIdleTimeout
+            )),
+        );
     }
 }

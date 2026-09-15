@@ -18,7 +18,7 @@ use super::{
         JpuInspectError,
     },
     header::{JpegHeaderInfo, parse_jpeg_header},
-    layout::{FrameLayout, JpuPixelFormat, JpuScale, PlaneLayout},
+    layout::{FrameLayout, FrameLayoutError, JpuPixelFormat, JpuScale, PlaneLayout},
     regs::hardware_init_at,
 };
 
@@ -83,6 +83,12 @@ pub fn inspect_jpeg_layout(
     scale: JpuScale,
 ) -> Result<FrameLayout, JpuInspectError> {
     Ok(inspect_jpeg(jpeg_data, scale)?.layout)
+}
+
+#[derive(Clone, Copy)]
+enum OutputFormat {
+    Native,
+    Yuv420,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -187,9 +193,37 @@ impl JpuDecoder {
         jpeg_data: &[u8],
         scale: JpuScale,
     ) -> Result<DecodeResult<'a>, JpuDecodeError> {
+        self.decode_scaled_output(jpeg_data, scale, OutputFormat::Native)
+    }
+
+    /// Decodes a color JPEG and converts its chroma to planar YUV420 in place.
+    ///
+    /// Uses a rounded box average over the additional sampling axis or axes,
+    /// replicating the last visible sample at odd edges. Luma is unchanged.
+    /// Conversion runs only after DMA completion and needs no extra frame buffer.
+    /// Grayscale is rejected before hardware submission. Other errors and
+    /// poisoning semantics are the same as [`Self::decode_scaled`].
+    pub fn decode_scaled_yuv420<'a>(
+        &'a mut self,
+        jpeg_data: &[u8],
+        scale: JpuScale,
+    ) -> Result<DecodeResult<'a>, JpuDecodeError> {
+        self.decode_scaled_output(jpeg_data, scale, OutputFormat::Yuv420)
+    }
+
+    fn decode_scaled_output<'a>(
+        &'a mut self,
+        jpeg_data: &[u8],
+        scale: JpuScale,
+        output: OutputFormat,
+    ) -> Result<DecodeResult<'a>, JpuDecodeError> {
         self.validate_decoder_ready()?;
 
         let JpegInspection { header, layout } = inspect_jpeg(jpeg_data, scale)?;
+        let output_layout = match output {
+            OutputFormat::Native => layout,
+            OutputFormat::Yuv420 => layout.yuv420_layout()?,
+        };
         let format = layout.format;
         self.completed_frame_len = None;
         let stream_len = required_stream_capacity(jpeg_data.len(), header.ecs_offset)?;
@@ -234,6 +268,17 @@ impl JpuDecoder {
         }
 
         self.clear_frame_padding(&layout)?;
+        if matches!(output, OutputFormat::Yuv420) {
+            let frame = self
+                .frame_buffer
+                .as_mut()
+                .ok_or(JpuBufferError::MissingCompletedFrameBuffer)?;
+            // SAFETY: DONE was acknowledged and complete_dma returned CPU ownership.
+            // The exclusive decoder borrow prevents concurrent decode or frame reads.
+            let bytes = unsafe { frame.as_mut_slice_cpu() };
+            convert_yuv420(bytes, &layout)?;
+        }
+        let layout = output_layout;
         self.completed_frame_len = Some(layout.total_len);
         let frame = self
             .frame_buffer
@@ -542,6 +587,58 @@ fn clear_plane_and_gap_padding(
     Ok(())
 }
 
+// Forward compaction is safe: destination strides and offsets never exceed
+// their source counterparts. Finish Cb before moving Cr into the freed space.
+fn convert_yuv420(bytes: &mut [u8], native: &FrameLayout) -> Result<(), JpuDecodeError> {
+    let output = native.yuv420_layout()?;
+    if bytes.len() < native.total_len {
+        return Err(JpuBufferError::FrameLayoutExceedsAllocation.into());
+    }
+    let (step_x, step_y) = match native.format {
+        JpuPixelFormat::Yuv420 => return Ok(()),
+        JpuPixelFormat::Yuv422Horizontal => (1, 2),
+        JpuPixelFormat::Yuv422Vertical => (2, 1),
+        JpuPixelFormat::Yuv444 => (2, 2),
+        JpuPixelFormat::Grayscale => return Err(FrameLayoutError::UnsupportedPixelFormat.into()),
+    };
+    let width = native.visible.width as usize;
+    let height = native.visible.height as usize;
+    let source_width = width.div_ceil(2 / step_x);
+    let source_height = height.div_ceil(2 / step_y);
+    for (source, destination) in [(native.cb, output.cb), (native.cr, output.cr)] {
+        let source = source.ok_or(FrameLayoutError::UnsupportedPixelFormat)?;
+        let destination = destination.ok_or(FrameLayoutError::UnsupportedPixelFormat)?;
+        for y in 0..height.div_ceil(2) {
+            for x in 0..width.div_ceil(2) {
+                let mut sum = 0u16;
+                for dy in 0..step_y {
+                    let row = (y * step_y + dy).min(source_height - 1);
+                    for dx in 0..step_x {
+                        let column = (x * step_x + dx).min(source_width - 1);
+                        sum +=
+                            u16::from(bytes[source.offset + row * source.stride as usize + column]);
+                    }
+                }
+                let count = (step_x * step_y) as u16;
+                bytes[destination.offset + y * destination.stride as usize + x] =
+                    ((sum + count / 2) / count) as u8;
+            }
+        }
+        // Do not let source samples survive in output row or bottom padding.
+        for y in 0..destination.storage.height as usize {
+            let row = destination.offset + y * destination.stride as usize;
+            let used = if y < height.div_ceil(2) {
+                width.div_ceil(2)
+            } else {
+                0
+            };
+            bytes[row + used..row + destination.stride as usize].fill(0);
+        }
+    }
+    clear_frame_padding(bytes, &output)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -558,6 +655,83 @@ mod tests {
         0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02, 0x11,
         0x03, 0x11, 0x00, 0x3f, 0x00, 0x00, 0xff, 0xd9,
     ];
+
+    #[test]
+    fn color_frames_convert_to_yuv420_with_consistent_readback() {
+        // A spatial ramp distinguishes horizontal, vertical, and two-axis
+        // averaging. Different component biases detect Cb/Cr overlap.
+        for (format, dx, dy, first) in [
+            (JpuPixelFormat::Yuv420, 1usize, 1usize, 0),
+            (JpuPixelFormat::Yuv422Horizontal, 1, 2, 3),
+            (JpuPixelFormat::Yuv422Vertical, 2, 1, 1),
+            (JpuPixelFormat::Yuv444, 2, 2, 4),
+        ] {
+            for (width, height, scale) in [
+                (1, 1, JpuScale::Full),
+                (16, 16, JpuScale::Full),
+                (19, 21, JpuScale::Full),
+                (129, 145, JpuScale::Eighth),
+            ] {
+                let native = FrameLayout::new(width, height, format, scale).unwrap();
+                let output = native.yuv420_layout().unwrap();
+                let w = native.visible.width as usize;
+                let h = native.visible.height as usize;
+                let mut bytes = std::vec![0; native.total_len];
+                bytes[..native.y.len].fill(42);
+                for (plane, bias) in [(native.cb.unwrap(), 0), (native.cr.unwrap(), 50)] {
+                    for y in 0..h.div_ceil(2 / dy) {
+                        for x in 0..w.div_ceil(2 / dx) {
+                            bytes[plane.offset + y * plane.stride as usize + x] =
+                                (bias + 2 * x + 6 * y) as u8;
+                        }
+                    }
+                }
+                clear_frame_padding(&mut bytes, &native).unwrap();
+                let luma = bytes[..native.y.len].to_vec();
+                super::convert_yuv420(&mut bytes, &native).unwrap();
+                assert_eq!(output.format, JpuPixelFormat::Yuv420);
+                assert!(output.total_len <= native.total_len);
+                assert_eq!(bytes[..native.y.len], luma);
+                for (plane, bias) in [(output.cb.unwrap(), 0), (output.cr.unwrap(), 50)] {
+                    assert_eq!(plane.stride, output.y.stride / 2);
+                    assert_eq!(plane.storage.height, output.storage.height / 2);
+                    for y in 0..plane.storage.height as usize {
+                        for x in 0..plane.stride as usize {
+                            let expected = if x < w.div_ceil(2) && y < h.div_ceil(2) {
+                                // Odd right/bottom edges replicate the last sample,
+                                // removing the half-step contribution from that axis.
+                                let edge_x = usize::from(x == w / 2) * (dx - 1);
+                                let edge_y = usize::from(y == h / 2) * 3 * (dy - 1);
+                                bias + 2 * x * dx + 6 * y * dy + first - edge_x - edge_y
+                            } else {
+                                0
+                            };
+                            assert_eq!(
+                                bytes[plane.offset + y * plane.stride as usize + x],
+                                expected as u8,
+                                "{format:?} {scale:?} ({x}, {y})"
+                            );
+                        }
+                    }
+                }
+                let mut readback = std::vec![];
+                let mut chunk = [0xa5; 13];
+                loop {
+                    let n = copy_frame_range(&bytes, output.total_len, readback.len(), &mut chunk)
+                        .unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    readback.extend_from_slice(&chunk[..n]);
+                }
+                assert_eq!(readback, bytes[..output.total_len]);
+            }
+        }
+        let gray = FrameLayout::new(19, 21, JpuPixelFormat::Grayscale, JpuScale::Full).unwrap();
+        let mut bytes = std::vec![0x5a; gray.total_len];
+        assert!(super::convert_yuv420(&mut bytes, &gray).is_err());
+        assert!(bytes.iter().all(|&byte| byte == 0x5a));
+    }
 
     #[test]
     fn buffer_plan_reuses_only_when_both_capacities_fit() {

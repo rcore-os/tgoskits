@@ -190,6 +190,11 @@ impl VdecState {
 
         let inspected =
             inspect_jpeg_layout(&self.stream_scratch, self.scale).map_err(map_inspect_error)?;
+        // Bound the native DMA allocation separately from the compact output.
+        if inspected.total_len > MAX_FRAME_BYTES {
+            return Err(StarryError::StorageFull);
+        }
+        let inspected = inspected.yuv420_layout().map_err(map_layout_error)?;
         validate_layout(&inspected, &self.attr, &self.param)?;
         let decoded = jpu.decode_vdec(&self.stream_scratch, self.scale)?;
         if decoded.layout != inspected {
