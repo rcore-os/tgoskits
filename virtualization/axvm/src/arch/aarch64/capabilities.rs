@@ -16,8 +16,12 @@ impl MachinePlatform for Aarch64Arch {
 
 impl BootImagePlatform for Aarch64Arch {
     fn make_guest_memory_visible(addr: VirtAddr, size: usize) {
+        // The loader wrote through a cacheable host alias. A guest may update
+        // relocation data with its caches disabled before enabling them. Do
+        // not retain clean host lines that could resurrect the older contents.
+        // Image loading owns this range before the guest starts executing.
         aarch64_cpu_ext::cache::dcache_range(
-            aarch64_cpu_ext::cache::CacheOp::Clean,
+            aarch64_cpu_ext::cache::CacheOp::CleanAndInvalidate,
             addr.as_usize(),
             size,
         );

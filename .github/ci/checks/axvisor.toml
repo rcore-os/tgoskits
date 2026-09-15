@@ -251,6 +251,20 @@ kind = "axvisor-board"
 board = "orangepi-5-plus-starry"
 
 [[check]]
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-vcpu-perf"
+impact_targets = ["axvisor:aarch64"]
+name = "Board OrangePi 5 Plus · Single ArceOS guest performance"
+runner = "board"
+timeout_minutes = 15
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-vcpu-perf
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-vcpu-perf"
+
+[[check]]
 id = "test-axvisor-self-hosted-board-roc-rk3568-pc-linux"
 impact_targets = ["axvisor:aarch64"]
 name = "Board ROC-RK3568-PC · Linux guest"

@@ -1,0 +1,4 @@
+features = ["test-vcpu-perf", "ax-driver/rk3588-cpufreq"]
+log = "Warn"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["test-suit/axvisor/normal/board-orangepi-5-plus/vcpu-perf/vm.toml"]
