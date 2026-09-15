@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.7.5...axvisor-v0.7.6) - 2026-09-15
+
+### Added
+
+- *(axvm)* support x86 virtio-blk file backends ([#2390](https://github.com/rcore-os/tgoskits/pull/2390))
+
 ## [0.7.5](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.7.4...axvisor-v0.7.5) - 2026-09-13
 
 ### Other

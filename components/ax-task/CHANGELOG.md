@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.8.2...ax-task-v0.8.3) - 2026-09-15
+
+### Added
+
+- *(ax-task)* integrate capacity-aware Fair placement ([#2389](https://github.com/rcore-os/tgoskits/pull/2389))
+
+### Other
+
+- *(sched)* reduce scheduler and futex hot-path overhead ([#2399](https://github.com/rcore-os/tgoskits/pull/2399))
+
 ## [0.8.2](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.8.1...ax-task-v0.8.2) - 2026-09-13
 
 ### Fixed

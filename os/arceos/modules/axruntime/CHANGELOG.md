@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.3](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.2...ax-runtime-v0.13.3) - 2026-09-15
+
+### Added
+
+- *(vfs)* implement mutation credentials for directory operations an… ([#2287](https://github.com/rcore-os/tgoskits/pull/2287))
+- *(ax-task)* integrate capacity-aware Fair placement ([#2389](https://github.com/rcore-os/tgoskits/pull/2389))
+
+### Fixed
+
+- *(starry-kernel)* enforce executable inode write exclusion ([#2375](https://github.com/rcore-os/tgoskits/pull/2375))
+
+### Other
+
+- *(sched)* reduce scheduler and futex hot-path overhead ([#2399](https://github.com/rcore-os/tgoskits/pull/2399))
+
 ## [0.13.2](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.1...ax-runtime-v0.13.2) - 2026-09-13
 
 ### Other

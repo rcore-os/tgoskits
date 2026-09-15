@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.37](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.36...starryos-v0.5.37) - 2026-09-15
+
+### Other
+
+- updated the following local packages: ax-runtime, axbuild, ax-std
+
 ## [0.5.36](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.35...starryos-v0.5.36) - 2026-09-13
 
 ### Other
