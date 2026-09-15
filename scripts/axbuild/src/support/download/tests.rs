@@ -63,38 +63,50 @@ async fn download_file_restarts_when_range_is_invalid() {
 }
 
 #[tokio::test]
-async fn download_file_retries_transient_http_status() {
-    let server = TestServer::start_with_failures(
-        b"abcdef".to_vec(),
-        vec![StatusCode::TOO_MANY_REQUESTS, StatusCode::GATEWAY_TIMEOUT],
-    )
-    .await;
-    let workspace = tempdir().unwrap();
-    let output_path = workspace.path().join("rootfs.img.tar.gz");
-
-    let client = http_client().unwrap();
-    download_file(&client, &server.url(), &output_path)
-        .await
-        .unwrap();
-
-    assert_eq!(fs::read(&output_path).unwrap(), b"abcdef");
-    assert_eq!(server.request_count(), 3);
+async fn downloads_retry_transient_http_status() {
+    for as_text in [false, true] {
+        let server = TestServer::start_with_failures(
+            b"abcdef".to_vec(),
+            vec![StatusCode::TOO_MANY_REQUESTS, StatusCode::GATEWAY_TIMEOUT],
+        )
+        .await;
+        let workspace = tempdir().unwrap();
+        let output_path = workspace.path().join("rootfs.img.tar.gz");
+        let client = http_client().unwrap();
+        let body = if as_text {
+            fetch_text(&client, &server.url()).await.unwrap()
+        } else {
+            download_file(&client, &server.url(), &output_path)
+                .await
+                .unwrap();
+            fs::read_to_string(&output_path).unwrap()
+        };
+        assert_eq!(body, "abcdef");
+        assert_eq!(server.request_count(), 3);
+    }
 }
 
 #[tokio::test]
-async fn download_file_does_not_retry_permanent_http_status() {
-    let server =
-        TestServer::start_with_failures(b"abcdef".to_vec(), vec![StatusCode::NOT_FOUND]).await;
-    let workspace = tempdir().unwrap();
-    let output_path = workspace.path().join("rootfs.img.tar.gz");
-
-    let client = http_client().unwrap();
-    let err = download_file(&client, &server.url(), &output_path)
-        .await
-        .unwrap_err();
-
-    assert!(err.to_string().contains("HTTP 404 Not Found"));
-    assert_eq!(server.request_count(), 1);
+async fn downloads_stop_on_permanent_errors_or_exhausted_attempts() {
+    for as_text in [false, true] {
+        for (status, attempts) in [
+            (StatusCode::NOT_FOUND, 1),
+            (StatusCode::SERVICE_UNAVAILABLE, 5),
+        ] {
+            let server = TestServer::start_with_failures(b"abcdef".to_vec(), vec![status; 5]).await;
+            let workspace = tempdir().unwrap();
+            let output_path = workspace.path().join("rootfs.img.tar.gz");
+            let client = http_client().unwrap();
+            let result = if as_text {
+                fetch_text(&client, &server.url()).await.map(|_| ())
+            } else {
+                download_file(&client, &server.url(), &output_path).await
+            };
+            let error = result.unwrap_err();
+            assert!(error.to_string().contains(&format!("HTTP {status}")));
+            assert_eq!(server.request_count(), attempts);
+        }
+    }
 }
 
 #[tokio::test]
