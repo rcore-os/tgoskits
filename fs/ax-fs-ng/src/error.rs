@@ -116,6 +116,7 @@ pub(crate) fn vfs_error_to_io_error(error: VfsError) -> IoError {
         VfsError::ReadOnlyFilesystem => IoError::ReadOnlyFilesystem,
         VfsError::ResourceBusy => IoError::ResourceBusy,
         VfsError::StorageFull => IoError::StorageFull,
+        VfsError::TextFileBusy => IoError::ResourceBusy,
         VfsError::TimedOut => IoError::TimedOut,
         VfsError::TooManyLinks => IoError::Io,
         VfsError::Unsupported => IoError::Unsupported,

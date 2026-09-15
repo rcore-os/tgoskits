@@ -744,9 +744,12 @@ impl ElfLoader {
             None
         };
 
+        // PT_INTERP is protected while loading, but is not mm->exe_file.
+        let _interpreter_access;
         let (elf, ldso) = if let Some(ldso) = ldso {
             let loc = ax_fs_ng::vfs::current_fs_context().lock().resolve(ldso)?;
             check_executable_access(&loc, cred)?;
+            _interpreter_access = ax_fs_ng::file::ExecutableFile::acquire(loc.clone())?;
             if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
                 let e = ElfCacheEntry::load(loc)?.map_err(|_| StarryError::InvalidInput)?;
                 self.0.insert(e);
@@ -914,6 +917,7 @@ fn load_user_app_with_depth(
     interpreter_depth: usize,
 ) -> StarryResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
     check_executable_access(&loc, cred)?;
+    let executable_file = ax_fs_ng::file::ExecutableFile::acquire(loc.clone())?;
 
     let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc, cred)? } {
         Ok((entry, auxv)) => (entry, auxv),
@@ -939,6 +943,8 @@ fn load_user_app_with_depth(
                 let interp = ax_fs_ng::vfs::current_fs_context()
                     .lock()
                     .resolve(&new_args[0])?;
+                // A script stops being the executable when its interpreter takes over.
+                drop(executable_file);
                 return load_user_app_with_depth(
                     uspace,
                     interp,
@@ -952,6 +958,8 @@ fn load_user_app_with_depth(
             return Err(StarryError::InvalidExecutable);
         }
     };
+
+    uspace.set_executable_file(executable_file);
 
     let ustack_top = uspace.stack_top();
     let ustack_size = crate::config::USER_STACK_SIZE;

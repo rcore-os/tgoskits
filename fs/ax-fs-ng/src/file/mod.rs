@@ -1,8 +1,10 @@
+mod access;
 mod cache;
 mod handle;
 mod open;
 mod page;
 
+pub use access::{ExecutableFile, WriteAccess};
 #[cfg(feature = "ext4")]
 pub(crate) use cache::forget_cached_file_key;
 #[cfg(feature = "ext4")]

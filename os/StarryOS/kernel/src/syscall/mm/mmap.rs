@@ -734,6 +734,12 @@ pub fn sys_mmap(
         _ => return Err(StarryError::InvalidInput),
     };
 
+    let write_access = file
+        .as_ref()
+        .and_then(|file| file.downcast_ref::<crate::file::File>())
+        .and_then(|file| file.inner().write_access().cloned());
+    let backend = backend.with_write_access(write_access);
+
     let lock_mode = if map_flags.contains(MmapFlags::LOCKED) {
         VmaLockMode::Locked
     } else {
