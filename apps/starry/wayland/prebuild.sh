@@ -86,6 +86,37 @@ roots = ["weston", "weston-backend-drm", "weston-shell-desktop", *extra_roots]
 installed_names = set(os.environ.get("STARRY_WAYLAND_INSTALLED_PACKAGES", "").split())
 write_install_list = os.environ.get("STARRY_WAYLAND_WRITE_INSTALL_LIST") == "1"
 
+# APKINDEX is fetched from plaintext HTTP mirrors, so its package names and
+# versions are untrusted path input: only allow a single path component built
+# from the alphabet apk actually uses.
+COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+~-]*")
+
+
+def package_filename(name, version):
+    for field, value in (("package name", name), ("version", version)):
+        if not COMPONENT_RE.fullmatch(value):
+            raise ValueError(f"invalid APK {field}: {value!r}")
+    return f"{name}-{version}.apk"
+
+
+def cache_path(root, filename):
+    root = os.path.abspath(root)
+    # commonpath does not resolve "..", so normalize the target lexically
+    # before comparing it with the expected, unresolved root; also refuse a
+    # symlinked root or target so neither can move the write boundary.
+    target = os.path.normpath(os.path.join(root, filename))
+    try:
+        contained = os.path.commonpath((root, target)) == root
+    except ValueError:
+        contained = False
+    if not contained:
+        raise ValueError(f"APK cache target escapes its root: {filename!r}")
+    if os.path.islink(root):
+        raise ValueError(f"APK cache root is a symlink: {root}")
+    if os.path.islink(target):
+        raise ValueError(f"APK cache target is a symlink: {target}")
+    return target
+
 
 def log(message, stream=sys.stdout):
     print(message, file=stream, flush=True)
@@ -111,12 +142,12 @@ def fetch_bytes(path):
     raise RuntimeError(f"all mirrors failed for {path}: {last_error}")
 
 
-def fetch_file(path, target_path):
+def fetch_file(path, cache_dir, filename):
     last_error = None
-    filename = os.path.basename(target_path)
+    target_path = cache_path(cache_dir, filename)
+    tmp = cache_path(cache_dir, filename + ".tmp")
     for mirror in mirrors:
         url = f"{mirror}/{branch}/{path}"
-        tmp = target_path + ".tmp"
         try:
             with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as out:
                 total_header = resp.headers.get("Content-Length")
@@ -170,6 +201,7 @@ for repo in repos:
         version = fields.get("V", [None])[0]
         if not name or not version:
             continue
+        filename = package_filename(name, version)
         deps = []
         for dep_line in fields.get("D", []):
             deps.extend(filter(None, (dep_key(dep) for dep in dep_line.split())))
@@ -179,6 +211,7 @@ for repo in repos:
         packages[name] = {
             "name": name,
             "version": version,
+            "filename": filename,
             "repo": repo,
             "deps": deps,
         }
@@ -205,23 +238,22 @@ os.makedirs(cache_dir, exist_ok=True)
 os.makedirs(guest_cache_dir, exist_ok=True)
 log(f"WAYLAND_PREFETCH resolved {len(resolved)} apk(s) for {apk_arch}")
 for pkg in resolved:
-    filename = f"{pkg['name']}-{pkg['version']}.apk"
+    filename = pkg["filename"]
     rel = f"{pkg['repo']}/{apk_arch}/{filename}"
-    cached = os.path.join(cache_dir, filename)
+    cached = cache_path(cache_dir, filename)
     if not os.path.exists(cached) or os.path.getsize(cached) == 0:
-        mirror = fetch_file(rel, cached)
+        mirror = fetch_file(rel, cache_dir, filename)
         log(f"WAYLAND_PREFETCH downloaded {filename} from {mirror}")
     else:
         log(f"WAYLAND_PREFETCH cached {filename}")
-    shutil.copy2(cached, os.path.join(guest_cache_dir, filename))
+    shutil.copy2(cached, cache_path(guest_cache_dir, filename))
 
 if write_install_list:
     install_list = os.path.join(guest_cache_dir, "install.list")
     with open(install_list, "w", encoding="utf-8") as out:
         for pkg in resolved:
             if pkg["name"] not in installed_names:
-                filename = f"{pkg['name']}-{pkg['version']}.apk"
-                out.write(f"/usr/local/wayland-apks/{filename}\n")
+                out.write(f"/usr/local/wayland-apks/{pkg['filename']}\n")
 
 log(f"WAYLAND_PREFETCH prepared {len(resolved)} apk(s) for {apk_arch}")
 PY
