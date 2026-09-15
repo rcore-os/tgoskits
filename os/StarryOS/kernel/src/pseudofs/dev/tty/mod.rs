@@ -9,7 +9,6 @@ use alloc::{
     format,
     string::String,
     sync::{Arc, Weak},
-    vec::Vec,
 };
 use core::{
     any::Any,
@@ -45,8 +44,6 @@ use crate::{
     },
 };
 
-const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
-const ANSI_CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;1R";
 const TCIFLUSH: usize = 0;
 const TCOFLUSH: usize = 1;
 const TCIOFLUSH: usize = 2;
@@ -196,15 +193,8 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
         if self.is_ptm {
             self.writer.write(buf);
         } else {
-            let (output, response_count) = filter_cursor_position_requests(buf);
             let term = self.terminal.load_termios();
-            write_output_bytes(&self.writer, term.as_ref(), &output);
-            if response_count > 0 {
-                let mut ldisc = self.ldisc.lock();
-                for _ in 0..response_count {
-                    ldisc.inject_input(ANSI_CURSOR_POSITION_RESPONSE);
-                }
-            }
+            write_output_bytes(&self.writer, term.as_ref(), buf);
         }
         Ok(buf.len())
     }
@@ -378,24 +368,6 @@ fn apply_termios_update<W: TtyWrite>(
     })
 }
 
-fn filter_cursor_position_requests(bytes: &[u8]) -> (Vec<u8>, usize) {
-    let mut output = Vec::with_capacity(bytes.len());
-    let mut count = 0;
-    let mut rest = bytes;
-
-    while let Some(pos) = rest
-        .windows(ANSI_CURSOR_POSITION_REQUEST.len())
-        .position(|window| window == ANSI_CURSOR_POSITION_REQUEST)
-    {
-        output.extend_from_slice(&rest[..pos]);
-        count += 1;
-        rest = &rest[pos + ANSI_CURSOR_POSITION_REQUEST.len()..];
-    }
-
-    output.extend_from_slice(rest);
-    (output, count)
-}
-
 impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
     fn poll(&self) -> IoEvents {
         let _ = self.writer.open();
@@ -470,9 +442,7 @@ mod tests {
     use alloc::{sync::Arc, vec, vec::Vec};
     use std::sync::Mutex;
 
-    use super::{
-        Terminal, Termios2, TtyWrite, apply_termios_update, filter_cursor_position_requests,
-    };
+    use super::{Terminal, Termios2, TtyWrite, apply_termios_update};
     use crate::StarryResult;
 
     struct TermiosOrderWriter {
@@ -557,48 +527,4 @@ mod tests {
         assert_eq!(terminal.load_termios().baudrate(), old_baudrate);
     }
 
-    #[test]
-    fn cursor_position_request_matcher_does_not_buffer_partial_writes() {
-        assert_eq!(
-            filter_cursor_position_requests(b"\x1b["),
-            (b"\x1b[".to_vec(), 0)
-        );
-        assert_eq!(filter_cursor_position_requests(b"6"), (b"6".to_vec(), 0));
-        assert_eq!(filter_cursor_position_requests(b"n"), (b"n".to_vec(), 0));
-    }
-
-    #[test]
-    fn cursor_position_request_matcher_recovers_after_partial_mismatch() {
-        assert_eq!(
-            filter_cursor_position_requests(b"\x1bX"),
-            (b"\x1bX".to_vec(), 0)
-        );
-        assert_eq!(filter_cursor_position_requests(b"\x1b[6n"), (Vec::new(), 1));
-        assert_eq!(
-            filter_cursor_position_requests(b"\x1b[6n\x1b[6n"),
-            (Vec::new(), 2)
-        );
-    }
-
-    #[test]
-    fn cursor_position_request_filter_preserves_other_output() {
-        assert_eq!(
-            filter_cursor_position_requests(b"ab\x1b[6ncd"),
-            (b"abcd".to_vec(), 1)
-        );
-    }
-
-    #[test]
-    fn cursor_position_request_filter_flushes_unmatched_prefix() {
-        assert_eq!(
-            filter_cursor_position_requests(b"\x1b[31mred"),
-            (b"\x1b[31mred".to_vec(), 0)
-        );
-
-        assert_eq!(
-            filter_cursor_position_requests(b"\x1b["),
-            (b"\x1b[".to_vec(), 0)
-        );
-        assert_eq!(filter_cursor_position_requests(b"A"), (b"A".to_vec(), 0));
-    }
 }
