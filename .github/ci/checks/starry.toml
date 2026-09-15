@@ -137,6 +137,8 @@ id = "test-starry-self-hosted-board-jl-lsgd2k10"
 impact_targets = ["starry:loongarch64"]
 name = "Board JL LSGD2K10 · Suites"
 runner = "board"
+# Bound lease acquisition and preparation before the guest timeout starts.
+timeout_minutes = 30
 command = '''
 cargo xtask starry test board --board jl-lsgd2k10
 '''
