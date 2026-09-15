@@ -54,10 +54,8 @@ jobs:
       credentials:
         # Public GHCR images need no login. Keep a nonempty username to prevent
         # the runner from injecting GITHUB_TOKEN when both credentials are absent;
-        # an empty password makes ContainerRegistryLogin skip docker login.
+        # an omitted password makes ContainerRegistryLogin skip docker login.
         username: anonymous
-        # Use an expression because Actions rejects an empty literal here.
-        password: ${{ '' }}
     defaults:
       run:
         shell: bash
