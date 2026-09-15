@@ -1,5 +1,6 @@
 use std::{
     fmt, fs,
+    future::Future,
     io::{Read, Write},
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
@@ -21,14 +22,25 @@ const DOWNLOAD_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 const DOWNLOAD_RETRY_BASE_DELAY: Duration = Duration::from_millis(1);
 
 pub(crate) fn http_client() -> anyhow::Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(60 * 30))
+    http_client_builder()
         .build()
         .map_err(|e| anyhow!("failed to create HTTP client: {e}"))
 }
 
+fn http_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(60 * 30))
+}
+
 pub(crate) async fn fetch_text(client: &reqwest::Client, url: &str) -> anyhow::Result<String> {
+    with_download_retries(client, url, |client| async move {
+        fetch_text_inner(&client, url).await
+    })
+    .await
+}
+
+async fn fetch_text_inner(client: &reqwest::Client, url: &str) -> anyhow::Result<String> {
     #[cfg(test)]
     if let Some(response) = test_support::fetch_text(url) {
         return response;
@@ -105,14 +117,41 @@ async fn download_file_with_retries(
     url: &str,
     path: &Path,
 ) -> anyhow::Result<()> {
+    with_download_retries(client, url, |client| async move {
+        download_file_inner(&client, url, path, true).await
+    })
+    .await
+}
+
+async fn with_download_retries<T, F, Fut>(
+    client: &reqwest::Client,
+    url: &str,
+    mut download: F,
+) -> anyhow::Result<T>
+where
+    F: FnMut(reqwest::Client) -> Fut,
+    Fut: Future<Output = anyhow::Result<T>>,
+{
+    let mut http1_client = None;
     for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
-        match download_file_inner(client, url, path, true).await {
-            Ok(()) => return Ok(()),
+        match download(http1_client.as_ref().unwrap_or(client).clone()).await {
+            Ok(result) => return Ok(result),
             Err(err) if attempt < DOWNLOAD_MAX_ATTEMPTS && retryable_download_error(&err) => {
+                if http1_client.is_none() && http2_protocol_error(&err) {
+                    // Repeating a refused stream on HTTP/2 may never recover. Use
+                    // HTTP/1.1 for the remaining attempts without resetting the budget.
+                    http1_client = Some(
+                        http_client_builder()
+                            .http1_only()
+                            .build()
+                            .context("failed to create HTTP/1.1 download client")?,
+                    );
+                    eprintln!("HTTP/2 download failed for {url}; switching to HTTP/1.1");
+                }
                 let delay = download_retry_delay(attempt);
                 eprintln!(
-                    "download attempt {attempt}/{DOWNLOAD_MAX_ATTEMPTS} for {url} failed: {err}; \
-                     retrying in {:.1}s",
+                    "download attempt {attempt}/{DOWNLOAD_MAX_ATTEMPTS} for {url} failed: \
+                     {err:#}; retrying in {:.1}s",
                     delay.as_secs_f32()
                 );
                 tokio::time::sleep(delay).await;
@@ -318,17 +357,26 @@ fn download_status_error(url: &str, status: StatusCode) -> anyhow::Error {
 }
 
 fn retryable_download_error(err: &anyhow::Error) -> bool {
+    http2_protocol_error(err)
+        || err.chain().any(|cause| {
+            cause
+                .downcast_ref::<DownloadStatusError>()
+                .is_some_and(|err| retryable_status(err.status))
+                || cause.downcast_ref::<reqwest::Error>().is_some_and(|err| {
+                    err.status().is_some_and(retryable_status)
+                        || err.is_timeout()
+                        || err.is_connect()
+                        || err.is_request()
+                        || err.is_body()
+                })
+        })
+}
+
+fn http2_protocol_error(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         cause
-            .downcast_ref::<DownloadStatusError>()
-            .is_some_and(|err| retryable_status(err.status))
-            || cause.downcast_ref::<reqwest::Error>().is_some_and(|err| {
-                err.status().is_some_and(retryable_status)
-                    || err.is_timeout()
-                    || err.is_connect()
-                    || err.is_request()
-                    || err.is_body()
-            })
+            .downcast_ref::<h2::Error>()
+            .is_some_and(|error| error.reason().is_some())
     })
 }
 
@@ -671,3 +719,219 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod transport_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use tokio::{io::AsyncReadExt, net::TcpListener, task::JoinSet};
+
+    use super::*;
+
+    #[derive(Clone, Copy)]
+    enum Reply {
+        Status(StatusCode),
+        TruncatedBody,
+    }
+
+    struct Server {
+        url: String,
+        http1_requests: Arc<AtomicUsize>,
+        http2_requests: Arc<AtomicUsize>,
+        resumed_requests: Arc<AtomicUsize>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Server {
+        async fn start(replies: Vec<Reply>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/image", listener.local_addr().unwrap());
+            let http1_requests = Arc::new(AtomicUsize::new(0));
+            let http2_requests = Arc::new(AtomicUsize::new(0));
+            let resumed_requests = Arc::new(AtomicUsize::new(0));
+            let resumed_count = resumed_requests.clone();
+            let http1_count = http1_requests.clone();
+            let http2_count = http2_requests.clone();
+            let task = tokio::spawn(async move {
+                let mut connections = JoinSet::new();
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let http1_count = http1_count.clone();
+                    let http2_count = http2_count.clone();
+                    let replies = replies.clone();
+                    let resumed_count = resumed_count.clone();
+                    connections.spawn(async move {
+                        let mut first = [0; 1];
+                        stream.peek(&mut first).await.unwrap();
+                        if first[0] == b'P' {
+                            let mut connection = h2::server::handshake(stream).await.unwrap();
+                            while let Some(Ok((_, mut response))) = connection.accept().await {
+                                http2_count.fetch_add(1, Ordering::SeqCst);
+                                response.send_reset(h2::Reason::REFUSED_STREAM);
+                            }
+                            return;
+                        }
+
+                        let mut request = Vec::new();
+                        while !request.ends_with(b"\r\n\r\n") {
+                            request.push(stream.read_u8().await.unwrap());
+                        }
+                        let index = http1_count.fetch_add(1, Ordering::SeqCst);
+                        let reply = replies
+                            .get(index)
+                            .copied()
+                            .unwrap_or(Reply::Status(StatusCode::OK));
+                        let status = match reply {
+                            Reply::Status(status) => status,
+                            Reply::TruncatedBody => StatusCode::OK,
+                        };
+                        let request = String::from_utf8(request).unwrap();
+                        let (status, body, range) = if status == StatusCode::OK
+                            && request.to_ascii_lowercase().contains("range: bytes=3-\r\n")
+                        {
+                            resumed_count.fetch_add(1, Ordering::SeqCst);
+                            (
+                                StatusCode::PARTIAL_CONTENT,
+                                "def",
+                                "Content-Range: bytes 3-5/6\r\n",
+                            )
+                        } else {
+                            (status, "abcdef", "")
+                        };
+                        let response = format!(
+                            "HTTP/1.1 {status}\r\nContent-Length: {}\r\n{range}Connection: \
+                             close\r\n\r\n{body}",
+                            body.len() + usize::from(matches!(reply, Reply::TruncatedBody))
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                    });
+                }
+            });
+            Self {
+                url,
+                http1_requests,
+                http2_requests,
+                resumed_requests,
+                task,
+            }
+        }
+    }
+
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_requests_recover_transient_errors_and_bound_failures() {
+        for (replies, expected_requests, expected_error) in [
+            (
+                vec![
+                    Reply::Status(StatusCode::TOO_MANY_REQUESTS),
+                    Reply::Status(StatusCode::GATEWAY_TIMEOUT),
+                ],
+                3,
+                None,
+            ),
+            (vec![Reply::TruncatedBody], 2, None),
+            (
+                vec![Reply::Status(StatusCode::NOT_FOUND)],
+                1,
+                Some(StatusCode::NOT_FOUND),
+            ),
+            (
+                vec![Reply::Status(StatusCode::SERVICE_UNAVAILABLE); 5],
+                5,
+                Some(StatusCode::SERVICE_UNAVAILABLE),
+            ),
+        ] {
+            let server = Server::start(replies).await;
+            let client = http_client().unwrap();
+            let result =
+                tokio::time::timeout(Duration::from_secs(5), fetch_text(&client, &server.url))
+                    .await
+                    .unwrap();
+            if let Some(status) = expected_error {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<reqwest::Error>().unwrap().status(),
+                    Some(status)
+                );
+            } else {
+                assert_eq!(result.unwrap(), "abcdef");
+            }
+            assert_eq!(
+                server.http1_requests.load(Ordering::SeqCst),
+                expected_requests
+            );
+        }
+    }
+
+    async fn assert_http2_recovery(archive: bool) {
+        let server = Server::start(Vec::new()).await;
+        let client = reqwest::Client::builder()
+            .http2_prior_knowledge()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let operation = async {
+            if archive {
+                let workspace = tempfile::tempdir().unwrap();
+                let path = workspace.path().join("archive");
+                fs::write(part_path(&path), b"abc").unwrap();
+                let digest = format!("{:x}", Sha256::digest(b"abcdef"));
+                assert_eq!(
+                    download_file_verified_sha256(&client, &server.url, &path, &digest)
+                        .await
+                        .unwrap(),
+                    DownloadOutcome::Downloaded
+                );
+                assert_eq!(fs::read(&path).unwrap(), b"abcdef");
+                assert!(!part_path(&path).exists());
+            } else {
+                assert_eq!(fetch_text(&client, &server.url).await.unwrap(), "abcdef");
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), operation)
+            .await
+            .unwrap();
+        assert!(server.http2_requests.load(Ordering::SeqCst) > 0);
+        assert_eq!(server.http1_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            server.resumed_requests.load(Ordering::SeqCst),
+            usize::from(archive)
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_http2_recovery_preserves_partial_bytes() {
+        assert_http2_recovery(true).await;
+    }
+
+    #[tokio::test]
+    async fn registry_http2_recovery_uses_remaining_attempts() {
+        assert_http2_recovery(false).await;
+        let server = Server::start(vec![Reply::Status(StatusCode::SERVICE_UNAVAILABLE); 5]).await;
+        let client = reqwest::Client::builder()
+            .http2_prior_knowledge()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(10), fetch_text(&client, &server.url))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<reqwest::Error>().unwrap().status(),
+            Some(StatusCode::SERVICE_UNAVAILABLE)
+        );
+        assert!(server.http2_requests.load(Ordering::SeqCst) > 0);
+        assert_eq!(server.http1_requests.load(Ordering::SeqCst), 4);
+    }
+}

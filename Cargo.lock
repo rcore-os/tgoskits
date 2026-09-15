@@ -1343,6 +1343,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "getrandom 0.3.4",
+ "h2",
  "httpboot-protocol",
  "indicatif",
  "jkconfig 0.1.8",
