@@ -137,16 +137,16 @@ where
         match download(http1_client.as_ref().unwrap_or(client).clone()).await {
             Ok(result) => return Ok(result),
             Err(err) if attempt < DOWNLOAD_MAX_ATTEMPTS && retryable_download_error(&err) => {
-                if http1_client.is_none() && http2_protocol_error(&err) {
-                    // Repeating a refused stream on HTTP/2 may never recover. Use
-                    // HTTP/1.1 for the remaining attempts without resetting the budget.
+                if http1_client.is_none() && http1_required(&err) {
+                    // Only an explicit peer requirement changes the protocol.
+                    // REFUSED_STREAM and other failures retain HTTP/2 on retry.
                     http1_client = Some(
                         http_client_builder()
                             .http1_only()
                             .build()
                             .context("failed to create HTTP/1.1 download client")?,
                     );
-                    eprintln!("HTTP/2 download failed for {url}; switching to HTTP/1.1");
+                    eprintln!("Server requires HTTP/1.1 for {url}; switching protocols");
                 }
                 let delay = download_retry_delay(attempt);
                 eprintln!(
@@ -357,7 +357,7 @@ fn download_status_error(url: &str, status: StatusCode) -> anyhow::Error {
 }
 
 fn retryable_download_error(err: &anyhow::Error) -> bool {
-    http2_protocol_error(err)
+    http1_required(err)
         || err.chain().any(|cause| {
             cause
                 .downcast_ref::<DownloadStatusError>()
@@ -372,11 +372,11 @@ fn retryable_download_error(err: &anyhow::Error) -> bool {
         })
 }
 
-fn http2_protocol_error(err: &anyhow::Error) -> bool {
+fn http1_required(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         cause
             .downcast_ref::<h2::Error>()
-            .is_some_and(|error| error.reason().is_some())
+            .is_some_and(|error| error.reason() == Some(h2::Reason::HTTP_1_1_REQUIRED))
     })
 }
 
@@ -741,16 +741,23 @@ mod transport_tests {
         url: String,
         http1_requests: Arc<AtomicUsize>,
         http2_requests: Arc<AtomicUsize>,
+        http2_connections: Arc<AtomicUsize>,
         resumed_requests: Arc<AtomicUsize>,
         task: tokio::task::JoinHandle<()>,
     }
 
     impl Server {
         async fn start(replies: Vec<Reply>) -> Self {
+            Self::start_with_http2(replies, vec![h2::Reason::HTTP_1_1_REQUIRED; 5]).await
+        }
+
+        async fn start_with_http2(replies: Vec<Reply>, resets: Vec<h2::Reason>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://{}/image", listener.local_addr().unwrap());
             let http1_requests = Arc::new(AtomicUsize::new(0));
             let http2_requests = Arc::new(AtomicUsize::new(0));
+            let http2_connections = Arc::new(AtomicUsize::new(0));
+            let connection_count = http2_connections.clone();
             let resumed_requests = Arc::new(AtomicUsize::new(0));
             let resumed_count = resumed_requests.clone();
             let http1_count = http1_requests.clone();
@@ -762,15 +769,26 @@ mod transport_tests {
                     let http1_count = http1_count.clone();
                     let http2_count = http2_count.clone();
                     let replies = replies.clone();
+                    let resets = resets.clone();
+                    let connection_count = connection_count.clone();
                     let resumed_count = resumed_count.clone();
                     connections.spawn(async move {
                         let mut first = [0; 1];
                         stream.peek(&mut first).await.unwrap();
                         if first[0] == b'P' {
+                            connection_count.fetch_add(1, Ordering::SeqCst);
                             let mut connection = h2::server::handshake(stream).await.unwrap();
                             while let Some(Ok((_, mut response))) = connection.accept().await {
-                                http2_count.fetch_add(1, Ordering::SeqCst);
-                                response.send_reset(h2::Reason::REFUSED_STREAM);
+                                let index = http2_count.fetch_add(1, Ordering::SeqCst);
+                                if let Some(reason) = resets.get(index) {
+                                    response.send_reset(*reason);
+                                    connection.graceful_shutdown();
+                                } else {
+                                    let mut body = response
+                                        .send_response(http::Response::new(()), false)
+                                        .unwrap();
+                                    body.send_data(b"abcdef".as_slice().into(), true).unwrap();
+                                }
                             }
                             return;
                         }
@@ -814,6 +832,7 @@ mod transport_tests {
                 url,
                 http1_requests,
                 http2_requests,
+                http2_connections,
                 resumed_requests,
                 task,
             }
@@ -871,7 +890,7 @@ mod transport_tests {
         }
     }
 
-    async fn assert_http2_recovery(archive: bool) {
+    async fn assert_required_http1_recovery(archive: bool) {
         let server = Server::start(Vec::new()).await;
         let client = reqwest::Client::builder()
             .http2_prior_knowledge()
@@ -909,13 +928,13 @@ mod transport_tests {
     }
 
     #[tokio::test]
-    async fn archive_http2_recovery_preserves_partial_bytes() {
-        assert_http2_recovery(true).await;
+    async fn required_http1_recovery_preserves_partial_bytes() {
+        assert_required_http1_recovery(true).await;
     }
 
     #[tokio::test]
-    async fn registry_http2_recovery_uses_remaining_attempts() {
-        assert_http2_recovery(false).await;
+    async fn required_http1_recovery_uses_remaining_attempts() {
+        assert_required_http1_recovery(false).await;
         let server = Server::start(vec![Reply::Status(StatusCode::SERVICE_UNAVAILABLE); 5]).await;
         let client = reqwest::Client::builder()
             .http2_prior_knowledge()
@@ -933,5 +952,44 @@ mod transport_tests {
         );
         assert!(server.http2_requests.load(Ordering::SeqCst) > 0);
         assert_eq!(server.http1_requests.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn http2_retries_preserve_protocol_and_bound_failures() {
+        for (reason, refusals) in [
+            (h2::Reason::REFUSED_STREAM, 2),
+            (h2::Reason::REFUSED_STREAM, 5),
+            (h2::Reason::CANCEL, 5),
+            (h2::Reason::ENHANCE_YOUR_CALM, 5),
+            (h2::Reason::INADEQUATE_SECURITY, 5),
+        ] {
+            let server = Server::start_with_http2(Vec::new(), vec![reason; refusals]).await;
+            let client = reqwest::Client::builder()
+                .http2_prior_knowledge()
+                .no_proxy()
+                // Exercise axbuild's attempt budget without reqwest's inner retries.
+                .retry(reqwest::retry::never())
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap();
+            let result =
+                tokio::time::timeout(Duration::from_secs(10), fetch_text(&client, &server.url))
+                    .await
+                    .unwrap();
+            if refusals < 5 {
+                assert_eq!(result.unwrap(), "abcdef");
+                assert_eq!(server.http2_requests.load(Ordering::SeqCst), refusals + 1);
+                assert!(server.http2_connections.load(Ordering::SeqCst) > 1);
+            } else {
+                let error = result.unwrap_err();
+                let protocol_error = error
+                    .chain()
+                    .find_map(|cause| cause.downcast_ref::<h2::Error>())
+                    .unwrap();
+                assert_eq!(protocol_error.reason(), Some(reason));
+                assert_eq!(server.http2_requests.load(Ordering::SeqCst), 5);
+            }
+            assert_eq!(server.http1_requests.load(Ordering::SeqCst), 0);
+        }
     }
 }

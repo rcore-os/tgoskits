@@ -56,6 +56,7 @@ syn = { workspace = true, features = ["full", "visit"] }
 walkdir = "2"
 
 [target.'cfg(any(windows, unix))'.dev-dependencies]
+http = "1"
 tokio = { version = "1.0", features = ["net"] }
 
 [target.'cfg(windows)'.dependencies]
