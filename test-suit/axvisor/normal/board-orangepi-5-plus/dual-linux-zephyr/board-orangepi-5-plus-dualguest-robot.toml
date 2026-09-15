@@ -1,0 +1,38 @@
+board_type = "OrangePi-5-Plus-DualGuest-robot"
+uboot_cmd = [
+  "setenv bootargs root=/dev/mmcblk0p2 rw console=ttyS2,1500000 console=tty1 splash=verbose consoleblank=0 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 loglevel=8 usb-storage.quirks= cma=128M cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory swapaccount=1",
+  "mw.l 0xfd7c03cc 0x7e000000",
+  "mw.l 0xfd7c03d0 0x00080129",
+  "mw.l 0xfd7c03d4 0x00030001",
+  "mw.l 0xfd7c0830 0x00800000",
+  "mw.l 0xfd7c0834 0x10000000",
+  "mw.l 0xfd5f8020 0x00ff00aa",
+  "mw.l 0xfd5f9110 0x000f000f",
+  "mw.l 0xfd5f9020 0x00ff0066",
+]
+shell_prefix = "ZEPHYR_IVC_WAIT attempts=60"
+shell_init_cmd = '''
+marker=DUAL_PICK_CI
+cd /home/orangepi/robot/aka-rk3588 &&
+if sudo -n /home/orangepi/robot/aka-rk3588/run_dual_pick_ci_once.sh; then
+  sync
+  echo "${marker}_PASS guest=linux-zephyr"
+else
+  status=$?
+  sync
+  echo "${marker}_FAIL guest=linux-zephyr status=${status}"
+fi
+'''
+success_regex = [
+  '(?m)^DUAL_PICK_CI_PASS guest=linux-zephyr\s*$',
+]
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  "Failed to initialize guest VM",
+  "Failed to start VM",
+  "VFS: Cannot open root device",
+  "Waiting for root device",
+  '(?i)segmentation fault',
+  '(?m)^DUAL_PICK_CI_FAIL guest=linux-zephyr .*$'
+]
+timeout = 300

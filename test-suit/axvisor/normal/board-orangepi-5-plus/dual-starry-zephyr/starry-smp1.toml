@@ -1,0 +1,42 @@
+[base]
+id = 1
+name = "starry"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [0x00]
+
+[kernel]
+entry_point = 0x4008_0000
+image_location = "fs"
+kernel_load_addr = 0x4008_0000
+kernel_path = "/guest/starry/orangepi-5-plus"
+# DTB GPA is selected automatically from the prepared guest memory layout.
+
+memory_regions = [
+  [0x4000_0000, 0x1000_0000, 0x7, 2],
+  [0x2_4000_0000, 0x8000_0000, 0x7, 1],
+]
+
+[devices]
+passthrough = []
+# AxVisor owns the PCIe controllers and RTL8125 NICs used by the browser console.
+disabled = [
+  { path = "/serial@feb90000" },
+  { path = "/pcie@fe150000" },
+  { path = "/pcie@fe160000" },
+  { path = "/pcie@fe170000" },
+  { path = "/pcie@fe180000" },
+  { path = "/pcie@fe190000" },
+  { path = "/phy@fee00000" },
+  { path = "/phy@fee10000" },
+  { path = "/phy@fee20000" },
+  { path = "/phy@fee80000" },
+  # Keep the unused USB0 controller and its Combo PHY with the AxVisor host.
+  # StarryOS still owns the robot camera on USB1.
+  { path = "/usbdrd3_0" },
+  { path = "/phy@fed80000" },
+]
+
+[[devices.virtual]]
+id = "robot-ivc"
+model = "ivc-channel"

@@ -3,6 +3,7 @@
 import importlib.util
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from typing import Any
@@ -515,6 +516,42 @@ command = "true"
         )
         self.assertEqual(plan["arceos_matrix"]["include"], [])
         self.assertEqual(plan["axvisor_matrix"]["include"], [])
+
+    def test_dualguest_robot_board_runs_both_guest_variants(self) -> None:
+        rows = self.assert_unique_ids(
+            ci_plan.build_main_plan(self.upstream)["axvisor_matrix"]["include"]
+        )
+        dualguest = rows["test-orangepi-5-plus-dualguest-robot"]
+
+        self.assertEqual(dualguest["runs_on"], ["self-hosted", "linux", "board"])
+        self.assertEqual(dualguest["timeout_minutes"], 30)
+        self.assertEqual(
+            dualguest["command"],
+            "cargo xtask axvisor test board "
+            "--board orangepi-5-plus-dualguest-robot",
+        )
+
+    def test_dualguest_robot_board_markers_cannot_match_command_echo(self) -> None:
+        root = MODULE_PATH.parents[2]
+        configs = (
+            root
+            / "test-suit/axvisor/normal/board-orangepi-5-plus/dual-linux-zephyr"
+            / "board-orangepi-5-plus-dualguest-robot.toml",
+            root
+            / "test-suit/axvisor/normal/board-orangepi-5-plus/dual-starry-zephyr"
+            / "board-orangepi-5-plus-dualguest-robot.toml",
+        )
+
+        for path in configs:
+            with self.subTest(config=path):
+                config = tomllib.loads(path.read_text())
+                self.assertEqual(
+                    config["board_type"], "OrangePi-5-Plus-DualGuest-robot"
+                )
+                self.assertNotIn("DUAL_PICK_CI_PASS", config["shell_init_cmd"])
+                self.assertNotIn("DUAL_PICK_CI_FAIL", config["shell_init_cmd"])
+                self.assertIn("marker=DUAL_PICK_CI", config["shell_init_cmd"])
+                self.assertEqual(len(config["success_regex"]), 1)
 
     def test_fork_repository_filters_owner_checks_and_falls_back_from_qcs(
         self,

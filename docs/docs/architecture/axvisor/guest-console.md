@@ -260,7 +260,69 @@ HTML、CSS 和 JavaScript 均编译进 Axvisor，不依赖 GitHub、CDN 或开�
 
 SMP 路径仍不能让任意 vCPU poll，那会破坏设备 poll 的 single-owner 假设。线程世代绑定的 vCPU0 kick capability 只解决定向 wait/wake；设备 poll 的所有权仍固定在 vCPU0。
 
-## 8. 故障定位
+## 8. 实体板卡网络资源
+
+板载网页由 Axvisor 直接发布，因此它的可用性不仅取决于 `network_console`、WebSocket 队列和 HTTP task，还取决于宿主实体网卡的完整硬件资源。客户机不需要自己的网络协议栈即可使用网页控制台，但 passthrough 客户机必须避开 Axvisor 网卡使用的控制器、PHY、时钟、复位和电源依赖；否则网页可以先成功监听，再在客户机驱动初始化真实硬件后永久失联。
+
+### 8.1 宿主所有权边界
+
+实体板卡启用网络 Shell 时，构建配置需要同时提供平台总线、实体网卡驱动和 `browser-console`。`AXVM_HTTP_BIND` 只决定 HTTP 监听地址，不会自动隔离客户机设备，也不会让 Axvisor 与客户机共享同一物理控制器。
+
+| 配置或资源 | 所有者 | 维护含义 |
+| --- | --- | --- |
+| `ax-driver/rk3588-pcie` 与 `ax-driver/realtek-rtl8125` | Axvisor | 探测并驱动 Orange Pi 5 Plus 的 RTL8125 管理网卡 |
+| `browser-console` 与 `AXVM_HTTP_BIND` | Axvisor | 发布内嵌页面、`/api/consoles` 和各控制台 WebSocket |
+| PCIe Host Bridge、PCIe PHY 和网卡依赖 | Axvisor | 客户机不得重新配置、复位或关闭这些实体资源 |
+| 客户机虚拟 UART backend | 对应 VM，Axvisor 路由 | 只承载 Shell 字节，不要求客户机拥有实体网卡 |
+
+`guest_type = "passthrough"` 且 `devices.passthrough = []` 会使用隐式根 selector。`setup_guest_fdt_from_vmm()` 会从这种客户机的设备树移除 PCIe Host Bridge，但独立的 PCIe PHY、USB 控制器和 USB/DP PHY 不属于 Bridge 子树，不会随 Bridge 自动删除。配置必须用 `devices.disabled` 明确表达宿主资源闭包，不能把“客户机设备树中没有 PCIe Bridge”等同于“客户机无法修改 PCIe 相关硬件”。
+
+### 8.2 Orange Pi 资源隔离
+
+Orange Pi 5 Plus 的 RTL8125 管理网络需要保留完整 PCIe PHY 集合。此外，Linux 启动和 systemd 的 USB gadget 流程会激活未用于机器人摄像头的 USB0 DWC3/OTG 控制器；其 USB3/DisplayPort Combo PHY 驱动会操作 PLL、lane mux、GRF、时钟和批量复位。当前验证配置把 USB0 控制器与 PHY 作为一个所有权单元留给宿主。
+
+| 必须排除的客户机节点 | 作用 |
+| --- | --- |
+| `/phy@fee00000` | PCIe 2.0 Combo PHY，包含 RTL8125 所用 PCIe 路径之一 |
+| `/phy@fee10000` | PCIe 2.0 Combo PHY，作为宿主 PCIe fabric 的一部分统一保留 |
+| `/phy@fee20000` | PCIe 2.0 Combo PHY，包含 RTL8125 所用 PCIe 路径之一 |
+| `/phy@fee80000` | PCIe 3.0 PHY，作为宿主 PCIe fabric 的一部分统一保留 |
+| `/usbdrd3_0` | 未用于机器人摄像头的 USB0 DWC3/OTG 控制器 |
+| `/phy@fed80000` | USB0 使用的 USB3/DisplayPort Combo PHY |
+
+六个节点在 eMMC 和 SD Linux 配置中保持一致。机器人摄像头实际连接在 `/usbdrd3_1/usb@fc400000`，因此隔离 USB0 不影响摄像头、RKNPU、根存储、IVC 或 Zephyr UART6。配置采用以下固定排除集合：
+
+```toml
+[devices]
+passthrough = []
+disabled = [
+  { path = "/phy@fee00000" },
+  { path = "/phy@fee10000" },
+  { path = "/phy@fee20000" },
+  { path = "/phy@fee80000" },
+  { path = "/usbdrd3_0" },
+  { path = "/phy@fed80000" },
+]
+```
+
+`/usbdrd3_0` 与 `/phy@fed80000` 应同时排除。只移除控制器仍可能让独立 PHY 节点被驱动探测；只移除 PHY 会给 DWC3 留下不完整依赖。即使构建配置暂时注释掉网络 Shell，也保留这些 `disabled` 项，使以后启用网页时不改变客户机可访问的实体硬件集合。
+
+### 8.3 失联判定
+
+硬件所有权冲突与网页任务拥塞的处理方法不同。判断时应同时观察 HTTP、WebSocket、ICMP、物理串口和客户机执行状态，不能仅凭页面上的 `connecting` 状态修改网络线程或调度策略。
+
+| 现象 | 首先检查 | 判定依据 |
+| --- | --- | --- |
+| 网页从未出现 | 三项 feature、`AXVM_HTTP_BIND`、DHCP 和 `Axvisor network ready` | HTTP 服务或宿主网络尚未就绪 |
+| Linux 启动后 HTTP、WebSocket 和 ICMP 持续失联，但物理串口与 VM 继续运行 | Linux TOML 的六个 `disabled` 节点 | 优先判定实体网卡依赖被客户机重配，而不是 Shell 队列拥塞 |
+| 只有一个 WebSocket 返回 `409` | 对应端点是否已有浏览器会话 | 每个端点同时只允许一个会话，宿主网络仍正常 |
+| 高频日志下请求偶发超时后立即恢复 | 输出队列丢弃摘要、HTTP task 调度和请求超时 | 与永久链路失联分开处理，不扩大设备直通范围 |
+
+受控 A/B 测试中，只保护 PCIe PHY 后，网页能够越过 Linux 早期初始化，但仍在 systemd 的 `Manage USB device functions` 附近永久失联；继续排除 `/usbdrd3_0` 与 `/phy@fed80000` 后，eMMC 完成 300 次、SD 完成 229 次连续 HTTP `200` 探测，三路 WebSocket 和完整机器人流程均通过。该证据确认的是设备组冲突；尚未把最终失联归因到单个 CRU、GRF、复位或 IRQ 位。
+
+可直接运行的 eMMC/SD 配置、网络 Shell 注释开关和机器人验收步骤保存在 `test-suit/axvisor/normal/board-orangepi-5-plus/dual-linux-zephyr/README.md`。`clk_ignore_unused` 和 `pd_ignore_unused` 只能阻止 Linux 启动末尾清理未使用资源，不能阻止已绑定驱动主动复位设备或关闭时钟，不能替代上述 `disabled` 集合。
+
+## 9. 故障定位
 
 控制台问题通常表现为丢字符、无响应或输出交错，多数可以从 mux 的状态直接定位。下表把每种现象映射到应首先检查的状态，第三列给出对应的机制事实。
 
@@ -277,7 +339,7 @@ SMP 路径仍不能让任意 vCPU poll，那会破坏设备 poll 的 single-owne
 | 切换前台后少了早期日志 | 该 VM ring 是否超过 16 KiB，是否出现 dropped 摘要，或 lifecycle/reconcile 是否 reset/discard 了 output state | ring 淘汰最旧字节并在回放前报告；stop/remove/replacement/reconcile 会清理相应 output state |
 | detach 后 shell prompt 接在 guest prompt 后 | 检查 `buffer_all()` 是否返回补行、调用方是否写出其结果 | `physical_line_open` 为真时必须先写 `\n` |
 
-## 9. 测试覆盖与验证命令
+## 10. 测试覆盖与验证命令
 
 `os/axvisor/src/guest_console/mux/tests.rs` 的测试覆盖范围应按实际断言理解：
 
