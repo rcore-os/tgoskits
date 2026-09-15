@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.16.0...ax-driver-v0.16.1) - 2026-09-15
+
+### Fixed
+
+- *(ci)* fix debugfs test execution and virtio input startup ([#2396](https://github.com/rcore-os/tgoskits/pull/2396))
+- *(ax-driver)* keep PCI INTx unmasked for virtio input probe ([#2353](https://github.com/rcore-os/tgoskits/pull/2353))
+
 ## [0.16.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.15.0...ax-driver-v0.16.0) - 2026-09-13
 
 ### Fixed

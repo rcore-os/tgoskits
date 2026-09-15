@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.10.2...starry-kernel-v0.10.3) - 2026-09-15
+
+### Added
+
+- *(vfs)* implement mutation credentials for directory operations an… ([#2287](https://github.com/rcore-os/tgoskits/pull/2287))
+
+### Fixed
+
+- *(starry-kernel)* forward terminal cursor position queries ([#2408](https://github.com/rcore-os/tgoskits/pull/2408))
+- *(starry-kernel)* unify inode lock identity across mounts ([#2406](https://github.com/rcore-os/tgoskits/pull/2406))
+- *(starry-kernel)* enforce executable inode write exclusion ([#2375](https://github.com/rcore-os/tgoskits/pull/2375))
+- *(starry-kernel)* make FIFO opens interruptible ([#2368](https://github.com/rcore-os/tgoskits/pull/2368))
+- *(ci)* fix debugfs test execution and virtio input startup ([#2396](https://github.com/rcore-os/tgoskits/pull/2396))
+- *(starry)* align syscall and Unix socket semantics with Linux ([#2270](https://github.com/rcore-os/tgoskits/pull/2270))
+
+### Other
+
+- *(sched)* reduce scheduler and futex hot-path overhead ([#2399](https://github.com/rcore-os/tgoskits/pull/2399))
+
 ## [0.10.2](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.10.1...starry-kernel-v0.10.2) - 2026-09-13
 
 ### Added

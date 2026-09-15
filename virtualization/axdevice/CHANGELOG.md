@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.8.2...axdevice-v0.8.3) - 2026-09-15
+
+### Added
+
+- *(axvm)* support x86 virtio-blk file backends ([#2390](https://github.com/rcore-os/tgoskits/pull/2390))
+
 ## [0.8.2](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.8.1...axdevice-v0.8.2) - 2026-09-13
 
 ### Other

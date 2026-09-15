@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.8.3...ax-api-v0.8.4) - 2026-09-15
+
+### Fixed
+
+- *(starry-kernel)* enforce executable inode write exclusion ([#2375](https://github.com/rcore-os/tgoskits/pull/2375))
+
 ## [0.8.3](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.8.2...ax-api-v0.8.3) - 2026-09-13
 
 ### Other
