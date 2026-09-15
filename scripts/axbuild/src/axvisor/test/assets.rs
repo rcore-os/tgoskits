@@ -1,3 +1,7 @@
+use std::path::{Component, Path, PathBuf};
+
+use anyhow::ensure;
+
 use crate::test::case as test_case;
 
 pub(super) fn axvisor_case_asset_config() -> test_case::CaseAssetConfig {
@@ -14,5 +18,40 @@ pub(super) fn axvisor_case_asset_config() -> test_case::CaseAssetConfig {
         cache_env_vars: Vec::new(),
         prepare_staging_root: |_| Ok(()),
         prepare_guest_package_env: None,
+    }
+}
+
+pub(super) fn resolve_workspace_path(
+    workspace_root: &Path,
+    configured_path: &str,
+    variable: &str,
+) -> anyhow::Result<PathBuf> {
+    let configured_path = Path::new(configured_path);
+    ensure!(
+        !configured_path.is_absolute()
+            && configured_path
+                .components()
+                .all(|component| matches!(component, Component::CurDir | Component::Normal(_))),
+        "{variable} must be a workspace-relative path without parent traversal"
+    );
+    Ok(workspace_root.join(configured_path))
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn configured_asset_path_must_stay_inside_workspace() {
+        let root = tempdir().unwrap();
+
+        assert_eq!(
+            resolve_workspace_path(root.path(), "tmp/asset", "TEST_ASSET").unwrap(),
+            root.path().join("tmp/asset")
+        );
+        assert!(resolve_workspace_path(root.path(), "../outside", "TEST_ASSET").is_err());
+        assert!(resolve_workspace_path(root.path(), "/tmp/outside", "TEST_ASSET").is_err());
     }
 }

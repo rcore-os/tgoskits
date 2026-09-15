@@ -255,6 +255,7 @@ impl<D: super::VirtioDeviceCore> VirtioPciTransport<D> {
                 let shift = state.driver_feature_select * 32;
                 let mask = 0xffff_ffff_u64 << shift;
                 state.driver_features = (state.driver_features & !mask) | ((value << shift) & mask);
+                self.core.set_driver_features(state.driver_features);
             }
             DEVICE_STATUS => {
                 let status = value as u8;

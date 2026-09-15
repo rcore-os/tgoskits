@@ -1,0 +1,48 @@
+#!/bin/busybox sh
+
+/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+/bin/busybox mount -t proc proc /proc 2>/dev/null || true
+/bin/busybox mount -t sysfs sysfs /sys 2>/dev/null || true
+export HOME=/root
+export PATH=/bin
+export TERM=vt100
+export PS1='~ # '
+cd /root
+
+fail() {
+  echo "$1"
+  failed=1
+}
+
+cmdline=$(/bin/busybox cat /proc/cmdline)
+case "$cmdline" in
+  *axvisor.uefi_disk_case=ro*) ;;
+  *)
+    echo "missing axvisor.uefi_disk_case=ro"
+    echo AXVISOR_X86_UEFI_DISK_FAILED
+    exec /bin/busybox sh -i
+    ;;
+esac
+
+attempt=0
+while [ "$attempt" -lt 10 ] && { [ ! -b /dev/vda ] || [ ! -b /dev/vda1 ]; }; do
+  /bin/busybox sleep 1
+  attempt=$((attempt + 1))
+done
+
+failed=0
+[ -b /dev/vda ] || fail "missing block device /dev/vda"
+[ -b /dev/vda1 ] || fail "missing block partition /dev/vda1"
+read_only=$(/bin/busybox cat /sys/class/block/vda/ro 2>/dev/null)
+[ "$read_only" = "1" ] || fail "unexpected /dev/vda read-only state: $read_only"
+if [ -b /dev/vda ] && ! /bin/busybox dd if=/dev/vda of=/dev/null bs=512 count=1 2>/dev/null; then
+  fail "failed to read the first /dev/vda sector"
+fi
+
+if [ "$failed" -eq 0 ]; then
+  echo AXVISOR_X86_UEFI_DISK_PASSED
+else
+  echo AXVISOR_X86_UEFI_DISK_FAILED
+fi
+
+exec /bin/busybox sh -i

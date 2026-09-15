@@ -132,6 +132,18 @@ impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {
             .accept_interrupt(vector, level_triggered);
     }
 
+    /// Returns whether a fixed interrupt passes the local APIC priority.
+    pub fn can_accept_interrupt(&self, vector: u8) -> bool {
+        let ppr = self.processor_priority();
+        self.get_vlapic_regs()
+            .can_accept_interrupt_with_priority(vector, ppr)
+    }
+
+    /// Returns the current local APIC processor-priority register value.
+    pub fn processor_priority(&self) -> u8 {
+        self.get_vlapic_regs().processor_priority()
+    }
+
     /// Returns whether the local APIC timer has an edge awaiting vCPU entry.
     pub fn has_pending_timer_interrupt(&self) -> bool {
         self.get_vlapic_regs().has_pending_timer_interrupt()
@@ -211,5 +223,108 @@ impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {
         debug!("EmulatedLocalApic::handle_msr_write: addr={addr:?}, width={width:?}, val={val:#x}");
         let reg_off = x2apic_msr_access_reg(addr);
         self.get_mut_vlapic_regs().handle_write(reg_off, val, width)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::boxed::Box;
+
+    use super::*;
+
+    #[repr(align(4096))]
+    struct TestFrame {
+        _bytes: [u8; host::X86_PAGE_SIZE_4K],
+    }
+
+    struct TestHost;
+
+    impl host::X86VlapicHostOps for TestHost {
+        type TimerHandle = ();
+
+        fn alloc_frame() -> Option<X86HostPhysAddr> {
+            Some(X86HostPhysAddr::from_usize(
+                Box::into_raw(Box::new(TestFrame {
+                    _bytes: [0; host::X86_PAGE_SIZE_4K],
+                })) as usize,
+            ))
+        }
+
+        fn dealloc_frame(paddr: X86HostPhysAddr) {
+            // SAFETY: `paddr` was returned by `alloc_frame`, and the owning
+            // `PhysFrame` is the only live owner when this callback runs.
+            unsafe {
+                drop(Box::from_raw(paddr.as_mut_ptr::<TestFrame>()));
+            }
+        }
+
+        fn phys_to_virt(paddr: X86HostPhysAddr) -> X86HostVirtAddr {
+            X86HostVirtAddr::from_usize(paddr.as_usize())
+        }
+
+        fn virt_to_phys(vaddr: X86HostVirtAddr) -> X86HostPhysAddr {
+            X86HostPhysAddr::from_usize(vaddr.as_usize())
+        }
+
+        fn current_time_nanos() -> u64 {
+            0
+        }
+
+        fn register_timer(
+            _deadline_nanos: u64,
+            _callback: X86TimerCallback,
+        ) -> X86VlapicResult<Self::TimerHandle> {
+            Err(X86VlapicError::TimerUnavailable)
+        }
+
+        unsafe fn register_hard_timer(
+            _deadline_nanos: u64,
+            _callback: X86TimerCallback,
+        ) -> X86VlapicResult<Self::TimerHandle> {
+            Err(X86VlapicError::TimerUnavailable)
+        }
+
+        fn cancel_timer(_handle: Self::TimerHandle) -> X86VlapicResult {
+            Ok(())
+        }
+
+        fn current_vm_id() -> X86VmId {
+            1
+        }
+
+        fn current_vm_vcpu_num() -> usize {
+            1
+        }
+
+        fn current_vm_active_vcpus() -> usize {
+            1
+        }
+
+        fn active_vcpus(_vm_id: X86VmId) -> Option<usize> {
+            Some(1)
+        }
+
+        fn inject_interrupt(
+            _vm_id: X86VmId,
+            _vcpu_id: X86VcpuId,
+            _vector: X86InterruptVector,
+        ) -> X86VlapicResult {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn same_priority_interrupt_is_blocked_until_eoi() {
+        let lapic = EmulatedLocalApic::<TestHost>::new(1, 0);
+
+        assert!(lapic.can_accept_interrupt(0x68));
+        lapic.accept_interrupt(0x68, false);
+
+        assert!(!lapic.can_accept_interrupt(0x68));
+        assert!(!lapic.can_accept_interrupt(0x21));
+        assert!(lapic.can_accept_interrupt(0x71));
+
+        lapic.handle_eoi();
+        assert!(lapic.can_accept_interrupt(0x68));
     }
 }

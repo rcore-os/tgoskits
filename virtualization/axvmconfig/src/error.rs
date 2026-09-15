@@ -2,7 +2,7 @@
 
 use alloc::string::{String, ToString};
 
-use crate::VMBootProtocol;
+use crate::{VMBootProtocol, VMBootSource};
 
 /// Result type returned by AxVM configuration operations.
 pub type AxVmConfigResult<T = ()> = Result<T, AxVmConfigError>;
@@ -23,6 +23,22 @@ pub enum AxVmConfigError {
         protocol: VMBootProtocol,
         /// Whether the legacy BIOS flow was enabled.
         enable_bios: bool,
+    },
+    /// A disk boot source was selected with a non-UEFI boot protocol.
+    #[error("boot source {boot_source:?} requires boot protocol Uefi, got {protocol:?}")]
+    BootSourceConflict {
+        /// The selected boot source.
+        boot_source: VMBootSource,
+        /// The selected boot protocol.
+        protocol: VMBootProtocol,
+    },
+    /// The selected boot source is not available on the target architecture.
+    #[error("boot source {boot_source:?} is not supported on architecture {arch}")]
+    UnsupportedBootSource {
+        /// The unsupported boot source.
+        boot_source: VMBootSource,
+        /// The target architecture name.
+        arch: String,
     },
     /// The selected boot protocol is not available on the target architecture.
     #[error("boot protocol {protocol:?} is not supported on architecture {arch}")]

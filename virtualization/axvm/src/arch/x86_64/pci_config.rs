@@ -6,9 +6,12 @@ use axdevice::*;
 use axdevice_base::{ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger};
 
 pub(super) const PCI_HOST_NODE: &str = "pci-host";
+pub(super) const PCI_ECAM_BASE: u64 = 0xb000_0000;
+pub(super) const PCI_ECAM_SIZE: u64 = 0x1000_0000;
 pub(super) const PCI_MEMORY_BASE: u64 = 0xc000_0000;
 pub(super) const PCI_MEMORY_SIZE: u64 = 0x1000_0000;
 const CONFIG_SLOT: &str = "config-ports";
+const ECAM_SLOT: &str = "ecam";
 const MEMORY_SLOT: &str = "memory-aperture";
 
 pub(super) fn host_key() -> PciHostKey {
@@ -56,6 +59,12 @@ impl DeviceModel for X86PciHostModel {
                 ResourceRequest::Fixed(X86PciConfigFrontend::PORT_BASE),
             )?
             .with_mmio(
+                ResourceSlot::new(ECAM_SLOT)?,
+                PCI_ECAM_SIZE,
+                PCI_ECAM_SIZE,
+                ResourceRequest::Fixed(PCI_ECAM_BASE),
+            )?
+            .with_mmio(
                 ResourceSlot::new(MEMORY_SLOT)?,
                 PCI_MEMORY_SIZE,
                 PCI_MEMORY_SIZE,
@@ -76,12 +85,14 @@ impl DeviceModel for X86PciHostModel {
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let config = context.pio(CONFIG_SLOT)?;
+        let ecam = context.mmio(ECAM_SLOT)?;
         let memory = context.mmio(MEMORY_SLOT)?;
         if config
             != (
                 X86PciConfigFrontend::PORT_BASE,
                 X86PciConfigFrontend::PORT_SIZE,
             )
+            || ecam != (PCI_ECAM_BASE, PCI_ECAM_SIZE)
             || memory != (PCI_MEMORY_BASE, PCI_MEMORY_SIZE)
         {
             return Err(DeviceManagerError::InvalidConfig {
@@ -100,6 +111,11 @@ impl DeviceModel for X86PciHostModel {
         let binding = Arc::new(PciRootBinding::new(self.host_id.clone(), root.clone()));
         let mut bundle = DeviceBundle::new();
         bundle.add_device(Arc::new(X86PciConfigFrontend::new(binding.clone())));
+        bundle.add_device(Arc::new(PciEcamDevice::new(
+            ecam.0,
+            ecam.1,
+            binding.clone(),
+        )));
         bundle.add_device(Arc::new(PciMemoryApertureDevice::new(
             memory.0,
             memory.1,
@@ -161,6 +177,9 @@ mod tests {
                 X86PciConfigFrontend::PORT_BASE
                     ..X86PciConfigFrontend::PORT_BASE + X86PciConfigFrontend::PORT_SIZE,
             )
+            .unwrap();
+        pools
+            .allow_fixed_mmio(PCI_ECAM_BASE..PCI_ECAM_BASE + PCI_ECAM_SIZE)
             .unwrap();
         pools
             .allow_fixed_mmio(PCI_MEMORY_BASE..PCI_MEMORY_BASE + PCI_MEMORY_SIZE)

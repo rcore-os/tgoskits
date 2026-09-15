@@ -7,6 +7,7 @@ mod initramfs;
 mod ovmf;
 mod qemu;
 mod types;
+mod uefi_disk;
 
 #[cfg(test)]
 mod tests;

@@ -89,6 +89,7 @@ fn fixture() -> (SerialRuntimeHandle, SerialWorker, Arc<Wire>) {
         tx_source: Arc::new(PollSet::new()),
         rx_progress: WaitQueue::new(),
         console_progress: WaitQueue::new(),
+        console_progress_notifications: AtomicUsize::new(0),
         tx_progress: WaitQueue::new(),
         tty_output_lock: Mutex::new(()),
         log_barriers: AtomicUsize::new(0),
@@ -99,6 +100,29 @@ fn fixture() -> (SerialRuntimeHandle, SerialWorker, Arc<Wire>) {
     shared.ingress.start_accepting();
     let worker = SerialWorker::new(shared.clone(), irq_rx, rx_output);
     (SerialRuntimeHandle { shared }, worker, wire)
+}
+
+#[test]
+fn output_publication_wakes_the_console_consumer() {
+    let (runtime, _worker, _wire) = fixture();
+    let subscription = runtime.take_log_subscription().unwrap();
+
+    assert_eq!(
+        runtime
+            .shared
+            .console_progress_notifications
+            .load(Ordering::Acquire),
+        0
+    );
+    subscription.write_output(1, b"guest-bytes\n").unwrap();
+    assert_eq!(
+        runtime
+            .shared
+            .console_progress_notifications
+            .load(Ordering::Acquire),
+        1
+    );
+    assert_eq!(subscription.try_read().unwrap().bytes(), b"guest-bytes\n");
 }
 
 #[test]

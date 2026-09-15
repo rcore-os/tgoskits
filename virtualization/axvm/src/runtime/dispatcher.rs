@@ -22,6 +22,8 @@
 use std::vec::Vec;
 
 use super::queue::{QueuedVcpuInterrupt, VcpuInterruptQueue};
+#[cfg(target_arch = "x86_64")]
+use crate::InterruptTriggerMode;
 use crate::irq::model::PendingVcpuInterrupt;
 
 /// Runtime-owned vCPU interrupt queue.
@@ -72,6 +74,22 @@ impl VcpuIrqDispatcher {
         interrupt: PendingVcpuInterrupt,
     ) -> Option<bool> {
         self.queue.push(vcpu_id, owner, interrupt.into())
+    }
+
+    /// Enqueues one legacy x86 PIC interrupt while retaining its source.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn enqueue_legacy_pic(
+        &self,
+        vcpu_id: usize,
+        owner: u64,
+        vector: u8,
+        trigger: InterruptTriggerMode,
+    ) -> Option<bool> {
+        self.queue.push(
+            vcpu_id,
+            owner,
+            QueuedVcpuInterrupt::LegacyPic { vector, trigger },
+        )
     }
 
     /// Enqueues one host physical interrupt while retaining its source identity.
@@ -191,6 +209,8 @@ mod tests {
         assert_eq!(
             match drained[0] {
                 QueuedVcpuInterrupt::Virtual(interrupt) => interrupt.trigger,
+                #[cfg(target_arch = "x86_64")]
+                QueuedVcpuInterrupt::LegacyPic { .. } => panic!("expected virtual interrupt"),
                 #[cfg(target_arch = "loongarch64")]
                 QueuedVcpuInterrupt::Physical { .. } => panic!("expected virtual interrupt"),
             },
@@ -199,6 +219,8 @@ mod tests {
         assert_eq!(
             match drained[1] {
                 QueuedVcpuInterrupt::Virtual(interrupt) => interrupt.trigger,
+                #[cfg(target_arch = "x86_64")]
+                QueuedVcpuInterrupt::LegacyPic { .. } => panic!("expected virtual interrupt"),
                 #[cfg(target_arch = "loongarch64")]
                 QueuedVcpuInterrupt::Physical { .. } => panic!("expected virtual interrupt"),
             },

@@ -111,7 +111,7 @@ pub use service::{DeviceServices, ServiceCardinality, ServiceKey};
 // Reusable x86 device models and narrow typed services. These are target-gated
 // device packages, not part of the architecture-neutral framework core.
 pub use x86::{
-    PciMemoryApertureDevice, PciRootLifecycle, X86AcpiPmTimerDevice, X86CmosDevice,
+    PciEcamDevice, PciMemoryApertureDevice, PciRootLifecycle, X86AcpiPmTimerDevice, X86CmosDevice,
     X86InterruptDomainKey, X86InterruptDomainOps, X86IoApicDevice, X86IoApicDeviceOps,
     X86IoApicServiceKey, X86MonotonicNanos, X86PciConfigFrontend, X86PicDevice, X86PicDeviceOps,
     X86PicServiceKey, X86PitDevice, X86UnassignedMmioDevice,

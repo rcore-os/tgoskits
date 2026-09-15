@@ -116,6 +116,9 @@ pub trait VirtioDeviceCore: Send + Sync {
         self.notify_queue(queue, memory)
     }
 
+    /// Publishes the feature bits selected by the driver.
+    fn set_driver_features(&self, _features: u64) {}
+
     /// Whether queue processing can complete asynchronously.
     fn requires_deferred_processing(&self) -> bool {
         false

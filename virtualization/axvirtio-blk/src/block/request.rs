@@ -11,8 +11,9 @@ use crate::{
     BlockBackend, VirtioBlockConfig,
     block::VIRTIO_BLK_REQUEST_HEADER_SIZE,
     constants::{
-        MIN_DESCRIPTOR_CHAIN_LENGTH, SECTOR_SIZE, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK,
-        VIRTIO_BLK_S_UNSUPP, VIRTIO_BLK_T_FLUSH, VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT,
+        MIN_DESCRIPTOR_CHAIN_LENGTH, SECTOR_SIZE, VIRTIO_BLK_F_SEG_MAX, VIRTIO_BLK_F_SIZE_MAX,
+        VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK, VIRTIO_BLK_S_UNSUPP, VIRTIO_BLK_T_FLUSH,
+        VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT,
     },
 };
 
@@ -78,6 +79,10 @@ impl<B: BlockBackend> VirtioBlockRequestCore<B> {
 
     /// Services every request currently available on `queue`.
     ///
+    /// This compatibility entry point assumes that all block request-limit
+    /// features are active. Transport implementations should call
+    /// [`Self::process_queue_with_features`] with their negotiated bits.
+    ///
     /// A request that returns [`VirtioError::WouldBlock`] is returned to the
     /// caller as `Deferred` and must be retried before a later available-ring
     /// head. Other request errors are completed deterministically: errors with
@@ -92,6 +97,17 @@ impl<B: BlockBackend> VirtioBlockRequestCore<B> {
         queue: &mut VirtioQueue<T>,
         memory: &mut dyn GuestMemory,
         pending_head: Option<u16>,
+    ) -> VirtioResult<BlockQueueOutcome> {
+        self.process_queue_with_features(queue, memory, pending_head, u64::MAX)
+    }
+
+    /// Services the queue using the driver's negotiated feature bits.
+    pub fn process_queue_with_features<T: GuestMemoryAccessor + Clone>(
+        &self,
+        queue: &mut VirtioQueue<T>,
+        memory: &mut dyn GuestMemory,
+        pending_head: Option<u16>,
+        negotiated_features: u64,
     ) -> VirtioResult<BlockQueueOutcome> {
         let mut completed = false;
         let mut notify = false;
@@ -116,7 +132,7 @@ impl<B: BlockBackend> VirtioBlockRequestCore<B> {
                 break;
             };
 
-            match self.process_request(queue, head, memory) {
+            match self.process_request_with_features(queue, head, memory, negotiated_features) {
                 Ok(Some(written_len)) => {
                     completed = true;
                     notify |= queue.complete_with_memory(head, written_len, memory)?;
@@ -142,13 +158,24 @@ impl<B: BlockBackend> VirtioBlockRequestCore<B> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn process_request<T: GuestMemoryAccessor + Clone>(
         &self,
         queue: &VirtioQueue<T>,
         head: u16,
         memory: &mut dyn GuestMemory,
     ) -> VirtioResult<Option<u32>> {
-        let result = self.process_request_inner(queue, head, memory);
+        self.process_request_with_features(queue, head, memory, u64::MAX)
+    }
+
+    fn process_request_with_features<T: GuestMemoryAccessor + Clone>(
+        &self,
+        queue: &VirtioQueue<T>,
+        head: u16,
+        memory: &mut dyn GuestMemory,
+        negotiated_features: u64,
+    ) -> VirtioResult<Option<u32>> {
+        let result = self.process_request_inner(queue, head, memory, negotiated_features);
         // Descriptor or memory validation can fail before reaching the backend.
         // Retire its old operation before returning this head to the guest.
         if !matches!(result, Ok(None)) {
@@ -162,6 +189,7 @@ impl<B: BlockBackend> VirtioBlockRequestCore<B> {
         queue: &VirtioQueue<T>,
         head: u16,
         memory: &mut dyn GuestMemory,
+        negotiated_features: u64,
     ) -> VirtioResult<Option<u32>> {
         let chain = queue.descriptor_chain_with_memory(head, memory)?;
         let descriptors = chain.descriptors();
@@ -178,8 +206,8 @@ impl<B: BlockBackend> VirtioBlockRequestCore<B> {
 
         let (request_type, sector) = read_header(header, memory)?;
         let completion = match request_type {
-            VIRTIO_BLK_T_IN => self.process_read(sector, data, memory),
-            VIRTIO_BLK_T_OUT => self.process_write(sector, data, memory),
+            VIRTIO_BLK_T_IN => self.process_read(sector, data, memory, negotiated_features),
+            VIRTIO_BLK_T_OUT => self.process_write(sector, data, memory, negotiated_features),
             VIRTIO_BLK_T_FLUSH if data.is_empty() && self.config.flush_supported => {
                 self.backend.flush().map(|()| 1)
             }
@@ -237,11 +265,12 @@ impl<B: BlockBackend> VirtioBlockRequestCore<B> {
         sector: u64,
         descriptors: &[VirtQueueDesc],
         memory: &mut dyn GuestMemory,
+        negotiated_features: u64,
     ) -> VirtioResult<u32> {
         if !descriptors.iter().all(VirtQueueDesc::is_write) {
             return Err(VirtioError::InvalidDescriptor);
         }
-        let total_len = self.validate_data_request(sector, descriptors)?;
+        let total_len = self.validate_data_request(sector, descriptors, negotiated_features)?;
         let mut buffer = allocate_request_buffer(total_len)?;
         let bytes_read = self.backend.read(sector, &mut buffer)?;
         if bytes_read != total_len {
@@ -259,6 +288,7 @@ impl<B: BlockBackend> VirtioBlockRequestCore<B> {
         sector: u64,
         descriptors: &[VirtQueueDesc],
         memory: &mut dyn GuestMemory,
+        negotiated_features: u64,
     ) -> VirtioResult<u32> {
         if self.config.read_only {
             return Err(VirtioError::BackendError);
@@ -266,7 +296,7 @@ impl<B: BlockBackend> VirtioBlockRequestCore<B> {
         if !descriptors.iter().all(|descriptor| !descriptor.is_write()) {
             return Err(VirtioError::InvalidDescriptor);
         }
-        let total_len = self.validate_data_request(sector, descriptors)?;
+        let total_len = self.validate_data_request(sector, descriptors, negotiated_features)?;
         let mut buffer = allocate_request_buffer(total_len)?;
         copy_from_guest(descriptors, &mut buffer, memory)?;
         let bytes_written = self.backend.write(sector, &buffer)?;
@@ -280,11 +310,14 @@ impl<B: BlockBackend> VirtioBlockRequestCore<B> {
         &self,
         sector: u64,
         descriptors: &[VirtQueueDesc],
+        negotiated_features: u64,
     ) -> VirtioResult<usize> {
-        if descriptors.len() > self.config.seg_max as usize
-            || descriptors
-                .iter()
-                .any(|descriptor| descriptor.len > self.config.size_max)
+        if (negotiated_features & VIRTIO_BLK_F_SEG_MAX != 0
+            && descriptors.len() > self.config.seg_max as usize)
+            || (negotiated_features & VIRTIO_BLK_F_SIZE_MAX != 0
+                && descriptors
+                    .iter()
+                    .any(|descriptor| descriptor.len > self.config.size_max))
         {
             return Err(VirtioError::InvalidBufferSize);
         }
