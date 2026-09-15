@@ -56,7 +56,8 @@ jobs:
         # the runner from injecting GITHUB_TOKEN when both credentials are absent;
         # an empty password makes ContainerRegistryLogin skip docker login.
         username: anonymous
-        password: ""
+        # Use an expression because Actions rejects an empty literal here.
+        password: ${{ '' }}
     defaults:
       run:
         shell: bash

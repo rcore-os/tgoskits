@@ -46,7 +46,8 @@ class RunnerTrustTests(unittest.TestCase):
         # A nonempty username prevents the runner's implicit GITHUB_TOKEN
         # fallback; an empty password makes ContainerRegistryLogin skip login.
         self.assertIn("        username: anonymous", credentials.splitlines())
-        self.assertIn('        password: ""', credentials.splitlines())
+        # Actions rejects an empty literal here before any job starts.
+        self.assertIn("        password: ${{ '' }}", credentials.splitlines())
 
     def test_cleanup_reuses_planning_runner(self) -> None:
         self.assertFalse(
