@@ -281,6 +281,30 @@ static int run_unprivileged_checks(void)
     errno = 0;
     check(dirfd >= 0 && unlinkat(dirfd, ".", 0) < 0 && errno == EISDIR,
           "unlinkat dirfd dot reports a directory before checking its physical parent");
+    const char *parent_results[] = {"..", "../", "./.."};
+    for (unsigned i = 0; i < sizeof(parent_results) / sizeof(parent_results[0]); i++) {
+        errno = 0;
+        check(dirfd >= 0
+                  && linkat(dirfd, parent_results[i], AT_FDCWD,
+                            "/tmp/bug-dir-mutation-permissions/public/parent-link", 0) < 0
+                  && errno == EPERM,
+              "linkat final parent is a directory, not a searched ancestor");
+        errno = 0;
+        check(dirfd >= 0 && unlinkat(dirfd, parent_results[i], 0) < 0 && errno == EISDIR,
+              "unlinkat final parent is a directory, not a searched ancestor");
+    }
+    const char *parent_searches[] = {"../missing", "../.", "../.."};
+    for (unsigned i = 0; i < sizeof(parent_searches) / sizeof(parent_searches[0]); i++) {
+        errno = 0;
+        check(dirfd >= 0 && unlinkat(dirfd, parent_searches[i], 0) < 0 && errno == EACCES,
+              "unlinkat still checks search when traversal continues after parent");
+        errno = 0;
+        check(dirfd >= 0
+                  && linkat(dirfd, parent_searches[i], AT_FDCWD,
+                            "/tmp/bug-dir-mutation-permissions/public/parent-link", 0) < 0
+                  && errno == EACCES,
+              "linkat still checks search when traversal continues after parent");
+    }
     errno = 0;
     check(dirfd >= 0 && unlinkat(dirfd, "..", AT_REMOVEDIR) < 0 && errno == ENOTEMPTY,
           "rmdir dirfd parent reports non-empty before checking outside the dirfd boundary");

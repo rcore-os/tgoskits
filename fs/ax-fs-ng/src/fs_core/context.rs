@@ -552,8 +552,12 @@ impl FsContext {
         }
         let dir = self.resolve_components_with_trace(components, follow_count, searched, search)?;
         dir.check_is_dir()?;
-        searched.push(dir.clone());
-        Self::check_search(&dir, search)?;
+        // A final `..` returns its parent without searching that parent.
+        // Only record it when a final name or explicit dot still needs search.
+        if entry_name.is_some() || Self::ends_in_dot(path) {
+            searched.push(dir.clone());
+            Self::check_search(&dir, search)?;
+        }
         Ok((dir, entry_name))
     }
 
