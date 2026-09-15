@@ -1,0 +1,10 @@
+[package]
+name = "aicp-rust-protocol"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[features]
+default = []
+std = []
