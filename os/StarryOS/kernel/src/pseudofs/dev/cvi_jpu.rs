@@ -89,7 +89,7 @@ impl CviJpu {
         }
         let result = state
             .decoder()?
-            .decode_scaled(jpeg, scale)
+            .decode_scaled_yuv420(jpeg, scale)
             .map_err(|error| map_decode_error(&error))?;
         Ok(DecodedJpuFrame {
             layout: result.layout,
