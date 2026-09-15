@@ -23,6 +23,9 @@ const DOWNLOAD_RETRY_BASE_DELAY: Duration = Duration::from_millis(1);
 
 pub(crate) fn http_client() -> anyhow::Result<reqwest::Client> {
     reqwest::Client::builder()
+        // Retrying on a pooled HTTP/2 connection can repeatedly hit REFUSED_STREAM.
+        // Keep download attempts on fresh connections without changing protocols.
+        .pool_max_idle_per_host(0)
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(60 * 30))
         .build()
