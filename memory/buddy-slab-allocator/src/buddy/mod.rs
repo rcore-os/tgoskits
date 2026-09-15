@@ -748,6 +748,59 @@ impl<const PAGE_SIZE: usize> BuddyAllocator<PAGE_SIZE> {
         Self::dealloc_in_section(section, pfn, order);
     }
 
+    /// Explode an allocated block into independently-freeable order-0 pages.
+    ///
+    /// `addr` must be the head address of a block previously obtained from
+    /// [`alloc_pages`](Self::alloc_pages) that is still allocated. After this
+    /// call every order-0 (`PAGE_SIZE`) page in the original block is an
+    /// independent `Allocated` block. Unlike a normal allocation — where only the
+    /// original `alloc_pages` head is a valid free address — each of these
+    /// per-page addresses then becomes a valid `dealloc_pages(page_addr, 1)`
+    /// input and coalesces normally with its buddies on free. This performs a
+    /// metadata rewrite only — no page contents move and the total allocated byte
+    /// count is unchanged.
+    ///
+    /// This is the physical-frame half of a transparent-huge-page → 4 KiB
+    /// split: the 2 MiB VMSAv8 block PTE is re-mapped as 512 leaf PTEs while
+    /// the underlying order-9 buddy block is exploded here so the 512 pages can
+    /// later be unmapped/freed individually.
+    pub fn split_pages(&mut self, addr: usize) {
+        let Some(section) = self.find_section_by_addr_mut(addr) else {
+            debug_assert!(
+                false,
+                "split_pages called with address outside all sections"
+            );
+            return;
+        };
+
+        debug_assert!(is_aligned(addr, PAGE_SIZE));
+        let head_pfn = (addr - section.heap_start) / PAGE_SIZE;
+        debug_assert!(head_pfn < section.max_pages);
+        let stored = unsafe { &*section.meta.add(head_pfn) };
+        debug_assert!(
+            stored.flags == PageFlags::Allocated,
+            "split_pages called on non-allocated block"
+        );
+        let order = stored.order as usize;
+        let count = 1usize << order;
+        debug_assert!(head_pfn + count <= section.max_pages);
+
+        // Re-tag every page (head included) as an independent order-0 allocated
+        // block. Free-list links are irrelevant for allocated pages, but reset
+        // them so a later `dealloc_in_section` sees clean metadata before it
+        // pushes the freed page onto a free list.
+        for i in 0..count {
+            let pfn = head_pfn + i;
+            unsafe {
+                let m = &mut *section.meta.add(pfn);
+                m.flags = PageFlags::Allocated;
+                m.order = 0;
+                m.prev = PFN_NONE;
+                m.next = PFN_NONE;
+            }
+        }
+    }
+
     /// Mark the page at `addr` with the given flags (used by slab to tag pages).
     ///
     /// # Safety
