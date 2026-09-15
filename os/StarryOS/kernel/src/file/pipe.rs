@@ -24,7 +24,7 @@ use ringbuf::{
 };
 use starry_signal::{SignalInfo, Signo};
 
-use super::{FileLike, Kstat};
+use super::{FileLike, InodeKey, Kstat};
 use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc},
@@ -1372,7 +1372,7 @@ impl FileLike for Pipe {
         })
     }
 
-    fn inode_key(&self) -> Option<(u64, u64)> {
+    fn inode_key(&self) -> Option<InodeKey> {
         self.named_file().and_then(|file| file.inode_key())
     }
 

@@ -6,19 +6,22 @@ use alloc::{
 };
 use core::ops::Bound::{Excluded, Unbounded};
 
-use axfs_ng_vfs::{FilesystemId, MountUseGuard};
+use axfs_ng_vfs::MountUseGuard;
 use linux_raw_sys::general::{O_ACCMODE, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY};
 
 use super::{Pipe, PipeAccess, PipeState, Shared};
-use crate::{StarryError, StarryResult, file::File, sync::Mutex, task::UserTaskRef};
+use crate::{
+    StarryError, StarryResult,
+    file::{File, InodeKey},
+    sync::Mutex,
+    task::UserTaskRef,
+};
 
 // The inode remains pinned by each opening/open file description. Weak entries
 // never retain a buffer after the last endpoint and pending open have gone away.
-type FifoKey = (FilesystemId, u64);
-
 struct FifoRegistry {
-    channels: BTreeMap<FifoKey, Weak<Shared>>,
-    cleanup_after: Option<FifoKey>,
+    channels: BTreeMap<InodeKey, Weak<Shared>>,
+    cleanup_after: Option<InodeKey>,
 }
 
 impl FifoRegistry {
@@ -75,10 +78,7 @@ impl Pipe {
         };
         let nonblocking = flags & O_NONBLOCK != 0;
         let mount_use = file.location().mountpoint().acquire_use()?;
-        let key = (
-            file.location().mountpoint().filesystem_id(),
-            file.location().entry().inode(),
-        );
+        let key = InodeKey::for_location(file.location());
         let file = Arc::new(File::new(file, flags));
         let shared = {
             let mut registry = FIFOS.lock();

@@ -39,13 +39,12 @@ use linux_raw_sys::general::{
 
 use crate::{
     Errno, StarryError, StarryResult,
-    file::{File, FileLike, Pipe, get_file_like},
+    file::{File, FileLike, InodeKey, Pipe, get_file_like},
     mm::UserPtr,
     sync::RwLock,
     task::{PidIdentityId, PidNamespaceId, PidSnapshot, futex::WaitQueue},
 };
 
-type InodeKey = (u64, u64); // (device, inode_no)
 type OfdAddr = usize;
 
 /// Linux convention: `F_OFD_GETLK` reports `l_pid = -1` for an OFD owner.
@@ -844,7 +843,7 @@ pub fn release_pid_locks(owner: PidIdentityId) {
 /// OFD entries are owned by the open file description, not the pid, so
 /// they are deliberately left in place — they age out via
 /// `Weak::strong_count` once the underlying `Arc<dyn FileLike>` is gone.
-pub fn release_inode_posix_locks(owner: PidIdentityId, key: (u64, u64)) {
+pub fn release_inode_posix_locks(owner: PidIdentityId, key: InodeKey) {
     let woke_someone = {
         let mut table = FCNTL_LOCKS.write();
         let Some(entries) = table.get_mut(&key) else {

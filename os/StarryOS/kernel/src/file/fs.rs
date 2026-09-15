@@ -14,7 +14,7 @@ use linux_raw_sys::{
     ioctl::TIOCSCTTY,
 };
 
-use super::{FileLike, Kstat, get_file_like};
+use super::{FileLike, InodeKey, Kstat, get_file_like};
 use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc},
@@ -260,9 +260,8 @@ impl FileLike for File {
         Ok(metadata_to_kstat(&self.inner().location().metadata()?))
     }
 
-    fn inode_key(&self) -> Option<(u64, u64)> {
-        let m = self.inner().location().metadata().ok()?;
-        Some((m.device, m.inode))
+    fn inode_key(&self) -> Option<InodeKey> {
+        Some(InodeKey::for_location(self.inner().location()))
     }
 
     fn ioctl(
@@ -451,9 +450,8 @@ impl FileLike for Directory {
         Ok(metadata_to_kstat(&self.inner.metadata()?))
     }
 
-    fn inode_key(&self) -> Option<(u64, u64)> {
-        let m = self.inner.metadata().ok()?;
-        Some((m.device, m.inode))
+    fn inode_key(&self) -> Option<InodeKey> {
+        Some(InodeKey::for_location(&self.inner))
     }
 
     fn open_flags(&self) -> u32 {

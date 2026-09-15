@@ -40,7 +40,7 @@ use core::{
 use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions, current_fs_context};
 use ax_io::prelude::*;
 use ax_std::os::arceos::task::thread::ThreadState;
-use axfs_ng_vfs::DeviceId;
+use axfs_ng_vfs::{DeviceId, FilesystemId, Location};
 use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
 use flatten_objects::FlattenObjects;
@@ -70,6 +70,25 @@ use crate::{
     sync::RwLock,
     task::{AX_FILE_LIMIT, PidIdentityId, current_user_task, tasks},
 };
+
+/// Mount-independent identity for inode-scoped state.
+///
+/// File descriptions pin the backing inode and filesystem. Mount-local device
+/// numbers remain metadata only and must not split locks or FIFO channels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InodeKey {
+    filesystem: FilesystemId,
+    inode: u64,
+}
+
+impl InodeKey {
+    fn for_location(location: &Location) -> Self {
+        Self {
+            filesystem: location.mountpoint().filesystem_id(),
+            inode: location.entry().inode(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Kstat {
@@ -279,14 +298,11 @@ pub trait FileLike: Pollable + DowncastSync {
         Err(StarryError::NotATty)
     }
 
-    /// (device, inode) identity used as the key for advisory file locks
-    /// (fcntl POSIX/OFD locks and flock(2)).
+    /// Mount-independent inode identity for advisory file locks and cleanup.
     ///
-    /// Returns `None` for fd kinds that have no inode and are therefore
-    /// not lockable (pipes, sockets, epoll, eventfd, ...). Regular files
-    /// and directories override this — Linux allows both kinds to carry
-    /// advisory locks.
-    fn inode_key(&self) -> Option<(u64, u64)> {
+    /// Filesystem-backed descriptions, including named FIFOs, override this.
+    /// `None` means this description does not expose an advisory-lock identity.
+    fn inode_key(&self) -> Option<InodeKey> {
         None
     }
 
