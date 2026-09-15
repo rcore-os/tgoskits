@@ -52,8 +52,11 @@ jobs:
     container:
       image: ${{ matrix.container_image }}
       credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+        # Public GHCR images need no login. Keep a nonempty username to prevent
+        # the runner from injecting GITHUB_TOKEN when both credentials are absent;
+        # an empty password makes ContainerRegistryLogin skip docker login.
+        username: anonymous
+        password: ""
     defaults:
       run:
         shell: bash
