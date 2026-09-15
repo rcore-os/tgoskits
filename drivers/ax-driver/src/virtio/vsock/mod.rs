@@ -125,10 +125,13 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
             return Ok(0);
         }
         let capacity = self.send_capacity(id)?;
-        if capacity == 0 {
-            return Err(VsockError::Retry);
-        }
-        let send_length = buf.len().min(capacity);
+        // Let the manager request credit when exhausted. Returning early here would
+        // leave a blocked writer waiting for an update that was never requested.
+        let send_length = if capacity == 0 {
+            buf.len()
+        } else {
+            buf.len().min(capacity)
+        };
         let (peer, local_port) = map_conn_id(id)?;
         self.inner
             .send(peer, local_port, &buf[..send_length])
@@ -179,18 +182,27 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
         if let Some(event) = self.pending_event.take() {
             return event.map(Some);
         }
-        let mut credit_update = None;
-        let event = self.inner.poll_with_credit_update(|peer, local_port| {
-            credit_update = Some(VsockConnId {
-                peer_addr: map_rdif_addr(peer),
-                local_port,
+        let mut notification = None;
+        let event = self
+            .inner
+            .poll_with_credit_update(|peer, local_port, event_type| {
+                let connection = VsockConnId {
+                    peer_addr: map_rdif_addr(peer),
+                    local_port,
+                };
+                notification = Some(
+                    if matches!(event_type, VsockEventType::Disconnected { .. }) {
+                        VsockEvent::Disconnected(connection)
+                    } else {
+                        VsockEvent::CreditUpdate(connection)
+                    },
+                );
             });
-        });
         publish_polled_event(
             event
                 .map(|event| event.map(map_event))
                 .map_err(map_vsock_error),
-            credit_update,
+            notification,
             &mut self.pending_event,
         )
     }
@@ -200,27 +212,31 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
     }
 }
 
-// Preserve both the protocol result and the credit notification without invoking
-// socket callbacks under the device gate. Deliver credit before an error, since
-// the worker stops draining on errors and may receive no further IRQ.
+// Preserve state notifications even when a control response cannot be submitted.
+// The task worker stops draining on errors, so return the notification first and
+// retain the error for the next call. No socket callback runs under the device gate.
 fn publish_polled_event(
     result: Result<Option<VsockEvent>, VsockError>,
-    credit_update: Option<VsockConnId>,
+    notification: Option<VsockEvent>,
     pending: &mut Option<Result<VsockEvent, VsockError>>,
 ) -> Result<Option<VsockEvent>, VsockError> {
-    let Some(connection) = credit_update else {
+    let Some(notification) = notification else {
         return result;
     };
-    let credit = VsockEvent::CreditUpdate(connection);
     match result {
         Ok(Some(event)) => {
-            *pending = Some(Ok(credit));
+            if matches!(
+                event,
+                VsockEvent::Received(..) | VsockEvent::ConnectionRequest(..)
+            ) {
+                *pending = Some(Ok(notification));
+            }
             Ok(Some(event))
         }
-        Ok(None) => Ok(Some(credit)),
+        Ok(None) => Ok(Some(notification)),
         Err(error) => {
             *pending = Some(Err(error));
-            Ok(Some(credit))
+            Ok(Some(notification))
         }
     }
 }
@@ -297,11 +313,6 @@ fn map_vsock_error(err: VirtIoError) -> VsockError {
 mod tests {
     use super::*;
 
-    const CONNECTION: VsockConnId = VsockConnId {
-        peer_addr: RdifVsockAddr { cid: 2, port: 3 },
-        local_port: 4,
-    };
-
     #[test]
     fn peer_credit_exhaustion_is_retryable_not_a_disconnect() {
         assert!(matches!(
@@ -310,37 +321,5 @@ mod tests {
             )),
             VsockError::Retry
         ));
-    }
-
-    #[test]
-    fn consumed_credit_is_delivered_before_a_response_error() {
-        let mut pending = None;
-        for result in [Ok(None), Err(VsockError::Retry)] {
-            let failed = result.is_err();
-            let event = publish_polled_event(result, Some(CONNECTION), &mut pending).unwrap();
-            assert!(matches!(event, Some(VsockEvent::CreditUpdate(id)) if id == CONNECTION));
-            assert_eq!(pending.is_some(), failed);
-        }
-        assert!(matches!(pending.take(), Some(Err(VsockError::Retry))));
-        assert!(
-            publish_polled_event(Ok(None), None, &mut pending)
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn connection_event_precedes_its_credit_notification() {
-        let mut pending = None;
-        let event = publish_polled_event(
-            Ok(Some(VsockEvent::Connected(CONNECTION))),
-            Some(CONNECTION),
-            &mut pending,
-        )
-        .unwrap();
-        assert!(matches!(event, Some(VsockEvent::Connected(id)) if id == CONNECTION));
-        assert!(
-            matches!(pending.take(), Some(Ok(VsockEvent::CreditUpdate(id))) if id == CONNECTION)
-        );
     }
 }

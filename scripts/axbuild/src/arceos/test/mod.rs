@@ -36,6 +36,7 @@ const ARCEOS_RUST_STANDALONE_FEATURES: &[&str] = &[
     ARCEOS_RUST_TASK_IRQ_FEATURE,
     ARCEOS_RUST_CPU_LIFECYCLE_FEATURE,
     "serial-rx",
+    "net-vsock",
 ];
 
 const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
@@ -53,6 +54,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     ARCEOS_RUST_MEM_STAGE1_TRANSITION_FEATURE,
     "memtest",
     "net-loopback",
+    "net-vsock",
     "serial-rx",
     "sched-cfs",
     "sched-rr",
