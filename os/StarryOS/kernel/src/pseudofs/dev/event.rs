@@ -726,3 +726,92 @@ pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
     EVENT_DEVICE_COUNT.store(input_id, Ordering::Release);
     inputs
 }
+
+#[cfg(all(test, axtest))]
+mod tests {
+    use ax_input::InputIrqEvent;
+    use ax_runtime::hal::irq::{HwIrq, IrqDomainId, IrqReturn};
+
+    use super::*;
+
+    /// Reports its queued input as ready only when the interrupt handler runs.
+    struct IrqInput(Arc<IrqMutex<VecDeque<Event>>>);
+
+    impl InputDevice for IrqInput {
+        fn name(&self) -> &str {
+            "axtest-irq-input"
+        }
+
+        fn device_id(&self) -> InputDeviceId {
+            InputDeviceId {
+                bus_type: 0,
+                vendor: 0,
+                product: 0,
+                version: 0,
+            }
+        }
+
+        fn physical_location(&self) -> &str {
+            ""
+        }
+
+        fn unique_id(&self) -> &str {
+            ""
+        }
+
+        fn irq_id(&self) -> Option<IrqId> {
+            Some(IrqId::new(IrqDomainId(0), HwIrq(0)))
+        }
+
+        fn get_event_bits(
+            &mut self,
+            _ty: EventType,
+            _out: &mut [u8],
+        ) -> ax_input::InputResult<bool> {
+            Ok(false)
+        }
+
+        fn read_event(&mut self) -> ax_input::InputResult<Event> {
+            self.0.lock().pop_front().ok_or(InputError::Again)
+        }
+
+        fn handle_irq(&mut self) -> InputIrqEvent {
+            let ready = !self.0.lock().is_empty();
+            InputIrqEvent {
+                handled: ready,
+                input_ready: ready,
+            }
+        }
+    }
+
+    #[axtest::axtest]
+    fn irq_wakes_the_service_that_drains_input() {
+        let key = |value| Event {
+            event_type: EventType::Key as u16,
+            code: 30,
+            value,
+        };
+        let queued = Arc::new(IrqMutex::new(VecDeque::from([key(1), key(0)])));
+        let dev = Arc::new(EventDev::new(ErasedInputDevice::new(IrqInput(
+            queued.clone(),
+        ))));
+        assert!(dev.start_irq_service());
+
+        // Input advances only through the device interrupt, never by polling.
+        crate::task::sleep(Duration::from_millis(100));
+        assert_eq!(queued.lock().len(), 2, "input drained without an interrupt");
+
+        assert_eq!(dev.handle_irq(), IrqReturn::Wake);
+        for _ in 0..200 {
+            if queued.lock().is_empty() {
+                break;
+            }
+            crate::task::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            queued.lock().is_empty(),
+            "the interrupt did not wake the evdev service"
+        );
+        assert_eq!(dev.inner.lock().read_ahead.len(), 2);
+    }
+}
