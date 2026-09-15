@@ -682,6 +682,12 @@ impl DirNode {
 
     /// Opens (or creates) a file in the directory.
     pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<DirEntry> {
+        self.open_or_create(name, options).map(|(entry, _)| entry)
+    }
+
+    /// Like [`Self::open_file`], also reporting whether this call created the
+    /// file; a racing creator does not count.
+    pub fn open_or_create(&self, name: &str, options: &OpenOptions) -> VfsResult<(DirEntry, bool)> {
         verify_entry_name(name)?;
 
         match self.lookup(name) {
@@ -689,18 +695,17 @@ impl DirNode {
                 if options.create_new {
                     return Err(VfsError::AlreadyExists);
                 }
-                return Ok(val);
+                return Ok((val, false));
             }
             Err(VfsError::NotFound) if options.create => {}
             Err(err) => return Err(err),
         }
         let (uid, gid) = options.user.unwrap_or((0, 0));
-        let entry = match self.create_entry(name, options.node_type, options.permission, uid, gid) {
-            Ok(entry) => entry,
-            Err(VfsError::AlreadyExists) if !options.create_new => self.lookup(name)?,
-            Err(err) => return Err(err),
-        };
-        Ok(entry)
+        match self.create_entry(name, options.node_type, options.permission, uid, gid) {
+            Ok(entry) => Ok((entry, true)),
+            Err(VfsError::AlreadyExists) if !options.create_new => Ok((self.lookup(name)?, false)),
+            Err(err) => Err(err),
+        }
     }
 
     pub fn mountpoint(&self) -> Option<Arc<Mountpoint>> {

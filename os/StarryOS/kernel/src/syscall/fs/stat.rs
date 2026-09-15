@@ -255,7 +255,7 @@ pub fn sys_faccessat2(
     Ok(0)
 }
 
-fn check_dac_access(
+pub(super) fn check_dac_access(
     cred: &crate::task::Cred,
     kstat: &crate::file::Kstat,
     mode: u32,
@@ -597,7 +597,7 @@ pub fn sys_name_to_handle_at(
 
 #[cfg(all(test, not(axtest)))]
 mod access_tests {
-    use linux_raw_sys::general::{CAP_DAC_READ_SEARCH, R_OK, S_IFDIR, S_IFREG, X_OK};
+    use linux_raw_sys::general::{CAP_DAC_READ_SEARCH, R_OK, S_IFDIR, S_IFREG, W_OK, X_OK};
 
     use super::check_dac_access;
     use crate::{StarryError, file::Kstat, task::Cred};
@@ -644,6 +644,28 @@ mod access_tests {
         assert!(check_dac_access(&cred, &target, R_OK).is_ok());
         assert!(matches!(
             check_dac_access(&cred, &target, X_OK),
+            Err(StarryError::PermissionDenied)
+        ));
+    }
+
+    // Linux generic_permission() lets this capability bypass only a mask of
+    // exactly MAY_READ, so it does not combine with a write bit granted by mode:
+    // on Linux 6.6 open(O_RDWR) of an other-writable file fails EACCES.
+    #[test]
+    fn file_read_search_capability_does_not_extend_to_read_write_access() {
+        let mut cred = Cred::root();
+        cred.fsuid = 1000;
+        cred.cap_effective = 1 << CAP_DAC_READ_SEARCH;
+        let target = Kstat {
+            mode: S_IFREG | 0o002,
+            uid: 2000,
+            gid: 2000,
+            ..Kstat::default()
+        };
+        assert!(check_dac_access(&cred, &target, W_OK).is_ok());
+        assert!(check_dac_access(&cred, &target, R_OK).is_ok());
+        assert!(matches!(
+            check_dac_access(&cred, &target, R_OK | W_OK),
             Err(StarryError::PermissionDenied)
         ));
     }
