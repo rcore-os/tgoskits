@@ -16,7 +16,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use axfs_ng_vfs::{Location, NodeFlags, VfsError, VfsResult};
+use axfs_ng_vfs::{DeviceId, Location, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use starry_signal::{SignalInfo, Signo};
 
@@ -146,6 +146,17 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
         self.terminal.pty_number.load(Ordering::Acquire)
     }
 
+    /// Every refusal is silent, as in Linux `tty_open_proc_set_tty()`: the
+    /// caller must lead a session that has no terminal, and no other session
+    /// may own this one.
+    fn acquire_on_open(&self, proc: &Process, location: Option<Location>) {
+        if !self.is_ptm
+            && let Some(this) = self.this.upgrade()
+        {
+            let _ = this.bind_to_at(proc, location);
+        }
+    }
+
     fn bind_current_to_at(&self, location: Location) -> StarryResult<()> {
         self.this.upgrade().unwrap().bind_to_at(
             &current_user_task().as_thread().proc_data.proc,
@@ -158,6 +169,32 @@ pub(crate) fn bind_pty_at_location(location: Location) -> Option<StarryResult<us
     let device = location.entry().downcast::<Device>().ok()?;
     let pty = device.inner().as_any().downcast_ref::<PtyDriver>()?;
     Some(pty.bind_current_to_at(location).map(|()| 0))
+}
+
+/// Linux `tty_open()` makes a tty opened for reading without `O_NOCTTY` the
+/// caller's controlling terminal. Pty masters and `/dev/console` never are.
+pub(crate) fn set_controlling_terminal_on_open(
+    current: &crate::task::UserTaskRef,
+    location: &Location,
+) {
+    let Ok(device) = location.entry().downcast::<Device>() else {
+        return;
+    };
+    if location
+        .metadata()
+        .is_ok_and(|metadata| metadata.rdev == DeviceId::new(5, 1))
+    {
+        return;
+    }
+    let proc = &current.as_thread().proc_data.proc;
+    let inner = device.inner().as_any();
+    if let Some(pty) = inner.downcast_ref::<PtyDriver>() {
+        pty.acquire_on_open(proc, Some(location.clone()));
+    } else if let Some(tty) = inner.downcast_ref::<serial::SerialTtyDriver>() {
+        tty.acquire_on_open(proc, None);
+    } else if let Some(tty) = inner.downcast_ref::<usb_serial::UsbSerialTtyDriver>() {
+        tty.acquire_on_open(proc, None);
+    }
 }
 
 impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
