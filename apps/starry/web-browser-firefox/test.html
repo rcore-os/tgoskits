@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>StarryOS NetSurf</title>
+  <style>
+    body { font-family: sans-serif; margin: 24px; background: #f4f6fb; color: #222; }
+    h1 { color: #1a4d8f; border-bottom: 3px solid #1a4d8f; padding-bottom: 6px; }
+    .box { background: #ffffff; border: 1px solid #cfd8e3; border-radius: 8px;
+           padding: 16px; margin: 16px 0; }
+    .ok { color: #157a3d; font-weight: bold; }
+    table { border-collapse: collapse; }
+    th, td { border: 1px solid #99a; padding: 6px 12px; }
+    th { background: #1a4d8f; color: #fff; }
+    ul { line-height: 1.6; }
+    .swatch { display: inline-block; width: 20px; height: 20px; vertical-align: middle;
+              border: 1px solid #333; }
+  </style>
+</head>
+<body>
+  <h1>StarryOS - NetSurf software render</h1>
+  <div class="box">
+    <p class="ok">If you can read this styled page, HTML + CSS rendering works.</p>
+    <p>Rendered by the NetSurf engine on a pixman software surface, presented
+       through virtio-gpu and viewed over QEMU VNC.</p>
+  </div>
+  <div class="box">
+    <h2>Layout &amp; color</h2>
+    <p>
+      <span class="swatch" style="background:#e2413a"></span>
+      <span class="swatch" style="background:#f2b134"></span>
+      <span class="swatch" style="background:#157a3d"></span>
+      <span class="swatch" style="background:#1a4d8f"></span>
+      four CSS color swatches
+    </p>
+    <table>
+      <tr><th>Feature</th><th>State</th></tr>
+      <tr><td>HTML parse</td><td class="ok">ok</td></tr>
+      <tr><td>CSS box model</td><td class="ok">ok</td></tr>
+      <tr><td>Tables</td><td class="ok">ok</td></tr>
+    </table>
+  </div>
+  <div class="box">
+    <h2>List</h2>
+    <ul>
+      <li>Weston compositor (DRM backend, pixman renderer)</li>
+      <li>virtio-gpu scanout - QEMU VNC</li>
+      <li>GTK3 + cairo software rasterization</li>
+    </ul>
+  </div>
+</body>
+</html>
