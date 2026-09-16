@@ -217,7 +217,21 @@ fn main() {
         builder.init();
 
         // Initialize subsystems
-        let llm = LlmClient::new(API_BASE, MODEL);
+        let proxy_token = match std::env::var("ARCE_AGENT_PROXY_TOKEN") {
+            Ok(token)
+                if !token.is_empty() && token.bytes().all(|byte| (33..=126).contains(&byte)) =>
+            {
+                token
+            }
+            _ => {
+                eprintln!(
+                    "Set ARCE_AGENT_PROXY_TOKEN to the proxy's printable ASCII token without \
+                     spaces"
+                );
+                std::process::exit(1);
+            }
+        };
+        let llm = LlmClient::new(API_BASE, MODEL, proxy_token);
         let mut hal = HalInterface::init();
         let mut mem = Memory::load();
 

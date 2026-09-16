@@ -2,7 +2,7 @@
 """
 Simple HTTP-to-HTTPS reverse proxy for ArceAgent testing.
 
-Listens on 0.0.0.0:8080 (plain HTTP) and forwards requests to the
+Listens on 127.0.0.1:8080 (plain HTTP) and forwards requests to the
 Tsinghua AI Platform HTTPS API. This allows ArceOS (which lacks TLS)
 to reach the API via QEMU user-mode networking (10.0.2.2:8080).
 
@@ -11,11 +11,22 @@ need to be stored in the Rust binary or transmitted over the unencrypted
 QEMU virtual network link.
 
 Usage:
+    # Set TARGET_BASE and API_KEY below, then generate a separate proxy token:
+    export ARCE_AGENT_PROXY_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
     python3 llm_proxy.py
-    # Then ArceAgent connects to http://10.0.2.2:8080/v1/chat/completions
+    # Start the host ArceAgent with the same environment variable.
+    # QEMU clients use http://10.0.2.2:8080/v1/chat/completions with
+    # Authorization: Bearer <ARCE_AGENT_PROXY_TOKEN> (never the upstream key).
+
+Keep this proxy local; remote clients need an authenticated encrypted tunnel.
+The token authorizes use of the configured upstream account, so configure
+spending limits with the provider when sharing access with trusted clients.
+Upstream redirects are rejected; configure the final API endpoint directly.
 """
 
 import http.server
+import hmac
+import os
 import urllib.request
 import ssl
 import json
@@ -23,8 +34,16 @@ import sys
 
 TARGET_BASE = "" # OpenAI-capable api url, for example, "https://lab.cs.tsinghua.edu.cn/ai-platform/api/v1"
 LISTEN_PORT = 8080
+LISTEN_HOST = "127.0.0.1"
+PROXY_TOKEN = os.environ.get("ARCE_AGENT_PROXY_TOKEN", "")
 
 API_KEY = "" # Paste your API key here
+
+
+class RejectRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Neither the upstream key nor the client's proxy token may follow redirects.
+        raise urllib.error.URLError("Upstream redirects are disabled")
 
 
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
@@ -35,6 +54,23 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         self._proxy()
 
     def _proxy(self):
+        # Authenticate before reading a body or constructing a credentialed request.
+        authorization = self.headers.get_all("Authorization", [])
+        if (
+            not PROXY_TOKEN
+            or len(authorization) != 1
+            or not hmac.compare_digest(
+                authorization[0].encode(), f"Bearer {PROXY_TOKEN}".encode()
+            )
+        ):
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Bearer realm="arce-agent-proxy"')
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            return
+
         # Read request body if present
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else None
@@ -65,7 +101,10 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             )
             # Create SSL context that validates certs
             ctx = ssl.create_default_context()
-            with urllib.request.urlopen(req, context=ctx, timeout=120) as resp:
+            opener = urllib.request.build_opener(
+                urllib.request.HTTPSHandler(context=ctx), RejectRedirects()
+            )
+            with opener.open(req, timeout=120) as resp:
                 resp_body = resp.read()
                 self.send_response(resp.status)
                 for key, val in resp.getheaders():
@@ -94,8 +133,12 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = http.server.HTTPServer(("0.0.0.0", LISTEN_PORT), ProxyHandler)
-    print(f"LLM proxy listening on 0.0.0.0:{LISTEN_PORT}", flush=True)
+    if not PROXY_TOKEN or any(not 33 <= ord(char) <= 126 for char in PROXY_TOKEN):
+        sys.exit("Set ARCE_AGENT_PROXY_TOKEN to a nonempty printable ASCII token without spaces")
+    if PROXY_TOKEN == API_KEY:
+        sys.exit("ARCE_AGENT_PROXY_TOKEN must differ from the upstream API key")
+    server = http.server.HTTPServer((LISTEN_HOST, LISTEN_PORT), ProxyHandler)
+    print(f"LLM proxy listening on {LISTEN_HOST}:{LISTEN_PORT}", flush=True)
     print(f"Forwarding to {TARGET_BASE}", flush=True)
     print(f"API key injected by proxy (not sent from client)", flush=True)
     print(f"ArceAgent should connect to http://10.0.2.2:{LISTEN_PORT}/v1/...", flush=True)
