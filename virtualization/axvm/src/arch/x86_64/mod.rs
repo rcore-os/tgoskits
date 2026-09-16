@@ -53,6 +53,7 @@ mod pci_config;
 mod pic;
 pub(crate) mod port;
 mod resource_pools;
+mod unassigned_mmio;
 mod vm;
 use exit::*;
 pub(crate) use vm::X86VmPlan;
@@ -68,6 +69,26 @@ impl ArchOps for X86_64Arch {
     type PerCpu = AxvmX86PerCpu;
     type DeferredRunWork = DeferredRunWork;
     type NestedPageTable = nested_paging::NestedPageTable<crate::HostPagingHandler>;
+
+    fn inject_arch_interrupt(
+        vm_id: usize,
+        vcpu: &crate::vcpu::AxVCpu<Self::VCpu>,
+        interrupt: crate::runtime::QueuedVcpuInterrupt,
+    ) {
+        let crate::runtime::QueuedVcpuInterrupt::LegacyPic { vector, trigger } = interrupt else {
+            unreachable!("x86 architecture interrupt queue contains a non-PIC event")
+        };
+        if let Err(error) = vcpu
+            .get_arch_vcpu()
+            .inject_legacy_pic_interrupt(vector as usize, trigger)
+        {
+            warn!(
+                "Failed to inject queued legacy PIC interrupt vector={vector:#x} into VM[{vm_id}] \
+                 VCpu[{}]: {error:?}",
+                vcpu.id()
+            );
+        }
+    }
 
     fn has_hardware_support() -> bool {
         crate::arch::x86_64::policy::initialize_hardware_support().is_ok()
@@ -296,7 +317,7 @@ pub(crate) fn publish_pic_interrupt_after_write(vm: &AxVM, vcpu_id: X86VcpuId) -
         return Ok(());
     };
     dispatch_pic_claim(pic.as_ref(), claim, |vector| {
-        dispatch_x86_interrupt(vm, vcpu_id, vector, InterruptTriggerMode::EdgeTriggered)
+        dispatch_pic_interrupt(vm, vcpu_id, vector, InterruptTriggerMode::EdgeTriggered)
     })
 }
 
@@ -325,6 +346,19 @@ fn dispatch_x86_interrupt(
             trigger,
         },
     )
+}
+
+fn dispatch_pic_interrupt(
+    vm: &AxVM,
+    vcpu_id: X86VcpuId,
+    vector: u8,
+    trigger: InterruptTriggerMode,
+) -> AxVmResult {
+    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
+        return ax_err!(BadState, "VM does not accept virtual interrupts");
+    }
+    vm.runtime_handle()?
+        .dispatch_legacy_pic_interrupt(vcpu_id, vector, trigger)
 }
 
 pub(crate) struct AxvmX86HostOps;
@@ -481,7 +515,14 @@ impl X86VlapicHostOps for AxvmX86HostOps {
                         .restore_interrupt(claim)
                 },
                 ioapic_interrupts,
-                |vector, trigger| dispatch_pit_interrupt(vm, vcpu_id, vector, trigger),
+                PIT_AB_ROUTING,
+                |route, vector, trigger| match route {
+                    PitInterruptRoute::Pic => dispatch_pic_interrupt(vm, vcpu_id, vector, trigger)
+                        .map_err(ax_error_to_vlapic),
+                    PitInterruptRoute::IoApic => {
+                        dispatch_pit_interrupt(vm, vcpu_id, vector, trigger)
+                    }
+                },
             )
         })
         .unwrap_or(Err(X86VlapicError::BadState))
@@ -509,14 +550,15 @@ fn route_pit_claim<C>(
     pic_vector: impl FnOnce(&C) -> u8,
     restore_pic: impl FnOnce(C),
     assert_ioapic: impl FnOnce() -> Option<IoApicInterrupt>,
-    inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
+    mut inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
 ) -> X86VlapicResult {
     route_pit_claims(
         claim_pic,
         pic_vector,
         restore_pic,
         [assert_ioapic()],
-        inject,
+        true,
+        move |_route, vector, trigger| inject(vector, trigger),
     )
 }
 
@@ -525,18 +567,22 @@ fn route_pit_claims<C>(
     pic_vector: impl FnOnce(&C) -> u8,
     restore_pic: impl FnOnce(C),
     ioapic_interrupts: impl IntoIterator<Item = Option<IoApicInterrupt>>,
-    mut inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
+    route_pic: bool,
+    mut inject: impl FnMut(PitInterruptRoute, u8, InterruptTriggerMode) -> X86VlapicResult,
 ) -> X86VlapicResult {
     // KVM fans GSI 0 out to both in-kernel irqchips. Each controller owns its
     // mask/in-service state and independently decides whether this edge is
     // currently deliverable. The second IOAPIC input preserves the standard
     // MPS IRQ0 -> INTIN2 route while the first preserves the ACPI GSI0 route.
-    let pic_claim = claim_pic();
     let mut first_error = None;
 
-    if let Some(claim) = pic_claim {
+    if route_pic && let Some(claim) = claim_pic() {
         let vector = pic_vector(&claim);
-        if let Err(error) = inject(vector, InterruptTriggerMode::EdgeTriggered) {
+        if let Err(error) = inject(
+            PitInterruptRoute::Pic,
+            vector,
+            InterruptTriggerMode::EdgeTriggered,
+        ) {
             restore_pic(claim);
             first_error = Some(error);
         }
@@ -547,7 +593,7 @@ fn route_pit_claims<C>(
         } else {
             InterruptTriggerMode::EdgeTriggered
         };
-        if let Err(error) = inject(interrupt.vector, trigger)
+        if let Err(error) = inject(PitInterruptRoute::IoApic, interrupt.vector, trigger)
             && first_error.is_none()
         {
             first_error = Some(error);
@@ -556,6 +602,17 @@ fn route_pit_claims<C>(
 
     first_error.map_or(Ok(()), Err)
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PitInterruptRoute {
+    Pic,
+    IoApic,
+}
+
+// Temporary A/B switch for the PIT routing diagnosis. Keep the dual-route
+// implementation above intact so the result can be compared without losing
+// the original PIC claim and restore behavior.
+const PIT_AB_ROUTING: bool = false;
 
 fn dispatch_pit_interrupt(
     vm: &AxVM,
@@ -653,6 +710,17 @@ impl AxvmX86Vcpu {
 
     fn has_pending_event(&self) -> bool {
         self.0.has_pending_event()
+    }
+
+    fn inject_legacy_pic_interrupt(
+        &mut self,
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    ) -> BackendResult {
+        x86_result(
+            self.0
+                .inject_legacy_pic_interrupt(vector, x86_interrupt_is_level_triggered(trigger)),
+        )
     }
 
     fn set_gpr_byte(&mut self, reg: X86ByteRegister, value: u8) {
@@ -1385,6 +1453,78 @@ mod tests {
                 (0x20, InterruptTriggerMode::EdgeTriggered),
                 (0x30, InterruptTriggerMode::EdgeTriggered),
             ]
+        );
+    }
+
+    #[test]
+    fn pit_keeps_pic_and_ioapic_delivery_sources_distinct() {
+        let injected = std::cell::RefCell::new(std::vec::Vec::new());
+
+        route_pit_claims(
+            || Some(0x68),
+            |vector| *vector,
+            |_claim| {},
+            [Some(IoApicInterrupt {
+                vector: 0x30,
+                level_triggered: false,
+            })],
+            true,
+            |route, vector, trigger| {
+                injected.borrow_mut().push((route, vector, trigger));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            injected.into_inner(),
+            [
+                (
+                    PitInterruptRoute::Pic,
+                    0x68,
+                    InterruptTriggerMode::EdgeTriggered,
+                ),
+                (
+                    PitInterruptRoute::IoApic,
+                    0x30,
+                    InterruptTriggerMode::EdgeTriggered,
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn pit_ab_routing_uses_only_ioapic() {
+        let pic_claims = Cell::new(0);
+        let injected = std::cell::RefCell::new(std::vec::Vec::new());
+
+        route_pit_claims(
+            || {
+                pic_claims.set(pic_claims.get() + 1);
+                Some(0x68)
+            },
+            |vector| *vector,
+            |_claim| {},
+            [Some(IoApicInterrupt {
+                vector: 0x30,
+                level_triggered: false,
+            })],
+            PIT_AB_ROUTING,
+            |route, vector, trigger| {
+                injected.borrow_mut().push((route, vector, trigger));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(pic_claims.get(), 0);
+        assert_eq!(
+            injected.into_inner(),
+            [(
+                PitInterruptRoute::IoApic,
+                0x30,
+                InterruptTriggerMode::EdgeTriggered,
+            )]
         );
     }
 

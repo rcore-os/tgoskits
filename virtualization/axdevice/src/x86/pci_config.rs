@@ -110,85 +110,89 @@ impl X86PciConfigFrontend {
         Ok(Some((bdf, register)))
     }
 
-    /// Reads one data-window access, splitting unaligned lanes into
-    /// single-byte config reads like the legacy frontend and real bridges.
+    /// Reads one data-window access through the shared PCI config backend.
     fn read_data_window(
         &self,
         window: ConfigWindow,
         context: &mut dyn DeviceContext,
     ) -> DeviceResult<u64> {
-        if window.data_offset.is_multiple_of(window.size) {
-            return self.binding.read_config_with_context(
-                window.bdf,
-                window.register,
-                window.width,
-                context,
-            );
-        }
-        if self.binding.config_access_intersects_effect(
-            window.bdf,
-            window.register,
-            window.width,
-        )? {
-            return Err(DeviceError::InvalidInput {
-                operation: "access x86 PCI configuration",
-                detail: "an unaligned access cannot partially cover a config effect".into(),
-            });
-        }
-        let mut value = 0;
-        for index in 0..window.size {
-            let lane = ConfigOffset::new(window.register.value() + index as u16)
-                .map_err(pci_access_error)?;
-            let byte = self.binding.read_config_with_context(
-                window.bdf,
-                lane,
-                AccessWidth::Byte,
-                context,
-            )?;
-            value |= byte << (index * 8);
-        }
-        Ok(value)
+        read_config_window(&self.binding, window, context)
     }
 
-    /// Writes one data-window access with the same lane-splitting rule.
+    /// Writes one data-window access through the shared PCI config backend.
     fn write_data_window(
         &self,
         window: ConfigWindow,
         value: u64,
         context: &mut dyn DeviceContext,
     ) -> DeviceResult {
-        if window.data_offset.is_multiple_of(window.size) {
-            return self.binding.write_config_with_context(
-                window.bdf,
-                window.register,
-                window.width,
-                value,
-                context,
-            );
-        }
-        if self.binding.config_access_intersects_effect(
+        write_config_window(&self.binding, window, value, context)
+    }
+}
+
+fn read_config_window(
+    binding: &PciRootBinding,
+    window: ConfigWindow,
+    context: &mut dyn DeviceContext,
+) -> DeviceResult<u64> {
+    if window.data_offset.is_multiple_of(window.size) {
+        return binding.read_config_with_context(
             window.bdf,
             window.register,
             window.width,
-        )? {
-            return Err(DeviceError::InvalidInput {
-                operation: "access x86 PCI configuration",
-                detail: "an unaligned access cannot partially cover a config effect".into(),
-            });
-        }
-        for index in 0..window.size {
-            let lane = ConfigOffset::new(window.register.value() + index as u16)
-                .map_err(pci_access_error)?;
-            self.binding.write_config_with_context(
-                window.bdf,
-                lane,
-                AccessWidth::Byte,
-                value >> (index * 8),
-                context,
-            )?;
-        }
-        Ok(())
+            context,
+        );
     }
+    if binding.config_access_intersects_effect(window.bdf, window.register, window.width)? {
+        return Err(DeviceError::InvalidInput {
+            operation: "access x86 PCI configuration",
+            detail: "an unaligned access cannot partially cover a config effect".into(),
+        });
+    }
+    let mut value = 0;
+    for index in 0..window.size {
+        let lane =
+            ConfigOffset::new(window.register.value() + index as u16).map_err(pci_access_error)?;
+        let byte =
+            binding.read_config_with_context(window.bdf, lane, AccessWidth::Byte, context)?;
+        value |= byte << (index * 8);
+    }
+    Ok(value)
+}
+
+fn write_config_window(
+    binding: &PciRootBinding,
+    window: ConfigWindow,
+    value: u64,
+    context: &mut dyn DeviceContext,
+) -> DeviceResult {
+    if window.data_offset.is_multiple_of(window.size) {
+        return binding.write_config_with_context(
+            window.bdf,
+            window.register,
+            window.width,
+            value,
+            context,
+        );
+    }
+    if binding.config_access_intersects_effect(window.bdf, window.register, window.width)? {
+        return Err(DeviceError::InvalidInput {
+            operation: "access x86 PCI configuration",
+            detail: "an unaligned access cannot partially cover a config effect".into(),
+        });
+    }
+    for index in 0..window.size {
+        let lane =
+            ConfigOffset::new(window.register.value() + index as u16).map_err(pci_access_error)?;
+        binding.write_config_with_context(
+            window.bdf,
+            lane,
+            AccessWidth::Byte,
+            value >> (index * 8),
+            context,
+        )?;
+    }
+    Ok(())
 }
 
 impl Device for X86PciConfigFrontend {
@@ -275,6 +279,130 @@ impl Device for X86PciConfigFrontend {
         Err(DeviceError::OutOfRange {
             addr: access.address(),
         })
+    }
+}
+
+struct EcamAccess {
+    bdf: PciBdf,
+    offset: u16,
+    width: AccessWidth,
+}
+
+/// PCI Express ECAM frontend for PCI segment zero.
+pub struct PciEcamDevice {
+    base: u64,
+    size: u64,
+    binding: Arc<PciRootBinding>,
+    resources: Box<[Resource]>,
+}
+
+impl PciEcamDevice {
+    /// Creates an ECAM adapter for one contiguous PCI bus window.
+    pub fn new(base: u64, size: u64, binding: Arc<PciRootBinding>) -> Self {
+        Self {
+            base,
+            size,
+            binding,
+            resources: alloc::vec![Resource::MmioRange { base, size }].into_boxed_slice(),
+        }
+    }
+
+    fn decode_access(&self, access: &DeviceAccess) -> DeviceResult<EcamAccess> {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
+        }
+        if access.width() == AccessWidth::Qword {
+            return Err(DeviceError::Unsupported {
+                operation: "access PCIe ECAM",
+                detail: "PCI configuration accesses are limited to 32 bits".into(),
+            });
+        }
+        let relative = access
+            .address()
+            .checked_sub(self.base)
+            .ok_or(DeviceError::OutOfRange {
+                addr: access.address(),
+            })?;
+        let end =
+            relative
+                .checked_add(access.width().size() as u64)
+                .ok_or(DeviceError::OutOfRange {
+                    addr: access.address(),
+                })?;
+        if end > self.size {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
+        }
+        let bus = u8::try_from(relative >> 20).map_err(|_| DeviceError::OutOfRange {
+            addr: access.address(),
+        })?;
+        let device = ((relative >> 15) & 0x1f) as u8;
+        let function = ((relative >> 12) & 0x7) as u8;
+        let offset = (relative & 0xfff) as u16;
+        let bdf =
+            PciBdf::new(PciSegment::new(0), bus, device, function).map_err(pci_access_error)?;
+        Ok(EcamAccess {
+            bdf,
+            offset,
+            width: access.width(),
+        })
+    }
+}
+
+impl Device for PciEcamDevice {
+    fn name(&self) -> &str {
+        "pci-ecam"
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    fn read(&self, access: &DeviceAccess, context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+        let decoded = self.decode_access(access)?;
+        if decoded.offset >= 0x100 {
+            return Ok(all_ones(decoded.width.size()));
+        }
+        let register = ConfigOffset::new(decoded.offset).map_err(pci_access_error)?;
+        read_config_window(
+            &self.binding,
+            ConfigWindow {
+                bdf: decoded.bdf,
+                register,
+                data_offset: usize::from(decoded.offset) % decoded.width.size(),
+                size: decoded.width.size(),
+                width: decoded.width,
+            },
+            context,
+        )
+    }
+
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        context: &mut dyn DeviceContext,
+    ) -> DeviceResult {
+        let decoded = self.decode_access(access)?;
+        if decoded.offset >= 0x100 {
+            return Ok(());
+        }
+        let register = ConfigOffset::new(decoded.offset).map_err(pci_access_error)?;
+        write_config_window(
+            &self.binding,
+            ConfigWindow {
+                bdf: decoded.bdf,
+                register,
+                data_offset: usize::from(decoded.offset) % decoded.width.size(),
+                size: decoded.width.size(),
+                width: decoded.width,
+            },
+            value,
+            context,
+        )
     }
 }
 
@@ -583,7 +711,8 @@ mod tests {
         let register = ConfigOffset::new(0x45).unwrap();
 
         assert!(matches!(
-            frontend.read_data_window(
+            read_config_window(
+                &frontend.binding,
                 ConfigWindow {
                     bdf: endpoint_bdf,
                     register,
@@ -596,7 +725,8 @@ mod tests {
             Err(DeviceError::InvalidInput { .. })
         ));
         assert!(matches!(
-            frontend.write_data_window(
+            write_config_window(
+                &frontend.binding,
                 ConfigWindow {
                     bdf: endpoint_bdf,
                     register,
@@ -609,6 +739,30 @@ mod tests {
             ),
             Err(DeviceError::InvalidInput { .. })
         ));
+    }
+
+    #[test]
+    fn ecam_frontend_routes_conventional_config_accesses_to_the_same_root() {
+        let frontend = frontend();
+        let ecam = PciEcamDevice::new(0xb000_0000, 0x1000_0000, Arc::clone(&frontend.binding));
+        let lpc_config = 0xb000_0000 + (0x1f_u64 << 15) + 0x40;
+        let access = DeviceAccess::new(
+            DeviceVcpuId::new(0),
+            BusKind::Mmio,
+            lpc_config,
+            AccessWidth::Dword,
+        );
+        ecam.write(
+            &access,
+            0x601,
+            &mut NoopDeviceContext::new(DeviceId::new(0)),
+        )
+        .unwrap();
+        assert_eq!(
+            ecam.read(&access, &mut NoopDeviceContext::new(DeviceId::new(0)))
+                .unwrap(),
+            0x601
+        );
     }
 
     fn read_error(frontend: &X86PciConfigFrontend, port: u16, width: AccessWidth) -> DeviceError {

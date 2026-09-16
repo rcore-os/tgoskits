@@ -190,36 +190,58 @@ cases = ["pci-enumeration-svm"]
 [[check]]
 id = "test-axvisor-x86-64-pci-block-vmx"
 impact_targets = ["axvisor:x86_64"]
-name = "VMX x86_64 · VirtIO PCI block RW/RO"
+name = "VMX x86_64 · VirtIO PCI block RW/RO + UEFI disk boot"
 runner = "kvm-intel"
-timeout_minutes = 45
+timeout_minutes = 60
 command = '''
 cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
 cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-rw-vmx
 cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-ro-vmx
+uefi_asset_dir=test-suit/axvisor/normal/qemu-uefi-disk/assets
+uefi_raw_dir=tmp/axbuild/axvisor/qemu-uefi-disk
+uefi_raw_tmp=${uefi_raw_dir}/uefi-guest.img.tmp
+uefi_raw_image=${uefi_raw_dir}/uefi-guest.img
+(cd "${uefi_asset_dir}" && sha256sum --check uefi-guest.img.gz.sha256)
+mkdir -p "${uefi_raw_dir}"
+gzip -dc "${uefi_asset_dir}/uefi-guest.img.gz" > "${uefi_raw_tmp}"
+uefi_raw_sha=$(awk '{print $1}' "${uefi_asset_dir}/uefi-guest.img.sha256")
+printf '%s  %s\n' "${uefi_raw_sha}" "${uefi_raw_tmp}" | sha256sum --check -
+mv "${uefi_raw_tmp}" "${uefi_raw_image}"
+cargo xtask axvisor test qemu --arch x86_64 --test-case uefi-disk-vmx
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "x86_64"
-cases = ["pci-block-rw-vmx", "pci-block-ro-vmx"]
+cases = ["pci-block-rw-vmx", "pci-block-ro-vmx", "uefi-disk-vmx"]
 
 [[check]]
 id = "test-axvisor-x86-64-pci-block-svm"
 impact_targets = ["axvisor:x86_64"]
-name = "SVM x86_64 · VirtIO PCI block RW/RO"
+name = "SVM x86_64 · VirtIO PCI block RW/RO + UEFI disk boot"
 runner = "kvm-amd"
-timeout_minutes = 45
+timeout_minutes = 60
 command = '''
 cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
 cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-rw-svm
 cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-ro-svm
+uefi_asset_dir=test-suit/axvisor/normal/qemu-uefi-disk/assets
+uefi_raw_dir=tmp/axbuild/axvisor/qemu-uefi-disk
+uefi_raw_tmp=${uefi_raw_dir}/uefi-guest.img.tmp
+uefi_raw_image=${uefi_raw_dir}/uefi-guest.img
+(cd "${uefi_asset_dir}" && sha256sum --check uefi-guest.img.gz.sha256)
+mkdir -p "${uefi_raw_dir}"
+gzip -dc "${uefi_asset_dir}/uefi-guest.img.gz" > "${uefi_raw_tmp}"
+uefi_raw_sha=$(awk '{print $1}' "${uefi_asset_dir}/uefi-guest.img.sha256")
+printf '%s  %s\n' "${uefi_raw_sha}" "${uefi_raw_tmp}" | sha256sum --check -
+mv "${uefi_raw_tmp}" "${uefi_raw_image}"
+cargo xtask axvisor test qemu --arch x86_64 --test-case uefi-disk-svm
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "x86_64"
-cases = ["pci-block-rw-svm", "pci-block-ro-svm"]
+cases = ["pci-block-rw-svm", "pci-block-ro-svm", "uefi-disk-svm"]
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-starry-ivc-benchmark"

@@ -37,6 +37,9 @@ impl BootImagePlatform for X86_64Arch {
     ) -> AxVmResult {
         let fw_cfg_payload = x86_fw_cfg_payload(&loader.config, images.kernel, images.ramdisk)?;
         let firmware = prepare_x86_firmware(loader, fw_cfg_payload)?;
+        if loader.config.kernel.boots_from_pci_disk() {
+            return load_boot_image_from_memory(loader, images.bios);
+        }
         if should_direct_boot_linux(&loader.config)
             && let Some(header) = detect_linux_image(images.kernel)
         {
@@ -60,6 +63,9 @@ impl BootImagePlatform for X86_64Arch {
     fn load_images_from_filesystem(loader: &mut ImageLoaderCore<'_>) -> AxVmResult {
         let fw_cfg_payload = read_x86_fw_cfg_payload(loader)?;
         let firmware = prepare_x86_firmware(loader, fw_cfg_payload)?;
+        if loader.config.kernel.boots_from_pci_disk() {
+            return load_boot_image_from_filesystem(loader);
+        }
         if should_direct_boot_linux(&loader.config) {
             let probe = crate::boot::images::fs::kernel_read(
                 &loader.config,
@@ -315,7 +321,9 @@ fn x86_fw_cfg_payload(
     kernel: &[u8],
     initrd: Option<&[u8]>,
 ) -> AxVmResult<X86FwCfgPayload> {
-    if config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
+    if config.kernel.boots_from_pci_disk() {
+        Ok(X86FwCfgPayload::empty())
+    } else if config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
         Ok(X86FwCfgPayload {
             kernel: x86_fw_cfg_kernel(kernel)?,
             initrd: initrd.map(Arc::from),
@@ -349,7 +357,9 @@ fn x86_fw_cfg_kernel(image: &[u8]) -> AxVmResult<FwCfgKernelPayload> {
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
 fn read_x86_fw_cfg_payload(loader: &ImageLoaderCore<'_>) -> AxVmResult<X86FwCfgPayload> {
-    if loader.config.kernel.effective_boot_protocol() != VMBootProtocol::Uefi {
+    if loader.config.kernel.boots_from_pci_disk()
+        || loader.config.kernel.effective_boot_protocol() != VMBootProtocol::Uefi
+    {
         return Ok(X86FwCfgPayload::empty());
     }
     let kernel = crate::boot::images::fs::read_full_image(
@@ -751,6 +761,28 @@ mod tests {
         config.kernel.enable_bios = true;
         config.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
         assert!(!should_patch_multiboot_info(&config));
+    }
+
+    #[test]
+    fn uefi_pci_disk_boot_does_not_expose_kernel_through_fw_cfg() {
+        let mut config = axvmconfig::GuestConfig::default();
+        config.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
+        config.kernel.boot_source = axvmconfig::VMBootSource::PciDisk;
+
+        let payload = x86_fw_cfg_payload(&config, b"not-a-kernel", None).unwrap();
+
+        assert_eq!(payload.kernel.total_len(), 0);
+        assert!(payload.initrd.is_none());
+    }
+
+    #[test]
+    fn uefi_kernel_boot_keeps_fw_cfg_kernel_payload() {
+        let mut config = axvmconfig::GuestConfig::default();
+        config.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
+
+        let payload = x86_fw_cfg_payload(&config, b"kernel", None).unwrap();
+
+        assert_eq!(payload.kernel.total_len(), b"kernel".len());
     }
 
     #[test]

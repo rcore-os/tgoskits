@@ -65,6 +65,23 @@ pub const X86_LOCAL_APIC_GPA: usize = 0xfee0_0000;
 /// Size of the architectural local APIC window.
 pub const X86_LOCAL_APIC_SIZE: usize = 0x1000;
 
+const X86_EVENT_DIAGNOSTIC_INITIAL_SAMPLES: u64 = 16;
+
+/// Per-vCPU sampler for high-frequency external-event diagnostics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct X86EventDiagnosticSampler {
+    count: u64,
+}
+
+impl X86EventDiagnosticSampler {
+    /// Advances the event count and returns the count when it should be logged.
+    pub(crate) fn next_sample(&mut self) -> Option<u64> {
+        self.count = self.count.saturating_add(1);
+        (self.count <= X86_EVENT_DIAGNOSTIC_INITIAL_SAMPLES || self.count.is_power_of_two())
+            .then_some(self.count)
+    }
+}
+
 /// x86 vCPU creation configuration.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct X86VcpuCreateConfig;
@@ -334,5 +351,18 @@ mod tests {
         assert!(range.contains(X86GuestPhysAddr::from_usize(0x8000_0fff)));
         assert!(!range.contains(X86GuestPhysAddr::from_usize(0x7fff_ffff)));
         assert!(!range.contains(X86GuestPhysAddr::from_usize(0x8000_1000)));
+    }
+
+    #[test]
+    fn event_diagnostic_sampler_is_bounded() {
+        let mut sampler = X86EventDiagnosticSampler::default();
+        let sampled = (0..=32)
+            .filter_map(|_| sampler.next_sample())
+            .collect::<std::vec::Vec<_>>();
+
+        assert_eq!(
+            sampled,
+            std::vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 32]
+        );
     }
 }

@@ -16,6 +16,10 @@ pub(super) fn create(config: &AxVMConfig) -> AxVmResult<ResourcePools> {
     let mut pools = ResourcePools::new();
     pools.add_auto_mmio(AUTO_MMIO)?;
     pools.allow_fixed_mmio(
+        super::pci_config::PCI_ECAM_BASE
+            ..super::pci_config::PCI_ECAM_BASE + super::pci_config::PCI_ECAM_SIZE,
+    )?;
+    pools.allow_fixed_mmio(
         super::pci_config::PCI_MEMORY_BASE
             ..super::pci_config::PCI_MEMORY_BASE + super::pci_config::PCI_MEMORY_SIZE,
     )?;

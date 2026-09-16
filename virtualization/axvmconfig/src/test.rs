@@ -356,6 +356,42 @@ fn boot_config_validation_preserves_typed_errors() {
 }
 
 #[test]
+fn pci_disk_boot_source_requires_uefi() {
+    let config = VMKernelConfig {
+        enable_bios: true,
+        boot_protocol: Some(VMBootProtocol::Multiboot),
+        boot_source: VMBootSource::PciDisk,
+        ..Default::default()
+    };
+    assert_eq!(
+        config.validate_boot_config_for_arch("x86_64"),
+        Err(AxVmConfigError::BootSourceConflict {
+            boot_source: VMBootSource::PciDisk,
+            protocol: VMBootProtocol::Multiboot,
+        })
+    );
+}
+
+#[test]
+fn pci_disk_boot_source_is_rejected_on_non_x86() {
+    let config = VMKernelConfig {
+        enable_bios: true,
+        boot_protocol: Some(VMBootProtocol::Uefi),
+        boot_source: VMBootSource::PciDisk,
+        uefi_firmware_path: Some("OVMF_CODE.fd".into()),
+        bios_load_addr: Some(0xffc0_0000),
+        ..Default::default()
+    };
+    assert_eq!(
+        config.validate_boot_config_for_arch("aarch64"),
+        Err(AxVmConfigError::UnsupportedBootSource {
+            boot_source: VMBootSource::PciDisk,
+            arch: "aarch64".into(),
+        })
+    );
+}
+
+#[test]
 fn rejects_invalid_toml_with_public_error() {
     let result = GuestConfig::from_toml("[base");
     assert!(matches!(result, Err(AxVmConfigError::TomlParse { .. })));

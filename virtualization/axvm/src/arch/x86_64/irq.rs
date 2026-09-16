@@ -571,10 +571,16 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
         .services()
         .require::<X86InterruptDomainKey>()
         .ok()
-        .and_then(|ioapic| ioapic.end_of_interrupt(vector))
+        .and_then(|ioapic| {
+            end_guest_ioapic_eoi(vm.uses_passthrough_address_space(), ioapic.as_ref(), vector)
+        })
     else {
         return;
     };
+    info!(
+        "[x86-ioapic-diag] guest EOI vector={vector:#x} gsi={} pending={:?}",
+        eoi.gsi, eoi.pending
+    );
     let pending = eoi.pending;
     if vm.uses_passthrough_address_space()
         && should_rearm_forwarded_host_gsi_after_eoi(pending)
@@ -587,9 +593,9 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
         return;
     };
 
-    trace!(
-        "Injecting pending x86 IOAPIC level IRQ vector {:#x} after EOI {vector:#x}",
-        irq.vector
+    info!(
+        "[x86-ioapic-diag] requeue pending vector={:#x} level={} after EOI {vector:#x}",
+        irq.vector, irq.level_triggered,
     );
     vcpu.get_arch_vcpu()
         .inject_interrupt_with_trigger(
@@ -605,6 +611,19 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
 
 fn should_rearm_forwarded_host_gsi_after_eoi(pending: Option<x86_vlapic::IoApicInterrupt>) -> bool {
     !pending.is_some_and(|irq| irq.level_triggered)
+}
+
+/// Processes guest-visible IOAPIC EOI state for both address-space policies.
+///
+/// Address-space passthrough controls host physical mappings and host IRQ
+/// forwarding; it must not suppress EOI processing for emulated devices.
+fn end_guest_ioapic_eoi(
+    // Keep the policy at the call boundary to make this invariant explicit.
+    _uses_passthrough_address_space: bool,
+    ioapic: &dyn X86InterruptDomainOps,
+    vector: u8,
+) -> Option<x86_vlapic::IoApicEoi> {
+    ioapic.end_of_interrupt(vector)
 }
 
 pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
@@ -928,10 +947,11 @@ mod tests {
 
     use super::{
         COM1_GSI, IOAPIC_GSI_COUNT, MPS_PIT_TIMER_GSI, PIT_TIMER_GSI,
-        acquire_host_irq_forwarding_lease, gsi_bit, host_irq_forwarding_lease_count,
-        host_irq_is_guest_assignable, host_irq_to_raw, ioapic_irq_hook_gsis, raw_to_host_irq,
-        release_host_irq_forwarding_leases_for_vm, reset_host_irq_forwarding_leases,
-        should_rearm_forwarded_host_gsi_after_eoi, should_register_ioapic_gsi_hook,
+        acquire_host_irq_forwarding_lease, end_guest_ioapic_eoi, gsi_bit,
+        host_irq_forwarding_lease_count, host_irq_is_guest_assignable, host_irq_to_raw,
+        ioapic_irq_hook_gsis, raw_to_host_irq, release_host_irq_forwarding_leases_for_vm,
+        reset_host_irq_forwarding_leases, should_rearm_forwarded_host_gsi_after_eoi,
+        should_register_ioapic_gsi_hook,
     };
     use crate::{InterruptTriggerMode, arch::x86_64::X86InterruptDomain};
 
@@ -939,6 +959,8 @@ mod tests {
     static ACTIVATION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     struct FakeIoApic;
+
+    struct PendingEoiIoApic;
 
     impl X86IoApicDeviceOps for FakeIoApic {
         fn vector_for_gsi(&self, _gsi: usize) -> Option<u8> {
@@ -962,8 +984,52 @@ mod tests {
         }
     }
 
+    impl X86IoApicDeviceOps for PendingEoiIoApic {
+        fn vector_for_gsi(&self, _gsi: usize) -> Option<u8> {
+            Some(0x21)
+        }
+
+        fn assert_gsi(&self, _gsi: usize) -> Option<x86_vlapic::IoApicInterrupt> {
+            None
+        }
+
+        fn set_gsi_level(
+            &self,
+            _gsi: usize,
+            _asserted: bool,
+        ) -> Option<x86_vlapic::IoApicInterrupt> {
+            None
+        }
+
+        fn end_of_interrupt(&self, _vector: u8) -> Option<x86_vlapic::IoApicEoi> {
+            Some(x86_vlapic::IoApicEoi {
+                gsi: 17,
+                pending: Some(x86_vlapic::IoApicInterrupt {
+                    vector: 0x21,
+                    level_triggered: true,
+                }),
+            })
+        }
+    }
+
     fn new_domain() -> X86InterruptDomain {
         X86InterruptDomain::new(1, Arc::new(FakeIoApic))
+    }
+
+    #[test]
+    fn virtualized_guest_eoi_releases_pending_level_interrupt() {
+        let domain = X86InterruptDomain::new(1, Arc::new(PendingEoiIoApic));
+
+        assert_eq!(
+            end_guest_ioapic_eoi(false, &domain, 0x21),
+            Some(x86_vlapic::IoApicEoi {
+                gsi: 17,
+                pending: Some(x86_vlapic::IoApicInterrupt {
+                    vector: 0x21,
+                    level_triggered: true,
+                }),
+            })
+        );
     }
 
     #[test]

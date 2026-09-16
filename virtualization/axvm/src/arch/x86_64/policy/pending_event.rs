@@ -7,10 +7,19 @@ pub(crate) struct PendingEvent {
     pub(crate) vector: u8,
     pub(crate) err_code: Option<u32>,
     pub(crate) level_triggered: bool,
+    /// Whether this event originated from the legacy PIC delivery path.
+    pub(crate) legacy_pic: bool,
 }
 
 pub(crate) fn queue_pending_event(queue: &mut VecDeque<PendingEvent>, event: PendingEvent) {
-    if event.vector >= 32 && queue.iter().any(|pending| pending.vector == event.vector) {
+    if event.vector >= 32
+        && queue
+            .iter()
+            .any(|pending| pending.vector == event.vector && pending.legacy_pic == event.legacy_pic)
+    {
+        // Coalesce repeated events from the same delivery source. A fixed
+        // interrupt and a legacy PIC interrupt may share a vector while still
+        // representing independent pending sources.
         return;
     }
     queue.push_back(event);
@@ -27,6 +36,7 @@ mod tests {
             vector,
             err_code: None,
             level_triggered: false,
+            legacy_pic: false,
         }
     }
 
@@ -50,11 +60,31 @@ mod tests {
             vector: 14,
             err_code: Some(1),
             level_triggered: false,
+            legacy_pic: false,
         };
 
         queue_pending_event(&mut queue, exception);
         queue_pending_event(&mut queue, exception);
 
         assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
+    fn fixed_and_legacy_sources_keep_independent_pending_owners() {
+        let mut queue = VecDeque::new();
+        queue_pending_event(&mut queue, external_event(0x68));
+        queue_pending_event(
+            &mut queue,
+            PendingEvent {
+                vector: 0x68,
+                err_code: None,
+                level_triggered: false,
+                legacy_pic: true,
+            },
+        );
+
+        assert_eq!(queue.len(), 2);
+        assert!(!queue[0].legacy_pic);
+        assert!(queue[1].legacy_pic);
     }
 }

@@ -395,6 +395,15 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
         self.update_ppr();
     }
 
+    pub(crate) fn can_accept_interrupt_with_priority(&self, vector: u8, ppr: u8) -> bool {
+        prio(vector as u32) > prio(ppr as u32)
+    }
+
+    /// Returns the current processor-priority register value.
+    pub fn processor_priority(&self) -> u8 {
+        self.regs().PPR.get() as u8
+    }
+
     pub fn has_pending_timer_interrupt(&self) -> bool {
         self.virtual_timer.has_pending_interrupt()
     }

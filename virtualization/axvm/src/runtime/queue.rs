@@ -25,6 +25,8 @@ use std::{collections::BTreeMap, vec::Vec};
 
 use ax_std::os::arceos::sync::IrqSafeMutex as Mutex;
 
+#[cfg(target_arch = "x86_64")]
+use crate::InterruptTriggerMode;
 use crate::irq::model::PendingVcpuInterrupt;
 
 /// One interrupt delivery owned by the target vCPU runtime.
@@ -32,6 +34,12 @@ use crate::irq::model::PendingVcpuInterrupt;
 pub(crate) enum QueuedVcpuInterrupt {
     /// A virtual interrupt whose trigger semantics are architecture-independent.
     Virtual(PendingVcpuInterrupt),
+    /// A legacy x86 PIC interrupt whose source must bypass LAPIC PPR gating.
+    #[cfg(target_arch = "x86_64")]
+    LegacyPic {
+        vector: u8,
+        trigger: InterruptTriggerMode,
+    },
     /// A host physical interrupt that retains its source identity until the
     /// architecture-specific vCPU injection path consumes it.
     #[cfg(target_arch = "loongarch64")]
@@ -42,6 +50,8 @@ impl QueuedVcpuInterrupt {
     pub(crate) fn into_virtual(self) -> Result<PendingVcpuInterrupt, Self> {
         match self {
             Self::Virtual(interrupt) => Ok(interrupt),
+            #[cfg(target_arch = "x86_64")]
+            legacy_pic @ Self::LegacyPic { .. } => Err(legacy_pic),
             #[cfg(target_arch = "loongarch64")]
             physical @ Self::Physical { .. } => Err(physical),
         }
@@ -50,6 +60,10 @@ impl QueuedVcpuInterrupt {
     fn has_same_pending_owner(self, other: Self) -> bool {
         match (self, other) {
             (Self::Virtual(left), Self::Virtual(right)) => left.id == right.id,
+            #[cfg(target_arch = "x86_64")]
+            (Self::LegacyPic { vector: left, .. }, Self::LegacyPic { vector: right, .. }) => {
+                left == right
+            }
             #[cfg(target_arch = "loongarch64")]
             (
                 Self::Physical {
@@ -60,6 +74,8 @@ impl QueuedVcpuInterrupt {
                     ..
                 },
             ) => left == right,
+            #[cfg(target_arch = "x86_64")]
+            _ => false,
             #[cfg(target_arch = "loongarch64")]
             _ => false,
         }
@@ -246,6 +262,20 @@ mod tests {
         assert_eq!(state.pending, vec![edge(10)]);
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn fixed_and_legacy_pic_events_keep_distinct_runtime_sources() {
+        let mut state = VcpuInterruptState::default();
+
+        state.push(edge(0x68));
+        state.push(QueuedVcpuInterrupt::LegacyPic {
+            vector: 0x68,
+            trigger: crate::InterruptTriggerMode::EdgeTriggered,
+        });
+
+        assert_eq!(state.pending.len(), 2);
+    }
+
     #[test]
     fn draining_runtime_work_rearms_the_physical_kick_before_guest_entry() {
         let mut state = VcpuInterruptState::default();
@@ -312,6 +342,8 @@ mod tests {
         assert_eq!(
             match drained[0] {
                 QueuedVcpuInterrupt::Virtual(interrupt) => interrupt.trigger,
+                #[cfg(target_arch = "x86_64")]
+                QueuedVcpuInterrupt::LegacyPic { .. } => panic!("expected virtual interrupt"),
                 #[cfg(target_arch = "loongarch64")]
                 QueuedVcpuInterrupt::Physical { .. } => panic!("expected virtual interrupt"),
             },
@@ -320,6 +352,8 @@ mod tests {
         assert_eq!(
             match drained[1] {
                 QueuedVcpuInterrupt::Virtual(interrupt) => interrupt.trigger,
+                #[cfg(target_arch = "x86_64")]
+                QueuedVcpuInterrupt::LegacyPic { .. } => panic!("expected virtual interrupt"),
                 #[cfg(target_arch = "loongarch64")]
                 QueuedVcpuInterrupt::Physical { .. } => panic!("expected virtual interrupt"),
             },

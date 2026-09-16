@@ -197,7 +197,12 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
             return Ok(BlockDeviceEvent::None);
         }
         let pending_head = self.take_pending_head();
-        let outcome = self.core.process_queue(queue, memory, pending_head);
+        let outcome = self.core.process_queue_with_features(
+            queue,
+            memory,
+            pending_head,
+            self.state.driver_features(),
+        );
         drop(queues);
         match outcome? {
             BlockQueueOutcome::Idle | BlockQueueOutcome::Completed { notify: false } => {

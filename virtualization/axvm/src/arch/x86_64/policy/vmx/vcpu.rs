@@ -73,14 +73,17 @@ fn interrupted_vmx_event(
         return None;
     }
 
-    let level_triggered = injected
+    let (level_triggered, legacy_pic) = injected
         .filter(|event| event.event.vector == info.vector && event.int_type == info.int_type)
-        .is_some_and(|event| event.event.level_triggered);
+        .map_or((false, false), |event| {
+            (event.event.level_triggered, event.event.legacy_pic)
+        });
     Some(VmxInjectionEvent {
         event: PendingEvent {
             vector: info.vector,
             err_code: info.err_code,
             level_triggered,
+            legacy_pic,
         },
         int_type: info.int_type,
         instruction_len: info.int_type.is_soft().then_some(exit_instruction_len),
@@ -135,6 +138,13 @@ pub struct VmxVcpu<H: X86HostOps, M: ControlMemory> {
     reinjection_event: Option<VmxInjectionEvent>,
     /// Emulated Local APIC.
     vlapic: EmulatedLocalApic<H>,
+    /// Last external event blocked by CPU interruptibility or APIC PPR.
+    ///
+    /// This is diagnostic state only. It suppresses repeated log lines while
+    /// a guest remains blocked on the same event and gate state.
+    last_blocked_external_event: Option<(u8, bool, bool, bool, u8)>,
+    /// Samples high-frequency external-event diagnostics for this vCPU.
+    external_event_diagnostic_sampler: X86EventDiagnosticSampler,
     /// Guest RAM regions used to read guest instructions and page tables.
     guest_memory_regions: Vec<X86GuestMemoryRegion>,
 }
@@ -165,6 +175,8 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
             injecting_event: None,
             reinjection_event: None,
             vlapic: EmulatedLocalApic::<H>::new(vm_id, vcpu_id),
+            last_blocked_external_event: None,
+            external_event_diagnostic_sampler: X86EventDiagnosticSampler::default(),
             guest_memory_regions: Vec::new(),
         };
         info!(
@@ -336,14 +348,39 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
         err_code: Option<u32>,
         level_triggered: bool,
     ) {
+        self.queue_event_with_source(vector, err_code, level_triggered, false);
+    }
+
+    fn queue_event_with_source(
+        &mut self,
+        vector: u8,
+        err_code: Option<u32>,
+        level_triggered: bool,
+        legacy_pic: bool,
+    ) {
         queue_pending_event(
             &mut self.pending_events,
             PendingEvent {
                 vector,
                 err_code,
                 level_triggered,
+                legacy_pic,
             },
         );
+    }
+
+    /// Queue a legacy PIC interrupt without applying fixed-vector APIC PPR gating.
+    pub fn inject_legacy_pic_interrupt(
+        &mut self,
+        vector: usize,
+        level_triggered: bool,
+    ) -> X86VcpuResult {
+        if vector == 0 {
+            warn!("interrupt queued in inject_legacy_pic_interrupt: vector 0");
+            panic!()
+        }
+        self.queue_event_with_source(vector as u8, None, level_triggered, true);
+        Ok(())
     }
 
     /// If enable, a VM exit occurs at the beginning of any instruction if
@@ -968,6 +1005,75 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
         vmx_external_interrupt_allowed(rflags as u64, block_state)
     }
 
+    fn handle_local_apic_eoi(&mut self) -> Option<u8> {
+        let ppr_before = self.vlapic.processor_priority();
+        let vector = self.vlapic.handle_eoi();
+        if let Some(count) = self.external_event_diagnostic_sampler.next_sample() {
+            info!(
+                "[x86-vmx-diag] guest EOI count={count} next_vector={:?} \
+                 ppr_before={ppr_before:#x} ppr_after={:#x}",
+                vector,
+                self.vlapic.processor_priority()
+            );
+        }
+        vector
+    }
+
+    fn record_blocked_external_event(
+        &mut self,
+        event: PendingEvent,
+        cpu_interrupt_allowed: bool,
+        apic_priority_allowed: bool,
+    ) {
+        let state = (
+            event.vector,
+            event.legacy_pic,
+            event.level_triggered,
+            cpu_interrupt_allowed,
+            self.vlapic.processor_priority(),
+        );
+        if self.last_blocked_external_event != Some(state) {
+            if let Some(count) = self.external_event_diagnostic_sampler.next_sample() {
+                info!(
+                    "[x86-vmx-diag] blocked count={count} vector={:#x} source={} level={} \
+                     cpu_allowed={} apic_allowed={} ppr={:#x} pending={}",
+                    event.vector,
+                    if event.legacy_pic { "pic" } else { "fixed" },
+                    event.level_triggered,
+                    cpu_interrupt_allowed,
+                    apic_priority_allowed,
+                    self.vlapic.processor_priority(),
+                    self.pending_events.len()
+                );
+            }
+            self.last_blocked_external_event = Some(state);
+        }
+    }
+
+    fn record_injected_external_event(
+        &mut self,
+        event: PendingEvent,
+        reinjected: bool,
+        cpu_interrupt_allowed: bool,
+        apic_priority_allowed: bool,
+    ) {
+        if let Some(count) = self.external_event_diagnostic_sampler.next_sample() {
+            info!(
+                "[x86-vmx-diag] inject count={count} vector={:#x} source={} level={} \
+                 reinjected={} cpu_allowed={} apic_allowed={} ppr={:#x} pending={}",
+                event.vector,
+                if event.legacy_pic { "pic" } else { "fixed" },
+                event.level_triggered,
+                reinjected,
+                cpu_interrupt_allowed,
+                apic_priority_allowed,
+                self.vlapic.processor_priority(),
+                self.pending_events.len()
+            );
+        }
+        self.last_blocked_external_event = None;
+    }
+
     /// Try to inject a pending event before next VM entry.
     fn inject_pending_events(&mut self) -> X86VcpuResult {
         if let Some(vector) = self.vlapic.take_pending_timer_interrupt() {
@@ -978,6 +1084,9 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
         }
 
         if let Some(event) = self.reinjection_event {
+            if event.event.vector >= 32 {
+                self.record_injected_external_event(event.event, true, true, true);
+            }
             if event.int_type == VmxInterruptionType::External {
                 self.set_interrupt_window(false)?;
             }
@@ -998,13 +1107,50 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
             return Ok(());
         }
 
-        if let Some(event) = self.pending_events.front().copied() {
+        let pending_event_index = self.pending_events.front().copied().map(|event| {
+            let cpu_interrupt_allowed = event.vector < 32 || self.allow_interrupt();
+            let apic_priority_allowed = event.vector < 32
+                || event.legacy_pic
+                || self.vlapic.can_accept_interrupt(event.vector);
+            if event.vector >= 32 && (!cpu_interrupt_allowed || !apic_priority_allowed) {
+                self.record_blocked_external_event(
+                    event,
+                    cpu_interrupt_allowed,
+                    apic_priority_allowed,
+                );
+            }
+            if !cpu_interrupt_allowed || apic_priority_allowed {
+                0
+            } else {
+                // A fixed event blocked by APIC PPR must not hide a later
+                // legacy PIC event, which follows a separate delivery path.
+                self.pending_events
+                    .iter()
+                    .position(|pending| pending.legacy_pic)
+                    .unwrap_or(0)
+            }
+        });
+
+        if let Some(pending_event_index) = pending_event_index {
+            let event = self.pending_events[pending_event_index];
             // trace!(
             //     "pending event vector {:#x} allow_int {}",
             //     event.vector,
             //     self.allow_interrupt()
             // );
-            if event.vector < 32 || self.allow_interrupt() {
+            let cpu_interrupt_allowed = event.vector < 32 || self.allow_interrupt();
+            let apic_priority_allowed = event.vector < 32
+                || event.legacy_pic
+                || self.vlapic.can_accept_interrupt(event.vector);
+            if cpu_interrupt_allowed && apic_priority_allowed {
+                if event.vector >= 32 {
+                    self.record_injected_external_event(
+                        event,
+                        false,
+                        cpu_interrupt_allowed,
+                        apic_priority_allowed,
+                    );
+                }
                 // if it's an exception, or an interrupt that is not blocked, inject it directly.
                 vmcs::inject_event(
                     self.cpu.vmx_controls_mut().expect("VMX policy CPU"),
@@ -1016,10 +1162,12 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
                         .accept_interrupt(event.vector, event.level_triggered);
                 }
                 self.injecting_event = Some(VmxInjectionEvent::pending(event));
-                self.pending_events.pop_front();
+                let _ = self.pending_events.remove(pending_event_index);
             } else {
-                // interrupts are blocked, enable interrupt-window exiting.
-                self.set_interrupt_window(true)?;
+                // Only CPU interruptibility can be relieved by interrupt-window exiting.
+                if !cpu_interrupt_allowed {
+                    self.set_interrupt_window(true)?;
+                }
             }
         }
         Ok(())
@@ -1032,11 +1180,26 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
             .expect("VMX policy CPU")
             .idt_vectoring_info()
             .map_err(X86VcpuError::from)?;
-        self.reinjection_event = interrupted_vmx_event(
-            vectoring,
-            exit_info.exit_instruction_length,
-            self.injecting_event,
-        );
+        let injected = self.injecting_event;
+        self.reinjection_event =
+            interrupted_vmx_event(vectoring, exit_info.exit_instruction_length, injected);
+        if let Some(injected) = injected.filter(|event| event.event.vector >= 32)
+            && let Some(count) = self.external_event_diagnostic_sampler.next_sample()
+        {
+            info!(
+                "[x86-vmx-diag] injection completed count={count} vector={:#x} source={} \
+                 vectoring_valid={} vectoring_vector={:#x} reinject={}",
+                injected.event.vector,
+                if injected.event.legacy_pic {
+                    "pic"
+                } else {
+                    "fixed"
+                },
+                vectoring.valid,
+                vectoring.vector,
+                self.reinjection_event.is_some(),
+            );
+        }
         self.injecting_event = None;
         Ok(())
     }
@@ -1118,7 +1281,7 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
 
             if msr == X2APIC_EOI_MSR {
                 Ok(X86VmExit::InterruptEnd {
-                    vector: self.vlapic.handle_eoi(),
+                    vector: self.handle_local_apic_eoi(),
                 })
             } else {
                 self.vlapic
@@ -1178,7 +1341,7 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
             let value = self.decode_apic_mmio_write_value(exit_info)?;
             if reg == X86_LOCAL_APIC_EOI_OFFSET {
                 exit_reason = X86VmExit::InterruptEnd {
-                    vector: self.vlapic.handle_eoi(),
+                    vector: self.handle_local_apic_eoi(),
                 };
             } else {
                 self.vlapic
@@ -1584,7 +1747,7 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
         let offset = addr.as_usize() - X86_LOCAL_APIC_GPA;
         if offset == X86_LOCAL_APIC_EOI_OFFSET {
             return Some(X86VmExit::InterruptEnd {
-                vector: self.vlapic.handle_eoi(),
+                vector: self.handle_local_apic_eoi(),
             });
         }
 
@@ -2227,12 +2390,12 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
                         X86VmExit::Halt
                     }
                     VmxExitReason::VirtualizedEoi => X86VmExit::InterruptEnd {
-                        vector: self.vlapic.handle_eoi(),
+                        vector: self.handle_local_apic_eoi(),
                     },
                     VmxExitReason::ApicWrite => {
                         let offset = self.apic_access_exit_info()?.offset as usize;
                         if offset == X86_LOCAL_APIC_EOI_OFFSET {
-                            let vector = self.vlapic.handle_eoi();
+                            let vector = self.handle_local_apic_eoi();
                             X86VmExit::InterruptEnd { vector }
                         } else {
                             X86VmExit::Nothing
@@ -2365,7 +2528,7 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
     }
 
     pub fn handle_eoi(&mut self) -> Option<u8> {
-        self.vlapic.handle_eoi()
+        self.handle_local_apic_eoi()
     }
 
     pub fn set_return_value(&mut self, val: usize) {
@@ -2383,6 +2546,7 @@ mod tests {
             vector: 0x51,
             err_code: None,
             level_triggered: true,
+            legacy_pic: false,
         };
         let injected = VmxInjectionEvent::pending(pending);
         let vectoring = VmxInterruptInfo {

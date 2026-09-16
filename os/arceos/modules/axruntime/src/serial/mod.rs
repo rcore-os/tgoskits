@@ -234,6 +234,8 @@ struct RuntimeShared {
     tx_source: Arc<PollSet>,
     rx_progress: WaitQueue,
     console_progress: WaitQueue,
+    #[cfg(test)]
+    console_progress_notifications: AtomicUsize,
     tx_progress: WaitQueue,
     tty_output_lock: Mutex<()>,
     log_barriers: AtomicUsize,
@@ -339,6 +341,19 @@ impl RuntimeShared {
         // SAFETY: the maintenance task publishes queue space before waking
         // task-context poll waiters.
         unsafe { self.tx_source.wake(IoEvents::OUT) };
+    }
+
+    fn notify_console_progress(&self) {
+        if ax_hal::irq::in_irq_context() {
+            // Hard IRQ producers only wake the fixed serial worker. It will
+            // fan out to the task-context console waiter after the IRQ path
+            // has released all device state.
+            return;
+        }
+        #[cfg(test)]
+        self.console_progress_notifications
+            .fetch_add(1, Ordering::Release);
+        self.console_progress.notify_all();
     }
 
     fn enable_irq(&self) -> RuntimeResult {
@@ -665,6 +680,10 @@ impl SerialLogSubscription {
         if let Err(bytes) = result {
             self.shared.record_subscription_drop(bytes);
         }
+        // A vCPU callback normally runs in task context and can wake the
+        // shell consumer directly. Hard-IRQ callers are kept on the bounded
+        // worker-doorbell path by `notify_console_progress`.
+        self.shared.notify_console_progress();
         self.shared.bridge.notify();
         result.map_err(|_| RuntimeError::WouldBlock)
     }
@@ -959,6 +978,8 @@ fn build_runtime(
         tx_source: Arc::new(PollSet::new()),
         rx_progress: WaitQueue::new(),
         console_progress: WaitQueue::new(),
+        #[cfg(test)]
+        console_progress_notifications: AtomicUsize::new(0),
         tx_progress: WaitQueue::new(),
         tty_output_lock: Mutex::new(()),
         log_barriers: AtomicUsize::new(0),

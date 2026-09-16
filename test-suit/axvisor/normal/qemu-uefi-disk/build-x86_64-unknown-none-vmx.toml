@@ -1,0 +1,10 @@
+features = ["fs"]
+log = "Info"
+target = "x86_64-unknown-none"
+vm_configs = ["test-suit/axvisor/normal/qemu-uefi-disk/x86-linux-uefi-disk.toml"]
+
+[env]
+AXVISOR_TEST_X86_OVMF_OUTPUT = "tmp/axbuild/axvisor/qemu-uefi-disk/OVMF_CODE_4M.fd"
+AXVISOR_TEST_X86_OVMF_INPUT = "test-suit/axvisor/normal/qemu-uefi-disk/assets/OVMF_CODE_4M.fd"
+AXVISOR_TEST_X86_OVMF_VARS_INPUT = "test-suit/axvisor/normal/qemu-uefi-disk/assets/OVMF_VARS_4M.fd"
+AXVISOR_TEST_X86_UEFI_DISK_IMAGE = "tmp/axbuild/axvisor/qemu-uefi-disk/uefi-guest.img"

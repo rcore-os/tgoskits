@@ -93,6 +93,11 @@ impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
                 TransitionResult::Failed(error) => {
                     self.transport
                         .complete_interrupt_transition(transition, false);
+                    warn!(
+                        "VirtIO PCI INTx transition failed transition={transition:?} \
+                         error={error:?} pending_after={}",
+                        self.transport.interrupt_pending()
+                    );
                     return Err(error);
                 }
             }

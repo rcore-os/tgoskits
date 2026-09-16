@@ -132,6 +132,10 @@ fn plan_devices(
             std::sync::Arc::new(super::acpi_pm_timer::X86AcpiPmTimerModel),
         )
         .with_dependency(controller_id.clone()),
+        DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("tpm-tis")?,
+            std::sync::Arc::new(super::unassigned_mmio::X86UnassignedTpmMmioModel),
+        ),
     ];
     for port in config.pass_through_ports() {
         let id = DeviceNodeId::new(std::format!("host-port-{:x}", port.base))?;
