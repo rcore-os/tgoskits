@@ -244,7 +244,7 @@ docker run --rm -v "$PWD:/workspace" -w /workspace \
 - QEMU smoke 要走真实 UEFI UDP/HTTP。SLiRP 可承担 DHCP 与 HTTP；需要把二层广播交给宿主测试服务时，用 `filter-mirror` 捕获客户机发包、用独立 `filter-redirector` 注入响应，并验证四字节大端帧长、IPv4/UDP 校验和、目标 MAC/IP/端口。
 - UEFI HTTP JSON POST 必须显式携带 `Content-Type: application/json` 与准确的 `Content-Length`；只有请求体字节但没有长度头时，HTTP/1.1 server 会把请求解析为空 body。对同一网卡连续创建 HTTP 子协议时，上一请求的 protocol guard 必须先完成关闭，避免 OVMF 将相同 OpenProtocol 键合并后在析构期返回 `NOT_FOUND`。
 - 成功证据必须同时包含真实内核 GET、长度和 SHA-256 校验、`ready_to_handoff` 状态及 ELF 装载。`ready_to_handoff` 后先析构 UDP、HTTP、IP 配置及其事件和子句柄，再调用 `ExitBootServices`；退出后不能再调用固件网络或控制台服务。
-- axloader 镜像真实性由 EFI 预配置的 `AXLOADER_TRUSTED_PUBLIC_KEY` 和 `authentication::authenticate_image` 负责，HTTP 下发的 SHA-256 只证明传输一致性。签名必须在 strip、kallsyms 和 objcopy 等最终 ELF 后处理之后生成；验证完整镜像和入口模式后才解析或复制 segment。无公钥或验签失败时拒绝启动，不回退旧未认证路径。QEMU 使用临时密钥与独立 EFI 构建目录，同时证明未签名、篡改镜像及错误签名被拒绝、合法签名可装载；无 KVM 时显式使用 `--accel tcg`。
+- axloader 镜像真实性由 EFI 预配置的 `AXLOADER_TRUSTED_PUBLIC_KEY` 和 `authentication::authenticate_image` 负责，HTTP 下发的 SHA-256 只证明传输一致性。签名必须在 strip、kallsyms 和 objcopy 等最终 ELF 后处理之后生成；验证完整镜像和入口模式后才解析或复制 segment。无公钥或验签失败时拒绝启动，不回退旧未认证路径。QEMU 使用临时密钥与独立 EFI 构建目录，沿用现有成功启动验证，不覆盖部署用 EFI。
 
 - 首条可靠输出前失败时加入 `-S -s`，在复位处停止并连接 GDB。
 - 加入 `-d int,cpu_reset,guest_errors` 记录陷阱、复位和无效客户机访问。

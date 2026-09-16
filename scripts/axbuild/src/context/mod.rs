@@ -381,66 +381,18 @@ impl AppContext {
             cargo.target,
             display_optional_path(build_config_path.as_deref())
         ));
-        let result = if env::var_os("AXLOADER_SIGNING_KEY").is_some() {
-            // Match cargo_run_board's release default and deferred BIN
-            // conversion: HTTP Boot consumes the final ELF directly.
-            self.set_debug_mode(false)?;
-            let mut cargo = cargo;
-            cargo.to_bin = false;
-            let output = ostool_build::cargo_build(
-                &mut self.invocation,
-                &cargo,
-                build_config_path.as_deref(),
-            )
-            .await?;
-            let _signed = self.prepare_signed_board_kernel(
-                output.elf_path(),
-                cargo.to_bin,
-                Some(output.cargo_artifact_dir()),
-            )?;
-            ostool_board::run_prepared_board(&mut self.invocation, &board_config, options).await
-        } else {
-            ostool_board::cargo_run_board(
-                &mut self.invocation,
-                &cargo,
-                build_config_path.as_deref(),
-                &board_config,
-                options,
-            )
-            .await
-        };
+        let result = ostool_board::cargo_run_board(
+            &mut self.invocation,
+            &cargo,
+            build_config_path.as_deref(),
+            &board_config,
+            options,
+        )
+        .await;
         if result.is_ok() {
             stage.done();
         }
         result
-    }
-
-    /// Applies the caller's explicit HTTP Boot signing option after all ELF
-    /// postprocessing. Keep its owner alive until the board runner has finished.
-    fn prepare_signed_board_kernel(
-        &mut self,
-        elf: &Path,
-        to_bin: bool,
-        cargo_artifact_dir: Option<&Path>,
-    ) -> anyhow::Result<Option<crate::axloader::SignedKernel>> {
-        let Some(key) = env::var_os("AXLOADER_SIGNING_KEY") else {
-            return Ok(None);
-        };
-        let signed = crate::axloader::sign_runtime_kernel(self.workspace_root(), elf, key.into())?;
-        let source_directory = match cargo_artifact_dir {
-            Some(directory) => directory,
-            None => elf
-                .parent()
-                .context("runtime ELF has no parent directory")?,
-        };
-        // RuntimeArtifactInput defaults to no ELF rewrite. BIN conversion reads
-        // the unchanged loadable segments and never includes the signature.
-        ostool_build::prepare_runtime_artifact(
-            &mut self.invocation,
-            RuntimeArtifactInput::new(signed.path(), to_bin)
-                .with_cargo_artifact_dir(source_directory),
-        )?;
-        Ok(Some(signed))
     }
 
     pub(crate) async fn board_prepared_elf(
@@ -459,10 +411,9 @@ impl AppContext {
         ));
         ostool_build::prepare_runtime_artifact(
             &mut self.invocation,
-            RuntimeArtifactInput::new(elf_path.clone(), to_bin),
+            RuntimeArtifactInput::new(elf_path, to_bin),
         )?;
         prepare_stage.done();
-        let _signed = self.prepare_signed_board_kernel(&elf_path, to_bin, None)?;
 
         let run_stage = StageLog::start("board run prepared artifact");
         let result =
@@ -488,10 +439,9 @@ impl AppContext {
         ));
         ostool_build::prepare_runtime_artifact(
             &mut self.invocation,
-            RuntimeArtifactInput::new(elf_path.clone(), to_bin),
+            RuntimeArtifactInput::new(elf_path, to_bin),
         )?;
         prepare_stage.done();
-        let _signed = self.prepare_signed_board_kernel(&elf_path, to_bin, None)?;
 
         let run_stage = StageLog::start("board run prepared artifact");
         let result =

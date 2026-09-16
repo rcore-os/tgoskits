@@ -70,7 +70,7 @@ EFI 必须预先配置发布者的 Ed25519 公钥。HTTP 返回的 SHA-256 只�
 不能作为信任依据。`authentication::authenticate_image` 在 ELF 解析和 segment
 复制前校验完整镜像及入口模式；没有公钥、未签名、签名错误或入口不匹配时拒绝启动。
 部署者还需保护 EFI 文件及其中的公钥。镜像签名不提供服务器身份认证、保密性、
-抗拒绝服务或旧签名镜像撤销。设计与取舍见[镜像真实性校验](../../docs/design/axloader-image-authentication.md)。
+抗拒绝服务或旧签名镜像撤销。
 
 先在发布端生成私钥，对完成所有 strip、kallsyms 和格式转换的最终 ELF 签名。
 私钥不得上传到板卡、服务端文件接口或仓库。以下命令输出的 64 位十六进制公钥
@@ -99,12 +99,6 @@ cargo xtask axloader test qemu --target x86_64-unknown-uefi
 也可通过构建环境 `AXLOADER_TRUSTED_PUBLIC_KEY` 提供公钥；命令行参数优先。
 未配置公钥仍可编译用于静态检查，但该 EFI 会拒绝装载任何内核，不会回退到仅校验 SHA-256。
 
-项目板卡运行入口支持 `AXLOADER_SIGNING_KEY`，值为发布端 PKCS#8 PEM 私钥的绝对路径。
-仅在 HTTP Boot 命令作用域设置该变量：`AppContext` 会在最终 ELF 后处理完成后，
-通过 `sign_runtime_kernel` 签名到独立临时文件并交给原 ostool 上传流程；自动签名
-绑定 ostool 使用的 `httpboot_entry`。原 ELF 不变，临时文件保留至运行结束。
-未设置该变量时不会自动签名，因此新版 EFI 会拒绝原有未签名上传。
-
 The output is:
 
 ```text
@@ -121,17 +115,14 @@ never used to inject a command. Success requires all of the following:
 - `ready_to_handoff` reached the control server;
 - `elf_loaded:` appeared in diagnostics.
 
-测试使用临时生成的密钥及独立构建目录，不覆盖部署用 EFI。它还要求未签名镜像、
-被篡改但 HTTP 摘要同步更新的镜像和错误签名在 ELF 装载前被拒绝。
-没有 KVM 的宿主使用 `cargo xtask axloader test qemu --accel tcg`。
+现有 QEMU 冒烟测试使用签名后的 ELF、临时密钥及独立构建目录，不覆盖部署用 EFI。
 
 ## Install to removable media
 
 The helper builds the loader, mounts an EFI partition, installs the removable
 media filename, verifies the copy, syncs, and unmounts:
 
-安装前必须设置 `AXLOADER_TRUSTED_PUBLIC_KEY`。脚本在选择或挂载设备前检查该变量，
-避免将没有信任配置的 EFI 安装到启动介质。
+安装前必须设置 `AXLOADER_TRUSTED_PUBLIC_KEY`，否则生成的 EFI 会拒绝启动。
 
 ```bash
 ./bootloader/axloader/scripts/build-install-efi.sh

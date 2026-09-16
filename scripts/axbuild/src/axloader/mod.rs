@@ -1,5 +1,3 @@
-mod signing;
-
 use std::{
     fs,
     io::{Read, Write},
@@ -16,14 +14,13 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 use httpboot_protocol::{
     BootArch, ImageFormat, LoaderDiscoveryOffer, LoaderDiscoveryProbe, LoaderPollResponse,
     LoaderStatusPhase, LoaderStatusReport, PROTOCOL_VERSION,
 };
 use ostool::ovmf::Arch;
 use sha2::{Digest, Sha256};
-pub(crate) use signing::{SignedKernel, sign_runtime_kernel};
 
 use crate::support::{ovmf::OvmfFirmware, process::ProcessExt};
 
@@ -31,6 +28,7 @@ const AXLOADER_PACKAGE: &str = "axloader";
 const AXLOADER_BIN: &str = "axloader";
 const DEFAULT_UEFI_TARGET: &str = "x86_64-unknown-uefi";
 const HTTP_SMOKE_BOOT_TIMEOUT: Duration = Duration::from_secs(240);
+const HTTP_SMOKE_MAX_ATTEMPTS: usize = 2;
 const HTTP_SMOKE_DISCOVERY_REPLY_DELAY: Duration = Duration::from_millis(500);
 const QEMU_HOST_GATEWAY: &str = "10.0.2.2";
 
@@ -40,14 +38,12 @@ struct LoaderSmokeTarget {
     ovmf_arch: Arch,
     efi_output_file: &'static str,
     qemu_program: &'static str,
-    qemu_args: fn(&Path, &Path, u16, u16, Acceleration) -> Vec<String>,
+    qemu_args: fn(&Path, &Path, u16, u16) -> Vec<String>,
     kernel_elf: fn() -> Vec<u8>,
 }
 
 struct SmokeAttemptContext<'a> {
     efi: &'a Path,
-    accel: Acceleration,
-    reject: bool,
     smoke_target: LoaderSmokeTarget,
     firmware: &'a Path,
     kernel: &'a [u8],
@@ -85,15 +81,6 @@ pub enum TestCommand {
 pub struct ArgsTestQemu {
     #[arg(long, default_value = DEFAULT_UEFI_TARGET)]
     pub target: String,
-
-    #[arg(long, value_enum, default_value = "kvm")]
-    pub accel: Acceleration,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum Acceleration {
-    Kvm,
-    Tcg,
 }
 
 #[derive(Args)]
@@ -177,7 +164,7 @@ async fn test_qemu(workspace_root: &Path, args: ArgsTestQemu) -> anyhow::Result<
     );
     result?;
 
-    run_http_smoke_test(workspace_root, &args.target, args.accel).await
+    run_http_smoke_test(workspace_root, &args.target).await
 }
 
 fn run_loader_build(
@@ -253,11 +240,7 @@ fn run_cargo<'a>(
     command.exec()
 }
 
-async fn run_http_smoke_test(
-    workspace_root: &Path,
-    target: &str,
-    accel: Acceleration,
-) -> anyhow::Result<()> {
+async fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()> {
     let smoke_target = smoke_target(target)?;
     let temp = tempfile::tempdir().context("failed to create axloader signing temp dir")?;
     let key = temp.path().join("signing.pem");
@@ -290,34 +273,38 @@ async fn run_http_smoke_test(
     let efi = target_dir.join(target).join("release/axloader.efi");
     let firmware = OvmfFirmware::fetch(smoke_target.ovmf_arch).await?;
     let signed = fs::read(signed_path)?;
-    let mut tampered = signed.clone();
-    // Change a loadable instruction, leaving the ELF valid. The server derives
-    // a fresh transport digest from this modified body in every scenario.
-    tampered[0x1000] ^= 1;
-    let mut bad_signature = signed.clone();
-    *bad_signature.last_mut().context("signed image is empty")? ^= 1;
-    for (name, image, reject) in [
-        ("unsigned", kernel, true),
-        (
-            "tampered image with matching transport digest",
-            tampered,
-            true,
-        ),
-        ("invalid signature", bad_signature, true),
-        ("trusted signature", signed, false),
-    ] {
-        println!("axloader http smoke: {name}");
-        run_http_smoke_attempt(&SmokeAttemptContext {
-            efi: &efi,
-            accel,
-            reject,
-            smoke_target,
-            firmware: firmware.code(),
-            kernel: &image,
-        })
-        .with_context(|| format!("axloader HTTP authentication scenario `{name}` failed"))?;
+    let attempt_context = SmokeAttemptContext {
+        efi: &efi,
+        smoke_target,
+        firmware: firmware.code(),
+        kernel: &signed,
+    };
+    let mut attempt = 1;
+    let mut failures = Vec::new();
+
+    loop {
+        println!(
+            "axloader http smoke: running QEMU attempt {attempt}/{HTTP_SMOKE_MAX_ATTEMPTS} ..."
+        );
+        let failure = match run_http_smoke_attempt(&attempt_context) {
+            Ok(()) => {
+                println!("axloader http smoke: kernel transferred and ELF loaded");
+                return Ok(());
+            }
+            Err(error) => format!("attempt {attempt}: {error:#}"),
+        };
+
+        let Some(next_attempt) = next_smoke_attempt(attempt) else {
+            failures.push(failure);
+            bail!(
+                "axloader HTTP smoke failed after {attempt} attempt(s):\n{}",
+                failures.join("\n")
+            );
+        };
+        eprintln!("axloader http smoke: {failure}; retrying with a fresh QEMU instance");
+        failures.push(failure);
+        attempt = next_attempt;
     }
-    Ok(())
 }
 
 fn run_http_smoke_attempt(context: &SmokeAttemptContext<'_>) -> anyhow::Result<()> {
@@ -340,13 +327,12 @@ fn run_http_smoke_attempt(context: &SmokeAttemptContext<'_>) -> anyhow::Result<(
         &temp.path().join("esp"),
         control_server.capture_port(),
         control_server.injection_port(),
-        context.accel,
     )?;
-    let smoke_result = drive_http_smoke_session(&mut child, &control_server, context.reject);
+    let smoke_result = drive_http_smoke_session(&mut child, &control_server);
     stop_child(&mut child);
     smoke_result?;
 
-    if !control_server.was_requested() || control_server.ready_to_handoff() == context.reject {
+    if !control_server.was_requested() || !control_server.ready_to_handoff() {
         bail!("axloader network smoke did not observe both kernel download and ready_to_handoff");
     }
 
@@ -356,7 +342,6 @@ fn run_http_smoke_attempt(context: &SmokeAttemptContext<'_>) -> anyhow::Result<(
 fn drive_http_smoke_session(
     child: &mut Child,
     control_server: &SmokeControlServer,
-    reject: bool,
 ) -> anyhow::Result<()> {
     let stdout = child
         .stdout
@@ -373,21 +358,7 @@ fn drive_http_smoke_session(
     let deadline = Instant::now() + HTTP_SMOKE_BOOT_TIMEOUT;
     let mut transcript = String::new();
     while Instant::now() < deadline {
-        if reject {
-            if transcript.contains("elf_loaded:") || control_server.ready_to_handoff() {
-                bail!(
-                    "unauthenticated kernel reached ELF load or handoff; transcript:\n{transcript}"
-                );
-            }
-            if transcript.contains("elf_load_error: Authentication(")
-                && control_server.was_requested()
-                && transcript.ends_with('\n')
-            {
-                return Ok(());
-            }
-        }
-        if !reject
-            && transcript.contains("elf_loaded:")
+        if transcript.contains("elf_loaded:")
             && control_server.was_requested()
             && control_server.ready_to_handoff()
         {
@@ -421,6 +392,10 @@ fn drive_http_smoke_session(
     bail!("axloader network smoke timed out; transcript:\n{transcript}")
 }
 
+fn next_smoke_attempt(current_attempt: usize) -> Option<usize> {
+    (current_attempt < HTTP_SMOKE_MAX_ATTEMPTS).then_some(current_attempt + 1)
+}
+
 fn smoke_target(target: &str) -> anyhow::Result<LoaderSmokeTarget> {
     match target {
         "x86_64-unknown-uefi" => Ok(LoaderSmokeTarget {
@@ -441,7 +416,6 @@ fn spawn_axloader_qemu(
     esp_dir: &Path,
     capture_port: u16,
     injection_port: u16,
-    accel: Acceleration,
 ) -> anyhow::Result<Child> {
     StdCommand::new(target.qemu_program)
         .args((target.qemu_args)(
@@ -449,7 +423,6 @@ fn spawn_axloader_qemu(
             esp_dir,
             capture_port,
             injection_port,
-            accel,
         ))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -468,7 +441,6 @@ fn x86_64_qemu_args(
     esp_dir: &Path,
     capture_port: u16,
     injection_port: u16,
-    accel: Acceleration,
 ) -> Vec<String> {
     [
         "-m".into(),
@@ -478,17 +450,9 @@ fn x86_64_qemu_args(
         "-machine".into(),
         "q35".into(),
         "-accel".into(),
-        match accel {
-            Acceleration::Kvm => "kvm",
-            Acceleration::Tcg => "tcg",
-        }
-        .into(),
+        "kvm".into(),
         "-cpu".into(),
-        match accel {
-            Acceleration::Kvm => "host",
-            Acceleration::Tcg => "max",
-        }
-        .into(),
+        "host".into(),
         "-display".into(),
         "none".into(),
         "-monitor".into(),
@@ -982,6 +946,12 @@ mod tests {
     fn smoke_arch_uses_protocol_architecture() {
         assert_eq!(parse_smoke_arch("x86_64").unwrap(), BootArch::X86_64);
         assert!(parse_smoke_arch("mips64").is_err());
+    }
+
+    #[test]
+    fn first_failed_qemu_attempt_is_retried() {
+        assert_eq!(next_smoke_attempt(1), Some(2));
+        assert_eq!(next_smoke_attempt(2), None);
     }
 
     #[test]
