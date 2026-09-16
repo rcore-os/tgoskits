@@ -122,7 +122,8 @@ never used to inject a command. Success requires all of the following:
 The helper builds the loader, mounts an EFI partition, installs the removable
 media filename, verifies the copy, syncs, and unmounts:
 
-安装前必须设置 `AXLOADER_TRUSTED_PUBLIC_KEY`，否则生成的 EFI 会拒绝启动。
+安装前必须设置 `AXLOADER_TRUSTED_PUBLIC_KEY`。脚本在设备选择、构建和挂载之前
+检查其是否为 64 位十六进制值；公钥的密码学有效性仍由装载器检查。
 
 ```bash
 ./bootloader/axloader/scripts/build-install-efi.sh
