@@ -18,6 +18,8 @@ args = [
 ]
 fail_regex = [
     "(?m)^VIRTIO_BLK_MOUNT_FAIL:",
+    "(?i)I/O error",
+    "(?i)filesystem resource is busy",
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)login incorrect",
     "(?i)permission denied",
@@ -64,8 +66,8 @@ shell_prefix = "~ #"
 shell_cmd = "mkdir -p /mnt/v"
 
 [[shell_check_steps]]
-shell_cmd = "mount -t ext4 -o ro /dev/vda /mnt/v"
-success_regex = ['EXT4-fs \(vda\): mounted filesystem .* ro ']
+shell_cmd = "mount -t ext4 -o rw /dev/vda /mnt/v"
+success_regex = ['EXT4-fs \(vda\): mounted filesystem .* r/w ']
 fail_regex = ['mount:']
 timeout = 60
 
@@ -74,3 +76,23 @@ shell_cmd = "cat /mnt/v/etc/alpine-release"
 success_regex = ['(?m)^3\.23\.5\s*$']
 fail_regex = ['cat:']
 timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "dd if=/dev/zero of=/mnt/v/tmp/axvisor-virtio-blk-rw bs=4096 count=1024 conv=fsync"
+success_regex = ['(?m)^1024\+0 records out$']
+fail_regex = ['(?i)I/O error', '(?m)^dd:']
+timeout = 120
+
+[[shell_check_steps]]
+shell_cmd = "wc -c /mnt/v/tmp/axvisor-virtio-blk-rw"
+success_regex = ['(?m)^4194304 /mnt/v/tmp/axvisor-virtio-blk-rw$']
+fail_regex = ['wc:']
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "rm -f /mnt/v/tmp/axvisor-virtio-blk-rw"
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "echo AXVISOR_VIRTIO_BLK_RW_PASSED"
+success_regex = ['(?m)^AXVISOR_VIRTIO_BLK_RW_PASSED\s*$']

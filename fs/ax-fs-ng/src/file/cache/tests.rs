@@ -4,7 +4,11 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::Duration,
 };
+#[cfg(feature = "vfs")]
+use std::sync::Barrier;
 use std::sync::Mutex as StdMutex;
+#[cfg(all(feature = "ext4", feature = "vfs"))]
+use std::sync::mpsc;
 
 use axfs_ng_vfs::{
     DeviceId, DirEntry, FileNodeOps, FileRangeOperation, Filesystem, FilesystemOps, Metadata,
@@ -52,6 +56,8 @@ struct CacheTestFilesystem {
 
 static CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem { name: "cache-test" };
 static TMPFS_CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem { name: "tmpfs" };
+#[cfg(all(feature = "ext4", feature = "vfs"))]
+static EXT4_CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem { name: "ext4" };
 
 impl FilesystemOps for CacheTestFilesystem {
     fn name(&self) -> &str {
@@ -78,9 +84,14 @@ struct CacheTestFileState {
     write_lengths: Vec<usize>,
 }
 
+#[cfg(feature = "vfs")]
+type WriteObserver = Arc<dyn Fn(bool) + Send + Sync>;
+
 struct CacheTestFile {
     state: StdMutex<CacheTestFileState>,
     read_observer: StdMutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(feature = "vfs")]
+    write_observer: StdMutex<Option<WriteObserver>>,
     fail_next_set_len: AtomicBool,
     fail_next_write: AtomicBool,
     fail_next_range_operation: AtomicBool,
@@ -101,6 +112,8 @@ impl CacheTestFile {
                 write_lengths: Vec::new(),
             }),
             read_observer: StdMutex::new(None),
+            #[cfg(feature = "vfs")]
+            write_observer: StdMutex::new(None),
             fail_next_set_len: AtomicBool::new(false),
             fail_next_write: AtomicBool::new(false),
             fail_next_range_operation: AtomicBool::new(false),
@@ -123,6 +136,11 @@ impl CacheTestFile {
 
     fn set_read_observer(&self, observer: Option<Arc<dyn Fn() + Send + Sync>>) {
         *self.read_observer.lock().unwrap() = observer;
+    }
+
+    #[cfg(feature = "vfs")]
+    fn set_write_observer(&self, observer: Option<WriteObserver>) {
+        *self.write_observer.lock().unwrap() = observer;
     }
 
     fn write_lengths(&self) -> Vec<usize> {
@@ -211,6 +229,12 @@ impl FileNodeOps for CacheTestFile {
         if self.fail_next_write.swap(false, Ordering::AcqRel) {
             return Err(VfsError::Io);
         }
+        #[cfg(feature = "vfs")]
+        let observer = self.write_observer.lock().unwrap().clone();
+        #[cfg(feature = "vfs")]
+        if let Some(observer) = observer.as_ref() {
+            observer(false);
+        }
         let offset = usize::try_from(offset).map_err(|_| VfsError::InvalidInput)?;
         let end = offset
             .checked_add(buf.len())
@@ -222,6 +246,13 @@ impl FileNodeOps for CacheTestFile {
         state.physical_data[offset..end].copy_from_slice(buf);
         state.logical_len = state.logical_len.max(end);
         state.write_lengths.push(buf.len());
+        #[cfg(feature = "vfs")]
+        {
+            drop(state);
+            if let Some(observer) = observer {
+                observer(true);
+            }
+        }
         Ok(buf.len())
     }
 
@@ -592,6 +623,544 @@ fn writeback_does_not_materialize_an_unbounded_contiguous_run() {
         let write_lengths = backing.write_lengths();
         assert_eq!(write_lengths.len(), PAGE_COUNT);
         assert!(write_lengths.iter().all(|len| *len <= PAGE_SIZE));
+    });
+}
+
+#[cfg(feature = "vfs")]
+#[test]
+fn background_watermark_defers_writeback_to_the_worker() {
+    const BACKGROUND: usize = DIRTY_PAGE_BACKGROUND_WATERMARK;
+
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+        let data = vec![0x4d; BACKGROUND * PAGE_SIZE];
+
+        super::writeback_worker::tests::with_forced_worker_result(true, || {
+            assert_eq!(cached.write_at(data.as_slice(), 0).unwrap(), data.len());
+        });
+
+        let dirty = cached
+            .shared
+            .page_cache
+            .lock()
+            .iter()
+            .filter(|(_, page)| page.dirty)
+            .count();
+        assert_eq!(dirty, BACKGROUND);
+        assert!(backing.write_lengths().is_empty());
+
+        cached.sync(false).unwrap();
+        assert_eq!(backing.state.lock().unwrap().physical_data, data);
+    });
+}
+
+#[cfg(feature = "vfs")]
+#[test]
+fn real_worker_scans_registry_and_writes_to_low_watermark() {
+    const BACKGROUND: usize = DIRTY_PAGE_BACKGROUND_WATERMARK;
+    const WRITEBACK_PAGES: usize = BACKGROUND - DIRTY_PAGE_LOW_WATERMARK;
+
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+        let endpoint =
+            install_shared_test_endpoint(&cached.shared, |_| CacheMappingResult::Protected);
+        let data = vec![0x5c; BACKGROUND * PAGE_SIZE];
+        super::writeback_worker::tests::with_forced_worker_result(true, || {
+            assert_eq!(cached.write_at(data.as_slice(), 0).unwrap(), data.len());
+        });
+        drop(endpoint);
+
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let completed = Arc::new(Barrier::new(2));
+        let completions = Arc::new(AtomicUsize::new(0));
+        let observed_entered = Arc::clone(&entered);
+        let observed_release = Arc::clone(&release);
+        let observed_completed = Arc::clone(&completed);
+        let observed_completions = Arc::clone(&completions);
+        let first_write = Arc::new(AtomicBool::new(true));
+        let observed_first = Arc::clone(&first_write);
+        backing.set_write_observer(Some(Arc::new(move |finished| {
+            if !finished && observed_first.swap(false, Ordering::AcqRel) {
+                observed_entered.wait();
+                observed_release.wait();
+            }
+            if finished
+                && observed_completions.fetch_add(1, Ordering::AcqRel) + 1 == WRITEBACK_PAGES
+            {
+                observed_completed.wait();
+            }
+        })));
+
+        assert!(
+            super::writeback_worker::request_background_writeback_with_runtime(
+                super::writeback_worker::tests::thread_runtime(),
+            )
+        );
+        entered.wait();
+        assert!(backing.write_lengths().is_empty());
+        assert_eq!(cached.shared.dirty_page_count(), BACKGROUND);
+
+        release.wait();
+        completed.wait();
+        {
+            let _io = cached.shared.io_lock.lock();
+            assert_eq!(cached.shared.dirty_page_count(), DIRTY_PAGE_LOW_WATERMARK);
+            assert_eq!(backing.write_lengths().len(), WRITEBACK_PAGES);
+        }
+        backing.set_write_observer(None);
+        cached.sync(false).unwrap();
+    });
+}
+
+#[cfg(not(feature = "vfs"))]
+#[test]
+fn non_vfs_background_watermark_stays_synchronous() {
+    const BACKGROUND: usize = DIRTY_PAGE_BACKGROUND_WATERMARK;
+    const LOW: usize = DIRTY_PAGE_LOW_WATERMARK;
+
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+        let data = vec![0x4d; BACKGROUND * PAGE_SIZE];
+
+        assert_eq!(cached.write_at(data.as_slice(), 0).unwrap(), data.len());
+
+        assert_eq!(cached.shared.dirty_page_count(), LOW);
+        assert_eq!(backing.write_lengths().len(), BACKGROUND - LOW);
+    });
+}
+
+#[cfg(not(feature = "vfs"))]
+#[test]
+fn failed_dirty_watermark_writeback_keeps_pages_dirty() {
+    const BACKGROUND: usize = DIRTY_PAGE_BACKGROUND_WATERMARK;
+
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+        let data = vec![0x7a; BACKGROUND * PAGE_SIZE];
+        backing.fail_next_write();
+
+        let result = cached.write_at(data.as_slice(), 0);
+        let write_lengths = backing.write_lengths();
+        let dirty = cached
+            .shared
+            .page_cache
+            .lock()
+            .iter()
+            .filter(|(_, page)| page.dirty)
+            .count();
+
+        backing.fail_next_write.store(false, Ordering::Release);
+        cached.sync(false).unwrap();
+
+        assert_eq!(result, Err(VfsError::Io));
+        assert!(write_lengths.is_empty());
+        assert_eq!(dirty, BACKGROUND);
+    });
+}
+
+#[cfg(feature = "vfs")]
+#[test]
+fn hard_watermark_makes_the_unmapped_writer_assist_to_low_watermark() {
+    const HARD: usize = DIRTY_PAGE_HARD_WATERMARK;
+
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+        let data = vec![0x71; HARD * PAGE_SIZE];
+
+        super::writeback_worker::tests::with_forced_worker_result(true, || {
+            assert_eq!(cached.write_at(data.as_slice(), 0).unwrap(), data.len());
+        });
+
+        assert_eq!(cached.shared.dirty_page_count(), DIRTY_PAGE_LOW_WATERMARK);
+        assert_eq!(
+            backing.write_lengths().len(),
+            HARD - DIRTY_PAGE_LOW_WATERMARK
+        );
+    });
+}
+
+#[cfg(feature = "vfs")]
+#[test]
+fn failed_background_writeback_waits_for_a_new_request() {
+    const HIGH: usize = DISK_PAGE_CACHE_CAP * 3 / 4;
+
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+        let endpoint =
+            install_shared_test_endpoint(&cached.shared, |_| CacheMappingResult::Protected);
+        let data = vec![0x3c; HIGH * PAGE_SIZE];
+        super::writeback_worker::tests::with_forced_worker_result(true, || {
+            assert_eq!(cached.write_at(data.as_slice(), 0).unwrap(), data.len());
+        });
+        drop(endpoint);
+        assert!(cached.shared.take_background_writeback_request());
+        backing.fail_next_write();
+
+        assert_eq!(
+            cached.shared.writeback_dirty_for_background(),
+            Err(VfsError::Io)
+        );
+
+        assert!(!cached.shared.take_background_writeback_request());
+        assert_eq!(
+            cached
+                .shared
+                .page_cache
+                .lock()
+                .iter()
+                .filter(|(_, page)| page.dirty)
+                .count(),
+            HIGH
+        );
+    });
+}
+
+#[cfg(feature = "vfs")]
+#[test]
+fn background_writeback_skips_a_retired_registry_snapshot() {
+    const HIGH: usize = DISK_PAGE_CACHE_CAP * 3 / 4;
+
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+        let endpoint =
+            install_shared_test_endpoint(&cached.shared, |_| CacheMappingResult::Protected);
+        let data = vec![0x6e; HIGH * PAGE_SIZE];
+        super::writeback_worker::tests::with_forced_worker_result(true, || {
+            assert_eq!(cached.write_at(data.as_slice(), 0).unwrap(), data.len());
+        });
+        drop(endpoint);
+        cached.shared.retired.store(true, Ordering::Release);
+
+        assert_eq!(cached.shared.writeback_dirty_for_background(), Ok(()));
+
+        assert!(backing.write_lengths().is_empty());
+    });
+}
+
+#[cfg(feature = "vfs")]
+#[test]
+fn periodic_writeback_flushes_dirty_pages_below_the_background_watermark() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+
+        let data: &[u8] = &[0x51; 64];
+        assert_eq!(cached.write_at(data, 0), Ok(64));
+        assert!(backing.write_lengths().is_empty());
+        assert_eq!(cached.shared.dirty_page_count(), 1);
+
+        super::writeback_worker::scan_all_registered_files();
+
+        assert_eq!(backing.write_lengths(), vec![64]);
+        assert_eq!(cached.shared.dirty_page_count(), 0);
+    });
+}
+
+#[cfg(feature = "vfs")]
+#[test]
+fn periodic_writeback_skips_a_retired_registry_snapshot() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+
+        let data: &[u8] = &[0x62; 64];
+        assert_eq!(cached.write_at(data, 0), Ok(64));
+        cached.shared.retired.store(true, Ordering::Release);
+
+        assert_eq!(cached.shared.writeback_dirty_for_periodic(), Ok(()));
+        assert!(backing.write_lengths().is_empty());
+        assert_eq!(cached.shared.dirty_page_count(), 1);
+    });
+}
+
+#[cfg(all(feature = "ext4", feature = "vfs"))]
+#[test]
+fn unlink_wins_before_periodic_writeback_rechecks_the_registry_snapshot() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+        let entered = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let callback_entered = entered.clone();
+        let callback_resume = resume.clone();
+        let endpoint = install_shared_test_endpoint(&cached.shared, move |event| match event {
+            CacheMappingEvent::WritebackProtect(_) => {
+                callback_entered.wait();
+                callback_resume.wait();
+                CacheMappingResult::Protected
+            }
+            CacheMappingEvent::Evict(_) => CacheMappingResult::Retired,
+        });
+        let data: &[u8] = &[0x73; 64];
+        assert_eq!(cached.write_at(data, 0), Ok(64));
+
+        let shared = cached.shared.clone();
+        let worker = std::thread::spawn(move || shared.writeback_dirty_for_periodic());
+        entered.wait();
+        cached.shared.mark_unlinked();
+        resume.wait();
+
+        assert_eq!(worker.join().unwrap(), Ok(()));
+        assert!(backing.write_lengths().is_empty());
+        assert_eq!(cached.shared.dirty_page_count(), 1);
+        drop(endpoint);
+    });
+}
+
+#[cfg(all(feature = "ext4", feature = "vfs"))]
+#[test]
+fn retirement_waits_for_periodic_writeback_before_registry_removal() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new_on(
+            Vec::new(),
+            &EXT4_CACHE_TEST_FILESYSTEM,
+        ));
+        let entry = DirEntry::new_file(
+            FileNode::new(backing.clone()),
+            NodeType::RegularFile,
+            Reference::root(),
+        );
+        let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem { name: "ext4" }));
+        let mountpoint = Mountpoint::new_root(&filesystem);
+        let cached = CachedFile::get_or_create(Location::new(mountpoint, entry)).unwrap();
+        let initial_data: &[u8] = &[0x81; 64];
+        assert_eq!(cached.write_at(initial_data, 0), Ok(64));
+
+        let write_entered = Arc::new(Barrier::new(2));
+        let resume_write = Arc::new(Barrier::new(2));
+        let entered = write_entered.clone();
+        let resume = resume_write.clone();
+        backing.set_write_observer(Some(Arc::new(move |completed| {
+            if !completed {
+                entered.wait();
+                resume.wait();
+            }
+        })));
+
+        let shared = cached.shared.clone();
+        let worker = std::thread::spawn(move || shared.writeback_dirty_for_periodic());
+        write_entered.wait();
+
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        cached
+            .shared
+            .set_retirement_observer(Some(Arc::new(move || attempt_tx.send(()).unwrap())));
+        let retiring = cached.clone();
+        let retirement =
+            std::thread::spawn(move || retire_filesystem_cache(retiring.inner.filesystem()));
+
+        let lock_attempt = attempt_rx.recv_timeout(Duration::from_secs(1));
+        assert!(!cached.shared.retired.load(Ordering::Acquire));
+        resume_write.wait();
+        let worker_result = worker.join().unwrap();
+        let retirement_result = retirement.join().unwrap();
+
+        assert!(
+            lock_attempt.is_ok(),
+            "retirement did not join the page-cache I/O lifecycle protocol"
+        );
+        assert_eq!(worker_result, Ok(()));
+        assert_eq!(retirement_result, Ok(()));
+        assert!(cached.shared.retired.load(Ordering::Acquire));
+        assert_eq!(cached.shared.dirty_page_count(), 0);
+        assert_eq!(
+            &backing.state.lock().unwrap().physical_data[..initial_data.len()],
+            initial_data
+        );
+        assert!(
+            !reclaim::snapshot_cached_files()
+                .iter()
+                .any(|registered| Arc::ptr_eq(registered, &cached.shared))
+        );
+    });
+}
+
+#[cfg(all(feature = "ext4", feature = "vfs"))]
+#[test]
+fn failed_retirement_keeps_dirty_file_registered_for_retry() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new_on(
+            Vec::new(),
+            &EXT4_CACHE_TEST_FILESYSTEM,
+        ));
+        let entry = DirEntry::new_file(
+            FileNode::new(backing.clone()),
+            NodeType::RegularFile,
+            Reference::root(),
+        );
+        let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem { name: "ext4" }));
+        let mountpoint = Mountpoint::new_root(&filesystem);
+        let cached = CachedFile::get_or_create(Location::new(mountpoint, entry)).unwrap();
+        let data: &[u8] = &[0x91; 64];
+        assert_eq!(cached.write_at(data, 0), Ok(data.len()));
+        backing.fail_next_write();
+
+        assert_eq!(
+            retire_filesystem_cache(cached.inner.filesystem()),
+            Err(VfsError::Io)
+        );
+        assert!(!cached.shared.retired.load(Ordering::Acquire));
+        assert_eq!(cached.shared.dirty_page_count(), 1);
+        assert!(
+            reclaim::snapshot_cached_files()
+                .iter()
+                .any(|registered| Arc::ptr_eq(registered, &cached.shared))
+        );
+
+        assert_eq!(retire_filesystem_cache(cached.inner.filesystem()), Ok(()));
+        assert!(cached.shared.retired.load(Ordering::Acquire));
+        assert_eq!(cached.shared.dirty_page_count(), 0);
+    });
+}
+
+#[cfg(feature = "vfs")]
+#[test]
+fn dirty_watermark_writeback_skips_files_with_mapping_endpoint() {
+    const HARD: usize = DIRTY_PAGE_HARD_WATERMARK;
+
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+        let protections = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&protections);
+        let endpoint = install_shared_test_endpoint(&cached.shared, move |event| match event {
+            CacheMappingEvent::WritebackProtect(_) => {
+                observed.fetch_add(1, Ordering::Relaxed);
+                CacheMappingResult::Protected
+            }
+            CacheMappingEvent::Evict(_) => CacheMappingResult::Retired,
+        });
+        let data = vec![0x2e; HARD * PAGE_SIZE];
+
+        super::writeback_worker::tests::with_forced_worker_result(true, || {
+            assert_eq!(cached.write_at(data.as_slice(), 0).unwrap(), data.len());
+        });
+
+        assert!(backing.write_lengths().is_empty());
+        assert_eq!(cached.shared.dirty_page_count(), HARD);
+        assert!(cached.shared.take_background_writeback_request());
+        cached.shared.writeback_dirty_for_background().unwrap();
+
+        drop(endpoint);
+        cached.sync(false).unwrap();
+
+        assert_eq!(
+            protections.load(Ordering::Relaxed),
+            HARD - DIRTY_PAGE_LOW_WATERMARK
+        );
+        assert_eq!(cached.shared.dirty_page_count(), 0);
+    });
+}
+
+#[cfg(feature = "vfs")]
+#[test]
+fn mapped_file_with_unavailable_worker_reaches_capacity_without_unsafe_writeback() {
+    const PAGE_COUNT: usize = DISK_PAGE_CACHE_CAP + 1;
+
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+        let endpoint =
+            install_shared_test_endpoint(&cached.shared, |_| CacheMappingResult::Protected);
+        let data = vec![0x4a; PAGE_COUNT * PAGE_SIZE];
+
+        let result = super::writeback_worker::tests::with_forced_worker_result(false, || {
+            cached.write_at(data.as_slice(), 0)
+        });
+
+        assert_eq!(result, Err(VfsError::ResourceBusy));
+        assert!(backing.write_lengths().is_empty());
+        assert_eq!(cached.shared.dirty_page_count(), DISK_PAGE_CACHE_CAP);
+        drop(endpoint);
+        cached.sync(false).unwrap();
+    });
+}
+
+#[test]
+fn writer_owned_capacity_writeback_clears_page_redirtied_during_tracked_writeback() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+        let data = vec![0x51; PAGE_SIZE];
+        assert_eq!(cached.write_at(data.as_slice(), 0).unwrap(), data.len());
+
+        let page_number = {
+            let mut cache = cached.shared.page_cache.lock();
+            let page_number = *cache.peek_lru().unwrap().0;
+            let page = cache.peek_mut(&page_number).unwrap();
+            page.writeback_protecting = true;
+            page.dirty_during_writeback = true;
+            page_number
+        };
+        {
+            let _io = cached.shared.io_lock.lock();
+            cached.shared.writeback_lru_for_capacity_locked().unwrap();
+        }
+        let dirty = cached
+            .shared
+            .page_cache
+            .lock()
+            .peek(&page_number)
+            .unwrap()
+            .dirty;
+
+        {
+            let mut cache = cached.shared.page_cache.lock();
+            let page = cache.peek_mut(&page_number).unwrap();
+            page.writeback_protecting = false;
+            page.dirty_during_writeback = false;
+        }
+        cached.sync(false).unwrap();
+
+        assert!(!dirty);
+        assert_eq!(backing.state.lock().unwrap().physical_data, data);
+    });
+}
+
+#[cfg(feature = "vfs")]
+#[test]
+fn buffered_write_reclaims_dirty_lru_page_when_cache_is_full() {
+    const INITIAL_PAGE_COUNT: usize = DISK_PAGE_CACHE_CAP;
+    const PAGE_COUNT: usize = INITIAL_PAGE_COUNT + 1;
+
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+        let endpoint =
+            install_shared_test_endpoint(&cached.shared, |_| CacheMappingResult::Protected);
+        let data = vec![0x6d; PAGE_COUNT * PAGE_SIZE];
+
+        super::writeback_worker::tests::with_forced_worker_result(true, || {
+            assert_eq!(
+                cached
+                    .write_at(&data[..INITIAL_PAGE_COUNT * PAGE_SIZE], 0)
+                    .unwrap(),
+                INITIAL_PAGE_COUNT * PAGE_SIZE
+            );
+        });
+        assert!(cached.shared.page_cache.lock().peek_lru().unwrap().1.dirty);
+        drop(endpoint);
+
+        assert_eq!(
+            cached
+                .write_at(
+                    &data[INITIAL_PAGE_COUNT * PAGE_SIZE..],
+                    (INITIAL_PAGE_COUNT * PAGE_SIZE) as u64,
+                )
+                .unwrap(),
+            PAGE_SIZE
+        );
+        cached.writeback().unwrap();
+
+        assert_eq!(backing.state.lock().unwrap().physical_data, data);
     });
 }
 

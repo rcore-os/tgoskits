@@ -41,4 +41,6 @@ pub fn install(
     if let Some(entropy_provider) = entropy_provider {
         entropy::set_entropy_provider(entropy_provider);
     }
+    #[cfg(feature = "vfs")]
+    crate::file::start_background_writeback(runtime_ops);
 }

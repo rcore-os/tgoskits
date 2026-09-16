@@ -140,6 +140,15 @@ const AX_FS_NG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
         expected_tests: &["block::cache::registry::tests::reclaim_capability_does_not_defer_last_endpoint_drop"],
     },
     PackageFeatureProfile {
+        name: "host-test-non-vfs-writeback-discovery",
+        no_default_features: false,
+        features: &["host-test"],
+        name_filter: Some("non_vfs_background_watermark_stays_synchronous"),
+        expected_tests: &[
+            "file::cache::tests::non_vfs_background_watermark_stays_synchronous",
+        ],
+    },
+    PackageFeatureProfile {
         name: "host-test-resource-rollback-discovery",
         no_default_features: false,
         features: &["host-test"],

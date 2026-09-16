@@ -1,8 +1,15 @@
+#[cfg(all(feature = "ext4", feature = "vfs"))]
+use alloc::sync::Arc;
 use alloc::{boxed::Box, vec::Vec};
 
 use axfs_ng_vfs::{VfsError, VfsResult};
 
-use super::{CacheMappingEvent, CacheMappingResult, CachedFileShared, PAGE_SIZE};
+#[cfg(feature = "vfs")]
+use super::DIRTY_PAGE_HARD_WATERMARK;
+use super::{
+    CacheMappingEvent, CacheMappingResult, CachedFileShared, DIRTY_PAGE_BACKGROUND_WATERMARK,
+    DIRTY_PAGE_LOW_WATERMARK, PAGE_SIZE,
+};
 
 /// Upper bound for one detached writeback snapshot batch.
 ///
@@ -20,13 +27,163 @@ struct DirtyPageSnapshot {
     len: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WritebackCompletionMode {
+    /// Preserve a page redirtied while an explicit writeback was protecting
+    /// mappings without holding `io_lock`.
+    Tracked,
+    /// The buffered writer owns `io_lock`, so a matching snapshot is the
+    /// newest page generation even if another writeback round tracks it.
+    WriterOwned,
+}
+
 impl CachedFileShared {
+    pub(super) fn balance_dirty_pages_locked(&self) -> VfsResult<()> {
+        let dirty_count = self.dirty_page_count();
+        if dirty_count < DIRTY_PAGE_BACKGROUND_WATERMARK {
+            return Ok(());
+        }
+
+        #[cfg(feature = "vfs")]
+        {
+            self.request_background_writeback();
+            let worker_running = super::writeback_worker::request_background_writeback();
+            let mapped = self.has_mapping_endpoint();
+            if !worker_running {
+                self.take_background_writeback_request();
+                if mapped {
+                    return Ok(());
+                }
+            } else if dirty_count < DIRTY_PAGE_HARD_WATERMARK || mapped {
+                return Ok(());
+            }
+        }
+
+        self.writeback_dirty_to_low_watermark_locked()
+    }
+
+    pub(super) fn dirty_page_count(&self) -> usize {
+        self.page_cache
+            .lock()
+            .iter()
+            .filter(|(_, page)| page.dirty)
+            .count()
+    }
+
+    #[cfg(feature = "vfs")]
+    pub(super) fn writeback_dirty_for_background(&self) -> VfsResult<()> {
+        let dirty_keys = self.begin_writeback_to_low_watermark()?;
+        if dirty_keys.is_empty() {
+            return Ok(());
+        }
+        self.protect_dirty_pages_before_writeback(&dirty_keys)
+            .inspect_err(|_| self.cancel_writeback_tracking(&dirty_keys))?;
+        let _io = self.io_lock.lock();
+        if self.retired.load(core::sync::atomic::Ordering::Acquire)
+            || self.unlinked.load(core::sync::atomic::Ordering::Acquire)
+        {
+            self.finish_writeback_tracking(&dirty_keys);
+            return Ok(());
+        }
+        let result =
+            self.writeback_page_runs(self.len(), &dirty_keys, WritebackCompletionMode::Tracked);
+        self.finish_writeback_tracking(&dirty_keys);
+        result
+    }
+
+    #[cfg(feature = "vfs")]
+    pub(super) fn writeback_dirty_for_periodic(&self) -> VfsResult<()> {
+        let dirty_keys = self.begin_writeback_all_dirty()?;
+        if dirty_keys.is_empty() {
+            return Ok(());
+        }
+        self.protect_dirty_pages_before_writeback(&dirty_keys)
+            .inspect_err(|_| self.cancel_writeback_tracking(&dirty_keys))?;
+        let _io = self.io_lock.lock();
+        if self.retired.load(core::sync::atomic::Ordering::Acquire)
+            || self.unlinked.load(core::sync::atomic::Ordering::Acquire)
+        {
+            self.finish_writeback_tracking(&dirty_keys);
+            return Ok(());
+        }
+        let result =
+            self.writeback_page_runs(self.len(), &dirty_keys, WritebackCompletionMode::Tracked);
+        self.finish_writeback_tracking(&dirty_keys);
+        result
+    }
+
+    /// Writes older dirty pages down to the low watermark while buffered I/O
+    /// owns `io_lock`. Files with a live mapping endpoint use the existing
+    /// reverse-mapping-aware writeback path instead.
+    pub(super) fn writeback_dirty_to_low_watermark_locked(&self) -> VfsResult<()> {
+        if self.has_mapping_endpoint() {
+            return Ok(());
+        }
+
+        let dirty_count = self.dirty_page_count();
+        if dirty_count < DIRTY_PAGE_BACKGROUND_WATERMARK {
+            return Ok(());
+        }
+
+        let writeback_count = dirty_count - DIRTY_PAGE_LOW_WATERMARK;
+        let mut dirty_keys = Vec::new();
+        dirty_keys
+            .try_reserve_exact(writeback_count)
+            .map_err(|_| VfsError::NoMemory)?;
+        {
+            let cache = self.page_cache.lock();
+            dirty_keys.extend(
+                cache
+                    .iter()
+                    .rev()
+                    .filter_map(|(&pn, page)| page.dirty.then_some(pn))
+                    .take(writeback_count),
+            );
+        }
+        if dirty_keys.len() != writeback_count {
+            return Err(VfsError::BadState);
+        }
+
+        dirty_keys.sort_unstable();
+        self.writeback_page_runs(
+            self.len(),
+            &dirty_keys,
+            WritebackCompletionMode::WriterOwned,
+        )
+    }
+
+    /// Writes the least-recently-used dirty page while buffered I/O owns
+    /// `io_lock`, making room for the next cache insertion.
+    pub(super) fn writeback_lru_for_capacity_locked(&self) -> VfsResult<()> {
+        let page_number = {
+            let cache = self.page_cache.lock();
+            let Some((&page_number, _)) = cache.peek_lru() else {
+                return Err(VfsError::BadState);
+            };
+            let page = cache.peek(&page_number).ok_or(VfsError::BadState)?;
+            if page.pins != 0 {
+                return Err(VfsError::ResourceBusy);
+            }
+            if !page.dirty {
+                return Ok(());
+            }
+            page_number
+        };
+
+        self.writeback_page_runs(
+            self.len(),
+            core::slice::from_ref(&page_number),
+            WritebackCompletionMode::WriterOwned,
+        )
+    }
+
     pub(super) fn writeback(&self) -> VfsResult<Vec<u32>> {
         let dirty_keys = self.begin_writeback_all_dirty()?;
         self.protect_dirty_pages_before_writeback(&dirty_keys)
             .inspect_err(|_| self.cancel_writeback_tracking(&dirty_keys))?;
         let _io = self.io_lock.lock();
-        let result = self.writeback_page_runs(self.len(), &dirty_keys);
+        let result =
+            self.writeback_page_runs(self.len(), &dirty_keys, WritebackCompletionMode::Tracked);
         self.finish_writeback_tracking(&dirty_keys);
         result?;
         self.backing()?.sync(false)?;
@@ -38,7 +195,8 @@ impl CachedFileShared {
         self.protect_dirty_pages_before_writeback(&dirty_keys)
             .inspect_err(|_| self.cancel_writeback_tracking(&dirty_keys))?;
         let _io = self.io_lock.lock();
-        let result = self.writeback_page_runs(self.len(), &dirty_keys);
+        let result =
+            self.writeback_page_runs(self.len(), &dirty_keys, WritebackCompletionMode::Tracked);
         self.finish_writeback_tracking(&dirty_keys);
         result?;
         self.backing()?.sync(false)?;
@@ -50,7 +208,8 @@ impl CachedFileShared {
         self.protect_dirty_pages_before_writeback(&dirty_keys)
             .inspect_err(|_| self.cancel_writeback_tracking(&dirty_keys))?;
         let _io = self.io_lock.lock();
-        let result = self.writeback_page_runs(self.len(), &dirty_keys);
+        let result =
+            self.writeback_page_runs(self.len(), &dirty_keys, WritebackCompletionMode::Tracked);
         self.finish_writeback_tracking(&dirty_keys);
         result?;
         self.backing()?.sync(data_only)?;
@@ -66,9 +225,65 @@ impl CachedFileShared {
         self.protect_dirty_pages_before_writeback(&dirty_keys)
             .inspect_err(|_| self.cancel_writeback_tracking(&dirty_keys))?;
         let _io = self.io_lock.lock();
-        let result = self.writeback_page_runs(self.len(), &dirty_keys);
+        #[cfg(feature = "vfs")]
+        if self.retired.load(core::sync::atomic::Ordering::Acquire)
+            || self.unlinked.load(core::sync::atomic::Ordering::Acquire)
+        {
+            self.finish_writeback_tracking(&dirty_keys);
+            return Ok(());
+        }
+        let result =
+            self.writeback_page_runs(self.len(), &dirty_keys, WritebackCompletionMode::Tracked);
         self.finish_writeback_tracking(&dirty_keys);
         result
+    }
+
+    /// Stops registry writeback, waits for in-flight file I/O, and performs
+    /// the final dirty writeback before dropping registry ownership.
+    #[cfg(all(feature = "ext4", feature = "vfs"))]
+    pub(super) fn retire_from_writeback_registry(self: &Arc<Self>) -> VfsResult<()> {
+        #[cfg(test)]
+        self.notify_retirement_lock_attempt();
+
+        {
+            let _io = self.io_lock.lock();
+            self.retired
+                .store(true, core::sync::atomic::Ordering::Release);
+        }
+
+        let dirty_keys = match self.begin_writeback_all_dirty() {
+            Ok(dirty_keys) => dirty_keys,
+            Err(error) => {
+                self.cancel_retirement();
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.protect_dirty_pages_before_writeback(&dirty_keys) {
+            self.cancel_writeback_tracking(&dirty_keys);
+            self.cancel_retirement();
+            return Err(error);
+        }
+
+        let _io = self.io_lock.lock();
+        let result =
+            self.writeback_page_runs(self.len(), &dirty_keys, WritebackCompletionMode::Tracked);
+        self.finish_writeback_tracking(&dirty_keys);
+
+        if let Err(error) = result {
+            self.retired
+                .store(false, core::sync::atomic::Ordering::Release);
+            return Err(error);
+        }
+
+        super::reclaim::release_cached_file(self);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "ext4", feature = "vfs"))]
+    fn cancel_retirement(&self) {
+        let _io = self.io_lock.lock();
+        self.retired
+            .store(false, core::sync::atomic::Ordering::Release);
     }
 
     #[cfg(feature = "vfs")]
@@ -100,6 +315,46 @@ impl CachedFileShared {
 
     fn begin_writeback_all_dirty(&self) -> VfsResult<Vec<u32>> {
         self.begin_writeback(None)
+    }
+
+    #[cfg(feature = "vfs")]
+    fn begin_writeback_to_low_watermark(&self) -> VfsResult<Vec<u32>> {
+        let _io = self.io_lock.lock();
+        let dirty_count = self.dirty_page_count();
+        if dirty_count < DIRTY_PAGE_BACKGROUND_WATERMARK {
+            return Ok(Vec::new());
+        }
+
+        let writeback_count = dirty_count - DIRTY_PAGE_LOW_WATERMARK;
+        let mut dirty_keys = Vec::new();
+        dirty_keys
+            .try_reserve_exact(writeback_count)
+            .map_err(|_| VfsError::NoMemory)?;
+        {
+            let cache = self.page_cache.lock();
+            dirty_keys.extend(
+                cache
+                    .iter()
+                    .rev()
+                    .filter_map(|(&pn, page)| page.dirty.then_some(pn))
+                    .take(writeback_count),
+            );
+        }
+        if dirty_keys.len() != writeback_count {
+            return Err(VfsError::BadState);
+        }
+        dirty_keys.sort_unstable();
+        let mut cache = self.page_cache.lock();
+        for pn in &dirty_keys {
+            let page = cache.peek_mut(pn).ok_or(VfsError::BadState)?;
+            if !page.dirty {
+                return Err(VfsError::BadState);
+            }
+            page.writeback_protecting = true;
+            page.dirty_during_writeback = false;
+        }
+        drop(cache);
+        Ok(dirty_keys)
     }
 
     fn begin_writeback_pages(&self, pns: &[u32]) -> VfsResult<Vec<u32>> {
@@ -162,15 +417,24 @@ impl CachedFileShared {
 
     // The caller samples EOF only after reacquiring io_lock: mapping
     // protection runs lock-external and may race a committed truncate/write.
-    fn writeback_page_runs(&self, file_len: u64, pns: &[u32]) -> VfsResult<()> {
+    fn writeback_page_runs(
+        &self,
+        file_len: u64,
+        pns: &[u32],
+        completion_mode: WritebackCompletionMode,
+    ) -> VfsResult<()> {
         for batch in pns.chunks(MAX_WRITEBACK_SNAPSHOT_PAGES) {
             let snapshots = self.snapshot_dirty_pages(file_len, batch)?;
-            self.writeback_snapshot_batch(&snapshots)?;
+            self.writeback_snapshot_batch(&snapshots, completion_mode)?;
         }
         Ok(())
     }
 
-    fn writeback_snapshot_batch(&self, snapshots: &[DirtyPageSnapshot]) -> VfsResult<()> {
+    fn writeback_snapshot_batch(
+        &self,
+        snapshots: &[DirtyPageSnapshot],
+        completion_mode: WritebackCompletionMode,
+    ) -> VfsResult<()> {
         let backing = self.backing()?;
         for page in snapshots {
             let offset = page.pn as u64 * PAGE_SIZE as u64;
@@ -187,10 +451,11 @@ impl CachedFileShared {
 
         let mut guard = self.page_cache.lock();
         for page in snapshots {
-            if let Some(current) = guard.get_mut(&page.pn)
+            if let Some(current) = guard.peek_mut(&page.pn)
                 && current.dirty
                 && current.dirty_generation == page.generation
-                && !current.dirty_during_writeback
+                && (completion_mode == WritebackCompletionMode::WriterOwned
+                    || !current.dirty_during_writeback)
             {
                 current.dirty = false;
             }
@@ -218,7 +483,7 @@ impl CachedFileShared {
                 .map_err(|_| VfsError::NoMemory)?;
             let generation = {
                 let mut guard = self.page_cache.lock();
-                let Some(page) = guard.get_mut(pn) else {
+                let Some(page) = guard.peek_mut(pn) else {
                     continue;
                 };
                 if !page.dirty {

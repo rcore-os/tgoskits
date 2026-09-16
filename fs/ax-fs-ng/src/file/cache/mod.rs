@@ -3,7 +3,8 @@ mod readahead;
 mod reclaim;
 mod resize;
 mod writeback;
-
+#[cfg(feature = "vfs")]
+mod writeback_worker;
 use alloc::{
     collections::BTreeMap,
     sync::{Arc, Weak},
@@ -20,6 +21,8 @@ use lru::LruCache;
 use readahead::ReadAheadState;
 #[cfg(feature = "vfs")]
 pub use reclaim::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};
+#[cfg(feature = "vfs")]
+pub(crate) use writeback_worker::start_background_writeback;
 
 use super::page::PageCache;
 use crate::os::{
@@ -28,6 +31,10 @@ use crate::os::{
 };
 
 const DISK_PAGE_CACHE_CAP: usize = 512;
+const DIRTY_PAGE_BACKGROUND_WATERMARK: usize = DISK_PAGE_CACHE_CAP * 3 / 4;
+#[cfg(feature = "vfs")]
+const DIRTY_PAGE_HARD_WATERMARK: usize = DISK_PAGE_CACHE_CAP * 7 / 8;
+const DIRTY_PAGE_LOW_WATERMARK: usize = DISK_PAGE_CACHE_CAP / 2;
 
 type CachedFileKey = (usize, u64);
 type InodeCacheIndex = BTreeMap<CachedFileKey, Weak<CachedFileShared>>;
@@ -265,6 +272,9 @@ struct MappingUpdateGuard<'a> {
     _layout: SleepMutexGuard<'a, ()>,
 }
 
+#[cfg(all(test, feature = "ext4", feature = "vfs"))]
+type RetirementObserver = Arc<dyn Fn() + Send + Sync>;
+
 impl Drop for MappingUpdateGuard<'_> {
     fn drop(&mut self) {
         self.shared
@@ -289,6 +299,10 @@ struct CachedFileShared {
     unlinked: AtomicBool,
     #[cfg(feature = "vfs")]
     retired: AtomicBool,
+    #[cfg(feature = "vfs")]
+    background_writeback_requested: AtomicBool,
+    #[cfg(all(test, feature = "ext4", feature = "vfs"))]
+    retirement_observer: Mutex<Option<RetirementObserver>>,
 }
 
 impl CachedFileShared {
@@ -308,6 +322,10 @@ impl CachedFileShared {
             unlinked: AtomicBool::new(false),
             #[cfg(feature = "vfs")]
             retired: AtomicBool::new(false),
+            #[cfg(feature = "vfs")]
+            background_writeback_requested: AtomicBool::new(false),
+            #[cfg(all(test, feature = "ext4", feature = "vfs"))]
+            retirement_observer: Mutex::new(None),
         }
     }
 
@@ -325,6 +343,10 @@ impl CachedFileShared {
             unlinked: AtomicBool::new(false),
             #[cfg(feature = "vfs")]
             retired: AtomicBool::new(false),
+            #[cfg(feature = "vfs")]
+            background_writeback_requested: AtomicBool::new(false),
+            #[cfg(all(test, feature = "ext4", feature = "vfs"))]
+            retirement_observer: Mutex::new(None),
         }
     }
 
@@ -343,6 +365,14 @@ impl CachedFileShared {
                 Err(observed) => current = observed,
             }
         }
+    }
+
+    fn ensure_writeback_owner_active(&self) -> VfsResult<()> {
+        #[cfg(feature = "vfs")]
+        if self.retired.load(Ordering::Acquire) {
+            return Err(VfsError::BadState);
+        }
+        Ok(())
     }
 
     fn prepare_mapping_epoch(&self) -> VfsResult<u64> {
@@ -388,6 +418,19 @@ impl CachedFileShared {
         self.mapping_endpoint().is_some()
     }
 
+    #[cfg(feature = "vfs")]
+    fn request_background_writeback(&self) -> bool {
+        !self
+            .background_writeback_requested
+            .swap(true, Ordering::AcqRel)
+    }
+
+    #[cfg(feature = "vfs")]
+    fn take_background_writeback_request(&self) -> bool {
+        self.background_writeback_requested
+            .swap(false, Ordering::AcqRel)
+    }
+
     fn publish_mapping_event(&self, event: CacheMappingEvent) -> CacheMappingResult {
         let Some(endpoint) = self.mapping_endpoint() else {
             return event.no_endpoint_result();
@@ -406,6 +449,10 @@ impl CachedFileShared {
 
     #[cfg(all(feature = "ext4", feature = "vfs"))]
     fn mark_unlinked(&self) {
+        // Serialize publication with the worker's final lifecycle check and
+        // backing I/O. Once this returns, no writeback that observed the old
+        // inode registration can still begin or remain in flight.
+        let _io = self.io_lock.lock();
         self.unlinked.store(true, Ordering::Release);
     }
 
@@ -432,6 +479,19 @@ impl CachedFileShared {
     #[cfg(test)]
     fn page_cache_lock_is_free_for_test(&self) -> bool {
         self.page_cache.try_lock().is_some()
+    }
+
+    #[cfg(all(test, feature = "ext4", feature = "vfs"))]
+    fn set_retirement_observer(&self, observer: Option<RetirementObserver>) {
+        *self.retirement_observer.lock() = observer;
+    }
+
+    #[cfg(all(test, feature = "ext4", feature = "vfs"))]
+    fn notify_retirement_lock_attempt(&self) {
+        let observer = self.retirement_observer.lock().clone();
+        if let Some(observer) = observer {
+            observer();
+        }
     }
 }
 
@@ -828,12 +888,12 @@ impl CachedFile {
 
         let mut prepared = self.prepare_cache_page(file, pn, read_backing)?;
         let has_mapping_endpoint = self.shared.has_mapping_endpoint();
-        let (result, retired) = {
+        let (result, retired) = loop {
             let mut cache = self.shared.page_cache.lock();
             if cache.contains(&pn) {
                 let page = cache.get_mut(&pn).ok_or(VfsError::BadState)?;
                 let result = update.take().ok_or(VfsError::BadState)?(page, false);
-                (result, Some(prepared))
+                break (result, Some(prepared));
             } else {
                 if cache.len() >= cache.cap().get() {
                     if has_mapping_endpoint {
@@ -846,16 +906,21 @@ impl CachedFile {
                         drop(prepared);
                         return Err(VfsError::BadState);
                     };
-                    if victim.dirty || victim.pins != 0 {
+                    if victim.pins != 0 {
                         drop(cache);
                         drop(prepared);
                         return Err(VfsError::ResourceBusy);
+                    }
+                    if victim.dirty {
+                        drop(cache);
+                        self.shared.writeback_lru_for_capacity_locked()?;
+                        continue;
                     }
                 }
 
                 let result = update.take().ok_or(VfsError::BadState)?(&mut prepared, true);
                 let retired = cache.push(pn, prepared).map(|(_, page)| page);
-                (result, retired)
+                break (result, retired);
             }
         };
         drop(retired);
@@ -949,6 +1014,7 @@ impl CachedFile {
             return Err(VfsError::ResourceBusy);
         }
         let _io = self.shared.io_lock.lock();
+        self.shared.ensure_writeback_owner_active()?;
         if self
             .shared
             .mapping_update_in_progress
@@ -1083,6 +1149,7 @@ impl CachedFile {
     }
 
     fn write_at_locked(&self, mut buf: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
+        self.shared.ensure_writeback_owner_active()?;
         let file = self.inner.entry().as_file()?;
         let end = offset.saturating_add(buf.remaining() as u64);
         let old_len = self.shared.len();
@@ -1127,6 +1194,9 @@ impl CachedFile {
                     page.mark_dirty();
                 }
             })?;
+            if !self.in_memory {
+                self.shared.balance_dirty_pages_locked()?;
+            }
 
             written += n;
             current += n as u64;
@@ -1240,16 +1310,12 @@ pub(crate) fn retire_filesystem_cache(filesystem: &dyn FilesystemOps) -> VfsResu
         .collect();
     let mut first_error = None;
     for file in files {
-        if let Err(error) = file.writeback_dirty_for_global_sync() {
-            first_error.get_or_insert(error);
-            continue;
-        }
-        // Retain failed dirty owners for the existing global writeback path.
-        // A concurrent registry prune must not restore successful retirees.
         #[cfg(feature = "vfs")]
-        {
-            file.retired.store(true, Ordering::Release);
-            reclaim::release_cached_file(&file);
+        let result = file.retire_from_writeback_registry();
+        #[cfg(not(feature = "vfs"))]
+        let result = file.writeback_dirty_for_global_sync();
+        if let Err(error) = result {
+            first_error.get_or_insert(error);
         }
     }
     first_error.map_or(Ok(()), Err)

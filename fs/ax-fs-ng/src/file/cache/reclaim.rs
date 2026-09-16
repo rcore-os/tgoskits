@@ -146,6 +146,20 @@ pub(super) fn register_cached_file(file: &Arc<CachedFileShared>) {
     }
 }
 
+pub(super) fn take_background_writeback_files() -> AllocVec<Arc<CachedFileShared>> {
+    GLOBAL_CACHED_FILES
+        .files
+        .read()
+        .iter()
+        .filter(|file| file.take_background_writeback_request())
+        .cloned()
+        .collect()
+}
+
+pub(super) fn snapshot_cached_files() -> AllocVec<Arc<CachedFileShared>> {
+    GLOBAL_CACHED_FILES.files.read().clone()
+}
+
 /// Drops reclaim ownership after inode reaping or final mount-cache writeback.
 ///
 /// The removed `Arc` is dropped only after releasing the registry spin lock:

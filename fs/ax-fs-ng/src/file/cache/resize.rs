@@ -397,6 +397,7 @@ impl CachedFile {
         zero_start: usize,
         zero_end: usize,
     ) -> VfsResult<()> {
+        self.shared.ensure_writeback_owner_active()?;
         self.with_page_or_insert(file, page_number, true, |page, _| {
             page.data()[zero_start..zero_end].fill(0);
             if !self.in_memory {
@@ -413,6 +414,7 @@ impl CachedFile {
         zero_end: usize,
         persist_end: usize,
     ) -> VfsResult<PreparedPageWrite> {
+        self.shared.ensure_writeback_owner_active()?;
         let original_len = zero_end
             .checked_sub(zero_start)
             .filter(|_| zero_end <= PAGE_SIZE)
