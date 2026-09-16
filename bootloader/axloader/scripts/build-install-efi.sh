@@ -147,6 +147,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Keep the selected executable (including wrappers) stable after changing cwd.
+CARGO_BIN="$(command -v "$CARGO_BIN")" || die "cargo executable not found"
+if [[ "$CARGO_BIN" != /* ]]; then
+    CARGO_BIN="$PWD/$CARGO_BIN"
+fi
+
 cd "$REPO_ROOT"
 
 if [[ "$CLEAN" -eq 1 ]]; then
@@ -155,7 +161,7 @@ if [[ "$CLEAN" -eq 1 ]]; then
 fi
 
 info "Building $PACKAGE for $TARGET"
-"$CARGO_BIN" xtask axloader build \
+AXLOADER_CARGO="$CARGO_BIN" "$CARGO_BIN" xtask axloader build \
     --target "$TARGET" \
     --release
 

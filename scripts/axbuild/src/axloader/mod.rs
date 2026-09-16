@@ -186,7 +186,7 @@ fn run_loader_build(
     if release {
         args.push("--release");
     }
-    let mut command = StdCommand::new("cargo");
+    let mut command = cargo_command();
     command.current_dir(workspace_root).args(args);
     if let Some(public_key) = public_key {
         command.env("AXLOADER_TRUSTED_PUBLIC_KEY", public_key);
@@ -198,7 +198,7 @@ fn run_loader_build(
 }
 
 fn sign_kernel(workspace_root: &Path, args: &ArgsSign) -> anyhow::Result<String> {
-    let mut command = StdCommand::new("cargo");
+    let mut command = cargo_command();
     command
         .current_dir(workspace_root)
         .args([
@@ -231,11 +231,17 @@ fn sign_kernel(workspace_root: &Path, args: &ArgsSign) -> anyhow::Result<String>
     Ok(key.to_owned())
 }
 
+fn cargo_command() -> StdCommand {
+    // Cargo may rewrite CARGO for its children; preserve the installer's
+    // explicitly selected wrapper independently across nested invocations.
+    StdCommand::new(std::env::var_os("AXLOADER_CARGO").unwrap_or_else(|| "cargo".into()))
+}
+
 fn run_cargo<'a>(
     workspace_root: &Path,
     args: impl IntoIterator<Item = &'a str>,
 ) -> anyhow::Result<()> {
-    let mut command = StdCommand::new("cargo");
+    let mut command = cargo_command();
     command.current_dir(workspace_root).args(args);
     command.exec()
 }
