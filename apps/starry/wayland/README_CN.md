@@ -268,19 +268,10 @@ provision，之后复用已经 provision 好的镜像：
 STARRY_VNC=9 ./apps/starry/wayland/run-hvf.sh --no-build --vnc-only
 ```
 
-[`prebuild.sh`](prebuild.sh) 仅通过 HTTPS 预取包和原始签名 `APKINDEX`，拒绝降级到
-HTTP 的重定向，并按 `main/<arch>`、`community/<arch>` 保存离线仓库。
-预取闭包同时包含普通依赖和索引 `install_if` 条件匹配的包，供原生 apk 求解器离线选择。
-`run-hvf.sh` 生成的 provisioning 脚本先用 `apk verify` 验证所有索引和预取 APK，
-再按 `install.list` 中的 `name=version` 从这些仓库安装。两个步骤均保持签名校验，
-信任根来自基础 rootfs 的 `/etc/apk/keys`；不从预取镜像添加新密钥。
-`apk add` 还会验证仓库索引签名及包与索引的对应关系。认证失败时停止安装，不写入
-`/.wayland-provisioned`。[`wayland-test.sh`](wayland-test.sh) 使用相同的离线仓库和验证顺序。
-
-旧脚本已 provision 的镜像不会自动重新认证；升级后需执行
-`./apps/starry/wayland/run-hvf.sh --reprovision --provision-only` 从可信基础镜像重建。
-如果主机缓存中的 APK 校验失败，删除对应的 `target/wayland-apks/<branch>/<arch>/`
-缓存文件后重新预取；不要添加 `--allow-untrusted` 或导入镜像提供的未知密钥。
+[`prebuild.sh`](prebuild.sh) 通过 HTTPS 预取包及签名索引；安装前使用基础 rootfs 的
+`/etc/apk/keys` 验证全部索引和 APK，再从签名离线仓库安装，认证失败即停止。
+旧脚本已 provision 的镜像不会自动重新认证，升级后需使用
+`--reprovision --provision-only` 从可信基础镜像重建。
 
 使用 `--reprovision` 可以丢弃并重新创建
 `tmp/axbuild/rootfs/rootfs-aarch64-wayland.img`。如果默认 4096 MiB 的手动镜像
@@ -291,33 +282,6 @@ HTTP 的重定向，并按 `main/<arch>`、`community/<arch>` 保存离线仓库
 刻意走离线流程，也没有启用网络驱动。
 需要在终端里操作串口、同时通过 VNC 查看图形界面时，使用 `--vnc-only`，避免
 Cocoa 抢占终端焦点。
-
-### 离线包认证回归
-
-[`test_prefetch.py`](test_prefetch.py) 验证 HTTPS 请求、降级重定向拒绝、签名索引原样保留
-及缓存复用。它使用受控下载响应，不依赖外网：
-
-```bash
-python3 apps/starry/wayland/test_prefetch.py
-```
-
-[`test_provision.py`](test_provision.py) 在 Linux 的隔离文件系统及网络命名空间内执行
-`run-hvf.sh` 生成的实际脚本，调用真实 `apk-tools`；需要 `bubblewrap`、静态 `busybox`
-和 x86_64 `apk.static`。通过 HTTPS 从 Alpine 官方仓库准备同一版本仓库的
-`alpine-keys-*.apk`、`alpine-baselayout-data-*.apk`，放入测试资料目录，并将原始签名
-索引保存为该目录下的 `repo/x86_64/APKINDEX.tar.gz`。测试资料的来源应为
-`https://dl-cdn.alpinelinux.org/alpine/<branch>/main/x86_64/`。
-
-```bash
-APK_TEST_TOOL=/path/to/apk.static \
-APK_TEST_FIXTURES=/path/to/fixtures \
-python3 apps/starry/wayland/test_provision.py
-```
-
-测试证明有效包能安装并生成完成标记；缺少包签名、篡改内容、缺少可信密钥、
-索引签名缺失或包与索引不匹配时必须失败，且不能生成完成标记或安装目标文件。
-包或索引认证失败还必须发生在任何 `apk add` 调用之前。该测试只证明 provisioning 的
-认证契约，不代替上面的 StarryOS QEMU 应用验证。
 
 ## 内核侧依赖
 
