@@ -7,7 +7,7 @@ use core::{
 };
 
 use ax_driver::rknpu::{
-    self, GemCachePolicy, RknpuAction, RknpuMemCreate, RknpuMemDestroy, RknpuMemMap, RknpuMemSync,
+    self, GemCachePolicy, GemOwner, RknpuAction, RknpuMemCreate, RknpuMemDestroy, RknpuMemMap, RknpuMemSync,
     RknpuSubmit, RknpuTask, RKNPU_CORE0_MASK, RKNPU_CORE1_MASK, RKNPU_CORE2_MASK,
 };
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
@@ -231,6 +231,7 @@ pub(crate) fn open_card1_file(
 
 struct Card1File {
     base: KernelFile,
+    owner: GemOwner,
     /// Local handles are translated to global driver handles. This prevents a
     /// handle obtained from another card1 open from reaching the NPU GEM pool.
     handles: Mutex<BTreeMap<u32, u32>>,
@@ -251,6 +252,7 @@ impl Card1File {
     fn new(base: KernelFile) -> Self {
         Self {
             base,
+            owner: GemOwner::default(),
             handles: Mutex::new(BTreeMap::new()),
             next_handle: Mutex::new(1),
             operation: Mutex::new(()),
@@ -652,7 +654,7 @@ impl Card1File {
                     bytemuck::bytes_of_mut(&mut mem_create_args),
                     arg,
                 )?;
-                rknpu::mem_create(&mut mem_create_args).map_err(map_rknpu_err)?;
+                rknpu::mem_create(&self.owner, &mut mem_create_args).map_err(map_rknpu_err)?;
                 let global_handle = mem_create_args.handle;
                 let local_handle = match self.add_handle(global_handle) {
                     Ok(handle) => handle,
@@ -1040,6 +1042,7 @@ fn map_rknpu_err(err: rknpu::Error) -> VfsError {
         rknpu::Error::Busy => VfsError::AlreadyExists,
         rknpu::Error::TimedOut => VfsError::TimedOut,
         rknpu::Error::Quarantined => VfsError::Io,
+        rknpu::Error::NoMemory => VfsError::NoMemory,
         rknpu::Error::InvalidData => VfsError::InvalidData,
         rknpu::Error::NotSupported => VfsError::OperationNotSupported,
     }

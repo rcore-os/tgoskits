@@ -11,7 +11,7 @@ use rdrive::{
     register::ProbeFdt,
 };
 pub use rockchip_npu::{
-    GemBufferInfo, GemCachePolicy, RKNPU_CORE0_MASK, RKNPU_CORE1_MASK, RKNPU_CORE2_MASK,
+    GemBufferInfo, GemCachePolicy, GemOwner, RKNPU_CORE0_MASK, RKNPU_CORE1_MASK, RKNPU_CORE2_MASK,
     RknpuAction, RknpuTask,
     ioctrl::{RknpuMemCreate, RknpuMemDestroy, RknpuMemMap, RknpuMemSync, RknpuSubmit},
 };
@@ -35,6 +35,8 @@ pub enum Error {
     Quarantined,
     #[error("Rockchip NPU request contains invalid data")]
     InvalidData,
+    #[error("Rockchip NPU allocation or quota exhausted")]
+    NoMemory,
     #[error("Rockchip NPU user task submission is not supported by this DMA setup")]
     NotSupported,
 }
@@ -246,8 +248,13 @@ pub fn normalize_core_mask(requested_mask: u32) -> Result<u32, Error> {
     })
 }
 
-pub fn mem_create(args: &mut RknpuMemCreate) -> Result<(), Error> {
-    with_npu(|npu| npu.create(args).map_err(|_| Error::InvalidData))
+pub fn mem_create(owner: &GemOwner, args: &mut RknpuMemCreate) -> Result<(), Error> {
+    with_npu(|npu| {
+        npu.create(owner, args).map_err(|error| match error {
+            rockchip_npu::RknpuError::OutOfMemory => Error::NoMemory,
+            _ => Error::InvalidData,
+        })
+    })
 }
 
 /// Import an externally-owned, physically-contiguous buffer (resolved from a

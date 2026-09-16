@@ -266,3 +266,35 @@ extern "C" fn npu_irq_handler(core_index: usize) {
 3. 集成中断处理机制
 4. 测试内存分配和任务执行
 5. 优化性能和稳定性
+
+## GEM 分配配额
+
+`GemPool::create()` 对 `MemCreate` 分配的连续 DMA 内存执行配额检查，用于处理 [#1762](https://github.com/rcore-os/tgoskits/issues/1762)。`Card1File` 已有独立打开文件的句柄表和关闭清理，本次在该边界保存 `GemOwner`，不增加进程级登记表。Rust 调用方创建独立的 `GemOwner::default()`，并将其传给 `create(&owner, &mut args)`；Starry 的 `dup` 和 `fork` 通过共享 `Card1File` 继续使用同一个账户。
+
+### 分配限制
+
+[src/gem.rs](src/gem.rs) 中的常量集中定义当前资源策略。大小按 DMA 页向上取整后计费，因此超过剩余页预算一个字节也会被拒绝。
+
+| 常量 | 上限 | 约束对象 |
+| --- | --- | --- |
+| `MAX_ALLOCATION_BYTES` | 64 MiB | 单次连续分配 |
+| `MAX_OWNER_BYTES` | 256 MiB | 一个打开文件创建且仍然存活的 DMA backing |
+| `MAX_OWNER_OBJECTS` | 1024 | 一个打开文件创建且仍然存活的对象 |
+| `MAX_DEVICE_BYTES` | 512 MiB | 一个 `GemPool` 的全部存活 DMA backing |
+| `MAX_DEVICE_OBJECTS` | 4096 | 一个 `GemPool` 的全部存活对象 |
+
+这些值是软件资源上限，不是 RK3588 的硬件限制或可分配内存保证。单次上限限制连续大块请求；文件上限允许一个任务组合多个缓冲区；设备上限限制反复打开设备后的总占用。调整时应一并评估模型工作集和平台共享 DMA 内存容量。即使尚未触及上限，底层分配器仍可拒绝请求。零长度和对齐溢出返回参数错误；超限和底层内存不足经 `ax-driver::rknpu::Error::NoMemory` 映射为 `ENOMEM`。ioctl 结构和正常请求的返回字段不变。
+
+### 保活与回收
+
+`OwnedGem` 先持有 `ContiguousArray`，随后持有 owner 和设备两份 `GemCharge`；字段析构顺序保证实际 DMA 内存先释放，再归还配额。`GemUsage::reserve()` 在调用分配器前取得额度，设备配额拒绝或 DMA 分配失败通过 RAII 回滚。原子计数只维护独立资源上限，对象发布仍由池的排他借用和既有设备锁保证；保守的并发拒绝不会造成超额分配。
+
+只在 ioctl 入口检查大小无法阻止重复分配；只按句柄表长度计费则可通过 mmap 或 PRIME 导出后销毁句柄绕过。当前设计让 `buffer_retainer()` 返回整个 `OwnedGem` 的 `Arc`，映射、导出或驱动层导入保留 backing 时也保留原始账户。外部导入不创建新的 DMA backing，不重复收取 `MemCreate` 额度；本配额不承担外部 dma-heap 或导入句柄表的资源政策。Starry 现有 PRIME fd 解析范围不因此扩大。
+
+`MemDestroy`、最后一次关闭文件及复制输出失败仍走原有清理流程。设备忙时的延迟销毁继续占用额度；复位失败后进入隔离状态的设备继续保留 backing 和额度，不能为了回收配额释放设备可能仍在访问的内存。映射和导出 fd 可比源文件活得更久，故关闭源文件并不保证此类内存立即回收。
+
+### 验证入口
+
+`gem::tests` 用可计数的 DMA 分配后端和较小账户上限验证真实 `GemPool` 的字节边界、对象边界、失败回滚及最后 retainer 回收，不需要耗尽实体内存。AArch64 用户态执行命令为 `cargo xtask cross-test --arch aarch64 --package rockchip-npu --lib gem::tests::`；标准库检查使用 `cargo xtask test`。
+
+真实文件生命周期回归位于 [rknpu-resources](../../../test-suit/starryos/board-orangepi-5-plus/rknpu-resources/c/main.c)，通过 `cargo xtask starry test board --board orangepi-5-plus -c rknpu-resources` 执行。它以 4 KiB 分配达到对象配额，正常实现最多占用 16 MiB DMA，验证独立打开、共享描述符、映射及 PRIME 导出保活和最后关闭后的额度恢复。该检查需要空闲的 OrangePi-5-Plus，不能以宿主测试或 C 编译结果代替。

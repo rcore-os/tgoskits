@@ -1,5 +1,8 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
-use core::any::Any;
+use core::{
+    any::Any,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
 
@@ -39,6 +42,104 @@ pub struct GemBufferInfo {
     pub cache_policy: GemCachePolicy,
 }
 
+// These are resource policy limits, not RK3588 hardware limits. Charge full
+// pages, and leave room for other users of the shared contiguous DMA allocator.
+const MAX_ALLOCATION_BYTES: usize = 64 * 1024 * 1024;
+const MAX_OWNER_BYTES: usize = 256 * 1024 * 1024;
+const MAX_OWNER_OBJECTS: usize = 1024;
+const MAX_DEVICE_BYTES: usize = 512 * 1024 * 1024;
+const MAX_DEVICE_OBJECTS: usize = 4096;
+
+/// Allocation account for one open file description. Share this account across
+/// dup/fork; create a new account for each independent open. Outstanding GEM
+/// backing retains the account even after its file or handle has been closed.
+/// Imported buffers retain their exporter's allocation account unchanged.
+pub struct GemOwner {
+    usage: Arc<GemUsage>,
+}
+
+impl Default for GemOwner {
+    fn default() -> Self {
+        Self {
+            usage: Arc::new(GemUsage::new(MAX_OWNER_BYTES, MAX_OWNER_OBJECTS)),
+        }
+    }
+}
+
+struct GemUsage {
+    bytes: AtomicUsize,
+    objects: AtomicUsize,
+    max_bytes: usize,
+    max_objects: usize,
+}
+
+impl GemUsage {
+    fn new(max_bytes: usize, max_objects: usize) -> Self {
+        Self {
+            bytes: AtomicUsize::new(0),
+            objects: AtomicUsize::new(0),
+            max_bytes,
+            max_objects,
+        }
+    }
+
+    fn reserve(self: &Arc<Self>, bytes: usize) -> Result<GemCharge, RknpuError> {
+        // These atomics only account resources; Arc and the pool's exclusive
+        // borrow publish buffers. Reserve each independent limit before DMA
+        // allocation. A partial reservation is conservative and rolls back on
+        // failure; it can never admit usage beyond either limit.
+        self.objects
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                used.checked_add(1).filter(|next| *next <= self.max_objects)
+            })
+            .map_err(|_| RknpuError::OutOfMemory)?;
+        if self
+            .bytes
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                used.checked_add(bytes)
+                    .filter(|next| *next <= self.max_bytes)
+            })
+            .is_err()
+        {
+            self.objects.fetch_sub(1, Ordering::Relaxed);
+            return Err(RknpuError::OutOfMemory);
+        }
+        Ok(GemCharge {
+            usage: self.clone(),
+            bytes,
+        })
+    }
+}
+
+struct GemCharge {
+    usage: Arc<GemUsage>,
+    bytes: usize,
+}
+
+impl Drop for GemCharge {
+    fn drop(&mut self) {
+        self.usage.bytes.fetch_sub(self.bytes, Ordering::Relaxed);
+        self.usage.objects.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+struct OwnedGem {
+    // Declaration order matters: release the DMA allocation before making its
+    // quota available again. Mappings and PRIME exports retain this entire
+    // object, so removing a handle cannot hide still-pinned DMA memory.
+    data: ContiguousArray<u8>,
+    _owner_charge: GemCharge,
+    _device_charge: GemCharge,
+}
+
+impl core::ops::Deref for OwnedGem {
+    type Target = ContiguousArray<u8>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
 /// An externally-owned buffer imported by dma-buf fd (e.g. from `/dev/dma_heap`,
 /// the same buffer a vendor lib hands across engines for zero-copy). The NPU runs
 /// IOMMU-bypassed, so `dma_addr` is the device-reachable physical base; `obj_addr`
@@ -57,10 +158,7 @@ struct ImportedBuffer {
 /// Owned allocations live behind an `Arc` so a live mapping (card1 `mmap` /
 /// PRIME export) can pin them past a `destroy`, avoiding a use-after-free.
 enum GemBuffer {
-    Owned {
-        data: Arc<ContiguousArray<u8>>,
-        flags: u32,
-    },
+    Owned { data: Arc<OwnedGem>, flags: u32 },
     Imported(ImportedBuffer),
 }
 
@@ -68,6 +166,7 @@ pub struct GemPool {
     dma: DeviceDma,
     pool: BTreeMap<u32, GemBuffer>,
     handle_counter: u32,
+    usage: Arc<GemUsage>,
 }
 
 impl GemPool {
@@ -76,6 +175,7 @@ impl GemPool {
             dma,
             pool: BTreeMap::new(),
             handle_counter: 1,
+            usage: Arc::new(GemUsage::new(MAX_DEVICE_BYTES, MAX_DEVICE_OBJECTS)),
         }
     }
 
@@ -85,7 +185,14 @@ impl GemPool {
         handle
     }
 
-    pub fn create(&mut self, args: &mut RknpuMemCreate) -> Result<(), RknpuError> {
+    /// Allocate page-rounded DMA backing charged to the file and device until
+    /// the last handle, mapping, or PRIME retainer drops. Zero/overflowing sizes
+    /// are invalid; allocation and quota exhaustion return `OutOfMemory`.
+    pub fn create(
+        &mut self,
+        owner: &GemOwner,
+        args: &mut RknpuMemCreate,
+    ) -> Result<(), RknpuError> {
         let requested_size =
             usize::try_from(args.size).map_err(|_| RknpuError::InvalidParameter)?;
         // Owned GEMs are exposed through mmap as device mappings. Allocate and
@@ -93,6 +200,14 @@ impl GemPool {
         // the initialized DMA backing. Imported buffers keep their exact size
         // and are capped to complete pages by the mmap path.
         let allocation_size = page_align_size(requested_size, self.dma.page_size())?;
+        if allocation_size == 0 {
+            return Err(RknpuError::InvalidParameter);
+        }
+        if allocation_size > MAX_ALLOCATION_BYTES {
+            return Err(RknpuError::OutOfMemory);
+        }
+        let owner_charge = owner.usage.reserve(allocation_size)?;
+        let device_charge = self.usage.reserve(allocation_size)?;
         let data = self
             .dma
             .contiguous_array_zero_with_align::<u8>(
@@ -100,7 +215,10 @@ impl GemPool {
                 0x1000,
                 DmaDirection::Bidirectional,
             )
-            .map_err(|_| RknpuError::DmaError)?;
+            .map_err(|error| match error {
+                dma_api::DmaError::NoMemory => RknpuError::OutOfMemory,
+                _ => RknpuError::DmaError,
+            })?;
 
         let handle = self.next_handle();
 
@@ -111,7 +229,11 @@ impl GemPool {
         self.pool.insert(
             args.handle,
             GemBuffer::Owned {
-                data: Arc::new(data),
+                data: Arc::new(OwnedGem {
+                    data,
+                    _owner_charge: owner_charge,
+                    _device_charge: device_charge,
+                }),
                 flags: args.flags,
             },
         );
@@ -411,5 +533,164 @@ mod tests {
     fn buffer_retainer_is_none_for_unknown_handle() {
         let pool = import_only_pool();
         assert!(pool.buffer_retainer(0xdead_beef).is_none());
+    }
+    #[derive(Default)]
+    struct AllocOp {
+        live_bytes: AtomicUsize,
+        calls: AtomicUsize,
+        fail: AtomicBool,
+    }
+
+    impl DmaOp for AllocOp {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            if self.fail.load(Ordering::Relaxed) {
+                return None;
+            }
+            // SAFETY: layout comes from DeviceDma; this backend owns the new
+            // allocation until the matching dealloc_contiguous call. There is
+            // no hardware; the CPU allocation is also the test DMA address.
+            let ptr = NonNull::new(unsafe { alloc::alloc::alloc_zeroed(layout) })?;
+            self.live_bytes.fetch_add(layout.size(), Ordering::Relaxed);
+            Some(unsafe { DmaAllocHandle::new(ptr, ptr, (ptr.as_ptr() as u64).into(), layout) })
+        }
+
+        unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
+            // SAFETY: DeviceDma returns the unique handle produced above,
+            // with the same pointer and layout and no remaining buffer users.
+            unsafe { alloc::alloc::dealloc(handle.allocation_ptr().as_ptr(), handle.layout()) };
+            self.live_bytes.fetch_sub(handle.size(), Ordering::Relaxed);
+        }
+
+        unsafe fn alloc_coherent(&self, _: DmaConstraints, _: Layout) -> Option<DmaAllocHandle> {
+            panic!("test DMA device is coherent")
+        }
+        unsafe fn dealloc_coherent(&self, _: DmaAllocHandle) -> Result<(), DmaError> {
+            panic!("test DMA device is coherent")
+        }
+        unsafe fn map_streaming(
+            &self,
+            _: DmaConstraints,
+            _: NonNull<u8>,
+            _: NonZeroUsize,
+            _: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            panic!("GEM uses contiguous allocations")
+        }
+        unsafe fn unmap_streaming(&self, _: DmaMapHandle) {
+            panic!("GEM uses contiguous allocations")
+        }
+    }
+
+    fn allocation_pool(bytes: usize, objects: usize) -> (GemPool, &'static AllocOp) {
+        let op = alloc::boxed::Box::leak(alloc::boxed::Box::new(AllocOp::default()));
+        let mut pool = GemPool::new(DeviceDma::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::Coherent,
+                DmaConstraints::new(u64::MAX),
+            ),
+            op,
+        ));
+        pool.usage = Arc::new(GemUsage::new(bytes, objects));
+        (pool, op)
+    }
+
+    fn owner(bytes: usize, objects: usize) -> GemOwner {
+        GemOwner {
+            usage: Arc::new(GemUsage::new(bytes, objects)),
+        }
+    }
+
+    fn create(pool: &mut GemPool, owner: &GemOwner, size: usize) -> Result<u32, RknpuError> {
+        let mut args = RknpuMemCreate {
+            size: size as u64,
+            ..Default::default()
+        };
+        pool.create(owner, &mut args)?;
+        Ok(args.handle)
+    }
+
+    #[test]
+    fn allocation_limits_reject_before_dma_and_recover_after_release() {
+        let (mut pool, op) = allocation_pool(4 * 4096, 16);
+        let first = owner(2 * 4096, 16);
+        let second = owner(2 * 4096, 16);
+        for size in [0, usize::MAX] {
+            assert_eq!(
+                create(&mut pool, &first, size),
+                Err(RknpuError::InvalidParameter)
+            );
+        }
+        assert_eq!(
+            create(&mut pool, &first, MAX_ALLOCATION_BYTES + 1),
+            Err(RknpuError::OutOfMemory)
+        );
+        assert_eq!(op.calls.load(Ordering::Relaxed), 0);
+        // A byte past the page boundary consumes the whole second page.
+        let a = create(&mut pool, &first, 4097).unwrap();
+        let calls = op.calls.load(Ordering::Relaxed);
+        assert_eq!(create(&mut pool, &first, 1), Err(RknpuError::OutOfMemory));
+        assert_eq!(op.calls.load(Ordering::Relaxed), calls);
+        assert_eq!(op.live_bytes.load(Ordering::Relaxed), 8192);
+        create(&mut pool, &second, 8192).unwrap();
+        let third = owner(8192, 16);
+        assert_eq!(create(&mut pool, &third, 1), Err(RknpuError::OutOfMemory));
+        assert_eq!(op.calls.load(Ordering::Relaxed), calls + 1);
+        assert_eq!(op.live_bytes.load(Ordering::Relaxed), 16384);
+        pool.destroy(a);
+        pool.destroy(a); // Repeated destroy must not return quota twice.
+        let recovered = create(&mut pool, &third, 8192).unwrap();
+        pool.destroy(recovered);
+        create(&mut pool, &first, 8192).unwrap();
+        drop(pool);
+        assert_eq!(op.live_bytes.load(Ordering::Relaxed), 0);
+        // A failed DMA allocation must return both owner and device quota.
+        let (mut pool, op) = allocation_pool(8192, 1);
+        op.fail.store(true, Ordering::Relaxed);
+        assert_eq!(
+            create(&mut pool, &first, 8192),
+            Err(RknpuError::OutOfMemory)
+        );
+        op.fail.store(false, Ordering::Relaxed);
+        create(&mut pool, &first, 8192).unwrap();
+        drop(pool);
+        assert_eq!(op.live_bytes.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn object_limits_remain_charged_through_export_and_import() {
+        let (mut pool, op) = allocation_pool(16 * 4096, 2);
+        let first = owner(16 * 4096, 1);
+        let second = owner(16 * 4096, 1);
+        let a = create(&mut pool, &first, 1).unwrap();
+        let info = pool.get_buffer_info(a).unwrap();
+        let anchor = pool.buffer_retainer(a).unwrap();
+        let imported = pool.import(info.dma_addr, info.obj_addr, info.size, 0, anchor.clone());
+        pool.destroy(a);
+        assert_eq!(create(&mut pool, &first, 1), Err(RknpuError::OutOfMemory));
+        let b = create(&mut pool, &second, 1).unwrap();
+        let third = owner(16 * 4096, 1);
+        assert_eq!(create(&mut pool, &third, 1), Err(RknpuError::OutOfMemory));
+        assert_eq!(op.calls.load(Ordering::Relaxed), 2);
+        drop(anchor);
+        assert_eq!(create(&mut pool, &first, 1), Err(RknpuError::OutOfMemory));
+        pool.destroy(imported);
+        assert_eq!(op.live_bytes.load(Ordering::Relaxed), 4096);
+        create(&mut pool, &first, 1).unwrap();
+        let anchor = pool.buffer_retainer(b).unwrap();
+        drop(second);
+        drop(pool);
+        assert_eq!(op.live_bytes.load(Ordering::Relaxed), 4096);
+        drop(anchor);
+        assert_eq!(op.live_bytes.load(Ordering::Relaxed), 0);
     }
 }
