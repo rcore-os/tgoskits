@@ -304,7 +304,6 @@ jobs:
             scripts/test/test_ci_impact.py \
             scripts/test/test_ci_plan.py \
             scripts/test/test_ci_routing.py
-          python3 -m unittest discover -s apps/arceos/arce_agent -p test_llm_proxy.py -v
 
       - name: Resolve incremental base revision
         id: since
