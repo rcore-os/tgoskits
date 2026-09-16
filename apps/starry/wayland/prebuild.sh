@@ -70,15 +70,16 @@ import re
 import shutil
 import sys
 import tarfile
+import urllib.parse
 import urllib.request
 
 apk_arch, branch, cache_dir, guest_cache_dir = sys.argv[1:]
 mirrors = [
-    "http://mirrors.huaweicloud.com/alpine",
-    "http://mirrors.aliyun.com/alpine",
-    "http://mirrors.tuna.tsinghua.edu.cn/alpine",
-    "http://mirrors.cernet.edu.cn/alpine",
-    "http://dl-cdn.alpinelinux.org/alpine",
+    "https://mirrors.huaweicloud.com/alpine",
+    "https://mirrors.aliyun.com/alpine",
+    "https://mirrors.tuna.tsinghua.edu.cn/alpine",
+    "https://mirrors.cernet.edu.cn/alpine",
+    "https://dl-cdn.alpinelinux.org/alpine",
 ]
 repos = ["main", "community"]
 extra_roots = os.environ.get("STARRY_WAYLAND_EXTRA_APKS", "").split()
@@ -86,9 +87,8 @@ roots = ["weston", "weston-backend-drm", "weston-shell-desktop", *extra_roots]
 installed_names = set(os.environ.get("STARRY_WAYLAND_INSTALLED_PACKAGES", "").split())
 write_install_list = os.environ.get("STARRY_WAYLAND_WRITE_INSTALL_LIST") == "1"
 
-# APKINDEX is fetched from plaintext HTTP mirrors, so its package names and
-# versions are untrusted path input: only allow a single path component built
-# from the alphabet apk actually uses.
+# Treat index fields as untrusted path input even over HTTPS. The guest
+# verifies the original signed index before using this offline repository.
 COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+~-]*")
 
 
@@ -129,12 +129,22 @@ def dep_key(value):
     return re.split(r"[<>=]", value, maxsplit=1)[0]
 
 
+class HTTPSOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urllib.parse.urlsplit(newurl).scheme != "https":
+            raise ValueError(f"refusing non-HTTPS redirect: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+opener = urllib.request.build_opener(HTTPSOnlyRedirectHandler())
+
+
 def fetch_bytes(path):
     last_error = None
     for mirror in mirrors:
         url = f"{mirror}/{branch}/{path}"
         try:
-            with urllib.request.urlopen(url, timeout=120) as resp:
+            with opener.open(url, timeout=120) as resp:
                 return resp.read(), mirror
         except Exception as exc:
             last_error = exc
@@ -149,7 +159,7 @@ def fetch_file(path, cache_dir, filename):
     for mirror in mirrors:
         url = f"{mirror}/{branch}/{path}"
         try:
-            with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as out:
+            with opener.open(url, timeout=120) as resp, open(tmp, "wb") as out:
                 total_header = resp.headers.get("Content-Length")
                 total = int(total_header) if total_header and total_header.isdigit() else 0
                 downloaded = 0
@@ -190,6 +200,10 @@ providers = {}
 for repo in repos:
     log(f"WAYLAND_PREFETCH fetching index {repo}/{apk_arch}")
     data, _ = fetch_bytes(f"{repo}/{apk_arch}/APKINDEX.tar.gz")
+    repo_dir = os.path.join(guest_cache_dir, repo, apk_arch)
+    os.makedirs(repo_dir, exist_ok=True)
+    with open(cache_path(repo_dir, "APKINDEX.tar.gz"), "wb") as out:
+        out.write(data)
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
         index = archive.extractfile("APKINDEX").read().decode()
     for block in index.strip().split("\n\n"):
@@ -214,6 +228,10 @@ for repo in repos:
             "filename": filename,
             "repo": repo,
             "deps": deps,
+            "install_if": [
+                key for line in fields.get("i", [])
+                for dep in line.split() if (key := dep_key(dep))
+            ],
         }
         for provide in provides:
             providers.setdefault(provide, name)
@@ -222,17 +240,28 @@ resolved = []
 seen = set()
 queue = list(roots)
 while queue:
-    request = queue.pop(0)
-    name = request if request in packages else providers.get(request)
-    if not name or name in seen:
-        continue
-    seen.add(name)
-    pkg = packages[name]
-    resolved.append(pkg)
-    for dep in pkg["deps"]:
-        dep_name = dep if dep in packages else providers.get(dep)
-        if dep_name and dep_name not in seen:
-            queue.append(dep_name)
+    while queue:
+        request = queue.pop(0)
+        name = request if request in packages else providers.get(request)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        pkg = packages[name]
+        resolved.append(pkg)
+        for dep in pkg["deps"]:
+            dep_name = dep if dep in packages else providers.get(dep)
+            if dep_name and dep_name not in seen:
+                queue.append(dep_name)
+    # The native solver also selects install_if packages. Prefetch a
+    # conservative superset; apk still decides exact version constraints.
+    available = seen | installed_names
+    for candidate in packages.values():
+        conditions = candidate["install_if"]
+        if candidate["name"] not in seen and conditions and all(
+            (dep if dep in packages else providers.get(dep)) in available
+            for dep in conditions
+        ):
+            queue.append(candidate["name"])
 
 os.makedirs(cache_dir, exist_ok=True)
 os.makedirs(guest_cache_dir, exist_ok=True)
@@ -246,14 +275,19 @@ for pkg in resolved:
         log(f"WAYLAND_PREFETCH downloaded {filename} from {mirror}")
     else:
         log(f"WAYLAND_PREFETCH cached {filename}")
-    shutil.copy2(cached, cache_path(guest_cache_dir, filename))
+    repo_dir = os.path.join(guest_cache_dir, pkg["repo"], apk_arch)
+    shutil.copy2(cached, cache_path(repo_dir, filename))
+
+with open(cache_path(guest_cache_dir, "repositories"), "w", encoding="utf-8") as out:
+    for repo in repos:
+        out.write(f"/usr/local/wayland-apks/{repo}\n")
 
 if write_install_list:
     install_list = os.path.join(guest_cache_dir, "install.list")
     with open(install_list, "w", encoding="utf-8") as out:
         for pkg in resolved:
             if pkg["name"] not in installed_names:
-                out.write(f"/usr/local/wayland-apks/{pkg['filename']}\n")
+                out.write(f"{pkg['name']}={pkg['version']}\n")
 
 log(f"WAYLAND_PREFETCH prepared {len(resolved)} apk(s) for {apk_arch}")
 PY
