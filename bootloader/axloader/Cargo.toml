@@ -12,12 +12,17 @@ name = "axloader"
 path = "src/main.rs"
 
 [dependencies]
+ed25519-dalek = { version = "2.2", default-features = false }
 httpboot-protocol = { workspace = true }
 sha2 = { version = "0.10", default-features = false }
+thiserror = { workspace = true }
 
 [target.'cfg(any(windows, unix))'.dependencies]
 anyhow = { workspace = true }
+clap = { version = "4.6", features = ["derive"] }
+ed25519-dalek = { version = "2.2", default-features = false, features = ["pem", "std", "zeroize"] }
 object = "0.38"
+zeroize = { workspace = true, features = ["alloc"] }
 
 [target.'cfg(target_os = "uefi")'.dependencies]
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }

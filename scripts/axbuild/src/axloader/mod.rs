@@ -1,3 +1,5 @@
+mod signing;
+
 use std::{
     fs,
     io::{Read, Write},
@@ -14,13 +16,14 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use httpboot_protocol::{
     BootArch, ImageFormat, LoaderDiscoveryOffer, LoaderDiscoveryProbe, LoaderPollResponse,
     LoaderStatusPhase, LoaderStatusReport, PROTOCOL_VERSION,
 };
 use ostool::ovmf::Arch;
 use sha2::{Digest, Sha256};
+pub(crate) use signing::{SignedKernel, sign_runtime_kernel};
 
 use crate::support::{ovmf::OvmfFirmware, process::ProcessExt};
 
@@ -28,7 +31,6 @@ const AXLOADER_PACKAGE: &str = "axloader";
 const AXLOADER_BIN: &str = "axloader";
 const DEFAULT_UEFI_TARGET: &str = "x86_64-unknown-uefi";
 const HTTP_SMOKE_BOOT_TIMEOUT: Duration = Duration::from_secs(240);
-const HTTP_SMOKE_MAX_ATTEMPTS: usize = 2;
 const HTTP_SMOKE_DISCOVERY_REPLY_DELAY: Duration = Duration::from_millis(500);
 const QEMU_HOST_GATEWAY: &str = "10.0.2.2";
 
@@ -38,13 +40,14 @@ struct LoaderSmokeTarget {
     ovmf_arch: Arch,
     efi_output_file: &'static str,
     qemu_program: &'static str,
-    qemu_args: fn(&Path, &Path, u16, u16) -> Vec<String>,
+    qemu_args: fn(&Path, &Path, u16, u16, Acceleration) -> Vec<String>,
     kernel_elf: fn() -> Vec<u8>,
 }
 
 struct SmokeAttemptContext<'a> {
-    workspace_root: &'a Path,
-    target: &'a str,
+    efi: &'a Path,
+    accel: Acceleration,
+    reject: bool,
     smoke_target: LoaderSmokeTarget,
     firmware: &'a Path,
     kernel: &'a [u8],
@@ -60,6 +63,10 @@ pub struct ArgsBuild {
 
     #[arg(long, conflicts_with = "release")]
     pub debug: bool,
+
+    /// Trusted Ed25519 public key encoded as 64 hexadecimal digits
+    #[arg(long)]
+    pub trusted_public_key: Option<String>,
 }
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
@@ -78,6 +85,27 @@ pub enum TestCommand {
 pub struct ArgsTestQemu {
     #[arg(long, default_value = DEFAULT_UEFI_TARGET)]
     pub target: String,
+
+    #[arg(long, value_enum, default_value = "kvm")]
+    pub accel: Acceleration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Acceleration {
+    Kvm,
+    Tcg,
+}
+
+#[derive(Args)]
+pub struct ArgsSign {
+    #[arg(long)]
+    key: PathBuf,
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    entry_symbol: Option<String>,
 }
 
 /// Axloader host-side commands
@@ -85,6 +113,8 @@ pub struct ArgsTestQemu {
 pub enum Command {
     /// Build axloader
     Build(ArgsBuild),
+    /// Sign a kernel ELF using an Ed25519 PKCS8 PEM key
+    Sign(ArgsSign),
     /// Run axloader test suites
     Test(ArgsTest),
 }
@@ -103,13 +133,23 @@ impl Axloader {
     pub async fn execute(&mut self, command: Command) -> anyhow::Result<()> {
         match command {
             Command::Build(args) => build(&self.workspace_root, args),
+            Command::Sign(args) => {
+                println!("{}", sign_kernel(&self.workspace_root, &args)?);
+                Ok(())
+            }
             Command::Test(args) => test(&self.workspace_root, args).await,
         }
     }
 }
 
 pub fn build(workspace_root: &Path, args: ArgsBuild) -> anyhow::Result<()> {
-    run_loader_build(workspace_root, &args.target, args.release || !args.debug)
+    run_loader_build(
+        workspace_root,
+        &args.target,
+        args.release || !args.debug,
+        args.trusted_public_key.as_deref(),
+        None,
+    )
 }
 
 pub async fn test(workspace_root: &Path, args: ArgsTest) -> anyhow::Result<()> {
@@ -137,10 +177,16 @@ async fn test_qemu(workspace_root: &Path, args: ArgsTestQemu) -> anyhow::Result<
     );
     result?;
 
-    run_http_smoke_test(workspace_root, &args.target).await
+    run_http_smoke_test(workspace_root, &args.target, args.accel).await
 }
 
-fn run_loader_build(workspace_root: &Path, target: &str, release: bool) -> anyhow::Result<()> {
+fn run_loader_build(
+    workspace_root: &Path,
+    target: &str,
+    release: bool,
+    public_key: Option<&str>,
+    target_dir: Option<&Path>,
+) -> anyhow::Result<()> {
     let mut args = vec![
         "build",
         "-p",
@@ -153,7 +199,49 @@ fn run_loader_build(workspace_root: &Path, target: &str, release: bool) -> anyho
     if release {
         args.push("--release");
     }
-    run_cargo(workspace_root, args)
+    let mut command = StdCommand::new("cargo");
+    command.current_dir(workspace_root).args(args);
+    if let Some(public_key) = public_key {
+        command.env("AXLOADER_TRUSTED_PUBLIC_KEY", public_key);
+    }
+    if let Some(target_dir) = target_dir {
+        command.arg("--target-dir").arg(target_dir);
+    }
+    command.exec()
+}
+
+fn sign_kernel(workspace_root: &Path, args: &ArgsSign) -> anyhow::Result<String> {
+    let mut command = StdCommand::new("cargo");
+    command
+        .current_dir(workspace_root)
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            AXLOADER_PACKAGE,
+            "--",
+            "sign",
+            "--key",
+        ])
+        .arg(&args.key)
+        .arg("--input")
+        .arg(&args.input)
+        .arg("--output")
+        .arg(&args.output)
+        .stderr(Stdio::inherit());
+    if let Some(symbol) = &args.entry_symbol {
+        command.arg("--entry-symbol").arg(symbol);
+    }
+    let output = command.output().context("failed to run axloader signer")?;
+    if !output.status.success() {
+        bail!("axloader signing failed with {}", output.status);
+    }
+    let key = String::from_utf8(output.stdout).context("signer returned invalid UTF-8")?;
+    let key = key.trim();
+    if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("signer did not return an Ed25519 public key");
+    }
+    Ok(key.to_owned())
 }
 
 fn run_cargo<'a>(
@@ -165,51 +253,71 @@ fn run_cargo<'a>(
     command.exec()
 }
 
-async fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()> {
+async fn run_http_smoke_test(
+    workspace_root: &Path,
+    target: &str,
+    accel: Acceleration,
+) -> anyhow::Result<()> {
     let smoke_target = smoke_target(target)?;
-
-    println!("axloader http smoke: building UEFI loader ...");
-    run_loader_build(workspace_root, target, true)?;
-
-    let firmware = OvmfFirmware::fetch(smoke_target.ovmf_arch).await?;
-    println!(
-        "axloader http smoke: using UEFI firmware {}",
-        firmware.code().display()
-    );
+    let temp = tempfile::tempdir().context("failed to create axloader signing temp dir")?;
+    let key = temp.path().join("signing.pem");
+    StdCommand::new("openssl")
+        .args(["genpkey", "-algorithm", "ED25519", "-out"])
+        .arg(&key)
+        .exec()?;
     let kernel = (smoke_target.kernel_elf)();
-    let attempt_context = SmokeAttemptContext {
+    let input = temp.path().join("kernel.elf");
+    fs::write(&input, &kernel)?;
+    let signed_path = temp.path().join("signed.elf");
+    let public_key = sign_kernel(
+        workspace_root,
+        &ArgsSign {
+            key,
+            input,
+            output: signed_path.clone(),
+            entry_symbol: None,
+        },
+    )?;
+    let target_dir = temp.path().join("target");
+    println!("axloader http smoke: building isolated UEFI loader ...");
+    run_loader_build(
         workspace_root,
         target,
-        smoke_target,
-        firmware: firmware.code(),
-        kernel: &kernel,
-    };
-    let mut attempt = 1;
-    let mut failures = Vec::new();
-
-    loop {
-        println!(
-            "axloader http smoke: running QEMU attempt {attempt}/{HTTP_SMOKE_MAX_ATTEMPTS} ..."
-        );
-        let failure = match run_http_smoke_attempt(&attempt_context) {
-            Ok(()) => {
-                println!("axloader http smoke: kernel transferred and ELF loaded");
-                return Ok(());
-            }
-            Err(error) => format!("attempt {attempt}: {error:#}"),
-        };
-
-        let Some(next_attempt) = next_smoke_attempt(attempt) else {
-            failures.push(failure);
-            bail!(
-                "axloader HTTP smoke failed after {attempt} attempt(s):\n{}",
-                failures.join("\n")
-            );
-        };
-        eprintln!("axloader http smoke: {failure}; retrying with a fresh QEMU instance");
-        failures.push(failure);
-        attempt = next_attempt;
+        true,
+        Some(&public_key),
+        Some(&target_dir),
+    )?;
+    let efi = target_dir.join(target).join("release/axloader.efi");
+    let firmware = OvmfFirmware::fetch(smoke_target.ovmf_arch).await?;
+    let signed = fs::read(signed_path)?;
+    let mut tampered = signed.clone();
+    // Change a loadable instruction, leaving the ELF valid. The server derives
+    // a fresh transport digest from this modified body in every scenario.
+    tampered[0x1000] ^= 1;
+    let mut bad_signature = signed.clone();
+    *bad_signature.last_mut().context("signed image is empty")? ^= 1;
+    for (name, image, reject) in [
+        ("unsigned", kernel, true),
+        (
+            "tampered image with matching transport digest",
+            tampered,
+            true,
+        ),
+        ("invalid signature", bad_signature, true),
+        ("trusted signature", signed, false),
+    ] {
+        println!("axloader http smoke: {name}");
+        run_http_smoke_attempt(&SmokeAttemptContext {
+            efi: &efi,
+            accel,
+            reject,
+            smoke_target,
+            firmware: firmware.code(),
+            kernel: &image,
+        })
+        .with_context(|| format!("axloader HTTP authentication scenario `{name}` failed"))?;
     }
+    Ok(())
 }
 
 fn run_http_smoke_attempt(context: &SmokeAttemptContext<'_>) -> anyhow::Result<()> {
@@ -218,7 +326,7 @@ fn run_http_smoke_attempt(context: &SmokeAttemptContext<'_>) -> anyhow::Result<(
     fs::create_dir_all(&efi_boot_dir)
         .with_context(|| format!("failed to create {}", efi_boot_dir.display()))?;
     fs::copy(
-        axloader_efi_path(context.workspace_root, context.target),
+        context.efi,
         efi_boot_dir.join(context.smoke_target.efi_output_file),
     )
     .context("failed to stage axloader EFI binary")?;
@@ -232,12 +340,13 @@ fn run_http_smoke_attempt(context: &SmokeAttemptContext<'_>) -> anyhow::Result<(
         &temp.path().join("esp"),
         control_server.capture_port(),
         control_server.injection_port(),
+        context.accel,
     )?;
-    let smoke_result = drive_http_smoke_session(&mut child, &control_server);
+    let smoke_result = drive_http_smoke_session(&mut child, &control_server, context.reject);
     stop_child(&mut child);
     smoke_result?;
 
-    if !control_server.was_requested() || !control_server.ready_to_handoff() {
+    if !control_server.was_requested() || control_server.ready_to_handoff() == context.reject {
         bail!("axloader network smoke did not observe both kernel download and ready_to_handoff");
     }
 
@@ -247,6 +356,7 @@ fn run_http_smoke_attempt(context: &SmokeAttemptContext<'_>) -> anyhow::Result<(
 fn drive_http_smoke_session(
     child: &mut Child,
     control_server: &SmokeControlServer,
+    reject: bool,
 ) -> anyhow::Result<()> {
     let stdout = child
         .stdout
@@ -263,7 +373,21 @@ fn drive_http_smoke_session(
     let deadline = Instant::now() + HTTP_SMOKE_BOOT_TIMEOUT;
     let mut transcript = String::new();
     while Instant::now() < deadline {
-        if transcript.contains("elf_loaded:")
+        if reject {
+            if transcript.contains("elf_loaded:") || control_server.ready_to_handoff() {
+                bail!(
+                    "unauthenticated kernel reached ELF load or handoff; transcript:\n{transcript}"
+                );
+            }
+            if transcript.contains("elf_load_error: Authentication(")
+                && control_server.was_requested()
+                && transcript.ends_with('\n')
+            {
+                return Ok(());
+            }
+        }
+        if !reject
+            && transcript.contains("elf_loaded:")
             && control_server.was_requested()
             && control_server.ready_to_handoff()
         {
@@ -297,18 +421,6 @@ fn drive_http_smoke_session(
     bail!("axloader network smoke timed out; transcript:\n{transcript}")
 }
 
-fn next_smoke_attempt(current_attempt: usize) -> Option<usize> {
-    (current_attempt < HTTP_SMOKE_MAX_ATTEMPTS).then_some(current_attempt + 1)
-}
-
-fn axloader_efi_path(workspace_root: &Path, target: &str) -> PathBuf {
-    workspace_root
-        .join("target")
-        .join(target)
-        .join("release")
-        .join("axloader.efi")
-}
-
 fn smoke_target(target: &str) -> anyhow::Result<LoaderSmokeTarget> {
     match target {
         "x86_64-unknown-uefi" => Ok(LoaderSmokeTarget {
@@ -329,6 +441,7 @@ fn spawn_axloader_qemu(
     esp_dir: &Path,
     capture_port: u16,
     injection_port: u16,
+    accel: Acceleration,
 ) -> anyhow::Result<Child> {
     StdCommand::new(target.qemu_program)
         .args((target.qemu_args)(
@@ -336,6 +449,7 @@ fn spawn_axloader_qemu(
             esp_dir,
             capture_port,
             injection_port,
+            accel,
         ))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -354,6 +468,7 @@ fn x86_64_qemu_args(
     esp_dir: &Path,
     capture_port: u16,
     injection_port: u16,
+    accel: Acceleration,
 ) -> Vec<String> {
     [
         "-m".into(),
@@ -363,9 +478,17 @@ fn x86_64_qemu_args(
         "-machine".into(),
         "q35".into(),
         "-accel".into(),
-        "kvm".into(),
+        match accel {
+            Acceleration::Kvm => "kvm",
+            Acceleration::Tcg => "tcg",
+        }
+        .into(),
         "-cpu".into(),
-        "host".into(),
+        match accel {
+            Acceleration::Kvm => "host",
+            Acceleration::Tcg => "max",
+        }
+        .into(),
         "-display".into(),
         "none".into(),
         "-monitor".into(),
@@ -859,12 +982,6 @@ mod tests {
     fn smoke_arch_uses_protocol_architecture() {
         assert_eq!(parse_smoke_arch("x86_64").unwrap(), BootArch::X86_64);
         assert!(parse_smoke_arch("mips64").is_err());
-    }
-
-    #[test]
-    fn first_failed_qemu_attempt_is_retried() {
-        assert_eq!(next_smoke_attempt(1), Some(2));
-        assert_eq!(next_smoke_attempt(2), None);
     }
 
     #[test]

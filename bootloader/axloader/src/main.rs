@@ -5,7 +5,12 @@
 extern crate alloc;
 
 #[cfg(not(target_os = "uefi"))]
-fn main() {}
+mod signing;
+
+#[cfg(not(target_os = "uefi"))]
+fn main() -> anyhow::Result<()> {
+    signing::run()
+}
 
 #[cfg(target_os = "uefi")]
 mod loader;

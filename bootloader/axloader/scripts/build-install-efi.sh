@@ -39,6 +39,9 @@ usage() {
     cat <<EOF
 Usage: $SCRIPT_NAME [OPTIONS]
 
+Required environment:
+  AXLOADER_TRUSTED_PUBLIC_KEY  Publisher Ed25519 public key (64 hex digits).
+
 Options:
   --device PATH       EFI partition to mount, for example /dev/sdb1.
   --label LABEL       Find EFI partition by filesystem label. Default: $USB_LABEL.
@@ -112,6 +115,9 @@ if [[ -z "$CARGO_BIN" ]]; then
     fi
 fi
 
+[[ "${AXLOADER_TRUSTED_PUBLIC_KEY:-}" =~ ^[[:xdigit:]]{64}$ ]] || \
+    die "set AXLOADER_TRUSTED_PUBLIC_KEY to the publisher's 64-digit hexadecimal public key"
+
 if [[ -z "$DEVICE" ]]; then
     mapfile -t matches < <(blkid -L "$USB_LABEL" 2>/dev/null || true)
     if [[ "${#matches[@]}" -eq 0 ]]; then
@@ -149,10 +155,8 @@ if [[ "$CLEAN" -eq 1 ]]; then
 fi
 
 info "Building $PACKAGE for $TARGET"
-"$CARGO_BIN" build \
-    -p "$PACKAGE" \
+"$CARGO_BIN" xtask axloader build \
     --target "$TARGET" \
-    --bin "$BIN" \
     --release
 
 LOADER="$REPO_ROOT/target/$TARGET/release/$BIN.efi"
