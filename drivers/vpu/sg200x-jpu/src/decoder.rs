@@ -127,7 +127,12 @@ pub struct DecodeResult<'a> {
     pub height: u32,
     /// CPU-visible frame bytes. Plane offsets and strides are in [`Self::layout`].
     pub yuv_data: &'a [u8],
-    /// Device-visible address corresponding to `yuv_data[0]`.
+    /// JPU DMA address corresponding to `yuv_data[0]`, for frame metadata.
+    ///
+    /// The buffer is CPU-owned on return. CPU postprocessing is not flushed
+    /// for device access on non-coherent platforms. This address grants neither
+    /// a userspace mapping nor permission to submit the buffer to another device;
+    /// consumers must copy `yuv_data` into their own DMA-managed buffer.
     pub yuv_dma_addr: u32,
     /// Planar format, scale, extents, offsets, and strides.
     pub layout: FrameLayout,
@@ -201,6 +206,8 @@ impl JpuDecoder {
     /// Uses a rounded box average over the additional sampling axis or axes,
     /// replicating the last visible sample at odd edges. Luma is unchanged.
     /// Conversion runs only after DMA completion and needs no extra frame buffer.
+    /// The result is CPU-visible; see [`DecodeResult::yuv_dma_addr`] for the
+    /// address and device-access contract.
     /// Grayscale is rejected before hardware submission. Other errors and
     /// poisoning semantics are the same as [`Self::decode_scaled`].
     pub fn decode_scaled_yuv420<'a>(
@@ -601,42 +608,51 @@ fn convert_yuv420(bytes: &mut [u8], native: &FrameLayout) -> Result<(), JpuDecod
         JpuPixelFormat::Yuv444 => (2, 2),
         JpuPixelFormat::Grayscale => return Err(FrameLayoutError::UnsupportedPixelFormat.into()),
     };
-    let width = native.visible.width as usize;
-    let height = native.visible.height as usize;
-    let source_width = width.div_ceil(2 / step_x);
-    let source_height = height.div_ceil(2 / step_y);
+    let visible = (
+        native.visible.width as usize,
+        native.visible.height as usize,
+    );
     for (source, destination) in [(native.cb, output.cb), (native.cr, output.cr)] {
         let source = source.ok_or(FrameLayoutError::UnsupportedPixelFormat)?;
         let destination = destination.ok_or(FrameLayoutError::UnsupportedPixelFormat)?;
-        for y in 0..height.div_ceil(2) {
-            for x in 0..width.div_ceil(2) {
-                let mut sum = 0u16;
-                for dy in 0..step_y {
-                    let row = (y * step_y + dy).min(source_height - 1);
-                    for dx in 0..step_x {
-                        let column = (x * step_x + dx).min(source_width - 1);
-                        sum +=
-                            u16::from(bytes[source.offset + row * source.stride as usize + column]);
-                    }
-                }
-                let count = (step_x * step_y) as u16;
-                bytes[destination.offset + y * destination.stride as usize + x] =
-                    ((sum + count / 2) / count) as u8;
-            }
-        }
-        // Do not let source samples survive in output row or bottom padding.
-        for y in 0..destination.storage.height as usize {
-            let row = destination.offset + y * destination.stride as usize;
-            let used = if y < height.div_ceil(2) {
-                width.div_ceil(2)
-            } else {
-                0
-            };
-            bytes[row + used..row + destination.stride as usize].fill(0);
-        }
+        downsample_chroma(bytes, source, destination, visible, (step_x, step_y));
     }
     clear_frame_padding(bytes, &output)?;
     Ok(())
+}
+
+fn downsample_chroma(
+    bytes: &mut [u8],
+    source: PlaneLayout,
+    destination: PlaneLayout,
+    (width, height): (usize, usize),
+    (step_x, step_y): (usize, usize),
+) {
+    let source_width = width.div_ceil(2 / step_x);
+    let source_height = height.div_ceil(2 / step_y);
+    let output_width = width.div_ceil(2);
+    let output_height = height.div_ceil(2);
+    let count = (step_x * step_y) as u16;
+    for y in 0..output_height {
+        for x in 0..output_width {
+            let mut sum = 0u16;
+            for dy in 0..step_y {
+                let row = (y * step_y + dy).min(source_height - 1);
+                for dx in 0..step_x {
+                    let column = (x * step_x + dx).min(source_width - 1);
+                    sum += u16::from(bytes[source.offset + row * source.stride as usize + column]);
+                }
+            }
+            bytes[destination.offset + y * destination.stride as usize + x] =
+                ((sum + count / 2) / count) as u8;
+        }
+    }
+    // Do not let source samples survive in output row or bottom padding.
+    for y in 0..destination.storage.height as usize {
+        let row = destination.offset + y * destination.stride as usize;
+        let used = if y < output_height { output_width } else { 0 };
+        bytes[row + used..row + destination.stride as usize].fill(0);
+    }
 }
 
 #[cfg(test)]
