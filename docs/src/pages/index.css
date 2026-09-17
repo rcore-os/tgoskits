@@ -6,8 +6,6 @@
   --home-base: #f6f8f9;
   --home-padding: clamp(4rem, 6vw, 6rem);
   --home-radius: 24px;
-  --home-max-width: var(--site-content-width);
-  --home-max-width-wide: var(--site-content-width);
   --home-section-width: var(--site-content-width);
   --home-panel: #ffffff;
   --home-panel-strong: #ffffff;
@@ -26,7 +24,6 @@
   --system-accent-axvisor: #14b8a6;
   --arch-accent-main: #0f766e;
   --arch-accent-alt: #2563eb;
-  --arch-chip-border: rgba(15, 118, 110, 0.16);
 
   --home-box-radius: 16px;
   --home-line: rgba(52, 65, 112, 0.18);
@@ -68,7 +65,6 @@ html[data-theme='dark'] {
   --system-accent-axvisor: #2dd4bf;
   --arch-accent-main: #5eead4;
   --arch-accent-alt: #93c5fd;
-  --arch-chip-border: rgba(94, 234, 212, 0.24);
   --home-line: rgba(169, 190, 229, 0.2);
   --home-line-strong: rgba(103, 222, 226, 0.46);
   --home-surface-soft: #101728;
@@ -1023,8 +1019,6 @@ html { scroll-behavior: smooth; }
 .icon-ring,
 .icon-orbit,
 .icon-layer,
-.icon-shield,
-.icon-check,
 .icon-pulse,
 .icon-chip,
 .icon-chip-pins line,
@@ -1051,11 +1045,6 @@ html { scroll-behavior: smooth; }
 @keyframes dotPulse    { 0%, 100% { opacity: 0.4; transform: scale(1); } 50% { opacity: 1; transform: scale(1.3); } }
 
 /* Responsive */
-@media (min-width: 1600px) {
-  .hero-content { max-width: none; grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr); }
-  .hero-terminal-container { max-width: none; }
-}
-
 @media (max-width: 1120px) {
   .hero-content,
   .hardware-layout { grid-template-columns: 1fr; }
@@ -1070,7 +1059,6 @@ html { scroll-behavior: smooth; }
 }
 
 @media (max-width: 900px) {
-  .hero-banner { padding-left: 0; padding-right: 0; }
   .hero-content,
   .section-shell__inner { width: min(100%, calc(100% - 2rem)); }
   .docs-constellation { grid-template-columns: 1fr; gap: 1.3rem; }
@@ -1118,7 +1106,6 @@ html { scroll-behavior: smooth; }
 
 @media (max-width: 520px) {
   .hero-copy h1 { font-size: 2.3rem; }
-  .hero-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .hero-quicklink { flex-basis: 100%; }
   .architecture-art__detail { display: none; }
   .quality-card__visual { min-height: 190px; }

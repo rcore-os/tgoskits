@@ -7,10 +7,7 @@ import Architecture from './Architecture';
 import styles from './styles.module.css';
 
 export const titles = {components: 'Components', apps: 'APPs'};
-const descriptions = {
-  components: '操作系统与虚拟化平台的基础组件、设备驱动和内存管理模块。',
-  apps: 'ArceOS、StarryOS 应用与开发工具。',
-};
+const description = '操作系统与虚拟化平台的基础组件、设备驱动和内存管理模块。';
 
 export function Emblem({group}) {
   const paths = {
@@ -28,7 +25,7 @@ export function Emblem({group}) {
   </span>;
 }
 
-export default function Catalog({catalog: {kind, entries}}) {
+export default function Catalog({catalog: {entries}}) {
   const illustration = useBaseUrl('/images/showcase/component-hierarchy.svg');
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('全部');
@@ -39,8 +36,8 @@ export default function Catalog({catalog: {kind, entries}}) {
     [entry.name, entry.description, entry.location, ...entry.tags].join(' ').toLocaleLowerCase().includes(search));
   const reset = () => { setQuery(''); setCategory('全部'); };
   return (
-    <Layout wrapperClassName="site-showcase" title={titles[kind]} description={descriptions[kind]}>
-      <div className={styles.catalog} data-kind={kind}>
+    <Layout wrapperClassName="site-showcase" title={titles.components} description={description}>
+      <div className={styles.catalog}>
       <header id="architecture-overview" className={styles.hero}>
         <div className={styles.heroBackdrop} aria-hidden="true">
           <div className={styles.glowPrimary} /><div className={styles.glowSecondary} />
@@ -57,7 +54,7 @@ export default function Catalog({catalog: {kind, entries}}) {
         <div className={`container ${styles.heroInner}`}>
           <div className={styles.heroCopy}>
           <p className={styles.heroLabel}>TGOSKits · COMPONENT LIBRARY</p>
-          <h1>{titles[kind]}</h1>
+          <h1>{titles.components}</h1>
           <p className={styles.intro}>按需组合，跨系统复用。</p>
           <p className={styles.heroDescription}>在统一 Cargo workspace 中组织三套系统、共享组件与平台适配，通过 feature 和目标配置装配所需能力。</p>
           <dl className={styles.frameworkSummary}>
@@ -67,7 +64,7 @@ export default function Catalog({catalog: {kind, entries}}) {
           </dl>
           <div className={styles.heroActions}><a className="button button--primary" href="#component-catalog">浏览全部组件 ↓</a><Link to="/docs/architecture/overview">架构文档 ↗</Link></div>
           <div className={styles.heroMeta}>
-            <span><strong>{entries.length}</strong><span>{kind === 'components' ? '目录软件包' : '应用与工具'}</span></span>
+            <span><strong>{entries.length}</strong><span>目录软件包</span></span>
             <span><strong>4</strong><span>逻辑层级</span></span>
           </div>
           </div>
@@ -82,7 +79,7 @@ export default function Catalog({catalog: {kind, entries}}) {
       <section id="component-catalog" className={`container ${styles.main}`} aria-label="全部组件目录">
         <section className={styles.filters} aria-label="筛选目录">
           <div className={styles.filterHeading}>
-            <h2>{kind === 'components' ? '全部组件' : '应用目录'}</h2>
+            <h2>全部组件</h2>
             <label className={styles.search}>
               <span className={styles.srOnly}>搜索名称、简介或标签</span>
               <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></svg>
@@ -118,7 +115,7 @@ export default function Catalog({catalog: {kind, entries}}) {
           </article>)}
         </div>
         {!visible.length && <div className={styles.empty}>
-          <h2>没有找到匹配的{kind === 'components' ? '组件' : '应用'}</h2>
+          <h2>没有找到匹配的组件</h2>
           <p>试试其他关键词，或清除筛选查看完整目录。</p>
           <button type="button" className="button button--primary" onClick={reset}>查看全部</button>
         </div>}

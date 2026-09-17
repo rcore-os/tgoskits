@@ -30,7 +30,7 @@ function ProductArt({type}) {
   }, []);
   return <figure ref={figure} className={styles.art} data-type={type} data-visible={visible}>
     <svg viewBox="0 0 520 340" role="img" aria-label={{database: 'SQL 查询连接数据库表的示意图', web: '浏览器请求连接 Nginx 服务的示意图', inference: '模型从输入到文本生成的示意图'}[type]}>
-      <g className={styles.gridLines} stroke="currentColor" opacity=".08">
+      <g stroke="currentColor" opacity=".08">
         {[60, 120, 180, 240, 300, 360, 420, 480].map(x => <path key={x} d={`M${x} 0V340`} />)}
         {[50, 110, 170, 230, 290].map(y => <path key={y} d={`M0 ${y}H520`} />)}
       </g>

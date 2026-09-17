@@ -39,12 +39,6 @@ const iconLibrary = {
       <path d="M20 100 L60 80 L100 100 L60 120 Z" className="icon-layer" />
     </svg>
   ),
-  shield: (
-    <svg viewBox="0 0 120 120" role="presentation" aria-hidden="true">
-      <path d="M60 10 L100 30 V65 C100 88 83 108 60 112 C37 108 20 88 20 65 V30 Z" className="icon-shield" />
-      <path d="M45 55 L55 65 L75 45" className="icon-check" />
-    </svg>
-  ),
   pulse: (
     <svg viewBox="0 0 120 120" role="presentation" aria-hidden="true">
       <polyline points="10,70 35,70 50,40 70,90 85,55 110,55" className="icon-pulse" />
