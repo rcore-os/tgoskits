@@ -1,0 +1,17 @@
+board_type = "OrangePi-5-Plus"
+dtb_file = "os/StarryOS/configs/board/orangepi-5-plus.dtb"
+timeout = 600
+fail_regex = ["(?m)^PWM_SYSFS_FAILED\\s*$", "(?i)panic", "(?i)segmentation fault"]
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = '''
+i=0
+while ! wget -q -O /tmp/test-pwm-sysfs "${sessionFile:usr/bin/test-pwm-sysfs}"; do
+  i=$((i + 1))
+  if [ "$i" -ge 15 ]; then printf '%s%s\n' PWM_SYSFS_ FAILED; exit 1; fi
+  sleep 1
+done
+chmod +x /tmp/test-pwm-sysfs
+/tmp/test-pwm-sysfs --hardware || printf '%s%s\n' PWM_SYSFS_ FAILED
+'''
+success_regex = ["(?m)^PWM_SYSFS_PASSED\\s*$"]
