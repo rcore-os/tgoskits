@@ -17,10 +17,9 @@
 .viewport [data-node]:focus-visible rect { stroke: var(--catalog-accent); stroke-width: 4; }
 .status { padding: .9rem 1.5rem; font-size: .875rem; color: var(--catalog-muted); background: var(--catalog-tint); }
 .inspector { padding: 1.5rem; }
-.inspector > p { color: var(--catalog-muted); margin: 0; line-height: 1.8; }
 .inspectorHeading { display: flex; align-items: flex-start; justify-content: space-between; gap: 2rem; }
 .inspectorHeading h3 { font-size: 1.3rem; overflow-wrap: anywhere; }
-.inspectorHeading p { color: var(--catalog-muted); line-height: 1.8; max-width: 48rem; }
+.inspectorHeading p { color: var(--catalog-muted); line-height: 1.8; }
 .inspectorHeading > div:last-child { display: flex; align-items: center; gap: 1rem; flex-shrink: 0; }
 .relations { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; border-top: 1px solid var(--catalog-border); padding-top: 1.5rem; }
 .relations h4 { font-size: 1rem; }

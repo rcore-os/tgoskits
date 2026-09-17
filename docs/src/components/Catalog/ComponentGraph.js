@@ -103,11 +103,10 @@ export default function ComponentGraph({entries}) {
         </g>)}
       </svg>
     </div>
-    <div className={styles.status} role="status">{graph.nodes.length} 个组件 · {graph.edges.length} 条内部直接依赖{entry ? ` · 已选择 ${entry.name}` : ' · 点击节点查看关联'}</div>
-    <div className={styles.inspector}>
-      {entry ? <><div className={styles.inspectorHeading}><div><h3>{entry.name}</h3><p>{entry.description}</p></div><div><Link to={entry.route}>组件详情 ↗</Link><button type="button" onClick={() => setSelected('')}>清除选择</button></div></div>
+    <div className={styles.status} role="status">{graph.nodes.length} 个组件 · {graph.edges.length} 条内部直接依赖{entry ? ` · 已选择 ${entry.name}` : ''}</div>
+    {entry && <div className={styles.inspector}>
+      <><div className={styles.inspectorHeading}><div><h3>{entry.name}</h3><p>{entry.description}</p></div><div><Link to={entry.route}>组件详情</Link><button type="button" onClick={() => setSelected('')}>清除选择</button></div></div>
         <div className={styles.relations}><div><h4>直接依赖 · {entry.dependencies.length}</h4>{entry.dependencies.length ? entry.dependencies.map(item => <button type="button" key={item.route} onClick={() => choose(item.route)}>{item.name}</button>) : <p>无目录内直接依赖。</p>}</div><div><h4>直接使用方 · {consumers.length}</h4>{consumers.length ? consumers.map(item => <button type="button" key={item.route} onClick={() => choose(item.route)}>{item.name}</button>) : <p>无目录内直接使用方。</p>}</div></div></>
-      : <p>全图包含所有目录组件。使用缩放按钮查看名称，点击组件高亮关联；侧向与向上连线反映实际声明，不强行限定依赖方向。</p>}
-    </div>
+    </div>}
   </div>;
 }

@@ -508,7 +508,7 @@ function CapabilitySection() {
                 <h3>{feature.title}</h3>
                 <p>{feature.desc}</p>
               </div>
-              <span aria-hidden="true" className="capability-card__arrow">→</span>
+
             </Link>
           ))}
         </div>
@@ -624,7 +624,7 @@ function ComponentWorkspaceSection() {
       className="section-shell--component-workspace"
       eyebrow="Component Workspace"
       title="Git Subtree 组件同步工作流"
-      description={`scripts/repo/repos.csv 登记 ${workspaceFacts.subtreeMappings} 条映射，其中 ${workspaceFacts.existingSubtreeTargets} 个目标目录存在，另有 ${workspaceFacts.subtreeMappings - workspaceFacts.existingSubtreeTargets} 条记录指向已不存在的目录。repo.py 提供仓库与工作区间的同步入口；实际同步前应核对映射及目录状态。`}
+      description={`scripts/repo/repos.csv 登记 ${workspaceFacts.subtreeMappings} 条映射，其中 ${workspaceFacts.existingSubtreeTargets} 个目标目录存在，另有 ${workspaceFacts.subtreeMappings - workspaceFacts.existingSubtreeTargets} 条记录指向已不存在的目录。repo.py 提供仓库与工作区间的同步入口。`}
     >
       <ComponentWorkspaceDiagram />
     </SectionShell>
@@ -667,7 +667,7 @@ function DocsSection() {
       className="section-shell--docs"
       eyebrow="Documentation Map"
       title="面向研发任务的文档导航"
-      description="文档体系覆盖环境准备、系统构建、运行验证、组件开发与贡献流程，可按当前研发任务进入对应指南和命令参考。"
+      description="文档体系覆盖环境准备、系统构建、运行验证、组件开发与贡献流程。"
     >
       <div className="docs-constellation" aria-label="Documentation entry map">
         <svg className="docs-constellation__art" viewBox="0 0 1120 560" preserveAspectRatio="none" aria-hidden="true">

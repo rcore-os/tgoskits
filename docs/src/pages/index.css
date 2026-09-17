@@ -191,7 +191,7 @@ html { scroll-behavior: smooth; }
   -webkit-text-fill-color: var(--ifm-color-primary);
 }
 
-.lead { margin: 0; font-size: 1.1rem; max-width: 48rem; animation-delay: 0.25s; }
+.lead { margin: 0; font-size: 1.1rem; animation-delay: 0.25s; }
 
 .hero-actions {
   display: flex;
@@ -473,11 +473,9 @@ html[data-theme='dark'] .capability-art .capability-art__xtask text { fill: #102
 .capability-card .feature-icon { grid-column: 1; grid-row: 1; width: 36px; height: 36px; margin: 0; }
 .capability-card .feature-icon svg { width: 24px; height: 24px; }
 .capability-card__index { grid-column: 2; align-self: center; color: var(--feature-accent-1); font-family: var(--ifm-font-family-monospace); font-size: var(--home-type-meta); font-weight: 800; }
-.capability-card__body { grid-column: 1 / -1; min-width: 0; padding-bottom: 1.2rem; }
+.capability-card__body { grid-column: 1 / -1; min-width: 0; }
 .capability-card__body h3 { margin: 0 0 0.4rem; font-size: var(--home-type-card-title); }
 .capability-card__body p { margin: 0; color: var(--home-text-soft); font-size: var(--home-type-body-small); line-height: var(--home-line-compact); }
-.capability-card__arrow { position: absolute; bottom: .6rem; right: 1rem; color: var(--feature-accent-1); font-size: 1.3rem; transition: transform var(--t-fast); }
-.capability-card:hover .capability-card__arrow { transform: translateX(3px); }
 
 .feature-icon {
   width: 48px; height: 48px;

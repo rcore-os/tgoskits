@@ -62,7 +62,7 @@ export default function Catalog({catalog: {entries}}) {
             <div><dt>共享组件，按需组合</dt><dd>调度、内存、驱动、文件、网络与虚拟化按领域维护，各系统保留自己的运行策略。</dd></div>
             <div><dt>平台契约，连接硬件</dt><dd>ax-plat、axplat-dyn、somehal 与 someboot 连接四种架构、固件与实体设备。</dd></div>
           </dl>
-          <div className={styles.heroActions}><a className="button button--primary" href="#component-catalog">浏览全部组件 ↓</a><Link to="/docs/architecture/overview">架构文档 ↗</Link></div>
+          <div className={styles.heroActions}><a className="button button--primary" href="#component-catalog">浏览全部组件</a><Link to="/docs/architecture/overview">架构文档</Link></div>
           <div className={styles.heroMeta}>
             <span><strong>{entries.length}</strong><span>目录软件包</span></span>
             <span><strong>4</strong><span>逻辑层级</span></span>
@@ -70,7 +70,6 @@ export default function Catalog({catalog: {entries}}) {
           </div>
           <figure className={styles.frameworkFigure}>
             <a href={illustration} target="_blank" rel="noopener noreferrer" aria-label="打开完整组件框架图（新窗口）"><ComponentArchitecture className={styles.catalogIllustration} role="img" aria-label="四层组件视图：三套顶层系统、系统接口与集成、共享领域组件、平台与硬件。" /></a>
-            <figcaption>上层使用下层能力 · 点击查看完整 SVG</figcaption>
           </figure>
         </div>
       </header>
@@ -109,14 +108,13 @@ export default function Catalog({catalog: {entries}}) {
                 <p>{entry.description}</p>
                 <div className={styles.tags}>{entry.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div>
                 <span className={styles.featureCount}>{entry.features?.length ? `${entry.features.length} 个 Cargo 功能开关` : '未声明 Cargo 功能开关'}</span>
-                <div className={styles.cardFooter}><span className={styles.location}>{entry.location}</span><span className={styles.more}>查看详情 <span aria-hidden="true">↗</span></span></div>
+                <div className={styles.cardFooter}><span className={styles.location}>{entry.location}</span><span className={styles.more}>查看详情</span></div>
               </div>
             </Link>
           </article>)}
         </div>
         {!visible.length && <div className={styles.empty}>
           <h2>没有找到匹配的组件</h2>
-          <p>试试其他关键词，或清除筛选查看完整目录。</p>
           <button type="button" className="button button--primary" onClick={reset}>查看全部</button>
         </div>}
       </section>

@@ -81,6 +81,8 @@ yarn serve
 
 首页由 `src/pages/index.js` 和 `src/pages/index.css` 维护，保留终端演示、组件关系、三套系统、四层架构、仓库同步、硬件平台、验证与文档导航。`ArchitectureIllustration()` 维护四层架构图，`ComponentWorkspaceDiagram()` 维护仓库同步图。Components 首屏的层级框架图位于 `static/images/showcase/component-hierarchy.svg`，以 ArceOS、StarryOS、Axvisor 为顶层，说明系统集成、共享组件与平台适配的四层逻辑视图，不代替逐包依赖图。
 
+OSs 菜单进入 `/oss`，由 `src/pages/oss.js` 按 ArceOS、AxVisor、Starry 的顺序组织三套系统的架构图和说明。`static/images/oss/` 保存各系统的完整 SVG，页面以内联 SVG 继承明暗主题，也提供原图入口；`oss.module.css` 维护响应式图文布局，桌面内容区沿用站点的 80% 宽度。
+
 ## 组件与应用目录
 
 导航中的 Components 和 APPS 分别进入 `/components` 与 `/apps`，两页均支持名称、简介和标签搜索，以及分类筛选。Components 依次展示整屏架构介绍 Hero、COMPONENT MAP 层级依赖全图和全部组件卡片；总体介绍集中在 Hero，不再设置重复介绍区或背景动画按钮。背景动效播放一次，并遵循减少动态效果设置；`src/components/Catalog/Architecture.js` 组织说明，`ComponentGraph.js` 展示全部目录节点和依赖，支持缩放、定位、高亮直接依赖与使用方以及 SVG 下载。`plugins/catalog/graph-layout.js` 按系统集成、共享领域和平台归属排列节点，不把领域层次当成依赖的拓扑层次，最下方以等宽等高的卡片网格展示全部目录条目；卡片提供摘要和功能数量，点击后查看完整详情。手机端 Hero 按内容自然增高，框架图可点击打开原始 SVG。APPs 由 `src/components/Catalog/Apps.js` 展示图文交错的应用介绍、能力示意动画及全部应用目录；点击“配置与详情”或应用名称可原地展开运行配置、README、源码和独立详情入口。动效遵循系统的减少动态效果设置，示意图不代表实际运行截图。

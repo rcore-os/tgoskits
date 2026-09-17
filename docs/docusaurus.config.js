@@ -8,6 +8,7 @@ const routes = {
   arceos: '/docs/quickstart/arceos',
   starryos: '/docs/quickstart/starryos',
   axvisor: '/docs/quickstart/axvisor',
+  oss: '/oss',
   components: '/components',
   apps: '/apps',
   blog: '/blog',
@@ -132,6 +133,7 @@ const config = {
           position: 'left',
         },
         {to: routes.components, activeBasePath: 'components', label: 'Components', position: 'left'},
+        {to: routes.oss, activeBasePath: 'oss', label: 'OSs', position: 'left'},
         {to: routes.apps, activeBasePath: 'apps', label: 'APPs', position: 'left'},
         {
           to: routes.community,
@@ -161,6 +163,7 @@ const config = {
         {
           title: '系统',
           items: [
+            {label: 'OSs 总览', to: routes.oss},
             {label: 'ArceOS', to: routes.arceos},
             {label: 'StarryOS', to: routes.starryos},
             {label: 'Axvisor', to: routes.axvisor},

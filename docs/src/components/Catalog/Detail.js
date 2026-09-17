@@ -32,7 +32,6 @@ export default function Detail({catalog: {kind, entry}}) {
         {entry.features?.length > 0 && <section className={styles.info}>
           <h2>Cargo 功能开关</h2>
           <div className={styles.tags}>{entry.features.map((feature) => <code key={feature}>{feature}</code>)}</div>
-          <p className={styles.note}>各功能的含义及组合要求请参阅组件 README 和 Cargo.toml。</p>
         </section>}
         {entry.dependencies && <section className={styles.info}>
           <h2>目录内直接依赖</h2>
@@ -41,7 +40,6 @@ export default function Detail({catalog: {kind, entry}}) {
         </section>}
         {entry.configurations?.length > 0 && <section className={styles.info}>
           <h2>运行配置</h2>
-          <p>选择配置查看对应的运行参数；具体准备步骤请参阅应用 README。</p>
           <ul className={styles.configurations}>{entry.configurations.map((name) =>
             <li key={name}><Link href={`${entry.source}/${name}`}>{name}</Link></li>)}</ul>
         </section>}

@@ -61,7 +61,6 @@ function ProductArt({type}) {
         </g>
       </>}
     </svg>
-    <figcaption>应用能力示意</figcaption>
   </figure>;
 }
 
@@ -69,10 +68,10 @@ function AppResources({entry}) {
   return <div className={styles.resources}>
     <p>{entry.description}</p>
     <div className={styles.links}>
-      <Link to={entry.route}>完整详情 ↗</Link>
-      {entry.readme && <Link href={entry.readme}>README ↗</Link>}
-      <Link href={entry.source}>源码 ↗</Link>
-      <Link to={entry.guide}>构建与运行指南 ↗</Link>
+      <Link to={entry.route}>完整详情</Link>
+      {entry.readme && <Link href={entry.readme}>README</Link>}
+      <Link href={entry.source}>源码</Link>
+      <Link to={entry.guide}>构建与运行指南</Link>
     </div>
     {entry.configurations.length > 0 && <>
       <h4>运行配置</h4>
@@ -91,9 +90,9 @@ export default function Apps({catalog: {entries}}) {
   return <Layout wrapperClassName="site-showcase" title="APPs" description="ArceOS 与 StarryOS 上的数据库、Web 服务、模型推理和开发工具。">
     <main className={styles.page}>
       <header className={`container ${styles.hero}`}>
-        <div><p className={styles.kicker}>APPs</p><h1>让应用，<br />运行于你的系统。</h1>
-          <p className={styles.lead}>ArceOS 与 StarryOS 的应用实践，<br />从 Web 服务、数据库到模型推理。</p>
-          <a className={styles.primary} href="#applications">浏览全部应用 <span aria-hidden="true">↓</span></a>
+        <div><p className={styles.kicker}>APPs</p><h1>让应用，运行于你的系统。</h1>
+          <p className={styles.lead}>ArceOS 与 StarryOS 的应用实践，从 Web 服务、数据库到模型推理。</p>
+          <a className={styles.primary} href="#applications">浏览全部应用</a>
           <p className={styles.count}><strong>{entries.length}</strong> 个应用与工具 · ArceOS / StarryOS</p>
         </div>
         <div className={styles.heroVisual} aria-hidden="true">
@@ -104,7 +103,7 @@ export default function Apps({catalog: {entries}}) {
           <div className={styles.tile} data-tile="inference"><span>LLM</span>模型推理</div>
         </div>
       </header>
-      <div className={styles.productNav}><div className="container">{featured.map(product => <a key={product.name} href={`#product-${product.name}`}>{product.category}<span>{product.title} ↗</span></a>)}</div></div>
+      <div className={styles.productNav}><div className="container">{featured.map(product => <a key={product.name} href={`#product-${product.name}`}>{product.category}<span>{product.title}</span></a>)}</div></div>
       <div className="container">
         {featured.map((product, index) => <section key={product.name} id={`product-${product.name}`} className={styles.product}>
           <ProductArt type={product.type} />

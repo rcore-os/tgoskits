@@ -32,7 +32,6 @@
 .frameworkFigure { min-width: 0; margin: 0; }
 .frameworkFigure a { display: block; border: 1px solid var(--catalog-border); border-radius: 12px; overflow: hidden; }
 .frameworkFigure a:focus-visible { outline: 3px solid var(--catalog-accent); outline-offset: 4px; }
-.frameworkFigure figcaption { margin-top: .75rem; font-size: .875rem; color: var(--catalog-muted); text-align: center; }
 .catalogIllustration { display: block; width: 100%; height: auto; }
 .main { scroll-margin-top: calc(var(--ifm-navbar-height) + 1rem); position: relative; padding-top: 4rem; padding-bottom: 5rem; }
 .filters { position: relative; margin-top: 0; padding: 0 0 1rem; border-bottom: 1px solid var(--catalog-border); }
@@ -79,7 +78,6 @@
 .cardFooter { margin-top: auto; padding: 1rem 0; border-top: 1px solid var(--catalog-border); display: flex; align-items: center; justify-content: space-between; gap: .6rem; }
 .location { min-width: 0; font-family: var(--ifm-font-family-monospace); font-size: .875rem; color: var(--catalog-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .more { color: var(--catalog-accent); font-size: .875rem; font-weight: 600; white-space: nowrap; }
-.more > span { display: inline-block; margin-left: .3rem; }
 .empty { text-align: center; padding: 4rem 1rem; background: var(--catalog-surface); border: 1px dashed var(--catalog-border); border-radius: 14px; }
 .detail { max-width: none; padding-top: 2.5rem; padding-bottom: 5rem; }
 .detailHeader { display: flex; gap: 1.5rem; align-items: center; margin-top: 3rem; margin-bottom: 1.5rem; }
@@ -92,7 +90,6 @@
 .info h2 { font-size: 1.5rem; }
 .info dl { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: 1rem; margin-bottom: 0; }
 .info dd { margin: 0; overflow-wrap: anywhere; }
-.note { margin-top: 1rem; color: var(--ifm-color-emphasis-700); }
 .configurations { columns: 2; padding-left: 1.3rem; overflow-wrap: anywhere; }
 .configurations li { margin-bottom: .5rem; }
 :global([data-theme='dark']) .catalog { --catalog-button-text: #112d26; --catalog-tint: #223932; }
@@ -146,7 +143,7 @@
 @media (prefers-reduced-motion: reduce) { .card, .search input { transition: none; } .card:hover { transform: none; } }
 .srOnly { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 
-.heroDescription { font-size: 1rem; line-height: 1.8; color: var(--catalog-muted); margin: .8rem 0 0; max-width: 35rem; }
+.heroDescription { font-size: 1rem; line-height: 1.8; color: var(--catalog-muted); margin: .8rem 0 0; }
 .heroBackdrop { position: absolute; inset: 0; overflow: hidden; z-index: 0; pointer-events: none; }
 .glowPrimary, .glowSecondary { position: absolute; border-radius: 50%; opacity: .65; }
 .glowPrimary { width: 85vw; height: 85vw; left: -35vw; top: -28vw; background: radial-gradient(ellipse, var(--hero-glow-primary), transparent 68%); animation: catalog-glow 5s ease-in-out both; }
@@ -186,7 +183,5 @@
 .graphMetrics { display: flex; gap: 2rem; color: var(--catalog-muted); font-size: .875rem; }
 .graphMetrics > span { display: flex; flex-direction: column; gap: .4rem; }
 .graphMetrics strong { color: var(--catalog-text); font-size: 2rem; font-weight: 500; }
-.graphIntroduction { color: var(--catalog-muted); max-width: 64rem; line-height: 1.8; margin: 1rem 0 2rem; }
-.graphNotes { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-top: 1.5rem; color: var(--catalog-muted); font-size: .875rem; line-height: 1.8; }
-.graphNotes strong { color: var(--catalog-text); display: block; margin-bottom: .4rem; }
-@media (max-width: 767px) { .graphNotes { grid-template-columns: 1fr; gap: 1rem; } .graphHeading { flex-direction: column; align-items: flex-start; gap: 1rem; } .graphSectionInner { width: calc(100% - 2rem); } .graphMetrics { gap: 1.5rem; } }
+.graphIntroduction { color: var(--catalog-muted); line-height: 1.8; margin: 1rem 0 2rem; }
+@media (max-width: 767px) { .graphHeading { flex-direction: column; align-items: flex-start; gap: 1rem; } .graphSectionInner { width: calc(100% - 2rem); } .graphMetrics { gap: 1.5rem; } }
