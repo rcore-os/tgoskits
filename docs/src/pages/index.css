@@ -220,13 +220,13 @@ html { scroll-behavior: smooth; }
 .stat-label { font-size: 1rem; color: var(--home-text-soft); }
 
 /* Hero Terminal */
-.hero-visual { display: flex; justify-content: center; align-items: stretch; min-height: 100%; }
+.hero-visual { display: flex; justify-content: center; align-items: stretch; min-width: 0; }
 .hero-terminal-container {
   display: flex;
   flex-direction: column;
   width: 100%;
   max-width: none;
-  min-height: 100%;
+  min-height: 0;
   border-radius: var(--home-radius);
   overflow: hidden;
   background: rgba(11, 18, 36, 0.94);
@@ -1035,9 +1035,12 @@ html[data-theme='dark'] .capability-art .capability-art__xtask text { fill: #102
   .capability-illustration { width: min(100%, calc(var(--visual-target-height) * 1.67442)); justify-self: center; }
 }
 
+/* Grid determines the terminal height during SSR, before JavaScript measurement. */
 @media (min-width: 1101px) {
-  .hero-visual { min-height: 0; }
-  .hero-terminal-container { min-height: var(--visual-target-height); }
+  .hero-visual { align-self: stretch; contain: size; min-height: 0; }
+  .hero-terminal-container { flex: 1; }
+  .hero-terminal-screen { min-height: 0; overflow: auto; }
+  .hero-terminal-header, .hero-terminal-footer { flex-shrink: 0; }
 }
 @media (min-width: 901px) {
   .architecture-visual { display: flex; align-items: center; justify-content: center; contain: none; }

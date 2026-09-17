@@ -261,8 +261,8 @@ function HeroBanner() {
         <circle cx="1000" cy="400" r="3" fill="var(--hero-decoration)" opacity="0.5" className="hero-dot-pulse-delayed" />
       </svg>
 
-      <div className={`hero-content ${layout.container} ${layout.split} ${layout.heroInner}`} data-visual-pair>
-        <div className={`hero-copy ${layout.copy}`} data-visual-copy>
+      <div className={`hero-content ${layout.container} ${layout.split} ${layout.heroInner}`}>
+        <div className={`hero-copy ${layout.copy}`}>
           <p className={`eyebrow ${layout.eyebrow}`}>Operating Systems and Virtualization Workspace</p>
           <h1><span>TGOSKits</span><em>面向系统软件研发的一体化工作区</em></h1>
           <p className="lead">
