@@ -26,8 +26,6 @@ default = ["dynamic_debug"]
 dev-log = []
 ext4 = ["ax-fs-ng/ext4"]
 fat = ["ax-fs-ng/fat"]
-input = ["dep:ax-input", "ax-runtime/input"]
-ipi = ["ax-runtime/ipi"]
 memtrack = ["axbacktrace/alloc", "ax-alloc/tracking"]
 qperf-metrics = ["ax-runtime/qperf-metrics"]
 # Exposes a debugfs-only synchronization hook used by the real userspace QEMU
@@ -41,8 +39,7 @@ rk3588-pwm = [
     "dep:rdif-pwm",
 ]
 k230-kpu = ["ax-hal/riscv-thead-mae", "dep:k230-kpu"]
-vsock = ["ax-runtime/vsock"]
-dynamic_debug = ["ipi"]
+dynamic_debug = []
 sg2002 = [
     "ax-driver/usb",
     "dep:rdif-pwm",
@@ -56,7 +53,6 @@ sg2002-cvi-usb-camera = [
     "dep:cvi-vdec-uapi",
     "dep:sg200x-jpu",
 ]
-smp = ["ax-std/smp"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 axtest = ["ax-runtime/fault-injection"]
@@ -70,7 +66,7 @@ ax-display.workspace = true
 ax-fs-ng = { workspace = true, features = ["vfs"] }
 ax-cpu = { workspace = true, features = ["fp-simd"] }
 ax-hal = { workspace = true, features = ["fp-simd", "uspace"] }
-ax-input = { workspace = true, optional = true }
+ax-input.workspace = true
 ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm = { workspace = true, features = ["copy"] }
@@ -85,12 +81,16 @@ ax-runtime = { workspace = true, features = [
     "ext4fs",
     "net",
     "vmap-task-stack",
+    "input",
+    "ipi",
+    "vsock",
 ] }
 ax-std = { workspace = true, default-features = false, features = [
     "alloc",
     "fd",
     "task-ext",
     "tracepoint-hooks",
+    "smp",
 ] }
 rockchip-rga = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }

@@ -500,7 +500,6 @@ pub fn sys_getsockopt(
                     socket.get_option(GetSocketOption::SocketType(&mut t))?;
                     t
                 }
-                #[cfg(feature = "vsock")]
                 SocketInner::Vsock(_) => SOCK_STREAM as i32,
             };
             write_fixed(current, optval, optlen_ptr, optlen, so_type)?;

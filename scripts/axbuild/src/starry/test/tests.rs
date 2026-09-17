@@ -35,7 +35,10 @@ fn write_qemu_build_config(root: &Path, _group: &str, build_group: &str, target:
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(
         &path,
-        format!("target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \"Info\"\n"),
+        format!(
+            "target = \"{target}\"\nenv = {{}}\nfeatures = [\"ax-driver/virtio-net\"]\nlog = \
+             \"Info\"\n"
+        ),
     )
     .unwrap();
     path
@@ -49,7 +52,10 @@ fn write_flat_qemu_build_config(root: &Path, build_group: &str, target: &str) ->
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(
         &path,
-        format!("target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \"Info\"\n"),
+        format!(
+            "target = \"{target}\"\nenv = {{}}\nfeatures = [\"ax-driver/virtio-net\"]\nlog = \
+             \"Info\"\n"
+        ),
     )
     .unwrap();
     path
@@ -70,7 +76,7 @@ fn write_qemu_build_config_with_max_cpu_num(
     fs::write(
         &path,
         format!(
-            "target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \
+            "target = \"{target}\"\nenv = {{}}\nfeatures = [\"ax-driver/virtio-net\"]\nlog = \
              \"Info\"\nmax_cpu_num = {max_cpu_num}\n"
         ),
     )
@@ -86,7 +92,10 @@ fn write_starry_board_build_config(root: &Path, build_group: &str, target: &str)
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(
         &path,
-        format!("target = \"{target}\"\nenv = {{}}\nfeatures = [\"qemu\"]\nlog = \"Info\"\n"),
+        format!(
+            "target = \"{target}\"\nenv = {{}}\nfeatures = [\"ax-driver/virtio-net\"]\nlog = \
+             \"Info\"\n"
+        ),
     )
     .unwrap();
     path

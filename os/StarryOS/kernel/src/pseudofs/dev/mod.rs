@@ -9,12 +9,10 @@ pub(crate) mod card1;
 #[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
 mod dmaheap;
 mod drm;
-#[cfg(feature = "input")]
 pub mod event;
 mod fb;
 #[cfg(feature = "sg2002")]
 pub mod ion;
-#[cfg(any(feature = "input", feature = "k230-kpu"))]
 mod irq_service;
 mod kmsg;
 #[cfg(feature = "k230-kpu")]
@@ -764,7 +762,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     }
 
     // Input devices
-    #[cfg(feature = "input")]
     root.add(
         "input",
         SimpleDir::new_maker(fs.clone(), Arc::new(event::input_devices(fs.clone()))),

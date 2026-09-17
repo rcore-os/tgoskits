@@ -249,7 +249,7 @@ fn qemu_group_build_context_uses_group_build_config_over_default_override() {
         Starry::qemu_group_build_context(&request, &build_config).unwrap();
 
     assert_eq!(cargo.env.get("SMP").map(String::as_str), Some("4"));
-    assert!(cargo.features.contains(&"smp".to_string()));
+    assert!(!cargo.features.contains(&"smp".to_string()));
 }
 
 #[test]
@@ -261,8 +261,8 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
     fs::create_dir_all(build_config.parent().unwrap()).unwrap();
     fs::write(
         &build_config,
-        "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = [\"qemu\"]\nlog = \
-         \"Warn\"\n",
+        "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = \
+         [\"ax-driver/virtio-net\"]\nlog = \"Warn\"\n",
     )
     .unwrap();
     let mut request = starry_request(
@@ -271,7 +271,7 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
         "aarch64-unknown-none-softfloat",
     );
     request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
-        features: vec!["qemu".to_string()],
+        features: vec!["ax-driver/nvme".to_string()],
         ..crate::starry::build::default_starry_build_info()
     });
 
@@ -285,7 +285,7 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
             .features
             .contains(&"starry-kernel/plat-dyn".to_string())
     );
-    assert!(cargo.features.contains(&"qemu".to_string()));
+    assert_eq!(cargo.features, vec!["ax-driver/virtio-net".to_string()]);
     assert_eq!(
         cargo.target,
         "scripts/targets/bare/aarch64-unknown-none-softfloat.json"

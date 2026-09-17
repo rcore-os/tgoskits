@@ -30,8 +30,8 @@ fn discovers_board_case_when_case_dir_contains_build_config() {
     let build_config = case_dir.join("build-aarch64-unknown-none-softfloat.toml");
     fs::write(
         &build_config,
-        "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = [\"qemu\"]\nlog = \
-         \"Info\"\n",
+        "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = \
+         [\"ax-driver/virtio-net\"]\nlog = \"Info\"\n",
     )
     .unwrap();
     let board_test_config = case_dir.join("board-orangepi-5-plus.toml");

@@ -90,9 +90,9 @@ default = []
 smp = ["ax-runtime/smp", "ax-hal/smp"]
 ```
 
-The same applies to board and device features. If a module needs a symbol or
-type behind `starry-kernel/input`, `starry-kernel/vsock`, `ax-driver/rknpu`, or
-similar feature gates, the kernel must be built with compatible support.
+Input and vsock kernel interfaces are always compiled. Hardware-dependent
+symbols remain controlled by board and device features such as
+`ax-driver/rknpu`; the kernel and module must select compatible device support.
 
 `cargo xtask starry kmod build` starts from the normal Starry build selectors
 (`--arch`, `--target`, `--config`, `--smp`, `--debug`) and reuses the resolved

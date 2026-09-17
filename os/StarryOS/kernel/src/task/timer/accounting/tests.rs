@@ -2,7 +2,6 @@
 mod tests {
     use super::*;
 
-    #[cfg(feature = "smp")]
     #[test]
     fn running_policy_update_waits_for_realtime_state_writer() {
         use std::{

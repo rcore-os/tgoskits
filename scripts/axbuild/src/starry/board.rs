@@ -156,7 +156,7 @@ mod tests {
             "z-board",
             r#"
 target = "aarch64-unknown-none-softfloat"
-features = ["qemu"]
+features = ["ax-driver/virtio-net"]
 log = "Warn"
 "#,
         );
@@ -165,7 +165,7 @@ log = "Warn"
             "a-board",
             r#"
 target = "x86_64-unknown-none"
-features = ["qemu"]
+features = ["ax-driver/virtio-net"]
 log = "Warn"
 "#,
         );
@@ -203,7 +203,7 @@ log = "Info"
             "qemu-aarch64",
             r#"
 target = "aarch64-unknown-none-softfloat"
-features = ["qemu"]
+features = ["ax-driver/virtio-net"]
 log = "Warn"
 "#,
         );

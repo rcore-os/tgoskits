@@ -414,10 +414,11 @@ fn load_cargo_config_uses_shared_bare_target_for_dynamic_platform_request() {
 
     assert_eq!(cargo.target, format!("scripts/targets/bare/{target}.json"));
     assert_eq!(cargo.env.get("AX_TARGET"), Some(&target.to_string()));
+    assert!(cargo.features.contains(&"ax-driver/nvme".to_string()));
 }
 
 #[test]
-fn load_cargo_config_keeps_starry_smp_capability_for_single_or_unspecified_cpu_limits() {
+fn load_cargo_config_keeps_cpu_limit_without_injecting_smp_feature() {
     for requested_smp in [None, Some(1)] {
         let target = "riscv64gc-unknown-none-elf";
         let mut request = request(PathBuf::from("/tmp/.build.toml"), "riscv64", target);
@@ -426,7 +427,7 @@ fn load_cargo_config_keeps_starry_smp_capability_for_single_or_unspecified_cpu_l
 
         let cargo = load_cargo_config(&request).unwrap();
 
-        assert!(cargo.features.contains(&"smp".to_string()));
+        assert!(!cargo.features.contains(&"smp".to_string()));
         match requested_smp {
             Some(cpu_count) => assert_eq!(cargo.env.get("SMP"), Some(&cpu_count.to_string())),
             None => assert!(!cargo.env.contains_key("SMP")),

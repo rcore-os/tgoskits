@@ -1,7 +1,6 @@
 use alloc::boxed::Box;
 
 use ax_fs_ng::vfs::current_fs_context;
-#[cfg(feature = "vsock")]
 use ax_net::vsock::VsockSocket;
 use ax_net::{
     Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
@@ -113,7 +112,6 @@ pub fn sys_socket(
             let cloexec = raw_ty & O_CLOEXEC != 0;
             return add_file_like(socket as _, cloexec).map(|fd| fd as isize);
         }
-        #[cfg(feature = "vsock")]
         (AF_VSOCK, SOCK_STREAM) => VsockSocket::new().into(),
         (AF_INET, SOCK_RAW) => {
             if proto != IPPROTO_ICMP as u32 {

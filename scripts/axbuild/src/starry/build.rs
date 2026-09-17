@@ -95,7 +95,6 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
     let metadata =
         crate::build::cached_workspace_metadata().context("failed to load workspace metadata")?;
     let mut build_info = load_build_info(request)?;
-    enable_starry_smp_capability(&mut build_info.features);
     build_info.features.sort();
     build_info.features.dedup();
     let mut cargo = build_info.into_prepared_no_std_cargo_config_with_metadata(
@@ -107,12 +106,6 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
     patch_starry_cargo_config(&mut cargo, request, metadata)?;
     crate::build::append_cargo_rustflags(&mut cargo, &["-D", "warnings"]);
     Ok(cargo)
-}
-
-fn enable_starry_smp_capability(features: &mut Vec<String>) {
-    // Starry always compiles the SMP kernel paths. `SMP` limits the CPUs exposed
-    // at runtime; board configurations may intentionally leave that limit unset.
-    features.push("smp".to_string());
 }
 
 fn patch_starry_cargo_config(

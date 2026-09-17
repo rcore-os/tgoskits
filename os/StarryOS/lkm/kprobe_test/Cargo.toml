@@ -28,12 +28,6 @@ kprobe.workspace = true
 
 [features]
 default = []
-qemu = [
-  "ax-runtime/rtc",
-  "ax-runtime/display",
-  "starry-kernel/input",
-  "starry-kernel/vsock", # auxiliary features
-]
 smp = ["ax-runtime/smp", "axplat-dyn?/smp", "ax-hal/smp"]
 
 k230 = [

@@ -296,14 +296,8 @@ impl SimpleDirOps for InputClassDir {
     }
 }
 
-#[cfg(feature = "input")]
 fn input_device_count() -> u32 {
     crate::pseudofs::dev::event::input_device_count()
-}
-
-#[cfg(not(feature = "input"))]
-fn input_device_count() -> u32 {
-    0
 }
 
 // ========================================================================

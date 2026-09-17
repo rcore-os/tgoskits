@@ -1,5 +1,5 @@
 features = [
-  "qemu",
+  "ax-runtime/display",
   "ax-driver/nvme",
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",

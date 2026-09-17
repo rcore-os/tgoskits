@@ -26,12 +26,6 @@ kmod-tools.workspace = true
 
 [features]
 default = []
-qemu = [
-  "ax-runtime/rtc",
-  "ax-runtime/display",
-  "starry-kernel/input",
-  "starry-kernel/vsock", # auxilary features
-]
 smp = ["ax-runtime/smp", "axplat-dyn?/smp", "ax-hal/smp"]
 
 k230 = [

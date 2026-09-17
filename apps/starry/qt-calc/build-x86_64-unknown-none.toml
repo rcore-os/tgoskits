@@ -9,5 +9,4 @@ features = [
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",
   "ax-driver/virtio-net",
-  "starry-kernel/input",
 ]

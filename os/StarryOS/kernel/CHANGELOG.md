@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- [**breaking**] 移除 `starry-kernel` 的 `input`、`smp`、`vsock` 和 `ipi` Cargo features；对应内核路径改为始终编译。
+
 ## [0.10.2](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.10.1...starry-kernel-v0.10.2) - 2026-09-13
 
 ### Added

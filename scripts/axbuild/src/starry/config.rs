@@ -220,7 +220,7 @@ log = "Warn"
             "qemu-aarch64",
             r#"
 target = "aarch64-unknown-none-softfloat"
-features = ["qemu"]
+features = ["ax-driver/virtio-net"]
 log = "Warn"
 "#,
         );
@@ -313,7 +313,7 @@ log = "Warn"
             "qemu-aarch64",
             r#"
 target = "aarch64-unknown-none-softfloat"
-features = ["qemu"]
+features = ["ax-driver/virtio-net"]
 log = "Warn"
 "#,
         );

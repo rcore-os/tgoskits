@@ -7,10 +7,8 @@ use core::{
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 
-#[cfg(feature = "vsock")]
 use ax_net::vsock::VsockAddr;
 use ax_net::{SocketAddrEx, unix::UnixSocketAddr};
-#[cfg(feature = "vsock")]
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::{net::*, netlink::sockaddr_nl};
 
@@ -47,7 +45,6 @@ pub fn normalize_socket_addr_ex_for_ip_stack(
             ))))
         }
         SocketAddrEx::Unix(_) => Ok(addr),
-        #[cfg(feature = "vsock")]
         SocketAddrEx::Vsock(_) => Ok(addr),
     }
 }
@@ -342,7 +339,6 @@ impl SocketAddrExt for UnixSocketAddr {
 
 // This type should be provided by linux_raw_sys but it's missing.
 // See https://github.com/sunfishcode/linux-raw-sys/issues/169
-#[cfg(feature = "vsock")]
 #[allow(non_camel_case_types)]
 #[repr(C)]
 #[derive(Copy, Clone, AnyBitPattern)]
@@ -354,7 +350,6 @@ pub struct sockaddr_vm {
     pub svm_zero: [u8; 4],
 }
 
-#[cfg(feature = "vsock")]
 impl SocketAddrExt for VsockAddr {
     fn read_from_user(
         current: &crate::task::UserTaskRef,
@@ -407,7 +402,6 @@ impl SocketAddrExt for SocketAddrEx {
         match read_family(current, addr, addrlen)? as u32 {
             AF_INET | AF_INET6 => SocketAddr::read_from_user(current, addr, addrlen).map(Self::Ip),
             AF_UNIX => UnixSocketAddr::read_from_user(current, addr, addrlen).map(Self::Unix),
-            #[cfg(feature = "vsock")]
             AF_VSOCK => VsockAddr::read_from_user(current, addr, addrlen).map(Self::Vsock),
             _ => Err(crate::StarryError::from(crate::Errno::EAFNOSUPPORT)),
         }
@@ -422,7 +416,6 @@ impl SocketAddrExt for SocketAddrEx {
         match self {
             SocketAddrEx::Ip(ip_addr) => ip_addr.write_to_user(current, addr, addrlen),
             SocketAddrEx::Unix(unix_addr) => unix_addr.write_to_user(current, addr, addrlen),
-            #[cfg(feature = "vsock")]
             SocketAddrEx::Vsock(vsock_addr) => vsock_addr.write_to_user(current, addr, addrlen),
         }
     }
@@ -431,7 +424,6 @@ impl SocketAddrExt for SocketAddrEx {
         match self {
             SocketAddrEx::Ip(ip) => ip.family(),
             SocketAddrEx::Unix(unix) => unix.family(),
-            #[cfg(feature = "vsock")]
             SocketAddrEx::Vsock(vsock) => vsock.family(),
         }
     }
