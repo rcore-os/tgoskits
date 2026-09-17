@@ -515,7 +515,7 @@ name = "arceos-vcpu-perf"
 version = "0.1.0"
 dependencies = [
  "ax-std",
- "toml 1.1.6+spec-1.1.0",
+ "toml 1.1.4+spec-1.1.0",
 ]
 
 [[package]]
@@ -5672,9 +5672,9 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.29.3"
+version = "0.29.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aad37963f15c0a692e8de6a50801c9b443ec178e8906b2d857b219ba43e164e0"
+checksum = "c4adbef8d4e7de50e044b02c1039ca6b943dd1d44aaf71b46512ab5300d39f2d"
 dependencies = [
  "anyhow",
  "async-trait",
