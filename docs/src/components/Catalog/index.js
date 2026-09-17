@@ -39,7 +39,7 @@ export default function Catalog({catalog: {kind, entries}}) {
     [entry.name, entry.description, entry.location, ...entry.tags].join(' ').toLocaleLowerCase().includes(search));
   const reset = () => { setQuery(''); setCategory('全部'); };
   return (
-    <Layout title={titles[kind]} description={descriptions[kind]}>
+    <Layout wrapperClassName="site-showcase" title={titles[kind]} description={descriptions[kind]}>
       <div className={styles.catalog} data-kind={kind}>
       <header id="architecture-overview" className={styles.hero}>
         <div className={styles.heroBackdrop} aria-hidden="true">

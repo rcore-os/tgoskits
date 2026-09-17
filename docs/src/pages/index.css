@@ -6,9 +6,9 @@
   --home-base: #f6f8f9;
   --home-padding: clamp(4rem, 6vw, 6rem);
   --home-radius: 24px;
-  --home-max-width: min(1440px, calc(100vw - 4rem));
-  --home-max-width-wide: min(1600px, calc(100vw - 4rem));
-  --home-section-width: min(1280px, calc(100vw - 4rem));
+  --home-max-width: var(--site-content-width);
+  --home-max-width-wide: var(--site-content-width);
+  --home-section-width: var(--site-content-width);
   --home-panel: #ffffff;
   --home-panel-strong: #ffffff;
   --home-panel-border: rgba(24, 33, 62, 0.14);
@@ -134,7 +134,7 @@ html { scroll-behavior: smooth; }
 .hero-banner {
   position: relative;
   min-height: calc(100svh - var(--ifm-navbar-height));
-  padding: var(--home-padding);
+  padding: var(--home-padding) 0;
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -146,8 +146,8 @@ html { scroll-behavior: smooth; }
   position: relative;
   z-index: 2;
   display: grid;
-  width: 100%;
-  max-width: 1440px;
+  width: var(--site-content-width);
+  max-width: none;
   margin: 0 auto;
   grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
   gap: clamp(2.4rem, 4vw, 5rem);
@@ -271,7 +271,7 @@ html { scroll-behavior: smooth; }
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 680px;
+  max-width: none;
   min-height: 100%;
   border-radius: var(--home-radius);
   overflow: hidden;
@@ -500,7 +500,7 @@ html { scroll-behavior: smooth; }
 
 .capability-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
   gap: 1rem;
   margin-top: 1.25rem;
 }
@@ -1052,8 +1052,8 @@ html { scroll-behavior: smooth; }
 
 /* Responsive */
 @media (min-width: 1600px) {
-  .hero-content { max-width: 1600px; grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr); }
-  .hero-terminal-container { max-width: 720px; }
+  .hero-content { max-width: none; grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr); }
+  .hero-terminal-container { max-width: none; }
 }
 
 @media (max-width: 1120px) {
@@ -1133,7 +1133,7 @@ html { scroll-behavior: smooth; }
 .home .section-shell { scroll-margin-top: var(--ifm-navbar-height); }
 .hero-terminal-footer button { min-height: 44px; }
 @media (min-width: 1121px) and (max-height: 850px) {
-  .hero-banner { padding: 2.5rem clamp(2rem, 4vw, 5rem); }
+  .hero-banner { padding: 2.5rem 0; }
   .hero-actions { margin-top: 1.5rem; }
   .hero-stats { margin-top: 1.5rem; }
   .hero-copy h1 { margin-bottom: 1rem; }

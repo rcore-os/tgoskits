@@ -88,7 +88,7 @@ export default function Apps({catalog: {entries}}) {
   const visible = entries.filter(entry => (category === '全部' || entry.category === category) &&
     [entry.name, entry.description, ...entry.tags].join(' ').toLowerCase().includes(query.trim().toLowerCase()));
   const featured = products.map(product => ({...product, entry: entries.find(entry => entry.location === `apps/starry/${product.name}`)})).filter(product => product.entry);
-  return <Layout title="APPs" description="ArceOS 与 StarryOS 上的数据库、Web 服务、模型推理和开发工具。">
+  return <Layout wrapperClassName="site-showcase" title="APPs" description="ArceOS 与 StarryOS 上的数据库、Web 服务、模型推理和开发工具。">
     <main className={styles.page}>
       <header className={`container ${styles.hero}`}>
         <div><p className={styles.kicker}>APPs</p><h1>让应用，<br />运行于你的系统。</h1>

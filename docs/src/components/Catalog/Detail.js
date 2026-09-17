@@ -6,7 +6,7 @@ import styles from './styles.module.css';
 
 export default function Detail({catalog: {kind, entry}}) {
   return (
-    <Layout title={`${entry.name} · ${titles[kind]}`} description={entry.description}>
+    <Layout wrapperClassName="site-showcase" title={`${entry.name} · ${titles[kind]}`} description={entry.description}>
       <main className={`container ${styles.detail}`}>
         <Link to={`/${kind}`}>← 返回 {titles[kind]}</Link>
         <header className={styles.detailHeader}>

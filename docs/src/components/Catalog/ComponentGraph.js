@@ -14,7 +14,7 @@ export default function ComponentGraph({entries}) {
   const [selected, setSelected] = useState('');
   const [showEdges, setShowEdges] = useState(true);
   const {colorMode} = useColorMode();
-  const scale = zoom ?? Math.min(viewportWidth / graph.width, 1);
+  const scale = zoom ?? Math.min(viewportWidth / graph.width, 2);
   const entry = nodes.get(selected);
   const dependencies = new Set(entry?.dependencies.map(dependency => dependency.route) || []);
   const consumers = graph.nodes.filter(node => node.dependencies.some(dependency => dependency.route === selected));

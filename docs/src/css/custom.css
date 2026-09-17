@@ -1,4 +1,5 @@
 :root {
+  --site-content-width: 80vw;
   --ifm-color-primary: #0f766e;
   --ifm-color-primary-dark: #0d635d;
   --ifm-color-primary-darker: #0c5d58;
@@ -26,4 +27,14 @@ html[data-theme='dark'] {
 
 .markdown img {
   border-radius: 12px;
+}
+
+/* Custom landing pages share a fluid desktop canvas without widening document columns. */
+.site-showcase .container {
+  width: var(--site-content-width);
+  max-width: none;
+}
+
+@media (max-width: 1199px) {
+  :root { --site-content-width: calc(100% - 2rem); }
 }
