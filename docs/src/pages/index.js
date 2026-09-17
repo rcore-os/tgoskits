@@ -163,18 +163,39 @@ function ComponentWorkspaceDiagram() {
 }
 
 /* ── Systems Diagram ─────────────────────────────────────── */
+function SystemThumbnail({system}) {
+  return <svg className="systems-diagram__art" viewBox="0 0 480 300" role="img" aria-label={`${system.name} 架构概览：${system.layers.map(layer => layer.join('、')).join('，')}`}>
+    <title>{system.name} 架构概览</title>
+    <g className="systems-diagram__connections">
+      <path d="M240 76v30m-5-6 5 6 5-6M240 158v30m-5-6 5 6 5-6M240 240v22" />
+    </g>
+    {system.layers.map((layer, row) => {
+      const gap = 12;
+      const width = (400 - gap * (layer.length - 1)) / layer.length;
+      return <g key={row} className={`systems-diagram__layer systems-diagram__layer--${row}`}>
+        {layer.map((label, column) => <g key={label}>
+          <rect x={40 + column * (width + gap)} y={24 + row * 82} width={width} height="52" rx="10" />
+          <text x={40 + column * (width + gap) + width / 2} y={56 + row * 82} textAnchor="middle">{label}</text>
+        </g>)}
+      </g>;
+    })}
+    <text className="systems-diagram__foundation" x="240" y="283" textAnchor="middle">{system.foundation}</text>
+  </svg>;
+}
+
 function SystemsDiagram({ systems }) {
   return (
-    <div className="systems-diagram" aria-label="Shared components powering ArceOS StarryOS and Axvisor">
+    <div className="systems-diagram" aria-label="三套系统架构概览">
       <div className="systems-diagram__cards">
         {systems.map((system) => (
           <article className={`systems-diagram__card ${system.accent}`} key={system.name}>
-            <div className="systems-diagram__header"><h3>{system.name}</h3></div>
+            <Link className="systems-diagram__visual" to={`/oss#${system.id}`} aria-label={`${system.name} 完整架构`}><SystemThumbnail system={system} /></Link>
             <div className="systems-diagram__body">
-              <strong>{system.subtitle}</strong>
-              <span className="systems-diagram__tag">{system.tag}</span>
+              <p className="systems-diagram__type">{system.subtitle}</p>
+              <h3><Link to={`/oss#${system.id}`}>{system.name}</Link></h3>
               <p>{system.desc}</p>
               <ul>{system.items.map((item) => (<li key={item}>{item}</li>))}</ul>
+              <Link className="systems-diagram__link" to={`/oss#${system.id}`}>系统架构</Link>
             </div>
           </article>
         ))}
@@ -634,9 +655,18 @@ function ComponentWorkspaceSection() {
 /* ── Systems Section ─────────────────────────────────────── */
 function SystemsSection() {
   const systems = [
-    { accent: 'accent-arceos', name: 'ArceOS', subtitle: '模块化内核', tag: '组合系统', desc: '通过配置组合 ax-alloc、ax-runtime、ax-task、ax-fs-ng、ax-net、ax-hal 等组件，生成面向具体应用场景的系统镜像。', items: ['四架构 Rust、C 与 axtest 用例', '示例覆盖基础运行与设备场景', '基于 feature 和配置裁剪模块能力'] },
-    { accent: 'accent-starry', name: 'StarryOS', subtitle: 'Linux 兼容 OS', tag: '用户态兼容', desc: '实现 Linux 系统调用、ELF 加载、进程与信号语义，并通过 rootfs 和用户态程序验证兼容性。', items: ['四架构系统调用分组测试', '四架构 TTY 输入测试', '板测覆盖网络、USB、PCIe 与 NPU'] },
-    { accent: 'accent-axvisor', name: 'Axvisor', subtitle: 'Type-I Hypervisor', tag: '虚拟化运行时', desc: '管理 VM、vCPU、虚拟地址空间与虚拟设备，并通过静态或动态平台配置启动不同 Guest。', items: ['四架构 Guest 启动冒烟测试', 'x86_64 支持 VMX 与 SVM', 'LoongArch64 支持动态 UEFI 启动'] },
+    { id: 'arceos', accent: 'accent-arceos', name: 'ArceOS', subtitle: '组件化 Unikernel',
+      desc: '应用与运行时按需组合，通过 Cargo feature 选择内存、任务、文件和网络能力，构建面向场景的系统镜像。',
+      layers: [['Rust / C 应用'], ['ax-std', 'ax-libc'], ['API · runtime · 共享组件']], foundation: 'HAL · 平台与设备',
+      items: ['编译期组件装配', '共享运行时与硬件抽象'] },
+    { id: 'axvisor', accent: 'accent-axvisor', name: 'AxVisor', subtitle: 'Type-I Hypervisor',
+      desc: '在 ArceOS 基础能力之上组合虚拟机、地址空间与虚拟设备，通过配置和管理入口控制 Guest 的生命周期。',
+      layers: [['Guest 01', 'Guest 02'], ['AxvmManager · axvm'], ['vCPU', '地址空间', '虚拟设备']], foundation: 'ArceOS · 宿主平台',
+      items: ['客户机资源与生命周期管理', '多架构虚拟化组件'] },
+    { id: 'starry', accent: 'accent-starry', name: 'StarryOS', subtitle: 'Linux 兼容操作系统',
+      desc: '通过系统调用与进程环境承载 Linux 用户态程序，在共享组件之上实现文件、内存、信号和网络语义。',
+      layers: [['Linux 用户态 · Rootfs'], ['starry-kernel · syscall'], ['进程 / 信号', '内存 / 文件']], foundation: 'ArceOS · 共享组件与平台',
+      items: ['Linux 用户态接口兼容', '进程与资源管理语义'] },
   ];
 
   return (
