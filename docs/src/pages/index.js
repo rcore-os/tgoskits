@@ -884,18 +884,24 @@ function HardwareSection() {
         </div>
       </div>
 
-      <div className="hardware-board-evidence">
-        <div className="hardware-board-evidence__heading">
-          <span>Self-hosted CI</span>
-          <strong>当前 CI 清单登记的板卡用例</strong>
+      <section className="hardware-board-evidence" aria-labelledby="hardware-board-title">
+        <div className="hardware-board-evidence__header">
+          <div className="hardware-board-evidence__heading">
+            <p className={layout.eyebrow}>Self-hosted CI</p>
+            <h3 id="hardware-board-title">实体板卡验证</h3>
+            <p>当前 CI 清单登记的板卡与验证场景</p>
+          </div>
+          <Link className={layout.secondaryButton} to="/docs/introduction/platform">平台支持范围</Link>
         </div>
-        <div className="hardware-board-list">
+        <ul className="hardware-board-list">
           {boardEvidence.map((item) => (
-            <div key={item.board}><strong>{item.board}</strong><span>{item.systems}</span></div>
+            <li className="hardware-board" key={item.board}>
+              <div className="hardware-board__title"><span className="hardware-board__icon" aria-hidden="true">{iconLibrary.chip}</span><h4>{item.board}</h4></div>
+              <ul className="hardware-board__scenarios">{item.systems.split(' · ').map(scenario => <li key={scenario}>{scenario}</li>)}</ul>
+            </li>
           ))}
-        </div>
-        <Link className="hardware-board-evidence__link" to="/docs/introduction/platform">查看平台支持范围</Link>
-      </div>
+        </ul>
+      </section>
     </SectionShell>
   );
 }
