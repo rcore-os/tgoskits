@@ -26,7 +26,6 @@ mod memtrack;
 mod mpp_service;
 #[cfg(feature = "sg2002")]
 mod pinmux;
-#[cfg(any(feature = "sg2002", feature = "rk3588-pwm"))]
 pub(super) mod pwm;
 #[cfg(feature = "rga")]
 pub(crate) mod rga;

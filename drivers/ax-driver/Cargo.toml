@@ -116,7 +116,9 @@ starfive-soc = [
     "dep:rdif-reset",
     "dep:tock-registers",
 ]
-rk3588-pwm = [
+pwm = [
+    "dep:sg200x-pwm",
+    "dep:cv181x-clock",
     "rockchip-soc",
     "dep:rdif-pwm",
     "dep:rockchip-pwm",
@@ -145,6 +147,8 @@ list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
 
 [dependencies]
+sg200x-pwm = { workspace = true, optional = true }
+cv181x-clock = { workspace = true, optional = true }
 aic8800 = { workspace = true, optional = true }
 ahci-driver = { workspace = true, optional = true }
 anyhow = { workspace = true }

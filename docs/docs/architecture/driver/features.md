@@ -100,7 +100,7 @@ USB transport 开关和 SoC 初始化开关可明确区分，DWC3 路径还需�
 | `rockchip-ehci` | `usb`、Rockchip SoC 和电源依赖 |
 | `sg2002-dwc2` | `usb`、`sg200x-bsp` |
 | `rk3588-pcie` | PCI、Rockchip 资源、`rk3588-pci` |
-| `rk3588-pwm` | Rockchip 资源、PWM 能力与实现 |
+| `pwm` | Rockchip、SG200x PWM 及所需时钟资源；Starry 固定启用 |
 | `rknpu`、`rga`、`jpeg` | 对应加速核心与 Rockchip 资源 |
 
 `rockchip-soc` 和 `rockchip-pm` 引入的依赖不意味着每个资源都由使用它的 probe 自动启用；具体操作仍由回调和平台资源提供者实现。

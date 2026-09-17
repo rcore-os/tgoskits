@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-pwm-sysfs C)
+add_executable(test-pwm-sysfs src/main.c)
+target_compile_options(test-pwm-sysfs PRIVATE -Wall -Wextra -Werror)
+install(TARGETS test-pwm-sysfs RUNTIME DESTINATION usr/bin/starry-test-suit)
