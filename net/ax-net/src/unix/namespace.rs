@@ -22,6 +22,8 @@ use crate::{NetError, NetResult};
 ///
 /// Provides filesystem backing for Unix domain socket path bindings.
 /// Abstract namespace sockets are handled separately within ax-net.
+/// Callbacks run in sleepable task context: path lookup, creation, and removal
+/// can perform filesystem I/O and wait for filesystem locks.
 pub trait UnixNamespace: Send + Sync {
     /// Resolve an existing socket path binding.
     fn resolve(&self, path: &str) -> NetResult<Arc<BindSlot>>;

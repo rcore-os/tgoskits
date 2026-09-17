@@ -54,7 +54,10 @@ pub mod lockdep;
     any(feature = "mem-stage1-transition", feature = "memtest")
 ))]
 pub mod mem;
-#[cfg(all(feature = "net-loopback", feature = "ax-std"))]
+#[cfg(all(
+    any(feature = "net-loopback", feature = "net-unix-path"),
+    feature = "ax-std"
+))]
 pub mod net;
 #[cfg(all(
     feature = "ax-std",
@@ -135,6 +138,7 @@ test_runner!(
     mem::stage1_transition::run
 );
 test_runner!("net-loopback", run_net_loopback, net::loopback::run);
+test_runner!("net-unix-path", run_net_unix_path, net::unix_path::run);
 test_runner!("sched-cfs", run_sched_cfs, task::priority::run_cfs);
 test_runner!("sched-rr", run_sched_rr, task::priority::run_rr);
 test_runner!("task-affinity", run_task_affinity, task::affinity::run);
@@ -280,6 +284,12 @@ const SELECTED_TESTS: &[TestCase] = &[
         "net-loopback",
         "finite network address smoke",
         run_net_loopback,
+    ),
+    #[cfg(feature = "net-unix-path")]
+    TestCase::new(
+        "net-unix-path",
+        "sleepable Unix pathname namespace",
+        run_net_unix_path,
     ),
     #[cfg(feature = "sched-cfs")]
     TestCase::new("sched-cfs", "CFS scheduling priority smoke", run_sched_cfs),

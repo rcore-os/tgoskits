@@ -40,6 +40,8 @@ task-smp-online = ["task-runtime", "ax-std/ipi"]
 task-stack-guard-page = ["task-runtime", "ax-std/paging", "ax-std/stack-guard-page"]
 task-mutex = ["task-runtime", "ax-std/alloc"]
 net-loopback = ["ax-std", "ax-driver/virtio-net", "ax-std/net", "ax-std/dns"]
+# Owns the Unix namespace provider; run separately from the filesystem suite.
+net-unix-path = ["task-runtime", "ax-driver/virtio-net", "ax-std/net"]
 fs-basic = ["ax-std", "ax-driver/nvme", "ax-std/alloc", "ax-std/fatfs"]
 debug-backtrace = ["ax-std", "dep:axbacktrace", "ax-std/backtrace"]
 debug-panic-path = ["ax-std", "dep:axbacktrace", "ax-std/backtrace"]
