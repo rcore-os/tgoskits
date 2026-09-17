@@ -79,6 +79,14 @@ yarn serve
 - `docs/sidebars.docs.js`：主文档侧边栏
 - `docs/sidebars.community.js`：社区文档侧边栏
 
+## 组件与应用目录
+
+导航中的 Components 和 APPS 分别进入 `/components` 与 `/apps`，两页均支持名称、简介和标签搜索，以及分类筛选。Components 使用按内容高度排列的瀑布流，点击组件进入站内详情。APPs 由 `src/components/Catalog/Apps.js` 展示图文交错的应用介绍、能力示意动画及全部应用目录；点击“配置与详情”或应用名称可原地展开运行配置、README、源码和独立详情入口。动效遵循系统的减少动态效果设置，示意图不代表实际运行截图。
+
+`plugins/catalog/index.js` 的 `collectCatalog()` 在站点启动或构建时生成目录：组件取自 `components/`、`drivers/`、`memory/`、`virtualization/` 下的 Cargo 软件包，排除测试与示例目录；应用取自 `apps/arceos/`、`apps/starry/` 的直接子目录及 `apps/` 顶层工具目录，排除共享脚本目录 `common`。组件以 Cargo.toml 为元数据来源，应用优先使用 README 的正文摘要。运行配置标签仅表示仓库存在对应配置，不代表当前持续集成结果。
+
+新增条目无需维护页面清单。更新对应软件包的 Cargo.toml、README 或应用目录后，执行 `yarn build` 即可更新列表和详情页；缺少 README 时仍保留源码入口。`src/components/Catalog/` 统一维护卡片、筛选、详情及响应式样式。运行网站需要完整仓库，以便插件读取这些目录。
+
 ## 部署
 
 当前文档站点发布到 GitHub Pages：

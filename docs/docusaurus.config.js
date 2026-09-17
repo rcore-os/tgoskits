@@ -8,6 +8,8 @@ const routes = {
   arceos: '/docs/quickstart/arceos',
   starryos: '/docs/quickstart/starryos',
   axvisor: '/docs/quickstart/axvisor',
+  components: '/components',
+  apps: '/apps',
   blog: '/blog',
   community: '/community/introduction',
   github: 'https://github.com/rcore-os/tgoskits',
@@ -33,6 +35,7 @@ const config = {
   },
   themes: ['@docusaurus/theme-mermaid'],
   plugins: [
+    './plugins/catalog',
     [
       '@docusaurus/plugin-content-docs',
       {
@@ -120,7 +123,7 @@ const config = {
           type: 'docSidebar',
           sidebarId: 'docs',
           position: 'left',
-          label: 'Document',
+          label: 'Docs',
         },
         {
           to: routes.blog,
@@ -128,6 +131,8 @@ const config = {
           label: 'Blog',
           position: 'left',
         },
+        {to: routes.components, activeBasePath: 'components', label: 'Components', position: 'left'},
+        {to: routes.apps, activeBasePath: 'apps', label: 'APPs', position: 'left'},
         {
           to: routes.community,
           activeBasePath: 'community',
@@ -167,6 +172,8 @@ const config = {
             {label: 'GitHub 仓库', href: routes.github},
             {label: '构建系统', to: routes.build},
             {label: '架构设计', to: routes.architecture},
+            {label: 'Components', to: routes.components},
+            {label: 'APPS', to: routes.apps},
             {label: 'Blog', to: routes.blog},
             {label: 'Community', to: routes.community},
           ],

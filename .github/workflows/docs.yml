@@ -6,6 +6,16 @@ on:
       - main
     paths:
       - "docs/**"
+      - "Cargo.toml"
+      - "components/**/Cargo.toml"
+      - "components/**/README*.md"
+      - "drivers/**/Cargo.toml"
+      - "drivers/**/README*.md"
+      - "memory/**/Cargo.toml"
+      - "memory/**/README*.md"
+      - "virtualization/**/Cargo.toml"
+      - "virtualization/**/README*.md"
+      - "apps/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
