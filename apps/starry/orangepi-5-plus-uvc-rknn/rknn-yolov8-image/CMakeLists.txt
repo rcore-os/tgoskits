@@ -21,6 +21,15 @@ add_executable(rknn_yolov8_image
     cpp/rknpu2/yolov8.cc
 )
 
+if(NOT CMAKE_CROSSCOMPILING)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_executable(image_runner_verdict_selftest cpp/main.cc cpp/image_runner_mock.cc)
+    target_include_directories(image_runner_verdict_selftest PRIVATE
+        ${RKNN_IMAGE_ROOT}/cpp ${RKNN_IMAGE_ROOT}/utils ${LIBRKNNRT_INCLUDES})
+    add_test(NAME image_runner_verdict COMMAND ${Python3_EXECUTABLE}
+        ${RKNN_IMAGE_ROOT}/cpp/image_runner_verdict_test.py $<TARGET_FILE:image_runner_verdict_selftest>)
+endif()
+
 add_executable(rknn_yolov8_stream
     cpp/stream_main.cc
     cpp/uvc_capture.cc

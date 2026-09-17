@@ -90,14 +90,15 @@ int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx)
 {
     int ret;
     int model_len = 0;
-    char *model;
+    char *model = NULL;
     rknn_context ctx = 0;
 
     // Load RKNN Model
     model_len = read_data_from_file(model_path, &model);
-    if (model == NULL)
+    if (model == NULL || model_len <= 0)
     {
         printf("load_model fail!\n");
+        free(model);
         return -1;
     }
 
@@ -192,6 +193,7 @@ int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx)
 
 int release_yolov8_model(rknn_app_context_t *app_ctx)
 {
+    int ret = 0;
     if (app_ctx->input_attrs != NULL)
     {
         free(app_ctx->input_attrs);
@@ -204,10 +206,10 @@ int release_yolov8_model(rknn_app_context_t *app_ctx)
     }
     if (app_ctx->rknn_ctx != 0)
     {
-        rknn_destroy(app_ctx->rknn_ctx);
+        ret = rknn_destroy(app_ctx->rknn_ctx);
         app_ctx->rknn_ctx = 0;
     }
-    return 0;
+    return ret;
 }
 
 int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, object_detect_result_list *od_results)
@@ -373,15 +375,21 @@ int inference_yolov8_model_with_thresholds_profile(rknn_app_context_t *app_ctx, 
 
     // Post Process
     stage_start = monotonic_ms();
-    post_process(app_ctx, outputs, &letter_box, box_conf_threshold, nms_threshold, od_results);
+    ret = post_process(app_ctx, outputs, &letter_box, box_conf_threshold, nms_threshold, od_results);
     if (profile != NULL)
     {
         profile->postprocess_ms = monotonic_ms() - stage_start;
     }
 
-    // Remeber to release rknn output
+    if (ret != 0)
+    {
+        printf("post_process fail! ret=%d\n", ret);
+        goto out;
+    }
+
+    // Release is part of a completed inference, not just a diagnostic.
     stage_start = monotonic_ms();
-    rknn_outputs_release(app_ctx->rknn_ctx, app_ctx->io_num.n_output, outputs);
+    ret = rknn_outputs_release(app_ctx->rknn_ctx, app_ctx->io_num.n_output, outputs);
     if (profile != NULL)
     {
         profile->outputs_release_ms = monotonic_ms() - stage_start;

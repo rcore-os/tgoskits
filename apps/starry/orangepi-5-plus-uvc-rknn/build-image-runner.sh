@@ -30,7 +30,7 @@ cmake -S "${src_dir}" -B "${host_test_build_dir}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DTARGET_SOC=rk3588
 cmake --build "${host_test_build_dir}" \
-  --target image_utils_jpeg_selftest uvc_capture_layout_selftest uvc_capture_mjpeg_selftest \
+  --target image_utils_jpeg_selftest uvc_capture_layout_selftest uvc_capture_mjpeg_selftest image_runner_verdict_selftest \
   -j"$(nproc)"
 ctest --test-dir "${host_test_build_dir}" --output-on-failure
 

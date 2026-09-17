@@ -32,7 +32,7 @@ target/aka-rk3588/aka-rk3588.tar.gz
 已有归档可通过环境变量复用，进行无网络打包：
 
 ```bash
-AKA_RK3588_SOURCE_ARCHIVE=/path/to/aka-rk3588-dc95d5502f93b61adb7a7c590a170358b93e840a.tar.gz \
+AKA_RK3588_SOURCE_ARCHIVE=/path/to/aka-rk3588-f5d2c731a13692a1e3bc7136188df3f2ffc541c1.tar.gz \
   ./prepare-package.sh
 ```
 
@@ -90,9 +90,10 @@ export LD_LIBRARY_PATH="$PWD/lib:${LD_LIBRARY_PATH:-}"
 
 ## CI 正确性与性能门槛
 
-固定版本 `dc95d55` 要求真实推理成功、两个完整性能窗口、控制流程完成和零退出码。
+固定版本 `f5d2c73` 要求真实推理成功、两个完整性能窗口、控制流程完成和零退出码。
 性能窗口前须通过三轮双向速度反馈检查，流程结束时须连续三次读到三轮速度均为零；
-启动器同时验证 `WHEEL_CHECK=PASS` 和 `WHEEL_STOP=PASS`。命令错误不会被后续
+应用在上述检查和模型释放均成功后输出唯一 `APPLICATION_PASS`；启动器要求该结果及
+零退出码，不再根据中间诊断拼出成功结论。命令错误不会被后续
 成功停车清除，推理失败或提前中断也不会输出总 PASS。部署包使用真实 Feetech 执行器。
 启动脚本优先从自身 `lib/` 加载 RKNN 运行库，支持独立 CI 目录部署。
 
@@ -120,3 +121,17 @@ cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
 [`rknpu-privileged-submit.md`](../../../docs/design/rknpu-privileged-submit.md)。
 `tests/rknpu-submit-access.c` 验证无效对象、GEM 归属、越界和降权后继承 fd 的拒绝路径；
 仅在 Starry root shell 执行，不在 Linux vendor 驱动上执行这些无效对象测试。
+
+## 部署兼容性与基线
+
+运行目录固定为 `/home/orangepi/robot-ci/aka-rk3588`，源码提交号和产物哈希记录在
+部署目录的 `SOURCE` 文件中。部署时持有板卡租约，确认没有程序运行，先备份当前
+目录，再整体切换包含程序、启动器、运行库、模型和本板校准配置的暂存目录。
+不要逐个覆盖正在使用的文件。更早的 `/home/orangepi/robot/aka-rk3588` 保留不变。
+
+程序内部使用新版 `APPLICATION_PASS`，启动器对外仍输出原有 `RESULT=PASS/FAIL`，
+因此合入前后使用同一固定路径的 board 配置均可识别结果。新旧程序和启动器不能混用。
+
+基线约 30 FPS，三个正式配置的门槛为 28 FPS；成功以两个约 10 秒窗口的总帧数除以
+总耗时判断。最终性能汇总延后到动作、停车和清理完成后输出。该基线验证真实 NPU
+和执行器控制，不要求球存在，也不表示验证了真实抓球成功率。
