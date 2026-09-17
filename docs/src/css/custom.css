@@ -38,3 +38,9 @@ html[data-theme='dark'] {
 @media (max-width: 1199px) {
   :root { --site-content-width: calc(100% - 2rem); }
 }
+
+/* Shared image/copy policy: natural text height, bounded artwork, no forced text stretching. */
+[data-visual-pair] {
+  --visual-target-height: min(var(--visual-copy-height, 640px), clamp(640px, 75svh, 800px));
+}
+[data-visual-copy] { min-height: 0; }

@@ -1,3 +1,4 @@
+import useVisualHeight from '../hooks/useVisualHeight';
 import { useEffect, useMemo, useState } from 'react';
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
@@ -259,8 +260,8 @@ function HeroBanner() {
         <circle cx="1000" cy="400" r="3" fill="var(--hero-decoration)" opacity="0.5" className="hero-dot-pulse-delayed" />
       </svg>
 
-      <div className="hero-content">
-        <div className="hero-copy">
+      <div className="hero-content" data-visual-pair>
+        <div className="hero-copy" data-visual-copy>
           <p className="eyebrow">Operating Systems and Virtualization Workspace</p>
           <h1><span>TGOSKits</span><em>面向系统软件研发的一体化工作区</em></h1>
           <p className="lead">
@@ -517,10 +518,10 @@ function CapabilitySection() {
       title="可组合的系统软件基础能力"
       description="统一工作区汇聚基础组件、内存、驱动、文件系统、网络、虚拟化与平台适配，支撑三套系统按需组合能力。"
     >
-      <div className="capability-showcase">
+      <div className="capability-showcase" data-visual-pair>
         <CapabilityIllustration />
 
-        <div className="capability-grid">
+        <div className="capability-grid" data-visual-copy>
           {features.map((feature, index) => (
             <Link className={`capability-card ${staggerClass(index)}`} key={feature.title} to={feature.to}>
               <div className="feature-icon">{iconLibrary[feature.icon]}</div>
@@ -603,9 +604,9 @@ function ArchitectureSection() {
       title="四层职责架构"
       description="场景入口、系统语义、领域能力与平台边界构成四类职责。跨层交互通过依赖声明、trait 和能力接口连接；实际依赖以组件关系图和构建配置为准。"
     >
-      <div className="architecture-layout">
+      <div className="architecture-layout" data-visual-pair>
         <ArchitectureIllustration />
-        <div className="architecture-explanations">
+        <div className="architecture-explanations" data-visual-copy>
           {architectureFlow.map((layer) => (
             <article className={`architecture-explanation architecture-explanation--${layer.tone}`} key={layer.label}>
               <span className="architecture-explanation__index">{layer.index}</span>
@@ -900,6 +901,7 @@ function HardwareSection() {
 
 /* ── Home Page ───────────────────────────────────────────── */
 export default function Home() {
+  useVisualHeight();
   const { siteConfig } = useDocusaurusContext();
   useScrollReveal();
 

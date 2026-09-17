@@ -1,3 +1,4 @@
+import useVisualHeight from '../hooks/useVisualHeight';
 import React, {useState} from 'react';
 import Layout from '@theme/Layout';
 import {usePluginData} from '@docusaurus/useGlobalData';
@@ -12,6 +13,7 @@ import styles from '../components/catalog/styles.module.css';
 const description = '操作系统与虚拟化平台的基础组件、设备驱动和内存管理模块。';
 
 export default function ComponentsPage() {
+  useVisualHeight();
   const {components: entries} = usePluginData('tgoskits-catalog');
   const illustration = useBaseUrl('/images/showcase/component-hierarchy.svg');
   const [query, setQuery] = useState('');
@@ -38,16 +40,16 @@ export default function ComponentsPage() {
             <path className={styles.signalLine} d="M-100 754C180 864 270 204 690 249S1200 514 1700 164" />
           </svg>
         </div>
-        <div className={`container ${styles.heroInner}`}>
-          <div className={styles.heroCopy}>
-          <p className={styles.heroLabel}>TGOSKits · COMPONENT LIBRARY</p>
+        <div className={`container ${styles.heroInner}`} data-visual-pair>
+          <div className={styles.heroCopy} data-visual-copy>
+          <p className={styles.heroLabel}>TGOSKits <span>组件与系统基础</span></p>
           <h1>{titles.components}</h1>
           <p className={styles.intro}>按需组合，跨系统复用。</p>
           <p className={styles.heroDescription}>在统一 Cargo workspace 中组织三套系统、共享组件与平台适配，通过 feature 和目标配置装配所需能力。</p>
           <dl className={styles.frameworkSummary}>
-            <div><dt>三套系统，各有职责</dt><dd>ArceOS 提供模块化运行时，StarryOS 实现 Linux 兼容，Axvisor 管理虚拟机。</dd></div>
-            <div><dt>共享组件，按需组合</dt><dd>调度、内存、驱动、文件、网络与虚拟化按领域维护，各系统保留自己的运行策略。</dd></div>
-            <div><dt>平台契约，连接硬件</dt><dd>ax-plat、axplat-dyn、somehal 与 someboot 连接四种架构、固件与实体设备。</dd></div>
+            <div><dt><span aria-hidden="true">01</span>三套系统，各有职责</dt><dd>ArceOS 提供运行时，StarryOS 实现 Linux 兼容，AxVisor 管理虚拟机。共享基础机制，独立维护系统语义。</dd></div>
+            <div><dt><span aria-hidden="true">02</span>共享组件，按需组合</dt><dd>调度、内存、驱动、文件、网络与虚拟化按领域维护，由 Cargo feature 和目标配置选择装配。</dd></div>
+            <div><dt><span aria-hidden="true">03</span>平台契约，连接硬件</dt><dd>ax-plat 定义契约，axplat-dyn、somehal 与 someboot 接入启动和硬件，支撑四种架构与实体板卡。</dd></div>
           </dl>
           <div className={styles.heroActions}><a className="button button--primary" href="#component-catalog">浏览全部组件</a><Link to="/docs/architecture/overview">架构文档</Link></div>
           <div className={styles.heroMeta}>

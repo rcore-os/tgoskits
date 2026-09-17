@@ -449,7 +449,7 @@ html[data-theme='dark'] .capability-art .capability-art__xtask text { fill: #102
 
 .capability-grid {
   display: grid;
-  align-content: space-between;
+  align-content: start;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
   margin: 0;
@@ -1084,4 +1084,18 @@ html[data-theme='dark'] .capability-art .capability-art__xtask text { fill: #102
     opacity: 1;
     transform: none;
   }
+}
+
+@media (min-width: 1121px) {
+  .capability-showcase { align-items: center; }
+  .capability-illustration { width: min(100%, calc(var(--visual-target-height) * 1.67442)); justify-self: center; }
+}
+
+@media (min-width: 1121px) {
+  .hero-visual { min-height: 0; }
+  .hero-terminal-container { min-height: var(--visual-target-height); }
+}
+@media (min-width: 901px) {
+  .architecture-visual { display: flex; align-items: center; justify-content: center; contain: none; }
+  .architecture-art { height: auto; width: min(100%, calc(var(--visual-target-height) * .93333)); }
 }

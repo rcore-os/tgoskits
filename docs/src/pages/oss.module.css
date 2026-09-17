@@ -71,3 +71,10 @@
   .features { margin-block: 1.5rem; }
 }
 @media (prefers-reduced-motion: reduce) { .systemNav a { transition: none; } }
+
+@media (min-width: 1101px) {
+  .diagram { width: min(100%, calc(var(--visual-target-height) * 1.19565)); justify-self: center; }
+  .system[data-system='starry'] .diagram { width: min(100%, calc(var(--visual-target-height) * 1.15789)); }
+  .diagram svg { max-height: none; }
+  .overviewArt { width: min(100%, calc(var(--visual-target-height) * 1.73077)); justify-self: center; max-height: none; }
+}

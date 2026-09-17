@@ -1,3 +1,4 @@
+import useVisualHeight from '../hooks/useVisualHeight';
 import React from 'react';
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
@@ -45,8 +46,8 @@ function SystemSection({system, index}) {
   const diagramUrl = useBaseUrl(`/images/oss/${system.id}-architecture.svg`);
   const Diagram = system.diagram;
   return <section id={system.id} className={styles.system} data-system={system.id} data-reverse={index % 2 === 1} aria-labelledby={`${system.id}-title`}>
-    <div className={`container ${styles.systemInner}`}>
-      <div className={styles.copy}>
+    <div className={`container ${styles.systemInner}`} data-visual-pair>
+      <div className={styles.copy} data-visual-copy>
         <div className={styles.systemHeading}><span className={styles.sectionNumber}>0{index + 1}</span><p className={styles.systemType}>{system.type}</p></div>
         <h2 id={`${system.id}-title`}>{system.name}</h2>
         <p className={styles.description}>{system.description}</p>
@@ -61,11 +62,12 @@ function SystemSection({system, index}) {
 }
 
 export default function OSs() {
+  useVisualHeight();
   return <Layout wrapperClassName="site-showcase" title="OSs" description="ArceOS、AxVisor 与 Starry 的系统定位、组件架构与运行链路。">
     <main className={styles.page}>
       <header className={styles.banner}>
-        <div className={`container ${styles.header}`}>
-          <div className={styles.bannerCopy}>
+        <div className={`container ${styles.header}`} data-visual-pair>
+          <div className={styles.bannerCopy} data-visual-copy>
             <p className={styles.eyebrow}>TGOSKits / OSs</p>
             <h1>三套系统，一体化开发。</h1>
             <p className={styles.bannerDescription}>从组件化应用到虚拟机，再到 Linux 用户态兼容。在同一工作区中组合共享能力，构建不同的运行环境。</p>

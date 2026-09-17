@@ -20,8 +20,8 @@ export default function ComponentGraph({entries}) {
   const consumers = graph.nodes.filter(node => node.dependencies.some(dependency => dependency.route === selected));
   const related = new Set([selected, ...dependencies, ...consumers.map(node => node.route)]);
   const palette = colorMode === 'dark'
-    ? {bg: '#1c2025', panel: '#252c34', node: '#303b45', border: '#465563', text: '#e9eff4', muted: '#afbdc9', edge: '#92a8b8', accent: '#6edcc3', used: '#85b6ff', consumer: '#deb0ff'}
-    : {bg: '#f6f8fa', panel: '#ffffff', node: '#f5f8fb', border: '#d7e1e9', text: '#233b4b', muted: '#667d8d', edge: '#8ba3b2', accent: '#087e73', used: '#356ac0', consumer: '#9361b7'};
+    ? {bg: '#223932', panel: '#252c34', node: '#303b45', border: '#465563', text: '#e9eff4', muted: '#afbdc9', edge: '#92a8b8', accent: '#6edcc3', used: '#85b6ff', consumer: '#deb0ff'}
+    : {bg: '#e9f4f0', panel: '#ffffff', node: '#f5f8fb', border: '#d7e1e9', text: '#233b4b', muted: '#667d8d', edge: '#8ba3b2', accent: '#087e73', used: '#356ac0', consumer: '#9361b7'};
   useEffect(() => {
     const observer = new ResizeObserver(([entry]) => setViewportWidth(entry.contentRect.width));
     observer.observe(viewport.current);
@@ -53,7 +53,10 @@ export default function ComponentGraph({entries}) {
   }
   return <div className={styles.explorer}>
     <div className={styles.toolbar}>
-      <label>定位组件<select value={selected} onChange={event => choose(event.target.value)}><option value="">全部组件</option>{entries.map(item => <option key={item.route} value={item.route}>{item.name} · {item.category}</option>)}</select></label>
+      <div className={styles.selection}>
+        <select aria-label="定位组件" value={selected} onChange={event => choose(event.target.value)}><option value="">全部组件</option>{entries.map(item => <option key={item.route} value={item.route}>{item.name} · {item.category}</option>)}</select>
+      <div className={styles.status} role="status">{graph.nodes.length} 个组件 · {graph.edges.length} 条内部直接依赖{entry ? ` · 已选择 ${entry.name}` : ''}</div>
+      </div>
       <div className={styles.controls}>
         <button type="button" aria-label="缩小架构图" disabled={scale <= .15} onClick={() => resize(Math.max(.15, scale / 1.25))}>−</button>
         <output aria-label="缩放比例">{Math.round(scale * 100)}%</output>
@@ -103,7 +106,6 @@ export default function ComponentGraph({entries}) {
         </g>)}
       </svg>
     </div>
-    <div className={styles.status} role="status">{graph.nodes.length} 个组件 · {graph.edges.length} 条内部直接依赖{entry ? ` · 已选择 ${entry.name}` : ''}</div>
     {entry && <div className={styles.inspector}>
       <><div className={styles.inspectorHeading}><div><h3>{entry.name}</h3><p>{entry.description}</p></div><div><Link to={entry.route}>组件详情</Link><button type="button" onClick={() => setSelected('')}>清除选择</button></div></div>
         <div className={styles.relations}><div><h4>直接依赖 · {entry.dependencies.length}</h4>{entry.dependencies.length ? entry.dependencies.map(item => <button type="button" key={item.route} onClick={() => choose(item.route)}>{item.name}</button>) : <p>无目录内直接依赖。</p>}</div><div><h4>直接使用方 · {consumers.length}</h4>{consumers.length ? consumers.map(item => <button type="button" key={item.route} onClick={() => choose(item.route)}>{item.name}</button>) : <p>无目录内直接使用方。</p>}</div></div></>

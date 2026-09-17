@@ -89,3 +89,8 @@ details[open] > summary > span:last-child { transform: rotate(45deg); }
   .heroVisual { height: clamp(420px, 25vw, 780px); }
   .tile { width: clamp(130px, 7vw, 240px); height: clamp(130px, 7vw, 240px); }
 }
+
+@media (min-width: 768px) {
+  .art { width: min(100%, calc(var(--visual-target-height) * 1.52941)); justify-self: center; }
+  .heroVisual { height: var(--visual-target-height); min-height: 320px; }
+}

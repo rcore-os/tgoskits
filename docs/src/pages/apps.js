@@ -1,3 +1,4 @@
+import useVisualHeight from '../hooks/useVisualHeight';
 import React, {useEffect, useRef, useState} from 'react';
 import Layout from '@theme/Layout';
 import {usePluginData} from '@docusaurus/useGlobalData';
@@ -82,6 +83,7 @@ function AppResources({entry}) {
 }
 
 export default function AppsPage() {
+  useVisualHeight();
   const {apps: entries} = usePluginData('tgoskits-catalog');
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('全部');
@@ -91,8 +93,8 @@ export default function AppsPage() {
   const featured = products.map(product => ({...product, entry: entries.find(entry => entry.location === `apps/starry/${product.name}`)})).filter(product => product.entry);
   return <Layout wrapperClassName="site-showcase" title="APPs" description="ArceOS 与 StarryOS 上的数据库、Web 服务、模型推理和开发工具。">
     <main className={styles.page}>
-      <header className={`container ${styles.hero}`}>
-        <div><p className={styles.kicker}>APPs</p><h1>让应用，运行于你的系统。</h1>
+      <header className={`container ${styles.hero}`} data-visual-pair>
+        <div data-visual-copy><p className={styles.kicker}>APPs</p><h1>让应用，运行于你的系统。</h1>
           <p className={styles.lead}>ArceOS 与 StarryOS 的应用实践，从 Web 服务、数据库到模型推理。</p>
           <a className={styles.primary} href="#applications">浏览全部应用</a>
           <p className={styles.count}><strong>{entries.length}</strong> 个应用与工具 · ArceOS / StarryOS</p>
@@ -107,9 +109,9 @@ export default function AppsPage() {
       </header>
       <div className={styles.productNav}><div className="container">{featured.map(product => <a key={product.name} href={`#product-${product.name}`}>{product.category}<span>{product.title}</span></a>)}</div></div>
       <div className="container">
-        {featured.map((product, index) => <section key={product.name} id={`product-${product.name}`} className={styles.product}>
+        {featured.map((product, index) => <section key={product.name} id={`product-${product.name}`} className={styles.product} data-visual-pair>
           <ProductArt type={product.type} />
-          <div className={styles.productCopy}><p className={styles.kicker}>0{index + 1} / {product.category}</p>
+          <div className={styles.productCopy} data-visual-copy><p className={styles.kicker}>0{index + 1} / {product.category}</p>
             <h2>{product.title}</h2><p>{product.description}</p>
             <ul className={styles.features}>{product.features.map(feature => <li key={feature}>{feature}</li>)}</ul>
             <details className={styles.productDetails}>
