@@ -253,31 +253,30 @@ impl Configurable for UnixSocket {
 impl SocketOps for UnixSocket {
     fn bind(&self, local_addr: SocketAddrEx) -> NetResult {
         let local_addr = local_addr.into_unix()?;
-        let mut guard = self.local_addr.lock();
-        if matches!(&*guard, UnixSocketAddr::Unnamed) {
-            with_slot_or_insert(&local_addr, |slot| self.transport.bind(slot, &local_addr))?;
-            *guard = local_addr;
-            self.owns_bind.store(true, Ordering::Release);
-        } else {
+        if !matches!(&*self.local_addr.lock(), UnixSocketAddr::Unnamed) {
             return Err(NetError::InvalidInput);
         }
+        // Like Linux `unix_bind_bsd`, the node is created without a socket
+        // spinlock held: the filesystem namespace can sleep. A second bind that
+        // races past the check above is refused by the transport.
+        with_slot_or_insert(&local_addr, |slot| self.transport.bind(slot, &local_addr))?;
+        *self.local_addr.lock() = local_addr;
+        self.owns_bind.store(true, Ordering::Release);
         Ok(())
     }
 
     fn start_connect(&self, remote_addr: SocketAddrEx) -> NetResult<ConnectStatus> {
         let remote_addr = remote_addr.into_unix()?;
+        if self.remote_addr.lock().is_some() {
+            return Err(NetError::InvalidInput);
+        }
         let local_addr = self.local_addr.lock().clone();
-        let accept_poll = {
-            let mut guard = self.remote_addr.lock();
-            if guard.is_some() {
-                return Err(NetError::InvalidInput);
-            }
-            let accept_poll = with_slot(&remote_addr, |slot| {
-                self.transport.connect(slot, &local_addr)
-            })?;
-            *guard = Some(remote_addr);
-            accept_poll
-        };
+        // Like Linux `unix_stream_connect`, the peer is looked up before any
+        // socket state lock is taken; the transport refuses a racing connect.
+        let accept_poll = with_slot(&remote_addr, |slot| {
+            self.transport.connect(slot, &local_addr)
+        })?;
+        *self.remote_addr.lock() = Some(remote_addr);
         self.transport.finish_connect(accept_poll);
         Ok(ConnectStatus::Connected)
     }
@@ -403,6 +402,75 @@ mod tests {
             from,
             SocketAddrEx::Unix(UnixSocketAddr::Path(path)) if path.as_ref() == "server.sock"
         ));
+    }
+
+    /// Stands in for the filesystem namespace and records, on every call,
+    /// whether the address locks of the watched sockets were free.
+    #[derive(Default)]
+    struct ProbeNamespace {
+        slots: SpinLock<HashMap<alloc::string::String, Arc<BindSlot>>>,
+    }
+
+    static WATCHED: SpinLock<alloc::vec::Vec<(&'static str, Arc<UnixSocket>)>> =
+        SpinLock::new(alloc::vec::Vec::new());
+    static LOCKS_FREE: SpinLock<alloc::vec::Vec<(&'static str, bool)>> =
+        SpinLock::new(alloc::vec::Vec::new());
+
+    impl ProbeNamespace {
+        fn observe(path: &str) {
+            let watched = WATCHED.lock();
+            for (name, socket) in watched.iter().filter(|(name, _)| *name == path) {
+                let free = !socket.local_addr.is_locked() && !socket.remote_addr.is_locked();
+                LOCKS_FREE.lock().push((name, free));
+            }
+        }
+    }
+
+    impl UnixNamespace for ProbeNamespace {
+        fn resolve(&self, path: &str) -> NetResult<Arc<BindSlot>> {
+            Self::observe(path);
+            self.slots
+                .lock()
+                .get(path)
+                .cloned()
+                .ok_or(NetError::NotFound)
+        }
+
+        fn bind(&self, path: &str) -> NetResult<Arc<BindSlot>> {
+            Self::observe(path);
+            Ok(self.slots.lock().entry(path.into()).or_default().clone())
+        }
+
+        fn unbind(&self, path: &str) -> NetResult<()> {
+            self.slots.lock().remove(path);
+            Ok(())
+        }
+    }
+
+    // A filesystem namespace can sleep on filesystem locks, so reaching it with
+    // an address spinlock held trips the scheduler safe-point check (#2351).
+    #[test]
+    fn path_bind_and_connect_reach_the_namespace_without_address_locks() {
+        const PATH: &str = "lock-order.sock";
+        register_unix_namespace(ProbeNamespace::default());
+        let path = || SocketAddrEx::Unix(UnixSocketAddr::Path(Arc::from(PATH)));
+
+        let server = Arc::new(UnixSocket::new(StreamTransport::new(1)));
+        WATCHED.lock().push((PATH, server.clone()));
+        server.bind(path()).unwrap();
+        server.listen(1).unwrap();
+
+        let client = Arc::new(UnixSocket::new(StreamTransport::new(2)));
+        WATCHED.lock().push((PATH, client.clone()));
+        client.start_connect(path()).unwrap();
+
+        let observed: alloc::vec::Vec<bool> = LOCKS_FREE
+            .lock()
+            .iter()
+            .filter(|(name, _)| *name == PATH)
+            .map(|(_, free)| *free)
+            .collect();
+        assert_eq!(observed, [true, true, true]);
     }
 
     #[test]
