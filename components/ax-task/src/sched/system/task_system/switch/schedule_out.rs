@@ -122,8 +122,11 @@ impl TaskSystem {
                 let core = transaction.current_core().unwrap_or_else(|| {
                     task_runtime::fatal_invariant(0x5343_1105, thread.as_u64() as usize)
                 });
-                let queued_entity = transaction.put_prev_unlinked_current(thread, reason);
-                core.publish_effective_schedule(policy, &queued_entity);
+                // Fair/stop requeue changes no published scheduling key.
+                // Policy and PI transactions publish that key under this rq
+                // lock; only Deadline has an entity-owned absolute deadline,
+                // and prepare_owner_rq_schedule_out excludes that class.
+                transaction.put_prev_unlinked_current(thread, reason);
                 OwnerRqScheduledOut {
                     core: PreviousSwitchOwnership::retained(core),
                     endpoint,
