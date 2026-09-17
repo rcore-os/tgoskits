@@ -1,1 +1,1 @@
-export const titles = {components: 'Components', apps: 'APPs'};
+export const titles = {components: 'Components', apps: 'Showcase'};

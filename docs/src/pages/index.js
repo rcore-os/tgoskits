@@ -241,7 +241,7 @@ function HeroBanner() {
     { label: '构建系统', to: '/docs/build/overview' },
     { label: '架构视图', to: '/docs/architecture/overview' },
     { label: 'Components', to: '/components' },
-    { label: 'APPs', to: '/apps' },
+    { label: 'Showcase', to: '/apps' },
   ];
 
   return (

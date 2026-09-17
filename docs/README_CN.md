@@ -73,7 +73,7 @@ yarn serve
 - `docs/docs/`：主文档内容
 - `docs/blog/`：Blog 内容
 - `docs/community/`：社区文档
-- `docs/src/pages/`：由 Docusaurus 自动注册的首页、OSs、Components、APPs 页面
+- `docs/src/pages/`：由 Docusaurus 自动注册的首页、OSs、Components、应用案例页面
 - `docs/src/components/catalog/`：目录页面共用的架构图、依赖图、图标和样式
 - `docs/src/templates/CatalogDetail.js`：插件注册的组件与应用详情模板
 - `docs/plugins/catalog/`：构建时扫描目录、生成数据与注册路由
@@ -89,7 +89,7 @@ OSs 菜单进入 `/oss`，由 `src/pages/oss.js` 按 ArceOS、AxVisor、Starry �
 
 ## 组件与应用目录
 
-导航中的 Components 和 APPS 分别进入 `/components` 与 `/apps`，两页均支持名称、简介和标签搜索，以及分类筛选。Components 依次展示整屏架构介绍 Hero、COMPONENT MAP 层级依赖全图和全部组件卡片；总体介绍集中在 Hero，不再设置重复介绍区或背景动画按钮。背景动效播放一次，并遵循减少动态效果设置；`src/components/catalog/Architecture.js` 组织说明，`ComponentGraph.js` 展示全部目录节点和依赖，支持缩放、定位、高亮直接依赖与使用方以及 SVG 下载。`plugins/catalog/graph-layout.js` 按系统集成、共享领域和平台归属排列节点，不把领域层次当成依赖的拓扑层次，最下方以等宽等高的卡片网格展示全部目录条目；卡片提供摘要和功能数量，点击后查看完整详情。手机端 Hero 按内容自然增高，框架图可点击打开原始 SVG。APPs 由 `src/pages/apps.js` 展示图文交错的应用介绍、能力示意动画及全部应用目录；点击“配置与详情”或应用名称可原地展开运行配置、README、源码和独立详情入口。动效遵循系统的减少动态效果设置，示意图不代表实际运行截图。
+导航中的 Components 和应用案例分别进入 `/components` 与 `/apps`。Components 支持搜索与分类筛选。Components 依次展示整屏架构介绍 Hero、COMPONENT MAP 层级依赖全图和全部组件卡片；总体介绍集中在 Hero，不再设置重复介绍区或背景动画按钮。背景动效播放一次，并遵循减少动态效果设置；`src/components/catalog/Architecture.js` 组织说明，`ComponentGraph.js` 展示全部目录节点和依赖，支持缩放、定位、高亮直接依赖与使用方以及 SVG 下载。`plugins/catalog/graph-layout.js` 按系统集成、共享领域和平台归属排列节点，不把领域层次当成依赖的拓扑层次，最下方以等宽等高的卡片网格展示全部目录条目；卡片提供摘要和功能数量，点击后查看完整详情。手机端 Hero 按内容自然增高，框架图可点击打开原始 SVG。应用案例由 `src/pages/apps.js` 的 `products` 选择 PostgreSQL、Nginx、llama.cpp、Redis 和 FFmpeg，以图文说明应用场景、功能范围和运行准备，配置与源码入口仍来自插件扫描数据。页面只展示精选案例，保留 `/apps` 和已有详情路由；新增案例需核对应用 README 与运行配置。动效遵循系统的减少动态效果设置。
 
 `plugins/catalog/index.js` 的 `collectCatalog()` 在站点启动或构建时生成目录：组件取自 `components/`、`drivers/`、`memory/`、`virtualization/`、`fs/`、`net/`、`platforms/` 和三套系统目录下的 Cargo 软件包，排除测试、示例与 xtask 目录；应用取自 `apps/arceos/`、`apps/starry/` 的直接子目录及 `apps/` 顶层工具目录，排除共享脚本目录 `common`。组件以 Cargo.toml 为元数据来源，应用优先使用 README 的正文摘要。运行配置标签仅表示仓库存在对应配置，不代表当前持续集成结果。
 

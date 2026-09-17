@@ -134,7 +134,7 @@ const config = {
         },
         {to: routes.components, activeBasePath: 'components', label: 'Components', position: 'left'},
         {to: routes.oss, activeBasePath: 'oss', label: 'OSs', position: 'left'},
-        {to: routes.apps, activeBasePath: 'apps', label: 'APPs', position: 'left'},
+        {to: routes.apps, activeBasePath: 'apps', label: 'Showcase', position: 'left'},
         {
           to: routes.community,
           activeBasePath: 'community',
@@ -176,7 +176,7 @@ const config = {
             {label: '构建系统', to: routes.build},
             {label: '架构设计', to: routes.architecture},
             {label: 'Components', to: routes.components},
-            {label: 'APPS', to: routes.apps},
+            {label: 'Showcase', to: routes.apps},
             {label: 'Blog', to: routes.blog},
             {label: 'Community', to: routes.community},
           ],

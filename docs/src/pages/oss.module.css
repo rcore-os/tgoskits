@@ -7,9 +7,9 @@
   color: var(--os-text);
   background: var(--ifm-background-color);
 }
-.banner { position: relative; overflow: hidden; background: linear-gradient(120deg, var(--os-banner-start, #eaf5f1), var(--os-surface) 65%, var(--os-banner-end, #eef2fa)); }
+.banner { min-height: calc(100svh - var(--ifm-navbar-height)); display: flex; align-items: center; position: relative; overflow: hidden; background: linear-gradient(120deg, var(--os-banner-start, #eaf5f1), var(--os-surface) 65%, var(--os-banner-end, #eef2fa)); }
 .banner::before { content: ''; position: absolute; width: 60vw; height: 60vw; border: 1px solid var(--os-line); border-radius: 50%; top: -28vw; right: -18vw; opacity: .5; pointer-events: none; }
-.header { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); align-items: center; gap: 2.5rem 3rem; padding-block: 4rem 2rem; }
+.header { min-height: inherit; align-content: center; position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); align-items: center; gap: 2.5rem 3rem; padding-block: 4rem 2rem; }
 .header h1 { font-size: clamp(2.25rem, 3vw, 3.5rem); letter-spacing: -.045em; line-height: 1.2; margin-bottom: 1.5rem; }
 .eyebrow { color: var(--os-accent); font-size: .875rem; font-weight: 650; letter-spacing: .09em; margin: 0 0 1rem; }
 .bannerDescription { color: var(--os-muted); font-size: 1.125rem; line-height: 1.85; text-wrap: pretty; margin-bottom: 1.5rem; }
@@ -76,5 +76,12 @@
   .diagram { width: min(100%, calc(var(--visual-target-height) * 1.19565)); justify-self: center; }
   .system[data-system='starry'] .diagram { width: min(100%, calc(var(--visual-target-height) * 1.15789)); }
   .diagram svg { max-height: none; }
-  .overviewArt { width: min(100%, calc(var(--visual-target-height) * 1.73077)); justify-self: center; max-height: none; }
+  .overviewArt { width: 100%; justify-self: center; max-height: 60svh; }
 }
+
+@media (min-width: 1101px) {
+  .header { grid-template-rows: 1fr auto; padding-block: 3rem 2rem; }
+  .bannerCopy { padding-block: 2rem; }
+  .bannerDescription { line-height: 1.9; margin-block: 1.6rem 2rem; }
+}
+@media (max-width: 1100px) { .header { min-height: auto; } }

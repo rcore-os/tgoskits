@@ -8,13 +8,21 @@ import styles from './apps.module.css';
 const products = [
   {name: 'postgresql', title: 'PostgreSQL', category: '数据库', type: 'database',
     description: '在 StarryOS 上运行关系数据库，覆盖数据定义、查询、事务与数据完整性验证。',
-    features: ['SQL 查询与关联', '事务提交与回滚', '批量写入与数据校验']},
+    features: ['SQL 查询与关联', '事务提交与回滚', '批量写入与数据校验'], preparation: '通过应用运行器准备 PostgreSQL 环境，初始化数据库并执行结构化 SQL 工作负载。'},
   {name: 'nginx', title: 'Nginx', category: 'Web 服务', type: 'web',
     description: '将 Web 服务带到 StarryOS。通过统一应用入口启动 Nginx，按需执行基础检查、分阶段验证与调试。',
-    features: ['独立应用运行入口', '多架构 QEMU 配置', '分阶段验证与调试']},
+    features: ['独立应用运行入口', '多架构 QEMU 配置', '分阶段验证与调试'], preparation: '默认 QEMU 配置执行基础功能检查，分阶段与调试模式使用各自的运行配置。'},
   {name: 'llama-cpp', title: 'llama.cpp', category: '模型推理', type: 'inference',
     description: '从模型加载到文本生成，在 StarryOS 上运行 llama.cpp，验证 Alpine / musl 环境中的本地推理流程。',
-    features: ['量化模型加载', 'CPU 文本生成', 'Alpine / musl 兼容验证']},
+    features: ['量化模型加载', 'CPU 文本生成', 'Alpine / musl 兼容验证'], preparation: '运行前需将 llama-cli 和 SmolLM2-135M Q4_0 模型注入 Alpine rootfs。案例覆盖模型加载和 token 生成。'},
+  {name: 'redis', title: 'Redis', category: '缓存与存储', type: 'cache',
+    description: '在 StarryOS 中运行 Redis 数据服务，验证键值操作及持久化相关行为，连接网络服务、文件 I/O 与用户态运行环境。',
+    features: ['Redis 功能检查', '独立 AOF 追加写验证', '显式压力测试配置'],
+    preparation: '预构建步骤将 Redis、运行库和测试脚本装入应用 overlay。AOF 与压力场景通过独立配置启动。'},
+  {name: 'ffmpeg', title: 'FFmpeg', category: '音视频处理', type: 'media',
+    description: '将音视频处理工具运行在 StarryOS 上，以 FFmpeg 应用镜像和测试脚本验证多媒体程序所需的文件、内存与线程能力。',
+    features: ['独立 FFmpeg 应用镜像', '音视频处理工具链', 'QEMU 应用脚本验证'],
+    preparation: '使用 FFmpeg 专用 rootfs 和应用配置，通过 /usr/bin/test_ffmpeg.sh 执行案例验证。具体媒体格式与检查项以脚本为准。'},
 ];
 
 function ProductArt({type}) {
@@ -31,7 +39,7 @@ function ProductArt({type}) {
     return () => observer.disconnect();
   }, []);
   return <figure ref={figure} className={styles.art} data-type={type} data-visible={visible}>
-    <svg viewBox="0 0 520 340" role="img" aria-label={{database: 'SQL 查询连接数据库表的示意图', web: '浏览器请求连接 Nginx 服务的示意图', inference: '模型从输入到文本生成的示意图'}[type]}>
+    <svg viewBox="0 0 520 340" role="img" aria-label={{database: 'SQL 查询连接数据库表的示意图', web: '浏览器请求连接 Nginx 服务的示意图', inference: '模型从输入到文本生成的示意图', cache: 'Redis 键值存储与持久化示意图', media: 'FFmpeg 输入媒体、处理与输出示意图'}[type]}>
       <g stroke="currentColor" opacity=".08">
         {[60, 120, 180, 240, 300, 360, 420, 480].map(x => <path key={x} d={`M${x} 0V340`} />)}
         {[50, 110, 170, 230, 290].map(y => <path key={y} d={`M0 ${y}H520`} />)}
@@ -62,13 +70,26 @@ function ProductArt({type}) {
           <rect x="380" y="105" width="110" height="130" rx="12" fill="#fff" stroke="#c8a8e0" /><path d="M397 133h62m-62 22h75m-75 22h45m-45 22h60" stroke="#b69ad4" strokeWidth="6" strokeLinecap="round" />
         </g>
       </>}
+      {type === 'cache' && <g className={styles.illustration}>
+        <rect x="55" y="75" width="190" height="190" rx="16" fill="#fff" stroke="#dbabb0" />
+        <text x="80" y="113" fill="#a53b4b">Redis</text>
+        {[0, 1, 2].map(row => <g key={row}><rect x="78" y={133 + row * 36} width="56" height="23" rx="4" fill="#f5dce0" /><rect x="145" y={133 + row * 36} width="75" height="23" rx="4" fill="#f9edf0" /></g>)}
+        <path className={styles.trace} d="M245 170h65" />
+        <rect x="310" y="116" width="150" height="108" rx="14" fill="#ac4658" /><text x="385" y="163" textAnchor="middle" fill="#fff">AOF</text><text x="385" y="198" textAnchor="middle" fill="#fff">持久化</text>
+      </g>}
+      {type === 'media' && <g className={styles.illustration}>
+        <rect x="35" y="113" width="125" height="114" rx="14" fill="#e1f0f7" stroke="#8dbace" /><path d="m83 145 35 25-35 25Z" fill="#508caa" />
+        <path className={styles.trace} d="M160 170h35m130 0h35" />
+        <rect x="195" y="90" width="130" height="160" rx="18" fill="#326580" /><text x="260" y="155" textAnchor="middle" fill="#fff">FFmpeg</text><text x="260" y="193" textAnchor="middle" fill="#fff">媒体处理</text>
+        <rect x="360" y="113" width="125" height="114" rx="14" fill="#fff" stroke="#8dbace" /><path d="M379 174h12l8-25 12 48 12-35 9 12h31" fill="none" stroke="#508caa" strokeWidth="3" />
+      </g>}
     </svg>
   </figure>;
 }
 
-function AppResources({entry}) {
+function AppResources({entry, product}) {
   return <div className={styles.resources}>
-    <p>{entry.description}</p>
+    <p>{product.preparation}</p>
     <div className={styles.links}>
       <Link to={entry.route}>完整详情</Link>
       {entry.readme && <Link href={entry.readme}>README</Link>}
@@ -85,19 +106,14 @@ function AppResources({entry}) {
 export default function AppsPage() {
   useVisualHeight();
   const {apps: entries} = usePluginData('tgoskits-catalog');
-  const [query, setQuery] = useState('');
-  const [category, setCategory] = useState('全部');
-  const categories = ['全部', ...new Set(entries.map(entry => entry.category))];
-  const visible = entries.filter(entry => (category === '全部' || entry.category === category) &&
-    [entry.name, entry.description, ...entry.tags].join(' ').toLowerCase().includes(query.trim().toLowerCase()));
   const featured = products.map(product => ({...product, entry: entries.find(entry => entry.location === `apps/starry/${product.name}`)})).filter(product => product.entry);
-  return <Layout wrapperClassName="site-showcase" title="APPs" description="ArceOS 与 StarryOS 上的数据库、Web 服务、模型推理和开发工具。">
+  return <Layout wrapperClassName="site-showcase" title="Showcase" description="TGOSKits 大型应用实践：PostgreSQL、Redis、Nginx、llama.cpp 与 FFmpeg。">
     <main className={styles.page}>
       <header className={`container ${styles.hero}`} data-visual-pair>
-        <div data-visual-copy><p className={styles.kicker}>APPs</p><h1>让应用，运行于你的系统。</h1>
-          <p className={styles.lead}>ArceOS 与 StarryOS 的应用实践，从 Web 服务、数据库到模型推理。</p>
-          <a className={styles.primary} href="#applications">浏览全部应用</a>
-          <p className={styles.count}><strong>{entries.length}</strong> 个应用与工具 · ArceOS / StarryOS</p>
+        <div data-visual-copy><p className={styles.kicker}>Showcase</p><h1>从系统能力，到应用实践。</h1>
+          <p className={styles.lead}>来自源码 apps/ 的大型应用案例，展示 StarryOS 在数据库、Web 服务、模型推理与音视频处理中的应用实践。</p>
+          <a className={styles.primary} href="#applications">浏览应用案例</a>
+          <p className={styles.count}><strong>{featured.length}</strong> 个应用案例 · StarryOS</p>
         </div>
         <div className={styles.heroVisual} aria-hidden="true">
           <div className={styles.halo} />
@@ -108,32 +124,19 @@ export default function AppsPage() {
         </div>
       </header>
       <div className={styles.productNav}><div className="container">{featured.map(product => <a key={product.name} href={`#product-${product.name}`}>{product.category}<span>{product.title}</span></a>)}</div></div>
-      <div className="container">
+      <div id="applications" className="container">
         {featured.map((product, index) => <section key={product.name} id={`product-${product.name}`} className={styles.product} data-visual-pair>
           <ProductArt type={product.type} />
           <div className={styles.productCopy} data-visual-copy><p className={styles.kicker}>0{index + 1} / {product.category}</p>
             <h2>{product.title}</h2><p>{product.description}</p>
             <ul className={styles.features}>{product.features.map(feature => <li key={feature}>{feature}</li>)}</ul>
             <details className={styles.productDetails}>
-              <summary>配置与详情 <span aria-hidden="true">＋</span></summary>
-              <AppResources entry={product.entry} />
+              <summary>运行与源码 <span aria-hidden="true">＋</span></summary>
+              <AppResources entry={product.entry} product={product} />
             </details>
           </div>
         </section>)}
       </div>
-      <section id="applications" className={styles.directory}>
-        <div className="container"><div className={styles.directoryHeading}><div><p className={styles.kicker}>APPLICATIONS</p><h2>全部应用</h2></div>
-          <label><span className={styles.srOnly}>搜索名称、简介或标签</span><input type="search" placeholder="搜索应用…" value={query} onChange={event => setQuery(event.target.value)} /></label>
-        </div>
-        <div className={styles.categories}>{categories.map(item => <button type="button" key={item} aria-pressed={category === item} onClick={() => setCategory(item)}>{item}</button>)}</div>
-        <p role="status">显示 {visible.length} / {entries.length} 项</p>
-        <div className={styles.appList}>{visible.map(entry => <details key={entry.route} className={styles.appRow}>
-          <summary><strong>{entry.name}</strong><span>{entry.category}</span><span aria-hidden="true">＋</span></summary>
-          <AppResources entry={entry} />
-        </details>)}</div>
-        {!visible.length && <div className={styles.empty}><h3>没有找到匹配的应用</h3><button type="button" onClick={() => {setQuery(''); setCategory('全部');}}>清除筛选</button></div>}
-        </div>
-      </section>
     </main>
   </Layout>;
 }

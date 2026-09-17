@@ -1099,3 +1099,12 @@ html[data-theme='dark'] .capability-art .capability-art__xtask text { fill: #102
   .architecture-visual { display: flex; align-items: center; justify-content: center; contain: none; }
   .architecture-art { height: auto; width: min(100%, calc(var(--visual-target-height) * .93333)); }
 }
+
+/* Landing-page visuals need a display-sized canvas, not a short paragraph-sized one. */
+@media (min-width: 1121px) {
+  .home [data-visual-pair] { --visual-target-height: max(var(--visual-copy-height, 640px), min(65svh, 850px)); }
+  .capability-showcase { align-items: stretch; }
+  .capability-illustration { align-self: center; }
+  .capability-grid { align-content: stretch; }
+  .hero-copy { align-self: center; }
+}
