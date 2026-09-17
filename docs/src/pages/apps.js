@@ -1,4 +1,5 @@
 import useVisualHeight from '../hooks/useVisualHeight';
+import layout from '../components/layout/page.module.css';
 import React, {useEffect, useRef, useState} from 'react';
 import Layout from '@theme/Layout';
 import {usePluginData} from '@docusaurus/useGlobalData';
@@ -104,15 +105,20 @@ function AppResources({entry, product}) {
 }
 
 export default function AppsPage() {
-  useVisualHeight();
+  const pageRef = useVisualHeight();
   const {apps: entries} = usePluginData('tgoskits-catalog');
   const featured = products.map(product => ({...product, entry: entries.find(entry => entry.location === `apps/starry/${product.name}`)})).filter(product => product.entry);
   return <Layout wrapperClassName="site-showcase" title="Showcase" description="TGOSKits 大型应用实践：PostgreSQL、Redis、Nginx、llama.cpp 与 FFmpeg。">
-    <main className={styles.page}>
-      <header className={`container ${styles.hero}`} data-visual-pair>
-        <div data-visual-copy><p className={styles.kicker}>Showcase</p><h1>从系统能力，到应用实践。</h1>
-          <p className={styles.lead}>来自源码 apps/ 的大型应用案例，展示 StarryOS 在数据库、Web 服务、模型推理与音视频处理中的应用实践。</p>
-          <a className={styles.primary} href="#applications">浏览应用案例</a>
+    <main className={styles.page} ref={pageRef}>
+      <header className={styles.hero}><div className={`container ${styles.heroInner}`} data-visual-pair>
+        <div className={styles.copy} data-visual-copy><p className={styles.eyebrow}>Showcase</p><h1 className={layout.heroTitle}>从系统能力，到应用实践。</h1>
+          <p className={styles.description}>来自源码 apps/ 的大型应用案例，展示 StarryOS 在数据库、Web 服务、模型推理与音视频处理中的应用实践。</p>
+          <dl className={layout.featureList}>
+            <div><dt><span aria-hidden="true">01</span>数据与在线服务</dt><dd>PostgreSQL、Redis 与 Nginx 展示数据库、缓存和 Web 服务在 StarryOS 上的运行方式，覆盖文件、网络与进程协作。</dd></div>
+            <div><dt><span aria-hidden="true">02</span>推理与多媒体</dt><dd>llama.cpp 从量化模型加载走到文本生成，FFmpeg 连接媒体输入与处理流程，体现用户态程序对内存、线程和 I/O 的综合需求。</dd></div>
+            <div><dt><span aria-hidden="true">03</span>可追溯的运行案例</dt><dd>每个案例对应 apps/ 中的源码、准备步骤和运行配置，保留独立验证入口；具体功能范围与运行条件以对应案例为准。</dd></div>
+          </dl>
+          <a className={styles.primaryButton} href="#applications">浏览应用案例</a>
           <p className={styles.count}><strong>{featured.length}</strong> 个应用案例 · StarryOS</p>
         </div>
         <div className={styles.heroVisual} aria-hidden="true">
@@ -122,13 +128,14 @@ export default function AppsPage() {
           <div className={styles.tile} data-tile="web"><span>HTTP</span>Web 服务</div>
           <div className={styles.tile} data-tile="inference"><span>LLM</span>模型推理</div>
         </div>
+      </div>
+      <nav aria-label="案例页面导航" className={styles.productNav}><div className="container">{featured.map(product => <a key={product.name} href={`#product-${product.name}`}>{product.category}<span>{product.title}</span></a>)}</div></nav>
       </header>
-      <div className={styles.productNav}><div className="container">{featured.map(product => <a key={product.name} href={`#product-${product.name}`}>{product.category}<span>{product.title}</span></a>)}</div></div>
       <div id="applications" className="container">
         {featured.map((product, index) => <section key={product.name} id={`product-${product.name}`} className={styles.product} data-visual-pair>
           <ProductArt type={product.type} />
-          <div className={styles.productCopy} data-visual-copy><p className={styles.kicker}>0{index + 1} / {product.category}</p>
-            <h2>{product.title}</h2><p>{product.description}</p>
+          <div className={styles.copy} data-visual-copy><p className={styles.eyebrow}>0{index + 1} / {product.category}</p>
+            <h2 className={layout.sectionTitle}>{product.title}</h2><p className={layout.description}>{product.description}</p>
             <ul className={styles.features}>{product.features.map(feature => <li key={feature}>{feature}</li>)}</ul>
             <details className={styles.productDetails}>
               <summary>运行与源码 <span aria-hidden="true">＋</span></summary>

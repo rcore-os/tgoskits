@@ -1,4 +1,5 @@
 import useVisualHeight from '../hooks/useVisualHeight';
+import layout from '../components/layout/page.module.css';
 import React, {useState} from 'react';
 import Layout from '@theme/Layout';
 import {usePluginData} from '@docusaurus/useGlobalData';
@@ -13,7 +14,7 @@ import styles from '../components/catalog/styles.module.css';
 const description = '操作系统与虚拟化平台的基础组件、设备驱动和内存管理模块。';
 
 export default function ComponentsPage() {
-  useVisualHeight();
+  const pageRef = useVisualHeight();
   const {components: entries} = usePluginData('tgoskits-catalog');
   const illustration = useBaseUrl('/images/showcase/component-hierarchy.svg');
   const [query, setQuery] = useState('');
@@ -26,7 +27,7 @@ export default function ComponentsPage() {
   const reset = () => { setQuery(''); setCategory('全部'); };
   return (
     <Layout wrapperClassName="site-showcase" title={titles.components} description={description}>
-      <div className={styles.catalog}>
+      <div className={styles.catalog} ref={pageRef}>
       <header id="architecture-overview" className={styles.hero}>
         <div className={styles.heroBackdrop} aria-hidden="true">
           <div className={styles.glowPrimary} /><div className={styles.glowSecondary} />
@@ -43,7 +44,7 @@ export default function ComponentsPage() {
         <div className={`container ${styles.heroInner}`} data-visual-pair>
           <div className={styles.heroCopy} data-visual-copy>
           <p className={styles.heroLabel}>TGOSKits <span>组件与系统基础</span></p>
-          <h1>{titles.components}</h1>
+          <h1 className={layout.heroTitle}>{titles.components}</h1>
           <p className={styles.intro}>按需组合，跨系统复用。</p>
           <p className={styles.heroDescription}>在统一 Cargo workspace 中组织三套系统、共享组件与平台适配，通过 feature 和目标配置装配所需能力。</p>
           <dl className={styles.frameworkSummary}>
@@ -51,7 +52,7 @@ export default function ComponentsPage() {
             <div><dt><span aria-hidden="true">02</span>共享组件，按需组合</dt><dd>调度、内存、驱动、文件、网络与虚拟化按领域维护，由 Cargo feature 和目标配置选择装配。</dd></div>
             <div><dt><span aria-hidden="true">03</span>平台契约，连接硬件</dt><dd>ax-plat 定义契约，axplat-dyn、somehal 与 someboot 接入启动和硬件，支撑四种架构与实体板卡。</dd></div>
           </dl>
-          <div className={styles.heroActions}><a className="button button--primary" href="#component-catalog">浏览全部组件</a><Link to="/docs/architecture/overview">架构文档</Link></div>
+          <div className={styles.heroActions}><a className={layout.primaryButton} href="#component-catalog">浏览全部组件</a><Link to="/docs/architecture/overview">架构文档</Link></div>
           <div className={styles.heroMeta}>
             <span><strong>{entries.length}</strong><span>目录软件包</span></span>
             <span><strong>4</strong><span>逻辑层级</span></span>
@@ -104,7 +105,7 @@ export default function ComponentsPage() {
         </div>
         {!visible.length && <div className={styles.empty}>
           <h2>没有找到匹配的组件</h2>
-          <button type="button" className="button button--primary" onClick={reset}>查看全部</button>
+          <button type="button" className={layout.primaryButton} onClick={reset}>查看全部</button>
         </div>}
       </section>
       </main>

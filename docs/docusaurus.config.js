@@ -120,11 +120,14 @@ const config = {
         src: 'images/site/logo.svg',
       },
       items: [
+        {to: routes.components, activeBasePath: 'components', label: 'Components', position: 'left'},
+        {to: routes.oss, activeBasePath: 'oss', label: 'OSs', position: 'left'},
+        {to: routes.apps, activeBasePath: 'apps', label: 'Showcase', position: 'left'},
         {
           type: 'docSidebar',
           sidebarId: 'docs',
           position: 'left',
-          label: 'Docs',
+          label: 'Documents',
         },
         {
           to: routes.blog,
@@ -132,9 +135,6 @@ const config = {
           label: 'Blog',
           position: 'left',
         },
-        {to: routes.components, activeBasePath: 'components', label: 'Components', position: 'left'},
-        {to: routes.oss, activeBasePath: 'oss', label: 'OSs', position: 'left'},
-        {to: routes.apps, activeBasePath: 'apps', label: 'Showcase', position: 'left'},
         {
           to: routes.community,
           activeBasePath: 'community',

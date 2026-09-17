@@ -1,12 +1,14 @@
-import {useEffect} from 'react';
+import {useEffect, useRef} from 'react';
 
 // Match illustration sizing to natural copy height without stretching text or SVGs.
 export default function useVisualHeight() {
+  const root = useRef(null);
   useEffect(() => {
-    const observers = [...document.querySelectorAll('[data-visual-pair]')].map(pair => {
+    if (!root.current) return undefined;
+    const observers = [...root.current.querySelectorAll('[data-visual-pair]')].map(pair => {
       const copy = pair.querySelector('[data-visual-copy]');
       if (!copy) return null;
-      const update = () => pair.style.setProperty('--visual-copy-height', `${copy.getBoundingClientRect().height}px`);
+      const update = () => pair.style.setProperty('--visual-copy-height', `${copy.offsetHeight}px`);
       const observer = new ResizeObserver(update);
       observer.observe(copy);
       update();
@@ -17,4 +19,5 @@ export default function useVisualHeight() {
       item?.pair.style.removeProperty('--visual-copy-height');
     });
   }, []);
+  return root;
 }

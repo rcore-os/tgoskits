@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+import layout from '../components/layout/page.module.css';
 import './index.css';
 
 // Verified against Cargo metadata and scripts/repo/repos.csv on 2026-09-17.
@@ -208,10 +209,10 @@ function SystemsDiagram({ systems }) {
 /* ── Section Shell ───────────────────────────────────────── */
 function SectionShell({ id, className, eyebrow, title, description, children }) {
   return (
-    <section className={`section-shell section-reveal ${className || ''}`} id={id}>
-      <div className="section-shell__inner">
+    <section className={`section-shell section-reveal ${layout.section} ${className || ''}`} id={id}>
+      <div className={`section-shell__inner ${layout.container}`}>
         <div className="section-header">
-          <p className="eyebrow">{eyebrow}</p>
+          <p className={`eyebrow ${layout.eyebrow}`}>{eyebrow}</p>
           <h2>{title}</h2>
           <p>{description}</p>
         </div>
@@ -231,7 +232,7 @@ function HeroBanner() {
   const heroStats = [
     { label: '核心系统', value: '3' },
     { label: '工作区成员', value: workspaceFacts.packages },
-    { label: '主流架构', value: '4' },
+    { label: '目标架构', value: '4' },
     { label: '统一命令入口', value: 'xtask' },
   ];
 
@@ -245,7 +246,7 @@ function HeroBanner() {
   ];
 
   return (
-    <section className="hero-banner" id="hero" aria-label="TGOSKits overview banner">
+    <section className={`hero-banner ${layout.hero}`} id="hero" aria-label="TGOSKits overview banner">
       <svg className="hero-background-svg" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
         <rect width="1200" height="800" fill="var(--hero-accent)" opacity="0.08" />
         <path d="M0,100 Q300,50 600,100 T1200,100" stroke="var(--hero-decoration)" strokeWidth="2" fill="none" opacity="0.4" className="hero-wave-top" />
@@ -260,18 +261,18 @@ function HeroBanner() {
         <circle cx="1000" cy="400" r="3" fill="var(--hero-decoration)" opacity="0.5" className="hero-dot-pulse-delayed" />
       </svg>
 
-      <div className="hero-content" data-visual-pair>
-        <div className="hero-copy" data-visual-copy>
-          <p className="eyebrow">Operating Systems and Virtualization Workspace</p>
+      <div className={`hero-content ${layout.container} ${layout.split} ${layout.heroInner}`} data-visual-pair>
+        <div className={`hero-copy ${layout.copy}`} data-visual-copy>
+          <p className={`eyebrow ${layout.eyebrow}`}>Operating Systems and Virtualization Workspace</p>
           <h1><span>TGOSKits</span><em>面向系统软件研发的一体化工作区</em></h1>
           <p className="lead">
-            ArceOS、StarryOS、Axvisor 三套系统位于包含 {workspaceFacts.packages} 个成员的统一 Cargo workspace 中，
-            通过 cargo xtask 统一执行构建、镜像生成、QEMU 运行与分层验证，形成从组件开发到系统集成的可复现工程流程。
+            ArceOS、StarryOS、Axvisor 三套系统与它们共享的组件、内存、驱动、虚拟化和平台实现，位于同一个包含 {workspaceFacts.packages} 个成员的 Cargo workspace 中。
+            cargo xtask 统一承担配置解析、构建、镜像生成、QEMU 与板卡运行以及分层验证，使同一处组件改动可以在多个系统与目标架构上直接复现，而不需要为每套系统维护独立的构建脚本。
           </p>
-          <div className="hero-actions">
-            <Link className="button button--primary button--hero" to="/docs/introduction/overview">阅读概览</Link>
-            <Link className="button button--outline button--hero" to="/docs/quickstart/overview">开始上手</Link>
-            <Link className="button button--secondary button--hero" to="https://github.com/rcore-os/tgoskits">GitHub</Link>
+          <div className={`hero-actions ${layout.actions}`}>
+            <Link className={layout.primaryButton} to="/docs/introduction/overview">阅读概览</Link>
+            <Link className={layout.secondaryButton} to="/docs/quickstart/overview">开始上手</Link>
+            <Link className={layout.secondaryButton} to="https://github.com/rcore-os/tgoskits">GitHub</Link>
           </div>
           <div className="hero-quicklinks">
             {quickLinks.map((link) => (
@@ -319,7 +320,7 @@ function HeroTerminal() {
         'Using rootfs-aarch64-alpine.img',
         'Booting StarryOS on qemu-aarch64',
         'Starting init process and user shell',
-        'root@starry:~#',
+        'root@starry:/root #',
       ],
     },
     {
@@ -430,7 +431,7 @@ function HeroTerminal() {
 /* ── Capability Section ──────────────────────────────────── */
 function CapabilityIllustration() {
   const domains = [
-    { name: 'components/', detail: '调度 · CPU · 同步与基础工具' },
+    { name: 'components/', detail: '任务 · 调度 · CPU 抽象 · 基础工具' },
     { name: 'memory/', detail: '内存分配 · 地址空间 · 页表 · DMA / MMIO' },
     { name: 'drivers/', detail: '块设备 · 网络设备 · USB · 中断与设备接口' },
     { name: 'fs/', detail: 'VFS · 文件系统 · 页缓存与块设备集成' },
@@ -453,7 +454,7 @@ function CapabilityIllustration() {
           <rect className="capability-art__frame" x="1" y="1" width="1438" height="858" rx="28" />
           <g className="capability-art__connections">
             <path d="M785 136V245" />
-            {domains.map((domain, index) => <path key={domain.name} d={`M450 ${80 + index * 94 + 39}H495C550 ${80 + index * 94 + 39} 550 ${315 + index * 30} 600 ${315 + index * 30}`} />)}
+            {domains.map((domain, index) => <path key={domain.name} d={`M450 ${36 + index * 112 + 50}H495C550 ${36 + index * 112 + 50} 550 ${315 + index * 30} 600 ${315 + index * 30}`} />)}
             {systems.map((system, index) => <path key={system.name} d={`M970 ${335 + index * 70}C1030 ${335 + index * 70} 1040 ${235 + index * 190} 1110 ${235 + index * 190}`} />)}
             <path d="M785 575V714H1285M685 714H785" />
             {[685, 885, 1085, 1285].map(x => <path key={x} d={`M${x} 714V764`} />)}
@@ -464,12 +465,12 @@ function CapabilityIllustration() {
             <text className="capability-art__title" x="785" y="115" textAnchor="middle">cargo xtask</text>
           </g>
           {domains.map((domain, index) => {
-            const y = 80 + index * 94;
+            const y = 36 + index * 112;
             return <g className="capability-art__domain" key={domain.name}>
-              <rect x="40" y={y} width="410" height="78" rx="16" />
-              <path d={`M60 ${y + 17}h13l6 7h24v22H60Z`} />
-              <text className="capability-art__node-title" x="120" y={y + 33}>{domain.name}</text>
-              <text className="capability-art__node-copy" x="60" y={y + 64}>{domain.detail}</text>
+              <rect x="40" y={y} width="410" height="100" rx="16" />
+              <path d={`M60 ${y + 23}h13l6 7h24v22H60Z`} />
+              <text className="capability-art__node-title" x="120" y={y + 39}>{domain.name}</text>
+              <text className="capability-art__node-copy" x="60" y={y + 78}>{domain.detail}</text>
             </g>;
           })}
           <g className="capability-art__workspace">
@@ -502,12 +503,12 @@ function CapabilityIllustration() {
 
 function CapabilitySection() {
   const features = [
-    { icon: 'orbit', title: '统一工程编排', desc: 'cargo xtask 提供 ArceOS、StarryOS、Axvisor、镜像、板卡与测试命令的统一入口。', to: '/docs/build/overview' },
-    { icon: 'grid', title: '内存基础能力', desc: 'allocator、地址类型、memory set 与多架构页表实现集中在 memory/，供系统按需组合。', to: '/docs/architecture/overview' },
-    { icon: 'layers', title: '调度与同步原语', desc: 'ax-sched、ax-cpumask、ax-sync 与 ax-lazyinit 提供可复用的内核运行时基础。', to: '/docs/architecture/overview' },
-    { icon: 'server', title: '文件与进程组件', desc: 'axfs-ng-vfs、rsext4、StarryOS kernel task、starry-signal 与 starry-vm 承载明确的领域语义。', to: '/docs/architecture/overview' },
-    { icon: 'chip', title: '虚拟化基础对象', desc: 'virtualization/ 提供 VM、地址空间与虚拟设备，components/axcpu 提供多架构 vCPU 能力。', to: '/docs/architecture/axvisor' },
-    { icon: 'plug', title: '设备能力接口', desc: 'dma-api、mmio-api、irq-framework 与 RDIF 接口 crate 将资源访问从具体 OS glue 中分离。', to: '/docs/architecture/overview' },
+    { icon: 'orbit', title: '统一工程编排', desc: 'cargo xtask 是三套系统共用的命令入口，覆盖配置生成、构建、镜像处理、QEMU 与板卡运行以及分层测试，同一条命令在不同目标架构间保持相同的参数约定与判定方式。', to: '/docs/build/overview' },
+    { icon: 'grid', title: '内存基础能力', desc: 'memory/ 收录分配器、地址类型、memory set、多架构页表以及 DMA 与 MMIO API，把物理地址转换和资源映射的差异收敛在明确的能力边界内。', to: '/docs/architecture/memory/overview' },
+    { icon: 'layers', title: '任务与调度原语', desc: 'ax-task、axsched、cpumask、ax-lazyinit 与 timer_list 提供与具体系统无关的任务调度核心、调度算法、CPU 掩码、惰性初始化和定时事件。', to: '/docs/architecture/overview' },
+    { icon: 'server', title: '文件与进程组件', desc: 'axfs-ng-vfs、ax-fs-ng 与 rsext4 组成文件系统层，StarryOS 侧的 starry-kernel、starry-signal 与 starry-vm 承载进程、信号和地址空间语义。', to: '/docs/architecture/fs/overview' },
+    { icon: 'chip', title: '虚拟化基础对象', desc: 'virtualization/ 提供 axvm、axaddrspace 与 axdevice 等基础对象，以及 arm_vgic、riscv_vplic、x86_vlapic 虚拟中断控制器，由 Axvisor 组合成完整的 VMM。', to: '/docs/architecture/axvisor' },
+    { icon: 'plug', title: '设备能力接口', desc: 'dma-api、mmio-api、irq-framework 与 drivers/interface/ 下的 rdif-* 接口 crate 描述设备能力，使具体驱动实现不必依赖某一个系统的运行时。', to: '/docs/architecture/driver/overview' },
   ];
 
   return (
@@ -516,7 +517,7 @@ function CapabilitySection() {
       className="section-shell--capabilities"
       eyebrow="Core Capabilities"
       title="可组合的系统软件基础能力"
-      description="统一工作区汇聚基础组件、内存、驱动、文件系统、网络、虚拟化与平台适配，支撑三套系统按需组合能力。"
+      description="工作区按领域划分出 components/、memory/、drivers/、fs/、net/、virtualization/ 与 platforms/ 七类目录，每一类只暴露明确的能力边界。三套系统按各自需求选择组合这些能力，组件本身不绑定任何一套系统的运行语义。"
     >
       <div className="capability-showcase" data-visual-pair>
         <CapabilityIllustration />
@@ -584,16 +585,16 @@ function ArchitectureIllustration() {
 
 function ArchitectureSection() {
   const architectureFlow = [
-    { index: '04', code: 'ENTRY', label: '场景入口', desc: '定义目标系统的能力选择、构建参数与运行场景', items: ['feature / package selection', 'board / VM configuration'], tone: 'entry' },
-    { index: '03', code: 'SYSTEM', label: '系统语义', desc: '实现内核生命周期、接口语义与运行策略', items: ['OS lifecycle / syscall semantics', 'crate composition / policy'], tone: 'system' },
-    { index: '02', code: 'SHARED', label: '领域能力', desc: '沉淀跨系统复用的内存、调度、I/O 与虚拟化机制', items: ['no_std reusable crates', 'traits / capability APIs'], tone: 'shared' },
-    { index: '01', code: 'PLATFORM', label: '平台边界', desc: '适配 CPU 架构、固件、板级资源与设备访问', items: ['arch / board adapters', 'MMIO / DMA / IRQ contracts'], tone: 'platform' },
+    { index: '04', code: 'ENTRY', label: '场景入口', desc: '定义目标系统的能力选择、构建参数与运行场景，同一批领域实现通过不同的 package 与 feature 组合装配成面向该场景的镜像。', items: ['feature / package selection', 'board / VM configuration'], tone: 'entry' },
+    { index: '03', code: 'SYSTEM', label: '系统语义', desc: '实现内核生命周期、接口语义与运行策略：ArceOS 的模块化运行时、StarryOS 的 Linux 兼容语义和 Axvisor 的 VMM 都位于这一层。', items: ['OS lifecycle / syscall semantics', 'crate composition / policy'], tone: 'system' },
+    { index: '02', code: 'SHARED', label: '领域能力', desc: '沉淀跨系统复用的内存、调度、I/O 与虚拟化机制，通过 no_std crate 与 trait 暴露能力，不引入具体系统的运行策略。', items: ['no_std reusable crates', 'traits / capability APIs'], tone: 'shared' },
+    { index: '01', code: 'PLATFORM', label: '平台边界', desc: '适配 CPU 架构、固件、板级资源与设备访问，把启动、内存布局、时钟、中断和设备发现事实转换为上层可消费的稳定接口。', items: ['arch / board adapters', 'MMIO / DMA / IRQ contracts'], tone: 'platform' },
   ];
 
   const notes = [
-    { title: '职责分层与实际依赖', desc: '四层用于解释职责，不是严格的 Cargo 拓扑。例如 axvm 依赖 ArceOS 的 ax-std，领域组件也可能需要运行时服务。评估改动时需检查直接依赖与 feature 条件。' },
-    { title: '水平切分的复用边界', desc: '同一层的 crate 通过 trait 或接口抽象解耦，系统通过组合而非继承获取能力，通过明确接口承接系统集成需求。' },
-    { title: '副作用止于边界', desc: 'MMIO、DMA、IRQ、固件与调度能力只通过显式 API 跨层传递；优先通过能力契约隔离系统与平台差异，具体耦合仍需按组件审查。' },
+    { title: '职责分层与实际依赖', desc: '四层用于解释代码应该放在哪里、允许依赖谁，不是严格的 Cargo 拓扑。例如 axvm 依赖 ArceOS 的运行时服务，部分领域组件之间也存在直接依赖；评估改动影响时，应核对直接依赖与 feature 条件，而不是只看目录层级。' },
+    { title: '水平切分的复用边界', desc: '同一层的 crate 通过 trait 或能力接口解耦，系统以组合方式获取能力，而不是通过继承或全局单例；新的系统集成需求应落在接口层，而不是扩散到具体实现。' },
+    { title: '副作用止于边界', desc: 'MMIO、DMA、IRQ、固件与调度能力只通过显式 API 跨层传递，避免组件内部隐式访问硬件。能力契约可以隔离大部分系统与平台差异，但具体耦合仍需按组件逐一审查。' },
   ];
 
   return (
@@ -602,7 +603,7 @@ function ArchitectureSection() {
       className="section-shell--architecture"
       eyebrow="Architecture"
       title="四层职责架构"
-      description="场景入口、系统语义、领域能力与平台边界构成四类职责。跨层交互通过依赖声明、trait 和能力接口连接；实际依赖以组件关系图和构建配置为准。"
+      description="四层描述的是职责归属而不是目录等级：场景入口选择能力与运行配置，系统语义定义接口行为和生命周期策略，领域能力沉淀可跨系统复用的实现，平台边界隔离 CPU、固件与板级差异。层与层之间只通过依赖声明、trait 和能力接口连接，完整依赖关系以组件关系图和构建配置为准。"
     >
       <div className="architecture-layout" data-visual-pair>
         <ArchitectureIllustration />
@@ -646,7 +647,7 @@ function ComponentWorkspaceSection() {
       className="section-shell--component-workspace"
       eyebrow="Component Workspace"
       title="Git Subtree 组件同步工作流"
-      description={`scripts/repo/repos.csv 登记 ${workspaceFacts.subtreeMappings} 条映射，其中 ${workspaceFacts.existingSubtreeTargets} 个目标目录存在，另有 ${workspaceFacts.subtreeMappings - workspaceFacts.existingSubtreeTargets} 条记录指向已不存在的目录。repo.py 提供仓库与工作区间的同步入口。`}
+      description={`scripts/repo/repos.csv 登记 ${workspaceFacts.subtreeMappings} 条组件来源映射，每条记录包含上游地址、分支、目标目录与分类；其中 ${workspaceFacts.existingSubtreeTargets} 个目标目录当前存在，另有 ${workspaceFacts.subtreeMappings - workspaceFacts.existingSubtreeTargets} 条记录指向已移除的目录，同步前需要先清理。同步动作由维护者通过 repo.py 显式执行，组件改动不会自动写回上游仓库。`}
     >
       <ComponentWorkspaceDiagram />
     </SectionShell>
@@ -657,15 +658,15 @@ function ComponentWorkspaceSection() {
 function SystemsSection() {
   const systems = [
     { id: 'arceos', accent: 'accent-arceos', name: 'ArceOS', subtitle: '组件化 Unikernel',
-      desc: '应用与运行时按需组合，通过 Cargo feature 选择内存、任务、文件和网络能力，构建面向场景的系统镜像。',
+      desc: '应用、运行时与内核模块在编译期通过 Cargo feature 装配，只链接被选中的内存、任务、文件和网络能力；它同时是示例应用平台和其他两套系统的共享基础。',
       layers: [['Rust / C 应用'], ['ax-std', 'ax-libc'], ['API · runtime · 共享组件']], foundation: 'HAL · 平台与设备',
       items: ['编译期组件装配', '共享运行时与硬件抽象'] },
     { id: 'axvisor', accent: 'accent-axvisor', name: 'AxVisor', subtitle: 'Type-I Hypervisor',
-      desc: '在 ArceOS 基础能力之上组合虚拟机、地址空间与虚拟设备，通过配置和管理入口控制 Guest 的生命周期。',
+      desc: '在 ArceOS 运行时之上组合虚拟机、客户机地址空间与虚拟设备，通过板级配置和 VM 配置描述 Guest 的资源与设备，并在 shell 或控制平面中管理其生命周期。',
       layers: [['Guest 01', 'Guest 02'], ['AxvmManager · axvm'], ['vCPU', '地址空间', '虚拟设备']], foundation: 'ArceOS · 宿主平台',
       items: ['客户机资源与生命周期管理', '多架构虚拟化组件'] },
     { id: 'starry', accent: 'accent-starry', name: 'StarryOS', subtitle: 'Linux 兼容操作系统',
-      desc: '通过系统调用与进程环境承载 Linux 用户态程序，在共享组件之上实现文件、内存、信号和网络语义。',
+      desc: '在 ArceOS 基础设施之上实现 Linux 兼容的进程、syscall、文件系统与 rootfs 语义，使未修改的 Linux 用户态程序可以直接运行在共享组件提供的底层机制之上。',
       layers: [['Linux 用户态 · Rootfs'], ['starry-kernel · syscall'], ['进程 / 信号', '内存 / 文件']], foundation: 'ArceOS · 共享组件与平台',
       items: ['Linux 用户态接口兼容', '进程与资源管理语义'] },
   ];
@@ -676,7 +677,7 @@ function SystemsSection() {
       className="section-shell--systems"
       eyebrow="Systems"
       title="面向不同运行目标的三套系统"
-      description="ArceOS 提供模块化内核组合，StarryOS 实现 Linux 用户态兼容，Axvisor 提供 Type-I 虚拟化；三者复用工作区基础能力并独立维护运行语义。"
+      description="三套系统各自维护启动入口、配置集合、运行时语义和测试套件，同时复用同一批组件与 ArceOS 基础能力。每张卡片自下而上展示该系统的复用基础、实现主体和运行目标。"
     >
       <SystemsDiagram systems={systems} />
     </SectionShell>
@@ -686,10 +687,10 @@ function SystemsSection() {
 /* ── Docs Section ────────────────────────────────────────── */
 function DocsSection() {
   const docs = [
-    { title: '入门与运行', desc: '了解项目定位、开发环境与三套系统的 QEMU 启动流程。', links: [{ label: '项目概览', to: '/docs/introduction/overview' }, { label: '快速开始', to: '/docs/quickstart/overview' }] },
-    { title: '构建与验证', desc: '配置目标架构和平台，生成系统镜像并执行相应测试。', links: [{ label: '命令参考', to: '/docs/build/commands' }, { label: '配置系统', to: '/docs/build/configuration' }, { label: '测试入口', to: '/docs/build/test' }] },
-    { title: '系统上手', desc: '查阅 ArceOS、StarryOS 与 Axvisor 的环境准备和 QEMU 启动流程。', links: [{ label: 'ArceOS', to: '/docs/quickstart/arceos' }, { label: 'StarryOS', to: '/docs/quickstart/starryos' }, { label: 'Axvisor', to: '/docs/quickstart/axvisor' }] },
-    { title: '扩展与贡献', desc: '掌握仓库同步机制以及代码与文档贡献规范。', links: [{ label: '架构设计', to: '/docs/architecture/overview' }, { label: '仓库结构', to: '/docs/contributing/repo' }, { label: '文档贡献', to: '/docs/contributing/docs' }] },
+    { title: '入门与运行', desc: '先了解项目边界和 workspace 模型，再按平台文档准备宿主环境，最后运行第一份系统镜像。', links: [{ label: '项目概览', to: '/docs/introduction/overview' }, { label: '快速开始', to: '/docs/quickstart/overview' }, { label: '架构与平台', to: '/docs/introduction/platform' }] },
+    { title: '构建与验证', desc: '查询可用板卡名、写入构建配置、生成系统镜像，并通过命令参考和测试入口确认判定规则。', links: [{ label: '命令参考', to: '/docs/build/commands' }, { label: '配置系统', to: '/docs/build/configuration' }, { label: '测试入口', to: '/docs/build/test' }] },
+    { title: '系统上手', desc: '分别查阅 ArceOS、StarryOS 与 Axvisor 的环境准备、rootfs 或 Guest 准备以及 QEMU 启动步骤。', links: [{ label: 'ArceOS', to: '/docs/quickstart/arceos' }, { label: 'StarryOS', to: '/docs/quickstart/starryos' }, { label: 'Axvisor', to: '/docs/quickstart/axvisor' }] },
+    { title: '扩展与贡献', desc: '理解分层架构与目录边界，掌握 Git Subtree 组件同步机制以及代码和文档的贡献规范。', links: [{ label: '架构设计', to: '/docs/architecture/overview' }, { label: '仓库结构', to: '/docs/contributing/repo' }, { label: '文档贡献', to: '/docs/contributing/docs' }] },
   ];
 
   return (
@@ -698,7 +699,7 @@ function DocsSection() {
       className="section-shell--docs"
       eyebrow="Documentation Map"
       title="面向研发任务的文档导航"
-      description="文档体系覆盖环境准备、系统构建、运行验证、组件开发与贡献流程。"
+      description="文档按研发任务组织：从环境准备和快速上手，到构建配置与测试判定，再到架构说明和仓库协作流程，每类任务的入口如下。"
     >
       <div className="docs-constellation" aria-label="Documentation entry map">
         <svg className="docs-constellation__art" viewBox="0 0 1120 560" preserveAspectRatio="none" aria-hidden="true">
@@ -780,9 +781,9 @@ function VerificationIllustration({ type }) {
 
 function QualitySection() {
   const lanes = [
-    { type: 'host', status: 'Local', scope: 'Crate', signal: '快速反馈', title: 'Host 侧组件验证', desc: '在宿主机上执行标准库测试与静态检查，不启动目标系统即可发现组件级问题。', items: ['cargo xtask clippy', 'cargo xtask test', '按项目清单展开功能与目标组合'] },
-    { type: 'qemu', status: 'System', scope: 'System image', signal: '完整语义', title: 'QEMU 系统级验证', desc: '构建目标系统镜像并在 QEMU 中运行，检查 syscall、进程、设备与 Guest 引导行为。', items: ['ArceOS example 运行检查', 'StarryOS rootfs + shell 启动', 'Axvisor Guest 引导与交互'] },
-    { type: 'board', status: 'Scenario', scope: 'Physical board', signal: '真实设备', title: '板级场景回归', desc: '在 self-hosted 板卡上执行端到端场景，确认平台适配与真实硬件行为。', items: ['platforms/* 编译与启动验证', 'VM / Guest 配置兼容性回归', '共享 crate 的多系统影响面检查'] },
+    { type: 'host', status: 'Local', scope: 'Crate', signal: '快速反馈', title: 'Host 侧组件验证', desc: '按 std_crates.csv 白名单在宿主机上运行标准库测试，并对改动包执行静态检查，不需要目标系统或模拟器即可发现组件级问题。', items: ['cargo xtask clippy', 'cargo xtask test', '按项目清单展开功能与目标组合'] },
+    { type: 'qemu', status: 'System', scope: 'System image', signal: '完整语义', title: 'QEMU 系统级验证', desc: '构建目标系统镜像并在 QEMU 中运行，由 test-suit 配置中的成功与失败规则判定 syscall、进程、设备和 Guest 引导行为是否符合预期。', items: ['ArceOS Rust / C / axtest 用例', 'StarryOS grouped system + TTY 输入', 'Axvisor Guest 引导与交互'] },
+    { type: 'board', status: 'Scenario', scope: 'Physical board', signal: '真实设备', title: '板级场景回归', desc: '在自托管板卡上执行端到端场景，确认启动、设备与 Guest 行为在真实硬件上与 QEMU 的结论一致；执行与否取决于硬件可用性。', items: ['platforms/* 编译与启动验证', 'VM / Guest 配置兼容性回归', '共享 crate 的多系统影响面检查'] },
   ];
 
   return (
@@ -791,7 +792,7 @@ function QualitySection() {
       className="section-shell--quality"
       eyebrow="Verification"
       title="从组件检查到真实板卡的三级验证"
-      description="Host 测试与静态检查覆盖 crate 级正确性，QEMU 验证系统集成与运行语义，self-hosted 板卡回归确认平台适配和设备行为。"
+      description="验证按成本和覆盖面从低到高分为三级：先在宿主机上以最短反馈路径发现组件问题，再用 QEMU 运行完整系统镜像检查集成与运行语义，最后在自托管板卡上确认平台适配和真实设备行为。CI 按改动的影响范围选择其中若干级执行。"
     >
       <div className="quality-gallery" aria-label="Three verification layers from host to physical board">
         {lanes.map((lane, i) => (
@@ -816,30 +817,30 @@ function QualitySection() {
 /* ── Hardware Enablement Section ─────────────────────────── */
 function HardwareSection() {
   const architectures = [
-    { arch: 'aarch64', target: 'aarch64-unknown-none-softfloat', platform: 'QEMU virt', note: 'ArceOS · StarryOS · Axvisor' },
-    { arch: 'riscv64', target: 'riscv64gc-unknown-none-elf', platform: 'QEMU virt；SSTC 按配置启用', note: 'ArceOS · StarryOS · Axvisor' },
-    { arch: 'x86_64', target: 'x86_64-unknown-none', platform: 'Q35 · ACPI；Axvisor QEMU 需 KVM + VMX/SVM', note: 'ArceOS · StarryOS · Axvisor' },
-    { arch: 'loongarch64', target: 'loongarch64-unknown-none-softfloat', platform: 'QEMU virt；UEFI 按配置启用', note: 'ArceOS · StarryOS · Axvisor' },
+    { arch: 'aarch64', target: 'aarch64-unknown-none-softfloat', platform: 'QEMU virt；板卡验证以 OrangePi-5-Plus 为主', note: 'ArceOS · StarryOS · Axvisor' },
+    { arch: 'riscv64', target: 'riscv64gc-unknown-none-elf', platform: 'QEMU virt；Axvisor 启用 sstc', note: 'ArceOS · StarryOS · Axvisor' },
+    { arch: 'x86_64', target: 'x86_64-unknown-none', platform: 'q35 · ACPI；Axvisor 的 QEMU 用例需要 KVM 与 Intel VMX / AMD SVM', note: 'ArceOS · StarryOS · Axvisor' },
+    { arch: 'loongarch64', target: 'loongarch64-unknown-none-softfloat', platform: 'QEMU virt；Axvisor 使用动态 UEFI/OVMF，需要 LVZ 容器', note: 'ArceOS · StarryOS · Axvisor' },
   ];
 
   const driverCategories = [
-    { icon: 'server', title: '块设备', items: ['sdhci-host', 'dwmmc-host', 'nvme-driver'] },
-    { icon: 'pulse', title: '网络', items: ['realtek-rtl8125', 'eth-intel', 'fxmac_rs'] },
+    { icon: 'server', title: '块设备', items: ['sdhci-host', 'dwmmc-host', 'phytium-mci-host', 'nvme-driver'] },
+    { icon: 'pulse', title: '网络', items: ['realtek-rtl8125', 'eth-intel', 'fxmac_rs', 'rd-net'] },
     { icon: 'orbit', title: '中断控制器', items: ['arm-gic-driver', 'ax-riscv-plic', 'rdif-intc'] },
     { icon: 'layers', title: 'PCIe', items: ['pcie', 'rk3588-pci', 'rdif-pcie'] },
     { icon: 'plug', title: 'USB', items: ['crab-usb', 'usb-if', 'usb-serial'] },
-    { icon: 'chip', title: 'AI 与多媒体', items: ['rockchip-npu', 'k230-kpu', 'sg2002-tpu'] },
-    { icon: 'grid', title: '平台设备', items: ['rockchip-pwm', 'ax-arm-pl031', 'arm-scmi-rs'] },
+    { icon: 'chip', title: 'AI 与多媒体', items: ['rockchip-npu', 'k230-kpu', 'sg2002-tpu', 'rockchip-rga', 'rockchip-jpeg'] },
+    { icon: 'grid', title: '平台设备', items: ['rockchip-pwm', 'ax-arm-pl031', 'some-serial', 'arm-scmi-rs'] },
   ];
 
   const boardEvidence = [
-    { board: 'OrangePi-5-Plus', systems: 'ArceOS · StarryOS · Axvisor' },
-    { board: 'Phytium Pi', systems: 'Axvisor' },
-    { board: 'ROC-RK3568-PC', systems: 'Axvisor' },
-    { board: 'ASUS NUC15 CRH', systems: 'Axvisor' },
-    { board: 'AKA-00-SG2002', systems: 'StarryOS' },
-    { board: 'VisionFive 2', systems: 'StarryOS' },
-    { board: 'JL LSGD2K10', systems: 'StarryOS' },
+    { board: 'OrangePi-5-Plus', systems: 'ArceOS PMU · StarryOS suites · Axvisor Linux/Starry Guest' },
+    { board: 'Phytium Pi', systems: 'Axvisor Linux Guest' },
+    { board: 'ROC-RK3568-PC', systems: 'Axvisor Linux Guest' },
+    { board: 'ASUS NUC15 CRH', systems: 'Axvisor Linux Guest' },
+    { board: 'AKA-00-SG2002', systems: 'StarryOS suites' },
+    { board: 'VisionFive 2', systems: 'StarryOS suites' },
+    { board: 'JL LSGD2K10', systems: 'StarryOS suites' },
   ];
 
   return (
@@ -848,7 +849,7 @@ function HardwareSection() {
       className="section-shell--hardware"
       eyebrow="Hardware Enablement"
       title="四架构平台与设备使能"
-      description="aarch64、riscv64、x86_64 与 loongarch64 均具备三套系统的 QEMU 配置；drivers/ 提供分类型设备实现，CI 清单包含关键实体板卡用例，是否执行取决于变更路由和运行条件。"
+      description="四种架构都具备 ArceOS、StarryOS 与 Axvisor 的 QEMU 构建与测试入口，差异集中在虚拟平台模型和启动路径上。drivers/ 按设备类型组织驱动核心与具体实现，通过 rdif-* 等能力接口接入系统。物理板卡用例登记在 CI 清单中，实际执行取决于变更路由、自托管运行器和硬件可用性。"
     >
       <div className="hardware-layout">
         <div className="hardware-platforms">
@@ -901,12 +902,13 @@ function HardwareSection() {
 
 /* ── Home Page ───────────────────────────────────────────── */
 export default function Home() {
-  useVisualHeight();
+  const pageRef = useVisualHeight();
   const { siteConfig } = useDocusaurusContext();
   useScrollReveal();
 
   return (
-    <Layout title={siteConfig.title} description={siteConfig.tagline} wrapperClassName="home">
+    <Layout title={siteConfig.title} description={siteConfig.tagline} wrapperClassName="home site-showcase">
+      <main ref={pageRef}>
       <HeroBanner />
       <CapabilitySection />
       <SystemsSection />
@@ -915,6 +917,7 @@ export default function Home() {
       <HardwareSection />
       <QualitySection />
       <DocsSection />
+      </main>
     </Layout>
   );
 }

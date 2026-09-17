@@ -4,6 +4,7 @@ import Link from '@docusaurus/Link';
 import Emblem from '../components/catalog/Emblem';
 import {titles} from '../components/catalog/titles';
 import styles from '../components/catalog/styles.module.css';
+import layout from '../components/layout/page.module.css';
 
 export default function CatalogDetail({catalog: {kind, entry}}) {
   return (
@@ -16,10 +17,10 @@ export default function CatalogDetail({catalog: {kind, entry}}) {
         </header>
         <p className={styles.detailDescription}>{entry.description}</p>
         <div className={styles.tags}>{entry.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
-        <div className={styles.actions}>
-          {entry.readme && <Link className="button button--primary" href={entry.readme}>阅读 README</Link>}
-          <Link className="button button--secondary" href={entry.source}>查看源码</Link>
-          <Link className="button button--secondary" to={entry.guide}>{kind === 'components' ? '相关架构文档' : '构建与运行指南'}</Link>
+        <div className={layout.actions}>
+          {entry.readme && <Link className={layout.primaryButton} href={entry.readme}>阅读 README</Link>}
+          <Link className={layout.secondaryButton} href={entry.source}>查看源码</Link>
+          <Link className={layout.secondaryButton} to={entry.guide}>{kind === 'components' ? '相关架构文档' : '构建与运行指南'}</Link>
         </div>
         <section className={styles.info}>
           <h2>{kind === 'components' ? '组件信息' : '应用信息'}</h2>

@@ -1,4 +1,5 @@
 import useVisualHeight from '../hooks/useVisualHeight';
+import layout from '../components/layout/page.module.css';
 import React from 'react';
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
@@ -46,13 +47,13 @@ function SystemSection({system, index}) {
   const diagramUrl = useBaseUrl(`/images/oss/${system.id}-architecture.svg`);
   const Diagram = system.diagram;
   return <section id={system.id} className={styles.system} data-system={system.id} data-reverse={index % 2 === 1} aria-labelledby={`${system.id}-title`}>
-    <div className={`container ${styles.systemInner}`} data-visual-pair>
+    <div className={`container ${styles.sectionInner}`} data-visual-pair>
       <div className={styles.copy} data-visual-copy>
         <div className={styles.systemHeading}><span className={styles.sectionNumber}>0{index + 1}</span><p className={styles.systemType}>{system.type}</p></div>
-        <h2 id={`${system.id}-title`}>{system.name}</h2>
+        <h2 className={layout.sectionTitle} id={`${system.id}-title`}>{system.name}</h2>
         <p className={styles.description}>{system.description}</p>
         <dl className={styles.features}>{system.features.map(([title, description], featureIndex) => <div key={title}><dt><span aria-hidden="true">0{featureIndex + 1}</span>{title}</dt><dd>{description}</dd></div>)}</dl>
-        <div className={styles.actions}><Link className="button button--primary" to={`/docs/quickstart/${system.docs || system.id}`}>快速开始</Link><Link to={`/docs/architecture/${system.docs || system.id}`}>架构文档</Link><Link href={`https://github.com/rcore-os/tgoskits/tree/main/${system.source}`}>源码</Link></div>
+        <div className={styles.actions}><Link className={layout.primaryButton} to={`/docs/quickstart/${system.docs || system.id}`}>快速开始</Link><Link className={layout.secondaryButton} to={`/docs/architecture/${system.docs || system.id}`}>架构文档</Link><Link className={layout.secondaryButton} href={`https://github.com/rcore-os/tgoskits/tree/main/${system.source}`}>源码</Link></div>
       </div>
       <figure className={styles.diagram}>
         <a href={diagramUrl} target="_blank" rel="noopener noreferrer" aria-label={`打开 ${system.name} 完整 SVG 架构图（新窗口）`}><Diagram aria-label={`${system.name} 完整架构图`} /></a>
@@ -62,20 +63,26 @@ function SystemSection({system, index}) {
 }
 
 export default function OSs() {
-  useVisualHeight();
+  const pageRef = useVisualHeight();
   return <Layout wrapperClassName="site-showcase" title="OSs" description="ArceOS、AxVisor 与 Starry 的系统定位、组件架构与运行链路。">
-    <main className={styles.page}>
-      <header className={styles.banner}>
-        <div className={`container ${styles.header}`} data-visual-pair>
-          <div className={styles.bannerCopy} data-visual-copy>
+    <main className={styles.page} ref={pageRef}>
+      <header className={styles.hero}>
+        <div className={`container ${styles.heroInner}`} data-visual-pair>
+          <div className={styles.copy} data-visual-copy>
             <p className={styles.eyebrow}>TGOSKits / OSs</p>
-            <h1>三套系统，一体化开发。</h1>
-            <p className={styles.bannerDescription}>从组件化应用到虚拟机，再到 Linux 用户态兼容。在同一工作区中组合共享能力，构建不同的运行环境。</p>
+            <h1 className={layout.heroTitle}>三套系统，一体化开发。</h1>
+            <p className={styles.description}>从组件化应用到虚拟机，再到 Linux 用户态兼容。在同一工作区中组合共享能力，构建不同的运行环境。</p>
+            <dl className={layout.featureList}>
+              <div><dt><span aria-hidden="true">01</span>面向不同运行场景</dt><dd>ArceOS 将应用与所需组件构建为系统镜像；AxVisor 编排客户机；Starry 为 Linux 用户态程序提供进程与系统调用环境。</dd></div>
+              <div><dt><span aria-hidden="true">02</span>复用基础，独立演进</dt><dd>三套系统共享任务、内存、设备和平台能力，各自维护运行策略与接口语义。功能选择通过 Cargo feature 和目标配置完成。</dd></div>
+              <div><dt><span aria-hidden="true">03</span>统一构建与验证</dt><dd>通过 cargo xtask 组织构建、QEMU 运行及板卡测试，让组件开发与系统集成衔接在同一工作区中。</dd></div>
+            </dl>
             <Link className={styles.componentLink} to="/components">了解共享组件</Link>
           </div>
           <SystemsOverview className={styles.overviewArt} aria-label="ArceOS、AxVisor 和 Starry 的定位及共享运行基础" />
-          <nav className={styles.systemNav} aria-label="系统页面导航">{systems.map((system, index) => <a key={system.id} href={`#${system.id}`}><span className={styles.navIndex}>0{index + 1}</span><span><strong>{system.name}</strong><small>{system.summary}</small></span></a>)}</nav>
+
         </div>
+          <nav className={`container ${styles.systemNav}`} aria-label="系统页面导航">{systems.map((system, index) => <a key={system.id} href={`#${system.id}`}><span className={styles.navIndex}>0{index + 1}</span><span><strong>{system.name}</strong><small>{system.summary}</small></span></a>)}</nav>
       </header>
       {systems.map((system, index) => <SystemSection key={system.id} system={system} index={index} />)}
     </main>

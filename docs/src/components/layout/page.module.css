@@ -1,0 +1,74 @@
+/* Shared page primitives. Page styles own illustrations and domain-specific content only. */
+.container {
+  width: var(--site-content-width);
+  max-width: none;
+  margin-inline: auto;
+}
+.hero {
+  min-height: var(--site-hero-height);
+  display: flex;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+}
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  align-items: center;
+  gap: var(--site-layout-gap);
+}
+.heroInner { padding-block: var(--site-hero-padding); }
+.section { padding-block: var(--site-section-space); scroll-margin-top: var(--ifm-navbar-height); }
+.copy { min-width: 0; }
+.eyebrow { color: var(--site-accent); font-size: .875rem; font-weight: 650; letter-spacing: .1em; margin: 0 0 1rem; }
+.heroTitle { font-size: var(--site-hero-title-size); font-weight: 700; line-height: 1.2; letter-spacing: -.04em; margin: 0 0 1.5rem; }
+.sectionTitle { font-size: var(--site-section-title-size); font-weight: 700; line-height: 1.25; letter-spacing: -.03em; margin: 0 0 1.25rem; }
+.description { color: var(--site-muted); font-size: 1rem; line-height: var(--site-line-height); text-wrap: pretty; }
+.actions { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem 1.25rem; }
+.primaryButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: .75rem 1.4rem;
+  border: 1px solid var(--site-accent);
+  border-radius: var(--site-control-radius);
+  color: var(--site-on-accent);
+  background: var(--site-accent);
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.primaryButton:hover { color: var(--site-on-accent); background: color-mix(in srgb, var(--site-accent) 88%, var(--site-text)); text-decoration: none; }
+.visual {
+  width: min(100%, calc(var(--visual-target-height) * var(--visual-ratio, 1)));
+  justify-self: center;
+  min-width: 0;
+  margin: 0;
+}
+@media (max-width: 1100px) {
+  .split { grid-template-columns: minmax(0, 1fr); }
+  .visual { width: 100%; }
+}
+.secondaryButton {
+  composes: primaryButton;
+  color: var(--site-text);
+  background: var(--site-surface);
+  border-color: var(--site-border);
+}
+.secondaryButton:hover { color: var(--site-accent); background: var(--site-surface); border-color: var(--site-accent); }
+
+.featureList { display: grid; gap: 1rem; margin: 1.5rem 0; }
+.featureList > div { padding-top: 1rem; border-top: 1px solid var(--site-border); }
+.featureList dt { display: flex; align-items: baseline; gap: .75rem; font-size: 1rem; font-weight: 650; margin-bottom: .5rem; }
+.featureList dt > span { flex-shrink: 0; width: 1.5rem; color: var(--site-accent); font-size: .75rem; font-weight: 500; }
+.featureList dd { margin: 0 0 0 2.25rem; color: var(--site-muted); font-size: 1rem; line-height: var(--site-line-height); text-wrap: pretty; }
+
+/* Keep section navigation in the first-screen layout without overlapping the copy. */
+.heroWithNav {
+  composes: hero;
+  display: grid;
+  grid-template-rows: minmax(min-content, 1fr) auto;
+  align-items: stretch;
+}
+.heroWithNav > .heroInner { align-self: center; }

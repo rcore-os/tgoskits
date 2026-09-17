@@ -77,11 +77,16 @@ yarn serve
 - `docs/src/components/catalog/`：目录页面共用的架构图、依赖图、图标和样式
 - `docs/src/templates/CatalogDetail.js`：插件注册的组件与应用详情模板
 - `docs/plugins/catalog/`：构建时扫描目录、生成数据与注册路由
-- `docs/src/css/`：站点公共样式
+- `docs/src/css/`：站点主题和公共尺寸变量
+- `docs/src/components/layout/page.module.css`：页面共用的布局与交互样式
 - `docs/static/`：静态资源
 - `docs/docusaurus.config.js`：站点配置
 - `docs/sidebars.docs.js`：主文档侧边栏
 - `docs/sidebars.community.js`：社区文档侧边栏
+
+自定义页面共用 `src/components/layout/page.module.css` 的 `container`、`hero`、`heroInner`、`split`、`section`、`copy`、`description`、`featureList`、`actions`、`visual` 和按钮样式。页面样式通过 CSS Modules 的 `composes` 复用这些规则；`src/css/custom.css` 统一维护 80% 桌面内容宽度、整屏 Hero、高度上限、章节间距、标题字号和主题色。图示颜色、交替排版和依赖图工具栏等领域样式保留在各自模块，普通文档的阅读列继续由 Docusaurus 主题管理。
+
+`useVisualHeight()` 返回页面根节点的 ref，仅观察该页面的 `data-visual-pair` 与 `data-visual-copy`，更新共享的 `--visual-copy-height`。插图通过 `visual` 和自身宽高比等比缩放；卸载页面时断开观察器。不要再为页面追加另一套 Hero 高度、文字拉伸或局部图文高度覆盖。
 
 首页由 `src/pages/index.js` 和 `src/pages/index.css` 维护，保留终端演示、组件关系、三套系统、四层架构、仓库同步、硬件平台、验证与文档导航。`ArchitectureIllustration()` 维护四层架构图，`ComponentWorkspaceDiagram()` 维护仓库同步图。Components 首屏的层级框架图位于 `static/images/showcase/component-hierarchy.svg`，以 ArceOS、StarryOS、Axvisor 为顶层，说明系统集成、共享组件与平台适配的四层逻辑视图，不代替逐包依赖图。
 
