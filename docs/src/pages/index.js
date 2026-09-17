@@ -4,6 +4,10 @@ import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import './index.css';
 
+// Verified against Cargo metadata and scripts/repo/repos.csv on 2026-09-17.
+// Workspace members include applications, tests and build tools, unlike the component catalog.
+const workspaceFacts = { packages: 193, subtreeMappings: 41, existingSubtreeTargets: 39 };
+
 /* ── Scroll Reveal Hook ──────────────────────────────────── */
 function useScrollReveal() {
   useEffect(() => {
@@ -89,20 +93,20 @@ const iconLibrary = {
 /* ── Component Workspace Diagram ─────────────────────────── */
 function ComponentWorkspaceDiagram() {
   const repos = [
-    { name: 'buddy-slab-allocator', path: 'memory/buddy-slab-allocator', tone: 'memory' },
-    { name: 'arm_vcpu', path: 'virtualization/arm_vcpu', tone: 'virtualization' },
+    { name: 'axcpu', path: 'components/axcpu', tone: 'memory' },
+    { name: 'arm_vgic', path: 'virtualization/arm_vgic', tone: 'virtualization' },
     { name: 'rockchip-npu', path: 'drivers/npu/rockchip-npu', tone: 'driver' },
   ];
 
   const hubItems = [
-    { title: '外部仓库汇聚', desc: ['50 个 subtree 映射', 'OS · 内存 · 驱动 · VFS · 虚拟化'] },
+    { title: '外部仓库汇聚', desc: [`${workspaceFacts.subtreeMappings} 条映射记录`, `${workspaceFacts.existingSubtreeTargets} 个目标目录存在`] },
     { title: 'Subtree 同步工具', desc: ['repo.py list / pull / push', '集成验证后同步回上游'] },
     { title: '来源边界清晰', desc: ['repos.csv · target_dir · category'] },
   ];
 
   return (
     <div className="workspace-diagram" aria-label="Git Subtree component workspace workflow">
-      <div className="workspace-diagram__title">50 个 Git Subtree 映射：外部仓库 ↔ 统一工作区 ↔ 上游</div>
+      <div className="workspace-diagram__title">{workspaceFacts.subtreeMappings} 条 Git Subtree 映射记录：外部仓库 ↔ 统一工作区 ↔ 上游</div>
       <div className="workspace-diagram__flow">
         <div className="workspace-diagram__repos workspace-diagram__repos--source">
           {repos.map((repo) => (
@@ -204,7 +208,7 @@ function staggerClass(index) {
 function HeroBanner() {
   const heroStats = [
     { label: '核心系统', value: '3' },
-    { label: '工作区包', value: '184' },
+    { label: '工作区成员', value: workspaceFacts.packages },
     { label: '主流架构', value: '4' },
     { label: '统一命令入口', value: 'xtask' },
   ];
@@ -239,7 +243,7 @@ function HeroBanner() {
           <p className="eyebrow">Operating Systems and Virtualization Workspace</p>
           <h1><span>TGOSKits</span><em>面向系统软件研发的一体化工作区</em></h1>
           <p className="lead">
-            ArceOS、StarryOS、Axvisor 三套系统共享由 184 个 package 组成的 Cargo workspace，
+            ArceOS、StarryOS、Axvisor 三套系统位于包含 {workspaceFacts.packages} 个成员的统一 Cargo workspace 中，
             通过 cargo xtask 统一执行构建、镜像生成、QEMU 运行与分层验证，形成从组件开发到系统集成的可复现工程流程。
           </p>
           <div className="hero-actions">
@@ -369,7 +373,7 @@ function HeroTerminal() {
           <span className="htb htb-min" />
           <span className="htb htb-max" />
         </div>
-        <span className="hero-terminal-title">workspace shell</span>
+        <span className="hero-terminal-title">运行流程示意 · 非实时日志</span>
       </div>
       <div className="hero-terminal-screen" aria-live="polite">
         <div className="hero-terminal-command">
@@ -404,92 +408,72 @@ function HeroTerminal() {
 /* ── Capability Section ──────────────────────────────────── */
 function CapabilityIllustration() {
   const domains = [
-    { name: 'components/', detail: 'scheduler · fs · process', y: 140 },
-    { name: 'memory/', detail: 'allocator · page table · DMA/MMIO', y: 245 },
-    { name: 'drivers/', detail: 'blk · net · USB · NPU · PCI', y: 350 },
-    { name: 'virtualization/', detail: 'vCPU · VM · address space', y: 455 },
+    { name: 'components/', detail: '调度 · CPU · 同步与基础工具' },
+    { name: 'memory/', detail: '内存分配 · 地址空间 · 页表 · DMA / MMIO' },
+    { name: 'drivers/', detail: '块设备 · 网络设备 · USB · 中断与设备接口' },
+    { name: 'fs/', detail: 'VFS · 文件系统 · 页缓存与块设备集成' },
+    { name: 'net/', detail: '网络协议栈 · Socket · 网络设备适配' },
+    { name: 'virtualization/', detail: 'VM · 虚拟设备 · 客户机地址空间' },
+    { name: 'platforms/', detail: '平台契约 · 启动与固件 · 硬件资源' },
   ];
-
   const systems = [
-    { className: 'arceos', name: 'ArceOS', detail: 'Modular OS', y: 140 },
-    { className: 'starry', name: 'StarryOS', detail: 'Linux-compatible OS', y: 275 },
-    { className: 'axvisor', name: 'Axvisor', detail: 'Type-I hypervisor', y: 410 },
+    { className: 'arceos', name: 'ArceOS', detail: '模块化运行时' },
+    { className: 'starry', name: 'StarryOS', detail: 'Linux 用户态兼容' },
+    { className: 'axvisor', name: 'Axvisor', detail: 'Type-I Hypervisor' },
   ];
-
-  const architectures = ['aarch64', 'riscv64', 'x86_64', 'loongarch64'];
-
+  const architectures = ['AArch64', 'RISC-V', 'x86_64', 'LoongArch'];
   return (
     <figure className="capability-illustration card-reveal stagger-1">
-      <svg
-        aria-labelledby="capability-art-title capability-art-description"
-        className="capability-art"
-        role="img"
-        viewBox="0 0 1200 620"
-      >
-        <title id="capability-art-title">TGOSKits workspace capability map</title>
-        <desc id="capability-art-description">
-          Cargo xtask orchestrates reusable component, memory, driver and virtualization crates for ArceOS, StarryOS and Axvisor across four CPU architectures.
-        </desc>
-
-        <rect className="capability-art__frame" height="618" rx="28" width="1198" x="1" y="1" />
-
-        <g className="capability-art__connections">
-          <path d="M600 100 V165" />
-          {domains.map((domain) => (
-            <path d={`M290 ${domain.y + 37.5} H350 Q390 ${domain.y + 37.5} 410 285`} key={domain.name} />
-          ))}
-          {systems.map((system) => (
-            <path d={`M770 315 Q820 315 900 ${system.y + 45}`} key={system.name} />
-          ))}
-          <path d="M590 465 V505 H865" />
-          <path d="M415 505 H590" />
-          {[405, 555, 705, 855].map((x) => (<path d={`M${x} 505 V535`} key={x} />))}
-        </g>
-
-        <g className="capability-art__xtask">
-          <rect height="70" rx="18" width="280" x="460" y="30" />
-          <text className="capability-art__overline" textAnchor="middle" x="600" y="56">UNIFIED ORCHESTRATION</text>
-          <text className="capability-art__title" textAnchor="middle" x="600" y="83">cargo xtask</text>
-        </g>
-
-        {domains.map((domain) => (
-          <g className="capability-art__domain" key={domain.name}>
-            <rect height="75" rx="16" width="250" x="40" y={domain.y} />
-            <path d={`M68 ${domain.y + 23} h18 l7 8 h31 v25 h-56 z`} />
-            <text className="capability-art__node-title" x="138" y={domain.y + 32}>{domain.name}</text>
-            <text className="capability-art__node-copy" x="138" y={domain.y + 55}>{domain.detail}</text>
+      <div className="capability-art-scroll" tabIndex={0} role="region" aria-label="系统与七类组件能力图，窄屏可横向滚动">
+        <svg aria-labelledby="capability-art-title capability-art-description" className="capability-art" role="img" viewBox="0 0 1440 860">
+          <title id="capability-art-title">TGOSKits 系统与组件能力全景</title>
+          <desc id="capability-art-description">左侧七类领域组件汇聚至中央 TGOSKits 工作区，右侧连接 ArceOS、StarryOS 与 Axvisor。上方 cargo xtask 编排构建与验证，下方列出四种目标架构。连线表示能力组合，不是逐包依赖图。</desc>
+          <rect className="capability-art__frame" x="1" y="1" width="1438" height="858" rx="28" />
+          <g className="capability-art__connections">
+            <path d="M785 136V245" />
+            {domains.map((domain, index) => <path key={domain.name} d={`M450 ${80 + index * 94 + 39}H495C550 ${80 + index * 94 + 39} 550 ${315 + index * 30} 600 ${315 + index * 30}`} />)}
+            {systems.map((system, index) => <path key={system.name} d={`M970 ${335 + index * 70}C1030 ${335 + index * 70} 1040 ${235 + index * 190} 1110 ${235 + index * 190}`} />)}
+            <path d="M785 575V714H1285M685 714H785" />
+            {[685, 885, 1085, 1285].map(x => <path key={x} d={`M${x} 714V764`} />)}
           </g>
-        ))}
-
-        <g className="capability-art__workspace">
-          <rect height="300" rx="28" width="360" x="410" y="165" />
-          <text className="capability-art__overline" textAnchor="middle" x="590" y="207">TGOSKITS CARGO WORKSPACE</text>
-          <text className="capability-art__metric" textAnchor="middle" x="590" y="292">184</text>
-          <text className="capability-art__metric-label" textAnchor="middle" x="590" y="326">workspace packages</text>
-          <line x1="465" x2="715" y1="350" y2="350" />
-          <text className="capability-art__workspace-copy" textAnchor="middle" x="590" y="385">build · run · test · image · board</text>
-          <text className="capability-art__workspace-copy" textAnchor="middle" x="590" y="418">shared crates, explicit OS boundaries</text>
-        </g>
-
-        {systems.map((system) => (
-          <g className={`capability-art__system capability-art__system--${system.className}`} key={system.name}>
-            <rect height="90" rx="18" width="250" x="900" y={system.y} />
-            <text className="capability-art__system-title" x="930" y={system.y + 39}>{system.name}</text>
-            <text className="capability-art__node-copy" x="930" y={system.y + 65}>{system.detail}</text>
+          <g className="capability-art__xtask">
+            <rect x="635" y="52" width="300" height="84" rx="18" />
+            <text className="capability-art__overline" x="785" y="82" textAnchor="middle">UNIFIED ORCHESTRATION</text>
+            <text className="capability-art__title" x="785" y="115" textAnchor="middle">cargo xtask</text>
           </g>
-        ))}
-
-        <text className="capability-art__overline" textAnchor="middle" x="630" y="526">ARCHITECTURE TARGETS</text>
-        {architectures.map((architecture, index) => (
-          <g className="capability-art__arch" key={architecture}>
-            <rect height="48" rx="14" width="130" x={340 + index * 150} y="535" />
-            <text textAnchor="middle" x={405 + index * 150} y="566">{architecture}</text>
+          {domains.map((domain, index) => {
+            const y = 80 + index * 94;
+            return <g className="capability-art__domain" key={domain.name}>
+              <rect x="40" y={y} width="410" height="78" rx="16" />
+              <path d={`M60 ${y + 17}h13l6 7h24v22H60Z`} />
+              <text className="capability-art__node-title" x="120" y={y + 33}>{domain.name}</text>
+              <text className="capability-art__node-copy" x="60" y={y + 64}>{domain.detail}</text>
+            </g>;
+          })}
+          <g className="capability-art__workspace">
+            <rect x="600" y="245" width="370" height="330" rx="28" />
+            <text className="capability-art__overline" x="785" y="290" textAnchor="middle">CARGO WORKSPACE</text>
+            <text className="capability-art__hub-title" x="785" y="360" textAnchor="middle">TGOSKits</text>
+            <text className="capability-art__node-copy" x="785" y="400" textAnchor="middle">共享组件 · 系统集成</text>
+            <line x1="645" x2="925" y1="428" y2="428" />
+            <text className="capability-art__node-copy" x="785" y="477" textAnchor="middle">配置 · 构建 · 运行 · 验证</text>
+            <text className="capability-art__node-copy" x="785" y="521" textAnchor="middle">明确接口边界，按需组合能力</text>
           </g>
-        ))}
-      </svg>
-      <figcaption>
-        <code>components/</code>、<code>memory/</code>、<code>drivers/</code> 与 <code>virtualization/</code> 通过统一 workspace 为三套系统提供基础能力。
-      </figcaption>
+          {systems.map((system, index) => {
+            const y = 190 + index * 190;
+            return <g className={`capability-art__system capability-art__system--${system.className}`} key={system.name}>
+              <rect x="1110" y={y} width="280" height="90" rx="18" />
+              <text className="capability-art__system-title" x="1140" y={y + 38}>{system.name}</text>
+              <text className="capability-art__node-copy" x="1140" y={y + 67}>{system.detail}</text>
+            </g>;
+          })}
+          <text className="capability-art__overline" x="1085" y="700" textAnchor="middle">ARCHITECTURE TARGETS</text>
+          {architectures.map((architecture, index) => <g className="capability-art__arch" key={architecture}>
+            <rect x={600 + index * 200} y="764" width="170" height="57" rx="14" />
+            <text x={685 + index * 200} y="800" textAnchor="middle">{architecture}</text>
+          </g>)}
+        </svg>
+      </div>
     </figure>
   );
 }
@@ -498,9 +482,9 @@ function CapabilitySection() {
   const features = [
     { icon: 'orbit', title: '统一工程编排', desc: 'cargo xtask 提供 ArceOS、StarryOS、Axvisor、镜像、板卡与测试命令的统一入口。', to: '/docs/build/overview' },
     { icon: 'grid', title: '内存基础能力', desc: 'allocator、地址类型、memory set 与多架构页表实现集中在 memory/，供系统按需组合。', to: '/docs/architecture/overview' },
-    { icon: 'layers', title: '调度与同步原语', desc: 'axsched、cpumask、ax-sync 与 ax-lazyinit 提供可复用的内核运行时基础。', to: '/docs/architecture/overview' },
+    { icon: 'layers', title: '调度与同步原语', desc: 'ax-sched、ax-cpumask、ax-sync 与 ax-lazyinit 提供可复用的内核运行时基础。', to: '/docs/architecture/overview' },
     { icon: 'server', title: '文件与进程组件', desc: 'axfs-ng-vfs、rsext4、StarryOS kernel task、starry-signal 与 starry-vm 承载明确的领域语义。', to: '/docs/architecture/overview' },
-    { icon: 'chip', title: '虚拟化基础对象', desc: 'virtualization/ 提供 VM、vCPU、地址空间、虚拟设备及各架构中断控制器实现。', to: '/docs/architecture/axvisor' },
+    { icon: 'chip', title: '虚拟化基础对象', desc: 'virtualization/ 提供 VM、地址空间与虚拟设备，components/axcpu 提供多架构 vCPU 能力。', to: '/docs/architecture/axvisor' },
     { icon: 'plug', title: '设备能力接口', desc: 'dma-api、mmio-api、irq-framework 与 RDIF 接口 crate 将资源访问从具体 OS glue 中分离。', to: '/docs/architecture/overview' },
   ];
 
@@ -510,38 +494,24 @@ function CapabilitySection() {
       className="section-shell--capabilities"
       eyebrow="Core Capabilities"
       title="可组合的系统软件基础能力"
-      description="统一的 Cargo workspace 汇聚工程编排、内存管理、调度同步、文件与进程、虚拟化及设备接口，为三套系统提供可复用的实现基础。"
+      description="统一工作区汇聚基础组件、内存、驱动、文件系统、网络、虚拟化与平台适配，支撑三套系统按需组合能力。"
     >
       <div className="capability-showcase">
         <CapabilityIllustration />
-        <div className="capability-narrative card-reveal stagger-2">
-          <span className="capability-narrative__eyebrow">Repository-backed view</span>
-          <h3>领域能力统一复用，运行语义保持隔离</h3>
-          <p>
-            可复用机制以 crate 纳入统一 workspace，OS glue、平台适配与运行策略由各系统独立实现；
-            cargo xtask 在不破坏边界的前提下统一编排构建、镜像、运行和验证流程。
-          </p>
-          <dl className="capability-facts">
-            <div><dt>184</dt><dd>workspace packages</dd></div>
-            <div><dt>3</dt><dd>system paths</dd></div>
-            <div><dt>4</dt><dd>CPU architectures</dd></div>
-          </dl>
-          <Link className="capability-narrative__link" to="/docs/architecture/overview">查看架构边界</Link>
-        </div>
-      </div>
 
-      <div className="capability-grid">
-        {features.map((feature, index) => (
-          <Link className={`capability-card ${staggerClass(index)}`} key={feature.title} to={feature.to}>
-            <div className="feature-icon">{iconLibrary[feature.icon]}</div>
-            <span className="capability-card__index">0{index + 1}</span>
-            <div className="capability-card__body">
-              <h3>{feature.title}</h3>
-              <p>{feature.desc}</p>
-            </div>
-            <span aria-hidden="true" className="capability-card__arrow">→</span>
-          </Link>
-        ))}
+        <div className="capability-grid">
+          {features.map((feature, index) => (
+            <Link className={`capability-card ${staggerClass(index)}`} key={feature.title} to={feature.to}>
+              <div className="feature-icon">{iconLibrary[feature.icon]}</div>
+              <span className="capability-card__index">0{index + 1}</span>
+              <div className="capability-card__body">
+                <h3>{feature.title}</h3>
+                <p>{feature.desc}</p>
+              </div>
+              <span aria-hidden="true" className="capability-card__arrow">→</span>
+            </Link>
+          ))}
+        </div>
       </div>
     </SectionShell>
   );
@@ -565,7 +535,7 @@ function ArchitectureIllustration() {
         viewBox="0 0 560 600"
       >
         <title id="architecture-art-title">TGOSKits four-layer architecture</title>
-        <desc id="architecture-art-description">Four increasingly broad layers show that scenario entry depends on system semantics, reusable domain capabilities and platform contracts.</desc>
+        <desc id="architecture-art-description">Four conceptual responsibility layers show scenario entry, system semantics, shared capabilities and platform contracts; this is not a complete Cargo dependency graph.</desc>
         <path className="architecture-art__axis" d="M280 112 V152 M280 232 V272 M280 352 V392" />
         <path className="architecture-art__arrow" d="M272 142 L280 150 L288 142 M272 262 L280 270 L288 262 M272 382 L280 390 L288 382" />
         {layers.map((layer, index) => (
@@ -586,7 +556,6 @@ function ArchitectureIllustration() {
         <path className="architecture-art__axis" d="M280 472 V512" />
         <path className="architecture-art__arrow" d="M272 502 L280 510 L288 502" />
       </svg>
-      <figcaption>依赖方向始终向下：上层选择能力，下层提供稳定契约。</figcaption>
     </figure>
   );
 }
@@ -600,9 +569,9 @@ function ArchitectureSection() {
   ];
 
   const notes = [
-    { title: '自底向上的依赖约束', desc: '下层 crate 不依赖上层实现，组件层不引用系统层代码，平台层不感知具体系统。依赖方向单一，修改影响可控。' },
-    { title: '水平切分的复用边界', desc: '同一层的 crate 通过 trait 或接口抽象解耦，系统通过组合而非继承获取能力，新增系统实现无需修改现有组件。' },
-    { title: '副作用止于边界', desc: 'MMIO、DMA、IRQ、固件与调度能力只通过显式 API 跨层传递；共享逻辑依赖能力契约，不直接耦合具体 OS 或平台实现。' },
+    { title: '职责分层与实际依赖', desc: '四层用于解释职责，不是严格的 Cargo 拓扑。例如 axvm 依赖 ArceOS 的 ax-std，领域组件也可能需要运行时服务。评估改动时需检查直接依赖与 feature 条件。' },
+    { title: '水平切分的复用边界', desc: '同一层的 crate 通过 trait 或接口抽象解耦，系统通过组合而非继承获取能力，通过明确接口承接系统集成需求。' },
+    { title: '副作用止于边界', desc: 'MMIO、DMA、IRQ、固件与调度能力只通过显式 API 跨层传递；优先通过能力契约隔离系统与平台差异，具体耦合仍需按组件审查。' },
   ];
 
   return (
@@ -610,8 +579,8 @@ function ArchitectureSection() {
       id="architecture"
       className="section-shell--architecture"
       eyebrow="Architecture"
-      title="四层单向依赖架构"
-      description="场景入口、系统语义、领域能力与平台边界构成自上而下的依赖链，跨层交互通过 workspace 依赖、trait 和 capability API 建立稳定契约。"
+      title="四层职责架构"
+      description="场景入口、系统语义、领域能力与平台边界构成四类职责。跨层交互通过依赖声明、trait 和能力接口连接；实际依赖以组件关系图和构建配置为准。"
     >
       <div className="architecture-layout">
         <ArchitectureIllustration />
@@ -654,8 +623,8 @@ function ComponentWorkspaceSection() {
       id="component-workspace"
       className="section-shell--component-workspace"
       eyebrow="Component Workspace"
-      title="50 个 Git Subtree 映射的同步工作流"
-      description="scripts/repo/repos.csv 维护外部仓库与工作区目录的 50 组映射，repo.py 执行双向同步，使独立仓库演进、集成验证与上游回推保持一致。"
+      title="Git Subtree 组件同步工作流"
+      description={`scripts/repo/repos.csv 登记 ${workspaceFacts.subtreeMappings} 条映射，其中 ${workspaceFacts.existingSubtreeTargets} 个目标目录存在，另有 ${workspaceFacts.subtreeMappings - workspaceFacts.existingSubtreeTargets} 条记录指向已不存在的目录。repo.py 提供仓库与工作区间的同步入口；实际同步前应核对映射及目录状态。`}
     >
       <ComponentWorkspaceDiagram />
     </SectionShell>
@@ -665,7 +634,7 @@ function ComponentWorkspaceSection() {
 /* ── Systems Section ─────────────────────────────────────── */
 function SystemsSection() {
   const systems = [
-    { accent: 'accent-arceos', name: 'ArceOS', subtitle: '模块化内核', tag: '组合系统', desc: '通过配置组合 axalloc、ax-runtime、ax-task、axfs、axnet、axhal 等组件，生成面向具体应用场景的系统镜像。', items: ['四架构 Rust、C 与 axtest 用例', '示例覆盖基础运行与设备场景', '基于 feature 和配置裁剪模块能力'] },
+    { accent: 'accent-arceos', name: 'ArceOS', subtitle: '模块化内核', tag: '组合系统', desc: '通过配置组合 ax-alloc、ax-runtime、ax-task、ax-fs-ng、ax-net、ax-hal 等组件，生成面向具体应用场景的系统镜像。', items: ['四架构 Rust、C 与 axtest 用例', '示例覆盖基础运行与设备场景', '基于 feature 和配置裁剪模块能力'] },
     { accent: 'accent-starry', name: 'StarryOS', subtitle: 'Linux 兼容 OS', tag: '用户态兼容', desc: '实现 Linux 系统调用、ELF 加载、进程与信号语义，并通过 rootfs 和用户态程序验证兼容性。', items: ['四架构系统调用分组测试', '四架构 TTY 输入测试', '板测覆盖网络、USB、PCIe 与 NPU'] },
     { accent: 'accent-axvisor', name: 'Axvisor', subtitle: 'Type-I Hypervisor', tag: '虚拟化运行时', desc: '管理 VM、vCPU、虚拟地址空间与虚拟设备，并通过静态或动态平台配置启动不同 Guest。', items: ['四架构 Guest 启动冒烟测试', 'x86_64 支持 VMX 与 SVM', 'LoongArch64 支持动态 UEFI 启动'] },
   ];
@@ -780,7 +749,7 @@ function VerificationIllustration({ type }) {
 
 function QualitySection() {
   const lanes = [
-    { type: 'host', status: 'Local', scope: 'Crate', signal: '快速反馈', title: 'Host 侧组件验证', desc: '在宿主机上执行标准库测试与静态检查，不启动目标系统即可发现组件级问题。', items: ['cargo test -p <crate>', 'cargo xtask clippy', 'cargo xtask test'] },
+    { type: 'host', status: 'Local', scope: 'Crate', signal: '快速反馈', title: 'Host 侧组件验证', desc: '在宿主机上执行标准库测试与静态检查，不启动目标系统即可发现组件级问题。', items: ['cargo xtask clippy', 'cargo xtask test', '按项目清单展开功能与目标组合'] },
     { type: 'qemu', status: 'System', scope: 'System image', signal: '完整语义', title: 'QEMU 系统级验证', desc: '构建目标系统镜像并在 QEMU 中运行，检查 syscall、进程、设备与 Guest 引导行为。', items: ['ArceOS example 运行检查', 'StarryOS rootfs + shell 启动', 'Axvisor Guest 引导与交互'] },
     { type: 'board', status: 'Scenario', scope: 'Physical board', signal: '真实设备', title: '板级场景回归', desc: '在 self-hosted 板卡上执行端到端场景，确认平台适配与真实硬件行为。', items: ['platforms/* 编译与启动验证', 'VM / Guest 配置兼容性回归', '共享 crate 的多系统影响面检查'] },
   ];
@@ -817,28 +786,29 @@ function QualitySection() {
 function HardwareSection() {
   const architectures = [
     { arch: 'aarch64', target: 'aarch64-unknown-none-softfloat', platform: 'QEMU virt', note: 'ArceOS · StarryOS · Axvisor' },
-    { arch: 'riscv64', target: 'riscv64gc-unknown-none-elf', platform: 'QEMU virt + SSTC', note: 'ArceOS · StarryOS · Axvisor' },
-    { arch: 'x86_64', target: 'x86_64-unknown-none', platform: 'Q35 · ACPI · VMX/SVM', note: 'ArceOS · StarryOS · Axvisor' },
-    { arch: 'loongarch64', target: 'loongarch64-unknown-none-softfloat', platform: 'QEMU virt · dynamic UEFI', note: 'ArceOS · StarryOS · Axvisor' },
+    { arch: 'riscv64', target: 'riscv64gc-unknown-none-elf', platform: 'QEMU virt；SSTC 按配置启用', note: 'ArceOS · StarryOS · Axvisor' },
+    { arch: 'x86_64', target: 'x86_64-unknown-none', platform: 'Q35 · ACPI；Axvisor QEMU 需 KVM + VMX/SVM', note: 'ArceOS · StarryOS · Axvisor' },
+    { arch: 'loongarch64', target: 'loongarch64-unknown-none-softfloat', platform: 'QEMU virt；UEFI 按配置启用', note: 'ArceOS · StarryOS · Axvisor' },
   ];
 
   const driverCategories = [
     { icon: 'server', title: '块设备', items: ['sdhci-host', 'dwmmc-host', 'nvme-driver'] },
     { icon: 'pulse', title: '网络', items: ['realtek-rtl8125', 'eth-intel', 'fxmac_rs'] },
-    { icon: 'orbit', title: '中断控制器', items: ['arm-gic-driver', 'riscv_plic', 'rdif-intc'] },
+    { icon: 'orbit', title: '中断控制器', items: ['arm-gic-driver', 'ax-riscv-plic', 'rdif-intc'] },
     { icon: 'layers', title: 'PCIe', items: ['pcie', 'rk3588-pci', 'rdif-pcie'] },
-    { icon: 'plug', title: 'USB', items: ['usb-host', 'usb-if', 'usb-serial'] },
+    { icon: 'plug', title: 'USB', items: ['crab-usb', 'usb-if', 'usb-serial'] },
     { icon: 'chip', title: 'AI 与多媒体', items: ['rockchip-npu', 'k230-kpu', 'sg2002-tpu'] },
-    { icon: 'grid', title: '平台设备', items: ['rockchip-pwm', 'arm_pl031', 'arm-scmi-rs'] },
+    { icon: 'grid', title: '平台设备', items: ['rockchip-pwm', 'ax-arm-pl031', 'arm-scmi-rs'] },
   ];
 
   const boardEvidence = [
-    { board: 'OrangePi-5-Plus', systems: 'StarryOS · Axvisor' },
+    { board: 'OrangePi-5-Plus', systems: 'ArceOS · StarryOS · Axvisor' },
     { board: 'Phytium Pi', systems: 'Axvisor' },
     { board: 'ROC-RK3568-PC', systems: 'Axvisor' },
     { board: 'ASUS NUC15 CRH', systems: 'Axvisor' },
     { board: 'AKA-00-SG2002', systems: 'StarryOS' },
     { board: 'VisionFive 2', systems: 'StarryOS' },
+    { board: 'JL LSGD2K10', systems: 'StarryOS' },
   ];
 
   return (
@@ -847,7 +817,7 @@ function HardwareSection() {
       className="section-shell--hardware"
       eyebrow="Hardware Enablement"
       title="四架构平台与设备使能"
-      description="aarch64、riscv64、x86_64 与 loongarch64 均具备三套系统的 QEMU 配置；drivers/ 提供分类型设备实现，self-hosted CI 持续验证关键实体板卡。"
+      description="aarch64、riscv64、x86_64 与 loongarch64 均具备三套系统的 QEMU 配置；drivers/ 提供分类型设备实现，CI 清单包含关键实体板卡用例，是否执行取决于变更路由和运行条件。"
     >
       <div className="hardware-layout">
         <div className="hardware-platforms">
@@ -885,14 +855,14 @@ function HardwareSection() {
       <div className="hardware-board-evidence">
         <div className="hardware-board-evidence__heading">
           <span>Self-hosted CI</span>
-          <strong>当前持续执行的板卡用例</strong>
+          <strong>当前 CI 清单登记的板卡用例</strong>
         </div>
         <div className="hardware-board-list">
           {boardEvidence.map((item) => (
             <div key={item.board}><strong>{item.board}</strong><span>{item.systems}</span></div>
           ))}
         </div>
-        <Link className="hardware-board-evidence__link" to="/docs/introduction/platform">查看完整支持与证据矩阵</Link>
+        <Link className="hardware-board-evidence__link" to="/docs/introduction/platform">查看平台支持范围</Link>
       </div>
     </SectionShell>
   );
