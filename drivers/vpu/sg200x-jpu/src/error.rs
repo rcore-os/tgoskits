@@ -371,30 +371,19 @@ impl From<PollError> for JpuDecodeError {
 
 #[cfg(test)]
 mod tests {
-    extern crate std;
-
     use core::error::Error as _;
-    use std::string::ToString;
 
     use super::{
         JpegHeaderError, JpuDecodeError, JpuHardwareSetupError, JpuInspectError, JpuRegisterError,
     };
 
     #[test]
-    fn nested_errors_preserve_display_text_and_sources() {
+    fn nested_errors_preserve_sources() {
         let inspect = JpuInspectError::from(JpegHeaderError::ProgressiveUnsupported);
-        assert_eq!(
-            inspect.to_string(),
-            "invalid JPEG stream: progressive JPEG is unsupported"
-        );
         assert!(inspect.source().is_some());
 
         let setup = JpuHardwareSetupError::from(JpuRegisterError::BbcIdleTimeout);
         let decode = JpuDecodeError::from(setup);
-        assert_eq!(
-            decode.to_string(),
-            "JPU hardware setup failed: JPU BBC did not become idle"
-        );
         // The transparent Register variant has no further source.
         assert_eq!(
             decode

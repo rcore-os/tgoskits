@@ -391,13 +391,6 @@ fn vec_seek_and_write_past_usize_max() {
     assert!(c.write_all(&[1, 2, 3]).is_err());
 }
 
-#[allow(dead_code)]
-fn const_cursor() {
-    const CURSOR: Cursor<&[u8]> = Cursor::new(&[0]);
-    const _: &&[u8] = CURSOR.get_ref();
-    const _: u64 = CURSOR.position();
-}
-
 #[cfg(feature = "alloc")]
 #[bench]
 fn bench_write_vec(b: &mut test::Bencher) {

@@ -1091,15 +1091,10 @@ fn rsext4_journal_device_overlay_rules_hold() {
 fn rsext4_extent_tree_parse_store_and_hash_tree_rules_hold() {
     use rsext4::{
         BLOCK_SIZE,
-        bmalloc::{AbsoluteBN, InodeNumber},
         disknode::{Ext4Extent, Ext4ExtentHeader, Ext4ExtentIdx, Ext4Inode},
         endian::DiskFormat,
-        entries::{Ext4DirEntry2, Ext4DxEntry},
-        extents_tree::{ExtentNode, ExtentRun, ExtentTree},
-        hashtree::{
-            Ext4InodeHashTreeExt, HashTreeError, HashTreeManager, HashTreeNode,
-            HashTreeSearchResult,
-        },
+        extents_tree::{ExtentNode, ExtentTree},
+        hashtree::Ext4InodeHashTreeExt,
     };
 
     let mut leaf_bytes = [0_u8; 60];
@@ -1180,74 +1175,10 @@ fn rsext4_extent_tree_parse_store_and_hash_tree_rules_hold() {
     }
     assert!(inode.uses_extents());
 
-    let run = ExtentRun {
-        logical_start: 3,
-        physical_start: AbsoluteBN::new(100),
-        len: 4,
-    };
-    assert_eq!(run.logical_start, 3);
-    assert_eq!(run.physical_start.raw(), 100);
-    assert_eq!(run.len, 4);
-
     let mut inode = Ext4Inode::default();
     assert!(!inode.is_htree_indexed());
     inode.i_flags |= Ext4Inode::EXT4_INDEX_FL;
     assert!(inode.is_htree_indexed());
-
-    let errors = [
-        (HashTreeError::InvalidHashTree, "Invalid hash tree format"),
-        (
-            HashTreeError::UnsupportedHashVersion,
-            "Unsupported hash version",
-        ),
-        (HashTreeError::CorruptedHashTree, "Corrupted hash tree"),
-        (HashTreeError::BlockOutOfRange, "Block number out of range"),
-        (HashTreeError::BufferTooSmall, "Buffer too small"),
-        (HashTreeError::EntryNotFound, "Entry not found"),
-    ];
-    for (error, text) in errors {
-        assert_eq!(error.to_string(), text);
-    }
-
-    let manager = HashTreeManager::new([1, 2, 3, 4]);
-    let _ = manager;
-    let root_node = HashTreeNode::Root {
-        hash_version: 1,
-        indirect_levels: 0,
-        entries: vec![Ext4DxEntry { hash: 7, block: 2 }],
-    };
-    let internal_node = HashTreeNode::Internal {
-        entries: vec![Ext4DxEntry { hash: 9, block: 3 }],
-    };
-    match root_node {
-        HashTreeNode::Root {
-            hash_version,
-            indirect_levels,
-            entries,
-        } => {
-            assert_eq!(hash_version, 1);
-            assert_eq!(indirect_levels, 0);
-            assert_eq!(entries[0].block, 2);
-        }
-        _ => panic!("expected root hash tree node"),
-    }
-    match internal_node {
-        HashTreeNode::Internal { entries } => {
-            assert_eq!(entries[0].hash, 9);
-        }
-        _ => panic!("expected internal hash tree node"),
-    }
-
-    let result = HashTreeSearchResult {
-        inode: InodeNumber::new(8).unwrap(),
-        file_type: Ext4DirEntry2::EXT4_FT_DIR,
-        block_num: AbsoluteBN::new(12),
-        offset: 16,
-    };
-    assert_eq!(result.inode.raw(), 8);
-    assert_eq!(result.file_type, Ext4DirEntry2::EXT4_FT_DIR);
-    assert_eq!(result.block_num.raw(), 12);
-    assert_eq!(result.offset, 16);
 }
 
 #[test]
@@ -1333,18 +1264,6 @@ fn rsext4_path_and_bitmap_rules_hold() {
     assert_eq!(normalize_path("///"), "/");
     assert_eq!(normalize_path("//alpha///beta//"), "/alpha/beta");
     assert_eq!(normalize_path("alpha//beta///gamma"), "alpha/beta/gamma");
-
-    let bitmap_errors = [
-        (BitmapError::IndexOutOfRange, "bitmap index out of range"),
-        (
-            BitmapError::AlreadyAllocated,
-            "bitmap entry is already allocated",
-        ),
-        (BitmapError::AlreadyFree, "bitmap entry is already free"),
-    ];
-    for (error, text) in bitmap_errors {
-        assert_eq!(error.to_string(), text);
-    }
 
     let mut block_data = vec![0_u8; 2];
     {

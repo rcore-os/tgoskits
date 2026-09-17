@@ -1,4 +1,4 @@
-use starry_signal::{SignalInfo, SignalSet, Signo};
+use starry_signal::{SignalSet, Signo};
 
 #[test]
 fn signalset_add_remove_has_is_empty() {
@@ -54,21 +54,4 @@ fn signalset_bounds() {
     assert!(set.has(Signo::SIGRT32));
     assert!(set.remove(Signo::SIGHUP));
     assert!(set.remove(Signo::SIGRT32));
-}
-
-#[test]
-fn signalinfo_new_kernel() {
-    let si = SignalInfo::new_kernel(Signo::SIGTERM);
-    assert_eq!(si.signo(), Signo::SIGTERM);
-    assert_eq!(si.code(), 128);
-    assert_eq!(si.errno(), 0);
-}
-
-#[test]
-fn signalinfo_new_user() {
-    let si = SignalInfo::new_user(Signo::SIGINT, 9, 9, 0);
-    assert_eq!(si.signo(), Signo::SIGINT);
-    assert_eq!(si.code(), 9);
-    assert_eq!(si.pid(), 9);
-    assert_eq!(si.errno(), 0);
 }

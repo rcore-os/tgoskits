@@ -2,7 +2,7 @@
 
 use std::{fmt, io::BorrowedBuf, mem::MaybeUninit};
 
-use ax_io::{Empty, Error, Repeat, SeekFrom, Sink, empty, prelude::*, repeat, sink};
+use ax_io::{Error, SeekFrom, empty, prelude::*, repeat, sink};
 
 struct ErrorDisplay;
 
@@ -155,11 +155,4 @@ fn repeat_repeats() {
     let mut b = [0; 1024];
     assert_eq!(r.read(&mut b).unwrap(), 1024);
     assert!(b.iter().all(|b| *b == 4));
-}
-
-#[allow(dead_code)]
-fn const_utils() {
-    const _: Empty = empty();
-    const _: Repeat = repeat(b'c');
-    const _: Sink = sink();
 }

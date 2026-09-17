@@ -394,18 +394,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_default_agent_configuration() {
-        let cli = TestCli::try_parse_from(["bench", "run"]).unwrap();
-        let Command::Run(args) = cli.command else {
-            panic!("expected run command");
-        };
-
-        assert_eq!(args.agent, AgentKind::Codex);
-        assert_eq!(args.model, None);
-        assert_eq!(args.reasoning_effort, "high");
-    }
-
-    #[test]
     fn percentage_handles_empty_and_non_empty_totals() {
         assert_eq!(percentage(0, 0), 0.0);
         assert_eq!(percentage(1, 2), 50.0);

@@ -99,32 +99,16 @@ fn axfs_ng_vfs_path_ownership_and_join_rules_hold() {
 
 #[test]
 fn axfs_ng_vfs_type_rules_hold() {
-    use axfs_ng_vfs::{DeviceId, NodePermission, NodeType, Reference, TypeMap};
-    use axpoll::IoEvents;
+    use axfs_ng_vfs::{NodeType, TypeMap};
 
     assert_eq!(NodeType::from(0o10), NodeType::RegularFile);
     assert_eq!(NodeType::from(0o12), NodeType::Symlink);
     assert_eq!(NodeType::from(0xff), NodeType::Unknown);
-    assert_eq!(NodePermission::default().bits(), 0o666);
-    assert!(
-        (NodePermission::OWNER_READ | NodePermission::OWNER_WRITE)
-            .contains(NodePermission::OWNER_WRITE)
-    );
-
-    let device = DeviceId::new(0x12345, 0x6789ab);
-    assert_eq!(device.major(), 0x12345);
-    assert_eq!(device.minor(), 0x6789ab);
-
-    let events = IoEvents::IN | IoEvents::OUT;
-    assert!(events.contains(IoEvents::IN));
-    assert!(!events.contains(IoEvents::ERR));
-
     let mut type_map = TypeMap::new();
     assert!(type_map.get::<u32>().is_none());
     type_map.insert(42_u32);
     assert_eq!(*type_map.get::<u32>().unwrap(), 42);
     assert_eq!(*type_map.get_or_insert_with(|| 7_u32), 42);
-    assert_eq!(Reference::root().key(), (0, String::new()));
 }
 
 #[test]

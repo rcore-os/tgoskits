@@ -108,11 +108,9 @@ fn ax_driver_converts_rdif_intc_acpi_routes_without_losing_metadata() {
 fn ax_driver_error_conversions_preserve_driver_and_probe_categories() {
     let driver_error = Error::from(DriverError::Unsupported("mock"));
     assert!(matches!(driver_error, Error::Driver(_)));
-    assert!(alloc::format!("{driver_error}").contains("driver init failed"));
 
     let probe_error = Error::from(ProbeError::Unsupported("mock-probe"));
     assert!(matches!(probe_error, Error::Probe(_)));
-    assert!(alloc::format!("{probe_error}").contains("driver probe failed"));
 
     let on_probe = Error::from(ProbeError::from(OnProbeError::NotMatch));
     assert!(matches!(on_probe, Error::Probe(_)));

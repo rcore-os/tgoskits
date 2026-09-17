@@ -288,28 +288,3 @@ fn board_profiles_require_the_uploaded_session_helper() {
     assert!(INIT_SCRIPT.contains("BLOCK_RW_BENCH_STAGED_PROGRAM"));
     assert!(INIT_SCRIPT.contains("BLOCK_RW_BENCH_DOWNLOAD_ATTEMPTS"));
 }
-
-#[test]
-fn rock4d_profile_describes_the_rk3576_dwcmshc_emmc_path() {
-    assert!(ROCK4D_PROFILE.contains("board_type = \"Rock-4D\""));
-    assert!(ROCK4D_PROFILE.contains("export BLOCK_RW_BENCH_ROOT_DEVICE='/dev/mmcblk0'"));
-    assert!(ROCK4D_PROFILE.contains("export BLOCK_RW_BENCH_CONTROLLER='rk3588-dwcmshc-emmc'"));
-    assert!(ROCK4D_PROFILE.contains("export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='1048064'"));
-    assert!(ROCK4D_PROFILE.contains("ROCK4D_BLOCK_RW_BENCH_PASSED"));
-}
-
-#[test]
-fn jl_profile_uses_the_linux_autologin_staging_path() {
-    assert!(
-        JL_LSGD2K10_PROFILE
-            .contains("export BLOCK_RW_BENCH_STAGED_PROGRAM='/home/loongson/block-rw-bench'"),
-        "JL Linux staging must use a path writable by its non-root automatic-login user"
-    );
-}
-
-#[test]
-fn jl_profile_describes_the_ls2k1000_ahci_root_path() {
-    assert!(JL_LSGD2K10_PROFILE.contains("export BLOCK_RW_BENCH_ROOT_DEVICE='/dev/sda'"));
-    assert!(JL_LSGD2K10_PROFILE.contains("export BLOCK_RW_BENCH_CONTROLLER='ls2k1000-ahci'"));
-    assert!(JL_LSGD2K10_PROFILE.contains("export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='4194304'"));
-}

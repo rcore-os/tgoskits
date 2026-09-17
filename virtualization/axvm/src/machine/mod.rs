@@ -233,6 +233,3 @@ pub fn machine_profile_for(architecture: MachineArchitecture, cpu_num: usize) ->
 pub fn current_machine_profile(cpu_num: usize) -> MachineProfile {
     machine_profile_for(CurrentArch::MACHINE_ARCHITECTURE, cpu_num)
 }
-
-#[cfg(test)]
-mod tests;

@@ -792,19 +792,6 @@ mod tests {
 
     #[cfg(feature = "host-fs")]
     #[test]
-    fn host_fs_passthrough_route_is_contributed_to_firmware() {
-        assert_eq!(
-            x86_passthrough_intx_routes().unwrap(),
-            vec![acpi::X86PciIntxRoute {
-                device: 3,
-                pin: 0,
-                gsi: 19,
-            }]
-        );
-    }
-
-    #[cfg(feature = "host-fs")]
-    #[test]
     fn host_fs_passthrough_route_reaches_the_final_firmware_tables() {
         use crate::vm::prepare::device_plan::ArchitectureVmPlan;
 

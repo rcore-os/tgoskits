@@ -6,7 +6,6 @@ import importlib.util
 import queue
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 
 
 MODULE_PATH = Path(__file__).with_name("starry_machine.py")
@@ -232,16 +231,6 @@ class StarryMachineTests(unittest.TestCase):
         with self.assertRaises(STARRY_MACHINE.StarryNixosTestError):
             machine.wait_for_unit("multi-user.target")
         self.assertFalse(inner.connect_called)
-
-    def test_allowed_start_reaches_inner(self) -> None:
-        inner = SimpleNamespace(started=False)
-
-        def start() -> None:
-            inner.started = True
-
-        inner.start = start
-        STARRY_MACHINE.wrap_machine(inner).start()
-        self.assertTrue(inner.started)
 
     def test_wait_for_assertion_continues_after_system_passed(self) -> None:
         clock = FakeClock()

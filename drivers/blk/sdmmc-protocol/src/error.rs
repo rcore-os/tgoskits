@@ -271,17 +271,16 @@ impl core::error::Error for CardError {}
 
 #[cfg(test)]
 mod tests {
-    extern crate std;
-
-    use std::format;
-
     use super::*;
 
     #[test]
     fn error_trait_source_threads_card_error_through() {
         let err = Error::CardError(CardError::WriteProtect);
         let src = core::error::Error::source(&err).expect("source should be CardError");
-        assert_eq!(format!("{src}"), "write-protect violation");
+        assert_eq!(
+            src.downcast_ref::<CardError>(),
+            Some(&CardError::WriteProtect)
+        );
     }
 
     #[test]

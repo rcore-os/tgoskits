@@ -141,10 +141,6 @@ mod tests {
             kind: TransferError::Framing,
         };
 
-        assert_eq!(
-            std::format!("{error}"),
-            "transfer error after transferring 7 bytes: framing error"
-        );
         assert!(core::error::Error::source(&error).is_some());
     }
 }

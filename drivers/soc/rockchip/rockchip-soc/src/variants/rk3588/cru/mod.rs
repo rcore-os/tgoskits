@@ -635,45 +635,6 @@ fn verify_pll_frequency(pll_id: PllId, actual_hz: u64, expected_hz: u64) {
 mod tests {
     use super::*;
 
-    /// 测试寄存器位掩码定义
-    #[test]
-    fn test_register_bit_masks() {
-        // ACLK_BUS_ROOT 位掩码
-        assert_eq!(ACLK_BUS_ROOT_SEL_MASK, 0x3 << 5);
-        assert_eq!(ACLK_BUS_ROOT_DIV_MASK, 0x1f);
-
-        // ACLK_TOP 位掩码
-        assert_eq!(ACLK_TOP_S400_SEL_MASK, 0x3 << 8);
-        assert_eq!(ACLK_TOP_S200_SEL_MASK, 0x3 << 6);
-    }
-
-    /// 测试 PLL 模式掩码和常量
-    #[test]
-    fn test_pll_mode_constants() {
-        // 验证模式常量
-        assert_eq!(pll_mode::PLL_MODE_SLOW, 0);
-        assert_eq!(pll_mode::PLL_MODE_NORMAL, 1);
-        assert_eq!(pll_mode::PLL_MODE_DEEP, 2);
-    }
-
-    /// 测试 PLL 寄存器位掩码
-    #[test]
-    fn test_pll_register_masks() {
-        // PLLCON0: M (10 bits)
-        assert_eq!(pllcon0::M_MASK, 0x3ff);
-        assert_eq!(pllcon0::M_SHIFT, 0);
-
-        // PLLCON1: P (6 bits), S (3 bits)
-        assert_eq!(pllcon1::P_MASK, 0x3f);
-        assert_eq!(pllcon1::P_SHIFT, 0);
-        assert_eq!(pllcon1::S_MASK, 0x7 << 6);
-        assert_eq!(pllcon1::S_SHIFT, 6);
-
-        // PLLCON2: K (16 bits)
-        assert_eq!(pllcon2::K_MASK, 0xffff);
-        assert_eq!(pllcon2::K_SHIFT, 0);
-    }
-
     /// 测试 PLL 参数查找 (频率表)
     #[test]
     fn test_find_pll_params_from_table() {

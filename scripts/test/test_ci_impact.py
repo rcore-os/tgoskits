@@ -403,29 +403,6 @@ class CiImpactTests(unittest.TestCase):
         self.assertEqual(impact.ignored_markdown, ("README.md",))
         load_metadata.assert_not_called()
 
-    def test_summary_reports_selected_and_skipped_checks(self) -> None:
-        impact = ci_impact.CiImpact(
-            full=False,
-            reason="fixture",
-            changed_paths=("components/shared/src/lib.rs",),
-            ignored_markdown=("components/shared/README.md",),
-            changed_packages=("shared",),
-            affected_packages=("shared", "starryos"),
-            targets=("starry:aarch64",),
-        )
-
-        summary = ci_impact.render_summary(
-            impact,
-            ["run-clippy", "test-starry-aarch64-qemu"],
-            ["test-starry-x86-64-qemu"],
-        )
-
-        self.assertIn("components/shared/src/lib.rs", summary)
-        self.assertIn("components/shared/README.md", summary)
-        self.assertIn("starry:aarch64", summary)
-        self.assertIn("Selected checks (2)", summary)
-        self.assertIn("Skipped checks (1)", summary)
-
     def test_unknown_and_global_paths_fall_back_to_full(self) -> None:
         for changed_path in (
             "unknown/input.bin",

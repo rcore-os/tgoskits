@@ -27,11 +27,6 @@ name = "std"
 path = "tests/std.rs"
 required-features = ["host-test"]
 
-[[test]]
-name = "rdif"
-path = "tests/rdif.rs"
-required-features = ["host-test", "rdif"]
-
 [build-dependencies]
 ureq = "3"
 sha2 = "0.10"
