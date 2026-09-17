@@ -27,8 +27,9 @@ static void *worker(void *argument)
     atomic_store_explicit(&result->ready, 1, memory_order_release);
 
     /* Keep earlier workers runnable while subsequent workers are admitted.
-     * Observe each worker's entry once: later migration must not enlarge a
-     * time-sampled CPU union and disguise all-on-one-CPU initial placement. */
+     * Observe each worker's entry once instead of sampling its later migration.
+     * This checks user-visible distribution; balancing before entry can also
+     * contribute, so it does not isolate the initial CPU selection policy. */
     while (!atomic_load_explicit(&release_workers, memory_order_acquire)) {
         atomic_signal_fence(memory_order_seq_cst);
     }
