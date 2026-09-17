@@ -1,0 +1,80 @@
+name: Issue and PR maintenance
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview maintenance without commenting or closing issues or PRs.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-pr-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintain:
+    if: github.repository == 'rcore-os/tgoskits'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write # actions/stale persists its scan cursor in the Actions cache.
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout trusted policy
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      - name: Test PR limit before applying changes
+        run: node --test scripts/ci/maintenance.cjs
+
+      - name: Limit open PRs per author
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        with:
+          script: |
+            const enforceLimit = require('./scripts/ci/maintenance.cjs');
+            await enforceLimit({ github, context, core, dryRun: process.env.DRY_RUN === 'true' });
+
+      - name: Close inactive issues and PRs
+        if: github.event_name != 'pull_request_target'
+        uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11
+        with:
+          days-before-issue-stale: 30
+          days-before-issue-close: 0
+          days-before-pr-stale: 30
+          days-before-pr-close: 0
+          stale-issue-label: stale
+          stale-issue-message: ''
+          close-issue-message: >-
+            本 Issue 已连续 30 天没有更新，现自动关闭，这不代表问题已经解决。
+            若问题仍然存在，请补充最新情况后重新打开，或请求维护者重新打开。
+            需要继续跟踪的问题，可由维护者添加 keep-open 标签暂停过期关闭。
+          close-issue-reason: not_planned
+          exempt-issue-labels: keep-open
+          remove-issue-stale-when-updated: true
+          stale-pr-label: stale
+          stale-pr-message: ''
+          close-pr-message: >-
+            本 PR 已连续 30 天没有更新，现自动关闭，分支会保留。
+            若仍需继续，请更新后重新打开；重新打开时仍受每位作者最多 5 个开放 PR 的限制。
+            等待维护者审查或依赖合入的 PR，可由维护者添加 keep-open 标签暂停过期关闭。
+          exempt-pr-labels: keep-open
+          exempt-draft-pr: false
+          remove-pr-stale-when-updated: true
+          delete-branch: false
+          operations-per-run: 1000
+          debug-only: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}

@@ -106,6 +106,8 @@ cargo xtask axvisor qemu --arch aarch64
 
 完整开发示例、文档贡献和 rootfs 维护说明见 [贡献文档](https://rcore-os.cn/tgoskits/docs/contributing/demo)。问题反馈和补丁提交请使用 [GitHub Issues](https://github.com/rcore-os/tgoskits/issues) 与 [GitHub Pull Requests](https://github.com/rcore-os/tgoskits/pulls)。
 
+[Issue 与 PR 管理工作流](.github/workflows/maintenance.yml) 限制每位作者最多保留 5 个开放 PR（包含 Draft，跨目标分支统计），超额时按创建时间关闭最老的，并在新旧 PR 下评论说明。Issue 和 PR 按 GitHub `updated_at` 连续 30 天未更新后，在每日巡检中自动关闭；维护者可添加 `keep-open` 标签暂停过期关闭，该标签不豁免 PR 数量限制。关闭会保留讨论记录和 PR 分支，Issue 过期关闭不表示问题已解决。规则合入默认分支后也适用于存量 Issue 和 PR，手动运行默认使用 `dry_run` 预演。
+
 ## 5. 许可证
 
 TGOSKits 仓库整体采用 [Apache-2.0](./LICENSE) 许可证。部分 subtree 组件可能包含自己的许可证文件；如有差异，以组件目录中的许可证文件为准。
