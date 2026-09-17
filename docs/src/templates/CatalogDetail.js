@@ -1,10 +1,11 @@
 import React from 'react';
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
-import {Emblem, titles} from './index';
-import styles from './styles.module.css';
+import Emblem from '../components/catalog/Emblem';
+import {titles} from '../components/catalog/titles';
+import styles from '../components/catalog/styles.module.css';
 
-export default function Detail({catalog: {kind, entry}}) {
+export default function CatalogDetail({catalog: {kind, entry}}) {
   return (
     <Layout wrapperClassName="site-showcase" title={`${entry.name} · ${titles[kind]}`} description={entry.description}>
       <main className={`container ${styles.detail}`}>

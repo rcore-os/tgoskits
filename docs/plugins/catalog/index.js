@@ -138,19 +138,15 @@ module.exports = function catalogPlugin(context) {
     },
     loadContent() { return collectCatalog(root); },
     async contentLoaded({content, actions}) {
-      const {createData, addRoute} = actions;
+      const {createData, addRoute, setGlobalData} = actions;
+      setGlobalData(content);
       for (const [kind, entries] of Object.entries(content)) {
-        const data = await createData(`${kind}.json`, JSON.stringify({kind, entries}));
-        addRoute({
-          path: `${context.siteConfig.baseUrl}${kind}`, exact: true,
-          component: kind === 'apps' ? '@site/src/components/Catalog/Apps.js' : '@site/src/components/Catalog/index.js', modules: {catalog: data},
-        });
         for (const entry of entries) {
           const data = await createData(`${kind}-${entry.route.replaceAll('/', '-')}.json`,
             JSON.stringify({kind, entry}));
           addRoute({
             path: `${context.siteConfig.baseUrl}${entry.route.slice(1)}`, exact: true,
-            component: '@site/src/components/Catalog/Detail.js', modules: {catalog: data},
+            component: '@site/src/templates/CatalogDetail.js', modules: {catalog: data},
           });
         }
       }

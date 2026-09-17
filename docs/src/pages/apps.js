@@ -1,5 +1,6 @@
 import React, {useEffect, useRef, useState} from 'react';
 import Layout from '@theme/Layout';
+import {usePluginData} from '@docusaurus/useGlobalData';
 import Link from '@docusaurus/Link';
 import styles from './apps.module.css';
 
@@ -80,7 +81,8 @@ function AppResources({entry}) {
   </div>;
 }
 
-export default function Apps({catalog: {entries}}) {
+export default function AppsPage() {
+  const {apps: entries} = usePluginData('tgoskits-catalog');
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('全部');
   const categories = ['全部', ...new Set(entries.map(entry => entry.category))];
