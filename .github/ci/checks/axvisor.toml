@@ -313,11 +313,12 @@ board = "asus-nuc15crh-linux"
 
 [[check]]
 id = "test-orangepi-5-plus-robot-axvisor-starryos-guest"
-impact_targets = ["axvisor:aarch64"]
+impact_targets = ["axvisor:aarch64", "starry:aarch64"]
 name = "Board OrangePi 5 Plus robot · StarryOS guest"
 runner = "board"
 timeout_minutes = 90
 command = '''
+cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/robot-flow/build-aarch64-unknown-none-softfloat.toml --smp 1
 cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
 '''
 

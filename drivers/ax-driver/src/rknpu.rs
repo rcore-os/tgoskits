@@ -227,6 +227,31 @@ pub fn submit(args: &mut RknpuSubmit, tasks: &mut [RknpuTask]) -> Result<(), Err
     }
 }
 
+/// Submit a task snapshot for a producer authorized to issue raw DMA commands.
+///
+/// # Safety
+/// The caller must check raw-I/O authority for the current submitting process
+/// and keep its command/data buffers pinned until this synchronous operation
+/// returns. The producer is trusted to access physical memory on Direct DMA.
+pub unsafe fn submit_rawio(args: &mut RknpuSubmit, tasks: &mut [RknpuTask]) -> Result<(), Error> {
+    let mut npu = rdrive::get_one::<RknpuDevice>()
+        .ok_or(Error::NotFound)?
+        .try_lock()
+        .map_err(|_| Error::Busy)?;
+    npu.ensure_available()?;
+    let mut clock = axklib::time::monotonic_nanos;
+    // SAFETY: authorization and buffer lifetime are the caller's documented
+    // contract; this lock serializes the entire submission and recovery.
+    match unsafe { npu.core.submit_rawio(args, tasks, &mut clock) } {
+        Ok(()) => Ok(()),
+        Err(rockchip_npu::RknpuError::Timeout) => {
+            npu.recover_timeout()?;
+            Err(Error::TimedOut)
+        }
+        Err(_) => Err(Error::InvalidData),
+    }
+}
+
 /// Reports whether the current RKNPU instance can safely accept user tasks.
 ///
 /// The capability is separate from GEM allocation and mapping: those paths

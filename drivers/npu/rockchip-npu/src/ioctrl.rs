@@ -229,21 +229,36 @@ impl Rknpu {
         tasks: &mut [RknpuTask],
         clock: &mut impl FnMut() -> u64,
     ) -> Result<(), RknpuError> {
-        // The command stream can contain DMA addresses that are not visible in
-        // the task descriptor itself.  A direct DMA domain therefore cannot be
-        // made safe by checking the GEM containing the command buffer; require
-        // both an enabled IOMMU and a translated device domain before touching
-        // any submission state or MMIO.
-        if !self.iommu_enabled
-            || !matches!(
-                self.dma.info().domain(),
-                dma_api::DmaDomainId::Translated(_)
-            )
-        {
-            warn!("rknpu submit rejected: translated IOMMU domain is unavailable");
+        if !self.user_submit_supported() {
             return Err(RknpuError::IommuError);
         }
+        self.submit_validated_tasks(args, tasks, clock)
+    }
 
+    /// Submit commands from a caller authorized for raw DMA access.
+    ///
+    /// # Safety
+    ///
+    /// The caller must authorize the command producer to access physical memory
+    /// (for example CAP_SYS_RAWIO). On a direct domain, command-stream addresses
+    /// are not confined by an IOMMU. All referenced allocations must remain
+    /// alive until completion or successful recovery. This does not enable the
+    /// ordinary unprivileged submit path or claim IOMMU isolation.
+    pub unsafe fn submit_rawio(
+        &mut self,
+        args: &mut RknpuSubmit,
+        tasks: &mut [RknpuTask],
+        clock: &mut impl FnMut() -> u64,
+    ) -> Result<(), RknpuError> {
+        self.submit_validated_tasks(args, tasks, clock)
+    }
+
+    fn submit_validated_tasks(
+        &mut self,
+        args: &mut RknpuSubmit,
+        tasks: &mut [RknpuTask],
+        clock: &mut impl FnMut() -> u64,
+    ) -> Result<(), RknpuError> {
         if args.flags & 1 << 1 > 0 {
             debug!("Nonblock task");
         }

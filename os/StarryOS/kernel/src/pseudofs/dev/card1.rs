@@ -384,7 +384,6 @@ impl Card1File {
 
     fn load_tasks(
         &self,
-        current: &UserTaskRef,
         args: &RknpuSubmit,
         core_mask: u32,
     ) -> VfsResult<(usize, Vec<RknpuTask>)> {
@@ -401,8 +400,16 @@ impl Card1File {
             return Err(VfsError::BadAddress);
         }
 
-        let bytes: Vec<u8> = vm_load(current, task_addr as *const u8, byte_len)
-            .map_err(|_| VfsError::BadAddress)?;
+        if !self.find_cpu_range(args.task_obj_addr, byte_offset as u64, byte_len as u64) {
+            return Err(VfsError::BadAddress);
+        }
+        // SAFETY: task_addr is within a GEM owned by this open description;
+        // the ioctl operation mutex prevents its destruction for this call.
+        // Snapshot bytewise without creating a reference to userspace-shared
+        // storage. Descriptor fields are decoded and validated from the copy.
+        let bytes: Vec<u8> = (0..byte_len)
+            .map(|offset| unsafe { core::ptr::read_volatile((task_addr as *const u8).add(offset)) })
+            .collect();
         let mut tasks = Vec::with_capacity(end - first);
         for bytes in bytes.chunks_exact(task_size) {
             // `RknpuTask` is `repr(C, packed)` and contains integer fields only.
@@ -443,11 +450,14 @@ impl Card1File {
     }
 
     fn handle_submit(&self, current: &UserTaskRef, args: &mut RknpuSubmit) -> VfsResult<()> {
-        if !rknpu::submit_available().map_err(map_rknpu_err)? {
-            return Err(VfsError::OperationNotSupported);
+        // Raw vendor command streams carry arbitrary DMA addresses. Match the
+        // existing RGA raw-address boundary: authorize the current caller on
+        // every ioctl, including descriptors inherited before dropping caps.
+        if !current.as_thread().cred().has_cap_sys_rawio() {
+            return Err(VfsError::OperationNotPermitted);
         }
         let core_mask = rknpu::normalize_core_mask(args.core_mask).map_err(map_rknpu_err)?;
-        let (first, mut tasks) = self.load_tasks(current, args, core_mask)?;
+        let (first, mut tasks) = self.load_tasks(args, core_mask)?;
         let task_bytes = (tasks.len() as u64)
             .checked_mul(mem::size_of::<RknpuTask>() as u64)
             .ok_or(VfsError::BadAddress)?;
@@ -480,20 +490,28 @@ impl Card1File {
                     .ok_or(VfsError::InvalidData)?;
             }
         }
-        rknpu::submit(&mut driver_args, &mut tasks).map_err(map_rknpu_err)?;
+        // SAFETY: CAP_SYS_RAWIO above authorizes physical-memory access. The
+        // per-open operation mutex pins all owned GEM handles across validation,
+        // submission and synchronous completion/recovery; tasks is a snapshot.
+        unsafe { rknpu::submit_rawio(&mut driver_args, &mut tasks) }.map_err(map_rknpu_err)?;
         args.task_counter = driver_args.task_counter;
         args.hw_elapse_time = driver_args.hw_elapse_time;
 
         let task_addr = (args.task_obj_addr as usize)
             .checked_add(first.checked_mul(mem::size_of::<RknpuTask>()).ok_or(VfsError::BadAddress)?)
             .ok_or(VfsError::BadAddress)?;
-        // SAFETY: `tasks` is an initialized, contiguous vector of packed ABI
-        // records, and `task_bytes` is exactly its byte length.
-        let task_bytes = unsafe {
-            core::slice::from_raw_parts(tasks.as_ptr().cast::<u8>(), task_bytes as usize)
-        };
-        vm_write_slice(current, task_addr as *mut u8, task_bytes)
-            .map_err(|_| VfsError::BadAddress)?;
+        // Only interrupt feedback changes. Do not overwrite shared command
+        // descriptors with the earlier snapshot after hardware completion.
+        for (index, task) in tasks.iter().enumerate() {
+            let offset = index * mem::size_of::<RknpuTask>()
+                + core::mem::offset_of!(RknpuTask, int_status);
+            for (byte, value) in task.int_status.to_ne_bytes().into_iter().enumerate() {
+                // SAFETY: load_tasks validated this complete owned GEM span,
+                // and the same operation mutex is still held. Volatile byte
+                // stores do not require aligned/shared Rust references.
+                unsafe { core::ptr::write_volatile((task_addr as *mut u8).add(offset + byte), value) };
+            }
+        }
         Ok(())
     }
 }

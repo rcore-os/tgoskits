@@ -92,7 +92,9 @@ else
   npu_status=$?
 fi
 cat /tmp/starry-npu-yolov8.out
-if [ "$npu_status" = "0" ] && grep -q '^=== Detection Results Summary ===$' /tmp/starry-npu-yolov8.out; then
+if [ "$npu_status" = "0" ] &&
+   grep -q '^=== Detection Results Summary ===$' /tmp/starry-npu-yolov8.out &&
+   ! grep -Eq 'rknn_run fail|inference_yolov8_model fail|failed to submit' /tmp/starry-npu-yolov8.out; then
   echo ${npu_marker}_OK
 else
   echo ${npu_marker}_FAILED
