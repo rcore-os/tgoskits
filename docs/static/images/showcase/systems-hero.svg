@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600" role="img" aria-labelledby="title desc">
+<title id="title">ArceOS、StarryOS 与 Axvisor 构建于共享组件之上</title><desc id="desc">TGOSKits 系统与组件概念示意，不表示物理硬件布局。</desc>
+<defs>
+<linearGradient id="metal" x2=".8" y2="1"><stop stop-color="#fff"/><stop offset=".55" stop-color="#e8eff4"/><stop offset="1" stop-color="#bacbd8"/></linearGradient>
+<linearGradient id="edge" x2="0" y2="1"><stop stop-color="#c7d6df"/><stop offset="1" stop-color="#879eae"/></linearGradient>
+<linearGradient id="teal" x2="1" y2="1"><stop stop-color="#6be8d3"/><stop offset="1" stop-color="#147f86"/></linearGradient>
+<linearGradient id="blue" x2="1" y2="1"><stop stop-color="#a5c6ff"/><stop offset="1" stop-color="#4869c4"/></linearGradient>
+<linearGradient id="violet" x2="1" y2="1"><stop stop-color="#d9c7ff"/><stop offset="1" stop-color="#8063b5"/></linearGradient>
+<radialGradient id="glow"><stop stop-color="#8edfd2" stop-opacity=".3"/><stop offset="1" stop-color="#8edfd2" stop-opacity="0"/></radialGradient>
+<filter id="shadow" x="-40%" y="-50%" width="180%" height="220%"><feDropShadow dx="0" dy="18" stdDeviation="15" flood-color="#0b293c" flood-opacity=".16"/></filter>
+</defs>
+<g font-family="system-ui, sans-serif"><ellipse cx="500" cy="350" rx="470" ry="240" fill="url(#glow)"/><g transform="translate(500 290) rotate(-22) skewX(22) scale(1 .8) translate(-500 -290)"><g transform="translate(140 290)" filter="url(#shadow)">
+<path d="M0 0 720 0 720 180 0 180Z" fill="url(#edge)" transform="translate(0 15)"/>
+<rect width="720" height="180" rx="12" fill="url(#metal)" stroke="#fff" stroke-opacity=".7"/>
+<rect x="10" y="10" width="700" height="160" rx="8" fill="none" stroke="#fff" stroke-opacity=".35"/>
+<text x="360.0" y="95.0" fill="#16364a" text-anchor="middle" font-size="26" font-weight="650">SHARED COMPONENTS</text>
+</g><g fill="none" stroke="#6b9aa3" stroke-width="2" opacity=".6"><path d="M245 240v95h255v35m0-130v130m255-130v95H500"/></g><g transform="translate(145 110)" filter="url(#shadow)">
+<path d="M0 0 210 0 210 145 0 145Z" fill="url(#edge)" transform="translate(0 15)"/>
+<rect width="210" height="145" rx="12" fill="url(#teal)" stroke="#fff" stroke-opacity=".7"/>
+<rect x="10" y="10" width="190" height="125" rx="8" fill="none" stroke="#fff" stroke-opacity=".35"/>
+<text x="105.0" y="77.5" fill="#16364a" text-anchor="middle" font-size="26" font-weight="650">ArceOS</text>
+<text x="105.0" y="104.5" fill="#254e65" text-anchor="middle" font-size="13" letter-spacing="2">MODULAR KERNEL</text></g><g transform="translate(395 65)" filter="url(#shadow)">
+<path d="M0 0 210 0 210 145 0 145Z" fill="url(#edge)" transform="translate(0 15)"/>
+<rect width="210" height="145" rx="12" fill="url(#blue)" stroke="#fff" stroke-opacity=".7"/>
+<rect x="10" y="10" width="190" height="125" rx="8" fill="none" stroke="#fff" stroke-opacity=".35"/>
+<text x="105.0" y="77.5" fill="#16364a" text-anchor="middle" font-size="26" font-weight="650">StarryOS</text>
+<text x="105.0" y="104.5" fill="#254e65" text-anchor="middle" font-size="13" letter-spacing="2">LINUX COMPATIBLE</text></g><g transform="translate(645 110)" filter="url(#shadow)">
+<path d="M0 0 210 0 210 145 0 145Z" fill="url(#edge)" transform="translate(0 15)"/>
+<rect width="210" height="145" rx="12" fill="url(#violet)" stroke="#fff" stroke-opacity=".7"/>
+<rect x="10" y="10" width="190" height="125" rx="8" fill="none" stroke="#fff" stroke-opacity=".35"/>
+<text x="105.0" y="77.5" fill="#16364a" text-anchor="middle" font-size="26" font-weight="650">Axvisor</text>
+<text x="105.0" y="104.5" fill="#254e65" text-anchor="middle" font-size="13" letter-spacing="2">HYPERVISOR</text></g></g></g></svg>

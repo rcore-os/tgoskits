@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600" role="img" aria-labelledby="title desc">
+<title id="title">ArceOS 系统组成概念图</title><desc id="desc">TGOSKits 系统与组件概念示意，不表示物理硬件布局。</desc>
+<defs>
+<linearGradient id="metal" x2=".8" y2="1"><stop stop-color="#fff"/><stop offset=".55" stop-color="#e8eff4"/><stop offset="1" stop-color="#bacbd8"/></linearGradient>
+<linearGradient id="edge" x2="0" y2="1"><stop stop-color="#c7d6df"/><stop offset="1" stop-color="#879eae"/></linearGradient>
+<linearGradient id="teal" x2="1" y2="1"><stop stop-color="#6be8d3"/><stop offset="1" stop-color="#147f86"/></linearGradient>
+<linearGradient id="blue" x2="1" y2="1"><stop stop-color="#a5c6ff"/><stop offset="1" stop-color="#4869c4"/></linearGradient>
+<linearGradient id="violet" x2="1" y2="1"><stop stop-color="#d9c7ff"/><stop offset="1" stop-color="#8063b5"/></linearGradient>
+<radialGradient id="glow"><stop stop-color="#8edfd2" stop-opacity=".3"/><stop offset="1" stop-color="#8edfd2" stop-opacity="0"/></radialGradient>
+<filter id="shadow" x="-40%" y="-50%" width="180%" height="220%"><feDropShadow dx="0" dy="18" stdDeviation="15" flood-color="#0b293c" flood-opacity=".16"/></filter>
+</defs>
+<g font-family="system-ui, sans-serif"><ellipse cx="500" cy="365" rx="400" ry="210" fill="url(#glow)"/><g transform="translate(500 290) rotate(-20) skewX(20) scale(1 .85) translate(-500 -290)"><g transform="translate(225 345)" filter="url(#shadow)">
+<path d="M0 0 550 0 550 105 0 105Z" fill="url(#edge)" transform="translate(0 15)"/>
+<rect width="550" height="105" rx="12" fill="url(#metal)" stroke="#fff" stroke-opacity=".7"/>
+<rect x="10" y="10" width="530" height="85" rx="8" fill="none" stroke="#fff" stroke-opacity=".35"/>
+<text x="275.0" y="57.5" fill="#16364a" text-anchor="middle" font-size="26" font-weight="650">ArceOS</text>
+</g><g transform="translate(265 225)" filter="url(#shadow)">
+<path d="M0 0 470 0 470 100 0 100Z" fill="url(#edge)" transform="translate(0 15)"/>
+<rect width="470" height="100" rx="12" fill="url(#teal)" stroke="#fff" stroke-opacity=".7"/>
+<rect x="10" y="10" width="450" height="80" rx="8" fill="none" stroke="#fff" stroke-opacity=".35"/>
+<text x="235.0" y="55.0" fill="#16364a" text-anchor="middle" font-size="26" font-weight="650">RUNTIME</text>
+</g><g transform="translate(310 95)" filter="url(#shadow)">
+<path d="M0 0 380 0 380 100 0 100Z" fill="url(#edge)" transform="translate(0 15)"/>
+<rect width="380" height="100" rx="12" fill="url(#teal)" stroke="#fff" stroke-opacity=".7"/>
+<rect x="10" y="10" width="360" height="80" rx="8" fill="none" stroke="#fff" stroke-opacity=".35"/>
+<text x="190.0" y="55.0" fill="#16364a" text-anchor="middle" font-size="26" font-weight="650">APPLICATION</text>
+</g></g></g></svg>

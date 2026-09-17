@@ -34,6 +34,11 @@ export default function Detail({catalog: {kind, entry}}) {
           <div className={styles.tags}>{entry.features.map((feature) => <code key={feature}>{feature}</code>)}</div>
           <p className={styles.note}>各功能的含义及组合要求请参阅组件 README 和 Cargo.toml。</p>
         </section>}
+        {entry.dependencies && <section className={styles.info}>
+          <h2>目录内直接依赖</h2>
+          <p>包含可选及目标条件声明，不代表当前构建全部启用。</p>
+          {entry.dependencies.length ? <ul>{entry.dependencies.map(dependency => <li key={dependency.route}><Link to={dependency.route}>{dependency.name}</Link></li>)}</ul> : <p>未发现指向目录内软件包的直接依赖。</p>}
+        </section>}
         {entry.configurations?.length > 0 && <section className={styles.info}>
           <h2>运行配置</h2>
           <p>选择配置查看对应的运行参数；具体准备步骤请参阅应用 README。</p>

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 840" role="img" aria-labelledby="title desc">
+  <title id="title">TGOSKits 组件框架与层级关系</title>
+  <desc id="desc">从场景入口到系统语义、共享组件、平台与硬件的四层框架。ArceOS 提供模块化运行时，StarryOS 和 Axvisor 复用 ArceOS 基础能力。共享领域包含基础组件、内存、驱动、文件系统、网络及虚拟化。箭头表示上层使用下层能力，是概念分层而非逐包依赖图。</desc>
+  <defs>
+    <linearGradient id="surface" x2="0" y2="1"><stop stop-color="var(--diagram-cell, #ffffff)"/><stop offset="1" stop-color="var(--diagram-cell, #ffffff)"/></linearGradient>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="m1 1 5 3-5 3" fill="none" stroke="#719aa4" stroke-width="1.5"/></marker>
+  </defs>
+  <rect width="900" height="840" rx="12" fill="var(--diagram-bg, #ffffff)"/>
+  <g font-family="system-ui, sans-serif" fill="var(--diagram-text, #213b47)">
+    <text x="32" y="44" font-size="24" font-weight="700">TGOSKits · 组件框架</text>
+    <text x="868" y="43" text-anchor="end" font-size="17" fill="var(--diagram-muted, #637b86)">上层使用下层能力 ↓</text>
+    <g>
+      <rect x="24" y="66" width="852" height="105" rx="8" fill="var(--diagram-entry, #f3f0fa)" stroke="var(--diagram-entry-border, #e1d9ed)"/>
+      <text x="44" y="99" font-size="20" font-weight="650" fill="var(--diagram-purple, #7955a5)">04  场景入口</text>
+      <text x="44" y="137" font-size="19">应用与示例</text><text x="239" y="137" font-size="19">Rootfs 用户态</text><text x="464" y="137" font-size="19">Guest / VM 配置</text><text x="711" y="137" font-size="19">构建与测试</text>
+    </g>
+    <path d="M450 172v23" stroke="#719aa4" stroke-width="2" marker-end="url(#arrow)"/>
+    <g>
+      <rect x="24" y="200" width="852" height="171" rx="8" fill="var(--diagram-system, #edf3fa)" stroke="var(--diagram-system-border, #d4e0ec)"/>
+      <text x="44" y="232" font-size="20" font-weight="650" fill="var(--diagram-blue, #396d9e)">03  系统语义与运行时</text>
+      <g fill="url(#surface)" stroke="var(--diagram-system-border, #d4e0ec)"><rect x="44" y="249" width="250" height="72" rx="5"/><rect x="325" y="249" width="250" height="72" rx="5"/><rect x="606" y="249" width="250" height="72" rx="5"/></g>
+      <g text-anchor="middle"><text x="169" y="278" font-size="22" font-weight="700">ArceOS</text><text x="169" y="305" font-size="17">模块化内核 / 运行时</text><text x="450" y="278" font-size="22" font-weight="700">StarryOS</text><text x="450" y="305" font-size="17">Linux 用户态兼容</text><text x="731" y="278" font-size="22" font-weight="700">Axvisor</text><text x="731" y="305" font-size="17">Type-I Hypervisor</text></g>
+      <text x="450" y="351" text-anchor="middle" font-size="18" fill="var(--diagram-muted, #637b86)">StarryOS、Axvisor 复用 ArceOS 的 HAL、调度等基础能力</text>
+    </g>
+    <path d="M450 372v23" stroke="#719aa4" stroke-width="2" marker-end="url(#arrow)"/>
+    <g>
+      <rect x="24" y="400" width="852" height="226" rx="8" fill="var(--diagram-shared, #edf6f1)" stroke="var(--diagram-shared-border, #d2e5da)"/>
+      <text x="44" y="432" font-size="20" font-weight="650" fill="var(--diagram-green, #27775f)">02  可复用领域组件</text>
+      <g fill="url(#surface)" stroke="var(--diagram-shared-border, #d2e5da)"><rect x="44" y="448" width="250" height="72" rx="5"/><rect x="325" y="448" width="250" height="72" rx="5"/><rect x="606" y="448" width="250" height="72" rx="5"/><rect x="44" y="536" width="250" height="72" rx="5"/><rect x="325" y="536" width="250" height="72" rx="5"/><rect x="606" y="536" width="250" height="72" rx="5"/></g>
+      <g text-anchor="middle"><text x="169" y="476" font-size="20" font-weight="600">调度 · CPU · 基础工具</text><text x="169" y="503" font-size="17" fill="var(--diagram-muted, #637b86)">components/</text><text x="450" y="476" font-size="20" font-weight="600">分配器 · 地址 · 页表</text><text x="450" y="503" font-size="17" fill="var(--diagram-muted, #637b86)">memory/</text><text x="731" y="476" font-size="20" font-weight="600">设备驱动 · 能力接口</text><text x="731" y="503" font-size="17" fill="var(--diagram-muted, #637b86)">drivers/</text><text x="169" y="564" font-size="20" font-weight="600">VFS · 文件系统</text><text x="169" y="591" font-size="17" fill="var(--diagram-muted, #637b86)">fs/</text><text x="450" y="564" font-size="20" font-weight="600">网络协议与接口</text><text x="450" y="591" font-size="17" fill="var(--diagram-muted, #637b86)">net/</text><text x="731" y="564" font-size="20" font-weight="600">VM · vCPU · 虚拟设备</text><text x="731" y="591" font-size="17" fill="var(--diagram-muted, #637b86)">virtualization/</text></g>
+    </g>
+    <path d="M450 627v23" stroke="#719aa4" stroke-width="2" marker-end="url(#arrow)"/>
+    <g>
+      <rect x="24" y="655" width="852" height="124" rx="8" fill="var(--diagram-platform, #eff3f5)"/>
+      <text x="44" y="688" font-size="20" font-weight="650" fill="var(--diagram-green, #27775f)">01  平台契约与硬件适配</text>
+      <text x="44" y="722" font-size="19" fill="var(--diagram-text, #213b47)">ax-plat · axplat-dyn · somehal · someboot</text>
+      <text x="44" y="755" font-size="18" fill="var(--diagram-muted, #637b86)">AArch64 · RISC-V · x86_64 · LoongArch</text>
+      <text x="851" y="755" text-anchor="end" font-size="18" fill="var(--diagram-muted, #637b86)">QEMU / 实体板卡</text>
+    </g>
+    <text x="32" y="813" font-size="17" fill="var(--diagram-muted, #637b86)">概念分层；具体依赖与系统适配边界以架构文档为准。</text>
+  </g>
+</svg>

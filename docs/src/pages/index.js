@@ -220,6 +220,8 @@ function HeroBanner() {
     { label: '快速开始', to: '/docs/quickstart/overview' },
     { label: '构建系统', to: '/docs/build/overview' },
     { label: '架构视图', to: '/docs/architecture/overview' },
+    { label: 'Components', to: '/components' },
+    { label: 'APPs', to: '/apps' },
   ];
 
   return (
@@ -265,7 +267,7 @@ function HeroBanner() {
             ))}
           </div>
         </div>
-        <div className="hero-visual" aria-hidden="true">
+        <div className="hero-visual">
           <HeroTerminal />
         </div>
       </div>
@@ -313,12 +315,20 @@ function HeroTerminal() {
       ],
     },
   ], []);
+  const [reducedMotion, setReducedMotion] = useState(false);
+  useEffect(() => {
+    const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const update = () => setReducedMotion(preference.matches);
+    update();
+    preference.addEventListener('change', update);
+    return () => preference.removeEventListener('change', update);
+  }, []);
   const [sessionIndex, setSessionIndex] = useState(0);
   const [typedCount, setTypedCount] = useState(0);
   const [visibleOutputCount, setVisibleOutputCount] = useState(0);
   const session = sessions[sessionIndex];
-  const commandDone = typedCount >= session.command.length;
-  const outputDone = visibleOutputCount >= session.output.length;
+  const commandDone = reducedMotion || typedCount >= session.command.length;
+  const outputDone = reducedMotion || visibleOutputCount >= session.output.length;
 
   const handleSessionSelect = (index) => {
     setSessionIndex(index);
@@ -332,6 +342,7 @@ function HeroTerminal() {
   }, [sessionIndex]);
 
   useEffect(() => {
+    if (reducedMotion) return undefined;
     if (typedCount < session.command.length) {
       const timer = window.setTimeout(() => setTypedCount((count) => count + 1), 28);
       return () => window.clearTimeout(timer);
@@ -345,16 +356,16 @@ function HeroTerminal() {
     }
 
     return undefined;
-  }, [session.command.length, session.output.length, typedCount, visibleOutputCount]);
+  }, [reducedMotion, session.command.length, session.output.length, typedCount, visibleOutputCount]);
 
   useEffect(() => {
-    if (!outputDone) return undefined;
+    if (reducedMotion || !outputDone) return undefined;
 
     const timer = window.setTimeout(() => {
       setSessionIndex((index) => (index + 1) % sessions.length);
     }, 1900);
     return () => window.clearTimeout(timer);
-  }, [outputDone, sessions.length]);
+  }, [reducedMotion, outputDone, sessions.length]);
 
   return (
     <div className="hero-terminal-container">
@@ -369,11 +380,11 @@ function HeroTerminal() {
       <div className="hero-terminal-screen" aria-live="polite">
         <div className="hero-terminal-command">
           <span className="hero-terminal-prompt">$</span>
-          <span>{session.command.slice(0, typedCount)}</span>
+          <span>{reducedMotion ? session.command : session.command.slice(0, typedCount)}</span>
           {!commandDone && <span className="hero-terminal-cursor" aria-hidden="true" />}
         </div>
         <div className="hero-terminal-output">
-          {session.output.slice(0, visibleOutputCount).map((line, index) => (
+          {session.output.slice(0, reducedMotion ? session.output.length : visibleOutputCount).map((line, index) => (
             <span className={index === session.output.length - 1 ? 'is-success' : undefined} key={line}>{line}</span>
           ))}
           {commandDone && !outputDone && <span className="hero-terminal-cursor" aria-hidden="true" />}

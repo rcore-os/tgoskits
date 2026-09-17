@@ -7,8 +7,14 @@ const groups = {
   drivers: ['设备驱动', '/docs/architecture/driver/overview'],
   memory: ['内存管理', '/docs/architecture/memory/overview'],
   virtualization: ['虚拟化', '/docs/quickstart/axvisor'],
+  fs: ['文件系统', '/docs/architecture/fs/overview'],
+  net: ['网络协议', '/docs/architecture/net/overview'],
+  platforms: ['平台适配', '/docs/architecture/platform/overview'],
+  'os/arceos': ['ArceOS 组件', '/docs/architecture/arceos'],
+  'os/StarryOS': ['StarryOS 组件', '/docs/architecture/starryos'],
+  'os/axvisor': ['Axvisor 组件', '/docs/architecture/axvisor'],
 };
-const ignored = new Set(['target', '.git', 'node_modules', 'test_crates', 'tests', 'examples']);
+const ignored = new Set(['target', '.git', 'node_modules', 'test_crates', 'tests', 'examples', 'xtask']);
 const sourceBase = 'https://github.com/rcore-os/tgoskits/tree/main/';
 
 function directories(directory) {
@@ -40,7 +46,9 @@ function readme(directory) {
 }
 
 function collectCatalog(root) {
-  const workspace = parse(fs.readFileSync(path.join(root, 'Cargo.toml'), 'utf8')).workspace.package;
+  const workspaceConfig = parse(fs.readFileSync(path.join(root, 'Cargo.toml'), 'utf8')).workspace;
+  const workspace = workspaceConfig.package;
+  const packageManifests = new Map();
   const relative = (directory) => path.relative(root, directory).split(path.sep).join('/');
   const components = Object.entries(groups).flatMap(([group, [category, guide]]) =>
     manifests(path.join(root, group)).flatMap((manifest) => {
@@ -49,6 +57,7 @@ function collectCatalog(root) {
       const pkg = data.package;
       const directory = path.dirname(manifest);
       const location = relative(directory);
+      packageManifests.set(location, data);
       const info = readme(directory);
       const inherited = (field) => pkg[field]?.workspace ? workspace[field] : pkg[field];
       return [{
@@ -64,6 +73,22 @@ function collectCatalog(root) {
       }];
     }),
   );
+  const packagesByDirectory = new Map(components.map(entry => [path.resolve(root, entry.location), entry]));
+  for (const entry of components) {
+    const data = packageManifests.get(entry.location);
+    const dependencyTables = [data.dependencies, ...Object.values(data.target || {}).map(target => target.dependencies)];
+    const dependencies = new Map();
+    for (const table of dependencyTables) {
+      for (const [alias, declaration] of Object.entries(table || {})) {
+        const dependency = declaration.workspace ? workspaceConfig.dependencies?.[alias] : declaration;
+        if (!dependency?.path) continue;
+        const base = declaration.workspace ? root : path.join(root, entry.location);
+        const resolved = packagesByDirectory.get(path.resolve(base, dependency.path));
+        if (resolved) dependencies.set(resolved.route, {name: resolved.name, route: resolved.route});
+      }
+    }
+    entry.dependencies = [...dependencies.values()].sort((a, b) => a.name.localeCompare(b.name, 'en'));
+  }
   const appsRoot = path.join(root, 'apps');
   const appDirectories = directories(appsRoot).flatMap((directory) => {
     const name = path.basename(directory);
@@ -107,7 +132,7 @@ module.exports = function catalogPlugin(context) {
   return {
     name: 'tgoskits-catalog',
     getPathsToWatch() {
-      return ['components', 'drivers', 'memory', 'virtualization', 'apps']
+      return [...Object.keys(groups), 'apps']
         .map((directory) => path.join(root, directory, '**/*.{toml,md}'))
         .concat(path.join(root, 'Cargo.toml'));
     },

@@ -79,13 +79,17 @@ yarn serve
 - `docs/sidebars.docs.js`：主文档侧边栏
 - `docs/sidebars.community.js`：社区文档侧边栏
 
+首页由 `src/pages/index.js` 和 `src/pages/index.css` 维护，保留终端演示、组件关系、三套系统、四层架构、仓库同步、硬件平台、验证与文档导航。`ArchitectureIllustration()` 维护四层架构图，`ComponentWorkspaceDiagram()` 维护仓库同步图。Components 首屏的层级框架图位于 `static/images/showcase/component-hierarchy.svg`，以 ArceOS、StarryOS、Axvisor 为顶层，说明系统集成、共享组件与平台适配的四层逻辑视图，不代替逐包依赖图。
+
 ## 组件与应用目录
 
-导航中的 Components 和 APPS 分别进入 `/components` 与 `/apps`，两页均支持名称、简介和标签搜索，以及分类筛选。Components 使用按内容高度排列的瀑布流，点击组件进入站内详情。APPs 由 `src/components/Catalog/Apps.js` 展示图文交错的应用介绍、能力示意动画及全部应用目录；点击“配置与详情”或应用名称可原地展开运行配置、README、源码和独立详情入口。动效遵循系统的减少动态效果设置，示意图不代表实际运行截图。
+导航中的 Components 和 APPS 分别进入 `/components` 与 `/apps`，两页均支持名称、简介和标签搜索，以及分类筛选。Components 依次展示整屏架构介绍 Hero、COMPONENT MAP 层级依赖全图和全部组件卡片；总体介绍集中在 Hero，不再设置重复介绍区或背景动画按钮。背景动效播放一次，并遵循减少动态效果设置；`src/components/Catalog/Architecture.js` 组织说明，`ComponentGraph.js` 展示全部目录节点和依赖，支持缩放、定位、高亮直接依赖与使用方以及 SVG 下载。`plugins/catalog/graph-layout.js` 按系统集成、共享领域和平台归属排列节点，不把领域层次当成依赖的拓扑层次，最下方以等宽等高的卡片网格展示全部目录条目；卡片提供摘要和功能数量，点击后查看完整详情。手机端 Hero 按内容自然增高，框架图可点击打开原始 SVG。APPs 由 `src/components/Catalog/Apps.js` 展示图文交错的应用介绍、能力示意动画及全部应用目录；点击“配置与详情”或应用名称可原地展开运行配置、README、源码和独立详情入口。动效遵循系统的减少动态效果设置，示意图不代表实际运行截图。
 
-`plugins/catalog/index.js` 的 `collectCatalog()` 在站点启动或构建时生成目录：组件取自 `components/`、`drivers/`、`memory/`、`virtualization/` 下的 Cargo 软件包，排除测试与示例目录；应用取自 `apps/arceos/`、`apps/starry/` 的直接子目录及 `apps/` 顶层工具目录，排除共享脚本目录 `common`。组件以 Cargo.toml 为元数据来源，应用优先使用 README 的正文摘要。运行配置标签仅表示仓库存在对应配置，不代表当前持续集成结果。
+`plugins/catalog/index.js` 的 `collectCatalog()` 在站点启动或构建时生成目录：组件取自 `components/`、`drivers/`、`memory/`、`virtualization/`、`fs/`、`net/`、`platforms/` 和三套系统目录下的 Cargo 软件包，排除测试、示例与 xtask 目录；应用取自 `apps/arceos/`、`apps/starry/` 的直接子目录及 `apps/` 顶层工具目录，排除共享脚本目录 `common`。组件以 Cargo.toml 为元数据来源，应用优先使用 README 的正文摘要。运行配置标签仅表示仓库存在对应配置，不代表当前持续集成结果。
 
 新增条目无需维护页面清单。更新对应软件包的 Cargo.toml、README 或应用目录后，执行 `yarn build` 即可更新列表和详情页；缺少 README 时仍保留源码入口。`src/components/Catalog/` 统一维护卡片、筛选、详情及响应式样式。运行网站需要完整仓库，以便插件读取这些目录。
+
+目录依赖从普通依赖及目标条件依赖的本地路径解析，支持 workspace 继承与依赖重命名；可选项一并收录，同一目标软件包去重。它不包含开发、构建、外部或传递依赖，也不等价于指定 feature 与 target 后的实际构建图。依赖发现规则可通过 `yarn test` 在 `docs/` 目录验证。
 
 ## 部署
 
