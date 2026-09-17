@@ -407,10 +407,42 @@ fn replace_active_activation(
 }
 
 #[cfg(feature = "uspace")]
-fn install_mm_identity(installed: ax_hal::context::InstalledAddressSpace) {
-    // SAFETY: the prepared/active lease owns the root, and the caller keeps IRQs
-    // disabled from CPU-footprint publication through active-lease publication.
-    unsafe { ax_cpu::mmu::install_user_address_space(installed.hardware()) };
+fn install_mm_identity(
+    installed: ax_hal::context::InstalledAddressSpace,
+    current_root: usize,
+    transition: HardwareAddressSpaceTransition,
+) {
+    #[cfg(target_arch = "aarch64")]
+    let restore_lazy = transition == HardwareAddressSpaceTransition::SameAddressSpace
+        && current_root == 0
+        && installed.hardware_tag() != 0
+        && u32::from(installed.hardware_tag()) < ax_cpu::mmu::address_space_tag_capacity();
+    #[cfg(not(target_arch = "aarch64"))]
+    let restore_lazy = {
+        let _ = (current_root, transition);
+        false
+    };
+    if restore_lazy {
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: the retained activation owns this same logical mm. The
+            // runtime's lazy entry installed reserved ASID zero. User leaves
+            // are non-global; retained entries still belong to this same mm,
+            // and no different user mm has run here since. Its active target
+            // bit stayed published for synchronous mapping shootdowns.
+            // A lease alone does not reserve a numeric ASID: different-mm
+            // installations must still invalidate the incoming tag below.
+            ax_cpu::barrier::synchronize_page_table_writes();
+            // SAFETY: the retained-root proof above excludes accesses through
+            // a retired lower mapping; the lease and local IRQ exclusion persist.
+            unsafe { ax_cpu::mmu::El1::write_user_address_space(installed.hardware()) };
+            ax_cpu::barrier::instruction_sync();
+        }
+    } else {
+        // SAFETY: the prepared/active lease owns the root, and the caller keeps IRQs
+        // disabled from CPU-footprint publication through active-lease publication.
+        unsafe { ax_cpu::mmu::install_user_address_space(installed.hardware()) };
+    }
     #[cfg(feature = "qperf-metrics")]
     ACTIVE_MM_HARDWARE_ROOT_WRITES.fetch_add(1, Ordering::Relaxed);
 }
@@ -518,13 +550,33 @@ fn install_hardware_root(root: usize, transition: HardwareAddressSpaceTransition
 }
 
 #[cfg(feature = "uspace")]
-fn enter_lazy_kernel_address_space() {
-    // Linux's current x86, RISC-V and LoongArch enter_lazy_tlb paths retain the
-    // loaded user root and only change scheduler/ASID bookkeeping. AArch64
-    // installs its reserved lower root so a kernel thread cannot use the
-    // previous task's user mappings.
+fn enter_lazy_kernel_address_space(has_active_mm: bool) {
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = has_active_mm;
+    // The other architectures retain the loaded root during kernel execution.
     #[cfg(target_arch = "aarch64")]
-    install_hardware_root(0, HardwareAddressSpaceTransition::DifferentAddressSpace);
+    {
+        let current = ax_cpu::mmu::El1::read_user_address_space();
+        if has_active_mm {
+            if current.root().as_usize() == 0 && current.hardware_tag() == 0 {
+                return;
+            }
+            if current.hardware_tag() != 0 {
+                // SAFETY: IRQ exclusion covers this transition. All user leaves
+                // are non-global, so reserved ASID zero excludes their cached
+                // translations. The active-mm lease and shootdown target remain
+                // published until a different user mm is installed or CPU offline.
+                unsafe { ax_cpu::mmu::write_user_page_table(PhysAddr::from_usize(0)) };
+                ax_cpu::barrier::instruction_sync();
+                #[cfg(feature = "qperf-metrics")]
+                ACTIVE_MM_HARDWARE_ROOT_WRITES.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+        // Untagged users need a real flush before kernel execution. Keep the
+        // initial no-active-mm flush as well, including any boot translations.
+        install_hardware_root(0, HardwareAddressSpaceTransition::DifferentAddressSpace);
+    }
 }
 
 #[cfg(feature = "uspace")]
@@ -655,7 +707,7 @@ impl PreparedAddressSpaceSwitch<'_, '_> {
                 {
                     #[cfg(feature = "qperf-metrics")]
                     ACTIVE_MM_KERNEL_LAZY_ACTIVATIONS.fetch_add(1, Ordering::Relaxed);
-                    enter_lazy_kernel_address_space();
+                    enter_lazy_kernel_address_space(self.previous_raw != 0);
                 }
             }
             #[cfg(all(feature = "uspace", not(target_arch = "aarch64")))]
@@ -691,12 +743,9 @@ impl PreparedAddressSpaceSwitch<'_, '_> {
                     next,
                     |root, transition| {
                         if let Some(installed) = installed {
-                            if hardware_root_install_required(
-                                current_hardware_root(),
-                                root,
-                                transition,
-                            ) {
-                                install_mm_identity(installed);
+                            let current_root = current_hardware_root();
+                            if hardware_root_install_required(current_root, root, transition) {
+                                install_mm_identity(installed, current_root, transition);
                             }
                         } else {
                             install_hardware_root(root, transition);

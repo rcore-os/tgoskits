@@ -6,6 +6,8 @@ extern crate ax_std as std;
 mod aarch64;
 #[cfg(target_arch = "aarch64")]
 mod fixup;
+#[cfg(target_arch = "aarch64")]
+mod managed;
 
 fn pin_to(cpu: usize) {
     use std::os::arceos::{

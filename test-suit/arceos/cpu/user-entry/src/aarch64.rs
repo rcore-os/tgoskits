@@ -1,7 +1,16 @@
-//! Real EL0 PMU reads, revocation and interrupted user register snapshots.
+//! Tagged EL0 restoration, PMU permissions and interrupted register snapshots.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
-use std::os::arceos::{modules::ax_hal, thread};
+mod reuse;
+
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::{
+    os::arceos::{
+        api::task::{self as task_api, AxWaitQueueHandle},
+        modules::ax_hal,
+        thread,
+    },
+    sync::Arc,
+};
 
 use ax_cpu::{
     VirtAddr,
@@ -13,7 +22,13 @@ use ax_cpu::{
 const CODE: usize = 0x1000_0000;
 const STACK: usize = CODE + 4096;
 const STACK_TOP: usize = STACK + 4096;
+const DATA: usize = STACK_TOP;
+const ORIGINAL_WORD: usize = 0x1234_5678;
+const REPLACEMENT_WORD: usize = 0x8765_4321;
 static USER_IRQ_PC: AtomicUsize = AtomicUsize::new(0);
+static PARK_READY: AtomicBool = AtomicBool::new(false);
+static RESUME: AtomicBool = AtomicBool::new(false);
+static PARK: AxWaitQueueHandle = AxWaitQueueHandle::new();
 
 core::arch::global_asm!(
     ".section .text",
@@ -27,13 +42,36 @@ core::arch::global_asm!(
     "cpu_pmu_user_loop:",
     "mov x29, sp",
     "2: b 2b",
+    ".global cpu_user_load_word",
+    "cpu_user_load_word:",
+    "ldr x0, [x0]",
+    "svc #0",
     ".global cpu_pmu_user_end",
     "cpu_pmu_user_end:",
 );
 unsafe extern "C" {
     fn cpu_pmu_user_start();
     fn cpu_pmu_user_loop();
+    fn cpu_user_load_word();
     fn cpu_pmu_user_end();
+}
+
+struct UserProgram {
+    interrupt_loop: usize,
+    load_word: usize,
+    hardware_tag: u16,
+}
+
+fn load_user_word(context: &mut thread::UserExecutionContext, entry: usize) -> usize {
+    context.set_ip(entry);
+    context.set_arg0(DATA);
+    loop {
+        match context.enter().unwrap() {
+            ReturnReason::Interrupt => continue,
+            ReturnReason::Syscall => return context.arg0(),
+            other => panic!("EL0 data read failed: {other:?}"),
+        }
+    }
 }
 
 fn handle(_: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
@@ -54,7 +92,7 @@ fn handle(_: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_hal::irq::IrqReturn::Handled
 }
 
-fn user_thread(loop_offset: usize, cpu: usize) {
+fn user_thread(program: UserProgram, cpu: usize, root: ax_cpu::PhysAddr) {
     super::pin_to(cpu);
     let mut context = thread::UserExecutionContext::bind(UserContext::new(
         CODE,
@@ -85,6 +123,27 @@ fn user_thread(loop_offset: usize, cpu: usize) {
     // SAFETY: same owner CPU; revoke authorization before the next user entry.
     unsafe { Pmu::current().unwrap().disable_user_access() };
     ax_cpu::interrupt::enable_irqs();
+    assert_eq!(
+        load_user_word(&mut context, program.load_word),
+        ORIGINAL_WORD
+    );
+    PARK_READY.store(true, Ordering::Release);
+    assert!(!task_api::ax_wait_queue_wait_until(
+        &PARK,
+        || RESUME.load(Ordering::Acquire),
+        None,
+    ));
+    {
+        let _irq = std::os::arceos::sync::IrqSaveGuard::new();
+        let restored = ax_cpu::mmu::El1::read_user_address_space();
+        assert_eq!(restored.root(), root);
+        assert_eq!(restored.hardware_tag(), program.hardware_tag);
+    }
+    assert_eq!(
+        load_user_word(&mut context, program.load_word),
+        REPLACEMENT_WORD,
+        "restored EL0 execution must observe the mapping replaced while parked"
+    );
     context.set_ip(CODE);
     loop {
         match context.enter().unwrap() {
@@ -122,7 +181,7 @@ fn user_thread(loop_offset: usize, cpu: usize) {
         pmu.start();
     }
     ax_cpu::interrupt::enable_irqs();
-    context.set_ip(CODE + loop_offset);
+    context.set_ip(program.interrupt_loop);
     while USER_IRQ_PC.load(Ordering::Acquire) == 0 {
         assert!(matches!(context.enter().unwrap(), ReturnReason::Interrupt));
     }
@@ -131,12 +190,31 @@ fn user_thread(loop_offset: usize, cpu: usize) {
     ax_hal::irq::free_irq(handle).unwrap();
 }
 
-fn run_cpu(cpu: usize) {
+fn run_cpu(cpu: usize, hardware_tag: u16) {
+    super::pin_to(cpu);
     USER_IRQ_PC.store(0, Ordering::Release);
+    PARK_READY.store(false, Ordering::Release);
+    RESUME.store(false, Ordering::Release);
     let mut code = ax_alloc::GlobalPage::alloc_contiguous(1, 4096).unwrap();
     let mut stack = ax_alloc::GlobalPage::alloc_contiguous(1, 4096).unwrap();
+    let mut data = ax_alloc::GlobalPage::alloc_contiguous(1, 4096).unwrap();
+    let mut replacement = ax_alloc::GlobalPage::alloc_contiguous(1, 4096).unwrap();
     code.zero();
     stack.zero();
+    data.zero();
+    replacement.zero();
+    // SAFETY: these disjoint, aligned allocations are unpublished writable pages.
+    unsafe {
+        data.start_vaddr()
+            .as_mut_ptr()
+            .cast::<usize>()
+            .write_volatile(ORIGINAL_WORD);
+        replacement
+            .start_vaddr()
+            .as_mut_ptr()
+            .cast::<usize>()
+            .write_volatile(REPLACEMENT_WORD);
+    }
     let start = cpu_pmu_user_start as *const () as usize;
     let end = cpu_pmu_user_end as *const () as usize;
     let length = end.checked_sub(start).unwrap();
@@ -162,6 +240,11 @@ fn run_cpu(cpu: usize) {
             ax_hal::mem::virt_to_phys(stack.start_vaddr().as_usize().into()),
             MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         ),
+        (
+            DATA,
+            ax_hal::mem::virt_to_phys(data.start_vaddr().as_usize().into()),
+            MappingFlags::READ | MappingFlags::USER,
+        ),
     ] {
         table
             .map(&ax_hal::paging::MapConfig {
@@ -175,22 +258,87 @@ fn run_cpu(cpu: usize) {
             .unwrap();
     }
     let root = table.root_paddr();
-    let owner = std::os::arceos::sync::IrqSafeMutex::new((table, code, stack));
-    let address_space = thread::TaskAddressSpace::new(root, owner).unwrap();
-    let loop_offset = cpu_pmu_user_loop as *const () as usize - start;
+    let owner = Arc::new(std::os::arceos::sync::IrqSafeMutex::new((
+        table,
+        code,
+        stack,
+        data,
+        replacement,
+    )));
+    let mode = if hardware_tag == 0 {
+        ax_hal::context::InstalledAddressSpaceMode::FullFlush
+    } else {
+        ax_hal::context::InstalledAddressSpaceMode::Tagged
+    };
+    let installed = ax_hal::context::InstalledAddressSpace::user(
+        cpu as u64 * 2 + u64::from(hardware_tag) + 1,
+        root,
+        hardware_tag,
+        0,
+        0,
+        mode,
+    )
+    .unwrap();
+    // SAFETY: owner retains the complete table and all old/new backing pages.
+    // Their allocations remain stable until the runtime retires its last lease.
+    let (address_space, cpu_state) = unsafe { super::managed::new(installed, owner.clone()) };
+    let program = UserProgram {
+        interrupt_loop: CODE + (cpu_pmu_user_loop as *const () as usize - start),
+        load_word: CODE + (cpu_user_load_word as *const () as usize - start),
+        hardware_tag,
+    };
     // SAFETY: the runtime address-space token retains every table and backing
     // page until task and lazy-CPU leases retire; there is no external extension.
     let task = unsafe {
         thread::prepare_user_thread(
             thread::builder("cpu-pmu-user".into()).stack_size(0x10000),
-            move || user_thread(loop_offset, cpu),
+            move || user_thread(program, cpu, root),
             thread::UserContextOptions::new(address_space),
         )
         .unwrap()
     }
     .publish()
     .unwrap();
+    let started = std::time::Instant::now();
+    while !PARK_READY.load(Ordering::Acquire)
+        || task.state() != std::os::arceos::task::thread::ThreadState::Blocked
+    {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "EL0 owner did not park"
+        );
+        std::thread::yield_now();
+    }
+    {
+        let _irq = std::os::arceos::sync::IrqSaveGuard::new();
+        let lazy = ax_cpu::mmu::El1::read_user_address_space();
+        assert_eq!(lazy.root().as_usize(), 0);
+        assert_eq!(lazy.hardware_tag(), 0);
+    }
+    assert_ne!(cpu_state.active_mask() & (1usize << cpu), 0);
+    assert!(ax_hal::cpu_num() > 1);
+    super::pin_to((cpu + 1) % ax_hal::cpu_num());
+    {
+        let mut backing = owner.lock();
+        let replacement = ax_hal::mem::virt_to_phys(backing.4.start_vaddr().as_usize().into());
+        // The sole user is parked on another CPU, whose active-mm lease must
+        // remain a shootdown target even with its reserved lower root loaded.
+        // Both old and new backing pages stay owned through task retirement.
+        backing
+            .0
+            .remap_page(
+                DATA.into(),
+                replacement,
+                MappingFlags::READ | MappingFlags::USER,
+            )
+            .unwrap();
+    }
+    ax_hal::cache::flush_tlb_range_on_cpus(cpu_state.active_mask(), DATA.into(), 4096).unwrap();
+    RESUME.store(true, Ordering::Release);
+    assert_eq!(task_api::ax_wait_queue_wake(&PARK, 1), 1);
     assert_eq!(task.join().unwrap(), 0);
+    std::println!("CPU_USER_RESTORE_OK cpu={cpu} tag={hardware_tag}");
+    std::println!("CPU_USER_REMOTE_REMAP_OK cpu={cpu} tag={hardware_tag}");
     std::println!(
         "CPU_PMU_USER_CORE cpu={cpu} pc={:#x}",
         USER_IRQ_PC.load(Ordering::Acquire)
@@ -206,7 +354,11 @@ pub fn run() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(ax_hal::irq::is_cpu_online(cpu));
-        run_cpu(cpu);
+        // Both installation modes must survive the same real lazy-mm transition.
+        for hardware_tag in [0, 1] {
+            run_cpu(cpu, hardware_tag);
+        }
     }
+    reuse::run();
     std::println!("CPU_PMU_USER_OK");
 }
