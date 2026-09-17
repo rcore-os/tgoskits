@@ -187,18 +187,17 @@ impl VsockStreamTransport {
         }
 
         let conn_id = self.conn_id.lock().ok_or(NetError::NotConnected)?;
-        let capacity = vsock_send_capacity(conn_id)?;
-        if capacity == 0 {
-            return Err(NetError::WouldBlock);
-        }
-
+        // The device owns credit accounting and partial-send limits. Even at zero
+        // capacity it must see the attempt so it can request a peer credit update.
         let result = src.write_to(&mut ax_io::write_fn(|buffer| {
-            let send_length = buffer.len().min(capacity);
-            vsock_send(conn_id, &buffer[..send_length]).map_err(ax_io::IoError::from)
+            vsock_send(conn_id, buffer).map_err(ax_io::IoError::from)
         }));
         conn.lock()
             .add_tx_bytes(result.as_ref().copied().unwrap_or(0));
-        Ok(result?)
+        result.map_err(|error| match error {
+            ax_io::IoError::WouldBlock => NetError::WouldBlock,
+            error => NetError::Io(error),
+        })
     }
 
     pub(in crate::vsock) fn try_recv(

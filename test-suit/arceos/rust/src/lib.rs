@@ -1,3 +1,6 @@
+#[cfg(feature = "net-vsock")]
+mod net_vsock;
+
 #[cfg(feature = "cpu-capacity")]
 mod cpu_capacity;
 
@@ -207,6 +210,8 @@ test_runner!("task-yield", run_task_yield, task::yield_now::run);
 test_runner!("serial-rx", run_serial_rx, serial_rx::run);
 
 const SELECTED_TESTS: &[TestCase] = &[
+    #[cfg(feature = "net-vsock")]
+    TestCase::new("net-vsock", "vsock credit wakeup", net_vsock::run),
     #[cfg(feature = "cpu-capacity")]
     TestCase::new(
         "cpu-capacity",

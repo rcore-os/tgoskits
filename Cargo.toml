@@ -152,7 +152,9 @@ ax-ctor-bare = { version = "0.4", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4", path = "components/ctor_bare/ctor_bare_macros" }
 ax-display = { version = "0.6", path = "os/arceos/modules/axdisplay" }
 ax-driver = { version = "0.16", path = "drivers/ax-driver" }
-virtio-drivers = { version = "0.13.0", default-features = false }
+# Use the 0.13 backport until the credit observer/capacity API is released.
+# Upstream review: https://github.com/rcore-os/virtio-drivers/pull/266
+virtio-drivers = { version = "0.13.0", git = "https://github.com/rcore-os/virtio-drivers.git", rev = "0de7970bfbccd9704417f43fa7e4cd84c4a3681d", default-features = false }
 ax-fs-ng = { version = "0.10", path = "fs/ax-fs-ng" }
 ax-hal = { version = "0.8.1", path = "os/arceos/modules/axhal" }
 irq-framework = { version = "0.5", path = "components/irq-framework" }

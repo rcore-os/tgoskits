@@ -39,6 +39,21 @@ task-sleep = ["task-runtime"]
 task-smp-online = ["task-runtime", "ax-std/ipi"]
 task-stack-guard-page = ["task-runtime", "ax-std/paging", "ax-std/stack-guard-page"]
 task-mutex = ["task-runtime", "ax-std/alloc"]
+# Owns a single global test device; run as a standalone QEMU selector.
+net-vsock = [
+    "task-runtime",
+    "ax-std/net",
+    "ax-driver/virtio-socket",
+    "dep:ax-net",
+    "ax-net/vsock",
+    "dep:ax-sync",
+    "dep:axpoll",
+    "dep:irq-framework",
+    "dep:rdrive",
+    "dep:virtio-drivers",
+    "dep:zerocopy",
+    "dep:ax-task",
+]
 net-loopback = ["ax-std", "ax-driver/virtio-net", "ax-std/net", "ax-std/dns"]
 fs-basic = ["ax-std", "ax-driver/nvme", "ax-std/alloc", "ax-std/fatfs"]
 debug-backtrace = ["ax-std", "dep:axbacktrace", "ax-std/backtrace"]
@@ -92,6 +107,13 @@ all = [
 ]
 
 [dependencies]
+ax-net = { workspace = true, optional = true }
+ax-sync = { workspace = true, optional = true }
+axpoll = { workspace = true, optional = true }
+irq-framework = { workspace = true, optional = true }
+rdrive = { workspace = true, optional = true }
+virtio-drivers = { workspace = true, optional = true }
+zerocopy = { workspace = true, optional = true }
 ax-mm = { workspace = true, optional = true }
 ax-runtime = { workspace = true, optional = true }
 ax-task = { workspace = true, optional = true }

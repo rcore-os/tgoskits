@@ -25,10 +25,8 @@ use crate::{PciIrqRequirement, binding_info_from_pci};
 
 const DEFAULT_RX_BUFFER_CAPACITY: u32 = 32 * 1024;
 
-mod credit;
 mod irq;
 
-use credit::TxCreditBook;
 use irq::SharedVsockTransport;
 
 #[cfg(feature = "pci")]
@@ -72,7 +70,7 @@ pub fn register_transport_with_info<T: Transport + 'static>(
 
 struct VirtIoVsock<T: Transport + 'static> {
     inner: VsockConnectionManager<VirtIoHalImpl, SharedVsockTransport<T>>,
-    tx_credits: TxCreditBook,
+    pending_event: Option<Result<VsockEvent, VsockError>>,
     irq_endpoints: Option<VsockIrqEndpoints>,
 }
 
@@ -84,7 +82,7 @@ impl<T: Transport + 'static> VirtIoVsock<T> {
         let socket = VirtIOSocket::<VirtIoHalImpl, _>::new(transport)?;
         Ok(Self {
             inner: VsockConnectionManager::new_with_capacity(socket, DEFAULT_RX_BUFFER_CAPACITY),
-            tx_credits: TxCreditBook::default(),
+            pending_event: None,
             irq_endpoints: Some(irq_endpoints),
         })
     }
@@ -112,39 +110,32 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
         self.inner
             .connect(peer, local_port)
             .map_err(map_vsock_error)?;
-        self.tx_credits.open(id);
         Ok(())
     }
 
     fn send_capacity(&mut self, id: VsockConnId) -> Result<usize, VsockError> {
-        let _validated = map_conn_id(id)?;
-        self.tx_credits
-            .available(id, DEFAULT_RX_BUFFER_CAPACITY)
-            .ok_or(VsockError::NotConnected)
+        let (peer, local_port) = map_conn_id(id)?;
+        self.inner
+            .send_capacity(peer, local_port)
+            .map_err(map_vsock_error)
     }
 
     fn send(&mut self, id: VsockConnId, buf: &[u8]) -> Result<usize, VsockError> {
         if buf.is_empty() {
             return Ok(0);
         }
-        let capacity = self
-            .tx_credits
-            .available(id, DEFAULT_RX_BUFFER_CAPACITY)
-            .ok_or(VsockError::NotConnected)?;
-        if capacity == 0 {
-            return Err(VsockError::Retry);
-        }
-        let send_length = buf.len().min(capacity);
-        let length = u32::try_from(send_length).map_err(|_| VsockError::NotSupported)?;
+        let capacity = self.send_capacity(id)?;
+        // Let the manager request credit when exhausted. Returning early here would
+        // leave a blocked writer waiting for an update that was never requested.
+        let send_length = if capacity == 0 {
+            buf.len()
+        } else {
+            buf.len().min(capacity)
+        };
         let (peer, local_port) = map_conn_id(id)?;
         self.inner
             .send(peer, local_port, &buf[..send_length])
             .map_err(map_vsock_error)?;
-        let recorded = self.tx_credits.record_sent(id, length);
-        debug_assert!(
-            recorded,
-            "a successful send must retain its opened credit entry"
-        );
         Ok(send_length)
     }
 
@@ -175,46 +166,45 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
 
     fn disconnect(&mut self, id: VsockConnId) -> Result<(), VsockError> {
         let (peer, local_port) = map_conn_id(id)?;
-        complete_local_disconnect(
-            &mut self.tx_credits,
-            id,
-            self.inner.shutdown(peer, local_port),
-        )
+        self.inner
+            .shutdown(peer, local_port)
+            .map_err(map_vsock_error)
     }
 
     fn abort(&mut self, id: VsockConnId) -> Result<(), VsockError> {
         let (peer, local_port) = map_conn_id(id)?;
         self.inner
             .force_close(peer, local_port)
-            .map_err(map_vsock_error)?;
-        self.tx_credits.close(id);
-        Ok(())
+            .map_err(map_vsock_error)
     }
 
     fn poll_event(&mut self) -> Result<Option<VsockEvent>, VsockError> {
-        let Some(event) = self.inner.poll().map_err(map_vsock_error)? else {
-            return Ok(None);
-        };
-        let connection = map_event_conn(&event);
-        let connected = matches!(
-            event.event_type,
-            VsockEventType::ConnectionRequest | VsockEventType::Connected
-        );
-        let disconnected = matches!(event.event_type, VsockEventType::Disconnected { .. });
-        if connected {
-            self.tx_credits.open(connection);
+        if let Some(event) = self.pending_event.take() {
+            return event.map(Some);
         }
-        if disconnected {
-            self.tx_credits.close(connection);
-        } else {
-            self.tx_credits.update_peer(
-                connection,
-                event.buffer_status.buffer_allocation,
-                event.buffer_status.forward_count,
-            );
-        }
-        let event = map_event(event);
-        Ok(Some(event))
+        let mut notification = None;
+        let event = self
+            .inner
+            .poll_with_credit_update(|peer, local_port, event_type| {
+                let connection = VsockConnId {
+                    peer_addr: map_rdif_addr(peer),
+                    local_port,
+                };
+                notification = Some(
+                    if matches!(event_type, VsockEventType::Disconnected { .. }) {
+                        VsockEvent::Disconnected(connection)
+                    } else {
+                        VsockEvent::CreditUpdate(connection)
+                    },
+                );
+            });
+        publish_polled_event(
+            event
+                .map(|event| event.map(map_event))
+                .map_err(map_vsock_error),
+            notification,
+            &mut self.pending_event,
+        )
     }
 
     fn take_irq_endpoints(&mut self) -> Result<VsockIrqEndpoints, VsockError> {
@@ -222,14 +212,33 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
     }
 }
 
-fn complete_local_disconnect(
-    tx_credits: &mut TxCreditBook,
-    connection: VsockConnId,
-    result: Result<(), VirtIoError>,
-) -> Result<(), VsockError> {
-    result.map_err(map_vsock_error)?;
-    tx_credits.close(connection);
-    Ok(())
+// Preserve state notifications even when a control response cannot be submitted.
+// The task worker stops draining on errors, so return the notification first and
+// retain the error for the next call. No socket callback runs under the device gate.
+fn publish_polled_event(
+    result: Result<Option<VsockEvent>, VsockError>,
+    notification: Option<VsockEvent>,
+    pending: &mut Option<Result<VsockEvent, VsockError>>,
+) -> Result<Option<VsockEvent>, VsockError> {
+    let Some(notification) = notification else {
+        return result;
+    };
+    match result {
+        Ok(Some(event)) => {
+            if matches!(
+                event,
+                VsockEvent::Received(..) | VsockEvent::ConnectionRequest(..)
+            ) {
+                *pending = Some(Ok(notification));
+            }
+            Ok(Some(event))
+        }
+        Ok(None) => Ok(Some(notification)),
+        Err(error) => {
+            *pending = Some(Err(error));
+            Ok(Some(notification))
+        }
+    }
 }
 
 fn validate_port(port: u32) -> Result<(), VsockError> {
@@ -304,11 +313,6 @@ fn map_vsock_error(err: VirtIoError) -> VsockError {
 mod tests {
     use super::*;
 
-    const CONNECTION: VsockConnId = VsockConnId {
-        peer_addr: RdifVsockAddr { cid: 2, port: 3 },
-        local_port: 4,
-    };
-
     #[test]
     fn peer_credit_exhaustion_is_retryable_not_a_disconnect() {
         assert!(matches!(
@@ -317,21 +321,5 @@ mod tests {
             )),
             VsockError::Retry
         ));
-    }
-
-    #[test]
-    fn successful_local_disconnect_retires_transmit_credit() {
-        let mut credits = TxCreditBook::default();
-        credits.open(CONNECTION);
-        credits.update_peer(CONNECTION, 4096, 0);
-        assert_eq!(credits.available(CONNECTION, 4096), Some(4096));
-
-        complete_local_disconnect(&mut credits, CONNECTION, Ok(())).unwrap();
-
-        assert_eq!(
-            credits.available(CONNECTION, 4096),
-            None,
-            "a transport that accepted local disconnect must not remain writable"
-        );
     }
 }
