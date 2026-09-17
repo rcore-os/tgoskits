@@ -231,23 +231,36 @@ pub fn wait_existing_ptrace_stop_current(thr: &Thread, uctx: &mut UserContext) {
 
 fn wait_ptrace_resume(thr: &Thread, tid: TidNumber, uctx: &mut UserContext) {
     let task = current_user_task();
-    let stale_interrupts = thr.interrupt_snapshot();
-    thr.acknowledge_interrupt(stale_interrupts);
-    let wait_result = block_on_user(
-        &task,
-        super::process_wait::wait_on_pollset(thr.proc_data.ptrace_stop_event(), || {
-            thr.proc_data
-                .ptrace_stop_signo_for(tid)
-                .is_none()
-                .then_some(())
-        }),
-    );
+    loop {
+        // TASK_TRACED is released by the tracer or fatal state, not by an
+        // ordinary signal's scheduler notification. Acknowledge first, then
+        // recheck persistent exit state so a fatal wake cannot be lost here.
+        let stale_interrupts = thr.interrupt_snapshot();
+        thr.acknowledge_interrupt(stale_interrupts);
+        if thr.pending_exit()
+            || thr.has_exit_request()
+            || thr.proc_data.signal.group_exit_status().is_some()
+            || thr.signal().pending().has(Signo::SIGKILL)
+        {
+            thr.proc_data.clear_ptrace_stop();
+            return;
+        }
 
-    if matches!(wait_result, UserWaitOutcome::Interrupted) {
-        thr.proc_data.clear_ptrace_stop();
-    } else if matches!(wait_result, UserWaitOutcome::Ready(()))
-        && let Some(resume_uctx) = thr.proc_data.take_ptrace_stop_user_context_for(tid)
-    {
+        let wait_result = block_on_user(
+            &task,
+            super::process_wait::wait_on_pollset(thr.proc_data.ptrace_stop_event(), || {
+                thr.proc_data
+                    .ptrace_stop_signo_for(tid)
+                    .is_none()
+                    .then_some(())
+            }),
+        );
+        if matches!(wait_result, UserWaitOutcome::Ready(())) {
+            break;
+        }
+    }
+
+    if let Some(resume_uctx) = thr.proc_data.take_ptrace_stop_user_context_for(tid) {
         *uctx = resume_uctx;
         thr.proc_data.restore_current_fp_for_ptrace(tid, uctx);
     }
