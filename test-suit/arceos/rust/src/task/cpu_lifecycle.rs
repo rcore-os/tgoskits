@@ -48,6 +48,16 @@ fn idle_polling_ends_before_task_execution() {
         })
         .unwrap();
     wait_for(|| wakee.state() == ThreadState::Blocked);
+    {
+        let _irq = ax_std::os::arceos::guard::PreemptIrqSaveGuard::new();
+        assert!(
+            matches!(
+                IdlePollingWakeProbe::arm(CpuId::new(1), wakee.wake_handle()),
+                Err(ax_task::thread::TaskError::UnsafeContext)
+            ),
+            "idle wake probe must reject atomic context before registration"
+        );
+    }
     let probe = IdlePollingWakeProbe::arm(CpuId::new(1), wakee.wake_handle()).unwrap();
     notify_idle_cpu_probe(RuntimeCpuId::new(1)).unwrap();
     wakee.join().unwrap();

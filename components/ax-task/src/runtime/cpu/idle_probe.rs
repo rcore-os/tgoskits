@@ -20,7 +20,11 @@ pub struct IdlePollingWakeProbe {
 
 impl IdlePollingWakeProbe {
     /// Arms the next idle polling attempt on `cpu`; concurrent probes are rejected.
+    ///
+    /// Requires a blocking-capable task context; returns [`TaskError::UnsafeContext`]
+    /// before acquiring the probe lock when called from an atomic context.
     pub fn arm(cpu: CpuId, wake: ThreadWakeHandle) -> Result<Self, TaskError> {
+        crate::thread::current::validate_blocking_context()?;
         let system = crate::runtime::context::runtime_task_system()?;
         if system.cpu_remote(cpu).is_none() {
             return Err(TaskError::CpuOffline(cpu.as_u32()));
