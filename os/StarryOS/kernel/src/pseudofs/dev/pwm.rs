@@ -362,7 +362,7 @@ fn map_error(error: PwmError) -> VfsError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use rdif_pwm::{DriverGeneric, Interface};
 
