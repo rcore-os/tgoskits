@@ -23,7 +23,7 @@ struct CpuInterfaceSlot {
 // SAFETY: CPU_IF is initialized once by the BSP with all logical CPU slots
 // preallocated, so the BTreeMap structure is immutable afterwards. Each CPU
 // writes only its own slot during interrupt-controller initialization, and
-// send_ipi reads the current CPU slot only after that CPU has initialized it.
+// private interrupt configuration reads only the initialized current CPU slot.
 unsafe impl Sync for CpuInterfaceSlot {}
 
 impl CpuInterfaceSlot {
@@ -243,7 +243,8 @@ pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) -> Result<(), crate::
     // Normal-memory stores before issuing the SGI; the driver's trailing ISB
     // only forces execution of the system-register write.
     barrier::dsb(barrier::ISHST);
-    current_cpu_interface().send_sgi(sgi, target);
+    // SGI generation uses only banked system registers, not redistributor state.
+    arm_gic_driver::v3::send_sgi(sgi, target);
     Ok(())
 }
 
