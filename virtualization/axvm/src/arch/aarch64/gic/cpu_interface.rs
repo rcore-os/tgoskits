@@ -508,7 +508,7 @@ fn write_v3_list_register(index: usize, entry: ListRegisterState) -> Result<(), 
         + ICH_LR_EL2::GROUP::SET
         + state;
     if entry.maintenance_on_eoi() {
-        fields = fields + ICH_LR_EL2::EOI::SET;
+        fields += ICH_LR_EL2::EOI::SET;
     }
     if let ListRegisterBacking::Physical(physical) = entry.backing() {
         let pintid = u16::try_from(physical.raw()).map_err(|_| {

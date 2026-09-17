@@ -28,7 +28,7 @@ use sbi_spec::{hsm, legacy, pmu, rfnc, spi, srst};
 
 use crate::arch::riscv64::policy::{
     EID_HVC, RiscvVcpuCreateConfig,
-    consts::traps::irq::{S_EXT, S_SOFT, S_TIMER, is_supervisor_external},
+    consts::traps::irq::{S_SOFT, S_TIMER, is_supervisor_external},
     guest_mem,
     host::RiscvHostOps,
     sbi_console::*,
@@ -48,33 +48,6 @@ const FID_SET_TIMER: usize = 0;
 const SYSTEM_OPCODE: u32 = 0x73;
 #[cfg(feature = "sstc")]
 const CSR_STIMECMP: u16 = 0x14d;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct GuestTimerProgram {
-    deadline: usize,
-    claims_host_clockevent: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SupervisorTimerTrapOwner {
-    HostClockevent,
-    GuestTimerEmulation,
-}
-
-const fn guest_timer_program(deadline: usize) -> GuestTimerProgram {
-    GuestTimerProgram {
-        deadline,
-        claims_host_clockevent: false,
-    }
-}
-
-const fn supervisor_timer_trap_owner() -> SupervisorTimerTrapOwner {
-    if guest_timer_program(0).claims_host_clockevent {
-        SupervisorTimerTrapOwner::GuestTimerEmulation
-    } else {
-        SupervisorTimerTrapOwner::HostClockevent
-    }
-}
 
 #[inline]
 fn instr_is_pseudo(ins: u32) -> bool {
@@ -317,14 +290,6 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 }
 
 impl<H: RiscvHostOps> RiscvVcpu<H> {
-    /// Capture any virtual pending interrupt bits that were raised after the
-    /// last `unbind()` so the next `bind()` does not overwrite them with stale
-    /// saved state.
-    pub fn latch_hvip_from_hw(&mut self) {
-        // SAFETY: the AxVM timer owner attributes these current-hart bits to this vCPU.
-        unsafe { self.regs.latch_interrupts() };
-    }
-
     /// Attempts to decode the current guest-page-fault trap as an MMIO access.
     pub fn decode_mmio_fault(
         &mut self,
@@ -343,14 +308,11 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     #[cfg(feature = "sstc")]
     #[inline]
     fn program_guest_timer(&mut self, deadline: usize) -> RiscvVcpuResult {
-        let program = guest_timer_program(deadline);
-        self.regs.vs_csrs.vstimecmp = program.deadline;
-        debug_assert!(!program.claims_host_clockevent);
         self.set_virtual_interrupt_pending(S_TIMER, false)?;
         self.binding
             .as_mut()
             .ok_or(RiscvVcpuError::BadState)?
-            .set_timer_compare(&mut self.regs, program.deadline);
+            .set_timer_compare(&mut self.regs, deadline);
         Ok(())
     }
 
@@ -706,29 +668,14 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                 Ok(RiscvVmExit::Nothing)
             }
             Trap::Exception(Exception::VirtualInstruction) => self.handle_virtual_instruction(),
-            Trap::Interrupt(Interrupt::SupervisorTimer) => match supervisor_timer_trap_owner() {
-                SupervisorTimerTrapOwner::HostClockevent => Ok(RiscvVmExit::ExternalInterrupt {
-                    vector: S_TIMER as _,
-                }),
-                SupervisorTimerTrapOwner::GuestTimerEmulation => unreachable!(
-                    "guest timer emulation must not claim the host supervisor timer interrupt"
-                ),
-            },
-            Trap::Interrupt(Interrupt::SupervisorSoft) => {
-                // Host IPIs and scheduler wakeups use SSIP. Route them through
-                // the host IRQ path so it can acknowledge SSIP before the vCPU
-                // resumes instead of treating the interrupt as a guest trap.
-                Ok(RiscvVmExit::ExternalInterrupt {
-                    vector: S_SOFT as _,
-                })
-            }
-            Trap::Interrupt(Interrupt::SupervisorExternal) => {
-                // 9 == Interrupt::SupervisorExternal
-                //
-                // It's a great fault in the `riscv` crate that `Interrupt` and `Exception` are not
-                // explicitly numbered, and they provide no way to convert them to a number. Also,
-                // `as usize` will give use a wrong value.
-                Ok(RiscvVmExit::ExternalInterrupt { vector: S_EXT as _ })
+            Trap::Interrupt(
+                Interrupt::SupervisorTimer
+                | Interrupt::SupervisorSoft
+                | Interrupt::SupervisorExternal,
+            ) => {
+                // These sources remain pending until the normal host IRQ
+                // entry services them on this hart after IRQ restoration.
+                Ok(RiscvVmExit::Nothing)
             }
             Trap::Exception(
                 gpf @ (Exception::LoadGuestPageFault | Exception::StoreGuestPageFault),
@@ -1185,24 +1132,6 @@ mod tests {
         let mut vcpu = RiscvVcpu::<TestHost>::default();
 
         assert_eq!(vcpu.unbind(), Err(RiscvVcpuError::BadState));
-    }
-
-    #[cfg(feature = "sstc")]
-    #[test]
-    fn guest_deadline_does_not_claim_host_clockevent() {
-        let program = guest_timer_program(0x1234_5678);
-
-        assert_eq!(program.deadline, 0x1234_5678);
-        assert!(!program.claims_host_clockevent);
-    }
-
-    #[cfg(feature = "sstc")]
-    #[test]
-    fn supervisor_timer_trap_belongs_to_host_clockevent() {
-        assert_eq!(
-            supervisor_timer_trap_owner(),
-            SupervisorTimerTrapOwner::HostClockevent
-        );
     }
 }
 

@@ -13,7 +13,7 @@ pub use ax_cpu::virtualization::GuestContext as TrapFrame;
 pub use self::{
     host::ArmHostIrqGuard,
     pcpu::ArmPerCpu,
-    vcpu::{ArmVcpu, ArmVcpuCreateConfig, ArmVcpuSetupConfig},
+    vcpu::{ArmRunExit, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuSetupConfig},
 };
 
 /// Returns whether the current platform supports the virtualization extension.

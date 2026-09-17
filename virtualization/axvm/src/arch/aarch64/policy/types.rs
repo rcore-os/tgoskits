@@ -267,14 +267,7 @@ pub enum ArmVmExit {
         /// Value written by the guest.
         value: u64,
     },
-    /// A physical host interrupt should be handled by the embedding VMM.
-    ExternalInterrupt {
-        /// Opaque acknowledgement token, or `None` for a spurious interrupt.
-        ///
-        /// The token is returned unchanged so a split-EOI host controller can
-        /// retain source information until the guest deactivates the interrupt.
-        token: Option<usize>,
-    },
+
     /// A guest WFI or WFE instruction was trapped.
     WaitForInterrupt,
     /// The guest wrote a GIC SGI system register.

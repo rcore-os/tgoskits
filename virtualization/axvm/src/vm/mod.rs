@@ -31,7 +31,9 @@ use std::{
 use ax_cpumask::CpuMask;
 use ax_memory_addr::align_up_4k;
 use ax_std::os::arceos::sync::IrqSafeMutex;
-use axaddrspace::{AddrSpace, NestedPageTableOps};
+use axaddrspace::AddrSpace;
+#[cfg(not(target_arch = "aarch64"))]
+use axaddrspace::NestedPageTableOps;
 use axdevice::*;
 use axdevice_base::*;
 use axvm_types::*;
@@ -1690,6 +1692,7 @@ impl AxVM {
     }
 
     /// Reads the immutable device graph resolved during architecture planning.
+    #[cfg(not(target_arch = "aarch64"))]
     pub(crate) fn with_planned_device_graph<F, R>(&self, f: F) -> AxVmResult<R>
     where
         F: FnOnce(&axdevice::ResolvedDeviceGraph) -> AxVmResult<R>,
@@ -2029,6 +2032,7 @@ impl AxVM {
             .map_err(Into::into)
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
     pub(crate) fn handle_nested_page_fault(
         &self,
         addr: GuestPhysAddr,
@@ -2044,6 +2048,7 @@ impl AxVM {
         .unwrap_or(false)
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
     fn debug_nested_page_fault(
         vm_id: usize,
         resources: &AxVMResources,

@@ -435,6 +435,15 @@ pub trait VmArchVcpuOps: Sized {
     /// Completes architecture-specific setup.
     fn setup(&mut self, config: Self::SetupConfig) -> VmBackendResult;
     /// Runs the vCPU until an architecture-specific VM exit.
+    ///
+    /// The caller pins the backend and masks local IRQs across this call. Guest
+    /// execution must still allow host interrupts to force an exit independently
+    /// of the guest interrupt mask. Before returning, restore the host trap
+    /// environment and complete any acknowledged host IRQ on this CPU (or
+    /// transfer its token to the interrupt controller's retained route). Leave
+    /// unacknowledged sources pending for normal host IRQ entry when the caller
+    /// restores IRQs. The returned exit must not require replaying a host IRQ
+    /// snapshot after the backend is unloaded.
     fn run(&mut self) -> VmBackendResult<Self::Exit>;
     /// Binds the vCPU to the current physical CPU.
     fn bind(&mut self) -> VmBackendResult;

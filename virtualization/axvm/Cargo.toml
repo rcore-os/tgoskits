@@ -9,6 +9,14 @@ repository = "https://github.com/arceos-hypervisor/axvm"
 keywords = ["vm", "hypervisor", "arceos"]
 license = "Apache-2.0"
 
+[package.metadata.docs.rs]
+targets = [
+    "aarch64-unknown-linux-musl",
+    "loongarch64-unknown-linux-musl",
+    "riscv64gc-unknown-linux-musl",
+    "x86_64-unknown-linux-musl",
+]
+
 [features]
 fs = ["ax-std/fs", "dep:ax-api", "ax-api/fs", "dep:rsext4"]
 host-fs = ["fs", "dep:ax-driver"]
@@ -27,7 +35,6 @@ bit_field = "0.10"
 bitflags = "2.9"
 byte-unit = { version = "5", default-features = false, features = ["byte"] }
 thiserror = { workspace = true }
-acpi_tables = { workspace = true }
 serde = { version = "1.0.204", default-features = false, features = ["derive"] }
 
 # System independent crates provided by ArceOS.
@@ -97,5 +104,9 @@ rdif-intc.workspace = true
 rdrive.workspace = true
 rdif-clk.workspace = true
 
+[target.'cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))'.dependencies]
+acpi_tables.workspace = true
+
 [dev-dependencies]
+acpi_tables.workspace = true
 rdif-clk = { path = "../../drivers/interface/rdif-clk" }

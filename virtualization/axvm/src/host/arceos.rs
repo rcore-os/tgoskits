@@ -1,10 +1,9 @@
 //! Default private ArceOS host adapter for AxVM.
 
+#[cfg(any(not(target_arch = "loongarch64"), test))]
+use std::sync::OnceLock;
 use std::{
-    sync::{
-        OnceLock,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::atomic::{AtomicUsize, Ordering},
     thread,
     time::Duration,
 };
@@ -178,6 +177,7 @@ impl HostTimer for ArceOsHost {
             .map_err(|error| crate::AxVmError::host("disarm hard host timer", error))
     }
 
+    #[cfg(not(target_arch = "riscv64"))]
     fn cancel_timer(&self, handle: Self::TimerHandle) -> AxVmResult<super::HostTimerCancelOutcome> {
         runtime_task::time::timer::cancel_kernel_timer(handle)
             .map(|outcome| match outcome {
@@ -196,10 +196,12 @@ impl HostTimer for ArceOsHost {
 }
 
 /// Returns the platform IRQ reserved for the physical host console.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn host_console_irq() -> Option<modules::ax_hal::irq::IrqId> {
     modules::ax_hal::console::irq_num()
 }
 
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn dispatch_host_irq(vector: usize) {
     modules::ax_hal::irq::handle_irq(vector, modules::ax_hal::irq::TrapOrigin::Kernel);
 }
@@ -224,27 +226,31 @@ pub(crate) type ArceOsWaitQueue = runtime_task::sync::WaitQueue;
 #[cfg(target_arch = "aarch64")]
 pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
+#[cfg(any(not(target_arch = "loongarch64"), test))]
+use runtime_task::time::MonotonicDeadline as ArceOsMonotonicDeadline;
 pub(crate) use runtime_task::{
     sched::{CpuId as ArceOsCpuId, CpuSet as ArceOsCpuSet, SchedulePolicy as ArceOsSchedulePolicy},
     thread::{
         SwitchReason as ArceOsSwitchReason, ThreadExtension as ArceOsThreadExtension,
         ThreadExtensionOps as ArceOsThreadExtensionOps, ThreadId as ArceOsThreadId,
     },
-    time::MonotonicDeadline as ArceOsMonotonicDeadline,
 };
 
 /// Hard-IRQ-safe event consumed by one fixed ArceOS service thread.
+#[cfg(any(not(target_arch = "loongarch64"), test))]
 pub(crate) struct ArceOsIrqNotification {
     event: runtime_task::sync::irq::IrqWaitCell,
     waiter: OnceLock<ArceOsIrqWaiter>,
 }
 
+#[cfg(any(not(target_arch = "loongarch64"), test))]
 struct ArceOsIrqWaiter {
     owner: ArceOsThreadId,
     registration: runtime_task::sync::irq::IrqWaitRegistration,
     park: runtime_task::sync::WaitQueue,
 }
 
+#[cfg(any(not(target_arch = "loongarch64"), test))]
 impl ArceOsIrqNotification {
     pub(crate) const fn new() -> Self {
         Self {

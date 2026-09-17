@@ -18,9 +18,9 @@ pub(crate) use paging::PagingHandler;
 pub(crate) use traits::HostHardTimerAction;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use traits::HostTimerAction;
-pub(crate) use traits::{
-    HostCpu, HostMemory, HostPlatform, HostTime, HostTimer, HostTimerCancelOutcome,
-};
+#[cfg(not(target_arch = "riscv64"))]
+pub(crate) use traits::HostTimerCancelOutcome;
+pub(crate) use traits::{HostCpu, HostMemory, HostPlatform, HostTime, HostTimer};
 
 /// Physical host-CPU information required by an AxVM application.
 pub mod cpu {

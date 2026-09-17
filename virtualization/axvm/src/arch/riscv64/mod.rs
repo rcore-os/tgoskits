@@ -20,15 +20,9 @@ pub(crate) use vm::RiscvVmPlan;
 
 pub(crate) struct Riscv64Arch;
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum RiscvDeferredRunWork {
-    ExternalInterrupt { vector: usize },
-}
-
 impl ArchOps for Riscv64Arch {
     type VCpu = AxvmRiscvVcpu;
     type PerCpu = AxvmRiscvPerCpu;
-    type DeferredRunWork = RiscvDeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, vcpu_id: usize, arg: usize) {
@@ -82,7 +76,7 @@ impl ArchOps for Riscv64Arch {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
+    ) -> AxVmResult<VcpuExitAction> {
         match exit {
             RiscvVmExit::Machine(_) => {
                 ax_err!(BadState, "CPU exit was not interpreted before unloading")
@@ -122,14 +116,6 @@ impl ArchOps for Riscv64Arch {
             RiscvVmExit::NestedPageFault { addr, access_flags } => {
                 handle_riscv_nested_page_fault(vm, vcpu, addr, access_flags)
             }
-            RiscvVmExit::ExternalInterrupt { vector } => {
-                debug!("VM[{}] run VCpu[{}] get irq {vector}", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Defer(
-                    RiscvDeferredRunWork::ExternalInterrupt {
-                        vector: vector as usize,
-                    },
-                ))
-            }
             RiscvVmExit::SendIpi(request) => ipi::handle(vm, vcpu, request),
             RiscvVmExit::CpuUp {
                 target_cpu,
@@ -150,7 +136,7 @@ impl ArchOps for Riscv64Arch {
                     vm.id(),
                     vcpu.id()
                 );
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                Ok(VcpuExitAction::Complete(VcpuRunAction {
                     waits_for_event: true,
                     stop_reason: None,
                     resets_vm: false,
@@ -159,7 +145,7 @@ impl ArchOps for Riscv64Arch {
             }
             RiscvVmExit::Halt => {
                 debug!("VM[{}] run VCpu[{}] Halt", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                Ok(VcpuExitAction::Complete(VcpuRunAction {
                     waits_for_event: true,
                     stop_reason: None,
                     resets_vm: false,
@@ -168,14 +154,14 @@ impl ArchOps for Riscv64Arch {
             }
             RiscvVmExit::SystemDown => {
                 warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                Ok(VcpuExitAction::Complete(VcpuRunAction {
                     waits_for_event: false,
                     stop_reason: Some(StopReason::SystemDown),
                     resets_vm: false,
                     exits_vcpu: false,
                 }))
             }
-            RiscvVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
+            RiscvVmExit::Nothing => Ok(VcpuExitAction::Complete(VcpuRunAction {
                 waits_for_event: false,
                 stop_reason: None,
                 resets_vm: false,
@@ -184,34 +170,9 @@ impl ArchOps for Riscv64Arch {
         }
     }
 
-    fn finish_deferred_run_work(
-        _vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        work: Self::DeferredRunWork,
-    ) -> AxVmResult<VcpuRunAction> {
-        match work {
-            RiscvDeferredRunWork::ExternalInterrupt { vector } => {
-                finish_external_interrupt(vcpu, vector);
-            }
-        }
-        Ok(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-            resets_vm: false,
-            exits_vcpu: false,
-        })
-    }
-
     fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
         Self::exit_runtime(vm)
     }
-}
-
-fn finish_external_interrupt(vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>, vector: usize) {
-    vcpu.with_current_cpu_set(|| {
-        crate::host::arceos::dispatch_host_irq(vector);
-        vcpu.get_arch_vcpu().latch_hvip_from_hw();
-    });
 }
 
 fn vplic_runtime(vm: &crate::AxVM) -> AxVmResult<Arc<irq::RiscvPlicRuntime>> {
@@ -232,7 +193,7 @@ fn handle_riscv_nested_page_fault(
     vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>,
     addr: RiscvGuestPhysAddr,
     access_flags: RiscvAccessFlags,
-) -> AxVmResult<BoundVcpuExit<RiscvDeferredRunWork>> {
+) -> AxVmResult<VcpuExitAction> {
     let ax_addr = riscv_guest_phys_addr_to_ax(addr);
     let decoded = vcpu.with_backend_bound_current_cpu(|| {
         Ok(vcpu.get_arch_vcpu().decode_mmio_fault(addr, access_flags))
@@ -268,13 +229,13 @@ fn handle_riscv_nested_page_fault(
             _ => false,
         };
         if handled {
-            return Ok(BoundVcpuExit::Continue);
+            return Ok(VcpuExitAction::Continue);
         }
     }
 
     let ax_flags = riscv_access_flags_to_ax(access_flags);
     if vm.handle_nested_page_fault(ax_addr, ax_flags) {
-        Ok(BoundVcpuExit::Continue)
+        Ok(VcpuExitAction::Continue)
     } else {
         warn!(
             "VM[{}] VCpu[{}] unhandled nested page fault at {:#x}, access={:?}",
@@ -283,7 +244,7 @@ fn handle_riscv_nested_page_fault(
             ax_addr.as_usize(),
             ax_flags
         );
-        Ok(BoundVcpuExit::Complete(VcpuRunAction {
+        Ok(VcpuExitAction::Complete(VcpuRunAction {
             waits_for_event: false,
             stop_reason: None,
             resets_vm: false,
@@ -307,10 +268,6 @@ impl RiscvHostOps for AxvmRiscvHostOps {
 pub(crate) struct AxvmRiscvVcpu(RiscvVcpu<AxvmRiscvHostOps>);
 
 impl AxvmRiscvVcpu {
-    fn latch_hvip_from_hw(&mut self) {
-        self.0.latch_hvip_from_hw();
-    }
-
     fn decode_mmio_fault(
         &mut self,
         addr: RiscvGuestPhysAddr,

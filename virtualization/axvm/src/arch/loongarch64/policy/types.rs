@@ -159,9 +159,7 @@ pub enum LoongArchVmExit {
         addr: LoongArchGuestPhysAddr,
         access_flags: LoongArchAccessFlags,
     },
-    ExternalInterrupt {
-        vector: u64,
-    },
+
     Idle,
     Halt,
     Nothing,

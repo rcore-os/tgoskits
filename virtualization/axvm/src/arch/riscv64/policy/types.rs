@@ -274,11 +274,7 @@ pub enum RiscvVmExit {
         /// Fault access flags.
         access_flags: RiscvAccessFlags,
     },
-    /// Host external interrupt while running the vCPU.
-    ExternalInterrupt {
-        /// Host interrupt vector.
-        vector: u64,
-    },
+
     /// Guest requested supervisor software interrupts for other harts.
     SendIpi(RiscvIpiRequest),
     /// Guest requested another CPU to start.

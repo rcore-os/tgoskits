@@ -20,15 +20,9 @@ pub(crate) use vm::LoongArchVmPlan;
 
 pub(crate) struct LoongArch64Arch;
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum LoongArchDeferredRunWork {
-    ExternalInterrupt { vector: usize },
-}
-
 impl ArchOps for LoongArch64Arch {
     type VCpu = AxvmLoongArchVcpu;
     type PerCpu = AxvmLoongArchPerCpu;
-    type DeferredRunWork = LoongArchDeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
     fn has_hardware_support() -> bool {
@@ -101,7 +95,7 @@ impl ArchOps for LoongArch64Arch {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
+    ) -> AxVmResult<VcpuExitAction> {
         let exit = match exit {
             LoongArchVmExit::Machine(exit) => {
                 loongarch_result(vcpu.get_arch_vcpu().0.process_exit(exit))
@@ -146,17 +140,9 @@ impl ArchOps for LoongArch64Arch {
             LoongArchVmExit::NestedPageFault { addr, access_flags } => {
                 handle_loongarch_nested_page_fault(vm, vcpu, addr, access_flags)
             }
-            LoongArchVmExit::ExternalInterrupt { vector } => {
-                debug!("VM[{}] run VCpu[{}] get irq {vector}", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Defer(
-                    LoongArchDeferredRunWork::ExternalInterrupt {
-                        vector: vector as usize,
-                    },
-                ))
-            }
             LoongArchVmExit::Idle => {
                 trace!("VM[{}] run VCpu[{}] Idle", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                Ok(VcpuExitAction::Complete(VcpuRunAction {
                     waits_for_event: true,
                     stop_reason: None,
                     resets_vm: false,
@@ -165,38 +151,20 @@ impl ArchOps for LoongArch64Arch {
             }
             LoongArchVmExit::Halt => {
                 debug!("VM[{}] run VCpu[{}] Halt", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                Ok(VcpuExitAction::Complete(VcpuRunAction {
                     waits_for_event: true,
                     stop_reason: None,
                     resets_vm: false,
                     exits_vcpu: false,
                 }))
             }
-            LoongArchVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
+            LoongArchVmExit::Nothing => Ok(VcpuExitAction::Complete(VcpuRunAction {
                 waits_for_event: false,
                 stop_reason: None,
                 resets_vm: false,
                 exits_vcpu: false,
             })),
         }
-    }
-
-    fn finish_deferred_run_work(
-        _vm: &crate::AxVMRef,
-        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        work: Self::DeferredRunWork,
-    ) -> AxVmResult<VcpuRunAction> {
-        match work {
-            LoongArchDeferredRunWork::ExternalInterrupt { vector } => {
-                crate::host::arceos::dispatch_host_irq(vector);
-            }
-        }
-        Ok(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-            resets_vm: false,
-            exits_vcpu: false,
-        })
     }
 
     fn wait_for_vcpu_event(
@@ -223,7 +191,7 @@ fn handle_loongarch_nested_page_fault(
     vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>,
     addr: LoongArchGuestPhysAddr,
     access_flags: LoongArchAccessFlags,
-) -> AxVmResult<BoundVcpuExit<LoongArchDeferredRunWork>> {
+) -> AxVmResult<VcpuExitAction> {
     let ax_addr = loong_guest_phys_addr_to_ax(addr);
     if let Some(decoded) = vcpu.get_arch_vcpu().decode_mmio_fault(addr, access_flags) {
         let handled = match decoded {
@@ -256,13 +224,13 @@ fn handle_loongarch_nested_page_fault(
             _ => false,
         };
         if handled {
-            return Ok(BoundVcpuExit::Continue);
+            return Ok(VcpuExitAction::Continue);
         }
     }
 
     let ax_flags = loong_access_flags_to_ax(access_flags);
     if vm.handle_nested_page_fault(ax_addr, ax_flags) {
-        Ok(BoundVcpuExit::Continue)
+        Ok(VcpuExitAction::Continue)
     } else {
         warn!(
             "VM[{}] VCpu[{}] unhandled nested page fault at {:#x}, access={:?}",
@@ -271,7 +239,7 @@ fn handle_loongarch_nested_page_fault(
             ax_addr.as_usize(),
             ax_flags
         );
-        Ok(BoundVcpuExit::Complete(VcpuRunAction {
+        Ok(VcpuExitAction::Complete(VcpuRunAction {
             waits_for_event: false,
             stop_reason: None,
             resets_vm: false,

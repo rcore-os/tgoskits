@@ -241,6 +241,29 @@ docker run --rm -v "$PWD:/workspace" -w /workspace \
 - 容器通过后，如果持续集成或开发流程依赖该映像，仍需编写与宿主无关的文档。
 - 客户机控制台失败时区分宿主串口和机器所有客户机串口。宿主串口不得进入客户机直通集合。先检查固定 LoongArch 客户机资源、生成的扁平设备树或固件表、虚拟 PCH-PIC 电平状态和 Axvisor 控制台多路复用器，再修改宿主中断路由。
 
+LVZ 客户机运行时，宿主 clockevent 必须能独立于客户机中断屏蔽触发退出。
+`components/axcpu/src/arch/loongarch64/entry/guest.S::PREPARE_GUEST_ENTRY` 保留宿主
+`ECFG.LIE`，并设置 `PRMD.PIE`，使 `ertn` 恢复 root mode 的中断响应；客户机自己的
+IE 来自 `GCSR_CRMD`。不能在整个客户机运行区间屏蔽宿主 timer，也不能在同步退出时
+仅因保存的 `ESTAT` 含 TI 就提前清除 timer。对照 Linux v7.1
+`arch/loongarch/kvm/switch.S::kvm_switch_to_guest` 与
+`arch/loongarch/kvm/vcpu.c::kvm_handle_exit`：恢复宿主环境后打开中断，由正常 IRQ
+入口确认和服务仍 pending 的源，不重放旧的中断快照。
+
+跨架构所有权由 `VmArchVcpuOps::run` 约束：返回值只携带可在卸载后解释的 guest
+退出；已确认的宿主令牌必须在原 CPU、IRQ 仍屏蔽时处理或移交给控制器持有的路由。
+AArch64 的 `ArmRunExit::HostInterrupt` 只存在于后端内部，不能进入延后的 VM 工作；
+RISC-V 与 LoongArch 的未确认源由宿主 IRQ 入口处理；x86 VMX 的 acknowledged vector
+沿现有 IRQ-off dispatch 路径处理。公共 `VcpuExitAction` 不再提供任意架构延后工作，
+x86 虚拟 EOI 在已卸载后端的 guest 退出处理阶段完成；可能阻塞的 hypercall 仍有独立
+生命周期。排查 Linux 客户机停在某条启动日志时，先检查宿主
+timer 是否 pending、是否仍允许打断 guest，再判断该日志对应的设备是否故障。
+
+ArceOS `cpu/guest-entry` 的 LoongArch 用例以关闭 guest IE 的有限忙循环验证宿主
+timer 退出。旧入口必然执行到 HVCL 并在退出类别断言失败；正确入口先返回 timer IRQ，
+且保留 pending 位、恢复宿主 IRQ 屏蔽状态。它提供入口契约的确定性证明，Axvisor
+`normal/smoke` 继续验证 Linux 启动、定时唤醒和块设备访问。
+
 ## QEMU 调试模式
 
 ### axloader UEFI 网络启动

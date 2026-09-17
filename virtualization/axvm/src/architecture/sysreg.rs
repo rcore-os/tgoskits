@@ -4,7 +4,7 @@ use axdevice::DeviceManagerError;
 use axdevice_base::{BusKind, DeviceAccess, DeviceError, DeviceVcpuId};
 use axvm_types::{AccessWidth, SysRegAddr, VmArchVcpuOps};
 
-use crate::{AxVmError, AxVmResult, architecture::BoundVcpuExit};
+use crate::{AxVmError, AxVmResult, architecture::VcpuExitAction};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SysRegReadExit {
@@ -18,11 +18,11 @@ pub(crate) struct SysRegWriteExit {
     pub(crate) value: u64,
 }
 
-pub(crate) fn handle_read<V: VmArchVcpuOps, D>(
+pub(crate) fn handle_read<V: VmArchVcpuOps>(
     vm: &crate::AxVM,
     vcpu: &crate::vm::AxVCpuRef<V>,
     exit: SysRegReadExit,
-) -> AxVmResult<BoundVcpuExit<D>> {
+) -> AxVmResult<VcpuExitAction> {
     let access = sysreg_access(vcpu.id(), exit.addr);
     let val = vm
         .get_devices()?
@@ -30,19 +30,19 @@ pub(crate) fn handle_read<V: VmArchVcpuOps, D>(
         .map_err(|error| AxVmError::device("read guest system register", error))?
         .ok_or_else(|| missing_sysreg_error("read", exit.addr))?;
     vcpu.set_gpr(exit.reg, val as usize);
-    Ok(BoundVcpuExit::Continue)
+    Ok(VcpuExitAction::Continue)
 }
 
-pub(crate) fn handle_write<V: VmArchVcpuOps, D>(
+pub(crate) fn handle_write<V: VmArchVcpuOps>(
     vm: &crate::AxVM,
     vcpu: &crate::vm::AxVCpuRef<V>,
     exit: SysRegWriteExit,
-) -> AxVmResult<BoundVcpuExit<D>> {
+) -> AxVmResult<VcpuExitAction> {
     let access = sysreg_access(vcpu.id(), exit.addr);
     if !vm.try_write_device(&access, exit.value)? {
         return Err(missing_sysreg_error("write", exit.addr));
     }
-    Ok(BoundVcpuExit::Continue)
+    Ok(VcpuExitAction::Continue)
 }
 
 fn sysreg_access(vcpu_id: usize, addr: SysRegAddr) -> DeviceAccess {

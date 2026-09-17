@@ -6,13 +6,12 @@ use ax_std::os::arceos::guard::IrqSaveGuard;
 use axaddrspace::NestedPageTableOps;
 use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
 
-use super::{BoundVcpuExit, VcpuRunAction, VcpuRunOutcome};
+use super::{VcpuExitAction, VcpuRunAction, VcpuRunOutcome};
 use crate::{AxVmResult, ax_err, irq::model::PendingVcpuInterrupt};
 
 pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
     type PerCpu: VmArchPerCpuOps;
-    type DeferredRunWork;
     type NestedPageTable: NestedPageTableOps;
 
     fn has_hardware_support() -> bool;
@@ -135,13 +134,7 @@ pub(crate) trait ArchOps {
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>>;
-
-    fn finish_deferred_run_work(
-        vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        work: Self::DeferredRunWork,
-    ) -> AxVmResult<VcpuRunAction>;
+    ) -> AxVmResult<VcpuExitAction>;
 
     fn run_vcpu(
         vm: &crate::AxVMRef,
@@ -215,6 +208,10 @@ pub(crate) trait ArchOps {
                                 break Ok(None);
                             }
                             crate::vcpu::VcpuRunResult::VmExit(exit) => {
+                                // Acknowledged host IRQs were completed by the
+                                // backend while pinned and IRQ-masked. Restore
+                                // IRQs here so unacknowledged sources enter the
+                                // native host handler before backend unloading.
                                 drop(entry_irq_guard);
                                 let exit = Self::after_vcpu_run(vm, vcpu, exit)?;
                                 break Ok(Some(exit));
@@ -228,21 +225,17 @@ pub(crate) trait ArchOps {
                     trace!("{exit:#x?}");
                     Self::handle_vcpu_exit_unbound(vm, vcpu, exit)
                 }
-                None => Ok(BoundVcpuExit::EntryCanceled),
+                None => Ok(VcpuExitAction::EntryCanceled),
             },
         );
 
         let unbind_result = vcpu.unbind();
         match run_result {
-            Ok(BoundVcpuExit::Complete(action)) => {
+            Ok(VcpuExitAction::Complete(action)) => {
                 unbind_result?;
                 Ok(VcpuRunOutcome::Entered(action))
             }
-            Ok(BoundVcpuExit::Defer(work)) => {
-                unbind_result?;
-                Self::finish_deferred_run_work(vm, vcpu, work).map(VcpuRunOutcome::Entered)
-            }
-            Ok(BoundVcpuExit::DeferHypercall(work)) => {
+            Ok(VcpuExitAction::DeferHypercall(work)) => {
                 unbind_result?;
                 let return_value = crate::runtime::hvc::finish_deferred_hypercall(vm.clone(), work);
                 vcpu.set_return_value(return_value);
@@ -253,11 +246,11 @@ pub(crate) trait ArchOps {
                     exits_vcpu: false,
                 }))
             }
-            Ok(BoundVcpuExit::EntryCanceled) => {
+            Ok(VcpuExitAction::EntryCanceled) => {
                 unbind_result?;
                 Ok(VcpuRunOutcome::EntryCanceled)
             }
-            Ok(BoundVcpuExit::Continue) => unreachable!("continued exits do not leave run loop"),
+            Ok(VcpuExitAction::Continue) => unreachable!("continued exits do not leave run loop"),
             Err(err) => {
                 if let Err(unbind_err) = unbind_result {
                     warn!(
@@ -270,15 +263,15 @@ pub(crate) trait ArchOps {
     }
 }
 
-fn run_vcpu_slice<E, T>(
+fn run_vcpu_slice<E>(
     prepare: impl FnOnce() -> AxVmResult,
     mut run_entry: impl FnMut() -> AxVmResult<E>,
-    mut handle_exit: impl FnMut(E) -> AxVmResult<BoundVcpuExit<T>>,
-) -> AxVmResult<BoundVcpuExit<T>> {
+    mut handle_exit: impl FnMut(E) -> AxVmResult<VcpuExitAction>,
+) -> AxVmResult<VcpuExitAction> {
     prepare()?;
     loop {
         match handle_exit(run_entry()?)? {
-            BoundVcpuExit::Continue => continue,
+            VcpuExitAction::Continue => continue,
             action => return Ok(action),
         }
     }
@@ -462,7 +455,6 @@ mod tests {
     impl ArchOps for RecordingArch {
         type VCpu = RecordingVcpu;
         type PerCpu = RecordingPerCpu;
-        type DeferredRunWork = ();
         type NestedPageTable = crate::arch::current::ArchNestedPageTable;
 
         fn has_hardware_support() -> bool {
@@ -473,16 +465,8 @@ mod tests {
             _vm: &crate::AxVMRef,
             _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
             _exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-        ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
+        ) -> AxVmResult<VcpuExitAction> {
             unreachable!("the injection test never runs a vCPU")
-        }
-
-        fn finish_deferred_run_work(
-            _vm: &crate::AxVMRef,
-            _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-            _work: Self::DeferredRunWork,
-        ) -> AxVmResult<VcpuRunAction> {
-            unreachable!("the injection test has no deferred work")
         }
     }
 
@@ -502,15 +486,15 @@ mod tests {
             },
             |entry| {
                 Ok(if entry < 3 {
-                    BoundVcpuExit::Continue
+                    VcpuExitAction::Continue
                 } else {
-                    BoundVcpuExit::Defer(())
+                    VcpuExitAction::Complete(VcpuRunAction::default())
                 })
             },
         )
         .unwrap();
 
-        assert!(matches!(exit, BoundVcpuExit::Defer(())));
+        assert!(matches!(exit, VcpuExitAction::Complete(_)));
         assert_eq!(entries.get(), 3);
         assert_eq!(preparations.get(), 1);
     }
@@ -530,12 +514,12 @@ mod tests {
             |()| {
                 assert!(!cpu_bound.get());
                 handled.set(true);
-                Ok(BoundVcpuExit::Defer(()))
+                Ok(VcpuExitAction::Complete(VcpuRunAction::default()))
             },
         )
         .unwrap();
 
-        assert!(matches!(exit, BoundVcpuExit::Defer(())));
+        assert!(matches!(exit, VcpuExitAction::Complete(_)));
         assert!(handled.get());
     }
 

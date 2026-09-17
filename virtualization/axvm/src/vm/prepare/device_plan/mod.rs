@@ -16,7 +16,7 @@ pub(crate) struct VmDevicePlan {
 }
 
 impl VmDevicePlan {
-    #[cfg(any(not(target_arch = "x86_64"), test))]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
     pub(crate) fn with_pools_for_vm(
         config: &AxVMConfig,
         nodes: Vec<DeviceNodeSpec>,
@@ -26,6 +26,7 @@ impl VmDevicePlan {
         Self::build(config, nodes, replacement_ranges, &mut pools, None)
     }
 
+    #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
     pub(crate) fn with_pci_host_for_vm(
         config: &AxVMConfig,
         nodes: Vec<DeviceNodeSpec>,
@@ -85,14 +86,17 @@ pub(crate) trait ArchitectureVmPlan {
 }
 
 /// Plan used by architectures with no extra immutable controller metadata.
+#[cfg(not(target_arch = "aarch64"))]
 pub(crate) struct SimpleVmPlan(VmDevicePlan);
 
+#[cfg(not(target_arch = "aarch64"))]
 impl SimpleVmPlan {
     pub(crate) const fn new(devices: VmDevicePlan) -> Self {
         Self(devices)
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 impl ArchitectureVmPlan for SimpleVmPlan {
     fn devices(&self) -> &VmDevicePlan {
         &self.0

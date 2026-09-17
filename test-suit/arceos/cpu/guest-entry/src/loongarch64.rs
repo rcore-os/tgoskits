@@ -22,10 +22,19 @@ core::arch::global_asm!(
     "hvcl 0",
     "ld.d $a0, $a2, 0",
     "hvcl 0",
+    ".global cpu_test_lvz_busy_guest",
+    "cpu_test_lvz_busy_guest:",
+    "rdtime.d $a0, $zero",
+    "add.d $a1, $a0, $a1",
+    "2:",
+    "rdtime.d $a0, $zero",
+    "bltu $a0, $a1, 2b",
+    "hvcl 0",
 );
 
 unsafe extern "C" {
     fn cpu_test_lvz_guest();
+    fn cpu_test_lvz_busy_guest();
 }
 
 fn direct_alias(address: VirtAddr) -> VirtAddr {
@@ -137,6 +146,26 @@ pub fn run() {
                 "guest reused a retired nested mapping"
             );
         }
+        // A guest with interrupts masked must still be preemptible by the
+        // host clockevent. The finite loop exits by HVCL on a broken entry,
+        // so failure is an exit-kind assertion rather than a harness timeout.
+        let busy_offset = cpu_test_lvz_busy_guest as *const () as usize
+            - cpu_test_lvz_guest as *const () as usize;
+        state.context.sepc = guest_address.as_usize() + busy_offset;
+        state.context.gcsr_era = state.context.sepc;
+        state
+            .context
+            .set_a1((ax_cpu::timer::counter_frequency() / 20) as usize);
+        ax_hal::time::set_oneshot_timer(ax_hal::time::monotonic_time_nanos() + 1_000_000);
+        let exit = state.run(1, state_address).unwrap();
+        assert_eq!(
+            exit.kind,
+            ExitKind::Irq,
+            "host timer must interrupt a busy guest"
+        );
+        assert_ne!(exit.status & (1 << 11), 0, "host timer must remain pending");
+        assert!(!interrupt::irqs_enabled());
+        ax_hal::time::cancel_oneshot_timer();
         state.unbind().unwrap();
         cpu.disable().unwrap();
     }

@@ -1,16 +1,10 @@
-//! x86-only port, nested-fault, and deferred exit handling.
+//! x86-only port and nested-fault exit handling.
 
 use axdevice_base::{BusKind, DeviceAccess, DeviceVcpuId};
 use axvm_types::{AccessWidth, GuestPhysAddr, MappingFlags, Port};
 
 use super::*;
 use crate::arch::x86_64::policy::{X86PortIoDirection, X86PortIoStringExit};
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum DeferredRunWork {
-    TimesliceExpired,
-    InterruptEnd { vector: Option<u8> },
-}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct IoReadExit {
@@ -35,7 +29,7 @@ pub(crate) fn handle_io_read(
     vm: &crate::AxVM,
     vcpu: &crate::vm::AxVCpuRef<AxvmX86Vcpu>,
     exit: IoReadExit,
-) -> AxVmResult<BoundVcpuExit<DeferredRunWork>> {
+) -> AxVmResult<VcpuExitAction> {
     let access = DeviceAccess::new(
         DeviceVcpuId::new(vcpu.id()),
         BusKind::Port,
@@ -49,14 +43,14 @@ pub(crate) fn handle_io_read(
         .map(|value| value as usize)
         .unwrap_or_else(|| unmapped_port_value(exit.width));
     vcpu.set_gpr(0, val);
-    Ok(BoundVcpuExit::Continue)
+    Ok(VcpuExitAction::Continue)
 }
 
 pub(crate) fn handle_io_write(
     vm: &crate::AxVM,
     vcpu: &crate::vm::AxVCpuRef<AxvmX86Vcpu>,
     exit: IoWriteExit,
-) -> AxVmResult<BoundVcpuExit<DeferredRunWork>> {
+) -> AxVmResult<VcpuExitAction> {
     let access = DeviceAccess::new(
         DeviceVcpuId::new(vcpu.id()),
         BusKind::Port,
@@ -66,14 +60,14 @@ pub(crate) fn handle_io_write(
     vm.try_write_device(&access, exit.data)
         .map_err(|error| AxVmError::device("write guest I/O port", error))?;
     publish_pic_interrupt_if_needed(vm, vcpu.id(), exit.port)?;
-    Ok(BoundVcpuExit::Continue)
+    Ok(VcpuExitAction::Continue)
 }
 
 pub(crate) fn handle_io_string(
     vm: &crate::AxVM,
     vcpu: &crate::vm::AxVCpuRef<AxvmX86Vcpu>,
     exit: X86PortIoStringExit,
-) -> AxVmResult<BoundVcpuExit<DeferredRunWork>> {
+) -> AxVmResult<VcpuExitAction> {
     let port = super::x86_port_to_ax(exit.port());
     let width = super::x86_access_width_to_ax(exit.width());
     let size = width.size();
@@ -110,7 +104,7 @@ pub(crate) fn handle_io_string(
     // commit RIP and string registers before injecting interrupts or running
     // the guest, matching KVM's complete_userspace_io lifecycle.
     vcpu.get_arch_vcpu().stage_port_io_string_completion(exit)?;
-    Ok(BoundVcpuExit::Continue)
+    Ok(VcpuExitAction::Continue)
 }
 
 fn publish_pic_interrupt_if_needed(vm: &crate::AxVM, vcpu_id: usize, port: Port) -> AxVmResult {
@@ -126,25 +120,4 @@ fn publish_pic_interrupt_if_needed(vm: &crate::AxVM, vcpu_id: usize, port: Port)
 
 fn unmapped_port_value(width: AccessWidth) -> usize {
     usize::MAX >> ((core::mem::size_of::<usize>() - width.size()) * 8)
-}
-
-pub(crate) fn finish(
-    vm: &crate::AxVMRef,
-    vcpu: &crate::vm::AxVCpuRef<AxvmX86Vcpu>,
-    work: DeferredRunWork,
-) -> AxVmResult<VcpuRunAction> {
-    match work {
-        DeferredRunWork::TimesliceExpired => {}
-        DeferredRunWork::InterruptEnd { vector } => {
-            if let Some(vector) = vector {
-                super::irq::inject_pending_ioapic_irq_after_eoi(vm, vcpu, vector);
-            }
-        }
-    }
-    Ok(VcpuRunAction {
-        waits_for_event: false,
-        stop_reason: None,
-        resets_vm: false,
-        exits_vcpu: false,
-    })
 }

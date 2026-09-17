@@ -2,7 +2,7 @@ use core::marker::PhantomData;
 
 use super::{
     LoongArchContextFrame,
-    exception::{handle_exception_irq, handle_exception_sync},
+    exception::handle_exception_sync,
     guest_csr::GuestTimerRegistration,
     host::LoongArchHostOps,
     iocsr::{
@@ -10,7 +10,7 @@ use super::{
         inject_guest_eiointc_vector,
     },
     registers::{INT_HWI0, INT_IPI},
-    trap::{TIMER_BIT, TrapKind},
+    trap::TrapKind,
     types::{
         LoongArchAccessFlags, LoongArchGuestPhysAddr, LoongArchHostVirtAddr,
         LoongArchNestedPagingConfig, LoongArchVcpuError, LoongArchVcpuId, LoongArchVcpuResult,
@@ -167,11 +167,6 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         // direct map aliases the retained machine object under both translations.
         let exit = unsafe { self.machine.run(guest_id, state_address) }
             .map_err(|_| LoongArchVcpuError::BadState)?;
-        if exit.status & TIMER_BIT != 0 {
-            // Acknowledge this saved host timer source before the entry IRQ
-            // guard opens; deferred policy must not clear a newer timer event.
-            ax_cpu::timer::acknowledge_interrupt();
-        }
         Ok(LoongArchVmExit::Machine(exit))
     }
 
@@ -374,7 +369,9 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
                 self.vcpu_id,
                 &mut self.guest_timer,
             ),
-            TrapKind::Irq => handle_exception_irq(&mut self.machine.context),
+            // The normal host IRQ entry consumes live pending sources when
+            // the shared entry guard restores IRQs. Never replay saved ESTAT.
+            TrapKind::Irq => Ok(LoongArchVmExit::Nothing),
         }
     }
 }

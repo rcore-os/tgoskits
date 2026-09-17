@@ -116,10 +116,11 @@ fn plan_devices(
         axdevice_base::InterruptControllerId::new(0),
         Some(super::pci_config::host_key()),
     )?;
+    let pch_pic_range = PCH_PIC_BASE as u64..(PCH_PIC_BASE + PCH_PIC_SIZE) as u64;
     Ok(SimpleVmPlan::new(VmDevicePlan::with_pci_host_for_vm(
         config,
         nodes,
-        &[PCH_PIC_BASE as u64..(PCH_PIC_BASE + PCH_PIC_SIZE) as u64],
+        std::slice::from_ref(&pch_pic_range),
         super::resource_pools::create()?,
         super::pci_config::provider()?,
     )?))

@@ -14,8 +14,8 @@ use super::{
     trap::{
         ECODE_ADE, ECODE_GSPR, ECODE_HVC, ECODE_PIF, ECODE_PIL, ECODE_PIS, ECODE_PME, ECODE_PNR,
         ECODE_PNX, ECODE_PPI, ECODE_RSE, ESUBCODE_ADEF, ESUBCODE_ADEM, advance_guest_pc,
-        decode_interrupt_vector, extract_field, get_badi, get_badv, get_exception_code,
-        get_exception_subcode, get_guest_interrupt_status, get_guest_pc, is_host_tlb_refill,
+        extract_field, get_badi, get_badv, get_exception_code, get_exception_subcode,
+        get_guest_interrupt_status, get_guest_pc, is_host_tlb_refill,
     },
     types::{
         LoongArchAccessFlags, LoongArchGuestPhysAddr, LoongArchVcpuId, LoongArchVcpuResult,
@@ -165,11 +165,11 @@ pub(crate) fn handle_exception_sync<H: LoongArchHostOps>(
         });
     }
 
-    if ecode == 0 && decode_interrupt_vector(get_guest_interrupt_status(ctx)).is_some() {
-        return handle_exception_irq(ctx);
+    if ecode == 0 && get_guest_interrupt_status(ctx) != 0 {
+        return Ok(LoongArchVmExit::Nothing);
     }
 
-    let result = match ecode {
+    match ecode {
         ECODE_HVC => {
             let nr = ctx.get_a0() as u64;
             let args = [
@@ -247,37 +247,5 @@ pub(crate) fn handle_exception_sync<H: LoongArchHostOps>(
             get_badv(ctx),
             get_badi(ctx)
         ),
-    };
-    result
-}
-
-pub fn handle_exception_irq(
-    ctx: &mut LoongArchContextFrame,
-) -> LoongArchVcpuResult<LoongArchVmExit> {
-    let guest_is = get_guest_interrupt_status(ctx);
-    let is = guest_is;
-
-    if let Some(vector) = decode_interrupt_vector(is) {
-        log::trace!(
-            "LoongArch guest irq exit: vector={}, guest_is={:#x}, sepc={:#x}, gera={:#x}",
-            vector,
-            guest_is,
-            get_guest_pc(ctx),
-            ctx.gcsr_era
-        );
-
-        return Ok(LoongArchVmExit::ExternalInterrupt {
-            vector: vector as u64,
-        });
     }
-
-    log::trace!(
-        "LoongArch guest irq exit with unknown status: guest_is={:#x}, saved_estat={:#x}, \
-         sepc={:#x}, gera={:#x}",
-        guest_is,
-        ctx.host_estat,
-        get_guest_pc(ctx),
-        ctx.gcsr_era
-    );
-    Ok(LoongArchVmExit::Nothing)
 }

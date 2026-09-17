@@ -56,6 +56,7 @@ pub trait HostTime {
 }
 
 /// Completion state of non-blocking host timer cancellation.
+#[cfg(not(target_arch = "riscv64"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostTimerCancelOutcome {
     /// Registration removed and payload reclaimed.
@@ -104,6 +105,7 @@ pub trait HostTimer {
     #[cfg(target_arch = "aarch64")]
     fn disarm_hard_timer(&self, handle: Self::HardTimerHandle) -> AxVmResult;
 
+    #[cfg(not(target_arch = "riscv64"))]
     fn cancel_timer(&self, handle: Self::TimerHandle) -> AxVmResult<HostTimerCancelOutcome>;
 }
 

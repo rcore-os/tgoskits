@@ -35,6 +35,14 @@ pub struct ArmVcpu {
     mpidr: u64,
 }
 
+/// A machine exit that must be resolved while the local IRQ mask is held.
+pub enum ArmRunExit {
+    Guest(ArmVmExit),
+    /// Acknowledged on this CPU; the adapter must complete or transfer ownership
+    /// to its physical IRQ route before restoring IRQs or unloading the backend.
+    HostInterrupt(Option<usize>),
+}
+
 /// Configuration for creating a new [`ArmVcpu`].
 #[derive(Clone, Debug, Default)]
 pub struct ArmVcpuCreateConfig {
@@ -135,13 +143,20 @@ impl ArmVcpu {
     ///
     /// Requiring the guard keeps architecture-external VGIC load/save hooks in
     /// the same IRQ-atomic transaction as guest execution.
-    pub fn run(&mut self, _host_irq_guard: &ArmHostIrqGuard) -> ArmVcpuResult<ArmVmExit> {
+    pub fn run(&mut self, _host_irq_guard: &ArmHostIrqGuard) -> ArmVcpuResult<ArmRunExit> {
         self.machine.timer = self.timer.prepare_machine()?;
         // SAFETY: AxVM owns the pinned EL2 backend and retains IRQ exclusion,
         // the CPU-owned vector, guest memory, and the immutable GIC interface.
         let exit = unsafe { ax_cpu::virtualization::enter_guest(&mut self.machine) };
         self.timer.finish_machine(self.machine.timer);
-        self.vmexit_handler(exit)
+        if exit.kind == TrapKind::Irq {
+            let token = (exit.irq_ack != u32::MAX)
+                .then(|| crate::arch::aarch64::gic::finish_pending_host_irq(exit.irq_ack))
+                .flatten();
+            Ok(ArmRunExit::HostInterrupt(token))
+        } else {
+            self.vmexit_handler(exit).map(ArmRunExit::Guest)
+        }
     }
 
     /// Binds this vCPU to the current physical CPU.
@@ -249,14 +264,6 @@ impl ArmVcpu {
         let result = match exit.kind {
             TrapKind::Synchronous => {
                 handle_exception_sync(&mut self.machine.context, &self.machine.system, &exit)
-            }
-            TrapKind::Irq => {
-                let raw_ack = exit.irq_ack;
-                Ok(ArmVmExit::ExternalInterrupt {
-                    token: (raw_ack != u32::MAX)
-                        .then(|| crate::arch::aarch64::gic::finish_pending_host_irq(raw_ack))
-                        .flatten(),
-                })
             }
             _ => panic!("Unhandled exception {:?}", exit.kind),
         };

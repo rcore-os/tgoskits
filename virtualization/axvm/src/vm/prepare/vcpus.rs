@@ -65,7 +65,6 @@ impl PreparedVcpus {
         >,
     ) -> AxVmResult {
         for vcpu in &self.vcpus {
-            let setup_config = build_config(config, &resources.memory_regions)?;
             let entry = if vcpu.id() == 0 {
                 config.bsp_entry()
             } else {
@@ -73,7 +72,11 @@ impl PreparedVcpus {
             };
 
             debug!("Setting up vCPU[{}] entry at {:#x}", vcpu.id(), entry);
-            vcpu.setup(entry, resources.nested_paging, setup_config)?;
+            vcpu.setup(
+                entry,
+                resources.nested_paging,
+                build_config(config, &resources.memory_regions)?,
+            )?;
         }
         Ok(())
     }

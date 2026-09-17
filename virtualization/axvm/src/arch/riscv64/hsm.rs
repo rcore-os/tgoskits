@@ -2,10 +2,10 @@
 
 use axvm_types::GuestPhysAddr;
 
-use super::{AxvmRiscvVcpu, RiscvDeferredRunWork};
+use super::AxvmRiscvVcpu;
 use crate::{
     AxVmResult,
-    architecture::{BoundVcpuExit, VcpuRunAction},
+    architecture::{VcpuExitAction, VcpuRunAction},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -25,7 +25,7 @@ pub(crate) fn handle(
     vm: &crate::AxVMRef,
     vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>,
     exit: HartStart,
-) -> AxVmResult<BoundVcpuExit<RiscvDeferredRunWork>> {
+) -> AxVmResult<VcpuExitAction> {
     let vm_id = vm.id();
     let vcpu_id = vcpu.id();
     info!(
@@ -42,7 +42,7 @@ pub(crate) fn handle(
             exit.target_cpu
         );
         vcpu.set_return_value(usize::MAX);
-        return Ok(BoundVcpuExit::Complete(VcpuRunAction {
+        return Ok(VcpuExitAction::Complete(VcpuRunAction {
             waits_for_event: false,
             stop_reason: None,
             resets_vm: false,
@@ -62,7 +62,7 @@ pub(crate) fn handle(
             vcpu.set_return_value(usize::MAX);
         }
     }
-    Ok(BoundVcpuExit::Complete(VcpuRunAction {
+    Ok(VcpuExitAction::Complete(VcpuRunAction {
         waits_for_event: false,
         stop_reason: None,
         resets_vm: false,

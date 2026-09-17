@@ -40,21 +40,6 @@ impl Vcpu {
             self.virtual_hs_csrs.hvip &= !bit;
         }
     }
-
-    /// Captures host-raised virtual interrupt bits for subsequent guest binding.
-    ///
-    /// # Safety
-    /// The caller owns the current hart's HVIP bank and has established that
-    /// every pending bit belongs to this guest. It must exclude migration and
-    /// concurrent changes while attributing and capturing the pending state.
-    pub unsafe fn latch_interrupts(&mut self) {
-        let pending: usize;
-        // SAFETY: caller owns this hart's guest interrupt attribution.
-        unsafe {
-            core::arch::asm!("csrr {}, hvip", out(reg) pending, options(nostack));
-        }
-        self.virtual_hs_csrs.hvip |= pending & ((1 << 2) | (1 << 6) | (1 << 10));
-    }
 }
 
 impl GuestBinding {

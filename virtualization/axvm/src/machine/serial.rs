@@ -221,6 +221,7 @@ impl ResolvedSerialDevice {
         self.profile
     }
 
+    #[cfg(any(not(target_arch = "loongarch64"), test))]
     pub(crate) const fn firmware_binding(&self) -> &DeviceFirmwareBinding {
         &self.firmware_binding
     }

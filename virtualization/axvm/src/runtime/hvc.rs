@@ -23,6 +23,7 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HyperCallAbi {
+    #[cfg(any(not(target_arch = "aarch64"), test))]
     Generic,
     AArch64,
 }

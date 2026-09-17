@@ -194,11 +194,11 @@ impl Aarch64TimerBinding {
                 None
             }
         };
-        if let Some(activation) = activation {
-            if let Err(error) = self.complete_host_activation(activation) {
-                *self.host_activation.lock() = Some(activation);
-                return Err(error);
-            }
+        if let Some(activation) = activation
+            && let Err(error) = self.complete_host_activation(activation)
+        {
+            *self.host_activation.lock() = Some(activation);
+            return Err(error);
         }
         Ok(())
     }

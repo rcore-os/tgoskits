@@ -3,12 +3,12 @@
 use std::vec::Vec;
 
 use super::{
-    AxvmRiscvVcpu, RiscvDeferredRunWork,
+    AxvmRiscvVcpu,
     policy::{RiscvIpiCompletion, RiscvIpiRequest},
 };
 use crate::{
     AxVMRef, AxVmResult, InterruptTriggerMode,
-    architecture::BoundVcpuExit,
+    architecture::VcpuExitAction,
     irq::{
         model::{PendingVcpuInterrupt, VirtualInterruptId},
         sender::VmInterruptSender,
@@ -22,7 +22,7 @@ pub(super) fn handle(
     vm: &AxVMRef,
     vcpu: &AxVCpuRef<AxvmRiscvVcpu>,
     request: RiscvIpiRequest,
-) -> AxVmResult<BoundVcpuExit<RiscvDeferredRunWork>> {
+) -> AxVmResult<VcpuExitAction> {
     let sender = VmInterruptSender::new(vm);
     let completion = match route_hart_mask(
         request.hart_mask(),
@@ -55,7 +55,7 @@ pub(super) fn handle(
         }
     };
     vcpu.get_arch_vcpu().complete_ipi(request, completion);
-    Ok(BoundVcpuExit::Continue)
+    Ok(VcpuExitAction::Continue)
 }
 
 fn route_hart_mask<E>(
