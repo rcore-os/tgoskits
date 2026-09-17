@@ -351,10 +351,11 @@ impl TaskDeadlineQueue {
             TaskDeadlineClass::DeadlineCbs,
             TaskDeadlineClass::DeadlineZeroLag,
         ];
-        let class = self.next_class_in(&classes)?;
-        if !now.reached(self.heap(class).peek()?.deadline()) {
+        let earliest = self.next_entry_in(&classes)?;
+        if !now.reached(earliest.deadline()) {
             return None;
         }
+        let class = earliest.class();
         let mut entry = self
             .heap_mut(class)
             .pop_min()
@@ -387,21 +388,17 @@ impl TaskDeadlineQueue {
         let mut expired = 0;
 
         while processed < request.batch_limit {
-            let Some(class) = self.next_class_in(classes) else {
+            let Some(earliest) = self.next_entry_in(classes) else {
                 break;
             };
-            if !request.now.reached(
-                self.heap(class)
-                    .peek()
-                    .expect("selected timer class remains non-empty")
-                    .deadline(),
-            ) {
+            if !request.now.reached(earliest.deadline()) {
                 break;
             }
             if expired == output.len() {
                 break;
             }
 
+            let class = earliest.class();
             let entry = self
                 .heap_mut(class)
                 .pop_min()
@@ -442,26 +439,11 @@ impl TaskDeadlineQueue {
     }
 
     fn next_entry_in(&self, classes: &[TaskDeadlineClass]) -> Option<&TimerEntry> {
-        self.next_class_in(classes)
-            .and_then(|class| self.heap(class).peek())
-    }
-
-    fn next_class_in(&self, classes: &[TaskDeadlineClass]) -> Option<TaskDeadlineClass> {
         classes
             .iter()
-            .copied()
-            .filter(|class| !self.heap(*class).is_empty())
+            .filter_map(|class| self.heap(*class).peek())
             .reduce(|earliest, candidate| {
-                if self
-                    .heap(candidate)
-                    .peek()
-                    .expect("candidate timer class remains non-empty")
-                    .precedes(
-                        self.heap(earliest)
-                            .peek()
-                            .expect("selected timer class remains non-empty"),
-                    )
-                {
+                if candidate.precedes(earliest) {
                     candidate
                 } else {
                     earliest

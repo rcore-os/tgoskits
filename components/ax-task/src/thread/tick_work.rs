@@ -26,6 +26,15 @@ pub enum SchedulerTickMode {
 pub struct SchedulerTickCpuTime {
     user_ns: AtomicU64,
     system_ns: AtomicU64,
+    realtime: Option<RealtimeTickAccounting>,
+}
+
+#[derive(Debug)]
+struct RealtimeTickAccounting {
+    gate: Arc<SchedulerTickGate>,
+    period_ns: AtomicU64,
+    last_period: AtomicU64,
+    ticks: AtomicU64,
 }
 
 impl SchedulerTickCpuTime {
@@ -34,6 +43,74 @@ impl SchedulerTickCpuTime {
         Self {
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
+            realtime: None,
+        }
+    }
+
+    /// Creates tick accounting with optional continuous real-time accounting.
+    ///
+    /// The OS owns the shared gate. While enabled, actual FIFO/RR class ticks
+    /// count at most once per common monotonic-clock period, including across
+    /// migration. A real-time wake or PI deboost to Fair resets the count but
+    /// preserves deduplication.
+    /// Disabling the gate preserves previously accumulated ticks.
+    pub fn with_realtime_gate(gate: Arc<SchedulerTickGate>) -> Self {
+        Self {
+            realtime: Some(RealtimeTickAccounting {
+                gate,
+                period_ns: AtomicU64::new(0),
+                last_period: AtomicU64::new(u64::MAX),
+                ticks: AtomicU64::new(0),
+            }),
+            ..Self::new()
+        }
+    }
+
+    /// Returns continuous real-time ticks and their fixed period in nanoseconds.
+    ///
+    /// Returns `None` until the first enabled real-time tick, or when this
+    /// stream has no real-time accounting. The period cannot change during
+    /// the stream's lifetime. A wake or PI deboost may concurrently reset the count.
+    pub fn realtime_ticks(&self) -> Option<(u64, core::num::NonZeroU64)> {
+        let realtime = self.realtime.as_ref()?;
+        let period = core::num::NonZeroU64::new(realtime.period_ns.load(Ordering::Acquire))?;
+        Some((realtime.ticks.load(Ordering::Acquire), period))
+    }
+
+    pub(crate) fn sample_realtime(&self, wall_ns: u64, tick_ns: u64) {
+        let Some(realtime) = &self.realtime else {
+            return;
+        };
+        if realtime.gate.enabled_generation().is_none() {
+            return;
+        }
+        assert_ne!(tick_ns, 0, "real-time tick period must be nonzero");
+        let period = realtime.period_ns.load(Ordering::Relaxed);
+        if period == 0 {
+            realtime.period_ns.store(tick_ns, Ordering::Release);
+        } else {
+            assert_eq!(period, tick_ns, "real-time tick period changed");
+        }
+        // Owner-rq exclusion and migration handoff serialize every writer.
+        // Only the count is consumed remotely; last_period is writer-local
+        // bookkeeping represented atomically to keep the carrier safely shared.
+        let current_period = wall_ns / tick_ns;
+        if realtime.last_period.load(Ordering::Relaxed) == current_period {
+            return;
+        }
+        realtime
+            .last_period
+            .store(current_period, Ordering::Relaxed);
+        let ticks = realtime.ticks.load(Ordering::Relaxed);
+        realtime
+            .ticks
+            .store(ticks.saturating_add(1), Ordering::Release);
+    }
+
+    pub(crate) fn reset_realtime(&self) {
+        if let Some(realtime) = &self.realtime {
+            // Resetting the count does not permit a second charge in this period.
+            realtime.ticks.store(0, Ordering::Release);
         }
     }
 

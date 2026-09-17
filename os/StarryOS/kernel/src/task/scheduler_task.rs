@@ -590,7 +590,6 @@ where
     let extension = unsafe {
         scheduler::thread::ThreadExtension::new(data, &STARRY_USER_TASK_EXTENSION_OPS)
             .with_scheduler_tick_cpu_time(scheduler_tick_cpu_time)
-            .with_running_policy_applied_hook(starry_user_task_policy_applied)
             .with_scheduler_tick_work(scheduler_tick_gate, starry_user_task_scheduler_tick)
     };
     let mut builder = kernel_thread_builder(name)
@@ -728,24 +727,11 @@ static STARRY_USER_TASK_EXTENSION_OPS: scheduler::thread::ThreadExtensionOps =
         drop: starry_user_task_drop,
     };
 
-unsafe extern "Rust" fn starry_user_task_policy_applied(
-    data: usize,
-    _thread: scheduler::thread::ThreadId,
-    base_policy: scheduler::sched::SchedulePolicy,
-    observed_ns: u64,
-) {
-    let extension = unsafe { extension_data_from_raw(data) };
-    let realtime_policy = is_realtime_policy(base_policy);
-    extension
-        .thread
-        .apply_cpu_time_policy(realtime_policy, observed_ns);
-}
-
 unsafe extern "Rust" fn starry_user_task_switch_in(
     data: usize,
     thread: scheduler::thread::ThreadId,
-    base_policy: scheduler::sched::SchedulePolicy,
-    charged_runtime_ns: u64,
+    _base_policy: scheduler::sched::SchedulePolicy,
+    _charged_runtime_ns: u64,
 ) {
     let extension = unsafe { extension_data_from_raw(data) };
     // SAFETY: scheduler extension hooks run with local IRQs disabled from the
@@ -753,12 +739,7 @@ unsafe extern "Rust" fn starry_user_task_switch_in(
     unsafe {
         ax_runtime::hal::percpu::with_cpu_pin(|pin| {
             CURRENT_USER_EXTENSION.write_current(pin, data);
-            extension.thread.scheduler_switch_in(
-                thread,
-                is_realtime_policy(base_policy),
-                charged_runtime_ns,
-                pin,
-            );
+            extension.thread.scheduler_switch_in(thread, pin);
         })
         .unwrap_or_else(|_| panic!("Starry switch-in has no bound per-CPU area"));
     }
@@ -767,14 +748,14 @@ unsafe extern "Rust" fn starry_user_task_switch_in(
 unsafe extern "Rust" fn starry_user_task_switch_out(
     data: usize,
     _thread: scheduler::thread::ThreadId,
-    reason: scheduler::thread::SwitchReason,
+    _reason: scheduler::thread::SwitchReason,
 ) {
     let extension = unsafe { extension_data_from_raw(data) };
     // SAFETY: scheduler extension hooks run with local IRQs disabled from the
     // final switch baton, which pins this scoped callback to the owner CPU.
     unsafe {
         ax_runtime::hal::percpu::with_cpu_pin(|pin| {
-            extension.thread.scheduler_switch_out(reason, pin);
+            extension.thread.scheduler_switch_out(pin);
             let current = CURRENT_USER_EXTENSION.read_current(pin);
             if current != data {
                 panic!("Starry switch-out does not own the current-user slot");
@@ -867,14 +848,6 @@ fn is_starry_thread_extension(ops: &'static scheduler::thread::ThreadExtensionOp
     ptr::eq(ops, &STARRY_USER_TASK_EXTENSION_OPS)
 }
 
-const fn is_realtime_policy(policy: scheduler::sched::SchedulePolicy) -> bool {
-    matches!(
-        policy,
-        scheduler::sched::SchedulePolicy::Fifo { .. }
-            | scheduler::sched::SchedulePolicy::RoundRobin { .. }
-    )
-}
-
 unsafe fn extension_data_from_raw(data: usize) -> &'static StarryUserTaskExtension {
     // SAFETY: callers either validated `STARRY_USER_TASK_EXTENSION_OPS` or are
     // callbacks reached exclusively through that static table.
@@ -933,30 +906,6 @@ mod tests {
         assert!(matches!(
             resolve_weak_scheduler_handle(Err(scheduler::thread::TaskError::NotInitialized)),
             Err(scheduler::thread::TaskError::NotInitialized)
-        ));
-    }
-
-    #[test]
-    fn rttime_classification_includes_only_fifo_and_round_robin() {
-        let priority = scheduler::sched::RtPriority::new(1).unwrap();
-        assert!(is_realtime_policy(scheduler::sched::SchedulePolicy::fifo(
-            priority
-        )));
-        assert!(is_realtime_policy(
-            scheduler::sched::SchedulePolicy::round_robin(priority)
-        ));
-        assert!(!is_realtime_policy(
-            scheduler::sched::SchedulePolicy::default()
-        ));
-        let deadline = scheduler::sched::DeadlinePolicy::new(
-            1_000_000,
-            2_000_000,
-            3_000_000,
-            scheduler::sched::DeadlineFlags::NONE,
-        )
-        .unwrap();
-        assert!(!is_realtime_policy(
-            scheduler::sched::SchedulePolicy::Deadline(deadline,)
         ));
     }
 

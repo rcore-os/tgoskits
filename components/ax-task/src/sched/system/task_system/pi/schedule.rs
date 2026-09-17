@@ -73,6 +73,17 @@ impl TaskSystem {
         if transaction.owner() != owner {
             task_runtime::fatal_invariant(0x5049_1206, core.id().as_u64() as usize);
         }
+        if matches!(update.policy, SchedulePolicy::Fair { .. })
+            && matches!(
+                core.effective_policy_snapshot(),
+                SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
+            )
+        {
+            // Linux rt_mutex_setprio() clears the watchdog count when PI
+            // deboost leaves the RT class. Keep the period stamp so a later
+            // boost cannot charge the same physical tick twice.
+            core.reset_realtime_ticks();
+        }
         let rq_state = transaction.task_state(core.id(), &sched.placement);
         let owner_now_ns = transaction.clock().wall().as_nanos();
         let source_fair = core

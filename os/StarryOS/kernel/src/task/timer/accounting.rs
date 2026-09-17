@@ -12,39 +12,37 @@ pub struct CpuTimeAccounting {
     published_system_ns: AtomicU64,
     published_runtime_ns: AtomicU64,
     adjusted: RawSpinLock<CpuTimeHighWater>,
-    realtime_state: AtomicU8,
-    realtime: RawSpinLock<RealtimeCpuTime>,
-}
-
-const REALTIME_POLICY_ACTIVE: u8 = 1 << 0;
-const REALTIME_BASELINE_PENDING: u8 = 1 << 1;
-
-#[derive(Clone, Copy, Debug)]
-struct RealtimeCpuTime {
-    policy: bool,
-    baseline_runtime_ns: u64,
-    reset_generation: u64,
-    baseline_pending: bool,
 }
 
 impl CpuTimeAccounting {
+    #[cfg(any(test, axtest))]
     pub(crate) fn new() -> crate::StarryResult<Self> {
-        let scheduler_tick_cpu_time =
-            crate::task::allocation::try_arc(scheduler::runtime::service::SchedulerTickCpuTime::new())?;
+        Self::from_tick_accounting(scheduler::runtime::service::SchedulerTickCpuTime::new())
+    }
+
+    pub(crate) fn with_realtime_gate(
+        gate: Arc<scheduler::runtime::service::SchedulerTickGate>,
+    ) -> crate::StarryResult<Self> {
+        Self::from_tick_accounting(
+            scheduler::runtime::service::SchedulerTickCpuTime::with_realtime_gate(gate),
+        )
+    }
+
+    fn from_tick_accounting(
+        accounting: scheduler::runtime::service::SchedulerTickCpuTime,
+    ) -> crate::StarryResult<Self> {
+        let scheduler_tick_cpu_time = crate::task::allocation::try_arc(accounting)?;
         Ok(Self {
             scheduler_tick_cpu_time,
             published_user_ns: AtomicU64::new(0),
             published_system_ns: AtomicU64::new(0),
             published_runtime_ns: AtomicU64::new(0),
             adjusted: RawSpinLock::new(CpuTimeHighWater::ZERO),
-            realtime_state: AtomicU8::new(0),
-            realtime: RawSpinLock::new(RealtimeCpuTime {
-                policy: false,
-                baseline_runtime_ns: 0,
-                reset_generation: 0,
-                baseline_pending: false,
-            }),
         })
+    }
+
+    pub(crate) fn realtime_ticks(&self) -> Option<(u64, core::num::NonZeroU64)> {
+        self.scheduler_tick_cpu_time.realtime_ticks()
     }
 
     /// Returns the current user time and system time as a tuple of `TimeValue`.
@@ -68,35 +66,6 @@ impl CpuTimeAccounting {
         Arc::clone(&self.scheduler_tick_cpu_time)
     }
 
-    pub(crate) fn scheduler_switch_in(
-        &self,
-        realtime_policy: bool,
-        runtime_ns: impl FnOnce() -> u64,
-    ) {
-        let stable_state = u8::from(realtime_policy) * REALTIME_POLICY_ACTIVE;
-        if self.realtime_state.load(Ordering::Acquire) == stable_state {
-            return;
-        }
-
-        let mut state = self.realtime.lock();
-        state.policy = realtime_policy;
-        state.baseline_runtime_ns = runtime_ns();
-        state.baseline_pending = false;
-        self.realtime_state.store(stable_state, Ordering::Release);
-    }
-
-    pub(crate) fn scheduler_switch_out(&self, reason: scheduler::thread::SwitchReason) {
-        if reason == scheduler::thread::SwitchReason::Blocked
-            && self.realtime_state.load(Ordering::Acquire) & REALTIME_POLICY_ACTIVE != 0
-        {
-            self.reset_realtime_continuous();
-        }
-    }
-
-    pub(crate) fn apply_realtime_policy(&self, realtime_policy: bool) {
-        self.set_realtime_policy(realtime_policy);
-    }
-
     /// Samples the scheduler-tick carrier through the IRQ observation boundary.
     ///
     /// This runs from deferred task work, not hard IRQ. It reads the owner
@@ -105,47 +74,6 @@ impl CpuTimeAccounting {
     /// IRQ-off scheduler switch writer.
     pub(crate) fn sample_scheduler_tick(&self, runtime_ns: u64) -> CpuTimeDelta {
         self.publish_snapshot_delta(self.snapshot(runtime_ns))
-    }
-
-    #[cfg(any(test, axtest))]
-    fn scheduler_switch_in_at(&self, realtime_policy: bool, runtime_ns: u64) {
-        self.scheduler_switch_in(realtime_policy, || runtime_ns);
-    }
-
-    #[cfg(any(test, axtest))]
-    fn scheduler_switch_out_at(&self, reason: scheduler::thread::SwitchReason, runtime_ns: u64) {
-        self.scheduler_switch_out(reason);
-        let _ = self.snapshot(runtime_ns);
-    }
-
-    #[cfg(all(test, not(axtest)))]
-    fn set_realtime_policy_at(&self, realtime_policy: bool, runtime_ns: u64) {
-        self.set_realtime_policy(realtime_policy);
-        let _ = self.snapshot(runtime_ns);
-    }
-
-    fn set_realtime_policy(&self, realtime_policy: bool) {
-        let published = self.realtime_state.load(Ordering::Acquire);
-        if (published & REALTIME_POLICY_ACTIVE != 0) == realtime_policy {
-            return;
-        }
-        let mut state = self.realtime.lock();
-        if state.policy == realtime_policy {
-            return;
-        }
-        let leaving_realtime = state.policy && !realtime_policy;
-        state.policy = realtime_policy;
-        state.baseline_pending = true;
-        if leaving_realtime {
-            state.reset_generation = state
-                .reset_generation
-                .checked_add(1)
-                .expect("RTTIME generation overflow");
-        }
-        self.realtime_state.store(
-            (u8::from(realtime_policy) * REALTIME_POLICY_ACTIVE) | REALTIME_BASELINE_PENDING,
-            Ordering::Release,
-        );
     }
 
     /// Returns task CPU time not yet published into the process aggregate.
@@ -164,41 +92,12 @@ impl CpuTimeAccounting {
         }
     }
 
-    fn reset_realtime_continuous(&self) {
-        let mut state = self.realtime.lock();
-        state.baseline_pending = true;
-        state.reset_generation = state
-            .reset_generation
-            .checked_add(1)
-            .expect("RTTIME generation overflow");
-        self.realtime_state.store(
-            REALTIME_POLICY_ACTIVE | REALTIME_BASELINE_PENDING,
-            Ordering::Release,
-        );
-    }
-
     pub(super) fn snapshot(&self, runtime_ns: u64) -> CpuTimeSnapshot {
         let tick = self.scheduler_tick_cpu_time.snapshot();
-        let mut realtime = self.realtime.lock();
-        if realtime.baseline_pending {
-            realtime.baseline_runtime_ns = runtime_ns;
-            realtime.baseline_pending = false;
-            self.realtime_state.store(
-                u8::from(realtime.policy) * REALTIME_POLICY_ACTIVE,
-                Ordering::Release,
-            );
-        }
         CpuTimeSnapshot {
             raw_user_ns: tick.user_ns(),
             raw_system_ns: tick.system_ns(),
             runtime_ns,
-            realtime_continuous_ns: if realtime.policy {
-                runtime_ns.saturating_sub(realtime.baseline_runtime_ns)
-            } else {
-                0
-            },
-            realtime_reset_generation: realtime.reset_generation,
-            realtime_policy: realtime.policy,
         }
     }
 
@@ -247,9 +146,6 @@ pub(super) struct CpuTimeSnapshot {
     pub(super) raw_user_ns: u64,
     pub(super) raw_system_ns: u64,
     pub(super) runtime_ns: u64,
-    pub(super) realtime_continuous_ns: u64,
-    pub(super) realtime_reset_generation: u64,
-    pub(super) realtime_policy: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -440,14 +336,9 @@ impl ProcessCpuTimeSnapshot {
 pub(super) fn process_cpu_high_water_preserves_runtime_total_for_test() -> bool {
     let process = ProcessCpuTimeAccounting::new();
     let accounting = CpuTimeAccounting::new().unwrap();
-    process.record_transition(|| {
-        accounting.scheduler_switch_in_at(false, 0);
-        CpuTimeDelta::ZERO
-    });
 
     let first =
         process.snapshot_at_with_live(10, &mut |runtime| accounting.unpublished_delta(runtime));
-    accounting.scheduler_switch_out_at(scheduler::thread::SwitchReason::Preempted, 15);
     process.record_transition(|| accounting.publish_committed_delta(15));
     let second = process.snapshot_committed_at(15);
 

@@ -1,44 +1,15 @@
-#[cfg(all(test, not(axtest)))]
-mod tests {
-    use super::*;
+use super::*;
 
-    #[test]
-    fn rttime_watchdog_uses_exact_limits_and_one_second_soft_intervals() {
-        let mut watchdog = RttimeWatchdog::new();
-        assert_eq!(watchdog.check(9, 0, 10, u64::MAX), RttimeLimitAction::None);
-        assert_eq!(watchdog.check(10, 0, 10, u64::MAX), RttimeLimitAction::Soft);
-        assert_eq!(
-            watchdog.check(1_000_009, 0, 10, u64::MAX),
-            RttimeLimitAction::None
-        );
-        assert_eq!(
-            watchdog.check(1_000_010, 0, 10, u64::MAX),
-            RttimeLimitAction::Soft
-        );
-
-        let mut hard_watchdog = RttimeWatchdog::new();
-        assert_eq!(
-            hard_watchdog.check(19, 0, u64::MAX, 20),
-            RttimeLimitAction::None
-        );
-        assert_eq!(
-            hard_watchdog.check(20, 0, u64::MAX, 20),
-            RttimeLimitAction::Hard
-        );
-
-        let accounting = CpuTimeAccounting::new().unwrap();
-        let mut watchdog = RttimeWatchdog::new();
-        assert_eq!(
-            watchdog.check_snapshot(accounting.snapshot(0), 0, 0),
-            RttimeLimitAction::None
-        );
-    }
-
-    #[test]
-    fn rttime_reset_generation_rearms_the_soft_limit() {
-        let mut watchdog = RttimeWatchdog::new();
-        assert_eq!(watchdog.check(10, 0, 10, u64::MAX), RttimeLimitAction::Soft);
-        assert_eq!(watchdog.check(0, 1, 10, u64::MAX), RttimeLimitAction::None);
-        assert_eq!(watchdog.check(10, 1, 10, u64::MAX), RttimeLimitAction::Soft);
-    }
+#[axtest::axtest]
+fn tick_watchdog_rounding_and_shared_threshold_progression() {
+    let period = NonZeroU64::new(1_000_000).unwrap();
+    assert_eq!(check_realtime_tick_limit(2, period, 1_500, 5_000), RttimeLimitAction::None);
+    assert_eq!(check_realtime_tick_limit(3, period, 1_500, 5_000), RttimeLimitAction::Soft);
+    // The process soft limit has advanced after the first signal. The hard
+    // limit now controls the rounded tick threshold and must win next.
+    assert_eq!(check_realtime_tick_limit(5, period, 1_001_500, 5_000), RttimeLimitAction::None);
+    assert_eq!(check_realtime_tick_limit(6, period, 1_001_500, 5_000), RttimeLimitAction::Hard);
+    assert_eq!(check_realtime_tick_limit(0, period, 0, u64::MAX), RttimeLimitAction::None);
+    assert_eq!(check_realtime_tick_limit(1, period, 0, u64::MAX), RttimeLimitAction::Soft);
+    assert_eq!(check_realtime_tick_limit(u64::MAX, period, u64::MAX, u64::MAX), RttimeLimitAction::None);
 }

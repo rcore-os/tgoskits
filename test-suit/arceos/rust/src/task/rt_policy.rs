@@ -1,3 +1,5 @@
+mod tick_accounting;
+
 use std::{
     hint,
     sync::{
@@ -313,6 +315,7 @@ pub fn run() -> crate::TestResult {
         cpu_count >= 3,
         "task-rt-policy requires at least three CPUs"
     );
+    tick_accounting::run(cpu_count);
     higher_priority_wake_preempts_current();
     preempted_rt_donor_is_pushed_to_a_lower_priority_cpu(cpu_count);
     promoted_fifo_keeps_running_after_one_period()?;

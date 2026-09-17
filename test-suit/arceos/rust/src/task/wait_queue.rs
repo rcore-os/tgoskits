@@ -19,6 +19,7 @@ pub fn run() -> crate::TestResult {
     test_wake_before_admission();
     lifecycle::run();
     test_wait();
+    test_deadline_wait();
     test_wait_timeout_until();
     test_release_all_runtime_tasks();
     Ok(())
@@ -232,4 +233,70 @@ fn test_wake_before_admission() {
     assert_eq!(published.join().unwrap(), 0);
     ax_std::os::arceos::task::thread::current::set_current_thread_affinity(old_affinity).unwrap();
     println!("task_wait_queue: pre-admission wake isolation OK");
+}
+
+fn test_deadline_wait() {
+    use std::time::Instant;
+
+    use ax_std::os::arceos::task::{
+        sched::{DeadlineFlags, DeadlinePolicy, SchedulePolicy},
+        thread::ThreadState,
+    };
+
+    let queue = Arc::new(AxWaitQueueHandle::new());
+    let granted = Arc::new(AtomicUsize::new(0));
+    let completed = Arc::new(AtomicUsize::new(0));
+    let worker_queue = Arc::clone(&queue);
+    let worker_granted = Arc::clone(&granted);
+    let worker_completed = Arc::clone(&completed);
+    let policy = SchedulePolicy::deadline(
+        DeadlinePolicy::new(20_000_000, 100_000_000, 100_000_000, DeadlineFlags::NONE)
+            .expect("Deadline wait budget must be admissible"),
+    );
+    let worker = ax_std::os::arceos::thread::builder("deadline-wait".into())
+        .stack_size(ax_std::os::arceos::thread::default_task_stack_size())
+        .policy(policy)
+        .spawn(move || {
+            for generation in 1..=2 {
+                let timed_out = api::ax_wait_queue_wait_until(
+                    worker_queue.as_ref(),
+                    || worker_granted.load(Ordering::Acquire) >= generation,
+                    None,
+                );
+                assert!(
+                    !timed_out,
+                    "an untimed Deadline wait must resume from its grant"
+                );
+                worker_completed.store(generation, Ordering::Release);
+            }
+        })
+        .expect("Deadline waiter must start");
+
+    for generation in 1..=2 {
+        let limit = Instant::now() + Duration::from_secs(5);
+        while worker.state() != ThreadState::Blocked
+            || completed.load(Ordering::Acquire) != generation - 1
+        {
+            assert!(Instant::now() < limit, "Deadline waiter did not block");
+            thread::yield_now();
+        }
+        granted.store(generation, Ordering::Release);
+        assert_eq!(api::ax_wait_queue_wake(queue.as_ref(), 1), 1);
+        while completed.load(Ordering::Acquire) != generation {
+            assert!(Instant::now() < limit, "Deadline waiter did not resume");
+            thread::yield_now();
+        }
+    }
+    assert_eq!(worker.wait().expect("Deadline waiter must exit"), 0);
+    let limit = Instant::now() + Duration::from_secs(5);
+    while !worker.execution_reclaimed() {
+        assert!(
+            Instant::now() < limit,
+            "Deadline execution was not reclaimed"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(worker.join().expect("Deadline waiter must be reaped"), 0);
+    assert_eq!(api::ax_wait_queue_wake(queue.as_ref(), u32::MAX), 0);
+    println!("task_wait_queue: Deadline block/wake/reclaim OK");
 }

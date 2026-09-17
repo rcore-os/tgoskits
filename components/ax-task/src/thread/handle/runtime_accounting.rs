@@ -34,6 +34,18 @@ impl ThreadCore {
         }
     }
 
+    pub(crate) fn sample_realtime_tick(&self, wall_ns: u64, tick_ns: u64) {
+        if let Some(accounting) = &self.scheduler_tick_cpu_time {
+            accounting.sample_realtime(wall_ns, tick_ns);
+        }
+    }
+
+    pub(crate) fn reset_realtime_ticks(&self) {
+        if let Some(accounting) = &self.scheduler_tick_cpu_time {
+            accounting.reset_realtime();
+        }
+    }
+
     pub(crate) fn transition_state(&self, next: ThreadState) -> Result<(), TaskError> {
         self.state.transition(next)?;
         if next == ThreadState::Exited {

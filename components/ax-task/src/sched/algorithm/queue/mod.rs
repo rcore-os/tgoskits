@@ -176,14 +176,6 @@ impl RunQueue {
         self.publication_dirty = true;
     }
 
-    fn pushable_publication_state(&self) -> (bool, bool, bool) {
-        (
-            self.rt.has_pushable(),
-            self.deadline.has_pushable(),
-            self.fair.has_migratable(),
-        )
-    }
-
     pub(crate) const fn current(&self) -> Option<&CurrentDispatch> {
         self.current.as_ref()
     }

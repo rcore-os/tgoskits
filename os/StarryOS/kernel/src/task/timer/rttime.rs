@@ -1,81 +1,29 @@
-use super::{accounting::CpuTimeSnapshot, *};
+use core::num::NonZeroU64;
 
-pub struct RttimeWatchdog {
-    reset_generation: u64,
+/// Checks Linux's RT watchdog tick threshold before deferred signal delivery.
+pub(crate) fn check_realtime_tick_limit(
+    ticks: u64,
+    period_ns: NonZeroU64,
     soft_limit_us: u64,
-    next_signal_us: u64,
-}
-
-impl RttimeWatchdog {
-    pub(crate) const fn new() -> Self {
-        Self {
-            reset_generation: 0,
-            soft_limit_us: u64::MAX,
-            next_signal_us: u64::MAX,
-        }
+    hard_limit_us: u64,
+) -> RttimeLimitAction {
+    if soft_limit_us == u64::MAX {
+        return RttimeLimitAction::None;
     }
-
-    pub(crate) fn check_limit_at(
-        &mut self,
-        accounting: &CpuTimeAccounting,
-        runtime_ns: u64,
-        soft_limit_us: u64,
-        hard_limit_us: u64,
-    ) -> RttimeLimitAction {
-        self.check_snapshot(
-            accounting.snapshot(runtime_ns),
-            soft_limit_us,
-            hard_limit_us,
-        )
+    let period_ns = u128::from(period_ns.get());
+    let threshold_ns = u128::from(soft_limit_us.min(hard_limit_us)) * 1_000;
+    // task_tick_rt() only arms the deferred check after timeout exceeds the
+    // rounded-up limit. Missed physical periods do not synthesize CPU ticks.
+    if u128::from(ticks) <= threshold_ns.div_ceil(period_ns) {
+        return RttimeLimitAction::None;
     }
-
-    fn check_snapshot(
-        &mut self,
-        snapshot: CpuTimeSnapshot,
-        soft_limit_us: u64,
-        hard_limit_us: u64,
-    ) -> RttimeLimitAction {
-        if !snapshot.realtime_policy {
-            self.reset(snapshot.realtime_reset_generation, soft_limit_us);
-            return RttimeLimitAction::None;
-        }
-        self.check(
-            snapshot.realtime_continuous_ns / 1_000,
-            snapshot.realtime_reset_generation,
-            soft_limit_us,
-            hard_limit_us,
-        )
-    }
-
-    fn check(
-        &mut self,
-        runtime_us: u64,
-        reset_generation: u64,
-        soft_limit_us: u64,
-        hard_limit_us: u64,
-    ) -> RttimeLimitAction {
-        if hard_limit_us != u64::MAX && runtime_us >= hard_limit_us {
-            return RttimeLimitAction::Hard;
-        }
-        if soft_limit_us == u64::MAX {
-            self.reset(reset_generation, soft_limit_us);
-            return RttimeLimitAction::None;
-        }
-        if self.reset_generation != reset_generation || self.soft_limit_us != soft_limit_us {
-            self.reset(reset_generation, soft_limit_us);
-        }
-        if runtime_us >= self.next_signal_us {
-            self.next_signal_us = self.next_signal_us.saturating_add(1_000_000);
-            RttimeLimitAction::Soft
-        } else {
-            RttimeLimitAction::None
-        }
-    }
-
-    fn reset(&mut self, reset_generation: u64, soft_limit_us: u64) {
-        self.reset_generation = reset_generation;
-        self.soft_limit_us = soft_limit_us;
-        self.next_signal_us = soft_limit_us;
+    let runtime_us = u128::from(ticks) * period_ns / 1_000;
+    if hard_limit_us != u64::MAX && runtime_us >= u128::from(hard_limit_us) {
+        RttimeLimitAction::Hard
+    } else if runtime_us >= u128::from(soft_limit_us) {
+        RttimeLimitAction::Soft
+    } else {
+        RttimeLimitAction::None
     }
 }
 
@@ -86,4 +34,5 @@ pub(crate) enum RttimeLimitAction {
     Hard,
 }
 
-include!("rttime/tests.rs");
+#[cfg(all(test, axtest))]
+mod tests;

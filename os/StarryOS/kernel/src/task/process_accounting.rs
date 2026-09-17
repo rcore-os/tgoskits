@@ -29,6 +29,7 @@ pub(super) struct ProcessAccountingState {
     #[cfg(target_arch = "aarch64")]
     perf_scheduler_tick_users: AtomicUsize,
     scheduler_tick_gate: Arc<SchedulerTickGate>,
+    realtime_tick_gate: Arc<SchedulerTickGate>,
     /// Serializes source observation with scheduler gate publication.
     scheduler_tick_publish: IrqMutex<()>,
     posix_timers: Arc<PosixTimerTable>,
@@ -44,6 +45,7 @@ impl ProcessAccountingState {
             #[cfg(target_arch = "aarch64")]
             perf_scheduler_tick_users: AtomicUsize::new(0),
             scheduler_tick_gate: Arc::new(SchedulerTickGate::new()),
+            realtime_tick_gate: Arc::new(SchedulerTickGate::new()),
             scheduler_tick_publish: IrqMutex::new(()),
             posix_timers: Arc::new(PosixTimerTable::default()),
         }
@@ -61,6 +63,7 @@ impl ProcessData {
                     & CPU_INTERVAL_TIMER_MASK
                     != 0;
                 let has_rttime_watchdog = self.rlimit_current(RLIMIT_RTTIME) != u64::MAX;
+                self.accounting.realtime_tick_gate.set_enabled(has_rttime_watchdog);
                 let enabled = has_cpu_interval_timer || has_rttime_watchdog;
                 #[cfg(target_arch = "aarch64")]
                 let enabled = enabled
@@ -84,6 +87,11 @@ impl ProcessData {
 
     pub(crate) fn publish_rttime_watchdog_limit(&self) {
         self.refresh_scheduler_tick_gate();
+    }
+
+    pub(crate) fn realtime_tick_gate(&self) -> Arc<SchedulerTickGate> {
+        self.refresh_scheduler_tick_gate();
+        Arc::clone(&self.accounting.realtime_tick_gate)
     }
 
     pub(crate) fn scheduler_tick_gate(&self) -> Arc<SchedulerTickGate> {

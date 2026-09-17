@@ -112,6 +112,7 @@ impl TaskSystem {
             return Err(TaskError::NoRunnableThread);
         };
         let charge = transaction.task_tick_current_until(reclaimed_ns, tick_ns);
+        sample_current_realtime_tick(&transaction, tick_ns);
         let rq_observation = transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
         transaction.commit();
         Ok((
@@ -193,6 +194,7 @@ impl TaskSystem {
             return Err(TaskError::NoRunnableThread);
         };
         let charge = transaction.task_tick_and_clock_event_current_until(reclaimed_ns, tick_ns);
+        sample_current_realtime_tick(&transaction, tick_ns);
         let rq_observation = transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
         transaction.commit();
         Ok((
@@ -214,5 +216,17 @@ impl TaskSystem {
             .remote()
             .lock_run_queue(RunQueueGuardSource::RtAccounting);
         Ok(!run_queue.rt_is_throttled() || run_queue.has_exempt_rt())
+    }
+}
+
+fn sample_current_realtime_tick(transaction: &OwnerRqTxn<'_>, tick_ns: u64) {
+    if transaction.current().is_some_and(|current| {
+        matches!(
+            current.schedule_policy_ref(),
+            SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
+        )
+    }) && let Some(core) = transaction.current_core_ref()
+    {
+        core.sample_realtime_tick(transaction.clock().wall().as_nanos(), tick_ns);
     }
 }

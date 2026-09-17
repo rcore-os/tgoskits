@@ -280,20 +280,25 @@ impl RunQueue {
     }
 
     pub(super) fn refresh_class_pushable(&mut self, thread: ThreadId, current: Option<ThreadId>) {
-        let previous = self.pushable_publication_state();
-        match self.membership_class(thread) {
+        let changed = match self.membership_class(thread) {
             Some(QueueMembershipClass::Deadline(_)) => {
-                self.deadline.refresh_pushable(thread, current)
+                let previous = self.deadline.has_pushable();
+                self.deadline.refresh_pushable(thread, current);
+                self.deadline.has_pushable() != previous
             }
-            Some(QueueMembershipClass::Realtime(key)) => self.rt.refresh_pushable(key, current),
+            Some(QueueMembershipClass::Realtime(key)) => {
+                let previous = self.rt.has_pushable();
+                self.rt.refresh_pushable(key, current);
+                self.rt.has_pushable() != previous
+            }
             Some(
                 QueueMembershipClass::Stop
                 | QueueMembershipClass::DeadlineThrottled
                 | QueueMembershipClass::Fair,
             )
-            | None => {}
-        }
-        if self.pushable_publication_state() != previous {
+            | None => false,
+        };
+        if changed {
             self.mark_publication_dirty();
         }
     }

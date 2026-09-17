@@ -13,7 +13,7 @@ use starry_signal::{SignalSet, Signo, api::ThreadSignalManager};
 
 use super::{
     CpuTimeAccounting, Cred, ExitPathLease, PidIdentity, PidNamespaceRef, PidRoleLease,
-    ProcessData, ROOT_PID_NS, RttimeWatchdog, SeccompDecision, SeccompState, SeccompStateStore,
+    ProcessData, ROOT_PID_NS, SeccompDecision, SeccompState, SeccompStateStore,
     SockFilter, Tid, TidNumber, UserTaskRef,
     bounded_stack::BoundedStack,
     futex::ThreadWaitState,
@@ -125,17 +125,17 @@ impl ThreadScope {
     }
 }
 
-/// Runtime accounting that follows scheduler switch callbacks.
+/// CPU accounting retained for the lifetime of the thread.
 struct ThreadAccounting {
     cpu_time: CpuTimeAccounting,
-    rttime: Mutex<RttimeWatchdog>,
 }
 
 impl ThreadAccounting {
-    fn new() -> crate::StarryResult<Self> {
+    fn new(
+        gate: Arc<ax_runtime::task::runtime::service::SchedulerTickGate>,
+    ) -> crate::StarryResult<Self> {
         Ok(Self {
-            cpu_time: CpuTimeAccounting::new()?,
-            rttime: Mutex::new(RttimeWatchdog::new()),
+            cpu_time: CpuTimeAccounting::with_realtime_gate(gate)?,
         })
     }
 }
@@ -339,7 +339,7 @@ pub struct Thread {
     security: ThreadSecurity,
     trace: ThreadTrace,
     /// Per-task software perf bindings. Inherited tasks own slice-local state.
-    pub(crate) perf_sw_counters: Arc<IrqMutex<crate::perf::sw::SwTaskContext>>,
+    pub(crate) perf_sw_counters: Arc<crate::perf::sw::SwTaskContext>,
     /// Last CPU observed by the software perf scheduler hook.
     pub(crate) perf_sw_last_cpu: AtomicU32,
 }
@@ -428,6 +428,7 @@ impl Thread {
             .get();
         let process_signal = proc_data.signal.clone();
         let process_identity = proc_data.identity();
+        let accounting = ThreadAccounting::new(proc_data.realtime_tick_gate())?;
         let thread = Self {
             identity: ThreadIdentity::new(),
             pid: IrqMutex::new(ThreadPidOwnership {
@@ -436,13 +437,13 @@ impl Thread {
             }),
             proc_data,
             scope: ThreadScope::new(scope),
-            accounting: ThreadAccounting::new()?,
+            accounting,
             lifecycle: ThreadLifecycle::new()?,
             work: ThreadWork::new(),
             wait: ThreadWaitState::new(),
             security: ThreadSecurity::new(parent_cred)?,
             trace: ThreadTrace::new(),
-            perf_sw_counters: super::allocation::try_arc(IrqMutex::new(Default::default()))?,
+            perf_sw_counters: super::allocation::try_arc(Default::default())?,
             perf_sw_last_cpu: AtomicU32::new(crate::perf::sw::CPU_UNSET),
             // Register with the process only after every private allocation succeeds.
             signals: ThreadSignals::new(tid, process_signal, signal_mask)?,
@@ -628,14 +629,9 @@ impl Thread {
     pub(super) fn scheduler_switch_in(
         &self,
         id: ax_std::os::arceos::task::thread::ThreadId,
-        realtime_policy: bool,
-        charged_runtime_ns: u64,
         cpu_pin: &CpuPin<'_>,
     ) {
         debug_assert!(self.validate_scheduler_id(id).is_ok());
-        self.accounting
-            .cpu_time
-            .scheduler_switch_in(realtime_policy, || charged_runtime_ns);
         // SAFETY: the scheduler switch baton pins this CPU and retains the
         // thread-owned ProcessData until the matching switch-out callback.
         unsafe { self.scope.activate_pinned(cpu_pin) };
@@ -646,7 +642,6 @@ impl Thread {
 
     pub(super) fn scheduler_switch_out(
         &self,
-        reason: ax_std::os::arceos::task::thread::SwitchReason,
         cpu_pin: &CpuPin<'_>,
     ) {
         #[cfg(target_arch = "aarch64")]
@@ -655,13 +650,6 @@ impl Thread {
         // SAFETY: switch-in established exactly one activation for this task,
         // and the scheduler baton still pins the same CPU during switch-out.
         unsafe { self.scope.deactivate_pinned(cpu_pin) };
-        self.accounting.cpu_time.scheduler_switch_out(reason);
-    }
-
-    pub(crate) fn apply_cpu_time_policy(&self, realtime_policy: bool, _observed_ns: u64) {
-        self.accounting
-            .cpu_time
-            .apply_realtime_policy(realtime_policy);
     }
 
     pub(crate) fn cpu_time_output(&self) -> (TimeValue, TimeValue) {
@@ -684,10 +672,6 @@ impl Thread {
 
     pub(crate) fn cpu_time(&self) -> &CpuTimeAccounting {
         &self.accounting.cpu_time
-    }
-
-    pub(crate) fn rttime(&self) -> &Mutex<RttimeWatchdog> {
-        &self.accounting.rttime
     }
 
     /// Returns the clear-child-TID address.

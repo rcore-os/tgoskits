@@ -451,23 +451,37 @@ pub(crate) fn check_signals_with_outcome(
 }
 
 pub(super) fn queue_rttime_limit_signal_from_scheduler_tick(thr: &Thread, _observed_ns: u64) {
-    let limit = thr.proc_data.rlimit(RLIMIT_RTTIME);
+    if thr.proc_data.rlimit_current(RLIMIT_RTTIME) == u64::MAX {
+        return;
+    }
+    // Serialize the threshold decision and shared soft-limit advance with
+    // prlimit writers and watchdogs running for other threads in this group.
+    let update = thr.proc_data.rlimit_update(RLIMIT_RTTIME);
+    let limit = update.snapshot();
     let (soft_limit_us, hard_limit_us) = (limit.current, limit.max);
     if soft_limit_us == u64::MAX {
         return;
     }
-    let action = thr.rttime().lock().check_limit_at(
-        thr.cpu_time(),
-        thr.scheduler_runtime_ns(),
-        soft_limit_us,
-        hard_limit_us,
-    );
+    let Some((ticks, period)) = thr.cpu_time().realtime_ticks() else {
+        return;
+    };
+    let action = super::check_realtime_tick_limit(ticks, period, soft_limit_us, hard_limit_us);
     let signo = match action {
         RttimeLimitAction::None => return,
-        RttimeLimitAction::Soft => Signo::SIGXCPU,
-        RttimeLimitAction::Hard => Signo::SIGKILL,
+        RttimeLimitAction::Soft => {
+            update.replace(super::Rlimit::new(
+                soft_limit_us.wrapping_add(1_000_000),
+                hard_limit_us,
+            ));
+            Signo::SIGXCPU
+        }
+        RttimeLimitAction::Hard => {
+            drop(update);
+            Signo::SIGKILL
+        }
     };
-    queue_thread_signal(thr, SignalInfo::new_kernel(signo));
+    // Resource-limit locks must not cover signal publication or task wakeup.
+    let _ = send_signal_to_process_data(&thr.proc_data, Some(SignalInfo::new_kernel(signo)));
 }
 
 /// Notify a process's parent of a job-control state change by sending it

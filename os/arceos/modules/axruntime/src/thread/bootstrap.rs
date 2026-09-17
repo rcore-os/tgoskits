@@ -375,7 +375,9 @@ mod tests {
     #[test]
     fn scheduler_remote_handle_uses_pre_pin_current_cpu_area() {
         std::thread::spawn(|| {
-            const TEST_REMOTE_HANDLE: usize = 0x1000;
+            let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+            let expected = system.runtime_cpu_remote_handle(CpuId::new(0));
+            assert!(!expected.is_none());
 
             ax_hal::percpu::initialize_host_test_cpu();
             // SAFETY: this fresh host thread models one offline, non-migrating
@@ -383,7 +385,7 @@ mod tests {
             unsafe {
                 with_current_cpu_pin(|pin| {
                     CPU_REMOTE_HANDLE.with_current(pin, |slot| {
-                        slot.call_once(|| TEST_REMOTE_HANDLE);
+                        slot.call_once(|| expected.into_raw());
                     });
                 })
             };
@@ -392,7 +394,7 @@ mod tests {
             // SAFETY: the modeled CPU cannot migrate, switch context, or take
             // interrupts for the complete observation.
             let handle = unsafe { scheduler_current_cpu_remote_handle() };
-            assert_eq!(handle.into_raw(), TEST_REMOTE_HANDLE);
+            assert_eq!(handle, expected);
             assert_eq!(
                 cpu_local::host_test::register_read_counts(),
                 cpu_local::host_test::RegisterReadCounts {

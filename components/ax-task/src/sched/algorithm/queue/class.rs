@@ -129,7 +129,14 @@ impl SchedulerClass {
                 }
                 QueueMembershipClass::Deadline(run_queue.deadline.insert(thread))
             }
-            Self::Realtime => QueueMembershipClass::Realtime(run_queue.rt.enqueue(thread, reason)),
+            Self::Realtime => {
+                // RT insertion is infallible after the common duplicate check.
+                // Policy changes, migration and requeue do not reset runtime.
+                if reason == EnqueueReason::Wake {
+                    thread.core.reset_realtime_ticks();
+                }
+                QueueMembershipClass::Realtime(run_queue.rt.enqueue(thread, reason))
+            }
             Self::Fair => {
                 run_queue.fair.insert(thread);
                 QueueMembershipClass::Fair

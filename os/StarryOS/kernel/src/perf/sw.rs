@@ -38,17 +38,55 @@ static SYSTEM_COUNTERS: LazyInit<IrqMutex<Vec<Arc<SwSystemCounter>>>> = LazyInit
 // transaction lock per CPU, including members reached through another FD.
 static SYSTEM_CONTEXTS: LazyInit<Vec<Mutex<()>>> = LazyInit::new();
 
-/// Scheduler and task-context controls serialize on this per-thread boundary.
-/// Even without an event, switch hooks keep the current running CPU published,
-/// so a remote opener can start a software clock in the existing interval.
+/// Running-state publication transfers permanently to the context lock on
+/// first observation. Until then, no counter can consume the published CPU.
 #[derive(Default)]
 pub(crate) struct SwTaskContext {
+    unobserved_cpu: AtomicUsize,
+    state: IrqMutex<SwTaskState>,
+}
+
+#[derive(Default)]
+struct SwTaskState {
     counters: Vec<Arc<SwPerTaskCounter>>,
     running_cpu: Option<usize>,
     closed: bool,
 }
 
 impl SwTaskContext {
+    const OBSERVED: usize = usize::MAX;
+
+    fn publish_unobserved(&self, cpu: Option<usize>) -> bool {
+        let previous = self.unobserved_cpu.load(Ordering::Relaxed);
+        if previous == Self::OBSERVED {
+            return false;
+        }
+        let next = cpu.map_or(0, |cpu| {
+            cpu.checked_add(1)
+                .filter(|encoded| *encoded != Self::OBSERVED)
+                .expect("a runtime CPU must fit the software perf context")
+        });
+        // One modification order decides whether switch publication or the
+        // first observer owns this transition. A failed CAS enters the lock;
+        // it must never overwrite the permanent OBSERVED marker.
+        self.unobserved_cpu
+            .compare_exchange(previous, next, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+    }
+
+    fn lock(&self) -> crate::sync::IrqMutexGuard<'_, SwTaskState> {
+        let mut state = self.state.lock();
+        if self.unobserved_cpu.load(Ordering::Relaxed) != Self::OBSERVED {
+            let previous = self.unobserved_cpu.swap(Self::OBSERVED, Ordering::AcqRel);
+            // A switch whose CAS won is included in this value. If the
+            // observer won, that switch must wait for this same state lock.
+            state.running_cpu = previous.checked_sub(1);
+        }
+        state
+    }
+}
+
+impl SwTaskState {
     fn attach(&mut self, counter: Arc<SwPerTaskCounter>) -> StarryResult<()> {
         if self.closed {
             return Err(StarryError::NoSuchProcess);
@@ -249,7 +287,7 @@ impl SwEventState {
 #[derive(Debug)]
 pub struct SwPerTaskCounter {
     state: Arc<SwEventState>,
-    context: Weak<IrqMutex<SwTaskContext>>,
+    context: Weak<SwTaskContext>,
     owner: PidIdentityId,
     cpu_filter: Option<usize>,
     enabled: AtomicBool,
@@ -267,7 +305,7 @@ pub struct SwPerTaskCounter {
 impl SwPerTaskCounter {
     fn new(
         state: Arc<SwEventState>,
-        context: Weak<IrqMutex<SwTaskContext>>,
+        context: Weak<SwTaskContext>,
         owner: PidIdentityId,
         cpu_filter: Option<usize>,
         enabled: bool,
@@ -936,8 +974,13 @@ fn for_each_system(mut operation: impl FnMut(&SwSystemCounter)) {
 /// Scheduler entry hook for task clocks, CPU migration events, and CPU-wide
 /// migration accounting.
 pub fn sched_in(thread: &Thread) {
-    let mut context = thread.perf_sw_counters.lock();
     let cpu = ax_hal::percpu::this_cpu_id();
+    if PERF_SW_ACTIVE.load(Ordering::Acquire) == 0
+        && thread.perf_sw_counters.publish_unobserved(Some(cpu))
+    {
+        return;
+    }
+    let mut context = thread.perf_sw_counters.lock();
     context.running_cpu = Some(cpu);
     if PERF_SW_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
@@ -966,6 +1009,11 @@ pub fn sched_in(thread: &Thread) {
 
 /// Scheduler exit hook for task running time and context-switch events.
 pub fn sched_out(thread: &Thread) {
+    if PERF_SW_ACTIVE.load(Ordering::Acquire) == 0
+        && thread.perf_sw_counters.publish_unobserved(None)
+    {
+        return;
+    }
     let mut context = thread.perf_sw_counters.lock();
     context.running_cpu = None;
     if PERF_SW_ACTIVE.load(Ordering::Acquire) == 0 {
@@ -1101,8 +1149,35 @@ mod tests {
     use super::*;
 
     #[axtest::axtest]
+    fn first_software_context_observation_serializes_switch_publication() {
+        let context = SwTaskContext::default();
+        assert!(context.publish_unobserved(Some(2)));
+        {
+            let state = context.lock();
+            assert_eq!(state.running_cpu, Some(2));
+            // Once observation owns the context, an outgoing hook must join
+            // the lock path instead of erasing its observer's running state.
+            assert!(!context.publish_unobserved(None));
+            assert_eq!(state.running_cpu, Some(2));
+        }
+        assert!(!context.publish_unobserved(Some(3)));
+
+        let context = SwTaskContext::default();
+        let previous = context.unobserved_cpu.load(Ordering::Relaxed);
+        let state = context.lock();
+        // Model a switch paused between its load and CAS while a remote
+        // opener takes ownership. The stale CAS must not remove OBSERVED.
+        assert!(context
+            .unobserved_cpu
+            .compare_exchange(previous, 3, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err());
+        assert_eq!(state.running_cpu, None);
+        assert!(!context.publish_unobserved(Some(2)));
+    }
+
+    #[axtest::axtest]
     fn closed_software_context_rejects_late_installation() {
-        let context = Arc::new(IrqMutex::new(SwTaskContext::default()));
+        let context = Arc::new(SwTaskContext::default());
         // Exercise the actual exit/installation state boundary, including an
         // exit with no events. No task, scheduler, or IRQ runtime is replaced.
         context.lock().close();

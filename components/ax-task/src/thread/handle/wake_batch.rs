@@ -111,17 +111,31 @@ impl ThreadWakeBatch {
             // the reconstructed handle is dropped.
             ptr::read(&wake.reap_signal)
         };
-        drop(reap_signal);
+        // Every wake handle carries the core's immutable reap-signal allocation.
+        // Keep this strong reference owned by the linked node, alongside its
+        // external lease. `from_raw` recovers that same allocation through core.
+        debug_assert!(Arc::ptr_eq(&reap_signal, &core.reap_signal));
+        let _signal = Arc::into_raw(reap_signal);
         Arc::into_raw(core)
     }
 
+    /// # Safety
+    /// `raw` must be an unconsumed node produced by this type's `into_raw`.
+    /// The caller must own its core and reap-signal strong references and its
+    /// external lease, and must reconstruct them exactly once.
     unsafe fn from_raw(raw: *const ThreadCore) -> ThreadWakeHandle {
         let core = unsafe {
             // SAFETY: every pointer placed in the batch came from one
             // `Arc::into_raw`, and `pop` removes it exactly once.
             Arc::from_raw(raw)
         };
-        let reap_signal = Arc::clone(&core.reap_signal);
+        let reap_signal = unsafe {
+            // SAFETY: `into_raw` retained exactly one strong reference to this
+            // immutable allocation for this node. The live core preserves its
+            // address; exclusive pop consumes that retained reference once,
+            // including when an undrained batch is dropped.
+            Arc::from_raw(Arc::as_ptr(&core.reap_signal))
+        };
         ThreadWakeHandle {
             core: ManuallyDrop::new(core),
             reap_signal,
