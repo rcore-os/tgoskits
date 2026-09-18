@@ -291,6 +291,15 @@ cargo xtask starry test qemu --arch loongarch64 -c qemu/system/test-tty-termios-
 
 运行器会根据 case 目录内容选择一个 asset pipeline。一个 case 只能使用一种 pipeline。
 
+默认 Alpine 镜像在启动前准备 BusyBox init 与 OpenRC。分组 runner 由
+`starry-autorun` 服务执行，终端由 BusyBox init 重新拉起；测试命令结束不再等同于
+根 PID 1 退出。`qemu/pid1`、`qemu/pid1-exit`、`qemu/pid1-exit-thread` 和 `qemu/pid1-fault` 安装专用
+`/sbin/init`，验证根 PID 1 的信号、回收语义、两种退出入口与同步缺页；`qemu/openrc` 验证服务管理和终端重新拉起。
+
+`python3 scripts/test/starry_openrc_boot.py --arch <arch> --output <目录>` 另外在私有镜像副本上
+通过 `cargo xtask starry qemu` 连续启动两次，检查服务注册持久化、正常关机及重启的 QMP
+事件。它不修改 test-suit 的 discard 策略；单纯匹配服务停止日志不能替代电源终态证明。
+
 | Pipeline | 触发条件 | 行为 |
 | --- | --- | --- |
 | `plain` | 无 `test_commands`，且无 `c/`、`sh/`、`python/` | 直接启动共享 rootfs，由 rootfs patcher 仅对主 rootfs drive 设置 `snapshot=on` |

@@ -911,6 +911,11 @@ pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> crate::StarryR
         if force_default {
             *act = starry_signal::SignalAction::default();
         }
+        if matches!(act.disposition, SignalDisposition::Default) {
+            // A synchronous fault must not loop forever in global init. The
+            // action lock also orders this transition with signal publication.
+            thread.proc_data.signal.allow_init_fault_exit();
+        }
     }
     let mut mask = thread.signal().blocked();
     if mask.has(signo) {

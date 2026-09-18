@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+description="Run the selected Starry test scenario"
+depend() {
+    need starry-runtime
+}
+start() {
+    . /etc/profile.d/starry.sh || return 1
+    if [ -f /usr/bin/starry-run-case-tests ]; then
+        echo STARRY_GROUPED_AUTORUN_INIT
+        /bin/sh /usr/bin/starry-run-case-tests || return $?
+    fi
+    if [ -x /test_runner.sh ]; then
+        echo '[init] /test_runner.sh detected, launching visual scenario'
+        setsid /test_runner.sh </dev/null >/dev/console 2>&1 &
+        echo "[init] /test_runner.sh started pid=$!"
+    fi
+}

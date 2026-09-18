@@ -1,0 +1,21 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-smp",
+    "4",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+]
+# This std/PIC test image requires the x86_64 UEFI handoff before the tty test starts.
+uefi = true
+to_bin = true
+shell_check_steps = [
+  { shell_prefix = "root@starry:", shell_cmd = "/usr/bin/openrc-test.sh", success_regex = ["(?m)^STARRY_OPENRC_PASSED\\s*$"] },
+  { shell_prefix = "root@starry:", shell_cmd = "exit", success_regex = ["Welcome to Starry OS!"] },
+  { shell_prefix = "root@starry:", shell_cmd = "poweroff", success_regex = ["(?m)^STARRY_OPENRC_SERVICE_STOPPED\\s*$"] },
+]
+fail_regex = ["STARRY_OPENRC_FAILED", "(?i)panic"]
+timeout = 180

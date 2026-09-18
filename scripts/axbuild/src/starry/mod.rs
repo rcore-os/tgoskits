@@ -21,6 +21,7 @@ mod boot_entropy;
 pub mod build;
 pub mod config;
 pub mod kmod;
+mod openrc;
 pub mod perf;
 pub mod quick_start;
 pub(crate) mod resolver;

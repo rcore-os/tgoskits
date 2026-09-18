@@ -1,0 +1,31 @@
+args = [
+    "-machine",
+    "virt",
+    "-cpu",
+    "la464",
+    "-nographic",
+    "-m",
+    "2G",
+    "-smp",
+    "4",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+    "-device",
+    "virtio-gpu-pci",
+    "-device",
+    "virtio-keyboard-pci",
+    "-device",
+    "virtio-tablet-pci",
+]
+# This dynamic LoongArch test uses the same UEFI handoff as the Starry kernel test image.
+uefi = true
+to_bin = true
+shell_check_steps = [{ success_regex = ["Attempted to kill init! exitcode=0x0000008b"] }]
+fail_regex = ["STARRY_PID1_FAULT_FAILED"]
+timeout = 120

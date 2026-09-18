@@ -9,4 +9,6 @@ if [[ -z "$overlay_dir" ]]; then
     exit 1
 fi
 
-install -Dm0755 "$app_dir/openrc-test.sh" "$overlay_dir/usr/bin/openrc-test.sh"
+workspace_dir="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}"
+install -Dm0755 "$workspace_dir/test-suit/starryos/qemu/openrc/sh/openrc-test.sh" \
+    "$overlay_dir/usr/bin/openrc-test.sh"

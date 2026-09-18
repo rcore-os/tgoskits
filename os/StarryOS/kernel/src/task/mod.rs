@@ -175,6 +175,16 @@ impl ProcessData {
         } = init;
         let wait = ProcessWaitState::new(exit_signal, wait_parent_tid);
         let exit_event = wait.exit_event_arc();
+        let signal = ProcessSignalManager::new(
+            signal_actions,
+            crate::config::SIGNAL_TRAMPOLINE,
+            proc.group_exit_state(),
+        );
+        let signal = if proc.pid().get() == 1 {
+            signal.protect_global_init()
+        } else {
+            signal
+        };
         let this = Arc::new(Self {
             proc: proc.clone(),
             identity: identity.clone(),
@@ -186,11 +196,7 @@ impl ProcessData {
             uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
             policy: ProcessPolicyState::new(),
             accounting: ProcessAccountingState::new(),
-            signal: Arc::new(ProcessSignalManager::new(
-                signal_actions,
-                crate::config::SIGNAL_TRAMPOLINE,
-                proc.group_exit_state(),
-            )),
+            signal: Arc::new(signal),
             nsproxy: IrqMutex::new(Arc::new(nsproxy)),
             namespace_update: Mutex::new(()),
             cgroup: ProcessCgroupState::new(&identity, cgroup),
