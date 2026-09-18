@@ -730,6 +730,13 @@ impl CachedFile {
             });
         }
 
+        // Detaching and retiring pages must exclude fault publication: a fault
+        // published between a page's retirement and the drop below would leave
+        // a page table owning frames this invalidation is releasing. In-flight
+        // faults are drained under `io_lock`, which is released before the
+        // mapping callbacks because those re-enter the page cache.
+        let _mapping_update = self.begin_mapping_update()?;
+        let io = self.shared.io_lock.lock();
         let candidates = self.cached_pages_in(u64::from(start_pn), u64::from(end_pn))?;
         let mut pending = Vec::new();
         pending
@@ -750,6 +757,7 @@ impl CachedFile {
                 }
             }
         }
+        drop(io);
 
         let mut invalidated = 0;
         let mut first_error = None;
@@ -887,7 +895,6 @@ impl CachedFile {
         }
 
         let mut prepared = self.prepare_cache_page(file, pn, read_backing)?;
-        let has_mapping_endpoint = self.shared.has_mapping_endpoint();
         let (result, retired) = loop {
             let mut cache = self.shared.page_cache.lock();
             if cache.contains(&pn) {
@@ -895,8 +902,18 @@ impl CachedFile {
                 let result = update.take().ok_or(VfsError::BadState)?(page, false);
                 break (result, Some(prepared));
             } else {
-                if cache.len() >= cache.cap().get() {
-                    if has_mapping_endpoint {
+                // The endpoint publication lock is held across the capacity
+                // decision and the eviction it authorizes. Reading the proof
+                // once, or re-reading it after the LRU writeback, misses a
+                // mapping installed while that backing I/O was in flight, and
+                // the eviction it then authorizes detaches frames whose page
+                // tables were never retired.
+                let _publication = if cache.len() >= cache.cap().get() {
+                    let publication = self.shared.mapping_endpoint.lock();
+                    if publication
+                        .as_ref()
+                        .is_some_and(|owner| owner.strong_count() != 0)
+                    {
                         drop(cache);
                         drop(prepared);
                         return Err(VfsError::ResourceBusy);
@@ -913,10 +930,14 @@ impl CachedFile {
                     }
                     if victim.dirty {
                         drop(cache);
+                        drop(publication);
                         self.shared.writeback_lru_for_capacity_locked()?;
                         continue;
                     }
-                }
+                    Some(publication)
+                } else {
+                    None
+                };
 
                 let result = update.take().ok_or(VfsError::BadState)?(&mut prepared, true);
                 let retired = cache.push(pn, prepared).map(|(_, page)| page);
