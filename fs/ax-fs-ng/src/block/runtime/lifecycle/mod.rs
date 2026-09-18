@@ -1131,20 +1131,39 @@ impl BlockDeviceHandle {
     /// preparation and request validation remain owned by the runtime.
     #[cfg(axtest)]
     pub async fn axtest_read(&self, lba: u64) -> Result<CompletedRequest, BlockError> {
-        let info = self.inner.selected_queue_info().ok_or(BlockError::Io)?;
-        let data = dma::prepare_read(info.limits, info.device.logical_block_size)?;
-        let request = OwnedRequest {
-            op: RequestOp::Read,
-            lba,
-            block_count: 1,
-            data: Some(data),
-            flags: RequestFlags::NONE,
-        };
+        let request = self.axtest_read_request(lba)?;
         let subscription = self
             .submit_owned_async(request)
             .await
             .map_err(|error| BlockError::from(error.error))?;
         Ok(subscription.recv_async().await)
+    }
+
+    /// Reads one logical block through the synchronous completion path.
+    ///
+    /// This helper is only available to the axtest target so a benchmark can
+    /// compare equivalent request construction and DMA ownership on both
+    /// completion paths without duplicating runtime internals in the kernel.
+    #[cfg(axtest)]
+    pub fn axtest_read_sync(&self, lba: u64) -> Result<CompletedRequest, BlockError> {
+        let request = self.axtest_read_request(lba)?;
+        let subscription = self
+            .submit_owned(request)
+            .map_err(|error| BlockError::from(error.error))?;
+        subscription.recv().map_err(BlockError::from)
+    }
+
+    #[cfg(axtest)]
+    fn axtest_read_request(&self, lba: u64) -> Result<OwnedRequest, BlockError> {
+        let info = self.inner.selected_queue_info().ok_or(BlockError::Io)?;
+        let data = dma::prepare_read(info.limits, info.device.logical_block_size)?;
+        Ok(OwnedRequest {
+            op: RequestOp::Read,
+            lba,
+            block_count: 1,
+            data: Some(data),
+            flags: RequestFlags::NONE,
+        })
     }
 
     #[cfg(feature = "ext4")]
