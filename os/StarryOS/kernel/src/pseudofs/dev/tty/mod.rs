@@ -38,10 +38,7 @@ use crate::{
     mm::{VmMutPtr, VmPtr},
     pseudofs::{Device, DeviceOps},
     sync::{IrqMutex, Mutex},
-    task::{
-        PgidNumber, Process, current_user_task, get_process_group_by_number,
-        send_signal_to_process_group,
-    },
+    task::{PgidNumber, PidView, Process, current_user_task, send_signal_to_process_group},
 };
 
 const TCIFLUSH: usize = 0;
@@ -160,6 +157,11 @@ pub(crate) fn bind_pty_at_location(location: Location) -> Option<StarryResult<us
     Some(pty.bind_current_to_at(location).map(|()| 0))
 }
 
+/// The PID namespace the caller sees; Linux resolves job control ids in it.
+fn caller_view(current: &crate::task::UserTaskRef) -> PidView {
+    PidView::new(current.as_thread().active_pid_namespace())
+}
+
 impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     fn open(&self, _exclusive: bool) -> VfsResult<()> {
         self.open_count.fetch_add(1, Ordering::AcqRel);
@@ -247,11 +249,16 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                         .job_control
                         .foreground()
                         .ok_or(StarryError::NoSuchProcess)?;
-                    (arg as *mut u32).vm_write(current, foreground.pgid().get())?;
+                    // Linux tiocgpgrp() answers with pid_vnr(): the number the
+                    // caller's PID namespace shows, not the root one.
+                    let pgid = caller_view(current)
+                        .visible_group_number(&foreground.identity())
+                        .ok_or(StarryError::NoSuchProcess)?;
+                    (arg as *mut u32).vm_write(current, pgid.get())?;
                 }
                 TIOCSPGRP => {
                     let pgid: u32 = (arg as *const u32).vm_read(current)?;
-                    let pg = get_process_group_by_number(PgidNumber::try_from(pgid)?)?;
+                    let pg = caller_view(current).resolve_group(PgidNumber::try_from(pgid)?)?;
                     self.terminal.job_control.set_foreground(&pg)?;
                 }
                 TIOCGWINSZ => {
