@@ -61,7 +61,8 @@ fn resolve_machine_resources_from_host(
     })?;
     let machine = crate::machine::current_machine_profile(vm_config.phys_cpu_ls.cpu_num());
     let current = vm_config.serial_profile();
-    if let Some(interrupt_encoding) = machine.serial_fdt_interrupt
+    if should_follow_host_serial(vm_config)
+        && let Some(interrupt_encoding) = machine.serial_fdt_interrupt
         && let Some(resolved) =
             serial::host_selected_serial(&host_fdt, current, interrupt_encoding)?
     {
@@ -105,6 +106,10 @@ fn resolve_machine_resources_from_host(
         vm_config.replace_machine_plic(plic)?;
     }
     Ok(())
+}
+
+fn should_follow_host_serial(vm_config: &AxVMConfig) -> bool {
+    vm_config.uses_passthrough_address_space()
 }
 
 pub(crate) fn selected_guest_fdt_policy() -> GuestFdtPolicy {
@@ -239,5 +244,21 @@ fn get_developer_provided_dtb(
             InvalidInput,
             "Unsupported image_location; use \"memory\" or enable fs feature for \"fs\""
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_follow_host_serial;
+    use crate::config::{AddressSpacePolicy, AxVMConfig, AxVMConfigParams};
+
+    #[test]
+    fn virtualized_guest_keeps_the_architecture_serial_profile() {
+        let config = AxVMConfig::new(AxVMConfigParams {
+            address_space_policy: AddressSpacePolicy::Virtualized,
+            ..Default::default()
+        });
+
+        assert!(!should_follow_host_serial(&config));
     }
 }

@@ -1,0 +1,28 @@
+[base]
+id = 1
+name = "linux-virtio-net-peer-vm1"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x100]
+
+[kernel]
+entry_point = 0x4008_0000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x4008_0000
+dtb_load_addr = 0x6000_0000
+ramdisk_path = "/guest/linux/initramfs-aarch64-busybox.cpio.gz"
+ramdisk_load_addr = 0x7000_0000
+cmdline = "console=ttyAMA0,115200 earlycon=pl011,mmio32,0x09000000 init=/init virtio_mmio.device=0x200@0xb000000:32"
+memory_regions = [
+  [0x4000_0000, 0x4000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x20, 0x01, 0x01]

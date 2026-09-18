@@ -1,0 +1,48 @@
+board_type = "OrangePi-5-Plus"
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "Failed to initialize guest VM",
+  "(?m)^ORANGEPI_VM1_VIRTIO_NET_FAIL\\s*$",
+  "(?m)^ORANGEPI_VM2_VIRTIO_NET_FAIL\\s*$",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = ["Attached VM\\[1\\] console"]
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "ip link set eth0 up; ip addr add 10.0.2.15/24 dev eth0; ip a; printf 'ORANGEPI_VM1_NET_%s\\n' CONFIGURED"
+success_regex = ["(?m)^ORANGEPI_VM1_NET_CONFIGURED\\s*$"]
+fail_regex = ["(?m)^ORANGEPI_VM1_VIRTIO_NET_FAIL\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018hvm console 2"
+success_regex = ["Attached VM\\[2\\] console"]
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "ip link set eth0 up; ip addr add 10.0.2.16/24 dev eth0; ip a; printf 'ORANGEPI_VM2_NET_%s\\n' CONFIGURED"
+success_regex = ["(?m)^ORANGEPI_VM2_NET_CONFIGURED\\s*$"]
+fail_regex = ["(?m)^ORANGEPI_VM2_VIRTIO_NET_FAIL\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "printf 'ORANGEPI_VM2_PING_10.0.2.16_TO_10.0.2.15\\n'; ping -c 5 -W 1 10.0.2.15 && printf 'ORANGEPI_VM2_VIRTIO_NET_%s\\n' PASS || printf 'ORANGEPI_VM2_VIRTIO_NET_%s\\n' FAIL"
+success_regex = ["(?m)^ORANGEPI_VM2_VIRTIO_NET_PASS\\s*$"]
+fail_regex = ["(?m)^ORANGEPI_VM2_VIRTIO_NET_FAIL\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018hvm console 1\n:"
+success_regex = ["Attached VM\\[1\\] console"]
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "printf 'ORANGEPI_VM1_PING_10.0.2.15_TO_10.0.2.16\\n'; ping -c 5 -W 1 10.0.2.16 && printf 'ORANGEPI_VM1_VIRTIO_NET_%s\\n' PASS || printf 'ORANGEPI_VM1_VIRTIO_NET_%s\\n' FAIL"
+success_regex = ["(?m)^ORANGEPI_VM1_VIRTIO_NET_PASS\\s*$"]
+fail_regex = ["(?m)^ORANGEPI_VM1_VIRTIO_NET_FAIL\\s*$"]
