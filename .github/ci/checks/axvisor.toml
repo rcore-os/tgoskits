@@ -412,8 +412,6 @@ performance_report = true
 runner = "board"
 timeout_minutes = 90
 command = '''
-echo "==> build the ArceOS task switch guest from this checkout"
-cargo xtask arceos build --config apps/arceos/task_switch_bench/build-aarch64-unknown-none-softfloat.toml
 echo "==> axvisor OrangePi 5 Plus task switch benchmark"
 cargo xtask axvisor test board --board orangepi-5-plus-task-switch-overhead
 '''

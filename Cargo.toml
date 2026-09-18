@@ -15,6 +15,7 @@ lto = "fat"
 resolver = "3"
 members = [
     "apps/starry/orangepi-5-plus-uvc/rust",
+    "test-suit/axvisor/normal/board-orangepi-5-plus/task-switch-overhead/guest",
 
     "bootloader/axloader",
 

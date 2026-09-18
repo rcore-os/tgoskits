@@ -224,6 +224,12 @@ def build_axvisor_nightly_plan(context: PlanContext) -> dict[str, Any]:
         raise PlanError("AxVisor nightly requires schedule or workflow_dispatch")
     context = replace(context, include_nightly=True)
     checks = load_catalog(MAIN_MANIFESTS)
+    return _build_axvisor_nightly_plan(checks, context)
+
+
+def _build_axvisor_nightly_plan(
+    checks: list[dict[str, Any]], context: PlanContext
+) -> dict[str, Any]:
     producer = next(check for check in checks if check.get("upload_xtask_bin_artifact"))
     prepare = _normalize_check(producer, context)
     prepare.update(

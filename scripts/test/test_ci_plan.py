@@ -59,18 +59,6 @@ class CiPlanTests(unittest.TestCase):
                         self.assertEqual(
                             row["xtask_bin_artifact_name"], producer["xtask_bin_artifact_name"]
                         )
-                performance_rows = {
-                    row["id"]
-                    for row in rows
-                    if row["performance_report"]
-                }
-                self.assertEqual(
-                    performance_rows,
-                    {
-                        check["id"] for check in catalog
-                        if check["group"] == "AxVisor" and check.get("performance_report", False)
-                    },
-                )
                 main = ci_plan.build_main_plan(context)
                 nightly_ids = {
                     check["id"] for check in catalog if check.get("nightly_only", False)
@@ -79,6 +67,62 @@ class CiPlanTests(unittest.TestCase):
                     [row for row in rows if row["id"] not in nightly_ids],
                     main["axvisor_matrix"]["include"],
                 )
+
+    def test_axvisor_nightly_maps_only_performance_checks_to_report_rows(self):
+        checks = [
+            {
+                "id": "xtask-producer",
+                "name": "producer",
+                "group": "Workspace",
+                "phase": "static",
+                "runs_on": ["ubuntu-latest"],
+                "environment": "host",
+                "command": "build-xtask",
+                "source": "synthetic.toml",
+                "upload_xtask_bin_artifact": True,
+            },
+            {
+                "id": "axvisor-performance",
+                "name": "performance",
+                "group": "AxVisor",
+                "phase": "test",
+                "runs_on": ["ubuntu-latest"],
+                "environment": "host",
+                "command": "run-performance",
+                "source": "synthetic.toml",
+                "performance_report": True,
+            },
+            {
+                "id": "axvisor-functional",
+                "name": "functional",
+                "group": "AxVisor",
+                "phase": "test",
+                "runs_on": ["ubuntu-latest"],
+                "environment": "host",
+                "command": "run-functional",
+                "source": "synthetic.toml",
+            },
+        ]
+        context = ci_plan.PlanContext(
+            repository="example/tgoskits",
+            repository_owner="example",
+            event_name="workflow_dispatch",
+            include_nightly=True,
+        )
+
+        rows = ci_plan._build_axvisor_nightly_plan(checks, context)[
+            "axvisor_matrix"
+        ]["include"]
+
+        self.assertEqual(
+            {row["id"] for row in rows if row["performance_report"]},
+            {"axvisor-performance"},
+        )
+        self.assertFalse(
+            next(row for row in rows if row["id"] == "axvisor-functional")[
+                "performance_report"
+            ]
+        )
 
     def test_main_ci_never_runs_axvisor_nightly_only_cases(self):
         for event in ("pull_request", "push", "workflow_dispatch", "schedule"):

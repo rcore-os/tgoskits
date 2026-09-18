@@ -5,7 +5,7 @@ fail_regex = [
   "VM\\[1\\] run VCpu\\[0\\] get error",
   "AXVISOR_TASK_SWITCH_BENCH_FAILED",
 ]
-timeout = 7200
+timeout = 1800
 
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"

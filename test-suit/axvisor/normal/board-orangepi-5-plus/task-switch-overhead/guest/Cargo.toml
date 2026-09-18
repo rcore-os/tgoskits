@@ -25,4 +25,4 @@ ax-runtime = { workspace = true, optional = true }
 ax-std = { workspace = true, optional = true, features = ["default"] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-rockchip-soc = { path = "../../../drivers/soc/rockchip/rockchip-soc", optional = true }
+rockchip-soc = { path = "../../../../../../drivers/soc/rockchip/rockchip-soc", optional = true }

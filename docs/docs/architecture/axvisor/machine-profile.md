@@ -180,7 +180,7 @@ flowchart TB
 
 共同 FDT composer 的顺序是：重建 memory nodes 和 `/chosen`，替换 machine interrupt controller，写入通用 resolved 配置设备节点，替换 architectural timer，再安装 `console0` 与额外串口。
 
-AArch64 的 `Aarch64FirmwarePlan` 从同一 `ResolvedDeviceGraph` 固化 GIC、所有串口、普通 FDT contribution 和 timer。host GIC 节点 path/phandle、GICD/GICC/GICR/ITS 窗口和 host-selected serial identity 尽量保持；composer 删除物理实现节点后以虚拟实现重建。兼容的 `console0` 沿用原 `stdout-path`、node path/phandle、interrupt parent/specifier 和必要 clock provider identity；PL011 会生成虚拟 fixed-clock，避免把 host clock 控制硬件暴露给客户机。不兼容的 `console0` 使用新地址并建立新的 serial node、alias 和 `/chosen/stdout-path`。
+AArch64 的 `Aarch64FirmwarePlan` 从同一 `ResolvedDeviceGraph` 固化 GIC、所有串口、普通 FDT contribution 和 timer。对于 `Passthrough` 客户机，host GIC 节点 path/phandle、GICD/GICC/GICR/ITS 窗口和 host-selected serial identity 尽量保持；composer 删除物理实现节点后以虚拟实现重建。`Virtualized` 客户机不沿用固件选定的物理 UART 身份，而使用架构或 machine profile 的默认 serial profile。兼容的 `console0` 沿用原 `stdout-path`、node path/phandle、interrupt parent/specifier 和必要 clock provider identity；PL011 会生成虚拟 fixed-clock，避免把 host clock 控制硬件暴露给客户机。不兼容的 `console0` 使用新地址并建立新的 serial node、alias 和 `/chosen/stdout-path`。
 
 RISC-V 在运行时从 graph 解析 `console0`、额外串口和普通 FDT contribution，再结合 config 中仍匹配 binding path 的 serial identity 与 PLIC profile patch FDT。PLIC host replacement 保留 node identity 和窗口；没有独立 machine timer replacement DTO。
 
