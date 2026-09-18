@@ -6615,7 +6615,7 @@ dependencies = [
 
 [[package]]
 name = "rdif-pwm"
-version = "0.1.3"
+version = "0.2.0"
 dependencies = [
  "rdif-base",
  "thiserror 2.0.20",
@@ -6965,7 +6965,7 @@ dependencies = [
 
 [[package]]
 name = "rockchip-pwm"
-version = "0.1.3"
+version = "0.2.0"
 dependencies = [
  "mmio-api",
  "rdif-pwm",

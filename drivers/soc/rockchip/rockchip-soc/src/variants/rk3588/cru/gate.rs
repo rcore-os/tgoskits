@@ -210,8 +210,8 @@ clk_gate_table!(
     // ========================================================================
     // ADC 时钟门控
     // ========================================================================
-    PCLK_SARADC => (15, 11),
-    CLK_SARADC => (15, 12),
+    PCLK_SARADC => (11, 14),
+    CLK_SARADC => (11, 15),
     PCLK_TSADC => (16, 6),
     CLK_TSADC => (16, 7),
     // ========================================================================
@@ -441,6 +441,30 @@ mod tests {
                 + CLK_COMPOSITE_TABLE.len()
                 + CLK_PMU_COMPOSITE_TABLE.len(),
             "CLK_GATE_TABLE should not have duplicate clkid entries"
+        );
+    }
+
+    #[test]
+    fn test_pwm3_capture_and_saradc_gate_mappings() {
+        let pwm3_capture = CLK_GATE_TABLE
+            .iter()
+            .find(|gate| gate.clk_id == CLK_PWM3_CAPTURE)
+            .expect("PWM3 capture gate must be present");
+        let saradc = CLK_GATE_TABLE
+            .iter()
+            .find(|gate| gate.clk_id == PCLK_SARADC)
+            .expect("SARADC gate must be present");
+        let saradc_clock = CLK_GATE_TABLE
+            .iter()
+            .find(|gate| gate.clk_id == CLK_SARADC)
+            .expect("SARADC clock gate must be present");
+
+        assert_eq!((pwm3_capture.reg_idx, pwm3_capture.bit), (15, 11));
+        assert_eq!((saradc.reg_idx, saradc.bit), (11, 14));
+        assert_eq!((saradc_clock.reg_idx, saradc_clock.bit), (11, 15));
+        assert_ne!(
+            (pwm3_capture.reg_idx, pwm3_capture.bit),
+            (saradc.reg_idx, saradc.bit)
         );
     }
 }
