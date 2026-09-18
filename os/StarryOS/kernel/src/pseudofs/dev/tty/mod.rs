@@ -162,11 +162,20 @@ pub(crate) fn bind_pty_at_location(location: Location) -> Option<StarryResult<us
 
 impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     fn open(&self, _exclusive: bool) -> VfsResult<()> {
+        // The writer accounts for the open before the count moves: a pty refuses
+        // an open whose peer is already gone, and a refused open must not count.
+        self.writer.opened().map_err(VfsError::from)?;
         self.open_count.fetch_add(1, Ordering::AcqRel);
-        self.writer.open().map_err(VfsError::from)
+        if let Err(error) = self.writer.open() {
+            self.open_count.fetch_sub(1, Ordering::AcqRel);
+            self.writer.closing();
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     fn close(&self, _exclusive: bool) {
+        self.writer.closing();
         // On the last fd close, notify the writer side so the peer reader can
         // observe POLLHUP / EOF. Without this, a PTY master/slave close never
         // wakes the peer and poll()/read() hang.
