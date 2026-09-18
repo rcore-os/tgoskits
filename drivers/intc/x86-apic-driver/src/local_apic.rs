@@ -64,6 +64,7 @@ pub struct LocalApicConfig {
 // "self" destination shorthand (bits 19:18 = 01b) for the xAPIC fallback.
 const ICR_FIXED_LEVEL: u32 = 0x0000_4000;
 const ICR_DEST_SELF: u32 = 0x0004_0000;
+const ICR_DELIVERY_STATUS: u32 = 0x0000_1000;
 
 const IPI_DELIVERY_WAIT_SPINS: usize = 1_000_000;
 const LVT_MASKED: u32 = 1 << 16;
@@ -177,12 +178,12 @@ impl X86LocalApic {
         match self.runtime_mode() {
             // x2apic encodes the destination in ICR bits 63:32, which is the
             // architectural x2APIC layout.
-            ApicMode::X2Apic => {
-                let mut lapic = self.instance();
-                unsafe {
-                    lapic.send_ipi(vector, dest_apic_id);
-                }
-            }
+            ApicMode::X2Apic => unsafe {
+                write_x2apic_icr(x2apic_icr_value(
+                    dest_apic_id,
+                    ICR_FIXED_LEVEL | u32::from(vector),
+                ));
+            },
             // x2apic 0.5 writes the destination into ICR_HIGH without the
             // shift into bits 31:24 that the xAPIC destination field
             // requires, so the xAPIC path uses the raw encoding.
@@ -204,9 +205,8 @@ impl X86LocalApic {
     /// self-shorthand ICR otherwise, followed by a delivery wait.
     pub fn send_self_ipi(&self, vector: u8) -> Result<(), ApicError> {
         if self.runtime_mode() == ApicMode::X2Apic {
-            let mut lapic = self.instance();
             unsafe {
-                lapic.send_ipi_self(vector);
+                x86::msr::wrmsr(X2APIC_SELF_IPI, u64::from(vector));
             }
             return Ok(());
         }
@@ -306,9 +306,14 @@ impl X86LocalApic {
     /// the delivery-status wait the previous in-glue implementations
     /// performed after every ICR write.
     fn wait_ipi_delivery(&self) -> Result<(), ApicError> {
-        let lapic = self.instance();
+        // x2APIC dropped the delivery-status bit because the ICR write itself is
+        // serializing, so only the xAPIC command register has anything to poll.
+        if self.runtime_mode() == ApicMode::X2Apic {
+            return Ok(());
+        }
         for _ in 0..IPI_DELIVERY_WAIT_SPINS {
-            if !unsafe { lapic.get_ipi_delivery_status() } {
+            let icr_low = unsafe { mmio_read(self.xapic_mmio_base, XAPIC_REG_ICR_LOW) };
+            if icr_low & ICR_DELIVERY_STATUS == 0 {
                 return Ok(());
             }
             core::hint::spin_loop();
@@ -431,6 +436,8 @@ const XAPIC_REG_TIMER_CURRENT_COUNT: u32 = 0x390;
 // x2APIC MSR addresses.
 const X2APIC_ESR: u32 = 0x828;
 const X2APIC_EOI: u32 = 0x80b;
+const X2APIC_ICR: u32 = 0x830;
+const X2APIC_SELF_IPI: u32 = 0x83f;
 const X2APIC_LVT_TIMER: u32 = 0x832;
 const X2APIC_LVT_LINT0: u32 = 0x835;
 const X2APIC_LVT_LINT1: u32 = 0x836;
@@ -447,6 +454,23 @@ unsafe fn set_apic_base_enable_bit() {
 
 /// Clears the error status register by writing zero, the documented
 /// clear-to-zero semantics of the ESR.
+/// Packs an x2APIC interrupt command, whose single 64-bit register carries the
+/// destination in the upper half and the command word in the lower.
+const fn x2apic_icr_value(destination: u32, icr_low: u32) -> u64 {
+    ((destination as u64) << 32) | icr_low as u64
+}
+
+/// Writes the x2APIC interrupt command register.
+///
+/// # Safety
+///
+/// The current CPU must be running in x2APIC mode.
+unsafe fn write_x2apic_icr(value: u64) {
+    unsafe {
+        x86::msr::wrmsr(X2APIC_ICR, value);
+    }
+}
+
 unsafe fn clear_esr(base: VirtAddr) {
     unsafe {
         match current_apic_mode() {
@@ -558,6 +582,23 @@ mod tests {
     #[test]
     fn fixed_ipi_level_bit_matches_the_runtime_icr_encoding() {
         assert_eq!(ICR_FIXED_LEVEL, 0x4000);
+    }
+
+    #[test]
+    fn x2apic_interrupt_command_carries_the_destination_in_the_upper_half() {
+        assert_eq!(
+            x2apic_icr_value(0x1234_5678, ICR_FIXED_LEVEL | 0xf0),
+            0x1234_5678_0000_40f0
+        );
+        assert_eq!(
+            x2apic_icr_value(0, ICR_FIXED_LEVEL),
+            u64::from(ICR_FIXED_LEVEL)
+        );
+    }
+
+    #[test]
+    fn the_delivery_status_bit_is_the_twelfth_icr_bit() {
+        assert_eq!(ICR_DELIVERY_STATUS, 1 << 12);
     }
 
     #[test]

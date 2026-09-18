@@ -36,6 +36,7 @@ ax-lazyinit
 ax-linked-list-r4l
 riscv-h
 ax-riscv-plic
+x86-apic-driver
 x86_vlapic
 rsext4
 starry-signal
