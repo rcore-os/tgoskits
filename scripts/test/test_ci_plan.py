@@ -67,8 +67,8 @@ class CiPlanTests(unittest.TestCase):
                 self.assertEqual(
                     performance_rows,
                     {
-                        "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark",
-                        "test-axvisor-self-hosted-board-orangepi-5-plus-vcpu-perf",
+                        check["id"] for check in catalog
+                        if check["group"] == "AxVisor" and check.get("performance_report", False)
                     },
                 )
                 main = ci_plan.build_main_plan(context)
@@ -188,6 +188,31 @@ class CiPlanTests(unittest.TestCase):
         rows = ci_plan.build_axvisor_nightly_plan(context)["axvisor_matrix"]["include"]
         self.assertTrue(rows)
         self.assertTrue(all("self-hosted" not in row["runs_on"] for row in rows))
+
+    def test_performance_report_renders_task_switch_groups(self):
+        lines = ["AXVISOR_TASK_SWITCH_BENCH_BEGIN groups=10"]
+        for index in range(10):
+            prefix = "[VM 1] " if index % 2 else ""
+            lines.append(
+                f"{prefix}AXVISOR_TASK_SWITCH_GROUP_SUMMARY index={index} "
+                f"samples_per_direction=1000000 avg_cycles={1700 + index} "
+                "min_cycles=1632 max_cycles=15879"
+            )
+        lines.append("AXVISOR_TASK_SWITCH_BENCH_DONE")
+        report = ci_perf_report.render_report("task-switch", "Task switch", "\n".join(lines))
+        self.assertIn("#### Task switch cycles (per group)", report)
+        self.assertIn(
+            "| index | samples_per_direction | avg_cycles | min_cycles | max_cycles |",
+            report,
+        )
+        for index in range(10):
+            self.assertIn(
+                f"| {index} | 1000000 | {1700 + index} | 1632 | 15879 |", report
+            )
+        with self.assertRaises(ValueError):
+            ci_perf_report.render_report(
+                "task-switch", "Task switch", "AXVISOR_TASK_SWITCH_BENCH_BEGIN groups=10"
+            )
 
     def setUp(self) -> None:
         self.upstream = ci_plan.PlanContext(
