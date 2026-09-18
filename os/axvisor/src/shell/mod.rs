@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::io::prelude::*;
-use std::string::ToString;
+use std::string::{String, ToString};
 
 #[cfg(feature = "browser-console")]
 use core::cell::Cell;
@@ -23,13 +23,28 @@ std::thread_local! {
     static NETWORK_OUTPUT_SELECTED: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Formats a text fragment submitted by the Axvisor shell.
+fn format_fragment(args: core::fmt::Arguments<'_>) -> String {
+    alloc::fmt::format(args)
+}
+
+/// Formats a complete text line submitted by the Axvisor shell.
+///
+/// The shared host-output queue preserves raw bytes because it also carries
+/// guest output. Shell-owned lines must therefore provide their own CRLF.
+fn format_line(args: core::fmt::Arguments<'_>) -> String {
+    let mut output = format_fragment(args);
+    output.push_str("\r\n");
+    output
+}
+
 fn submit_shell_fragment(args: core::fmt::Arguments<'_>) {
-    let output = axvisor::shell_support::format_fragment(args);
+    let output = format_fragment(args);
     submit_shell_bytes(output.as_bytes());
 }
 
 fn submit_shell_line(args: core::fmt::Arguments<'_>) {
-    let output = axvisor::shell_support::format_line(args);
+    let output = format_line(args);
     submit_shell_bytes(output.as_bytes());
 }
 

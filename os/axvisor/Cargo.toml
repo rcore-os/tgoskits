@@ -9,6 +9,9 @@ documentation = "https://docs.rs/axvisor"
 keywords = ["hypervisor", "virtualization", "arceos", "type-1"]
 categories = ["os", "no-std", "embedded"]
 license = "Apache-2.0"
+# `tests/` holds helper modules for the explicit `axtest` target below, not
+# standalone integration-test targets.
+autotests = false
 include = [
     ".cargo/config.toml",
     "src/**",
@@ -52,13 +55,7 @@ vpci-test-device = ["axvm/vpci-test-device"]
 sstc = ["axvm/sstc"]
 stack-protector = ["ax-std/stack-protector"]
 backtrace = ["ax-std/backtrace"]
-test-backtrace-panic = ["backtrace"]
-test-panic-no-backtrace = []
-test-el2-fatal = []
-test-el2-fatal-foreign-context = ["test-el2-fatal"]
-test-console-interleave = ["dep:ax-log"]
-test-console-atomic-output = []
-test-vcpu-perf = []
+vcpu-perf-load = []
 # axum-based management HTTP server. Pulls `ax-std/net` explicitly so the
 # ArceOS network stack (which probes the QEMU virtio-net NIC and backs the
 # tokio `TcpListener`) is enabled only when the control plane is built; a
@@ -89,7 +86,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, va
 
 [target.'cfg(any(not(any(windows, unix)), target_env = "musl"))'.dependencies]
 anyhow.workspace = true
-ax-log = { workspace = true, optional = true }
 log = "0.4"
 axum = { version = "0.8", optional = true }
 futures-util = { version = "0.3", optional = true, features = ["sink"] }

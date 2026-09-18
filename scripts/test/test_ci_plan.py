@@ -684,7 +684,7 @@ command = "true"
                 "run-clippy",
                 "test-with-std",
                 "test-arceos-aarch64-qemu-app-suites",
-                "test-axvisor-aarch64-qemu-panic-http-control-plane-ivc",
+                "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc",
                 "test-starry-aarch64-qemu",
             }.issubset(test_rows)
         )

@@ -4,8 +4,6 @@ mod host;
 mod mux;
 mod terminal;
 
-#[cfg(feature = "test-console-atomic-output")]
-pub(crate) use host::fill_runtime_output_queue;
 pub(crate) use host::{
     configure_host_console, read_host_byte, read_host_log, submit_host_bytes, take_host_log_drops,
     wait_for_host_event,

@@ -17,7 +17,7 @@ The source of truth is `.github/ci/checks/axvisor.toml`. Nightly runs every
 enabled check in that catalog without changed-file filtering, including:
 
 - AArch64 QEMU boot, timer stress, kernel tests, IVC, control plane and console.
-- RISC-V QEMU boot, IPI cross-tests and panic behavior.
+- RISC-V QEMU boot and IPI cross-tests.
 - LoongArch QEMU using the existing LVZ runner environment.
 - Intel VMX and AMD SVM boot, ACPI and PCI tests.
 - Registered board checks, including OrangePi Linux/Starry guests and the

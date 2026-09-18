@@ -1,9 +1,0 @@
-features = [
-    "test-backtrace-panic",
-]
-log = "Info"
-target = "riscv64gc-unknown-none-elf"
-vm_configs = []
-
-[env]
-BACKTRACE = "y"
