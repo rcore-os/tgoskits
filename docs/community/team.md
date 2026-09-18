@@ -343,10 +343,10 @@ TGOSKits 由来自高校、科研机构和企业的开发者共同维护。社�
 <div className="card__header">
 <div className="avatar avatar--vertical">
 <div className="avatar__photo avatar__photo--lg">
-<img src="https://github.com/Azure_stars.png" alt="Azure_stars" />
+<img src="https://github.com/Azure-stars.png" alt="Azure-stars" />
 </div>
 <div className="avatar__intro">
-<div className="avatar__name">Azure_stars</div>
+<div className="avatar__name">Azure-stars</div>
 <div className="avatar__subtitle">清华大学</div>
 </div>
 </div>
@@ -355,7 +355,7 @@ TGOSKits 由来自高校、科研机构和企业的开发者共同维护。社�
 贡献者
 </div>
 <div className="card__footer">
-<a className="button button--outline button--secondary button--sm" href="https://github.com/Azure_stars">💼 GitHub</a>
+<a className="button button--outline button--secondary button--sm" href="https://github.com/Azure-stars">💼 GitHub</a>
 </div>
 </div>
 </div>

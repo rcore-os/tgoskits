@@ -4,6 +4,7 @@ import React from 'react';
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
 import useBaseUrl from '@docusaurus/useBaseUrl';
+import useBrokenLinks from '@docusaurus/useBrokenLinks';
 import ArceOSArchitecture from '@site/static/images/oss/arceos-architecture.svg';
 import AxVisorArchitecture from '@site/static/images/oss/axvisor-architecture.svg';
 import StarryArchitecture from '@site/static/images/oss/starry-architecture.svg';
@@ -44,6 +45,8 @@ const systems = [
 ];
 
 function SystemSection({system, index}) {
+  // Docusaurus only registers theme heading anchors, so the fragment links from the home page need this section id registered explicitly.
+  useBrokenLinks().collectAnchor(system.id);
   const diagramUrl = useBaseUrl(`/images/oss/${system.id}-architecture.svg`);
   const Diagram = system.diagram;
   return <section id={system.id} className={styles.system} data-system={system.id} data-reverse={index % 2 === 1} aria-labelledby={`${system.id}-title`}>
