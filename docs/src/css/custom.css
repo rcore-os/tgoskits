@@ -45,6 +45,11 @@ html[data-theme='dark'] {
   border-radius: 12px;
 }
 
+/* Infima's vertical avatar leaves no row gap, which puts the name against the portrait. */
+.contributor-card .avatar--vertical {
+  row-gap: 0.75rem;
+}
+
 /* Custom landing pages share a fluid desktop canvas without widening document columns. */
 .site-showcase .container {
   width: var(--site-content-width);
