@@ -79,6 +79,72 @@ fn buddy_basic_alloc_dealloc() {
 }
 
 #[test]
+fn buddy_split_pages_explodes_block_into_freeable_4k_pages() {
+    // A 2 MiB (order-9) block must be splittable into 512 independently
+    // freeable 4 KiB pages, and freeing all of them must coalesce back to the
+    // original block (re-allocatable as one 2 MiB block again).
+    const ALIGN_2M: usize = 2 * 1024 * 1024;
+    const PAGES_2M: usize = ALIGN_2M / PAGE_SIZE; // 512
+    let mut region = HostRegion::new(buddy_region_size(TEST_HEAP_SIZE) + ALIGN_2M, ALIGN_2M);
+    let mut buddy = BuddyAllocator::<PAGE_SIZE>::new();
+    let _section = init_buddy_with_heap_alignment(&mut buddy, &mut region, ALIGN_2M);
+
+    let free_start = buddy.free_pages();
+
+    // One contiguous, 2 MiB-aligned order-9 block.
+    let block = buddy.alloc_pages(PAGES_2M, ALIGN_2M).unwrap();
+    assert_eq!(block % ALIGN_2M, 0);
+    assert_eq!(buddy.free_pages(), free_start - PAGES_2M);
+
+    // Explode it: every 4 KiB page becomes an independent order-0 allocation.
+    buddy.split_pages(block);
+    // Splitting is metadata-only; occupancy is unchanged.
+    assert_eq!(buddy.free_pages(), free_start - PAGES_2M);
+
+    // Free all 512 sub-pages individually, in a shuffled order to exercise
+    // buddy coalescing from both directions.
+    let mut order: Vec<usize> = (0..PAGES_2M).collect();
+    order.rotate_left(37);
+    for i in order {
+        buddy.dealloc_pages(block + i * PAGE_SIZE, 1);
+    }
+    assert_eq!(buddy.free_pages(), free_start);
+
+    // Full coalescing back to order-9: the 2 MiB block is allocatable again.
+    let block2 = buddy.alloc_pages(PAGES_2M, ALIGN_2M).unwrap();
+    assert_eq!(block2, block);
+    buddy.dealloc_pages(block2, PAGES_2M);
+    assert_eq!(buddy.free_pages(), free_start);
+}
+
+#[test]
+fn buddy_split_pages_allows_partial_free_of_exploded_block() {
+    // After split, freeing only a sub-range leaves the rest allocated; the
+    // remaining pages stay usable and freeable independently.
+    const ALIGN_2M: usize = 2 * 1024 * 1024;
+    const PAGES_2M: usize = ALIGN_2M / PAGE_SIZE;
+    let mut region = HostRegion::new(buddy_region_size(TEST_HEAP_SIZE) + ALIGN_2M, ALIGN_2M);
+    let mut buddy = BuddyAllocator::<PAGE_SIZE>::new();
+    let _section = init_buddy_with_heap_alignment(&mut buddy, &mut region, ALIGN_2M);
+
+    let free_start = buddy.free_pages();
+    let block = buddy.alloc_pages(PAGES_2M, ALIGN_2M).unwrap();
+    buddy.split_pages(block);
+
+    // Free the first half only.
+    for i in 0..PAGES_2M / 2 {
+        buddy.dealloc_pages(block + i * PAGE_SIZE, 1);
+    }
+    assert_eq!(buddy.free_pages(), free_start - PAGES_2M / 2);
+
+    // Free the second half; everything coalesces back.
+    for i in PAGES_2M / 2..PAGES_2M {
+        buddy.dealloc_pages(block + i * PAGE_SIZE, 1);
+    }
+    assert_eq!(buddy.free_pages(), free_start);
+}
+
+#[test]
 fn buddy_alignment() {
     // Heap must be aligned to the highest alignment we test (PAGE_SIZE * 4)
     let mut region = HostRegion::new(

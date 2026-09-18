@@ -205,6 +205,12 @@ impl<const PAGE_SIZE: usize> GlobalAllocator<PAGE_SIZE> {
         self.buddy().dealloc_pages(addr, count);
     }
 
+    /// Explode an allocated block at `addr` into independently-freeable order-0
+    /// pages. See [`BuddyAllocator::split_pages`](crate::buddy::BuddyAllocator::split_pages).
+    pub fn split_pages(&self, addr: usize) {
+        self.buddy().split_pages(addr);
+    }
+
     /// Allocate pages with physical address below 4 GiB.
     pub fn alloc_pages_lowmem(&self, count: usize, align: usize) -> AllocResult<usize> {
         self.buddy().alloc_pages_lowmem(count, align)
