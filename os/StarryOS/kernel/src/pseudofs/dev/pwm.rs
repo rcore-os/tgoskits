@@ -1,7 +1,8 @@
-use alloc::{borrow::Cow, boxed::Box, format, sync::Arc, vec, vec::Vec};
+use alloc::{borrow::Cow, boxed::Box, format, sync::Arc, vec::Vec};
 
 use ax_lazyinit::LazyLock;
 use axfs_ng_vfs::{NodePermission, VfsError, VfsResult};
+use rdif_pwm::{Pwm, PwmError, PwmPolarity, PwmState};
 
 use crate::{
     pseudofs::{
@@ -11,65 +12,96 @@ use crate::{
     sync::Mutex,
 };
 
-mod platform;
-
-/// Returns a [`DirMaker`] for `/sys/class/pwm`, to be embedded into the
-/// kernel-wide sysfs tree by [`crate::pseudofs::sysfs`]. The pwm subsystem
-/// shares the sysfs superblock so that `realpath()` on subordinate symlinks
-/// keeps resolving inside `/sys`.
+/// The class exists even on platforms without a PWM controller.
 pub(crate) fn pwm_class_dir_maker(fs: Arc<SimpleFs>) -> DirMaker {
     SimpleDir::new_maker(fs.clone(), Arc::new(PwmClassDir { fs }))
 }
 
-#[derive(Clone, Copy, Default)]
-struct PwmChannelState {
+struct PwmChannel {
     exported: bool,
-    enabled: bool,
-    period_ns: u64,
-    duty_ns: u64,
+    generation: usize,
+    requested: PwmState,
+}
+impl PwmChannel {
+    fn export(&mut self) -> VfsResult<()> {
+        if self.exported {
+            return Err(VfsError::ResourceBusy);
+        }
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .ok_or(VfsError::ValueOverflow)?;
+        self.exported = true;
+        Ok(())
+    }
+
+    fn unexport(&mut self, controller: &mut Pwm, channel: usize) -> VfsResult<()> {
+        if !self.exported {
+            return Err(VfsError::NoSuchDevice);
+        }
+        controller.disable(channel).map_err(map_error)?;
+        self.requested.enabled = false;
+        self.exported = false;
+        Ok(())
+    }
+
+    fn apply(&mut self, controller: &mut Pwm, channel: usize, next: PwmState) -> VfsResult<()> {
+        controller.apply(channel, next).map_err(map_error)?;
+        self.requested = next;
+        Ok(())
+    }
 }
 
-struct PwmChipState {
-    hw: platform::PwmHardware,
-    channels: Vec<PwmChannelState>,
+struct PwmChip {
+    number: usize,
+    device: rdrive::Device<Pwm>,
+    channels: Mutex<Vec<PwmChannel>>,
 }
 
-struct PwmSysfsState {
-    chips: Vec<PwmChipState>,
-}
+// Device IDs are allocated in firmware enumeration order. The registry is the
+// only discovery source; sysfs never matches vendor compatibles or maps MMIO.
+static CHIPS: LazyLock<Vec<PwmChip>> = LazyLock::new(|| {
+    let mut chips = Vec::new();
+    let mut number = 0;
+    for device in rdrive::get_list::<Pwm>() {
+        let result = (|| {
+            let mut controller = device.lock().map_err(|_| VfsError::Io)?;
+            (0..controller.channel_count())
+                .map(|channel| {
+                    controller
+                        .get_state(channel)
+                        .map(|requested| PwmChannel {
+                            exported: false,
+                            generation: 0,
+                            requested,
+                        })
+                        .map_err(map_error)
+                })
+                .collect::<VfsResult<Vec<_>>>()
+        })();
+        match result {
+            Ok(channels) if !channels.is_empty() => {
+                let count = channels.len();
+                chips.push(PwmChip {
+                    number,
+                    device,
+                    channels: Mutex::new(channels),
+                });
+                number += count;
+            }
+            Ok(_) => warn!("PWM controller has no channels"),
+            Err(err) => warn!(
+                "PWM controller {:?} state unavailable: {err:?}",
+                device.descriptor().device_id()
+            ),
+        }
+    }
+    chips
+});
 
 struct PwmAttrFile {
     ops: Arc<dyn SimpleFileOps>,
 }
-
-// PWM hardware state is only accessed while holding `PWM_SYSFS_STATE`.
-unsafe impl Send for PwmSysfsState {}
-
-impl PwmSysfsState {
-    fn new() -> Self {
-        let mut chips = Vec::with_capacity(platform::pwm_chip_count() as usize);
-        for index in 0..platform::pwm_chip_count() {
-            chips.push(PwmChipState {
-                hw: platform::PwmHardware::new(index),
-                channels: vec![
-                    PwmChannelState::default();
-                    platform::pwm_channels_per_chip(index) as usize
-                ],
-            });
-        }
-        Self { chips }
-    }
-}
-
-static PWM_SYSFS_STATE: LazyLock<Mutex<PwmSysfsState>> =
-    LazyLock::new(|| Mutex::new(PwmSysfsState::new()));
-
-impl PwmAttrFile {
-    fn new(ops: impl SimpleFileOps) -> Self {
-        Self { ops: Arc::new(ops) }
-    }
-}
-
 impl DirectRwFsFileOps for PwmAttrFile {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         let data = self.ops.read_all()?;
@@ -77,412 +109,334 @@ impl DirectRwFsFileOps for PwmAttrFile {
             return Ok(0);
         }
         let data = &data[offset as usize..];
-        let read = data.len().min(buf.len());
-        buf[..read].copy_from_slice(&data[..read]);
-        Ok(read)
+        let len = buf.len().min(data.len());
+        buf[..len].copy_from_slice(&data[..len]);
+        Ok(len)
     }
-
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
         if offset != 0 {
             return Err(VfsError::InvalidInput);
         }
-        // Sysfs attribute writes replace the attribute value. Do this locally
-        // for PWM instead of changing the generic SimpleFile write contract.
         self.ops.write_all(buf)?;
         Ok(buf.len())
     }
 }
-
-fn pwm_attr_file(fs: Arc<SimpleFs>, ops: impl SimpleFileOps) -> Arc<SpecialFsFile<PwmAttrFile>> {
-    SpecialFsFile::new_regular_with_perm(fs, PwmAttrFile::new(ops), NodePermission::default())
+fn attribute(
+    fs: Arc<SimpleFs>,
+    permissions: NodePermission,
+    ops: impl SimpleFileOps,
+) -> NodeOpsMux {
+    SpecialFsFile::new_regular_with_perm(fs, PwmAttrFile { ops: Arc::new(ops) }, permissions).into()
 }
-
 struct PwmClassDir {
     fs: Arc<SimpleFs>,
 }
-
 impl SimpleDirOps for PwmClassDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
-            (0..platform::pwm_chip_count())
-                .map(|index| Cow::Owned(format!("pwmchip{}", platform::pwmchip_number(index)))),
+            CHIPS
+                .iter()
+                .map(|chip| Cow::Owned(format!("pwmchip{}", chip.number))),
         )
     }
-
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
-        let chip_index = parse_pwmchip_index(name).ok_or(VfsError::NotFound)?;
+        let number = name
+            .strip_prefix("pwmchip")
+            .and_then(|v| v.parse::<usize>().ok())
+            .ok_or(VfsError::NotFound)?;
+        let index = CHIPS
+            .iter()
+            .position(|chip| chip.number == number)
+            .ok_or(VfsError::NotFound)?;
         Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
             self.fs.clone(),
             Arc::new(PwmChipDir {
                 fs: self.fs.clone(),
-                chip_index,
+                index,
             }),
         )))
     }
-
-    fn is_cacheable(&self) -> bool {
-        false
-    }
 }
-
 struct PwmChipDir {
     fs: Arc<SimpleFs>,
-    chip_index: u8,
+    index: usize,
 }
-
 impl SimpleDirOps for PwmChipDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        let mut names = vec![
+        let mut names = alloc::vec![
             Cow::Borrowed("export"),
             Cow::Borrowed("unexport"),
-            Cow::Borrowed("npwm"),
+            Cow::Borrowed("npwm")
         ];
-        let state = PWM_SYSFS_STATE.lock();
-        if let Some(chip) = state.chips.get(self.chip_index as usize) {
-            for (index, channel) in chip.channels.iter().enumerate() {
-                if channel.exported {
-                    names.push(Cow::Owned(format!("pwm{}", index)));
-                }
+        for (index, channel) in CHIPS[self.index].channels.lock().iter().enumerate() {
+            if channel.exported {
+                names.push(Cow::Owned(format!("pwm{index}")));
             }
         }
         Box::new(names.into_iter())
     }
-
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let index = self.index;
         match name {
-            "export" => Ok(pwm_attr_file(
-                self.fs.clone(),
-                RwFile::new({
-                    let chip_index = self.chip_index;
-                    move |req| match req {
-                        SimpleFileOperation::Read => Ok(Some(Vec::new())),
+            "export" | "unexport" => {
+                let export = name == "export";
+                Ok(attribute(
+                    self.fs.clone(),
+                    NodePermission::OWNER_WRITE,
+                    RwFile::new(move |request| match request {
+                        SimpleFileOperation::Read => Err(VfsError::PermissionDenied),
                         SimpleFileOperation::Write(data) => {
-                            if data.is_empty() || data.iter().all(|b| b.is_ascii_whitespace()) {
-                                return Ok(None);
-                            }
-                            let channel = parse_u8(data)?;
-                            export_pwm_channel(chip_index, channel)?;
-                            Ok(None)
+                            let channel = usize::try_from(parse_number(data)?)
+                                .map_err(|_| VfsError::InvalidInput)?;
+                            set_exported(index, channel, export)?;
+                            Ok(None::<Vec<u8>>)
                         }
-                    }
-                }),
-            )
-            .into()),
-            "unexport" => Ok(pwm_attr_file(
-                self.fs.clone(),
-                RwFile::new({
-                    let chip_index = self.chip_index;
-                    move |req| match req {
-                        SimpleFileOperation::Read => Ok(Some(Vec::new())),
-                        SimpleFileOperation::Write(data) => {
-                            if data.is_empty() || data.iter().all(|b| b.is_ascii_whitespace()) {
-                                return Ok(None);
-                            }
-                            let channel = parse_u8(data)?;
-                            unexport_pwm_channel(chip_index, channel)?;
-                            Ok(None)
-                        }
-                    }
-                }),
-            )
-            .into()),
-            "npwm" => Ok(SimpleFile::new_regular(self.fs.clone(), {
-                let chip_index = self.chip_index;
-                move || {
-                    let state = PWM_SYSFS_STATE.lock();
-                    let channels = state
-                        .chips
-                        .get(chip_index as usize)
-                        .map(|chip| chip.channels.len())
-                        .unwrap_or(0);
-                    Ok(format!("{channels}\n"))
-                }
+                    }),
+                ))
+            }
+            "npwm" => Ok(SimpleFile::new_regular(self.fs.clone(), move || {
+                Ok(format!("{}\n", CHIPS[index].channels.lock().len()))
             })
             .into()),
             _ => {
-                let local_index = parse_pwm_local_index(name).ok_or(VfsError::NotFound)?;
-                let state = PWM_SYSFS_STATE.lock();
-                let exported = state
-                    .chips
-                    .get(self.chip_index as usize)
-                    .and_then(|chip| chip.channels.get(local_index as usize))
-                    .map(|ch| ch.exported)
-                    .unwrap_or(false);
-                if !exported {
-                    return Err(VfsError::NotFound);
-                }
+                let channel = name
+                    .strip_prefix("pwm")
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .ok_or(VfsError::NotFound)?;
+                let generation =
+                    exported_channel(&CHIPS[index].channels.lock(), channel, None)?.generation;
                 Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
                     self.fs.clone(),
                     Arc::new(PwmChannelDir {
                         fs: self.fs.clone(),
-                        chip_index: self.chip_index,
-                        channel_index: local_index,
+                        index,
+                        channel,
+                        generation,
                     }),
                 )))
             }
         }
     }
-
     fn is_cacheable(&self) -> bool {
         false
     }
 }
-
 struct PwmChannelDir {
     fs: Arc<SimpleFs>,
-    chip_index: u8,
-    channel_index: u8,
+    index: usize,
+    channel: usize,
+    generation: usize,
 }
-
+#[derive(Clone, Copy)]
+enum Attribute {
+    Period,
+    Duty,
+    Enable,
+    Polarity,
+}
 impl SimpleDirOps for PwmChannelDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
-            ["period", "duty_cycle", "enable"]
-                .iter()
-                .map(|s| Cow::Borrowed(*s)),
+            ["period", "duty_cycle", "enable", "polarity"]
+                .into_iter()
+                .map(Cow::Borrowed),
         )
     }
-
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
-        let chip_index = self.chip_index;
-        let channel_index = self.channel_index;
-        let file = match name {
-            "period" => pwm_attr_file(
-                self.fs.clone(),
-                RwFile::new(move |req| match req {
-                    SimpleFileOperation::Read => Ok(Some(
-                        format!("{}\n", pwm_read_period(chip_index, channel_index)?).into_bytes(),
-                    )),
-                    SimpleFileOperation::Write(data) => {
-                        if data.is_empty() || data.iter().all(|b| b.is_ascii_whitespace()) {
-                            return Ok(None);
-                        }
-                        pwm_write_period(chip_index, channel_index, data)?;
-                        Ok(None)
-                    }
-                }),
-            ),
-            "duty_cycle" => pwm_attr_file(
-                self.fs.clone(),
-                RwFile::new(move |req| match req {
-                    SimpleFileOperation::Read => Ok(Some(
-                        format!("{}\n", pwm_read_duty(chip_index, channel_index)?).into_bytes(),
-                    )),
-                    SimpleFileOperation::Write(data) => {
-                        if data.is_empty() || data.iter().all(|b| b.is_ascii_whitespace()) {
-                            return Ok(None);
-                        }
-                        pwm_write_duty(chip_index, channel_index, data)?;
-                        Ok(None)
-                    }
-                }),
-            ),
-            "enable" => pwm_attr_file(
-                self.fs.clone(),
-                RwFile::new(move |req| match req {
-                    SimpleFileOperation::Read => Ok(Some(
-                        format!("{}\n", pwm_read_enable(chip_index, channel_index)?).into_bytes(),
-                    )),
-                    SimpleFileOperation::Write(data) => {
-                        if data.is_empty() || data.iter().all(|b| b.is_ascii_whitespace()) {
-                            return Ok(None);
-                        }
-                        pwm_write_enable(chip_index, channel_index, data)?;
-                        Ok(None)
-                    }
-                }),
-            ),
+        let attr = match name {
+            "period" => Attribute::Period,
+            "duty_cycle" => Attribute::Duty,
+            "enable" => Attribute::Enable,
+            "polarity" => Attribute::Polarity,
             _ => return Err(VfsError::NotFound),
         };
-        Ok(file.into())
+        let index = self.index;
+        let channel = self.channel;
+        let generation = self.generation;
+        exported_channel(&CHIPS[index].channels.lock(), channel, Some(generation))?;
+        Ok(attribute(
+            self.fs.clone(),
+            NodePermission::from_bits_truncate(0o644),
+            RwFile::new(move |request| match request {
+                SimpleFileOperation::Read => {
+                    let channels = CHIPS[index].channels.lock();
+                    let state = exported_channel(&channels, channel, Some(generation))?.requested;
+                    let value = match attr {
+                        Attribute::Period => format!("{}\n", state.period_ns),
+                        Attribute::Duty => format!("{}\n", state.duty_ns),
+                        Attribute::Enable => format!("{}\n", u8::from(state.enabled)),
+                        Attribute::Polarity => match state.polarity {
+                            PwmPolarity::Normal => "normal\n".into(),
+                            PwmPolarity::Inversed => "inversed\n".into(),
+                        },
+                    };
+                    Ok(Some(value.into_bytes()))
+                }
+                SimpleFileOperation::Write(data) => {
+                    write_attribute(index, channel, generation, attr, data)?;
+                    Ok(None)
+                }
+            }),
+        ))
     }
-
     fn is_cacheable(&self) -> bool {
         false
     }
 }
-
-fn parse_pwmchip_index(name: &str) -> Option<u8> {
-    let value = name.strip_prefix("pwmchip")?.parse::<u8>().ok()?;
-    platform::pwmchip_index(value)
-}
-
-fn parse_pwm_local_index(name: &str) -> Option<u8> {
-    name.strip_prefix("pwm")?.parse::<u8>().ok()
-}
-
-fn parse_u64(data: &[u8]) -> VfsResult<u64> {
+fn parse_number(data: &[u8]) -> VfsResult<u64> {
     core::str::from_utf8(data)
         .ok()
-        .and_then(|t| t.trim().parse::<u64>().ok())
+        .and_then(|s| s.trim().parse().ok())
         .ok_or(VfsError::InvalidInput)
 }
-
-fn parse_u8(data: &[u8]) -> VfsResult<u8> {
-    core::str::from_utf8(data)
-        .ok()
-        .and_then(|t| t.trim().parse::<u8>().ok())
-        .ok_or(VfsError::InvalidInput)
-}
-
-fn export_pwm_channel(chip_index: u8, channel: u8) -> VfsResult<()> {
-    let mut state = PWM_SYSFS_STATE.lock();
-    let chip = state
-        .chips
-        .get_mut(chip_index as usize)
-        .ok_or(VfsError::InvalidInput)?;
-    let entry = chip
-        .channels
-        .get_mut(channel as usize)
-        .ok_or(VfsError::InvalidInput)?;
+fn exported_channel(
+    channels: &[PwmChannel],
+    channel: usize,
+    generation: Option<usize>,
+) -> VfsResult<&PwmChannel> {
+    let entry = channels.get(channel).ok_or(VfsError::NotFound)?;
+    // An open attribute belongs to one export lifetime. Re-exporting the same
+    // hardware channel must not revive descriptors from the removed directory.
+    if generation.is_some_and(|value| value != entry.generation || !entry.exported) {
+        return Err(VfsError::NoSuchDevice);
+    }
     if !entry.exported {
-        *entry = PwmChannelState {
-            exported: true,
-            ..Default::default()
-        };
+        return Err(VfsError::NotFound);
     }
-    Ok(())
+    Ok(entry)
 }
-
-fn unexport_pwm_channel(chip_index: u8, channel: u8) -> VfsResult<()> {
-    let mut state = PWM_SYSFS_STATE.lock();
-    let chip = state
-        .chips
-        .get_mut(chip_index as usize)
-        .ok_or(VfsError::InvalidInput)?;
-    {
-        let entry = chip
-            .channels
-            .get(channel as usize)
-            .ok_or(VfsError::InvalidInput)?;
-        if entry.enabled {
-            platform::disable_channel(&mut chip.hw, channel)?;
-        }
-    }
-    chip.channels[channel as usize] = PwmChannelState::default();
-    Ok(())
-}
-
-fn pwm_read_period(chip_index: u8, channel_index: u8) -> VfsResult<u64> {
-    let state = PWM_SYSFS_STATE.lock();
-    Ok(state
-        .chips
-        .get(chip_index as usize)
-        .and_then(|c| c.channels.get(channel_index as usize))
-        .ok_or(VfsError::InvalidInput)?
-        .period_ns)
-}
-
-fn pwm_read_duty(chip_index: u8, channel_index: u8) -> VfsResult<u64> {
-    let state = PWM_SYSFS_STATE.lock();
-    Ok(state
-        .chips
-        .get(chip_index as usize)
-        .and_then(|c| c.channels.get(channel_index as usize))
-        .ok_or(VfsError::InvalidInput)?
-        .duty_ns)
-}
-
-fn pwm_read_enable(chip_index: u8, channel_index: u8) -> VfsResult<u8> {
-    let state = PWM_SYSFS_STATE.lock();
-    Ok(state
-        .chips
-        .get(chip_index as usize)
-        .and_then(|c| c.channels.get(channel_index as usize))
-        .ok_or(VfsError::InvalidInput)?
-        .enabled as u8)
-}
-
-fn pwm_write_period(chip_index: u8, channel_index: u8, data: &[u8]) -> VfsResult<()> {
-    let value = parse_u64(data)?;
-    if value == 0 {
-        return Err(VfsError::InvalidInput);
-    }
-    let mut state = PWM_SYSFS_STATE.lock();
-    let chip = state
-        .chips
-        .get_mut(chip_index as usize)
-        .ok_or(VfsError::InvalidInput)?;
-    let enabled = {
-        let e = chip
-            .channels
-            .get_mut(channel_index as usize)
-            .ok_or(VfsError::InvalidInput)?;
-        e.period_ns = value;
-        e.enabled
-    };
-    if let Err(err) = pwm_apply_channel(chip, channel_index, enabled) {
-        warn!("pwmchip{chip_index}/pwm{channel_index}: apply failed: {err:?}");
-        return Err(err);
-    }
-    Ok(())
-}
-
-fn pwm_write_duty(chip_index: u8, channel_index: u8, data: &[u8]) -> VfsResult<()> {
-    let value = parse_u64(data)?;
-    let mut state = PWM_SYSFS_STATE.lock();
-    let chip = state
-        .chips
-        .get_mut(chip_index as usize)
-        .ok_or(VfsError::InvalidInput)?;
-    let enabled = {
-        let e = chip
-            .channels
-            .get_mut(channel_index as usize)
-            .ok_or(VfsError::InvalidInput)?;
-        e.duty_ns = value;
-        e.enabled
-    };
-    pwm_apply_channel(chip, channel_index, enabled)
-}
-
-fn pwm_write_enable(chip_index: u8, channel_index: u8, data: &[u8]) -> VfsResult<()> {
-    let value = parse_u8(data)?;
-    if value > 1 {
-        return Err(VfsError::InvalidInput);
-    }
-    let mut state = PWM_SYSFS_STATE.lock();
-    let chip = state
-        .chips
-        .get_mut(chip_index as usize)
-        .ok_or(VfsError::InvalidInput)?;
-    if value == 1 {
-        let period_ns = chip
-            .channels
-            .get(channel_index as usize)
-            .ok_or(VfsError::InvalidInput)?
-            .period_ns;
-        if period_ns == 0 {
-            return Err(VfsError::InvalidInput);
-        }
-        pwm_apply_channel(chip, channel_index, true)?;
-        chip.channels[channel_index as usize].enabled = true;
+fn set_exported(index: usize, channel: usize, export: bool) -> VfsResult<()> {
+    let chip = &CHIPS[index];
+    let mut channels = chip.channels.lock();
+    let entry = channels.get_mut(channel).ok_or(VfsError::NoSuchDevice)?;
+    if export {
+        entry.export()
     } else {
-        chip.channels
-            .get(channel_index as usize)
-            .ok_or(VfsError::InvalidInput)?;
-        platform::disable_channel(&mut chip.hw, channel_index)?;
-        chip.channels[channel_index as usize].enabled = false;
+        let mut controller = chip.device.lock().map_err(|_| VfsError::Io)?;
+        entry.unexport(&mut controller, channel)
     }
-    Ok(())
+}
+fn write_attribute(
+    index: usize,
+    channel: usize,
+    generation: usize,
+    attr: Attribute,
+    data: &[u8],
+) -> VfsResult<()> {
+    let chip = &CHIPS[index];
+    // Lock order: per-chip sysfs state -> rdrive controller -> clock provider.
+    // No driver callback enters sysfs. The candidate is published only on success.
+    let mut channels = chip.channels.lock();
+    let mut next = exported_channel(&channels, channel, Some(generation))?.requested;
+    match attr {
+        Attribute::Period => next.period_ns = parse_number(data)?,
+        Attribute::Duty => next.duty_ns = parse_number(data)?,
+        Attribute::Enable => {
+            next.enabled = match parse_number(data)? {
+                0 => false,
+                1 => true,
+                _ => return Err(VfsError::InvalidInput),
+            }
+        }
+        Attribute::Polarity => {
+            next.polarity = match core::str::from_utf8(data)
+                .map_err(|_| VfsError::InvalidInput)?
+                .trim()
+            {
+                "normal" => PwmPolarity::Normal,
+                "inversed" => PwmPolarity::Inversed,
+                _ => return Err(VfsError::InvalidInput),
+            }
+        }
+    }
+    let mut controller = chip.device.lock().map_err(|_| VfsError::Io)?;
+    channels[channel].apply(&mut controller, channel, next)
+}
+fn map_error(error: PwmError) -> VfsError {
+    match error {
+        PwmError::InvalidChannel | PwmError::InvalidPeriod | PwmError::InvalidDuty => {
+            VfsError::InvalidInput
+        }
+        PwmError::UnsupportedPolarity => VfsError::OperationNotSupported,
+        PwmError::Clock | PwmError::InvalidMapping => VfsError::Io,
+    }
 }
 
-fn pwm_apply_channel(chip: &mut PwmChipState, channel_index: u8, running: bool) -> VfsResult<()> {
-    let entry = chip
-        .channels
-        .get(channel_index as usize)
-        .ok_or(VfsError::InvalidInput)?;
-    if entry.period_ns == 0 {
-        return Ok(());
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use rdif_pwm::{DriverGeneric, Interface};
+
+    use super::*;
+
+    // The failure is at the hardware boundary; no OS runtime is replaced.
+    struct UnavailableOutput;
+    impl DriverGeneric for UnavailableOutput {
+        fn name(&self) -> &str {
+            "unavailable-output"
+        }
     }
-    if entry.duty_ns > entry.period_ns {
-        return Err(VfsError::InvalidInput);
+    impl Interface for UnavailableOutput {
+        fn channel_count(&self) -> usize {
+            1
+        }
+        fn get_state(&mut self, _channel: usize) -> Result<PwmState, PwmError> {
+            Ok(PwmState::normal(0, 0, false))
+        }
+        fn apply(&mut self, _channel: usize, state: PwmState) -> Result<(), PwmError> {
+            if state.enabled {
+                Err(PwmError::Clock)
+            } else {
+                Ok(())
+            }
+        }
     }
-    platform::apply_channel(
-        &mut chip.hw,
-        channel_index,
-        entry.period_ns,
-        entry.duty_ns,
-        running,
-    )
+
+    #[test]
+    fn failed_submission_preserves_requested_state() {
+        let mut controller = Pwm::new(UnavailableOutput);
+        let initial = PwmState::normal(1_000_000, 250_000, false);
+        let mut channel = PwmChannel {
+            exported: false,
+            generation: 0,
+            requested: initial,
+        };
+        channel.export().unwrap();
+        assert_eq!(channel.export(), Err(VfsError::ResourceBusy));
+        let rejected = PwmState {
+            duty_ns: 300_000,
+            enabled: true,
+            polarity: PwmPolarity::Inversed,
+            ..initial
+        };
+        assert_eq!(
+            channel.apply(&mut controller, 0, rejected),
+            Err(VfsError::Io)
+        );
+        assert_eq!(channel.requested, initial);
+        assert!(channel.exported);
+        let accepted = PwmState {
+            enabled: false,
+            ..rejected
+        };
+        channel.apply(&mut controller, 0, accepted).unwrap();
+        assert_eq!(channel.requested, accepted);
+        let mut channels = [channel];
+        let generation = channels[0].generation;
+        channels[0].unexport(&mut controller, 0).unwrap();
+        assert!(matches!(
+            exported_channel(&channels, 0, Some(generation)),
+            Err(VfsError::NoSuchDevice)
+        ));
+        channels[0].export().unwrap();
+        assert!(matches!(
+            exported_channel(&channels, 0, Some(generation)),
+            Err(VfsError::NoSuchDevice)
+        ));
+        assert!(exported_channel(&channels, 0, Some(channels[0].generation)).is_ok());
+        channels[0].unexport(&mut controller, 0).unwrap();
+        assert_eq!(
+            channels[0].unexport(&mut controller, 0),
+            Err(VfsError::NoSuchDevice)
+        );
+    }
 }

@@ -1,0 +1,13 @@
+[package]
+name = "sg200x-pwm"
+version = "0.1.0"
+description = "Portable SG200x PWM controller driver"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mmio-api.workspace = true
+rdif-pwm.workspace = true
+tock-registers.workspace = true

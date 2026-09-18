@@ -77,6 +77,7 @@ members = [
     "drivers/rtc/*",
     "drivers/serial/*",
     "drivers/soc/rockchip/*",
+    "drivers/soc/cv181x-clock",
     "drivers/test_crates/*",
     "drivers/tpu/*",
     "drivers/vpu/*",
@@ -227,7 +228,7 @@ rdif-intc = { version = "0.16", path = "drivers/interface/rdif-intc" }
 rdif-msi = { version = "0.3", path = "drivers/interface/rdif-msi" }
 rdif-pcie = { version = "0.3", path = "drivers/interface/rdif-pcie" }
 rdif-pinctrl = { version = "0.2", path = "drivers/interface/rdif-pinctrl" }
-rdif-pwm = { version = "0.1", path = "drivers/interface/rdif-pwm" }
+rdif-pwm = { version = "0.2", path = "drivers/interface/rdif-pwm" }
 rdif-power = { version = "0.9", path = "drivers/interface/rdif-power" }
 rdif-reset = { version = "0.2", path = "drivers/interface/rdif-reset" }
 rdif-serial = { version = "0.10", path = "drivers/interface/rdif-serial" }
@@ -236,7 +237,9 @@ rk3588-pci = { version = "0.2", path = "drivers/pci/rk3588-pci" }
 rockchip-npu = { version = "0.6", path = "drivers/npu/rockchip-npu" }
 rockchip-rga = { version = "0.3", path = "drivers/gpu/rockchip-rga" }
 rockchip-jpeg = { version = "0.2", path = "drivers/vpu/rockchip-jpeg" }
-rockchip-pwm = { version = "0.1", path = "drivers/pwm/rockchip-pwm" }
+cv181x-clock = { version = "0.1", path = "drivers/soc/cv181x-clock" }
+sg200x-pwm = { version = "0.1", path = "drivers/pwm/sg200x-pwm" }
+rockchip-pwm = { version = "0.2", path = "drivers/pwm/rockchip-pwm" }
 k230-kpu = { version = "0.1", path = "drivers/npu/k230-kpu" }
 realtek-rtl8125 = { version = "0.3", path = "drivers/net/realtek-rtl8125" }
 rockchip-pm = { version = "0.4", path = "drivers/soc/rockchip/rockchip-pm" }
