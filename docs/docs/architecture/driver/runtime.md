@@ -28,7 +28,7 @@ sidebar_label: "运行时与完成"
 | 块 | 控制器维护与 hctx | 已确认 IRQ 后排空完成；定时器仅推进指定寄存器状态 |
 | 串口 | `SerialWorker` | latch、控制命令、软件 TX/RX 与配置的 polling |
 | USB | `Core`、端点 future、EventHandler | 端口变化、命令及传输事件、状态等待 |
-| 显示与输入 | 领域适配对象 | 方法调用、可选 IRQ 和输入兴趣条件 |
+| 显示与输入 | 领域适配对象 | 显示方法调用；输入 IRQ 通知与任务侧排水 |
 | 网络 | `QueueGroupExecutor` | 目标 group 通知、预算、rearm 和精确 deadline |
 | vsock | 连接接口 | 数据可用与连接事件 |
 
@@ -82,7 +82,7 @@ sequenceDiagram
 
 `os/arceos/modules/axdisplay/src/rdif.rs` 将领域显示接口包装为 `DisplayDevice`，在 `need_flush()` 为真时执行 flush；构造时保存帧缓冲视图并由对象持有设备。这里没有自动创建网络式队列 owner。
 
-`os/arceos/modules/axinput/src/rdif.rs` 转换事件和能力查询。`axinput/src/lib.rs` 的 `input_polling_fallback_should_drain()` 要求用户兴趣和 IRQ 不活跃条件同时满足，不能将网络“无轮询后备”的合同用于否定该已有输入策略。
+`os/arceos/modules/axinput/src/rdif.rs` 转换事件和能力查询。Starry 的 `os/StarryOS/kernel/src/pseudofs/dev/event.rs` 由 `EventDev::handle_irq()` 确认设备事件并发布 `irq_notify`，`run_irq_service()` 在任务上下文调用 `drain_irq_events()`，先写入输入队列，再唤醒读者。后台服务不以用户等待者数量或最近一次 IRQ 的时间决定是否接收事件；IRQ 路由故障应在设备与平台链路修复，不通过周期轮询掩盖。
 
 vsock 的 `poll_event()`、`send()` 和 `recv()` 围绕连接工作，不经过物理 Ethernet DMA 管道。连接与帧接口的服务边界见[领域服务](services.md)。
 
