@@ -1,0 +1,12 @@
+features = [
+  "ax-driver/rk3588-cpufreq",
+  "ax-driver/rockchip-dwmmc",
+  "ax-driver/rockchip-sdhci",
+  "fs",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "test-suit/axvisor/normal/board-orangepi-5-plus/virtio-net-peer/linux-virtio-net-peer-vm1.toml",
+  "test-suit/axvisor/normal/board-orangepi-5-plus/virtio-net-peer/linux-virtio-net-peer-vm2.toml",
+]

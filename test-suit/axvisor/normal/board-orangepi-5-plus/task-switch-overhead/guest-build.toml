@@ -1,0 +1,6 @@
+package = "arceos-task-switch-bench"
+target = "aarch64-unknown-none-softfloat"
+features = []
+log = "Info"
+max_cpu_num = 1
+to_bin = true

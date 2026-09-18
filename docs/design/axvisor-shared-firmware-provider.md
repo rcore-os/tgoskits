@@ -6,7 +6,7 @@
 
 ## 问题与成功标准
 
-基于 FDT 的 Axvisor machine 会把固件选定的物理 UART 替换为虚拟 UART，同时保持相同的客户机地址和中断身份。物理 UART 及其 clock 继续由宿主所有。透传型客户机仍从可分配物理地址空间的恒等映射开始；除非其他资源在 stage-2 中打洞，否则该范围会包含共享 clock/reset unit。
+基于 FDT 的 Axvisor machine 会为 `Passthrough` 客户机把固件选定的物理 UART 替换为虚拟 UART，同时保持相同的客户机地址和中断身份。物理 UART 及其 clock 继续由宿主所有。`Virtualized` 客户机不继承 host-selected serial identity，而使用架构或 machine profile 的默认 serial profile。透传型客户机仍从可分配物理地址空间的恒等映射开始；除非其他资源在 stage-2 中打洞，否则该范围会包含共享 clock/reset unit。
 
 物理 UART 节点被替换后，Linux 不再看到原 clock 的 consumer。此时 `clk_disable_unused` 可以写共享 provider，并在客户机继续运行时 gate 宿主 UART。RK3568 上，这会在客户机启动期间稳定导致宿主控制台输出消失。加入 `clk_ignore_unused` 后启动能够继续，这证明了所有权违规，但不是可接受的修复。
 

@@ -318,6 +318,21 @@ board = "orangepi-5-plus-robot-linux"
 # Nightly-only checks.
 
 [[check]]
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-virtio-net-peer"
+impact_targets = ["axvisor:aarch64"]
+name = "Board OrangePi 5 Plus · Inter-VM virtio-net"
+nightly_only = true
+runner = "board"
+timeout_minutes = 90
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-virtio-net-peer"
+
+[[check]]
 id = "test-axvisor-aarch64-qemu-timer-stress"
 impact_targets = ["axvisor:aarch64"]
 name = "QEMU aarch64 · GICv2 + GICv3 timer stress"
@@ -387,3 +402,20 @@ cargo xtask axvisor test board --board orangepi-5-plus-vcpu-perf
 [[check.suite]]
 kind = "axvisor-board"
 board = "orangepi-5-plus-vcpu-perf"
+
+[[check]]
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-task-switch-bench"
+impact_targets = ["axvisor:aarch64"]
+name = "Board OrangePi 5 Plus · Task switch benchmark"
+nightly_only = true
+performance_report = true
+runner = "board"
+timeout_minutes = 90
+command = '''
+echo "==> axvisor OrangePi 5 Plus task switch benchmark"
+cargo xtask axvisor test board --board orangepi-5-plus-task-switch-overhead
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-task-switch-overhead"

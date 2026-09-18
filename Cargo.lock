@@ -455,6 +455,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-task-switch-bench"
+version = "0.1.0"
+dependencies = [
+ "ax-cpu",
+ "ax-memory-addr",
+ "ax-mm",
+ "ax-runtime",
+ "ax-std",
+ "rockchip-soc",
+]
+
+[[package]]
 name = "arceos-test-suit"
 version = "0.3.1"
 dependencies = [
@@ -493,7 +505,7 @@ name = "arceos-vcpu-perf"
 version = "0.1.0"
 dependencies = [
  "ax-std",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
