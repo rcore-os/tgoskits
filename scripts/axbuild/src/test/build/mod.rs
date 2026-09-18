@@ -84,8 +84,10 @@ pub(crate) use toolchain::find_cross_tool_qemu;
 use toolchain::{cross_compile_spec, write_cmake_toolchain_file, write_cross_bin_wrappers};
 use wrappers::{
     apply_case_script_envs, case_script_envs, ensure_guest_tool_exists, guest_library_path,
-    qemu_user_binary_names, write_guest_command_wrappers, write_guest_exec_wrapper,
+    write_guest_command_wrappers, write_guest_exec_wrapper,
 };
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) use wrappers::qemu_user_binary_names;

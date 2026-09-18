@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(starry-pid1-exit-thread C)
+add_executable(starry-pid1-exit-thread src/main.c)
+set_target_properties(starry-pid1-exit-thread PROPERTIES OUTPUT_NAME init)
+target_compile_options(starry-pid1-exit-thread PRIVATE -Wall -Wextra -Werror)
+install(TARGETS starry-pid1-exit-thread RUNTIME DESTINATION sbin)

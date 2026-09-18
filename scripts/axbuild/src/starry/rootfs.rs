@@ -140,17 +140,30 @@ pub(crate) async fn ensure_rootfs_in_tmp_dir(
     }
 
     let rootfs = crate::image::storage::ensure_rootfs_for_arch(workspace_root, arch).await?;
-    let _lock = crate::support::download::acquire_path_lock(&rootfs).await?;
-    ensure_apk_region_in_rootfs(&rootfs)?;
-    Ok(rootfs)
+    let image_lock = crate::support::download::acquire_path_lock(&rootfs).await?;
+    let workspace_root = workspace_root.to_path_buf();
+    let arch = arch.to_string();
+    tokio::task::spawn_blocking(move || {
+        // Retain the lock in the blocking task even if its async caller is cancelled.
+        let _lock = image_lock;
+        ensure_apk_region_in_rootfs(&rootfs)?;
+        super::openrc::prepare(&workspace_root, &arch, &rootfs)?;
+        Ok(rootfs)
+    })
+    .await
+    .context("OpenRC rootfs preparation task failed")?
 }
 
-/// Ensures a selected rootfs image exists without modifying its contents.
+/// Prepares the default Alpine image; explicit images are only checked for existence.
 pub(crate) async fn ensure_qemu_rootfs_ready(
     request: &ResolvedStarryRequest,
     workspace_root: &Path,
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
+    if explicit_rootfs.is_none() {
+        ensure_rootfs_in_tmp_dir(workspace_root, &request.arch, &request.target).await?;
+        return Ok(());
+    }
     let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
     crate::image::storage::ensure_optional_managed_rootfs(
         workspace_root,

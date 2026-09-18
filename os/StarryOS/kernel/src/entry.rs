@@ -106,9 +106,8 @@ pub fn init(args: &[String], envs: &[String]) {
     let proc = Process::new_init(identity.clone()).expect("failed to prepare init process");
     proc.add_thread(TidNumber::try_from(pid).expect("init TID must be non-zero"));
 
-    if let Err(error) = tty::bind_console_to(&proc) {
-        warn!("Failed to bind console tty: {error:?}");
-    }
+    // Initial console descriptors do not assign a controlling terminal to
+    // PID 1. A userspace session leader claims it with TIOCSCTTY.
 
     let proc = ProcessData::new(
         proc,
@@ -168,24 +167,12 @@ pub fn init(args: &[String], envs: &[String]) {
     tty::arm_console_irq();
     let task = staged_task.activate();
 
-    // TODO: wait for all processes to finish
-    let exit_code = task.join();
-    info!("Init process exited with code: {exit_code:?}");
-
-    let fs_context = current_fs_context();
-    let cx = fs_context.lock();
-    // Best-effort teardown, matching Linux's shutdown path. A process that exited while
-    // holding a mount namespace (bind mounts, pivot_root) can leave the mount tree in a
-    // state `unmount_all` rejects; at shutdown that must be logged, not turned into a
-    // kernel panic that fails an otherwise clean run. The rootfs flush below is what
-    // matters for on-disk integrity.
-    if let Err(err) = cx.root_dir().unmount_all() {
-        warn!("shutdown: unmount_all failed (best-effort): {err:?}");
-    }
-    cx.root_dir()
-        .filesystem()
-        .flush()
-        .expect("Failed to flush rootfs");
+    // Reap the initial scheduler thread, which may exit while init's peers
+    // remain alive. Only do_exit's last-thread owner decides that init died.
+    // Userspace owns normal shutdown through reboot(2); the bootstrap thread
+    // must neither return nor poll a second process-lifecycle state here.
+    let _exit_code = task.join();
+    match crate::task::future::block_on(core::future::pending::<core::convert::Infallible>()) {}
 }
 
 /// Run the one-shot DVFS OPP calibration sweep (gated by the driver's `CALIBRATE`

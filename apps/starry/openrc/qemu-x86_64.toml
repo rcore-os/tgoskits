@@ -11,12 +11,12 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
-uefi = false
-to_bin = false
-fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^OPENRC_TEST_FAILED\\s*$"]
+uefi = true
+to_bin = true
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^STARRY_OPENRC_FAILED:"]
 timeout = 600
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:"
 shell_cmd = "/usr/bin/openrc-test.sh"
-success_regex = ["(?m)^OPENRC_TEST_PASSED\\s*$"]
+success_regex = ["(?m)^STARRY_OPENRC_PASSED\\s*$"]

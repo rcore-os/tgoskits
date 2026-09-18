@@ -19,7 +19,7 @@ use super::{
         termios::{Termios2, TermiosParity},
     },
 };
-use crate::{StarryError, StarryResult, pseudofs::DeviceOps, sync::Mutex, task::Process};
+use crate::{StarryError, StarryResult, pseudofs::DeviceOps, sync::Mutex};
 
 pub type SerialTtyDriver = Tty<SerialReader, SerialWriter>;
 
@@ -145,17 +145,6 @@ pub fn console_device() -> Arc<dyn DeviceOps> {
         .and_then(|index| SERIAL_REGISTRY.entries.get(index))
         .map(|entry| entry.tty() as Arc<dyn DeviceOps>)
         .unwrap_or_else(|| Arc::new(NoConsole))
-}
-
-pub fn bind_console_to(proc: &Process) -> StarryResult<()> {
-    if let Some(index) = SERIAL_REGISTRY.console_index
-        && let Some(entry) = SERIAL_REGISTRY.entries.get(index)
-    {
-        entry.tty.bind_to(proc)?;
-        entry.backend.ensure_started()?;
-        return Ok(());
-    }
-    Err(StarryError::NoSuchDevice)
 }
 
 pub fn arm_console_irq() {
