@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/rcore-os/tgoskits/compare/sg200x-jpu-v0.1.5...sg200x-jpu-v0.1.6) - 2026-09-18
+
+### Fixed
+
+- *(cvi-vdec)* convert native JPEG chroma to YUV420 ([#2414](https://github.com/rcore-os/tgoskits/pull/2414))
+
+### Other
+
+- *(repo)* remove nonfunctional and redundant test assertions ([#2440](https://github.com/rcore-os/tgoskits/pull/2440))
+
 ## [0.1.5](https://github.com/rcore-os/tgoskits/compare/sg200x-jpu-v0.1.4...sg200x-jpu-v0.1.5) - 2026-09-09
 
 ### Fixed

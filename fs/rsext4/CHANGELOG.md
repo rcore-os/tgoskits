@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.9.0...rsext4-v0.9.1) - 2026-09-18
+
+### Fixed
+
+- *(rsext4)* preserve indexed directory and freed inode consistency ([#2447](https://github.com/rcore-os/tgoskits/pull/2447))
+
+### Other
+
+- *(repo)* remove nonfunctional and redundant test assertions ([#2440](https://github.com/rcore-os/tgoskits/pull/2440))
+
 ## [0.9.0](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.8.1...rsext4-v0.9.0) - 2026-09-09
 
 ### Added

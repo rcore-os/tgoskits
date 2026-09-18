@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.2](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.10.1...ax-cpu-v0.10.2) - 2026-09-18
+
+### Fixed
+
+- *(axvm)* preserve host interrupt ownership across guest execution ([#2438](https://github.com/rcore-os/tgoskits/pull/2438))
+
 ## [0.10.1](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.10.0...ax-cpu-v0.10.1) - 2026-09-13
 
 ### Added

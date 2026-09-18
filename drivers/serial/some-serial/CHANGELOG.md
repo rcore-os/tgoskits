@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.8](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.7...some-serial-v0.7.8) - 2026-09-18
+
+### Other
+
+- *(repo)* remove nonfunctional and redundant test assertions ([#2440](https://github.com/rcore-os/tgoskits/pull/2440))
+
 ## [0.7.7](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.6...some-serial-v0.7.7) - 2026-09-11
 
 ### Fixed

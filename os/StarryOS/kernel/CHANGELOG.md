@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.10.2...starry-kernel-v0.11.0) - 2026-09-18
+
+### Added
+
+- *(vfs)* implement mutation credentials for directory operations an… ([#2287](https://github.com/rcore-os/tgoskits/pull/2287))
+
+### Fixed
+
+- *(ax-fs-ng)* serialize page-cache eviction with mapping publication ([#2449](https://github.com/rcore-os/tgoskits/pull/2449))
+- *(ci)* restore RK3588 NPU inference and require complete workload success ([#2441](https://github.com/rcore-os/tgoskits/pull/2441))
+- *(starry-kernel)* preserve ptrace stops during ordinary signal wakeups ([#2434](https://github.com/rcore-os/tgoskits/pull/2434))
+- *(rknpu)* enforce per-owner and per-device GEM allocation quotas ([#2424](https://github.com/rcore-os/tgoskits/pull/2424))
+- *(cvi-vdec)* convert native JPEG chroma to YUV420 ([#2414](https://github.com/rcore-os/tgoskits/pull/2414))
+- *(starry-kernel)* forward terminal cursor position queries ([#2408](https://github.com/rcore-os/tgoskits/pull/2408))
+- *(starry-kernel)* unify inode lock identity across mounts ([#2406](https://github.com/rcore-os/tgoskits/pull/2406))
+- *(starry-kernel)* enforce executable inode write exclusion ([#2375](https://github.com/rcore-os/tgoskits/pull/2375))
+- *(starry-kernel)* make FIFO opens interruptible ([#2368](https://github.com/rcore-os/tgoskits/pull/2368))
+- *(ci)* fix debugfs test execution and virtio input startup ([#2396](https://github.com/rcore-os/tgoskits/pull/2396))
+- *(starry)* align syscall and Unix socket semantics with Linux ([#2270](https://github.com/rcore-os/tgoskits/pull/2270))
+
+### Other
+
+- *(starry)* simplify feature selection ([#2436](https://github.com/rcore-os/tgoskits/pull/2436))
+- *(scheduler)* streamline wakeup paths and RT accounting ([#2435](https://github.com/rcore-os/tgoskits/pull/2435))
+- *(sched)* reduce scheduler and futex hot-path overhead ([#2399](https://github.com/rcore-os/tgoskits/pull/2399))
+
 ### Changed
 
 - [**breaking**] 移除 `starry-kernel` 的 `input`、`smp`、`vsock` 和 `ipi` Cargo features；对应内核路径改为始终编译。

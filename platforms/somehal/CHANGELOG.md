@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2](https://github.com/rcore-os/tgoskits/compare/somehal-v0.11.1...somehal-v0.11.2) - 2026-09-18
+
+### Other
+
+- updated the following local packages: ax-cpu, cpu-local, someboot
+
 ## [0.11.1](https://github.com/rcore-os/tgoskits/compare/somehal-v0.11.0...somehal-v0.11.1) - 2026-09-13
 
 ### Other

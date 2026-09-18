@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/axvm-types-v0.7.5...axvm-types-v0.7.6) - 2026-09-18
+
+### Fixed
+
+- *(axvm)* preserve host interrupt ownership across guest execution ([#2438](https://github.com/rcore-os/tgoskits/pull/2438))
+
 ## [0.7.5](https://github.com/rcore-os/tgoskits/compare/axvm-types-v0.7.4...axvm-types-v0.7.5) - 2026-09-09
 
 ### Other

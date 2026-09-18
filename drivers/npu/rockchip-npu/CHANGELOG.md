@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.6.0...rockchip-npu-v0.7.0) - 2026-09-18
+
+### Fixed
+
+- *(ci)* restore RK3588 NPU inference and require complete workload success ([#2441](https://github.com/rcore-os/tgoskits/pull/2441))
+- *(rknpu)* enforce per-owner and per-device GEM allocation quotas ([#2424](https://github.com/rcore-os/tgoskits/pull/2424))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/rockchip-npu-v0.5.0...rockchip-npu-v0.6.0) - 2026-09-13
 
 ### Fixed

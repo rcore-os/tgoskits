@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.7.5...axvisor-v0.8.0) - 2026-09-18
+
+### Added
+
+- *(axvm)* support LoongArch PCI direct boot ([#2405](https://github.com/rcore-os/tgoskits/pull/2405))
+- *(axvm)* support x86 virtio-blk file backends ([#2390](https://github.com/rcore-os/tgoskits/pull/2390))
+
+### Fixed
+
+- *(axvm)* reduce redundant vCPU scheduling and add board perf CI ([#2362](https://github.com/rcore-os/tgoskits/pull/2362))
+
+### Other
+
+- *(axvisor)* remove test-only features and normalize test layout ([#2450](https://github.com/rcore-os/tgoskits/pull/2450))
+
 ## [0.7.5](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.7.4...axvisor-v0.7.5) - 2026-09-13
 
 ### Other
