@@ -1,4 +1,7 @@
 //! Self-contained single-page frontend served directly by Axvisor.
+//!
+//! The page refers to its own assets relatively so that the same HTML works at
+//! `/` and, once the React dashboard takes `/` over, at `/console/`.
 
 pub(super) const XTERM_JAVASCRIPT: &str = include_str!("assets/xterm-6.0.0/xterm.js");
 pub(super) const XTERM_STYLESHEET: &str = include_str!("assets/xterm-6.0.0/xterm.css");
@@ -9,7 +12,7 @@ pub(super) const INDEX_HTML: &str = r##"<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Axvisor board console</title>
-  <link rel="stylesheet" href="/assets/xterm.css">
+  <link rel="stylesheet" href="assets/xterm.css">
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #080c14; color: #e8edf7; }
     * { box-sizing: border-box; }
@@ -44,7 +47,7 @@ pub(super) const INDEX_HTML: &str = r##"<!doctype html>
       <div class="terminal"></div>
     </section>
   </template>
-  <script src="/assets/xterm.js"></script>
+  <script src="assets/xterm.js"></script>
   <script>
     (() => {
       const encoder = new TextEncoder();

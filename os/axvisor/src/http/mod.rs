@@ -15,6 +15,8 @@
 pub mod auth;
 #[cfg(feature = "browser-console")]
 pub mod browser_console;
+#[cfg(feature = "http-axum")]
+pub mod manifest;
 pub mod server;
 #[cfg(feature = "http-axum")]
 pub mod vm;
