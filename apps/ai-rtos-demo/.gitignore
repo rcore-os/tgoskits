@@ -1,0 +1,6 @@
+build/
+install/
+target/
+yolov8-onnx-cpu/third_party/
+yolov8-onnx-cpu/model/
+yolov8-onnx-cpu/validation/

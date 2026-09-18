@@ -188,6 +188,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "aicp-rust-protocol"
+version = "0.1.0"
+
+[[package]]
 name = "aliasable"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -493,7 +497,7 @@ name = "arceos-vcpu-perf"
 version = "0.1.0"
 dependencies = [
  "ax-std",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]

@@ -18,6 +18,7 @@ members = [
 
     "bootloader/axloader",
 
+    "components/aicp-protocol",
     "components/axtest/axtest",
     "components/axtest/axtest_macros",
     "components/cpu-local",
