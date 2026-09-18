@@ -315,6 +315,15 @@ impl EpollInterest {
             && self.owner_repoll_pending.swap(false, Ordering::AcqRel)
     }
 
+    /// Returns whether this interest still holds a lease that can wake it.
+    fn registration_is_armed(&self) -> bool {
+        match &*self.registration.lock() {
+            Some(InterestRegistration::Shared(registrar)) => registrar.is_armed(),
+            Some(InterestRegistration::Exclusive(registrar)) => registrar.is_armed(),
+            None => false,
+        }
+    }
+
     fn replace_registration(&self, registration: Option<InterestRegistration>) {
         let previous = core::mem::replace(&mut *self.registration.lock(), registration);
         if let Some(mut previous) = previous {
@@ -731,6 +740,13 @@ impl Epoll {
     // only register waker, not add to ready queue
     fn register_waker_only(&self, interest: &Arc<EpollInterest>) {
         if !interest.can_refresh_waker_from_current_process() {
+            return;
+        }
+
+        // An armed lease already delivers this interest's wakeups into the
+        // ready queue; replacing it would cost an allocation per wait and
+        // leave the interest on no source in between.
+        if interest.registration_is_armed() {
             return;
         }
 

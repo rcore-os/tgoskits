@@ -141,6 +141,18 @@ impl<M> PollRegistrar<M> {
         self.registrations.is_empty()
     }
 
+    /// Returns whether every owned lease is still armed.
+    ///
+    /// A source removes the entry it notified, so a notified lease no longer
+    /// delivers wakeups and its owner has to register again.
+    pub fn is_armed(&self) -> bool {
+        !self.registrations.is_empty()
+            && self
+                .registrations
+                .iter()
+                .all(|registration| !registration.lease.was_notified())
+    }
+
     unsafe fn register_mode(
         &mut self,
         source: &dyn PollSource,
