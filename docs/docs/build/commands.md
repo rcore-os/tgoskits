@@ -185,10 +185,11 @@ UEFI bootloader（axloader）构建与 HTTP smoke 测试。
 
 | 子命令 | 用法 | 说明 |
 |--------|------|------|
-| `build` | `axloader build [--target <T>] [--release\|--debug]` | 编译（默认 `x86_64-unknown-uefi`，默认 release） |
+| `build` | `axloader build [--target <T>] [--release\|--debug] [--trusted-public-key <HEX>]` | 编译（默认 `x86_64-unknown-uefi`，默认 release） |
+| `sign` | `axloader sign --key <PEM> --input <ELF> --output <SIGNED_ELF> [--entry-symbol httpboot_entry]` | 对最终 ELF 签名并输出发布者公钥 |
 | `test qemu` | `axloader test qemu [--target <T>]` | host 单测 + QEMU HTTP smoke test |
 
-详见 [Axloader](./axloader)。
+`build` 的公钥也可通过 `AXLOADER_TRUSTED_PUBLIC_KEY` 提供；没有公钥的 EFI 会拒绝装载内核。签名须在最终 ELF 后处理完成后生成，详见 [Axloader](./axloader)。
 
 ### 4.6 评审基准
 

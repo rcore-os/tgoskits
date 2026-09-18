@@ -3,6 +3,7 @@
 #[cfg(any(windows, unix))]
 pub mod elf_image;
 
+pub mod authentication;
 pub mod boot_offer;
 pub mod integrity;
 pub mod network_policy;

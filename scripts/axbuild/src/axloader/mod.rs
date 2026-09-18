@@ -43,8 +43,7 @@ struct LoaderSmokeTarget {
 }
 
 struct SmokeAttemptContext<'a> {
-    workspace_root: &'a Path,
-    target: &'a str,
+    efi: &'a Path,
     smoke_target: LoaderSmokeTarget,
     firmware: &'a Path,
     kernel: &'a [u8],
@@ -60,6 +59,10 @@ pub struct ArgsBuild {
 
     #[arg(long, conflicts_with = "release")]
     pub debug: bool,
+
+    /// Trusted Ed25519 public key encoded as 64 hexadecimal digits
+    #[arg(long)]
+    pub trusted_public_key: Option<String>,
 }
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
@@ -80,11 +83,25 @@ pub struct ArgsTestQemu {
     pub target: String,
 }
 
+#[derive(Args)]
+pub struct ArgsSign {
+    #[arg(long)]
+    key: PathBuf,
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    entry_symbol: Option<String>,
+}
+
 /// Axloader host-side commands
 #[derive(Subcommand)]
 pub enum Command {
     /// Build axloader
     Build(ArgsBuild),
+    /// Sign a kernel ELF using an Ed25519 PKCS8 PEM key
+    Sign(ArgsSign),
     /// Run axloader test suites
     Test(ArgsTest),
 }
@@ -103,13 +120,23 @@ impl Axloader {
     pub async fn execute(&mut self, command: Command) -> anyhow::Result<()> {
         match command {
             Command::Build(args) => build(&self.workspace_root, args),
+            Command::Sign(args) => {
+                println!("{}", sign_kernel(&self.workspace_root, &args)?);
+                Ok(())
+            }
             Command::Test(args) => test(&self.workspace_root, args).await,
         }
     }
 }
 
 pub fn build(workspace_root: &Path, args: ArgsBuild) -> anyhow::Result<()> {
-    run_loader_build(workspace_root, &args.target, args.release || !args.debug)
+    run_loader_build(
+        workspace_root,
+        &args.target,
+        args.release || !args.debug,
+        args.trusted_public_key.as_deref(),
+        None,
+    )
 }
 
 pub async fn test(workspace_root: &Path, args: ArgsTest) -> anyhow::Result<()> {
@@ -140,7 +167,13 @@ async fn test_qemu(workspace_root: &Path, args: ArgsTestQemu) -> anyhow::Result<
     run_http_smoke_test(workspace_root, &args.target).await
 }
 
-fn run_loader_build(workspace_root: &Path, target: &str, release: bool) -> anyhow::Result<()> {
+fn run_loader_build(
+    workspace_root: &Path,
+    target: &str,
+    release: bool,
+    public_key: Option<&str>,
+    target_dir: Option<&Path>,
+) -> anyhow::Result<()> {
     let mut args = vec![
         "build",
         "-p",
@@ -153,36 +186,104 @@ fn run_loader_build(workspace_root: &Path, target: &str, release: bool) -> anyho
     if release {
         args.push("--release");
     }
-    run_cargo(workspace_root, args)
+    let mut command = cargo_command();
+    command.current_dir(workspace_root).args(args);
+    if let Some(public_key) = public_key {
+        command.env("AXLOADER_TRUSTED_PUBLIC_KEY", public_key);
+    }
+    if let Some(target_dir) = target_dir {
+        command.arg("--target-dir").arg(target_dir);
+    }
+    command.exec()
+}
+
+fn sign_kernel(workspace_root: &Path, args: &ArgsSign) -> anyhow::Result<String> {
+    let mut command = cargo_command();
+    command
+        .current_dir(workspace_root)
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            AXLOADER_PACKAGE,
+            "--",
+            "sign",
+            "--key",
+        ])
+        .arg(&args.key)
+        .arg("--input")
+        .arg(&args.input)
+        .arg("--output")
+        .arg(&args.output)
+        .stderr(Stdio::inherit());
+    if let Some(symbol) = &args.entry_symbol {
+        command.arg("--entry-symbol").arg(symbol);
+    }
+    let output = command.output().context("failed to run axloader signer")?;
+    if !output.status.success() {
+        bail!("axloader signing failed with {}", output.status);
+    }
+    let key = String::from_utf8(output.stdout).context("signer returned invalid UTF-8")?;
+    let key = key.trim();
+    if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("signer did not return an Ed25519 public key");
+    }
+    Ok(key.to_owned())
+}
+
+fn cargo_command() -> StdCommand {
+    // Cargo may rewrite CARGO for its children; preserve the installer's
+    // explicitly selected wrapper independently across nested invocations.
+    StdCommand::new(std::env::var_os("AXLOADER_CARGO").unwrap_or_else(|| "cargo".into()))
 }
 
 fn run_cargo<'a>(
     workspace_root: &Path,
     args: impl IntoIterator<Item = &'a str>,
 ) -> anyhow::Result<()> {
-    let mut command = StdCommand::new("cargo");
+    let mut command = cargo_command();
     command.current_dir(workspace_root).args(args);
     command.exec()
 }
 
 async fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()> {
     let smoke_target = smoke_target(target)?;
-
-    println!("axloader http smoke: building UEFI loader ...");
-    run_loader_build(workspace_root, target, true)?;
-
-    let firmware = OvmfFirmware::fetch(smoke_target.ovmf_arch).await?;
-    println!(
-        "axloader http smoke: using UEFI firmware {}",
-        firmware.code().display()
-    );
+    let temp = tempfile::tempdir().context("failed to create axloader signing temp dir")?;
+    let key = temp.path().join("signing.pem");
+    StdCommand::new("openssl")
+        .args(["genpkey", "-algorithm", "ED25519", "-out"])
+        .arg(&key)
+        .exec()?;
     let kernel = (smoke_target.kernel_elf)();
-    let attempt_context = SmokeAttemptContext {
+    let input = temp.path().join("kernel.elf");
+    fs::write(&input, &kernel)?;
+    let signed_path = temp.path().join("signed.elf");
+    let public_key = sign_kernel(
+        workspace_root,
+        &ArgsSign {
+            key,
+            input,
+            output: signed_path.clone(),
+            entry_symbol: None,
+        },
+    )?;
+    let target_dir = temp.path().join("target");
+    println!("axloader http smoke: building isolated UEFI loader ...");
+    run_loader_build(
         workspace_root,
         target,
+        true,
+        Some(&public_key),
+        Some(&target_dir),
+    )?;
+    let efi = target_dir.join(target).join("release/axloader.efi");
+    let firmware = OvmfFirmware::fetch(smoke_target.ovmf_arch).await?;
+    let signed = fs::read(signed_path)?;
+    let attempt_context = SmokeAttemptContext {
+        efi: &efi,
         smoke_target,
         firmware: firmware.code(),
-        kernel: &kernel,
+        kernel: &signed,
     };
     let mut attempt = 1;
     let mut failures = Vec::new();
@@ -218,7 +319,7 @@ fn run_http_smoke_attempt(context: &SmokeAttemptContext<'_>) -> anyhow::Result<(
     fs::create_dir_all(&efi_boot_dir)
         .with_context(|| format!("failed to create {}", efi_boot_dir.display()))?;
     fs::copy(
-        axloader_efi_path(context.workspace_root, context.target),
+        context.efi,
         efi_boot_dir.join(context.smoke_target.efi_output_file),
     )
     .context("failed to stage axloader EFI binary")?;
@@ -299,14 +400,6 @@ fn drive_http_smoke_session(
 
 fn next_smoke_attempt(current_attempt: usize) -> Option<usize> {
     (current_attempt < HTTP_SMOKE_MAX_ATTEMPTS).then_some(current_attempt + 1)
-}
-
-fn axloader_efi_path(workspace_root: &Path, target: &str) -> PathBuf {
-    workspace_root
-        .join("target")
-        .join(target)
-        .join("release")
-        .join("axloader.efi")
 }
 
 fn smoke_target(target: &str) -> anyhow::Result<LoaderSmokeTarget> {
