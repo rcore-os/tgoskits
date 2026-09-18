@@ -1,5 +1,5 @@
 use crate::{
-    StarryError, StarryResult,
+    StarryResult,
     task::{PidView, UserTaskRef},
 };
 
@@ -14,12 +14,11 @@ pub fn sys_getpid(current: &UserTaskRef) -> StarryResult<isize> {
 }
 
 pub fn sys_getppid(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {
-    let parent = current
-        .as_thread()
-        .proc_data
-        .proc
-        .parent()
-        .ok_or(StarryError::NoSuchProcess)?;
+    // Global init has no userspace parent. A parent outside the caller's PID
+    // namespace is likewise represented by zero, not an error.
+    let Some(parent) = current.as_thread().proc_data.proc.parent() else {
+        return Ok(0);
+    };
     Ok(PidView::new(current.as_thread().active_pid_namespace())
         .visible_process_number(&parent.identity())
         .map_or(0, |pid| pid.get() as isize))
@@ -101,7 +100,7 @@ pub fn sys_arch_prctl(
 ) -> crate::StarryResult<isize> {
     use crate::mm::VmMutPtr;
 
-    let code = ArchPrctlCode::try_from(code).map_err(|_| StarryError::InvalidInput)?;
+    let code = ArchPrctlCode::try_from(code).map_err(|_| crate::StarryError::InvalidInput)?;
     debug!("sys_arch_prctl: code = {code:?}, addr = {addr:#x}");
 
     match code {

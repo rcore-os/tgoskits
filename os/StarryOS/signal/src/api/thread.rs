@@ -271,6 +271,11 @@ impl ThreadSignalManager {
             let actions_arc = self.proc.actions();
             let mut actions = actions_arc.lock_irqsave();
             let action = actions[signo].clone();
+            if self.proc.ignores_init_default(&action)
+                || self.proc.rejects_kernel_only_signal(signo)
+            {
+                return (action.is_restartable(), PreparedSignal::Ignore);
+            }
             if action.flags.contains(SignalActionFlags::RESETHAND) {
                 actions[signo] = SignalAction::default();
             }
@@ -572,10 +577,17 @@ impl ThreadSignalManager {
         let signo = sig.signo();
         let mut prepared = Some(crate::pending::PreparedSignalInfo::new(sig));
         let (deliverable, _targets) = self.proc.publish_with_targets(|actions, targets| {
+            if self.proc.rejects_kernel_only_signal(signo) {
+                return false;
+            }
             let blocked = self.signal_blocked(signo);
             let deliverable = self.wants_signal(signo);
             let in_sigwait = self.is_sigwait_for(signo);
-            if !blocked && !in_sigwait && actions[signo].is_ignore(signo) {
+            if !blocked
+                && !in_sigwait
+                && (actions[signo].is_ignore(signo)
+                    || self.proc.ignores_init_default(&actions[signo]))
+            {
                 return false;
             }
             prepared = self.pending.lock_irqsave().put_prepared(

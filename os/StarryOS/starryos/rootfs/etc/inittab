@@ -1,0 +1,6 @@
+::sysinit:/sbin/openrc sysinit
+::wait:/sbin/openrc boot
+::wait:/sbin/openrc default
+::respawn:-/usr/libexec/starry/console
+::shutdown:/sbin/openrc shutdown
+::shutdown:/bin/sync

@@ -193,7 +193,7 @@ if ! kill -0 "$QPID" 2>/dev/null; then
     exit 1
 fi
 
-# Assert that the in-guest runner actually launched. The init.sh hook
+# Assert that the in-guest runner actually launched. The OpenRC autorun service
 # emits `[init] /test_runner.sh started pid=<n>` to /dev/console
 # immediately after spawning the scenario. Without this check a
 # scenario that silently failed to start would still pass on a

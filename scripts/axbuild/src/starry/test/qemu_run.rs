@@ -77,7 +77,8 @@ impl Starry {
             );
         }
         let default_rootfs_path =
-            crate::image::storage::default_rootfs_path(self.app.workspace_root(), &request.arch)?;
+            rootfs::ensure_rootfs_in_tmp_dir(self.app.workspace_root(), &request.arch, &target)
+                .await?;
         self.app.set_debug_mode(request.debug)?;
 
         let total = cases.len();
