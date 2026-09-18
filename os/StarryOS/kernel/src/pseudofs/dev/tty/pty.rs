@@ -73,6 +73,13 @@ impl PtyWriter {
 }
 
 impl TtyWrite for PtyWriter {
+    fn open(&self) -> crate::StarryResult<()> {
+        // Linux pty_open() clears TTY_OTHER_CLOSED on the peer, so a slave
+        // reopened by name no longer reads as hung up from the master.
+        self.3.store(false, Ordering::Release);
+        Ok(())
+    }
+
     fn write(&self, buf: &[u8]) {
         let read = self.try_write(buf);
         if read < buf.len() {
