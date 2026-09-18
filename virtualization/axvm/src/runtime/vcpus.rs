@@ -751,7 +751,8 @@ mod tests {
         });
 
         request_published.wait();
-        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        let wait_snapshot =
+            runtime.vcpu_event_wait_snapshot(Arc::new(crate::vcpu::VcpuRunState::new()));
         let wait_count = std::cell::Cell::new(0);
         crate::vm::wait_for_vcpu_event_if_idle(
             &runtime,
@@ -779,7 +780,8 @@ mod tests {
     #[test]
     fn interrupt_queued_before_wait_snapshot_prevents_sleep() {
         let runtime = VmRuntimeHandle::new();
-        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        let wait_snapshot =
+            runtime.vcpu_event_wait_snapshot(Arc::new(crate::vcpu::VcpuRunState::new()));
         let wait_count = std::cell::Cell::new(0);
 
         crate::vm::wait_for_vcpu_event_if_idle(
@@ -796,7 +798,8 @@ mod tests {
     #[test]
     fn request_published_at_wait_boundary_prevents_sleep_and_is_consumed_once() {
         let runtime = Arc::new(VmRuntimeHandle::new());
-        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        let wait_snapshot =
+            runtime.vcpu_event_wait_snapshot(Arc::new(crate::vcpu::VcpuRunState::new()));
         let wait_boundary_reached = Arc::new(std::sync::Barrier::new(2));
         let request_published = Arc::new(std::sync::Barrier::new(2));
         let notifier_runtime = runtime.clone();

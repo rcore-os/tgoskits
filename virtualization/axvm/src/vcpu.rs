@@ -116,6 +116,7 @@ const EXITING_GUEST_MODE_BIT: usize = 1;
 pub(crate) struct VcpuRunState {
     mode: AtomicUsize,
     exit_requested: AtomicBool,
+    unblock_requested: AtomicBool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,10 +129,11 @@ pub(crate) enum HardIrqExitClaim {
 }
 
 impl VcpuRunState {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             mode: AtomicUsize::new(OUTSIDE_GUEST_MODE),
             exit_requested: AtomicBool::new(false),
+            unblock_requested: AtomicBool::new(false),
         }
     }
 
@@ -162,6 +164,16 @@ impl VcpuRunState {
             run_state: self,
             guest_mode,
         }
+    }
+
+    /// Publishes KVM_REQ_UNBLOCK-like work before waking this vCPU's thread.
+    /// This is a wake request, not a second source of interrupt pending state.
+    pub(crate) fn request_unblock(&self) {
+        self.unblock_requested.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn take_unblock_request(&self) -> bool {
+        self.unblock_requested.swap(false, Ordering::AcqRel)
     }
 
     pub(crate) fn publish_exit_request(&self) {

@@ -172,7 +172,7 @@ impl ArchOps for LoongArch64Arch {
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         runtime: &crate::vm::VmRuntimeHandle,
     ) {
-        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        let wait_snapshot = runtime.vcpu_event_wait_snapshot(vcpu.run_state());
         crate::vm::wait_for_vcpu_event_if_idle_with(
             runtime,
             &wait_snapshot,

@@ -49,6 +49,8 @@ mod network_status;
 #[cfg(feature = "test-vcpu-perf")]
 mod perf_load;
 mod shell;
+#[cfg(feature = "test-virq-delivery")]
+mod virq_regression;
 
 /// Axvisor kernel entry point.
 ///
@@ -134,6 +136,9 @@ fn main() {
     // launched or waited on here.
     #[cfg(not(feature = "no-auto-start"))]
     let _ = manager.launch_default_vms();
+
+    #[cfg(feature = "test-virq-delivery")]
+    virq_regression::start();
 
     #[cfg(not(feature = "no-auto-start"))]
     std::thread::Builder::new()
