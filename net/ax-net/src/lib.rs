@@ -113,7 +113,10 @@ pub use self::{
         DeviceBinding, InterfaceConfig, InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind,
         InterfaceMatcher, Ipv4InterfaceConfig, NetworkConfig, RouteInfo, StaticIpConfig,
     },
-    device::{ArpEntry, EthernetFramePort, EthernetFramePortList, NetDeviceError, NetDeviceResult},
+    device::{
+        ArpEntry, EthernetFramePort, EthernetFramePortList, NetDeviceError, NetDeviceResult,
+        TunShared,
+    },
     queue_runtime::{
         NetQueueStats, NetworkDeviceInput, NetworkQueueRuntime, NetworkRuntimeBuilder,
         NetworkRuntimeError, PinnedNetIrqAction, PinnedNetIrqError, PinnedNetIrqOutcome,
@@ -141,6 +144,9 @@ type DeferredPollEntry = (Arc<PollSet>, IoEvents);
 static DEFERRED_POLL_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
 static DEFERRED_POLL_WAKES: LazyLock<Mutex<Vec<DeferredPollEntry>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
+/// `/dev/net/tun` state of every TUN and TAP interface, so `TUNSETIFF` can
+/// reattach a persistent one by name.
+static TUN_DEVICES: LazyLock<Mutex<Vec<Arc<TunShared>>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 struct WifiInterfaceControl {
     ifname: alloc::string::String,
@@ -815,6 +821,100 @@ pub fn remove_interface_ipv4(interface_id: InterfaceId, ip: Ipv4Addr, prefix_len
     }
     request_poll();
     Ok(())
+}
+
+/// Creates a TUN or TAP interface driven by a `/dev/net/tun` file.
+pub fn create_tun(name: &str, kind: InterfaceKind) -> NetResult<Arc<TunShared>> {
+    let shared = get_service().create_tun(name, kind)?;
+    TUN_DEVICES.lock().push(shared.clone());
+    Ok(shared)
+}
+
+/// Finds the `/dev/net/tun` state of an existing TUN or TAP interface.
+pub fn tun_shared_by_name(name: &str) -> Option<Arc<TunShared>> {
+    TUN_DEVICES
+        .lock()
+        .iter()
+        .find(|shared| shared.name() == name)
+        .cloned()
+}
+
+/// Unregisters a TUN or TAP interface once its last file is closed without
+/// `IFF_PERSIST`.
+pub fn destroy_tun(name: &str) {
+    let removed = {
+        let mut devices = TUN_DEVICES.lock();
+        devices
+            .iter()
+            .position(|shared| shared.name() == name)
+            .map(|index| devices.swap_remove(index))
+    };
+    if removed.is_none() {
+        return;
+    }
+    if let Some(interface) = interface_by_name(name) {
+        get_service().remove_tun_interface(interface.id);
+    }
+    request_poll();
+}
+
+/// Brings a TUN or TAP interface up or down (`SIOCSIFFLAGS`).
+pub fn set_interface_up(interface_id: InterfaceId, up: bool) -> NetResult {
+    let name = get_control().set_tun_up(interface_id, up)?;
+    if let Some(shared) = tun_shared_by_name(&name) {
+        shared.set_up(up);
+    }
+    request_poll();
+    Ok(())
+}
+
+/// Sets the MTU of a TUN or TAP interface (`SIOCSIFMTU`).
+pub fn set_interface_mtu(interface_id: InterfaceId, mtu: usize) -> NetResult {
+    let name = get_control().set_tun_mtu(interface_id, mtu)?;
+    if let Some(shared) = tun_shared_by_name(&name) {
+        shared.set_mtu(mtu);
+    }
+    Ok(())
+}
+
+/// Adds an IPv4 route through an interface (`SIOCADDRT`).
+pub fn add_route(
+    interface_id: InterfaceId,
+    destination: Ipv4Addr,
+    prefix_len: u8,
+    gateway: Option<Ipv4Addr>,
+) -> NetResult {
+    let destination = route_destination(destination, prefix_len)?;
+    let gateway = gateway.map(|gateway| Ipv4Address::from(gateway.octets()));
+    get_service().add_route(interface_id, destination, gateway)?;
+    request_poll();
+    Ok(())
+}
+
+/// Removes an IPv4 route from an interface (`SIOCDELRT`).
+pub fn del_route(
+    interface_id: InterfaceId,
+    destination: Ipv4Addr,
+    prefix_len: u8,
+    gateway: Option<Ipv4Addr>,
+) -> NetResult {
+    let destination = route_destination(destination, prefix_len)?;
+    let gateway = gateway.map(|gateway| Ipv4Address::from(gateway.octets()));
+    get_service().del_route(interface_id, destination, gateway)?;
+    request_poll();
+    Ok(())
+}
+
+/// `rtentry_to_fib_config` rejects a destination with host bits set.
+fn route_destination(destination: Ipv4Addr, prefix_len: u8) -> NetResult<Ipv4Cidr> {
+    if prefix_len > 32 {
+        return Err(NetError::InvalidInput);
+    }
+    let cidr = Ipv4Cidr::new(Ipv4Address::from(destination.octets()), prefix_len);
+    if cidr.network() != cidr {
+        return Err(NetError::InvalidInput);
+    }
+    Ok(cidr)
 }
 
 /// Returns public snapshots of configured IPv4 default routes.

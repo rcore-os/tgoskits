@@ -53,6 +53,12 @@ bitflags! {
         /// This could prevent higher layers from attempting to add unnecessary
         /// non-blocking handling.
         const BLOCKING = 0x0008;
+
+        /// Indicates that every read or write transfers exactly one record.
+        ///
+        /// The direct backend then calls the node once per request instead
+        /// of filling or draining the caller's buffer across records.
+        const PACKET = 0x0010;
     }
 }
 
