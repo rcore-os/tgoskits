@@ -319,6 +319,47 @@ static int fixed_replacement_clears_nonpresent_leaf(void)
     return replaced && unmapped ? 0 : -1;
 }
 
+static int private_discard_refault(void)
+{
+    const size_t length = 64 * PAGE_SIZE;
+    unsigned char *pages = (void *)syscall(SYS_mmap, NULL, length,
+        PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (pages == MAP_FAILED)
+        return -1;
+
+    int result = -1;
+    for (size_t offset = 0; offset < length; offset += PAGE_SIZE)
+        pages[offset] = 0x5a;
+    pid_t child = fork();
+    if (child == 0) {
+        // Repeated retirement/refault reuses physical frames in the same COW
+        // source while the parent retains its original private pages.
+        for (int pass = 0; pass < 8; ++pass) {
+            if (syscall(SYS_madvise, pages, length, MADV_DONTNEED) != 0)
+                _exit(1);
+            for (size_t offset = 0; offset < length; offset += PAGE_SIZE) {
+                if (pages[offset] != 0)
+                    _exit(2);
+                pages[offset] = 0xa5;
+            }
+        }
+        _exit(0);
+    }
+    if (child > 0) {
+        int status = 0;
+        if (waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+            WEXITSTATUS(status) == 0) {
+            result = 0;
+            for (size_t offset = 0; offset < length; offset += PAGE_SIZE)
+                if (pages[offset] != 0x5a)
+                    result = -1;
+        }
+    }
+    if (syscall(SYS_munmap, pages, length) != 0)
+        result = -1;
+    return result;
+}
+
 int main(void)
 {
     cpu_set_t allowed;
@@ -362,6 +403,11 @@ int main(void)
         printf("PASS: COW kernel-copy on CPU %d\n", cpus[index]);
     }
 
+    if (private_discard_refault() != 0) {
+        fprintf(stderr, "FAIL: private COW discard and refault\n");
+        return 1;
+    }
+    printf("PASS: private COW discard and refault\n");
     printf("ALL TESTS PASSED\n");
     return 0;
 }
