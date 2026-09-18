@@ -16,10 +16,13 @@
 
 #define _GNU_SOURCE
 #include "test_framework.h"
+#include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <stdint.h>
 #include <sys/ioctl.h>
+#include <sys/syscall.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 struct drm_mode_mode_info {
@@ -94,10 +97,12 @@ struct drm_event_vblank {
 #define DRM_IOCTL_SET_CLIENT_CAP          _IOW('d', 0x0d, struct drm_set_client_cap)
 
 #define DRM_MODE_OBJECT_CRTC        0xcccccccc
+#define DRM_MODE_OBJECT_FB          0xfbfbfbfb
 #define DRM_MODE_OBJECT_CONNECTOR   0xc0c0c0c0
 #define DRM_MODE_OBJECT_PLANE       0xeeeeeeee
 #define DRM_MODE_ATOMIC_TEST_ONLY   0x0100
 #define DRM_MODE_PAGE_FLIP_EVENT    0x01
+#define DRM_MODE_PROP_SIGNED_RANGE  (1u << 7)
 #define DRM_CLIENT_CAP_UNIVERSAL_PLANES 2
 #define DRM_CLIENT_CAP_ATOMIC       3
 #define DRM_FORMAT_XRGB8888         0x34325258
@@ -237,6 +242,85 @@ int main(void)
         CHECK(vals[0] == 0 && vals[1] == 1, "CRTC.ACTIVE range == [0, 1]");
     }
 
+    /* OBJECT 属性必须返回 count_values==1 且 values[0] 为对象类型。
+     * drm-rs / libdrm 在此直接索引 values[0]；返回空值列表会让
+     * smithay/合成器在枚举属性时越界崩溃。 */
+    {
+        struct drm_mode_get_property gp = {0};
+        uint64_t vals[2] = {0};
+        gp.prop_id = P_CONN_CRTC_ID;
+        gp.values_ptr = (uint64_t)(uintptr_t)vals;
+        gp.count_values = 2;
+        CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &gp), 0,
+                  "GETPROPERTY connector.CRTC_ID");
+        CHECK(gp.count_values == 1, "CRTC_ID exposes exactly one value");
+        CHECK(vals[0] == DRM_MODE_OBJECT_CRTC,
+              "CRTC_ID value type == DRM_MODE_OBJECT_CRTC");
+    }
+    {
+        struct drm_mode_get_property gp = {0};
+        uint64_t vals[2] = {0};
+        gp.prop_id = P_PLANE_FB_ID;
+        gp.values_ptr = (uint64_t)(uintptr_t)vals;
+        gp.count_values = 2;
+        CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &gp), 0,
+                  "GETPROPERTY plane.FB_ID");
+        CHECK(gp.count_values == 1, "FB_ID exposes exactly one value");
+        CHECK(vals[0] == DRM_MODE_OBJECT_FB,
+              "FB_ID value type == DRM_MODE_OBJECT_FB");
+    }
+    {
+        struct drm_mode_get_property gp = {0};
+        uint64_t vals[2] = {0};
+        gp.prop_id = P_CRTC_MODE_ID;
+        gp.values_ptr = (uint64_t)(uintptr_t)vals;
+        gp.count_values = 2;
+        CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &gp), 0,
+                  "GETPROPERTY crtc.MODE_ID");
+        CHECK(gp.count_values == 0, "BLOB metadata has no values");
+        CHECK(gp.count_enum_blobs == 0, "BLOB metadata has no enum payload");
+        CHECK(vals[0] == 0 && vals[1] == 0, "BLOB leaves value buffer untouched");
+    }
+
+    /* Linux distinguishes an existing framebuffer without a property
+     * container (EINVAL) from an unknown framebuffer (ENOENT). */
+    {
+        uint32_t ids[8] = {0};
+        uint64_t vals[8] = {0};
+        struct drm_mode_obj_get_properties q = {0};
+        q.obj_id = fb.fb_id;
+        q.obj_type = DRM_MODE_OBJECT_FB;
+        q.count_props = 8;
+        q.props_ptr = (uint64_t)(uintptr_t)ids;
+        q.prop_values_ptr = (uint64_t)(uintptr_t)vals;
+        CHECK_ERR(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &q), EINVAL,
+                  "framebuffer without property container returns EINVAL");
+        q.obj_id = UINT32_MAX;
+        CHECK_ERR(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &q), ENOENT,
+                  "unknown framebuffer returns ENOENT");
+    }
+
+    /* PRIME 导出的 dma-buf 必须支持 lseek(SEEK_END) 返回缓冲大小。
+     * Mesa/gbm 在 dmabuf 导入时用 lseek 探测大小，ESPIPE 会让
+     * eglCreateImageKHR 以 BAD_ALLOC 失败（llvmpipe/swrast 路径）。 */
+    {
+        struct drm_prime_handle { uint32_t handle; uint32_t flags; int32_t fd; };
+#define DRM_IOCTL_PRIME_HANDLE_TO_FD _IOWR('d', 0x2d, struct drm_prime_handle)
+        struct drm_prime_handle ph = { .handle = cd.handle, .flags = 0x80000 };
+        CHECK_RET(ioctl(fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &ph), 0,
+                  "PRIME_HANDLE_TO_FD");
+        CHECK(ph.fd >= 0, "PRIME export returns an fd");
+        off_t sz = syscall(SYS_lseek, ph.fd, 0, SEEK_END);
+        CHECK(sz == (off_t)cd.size, "dmabuf lseek SEEK_END == buffer size");
+        CHECK_RET(syscall(SYS_lseek, ph.fd, 0, SEEK_SET), 0, "dmabuf SEEK_SET(0)");
+        CHECK_ERR(syscall(SYS_lseek, ph.fd, 0, SEEK_CUR), EINVAL, "dmabuf rejects SEEK_CUR");
+        CHECK_ERR(syscall(SYS_lseek, ph.fd, 1, SEEK_SET), EINVAL, "dmabuf rejects nonzero SET");
+        CHECK_ERR(syscall(SYS_lseek, ph.fd, -1L, SEEK_END), EINVAL, "dmabuf rejects nonzero END");
+        CHECK_RET(syscall(SYS_lseek, ph.fd, 0, SEEK_END), (long)cd.size,
+                  "rejected seeks preserve size probe");
+        close(ph.fd);
+    }
+
     /* --- blob round-trip --- */
     struct drm_mode_create_blob cb = {
         .data = (uint64_t)(uintptr_t)&modes[0],
@@ -308,6 +392,103 @@ int main(void)
     CHECK(obj_prop_value(fd, conns[0], DRM_MODE_OBJECT_CONNECTOR, P_CONN_CRTC_ID)
               == crtcs[0],
           "commit set connector.CRTC_ID");
+
+    /* GETPLANE（legacy 结构体）也必须回读 atomic 提交后的实时状态。
+     * deniald 的初始扫描验证提交后用 GETPLANE 检查 primary plane 是否
+     * 真的在扫描 framebuffer；硬编码 fb_id=0 会让合成器直接失败。 */
+    {
+        struct drm_mode_get_plane {
+            uint32_t plane_id;
+            uint32_t crtc_id; uint32_t fb_id; uint32_t crtcs_possible;
+            uint32_t gamma_size; uint32_t count_format_types;
+            uint64_t format_type_ptr;
+        };
+#define DRM_IOCTL_MODE_GETPLANE _IOWR('d', 0xB6, struct drm_mode_get_plane)
+        uint32_t fmts[8] = {0};
+        struct drm_mode_get_plane gp2 = {0};
+        gp2.plane_id = planes[0];
+        gp2.count_format_types = 8;
+        gp2.format_type_ptr = (uint64_t)(uintptr_t)fmts;
+        CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPLANE, &gp2), 0,
+                  "GETPLANE after atomic commit");
+        CHECK(gp2.fb_id == fb.fb_id, "GETPLANE reports committed fb_id");
+        CHECK(gp2.crtc_id == crtcs[0], "GETPLANE reports committed crtc_id");
+    }
+
+    /* IN_FENCE_FD borrows a sync-file; it never owns the caller's fd.
+     * Starry currently has no sync-file producer, so only -1 is valid. */
+    uint32_t P_PLANE_IN_FENCE_FD = find_prop(fd, planes[0],
+                                             DRM_MODE_OBJECT_PLANE,
+                                             "IN_FENCE_FD");
+    CHECK(P_PLANE_IN_FENCE_FD != 0, "plane advertises IN_FENCE_FD");
+    {
+        struct drm_mode_get_property g = {0};
+        g.prop_id = P_PLANE_IN_FENCE_FD;
+        uint64_t vals[2] = {0};
+        g.count_values = 2;
+        g.values_ptr = (uint64_t)(uintptr_t)vals;
+        CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &g), 0,
+                  "GETPROPERTY IN_FENCE_FD");
+        CHECK(g.flags & DRM_MODE_PROP_SIGNED_RANGE,
+              "IN_FENCE_FD is SIGNED_RANGE");
+        CHECK(g.count_values == 2, "IN_FENCE_FD reports two range values");
+        CHECK(vals[0] == (uint64_t)-1, "IN_FENCE_FD min == -1");
+        CHECK(vals[1] == 2147483647ULL, "IN_FENCE_FD max == INT_MAX");
+        CHECK(obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE,
+                             P_PLANE_IN_FENCE_FD) == (uint64_t)-1,
+              "IN_FENCE_FD idle value == -1");
+    }
+    {
+        int probe = open("/dev/zero", O_RDONLY | O_CLOEXEC);
+        int sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        int card = dup(fd);
+        int closed = dup(fd);
+        CHECK(probe >= 0 && sock >= 0 && card >= 0 && closed >= 0,
+              "create non-sync-file descriptors");
+        close(closed);
+        CHECK_ERR(syscall(SYS_lseek, sock, 0L, SEEK_SET), ESPIPE,
+                  "nonseekable socket retains ESPIPE");
+        uint32_t t_objs[] = { planes[0] };
+        uint32_t t_counts[] = { 2 };
+        uint32_t t_props[] = { P_PLANE_CRTC_X, P_PLANE_IN_FENCE_FD };
+        uint64_t old_x = obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE, P_PLANE_CRTC_X);
+        uint64_t t_values[] = { old_x + 1, (uint64_t)-1 };
+        struct drm_mode_atomic t = {
+            .count_objs = 1,
+            .objs_ptr = (uint64_t)(uintptr_t)t_objs,
+            .count_props_ptr = (uint64_t)(uintptr_t)t_counts,
+            .props_ptr = (uint64_t)(uintptr_t)t_props,
+            .prop_values_ptr = (uint64_t)(uintptr_t)t_values,
+        };
+        const uint64_t invalid[] = { (uint64_t)-2, 2147483648ULL,
+                                    (uint64_t)closed, (uint64_t)probe,
+                                    (uint64_t)sock, (uint64_t)card };
+        for (unsigned test_only = 0; test_only < 2; test_only++) {
+            t.flags = test_only ? DRM_MODE_ATOMIC_TEST_ONLY : 0;
+            for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+                t_values[1] = invalid[i];
+                CHECK_ERR(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_ATOMIC, &t), EINVAL,
+                          "invalid fence rejected before atomic publication");
+                CHECK(obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE, P_PLANE_CRTC_X) == old_x,
+                      "invalid fence leaves earlier properties unchanged");
+                CHECK(fcntl(probe, F_GETFD) >= 0 && fcntl(sock, F_GETFD) >= 0 &&
+                      fcntl(card, F_GETFD) >= 0, "invalid fence preserves caller descriptors");
+            }
+        }
+        t_values[1] = (uint64_t)-1;
+        CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_ATOMIC, &t), 0,
+                  "TEST_ONLY without fence accepted");
+        CHECK(obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE, P_PLANE_CRTC_X) == old_x,
+              "TEST_ONLY without fence preserves state");
+        t.flags = 0;
+        CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_ATOMIC, &t), 0,
+                  "real commit without fence accepted");
+        CHECK(obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE, P_PLANE_CRTC_X) == old_x + 1,
+              "real commit without fence publishes state");
+        close(probe);
+        close(sock);
+        close(card);
+    }
 
     /* page flip event 应可读。 */
     struct pollfd pfd = { .fd = fd, .events = POLLIN };

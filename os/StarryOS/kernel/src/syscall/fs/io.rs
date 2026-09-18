@@ -217,7 +217,7 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> StarryResu
         return Ok(mq.seek_status(pos)? as _);
     }
 
-    if let Ok(d) = any_file.downcast_arc::<Directory>() {
+    if let Ok(d) = any_file.clone().downcast_arc::<Directory>() {
         let mut position = d.position.lock();
         let new_pos = match pos {
             SeekFrom::Start(pos) => pos,
@@ -241,7 +241,7 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> StarryResu
         return Ok(new_pos as _);
     }
 
-    Err(StarryError::from(Errno::ESPIPE))
+    Ok(any_file.seek(pos)? as _)
 }
 
 pub fn sys_truncate(

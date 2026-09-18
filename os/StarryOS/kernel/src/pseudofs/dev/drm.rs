@@ -419,12 +419,12 @@ pub struct DrmModeGetPlane {
     pub format_type_ptr: u64,
 }
 
-/// `DRM_MODE_OBJECT_*` — type tags for `OBJ_GETPROPERTIES` and atomic
-/// commits.  Values match Linux's uapi exactly; weston/modetest pattern-
-/// match on them.
+/// Linux `drm_mode.h` object type tags used by object queries and
+/// OBJECT property metadata.
 pub const DRM_MODE_OBJECT_CRTC: u32 = 0xcccc_cccc;
 pub const DRM_MODE_OBJECT_CONNECTOR: u32 = 0xc0c0_c0c0;
 pub const DRM_MODE_OBJECT_PLANE: u32 = 0xeeee_eeee;
+pub const DRM_MODE_OBJECT_FB: u32 = 0xfbfb_fbfb;
 
 pub const DRM_PLANE_TYPE_PRIMARY: u64 = 1;
 
@@ -449,6 +449,7 @@ pub const DRM_MODE_PROP_IMMUTABLE: u32 = 1 << 2;
 pub const DRM_MODE_PROP_ENUM: u32 = 1 << 3;
 pub const DRM_MODE_PROP_BLOB: u32 = 1 << 4;
 pub const DRM_MODE_PROP_OBJECT: u32 = 1 << 6;
+pub const DRM_MODE_PROP_SIGNED_RANGE: u32 = 1 << 7;
 pub const DRM_MODE_PROP_ATOMIC: u32 = 0x8000_0000;
 
 /// `DRM_PROP_NAME_LEN` from Linux uapi.

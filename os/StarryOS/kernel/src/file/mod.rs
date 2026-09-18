@@ -202,6 +202,14 @@ pub type IoSrc<'a> = dyn ReadBuf + 'a;
 
 #[allow(dead_code)]
 pub trait FileLike: Pollable + DowncastSync {
+    /// Seek a special file using its own offset rules.
+    ///
+    /// Files without a seek operation return ESPIPE. Implementations own any
+    /// cursor state and must reject offsets or origins their file type forbids.
+    fn seek(&self, _pos: ax_io::SeekFrom) -> StarryResult<u64> {
+        Err(StarryError::from(crate::Errno::ESPIPE))
+    }
+
     /// Whether this file supports epoll interest registration.
     ///
     /// A file may provide synchronous poll readiness without supporting epoll
