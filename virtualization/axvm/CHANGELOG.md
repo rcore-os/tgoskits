@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Clear newly allocated IVC shared regions before publishing channel identity.
+
 ## [0.8.3](https://github.com/rcore-os/tgoskits/compare/axvm-v0.8.2...axvm-v0.8.3) - 2026-09-18
 
 ### Added
