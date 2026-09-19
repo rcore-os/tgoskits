@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Changed ring storage into opaque 64-byte cells and moved Request/Ack plus
+- Changed ring storage into opaque 256-byte slots and moved Request/Ack plus
   application sequence semantics out of `axivc` payload transport.
 - Upgraded the shared region layout from v2 to v3. This is intentionally
   incompatible with v2 peers; the publish/subscribe/notify HVC ABI is unchanged.
@@ -33,8 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Compatibility
 
-- The external Linux `axvisor.ko` companion has not yet been migrated to region
-  v3 and must be updated before the ArceOS-to-Linux QEMU case is compatible.
+- 共享内存布局采用 256 字节 slot，每个 ring 包含 32 个槽位，region 总大小为
+  17152 字节；两个 ring 的偏移为 256、8704，各占 8448 字节。region 版本仍为 3，
+  旧版 v3 通过布局校验被拒绝；通信双方在升级或回滚时必须保持布局一致。
+- 将 `cell` 类型、常量、方法和 `CellFull` 错误统一改名为 `slot`/`SlotFull`，
+  同步两个 ArceOS demo 的分片边界和满 ring 消息长度，不保留旧接口别名。
 
 ## [0.1.1](https://github.com/rcore-os/tgoskits/compare/axivc-v0.1.0...axivc-v0.1.1) - 2026-09-09
 

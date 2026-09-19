@@ -5,9 +5,9 @@ use super::IvcMessageId;
 /// Errors produced while sending or receiving an IVC logical message.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum IvcMessageError {
-    /// The cell ring has no free entry for the requested operation.
-    #[error("the IVC cell ring is full")]
-    CellFull,
+    /// The slot ring has no free entry for the requested operation.
+    #[error("the IVC slot ring is full")]
+    SlotFull,
     /// A new message was requested while another message is still being sent.
     #[error("an IVC message send is already in progress")]
     SendInProgress,
@@ -28,13 +28,13 @@ pub enum IvcMessageError {
     /// The frame uses a message protocol version unsupported by this crate.
     #[error("unsupported IVC message version {version}")]
     UnsupportedVersion {
-        /// Version byte observed in the cell.
+        /// Version byte observed in the slot.
         version: u8,
     },
     /// The frame contains flag bits unknown to this protocol version.
     #[error("unknown IVC message flags {flags:#04x}")]
     UnknownFlags {
-        /// Raw flags byte observed in the cell.
+        /// Raw flags byte observed in the slot.
         flags: u8,
     },
     /// The frame header or its flag/length combination is invalid.
@@ -62,8 +62,8 @@ pub enum IvcMessageError {
         /// Length declared by the inconsistent frame.
         actual: u64,
     },
-    /// A frame declares more fragment bytes than its cell can hold.
-    #[error("IVC fragment length {length} exceeds cell capacity {capacity}")]
+    /// A frame declares more fragment bytes than its slot can hold.
+    #[error("IVC fragment length {length} exceeds slot capacity {capacity}")]
     FragmentTooLarge {
         /// Declared fragment length.
         length: usize,
@@ -86,7 +86,7 @@ pub enum IvcMessageError {
         /// Accumulated length at `LAST`.
         actual: u64,
     },
-    /// The output cannot hold the next complete cell fragment.
+    /// The output cannot hold the next complete slot fragment.
     #[error("output has {provided} bytes but the next fragment requires {required}")]
     BufferTooSmall {
         /// Space required for the next fragment.
@@ -97,7 +97,7 @@ pub enum IvcMessageError {
     /// The peer explicitly aborted the active message.
     #[error("the peer aborted the active IVC message")]
     TransferAborted,
-    /// The cell transport reset while a message was active.
-    #[error("the IVC peer reset the cell transport")]
+    /// The slot transport reset while a message was active.
+    #[error("the IVC peer reset the slot transport")]
     PeerReset,
 }

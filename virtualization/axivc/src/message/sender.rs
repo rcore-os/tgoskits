@@ -4,13 +4,13 @@ use super::{
     IvcMessageError, IvcMessageId, IvcMessageMeta, IvcSendProgress,
     frame::{FrameSpec, encode_frame},
 };
-use crate::{IVC_CELL_FRAGMENT_CAPACITY, IVC_CELL_SIZE, endpoint::IvcCellProducer};
+use crate::{IVC_SLOT_FRAGMENT_CAPACITY, IVC_SLOT_SIZE, endpoint::IvcSlotProducer};
 
 /// Stateful nonblocking sender for one direction of an IVC channel.
 ///
 /// A sender preserves frame ordering by allowing only one active logical
 /// message. Repeated [`Self::try_write`] calls can therefore send messages much
-/// larger than the cell ring without allocation. Sending requires exclusive
+/// larger than the slot ring without allocation. Sending requires exclusive
 /// access, and this endpoint is not cloneable.
 ///
 /// ```compile_fail
@@ -29,13 +29,13 @@ use crate::{IVC_CELL_FRAGMENT_CAPACITY, IVC_CELL_SIZE, endpoint::IvcCellProducer
 /// }
 /// ```
 pub struct IvcMessageSender<'a> {
-    producer: IvcCellProducer<'a>,
+    producer: IvcSlotProducer<'a>,
     state: SendState,
     next_message_id: Option<IvcMessageId>,
 }
 
 impl<'a> IvcMessageSender<'a> {
-    pub(crate) const fn new(producer: IvcCellProducer<'a>) -> Self {
+    pub(crate) const fn new(producer: IvcSlotProducer<'a>) -> Self {
         Self {
             producer,
             state: SendState::Idle,
@@ -45,7 +45,7 @@ impl<'a> IvcMessageSender<'a> {
 
     /// Starts one logical message and returns its transport identifier.
     ///
-    /// This changes only local state. The first cell is published by
+    /// This changes only local state. The first slot is published by
     /// [`Self::try_write`]. Application request identifiers must be encoded in
     /// the payload rather than derived from this transport identifier.
     ///
@@ -72,11 +72,11 @@ impl<'a> IvcMessageSender<'a> {
         Ok(message_id)
     }
 
-    /// Publishes as many complete fragment cells as current ring space allows.
+    /// Publishes as many complete fragment slots as current ring space allows.
     ///
     /// The returned consumed count identifies the prefix of `input` that the
     /// caller may release. Ring-full backpressure is reported as successful
-    /// progress with `complete == false`; no cell is overwritten.
+    /// progress with `complete == false`; no slot is overwritten.
     ///
     /// Empty messages are published by calling this method with `input == []`
     /// after `start_message(0)`.
@@ -104,43 +104,43 @@ impl<'a> IvcMessageSender<'a> {
         }
 
         let mut consumed = 0;
-        let mut published_cells = 0;
+        let mut published_slots = 0;
         while consumed < input.len() {
-            let fragment_len = cmp::min(IVC_CELL_FRAGMENT_CAPACITY, input.len() - consumed);
+            let fragment_len = cmp::min(IVC_SLOT_FRAGMENT_CAPACITY, input.len() - consumed);
             // The `input.len() <= remaining` check above keeps `sent` below
             // the declared message length, so this addition cannot overflow.
             let next_sent = sending.sent + fragment_len as u64;
             let complete = next_sent == sending.meta.len();
             let fragment = &input[consumed..consumed + fragment_len];
-            let cell = encode_message_cell(sending, complete, fragment)?;
-            if self.producer.try_push_cell(&cell).is_err() {
+            let slot = encode_message_slot(sending, complete, fragment)?;
+            if self.producer.try_push_slot(&slot).is_err() {
                 break;
             }
 
             sending.sent = next_sent;
             sending.published_any = true;
             consumed += fragment_len;
-            published_cells += 1;
+            published_slots += 1;
             if complete {
                 self.state = SendState::Idle;
-                return Ok(IvcSendProgress::new(consumed, published_cells, true));
+                return Ok(IvcSendProgress::new(consumed, published_slots, true));
             }
         }
 
         self.state = SendState::Sending(sending);
-        Ok(IvcSendProgress::new(consumed, published_cells, false))
+        Ok(IvcSendProgress::new(consumed, published_slots, false))
     }
 
     /// Aborts the active logical message.
     ///
     /// If no frame has been published, cancellation is local and consumes no
-    /// ring space. Otherwise an `ABORT` cell is published so the receiver can
+    /// ring space. Otherwise an `ABORT` slot is published so the receiver can
     /// discard its partial message.
     ///
     /// # Errors
     ///
     /// Returns [`IvcMessageError::NoMessageInProgress`] if the sender is idle,
-    /// or [`IvcMessageError::CellFull`] if an `ABORT` cell is required but the
+    /// or [`IvcMessageError::SlotFull`] if an `ABORT` slot is required but the
     /// ring is full. A full ring leaves the send active so the caller can retry.
     pub fn try_abort(&mut self) -> Result<(), IvcMessageError> {
         let SendState::Sending(sending) = self.state else {
@@ -151,9 +151,9 @@ impl<'a> IvcMessageSender<'a> {
             return Ok(());
         }
 
-        let mut cell = [0u8; IVC_CELL_SIZE];
+        let mut slot = [0u8; IVC_SLOT_SIZE];
         encode_frame(
-            &mut cell,
+            &mut slot,
             FrameSpec {
                 message_id: sending.meta.id(),
                 message_len: sending.meta.len(),
@@ -164,8 +164,8 @@ impl<'a> IvcMessageSender<'a> {
             &[],
         )?;
         self.producer
-            .try_push_cell(&cell)
-            .map_err(|_| IvcMessageError::CellFull)?;
+            .try_push_slot(&slot)
+            .map_err(|_| IvcMessageError::SlotFull)?;
         self.state = SendState::Idle;
         Ok(())
     }
@@ -174,8 +174,8 @@ impl<'a> IvcMessageSender<'a> {
         &mut self,
         sending: SendingMessage,
     ) -> Result<IvcSendProgress, IvcMessageError> {
-        let cell = encode_message_cell(sending, true, &[])?;
-        if self.producer.try_push_cell(&cell).is_err() {
+        let slot = encode_message_slot(sending, true, &[])?;
+        if self.producer.try_push_slot(&slot).is_err() {
             return Ok(IvcSendProgress::new(0, 0, false));
         }
         self.state = SendState::Idle;
@@ -183,14 +183,14 @@ impl<'a> IvcMessageSender<'a> {
     }
 }
 
-fn encode_message_cell(
+fn encode_message_slot(
     sending: SendingMessage,
     complete: bool,
     fragment: &[u8],
-) -> Result<[u8; IVC_CELL_SIZE], IvcMessageError> {
-    let mut cell = [0u8; IVC_CELL_SIZE];
+) -> Result<[u8; IVC_SLOT_SIZE], IvcMessageError> {
+    let mut slot = [0u8; IVC_SLOT_SIZE];
     encode_frame(
-        &mut cell,
+        &mut slot,
         FrameSpec {
             message_id: sending.meta.id(),
             message_len: sending.meta.len(),
@@ -200,7 +200,7 @@ fn encode_message_cell(
         },
         fragment,
     )?;
-    Ok(cell)
+    Ok(slot)
 }
 
 #[derive(Clone, Copy)]
@@ -228,7 +228,7 @@ mod tests {
     fn sender_rejects_interleaving_and_exhausts_ids_without_wrapping() {
         let ring = new_ring_for_test();
         ring.initialize(IvcRingDirection::PublisherToSubscriber);
-        let mut sender = IvcMessageSender::new(IvcCellProducer::new(&ring));
+        let mut sender = IvcMessageSender::new(IvcSlotProducer::new(&ring));
 
         sender.next_message_id = IvcMessageId::new(u64::MAX);
         let last_id = sender.start_message(1).unwrap();
@@ -248,14 +248,14 @@ mod tests {
     fn abort_preserves_send_state_when_the_ring_is_full() {
         let ring = new_ring_for_test();
         ring.initialize(IvcRingDirection::PublisherToSubscriber);
-        let mut sender = IvcMessageSender::new(IvcCellProducer::new(&ring));
-        let payload = [0x5a; IVC_RING_CAPACITY * IVC_CELL_FRAGMENT_CAPACITY];
+        let mut sender = IvcMessageSender::new(IvcSlotProducer::new(&ring));
+        let payload = [0x5a; IVC_RING_CAPACITY * IVC_SLOT_FRAGMENT_CAPACITY];
 
         sender.start_message((payload.len() + 1) as u64).unwrap();
         let progress = sender.try_write(&payload).unwrap();
-        assert_eq!(progress.published_cells(), IVC_RING_CAPACITY);
+        assert_eq!(progress.published_slots(), IVC_RING_CAPACITY);
         assert!(!progress.is_complete());
-        assert_eq!(sender.try_abort(), Err(IvcMessageError::CellFull));
+        assert_eq!(sender.try_abort(), Err(IvcMessageError::SlotFull));
         assert_eq!(
             sender.start_message(1),
             Err(IvcMessageError::SendInProgress)

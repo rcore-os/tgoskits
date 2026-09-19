@@ -41,9 +41,10 @@ mod publisher {
     const ARCEOS_ACK_BODY: &[u8] = b"ack from arceos subscriber";
     const LINUX_ACK_BODY: &[u8] = b"ack from linux subscriber";
     const APP_HEADER_LEN: usize = 11;
-    const APP_MAX_MESSAGE_LEN: usize = 700;
-    const REQUEST_MESSAGE_LENGTHS: [usize; 5] = [39, 40, 41, 640, 700];
-    const SUBSCRIBER_DATA_MESSAGE_LENGTHS: [usize; 3] = [41, 641, 700];
+    // Exercise single-fragment and full-ring payload boundaries.
+    const APP_MAX_MESSAGE_LEN: usize = 7484;
+    const REQUEST_MESSAGE_LENGTHS: [usize; 5] = [231, 232, 233, 7424, 7484];
+    const SUBSCRIBER_DATA_MESSAGE_LENGTHS: [usize; 3] = [233, 7425, 7484];
     const PUBLISH_COUNT: u64 = REQUEST_MESSAGE_LENGTHS.len() as u64;
     static NOTIFY_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -104,7 +105,7 @@ mod publisher {
         println!("ivc full-duplex demo complete");
     }
 
-    /// Sends messages spanning one-cell, fragment-boundary, ring-boundary, and
+    /// Sends messages spanning one-slot, fragment-boundary, ring-boundary, and
     /// backpressured lengths without waiting for individual acknowledgements.
     fn sender_task(mut sender: IvcMessageSender<'_>, waiter: &IvcPeerEventWaiter<'_>) {
         let mut payload = [0u8; APP_MAX_MESSAGE_LEN];
@@ -152,7 +153,7 @@ mod publisher {
             match receiver.try_read(&mut payload[received..]) {
                 Ok(progress) => {
                     received += progress.written();
-                    if progress.consumed_cells() > 0 {
+                    if progress.consumed_slots() > 0 {
                         notify_subscriber();
                     }
                     if progress.is_complete() {
@@ -230,7 +231,7 @@ mod publisher {
                             }
                         }
                         received = 0;
-                    } else if progress.consumed_cells() == 0 {
+                    } else if progress.consumed_slots() == 0 {
                         waiter.wait_for_peer_event();
                     }
                 }
@@ -258,7 +259,7 @@ mod publisher {
             match sender.try_write(&payload[consumed..]) {
                 Ok(progress) => {
                     consumed += progress.consumed();
-                    if progress.published_cells() > 0 {
+                    if progress.published_slots() > 0 {
                         if *peer_ready {
                             notify_subscriber();
                         }
@@ -267,7 +268,7 @@ mod publisher {
                     if progress.is_complete() {
                         return true;
                     }
-                    if progress.published_cells() == 0 {
+                    if progress.published_slots() == 0 {
                         waiter.wait_for_peer_event();
                     }
                 }

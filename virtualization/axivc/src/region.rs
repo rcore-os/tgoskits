@@ -6,20 +6,24 @@ use crate::{
     ring::{IvcRing, IvcRingDirection},
 };
 
-const RING_HEADER_SIZE: u32 = core::mem::size_of::<IvcRing>() as u32;
+const RING_SIZE: u32 = core::mem::size_of::<IvcRing>() as u32;
 const PUBLISHER_TO_SUBSCRIBER_RING_OFFSET: u32 =
     core::mem::offset_of!(IvcRegion, publisher_to_subscriber) as u32;
 const SUBSCRIBER_TO_PUBLISHER_RING_OFFSET: u32 =
     core::mem::offset_of!(IvcRegion, subscriber_to_publisher) as u32;
-const IVC_REGION_FEATURE_SPSC_OPAQUE_CELLS: u32 = 1;
+const IVC_REGION_FEATURE_SPSC_OPAQUE_SLOTS: u32 = 1;
 
-/// Full opaque-cell IVC region for one publisher/subscriber pair.
+/// Full opaque-slot IVC region for one publisher/subscriber pair.
 ///
 /// Axvisor enforces at most one subscriber for the current SPSC protocol. The
 /// first two fields intentionally match `axvm::runtime::ivc::IVCChannelHeader`.
 /// Axvisor initializes them when the host-side channel is created. The remaining
 /// fields are owned by this shared-memory protocol.
-#[repr(C, align(64))]
+///
+/// The rings begin at byte offsets 256 and 8704, and the complete region
+/// occupies 17152 bytes with 256-byte alignment. Peers must agree on these
+/// layout parameters as well as the region version.
+#[repr(C, align(256))]
 pub struct IvcRegion {
     publisher_id: u64,
     key: u64,
@@ -87,7 +91,7 @@ impl IvcRegion {
     /// The caller must guarantee that the publisher role is attached only
     /// once across every address space sharing this region. Attaching it again
     /// would create duplicate producer and consumer endpoints, allowing data
-    /// races on cell bytes.
+    /// races on slot bytes.
     pub unsafe fn publisher_endpoints(&self) -> IvcEndpoints<'_> {
         IvcEndpoints::new(&self.publisher_to_subscriber, &self.subscriber_to_publisher)
     }
@@ -102,7 +106,7 @@ impl IvcRegion {
     /// The caller must guarantee that the subscriber role is attached only
     /// once across every address space sharing this region. Attaching it again
     /// would create duplicate producer and consumer endpoints, allowing data
-    /// races on cell bytes.
+    /// races on slot bytes.
     pub unsafe fn subscriber_endpoints(&self) -> IvcEndpoints<'_> {
         IvcEndpoints::new(&self.subscriber_to_publisher, &self.publisher_to_subscriber)
     }
@@ -128,12 +132,12 @@ impl IvcRegionHeader {
             && self.header_size.load(Ordering::Relaxed) as usize == core::mem::size_of::<Self>()
             && self.region_size.load(Ordering::Relaxed) as usize
                 >= core::mem::size_of::<IvcRegion>()
-            && self.features.load(Ordering::Relaxed) == IVC_REGION_FEATURE_SPSC_OPAQUE_CELLS
+            && self.features.load(Ordering::Relaxed) == IVC_REGION_FEATURE_SPSC_OPAQUE_SLOTS
             && self.publisher_to_subscriber_offset.load(Ordering::Relaxed)
                 == PUBLISHER_TO_SUBSCRIBER_RING_OFFSET
             && self.subscriber_to_publisher_offset.load(Ordering::Relaxed)
                 == SUBSCRIBER_TO_PUBLISHER_RING_OFFSET
-            && self.ring_size.load(Ordering::Relaxed) == RING_HEADER_SIZE
+            && self.ring_size.load(Ordering::Relaxed) == RING_SIZE
     }
 
     fn invalidate(&self) {
@@ -146,12 +150,12 @@ impl IvcRegionHeader {
         self.region_size
             .store(core::mem::size_of::<IvcRegion>() as u32, Ordering::Relaxed);
         self.features
-            .store(IVC_REGION_FEATURE_SPSC_OPAQUE_CELLS, Ordering::Relaxed);
+            .store(IVC_REGION_FEATURE_SPSC_OPAQUE_SLOTS, Ordering::Relaxed);
         self.publisher_to_subscriber_offset
             .store(PUBLISHER_TO_SUBSCRIBER_RING_OFFSET, Ordering::Relaxed);
         self.subscriber_to_publisher_offset
             .store(SUBSCRIBER_TO_PUBLISHER_RING_OFFSET, Ordering::Relaxed);
-        self.ring_size.store(RING_HEADER_SIZE, Ordering::Relaxed);
+        self.ring_size.store(RING_SIZE, Ordering::Relaxed);
         self.version.store(IVC_REGION_VERSION, Ordering::Release);
         self.magic.store(IVC_REGION_MAGIC, Ordering::Release);
     }
@@ -188,5 +192,52 @@ pub(crate) fn new_region_for_test(publisher_id: usize, key: usize) -> IvcRegion 
         },
         publisher_to_subscriber: crate::ring::new_ring_for_test(),
         subscriber_to_publisher: crate::ring::new_ring_for_test(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::mem::{align_of, offset_of, size_of};
+
+    use super::*;
+
+    #[test]
+    fn protocol_region_matches_linux_shared_memory_abi() {
+        // The shared-memory ABI fixes these offsets and sizes. A round trip
+        // alone cannot detect both endpoints using the same incompatible layout.
+        assert_eq!(size_of::<IvcRegion>(), 17152);
+        assert_eq!(align_of::<IvcRegion>(), 256);
+        assert_eq!(size_of::<IvcRegionHeader>(), 32);
+        assert_eq!(offset_of!(IvcRegion, publisher_id), 0);
+        assert_eq!(offset_of!(IvcRegion, key), 8);
+        assert_eq!(offset_of!(IvcRegion, header), 16);
+        assert_eq!(offset_of!(IvcRegion, publisher_to_subscriber), 256);
+        assert_eq!(offset_of!(IvcRegion, subscriber_to_publisher), 8704);
+
+        let mut region = new_region_for_test(1, 0x4956_4301);
+        assert!(!region.protocol_header_matches());
+        region.initialize();
+        assert!(region.channel_header_matches(1, 0x4956_4301));
+        assert!(region.protocol_header_matches());
+
+        let header = &region.header;
+        // Verify published metadata against the shared-memory layout, then
+        // ensure a v2 peer or a v3 peer with the old layout is rejected.
+        for (field, expected, incompatible) in [
+            (&header.magic, 0x4956_4332, 0),
+            (&header.version.0, 3, 2),
+            (&header.header_size.0, 32, 0),
+            (&header.region_size, 17152, 2240),
+            (&header.features, 1, 0),
+            (&header.publisher_to_subscriber_offset, 256, 64),
+            (&header.subscriber_to_publisher_offset, 8704, 1152),
+            (&header.ring_size, 8448, 1088),
+        ] {
+            assert_eq!(field.load(Ordering::Relaxed), expected);
+            field.store(incompatible, Ordering::Relaxed);
+            assert!(!region.protocol_header_matches());
+            field.store(expected, Ordering::Relaxed);
+        }
+        assert!(region.protocol_header_matches());
     }
 }

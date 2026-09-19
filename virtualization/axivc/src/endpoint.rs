@@ -8,9 +8,9 @@
 //! [`IvcRegion`]: crate::IvcRegion
 
 use crate::{
-    IVC_CELL_SIZE,
+    IVC_SLOT_SIZE,
     message::{IvcMessageReceiver, IvcMessageSender},
-    ring::{IvcCellError, IvcRing},
+    ring::{IvcRing, IvcSlotError},
 };
 
 /// The message sender and receiver owned by one side of an IVC channel.
@@ -25,8 +25,8 @@ pub struct IvcEndpoints<'a> {
 impl<'a> IvcEndpoints<'a> {
     pub(crate) const fn new(producer: &'a IvcRing, consumer: &'a IvcRing) -> Self {
         Self {
-            sender: IvcMessageSender::new(IvcCellProducer::new(producer)),
-            receiver: IvcMessageReceiver::new(IvcCellConsumer::new(consumer)),
+            sender: IvcMessageSender::new(IvcSlotProducer::new(producer)),
+            receiver: IvcMessageReceiver::new(IvcSlotConsumer::new(consumer)),
         }
     }
 
@@ -36,34 +36,34 @@ impl<'a> IvcEndpoints<'a> {
     }
 }
 
-pub(crate) struct IvcCellProducer<'a> {
+pub(crate) struct IvcSlotProducer<'a> {
     ring: &'a IvcRing,
 }
 
-impl<'a> IvcCellProducer<'a> {
+impl<'a> IvcSlotProducer<'a> {
     pub(crate) const fn new(ring: &'a IvcRing) -> Self {
         Self { ring }
     }
 
-    pub(crate) fn try_push_cell(&mut self, cell: &[u8; IVC_CELL_SIZE]) -> Result<(), IvcCellError> {
-        self.ring.try_push_cell(cell)
+    pub(crate) fn try_push_slot(&mut self, slot: &[u8; IVC_SLOT_SIZE]) -> Result<(), IvcSlotError> {
+        self.ring.try_push_slot(slot)
     }
 }
 
-pub(crate) struct IvcCellConsumer<'a> {
+pub(crate) struct IvcSlotConsumer<'a> {
     ring: &'a IvcRing,
 }
 
-impl<'a> IvcCellConsumer<'a> {
+impl<'a> IvcSlotConsumer<'a> {
     pub(crate) const fn new(ring: &'a IvcRing) -> Self {
         Self { ring }
     }
 
-    pub(crate) fn try_peek_cell(&mut self, output: &mut [u8; IVC_CELL_SIZE]) -> bool {
-        self.ring.try_peek_cell(output)
+    pub(crate) fn try_peek_slot(&mut self, output: &mut [u8; IVC_SLOT_SIZE]) -> bool {
+        self.ring.try_peek_slot(output)
     }
 
-    pub(crate) fn pop_cell(&mut self) {
-        self.ring.pop_cell();
+    pub(crate) fn pop_slot(&mut self) {
+        self.ring.pop_slot();
     }
 }
