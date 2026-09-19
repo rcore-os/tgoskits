@@ -44,10 +44,11 @@ mod subscriber {
 
     const ACK_BODY: &[u8] = b"ack from arceos subscriber";
     const APP_HEADER_LEN: usize = 11;
-    const APP_MAX_MESSAGE_LEN: usize = 700;
+    // Exercise single-fragment and full-ring payload boundaries.
+    const APP_MAX_MESSAGE_LEN: usize = 7484;
     const ACK_MESSAGE_LEN: usize = APP_HEADER_LEN + ACK_BODY.len();
-    const DATA_MESSAGE_LENGTHS: [usize; 3] = [41, 641, 700];
-    const REQUEST_MESSAGE_LENGTHS: [usize; 5] = [39, 40, 41, 640, 700];
+    const DATA_MESSAGE_LENGTHS: [usize; 3] = [233, 7425, 7484];
+    const REQUEST_MESSAGE_LENGTHS: [usize; 5] = [231, 232, 233, 7424, 7484];
     const MAX_SUBSCRIBE_ATTEMPTS: usize = 80;
     const PUBLISH_COUNT: u64 = REQUEST_MESSAGE_LENGTHS.len() as u64;
     const SUBSCRIBE_DATA_COUNT: u64 = DATA_MESSAGE_LENGTHS.len() as u64;
@@ -224,7 +225,7 @@ mod subscriber {
             match receiver.try_read(&mut payload[received..]) {
                 Ok(progress) => {
                     received += progress.written();
-                    if progress.consumed_cells() > 0 {
+                    if progress.consumed_slots() > 0 {
                         notify_publisher();
                     }
                     if progress.is_complete() {
@@ -264,7 +265,7 @@ mod subscriber {
                             return;
                         }
                         received = 0;
-                    } else if progress.consumed_cells() == 0 {
+                    } else if progress.consumed_slots() == 0 {
                         waiter.wait_for_peer_event();
                     }
                 }
@@ -292,7 +293,7 @@ mod subscriber {
             match sender.try_write(&payload[consumed..]) {
                 Ok(progress) => {
                     consumed += progress.consumed();
-                    if progress.published_cells() > 0 {
+                    if progress.published_slots() > 0 {
                         if *peer_ready {
                             notify_publisher();
                         }
@@ -301,7 +302,7 @@ mod subscriber {
                     if progress.is_complete() {
                         return true;
                     }
-                    if progress.published_cells() == 0 {
+                    if progress.published_slots() == 0 {
                         waiter.wait_for_peer_event();
                     }
                 }

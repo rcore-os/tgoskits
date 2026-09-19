@@ -6,6 +6,7 @@ axbacktrace
 axdevice
 axdevice_base
 axhvc
+axivc
 ax-io
 axklib
 axpoll

@@ -1,4 +1,4 @@
-//! Fragmented logical messages transported over fixed-size opaque cells.
+//! Fragmented logical messages transported over fixed-size opaque slots.
 //!
 //! Applications provide only message payload bytes. This module assigns
 //! transport identifiers and preserves message boundaries with private V1
@@ -60,15 +60,15 @@ impl IvcMessageMeta {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IvcSendProgress {
     consumed: usize,
-    published_cells: usize,
+    published_slots: usize,
     complete: bool,
 }
 
 impl IvcSendProgress {
-    pub(crate) const fn new(consumed: usize, published_cells: usize, complete: bool) -> Self {
+    pub(crate) const fn new(consumed: usize, published_slots: usize, complete: bool) -> Self {
         Self {
             consumed,
-            published_cells,
+            published_slots,
             complete,
         }
     }
@@ -78,12 +78,12 @@ impl IvcSendProgress {
         self.consumed
     }
 
-    /// Returns the number of cells published by this attempt.
-    pub const fn published_cells(self) -> usize {
-        self.published_cells
+    /// Returns the number of slots published by this attempt.
+    pub const fn published_slots(self) -> usize {
+        self.published_slots
     }
 
-    /// Returns whether the logical message's `LAST` cell was published.
+    /// Returns whether the logical message's `LAST` slot was published.
     pub const fn is_complete(self) -> bool {
         self.complete
     }
@@ -93,15 +93,15 @@ impl IvcSendProgress {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IvcReceiveProgress {
     written: usize,
-    consumed_cells: usize,
+    consumed_slots: usize,
     complete: bool,
 }
 
 impl IvcReceiveProgress {
-    pub(crate) const fn new(written: usize, consumed_cells: usize, complete: bool) -> Self {
+    pub(crate) const fn new(written: usize, consumed_slots: usize, complete: bool) -> Self {
         Self {
             written,
-            consumed_cells,
+            consumed_slots,
             complete,
         }
     }
@@ -111,9 +111,9 @@ impl IvcReceiveProgress {
         self.written
     }
 
-    /// Returns the number of complete cells released to the producer.
-    pub const fn consumed_cells(self) -> usize {
-        self.consumed_cells
+    /// Returns the number of complete slots released to the producer.
+    pub const fn consumed_slots(self) -> usize {
+        self.consumed_slots
     }
 
     /// Returns whether `LAST` completed the logical message.
