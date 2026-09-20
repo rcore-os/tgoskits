@@ -107,3 +107,82 @@ jobs:
           test "$PLAN_RESULT" = success
           test "$PREPARE_RESULT" = success
           test "$CHECKS_RESULT" = success
+
+  perf-history:
+    name: Performance History
+    if: always() && github.repository == 'rcore-os/tgoskits'
+    needs: [plan, checks]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Checkout tested revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.revision }}
+
+      - name: Download performance reports
+        uses: actions/download-artifact@v8
+        with:
+          pattern: axvisor-nightly-performance-*
+          path: ${{ runner.temp }}/performance-reports
+          merge-multiple: true
+
+      - name: Collect benchmark data
+        id: collect
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP" <<'EOF'
+          import json, pathlib, sys
+          reports = pathlib.Path(sys.argv[1]) / "performance-reports"
+          metrics = [
+              metric
+              for path in sorted(reports.glob("*.json"))
+              for metric in json.loads(path.read_text(encoding="utf-8"))
+          ]
+          output = pathlib.Path(sys.argv[1]) / "bench.json"
+          output.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+          print(f"collected {len(metrics)} metrics")
+          EOF
+          count=$(python3 -c \
+            "import json, os; print(len(json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'bench.json')))))")
+          echo "metrics=${count}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish dashboard branch
+        if: steps.collect.outputs.metrics != '0'
+        env:
+          NIGHTLY_REVISION: ${{ needs.plan.outputs.revision }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          # perf-data is a data-only branch; docs.yml merges it into the site,
+          # so this job never touches the Pages deployment itself.
+          dashboard="${RUNNER_TEMP}/dashboard"
+          mkdir -p "${dashboard}"
+          if git fetch --depth=1 origin perf-data 2>/dev/null; then
+            git show FETCH_HEAD:history.json > "${dashboard}/history.json"
+          fi
+          python3 scripts/test/ci_perf_dashboard.py \
+            --metrics "${RUNNER_TEMP}/bench.json" \
+            --history "${dashboard}/history.json" \
+            --date "$(date -u +%F)" \
+            --revision "${NIGHTLY_REVISION}" \
+            --title "AxVisor Nightly Benchmarks" \
+            --window 7 \
+            --output "${dashboard}/index.html"
+          html_blob=$(git hash-object -w "${dashboard}/index.html")
+          json_blob=$(git hash-object -w "${dashboard}/history.json")
+          tree=$(printf '100644 blob %s\tindex.html\n100644 blob %s\thistory.json\n' \
+            "${html_blob}" "${json_blob}" | git mktree)
+          commit=$(git commit-tree "${tree}" -m "chore: update perf dashboard for $(date -u +%F)")
+          git push --force origin "${commit}:refs/heads/perf-data"
+
+      - name: Refresh docs pages
+        if: steps.collect.outputs.metrics != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run docs.yml --ref dev

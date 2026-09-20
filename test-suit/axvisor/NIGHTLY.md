@@ -63,6 +63,18 @@ merges the uploaded per-check report artifacts under a "Performance Results"
 section (retained 30 days). Reports render only when the check succeeds; a
 failed run still exposes its numbers through the matrix job log.
 
+A final `Performance History` job also collects the per-check benchmark JSON,
+appends it to the `perf-data` branch, and renders a Chart.js dashboard
+(`scripts/test/ci_perf_dashboard.py`). Each test case gets its own chart (vCPU
+throughput, IVC send, IVC receive), the x-axis is the nightly date, lines are
+unfilled, and charts show the most recent 7 nightly entries while
+`history.json` keeps all of them. The job then dispatches `docs.yml`, which
+merges `perf-data` into `docs/build/axvisor-perf` before publishing Pages, so
+the dashboard appears next to the documentation at
+`<docs-site>/axvisor-perf/`. `docs.yml` also rebuilds nightly as a fallback.
+The job never touches the Pages deployment itself and writes history only in
+`rcore-os/tgoskits`.
+
 Nightly runs do not cancel one another. Board availability, reservation and
 reset remain the responsibility of the existing board test service, shared
 with PR CI. Scheduling after Starry Apps reduces overlap but does not provide
@@ -70,8 +82,8 @@ cross-workflow board exclusion by itself.
 
 Existing image/rootfs requirements still apply. In particular, the OrangePi
 IVC test requires the matching tgosimages IVC payload in the board Linux rootfs.
-This first version does not add automated rootfs provisioning, cross-run
-performance trending, long-duration stress tests or extra log artifacts.
+This first version does not add automated rootfs provisioning, regression
+thresholds or extra log artifacts.
 
 ## Local Planning
 
