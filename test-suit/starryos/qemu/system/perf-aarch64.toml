@@ -9,7 +9,7 @@ args = [
     "-nographic", "-machine", "virt,gic-version=3,its=on",
     "-m", "512M", "-cpu", "cortex-a53,pmu=on", "-smp", "4",
     "-device", "nvme,serial=deadbeef,drive=nvm,max_ioqpairs=64,msix_qsize=65",
-    "-drive", "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-drive", "id=nvm,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
 ]
 uefi = false
 to_bin = true

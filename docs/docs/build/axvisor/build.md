@@ -60,7 +60,8 @@ tmp/axbuild/config/axvisor/build-<target>.toml
 - 选择 CLI `--vmconfigs`，或在 CLI 为空时选择 Build Config 的 `vm_configs`；
 - 仅在 `[kernel]` 的 `kernel_path`、`dtb_path`、`bios_path`、`uefi_firmware_path`、
   `ramdisk_path` 中展开 Ostool 变量；相对路径仍以原 VM config 所在目录为基准；
-- 含变量的配置原子写入 `tmp/axbuild/axvisor/resolved-vm-configs/`，文件名由源路径
+- 含变量或需要重写逻辑 target 路径的配置原子写入
+  `<target_directory>/axbuild/axvisor/resolved-vm-configs/`，文件名由源路径
   SHA-256 生成；
 - 非空 VM 列表以平台路径分隔符写入 `AXVISOR_VM_CONFIGS`；
 - 对 feature 排序去重。

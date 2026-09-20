@@ -140,7 +140,7 @@ Example:
 ```sh
 cargo xtask starry kmod build --arch riscv64 \
     -m os/StarryOS/lkm/hello \
-    --rootfs tmp/axbuild/rootfs/kmod-test-riscv64.img
+    --rootfs target/axbuild/rootfs/kmod-test-riscv64.img
 ```
 
 ## Validation
@@ -224,7 +224,7 @@ selected target. This is required for dynamic-platform targets such as riscv64,
 because the plain target default does not contain the virtio and driver
 features needed by QEMU.
 
-1. Ensure the rootfs image exists at `tmp/axbuild/rootfs/rootfs-<target>-alpine.img`. If not, build it with:
+1. Ensure the rootfs image exists at `target/axbuild/rootfs/rootfs-<target>-alpine.img`. If not, build it with:
 
 ```sh
 cargo xtask starry rootfs --arch <arch>
@@ -235,7 +235,7 @@ cargo xtask starry rootfs --arch <arch>
 ```sh
 cargo xtask starry kmod build --arch riscv64 \
     -m os/StarryOS/lkm/hello \
-    --rootfs tmp/axbuild/rootfs/rootfs-riscv64-alpine.img
+    --rootfs target/axbuild/rootfs/rootfs-riscv64-alpine.img
 ```
 
 3. Build and boot the kernel with QEMU and the injected rootfs:

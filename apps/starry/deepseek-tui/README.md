@@ -130,8 +130,8 @@ bash apps/starry/deepseek-tui/prepare_deepseek_assets.sh
 - `target/deepseek/assets/`：deepseek + deepseek-tui 二进制及运行时共享库
 - `target/deepseek/build/`：DeepSeek-TUI 源码克隆
 - `tmp/axbuild/starry-app/deepseek-tui/overlay/`：最近一次 app prebuild 生成的 overlay
-- `tmp/axbuild/rootfs/rootfs-x86_64-alpine.img`：标准 Alpine rootfs
-- `tmp/axbuild/rootfs/rootfs-x86_64-deepseek*.img`：仅旧 standalone rootfs 脚本会生成
+- `target/axbuild/rootfs/rootfs-x86_64-alpine.img`：标准 Alpine rootfs
+- `target/axbuild/rootfs/rootfs-x86_64-deepseek*.img`：仅旧 standalone rootfs 脚本会生成
 
 以上均为不受版本控制的本地构建产物。
 

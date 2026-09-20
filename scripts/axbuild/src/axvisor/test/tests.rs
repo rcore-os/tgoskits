@@ -6,7 +6,6 @@ use std::{
 use tempfile::tempdir;
 
 use super::*;
-use crate::{axvisor::build, context::ResolvedAxvisorRequest};
 
 fn write_qemu_config(root: &Path, case: &str, arch: &str, body: &str) -> PathBuf {
     write_qemu_config_in_group(root, "normal", "default", case, arch, body)
@@ -73,21 +72,6 @@ fn write_board_config_in_group(
     let path = dir.join(format!("board-{name}.toml"));
     fs::write(&path, body).unwrap();
     path
-}
-
-fn axvisor_request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
-    ResolvedAxvisorRequest {
-        package: build::AXVISOR_PACKAGE.to_string(),
-        axvisor_dir: PathBuf::from("/tmp/os/axvisor"),
-        arch: arch.to_string(),
-        target: target.to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: path,
-        qemu_config: None,
-        uboot_config: None,
-        vmconfigs: Vec::new(),
-    }
 }
 
 #[test]

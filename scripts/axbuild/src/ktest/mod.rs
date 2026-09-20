@@ -209,8 +209,8 @@ pub(crate) async fn run(args: ArgsKtest) -> anyhow::Result<()> {
 }
 
 async fn run_qemu(args: ArgsKtestQemu) -> anyhow::Result<()> {
-    let mut app = AppContext::new()?;
-    let packages = discover_workspace_ktests(crate::build::cached_workspace_metadata()?)?;
+    let mut app = AppContext::new_with_target_dir(args.target_dir.as_deref())?;
+    let packages = discover_workspace_ktests(app.workspace_metadata())?;
     let plan = build_qemu_plan(&packages, &args.qemu_selector())?;
     validate_unique_config_overrides(&args, &plan)?;
     if plan.is_empty() {
@@ -292,7 +292,7 @@ async fn run_qemu_unit(
     });
     let mut cargo = load_runtime_cargo(
         unit.runtime,
-        app.workspace_root(),
+        app.workspace_context(),
         &unit.package,
         &unit.arch,
         &unit.target,
@@ -302,12 +302,8 @@ async fn run_qemu_unit(
     apply_qemu_cargo_options(&mut cargo, args);
     app.set_debug_mode(false)?;
 
-    let report_session = maybe_start_starry_future_incompat_report(
-        unit.runtime,
-        app.workspace_root(),
-        &unit.arch,
-        &cargo,
-    )?;
+    let report_session =
+        maybe_start_starry_future_incompat_report(unit.runtime, app.target_dir(), &unit.arch)?;
     let build_result = app.build(cargo.clone(), build_config.clone()).await;
     let output = crate::build::finish_future_incompat_report_session(report_session, build_result)?;
     maybe_postprocess_starry_artifact(
@@ -322,9 +318,14 @@ async fn run_qemu_unit(
         &cargo,
         &output,
     )?;
-    let rootfs =
-        ensure_runtime_qemu_assets(unit.runtime, app.workspace_root(), &unit.arch, &unit.target)
-            .await?;
+    let rootfs = ensure_runtime_qemu_assets(
+        unit.runtime,
+        app.workspace_root(),
+        app.target_dir(),
+        &unit.arch,
+        &unit.target,
+    )
+    .await?;
 
     let mut qemu = app
         .read_qemu_config_from_path_for_cargo(&cargo, &qemu_config)
@@ -443,15 +444,19 @@ struct KtestBuildContext<'a> {
 async fn ensure_runtime_qemu_assets(
     runtime: KtestRuntime,
     workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
     target: &str,
 ) -> anyhow::Result<Option<PathBuf>> {
     if runtime == KtestRuntime::Starry {
-        let rootfs = starry::rootfs::ensure_rootfs_in_tmp_dir(workspace_root, arch, target).await?;
+        let rootfs =
+            starry::rootfs::ensure_rootfs_in_tmp_dir(workspace_root, target_dir, arch, target)
+                .await?;
         return Ok(Some(rootfs));
     }
     if runtime == KtestRuntime::Axvisor {
-        let rootfs = crate::image::storage::ensure_rootfs_for_arch(workspace_root, arch).await?;
+        let rootfs =
+            crate::image::storage::ensure_rootfs_for_arch(workspace_root, target_dir, arch).await?;
         return Ok(Some(rootfs));
     }
     Ok(None)
@@ -459,7 +464,7 @@ async fn ensure_runtime_qemu_assets(
 
 async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
     let mut app = AppContext::new()?;
-    let discovered = load_discovered_ktest_package(&args.package)?;
+    let discovered = load_discovered_ktest_package(app.workspace_metadata(), &args.package)?;
     if !discovered.uses_workspace_axtest {
         bail!(
             "package `{}` must declare workspace `axtest` directly in [dev-dependencies]",
@@ -497,7 +502,7 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
     let arch = crate::context::arch_for_target_checked(&triple)?;
     let mut cargo = load_runtime_cargo(
         runtime,
-        app.workspace_root(),
+        app.workspace_context(),
         &args.package,
         arch,
         &triple,
@@ -515,7 +520,7 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
             )
         })?;
     let report_session =
-        maybe_start_starry_future_incompat_report(runtime, app.workspace_root(), arch, &cargo)?;
+        maybe_start_starry_future_incompat_report(runtime, app.target_dir(), arch)?;
     let build_result = app.build(cargo.clone(), build_config.clone()).await;
     let output = crate::build::finish_future_incompat_report_session(report_session, build_result)?;
     maybe_postprocess_starry_artifact(
@@ -544,8 +549,11 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
     .await
 }
 
-fn load_discovered_ktest_package(package: &str) -> anyhow::Result<DiscoveredKtestPackage> {
-    discover_workspace_ktests(crate::build::cached_workspace_metadata()?)?
+fn load_discovered_ktest_package(
+    metadata: &Metadata,
+    package: &str,
+) -> anyhow::Result<DiscoveredKtestPackage> {
+    discover_workspace_ktests(metadata)?
         .into_iter()
         .find(|candidate| candidate.name == package)
         .ok_or_else(|| anyhow!("workspace package `{package}` not found"))
@@ -921,12 +929,6 @@ fn apply_qemu_cargo_options(cargo: &mut Cargo, args: &ArgsKtestQemu) {
     if args.frozen {
         ensure_cargo_arg(&mut cargo.args, "--frozen");
     }
-    if let Some(target_dir) = &args.target_dir {
-        remove_cargo_value_arg(&mut cargo.args, "--target-dir");
-        cargo
-            .args
-            .extend(["--target-dir".to_string(), target_dir.display().to_string()]);
-    }
     if let Some(profile) = &args.profile {
         remove_cargo_value_arg(&mut cargo.args, "--profile");
         cargo.profile = Some(if profile == "release" {
@@ -1018,7 +1020,7 @@ fn runtime_name(runtime: KtestRuntime) -> &'static str {
 
 fn load_runtime_cargo(
     runtime: KtestRuntime,
-    workspace_root: &Path,
+    workspace: &crate::context::WorkspaceContext,
     package: &str,
     arch: &str,
     target: &str,
@@ -1027,15 +1029,15 @@ fn load_runtime_cargo(
     match runtime {
         KtestRuntime::Arceos | KtestRuntime::Board => {
             let request = arceos_request(package, arch, target, build_config);
-            arceos::build::load_cargo_config(&request)
+            arceos::build::load_cargo_config(&request, workspace)
         }
         KtestRuntime::Starry => {
             let request = starry_request(package, arch, target, build_config);
-            starry::build::load_cargo_config(&request)
+            starry::build::load_cargo_config(&request, workspace)
         }
         KtestRuntime::Axvisor => {
-            let request = axvisor_request(workspace_root, package, arch, target, build_config);
-            axvisor::build::load_cargo_config(&request)
+            let request = axvisor_request(workspace.root(), package, arch, target, build_config);
+            axvisor::build::load_cargo_config(&request, workspace)
         }
     }
 }
@@ -1076,15 +1078,13 @@ fn maybe_postprocess_starry_artifact(
 
 fn maybe_start_starry_future_incompat_report(
     runtime: KtestRuntime,
-    workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
-    cargo: &Cargo,
 ) -> anyhow::Result<Option<crate::build::FutureIncompatReportSession>> {
     if runtime != KtestRuntime::Starry || arch != "aarch64" {
         return Ok(None);
     }
-    let target_dir = crate::build::cargo_target_dir_for(workspace_root, &cargo.args)?;
-    crate::build::start_future_incompat_report_session(&target_dir).map(Some)
+    crate::build::start_future_incompat_report_session(target_dir).map(Some)
 }
 
 fn starry_request(

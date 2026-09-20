@@ -3,8 +3,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 workspace="$(cd "$script_dir/../../.." && pwd)"
-base_rootfs="$workspace/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
-output_rootfs="$workspace/tmp/axbuild/rootfs/rootfs-x86_64-deepseek.img"
+base_rootfs="$workspace/target/axbuild/rootfs/rootfs-x86_64-alpine.img"
+output_rootfs="$workspace/target/axbuild/rootfs/rootfs-x86_64-deepseek.img"
 api_key=""
 proxy_url="${DEEPSEEK_ONLINE_PROXY:-}"
 env_file=""
@@ -22,9 +22,9 @@ Options:
                          (default: DEEPSEEK_ONLINE_PROXY when set)
   --env-file PATH        Inject an existing shell env file as /root/.deepseek/starry-online-env
   --base-rootfs PATH     Base rootfs image to copy before injection
-                         (default: tmp/axbuild/rootfs/rootfs-x86_64-alpine.img)
+                         (default: target/axbuild/rootfs/rootfs-x86_64-alpine.img)
   --output-rootfs PATH   Output rootfs image for the example
-                         (default: tmp/axbuild/rootfs/rootfs-x86_64-deepseek.img)
+                         (default: target/axbuild/rootfs/rootfs-x86_64-deepseek.img)
   --ca-cert PATH         CA bundle to inject as /etc/ssl/certs/ca-certificates.crt
                          (default: SSL_CERT_FILE or /etc/ssl/certs/ca-certificates.crt)
   -h, --help             Show this help
@@ -34,7 +34,7 @@ Example (offline smoke test):
 
 Example (online prime test):
   apps/starry/deepseek-tui/prepare_deepseek_rootfs.sh \\
-    --output-rootfs tmp/axbuild/rootfs/rootfs-x86_64-deepseek-online.img \\
+    --output-rootfs target/axbuild/rootfs/rootfs-x86_64-deepseek-online.img \\
     --api-key sk-your-key-here \\
     --proxy http://10.0.2.2:7890
 EOF
@@ -113,7 +113,7 @@ need_cmd mktemp
 need_cmd stat
 
 if [[ ! -f "$base_rootfs" ]]; then
-    if [[ "$base_rootfs" == "$workspace/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img" ]]; then
+    if [[ "$base_rootfs" == "$workspace/target/axbuild/rootfs/rootfs-x86_64-alpine.img" ]]; then
         echo "Base rootfs not found; preparing the default x86_64 Alpine rootfs..."
         (cd "$workspace" && cargo xtask starry rootfs --arch x86_64)
     fi

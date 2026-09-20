@@ -31,7 +31,7 @@ os/arceos/configs/qemu/qemu-<arch>.toml
 ```toml
 args = [
   "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
-  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/arceos-aarch64-fat32.img",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/arceos-aarch64-fat32.img",
 ]
 uefi = false
 to_bin = true

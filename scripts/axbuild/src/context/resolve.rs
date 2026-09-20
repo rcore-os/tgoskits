@@ -40,7 +40,7 @@ impl AppContext {
         uboot_config: Option<PathBuf>,
         resolve_build_info_path: impl FnOnce(&str, &str, Option<PathBuf>) -> anyhow::Result<PathBuf>,
     ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
-        let snapshot = ArceosCommandSnapshot::load(&self.root)?;
+        let snapshot = ArceosCommandSnapshot::load(self.workspace_root())?;
         let inherit_snapshot_config = cli.package.is_none()
             && cli.arch.is_none()
             && cli.target.is_none()
@@ -146,18 +146,18 @@ impl AppContext {
             arch: Some(arch),
             target: Some(target),
             smp,
-            config: Some(snapshot_path_value(&self.root, &build_info_path)),
+            config: Some(snapshot_path_value(self.workspace_root(), &build_info_path)),
             qemu: ArceosQemuSnapshot {
                 qemu_config: runtime_paths
                     .qemu_config
                     .as_ref()
-                    .map(|path| snapshot_path_value(&self.root, path)),
+                    .map(|path| snapshot_path_value(self.workspace_root(), path)),
             },
             uboot: ArceosUbootSnapshot {
                 uboot_config: runtime_paths
                     .uboot_config
                     .as_ref()
-                    .map(|path| snapshot_path_value(&self.root, path)),
+                    .map(|path| snapshot_path_value(self.workspace_root(), path)),
             },
         };
 
@@ -168,7 +168,7 @@ impl AppContext {
         &self,
         snapshot: &ArceosCommandSnapshot,
     ) -> anyhow::Result<PathBuf> {
-        snapshot.store(&self.root)
+        snapshot.store(self.workspace_root())
     }
 
     pub(crate) fn prepare_starry_request(
@@ -178,7 +178,7 @@ impl AppContext {
         uboot_config: Option<PathBuf>,
         resolve_build_info_path: impl FnOnce(&Path, &str, Option<PathBuf>) -> anyhow::Result<PathBuf>,
     ) -> anyhow::Result<(ResolvedStarryRequest, StarryCommandSnapshot)> {
-        let snapshot = StarryCommandSnapshot::load(&self.root)?;
+        let snapshot = StarryCommandSnapshot::load(self.workspace_root())?;
         let inherit_snapshot_config =
             cli.config.is_none() && cli.arch.is_none() && cli.target.is_none();
         let resolved_config = self.resolve_command_path(
@@ -227,7 +227,8 @@ impl AppContext {
                 None
             },
         );
-        let build_info_path = resolve_build_info_path(&self.root, &target, resolved_config)?;
+        let build_info_path =
+            resolve_build_info_path(self.workspace_root(), &target, resolved_config)?;
 
         let request = ResolvedStarryRequest {
             package: STARRY_PACKAGE.to_string(),
@@ -245,18 +246,18 @@ impl AppContext {
             arch: Some(arch),
             target: Some(target),
             smp,
-            config: Some(snapshot_path_value(&self.root, &build_info_path)),
+            config: Some(snapshot_path_value(self.workspace_root(), &build_info_path)),
             qemu: StarryQemuSnapshot {
                 qemu_config: runtime_paths
                     .qemu_config
                     .as_ref()
-                    .map(|path| snapshot_path_value(&self.root, path)),
+                    .map(|path| snapshot_path_value(self.workspace_root(), path)),
             },
             uboot: StarryUbootSnapshot {
                 uboot_config: runtime_paths
                     .uboot_config
                     .as_ref()
-                    .map(|path| snapshot_path_value(&self.root, path)),
+                    .map(|path| snapshot_path_value(self.workspace_root(), path)),
             },
         };
 
@@ -267,7 +268,7 @@ impl AppContext {
         &self,
         snapshot: &StarryCommandSnapshot,
     ) -> anyhow::Result<PathBuf> {
-        snapshot.store(&self.root)
+        snapshot.store(self.workspace_root())
     }
 
     pub(crate) fn prepare_axvisor_request(
@@ -286,7 +287,7 @@ impl AppContext {
             load_config_target,
             resolve_build_info_path,
         } = paths;
-        let snapshot = AxvisorCommandSnapshot::load(&self.root)?;
+        let snapshot = AxvisorCommandSnapshot::load(self.workspace_root())?;
         let inherit_snapshot_config =
             cli.config.is_none() && cli.arch.is_none() && cli.target.is_none();
         let resolved_config = self.resolve_command_path(
@@ -366,22 +367,22 @@ impl AppContext {
             arch: Some(arch),
             target: Some(target),
             smp,
-            config: Some(snapshot_path_value(&self.root, &build_info_path)),
+            config: Some(snapshot_path_value(self.workspace_root(), &build_info_path)),
             vmconfigs: vmconfigs
                 .iter()
-                .map(|path| snapshot_path_value(&self.root, path))
+                .map(|path| snapshot_path_value(self.workspace_root(), path))
                 .collect(),
             qemu: AxvisorQemuSnapshot {
                 qemu_config: runtime_paths
                     .qemu_config
                     .as_ref()
-                    .map(|path| snapshot_path_value(&self.root, path)),
+                    .map(|path| snapshot_path_value(self.workspace_root(), path)),
             },
             uboot: AxvisorUbootSnapshot {
                 uboot_config: runtime_paths
                     .uboot_config
                     .as_ref()
-                    .map(|path| snapshot_path_value(&self.root, path)),
+                    .map(|path| snapshot_path_value(self.workspace_root(), path)),
             },
         };
 
@@ -392,7 +393,7 @@ impl AppContext {
         &self,
         snapshot: &AxvisorCommandSnapshot,
     ) -> anyhow::Result<PathBuf> {
-        snapshot.store(&self.root)
+        snapshot.store(self.workspace_root())
     }
 
     fn resolve_runtime_paths(
@@ -413,7 +414,7 @@ impl AppContext {
         explicit_path: Option<PathBuf>,
         snapshot_path: Option<&PathBuf>,
     ) -> Option<PathBuf> {
-        explicit_path.or_else(|| resolve_snapshot_path(&self.root, snapshot_path))
+        explicit_path.or_else(|| resolve_snapshot_path(self.workspace_root(), snapshot_path))
     }
 
     fn resolve_workspace_paths<'a>(
@@ -430,7 +431,7 @@ impl AppContext {
         if path.is_absolute() {
             path.to_path_buf()
         } else {
-            self.root.join(path)
+            self.workspace_root().join(path)
         }
     }
 }

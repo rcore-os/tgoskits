@@ -86,7 +86,7 @@ rootfs used by the app runner.
 
 ```bash
 mkdir -p tmp/wayland-manual
-cp "tmp/axbuild/rootfs/rootfs-${ARCH}-alpine.img" "tmp/wayland-manual/${ARCH}.img"
+cp "target/axbuild/rootfs/rootfs-${ARCH}-alpine.img" "tmp/wayland-manual/${ARCH}.img"
 ```
 
 ### Step 3: Start QEMU with a VNC Display
@@ -286,7 +286,7 @@ STARRY_VNC=9 ./apps/starry/wayland/run-hvf.sh --no-build --vnc-only
 ```
 
 Use `--reprovision` to discard and recreate
-`tmp/axbuild/rootfs/rootfs-aarch64-wayland.img`. Set
+`target/axbuild/rootfs/rootfs-aarch64-wayland.img`. Set
 `STARRY_WAYLAND_ROOTFS_MB` if the default 4096 MiB manual image is not suitable.
 The helper requires host `debugfs`, `e2fsck`, `resize2fs`, `python3`, and
 `qemu-system-aarch64`; on macOS with Homebrew, the script adds the usual

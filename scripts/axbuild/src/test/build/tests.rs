@@ -214,9 +214,12 @@ fn grouped_c_subcases_reject_missing_direct_usr_bin_commands() {
 #[test]
 fn write_cmake_toolchain_file_contains_clang_cross_settings() {
     let root = tempdir().unwrap();
-    let layout =
-        case_assets::case_asset_layout(root.path(), "aarch64-unknown-none-softfloat", "usb")
-            .unwrap();
+    let layout = case_assets::case_asset_layout(
+        &root.path().join("target"),
+        "aarch64-unknown-none-softfloat",
+        "usb",
+    )
+    .unwrap();
     fs::create_dir_all(&layout.cross_bin_dir).unwrap();
     fs::create_dir_all(
         layout
@@ -245,9 +248,12 @@ fn write_cmake_toolchain_file_contains_clang_cross_settings() {
 #[test]
 fn write_riscv64_cmake_toolchain_file_constrains_guest_isa() {
     let root = tempdir().unwrap();
-    let layout =
-        case_assets::case_asset_layout(root.path(), "riscv64gc-unknown-none-elf", "system")
-            .unwrap();
+    let layout = case_assets::case_asset_layout(
+        &root.path().join("target"),
+        "riscv64gc-unknown-none-elf",
+        "system",
+    )
+    .unwrap();
     fs::create_dir_all(&layout.cross_bin_dir).unwrap();
 
     write_cmake_toolchain_file(

@@ -18,7 +18,7 @@ MySQL rootfs 准备流程必须以 `root` 身份运行，或者由具备 passwor
 cargo xtask starry app qemu -t mysql --arch x86_64
 ```
 
-生成后的镜像会缓存在 `tmp/axbuild/rootfs/rootfs-x86_64-mysql.img`，下载内容会缓存在
+生成后的镜像会缓存在 `target/axbuild/rootfs/rootfs-x86_64-mysql.img`，下载内容会缓存在
 `target/mysql`，但当前 `prebuild.sh` 在检查、扩容、挂载和刷新镜像时仍然需要
 root 权限。
 
@@ -26,7 +26,7 @@ root 权限。
 
 `prebuild.sh` 在宿主机或容器中、QEMU 启动前执行：
 
-1. 使用 `wget --no-check-certificate` 准备 `tmp/axbuild/rootfs/rootfs-x86_64-debian.img.tar.xz`。
+1. 使用 `wget --no-check-certificate` 准备 `target/axbuild/rootfs/rootfs-x86_64-debian.img.tar.xz`。
 2. 从 Debian rootfs 压缩包解出 MySQL 专用 rootfs。
 3. 将专用镜像扩容到 `5G`。
 4. 使用 `wget --no-check-certificate` 下载 MySQL 8.4.6；如果已有 `MYSQL_TARBALL` 或 `mysql.tar.xz`，则直接复用。
@@ -38,7 +38,7 @@ root 权限。
 QEMU 使用生成后的 rootfs：
 
 ```text
-tmp/axbuild/rootfs/rootfs-x86_64-mysql.img
+target/axbuild/rootfs/rootfs-x86_64-mysql.img
 ```
 
 ## 指定测试配置

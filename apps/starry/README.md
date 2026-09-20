@@ -82,14 +82,14 @@ The `picoclaw-cli` case is an opt-in StarryOS x86_64 QEMU workflow for checking
 PicoClaw compatibility in three stages: offline CLI smoke, online agent request,
 and gateway service smoke. It also provides an interactive StarryOS shell for
 manual PicoClaw use. It prepares local-only release assets and rootfs images
-under `target/picoclaw/` and `tmp/axbuild/rootfs/`.
+under `target/picoclaw/` and `target/axbuild/rootfs/`.
 
 ```bash
 apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh
 cargo xtask starry qemu \
   --arch x86_64 \
   --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw.img
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-picoclaw.img
 ```
 
 See `picoclaw-cli/README.md` for the online agent, gateway, and interactive
@@ -130,7 +130,7 @@ qemu-system-aarch64 \
   -m 512M \
   -smp 1 \
   -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 \
-  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,file.locking=off \
+  -drive id=disk0,if=none,format=raw,file=target/axbuild/rootfs/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
   -netdev user,id=net0
 ```
@@ -219,7 +219,7 @@ apps/starry/jcode/prepare_jcode_rootfs.sh
 cargo xtask starry qemu \
   --arch x86_64 \
   --qemu-config apps/starry/jcode/qemu-x86_64.toml \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-jcode.img
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-jcode.img
 ```
 
 See `jcode/README.md` for interactive usage and troubleshooting.

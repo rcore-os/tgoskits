@@ -4,7 +4,6 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::OnceLock,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -17,7 +16,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-use crate::context::{axbuild_tmp_dir, workspace_manifest_path, workspace_metadata_root_manifest};
+use crate::context::axbuild_tmp_dir;
+#[cfg(test)]
+use crate::context::{workspace_manifest_path, workspace_metadata_root_manifest};
 
 mod bare_build;
 mod config_file;
@@ -32,7 +33,7 @@ pub(crate) use config_file::{
     reject_arceos_app_c_field, reject_removed_std_field,
 };
 pub(crate) use future_incompat::{
-    FutureIncompatReportSession, cargo_target_dir_for, finish_future_incompat_report_session,
+    FutureIncompatReportSession, finish_future_incompat_report_session,
     finish_future_incompat_report_status, start_future_incompat_report_session,
 };
 pub(crate) use info::{
@@ -46,8 +47,7 @@ pub(crate) use platform::parse_makefile_features;
 pub(crate) use platform::workspace_metadata;
 use platform::*;
 pub(crate) use platform::{
-    apply_makefile_features, cached_workspace_metadata, default_build_info_path_in_workspace,
-    makefile_features_from_env,
+    apply_makefile_features, default_build_info_path_in_workspace, makefile_features_from_env,
 };
 pub(crate) use std_build::std_check_target_for;
 use std_build::*;

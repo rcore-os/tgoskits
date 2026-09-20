@@ -16,12 +16,12 @@ apps/starry/codex-cli/prepare_codex_rootfs.sh
 
 ```bash
 apps/starry/codex-cli/prepare_codex_rootfs.sh \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-alpine.img \
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-alpine.img \
   --auth-json target/auth.json \
   --proxy http://10.0.2.2:7890
 ```
 
-`target/auth.json`、`target/codex/assets/`、`tmp/axbuild/rootfs/rootfs-x86_64-codex*.img` 都是本地资产，不提交到仓库。
+`target/auth.json`、`target/codex/assets/`、`target/axbuild/rootfs/rootfs-x86_64-codex*.img` 都是本地资产，不提交到仓库。
 
 ## 离线启动检查
 
@@ -31,7 +31,7 @@ apps/starry/codex-cli/prepare_codex_rootfs.sh \
 cargo xtask starry qemu \
   --arch x86_64 \
   --qemu-config apps/starry/codex-cli/qemu-x86_64.toml \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-alpine.img
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-alpine.img
 ```
 
 期望输出包含：
@@ -48,7 +48,7 @@ STARRY_CODEX_STAGE_G_CODEX_HELP_PASSED
 cargo xtask starry qemu \
   --arch x86_64 \
   --qemu-config apps/starry/codex-cli/qemu-x86_64-codex-syscall-hunt.toml \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-alpine.img
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-alpine.img
 ```
 
 QEMU 内部会执行的核心动作包括：
@@ -78,7 +78,7 @@ STARRY_TGOSKITS_SYSCALL_HUNT_PASSED
 ```bash
 cargo xtask starry qemu \
   --arch x86_64 \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-alpine.img
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-alpine.img
 ```
 
 进入 `root@starry` 后：

@@ -21,20 +21,19 @@ pub(crate) struct ArceosCBuildOutput {
 }
 
 pub(crate) fn default_c_app_artifact_paths(
-    workspace_root: &Path,
+    target_dir: &Path,
     app_name: &str,
 ) -> ArceosCArtifactPaths {
-    let target_dir = crate::context::axbuild_tmp_dir(workspace_root)
-        .join("arceos-c")
-        .join("cargo");
-    let out_dir = crate::context::axbuild_tmp_dir(workspace_root)
+    let root = target_dir
+        .join("axbuild")
         .join("arceos-c")
         .join("apps")
-        .join(sanitize_name(app_name))
-        .join("out");
+        .join(sanitize_name(app_name));
+    let cargo_target_dir = target_dir.join("axbuild/arceos-c/cargo");
+    let out_dir = root.join("out");
 
     ArceosCArtifactPaths {
-        target_dir,
+        target_dir: cargo_target_dir,
         out_dir,
     }
 }

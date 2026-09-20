@@ -8,10 +8,10 @@ phys_cpu_ids = [1]
 [kernel]
 entry_point = 0x9020_0000
 image_location = "memory"
-kernel_path = "${workspace}/tmp/axbuild/images/qemu-riscv64/linux/linux-qemu"
+kernel_path = "${workspace}/target/axbuild/images/qemu-riscv64/linux/linux-qemu"
 kernel_load_addr = 0x9020_0000
 dtb_load_addr = 0x9300_0000
-ramdisk_path = "${workspace}/tmp/axbuild/images/initramfs-riscv64-busybox.cpio.gz/initramfs-riscv64-busybox.cpio.gz"
+ramdisk_path = "${workspace}/target/axbuild/images/initramfs-riscv64-busybox.cpio.gz/initramfs-riscv64-busybox.cpio.gz"
 ramdisk_load_addr = 0x9400_0000
 cmdline = "console=ttyS0,115200 rdinit=/init devtmpfs.mount=1"
 memory_regions = [

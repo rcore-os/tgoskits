@@ -11,9 +11,9 @@ application.
 - Host: native `x86_64-linux` with Nix/Lix, QEMU x86_64, `e2fsck`, and enough
   store/disk space for the closure.
 - Guest: `x86_64-unknown-none`, QEMU q35 UEFI, NVMe root disk.
-- Managed artifact reference: `tmp/axbuild/rootfs/rootfs-x86_64-nixos.img`.
+- Managed artifact reference: `target/axbuild/rootfs/rootfs-x86_64-nixos.img`.
   Axbuild resolves it to
-  `tmp/axbuild/rootfs/rootfs-x86_64-nixos.img/rootfs-x86_64-nixos.img`; the
+  `target/axbuild/rootfs/rootfs-x86_64-nixos.img/rootfs-x86_64-nixos.img`; the
   image is built only by `build-rootfs.sh` from `flake.lock`.
 - Boot: `/init` is the generated NixOS stage-2 initializer; systemd becomes PID
   1 and a declarative timer starts the marker service after

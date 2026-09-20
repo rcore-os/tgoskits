@@ -502,6 +502,7 @@ impl BuildInfo {
         package: &str,
         target: &str,
         metadata: &Metadata,
+        axbuild_dir: &Path,
     ) -> anyhow::Result<Cargo> {
         self.validated_max_cpu_num()?;
         self.validate_features()?;
@@ -514,8 +515,8 @@ impl BuildInfo {
             self.resolve_std_features();
         }
         let std_target = std_build_target_for(target)?;
-        let fake_lib_dir = std_fake_lib_dir(&std_target.target_name)?;
-        let wrapper = std_linker_wrapper_path(&std_target.target_name, &fake_lib_dir)?;
+        let fake_lib_dir = std_fake_lib_dir(axbuild_dir, &std_target.target_name)?;
+        let wrapper = std_linker_wrapper_path(axbuild_dir, &std_target.target_name, &fake_lib_dir)?;
         let mut cargo = self.into_base_cargo_config_with_log(
             package.to_string(),
             std_target.target.clone(),
@@ -531,13 +532,18 @@ impl BuildInfo {
         let axstd_features = package_feature_names(AXSTD_STD_PACKAGE, metadata)?;
         pass_std_build_nested_features(&mut cargo.features, &app_features, &axstd_features);
         cargo.pre_build_cmds.push(
-            std_fake_lib_prebuild_script_path(&std_target.target_name, &fake_lib_dir, &cargo.env)?
-                .display()
-                .to_string(),
+            std_fake_lib_prebuild_script_path(
+                axbuild_dir,
+                &std_target.target_name,
+                &fake_lib_dir,
+                &cargo.env,
+            )?
+            .display()
+            .to_string(),
         );
         let rustflags = toolchain_rustflags_for_features(&cargo.env, &cargo.features);
         cargo.extra_config = Some(
-            std_cargo_config_path(&std_target.target_name, &wrapper, &rustflags)?
+            std_cargo_config_path(axbuild_dir, &std_target.target_name, &wrapper, &rustflags)?
                 .display()
                 .to_string(),
         );
@@ -550,8 +556,9 @@ impl BuildInfo {
         package: &str,
         target: &str,
         metadata: &Metadata,
+        axbuild_dir: &Path,
     ) -> anyhow::Result<Cargo> {
-        self.into_prepared_base_cargo_config_with_metadata(package, target, metadata)
+        self.into_prepared_base_cargo_config_with_metadata(package, target, metadata, axbuild_dir)
     }
 
     /// Builds a freestanding kernel against only `core` and `alloc`.

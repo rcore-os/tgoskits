@@ -278,7 +278,7 @@ impl Axvisor {
         let request =
             self.prepare_request((&args.build).into(), None, None, SnapshotPersistence::Store)?;
         self.app.set_debug_mode(request.debug)?;
-        let cargo = build::load_cargo_config(&request)?;
+        let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
         let board_config = self
             .load_board_config(&cargo, args.board_config.as_deref())
             .await?;
@@ -392,7 +392,7 @@ impl Axvisor {
 
     async fn run_build_request(&mut self, request: ResolvedAxvisorRequest) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
-        let cargo = build::load_cargo_config(&request)?;
+        let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
         self.app
             .build(cargo, request.build_info_path)
             .await
@@ -401,7 +401,7 @@ impl Axvisor {
 
     async fn run_uboot_request(&mut self, request: ResolvedAxvisorRequest) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
-        let cargo = build::load_cargo_config(&request)?;
+        let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
         let uboot = self.load_uboot_config(&request, &cargo).await?;
         self.app.uboot(cargo, request.build_info_path, uboot).await
     }

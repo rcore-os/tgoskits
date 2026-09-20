@@ -252,9 +252,9 @@ mod tests {
             // Some CI runners mount their system temporary directory with
             // `noexec`. Probe fixtures are deliberately executable, so keep
             // them below the workspace build directory instead.
-            let root = std::env::current_dir()
+            let root = crate::context::WorkspaceContext::discover(None)
                 .unwrap()
-                .join("target")
+                .target_dir()
                 .join("axbuild-http-probe-fixtures");
             fs::create_dir_all(&root).unwrap();
             tempfile::Builder::new()

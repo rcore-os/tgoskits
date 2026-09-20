@@ -203,7 +203,7 @@ mod tests {
     fn cross_wrappers_select_tools_and_preserve_process_contract() {
         let root = tempfile::tempdir().unwrap();
         let layout = case_assets::case_asset_layout(
-            root.path(),
+            &root.path().join("target"),
             "aarch64-unknown-none-softfloat",
             "cross tools' case",
         )

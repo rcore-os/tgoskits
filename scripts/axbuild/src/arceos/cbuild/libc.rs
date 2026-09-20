@@ -15,6 +15,7 @@ pub(super) fn build_axlibc_staticlib(
     debug: bool,
     dynamic_pie: bool,
 ) -> anyhow::Result<()> {
+    crate::context::reject_raw_target_dir_args(cargo)?;
     let mut command = Command::new("cargo");
     let mut env = cargo.env.clone();
     if dynamic_pie {

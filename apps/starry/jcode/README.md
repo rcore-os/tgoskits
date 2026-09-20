@@ -28,7 +28,7 @@ apt-get install -y patchelf binutils curl qemu-user-static
 apps/starry/jcode/prepare_jcode_rootfs.sh
 ```
 
-产物位于 `tmp/axbuild/rootfs/rootfs-x86_64-jcode.img`，是本地资产，不提交到仓库。
+产物位于 `target/axbuild/rootfs/rootfs-x86_64-jcode.img`，是本地资产，不提交到仓库。
 
 ## 离线 Smoke 测试
 
@@ -38,7 +38,7 @@ apps/starry/jcode/prepare_jcode_rootfs.sh
 cargo xtask starry qemu \
   --arch x86_64 \
   --qemu-config apps/starry/jcode/qemu-x86_64.toml \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-jcode.img
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-jcode.img
 ```
 
 期望输出包含：
@@ -54,7 +54,7 @@ STARRY_JCODE_SMOKE_PASSED
 ```bash
 cargo xtask starry qemu \
   --arch x86_64 \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-jcode.img
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-jcode.img
 ```
 
 进入 `root@starry` 后：

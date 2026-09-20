@@ -12,7 +12,7 @@ Command:
 cargo xtask starry qemu \
   --arch x86_64 \
   --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img
 ```
 
 Guest command:

@@ -185,7 +185,7 @@ fn std_test_elf_path_uses_release_profile() {
     );
     assert_eq!(
         path,
-        PathBuf::from("/ws/target/x86_64-unknown-linux-musl/release/arceos-test-suit")
+        PathBuf::from("/ws/x86_64-unknown-linux-musl/release/arceos-test-suit")
     );
 }
 

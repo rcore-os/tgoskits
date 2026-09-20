@@ -22,7 +22,7 @@ apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh
 cargo xtask starry qemu \
   --arch x86_64 \
   --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-alpine.img
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-alpine.img
 ```
 
 成功标记：
@@ -38,7 +38,7 @@ STARRY_PICOCLAW_OFFLINE_PASSED
 ```bash
 PICOCLAW_API_KEY=sk-... \
 apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img \
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img \
   --proxy http://10.0.2.2:7890
 ```
 
@@ -73,7 +73,7 @@ OpenAI-compatible 调用链没有回传 `reasoning_content`，所以脚本会为
 
 ```bash
 apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img \
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img \
   --api-key "$PICOCLAW_API_KEY" \
   --provider openai \
   --model-name mimo-v25 \
@@ -85,7 +85,7 @@ apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh \
 
 ```bash
 apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img \
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img \
   --config-json /path/to/config.json \
   --security-yml /path/to/.security.yml \
   --env-file /path/to/online-env
@@ -99,7 +99,7 @@ apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh \
 cargo xtask starry qemu \
   --arch x86_64 \
   --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img
 ```
 
 成功标记：
@@ -118,7 +118,7 @@ Gateway smoke 复用在线 rootfs，不会发起模型请求；它在 guest 内�
 cargo xtask starry qemu \
   --arch x86_64 \
   --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-gateway.toml \
-  --rootfs tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img
+  --rootfs target/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img
 ```
 
 成功标记：
@@ -171,5 +171,5 @@ cargo xtask starry app qemu -t picoclaw-cli --arch x86_64 \
 ## 边界
 
 - 第一目标只覆盖 StarryOS x86_64 QEMU。
-- 资产放在 `target/picoclaw/assets/`，rootfs 放在 `tmp/axbuild/rootfs/`。
+- 资产放在 `target/picoclaw/assets/`，rootfs 放在 `target/axbuild/rootfs/`。
 - 如果 smoke 暴露 syscall 或 ABI 缺口，再按最小复现补 StarryOS 内核和对应回归测试。

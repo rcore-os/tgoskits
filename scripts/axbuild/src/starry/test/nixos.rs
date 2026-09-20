@@ -322,7 +322,7 @@ async fn build_kernel(starry: &mut Starry, build_config: PathBuf) -> anyhow::Res
     let build_info = build::load_build_info(&request)
         .context("failed to load the Starry nixosTest build configuration")?;
     request.build_info_override = Some(configure_p1_build_info(build_info));
-    let cargo = build::load_cargo_config(&request)
+    let cargo = build::load_cargo_config(&request, starry.app.workspace_context())
         .context("failed to prepare the Starry nixosTest build configuration")?;
     let output = starry
         .build_artifact(&request, cargo)

@@ -4,7 +4,8 @@ use anyhow::Context;
 use ostool::board::{BoardRunRequest, RunBoardOptions};
 
 use super::{
-    ArgsTestBoard, StarryBoardTestGroup, board_assets::prepare_board_session_assets,
+    ArgsTestBoard, StarryBoardTestGroup,
+    board_assets::{BoardSessionAssetRequest, prepare_board_session_assets},
     discover_board_test_groups,
 };
 use crate::{
@@ -82,7 +83,7 @@ impl Starry {
                     None,
                     SnapshotPersistence::Discard,
                 )?;
-                let cargo = build::load_cargo_config(&request)?;
+                let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
                 let (mut board_config, board_config_path) = self
                     .load_board_config(&cargo, Some(board_test_config.as_path()))
                     .await?;
@@ -99,15 +100,16 @@ impl Starry {
                         board_config_path.display()
                     )
                 })?;
-                let session_assets = prepare_board_session_assets(
-                    self.app.workspace_root(),
-                    &group.arch,
-                    &group.target,
-                    &group.name,
+                let session_assets = prepare_board_session_assets(BoardSessionAssetRequest {
+                    workspace_root: self.app.workspace_root(),
+                    target_dir: self.app.target_dir(),
+                    arch: &group.arch,
+                    target: &group.target,
+                    case_name: &group.name,
                     case_dir,
-                    &board_config_path,
-                    &board_config.session_files,
-                )
+                    board_config_path: &board_config_path,
+                    declared_session_files: &board_config.session_files,
+                })
                 .await?;
                 let output = self.build_artifact(&request, cargo.clone()).await?;
                 let board_request = match session_assets {

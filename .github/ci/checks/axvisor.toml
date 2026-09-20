@@ -28,8 +28,6 @@ impact_targets = ["axvisor:aarch64"]
 name = "QEMU aarch64 · HTTP control-plane + browser console + IVC"
 timeout_minutes = 30
 command = '''
-echo "==> pull qemu-aarch64 image"
-cargo xtask image pull qemu-aarch64 --extract-dir tmp/axbuild/images
 echo "==> axvisor aarch64 HTTP control-plane (incl. pause/resume)"
 cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 echo "==> axvisor aarch64 browser console"
@@ -87,8 +85,6 @@ timeout_minutes = 30
 command = '''
 echo "==> axvisor x86_64 svm smoke"
 cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
-echo "==> pull qemu-x86_64 image"
-cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
 echo "==> axvisor x86_64 svm direct ACPI boot"
 cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-svm
 echo "==> axvisor x86_64 svm nested OVMF ACPI boot"
@@ -109,8 +105,6 @@ timeout_minutes = 90
 command = '''
 echo "==> axvisor x86_64 VMX smoke"
 cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
-echo "==> pull qemu-x86_64 image"
-cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
 echo "==> axvisor x86_64 VMX generic PCI enumeration"
 cargo xtask axvisor test qemu --arch x86_64 --test-case pci-enumeration-vmx
 '''
@@ -139,8 +133,6 @@ name = "VMX x86_64 · Direct + MP fallback + OVMF ACPI"
 runner = "kvm-intel"
 timeout_minutes = 90
 command = '''
-echo "==> pull qemu-x86_64 image"
-cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
 echo "==> axvisor x86_64 VMX direct ACPI boot"
 target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
 echo "==> axvisor x86_64 VMX MP fallback boot"
@@ -161,7 +153,6 @@ name = "SVM x86_64 · Generic PCI enumeration"
 runner = "kvm-amd"
 timeout_minutes = 45
 command = '''
-cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
 cargo xtask axvisor test qemu --arch x86_64 --test-case pci-enumeration-svm
 '''
 
@@ -177,7 +168,6 @@ name = "VMX x86_64 · VirtIO PCI block RW/RO"
 runner = "kvm-intel"
 timeout_minutes = 45
 command = '''
-cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
 cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-rw-vmx
 cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-ro-vmx
 '''
@@ -194,7 +184,6 @@ name = "SVM x86_64 · VirtIO PCI block RW/RO"
 runner = "kvm-amd"
 timeout_minutes = 45
 command = '''
-cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
 cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-rw-svm
 cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-ro-svm
 '''
@@ -262,12 +251,14 @@ runner = "board"
 timeout_minutes = 45
 download_xtask_bin_artifact = true
 command = '''
-mkdir -p tmp
-target/debug/tg-xtask image pull qemu-x86_64 --extract-dir tmp
-target/debug/tg-xtask image pull initramfs-x86_64-busybox.cpio.gz --extract-dir tmp
+TARGET_DIR="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+STAGING_DIR="$TARGET_DIR/axbuild/board-assets/asus-nuc15crh-linux"
+mkdir -p "$STAGING_DIR"
+target/debug/tg-xtask image pull qemu-x86_64 --extract-dir "$STAGING_DIR"
+target/debug/tg-xtask image pull initramfs-x86_64-busybox.cpio.gz --extract-dir "$STAGING_DIR"
 gzip -dc \
-  tmp/initramfs-x86_64-busybox.cpio.gz/initramfs-x86_64-busybox.cpio.gz \
-  > tmp/initramfs-x86_64-busybox.cpio
+  "$STAGING_DIR/initramfs-x86_64-busybox.cpio.gz/initramfs-x86_64-busybox.cpio.gz" \
+  > "$STAGING_DIR/initramfs-x86_64-busybox.cpio"
 target/debug/tg-xtask axvisor test board --board asus-nuc15crh-linux
 '''
 
@@ -313,8 +304,6 @@ name = "QEMU aarch64 · GICv2 + GICv3 timer stress"
 nightly_only = true
 timeout_minutes = 30
 command = '''
-echo "==> pull qemu-aarch64 image"
-cargo xtask image pull qemu-aarch64 --extract-dir tmp/axbuild/images
 echo "==> axvisor aarch64 gicv2 timer stress"
 cargo xtask axvisor test qemu --arch aarch64 --test-case gicv2-timer-stress
 echo "==> axvisor aarch64 gicv3 timer stress"

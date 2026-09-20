@@ -47,6 +47,7 @@ impl DefaultAppRootfsRun {
 
 pub(super) async fn prepare_qemu_app_rootfs(
     workspace_root: &Path,
+    target_dir: &Path,
     app: &StarryAppCase,
     arch: &str,
     target: &str,
@@ -55,8 +56,15 @@ pub(super) async fn prepare_qemu_app_rootfs(
 ) -> anyhow::Result<PreparedAppRootfs> {
     match preparation {
         RootfsPreparation::Default => {
-            prepare_default_qemu_app_rootfs(workspace_root, app, arch, target, configured_rootfs)
-                .await
+            prepare_default_qemu_app_rootfs(
+                workspace_root,
+                target_dir,
+                app,
+                arch,
+                target,
+                configured_rootfs,
+            )
+            .await
         }
         RootfsPreparation::AppOwned(config) => prepare_app_owned_qemu_rootfs(
             workspace_root,
@@ -71,6 +79,7 @@ pub(super) async fn prepare_qemu_app_rootfs(
 
 async fn prepare_default_qemu_app_rootfs(
     workspace_root: &Path,
+    target_dir: &Path,
     app: &StarryAppCase,
     arch: &str,
     target: &str,
@@ -78,12 +87,13 @@ async fn prepare_default_qemu_app_rootfs(
 ) -> anyhow::Result<PreparedAppRootfs> {
     let rootfs_path = match configured_rootfs {
         Some(path) => path.to_path_buf(),
-        None => crate::image::storage::default_rootfs_path(workspace_root, arch)?,
+        None => crate::image::storage::default_rootfs_path(workspace_root, target_dir, arch)?,
     };
     if app.prebuild_path.is_none() {
         if let Some(configured) = configured_rootfs {
             crate::image::storage::ensure_optional_managed_rootfs(
                 workspace_root,
+                target_dir,
                 arch,
                 Some(configured),
             )
@@ -91,12 +101,13 @@ async fn prepare_default_qemu_app_rootfs(
             rootfs::ensure_apk_region_in_rootfs(configured)?;
             return Ok(PreparedAppRootfs::borrowed(configured.to_path_buf()));
         }
-        return rootfs::ensure_rootfs_in_tmp_dir(workspace_root, arch, target)
+        return rootfs::ensure_rootfs_in_tmp_dir(workspace_root, target_dir, arch, target)
             .await
             .map(PreparedAppRootfs::borrowed);
     }
 
-    let default_rootfs = rootfs::ensure_rootfs_in_tmp_dir(workspace_root, arch, target).await?;
+    let default_rootfs =
+        rootfs::ensure_rootfs_in_tmp_dir(workspace_root, target_dir, arch, target).await?;
     let run = create_default_app_rootfs_run(workspace_root, app, &default_rootfs, &rootfs_path)?;
     inject::set_directory_owner_and_mode(&run.rootfs_path, "/root", 0, 0, 0o700)?;
 

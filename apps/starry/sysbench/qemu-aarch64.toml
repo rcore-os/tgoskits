@@ -4,7 +4,7 @@ args = [
     "-m", "1024M",
     "-smp", "4",
     "-device", "nvme,serial=sysbench,drive=nvm,max_ioqpairs=64,msix_qsize=65",
-    "-drive", "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-drive", "id=nvm,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
     "-device", "virtio-net-pci,netdev=net0",
     "-netdev", "user,id=net0",
 ]

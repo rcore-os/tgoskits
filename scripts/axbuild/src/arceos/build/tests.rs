@@ -11,10 +11,24 @@ use super::{
     load_arceos_build_mode, load_c_app_cargo_config, load_cargo_config, resolve_app_c_dir,
     resolve_app_c_mode,
 };
-use crate::{build, context::ResolvedBuildRequest};
+use crate::{
+    build,
+    context::{ResolvedBuildRequest, WorkspaceContext},
+};
 
 fn repo_metadata() -> cargo_metadata::Metadata {
     build::workspace_metadata().unwrap()
+}
+
+fn workspace() -> WorkspaceContext {
+    WorkspaceContext::discover(None).unwrap()
+}
+
+fn repo_axbuild_dir() -> PathBuf {
+    repo_metadata()
+        .target_directory
+        .into_std_path_buf()
+        .join("axbuild")
 }
 
 fn request(package: &str, target: &str, build_info_path: PathBuf) -> ResolvedBuildRequest {
@@ -104,7 +118,7 @@ fn rust_build_config_to_bin_is_passed_to_cargo_config() {
     fs::write(&path, "features = []\nlog = \"Info\"\nto_bin = true\n").unwrap();
     let request = request("arceos-helloworld", "aarch64-unknown-none-softfloat", path);
 
-    let cargo = load_cargo_config(&request).unwrap();
+    let cargo = load_cargo_config(&request, &workspace()).unwrap();
 
     assert!(cargo.to_bin);
 }
@@ -123,7 +137,7 @@ fn app_c_build_config_to_bin_is_passed_to_cargo_config() {
     .unwrap();
     let request = request("ax-libc", "x86_64-unknown-none", path);
 
-    let cargo = load_c_app_cargo_config(&request).unwrap();
+    let cargo = load_c_app_cargo_config(&request, &workspace()).unwrap();
 
     assert!(cargo.to_bin);
 }
@@ -245,6 +259,7 @@ fn prepared_cargo_config_uses_unified_std_target() {
         "arceos-helloworld",
         "aarch64-unknown-none-softfloat",
         &metadata,
+        &repo_axbuild_dir(),
     )
     .unwrap();
 
@@ -270,7 +285,12 @@ fn to_cargo_config_maps_max_cpu_num_to_smp_env_for_dynamic_platforms() {
         max_cpu_num: Some(4),
         ..ArceosBuildInfo::default()
     }
-    .into_prepared_base_cargo_config_with_metadata(&request.package, &request.target, &metadata)
+    .into_prepared_base_cargo_config_with_metadata(
+        &request.package,
+        &request.target,
+        &metadata,
+        &repo_axbuild_dir(),
+    )
     .unwrap();
 
     assert_eq!(cargo.env.get("SMP"), Some(&"4".to_string()));
@@ -289,7 +309,7 @@ fn freestanding_rust_uses_core_alloc_without_the_std_linker_wrapper() {
     )
     .unwrap();
     let request = request("arceos-helloworld", "aarch64-unknown-none-softfloat", path);
-    let cargo = load_cargo_config(&request).unwrap();
+    let cargo = load_cargo_config(&request, &workspace()).unwrap();
     assert_eq!(
         cargo.target,
         "scripts/targets/bare/aarch64-unknown-none-softfloat.json"

@@ -12,12 +12,18 @@ axbuild 第一次读取镜像配置时会生成 `<workspace>/tmp/axbuild/.image.
 ```toml
 registry = "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/default.toml"
 download_dir = "/tmp/tgosimages"
-extract_dir = "<workspace>/tmp/axbuild/rootfs"
 ```
 
-下载目录取系统临时目录；Linux 上默认为 `/tmp/tgosimages`。解压目录仍位于当前 workspace，避免不同源码工作区共享可修改的 rootfs。
+下载目录取系统临时目录；Linux 上默认为 `/tmp/tgosimages`。未显式配置
+`extract_dir` 时，axbuild 每次从 `cargo metadata` 读取当前 `target_directory`，并使用
+`<target_directory>/axbuild/rootfs`。默认值不写入 `.image.toml`，因此切换
+`CARGO_TARGET_DIR` 或 Cargo 配置后不会继续绑定旧目录。
 
-配置文件是由 axbuild 管理的本机配置，已被 `.gitignore` 忽略。读取时只关心 `registry`、`download_dir` 和 `extract_dir`，其他字段不解释也不迁移。三个当前字段必须完整且类型正确；字段缺失、类型无效或文件不是有效 TOML 时，axbuild 使用全部默认值重新生成。读取后配置会被回写为只包含三个当前字段的规范格式，因此旧字段和任意额外字段都会被删除。需要固定镜像版本时，应提供完整的当前格式配置。
+配置文件是由 axbuild 管理的本机配置，已被 `.gitignore` 忽略。读取时只关心
+`registry`、`download_dir` 和可选的 `extract_dir`，其他字段不解释也不迁移。
+`registry`、`download_dir` 缺失、字段类型无效或文件不是有效 TOML 时，axbuild 使用默认值重新生成；规范化回写不会写入默认 `extract_dir`。旧配置中显式记录的
+`extract_dir` 仍按用户配置执行，删除或修改该项后才会采用当前 metadata target。
+相对目录以 workspace 为基准。
 
 也可以使用环境变量或命令行覆盖目录：
 
@@ -27,7 +33,8 @@ extract_dir = "<workspace>/tmp/axbuild/rootfs"
 | 解压目录 | `TGOS_IMAGE_EXTRACT_DIR` | `-E/--extract-dir` |
 | registry | — | `-R/--registry` |
 
-优先级为：命令行、环境变量、`.image.toml`。
+目录选择优先级为：命令行、环境变量、`.image.toml` 显式配置、metadata target
+默认值。Registry 没有对应环境变量，命令行优先于 `.image.toml`。
 
 例如，把下载缓存放到持久目录，同时把可修改 rootfs 留在当前工作区：
 
@@ -43,7 +50,7 @@ Linux 上的默认目录结构如下：
 ├── images.toml
 └── rootfs-riscv64-alpine.img.tar.xz
 
-<workspace>/tmp/axbuild/rootfs/
+<target_directory>/axbuild/rootfs/
 └── rootfs-riscv64-alpine.img
 ```
 
@@ -73,7 +80,7 @@ Linux 上的默认目录结构如下：
 ```toml
 registry = "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/v0.0.11.toml"
 download_dir = "/tmp/tgosimages"
-extract_dir = "/home/user/tgoskits/tmp/axbuild/rootfs"
+extract_dir = "/home/user/tgoskits/target/axbuild/rootfs"
 ```
 
 只要该版本 registry 中的归档 SHA-256 不变，后续运行就会复用归档并保留修改后的 rootfs。升级时将 `registry` 改为另一个版本文件，或恢复为 `default.toml`。
@@ -121,14 +128,14 @@ cargo xtask image pull qemu-aarch64 --no-extract
 计算或校验本地文件 SHA-256：
 
 ```bash
-cargo xtask image check tmp/axbuild/rootfs/rootfs-riscv64-alpine.img
+cargo xtask image check target/axbuild/rootfs/rootfs-riscv64-alpine.img
 cargo xtask image check rootfs.img --sha256 <expected-sha256>
 ```
 
 扩展 ext rootfs：
 
 ```bash
-cargo xtask image resize tmp/axbuild/rootfs/rootfs-riscv64-alpine.img --size-mib 2048
+cargo xtask image resize target/axbuild/rootfs/rootfs-riscv64-alpine.img --size-mib 2048
 cargo xtask image resize rootfs.img --size-mib 2048 --output resized.img
 ```
 
@@ -141,7 +148,13 @@ env:
   TGOS_IMAGE_DOWNLOAD_DIR: /tmp/tgosimages
 ```
 
-不要默认跨任务共享 `extract_dir`。其中的 rootfs 允许被测试和 QEMU 修改，共享会让不同任务互相污染。未设置 `TGOS_IMAGE_EXTRACT_DIR` 时，它保持为当前 workspace 下的 `tmp/axbuild/rootfs`。
+不要默认跨任务共享 `extract_dir`。其中的 rootfs 允许被测试和 QEMU 修改，共享会让不同任务互相污染。未设置 `TGOS_IMAGE_EXTRACT_DIR` 且配置文件没有显式
+`extract_dir` 时，它跟随当前 Cargo metadata target。
+
+默认 rootfs 属于 Cargo target 下的可重建产物。使用相同 target 选择执行
+`cargo clean` 会删除它；若通过 `CARGO_TARGET_DIR`、Cargo 配置或显式目录切换了
+target，清理时也必须使用相同选择。`.image.toml`、运行状态和日志仍保留在
+`tmp/axbuild`。axbuild 不读取或迁移旧的 `tmp/axbuild/rootfs`。
 
 ## 故障处理
 
@@ -150,6 +163,8 @@ registry 获取失败时，axbuild 会直接报错，不会用历史 registry �
 归档损坏时无需手动清理；下次准备镜像会校验失败并重新下载。需要主动恢复工作 rootfs 时，删除 `extract_dir` 中对应的 rootfs 文件，再次运行准备命令：
 
 ```bash
-rm tmp/axbuild/rootfs/rootfs-riscv64-alpine.img
+rm target/axbuild/rootfs/rootfs-riscv64-alpine.img
 cargo xtask image pull --arch riscv64
 ```
+
+使用自定义 target 时，应删除 `<target_directory>/axbuild/rootfs` 中的对应文件。

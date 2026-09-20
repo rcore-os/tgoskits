@@ -76,7 +76,7 @@ pub(super) async fn prepare_rust_qemu_cases(
             None,
             SnapshotPersistence::Discard,
         )?;
-        let mut cargo = build::load_cargo_config(&request)?;
+        let mut cargo = build::load_cargo_config(&request, arceos.app.workspace_context())?;
         if let Some(feature) = case.feature.as_deref() {
             add_cargo_feature(&mut cargo, feature);
         }
@@ -197,7 +197,7 @@ pub(super) async fn run_rust_qemu_case(
         );
     }
 
-    let elf = crate::backtrace::std_test_elf_path(&workspace, target, package, debug);
+    let elf = crate::backtrace::std_test_elf_path(arceos.app.target_dir(), target, package, debug);
     let stream_session = if auto_symbolize {
         crate::backtrace::BacktraceSymbolizeSession::try_new(&elf, case_name)
     } else {

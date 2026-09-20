@@ -6,8 +6,8 @@ WORKSPACE="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 ARCH="aarch64"
 TARGET="aarch64-unknown-none-softfloat"
 
-ROOTFS_BASE="$WORKSPACE/tmp/axbuild/rootfs/rootfs-${ARCH}-alpine.img"
-ROOTFS_APP="$WORKSPACE/tmp/axbuild/rootfs/rootfs-${ARCH}-wayland.img"
+ROOTFS_BASE="$WORKSPACE/target/axbuild/rootfs/rootfs-${ARCH}-alpine.img"
+ROOTFS_APP="$WORKSPACE/target/axbuild/rootfs/rootfs-${ARCH}-wayland.img"
 KERNEL="$WORKSPACE/target/${TARGET}/release/starryos.bin"
 BUILD_CONFIG="$SCRIPT_DIR/build-${TARGET}.toml"
 PROVISION_MARKER=".wayland-provisioned"
@@ -284,7 +284,7 @@ if ! marker_exists || [ "$REPROVISION" = true ]; then
 
     # Headless boot: send the provision command once the shell is ready.
     # AArch64 TCG boot is slow — wait 25s before sending.
-    provision_log="$WORKSPACE/tmp/axbuild/rootfs/provision-${ARCH}-wayland.log"
+    provision_log="$WORKSPACE/target/axbuild/rootfs/provision-${ARCH}-wayland.log"
     echo "    (booting headless, aarch64 TCG takes ~20s to reach shell...)"
     set +e
     run_provision_qemu "$provision_log"

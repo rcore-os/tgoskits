@@ -68,19 +68,23 @@ pub(super) async fn prepare(
     };
 
     let workspace_root = starry.app.workspace_root();
-    Starry::rewrite_qemu_case_managed_rootfs_paths(workspace_root, qemu)?;
-    let default_rootfs = crate::image::storage::default_rootfs_path(workspace_root, &request.arch)?;
-    for rootfs_path in Starry::qemu_case_managed_rootfs_paths(workspace_root, qemu)? {
+    let target_dir = starry.app.target_dir();
+    Starry::rewrite_qemu_case_managed_rootfs_paths(workspace_root, target_dir, qemu)?;
+    let default_rootfs =
+        crate::image::storage::default_rootfs_path(workspace_root, target_dir, &request.arch)?;
+    for rootfs_path in Starry::qemu_case_managed_rootfs_paths(workspace_root, target_dir, qemu)? {
         crate::image::storage::ensure_optional_managed_rootfs(
             workspace_root,
+            target_dir,
             &request.arch,
-            Some(&rootfs_path),
+            Some(rootfs_path.as_path()),
         )
         .await?;
     }
-    let source_rootfs = Starry::qemu_case_rootfs_path(workspace_root, qemu, &default_rootfs)?;
+    let source_rootfs =
+        Starry::qemu_case_rootfs_path(workspace_root, target_dir, qemu, &default_rootfs)?;
     let assets = case::prepare_case_assets(
-        workspace_root,
+        target_dir,
         &request.arch,
         &request.target,
         &selected.selected.case,

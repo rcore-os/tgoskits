@@ -79,7 +79,7 @@ cargo xtask starry app qemu -t wayland --arch "$ARCH"
 
 ```bash
 mkdir -p tmp/wayland-manual
-cp "tmp/axbuild/rootfs/rootfs-${ARCH}-alpine.img" "tmp/wayland-manual/${ARCH}.img"
+cp "target/axbuild/rootfs/rootfs-${ARCH}-alpine.img" "tmp/wayland-manual/${ARCH}.img"
 ```
 
 ### 第三步：用 VNC 显示启动 QEMU
@@ -274,7 +274,7 @@ STARRY_VNC=9 ./apps/starry/wayland/run-hvf.sh --no-build --vnc-only
 `--reprovision --provision-only` 从可信基础镜像重建。
 
 使用 `--reprovision` 可以丢弃并重新创建
-`tmp/axbuild/rootfs/rootfs-aarch64-wayland.img`。如果默认 4096 MiB 的手动镜像
+`target/axbuild/rootfs/rootfs-aarch64-wayland.img`。如果默认 4096 MiB 的手动镜像
 不合适，可以设置 `STARRY_WAYLAND_ROOTFS_MB`。辅助脚本需要宿主机提供 `debugfs`、
 `e2fsck`、`resize2fs`、`python3` 和 `qemu-system-aarch64`；在 macOS Homebrew
 环境下，脚本会自动加入常见 Homebrew 路径。

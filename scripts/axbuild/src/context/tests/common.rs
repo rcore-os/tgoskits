@@ -13,17 +13,31 @@ pub(super) use tempfile::tempdir;
 use super::*;
 
 pub(super) fn test_app_context(root: &Path) -> AppContext {
+    ensure_test_manifest(root);
+    let workspace = WorkspaceContext::from_root(root, None).unwrap();
     AppContext {
-        invocation: test_invocation(root),
+        invocation: test_invocation(&workspace),
         build_config_path: None,
-        root: root.to_path_buf(),
+        workspace,
         member_dirs: HashMap::from([("axvisor".to_string(), root.join("os/axvisor"))]),
         original_path: env::var_os("PATH").unwrap_or_default(),
         debug: false,
     }
 }
 
-fn test_invocation(root: &Path) -> Invocation {
+fn test_invocation(workspace: &WorkspaceContext) -> Invocation {
+    let root = workspace.root();
+    let manifest_path = root.join("Cargo.toml");
+    Invocation::new(InvocationOptions::new(
+        Some(manifest_path),
+        Some(workspace.target_dir().to_path_buf()),
+        None,
+        false,
+    ))
+    .unwrap()
+}
+
+fn ensure_test_manifest(root: &Path) {
     let manifest_path = root.join("Cargo.toml");
     if !manifest_path.exists() {
         fs::create_dir_all(root.join("src")).unwrap();
@@ -40,13 +54,6 @@ edition = "2021"
         )
         .unwrap();
     }
-    Invocation::new(InvocationOptions::new(
-        Some(manifest_path),
-        None,
-        None,
-        false,
-    ))
-    .unwrap()
 }
 
 fn resolve_arceos_build_info_path(
@@ -103,7 +110,7 @@ pub(super) fn prepare_axvisor_request(
         cli,
         AxvisorRequestPaths {
             package: crate::axvisor::build::AXVISOR_PACKAGE.to_string(),
-            axvisor_dir: app.root.join("os/axvisor"),
+            axvisor_dir: app.workspace_root().join("os/axvisor"),
             load_config_target: crate::axvisor::build::load_target_from_build_config,
             resolve_build_info_path: crate::axvisor::build::resolve_build_info_path,
         },

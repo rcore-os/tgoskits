@@ -1,12 +1,18 @@
-use anyhow::{Context, bail};
+use anyhow::bail;
 use ostool::build::config::Cargo;
 
 use super::info::load_build_config_with_makefile_features;
-use crate::{build, context::ResolvedBuildRequest};
+use crate::{
+    build,
+    context::{ResolvedBuildRequest, WorkspaceContext},
+};
 
-pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
-    let metadata =
-        build::cached_workspace_metadata().context("failed to load workspace metadata")?;
+pub(crate) fn load_cargo_config(
+    request: &ResolvedBuildRequest,
+    workspace: &WorkspaceContext,
+) -> anyhow::Result<Cargo> {
+    let metadata = workspace.metadata();
+    let axbuild_dir = workspace.axbuild_artifact_dir();
     let makefile_features = build::makefile_features_from_env();
     let config = load_build_config_with_makefile_features(request, &makefile_features)?;
     if config.app_c.is_some() {
@@ -32,15 +38,18 @@ pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Resul
                 &request.package,
                 &request.target,
                 metadata,
+                &axbuild_dir,
             )?
     };
     cargo.to_bin |= to_bin;
     Ok(cargo)
 }
 
-pub(crate) fn load_c_app_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
-    let metadata =
-        build::cached_workspace_metadata().context("failed to load workspace metadata")?;
+pub(crate) fn load_c_app_cargo_config(
+    request: &ResolvedBuildRequest,
+    workspace: &WorkspaceContext,
+) -> anyhow::Result<Cargo> {
+    let metadata = workspace.metadata();
     let makefile_features = build::makefile_features_from_env();
     let config = load_build_config_with_makefile_features(request, &makefile_features)?;
     let to_bin = config.to_bin;

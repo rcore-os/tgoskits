@@ -7,7 +7,7 @@ args = [
     "-device",
     "nvme,serial=deadbeef,drive=nvm,max_ioqpairs=64,msix_qsize=65",
     "-drive",
-    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "id=nvm,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-x86_64-alpine.img",
 ]
 # This std/PIC test image requires the x86_64 UEFI handoff before the tty test starts.
 uefi = true

@@ -120,7 +120,7 @@ impl Starry {
         let request =
             self.prepare_request((&args.build).into(), None, None, SnapshotPersistence::Store)?;
         self.app.set_debug_mode(request.debug)?;
-        let cargo = build::load_cargo_config(&request)?;
+        let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
         let (board_config, board_config_path) = self
             .load_board_config(&cargo, args.board_config.as_deref())
             .await?;
@@ -235,6 +235,7 @@ impl Starry {
     ) -> anyhow::Result<()> {
         let case = app::prepare_qemu_app_case(
             self.app.workspace_root(),
+            self.app.target_dir(),
             app,
             args.arch.as_deref(),
             args.qemu_config.as_deref(),
@@ -268,17 +269,19 @@ impl Starry {
         {
             let rootfs_path = crate::image::storage::resolve_explicit_rootfs(
                 self.app.workspace_root(),
+                self.app.target_dir(),
                 &request.arch,
                 case.rootfs_path.clone(),
             )?;
             rootfs::ensure_qemu_rootfs_ready(
                 &request,
                 self.app.workspace_root(),
+                self.app.target_dir(),
                 Some(&rootfs_path),
             )
             .await?;
             self.app.set_debug_mode(request.debug)?;
-            let cargo = build::load_cargo_config(&request)?;
+            let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
             let mut qemu = self
                 .app
                 .read_qemu_config_from_path_for_cargo(&cargo, &test_case.qemu_config_path)
@@ -313,13 +316,19 @@ impl Starry {
         }
         let rootfs_path = crate::image::storage::resolve_explicit_rootfs(
             self.app.workspace_root(),
+            self.app.target_dir(),
             &request.arch,
             case.rootfs_path.clone(),
         )?;
-        rootfs::ensure_qemu_rootfs_ready(&request, self.app.workspace_root(), Some(&rootfs_path))
-            .await?;
+        rootfs::ensure_qemu_rootfs_ready(
+            &request,
+            self.app.workspace_root(),
+            self.app.target_dir(),
+            Some(&rootfs_path),
+        )
+        .await?;
         self.app.set_debug_mode(request.debug)?;
-        let cargo = build::load_cargo_config(&request)?;
+        let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
         let asset_config = test::starry_case_asset_config();
         let mut qemu = self
             .app
@@ -332,7 +341,7 @@ impl Starry {
         );
         let prepare_started = std::time::Instant::now();
         let prepared_assets = qemu_case::prepare_case_assets(
-            self.app.workspace_root(),
+            self.app.target_dir(),
             &request.arch,
             &request.target,
             &test_case,
@@ -397,7 +406,7 @@ impl Starry {
             SnapshotPersistence::Store,
         )?;
         self.app.set_debug_mode(request.debug)?;
-        let cargo = build::load_cargo_config(&request)?;
+        let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
         let (mut board_config, board_config_path) = self
             .load_board_config(&cargo, Some(case.board_config_path.as_path()))
             .await?;
@@ -405,6 +414,7 @@ impl Starry {
         let arch = arch_for_target_checked(&case.target)?;
         let session_assets = app::prepare_app_board_session_assets(
             self.app.workspace_root(),
+            self.app.target_dir(),
             arch,
             &case.target,
             &case,
@@ -593,13 +603,13 @@ impl Starry {
 
     async fn run_build_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
-        let cargo = build::load_cargo_config(&request)?;
+        let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
         self.build_artifact(&request, cargo).await.map(|_| ())
     }
 
     async fn run_uboot_request(&mut self, request: ResolvedStarryRequest) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
-        let cargo = build::load_cargo_config(&request)?;
+        let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
         let uboot = self.load_uboot_config(&request, &cargo).await?;
         self.run_uboot_artifact(&request, cargo, uboot).await
     }
@@ -614,7 +624,12 @@ impl Starry {
         match action {
             quick_start::QuickQemuAction::Build => {
                 quick_start::refresh_qemu_build_config(self.app.workspace_root(), platform)?;
-                rootfs::ensure_quick_start_qemu_rootfs(self.app.workspace_root(), arch).await?;
+                rootfs::ensure_quick_start_qemu_rootfs(
+                    self.app.workspace_root(),
+                    self.app.target_dir(),
+                    arch,
+                )
+                .await?;
                 let request = self.prepare_request(
                     Self::quick_start_build_args(
                         arch,

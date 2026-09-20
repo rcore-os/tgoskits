@@ -6,7 +6,7 @@ Covers binary execution, error handling, model loading, and token generation.
 ## Prerequisites
 
 - llama-cli binary and SmolLM2-135M Q4_0 model pre-injected into the Alpine rootfs
-- Rootfs images at `tmp/axbuild/rootfs/rootfs-{arch}-alpine.img`
+- Rootfs images at `target/axbuild/rootfs/rootfs-{arch}-alpine.img`
 
 ## Running
 

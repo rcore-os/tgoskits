@@ -80,9 +80,9 @@ impl Starry {
             self.prepare_request((&args.build).into(), None, None, SnapshotPersistence::Store)?;
         self.ensure_default_build_config_for_request(&request, "kmod")?;
         self.app.set_debug_mode(request.debug)?;
-        let base_cargo = build::load_cargo_config(&request)?;
-        let metadata = crate::build::cached_workspace_metadata()
-            .context("failed to load workspace metadata")?;
+        let base_cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
+        let metadata = self.app.workspace_metadata();
+        let cargo_target_dir = self.app.target_dir().to_path_buf();
 
         let linker_script = workspace_root.join("os/StarryOS/scripts/kmod-linker.ld");
         if !linker_script.exists() {
@@ -93,28 +93,30 @@ impl Starry {
         }
 
         let profile = cargo_profile_dir(&base_cargo, request.debug);
-        let target_dir = cargo_target_output_dir(&workspace_root, &base_cargo.target, profile)?;
-        std::fs::create_dir_all(&target_dir)
-            .with_context(|| format!("create {}", target_dir.display()))?;
+        let target_output_dir =
+            cargo_target_output_dir(&cargo_target_dir, &base_cargo.target, profile)?;
+        std::fs::create_dir_all(&target_output_dir)
+            .with_context(|| format!("create {}", target_output_dir.display()))?;
 
+        let rust_module_context = RustModuleBuildContext {
+            workspace_root: &workspace_root,
+            cargo_target_dir: &cargo_target_dir,
+            base_cargo: &base_cargo,
+            debug: request.debug,
+            metadata,
+            linker_script: &linker_script,
+            out_dir: &target_output_dir,
+        };
         let mut built_modules = Vec::new();
         for module in modules {
             match module {
                 ModuleSpec::Rust(module_path) => {
-                    let ko_path = build_one_rust_module(
-                        &workspace_root,
-                        &module_path,
-                        &base_cargo,
-                        request.debug,
-                        metadata,
-                        &linker_script,
-                        &target_dir,
-                    )?;
+                    let ko_path = build_one_rust_module(&rust_module_context, &module_path)?;
                     built_modules.push(ko_path);
                 }
                 ModuleSpec::LinuxC(module_path) => {
                     if let Some(ko_paths) =
-                        build_one_linux_c_module(&module_path, &request.arch, &target_dir)?
+                        build_one_linux_c_module(&module_path, &request.arch, &target_output_dir)?
                     {
                         built_modules.extend(ko_paths);
                     }
@@ -133,6 +135,16 @@ impl Starry {
 enum ModuleSpec {
     Rust(PathBuf),
     LinuxC(PathBuf),
+}
+
+struct RustModuleBuildContext<'a> {
+    workspace_root: &'a Path,
+    cargo_target_dir: &'a Path,
+    base_cargo: &'a Cargo,
+    debug: bool,
+    metadata: &'a Metadata,
+    linker_script: &'a Path,
+    out_dir: &'a Path,
 }
 
 fn collect_modules(workspace_root: &Path, args: &ArgsKmodBuild) -> Result<Vec<ModuleSpec>> {
@@ -211,36 +223,40 @@ fn is_linux_c_module_dir(dir: &Path) -> Result<bool> {
 }
 
 fn build_one_rust_module(
-    workspace_root: &Path,
+    context: &RustModuleBuildContext<'_>,
     module_path: &Path,
-    base_cargo: &Cargo,
-    debug: bool,
-    metadata: &Metadata,
-    linker_script: &Path,
-    out_dir: &Path,
 ) -> Result<PathBuf> {
     let cargo_toml = module_path.join("Cargo.toml");
     if !cargo_toml.exists() {
         bail!("missing {}", cargo_toml.display());
     }
-    let package = package_for_manifest(metadata, &cargo_toml)?;
+    let package = package_for_manifest(context.metadata, &cargo_toml)?;
     let lib_name = lib_target_name(package)?;
     let module_name = package.name.to_string();
 
-    println!("[kmod] building {module_name} for {}", base_cargo.target);
+    println!(
+        "[kmod] building {module_name} for {}",
+        context.base_cargo.target
+    );
 
-    let module_cargo = module_cargo_config(base_cargo, package, debug);
-    cargo_build_module_rlib(workspace_root, &module_cargo, debug)?;
+    let module_cargo = module_cargo_config(context.base_cargo, package, context.debug);
+    cargo_build_module_rlib(
+        context.workspace_root,
+        context.cargo_target_dir,
+        &module_cargo,
+        context.debug,
+    )?;
 
-    let profile = cargo_profile_dir(&module_cargo, debug);
-    let rlib_path = cargo_target_output_dir(workspace_root, &module_cargo.target, profile)?
-        .join(format!("lib{}.rlib", rust_crate_file_stem(lib_name)));
+    let profile = cargo_profile_dir(&module_cargo, context.debug);
+    let rlib_path =
+        cargo_target_output_dir(context.cargo_target_dir, &module_cargo.target, profile)?
+            .join(format!("lib{}.rlib", rust_crate_file_stem(lib_name)));
     if !rlib_path.exists() {
         bail!("expected module rlib not found at {}", rlib_path.display());
     }
 
     // Step 3: partial-link into a .ko via the kmod linker script.
-    let ko_path = out_dir.join(format!("{module_name}.ko"));
+    let ko_path = context.out_dir.join(format!("{module_name}.ko"));
     // `(program, leading_args)`: the default ships `-flavor gnu` so `rust-lld`
     // runs as the GNU ELF driver; a `KMOD_LINKER` override is used verbatim.
     let (linker, lead_args): (String, &[&str]) = match std::env::var("KMOD_LINKER") {
@@ -253,7 +269,7 @@ fn build_one_rust_module(
     let status = Command::new(&linker)
         .args(lead_args)
         .args(["-r", "-T"])
-        .arg(linker_script)
+        .arg(context.linker_script)
         .arg("-o")
         .arg(&ko_path)
         .arg("--whole-archive")
@@ -264,7 +280,7 @@ fn build_one_rust_module(
             "--gc-sections",
             "-no-pie",
         ])
-        .current_dir(workspace_root)
+        .current_dir(context.workspace_root)
         .status()
         .with_context(|| format!("invoke {linker} -r for {module_name}"))?;
     if !status.success() {
@@ -439,7 +455,13 @@ fn remove_arg_value(args: &mut Vec<String>, key: &str) {
     *args = out;
 }
 
-fn cargo_build_module_rlib(workspace_root: &Path, cargo: &Cargo, debug: bool) -> Result<()> {
+fn cargo_build_module_rlib(
+    workspace_root: &Path,
+    target_dir: &Path,
+    cargo: &Cargo,
+    debug: bool,
+) -> Result<()> {
+    crate::context::reject_raw_target_dir_args(cargo)?;
     if let Some(extra_config) = &cargo.extra_config
         && (extra_config.starts_with("http://") || extra_config.starts_with("https://"))
     {
@@ -456,7 +478,7 @@ fn cargo_build_module_rlib(workspace_root: &Path, cargo: &Cargo, debug: bool) ->
         .arg("-Z")
         .arg("unstable-options")
         .arg("--target-dir")
-        .arg(workspace_root.join("target"));
+        .arg(target_dir);
 
     if let Some(extra_config) = &cargo.extra_config {
         command.arg("--config").arg(extra_config);
@@ -477,7 +499,7 @@ fn cargo_build_module_rlib(workspace_root: &Path, cargo: &Cargo, debug: bool) ->
 
     let report_session = if cargo.env.get("AX_ARCH").map(String::as_str) == Some("aarch64") {
         Some(crate::build::start_future_incompat_report_session(
-            &workspace_root.join("target"),
+            target_dir,
         )?)
     } else {
         None
@@ -511,7 +533,7 @@ fn cargo_profile_dir(cargo: &Cargo, debug: bool) -> &'static str {
 }
 
 fn cargo_target_output_dir(
-    workspace_root: &Path,
+    target_dir: &Path,
     cargo_target: &str,
     profile: &str,
 ) -> Result<PathBuf> {
@@ -520,10 +542,7 @@ fn cargo_target_output_dir(
         .or_else(|| Path::new(cargo_target).file_name())
         .and_then(|s| s.to_str())
         .with_context(|| format!("invalid Cargo target `{cargo_target}`"))?;
-    Ok(workspace_root
-        .join("target")
-        .join(target_name)
-        .join(profile))
+    Ok(target_dir.join(target_name).join(profile))
 }
 
 fn package_for_manifest<'a>(metadata: &'a Metadata, cargo_toml: &Path) -> Result<&'a Package> {
@@ -658,7 +677,6 @@ mod tests {
         assert_eq!(
             path,
             Path::new("/ws")
-                .join("target")
                 .join("riscv64gc-unknown-linux-musl")
                 .join("release")
         );

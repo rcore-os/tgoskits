@@ -11,6 +11,7 @@ fn std_build_does_not_auto_enable_app_arceos_feature() {
         "arceos-helloworld",
         "x86_64-unknown-none",
         &metadata,
+        &repo_axbuild_dir(),
     )
     .unwrap();
 
@@ -28,6 +29,7 @@ fn std_build_config_preserves_backtrace_rustflags_from_env() {
             "arceos-helloworld",
             "x86_64-unknown-none",
             &metadata,
+            &repo_axbuild_dir(),
         )
         .unwrap();
 
@@ -50,6 +52,7 @@ fn std_build_config_enables_stack_protector_from_feature() {
             "arceos-helloworld",
             "x86_64-unknown-none",
             &metadata,
+            &repo_axbuild_dir(),
         )
         .unwrap();
 

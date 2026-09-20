@@ -13,12 +13,12 @@ Rootfs 处理链路分为“镜像来源”“工作镜像”“运行时改写�
 
 ### 1.1 目录分层
 
-`ImageConfig::new_default()` 将下载缓存和可修改 rootfs 拆到不同目录：下载归档默认进入系统临时目录 `/tmp/tgosimages`，解压后的 rootfs 默认进入当前 workspace 的 `tmp/axbuild/rootfs`。这个拆分使自托管 runner 可以共享下载缓存，同时避免不同工作区共享会被 QEMU 写入的 rootfs。
+`ImageConfig::new_default()` 将下载缓存和可修改 rootfs 拆到不同目录：下载归档默认进入系统临时目录 `/tmp/tgosimages`，解压后的 rootfs 默认进入 Cargo metadata 返回的 `target_directory` 下的 `axbuild/rootfs`。这个拆分使自托管 runner 可以共享下载缓存，同时让工作 rootfs 跟随 Cargo target 的隔离与清理语义。
 
 | 层级 | 默认位置 | 主要代码 | 作用 |
 | --- | --- | --- | --- |
 | 下载缓存 | `/tmp/tgosimages` | `image/config.rs`、`image/storage.rs` | 保存 registry 副本和已校验的压缩归档 |
-| 工作 rootfs | `<workspace>/tmp/axbuild/rootfs` | `Storage::pull_rootfs_image()` | 保存可被 StarryOS、Axvisor、app 和调试命令修改的 `.img` |
+| 工作 rootfs | `<target_directory>/axbuild/rootfs` | `Storage::pull_rootfs_image()` | 保存可被 StarryOS、Axvisor、app 和调试命令修改的 `.img` |
 | app 工作区 | `<workspace>/tmp/axbuild/starry-app/<app>` | `starry/app/rootfs.rs` | 保存 app prebuild 的 `staging-root` 和 `overlay` |
 | QEMU case 工作区 | `<workspace>/target/<target>/qemu-cases/<case>` | `test/case/layout.rs` | 保存测试构建目录、overlay、per-case rootfs 和 rootfs 缓存 |
 | board case 工作区 | `<workspace>/target/<target>/board-cases/<case>` | `board_case_asset_layout()` | 保存板卡测试上传目录和构建中间产物 |
@@ -54,23 +54,23 @@ Managed rootfs 是 image 子系统中的一类特殊镜像。它必须满足 `ro
 
 ### 2.1 配置来源
 
-`ImageConfig::read_config()` 读取 `<workspace>/tmp/axbuild/.image.toml`，文件不存在时会写入默认值。配置字段只有 `registry`、`download_dir` 和 `extract_dir`，旧字段或未知字段会在规范化回写时被删除。
+`ImageConfig::read_config()` 读取 `<workspace>/tmp/axbuild/.image.toml`，文件不存在时会写入 registry 和下载目录默认值。`extract_dir` 是可选显式配置；未设置时动态使用 `<target_directory>/axbuild/rootfs`，不会被持久化。旧字段或未知字段会在规范化回写时被删除。
 
 ```toml
 registry = "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/default.toml"
 download_dir = "/tmp/tgosimages"
-extract_dir = "<workspace>/tmp/axbuild/rootfs"
 ```
 
-CLI 覆盖由 `ConfigOverrides` 处理，环境变量覆盖由 `ImageConfig::read_config_with_env()` 处理。`cargo xtask image -R/-D/-E ...` 的优先级高于环境变量，环境变量高于 `.image.toml`。
+CLI 覆盖由 `ConfigOverrides` 处理，环境变量覆盖由 `ImageConfig::read_config_with_env()` 处理。目录选择优先级是 CLI、环境变量、`.image.toml` 显式配置、metadata target 默认值；相对路径以 workspace 为基准。
 
 | 配置 | 环境变量 | 命令行参数 | 默认行为 |
 | --- | --- | --- | --- |
 | registry | 无 | `-R`、`--registry` | 跟踪 `tgosimages` main 分支的 `registry/default.toml` |
 | 下载目录 | `TGOS_IMAGE_DOWNLOAD_DIR` | `-D`、`--download-dir` | 使用系统临时目录下的 `tgosimages` |
-| 解压目录 | `TGOS_IMAGE_EXTRACT_DIR` | `-E`、`--extract-dir` | 使用当前 workspace 的 `tmp/axbuild/rootfs` |
+| 解压目录 | `TGOS_IMAGE_EXTRACT_DIR` | `-E`、`--extract-dir` | 使用 `<target_directory>/axbuild/rootfs` |
 
-配置文件是本机状态，不应提交。需要固定镜像版本时，应在本地 `.image.toml` 中指向版本 registry，或在命令行中为 `image pull` 指定 `name:version`。
+配置文件是本机状态，不应提交。旧配置中显式记录的 `extract_dir` 会继续生效；删除或修改该字段后才会采用 metadata target。axbuild 不读取或迁移旧的
+`tmp/axbuild/rootfs`。需要固定镜像版本时，应在本地 `.image.toml` 中指向版本 registry，或在命令行中为 `image pull` 指定 `name:version`。
 
 ### 2.2 Registry 解析
 
@@ -213,7 +213,7 @@ StarryOS 普通 QEMU 和 Axvisor 普通 QEMU 使用 persist，让用户显式运
 
 ### 4.3 路径重写
 
-Checked-in QEMU TOML 可以使用 `${workspace}/tmp/axbuild/rootfs/<name>.img` 指向默认 managed rootfs 目录。`resolve_managed_rootfs_path()` 会把这个默认前缀重写到当前 `TGOS_IMAGE_EXTRACT_DIR`，同时仍然要求文件名符合 `rootfs-*.img`。
+Checked-in QEMU TOML 可以使用 `${workspace}/target/axbuild/rootfs/<name>.img` 指向默认 managed rootfs 目录。`resolve_managed_rootfs_path()` 会把这个默认前缀重写到当前 `TGOS_IMAGE_EXTRACT_DIR`，同时仍然要求文件名符合 `rootfs-*.img`。
 
 这个重写只作用于 managed rootfs 路径。带目录组件但不在默认 rootfs 目录或当前 extract dir 下的路径会作为用户自管镜像保留，axbuild 不会替用户下载或重建它。
 
@@ -394,6 +394,6 @@ Rootfs 相关变更应先确认它修改的是镜像来源、内容注入、QEMU
 
 ### 8.4 调试损坏
 
-工作 rootfs 损坏时，删除 `extract_dir` 中对应 `.img` 后重新拉取即可；下载归档损坏时，下一次准备会因 SHA-256 不匹配自动重新下载。若怀疑本地 `.image.toml` 使用了旧格式，应删除 `<workspace>/tmp/axbuild/.image.toml`，让 `ImageConfig` 重新生成当前三字段格式。
+工作 rootfs 损坏时，删除 `extract_dir` 中对应 `.img` 后重新拉取即可；下载归档损坏时，下一次准备会因 SHA-256 不匹配自动重新下载。若旧 `.image.toml` 显式指向 `tmp/axbuild/rootfs`，应删除或修改 `extract_dir` 项以采用 metadata target 默认值。使用相同 target 选择执行 `cargo clean` 会清除 target 下的工作 rootfs，但不会删除 `tmp/axbuild` 中的配置、运行状态和日志。
 
 QEMU 启动找不到 rootfs 时，先检查 QEMU TOML 的 `-drive file=` 是否是 managed 路径或显式用户路径，再检查 `TGOS_IMAGE_EXTRACT_DIR` 是否改变了 managed rootfs 的真实位置。测试 case 资产异常时，优先清理对应 `target/<target>/qemu-cases/<case>/cache/rootfs`，而不是删除全局下载缓存。

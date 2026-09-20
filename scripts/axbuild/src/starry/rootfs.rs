@@ -33,17 +33,24 @@ pub struct ArgsRootfs {
 pub(super) async fn rootfs(starry: &mut Starry, args: ArgsRootfs) -> anyhow::Result<()> {
     let arch = args.arch.unwrap_or_else(|| DEFAULT_STARRY_ARCH.to_string());
     let target = starry_target_for_arch_checked(&arch)?.to_string();
-    let disk_img = ensure_rootfs_in_tmp_dir(starry.app.workspace_root(), &arch, &target).await?;
+    let disk_img = ensure_rootfs_in_tmp_dir(
+        starry.app.workspace_root(),
+        starry.app.target_dir(),
+        &arch,
+        &target,
+    )
+    .await?;
     println!("rootfs ready at {}", disk_img.display());
     Ok(())
 }
 
 pub(super) async fn ensure_quick_start_qemu_rootfs(
     workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
 ) -> anyhow::Result<PathBuf> {
     let target = starry_target_for_arch_checked(arch)?.to_string();
-    ensure_rootfs_in_tmp_dir(workspace_root, arch, &target).await
+    ensure_rootfs_in_tmp_dir(workspace_root, target_dir, arch, &target).await
 }
 
 pub(super) async fn qemu_with_explicit_rootfs(
@@ -54,12 +61,19 @@ pub(super) async fn qemu_with_explicit_rootfs(
 ) -> anyhow::Result<()> {
     let rootfs = crate::image::storage::resolve_explicit_rootfs(
         starry.app.workspace_root(),
+        starry.app.target_dir(),
         &request.arch,
         rootfs,
     )?;
-    ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), Some(&rootfs)).await?;
+    ensure_qemu_rootfs_ready(
+        &request,
+        starry.app.workspace_root(),
+        starry.app.target_dir(),
+        Some(&rootfs),
+    )
+    .await?;
     starry.app.set_debug_mode(request.debug)?;
-    let cargo = build::load_cargo_config(&request)?;
+    let cargo = build::load_cargo_config(&request, starry.app.workspace_context())?;
     let qemu =
         load_patched_qemu_config(starry, &request, &cargo, Some(&rootfs), false, write_policy)
             .await?;
@@ -72,8 +86,14 @@ pub(super) async fn qemu(
     write_policy: RootfsWritePolicy,
 ) -> anyhow::Result<()> {
     starry.app.set_debug_mode(request.debug)?;
-    let cargo = build::load_cargo_config(&request)?;
-    ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), None).await?;
+    let cargo = build::load_cargo_config(&request, starry.app.workspace_context())?;
+    ensure_qemu_rootfs_ready(
+        &request,
+        starry.app.workspace_root(),
+        starry.app.target_dir(),
+        None,
+    )
+    .await?;
     let qemu = load_patched_qemu_config(starry, &request, &cargo, None, true, write_policy).await?;
     starry.run_qemu_artifact(&request, cargo, qemu).await
 }
@@ -113,6 +133,7 @@ pub(super) async fn load_patched_qemu_config(
             &mut qemu,
             request,
             starry.app.workspace_root(),
+            starry.app.target_dir(),
             None,
             mode,
             write_policy,
@@ -131,6 +152,7 @@ const EXT_SUPER_MAGIC: [u8; 2] = [0x53, 0xef];
 /// Ensures the default managed rootfs for a Starry arch/target is available.
 pub(crate) async fn ensure_rootfs_in_tmp_dir(
     workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
     target: &str,
 ) -> anyhow::Result<PathBuf> {
@@ -139,7 +161,8 @@ pub(crate) async fn ensure_rootfs_in_tmp_dir(
         bail!("Starry arch `{arch}` maps to target `{expected_target}`, but got `{target}`");
     }
 
-    let rootfs = crate::image::storage::ensure_rootfs_for_arch(workspace_root, arch).await?;
+    let rootfs =
+        crate::image::storage::ensure_rootfs_for_arch(workspace_root, target_dir, arch).await?;
     let _lock = crate::support::download::acquire_path_lock(&rootfs).await?;
     ensure_apk_region_in_rootfs(&rootfs)?;
     Ok(rootfs)
@@ -149,11 +172,13 @@ pub(crate) async fn ensure_rootfs_in_tmp_dir(
 pub(crate) async fn ensure_qemu_rootfs_ready(
     request: &ResolvedStarryRequest,
     workspace_root: &Path,
+    target_dir: &Path,
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
+    let rootfs_path = qemu_rootfs_path(request, workspace_root, target_dir, explicit_rootfs)?;
     crate::image::storage::ensure_optional_managed_rootfs(
         workspace_root,
+        target_dir,
         &request.arch,
         Some(&rootfs_path),
     )
@@ -251,6 +276,7 @@ pub(crate) fn patch_qemu_rootfs(
     qemu: &mut QemuConfig,
     request: &ResolvedStarryRequest,
     workspace_root: &Path,
+    target_dir: &Path,
     explicit_rootfs: Option<&Path>,
     mode: RootfsPatchMode,
     write_policy: RootfsWritePolicy,
@@ -263,7 +289,7 @@ pub(crate) fn patch_qemu_rootfs(
             request.target
         );
     }
-    let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
+    let rootfs_path = qemu_rootfs_path(request, workspace_root, target_dir, explicit_rootfs)?;
     patch_qemu_rootfs_path_with_mode(qemu, &rootfs_path, mode, write_policy)
 }
 
@@ -271,13 +297,14 @@ pub(crate) fn patch_qemu_rootfs(
 pub(crate) fn qemu_rootfs_path(
     request: &ResolvedStarryRequest,
     workspace_root: &Path,
+    target_dir: &Path,
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<PathBuf> {
     if let Some(explicit) = explicit_rootfs {
         return Ok(explicit.to_path_buf());
     }
 
-    crate::image::storage::default_rootfs_path(workspace_root, &request.arch)
+    crate::image::storage::default_rootfs_path(workspace_root, target_dir, &request.arch)
 }
 
 /// Patches a QEMU config with a concrete Starry rootfs path.
@@ -315,6 +342,10 @@ mod tests {
         root.join(".tgos-images").join(image_name)
     }
 
+    fn target_dir(root: &Path) -> PathBuf {
+        root.join("custom-target")
+    }
+
     fn write_test_image_config(root: &Path) {
         let config = crate::image::config::ImageConfig {
             registry: crate::image::config::DEFAULT_REGISTRY_URL.to_string(),
@@ -347,6 +378,7 @@ mod tests {
             &mut qemu,
             &request,
             root.path(),
+            &target_dir(root.path()),
             None,
             RootfsPatchMode::EnsureDiskBootNet,
             RootfsWritePolicy::Discard,
@@ -399,6 +431,7 @@ mod tests {
             &mut qemu,
             &request,
             root.path(),
+            &target_dir(root.path()),
             None,
             RootfsPatchMode::EnsureDiskBootNet,
             RootfsWritePolicy::Persist,
@@ -455,6 +488,7 @@ mod tests {
             &mut qemu,
             &request,
             root.path(),
+            &target_dir(root.path()),
             None,
             RootfsPatchMode::ReplaceDriveOnly,
             RootfsWritePolicy::Persist,

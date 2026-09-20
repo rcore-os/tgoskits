@@ -4,7 +4,7 @@ set -euo pipefail
 workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 example_dir="${workspace}/apps/starry/picoclaw-cli"
 
-default_rootfs="${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
+default_rootfs="${workspace}/target/axbuild/rootfs/rootfs-x86_64-alpine.img"
 rootfs="$default_rootfs"
 asset_dir="${workspace}/target/picoclaw/assets"
 config_json=""

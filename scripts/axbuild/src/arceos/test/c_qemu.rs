@@ -181,7 +181,6 @@ async fn build_and_run_c_test(
     _arch: &str,
     test: &CTestDef,
 ) -> anyhow::Result<()> {
-    let workspace_root = arceos.app.workspace_root().to_path_buf();
     let build_config = load_c_test_build_config(&test.build_config_path)?;
     let qemu_config = load_c_test_qemu_config(&test.qemu_config_path)?;
     let mode = build::load_arceos_build_mode(&test.build_config_path)?;
@@ -193,7 +192,7 @@ async fn build_and_run_c_test(
         );
     };
     let artifacts = c_test_artifact_paths(
-        &workspace_root,
+        arceos.app.target_dir(),
         &test.build_group,
         &test.name,
         c_test_artifact_index(test),
@@ -220,7 +219,7 @@ async fn build_and_run_c_test(
         &test.name,
         build_config.build_info.features.clone(),
     );
-    let output = cbuild::build_c_app(&workspace_root, &request, &input)?;
+    let output = cbuild::build_c_app(arceos.app.workspace_context(), &request, &input)?;
     qemu_test::validate_test_qemu_rootfs_write_policy(&test.qemu_config_path, "ArceOS")?;
     let mut qemu = qemu_config;
     rootfs::prepare_default_qemu_fat32_rootfs(arceos.app.workspace_root(), &qemu)?;
@@ -267,17 +266,18 @@ fn c_test_feature_define(feature: &str) -> String {
 /// reuse the same ax-libc static library. QEMU output stays isolated per case
 /// and per invocation so generated ELF files do not overwrite each other.
 fn c_test_artifact_paths(
-    workspace_root: &Path,
+    target_dir: &Path,
     build_group: &str,
     test_name: &str,
     invocation_index: usize,
 ) -> CTestArtifactPaths {
-    let root = crate::context::axbuild_tmp_dir(workspace_root)
+    let root = target_dir
+        .join("axbuild")
         .join("arceos-c")
         .join(test_name.replace('/', "-"));
     CTestArtifactPaths {
-        target_dir: crate::context::axbuild_tmp_dir(workspace_root)
-            .join("arceos-c")
+        target_dir: target_dir
+            .join("axbuild/arceos-c")
             .join(build_group.replace('/', "-"))
             .join("cargo"),
         out_dir: root.join(format!("out-{invocation_index}")),

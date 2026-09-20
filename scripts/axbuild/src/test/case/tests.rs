@@ -102,7 +102,7 @@ pub(super) fn fake_case(root: &Path, name: &str) -> TestQemuCase {
 async fn prepare_case_assets_plain_case_uses_shared_rootfs() {
     let root = tempdir().unwrap();
     let target_dir = root.path().join("target/x86_64-unknown-none");
-    let rootfs_dir = root.path().join("tmp/axbuild/rootfs");
+    let rootfs_dir = root.path().join("target/axbuild/rootfs");
     fs::create_dir_all(&target_dir).unwrap();
     fs::create_dir_all(&rootfs_dir).unwrap();
     let shared_img = rootfs_dir.join("rootfs-x86_64-alpine.img");
@@ -110,7 +110,7 @@ async fn prepare_case_assets_plain_case_uses_shared_rootfs() {
     let case = fake_case(root.path(), "smoke");
 
     let assets = prepare_case_assets(
-        root.path(),
+        &root.path().join("target"),
         "x86_64",
         "x86_64-unknown-none",
         &case,

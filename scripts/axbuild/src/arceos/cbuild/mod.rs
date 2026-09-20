@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use anyhow::{Context, ensure};
 
 use super::build;
-use crate::context::ResolvedBuildRequest;
+use crate::context::{ResolvedBuildRequest, WorkspaceContext};
 
 mod compile;
 mod features;
@@ -33,11 +33,12 @@ pub(crate) fn default_c_app_artifact_paths(
 }
 
 pub(crate) fn build_c_app(
-    workspace_root: &Path,
+    workspace: &WorkspaceContext,
     request: &ResolvedBuildRequest,
     input: &ArceosCBuildInput,
 ) -> anyhow::Result<ArceosCBuildOutput> {
-    let cargo = prepare_c_app_cargo_config(request, &input.features)?;
+    let workspace_root = workspace.root();
+    let cargo = prepare_c_app_cargo_config(request, workspace, &input.features)?;
     let c_features = c_compiler_features(&cargo.features, &input.features);
     let dynamic_pie = dynamic_pie_for_c_app(&cargo.features);
     let mode = if request.debug { "debug" } else { "release" };
@@ -124,9 +125,10 @@ pub(crate) fn build_c_app(
 
 pub(crate) fn prepare_c_app_cargo_config(
     request: &ResolvedBuildRequest,
+    workspace: &WorkspaceContext,
     input_features: &[String],
 ) -> anyhow::Result<ostool::build::config::Cargo> {
-    let mut cargo = build::load_c_app_cargo_config(request)?;
+    let mut cargo = build::load_c_app_cargo_config(request, workspace)?;
     cargo.package = AX_LIBC_PACKAGE.to_string();
     cargo.to_bin = false;
     cargo.features = map_c_app_features(input_features, &cargo.features)?;

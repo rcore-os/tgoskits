@@ -121,9 +121,13 @@ impl Axvisor {
         let asset_config = axvisor_case_asset_config();
 
         let mut build_groups = test_qemu::prepare_case_build_groups(&cases, |build_config_path| {
-            Self::qemu_group_build_context(&request, build_config_path)
+            Self::qemu_group_build_context(
+                &request,
+                build_config_path,
+                self.app.workspace_context(),
+            )
         })?;
-        let artifact_parent = self.app.workspace_root().join("target");
+        let artifact_parent = self.app.target_dir().to_path_buf();
         std::fs::create_dir_all(&artifact_parent).with_context(|| {
             format!(
                 "failed to create Axvisor qemu artifact parent {}",
@@ -142,13 +146,20 @@ impl Axvisor {
         // embedded VM configuration, so a later build would otherwise replace
         // the executable belonging to an earlier group.
         for (index, build_group) in build_groups.iter_mut().enumerate() {
-            rootfs::ensure_qemu_assets_ready(&build_group.request, self.app.workspace_root(), None)
-                .await?;
-            build_group.cargo = build::load_cargo_config(&build_group.request)?;
+            rootfs::ensure_qemu_assets_ready(
+                &build_group.request,
+                self.app.workspace_root(),
+                self.app.target_dir(),
+                None,
+            )
+            .await?;
+            build_group.cargo =
+                build::load_cargo_config(&build_group.request, self.app.workspace_context())?;
             prepare_configured_busybox_initramfs(
                 &build_group.request,
                 &build_group.cargo,
                 self.app.workspace_root(),
+                self.app.target_dir(),
             )
             .await?;
             let output = self
@@ -237,6 +248,7 @@ impl Axvisor {
                 request,
                 &case.build_config_path,
                 &mut cargo_by_build_config,
+                self.app.workspace_context(),
             )?;
             let qemu = self
                 .app
@@ -258,6 +270,7 @@ impl Axvisor {
         request: &ResolvedAxvisorRequest,
         build_config_path: &Path,
         cargo_by_build_config: &mut BTreeMap<PathBuf, Cargo>,
+        workspace: &crate::context::WorkspaceContext,
     ) -> anyhow::Result<Cargo> {
         if let Some(cargo) = cargo_by_build_config.get(build_config_path) {
             return Ok(cargo.clone());
@@ -265,7 +278,7 @@ impl Axvisor {
 
         let mut request = request.clone();
         request.build_info_path = build_config_path.to_path_buf();
-        let cargo = build::load_cargo_config(&request)?;
+        let cargo = build::load_cargo_config(&request, workspace)?;
         cargo_by_build_config.insert(build_config_path.to_path_buf(), cargo.clone());
         Ok(cargo)
     }
@@ -273,10 +286,11 @@ impl Axvisor {
     fn qemu_group_build_context(
         request: &ResolvedAxvisorRequest,
         build_config_path: &Path,
+        workspace: &crate::context::WorkspaceContext,
     ) -> anyhow::Result<(ResolvedAxvisorRequest, Cargo)> {
         let mut request = request.clone();
         request.build_info_path = build_config_path.to_path_buf();
-        let cargo = build::load_cargo_config(&request)?;
+        let cargo = build::load_cargo_config(&request, workspace)?;
         request.vmconfigs = build::vmconfigs_from_cargo(&cargo);
 
         Ok((request, cargo))
@@ -304,9 +318,14 @@ impl Axvisor {
             qemu.fail_regex.push(VCPU_RUNTIME_ERROR.to_string());
         }
 
-        let rootfs_path = rootfs::qemu_rootfs_path(request, self.app.workspace_root(), None)?;
-        let prepared_assets = test_case::prepare_case_assets(
+        let rootfs_path = rootfs::qemu_rootfs_path(
+            request,
             self.app.workspace_root(),
+            self.app.target_dir(),
+            None,
+        )?;
+        let prepared_assets = test_case::prepare_case_assets(
+            self.app.target_dir(),
             &request.arch,
             &request.target,
             &case.case.case,

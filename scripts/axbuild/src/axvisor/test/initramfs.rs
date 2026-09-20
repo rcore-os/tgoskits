@@ -614,10 +614,11 @@ pub(super) async fn prepare_configured_busybox_initramfs(
     request: &ResolvedAxvisorRequest,
     cargo: &Cargo,
     workspace_root: &Path,
+    target_dir: &Path,
 ) -> anyhow::Result<()> {
     if let Some(configured_output) = cargo.env.get(OUTPUT_ENV) {
         let output_path = resolve_output_path(workspace_root, configured_output, OUTPUT_ENV)?;
-        let rootfs_path = rootfs::qemu_rootfs_path(request, workspace_root, None)?;
+        let rootfs_path = rootfs::qemu_rootfs_path(request, workspace_root, target_dir, None)?;
         prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch)?;
         println!(
             "prepared Axvisor QEMU test initramfs: {}",

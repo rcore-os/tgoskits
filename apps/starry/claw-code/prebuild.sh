@@ -2,7 +2,7 @@
 set -euo pipefail
 
 WORKSPACE="${STARRY_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
-ROOTFS_DIR="$WORKSPACE/tmp/axbuild/rootfs"
+ROOTFS_DIR="$WORKSPACE/target/axbuild/rootfs"
 OVERLAY="${STARRY_OVERLAY_DIR:-$WORKSPACE/tmp/axbuild/starry-app/claw-code/overlay}"
 
 echo "=== 1. Build claw from source ==="

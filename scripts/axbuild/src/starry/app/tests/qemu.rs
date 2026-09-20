@@ -11,6 +11,10 @@ use crate::{
     },
 };
 
+fn target_dir(root: &Path) -> std::path::PathBuf {
+    root.join("custom-target")
+}
+
 #[tokio::test]
 async fn app_owned_rootfs_runs_declared_builder_without_default_rootfs() {
     let root = tempdir().unwrap();
@@ -45,11 +49,18 @@ target_arch = "x86_64"
         .find(|app| app.name == "nixos")
         .unwrap();
 
-    let case = prepare_qemu_app_case(root.path(), &app, Some("x86_64"), None)
-        .await
-        .unwrap();
+    let case = prepare_qemu_app_case(
+        root.path(),
+        &target_dir(root.path()),
+        &app,
+        Some("x86_64"),
+        None,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(fs::read(&case.rootfs_path).unwrap(), b"nixos-image");
+    assert!(!root.path().join("custom-target/axbuild/rootfs").exists());
     assert!(!root.path().join("tmp/axbuild/rootfs").exists());
 }
 
@@ -87,10 +98,16 @@ target_arch = "x86_64"
         .find(|app| app.name == "nixos")
         .unwrap();
 
-    let error = prepare_qemu_app_case(root.path(), &app, Some("x86_64"), None)
-        .await
-        .unwrap_err()
-        .to_string();
+    let error = prepare_qemu_app_case(
+        root.path(),
+        &target_dir(root.path()),
+        &app,
+        Some("x86_64"),
+        None,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
 
     assert!(
         error.contains("did not publish"),
@@ -133,10 +150,16 @@ target_arch = "aarch64"
         .find(|app| app.name == "nixos")
         .unwrap();
 
-    let error = prepare_qemu_app_case(root.path(), &app, Some("x86_64"), None)
-        .await
-        .unwrap_err()
-        .to_string();
+    let error = prepare_qemu_app_case(
+        root.path(),
+        &target_dir(root.path()),
+        &app,
+        Some("x86_64"),
+        None,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
 
     assert!(
         error.contains("targets `aarch64`"),
@@ -202,7 +225,7 @@ target_arch = "riscv64"
         .find(|app| app.name == "qemu/apt")
         .unwrap();
 
-    let case = prepare_qemu_app_case(root.path(), &app, None, None)
+    let case = prepare_qemu_app_case(root.path(), &target_dir(root.path()), &app, None, None)
         .await
         .unwrap();
 
@@ -292,8 +315,13 @@ fn qemu_case_fields_load_grouped_commands_and_subcases() {
         .unwrap();
     let qemu_config = resolve_qemu_config(&app, Some("x86_64"), None).unwrap();
 
-    let fields =
-        load_qemu_app_case_fields(root.path(), &app, qemu_config.as_deref().unwrap()).unwrap();
+    let fields = load_qemu_app_case_fields(
+        root.path(),
+        &target_dir(root.path()),
+        &app,
+        qemu_config.as_deref().unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(
         fields.test_case.test_commands,
@@ -327,8 +355,13 @@ fail_regex = []
         .unwrap();
     let qemu_config = resolve_qemu_config(&app, Some("aarch64"), None).unwrap();
 
-    let fields =
-        load_qemu_app_case_fields(root.path(), &app, qemu_config.as_deref().unwrap()).unwrap();
+    let fields = load_qemu_app_case_fields(
+        root.path(),
+        &target_dir(root.path()),
+        &app,
+        qemu_config.as_deref().unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(fields.rootfs_path, Some(rootfs_path));
     assert_eq!(fields.write_policy, RootfsWritePolicy::Discard);
@@ -355,8 +388,13 @@ fail_regex = []
         .unwrap();
     let qemu_config = resolve_qemu_config(&app, Some("aarch64"), None).unwrap();
 
-    let fields =
-        load_qemu_app_case_fields(root.path(), &app, qemu_config.as_deref().unwrap()).unwrap();
+    let fields = load_qemu_app_case_fields(
+        root.path(),
+        &target_dir(root.path()),
+        &app,
+        qemu_config.as_deref().unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(fields.write_policy, RootfsWritePolicy::Persist);
 }

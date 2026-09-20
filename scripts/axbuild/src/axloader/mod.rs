@@ -43,7 +43,7 @@ struct LoaderSmokeTarget {
 }
 
 struct SmokeAttemptContext<'a> {
-    workspace_root: &'a Path,
+    target_dir: &'a Path,
     target: &'a str,
     smoke_target: LoaderSmokeTarget,
     firmware: &'a Path,
@@ -90,41 +90,67 @@ pub enum Command {
 }
 
 pub struct Axloader {
-    workspace_root: PathBuf,
+    workspace: crate::context::WorkspaceContext,
 }
 
 impl Axloader {
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
-            workspace_root: crate::context::workspace_root_path()?,
+            workspace: crate::context::WorkspaceContext::discover(None)?,
         })
     }
 
     pub async fn execute(&mut self, command: Command) -> anyhow::Result<()> {
         match command {
-            Command::Build(args) => build(&self.workspace_root, args),
-            Command::Test(args) => test(&self.workspace_root, args).await,
+            Command::Build(args) => build_with_context(&self.workspace, args),
+            Command::Test(args) => test_with_context(&self.workspace, args).await,
         }
     }
 }
 
 pub fn build(workspace_root: &Path, args: ArgsBuild) -> anyhow::Result<()> {
-    run_loader_build(workspace_root, &args.target, args.release || !args.debug)
+    let workspace = crate::context::WorkspaceContext::from_root(workspace_root, None)?;
+    build_with_context(&workspace, args)
 }
 
 pub async fn test(workspace_root: &Path, args: ArgsTest) -> anyhow::Result<()> {
+    let workspace = crate::context::WorkspaceContext::from_root(workspace_root, None)?;
+    test_with_context(&workspace, args).await
+}
+
+fn build_with_context(
+    workspace: &crate::context::WorkspaceContext,
+    args: ArgsBuild,
+) -> anyhow::Result<()> {
+    run_loader_build(
+        workspace.root(),
+        workspace.target_dir(),
+        &args.target,
+        args.release || !args.debug,
+    )
+}
+
+async fn test_with_context(
+    workspace: &crate::context::WorkspaceContext,
+    args: ArgsTest,
+) -> anyhow::Result<()> {
     match args.command {
-        TestCommand::Qemu(args) => test_qemu(workspace_root, args).await,
+        TestCommand::Qemu(args) => test_qemu(workspace, args).await,
     }
 }
 
-async fn test_qemu(workspace_root: &Path, args: ArgsTestQemu) -> anyhow::Result<()> {
+async fn test_qemu(
+    workspace: &crate::context::WorkspaceContext,
+    args: ArgsTestQemu,
+) -> anyhow::Result<()> {
     run_cargo(
-        workspace_root,
+        workspace.root(),
+        workspace.target_dir(),
         ["test", "-p", AXLOADER_PACKAGE, "--all-targets"],
     )?;
     let result = run_cargo(
-        workspace_root,
+        workspace.root(),
+        workspace.target_dir(),
         [
             "check",
             "-p",
@@ -137,10 +163,15 @@ async fn test_qemu(workspace_root: &Path, args: ArgsTestQemu) -> anyhow::Result<
     );
     result?;
 
-    run_http_smoke_test(workspace_root, &args.target).await
+    run_http_smoke_test(workspace.root(), workspace.target_dir(), &args.target).await
 }
 
-fn run_loader_build(workspace_root: &Path, target: &str, release: bool) -> anyhow::Result<()> {
+fn run_loader_build(
+    workspace_root: &Path,
+    target_dir: &Path,
+    target: &str,
+    release: bool,
+) -> anyhow::Result<()> {
     let mut args = vec![
         "build",
         "-p",
@@ -153,23 +184,32 @@ fn run_loader_build(workspace_root: &Path, target: &str, release: bool) -> anyho
     if release {
         args.push("--release");
     }
-    run_cargo(workspace_root, args)
+    run_cargo(workspace_root, target_dir, args)
 }
 
 fn run_cargo<'a>(
     workspace_root: &Path,
+    target_dir: &Path,
     args: impl IntoIterator<Item = &'a str>,
 ) -> anyhow::Result<()> {
     let mut command = StdCommand::new("cargo");
-    command.current_dir(workspace_root).args(args);
+    command
+        .current_dir(workspace_root)
+        .args(args)
+        .arg("--target-dir")
+        .arg(target_dir);
     command.exec()
 }
 
-async fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()> {
+async fn run_http_smoke_test(
+    workspace_root: &Path,
+    target_dir: &Path,
+    target: &str,
+) -> anyhow::Result<()> {
     let smoke_target = smoke_target(target)?;
 
     println!("axloader http smoke: building UEFI loader ...");
-    run_loader_build(workspace_root, target, true)?;
+    run_loader_build(workspace_root, target_dir, target, true)?;
 
     let firmware = OvmfFirmware::fetch(smoke_target.ovmf_arch).await?;
     println!(
@@ -178,7 +218,7 @@ async fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Res
     );
     let kernel = (smoke_target.kernel_elf)();
     let attempt_context = SmokeAttemptContext {
-        workspace_root,
+        target_dir,
         target,
         smoke_target,
         firmware: firmware.code(),
@@ -218,7 +258,7 @@ fn run_http_smoke_attempt(context: &SmokeAttemptContext<'_>) -> anyhow::Result<(
     fs::create_dir_all(&efi_boot_dir)
         .with_context(|| format!("failed to create {}", efi_boot_dir.display()))?;
     fs::copy(
-        axloader_efi_path(context.workspace_root, context.target),
+        axloader_efi_path(context.target_dir, context.target),
         efi_boot_dir.join(context.smoke_target.efi_output_file),
     )
     .context("failed to stage axloader EFI binary")?;
@@ -301,12 +341,8 @@ fn next_smoke_attempt(current_attempt: usize) -> Option<usize> {
     (current_attempt < HTTP_SMOKE_MAX_ATTEMPTS).then_some(current_attempt + 1)
 }
 
-fn axloader_efi_path(workspace_root: &Path, target: &str) -> PathBuf {
-    workspace_root
-        .join("target")
-        .join(target)
-        .join("release")
-        .join("axloader.efi")
+fn axloader_efi_path(target_dir: &Path, target: &str) -> PathBuf {
+    target_dir.join(target).join("release").join("axloader.efi")
 }
 
 fn smoke_target(target: &str) -> anyhow::Result<LoaderSmokeTarget> {

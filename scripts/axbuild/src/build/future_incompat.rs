@@ -59,37 +59,6 @@ pub(crate) struct FutureIncompatReportSession {
     finished: bool,
 }
 
-pub(crate) fn cargo_target_dir_for(
-    workspace_root: &Path,
-    cargo_args: &[String],
-) -> anyhow::Result<PathBuf> {
-    let mut target_dir = None;
-    let mut args = cargo_args.iter();
-    while let Some(arg) = args.next() {
-        if arg == "--" {
-            break;
-        }
-        if arg == "--target-dir" {
-            let value = args
-                .next()
-                .context("Cargo argument `--target-dir` is missing its value")?;
-            target_dir = Some(PathBuf::from(value));
-        } else if let Some(value) = arg.strip_prefix("--target-dir=") {
-            if value.is_empty() {
-                bail!("Cargo argument `--target-dir=` is missing its value");
-            }
-            target_dir = Some(PathBuf::from(value));
-        }
-    }
-
-    let target_dir = target_dir.unwrap_or_else(|| workspace_root.join("target"));
-    Ok(if target_dir.is_absolute() {
-        target_dir
-    } else {
-        workspace_root.join(target_dir)
-    })
-}
-
 pub(crate) fn start_future_incompat_report_session(
     target_dir: &Path,
 ) -> anyhow::Result<FutureIncompatReportSession> {
@@ -613,25 +582,6 @@ mod tests {
             .push(duplicate);
         let id_error = validate_report_json(&duplicate_ids.to_string()).unwrap_err();
         assert!(id_error.to_string().contains("report ids"));
-    }
-
-    #[test]
-    fn cargo_target_dir_comes_from_the_cargo_invocation_not_artifact_depth() {
-        let workspace = Path::new("/workspace");
-
-        assert_eq!(
-            cargo_target_dir_for(workspace, &[]).unwrap(),
-            Path::new("/workspace/target")
-        );
-        assert_eq!(
-            cargo_target_dir_for(workspace, &["--target-dir".into(), "ktest-target".into()])
-                .unwrap(),
-            Path::new("/workspace/ktest-target")
-        );
-        assert_eq!(
-            cargo_target_dir_for(workspace, &["--target-dir=/tmp/custom-target".into()]).unwrap(),
-            Path::new("/tmp/custom-target")
-        );
     }
 
     #[test]

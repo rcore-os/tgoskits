@@ -161,7 +161,7 @@ cargo xtask starry test qemu --arch riscv64 -g qemu-selfhost -c selfhost-full-ke
 ### scripts/prepare-selfhost-rootfs.sh — 准备自编译 rootfs 镜像（统一脚本）
 
 **前提**: 
-- riscv64: 已有 Debian riscv64 基础镜像（`tmp/axbuild/rootfs/rootfs-riscv64-debian.img`）
+- riscv64: 已有 Debian riscv64 基础镜像（`target/axbuild/rootfs/rootfs-riscv64-debian.img`）
 - x86_64: `sudo pacman -S debootstrap`（Arch Linux），本机架构无需 QEMU
 - aarch64: `sudo pacman -S debootstrap qemu-user-static-binfmt`
 

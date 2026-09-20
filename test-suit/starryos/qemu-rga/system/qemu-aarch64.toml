@@ -11,7 +11,7 @@ args = [
     "-device",
     "nvme,serial=deadbeef,drive=nvm,max_ioqpairs=64,msix_qsize=65",
     "-drive",
-    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "id=nvm,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
     "-device",
     "virtio-net-pci,netdev=net0",
     "-netdev",

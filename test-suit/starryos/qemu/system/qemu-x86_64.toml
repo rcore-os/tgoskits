@@ -10,7 +10,7 @@ args = [
     "-device",
     "nvme,serial=deadbeef,drive=nvm,max_ioqpairs=64,msix_qsize=65",
     "-drive",
-    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "id=nvm,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-x86_64-alpine.img",
     "-device",
     "virtio-net-pci,netdev=net0",
     "-netdev",
@@ -32,7 +32,7 @@ args = [
     "-device",
     "usb-audio,bus=xhci.0,audiodev=audio0",
     "-drive",
-    "id=usbdisk,if=none,format=raw,snapshot=on,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-busybox.img",
+    "id=usbdisk,if=none,format=raw,snapshot=on,file=${workspace}/target/axbuild/rootfs/rootfs-x86_64-busybox.img",
     "-device",
     "usb-storage,bus=xhci.0,drive=usbdisk,serial=starry-usb-storage",
 ]

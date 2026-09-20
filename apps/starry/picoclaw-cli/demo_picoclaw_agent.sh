@@ -4,7 +4,7 @@ set -euo pipefail
 workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 image="${STARRYOS_DOCKER_IMAGE:-starryos-dev:ubuntu-qemu11.1.1}"
-rootfs="${PICOCLAW_DEMO_ROOTFS:-tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img}"
+rootfs="${PICOCLAW_DEMO_ROOTFS:-target/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img}"
 qemu_config="${PICOCLAW_DEMO_QEMU_CONFIG:-apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml}"
 provider="${PICOCLAW_PROVIDER:-openai}"
 model_name="${PICOCLAW_MODEL_NAME:-mimo-v25}"

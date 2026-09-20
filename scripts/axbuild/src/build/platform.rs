@@ -144,23 +144,10 @@ pub(crate) fn default_build_info_path_in_workspace(
         .join(format!("build-{target}.toml"))
 }
 
+#[cfg(test)]
 pub(crate) fn workspace_metadata() -> anyhow::Result<Metadata> {
     let manifest_path = workspace_manifest_path()?;
     workspace_metadata_root_manifest(&manifest_path)
-}
-
-pub(crate) fn cached_workspace_metadata() -> anyhow::Result<&'static Metadata> {
-    static METADATA: OnceLock<anyhow::Result<Metadata, String>> = OnceLock::new();
-
-    cached_metadata_result(
-        METADATA.get_or_init(|| workspace_metadata().map_err(|err| format!("{err:#}"))),
-    )
-}
-
-pub(super) fn cached_metadata_result(
-    result: &'static anyhow::Result<Metadata, String>,
-) -> anyhow::Result<&'static Metadata> {
-    result.as_ref().map_err(|err| anyhow::anyhow!("{err}"))
 }
 
 pub(super) fn workspace_package<'a>(

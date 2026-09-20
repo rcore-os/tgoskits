@@ -281,7 +281,7 @@ cargo xtask starry test qemu --arch loongarch64 -c qemu/system/test-tty-termios-
 - `virtio-net` 提供基础网络。
 - `virtio-gpu`、`virtio-keyboard`、`virtio-tablet` 支持 DRM/evdev。
 - `nec-usb-xhci,id=xhci,msi=off,msix=off`、`usb-audio`、`usb-storage` 支持 USB 回归。
-- USB storage 第二盘使用 `${workspace}/tmp/axbuild/rootfs/rootfs-<arch>-busybox.img`。
+- USB storage 第二盘使用 `${workspace}/target/axbuild/rootfs/rootfs-<arch>-busybox.img`。
 
 `system/qemu-loongarch64.toml` 不带 xHCI、USB audio 或 USB storage。对应 build config
 也不启用 `ax-driver/xhci-pci`。USB 测试程序仍会被构建并安装，但在 loongarch64 guest
@@ -345,7 +345,7 @@ qemu-user 执行 staging root 内的工具，否则使用宿主原生 `<gnu_tool
 args = [
     "-nographic", "-cpu", "rv64",
     "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
-    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-riscv64-alpine.img",
     "-device", "virtio-net-pci,netdev=net0",
     "-netdev", "user,id=net0",
 ]

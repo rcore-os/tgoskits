@@ -135,8 +135,8 @@ pub(crate) fn default_rootfs_image(arch: &str) -> Option<&'static str> {
 }
 
 /// Returns the directory containing mutable, extracted rootfs images.
-pub(crate) fn rootfs_dir(workspace_root: &Path) -> anyhow::Result<PathBuf> {
-    Ok(ImageConfig::read_config(workspace_root)?.extract_dir)
+pub(crate) fn rootfs_dir(workspace_root: &Path, target_dir: &Path) -> anyhow::Result<PathBuf> {
+    Ok(ImageConfig::read_config(workspace_root, target_dir)?.extract_dir)
 }
 
 /// Resolves a QEMU rootfs reference into the configured extraction directory.
@@ -145,11 +145,12 @@ pub(crate) fn rootfs_dir(workspace_root: &Path) -> anyhow::Result<PathBuf> {
 /// portable reference. A configured extraction directory replaces that prefix.
 pub(crate) fn resolve_managed_rootfs_path(
     workspace_root: &Path,
+    target_dir: &Path,
     path: &Path,
 ) -> anyhow::Result<Option<PathBuf>> {
     let path = resolve_workspace_path(workspace_root, path);
-    let rootfs_dir = rootfs_dir(workspace_root)?;
-    let default_rootfs_dir = crate::context::axbuild_tmp_dir(workspace_root).join("rootfs");
+    let rootfs_dir = rootfs_dir(workspace_root, target_dir)?;
+    let default_rootfs_dir = workspace_root.join("target/axbuild/rootfs");
     if !path.starts_with(&rootfs_dir) && !path.starts_with(&default_rootfs_dir) {
         return Ok(None);
     }
@@ -159,7 +160,7 @@ pub(crate) fn resolve_managed_rootfs_path(
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow!("invalid managed rootfs path `{}`", path.display()))?;
     ensure_rootfs_image_name(image_name)?;
-    rootfs_image_path(workspace_root, image_name).map(Some)
+    rootfs_image_path(workspace_root, target_dir, image_name).map(Some)
 }
 
 /// Resolves a user-facing rootfs argument into the image storage path.
@@ -169,6 +170,7 @@ pub(crate) fn resolve_managed_rootfs_path(
 /// are treated as explicit user-managed paths.
 pub(crate) fn resolve_rootfs_path(
     workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
     rootfs: PathBuf,
 ) -> anyhow::Result<PathBuf> {
@@ -195,30 +197,37 @@ pub(crate) fn resolve_rootfs_path(
         keyword.into_owned()
     };
 
-    rootfs_image_path(workspace_root, &image_name)
+    rootfs_image_path(workspace_root, target_dir, &image_name)
 }
 
 pub(crate) fn resolve_explicit_rootfs(
     workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
     rootfs: PathBuf,
 ) -> anyhow::Result<PathBuf> {
-    resolve_rootfs_path(workspace_root, arch, rootfs)
+    resolve_rootfs_path(workspace_root, target_dir, arch, rootfs)
 }
 
-pub(crate) fn default_rootfs_path(workspace_root: &Path, arch: &str) -> anyhow::Result<PathBuf> {
+pub(crate) fn default_rootfs_path(
+    workspace_root: &Path,
+    target_dir: &Path,
+    arch: &str,
+) -> anyhow::Result<PathBuf> {
     let image_name = default_rootfs_image(arch)
         .ok_or_else(|| anyhow!("no managed rootfs image available for arch `{arch}`"))?;
-    rootfs_image_path(workspace_root, image_name)
+    rootfs_image_path(workspace_root, target_dir, image_name)
 }
 
 pub(crate) async fn ensure_rootfs_for_arch(
     workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
 ) -> anyhow::Result<PathBuf> {
     let image_name = default_rootfs_image(arch)
         .ok_or_else(|| anyhow!("no managed rootfs image available for arch `{arch}`"))?;
-    let storage = Storage::new_from_config(&ImageConfig::read_config(workspace_root)?).await?;
+    let storage =
+        Storage::new_from_config(&ImageConfig::read_config(workspace_root, target_dir)?).await?;
     storage
         .pull_rootfs_image(ImageSpecRef::parse(image_name))
         .await
@@ -226,6 +235,7 @@ pub(crate) async fn ensure_rootfs_for_arch(
 
 pub(crate) async fn ensure_managed_rootfs(
     workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
     path: &Path,
 ) -> anyhow::Result<()> {
@@ -233,7 +243,7 @@ pub(crate) async fn ensure_managed_rootfs(
         return Ok(());
     }
 
-    let Some(path) = resolve_managed_rootfs_path(workspace_root, path)? else {
+    let Some(path) = resolve_managed_rootfs_path(workspace_root, target_dir, path)? else {
         return Ok(());
     };
 
@@ -242,7 +252,8 @@ pub(crate) async fn ensure_managed_rootfs(
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow!("invalid managed rootfs path `{}`", path.display()))?;
     ensure_rootfs_image_name(image_name)?;
-    let storage = Storage::new_from_config(&ImageConfig::read_config(workspace_root)?).await?;
+    let storage =
+        Storage::new_from_config(&ImageConfig::read_config(workspace_root, target_dir)?).await?;
     // A managed rootfs that is not a registry image but already exists locally was
     // produced on-host (e.g. by a Starry app `prebuild.sh` that bakes its own
     // rootfs into the canonical image-storage path). Accept the prepared file
@@ -270,11 +281,12 @@ pub(crate) async fn ensure_managed_rootfs(
 
 pub(crate) async fn ensure_optional_managed_rootfs(
     workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
     path: Option<&Path>,
 ) -> anyhow::Result<()> {
     if let Some(path) = path {
-        ensure_managed_rootfs(workspace_root, arch, path).await?;
+        ensure_managed_rootfs(workspace_root, target_dir, arch, path).await?;
     }
     Ok(())
 }
@@ -462,9 +474,13 @@ fn unpack_archive(
         .with_context(|| format!("failed to extract into {}", extract_dir.display()))
 }
 
-fn rootfs_image_path(workspace_root: &Path, image_name: &str) -> anyhow::Result<PathBuf> {
+fn rootfs_image_path(
+    workspace_root: &Path,
+    target_dir: &Path,
+    image_name: &str,
+) -> anyhow::Result<PathBuf> {
     ensure_rootfs_image_name(image_name)?;
-    let config = ImageConfig::read_config(workspace_root)?;
+    let config = ImageConfig::read_config(workspace_root, target_dir)?;
     Ok(config.extract_dir.join(image_name))
 }
 

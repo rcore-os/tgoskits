@@ -49,6 +49,7 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
     }
     .context("failed to load cargo metadata")?;
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
+    let target_dir = metadata.target_directory.clone().into_std_path_buf();
     let all_packages = workspace_packages(&metadata);
     let packages = skip_unsupported_packages(resolve_requested_packages(
         args,
@@ -74,7 +75,7 @@ pub(crate) fn run_workspace_clippy_command(args: &crate::ClippyArgs) -> anyhow::
     );
 
     let mut runner = ProcessCargoRunner;
-    let report = match run_clippy_checks(&mut runner, &workspace_root, &checks) {
+    let report = match run_clippy_checks(&mut runner, &workspace_root, &target_dir, &checks) {
         Ok(report) => report,
         Err(err) => {
             print_clippy_timing(timer.elapsed());

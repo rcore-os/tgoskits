@@ -394,11 +394,26 @@ fn managed_rootfs_reference_resolves_to_configured_extract_dir() {
         extract_dir: workspace.path().join("working-rootfs"),
     };
     ImageConfig::write_config(workspace.path(), &config).unwrap();
-    let reference = PathBuf::from(format!("${{workspace}}/tmp/axbuild/rootfs/{image_name}"));
+    let target_dir = workspace.path().join("custom-target");
+    let reference = PathBuf::from(format!("${{workspace}}/target/axbuild/rootfs/{image_name}"));
 
-    let resolved = resolve_managed_rootfs_path(workspace.path(), &reference).unwrap();
+    let resolved = resolve_managed_rootfs_path(workspace.path(), &target_dir, &reference).unwrap();
 
     assert_eq!(resolved, Some(config.extract_dir.join(image_name)));
+}
+
+#[test]
+fn legacy_tmp_rootfs_reference_is_not_managed_implicitly() {
+    let workspace = tempdir().unwrap();
+    let target_dir = workspace.path().join("custom-target");
+    let reference = workspace
+        .path()
+        .join("tmp/axbuild/rootfs/rootfs-aarch64-busybox.img");
+
+    assert_eq!(
+        resolve_managed_rootfs_path(workspace.path(), &target_dir, &reference).unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -420,9 +435,13 @@ async fn ensure_rootfs_for_arch_uses_configured_direct_path() {
     };
     ImageConfig::write_config(workspace.path(), &config).unwrap();
 
-    let rootfs = ensure_rootfs_for_arch(workspace.path(), "loongarch64")
-        .await
-        .unwrap();
+    let rootfs = ensure_rootfs_for_arch(
+        workspace.path(),
+        &workspace.path().join("custom-target"),
+        "loongarch64",
+    )
+    .await
+    .unwrap();
 
     assert_eq!(rootfs, config.extract_dir.join(image_name));
     assert_eq!(fs::read(rootfs).unwrap(), b"rootfs");
@@ -439,10 +458,14 @@ async fn ensure_managed_rootfs_accepts_locally_prepared_non_registry_image() {
         extract_dir: workspace.path().join("working-rootfs"),
     };
     ImageConfig::write_config(workspace.path(), &config).unwrap();
-    let reference = workspace.path().join("tmp/axbuild/rootfs").join(image_name);
+    let target_dir = workspace.path().join("custom-target");
+    let reference = workspace
+        .path()
+        .join("target/axbuild/rootfs")
+        .join(image_name);
 
     assert!(
-        ensure_managed_rootfs(workspace.path(), "aarch64", &reference)
+        ensure_managed_rootfs(workspace.path(), &target_dir, "aarch64", &reference)
             .await
             .is_err()
     );
@@ -450,7 +473,7 @@ async fn ensure_managed_rootfs_accepts_locally_prepared_non_registry_image() {
     let prepared = config.extract_dir.join(image_name);
     fs::create_dir_all(&config.extract_dir).unwrap();
     fs::write(&prepared, b"prepared-app-rootfs").unwrap();
-    ensure_managed_rootfs(workspace.path(), "aarch64", &reference)
+    ensure_managed_rootfs(workspace.path(), &target_dir, "aarch64", &reference)
         .await
         .expect("locally prepared non-registry rootfs should be accepted");
 }

@@ -25,7 +25,7 @@ entry_point = 0x8020_0000
 # The location of image: "memory" | "fs". Memory embeds the image at build time.
 image_location = "memory"
 # The file path of the kernel image (build-time only for memory images).
-kernel_path = "${workspace}/tmp/axbuild/images/qemu-aarch64/linux/linux-qemu"
+kernel_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/linux-qemu"
 # The load address of the kernel image.
 kernel_load_addr = 0x8020_0000
 # The load address of the device tree blob (DTB).

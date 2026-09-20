@@ -15,7 +15,7 @@ mysql_cache_dir="${MYSQL_CACHE_DIR:-$workspace/target/mysql}"
 mysql_rootfs_size="${MYSQL_ROOTFS_SIZE:-5G}"
 rootfs_release="${MYSQL_ROOTFS_RELEASE:-v0.0.5}"
 base_rootfs_archive_name="rootfs-${arch}-debian.img.tar.xz"
-base_rootfs_archive="${MYSQL_BASE_ROOTFS_ARCHIVE:-$workspace/tmp/axbuild/rootfs/$base_rootfs_archive_name}"
+base_rootfs_archive="${MYSQL_BASE_ROOTFS_ARCHIVE:-$workspace/target/axbuild/rootfs/$base_rootfs_archive_name}"
 base_rootfs_archive_url="${MYSQL_BASE_ROOTFS_ARCHIVE_URL:-https://github.com/rcore-os/tgosimages/releases/download/$rootfs_release/$base_rootfs_archive_name}"
 base_rootfs="${MYSQL_BASE_ROOTFS:-}"
 apt_lists_ready=0
@@ -221,7 +221,7 @@ prepare_mysql_rootfs_image() {
         return
     fi
 
-    fallback="$workspace/tmp/axbuild/rootfs/rootfs-${arch}-debian.img.tar.xz"
+    fallback="$workspace/target/axbuild/rootfs/rootfs-${arch}-debian.img.tar.xz"
     echo "error: Debian base rootfs archive not found: $base_rootfs_archive" >&2
     echo "error: expected archive path: $fallback" >&2
     echo "error: download URL: $base_rootfs_archive_url" >&2

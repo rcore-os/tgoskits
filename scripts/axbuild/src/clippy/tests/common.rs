@@ -210,15 +210,17 @@ impl FakeCargoRunner {
 }
 
 impl CargoRunner for FakeCargoRunner {
-    fn run_clippy(&mut self, workspace_root: &Path, check: &ClippyCheck) -> anyhow::Result<bool> {
+    fn run_clippy(
+        &mut self,
+        workspace_root: &Path,
+        target_dir: &Path,
+        check: &ClippyCheck,
+    ) -> anyhow::Result<bool> {
         self.invocations
             .push((workspace_root.to_path_buf(), check.clone()));
         if let Some(report) = &self.future_incompat_report {
-            std::fs::create_dir_all(workspace_root.join("target"))?;
-            std::fs::write(
-                workspace_root.join("target/.future-incompat-report.json"),
-                report,
-            )?;
+            std::fs::create_dir_all(target_dir)?;
+            std::fs::write(target_dir.join(".future-incompat-report.json"), report)?;
         }
         Ok(*self.results.get(check).unwrap_or(&true))
     }

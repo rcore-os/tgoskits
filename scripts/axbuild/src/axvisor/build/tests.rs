@@ -7,6 +7,10 @@ use tempfile::tempdir;
 
 use super::*;
 
+fn workspace() -> WorkspaceContext {
+    WorkspaceContext::discover(None).unwrap()
+}
+
 fn write_board(axvisor_dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = axvisor_dir
         .join("configs/board")
@@ -71,18 +75,21 @@ log = "Info"
     )
     .unwrap();
 
-    let cargo = load_cargo_config(&ResolvedAxvisorRequest {
-        package: AXVISOR_PACKAGE.to_string(),
-        axvisor_dir: root.path().join("os/axvisor"),
-        arch: "aarch64".to_string(),
-        target: "aarch64-unknown-none-softfloat".to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: config_path,
-        qemu_config: None,
-        uboot_config: None,
-        vmconfigs: vmconfigs.clone(),
-    })
+    let cargo = load_cargo_config(
+        &ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "aarch64".to_string(),
+            target: "aarch64-unknown-none-softfloat".to_string(),
+            smp: None,
+            debug: false,
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vmconfigs.clone(),
+        },
+        &workspace(),
+    )
     .unwrap();
 
     assert_eq!(cargo.package, AXVISOR_PACKAGE);
@@ -130,7 +137,11 @@ log = "Info"
     )
     .unwrap();
 
-    let cargo = load_cargo_config(&request(config_path, "x86_64", "x86_64-unknown-none")).unwrap();
+    let cargo = load_cargo_config(
+        &request(config_path, "x86_64", "x86_64-unknown-none"),
+        &workspace(),
+    )
+    .unwrap();
 
     assert!(!cargo.features.contains(&"vmx".to_string()));
     assert!(!cargo.features.contains(&"svm".to_string()));
@@ -152,8 +163,11 @@ log = "Info"
         )
         .unwrap();
 
-        let err =
-            load_cargo_config(&request(config_path, "x86_64", "x86_64-unknown-none")).unwrap_err();
+        let err = load_cargo_config(
+            &request(config_path, "x86_64", "x86_64-unknown-none"),
+            &workspace(),
+        )
+        .unwrap_err();
 
         assert!(err.to_string().contains("selected from CPU capabilities"));
         assert!(err.to_string().contains(&format!("`{feature}`")));
@@ -261,18 +275,21 @@ vm_configs = []
 "#,
     );
 
-    let cargo = load_cargo_config(&ResolvedAxvisorRequest {
-        package: AXVISOR_PACKAGE.to_string(),
-        axvisor_dir: root.path().join("os/axvisor"),
-        arch: "x86_64".to_string(),
-        target: "x86_64-unknown-none".to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: path.clone(),
-        qemu_config: None,
-        uboot_config: None,
-        vmconfigs: vec![],
-    })
+    let cargo = load_cargo_config(
+        &ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "x86_64".to_string(),
+            target: "x86_64-unknown-none".to_string(),
+            smp: None,
+            debug: false,
+            build_info_path: path.clone(),
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        },
+        &workspace(),
+    )
     .unwrap();
 
     assert!(path.exists());
@@ -303,18 +320,21 @@ log = "Info"
     )
     .unwrap();
 
-    let err = load_cargo_config(&ResolvedAxvisorRequest {
-        package: AXVISOR_PACKAGE.to_string(),
-        axvisor_dir: root.path().join("os/axvisor"),
-        arch: "loongarch64".to_string(),
-        target: "loongarch64-unknown-none-softfloat".to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: config_path,
-        qemu_config: None,
-        uboot_config: None,
-        vmconfigs: vec![],
-    })
+    let err = load_cargo_config(
+        &ResolvedAxvisorRequest {
+            package: AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "loongarch64".to_string(),
+            target: "loongarch64-unknown-none-softfloat".to_string(),
+            smp: None,
+            debug: false,
+            build_info_path: config_path,
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        },
+        &workspace(),
+    )
     .unwrap_err();
 
     assert!(err.to_string().contains("dynamic platform features"));
@@ -347,6 +367,7 @@ log = "Info"
             uboot_config: None,
             vmconfigs: vec![],
         },
+        &workspace(),
         &["stack-protector".to_string()],
     )
     .unwrap();

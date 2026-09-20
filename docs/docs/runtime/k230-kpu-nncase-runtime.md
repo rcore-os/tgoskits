@@ -395,7 +395,7 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
 -smp 2
 -m 2G
 -dtb os/StarryOS/configs/board/k230-canmv.dtb
--drive if=sd,format=raw,file=tmp/axbuild/rootfs/rootfs-riscv64-alpine.img
+-drive if=sd,format=raw,file=target/axbuild/rootfs/rootfs-riscv64-alpine.img
 timeout = 300
 
 [[shell_check_steps]]

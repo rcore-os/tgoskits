@@ -41,7 +41,7 @@ rootfs_offline() {
 rootfs_online() {
     echo "=== Prepare online rootfs ==="
     local args=()
-    args+=(--output-rootfs "tmp/axbuild/rootfs/rootfs-x86_64-deepseek-online.img")
+    args+=(--output-rootfs "target/axbuild/rootfs/rootfs-x86_64-deepseek-online.img")
     if [[ -n "$api_key" ]]; then
         args+=(--api-key "$api_key")
     fi

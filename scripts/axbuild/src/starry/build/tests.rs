@@ -8,9 +8,13 @@ use tempfile::tempdir;
 
 use super::*;
 use crate::{
-    context::{ResolvedStarryRequest, STARRY_PACKAGE},
+    context::{ResolvedStarryRequest, STARRY_PACKAGE, WorkspaceContext},
     starry::build::LogLevel,
 };
+
+fn workspace() -> WorkspaceContext {
+    WorkspaceContext::discover(None).unwrap()
+}
 
 fn write_minimal_package_manifest(path: &Path, name: &str) {
     let src_dir = path.parent().unwrap().join("src");
@@ -312,7 +316,7 @@ fn load_cargo_config_rejects_removed_dynamic_platform_feature() {
         max_cpu_num: Some(8),
     });
 
-    let err = load_cargo_config(&request).unwrap_err();
+    let err = load_cargo_config(&request, &workspace()).unwrap_err();
 
     assert!(
         err.to_string()
@@ -410,7 +414,7 @@ fn load_cargo_config_uses_shared_bare_target_for_dynamic_platform_request() {
         ..default_starry_build_info()
     });
 
-    let cargo = load_cargo_config(&request).unwrap();
+    let cargo = load_cargo_config(&request, &workspace()).unwrap();
 
     assert_eq!(cargo.target, format!("scripts/targets/bare/{target}.json"));
     assert_eq!(cargo.env.get("AX_TARGET"), Some(&target.to_string()));
@@ -425,7 +429,7 @@ fn load_cargo_config_keeps_cpu_limit_without_injecting_smp_feature() {
         request.smp = requested_smp;
         request.build_info_override = Some(default_starry_build_info());
 
-        let cargo = load_cargo_config(&request).unwrap();
+        let cargo = load_cargo_config(&request, &workspace()).unwrap();
 
         assert!(!cargo.features.contains(&"smp".to_string()));
         match requested_smp {
@@ -441,7 +445,7 @@ fn load_cargo_config_uses_bare_no_std_pie_contract() {
     let mut request = request(PathBuf::from("/tmp/.build.toml"), "aarch64", target);
     request.build_info_override = Some(default_starry_build_info());
 
-    let cargo = load_cargo_config(&request).unwrap();
+    let cargo = load_cargo_config(&request, &workspace()).unwrap();
     let args = cargo.args.join("\n");
 
     assert_eq!(cargo.target, format!("scripts/targets/bare/{target}.json"));
@@ -493,7 +497,7 @@ fn load_cargo_config_applies_arch_specific_bare_pie_flags() {
         let mut request = request(PathBuf::from("/tmp/.build.toml"), arch, target);
         request.build_info_override = Some(default_starry_build_info());
 
-        let cargo = load_cargo_config(&request).unwrap();
+        let cargo = load_cargo_config(&request, &workspace()).unwrap();
         assert!(cargo.args.join("\n").contains(expected_flag));
     }
 }
@@ -507,7 +511,7 @@ fn load_cargo_config_denies_warnings() {
     );
     request.build_info_override = Some(default_starry_build_info());
 
-    let cargo = load_cargo_config(&request).unwrap();
+    let cargo = load_cargo_config(&request, &workspace()).unwrap();
 
     assert!(cargo.args.join("\n").contains("\"-D\", \"warnings\""));
 }
@@ -522,7 +526,7 @@ fn load_cargo_config_rejects_std_compat_for_freestanding_kernel() {
             ..default_starry_build_info()
         });
 
-        let err = load_cargo_config(&request).unwrap_err();
+        let err = load_cargo_config(&request, &workspace()).unwrap_err();
         assert!(err.to_string().contains("freestanding no_std build"));
     }
 }

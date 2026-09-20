@@ -2,8 +2,10 @@ use super::*;
 
 #[test]
 fn std_linker_wrapper_filters_crt_and_replaces_fixed_libs() {
-    let fake_dir = std_fake_lib_dir("x86_64-unknown-linux-musl").unwrap();
-    let wrapper = std_linker_wrapper_path("x86_64-unknown-linux-musl", &fake_dir).unwrap();
+    let axbuild_dir = repo_axbuild_dir();
+    let fake_dir = std_fake_lib_dir(&axbuild_dir, "x86_64-unknown-linux-musl").unwrap();
+    let wrapper =
+        std_linker_wrapper_path(&axbuild_dir, "x86_64-unknown-linux-musl", &fake_dir).unwrap();
     let wrapper = fs::read_to_string(wrapper).unwrap();
 
     assert!(wrapper.contains("rust-lld"));

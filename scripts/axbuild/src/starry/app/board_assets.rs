@@ -1,24 +1,29 @@
 use std::path::{Path, PathBuf};
 
 use super::StarryAppBoardCase;
-use crate::starry::test::{PreparedBoardSessionAssets, prepare_board_session_assets};
+use crate::starry::test::{
+    BoardSessionAssetRequest, PreparedBoardSessionAssets, prepare_board_session_assets,
+};
 
 pub(in crate::starry) async fn prepare_app_board_session_assets(
     workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
     target: &str,
     case: &StarryAppBoardCase,
     declared_session_files: &[PathBuf],
 ) -> anyhow::Result<Option<PreparedBoardSessionAssets>> {
-    prepare_board_session_assets(
+    let case_name = format!("app/{}", case.name);
+    prepare_board_session_assets(BoardSessionAssetRequest {
         workspace_root,
+        target_dir,
         arch,
         target,
-        &format!("app/{}", case.name),
-        &case.case_dir,
-        &case.board_config_path,
+        case_name: &case_name,
+        case_dir: &case.case_dir,
+        board_config_path: &case.board_config_path,
         declared_session_files,
-    )
+    })
     .await
 }
 
@@ -44,9 +49,15 @@ mod tests {
             target: "aarch64-unknown-none-softfloat".into(),
             case_dir,
         };
-        let result =
-            prepare_app_board_session_assets(root.path(), "aarch64", &case.target, &case, &[])
-                .await;
+        let result = prepare_app_board_session_assets(
+            root.path(),
+            &root.path().join("target"),
+            "aarch64",
+            &case.target,
+            &case,
+            &[],
+        )
+        .await;
         let error = result.expect_err("a board app must not silently ignore its C assets");
         assert!(error.to_string().contains("multiple asset pipelines"));
     }

@@ -19,7 +19,7 @@
 #   aarch64: qemu-aarch64-static, debootstrap (pacman -S debootstrap qemu-user-static-binfmt)
 #
 # Output:
-#   tmp/axbuild/rootfs/rootfs-<arch>-debian-selfhost.img
+#   target/axbuild/rootfs/rootfs-<arch>-debian-selfhost.img
 #
 # Example:
 #   sudo ./scripts/prepare-selfhost-rootfs.sh --arch x86_64
@@ -63,7 +63,7 @@ done
 
 # ─── Architecture mapping ───────────────────────────────────────────────────────
 
-ROOTFS_DIR="tmp/axbuild/rootfs"
+ROOTFS_DIR="target/axbuild/rootfs"
 mkdir -p "$ROOTFS_DIR"
 
 case "$ARCH" in

@@ -40,6 +40,7 @@ struct QemuAppConfig {
 
 pub(crate) async fn prepare_qemu_app_case(
     workspace_root: &Path,
+    target_dir: &Path,
     app: &StarryAppCase,
     arch: Option<&str>,
     explicit_qemu_config: Option<&Path>,
@@ -63,10 +64,11 @@ pub(crate) async fn prepare_qemu_app_case(
     let build_config_path = discover_optional_build_config(&app.case_dir, &target)?;
     let fields = qemu_config_path
         .as_deref()
-        .map(|path| load_qemu_app_case_fields(workspace_root, app, path))
+        .map(|path| load_qemu_app_case_fields(workspace_root, target_dir, app, path))
         .transpose()?;
     let rootfs = prepare_qemu_app_rootfs(
         workspace_root,
+        target_dir,
         app,
         &arch,
         &target,
@@ -134,6 +136,7 @@ pub(crate) fn app_qemu_test_case(
 
 fn load_qemu_app_case_fields(
     workspace_root: &Path,
+    target_dir: &Path,
     app: &StarryAppCase,
     qemu_config_path: &Path,
 ) -> anyhow::Result<LoadedQemuAppCaseFields> {
@@ -145,7 +148,7 @@ fn load_qemu_app_case_fields(
         "Starry app",
         true,
     )?;
-    let rootfs_path = qemu_app_config_rootfs_path(workspace_root, qemu_config_path)?;
+    let rootfs_path = qemu_app_config_rootfs_path(workspace_root, target_dir, qemu_config_path)?;
     let rootfs_preparation = qemu_app_rootfs_preparation(app, qemu_config_path)?;
 
     Ok(LoadedQemuAppCaseFields {
@@ -216,12 +219,15 @@ fn qemu_app_rootfs_preparation(
 
 fn qemu_app_config_rootfs_path(
     workspace_root: &Path,
+    target_dir: &Path,
     qemu_config_path: &Path,
 ) -> anyhow::Result<Option<PathBuf>> {
     let qemu = read_qemu_app_config(qemu_config_path)?;
-    Ok(qemu_app_managed_rootfs_paths(workspace_root, &qemu)?
-        .into_iter()
-        .next())
+    Ok(
+        qemu_app_managed_rootfs_paths(workspace_root, target_dir, &qemu)?
+            .into_iter()
+            .next(),
+    )
 }
 
 fn read_qemu_app_config(qemu_config_path: &Path) -> anyhow::Result<ostool::run::qemu::QemuConfig> {
@@ -233,12 +239,14 @@ fn read_qemu_app_config(qemu_config_path: &Path) -> anyhow::Result<ostool::run::
 
 fn qemu_app_managed_rootfs_paths(
     workspace_root: &Path,
+    target_dir: &Path,
     qemu: &ostool::run::qemu::QemuConfig,
 ) -> anyhow::Result<Vec<PathBuf>> {
     crate::rootfs::qemu::drive_file_paths(qemu)
         .into_iter()
         .filter_map(|path| {
-            crate::image::storage::resolve_managed_rootfs_path(workspace_root, &path).transpose()
+            crate::image::storage::resolve_managed_rootfs_path(workspace_root, target_dir, &path)
+                .transpose()
         })
         .collect()
 }

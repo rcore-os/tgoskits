@@ -122,19 +122,21 @@ fn run_fat32_creation_command(command: &mut StdCommand) -> anyhow::Result<()> {
 /// Resolves an explicit ArceOS rootfs CLI value into a concrete path.
 pub(crate) fn resolve_explicit_rootfs(
     workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
     rootfs: PathBuf,
 ) -> anyhow::Result<PathBuf> {
-    crate::image::storage::resolve_rootfs_path(workspace_root, arch, rootfs)
+    crate::image::storage::resolve_rootfs_path(workspace_root, target_dir, arch, rootfs)
 }
 
 /// Ensures a managed ArceOS rootfs image is available before launch.
 pub(crate) async fn ensure_rootfs_ready(
     workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
     rootfs: &Path,
 ) -> anyhow::Result<()> {
-    crate::image::storage::ensure_managed_rootfs(workspace_root, arch, rootfs).await
+    crate::image::storage::ensure_managed_rootfs(workspace_root, target_dir, arch, rootfs).await
 }
 
 /// Patches a QEMU config so it boots with the selected ArceOS rootfs image.
@@ -154,10 +156,21 @@ pub(super) async fn qemu_with_explicit_rootfs(
     request: ResolvedBuildRequest,
     rootfs: PathBuf,
 ) -> anyhow::Result<()> {
-    let rootfs = resolve_explicit_rootfs(arceos.app.workspace_root(), &request.arch, rootfs)?;
-    ensure_rootfs_ready(arceos.app.workspace_root(), &request.arch, &rootfs).await?;
+    let rootfs = resolve_explicit_rootfs(
+        arceos.app.workspace_root(),
+        arceos.app.target_dir(),
+        &request.arch,
+        rootfs,
+    )?;
+    ensure_rootfs_ready(
+        arceos.app.workspace_root(),
+        arceos.app.target_dir(),
+        &request.arch,
+        &rootfs,
+    )
+    .await?;
     arceos.app.set_debug_mode(request.debug)?;
-    let cargo = build::load_cargo_config(&request)?;
+    let cargo = build::load_cargo_config(&request, arceos.app.workspace_context())?;
     let mut qemu = arceos
         .load_qemu_config(&request, &cargo)
         .await?

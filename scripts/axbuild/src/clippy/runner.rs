@@ -11,6 +11,7 @@ use crate::support::process::run_cargo_status_with_env;
 pub(super) fn run_clippy_checks<R: CargoRunner>(
     runner: &mut R,
     workspace_root: &Path,
+    target_dir: &Path,
     checks: &[ClippyCheck],
 ) -> anyhow::Result<ClippyRunReport> {
     let mut report = planned_clippy_report(checks);
@@ -34,12 +35,12 @@ pub(super) fn run_clippy_checks<R: CargoRunner>(
             .is_some_and(|target| target.starts_with("aarch64-"))
         {
             Some(crate::build::start_future_incompat_report_session(
-                &workspace_root.join("target"),
+                target_dir,
             )?)
         } else {
             None
         };
-        let cargo_result = runner.run_clippy(workspace_root, check);
+        let cargo_result = runner.run_clippy(workspace_root, target_dir, check);
         let success =
             crate::build::finish_future_incompat_report_status(report_session, cargo_result)?;
 
@@ -60,16 +61,26 @@ pub(super) fn run_clippy_checks<R: CargoRunner>(
 }
 
 pub(super) trait CargoRunner {
-    fn run_clippy(&mut self, workspace_root: &Path, check: &ClippyCheck) -> anyhow::Result<bool>;
+    fn run_clippy(
+        &mut self,
+        workspace_root: &Path,
+        target_dir: &Path,
+        check: &ClippyCheck,
+    ) -> anyhow::Result<bool>;
 }
 
 pub(super) struct ProcessCargoRunner;
 
 impl CargoRunner for ProcessCargoRunner {
-    fn run_clippy(&mut self, workspace_root: &Path, check: &ClippyCheck) -> anyhow::Result<bool> {
+    fn run_clippy(
+        &mut self,
+        workspace_root: &Path,
+        target_dir: &Path,
+        check: &ClippyCheck,
+    ) -> anyhow::Result<bool> {
         let invocation = check.cargo_invocation();
         let mut env = invocation.env;
-        let target_dir = workspace_root.join("target").display().to_string();
+        let target_dir = target_dir.display().to_string();
         if let Some((_, value)) = env.iter_mut().find(|(key, _)| key == "CARGO_TARGET_DIR") {
             *value = target_dir;
         } else {

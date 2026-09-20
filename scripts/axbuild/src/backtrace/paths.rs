@@ -1,28 +1,24 @@
 use std::path::{Path, PathBuf};
 
-/// Resolved ELF path for an ArceOS Rust package built via the workspace `target/` dir.
+/// Resolved ELF path for an ArceOS Rust package built via the active Cargo target dir.
 pub(crate) fn arceos_rust_elf_path(
-    workspace_root: &Path,
+    target_dir: &Path,
     target: &str,
     package: &str,
     debug: bool,
 ) -> PathBuf {
     let profile = if debug { "debug" } else { "release" };
-    workspace_root
-        .join("target")
-        .join(target)
-        .join(profile)
-        .join(package)
+    target_dir.join(target).join(profile).join(package)
 }
 
-/// Resolved ELF path for an ArceOS std test package built via the workspace `target/` dir.
+/// Resolved ELF path for an ArceOS std test package built via the active Cargo target dir.
 pub(crate) fn std_test_elf_path(
-    workspace_root: &Path,
+    target_dir: &Path,
     target: &str,
     package: &str,
     debug: bool,
 ) -> PathBuf {
-    arceos_rust_elf_path(workspace_root, std_test_target_dir(target), package, debug)
+    arceos_rust_elf_path(target_dir, std_test_target_dir(target), package, debug)
 }
 
 fn std_test_target_dir(target: &str) -> &str {

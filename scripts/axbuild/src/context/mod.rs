@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use log::info;
 use ostool::{
     board::{self as ostool_board, BoardRunRequest, RunBoardOptions, config::BoardRunConfig},
@@ -48,7 +48,7 @@ pub use types::{
     StarryUbootSnapshot,
 };
 pub(crate) use workspace::{
-    axbuild_tmp_dir, find_workspace_root, workspace_manifest_path,
+    WorkspaceContext, axbuild_tmp_dir, resolve_axbuild_artifact_path, workspace_manifest_path,
     workspace_member_dir as resolve_workspace_member_dir, workspace_metadata_root_manifest,
     workspace_metadata_root_manifest_with_deps, workspace_root_path,
 };
@@ -76,7 +76,7 @@ fn snapshot_store_disabled() -> bool {
 pub struct AppContext {
     invocation: Invocation,
     build_config_path: Option<PathBuf>,
-    root: PathBuf,
+    workspace: WorkspaceContext,
     member_dirs: HashMap<String, PathBuf>,
     original_path: OsString,
     debug: bool,
@@ -84,17 +84,25 @@ pub struct AppContext {
 
 impl AppContext {
     pub(crate) fn new() -> anyhow::Result<Self> {
-        let workspace_root = find_workspace_root();
-        crate::support::logging::init_logging(&workspace_root)?;
+        Self::new_with_target_dir(None)
+    }
 
-        info!("Workspace root: {}", workspace_root.display());
+    pub(crate) fn new_with_target_dir(target_dir: Option<&Path>) -> anyhow::Result<Self> {
+        let workspace = WorkspaceContext::discover(target_dir)?;
+        crate::support::logging::init_logging(workspace.root())?;
 
-        let invocation = Self::new_invocation(&workspace_root, false)
+        info!("Workspace root: {}", workspace.root().display());
+        info!(
+            "Cargo target directory: {}",
+            workspace.target_dir().display()
+        );
+
+        let invocation = Self::new_invocation(&workspace, false)
             .context("failed to initialize ostool invocation")?;
         Ok(Self {
             invocation,
             build_config_path: None,
-            root: workspace_root,
+            workspace,
             member_dirs: HashMap::new(),
             original_path: env::var_os("PATH").unwrap_or_default(),
             debug: false,
@@ -102,7 +110,19 @@ impl AppContext {
     }
 
     pub(crate) fn workspace_root(&self) -> &Path {
-        &self.root
+        self.workspace.root()
+    }
+
+    pub(crate) fn workspace_metadata(&self) -> &cargo_metadata::Metadata {
+        self.workspace.metadata()
+    }
+
+    pub(crate) fn target_dir(&self) -> &Path {
+        self.workspace.target_dir()
+    }
+
+    pub(crate) fn workspace_context(&self) -> &WorkspaceContext {
+        &self.workspace
     }
 
     pub(crate) fn workspace_member_dir(&mut self, package: &str) -> anyhow::Result<&Path> {
@@ -126,6 +146,7 @@ impl AppContext {
         cargo: Cargo,
         build_config_path: PathBuf,
     ) -> anyhow::Result<ostool_build::CargoBuildOutput> {
+        reject_raw_target_dir_args(&cargo)?;
         self.set_build_config_path(build_config_path);
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
         let build_config_path = self.build_config_path.clone();
@@ -167,6 +188,7 @@ impl AppContext {
         build_config_path: PathBuf,
         qemu: Option<QemuConfig>,
     ) -> anyhow::Result<()> {
+        reject_raw_target_dir_args(&cargo)?;
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
         let _path_guard = self.scoped_qemu_path(&cargo)?;
         self.set_build_config_path(build_config_path);
@@ -343,6 +365,7 @@ impl AppContext {
         build_config_path: PathBuf,
         uboot: Option<UbootConfig>,
     ) -> anyhow::Result<()> {
+        reject_raw_target_dir_args(&cargo)?;
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.set_build_config_path(build_config_path);
         let build_config_path = self.build_config_path.clone();
@@ -372,6 +395,7 @@ impl AppContext {
         board_config: BoardRunConfig,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
+        reject_raw_target_dir_args(&cargo)?;
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.set_build_config_path(build_config_path);
         let build_config_path = self.build_config_path.clone();
@@ -458,7 +482,7 @@ impl AppContext {
             return Ok(());
         }
 
-        self.invocation = Self::new_invocation(&self.root, debug)
+        self.invocation = Self::new_invocation(&self.workspace, debug)
             .context("failed to reinitialize ostool invocation")?;
         self.debug = debug;
 
@@ -470,6 +494,7 @@ impl AppContext {
         cargo: &Cargo,
         path: &Path,
     ) -> anyhow::Result<QemuConfig> {
+        reject_raw_target_dir_args(cargo)?;
         ostool_qemu::read_config_from_path_for_cargo(&self.invocation, cargo, path).await
     }
 
@@ -478,6 +503,7 @@ impl AppContext {
         cargo: &Cargo,
         path: &Path,
     ) -> anyhow::Result<UbootConfig> {
+        reject_raw_target_dir_args(cargo)?;
         ostool_uboot::read_config_from_path_for_cargo(&self.invocation, cargo, path).await
     }
 
@@ -485,6 +511,7 @@ impl AppContext {
         &self,
         cargo: &Cargo,
     ) -> anyhow::Result<UbootConfig> {
+        reject_raw_target_dir_args(cargo)?;
         ostool_uboot::ensure_config_for_cargo(&self.invocation, cargo).await
     }
 
@@ -493,6 +520,7 @@ impl AppContext {
         cargo: &Cargo,
         path: &Path,
     ) -> anyhow::Result<BoardRunConfig> {
+        reject_raw_target_dir_args(cargo)?;
         ostool_board::read_run_config_from_path_for_cargo(&self.invocation, cargo, path).await
     }
 
@@ -501,6 +529,7 @@ impl AppContext {
         cargo: &Cargo,
         dir: &Path,
     ) -> anyhow::Result<BoardRunConfig> {
+        reject_raw_target_dir_args(cargo)?;
         ostool_board::ensure_run_config_in_dir_for_cargo(&self.invocation, cargo, dir).await
     }
 
@@ -509,6 +538,7 @@ impl AppContext {
     }
 
     fn activate_cargo_build_context(&mut self, cargo: &Cargo) -> anyhow::Result<()> {
+        reject_raw_target_dir_args(cargo)?;
         let build_config_path = self.build_config_path.clone();
         ostool_build::activate_build_config(
             &mut self.invocation,
@@ -519,10 +549,10 @@ impl AppContext {
         )
     }
 
-    fn new_invocation(workspace_root: &Path, debug: bool) -> anyhow::Result<Invocation> {
+    fn new_invocation(workspace: &WorkspaceContext, debug: bool) -> anyhow::Result<Invocation> {
         Invocation::new(InvocationOptions::new(
-            Some(workspace_root.join("Cargo.toml")),
-            None,
+            Some(workspace.root().join("Cargo.toml")),
+            Some(workspace.target_dir().to_path_buf()),
             None,
             debug,
         ))
@@ -536,6 +566,22 @@ impl AppContext {
         }
         Ok(guard)
     }
+}
+
+pub(crate) fn reject_raw_target_dir_args(cargo: &Cargo) -> anyhow::Result<()> {
+    if cargo
+        .args
+        .iter()
+        .take_while(|argument| argument.as_str() != "--")
+        .any(|argument| argument == "--target-dir" || argument.starts_with("--target-dir="))
+    {
+        bail!(
+            "Cargo arguments for package `{}` contain a raw `--target-dir`; use the typed command \
+             option when available or configure Cargo's target directory instead",
+            cargo.package
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn board_run_request(

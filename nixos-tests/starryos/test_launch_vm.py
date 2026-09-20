@@ -28,7 +28,7 @@ args = [
   "q35",
   "-nographic",
   "-drive",
-  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-nixos.img",
+  "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-x86_64-nixos.img",
 ]
 uefi = true
 to_bin = true

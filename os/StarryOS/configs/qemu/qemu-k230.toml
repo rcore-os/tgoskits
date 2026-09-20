@@ -9,7 +9,7 @@ args = [
   "-dtb",
   "${workspace}/os/StarryOS/configs/board/k230-canmv.dtb",
   "-drive",
-  "if=sd,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+  "if=sd,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-riscv64-alpine.img",
 ]
 uefi = false
 to_bin = true

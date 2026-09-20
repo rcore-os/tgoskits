@@ -20,15 +20,30 @@ pub(in crate::starry) struct PreparedBoardSessionAssets {
     pub(crate) relative_paths: Vec<PathBuf>,
 }
 
+pub(in crate::starry) struct BoardSessionAssetRequest<'a> {
+    pub(crate) workspace_root: &'a Path,
+    pub(crate) target_dir: &'a Path,
+    pub(crate) arch: &'a str,
+    pub(crate) target: &'a str,
+    pub(crate) case_name: &'a str,
+    pub(crate) case_dir: &'a Path,
+    pub(crate) board_config_path: &'a Path,
+    pub(crate) declared_session_files: &'a [PathBuf],
+}
+
 pub(crate) async fn prepare_board_session_assets(
-    workspace_root: &Path,
-    arch: &str,
-    target: &str,
-    case_name: &str,
-    case_dir: &Path,
-    board_config_path: &Path,
-    declared_session_files: &[PathBuf],
+    request: BoardSessionAssetRequest<'_>,
 ) -> anyhow::Result<Option<PreparedBoardSessionAssets>> {
+    let BoardSessionAssetRequest {
+        workspace_root,
+        target_dir,
+        arch,
+        target,
+        case_name,
+        case_dir,
+        board_config_path,
+        declared_session_files,
+    } = request;
     let case = TestQemuCase {
         name: case_name.to_string(),
         display_name: case_name.to_string(),
@@ -52,8 +67,9 @@ pub(crate) async fn prepare_board_session_assets(
     };
 
     let rootfs =
-        crate::starry::rootfs::ensure_rootfs_in_tmp_dir(workspace_root, arch, target).await?;
-    let workspace_root = workspace_root.to_path_buf();
+        crate::starry::rootfs::ensure_rootfs_in_tmp_dir(workspace_root, target_dir, arch, target)
+            .await?;
+    let target_dir = target_dir.to_path_buf();
     let arch = arch.to_string();
     let target = target.to_string();
     let case_name = case_name.to_string();
@@ -61,7 +77,7 @@ pub(crate) async fn prepare_board_session_assets(
     let declared_session_files = declared_session_files.to_vec();
 
     let assets = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let layout = board_case_asset_layout(&workspace_root, &target, &case_name)?;
+        let layout = board_case_asset_layout(&target_dir, &target, &case_name)?;
         prepare_overlay(&arch, &case, &rootfs, &layout, &starry_case_asset_config())?;
         copy_declared_session_files(&case_dir, &layout.overlay_dir, &declared_session_files)?;
         let relative_paths = collect_upload_paths(&layout.overlay_dir)?;

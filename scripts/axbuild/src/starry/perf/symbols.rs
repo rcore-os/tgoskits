@@ -1,7 +1,4 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::Path};
 
 use anyhow::Context;
 use object::{Object, ObjectSection};
@@ -16,13 +13,6 @@ pub(super) struct AddressRange {
 pub(super) struct KernelTextRange {
     pub(super) virt: AddressRange,
     pub(super) phys: Option<AddressRange>,
-}
-
-pub(super) fn kernel_bin_path(root: &Path, target: &str, debug: bool) -> PathBuf {
-    root.join("target")
-        .join(target)
-        .join(if debug { "debug" } else { "release" })
-        .join("starryos.bin")
 }
 
 pub(super) fn detect_kernel_text_range(elf: &Path) -> anyhow::Result<Option<KernelTextRange>> {

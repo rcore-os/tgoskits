@@ -35,7 +35,7 @@ fn package_failures_abort_remaining_checks() {
         (checks[2].clone(), true),
     ]);
 
-    let err = run_clippy_checks(&mut runner, &root, &checks).unwrap_err();
+    let err = run_clippy_checks(&mut runner, &root, &root.join("target"), &checks).unwrap_err();
 
     assert_eq!(
         err.to_string(),
@@ -73,7 +73,13 @@ fn aarch64_clippy_rejects_unapproved_current_future_incompat_report() {
     let mut runner =
         FakeCargoRunner::new(&[(check.clone(), true)]).with_future_incompat_report(report);
 
-    let error = run_clippy_checks(&mut runner, root.path(), &[check]).unwrap_err();
+    let error = run_clippy_checks(
+        &mut runner,
+        root.path(),
+        &root.path().join("target"),
+        &[check],
+    )
+    .unwrap_err();
 
     assert!(
         format!("{error:#}").contains("unapproved future-incompatible package"),

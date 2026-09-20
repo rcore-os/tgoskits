@@ -16,7 +16,7 @@ from typing import NamedTuple, Sequence
 
 MANAGED_ROOTFS = (
     "id=disk0,if=none,format=raw,"
-    "file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-nixos.img"
+    "file=${workspace}/target/axbuild/rootfs/rootfs-x86_64-nixos.img"
 )
 
 

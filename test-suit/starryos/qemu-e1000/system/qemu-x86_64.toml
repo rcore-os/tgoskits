@@ -9,7 +9,7 @@ args = [
     "-device",
     "nvme,serial=e1000-napi,drive=nvm,max_ioqpairs=64,msix_qsize=65",
     "-drive",
-    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "id=nvm,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-x86_64-alpine.img",
     "-device",
     "e1000,netdev=net0",
     "-netdev",

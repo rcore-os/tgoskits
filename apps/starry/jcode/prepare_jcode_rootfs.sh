@@ -3,8 +3,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 workspace="$(cd "$script_dir/../../.." && pwd)"
-base_rootfs="$workspace/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
-output_rootfs="$workspace/tmp/axbuild/rootfs/rootfs-x86_64-jcode.img"
+base_rootfs="$workspace/target/axbuild/rootfs/rootfs-x86_64-alpine.img"
+output_rootfs="$workspace/target/axbuild/rootfs/rootfs-x86_64-jcode.img"
 
 usage() {
     cat <<EOF
@@ -14,9 +14,9 @@ Prepare a local rootfs for the StarryOS jcode example.
 
 Options:
   --base-rootfs PATH   Base rootfs image to copy before injection
-                       (default: tmp/axbuild/rootfs/rootfs-x86_64-alpine.img)
+                       (default: target/axbuild/rootfs/rootfs-x86_64-alpine.img)
   --output-rootfs PATH Output rootfs image for the example
-                       (default: tmp/axbuild/rootfs/rootfs-x86_64-jcode.img)
+                       (default: target/axbuild/rootfs/rootfs-x86_64-jcode.img)
   -h, --help           Show this help
 
 Example:
@@ -63,7 +63,7 @@ need_cmd mktemp
 need_cmd stat
 
 if [[ ! -f "$base_rootfs" ]]; then
-    if [[ "$base_rootfs" == "$workspace/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img" ]]; then
+    if [[ "$base_rootfs" == "$workspace/target/axbuild/rootfs/rootfs-x86_64-alpine.img" ]]; then
         echo "Base rootfs not found; preparing the default x86_64 Alpine rootfs..."
         (cd "$workspace" && cargo xtask starry rootfs --arch x86_64)
     fi

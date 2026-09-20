@@ -146,7 +146,7 @@ ArceOS Rust app、StarryOS 和 Axvisor 共用 `into_prepared_base_cargo_config_w
 2. 将 `ax-std/foo` 规范成逻辑能力 `foo`，保留 `ax-hal/*`、`ax-driver/*`、`ax-runtime/*` 边界。
 3. 根据应用 package 和 `ax-std` 的 Cargo metadata，仅把实际存在的 feature 分发到应用或 `ax-std`。
 4. 将裸机 target 映射到 musl PIE JSON target，并启用 `build-std = ["std", "panic_abort"]`。
-5. 生成 `tmp/axbuild/std-libs/` 下的占位库和 linker wrapper，避免宿主静态库污染内核链接。
+5. 生成 `<target_directory>/axbuild/std-libs/` 下的占位库和 linker wrapper，避免宿主静态库污染内核链接。
 6. 设置对应的 musl `CC_*`、`AR_*`、`CFLAGS_*` 和 bindgen 参数；release profile 使用 `panic = "abort"` 且关闭 LTO。
 
 Build Config 中 `[env]` 的以下键会补充 Rust 工具链选项：
@@ -206,7 +206,7 @@ guest 内核驱动不属于该迁移。
 | `AXBUILD_TEST_TIMEOUT_SCALE` | 按整数倍放大测试 QEMU timeout |
 | `STARRY_APK_REGION` | Starry managed rootfs 的 APK 区域，支持 `china`/`cn`、`us`/`usa` |
 | `TGOS_IMAGE_DOWNLOAD_DIR` | 覆盖镜像归档下载目录；Linux 默认 `/tmp/tgosimages` |
-| `TGOS_IMAGE_EXTRACT_DIR` | 覆盖可修改镜像的解压目录；默认 `<workspace>/tmp/axbuild/rootfs` |
+| `TGOS_IMAGE_EXTRACT_DIR` | 覆盖可修改镜像的解压目录；默认 `<workspace>/target/axbuild/rootfs` |
 | `TGOS_OVMF_DIR` | 覆盖 Ostool 格式的 OVMF 缓存根目录；不绕过版本选择和 SHA-256 校验 |
 | `TGOSKITS_KEEP_QEMU_LOG` | 保留 QEMU 日志，便于事后符号化 |
 

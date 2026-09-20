@@ -39,15 +39,15 @@ pub struct ConfigOverrides {
 }
 
 impl ConfigOverrides {
-    pub fn apply_on(&self, config: &mut ImageConfig) {
+    pub fn apply_on(&self, workspace_root: &Path, config: &mut ImageConfig) {
         if let Some(registry) = self.registry.as_ref() {
             config.registry = registry.clone();
         }
         if let Some(download_dir) = self.download_dir.as_ref() {
-            config.download_dir = download_dir.clone();
+            config.download_dir = workspace_relative_path(workspace_root, download_dir);
         }
         if let Some(extract_dir) = self.extract_dir.as_ref() {
-            config.extract_dir = extract_dir.clone();
+            config.extract_dir = workspace_relative_path(workspace_root, extract_dir);
         }
     }
 }
@@ -117,8 +117,18 @@ pub(crate) async fn run(args: ImageArgs) -> anyhow::Result<()> {
 async fn execute(args: ImageArgs) -> anyhow::Result<()> {
     let app = AppContext::new()?;
     match args.command {
-        Command::Ls(ls) => list_images(app.workspace_root(), &args.overrides, ls).await,
-        Command::Pull(pull) => pull_image(app.workspace_root(), &args.overrides, pull).await,
+        Command::Ls(ls) => {
+            list_images(app.workspace_root(), app.target_dir(), &args.overrides, ls).await
+        }
+        Command::Pull(pull) => {
+            pull_image(
+                app.workspace_root(),
+                app.target_dir(),
+                &args.overrides,
+                pull,
+            )
+            .await
+        }
         Command::Resize(resize) => resize_image(resize),
         Command::Check(check) => {
             let path = to_absolute_path(&check.image)?;
@@ -151,11 +161,12 @@ fn check_image(path: &Path, expected_sha256: Option<&str>) -> anyhow::Result<boo
 
 async fn list_images(
     workspace_root: &Path,
+    target_dir: &Path,
     overrides: &ConfigOverrides,
     args: ArgsLs,
 ) -> anyhow::Result<()> {
-    let mut config = ImageConfig::read_config(workspace_root)?;
-    overrides.apply_on(&mut config);
+    let mut config = ImageConfig::read_config(workspace_root, target_dir)?;
+    overrides.apply_on(workspace_root, &mut config);
     let storage = Storage::new_from_config(&config).await?;
     storage
         .image_registry
@@ -165,13 +176,14 @@ async fn list_images(
 
 async fn pull_image(
     workspace_root: &Path,
+    target_dir: &Path,
     overrides: &ConfigOverrides,
     args: ArgsPull,
 ) -> anyhow::Result<()> {
     let image_path = match (args.image.as_deref(), args.arch.as_deref()) {
         (Some(image), None) if !args.no_extract => {
-            let mut config = ImageConfig::read_config(workspace_root)?;
-            overrides.apply_on(&mut config);
+            let mut config = ImageConfig::read_config(workspace_root, target_dir)?;
+            overrides.apply_on(workspace_root, &mut config);
             let storage = Storage::new_from_config(&config).await?;
             match storage.pull_rootfs_image(ImageSpecRef::parse(image)).await {
                 Ok(path) => path,
@@ -187,16 +199,16 @@ async fn pull_image(
             }
         }
         (Some(image), None) => {
-            let mut config = ImageConfig::read_config(workspace_root)?;
-            overrides.apply_on(&mut config);
+            let mut config = ImageConfig::read_config(workspace_root, target_dir)?;
+            overrides.apply_on(workspace_root, &mut config);
             let storage = Storage::new_from_config(&config).await?;
             storage
                 .pull_image(ImageSpecRef::parse(image), !args.no_extract)
                 .await?
         }
         (None, Some(arch)) if !args.no_extract => {
-            let mut config = ImageConfig::read_config(workspace_root)?;
-            overrides.apply_on(&mut config);
+            let mut config = ImageConfig::read_config(workspace_root, target_dir)?;
+            overrides.apply_on(workspace_root, &mut config);
             let image = storage::default_rootfs_image(arch).ok_or_else(|| {
                 anyhow::anyhow!("no managed rootfs image available for arch `{arch}`")
             })?;
@@ -239,4 +251,39 @@ fn to_absolute_path(path: &Path) -> anyhow::Result<PathBuf> {
     } else {
         std::env::current_dir()?.join(path)
     })
+}
+
+fn workspace_relative_path(workspace_root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace_root.join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn cli_paths_override_environment_config_relative_to_workspace() {
+        let workspace = tempdir().unwrap();
+        let mut config = ImageConfig {
+            registry: "configured".to_string(),
+            download_dir: workspace.path().join("env-downloads"),
+            extract_dir: workspace.path().join("env-images"),
+        };
+        ConfigOverrides {
+            registry: Some("cli".to_string()),
+            download_dir: Some(PathBuf::from("cli-downloads")),
+            extract_dir: Some(PathBuf::from("cli-images")),
+        }
+        .apply_on(workspace.path(), &mut config);
+
+        assert_eq!(config.registry, "cli");
+        assert_eq!(config.download_dir, workspace.path().join("cli-downloads"));
+        assert_eq!(config.extract_dir, workspace.path().join("cli-images"));
+    }
 }

@@ -59,6 +59,7 @@ fn std_build_cargo_config_builds_fake_lib_before_app() {
         "arceos-helloworld",
         "x86_64-unknown-none",
         &metadata,
+        &repo_axbuild_dir(),
     )
     .unwrap();
 
@@ -112,11 +113,17 @@ fn std_build_cargo_config_builds_fake_lib_before_app() {
 fn preparing_another_build_preserves_existing_target_configuration() {
     let root = tempdir().unwrap();
     let linker = root.path().join("linker");
+    let axbuild_dir = root.path().join("axbuild");
     let target = "x86_64-unknown-linux-musl";
-    let protected =
-        std_cargo_config_path(target, &linker, &["-Zstack-protector=strong".to_string()]).unwrap();
+    let protected = std_cargo_config_path(
+        &axbuild_dir,
+        target,
+        &linker,
+        &["-Zstack-protector=strong".to_string()],
+    )
+    .unwrap();
     let original = fs::read_to_string(&protected).unwrap();
-    let plain = std_cargo_config_path(target, &linker, &[]).unwrap();
+    let plain = std_cargo_config_path(&axbuild_dir, target, &linker, &[]).unwrap();
 
     assert_ne!(
         protected, plain,
@@ -129,7 +136,13 @@ fn preparing_another_build_preserves_existing_target_configuration() {
             .contains("stack-protector")
     );
     assert_eq!(
-        std_cargo_config_path(target, &linker, &["-Zstack-protector=strong".to_string()]).unwrap(),
+        std_cargo_config_path(
+            &axbuild_dir,
+            target,
+            &linker,
+            &["-Zstack-protector=strong".to_string()]
+        )
+        .unwrap(),
         protected,
     );
 }

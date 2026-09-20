@@ -28,27 +28,20 @@ use crate::test::{build as case_builder, timing};
 /// directly from the shared image. The rootfs patcher owns QEMU write
 /// isolation for both paths.
 pub(crate) async fn prepare_case_assets(
-    workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
     target: &str,
     case: &TestQemuCase,
     rootfs_path: PathBuf,
     config: CaseAssetConfig,
 ) -> anyhow::Result<PreparedCaseAssets> {
-    let workspace_root = workspace_root.to_path_buf();
+    let target_dir = target_dir.to_path_buf();
     let arch = arch.to_string();
     let target = target.to_string();
     let case = case.clone();
     let config = config.clone();
     let parts = tokio::task::spawn_blocking(move || {
-        prepare_case_assets_sync(
-            &workspace_root,
-            &arch,
-            &target,
-            &case,
-            &rootfs_path,
-            &config,
-        )
+        prepare_case_assets_sync(&target_dir, &arch, &target, &case, &rootfs_path, &config)
     })
     .await
     .context("qemu test case asset task failed")??;
@@ -118,7 +111,7 @@ pub(crate) fn remove_case_run_dir(path: Option<&Path>) {
 /// - `rootfs_copy_to_remove` is `Some(copy_path)` when a copy was created and
 ///   must be deleted after the run, `None` for plain cases.
 pub(crate) fn prepare_case_assets_sync(
-    workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
     target: &str,
     case: &TestQemuCase,
@@ -147,7 +140,7 @@ pub(crate) fn prepare_case_assets_sync(
                 ("pipeline", pipeline.as_str().to_string()),
             ],
         );
-        let layout = case_asset_layout(workspace_root, target, &case.display_name)?;
+        let layout = case_asset_layout(target_dir, target, &case.display_name)?;
         timing_stage.finish();
         Some(layout)
     } else {

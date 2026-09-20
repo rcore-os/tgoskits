@@ -18,7 +18,7 @@ can run the required mount flow with passwordless `sudo`:
 cargo xtask starry app qemu -t mysql --arch x86_64
 ```
 
-The generated image is cached at `tmp/axbuild/rootfs/rootfs-x86_64-mysql.img`,
+The generated image is cached at `target/axbuild/rootfs/rootfs-x86_64-mysql.img`,
 and downloads are cached under `target/mysql`, but the current prebuild still
 needs root privileges when it verifies, resizes, mounts, and refreshes the image.
 
@@ -26,7 +26,7 @@ needs root privileges when it verifies, resizes, mounts, and refreshes the image
 
 `prebuild.sh` runs on the host/container before QEMU starts:
 
-1. Prepares `tmp/axbuild/rootfs/rootfs-x86_64-debian.img.tar.xz` with `wget --no-check-certificate`.
+1. Prepares `target/axbuild/rootfs/rootfs-x86_64-debian.img.tar.xz` with `wget --no-check-certificate`.
 2. Extracts the Debian rootfs archive into a dedicated MySQL rootfs image.
 3. Expands the dedicated image to `5G`.
 4. Downloads MySQL 8.4.6 with `wget --no-check-certificate`, unless `MYSQL_TARBALL` or `mysql.tar.xz` is already available.
@@ -38,7 +38,7 @@ needs root privileges when it verifies, resizes, mounts, and refreshes the image
 The QEMU config uses the generated rootfs:
 
 ```text
-tmp/axbuild/rootfs/rootfs-x86_64-mysql.img
+target/axbuild/rootfs/rootfs-x86_64-mysql.img
 ```
 
 ## 指定测试配置

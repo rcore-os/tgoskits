@@ -66,12 +66,18 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         SnapshotPersistence::Store,
     )?;
 
-    let mut cargo = build::load_cargo_config(&request)?;
+    let mut cargo = build::load_cargo_config(&request, starry.app.workspace_context())?;
     args_support::apply_perf_cargo_features(&mut cargo, &args);
     starry.app.set_debug_mode(args.debug)?;
     let build_output = starry.build_artifact(&request, cargo).await?;
-    rootfs::ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), None).await?;
-    let mut cargo = build::load_cargo_config(&request)?;
+    rootfs::ensure_qemu_rootfs_ready(
+        &request,
+        starry.app.workspace_root(),
+        starry.app.target_dir(),
+        None,
+    )
+    .await?;
+    let mut cargo = build::load_cargo_config(&request, starry.app.workspace_context())?;
     args_support::apply_perf_cargo_features(&mut cargo, &args);
     let mut qemu = rootfs::load_patched_qemu_config(
         starry,
@@ -92,7 +98,7 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
     let text_range = symbols::detect_kernel_text_range(&elf)?;
     qemu::write_qemu_config(&outputs, &tools, &args, &arch, &qemu, text_range)?;
 
-    let kernel_bin = symbols::kernel_bin_path(starry.app.workspace_root(), &target, args.debug);
+    let kernel_bin = crate::context::cargo_bin_path_for_elf(&elf);
     let qemu_run = qemu::run_qemu_direct(&outputs, &args, &arch, &kernel_bin).await?;
     drop(prepared_test_case);
     let samples_present = outputs::file_nonempty(&outputs.raw);

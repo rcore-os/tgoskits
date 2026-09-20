@@ -7,8 +7,8 @@ phys_cpu_ids = [1]
 
 [kernel]
 image_location = "memory"
-kernel_path = "${workspace}/tmp/axbuild/images/qemu-loongarch64/linux/linux-qemu"
-ramdisk_path = "${workspace}/tmp/axbuild/images/initramfs-loongarch64-busybox.cpio.gz/initramfs-loongarch64-busybox.cpio.gz"
+kernel_path = "${workspace}/target/axbuild/images/qemu-loongarch64/linux/linux-qemu"
+ramdisk_path = "${workspace}/target/axbuild/images/initramfs-loongarch64-busybox.cpio.gz/initramfs-loongarch64-busybox.cpio.gz"
 ramdisk_load_addr = 0x0800_0000
 boot_protocol = "direct"
 cmdline = "console=ttyS0,115200 earlycon=uart8250,mmio,0x1fe001e0,115200 rdinit=/init devtmpfs.mount=1 nokaslr swiotlb=1024 pci=nomsi"

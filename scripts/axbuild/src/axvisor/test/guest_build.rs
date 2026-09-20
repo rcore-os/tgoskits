@@ -44,7 +44,7 @@ pub(super) async fn prepare(app: &mut AppContext, board_config: &Path) -> anyhow
             None,
             crate::arceos::build::resolve_build_info_path,
         )?;
-        let cargo = crate::arceos::build::load_cargo_config(&request)?;
+        let cargo = crate::arceos::build::load_cargo_config(&request, app.workspace_context())?;
         ensure!(cargo.to_bin, "board guest build must enable to_bin");
         println!("prepare board guest: {}", request.package);
         app.build(cargo, request.build_info_path).await?;

@@ -5,7 +5,7 @@ app_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 workspace="${STARRY_WORKSPACE:-$(cd -- "$app_dir/../../.." && pwd)}"
 architecture="${STARRY_ARCH:-x86_64}"
 target="${STARRY_TARGET:-x86_64-unknown-none}"
-output="${STARRY_ROOTFS:-$workspace/tmp/axbuild/rootfs/rootfs-x86_64-nixos.img/rootfs-x86_64-nixos.img}"
+output="${STARRY_ROOTFS:-$workspace/target/axbuild/rootfs/rootfs-x86_64-nixos.img/rootfs-x86_64-nixos.img}"
 NIX=(nix --extra-experimental-features "nix-command flakes")
 
 fail() {
