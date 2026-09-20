@@ -284,10 +284,18 @@ fn try_reopen_self_file(
     }
 
     let cred = current.as_thread().cred();
+    let mutation_cred = MutationCredentials {
+        fsuid: cred.fsuid,
+        fsgid: cred.fsgid,
+        supplementary_gids: &cred.groups,
+        cap_dac_override: cred.has_cap_dac_override(),
+        cap_dac_read_search: cred.has_cap_dac_read_search(),
+        cap_fowner: cred.has_cap_fowner(),
+    };
     let options = flags_to_options(flags as i32, 0, (cred.fsuid, cred.fsgid));
     Some(
         options
-            .open_loc(location.clone())
+            .open_loc_with_credentials(location.clone(), &mutation_cred)
             .map_err(StarryError::from)
             .and_then(|result| add_to_fd(current, result, flags, None))
             .map(|fd| fd as isize),
@@ -651,7 +659,7 @@ pub fn sys_openat2(
                 fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
             })?;
             options.no_follow(true);
-            return Ok(options.open_loc(location)?);
+            return Ok(options.open_loc_with_credentials(location, &mutation_cred)?);
         }
         let (parent, name) = fs.resolve_parent_beneath_no_symlinks_checked(
             path.as_ref(),

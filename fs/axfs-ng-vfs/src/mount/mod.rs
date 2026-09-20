@@ -1159,13 +1159,23 @@ impl Location {
     }
 
     pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<Location> {
+        self.open_file_with_status(name, options)
+            .map(|(location, _)| location)
+    }
+
+    /// Opens (or creates) a file and reports whether this call created it.
+    pub fn open_file_with_status(
+        &self,
+        name: &str,
+        options: &OpenOptions,
+    ) -> VfsResult<(Location, bool)> {
         if self.is_readonly() && (options.create || options.create_new) {
             return Err(VfsError::ReadOnlyFilesystem);
         }
         self.entry
             .as_dir()?
-            .open_file(name, options)
-            .map(|entry| self.wrap(entry).resolve_mountpoint())
+            .open_file_with_status(name, options)
+            .map(|(entry, created)| (self.wrap(entry).resolve_mountpoint(), created))
     }
 
     pub fn read_dir(

@@ -103,7 +103,7 @@ pub struct Metadata {
     pub ctime: Duration,
 }
 
-/// Credentials used by filesystem mutation authorization.
+/// Credentials used by filesystem access and mutation authorization.
 ///
 /// The VFS does not own a task or a credential namespace, so callers must
 /// provide a snapshot for each mutation.  The snapshot deliberately contains

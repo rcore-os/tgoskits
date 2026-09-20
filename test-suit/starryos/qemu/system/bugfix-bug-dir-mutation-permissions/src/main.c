@@ -1,5 +1,5 @@
 /*
- * Regression coverage for directory mutation authorization.
+ * Regression coverage for filesystem authorization.
  *
  * Linux requires write+search permission on mutation parents and applies the
  * sticky-directory owner rules to unlink/rmdir/rename.  The test runs the
@@ -10,6 +10,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -42,6 +43,7 @@
 #endif
 
 #define LINUX_CAPABILITY_VERSION_3 0x20080522U
+#define CAP_DAC_OVERRIDE 1
 #define CAP_DAC_READ_SEARCH 2
 
 struct capability_header {
@@ -66,6 +68,10 @@ static const char *const protected_dir = "/tmp/bug-dir-mutation-permissions/prot
 static const char *const sticky_dir = "/tmp/bug-dir-mutation-permissions/sticky";
 static const char *const source = "/tmp/bug-dir-mutation-permissions/source";
 static const char *const protected_file = "/tmp/bug-dir-mutation-permissions/protected/file";
+static const char *const dac_file = "/tmp/bug-dir-mutation-permissions/dac-file";
+static const char *const dac_owner_file = "/tmp/bug-dir-mutation-permissions/dac-owner";
+static const char *const dac_group_file = "/tmp/bug-dir-mutation-permissions/dac-group";
+static const char *const dac_cap_file = "/tmp/bug-dir-mutation-permissions/dac-cap";
 static const char *const protected_dangling_middle =
     "/tmp/bug-dir-mutation-permissions/protected/dangling-middle";
 static const char *const protected_dangling_path =
@@ -134,6 +140,23 @@ static int create_file(const char *path)
     return 0;
 }
 
+static int create_seeded_file(const char *path, mode_t mode)
+{
+    static const char contents[] = "secret";
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (fd < 0) {
+        return -1;
+    }
+    ssize_t written = write(fd, contents, sizeof(contents) - 1);
+    close(fd);
+    return written == (ssize_t)(sizeof(contents) - 1) ? 0 : -1;
+}
+
+static int raw_openat(const char *path, int flags)
+{
+    return (int)syscall(SYS_openat, AT_FDCWD, path, flags, 0);
+}
+
 static long renameat2_call(const char *old_path, const char *new_path,
                            unsigned int flags)
 {
@@ -167,6 +190,11 @@ static void cleanup_dirfd_tree(void)
 
 static int run_unprivileged_checks(void)
 {
+    gid_t supplementary_gid = 1001;
+    if (setgroups(1, &supplementary_gid) < 0) {
+        perror("setgroups");
+        return 1;
+    }
     if (setuid(1000) < 0) {
         perror("setuid");
         return 1;
@@ -209,6 +237,57 @@ static int run_unprivileged_checks(void)
           "open O_CREAT checks an inaccessible parent before opening an existing target");
     if (inaccessible >= 0) {
         close(inaccessible);
+    }
+
+    errno = 0;
+    int dac_fd = raw_openat(dac_file, O_RDONLY);
+    check(dac_fd < 0 && errno == EACCES,
+          "openat denies read access without the selected owner/group/other mode bit");
+    if (dac_fd >= 0) {
+        close(dac_fd);
+    }
+    errno = 0;
+    dac_fd = raw_openat(dac_file, O_WRONLY);
+    check(dac_fd < 0 && errno == EACCES,
+          "openat denies write access without the selected owner/group/other mode bit");
+    if (dac_fd >= 0) {
+        close(dac_fd);
+    }
+    errno = 0;
+    dac_fd = raw_openat(dac_file, O_WRONLY | O_TRUNC);
+    check(dac_fd < 0 && errno == EACCES,
+          "openat denies O_TRUNC without write permission");
+    if (dac_fd >= 0) {
+        close(dac_fd);
+    }
+    errno = 0;
+    dac_fd = raw_openat(dac_file, O_RDONLY | O_TRUNC);
+    check(dac_fd < 0 && errno == EACCES,
+          "openat denies O_RDONLY|O_TRUNC without write permission");
+    if (dac_fd >= 0) {
+        close(dac_fd);
+    }
+    struct stat dac_metadata;
+    check(stat(dac_file, &dac_metadata) == 0 && dac_metadata.st_size == 6,
+          "denied openat requests leave the protected file unchanged");
+
+    errno = 0;
+    dac_fd = raw_openat(dac_file, O_PATH);
+    check(dac_fd >= 0, "O_PATH does not require final inode read permission");
+    if (dac_fd >= 0) {
+        close(dac_fd);
+    }
+    errno = 0;
+    dac_fd = raw_openat(dac_owner_file, O_RDWR);
+    check(dac_fd >= 0, "file owner can open a mode-restricted file");
+    if (dac_fd >= 0) {
+        close(dac_fd);
+    }
+    errno = 0;
+    dac_fd = raw_openat(dac_group_file, O_RDWR);
+    check(dac_fd >= 0, "supplementary group membership selects group mode bits");
+    if (dac_fd >= 0) {
+        close(dac_fd);
     }
 
     errno = 0;
@@ -513,7 +592,7 @@ static int run_dac_read_search_checks(void)
     }
 
     data[0].effective = 1U << CAP_DAC_READ_SEARCH;
-    data[0].permitted = 1U << CAP_DAC_READ_SEARCH;
+    data[0].permitted = (1U << CAP_DAC_OVERRIDE) | (1U << CAP_DAC_READ_SEARCH);
     if (syscall(SYS_capset, &header, data) != 0) {
         perror("capset(CAP_DAC_READ_SEARCH)");
         return 1;
@@ -523,6 +602,14 @@ static int run_dac_read_search_checks(void)
     int fd = open(protected_file, O_RDONLY);
     check(fd >= 0,
           "CAP_DAC_READ_SEARCH permits reading through an unsearchable parent");
+    if (fd >= 0) {
+        close(fd);
+    }
+
+    errno = 0;
+    fd = raw_openat(dac_cap_file, O_WRONLY);
+    check(fd < 0 && errno == EACCES,
+          "CAP_DAC_READ_SEARCH does not grant write access to a protected inode");
     if (fd >= 0) {
         close(fd);
     }
@@ -539,6 +626,18 @@ static int run_dac_read_search_checks(void)
     fd = open(dangling_link, O_WRONLY | O_CREAT, 0600);
     check(fd < 0 && errno == EACCES,
           "CAP_DAC_READ_SEARCH cannot create through a dangling link without write access");
+    if (fd >= 0) {
+        close(fd);
+    }
+
+    data[0].effective |= 1U << CAP_DAC_OVERRIDE;
+    if (syscall(SYS_capset, &header, data) != 0) {
+        perror("capset(CAP_DAC_OVERRIDE)");
+        return 1;
+    }
+    errno = 0;
+    fd = raw_openat(dac_cap_file, O_WRONLY);
+    check(fd >= 0, "CAP_DAC_OVERRIDE permits opening a protected inode for writing");
     if (fd >= 0) {
         close(fd);
     }
@@ -632,6 +731,13 @@ int main(void)
     check(create_file(protected_file) == 0, "create protected victim");
     check(chmod(protected_file, 0644) == 0,
           "make protected victim readable after setup");
+    check(create_seeded_file(dac_file, 0600) == 0, "create mode-protected victim");
+    check(create_seeded_file(dac_owner_file, 0600) == 0, "create owner-mode fixture");
+    check(chown(dac_owner_file, 1000, 1000) == 0, "assign owner-mode fixture to the child");
+    check(create_seeded_file(dac_group_file, 0060) == 0, "create supplementary-group fixture");
+    check(chown(dac_group_file, 0, 1001) == 0,
+          "assign supplementary-group fixture to the selected group");
+    check(create_seeded_file(dac_cap_file, 0600) == 0, "create capability fixture");
     check(symlink(public_dir, protected_link) == 0,
           "create symlink through protected directory");
     check(symlink("missing-target", protected_dangling_middle) == 0,
@@ -701,6 +807,10 @@ int main(void)
     remove_if_present(protected_dangling_middle);
     remove_if_present(protected_new_file);
     remove_if_present(protected_file);
+    remove_if_present(dac_file);
+    remove_if_present(dac_owner_file);
+    remove_if_present(dac_group_file);
+    remove_if_present(dac_cap_file);
     remove_if_present(public_link_new);
     remove_if_present(readonly_dir);
     remove_if_present(protected_link);

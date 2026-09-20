@@ -682,6 +682,16 @@ impl DirNode {
 
     /// Opens (or creates) a file in the directory.
     pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<DirEntry> {
+        self.open_file_with_status(name, options)
+            .map(|(entry, _)| entry)
+    }
+
+    /// Opens (or creates) a file and reports whether this call created it.
+    pub fn open_file_with_status(
+        &self,
+        name: &str,
+        options: &OpenOptions,
+    ) -> VfsResult<(DirEntry, bool)> {
         verify_entry_name(name)?;
 
         match self.lookup(name) {
@@ -689,15 +699,15 @@ impl DirNode {
                 if options.create_new {
                     return Err(VfsError::AlreadyExists);
                 }
-                return Ok(val);
+                return Ok((val, false));
             }
             Err(VfsError::NotFound) if options.create => {}
             Err(err) => return Err(err),
         }
         let (uid, gid) = options.user.unwrap_or((0, 0));
         let entry = match self.create_entry(name, options.node_type, options.permission, uid, gid) {
-            Ok(entry) => entry,
-            Err(VfsError::AlreadyExists) if !options.create_new => self.lookup(name)?,
+            Ok(entry) => (entry, true),
+            Err(VfsError::AlreadyExists) if !options.create_new => (self.lookup(name)?, false),
             Err(err) => return Err(err),
         };
         Ok(entry)

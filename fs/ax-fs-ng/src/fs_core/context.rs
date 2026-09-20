@@ -876,7 +876,7 @@ impl FsContext {
     }
 
     /// Check one DAC permission class for a filesystem location.
-    fn check_permission(
+    pub(crate) fn check_permission(
         location: &Location,
         credentials: &MutationCredentials<'_>,
         required: NodePermission,
