@@ -212,7 +212,7 @@ where
         .map(|image| func(image.kernel))
 }
 
-fn memory_images_for_vm(
+pub(super) fn memory_images_for_vm(
     config: &GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> AxVmResult<StaticVmImage> {

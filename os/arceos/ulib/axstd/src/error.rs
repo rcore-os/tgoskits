@@ -24,7 +24,7 @@ pub enum StdError {
     /// A datagram send operation has no destination address.
     #[error("no destination address was provided")]
     MissingDestinationAddress,
-    /// Recursive directory creation is not implemented by this facade.
+    /// Retained for compatibility; recursive directory creation no longer emits this error.
     #[error("recursive directory creation is not supported")]
     RecursiveDirectoryCreationUnsupported,
     /// A joined task exited without publishing its return value.

@@ -84,6 +84,12 @@ AxVisor 管理 Shell 使用 `shlex` 的 POSIX 风格规则拆分命令行。单�
 
 分词不提供变量展开、glob、管道、通用重定向或 job control。命令查找、选项校验和 handler 行为仍由 AxVisor 自身实现。
 
+串口管理 Shell 的 `shell::console_init` 支持方向键浏览历史和移动光标、Delete 删除光标处字符、Home/End 或 Ctrl+A/E 移到行首/行尾。Ctrl+W 删除前一个词，Ctrl+U 清空当前行，Ctrl+K 删除光标到行尾，Ctrl+C 取消尚未执行的输入。SGR 鼠标报告等未支持的 CSI 序列会完整消费，不会混入命令。
+
+Tab 通过 `shell::completion::complete_line` 补全命令和子命令；启用 `fs` 时还补全路径。唯一候选会补齐，目录追加 `/`；多个候选先补公共前缀，再按 Tab 列出候选。补全只在词尾处理未加引号、未转义的输入，文件名限 ASCII 字母、数字、`_`、`-` 和 `.`。这些按键针对串口管理 Shell；客户机控制台仍由客户机处理输入，Ctrl+X 后按 h 返回管理 Shell。
+
+使用 QEMU `-nographic` 时，连续按两次 Ctrl+A 才会向管理 Shell 发送一个 Ctrl+A；Ctrl+A 后按 x 由 QEMU 自身处理并退出模拟器。维护中的 Linux smoke 镜像以 `sh` 作为 PID 1，关机使用 `poweroff -f`；AxVisor 收到 PSCI 关机请求后停止客户机并返回管理 Shell，再执行 `exit` 关闭宿主。
+
 ## 编译
 
 AxVisor 使用 xtask 工具进行构建管理，支持多种硬件平台和配置选项。快速构建及运行 AxVisor，请参见配置套文档中的[快速上手](https://arceos-hypervisor.github.io/axvisorbook/docs/quickstart)章节。
