@@ -37,6 +37,7 @@ pub enum ElfLoadError {
     EntryNotInLoadSegment,
     UnsupportedEntrySymbol,
     HashMismatch,
+    Authentication(axloader::authentication::AuthenticationError),
 }
 
 #[derive(Debug)]
@@ -107,7 +108,13 @@ pub fn download_and_load(
     if !axloader::integrity::sha256_matches(&image, expected_sha256) {
         return Err(ElfLoadError::HashMismatch);
     }
-    load_elf(&image, entry_symbol)
+    let elf = axloader::authentication::authenticate_image(
+        &image,
+        option_env!("AXLOADER_TRUSTED_PUBLIC_KEY"),
+        entry_symbol,
+    )
+    .map_err(ElfLoadError::Authentication)?;
+    load_elf(elf, entry_symbol)
 }
 
 fn load_elf(image: &[u8], entry_symbol: Option<&str>) -> Result<LoadedElf, ElfLoadError> {

@@ -12,16 +12,20 @@ sidebar_label: "Axloader"
 ```text
 cargo xtask axloader <subcommand>
   build   构建 axloader EFI
+  sign    对最终 ELF 签名并输出发布者公钥
   test
     qemu  执行宿主测试、UEFI check 和真实网络启动
 ```
 
 ```bash
-cargo xtask axloader build --target x86_64-unknown-uefi --release
+cargo xtask axloader build --target x86_64-unknown-uefi --release \
+  --trusted-public-key <64位十六进制公钥>
 cargo xtask axloader test qemu --target x86_64-unknown-uefi
 ```
 
 当前第一阶段固定验证 `x86_64-unknown-uefi + OVMF + q35`。构建产物是 `target/x86_64-unknown-uefi/release/axloader.efi`。
+
+`authentication::authenticate_image` 使用 EFI 中预配置的 Ed25519 公钥，验证镜像及入口模式后才允许 ELF 装载。公钥也可通过构建环境 `AXLOADER_TRUSTED_PUBLIC_KEY` 设置；缺失时拒绝启动，不相信 HTTP 清单中的摘要作为授权依据。签名必须在所有 ELF 后处理之后完成，操作步骤与安全边界见 [axloader README](https://github.com/rcore-os/tgoskits/blob/dev/bootloader/axloader/README.md#build-and-test)。现有未签名发布流程需要与 EFI 协调迁移。
 
 ## 网络启动验证
 
@@ -39,7 +43,7 @@ sequenceDiagram
     S-->>A: boot manifest
     A->>S: POST status accepted/downloading
     A->>S: GET /kernel.elf
-    A->>A: verify length and SHA-256, load ELF
+    A->>A: verify length, SHA-256 and publisher signature, load ELF
     A->>S: POST status verified/ready_to_handoff
     A->>A: release network objects and ExitBootServices
 ```
