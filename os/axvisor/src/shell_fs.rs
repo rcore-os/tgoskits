@@ -69,11 +69,11 @@ pub fn remove_path(path: &str, options: RemoveOptions) -> io::Result<()> {
     }
 }
 
-pub fn metadata_for_remove(path: &str) -> io::Result<Metadata> {
+fn metadata_for_remove(path: &str) -> io::Result<Metadata> {
     fs::symlink_metadata(path)
 }
 
-pub const fn ignore_remove_error(force: bool, kind: ErrorKind) -> bool {
+const fn ignore_remove_error(force: bool, kind: ErrorKind) -> bool {
     force && matches!(kind, ErrorKind::NotFound)
 }
 
@@ -94,7 +94,7 @@ pub fn move_file_or_dir(source: &str, destination: &str) -> io::Result<()> {
     }
 }
 
-pub const fn copy_after_rename_failure(kind: ErrorKind) -> bool {
+const fn copy_after_rename_failure(kind: ErrorKind) -> bool {
     matches!(kind, ErrorKind::CrossesDevices)
 }
 
@@ -102,7 +102,7 @@ pub fn touch_file(path: &str) -> io::Result<()> {
     touch_file_at(path, SystemTime::now())
 }
 
-pub fn touch_file_at(path: &str, time: SystemTime) -> io::Result<()> {
+fn touch_file_at(path: &str, time: SystemTime) -> io::Result<()> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -150,10 +150,7 @@ fn effective_destination(source: &str, destination: &str) -> io::Result<String> 
     }
 }
 
-pub fn ensure_recursive_destination_outside_source(
-    source: &str,
-    destination: &str,
-) -> io::Result<()> {
+fn ensure_recursive_destination_outside_source(source: &str, destination: &str) -> io::Result<()> {
     let source_components = absolute_path_components(source)?;
     let destination_components = absolute_path_components(destination)?;
 
@@ -294,26 +291,43 @@ fn remove_dir_recursive(path: &str) -> io::Result<()> {
     fs::remove_dir(path)
 }
 
-#[cfg(test)]
+#[cfg(any(test, axtest))]
 mod tests {
+    use super::*;
     use std::{
         ffi::OsString,
         io::{self, ErrorKind},
+        time::Duration,
     };
 
-    use super::{
-        collect_directory_entry_names, copy_after_rename_failure, copy_operands,
-        ignore_remove_error,
-    };
+    fn reset_test_dir(path: &str) {
+        let _ = remove_path(
+            path,
+            RemoveOptions {
+                recursive: true,
+                force: true,
+                ..RemoveOptions::default()
+            },
+        );
+        fs::create_dir(path).expect("create test directory");
+    }
 
-    #[test]
+    fn unix_seconds(time: SystemTime) -> u64 {
+        time.duration_since(SystemTime::UNIX_EPOCH)
+            .expect("test time must not predate Unix epoch")
+            .as_secs()
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
     fn move_falls_back_to_copy_only_across_devices() {
         assert!(copy_after_rename_failure(ErrorKind::CrossesDevices));
         assert!(!copy_after_rename_failure(ErrorKind::PermissionDenied));
         assert!(!copy_after_rename_failure(ErrorKind::AlreadyExists));
     }
 
-    #[test]
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
     fn remove_force_ignores_only_not_found() {
         assert!(ignore_remove_error(true, ErrorKind::NotFound));
         assert!(!ignore_remove_error(true, ErrorKind::PermissionDenied));
@@ -321,7 +335,8 @@ mod tests {
         assert!(!ignore_remove_error(false, ErrorKind::NotFound));
     }
 
-    #[test]
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
     fn directory_collection_propagates_iteration_errors() {
         let entries = [
             Ok(OsString::from("visible")),
@@ -333,7 +348,8 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
     }
 
-    #[test]
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
     fn copy_requires_exactly_two_operands() {
         let source = "source".to_string();
         let destination = "destination".to_string();
@@ -342,5 +358,216 @@ mod tests {
         assert!(copy_operands(core::slice::from_ref(&source)).is_err());
         assert!(copy_operands(&[source.clone(), destination.clone()]).is_ok());
         assert!(copy_operands(&[source, destination, extra]).is_err());
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn touch_preserves_content_and_updates_times() {
+        let path = "/tmp/axvisor-touch-regression";
+        let touch_time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let _ = fs::remove_file(path);
+        fs::write(path, b"preserve me").expect("create touch fixture");
+
+        touch_file_at(path, touch_time).expect("touch fixture");
+
+        let metadata = fs::metadata(path).expect("read touched metadata");
+        assert_eq!(fs::read(path).expect("read touched file"), b"preserve me");
+        let accessed = unix_seconds(metadata.accessed().expect("read atime"));
+        let modified = unix_seconds(metadata.modified().expect("read mtime"));
+        assert_eq!(accessed, unix_seconds(touch_time));
+        assert_eq!(modified, unix_seconds(touch_time));
+
+        // The kernel filesystem stores timestamps as 32-bit seconds and must
+        // reject anything beyond that range; host std accepts the full range.
+        #[cfg(target_env = "musl")]
+        {
+            let unsupported_time =
+                SystemTime::UNIX_EPOCH + Duration::from_secs(u32::MAX as u64 + 1);
+            let error = touch_file_at(path, unsupported_time)
+                .expect_err("timestamps that would be truncated must fail");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        }
+        fs::remove_file(path).expect("remove touch fixture");
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn cp_file_to_existing_directory_uses_source_basename() {
+        let root = "/tmp/axvisor-cp-file-regression";
+        reset_test_dir(root);
+        let source = format!("{root}/source.txt");
+        let destination = format!("{root}/destination");
+        fs::write(&source, b"copied payload").expect("create copy source");
+        fs::create_dir(&destination).expect("create copy destination");
+
+        copy_path(&source, &destination, CopyMode::File).expect("copy file into directory");
+
+        assert_eq!(
+            fs::read(format!("{destination}/source.txt")).expect("read copied file"),
+            b"copied payload"
+        );
+        remove_path(
+            root,
+            RemoveOptions {
+                recursive: true,
+                ..RemoveOptions::default()
+            },
+        )
+        .expect("remove copy fixture");
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn cp_rejects_copying_file_onto_itself_without_truncating_it() {
+        let path = "/tmp/axvisor-cp-self-file-regression";
+        let _ = fs::remove_file(path);
+        fs::write(path, b"keep this payload").expect("create self-copy fixture");
+
+        let error = copy_path(path, path, CopyMode::File)
+            .expect_err("copying a file onto itself must fail");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            fs::read(path).expect("read self-copy fixture"),
+            b"keep this payload"
+        );
+        fs::remove_file(path).expect("remove self-copy fixture");
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn cp_recursive_directory_to_existing_directory_uses_source_basename() {
+        let root = "/tmp/axvisor-cp-dir-regression";
+        reset_test_dir(root);
+        let source = format!("{root}/source-dir");
+        let destination = format!("{root}/destination");
+        fs::create_dir(&source).expect("create recursive copy source");
+        fs::write(format!("{source}/child.txt"), b"recursive payload")
+            .expect("create recursive copy child");
+        fs::create_dir(&destination).expect("create recursive copy destination");
+
+        copy_path(&source, &destination, CopyMode::Recursive)
+            .expect("copy directory into directory");
+
+        assert_eq!(
+            fs::read(format!("{destination}/source-dir/child.txt"))
+                .expect("read recursively copied file"),
+            b"recursive payload"
+        );
+        remove_path(
+            root,
+            RemoveOptions {
+                recursive: true,
+                ..RemoveOptions::default()
+            },
+        )
+        .expect("remove recursive copy fixture");
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn cp_recursive_rejects_copying_directory_into_itself() {
+        let root = "/tmp/axvisor-cp-self-regression";
+        reset_test_dir(root);
+        let source = format!("{root}/dir");
+        fs::create_dir(&source).expect("create recursive copy source");
+        fs::create_dir(format!("{source}/dir")).expect("create recursion guard");
+
+        let error = copy_path(&source, &source, CopyMode::Recursive)
+            .expect_err("recursive copy into itself must fail");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        remove_path(
+            root,
+            RemoveOptions {
+                recursive: true,
+                ..RemoveOptions::default()
+            },
+        )
+        .expect("remove self-copy fixture");
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn cp_recursive_rejects_copying_directory_into_descendant() {
+        let root = "/tmp/axvisor-cp-descendant-regression";
+        reset_test_dir(root);
+        let source = format!("{root}/dir");
+        let destination = format!("{source}/subdir");
+        fs::create_dir(&source).expect("create recursive copy source");
+        fs::create_dir(&destination).expect("create descendant destination");
+        fs::create_dir(format!("{destination}/dir")).expect("create recursion guard");
+
+        let error = copy_path(&source, &destination, CopyMode::Recursive)
+            .expect_err("recursive copy into a descendant must fail");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        remove_path(
+            root,
+            RemoveOptions {
+                recursive: true,
+                ..RemoveOptions::default()
+            },
+        )
+        .expect("remove descendant-copy fixture");
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn cp_recursive_rejects_nonexistent_descendant_before_creation() {
+        let root = "/tmp/axvisor-cp-new-descendant-regression";
+        reset_test_dir(root);
+        let source = format!("{root}/dir");
+        let destination = format!("{source}/subdir");
+        fs::create_dir(&source).expect("create recursive copy source");
+
+        let error = ensure_recursive_destination_outside_source(&source, &destination)
+            .expect_err("nonexistent descendant must be rejected before creation");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert!(!fs::exists(&destination).expect("check descendant was not created"));
+        remove_path(
+            root,
+            RemoveOptions {
+                recursive: true,
+                ..RemoveOptions::default()
+            },
+        )
+        .expect("remove nonexistent-descendant fixture");
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn mv_renames_file_on_same_filesystem() {
+        let root = "/tmp/axvisor-mv-regression";
+        reset_test_dir(root);
+        let source = format!("{root}/source.txt");
+        let destination = format!("{root}/destination.txt");
+        fs::write(&source, b"moved payload").expect("create move source");
+
+        move_file_or_dir(&source, &destination).expect("move file");
+
+        assert!(!fs::exists(&source).expect("check move source"));
+        assert_eq!(
+            fs::read(&destination).expect("read move destination"),
+            b"moved payload"
+        );
+        remove_path(
+            root,
+            RemoveOptions {
+                recursive: true,
+                ..RemoveOptions::default()
+            },
+        )
+        .expect("remove move fixture");
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn rm_does_not_follow_a_directory_symlink() {
+        let metadata = metadata_for_remove("/var/run").expect("inspect rootfs directory symlink");
+
+        assert!(metadata.file_type().is_symlink());
+        assert!(!metadata.is_dir());
     }
 }

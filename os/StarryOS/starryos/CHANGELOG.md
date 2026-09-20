@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.37](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.36...starryos-v0.5.37) - 2026-09-18
+
+### Other
+
+- *(starry)* simplify feature selection ([#2436](https://github.com/rcore-os/tgoskits/pull/2436))
+
 ### Changed
 
 - [**breaking**] 移除 StarryOS 和两个 LKM 包的 `qemu` Cargo feature，以及 StarryOS 的 `smp` Cargo feature。QEMU 设备需在构建配置中通过 `ax-driver/*` 显式选择；需要图形初始化时还需显式启用 `ax-runtime/display`。

@@ -224,6 +224,9 @@ fn free_inode<B: BlockIo>(
     *inode = updated_inode;
     inode.i_links_count = 0;
     inode.i_block = [0; 15];
+    // A cleared i_block is not an extent tree, even in a freed inode.
+    // Offline fsck also inspects free inode records for table corruption.
+    inode.i_flags &= !Ext4Inode::EXT4_EXTENTS_FL;
     inode.i_blocks_lo = 0;
     inode.l_i_blocks_high = 0;
     inode.i_size_lo = 0;
@@ -282,6 +285,7 @@ pub fn reap_unlinked_inode<B: BlockIo>(
         // Keep i_dtime intact while the inode is on the orphan chain: it is
         // the next-inode pointer, not a wall-clock deletion time.
         inode.i_block = [0; 15];
+        inode.i_flags &= !Ext4Inode::EXT4_EXTENTS_FL;
         inode.i_blocks_lo = 0;
         inode.l_i_blocks_high = 0;
         inode.i_size_lo = 0;
@@ -751,12 +755,27 @@ pub(crate) fn replace_named_entry_at<B: BlockIo>(
 
             data[offset..offset + 4].copy_from_slice(&replacement.inode.raw().to_le_bytes());
             data[offset + 7] = replacement.file_type;
-            update_ext4_dirblock_csum32(
-                superblock,
-                parent_ino.raw(),
-                parent_inode.i_generation,
-                data,
-            );
+            if parent_inode.is_htree_indexed() && (name_bytes == b"." || name_bytes == b"..") {
+                // Dot entries live in the index root, whose checksum is not
+                // the ordinary leaf dirent-tail checksum.
+                if !crate::checksum::update_ext4_dx_checksum(
+                    superblock,
+                    parent_ino.raw(),
+                    parent_inode.i_generation,
+                    data,
+                ) {
+                    data[offset..offset + 4].copy_from_slice(&entry.ino.raw().to_le_bytes());
+                    data[offset + 7] = entry.file_type;
+                    return;
+                }
+            } else {
+                update_ext4_dirblock_csum32(
+                    superblock,
+                    parent_ino.raw(),
+                    parent_inode.i_generation,
+                    data,
+                );
+            }
             replaced = true;
         })?;
     if replaced {

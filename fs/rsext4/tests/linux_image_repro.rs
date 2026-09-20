@@ -1175,6 +1175,7 @@ fn indexed_delete_and_rename_keep_linux_htree_layout() {
     let directory_number;
     let indexed_size;
     let renamed_inode;
+    let deleted_inode;
     {
         let device = FileBlockDevice::open_with_sector_size(image.clone(), 512);
         let services = MountServices::new(TestClock(Cell::new(1_810_000_000)), (), NoopObserver);
@@ -1192,7 +1193,7 @@ fn indexed_delete_and_rename_keep_linux_htree_layout() {
         directory_number = directory.number;
         let permissions = FilePermissions::new(0o644).expect("valid file permissions");
         for (index, name) in names.iter().enumerate() {
-            filesystem
+            let child = filesystem
                 .create_regular_file(
                     context,
                     directory_number,
@@ -1200,6 +1201,11 @@ fn indexed_delete_and_rename_keep_linux_htree_layout() {
                     permissions,
                 )
                 .unwrap_or_else(|error| panic!("create indexed child {index}: {error}"));
+            // Exercise allocated extent trees, not only zero-length inodes.
+            // Reaping a whole inode-table run must stay readable by e2fsck.
+            filesystem
+                .write_inode(child.number, 0, b"extent-backed child")
+                .expect("write indexed child");
         }
         let source = filesystem
             .create_regular_file(
@@ -1238,6 +1244,7 @@ fn indexed_delete_and_rename_keep_linux_htree_layout() {
             )
             .expect("unlink indexed child");
         assert!(deleted.requires_reap());
+        deleted_inode = deleted.inode;
         filesystem
             .reap_unlinked_inode(deleted.inode)
             .expect("reap deleted indexed child");
@@ -1335,6 +1342,22 @@ fn indexed_delete_and_rename_keep_linux_htree_layout() {
         filesystem
             .unmount()
             .expect("unmount empty indexed directory");
+    }
+
+    // Check the persisted orphan-reap record as well as e2fsck's verdict:
+    // a checker may skip unused inode records depending on table layout.
+    {
+        let device = FileBlockDevice::open(image.clone());
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        let mut filesystem = Ext4FileSystem::mount(&mut journal).expect("inspect reaped inode");
+        let reaped = filesystem
+            .get_inode_by_num(&mut journal, deleted_inode)
+            .expect("read persisted reaped inode");
+        assert!(
+            !reaped.uses_extents() || reaped.i_block[0] & 0xffff == 0xf30a,
+            "persisted reaped inode must not advertise a cleared extent tree"
+        );
+        umount(filesystem, &mut journal).expect("unmount reaped inode inspection");
     }
 
     let dump = debugfs_query(&image, "htree_dump /indexed-delete");

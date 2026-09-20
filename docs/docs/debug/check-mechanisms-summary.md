@@ -73,7 +73,7 @@ sidebar_label: "检查机制总览"
 
 ## 2. `sync-lint` 原子内存序静态检查
 
-[`sync-lint`](/community/sync-lint) 是仓库内的静态检查工具，入口命令是：
+[`sync-lint`](/docs/build/sync_lint) 是仓库内的静态检查工具，入口命令是：
 
 ```bash
 cargo xtask sync-lint
@@ -91,8 +91,8 @@ cargo xtask sync-lint
 
 主要入口：
 
-- `scripts/axbuild/src/sync_lint.rs`
-- [`docs/community/sync-lint.md`](/community/sync-lint)
+- `scripts/axbuild/src/sync_lint/mod.rs`
+- [`docs/docs/build/sync_lint.md`](/docs/build/sync_lint)
 - `.github/workflows/ci.yml`
 
 后续改进方向：

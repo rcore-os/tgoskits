@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-18
+
+### Breaking
+
+- Reworked construction and configuration around the complete `rdif-pwm` state interface.
+- Removed the fixed-clock `RK_PWM_CLOCK_HZ` and standalone `init` API; callers now provide the
+  mapped register window and actual clock rate through the driver adapter.
+
 ## [0.1.3](https://github.com/rcore-os/tgoskits/compare/rockchip-pwm-v0.1.2...rockchip-pwm-v0.1.3) - 2026-08-20
 
 ### Other

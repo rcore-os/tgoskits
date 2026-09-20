@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 920" role="img">
+<title>AxVisor 客户机与虚拟化运行架构</title><desc>客户机由 AxvmManager 和 AxvmRuntime 管理；配置、虚拟设备、地址空间和 ax-cpu 的架构虚拟化后端组合在 ArceOS 宿主运行时之上。</desc>
+<rect x="1" y="1" width="1098" height="918" rx="24" fill="var(--os-diagram-bg, #f7f9fb)" stroke="var(--os-diagram-border, #d7e2e9)"/>
+<g font-family="system-ui, sans-serif" fill="var(--os-diagram-text, #263d4a)">
+<text x="40" y="42" font-size="26" font-weight="650" text-anchor="start">AxVisor · 组件化 Type-I Hypervisor</text>
+<g><rect x="40.0" y="66" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="204.0" y="96" font-size="22" font-weight="650" text-anchor="middle">Linux Guest</text>
+<text x="204.0" y="125" font-size="17" font-weight="400" text-anchor="middle">客户机内核与用户态</text>
+</g>
+<g><rect x="386.0" y="66" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="550.0" y="96" font-size="22" font-weight="650" text-anchor="middle">ArceOS Guest</text>
+<text x="550.0" y="125" font-size="17" font-weight="400" text-anchor="middle">组件化应用系统</text>
+</g>
+<g><rect x="732.0" y="66" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="896.0" y="96" font-size="22" font-weight="650" text-anchor="middle">其他 Guest</text>
+<text x="896.0" y="125" font-size="17" font-weight="400" text-anchor="middle">按客户机配置接入</text>
+</g>
+<path d="M550 147V166m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="177" width="501.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="290.5" y="207" font-size="22" font-weight="650" text-anchor="middle">管理与控制台</text>
+<text x="290.5" y="236" font-size="17" font-weight="400" text-anchor="middle">shell · guest_console · 可选 HTTP</text>
+</g>
+<g><rect x="559.0" y="177" width="501.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="809.5" y="207" font-size="22" font-weight="650" text-anchor="middle">配置与镜像</text>
+<text x="809.5" y="236" font-size="17" font-weight="400" text-anchor="middle">VM TOML · 资源配置 · Guest 镜像</text>
+</g>
+<path d="M550 258V276m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="287" width="1020.0" height="80" rx="12" fill="var(--os-diagram-accent-bg, #e6f4ee)" stroke="var(--os-accent, #0f766e)" stroke-width="1.5"/>
+<text x="550.0" y="317" font-size="22" font-weight="650" text-anchor="middle">AxvmManager → AxvmRuntime</text>
+<text x="550.0" y="346" font-size="17" font-weight="400" text-anchor="middle">加载与创建 · 启停 / 暂停 / 恢复 · 客户机生命周期</text>
+</g>
+<path d="M550 368V386m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="397" width="1020.0" height="80" rx="12" fill="var(--os-diagram-accent-bg, #e6f4ee)" stroke="var(--os-accent, #0f766e)" stroke-width="1.5"/>
+<text x="550.0" y="427" font-size="22" font-weight="650" text-anchor="middle">axvm / axvm-types / axvmconfig</text>
+<text x="550.0" y="456" font-size="17" font-weight="400" text-anchor="middle">虚拟机对象 · vCPU 调度与运行 · 资源描述</text>
+</g>
+<path d="M550 478V496m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="507" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="204.0" y="537" font-size="22" font-weight="650" text-anchor="middle">客户机地址空间</text>
+<text x="204.0" y="566" font-size="17" font-weight="400" text-anchor="middle">axaddrspace · 地址与页表</text>
+</g>
+<g><rect x="386.0" y="507" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="550.0" y="537" font-size="22" font-weight="650" text-anchor="middle">客户机设备模型</text>
+<text x="550.0" y="566" font-size="17" font-weight="400" text-anchor="middle">axdevice · axdevice_base</text>
+</g>
+<g><rect x="732.0" y="507" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="896.0" y="537" font-size="22" font-weight="650" text-anchor="middle">虚拟 I/O 与通信</text>
+<text x="896.0" y="566" font-size="17" font-weight="400" text-anchor="middle">axvirtio-* · axivc · axhvc</text>
+</g>
+<path d="M550 588V606m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="617" width="501.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="290.5" y="647" font-size="22" font-weight="650" text-anchor="middle">架构虚拟化后端</text>
+<text x="290.5" y="676" font-size="17" font-weight="400" text-anchor="middle">ax-cpu · VM entry / exit</text>
+</g>
+<g><rect x="559.0" y="617" width="501.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="809.5" y="647" font-size="22" font-weight="650" text-anchor="middle">虚拟中断与寄存器</text>
+<text x="809.5" y="676" font-size="17" font-weight="400" text-anchor="middle">arm_vgic · x86_vlapic · riscv_vplic</text>
+</g>
+<path d="M550 698V716m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="727" width="1020.0" height="80" rx="12" fill="var(--os-diagram-accent-bg, #e6f4ee)" stroke="var(--os-accent, #0f766e)" stroke-width="1.5"/>
+<text x="550.0" y="757" font-size="22" font-weight="650" text-anchor="middle">ArceOS 宿主运行能力</text>
+<text x="550.0" y="786" font-size="17" font-weight="400" text-anchor="middle">ax-std · ax-runtime · ax-task · ax-sync · ax-hal</text>
+</g>
+<path d="M550 808V826m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="837" width="1020.0" height="66" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="550.0" y="859" dominant-baseline="central" font-size="22" font-weight="650" text-anchor="middle">平台与物理设备</text>
+<text x="550.0" y="885" dominant-baseline="central" font-size="17" font-weight="400" text-anchor="middle">ax-plat · 动态平台 · 宿主驱动 · QEMU / 实体板卡</text>
+</g>
+</g></svg>

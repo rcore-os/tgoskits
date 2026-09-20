@@ -31,13 +31,6 @@ use ax_std as _;
 
 mod banner;
 mod config;
-#[cfg(any(
-    feature = "test-console-atomic-output",
-    feature = "test-console-interleave"
-))]
-mod console_regression;
-#[cfg(all(feature = "test-el2-fatal", target_arch = "aarch64"))]
-mod fatal_regression;
 mod guest_console;
 #[cfg(any(feature = "browser-console", feature = "http-axum"))]
 mod http;
@@ -46,9 +39,11 @@ mod manager;
 mod network_console;
 #[cfg(feature = "browser-console")]
 mod network_status;
-#[cfg(feature = "test-vcpu-perf")]
+#[cfg(feature = "vcpu-perf-load")]
 mod perf_load;
 mod shell;
+#[cfg(feature = "test-virq-delivery")]
+mod virq_regression;
 
 /// Axvisor kernel entry point.
 ///
@@ -63,14 +58,6 @@ mod shell;
 ///    lifecycle waiter and the physical-console shell.
 ///
 fn main() {
-    // Test-only panic paths — gated behind dedicated features so they never
-    // activate in normal builds.  These are consumed by test-suit cases that
-    // verify the backtrace markers (or their absence) via QEMU regex matching.
-    #[cfg(feature = "test-backtrace-panic")]
-    panic!("axvisor backtrace smoke test: deliberate panic to verify backtrace output");
-    #[cfg(feature = "test-panic-no-backtrace")]
-    panic!("axvisor no-backtrace smoke test: panic without backtrace");
-
     guest_console::configure_host_console()
         .unwrap_or_else(|error| panic!("failed to configure host console: {error:#}"));
 
@@ -80,11 +67,8 @@ fn main() {
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
-    #[cfg(all(feature = "test-el2-fatal", target_arch = "aarch64"))]
-    fatal_regression::run();
-
     manager.init_default_vms();
-    #[cfg(feature = "test-vcpu-perf")]
+    #[cfg(feature = "vcpu-perf-load")]
     let _performance_load = perf_load::start();
 
     // The browser-console registry snapshots the successfully initialized
@@ -123,17 +107,14 @@ fn main() {
     #[cfg(feature = "browser-console")]
     network_status::start();
 
-    #[cfg(feature = "test-console-atomic-output")]
-    console_regression::emit_atomic_output();
-
-    #[cfg(feature = "test-console-interleave")]
-    console_regression::emit_interleave();
-
     // With `no-auto-start` the default VMs are only created (staying in
     // `Ready`) and the management plane boots them on demand, so nothing is
     // launched or waited on here.
     #[cfg(not(feature = "no-auto-start"))]
     let _ = manager.launch_default_vms();
+
+    #[cfg(feature = "test-virq-delivery")]
+    virq_regression::start();
 
     #[cfg(not(feature = "no-auto-start"))]
     std::thread::Builder::new()

@@ -55,3 +55,36 @@ pub(super) fn plan_endpoints(mut guests: Vec<(usize, String)>) -> Vec<Endpoint> 
     }
     endpoints
 }
+
+#[cfg(any(test, axtest))]
+mod tests {
+    use super::*;
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn uses_at_most_three_sorted_guests() {
+        let endpoints = plan_endpoints(
+            [7, 5, 9, 3]
+                .into_iter()
+                .map(|vm_id| (vm_id, vm_id.to_string()))
+                .collect(),
+        );
+
+        assert_eq!(endpoints.len(), MAX_GUEST_CONSOLES + 1);
+        assert_eq!(endpoints[0].route, "axvisor");
+        assert_eq!(endpoints[1].vm_id, Some(3));
+        assert_eq!(endpoints[2].vm_id, Some(5));
+        assert_eq!(endpoints[3].vm_id, Some(7));
+        assert_eq!(endpoints[3].lane.index(), 3);
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn uses_configured_names_with_vm_fallback() {
+        let endpoints = plan_endpoints(vec![(2, "zephyr".into()), (1, String::new())]);
+
+        assert_eq!(endpoints[1].display_name, "VM 1");
+        assert_eq!(endpoints[2].display_name, "zephyr");
+        assert_eq!(endpoints[2].route, "vm-2");
+    }
+}

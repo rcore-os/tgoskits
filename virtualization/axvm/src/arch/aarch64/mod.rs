@@ -164,11 +164,11 @@ impl ArchOps for Aarch64Arch {
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         runtime: &crate::vm::VmRuntimeHandle,
     ) {
-        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        let wait_snapshot = runtime.vcpu_event_wait_snapshot(vcpu.run_state());
         if !vm.running() {
             return;
         }
-        if wait_snapshot.has_pending_event(runtime) {
+        if wait_snapshot.take_pending_event(runtime) {
             return;
         }
         match vcpu.get_arch_vcpu().has_pending_interrupt() {

@@ -13,19 +13,19 @@ use alloc::{
 };
 use core::{
     any::Any,
-    future::{Future, poll_fn},
+    cell::Cell,
+    future::poll_fn,
     mem::size_of,
-    pin::pin,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::{Context, Poll},
     time::Duration,
 };
 
+use ax_std::os::arceos::task::{executor::LocalExecutor, thread::current::current_thread_handle};
 use axfs_ng_vfs::Filesystem;
 use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
 use axpoll_set::PollSet;
 use crab_usb::usb_if::endpoint::{TransferCompletion, TransferRequest};
-use event_listener::Event as NotifyEvent;
 
 use self::{irq::manager, manager::UsbFsManager, tree::UsbRootDir};
 use crate::{
@@ -235,7 +235,6 @@ struct UsbDeviceFile {
 }
 
 struct UrbWorker {
-    wake_event: NotifyEvent,
     running: AtomicBool,
     closed: AtomicBool,
 }
@@ -243,19 +242,14 @@ struct UrbWorker {
 impl UrbWorker {
     fn new() -> Self {
         Self {
-            wake_event: NotifyEvent::new(),
             running: AtomicBool::new(false),
             closed: AtomicBool::new(false),
         }
     }
 
-    fn notify(&self) {
-        self.wake_event.notify(usize::MAX);
-    }
-
-    fn close(&self) {
+    fn close(&self, manager: &UsbFsManager) {
         self.closed.store(true, Ordering::Release);
-        self.notify();
+        manager.notify_urb_workers();
     }
 
     fn try_start(&self) -> bool {
@@ -827,7 +821,7 @@ impl UsbDeviceFile {
 
     fn ensure_urb_worker(&self) {
         if !self.urb_worker.try_start() {
-            self.urb_worker.notify();
+            self.manager.notify_urb_workers();
             return;
         }
         let submitted_urbs = self.submitted_urbs.clone();
@@ -837,8 +831,15 @@ impl UsbDeviceFile {
         let manager = self.manager.clone();
         crate::task::kernel_thread_builder("usbfs-urb-worker".to_owned())
             .spawn(move || {
-                crate::task::future::block_on(async {
-                    loop {
+                let current = current_thread_handle().expect("USB worker has no scheduler thread");
+                let executor = LocalExecutor::new(current.wake_handle())
+                    .expect("USB executor must belong to its worker");
+                let observed = Cell::new(manager.usb_activity_seq());
+                executor.run(
+                    poll_fn(|cx| {
+                        // Snapshot before inspecting transfers: a submit, close, or
+                        // completion racing this poll must prevent the next park.
+                        observed.set(manager.usb_activity_seq());
                         let mut ready = Vec::new();
                         {
                             let mut submitted = submitted_urbs.lock();
@@ -850,113 +851,40 @@ impl UsbDeviceFile {
                                     index += 1;
                                     continue;
                                 }
-                                let result = match submitted[index].try_reclaim() {
-                                    Ok(Some(completion)) => Some(Ok(completion)),
-                                    Ok(None) => None,
-                                    Err(err) => Some(Err(err)),
-                                };
-                                if let Some(result) = result {
-                                    ready.push((
-                                        submitted.remove(index).expect("submitted URB disappeared"),
-                                        result,
-                                    ));
-                                } else {
-                                    if let Some(queue_key) = queue_key {
-                                        blocked_queues.insert(queue_key);
+                                match submitted[index].poll_reclaim(cx) {
+                                    Poll::Ready(result) => {
+                                        ready.push((
+                                            submitted.remove(index).expect("submitted URB disappeared"),
+                                            result,
+                                        ));
                                     }
-                                    index += 1;
+                                    Poll::Pending => {
+                                        if let Some(queue_key) = queue_key {
+                                            blocked_queues.insert(queue_key);
+                                        }
+                                        index += 1;
+                                    }
                                 }
                             }
                         }
 
+                        // Completion callbacks and task wakes run outside the URB lock.
                         for (submitted, result) in ready {
                             if let Some(completed) = terminal_completed_urb(submitted, result) {
                                 complete_urb(&pending_urbs, &poll_urbs, completed);
                             }
                         }
-
                         if worker.closed.load(Ordering::Acquire) {
-                            break;
-                        }
-                        let activity_seq = manager.usb_activity_seq();
-                        let wake_listener = worker.wake_event.listen();
-                        let activity_listener = manager.listen_usb_activity();
-                        let mut wake_listener = pin!(wake_listener);
-                        let mut activity_listener = pin!(activity_listener);
-                        if submitted_urbs.lock().is_empty() {
-                            poll_fn(|cx| {
-                                if worker.closed.load(Ordering::Acquire)
-                                    || manager.usb_activity_seq() != activity_seq
-                                    || wake_listener.as_mut().poll(cx).is_ready()
-                                    || activity_listener.as_mut().poll(cx).is_ready()
-                                {
-                                    Poll::Ready(())
-                                } else {
-                                    Poll::Pending
-                                }
-                            })
-                            .await;
-                            continue;
-                        }
-
-                        let completed = poll_fn(|cx| {
-                            if worker.closed.load(Ordering::Acquire)
-                                || wake_listener.as_mut().poll(cx).is_ready()
-                            {
-                                return Poll::Ready(None);
-                            }
-                            let usb_activity_ready = manager.usb_activity_seq() != activity_seq
-                                || activity_listener.as_mut().poll(cx).is_ready();
-                            let mut submitted = submitted_urbs.lock();
-                            let mut blocked_queues = BTreeSet::new();
-                            let mut index = 0;
-                            while index < submitted.len() {
-                                let queue_key = submitted[index]
-                                    .queue_key()
-                                    .expect("submitted URB has no transfer queue");
-                                if blocked_queues.contains(&queue_key) {
-                                    index += 1;
-                                    continue;
-                                }
-                                match submitted[index].poll_reclaim(cx) {
-                                    Poll::Ready(result) => {
-                                        let submitted = submitted
-                                            .remove(index)
-                                            .expect("submitted URB disappeared");
-                                        return Poll::Ready(Some((submitted, result)));
-                                    }
-                                    Poll::Pending => {
-                                        blocked_queues.insert(queue_key);
-                                        index += 1;
-                                    }
-                                }
-                            }
-                            if usb_activity_ready {
-                                Poll::Ready(None)
-                            } else {
-                                Poll::Pending
-                            }
-                        })
-                        .await;
-                        if let Some((submitted, result)) = completed {
-                            if submitted.discarded {
-                                continue;
-                            }
-                            complete_urb(
-                                &pending_urbs,
-                                &poll_urbs,
-                                completed_urb_from_result(
-                                    submitted.user_urb_ptr,
-                                    submitted.log,
-                                    submitted,
-                                    result,
-                                ),
-                            );
+                            Poll::Ready(())
                         } else {
-                            crate::task::yield_now();
+                            Poll::Pending
                         }
-                    }
-                });
+                    }),
+                    |condition| {
+                        manager.wait_for_usb_activity(observed.get(), || condition.should_abort());
+                    },
+                );
+                drop(executor);
                 worker.stop();
             })
             .expect("failed to spawn kernel thread");
@@ -1491,7 +1419,7 @@ impl Pollable for UsbDeviceFile {
 
 impl Drop for UsbDeviceFile {
     fn drop(&mut self) {
-        self.urb_worker.close();
+        self.urb_worker.close(&self.manager);
         let lease = self.lease.lock().take();
         let mut submitted = self.drain_all_submitted_urbs();
         if let Some(lease) = lease.as_ref() {
@@ -1913,5 +1841,89 @@ mod tests {
         let state = adapter.0.lock().unwrap();
         assert_eq!(state.inflight_requests, 0);
         assert_eq!(state.completion_reclaims, 1);
+    }
+}
+
+#[cfg(all(test, axtest))]
+mod wait_tests {
+    use alloc::{sync::Arc, vec::Vec};
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    use ax_std::os::arceos::task::{
+        sched::{CpuId, CpuSet, RtPriority, SchedulePolicy},
+        thread::current,
+    };
+
+    use super::{UrbWorker, manager::UsbFsManager};
+
+    #[axtest::axtest]
+    fn usb_activity_publication_and_worker_close_do_not_strand_waiters() {
+        let current = current::current_thread_handle().unwrap();
+        let original_affinity = current.affinity().unwrap();
+        let original_policy = current.base_policy();
+        let mut affinity = CpuSet::empty(ax_hal::cpu_num());
+        assert!(affinity.insert(CpuId::new(ax_hal::percpu::this_cpu_id() as u32)));
+        current::set_current_thread_affinity(affinity.clone()).unwrap();
+        current
+            .set_policy(SchedulePolicy::fifo(RtPriority::new(10).unwrap()))
+            .unwrap();
+
+        let manager = Arc::new(UsbFsManager::new(Vec::new()));
+        let observed = manager.usb_activity_seq();
+        manager.notify_urb_workers();
+        // Publication before waiter registration must remain observable.
+        manager.wait_for_usb_activity(observed, || false);
+
+        for close in [false, true] {
+            let worker = Arc::new(UrbWorker::new());
+            let entered = Arc::new(AtomicBool::new(false));
+            let completed = Arc::new(AtomicBool::new(false));
+            let waiter = crate::task::kernel_thread_builder("usb-activity-wait".into())
+                .affinity(affinity.clone())
+                .policy(SchedulePolicy::fifo(RtPriority::new(80).unwrap()))
+                .spawn({
+                    let manager = Arc::clone(&manager);
+                    let worker = Arc::clone(&worker);
+                    let entered = Arc::clone(&entered);
+                    let completed = Arc::clone(&completed);
+                    move || {
+                        let observed = manager.usb_activity_seq();
+                        manager.wait_for_usb_activity(observed, || {
+                            entered.store(true, Ordering::Release);
+                            worker.closed.load(Ordering::Acquire)
+                        });
+                        if close {
+                            assert!(worker.closed.load(Ordering::Acquire));
+                        }
+                        completed.store(true, Ordering::Release);
+                    }
+                })
+                .unwrap();
+
+            // The higher-priority waiter shares this CPU. Once it has entered,
+            // this lower-priority publisher can run only after it has parked.
+            assert!(entered.load(Ordering::Acquire));
+            assert!(!completed.load(Ordering::Acquire));
+            if close {
+                worker.close(&manager);
+            } else {
+                manager.notify_urb_workers();
+            }
+            // Wake may preempt the publisher before returning. No notification
+            // lock may remain held while the waiter resumes or drops its wait.
+            waiter.join().unwrap();
+            assert!(completed.load(Ordering::Acquire));
+        }
+
+        let worker = UrbWorker::new();
+        worker.close(&manager);
+        // Even a generation sampled after close must not put the worker to sleep.
+        manager.wait_for_usb_activity(manager.usb_activity_seq(), || {
+            worker.closed.load(Ordering::Acquire)
+        });
+        manager.notify_urb_workers();
+
+        current.set_policy(original_policy).unwrap();
+        current::set_current_thread_affinity(original_affinity).unwrap();
     }
 }

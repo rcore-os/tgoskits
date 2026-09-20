@@ -28,3 +28,30 @@ impl TerminalNewlineNormalizer {
         write(&bytes[chunk_start..])
     }
 }
+
+#[cfg(any(test, axtest))]
+mod tests {
+    use super::*;
+    use alloc::vec::Vec;
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn converts_only_bare_lf_across_batches() {
+        let mut normalizer = TerminalNewlineNormalizer::new();
+        let mut output = Vec::new();
+        normalizer
+            .write(b"banner\nline\r", |bytes| {
+                output.extend_from_slice(bytes);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        normalizer
+            .write(b"\nnext\n", |bytes| {
+                output.extend_from_slice(bytes);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+
+        assert_eq!(output, b"banner\r\nline\r\nnext\r\n");
+    }
+}

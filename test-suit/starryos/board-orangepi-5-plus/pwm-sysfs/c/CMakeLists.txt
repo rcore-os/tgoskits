@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(pwm-sysfs-board C)
+add_executable(test-pwm-sysfs ../../../qemu/system/test-pwm-sysfs/src/main.c)
+target_compile_options(test-pwm-sysfs PRIVATE -Wall -Wextra -Werror)
+target_link_options(test-pwm-sysfs PRIVATE -static)
+install(TARGETS test-pwm-sysfs RUNTIME DESTINATION usr/bin)

@@ -198,20 +198,20 @@ clk_gate_table!(
     // ========================================================================
     // PWM 时钟门控
     // ========================================================================
-    PCLK_PWM1 => (15, 0),
-    CLK_PWM1 => (15, 3),
+    PCLK_PWM1 => (15, 3),
+    CLK_PWM1 => (15, 4),
     CLK_PWM1_CAPTURE => (15, 5),
     PCLK_PWM2 => (15, 6),
     CLK_PWM2 => (15, 7),
     CLK_PWM2_CAPTURE => (15, 8),
-    PCLK_PWM3 => (15, 1),
-    CLK_PWM3 => (15, 4),
-    CLK_PWM3_CAPTURE => (15, 9),
+    PCLK_PWM3 => (15, 9),
+    CLK_PWM3 => (15, 10),
+    CLK_PWM3_CAPTURE => (15, 11),
     // ========================================================================
     // ADC 时钟门控
     // ========================================================================
-    PCLK_SARADC => (15, 11),
-    CLK_SARADC => (15, 12),
+    PCLK_SARADC => (11, 14),
+    CLK_SARADC => (11, 15),
     PCLK_TSADC => (16, 6),
     CLK_TSADC => (16, 7),
     // ========================================================================
@@ -360,9 +360,9 @@ clk_pmu_gate_table!(
     PCLK_UART0 => (2, 6),
     SCLK_UART0 => (2, 5),
     // PMU PWM
-    PCLK_PMU1PWM => (2, 8),
-    CLK_PMU1PWM => (2, 11),
-    CLK_PMU1PWM_CAPTURE => (2, 12),
+    PCLK_PMU1PWM => (1, 12),
+    CLK_PMU1PWM => (1, 13),
+    CLK_PMU1PWM_CAPTURE => (1, 14),
 );
 
 clk_php_gate_table!(
@@ -441,6 +441,30 @@ mod tests {
                 + CLK_COMPOSITE_TABLE.len()
                 + CLK_PMU_COMPOSITE_TABLE.len(),
             "CLK_GATE_TABLE should not have duplicate clkid entries"
+        );
+    }
+
+    #[test]
+    fn test_pwm3_capture_and_saradc_gate_mappings() {
+        let pwm3_capture = CLK_GATE_TABLE
+            .iter()
+            .find(|gate| gate.clk_id == CLK_PWM3_CAPTURE)
+            .expect("PWM3 capture gate must be present");
+        let saradc = CLK_GATE_TABLE
+            .iter()
+            .find(|gate| gate.clk_id == PCLK_SARADC)
+            .expect("SARADC gate must be present");
+        let saradc_clock = CLK_GATE_TABLE
+            .iter()
+            .find(|gate| gate.clk_id == CLK_SARADC)
+            .expect("SARADC clock gate must be present");
+
+        assert_eq!((pwm3_capture.reg_idx, pwm3_capture.bit), (15, 11));
+        assert_eq!((saradc.reg_idx, saradc.bit), (11, 14));
+        assert_eq!((saradc_clock.reg_idx, saradc_clock.bit), (11, 15));
+        assert_ne!(
+            (pwm3_capture.reg_idx, pwm3_capture.bit),
+            (saradc.reg_idx, saradc.bit)
         );
     }
 }

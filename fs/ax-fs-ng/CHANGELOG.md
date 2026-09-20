@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.10.2...ax-fs-ng-v0.11.0) - 2026-09-18
+
+### Added
+
+- *(vfs)* implement mutation credentials for directory operations an… ([#2287](https://github.com/rcore-os/tgoskits/pull/2287))
+
+### Fixed
+
+- *(ax-fs-ng)* serialize page-cache eviction with mapping publication ([#2449](https://github.com/rcore-os/tgoskits/pull/2449))
+- *(ax-fs-ng)* bound page-cache writeback ([#2427](https://github.com/rcore-os/tgoskits/pull/2427))
+- *(starry-kernel)* enforce executable inode write exclusion ([#2375](https://github.com/rcore-os/tgoskits/pull/2375))
+
 ## [0.10.2](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.10.1...ax-fs-ng-v0.10.2) - 2026-09-11
 
 ### Added

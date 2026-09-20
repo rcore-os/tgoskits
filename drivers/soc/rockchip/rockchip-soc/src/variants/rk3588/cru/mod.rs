@@ -280,6 +280,9 @@ impl Cru {
         ) {
             return Ok(());
         }
+        if matches!(id, CLK_PWM1 | CLK_PWM2 | CLK_PWM3 | CLK_PMU1PWM) {
+            self.pwm_enable_parent(id)?;
+        }
         let Some(gate) = self.find_clk_gate(id) else {
             return self.pcie_root_ref_enable(id);
         };

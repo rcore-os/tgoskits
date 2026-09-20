@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2](https://github.com/rcore-os/tgoskits/compare/ax-io-v0.7.1...ax-io-v0.7.2) - 2026-09-18
+
+### Other
+
+- *(repo)* remove nonfunctional and redundant test assertions ([#2440](https://github.com/rcore-os/tgoskits/pull/2440))
+
 ## [0.7.1](https://github.com/rcore-os/tgoskits/compare/ax-io-v0.7.0...ax-io-v0.7.1) - 2026-09-09
 
 ### Other

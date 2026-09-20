@@ -32,7 +32,7 @@ pub(crate) struct StarryAppBoardCase {
     pub(crate) target: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct StarryAppQemuCase {
     pub(crate) name: String,
     pub(crate) arch: String,
@@ -40,12 +40,29 @@ pub(crate) struct StarryAppQemuCase {
     pub(crate) build_config_path: Option<PathBuf>,
     pub(crate) qemu_config_path: Option<PathBuf>,
     pub(crate) rootfs_path: PathBuf,
+    pub(crate) rootfs_cleanup_dir: Option<PathBuf>,
     pub(crate) rootfs_write_policy: crate::rootfs::qemu::RootfsWritePolicy,
     pub(crate) test_commands: Vec<String>,
     pub(crate) grouped_command_selection: GroupedCommandSelection,
     pub(crate) host_symbolize_success_regex: Vec<String>,
     pub(crate) host_http_server: Option<HostHttpServerConfig>,
     pub(crate) subcases: Vec<TestQemuSubcase>,
+}
+
+impl Drop for StarryAppQemuCase {
+    fn drop(&mut self) {
+        let Some(path) = self.rootfs_cleanup_dir.take() else {
+            return;
+        };
+        if let Err(error) = std::fs::remove_dir_all(&path)
+            && path.exists()
+        {
+            eprintln!(
+                "warning: failed to remove Starry app rootfs run directory {}: {error}",
+                path.display()
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

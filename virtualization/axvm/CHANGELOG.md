@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3](https://github.com/rcore-os/tgoskits/compare/axvm-v0.8.2...axvm-v0.8.3) - 2026-09-18
+
+### Added
+
+- *(axvm)* support LoongArch PCI direct boot ([#2405](https://github.com/rcore-os/tgoskits/pull/2405))
+- *(axvm)* support x86 virtio-blk file backends ([#2390](https://github.com/rcore-os/tgoskits/pull/2390))
+
+### Fixed
+
+- *(axvm)* preserve host interrupt ownership across guest execution ([#2438](https://github.com/rcore-os/tgoskits/pull/2438))
+- *(axvm)* reduce redundant vCPU scheduling and add board perf CI ([#2362](https://github.com/rcore-os/tgoskits/pull/2362))
+- *(axvm)* parse VM interrupts before passthrough address resolution ([#2400](https://github.com/rcore-os/tgoskits/pull/2400))
+
+### Other
+
+- *(repo)* remove nonfunctional and redundant test assertions ([#2440](https://github.com/rcore-os/tgoskits/pull/2440))
+
 ## [0.8.2](https://github.com/rcore-os/tgoskits/compare/axvm-v0.8.1...axvm-v0.8.2) - 2026-09-13
 
 ### Other

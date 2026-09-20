@@ -239,6 +239,7 @@ struct VcpuThreadRuntime {
 
 pub(crate) struct VcpuEventWaitSnapshot {
     notification_generation: usize,
+    target: Arc<crate::vcpu::VcpuRunState>,
 }
 
 pub(crate) fn wait_for_vcpu_event_if_idle(
@@ -265,7 +266,7 @@ pub(crate) fn wait_for_vcpu_event_if_idle_with(
     wait_until: impl FnOnce(&dyn Fn() -> bool),
 ) {
     let wake_condition =
-        || !vm_running() || wait_snapshot.has_pending_event(runtime) || additional_ready();
+        || !vm_running() || wait_snapshot.take_pending_event(runtime) || additional_ready();
     if wake_condition() {
         return;
     }
@@ -491,11 +492,7 @@ impl VmRuntimeHandle {
 
     pub(crate) fn kick_vcpu(&self, vcpu_id: usize) -> AxVmResult {
         let kick = self.vcpu_kick_handle(vcpu_id)?;
-        self.notify_all();
-        let exit_cpu = kick.kick_from_task(crate::host::task::current_cpu_id());
-        if let Some(cpu_id) = exit_cpu {
-            crate::host::task::send_ipi(cpu_id);
-        }
+        kick.kick_from_task();
         Ok(())
     }
 
@@ -503,11 +500,20 @@ impl VmRuntimeHandle {
     pub(crate) fn request_vcpu(&self, vcpu_id: usize) -> AxVmResult {
         let kick = self.vcpu_kick_handle(vcpu_id)?;
         kick.publish_entry_request();
+        kick.kick_from_task();
+        Ok(())
+    }
+
+    /// Publishes VM-wide work before waking the vCPU that owns its poll loop.
+    ///
+    /// The entry request must be visible before advancing the shared wait
+    /// generation. This closes the same predicate-to-park window as the KVM
+    /// request path while keeping ordinary target kicks isolated.
+    pub(crate) fn request_vcpu_for_vm_work(&self, vcpu_id: usize) -> AxVmResult {
+        let kick = self.vcpu_kick_handle(vcpu_id)?;
+        kick.publish_entry_request();
         self.notify_all();
-        let exit_cpu = kick.kick_from_task(crate::host::task::current_cpu_id());
-        if let Some(cpu_id) = exit_cpu {
-            crate::host::task::send_ipi(cpu_id);
-        }
+        kick.kick_from_task();
         Ok(())
     }
 
@@ -522,14 +528,8 @@ impl VmRuntimeHandle {
 
     fn deliver_kicks(&self, kicks: Vec<crate::runtime::VcpuKickHandle>) {
         self.notify_all();
-        if kicks.is_empty() {
-            return;
-        }
-        let current_cpu = crate::host::task::current_cpu_id();
         for kick in kicks {
-            if let Some(cpu_id) = kick.kick_from_task(current_cpu) {
-                crate::host::task::send_ipi(cpu_id);
-            }
+            kick.kick_from_task();
         }
     }
 
@@ -585,11 +585,7 @@ impl VmRuntimeHandle {
                 Ok(needs_kick)
             },
             || {
-                self.notify_all();
-                let exit_cpu = kick.kick_from_task(crate::host::task::current_cpu_id());
-                if let Some(cpu_id) = exit_cpu {
-                    crate::host::task::send_ipi(cpu_id);
-                }
+                kick.kick_from_task();
                 Ok(())
             },
         )
@@ -617,11 +613,7 @@ impl VmRuntimeHandle {
                 Ok(needs_kick)
             },
             || {
-                self.notify_all();
-                let exit_cpu = kick.kick_from_task(crate::host::task::current_cpu_id());
-                if let Some(cpu_id) = exit_cpu {
-                    crate::host::task::send_ipi(cpu_id);
-                }
+                kick.kick_from_task();
                 Ok(())
             },
         )
@@ -648,11 +640,7 @@ impl VmRuntimeHandle {
                 Ok(needs_kick)
             },
             || {
-                self.notify_all();
-                let exit_cpu = kick.kick_from_task(crate::host::task::current_cpu_id());
-                if let Some(cpu_id) = exit_cpu {
-                    crate::host::task::send_ipi(cpu_id);
-                }
+                kick.kick_from_task();
                 Ok(())
             },
         )
@@ -677,9 +665,13 @@ impl VmRuntimeHandle {
         self.notification_generation.load(Ordering::Acquire)
     }
 
-    pub(crate) fn vcpu_event_wait_snapshot(&self) -> VcpuEventWaitSnapshot {
+    pub(crate) fn vcpu_event_wait_snapshot(
+        &self,
+        target: Arc<crate::vcpu::VcpuRunState>,
+    ) -> VcpuEventWaitSnapshot {
         VcpuEventWaitSnapshot {
             notification_generation: self.notification_generation(),
+            target,
         }
     }
 
@@ -823,9 +815,10 @@ impl VmRuntimeHandle {
 }
 
 impl VcpuEventWaitSnapshot {
-    pub(crate) fn has_pending_event(&self, runtime: &VmRuntimeHandle) -> bool {
+    pub(crate) fn take_pending_event(&self, runtime: &VmRuntimeHandle) -> bool {
         runtime.device_poll_requested()
             || runtime.notification_generation() != self.notification_generation
+            || self.target.take_unblock_request()
     }
 }
 
@@ -2864,7 +2857,7 @@ mod tests {
     #[test]
     fn vcpu_wake_before_park_is_observed_by_the_wait_generation() {
         let runtime = VmRuntimeHandle::new();
-        let snapshot = runtime.vcpu_event_wait_snapshot();
+        let snapshot = runtime.vcpu_event_wait_snapshot(Arc::new(crate::vcpu::VcpuRunState::new()));
         let entered_wait = AtomicBool::new(false);
 
         runtime.notify_all();
@@ -2882,9 +2875,32 @@ mod tests {
     }
 
     #[test]
+    fn targeted_notification_preserves_unrelated_wait_and_broadcast_releases_both() {
+        let runtime = VmRuntimeHandle::new();
+        let target = Arc::new(crate::vcpu::VcpuRunState::new());
+        let other = Arc::new(crate::vcpu::VcpuRunState::new());
+        let target_wait = runtime.vcpu_event_wait_snapshot(target.clone());
+        let other_wait = runtime.vcpu_event_wait_snapshot(other.clone());
+
+        target.request_unblock();
+        assert!(target_wait.take_pending_event(&runtime));
+        assert!(!other_wait.take_pending_event(&runtime));
+
+        let target_wait = runtime.vcpu_event_wait_snapshot(target.clone());
+        assert!(!target_wait.take_pending_event(&runtime));
+        target.request_unblock();
+        let target_wait = runtime.vcpu_event_wait_snapshot(target);
+        assert!(target_wait.take_pending_event(&runtime));
+        assert!(!target_wait.take_pending_event(&runtime));
+        runtime.notify_all();
+        assert!(target_wait.take_pending_event(&runtime));
+        assert!(other_wait.take_pending_event(&runtime));
+    }
+
+    #[test]
     fn timer_completion_before_park_is_observed_by_the_waiter() {
         let runtime = VmRuntimeHandle::new();
-        let snapshot = runtime.vcpu_event_wait_snapshot();
+        let snapshot = runtime.vcpu_event_wait_snapshot(Arc::new(crate::vcpu::VcpuRunState::new()));
         let completed = AtomicBool::new(true);
         let entered_wait = AtomicBool::new(false);
 
@@ -2902,7 +2918,7 @@ mod tests {
     #[test]
     fn timer_completion_at_the_park_boundary_is_rechecked() {
         let runtime = VmRuntimeHandle::new();
-        let snapshot = runtime.vcpu_event_wait_snapshot();
+        let snapshot = runtime.vcpu_event_wait_snapshot(Arc::new(crate::vcpu::VcpuRunState::new()));
         let completed = AtomicBool::new(false);
 
         wait_for_vcpu_event_if_idle_with(

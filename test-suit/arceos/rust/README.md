@@ -46,6 +46,16 @@ cargo xtask arceos test qemu --test-group rust --arch riscv64 --test-case task-m
 
 `lockdep/baseline.rs` 的双线程自旋锁测试在释放 A、B 后才发布完成阶段，并在发布前检查两把锁已释放。工作线程持有 A、B 时提前通知，不能保证另一线程取得 B 后也能取得 A；恢复该错误顺序时，前置断言会确定性失败。
 
+`net-unix-path` 在真实任务运行时中验证 Unix socket 的路径绑定和连接：命名空间夹具
+明确检查可阻塞上下文并执行睡眠，再验证连接、地址、接收来源及关闭后抽象名称重绑定。
+地址状态若由禁止抢占的自旋锁保护，命名空间入口会确定性失败；测试不能用宿主空运行时替代。
+该用例独占一次性命名空间注册，因此作为独立内核运行，不与 `all` 中的真实文件系统提供者混用。
+它保护网络层的阻塞契约，实际文件系统与系统调用兼容性仍需 Starry 回归或板端测试。
+
+```bash
+cargo xtask arceos test qemu --test-group rust --arch aarch64 --test-case net-unix-path
+```
+
 ## 3. 其他测试入口
 
 `test-suit/arceos` 还包含直接验证 C ABI 和硬件行为的测试。选择 std 是为了覆盖实际调用边界，不应删除这些入口的独立职责。

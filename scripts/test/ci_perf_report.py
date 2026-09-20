@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -92,32 +93,9 @@ def ivc_case_table(cases: list[dict[str, str]]) -> str:
 
 
 def render_report(check_id: str, check_name: str, log_text: str) -> str:
-    vcpu_samples: list[dict[str, str]] = []
-    vcpu_results: list[dict[str, str]] = []
-    ivc_cases: list[dict[str, str]] = []
-    ivc_results: list[dict[str, str]] = []
-    task_switch_groups: list[dict[str, str]] = []
-    for raw_line in log_text.splitlines():
-        line = strip_line_prefixes(raw_line)
-        if match := TASK_SWITCH_PATTERN.search(line):
-            task_switch_groups.append(parse_fields(match.group("fields")))
-        if match := VCPU_SAMPLE_PATTERN.search(line):
-            vcpu_samples.append(parse_fields(match.group("fields")))
-        if match := VCPU_RESULT_PATTERN.search(line):
-            vcpu_results.append(parse_fields(match.group("fields")))
-        if match := IVC_CASE_PATTERN.search(line):
-            ivc_cases.append(
-                {
-                    "datasize": match.group("datasize"),
-                    "send": match.group("send"),
-                    "receive": match.group("receive"),
-                    "test_time": match.group("test_time"),
-                }
-            )
-        if match := IVC_RESULT_PATTERN.search(line):
-            fields = {"status": match.group("status")}
-            fields.update(parse_fields(match.group("fields")))
-            ivc_results.append(fields)
+    vcpu_samples, vcpu_results, ivc_cases, ivc_results, task_switch_groups = parse_log(
+        log_text
+    )
 
     sections = [
         section
@@ -153,12 +131,91 @@ def render_report(check_id: str, check_name: str, log_text: str) -> str:
     )
 
 
+def parse_log(log_text: str) -> tuple[
+    list[dict[str, str]], list[dict[str, str]],
+    list[dict[str, str]], list[dict[str, str]],
+    list[dict[str, str]],
+]:
+    vcpu_samples: list[dict[str, str]] = []
+    vcpu_results: list[dict[str, str]] = []
+    ivc_cases: list[dict[str, str]] = []
+    ivc_results: list[dict[str, str]] = []
+    task_switch_groups: list[dict[str, str]] = []
+    for raw_line in log_text.splitlines():
+        line = strip_line_prefixes(raw_line)
+        if match := TASK_SWITCH_PATTERN.search(line):
+            task_switch_groups.append(parse_fields(match.group("fields")))
+        if match := VCPU_SAMPLE_PATTERN.search(line):
+            vcpu_samples.append(parse_fields(match.group("fields")))
+        if match := VCPU_RESULT_PATTERN.search(line):
+            vcpu_results.append(parse_fields(match.group("fields")))
+        if match := IVC_CASE_PATTERN.search(line):
+            ivc_cases.append(
+                {
+                    "datasize": match.group("datasize"),
+                    "send": match.group("send"),
+                    "receive": match.group("receive"),
+                    "test_time": match.group("test_time"),
+                }
+            )
+        if match := IVC_RESULT_PATTERN.search(line):
+            fields = {"status": match.group("status")}
+            fields.update(parse_fields(match.group("fields")))
+            ivc_results.append(fields)
+    return vcpu_samples, vcpu_results, ivc_cases, ivc_results, task_switch_groups
+
+
+def metric_datasize(datasize: str) -> str:
+    return human_datasize(int(datasize)).replace(" ", "")
+
+
+def render_benchmarks(log_text: str) -> list[dict[str, object]]:
+    """Metrics in github-action-benchmark's customBiggerIsBetter JSON format."""
+    _, vcpu_results, ivc_cases, _, task_switch_groups = parse_log(log_text)
+    benchmarks: list[dict[str, object]] = []
+    for result in vcpu_results:
+        if "blocks_per_second" in result:
+            benchmarks.append(
+                {
+                    "name": "vcpu-perf/blocks_per_second",
+                    "unit": "blocks/s",
+                    "value": float(result["blocks_per_second"]),
+                }
+            )
+    for case in sorted(ivc_cases, key=lambda case: int(case["datasize"])):
+        label = metric_datasize(case["datasize"])
+        benchmarks.append(
+            {"name": f"ivc-bench/send/{label}", "unit": "MB/s", "value": float(case["send"])}
+        )
+        benchmarks.append(
+            {
+                "name": f"ivc-bench/receive/{label}",
+                "unit": "MB/s",
+                "value": float(case["receive"]),
+            }
+        )
+    for group in sorted(task_switch_groups, key=lambda group: int(group["index"])):
+        benchmarks.append(
+            {
+                "name": f"task-switch/avg_cycles/index-{group['index']}",
+                "unit": "cycles",
+                "value": float(group["avg_cycles"]),
+            }
+        )
+    return benchmarks
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Render CI performance results")
     parser.add_argument("--check-id", required=True)
     parser.add_argument("--check-name", required=True)
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--json-output",
+        type=Path,
+        help="Write github-action-benchmark metrics to this JSON file",
+    )
     return parser.parse_args()
 
 
@@ -169,6 +226,12 @@ def main() -> int:
         report = render_report(args.check_id, args.check_name, log_text)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(report, encoding="utf-8")
+        if args.json_output is not None:
+            benchmarks = render_benchmarks(log_text)
+            args.json_output.parent.mkdir(parents=True, exist_ok=True)
+            args.json_output.write_text(
+                json.dumps(benchmarks, indent=2), encoding="utf-8"
+            )
     except (OSError, ValueError) as error:
         print(f"performance report failed: {error}", file=sys.stderr)
         return 1

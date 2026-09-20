@@ -5,7 +5,6 @@ const sidebars = {
     'team',
     'contributing',
     'resources',
-    'sync-lint',
     'support',
   ],
 };

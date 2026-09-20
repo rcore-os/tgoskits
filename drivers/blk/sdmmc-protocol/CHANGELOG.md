@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.5.3...sdmmc-protocol-v0.5.4) - 2026-09-18
+
+### Other
+
+- *(repo)* remove nonfunctional and redundant test assertions ([#2440](https://github.com/rcore-os/tgoskits/pull/2440))
+
 ## [0.5.3](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.5.2...sdmmc-protocol-v0.5.3) - 2026-09-09
 
 ### Added

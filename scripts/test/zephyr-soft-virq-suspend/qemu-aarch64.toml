@@ -1,0 +1,8 @@
+args = [
+  "-nographic", "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-smp", "2", "-m", "512M",
+]
+to_bin = true
+uefi = false
+fail_regex = ["VIRQ_TEST_FAILED", "SOFTWARE VIRQ FAIL", "panicked at"]

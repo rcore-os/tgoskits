@@ -361,29 +361,75 @@ impl Cru {
     // PWM 时钟
     // ========================================================================
 
-    /// 获取 PWM 时钟频率
-    ///
-    /// 参考 u-boot: drivers/clk/rockchip/clk_rk3588.c:rk3588_pwm_get_clk()
-    ///
-    /// # Errors
-    ///
-    /// 如果时钟 ID 不支持，返回 `ClockError::UnsupportedClock`
-    pub(crate) fn pwm_get_rate(&self, id: ClkId) -> ClockResult<u64> {
-        let (con, sel_shift) = match id {
+    // Orange Pi 6.1 BSP clk-rk3588.c: PWM muxes select divided GPLL/CPLL
+    // sources or xin24m. Source names describe nominal, not guaranteed rates.
+    fn pwm_source(&self, id: ClkId) -> ClockResult<u32> {
+        let (con, shift) = match id {
             CLK_PWM1 => (clksel_con(59), 12),
             CLK_PWM2 => (clksel_con(59), 14),
             CLK_PWM3 => (clksel_con(60), 0),
             CLK_PMU1PWM => (pmu_clksel_con(2), 9),
             _ => return Err(ClockError::unsupported(id)),
         };
+        let source = (self.read(con) >> shift) & 3;
+        if source == 3 {
+            return Err(ClockError::invalid_clock_source(id, source));
+        }
+        Ok(source)
+    }
 
-        let sel = (self.read(con) >> sel_shift) & 0x3;
-        Ok(match sel {
-            0 => 100 * MHZ, // CLK_PWM_SEL_100M
-            1 => 50 * MHZ,  // CLK_PWM_SEL_50M
-            2 => OSC_HZ,    // CLK_PWM_SEL_24M
-            _ => 0,
-        })
+    fn pwm_top_source_rate(&self, con: u32, shift: u32) -> ClockResult<u64> {
+        let value = self.read(clksel_con(con)) >> shift;
+        let parent = if value & (1 << 5) == 0 {
+            PllId::GPLL
+        } else {
+            PllId::CPLL
+        };
+        Ok(self
+            .pll_get_rate(parent)?
+            .div_ceil(u64::from((value & 31) + 1)))
+    }
+
+    pub(crate) fn pwm_get_rate(&self, id: ClkId) -> ClockResult<u64> {
+        let source = self.pwm_source(id)?;
+        if source == 2 {
+            return Ok(OSC_HZ);
+        }
+        if id != CLK_PMU1PWM {
+            return self.pwm_top_source_rate(0, if source == 0 { 6 } else { 0 });
+        }
+        let config = self.read(pmu_clksel_con(1));
+        let parent = if config & (1 << 5) == 0 {
+            self.pwm_top_source_rate(3, 6)?
+        } else {
+            OSC_HZ
+        };
+        let parent = parent.div_ceil(u64::from((config & 31) + 1));
+        let config = self.read(pmu_clksel_con(0));
+        let divider = if source == 0 {
+            (config >> 4) & 7
+        } else {
+            config & 15
+        };
+        Ok(parent.div_ceil(u64::from(divider + 1)))
+    }
+
+    pub(crate) fn pwm_enable_parent(&mut self, id: ClkId) -> ClockResult<()> {
+        let source = self.pwm_source(id)?;
+        if source == 2 {
+            return Ok(());
+        }
+        if id == CLK_PMU1PWM {
+            // PMU 100/50 MHz sources both descend from the PMU 400 MHz source.
+            if self.read(pmu_clksel_con(1)) & (1 << 5) == 0 {
+                self.write(clkgate_con(0), 1 << (16 + 7));
+            }
+            let gates = (1 << 4) | (1 << u32::from(source == 0));
+            self.write(pmu_clkgate_con(0), gates << 16);
+        } else {
+            self.write(clkgate_con(0), 1 << (16 + u32::from(source == 0)));
+        }
+        Ok(())
     }
 
     /// 设置 PWM 时钟频率
@@ -412,12 +458,7 @@ impl Cru {
 
         self.clrsetreg(offset, mask, src_clk << shift);
 
-        Ok(match src_clk {
-            0 => 100 * MHZ,
-            1 => 50 * MHZ,
-            2 => OSC_HZ,
-            _ => 0,
-        })
+        self.pwm_get_rate(id)
     }
 
     // ========================================================================
@@ -1340,5 +1381,47 @@ impl Cru {
             }
             _ => OSC_HZ,
         })
+    }
+}
+
+#[cfg(test)]
+mod pwm_tests {
+    use super::*;
+
+    #[test]
+    fn pwm_clock_uses_bsp_gates_and_live_parent_divider() {
+        let mut registers = alloc::vec![0u32; 0x5c000 / 4];
+        let base = registers.as_mut_ptr() as usize;
+        // Exclusive aligned storage covers every CRU offset accessed below.
+        let mut cru = Cru {
+            base,
+            _grf: 0,
+            cpll_hz: 0,
+            gpll_hz: 0,
+            ppll_hz: 0,
+            reset: ResetRockchip::new(base + SOFTRST_CON_OFFSET as usize, 49158),
+        };
+        cru.clk_enable(CLK_PWM1).unwrap();
+        assert_eq!(registers[clkgate_con(15) as usize / 4], 1 << 20);
+        cru.clk_enable(CLK_PWM3).unwrap();
+        assert_eq!(registers[clkgate_con(15) as usize / 4], 1 << 26);
+        // PLL slow mode is the 24 MHz oscillator. A divide-by-three source
+        // must report 8 MHz, regardless of the source's nominal 100 MHz name.
+        registers[clksel_con(0) as usize / 4] = 2 << 6;
+        assert_eq!(cru.clk_get_rate(CLK_PWM1).unwrap(), 8_000_000);
+        registers[clksel_con(59) as usize / 4] = 2 << 12;
+        assert_eq!(cru.clk_get_rate(CLK_PWM1).unwrap(), 24_000_000);
+        registers[clksel_con(59) as usize / 4] = 3 << 12;
+        assert!(cru.clk_get_rate(CLK_PWM1).is_err());
+        let before = registers.clone();
+        assert!(cru.clk_enable(CLK_PWM1).is_err());
+        assert_eq!(registers, before);
+        // PMU source: oscillator / 2 / 2, using the separate PMU gate bank.
+        registers[pmu_clksel_con(1) as usize / 4] = (1 << 5) | 1;
+        registers[pmu_clksel_con(0) as usize / 4] = 1 << 4;
+        assert_eq!(cru.clk_get_rate(CLK_PMU1PWM).unwrap(), 6_000_000);
+        cru.clk_enable(CLK_PMU1PWM).unwrap();
+        assert_eq!(registers[pmu_clkgate_con(0) as usize / 4], 0x12 << 16);
+        assert_eq!(registers[pmu_clkgate_con(1) as usize / 4], 1 << 29);
     }
 }

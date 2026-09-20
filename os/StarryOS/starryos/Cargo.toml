@@ -11,7 +11,7 @@ edition.workspace = true
 license.workspace = true
 name = "starryos"
 repository.workspace = true
-version = "0.5.36"
+version = "0.5.37"
 
 [features]
 default = []
@@ -30,7 +30,6 @@ k230 = [
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
 jpeg = ["ax-driver/jpeg", "starry-kernel/jpeg"]
-rk3588-pwm = ["starry-kernel/rk3588-pwm"]
 rga = ["ax-driver/rga", "starry-kernel/rga"]
 stack-protector = ["ax-std/stack-protector", "starry-kernel/stack-protector"]
 

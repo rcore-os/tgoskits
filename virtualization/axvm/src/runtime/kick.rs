@@ -48,6 +48,7 @@ impl VcpuKickHandle {
     /// wake handle is deferred to the VM-owned kick worker.
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn kick_from_hard_irq(&self, current_cpu: usize) -> HardIrqKick {
+        self.run_state.request_unblock();
         let wake = self.wake.wake();
         if matches!(wake, WakeResult::Exited | WakeResult::Unavailable) {
             return HardIrqKick::Defer;
@@ -60,15 +61,23 @@ impl VcpuKickHandle {
         }
     }
 
-    /// Kicks the vCPU from task context and returns a remote CPU doorbell.
+    /// Publishes an unblock request, wakes only this vCPU, and requests a
+    /// remote guest exit when required, matching KVM's task-context kick.
     ///
-    /// The caller must send the returned IPI only after releasing runtime
-    /// registry locks. A stale CPU is harmless: migration requires leaving
-    /// guest mode. Controller-owned pending state must be published before
-    /// this call; the kick itself does not manufacture a generic request.
-    pub(crate) fn kick_from_task(&self, current_cpu: usize) -> Option<usize> {
+    /// Call only after releasing runtime registry and interrupt queue locks.
+    /// Controller pending state must already be published. The unblock request
+    /// survives a kick before wait registration; ax-task's sticky park protocol
+    /// closes the predicate-to-block window. A stale CPU is harmless because
+    /// migration also requires leaving guest mode.
+    pub(crate) fn kick_from_task(&self) {
+        self.run_state.request_unblock();
         let _ = self.wake.wake();
-        self.run_state.request_exit(current_cpu)
+        if let Some(cpu_id) = self
+            .run_state
+            .request_exit(crate::host::task::current_cpu_id())
+        {
+            crate::host::task::send_ipi(cpu_id);
+        }
     }
 
     /// Publishes a sticky request for work that has no backend pending state.

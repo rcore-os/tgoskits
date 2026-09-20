@@ -1,8 +1,9 @@
 #!/bin/sh
 # On-target runner for the cpu-audio-test carpet - the "pyte for audio". Each cell decodes audio to
-# in-memory PCM and asserts in the SIGNAL domain (FFT bins / RMS / SNR / THD+N / PSNR / byte-exact
-# SHA-256) against an analytically-known or golden reference. Prints "TEST PASSED" only when every
-# provisioned cell reports its "AUDIO_<CELL> OK <n>" marker (three-gate: fail==0 && total==EXPECTED==pass).
+# in-memory PCM and asserts in the SIGNAL domain (FFT bins / RMS / SNR / THD+N / PSNR, plus byte-exact
+# checks for lossless codecs) against an analytically-known or golden reference. Prints "TEST PASSED" only
+# when every provisioned cell reports its "AUDIO_<CELL> OK <n>" marker (three-gate:
+# fail==0 && total==EXPECTED==pass).
 #
 # Cells:
 #   audio_fft        - synthetic known-signal spectral leg (sine peak bin+mag+SNR, DTMF, chirp, silence,
@@ -10,8 +11,8 @@
 #   audio_codec      - codec cartesian {wav,flac,opus,aac,mp3} x {mono,stereo} x {44100,48000}: encode ->
 #                      decode -> lossless byte-exact SHA / lossy FFT-peak+PSNR, metadata exact.
 #   audio_resample   - 44100<->48000 FFT-peak migration + anti-alias (above-Nyquist tone removed).
-#   audio_realassets - decode the real media submodule + assert decoded stats == golden tsv; honest-skip
-#                      when $ASSET_DIR is absent (the synthetic legs always gate).
+#   audio_realassets - decode the real media submodule + assert decoded signal stats against the golden
+#                      tsv; honest-skip when $ASSET_DIR is absent (the synthetic legs always gate).
 set -u
 BIN=/opt/cpu-audio-test
 export PATH="/usr/bin:/usr/local/bin:$PATH"

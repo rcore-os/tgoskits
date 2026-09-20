@@ -191,7 +191,8 @@ jobs:
             --check-id "${CHECK_ID}" \
             --check-name "${CHECK_NAME}" \
             --log "${RUNNER_TEMP}/reusable-command.log" \
-            --output "${RUNNER_TEMP}/performance-report/${CHECK_ID}.md"
+            --output "${RUNNER_TEMP}/performance-report/${CHECK_ID}.md" \
+            --json-output "${RUNNER_TEMP}/performance-report/${CHECK_ID}.json"
           cat "${RUNNER_TEMP}/performance-report/${CHECK_ID}.md" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload performance report
@@ -199,7 +200,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: axvisor-nightly-performance-${{ matrix.id }}
-          path: ${{ runner.temp }}/performance-report/${{ matrix.id }}.md
+          path: ${{ runner.temp }}/performance-report/${{ matrix.id }}.*
           if-no-files-found: error
           retention-days: 30
 

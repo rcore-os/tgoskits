@@ -15,6 +15,7 @@ mod shell;
 mod types;
 
 pub(crate) use assets::*;
+pub(crate) use cache::copy_file_fast;
 #[cfg(test)]
 use cache::save_rootfs_cache_image;
 pub(crate) use grouped_runner::*;

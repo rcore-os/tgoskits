@@ -3,7 +3,7 @@
 An industrial-grade audio test carpet for StarryOS. Where `pyte` gives a headless terminal you can assert
 against cell-by-cell, this gives a headless audio pipeline you can assert against **in the signal domain**:
 every cell decodes audio to in-memory PCM and checks the result against an analytically-known or golden
-reference - FFT bins, magnitudes, SNR, THD+N, PSNR, byte-exact SHA-256 - never a smoke test.
+reference - FFT bins, magnitudes, SNR, THD+N, PSNR, and lossless byte-exact checks - never a smoke test.
 
 Runtime dependency is only the Alpine musl `ffmpeg` CLI (libavcodec/libavformat/libswresample with
 flac/opus/aac/mp3 + the soxr resampler). No MP3/AAC decoder is reinvented; the FFT, the RIFF/WAVE parser,
@@ -50,12 +50,11 @@ to `round(f*N/fs')`:
 
 ### `audio_realassets` - real-media leg (optional) - 59 assertions with assets present
 Reads `$ASSET_DIR/golden/audio/audio_golden.tsv` and, per row, decodes `audio/<slug>.m4a` to interleaved
-s16le at the native rate + native channel count (the exact pipeline that produced the golden) and asserts:
-sample_rate, channels, per-channel sample_count, duration (`frames/rate`), RMS (`/32768`), and the decoded
-PCM **SHA-256 == golden pcm_sha256** (byte-exact against the committed AAC stream - the media submodule
-tracks `.m4a`, not `.wav`, and the golden was generated from that stream). Cross-format siblings
-(`<slug>.flac/.opus`, where committed) are decoded and their RMS + dominant peak band checked against the
-golden (flac tight, opus within lossy tolerance).
+s16le at the native rate + native channel count and asserts sample_rate, channels, per-channel
+sample_count, duration (`frames/rate`), RMS (`/32768`), and a non-silent dominant spectral peak. The golden
+PCM SHA-256 is logged diagnostically because lossy AAC decoder output can differ across FFmpeg versions
+and architectures. Cross-format siblings (`<slug>.flac/.opus`, where committed) are decoded and their RMS
+and dominant peak band checked against the golden (flac tight, opus within lossy tolerance).
 
 On-target the assets ride a git submodule; `ASSET_DIR` defaults to `/opt/cpu-audio-test/assets`. If the
 golden tsv is absent the cell **honest-skips** (prints `AUDIO_REALASSETS SKIP ... OK 1`) so a missing

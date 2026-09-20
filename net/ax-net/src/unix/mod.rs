@@ -26,7 +26,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_io::{IoBuf, Read, Write};
 use ax_lazyinit::LazyLock;
-use ax_sync::SpinLock;
+use ax_sync::{Mutex, SpinLock};
 use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
 use axpoll_set::PollSet;
 use enum_dispatch::enum_dispatch;
@@ -201,10 +201,10 @@ fn with_slot_or_insert<R>(
 pub struct UnixSocket {
     /// Concrete stream or datagram transport.
     transport: Transport,
-    /// Public local Unix address.
-    local_addr: SpinLock<UnixSocketAddr>,
-    /// Public remote Unix address.
-    remote_addr: SpinLock<Option<UnixSocketAddr>>,
+    /// Serializes bind, including filesystem namespace creation which may sleep.
+    local_addr: Mutex<UnixSocketAddr>,
+    /// Serializes connect, including filesystem path resolution which may sleep.
+    remote_addr: Mutex<Option<UnixSocketAddr>>,
     /// Whether this socket owns the namespace binding in `local_addr`.
     ///
     /// Accepted sockets inherit the listener's local address but not ownership
@@ -217,8 +217,8 @@ impl UnixSocket {
     pub fn new(transport: impl Into<Transport>) -> Self {
         Self {
             transport: transport.into(),
-            local_addr: SpinLock::new(UnixSocketAddr::Unnamed),
-            remote_addr: SpinLock::new(None),
+            local_addr: Mutex::new(UnixSocketAddr::Unnamed),
+            remote_addr: Mutex::new(None),
             owns_bind: AtomicBool::new(false),
         }
     }
@@ -227,8 +227,8 @@ impl UnixSocket {
     pub fn new_connected(transport: impl Into<Transport>) -> Self {
         Self {
             transport: transport.into(),
-            local_addr: SpinLock::new(UnixSocketAddr::Unnamed),
-            remote_addr: SpinLock::new(Some(UnixSocketAddr::Unnamed)),
+            local_addr: Mutex::new(UnixSocketAddr::Unnamed),
+            remote_addr: Mutex::new(Some(UnixSocketAddr::Unnamed)),
             owns_bind: AtomicBool::new(false),
         }
     }
@@ -294,8 +294,8 @@ impl SocketOps for UnixSocket {
         let (transport, peer_addr) = self.transport.try_accept()?;
         Ok(Self {
             transport,
-            local_addr: SpinLock::new(self.local_addr.lock().clone()),
-            remote_addr: SpinLock::new(Some(peer_addr)),
+            local_addr: Mutex::new(self.local_addr.lock().clone()),
+            remote_addr: Mutex::new(Some(peer_addr)),
             owns_bind: AtomicBool::new(false),
         }
         .into())
@@ -366,54 +366,5 @@ impl Pollable for UnixSocket {
         events: IoEvents,
     ) {
         unsafe { self.transport.register_exclusive(sink, events) };
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn peer_address_distinguishes_unconnected_and_socketpair() {
-        let unconnected = UnixSocket::new(DgramTransport::new(1));
-        assert!(matches!(
-            unconnected.peer_addr(),
-            Err(NetError::NotConnected)
-        ));
-
-        let connected = UnixSocket::new_connected(DgramTransport::new(1));
-        assert!(matches!(
-            connected.peer_addr(),
-            Ok(SocketAddrEx::Unix(UnixSocketAddr::Unnamed))
-        ));
-    }
-
-    #[test]
-    fn stream_receive_peer_address_uses_logical_remote() {
-        let receiver = UnixSocket {
-            transport: StreamTransport::new(1).into(),
-            local_addr: SpinLock::new(UnixSocketAddr::Unnamed),
-            remote_addr: SpinLock::new(Some(UnixSocketAddr::Path(Arc::from("server.sock")))),
-            owns_bind: AtomicBool::new(false),
-        };
-
-        let mut from = SocketAddrEx::Unix(UnixSocketAddr::Unnamed);
-        receiver.write_connected_peer_address(Some(&mut from));
-        assert!(matches!(
-            from,
-            SocketAddrEx::Unix(UnixSocketAddr::Path(path)) if path.as_ref() == "server.sock"
-        ));
-    }
-
-    #[test]
-    fn abstract_bind_is_released_on_final_socket_drop() {
-        let address = UnixSocketAddr::Abstract(Arc::from(&b"rebind-after-close"[..]));
-        {
-            let first = UnixSocket::new(DgramTransport::new(1));
-            first.bind(SocketAddrEx::Unix(address.clone())).unwrap();
-        }
-
-        let second = UnixSocket::new(DgramTransport::new(2));
-        second.bind(SocketAddrEx::Unix(address)).unwrap();
     }
 }

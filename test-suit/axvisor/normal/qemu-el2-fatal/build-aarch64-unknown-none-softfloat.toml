@@ -1,4 +1,0 @@
-features = ["test-el2-fatal"]
-log = "Info"
-target = "aarch64-unknown-none-softfloat"
-vm_configs = []

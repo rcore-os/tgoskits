@@ -6,6 +6,7 @@ use core::{
     task::{Context, Poll},
 };
 
+use ax_std::os::arceos::task::sync::WaitQueue;
 use crab_usb::{
     Device, DeviceInfo, EndpointHandle, InterfaceSession, ProbeChanges,
     usb_if::{
@@ -15,7 +16,6 @@ use crab_usb::{
         transfer::{Direction, Recipient, Request, RequestType},
     },
 };
-use event_listener::Event as NotifyEvent;
 use rdrive::DeviceId as RDriveDeviceId;
 
 use super::{
@@ -258,14 +258,14 @@ pub(super) struct UsbFsManager {
 
 struct UsbActivity {
     seq: AtomicU64,
-    event: NotifyEvent,
+    waiters: WaitQueue,
 }
 
 impl UsbActivity {
     fn new() -> Self {
         Self {
             seq: AtomicU64::new(0),
-            event: NotifyEvent::new(),
+            waiters: WaitQueue::new(),
         }
     }
 }
@@ -453,8 +453,16 @@ impl UsbFsManager {
         self.usb_activity.seq.load(Ordering::Acquire)
     }
 
-    pub(super) fn listen_usb_activity(&self) -> event_listener::EventListener {
-        self.usb_activity.event.listen()
+    pub(super) fn notify_urb_workers(&self) {
+        // Submit and close publish their state before advancing this generation.
+        self.usb_activity.seq.fetch_add(1, Ordering::AcqRel);
+        self.usb_activity.waiters.notify_all();
+    }
+
+    pub(super) fn wait_for_usb_activity(&self, observed: u64, ready: impl Fn() -> bool) {
+        self.usb_activity
+            .waiters
+            .wait_until(|| self.usb_activity_seq() != observed || ready());
     }
 
     pub(super) fn has_hosts(&self) -> bool {
@@ -1432,7 +1440,7 @@ pub(super) fn usbfs_refresh_task(manager: Arc<UsbFsManager>) {
     let mut retry_backoff = RefreshRetryBackoff::default();
     loop {
         manager.irq_notify.wait();
-        manager.usb_activity.event.notify(usize::MAX);
+        manager.usb_activity.waiters.notify_all();
         loop {
             match manager.service_refresh_batch() {
                 RefreshBatchOutcome::Idle => {

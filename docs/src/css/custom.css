@@ -1,4 +1,20 @@
 :root {
+  --site-content-width: 80vw;
+  --site-hero-height: calc(100svh - var(--ifm-navbar-height));
+  --site-hero-padding: clamp(2rem, 4vw, 4rem);
+  --site-section-space: clamp(3rem, 5vw, 5rem);
+  --site-layout-gap: clamp(1.5rem, 3vw, 4rem);
+  --site-hero-title-size: clamp(2.25rem, 3vw, 3.5rem);
+  --site-section-title-size: clamp(1.8rem, 2.5vw, 2.6rem);
+  --site-line-height: 1.8;
+  --site-control-radius: 8px;
+  --site-card-radius: 16px;
+  --site-accent: var(--ifm-color-primary);
+  --site-on-accent: #fff;
+  --site-text: var(--ifm-font-color-base);
+  --site-muted: var(--ifm-color-emphasis-700);
+  --site-surface: var(--ifm-background-surface-color);
+  --site-border: var(--ifm-color-emphasis-200);
   --ifm-color-primary: #0f766e;
   --ifm-color-primary-dark: #0d635d;
   --ifm-color-primary-darker: #0c5d58;
@@ -11,6 +27,7 @@
 }
 
 html[data-theme='dark'] {
+  --site-on-accent: #112d26;
   --ifm-color-primary: #5eead4;
   --ifm-color-primary-dark: #2dd4bf;
   --ifm-color-primary-darker: #14b8a6;
@@ -26,4 +43,34 @@ html[data-theme='dark'] {
 
 .markdown img {
   border-radius: 12px;
+}
+
+/* Infima's vertical avatar leaves no row gap, which puts the name against the portrait. */
+.contributor-card .avatar--vertical {
+  row-gap: 0.75rem;
+}
+
+/* Custom landing pages share a fluid desktop canvas without widening document columns. */
+.site-showcase .container {
+  width: var(--site-content-width);
+  max-width: none;
+}
+
+@media (max-width: 1199px) {
+  :root { --site-content-width: calc(100% - 2rem); }
+}
+
+/* Shared image/copy policy: natural text height, bounded artwork, no forced text stretching. */
+[data-visual-pair] {
+  --visual-target-height: min(var(--visual-copy-height, 640px), 850px);
+}
+[data-visual-copy] { min-height: 0; }
+
+.site-showcase :is(a, button, input, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--site-accent);
+  outline-offset: 4px;
+}
+@media (max-width: 1100px) {
+  [data-visual-pair] { --visual-target-height: 640px; }
+  [data-visual-pair] > [data-visual-copy] { grid-column: auto; grid-row: auto; }
 }

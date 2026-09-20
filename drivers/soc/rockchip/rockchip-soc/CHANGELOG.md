@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.4.6...rockchip-soc-v0.4.7) - 2026-09-18
+
+### Other
+
+- *(repo)* remove nonfunctional and redundant test assertions ([#2440](https://github.com/rcore-os/tgoskits/pull/2440))
+
 ## [0.4.6](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.4.5...rockchip-soc-v0.4.6) - 2026-09-09
 
 ### Other

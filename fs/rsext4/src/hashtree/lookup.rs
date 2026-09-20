@@ -49,6 +49,26 @@ pub(super) fn lookup<B: BlockIo>(
         return manager.fallback_to_linear_search(fs, block_dev, dir_ino, dir_inode, target_name);
     }
 
+    // Indexed directories keep dot entries in logical block zero, outside
+    // the hash-indexed leaves. In particular rename's ancestry walk needs
+    // the real parent entry, not a hash lookup for the bytes "..".
+    if target_name == b"." || target_name == b".." {
+        let block = manager.get_root_block(fs, block_dev, dir_ino, dir_inode)?;
+        let data = manager.read_block_data(fs, block_dev, block)?;
+        if crate::checksum::verify_ext4_dx_checksum(
+            &fs.superblock,
+            dir_ino.raw(),
+            dir_inode.i_generation,
+            &data,
+        ) != Some(true)
+        {
+            return Err(HashTreeError::Filesystem(
+                crate::Ext4Error::checksum().with_operation("htree:root"),
+            ));
+        }
+        return manager.search_in_leaf_data(&data, target_name, block);
+    }
+
     let indexed_result = manager
         .prepare_search(fs, block_dev, dir_ino, dir_inode, target_name)
         .and_then(|(search, root)| manager.search_collision_chain(fs, block_dev, search, &root));

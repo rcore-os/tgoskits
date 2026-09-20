@@ -1674,6 +1674,30 @@ impl JBD2DEVSYSTEM {
     }
 }
 
+fn zero_allocated_block_runs<B: BlockIo>(
+    block_dev: &mut Jbd2Dev<B>,
+    blocks: &[AbsoluteBN],
+) -> Ext4Result<()> {
+    let Some((&first, remaining)) = blocks.split_first() else {
+        return Ok(());
+    };
+
+    let mut run_start = first;
+    let mut previous = first;
+    let mut run_len = 1u32;
+    for &block in remaining {
+        if block == previous.checked_add(1)? {
+            run_len = run_len.checked_add(1).ok_or_else(Ext4Error::overflow)?;
+        } else {
+            block_dev.zero_metadata_blocks(run_start, run_len)?;
+            run_start = block;
+            run_len = 1;
+        }
+        previous = block;
+    }
+    block_dev.zero_metadata_blocks(run_start, run_len)
+}
+
 /// Creates the journal inode and writes its initial journal superblock.
 pub fn create_journal_entry<B: BlockIo>(
     fs: &mut Ext4FileSystem,
@@ -1687,10 +1711,7 @@ pub fn create_journal_entry<B: BlockIo>(
 
     // Ensure journal area starts clean: otherwise old image contents could look like valid
     // descriptor/commit blocks and replay would corrupt filesystem metadata.
-    let zero = vec![0u8; block_size];
-    for &b in free_block.iter() {
-        block_dev.write_blocks(&zero, b, 1, true)?;
-    }
+    zero_allocated_block_runs(block_dev, &free_block)?;
     // Build the journal inode metadata and map the allocated journal blocks.
     let mut jour_inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
     jour_inode.i_links_count = 1;

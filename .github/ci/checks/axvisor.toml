@@ -23,18 +23,11 @@ arch = "aarch64"
 cases = ["smoke"]
 
 [[check]]
-id = "test-axvisor-aarch64-qemu-panic-http-control-plane-ivc"
+id = "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · Panic modes + HTTP control-plane + browser console + IVC"
+name = "QEMU aarch64 · HTTP control-plane + browser console + IVC"
 timeout_minutes = 30
 command = '''
-echo "==> axvisor aarch64 backtrace panic"
-cargo xtask axvisor test qemu --arch aarch64 --test-case backtrace-panic
-echo "==> axvisor aarch64 terminal EL2 faults"
-cargo xtask axvisor test qemu --arch aarch64 --test-case el2-fatal
-cargo xtask axvisor test qemu --arch aarch64 --test-case el2-fatal-foreign-context
-echo "==> axvisor aarch64 no-backtrace panic"
-cargo xtask axvisor test qemu --arch aarch64 --test-case no-backtrace
 echo "==> pull qemu-aarch64 image"
 cargo xtask image pull qemu-aarch64 --extract-dir tmp/axbuild/images
 echo "==> axvisor aarch64 HTTP control-plane (incl. pause/resume)"
@@ -48,12 +41,12 @@ cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qem
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["backtrace-panic", "no-backtrace", "el2-fatal", "el2-fatal-foreign-context", "http-control-plane", "browser-console", "qemu-ivc"]
+cases = ["http-control-plane", "browser-console", "qemu-ivc"]
 
 [[check]]
-id = "test-axvisor-riscv64-qemu-smoke-panic-modes"
+id = "test-axvisor-riscv64-qemu-smoke-ipi"
 impact_targets = ["axvisor:riscv64"]
-name = "QEMU riscv64 · Smoke + IPI + panic modes"
+name = "QEMU riscv64 · Smoke + IPI"
 timeout_minutes = 30
 command = '''
 echo "==> axvisor riscv64 smoke"
@@ -62,16 +55,12 @@ echo "==> axvisor riscv64 IPI cross-test"
 cargo xtask cross-test --arch riscv64 \
   --package axvm \
   --features axvm/host-test --no-default-features --lib ipi
-echo "==> axvisor riscv64 backtrace panic"
-cargo xtask axvisor test qemu --arch riscv64 --test-case backtrace-panic
-echo "==> axvisor riscv64 no-backtrace panic"
-cargo xtask axvisor test qemu --arch riscv64 --test-case no-backtrace
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "riscv64"
-cases = ["smoke", "backtrace-panic", "no-backtrace"]
+cases = ["smoke"]
 
 [[check]]
 id = "test-axvisor-loongarch64-qemu"

@@ -417,6 +417,32 @@ fn invalidate_clean_pages_detaches_disk_cache_copy() {
 }
 
 #[test]
+fn invalidate_clean_pages_holds_the_fault_barrier_until_retirement() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE]));
+        let cached = reopen_cached_file(backing);
+        drop(cached.pin_page_or_insert(0).unwrap());
+
+        let publisher = cached.clone();
+        let endpoint = test_mapping_endpoint(move |event| {
+            assert!(matches!(event, CacheMappingEvent::Evict(_)));
+            // A fault published while the detached page is being retired would
+            // re-own frames this invalidation is about to release, so new
+            // publications must stay excluded until the retirement completes.
+            assert!(matches!(
+                publisher.pin_page_or_insert(0),
+                Err(VfsError::ResourceBusy)
+            ));
+            CacheMappingResult::Retired
+        });
+        cached.install_mapping_endpoint(&endpoint).unwrap();
+
+        assert_eq!(cached.invalidate_clean_pages(0, 1).unwrap(), 1);
+        assert!(!cached.is_page_cached(0));
+    });
+}
+
+#[test]
 fn invalidate_clean_pages_preserves_tmpfs_backing_object() {
     with_test_page_provider(true, |_| {
         let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE]));
@@ -1161,6 +1187,63 @@ fn buffered_write_reclaims_dirty_lru_page_when_cache_is_full() {
         cached.writeback().unwrap();
 
         assert_eq!(backing.state.lock().unwrap().physical_data, data);
+    });
+}
+
+#[cfg(feature = "vfs")]
+#[test]
+fn capacity_writeback_revalidates_a_mapping_installed_during_the_writeback() {
+    const INITIAL_PAGE_COUNT: usize = DISK_PAGE_CACHE_CAP;
+
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(Vec::new()));
+        let cached = reopen_cached_file(backing.clone());
+        let data = vec![0x7e; (INITIAL_PAGE_COUNT + 1) * PAGE_SIZE];
+
+        // A live endpoint suppresses the low-watermark writeback while the
+        // cache fills, so the LRU page is still dirty when capacity is reached.
+        let endpoint =
+            install_shared_test_endpoint(&cached.shared, |_| CacheMappingResult::Protected);
+        super::writeback_worker::tests::with_forced_worker_result(true, || {
+            assert_eq!(
+                cached
+                    .write_at(&data[..INITIAL_PAGE_COUNT * PAGE_SIZE], 0)
+                    .unwrap(),
+                INITIAL_PAGE_COUNT * PAGE_SIZE
+            );
+        });
+        assert!(cached.shared.page_cache.lock().peek_lru().unwrap().1.dirty);
+        drop(endpoint);
+        assert!(backing.write_lengths().is_empty());
+
+        // Mapping the file while the capacity writeback owns the backing store
+        // must reach the retry: the LRU page belongs to a mapped file now, so
+        // evicting it would detach frames that page tables still own.
+        let mapped = Arc::new(StdMutex::new(None));
+        let installed = mapped.clone();
+        let shared = cached.shared.clone();
+        backing.set_write_observer(Some(Arc::new(move |finished| {
+            if finished || installed.lock().unwrap().is_some() {
+                return;
+            }
+            *installed.lock().unwrap() = Some(install_shared_test_endpoint(&shared, |_| {
+                CacheMappingResult::Protected
+            }));
+        })));
+
+        assert_eq!(
+            cached.write_at(
+                &data[INITIAL_PAGE_COUNT * PAGE_SIZE..],
+                (INITIAL_PAGE_COUNT * PAGE_SIZE) as u64,
+            ),
+            Err(VfsError::ResourceBusy)
+        );
+        backing.set_write_observer(None);
+        assert!(cached.is_page_cached(0));
+        assert!(!cached.is_page_cached(INITIAL_PAGE_COUNT as u32));
+
+        drop(mapped.lock().unwrap().take());
+        cached.sync(false).unwrap();
     });
 }
 

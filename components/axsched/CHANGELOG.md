@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.11](https://github.com/rcore-os/tgoskits/compare/ax-sched-v0.5.10...ax-sched-v0.5.11) - 2026-09-18
+
+### Added
+
+- *(ax-task)* integrate capacity-aware Fair placement ([#2389](https://github.com/rcore-os/tgoskits/pull/2389))
+
 ## [0.5.10](https://github.com/rcore-os/tgoskits/compare/ax-sched-v0.5.9...ax-sched-v0.5.10) - 2026-09-09
 
 ### Other

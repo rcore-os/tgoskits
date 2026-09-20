@@ -40,15 +40,24 @@ pub enum PwmError {
     InvalidDuty,
     #[error("unsupported PWM polarity")]
     UnsupportedPolarity,
+    #[error("invalid PWM register mapping")]
+    InvalidMapping,
+    #[error("PWM clock is unavailable or invalid")]
+    Clock,
 }
 
 pub trait Interface: DriverGeneric {
     fn channel_count(&self) -> usize;
 
+    /// Read the actual, quantized hardware state, not the last requested state.
+    fn get_state(&mut self, channel: usize) -> Result<PwmState, PwmError>;
+
+    /// Apply a complete state. Disabled requests ignore waveform parameters.
+    /// Validation failures must leave the hardware unchanged.
     fn apply(&mut self, channel: usize, state: PwmState) -> Result<(), PwmError>;
 
     fn disable(&mut self, channel: usize) -> Result<(), PwmError> {
-        self.apply(channel, PwmState::normal(1, 0, false))
+        self.apply(channel, PwmState::normal(0, 0, false))
     }
 }
 

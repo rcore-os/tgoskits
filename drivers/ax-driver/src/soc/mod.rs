@@ -48,3 +48,6 @@ impl RockchipPinCtrl {
         )))
     }
 }
+
+#[cfg(feature = "pwm")]
+mod cv181x_clock;

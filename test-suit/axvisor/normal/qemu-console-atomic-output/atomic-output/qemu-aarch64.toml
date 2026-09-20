@@ -1,21 +1,63 @@
+# Console-output stress driven through real output paths.
+#
+# The case floods the bounded host-console pipeline with `vm show --full` and
+# `help` output, then attaches to the Linux guest so its whole boot log replays
+# through the mux. The pass criteria are the original regression's failure
+# modes: no panic, no sleep attempt from an atomic context, and the console
+# worker staying alive; queued-byte drops under flood are expected behavior.
 args = [
-    "-nographic",
-    "-cpu",
-    "cortex-a72",
-    "-machine",
-    "virt,virtualization=on,gic-version=3",
-    "-smp",
-    "1",
-    "-m",
-    "512M",
+  "-nographic",
+  "-snapshot",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-device",
+  "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-append",
+  "root=/dev/nvme0n1 rw init=/bin/sh",
+  "-m",
+  "8g",
 ]
 fail_regex = [
-    "(?i)panic",
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)I/O error",
     "sleeping or rescheduling is not allowed in atomic context",
+    "Axvisor host console output worker stopped",
+    "Axvisor host console output stopped",
 ]
-timeout = 60
+timeout = 300
 to_bin = true
 uefi = false
 
 [[shell_check_steps]]
-success_regex = ["(?m)^CONSOLE_ATOMIC_OUTPUT_REGRESSION_PASSED\\s*$"]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm show --full 1"
+success_regex = ['(?m)^=== VM Details: 1 ===\s*$', '(?m)^VCPU Details:\s*$']
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "help"
+success_regex = ['(?m)^ArceOS Shell - Available Commands:\s*$']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "vm list"
+success_regex = ['(?m)^VM ID\s+NAME\s+STATUS']
+timeout = 30
+
+# Replaying the guest boot log floods the output queue far beyond one batch.
+[[shell_check_steps]]
+shell_cmd = "vm console 1"
+success_regex = ['(?m)^test pass!\s*$']
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "echo CONSOLE_ATOMIC_OUTPUT_OK"
+success_regex = ['(?m)^CONSOLE_ATOMIC_OUTPUT_OK\s*$']
+timeout = 30

@@ -2,7 +2,7 @@
 
 use alloc::{boxed::Box, vec::Vec};
 
-use super::cached_device::BlockDev;
+use super::{MAX_BUFFERED_WRITE_BLOCKS, cached_device::BlockDev};
 use crate::{
     bmalloc::AbsoluteBN,
     checksum::jbd2_superblock_csum32,
@@ -1732,6 +1732,46 @@ impl<B: BlockIo> Jbd2Dev<B> {
             self.enqueue_journal_update(updates, transaction_capacity)?;
         }
 
+        Ok(())
+    }
+
+    /// Zeroes a contiguous metadata region with bounded multi-block writes.
+    pub(crate) fn zero_metadata_blocks(
+        &mut self,
+        block_id: AbsoluteBN,
+        count: u32,
+    ) -> Ext4Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+
+        let block_size = self.inner.block_size() as usize;
+        let buffered_blocks = core::cmp::min(
+            usize::try_from(count).map_err(|_| Ext4Error::overflow())?,
+            MAX_BUFFERED_WRITE_BLOCKS,
+        );
+        let buffer_bytes = block_size
+            .checked_mul(buffered_blocks)
+            .ok_or_else(Ext4Error::overflow)?;
+        let mut zeroes = Vec::new();
+        zeroes
+            .try_reserve_exact(buffer_bytes)
+            .map_err(|_| Ext4Error::no_memory())?;
+        zeroes.resize(buffer_bytes, 0);
+
+        let buffered_blocks = u32::try_from(buffered_blocks).map_err(|_| Ext4Error::overflow())?;
+        let mut offset = 0u32;
+        while offset < count {
+            let blocks = core::cmp::min(count - offset, buffered_blocks);
+            let bytes = checked_block_bytes(block_size, blocks)?;
+            self.write_blocks(
+                &zeroes[..bytes],
+                block_id.checked_add(offset)?,
+                blocks,
+                true,
+            )?;
+            offset = offset.checked_add(blocks).ok_or_else(Ext4Error::overflow)?;
+        }
         Ok(())
     }
 
