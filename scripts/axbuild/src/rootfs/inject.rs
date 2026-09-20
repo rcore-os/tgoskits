@@ -1024,6 +1024,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn non_root_extraction_starts_debugfs_inside_fakeroot() {
+        use std::fs::OpenOptions;
+
         let root = executable_helper_tempdir();
         let fakeroot = root.path().join("fakeroot");
         let debugfs = root.path().join("debugfs");
@@ -1031,7 +1033,7 @@ mod tests {
         write_executable(
             &fakeroot,
             "#!/bin/sh\ntest \"$1\" = \"--\" || exit 91\nshift\nexport \
-             AXBUILD_TEST_FAKEROOT=1\nexec \"$@\"\n",
+             AXBUILD_TEST_FAKEROOT=1\nexec /bin/sh \"$@\"\n",
         );
         write_executable(
             &debugfs,
@@ -1042,6 +1044,12 @@ mod tests {
                 marker.display()
             ),
         );
+
+        // Keep the fixture inode busy to model a writer inherited during
+        // publication. The fake fakeroot reads it through the installed shell,
+        // so this test exercises wrapper argument and environment propagation
+        // without depending on direct script execution timing.
+        let _inherited_writer = OpenOptions::new().write(true).open(&debugfs).unwrap();
 
         let output_dir = root.path().join("staging");
         fs::create_dir_all(output_dir.join("etc")).unwrap();
