@@ -95,6 +95,7 @@ struct SyncIoCounters {
     reads: AtomicUsize,
     writes: AtomicUsize,
     written_sectors: AtomicUsize,
+    largest_write_sectors: AtomicUsize,
     primary_superblock_writes: AtomicUsize,
     primary_gdt_writes: AtomicUsize,
     flushes: AtomicUsize,
@@ -105,6 +106,7 @@ struct SyncIoSnapshot {
     reads: usize,
     writes: usize,
     written_sectors: usize,
+    largest_write_sectors: usize,
     primary_superblock_writes: usize,
     primary_gdt_writes: usize,
     flushes: usize,
@@ -115,6 +117,7 @@ impl SyncIoCounters {
         self.reads.store(0, Ordering::SeqCst);
         self.writes.store(0, Ordering::SeqCst);
         self.written_sectors.store(0, Ordering::SeqCst);
+        self.largest_write_sectors.store(0, Ordering::SeqCst);
         self.primary_superblock_writes.store(0, Ordering::SeqCst);
         self.primary_gdt_writes.store(0, Ordering::SeqCst);
         self.flushes.store(0, Ordering::SeqCst);
@@ -125,6 +128,7 @@ impl SyncIoCounters {
             reads: self.reads.load(Ordering::SeqCst),
             writes: self.writes.load(Ordering::SeqCst),
             written_sectors: self.written_sectors.load(Ordering::SeqCst),
+            largest_write_sectors: self.largest_write_sectors.load(Ordering::SeqCst),
             primary_superblock_writes: self.primary_superblock_writes.load(Ordering::SeqCst),
             primary_gdt_writes: self.primary_gdt_writes.load(Ordering::SeqCst),
             flushes: self.flushes.load(Ordering::SeqCst),
@@ -157,6 +161,9 @@ impl BlockIo for CountingIoDevice {
         self.counters
             .written_sectors
             .fetch_add(count as usize, Ordering::SeqCst);
+        self.counters
+            .largest_write_sectors
+            .fetch_max(count as usize, Ordering::SeqCst);
         // The test device and default mkfs both use 4 KiB blocks, so the
         // primary superblock shares sector 0 and the GDT starts at sector 1.
         if sector.raw() == 0 {
@@ -374,6 +381,29 @@ fn owned_test_filesystem_with_flush_failure() -> (TestOwnedFilesystem, Arc<Atomi
     let filesystem =
         Ext4::mount(device, services, MountOptions::read_write()).expect("owned mount failed");
     (filesystem, fail_flush)
+}
+
+#[test]
+fn mkfs_batches_large_zeroed_regions() {
+    let counters = Arc::new(SyncIoCounters::default());
+    let device = CountingIoDevice::new(100 * 1024 * 1024, counters.clone());
+
+    format(
+        device,
+        SeparateClock(Cell::new(1_700_000_000)),
+        MkfsOptions::default(),
+    )
+    .expect("mkfs failed");
+
+    let io = counters.snapshot();
+    assert!(
+        io.largest_write_sectors > 1,
+        "mkfs must issue multi-block writes for contiguous zeroed regions: {io:?}"
+    );
+    assert!(
+        io.writes < 1024,
+        "mkfs must not zero the inode table and journal one block per request: {io:?}"
+    );
 }
 
 #[test]

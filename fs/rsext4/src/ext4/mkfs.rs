@@ -701,10 +701,7 @@ fn initialize_group_0<B: BlockIo>(
     block_dev.write_blocks(&inode_bitmap, inode_bitmap_blk.into(), 1, true)?;
 
     // Zero the inode table before the filesystem is mounted for the first time.
-    let zero_block = vec![0; block_dev.block_size() as usize];
-    for i in 0..layout.inode_table_blocks {
-        block_dev.write_blocks(&zero_block, (inode_table_blk + i).into(), 1, true)?;
-    }
+    block_dev.zero_metadata_blocks(inode_table_blk.into(), layout.inode_table_blocks)?;
 
     // Persist the now-initialized descriptor for group 0.
     let mut desc = Ext4GroupDesc {
