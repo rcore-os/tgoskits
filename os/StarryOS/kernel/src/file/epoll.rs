@@ -14,10 +14,12 @@ use alloc::{
 };
 use core::{
     hash::{Hash, Hasher},
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    ptr,
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
     task::Waker,
 };
 
+use ax_lazyinit::OnceLock;
 use axpoll::{
     ExclusiveConsumer, ExclusiveRegistrationSink, IoEvents, PollRegistrar, SharedObserver,
     SharedRegistrationSink,
@@ -37,8 +39,42 @@ use crate::{
     StarryError, StarryResult,
     file::{FileLike, get_file_like, signalfd::Signalfd},
     sync::IrqMutex,
-    task::{ProcessData, current_user_task},
+    task::{ProcessData, current_user_task, future::IrqNotify},
 };
+#[cfg(not(all(test, not(axtest))))]
+use crate::sync::Mutex;
+
+static EPOLL_NOTIFY: IrqNotify = IrqNotify::new();
+static EPOLL_NOTIFY_QUEUE: IrqMutex<()> = IrqMutex::new(());
+static EPOLL_NOTIFY_HEAD: AtomicPtr<EpollInner> = AtomicPtr::new(ptr::null_mut());
+static EPOLL_NOTIFY_STARTED: OnceLock<()> = OnceLock::new();
+
+pub(crate) fn start_epoll_notify_worker() {
+    EPOLL_NOTIFY_STARTED.call_once(|| {
+        crate::task::kernel_thread_builder("epoll-notify".into())
+            .spawn(|| loop {
+                EPOLL_NOTIFY.wait();
+                let mut current = {
+                    let _queue = EPOLL_NOTIFY_QUEUE.lock();
+                    EPOLL_NOTIFY_HEAD.swap(ptr::null_mut(), Ordering::AcqRel)
+                };
+                while !current.is_null() {
+                    let epoll = unsafe {
+                        // SAFETY: queue insertion transfers exactly one strong
+                        // reference through Arc::into_raw. The queue lock gives
+                        // this sole consumer exclusive ownership of the detached
+                        // list, so each node is reconstructed exactly once.
+                        Arc::from_raw(current)
+                    };
+                    let next = epoll.notify_next.swap(ptr::null_mut(), Ordering::Acquire);
+                    epoll.notify_queued.store(false, Ordering::Release);
+                    epoll.flush_ready_waiters();
+                    current = next;
+                }
+            })
+            .expect("failed to spawn epoll notification worker");
+    });
+}
 
 pub struct EpollEvent {
     pub events: IoEvents,
@@ -178,11 +214,14 @@ struct EpollInterest {
     // A weak owner preserves same-process waiter refreshes without extending
     // the originating process lifetime.
     signalfd_registration_owner: Option<Weak<ProcessData>>,
-    registration_order: usize,
     mode: IrqMutex<TriggerMode>,
     exclusive: bool,
     in_ready_queue: AtomicBool,
     owner_repoll_pending: AtomicBool,
+    #[cfg(not(all(test, not(axtest))))]
+    registration_refresh: Mutex<()>,
+    #[cfg(all(test, not(axtest)))]
+    registration_refresh: std::sync::Mutex<()>,
     registration: IrqMutex<Option<InterestRegistration>>,
 }
 
@@ -197,7 +236,6 @@ impl EpollInterest {
         event: EpollEvent,
         flags: EpollFlags,
         nested_link: Option<EpollTopologyLink>,
-        registration_order: usize,
     ) -> Self {
         Self {
             signalfd_registration_owner: key
@@ -207,11 +245,14 @@ impl EpollInterest {
             key,
             event,
             nested_link,
-            registration_order,
             mode: IrqMutex::new(TriggerMode::from_flags(flags)),
             exclusive: flags.contains(EpollFlags::EXCLUSIVE),
             in_ready_queue: AtomicBool::new(false),
             owner_repoll_pending: AtomicBool::new(false),
+            #[cfg(not(all(test, not(axtest))))]
+            registration_refresh: Mutex::new(()),
+            #[cfg(all(test, not(axtest)))]
+            registration_refresh: std::sync::Mutex::new(()),
             registration: IrqMutex::new(None),
         }
     }
@@ -229,11 +270,6 @@ impl EpollInterest {
     #[inline]
     fn is_edge_triggered(&self) -> bool {
         matches!(*self.mode.lock(), TriggerMode::Edge)
-    }
-
-    #[inline]
-    fn is_level_triggered(&self) -> bool {
-        matches!(*self.mode.lock(), TriggerMode::Level)
     }
 
     #[inline]
@@ -302,8 +338,10 @@ impl EpollInterest {
             })
     }
 
-    fn request_owner_repoll(&self) {
-        self.owner_repoll_pending.store(true, Ordering::Release);
+    fn request_owner_repoll(&self) -> bool {
+        self.owner_repoll_pending
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     fn requires_owner_repoll(&self) -> bool {
@@ -335,6 +373,8 @@ impl InterestRegistration {
 struct InterestWaker {
     epoll: Weak<EpollInner>,
     interest: Weak<EpollInterest>,
+    defer_wake: AtomicBool,
+    deferred_wake: AtomicBool,
 }
 
 impl Wake for InterestWaker {
@@ -343,10 +383,43 @@ impl Wake for InterestWaker {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
+        if self.defer_wake.load(Ordering::Acquire) {
+            self.deferred_wake.store(true, Ordering::Release);
+            // Close the race where registration completes after the first
+            // defer check but before this callback publishes its flag.
+            if self.defer_wake.load(Ordering::Acquire) {
+                return;
+            }
+            if !self.deferred_wake.swap(false, Ordering::AcqRel) {
+                return;
+            }
+        }
+        self.publish();
+    }
+}
+
+impl InterestWaker {
+    fn new(epoll: &Arc<EpollInner>, interest: &Arc<EpollInterest>) -> Arc<Self> {
+        Arc::new(Self {
+            epoll: Arc::downgrade(epoll),
+            interest: Arc::downgrade(interest),
+            defer_wake: AtomicBool::new(true),
+            deferred_wake: AtomicBool::new(false),
+        })
+    }
+
+    fn finish_register(&self, ready: bool) {
+        self.defer_wake.store(false, Ordering::Release);
+        let had_deferred_wake = self.deferred_wake.swap(false, Ordering::AcqRel);
+        if ready || had_deferred_wake {
+            self.publish();
+        }
+    }
+
+    fn publish(&self) {
         let Some(epoll) = self.epoll.upgrade() else {
             return;
         };
-
         let Some(interest) = self.interest.upgrade() else {
             return;
         };
@@ -357,27 +430,10 @@ impl Wake for InterestWaker {
         // additional case where doing so would steal the parent's registration.
         // Wake the original waiter and let it refresh exactly once in context.
         if interest.requires_owner_repoll() {
-            interest.request_owner_repoll();
-            epoll.wake_ready_waiters(1);
-            return;
+            epoll.request_owner_repoll(&interest);
+        } else {
+            epoll.publish_ready_interest(&interest);
         }
-
-        if interest.is_edge_triggered() {
-            // A target may invoke its waker while holding an internal lock.
-            // The callback must therefore only publish epoll-owned state; in
-            // particular, calling file.poll() or file.register() here could
-            // re-enter that target lock on the same thread. The epoll waiter
-            // rearms the consumed PollSet entry from task context.
-            if interest.is_enabled() && interest.try_mark_in_queue() {
-                epoll.enqueue_marked_ready(&interest);
-                trace!(
-                    "Epoll: fd={} added to ready queue, events={:?}",
-                    interest.key.fd, interest.event.events
-                );
-            }
-            return;
-        }
-        epoll.publish_ready_for_file(&interest);
     }
 }
 
@@ -387,7 +443,9 @@ pub(super) struct EpollInner {
     ready_queue: IrqMutex<VecDeque<Weak<EpollInterest>>>,
     overflow_ready: AtomicBool,
     poll_ready: PollSet,
-    next_registration_order: AtomicUsize,
+    pending_wakes: AtomicUsize,
+    notify_queued: AtomicBool,
+    notify_next: AtomicPtr<EpollInner>,
 }
 
 impl Default for EpollInner {
@@ -398,7 +456,9 @@ impl Default for EpollInner {
             ready_queue: IrqMutex::new(VecDeque::new()),
             overflow_ready: AtomicBool::new(false),
             poll_ready: PollSet::new(),
-            next_registration_order: AtomicUsize::new(0),
+            pending_wakes: AtomicUsize::new(0),
+            notify_queued: AtomicBool::new(false),
+            notify_next: AtomicPtr::new(ptr::null_mut()),
         }
     }
 }
@@ -419,10 +479,18 @@ impl EpollInner {
         unsafe { sink.register_exclusive(&self.poll_ready, IoEvents::IN) };
     }
 
-    fn register_waker_only(
+    fn register_waker(
         self: &Arc<Self>,
         interest: &Arc<EpollInterest>,
-    ) -> Option<(Arc<dyn FileLike>, Waker)> {
+        recheck: bool,
+    ) -> Option<Arc<InterestWaker>> {
+        #[cfg(not(all(test, not(axtest))))]
+        let _refresh = interest.registration_refresh.lock();
+        #[cfg(all(test, not(axtest)))]
+        let _refresh = interest
+            .registration_refresh
+            .lock()
+            .expect("epoll registration refresh lock poisoned");
         let Some(file) = interest.key.get_file() else {
             interest.replace_registration(None);
             return None;
@@ -433,10 +501,11 @@ impl EpollInner {
             return None;
         }
 
-        let waker = Waker::from(Arc::new(InterestWaker {
-            epoll: Arc::downgrade(self),
-            interest: Arc::downgrade(interest),
-        }));
+        // A selected callback from the previous registration remains valid
+        // until it runs. Serialize refreshes so the stored ownership lease and
+        // the new callback cannot be reordered by concurrent epoll waiters.
+        let interest_waker = InterestWaker::new(self, interest);
+        let waker = Waker::from(Arc::clone(&interest_waker));
         let events = register_events(interest.event.events);
         let registration = if interest.is_exclusive() {
             let mut registrar = PollRegistrar::<ExclusiveConsumer>::new(&waker);
@@ -448,7 +517,9 @@ impl EpollInner {
             InterestRegistration::Shared(registrar)
         };
         interest.replace_registration(Some(registration));
-        Some((file, waker))
+        let ready = recheck && !match_ready_events(file.poll(), interest.event.events).is_empty();
+        interest_waker.finish_register(ready);
+        Some(interest_waker)
     }
 
     /// Remove an interest while the global topology mutex is held.
@@ -505,9 +576,6 @@ impl EpollInner {
     fn enqueue_marked_ready_without_wake(&self, interest: &Arc<EpollInterest>) {
         let queued = {
             let mut queue = self.ready_queue.lock();
-            if queue.len() == queue.capacity() {
-                queue.retain(|entry| entry.upgrade().is_some());
-            }
             if queue.len() < queue.capacity() {
                 queue.push_back(Arc::downgrade(interest));
                 true
@@ -532,64 +600,69 @@ impl EpollInner {
         }
     }
 
+    fn defer_ready_waiters(self: &Arc<Self>, published: usize) {
+        if published == 0 {
+            return;
+        }
+
+        self.pending_wakes.fetch_add(published, Ordering::Release);
+        #[cfg(not(all(test, not(axtest))))]
+        if self
+            .notify_queued
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let node = Arc::into_raw(Arc::clone(self)).cast_mut();
+            {
+                // The queue lock serializes publication with list detachment.
+                // The transferred Arc keeps this embedded link alive until the
+                // notification worker reconstructs and drops that reference.
+                let _queue = EPOLL_NOTIFY_QUEUE.lock();
+                let head = EPOLL_NOTIFY_HEAD.load(Ordering::Relaxed);
+                self.notify_next.store(head, Ordering::Relaxed);
+                EPOLL_NOTIFY_HEAD.store(node, Ordering::Release);
+            }
+            EPOLL_NOTIFY.notify_irq();
+        }
+    }
+
+    fn flush_ready_waiters(&self) {
+        let published = self.pending_wakes.swap(0, Ordering::AcqRel);
+        self.wake_ready_waiters(published);
+    }
+
     fn enqueue_marked_ready(&self, interest: &Arc<EpollInterest>) {
         self.enqueue_marked_ready_without_wake(interest);
-        // Ready queue or overflow state is published before giving one
-        // exclusive epoll waiter a chance to consume it. Linux registers
-        // epoll_wait callers as exclusive waiters so one callback cannot make
-        // multiple callers race over the same level-triggered ready entry.
         self.wake_ready_waiters(1);
     }
 
-    fn publish_ready_for_file(&self, source: &Arc<EpollInterest>) {
-        let interests = match self.snapshot_callback_batch(source) {
-            Ok(interests) => interests,
-            Err(_) => {
-                // Allocation failure must not lose the callback that reached
-                // us. The overflow path will rediscover other ready aliases.
-                self.overflow_ready.store(true, Ordering::Release);
-                if source.is_enabled() && source.try_mark_in_queue() {
-                    self.enqueue_marked_ready(source);
-                } else {
-                    self.wake_ready_waiters(1);
-                }
-                return;
+    fn publish_ready_interest(self: &Arc<Self>, interest: &Arc<EpollInterest>) {
+        let published = {
+            let interests = self.interests.lock();
+            let is_current = interests
+                .get(&interest.key)
+                .is_some_and(|current| Arc::ptr_eq(current, interest));
+            if !is_current || !interest.is_enabled() || !interest.try_mark_in_queue() {
+                0
+            } else {
+                self.enqueue_marked_ready_without_wake(interest);
+                1
             }
         };
+        self.defer_ready_waiters(published);
+    }
 
-        // One file readiness transition can invoke multiple registered
-        // callbacks for dup aliases. Publish all matching interests before
-        // waking epoll_wait callers so a re-entrant waiter cannot consume and
-        // requeue the first LT item ahead of an alias from the same callback
-        // batch. Do not call back into the target here: poll wakeups may run
-        // while the target holds an internal lock, and readiness is rechecked
-        // when epoll_wait consumes each queued interest.
-        let mut published = 0;
-        let mut interests = interests;
-        // Linux's non-exclusive poll callbacks are linked at the wait-queue
-        // head, so the most recently registered alias callback runs first.
-        // Preserve that ordering instead of exposing HashMap iteration order.
-        interests.sort_unstable_by_key(|interest| core::cmp::Reverse(interest.registration_order));
-        for interest in interests {
-            let same_callback_batch = source.is_level_triggered()
-                && interest.is_level_triggered()
-                && Weak::ptr_eq(&interest.key.file, &source.key.file);
-            if (!same_callback_batch && !Arc::ptr_eq(&interest, source))
-                || !interest.is_enabled()
-                || interest.is_in_queue()
-            {
-                continue;
-            }
-            if interest.try_mark_in_queue() {
-                self.enqueue_marked_ready_without_wake(&interest);
-                published += 1;
-                trace!(
-                    "Epoll: fd={} added to ready queue, events={:?}",
-                    interest.key.fd, interest.event.events
-                );
-            }
+    fn request_owner_repoll(self: &Arc<Self>, interest: &Arc<EpollInterest>) {
+        let should_wake = {
+            let interests = self.interests.lock();
+            interests
+                .get(&interest.key)
+                .is_some_and(|current| Arc::ptr_eq(current, interest))
+                && interest.is_enabled()
+        };
+        if should_wake && interest.request_owner_repoll() {
+            self.defer_ready_waiters(1);
         }
-        self.wake_ready_waiters(published);
     }
 
     fn remove_ready_entries_for(&self, target: &Weak<EpollInterest>) {
@@ -612,57 +685,6 @@ impl EpollInner {
                 txlist.push_back(entry);
             }
             return Ok(txlist);
-        }
-    }
-
-    /// Whether a readiness callback that reached `source` may publish
-    /// `interest`: the source itself, or a descriptor registered on the same
-    /// file.
-    fn in_callback_batch(interest: &Arc<EpollInterest>, source: &Arc<EpollInterest>) -> bool {
-        Arc::ptr_eq(interest, source) || Weak::ptr_eq(&interest.key.file, &source.key.file)
-    }
-
-    /// The interests one readiness callback can publish.
-    ///
-    /// A file becoming ready can only publish the interests registered on that
-    /// file, and that is almost always one. Taking the whole epoll set to find
-    /// them charged every callback a reference count per registered
-    /// descriptor and a sort of the entire set, so the candidates are picked
-    /// out by pointer identity first. Pointer identity is also all that may be
-    /// tested here: it takes no further lock, which is what lets it run while
-    /// the interests lock is held.
-    fn snapshot_callback_batch(
-        &self,
-        source: &Arc<EpollInterest>,
-    ) -> StarryResult<Vec<Arc<EpollInterest>>> {
-        loop {
-            let len = self
-                .interests
-                .lock()
-                .values()
-                .filter(|interest| Self::in_callback_batch(interest, source))
-                .count();
-            let mut batch = Vec::new();
-            batch.try_reserve(len).map_err(|_| StarryError::NoMemory)?;
-
-            let interests = self.interests.lock();
-            let mut matched = 0;
-            for interest in interests.values() {
-                if !Self::in_callback_batch(interest, source) {
-                    continue;
-                }
-                matched += 1;
-                if matched > batch.capacity() {
-                    break;
-                }
-                batch.push(Arc::clone(interest));
-            }
-            // An alias registered while the count was not held sends this
-            // round back rather than growing the vector under the lock.
-            if matched > batch.capacity() {
-                continue;
-            }
-            return Ok(batch);
         }
     }
 
@@ -734,7 +756,7 @@ impl Epoll {
             return;
         }
 
-        let _ = self.inner.register_waker_only(interest);
+        let _ = self.inner.register_waker(interest, false);
     }
 
     fn register_waker_and_recheck(&self, interest: &Arc<EpollInterest>) {
@@ -742,13 +764,7 @@ impl Epoll {
             return;
         }
 
-        let Some((file, waker)) = self.inner.register_waker_only(interest) else {
-            return;
-        };
-
-        if !match_ready_events(file.poll(), interest.event.events).is_empty() {
-            waker.wake_by_ref();
-        }
+        let _ = self.inner.register_waker(interest, true);
     }
 
     /// Registers enabled interests with the thread currently waiting in epoll.
@@ -759,8 +775,9 @@ impl Epoll {
                 // A callback consumed outside owner context cannot safely poll
                 // signalfd readiness there. Recheck exactly once in the owner
                 // waiter without turning ordinary EPOLLET waits into LT polls.
-                let _ = self.inner.register_waker_only(interest);
-                self.inner.publish_ready_for_file(interest);
+                if self.inner.register_waker(interest, false).is_some() {
+                    self.inner.publish_ready_interest(interest);
+                }
             } else {
                 self.register_waker_only(interest);
             }
@@ -770,34 +787,7 @@ impl Epoll {
 
     // for add/modify
     fn check_and_register_waker(&self, interest: &Arc<EpollInterest>) {
-        let Some(file) = interest.key.get_file() else {
-            return;
-        };
-
-        if !interest.is_enabled() {
-            return;
-        }
-
-        let waker = Waker::from(Arc::new(InterestWaker {
-            epoll: Arc::downgrade(&self.inner),
-            interest: Arc::downgrade(interest),
-        }));
-
-        let current = match_ready_events(file.poll(), interest.event.events);
-
-        if !current.is_empty() {
-            interest.replace_registration(None);
-            waker.wake_by_ref();
-        } else {
-            let Some((file, waker)) = self.inner.register_waker_only(interest) else {
-                return;
-            };
-
-            let current = match_ready_events(file.poll(), interest.event.events);
-            if !current.is_empty() {
-                waker.wake_by_ref();
-            }
-        }
+        self.register_waker_and_recheck(interest);
     }
 
     pub fn add(&self, fd: i32, event: EpollEvent, flags: EpollFlags) -> StarryResult<()> {
@@ -851,9 +841,6 @@ impl Epoll {
             event,
             flags,
             nested_link.clone(),
-            self.inner
-                .next_registration_order
-                .fetch_add(1, Ordering::Relaxed),
         ));
         self.inner
             .interests
@@ -903,27 +890,9 @@ impl Epoll {
         )
     }
 
-    /// How many interests one readiness callback on `fd` would snapshot.
-    ///
-    /// What the callback publishes is the same either way, so the size of the
-    /// snapshot is the only thing that separates a per-file batch from a copy
-    /// of the whole epoll set.
     #[cfg(all(test, not(axtest)))]
-    pub(super) fn callback_batch_len_for_test(
-        &self,
-        fd: i32,
-        file: &Arc<dyn FileLike>,
-    ) -> Option<usize> {
-        let source = self
-            .inner
-            .interests
-            .lock()
-            .get(&EntryKey::for_test(fd, file))
-            .cloned()?;
-        self.inner
-            .snapshot_callback_batch(&source)
-            .ok()
-            .map(|batch| batch.len())
+    pub(super) fn flush_ready_waiters_for_test(&self) {
+        self.inner.flush_ready_waiters();
     }
 
     pub fn modify(&self, fd: i32, event: EpollEvent, flags: EpollFlags) -> StarryResult<()> {
@@ -941,7 +910,6 @@ impl Epoll {
             event,
             flags,
             old.nested_link.clone(),
-            old.registration_order,
         ));
 
         // Preserve ready-queue membership across the swap. The ready_queue

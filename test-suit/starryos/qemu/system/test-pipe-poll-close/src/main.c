@@ -19,6 +19,7 @@
 
 static int tests_pass;
 static int tests_fail;
+static volatile sig_atomic_t wait_timed_out;
 
 #define TEST(cond, msg)                                                        \
     do {                                                                      \
@@ -30,6 +31,11 @@ static int tests_fail;
             printf("  FAIL: %s (%s:%d)\n", msg, __FILE__, __LINE__);          \
         }                                                                     \
     } while (0)
+
+static void record_wait_timeout(int signo) {
+    (void)signo;
+    wait_timed_out = 1;
+}
 
 
 // ─── Test 1: poll detects pipe close (HUP) ──────────────────────────────
@@ -276,7 +282,7 @@ static void test_poll_two_fds_one_closes(void) {
 // Edge case: fd added to epoll, child writes and exits, parent hasn't
 // drained yet.  epoll must deliver both IN (data) and HUP (close).
 static void test_epoll_lt_close_with_data(void) {
-    printf("Test 6: epoll LT delivers both data and close in one event\n");
+    printf("Test 5: epoll LT delivers both data and close in one event\n");
     int pipefd[2];
     TEST(pipe(pipefd) == 0, "pipe created");
 
@@ -336,6 +342,64 @@ static void test_epoll_lt_close_with_data(void) {
     close(epfd);
 }
 
+// An infinite epoll wait must sleep until a pipe writer publishes readiness,
+// then return the event rather than a zero-length batch.
+static void test_epoll_pwait_pipe_wakeup(void) {
+    printf("Test 6: epoll_pwait(-1) wakes for a pipe write\n");
+    int pipefd[2];
+    TEST(pipe(pipefd) == 0, "pipe created");
+
+    int epfd = epoll_create1(0);
+    TEST(epfd >= 0, "epoll_create1 succeeded");
+
+    struct epoll_event ev = {.events = EPOLLIN, .data.fd = pipefd[0]};
+    TEST(epoll_ctl(epfd, EPOLL_CTL_ADD, pipefd[0], &ev) == 0,
+         "epoll_ctl ADD succeeded");
+    TEST(epoll_ctl(epfd, EPOLL_CTL_MOD, pipefd[0], &ev) == 0,
+         "epoll_ctl MOD refreshed the registration");
+
+    pid_t child = fork();
+    TEST(child >= 0, "fork succeeded");
+    if (child == 0) {
+        close(pipefd[0]);
+        usleep(50000);
+        _exit(write(pipefd[1], "w", 1) == 1 ? 0 : 1);
+    }
+
+    close(pipefd[1]);
+    struct sigaction action = {.sa_handler = record_wait_timeout};
+    sigemptyset(&action.sa_mask);
+    sigaction(SIGALRM, &action, NULL);
+    wait_timed_out = 0;
+    alarm(2);
+
+    struct epoll_event events[1];
+    errno = 0;
+    int nfds = epoll_pwait(epfd, events, 1, -1, NULL);
+    int wait_errno = errno;
+    alarm(0);
+
+    TEST(!wait_timed_out, "epoll_pwait woke before the timeout guard");
+    TEST(nfds == 1, "epoll_pwait returned exactly one ready event");
+    if (nfds == 1) {
+        TEST(events[0].data.fd == pipefd[0], "event is for the pipe read end");
+        TEST(events[0].events & EPOLLIN, "pipe write published EPOLLIN");
+        char byte = 0;
+        TEST(read(pipefd[0], &byte, 1) == 1 && byte == 'w',
+             "pipe payload is readable after epoll_pwait");
+    } else {
+        fprintf(stderr, "  INFO: epoll_pwait returned %d errno=%d (%s)\n",
+                nfds, wait_errno, strerror(wait_errno));
+    }
+
+    int status = 0;
+    waitpid(child, &status, 0);
+    TEST(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+         "pipe writer exited successfully");
+    close(pipefd[0]);
+    close(epfd);
+}
+
 int main(void) {
     printf("=== pipe-poll-close regression ===\n");
 
@@ -344,6 +408,7 @@ int main(void) {
     test_epoll_in_only_detects_close();
     test_poll_two_fds_one_closes();
     test_epoll_lt_close_with_data();
+    test_epoll_pwait_pipe_wakeup();
 
     printf("\n=== Results: %d pass, %d fail ===\n", tests_pass, tests_fail);
     if (tests_fail == 0) {

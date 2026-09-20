@@ -2,15 +2,16 @@
 
 use alloc::sync::Arc;
 #[cfg(all(test, not(axtest)))]
-use alloc::{borrow::Cow, task::Wake, vec::Vec};
-#[cfg(all(test, axtest))]
-use core::sync::atomic::AtomicUsize;
-use core::sync::atomic::{AtomicBool, Ordering};
+use alloc::{borrow::Cow, boxed::Box, task::Wake, vec::Vec};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[cfg(all(test, not(axtest)))]
 use core::task::Waker;
 
 #[cfg(all(test, not(axtest)))]
-use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar, Pollable, SharedRegistrationSink};
+use axpoll::{
+    ExclusiveConsumer, ExclusiveRegistrationSink, IoEvents, PollRegistrar, PollRegistration,
+    PollSource, Pollable, RegistrationMode, SharedRegistrationSink,
+};
 #[cfg(all(test, not(axtest)))]
 use axpoll_set::PollSet;
 
@@ -123,6 +124,14 @@ impl Pollable for ReadyFile {
     unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
         unsafe { sink.register_shared(&self.poll_waiters, events) };
     }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { sink.register_exclusive(&self.poll_waiters, events) };
+    }
 }
 
 #[cfg(all(test, not(axtest)))]
@@ -223,7 +232,124 @@ impl Wake for EpollWaiter {
 }
 
 #[cfg(all(test, not(axtest)))]
-fn level_aliases_rotate_in_linux_callback_order_for_test() -> bool {
+struct TestPollRegistration;
+
+#[cfg(all(test, not(axtest)))]
+impl PollRegistration for TestPollRegistration {
+    fn was_notified(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+struct WakeDuringRegisterSource {
+    registrations: AtomicUsize,
+    wakers: IrqMutex<Vec<Waker>>,
+}
+
+#[cfg(all(test, not(axtest)))]
+impl PollSource for WakeDuringRegisterSource {
+    unsafe fn register(
+        &self,
+        waker: &Waker,
+        _interests: IoEvents,
+        _mode: RegistrationMode,
+    ) -> Option<Box<dyn PollRegistration>> {
+        let previous = {
+            let mut wakers = self.wakers.lock();
+            let previous = wakers.last().cloned();
+            wakers.push(waker.clone());
+            previous
+        };
+        if self.registrations.fetch_add(1, Ordering::AcqRel) == 1
+            && let Some(previous) = previous
+        {
+            previous.wake_by_ref();
+        }
+        Some(Box::new(TestPollRegistration))
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+struct WakeDuringRegisterFile {
+    registering: AtomicBool,
+    callback_reentered_file: AtomicBool,
+    source: WakeDuringRegisterSource,
+}
+
+#[cfg(all(test, not(axtest)))]
+impl WakeDuringRegisterFile {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            registering: AtomicBool::new(false),
+            callback_reentered_file: AtomicBool::new(false),
+            source: WakeDuringRegisterSource {
+                registrations: AtomicUsize::new(0),
+                wakers: IrqMutex::new(Vec::new()),
+            },
+        })
+    }
+
+    fn record_callback_reentry(&self) {
+        if self.registering.load(Ordering::Acquire) {
+            self.callback_reentered_file.store(true, Ordering::Release);
+        }
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+impl FileLike for WakeDuringRegisterFile {
+    fn validate_write_access(&self) -> crate::StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
+    fn path(&self) -> Cow<'_, str> {
+        "axtest:[epoll-wake-during-register]".into()
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+impl Pollable for WakeDuringRegisterFile {
+    fn poll(&self) -> IoEvents {
+        self.record_callback_reentry();
+        IoEvents::empty()
+    }
+
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        self.registering.store(true, Ordering::Release);
+        unsafe { sink.register_shared(&self.source, events) };
+        self.registering.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+fn wake_during_registration_is_deferred_for_test() -> bool {
+    let epoll = Arc::new(Epoll::new());
+    let target = WakeDuringRegisterFile::new();
+    let target_file: Arc<dyn FileLike> = target.clone();
+
+    if epoll
+        .add_file_for_test(1, target_file, 0x46, EpollFlags::empty())
+        .is_err()
+    {
+        return false;
+    }
+
+    let waiter = Arc::new(EpollWaiter {
+        epoll: epoll.clone(),
+        result_index: 0,
+        results: Arc::new(IrqMutex::new([None, None])),
+    });
+    let waker = Waker::from(waiter);
+    let mut registrar = PollRegistrar::<ExclusiveConsumer>::new(&waker);
+    unsafe { epoll.register_exclusive(&mut registrar, IoEvents::IN) };
+
+    epoll.register_waiter_wakers().is_ok()
+        && !target.callback_reentered_file.load(Ordering::Acquire)
+}
+
+#[cfg(all(test, not(axtest)))]
+fn level_aliases_are_both_delivered_for_test() -> bool {
     let epoll = Arc::new(Epoll::new());
     let target = ReadyFile::new();
     let target_file: Arc<dyn FileLike> = target.clone();
@@ -250,7 +376,36 @@ fn level_aliases_rotate_in_linux_callback_order_for_test() -> bool {
     }
 
     target.make_ready();
-    results.lock().as_slice() == [Some(0x22), Some(0x11)]
+    epoll.flush_ready_waiters_for_test();
+    matches!(
+        results.lock().as_slice(),
+        [Some(0x11), Some(0x22)] | [Some(0x22), Some(0x11)]
+    )
+}
+
+#[cfg(all(test, not(axtest)))]
+fn exclusive_aliases_publish_only_one_interest_for_test() -> bool {
+    let epoll = Epoll::new();
+    let target = ReadyFile::new();
+    let target_file: Arc<dyn FileLike> = target.clone();
+
+    epoll
+        .add_file_for_test(1, target_file.clone(), 0x51, EpollFlags::EXCLUSIVE)
+        .expect("first exclusive test interest must be added");
+    epoll
+        .add_file_for_test(2, target_file, 0x52, EpollFlags::EXCLUSIVE)
+        .expect("second exclusive test interest must be added");
+
+    target.make_ready();
+    let mut user_data = Vec::new();
+    epoll
+        .poll_events_with(2, |_index, event| {
+            user_data.push(event.data);
+            Ok(())
+        })
+        .is_ok_and(|count| {
+            count == 1 && matches!(user_data.as_slice(), [0x51] | [0x52])
+        })
 }
 
 #[cfg(all(test, not(axtest)))]
@@ -398,27 +553,6 @@ fn epoll_requeues_readiness_observed_during_rearm_for_test() -> bool {
         })
 }
 
-#[cfg(all(test, not(axtest)))]
-fn callback_batch_covers_only_the_ready_file_for_test() -> bool {
-    const FILES: i32 = 64;
-    const SOURCE_FD: i32 = 7;
-
-    let epoll = Epoll::new();
-    let mut files: Vec<Arc<dyn FileLike>> = Vec::new();
-    for fd in 0..FILES {
-        let file_like: Arc<dyn FileLike> = ReadyFile::new();
-        if epoll
-            .add_file_for_test(fd, file_like.clone(), fd as u64, EpollFlags::empty())
-            .is_err()
-        {
-            return false;
-        }
-        files.push(file_like);
-    }
-
-    epoll.callback_batch_len_for_test(SOURCE_FD, &files[SOURCE_FD as usize]) == Some(1)
-}
-
 #[cfg(test)]
 mod tests {
     #[cfg(all(test, axtest))]
@@ -429,8 +563,14 @@ mod tests {
 
     #[cfg(all(test, not(axtest)))]
     #[test]
-    fn level_aliases_rotate_in_linux_callback_order() {
-        assert!(super::level_aliases_rotate_in_linux_callback_order_for_test());
+    fn level_aliases_are_both_delivered() {
+        assert!(super::level_aliases_are_both_delivered_for_test());
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn exclusive_aliases_publish_only_one_interest() {
+        assert!(super::exclusive_aliases_publish_only_one_interest_for_test());
     }
 
     #[cfg(all(test, not(axtest)))]
@@ -453,13 +593,13 @@ mod tests {
 
     #[cfg(all(test, not(axtest)))]
     #[test]
-    fn requeues_readiness_observed_during_rearm() {
-        assert!(super::epoll_requeues_readiness_observed_during_rearm_for_test());
+    fn wake_during_registration_is_deferred() {
+        assert!(super::wake_during_registration_is_deferred_for_test());
     }
 
     #[cfg(all(test, not(axtest)))]
     #[test]
-    fn callback_batch_covers_only_the_ready_file() {
-        assert!(super::callback_batch_covers_only_the_ready_file_for_test());
+    fn requeues_readiness_observed_during_rearm() {
+        assert!(super::epoll_requeues_readiness_observed_during_rearm_for_test());
     }
 }

@@ -37,6 +37,7 @@ pub fn init(args: &[String], envs: &[String]) {
     crate::kmod::init_kmod();
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
+    crate::file::epoll::start_epoll_notify_worker();
     spawn_alarm_task();
     crate::mm::spawn_reclaimer_task();
     // DVFS: a one-shot OPP-calibration boot runs the sweep and skips the governor;
