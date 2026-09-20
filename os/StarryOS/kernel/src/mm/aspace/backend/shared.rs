@@ -13,8 +13,8 @@ use super::{
         },
     },
     FaultMaterialization, FaultPteSnapshot, MappingExecution, MappingOperation, PreparedPteOwner,
-    ProviderPublication, PteMaterialization, RssKind, SharedFutexIdentity, alloc_frame,
-    divide_page, occupied_leaf_ranges, pages_in,
+    MappingMutationContext, ProviderPublication, PteMaterialization, RssKind, SharedFutexIdentity,
+    alloc_frame, divide_page, occupied_leaf_ranges, pages_in, rollback_live_mapped_pages,
 };
 use crate::{StarryResult, sync::IrqMutex};
 
@@ -440,16 +440,22 @@ impl MappingExecution for SharedBackend {
         mapped
             .try_reserve(leaf_count)
             .map_err(|_| crate::StarryError::NoMemory)?;
+        let rollback_context = MappingMutationContext::for_rollback(leaf_count)?;
         for vaddr in pages_in(range, self.leaf_size)? {
             let (page, paddr) = self.page_for_materialization(vaddr, self.leaf_size)?;
             page.prepare_executable_mapping(paddr, self.leaf_size, flags);
             if let Err(error) = pt.map_page(vaddr, paddr, self.leaf_size, flags) {
-                for old_va in mapped.into_iter().rev() {
-                    let _ = pt.unmap_page(old_va);
+                if !rollback_live_mapped_pages(
+                    pt,
+                    mapped.into_iter().rev(),
+                    range,
+                    rollback_context,
+                ) {
+                    core::mem::forget(materialization);
                 }
                 return Err(error.into());
             }
-            mapped.push(vaddr);
+            mapped.push((vaddr, paddr, self.leaf_size));
             materialization.push(PreparedPteOwner::installed(
                 vaddr,
                 paddr,
@@ -549,6 +555,7 @@ impl MappingExecution for SharedBackend {
         installed
             .try_reserve(leaf_count)
             .map_err(|_| crate::StarryError::NoMemory)?;
+        let rollback_context = MappingMutationContext::for_rollback(leaf_count)?;
         for vaddr in pages_in(range, leaf_size)? {
             match pt.query(vaddr) {
                 Ok((paddr, page_flags, mapped_size)) => {
@@ -565,12 +572,17 @@ impl MappingExecution for SharedBackend {
                     let (page, paddr) = self.page_for_materialization(vaddr, leaf_size)?;
                     page.prepare_executable_mapping(paddr, leaf_size, flags);
                     if let Err(error) = pt.map_page(vaddr, paddr, leaf_size, flags) {
-                        for old_va in installed.into_iter().rev() {
-                            let _ = pt.unmap_page(old_va);
+                        if !rollback_live_mapped_pages(
+                            pt,
+                            installed.into_iter().rev(),
+                            range,
+                            rollback_context,
+                        ) {
+                            core::mem::forget(materialization);
                         }
                         return Err(error.into());
                     }
-                    installed.push(vaddr);
+                    installed.push((vaddr, paddr, leaf_size));
                     materialization.push(PreparedPteOwner::installed(
                         vaddr,
                         paddr,
@@ -595,22 +607,22 @@ impl MappingExecution for SharedBackend {
         self.validate_materialized_range(range, pt)
     }
 
-    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTable) -> StarryResult {
+    fn unmap(
+        &self,
+        range: VirtAddrRange,
+        context: &mut super::MappingMutationContext,
+        pt: &mut PageTable,
+    ) -> StarryResult {
         debug!("Shared::unmap: {:?}", range);
         self.validate_range(range)?;
         if !self.validate_materialized_range(range, pt) {
             return Err(crate::StarryError::BadState);
         }
         for (va, page_size) in occupied_leaf_ranges(range, pt)? {
-            let unmapped = pt.unmap_page(va)?;
+            let unmapped = pt.unmap_page_deferred(va)?;
+            context.record_unmap(unmapped.3);
             if unmapped.2 != page_size {
                 return Err(crate::StarryError::BadState);
-            }
-            // A normal outer mutation retains the SharedBackend owner until
-            // its epoch receipt completes. Other callers must invalidate
-            // immediately before their backend clone can release the object.
-            if !super::tlb_retire_is_deferred() {
-                crate::mm::flush_tlb_range_sync(va, page_size)?;
             }
         }
         Ok(())
@@ -644,7 +656,11 @@ impl MappingExecution for SharedBackend {
             page.prepare_executable_mapping(paddr, leaf_size, pte_flags);
             if let Err(error) = new_pt.map_page(va, paddr, leaf_size, pte_flags) {
                 for old_va in installed.into_iter().rev() {
-                    let _ = new_pt.unmap_page(old_va);
+                    if let Ok((_, _, _, deferred)) = new_pt.unmap_page_deferred(old_va) {
+                        // SAFETY: the child root has never been published, so no
+                        // hardware page-table walker can retain this hierarchy.
+                        unsafe { deferred.reclaim() };
+                    }
                 }
                 return Err(error.into());
             }

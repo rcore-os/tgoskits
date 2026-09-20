@@ -12,7 +12,7 @@ use super::{
         },
     },
     MappingExecution, MappingOperation, PreparedPteOwner, ProviderPublication, PteMaterialization,
-    occupied_leaf_ranges, pages_in,
+    MappingMutationContext, occupied_leaf_ranges, pages_in, rollback_live_mapped_pages,
 };
 use crate::{StarryError, StarryResult, sync::Mutex};
 
@@ -131,29 +131,42 @@ impl MappingExecution for LinearBackend {
         mapped
             .try_reserve(page_count)
             .map_err(|_| StarryError::NoMemory)?;
+        let rollback_context = MappingMutationContext::for_rollback(page_count)?;
         for va in pages_in(range, PAGE_SIZE_4K)? {
             let pa = self.pa(va).ok_or(StarryError::InvalidInput)?;
             if let Err(error) = pt.map_page(va, pa, PAGE_SIZE_4K, flags) {
-                for old_va in mapped.into_iter().rev() {
-                    let _ = pt.unmap_page(old_va);
-                }
+                let _ = rollback_live_mapped_pages(
+                    pt,
+                    mapped.into_iter().rev(),
+                    range,
+                    rollback_context,
+                );
                 return Err(error.into());
             }
-            mapped.push(va);
+            mapped.push((va, pa, PAGE_SIZE_4K));
         }
         materialization.set_satisfied_pages(page_count);
         Ok(materialization)
     }
 
-    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTable) -> StarryResult {
+    fn unmap(
+        &self,
+        range: VirtAddrRange,
+        context: &mut super::MappingMutationContext,
+        pt: &mut PageTable,
+    ) -> StarryResult {
         let pa_start = self.pa(range.start).ok_or(StarryError::InvalidInput)?;
         let pa_range = ax_memory_addr::PhysAddrRange::try_from_start_size(pa_start, range.size())
             .ok_or(StarryError::InvalidInput)?;
         debug!("Linear::unmap: {range:?} -> {pa_range:?}");
         for (vaddr, expected_size) in occupied_leaf_ranges(range, pt)? {
-            match pt.unmap_page(vaddr) {
-                Ok((_, _, page_size)) if page_size == expected_size => {}
-                Ok(_) => return Err(StarryError::BadState),
+            match pt.unmap_page_deferred(vaddr) {
+                Ok((_, _, page_size, deferred)) => {
+                    context.record_unmap(deferred);
+                    if page_size != expected_size {
+                        return Err(StarryError::BadState);
+                    }
+                }
                 Err(PagingError::NotMapped) => {}
                 Err(err) => return Err(err.into()),
             }

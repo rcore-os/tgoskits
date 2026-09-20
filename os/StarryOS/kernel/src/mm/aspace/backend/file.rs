@@ -32,7 +32,7 @@ use super::{
     PopulateRequest, PreparedPteOwner, ProviderPublication, PteMaterialization, RssKind,
     occupied_leaf_ranges, pages_in,
 };
-use crate::{StarryError, StarryResult, mm::flush_tlb_range_sync, sync::Mutex};
+use crate::{StarryError, StarryResult, sync::Mutex};
 
 #[doc(hidden)]
 pub struct FileBackendInner {
@@ -595,6 +595,19 @@ impl FileBackendInner {
 /// File-backed mapping backend.
 #[derive(Clone)]
 pub struct FileBackend(Arc<FileBackendInner>);
+
+pub(super) struct FileRollbackOwner {
+    backend: FileBackend,
+    va: VirtAddr,
+    page: Arc<PageObject>,
+}
+
+impl FileRollbackOwner {
+    pub(super) fn complete(self) -> StarryResult {
+        self.backend.cancel_page_publication(self.va, &self.page)
+    }
+}
+
 impl FileBackend {
     fn with_coordinates(&self, start: VirtAddr, offset_page: u32) -> Self {
         Self(Arc::new(FileBackendInner {
@@ -687,6 +700,14 @@ impl FileBackend {
         page: &Arc<PageObject>,
     ) -> StarryResult {
         self.0.cancel_page_publication(va, page)
+    }
+
+    fn rollback_owner(&self, va: VirtAddr, page: Arc<PageObject>) -> FileRollbackOwner {
+        FileRollbackOwner {
+            backend: self.clone(),
+            va,
+            page,
+        }
     }
 
     pub(crate) fn ensure_page_identity(
@@ -875,8 +896,13 @@ impl MappingExecution for FileBackend {
         Ok(PteMaterialization::empty())
     }
 
-    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTable) -> StarryResult {
-        let provider_rollback = !super::tlb_retire_is_deferred();
+    fn unmap(
+        &self,
+        range: VirtAddrRange,
+        context: &mut super::MappingMutationContext,
+        pt: &mut PageTable,
+    ) -> StarryResult {
+        let provider_rollback = !context.backend_owners_deferred();
         for (addr, expected_size) in occupied_leaf_ranges(range, pt)? {
             if expected_size != PAGE_SIZE_4K {
                 return Err(StarryError::BadState);
@@ -891,39 +917,34 @@ impl MappingExecution for FileBackend {
             // sleeping file-page domain while a PTE stripe/structure cursor
             // may be held.  Non-deferred calls are unpublished-map rollback
             // and retain the provider reservation that must be cancelled.
-            let rollback_page = if provider_rollback {
+            let rollback_owner = if provider_rollback {
                 Some(
-                    self.0
-                        .page_object_for_va(addr, expected_paddr)
-                        .ok_or(StarryError::BadState)?,
+                    self.rollback_owner(
+                        addr,
+                        self.0
+                            .page_object_for_va(addr, expected_paddr)
+                            .ok_or(StarryError::BadState)?,
+                    ),
                 )
             } else {
                 None
             };
-            match pt.unmap_page(addr) {
-                Ok((paddr, _, page_size)) => {
+            match pt.unmap_page_deferred(addr) {
+                Ok((paddr, _, page_size, deferred)) => {
+                    context.record_unmap(deferred);
+                    if let Some(owner) = rollback_owner {
+                        context.defer_file_cleanup(owner);
+                    }
                     if page_size != PAGE_SIZE_4K {
                         return Err(StarryError::BadState);
                     }
                     if expected_paddr != paddr {
                         return Err(StarryError::BadState);
                     }
-                    // The outer mutation normally holds a CachedPagePin until
-                    // its receipt is acknowledged.  Standalone rollback or
-                    // teardown callers have no such epoch batch and therefore
-                    // retain the immediate invalidation fallback.
-                    if provider_rollback {
-                        flush_tlb_range_sync(addr, page_size)?;
-                    }
-                    // MappingSlot/rmap is the sole installed-mapping owner.  A
-                    // reservation can still exist when an outer transaction is
-                    // rolling back before slot publication; canceling it here
-                    // releases the corresponding CachedPagePin.  Published
-                    // entries make this an idempotent no-op and are detached by
-                    // the outer address-space mutation.
-                    if let Some(page) = rollback_page {
-                        self.0.cancel_page_publication(addr, &page)?;
-                    }
+                    // MappingSlot/rmap is the sole installed-mapping owner.
+                    // Rollback-only reservations are canceled by the context
+                    // after synchronous invalidation, while published owners
+                    // remain attached to the outer address-space receipt.
                 }
                 Err(PagingError::NotMapped) => return Err(StarryError::BadState),
                 Err(err) => {

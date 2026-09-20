@@ -78,7 +78,7 @@ fn split_2m_then_unmap_then_repromote_leaves_no_frame_leaked() {
         );
     }
 
-    // 3) unmap the whole range: #2009 reclaims the now-empty split table inline.
+    // 3) unmap the whole range and reclaim the now-empty split table.
     pt.unmap(va, HUGE_2M).unwrap();
 
     // 4) re-promote: a fresh 2 MiB block at the same VA must succeed (a stranded
@@ -140,7 +140,7 @@ fn split_not_present_2m_block_preserves_the_data_frame() {
     assert!(!alloc.has_leaks(), "leaked table frame(s) after teardown");
 }
 
-// ---- Ordering harness (same shape as tests/reclaim_flush_order.rs) ----
+// ---- Huge-split ordering harness ----
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Op {
