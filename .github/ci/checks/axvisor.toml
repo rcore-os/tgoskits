@@ -134,11 +134,11 @@ runner = "kvm-intel"
 timeout_minutes = 90
 command = '''
 echo "==> axvisor x86_64 VMX direct ACPI boot"
-target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
+cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
 echo "==> axvisor x86_64 VMX MP fallback boot"
-target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
+cargo xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
 echo "==> axvisor x86_64 VMX OVMF ACPI boot"
-target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
+cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
 '''
 
 [[check.suite]]
