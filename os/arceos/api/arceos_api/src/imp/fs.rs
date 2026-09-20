@@ -57,6 +57,10 @@ pub fn ax_seek_file(file: &mut AxFileHandle, pos: AxSeekFrom) -> ApiResult<u64> 
     Ok(file.0.seek(pos)?)
 }
 
+pub fn ax_metadata(path: &str) -> ApiResult<AxFileAttr> {
+    Ok(ax_fs_ng::api::metadata(path)?)
+}
+
 pub fn ax_file_attr(file: &AxFileHandle) -> ApiResult<AxFileAttr> {
     Ok(file.0.get_attr()?)
 }

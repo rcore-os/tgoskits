@@ -208,24 +208,23 @@ pub fn sys_clock_nanosleep(
 pub fn sys_sched_getaffinity(
     current: &crate::task::UserTaskRef,
     pid: i32,
-    cpusetsize: usize,
+    cpusetsize: u32,
     user_mask: *mut u8,
 ) -> crate::StarryResult<isize> {
     let cpu_count = hal::cpu_num();
-    let kernel_mask_bytes = cpu_count
-        .div_ceil(usize::BITS as usize)
-        .saturating_mul(core::mem::size_of::<usize>());
-    if cpusetsize
-        .checked_mul(8)
-        .is_none_or(|bits| bits < cpu_count)
-        || !cpusetsize.is_multiple_of(core::mem::size_of::<usize>())
+    let abi_cpu_count = u32::try_from(cpu_count).map_err(|_| crate::StarryError::BadState)?;
+    let cpusetsize_bits = cpusetsize.wrapping_mul(u8::BITS);
+    let cpusetsize = cpusetsize as usize;
+    if cpusetsize_bits < abi_cpu_count || !cpusetsize.is_multiple_of(core::mem::size_of::<usize>())
     {
         return Err(crate::StarryError::InvalidInput);
     }
 
-    let affinity = scheduler::thread::ThreadHandle::lookup(scheduler_thread_id(current, pid)?)
+    let task = scheduler_task(current, pid)?;
+    let affinity = scheduler::thread::ThreadHandle::lookup(task.id())
         .and_then(|thread| thread.affinity())
         .map_err(map_task_error)?;
+    let kernel_mask_bytes = sched_affinity_mask_bytes(cpu_count);
     let mut mask_bytes = vec![0_u8; kernel_mask_bytes.min(cpusetsize)];
     for cpu in 0..cpu_count {
         let cpu_id = u32::try_from(cpu).map_err(|_| crate::StarryError::InvalidInput)?;
@@ -243,8 +242,15 @@ pub fn check_sched_permission(
     current: &crate::task::UserTaskRef,
     pid: i32,
 ) -> crate::StarryResult<()> {
-    let caller = current.as_thread().cred();
     let task = scheduler_task(current, pid)?;
+    check_sched_task_permission(current, &task)
+}
+
+fn check_sched_task_permission(
+    current: &crate::task::UserTaskRef,
+    task: &crate::task::UserTaskRef,
+) -> crate::StarryResult<()> {
+    let caller = current.as_thread().cred();
     if task.id() == current.id() {
         return Ok(());
     }
@@ -262,12 +268,11 @@ pub fn check_sched_permission(
 pub fn sys_sched_setaffinity(
     current: &crate::task::UserTaskRef,
     pid: i32,
-    cpusetsize: usize,
+    cpusetsize: u32,
     user_mask: *const u8,
 ) -> crate::StarryResult<isize> {
-    check_sched_permission(current, pid)?;
     let cpu_count = hal::cpu_num();
-    let size = cpusetsize.min(cpu_count.div_ceil(8));
+    let size = (cpusetsize as usize).min(sched_affinity_mask_bytes(cpu_count));
     let user_mask = vm_load(current, user_mask, size)?;
     let mut affinity = scheduler::sched::CpuSet::empty(cpu_count);
     let mut any_cpu = false;
@@ -280,20 +285,20 @@ pub fn sys_sched_setaffinity(
         }
     }
 
+    let task = scheduler_task(current, pid)?;
+    check_sched_task_permission(current, &task)?;
     if !any_cpu {
         return Err(crate::StarryError::InvalidInput);
     }
-    let target_tid = scheduler_tid(current, pid)?;
-    if target_tid == current.as_thread().tid() {
-        scheduler::thread::current::set_current_thread_affinity(affinity)
-            .map_err(map_task_error)?;
-    } else {
-        scheduler::thread::ThreadHandle::lookup(scheduler_thread_id(current, pid)?)
-            .and_then(|thread| thread.set_affinity_and_wait(affinity))
-            .map_err(map_task_error)?;
-    }
+    scheduler::thread::ThreadHandle::lookup(task.id())
+        .and_then(|thread| thread.set_affinity_and_wait(affinity))
+        .map_err(map_task_error)?;
 
     Ok(0)
+}
+
+fn sched_affinity_mask_bytes(cpu_count: usize) -> usize {
+    cpu_count.div_ceil(usize::BITS as usize) * core::mem::size_of::<usize>()
 }
 
 pub fn sys_sched_getscheduler(
@@ -508,10 +513,6 @@ fn scheduler_thread_id(
     pid: i32,
 ) -> crate::StarryResult<scheduler::thread::ThreadId> {
     Ok(scheduler_task(current, pid)?.id())
-}
-
-fn scheduler_tid(current: &crate::task::UserTaskRef, pid: i32) -> crate::StarryResult<TidNumber> {
-    Ok(scheduler_task(current, pid)?.as_thread().tid_number())
 }
 
 fn scheduler_task(

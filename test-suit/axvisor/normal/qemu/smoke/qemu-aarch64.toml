@@ -29,6 +29,38 @@ timeout = 300
 to_bin = true
 uefi = false
 
+# Drive the real serial editor; match command output, never its redraw/echo.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "echox\u001b[999999999999999999999~\u001b[<0;16;41M\u001b[D\u001b[3~ SHELL_CSI_OK"
+success_regex = ['(?m)^SHELL_CSI_OK\s*$']
+timeout = 15
+
+[[shell_check_steps]]
+shell_cmd = "SHELL_HOME_END_\u001b[Hecho \u001b[FOK"
+success_regex = ['(?m)^SHELL_HOME_END_OK\s*$']
+
+[[shell_check_steps]]
+# QEMU -nographic consumes Ctrl+A as its escape prefix; double it to send one.
+shell_cmd = "discard\u0015SHELL_CTRL_OK wrong\u0017\u0001\u0001echo \u0005tail\u001b[D\u001b[D\u001b[D\u001b[D\u000b"
+success_regex = ['(?m)^SHELL_CTRL_OK\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "bad-command\u0003ech\t SHELL_COMPLETE_OK"
+success_regex = ['(?m)^SHELL_COMPLETE_OK\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "ech SHELL_MID_OK\u001b[H\u001b[C\u001b[C\u001b[C\t\u001b[F"
+success_regex = ['(?m)^SHELL_MID_OK\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "echo SHELL_WORD_OK\u001b[H\u001b[C\u001b[C\u001b[C\t\u001b[F"
+success_regex = ['(?m)^SHELL_WORD_OK\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "bad-command\u001b[\u0003echo SHELL_CANCEL_OK"
+success_regex = ['(?m)^SHELL_CANCEL_OK\s*$']
+
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"
 shell_cmd = """echo 'AXVISOR SHLEX' "" EMPTY"""
@@ -46,7 +78,7 @@ success_regex = ['(?m)^Error: Invalid command syntax\s*$']
 shell_cmd = "echo AXVISOR_NVME_RW_PAYLOAD > /tmp/axvisor-nvme-rw"
 
 [[shell_check_steps]]
-shell_cmd = "cat /tmp/axvisor-nvme-rw"
+shell_cmd = "cat /tmp/axvisor-nvme-r\t"
 success_regex = ['(?m)^AXVISOR_NVME_RW_PAYLOAD\s*$']
 
 [[shell_check_steps]]
@@ -78,20 +110,33 @@ fail_regex = ['cat:']
 timeout = 60
 
 [[shell_check_steps]]
-shell_cmd = "dd if=/dev/zero of=/mnt/v/tmp/axvisor-virtio-blk-rw bs=4096 count=1024 conv=fsync"
-success_regex = ['(?m)^1024\+0 records out$']
-fail_regex = ['(?i)I/O error', '(?m)^dd:']
+shell_cmd = "mkdir -p /tmp /mnt/v/tmp"
+
+[[shell_check_steps]]
+shell_cmd = "dd if=/dev/zero of=/tmp/av-ref bs=4096 count=1024 2>/tmp/av-dd-ref.log; echo AXVISOR_REF_STATUS=$?"
+success_regex = ['(?m)^AXVISOR_REF_STATUS=0\s*$']
+fail_regex = ['(?m)^AXVISOR_REF_STATUS=[^0]\s*$']
 timeout = 120
 
 [[shell_check_steps]]
-shell_cmd = "wc -c /mnt/v/tmp/axvisor-virtio-blk-rw"
-success_regex = ['(?m)^4194304 /mnt/v/tmp/axvisor-virtio-blk-rw$']
-fail_regex = ['wc:']
+shell_cmd = "dd if=/tmp/av-ref of=/mnt/v/tmp/av-rw bs=4096 conv=fsync 2>/tmp/av-dd-copy.log; echo AXVISOR_COPY_STATUS=$?"
+success_regex = ['(?m)^AXVISOR_COPY_STATUS=0\s*$']
+fail_regex = ['(?m)^AXVISOR_COPY_STATUS=[^0]\s*$']
+timeout = 120
+
+[[shell_check_steps]]
+shell_cmd = "wc -c < /mnt/v/tmp/av-rw"
+success_regex = ['(?m)^4194304\s*$']
 timeout = 60
 
 [[shell_check_steps]]
-shell_cmd = "rm -f /mnt/v/tmp/axvisor-virtio-blk-rw"
+shell_cmd = "cmp /tmp/av-ref /mnt/v/tmp/av-rw >/dev/null 2>&1; echo AXVISOR_CMP_STATUS=$?"
+success_regex = ['(?m)^AXVISOR_CMP_STATUS=0\s*$']
+fail_regex = ['(?m)^AXVISOR_CMP_STATUS=[^0]\s*$']
 timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "rm -f /tmp/av-ref /tmp/av-dd-ref.log /tmp/av-dd-copy.log /mnt/v/tmp/av-rw"
 
 [[shell_check_steps]]
 shell_cmd = "echo AXVISOR_VIRTIO_BLK_RW_PASSED"

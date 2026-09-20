@@ -15,13 +15,33 @@ pub fn run() -> crate::TestResult {
     let _ = fs::remove_file(FILE);
     let _ = fs::remove_dir(DIR);
 
-    fs::create_dir(DIR).expect("failed to create fs smoke directory");
+    assert!(
+        ax_std::fs::metadata("/")
+            .expect("missing root metadata")
+            .is_dir()
+    );
+    // Exercise the mini-std facade as well as the libc-backed standard library.
+    ax_std::fs::create_dir_all(SUBDIR).expect("failed to recursively create fs directories");
+    ax_std::fs::create_dir_all(SUBDIR).expect("existing directory must be accepted");
+    ax_std::fs::create_dir_all("").expect("empty path must be accepted");
+    assert!(
+        ax_std::fs::metadata(DIR)
+            .expect("missing directory metadata")
+            .is_dir()
+    );
     fs::write(FILE, CONTENT.as_bytes()).expect("failed to write fs smoke file");
     let text = fs::read_to_string(FILE).expect("failed to read fs smoke file");
     assert_eq!(text, CONTENT);
     assert!(fs::metadata(FILE).expect("missing fs smoke file").is_file());
 
-    fs::create_dir(SUBDIR).expect("failed to create fs nested directory");
+    assert!(
+        ax_std::fs::metadata(FILE)
+            .expect("missing file metadata")
+            .is_file()
+    );
+    assert!(ax_std::fs::create_dir_all(FILE).is_err());
+    assert!(ax_std::fs::create_dir_all("/arceos-test-suit/basic.txt/child").is_err());
+    assert_eq!(fs::read_to_string(FILE).unwrap(), CONTENT);
     fs::write(NESTED_FILE, NESTED_CONTENT.as_bytes()).expect("failed to write nested fs file");
     assert_eq!(
         fs::read(NESTED_FILE).expect("failed to read nested fs file"),
@@ -45,6 +65,11 @@ pub fn run() -> crate::TestResult {
         fs::read_to_string("basic.txt").expect("failed to read relative fs smoke file"),
         CONTENT
     );
+    ax_std::fs::create_dir_all("subdir//nested/../leaf/")
+        .expect("failed to create relative directories");
+    assert!(ax_std::fs::metadata("subdir/leaf").unwrap().is_dir());
+    ax_std::fs::remove_dir("subdir/leaf").unwrap();
+    ax_std::fs::remove_dir("subdir/nested").unwrap();
     env::set_current_dir(&original_dir).expect("failed to restore current dir after fs test");
 
     fs::remove_file(FILE).expect("failed to remove fs smoke file");

@@ -47,9 +47,15 @@ shell_prefix = "~ #"
 shell_cmd = "mkdir -p /mnt/v"
 
 [[shell_check_steps]]
-shell_cmd = "mount -t ext4 -o ro /dev/vda /mnt/v"
-success_regex = ["EXT4-fs \\(vda\\): mounted filesystem .* ro "]
-fail_regex = ["mount:"]
+shell_cmd = "mount -t ext4 -o ro /dev/vda /mnt/v; echo AXVISOR_MOUNT_STATUS=$?"
+success_regex = ["(?m)^AXVISOR_MOUNT_STATUS=0\\s*$"]
+fail_regex = ["(?m)^AXVISOR_MOUNT_STATUS=[^0]\\s*$", "mount:"]
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "grep -q ' /mnt/v ext4 ro' /proc/mounts; echo AXVISOR_RO_STATUS=$?"
+success_regex = ["(?m)^AXVISOR_RO_STATUS=0\\s*$"]
+fail_regex = ["(?m)^AXVISOR_RO_STATUS=[^0]\\s*$"]
 timeout = 60
 
 [[shell_check_steps]]
@@ -57,3 +63,7 @@ shell_cmd = "cat /mnt/v/etc/alpine-release"
 success_regex = ["(?m)^3\\.23\\.5\\s*$"]
 fail_regex = ["cat:"]
 timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "echo AXVISOR_VIRTIO_BLK_MOUNT_RO_PASSED"
+success_regex = ["(?m)^AXVISOR_VIRTIO_BLK_MOUNT_RO_PASSED\\s*$"]

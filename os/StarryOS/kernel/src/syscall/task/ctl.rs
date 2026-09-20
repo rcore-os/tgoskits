@@ -629,10 +629,9 @@ pub fn sys_prctl(
             current.as_thread().proc_data.set_dumpable(arg2 as i32);
         }
         PR_SET_SECCOMP => {
-            if arg4 != 0 || arg5 != 0 {
-                return Err(StarryError::InvalidInput);
-            }
-            crate::syscall::sys_seccomp(current, arg2 as u32, 0, arg3 as *const ())?;
+            // Linux consumes only the mode and optional filter pointer. The
+            // seccomp layer translates prctl's mode values to seccomp(2) ops.
+            crate::syscall::prctl_set_seccomp(current, arg2, arg3 as *const ())?;
         }
         PR_MCE_KILL => {}
         PR_SET_NO_NEW_PRIVS => {

@@ -118,6 +118,121 @@ pub(crate) fn replace_file(
     )
 }
 
+/// Sets Linux ownership and permission bits on one directory in a rootfs image.
+///
+/// `debugfs` may report success after rejecting an individual command, so the
+/// resulting inode metadata is read back before this helper returns.
+pub(crate) fn set_directory_owner_and_mode(
+    rootfs_img: &Path,
+    guest_path: &str,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+) -> anyhow::Result<()> {
+    ensure!(
+        guest_path.starts_with('/'),
+        "guest path must be absolute: `{guest_path}`"
+    );
+    ensure!(
+        mode & !0o7777 == 0,
+        "directory mode contains non-permission bits: {mode:#o}"
+    );
+
+    let guest_path = debugfs_argument(guest_path)?;
+    let inode_mode = 0o040000 | mode;
+    let commands = [
+        format!("sif {guest_path} uid {uid}"),
+        format!("sif {guest_path} gid {gid}"),
+        format!("sif {guest_path} mode 0{inode_mode:o}"),
+    ];
+    run_debugfs_script(
+        rootfs_img,
+        &commands,
+        &format!(
+            "failed to set ownership or mode for {guest_path} in {}",
+            rootfs_img.display()
+        ),
+    )?;
+
+    let metadata = read_inode_metadata(rootfs_img, &guest_path)?;
+    ensure!(
+        metadata.file_type == "directory"
+            && metadata.uid == uid
+            && metadata.gid == gid
+            && metadata.mode == mode,
+        "inode metadata mismatch for {guest_path} in {}: expected directory uid={uid} gid={gid} \
+         mode={mode:#o}, got {:?}",
+        rootfs_img.display(),
+        metadata
+    );
+    Ok(())
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct InodeMetadata {
+    file_type: String,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+}
+
+fn read_inode_metadata(
+    rootfs_img: &Path,
+    quoted_guest_path: &str,
+) -> anyhow::Result<InodeMetadata> {
+    let output = Command::new("debugfs")
+        .arg("-R")
+        .arg(format!("stat {quoted_guest_path}"))
+        .arg(rootfs_img)
+        .output()
+        .with_context(|| format!("failed to spawn debugfs for {}", rootfs_img.display()))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    ensure!(
+        output.status.success() && !stderr.contains("File not found"),
+        "failed to stat {quoted_guest_path} in {}: {}",
+        rootfs_img.display(),
+        stderr.trim()
+    );
+
+    let stdout = String::from_utf8(output.stdout).with_context(|| {
+        format!(
+            "debugfs stat output for {quoted_guest_path} in {} is not UTF-8",
+            rootfs_img.display()
+        )
+    })?;
+    let type_line = stdout
+        .lines()
+        .find(|line| line.contains("Type:") && line.contains("Mode:"))
+        .with_context(|| format!("debugfs stat output has no type/mode line: {stdout}"))?;
+    let owner_line = stdout
+        .lines()
+        .find(|line| line.contains("User:") && line.contains("Group:"))
+        .with_context(|| format!("debugfs stat output has no owner line: {stdout}"))?;
+
+    let file_type = field_after(type_line, "Type:")?.to_string();
+    let mode = u32::from_str_radix(field_after(type_line, "Mode:")?, 8)
+        .with_context(|| format!("invalid inode mode in debugfs output: {type_line}"))?;
+    let uid = field_after(owner_line, "User:")?
+        .parse()
+        .with_context(|| format!("invalid inode uid in debugfs output: {owner_line}"))?;
+    let gid = field_after(owner_line, "Group:")?
+        .parse()
+        .with_context(|| format!("invalid inode gid in debugfs output: {owner_line}"))?;
+
+    Ok(InodeMetadata {
+        file_type,
+        uid,
+        gid,
+        mode,
+    })
+}
+
+fn field_after<'a>(line: &'a str, label: &str) -> anyhow::Result<&'a str> {
+    line.split_once(label)
+        .and_then(|(_, rest)| rest.split_ascii_whitespace().next())
+        .with_context(|| format!("debugfs stat output is missing `{label}` value: {line}"))
+}
+
 /// Extracts the contents of a rootfs image into a host staging directory.
 pub(crate) fn extract_rootfs(rootfs_img: &Path, output_dir: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
@@ -813,6 +928,52 @@ mod tests {
         assert_eq!(
             read_binary_file(&rootfs_img, "/payload file.bin").unwrap(),
             Some(b"injected payload".to_vec())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_metadata_is_normalized_and_verified() {
+        let root = tempdir().unwrap();
+        let rootfs_img = root.path().join("rootfs.img");
+        assert!(
+            Command::new("truncate")
+                .args(["-s", "16M"])
+                .arg(&rootfs_img)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("mkfs.ext4")
+                .args(["-q", "-F"])
+                .arg(&rootfs_img)
+                .status()
+                .unwrap()
+                .success()
+        );
+        run_debugfs_script(
+            &rootfs_img,
+            &[
+                "mkdir \"/root\"".to_string(),
+                "sif \"/root\" uid 1001".to_string(),
+                "sif \"/root\" gid 1001".to_string(),
+                "sif \"/root\" mode 040775".to_string(),
+            ],
+            "failed to prepare root directory",
+        )
+        .unwrap();
+
+        set_directory_owner_and_mode(&rootfs_img, "/root", 0, 0, 0o700).unwrap();
+
+        assert_eq!(
+            read_inode_metadata(&rootfs_img, "\"/root\"").unwrap(),
+            InodeMetadata {
+                file_type: "directory".to_string(),
+                uid: 0,
+                gid: 0,
+                mode: 0o700,
+            }
         );
     }
 

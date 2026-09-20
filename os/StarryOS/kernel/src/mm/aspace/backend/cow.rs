@@ -29,8 +29,9 @@ use super::{
         },
     },
     FaultFallback, FaultMaterialization, FaultPteSnapshot, MappingExecution, MappingFileInfo,
-    MappingOperation, PopulateRequest, PreparedPteOwner, ProviderPublication, PteMaterialization,
-    RssKind, alloc_frame, occupied_leaf_ranges, pages_in, validate_occupied_leaf_range,
+    MappingMutationContext, MappingOperation, PopulateRequest, PreparedPteOwner,
+    ProviderPublication, PteMaterialization, RssKind, alloc_frame, occupied_leaf_ranges, pages_in,
+    rollback_live_mapped_pages, validate_occupied_leaf_range,
 };
 use crate::{StarryError, StarryResult, sync::IrqMutex};
 
@@ -43,6 +44,22 @@ use crate::{StarryError, StarryResult, sync::IrqMutex};
 enum CowPageIndexOwner {
     Pending(Arc<PageObject>),
     Published(Weak<PageObject>),
+}
+
+pub(super) struct CowRollbackOwner {
+    pages: Arc<IrqMutex<CowPageIndex>>,
+    page: Arc<PageObject>,
+}
+
+impl CowRollbackOwner {
+    pub(super) fn complete(self) -> StarryResult {
+        let retired = {
+            let mut pages = self.pages.lock();
+            pages.discard_pending(&self.page)?
+        };
+        drop(retired);
+        Ok(())
+    }
 }
 
 impl CowPageIndexOwner {
@@ -743,6 +760,13 @@ impl CowBackend {
         self.discard_pending_index_entry(page)
     }
 
+    fn rollback_owner(&self, page: Arc<PageObject>) -> CowRollbackOwner {
+        CowRollbackOwner {
+            pages: self.pages.clone(),
+            page,
+        }
+    }
+
     fn discard_pending_index_entry(&self, page: &Arc<PageObject>) -> StarryResult {
         let retired = {
             let mut pages = self.pages.lock();
@@ -900,28 +924,29 @@ impl CowBackend {
         Ok(page)
     }
 
-    fn rollback_new_pages(&self, pages: &mut Vec<(VirtAddr, Arc<PageObject>)>, pt: &mut PageTable) {
-        for (vaddr, page) in pages.drain(..).rev() {
-            let frame = page.frame().paddr();
-            match pt.unmap_page(vaddr) {
-                Ok((mapped, _, page_size)) if mapped == frame => {
-                    if let Err(error) = crate::mm::flush_tlb_range_sync(vaddr, page_size) {
-                        warn!(
-                            "COW rollback could not invalidate {vaddr:?} before releasing \
-                             {frame:?}: {error}"
-                        );
-                        // Deliberately leak the registry reference rather than
-                        // freeing a frame that a remote TLB may still reach.
-                        continue;
-                    }
-                    self.discard_pending_page(&page)
-                }
-                Ok((mapped, ..)) => {
-                    warn!("COW rollback found frame {mapped:?} instead of {frame:?} at {vaddr:?}")
-                }
-                Err(PagingError::NotMapped) => self.discard_pending_page(&page),
-                Err(error) => warn!("COW rollback could not unmap {vaddr:?}: {error}"),
+    fn rollback_new_pages(
+        &self,
+        pages: &mut Vec<(VirtAddr, Arc<PageObject>)>,
+        range: VirtAddrRange,
+        context: MappingMutationContext,
+        pt: &mut PageTable,
+    ) {
+        let complete = rollback_live_mapped_pages(
+            pt,
+            pages.iter().rev().map(|(vaddr, page)| {
+                (*vaddr, page.frame().paddr(), self.page_size)
+            }),
+            range,
+            context,
+        );
+        if complete {
+            for (_, page) in pages.drain(..).rev() {
+                self.discard_pending_page(&page);
             }
+        } else {
+            // A stale translation or surviving PTE may still refer to any of
+            // these frames. Keep both the frame and registry owner alive.
+            core::mem::forget(core::mem::take(pages));
         }
     }
 
@@ -935,6 +960,13 @@ impl CowBackend {
         pt: &mut PageTable,
     ) -> StarryResult<PteMaterialization> {
         let mut materialization = PteMaterialization::with_capacity(run.len())?;
+        let rollback_size = run
+            .len()
+            .checked_mul(self.page_size)
+            .ok_or(StarryError::InvalidInput)?;
+        let rollback_range = VirtAddrRange::try_from_start_size(run[0], rollback_size)
+            .ok_or(StarryError::InvalidInput)?;
+        let rollback_context = MappingMutationContext::for_rollback(run.len())?;
         let Some((file, file_vaddr_base, file_start, file_end)) = &self.file else {
             let mut mapped = Vec::new();
             mapped
@@ -944,7 +976,12 @@ impl CowBackend {
                 let page = match self.alloc_new_at(addr, flags, access_flags, pt) {
                     Ok(page) => page,
                     Err(error) => {
-                        self.rollback_new_pages(&mut mapped, pt);
+                        self.rollback_new_pages(
+                            &mut mapped,
+                            rollback_range,
+                            rollback_context,
+                            pt,
+                        );
                         return Err(error);
                     }
                 };
@@ -972,7 +1009,12 @@ impl CowBackend {
                 let page = match self.alloc_new_at(addr, flags, access_flags, pt) {
                     Ok(page) => page,
                     Err(error) => {
-                        self.rollback_new_pages(&mut mapped, pt);
+                        self.rollback_new_pages(
+                            &mut mapped,
+                            rollback_range,
+                            rollback_context,
+                            pt,
+                        );
                         return Err(error);
                     }
                 };
@@ -1011,19 +1053,34 @@ impl CowBackend {
             let page = match self.alloc_new_frame(false, kind) {
                 Ok(page) => page,
                 Err(error) => {
-                    self.rollback_new_pages(&mut mapped_pages, pt);
+                    self.rollback_new_pages(
+                        &mut mapped_pages,
+                        rollback_range,
+                        rollback_context,
+                        pt,
+                    );
                     return Err(error);
                 }
             };
             let frame = page.frame().paddr();
             let Some(chunk_start) = k.checked_mul(ps) else {
                 self.discard_pending_page(&page);
-                self.rollback_new_pages(&mut mapped_pages, pt);
+                self.rollback_new_pages(
+                    &mut mapped_pages,
+                    rollback_range,
+                    rollback_context,
+                    pt,
+                );
                 return Err(StarryError::InvalidInput);
             };
             let Some(chunk_end) = chunk_start.checked_add(ps) else {
                 self.discard_pending_page(&page);
-                self.rollback_new_pages(&mut mapped_pages, pt);
+                self.rollback_new_pages(
+                    &mut mapped_pages,
+                    rollback_range,
+                    rollback_context,
+                    pt,
+                );
                 return Err(StarryError::InvalidInput);
             };
             let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
@@ -1032,7 +1089,12 @@ impl CowBackend {
             page.prepare_executable_mapping(frame, self.page_size, pte_flags);
             if let Err(err) = pt.map_page(addr, frame, self.page_size, pte_flags) {
                 self.discard_pending_page(&page);
-                self.rollback_new_pages(&mut mapped_pages, pt);
+                self.rollback_new_pages(
+                    &mut mapped_pages,
+                    rollback_range,
+                    rollback_context,
+                    pt,
+                );
                 return Err(err.into());
             }
             materialization.push(PreparedPteOwner::installed(
@@ -1142,7 +1204,12 @@ impl CowBackend {
 
     /// Unmap one resident page. MappingSlot owns resident classification; the
     /// backend only retires the registry reference after the PTE is cleared.
-    fn unmap_page(&self, addr: VirtAddr, pt: &mut PageTable) -> StarryResult {
+    fn unmap_page(
+        &self,
+        addr: VirtAddr,
+        context: &mut super::MappingMutationContext,
+        pt: &mut PageTable,
+    ) -> StarryResult {
         // Inspect the occupied leaf before changing it.  Calling
         // `unmap_page` first and checking its size afterwards could silently
         // remove a huge mapping when a stale backend descriptor disagreed
@@ -1155,7 +1222,20 @@ impl CowBackend {
         if expected_size < PAGE_SIZE_4K || !expected_size.is_power_of_two() {
             return Err(StarryError::BadState);
         }
-        let (frame, _flags, page_size) = pt.unmap_page(addr).map_err(StarryError::from)?;
+        let rollback_owner = if context.backend_owners_deferred() {
+            None
+        } else {
+            self.page_object_for_frame(expected_frame)
+                .filter(|page| page.mapping_refs() == 0)
+                .map(|page| self.rollback_owner(page))
+        };
+        let (frame, _flags, page_size, deferred) = pt
+            .unmap_page_deferred(addr)
+            .map_err(StarryError::from)?;
+        context.record_unmap(deferred);
+        if let Some(owner) = rollback_owner {
+            context.defer_cow_cleanup(owner);
+        }
         if page_size != expected_size || frame != expected_frame {
             // This indicates a concurrent or corrupted page-table update.  A
             // caller holding the address-space gate will mark NeedsRepair;
@@ -1166,17 +1246,6 @@ impl CowBackend {
         // address-space owner detaches the MappingSlot only after this step;
         // rollback/teardown callers without a receipt still invalidate before
         // that unique mapping owner is released.
-        if !super::tlb_retire_is_deferred() {
-            crate::mm::flush_tlb_range_sync(addr, page_size)?;
-        }
-        if let Some(page) = self.page_object_for_frame(frame)
-            && page.mapping_refs() == 0
-        {
-            // This was an unpublished PTE whose Pending index entry was the
-            // only strong owner. Published pages remain weakly indexed and are
-            // retired by MappingSlot::detach.
-            let _ = self.discard_pending_index_entry(&page);
-        }
         Ok(())
     }
 
@@ -1303,14 +1372,16 @@ impl PageTableCowCloneRollback<'_> {
             );
             return false;
         }
-        if let Err(err) = self.page_table.unmap_page(vaddr) {
-            warn!("failed to unmap cloned COW page {vaddr:?} during rollback: {err}");
-            return false;
-        }
-        if let Err(err) = crate::mm::flush_tlb_range_sync(vaddr, page_size) {
-            warn!("failed to invalidate cloned COW page {vaddr:?} during rollback: {err}");
-            return false;
-        }
+        let deferred = match self.page_table.unmap_page_deferred(vaddr) {
+            Ok((_, _, _, deferred)) => deferred,
+            Err(err) => {
+                warn!("failed to unmap cloned COW page {vaddr:?} during rollback: {err}");
+                return false;
+            }
+        };
+        // SAFETY: the child root has never been published, so no hardware
+        // page-table walker can retain the detached hierarchy.
+        unsafe { deferred.reclaim() };
         true
     }
 }
@@ -1398,10 +1469,15 @@ impl MappingExecution for CowBackend {
         self.validate_materialized_leaf_range(range, pt)
     }
 
-    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTable) -> StarryResult {
+    fn unmap(
+        &self,
+        range: VirtAddrRange,
+        context: &mut super::MappingMutationContext,
+        pt: &mut PageTable,
+    ) -> StarryResult {
         debug!("Cow::unmap: {range:?}");
         for (leaf_start, _) in occupied_leaf_ranges(range, pt)? {
-            self.unmap_page(leaf_start, pt)?;
+            self.unmap_page(leaf_start, context, pt)?;
         }
         Ok(())
     }

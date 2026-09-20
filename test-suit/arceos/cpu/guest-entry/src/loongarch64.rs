@@ -44,6 +44,16 @@ fn direct_alias(address: VirtAddr) -> VirtAddr {
 #[repr(C, align(4096))]
 struct DataPage([u64; 512]);
 
+fn timer_irq_enabled() -> bool {
+    let ecfg: usize;
+    // SAFETY: ECFG is a CPU-local control/status register. This read has no
+    // memory or ownership preconditions and does not modify interrupt state.
+    unsafe {
+        core::arch::asm!("csrrd {}, 0x4", out(reg) ecfg, options(nomem, nostack));
+    }
+    ecfg & (1 << 11) != 0
+}
+
 pub fn run() {
     assert!(ax_cpu::capability::has_hypervisor_extension());
     let guest_address = VirtAddr::from_usize(0x10000);
@@ -74,6 +84,7 @@ pub fn run() {
     let entries = entry_addresses().map(direct_alias);
     let state_address = direct_alias(VirtAddr::from_usize((&raw mut *state) as usize));
     let irq = interrupt::irqs_enabled();
+    let timer_irq = timer_irq_enabled();
     interrupt::disable_irqs();
     let anchor = registers::read_cpu_anchor();
     let tp = registers::read_tp();
@@ -89,6 +100,10 @@ pub fn run() {
     unsafe {
         cpu.enable().unwrap();
         state.bind(EntryAddresses::new(entries).unwrap()).unwrap();
+        // Root-mode interrupts are enabled while the guest runs. Mask the
+        // host timer line until the test reaches the explicit IRQ phase so
+        // the synchronous entry checks cannot consume a valid clock event.
+        interrupt::set_timer_irq_enabled(false);
         ax_cpu::virtualization::set_hwi_pending(1);
         ax_cpu::virtualization::GuestInterrupt::new(3)
             .unwrap()
@@ -156,8 +171,10 @@ pub fn run() {
         state
             .context
             .set_a1((ax_cpu::timer::counter_frequency() / 20) as usize);
+        interrupt::set_timer_irq_enabled(true);
         ax_hal::time::set_oneshot_timer(ax_hal::time::monotonic_time_nanos() + 1_000_000);
         let exit = state.run(1, state_address).unwrap();
+        ax_hal::time::cancel_oneshot_timer();
         assert_eq!(
             exit.kind,
             ExitKind::Irq,
@@ -165,10 +182,21 @@ pub fn run() {
         );
         assert_ne!(exit.status & (1 << 11), 0, "host timer must remain pending");
         assert!(!interrupt::irqs_enabled());
-        ax_hal::time::cancel_oneshot_timer();
+
+        state.context.sepc = guest_address.as_usize();
+        state.context.gcsr_era = guest_address.as_usize();
+        let exit = state.run(1, state_address).unwrap();
+        assert_eq!(
+            exit.kind,
+            ExitKind::Synchronous,
+            "guest re-entry after the host timer must reach HVCL"
+        );
+        assert_eq!((exit.status >> 16) & 0x3f, 0x17, "guest must exit by HVCL");
+        assert!(!interrupt::irqs_enabled());
         state.unbind().unwrap();
         cpu.disable().unwrap();
     }
+    interrupt::set_timer_irq_enabled(timer_irq);
     original_fp.restore();
     if irq {
         interrupt::enable_irqs();

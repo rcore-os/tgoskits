@@ -20,7 +20,7 @@ pub struct File {
 }
 
 /// Metadata information about a file.
-pub struct Metadata(api::AxFileAttr);
+pub struct Metadata(pub(super) api::AxFileAttr);
 
 /// Options and flags which can be used to configure how a file is opened.
 #[derive(Clone, Debug)]

@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <stdatomic.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/prctl.h>
@@ -51,6 +52,15 @@ struct sock_fprog {
 #endif
 #ifndef BPF_JUMP
 #define BPF_JUMP(code, k, jt, jf) { (unsigned short)(code), jt, jf, k }
+#endif
+#ifndef BPF_MAXINSNS
+#define BPF_MAXINSNS 4096
+#endif
+#ifndef SECCOMP_MODE_STRICT
+#define SECCOMP_MODE_STRICT 1
+#endif
+#ifndef SECCOMP_MODE_FILTER
+#define SECCOMP_MODE_FILTER 2
 #endif
 #ifndef SECCOMP_SET_MODE_STRICT
 #define SECCOMP_SET_MODE_STRICT 0
@@ -256,6 +266,106 @@ static void check_invalid_seccomp_args(void)
     errno = 0;
     expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_STRICT, 0, &action), -1,
                        EINVAL, "strict mode rejects non-NULL args");
+}
+
+static void check_filter_error_ordering_without_permission(void)
+{
+    struct sock_filter allow = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+    struct sock_fprog empty = {
+        .len = 0,
+        .filter = NULL,
+    };
+    struct sock_fprog oversized = {
+        .len = BPF_MAXINSNS + 1,
+        .filter = NULL,
+    };
+    struct sock_fprog null_filter = {
+        .len = 1,
+        .filter = NULL,
+    };
+    struct sock_fprog valid = {
+        .len = 1,
+        .filter = &allow,
+    };
+
+    if (setresuid(1000, 1000, 1000) != 0) {
+        note_fail("drop privileges for seccomp filter validation", strerror(errno));
+        return;
+    }
+
+    errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, NULL), -1,
+                       EFAULT, "filter mode reads a NULL header before permission");
+
+    errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &empty), -1,
+                       EINVAL, "filter mode rejects zero instructions before permission");
+
+    errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &oversized), -1,
+                       EINVAL, "filter mode enforces the instruction limit before permission");
+
+    errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &null_filter), -1,
+                       EACCES, "filter mode checks permission before a NULL instruction pointer");
+
+    errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &valid), -1,
+                       EACCES, "filter mode reports EACCES without installation permission");
+
+    errno = 0;
+    expect_syscall_ret(syscall(SYS_prctl, PR_SET_SECCOMP, SECCOMP_MODE_FILTER,
+                               &valid, 0, 0),
+                       -1, EACCES, "PR_SET_SECCOMP shares filter installation permission errors");
+
+    errno = 0;
+    expect_syscall_ret(syscall(SYS_prctl, PR_SET_SECCOMP, SECCOMP_MODE_FILTER,
+                               &valid, 1, 1),
+                       -1, EACCES, "PR_SET_SECCOMP ignores unused arguments");
+}
+
+static void check_filter_pointer_validation_with_permission(void)
+{
+    struct sock_fprog null_filter = {
+        .len = 1,
+        .filter = NULL,
+    };
+    struct sock_fprog unreadable_filter = {
+        .len = 1,
+        .filter = (struct sock_filter *)(uintptr_t)1,
+    };
+
+    if (set_no_new_privs() != 0) {
+        failed++;
+        return;
+    }
+
+    errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &null_filter), -1,
+                       EINVAL, "filter mode rejects a NULL instruction pointer after permission");
+
+    errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &unreadable_filter), -1,
+                       EFAULT, "filter mode faults on unreadable instructions after permission");
+}
+
+static void check_prctl_filter_mode(void)
+{
+    struct sock_filter allow = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+    struct sock_fprog prog = {
+        .len = 1,
+        .filter = &allow,
+    };
+
+    if (set_no_new_privs() != 0) {
+        failed++;
+        return;
+    }
+
+    errno = 0;
+    expect_syscall_ret(syscall(SYS_prctl, PR_SET_SECCOMP, SECCOMP_MODE_FILTER,
+                               &prog, 0, 0),
+                       0, 0, "PR_SET_SECCOMP translates filter mode");
 }
 
 static void check_errno_filter(void)
@@ -503,7 +613,7 @@ static void expect_child_killed_after_marker(pid_t pid, int read_fd,
     }
 }
 
-static void check_strict_kills_child(void)
+static void check_strict_kills_child(int use_prctl, const char *name)
 {
     int pipefd[2];
 
@@ -515,7 +625,11 @@ static void check_strict_kills_child(void)
     pid_t pid = fork();
     if (pid == 0) {
         close(pipefd[0]);
-        if (seccomp_raw(SECCOMP_SET_MODE_STRICT, 0, NULL) != 0) {
+        long ret = use_prctl
+                       ? syscall(SYS_prctl, PR_SET_SECCOMP, SECCOMP_MODE_STRICT,
+                                 (void *)(uintptr_t)1, 1, 1)
+                       : seccomp_raw(SECCOMP_SET_MODE_STRICT, 0, NULL);
+        if (ret != 0) {
             _exit(2);
         }
         if (write(pipefd[1], "R", 1) != 1) {
@@ -531,8 +645,7 @@ static void check_strict_kills_child(void)
         note_fail("fork strict child", strerror(errno));
         return;
     }
-    expect_child_killed_after_marker(pid, pipefd[0],
-                                     "strict mode kills forbidden syscall");
+    expect_child_killed_after_marker(pid, pipefd[0], name);
 }
 
 static void check_filter_kills_child(void)
@@ -706,12 +819,20 @@ int main(void)
 
     check_action_availability();
     check_invalid_seccomp_args();
+    run_isolated(check_filter_error_ordering_without_permission,
+                 "filter error ordering without permission isolated test");
+    run_isolated(check_filter_pointer_validation_with_permission,
+                 "filter pointer validation with permission isolated test");
+    run_isolated(check_prctl_filter_mode,
+                 "PR_SET_SECCOMP filter mode isolated test");
     run_isolated(check_errno_filter, "ERRNO filter isolated test");
     run_isolated(check_errno_zero_returns_zero, "ERRNO zero isolated test");
     run_isolated(check_arch_and_arg_filter, "arch and arg filter isolated test");
     run_isolated(check_fork_inherits_filter, "fork inheritance isolated test");
     run_isolated(check_tsync_filter, "TSYNC isolated test");
-    check_strict_kills_child();
+    check_strict_kills_child(0, "strict mode kills forbidden syscall");
+    check_strict_kills_child(1,
+                             "PR_SET_SECCOMP translates strict mode and ignores extra arguments");
     check_filter_kills_child();
     check_filter_kill_process_child();
     check_filter_precedence_kill_over_errno();

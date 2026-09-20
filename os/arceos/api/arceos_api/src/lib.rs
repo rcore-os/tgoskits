@@ -215,6 +215,8 @@ pub mod fs {
         /// Sets the cursor of the file to the specified offset. Returns the new
         /// position after the seek.
         pub fn ax_seek_file(file: &mut AxFileHandle, pos: AxSeekFrom) -> ApiResult<u64>;
+        /// Returns attributes of a file or directory, following symbolic links.
+        pub fn ax_metadata(path: &str) -> ApiResult<AxFileAttr>;
         /// Returns attributes of the file.
         pub fn ax_file_attr(file: &AxFileHandle) -> ApiResult<AxFileAttr>;
 

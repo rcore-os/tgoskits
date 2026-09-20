@@ -25,6 +25,9 @@ on:
       - "os/**/README*.md"
       - "apps/**"
       - ".github/workflows/docs.yml"
+  # Fallback for nights when the perf-history job cannot dispatch this workflow.
+  schedule:
+    - cron: "0 23 * * *"
   workflow_dispatch:
 
 permissions:
@@ -65,6 +68,18 @@ jobs:
       - name: Build Docusaurus site
         working-directory: docs
         run: yarn build
+
+      - name: Merge performance dashboard
+        run: |
+          set -euo pipefail
+          if git fetch --depth=1 origin perf-data 2>/dev/null; then
+            mkdir -p docs/build/axvisor-perf
+            git show FETCH_HEAD:index.html > docs/build/axvisor-perf/index.html
+            git show FETCH_HEAD:history.json > docs/build/axvisor-perf/history.json
+            echo "merged performance dashboard"
+          else
+            echo "perf-data branch is not available; publishing docs without it"
+          fi
 
       - name: Set up Pages
         uses: actions/configure-pages@v6

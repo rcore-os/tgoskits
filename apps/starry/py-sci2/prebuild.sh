@@ -72,6 +72,7 @@ ensure_host_tools() {
     command -v resize2fs  >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v e2fsck     >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v truncate   >/dev/null 2>&1 || missing+=(coreutils)
+    command -v numfmt     >/dev/null 2>&1 || missing+=(coreutils)
     command -v readelf    >/dev/null 2>&1 || missing+=(binutils)
     command -v "$qemu_runner" >/dev/null 2>&1 || missing+=(qemu-user-static)
     if [[ ${#missing[@]} -gt 0 ]]; then
@@ -85,12 +86,16 @@ ensure_host_tools() {
     fi
 }
 
-# Grow the per-app rootfs image so the injected closure fits without truncation. Idempotent:
-# truncate only grows, e2fsck/resize2fs are safe to re-run.
+# Grow the per-app rootfs image so the injected closure fits without truncation.
 grow_rootfs() {
     [[ -f "$base_rootfs" ]] || { echo "prebuild: rootfs image missing: $base_rootfs" >&2; exit 2; }
-    local before after
+    local before target after
     before=$(stat -c %s "$base_rootfs")
+    target=$(numfmt --from=iec "$ROOTFS_SIZE")
+    if (( before >= target )); then
+        echo "prebuild: rootfs $base_rootfs is $((before / 1024 / 1024)) MiB; target $ROOTFS_SIZE already satisfied"
+        return
+    fi
     echo "prebuild: rootfs $base_rootfs is $((before / 1024 / 1024)) MiB; growing to $ROOTFS_SIZE"
     truncate -s "$ROOTFS_SIZE" "$base_rootfs"
     e2fsck -f -y "$base_rootfs" >/dev/null 2>&1 || true

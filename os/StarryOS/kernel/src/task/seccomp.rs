@@ -309,11 +309,17 @@ impl SeccompState {
 }
 
 impl SeccompFilter {
-    /// Validate and construct a seccomp filter from userspace BPF instructions.
-    pub fn new(insns: Vec<SockFilter>) -> StarryResult<Self> {
-        if insns.is_empty() || insns.len() > BPF_MAXINSNS {
+    /// Validate the number of instructions before allocating or copying them.
+    pub(crate) fn validate_instruction_count(count: usize) -> StarryResult<()> {
+        if count == 0 || count > BPF_MAXINSNS {
             return Err(StarryError::InvalidInput);
         }
+        Ok(())
+    }
+
+    /// Validate and construct a seccomp filter from userspace BPF instructions.
+    pub fn new(insns: Vec<SockFilter>) -> StarryResult<Self> {
+        Self::validate_instruction_count(insns.len())?;
         Ok(Self { insns })
     }
 

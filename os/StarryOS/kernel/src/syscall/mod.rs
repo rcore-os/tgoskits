@@ -924,13 +924,13 @@ pub fn handle_syscall(
         Sysno::sched_getaffinity => sys_sched_getaffinity(
             current,
             uctx.arg0() as _,
-            uctx.arg1() as _,
+            uctx.arg1() as u32,
             uctx.arg2() as _,
         ),
         Sysno::sched_setaffinity => sys_sched_setaffinity(
             current,
             uctx.arg0() as _,
-            uctx.arg1() as _,
+            uctx.arg1() as u32,
             uctx.arg2() as _,
         ),
         Sysno::sched_getscheduler => sys_sched_getscheduler(current, uctx.arg0() as _),
