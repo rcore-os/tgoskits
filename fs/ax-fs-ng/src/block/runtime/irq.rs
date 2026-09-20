@@ -1,12 +1,11 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rdif_block::{
     ControlEvent, GroupIrqEvent, GroupIrqSink, GroupIrqTarget, HardIrqHandler, IrqDisposition,
     IrqQueueMask, SharedHardIrqHandler,
 };
 
-use crate::os::{BlockIrqOutcome, BlockNotification};
+use crate::os::{BlockIrqOutcome, BlockNotification, sync::IrqMutex};
 
 /// Preallocated hard-IRQ action owning exactly one boxed device handler.
 pub struct BlockIrqAction {
@@ -34,10 +33,7 @@ pub(super) struct IrqTarget {
 }
 
 pub(super) struct IrqEventLatch {
-    queue_ready: AtomicBool,
-    needs_rearm: AtomicBool,
-    control_bits: AtomicU64,
-    source_id: usize,
+    pending: IrqMutex<LatchedIrqEvent>,
 }
 
 pub(super) struct ControllerIrqTarget {
@@ -46,9 +42,7 @@ pub(super) struct ControllerIrqTarget {
 }
 
 pub(super) struct ControllerIrqLatch {
-    needs_rearm: AtomicBool,
-    control_bits: AtomicU64,
-    source_id: usize,
+    pending: IrqMutex<LatchedControllerIrq>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,6 +214,9 @@ fn publish_device_event(
         activated = true;
         control_deferred |= control_bits != 0;
     }
+    // Supported masked domains (NVMe INTx and individual AHCI ports) each have
+    // one queue target. A shared masked multi-queue domain would need a source
+    // completion barrier before any target could rearm it.
     // A queue target owns the complete drain-then-rearm transaction. Publishing
     // the same rearm to the controller worker would let it unmask the source
     // before the hctx has consumed the completions. Controller-only events,
@@ -260,24 +257,28 @@ impl ControllerIrqTarget {
 impl ControllerIrqLatch {
     pub(super) const fn new(source_id: usize) -> Self {
         Self {
-            needs_rearm: AtomicBool::new(false),
-            control_bits: AtomicU64::new(0),
-            source_id,
+            pending: IrqMutex::new(LatchedControllerIrq {
+                needs_rearm: false,
+                control: ControlEvent::new(source_id, 0),
+            }),
         }
     }
 
     fn publish(&self, needs_rearm: bool, control_bits: u64) {
-        if needs_rearm {
-            self.needs_rearm.store(true, Ordering::Release);
-        }
-        self.control_bits.fetch_or(control_bits, Ordering::AcqRel);
+        let mut pending = self.pending.lock();
+        pending.needs_rearm |= needs_rearm;
+        pending.control = ControlEvent::new(
+            pending.control.source_id(),
+            pending.control.bits() | control_bits,
+        );
     }
 
     pub(super) fn take(&self) -> LatchedControllerIrq {
-        LatchedControllerIrq {
-            needs_rearm: self.needs_rearm.swap(false, Ordering::AcqRel),
-            control: ControlEvent::new(self.source_id, self.control_bits.swap(0, Ordering::AcqRel)),
-        }
+        let mut pending = self.pending.lock();
+        let event = *pending;
+        pending.needs_rearm = false;
+        pending.control = ControlEvent::new(event.control.source_id(), 0);
+        event
     }
 }
 
@@ -298,34 +299,38 @@ impl IrqTarget {
 impl IrqEventLatch {
     pub(super) const fn new(source_id: usize) -> Self {
         Self {
-            queue_ready: AtomicBool::new(false),
-            needs_rearm: AtomicBool::new(false),
-            control_bits: AtomicU64::new(0),
-            source_id,
+            pending: IrqMutex::new(LatchedIrqEvent {
+                queue_ready: false,
+                needs_rearm: false,
+                control: ControlEvent::new(source_id, 0),
+            }),
         }
     }
 
     fn publish(&self, queue_ready: bool, needs_rearm: bool, control_bits: u64) {
-        if queue_ready {
-            self.queue_ready.store(true, Ordering::Release);
-        }
-        if needs_rearm {
-            self.needs_rearm.store(true, Ordering::Release);
-        }
-        if control_bits != 0 {
-            self.control_bits.fetch_or(control_bits, Ordering::AcqRel);
-        }
+        // Drain, control and rearm belong to one event. Separate atomics let a
+        // consumer take rearm from a new IRQ after taking an empty queue flag.
+        let mut pending = self.pending.lock();
+        pending.queue_ready |= queue_ready;
+        pending.needs_rearm |= needs_rearm;
+        pending.control = ControlEvent::new(
+            pending.control.source_id(),
+            pending.control.bits() | control_bits,
+        );
     }
 
     pub(super) fn take(&self) -> LatchedIrqEvent {
-        let queue_ready = self.queue_ready.swap(false, Ordering::AcqRel);
+        let event = {
+            let mut pending = self.pending.lock();
+            let event = *pending;
+            pending.queue_ready = false;
+            pending.needs_rearm = false;
+            pending.control = ControlEvent::new(event.control.source_id(), 0);
+            event
+        };
         #[cfg(test)]
         tests::after_snapshot();
-        LatchedIrqEvent {
-            queue_ready,
-            needs_rearm: self.needs_rearm.swap(false, Ordering::AcqRel),
-            control: ControlEvent::new(self.source_id, self.control_bits.swap(0, Ordering::AcqRel)),
-        }
+        event
     }
 }
 
@@ -356,6 +361,7 @@ mod tests {
 
     #[test]
     fn irq_arriving_during_take_keeps_drain_and_rearm_together() {
+        crate::os::task::install_test_runtime_ops();
         let latch = Arc::new(IrqEventLatch::new(11));
         let notification = Arc::new(TestNotification {
             irq_notifications: AtomicUsize::new(0),
@@ -401,6 +407,7 @@ mod tests {
 
     impl BlockNotification for TestNotification {
         fn notify(&self) {
+            assert!(!crate::os::sync::current_thread_holds_irq_mutex());
             self.irq_notifications.fetch_add(1, Ordering::AcqRel);
         }
 
@@ -448,6 +455,7 @@ mod tests {
 
     #[test]
     fn hard_irq_only_latches_and_notifies_deferred_work() {
+        crate::os::task::install_test_runtime_ops();
         let latch = Arc::new(IrqEventLatch::new(5));
         let notification = Arc::new(TestNotification {
             irq_notifications: AtomicUsize::new(0),
@@ -472,6 +480,7 @@ mod tests {
 
     #[test]
     fn spurious_irq_does_not_activate_worker() {
+        crate::os::task::install_test_runtime_ops();
         let latch = Arc::new(IrqEventLatch::new(7));
         let notification = Arc::new(TestNotification {
             irq_notifications: AtomicUsize::new(0),
@@ -489,6 +498,7 @@ mod tests {
 
     #[test]
     fn acknowledged_empty_irq_does_not_activate_worker() {
+        crate::os::task::install_test_runtime_ops();
         let latch = Arc::new(IrqEventLatch::new(9));
         let notification = Arc::new(TestNotification {
             irq_notifications: AtomicUsize::new(0),
@@ -506,6 +516,7 @@ mod tests {
 
     #[test]
     fn queue_coupled_control_is_deferred_to_hctx() {
+        crate::os::task::install_test_runtime_ops();
         let queue_latch = Arc::new(IrqEventLatch::new(11));
         let queue_notification = Arc::new(TestNotification {
             irq_notifications: AtomicUsize::new(0),
@@ -563,6 +574,7 @@ mod tests {
 
     #[test]
     fn queue_coupled_rearm_is_owned_only_by_hctx() {
+        crate::os::task::install_test_runtime_ops();
         let queue_latch = Arc::new(IrqEventLatch::new(11));
         let queue_notification = Arc::new(TestNotification {
             irq_notifications: AtomicUsize::new(0),
@@ -618,6 +630,7 @@ mod tests {
 
     #[test]
     fn one_shared_handler_fans_out_to_two_member_devices() {
+        crate::os::task::install_test_runtime_ops();
         let first_latch = Arc::new(IrqEventLatch::new(0));
         let first_notification = Arc::new(TestNotification {
             irq_notifications: AtomicUsize::new(0),
