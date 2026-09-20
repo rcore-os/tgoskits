@@ -257,7 +257,7 @@ impl Starry {
             return rootfs::qemu_with_explicit_rootfs(
                 self,
                 request,
-                case.rootfs_path,
+                case.rootfs_path.clone(),
                 case.rootfs_write_policy,
             )
             .await;
@@ -269,7 +269,7 @@ impl Starry {
             let rootfs_path = crate::image::storage::resolve_explicit_rootfs(
                 self.app.workspace_root(),
                 &request.arch,
-                case.rootfs_path,
+                case.rootfs_path.clone(),
             )?;
             rootfs::ensure_qemu_rootfs_ready(
                 &request,
@@ -314,7 +314,7 @@ impl Starry {
         let rootfs_path = crate::image::storage::resolve_explicit_rootfs(
             self.app.workspace_root(),
             &request.arch,
-            case.rootfs_path,
+            case.rootfs_path.clone(),
         )?;
         rootfs::ensure_qemu_rootfs_ready(&request, self.app.workspace_root(), Some(&rootfs_path))
             .await?;

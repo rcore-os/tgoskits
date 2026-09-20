@@ -65,7 +65,7 @@ pub(crate) async fn prepare_qemu_app_case(
         .as_deref()
         .map(|path| load_qemu_app_case_fields(workspace_root, app, path))
         .transpose()?;
-    let rootfs_path = prepare_qemu_app_rootfs(
+    let rootfs = prepare_qemu_app_rootfs(
         workspace_root,
         app,
         &arch,
@@ -86,7 +86,8 @@ pub(crate) async fn prepare_qemu_app_case(
         target,
         build_config_path,
         qemu_config_path,
-        rootfs_path,
+        rootfs_path: rootfs.path,
+        rootfs_cleanup_dir: rootfs.cleanup_dir,
         rootfs_write_policy: fields
             .as_ref()
             .map(|fields| fields.write_policy)

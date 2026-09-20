@@ -78,20 +78,33 @@ fail_regex = ['cat:']
 timeout = 60
 
 [[shell_check_steps]]
-shell_cmd = "dd if=/dev/zero of=/mnt/v/tmp/axvisor-virtio-blk-rw bs=4096 count=1024 conv=fsync"
-success_regex = ['(?m)^1024\+0 records out$']
-fail_regex = ['(?i)I/O error', '(?m)^dd:']
+shell_cmd = "mkdir -p /tmp /mnt/v/tmp"
+
+[[shell_check_steps]]
+shell_cmd = "dd if=/dev/zero of=/tmp/av-ref bs=4096 count=1024 2>/tmp/av-dd-ref.log; echo AXVISOR_REF_STATUS=$?"
+success_regex = ['(?m)^AXVISOR_REF_STATUS=0\s*$']
+fail_regex = ['(?m)^AXVISOR_REF_STATUS=[^0]\s*$']
 timeout = 120
 
 [[shell_check_steps]]
-shell_cmd = "wc -c /mnt/v/tmp/axvisor-virtio-blk-rw"
-success_regex = ['(?m)^4194304 /mnt/v/tmp/axvisor-virtio-blk-rw$']
-fail_regex = ['wc:']
+shell_cmd = "dd if=/tmp/av-ref of=/mnt/v/tmp/av-rw bs=4096 conv=fsync 2>/tmp/av-dd-copy.log; echo AXVISOR_COPY_STATUS=$?"
+success_regex = ['(?m)^AXVISOR_COPY_STATUS=0\s*$']
+fail_regex = ['(?m)^AXVISOR_COPY_STATUS=[^0]\s*$']
+timeout = 120
+
+[[shell_check_steps]]
+shell_cmd = "wc -c < /mnt/v/tmp/av-rw"
+success_regex = ['(?m)^4194304\s*$']
 timeout = 60
 
 [[shell_check_steps]]
-shell_cmd = "rm -f /mnt/v/tmp/axvisor-virtio-blk-rw"
+shell_cmd = "cmp /tmp/av-ref /mnt/v/tmp/av-rw >/dev/null 2>&1; echo AXVISOR_CMP_STATUS=$?"
+success_regex = ['(?m)^AXVISOR_CMP_STATUS=0\s*$']
+fail_regex = ['(?m)^AXVISOR_CMP_STATUS=[^0]\s*$']
 timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "rm -f /tmp/av-ref /tmp/av-dd-ref.log /tmp/av-dd-copy.log /mnt/v/tmp/av-rw"
 
 [[shell_check_steps]]
 shell_cmd = "echo AXVISOR_VIRTIO_BLK_RW_PASSED"

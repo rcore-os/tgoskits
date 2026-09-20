@@ -102,7 +102,7 @@ pub(super) fn is_valid_rootfs_cache_image(path: &Path) -> bool {
 /// On Linux this delegates to `cp --reflink=auto` and falls back to a regular
 /// `fs::copy` if that fails (e.g. on ext4 or when `cp` is too old). On other
 /// platforms only `fs::copy` is used.
-pub(super) fn copy_file_fast(src: &Path, dst: &Path) -> anyhow::Result<()> {
+pub(crate) fn copy_file_fast(src: &Path, dst: &Path) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
         // `cp --reflink=auto` tries FICLONE ioctl first; if the filesystem
