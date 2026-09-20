@@ -67,7 +67,7 @@ pub(crate) fn start_epoll_notify_worker() {
                         Arc::from_raw(current)
                     };
                     let next = epoll.notify_next.swap(ptr::null_mut(), Ordering::Acquire);
-                    epoll.notify_queued.store(false, Ordering::Release);
+                    epoll.notify_queued.store(false, Ordering::SeqCst);
                     epoll.flush_ready_waiters();
                     current = next;
                 }
@@ -605,11 +605,14 @@ impl EpollInner {
             return;
         }
 
-        self.pending_wakes.fetch_add(published, Ordering::Release);
+        // Keep the count-before-CAS and clear-before-swap pairs in one order:
+        // a producer that observes an already queued node must have its count
+        // included in that worker's swap, or another node will be queued.
+        self.pending_wakes.fetch_add(published, Ordering::SeqCst);
         #[cfg(not(all(test, not(axtest))))]
         if self
             .notify_queued
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
             let node = Arc::into_raw(Arc::clone(self)).cast_mut();
@@ -627,7 +630,7 @@ impl EpollInner {
     }
 
     fn flush_ready_waiters(&self) {
-        let published = self.pending_wakes.swap(0, Ordering::AcqRel);
+        let published = self.pending_wakes.swap(0, Ordering::SeqCst);
         self.wake_ready_waiters(published);
     }
 
