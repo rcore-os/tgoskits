@@ -46,9 +46,14 @@ fn mincore_file_visible(location: &axfs_ng_vfs::Location, cred: &crate::task::Cr
 
 /// Intermediate page-table frames detached by one logical mapping mutation.
 ///
-/// Capacity is reserved before the first PTE is changed. The address-space
-/// owner then either attaches this context to a published TLB receipt or
-/// reclaims it after a separate quiescence/shootdown proof.
+/// Capacity is reserved before the first PTE is changed. One leaf removal can
+/// return at most one token, even when that token owns multiple intermediate
+/// frames, and can defer at most one backend owner. Therefore the number of
+/// affected leaves is an upper bound for both vectors. New mutation paths must
+/// preserve that reservation rule.
+///
+/// The address-space owner then either attaches this context to a published
+/// TLB receipt or reclaims it after a separate quiescence/shootdown proof.
 pub(super) struct MappingMutationContext {
     deferred_page_tables: Vec<DeferredPageTableFrames>,
     rollback_cleanups: Vec<RollbackCleanup>,
@@ -107,10 +112,19 @@ impl MappingMutationContext {
         if tables.is_empty() {
             return;
         }
-        assert!(
-            self.deferred_page_tables.len() < self.deferred_page_tables.capacity(),
+        let slot_reserved = self.deferred_page_tables.len() < self.deferred_page_tables.capacity();
+        debug_assert!(
+            slot_reserved,
             "page-table reclaim ownership must be reserved before PTE mutation"
         );
+        if !slot_reserved && let Err(error) = self.deferred_page_tables.try_reserve(1) {
+            warn!(
+                "cannot retain detached page-table ownership after PTE mutation; leaking the \
+                 frames: {error}"
+            );
+            core::mem::forget(tables);
+            return;
+        }
         self.deferred_page_tables.push(tables);
     }
 
@@ -119,11 +133,7 @@ impl MappingMutationContext {
         owner: cow::CowRollbackOwner,
     ) {
         debug_assert!(!self.backend_owners_deferred);
-        assert!(
-            self.rollback_cleanups.len() < self.rollback_cleanups.capacity(),
-            "backend rollback ownership must be reserved before PTE mutation"
-        );
-        self.rollback_cleanups.push(RollbackCleanup::Cow(owner));
+        self.defer_rollback_cleanup(RollbackCleanup::Cow(owner));
     }
 
     pub(in crate::mm::aspace::backend) fn defer_file_cleanup(
@@ -131,11 +141,24 @@ impl MappingMutationContext {
         owner: file::FileRollbackOwner,
     ) {
         debug_assert!(!self.backend_owners_deferred);
-        assert!(
-            self.rollback_cleanups.len() < self.rollback_cleanups.capacity(),
+        self.defer_rollback_cleanup(RollbackCleanup::File(owner));
+    }
+
+    fn defer_rollback_cleanup(&mut self, cleanup: RollbackCleanup) {
+        let slot_reserved = self.rollback_cleanups.len() < self.rollback_cleanups.capacity();
+        debug_assert!(
+            slot_reserved,
             "backend rollback ownership must be reserved before PTE mutation"
         );
-        self.rollback_cleanups.push(RollbackCleanup::File(owner));
+        if !slot_reserved && let Err(error) = self.rollback_cleanups.try_reserve(1) {
+            warn!(
+                "cannot retain backend rollback ownership after PTE mutation; leaking the owner: \
+                 {error}"
+            );
+            core::mem::forget(cleanup);
+            return;
+        }
+        self.rollback_cleanups.push(cleanup);
     }
 
     pub(super) fn is_empty(&self) -> bool {
