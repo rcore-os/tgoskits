@@ -37,29 +37,24 @@ impl<Npt: NestedPageTableOps> Backend<Npt> {
         pt: &mut Npt,
         pa_to_va_delta: i128,
     ) -> bool {
-        let Some(pa_start) = Self::linear_paddr(start, pa_to_va_delta) else {
+        let Some((end, pa_start, pa_end)) =
+            Self::linear_paddr(start, pa_to_va_delta).and_then(|pa_start| {
+                Some((
+                    GuestPhysAddr::from(start.as_usize().checked_add(size)?),
+                    pa_start,
+                    PhysAddr::from(pa_start.as_usize().checked_add(size)?),
+                ))
+            })
+        else {
             return false;
         };
         debug!(
             "map_linear: [{:#x}, {:#x}) -> [{:#x}, {:#x}) {:?}",
-            start,
-            start + size,
-            pa_start,
-            pa_start + size,
-            flags
+            start, end, pa_start, pa_end, flags
         );
         let allow_huge = true;
-        pt.map_region(
-            start,
-            |va| {
-                Self::linear_paddr(va, pa_to_va_delta)
-                    .expect("linear mapping physical address underflow")
-            },
-            size,
-            flags,
-            allow_huge,
-        )
-        .is_ok()
+        pt.map_linear(start, pa_start, size, flags, allow_huge)
+            .is_ok()
     }
 
     pub(crate) fn unmap_linear(

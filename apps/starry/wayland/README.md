@@ -59,7 +59,7 @@ The automated test exercises these kernel paths:
 
 ## Manual Reproduction with VNC
 
-The manual flow intentionally avoids the app test's `shell_init_cmd`; it boots
+The manual flow intentionally avoids the app test's `shell_cmd`; it boots
 the same kernel and Alpine rootfs directly so you can type commands at the
 StarryOS shell and interact with GTK through VNC. The guest-side Weston and GTK
 commands are the same for the direct riscv64 and x86_64 flows. Only the
@@ -307,7 +307,7 @@ This app requires:
 - `memfd_create` and file-descriptor passing over Unix sockets for Wayland SHM.
 - `eventfd` for the compositor event loop.
 - udev seed data under `/run/udev/data/` for libinput device discovery.
-- `starry-kernel/input` and `ax-runtime/display` in the app build config.
+- `ax-runtime/display` in the app build config.
 
 The optional manual package-install flow additionally needs a kernel/QEMU launch
 with working guest networking if the packages are not already present in the

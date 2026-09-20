@@ -1,5 +1,13 @@
+//! Kernel harness for the Axvisor in-source axtest suites.
+//!
+//! The assertions live at the end of the production source files (gated by
+//! `#[cfg(any(test, axtest))]`), registered through the `.axtest_array` linker
+//! section. This target only wires the bare-metal modules that the binary owns
+//! into the test build, together with narrow host/manager/network stubs, and
+//! provides the axtest entry point.
+
 #![cfg_attr(target_os = "none", no_std)]
-#![cfg_attr(target_os = "none", no_main)]
+#![no_main]
 
 extern crate alloc;
 
@@ -7,324 +15,102 @@ use ax_hal as _;
 use ax_std as _;
 use axvm as _;
 
-mod host {
-    pub(super) fn write_host_bytes(_bytes: &[u8]) {}
-}
+// Compile the production guest-console mux with narrow host/manager adapters
+// so its application-layer state machine is exercised by the kernel harness.
+// These modules stay reachable from the production binary build; the harness
+// compiles them only for their in-file axtest suites.
+#[allow(dead_code)]
+#[path = "../src/network_console/delivery.rs"]
+mod browser_console_delivery;
+#[allow(dead_code)]
+#[path = "../src/network_console/layout.rs"]
+mod browser_console_layout;
+mod guest_console_harness;
+#[allow(dead_code)]
+#[path = "../src/guest_console/terminal.rs"]
+mod host_terminal;
+mod manager;
+mod network_console;
 
-mod manager {
-    pub struct AxvmManager;
-
-    impl AxvmManager {
-        pub fn notify_vm(_vm_id: axvm::VMId) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        pub fn vm_by_id(_vm_id: axvm::VMId) -> Option<axvm::AxVMRef> {
-            None
-        }
-
-        pub fn vm_list() -> Vec<axvm::AxVMRef> {
-            Vec::new()
-        }
-    }
-}
-
-#[path = "../src/guest_console/mux/mod.rs"]
-mod guest_console_mux;
-
-#[cfg(feature = "fs")]
-#[path = "../src/shell/command/fs.rs"]
-mod shell_fs;
-
+// These cases exercise the mux-to-network boundary through the stub above and
+// therefore must live beside the harness assembly instead of `mux/tests.rs`
+// (the binary is also compiled with `--cfg axtest` and has no network console).
 #[axtest::tests]
 mod tests {
     use axtest::prelude::*;
-    #[cfg(feature = "fs")]
-    use std::{
-        ffi::OsString,
-        fs,
-        io::{self, ErrorKind},
-        string::ToString,
-        time::{Duration, SystemTime, UNIX_EPOCH},
-    };
 
-    #[cfg(feature = "fs")]
-    use super::shell_fs::{
-        CopyMode, RemoveOptions, collect_directory_entry_names, copy_after_rename_failure,
-        copy_operands, copy_path, ensure_recursive_destination_outside_source, ignore_remove_error,
-        metadata_for_remove, move_file_or_dir, remove_path, touch_file_at,
-    };
+    fn remove_guest_console(vm_id: usize) {
+        use crate::guest_console_harness::mux;
+
+        let identity = mux::backend_identity(vm_id).expect("guest backend must be registered");
+        assert!(mux::remove_if_backend(identity));
+    }
 
     #[test]
-    fn axvisor_axtest_smoke() {
-        ax_assert!(true);
+    fn guest_output_reaches_only_its_network_console() {
+        use crate::{guest_console_harness::mux, network_console};
+
+        network_console::reset();
+        network_console::set_guest_connected(1);
+        network_console::set_guest_connected(2);
+        let backend_1 = mux::serial_backend_factory(1).create();
+        let backend_2 = mux::serial_backend_factory(2).create();
+        mux::mark_running(1);
+        mux::mark_running(2);
+
+        backend_1.write(b"starry output\n");
+        backend_2.write(b"zephyr output\n");
+
+        ax_assert_eq!(network_console::take_guest_output(1), b"starry output\n");
+        ax_assert_eq!(network_console::take_guest_output(2), b"zephyr output\n");
+        ax_assert!(network_console::take_guest_output(3).is_empty());
+        remove_guest_console(1);
+        remove_guest_console(2);
     }
 
-    #[cfg(feature = "fs")]
     #[test]
-    fn touch_preserves_content_and_updates_times() {
-        let path = "/tmp/axvisor-touch-regression";
-        let touch_time = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        let _ = fs::remove_file(path);
-        fs::write(path, b"preserve me").expect("create touch fixture");
+    fn guest_output_skips_network_path_without_a_browser_session() {
+        use crate::{guest_console_harness::mux, network_console};
 
-        touch_file_at(path, touch_time).expect("touch fixture");
+        network_console::reset();
+        let backend = mux::serial_backend_factory(1).create();
+        mux::mark_running(1);
 
-        let metadata = fs::metadata(path).expect("read touched metadata");
-        ax_assert_eq!(fs::read(path).expect("read touched file"), b"preserve me");
-        let accessed = unix_seconds(metadata.accessed().expect("read atime"));
-        let modified = unix_seconds(metadata.modified().expect("read mtime"));
-        ax_assert_eq!(accessed, unix_seconds(touch_time));
-        ax_assert_eq!(modified, unix_seconds(touch_time));
+        backend.write(b"physical console only\n");
 
-        let unsupported_time = UNIX_EPOCH + Duration::from_secs(u32::MAX as u64 + 1);
-        let error = touch_file_at(path, unsupported_time)
-            .expect_err("timestamps that would be truncated must fail");
-        ax_assert_eq!(error.kind(), ErrorKind::InvalidInput);
-        fs::remove_file(path).expect("remove touch fixture");
+        ax_assert!(network_console::take_guest_output(1).is_empty());
+        remove_guest_console(1);
     }
 
-    #[cfg(feature = "fs")]
     #[test]
-    fn cp_file_to_existing_directory_uses_source_basename() {
-        let root = "/tmp/axvisor-cp-file-regression";
-        reset_test_dir(root);
-        let source = format!("{root}/source.txt");
-        let destination = format!("{root}/destination");
-        fs::write(&source, b"copied payload").expect("create copy source");
-        fs::create_dir(&destination).expect("create copy destination");
+    fn unterminated_guest_echo_reaches_browser_without_another_input() {
+        use crate::{guest_console_harness::mux, network_console};
 
-        copy_path(&source, &destination, CopyMode::File).expect("copy file into directory");
+        network_console::reset();
+        network_console::set_guest_connected(1);
+        let backend = mux::serial_backend_factory(1).create();
+        mux::mark_running(1);
 
-        ax_assert_eq!(
-            fs::read(format!("{destination}/source.txt")).expect("read copied file"),
-            b"copied payload"
-        );
-        remove_path(
-            root,
-            RemoveOptions {
-                recursive: true,
-                ..RemoveOptions::default()
-            },
-        )
-        .expect("remove copy fixture");
+        backend.write(b"./run_dual_pick.sh");
+
+        ax_assert_eq!(network_console::take_guest_output(1), b"./run_dual_pick.sh");
+        remove_guest_console(1);
     }
 
-    #[cfg(feature = "fs")]
     #[test]
-    fn cp_rejects_copying_file_onto_itself_without_truncating_it() {
-        let path = "/tmp/axvisor-cp-self-file-regression";
-        let _ = fs::remove_file(path);
-        fs::write(path, b"keep this payload").expect("create self-copy fixture");
+    fn guest_byte_writes_reach_network_output_in_order() {
+        use crate::{guest_console_harness::mux, network_console};
 
-        let error = copy_path(path, path, CopyMode::File)
-            .expect_err("copying a file onto itself must fail");
+        network_console::reset();
+        network_console::set_guest_connected(2);
+        let backend = mux::serial_backend_factory(2).create();
+        mux::mark_running(2);
 
-        ax_assert_eq!(error.kind(), ErrorKind::InvalidInput);
-        ax_assert_eq!(
-            fs::read(path).expect("read self-copy fixture"),
-            b"keep this payload"
-        );
-        fs::remove_file(path).expect("remove self-copy fixture");
-    }
+        for byte in b"zephyr log line\n" {
+            backend.write(core::slice::from_ref(byte));
+        }
 
-    #[cfg(feature = "fs")]
-    #[test]
-    fn cp_recursive_directory_to_existing_directory_uses_source_basename() {
-        let root = "/tmp/axvisor-cp-dir-regression";
-        reset_test_dir(root);
-        let source = format!("{root}/source-dir");
-        let destination = format!("{root}/destination");
-        fs::create_dir(&source).expect("create recursive copy source");
-        fs::write(format!("{source}/child.txt"), b"recursive payload")
-            .expect("create recursive copy child");
-        fs::create_dir(&destination).expect("create recursive copy destination");
-
-        copy_path(&source, &destination, CopyMode::Recursive)
-            .expect("copy directory into directory");
-
-        ax_assert_eq!(
-            fs::read(format!("{destination}/source-dir/child.txt"))
-                .expect("read recursively copied file"),
-            b"recursive payload"
-        );
-        remove_path(
-            root,
-            RemoveOptions {
-                recursive: true,
-                ..RemoveOptions::default()
-            },
-        )
-        .expect("remove recursive copy fixture");
-    }
-
-    #[cfg(feature = "fs")]
-    #[test]
-    fn cp_recursive_rejects_copying_directory_into_itself() {
-        let root = "/tmp/axvisor-cp-self-regression";
-        reset_test_dir(root);
-        let source = format!("{root}/dir");
-        fs::create_dir(&source).expect("create recursive copy source");
-        fs::create_dir(format!("{source}/dir")).expect("create recursion guard");
-
-        let error = copy_path(&source, &source, CopyMode::Recursive)
-            .expect_err("recursive copy into itself must fail");
-
-        ax_assert_eq!(error.kind(), ErrorKind::InvalidInput);
-        remove_path(
-            root,
-            RemoveOptions {
-                recursive: true,
-                ..RemoveOptions::default()
-            },
-        )
-        .expect("remove self-copy fixture");
-    }
-
-    #[cfg(feature = "fs")]
-    #[test]
-    fn cp_recursive_rejects_copying_directory_into_descendant() {
-        let root = "/tmp/axvisor-cp-descendant-regression";
-        reset_test_dir(root);
-        let source = format!("{root}/dir");
-        let destination = format!("{source}/subdir");
-        fs::create_dir(&source).expect("create recursive copy source");
-        fs::create_dir(&destination).expect("create descendant destination");
-        fs::create_dir(format!("{destination}/dir")).expect("create recursion guard");
-
-        let error = copy_path(&source, &destination, CopyMode::Recursive)
-            .expect_err("recursive copy into a descendant must fail");
-
-        ax_assert_eq!(error.kind(), ErrorKind::InvalidInput);
-        remove_path(
-            root,
-            RemoveOptions {
-                recursive: true,
-                ..RemoveOptions::default()
-            },
-        )
-        .expect("remove descendant-copy fixture");
-    }
-
-    #[cfg(feature = "fs")]
-    #[test]
-    fn cp_recursive_rejects_nonexistent_descendant_before_creation() {
-        let root = "/tmp/axvisor-cp-new-descendant-regression";
-        reset_test_dir(root);
-        let source = format!("{root}/dir");
-        let destination = format!("{source}/subdir");
-        fs::create_dir(&source).expect("create recursive copy source");
-
-        let error = ensure_recursive_destination_outside_source(&source, &destination)
-            .expect_err("nonexistent descendant must be rejected before creation");
-
-        ax_assert_eq!(error.kind(), ErrorKind::InvalidInput);
-        ax_assert!(!fs::exists(&destination).expect("check descendant was not created"));
-        remove_path(
-            root,
-            RemoveOptions {
-                recursive: true,
-                ..RemoveOptions::default()
-            },
-        )
-        .expect("remove nonexistent-descendant fixture");
-    }
-
-    #[cfg(feature = "fs")]
-    #[test]
-    fn mv_only_falls_back_to_copy_across_devices() {
-        ax_assert!(copy_after_rename_failure(ErrorKind::CrossesDevices));
-        ax_assert!(!copy_after_rename_failure(ErrorKind::PermissionDenied));
-        ax_assert!(!copy_after_rename_failure(ErrorKind::AlreadyExists));
-    }
-
-    #[cfg(feature = "fs")]
-    #[test]
-    fn mv_renames_file_on_same_filesystem() {
-        let root = "/tmp/axvisor-mv-regression";
-        reset_test_dir(root);
-        let source = format!("{root}/source.txt");
-        let destination = format!("{root}/destination.txt");
-        fs::write(&source, b"moved payload").expect("create move source");
-
-        move_file_or_dir(&source, &destination).expect("move file");
-
-        ax_assert!(!fs::exists(&source).expect("check move source"));
-        ax_assert_eq!(
-            fs::read(&destination).expect("read move destination"),
-            b"moved payload"
-        );
-        remove_path(
-            root,
-            RemoveOptions {
-                recursive: true,
-                ..RemoveOptions::default()
-            },
-        )
-        .expect("remove move fixture");
-    }
-
-    #[cfg(feature = "fs")]
-    #[test]
-    fn rm_force_only_ignores_not_found() {
-        ax_assert!(ignore_remove_error(true, ErrorKind::NotFound));
-        ax_assert!(!ignore_remove_error(true, ErrorKind::PermissionDenied));
-        ax_assert!(!ignore_remove_error(true, ErrorKind::Unsupported));
-        ax_assert!(!ignore_remove_error(false, ErrorKind::NotFound));
-    }
-
-    #[cfg(feature = "fs")]
-    #[test]
-    fn rm_does_not_follow_a_directory_symlink() {
-        let metadata = metadata_for_remove("/var/run").expect("inspect rootfs directory symlink");
-
-        ax_assert!(metadata.file_type().is_symlink());
-        ax_assert!(!metadata.is_dir());
-    }
-
-    #[cfg(feature = "fs")]
-    #[test]
-    fn ls_propagates_directory_iteration_errors() {
-        let entries = [
-            Ok(OsString::from("visible")),
-            Err(io::Error::from(ErrorKind::PermissionDenied)),
-        ];
-
-        let error = collect_directory_entry_names(entries, false)
-            .expect_err("directory iteration error must be propagated");
-
-        ax_assert_eq!(error.kind(), ErrorKind::PermissionDenied);
-    }
-
-    #[cfg(feature = "fs")]
-    #[test]
-    fn cp_requires_exactly_two_operands() {
-        let source = "source".to_string();
-        let destination = "destination".to_string();
-        let extra = "extra".to_string();
-        ax_assert!(copy_operands(&[]).is_err());
-        ax_assert!(copy_operands(core::slice::from_ref(&source)).is_err());
-        ax_assert!(copy_operands(&[source.clone(), destination.clone()]).is_ok());
-        ax_assert!(copy_operands(&[source, destination, extra]).is_err());
-    }
-
-    #[cfg(feature = "fs")]
-    fn reset_test_dir(path: &str) {
-        let _ = remove_path(
-            path,
-            RemoveOptions {
-                recursive: true,
-                force: true,
-                ..RemoveOptions::default()
-            },
-        );
-        fs::create_dir(path).expect("create test directory");
-    }
-
-    #[cfg(feature = "fs")]
-    fn unix_seconds(time: SystemTime) -> u64 {
-        time.duration_since(UNIX_EPOCH)
-            .expect("test time must not predate Unix epoch")
-            .as_secs()
+        ax_assert_eq!(network_console::take_guest_output(2), b"zephyr log line\n");
+        remove_guest_console(2);
     }
 }

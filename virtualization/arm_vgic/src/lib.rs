@@ -45,7 +45,7 @@ pub use backend::*;
 pub use config::*;
 pub use controller::*;
 pub use cpu_interface::*;
-pub use devices::{VgicAccessContext, VgicDeviceSet};
+pub use devices::VgicDeviceSet;
 pub(crate) use distributor::DistributorState;
 pub use error::*;
 pub(crate) use interrupt::InterruptRecord;

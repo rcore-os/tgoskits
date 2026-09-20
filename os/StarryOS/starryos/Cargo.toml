@@ -11,22 +11,15 @@ edition.workspace = true
 license.workspace = true
 name = "starryos"
 repository.workspace = true
-version = "0.5.28"
+version = "0.5.37"
 
 [features]
 default = []
-qemu = [
-  "ax-runtime/irq",
-  "ax-runtime/rtc",
-  "ax-runtime/display",
-  "starry-kernel/input",
-  "starry-kernel/vsock", # auxiliary features
-]
+nixos = []
 # The profiling command selects this package-level preset; axbuild must not assemble the
 # individual driver feature list at runtime.
 qperf = ["ax-driver/nvme", "ax-driver/virtio-net", "ax-driver/virtio-socket"]
-qperf-metrics = []
-smp = ["ax-runtime/smp", "axplat-dyn/smp", "ax-hal/smp", "starry-kernel/ipi"]
+qperf-metrics = ["starry-kernel/qperf-metrics"]
 lockdep = ["ax-std/lockdep"]
 
 k230 = [
@@ -44,10 +37,12 @@ stack-protector = ["ax-std/stack-protector", "starry-kernel/stack-protector"]
 [[bin]]
 name = "starryos"
 path = "src/main.rs"
+test = false
 
 [[bin]]
 name = "xtask"
 path = "xtask/main.rs"
+test = false
 
 [dependencies]
 # Starry is a freestanding PIE. Keep host `std` compatibility and kernel TLS
@@ -57,13 +52,11 @@ ax-std = { workspace = true, default-features = false, features = [
   "fd",
   "ext-ld",
   "fs",
-  "multitask",
-  "irq",
 ] }
 ax-driver.workspace = true
-ax-hal.workspace = true
-ax-runtime = { workspace = true, features = ["ext-ld", "irq"] }
-axplat-dyn.workspace = true
+ax-hal = { workspace = true, features = ["smp"] }
+ax-runtime = { workspace = true, features = ["ext-ld", "smp"] }
+axplat-dyn = { workspace = true, features = ["smp"] }
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 
 [target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]

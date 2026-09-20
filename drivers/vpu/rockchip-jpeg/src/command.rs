@@ -64,7 +64,7 @@ pub fn build_reg_array(info: &JpegInfo) -> [u32; registers::REG_COUNT] {
     let fill_down = info.yuv_mode == YuvMode::Yuv420 || info.fill_bottom;
     let mut reg2 = 0u32;
     if fill_down {
-        reg2 |= 1 << 24;
+        reg2 |= registers::SYS_FILL_DOWN;
     }
     if info.fill_right {
         reg2 |= 1 << 25;

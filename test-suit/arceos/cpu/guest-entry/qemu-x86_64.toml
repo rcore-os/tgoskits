@@ -1,0 +1,8 @@
+args = ["-m", "1G", "-smp", "1", "-display", "none", "-serial", "mon:stdio", "-cpu", "max,svm=on,la57=off"]
+timeout = 60
+uefi = true
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+
+[[shell_check_steps]]
+success_regex = ["CPU_GUEST_ENTRY_OK"]

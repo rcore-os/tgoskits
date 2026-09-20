@@ -2,9 +2,9 @@
 //!
 //! This crate ports the [SD Host Controller Standard Specification][sdhci]
 //! v3.x register layout and ADMA2 data path into a physical
-//! [`sdio_host2::SdioHost`] implementation that
-//! [`sdmmc_protocol::sdio::card::SdioSdmmc`] drives through
-//! [`sdmmc_protocol::sdio::card::SdioSdmmc::new`].
+//! [`sdmmc_host::SdMmcHost`] implementation that
+//! [`sdmmc_protocol::sdio::native::SdMmcCard`] drives through
+//! [`sdmmc_protocol::sdio::native::SdMmcCard::new`].
 //!
 //! # Scope
 //!
@@ -26,13 +26,13 @@
 //!
 //! use dma_api::DeviceDma;
 //! use sdhci_host::Sdhci;
-//! use sdmmc_protocol::sdio::card::SdioSdmmc;
+//! use sdmmc_protocol::sdio::native::SdMmcCard;
 //!
 //! let mmio = NonNull::new(0xFE31_0000 as *mut u8).unwrap();
 //! let dma: DeviceDma = todo!("install the platform DMA capability");
 //! let mut host = unsafe { Sdhci::new(mmio) };
 //! host.configure_dma(dma)?;
-//! let mut card = SdioSdmmc::new(host);
+//! let mut card = SdMmcCard::new(host);
 //! let mut request = card.submit_init()?;
 //! // Advance `request` only from the runtime's IRQ or bounded-deadline events.
 //! # Ok::<(), sdmmc_protocol::Error>(())
@@ -49,7 +49,12 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
-use core::{marker::PhantomData, ptr::NonNull, time::Duration};
+use core::{
+    marker::PhantomData,
+    ptr::NonNull,
+    sync::atomic::{Ordering, fence},
+    time::Duration,
+};
 
 mod block_path;
 mod command;
@@ -70,8 +75,8 @@ use sdmmc_protocol::{
     cmd::{Command, DataDirection},
     error::{Error, ErrorContext, Phase},
     sdio::host::{
-        BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, SdioIrqHandle,
-        SdioIrqHost, SignalVoltage,
+        BusWidth, CardIrqControl, ClockSpeed, CompletionIrqRearm, CompletionIrqRearmHost,
+        HostEvent, HostEventKind, HostEventSource, SdMmcIrqHandle, SdMmcIrqHost, SignalVoltage,
     },
 };
 
@@ -95,6 +100,14 @@ pub enum Event {
     ReceiveReady,
     /// Transmit-side FIFO space is ready.
     TransmitReady,
+    /// An SDIO function asserted the level-sensitive `CARD_INT` source.
+    CardInterrupt,
+    /// A card interrupt arrived together with another controller event.
+    Combined {
+        primary: HostEventKind,
+        normal: u16,
+        error: u16,
+    },
     /// One or more error bits are pending.
     Error { normal: u16, error: u16 },
     /// Status bits are pending but do not map to a high-level event yet.
@@ -118,12 +131,12 @@ pub struct TransactionRequest<'a> {
 }
 
 enum TransactionRequestKind {
-    Command { response: sdio_host2::ResponseType },
-    Data { response: sdio_host2::ResponseType },
+    Command { response: sdmmc_host::ResponseType },
+    Data { response: sdmmc_host::ResponseType },
 }
 
 impl<'a> TransactionRequest<'a> {
-    fn command(owner: usize, id: u64, response: sdio_host2::ResponseType) -> Self {
+    fn command(owner: usize, id: u64, response: sdmmc_host::ResponseType) -> Self {
         Self {
             owner,
             id,
@@ -138,7 +151,7 @@ impl<'a> TransactionRequest<'a> {
         owner: usize,
         id: u64,
         request: DataRequest<'a>,
-        response: sdio_host2::ResponseType,
+        response: sdmmc_host::ResponseType,
     ) -> Self {
         Self {
             owner,
@@ -201,10 +214,10 @@ enum SdhciClockState {
         target_hz: u32,
     },
     ExternalEnable {
-        polls: u32,
+        deadline_ns: u64,
     },
     InternalWaitStable {
-        polls: u32,
+        deadline_ns: u64,
     },
 }
 
@@ -225,7 +238,8 @@ enum SdhciTuningState {
 }
 
 const SDHCI_RESET_POLLS: u32 = 1_000;
-const SDHCI_CLOCK_POLLS: u32 = 1_000;
+// Linux `sdhci_enable_clk()` bounds this transition by monotonic elapsed time.
+const SDHCI_CLOCK_TIMEOUT_NS: u64 = 150_000_000;
 const SDHCI_TUNING_POLLS: u32 = 1_000_000;
 const SDHCI_VOLTAGE_SWITCH_DELAY_MS: u64 = 5;
 const SDHCI_REGISTER_RETRY_DELAY: Duration = Duration::from_micros(100);
@@ -235,12 +249,24 @@ pub struct SdhciIrqHandle {
     irq: Arc<host::IrqCore>,
 }
 
-impl SdioIrqHost for Sdhci {
+/// Task-context mask/rearm endpoint for `CARD_INT`.
+pub struct SdhciCardIrqHandle {
+    irq: Arc<host::IrqCore>,
+}
+
+impl SdMmcIrqHost for Sdhci {
     type Event = Event;
     type IrqHandle = SdhciIrqHandle;
+    type CardIrq = SdhciCardIrqHandle;
 
-    fn irq_handle(&mut self) -> Self::IrqHandle {
-        Sdhci::irq_endpoint(self)
+    fn into_parts(mut self) -> sdmmc_host::HostParts<Self, Self::IrqHandle, Self::CardIrq> {
+        let irq = Sdhci::irq_endpoint(&mut self);
+        let card_irq = Some(Sdhci::card_irq_endpoint(&mut self));
+        sdmmc_host::HostParts {
+            bus: self,
+            irq,
+            card_irq,
+        }
     }
 
     fn completion_irq_enabled(&self) -> bool {
@@ -263,6 +289,12 @@ impl SdioIrqHost for Sdhci {
 
     fn progress_wait_kind(&self) -> sdmmc_protocol::sdio::HostProgressWait {
         Sdhci::progress_wait_kind(self)
+    }
+}
+
+impl CompletionIrqRearmHost for Sdhci {
+    fn rearm_completion_irq_and_check(&mut self) -> Result<CompletionIrqRearm, Error> {
+        Ok(Sdhci::rearm_completion_irq_and_check(self))
     }
 }
 
@@ -292,20 +324,33 @@ pub(crate) fn sdhci_clock_divisor_with_quirk(
 }
 
 pub(crate) fn event_from_status(normal: u16, error: u16) -> Event {
-    if normal & NORMAL_INT_ERROR != 0 {
+    let has_card_interrupt = normal & NORMAL_INT_CARD_INTERRUPT != 0;
+    let normal_without_card = normal & !NORMAL_INT_CARD_INTERRUPT;
+    let primary = if normal_without_card & NORMAL_INT_ERROR != 0 {
         Event::Error { normal, error }
-    } else if normal & NORMAL_INT_XFER_COMPLETE != 0 {
+    } else if normal_without_card & NORMAL_INT_XFER_COMPLETE != 0 {
         Event::TransferComplete
-    } else if normal & NORMAL_INT_BUFFER_READ_READY != 0 {
+    } else if normal_without_card & NORMAL_INT_BUFFER_READ_READY != 0 {
         Event::ReceiveReady
-    } else if normal & NORMAL_INT_BUFFER_WRITE_READY != 0 {
+    } else if normal_without_card & NORMAL_INT_BUFFER_WRITE_READY != 0 {
         Event::TransmitReady
-    } else if normal & NORMAL_INT_CMD_COMPLETE != 0 {
+    } else if normal_without_card & NORMAL_INT_CMD_COMPLETE != 0 {
         Event::CommandComplete
-    } else if normal != 0 || error != 0 {
+    } else if normal_without_card != 0 || error != 0 {
         Event::Other { normal, error }
     } else {
         Event::None
+    };
+    if !has_card_interrupt {
+        return primary;
+    }
+    match primary {
+        Event::None => Event::CardInterrupt,
+        event => Event::Combined {
+            primary: event.kind(),
+            normal,
+            error,
+        },
     }
 }
 
@@ -317,6 +362,8 @@ impl HostEvent for Event {
             Event::TransferComplete => HostEventKind::TransferComplete,
             Event::ReceiveReady => HostEventKind::ReceiveReady,
             Event::TransmitReady => HostEventKind::TransmitReady,
+            Event::CardInterrupt => HostEventKind::CardInterrupt,
+            Event::Combined { primary, .. } => *primary,
             Event::Error { .. } => HostEventKind::Error,
             Event::Other { .. } => HostEventKind::Other,
         }
@@ -328,7 +375,10 @@ impl HostEvent for Event {
             Event::TransferComplete | Event::ReceiveReady | Event::TransmitReady => {
                 HostEventSource::Data
             }
-            Event::None | Event::Error { .. } | Event::Other { .. } => HostEventSource::Controller,
+            Event::Combined { primary, .. } => source_from_kind(*primary),
+            Event::None | Event::CardInterrupt | Event::Error { .. } | Event::Other { .. } => {
+                HostEventSource::Controller
+            }
         }
     }
 
@@ -337,22 +387,61 @@ impl HostEvent for Event {
             Event::TransferComplete | Event::ReceiveReady | Event::TransmitReady => {
                 Some(BlockRequestId::new(0))
             }
-            Event::None | Event::CommandComplete | Event::Error { .. } | Event::Other { .. } => {
-                None
-            }
+            Event::Combined {
+                primary:
+                    HostEventKind::TransferComplete
+                    | HostEventKind::ReceiveReady
+                    | HostEventKind::TransmitReady,
+                ..
+            } => Some(BlockRequestId::new(0)),
+            Event::None
+            | Event::CommandComplete
+            | Event::CardInterrupt
+            | Event::Combined { .. }
+            | Event::Error { .. }
+            | Event::Other { .. } => None,
         }
+    }
+
+    fn card_interrupt(&self) -> bool {
+        matches!(self, Event::CardInterrupt | Event::Combined { .. })
+    }
+}
+
+fn source_from_kind(kind: HostEventKind) -> HostEventSource {
+    match kind {
+        HostEventKind::CommandComplete => HostEventSource::Command,
+        HostEventKind::TransferComplete
+        | HostEventKind::ReceiveReady
+        | HostEventKind::TransmitReady => HostEventSource::Data,
+        _ => HostEventSource::Controller,
     }
 }
 
 impl Sdhci {
-    pub fn irq_endpoint(&mut self) -> SdhciIrqHandle {
+    pub(crate) fn irq_endpoint(&mut self) -> SdhciIrqHandle {
         SdhciIrqHandle {
             irq: self.irq.clone(),
         }
     }
+
+    pub(crate) fn card_irq_endpoint(&mut self) -> SdhciCardIrqHandle {
+        SdhciCardIrqHandle {
+            irq: self.irq.clone(),
+        }
+    }
+
+    fn rearm_completion_irq_and_check(&mut self) -> CompletionIrqRearm {
+        self.enable_completion_irq();
+        fence(Ordering::SeqCst);
+        match handle_irq_core(&self.irq).kind() {
+            HostEventKind::None | HostEventKind::CardInterrupt => CompletionIrqRearm::Idle,
+            _ => CompletionIrqRearm::Pending,
+        }
+    }
 }
 
-impl SdioIrqHandle for SdhciIrqHandle {
+impl SdMmcIrqHandle for SdhciIrqHandle {
     type Event = Event;
 
     fn handle_irq(&mut self) -> Self::Event {
@@ -362,42 +451,118 @@ impl SdioIrqHandle for SdhciIrqHandle {
 
 fn handle_irq_core(irq: &host::IrqCore) -> Event {
     let generation = irq.state.generation();
-    let raw_normal = read_u16(irq.base_addr, REG_NORMAL_INT_STATUS);
-    let raw_error = if raw_normal & NORMAL_INT_ERROR != 0 {
-        read_u16(irq.base_addr, REG_ERROR_INT_STATUS)
+    let (raw_normal, raw_error) = host::read_irq_register(irq.base_addr, REG_NORMAL_INT_STATUS);
+    let (normal_status_enable, error_status_enable) =
+        host::read_irq_register(irq.base_addr, REG_NORMAL_INT_STATUS_ENABLE);
+    let (signal_enable, error_signal_enable) =
+        host::read_irq_register(irq.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
+
+    let normal_enabled = raw_normal & normal_status_enable;
+    let error_enabled = if normal_enabled & NORMAL_INT_ERROR != 0 {
+        raw_error & error_status_enable
     } else {
         0
     };
 
-    if raw_normal != 0 {
-        write_u16(irq.base_addr, REG_NORMAL_INT_STATUS, raw_normal);
-    }
-    if raw_error != 0 {
-        write_u16(irq.base_addr, REG_ERROR_INT_STATUS, raw_error);
+    // STATUS_ENABLE controls which latched bits the driver owns and
+    // SIGNAL_ENABLE gates assertion of the external IRQ line. A CARD_INT can
+    // arrive together with command/data completion; preserve the completion
+    // facts in this snapshot before masking the level source below.
+    let visible_card = normal_enabled & signal_enable & NORMAL_INT_CARD_INTERRUPT;
+    let normal = (normal_enabled & !NORMAL_INT_CARD_INTERRUPT) | visible_card;
+    let error = error_enabled;
+
+    let normal_to_ack = raw_normal & !NORMAL_INT_CARD_INTERRUPT;
+    if normal_to_ack != 0 || raw_error != 0 {
+        host::write_irq_register(
+            irq.base_addr,
+            REG_NORMAL_INT_STATUS,
+            normal_to_ack,
+            raw_error,
+        );
     }
 
-    let normal = raw_normal
-        & read_u16(irq.base_addr, REG_NORMAL_INT_STATUS_ENABLE)
-        & read_u16(irq.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
-    let error = raw_error
-        & read_u16(irq.base_addr, REG_ERROR_INT_STATUS_ENABLE)
-        & read_u16(irq.base_addr, REG_ERROR_INT_SIGNAL_ENABLE);
     let normal = if error == 0 {
         normal & !NORMAL_INT_ERROR
     } else {
         normal
     };
-    irq.state.cache_if_current(generation, normal, error);
+    if normal & NORMAL_INT_CARD_INTERRUPT != 0 {
+        // Linux's SDHCI `ier` is written to both INT_ENABLE and
+        // SIGNAL_ENABLE when CARD_INT is consumed.  Do the same here: the
+        // source is level-sensitive and must remain masked until the task
+        // context drains the AIC function FIFOs and explicitly rearms it.
+        host::write_irq_register(
+            irq.base_addr,
+            REG_NORMAL_INT_STATUS_ENABLE,
+            normal_status_enable & !NORMAL_INT_CARD_INTERRUPT,
+            error_status_enable,
+        );
+        host::write_irq_register(
+            irq.base_addr,
+            REG_NORMAL_INT_SIGNAL_ENABLE,
+            signal_enable & !NORMAL_INT_CARD_INTERRUPT,
+            error_signal_enable,
+        );
+    }
+    irq.state
+        .cache_if_current(generation, normal & !NORMAL_INT_CARD_INTERRUPT, error);
 
     event_from_status(normal, error)
 }
 
-fn read_u16(base_addr: usize, off: usize) -> u16 {
-    unsafe { core::ptr::read_volatile((base_addr + off) as *const u16) }
-}
+impl CardIrqControl for SdhciCardIrqHandle {
+    fn mask(&mut self) {
+        let (status_enable, error_status_enable) =
+            host::read_irq_register(self.irq.base_addr, REG_NORMAL_INT_STATUS_ENABLE);
+        host::write_irq_register(
+            self.irq.base_addr,
+            REG_NORMAL_INT_STATUS_ENABLE,
+            status_enable & !NORMAL_INT_CARD_INTERRUPT,
+            error_status_enable,
+        );
+        let (signals, error_signals) =
+            host::read_irq_register(self.irq.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
+        host::write_irq_register(
+            self.irq.base_addr,
+            REG_NORMAL_INT_SIGNAL_ENABLE,
+            signals & !NORMAL_INT_CARD_INTERRUPT,
+            error_signals,
+        );
+    }
 
-fn write_u16(base_addr: usize, off: usize, val: u16) {
-    unsafe { core::ptr::write_volatile((base_addr + off) as *mut u16, val) }
+    fn disable(&mut self) {
+        self.mask();
+    }
+
+    fn rearm_and_check(&mut self) -> bool {
+        let (status_enable, error_status_enable) =
+            host::read_irq_register(self.irq.base_addr, REG_NORMAL_INT_STATUS_ENABLE);
+        host::write_irq_register(
+            self.irq.base_addr,
+            REG_NORMAL_INT_STATUS_ENABLE,
+            status_enable | NORMAL_INT_CARD_INTERRUPT,
+            error_status_enable,
+        );
+        let (signals, error_signals) =
+            host::read_irq_register(self.irq.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
+        host::write_irq_register(
+            self.irq.base_addr,
+            REG_NORMAL_INT_SIGNAL_ENABLE,
+            signals | NORMAL_INT_CARD_INTERRUPT,
+            error_signals,
+        );
+        fence(Ordering::SeqCst);
+        if host::read_irq_register(self.irq.base_addr, REG_NORMAL_INT_STATUS).0
+            & NORMAL_INT_CARD_INTERRUPT
+            != 0
+        {
+            self.mask();
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[cfg(test)]

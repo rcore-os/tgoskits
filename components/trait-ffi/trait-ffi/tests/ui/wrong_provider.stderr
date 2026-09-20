@@ -1,0 +1,18 @@
+error[E0053]: method `read` has an incompatible type for trait
+ --> tests/ui/wrong_provider.rs:4:69
+  |
+4 | interface::impl_trait! { impl Interface for Provider { fn read() -> u16 { 1 } } }
+  |                                                                     ^^^ expected `u8`, found `u16`
+  |
+note: type in trait
+ --> tests/ui/wrong_provider.rs:2:36
+  |
+2 | pub trait Interface { fn read() -> u8; }
+  |                                    ^^
+  = note: expected signature `fn() -> u8`
+             found signature `fn() -> u16`
+help: change the output type to match the trait
+  |
+4 - interface::impl_trait! { impl Interface for Provider { fn read() -> u16 { 1 } } }
+4 + interface::impl_trait! { impl Interface for Provider { fn read() -> u8 { 1 } } }
+  |

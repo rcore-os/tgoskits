@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="520" viewBox="0 0 1100 520" role="img" aria-labelledby="title desc">
+  <title id="title">地址空间组件边界</title><desc id="desc">公共 MemorySet 机制被 ArceOS、StarryOS 和 Axvisor 三类策略分别消费。</desc>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0L0 6L9 3Z" fill="#475569"/></marker><style>.h{font:700 24px sans-serif;fill:#0f172a}.t{font:600 18px sans-serif;fill:#0f172a}.s{font:14px sans-serif;fill:#334155}.core{fill:#eff6ff;stroke:#3b82f6;stroke-width:2}.os{fill:#f5f3ff;stroke:#8b5cf6;stroke-width:2}.pt{fill:#ecfdf5;stroke:#10b981;stroke-width:2}.l{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#a)}</style></defs>
+  <text x="550" y="36" text-anchor="middle" class="h">虚拟内存区域与系统策略边界</text>
+  <rect x="310" y="70" width="480" height="100" rx="16" class="core"/><text x="550" y="105" text-anchor="middle" class="t">ax-memory-set</text><text x="550" y="133" text-anchor="middle" class="s">MemoryArea + MemorySet + MappingBackend</text><text x="550" y="155" text-anchor="middle" class="s">区域集合，不拥有系统页帧策略</text>
+  <rect x="55" y="245" width="290" height="100" rx="16" class="os"/><text x="200" y="280" text-anchor="middle" class="t">ArceOS ax-mm</text><text x="200" y="307" text-anchor="middle" class="s">内核与用户虚拟地址</text><text x="200" y="329" text-anchor="middle" class="s">Linear / Alloc backend</text>
+  <rect x="405" y="245" width="290" height="100" rx="16" class="os"/><text x="550" y="280" text-anchor="middle" class="t">StarryOS AddrSpace</text><text x="550" y="307" text-anchor="middle" class="s">Linux VMA / COW / File / RSS</text><text x="550" y="329" text-anchor="middle" class="s">进程地址空间锁</text>
+  <rect x="755" y="245" width="290" height="100" rx="16" class="os"/><text x="900" y="280" text-anchor="middle" class="t">Axvisor axaddrspace</text><text x="900" y="307" text-anchor="middle" class="s">客户机物理地址</text><text x="900" y="329" text-anchor="middle" class="s">Linear / Alloc Guest RAM</text>
+  <path d="M455 170L200 245M550 170V245M645 170L900 245" class="l"/>
+  <rect x="130" y="410" width="840" height="70" rx="16" class="pt"/><text x="550" y="438" text-anchor="middle" class="t">各自页表、页帧来源与失效协议</text><text x="550" y="463" text-anchor="middle" class="s">Host Stage-1、Starry Stage-1 与 Guest Stage-2 不共享同一个状态所有者</text>
+  <path d="M200 345V410M550 345V410M900 345V410" class="l"/>
+</svg>

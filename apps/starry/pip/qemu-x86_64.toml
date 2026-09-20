@@ -12,13 +12,9 @@ args = [
     "virtio-net-pci,netdev=net0",
     "-netdev",
     "user,id=net0",
-    "-snapshot",
 ]
 uefi = false
 to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/test_pip.sh"
-success_regex = ["(?m)^STARRY_PIP_TESTS_PASSED\\s*$"]
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)page fault",
@@ -27,3 +23,8 @@ fail_regex = [
     "STARRY_PIP_STAGE_.*_FAILED",
 ]
 timeout = 600
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/test_pip.sh"
+success_regex = ["(?m)^STARRY_PIP_TESTS_PASSED\\s*$"]

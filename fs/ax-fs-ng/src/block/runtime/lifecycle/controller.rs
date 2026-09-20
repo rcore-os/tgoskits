@@ -4,6 +4,7 @@ pub(super) struct ControllerPort {
     pub(super) commands: BoundedChannel<ControllerCommand>,
     pub(super) notification: Arc<dyn BlockNotification>,
     pub(super) irq_latches: IrqMutex<Vec<Arc<ControllerIrqLatch>>>,
+    pub(super) terminal_confirmed: AtomicBool,
 }
 
 pub(super) struct ControllerCommand {
@@ -24,6 +25,7 @@ struct PendingTransition {
     retry_at: Duration,
     deadline: Duration,
     reply: Option<ControllerReplySender>,
+    event: ControllerEvent,
     exit_on_complete: bool,
 }
 
@@ -61,10 +63,67 @@ impl ControllerPort {
         }
     }
 
-    pub(super) fn irq_target(&self, source_id: usize) -> ControllerIrqTarget {
+    pub(super) fn prepare_irq_target(
+        self: &Arc<Self>,
+        source_id: usize,
+    ) -> (ControllerIrqTarget, ControllerIrqToken) {
         let latch = Arc::new(ControllerIrqLatch::new(source_id));
-        self.irq_latches.lock().push(Arc::clone(&latch));
-        ControllerIrqTarget::new(latch, Arc::clone(&self.notification))
+        (
+            ControllerIrqTarget::new(Arc::clone(&latch), Arc::clone(&self.notification)),
+            ControllerIrqToken {
+                port: Arc::clone(self),
+                latch,
+                committed: false,
+            },
+        )
+    }
+
+    pub(super) fn terminal_confirmed(&self) -> bool {
+        self.terminal_confirmed.load(Ordering::Acquire)
+    }
+
+    pub(super) fn reserve_irq_targets(&self, additional: usize) -> Result<(), BlkError> {
+        self.irq_latches
+            .lock()
+            .try_reserve(additional)
+            .map_err(|_| BlkError::NoMemory)
+    }
+
+    fn confirm_terminal(&self) {
+        self.terminal_confirmed.store(true, Ordering::Release);
+        self.commands.close();
+        fail_queued_commands(self);
+    }
+}
+
+pub(super) struct ControllerIrqToken {
+    port: Arc<ControllerPort>,
+    latch: Arc<ControllerIrqLatch>,
+    committed: bool,
+}
+
+impl ControllerIrqToken {
+    pub(super) fn commit(&mut self) {
+        if !self.committed {
+            let mut latches = self.port.irq_latches.lock();
+            debug_assert!(latches.len() < latches.capacity());
+            latches.push(Arc::clone(&self.latch));
+            self.committed = true;
+        }
+    }
+}
+
+impl Drop for ControllerIrqToken {
+    fn drop(&mut self) {
+        if self.committed {
+            let mut latches = self.port.irq_latches.lock();
+            if let Some(index) = latches
+                .iter()
+                .position(|latch| Arc::ptr_eq(latch, &self.latch))
+            {
+                latches.swap_remove(index);
+            }
+        }
     }
 }
 
@@ -98,6 +157,12 @@ pub(super) fn run_controller(
     let mut irq_events = Vec::<LatchedControllerIrq>::new();
     let mut pending = None;
     loop {
+        if port.commands.is_closed() {
+            complete_pending_reply(&mut pending, Err(BlkError::Io));
+            fail_queued_commands(&port);
+            exit_controller(controller, &port);
+            return;
+        }
         let mut progressed = false;
 
         // Acknowledged IRQ state is observed before task-context commands and
@@ -123,6 +188,7 @@ pub(super) fn run_controller(
                     &mut pending,
                 )
             {
+                exit_controller(controller, &port);
                 return;
             }
             if event.needs_rearm
@@ -136,6 +202,7 @@ pub(super) fn run_controller(
                     &mut pending,
                 )
             {
+                exit_controller(controller, &port);
                 return;
             }
         }
@@ -148,7 +215,9 @@ pub(super) fn run_controller(
             if pending.is_some() && command.reply.is_some() {
                 if matches!(
                     command.event,
-                    ControllerEvent::QuiesceIrqs | ControllerEvent::Shutdown
+                    ControllerEvent::QuiesceIrqs
+                        | ControllerEvent::Watchdog { .. }
+                        | ControllerEvent::Shutdown
                 ) {
                     fail_pending_reply(&mut pending, BlkError::Io);
                 } else {
@@ -170,14 +239,33 @@ pub(super) fn run_controller(
             );
             match result {
                 Ok(ControllerState::RegisterPending { retry_after }) => {
-                    schedule_pending(&mut pending, retry_after, command.reply, exit_on_complete);
+                    schedule_pending(
+                        &mut pending,
+                        retry_after,
+                        command.reply,
+                        command.event,
+                        exit_on_complete,
+                    );
                 }
                 Ok(state) => {
+                    let terminal = state == ControllerState::Shutdown;
+                    let controller_originated_terminal = terminal
+                        && !matches!(
+                            command.event,
+                            ControllerEvent::Shutdown | ControllerEvent::QuiesceIrqs
+                        );
+                    if terminal {
+                        port.confirm_terminal();
+                    }
                     if let Some(reply) = command.reply {
                         reply.complete(Ok(state));
                     }
                     complete_pending_reply(&mut pending, Ok(state));
-                    if exit_on_complete {
+                    if controller_originated_terminal && let Some(device) = device.upgrade() {
+                        device.controller_terminal();
+                    }
+                    if terminal {
+                        exit_controller(controller, &port);
                         return;
                     }
                 }
@@ -188,6 +276,7 @@ pub(super) fn run_controller(
                     complete_pending_reply(&mut pending, Err(error));
                     mark_device_failed(device.upgrade());
                     if exit_on_complete {
+                        exit_controller(controller, &port);
                         return;
                     }
                 }
@@ -201,6 +290,7 @@ pub(super) fn run_controller(
                 complete_pending_reply(&mut pending, Err(BlkError::TimedOut));
                 mark_device_failed(device.upgrade());
                 if exit {
+                    exit_controller(controller, &port);
                     return;
                 }
                 continue;
@@ -222,10 +312,24 @@ pub(super) fn run_controller(
                     }
                     Ok(state) => {
                         let exit = current.exit_on_complete;
+                        let terminal = state == ControllerState::Shutdown;
+                        if terminal {
+                            port.confirm_terminal();
+                        }
                         if let Some(reply) = current.reply {
                             reply.complete(Ok(state));
                         }
-                        if exit {
+                        if terminal
+                            && !matches!(
+                                current.event,
+                                ControllerEvent::Shutdown | ControllerEvent::QuiesceIrqs
+                            )
+                            && let Some(device) = device.upgrade()
+                        {
+                            device.controller_terminal();
+                        }
+                        if terminal || exit {
+                            exit_controller(controller, &port);
                             return;
                         }
                     }
@@ -236,6 +340,7 @@ pub(super) fn run_controller(
                         }
                         mark_device_failed(device.upgrade());
                         if exit {
+                            exit_controller(controller, &port);
                             return;
                         }
                     }
@@ -244,6 +349,9 @@ pub(super) fn run_controller(
         }
 
         if !progressed {
+            if port.commands.is_closed() {
+                continue;
+            }
             match &pending {
                 Some(current) => {
                     let now = wall_time();
@@ -269,7 +377,7 @@ fn apply_unsolicited_event(
         Ok(ControllerState::RegisterPending { retry_after }) => {
             match pending.take() {
                 Some(current) => reschedule_pending(pending, current, retry_after),
-                None => schedule_pending(pending, retry_after, None, false),
+                None => schedule_pending(pending, retry_after, None, event, false),
             }
             false
         }
@@ -277,8 +385,22 @@ fn apply_unsolicited_event(
             let exit = pending
                 .as_ref()
                 .is_some_and(|current| current.exit_on_complete);
-            complete_pending_reply(pending, Ok(state));
-            exit
+            let terminal = state == ControllerState::Shutdown;
+            complete_pending_reply(
+                pending,
+                if terminal {
+                    Err(BlkError::Io)
+                } else {
+                    Ok(state)
+                },
+            );
+            if terminal {
+                port.confirm_terminal();
+                if let Some(device) = device.upgrade() {
+                    device.controller_terminal();
+                }
+            }
+            exit || terminal
         }
         Err(error) => {
             let exit = pending
@@ -291,10 +413,21 @@ fn apply_unsolicited_event(
     }
 }
 
+fn exit_controller(controller: Box<dyn BlockController>, port: &ControllerPort) {
+    port.commands.close();
+    fail_queued_commands(port);
+    if !port.terminal_confirmed() {
+        // The controller may still own DMA-visible state. Keep it alive until
+        // a later recovery path can prove that hardware no longer accesses it.
+        core::mem::forget(controller);
+    }
+}
+
 fn schedule_pending(
     pending: &mut Option<PendingTransition>,
     retry_after: Duration,
     reply: Option<ControllerReplySender>,
+    event: ControllerEvent,
     exit_on_complete: bool,
 ) {
     let now = wall_time();
@@ -303,6 +436,7 @@ fn schedule_pending(
         retry_at: now.saturating_add(retry_after),
         deadline: now.saturating_add(CONTROLLER_TRANSITION_TIMEOUT),
         reply,
+        event,
         exit_on_complete,
     });
 }
@@ -339,6 +473,14 @@ fn fail_pending_reply(pending: &mut Option<PendingTransition>, error: BlkError) 
     complete_pending_reply(pending, Err(error));
 }
 
+fn fail_queued_commands(port: &ControllerPort) {
+    while let Some(mut command) = port.commands.try_recv() {
+        if let Some(reply) = command.reply.take() {
+            reply.complete(Err(BlkError::Io));
+        }
+    }
+}
+
 fn mark_device_failed(device: Option<Arc<DeviceInner>>) {
     if let Some(device) = device {
         device.mark_failed();
@@ -371,6 +513,9 @@ fn advance_controller_once(
                 return Err(error);
             }
         };
+        if state == ControllerState::Shutdown {
+            return Ok(state);
+        }
         for source_id in rearm_sources {
             let mut rearm = match controller.advance(ControllerEvent::Rearm { source_id }) {
                 Ok(update) => update,
@@ -387,6 +532,10 @@ fn advance_controller_once(
                 );
                 mark_device_failed(Some(Arc::clone(device)));
                 return Err(error);
+            }
+            if rearm_state == ControllerState::Shutdown {
+                state = ControllerState::Shutdown;
+                break;
             }
             if let ControllerState::RegisterPending {
                 retry_after: rearm_retry,

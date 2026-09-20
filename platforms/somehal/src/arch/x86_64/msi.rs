@@ -6,10 +6,10 @@ use rdif_msi::{
     MsiVectorIndex,
 };
 use rdrive::DeviceId;
+use x86_apic_driver::msi::compose_msi_message;
 
 use super::IOAPIC_CPU_IF;
 
-const MSI_ADDRESS_BASE: u64 = 0xfee0_0000;
 // Keep MSI vectors separate from QEMU's legacy I/O APIC range and from the
 // runtime-reserved local APIC vectors at the top of the vector table.
 const MSI_VECTOR_START: u8 = 0x80;
@@ -219,10 +219,8 @@ impl Interface for X86MsiProvider {
 }
 
 fn msi_message(vector: u8, destination: u8) -> MsiMessage {
-    MsiMessage::new(
-        MSI_ADDRESS_BASE | (u64::from(destination) << 12),
-        u32::from(vector),
-    )
+    let target = compose_msi_message(vector, destination);
+    MsiMessage::new(target.address, target.data)
 }
 
 pub(super) fn set_irq_affinity(
@@ -247,15 +245,7 @@ mod tests {
 
     use irq_framework::{HwIrq, IrqDomainId, IrqId};
 
-    use super::{MSI_ADDRESS_BASE, MsiRoute, available_vectors, msi_message};
-
-    #[test]
-    fn message_encodes_fixed_apic_destination_and_vector() {
-        let message = msi_message(0x81, 7);
-
-        assert_eq!(message.address, MSI_ADDRESS_BASE | (7 << 12));
-        assert_eq!(message.data, 0x81);
-    }
+    use super::{MsiRoute, available_vectors};
 
     #[test]
     fn vector_allocator_does_not_reuse_a_route_owned_by_the_provider() {

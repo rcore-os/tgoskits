@@ -1,41 +1,33 @@
 //! TPU 错误类型定义
 
 /// TPU 操作错误类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TpuError {
     /// 超时错误
+    #[error("TPU operation timed out")]
     Timeout,
     /// 无效的 DMA buffer
+    #[error("invalid TPU DMA buffer")]
     InvalidDmabuf,
     /// TDMA 错误
+    #[error("TPU TDMA error: {0:#x}")]
     TdmaError(u32),
     /// TIU 错误
+    #[error("TPU TIU error: {0:#x}")]
     TiuError(u32),
     /// 设备未初始化
+    #[error("TPU is not initialized")]
     NotInitialized,
     /// 设备正忙
+    #[error("TPU is busy")]
     Busy,
     /// 被中断
+    #[error("TPU operation was interrupted")]
     Interrupted,
     /// PMU buffer 地址未对齐
+    #[error("TPU PMU buffer address is not aligned")]
     PmuBufferNotAligned,
     /// DMA buffer 地址未对齐
+    #[error("TPU DMA buffer address is not aligned")]
     DmabufNotAligned,
-}
-
-impl TpuError {
-    /// 获取错误码 (兼容 Linux errno 风格)
-    pub fn as_errno(&self) -> i32 {
-        match self {
-            TpuError::Timeout => -110,       // ETIMEDOUT
-            TpuError::InvalidDmabuf => -22,  // EINVAL
-            TpuError::TdmaError(_) => -5,    // EIO
-            TpuError::TiuError(_) => -5,     // EIO
-            TpuError::NotInitialized => -19, // ENODEV
-            TpuError::Busy => -16,           // EBUSY
-            TpuError::Interrupted => -4,     // EINTR
-            TpuError::PmuBufferNotAligned => -22,
-            TpuError::DmabufNotAligned => -22,
-        }
-    }
 }

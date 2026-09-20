@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2](https://github.com/rcore-os/tgoskits/compare/ax-io-v0.7.1...ax-io-v0.7.2) - 2026-09-18
+
+### Other
+
+- *(repo)* remove nonfunctional and redundant test assertions ([#2440](https://github.com/rcore-os/tgoskits/pull/2440))
+
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/ax-io-v0.7.0...ax-io-v0.7.1) - 2026-09-09
+
+### Other
+
+- *(starry)* migrate syscall regressions to LTP ([#2322](https://github.com/rcore-os/tgoskits/pull/2322))
+
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-io-v0.6.5...ax-io-v0.7.0) - 2026-09-09
+
+### Fixed
+
+- *(ax-posix-api)* deliver EPOLLIN/EPOLLOUT edges via direction-split readiness versions ([#2235](https://github.com/rcore-os/tgoskits/pull/2235))
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(repo)* remove nonfunctional test scaffolding ([#2303](https://github.com/rcore-os/tgoskits/pull/2303))
+
+## [0.6.5](https://github.com/rcore-os/tgoskits/compare/ax-io-v0.6.4...ax-io-v0.6.5) - 2026-08-20
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+
 ## [0.6.4](https://github.com/rcore-os/tgoskits/compare/ax-io-v0.6.3...ax-io-v0.6.4) - 2026-08-09
 
 ### Other

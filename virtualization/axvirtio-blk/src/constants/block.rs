@@ -50,6 +50,9 @@ pub const VIRTIO_BLK_F_SIZE_MAX: u64 = 1 << 1;
 /// Block device feature: Maximum number of segments
 pub const VIRTIO_BLK_F_SEG_MAX: u64 = 1 << 2;
 
+/// Block device feature: device is read-only.
+pub const VIRTIO_BLK_F_RO: u64 = 1 << 5;
+
 /// Block device feature: Block size
 pub const VIRTIO_BLK_F_BLK_SIZE: u64 = 1 << 6;
 

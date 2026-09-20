@@ -177,6 +177,14 @@ impl DeviceServices {
         self.entries.extend(incoming.entries);
     }
 
+    pub(crate) const fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(crate) fn truncate(&mut self, len: usize) {
+        self.entries.truncate(len);
+    }
+
     fn validate_entry<K: ServiceKey>(&self) -> DeviceManagerResult {
         if K::CARDINALITY == ServiceCardinality::Single
             && self

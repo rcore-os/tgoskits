@@ -648,7 +648,7 @@ int main(int argc, char *argv[])
     CHECK(null_argv_pid != -1,
           "fork for successful execve(path, NULL, NULL) test");
     if (null_argv_pid == 0) {
-        syscall(SYS_execve, "/usr/bin/test-mt-execve",
+        syscall(SYS_execve, "/proc/self/exe",
                 (char *const *)NULL, (char *const *)NULL);
         fprintf(stderr,
                 "FAIL: successful NULL argv/envp execve returned errno=%d (%s)\n",

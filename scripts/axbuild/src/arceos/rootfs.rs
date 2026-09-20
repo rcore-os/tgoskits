@@ -40,6 +40,30 @@ pub(crate) fn prepare_default_qemu_fat32_rootfs(
     Ok(())
 }
 
+/// Applies the fixed discard policy to an ArceOS test-suite rootfs, if present.
+pub(crate) fn isolate_qemu_test_rootfs(qemu: &mut QemuConfig) -> anyhow::Result<()> {
+    let rootfs_images = qemu_fat32_rootfs_images(qemu);
+    match rootfs_images.as_slice() {
+        [] => Ok(()),
+        [rootfs] => crate::rootfs::qemu::patch_rootfs(
+            qemu,
+            rootfs,
+            crate::rootfs::qemu::RootfsPatchOptions {
+                mode: crate::rootfs::qemu::RootfsPatchMode::ReplaceDriveOnly,
+                write_policy: crate::rootfs::qemu::RootfsWritePolicy::Discard,
+            },
+        ),
+        _ => anyhow::bail!(
+            "ArceOS QEMU test config contains multiple rootfs images: {}",
+            rootfs_images
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 fn qemu_fat32_rootfs_images(qemu: &QemuConfig) -> Vec<PathBuf> {
     crate::rootfs::qemu::drive_file_paths(qemu)
         .into_iter()
@@ -114,12 +138,15 @@ pub(crate) async fn ensure_rootfs_ready(
 }
 
 /// Patches a QEMU config so it boots with the selected ArceOS rootfs image.
-pub(crate) fn patch_qemu_rootfs(qemu: &mut QemuConfig, rootfs: &Path) {
+pub(crate) fn patch_qemu_rootfs(qemu: &mut QemuConfig, rootfs: &Path) -> anyhow::Result<()> {
     crate::rootfs::qemu::patch_rootfs(
         qemu,
         rootfs,
-        crate::rootfs::qemu::RootfsPatchMode::EnsureDiskBootNet,
-    );
+        crate::rootfs::qemu::RootfsPatchOptions {
+            mode: crate::rootfs::qemu::RootfsPatchMode::EnsureDiskBootNet,
+            write_policy: crate::rootfs::qemu::RootfsWritePolicy::Persist,
+        },
+    )
 }
 
 pub(super) async fn qemu_with_explicit_rootfs(
@@ -135,7 +162,7 @@ pub(super) async fn qemu_with_explicit_rootfs(
         .load_qemu_config(&request, &cargo)
         .await?
         .unwrap_or_default();
-    patch_qemu_rootfs(&mut qemu, &rootfs);
+    patch_qemu_rootfs(&mut qemu, &rootfs)?;
     qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
     arceos
         .app

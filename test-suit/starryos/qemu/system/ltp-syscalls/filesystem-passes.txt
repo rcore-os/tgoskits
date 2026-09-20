@@ -1,0 +1,17 @@
+# Source-derived assertions required in each selected upstream filesystem phase.
+copy_file_range01 ext4 4
+copy_file_range01 tmpfs 4
+mount01 ext4 2
+mount01 tmpfs 2
+mount05 ext4 2
+mount05 tmpfs 2
+readdir01 ext4 1
+rename03 ext4 8
+rename03 tmpfs 8
+rename04 ext4 1
+rename05 ext4 1
+rename06 ext4 1
+rename06 tmpfs 1
+rename07 ext4 1
+statx12 ext4 4
+statx12 tmpfs 4

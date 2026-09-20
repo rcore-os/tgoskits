@@ -58,12 +58,23 @@ additionally requires `ExclusiveCpu`; only the unsafe guard integration can
 create that stronger capability after excluding IRQ/re-entry and conflicting
 remote access.
 
+Low-level execution-context owners and offline-bootstrap code use the hidden
+`with_current_cpu_area` and `with_current_cpu_area_mut` callbacks before a
+`CpuPin` exists. These callbacks select the architecture-owned CPU area directly
+instead of routing CPU-owned state through current execution-context
+publication. The caller retains the complete migration, context-switch,
+IRQ/re-entry, and remote aliasing contract. Runtime owner-guard reads and
+offline CPU bootstrap use this boundary only while their stronger exclusion
+already satisfies that contract.
+
 | Operation | Required protection |
 | --- | --- |
 | Atomic scalar | Migration disabled; local IRQs may remain enabled |
 | Shared `T: Sync` object | Migration disabled; the object synchronizes itself |
 | Local mutable object | Migration, IRQ/re-entry, and conflicting remote access excluded |
-| Scheduler switch | IRQs and migration disabled; transactional tokens consumed |
+| Pre-pin CPU-owner object | Migration and context switches excluded; mutable access also excludes IRQ/re-entry and remote conflicts |
+| Context switch | IRQs and migration disabled; transactional tokens consumed |
+| Preemption safe point | IRQs disabled; runtime baton claimed before pending release |
 | vCPU run | Migration disabled; exit assembly restores host registers before Rust |
 | CPU-area initialization | CPU offline and raw area exclusively owned |
 

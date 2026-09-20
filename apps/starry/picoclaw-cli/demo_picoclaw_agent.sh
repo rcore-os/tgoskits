@@ -3,7 +3,7 @@ set -euo pipefail
 
 workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
-image="${STARRYOS_DOCKER_IMAGE:-starryos-dev:ubuntu-qemu10.2.1}"
+image="${STARRYOS_DOCKER_IMAGE:-starryos-dev:ubuntu-qemu11.1.1}"
 rootfs="${PICOCLAW_DEMO_ROOTFS:-tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-online.img}"
 qemu_config="${PICOCLAW_DEMO_QEMU_CONFIG:-apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml}"
 provider="${PICOCLAW_PROVIDER:-openai}"
@@ -134,7 +134,7 @@ run_docker 'command -v debugfs; command -v qemu-system-x86_64; command -v cargo;
 pause
 
 say "Step 4: 生成带 PicoClaw 和在线配置的 StarryOS rootfs"
-run_docker "export PATH=/opt/qemu-10.2.1/bin:\$PATH; apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh --rootfs '$rootfs'"
+run_docker "export PATH=/opt/qemu-11.1.1/bin:\$PATH; apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh --rootfs '$rootfs'"
 pause
 
 say "Step 5: 启动 StarryOS x86_64 QEMU，并让 PicoClaw 完成多次真实对话"
@@ -143,7 +143,7 @@ echo "  STARRY_PICOCLAW_AGENT_OK"
 echo "  STARRY_PICOCLAW_AGENT_PASSED"
 echo "中间还会出现多段 PicoClaw chat，展示它在 StarryOS guest 里连续闲聊。"
 pause
-run_docker "export PATH=/opt/qemu-10.2.1/bin:/opt/x86_64-linux-musl-cross/bin:\$PATH; cargo xtask starry qemu --arch x86_64 --qemu-config '$qemu_config' --rootfs '$rootfs'"
+run_docker "export PATH=/opt/qemu-11.1.1/bin:/opt/x86_64-linux-musl-cross/bin:\$PATH; cargo xtask starry qemu --arch x86_64 --qemu-config '$qemu_config' --rootfs '$rootfs'"
 
 say "演示完成"
 echo "StarryOS 已在 QEMU 中运行 PicoClaw，并完成多次真实 API 对话。"

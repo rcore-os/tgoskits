@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" role="img" aria-labelledby="title desc">
+<title id="title">领域能力、平台绑定与运行时所有权</title>
+<desc id="desc">箭头表示资源或对象交付；接口合同与执行生命周期分别由能力层和运行时维护。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#2563eb"/></marker></defs>
+<rect width="1200" height="900" rx="16" fill="#f8fafc"/>
+<g font-family="Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+<text x="40" y="49" font-size="26" font-weight="700" fill="#0f172a">领域能力、平台绑定与运行时所有权</text>
+<text x="40" y="80" font-size="15" fill="#475569">箭头表示资源或对象交付；接口合同与执行生命周期分别由能力层和运行时维护。</text>
+<rect x="40" y="110" width="340" height="140" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="141" font-size="19" font-weight="700" fill="#0f172a">平台描述与资源</text>
+<text x="58" y="171" font-size="15" fill="#334155">FDT / ACPI / PCI / Static</text>
+<text x="58" y="196" font-size="15" fill="#334155">MMIO、DeviceDma、IRQ 来源</text>
+<text x="58" y="221" font-size="15" fill="#334155">控制器与局部 source 身份</text>
+<rect x="430" y="110" width="340" height="140" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="141" font-size="19" font-weight="700" fill="#0f172a">硬件核心</text>
+<text x="448" y="171" font-size="15" fill="#334155">寄存器与描述符</text>
+<text x="448" y="196" font-size="15" fill="#334155">设备协议、复位和状态</text>
+<text x="448" y="221" font-size="15" fill="#334155">不创建上层协议服务</text>
+<rect x="820" y="110" width="340" height="140" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="141" font-size="19" font-weight="700" fill="#0f172a">rdif 领域合同</text>
+<text x="838" y="171" font-size="15" fill="#334155">NetDeviceParts / HardwareQueue</text>
+<text x="838" y="196" font-size="15" fill="#334155">显示、输入、vsock Interface</text>
+<text x="838" y="221" font-size="15" fill="#334155">令牌、错误、事件与关闭语义</text>
+<rect x="40" y="330" width="340" height="170" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="361" font-size="19" font-weight="700" fill="#0f172a">ax-driver 平台绑定</text>
+<text x="58" y="391" font-size="15" fill="#334155">probe 匹配与资源解析</text>
+<text x="58" y="416" font-size="15" fill="#334155">包装硬件对象及 BindingInfo</text>
+<text x="58" y="441" font-size="15" fill="#334155">发布 Platform*Device</text>
+<text x="58" y="466" font-size="15" fill="#334155">不是运行时 IRQ action</text>
+<rect x="430" y="330" width="340" height="170" rx="12" fill="#f1f5f9" stroke="#94a3b8"/>
+<text x="448" y="361" font-size="19" font-weight="700" fill="#0f172a">rdrive 注册身份</text>
+<text x="448" y="391" font-size="15" fill="#334155">DeviceId → 多种外层对象</text>
+<text x="448" y="416" font-size="15" fill="#334155">DeviceOwner 持有注册包装</text>
+<text x="448" y="441" font-size="15" fill="#334155">Device&lt;T&gt; 是弱句柄</text>
+<text x="448" y="466" font-size="15" fill="#334155">take 后身份可继续存在</text>
+<rect x="820" y="330" width="340" height="170" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="838" y="361" font-size="19" font-weight="700" fill="#0f172a">领域资源准备</text>
+<text x="838" y="391" font-size="15" fill="#334155">网络：rd-net prepare_device</text>
+<text x="838" y="416" font-size="15" fill="#334155">块：控制器与 IRQ 来源移交</text>
+<text x="838" y="441" font-size="15" fill="#334155">显示 / 输入：领域包装</text>
+<text x="838" y="466" font-size="15" fill="#334155">所有权转移不是克隆硬件</text>
+<rect x="40" y="580" width="340" height="170" rx="12" fill="#eff6ff" stroke="#94a3b8"/>
+<text x="58" y="611" font-size="19" font-weight="700" fill="#0f172a">IRQ 解析与租约</text>
+<text x="58" y="641" font-size="15" fill="#334155">BindingIrq → 域 IrqId</text>
+<text x="58" y="666" font-size="15" fill="#334155">注册、亲和与使能</text>
+<text x="58" y="691" font-size="15" fill="#334155">关闭时 disable / synchronize</text>
+<text x="58" y="716" font-size="15" fill="#334155">硬 IRQ 使用预发布端点</text>
+<rect x="430" y="580" width="340" height="170" rx="12" fill="#f0fdf4" stroke="#94a3b8"/>
+<text x="448" y="611" font-size="19" font-weight="700" fill="#0f172a">领域运行时</text>
+<text x="448" y="641" font-size="15" fill="#334155">网络 owner / BlockRuntime</text>
+<text x="448" y="666" font-size="15" fill="#334155">独占硬件队列与请求通道</text>
+<text x="448" y="691" font-size="15" fill="#334155">推进完成、背压及控制状态</text>
+<text x="448" y="716" font-size="15" fill="#334155">停止并确认 DMA 不再访问</text>
+<rect x="820" y="580" width="340" height="170" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
+<text x="838" y="611" font-size="19" font-weight="700" fill="#0f172a">上层领域接口</text>
+<text x="838" y="641" font-size="15" fill="#334155">EthernetFramePort / socket</text>
+<text x="838" y="666" font-size="15" fill="#334155">块句柄、卷与文件系统</text>
+<text x="838" y="691" font-size="15" fill="#334155">帧缓冲、输入事件、vsock</text>
+<text x="838" y="716" font-size="15" fill="#334155">业务请求不重新枚举硬件</text>
+<polyline points="210,250 210,330" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="225" y="292" font-size="14" fill="#1d4ed8">资源输入</text>
+<polyline points="600,250 600,290 330,290 330,330" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="415" y="279" font-size="14" fill="#1d4ed8">硬件构造</text>
+<polyline points="380,415 430,415" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="385" y="400" font-size="14" fill="#1d4ed8">注册</text>
+<polyline points="770,415 820,415" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="774" y="400" font-size="14" fill="#1d4ed8">take</text>
+<polyline points="990,250 990,330" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1003" y="292" font-size="14" fill="#1d4ed8">能力约束</text>
+<polyline points="990,500 990,540 600,540 600,580" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="711" y="530" font-size="14" fill="#1d4ed8">设备与队列交付</text>
+<polyline points="380,665 430,665" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="385" y="650" font-size="14" fill="#1d4ed8">租约</text>
+<polyline points="770,665 820,665" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="776" y="650" font-size="14" fill="#1d4ed8">交付</text>
+<polyline points="150,500 150,580" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="165" y="546" font-size="14" fill="#1d4ed8">IRQ 来源</text>
+<text x="40" y="835" font-size="15" fill="#475569">网络与块有各自执行合同；USB、显示、输入不能直接套用网络 poll group。</text>
+<text x="40" y="860" font-size="15" fill="#475569">IRQ 同步或 DMA 停止未确认时，关联资源不能提前释放。</text>
+</g>
+</svg>

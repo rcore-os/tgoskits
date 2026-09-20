@@ -157,31 +157,16 @@ STARRY_PICOCLAW_AGENT_PASSED
 
 中间还会看到多段 `PicoClaw chat`，用于现场展示 StarryOS guest 内连续模型对话。
 
-## 交互式长期使用
+## 离线测试配置
 
-如果希望进入 StarryOS 后自己持续输入 PicoClaw 命令，可以运行：
-
-```bash
-PICOCLAW_API_KEY=... apps/starry/picoclaw-cli/run_picoclaw_interactive.sh
-```
-
-脚本默认创建或复用 `tmp/axbuild/rootfs/rootfs-x86_64-picoclaw-user.img`，
-然后启动一个不带自动退出条件的 StarryOS shell。进入 guest 后优先运行裸
-`picoclaw agent`，它会进入持续交互模式，可以连续输入多轮消息：
+`qemu-x86_64-picoclaw-interactive.toml` 保留原文件名，现在执行版本、帮助、初始化配置和状态检查，匹配 `STARRY_PICOCLAW_OFFLINE_PASSED` 后退出，不再作为长期交互入口。
 
 ```bash
-picoclaw status
-picoclaw agent
-picoclaw gateway --allow-empty --host 127.0.0.1 --port 18790
+cargo xtask starry app qemu -t picoclaw-cli --arch x86_64 \
+  --qemu-config qemu-x86_64-picoclaw-interactive.toml
 ```
 
-交互式 QEMU 默认把 guest 的 `18790` 转发到宿主机。启动 gateway 后，宿主机可以访问：
-
-```bash
-curl http://127.0.0.1:18790/health
-```
-
-退出 QEMU 使用 `Ctrl-a x`。
+离线检查使用客户机 `/tmp/picoclaw-smoke-home` 保存测试配置，不改动 `/root/.picoclaw`。`run_picoclaw_interactive.sh` 的默认配置也会执行该离线检查后退出；脚本名保留，不再表示持续交互。
 
 ## 边界
 

@@ -2,15 +2,9 @@
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
-use axdevice_base::{BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, Resource};
+use axdevice_base::{BusKind, Device, DeviceAccess, DeviceContext, DeviceError, Resource};
 
 use crate::{ArmVgicConfig, GicVcpuId, ItsConfig, VgicCore, VgicMmioRegion, VgicResult};
-
-/// Architecture-owned source of the vCPU issuing a trapped register access.
-pub trait VgicAccessContext: Send + Sync {
-    /// Returns the current VM-local vCPU identifier.
-    fn current_vcpu(&self) -> Option<usize>;
-}
 
 /// Complete set of bus devices exposing one [`VgicCore`].
 pub struct VgicDeviceSet {
@@ -19,31 +13,23 @@ pub struct VgicDeviceSet {
 
 impl VgicDeviceSet {
     /// Creates all MMIO frontends from the same immutable controller config.
-    pub fn new(
-        core: Arc<VgicCore>,
-        access_context: Arc<dyn VgicAccessContext>,
-    ) -> VgicResult<Self> {
+    pub fn new(core: Arc<VgicCore>) -> VgicResult<Self> {
         let mut devices: Vec<Arc<dyn Device>> = Vec::new();
         match core.config() {
             ArmVgicConfig::V2(config) => {
-                devices.push(Arc::new(VgicDistributorDevice::new(
+                devices.push(Arc::new(BankedDistributorDevice::new(
                     core.clone(),
-                    access_context.clone(),
                     config.distributor(),
-                    DistributorVersion::V2,
                 )));
                 devices.push(Arc::new(VgicV2CpuInterfaceDevice::new(
                     core.clone(),
-                    access_context,
                     config.cpu_interface(),
                 )));
             }
             ArmVgicConfig::V3(config) => {
-                devices.push(Arc::new(VgicDistributorDevice::new(
+                devices.push(Arc::new(SharedDistributorDevice::new(
                     core.clone(),
-                    access_context,
                     config.distributor(),
-                    DistributorVersion::V3,
                 )));
                 let mut first_vcpu = 0;
                 for (region_index, region) in config.redistributors().iter().copied().enumerate() {
@@ -77,38 +63,24 @@ impl VgicDeviceSet {
     }
 }
 
-#[derive(Clone, Copy)]
-enum DistributorVersion {
-    V2,
-    V3,
-}
-
-struct VgicDistributorDevice {
+/// Frontend for a distributor whose SGI/PPI registers are banked by accessor.
+struct BankedDistributorDevice {
     core: Arc<VgicCore>,
-    access_context: Arc<dyn VgicAccessContext>,
     region: VgicMmioRegion,
     resources: Box<[Resource]>,
-    version: DistributorVersion,
 }
 
-impl VgicDistributorDevice {
-    fn new(
-        core: Arc<VgicCore>,
-        access_context: Arc<dyn VgicAccessContext>,
-        region: VgicMmioRegion,
-        version: DistributorVersion,
-    ) -> Self {
+impl BankedDistributorDevice {
+    fn new(core: Arc<VgicCore>, region: VgicMmioRegion) -> Self {
         Self {
             core,
-            access_context,
             region,
             resources: mmio_resources(region),
-            version,
         }
     }
 }
 
-impl Device for VgicDistributorDevice {
+impl Device for BankedDistributorDevice {
     fn name(&self) -> &str {
         "arm-vgic-distributor"
     }
@@ -117,57 +89,92 @@ impl Device for VgicDistributorDevice {
         &self.resources
     }
 
-    fn access(
+    fn read(
         &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
+        access: &DeviceAccess,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<u64, DeviceError> {
         let offset = mmio_offset(access, self.region)?;
-        let result = match (self.version, access.is_read) {
-            (DistributorVersion::V2, true) => self
-                .core
-                .read_v2_distributor(current_vcpu(&*self.access_context)?, offset, access.width)
-                .map(|value| BusResponse::Read { value }),
-            (DistributorVersion::V2, false) => self
-                .core
-                .write_v2_distributor(
-                    current_vcpu(&*self.access_context)?,
-                    offset,
-                    access.width,
-                    access.data,
-                )
-                .map(|()| BusResponse::Write),
-            (DistributorVersion::V3, true) => self
-                .core
-                .controller()
-                .read_distributor(offset, access.width)
-                .map(|value| BusResponse::Read { value }),
-            (DistributorVersion::V3, false) => self
-                .core
-                .controller()
-                .write_distributor(offset, access.width, access.data)
-                .map(|()| BusResponse::Write),
-        };
-        result.map_err(Into::into)
+        self.core
+            .read_v2_distributor(source_vcpu(access), offset, access.width())
+            .map_err(Into::into)
+    }
+
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<(), DeviceError> {
+        let offset = mmio_offset(access, self.region)?;
+        self.core
+            .write_v2_distributor(source_vcpu(access), offset, access.width(), value)
+            .map_err(Into::into)
+    }
+}
+
+/// Frontend for a distributor whose state is shared and routes SPIs by affinity.
+struct SharedDistributorDevice {
+    core: Arc<VgicCore>,
+    region: VgicMmioRegion,
+    resources: Box<[Resource]>,
+}
+
+impl SharedDistributorDevice {
+    fn new(core: Arc<VgicCore>, region: VgicMmioRegion) -> Self {
+        Self {
+            core,
+            region,
+            resources: mmio_resources(region),
+        }
+    }
+}
+
+impl Device for SharedDistributorDevice {
+    fn name(&self) -> &str {
+        "arm-vgic-distributor"
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    fn read(
+        &self,
+        access: &DeviceAccess,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<u64, DeviceError> {
+        let offset = mmio_offset(access, self.region)?;
+        self.core
+            .controller()
+            .read_distributor(offset, access.width())
+            .map_err(Into::into)
+    }
+
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<(), DeviceError> {
+        let offset = mmio_offset(access, self.region)?;
+        self.core
+            .controller()
+            .write_distributor(offset, access.width(), value)
+            .map_err(Into::into)
     }
 }
 
 struct VgicV2CpuInterfaceDevice {
     core: Arc<VgicCore>,
-    access_context: Arc<dyn VgicAccessContext>,
     region: VgicMmioRegion,
     resources: Box<[Resource]>,
 }
 
 impl VgicV2CpuInterfaceDevice {
-    fn new(
-        core: Arc<VgicCore>,
-        access_context: Arc<dyn VgicAccessContext>,
-        region: VgicMmioRegion,
-    ) -> Self {
+    fn new(core: Arc<VgicCore>, region: VgicMmioRegion) -> Self {
         Self {
             core,
-            access_context,
             region,
             resources: mmio_resources(region),
         }
@@ -183,24 +190,27 @@ impl Device for VgicV2CpuInterfaceDevice {
         &self.resources
     }
 
-    fn access(
+    fn read(
         &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
+        access: &DeviceAccess,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<u64, DeviceError> {
         let offset = mmio_offset(access, self.region)?;
-        let vcpu = current_vcpu(&*self.access_context)?;
-        if access.is_read {
-            self.core
-                .read_v2_cpu_interface(vcpu, offset, access.width)
-                .map(|value| BusResponse::Read { value })
-                .map_err(Into::into)
-        } else {
-            self.core
-                .write_v2_cpu_interface(vcpu, offset, access.width, access.data)
-                .map(|()| BusResponse::Write)
-                .map_err(Into::into)
-        }
+        self.core
+            .read_v2_cpu_interface(source_vcpu(access), offset, access.width())
+            .map_err(Into::into)
+    }
+
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<(), DeviceError> {
+        let offset = mmio_offset(access, self.region)?;
+        self.core
+            .write_v2_cpu_interface(source_vcpu(access), offset, access.width(), value)
+            .map_err(Into::into)
     }
 }
 
@@ -244,39 +254,39 @@ impl Device for VgicRedistributorDevice {
         &self.resources
     }
 
-    fn access(
+    fn read(
         &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
+        access: &DeviceAccess,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<u64, DeviceError> {
         let region_offset = mmio_offset(access, self.region)?;
         let vcpu = self.first_vcpu + (region_offset / self.stride) as usize;
         if vcpu >= self.vcpu_count {
-            return Ok(if access.is_read {
-                BusResponse::Read { value: 0 }
-            } else {
-                BusResponse::Write
-            });
+            return Ok(0);
         }
         let frame_offset = region_offset % self.stride;
-        if access.is_read {
-            self.core
-                .controller()
-                .read_redistributor(GicVcpuId::new(vcpu), frame_offset, access.width)
-                .map(|value| BusResponse::Read { value })
-                .map_err(Into::into)
-        } else {
-            self.core
-                .controller()
-                .write_redistributor(
-                    GicVcpuId::new(vcpu),
-                    frame_offset,
-                    access.width,
-                    access.data,
-                )
-                .map(|()| BusResponse::Write)
-                .map_err(Into::into)
+        self.core
+            .controller()
+            .read_redistributor(GicVcpuId::new(vcpu), frame_offset, access.width())
+            .map_err(Into::into)
+    }
+
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<(), DeviceError> {
+        let region_offset = mmio_offset(access, self.region)?;
+        let vcpu = self.first_vcpu + (region_offset / self.stride) as usize;
+        if vcpu >= self.vcpu_count {
+            return Ok(());
         }
+        let frame_offset = region_offset % self.stride;
+        self.core
+            .controller()
+            .write_redistributor(GicVcpuId::new(vcpu), frame_offset, access.width(), value)
+            .map_err(Into::into)
     }
 }
 
@@ -307,25 +317,29 @@ impl Device for VgicItsDevice {
         &self.resources
     }
 
-    fn access(
+    fn read(
         &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
+        access: &DeviceAccess,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<u64, DeviceError> {
         let offset = mmio_offset(access, self.config.registers())?;
-        if access.is_read {
-            self.core
-                .controller()
-                .read_its_for(self.config.id(), offset, access.width)
-                .map(|value| BusResponse::Read { value })
-                .map_err(Into::into)
-        } else {
-            self.core
-                .controller()
-                .write_its_for(self.config.id(), offset, access.width, access.data)
-                .map(|()| BusResponse::Write)
-                .map_err(Into::into)
-        }
+        self.core
+            .controller()
+            .read_its_for(self.config.id(), offset, access.width())
+            .map_err(Into::into)
+    }
+
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<(), DeviceError> {
+        let offset = mmio_offset(access, self.config.registers())?;
+        self.core
+            .controller()
+            .write_its_for(self.config.id(), offset, access.width(), value)
+            .map_err(Into::into)
     }
 }
 
@@ -337,19 +351,15 @@ fn mmio_resources(region: VgicMmioRegion) -> Box<[Resource]> {
     .into_boxed_slice()
 }
 
-fn mmio_offset(access: &BusAccess, region: VgicMmioRegion) -> Result<u64, DeviceError> {
-    if access.kind != BusKind::Mmio || !region.contains(access.addr, access.width.size()) {
-        return Err(DeviceError::OutOfRange { addr: access.addr });
+fn mmio_offset(access: &DeviceAccess, region: VgicMmioRegion) -> Result<u64, DeviceError> {
+    if access.bus() != BusKind::Mmio || !region.contains(access.address(), access.width().size()) {
+        return Err(DeviceError::OutOfRange {
+            addr: access.address(),
+        });
     }
-    Ok(access.addr - region.base())
+    Ok(access.address() - region.base())
 }
 
-fn current_vcpu(context: &dyn VgicAccessContext) -> Result<GicVcpuId, DeviceError> {
-    context
-        .current_vcpu()
-        .map(GicVcpuId::new)
-        .ok_or_else(|| DeviceError::InvalidState {
-            operation: "access per-vCPU VGIC register",
-            detail: "no current vCPU is installed in the architecture runtime".into(),
-        })
+const fn source_vcpu(access: &DeviceAccess) -> GicVcpuId {
+    GicVcpuId::new(access.source_vcpu().as_usize())
 }

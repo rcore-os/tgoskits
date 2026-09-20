@@ -3,7 +3,7 @@
 //! Implements V3 device-access handling for MMIO read/write operations.
 
 use axdevice_base::{
-    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
+    AccessWidth, BusKind, Device, DeviceAccess, DeviceContext, DeviceError, DeviceResult,
 };
 use axvm_types::GuestPhysAddr;
 use bitmaps::Bitmap;
@@ -462,24 +462,35 @@ impl Device for VPlicGlobal {
         &self.resources
     }
 
-    fn access(
+    fn read(&self, access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
+        }
+        self.read_register(
+            GuestPhysAddr::from_usize(access.address() as usize),
+            access.width(),
+        )
+        .map(|value| value as u64)
+    }
+
+    fn write(
         &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        if access.kind != BusKind::Mmio {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> DeviceResult {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
-        let addr = GuestPhysAddr::from_usize(access.addr as usize);
-        if access.is_read {
-            self.read_register(addr, access.width)
-                .map(|value| BusResponse::Read {
-                    value: value as u64,
-                })
-        } else {
-            self.write_register(addr, access.width, access.data as usize)
-                .map(|_| BusResponse::Write)
-        }
+        self.write_register(
+            GuestPhysAddr::from_usize(access.address() as usize),
+            access.width(),
+            value as usize,
+        )
     }
 }
 

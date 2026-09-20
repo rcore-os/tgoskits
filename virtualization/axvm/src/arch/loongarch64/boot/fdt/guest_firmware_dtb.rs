@@ -2,17 +2,27 @@ use std::{format, vec::Vec};
 
 use fdt_edit::{Fdt, Node, NodeId};
 
-use super::property::{prop_null, prop_string, prop_string_list, prop_u32, prop_u32_array};
-use crate::{AxVmResult, arch::guest_platform::GuestPlatform, ax_err_type};
+use super::property::{
+    prop_null, prop_string, prop_string_list, prop_u32, prop_u32_array, prop_u64,
+};
+use crate::{
+    AxVmResult,
+    arch::loongarch64::boot::GuestPlatform,
+    ax_err_type,
+    boot::fdt::device::{ResolvedFdtDevice, ResolvedFdtProperty},
+};
 
 const PHANDLE_CPU0: u32 = 0x8000;
 const PHANDLE_CPUIC: u32 = 0x8001;
 const PHANDLE_EIOINTC: u32 = 0x8002;
 const PHANDLE_PCH_PIC: u32 = 0x8003;
-const PHANDLE_PCH_MSI: u32 = 0x8004;
 const PHANDLE_GED_SYSCON: u32 = 0x8005;
 
-pub fn build(platform: &GuestPlatform) -> AxVmResult<Vec<u8>> {
+pub fn build(
+    platform: &GuestPlatform,
+    cmdline: Option<&str>,
+    initrd: Option<(u64, u64)>,
+) -> AxVmResult<Vec<u8>> {
     let mut fdt = Fdt::new();
     let root = fdt.root_id();
     set_prop(&mut fdt, root, prop_u32("#address-cells", 2))?;
@@ -23,10 +33,12 @@ pub fn build(platform: &GuestPlatform) -> AxVmResult<Vec<u8>> {
         prop_string("compatible", "linux,dummy-loongson3"),
     )?;
 
-    add_chosen(&mut fdt, root, platform)?;
+    add_chosen(&mut fdt, root, platform, cmdline, initrd)?;
     add_cpus(&mut fdt, root)?;
     add_memory(&mut fdt, root, platform)?;
     add_interrupt_controllers(&mut fdt, root, platform)?;
+    add_pci(&mut fdt, root, platform)?;
+    add_configured_devices(&mut fdt, root, platform)?;
     add_platform_bus(&mut fdt, root, platform)?;
     add_power(&mut fdt, root, platform)?;
     add_rtc(&mut fdt, root, platform)?;
@@ -100,7 +112,13 @@ fn platform_bus_range(platform: &GuestPlatform) -> (u64, u64) {
     (base, end.saturating_sub(base).max(PAGE_SIZE))
 }
 
-fn add_chosen(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
+fn add_chosen(
+    fdt: &mut Fdt,
+    root: NodeId,
+    platform: &GuestPlatform,
+    cmdline: Option<&str>,
+    initrd: Option<(u64, u64)>,
+) -> AxVmResult {
     let chosen = add_child(fdt, root, "chosen");
     set_prop(
         fdt,
@@ -109,7 +127,15 @@ fn add_chosen(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResu
             "stdout-path",
             &format!("/serial@{:x}", platform.serial.mmio.base),
         ),
-    )
+    )?;
+    if let Some(cmdline) = cmdline {
+        set_prop(fdt, chosen, prop_string("bootargs", cmdline))?;
+    }
+    if let Some((start, end)) = initrd {
+        set_prop(fdt, chosen, prop_u64("linux,initrd-start", start))?;
+        set_prop(fdt, chosen, prop_u64("linux,initrd-end", end))?;
+    }
+    Ok(())
 }
 
 fn add_cpus(fdt: &mut Fdt, root: NodeId) -> AxVmResult {
@@ -201,33 +227,136 @@ fn add_interrupt_controllers(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatfo
             &[platform.interrupt.pch_pic_gsi_base],
         ),
     )?;
-    set_prop(fdt, pch_pic, prop_u32("phandle", PHANDLE_PCH_PIC))?;
+    set_prop(fdt, pch_pic, prop_u32("phandle", PHANDLE_PCH_PIC))
+}
 
-    let msi = add_child(
+fn add_configured_devices(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
+    for device in &platform.configured_fdt_devices {
+        let name = configured_device_node_name(device);
+        let node = add_child(fdt, root, &name);
+        let compatible = device
+            .compatible
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        set_prop(fdt, node, prop_string_list("compatible", &compatible))?;
+
+        if !device.registers.is_empty() {
+            let mut registers = Vec::with_capacity(device.registers.len() * 4);
+            for (base, size) in &device.registers {
+                registers.extend_from_slice(&[
+                    (base >> 32) as u32,
+                    *base as u32,
+                    (size >> 32) as u32,
+                    *size as u32,
+                ]);
+            }
+            set_prop(fdt, node, prop_u32_array("reg", &registers))?;
+        }
+
+        if !device.interrupts.is_empty() {
+            let mut interrupts = Vec::with_capacity(device.interrupts.len() * 2);
+            for interrupt in &device.interrupts {
+                if interrupt.controller != platform.interrupt.controller {
+                    return Err(crate::AxVmError::invalid_config(format!(
+                        "device {} uses unsupported LoongArch interrupt controller {}",
+                        device.id,
+                        interrupt.controller.value()
+                    )));
+                }
+                let flags = match interrupt.trigger {
+                    axdevice_base::InterruptTrigger::EdgeTriggered => 1,
+                    axdevice_base::InterruptTrigger::LevelTriggered => 4,
+                };
+                interrupts.extend_from_slice(&[interrupt.input, flags]);
+            }
+            set_prop(fdt, node, prop_u32("interrupt-parent", PHANDLE_PCH_PIC))?;
+            set_prop(fdt, node, prop_u32_array("interrupts", &interrupts))?;
+        }
+
+        for property in &device.properties {
+            let property = match property {
+                ResolvedFdtProperty::Empty(name) => prop_null(name),
+                ResolvedFdtProperty::U32(name, value) => prop_u32(name, *value),
+                ResolvedFdtProperty::String(name, value) => prop_string(name, value),
+            };
+            set_prop(fdt, node, property)?;
+        }
+    }
+    Ok(())
+}
+
+fn add_pci(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
+    let pci = platform.pci;
+    let node = add_child(fdt, root, &format!("pcie@{:x}", pci.ecam.base));
+    set_prop(
         fdt,
-        root,
-        &format!("msi@{:x}", platform.interrupt.pch_msi.base),
-    );
-    set_prop(fdt, msi, prop_string("compatible", "loongson,pch-msi-1.0"))?;
-    set_prop(fdt, msi, prop_null("interrupt-controller"))?;
-    set_prop(fdt, msi, prop_u32("interrupt-parent", PHANDLE_EIOINTC))?;
-    prop_reg(
+        node,
+        prop_string("compatible", "pci-host-ecam-generic"),
+    )?;
+    set_prop(fdt, node, prop_string("device_type", "pci"))?;
+    set_prop(fdt, node, prop_u32("#address-cells", 3))?;
+    set_prop(fdt, node, prop_u32("#size-cells", 2))?;
+    set_prop(fdt, node, prop_u32("#interrupt-cells", 1))?;
+    set_prop(fdt, node, prop_null("dma-coherent"))?;
+    prop_reg(fdt, node, pci.ecam.base, pci.ecam.size)?;
+    let bus_end = pci
+        .ecam
+        .size
+        .checked_shr(20)
+        .unwrap_or_default()
+        .saturating_sub(1);
+    let bus_end = u32::try_from(bus_end).map_err(|_| {
+        crate::AxVmError::invalid_config("LoongArch PCI ECAM bus range exceeds u32")
+    })?;
+    set_prop(fdt, node, prop_u32_array("bus-range", &[0, bus_end]))?;
+    set_prop(fdt, node, prop_u32("linux,pci-domain", 0))?;
+
+    let io_child_base = 0x4000_u64.min(pci.io_size);
+    let io_size = pci.io_size.saturating_sub(io_child_base);
+    set_prop(
         fdt,
-        msi,
-        platform.interrupt.pch_msi.base,
-        platform.interrupt.pch_msi.size,
+        node,
+        prop_u32_array(
+            "ranges",
+            &[
+                0x0100_0000,
+                0,
+                io_child_base as u32,
+                ((pci.io_base + io_child_base) >> 32) as u32,
+                (pci.io_base + io_child_base) as u32,
+                (io_size >> 32) as u32,
+                io_size as u32,
+                0x0200_0000,
+                (pci.mmio.base >> 32) as u32,
+                pci.mmio.base as u32,
+                (pci.mmio.base >> 32) as u32,
+                pci.mmio.base as u32,
+                (pci.mmio.size >> 32) as u32,
+                pci.mmio.size as u32,
+            ],
+        ),
     )?;
     set_prop(
         fdt,
-        msi,
-        prop_u32("loongson,msi-base-vec", platform.interrupt.pch_msi_start),
+        node,
+        prop_u32_array("interrupt-map-mask", &[0x1800, 0, 0, 7]),
     )?;
-    set_prop(
-        fdt,
-        msi,
-        prop_u32("loongson,msi-num-vecs", platform.interrupt.pch_msi_count),
-    )?;
-    set_prop(fdt, msi, prop_u32("phandle", PHANDLE_PCH_MSI))
+    let mut interrupt_map = Vec::with_capacity(4 * 4 * 7);
+    for device in 0_u32..4 {
+        for pin in 1_u32..=4 {
+            let input = pci.intx_base + (device + pin - 1) % 4;
+            interrupt_map.extend_from_slice(&[device << 11, 0, 0, pin, PHANDLE_PCH_PIC, input, 4]);
+        }
+    }
+    set_prop(fdt, node, prop_u32_array("interrupt-map", &interrupt_map))
+}
+
+fn configured_device_node_name(device: &ResolvedFdtDevice) -> String {
+    device.registers.first().map_or_else(
+        || format!("{}-{}", device.node_name, device.id),
+        |(base, _)| format!("{}@{base:x}", device.node_name),
+    )
 }
 
 fn add_power(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
@@ -282,6 +411,20 @@ fn add_serial(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResu
         fdt,
         serial,
         prop_u32("clock-frequency", platform.serial.clock_hz),
+    )?;
+    set_prop(
+        fdt,
+        serial,
+        prop_u32("reg-shift", u32::from(platform.serial.register_shift)),
+    )?;
+    set_prop(
+        fdt,
+        serial,
+        prop_u32(
+            "reg-io-width",
+            u32::try_from(platform.serial.register_width.size())
+                .expect("a serial access width is at most eight bytes"),
+        ),
     )?;
     set_prop(fdt, serial, prop_u32("current-speed", platform.serial.baud))?;
     set_prop(fdt, serial, prop_u32("interrupt-parent", PHANDLE_PCH_PIC))?;
@@ -345,10 +488,14 @@ mod tests {
 
     use super::*;
 
+    fn test_platform() -> GuestPlatform {
+        crate::arch::loongarch64::boot::probe::GuestPlatformBuilder::new(Vec::new(), None).build()
+    }
+
     #[test]
     fn loongarch_firmware_dtb_is_reparseable() {
-        let platform = GuestPlatform::default();
-        let dtb = build(&platform).unwrap();
+        let platform = test_platform();
+        let dtb = build(&platform, None, None).unwrap();
         let fdt = Fdt::from_bytes(&dtb).unwrap();
 
         assert!(fdt.get_by_path_id("/chosen").is_some());
@@ -399,5 +546,43 @@ mod tests {
                 .as_str(),
             Some(serial_path.as_str())
         );
+        let pci_path = format!("/pcie@{:x}", platform.pci.ecam.base);
+        let pci = fdt.get_by_path(&pci_path).unwrap();
+        assert_eq!(pci.regs()[0].address, platform.pci.ecam.base);
+        assert_eq!(pci.regs()[0].size, Some(platform.pci.ecam.size));
+    }
+
+    #[test]
+    fn loongarch_firmware_dtb_encodes_resolved_devices() {
+        let mut platform = test_platform();
+        platform.configured_fdt_devices.push(ResolvedFdtDevice {
+            id: "virtio-blk0".into(),
+            node_name: "virtio_mmio".into(),
+            compatible: std::vec!["virtio,mmio".into()],
+            registers: std::vec![(0x0a00_0000, 0x200)],
+            interrupts: std::vec![crate::boot::fdt::device::ResolvedFdtInterrupt {
+                controller: axdevice_base::InterruptControllerId::new(0),
+                input: 48,
+                trigger: axdevice_base::InterruptTrigger::EdgeTriggered,
+            }],
+            properties: std::vec![ResolvedFdtProperty::Empty("dma-coherent".into())],
+        });
+
+        let dtb = build(&platform, None, None).unwrap();
+        let fdt = Fdt::from_bytes(&dtb).unwrap();
+        let device = fdt.get_by_path("/virtio_mmio@a000000").unwrap();
+
+        assert_eq!(device.regs()[0].address, 0x0a00_0000);
+        assert_eq!(device.regs()[0].size, Some(0x200));
+        assert_eq!(
+            device
+                .as_node()
+                .get_property("interrupts")
+                .unwrap()
+                .get_u32_iter()
+                .collect::<Vec<_>>(),
+            [48, 1]
+        );
+        assert!(device.as_node().get_property("dma-coherent").is_some());
     }
 }

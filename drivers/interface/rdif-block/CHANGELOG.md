@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.2](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.13.1...rdif-block-v0.13.2) - 2026-09-18
+
+### Other
+
+- *(repo)* remove nonfunctional and redundant test assertions ([#2440](https://github.com/rcore-os/tgoskits/pull/2440))
+
+## [0.13.1](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.13.0...rdif-block-v0.13.1) - 2026-09-11
+
+### Other
+
+- *(ax-task)* unify thread lifecycle and PREEMPT_RT lock semantics ([#2357](https://github.com/rcore-os/tgoskits/pull/2357))
+
+## [0.13.0](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.12.1...rdif-block-v0.13.0) - 2026-09-09
+
+### Fixed
+
+- *(ax-fs-ng)* linearize block runtime lifecycle ([#2256](https://github.com/rcore-os/tgoskits/pull/2256))
+
+### Other
+
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(rsext4)* [**breaking**] align ext4 semantics with Linux 7.1 ([#1957](https://github.com/rcore-os/tgoskits/pull/1957))
+
+## [0.12.1](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.12.0...rdif-block-v0.12.1) - 2026-08-25
+
+### Fixed
+
+- *(ax-fs-ng)* stabilize block runtime lifecycle publication ([#2135](https://github.com/rcore-os/tgoskits/pull/2135))
+
+## [0.12.0](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.11.4...rdif-block-v0.12.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.11.4](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.11.3...rdif-block-v0.11.4) - 2026-08-09
 
 ### Other

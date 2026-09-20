@@ -38,7 +38,8 @@ flowchart LR
 | `scripts/axbuild/src/test/qemu/discovery.rs` | QEMU 用例发现：`discover_qemu_cases()`、`nearest_build_wrapper()`、build wrapper 解析 |
 | `scripts/axbuild/src/test/qemu/grouping.rs` | build group 分组：`group_cases_by_build_config()`、`prepare_case_build_groups()` |
 | `scripts/axbuild/src/test/qemu/config.rs` | 用例 TOML 字段加载：`test_commands`、`host_http_server`、subcase 发现 |
-| `scripts/axbuild/src/test/qemu/boot.rs` | QEMU 启动控制：`apply_smp_qemu_arg()`、`apply_drive_snapshot_without_global_snapshot()`、`apply_timeout_scale()` |
+| `scripts/axbuild/src/test/qemu/boot.rs` | QEMU 启动控制：`apply_smp_qemu_arg()`、`smp_from_qemu_arg()`、`apply_timeout_scale()`、`qemu_timeout_summary()` |
+| `scripts/axbuild/src/rootfs/qemu/` | QEMU rootfs drive 补丁与 `RootfsWritePolicy` 写入策略 |
 | `scripts/axbuild/src/test/qemu/tree.rs` | `--list` 输出的用例树渲染 |
 | `scripts/axbuild/src/test/qemu/summary.rs` | `QemuTestSummary` 结果聚合 |
 | `scripts/axbuild/src/test/case/types.rs` | 核心数据模型：`TestQemuCase`、`CasePipeline`、`CaseAssetLayout`、`GroupedCaseRunnerConfig` |
@@ -152,14 +153,14 @@ pub(crate) fn resolve_case_pipeline(case: &TestQemuCase) -> anyhow::Result<CaseP
 
 | Pipeline | 触发条件 | 资产准备行为 |
 |----------|----------|-------------|
-| `Plain` | 以上均不满足 | 不创建 per-case rootfs 副本，QEMU `-snapshot` 直接从共享镜像启动 |
+| `Plain` | 以上均不满足 | 不创建 per-case rootfs 副本，直接把共享 rootfs 交给系统 rootfs patcher；测试路径通过 `RootfsWritePolicy::Discard` 隔离 guest 写入 |
 | `Grouped` | QEMU TOML 中 `test_commands` 非空 | 生成 runner 脚本注入 `/usr/bin/`，逐条执行 shell 命令并打印 marker |
 | `C` | 含 `c/` 子目录 | CMake 交叉编译 C 程序，产物注入 overlay 的 `/usr/bin/` |
 | `Sh` | 含 `sh/` 子目录 | shell 脚本注入 overlay |
 | `Python` | 含 `python/` 子目录 | 交叉编译 Python wheel/site-packages，写入 musl loader 搜索路径 |
 | `Rust` | 含 `rust/` 子目录（须含 `Cargo.toml`） | `cargo build --release` 交叉编译为 musl 静态二进制，注入 `/usr/bin/` |
 
-需要注入的 pipeline（Grouped/C/Sh/Python/Rust）会创建 per-case rootfs 副本；Plain 用例不创建副本。`CasePipeline::is_str()` / `as_str()` 用于日志和缓存键。
+需要注入的 pipeline（Grouped/C/Sh/Python/Rust）会创建 per-case rootfs 副本；Plain 用例不创建副本。`CasePipeline::as_str()` 用于日志和缓存键。
 
 ### 6.1 Rust pipeline
 
@@ -167,12 +168,29 @@ Rust pipeline（`test/build/rust.rs`）交叉编译用例 `rust/` 目录下的 C
 
 1. `rust_musl_target(arch)` 把架构名映射到 musl target triple（如 `aarch64` → `aarch64-unknown-linux-musl`）；
 2. `rustup target add <triple>` 确保目标已安装；
-3. 解压 rootfs 获取 Alpine 交叉 linker（部分架构如 loongarch64 的 ELF 格式 host linker 无法处理）；
+3. 解压 rootfs 获取目标 sysroot，由 `write_cross_bin_wrappers()` 生成交叉工具包装器；
 4. 可选执行 `prebuild.sh`（在 Alpine staging root 内通过 qemu-user 运行，用于 `apk add` 原生依赖）；
-5. 设置 `CARGO_TARGET_<TRIPLE>_LINKER` 指向 staging root 中的 `ld`，执行 `cargo build --release`；
+5. 设置 `CARGO_TARGET_<TRIPLE>_LINKER` 指向 `cross-bin/ld`，执行 `cargo build --release`；
 6. 产物复制到 overlay 的 `/usr/bin/`。
 
 二进制名取自 `Cargo.toml` 的 `[[bin]]` name，缺失时回退到 package 名。
+
+### 6.2 Rootfs 解包完整性校验
+
+rootfs 解包（`debugfs rdump`）的权限决策：Linux 上按有效 uid、完整 uid/gid 映射与 `CAP_CHOWN` 决定是否进入 fakeroot，需要 fakeroot 但不可用时在启动 debugfs 前失败。非 Linux Unix 宿主（如 macOS）没有可用的 fakeroot（常见打包是 shell shim，会拆坏 `-R` 引号参数并假成功退出 0），因此直接执行 debugfs，并在解包后用 `debugfs -R "ls -p /"` 校验镜像顶层条目在暂存目录中全部存在，不得只信任退出码。`ls -p` 行格式为 `/inode/mode/uid/gid/name/`，文件条目末尾多一段 `/<size>/`，名字固定取第 5 段。
+
+### 6.3 宿主交叉工具
+
+`test/build/toolchain.rs` 的 `write_cross_bin_wrappers()` 统一为 C、分组 C 和 Rust 流水线生成普通名称及 `<gnu_tool_prefix>-<tool>` 包装器。架构信息继续来自 `CrossCompileSpec`，工具查找复用 `support::process`。
+
+| 宿主条件 | 工具执行方式 |
+| --- | --- |
+| 找到目标架构的 qemu-user | 保持现有路径，通过 qemu-user 执行 staging root 内的 binutils |
+| 没有 qemu-user | 查找宿主原生 `<gnu_tool_prefix>-<tool>`，包装器直接执行该工具；缺少工具立即失败 |
+
+两条路径均保留 staging root 作为目标 sysroot。宿主 binutils 版本必须能够处理该 sysroot 的 ELF 特性；例如旧工具不识别 `.relr.dyn` 时，链接错误会向外传播，需要升级交叉工具链。`rootfs::runtime::sync_runtime_dependencies()` 按 `readelf`、`llvm-readelf`、`<gnu_tool_prefix>-readelf` 的顺序选择宿主 ELF 检查工具，继续使用已有的递归依赖同步逻辑。
+
+原生 binutils 只能替代构建工具，不能执行客户机脚本。存在 `prebuild.sh` 的用例仍通过 `prepare_guest_prebuild_env()` 要求 qemu-user；缺失时在资产准备阶段报错，不跳过脚本或删去依赖其产物的子用例。因此不带 prebuild 的 C、分组 C 和 Rust 资产可以使用原生工具，当前 `qemu/system` 等带共享 prebuild 的套件仍需要 qemu-user。这项支持不代表 macOS 上完整 Starry 套件已经可用；需要完整套件时使用提供 qemu-user 的 Linux 环境。
 
 ## 7. 资产准备与 rootfs 缓存
 
@@ -235,13 +253,15 @@ pub(super) fn case_asset_cache_key(arch, target, pipeline, case, shared_rootfs, 
 | 修改 CMake 工具链模板 | 仅 C pipeline | 条件性 hash |
 | 修改 grouped runner 配置 | 仅 Grouped | 条件性 hash |
 
-缓存的 rootfs 镜像存放在 `cache/rootfs/{sha256}.img`。`is_valid_rootfs_cache_image()` 检查文件存在且非空即视为有效；命中时通过 `copy_file_fast`（优先 reflink）复制到 per-case 路径，跳过 overlay 构建和 `inject_overlay`。
+缓存的 rootfs 镜像存放在 `cache/rootfs/{sha256}.img`。`is_valid_rootfs_cache_image()` 要求文件存在且大小不小于 1 MiB；命中时通过 `copy_file_fast`（优先 reflink）复制到 per-case 路径，跳过 overlay 构建和 `inject_overlay`。
 
-### 7.3 QEMU snapshot 语义
+### 7.3 Rootfs 写入隔离
 
-`prepare_case_assets_sync()` 返回的 `extra_qemu_args` **始终包含 `-snapshot`**，确保 guest 写入永远不会落回任何镜像文件。对于需要注入的 pipeline，注入发生在 per-case 副本上；Plain 用例直接从共享镜像启动，`-snapshot` 保证共享镜像不被污染。
+`prepare_case_assets_sync()` 返回 `PreparedCaseAssets`，其中包含 `rootfs_path`、可清理的 per-case rootfs 副本、运行目录和 pipeline 信息，不再返回额外 QEMU 参数。QEMU 参数补丁由各系统运行层在拿到 prepared rootfs 后完成。
 
-运行结束后 `remove_case_rootfs_copy()` 删除 per-case 副本（仅大镜像，保留构建缓存）；失败只打印 warning，不掩盖测试本身的失败。
+StarryOS 测试通过 `patch_rootfs()` 写入 rootfs drive，Axvisor 测试通过 `patch_qemu_rootfs_path()` 写入 rootfs drive，两者都使用 `RootfsWritePolicy::Discard`。该策略会移除全局 `-snapshot`，并仅给匹配的 rootfs drive 设置 `snapshot=on`；这样 Plain 用例可共享基础 rootfs，带注入的 pipeline 可使用 per-case 副本，同时 guest 写入不会落回源镜像。
+
+运行结束后 `remove_case_rootfs_copy()` 删除 per-case 副本（仅大镜像，保留构建缓存），并清理本次运行目录；失败只打印 warning，不掩盖测试本身的失败。
 
 ## 8. Grouped runner 协议
 
@@ -292,12 +312,7 @@ fi
 
 ### 8.2 自动执行
 
-`apply_grouped_qemu_config()` 把 runner 注入 QEMU 配置：
-
-- 无 `autorun_profile_script` 时，设置 `qemu.shell_init_cmd = "exec <runner_path>"`，guest shell 启动即执行；
-- 有 `autorun_profile_script` 时，写入 `etc/profile.d/<script>.sh`，在登录 profile 阶段执行（通过 `AXBUILD_GROUPED_AUTORUN_DONE` 防止重复）。
-
-同时把 `success_regex` 设为 `all_passed_marker`，并把 `fail_regex` 追加 `all_failed_marker`。
+`GroupedCaseExecution::GuestInit` 表示由客户机启动脚本执行 grouped runner。StarryOS 的 `os/StarryOS/starryos/src/init.sh` 在进入登录 shell 前调用 `/usr/bin/starry-run-case-tests`，不依赖 `/etc/profile.d`。`apply_grouped_qemu_config()` 生成不含 `shell_prefix`/`shell_cmd` 的被动步骤，匹配整组成功标记，并把 grouped 失败正则追加到 QEMU 顶层。`External` 表示共享框架不生成或启动 grouped runner；Axvisor 使用该配置，并在用例发现阶段拒绝非空 `test_commands`，其命令执行由显式 `shell_check_steps` 负责。
 
 ## 9. QEMU 启动控制
 
@@ -308,17 +323,18 @@ fi
 | `apply_smp_qemu_arg(qemu, smp)` | 把 CLI `--smp` 写入 `-smp <n>`，覆盖 TOML 中的值 |
 | `smp_from_qemu_arg(qemu)` | 从 QEMU args 反读 `-smp` 值（取逗号前的核数） |
 | `apply_timeout_scale(qemu)` | 按 `AXBUILD_TEST_TIMEOUT_SCALE` 整数倍放大 QEMU timeout |
-| `apply_drive_snapshot_without_global_snapshot(qemu)` | UEFI 路径下把全局 `-snapshot` 改写为各 `-drive` 的 `snapshot=on` |
 | `qemu_timeout_summary(qemu)` | 提取 timeout 信息用于日志 |
 
-### 9.1 UEFI 与 snapshot
+### 9.1 RootfsWritePolicy
 
-UEFI 启动需要可写的 EFI pflash/ESP，全局 `-snapshot` 会把所有盘变为写时复制，破坏 UEFI 写语义。`apply_drive_snapshot_without_global_snapshot()` 的处理：
+QEMU rootfs 写入策略由 `scripts/axbuild/src/rootfs/qemu/` 维护，而不是由 `test/qemu/boot.rs` 维护。系统运行层在 patch rootfs drive 时选择 `RootfsWritePolicy`。
 
-1. 移除全局 `-snapshot` 参数；
-2. 遍历所有 `-drive`，对每个 drive 追加或改写 `snapshot=on`。
+| 策略 | 行为 |
+|------|------|
+| `Discard` | 移除全局 `-snapshot`，只给匹配的 rootfs drive 设置 `snapshot=on` |
+| `Persist` | 拒绝全局 `-snapshot` 和 rootfs drive 上已有的 `snapshot=` 字段，允许 guest 写回 rootfs |
 
-这样系统盘保持写时复制（保护镜像），而 EFI pflash/ESP 不受全局 snapshot 影响。`ensure_drive_snapshot_on()` 保证每个 drive 的 `snapshot=` 字段为 `on`。
+测试路径使用 `Discard`；StarryOS app case 默认使用 `Discard`，但可在 QEMU TOML 中显式声明 `rootfs_write_policy = "persist"`。旧的 `snapshot` 字段会被配置加载器拒绝，提示改用 `rootfs_write_policy`。
 
 ## 10. Host HTTP fixture
 
@@ -340,7 +356,7 @@ body = "ArceOS local HTTP fixture\n"
 - 支持固定 body（`body` / `body_byte` / `body_size`）和目录静态服务（`dir`，带 `/` autoindex）；
 - body 写入设 30s per-write timeout（`BODY_WRITE_TIMEOUT`），防止慢 guest 阻塞服务器线程。
 
-QEMU user-net 把 host 映射为 `10.0.2.2`，guest 通过该地址访问 host HTTP 服务。运行后 `AXBUILD_KEEP_QEMU_LOG` 保留 QEMU 日志便于事后符号化。
+QEMU user-net 把 host 映射为 `10.0.2.2`，guest 通过该地址访问 host HTTP 服务。运行后可设置 `TGOSKITS_KEEP_QEMU_LOG=1` 保留 QEMU 日志，便于事后符号化。
 
 ## 11. 测试计时
 
@@ -358,7 +374,7 @@ StarryOS 和 Axvisor 通过 `CaseAssetConfig` 注入差异，共享框架不包�
 
 ```rust
 pub(crate) struct CaseAssetConfig {
-    pub(crate) grouped_runner: GroupedCaseRunnerConfig,   // marker 前缀
+    pub(crate) grouped_execution: GroupedCaseExecution,  // 分组执行归属
     pub(crate) script_env: CaseScriptEnvConfig,           // 脚本环境变量
     pub(crate) cache_env_vars: Vec<String>,               // 纳入缓存键的环境变量
     pub(crate) prepare_staging_root: fn(&Path) -> Result<()>,  // rootfs 解压后钩子
@@ -366,9 +382,9 @@ pub(crate) struct CaseAssetConfig {
 }
 ```
 
-| 子系统 | `prepare_staging_root` | `cache_env_vars` | grouped marker 前缀 |
-|--------|------------------------|------------------|---------------------|
-| StarryOS | DNS 注入 + APK 区域配置 | `STARRY_APK_REGION` | `STARRY` |
-| Axvisor | 空操作 `\|_| Ok(())` | — | `AXVISOR` |
+| 子系统 | `prepare_staging_root` | `prepare_guest_package_env` | `cache_env_vars` | grouped marker 前缀 |
+|--------|------------------------|-----------------------------|------------------|---------------------|
+| StarryOS | DNS 注入 | APK 区域配置 | `STARRY_APK_REGION` | `STARRY` |
+| Axvisor | 空操作 `\|_| Ok(())` | 无 | — | 不支持 `test_commands` |
 
-StarryOS 的 `prepare_staging_root` 额外完成：读取宿主 DNS 写入 staging `/etc/resolv.conf`（过滤 loopback 和 slirp 地址），并根据 `STARRY_APK_REGION` 重写 `/etc/apk/repositories`。`STARRY_APK_REGION` 同时出现在 `cache_env_vars` 中，因此切换区域会使 rootfs 缓存失效。
+StarryOS 的 `prepare_staging_root` 读取宿主 DNS 写入 staging `/etc/resolv.conf`，过滤 loopback 和 slirp 地址；`prepare_guest_package_env` 根据 `STARRY_APK_REGION` 重写 `/etc/apk/repositories`。`STARRY_APK_REGION` 同时出现在 `cache_env_vars` 中，因此切换区域会使 rootfs 缓存失效。

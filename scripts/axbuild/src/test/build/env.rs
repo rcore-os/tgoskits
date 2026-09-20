@@ -7,7 +7,14 @@ pub(super) fn prepare_guest_prebuild_env(
     extra_script_envs: Vec<(String, String)>,
     config: &CaseAssetConfig,
 ) -> anyhow::Result<GuestPrebuildEnv> {
-    let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
+    let qemu_runner =
+        find_host_binary_candidates(qemu_user_binary_names(arch)?).with_context(|| {
+            format!(
+                "case `{}` requires qemu-user to run prebuild.sh; native cross binutils cannot \
+                 execute guest scripts",
+                case.display_name,
+            )
+        })?;
     write_guest_command_wrappers(layout, &qemu_runner)?;
 
     let mut script_envs = case_script_envs(case, layout, config);
@@ -33,7 +40,6 @@ pub(super) fn prepare_guest_package_env(
 pub(super) fn prepare_host_cross_build_env(
     arch: &str,
     layout: &case_assets::CaseAssetLayout,
-    qemu_runner: &Path,
 ) -> anyhow::Result<HostCrossBuildEnv> {
     let spec = cross_compile_spec(arch)?;
     let cmake = find_host_binary_candidates(&["cmake"])?;
@@ -41,7 +47,7 @@ pub(super) fn prepare_host_cross_build_env(
     let pkg_config = find_host_binary_candidates(&["pkg-config"])?;
     let make_program = find_host_binary_candidates(&["make", "gmake"])?;
 
-    write_cross_bin_wrappers(layout, spec, qemu_runner)?;
+    write_cross_bin_wrappers(layout, spec)?;
     write_cmake_toolchain_file(layout, spec, &clang)?;
 
     let pkgconfig_libdir = format!(

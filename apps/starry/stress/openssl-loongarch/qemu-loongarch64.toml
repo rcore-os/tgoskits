@@ -10,8 +10,10 @@ args = [
 ]
 to_bin = false
 uefi = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/openssl-loongarch-tests.sh"
-success_regex = ["(?m)^OPENSSL_LA_ALL_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^\S+_HAS_FAILURES\s*$']
 timeout = 900
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/openssl-loongarch-tests.sh"
+success_regex = ["(?m)^OPENSSL_LA_ALL_PASSED\\s*$"]

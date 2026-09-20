@@ -16,10 +16,3 @@ pub mod irq {
     pub const NMI: u32 = 13;
     pub const AVEC: u32 = 14;
 }
-
-pub mod csr {
-    pub const PRMD: usize = 0x1;
-    pub const ERA: usize = 0x6;
-    /// Bad Virtual Address - 触发地址相关异常的虚拟地址
-    pub const BADV: usize = 0x7;
-}

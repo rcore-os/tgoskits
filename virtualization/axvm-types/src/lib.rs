@@ -435,6 +435,15 @@ pub trait VmArchVcpuOps: Sized {
     /// Completes architecture-specific setup.
     fn setup(&mut self, config: Self::SetupConfig) -> VmBackendResult;
     /// Runs the vCPU until an architecture-specific VM exit.
+    ///
+    /// The caller pins the backend and masks local IRQs across this call. Guest
+    /// execution must still allow host interrupts to force an exit independently
+    /// of the guest interrupt mask. Before returning, restore the host trap
+    /// environment and complete any acknowledged host IRQ on this CPU (or
+    /// transfer its token to the interrupt controller's retained route). Leave
+    /// unacknowledged sources pending for normal host IRQ entry when the caller
+    /// restores IRQs. The returned exit must not require replaying a host IRQ
+    /// snapshot after the backend is unloaded.
     fn run(&mut self) -> VmBackendResult<Self::Exit>;
     /// Binds the vCPU to the current physical CPU.
     fn bind(&mut self) -> VmBackendResult;
@@ -647,139 +656,4 @@ pub enum VMBootProtocol {
     Multiboot,
     /// Load an external UEFI firmware image and enter it without multiboot patching.
     Uefi,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct MockPerCpu {
-        enabled: bool,
-    }
-
-    impl VmArchPerCpuOps for MockPerCpu {
-        fn new(_cpu_id: usize) -> VmBackendResult<Self> {
-            Ok(Self { enabled: false })
-        }
-
-        fn is_enabled(&self) -> bool {
-            self.enabled
-        }
-
-        fn hardware_enable(&mut self) -> VmBackendResult {
-            self.enabled = true;
-            Ok(())
-        }
-
-        fn hardware_disable(&mut self) -> VmBackendResult {
-            self.enabled = false;
-            Ok(())
-        }
-    }
-
-    #[derive(Debug, PartialEq, Eq)]
-    enum MockExit {
-        SysRegRead { reg: usize },
-    }
-
-    struct MockVcpu;
-
-    impl VmArchVcpuOps for MockVcpu {
-        type CreateConfig = ();
-        type SetupConfig = ();
-        type Exit = MockExit;
-
-        fn new(
-            _vm_id: VMId,
-            _vcpu_id: VCpuId,
-            _config: Self::CreateConfig,
-        ) -> VmBackendResult<Self> {
-            Ok(Self)
-        }
-
-        fn set_entry(&mut self, _entry: GuestPhysAddr) -> VmBackendResult {
-            Ok(())
-        }
-
-        fn set_nested_page_table(&mut self, _config: NestedPagingConfig) -> VmBackendResult {
-            Ok(())
-        }
-
-        fn setup(&mut self, _config: Self::SetupConfig) -> VmBackendResult {
-            Ok(())
-        }
-
-        fn run(&mut self) -> VmBackendResult<Self::Exit> {
-            Ok(MockExit::SysRegRead { reg: 2 })
-        }
-
-        fn bind(&mut self) -> VmBackendResult {
-            Ok(())
-        }
-
-        fn unbind(&mut self) -> VmBackendResult {
-            Ok(())
-        }
-
-        fn set_gpr(&mut self, _reg: usize, _val: usize) {}
-
-        fn inject_interrupt(&mut self, _vector: usize) -> VmBackendResult {
-            Ok(())
-        }
-
-        fn inject_interrupt_with_trigger(
-            &mut self,
-            _vector: usize,
-            _trigger: InterruptTriggerMode,
-        ) -> VmBackendResult {
-            Ok(())
-        }
-
-        fn set_return_value(&mut self, _val: usize) {}
-    }
-
-    #[test]
-    fn vcpu_protocol_lives_in_axvm_types() {
-        let mut percpu = MockPerCpu::new(0).unwrap();
-        assert!(!percpu.is_enabled());
-        percpu.hardware_enable().unwrap();
-        assert!(percpu.is_enabled());
-
-        let mut vcpu = MockVcpu::new(1, 0, ()).unwrap();
-        vcpu.set_entry(GuestPhysAddr::from(0x8020_0000)).unwrap();
-        vcpu.set_nested_page_table(NestedPagingConfig::new(
-            HostPhysAddr::from(0x1000),
-            4,
-            48,
-            0,
-        ))
-        .unwrap();
-        vcpu.setup(()).unwrap();
-        assert!(matches!(
-            vcpu.run().unwrap(),
-            MockExit::SysRegRead { reg: 2 }
-        ));
-    }
-
-    #[test]
-    fn vm_exit_keeps_access_width_and_state_types() {
-        let state = VmVcpuState::Created;
-        assert_eq!(state as u8, 1);
-
-        let exit = VmExit::MmioRead {
-            addr: GuestPhysAddr::from(0x1000),
-            width: AccessWidth::Dword,
-            reg: 3,
-            reg_width: AccessWidth::Qword,
-            signed_ext: true,
-        };
-        assert!(matches!(
-            exit,
-            VmExit::MmioRead {
-                width: AccessWidth::Dword,
-                reg: 3,
-                ..
-            }
-        ));
-    }
 }

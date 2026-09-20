@@ -85,11 +85,15 @@ pub(crate) struct QemuCaseExtraConfig {
     #[serde(default)]
     pub(crate) test_commands: Vec<String>,
     #[serde(default)]
+    pub(crate) grouped_command_selection: GroupedCommandSelection,
+    #[serde(default)]
     pub(crate) host_symbolize_success_regex: Vec<String>,
     #[serde(default)]
     pub(crate) host_http_server: Option<HostHttpServerConfig>,
     #[serde(default)]
-    pub(crate) snapshot: Option<bool>,
+    pub(crate) rootfs_write_policy: crate::rootfs::qemu::RootfsWritePolicy,
+    #[serde(default, rename = "snapshot")]
+    pub(super) legacy_snapshot: Option<toml::Value>,
 }
 
 pub(super) fn list_qemu_cases_unexpected_error(err: anyhow::Error) -> ListQemuCasesError {

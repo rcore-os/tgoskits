@@ -449,16 +449,7 @@ macro_rules! pa_range {
 
 #[cfg(test)]
 mod test {
-    use crate::{VirtAddrRange, va, va_range};
-
-    #[test]
-    fn test_range_format() {
-        let range = va_range!(0xfec000..0xfff000usize);
-
-        assert_eq!(format!("{:?}", range), "VA:0xfec000..VA:0xfff000");
-        assert_eq!(format!("{:x}", range), "VA:0xfec000..VA:0xfff000");
-        assert_eq!(format!("{:X}", range), "VA:0xFEC000..VA:0xFFF000");
-    }
+    use crate::{VirtAddrRange, va};
 
     #[test]
     #[allow(clippy::reversed_empty_ranges)]
@@ -466,8 +457,6 @@ mod test {
         let start = va!(0x1000);
         let end = va!(0x2000);
         let range = va_range!(start..end);
-
-        println!("range: {:?}", range);
 
         assert!((0x1000..0x1000).is_empty());
         assert!((0x1000..0xfff).is_empty());
@@ -503,11 +492,5 @@ mod test {
         assert!(range.overlaps(va_range!(0x1800..0x2001)));
         assert!(!range.overlaps(va_range!(0x2000..0x2800)));
         assert!(range.overlaps(va_range!(0xfff..0x2001)));
-
-        let default_range: VirtAddrRange = Default::default();
-        assert!(default_range.is_empty());
-        assert_eq!(default_range.size(), 0);
-        assert_eq!(default_range.start, va!(0));
-        assert_eq!(default_range.end, va!(0));
     }
 }

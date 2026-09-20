@@ -1,6 +1,6 @@
 [package]
 name = "starry-signal"
-version = "0.8.13"
+version = "0.10.3"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Signal management library for Starry OS"
@@ -9,9 +9,9 @@ repository = "https://github.com/Starry-OS/starry-signal"
 license = "Apache-2.0"
 
 [dependencies]
-ax-cpu = { workspace = true, features = ["uspace"] }
-ax-errno = { workspace = true }
+ax-cpu = { workspace = true, features = ["fp-simd", "uspace"] }
 bitflags = "2.6"
+bytemuck = "1.24"
 cfg-if = "1"
 derive_more = { version = "2.0", default-features = false, features = ["full"] }
 event-listener = { version = "5.4", default-features = false }
@@ -23,7 +23,11 @@ linux-raw-sys = { version = "0.12", default-features = false, features = [
 log = "0.4"
 starry-vm = { workspace = true }
 strum = { version = "0.27", default-features = false, features = ["derive"] }
+thiserror.workspace = true
 
 [dev-dependencies]
-ax-runtime = { workspace = true, features = ["host-test", "smp", "lockdep", "multitask"] }
+ax-runtime = { path = "../../arceos/modules/axruntime", features = ["host-test", "smp", "lockdep"] }
 extern-trait = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

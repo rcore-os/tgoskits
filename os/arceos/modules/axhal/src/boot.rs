@@ -15,12 +15,15 @@ pub fn bootargs() -> Option<&'static str> {
     crate::dtb::get_chosen_bootargs()
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn bootargs_facade_is_available() {
-        crate::dtb::init(0);
+/// Returns the trusted firmware seed captured during early boot.
+pub fn boot_entropy() -> Option<[u8; 32]> {
+    #[cfg(not(any(test, feature = "host-test")))]
+    {
+        axplat_dyn::boot_entropy()
+    }
 
-        assert_eq!(super::bootargs(), None);
+    #[cfg(any(test, feature = "host-test"))]
+    {
+        None
     }
 }

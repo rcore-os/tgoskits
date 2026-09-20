@@ -1,0 +1,37 @@
+board_type = "OrangePi-5-Plus"
+fail_regex = [
+    '(?m)^AXVISOR_PCI_NET_PING_FAILED\s*$',
+    'panicked at',
+    'Kernel panic - not syncing',
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+# Keep serial commands short and wait for each result before sending the next.
+shell_cmd = '''
+n=enP3p49s0; d=/sys/class/net/$n/device; m=AXVISOR_PCI_NET_PING; ip -br a; readlink -f "$d"; echo ${m}_READY
+'''
+success_regex = ['(?m)^AXVISOR_PCI_NET_PING_READY\s*$']
+
+[[shell_check_steps]]
+shell_cmd = '''
+if [ "$(cat "$d/vendor")" = 0x10ec ] && [ "$(cat "$d/device")" = 0x8125 ]; then printf '\n%s\n' ${m}_DEVICE_OK; else printf '\n%s\n' ${m}_FAILED; fi
+'''
+success_regex = ['(?m)^AXVISOR_PCI_NET_PING_DEVICE_OK\s*$']
+
+[[shell_check_steps]]
+shell_cmd = '''
+if printf '%s\n' orangepi | sudo -S nmcli -w 45 device connect "$n"; then printf '\n%s\n' ${m}_CONNECTED; else printf '\n%s\n' ${m}_FAILED; fi
+'''
+success_regex = ['(?m)^AXVISOR_PCI_NET_PING_CONNECTED\s*$']
+
+[[shell_check_steps]]
+shell_cmd = '''
+if ping -n -I "$n" -c 5 -w 10 -W 2 192.168.1.2; then sync; printf '\n%s\n' ${m}_PASSED; else sync; printf '\n%s\n' ${m}_FAILED; fi
+'''
+success_regex = ['(?m)^AXVISOR_PCI_NET_PING_PASSED\s*$']

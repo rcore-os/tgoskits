@@ -1,7 +1,25 @@
 board_type = "OrangePi-5-Plus"
 dtb_file = "os/StarryOS/configs/board/orangepi-5-plus.dtb"
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  'exit with code: 139',
+  "(?m)^unable to initialize libusb: .*$",
+  "(?i)(lsusb|grep|cat|sh): .*not found",
+  "(?m)^lsusb: .*",
+  '(?m)^STARRY_USB2_ROOT_HUB_MISSING\s*$',
+  '(?m)^STARRY_USB2_DEVICE_MISSING\s*$',
+  '(?m)^STARRY_USB2_LSUSB_FAILED\s*$',
+  '(?m)^STARRY_PWM_SMOKE_FAILED\s*$',
+  '(?m)^STARRY_NPU_YOLOV8_FAILED\s*$',
+  '(?m)^STARRY_NATIVE_HARDWARE_FAILED\s*$',
+]
+timeout = 300
+
+[[shell_check_steps]]
 shell_prefix = "root@starry:/root #"
-shell_init_cmd = '''
+shell_cmd = '''
 suite=STARRY_NATIVE_HARDWARE
 usb_marker=STARRY_USB2
 npu_marker=STARRY_NPU_YOLOV8
@@ -67,40 +85,29 @@ else
   ok=0
 fi
 
-if (cd /guest/npu_demo && ./yolov8.sh) >/tmp/starry-npu-yolov8.out 2>&1; then
+# Use the maintained image runner and its all-images-completed verdict.
+if (cd /guest/npu_demo/ci-v2 &&
+    LD_LIBRARY_PATH="$PWD/lib:${LD_LIBRARY_PATH:-}" ./rknn_yolov8_image --batch \
+      model/yolov8.rknn model/coco_80_labels_list.txt \
+      model/picture1.jpg model/picture2.jpg model/picture3.jpg
+   ) >/tmp/starry-npu-yolov8.out 2>&1; then
   npu_status=0
 else
   npu_status=$?
 fi
 cat /tmp/starry-npu-yolov8.out
-if [ "$npu_status" = "0" ] && grep -q '^=== Detection Results Summary ===$' /tmp/starry-npu-yolov8.out; then
-  echo ${npu_marker}_OK
+if [ "$npu_status" = "0" ] &&
+   [ "$(grep -xc 'UVC_RKNN_IMAGE_PASS images=3' /tmp/starry-npu-yolov8.out)" = "1" ]; then
+  printf '\n%s\n' "${npu_marker}_OK"
 else
-  echo ${npu_marker}_FAILED
+  printf '\n%s\n' "${npu_marker}_FAILED"
   ok=0
 fi
 
 if [ "$ok" = "1" ]; then
-  echo ${suite}_OK
+  printf '\n%s\n' "${suite}_OK"
 else
-  echo ${suite}_FAILED
+  printf '\n%s\n' "${suite}_FAILED"
 fi
 '''
-success_regex = ['STARRY_NATIVE_HARDWARE_OK']
-fail_regex = [
-  '(?i)\bpanic(?:ked)?\b',
-  '(?i)segmentation fault',
-  '(?i)SIGSEGV',
-  'exit with code: 139',
-  "(?m)^unable to initialize libusb: .*$",
-  "(?i)(lsusb|grep|cat|sh): .*not found",
-  "(?m)^lsusb: .*",
-  '(?m)^STARRY_USB2_ROOT_HUB_MISSING\s*$',
-  '(?m)^STARRY_USB2_DEVICE_MISSING\s*$',
-  '(?m)^STARRY_USB2_LSUSB_FAILED\s*$',
-  '(?m)^STARRY_PWM_SMOKE_FAILED\s*$',
-  '(?m)^rknn_init fail! ret=-1\s*$',
-  '(?m)^STARRY_NPU_YOLOV8_FAILED\s*$',
-  '(?m)^STARRY_NATIVE_HARDWARE_FAILED\s*$',
-]
-timeout = 300
+success_regex = ['(?m)^STARRY_NATIVE_HARDWARE_OK\s*$']

@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 950" role="img">
+<title>Starry Linux 兼容系统架构</title><desc>Linux 用户态经系统调用和异常入口进入 starry-kernel，内核维护进程、文件、内存、信号和网络语义，并复用 ArceOS 运行时、共享组件与平台能力。</desc>
+<rect x="1" y="1" width="1098" height="948" rx="24" fill="var(--os-diagram-bg, #f7f9fb)" stroke="var(--os-diagram-border, #d7e2e9)"/>
+<g font-family="system-ui, sans-serif" fill="var(--os-diagram-text, #263d4a)">
+<text x="40" y="42" font-size="26" font-weight="650" text-anchor="start">Starry · Linux 用户态兼容</text>
+<g><rect x="40.0" y="66" width="501.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="290.5" y="96" font-size="22" font-weight="650" text-anchor="middle">Linux 用户态程序</text>
+<text x="290.5" y="125" font-size="17" font-weight="400" text-anchor="middle">Shell · 数据库 · 服务与开发工具</text>
+</g>
+<g><rect x="559.0" y="66" width="501.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="809.5" y="96" font-size="22" font-weight="650" text-anchor="middle">用户态运行环境</text>
+<text x="809.5" y="125" font-size="17" font-weight="400" text-anchor="middle">ELF 程序 · libc · Rootfs</text>
+</g>
+<path d="M40 166H1060" stroke="var(--os-diagram-arrow, #779bab)" stroke-dasharray="7 5"/>
+<text x="1050" y="160" font-size="16" font-weight="400" text-anchor="end">用户态 / 内核态</text>
+<path d="M550 146V193m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="204" width="1020.0" height="80" rx="12" fill="var(--os-diagram-accent-bg, #e6f4ee)" stroke="var(--os-accent, #0f766e)" stroke-width="1.5"/>
+<text x="550.0" y="234" font-size="22" font-weight="650" text-anchor="middle">starry-kernel · syscall / trap</text>
+<text x="550.0" y="263" font-size="17" font-weight="400" text-anchor="middle">系统调用分发 · 异常与中断入口 · Linux 接口语义</text>
+</g>
+<path d="M550 285V303m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="314" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="204.0" y="344" font-size="22" font-weight="650" text-anchor="middle">task / namespace / cgroup</text>
+<text x="204.0" y="373" font-size="17" font-weight="400" text-anchor="middle">进程与线程 · 资源与隔离</text>
+</g>
+<g><rect x="386.0" y="314" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="550.0" y="344" font-size="22" font-weight="650" text-anchor="middle">mm / signal / time</text>
+<text x="550.0" y="373" font-size="17" font-weight="400" text-anchor="middle">虚拟内存 · 信号 · 时间服务</text>
+</g>
+<g><rect x="732.0" y="314" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="896.0" y="344" font-size="22" font-weight="650" text-anchor="middle">file / ipc / pseudofs</text>
+<text x="896.0" y="373" font-size="17" font-weight="400" text-anchor="middle">文件语义 · IPC · 伪文件系统</text>
+</g>
+<path d="M550 395V413m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="424" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="204.0" y="454" font-size="22" font-weight="650" text-anchor="middle">starry-signal</text>
+<text x="204.0" y="483" font-size="17" font-weight="400" text-anchor="middle">信号模型与处理</text>
+</g>
+<g><rect x="386.0" y="424" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="550.0" y="454" font-size="22" font-weight="650" text-anchor="middle">starry-vm</text>
+<text x="550.0" y="483" font-size="17" font-weight="400" text-anchor="middle">用户地址空间与映射</text>
+</g>
+<g><rect x="732.0" y="424" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="896.0" y="454" font-size="22" font-weight="650" text-anchor="middle">内核扩展能力</text>
+<text x="896.0" y="483" font-size="17" font-weight="400" text-anchor="middle">kmod · tracepoint · perf 等</text>
+</g>
+<path d="M550 505V523m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="534" width="1020.0" height="80" rx="12" fill="var(--os-diagram-accent-bg, #e6f4ee)" stroke="var(--os-accent, #0f766e)" stroke-width="1.5"/>
+<text x="550.0" y="564" font-size="22" font-weight="650" text-anchor="middle">ArceOS 运行时与硬件抽象</text>
+<text x="550.0" y="593" font-size="17" font-weight="400" text-anchor="middle">ax-runtime · ax-task · ax-sync · ax-mm · ax-hal</text>
+</g>
+<path d="M550 615V633m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="644" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="204.0" y="674" font-size="22" font-weight="650" text-anchor="middle">文件系统能力</text>
+<text x="204.0" y="703" font-size="17" font-weight="400" text-anchor="middle">ax-fs-ng · axfs-ng-vfs · rsext4</text>
+</g>
+<g><rect x="386.0" y="644" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="550.0" y="674" font-size="22" font-weight="650" text-anchor="middle">网络与设备</text>
+<text x="550.0" y="703" font-size="17" font-weight="400" text-anchor="middle">ax-net · ax-driver · rdrive</text>
+</g>
+<g><rect x="732.0" y="644" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="896.0" y="674" font-size="22" font-weight="650" text-anchor="middle">共享基础能力</text>
+<text x="896.0" y="703" font-size="17" font-weight="400" text-anchor="middle">ax-cpu · ax-alloc · ax-io</text>
+</g>
+<path d="M550 725V743m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="754" width="1020.0" height="80" rx="12" fill="var(--os-diagram-accent-bg, #e6f4ee)" stroke="var(--os-accent, #0f766e)" stroke-width="1.5"/>
+<text x="550.0" y="784" font-size="22" font-weight="650" text-anchor="middle">平台契约与启动</text>
+<text x="550.0" y="813" font-size="17" font-weight="400" text-anchor="middle">ax-plat · axplat-dyn · somehal · someboot</text>
+</g>
+<path d="M550 835V852m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="862" width="1020.0" height="66" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="550.0" y="884" dominant-baseline="central" font-size="22" font-weight="650" text-anchor="middle">目标环境</text>
+<text x="550.0" y="910" dominant-baseline="central" font-size="17" font-weight="400" text-anchor="middle">AArch64 · RISC-V · x86_64 · LoongArch / QEMU 与实体板卡</text>
+</g>
+</g></svg>

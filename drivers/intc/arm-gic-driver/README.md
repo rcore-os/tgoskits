@@ -42,6 +42,19 @@ if !ack.is_special() {
 }
 ```
 
+### GICv3.3 NMI Attributes
+
+The compile-checked
+[`gicv3_nmi_attribute`](examples/gicv3_nmi_attribute.rs) example shows the
+required order for initializing the Distributor, checking
+`FEAT_GICv3_NMI`, disabling an SPI, and setting and reading its typed NMI
+attribute. SGIs and PPIs additionally require the current PE's Redistributor
+to be initialized.
+
+This API only programs the per-interrupt GIC property. The OS or platform
+layer remains responsible for the CPU NMI feature, exception entry,
+acknowledgment, handler, and synchronization with independent MMIO aliases.
+
 ## Architecture Support
 
 This driver supports multiple ARM GIC versions:

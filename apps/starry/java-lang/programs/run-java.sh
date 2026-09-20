@@ -2,10 +2,10 @@
 # run-java.sh — on-target gate for the StarryOS java-lang multi-JDK LANGUAGE carpet (#764).
 #
 # Staged into the rootfs by prebuild.sh and invoked by every qemu-<arch>.toml as the
-# ENTIRE shell_init_cmd (`sh /usr/bin/run-java.sh`). Two reasons it is a STAGED script and
-# not an inline shell_init_cmd:
+# entire shell-check step command (`sh /usr/bin/run-java.sh`). Two reasons it is a staged script and
+# not an inline step command:
 #
-#  1. (FIX1, correctness) The StarryOS app harness echoes the shell_init_cmd text back over
+#  1. (FIX1, correctness) The StarryOS app harness echoes the step command text back over
 #     the serial console. The previous inline gate contained `echo "TEST PASSED"`, and the
 #     long `if ...; then echo "TEST PASSED"; ...` line wraps so that the literal `TEST PASSED`
 #     lands on its own line in the ECHOED command text — which the harness

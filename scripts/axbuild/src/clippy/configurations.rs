@@ -11,6 +11,7 @@ pub(super) struct PackageClippyConfiguration {
     pub(super) name: String,
     pub(super) target: String,
     pub(super) features: Vec<String>,
+    pub(super) rustflags: Vec<String>,
     pub(super) env: Vec<(String, String)>,
 }
 
@@ -33,6 +34,8 @@ struct RawClippyConfiguration {
     target: String,
     #[serde(default)]
     features: Vec<String>,
+    #[serde(default)]
+    rustflags: Vec<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
 }
@@ -89,11 +92,20 @@ fn validate_configuration(
         );
         features.insert(feature);
     }
+    for rustflag in &configuration.rustflags {
+        ensure!(
+            !rustflag.is_empty() && rustflag.trim() == rustflag,
+            "clippy configuration `{}` rustflag for `{}` must be non-empty and trimmed",
+            configuration.name,
+            package.name
+        );
+    }
 
     Ok(PackageClippyConfiguration {
         name: configuration.name,
         target: normalize_clippy_target(&configuration.target).to_string(),
         features: features.into_iter().collect(),
+        rustflags: configuration.rustflags,
         env: configuration.env.into_iter().collect(),
     })
 }

@@ -1,15 +1,7 @@
 fn main() {
     use std::io::Write;
 
-    fn pthread_mutex_layout(
-        has_multitask: bool,
-        has_smp: bool,
-        has_lockdep: bool,
-    ) -> (usize, &'static str) {
-        if !has_multitask {
-            return (1, "{0}");
-        }
-
+    fn pthread_mutex_layout(has_smp: bool, has_lockdep: bool) -> (usize, &'static str) {
         if has_lockdep {
             if has_smp {
                 // `lockdep` expands the underlying mutex with lock maps in both
@@ -30,13 +22,11 @@ fn main() {
     }
 
     fn gen_pthread_mutex(out_file: &std::path::Path) -> std::io::Result<()> {
-        println!("cargo:rerun-if-env-changed=CARGO_FEATURE_MULTITASK");
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SMP");
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_LOCKDEP");
-        let has_multitask = std::env::var_os("CARGO_FEATURE_MULTITASK").is_some();
         let has_smp = std::env::var_os("CARGO_FEATURE_SMP").is_some();
         let has_lockdep = std::env::var_os("CARGO_FEATURE_LOCKDEP").is_some();
-        let (mutex_size, mutex_init) = pthread_mutex_layout(has_multitask, has_smp, has_lockdep);
+        let (mutex_size, mutex_init) = pthread_mutex_layout(has_smp, has_lockdep);
 
         let mut output = Vec::new();
         writeln!(
@@ -66,6 +56,8 @@ typedef struct {{
 
         let allow_types = [
             "stat",
+            "tm",
+            "jmp_buf",
             "size_t",
             "ssize_t",
             "off_t",
@@ -122,12 +114,12 @@ typedef struct {{
         let mut builder = bindgen::Builder::default()
             .header(in_file)
             .clang_arg(format!("-I{}", generated_include_dir.display()))
-            .clang_arg("-I./../../ulib/axlibc/include")
+            .clang_arg("-Iinclude")
             .parse_callbacks(Box::new(MyCallbacks))
             .derive_default(true)
             .size_t_is_usize(false)
             .use_core();
-        for feature in ["MULTITASK", "SMP", "LOCKDEP", "PLAT_DYN"] {
+        for feature in ["SMP", "LOCKDEP", "PLAT_DYN"] {
             println!("cargo:rerun-if-env-changed=CARGO_FEATURE_{feature}");
             if std::env::var_os(format!("CARGO_FEATURE_{feature}")).is_some() {
                 builder = builder.clang_arg(format!("-DAX_CONFIG_{feature}"));
@@ -160,19 +152,7 @@ typedef struct {{
             .expect("Couldn't write bindings!");
     }
 
-    let axlibc_include = std::path::Path::new("../../ulib/axlibc/include");
     let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    let out_file = out_dir.join("ctypes_gen.rs");
-    if axlibc_include.exists() {
-        gen_pthread_mutex(&out_dir.join("ax_pthread_mutex.h")).unwrap();
-        gen_c_to_rust_bindings("ctypes.h", &out_dir, &out_file);
-    } else {
-        // During `cargo publish` verification, the external headers are not
-        // available. Use the pre-generated ctypes_gen.rs shipped in the crate.
-        eprintln!(
-            "cargo:warning=axlibc include directory not found, skipping ctypes_gen.rs regeneration"
-        );
-        std::fs::copy("src/ctypes_gen.rs", &out_file)
-            .expect("pre-generated ctypes_gen.rs is not available");
-    }
+    gen_pthread_mutex(&out_dir.join("ax_pthread_mutex.h")).unwrap();
+    gen_c_to_rust_bindings("ctypes.h", &out_dir, &out_dir.join("ctypes_gen.rs"));
 }

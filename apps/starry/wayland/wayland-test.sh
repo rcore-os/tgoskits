@@ -77,15 +77,16 @@ http://mirrors.cernet.edu.cn/alpine
 ${mirrors}"
     fi
 
-    set -- /usr/local/wayland-apks/*.apk
+    set -- /usr/local/wayland-apks/*/*/*.apk
     if [ -e "$1" ]; then
         echo "WAYLAND_PREP installing prefetched APKs from /usr/local/wayland-apks"
-        if run_with_timeout 420 apk add --allow-untrusted --no-network "$@"; then
-            echo "WAYLAND_PREP prefetched APKs installed"
-            return 0
-        else
-            echo "WAYLAND_PREP prefetched APK install failed; falling back to network repositories"
-        fi
+        # Authenticate every index and payload before any install script runs.
+        run_with_timeout 420 apk verify --no-network \
+            /usr/local/wayland-apks/*/*/APKINDEX.tar.gz "$@" || return 1
+        run_with_timeout 420 apk add --no-network \
+            --repositories-file /usr/local/wayland-apks/repositories $packages || return 1
+        echo "WAYLAND_PREP prefetched APKs installed"
+        return 0
     fi
 
     for mirror in $mirrors; do

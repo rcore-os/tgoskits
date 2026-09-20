@@ -93,26 +93,3 @@ pub(super) fn build_config_path(
     }
     anyhow::bail!("{suite_name} must provide {}", path.display())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::arceos::test::ARCEOS_RUST_TEST_PACKAGE;
-
-    #[test]
-    fn arceos_rust_qemu_test_uses_single_test_suite_package() {
-        let app_dir = tempfile::tempdir().unwrap();
-        let build_config = app_dir.path().join("build-x86_64-unknown-none.toml");
-        fs::write(&build_config, "features = [\"ax-std\"]\n").unwrap();
-
-        let args = test_build_args(
-            ARCEOS_RUST_TEST_PACKAGE,
-            "x86_64-unknown-none",
-            &build_config,
-        );
-
-        assert_eq!(args.config, Some(build_config));
-        assert_eq!(args.package.as_deref(), Some(ARCEOS_RUST_TEST_PACKAGE));
-        assert_eq!(args.target.as_deref(), Some("x86_64-unknown-none"));
-    }
-}

@@ -1,10 +1,9 @@
 use core::hint::spin_loop;
 
-use aarch64_cpu::asm::barrier;
 use tock_registers::{interfaces::*, register_bitfields, register_structs, registers::*};
 
 use crate::{
-    IntId,
+    IntId, arch,
     define::{SPI_RANGE, Trigger},
     v3::Affinity,
 };
@@ -108,6 +107,9 @@ fn reg8_addr(base: *const DistributorReg, offset: usize, index: usize) -> *mut u
 
 #[inline(always)]
 fn mmio_write32(addr: *mut u32, value: u32) {
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = (addr, value);
+    #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!(
             "str {value:w}, [{addr}]",
@@ -120,6 +122,9 @@ fn mmio_write32(addr: *mut u32, value: u32) {
 
 #[inline(always)]
 fn mmio_write8(addr: *mut u8, value: u8) {
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = (addr, value);
+    #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!(
             "strb {value:w}, [{addr}]",
@@ -487,41 +492,9 @@ impl DistributorReg {
         }
     }
 
-    /// Configure non-maskable interrupt
-    pub fn set_nmi(&self, intid: u32, nmi: bool) {
-        if (32..1020).contains(&intid) {
-            let reg_idx = (intid / 32) as usize;
-            let bit_idx = intid % 32;
-
-            if reg_idx < self.INMIR.len() {
-                let current = self.INMIR[reg_idx].get();
-                if nmi {
-                    self.INMIR[reg_idx].set(current | (1 << bit_idx));
-                } else {
-                    self.INMIR[reg_idx].set(current & !(1 << bit_idx));
-                }
-            }
-        }
-    }
-
-    /// Check if interrupt is configured as NMI
-    pub fn is_nmi(&self, intid: u32) -> bool {
-        if (32..1020).contains(&intid) {
-            let reg_idx = (intid / 32) as usize;
-            let bit_idx = intid % 32;
-
-            if reg_idx < self.INMIR.len() {
-                let current = self.INMIR[reg_idx].get();
-                return (current & (1 << bit_idx)) != 0;
-            }
-        }
-        false
-    }
-
     /// Check if Extended SPI range is supported
     pub fn has_extended_spi(&self) -> bool {
-        // Check if TYPER2.ESPI is implemented and set
-        self.TYPER2.read(TYPER2::NMI) != 0 // Using NMI bit as placeholder since ESPI is not defined yet
+        self.TYPER.is_set(TYPER::ESPI)
     }
 
     /// Get the Extended SPI range if supported
@@ -588,7 +561,7 @@ impl DistributorReg {
                 return Err("GICv3 Distributor CTLR RWP wait timeout.");
             }
         }
-        barrier::isb(barrier::SY);
+        arch::isb();
         Ok(())
     }
 }
@@ -640,6 +613,10 @@ register_bitfields! [
         ITLinesNumber OFFSET(0) NUMBITS(5) [],
         /// Number of CPU interfaces implemented minus one
         CPUNumber OFFSET(5) NUMBITS(3) [],
+        /// Extended SPI range supported
+        ESPI OFFSET(8) NUMBITS(1) [],
+        /// Non-maskable interrupt property supported
+        NMI OFFSET(9) NUMBITS(1) [],
         /// Indicates whether the GIC implements Security Extensions
         SecurityExtn OFFSET(10) NUMBITS(1) [
             SingleSecurity = 0,
@@ -665,12 +642,12 @@ register_bitfields! [
 
     /// Type Modifier Register
     pub TYPER2 [
+        /// Virtual PE identifier width
+        VID OFFSET(0) NUMBITS(5) [],
         /// Virtual LPIs supported
-        VIL OFFSET(0) NUMBITS(1) [],
-        /// Virtual command queue interface supported
-        VID OFFSET(1) NUMBITS(5) [],
-        /// NMI support
-        NMI OFFSET(6) NUMBITS(1) [],
+        VIL OFFSET(7) NUMBITS(1) [],
+        /// Support for SGIs without an active state
+        nASSGIcap OFFSET(8) NUMBITS(1) [],
     ],
 
     /// Status Register

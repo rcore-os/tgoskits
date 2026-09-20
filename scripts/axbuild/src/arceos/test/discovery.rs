@@ -24,9 +24,16 @@ pub(super) fn discover_rust_qemu_cases(
     selected_case: Option<&str>,
     allow_missing_selected_case: bool,
 ) -> anyhow::Result<Vec<ArceosRustQemuCase>> {
+    if let Some(feature) = selected_case
+        && !super::rust_qemu_feature_supports_arch(feature, arch)
+        && !allow_missing_selected_case
+    {
+        bail!("ArceOS test {feature} does not support {arch}");
+    }
     let root = arceos_rust_test_dir(arceos);
     rust_qemu_features_for_run(selected_case, allow_missing_selected_case)?
         .into_iter()
+        .filter(|feature| super::rust_qemu_feature_supports_arch(feature, arch))
         .map(|feature| load_arceos_test_suit_qemu_case(&root, arch, target, feature))
         .collect()
 }
@@ -67,6 +74,7 @@ fn load_rust_qemu_case(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<Ar
             case_dir: case.case_dir,
             qemu_config_path: case.qemu_config_path,
             test_commands: Vec::new(),
+            grouped_command_selection: Default::default(),
             host_symbolize_success_regex: Vec::new(),
             host_http_server,
             subcases: Vec::new(),
@@ -86,7 +94,7 @@ pub(super) fn load_arceos_test_suit_qemu_case(
     feature: &str,
 ) -> anyhow::Result<ArceosRustQemuCase> {
     let build_config_path = arceos_test_suit_build_config_path(root, target)?;
-    let qemu_config_path = arceos_test_suit_qemu_config_path(root, arch)?;
+    let qemu_config_path = arceos_test_suit_case_qemu_config_path(root, arch, feature)?;
     let host_http_server = qemu_test::load_qemu_case_host_http_server(&qemu_config_path)?;
     Ok(ArceosRustQemuCase {
         case: TestQemuCase {
@@ -95,6 +103,7 @@ pub(super) fn load_arceos_test_suit_qemu_case(
             case_dir: root.to_path_buf(),
             qemu_config_path,
             test_commands: Vec::new(),
+            grouped_command_selection: Default::default(),
             host_symbolize_success_regex: Vec::new(),
             host_http_server,
             subcases: Vec::new(),
@@ -119,6 +128,22 @@ pub(super) fn arceos_test_suit_qemu_config_path(
     arch: &str,
 ) -> anyhow::Result<PathBuf> {
     qemu_config_path(root, arch, "ArceOS rust test suite")
+}
+
+pub(super) fn arceos_test_suit_case_qemu_config_path(
+    root: &Path,
+    arch: &str,
+    case: &str,
+) -> anyhow::Result<PathBuf> {
+    let case_path = root
+        .join("cases")
+        .join(case)
+        .join(qemu_test::qemu_config_name(arch));
+    if case_path.is_file() {
+        Ok(case_path)
+    } else {
+        arceos_test_suit_qemu_config_path(root, arch)
+    }
 }
 
 pub(super) fn selected_qemu_test_groups(
@@ -147,7 +172,9 @@ pub(super) fn selected_qemu_test_groups(
         }
         Some(ARCEOS_RUST_TEST_GROUP) => Ok(vec![QemuTestFlow::Rust]),
         Some(ARCEOS_C_TEST_GROUP) => Ok(vec![QemuTestFlow::C]),
-        Some(ARCEOS_AXTEST_GROUP) => Ok(vec![QemuTestFlow::Axtest]),
+        Some(ARCEOS_AXTEST_GROUP) => bail!(
+            "ArceOS directory-style axtest discovery was removed; use `cargo xtask ktest qemu`"
+        ),
         Some(group) => {
             let dir = test_suite::group_dir(workspace_root, ARCEOS_TEST_SUITE_OS, group);
             if dir.is_dir() {
@@ -167,6 +194,8 @@ pub(super) fn selected_qemu_test_groups(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use tempfile::tempdir;
 
     use super::*;
@@ -223,5 +252,33 @@ mod tests {
         .unwrap();
 
         assert_eq!(flows, &[QemuTestFlow::Rust, QemuTestFlow::C]);
+    }
+
+    #[test]
+    fn arceos_rust_case_prefers_its_qemu_config() {
+        let root = tempdir().unwrap();
+        let suite_config = root.path().join("qemu-riscv64.toml");
+        fs::write(&suite_config, "timeout = 120\n").unwrap();
+        let case_dir = root.path().join("cases/task-ipi");
+        fs::create_dir_all(&case_dir).unwrap();
+        let case_config = case_dir.join("qemu-riscv64.toml");
+        fs::write(&case_config, "timeout = 5\n").unwrap();
+
+        let selected =
+            arceos_test_suit_case_qemu_config_path(root.path(), "riscv64", "task-ipi").unwrap();
+
+        assert_eq!(selected, case_config);
+    }
+
+    #[test]
+    fn arceos_rust_case_falls_back_to_suite_qemu_config() {
+        let root = tempdir().unwrap();
+        let suite_config = root.path().join("qemu-riscv64.toml");
+        fs::write(&suite_config, "timeout = 120\n").unwrap();
+
+        let selected =
+            arceos_test_suit_case_qemu_config_path(root.path(), "riscv64", "task-yield").unwrap();
+
+        assert_eq!(selected, suite_config);
     }
 }

@@ -1,13 +1,13 @@
 //! Interrupt request (IRQ) handling.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use ax_lazyinit::OnceLock;
 pub use irq_framework::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,
     CpuId, CpuMask, HwIrq, IrqAffinity, IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle,
-    IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, IrqTrigger,
-    Registry, ShareMode, TrapVector,
+    IrqId, IrqOps, IrqOrigin, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus,
+    IrqTrigger, Registry, ShareMode, TrapVector,
 };
 
 #[cfg(target_arch = "loongarch64")]
@@ -169,7 +169,9 @@ impl IrqOps for PlatIrqOps {
 
 static IRQ_REGISTRY: OnceLock<Registry<PlatIrqOps>> = OnceLock::new();
 static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(0);
-static IRQ_CONTEXT_CPUS: AtomicUsize = AtomicUsize::new(0);
+
+#[ax_percpu::def_percpu]
+static IRQ_CONTEXT_DEPTH: AtomicU32 = AtomicU32::new(0);
 
 fn registry() -> &'static Registry<PlatIrqOps> {
     IRQ_REGISTRY.call_once(|| Registry::new(PlatIrqOps))
@@ -177,17 +179,21 @@ fn registry() -> &'static Registry<PlatIrqOps> {
 
 /// Returns whether the current CPU is dispatching an IRQ action.
 pub fn in_irq_context() -> bool {
-    let _guard = ax_sync::PreemptGuard::new();
-    // SAFETY: the guard prevents migration across both CPU identity resolution
-    // and the matching context-bit read. Releasing an inner guard between these
-    // operations could resume this thread on another CPU with a stale ID.
-    unsafe {
-        ax_percpu::with_cpu_pin(|pin| {
-            let cpu = CpuId(crate::percpu::this_cpu_id_pinned(pin));
-            in_irq_context_on(cpu)
-        })
-    }
-    .expect("the current CPU-local area must remain bound")
+    let irq_state = ax_sync::irq_save_and_disable();
+    // SAFETY: local IRQ exclusion prevents a scheduler safe point and therefore
+    // fixes the selected CPU for this single owner-local read.
+    let active = unsafe { ax_percpu::with_cpu_pin(in_irq_context_pinned) }
+        .expect("the current CPU-local area must remain bound");
+    // SAFETY: this is the matching restore for the state saved above.
+    unsafe { ax_sync::irq_restore(irq_state) };
+    active
+}
+
+/// Tests IRQ-action context through an existing current-CPU pin.
+#[doc(hidden)]
+#[inline(always)]
+pub fn in_irq_context_pinned(pin: &ax_percpu::CpuPin<'_>) -> bool {
+    IRQ_CONTEXT_DEPTH.with_current(pin, |depth| depth.load(Ordering::Relaxed) != 0)
 }
 
 /// Requests an IRQ action through the dynamic IRQ framework.
@@ -268,33 +274,74 @@ pub fn prepare_irq_context(vector: TrapVector) {
 }
 
 /// Dispatches actions registered in the dynamic IRQ framework on `cpu`.
-pub fn dispatch_irq_on(irq: IrqId, cpu: CpuId) -> IrqOutcome {
-    let context_bit = irq_context_bit(cpu);
-    let was_in_irq = context_bit
-        .map(|bit| IRQ_CONTEXT_CPUS.fetch_or(bit, Ordering::AcqRel) & bit != 0)
-        .unwrap_or(false);
-    let outcome = registry().dispatch(irq, cpu);
-    if let Some(bit) = context_bit
-        && !was_in_irq
-    {
-        IRQ_CONTEXT_CPUS.fetch_and(!bit, Ordering::AcqRel);
+pub fn dispatch_irq_on(irq: IrqId, cpu: CpuId, origin: IrqOrigin) -> IrqOutcome {
+    // SAFETY: IRQ dispatch runs with local interrupts disabled. The caller's
+    // explicit CPU identity and the installed current area must describe the
+    // same non-migrating owner for the complete action callback.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            assert_eq!(
+                ax_percpu::current_cpu_index(pin).as_usize(),
+                cpu.0,
+                "IRQ dispatch CPU must match the current CPU-local owner"
+            );
+            let depth =
+                IRQ_CONTEXT_DEPTH.with_current(pin, |depth| depth.fetch_add(1, Ordering::Relaxed));
+            assert_ne!(depth, u32::MAX, "IRQ action nesting overflow");
+            let outcome = registry().dispatch(irq, cpu, origin);
+            IRQ_CONTEXT_DEPTH.with_current(pin, |depth| {
+                let previous = depth.fetch_sub(1, Ordering::Relaxed);
+                assert_ne!(previous, 0, "IRQ action exit without a matching entry");
+            });
+            outcome
+        })
     }
-    outcome
+    .expect("IRQ dispatch requires an installed current CPU-local area")
+}
+
+fn dispatch_with_controller_ack<T>(
+    acknowledge_controller: impl FnOnce(),
+    dispatch: impl FnOnce() -> T,
+) -> T {
+    acknowledge_controller();
+    dispatch()
+}
+
+/// Acknowledges one physical IPI before dispatching its logical actions.
+///
+/// IPI actions may make a coalesced software delivery edge reusable. The
+/// controller must therefore stop treating the previous IPI as pending or in
+/// service before any action can publish a fresh physical notification.
+pub fn dispatch_ipi_irq_on(
+    irq: IrqId,
+    cpu: CpuId,
+    origin: IrqOrigin,
+    acknowledge_controller: impl FnOnce(),
+) -> IrqOutcome {
+    dispatch_with_controller_ack(acknowledge_controller, || dispatch_irq_on(irq, cpu, origin))
 }
 
 /// Dispatches actions registered in the dynamic IRQ framework.
-pub fn dispatch_irq(irq: IrqId) -> IrqOutcome {
-    dispatch_irq_on(irq, PlatIrqOps.current_cpu())
+pub fn dispatch_irq(irq: IrqId, origin: IrqOrigin) -> IrqOutcome {
+    dispatch_irq_on(irq, PlatIrqOps.current_cpu(), origin)
 }
 
-fn in_irq_context_on(cpu: CpuId) -> bool {
-    irq_context_bit(cpu)
-        .map(|bit| IRQ_CONTEXT_CPUS.load(Ordering::Acquire) & bit != 0)
-        .unwrap_or(false)
-}
-
-fn irq_context_bit(cpu: CpuId) -> Option<usize> {
-    (cpu.0 < usize::BITS as usize).then_some(1usize << cpu.0)
+/// Tests one explicitly selected CPU's IRQ-action publication.
+///
+/// Callers that use this for the current CPU must retain their own migration
+/// exclusion across CPU identity resolution and this atomic observation.
+#[doc(hidden)]
+pub fn in_irq_context_on(cpu: CpuId) -> bool {
+    let Ok(cpu) = ax_percpu::CpuIndex::try_from(cpu.0) else {
+        return false;
+    };
+    let Ok(area) = ax_percpu::area(cpu) else {
+        return false;
+    };
+    // SAFETY: the generated symbol pointer addresses an AtomicU32 in every
+    // initialized CPU area, so shared remote observation is synchronized by
+    // the atomic itself and never aliases a non-atomic access.
+    unsafe { IRQ_CONTEXT_DEPTH.remote_ptr(area).as_ref() }.load(Ordering::Relaxed) != 0
 }
 
 /// Resolves a firmware/controller interrupt source to a framework IRQ id.
@@ -345,13 +392,15 @@ pub trait IrqIf {
     ///
     /// It is called by the common interrupt handler. Platform implementations
     /// should claim/ack the controller interrupt, dispatch the real IRQ through
-    /// [`dispatch_irq`], and perform the matching EOI/complete operation.
+    /// [`dispatch_irq`], and perform the matching EOI/complete operation. IPI
+    /// actions must instead be entered through [`dispatch_ipi_irq_on`] so the
+    /// architecture-specific acknowledgement precedes logical IPI draining.
     ///
     /// Returns the "real" IRQ number. On some platforms, this may differ from
     /// the input `irq` number, for example on AArch64 the input `irq` is
     /// ignored and the real IRQ number is obtained from the GIC. Returns
     /// `None` if the IRQ is spurious.
-    fn handle(vector: TrapVector) -> Option<IrqId>;
+    fn handle(vector: TrapVector, origin: IrqOrigin) -> Option<IrqId>;
 
     /// Sends an inter-processor interrupt (IPI) to one target CPU.
     ///
@@ -371,7 +420,10 @@ pub trait IrqIf {
 
 #[cfg(test)]
 mod tests {
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::{
+        cell::RefCell,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
     use crate::impl_plat_interface;
@@ -379,6 +431,27 @@ mod tests {
     static ENABLE_CALLS: AtomicUsize = AtomicUsize::new(0);
     static FAIL_ENABLE: AtomicUsize = AtomicUsize::new(0);
     static FAIL_SEND_IPI: AtomicUsize = AtomicUsize::new(0);
+
+    struct TestContextOps;
+
+    #[ax_crate_interface::impl_interface]
+    impl ax_sync::interface::ContextOps for TestContextOps {
+        fn enter(_context: u8) -> ax_sync::interface::ContextState {
+            ax_sync::interface::ContextState::new(0, 0)
+        }
+
+        fn exit(_context: u8, _state: ax_sync::interface::ContextState) {}
+
+        fn irq_return_preempt_enter() -> usize {
+            0
+        }
+
+        fn irq_return_preempt_exit(_state: usize) {}
+
+        fn hardirq_enter() {}
+
+        fn hardirq_exit() {}
+    }
 
     struct TestIrqIf;
 
@@ -411,7 +484,7 @@ mod tests {
             Err(IrqError::Unsupported)
         }
 
-        fn handle(_vector: TrapVector) -> Option<IrqId> {
+        fn handle(_vector: TrapVector, _origin: IrqOrigin) -> Option<IrqId> {
             None
         }
 
@@ -448,6 +521,18 @@ mod tests {
         );
 
         FAIL_SEND_IPI.store(0, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn ipi_controller_ack_precedes_logical_dispatch() {
+        let events = RefCell::new(alloc::vec::Vec::new());
+
+        super::dispatch_with_controller_ack(
+            || events.borrow_mut().push("controller-ack"),
+            || events.borrow_mut().push("logical-dispatch"),
+        );
+
+        assert_eq!(*events.borrow(), ["controller-ack", "logical-dispatch"]);
     }
 
     #[test]

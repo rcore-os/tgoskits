@@ -2,10 +2,9 @@
 
 use super::core::ext4_metadata_csum32;
 use crate::{
-    BLOCK_SIZE,
     crc32c::{ext4_crc32c_seed_from_superblock, ext4_superblock_has_metadata_csum},
     endian::read_u16_le,
-    entries::{Ext4DirEntryTail, Ext4DxEntry, Ext4DxRootInfo},
+    entries::{Ext4DirEntryTail, Ext4DxEntry, Ext4DxRootInfo, decode_directory_record_length},
     superblock::Ext4Superblock,
 };
 
@@ -25,23 +24,28 @@ pub fn verify_ext4_dirblock_checksum(
     if !ext4_superblock_has_metadata_csum(sb) {
         return true;
     }
-    if block_bytes.len() < BLOCK_SIZE || BLOCK_SIZE < 12 {
+    let block_size = block_bytes.len();
+    if block_size < Ext4DirEntryTail::TAIL_LEN as usize {
         return false;
     }
 
-    let tail_ft = block_bytes[BLOCK_SIZE - 5];
-    if tail_ft != 0xDE {
-        return true;
+    let tail_offset = block_size - Ext4DirEntryTail::TAIL_LEN as usize;
+    let tail = &block_bytes[tail_offset..];
+    if tail[..4] != [0; 4]
+        || read_u16_le(&tail[4..6]) != Ext4DirEntryTail::TAIL_LEN
+        || tail[6] != 0
+        || tail[7] != Ext4DirEntryTail::RESERVED_FT
+    {
+        return false;
     }
 
     let stored = u32::from_le_bytes([
-        block_bytes[BLOCK_SIZE - 4],
-        block_bytes[BLOCK_SIZE - 3],
-        block_bytes[BLOCK_SIZE - 2],
-        block_bytes[BLOCK_SIZE - 1],
+        block_bytes[block_size - 4],
+        block_bytes[block_size - 3],
+        block_bytes[block_size - 2],
+        block_bytes[block_size - 1],
     ]);
-    let data_len = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
-    let computed = ext4_dirblock_csum32(sb, ino, generation, &block_bytes[..data_len]);
+    let computed = ext4_dirblock_csum32(sb, ino, generation, &block_bytes[..tail_offset]);
     computed == stored
 }
 
@@ -53,10 +57,14 @@ pub fn update_ext4_dirblock_csum32(
     block_bytes: &mut [u8],
 ) {
     if ext4_superblock_has_metadata_csum(sb) {
-        let data_len = BLOCK_SIZE - Ext4DirEntryTail::TAIL_LEN as usize;
+        let block_size = block_bytes.len();
+        if block_size < Ext4DirEntryTail::TAIL_LEN as usize {
+            return;
+        }
+        let data_len = block_size - Ext4DirEntryTail::TAIL_LEN as usize;
         let checksum =
             ext4_dirblock_csum32(sb, parent_dir_ino, generation, &block_bytes[..data_len]);
-        block_bytes[BLOCK_SIZE - 4..].copy_from_slice(&checksum.to_le_bytes());
+        block_bytes[block_size - 4..].copy_from_slice(&checksum.to_le_bytes());
     }
 }
 
@@ -100,12 +108,13 @@ pub fn verify_ext4_dx_checksum(
     if !ext4_superblock_has_metadata_csum(sb) {
         return Some(true);
     }
-    if block_bytes.len() < BLOCK_SIZE {
+    let block_size = block_bytes.len();
+    if block_size < 8 {
         return Some(false);
     }
 
     let count_offset = dx_countlimit_offset(block_bytes)?;
-    if count_offset + 4 > BLOCK_SIZE {
+    if count_offset + 4 > block_size {
         return Some(false);
     }
 
@@ -114,12 +123,12 @@ pub fn verify_ext4_dx_checksum(
     let entry_size = core::mem::size_of::<Ext4DxEntry>();
     let tail_len = core::mem::size_of::<u64>();
 
-    if count > limit || count_offset + limit.saturating_mul(entry_size) > BLOCK_SIZE - tail_len {
+    if count > limit || count_offset + limit.saturating_mul(entry_size) > block_size - tail_len {
         return Some(false);
     }
 
     let tail_offset = count_offset + limit * entry_size;
-    if tail_offset + tail_len > BLOCK_SIZE {
+    if tail_offset + tail_len > block_size {
         return Some(false);
     }
 
@@ -152,13 +161,69 @@ pub fn verify_ext4_dx_checksum(
     Some(computed == stored)
 }
 
+/// Updates the checksum stored in an HTree `dx_tail`.
+pub(crate) fn update_ext4_dx_checksum(
+    sb: &Ext4Superblock,
+    ino: u32,
+    generation: u32,
+    block_bytes: &mut [u8],
+) -> bool {
+    if !ext4_superblock_has_metadata_csum(sb) {
+        return true;
+    }
+    let Some(count_offset) = dx_countlimit_offset(block_bytes) else {
+        return false;
+    };
+    if count_offset + 4 > block_bytes.len() {
+        return false;
+    }
+    let limit = usize::from(read_u16_le(&block_bytes[count_offset..count_offset + 2]));
+    let count = usize::from(read_u16_le(
+        &block_bytes[count_offset + 2..count_offset + 4],
+    ));
+    let entry_size = core::mem::size_of::<Ext4DxEntry>();
+    let Some(tail_offset) = count_offset.checked_add(limit.saturating_mul(entry_size)) else {
+        return false;
+    };
+    let Some(data_len) = count_offset.checked_add(count.saturating_mul(entry_size)) else {
+        return false;
+    };
+    if count == 0
+        || count > limit
+        || data_len > tail_offset
+        || tail_offset + core::mem::size_of::<u64>() > block_bytes.len()
+    {
+        return false;
+    }
+
+    block_bytes[tail_offset + 4..tail_offset + 8].fill(0);
+    let seed = ext4_crc32c_seed_from_superblock(sb);
+    let ino_le = ino.to_le_bytes();
+    let generation_le = generation.to_le_bytes();
+    let checksum = ext4_metadata_csum32(
+        seed,
+        &[
+            &ino_le,
+            &generation_le,
+            &block_bytes[..data_len],
+            &block_bytes[tail_offset..tail_offset + 8],
+        ],
+    );
+    block_bytes[tail_offset + 4..tail_offset + 8].copy_from_slice(&checksum.to_le_bytes());
+    true
+}
+
 fn dx_countlimit_offset(block_bytes: &[u8]) -> Option<usize> {
-    let rec_len = read_u16_le(&block_bytes[4..6]) as usize;
-    if rec_len == BLOCK_SIZE {
+    if block_bytes.len() < 6 {
+        return None;
+    }
+    let block_size = block_bytes.len();
+    let rec_len = decode_directory_record_length(read_u16_le(&block_bytes[4..6]), block_size);
+    if rec_len == block_size {
         return Some(8);
     }
 
-    if rec_len != 12 || BLOCK_SIZE < 32 {
+    if rec_len != 12 || block_size < 32 {
         return None;
     }
 

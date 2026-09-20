@@ -1,3 +1,5 @@
+extern crate ax_runtime as _;
+
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -87,11 +89,20 @@ impl Device for LineDevice {
         &[]
     }
 
-    fn access(
+    fn read(
         &self,
-        _access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
+        _access: &DeviceAccess,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<u64, DeviceError> {
+        Err(DeviceError::NotFound)
+    }
+
+    fn write(
+        &self,
+        _access: &DeviceAccess,
+        _value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<(), DeviceError> {
         Err(DeviceError::NotFound)
     }
 }
@@ -114,6 +125,10 @@ impl DeviceModel for IrqFactory {
             ResourceRequest::Fixed(ControllerInputId::new(40)),
         )?;
         Ok(requirements)
+    }
+
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::None
     }
 
     fn build(
@@ -152,11 +167,20 @@ impl Device for MmioDevice {
         &self.resource
     }
 
-    fn access(
+    fn read(
         &self,
-        _access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
+        _access: &DeviceAccess,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<u64, DeviceError> {
+        Err(DeviceError::NotFound)
+    }
+
+    fn write(
+        &self,
+        _access: &DeviceAccess,
+        _value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<(), DeviceError> {
         Err(DeviceError::NotFound)
     }
 }

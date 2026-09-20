@@ -136,6 +136,51 @@ pub struct FrameLayout {
 }
 
 impl FrameLayout {
+    /// Layout after in-place conversion of a native color frame to YUV420.
+    ///
+    /// Retains the native luma stride and storage extent, including MCU and
+    /// scaler padding. Chroma planes are compacted and remain eight-byte aligned.
+    /// Grayscale is not supported. This only describes the output; it does not
+    /// convert pixels or describe a different hardware decode configuration.
+    pub fn yuv420_layout(&self) -> Result<Self, FrameLayoutError> {
+        if self.format == JpuPixelFormat::Grayscale {
+            return Err(FrameLayoutError::UnsupportedPixelFormat);
+        }
+        let storage = Extent::new(self.storage.width / 2, self.storage.height / 2);
+        let stride = self.y.stride / 2;
+        let len = plane_len(stride, storage.height)?;
+        let cb_offset = align_usize(self.y.len, PLANE_ALIGNMENT)?;
+        let cr_offset = align_usize(
+            cb_offset
+                .checked_add(len)
+                .ok_or(FrameLayoutError::BufferSizeOverflow)?,
+            PLANE_ALIGNMENT,
+        )?;
+        let total_len = align_usize(
+            cr_offset
+                .checked_add(len)
+                .ok_or(FrameLayoutError::BufferSizeOverflow)?,
+            PLANE_ALIGNMENT,
+        )?;
+        Ok(Self {
+            format: JpuPixelFormat::Yuv420,
+            cb: Some(PlaneLayout {
+                offset: cb_offset,
+                len,
+                stride,
+                storage,
+            }),
+            cr: Some(PlaneLayout {
+                offset: cr_offset,
+                len,
+                stride,
+                storage,
+            }),
+            total_len,
+            ..*self
+        })
+    }
+
     /// Calculate the exact JPU output layout without touching hardware.
     pub fn new(
         source_width: u32,

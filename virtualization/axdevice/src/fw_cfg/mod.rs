@@ -467,7 +467,13 @@ impl FwCfg {
                 "failed to read fw_cfg DMA descriptor at {:#x}: {error}",
                 desc_addr.as_usize()
             );
-            let _ = write_guest(desc_addr, &FW_CFG_DMA_CTL_ERROR.to_be_bytes());
+            if let Err(status_error) = write_guest(desc_addr, &FW_CFG_DMA_CTL_ERROR.to_be_bytes()) {
+                warn!(
+                    "failed to write fw_cfg DMA error status at {:#x}: {status_error}",
+                    desc_addr.as_usize()
+                );
+                return Err(error);
+            }
             return Ok(());
         }
 

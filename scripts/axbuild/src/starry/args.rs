@@ -62,6 +62,22 @@ pub struct ArgsQemu {
     /// Override the rootfs disk image path (skips auto-download).
     #[arg(long, value_name = "IMAGE")]
     pub rootfs: Option<PathBuf>,
+
+    /// Control whether rootfs writes survive QEMU exit.
+    #[arg(long, value_enum)]
+    pub rootfs_write_policy: Option<rootfs::RootfsWritePolicy>,
+}
+
+impl ArgsQemu {
+    pub fn resolved_rootfs_write_policy(&self) -> rootfs::RootfsWritePolicy {
+        self.rootfs_write_policy.unwrap_or_else(|| {
+            if self.rootfs.is_some() {
+                rootfs::RootfsWritePolicy::Persist
+            } else {
+                rootfs::RootfsWritePolicy::Discard
+            }
+        })
+    }
 }
 
 #[derive(Args, Debug, Clone)]
@@ -69,6 +85,9 @@ pub struct ArgsPerf {
     /// Profile case name used in the default output path.
     #[arg(long, default_value = "boot")]
     pub case: String,
+    /// Reuse one Starry QEMU test-suit case's build, device, and rootfs assets.
+    #[arg(long)]
+    pub test_case: Option<String>,
     #[arg(long)]
     pub arch: Option<String>,
     #[arg(long, default_value_t = 99)]

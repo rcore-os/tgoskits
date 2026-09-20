@@ -6,8 +6,7 @@
 use std::cell::Cell;
 
 use rsext4::{
-    bmalloc::AbsoluteBN,
-    checksum::verify_ext4_dirblock_checksum,
+    checksum::{update_ext4_dirblock_csum32, verify_ext4_dirblock_checksum},
     dir::get_inode_with_num,
     disknode::Ext4Inode,
     error::{Ext4Error, Ext4Result},
@@ -15,7 +14,7 @@ use rsext4::{
     *,
 };
 
-fn test_mkdir<B: BlockDevice>(
+fn test_mkdir<B: BlockIo + rsext4::Clock>(
     device: &mut Jbd2Dev<B>,
     fs: &mut Ext4FileSystem,
     path: &str,
@@ -40,13 +39,13 @@ impl MockBlockDevice {
     }
 }
 
-impl BlockDevice for MockBlockDevice {
-    fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-        let start = block_id.as_usize()? * self.block_size as usize;
+impl BlockIo for MockBlockDevice {
+    fn read(&mut self, buffer: &mut [u8], sector: rsext4::SectorId, _count: u32) -> Ext4Result<()> {
+        let start = sector.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
-                block_id.to_u32()?,
+                sector.to_u32()?,
                 (self.data.len() / self.block_size as usize) as u64,
             ));
         }
@@ -54,12 +53,12 @@ impl BlockDevice for MockBlockDevice {
         Ok(())
     }
 
-    fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-        let start = block_id.as_usize()? * self.block_size as usize;
+    fn write(&mut self, buffer: &[u8], sector: rsext4::SectorId, _count: u32) -> Ext4Result<()> {
+        let start = sector.as_usize()? * self.block_size as usize;
         let end = start + buffer.len();
         if end > self.data.len() {
             return Err(Ext4Error::block_out_of_range(
-                block_id.to_u32()?,
+                sector.to_u32()?,
                 (self.data.len() / self.block_size as usize) as u64,
             ));
         }
@@ -67,23 +66,29 @@ impl BlockDevice for MockBlockDevice {
         Ok(())
     }
 
-    fn open(&mut self) -> Ext4Result<()> {
+    fn geometry(&self) -> rsext4::DeviceGeometry {
+        rsext4::DeviceGeometry::new(self.block_size, {
+            (self.data.len() / self.block_size as usize) as u64
+        })
+    }
+
+    fn capabilities(&self) -> rsext4::DeviceCapabilities {
+        rsext4::DeviceCapabilities {
+            read_only: { false },
+
+            flush: true,
+
+            ..rsext4::DeviceCapabilities::default()
+        }
+    }
+
+    fn flush(&mut self) -> rsext4::Ext4Result<()> {
         Ok(())
     }
+}
 
-    fn close(&mut self) -> Ext4Result<()> {
-        Ok(())
-    }
-
-    fn total_blocks(&self) -> u64 {
-        (self.data.len() / self.block_size as usize) as u64
-    }
-
-    fn block_size(&self) -> u32 {
-        self.block_size
-    }
-
-    fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+impl rsext4::Clock for MockBlockDevice {
+    fn now(&self) -> Ext4Result<Ext4Timestamp> {
         let sec = self.now.get();
         self.now.set(sec + 1);
         Ok(Ext4Timestamp::new(sec, 0))
@@ -94,31 +99,198 @@ impl BlockDevice for MockBlockDevice {
 mod directory_functional_tests {
     use super::*;
 
-    /// Verifies basic directory creation patterns, from single-level paths to a
-    /// deeper hierarchy and several siblings under one parent.
     #[test]
-    fn test_directory_create() {
-        let device = MockBlockDevice::new(100 * 1024 * 1024); // 100MB
+    fn directory_rename_traverses_indexed_parent_dotdot() {
+        let device = MockBlockDevice::new(64 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
-
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/parent").unwrap();
+        for index in 0..30 {
+            let name = format!("/parent/{index:03}{}", "a".repeat(252));
+            mkfile(&mut jbd2_dev, &mut fs, &name, None, None).unwrap();
+        }
+        let (parent_ino, parent) = get_inode_with_num(&mut fs, &mut jbd2_dev, "/parent")
+            .unwrap()
+            .unwrap();
+        assert_ne!(parent.i_flags & Ext4Inode::EXT4_INDEX_FL, 0);
+        mkdir(&mut jbd2_dev, &mut fs, "/parent/staged").unwrap();
+        let outcome = rename(
+            &mut jbd2_dev,
+            &mut fs,
+            "/parent/staged",
+            "/parent/installed",
+            RenameOptions::REPLACE,
+        )
+        .expect("directory rename must find dotdot in the indexed parent root");
+        assert!(outcome.replaced.is_none());
+        assert!(
+            get_inode_with_num(&mut fs, &mut jbd2_dev, "/parent/staged")
+                .unwrap()
+                .is_none()
+        );
+        let (installed_ino, installed) =
+            get_inode_with_num(&mut fs, &mut jbd2_dev, "/parent/installed")
+                .unwrap()
+                .unwrap();
+        assert!(installed.is_dir());
 
-        // Cover one shallow path first.
-        test_mkdir(&mut jbd2_dev, &mut fs, "/single").expect("mkdir failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/destination").unwrap();
+        let (destination_ino, _) = get_inode_with_num(&mut fs, &mut jbd2_dev, "/destination")
+            .unwrap()
+            .unwrap();
+        umount(fs, &mut jbd2_dev).unwrap();
+        let services = MountServices::new(MockBlockDevice::new(0), (), NoopObserver);
+        let mut owned =
+            Ext4::mount(jbd2_dev.into_inner(), services, MountOptions::read_write()).unwrap();
+        let root = owned.root_inode();
+        for (name, expected) in [(b".".as_slice(), parent_ino), (b"..", root)] {
+            let entry = owned
+                .lookup_child(parent_ino, FileName::new(name).unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(entry.number, expected);
+        }
+        let error = owned
+            .rename(
+                root,
+                FileName::new(b"parent").unwrap(),
+                installed_ino,
+                FileName::new(b"cycle").unwrap(),
+                RenameOptions::REPLACE,
+            )
+            .expect_err("moving a directory into its descendant must reject the cycle");
+        assert_eq!(error.kind(), Ext4ErrorKind::InvalidInput);
+        let outcome = owned
+            .rename(
+                root,
+                FileName::new(b"parent").unwrap(),
+                destination_ino,
+                FileName::new(b"moved").unwrap(),
+                RenameOptions::REPLACE,
+            )
+            .expect("moving an indexed directory must rewrite its root parent entry");
+        assert!(outcome.replaced.is_none());
+        assert!(
+            owned
+                .lookup_child(root, FileName::new(b"parent").unwrap())
+                .unwrap()
+                .is_none()
+        );
+        let parent_entry = owned
+            .lookup_child(parent_ino, FileName::new(b"..").unwrap())
+            .expect("moved indexed directory must retain a valid root checksum")
+            .unwrap();
+        assert_eq!(parent_entry.number, destination_ino);
+    }
 
-        // Then build a multi-level chain.
-        test_mkdir(&mut jbd2_dev, &mut fs, "/level1").expect("mkdir failed");
-        test_mkdir(&mut jbd2_dev, &mut fs, "/level1/level2").expect("mkdir failed");
-        test_mkdir(&mut jbd2_dev, &mut fs, "/level1/level2/level3").expect("mkdir failed");
+    #[test]
+    fn indexed_directory_link_count_uses_dir_nlink_sentinel_at_linux_limit() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
+        let root = fs.root_inode;
+        let mut root_inode = fs
+            .get_inode_by_num(&mut jbd2_dev, root)
+            .expect("load root inode");
+        root_inode.i_flags |= Ext4Inode::EXT4_INDEX_FL;
+        root_inode.i_links_count = 65_000;
+        assert_eq!(root_inode.incremented_links_count(true).unwrap(), 1);
+        root_inode.i_links_count = 1;
+        assert_eq!(root_inode.incremented_links_count(true).unwrap(), 1);
+    }
 
-        // Finally, create several siblings under one common parent.
-        test_mkdir(&mut jbd2_dev, &mut fs, "/siblings").expect("mkdir failed");
-        test_mkdir(&mut jbd2_dev, &mut fs, "/siblings/sibling1").expect("mkdir failed");
-        test_mkdir(&mut jbd2_dev, &mut fs, "/siblings/sibling2").expect("mkdir failed");
-        test_mkdir(&mut jbd2_dev, &mut fs, "/siblings/sibling3").expect("mkdir failed");
+    #[test]
+    fn directory_link_limit_without_dir_nlink_fails_before_allocation() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
+        fs.superblock.s_feature_ro_compat &=
+            !rsext4::superblock::Ext4Superblock::EXT4_FEATURE_RO_COMPAT_DIR_NLINK;
+        let root = fs.root_inode;
+        fs.modify_inode(&mut jbd2_dev, root, |inode| {
+            inode.i_flags |= Ext4Inode::EXT4_INDEX_FL;
+            inode.i_links_count = Ext4Inode::EXT4_LINK_MAX;
+        })
+        .expect("prepare root at the Linux link limit");
+        let free_inodes_before = fs.superblock.s_free_inodes_count;
+        let free_blocks_before = fs.superblock.free_blocks_count();
 
-        umount(fs, &mut jbd2_dev).expect("umount failed");
+        let error = mkdir(&mut jbd2_dev, &mut fs, "/must-not-allocate").unwrap_err();
+
+        assert_eq!(error.kind(), rsext4::Ext4ErrorKind::TooManyLinks);
+        assert_eq!(fs.superblock.s_free_inodes_count, free_inodes_before);
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+        assert!(
+            rsext4::dir::get_inode_with_num(&mut fs, &mut jbd2_dev, "/must-not-allocate")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn failed_directory_allocation_rolls_back_child_and_parent_accounting() {
+        let device = MockBlockDevice::new(64 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
+
+        // Maximum-length records force the root through Linux's one-block
+        // linear-to-HTree conversion and then fill the selected leaf.
+        for index in 0..30 {
+            let name = format!("{index:03}{}", "a".repeat(252));
+            mkfile(&mut jbd2_dev, &mut fs, &format!("/{name}"), None, None)
+                .expect("fill root directory");
+        }
+        let root = fs.root_inode;
+        let root_before = fs
+            .get_inode_by_num(&mut jbd2_dev, root)
+            .expect("read root before failed mkdir");
+        assert!(root_before.size() >= 3 * fs.superblock.block_size());
+        assert_ne!(root_before.i_flags & Ext4Inode::EXT4_INDEX_FL, 0);
+
+        while fs.superblock.free_blocks_count() > 0 {
+            fs.alloc_block(&mut jbd2_dev)
+                .expect("reserve data block before rollback probe");
+        }
+        let free_inodes_before = fs.superblock.s_free_inodes_count;
+        let free_blocks_before = fs.superblock.free_blocks_count();
+        let used_dirs_before: u32 = fs
+            .group_descs
+            .iter()
+            .map(|descriptor| descriptor.used_dirs_count())
+            .sum();
+
+        let child = "z".repeat(255);
+        let error = mkdir(&mut jbd2_dev, &mut fs, &format!("/{child}"))
+            .expect_err("child directory allocation must run out of space");
+        assert_eq!(error.kind(), Ext4ErrorKind::NoSpace);
+
+        let root_after = fs
+            .get_inode_by_num(&mut jbd2_dev, root)
+            .expect("read root after failed mkdir");
+        let used_dirs_after: u32 = fs
+            .group_descs
+            .iter()
+            .map(|descriptor| descriptor.used_dirs_count())
+            .sum();
+        assert_eq!(root_after.i_links_count, root_before.i_links_count);
+        assert_eq!(root_after.size(), root_before.size());
+        assert_eq!(root_after.i_blocks_lo, root_before.i_blocks_lo);
+        assert_eq!(root_after.l_i_blocks_high, root_before.l_i_blocks_high);
+        assert_eq!(root_after.i_flags, root_before.i_flags);
+        assert_eq!(root_after.l_i_version, root_before.l_i_version);
+        assert_eq!(root_after.i_version_hi, root_before.i_version_hi);
+        assert_eq!(used_dirs_after, used_dirs_before);
+        assert_eq!(fs.superblock.s_free_inodes_count, free_inodes_before);
+        assert_eq!(fs.superblock.free_blocks_count(), free_blocks_before);
+        assert!(
+            get_inode_with_num(&mut fs, &mut jbd2_dev, &format!("/{child}"))
+                .expect("lookup after failed mkdir")
+                .is_none()
+        );
     }
 
     #[test]
@@ -127,7 +299,7 @@ mod directory_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         let (dir_ino, mut dir_inode) = get_inode_with_num(&mut fs, &mut jbd2_dev, "/checksum-dir")
             .expect("lookup should succeed")
@@ -137,7 +309,7 @@ mod directory_functional_tests {
                     .expect("lookup after mkdir should succeed")
                     .expect("created directory should exist")
             });
-        let dir_block = resolve_inode_block(&mut jbd2_dev, &mut dir_inode, 0)
+        let dir_block = resolve_inode_block(&fs, &mut jbd2_dev, dir_ino, &mut dir_inode, 0)
             .expect("resolve directory block failed")
             .expect("directory should have a first block");
         let cached = fs
@@ -158,6 +330,36 @@ mod directory_functional_tests {
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
 
+    #[test]
+    fn empty_directory_rejects_dot_entry_for_another_inode() {
+        let device = MockBlockDevice::new(100 * 1024 * 1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+        mkfs(&mut jbd2_dev).expect("mkfs failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
+        mkdir(&mut jbd2_dev, &mut fs, "/victim").expect("mkdir failed");
+
+        let (inode_num, mut inode) = get_inode_with_num(&mut fs, &mut jbd2_dev, "/victim")
+            .expect("lookup failed")
+            .expect("victim directory missing");
+        let block = resolve_inode_block(&fs, &mut jbd2_dev, inode_num, &mut inode, 0)
+            .expect("resolve directory block")
+            .expect("directory must have a first block");
+        let superblock = fs.superblock;
+        let generation = inode.i_generation;
+        let wrong_inode = fs.root_inode.raw();
+        assert_ne!(wrong_inode, inode_num.raw());
+        fs.datablock_cache
+            .modify(&mut jbd2_dev, block, |data| {
+                data[..4].copy_from_slice(&wrong_inode.to_le_bytes());
+                update_ext4_dirblock_csum32(&superblock, inode_num.raw(), generation, data);
+            })
+            .expect("corrupt dot entry");
+
+        let error = is_dir_empty(&mut fs, &mut jbd2_dev, inode_num, &mut inode)
+            .expect_err("a dot entry naming another inode is corruption");
+        assert_eq!(error.kind(), Ext4ErrorKind::Corrupted);
+    }
+
     /// Verifies empty-directory deletion and records the current behavior for
     /// recreating paths under a directory that was previously removed.
     #[test]
@@ -166,7 +368,7 @@ mod directory_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Build a nested directory tree and one empty directory.
         test_mkdir(&mut jbd2_dev, &mut fs, "/test").expect("mkdir failed");
@@ -184,7 +386,17 @@ mod directory_functional_tests {
 
         // Empty directories should be removable.
         test_mkdir(&mut jbd2_dev, &mut fs, "/empty").expect("mkdir failed");
+        let (empty_ino, _) = get_inode_with_num(&mut fs, &mut jbd2_dev, "/empty")
+            .expect("lookup empty directory")
+            .expect("empty directory exists");
         delete_dir(&mut fs, &mut jbd2_dev, "/empty").expect("delete_dir failed");
+        let deleted = fs
+            .get_inode_by_num(&mut jbd2_dev, empty_ino)
+            .expect("load freed inode");
+        assert!(
+            !deleted.uses_extents() || deleted.i_block[0] & 0xffff == 0xf30a,
+            "freed directory must retain a valid mapping format for offline fsck"
+        );
 
         // `mkfile` currently recreates missing parents, so use that behavior as
         // the post-condition being documented here.
@@ -202,7 +414,7 @@ mod directory_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Build two branches and place independent files under each branch.
         test_mkdir(&mut jbd2_dev, &mut fs, "/documents").expect("mkdir failed");
@@ -249,7 +461,7 @@ mod directory_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         test_mkdir(&mut jbd2_dev, &mut fs, "/findtest").expect("mkdir failed");
 
@@ -280,38 +492,26 @@ mod directory_functional_tests {
         // A missing file should still report `ENOENT`.
         let not_found = read_file(&mut jbd2_dev, &mut fs, "/findtest/notexist.txt")
             .expect_err("missing file should fail");
-        assert_eq!(not_found.code, Errno::ENOENT);
+        assert_eq!(not_found.kind(), Ext4ErrorKind::NotFound);
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
 
-    /// Documents current directory error behavior, especially the difference
-    /// between explicit delete failures and implicit parent creation by `mkfile`.
+    /// Verifies recursive helper deletion and exact namespace errors.
     #[test]
     fn test_directory_error_handling() {
         let device = MockBlockDevice::new(100 * 1024 * 1024); // 100MB
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
-
-        // `mkfile` currently auto-creates missing parents instead of failing.
-        let result = mkfile(
-            &mut jbd2_dev,
-            &mut fs,
-            "/nonexistent/file.txt",
-            Some(b"data"),
-            None,
-        );
-        assert!(result.is_ok(), "mkfile should auto-create missing parents");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Removing a missing directory should fail with `ENOENT`.
         let err = delete_dir(&mut fs, &mut jbd2_dev, "/definitely-missing")
             .expect_err("missing directory should fail");
-        assert_eq!(err.code, Errno::ENOENT);
+        assert_eq!(err.kind(), Ext4ErrorKind::NotFound);
 
-        // Non-empty directory deletion is implementation-defined here, so the test
-        // records behavior rather than requiring one strict outcome.
+        // `delete_dir` is the recursive core helper, not the VFS rmdir entry.
         test_mkdir(&mut jbd2_dev, &mut fs, "/nonempty").expect("mkdir failed");
         mkfile(
             &mut jbd2_dev,
@@ -322,21 +522,26 @@ mod directory_functional_tests {
         )
         .expect("mkfile failed");
 
-        let _ = delete_dir(&mut fs, &mut jbd2_dev, "/nonempty");
+        delete_dir(&mut fs, &mut jbd2_dev, "/nonempty")
+            .expect("recursive helper must remove a non-empty tree");
+        let error = read_file(&mut jbd2_dev, &mut fs, "/nonempty/file.txt")
+            .expect_err("removed tree must be unreachable");
+        assert_eq!(error.kind(), Ext4ErrorKind::NotFound);
 
-        // A follow-up create documents whether the directory remained available.
-        let _result = mkfile(
+        test_mkdir(&mut jbd2_dev, &mut fs, "/nonempty").expect("recreate directory");
+        mkfile(
             &mut jbd2_dev,
             &mut fs,
             "/nonempty/another_file.txt",
             Some(b"data"),
             None,
-        );
+        )
+        .expect("create below recreated directory");
         // Duplicate directory creation should still return `EEXIST`.
         test_mkdir(&mut jbd2_dev, &mut fs, "/duplicate").expect("mkdir failed");
         let result = test_mkdir(&mut jbd2_dev, &mut fs, "/duplicate");
         let err = result.expect_err("duplicate mkdir should fail");
-        assert_eq!(err.code, Errno::EEXIST);
+        assert_eq!(err.kind(), Ext4ErrorKind::AlreadyExists);
 
         umount(fs, &mut jbd2_dev).expect("umount failed");
     }
@@ -349,7 +554,7 @@ mod directory_functional_tests {
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
 
         mkfs(&mut jbd2_dev).expect("mkfs failed");
-        let mut fs = mount(&mut jbd2_dev).expect("mount failed");
+        let mut fs = Ext4FileSystem::mount(&mut jbd2_dev).expect("mount failed");
 
         // Create a representative multi-branch hierarchy.
         let structure = [

@@ -24,6 +24,8 @@
 
 extern crate alloc;
 #[cfg(test)]
+extern crate ax_runtime as _;
+#[cfg(test)]
 extern crate std;
 #[macro_use]
 extern crate log;
@@ -36,12 +38,12 @@ mod fw_cfg;
 mod graph;
 mod interrupt;
 mod model;
+mod pci;
 // Keep the LoongArch-only implementation out of other production targets, but
 // compile its unit tests on the host so output-port behavior is covered by CI.
 #[cfg(any(target_arch = "loongarch64", test))]
 #[cfg_attr(test, allow(dead_code))]
 mod loongarch_pch_pic;
-mod range_alloc;
 mod registration;
 mod resources;
 mod runtime_resources;
@@ -74,10 +76,26 @@ pub use interrupt::{ControllerRegistration, InterruptRegistrationError};
 // not part of the architecture-neutral framework core.
 pub use loongarch_pch_pic::{
     LoongArchInterruptDomainFactory, LoongArchPchPic, LoongArchPchPicFactory, PchPicOutputEvent,
-    PchPicOutputPort, PchPicOutputPortKey,
+    PchPicOutputPort, PchPicOutputPortKey, PchPicOutputSink,
 };
-pub use model::{DeviceFirmwareProperty, DeviceFirmwareSpec, DeviceModel};
-pub use range_alloc::{GuestRangeAllocator, GuestRangeAllocatorKey, GuestRangePool};
+pub use model::{
+    AcpiContributionSpec, AcpiDeviceSpec, DeviceFirmwareProperty, DeviceFirmwareSpec, DeviceModel,
+    FdtContributionSpec, FdtNodeSpec,
+};
+pub(crate) use pci::PciTopologyBuilder;
+pub use pci::{
+    ConfigOffset, EndpointIrqTransitionPermit, PciBarAccess, PciBarIndex, PciBarRoute, PciBdf,
+    PciCapabilityByteMode, PciCapabilityEffectAccess, PciCapabilityEffectRegion, PciCapabilityId,
+    PciCapabilityLayout, PciCapabilitySnapshot, PciCapabilitySpec, PciClass, PciCommandRevision,
+    PciCommandState, PciConfigEffectId, PciConfigReadEffect, PciConfigWriteEffect,
+    PciEcamConfigFrontend, PciEndpointContext, PciEndpointIdentity, PciError, PciFunction,
+    PciFunctionRequirement, PciFunctionSpec, PciHostKey, PciHostProvider, PciIntxPin,
+    PciIntxRequirement, PciIntxRouter, PciMemoryApertureDevice, PciMemoryBar, PciResult,
+    PciRootBinding, PciRootBindingKey, PciRootLifecycle, PciRootState, PciSegment, ResolvedPciBar,
+    ResolvedPciFunction, ResolvedPciIntx, ResolvedPciTopology,
+};
+#[cfg(target_arch = "x86_64")]
+pub(crate) use pci::{all_ones, read_bytes};
 pub use registration::{
     DeviceBundle, DeviceLifecycle, DeviceRegistration, DmaPollableDeviceOps, PollableDeviceOps,
 };
@@ -98,8 +116,8 @@ pub use service::{DeviceServices, ServiceCardinality, ServiceKey};
 pub use x86::{
     X86AcpiPmTimerDevice, X86CmosDevice, X86InterruptDomainKey, X86InterruptDomainOps,
     X86IoApicDevice, X86IoApicDeviceOps, X86IoApicServiceKey, X86MonotonicNanos,
-    X86PciConfigDevice, X86PicDevice, X86PicDeviceOps, X86PicServiceKey, X86PitDevice,
-    X86PitDeviceOps, X86PitServiceKey,
+    X86PciConfigFrontend, X86PicDevice, X86PicDeviceOps, X86PicServiceKey, X86PitDevice,
+    X86UnassignedMmioDevice,
 };
 #[cfg(target_arch = "x86_64")]
 pub use x86_vlapic::IoApicInterrupt;

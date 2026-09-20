@@ -3,13 +3,14 @@ mod descriptor;
 mod used;
 
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 pub use available::{AvailableRing, VirtQueueAvail};
 use axaddrspace::GuestMemoryAccessor;
 use axvm_types::GuestPhysAddr;
 pub use descriptor::{DescriptorChain, DescriptorTable, VirtQueueDesc};
 use log::{trace, warn};
+use mbarrier::mb;
 pub use used::{UsedRing, VirtQueueUsed, VirtqUsedElem};
 
 use crate::{
@@ -37,6 +38,8 @@ pub struct VirtioQueue<T: GuestMemoryAccessor + Clone> {
     pub max_size: u16,
     /// Queue ready flag
     pub ready: bool,
+    /// A lock-external queue-ready validation transaction is in progress.
+    preparing: bool,
     /// Descriptor table address (guest physical)
     pub desc_table_addr: GuestPhysAddr,
     /// Available ring address (guest physical)
@@ -47,13 +50,13 @@ pub struct VirtioQueue<T: GuestMemoryAccessor + Clone> {
     next_avail: u16,
     /// Next used index
     next_used: u16,
+    /// Used index at the previous notification-suppression check.
+    notification_old_used: AtomicU16,
     /// Event index enabled.
     ///
-    /// Currently always `false` and intentionally unused: event-index feature
-    /// negotiation is not implemented yet, and a follow-up will wire this
-    /// flag. Layout validation deliberately does not depend on it: the ring
-    /// regions always include the 2-byte event-index footer through the
-    /// `layout_size` math, so the check stays negotiation-independent.
+    /// Set after the driver accepts `VIRTIO_F_RING_EVENT_IDX` and seals
+    /// `FEATURES_OK`. Layout validation deliberately does not depend on it:
+    /// ring regions always include the 2-byte event-index footer.
     pub event_idx_enabled: bool,
     /// Set when a runtime ring/descriptor validation failure occurs; the queue
     /// rejects `pop`/`complete` and the guest-data paths until
@@ -74,9 +77,9 @@ pub struct VirtioQueue<T: GuestMemoryAccessor + Clone> {
 }
 
 impl<T: GuestMemoryAccessor + Clone> Clone for VirtioQueue<T> {
-    /// Clones the queue configuration, snapshotting the current faulted and
-    /// layout-warning latch states into fresh atomics (the clone does not
-    /// share the original's latches).
+    /// Clones the queue configuration, snapshotting the notification baseline,
+    /// faulted state and layout-warning latch into fresh atomics (the clone does
+    /// not share those states with the original).
     fn clone(&self) -> Self {
         Self {
             index: self.index,
@@ -87,11 +90,15 @@ impl<T: GuestMemoryAccessor + Clone> Clone for VirtioQueue<T> {
             accessor: self.accessor.clone(),
             max_size: self.max_size,
             ready: self.ready,
+            preparing: self.preparing,
             desc_table_addr: self.desc_table_addr,
             avail_ring_addr: self.avail_ring_addr,
             used_ring_addr: self.used_ring_addr,
             next_avail: self.next_avail,
             next_used: self.next_used,
+            notification_old_used: AtomicU16::new(
+                self.notification_old_used.load(Ordering::Acquire),
+            ),
             event_idx_enabled: self.event_idx_enabled,
             faulted: AtomicBool::new(self.faulted.load(Ordering::Acquire)),
             layout_warn_emitted: AtomicBool::new(self.layout_warn_emitted.load(Ordering::Acquire)),
@@ -111,11 +118,13 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
             accessor,
             max_size: size,
             ready: false,
+            preparing: false,
             desc_table_addr: GuestPhysAddr::from(0),
             avail_ring_addr: GuestPhysAddr::from(0),
             used_ring_addr: GuestPhysAddr::from(0),
             next_avail: 0,
             next_used: 0,
+            notification_old_used: AtomicU16::new(0),
             event_idx_enabled: false,
             faulted: AtomicBool::new(false),
             layout_warn_emitted: AtomicBool::new(false),
@@ -168,6 +177,10 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
     /// Set used ring address
     pub fn set_used_ring_addr(&mut self, addr: GuestPhysAddr) -> VirtioResult<()> {
         self.used_ring_addr = addr;
+        // UsedRing::new starts its producer index at zero, so rebuilding it
+        // also starts a new notification-suppression epoch at zero.
+        self.next_used = 0;
+        self.notification_old_used.store(0, Ordering::Release);
         if addr.as_usize() != 0 {
             self.used_ring = Some(UsedRing::new(addr, self.size, self.accessor.clone()));
         } else {
@@ -189,6 +202,46 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
         self.desc_table_addr.as_usize() != 0
             && self.avail_ring_addr.as_usize() != 0
             && self.used_ring_addr.as_usize() != 0
+    }
+
+    /// Whether two queue snapshots describe the same programmable layout.
+    pub(crate) fn has_same_configuration(&self, other: &Self) -> bool {
+        self.index == other.index
+            && self.size == other.size
+            && self.desc_table_addr == other.desc_table_addr
+            && self.avail_ring_addr == other.avail_ring_addr
+            && self.used_ring_addr == other.used_ring_addr
+            && self.event_idx_enabled == other.event_idx_enabled
+    }
+
+    /// Starts one queue-ready preparation transaction.
+    pub(crate) fn begin_ready_preparation(&mut self) -> Option<Self> {
+        if self.ready || self.preparing || !self.is_configured() {
+            return None;
+        }
+        self.preparing = true;
+        Some(self.clone())
+    }
+
+    /// Commits or rejects a completed queue-ready preparation transaction,
+    /// including any warning latch raised while validating its snapshot.
+    pub(crate) fn finish_ready_preparation(&mut self, snapshot: &Self, prepared: bool) {
+        if !self.preparing {
+            return;
+        }
+        if self.has_same_configuration(snapshot) {
+            if snapshot.layout_warn_emitted.load(Ordering::Acquire) {
+                self.layout_warn_emitted.store(true, Ordering::Release);
+            }
+            self.ready = prepared;
+        }
+        self.preparing = false;
+    }
+
+    /// Cancels any queue-ready preparation and makes the queue unavailable.
+    pub(crate) fn cancel_ready_preparation(&mut self) {
+        self.ready = false;
+        self.preparing = false;
     }
 
     /// The guest-memory accessor used by the non-`_with_memory` operations.
@@ -374,11 +427,14 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
     /// usable; `reset` is the only operation that clears the fault.
     pub fn reset(&mut self) {
         self.ready = false;
+        self.preparing = false;
         self.desc_table_addr = GuestPhysAddr::from(0);
         self.avail_ring_addr = GuestPhysAddr::from(0);
         self.used_ring_addr = GuestPhysAddr::from(0);
         self.next_avail = 0;
         self.next_used = 0;
+        self.notification_old_used.store(0, Ordering::Release);
+        self.event_idx_enabled = false;
         self.desc_table = None;
         self.avail_ring = None;
         self.used_ring = None;
@@ -510,6 +566,53 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
         Ok(Some(head))
     }
 
+    /// Rearms driver-to-device notifications after the available ring is drained.
+    ///
+    /// When event index was negotiated, the device publishes the next available
+    /// index it expects, executes a full memory barrier, then rechecks `avail.idx`.
+    /// A `true` result means a driver publication raced with rearming and must be
+    /// consumed before the device waits for another notification.
+    pub fn rearm_available_event(&mut self) -> VirtioResult<bool> {
+        let accessor = self.accessor.clone();
+        let mut memory = crate::AddressSpaceMemory::new(&*accessor);
+        self.rearm_available_event_with_memory(&mut memory)
+    }
+
+    /// Rearms event-index notifications with a scoped guest-memory capability.
+    pub fn rearm_available_event_with_memory(
+        &mut self,
+        memory: &mut dyn crate::GuestMemory,
+    ) -> VirtioResult<bool> {
+        if !self.event_idx_enabled {
+            return Ok(false);
+        }
+        if self.faulted.load(Ordering::Acquire) {
+            return Err(VirtioError::QueueFaulted);
+        }
+        if !self.is_valid() {
+            return Err(VirtioError::QueueNotReady);
+        }
+
+        let result = (|| {
+            let next_avail = self.get_last_avail_idx();
+            let used_ring = self.used_ring.as_ref().ok_or(VirtioError::QueueNotReady)?;
+            used_ring.set_notification_with_memory(false, memory)?;
+            used_ring.write_avail_event_with_memory(next_avail, memory)?;
+            mb();
+
+            let avail_idx = self.read_avail_idx_with_memory(memory)?;
+            let pending = avail_idx.wrapping_sub(next_avail);
+            if pending > self.size {
+                return Err(VirtioError::InvalidQueue);
+            }
+            Ok(pending != 0)
+        })();
+        if result.is_err() {
+            self.latch_fault();
+        }
+        result
+    }
+
     /// Consume one available head and return a validated [`DescriptorChain`].
     ///
     /// Returns `Ok(None)` when the queue is empty. The head is consumed *before*
@@ -588,10 +691,25 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
             used_ring.add_used_with_memory(head as u32, written_len, memory)?;
             self.next_used = used_ring.get_used_idx();
             let avail_ring = self.avail_ring.as_ref().ok_or(VirtioError::QueueNotReady)?;
-            Ok(!avail_ring.interrupts_suppressed_with_memory(memory)?)
+            // Expose used.idx before checking the driver's notification
+            // suppression fields, as required by the split-ring protocol.
+            mb();
+            if self.event_idx_enabled {
+                let event = avail_ring.read_used_event_with_memory(memory)?;
+                Ok(event_idx_should_notify(
+                    event,
+                    self.next_used,
+                    self.notification_old_used.load(Ordering::Acquire),
+                ))
+            } else {
+                Ok(!avail_ring.interrupts_suppressed_with_memory(memory)?)
+            }
         })();
         if result.is_err() {
             self.latch_fault();
+        } else {
+            self.notification_old_used
+                .store(self.next_used, Ordering::Release);
         }
         result
     }
@@ -761,11 +879,25 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
         let Some(ref avail_ring) = self.avail_ring else {
             return Err(VirtioError::QueueNotReady);
         };
-        let result = avail_ring
-            .interrupts_suppressed()
-            .map(|suppressed| !suppressed);
+        mb();
+        let result = if self.event_idx_enabled {
+            avail_ring.read_used_event().map(|event| {
+                event_idx_should_notify(
+                    event,
+                    self.next_used,
+                    self.notification_old_used.load(Ordering::Acquire),
+                )
+            })
+        } else {
+            avail_ring
+                .interrupts_suppressed()
+                .map(|suppressed| !suppressed)
+        };
         if result.is_err() {
             self.latch_fault();
+        } else {
+            self.notification_old_used
+                .store(self.next_used, Ordering::Release);
         }
         result
     }
@@ -798,6 +930,20 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
             .map_err(|_| VirtioError::InvalidAddress)?;
 
         Ok(())
+    }
+}
+
+const fn event_idx_should_notify(event: u16, new: u16, old: u16) -> bool {
+    new.wrapping_sub(event).wrapping_sub(1) < new.wrapping_sub(old)
+}
+
+#[cfg(test)]
+mod event_idx_tests {
+    use super::event_idx_should_notify;
+
+    #[test]
+    fn notification_formula_handles_used_index_wraparound() {
+        assert!(event_idx_should_notify(u16::MAX, 0, u16::MAX));
     }
 }
 
@@ -835,5 +981,50 @@ impl RingRegion {
             return true;
         };
         self.base.as_usize() < other_end && other.base.as_usize() < self_end
+    }
+}
+
+#[cfg(test)]
+mod ready_preparation_tests {
+    use super::*;
+    use crate::{GuestMemory, NoGuestMemoryAccessor};
+
+    struct UnmappedMemory;
+
+    impl GuestMemory for UnmappedMemory {
+        fn read(&mut self, _guest_addr: GuestPhysAddr, _data: &mut [u8]) -> VirtioResult<()> {
+            Err(VirtioError::InvalidAddress)
+        }
+
+        fn write(&mut self, _guest_addr: GuestPhysAddr, _data: &[u8]) -> VirtioResult<()> {
+            Err(VirtioError::InvalidAddress)
+        }
+    }
+
+    #[test]
+    fn rejected_ready_preparation_preserves_layout_warning_latch() {
+        let mut queue = VirtioQueue::new(0, 4, Arc::new(NoGuestMemoryAccessor));
+        queue
+            .set_desc_table_addr(GuestPhysAddr::from(0x1000))
+            .unwrap();
+        queue
+            .set_avail_ring_addr(GuestPhysAddr::from(0x2000))
+            .unwrap();
+        queue
+            .set_used_ring_addr(GuestPhysAddr::from(0x3000))
+            .unwrap();
+
+        let first_snapshot = queue.begin_ready_preparation().unwrap();
+        assert_eq!(
+            first_snapshot.validate_layout_with_memory(&mut UnmappedMemory),
+            Err(VirtioError::InvalidRingLayout)
+        );
+        queue.finish_ready_preparation(&first_snapshot, false);
+
+        let second_snapshot = queue.begin_ready_preparation().unwrap();
+        assert!(
+            second_snapshot.layout_warn_emitted.load(Ordering::Acquire),
+            "a repeated QUEUE_READY attempt must inherit the warning latch"
+        );
     }
 }

@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(starry-system-qemu-rga C)
 
+include("${CMAKE_CURRENT_LIST_DIR}/../../qemu/system/common/starry_system_test_runner.cmake")
+
 file(GLOB STARRY_SYSTEM_SUBCASES
     RELATIVE "${CMAKE_CURRENT_LIST_DIR}"
     CONFIGURE_DEPENDS "*"

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::common::test_workspace;
 use crate::support::git::{
@@ -7,14 +7,34 @@ use crate::support::git::{
     selection::select_incremental_packages_for_paths_with_root_manifest_change,
 };
 
-fn local_root_change(dependencies: &[&str], members: &[&str]) -> RootManifestChange {
+fn local_root_change(local_packages: &[&str], members: &[&str]) -> RootManifestChange {
+    workspace_dependency_change(&[], local_packages, members)
+}
+
+fn workspace_dependency_change(
+    dependency_keys: &[&str],
+    local_packages: &[&str],
+    members: &[&str],
+) -> RootManifestChange {
     RootManifestChange::LocalWorkspace(LocalRootManifestChange {
-        dependencies: dependencies
+        dependency_keys: dependency_keys
             .iter()
             .map(|dependency| (*dependency).to_string())
             .collect(),
+        local_packages: local_packages
+            .iter()
+            .map(|package| (*package).to_string())
+            .collect(),
         members: members.iter().map(PathBuf::from).collect(),
     })
+}
+
+fn write_package_manifest(root: &Path, package: &str, manifest: &str) {
+    std::fs::write(
+        root.join("crates").join(package).join("Cargo.toml"),
+        manifest,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -190,7 +210,10 @@ fn root_manifest_classifier_uses_package_name_for_local_dependency_alias() {
 
     let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
 
-    assert_eq!(change, local_root_change(&["alpha"], &[]));
+    assert_eq!(
+        change,
+        workspace_dependency_change(&["alpha_alias"], &["alpha"], &[])
+    );
 }
 
 #[test]
@@ -212,7 +235,10 @@ fn root_manifest_classifier_tracks_local_dependency_alias_package_change() {
 
     let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
 
-    assert_eq!(change, local_root_change(&["alpha", "beta"], &[]));
+    assert_eq!(
+        change,
+        workspace_dependency_change(&["local_alias"], &["alpha", "beta"], &[])
+    );
 }
 
 #[test]
@@ -235,11 +261,14 @@ fn root_manifest_classifier_accepts_local_workspace_dependency_removal() {
 
     let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
 
-    assert_eq!(change, local_root_change(&["beta"], &[]));
+    assert_eq!(
+        change,
+        workspace_dependency_change(&["beta"], &["beta"], &[])
+    );
 }
 
 #[test]
-fn root_manifest_classifier_keeps_external_dependency_changes_hard() {
+fn root_manifest_classifier_tracks_external_dependency_changes() {
     let old_manifest = r#"
             [workspace]
             members = ["crates/alpha"]
@@ -257,7 +286,270 @@ fn root_manifest_classifier_keeps_external_dependency_changes_hard() {
 
     let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
 
-    assert_eq!(change, RootManifestChange::Hard);
+    assert_eq!(change, workspace_dependency_change(&["anyhow"], &[], &[]));
+}
+
+#[test]
+fn root_manifest_external_dependency_version_change_selects_only_inheriting_packages() {
+    let old_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta", "crates/gamma"]
+
+            [workspace.dependencies]
+            shared = "1.0"
+        "#;
+    let new_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta", "crates/gamma"]
+
+            [workspace.dependencies]
+            shared = "2.0"
+        "#;
+    let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
+    let (root, metadata, workspace_packages) = test_workspace();
+    write_package_manifest(root.path(), "alpha", "[dependencies]\nshared = \"1.0\"\n");
+    write_package_manifest(
+        root.path(),
+        "beta",
+        "[dependencies]\nshared.workspace = true\n",
+    );
+    write_package_manifest(root.path(), "gamma", "");
+
+    let selected = select_incremental_packages_for_paths_with_root_manifest_change(
+        root.path(),
+        &metadata,
+        &workspace_packages,
+        [PathBuf::from("Cargo.toml"), PathBuf::from("Cargo.lock")],
+        Some(change),
+    )
+    .unwrap();
+
+    assert_eq!(
+        selected,
+        IncrementalPackageSelection::Packages {
+            changed: vec!["beta".into()],
+            affected: vec!["beta".into(), "gamma".into()],
+        }
+    );
+}
+
+#[test]
+fn root_manifest_new_external_dependency_selects_target_consumer() {
+    let old_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta", "crates/gamma"]
+        "#;
+    let new_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta", "crates/gamma"]
+
+            [workspace.dependencies]
+            x2apic = "0.5"
+        "#;
+    let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
+    let (root, metadata, workspace_packages) = test_workspace();
+    write_package_manifest(root.path(), "alpha", "[dependencies]\nx2apic = \"0.5\"\n");
+    write_package_manifest(
+        root.path(),
+        "beta",
+        "[target.'cfg(target_arch = \"x86_64\")'.dependencies]\nx2apic = { workspace = true }\n",
+    );
+    write_package_manifest(root.path(), "gamma", "");
+
+    let selected = select_incremental_packages_for_paths_with_root_manifest_change(
+        root.path(),
+        &metadata,
+        &workspace_packages,
+        [PathBuf::from("Cargo.toml"), PathBuf::from("Cargo.lock")],
+        Some(change),
+    )
+    .unwrap();
+
+    assert_eq!(
+        selected,
+        IncrementalPackageSelection::Packages {
+            changed: vec!["beta".into()],
+            affected: vec!["beta".into(), "gamma".into()],
+        }
+    );
+}
+
+#[test]
+fn workspace_dependency_consumers_include_dev_and_build_dependencies() {
+    let old_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta", "crates/gamma"]
+
+            [workspace.dependencies]
+            shared = "1.0"
+        "#;
+    let new_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta", "crates/gamma"]
+
+            [workspace.dependencies]
+            shared = { version = "1.1", default-features = false, features = ["alloc"] }
+        "#;
+    let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
+    let (root, metadata, workspace_packages) = test_workspace();
+    write_package_manifest(
+        root.path(),
+        "alpha",
+        "[dev-dependencies]\nshared.workspace = true\n",
+    );
+    write_package_manifest(
+        root.path(),
+        "beta",
+        "[build-dependencies]\nshared = { workspace = true }\n",
+    );
+    write_package_manifest(root.path(), "gamma", "");
+
+    let selected = select_incremental_packages_for_paths_with_root_manifest_change(
+        root.path(),
+        &metadata,
+        &workspace_packages,
+        [PathBuf::from("Cargo.toml")],
+        Some(change),
+    )
+    .unwrap();
+
+    assert_eq!(
+        selected,
+        IncrementalPackageSelection::Packages {
+            changed: vec!["alpha".into(), "beta".into()],
+            affected: vec!["alpha".into(), "beta".into(), "gamma".into()],
+        }
+    );
+}
+
+#[test]
+fn workspace_dependency_alias_selects_inheriting_key_consumer() {
+    let old_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta", "crates/gamma"]
+
+            [workspace.dependencies]
+            serde_alias = { package = "serde", version = "1.0" }
+        "#;
+    let new_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta", "crates/gamma"]
+
+            [workspace.dependencies]
+            serde_alias = { package = "serde", version = "2.0" }
+        "#;
+    let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
+    assert_eq!(
+        change,
+        workspace_dependency_change(&["serde_alias"], &[], &[])
+    );
+
+    let (root, metadata, workspace_packages) = test_workspace();
+    write_package_manifest(root.path(), "alpha", "[dependencies]\nserde = \"1.0\"\n");
+    write_package_manifest(
+        root.path(),
+        "beta",
+        "[dependencies]\nserde_alias.workspace = true\n",
+    );
+    write_package_manifest(root.path(), "gamma", "");
+
+    let selected = select_incremental_packages_for_paths_with_root_manifest_change(
+        root.path(),
+        &metadata,
+        &workspace_packages,
+        [PathBuf::from("Cargo.toml")],
+        Some(change),
+    )
+    .unwrap();
+
+    assert_eq!(
+        selected,
+        IncrementalPackageSelection::Packages {
+            changed: vec!["beta".into()],
+            affected: vec!["beta".into(), "gamma".into()],
+        }
+    );
+}
+
+#[test]
+fn unused_workspace_dependency_change_selects_no_packages() {
+    let old_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta", "crates/gamma"]
+        "#;
+    let new_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta", "crates/gamma"]
+
+            [workspace.dependencies]
+            unused = "1.0"
+        "#;
+    let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
+    let (root, metadata, workspace_packages) = test_workspace();
+    for package in ["alpha", "beta", "gamma"] {
+        write_package_manifest(root.path(), package, "");
+    }
+
+    let selected = select_incremental_packages_for_paths_with_root_manifest_change(
+        root.path(),
+        &metadata,
+        &workspace_packages,
+        [PathBuf::from("Cargo.toml")],
+        Some(change),
+    )
+    .unwrap();
+
+    assert_eq!(
+        selected,
+        IncrementalPackageSelection::Packages {
+            changed: Vec::new(),
+            affected: Vec::new(),
+        }
+    );
+}
+
+#[test]
+fn local_workspace_dependency_change_selects_target_and_consumer() {
+    let old_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta", "crates/gamma"]
+
+            [workspace.dependencies]
+            alpha = { version = "0.1", path = "crates/alpha" }
+        "#;
+    let new_manifest = r#"
+            [workspace]
+            members = ["crates/alpha", "crates/beta", "crates/gamma"]
+
+            [workspace.dependencies]
+            alpha = { version = "0.2", path = "crates/alpha" }
+        "#;
+    let change = classify_root_manifest_change(old_manifest, new_manifest).unwrap();
+    let (root, metadata, workspace_packages) = test_workspace();
+    write_package_manifest(root.path(), "alpha", "");
+    write_package_manifest(
+        root.path(),
+        "beta",
+        "[dependencies]\nalpha.workspace = true\n",
+    );
+    write_package_manifest(root.path(), "gamma", "");
+
+    let selected = select_incremental_packages_for_paths_with_root_manifest_change(
+        root.path(),
+        &metadata,
+        &workspace_packages,
+        [PathBuf::from("Cargo.toml")],
+        Some(change),
+    )
+    .unwrap();
+
+    assert_eq!(
+        selected,
+        IncrementalPackageSelection::Packages {
+            changed: vec!["alpha".into(), "beta".into()],
+            affected: vec!["alpha".into(), "beta".into(), "gamma".into()],
+        }
+    );
 }
 
 #[test]

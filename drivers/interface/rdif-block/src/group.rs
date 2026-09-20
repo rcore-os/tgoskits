@@ -17,6 +17,11 @@ pub enum GroupIrqTarget {
 }
 
 /// One preallocated event produced while acknowledging a shared interrupt.
+///
+/// Its disposition describes the target-local rearm domain, not necessarily
+/// the physical source returned by [`SharedHardIrqHandler::ack`]. For example,
+/// an AHCI handler returns `Cleared` after acknowledging the HBA source while
+/// publishing `MaskedNeedsRearm` for each port whose PxIE was masked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GroupIrqEvent {
     target: GroupIrqTarget,
@@ -56,7 +61,7 @@ impl GroupIrqEvent {
         self.target
     }
 
-    /// Returns how the driver handled this target's interrupt state.
+    /// Returns how the driver handled this target-local rearm domain.
     pub const fn disposition(self) -> IrqDisposition {
         self.disposition
     }
@@ -84,7 +89,9 @@ pub trait SharedHardIrqHandler: Send + 'static {
     ///
     /// The handler must not allocate, drain a queue, complete DMA, or call an
     /// OS scheduler. It returns [`IrqDisposition::Spurious`] only when the
-    /// physical controller did not assert the source.
+    /// physical controller did not assert the source. The returned disposition
+    /// applies only to that physical source; each published event independently
+    /// describes its controller- or member-local rearm domain.
     fn ack(&mut self, sink: &mut dyn GroupIrqSink) -> IrqDisposition;
 }
 

@@ -3,12 +3,11 @@ use core::{
     future::poll_fn,
     ops::Range,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    task::{Poll, Waker},
+    task::Poll,
 };
 
-use ax_errno::{AxError, AxResult};
-use ax_task::future::block_on;
-use axpoll::{IoEvents, PollSet};
+use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar};
+use axpoll_set::PollSet;
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, ONLCR, OPOST, VEOF, VERASE, VKILL, VMIN, VTIME,
 };
@@ -20,8 +19,9 @@ use starry_signal::SignalInfo;
 
 use super::{Terminal, termios::Termios2};
 use crate::{
+    StarryError, StarryResult,
     sync::{IrqMutex, Mutex},
-    task::send_signal_to_process_group,
+    task::{future::block_on, send_signal_to_process_group},
 };
 
 const BUF_SIZE: usize = 4096;
@@ -58,7 +58,7 @@ pub trait TtyRead: Send + Sync + 'static {
     ///
     /// Once this returns, a later [`Self::read`] must not expose bytes that
     /// were observable by this reader before the discard began.
-    fn discard_input(&mut self) -> AxResult<()>;
+    fn discard_input(&mut self) -> StarryResult<()>;
 
     /// Whether the writer peer has been fully closed (last fd dropped).
     /// Default: never closed. Lets a Passive reader report hangup
@@ -68,7 +68,7 @@ pub trait TtyRead: Send + Sync + 'static {
     }
 }
 pub trait TtyWrite: Send + Sync + 'static {
-    fn open(&self) -> AxResult<()> {
+    fn open(&self) -> StarryResult<()> {
         Ok(())
     }
 
@@ -95,15 +95,37 @@ pub trait TtyWrite: Send + Sync + 'static {
         }
     }
 
-    fn drain(&self) -> AxResult<()> {
+    fn drain(&self) -> StarryResult<()> {
         Ok(())
     }
 
-    fn discard_output(&self) -> AxResult<()> {
-        Err(AxError::Unsupported)
+    fn discard_output(&self) -> StarryResult<()> {
+        Err(StarryError::Unsupported)
     }
 
-    fn termios_changed(&self, _old: &Termios2, _new: &Termios2) {}
+    fn termios_changed(&self, _old: &Termios2, _new: &Termios2) -> StarryResult<()> {
+        Ok(())
+    }
+
+    /// Applies an output-side termios transaction and publishes it last.
+    ///
+    /// Serial backends override this to hold their shared output lock across
+    /// drain, hardware configuration, and publication. The callback must only
+    /// publish the already-validated terminal state.
+    fn update_termios(
+        &self,
+        old: &Termios2,
+        new: &Termios2,
+        drain: bool,
+        publish: &mut dyn FnMut(),
+    ) -> StarryResult<()> {
+        if drain {
+            self.drain()?;
+        }
+        self.termios_changed(old, new)?;
+        publish();
+        Ok(())
+    }
 }
 
 pub fn write_output_bytes<W: TtyWrite + ?Sized>(writer: &W, term: &Termios2, buf: &[u8]) {
@@ -148,7 +170,7 @@ struct InputReader<R, W> {
     eof_ready: Arc<AtomicBool>,
 }
 impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
-    fn discard_input(&mut self) -> AxResult<()> {
+    fn discard_input(&mut self) -> StarryResult<()> {
         self.reader.discard_input()?;
         self.read_range = 0..0;
         self.line_buf.clear();
@@ -263,7 +285,7 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
         if let Some(signo) = term.signo_for(ch) {
             if let Some(pg) = self.terminal.job_control.foreground() {
                 let sig = SignalInfo::new_kernel(signo);
-                if let Err(err) = send_signal_to_process_group(pg.pgid(), Some(sig)) {
+                if let Err(err) = send_signal_to_process_group(pg.pgid_number(), Some(sig)) {
                     warn!("Failed to send signal: {err:?}");
                 }
             }
@@ -396,7 +418,7 @@ struct SimpleReader<R> {
     buf_tx: CachingProd<ReadBuf>,
 }
 impl<R: TtyRead> SimpleReader<R> {
-    fn discard_input(&mut self) -> AxResult<()> {
+    fn discard_input(&mut self) -> StarryResult<()> {
         self.reader.discard_input()
     }
 
@@ -424,7 +446,6 @@ enum Processor<R, W> {
 pub struct LineDiscipline<R, W> {
     terminal: Arc<Terminal>,
     buf_rx: CachingCons<ReadBuf>,
-    injected_input: VecDeque<u8>,
     input_ready: Arc<PollSet>,
     worker_source: Arc<PollSet>,
     eof_ready: Arc<AtomicBool>,
@@ -453,25 +474,28 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         input_ready: Arc<PollSet>,
         worker_source: Arc<PollSet>,
     ) {
-        ax_task::spawn_with_name(
-            move || {
+        crate::task::kernel_thread_builder("tty-reader".into())
+            .spawn(move || {
+                let mut registrar = None::<PollRegistrar<ExclusiveConsumer>>;
                 block_on(poll_fn(|cx| {
-                    Self::drive_input(&reader, input_ready.as_ref());
-                    // The reader task registers from ordinary task context.
-                    unsafe { input_source.register(cx.waker(), IoEvents::IN) };
-                    if let Some(output_source) = output_source.as_ref() {
-                        unsafe { output_source.register(cx.waker(), IoEvents::OUT) };
+                    if let Some(registrar) = registrar.as_mut() {
+                        registrar.reset(cx.waker());
                     }
-                    unsafe { worker_source.register(cx.waker(), IoEvents::OUT) };
+                    Self::drive_input(&reader, input_ready.as_ref());
+                    let registrar = registrar.get_or_insert_with(|| PollRegistrar::new(cx.waker()));
+                    unsafe { registrar.register_exclusive(&input_source, IoEvents::IN) };
+                    if let Some(output_source) = output_source.as_ref() {
+                        unsafe { registrar.register_exclusive(output_source, IoEvents::OUT) };
+                    }
+                    unsafe { registrar.register_exclusive(&worker_source, IoEvents::OUT) };
 
                     // Close the check/register race. block_on's stable AxWaker
                     // remembers a concurrent source wake before it parks.
                     Self::drive_input(&reader, input_ready.as_ref());
                     Poll::<()>::Pending
                 }))
-            },
-            "tty-reader".into(),
-        );
+            })
+            .expect("failed to spawn kernel thread");
     }
 
     pub fn new(terminal: Arc<Terminal>, config: TtyConfig<R, W>) -> Self {
@@ -523,7 +547,6 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         Self {
             terminal,
             buf_rx,
-            injected_input: VecDeque::new(),
             input_ready,
             worker_source,
             eof_ready,
@@ -531,7 +554,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         }
     }
 
-    pub fn drain_input(&mut self) -> AxResult<()> {
+    pub fn drain_input(&mut self) -> StarryResult<()> {
         match &mut self.processor {
             Processor::InterruptDriven(reader) => {
                 let mut reader = reader.lock();
@@ -543,24 +566,17 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                 self.buf_rx.clear();
             }
         }
-        self.injected_input.clear();
         self.eof_ready.store(false, Ordering::Release);
         Ok(())
     }
 
-    pub fn discard_output(&self, writer: &W) -> AxResult<()> {
+    pub fn discard_output(&self, writer: &W) -> StarryResult<()> {
         if let Processor::InterruptDriven(reader) = &self.processor {
             // Synchronize with the input worker so echo generated before this
             // flush is either pending here or already queued in the backend.
             reader.lock().echo.discard_pending();
         }
         writer.discard_output()
-    }
-
-    pub fn inject_input(&mut self, input: &[u8]) {
-        self.injected_input.extend(input);
-        // Injected bytes are visible before waking readers.
-        unsafe { self.input_ready.wake(IoEvents::IN) };
     }
 
     pub fn poll_read(&mut self) -> bool {
@@ -574,7 +590,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         if let Processor::Passive(reader, _) = &mut self.processor {
             reader.poll();
         }
-        if writer_closed || !self.injected_input.is_empty() {
+        if writer_closed {
             return true;
         }
         let term = self.terminal.termios.lock().clone();
@@ -589,34 +605,16 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         !self.buf_rx.is_empty() && (vmin == 0 || self.buf_rx.occupied_len() >= vmin)
     }
 
-    pub fn register_rx_waker(&self, waker: &Waker) {
+    pub fn rx_poll_source(&self) -> Arc<PollSet> {
         match &self.processor {
-            Processor::InterruptDriven(_) => {
-                // Registration happens from tty read poll context.
-                unsafe { self.input_ready.register(waker, IoEvents::IN) };
-            }
-            Processor::Passive(_, set) => {
-                // Registration happens from tty read poll context.
-                unsafe { set.register(waker, IoEvents::IN) };
-            }
+            Processor::InterruptDriven(_) => Arc::clone(&self.input_ready),
+            Processor::Passive(_, set) => Arc::clone(set),
         }
     }
 
-    pub fn read(&mut self, buf: &mut [u8]) -> AxResult<usize> {
+    pub fn read(&mut self, buf: &mut [u8]) -> StarryResult<usize> {
         if buf.is_empty() {
             return Ok(0);
-        }
-        if !self.injected_input.is_empty() {
-            let mut read = 0;
-            for slot in buf.iter_mut() {
-                if let Some(byte) = self.injected_input.pop_front() {
-                    *slot = byte;
-                    read += 1;
-                } else {
-                    break;
-                }
-            }
-            return Ok(read);
         }
         if let Processor::Passive(reader, _) = &mut self.processor {
             reader.poll();
@@ -627,7 +625,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
                 if reader.closed() {
                     Ok(0)
                 } else {
-                    Err(AxError::WouldBlock)
+                    Err(StarryError::WouldBlock)
                 }
             } else {
                 Ok(read)
@@ -646,7 +644,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         };
 
         if buf.len() < vmin {
-            return Err(AxError::WouldBlock);
+            return Err(StarryError::WouldBlock);
         }
 
         let available = self.buf_rx.occupied_len();
@@ -657,10 +655,10 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             if vmin == 0 {
                 return Ok(0);
             }
-            return Err(AxError::WouldBlock);
+            return Err(StarryError::WouldBlock);
         }
         if vmin > 0 && available < vmin {
-            return Err(AxError::WouldBlock);
+            return Err(StarryError::WouldBlock);
         }
 
         let read = self.buf_rx.pop_slice(buf);
@@ -670,19 +668,19 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use alloc::{sync::Arc, vec, vec::Vec};
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use axpoll::PollSet;
+    use axpoll_set::PollSet;
     use ringbuf::traits::{Observer, Split};
 
     use super::{
         BUF_SIZE, EchoQueue, InputReader, LineDiscipline, ProcessMode, ReadBuf, TtyConfig, TtyRead,
         TtyWrite,
     };
-    use crate::pseudofs::dev::tty::terminal::Terminal;
+    use crate::{StarryResult, pseudofs::dev::tty::terminal::Terminal};
 
     struct MockReader {
         data: Vec<u8>,
@@ -715,7 +713,7 @@ mod tests {
             n
         }
 
-        fn discard_input(&mut self) -> AxResult<()> {
+        fn discard_input(&mut self) -> StarryResult<()> {
             self.pos = self.data.len();
             Ok(())
         }
@@ -1053,26 +1051,6 @@ mod tests {
     }
 
     #[test]
-    fn injected_input_is_readable_immediately() {
-        let mut ldisc = LineDiscipline::new(
-            Arc::new(Terminal::default()),
-            TtyConfig {
-                reader: MockReader::new(Vec::new()),
-                writer: MockWriter,
-                process_mode: ProcessMode::Passive(Arc::new(PollSet::new())),
-            },
-        );
-
-        ldisc.inject_input(b"\x1b[1;1R");
-
-        assert!(ldisc.poll_read(), "injected bytes must make tty readable");
-
-        let mut buf = [0; 6];
-        assert_eq!(ldisc.read(&mut buf), Ok(6));
-        assert_eq!(&buf, b"\x1b[1;1R");
-    }
-
-    #[test]
     fn passive_read_drains_source_before_reporting_peer_eof() {
         let payload = b"data before eof";
         let mut ldisc = LineDiscipline::new(
@@ -1085,9 +1063,9 @@ mod tests {
         );
 
         let mut buf = [0; 15];
-        assert_eq!(ldisc.read(&mut buf), Ok(payload.len()));
+        assert_eq!(ldisc.read(&mut buf).unwrap(), payload.len());
         assert_eq!(&buf, payload);
-        assert_eq!(ldisc.read(&mut buf), Ok(0));
+        assert_eq!(ldisc.read(&mut buf).unwrap(), 0);
     }
 
     #[test]

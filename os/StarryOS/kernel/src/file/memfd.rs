@@ -22,23 +22,23 @@
 //! Chromium/Firefox seal read-only shared-memory snapshots with
 //! `F_SEAL_FUTURE_WRITE` after populating them.
 
-use alloc::{borrow::Cow, format, string::String, sync::Arc, vec::Vec};
-use core::{
-    sync::atomic::{AtomicU32, Ordering},
-    task::Context,
-};
+use alloc::{borrow::Cow, collections::BTreeMap, format, string::String, sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicU32, Ordering};
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FileFlags;
 use ax_io::{IoBuf, SeekFrom, prelude::*};
-use ax_memory_addr::VirtAddr;
-use ax_memory_set::MemoryArea;
+use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::paging::MappingFlags;
+use axfs_ng_vfs::FileRangeOperation;
 use axpoll::{IoEvents, Pollable};
 
 use super::{File, FileLike, IoDst, IoSrc, Kstat, get_file_like};
 use crate::{
-    mm::{AddrSpace, Backend},
+    StarryError, StarryResult,
+    mm::{
+        AddrSpace, AddressSpaceId, MappingOperation, SharedFileMappingLease, SharedFileVmaRecord,
+        is_address_space_live,
+    },
     sync::Mutex,
 };
 
@@ -65,8 +65,14 @@ pub struct MemfdRef(pub Arc<Memfd>);
 pub struct Memfd {
     inner: Arc<File>,
     seals: AtomicU32,
-    /// Number of live MAP_SHARED writable VMAs for this memfd.
-    shared_writable_mmap_count: AtomicU32,
+    /// Writable shared VMA fragments grouped by their owning address space.
+    ///
+    /// The lifecycle registry decides whether an owner is still Linux-visible;
+    /// a retiring MM therefore stops blocking `F_SEAL_WRITE` before its PTE
+    /// frames are asynchronously reclaimed.  This mirrors Linux `exit_mmap()`
+    /// without making a CPU activation or a temporary kernel pin look like a
+    /// userspace mapping owner.
+    shared_writable_mmaps: Mutex<BTreeMap<AddressSpaceId, u32>>,
     /// Userspace-visible name (the `name` arg to `memfd_create`). Included
     /// in the reported path so `/proc/*/fd/*` matches Linux's
     /// `/memfd:<name>` convention.
@@ -87,7 +93,7 @@ impl Memfd {
         Arc::new(Self {
             inner,
             seals: AtomicU32::new(initial),
-            shared_writable_mmap_count: AtomicU32::new(0),
+            shared_writable_mmaps: Mutex::new(BTreeMap::new()),
             name,
             truncate_mtx: Mutex::new(()),
         })
@@ -105,9 +111,9 @@ impl Memfd {
         self.seals.load(Ordering::Acquire)
     }
 
-    pub fn check_write_seal(&self) -> AxResult {
+    pub fn check_write_seal(&self) -> StarryResult {
         if self.get_seals() & F_SEAL_ANY_WRITE != 0 {
-            Err(AxError::OperationNotPermitted)
+            Err(StarryError::OperationNotPermitted)
         } else {
             Ok(())
         }
@@ -117,9 +123,9 @@ impl Memfd {
     /// if `F_SEAL_SEAL` is already set (so the mask is frozen), or
     /// `InvalidInput` if the requested seal bits are outside the supported
     /// mask.
-    pub fn add_seals(&self, add: u32) -> AxResult {
+    pub fn add_seals(&self, add: u32) -> StarryResult {
         if add & !F_SEAL_ALL != 0 {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         // Hold `truncate_mtx` across the seal publish so in-flight
         // `set_len_sealed` calls either finish before we set the seal (and
@@ -133,13 +139,17 @@ impl Memfd {
         let mut prev = self.seals.load(Ordering::Acquire);
         loop {
             if prev & F_SEAL_SEAL != 0 {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             if add & F_SEAL_WRITE != 0
                 && prev & F_SEAL_WRITE == 0
-                && self.shared_writable_mmap_count.load(Ordering::SeqCst) > 0
+                && self
+                    .shared_writable_mmaps
+                    .lock()
+                    .iter()
+                    .any(|(mm_id, count)| *count != 0 && is_address_space_live(*mm_id))
             {
-                return Err(AxError::ResourceBusy);
+                return Err(StarryError::ResourceBusy);
             }
             let new = prev | add;
             match self
@@ -155,13 +165,13 @@ impl Memfd {
 
     /// Check `F_SEAL_SHRINK`/`F_SEAL_GROW` against a proposed new size.
     /// Returns `Err(OperationNotPermitted)` if the operation is disallowed.
-    fn check_truncate(&self, current_len: u64, new_len: u64) -> AxResult {
+    fn check_truncate(&self, current_len: u64, new_len: u64) -> StarryResult {
         let seals = self.get_seals();
         if new_len < current_len && seals & F_SEAL_SHRINK != 0 {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
         if new_len > current_len && seals & F_SEAL_GROW != 0 {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
         Ok(())
     }
@@ -171,7 +181,7 @@ impl Memfd {
     /// window: without this lock, two concurrent `ftruncate` calls could
     /// both read the pre-shrink size, both pass `check_truncate`, and
     /// both race on `set_len`, with only the last write observed.
-    pub fn set_len_sealed(&self, new_len: u64) -> AxResult {
+    pub fn set_len_sealed(&self, new_len: u64) -> StarryResult {
         let _guard = self.truncate_mtx.lock();
         let current_len = self.inner.inner().backend()?.location().len()?;
         self.check_truncate(current_len, new_len)?;
@@ -194,7 +204,7 @@ impl Memfd {
     /// the seal and performing the write — without that ordering,
     /// the unsealed fast path could escape into a write that grows
     /// the file after the seal landed.
-    pub fn write_at(&self, data: &[u8], offset: u64) -> AxResult<usize> {
+    pub fn write_at(&self, data: &[u8], offset: u64) -> StarryResult<usize> {
         // Zero-length pwrite/pwritev succeeds unconditionally on Linux,
         // even on a sealed memfd, and does not advance the file size.
         // Short-circuit before any seal check (verified against
@@ -207,10 +217,10 @@ impl Memfd {
         let _guard = self.truncate_mtx.lock();
         let seals = self.get_seals();
         if seals & F_SEAL_ANY_WRITE != 0 {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
         if seals & F_SEAL_GROW == 0 {
-            return f.write_at(data, offset);
+            return Ok(f.write_at(data, offset)?);
         }
         // F_SEAL_GROW Linux semantics (verified against memfd_create +
         // F_ADD_SEALS(F_SEAL_GROW) on a stock host):
@@ -220,150 +230,183 @@ impl Memfd {
         // rejects every write; F_SEAL_GROW only rejects growth.
         let cur_len = self.inner.inner().backend()?.location().len()?;
         if offset >= cur_len {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
         let writable = (cur_len - offset).min(data.len() as u64) as usize;
         if writable == 0 {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
-        f.write_at(&data[..writable], offset)
+        Ok(f.write_at(&data[..writable], offset)?)
     }
 }
 
-fn memfd_from_file_backend(backend: &Backend) -> Option<Arc<Memfd>> {
-    let Backend::File(f) = backend else {
-        return None;
-    };
-    if !f.is_shared_file_map() {
-        return None;
-    }
-    f.cache_location()
+fn memfd_from_file_backend(backend: &MappingOperation) -> Option<Arc<Memfd>> {
+    memfd_from_shared_file(&backend.shared_file_lease()?)
+}
+
+fn memfd_from_shared_file(file: &SharedFileMappingLease) -> Option<Arc<Memfd>> {
+    file.cache_location()
         .user_data()
         .get::<MemfdRef>()
         .map(|memfd| memfd.0.clone())
 }
 
-fn memfd_from_shared_writable_area(area: &MemoryArea<Backend>) -> Option<Arc<Memfd>> {
-    if !area.flags().contains(MappingFlags::WRITE) {
+fn memfd_from_shared_writable_area(area: &SharedFileVmaRecord) -> Option<Arc<Memfd>> {
+    if !area.rights.contains(MappingFlags::WRITE) {
         return None;
     }
-    memfd_from_file_backend(area.backend())
+    memfd_from_shared_file(&area.file)
 }
 
-fn apply_shared_writable_count_delta(memfd: &Memfd, delta: i32) {
+fn apply_shared_writable_count_delta(memfd: &Memfd, mm_id: AddressSpaceId, delta: i32) {
+    let mut mappings = memfd.shared_writable_mmaps.lock();
     if delta > 0 {
-        memfd
-            .shared_writable_mmap_count
-            .fetch_add(delta as u32, Ordering::SeqCst);
+        let count = mappings.entry(mm_id).or_default();
+        let add = delta as u32;
+        let Some(next) = count.checked_add(add) else {
+            warn!(
+                "memfd shared writable VMA count overflow for mm {} (cur={}, add={add}); \
+                 retaining saturated busy state",
+                mm_id.get(),
+                *count
+            );
+            *count = u32::MAX;
+            return;
+        };
+        *count = next;
     } else if delta < 0 {
         let sub = (-delta) as u32;
-        loop {
-            let cur = memfd.shared_writable_mmap_count.load(Ordering::SeqCst);
-            if cur < sub {
-                warn!(
-                    "memfd shared_writable_mmap_count underflow (cur={cur}, sub={sub}); leaving \
-                     counter unchanged"
-                );
-                debug_assert!(
-                    cur >= sub,
-                    "memfd shared_writable_mmap_count underflow (cur={cur}, sub={sub})"
-                );
-                break;
-            }
-            let next = cur - sub;
-            if memfd
-                .shared_writable_mmap_count
-                .compare_exchange_weak(cur, next, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
-                break;
-            }
+        let Some(count) = mappings.get_mut(&mm_id) else {
+            warn!(
+                "memfd shared writable VMA count missing for mm {} while subtracting {sub}",
+                mm_id.get()
+            );
+            return;
+        };
+        if *count < sub {
+            warn!(
+                "memfd shared writable VMA count underflow for mm {} (cur={}, sub={sub}); leaving \
+                 count unchanged",
+                mm_id.get(),
+                *count
+            );
+            return;
+        }
+        *count -= sub;
+        if *count == 0 {
+            mappings.remove(&mm_id);
         }
     }
 }
 
-pub fn check_write_seal_for_shared_file_backend(backend: &Backend) -> AxResult {
-    let Some(memfd) = memfd_from_file_backend(backend) else {
+/// A side-band update prepared from an address-space mutation.  Preparing the
+/// update is read-only; the counter is changed only after the corresponding
+/// VMA publication has succeeded.  This keeps memfd seals from observing a
+/// mapping that a failed `munmap`/`mremap` left behind.
+#[derive(Clone)]
+pub(crate) struct SharedWritableDelta {
+    memfd: Arc<Memfd>,
+    mm_id: AddressSpaceId,
+    delta: i32,
+}
+
+pub(crate) fn apply_shared_writable_deltas(deltas: &[SharedWritableDelta]) {
+    for delta in deltas {
+        apply_shared_writable_count_delta(delta.memfd.as_ref(), delta.mm_id, delta.delta);
+    }
+}
+
+pub fn check_write_seal_for_shared_file_backend(file: &SharedFileMappingLease) -> StarryResult {
+    let Some(memfd) = memfd_from_shared_file(file) else {
         return Ok(());
     };
     memfd.check_write_seal()
 }
 
-/// Punch a hole in a shared file-backed (memfd) mapping's backing store by
-/// zeroing `[file_offset, file_offset+len)` so a `MAP_SHARED` mapping reads
-/// zero afterwards. Backs `madvise(MADV_REMOVE)` (Linux `vfs_fallocate`
-/// `FALLOC_FL_PUNCH_HOLE` on shmem, mm/madvise.c `madvise_remove`). Returns
-/// `Ok(false)` when the backend is not a shared file map, so the caller can
-/// report `EINVAL` for anonymous ranges (Linux requires file backing).
-/// Honors `F_SEAL_WRITE` via `write_at` (a sealed memfd punch yields `EPERM`,
-/// matching `shmem_fallocate`).
+/// Applies Linux `MADV_REMOVE` to one VMA fragment.
+///
+/// Linux deliberately walks VMAs in address order and does not roll back an
+/// earlier hole when a later VMA fails.  This function therefore owns exactly
+/// one file operation: it validates the shared/write-capable file, serializes
+/// memfd seals when present, and delegates the mapping/cache transition to the
+/// filesystem's `PUNCH_HOLE` operation.  It never emulates a hole with a loop
+/// of partial writes.
 pub(crate) fn punch_shared_file_backend(
-    backend: &Backend,
+    file_mapping: &SharedFileMappingLease,
     file_offset: u64,
     len: usize,
-) -> AxResult<bool> {
-    let Some(memfd) = memfd_from_file_backend(backend) else {
-        return Ok(false);
-    };
+) -> StarryResult {
+    file_mapping.check_flags(MappingFlags::WRITE)?;
+    let len = u64::try_from(len).map_err(|_| StarryError::InvalidInput)?;
+    file_offset
+        .checked_add(len)
+        .ok_or(StarryError::InvalidInput)?;
     if len == 0 {
-        return Ok(true);
+        return Ok(());
     }
-    let zeros = alloc::vec![0u8; len.min(64 * 1024)];
-    let mut off = file_offset;
-    let mut remaining = len;
-    while remaining > 0 {
-        let chunk = remaining.min(zeros.len());
-        let n = memfd.write_at(&zeros[..chunk], off)?;
-        if n == 0 {
-            break;
-        }
-        off += n as u64;
-        remaining -= n;
-    }
-    Ok(true)
-}
 
-pub(crate) fn apply_shared_writable_delta_for_backend(
-    backend: &Backend,
-    old_flags: MappingFlags,
-    new_flags: MappingFlags,
-) {
-    let Some(memfd) = memfd_from_file_backend(backend) else {
-        return;
-    };
-    let old_writable = old_flags.contains(MappingFlags::WRITE);
-    let new_writable = new_flags.contains(MappingFlags::WRITE);
-    apply_shared_writable_count_delta(memfd.as_ref(), new_writable as i32 - old_writable as i32);
+    if let Some(memfd) = memfd_from_shared_file(file_mapping) {
+        let _seal_guard = memfd.truncate_mtx.lock();
+        if memfd.get_seals() & F_SEAL_ANY_WRITE != 0 {
+            return Err(StarryError::OperationNotPermitted);
+        }
+        file_mapping
+            .cache()
+            .operate_range(file_offset, len, FileRangeOperation::PunchHole)?;
+    } else {
+        file_mapping
+            .cache()
+            .operate_range(file_offset, len, FileRangeOperation::PunchHole)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn on_after_map(aspace: &AddrSpace, start: VirtAddr) {
-    let Some(area) = aspace.find_area(start) else {
+    let Some(area) = aspace.shared_file_vma_at(start) else {
         return;
     };
-    let Some(memfd) = memfd_from_shared_writable_area(area) else {
+    let Some(memfd) = memfd_from_shared_writable_area(&area) else {
         return;
     };
-    apply_shared_writable_count_delta(memfd.as_ref(), 1);
+    apply_shared_writable_count_delta(memfd.as_ref(), aspace.address_space_id(), 1);
 }
 
-pub(crate) fn on_aspace_unmap_range(aspace: &AddrSpace, ustart: VirtAddr, ulen: usize) {
-    let uend = ustart + ulen;
-    for area in aspace.areas() {
-        let a0 = area.start();
-        let a1 = area.end();
+/// Computes the memfd writable-count changes caused by removing a range of
+/// VMA metadata.  No counter is touched and no callback is invoked.
+pub(crate) fn prepare_aspace_unmap_deltas(
+    aspace: &AddrSpace,
+    ustart: VirtAddr,
+    ulen: usize,
+) -> Vec<SharedWritableDelta> {
+    let Some(uend) = ustart.checked_add(ulen) else {
+        return Vec::new();
+    };
+    let mut deltas = Vec::new();
+    for area in aspace.shared_file_vmas() {
+        let a0 = area.range.start;
+        let a1 = area.range.end;
         if a1 <= ustart || a0 >= uend {
             continue;
         }
-        let Some(memfd) = memfd_from_shared_writable_area(area) else {
+        let Some(memfd) = memfd_from_shared_writable_area(&area) else {
             continue;
         };
         if ustart <= a0 && uend >= a1 {
-            apply_shared_writable_count_delta(memfd.as_ref(), -1);
+            deltas.push(SharedWritableDelta {
+                memfd,
+                mm_id: aspace.address_space_id(),
+                delta: -1,
+            });
         } else if ustart > a0 && uend < a1 {
             // Strict interior unmap splits one writable shared VMA into two.
-            apply_shared_writable_count_delta(memfd.as_ref(), 1);
+            deltas.push(SharedWritableDelta {
+                memfd,
+                mm_id: aspace.address_space_id(),
+                delta: 1,
+            });
         }
     }
+    deltas
 }
 
 pub(crate) fn collect_metas_touching_mprotect_range(
@@ -371,13 +414,15 @@ pub(crate) fn collect_metas_touching_mprotect_range(
     ustart: VirtAddr,
     ulen: usize,
 ) -> Vec<Arc<Memfd>> {
-    let uend = ustart + ulen;
+    let Some(uend) = ustart.checked_add(ulen) else {
+        return Vec::new();
+    };
     let mut memfds = Vec::new();
-    for area in aspace.areas() {
-        if area.end() <= ustart || area.start() >= uend {
+    for area in aspace.shared_file_vmas() {
+        if area.range.end <= ustart || area.range.start >= uend {
             continue;
         }
-        let Some(memfd) = memfd_from_file_backend(area.backend()) else {
+        let Some(memfd) = memfd_from_shared_file(&area.file) else {
             continue;
         };
         if !memfds.iter().any(|x: &Arc<Memfd>| Arc::ptr_eq(x, &memfd)) {
@@ -393,49 +438,73 @@ pub(crate) fn resync_shared_writable_counts_after_mprotect(
 ) {
     for memfd in touched {
         let mut count: u32 = 0;
-        for area in aspace.areas() {
-            let Some(mapped) = memfd_from_shared_writable_area(area) else {
+        for area in aspace.shared_file_vmas() {
+            let Some(mapped) = memfd_from_shared_writable_area(&area) else {
                 continue;
             };
             if Arc::ptr_eq(&mapped, memfd) {
                 count = count.saturating_add(1);
             }
         }
-        memfd
-            .shared_writable_mmap_count
-            .store(count, Ordering::SeqCst);
+        let mm_id = aspace.address_space_id();
+        let mut mappings = memfd.shared_writable_mmaps.lock();
+        if count == 0 {
+            mappings.remove(&mm_id);
+        } else {
+            mappings.insert(mm_id, count);
+        }
     }
 }
 
-pub(crate) fn release_all_shared_writable_counts_for_aspace(aspace: &AddrSpace) {
-    for area in aspace.areas() {
-        let Some(memfd) = memfd_from_shared_writable_area(area) else {
-            continue;
-        };
-        apply_shared_writable_count_delta(memfd.as_ref(), -1);
-    }
-}
-
-pub(crate) fn on_aspace_replace_metadata(
+/// Computes the old/new writable-count transition for a metadata replacement
+/// without publishing it.  The caller owns the commit ordering.
+pub(crate) fn prepare_aspace_replace_deltas(
     aspace: &AddrSpace,
     ustart: VirtAddr,
     ulen: usize,
     new_flags: MappingFlags,
-    new_backend: &Backend,
-) {
-    let empty = MappingFlags::empty();
-    for (_frag_start, _frag_size, old_flags, old_backend) in aspace.areas_in_range(ustart, ulen) {
-        apply_shared_writable_delta_for_backend(&old_backend, old_flags, empty);
+    new_backend: &MappingOperation,
+) -> Vec<SharedWritableDelta> {
+    let mut deltas = Vec::new();
+    let Some(uend) = ustart.checked_add(ulen) else {
+        return deltas;
+    };
+    for old in aspace.shared_file_vmas() {
+        if old.range.end <= ustart || old.range.start >= uend {
+            continue;
+        }
+        if let Some(memfd) = memfd_from_shared_file(&old.file)
+            && old.rights.contains(MappingFlags::WRITE)
+        {
+            deltas.push(SharedWritableDelta {
+                memfd,
+                mm_id: aspace.address_space_id(),
+                delta: -1,
+            });
+        }
     }
-    apply_shared_writable_delta_for_backend(new_backend, empty, new_flags);
+    if let Some(memfd) = memfd_from_file_backend(new_backend)
+        && new_flags.contains(MappingFlags::WRITE)
+    {
+        deltas.push(SharedWritableDelta {
+            memfd,
+            mm_id: aspace.address_space_id(),
+            delta: 1,
+        });
+    }
+    deltas
 }
 
 impl FileLike for Memfd {
-    fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
+    fn validate_write_access(&self) -> StarryResult {
+        self.inner.validate_write_access()
+    }
+
+    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         self.inner.read(dst)
     }
 
-    fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
+    fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
         // Zero-length write(2)/writev(2) (including pwritev2 with an
         // empty iov, sys_splice's zero-byte output probe, and similar)
         // succeeds unconditionally on Linux even against a sealed memfd
@@ -454,7 +523,7 @@ impl FileLike for Memfd {
         let _guard = self.truncate_mtx.lock();
         let seals = self.get_seals();
         if seals & F_SEAL_ANY_WRITE != 0 {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
         if seals & F_SEAL_GROW == 0 {
             return self.inner.write(src);
@@ -474,7 +543,7 @@ impl FileLike for Memfd {
         let cur_len = self.inner.inner().backend()?.location().len()?;
         let cursor = self.inner.inner().seek(SeekFrom::Current(0))?;
         if cursor >= cur_len {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
         let max_writable = (cur_len - cursor) as usize;
         let want = src.remaining().min(max_writable);
@@ -497,7 +566,7 @@ impl FileLike for Memfd {
         Ok(written)
     }
 
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         self.inner.stat()
     }
 
@@ -509,7 +578,7 @@ impl FileLike for Memfd {
         format!("/memfd:{}", self.name).into()
     }
 
-    fn file_mmap(&self) -> AxResult<(ax_fs_ng::vfs::FileBackend, ax_fs_ng::vfs::FileFlags)> {
+    fn file_mmap(&self) -> StarryResult<(ax_fs_ng::vfs::FileBackend, ax_fs_ng::vfs::FileFlags)> {
         // Reuse the inner File's mmap path so file-backed shared/private
         // mappings on memfd fds work the same as on regular files. Seal
         // enforcement for `MAP_SHARED|PROT_WRITE` runs in `sys_mmap`
@@ -517,8 +586,13 @@ impl FileLike for Memfd {
         self.inner.file_mmap()
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
-        self.inner.ioctl(cmd, arg)
+    fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> crate::StarryResult<usize> {
+        self.inner.ioctl(current, cmd, arg)
     }
 
     fn open_flags(&self) -> u32 {
@@ -529,11 +603,11 @@ impl FileLike for Memfd {
         self.inner.nonblocking()
     }
 
-    fn set_nonblocking(&self, non_blocking: bool) -> AxResult {
+    fn set_nonblocking(&self, non_blocking: bool) -> StarryResult {
         self.inner.set_nonblocking(non_blocking)
     }
 
-    fn from_fd(fd: core::ffi::c_int) -> AxResult<Arc<Self>>
+    fn from_fd(fd: core::ffi::c_int) -> StarryResult<Arc<Self>>
     where
         Self: Sized + 'static,
     {
@@ -542,7 +616,7 @@ impl FileLike for Memfd {
             return Ok(memfd);
         }
         let Some(file) = any.downcast_ref::<File>() else {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         };
         file.inner()
             .backend()?
@@ -550,7 +624,7 @@ impl FileLike for Memfd {
             .user_data()
             .get::<MemfdRef>()
             .map(|memfd| memfd.0.clone())
-            .ok_or(AxError::InvalidInput)
+            .ok_or(StarryError::InvalidInput)
     }
 }
 
@@ -559,7 +633,19 @@ impl Pollable for Memfd {
         self.inner.poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.inner.register(context, events);
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.register_exclusive(sink, events) };
     }
 }

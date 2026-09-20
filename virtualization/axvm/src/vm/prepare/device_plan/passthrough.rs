@@ -287,7 +287,8 @@ mod tests {
         });
 
         let mut builder = DeviceGraphBuilder::new();
-        add_host_nodes(&config, &[0xfd7c_0000..0xfd81_0000], &mut builder).unwrap();
+        let replacement = 0xfd7c_0000..0xfd81_0000;
+        add_host_nodes(&config, std::slice::from_ref(&replacement), &mut builder).unwrap();
         let declared = builder.declare().unwrap();
         let requests = declared.requests().unwrap();
         let mut pools = ResourcePools::new();

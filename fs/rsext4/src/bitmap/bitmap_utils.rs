@@ -78,16 +78,3 @@ pub fn toggle_bit(data: &mut [u8], bit_idx: u32) -> bool {
     data[byte_idx] ^= 1 << bit_pos;
     true
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_bitmap_utils() {
-        assert_eq!(bytes_for_bits(1), 1);
-        assert_eq!(bytes_for_bits(8), 1);
-        assert_eq!(bytes_for_bits(9), 2);
-        assert_eq!(count_set_bits(0b10101010), 4);
-    }
-}

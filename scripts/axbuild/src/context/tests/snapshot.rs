@@ -26,13 +26,6 @@ fn snapshot_persistence_treats_zero_env_as_enabled() {
 }
 
 #[test]
-fn axvisor_snapshot_load_returns_default_when_missing() {
-    let root = tempdir().unwrap();
-    let snapshot = AxvisorCommandSnapshot::load(root.path()).unwrap();
-    assert_eq!(snapshot, AxvisorCommandSnapshot::default());
-}
-
-#[test]
 fn snapshot_store_round_trips() {
     let root = tempdir().unwrap();
     let snapshot = ArceosCommandSnapshot {

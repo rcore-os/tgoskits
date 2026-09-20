@@ -101,10 +101,29 @@ impl Rknpu {
     /// The caller must ensure that `base_addr` is the correctly mapped and
     /// aligned physical address of the RKNPU register file and that it remains
     /// valid for the lifetime of the returned structure.
-    pub fn new(base_addrs: &[NonNull<u8>], config: RknpuConfig, dma: DeviceDma) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RknpuError::IommuError`] when the DMA device uses a translated
+    /// domain. GEM mmap currently needs a physical address, which this driver
+    /// cannot derive from an IOVA.
+    ///
+    /// A direct DMA domain is accepted for GEM allocation and mapping, but it
+    /// does not enable user-controlled task submission.
+    pub fn new(
+        base_addrs: &[NonNull<u8>],
+        config: RknpuConfig,
+        dma: DeviceDma,
+    ) -> Result<Self, RknpuError> {
+        // GEM mmap currently exports a physical range, while a translated DMA
+        // address is an IOVA. Reject that domain until GEM keeps and exposes a
+        // separate physical address for CPU mappings.
+        if matches!(dma.info().domain(), dma_api::DmaDomainId::Translated(_)) {
+            return Err(RknpuError::IommuError);
+        }
         let data = RknpuData::new(config.rknpu_type);
 
-        Self {
+        Ok(Self {
             base: base_addrs
                 .iter()
                 .map(|&addr| unsafe { RknpuCore::new(addr) })
@@ -115,7 +134,7 @@ impl Rknpu {
             iommu_enabled: false,
             gem: GemPool::new(dma),
             auto_core_cursor: 0,
-        }
+        })
     }
 
     pub fn dma(&self) -> &DeviceDma {
@@ -309,9 +328,26 @@ impl Rknpu {
         self.iommu_enabled
     }
 
-    /// Enable or disable IOMMU
+    /// Returns whether user-controlled task submission has a translated DMA
+    /// domain and an enabled IOMMU to contain command-stream addresses.
+    pub fn user_submit_supported(&self) -> bool {
+        self.iommu_enabled
+            && matches!(
+                self.dma.info().domain(),
+                dma_api::DmaDomainId::Translated(_)
+            )
+    }
+
+    /// Enable or disable IOMMU-backed submissions.
+    ///
+    /// Enabling the flag cannot make a direct DMA domain safe, so it is only
+    /// recorded when the device DMA capability is translated.
     pub fn set_iommu_enabled(&mut self, enabled: bool) {
-        self.iommu_enabled = enabled;
+        self.iommu_enabled = enabled
+            && matches!(
+                self.dma.info().domain(),
+                dma_api::DmaDomainId::Translated(_)
+            );
     }
 
     // /// Commit a prepared job descriptor to the hardware command parser.

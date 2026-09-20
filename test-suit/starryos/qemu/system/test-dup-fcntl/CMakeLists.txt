@@ -11,6 +11,7 @@ add_executable(test-dup-fcntl
     src/parts_fcntl_lock.c
     src/parts_fcntl_rdlck.c
     src/parts_flock_extra.c
+    src/parts_mount_locks.c
 )
 target_include_directories(test-dup-fcntl PRIVATE src)
 target_compile_options(test-dup-fcntl PRIVATE -Wall -Wextra -Werror)

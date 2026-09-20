@@ -155,17 +155,15 @@ fn guest_type_owns_address_space_policy() {
     assert_eq!(unresolved[0].name, "/soc/net@1000");
     assert!(
         unresolved.iter().all(|device| device.name != "/"),
-        "the config layer must not invent an unresolved root selector"
+        "ordinary device passthrough must not invent a root selector"
     );
 }
 
 #[test]
 fn rejects_removed_configuration_fields() {
     let removed_fields = [
-        ("[base]\n", "vm_type = 1\n"),
         ("", "version = 1\n"),
         ("[devices]\n", "serial = {}\n"),
-        ("[devices]\n", "emu_devices = []\n"),
         ("[devices]\n", "interrupt_mode = \"passthrough\"\n"),
         ("[devices]\n", "passthrough_devices = []\n"),
         ("[devices]\n", "passthrough_addresses = []\n"),
@@ -181,6 +179,40 @@ fn rejects_removed_configuration_fields() {
             "removed field unexpectedly parsed: {field}"
         );
     }
+}
+
+#[test]
+fn parses_virtual_ivc_channel_device() {
+    let config = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "ivc0"
+model = "ivc-channel"
+"#,
+    )
+    .unwrap();
+
+    let [request] = config.devices.virtual_devices.as_slice() else {
+        panic!("expected one virtual device request");
+    };
+    assert_eq!(request.id, "ivc0");
+    assert_eq!(request.model, "ivc-channel");
+    assert!(request.options.is_empty());
+}
+
+#[test]
+fn rejects_legacy_emulated_devices_entry() {
+    let error = GuestConfig::from_toml(
+        r#"
+[devices]
+emu_devices = [
+  ["ivc-channel", 0xbff0_0000, 0x1_0000, 0, 0xA, [60]],
+]
+"#,
+    )
+    .unwrap_err();
+    assert!(matches!(error, AxVmConfigError::TomlParse { .. }));
 }
 
 #[test]

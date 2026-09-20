@@ -8,6 +8,8 @@
 #![allow(clippy::new_ret_no_self)]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate ax_runtime;
 
 #[macro_use]
 extern crate log;
@@ -15,9 +17,11 @@ extern crate log;
 use alloc::{sync::Arc, vec::Vec};
 
 use axfs_ng_vfs::{Filesystem, Location};
+pub use axfs_ng_vfs::{VfsError, VfsResult};
 
 pub mod api;
 pub mod block;
+mod error;
 pub mod file;
 pub mod fops;
 mod fs;
@@ -27,6 +31,11 @@ pub mod os;
 pub mod root;
 pub mod volume;
 
+#[cfg(any(feature = "ext4", feature = "fat"))]
+pub(crate) use error::block_error_to_vfs_error;
+pub use error::{BlockError, BlockResult};
+pub(crate) use error::{io_error_to_vfs_error, vfs_error_to_io_error};
+
 static MOUNTED_FILESYSTEMS: os::sync::IrqMutex<Vec<Filesystem>> =
     os::sync::IrqMutex::new(Vec::new());
 
@@ -34,6 +43,8 @@ fn register_mounted_filesystem(fs: Filesystem) {
     MOUNTED_FILESYSTEMS.lock().push(fs);
 }
 
+#[cfg(any(feature = "ext4", feature = "fat"))]
+pub use block::sync_all_block_caches;
 pub use block::{
     BlockRegion,
     runtime::{
@@ -45,6 +56,9 @@ pub use block::{
 pub use highlevel::*;
 #[cfg(feature = "vfs")]
 pub mod vfs {
+    /// Create an ext4 filesystem from an owned file source and its open lease.
+    #[cfg(feature = "ext4")]
+    pub use crate::fs::new_from_file as new_filesystem_from_file;
     /// Create a filesystem from a native block runtime handle.
     #[cfg(any(feature = "ext4", feature = "fat"))]
     pub use crate::fs::new_from_handle as new_filesystem_from_handle;
@@ -105,7 +119,7 @@ fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem, source: &str) -> Location
     root
 }
 
-pub fn shutdown_filesystems() -> ax_errno::AxResult {
+pub fn shutdown_filesystems() -> axfs_ng_vfs::VfsResult {
     #[cfg(feature = "vfs")]
     highlevel::sync_all_cached_files(false)?;
     let filesystems = core::mem::take(&mut *MOUNTED_FILESYSTEMS.lock());

@@ -15,12 +15,14 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/k230-kpu-smoke"
-success_regex = ["(?m)^KPU_SMOKE_PASS$"]
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)illegal instruction",
   "(?m)^KPU_SMOKE_FAIL:",
 ]
 timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/k230-kpu-smoke"
+success_regex = ["(?m)^KPU_SMOKE_PASS$"]

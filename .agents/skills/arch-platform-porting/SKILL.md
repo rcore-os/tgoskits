@@ -1,0 +1,215 @@
+---
+name: arch-platform-porting
+description: 为 ArceOS、StarryOS、Axvisor、someboot、动态统一可扩展固件接口平台启动、对称多处理启动、QEMU 启动配置、目标 JSON 文件、axbuild 体系结构映射、axcpu 陷阱与上下文代码、axplat-dyn、somehal，以及 LoongArch、x86、AArch64 或 RISC-V 平台调通工作新增、适配、调试或审查支持。
+---
+
+# 体系结构与平台移植
+
+新增或修复体系结构、把 QEMU 用例切换到动态统一可扩展固件接口平台启动、为 someboot 启用对称多处理、调试早期启动挂起，或在新体系结构与平台路径上验证 ArceOS、StarryOS 或 Axvisor 时使用本技能。
+
+任务涉及早期启动、陷阱向量、内存管理单元、对称多处理、退出统一可扩展固件接口启动服务或 Axvisor LoongArch 虚拟化扩展 QEMU 时，完整读取 `references/boot-debugging.md`。
+
+当前 Axvisor LoongArch QEMU 使用动态统一可扩展固件接口平台路径。宿主 Axvisor 通过 LoongArch 开放虚拟机固件启动；Linux 客户机通过客户机统一可扩展固件接口启动，内核与根文件系统来自 Axvisor 运行时根文件系统，构建时保存本地开放虚拟机固件。
+
+## 初步检查
+
+Starry AArch64 Linux perf 的 `perf-*` 子用例通过 `grouped_qemu_profiles` 使用独立的 `perf-aarch64.toml`；该配置与 `apps/starry/linux-perf` 使用 `-icount shift=auto,align=off,sleep=on`，避免 QEMU PMU 定时器插入异常返回前后计数基线转换的空窗。不得把 icount 加到整个 system suite：普通时间与设备测试保留默认 MTTCG 配置。保留 guest SMP4，但不把 icount 结果解释成 MTTCG 宿主并行或真实 PMU 性能证明；计数跳变时检查 `docs/design/starry-aarch64-linux-perf.md` 的模拟器边界，不放宽组计数断言。
+
+Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 与 cluster 策略保留在 `perf::event_map`，不恢复已删除的 `ax_cpu::pmu::counter/cycles/overflow` 自由函数。IRQ 现场由 `ax_cpu::trap::InterruptedContext` 经 HAL 按值保留，AArch64 LR 必须来自入口保存的 x30，不能另建 PMU 专属逐核现场。计数器停止后先结算 pending wrap，再调用会清除标志的 `disable_overflow_irq()`。Starry 的 32 位软件扩展要求首次 reset 后、发布任何事件前选择短计数模式；其他 PMU 消费者继续使用自己的宽度策略。
+
+1. 确定变化层：目标规格、axbuild、测试套件配置、someboot、axcpu、axplat-dyn 或 somehal、设备驱动或操作系统配置。
+2. 先检查最接近且已工作的体系结构。动态统一可扩展固件接口路径优先与 x86_64 比较，不要直接创造新行为。
+3. 从 QEMU 参数一直追踪到内核入口的完整启动契约。固件、目标二进制接口、加载器和运行时平台不一致时，只改 QEMU 配置不能解决问题。
+4. ArceOS、StarryOS 和 Axvisor 优先使用 `cargo xtask`。特殊 QEMU 或容器环境必须用原生命令时，先检查 `xtask` 路径并保持参数一致。
+5. 最终补丁不得留下临时调试标记，除非用户明确要求保留。
+6. 修改 axloader UEFI 网络发现、HTTP 启动或 QEMU smoke 时，按 `references/boot-debugging.md` 的“axloader UEFI 网络启动”检查同网卡协议束、串口边界、发现响应注入和 `ExitBootServices` 前资源释放。
+
+## 对称多处理前的运行时控制台
+
+- 中断处理和多任务调度是强制运行时能力。先初始化调度器与中断框架，探测串口，创建按所有者处理器亲和的串口工作任务，尝试完成公共运行时控制台移交，再释放任何次处理器。不得增加独立 `serial` 或 `runtime-console` 功能。探测后全部运行时保持休眠；可以注册禁用的控制器中断，但选中或显式打开串口前不得屏蔽、复位或重新配置硬件。
+- 没有匹配的运行时串口时，底层硬件抽象层控制台继续独占，并通过同一任务控制台能力输出。只有底层控制台具备中断时才能提供任务输入：公共层在硬中断中把接收数据排入有界队列并唤醒 `WaitQueue`。没有控制台中断时，`take_input` 返回不支持，消费者关闭交互入口；禁止通过 `yield_now` 轮询伪造可休眠能力，也禁止用亲和性保留一个处理器。底层任务写入先取得可休眠任务锁，再取得中断安全硬件锁；早期次处理器和硬中断日志没有有效当前任务，只能非阻塞尝试硬件锁。一旦选中运行时进入 `Preparing`，任何失败都进入封闭状态；成功提交后，对称多处理代码不得退回早期串口。
+- 固件选中的硬件 `DeviceId` 必须精确匹配。只有 `NotSpecified` 可以退回通用 Linux `ttyS0` 编号。`Preparing` 前找不到匹配项时保留底层所有者，不得猜测其他运行时串口；移交已经开始后才采用失败封闭。
+- `begin -> adopt -> commit` 和失败封闭策略归 `ax-runtime::console` 所有。固件选中的控制台已经运行，应接管线路、波特率、先进先出缓冲区和启用状态，不调用普通串口 `startup()`。只屏蔽设备本地来源，启用预注册中断动作，再发布路由。这样可避免以循环次数计数的忙等待在 QEMU 与高速实体处理器上产生不同实际时长。非控制台串口仍按显式打开生命周期正常启动和配置。ArceOS、StarryOS 与 Axvisor 适配层不得保存第二套控制台选择或移交状态。
+- x86 固定 COM1 回退属于 `ax-driver` 的 NS16550 ACPI 探测：先匹配 `PNP0500` 或 `PNP0501` 命名空间设备，成功后由 rdrive 的同模型去重阻止后续根回调；没有 AML 命名空间设备时，再由空标识列表的 ACPI 根回调注册固定 PIO `0x3f8`、时钟 `1_843_200 Hz` 和实例 0，并把该资源关联到生成的 `DeviceId`，使 SPCR 仍能精确选择。`ax-driver` 不得依赖 someboot，`axplat-dyn` 不登记串口模型。不得通过 IIR 等带设备语义的寄存器重新猜测硬件是否存在；ISA IRQ4 无 MADT Interrupt Source Override 时使用 GSI4、高电平、边沿触发，存在 override 时采用其完整路由，并要求最终 GSI 由 IOAPIC 覆盖。
+- 次处理器安装逐处理器区域后、发布当前任务前，可以发布完整启动日志记录。此时只入队，不唤醒所有者工作任务；只有该处理器的调度器、中断和处理器间中断路径就绪后，才发布明确日志唤醒就绪状态。后续调度器就绪记录发送合并门铃通知，把早期记录作为同一流排空。
+- 每个串口驱动的有界中断处理自行决定接收端是否需要延后重新使能。批次未完成、溢出、耗尽中断预算或运行时环溢出时保留明确重新使能；来源已完全排空时保持接收中断使能，不能在任务上下文运行前无条件屏蔽小型先进先出缓冲区。延后重新使能立即发现硬件可读而中断样本为空时，通过直接端口路径排空。
+- 只有软件仍有待发送字节时才重新使能 `TX_SPACE`。先进先出缓冲区或移位寄存器完成状态只能在工作任务拥有的 `DrainTx` 控制事务内查询。没有完成中断的串口让该事务让出执行并重查，不得保留虚假发送就绪状态，也不得创建超时任务事后修复。
+- 致命输出只执行一次终结性串口所有权转移。使用有界且不休眠的声明，避免内核恐慌死锁于被中断的普通事务。声明成功后，紧急所有权保持到关机，排除工作任务和中断寄存器访问，并在返回任何可写紧急能力前屏蔽设备本地来源。接口不得表达“可写但未屏蔽”状态。同步输出完整格式化记录，不得截断到固定软件缓冲区。
+- Axvisor 在启动虚拟处理器前取得唯一输入；运行时后端支持时，还要取得完整记录日志订阅。启动横幅和普通宿主日志前配置所有者。取得订阅后，宿主日志和带来源代数的原始客户机字节通过同一有界队列发布；唯一消费者按入队顺序完成日志和客户机行格式化，再交给物理输出任务。移交时先转移早期日志，不能依赖启动等待、日志文字匹配或扩容保证顺序。宿主日志在启动期是独立行，在管理模式中采用清除、输出、重绘事务，客户机占用前台时采用有界完整记录积压。启动虚拟处理器前，把 `TaskConsoleOutput` 移入一个专用任务。虚拟串口或设备回调可能运行在虚拟处理器固定且禁用抢占的区域，只能在非休眠锁下向固定容量、无分配队列提交，并发出中断安全通知。只有输出任务可以等待可休眠运行时锁或串口背压。由该任务报告有界队列丢失；禁止用监视任务、超时任务、处理器保留或平台轮询修补原子上下文休眠。客户机输入队列第一次溢出时输出完整宿主记录，客户机排空前抑制重复报告，绝不把报告注入客户机串口字节。设备回调运行前预分配客户机输出环，性能敏感路径保持有界，并在重放前报告被逐出字节数。
+- 对称多处理后出现交错失败时，先确认 `runtime console active` 早于次处理器启动消息，并确认后续日志进入所有者工作任务或 Axvisor 多路复用器；不得放宽冒烟测试失败匹配规则，也不得保留轮询处理器绕过问题。
+
+## 移植检查清单
+
+- **目标与工具链**：检查 `scripts/targets` 目标规格、目标三元组、内核恐慌策略、重定位与代码模型、二进制接口、软浮点、musl 或标准库支持、链接器、目标文件复制工具和 `rust-src`。四架构裸机构建和 Clippy 必须通过共享 `CargoBuildTarget` 统一解析 `scripts/targets/bare/<逻辑目标名>.json`，不得为单一架构退回内置目标或另加命令行 target feature；逻辑目标名、`AX_TARGET` 和产物目录仍使用原目标三元组，JSON 路径只作为 Cargo `--target` 输入。各 JSON 精确保持固定 nightly 对应内置目标的二进制接口和指令集基线；LoongArch 目标额外保持 `lp64s` soft-float，并在 target specification 的 `features` 中声明 `-ual`，不得恢复会产生 unstable target feature 警报的命令行 `-Ctarget-feature=-ual`。由 Clang 构建 RISC-V Linux/musl 客户机 C 程序时，`CrossCompileSpec::clang_target_flags` 必须向编译和链接同时传递 `-march=rv64gc` 与 `-mabi=lp64d`，不得依赖可能启用根文件系统、QEMU CPU 或用户上下文尚未支持扩展的 Clang 默认指令集；C 与 grouped 用例的缓存散列同时包含这些标志和 CMake 工具链模板。改动 LoongArch 规格后同时运行 ArceOS `unaligned-fixup` 与 Starry `c-regression-test-loongarch-unaligned-cross-page` 回归，确认未对齐异常修复、跨页访问和 `SIGBUS` 语义。
+- **AArch64 短复制内联**：裸机目标通过 `CargoBuildTarget.rustflags` 统一提供 `--max-store-memcpy=16` 的 LLVM 代价参数，构建与 Clippy 共用，仍保留严格对齐、soft-float 与禁用 NEON 的目标契约。涉及复制性能或调整该参数时，读取[短复制内联设计](../../../docs/design/aarch64-inline-copy.md)，核对实际机器码和原生结果；不得以关闭严格对齐、开启内核 SIMD 或 QEMU 指令计数代替原生性能证明。
+- **内核运行模式**：明确最终映像契约。Starry 是以 `build-std=core,alloc` 构建的独立 `no_std`、`no_main` 位置无关可执行文件，始终保留对称多处理能力且不得含内核线程局部存储。Axvisor 保持标准库与 musl 位置无关可执行文件，并显式启用线程局部存储。ArceOS 默认启用线程局部存储；`uspace + tls` 按 `uspace` 选择寄存器所有权，内部 `kernel_tls` cfg 关闭。
+- **处理器局部执行上下文二进制接口**：`cpu-local` 独占当前来源选择、上下文绑定、切换事务和体系结构选定的抢占状态；`ax-percpu` 只负责类型化布局与存储。不得创建第二个逐处理器当前上下文指针。最终映像模式决定寄存器分配；精确初始化后的 `CpuAreaRef` 地址就是区域身份，不增加映像内二进制接口版本、代数、标记、提供者特征外部函数接口或原始线程指针访问。
+
+  | 体系结构 | 处理器区域 | `LinuxCurrent` | `UnikernelTls` |
+  | --- | --- | --- | --- |
+  | x86_64 | GS 基址 | GS 运行时锚点，FS 不使用 | GS 运行时锚点，FS 保存线程局部存储 |
+  | AArch64 | TPIDR_EL1 或 TPIDR_EL2 | SP_EL0，TPIDR_EL0 不使用 | SP_EL0，TPIDR_EL0 保存线程局部存储 |
+  | RISC-V | 从当前上下文指针回溯或使用 `sscratch` | `tp = current`、`sscratch = 0` | 锚定当前上下文，`tp = TLS`、`sscratch = CPU base` |
+  | LoongArch | r21，并镜像到 KS3 | `tp = current` | 锚定当前上下文，`tp = TLS` |
+
+  LoongArch 的 `KS4` 和 `KS5` 保留给虚拟处理器暂存。RISC-V 的 `gp` 恢复为普通全局指针；位置无关可执行重定位需要时，目标规格仍使用 `--no-relax`，但不得把 `gp` 描述为处理器局部存储。`CpuPin<'scope>` 只能在检查实时处理器基址、区域自指针、索引和当前上下文指针后，通过不逃逸受保护回调创建。原子标量要求排除迁移；共享 `T: Sync` 还依赖对象自身同步；可变局部对象还需在排除中断、重入和冲突远端访问后取得 `ExclusiveCpu`。上下文切换保持中断关闭，并消费准备与前序事务令牌。AArch64 借出 `SP_EL0` 给用户空间前，把唯一当前上下文指针保存到固定内核栈，返回 Rust 前恢复。抢占令牌为线性令牌。装载或存储型体系结构跨迁移保留当前上下文所有者；x86_64 使用处理器锚点，暂停的切换保护在另一处理器恢复时必须消费旧证明并接管目的处理器外出上下文留下的等价深度。运行时释放最后抢占深度前必须取得调度器接力棒；任务策略和接力棒状态不属于 `cpu-local`。处理器拥有抢占状态的体系结构中，新上下文首次进入尾部必须完成切换深度；上下文拥有状态的体系结构从深度零开始。
+- **构建系统**：接入 `scripts/axbuild` 的体系结构与目标映射、动态平台默认值、功能传播、内核格式转换、统一可扩展固件接口或二进制转换、根文件系统和各操作系统测试发现。
+- **QEMU 与固件**：核验 QEMU 程序、机器类型、处理器、对称多处理数量、闪存或 OVMF 文件、串口、磁盘与根文件系统设备、`-snapshot`、调试参数、超时和成功或失败匹配规则。通过 `cargo xtask ovmf --arch <arch>` 取得 OVMF CODE 与 VARS；该命令复用 Ostool 固定版本、镜像探测、SHA-256 校验和 `$TMPDIR/ostool/ovmf` 缓存。`TGOS_OVMF_DIR` 只用于选择另一 Ostool 格式缓存根目录，不能给各消费者新增固件变量或扫描发行版 `/usr/share`。`qemu-*.toml` 中的 `uefi`、`to_bin`、加速、处理器功能和设备选择属于用例契约，axbuild 不得按目标体系结构或宿主 `/dev/kvm` 可用性推断或覆盖。Axvisor x86_64 运行时按 CPUID 选择 VMX 或 SVM，通用 QEMU 板卡与构建配置保持后端中立；持续集成保留 Intel/VMX 与 AMD/SVM 两个用例，但都不得选择 Cargo `vmx` 或 `svm` 功能，并使用同一后端中立客户机基线。
+- **someboot 体系结构层**：实现或审计入口、重定位、未初始化数据段清理、栈、内存映射、分页、陷阱向量、定时器、中断、电源、对称多处理和地址转换。
+- **处理器局部启动**：最终可执行与可链接格式文件恰好含一个 `.percpu.template`、`.percpu.init` 和 `.percpu.align`，不含已链接运行时区域或兼容别名。发现运行时处理器数后，按模板几何动态分配所有最终区域，在最终地址构造一次全部类型化值，冻结布局，再在处理器离线时用 `CpuAreaRef` 绑定；只有之后运行时代码才能取得有作用域 `CpuPin`。所有可能失败的准备成功后才发布寄存器。丢弃未提交的准备切换令牌必须回滚下一任务绑定；进入尾部必须消费前一绑定代数后，任务才能在其他处理器运行。AArch64 最终别名按共享属性维护缓存；RISC-V 次处理器初始化 `sscratch`；LoongArch 保持 r21 与 KS3 一致。
+- **线程首次启动与回收**：`ax-task::ThreadBuilder` 统一内核与用户任务的生命周期。`PreparedThread::stage` 只预留首次投递及 CPU 热插拔租约，任务保持 `New`；OS 身份发布后由 `StagedThread::activate` 首次入队，禁止新增 trampoline start gate。`ax-runtime::thread::prepare_user_thread` 只装配 MM、FP、TLS 与架构上下文，必须使用公共 trampoline 并完成首次 switch tail。退出线程的执行资源在 off-CPU 与回调门禁结束后由任务上下文 reaper 释放，不能因管理句柄存活而一直保留栈；OS 扩展与 active-MM 的独立寿命不得合并。参照 `docs/design/ax-task-thread-lifecycle.md` 中 Linux v7.1 PREEMPT_RT 顺序及回归证据。 用户 clone 的 FP 装配不能只复制通用陷阱帧：AArch64/LoongArch 在 soft-float 内核中从当前 CPU 的 eager FP 状态快照到未发布子上下文，x86 先兑现 lazy xstate 所有权，RISC-V 保留显式寄存器快照与 FS 状态。通过 `UserContextOptions` 装配，并运行四架构 `qemu/test-clone-fp-state` 的真实寄存器断言。
+- **用户锁字原子访问**：`ax-cpu::user::user_cmpxchg_u32` 使用各体系结构的 `user_atomic.S` 和既有 nofault 异常表。返回观察值与 expected 相同才表示替换成功；失配只承诺原子观察。成功替换保持 Linux futex 的内存排序；`Fault` 或有界 LL/SC 耗尽的 `Retry` 不返回观察值，缺页和让出 CPU 由退出 raw 临界区后的任务调用方处理。RV32/RV64 共用汇编，`sext.w` 必须受既有 `XLENB == 8` 条件保护；RISC-V 和 LoongArch 的高位 u32 比较必须匹配 LR.W/LL.W 的符号扩展。异常表必须覆盖读和条件存储两条指令，真实 QEMU 验证同时覆盖未映射地址、只读页存储、比较失配和高位锁字，不能用普通物理地址 Atomic 代替用户地址异常恢复。
+- **处理器运行时**：更新 `components/axcpu/src/arch/<arch>` 中的陷阱入口、上下文切换、用户或内核上下文、系统调用返回、浮点与向量状态和逐处理器假设。下游使用 `ax_cpu::context`、`registers`、`trap` 等功能入口，不能访问私有 `arch`。`TaskAnchor` 只保存不透明任务地址；`ExecutionContextHeader`、准备切换令牌和取消回滚留在运行期。`prepared.commit()` 后必须立即进入 `TaskContext::switch_to()`，保持原有中断关闭窗口，不加入检查、回调或析构。
+- **CPU 运行期服务装配**：通过 `trait-ffi` 静态绑定真正由运行期拥有的窄服务。`TrapDiagnostics` 接收按值的 `BacktraceRegisters`，栈展开与符号解析由 `ax-hal::cpu_diagnostics` 提供。x86 `TrapStorageProvider` 由 `ax-hal::cpu_trap_storage` 提供每核 GDT、TSS 和双重故障栈；内存固定并映射到处理器关闭，重复交接必须在返回指针前失败。`__CPU_LOCAL_TSS_OFFSET` 必须指向该提供者交出的同一 TSS；TSS 字段偏移由 CPU 层 `offset_of!` 生成。恢复栈、TLS 和 CPU anchor 前的汇编不能调用运行期服务。不得用弱默认实现掩盖缺失装配。
+- **CPU 集成验证**：ax-cpu 不含宿主测试、假寄存器或测试专用 feature。通过 `cargo xtask clippy --package ax-cpu` 核对目标配置，通过 `cargo xtask arceos test qemu --arch <arch> --test-group cpu` 验证集成。页表描述符查询不等于硬件权限或 TLB 验证；PMU 溢出状态轮询不等于中断投递验证，不能互相代替。AArch64 PMU 寄存器与计数宽度参照 Linux `drivers/perf/arm_pmuv3.c`，perf 拉取请求只作为消费者需求。
+- **AArch64 扩展状态布局**：`ax_cpu::registers::FpState` 的 FPCR/FPSR 是相邻的 32 位字段，保存恢复用 `str/ldr wN` 和 Rust `offset_of!`，不能按两个 64 位槽访问。共享实现位于 `arch/aarch64/fp.rs`；迁移客户机入口时从这里取得原语，并通过 ArceOS `cpu/fp-context` 验证字段与真实寄存器一致。
+- **AArch64 EL2 启停所有权**：`ax_cpu::virtualization::PerCpu` 在独占、固定 CPU 且 IRQ 关闭的范围安装向量，关闭时恢复启用前的完整 HCR_EL2/VBAR_EL2，而非清零 HCR_EL2。重复启用和未启用时关闭必须失败，向量按 2 KiB 校验；平台保留 IRQ 处理与向量存储生命周期。ArceOS `cpu/virtualization-lifecycle` 在真实 EL2 验证恢复与非法转换。
+- **LVZ 机器边界**：LoongArch 客户机使用 `ax_cpu::virtualization::{PerCpu, Vcpu}`，通用寄存器布局来自 `registers::GeneralRegisters`，FP/LSX/LASX 保存恢复来自 `arch/loongarch64/fp.rs`。入口的机器镜像与代码必须具有切换二阶段根后仍可访问的直映别名，别名由宿主内存所有者提供。返回 Rust 前恢复宿主 FP、TLS 和 r21/KS3；解绑恢复原翻译、虚拟化控制与 scratch 状态，关闭 per-CPU owner 恢复原客户机向量。IOCSR、软件定时器和退出策略在 AxVM，不能进入 CPU 包或在机器 IRQ 窗口内分配。上层 `hv` 必须同步开启平台 FP 初始化，不能只启用 CPU 的 FP 保存代码。通过 ArceOS `cpu/guest-entry` 和 `cpu/virtualization-lifecycle` 的真实 LVZ 用例验证。
+- **本地 TLB 边界**：范围归一化、架构阈值与本地失效由 `ax_cpu::mmu` 所有，HAL 只保留跨核协议。非对齐范围必须覆盖最后一个字节所在页；不能只对长度向上取整。x86 全量失效必须包括 global 项，不能仅重载 CR3。ArceOS `cpu/paging-kvm` 与 `cpu/paging-kvm-pge` 分别验证 INVPCID 和 PGE 路径；TCG 对 global 项的过度失效不能替代硬件回归证据。
+- **CPU 入口状态布局**：`ax_cpu::registers::CpuEntryState` 和 RISC-V `TaskEntryState` 拥有机器字段；`cpu-local::cpu_entry` 从实际区域和任务布局生成 `__AX_CPU_AREA_ARCH_STATE_OFFSET`、`__AX_CPU_TASK_ARCH_STATE_OFFSET`、`__AX_CPU_TASK_CPU_BASE_OFFSET`。这些是隐藏的绝对偏移符号，不是运行期地址或第二套当前任务来源。大小、对齐和 RISC-V 正 12 位立即数范围必须在提供者处编译期验证。修改后检查链接产物没有残留动态重定位，保持 LinuxCurrent 的 `sscratch=0`、TLS 模式的 CPU 基址恢复及暂存寄存器保存顺序，并分别验证两种入口模式。
+- **平台桥接**：更新 `platforms/axplat-dyn`、`platforms/somehal`、平台配置、内存区域、中断路由、定时源、电源和处理器启动操作。
+- **调度器时钟所有权**：可比较调度时间属于 `ax-plat::time`，不属于 `ax-task` 或体系结构陷阱模块。`someboot` 只报告原始计数器的计数率稳定性和运行时处理器间同步性；`axplat-dyn` 在发布调度器和中断前初始化每个已绑定处理器的时钟锚点，并由本地定时中断盖章。x86 对称多处理中的不变时间戳计数器不自动证明跨处理器同步；可信虚拟平台可以同时提供计数率与同步契约，即使客户机 CPUID 没有暴露 `invariant_tsc`。两项条件不能互相替代，任一项未证明时都使用校正逐处理器路径。远端读取者只能耦合调用处理器与目标处理器已发布时钟，不能以调用处理器原始计数代替目标样本。处理器离线时先关闭远端接纳，再撤销发布。
+- **运行时平台身份**：动态平台名由 `someboot` 或 `somehal` 从固件发现，经 `axplat-dyn` 和 `ax_plat::platform::platform_name()` 暴露。`ax-hal` 只转发；静态平台继续返回 `config::PLATFORM`。
+- **启动熵**：`someboot` 在 `ExitBootServices` 前取得可信启动熵。先尝试统一可扩展固件接口随机数协议，再尝试扁平设备树 `/chosen/rng-seed` 的精确 32 字节值，并通过 `somehal`、`axplat-dyn` 与 `ax-hal` 暴露。没有来源时，要求每次启动唯一性的消费者应省略可选接口或返回明确不支持；能力正常缺失不得触发内核恐慌，也不得用单调时间、计数器、地址或其他可重放状态代替。
+- **运行时中断所有权**：ArceOS 运行时中断陷阱归 `ax-cpu`，经 `ax_hal::irq::handle_irq(raw_vector)` 分派，并立即把处理器陷阱入口包装成 `TrapVector`。`somehal` 保持与操作系统无关，通过 `somehal::irq::begin_irq(raw_vector) -> ActiveIrq` 暴露控制器事务；`ActiveIrq::id()` 返回解析后的 `IrqId`。`axplat-dyn` 分派期间持有 `ActiveIrq`，其 `Drop` 完成体系结构特定中断结束。不得恢复 `_someboot_handle_irq` 或 `#[somehal::irq_handler]` 作为运行时分派适配。
+- **运行时中断初始化顺序**：动态平台在注册运行时处理器或探测普通设备前调用 `ax_hal::irq::init_boot_irqs(cpu_id)`。`rdrive::ProbeLevel` 仍是粗生命周期边界，`PreKernel` 内顺序由 `ProbePriority` 决定：时钟、控制器、定时源、消息信号中断父控制器，最后才是普通早期设备。扁平设备树中相同级别和优先级保持树顺序；中断控制器还按父节点先于子节点，兄弟节点保持树顺序。优先级屏障能表达依赖时，不得在 `axruntime` 增加体系结构特定探测调用。
+- **块运行时对称多处理顺序**：中断驱动块运行时在要求次处理器前创建控制任务和一个处理器 0 启动硬件上下文，使早期根文件系统可用。只有全部目标处理器都具备在线调度器、可用处理器间中断和本地中断后，`axruntime` 才调用一次 `ax_fs_ng::block::runtime::online_smp()` 增加上下文与向量并重建逐处理器软件提交通道。驱动不得从次处理器入口扩展队列；中断注册或队列扩展失败必须回滚，不能改为轮询。与 `docs/design/block-mq-runtime.md` 保持一致。
+- **网络队列运行时顺序**：物理网卡初始化是对称多处理后的全有或全无事务。探测可在之前发布一次性 `TakenNetDevice`，但 `axruntime` 必须等待全部目标处理器的调度器、本地中断和同步处理器间中断就绪，才能选择亲和域、固定队列与协议执行任务或注册设备中断。全部动作以禁用、`NonReentrant`、共享线路语义和 `IrqAffinity::Fixed(owner_cpu)` 注册；匹配工作任务完成亲和性与队列初始化握手后才启用。工作任务固定、中断路由、共享亲和性或重新使能失败时回滚整个物理网络初始化，禁止退回 `IrqAffinity::Any`、远端中断继续执行或周期轮询。
+- **运行时处理器间中断身份**：动态平台通过 `somehal::irq::ipi_irq()`、`axplat-dyn` 和 `ax_hal::irq::ipi_irq()` 以 `IrqId` 暴露处理器间中断。不得通过 `ax-config` 注册动态处理器间中断。RISC-V 中该中断是处理器局部域中带标志的监管者软件中断原因，不是平台级中断控制器的裸来源 `1`。
+- **运行时处理器上限**：生成的 `CPU_CAPACITY` 与 `SMP` 配置值是常量泛型和固定容量调度结构的构建上限，不是复制可执行与可链接格式逐处理器模板的指令。实际在线或可用处理器数和动态区域分配来自平台发现数量，并在操作系统容量适用时受 `ax_hal::cpu_num()` 限制。
+- **中断命名空间**：处理器陷阱向量、平台 `IrqId { domain, hwirq }`、固件来源、控制器本地 `HwIrq` 和客户机全局系统中断或向量保持分离。新运行时注册使用 `IrqId`，不能使用 `usize`；旧 `IrqNumber(raw)` 只留在静态或尚未迁移的平台边界，并位于 `ax-plat`、`ax-hal` 或 `axklib` 等操作系统或硬件抽象层，不进入 `irq-framework` 或 `somehal`。`irq-framework` 只负责通用登记、亲和性、执行和装箱回调分派。动态外部控制器域在探测时分配，通过 `alloc_irq_domain`、`domain_by_kind`、`domain_by_owner` 或 `domain_is_kind` 查找，不能在动态平台代码中构造固定数字域。不得通过 `0x20 + gsi`、`PCI_INTX_VECTOR_BASE + gsi` 等算术推导宿主中断。固件来源经 `ax_hal::irq::resolve_irq_source(...)` 或平台解析器变成 `IrqId`。高级配置与电源接口的触发、电平和控制器元数据应保留为 `IrqSource::AcpiGsiRoute`；扁平设备树绑定保留原始说明符与父控制器到操作系统或平台层解析。`rdif_intc` 控制器提供可失败的 `translate_fdt` 与 `translate_acpi`，返回控制器本地线路和触发元数据。缺失控制器、锁失败、不支持亲和性、类型不匹配、空、畸形、越界或不支持说明符都返回错误，不能静默忽略、返回中断 0、基向量或猜测旧编号。
+- **各平台中断域**：x86 本地高级可编程中断控制器定时器与输入输出中断控制器属于不同域，陷阱向量 `0x20` 不是 `AcpiGsi(0)`。AArch64 通用中断控制器的中断标识是该控制器域内的 `HwIrq`；RISC-V 平台级中断控制器来源是该控制器域内的 `HwIrq`；LoongArch 的扩展输入输出中断控制器与外围设备控制器中断控制器保持不同域。无法解析时返回 `IrqError::Unsupported`。
+- **x86 64 位 trap 现场**：同特权级异常也由硬件保存 `SS:RSP`；不得按短帧结束地址推算中断前栈指针，IST 和栈对齐会使这种推算错误。`KernelTrapFrame::snapshot` 复制完整机器返回帧，普通 trap 与客户机入口共用 `ax_cpu::registers::GeneralRegisters`；Linux 信号和 ptrace 格式转换留在 Starry。通过 ArceOS `cpu/trap-entry` 的实际断点和软件 IRQ 检查 PC/SP/FP 与修改 GPR 后返回。
+- **x86 QEMU 中断契约**：动态 x86 目标为现代 QEMU `q35`，使用高级配置与电源接口、多重高级可编程中断控制器描述表、本地高级可编程中断控制器或扩展高级可编程中断控制器、输入输出中断控制器、外围部件互连总线传统中断路由，以及 `somehal` 在输入输出中断控制器平台设备上注册的物理目标消息信号中断父控制器。不得增加 8259 后备、`i440fx` 特定假设、非高级配置与电源接口探测、绕过控制器的原始全局系统中断启用或控制器外向量算术。`X86IoApicIntc` 独占外部路由，`X86MsiProvider` 独占保留向量和消息路由；固定亲和性先更新提供者路由，再由外围部件互连总线租约重新组合并写入仍屏蔽的消息信号扩展中断项。硬中断只读预装原子向量路由和通用中断路由，不能查找 `rdrive`。扩展高级可编程中断控制器保留完整 `u32` 标识；无法编码的标识必须在传统高级可编程中断控制器、输入输出中断控制器和当前消息格式中被拒绝。
+- **LoongArch QEMU 中断契约**：动态路径使用 QEMU `virt` 或 LS7A 风格固件路由，包含处理器局部定时器与处理器间中断、EIOINTC 和 PCH-PIC。`loongarch-intc-driver` 独占与操作系统无关的寄存器协议及控制器和处理器接口端点；`somehal` 独占固件解析、映射、动态域、`rdrive`、级联策略和 `ActiveIrq`。`somehal::begin_irq(raw)` 接收 `ESTAT.IS` 的处理器中断线，只允许定时器、处理器间中断和 EIOINTC 级联进入运行时分派。EIO 控制器、域和关闭期处理器接口发布后才能启用级联。PCH-PIC 本地启用不跨控制器持锁；平台先处理父 EIO，再处理本地 PCH，失败时恢复父状态。不得通过减去基向量推导 PCH 输入，也不得把未知处理器局部线当作 PCH-PIC 中断。
+- **LoongArch LS2K 局部输入输出中断控制器**：按照 AArch64 通用中断控制器的分发器与处理器接口分工。`rdif_intc` 控制器独占路由和一次写入启用或禁用寄存器；独立关闭期处理器接口只保存中断状态映射、类型化父线路和共享原子启用快照。注册控制器并发布接口与域后才能启用父级联。硬中断不得调用 `rdrive::get_list`、取得任务所有控制器锁、分配或阻塞。控制器硬件写入后以发布内存序（`Release`）公布启用状态；禁用前以获取并发布内存序（`AcqRel`）隐藏输入。每次认领还要按触发父线路的有效输入位图与启用快照过滤；重叠位图采用已编程首个匹配路由，所有位图遗漏输入只属于首个后备父线路，不同父线路同时待处理时不能相互认领。
+- **RISC-V QEMU 中断契约**：动态路径使用处理器局部监管者定时、软件、外部中断原因和一个平台级中断控制器域。`somehal::begin_irq(raw)` 接收 `scause.bits()`，不是平台级中断控制器来源号。该控制器来源只能由扁平设备树翻译或在监管者外部中断陷阱后认领产生。不得把裸来源号作为陷阱分派，不得把来源 0 当作有效，也不得绕过已注册 `rdif_intc::Intc` 控制器启用来源。
+- **RISC-V 客户机监管者二进制接口处理器间中断**：监管者二进制接口解码、硬件线程掩码和完成二进制接口属于 AxVM 的 `arch/riscv64/policy`；已保存或实时 `HVIP` 的硬件操作属于 `ax_cpu::virtualization`，单个虚拟中断更新必须使用 CSR 位操作，不能覆盖其他来源的实时待处理位；客户机硬件线程到虚拟处理器拓扑解析属于 AxVM 的 RISC-V 层；`VSSIP` 通过体系结构中立 `VmInterruptSender` 发布。发布前验证完整目标集合；当前与远端虚拟处理器使用同一排队投递路径，客户机 `VSSIP` 与宿主监管者软件中断和平台级中断控制器路由分离。与 `docs/design/axvm-riscv-sbi-ipi.md` 一致。
+- **RISC-V 客户机控制与状态寄存器所有权**：`RiscvVcpu::setup()` 构造复位状态时不读写实时宿主 `sstatus` 或 `hstatus`；只有汇编客户机入口交换宿主和客户机状态。客户机目标暴露 F/D 时，从客户机指令集契约初始化宿主监管者 `sstatus.FS`，架构客户机状态留在 `vsstatus`。从客户机等待中断返回后立即出现宿主 `InstructionFault`，通常表示宿主与客户机状态边界泄漏；稍后的客户机浮点非法指令表示指令集或复位状态不一致。不得复制当前宿主寄存器位修补。
+- **运行时控制台选择与所有权**：动态平台通过 `somehal::console_device_id()` 和 `ax_hal::console::device_id()` 暴露固件选择的硬件控制台，值来自启动参数 `console=`、高级配置与电源接口 SPCR 或扁平设备树 `stdout-path`。`ttyS<N>` 与 `ttyAMA<N>` 选择第 N 个普通串口节点；Rockchip `ttyFIQ<N>` 只匹配第 N 个启用的 `rockchip,fiq-debugger`。数字 `tty<N>`、裸 `tty` 和 `ttynull` 是虚拟选择，不绑定硬件。Starry 只在 `Err(NotSpecified)` 时退回 `ttyS0`；非硬件选择、选中硬件未匹配或没有串口终端时让 `/dev/console` 返回 `ENODEV`。解析器和节点到 `DeviceId` 映射都在 `somehal`。运行时绑定串口后，通过串口运行时所有权操作同时取得运行时输出路由和底层平台输出。进入 `Preparing` 后拒绝新的早期寄存器访问并等待在途访问；驱动接管、中断注册和路由成功后才提交 `Runtime`；之后失败进入 `FailedClosed`，不得退回底层硬件抽象层。紧急接管只屏蔽设备本地来源，不能禁用共享控制器线。硬件控制台只有一个寄存器所有者，Axvisor 任务、客户机和日志输出也都经过一个应用级输出所有者。
+- **x86 底层控制台中断后备**：COM1 IRQ4 可能共享输入输出中断控制器线路。只有串口中断标识寄存器报告待处理且为已知接收或线路状态中断时才认领；不存在端口常读为 `0xff`，即使合成线路状态看似就绪也视为未处理。每次硬中断排空受固定软件接收容量限制。
+- **Axvisor 客户机平台身份与设备规划**：每个客户机有稳定标识 `console0` 的必需虚拟串口，按机器后备、有效宿主扁平设备树或高级配置与电源接口快照、同标识用户请求的顺序解析。用户 TOML 可替换模型或选项，或添加另一串口标识，但不能指定数字地址、中断、控制器、消息信号中断、低优先级中断，或 `enabled = false`。物理宿主控制台始终宿主所有且禁止直通。各体系结构独立构建 `DeviceGraphBuilder`，图节点保留同一 `Arc<dyn DeviceModel>` 供 `requirements()`、`firmware()` 和 `build()` 使用；声明时只计算一次固件贡献。`DeviceFirmwareSpec::None` 不生成平台节点，`Interfaces` 可以只支持扁平设备树、只支持高级配置与电源接口或两者都支持，但被选平台必须有接口。用户配置为 `id + model + typed options`，通过显式填充、初始为空的 `ConfiguredDeviceCatalog` 解析；条目是带所有者路径的普通 `ConfiguredModelRegistration` 函数指针，不增加工厂特征、实例包装、设备类型枚举、链接器注册或动态固件容器。每个体系结构生成确定性计划，中断控制器先于消费者注册，每个节点独占一个 `ResourceClaimSet`，全部槽位被租约持有后才封装 `DeviceRuntime`。固件和运行时读取同一 `ResolvedDeviceGraph`；内存映射输入输出、端口输入输出和系统寄存器退出只查找一次并调用动态 `Device::read/write`，不得恢复地址或设备特殊分支、向下转换、两次分派或第二套中断结构。与 `docs/design/axvisor-resolved-device-graph.md` 和 `docs/design/arm-vgic-interrupt-topology.md` 一致。
+- **Axvisor 外设部件互连规划**：支持外设部件互连标准的体系结构必须注册类型化的 `PciHostProvider`，端点模型通过 `DeviceRequirements` 声明一个 `PciFunctionRequirement`，再由设备图声明过程实体化宿主机与依赖关系；不得按模型名称匹配，也不得由端点代码分配总线号、设备号和功能号。把总线号、设备号和功能号、基址寄存器、平台功能、所有者和宿主机身份冻结为同一份 `ResolvedDeviceGraph` 中的外设部件互连元数据；不得公开第二份总线图或增加第二次密封阶段。x86 Q35 宿主机、低引脚数配置与端点必须共享同一个 `PciRootState`；配置地址端口 `CF8` 和配置数据端口 `CFC` 只解码第一号配置机制，不得包含总线号、设备号和功能号特例。完整的外设部件互连内存窗口只注册为一个顶层运行时设备，基址寄存器重定位仅更新根状态内部路由，高级配置与电源接口中的外设部件互连内存窗口也必须来自同一运行时窗口。x86 通用虚拟外设部件互连端到端验证使用 `pci-enumeration` 虚拟机监控器扩展或安全虚拟机启动由构建流程生成、含 BusyBox 初始内存文件系统的 Linux；`/init` 必须断言恰好存在一个 `0500:1af4:1110` 设备、没有绑定驱动、分配了有基址的 64 KiB 不可预取 `BAR2`，且没有消息信号中断或扩展消息信号中断能力，成功时输出 `AXVISOR_X86_VPCI_ENUMERATION_PASSED`，准备阶段失败则必须匹配失败规则。所有 Axvisor 客户机断言用例先通过 `shell_check_steps` 的 `vm console 1` 接入客户机控制台，再匹配该步骤的成功标记；仅有顶层 `success_regex` 不会切换控制台。真实 VirtIO Block PCI 用例还必须在 VMX/SVM 上使用同一 backend-neutral guest/config，按 `1af4:1042` 发现唯一 endpoint，验证 Revision 1、Subsystem `1af4:1042`、4 KiB BAR0、INTA、驱动绑定、WRITE→READ、只读拒写、guest-visible flush 和中断计数增长；失败时必须匹配显式 block failure marker。文件后端继续由阻塞 worker 独占宿主文件句柄，并由 PCI 端点的 DMA poller 在临时客户机内存授权内重试保留的描述符；x86 smoke 在 VMX/SVM 上挂载同一 Alpine ext4 镜像验证这条链路。MP table 的 PCI 路由消费 resolved INTx，同时保留 ISA IRQ0 到 INTIN2、PIC ExtINT 级联以及本地 LINT0 ExtINT/LINT1 NMI 条目；迁移 PCI 路由接口时不得删除这些独立的传统中断投递信息。
+- **Axvisor 物理串口直通与固件贡献**：扁平设备树直通选择器用节点边界匹配，选择父节点时包含其后代但不包含同前缀其他节点。包含宿主控制台串口时返回 `HostOwnedDevice`。明确选择的非控制台串口保留地址、中断路由和客户机节点；未选择物理串口在安装机器虚拟控制台后删除。所选串口需要被排除宿主设备保留的中断来源时，虚拟机配置失败。所有扁平设备树或高级配置与电源接口贡献都按类型类别和固件身份消费，拒绝重复、未支持剩余和硬编码图节点标识。`InterruptController` 贡献保留 `(controller, input)`，显式映射到扁平设备树句柄或高级配置与电源接口全局系统中断域，不能默认父节点或压平输入。
+- **Axvisor 共享固件提供者**：替换宿主所有的固件设备时，客户机不得保留可以关闭宿主依赖的共享时钟、复位或电源域写权限。不可变机器计划保留提供者身份，虚拟机构造前解析类型化能力，并用提供者专用 `Arc<dyn DeviceModel>` 作为 `HostReplacement` 节点声明完整范围，使第二阶段页表陷入。只在提供者给出的硬件特定保护规则下转发无关访问；性能敏感路径不含板卡或片上系统判断。缺少能力、寄存器布局歧义、说明符不支持或保护规则无效时，虚拟机创建失败，不退回原始直通。与 `docs/design/axvisor-shared-firmware-provider.md` 一致。
+- **AArch64 客户机通用定时器**：虚拟机级频率与计数偏移保存在不可变软件状态；每个虚拟处理器分别保存 CNTV/CNTP CVAL、ENABLE、IMASK 和装载状态。每个可用物理处理器都记录 `CNTFRQ_EL0`，缺失、为零或不一致时拒绝。有效宿主扁平设备树 `clock-frequency` 只校正客户机固件可见值，不能跳过硬件一致性检查。硬件 `CNTVOFF_EL2` 只是装载执行上下文副本。最终汇编入口依次禁用 CNTV、安装偏移和 CVAL、执行 ISB、启用控制；退出依次读取控制与 CVAL、禁用 CNTV、执行 ISB、清除 CNTVOFF 并在进入 Rust 前恢复宿主定时器。不得把硬件 CNTVOFF 读回虚拟机软件状态。与 `docs/design/axvisor-aarch64-generic-timer.md` 一致。
+- **AArch64 客户机定时中断**：从机器 `GuestTimerProfile` 推导 CNTV/CNTP 私有外设中断和原始说明符，只向虚拟机局部虚拟中断控制器发布电平状态。宿主 CNTV 私有外设中断在虚拟机监控器生命周期内只声明一次，并在每个物理处理器配置为电平触发。低异常级中断时，汇编必须在 CNTV 仍有效时读取 GICv2 内存映射确认寄存器或 GICv3 `ICC_IAR1_EL1`，之后退出事务才能禁用 CNTV、清除偏移、恢复宿主控制并调用 Rust 执行优先级下降。反向顺序会把电平中断变成伪确认与重复进入。虚拟中断控制器负责待处理、活动、启用、路由、结束、停用和电平重新待处理。启用 `hv` 时全部宿主处理器接口采用分离结束：`EOIR` 只降优先级，普通宿主 `ActiveIrq::drop` 执行匹配停用，AxVM 延后到客户机退休。硬中断只发布固定预分配状态，不能分配、查找虚拟机、取得 `rdrive` 锁或调用通用订阅者，也不能通过多生产者单消费者通道传递中断状态。
+- **动态中断路由锁**：`somehal::irq::IRQ_ROUTES` 会从硬中断读取，因此读写都必须取得字段级保存中断状态的锁。不能用普通自旋获取；本地中断重入会递归同一登记表并使全部处理器停顿。
+- **AArch64 分配物理共享外设中断**：通过硬件支持列表项投递经过所有权检查的宿主共享外设中断，客户机和物理中断标识相同。正常退休让物理 GIC 停用，不得在软件回收后重复宿主停用。客户机陷阱停用或销毁时显式停用；该操作完成电平重采样。旧列表项尚未回收时到达新的确认，应保留到补充阶段创建下一硬件列表项。未分配的 GICv3 中断与低优先级中断仍归宿主，通过已注册消息信号中断叶路由解析父控制器并保留完整 24 位中断标识。
+- **AArch64 客户机定时等待与迁移**：等待中断调度最早可投递 CNTV 或 CNTP 截止时间。回调失效由 `Aarch64TimerBinding::wait_generation` 所有，不属于 `ArmTimerContext`。回调通过代数检查后，重新按当前物理计数评估捕获快照，先把私有外设中断电平发布到虚拟中断控制器，再唤醒虚拟处理器；先唤醒可能让虚拟处理器看不到待处理中断并再次休眠。陈旧回调不得发布或唤醒。虚拟中断查询和定时器重新设置放在调度等待队列临界区外。检查前捕获虚拟机运行时通知代数，设置后重查待处理状态，等待谓词只比较生命周期和原子代数。取消使用含所有者处理器的 `VmTimerHandle`；远端取消在所有者执行并重设比较器。虚拟处理器迁移前完成旧物理处理器上的本地定时激活；复位、停止和销毁使绑定失效、清除虚拟线路并推进等待代数。
+- **临时宿主比较器保护**：`ax-task::begin_hardware_timer_irq` 只有进入匹配定时中断后才清除记录的比较器截止时间，避免通用调度器尚未分别建模已编程、待处理和活动状态时，在待处理事件被消费前重写过期比较器。该保护可能以过期截止时间作为调度参考并延后重新编程，暂时接受此性能代价。只有中断确认路径能明确消费待处理状态后才能删除。与 `docs/design/axvisor-aarch64-generic-timer.md` 一致。
+- **动态固件设备与子提供者**：`rdrive` 高级配置与电源接口探测的非空真实标识列表枚举命名空间 `Device` 节点，并通过 `AcpiInfo` 暴露 `_CRS` 内存、输入输出端口和中断资源；空列表或合成根标识只用于根表回调。固件传输拥有协议子节点时，通过 `FdtInfo::available_children()` 枚举或 `FdtInfo::prepare_child()` 验证，再用 `PlatformDevice::register_fdt_child()` 或原子父子注册发布。能力不得发布到原始句柄。Rdrive 负责直接子节点验证、禁用过滤、稳定 `DeviceId`、路径与已填充状态、重复与所有权错误及可重试提交。子节点没有句柄仍可作为协议身份；句柄只是消费者查找键。每个提供者保留自己的后端与代理，不能路由到无关全局单例。
+- **页表与内存所有权**：检查页表项标志、大页、直接映射、内核高地址映射、设备映射、地址转换缓存或缓存屏障，以及内存管理单元状态完整记录前的 `phys_to_virt`。`page-table-generic` 只负责体系结构中立遍历、映射、页帧生命周期、结构性页表项操作和错误，把调用方页表项配置视为不透明关联类型。硬件页表位编码、虚拟地址规范化、页错误访问标志和本地地址转换缓存失效属于 `ax-cpu`；`someboot` 拥有启动映射、分配与属性策略；虚拟化所有者拥有客户机映射、二阶段表的几何、分配及失效生命周期。EPT 使用 `ax_cpu::paging::EptEntry`，AMD NPT 和 RISC-V G-stage 复用对应 CPU 原生描述符的位布局，不能复制掩码或以主机 TLB 失效冒充二阶段失效。`ax-hal` 可提供 `FrameAllocator` 适配和别名，但不能选择体系结构或定义页表项位。不得在 `memory/` 恢复多体系结构选择器。AArch64 的用户叶子页表项必须设置 nG，使地址转换缓存项受当前 ASID 约束；内核叶子仍可保持 global。EL1 启动代码根据 `ID_AA64MMFR0_EL1.ASIDBits` 配置 `TCR_EL1.AS`，运行时 tag allocator 必须读取已配置的 `TCR_EL1.AS` 决定 8 位或 16 位容量，不能只根据硬件能力发放尚未启用的 ASID。
+- **AArch64 页表失效顺序**：按地址或完整失效都必须先通过 `DSB ISHST` 或 `DSB SY` 完成页表描述符写入，再执行 `TLBI`，之后等待完成并执行 `ISB`。本地完整失效由 `ax-hal` 的目标处理器集合与同步确认提供跨核完成；不能用普通 Rust 原子发布代替体系结构要求的存储完成屏障。指令序列静态回归只验证 ISA 顺序，仍需目标 QEMU 的真实页表与调度验证。
+- **启动描述符复用**：someboot 的 `PteConfig` 和 `TableMeta` 保留启动属性与几何策略，硬件标志和地址编码通过 `ax_cpu::paging` 取得。不得以运行期默认策略替换启动层的脏位、全局位、MAIR 槽或共享属性。AArch64 查询写权限必须取反 `AP_RO`；LoongArch 有效位不能覆盖 `NR` 的读禁止语义。通过 ArceOS `cpu/paging` 运行真实启动描述符的属性回归。
+- **地址空间切换分配边界**：调度器在禁用中断的切换路径使用值类型 `SchedulerAddressSpaceActivation`，只转移已有 MM 所有者，不新建 `Box`、`Arc` 分配或扩容退休队列。MM 退休和异常 activation 使用创建时内嵌的 `MmWorkLink`；没有 root-switch proof 时必须保留实际强引用，不能只留下活动计数。最后一次 MM 析构由可睡眠回收入口取得唯一所有者后执行。
+- **固件地址与设备映射**：固件表暴露 LoongArch 直接映射窗口等处理器可见别名时，在体系结构边界规范化后再交给扁平设备树内存、早期控制台或设备映射后端。不得把体系结构掩码藏入通用 `mem` 或 `common`，也不得在驱动重复。`phys_to_virt` 与 `virt_to_phys` 只用于内存直接映射；设备资源通过 `ax-mm::iomap()`，由 `ax_hal::mem::prepare_iomap()` 先给出体系结构或平台决定，再退到页表设备映射。LoongArch 非缓存窗口放在 `someboot::ArchTrait::ioremap_device()` 后面。
+- **驱动与根文件系统**：检查外围部件互连总线命令位、设备映射、直接内存访问宽度、非易失性存储消息信号扩展中断或传统中断路由、块设备可见性、根文件系统修补和控制台或输入功能。QEMU 宿主根磁盘使用非易失性存储，不能静默退回 `virtio-blk`；绕过宿主块运行时的客户机虚拟设备二进制接口属于另一范围。
+- **RISC-V 客户机 initrd 与 virtio-mmio**：RISC-V 客户机使用 initrd 时，先确保客户机设备树存在 `/chosen`，再由客户机配置写入 `bootargs`、`stdout-path` 与 `linux,initrd-{start,end}`。virtio-mmio 块设备使用 PLIC 单单元中断绑定；宿主 PCI 与 NVMe 仍由 Axvisor 所有时，从客户机设备树禁用宿主 PCI 桥。
+- **StarryNixOS x86_64 诊断**：从 `apps/starry/nixos/flake.lock` 原生构建应用所有映像，再运行 `cargo xtask starry app qemu -t nixos --arch x86_64`。只有相邻清单通过锁文件、闭包、目标、ext4 和映像散列检查的已发布映像才能设置 `STARRY_NIXOS_REUSE_ROOTFS=1`。不得重建或切换宿主 NixOS，也不得在 `.ci-cache/{cargo,rustup,tmp}` 外创建仓库本地缓存。按有序阶段定位最早分歧，并在改变系统调用、procfs、挂载或文件系统语义前添加定向 `qemu/system/<behavior>`；后续 systemd 连锁错误不是第一根因。
+- **x86 调度基准启动**：`apps/arceos/scheduler-latency-bench/qemu-x86_64.toml` 对动态平台 PIE 使用 `uefi = true`、`to_bin = true`，与 ArceOS Rust 套件一致。直接把没有 PVH note 的映像交给 QEMU `-kernel` 会在进入内核前失败；比较旧提交与新提交时两侧使用同一份有效启动配置，不把启动失败计作性能数据。
+- **操作系统配置与测试用例**：只为已验证体系结构更新 ArceOS、StarryOS 和 Axvisor 配置。`qemu-<arch>.toml` 运行配置与 `build-*.toml` 构建配置分离。Starry 应用板卡用例默认使用匹配的 `os/StarryOS/configs/board/<board>.toml`；只有共享同一目标的全部板卡都能安全使用相同处理器、内存管理单元和片上系统功能集时，才加入应用局部 `build-<target>.toml`。板卡需要扫描输出桌面（card0/fb0 链路）时，构建特性必须同时包含 `ax-runtime/display` 与 `ax-driver/virtio-gpu`：`ax_runtime::devices::init_display` 由 `ax-runtime/display` 特性门控，缺配时 ax_display 永不初始化——`/dev/fb0` 不创建、card0 连接器模式回退 640x480、`present_fb` 静默空操作，用户态合成器整条管线正常但屏幕恒黑；对齐 `qemu-riscv64` 板卡与同目标 clippy 配置的特性集即可。
+
+## someboot 必备条件
+
+- 保持固件入口二进制接口。统一可扩展固件接口入口携带 `image_handle` 和 `system_table`，直接启动参数不同。
+- 风险转换前建立早期控制台，并保证退出固件服务或启用内存管理单元后仍有不依赖启动服务的控制台。
+- 地址转换辅助函数使用前，先取得内存映射和内核映像物理范围。
+- 重定位或切换高地址后，使用运行时安全符号地址辅助函数，不直接使用编译期地址。
+- x86_64 直接位置无关可执行启动在进入 Rust 前，由裸函数和相对指令指针入口应用受支持的 `R_X86_64_RELATIVE`。统一可扩展固件接口头可以共用头部节，但原始入口符号仍是直接加载入口，加载偏移后其物理地址保持有效。
+- AArch64 需要在 Rust 全局保存异常级转换状态时，把它传入重定位后入口，不能在重定位前写可重定位静态变量。统一可扩展固件接口入口按通用固件重定位契约适配 `relocate::apply`，在公共异常级设置前初始化统一可扩展固件接口、扁平设备树和高级配置与电源接口，不能重进会清理未初始化数据段或覆盖已取得设备树地址的直接启动路径。
+- 未初始化数据段只清理一次，且先保存其中的入口数据。
+- `tls` 与 `uspace` 同时启用时采用 `uspace` 的寄存器所有权，不启用内核 TLS。相关软件包在 `build.rs` 由 `CARGO_FEATURE_TLS` 存在且 `CARGO_FEATURE_USPACE` 不存在派生内部 `kernel_tls` cfg；Cargo feature 必须完整转发到 `cpu-local` 和启动层，自定义 cfg 不跨包传播。`someboot::Build::kernel_tls` 与源码 cfg 消费同一次计算结果，不能使用 AArch64 启动调整后的 `Build::uspace` 反推内核 TLS。
+- 线程局部存储与无线程局部存储使用不同链接布局。后者拒绝 `.tdata` 和 `.tbss` 并省略 `PT_TLS`；前者保留线程局部存储程序头和启动数据。
+- LoongArch 开放虚拟机固件同时取得固件设备树配置表和高级配置与电源接口根系统描述指针，但不由 someboot 或 somehal 再从这些表探测实时时钟。动态路径先使用统一可扩展固件接口运行服务 `GetTime`；固件时钟不可用时，由 `ax-driver` 处理 `loongson,ls7a-rtc` 或 `LOON0001`。
+- 启用对称多处理前分配并对齐启动栈、逐处理器区域、次处理器栈、启动参数和页表；启用中断、定时中断、内存管理单元错误或次处理器前安装陷阱向量。
+- x86 QEMU 的 CPUID 时间戳频率必须合理。优先可信虚拟化计时叶，再用 CPUID 计时数据、可编程间隔定时器校准，最后才用处理器基础频率。
+- x86 QEMU 只初始化一次 LAPIC 或 x2APIC，并把 APIC 标识视为固件标识，不视为逻辑处理器索引。x2APIC 启用时使用模型特定寄存器；处理器间中断等待有界；xAPIC 拒绝高于 255 的次处理器启动或目标；外部输入输出中断控制器传统中断编程留在运行时 `X86IoApicIntc`。依赖完成 LAPIC 启用后，显式屏蔽并读回 LVT LINT0 和 LINT1，同时保留投递配置；写零会清除掩码位，不会设置。
+- AArch64 的 someboot `hv` 只用于异常级 2 内核。非 `hv` 异常级 1 启动按启动异常级选择定时器：异常级 2 可用时用 CNTP，否则用 CNTV，并让设备树中断索引一致。一次性间隔用 64 位 CVAL 和环绕绝对截止时间，不能在间隔可能越界时用 32 位 TVAL。次处理器入口跨内存管理单元启用和异常级转换辅助函数显式保存处理器元数据指针，裸汇编使用辅助函数返回寄存器，不假设暂存寄存器跨 Rust 调用保持。
+- RK3576 ROCK 4D 的固件、设备树、串口、对称多处理、时钟复位单元、电源管理单元和板卡验证遵循 `references/boot-debugging.md`，未确认完整交接契约前不要诊断存储或次处理器。
+- 页表覆盖体系结构需要的身份或固件访问、直接映射、内核高地址、设备资源和逐处理器数据；页表写入、启动参数和次处理器释放周围执行地址转换缓存、缓存维护和体系结构屏障。
+- 把硬件内存管理单元启用、直接映射或内核空间可寻址、最终内核重定位视为不同状态。通用重定位检测使用最终 `VM_LOAD_ADDRESS`，不能使用更宽的体系结构内核或直接映射范围。AArch64 从 SCTLR.M 启用到跳入重定位入口之间禁止串口日志，仍在重定位前路径执行时地址辅助函数不得切到重定位地址。LoongArch 直接映射窗口只提供早期可寻址，执行到最终高地址 `VM_LOAD_ADDRESS` 后才能认定重定位完成。
+- LoongArch 的四级 4 KiB 页表 walker 是构建期契约，CPUCFG `VALEN` 是运行期 canonical 地址能力，两者不能混为动态页表层数。平台按 Linux 的 `vm_map_base = 0 - (1 << cpu_vabits)` 原理发布类型化 lower/upper half：CPUCFG wrapper 返回的 `VALEN` 先减一得到 `cpu_vabits`；PGDL/PGDH 由 `VA[VALEN-1]` 选择。用户 `TASK_SIZE` 和 page-table-backed kernel allocator 必须消费同一不可变布局，不得用板卡 feature 维护第二套地址常量；位宽超出 walker 时返回类型化不支持并停止启动。DMW 的 `PABITS`、缓存属性和物理直映所有权保持独立，不能随 `VALEN` 裁剪。
+- LoongArch 的 someboot 和运行期通过 `ax_cpu::boot::tlb_refill_entry()` 引用唯一填充入口，不能从普通异常向量表加固定偏移推导 refill 地址。入口地址通过 PC-relative 方式取得，平台按自身映射转换为 TLBRENTRY 要求的物理地址。遇到零中间目录项立即停止并写入两个零 `TLBRELO`，使原始装载、存储或取指错误进入虚拟内存处理器。不得从物理地址零继续 `lddir` 或 `ldpte`，也不得把含错误虚拟页号的 `TLBREHI` 当作 EntryLo。以延迟 `mmap` 后第一次存储回归和分配器测试验证。
+- `ExitBootServices` 之后不得调用启动服务。退出前重试必须使用正确内存映射键序列。
+
+## CPU 启动容量
+
+容量发现与归一化由 someboot 的 `fdt::CpuCapacities` 完成，按启动层选中集合的硬件 ID 匹配节点，不以设备树顺序重建逻辑编号。容量与元数据填充必须复用同一个 `CpuIdIter` 的来源选择；仅 FDT 拓扑允许读取 FDT 容量，ACPI 拓扑在没有自身容量实现时统一使用 1024，不能因两个固件表中的数字 ID 相同而混用。完整容量随 `PerCpuMeta` 在最终高地址初始化并通过已有 Release/Acquire 发布；运行期经 `CpuTopologyIf::cpu_capacity()` 读取，不解析固件、不新建惰性容量表。参照 [CPU 启动容量设计](../../../docs/design/cpu-capacity-topology.md) 中固定 Linux 版本的整组缺失回退、等频假设和零容量语义。没有可信容量来源时全部为 1024，禁止按 A55/A76 型号猜权重；整数归一化可能为零，消费者须处理后才能除法。
+
+## 对称多处理启动规则
+
+1. 从固件发现已启用处理器，固件标识与逻辑处理器标识分离。
+2. 检查处理器索引边界，不假设硬件线程、高级可编程中断控制器、MPIDR 或处理器标识连续。
+3. 为每个次处理器准备独立启动参数，包含栈、页表、内核入口、类型化逐处理器区域和逻辑标识。
+4. 执行体系结构处理器启动传输前，把启动参数和页表刷新到其他处理器可见。
+5. 次处理器路径先初始化地址窗口、栈、页表、处理器局部寄存器契约、陷阱向量、定时器和中断，再进入通用次处理器代码。处理器离线时安装最终 `CpuAreaRef`，之后只能通过有作用域 `CpuPin` 访问；不得先发布原始基址再初始化可能失败的状态。
+6. 次处理器的操作系统逐处理器寄存器尚未初始化时，通过 `somehal::irq::init_secondary_boot_irqs(cpu_id)` 的缓存控制器性能敏感路径设置中断和定时器，不得取得 `rdrive`、中断域或通用路由锁。
+7. 调试次处理器失败时先用物理地址标记；自身映射和陷阱状态就绪前，串口日志可能不可用。
+8. 体系结构唤醒传输与通用启动同步分离。体系结构钩子只投递 PSCI、SBI、邮箱或 INIT/SIPI；someboot 所有的关闭期逐处理器状态发布 `DEAD -> KICKED -> ALIVE -> SHOULD_ONLINE`。次处理器到达公共入口后报告 `ALIVE`，等待控制处理器释放再进入操作系统。可变状态放在可复制跳板元数据外，并与稍后调度器在线发布分离。不得用全局最后处理器标识、体系结构局部完成、超时重试或调度器在线标志代替。生命周期通过不可阻塞、不可复制的 `start_secondary_cpu`、`status`、`release` 句柄暴露；观察状态不能释放，只有匹配的存活句柄可以释放。单个在途传输通过不可阻塞比较交换声明。句柄丢弃、上层超时、取消或部分传输错误仍保持所有者声明，因为迟到 x86 次处理器可能使用共享跳板。不得增加取消、重试、后备或 someboot `Future`；未来异步上层需要真实唤醒器和终结取消语义。十秒同步轮询策略属于 `axplat-dyn::PowerIf`。x86 的 SIPI 使用 Linux `APIC_DM_STARTUP` 即 `0x600`，不能带 INIT 电平位。与 `docs/design/someboot-secondary-cpu-startup.md` 一致。
+
+## 验证层级
+
+从最小检查开始，逐层扩大：
+
+```bash
+cargo test -p axbuild --lib
+cargo test -p axvmconfig
+cargo test -p axdevice serial::tests
+cargo test -p axvm machine::tests
+cargo test -p virtualization-tests --test configured_device_graph
+cargo xtask ktest qemu --workspace --arch <arch>
+cargo xtask arceos test qemu --arch <arch>
+cargo xtask starry test qemu --arch <arch>
+cargo xtask axvisor test qemu --list --arch <arch>
+cargo xtask axvisor test qemu --arch <arch> --test-group normal --test-case smoke
+```
+
+`ktest qemu --arch <arch>` 按 `[package.metadata.docs.rs].targets` 中匹配的裸机目标筛选 Cargo 元数据执行计划。没有文档目标的软件包有意只在 x86_64 执行，`[package.metadata.axtest] runtime = "board"` 从 QEMU 排除。同一体系结构全部 ArceOS 测试放在一次串行 `ktest` 调用中，不能替代独立 ArceOS Rust 与 C 测试套件命令。
+
+LoongArch Axvisor 虚拟化扩展验证使用仓库容器，并在容器内构建 `xtask`：
+
+```bash
+docker run --rm -v "$PWD:/workspace" -w /workspace \
+  ghcr.io/rcore-os/tgoskits-container-axvisor-lvz:latest \
+  bash -lc 'cargo xtask axvisor test qemu --arch loongarch64 --test-group normal --test-case smoke'
+```
+
+修改 Rust 逻辑后再运行相应格式化和定向静态检查：
+
+```bash
+cargo fmt
+cargo xtask clippy --package axbuild
+cargo xtask clippy --package someboot
+```
+
+软件包列表按实际差异调整。
+
+## 调试流程
+
+1. 定位最后一个可靠输出或机器状态转移：统一可扩展固件接口入口、内存映射、`ExitBootServices`、重定位、启用内存管理单元、安装陷阱向量、释放次处理器、第一条内核输出。
+2. 在转移前后加入临时单字节串口或设备映射标记，找到根因后删除。
+3. `xtask` 能传递或可临时改造时，使用 QEMU `-d int,cpu_reset,guest_errors` 或 `-S -s`。
+4. 用 `llvm-objdump`、`readelf` 和映射文件检查符号与生成映像，确认运行时地址而不只看链接地址。
+5. 顺序不确定时，先搜索本地 Linux 源码树，再检查匹配 `arch/<linux-arch>` 的内存管理单元、陷阱、对称多处理和缓存或地址转换缓存屏障；不得假设固定路径。
+6. 一次性定时器平台必须先确认当前定时中断，再进入会重新编程下一事件的代码。LoongArch 定时处理器不能在 `_handle_irq()` 或 `dispatch_irq()` 后清除 `TICLR`，否则时钟滴答路径刚设置的近截止事件可能被迟到确认清除，使定时休眠挂起。
+7. RISC-V 平台级中断控制器平台在启用 `sie.SEXT` 前取得全部监管者上下文所有权：清除固件或启动加载器遗留来源启用位、初始化阈值，并维护软件“来源已启用”状态，不从非零优先级推断。中断框架可以在动作禁用时设置亲和性，但亲和性变化不得提前启用来源。
+8. 可行时把根因转化为回归测试或定向 QEMU 用例。
+
+## 常见失败信号
+
+- 停在 `Exiting UEFI boot services...`：检查陈旧内存映射键、退出后仍调用启动服务、退出后控制台、错误交接地址、内存管理单元切换或陷阱向量有效前异常。
+- 高地址取指、装载或存储错误：检查内核高地址映射、直接映射、直接映射窗口、重定位偏移和符号地址基准。
+- 地址转换缓存填充递归或静默复位：检查填充入口物理地址、陷阱向量映射、栈映射和地址转换缓存刷新。
+- 次处理器没有输出：检查固件标识映射、启动参数缓存可见性、次处理器栈、逐处理器基址、页表根和逐处理器陷阱设置。
+- Starry 启动但交互或系统测试失败：检查根文件系统准备、输入与控制台功能、终端尺寸假设和成功匹配规则。
+- 非易失性存储或根文件系统缺失：检查外围部件互连总线命令启用、设备映射、直接内存访问转换、消息信号扩展中断或传统中断注册、启动硬件上下文和根文件系统修补路径；不得重新启用 `virtio-blk` 掩盖失败。
+- Axvisor 只在 LoongArch 虚拟化扩展容器失败：检查容器 QEMU 路径、`cargo xtask ovmf --arch loongarch64`、`TGOS_OVMF_DIR`、目标工具链、虚拟化标志，以及 `xtask` 是否在挂载工作区内构建。
+
+## 完成条件
+
+- 修改在最小受影响层通过验证，并至少通过目标操作系统的一条端到端 QEMU 路径。
+- 临时调试标记、一次性 QEMU 参数和本地路径已删除，或明确记录为长期设计。
+- `qemu-<arch>.toml`、`build-*.toml` 和操作系统配置只声明实际验证过的体系结构。
+- 新目标、容器或固件要求已写入相关技能、测试套件指南或文档。
+- 修改体系结构启动、someboot 启动顺序、统一可扩展固件接口交接、对称多处理调通、动态平台契约、目标 JSON 假设或推荐调试流程时，在同一修改中更新本技能或 `references/boot-debugging.md`。

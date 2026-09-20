@@ -10,6 +10,7 @@ extern int parts_flock_basic(void);
 extern int parts_fcntl_lock(void);
 extern int parts_fcntl_rdlck(void);
 extern int parts_flock_extra(void);
+extern int parts_mount_locks(void);
 
 int main(void)
 {
@@ -20,6 +21,7 @@ int main(void)
     parts_fcntl_lock();
     parts_fcntl_rdlck();
     parts_flock_extra();
+    parts_mount_locks();
 
     TEST_DONE();
 }

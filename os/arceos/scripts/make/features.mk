@@ -13,7 +13,7 @@
 
 ifeq ($(APP_TYPE),c)
   arceos_feature_prefix := ax-libc/
-  lib_features := fp-simd irq alloc multitask lockdep fs net fd pipe select epoll
+  lib_features := fp-simd alloc lockdep fs net fd pipe select epoll
 else
   arceos_feature_prefix := ax-std/
   lib_features :=

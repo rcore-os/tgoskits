@@ -1,0 +1,59 @@
+# Host-log interleaving regression driven through the real shell.
+#
+# `vm suspend`/`vm resume` synchronously emit info! host-log records between
+# their shell println! lines while the Linux guest keeps producing console
+# output. Every success regex is anchored to complete physical lines, so a host
+# log that tears a shell-owned line (or vice versa) fails the case.
+args = [
+  "-nographic",
+  "-snapshot",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-device",
+  "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-append",
+  "root=/dev/nvme0n1 rw init=/bin/sh",
+  "-m",
+  "8g",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)I/O error",
+    "(?m)^✗ ",
+]
+timeout = 300
+to_bin = true
+uefi = false
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm list"
+success_regex = ['(?m)^VM ID\s+NAME\s+STATUS']
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "vm suspend 1"
+success_regex = [
+    '(?m)^\[.*VM\[1\] status set to Paused',
+    '(?m)^✓ VM\[1\] suspend signal sent\s*$',
+]
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "vm resume 1"
+success_regex = [
+    '(?m)^\[.*VM\[1\] resumed\b',
+    '(?m)^✓ VM\[1\] resumed successfully\s*$',
+]
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "echo CONSOLE_INTERLEAVE_OK"
+success_regex = ['(?m)^CONSOLE_INTERLEAVE_OK\s*$']
+timeout = 30

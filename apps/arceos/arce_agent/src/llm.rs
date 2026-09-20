@@ -164,13 +164,16 @@ pub struct FunctionCall {
 pub struct LlmClient {
     api_url: String,
     model: String,
+    proxy_token: String,
 }
 
 impl LlmClient {
-    pub fn new(base_url: &str, model: &str) -> Self {
+    /// `proxy_token` authenticates to the local proxy, not to the upstream provider.
+    pub fn new(base_url: &str, model: &str, proxy_token: String) -> Self {
         Self {
             api_url: format!("{}/chat/completions", base_url),
             model: model.to_string(),
+            proxy_token,
         }
     }
 
@@ -209,6 +212,7 @@ impl LlmClient {
             let start = Instant::now();
             let result = minreq::post(&self.api_url)
                 .with_header("Content-Type", "application/json")
+                .with_header("Authorization", format!("Bearer {}", self.proxy_token))
                 .with_body(body_json.clone())
                 .with_timeout(120)
                 .send();

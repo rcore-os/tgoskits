@@ -30,16 +30,16 @@ fn discovers_board_case_when_case_dir_contains_build_config() {
     let build_config = case_dir.join("build-aarch64-unknown-none-softfloat.toml");
     fs::write(
         &build_config,
-        "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = [\"qemu\"]\nlog = \
-         \"Info\"\n",
+        "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = \
+         [\"ax-driver/virtio-net\"]\nlog = \"Info\"\n",
     )
     .unwrap();
     let board_test_config = case_dir.join("board-orangepi-5-plus.toml");
     fs::write(
         &board_test_config,
-        "board_type = \"OrangePi-5-Plus\"\nshell_prefix = \
-         \"orangepi@orangepi5plus:~\"\nshell_init_cmd = \"pwd && echo 'test \
-         pass'\"\nsuccess_regex = [\"(?m)^test pass\\\\s*$\"]\nfail_regex = []\ntimeout = 300\n",
+        "board_type = \"OrangePi-5-Plus\"\nshell_check_steps = [{ shell_prefix = \
+         \"orangepi@orangepi5plus:~\", shell_cmd = \"pwd && echo 'test pass'\", success_regex = \
+         [\"(?m)^test pass\\\\s*$\"] }]\nfail_regex = []\ntimeout = 300\n",
     )
     .unwrap();
 

@@ -258,7 +258,18 @@ if [ ! -s "$apk_list" ]; then
     echo "PROVISION_NO_PREFETCHED_APKS"
     exit 1
 fi
-xargs apk add --allow-untrusted --no-network < "$apk_list"
+# Authenticate all indexes and payloads before any install script can run.
+# apk add then enforces the authenticated index checksums for each package.
+if ! apk verify --no-network /usr/local/wayland-apks/*/*/APKINDEX.tar.gz \
+    /usr/local/wayland-apks/*/*/*.apk; then
+    echo "PROVISION_FAILED"
+    exit 1
+fi
+if ! xargs apk add --no-network \
+    --repositories-file /usr/local/wayland-apks/repositories < "$apk_list"; then
+    echo "PROVISION_FAILED"
+    exit 1
+fi
 echo "PROVISION_PACKAGES_DONE"
 touch /.wayland-provisioned
 echo "PROVISION_DONE"

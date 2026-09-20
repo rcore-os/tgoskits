@@ -9,28 +9,24 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/default.toml";
-pub const DEFAULT_FALLBACK_REGISTRY_URL: &str =
-    "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/v0.0.8.toml";
 pub const IMAGE_CONFIG_FILENAME: &str = ".image.toml";
-const DEFAULT_AUTO_SYNC_THRESHOLD: u64 = 60 * 60 * 24 * 7;
-const LOCAL_STORAGE_ENV: &str = "TGOS_IMAGE_LOCAL_STORAGE";
-const FALLBACK_REGISTRY_ENV: &str = "TGOS_IMAGE_REGISTRY_FALLBACK_URL";
+const DOWNLOAD_DIR_ENV: &str = "TGOS_IMAGE_DOWNLOAD_DIR";
+const EXTRACT_DIR_ENV: &str = "TGOS_IMAGE_EXTRACT_DIR";
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ImageConfig {
-    pub local_storage: PathBuf,
     pub registry: String,
-    pub auto_sync: bool,
-    pub auto_sync_threshold: u64,
+    pub download_dir: PathBuf,
+    pub extract_dir: PathBuf,
 }
 
 impl ImageConfig {
     pub fn new_default(base_dir: &Path) -> Self {
+        let axbuild_tmp_dir = crate::context::axbuild_tmp_dir(base_dir);
         Self {
-            local_storage: crate::context::axbuild_tmp_dir(base_dir).join("rootfs"),
             registry: DEFAULT_REGISTRY_URL.to_string(),
-            auto_sync: true,
-            auto_sync_threshold: DEFAULT_AUTO_SYNC_THRESHOLD,
+            download_dir: std::env::temp_dir().join("tgosimages"),
+            extract_dir: axbuild_tmp_dir.join("rootfs"),
         }
     }
 
@@ -39,19 +35,49 @@ impl ImageConfig {
     }
 
     pub fn read_config(base_dir: &Path) -> anyhow::Result<Self> {
-        let path = Self::get_config_file_path(base_dir);
+        Self::read_config_with_env(base_dir, non_empty_env)
+    }
 
-        let mut config = if !path.exists() {
-            let config = Self::new_default(base_dir);
-            Self::write_config(base_dir, &config)?;
-            config
-        } else {
-            let s = fs::read_to_string(&path)?;
-            toml::from_str(&s).map_err(|e| anyhow!("Invalid image config file: {e}"))?
+    fn read_config_with_env(
+        base_dir: &Path,
+        env_value: impl Fn(&str) -> Option<String>,
+    ) -> anyhow::Result<Self> {
+        let path = Self::get_config_file_path(base_dir);
+        let default_config = || Self::new_default(base_dir);
+        let (mut config, original) = match fs::read_to_string(&path) {
+            Ok(contents) => {
+                let config = match toml::from_str(&contents) {
+                    Ok(config) => config,
+                    Err(error) => {
+                        eprintln!(
+                            "image config at {} does not match the current format; regenerating \
+                             defaults: {error}",
+                            path.display()
+                        );
+                        default_config()
+                    }
+                };
+                (config, Some(contents))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (default_config(), None),
+            Err(error) => {
+                return Err(anyhow!(
+                    "Failed to read image config file {}: {error}",
+                    path.display()
+                ));
+            }
         };
 
-        if let Some(local_storage) = non_empty_env(LOCAL_STORAGE_ENV) {
-            config.local_storage = PathBuf::from(local_storage);
+        let normalized = toml::to_string(&config)?;
+        if original.as_deref() != Some(normalized.as_str()) {
+            Self::write_config_contents(&path, &normalized)?;
+        }
+
+        if let Some(download_dir) = env_value(DOWNLOAD_DIR_ENV) {
+            config.download_dir = PathBuf::from(download_dir);
+        }
+        if let Some(extract_dir) = env_value(EXTRACT_DIR_ENV) {
+            config.extract_dir = PathBuf::from(extract_dir);
         }
 
         Ok(config)
@@ -59,109 +85,20 @@ impl ImageConfig {
 
     pub fn write_config(base_dir: &Path, config: &Self) -> anyhow::Result<()> {
         let path = Self::get_config_file_path(base_dir);
+        Self::write_config_contents(&path, &toml::to_string(config)?)
+    }
+
+    fn write_config_contents(path: &Path, contents: &str) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| anyhow!("Failed to create image config directory: {e}"))?;
         }
-        fs::write(path, toml::to_string(config)?)
-            .map_err(|e| anyhow!("Failed to write image config file: {e}"))
+        fs::write(path, contents).map_err(|e| anyhow!("Failed to write image config file: {e}"))
     }
-}
-
-pub(crate) fn fallback_registry_url() -> String {
-    non_empty_env(FALLBACK_REGISTRY_ENV)
-        .unwrap_or_else(|| DEFAULT_FALLBACK_REGISTRY_URL.to_string())
 }
 
 fn non_empty_env(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
         .filter(|value| !value.trim().is_empty())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        ffi::{OsStr, OsString},
-        sync::{LazyLock, Mutex},
-    };
-
-    use tempfile::tempdir;
-
-    use super::*;
-
-    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-    struct TempEnvVar {
-        key: &'static str,
-        original: Option<OsString>,
-    }
-
-    impl TempEnvVar {
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let original = std::env::var_os(key);
-            unsafe {
-                std::env::set_var(key, value);
-            }
-            Self { key, original }
-        }
-
-        fn unset(key: &'static str) -> Self {
-            let original = std::env::var_os(key);
-            unsafe {
-                std::env::remove_var(key);
-            }
-            Self { key, original }
-        }
-    }
-
-    impl Drop for TempEnvVar {
-        fn drop(&mut self) {
-            match self.original.as_ref() {
-                Some(value) => unsafe {
-                    std::env::set_var(self.key, value);
-                },
-                None => unsafe {
-                    std::env::remove_var(self.key);
-                },
-            }
-        }
-    }
-
-    #[test]
-    fn read_config_creates_default_when_missing() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let _env = TempEnvVar::unset(LOCAL_STORAGE_ENV);
-        let dir = tempdir().unwrap();
-
-        let config = ImageConfig::read_config(dir.path()).unwrap();
-
-        assert_eq!(config, ImageConfig::new_default(dir.path()));
-        assert_eq!(config.local_storage, dir.path().join("tmp/axbuild/rootfs"));
-        assert_eq!(
-            ImageConfig::get_config_file_path(dir.path()),
-            dir.path().join("tmp/axbuild/.image.toml")
-        );
-        assert!(ImageConfig::get_config_file_path(dir.path()).exists());
-    }
-
-    #[test]
-    fn read_config_prefers_local_storage_env_override() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let dir = tempdir().unwrap();
-        let override_path = dir.path().join("persistent-cache");
-        let _env = TempEnvVar::set(LOCAL_STORAGE_ENV, override_path.as_os_str());
-
-        let config = ImageConfig::read_config(dir.path()).unwrap();
-
-        assert_eq!(config.local_storage, override_path);
-    }
-
-    #[test]
-    fn fallback_registry_url_prefers_new_env() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let _env = TempEnvVar::set(FALLBACK_REGISTRY_ENV, "https://example.com/new.toml");
-
-        assert_eq!(fallback_registry_url(), "https://example.com/new.toml");
-    }
 }

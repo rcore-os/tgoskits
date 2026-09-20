@@ -1,41 +1,46 @@
-use alloc::{borrow::Cow, string::ToString, sync::Arc};
+use alloc::{borrow::Cow, boxed::Box, string::ToString, sync::Arc, vec::Vec};
 use core::{
     ffi::c_int,
     hint::likely,
     sync::atomic::{AtomicBool, Ordering},
-    task::Context,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext};
 use ax_io::{Seek, SeekFrom};
-use ax_task::future::{block_on, poll_io};
-use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, Metadata, NodeFlags};
+use axfs_ng_vfs::{DirectoryCursor, DirectoryReadState, Location, Metadata, NodeFlags, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
     general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
     ioctl::TIOCSCTTY,
 };
-use starry_vm::VmPtr;
 
-use super::{FileLike, Kstat, get_file_like};
+use super::{FileLike, InodeKey, Kstat, get_file_like};
 use crate::{
+    StarryError, StarryResult,
     file::{IoDst, IoSrc},
+    mm::VmPtr,
     pseudofs::Device,
     sync::Mutex,
+    task::{
+        current_user_task,
+        future::{block_on_user, poll_io},
+    },
 };
 
 // FusionIO/directFS atomic-write toggle used by MySQL.
 const DFS_IOCTL_ATOMIC_WRITE_SET: u32 = 0x4004_9502;
 
-pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&mut FsContext) -> AxResult<R>) -> AxResult<R> {
+pub fn with_fs<R>(
+    dirfd: c_int,
+    f: impl FnOnce(&mut FsContext) -> StarryResult<R>,
+) -> StarryResult<R> {
     let fs_context = ax_fs_ng::vfs::current_fs_context();
     let mut fs = fs_context.lock();
     if dirfd == AT_FDCWD {
         f(&mut fs)
     } else {
         let dir = Directory::from_fd(dirfd)?.inner.clone();
-        f(&mut fs.with_current_dir(dir)?)
+        f(&mut fs.with_dirfd(dir)?)
     }
 }
 
@@ -52,33 +57,67 @@ impl ResolveAtResult {
         }
     }
 
-    pub fn stat(&self) -> AxResult<Kstat> {
+    pub fn stat(&self) -> StarryResult<Kstat> {
         match self {
-            Self::File(file) => file.metadata().map(|it| metadata_to_kstat(&it)),
+            Self::File(file) => Ok(metadata_to_kstat(&file.metadata()?)),
             Self::Other(file_like) => file_like.stat(),
         }
     }
 }
 
-pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> AxResult<ResolveAtResult> {
+/// Resolves an actual file descriptor without interpreting AT_FDCWD.
+pub fn resolve_fd(fd: c_int) -> StarryResult<ResolveAtResult> {
+    let file_like = get_file_like(fd)?;
+    let f = file_like.clone();
+    Ok(if let Some(file) = f.downcast_ref::<File>() {
+        // Use location() directly: backend() rejects PATH-only fds
+        // (BadFileDescriptor) which would break fstat(O_PATH-fd).
+        // man "O_PATH": fstat(2) is in the allowed-operations list.
+        // Fixes bug-open-path-fstat-ebadf.
+        ResolveAtResult::File(file.inner().location().clone())
+    } else if let Some(file) = f
+        .downcast_ref::<super::Pipe>()
+        .and_then(super::Pipe::named_file)
+    {
+        ResolveAtResult::File(file.inner().location().clone())
+    } else if let Some(dir) = f.downcast_ref::<Directory>() {
+        ResolveAtResult::File(dir.inner().clone())
+    } else {
+        ResolveAtResult::Other(file_like)
+    })
+}
+
+/// Resolves the same dirfd/empty-path contract with directory search admission.
+pub fn resolve_at_checked(
+    dirfd: c_int,
+    path: Option<&str>,
+    flags: u32,
+    check_search: impl Fn(&Location) -> VfsResult<()>,
+) -> StarryResult<ResolveAtResult> {
+    let check = |_: &FsContext, directory: &Location| check_search(directory);
+    resolve_at_with_search(dirfd, path, flags, Some(&check))
+        .map(|(result, _, _)| result)
+}
+
+type SearchCheck<'a> = Option<&'a dyn Fn(&FsContext, &Location) -> VfsResult<()>>;
+
+fn resolve_at_with_search(
+    dirfd: c_int,
+    path: Option<&str>,
+    flags: u32,
+    search: SearchCheck<'_>,
+) -> StarryResult<(ResolveAtResult, Option<Location>, Vec<Location>)> {
     match path {
         Some("") | None => {
             if flags & AT_EMPTY_PATH == 0 {
-                return Err(AxError::NotFound);
+                return Err(StarryError::NotFound);
             }
-            let file_like = get_file_like(dirfd)?;
-            let f = file_like.clone();
-            Ok(if let Some(file) = f.downcast_ref::<File>() {
-                // Use location() directly: backend() rejects PATH-only fds
-                // (BadFileDescriptor) which would break fstat(O_PATH-fd).
-                // man "O_PATH": fstat(2) is in the allowed-operations list.
-                // Fixes bug-open-path-fstat-ebadf.
-                ResolveAtResult::File(file.inner().location().clone())
-            } else if let Some(dir) = f.downcast_ref::<Directory>() {
-                ResolveAtResult::File(dir.inner().clone())
-            } else {
-                ResolveAtResult::Other(file_like)
-            })
+            if dirfd == AT_FDCWD {
+                return with_fs(dirfd, |fs| {
+                    Ok((ResolveAtResult::File(fs.current_dir().clone()), None, Vec::new()))
+                });
+            }
+            Ok((resolve_fd(dirfd)?, None, Vec::new()))
         }
         Some(path) => {
             let dirfd = if path.starts_with('/') {
@@ -87,15 +126,49 @@ pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> AxResult<Reso
                 dirfd
             };
             with_fs(dirfd, |fs| {
-                if flags & AT_SYMLINK_NOFOLLOW != 0 {
-                    fs.resolve_no_follow(path)
-                } else {
-                    fs.resolve(path)
+                let boundary = fs.permission_boundary().cloned();
+                if let Some(check) = search {
+                    let (location, searched) = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+                        fs.resolve_no_follow_with_search_checked(path, |directory| {
+                            check(fs, directory)
+                        })
+                    } else {
+                        fs.resolve_with_search_checked(path, |directory| check(fs, directory))
+                    }?;
+                    return Ok((ResolveAtResult::File(location), boundary, searched));
                 }
-                .map(ResolveAtResult::File)
+                let (location, searched) = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+                    fs.resolve_no_follow_with_search(path)
+                } else {
+                    fs.resolve_with_search(path)
+                }?;
+                Ok((ResolveAtResult::File(location), boundary, searched))
             })
         }
     }
+}
+
+pub fn resolve_at_with_boundary(
+    dirfd: c_int,
+    path: Option<&str>,
+    flags: u32,
+) -> StarryResult<(ResolveAtResult, Option<Location>, Vec<Location>)> {
+    resolve_at_with_search(dirfd, path, flags, None)
+}
+
+/// Resolves an `*at` path with a credential-aware search check while retaining
+/// the directory trace needed for dirfd boundary validation.
+pub fn resolve_at_with_boundary_checked(
+    dirfd: c_int,
+    path: Option<&str>,
+    flags: u32,
+    check_search: impl Fn(&FsContext, &Location) -> VfsResult<()>,
+) -> StarryResult<(ResolveAtResult, Option<Location>, Vec<Location>)> {
+    resolve_at_with_search(dirfd, path, flags, Some(&check_search))
+}
+
+pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> StarryResult<ResolveAtResult> {
+    resolve_at_with_boundary(dirfd, path, flags).map(|(result, _, _)| result)
 }
 
 pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {
@@ -144,7 +217,9 @@ impl File {
 
 impl Drop for File {
     fn drop(&mut self) {
-        if let Ok(device) = self.inner.location().entry().downcast::<Device>() {
+        if self.open_flags & linux_raw_sys::general::O_PATH == 0
+            && let Ok(device) = self.inner.location().entry().downcast::<Device>()
+        {
             device.inner().close(self.open_flags & O_EXCL != 0);
         }
     }
@@ -161,37 +236,47 @@ fn path_for(loc: &Location) -> Cow<'static, str> {
         .map_or_else(|_| "<error>".into(), |f| Cow::Owned(f.to_string()))
 }
 
-fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
-    IoEvents::from_bits_truncate(events.bits())
-}
-
-fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
-    FsIoEvents::from_bits_truncate(events.bits())
-}
-
 impl FileLike for File {
-    fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
-        let inner = self.inner();
-        if likely(self.is_blocking()) {
-            inner.read(dst)
+    fn validate_write_access(&self) -> StarryResult {
+        if self.inner().flags().contains(FileFlags::WRITE) && !self.inner().is_path() {
+            Ok(())
         } else {
-            block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-                inner.read(&mut *dst)
-            }))
+            Err(StarryError::BadFileDescriptor)
         }
     }
 
-    fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
+    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
+        let inner = self.inner();
+        if likely(self.is_blocking()) {
+            Ok(inner.read(dst)?)
+        } else {
+            let task = current_user_task();
+            block_on_user(
+                &task,
+                poll_io(self, IoEvents::IN, self.nonblocking(), || {
+                    Ok(inner.read(&mut *dst)?)
+                }),
+            )
+            .into_result()?
+        }
+    }
+
+    fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
         let mut inner = self.inner();
         if self.append() {
             inner.seek(SeekFrom::End(0))?;
         }
-        let result = if likely(self.is_blocking()) {
-            inner.write(src)
+        let result: StarryResult<usize> = if likely(self.is_blocking()) {
+            Ok(inner.write(src)?)
         } else {
-            block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
-                inner.write(&mut *src)
-            }))
+            let task = current_user_task();
+            block_on_user(
+                &task,
+                poll_io(self, IoEvents::OUT, self.nonblocking(), || {
+                    Ok(inner.write(&mut *src)?)
+                }),
+            )
+            .into_result()?
         };
         if let Ok(bytes) = result
             && bytes > 0
@@ -202,16 +287,20 @@ impl FileLike for File {
         result
     }
 
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         Ok(metadata_to_kstat(&self.inner().location().metadata()?))
     }
 
-    fn inode_key(&self) -> Option<(u64, u64)> {
-        let m = self.inner().location().metadata().ok()?;
-        Some((m.device, m.inode))
+    fn inode_key(&self) -> Option<InodeKey> {
+        Some(InodeKey::for_location(self.inner().location()))
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+    fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> StarryResult<usize> {
         let loc = self.inner().backend()?.location();
         if cmd == TIOCSCTTY
             && let Some(result) = crate::pseudofs::dev::tty::bind_pty_at_location(loc.clone())
@@ -220,18 +309,24 @@ impl FileLike for File {
         }
         match cmd {
             DFS_IOCTL_ATOMIC_WRITE_SET => {
-                let _enabled: u32 = (arg as *const u32).vm_read()?;
+                let _enabled: u32 = (arg as *const u32).vm_read(current)?;
                 Ok(0)
             }
-            _ => loc.ioctl(cmd, arg),
+            _ => {
+                if let Ok(device) = loc.entry().downcast::<Device>() {
+                    Ok(device.ioctl_for_task(current, cmd, arg)?)
+                } else {
+                    Ok(loc.ioctl(cmd, arg)?)
+                }
+            }
         }
     }
 
-    fn file_mmap(&self) -> AxResult<(FileBackend, FileFlags)> {
+    fn file_mmap(&self) -> StarryResult<(FileBackend, FileFlags)> {
         Ok((self.inner().backend()?.clone(), self.inner().flags()))
     }
 
-    fn set_nonblocking(&self, flag: bool) -> AxResult {
+    fn set_nonblocking(&self, flag: bool) -> StarryResult {
         self.nonblock.store(flag, Ordering::Release);
         Ok(())
     }
@@ -244,7 +339,7 @@ impl FileLike for File {
         self.append.load(Ordering::Acquire)
     }
 
-    fn set_append(&self, flag: bool) -> AxResult {
+    fn set_append(&self, flag: bool) -> StarryResult {
         self.append.store(flag, Ordering::Release);
         self.inner().set_flag(FileFlags::APPEND, flag);
         Ok(())
@@ -258,7 +353,7 @@ impl FileLike for File {
         path_for(self.inner.location())
     }
 
-    fn from_fd(fd: c_int) -> AxResult<Arc<Self>>
+    fn from_fd(fd: c_int) -> StarryResult<Arc<Self>>
     where
         Self: Sized + 'static,
     {
@@ -278,28 +373,41 @@ impl FileLike for File {
             return Ok(mount_table.inner().clone());
         }
         Err(if any.is::<Directory>() {
-            AxError::IsADirectory
+            StarryError::IsADirectory
         } else {
-            AxError::InvalidInput
+            StarryError::InvalidInput
         })
     }
 }
 impl Pollable for File {
     fn poll(&self) -> IoEvents {
-        fs_events_to_io(self.inner().location().poll())
+        self.inner().location().poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.inner()
-            .location()
-            .register(context, io_events_to_fs(events));
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner().location().register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner().location().register_exclusive(sink, events) };
     }
 }
 
 /// Directory wrapper for `ax_fs_ng::fops::Directory`.
 pub struct Directory {
     inner: Location,
-    pub offset: Mutex<u64>,
+    // Serialize the complete getdents/lseek transition for one open file
+    // description. This is a sleepable mutex because filesystem reads may
+    // block; dup/fork share the Directory and therefore this position.
+    pub(crate) position: Mutex<DirectoryPosition>,
     /// Original open flags (used by fd_is_path / sys_fchmodat to detect
     /// O_PATH on directory descriptors — open(dir, O_PATH|O_DIRECTORY)
     /// must reject fchmod just like O_PATH on a regular file).
@@ -309,11 +417,19 @@ pub struct Directory {
     detached_mount_handle: bool,
 }
 
+pub(crate) struct DirectoryPosition {
+    pub(crate) cursor: DirectoryCursor,
+    pub(crate) read_state: Option<Box<dyn DirectoryReadState>>,
+}
+
 impl Directory {
     pub fn new(inner: Location, open_flags: u32) -> Self {
         Self {
             inner,
-            offset: Mutex::new(0),
+            position: Mutex::new(DirectoryPosition {
+                cursor: DirectoryCursor::START,
+                read_state: None,
+            }),
             open_flags,
             detached_mount_handle: false,
         }
@@ -322,7 +438,10 @@ impl Directory {
     pub(crate) fn new_detached_mount(inner: Location, open_flags: u32) -> Self {
         Self {
             inner,
-            offset: Mutex::new(0),
+            position: Mutex::new(DirectoryPosition {
+                cursor: DirectoryCursor::START,
+                read_state: None,
+            }),
             open_flags,
             detached_mount_handle: true,
         }
@@ -339,24 +458,31 @@ impl Directory {
 }
 
 impl FileLike for Directory {
-    fn read(&self, _dst: &mut IoDst) -> AxResult<usize> {
-        Err(AxError::IsADirectory)
+    fn supports_epoll(&self) -> bool {
+        false
     }
 
-    fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::BadFileDescriptor)
+    }
+
+    fn read(&self, _dst: &mut IoDst) -> StarryResult<usize> {
+        Err(StarryError::IsADirectory)
+    }
+
+    fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
         // Directories cannot be opened for writing, so any write attempt
         // means the fd is not open for writing → EBADF.
         // Linux VFS checks FMODE_WRITE before reaching the filesystem layer.
-        Err(AxError::BadFileDescriptor)
+        Err(StarryError::BadFileDescriptor)
     }
 
-    fn stat(&self) -> AxResult<Kstat> {
+    fn stat(&self) -> StarryResult<Kstat> {
         Ok(metadata_to_kstat(&self.inner.metadata()?))
     }
 
-    fn inode_key(&self) -> Option<(u64, u64)> {
-        let m = self.inner.metadata().ok()?;
-        Some((m.device, m.inode))
+    fn inode_key(&self) -> Option<InodeKey> {
+        Some(InodeKey::for_location(&self.inner))
     }
 
     fn open_flags(&self) -> u32 {
@@ -367,21 +493,26 @@ impl FileLike for Directory {
         path_for(&self.inner)
     }
 
-    fn from_fd(fd: c_int) -> AxResult<Arc<Self>> {
+    fn from_fd(fd: c_int) -> StarryResult<Arc<Self>> {
         get_file_like(fd)?
             .downcast_arc()
-            .map_err(|_| AxError::NotADirectory)
+            .map_err(|_| StarryError::NotADirectory)
     }
 }
 impl Pollable for Directory {
     fn poll(&self) -> IoEvents {
-        fs_events_to_io(FsIoEvents::IN | FsIoEvents::OUT)
+        IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
-#[cfg(axtest)]
-pub(crate) fn metadata_to_kstat_conversion_rules_hold_for_test() -> bool {
+#[cfg(all(test, not(axtest)))]
+fn metadata_to_kstat_conversion_rules_hold_for_test() -> bool {
     use core::time::Duration;
 
     use axfs_ng_vfs::{DeviceId, Metadata};
@@ -417,4 +548,12 @@ pub(crate) fn metadata_to_kstat_conversion_rules_hold_for_test() -> bool {
         && kstat.blocks == 8
         // mode should have type bits (S_IFREG=0100000) OR'd with 0644.
         && (kstat.mode >> 12) == (axfs_ng_vfs::NodeType::RegularFile as u32)
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    #[test]
+    fn metadata_to_kstat_conversion_rules_hold() {
+        assert!(super::metadata_to_kstat_conversion_rules_hold_for_test());
+    }
 }

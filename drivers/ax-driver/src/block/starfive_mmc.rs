@@ -7,7 +7,7 @@ use rdrive::{
 };
 use sdmmc_protocol::{
     rdif::{config::BlockConfig, device::BlockDevice},
-    sdio::{BusWidth, card::SdioSdmmc, init::CardInitPreference},
+    sdio::{BusWidth, SdMmcIrqHost, init::CardInitPreference, native::SdMmcCard},
 };
 use starfive_jh7110_dwmmc::{
     DEVICE_NAME, JH7110_FIFO_CONFIG, JH7110_STABLE_REFERENCE_CLOCK_HZ, Jh7110DwMmc,
@@ -63,7 +63,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { Jh7110DwMmc::new(mmio_base, profile.host_config) };
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+        dma_api::DmaConstraints::new(u32::MAX as u64),
+    ));
     let block_config = starfive_block_config(&dma);
     host.inner_mut().configure_dma(dma).map_err(|err| {
         OnProbeError::other(format!(
@@ -72,9 +76,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     })?;
 
     info!("starfive-jh7110-dwmmc: defer card initialization to IRQ-driven hctx");
-    let mut sd = SdioSdmmc::new(host);
+    let parts = host.into_parts();
+    let mut sd = SdMmcCard::new(parts.bus);
     sd.set_sd_speed_selection_enabled(false);
-    let dev = BlockDevice::new_initializing(sd, block_config, profile.init_preference);
+    let dev = BlockDevice::new_initializing(sd, parts.irq, block_config, profile.init_preference);
     let irq = probe.register_block(dev)?;
     info!("starfive-jh7110-mmc block device registered irq={:?}", irq);
     Ok(())
@@ -218,104 +223,7 @@ fn prepared_reference_clock_hz(clock_rate: Option<u64>) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(feature = "pci"))]
-    use axklib::{
-        AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle,
-        IrqId, Klib, PhysAddr, VirtAddr, impl_trait,
-    };
-
     use super::*;
-
-    #[cfg(not(feature = "pci"))]
-    struct KlibImpl;
-
-    #[cfg(not(feature = "pci"))]
-    impl_trait! {
-        impl Klib for KlibImpl {
-            fn mem_iomap(_addr: PhysAddr, _size: usize) -> AxResult<VirtAddr> {
-                Err(AxError::Unsupported)
-            }
-
-            fn mem_virt_to_phys(addr: VirtAddr) -> PhysAddr {
-                PhysAddr::from_usize(addr.as_usize())
-            }
-
-            fn mem_make_dma_coherent_uncached(
-                _addr: VirtAddr,
-                _size: usize,
-            ) -> axklib::DmaCoherentMappingOutcome {
-                axklib::DmaCoherentMappingOutcome::NotStarted(AxError::Unsupported)
-            }
-
-            fn mem_restore_dma_cached(_addr: VirtAddr, _size: usize) -> AxResult {
-                Err(AxError::Unsupported)
-            }
-
-            fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
-
-            fn dma_cache_invalidate(_addr: VirtAddr, _size: usize) {}
-
-            fn dma_cache_clean_invalidate(_addr: VirtAddr, _size: usize) {}
-
-            fn dma_alloc_pages(
-                _dma_mask: u64,
-                _num_pages: usize,
-                _align: usize,
-            ) -> AxResult<VirtAddr> {
-                Err(AxError::Unsupported)
-            }
-
-            fn dma_dealloc_pages(_addr: VirtAddr, _num_pages: usize) {}
-
-            fn time_busy_wait(_dur: core::time::Duration) {}
-
-            fn time_monotonic_nanos() -> u64 {
-                0
-            }
-
-            fn time_try_init_epoch_offset(_epoch_time_nanos: u64) -> bool {
-                false
-            }
-
-            fn irq_set_enable(_irq: IrqId, _enabled: bool) -> AxResult {
-                Ok(())
-            }
-
-            fn irq_request_shared(
-                _irq: IrqId,
-                _handler: BoxedIrqHandler,
-            ) -> AxResult<IrqHandle> {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_request_shared_disabled(
-                _irq: IrqId,
-                _handler: BoxedIrqHandler,
-            ) -> AxResult<IrqHandle> {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_request_percpu(
-                _irq: IrqId,
-                _cpus: IrqCpuMask,
-                _handler: ConcurrentBoxedIrqHandler,
-            ) -> AxResult<IrqHandle> {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_free(_handle: IrqHandle) -> AxResult {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_enable(_handle: IrqHandle) -> AxResult {
-                Err(AxError::Unsupported)
-            }
-
-            fn irq_disable(_handle: IrqHandle) -> AxResult {
-                Err(AxError::Unsupported)
-            }
-        }
-    }
 
     #[test]
     fn starfive_profiles_are_dt_capability_driven_not_base_driven() {

@@ -6,9 +6,8 @@ use alloc::{string::String, sync::Arc};
 use core::{cell::UnsafeCell, num::NonZeroU64};
 
 use ax_api::task::{self as api, AxTaskHandle};
-use ax_errno::ax_err_type;
 
-use crate::io;
+use crate::{StdError, StdResult};
 
 /// A unique identifier for a running thread.
 #[derive(Eq, PartialEq, Clone, Copy, Debug)]
@@ -75,13 +74,13 @@ impl Builder {
     }
 
     /// Spawns a new thread by taking ownership of the `Builder`, and returns an
-    /// [`io::Result`] to its [`JoinHandle`].
+    /// [`StdResult`] to its [`JoinHandle`].
     ///
     /// The spawned thread may outlive the caller (unless the caller thread
     /// is the main thread; the whole process is terminated when the main
     /// thread finishes). The join handle can be used to block on
     /// termination of the spawned thread.
-    pub fn spawn<F, T>(self, f: F) -> io::Result<JoinHandle<T>>
+    pub fn spawn<F, T>(self, f: F) -> StdResult<JoinHandle<T>>
     where
         F: FnOnce() -> T,
         F: Send + 'static,
@@ -90,7 +89,7 @@ impl Builder {
         unsafe { self.spawn_unchecked(f) }
     }
 
-    unsafe fn spawn_unchecked<F, T>(self, f: F) -> io::Result<JoinHandle<T>>
+    unsafe fn spawn_unchecked<F, T>(self, f: F) -> StdResult<JoinHandle<T>>
     where
         F: FnOnce() -> T,
         F: Send + 'static,
@@ -183,13 +182,13 @@ impl<T> JoinHandle<T> {
     /// This function will return immediately if the associated thread has
     /// already finished.
     #[track_caller]
-    pub fn join(mut self) -> io::Result<T> {
+    pub fn join(mut self) -> StdResult<T> {
         api::ax_wait_for_exit(self.native);
         Arc::get_mut(&mut self.packet)
             .unwrap()
             .result
             .get_mut()
             .take()
-            .ok_or_else(|| ax_err_type!(BadState))
+            .ok_or(StdError::ThreadResultUnavailable)
     }
 }

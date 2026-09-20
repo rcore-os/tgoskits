@@ -1,6 +1,8 @@
 //! x86_64 VM resource creation and initialization.
 
 use ax_memory_addr::PAGE_SIZE_4K;
+#[cfg(all(test, feature = "host-fs"))]
+use axdevice::FwCfgPayloadSlot;
 use axdevice::{DeviceFirmwareBinding, DeviceNodeId, DeviceNodeSpec};
 
 use super::*;
@@ -21,22 +23,22 @@ const ARCH_OWNED_REGIONS: [GuestOwnedRegion; 1] = [GuestOwnedRegion::new(
     crate::layout::VmRegionKind::Reserved,
 )];
 
+/// AMD FCH fixed system-management register aperture.
+const AMD_FCH_MMIO_BASE: usize = 0xfed8_0000;
+const AMD_FCH_MMIO_SIZE: usize = 0x1_0000;
+
 impl X86_64Arch {
     pub(crate) fn create_vm_resources(
-        config: AxVMConfig,
+        config: &mut AxVMConfig,
         fw_cfg_payload: std::sync::Arc<axdevice::FwCfgPayloadSlot>,
     ) -> AxVmResult<AxVMResources> {
         #[cfg(feature = "host-fs")]
-        let config = {
-            let mut config = config;
-            apply_host_serial(&mut config)?;
-            config
-        };
-        let device_plan = plan_devices(&config, fw_cfg_payload)?;
+        apply_host_serial(config)?;
+        let device_plan = plan_devices(config, fw_cfg_payload)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = nested_paging::NestedPageTable::new(levels)?;
-        AxVMResources::from_page_table(config, page_table, device_plan, |root_paddr| {
+        AxVMResources::from_page_table(config.id(), page_table, device_plan, |root_paddr| {
             let gpa_bits = match levels {
                 3 => 39,
                 4 => 48,
@@ -49,18 +51,24 @@ impl X86_64Arch {
     }
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
-        vm.prepare_resources_with(|resources| {
-            let placements = resources.vcpu_placements();
+        vm.prepare_resources_with(|resources, config| {
+            let placements = resources.vcpu_placements(config);
             let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VcpuCreateConfig))?;
             let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            resources.prepare_guest_address_space(vm.id(), &ARCH_OWNED_REGIONS)?;
+            resources.prepare_guest_address_space(vm.id(), config, &ARCH_OWNED_REGIONS)?;
             resources.map_arch_address_space()?;
             let intercepted_ports = resources.resolved_port_intercepts()?;
-            vcpus.setup(resources, |config, memory_regions| {
-                build_vcpu_setup_config(config, memory_regions, &intercepted_ports)
+            let intercepted_mmio = resources.resolved_mmio_intercepts()?;
+            vcpus.setup(resources, config, |config, memory_regions| {
+                build_vcpu_setup_config(
+                    config,
+                    memory_regions,
+                    &intercepted_ports,
+                    &intercepted_mmio,
+                )
             })?;
 
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
@@ -93,6 +101,10 @@ fn plan_devices(
     let controller_id = DeviceNodeId::new("ioapic")?;
     let mut nodes = std::vec![
         DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("amd-fch-mmio")?,
+            super::unassigned_mmio_model(AMD_FCH_MMIO_BASE, AMD_FCH_MMIO_SIZE),
+        ),
+        DeviceNodeSpec::virtual_device(
             controller_id.clone(),
             super::ioapic_model(config.id(), 0xfec0_0000, 0x1000),
         )
@@ -116,10 +128,6 @@ fn plan_devices(
             std::sync::Arc::new(super::cmos::X86CmosModel::new(low_memory_size)),
         ),
         DeviceNodeSpec::virtual_device(
-            DeviceNodeId::new("pci-config")?,
-            std::sync::Arc::new(super::pci_config::X86PciConfigModel),
-        ),
-        DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("acpi-pm-timer")?,
             std::sync::Arc::new(super::acpi_pm_timer::X86AcpiPmTimerModel),
         )
@@ -140,19 +148,27 @@ fn plan_devices(
         &mut nodes,
         &controller_id,
         axdevice_base::InterruptControllerId::new(0),
+        Some(super::pci_config::host_key()),
     )?;
-    Ok(SimpleVmPlan::new(VmDevicePlan::with_pools_for_vm(
+    Ok(SimpleVmPlan::new(VmDevicePlan::with_pci_host_for_vm(
         config,
         nodes,
         &[],
         super::resource_pools::create(config)?,
+        super::pci_config::provider()?,
     )?))
+}
+
+#[cfg(all(test, feature = "host-fs"))]
+pub(crate) fn test_plan_devices(config: &AxVMConfig) -> AxVmResult<X86VmPlan> {
+    plan_devices(config, std::sync::Arc::new(FwCfgPayloadSlot::new()))
 }
 
 fn build_vcpu_setup_config(
     _config: &AxVMConfig,
     memory_regions: &[crate::vm::VMMemoryRegion],
     intercepted_ports: &[(u16, u16)],
+    intercepted_mmio: &[(X86GuestPhysAddr, usize)],
 ) -> AxVmResult<<super::AxvmX86Vcpu as VmArchVcpuOps>::SetupConfig> {
     let mut setup_config = X86VcpuSetupConfig {
         guest_memory_regions: memory_regions
@@ -169,6 +185,10 @@ fn build_vcpu_setup_config(
         x86_result(setup_config.add_intercepted_port_range(base, size))
             .map_err(|error| AxVmError::vcpu("configure resolved device port intercept", error))?;
     }
+    for &(base, size) in intercepted_mmio {
+        x86_result(setup_config.add_intercepted_mmio_range(base, size))
+            .map_err(|error| AxVmError::vcpu("configure resolved device MMIO intercept", error))?;
+    }
     Ok(setup_config)
 }
 
@@ -183,6 +203,23 @@ impl AxVMResources {
                     .pio_ranges()
                     .map(|(_, base, size)| (base, size)),
             );
+        }
+        Ok(ranges)
+    }
+
+    fn resolved_mmio_intercepts(&self) -> AxVmResult<std::vec::Vec<(X86GuestPhysAddr, usize)>> {
+        let graph = self.planned_devices().graph();
+        let mut ranges = std::vec::Vec::new();
+        for node in graph.nodes() {
+            for (_, base, size) in graph.resources_for(node.id())?.mmio_ranges() {
+                let base = usize::try_from(base).map_err(|_| {
+                    AxVmError::invalid_config("planned device MMIO GPA does not fit usize")
+                })?;
+                let size = usize::try_from(size).map_err(|_| {
+                    AxVmError::invalid_config("planned device MMIO size does not fit usize")
+                })?;
+                ranges.push((X86GuestPhysAddr::from_usize(base), size));
+            }
         }
         Ok(ranges)
     }
@@ -227,6 +264,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn x86_device_plan_intercepts_the_amd_fch_mmio_window() {
+        use crate::vm::prepare::device_plan::ArchitectureVmPlan;
+
+        let mut catalog = crate::ConfiguredDeviceCatalog::new();
+        crate::machine::register_devices(&mut catalog).unwrap();
+        let config = AxVMConfig::new(AxVMConfigParams {
+            id: 1,
+            name: "x86-amd-fch-mmio-test".into(),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            memory_regions: std::vec![VmMemConfig {
+                gpa: 0,
+                size: 0x2000_0000,
+                flags: 0x7,
+                map_type: VmMemMappingType::MapAlloc,
+            }],
+            virtual_device_catalog: std::sync::Arc::new(catalog),
+            ..Default::default()
+        });
+        let device_plan = plan_devices(
+            &config,
+            std::sync::Arc::new(axdevice::FwCfgPayloadSlot::new()),
+        )
+        .unwrap();
+        let graph = ArchitectureVmPlan::devices(&device_plan).graph();
+        let resources = graph
+            .resources_for(&DeviceNodeId::new("amd-fch-mmio").unwrap())
+            .unwrap();
+
+        assert_eq!(
+            resources
+                .mmio_ranges()
+                .map(|(slot, base, size)| (slot.clone(), base, size))
+                .collect::<std::vec::Vec<_>>(),
+            std::vec![(
+                ResourceSlot::new("registers").unwrap(),
+                AMD_FCH_MMIO_BASE as u64,
+                AMD_FCH_MMIO_SIZE as u64,
+            )]
+        );
+    }
+
+    #[test]
     fn svm_reserves_the_local_apic_trap_region() {
         let layout = crate::layout::build_address_layout(
             axvm_types::AddressSpacePolicy::Passthrough,
@@ -251,6 +330,25 @@ mod tests {
                     0x1_0000_0000 - X86_LOCAL_APIC_GPA - X86_LOCAL_APIC_SIZE,
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn build_vcpu_setup_config_forwards_resolved_device_mmio_ranges() {
+        let config = AxVMConfig::default_for_test(1, "x86-mmio-setup-test");
+        let bar0_base = X86GuestPhysAddr::from_usize(0x8000_0000);
+        let bar0_size = 0x1000;
+
+        let setup_config =
+            build_vcpu_setup_config(&config, &[], &[], &[(bar0_base, bar0_size)]).unwrap();
+
+        let ranges = setup_config.intercepted_mmio;
+        assert_eq!(
+            ranges,
+            std::vec![X86InterceptedMmioRange {
+                base: bar0_base,
+                size: bar0_size,
+            }]
         );
     }
 }

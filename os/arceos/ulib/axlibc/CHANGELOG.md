@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.39](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.38...ax-libc-v0.5.39) - 2026-09-18
+
+### Other
+
+- updated the following local packages: ax-driver, ax-runtime, ax-posix-api, ax-hal
+
+## [0.5.38](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.37...ax-libc-v0.5.38) - 2026-09-13
+
+### Other
+
+- updated the following local packages: ax-driver, ax-hal, ax-runtime, ax-posix-api
+
+## [0.5.37](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.36...ax-libc-v0.5.37) - 2026-09-12
+
+### Other
+
+- updated the following local packages: ax-runtime, ax-posix-api
+
+## [0.5.36](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.35...ax-libc-v0.5.36) - 2026-09-11
+
+### Other
+
+- updated the following local packages: ax-driver, ax-hal, ax-runtime, ax-posix-api
+
+## [0.5.35](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.34...ax-libc-v0.5.35) - 2026-09-09
+
+### Fixed
+
+- *(arceos)* exercise real std and repair queued task affinity ([#2332](https://github.com/rcore-os/tgoskits/pull/2332))
+
+## [0.5.34](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.33...ax-libc-v0.5.34) - 2026-09-09
+
+### Other
+
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+
+## [0.5.33](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.32...ax-libc-v0.5.33) - 2026-08-27
+
+### Other
+
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+
+## [0.5.32](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.31...ax-libc-v0.5.32) - 2026-08-20
+
+### Other
+
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.5.31](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.30...ax-libc-v0.5.31) - 2026-08-09
 
 ### Added

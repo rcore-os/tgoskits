@@ -155,5 +155,11 @@ int main(void) {
     CHECK(raw_init_module(big, sizeof(big), "") < 0,
           "init_module(256-byte junk) returns error, no crash");
 
+    MODULE_START("init_module_oversized_len");
+    CHECK(geteuid() == 0, "oversized module test starts with root credentials");
+    errno = 0;
+    CHECK(raw_init_module(&dummy, SIZE_MAX, "") == -1 && errno == ENOMEM,
+          "init_module(SIZE_MAX) returns ENOMEM for an oversized image");
+
     SUMMARY();
 }

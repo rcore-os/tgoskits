@@ -66,6 +66,8 @@ int main(void)
     CHECK_RET(msgctl(msqid, IPC_STAT, &info), 0, "msgctl IPC_STAT returns queue info");
     CHECK(info.msg_qnum == 0, "new queue has zero messages");
     CHECK(info.msg_qbytes > 0, "queue size limit initialized");
+    CHECK(info.msg_lspid == 0, "new queue has no last sender");
+    CHECK(info.msg_lrpid == 0, "new queue has no last receiver");
 
     struct msqid_ds set = info;
     set.msg_perm.mode = (set.msg_perm.mode & ~0777) | 0640;

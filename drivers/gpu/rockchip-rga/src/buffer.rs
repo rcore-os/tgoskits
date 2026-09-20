@@ -42,12 +42,12 @@ impl RgaDmaBuffer {
 
     /// Hand ownership to the device before starting hardware (flush CPU writes).
     pub fn prepare_for_device(&self) {
-        self.inner.prepare_for_device_all();
+        self.inner.prepare_for_device(0..self.inner.bytes_len());
     }
 
     /// Reclaim ownership after completion (invalidate so the CPU sees device writes).
     pub fn complete_for_cpu(&self) {
-        self.inner.complete_for_cpu_all();
+        self.inner.complete_for_cpu(0..self.inner.bytes_len());
     }
 }
 
@@ -85,30 +85,5 @@ impl RgaBufferBacking {
     /// Returns `true` if the backing has zero bytes.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn imported_backing_reports_phys_and_len() {
-        let b = RgaBufferBacking::Imported {
-            phys_addr: 0x4000_0000,
-            len: 4096,
-        };
-        assert_eq!(b.phys_addr(), 0x4000_0000);
-        assert_eq!(b.len(), 4096);
-        assert!(!b.is_empty());
-    }
-
-    #[test]
-    fn empty_imported_backing_is_empty() {
-        let b = RgaBufferBacking::Imported {
-            phys_addr: 0,
-            len: 0,
-        };
-        assert!(b.is_empty());
     }
 }

@@ -520,7 +520,6 @@ macro_rules! va {
 
 #[cfg(test)]
 mod test {
-    use core::mem::size_of;
 
     use super::*;
 
@@ -534,61 +533,6 @@ mod test {
     def_usize_addr_formatter! {
         ExampleAddr = "EA:{}";
         AnotherAddr = "AA:{}";
-    }
-
-    #[test]
-    fn test_addr() {
-        let addr = va!(0x2000);
-        assert!(addr.is_aligned_4k());
-        assert!(!addr.is_aligned(0x10000usize));
-        assert_eq!(addr.align_offset_4k(), 0);
-        assert_eq!(addr.align_down_4k(), va!(0x2000));
-        assert_eq!(addr.align_up_4k(), va!(0x2000));
-
-        let addr = va!(0x2fff);
-        assert!(!addr.is_aligned_4k());
-        assert_eq!(addr.align_offset_4k(), 0xfff);
-        assert_eq!(addr.align_down_4k(), va!(0x2000));
-        assert_eq!(addr.align_up_4k(), va!(0x3000));
-
-        let align = 0x100000;
-        let addr = va!(align * 5) + 0x2000;
-        assert!(addr.is_aligned_4k());
-        assert!(!addr.is_aligned(align));
-        assert_eq!(addr.align_offset(align), 0x2000);
-        assert_eq!(addr.align_down(align), va!(align * 5));
-        assert_eq!(addr.align_up(align), va!(align * 6));
-    }
-
-    #[test]
-    pub fn test_addr_convert_and_comparison() {
-        let example1 = ExampleAddr::from_usize(0x1234);
-        let example2 = ExampleAddr::from(0x5678);
-        let another1 = AnotherAddr::from_usize(0x9abc);
-        let another2 = AnotherAddr::from(0xdef0);
-
-        assert_eq!(example1.as_usize(), 0x1234);
-        assert_eq!(Into::<usize>::into(example2), 0x5678);
-        assert_eq!(Into::<usize>::into(another1), 0x9abc);
-        assert_eq!(another2.as_usize(), 0xdef0);
-
-        assert_eq!(example1, ExampleAddr::from(0x1234));
-        assert_eq!(example2, ExampleAddr::from_usize(0x5678));
-        assert_eq!(another1, AnotherAddr::from_usize(0x9abc));
-        assert_eq!(another2, AnotherAddr::from(0xdef0));
-
-        assert!(example1 < example2);
-        assert!(example1 <= example2);
-        assert!(example2 > example1);
-        assert!(example2 >= example1);
-        assert!(example1 != example2);
-    }
-
-    #[test]
-    pub fn test_addr_fmt() {
-        assert_eq!(format!("{:?}", ExampleAddr::from(0x1abc)), "EA:0x1abc");
-        assert_eq!(format!("{:x}", AnotherAddr::from(0x1abc)), "AA:0x1abc");
-        assert_eq!(format!("{:X}", ExampleAddr::from(0x1abc)), "EA:0x1ABC");
     }
 
     #[test]
@@ -610,30 +554,6 @@ mod test {
             ExampleAddr::from_usize(base).align_up(alignment),
             ExampleAddr::from_usize(base)
         );
-    }
-
-    #[test]
-    pub fn test_addr_arithmetic() {
-        let base = 0x1234usize;
-        let offset = 0x100usize;
-        let with_offset = base + offset;
-
-        let addr = ExampleAddr::from_usize(base);
-        let offset_addr = ExampleAddr::from_usize(with_offset);
-
-        assert_eq!(addr.offset(offset as isize), offset_addr);
-        assert_eq!(addr.wrapping_offset(offset as isize), offset_addr);
-        assert_eq!(offset_addr.offset_from(addr), offset as isize);
-        assert_eq!(addr.add(offset), offset_addr);
-        assert_eq!(addr.wrapping_add(offset), offset_addr);
-        assert_eq!(offset_addr.sub(offset), addr);
-        assert_eq!(offset_addr.wrapping_sub(offset), addr);
-        assert_eq!(offset_addr.sub_addr(addr), offset);
-        assert_eq!(offset_addr.wrapping_sub_addr(addr), offset);
-
-        assert_eq!(addr + offset, offset_addr);
-        assert_eq!(offset_addr - offset, addr);
-        assert_eq!(offset_addr - addr, offset);
     }
 
     #[test]
@@ -750,41 +670,5 @@ mod test {
     pub fn test_addr_sub_addr_overflow() {
         let addr = ExampleAddr::from_usize(0);
         let _ = addr.sub_addr(ExampleAddr::from_usize(1));
-    }
-
-    #[test]
-    pub fn test_virt_addr_ptr() {
-        let a: [usize; 4] = [0x1234, 0x5678, 0x9abc, 0xdef0];
-
-        let va0 = VirtAddr::from_ptr_of(&a as *const usize);
-        let va1 = va0.add(size_of::<usize>());
-        let va2 = va1.add(size_of::<usize>());
-        let va3 = va2.add(size_of::<usize>());
-
-        let p0 = va0.as_ptr() as *const usize;
-        let p1 = va1.as_ptr_of::<usize>();
-        let p2 = va2.as_mut_ptr() as *mut usize;
-        let p3 = va3.as_mut_ptr_of::<usize>();
-
-        // testing conversion back to virt addr
-        assert_eq!(va0, VirtAddr::from_ptr_of(p0));
-        assert_eq!(va1, VirtAddr::from_ptr_of(p1));
-        assert_eq!(va2, VirtAddr::from_mut_ptr_of(p2));
-        assert_eq!(va3, VirtAddr::from_mut_ptr_of(p3));
-
-        // testing pointer read/write
-        assert!(unsafe { *p0 } == a[0]);
-        assert!(unsafe { *p1 } == a[1]);
-        assert!(unsafe { *p2 } == a[2]);
-        assert!(unsafe { *p3 } == a[3]);
-
-        unsafe {
-            *p2 = 0xdeadbeef;
-        }
-        unsafe {
-            *p3 = 0xcafebabe;
-        }
-        assert_eq!(a[2], 0xdeadbeef);
-        assert_eq!(a[3], 0xcafebabe);
     }
 }

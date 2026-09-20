@@ -1,6 +1,9 @@
 mod assets;
 mod board;
 mod discovery;
+mod guest_build;
+mod host_probe;
+mod http_probe;
 mod initramfs;
 mod ovmf;
 mod qemu;

@@ -36,6 +36,36 @@
 └─────────────────────────────────────────────────────────┘
 ```
 
+## 设备借用与进程退出
+
+`DeviceOwner` 管理设备分配，`Device<T>` 是弱引用，`DeviceGuard<T>` 持有强引用和独占借用。
+只有 guard 的析构才能解锁；将 guard 移交给内核工作线程会同时移交借用。
+`Osal::get_pid()` 仅提供诊断标签，进程退出或 PID 复用都不能撤销仍存活的 Rust 引用。
+因此不提供 `reclaim_all_held_by(pid)`，也不需要用于外部强制解锁的代际令牌。
+泄漏 guard 会保留设备及其借用；不能通过强制解锁修复泄漏或未完成的 DMA。
+
+子类型转换必须先获得 guard，再调用 `guard.downcast::<T>()`。转换消耗原 guard，
+并在整个子类型借用期间保持外层设备锁，防止外层驱动替换子对象导致悬垂引用。
+转换失败会释放借用。原来的 `device.downcast::<T>()` 调用需迁移到这一形式。
+
+StarryOS 适配层负责当前任务标签和可睡眠上下文中的调度让步；rdrive 调用适配器前释放
+OSAL 注册锁。阻塞式 `lock()` 不能用于 IRQ、关中断或禁止抢占的上下文。
+设备会话、文件引用、异步请求取消及硬件 shutdown 属于 OS glue/runtime 或对应驱动。
+StarryOS 已有的 `close_all_fds()` 按共享文件表生命周期释放文件，不应按退出进程 PID
+扫描全局设备并绕过其他文件引用或内核工作线程。
+
+这里参考 Linux 源码的 `kernel/exit.c::do_exit`、`fs/file.c::exit_files` /
+`put_files_struct`、`fs/file_table.c::__fput` 以及
+`Documentation/locking/mutex-design.rst`：退出路径释放文件引用，最终引用释放才进入
+驱动 release；普通内核锁要求退出时已释放，不能当作 robust futex 强制回收。
+Rust guard 可以跨线程转移，因此这里沿用的是独占访问和资源生命周期原则，
+并不照搬 Linux mutex 的任务绑定规则。
+
+宿主验证：`cargo test -p rdrive --features host-test`。标准测试 runner 已通过
+`scripts/test/std_crates.csv` 和 axbuild 的 `host-test` profile 收录 rdrive。
+借用和投影用例位于 `src/lock.rs`，OSAL 回调用例位于 `src/osal.rs`，
+均通过当前项目的 Cargo 单元测试布局发现执行。
+
 ## 快速开始
 
 ### 1. 添加依赖

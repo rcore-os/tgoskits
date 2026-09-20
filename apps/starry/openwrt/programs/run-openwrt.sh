@@ -1,7 +1,7 @@
 #!/bin/sh
 # run-openwrt.sh - on-target gate for the StarryOS OpenWrt-userland carpet (uci + opkg).
 #
-# Staged into the rootfs by prebuild.sh and invoked as the ENTIRE shell_init_cmd
+# Staged into the rootfs by prebuild.sh and invoked as the entire shell-check step command
 # (`sh /usr/bin/run-openwrt.sh`). The gate lives in a staged script, not inline in the toml,
 # so the harness never echoes a literal TEST PASSED back over the serial console and
 # self-matches success_regex: TEST PASSED is printed ONLY here, ONLY when BOTH carpets report

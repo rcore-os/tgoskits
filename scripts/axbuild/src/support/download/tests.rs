@@ -2,55 +2,6 @@ use tempfile::tempdir;
 
 use super::*;
 
-#[test]
-fn part_path_uses_dot_part_suffix() {
-    let path = Path::new("/tmp/rootfs-x86_64-alpine.img.tar.gz");
-    assert_eq!(
-        part_path(path),
-        PathBuf::from("/tmp/rootfs-x86_64-alpine.img.tar.gz.part")
-    );
-}
-
-#[test]
-fn lock_path_uses_dot_lock_suffix() {
-    let path = Path::new("/tmp/rootfs-x86_64-alpine.img.tar.gz");
-    assert_eq!(
-        lock_path(path),
-        PathBuf::from("/tmp/rootfs-x86_64-alpine.img.tar.gz.lock")
-    );
-}
-
-#[test]
-fn github_release_asset_ref_parses_release_download_url() {
-    let asset_ref = github_release_asset_ref(
-        "https://github.com/rcore-os/tgosimages/releases/download/v0.0.8/rootfs-loongarch64-alpine.img.tar.xz",
-    )
-    .unwrap();
-
-    assert_eq!(
-        asset_ref.api_url,
-        "https://api.github.com/repos/rcore-os/tgosimages/releases/tags/v0.0.8"
-    );
-    assert_eq!(asset_ref.asset_name, "rootfs-loongarch64-alpine.img.tar.xz");
-}
-
-#[test]
-fn github_release_asset_ref_rejects_non_release_download_url() {
-    assert!(github_release_asset_ref("https://example.com/rootfs.tar.xz").is_none());
-    assert!(github_release_asset_ref("https://github.com/rcore-os/tgosimages").is_none());
-}
-
-#[test]
-fn classify_download_sha256_accepts_matching_github_asset_digest() {
-    let actual = "25443ad55c76d810532f24f6868ce66923f58b423b3d6253cec03e8c4cc4c882";
-    let stale_registry = "67dd38677005c55bd5e27062bb885cb3962061729d3ca933faa146dc5d17f6b9";
-
-    assert_eq!(
-        classify_download_sha256(actual, stale_registry, Some(actual)),
-        VerifyOutcome::MatchedGitHubAsset
-    );
-}
-
 #[tokio::test]
 async fn recoverable_lock_accepts_dead_process_pid() {
     let workspace = tempdir().unwrap();
@@ -112,38 +63,74 @@ async fn download_file_restarts_when_range_is_invalid() {
 }
 
 #[tokio::test]
-async fn download_file_retries_transient_http_status() {
-    let server = TestServer::start_with_failures(
-        b"abcdef".to_vec(),
-        vec![StatusCode::TOO_MANY_REQUESTS, StatusCode::GATEWAY_TIMEOUT],
-    )
-    .await;
-    let workspace = tempdir().unwrap();
-    let output_path = workspace.path().join("rootfs.img.tar.gz");
-
-    let client = http_client().unwrap();
-    download_file(&client, &server.url(), &output_path)
-        .await
-        .unwrap();
-
-    assert_eq!(fs::read(&output_path).unwrap(), b"abcdef");
-    assert_eq!(server.request_count(), 3);
+async fn downloads_retry_transient_http_status() {
+    for as_text in [false, true] {
+        let server = TestServer::start_with_failures(
+            b"abcdef".to_vec(),
+            vec![StatusCode::TOO_MANY_REQUESTS, StatusCode::GATEWAY_TIMEOUT],
+        )
+        .await;
+        let workspace = tempdir().unwrap();
+        let output_path = workspace.path().join("rootfs.img.tar.gz");
+        let client = http_client().unwrap();
+        let body = if as_text {
+            fetch_text(&client, &server.url()).await.unwrap()
+        } else {
+            download_file(&client, &server.url(), &output_path)
+                .await
+                .unwrap();
+            fs::read_to_string(&output_path).unwrap()
+        };
+        assert_eq!(body, "abcdef");
+        assert_eq!(server.request_count(), 3);
+    }
 }
 
 #[tokio::test]
-async fn download_file_does_not_retry_permanent_http_status() {
-    let server =
-        TestServer::start_with_failures(b"abcdef".to_vec(), vec![StatusCode::NOT_FOUND]).await;
+async fn downloads_stop_on_permanent_errors_or_exhausted_attempts() {
+    for as_text in [false, true] {
+        for (status, attempts) in [
+            (StatusCode::NOT_FOUND, 1),
+            (StatusCode::SERVICE_UNAVAILABLE, 5),
+        ] {
+            let server = TestServer::start_with_failures(b"abcdef".to_vec(), vec![status; 5]).await;
+            let workspace = tempdir().unwrap();
+            let output_path = workspace.path().join("rootfs.img.tar.gz");
+            let client = http_client().unwrap();
+            let result = if as_text {
+                fetch_text(&client, &server.url()).await.map(|_| ())
+            } else {
+                download_file(&client, &server.url(), &output_path).await
+            };
+            let error = result.unwrap_err();
+            assert!(error.to_string().contains(&format!("HTTP {status}")));
+            assert_eq!(server.request_count(), attempts);
+        }
+    }
+}
+
+#[tokio::test]
+async fn verified_download_rejects_archive_when_registry_digest_mismatches() {
+    let server = TestServer::start_with_range_support(b"replacement".to_vec(), false).await;
     let workspace = tempdir().unwrap();
     let output_path = workspace.path().join("rootfs.img.tar.gz");
+    fs::write(&output_path, b"untrusted-local-archive").unwrap();
 
     let client = http_client().unwrap();
-    let err = download_file(&client, &server.url(), &output_path)
-        .await
-        .unwrap_err();
+    let err = download_file_verified_sha256(
+        &client,
+        &server.url(),
+        &output_path,
+        "0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .await
+    .unwrap_err()
+    .to_string();
 
-    assert!(err.to_string().contains("HTTP 404 Not Found"));
+    assert!(err.contains("downloaded file checksum mismatch"));
+    assert!(err.contains("95713e9cbdd1dfcb2d4080c2537f418d43ca0da25f0d7d6631f4f7c97b89dc47"));
     assert_eq!(server.request_count(), 1);
+    assert!(!output_path.exists());
 }
 
 struct TestServer {

@@ -13,8 +13,10 @@ args = [
 ]
 uefi = false
 to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/openssh-test.sh"
-success_regex = ["(?m)^OPENSSH_TEST_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^OPENSSH_TEST_FAILED\\s*$"]
 timeout = 600
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/openssh-test.sh"
+success_regex = ["(?m)^OPENSSH_TEST_PASSED\\s*$"]

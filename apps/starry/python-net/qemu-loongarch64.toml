@@ -11,8 +11,10 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "python3 /usr/bin/run_all.py"
-success_regex = ['(?m)^TEST PASSED\s*$']
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
 timeout = 18000
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "python3 /usr/bin/run_all.py"
+success_regex = ['(?m)^TEST PASSED\s*$']

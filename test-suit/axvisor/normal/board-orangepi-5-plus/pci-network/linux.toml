@@ -1,0 +1,46 @@
+[base]
+id = 1
+name = "linux-pci-network"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [0]
+
+[kernel]
+entry_point = 0x2_4008_0000
+image_location = "fs"
+kernel_load_addr = 0x2_4008_0000
+# Use the board's Linux 6.1.99 image and matching rootfs modules.
+kernel_path = "/boot/Image"
+dtb_load_addr = 0x2_4000_0000
+ramdisk_path = "/guest/linux/initramfs.cpio"
+ramdisk_load_addr = 0xc000_0000
+# Physical PCI MSI/ITS assignment is not wired into the AxVM host backend.
+# This case exercises the PCIe controller's physical INTx cascade instead.
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 cma=128M pci=nomsi"
+memory_regions = [
+    [0xb000_0000, 0x1000_0000, 0x7, 2],
+    [0xc000_0000, 0x3000_0000, 0x7, 2],
+    [0x2_4000_0000, 0x8000_0000, 0x7, 1],
+]
+
+[devices]
+# Preserve UART numbering and complete GPIO/SCMI provider subtrees.
+# The firmware dependency walker does not follow Rockchip-specific GRF references.
+passthrough = [
+    { path = "/aliases" },
+    { path = "/clocks" },
+    { path = "/firmware" },
+    { path = "/pinctrl" },
+    { path = "/syscon@fd5f0000" },
+    { path = "/syscon@fd5b0000" },
+    { path = "/syscon@fd5bc000" },
+    { path = "/syscon@fd5c4000" },
+    { path = "/vcc3v3-pcie-eth" },
+    { path = "/mmc@fe2c0000" },
+    { path = "/mmc@fe2e0000" },
+    { path = "/spi@feb20000" },
+    { path = "/i2c@fd880000" },
+    { path = "/pcie@fe180000" },
+    { path = "/pcie@fe190000" },
+]
+disabled = []

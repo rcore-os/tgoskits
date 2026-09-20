@@ -1,8 +1,6 @@
 use alloc::vec::Vec;
-use core::{fmt, time::Duration};
+use core::{fmt, mem::offset_of, time::Duration};
 
-use ax_errno::{AxError, AxResult};
-use ax_task::future::{self, block_on, poll_io};
 use axpoll::IoEvents;
 use bitmaps::Bitmap;
 use linux_raw_sys::{
@@ -13,9 +11,14 @@ use starry_signal::SignalSet;
 
 use super::FdPollSet;
 use crate::{
-    mm::{UserConstPtr, UserPtr, nullable},
+    StarryError, StarryResult,
+    file::current_fd_table,
+    mm::{UserConstPtr, UserPtr},
     syscall::signal::check_sigset_size,
-    task::with_blocked_signals,
+    task::{
+        future::{UserWaitOutcome, block_on_user_timeout, poll_io},
+        with_blocked_signals,
+    },
     time::TimeValueLike,
 };
 
@@ -51,39 +54,63 @@ impl fmt::Debug for FdSet {
 }
 
 fn do_select(
+    current: &crate::task::UserTaskRef,
     nfds: u32,
     readfds: UserPtr<__kernel_fd_set>,
     writefds: UserPtr<__kernel_fd_set>,
     exceptfds: UserPtr<__kernel_fd_set>,
     timeout: Option<Duration>,
     sigmask: UserConstPtr<SignalSetWithSize>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if nfds > __FD_SETSIZE {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
-    let sigmask = if let Some(sigmask) = nullable!(sigmask.get_as_ref())? {
-        check_sigset_size(sigmask.sigsetsize)?;
-        let set = sigmask.set;
-        nullable!(set.get_as_ref())?
-    } else {
+    let sigmask = if sigmask.is_null() {
         None
+    } else {
+        // SAFETY: pselect6's argument record contains only a pointer-sized
+        // address and a byte count, so every bit pattern is a valid record.
+        let sigmask = unsafe { sigmask.read_abi(current)? };
+        check_sigset_size(sigmask.sigsetsize)?;
+        let set = UserConstPtr::<SignalSet>::from(sigmask.set);
+        if set.is_null() {
+            None
+        } else {
+            // SAFETY: SignalSet is a transparent signal-bit mask; all bit
+            // patterns are valid and unsupported bits are validated later.
+            Some(unsafe { set.read_abi(current)? })
+        }
     };
 
-    let mut readfds = nullable!(readfds.get_as_mut())?;
-    let mut writefds = nullable!(writefds.get_as_mut())?;
-    let mut exceptfds = nullable!(exceptfds.get_as_mut())?;
+    // SAFETY: __kernel_fd_set is a C bitset made exclusively of integer
+    // words, so every copied byte pattern is a valid value.
+    let mut readfds_value = if readfds.is_null() {
+        None
+    } else {
+        Some(unsafe { readfds.read_abi(current)? })
+    };
+    let mut writefds_value = if writefds.is_null() {
+        None
+    } else {
+        Some(unsafe { writefds.read_abi(current)? })
+    };
+    let mut exceptfds_value = if exceptfds.is_null() {
+        None
+    } else {
+        Some(unsafe { exceptfds.read_abi(current)? })
+    };
 
-    let read_set = FdSet::new(nfds as _, readfds.as_deref());
-    let write_set = FdSet::new(nfds as _, writefds.as_deref());
-    let except_set = FdSet::new(nfds as _, exceptfds.as_deref());
+    let read_set = FdSet::new(nfds as _, readfds_value.as_ref());
+    let write_set = FdSet::new(nfds as _, writefds_value.as_ref());
+    let except_set = FdSet::new(nfds as _, exceptfds_value.as_ref());
 
     debug!(
         "sys_select <= nfds: {nfds} sets: [read: {read_set:?}, write: {write_set:?}, except: \
          {except_set:?}] timeout: {timeout:?}"
     );
 
-    let current_fd_table = crate::file::current_fd_table();
-    let fd_table = current_fd_table.read();
+    let fd_table_owner = current_fd_table();
+    let fd_table = fd_table_owner.read();
     let fd_bitmap = read_set.0 | write_set.0 | except_set.0;
     let fd_count = fd_bitmap.len();
     let mut fds = Vec::with_capacity(fd_count);
@@ -91,7 +118,7 @@ fn do_select(
     for fd in fd_bitmap.into_iter() {
         let f = fd_table
             .get(fd)
-            .ok_or(AxError::BadFileDescriptor)?
+            .ok_or(StarryError::BadFileDescriptor)?
             .inner
             .clone();
         let mut events = IoEvents::empty();
@@ -107,8 +134,10 @@ fn do_select(
     drop(fd_table);
     let fds = FdPollSet(fds);
 
-    with_blocked_signals(sigmask.copied(), || {
-        let result = block_on(future::timeout(
+    let task = current;
+    let result = with_blocked_signals(sigmask, || {
+        let result = block_on_user_timeout(
+            task,
             timeout,
             poll_io(&fds, IoEvents::empty(), false, || {
                 let mut res = 0usize;
@@ -118,11 +147,15 @@ fn do_select(
                 for ((fd, interested), index) in fds.0.iter().zip(fd_indices.iter().copied()) {
                     let events = fd.poll();
                     let always_report = events & IoEvents::ALWAYS_POLL;
+                    // Linux fs/select.c: POLLIN_SET carries HUP|ERR but
+                    // POLLOUT_SET carries only ERR, so a hangup makes a fd
+                    // readable (read returns EOF) yet never writable.
+                    let write_report = events & IoEvents::ERR;
                     let selected = events & *interested;
                     let selected_read = selected.contains(IoEvents::IN)
                         || (read_set.0.get(index) && !always_report.is_empty());
                     let selected_write = selected.contains(IoEvents::OUT)
-                        || (write_set.0.get(index) && !always_report.is_empty());
+                        || (write_set.0.get(index) && !write_report.is_empty());
                     let selected_except =
                         selected.contains(IoEvents::ERR) && except_set.0.get(index);
 
@@ -140,89 +173,110 @@ fn do_select(
                     }
                 }
                 if res > 0 {
-                    write_fd_set(readfds.as_deref_mut(), &selected_readfds, nfds as _);
-                    write_fd_set(writefds.as_deref_mut(), &selected_writefds, nfds as _);
-                    write_fd_set(exceptfds.as_deref_mut(), &selected_exceptfds, nfds as _);
+                    write_fd_set(readfds_value.as_mut(), &selected_readfds, nfds as _);
+                    write_fd_set(writefds_value.as_mut(), &selected_writefds, nfds as _);
+                    write_fd_set(exceptfds_value.as_mut(), &selected_exceptfds, nfds as _);
                     return Ok(res as _);
                 }
 
-                Err(AxError::WouldBlock)
+                Err(StarryError::WouldBlock)
             }),
-        ));
+        );
         match result {
-            Ok(r) => r,
-            Err(_) => {
+            UserWaitOutcome::Ready(result) => result,
+            UserWaitOutcome::TimedOut => {
                 let empty = FdSet(Bitmap::new());
-                write_fd_set(readfds, &empty, nfds as _);
-                write_fd_set(writefds, &empty, nfds as _);
-                write_fd_set(exceptfds, &empty, nfds as _);
+                write_fd_set(readfds_value.as_mut(), &empty, nfds as _);
+                write_fd_set(writefds_value.as_mut(), &empty, nfds as _);
+                write_fd_set(exceptfds_value.as_mut(), &empty, nfds as _);
                 Ok(0)
             }
+            UserWaitOutcome::Interrupted => Err(crate::StarryError::Interrupted),
         }
-    })
+    });
+    if let Some(value) = readfds_value {
+        readfds.write_field(
+            current,
+            offset_of!(__kernel_fd_set, fds_bits),
+            value.fds_bits,
+        )?;
+    }
+    if let Some(value) = writefds_value {
+        writefds.write_field(
+            current,
+            offset_of!(__kernel_fd_set, fds_bits),
+            value.fds_bits,
+        )?;
+    }
+    if let Some(value) = exceptfds_value {
+        exceptfds.write_field(
+            current,
+            offset_of!(__kernel_fd_set, fds_bits),
+            value.fds_bits,
+        )?;
+    }
+    result
 }
 
 #[cfg(target_arch = "x86_64")]
 pub fn sys_select(
+    current: &crate::task::UserTaskRef,
     nfds: u32,
     readfds: UserPtr<__kernel_fd_set>,
     writefds: UserPtr<__kernel_fd_set>,
     exceptfds: UserPtr<__kernel_fd_set>,
     timeout: UserConstPtr<timeval>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     do_select(
+        current,
         nfds,
         readfds,
         writefds,
         exceptfds,
-        nullable!(timeout.get_as_ref())?
-            .map(|it| it.try_into_time_value())
-            .transpose()?,
+        (if timeout.is_null() {
+            None
+        } else {
+            // SAFETY: timeval contains only signed integer fields; semantic
+            // range validation is performed by try_into_time_value below.
+            Some(unsafe { timeout.read_abi(current)? })
+        })
+        .map(|it| it.try_into_time_value())
+        .transpose()?,
         0.into(),
     )
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern)]
 pub struct SignalSetWithSize {
-    set: UserConstPtr<SignalSet>,
+    set: usize,
     sigsetsize: usize,
 }
 
 pub fn sys_pselect6(
+    current: &crate::task::UserTaskRef,
     nfds: u32,
     readfds: UserPtr<__kernel_fd_set>,
     writefds: UserPtr<__kernel_fd_set>,
     exceptfds: UserPtr<__kernel_fd_set>,
     timeout: UserConstPtr<timespec>,
     sigmask: UserConstPtr<SignalSetWithSize>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     do_select(
+        current,
         nfds,
         readfds,
         writefds,
         exceptfds,
-        nullable!(timeout.get_as_ref())?
-            .map(|ts| ts.try_into_time_value())
-            .transpose()?,
+        (if timeout.is_null() {
+            None
+        } else {
+            // SAFETY: timespec contains only signed integer fields; semantic
+            // range validation is performed by try_into_time_value below.
+            Some(unsafe { timeout.read_abi(current)? })
+        })
+        .map(|ts| ts.try_into_time_value())
+        .transpose()?,
         sigmask,
     )
-}
-
-#[cfg(axtest)]
-pub(crate) fn select_fd_set_and_validation_rules_hold_for_test() -> bool {
-    use linux_raw_sys::general::__FD_SETSIZE;
-
-    // Test nfds validation: must be <= __FD_SETSIZE
-    let valid_nfds = 1024u32;
-    assert!(valid_nfds <= __FD_SETSIZE as u32);
-
-    let max_nfds = __FD_SETSIZE as u32;
-    assert!(max_nfds <= __FD_SETSIZE as u32);
-
-    // Invalid: nfds > __FD_SETSIZE
-    let invalid_nfds = (__FD_SETSIZE + 1) as u32;
-    assert!(invalid_nfds > __FD_SETSIZE as u32);
-
-    true
 }

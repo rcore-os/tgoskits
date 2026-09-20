@@ -28,6 +28,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -167,6 +169,66 @@ static void phase_bad_whence(const char *path)
     close(fd);
 }
 
+static void phase_fifo(const char *path)
+{
+    unlink(path);
+    if (mkfifo(path, 0600) != 0) {
+        CHECK(0, "FIFO creation: %s", strerror(errno));
+        return;
+    }
+    int holder = open(path, O_RDWR | O_NONBLOCK);
+    int peer = open(path, O_RDWR | O_NONBLOCK);
+    if (holder < 0 || peer < 0) {
+        CHECK(0, "FIFO open: %s", strerror(errno));
+        goto out;
+    }
+    /* Buffered bytes must not become the lock's cursor or inode size. */
+    CHECK(syscall(SYS_write, holder, "abc", 3) == 3, "FIFO has buffered data");
+    char byte;
+    CHECK(syscall(SYS_read, peer, &byte, 1) == 1 && byte == 'a',
+          "FIFO read does not advance a file cursor");
+    const int commands[] = {F_SETLK, F_SETLKW, F_OFD_SETLK, F_OFD_SETLKW};
+    const short origins[] = {SEEK_END, SEEK_CUR};
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+        for (size_t j = 0; j < sizeof(origins) / sizeof(origins[0]); j++) {
+            struct flock lock = {
+                .l_type = F_WRLCK, .l_whence = origins[j], .l_start = 7, .l_len = 3,
+            };
+            int result = syscall(SYS_fcntl, holder, commands[i], &lock);
+            CHECK(result == 0, "FIFO cmd=%d whence=%d lock [7,10): result=%d errno=%d",
+                  commands[i], origins[j], result, errno);
+            if (result != 0)
+                continue;
+            /* Opposite ownership classes conflict even in the same process. */
+            int query = i < 2 ? F_OFD_GETLK : F_GETLK;
+            struct flock probe = lock;
+            result = syscall(SYS_fcntl, peer, query, &probe);
+            CHECK(result == 0 && probe.l_type == F_WRLCK &&
+                  probe.l_whence == SEEK_SET && probe.l_start == 7 && probe.l_len == 3,
+                  "FIFO cmd=%d whence=%d query reports absolute [7,10)", query, origins[j]);
+            probe = lock;
+            probe.l_whence = SEEK_SET;
+            errno = 0;
+            result = syscall(SYS_fcntl, peer, F_OFD_SETLK, &probe);
+            CHECK(result == -1 && errno == EAGAIN, "FIFO absolute range conflicts");
+            lock.l_type = F_UNLCK;
+            CHECK(syscall(SYS_fcntl, holder, commands[i], &lock) == 0,
+                  "FIFO relative unlock cmd=%d whence=%d", commands[i], origins[j]);
+            probe = lock;
+            probe.l_type = F_WRLCK;
+            result = syscall(SYS_fcntl, peer, query, &probe);
+            CHECK(result == 0 && probe.l_type == F_UNLCK, "FIFO relative range is released");
+        }
+    }
+    errno = 0;
+    CHECK(syscall(SYS_lseek, holder, 0, SEEK_CUR) == -1 && errno == ESPIPE,
+          "FIFO remains nonseekable");
+out:
+    if (peer >= 0) close(peer);
+    if (holder >= 0) close(holder);
+    unlink(path);
+}
+
 int main(void)
 {
     printf("=== bug-fcntl-whence ===\n");
@@ -177,6 +239,7 @@ int main(void)
     phase_bad_whence(path);
 
     unlink(path);
+    phase_fifo("/tmp/starry_bug_fcntl_whence_fifo");
 
     printf("=== bug-fcntl-whence: passed=%d failed=%d ===\n", passed, failed);
     return failed == 0 ? 0 : 1;

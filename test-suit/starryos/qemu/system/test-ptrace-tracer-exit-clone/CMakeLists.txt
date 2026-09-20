@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+project(test-ptrace-tracer-exit-clone C)
+add_executable(test-ptrace-tracer-exit-clone src/main.c)
+target_compile_options(test-ptrace-tracer-exit-clone PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(test-ptrace-tracer-exit-clone PRIVATE pthread)
+install(TARGETS test-ptrace-tracer-exit-clone RUNTIME DESTINATION usr/bin/starry-test-suit)

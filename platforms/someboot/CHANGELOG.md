@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/someboot-v0.7.0...someboot-v0.7.1) - 2026-09-18
+
+### Other
+
+- updated the following local packages: ax-cpu
+
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/someboot-v0.6.0...someboot-v0.7.0) - 2026-09-13
+
+### Other
+
+- *(someboot)* publish Linux-style CPU capacity through topology ([#2386](https://github.com/rcore-os/tgoskits/pull/2386))
+
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/someboot-v0.5.1...someboot-v0.6.0) - 2026-09-11
+
+### Other
+
+- *(ax-cpu)* [**breaking**] centralize CPU mechanisms and architecture backends ([#2363](https://github.com/rcore-os/tgoskits/pull/2363))
+
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/someboot-v0.5.0...someboot-v0.5.1) - 2026-09-09
+
+### Fixed
+
+- *(runtime)* prefer userspace over kernel TLS through build cfg ([#2339](https://github.com/rcore-os/tgoskits/pull/2339))
+
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/someboot-v0.4.2...someboot-v0.5.0) - 2026-09-09
+
+### Added
+
+- *(starry-mm)* redesign VMA lifecycle and transactional updates ([#2261](https://github.com/rcore-os/tgoskits/pull/2261))
+
+### Other
+
+- *(repo)* remove duplicated tests and configuration snapshots ([#2326](https://github.com/rcore-os/tgoskits/pull/2326))
+- *(repo)* continue removing nonfunctional test scaffolding ([#2307](https://github.com/rcore-os/tgoskits/pull/2307))
+- *(ax-task)* rebuild scheduler and runtime ownership ([#1775](https://github.com/rcore-os/tgoskits/pull/1775))
+- *(repo)* remove nonfunctional test scaffolding ([#2303](https://github.com/rcore-os/tgoskits/pull/2303))
+
+### Changed
+
+- **Breaking:** publish a validated virtual-address-space layout instead of a
+  fixed kernel range, and derive LoongArch canonical halves from CPUCFG VALEN.
+
+## [0.4.2](https://github.com/rcore-os/tgoskits/compare/someboot-v0.4.1...someboot-v0.4.2) - 2026-08-27
+
+### Added
+
+- *(loongarch-intc-driver)* extract OS-independent interrupt controllers ([#2174](https://github.com/rcore-os/tgoskits/pull/2174))
+
+## [0.4.1](https://github.com/rcore-os/tgoskits/compare/someboot-v0.4.0...someboot-v0.4.1) - 2026-08-25
+
+### Other
+
+- *(x86-apic-driver)* extract x86 interrupt controllers with rdif-intc support ([#2118](https://github.com/rcore-os/tgoskits/pull/2118))
+
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.8...someboot-v0.4.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+- *(starry-nixos)* add Stage-2 NixOS userspace baseline ([#1923](https://github.com/rcore-os/tgoskits/pull/1923))
+
+### Fixed
+
+- *(console)* unify sleepable runtime console arbitration ([#2113](https://github.com/rcore-os/tgoskits/pull/2113))
+- *(someboot)* [**breaking**] expose queryable secondary CPU startup ([#1981](https://github.com/rcore-os/tgoskits/pull/1981))
+- *(someboot)* harden timer boundary arithmetic ([#1982](https://github.com/rcore-os/tgoskits/pull/1982))
+- *(some-serial)* bound PL011 early-console startup ([#1983](https://github.com/rcore-os/tgoskits/pull/1983))
+- *(visionfive2)* restore booti and SD rootfs boot ([#1954](https://github.com/rcore-os/tgoskits/pull/1954))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(serial)* establish bounded owner-affine UART runtime ([#2076](https://github.com/rcore-os/tgoskits/pull/2076))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ### Changed
 
 - **Breaking:** replace blocking `cpu_on()` with a non-blocking, typed

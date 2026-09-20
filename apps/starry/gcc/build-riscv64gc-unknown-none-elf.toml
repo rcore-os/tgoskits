@@ -6,6 +6,4 @@ features = [
   "ax-driver/serial",
   "ax-driver/nvme",
   "ax-driver/virtio-net",
-  "starry-kernel/input",
-  "starry-kernel/vsock",
 ]

@@ -3,8 +3,6 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult};
-use ax_task::future::{self, block_on, poll_io};
 use axpoll::IoEvents;
 use bitflags::bitflags;
 use linux_raw_sys::general::{
@@ -12,16 +10,19 @@ use linux_raw_sys::general::{
     timespec,
 };
 use starry_signal::SignalSet;
-use starry_vm::{vm_read_slice, vm_write_slice};
 
 use crate::{
+    StarryError, StarryResult,
     file::{
         FileLike,
         epoll::{Epoll, EpollEvent, EpollFlags},
     },
-    mm::{UserConstPtr, UserPtr, check_access, nullable},
+    mm::{UserConstPtr, UserPtr, check_access, vm_read_slice, vm_write_slice},
     syscall::signal::check_sigset_size,
-    task::with_blocked_signals,
+    task::{
+        future::{UserWaitOutcome, block_on_user_timeout, poll_io},
+        with_blocked_signals,
+    },
     time::TimeValueLike,
 };
 
@@ -33,12 +34,12 @@ const EPOLLEXCLUSIVE_OK_BITS: u32 = IoEvents::IN.bits()
     | EpollFlags::EDGE_TRIGGER.bits()
     | EpollFlags::EXCLUSIVE.bits();
 
-fn check_epoll_events_access(events: UserPtr<epoll_event>, maxevents: usize) -> AxResult<()> {
+fn check_epoll_events_access(events: UserPtr<epoll_event>, maxevents: usize) -> StarryResult<()> {
     let len = maxevents
         .checked_mul(size_of::<epoll_event>())
-        .ok_or(AxError::BadAddress)?;
-    let start = events.as_ptr() as usize;
-    start.checked_add(len).ok_or(AxError::BadAddress)?;
+        .ok_or(StarryError::BadAddress)?;
+    let start = events.address().as_usize();
+    start.checked_add(len).ok_or(StarryError::BadAddress)?;
     check_access(start, len)?;
     Ok(())
 }
@@ -56,7 +57,10 @@ fn check_epoll_events_access(events: UserPtr<epoll_event>, maxevents: usize) -> 
 /// address that is `4 (mod 8)`. Reading through a typed `*const epoll_event`
 /// (which the generic VM helpers reject when the pointer is unaligned) would
 /// then fail with `EFAULT`. Copy at byte granularity to mirror Linux.
-fn read_epoll_event(event: UserConstPtr<epoll_event>) -> AxResult<epoll_event> {
+fn read_epoll_event(
+    current: &crate::task::UserTaskRef,
+    event: UserConstPtr<epoll_event>,
+) -> crate::StarryResult<epoll_event> {
     let mut buf = MaybeUninit::<epoll_event>::uninit();
     let dst = unsafe {
         core::slice::from_raw_parts_mut(
@@ -64,7 +68,7 @@ fn read_epoll_event(event: UserConstPtr<epoll_event>) -> AxResult<epoll_event> {
             size_of::<epoll_event>(),
         )
     };
-    vm_read_slice(event.address().as_ptr(), dst)?;
+    vm_read_slice(current, event.address().as_ptr(), dst)?;
     // SAFETY: all bytes were just initialized by the copy above and any bit
     // pattern is a valid `epoll_event` (plain old data).
     Ok(unsafe { buf.assume_init() })
@@ -78,10 +82,11 @@ fn read_epoll_event(event: UserConstPtr<epoll_event>) -> AxResult<epoll_event> {
 /// Linux's `__put_user` of each field has no alignment requirement, so we copy
 /// at byte granularity to match.
 fn write_epoll_event(
+    current: &crate::task::UserTaskRef,
     events: UserPtr<epoll_event>,
     index: usize,
     event: &epoll_event,
-) -> AxResult<()> {
+) -> StarryResult<()> {
     let dst = events.as_ptr().wrapping_add(index) as *mut u8;
     let src = unsafe {
         core::slice::from_raw_parts(
@@ -89,7 +94,7 @@ fn write_epoll_event(
             size_of::<epoll_event>(),
         )
     };
-    vm_write_slice(dst, src)?;
+    vm_write_slice(current, dst, src)?;
     Ok(())
 }
 
@@ -101,8 +106,8 @@ bitflags! {
     }
 }
 
-pub fn sys_epoll_create1(flags: u32) -> AxResult<isize> {
-    let flags = EpollCreateFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
+pub fn sys_epoll_create1(flags: u32) -> StarryResult<isize> {
+    let flags = EpollCreateFlags::from_bits(flags).ok_or(StarryError::InvalidInput)?;
     debug!("sys_epoll_create1 <= flags: {flags:?}");
     Epoll::new()
         .add_to_fd_table(flags.contains(EpollCreateFlags::CLOEXEC))
@@ -111,32 +116,33 @@ pub fn sys_epoll_create1(flags: u32) -> AxResult<isize> {
 
 /// Implements legacy `epoll_create`, validating size before creating an epoll fd without flags.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_epoll_create(size: i32) -> AxResult<isize> {
+pub fn sys_epoll_create(size: i32) -> StarryResult<isize> {
     if size <= 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     sys_epoll_create1(0)
 }
 
 pub fn sys_epoll_ctl(
+    current: &crate::task::UserTaskRef,
     epfd: i32,
     op: u32,
     fd: i32,
     event: UserConstPtr<epoll_event>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let epoll = Epoll::from_fd(epfd)?;
     debug!("sys_epoll_ctl <= epfd: {epfd}, op: {op}, fd: {fd}");
 
     if epfd == fd {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
-    let parse_event = || -> AxResult<(u32, EpollEvent, EpollFlags)> {
-        let event = read_epoll_event(event)?;
+    let parse_event = || -> crate::StarryResult<(u32, EpollEvent, EpollFlags)> {
+        let event = read_epoll_event(current, event)?;
         let raw_events = event.events;
         let events = IoEvents::from_bits_truncate(event.events);
         let flags =
-            EpollFlags::from_bits(raw_events & !events.bits()).ok_or(AxError::InvalidInput)?;
+            EpollFlags::from_bits(raw_events & !events.bits()).ok_or(StarryError::InvalidInput)?;
         Ok((
             raw_events,
             EpollEvent {
@@ -154,33 +160,34 @@ pub fn sys_epoll_ctl(
             if raw_events & EPOLLEXCLUSIVE != 0
                 && (raw_events & !EPOLLEXCLUSIVE_OK_BITS != 0 || Epoll::from_fd(fd).is_ok())
             {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             epoll.add(fd, event, flags)?;
         }
         EPOLL_CTL_MOD => {
             let (_, event, flags) = parse_event()?;
             if flags.contains(EpollFlags::EXCLUSIVE) {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             epoll.modify(fd, event, flags)?;
         }
         EPOLL_CTL_DEL => {
             epoll.delete(fd)?;
         }
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     }
     Ok(0)
 }
 
 fn do_epoll_wait(
+    current: &crate::task::UserTaskRef,
     epfd: i32,
     events: UserPtr<epoll_event>,
     maxevents: i32,
     timeout: Option<Duration>,
     sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if !sigmask.is_null() {
         check_sigset_size(sigsetsize)?;
     }
@@ -189,96 +196,97 @@ fn do_epoll_wait(
     let epoll = Epoll::from_fd(epfd)?;
 
     if maxevents <= 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let maxevents = maxevents as usize;
     if maxevents > EP_MAX_EVENTS {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if events.is_null() {
-        return Err(AxError::BadAddress);
+        return Err(StarryError::BadAddress);
     }
     check_epoll_events_access(events, maxevents)?;
 
-    let count = with_blocked_signals(
-        nullable!(sigmask.get_as_ref())?.copied(),
-        || match block_on(future::timeout(
+    let sigmask = if sigmask.is_null() {
+        None
+    } else {
+        // SAFETY: SignalSet is a transparent signal-bit mask; every bit
+        // pattern is valid and unsupported bits are handled by signal logic.
+        Some(unsafe { sigmask.read_abi(current)? })
+    };
+
+    let task = current;
+    let count = with_blocked_signals(sigmask, || {
+        match block_on_user_timeout(
+            task,
             timeout,
             poll_io(epoll.as_ref(), IoEvents::IN, false, || {
                 epoll.register_waiter_wakers()?;
                 epoll.poll_events_with(maxevents, |index, event| {
-                    write_epoll_event(events, index, &event)?;
+                    write_epoll_event(current, events, index, &event)?;
                     Ok(())
                 })
             }),
-        )) {
-            Ok(r) => r.map(|n| n as _),
-            Err(_) => Ok(0),
-        },
-    )?;
+        ) {
+            UserWaitOutcome::Ready(result) => result.map(|count| count as _),
+            UserWaitOutcome::TimedOut => Ok(0),
+            UserWaitOutcome::Interrupted => Err(crate::StarryError::Interrupted),
+        }
+    })?;
 
     Ok(count)
 }
 
 pub fn sys_epoll_pwait(
+    current: &crate::task::UserTaskRef,
     epfd: i32,
     events: UserPtr<epoll_event>,
     maxevents: i32,
     timeout: i32,
     sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let timeout = if timeout < 0 {
         None
     } else {
         Some(Duration::from_millis(timeout as u64))
     };
-    do_epoll_wait(epfd, events, maxevents, timeout, sigmask, sigsetsize)
+    do_epoll_wait(
+        current, epfd, events, maxevents, timeout, sigmask, sigsetsize,
+    )
 }
 
 /// Implements legacy `epoll_wait` as an x86_64 wrapper around `epoll_pwait`.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_epoll_wait(
+    current: &crate::task::UserTaskRef,
     epfd: i32,
     events: UserPtr<epoll_event>,
     maxevents: i32,
     timeout: i32,
-) -> AxResult<isize> {
-    sys_epoll_pwait(epfd, events, maxevents, timeout, 0usize.into(), 0)
+) -> crate::StarryResult<isize> {
+    sys_epoll_pwait(current, epfd, events, maxevents, timeout, 0usize.into(), 0)
 }
 
 pub fn sys_epoll_pwait2(
+    current: &crate::task::UserTaskRef,
     epfd: i32,
     events: UserPtr<epoll_event>,
     maxevents: i32,
     timeout: UserConstPtr<timespec>,
     sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
-) -> AxResult<isize> {
-    let timeout = nullable!(timeout.get_as_ref())?
-        .map(|ts| ts.try_into_time_value())
-        .transpose()?;
-    do_epoll_wait(epfd, events, maxevents, timeout, sigmask, sigsetsize)
-}
-
-#[cfg(axtest)]
-pub(crate) fn epoll_validation_rules_hold_for_test() -> bool {
-    use core::mem::size_of;
-
-    use linux_raw_sys::general::{EPOLL_CLOEXEC, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD};
-
-    // Test EP_MAX_EVENTS calculation
-    let ep_max_events = i32::MAX as usize / size_of::<linux_raw_sys::general::epoll_event>();
-    assert!(ep_max_events > 0);
-
-    // Test valid epoll operations
-    let valid_ops = [EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD];
-    for &op in &valid_ops {
-        assert!(op == EPOLL_CTL_ADD || op == EPOLL_CTL_DEL || op == EPOLL_CTL_MOD);
-    }
-
-    // Test EPOLL_CLOEXEC flag
-    assert!(EPOLL_CLOEXEC != 0);
-
-    true
+) -> crate::StarryResult<isize> {
+    let timeout = (if timeout.is_null() {
+        None
+    } else {
+        // SAFETY: timespec contains only signed integer fields; semantic
+        // range validation is performed by try_into_time_value below.
+        Some(unsafe { timeout.read_abi(current)? })
+    })
+    .map(|ts| ts.try_into_time_value())
+    .transpose()?;
+    do_epoll_wait(
+        current, epfd, events, maxevents, timeout, sigmask, sigsetsize,
+    )
 }

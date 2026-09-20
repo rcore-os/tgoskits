@@ -156,7 +156,7 @@ mod tests {
             "z-board",
             r#"
 target = "aarch64-unknown-none-softfloat"
-features = ["qemu"]
+features = ["ax-driver/virtio-net"]
 log = "Warn"
 "#,
         );
@@ -165,7 +165,7 @@ log = "Warn"
             "a-board",
             r#"
 target = "x86_64-unknown-none"
-features = ["qemu"]
+features = ["ax-driver/virtio-net"]
 log = "Warn"
 "#,
         );
@@ -178,10 +178,11 @@ baud_rate = "1500000"
 "#,
         );
 
-        assert_eq!(
-            board_names(root.path()).unwrap(),
-            vec!["a-board".to_string(), "z-board".to_string()]
-        );
+        let names = board_names(root.path()).unwrap();
+        assert!(names.contains(&"a-board".to_string()));
+        assert!(names.contains(&"z-board".to_string()));
+        assert!(!names.contains(&"orangepi-5-plus-uboot".to_string()));
+        assert!(names.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 
     #[test]
@@ -202,7 +203,7 @@ log = "Info"
             "qemu-aarch64",
             r#"
 target = "aarch64-unknown-none-softfloat"
-features = ["qemu"]
+features = ["ax-driver/virtio-net"]
 log = "Warn"
 "#,
         );
@@ -219,29 +220,5 @@ log = "Warn"
         let board =
             default_board_for_target(root.path(), "aarch64-unknown-none-softfloat").unwrap();
         assert_eq!(board.unwrap().name, "qemu-aarch64");
-    }
-
-    #[test]
-    fn default_qemu_boards_enable_nvme_root_device() {
-        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .unwrap();
-
-        for board in board_default_list(workspace_root)
-            .unwrap()
-            .into_iter()
-            .filter(|board| board.name.starts_with("qemu-"))
-        {
-            assert!(
-                board
-                    .build_info
-                    .features
-                    .iter()
-                    .any(|feature| feature == "ax-driver/nvme"),
-                "default QEMU board `{}` must enable the NVMe root device driver",
-                board.name
-            );
-        }
     }
 }

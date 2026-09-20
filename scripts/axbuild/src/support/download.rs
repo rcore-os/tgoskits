@@ -1,5 +1,6 @@
 use std::{
     fmt, fs,
+    future::Future,
     io::{Read, Write},
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
@@ -8,8 +9,7 @@ use std::{
 use anyhow::{Context, anyhow, bail};
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use reqwest::{StatusCode, Url, header};
-use serde::Deserialize;
+use reqwest::{StatusCode, header};
 use sha2::{Digest, Sha256};
 use tokio::{fs as tokio_fs, io::AsyncWriteExt};
 
@@ -23,6 +23,9 @@ const DOWNLOAD_RETRY_BASE_DELAY: Duration = Duration::from_millis(1);
 
 pub(crate) fn http_client() -> anyhow::Result<reqwest::Client> {
     reqwest::Client::builder()
+        // Retrying on a pooled HTTP/2 connection can repeatedly hit REFUSED_STREAM.
+        // Keep download attempts on fresh connections without changing protocols.
+        .pool_max_idle_per_host(0)
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(60 * 30))
         .build()
@@ -30,21 +33,24 @@ pub(crate) fn http_client() -> anyhow::Result<reqwest::Client> {
 }
 
 pub(crate) async fn fetch_text(client: &reqwest::Client, url: &str) -> anyhow::Result<String> {
-    #[cfg(test)]
-    if let Some(response) = test_support::fetch_text(url) {
-        return response;
-    }
+    with_download_retries(url, || async {
+        #[cfg(test)]
+        if let Some(response) = test_support::fetch_text(url) {
+            return response;
+        }
 
-    client
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("failed to request {url}"))?
-        .error_for_status()
-        .with_context(|| format!("failed to fetch {url}"))?
-        .text()
-        .await
-        .with_context(|| format!("failed to read response body from {url}"))
+        client
+            .get(url)
+            .send()
+            .await
+            .with_context(|| format!("failed to request {url}"))?
+            .error_for_status()
+            .with_context(|| format!("failed to fetch {url}"))?
+            .text()
+            .await
+            .with_context(|| format!("failed to read response body from {url}"))
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -54,7 +60,7 @@ pub(crate) async fn download_file(
     path: &Path,
 ) -> anyhow::Result<()> {
     let _lock = acquire_path_lock(path).await?;
-    download_file_with_retries(client, url, path).await
+    with_download_retries(url, || download_file_inner(client, url, path, true)).await
 }
 
 pub(crate) async fn download_file_verified_sha256(
@@ -62,16 +68,15 @@ pub(crate) async fn download_file_verified_sha256(
     url: &str,
     path: &Path,
     expected_sha256: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<DownloadOutcome> {
     let _lock = acquire_path_lock(path).await?;
     if path.exists() {
-        match verify_download_sha256(client, url, path, expected_sha256, true).await {
-            Ok(VerifyOutcome::MatchedRegistry) => {
+        match file_sha256(path) {
+            Ok(actual_sha256) if actual_sha256 == expected_sha256 => {
                 println!("file already exists and passed checksum verification");
-                return Ok(());
+                return Ok(DownloadOutcome::Reused);
             }
-            Ok(VerifyOutcome::MatchedGitHubAsset) => return Ok(()),
-            Ok(VerifyOutcome::Mismatched { .. }) => {
+            Ok(_) => {
                 println!("existing file checksum mismatch, re-downloading...");
             }
             Err(err) => {
@@ -83,160 +88,38 @@ pub(crate) async fn download_file_verified_sha256(
             .with_context(|| format!("failed to remove {}", path.display()))?;
     }
 
-    download_file_with_retries(client, url, path).await?;
-    match verify_download_sha256(client, url, path, expected_sha256, false).await? {
-        VerifyOutcome::MatchedRegistry | VerifyOutcome::MatchedGitHubAsset => Ok(()),
-        VerifyOutcome::Mismatched { actual_sha256 } => {
-            let _ = tokio_fs::remove_file(path).await;
-            bail!(
-                "downloaded file checksum mismatch for {url}: expected {expected_sha256}, got \
-                 {actual_sha256}"
-            );
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum VerifyOutcome {
-    MatchedRegistry,
-    MatchedGitHubAsset,
-    Mismatched { actual_sha256: String },
-}
-
-async fn verify_download_sha256(
-    client: &reqwest::Client,
-    url: &str,
-    path: &Path,
-    expected_sha256: &str,
-    ignore_remote_digest_error: bool,
-) -> anyhow::Result<VerifyOutcome> {
+    with_download_retries(url, || download_file_inner(client, url, path, true)).await?;
     let actual_sha256 = file_sha256(path)?;
-    if actual_sha256 == expected_sha256 {
-        return Ok(VerifyOutcome::MatchedRegistry);
+    if actual_sha256 != expected_sha256 {
+        let _ = tokio_fs::remove_file(path).await;
+        bail!(
+            "downloaded file checksum mismatch for {url}: expected {expected_sha256}, got \
+             {actual_sha256}"
+        );
     }
 
-    match github_release_asset_sha256(client, url).await {
-        Ok(Some(asset_sha256))
-            if classify_download_sha256(&actual_sha256, expected_sha256, Some(&asset_sha256))
-                == VerifyOutcome::MatchedGitHubAsset =>
-        {
-            eprintln!(
-                "warning: registry checksum for {url} is stale: expected {expected_sha256}, \
-                 GitHub release asset digest is {asset_sha256}; accepting verified asset digest"
-            );
-            Ok(VerifyOutcome::MatchedGitHubAsset)
-        }
-        Ok(_) => Ok(VerifyOutcome::Mismatched { actual_sha256 }),
-        Err(err) if ignore_remote_digest_error => {
-            eprintln!("warning: failed to check GitHub release asset digest for {url}: {err}");
-            Ok(VerifyOutcome::Mismatched { actual_sha256 })
-        }
-        Err(err) => Err(err),
-    }
-}
-
-fn classify_download_sha256(
-    actual_sha256: &str,
-    expected_sha256: &str,
-    asset_sha256: Option<&str>,
-) -> VerifyOutcome {
-    if actual_sha256 == expected_sha256 {
-        return VerifyOutcome::MatchedRegistry;
-    }
-    if asset_sha256 == Some(actual_sha256) {
-        return VerifyOutcome::MatchedGitHubAsset;
-    }
-    VerifyOutcome::Mismatched {
-        actual_sha256: actual_sha256.to_string(),
-    }
+    Ok(DownloadOutcome::Downloaded)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct GitHubReleaseAssetRef {
-    api_url: String,
-    asset_name: String,
+pub(crate) enum DownloadOutcome {
+    Reused,
+    Downloaded,
 }
 
-#[derive(Debug, Deserialize)]
-struct GitHubRelease {
-    assets: Vec<GitHubReleaseAsset>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubReleaseAsset {
-    name: String,
-    digest: Option<String>,
-}
-
-async fn github_release_asset_sha256(
-    client: &reqwest::Client,
-    download_url: &str,
-) -> anyhow::Result<Option<String>> {
-    let Some(asset_ref) = github_release_asset_ref(download_url) else {
-        return Ok(None);
-    };
-
-    let release: GitHubRelease = client
-        .get(&asset_ref.api_url)
-        .header(header::USER_AGENT, "tgoskits-axbuild")
-        .send()
-        .await
-        .with_context(|| format!("failed to request {}", asset_ref.api_url))?
-        .error_for_status()
-        .with_context(|| format!("failed to fetch {}", asset_ref.api_url))?
-        .json()
-        .await
-        .with_context(|| format!("failed to parse {}", asset_ref.api_url))?;
-
-    let digest = release
-        .assets
-        .into_iter()
-        .find(|asset| asset.name == asset_ref.asset_name)
-        .and_then(|asset| asset.digest)
-        .and_then(|digest| digest.strip_prefix("sha256:").map(str::to_owned));
-    Ok(digest)
-}
-
-fn github_release_asset_ref(download_url: &str) -> Option<GitHubReleaseAssetRef> {
-    let url = Url::parse(download_url).ok()?;
-    if url.host_str()? != "github.com" {
-        return None;
-    }
-
-    let segments: Vec<_> = url.path_segments()?.collect();
-    if segments.len() != 6
-        || segments[0].is_empty()
-        || segments[1].is_empty()
-        || segments[2] != "releases"
-        || segments[3] != "download"
-        || segments[4].is_empty()
-        || segments[5].is_empty()
-    {
-        return None;
-    }
-
-    Some(GitHubReleaseAssetRef {
-        api_url: format!(
-            "https://api.github.com/repos/{}/{}/releases/tags/{}",
-            segments[0], segments[1], segments[4]
-        ),
-        asset_name: segments[5].to_string(),
-    })
-}
-
-async fn download_file_with_retries(
-    client: &reqwest::Client,
-    url: &str,
-    path: &Path,
-) -> anyhow::Result<()> {
+async fn with_download_retries<T, F, Fut>(url: &str, mut download: F) -> anyhow::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = anyhow::Result<T>>,
+{
     for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
-        match download_file_inner(client, url, path, true).await {
-            Ok(()) => return Ok(()),
+        match download().await {
+            Ok(result) => return Ok(result),
             Err(err) if attempt < DOWNLOAD_MAX_ATTEMPTS && retryable_download_error(&err) => {
                 let delay = download_retry_delay(attempt);
                 eprintln!(
-                    "download attempt {attempt}/{DOWNLOAD_MAX_ATTEMPTS} for {url} failed: {err}; \
-                     retrying in {:.1}s",
+                    "download attempt {attempt}/{DOWNLOAD_MAX_ATTEMPTS} for {url} failed: \
+                     {err:#}; retrying in {:.1}s",
                     delay.as_secs_f32()
                 );
                 tokio::time::sleep(delay).await;
@@ -700,16 +583,14 @@ pub(crate) mod test_support {
     }
 
     pub(super) fn fetch_text(url: &str) -> Option<anyhow::Result<String>> {
-        if !is_mock_url(url) {
-            return None;
-        }
-
-        Some(route(url).and_then(|route| {
-            route.requests.fetch_add(1, Ordering::SeqCst);
-            *route.last_range_header.lock().unwrap() = None;
-            String::from_utf8(route.body.clone())
+        download_response(url, 0).map(|response| {
+            let response = response?;
+            if !response.status.is_success() {
+                return Err(super::download_status_error(url, response.status));
+            }
+            String::from_utf8(response.body)
                 .map_err(|err| anyhow::anyhow!("mock response for {url} is not UTF-8: {err}"))
-        }))
+        })
     }
 
     pub(super) fn download_response(

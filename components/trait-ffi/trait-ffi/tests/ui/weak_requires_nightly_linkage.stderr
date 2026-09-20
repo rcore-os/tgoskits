@@ -1,0 +1,9 @@
+error[E0658]: the `linkage` attribute is experimental and not portable across platforms
+ --> tests/ui/weak_requires_nightly_linkage.rs:1:1
+  |
+1 | #[trait_ffi::def_extern_trait(weak_default)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: see issue #29603 <https://github.com/rust-lang/rust/issues/29603> for more information
+  = help: add `#![feature(linkage)]` to the crate attributes to enable
+  = note: this error originates in the attribute macro `trait_ffi::def_extern_trait` (in Nightly builds, run with -Z macro-backtrace for more info)

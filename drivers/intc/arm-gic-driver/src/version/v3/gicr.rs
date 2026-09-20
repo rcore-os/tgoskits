@@ -384,8 +384,8 @@ impl SGI {
         }
 
         // Set default priorities (lower priority = higher urgency)
-        for i in 0..32 {
-            self.IPRIORITYR[i].set(0xA0); // Default to middle priority
+        for register in &self.IPRIORITYR {
+            register.set(0xA0); // Default to middle priority
         }
     }
 

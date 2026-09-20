@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 760" role="img" aria-labelledby="title desc">
+  <title id="title">ax-net 并发域与锁边界</title>
+  <desc id="desc">应用线程、串行 net-poll、设备 RX/TX 工作线程和 IRQ action 分别访问协议核心锁、控制面读写锁、有界队列与设备锁；IRQ 只触发通知，不获取普通驱动锁。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#50657d"/></marker>
+    <style>
+      .panel{fill:#f8fafc;stroke:#91a0b2;stroke-width:2}.actor{fill:#f0edff;stroke:#7457b6;stroke-width:2}
+      .lock{fill:#eaf3ff;stroke:#3478c0;stroke-width:2}.queue{fill:#fff4df;stroke:#c98216;stroke-width:2}
+      .device{fill:#eaf8ef;stroke:#398a55;stroke-width:2}.irq{fill:#fff0f0;stroke:#bf5555;stroke-width:2}
+      .title{font:700 24px sans-serif;fill:#213247}.heading{font:700 18px sans-serif;fill:#31465f}
+      .text{font:600 15px sans-serif;fill:#26384d}.small{font:14px sans-serif;fill:#455a72}
+      .edge{fill:none;stroke:#50657d;stroke-width:2;marker-end:url(#arrow)}
+      .wake{fill:none;stroke:#bf5555;stroke-width:2.1;stroke-dasharray:7 5;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <text class="title" x="35" y="40">不同执行域通过窄锁和队列交汇</text>
+
+  <rect class="panel" x="30" y="70" width="350" height="635" rx="18"/>
+  <text class="heading" x="55" y="102">执行域</text>
+  <rect class="actor" x="75" y="130" width="260" height="82" rx="12"/>
+  <text class="text" x="116" y="160">应用 / syscall 线程</text><text class="small" x="103" y="185">socket I/O · bind · query</text>
+  <rect class="actor" x="75" y="255" width="260" height="82" rx="12"/>
+  <text class="text" x="123" y="285">net-poll worker</text><text class="small" x="110" y="310">持有 PollOwnership 推进协议</text>
+  <rect class="actor" x="75" y="380" width="260" height="82" rx="12"/>
+  <text class="text" x="104" y="410">per-device RX / TX workers</text><text class="small" x="113" y="435">并行执行 driver I/O</text>
+  <rect class="irq" x="75" y="505" width="260" height="82" rx="12"/>
+  <text class="text" x="140" y="535">IRQ action</text><text class="small" x="107" y="560">独立 handler，只 notify</text>
+
+  <rect class="panel" x="445" y="70" width="405" height="635" rx="18"/>
+  <text class="heading" x="470" y="102">共享状态</text>
+  <rect class="lock" x="490" y="125" width="315" height="82" rx="12"/>
+  <text class="text" x="566" y="155">SERVICE Mutex</text><text class="small" x="522" y="180">Service + Router 的串行入口</text>
+  <rect class="lock" x="490" y="235" width="315" height="82" rx="12"/>
+  <text class="text" x="548" y="265">SocketSet Mutex</text><text class="small" x="523" y="290">短期访问 smoltcp socket state</text>
+  <rect class="lock" x="490" y="345" width="315" height="82" rx="12"/>
+  <text class="text" x="529" y="375">NetControl / Route RwLock</text><text class="small" x="525" y="400">查询可并发，提交时独占</text>
+  <rect class="queue" x="490" y="455" width="315" height="82" rx="12"/>
+  <text class="text" x="550" y="485">bounded packet queues</text><text class="small" x="528" y="510">shared RX / per-device TX</text>
+  <rect class="queue" x="490" y="565" width="315" height="82" rx="12"/>
+  <text class="text" x="547" y="595">WaitQueue / atomics</text><text class="small" x="526" y="620">poll request、IRQ 与 worker wake</text>
+
+  <rect class="panel" x="915" y="70" width="375" height="635" rx="18"/>
+  <text class="heading" x="940" y="102">设备所有权</text>
+  <rect class="device" x="960" y="165" width="285" height="92" rx="12"/>
+  <text class="text" x="1010" y="197">DeviceHandle Mutex</text><text class="small" x="993" y="223">单次 recv/send 的设备状态</text>
+  <rect class="device" x="960" y="320" width="285" height="92" rx="12"/>
+  <text class="text" x="1016" y="352">driver SpinLock</text><text class="small" x="992" y="378">worker 使用 lock_irqsave()</text>
+  <rect class="irq" x="960" y="505" width="285" height="92" rx="12"/>
+  <text class="text" x="1008" y="537">detached IRQ handler</text><text class="small" x="989" y="563">不经过 DeviceHandle 普通锁</text>
+
+  <path class="edge" d="M335 171 H420 V276 H490"/><path class="edge" d="M335 171 H400 V386 H490"/>
+  <path class="edge" d="M335 296 H490 V166"/><path class="edge" d="M648 207 V235"/>
+  <path class="edge" d="M648 207 V345"/><path class="edge" d="M648 207 V455"/>
+  <path class="edge" d="M335 421 H490 V496"/><path class="edge" d="M805 496 H900 V211 H960"/>
+  <path class="edge" d="M1102 257 V320"/><path class="edge" d="M335 421 H900 V366 H960"/>
+  <path class="wake" d="M335 546 H490 V606"/><path class="wake" d="M960 551 H850 V606 H805"/>
+  <text class="small" x="887" y="625">hard IRQ 只唤醒</text>
+</svg>

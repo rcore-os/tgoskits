@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(board_rknpu_resources C)
+add_executable(syscall-test-rknpu-resources main.c)
+target_compile_options(syscall-test-rknpu-resources PRIVATE -Wall -Wextra -Werror)
+target_link_options(syscall-test-rknpu-resources PRIVATE -static)
+install(TARGETS syscall-test-rknpu-resources RUNTIME DESTINATION usr/bin/starry-test-suit)

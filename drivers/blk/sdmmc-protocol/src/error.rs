@@ -100,6 +100,18 @@ pub enum Error {
     Busy,
     /// Command index is not supported on this transport.
     UnsupportedCommand,
+    /// The card exposes both memory and I/O functions.
+    ///
+    /// Combo-card arbitration is intentionally unsupported until the memory
+    /// and I/O protocol owners can share one physical bus without creating
+    /// two competing card state machines.
+    UnsupportedComboCard,
+    /// CMD5 completed without advertising an I/O function.
+    NoIoFunctions,
+    /// A malformed or unterminated SDIO card-information tuple was observed.
+    MalformedCis,
+    /// An enabled SDIO function did not become ready before its deadline.
+    SdioFunctionNotReady,
     /// Bad response received during the wrapped phase.
     BadResponse(ErrorContext),
     /// Card returned an error in its R1 response.
@@ -230,6 +242,10 @@ impl fmt::Display for Error {
             Self::NoCard => f.write_str("no card present"),
             Self::Busy => f.write_str("host controller is busy"),
             Self::UnsupportedCommand => f.write_str("command not supported by transport"),
+            Self::UnsupportedComboCard => f.write_str("SDIO combo cards are not supported"),
+            Self::NoIoFunctions => f.write_str("card exposes no SDIO functions"),
+            Self::MalformedCis => f.write_str("malformed SDIO card information structure"),
+            Self::SdioFunctionNotReady => f.write_str("SDIO function did not become ready"),
             Self::BadResponse(ctx) => write!(f, "bad response during {ctx}"),
             Self::CardError(err) => write!(f, "card reported {err}"),
             Self::WriteError(ctx) => write!(f, "write failed during {ctx}"),
@@ -255,44 +271,16 @@ impl core::error::Error for CardError {}
 
 #[cfg(test)]
 mod tests {
-    extern crate std;
-
-    use std::format;
-
     use super::*;
-
-    #[test]
-    fn display_error_includes_phase_and_cmd() {
-        let err = Error::Timeout(ErrorContext::for_cmd(Phase::DataRead, 17));
-        assert_eq!(format!("{err}"), "timeout during data read (CMD17)");
-    }
-
-    #[test]
-    fn display_error_without_cmd_drops_parenthesis() {
-        let err = Error::BadResponse(ErrorContext::new(Phase::ResponseWait));
-        assert_eq!(format!("{err}"), "bad response during response wait");
-    }
-
-    #[test]
-    fn display_card_error_known_variant() {
-        let err = Error::CardError(CardError::OutOfRange);
-        assert_eq!(format!("{err}"), "card reported out-of-range argument");
-    }
-
-    #[test]
-    fn display_card_error_unknown_preserves_bits() {
-        let err = Error::CardError(CardError::Unknown(0x1234));
-        assert_eq!(
-            format!("{err}"),
-            "card reported unknown card error bits 0x1234"
-        );
-    }
 
     #[test]
     fn error_trait_source_threads_card_error_through() {
         let err = Error::CardError(CardError::WriteProtect);
         let src = core::error::Error::source(&err).expect("source should be CardError");
-        assert_eq!(format!("{src}"), "write-protect violation");
+        assert_eq!(
+            src.downcast_ref::<CardError>(),
+            Some(&CardError::WriteProtect)
+        );
     }
 
     #[test]

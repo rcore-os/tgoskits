@@ -94,8 +94,8 @@ if [ -z "$ROOTFS_IMG" ]; then
     case "$ARCH" in
         riscv64)  ROOTFS_IMG="tmp/axbuild/rootfs/rootfs-riscv64-debian-selfhost-v2.img" ;;
         x86_64)
-            ROOTFS_STORAGE="${TGOS_IMAGE_LOCAL_STORAGE:-$REPO_ROOT/tmp/axbuild/rootfs}"
-            ROOTFS_IMG="$ROOTFS_STORAGE/rootfs-x86_64-selfhost.img/rootfs-x86_64-selfhost.img"
+            ROOTFS_STORAGE="${TGOS_IMAGE_EXTRACT_DIR:-$REPO_ROOT/tmp/axbuild/rootfs}"
+            ROOTFS_IMG="$ROOTFS_STORAGE/rootfs-x86_64-selfhost.img"
             ;;
         aarch64)  ROOTFS_IMG="tmp/axbuild/rootfs/rootfs-aarch64-debian-selfhost.img" ;;
     esac

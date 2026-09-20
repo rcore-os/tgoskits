@@ -24,10 +24,10 @@ use sdhci_host::{HostClock, HostResetHook, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error,
     error::{ErrorContext, Phase},
-    sdio::{card::SdioSdmmc, init::CardInitPreference},
+    sdio::{SdMmcIrqHost, init::CardInitPreference},
 };
 
-use crate::{block::ProbeFdtBlock, mmio::iomap};
+use crate::{block::ProbeFdtBlock, mmio::iomap, sdhci_runtime::install_host_timer};
 
 const DWCMSHC_P_VENDOR_AREA1: usize = 0xe8;
 const DWCMSHC_AREA1_MASK: u16 = 0x0fff;
@@ -131,6 +131,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { Sdhci::new(mmio_base) };
+    install_host_timer(&mut host);
     if let Some(clock) = info.find_clock_line_by_name("core")? {
         clock.enable()?;
         info!("rockchip-rk3568-sdhci: using external CRU clock");
@@ -139,7 +140,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         warn!("rockchip-rk3568-sdhci: no core clock found; using SDHCI internal clock divider");
     }
     host.set_reset_hook(RockchipSdhciResetHook);
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+        dma_api::DmaConstraints::new(u32::MAX as u64),
+    ));
     let config = sdhci_rdif::dma_config("rockchip-rk3568-sdhci", 0, &dma);
     host.configure_dma(dma).map_err(|err| {
         OnProbeError::other(format!(
@@ -148,8 +153,8 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     })?;
 
     info!("rockchip-rk3568-sdhci: defer eMMC initialization to IRQ-driven hctx");
-    let card = SdioSdmmc::new(host);
-    let dev = sdhci_rdif::initializing_device(card, config, CardInitPreference::MmcFirst);
+    let dev =
+        sdhci_rdif::initializing_device(host.into_parts(), config, CardInitPreference::MmcFirst);
     let irq = probe.register_block(dev)?;
     info!(
         "rockchip-rk3568-sdhci block device registered irq={:?}",
@@ -261,7 +266,11 @@ mod tests {
 
     #[test]
     fn rk3568_block_io_uses_dma_config_with_irq_completion() {
-        let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+        let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+            dma_api::DmaDomainId::Direct,
+            dma_api::DmaCoherency::NonCoherent,
+            dma_api::DmaConstraints::new(u32::MAX as u64),
+        ));
         let config = sdhci_rdif::dma_config("rockchip-rk3568-sdhci", 8, &dma);
 
         assert!(config.uses_dma());
@@ -270,12 +279,19 @@ mod tests {
 
     #[test]
     fn rk3568_dma_queue_limits_multi_block_requests() {
-        let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+        let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+            dma_api::DmaDomainId::Direct,
+            dma_api::DmaCoherency::NonCoherent,
+            dma_api::DmaConstraints::new(u32::MAX as u64),
+        ));
         let config = sdhci_rdif::dma_config("rockchip-rk3568-sdhci", 8, &dma);
         let limits = sdmmc_protocol::rdif::config::queue_limits(&config);
 
         assert!(limits.max_blocks_per_request > 1);
-        assert!(limits.max_segment_size > sdmmc_protocol::rdif::config::BLOCK_SIZE);
+        assert!(
+            limits.dma.constraints().max_segment_size.unwrap()
+                > sdmmc_protocol::rdif::config::BLOCK_SIZE
+        );
         assert_eq!(limits.max_segments, 1);
     }
 }

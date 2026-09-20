@@ -18,7 +18,7 @@
  *   RLIMIT_MEMLOCK — query + consistency
  *   RLIMIT_NPROC   — query + consistency
  *   RLIMIT_RTPRIO  — query + consistency
- *   RLIMIT_RTTIME  — query + consistency
+ *   RLIMIT_RTTIME  — shared soft-limit advance and process SIGXCPU visibility
  *   RLIMIT_SIGPENDING — query + consistency
  *   RLIMIT_MSGQUEUE   — query + consistency
  *
@@ -66,9 +66,13 @@
  * via a cleanup pattern.
  */
 
+int test_rttime_soft_limit(void);
+
 int main(void)
 {
     TEST_START("prlimit64 enforcement");
+    CHECK(test_rttime_soft_limit() == 0,
+          "RTTIME advances the shared limit and queues a process SIGXCPU");
 
     /* ═══════════════════════════════════════════════════════════════
      * 1. BASIC: pid=0 get-only / set-only / get+set roundtrip

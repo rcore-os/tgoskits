@@ -3,9 +3,9 @@ mod backend;
 use alloc::{collections::VecDeque, string::ToString, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
-use ax_errno::{AxError, AxResult};
 use ax_lazyinit::LazyLock;
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 
 use self::backend::{UsbSerialPortInfo, find_usb_serial_port};
 use super::{
@@ -17,6 +17,7 @@ use super::{
     },
 };
 use crate::{
+    StarryError, StarryResult,
     pseudofs::usbfs::{self, UsbDeviceHandle},
     sync::{IrqMutex, Mutex},
 };
@@ -119,7 +120,7 @@ fn new_usb_serial_tty(index: usize) -> Arc<UsbSerialTtyDriver> {
 }
 
 impl UsbSerialBackendState {
-    fn ensure_started(self: &Arc<Self>) -> AxResult<()> {
+    fn ensure_started(self: &Arc<Self>) -> StarryResult<()> {
         self.ensure_session()?;
         self.started.store(true, Ordering::Release);
         self.start_rx_worker();
@@ -129,9 +130,9 @@ impl UsbSerialBackendState {
     // Attach lazily so the tty can exist before the adapter is plugged in. A
     // closing session rejects new opens/writes until the RX worker finishes
     // deferred teardown.
-    fn ensure_session(&self) -> AxResult<Arc<UsbSerialSession>> {
+    fn ensure_session(&self) -> StarryResult<Arc<UsbSerialSession>> {
         if self.session_closing.load(Ordering::Acquire) {
-            return Err(AxError::ResourceBusy);
+            return Err(StarryError::ResourceBusy);
         }
 
         let mut session = self.session.lock();
@@ -140,10 +141,10 @@ impl UsbSerialBackendState {
         }
 
         if self.session_closing.load(Ordering::Acquire) {
-            return Err(AxError::ResourceBusy);
+            return Err(StarryError::ResourceBusy);
         }
 
-        let port = find_usb_serial_port(self.index).ok_or(AxError::NoSuchDevice)?;
+        let port = find_usb_serial_port(self.index).ok_or(StarryError::NoSuchDevice)?;
         let handle = usbfs::acquire_usb_device(port.bus_num, port.device_num)?;
         handle.claim_interface(port.interface(), 0)?;
         let baudrate = self.baudrate.load(Ordering::Acquire);
@@ -166,7 +167,7 @@ impl UsbSerialBackendState {
         Ok(new_session)
     }
 
-    fn set_baudrate(self: &Arc<Self>, baudrate: u32) -> AxResult<()> {
+    fn set_baudrate(self: &Arc<Self>, baudrate: u32) -> StarryResult<()> {
         if baudrate == 0 {
             return Ok(());
         }
@@ -183,7 +184,7 @@ impl UsbSerialBackendState {
         Ok(())
     }
 
-    fn write_bytes(self: &Arc<Self>, buf: &[u8]) -> AxResult<usize> {
+    fn write_bytes(self: &Arc<Self>, buf: &[u8]) -> StarryResult<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
@@ -251,7 +252,7 @@ impl UsbSerialBackendState {
         unsafe { self.output_source.wake(IoEvents::OUT) };
     }
 
-    fn drain_tx_queue_locked(self: &Arc<Self>) -> AxResult<()> {
+    fn drain_tx_queue_locked(self: &Arc<Self>) -> StarryResult<()> {
         loop {
             let chunk = self.pop_tx_chunk();
             if chunk.is_empty() {
@@ -280,7 +281,7 @@ impl UsbSerialBackendState {
                 if actual == 0 {
                     self.request_session_teardown(Some(&session));
                     self.clear_tx_queue();
-                    return Err(AxError::WriteZero);
+                    return Err(StarryError::WriteZero);
                 }
 
                 offset += actual.min(chunk.len() - offset);
@@ -371,7 +372,7 @@ impl UsbSerialBackendState {
         self.session_closing.store(false, Ordering::Release);
     }
 
-    fn bulk_in_rx(&self, session: &UsbSerialSession, buf: &mut [u8]) -> AxResult<usize> {
+    fn bulk_in_rx(&self, session: &UsbSerialSession, buf: &mut [u8]) -> StarryResult<usize> {
         session.handle.bulk_in(session.port.bulk_in(), buf)
     }
 
@@ -385,8 +386,8 @@ impl UsbSerialBackendState {
         }
 
         let backend = self.clone();
-        ax_task::spawn_with_name(
-            move || {
+        crate::task::kernel_thread_builder("usb-serial-rx".to_string())
+            .spawn(move || {
                 let mut buf = [0u8; USB_SERIAL_RX_CHUNK];
                 loop {
                     if backend.session_closing.load(Ordering::Acquire) {
@@ -413,7 +414,7 @@ impl UsbSerialBackendState {
                         }
                     };
                     match backend.bulk_in_rx(&session, &mut buf) {
-                        Ok(0) => ax_task::yield_now(),
+                        Ok(0) => crate::task::yield_now(),
                         Ok(actual) => {
                             backend.push_rx(&buf[..actual.min(buf.len())]);
                             if backend.session_closing.load(Ordering::Acquire) {
@@ -431,9 +432,8 @@ impl UsbSerialBackendState {
                         }
                     }
                 }
-            },
-            "usb-serial-rx".to_string(),
-        );
+            })
+            .expect("failed to spawn kernel thread");
     }
 
     fn start_tx_worker(self: &Arc<Self>) {
@@ -446,35 +446,36 @@ impl UsbSerialBackendState {
         }
 
         let backend = self.clone();
-        ax_task::spawn_with_name(
-            move || loop {
-                let result = {
-                    let _guard = backend.output_lock.lock();
-                    backend.drain_tx_queue_locked()
-                };
-                if let Err(err) = result {
-                    warn!(
-                        "usb-serial: ttyUSB{} TX worker stopped: {err:?}",
-                        backend.index
-                    );
-                    backend.tx_worker_started.store(false, Ordering::Release);
-                    break;
-                }
+        crate::task::kernel_thread_builder("usb-serial-tx".to_string())
+            .spawn(move || {
+                loop {
+                    let result = {
+                        let _guard = backend.output_lock.lock();
+                        backend.drain_tx_queue_locked()
+                    };
+                    if let Err(err) = result {
+                        warn!(
+                            "usb-serial: ttyUSB{} TX worker stopped: {err:?}",
+                            backend.index
+                        );
+                        backend.tx_worker_started.store(false, Ordering::Release);
+                        break;
+                    }
 
-                backend.tx_worker_started.store(false, Ordering::Release);
-                // Avoid a lost wakeup: if a producer queued more bytes after
-                // the queue was drained, take the worker flag again and loop.
-                if backend.tx_queue.lock().is_empty()
-                    || backend
-                        .tx_worker_started
-                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                        .is_err()
-                {
-                    break;
+                    backend.tx_worker_started.store(false, Ordering::Release);
+                    // Avoid a lost wakeup: if a producer queued more bytes after
+                    // the queue was drained, take the worker flag again and loop.
+                    if backend.tx_queue.lock().is_empty()
+                        || backend
+                            .tx_worker_started
+                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                            .is_err()
+                    {
+                        break;
+                    }
                 }
-            },
-            "usb-serial-tx".to_string(),
-        );
+            })
+            .expect("failed to spawn kernel thread");
     }
 }
 
@@ -486,14 +487,14 @@ impl TtyRead for UsbSerialReader {
         self.backend.drain_rx(buf)
     }
 
-    fn discard_input(&mut self) -> AxResult<()> {
+    fn discard_input(&mut self) -> StarryResult<()> {
         self.backend.rx_queue.lock().clear();
         Ok(())
     }
 }
 
 impl TtyWrite for UsbSerialWriter {
-    fn open(&self) -> AxResult<()> {
+    fn open(&self) -> StarryResult<()> {
         self.backend.ensure_started()
     }
 
@@ -507,28 +508,43 @@ impl TtyWrite for UsbSerialWriter {
     }
 
     fn try_write(&self, buf: &[u8]) -> usize {
+        let Some(_guard) = self.backend.output_lock.try_lock() else {
+            return 0;
+        };
         self.backend.try_queue_bytes(buf)
     }
 
-    fn discard_output(&self) -> AxResult<()> {
+    fn discard_output(&self) -> StarryResult<()> {
         let _guard = self.backend.output_lock.lock();
         self.backend.clear_tx_queue();
         Ok(())
     }
 
-    fn termios_changed(&self, old: &Termios2, new: &Termios2) {
+    fn termios_changed(&self, old: &Termios2, new: &Termios2) -> StarryResult<()> {
         let Some(new_baud) = new.baudrate() else {
-            return;
+            return Ok(());
         };
         if old.baudrate() == Some(new_baud) {
-            return;
+            return Ok(());
         }
-        if let Err(err) = self.backend.set_baudrate(new_baud) {
-            warn!(
-                "usb-serial: ttyUSB{} failed to set baudrate {new_baud}: {err:?}",
-                self.backend.index
-            );
+        self.backend.set_baudrate(new_baud)
+    }
+
+    fn update_termios(
+        &self,
+        old: &Termios2,
+        new: &Termios2,
+        drain: bool,
+        publish: &mut dyn FnMut(),
+    ) -> StarryResult<()> {
+        self.backend.ensure_started()?;
+        let _guard = self.backend.output_lock.lock();
+        if drain {
+            self.backend.drain_tx_queue_locked()?;
         }
+        self.termios_changed(old, new)?;
+        publish();
+        Ok(())
     }
 }
 

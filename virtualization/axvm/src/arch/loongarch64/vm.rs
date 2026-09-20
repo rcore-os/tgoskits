@@ -4,9 +4,11 @@ use std::sync::Arc;
 
 use axdevice::{DeviceNodeId, DeviceNodeSpec};
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
-use loongarch_vcpu::{LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig};
 
-use super::*;
+use super::{
+    policy::{LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig},
+    *,
+};
 use crate::{
     AxVmError, AxVmResult, ax_err,
     config::*,
@@ -20,15 +22,15 @@ pub(crate) type LoongArchVmPlan = SimpleVmPlan;
 
 impl LoongArch64Arch {
     pub(crate) fn create_vm_resources(
-        mut config: AxVMConfig,
+        config: &mut AxVMConfig,
         fw_cfg_payload: Arc<axdevice::FwCfgPayloadSlot>,
     ) -> AxVmResult<AxVMResources> {
-        super::boot::probe::apply_host_serial(&mut config)?;
-        let device_plan = plan_devices(&config, fw_cfg_payload)?;
+        super::boot::probe::apply_host_serial(config)?;
+        let device_plan = plan_devices(config, fw_cfg_payload)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;
-        AxVMResources::from_page_table(config, page_table, device_plan, |root_paddr| {
+        AxVMResources::from_page_table(config.id(), page_table, device_plan, |root_paddr| {
             let gpa_bits = match levels {
                 3 => 39,
                 4 => 48,
@@ -44,27 +46,24 @@ impl LoongArch64Arch {
     }
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
-        vm.prepare_resources_with(|resources| {
-            let placements = resources.vcpu_placements();
+        vm.prepare_resources_with(|resources, config| {
+            let placements = resources.vcpu_placements(config);
             let state_count = placements
                 .iter()
                 .map(|placement| placement.id)
                 .max()
                 .map_or(0, |vcpu_id| vcpu_id + 1);
             let iocsr_state =
-                loongarch_result(loongarch_vcpu::LoongArchIocsrState::new(state_count))
+                loongarch_result(super::policy::LoongArchIocsrState::new(state_count))
                     .map_err(|error| AxVmError::vcpu("create LoongArch IOCSR state", error))?;
-            let dtb_addr = resources
-                .config()
-                .image_config()
-                .dtb_load_gpa
-                .unwrap_or_default();
-            let firmware_boot = uses_firmware_boot(resources.config());
+            let dtb_addr = config.image_config().dtb_load_gpa.unwrap_or_default();
+            let firmware_boot = uses_firmware_boot(config);
+            let boot_args = direct_boot_args(firmware_boot);
             let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
                 Ok(LoongArchVCpuCreateConfig {
                     cpu_id: placement.id,
                     dtb_addr: dtb_addr.as_usize(),
-                    boot_args: [0; 3],
+                    boot_args,
                     boot_stack_top: 0,
                     firmware_boot,
                     iocsr_state: iocsr_state.clone(),
@@ -74,8 +73,8 @@ impl LoongArch64Arch {
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            resources.prepare_guest_address_space(vm.id(), &[])?;
-            vcpus.setup(resources, build_vcpu_setup_config)?;
+            resources.prepare_guest_address_space(vm.id(), config, &[])?;
+            vcpus.setup(resources, config, build_vcpu_setup_config)?;
 
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
         })
@@ -98,6 +97,7 @@ fn plan_devices(
                 PCH_PIC_BASE,
                 PCH_PIC_SIZE,
                 Arc::new(LoongArchDomainFactory { vm_id: config.id() }),
+                Arc::new(super::irq::LoongArchPchPicOutputSink::new(config.id())),
             )),
         ),
         DeviceNodeSpec::virtual_device(
@@ -114,12 +114,15 @@ fn plan_devices(
         &mut nodes,
         &controller_id,
         axdevice_base::InterruptControllerId::new(0),
+        Some(super::pci_config::host_key()),
     )?;
-    Ok(SimpleVmPlan::new(VmDevicePlan::with_pools_for_vm(
+    let pch_pic_range = PCH_PIC_BASE as u64..(PCH_PIC_BASE + PCH_PIC_SIZE) as u64;
+    Ok(SimpleVmPlan::new(VmDevicePlan::with_pci_host_for_vm(
         config,
         nodes,
-        &[PCH_PIC_BASE as u64..(PCH_PIC_BASE + PCH_PIC_SIZE) as u64],
+        std::slice::from_ref(&pch_pic_range),
         super::resource_pools::create()?,
+        super::pci_config::provider()?,
     )?))
 }
 
@@ -140,14 +143,20 @@ fn build_vcpu_setup_config(
     config: &AxVMConfig,
     _memory_regions: &[crate::vm::VMMemoryRegion],
 ) -> AxVmResult<<super::AxvmLoongArchVcpu as VmArchVcpuOps>::SetupConfig> {
-    let passthrough = config.uses_passthrough_address_space();
+    let firmware_boot = uses_firmware_boot(config);
     Ok(LoongArchVCpuSetupConfig {
-        passthrough_interrupt: passthrough,
-        passthrough_timer: passthrough,
-        boot_args: [0; 3],
+        boot_args: direct_boot_args(firmware_boot),
         boot_stack_top: 0,
-        firmware_boot: uses_firmware_boot(config),
+        firmware_boot,
     })
+}
+
+fn direct_boot_args(firmware_boot: bool) -> [usize; 3] {
+    if firmware_boot {
+        [0; 3]
+    } else {
+        super::boot::direct_linux_boot_args()
+    }
 }
 
 fn uses_firmware_boot(config: &AxVMConfig) -> bool {

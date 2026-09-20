@@ -1,0 +1,15 @@
+args = [
+    "-machine", "virt,gic-version=2",
+    "-m", "256M",
+    "-cpu", "cortex-a72",
+    "-smp", "4",
+    "-display", "none",
+    "-serial", "mon:stdio",
+]
+timeout = 20
+uefi = false
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "ARCEOS_TEST_FAIL"]
+
+[[shell_check_steps]]
+success_regex = ["ArceOS test suite run OK!"]

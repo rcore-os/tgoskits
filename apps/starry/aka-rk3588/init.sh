@@ -1,4 +1,4 @@
-app_root=/home/orangepi/robot/aka-rk3588
+app_root=/home/orangepi/robot-ci/aka-rk3588
 marker=AKA_RK3588_DEMO
 
 echo "${marker}_BEGIN"

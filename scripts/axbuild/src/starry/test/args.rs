@@ -12,6 +12,8 @@ pub enum TestCommand {
     Qemu(ArgsTestQemu),
     /// Run StarryOS remote board test suite
     Board(ArgsTestBoard),
+    /// Run StarryOS-backed NixOS tests
+    Nixos(ArgsTestNixos),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -69,5 +71,33 @@ pub struct ArgsTestBoard {
     pub port: Option<u16>,
 
     #[arg(short = 'l', long, help = "List discovered Starry board test cases")]
+    pub list: bool,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct ArgsTestNixos {
+    #[arg(
+        long,
+        value_name = "ARCH",
+        value_parser = ["x86_64"],
+        required_unless_present = "list",
+        requires = "test_case",
+        conflicts_with = "list",
+        help = "StarryOS architecture to test"
+    )]
+    pub arch: Option<String>,
+
+    #[arg(
+        short = 'c',
+        long = "test-case",
+        value_name = "CASE",
+        required_unless_present = "list",
+        requires = "arch",
+        conflicts_with = "list",
+        help = "Run one StarryOS-backed NixOS test case"
+    )]
+    pub test_case: Option<String>,
+
+    #[arg(short = 'l', long, help = "List StarryOS-backed NixOS test cases")]
     pub list: bool,
 }

@@ -17,6 +17,7 @@ pub fn primary_init_early(params: PrimaryCpuInitInfo) {
 
     crate::fdt::setup_earlycon();
     let _ = crate::acpi::earlycon::acpi_setup_earlycon();
+    crate::entropy::capture();
 
     #[cfg(efi)]
     if crate::efi_stub::is_uefi_available() {

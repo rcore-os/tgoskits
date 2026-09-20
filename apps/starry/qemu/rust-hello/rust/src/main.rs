@@ -10,9 +10,6 @@ fn main() {
     println!("PID: {}", process::id());
     println!("Args: {:?}", env::args().collect::<Vec<_>>());
 
-    // Basic sanity checks
-    let sum = 1 + 1;
-    assert_eq!(sum, 2, "math is broken");
     assert!(process::id() > 0, "getpid failed");
 
     // Validate that prebuild.sh ran and wrote the marker file.

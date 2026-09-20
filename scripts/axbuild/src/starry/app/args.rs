@@ -26,15 +26,27 @@ pub struct ArgsAppList {
     pub kind: Option<StarryAppKind>,
 }
 
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 pub struct ArgsAppQemu {
     /// Run all discovered QEMU apps after capability filtering
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["test_case", "nixos_case", "all_nixos_cases", "list_nixos_cases"])]
     pub all: bool,
 
     /// Select apps/starry/<CASE>
     #[arg(short = 't', long = "test-case", value_name = "CASE")]
     pub test_case: Option<String>,
+
+    /// Select a case from the StarryOS-backed NixOS test app
+    #[arg(long = "case", value_name = "CASE", conflicts_with_all = ["all_nixos_cases", "list_nixos_cases"])]
+    pub nixos_case: Option<String>,
+
+    /// Run all cases from the StarryOS-backed NixOS test app
+    #[arg(long = "all-cases", conflicts_with_all = ["nixos_case", "list_nixos_cases"])]
+    pub all_nixos_cases: bool,
+
+    /// List cases from the StarryOS-backed NixOS test app
+    #[arg(long = "list-cases", conflicts_with_all = ["nixos_case", "all_nixos_cases"])]
+    pub list_nixos_cases: bool,
 
     /// Declare an available capability, e.g. board:OrangePi-5-Plus
     #[arg(long = "cap", value_name = "CAP")]

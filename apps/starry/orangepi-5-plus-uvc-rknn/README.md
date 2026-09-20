@@ -50,6 +50,37 @@ Build the image runner:
 apps/starry/orangepi-5-plus-uvc-rknn/build-image-runner.sh
 ```
 
+The native hardware smoke uses the maintained image runner in batch mode:
+
+```sh
+cd /guest/npu_demo/ci-v2
+LD_LIBRARY_PATH="$PWD/lib:${LD_LIBRARY_PATH:-}" ./rknn_yolov8_image --batch \
+  model/yolov8.rknn model/coco_80_labels_list.txt \
+  model/picture1.jpg model/picture2.jpg model/picture3.jpg
+```
+
+Deploy the rebuilt `rknn_yolov8_image` and its matching libraries into
+`/guest/npu_demo/ci-v2/` before enabling the updated native smoke configuration.
+Copy the model, labels and three input images from this board's existing
+`/guest/npu_demo/rknn_yolov8/model/` into `ci-v2/model/`. Keep the previous
+executables, wrapper and runtime libraries unchanged so pre-merge jobs continue
+to work. Do not switch a shared symlink. Update all four `OrangePi-5-Plus`
+boards on the CI server before merging the new path. The historical
+`rknn_yolov8_demo`/`yolov8.sh` pair is not used by this configuration.
+The batch runner requires at least one image, stops on an image/inference error,
+and prints detection summaries and `UVC_RKNN_IMAGE_PASS images=3` only after all
+three inferences and model cleanup succeed. A successful inference with no
+detected objects is valid. The board test requires both a zero exit status and
+exactly one final marker for the expected image count; it does not interpret
+error wording or a diagnostic summary title as a verdict. Older executables
+without this batch protocol fail the new check instead of silently passing.
+The board wrapper writes its final verdict on a new line, so an interactive
+shell prompt cannot prevent the runner from recognizing a failure immediately.
+
+The CI deployment was built on Ubuntu 22.04 AArch64 with GCC 11 and requires
+GLIBC no newer than 2.34. Cross builds must use a compatible sysroot; do not
+replace shared system libraries to accommodate a newer host toolchain.
+
 Install it into the board Linux rootfs:
 
 ```bash

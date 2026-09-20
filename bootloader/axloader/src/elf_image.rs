@@ -276,12 +276,7 @@ fn option_hex(value: Option<u64>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{hex, parse_hex_u64, validate_manifest_address};
-
-    #[test]
-    fn hex_formats_with_prefix() {
-        assert_eq!(hex(0x20_0000), "0x200000");
-    }
+    use super::{parse_hex_u64, validate_manifest_address};
 
     #[test]
     fn parse_hex_accepts_optional_prefix() {

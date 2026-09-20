@@ -1,0 +1,19 @@
+args = [
+    "-nographic",
+    "-cpu", "cortex-a53",
+    "-m", "1024M",
+    "-smp", "4",
+    "-device", "nvme,serial=sysbench,drive=nvm,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+timeout = 900
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^SYSBENCH_HAS_FAILURES\s*$', '(?m)^SYSBENCH_FAILED\b']
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "sh -eu -c 'work=$(mktemp -d); trap '\"'\"'rm -rf \"$work\"'\"'\"' EXIT; tar -xzf /share/sysbench.tar.gz -C \"$work\"; sh \"$work/run.sh\" smoke' || printf 'SYSBENCH_%s\\n' HAS_FAILURES"
+success_regex = ['(?m)^SYSBENCH_DONE\s*$']

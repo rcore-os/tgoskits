@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-labelledby="title desc">
+  <title id="title">Buddy section 区段前缀布局</title><desc id="desc">展示 BuddySection、PageMeta 数组、对齐填充和可管理页帧。</desc>
+  <style>.h{font:700 24px sans-serif;fill:#0f172a}.t{font:600 16px sans-serif;fill:#0f172a}.s{font:14px sans-serif;fill:#334155}.a{fill:#ffedd5;stroke:#f97316;stroke-width:2}.b{fill:#dbeafe;stroke:#3b82f6;stroke-width:2}.c{fill:#f1f5f9;stroke:#94a3b8;stroke-width:2}.d{fill:#dcfce7;stroke:#22c55e;stroke-width:2}.tick{stroke:#475569;stroke-width:2}</style>
+  <text x="600" y="38" text-anchor="middle" class="h">单个运行时 Free region 的内部布局</text>
+  <rect x="60" y="95" width="150" height="90" class="a"/><text x="135" y="132" text-anchor="middle" class="t">BuddySection</text><text x="135" y="157" text-anchor="middle" class="s">区段控制块</text>
+  <rect x="210" y="95" width="300" height="90" class="b"/><text x="360" y="132" text-anchor="middle" class="t">PageMeta[managed_pages]</text><text x="360" y="157" text-anchor="middle" class="s">每页状态、order 与链表索引</text>
+  <rect x="510" y="95" width="160" height="90" class="c"/><text x="590" y="132" text-anchor="middle" class="t">padding</text><text x="590" y="157" text-anchor="middle" class="s">对齐到 2 MiB</text>
+  <rect x="670" y="95" width="470" height="90" class="d"/><text x="905" y="132" text-anchor="middle" class="t">managed page frames</text><text x="905" y="157" text-anchor="middle" class="s">Buddy 实际可分配范围</text>
+  <path d="M60 82V205M670 82V205M1140 82V205" class="tick"/>
+  <text x="60" y="228" class="s">region.start</text><text x="670" y="228" text-anchor="middle" class="s">managed_heap_start</text><text x="1140" y="228" text-anchor="end" class="s">region.end</text>
+  <text x="365" y="265" text-anchor="middle" class="s">前缀不会重新返回为普通可分配页</text><text x="905" y="265" text-anchor="middle" class="s">连续分配始终位于一个 section 内</text>
+</svg>

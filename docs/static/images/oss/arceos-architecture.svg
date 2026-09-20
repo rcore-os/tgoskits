@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 920" role="img">
+<title>ArceOS 组件装配架构</title><desc>Rust 与 C 应用通过用户库、API 和运行时组合共享服务，HAL 与平台契约连接硬件。图示表示职责与典型能力调用，不是逐包依赖清单。</desc>
+<rect x="1" y="1" width="1098" height="918" rx="24" fill="var(--os-diagram-bg, #f7f9fb)" stroke="var(--os-diagram-border, #d7e2e9)"/>
+<g font-family="system-ui, sans-serif" fill="var(--os-diagram-text, #263d4a)">
+<text x="40" y="42" font-size="26" font-weight="650" text-anchor="start">ArceOS · 按需装配的 Unikernel</text>
+<g><rect x="40.0" y="66" width="501.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="290.5" y="96" font-size="22" font-weight="650" text-anchor="middle">Rust 应用</text>
+<text x="290.5" y="125" font-size="17" font-weight="400" text-anchor="middle">apps/arceos/ · 应用所需 feature</text>
+</g>
+<g><rect x="559.0" y="66" width="501.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="809.5" y="96" font-size="22" font-weight="650" text-anchor="middle">C 应用</text>
+<text x="809.5" y="125" font-size="17" font-weight="400" text-anchor="middle">C 接口 · 静态集成到系统镜像</text>
+</g>
+<path d="M550 147V166m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="177" width="501.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="290.5" y="207" font-size="22" font-weight="650" text-anchor="middle">ax-std</text>
+<text x="290.5" y="236" font-size="17" font-weight="400" text-anchor="middle">Rust 应用接口</text>
+</g>
+<g><rect x="559.0" y="177" width="501.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="809.5" y="207" font-size="22" font-weight="650" text-anchor="middle">ax-libc</text>
+<text x="809.5" y="236" font-size="17" font-weight="400" text-anchor="middle">C / POSIX 应用接口</text>
+</g>
+<path d="M550 258V276m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="287" width="501.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="290.5" y="317" font-size="22" font-weight="650" text-anchor="middle">ax-api</text>
+<text x="290.5" y="346" font-size="17" font-weight="400" text-anchor="middle">系统能力 API 聚合</text>
+</g>
+<g><rect x="559.0" y="287" width="501.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="809.5" y="317" font-size="22" font-weight="650" text-anchor="middle">ax-posix-api</text>
+<text x="809.5" y="346" font-size="17" font-weight="400" text-anchor="middle">POSIX 接口适配</text>
+</g>
+<path d="M550 368V386m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="397" width="1020.0" height="80" rx="12" fill="var(--os-diagram-accent-bg, #e6f4ee)" stroke="var(--os-accent, #0f766e)" stroke-width="1.5"/>
+<text x="550.0" y="427" font-size="22" font-weight="650" text-anchor="middle">ax-runtime</text>
+<text x="550.0" y="456" font-size="17" font-weight="400" text-anchor="middle">启动与初始化 · 任务运行时接入 · 功能装配</text>
+</g>
+<path d="M550 478V496m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="507" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="204.0" y="537" font-size="22" font-weight="650" text-anchor="middle">任务与同步</text>
+<text x="204.0" y="566" font-size="17" font-weight="400" text-anchor="middle">ax-task · ax-sync</text>
+</g>
+<g><rect x="386.0" y="507" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="550.0" y="537" font-size="22" font-weight="650" text-anchor="middle">内存管理</text>
+<text x="550.0" y="566" font-size="17" font-weight="400" text-anchor="middle">ax-alloc · ax-mm</text>
+</g>
+<g><rect x="732.0" y="507" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="896.0" y="537" font-size="22" font-weight="650" text-anchor="middle">系统服务</text>
+<text x="896.0" y="566" font-size="17" font-weight="400" text-anchor="middle">ax-log · ax-ipi · 显示与输入</text>
+</g>
+<path d="M550 588V606m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="617" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="204.0" y="647" font-size="22" font-weight="650" text-anchor="middle">文件与网络</text>
+<text x="204.0" y="676" font-size="17" font-weight="400" text-anchor="middle">ax-fs-ng · ax-net</text>
+</g>
+<g><rect x="386.0" y="617" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="550.0" y="647" font-size="22" font-weight="650" text-anchor="middle">设备能力</text>
+<text x="550.0" y="676" font-size="17" font-weight="400" text-anchor="middle">ax-driver · rdrive · rdif-*</text>
+</g>
+<g><rect x="732.0" y="617" width="328.0" height="80" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="896.0" y="647" font-size="22" font-weight="650" text-anchor="middle">基础组件</text>
+<text x="896.0" y="676" font-size="17" font-weight="400" text-anchor="middle">ax-cpu · ax-io · 地址与页表</text>
+</g>
+<path d="M550 698V716m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="727" width="1020.0" height="80" rx="12" fill="var(--os-diagram-accent-bg, #e6f4ee)" stroke="var(--os-accent, #0f766e)" stroke-width="1.5"/>
+<text x="550.0" y="757" font-size="22" font-weight="650" text-anchor="middle">ax-hal / ax-plat</text>
+<text x="550.0" y="786" font-size="17" font-weight="400" text-anchor="middle">CPU · 中断 · 时钟 · 内存与平台资源</text>
+</g>
+<path d="M550 808V826m-6-8 6 8 6-8" fill="none" stroke="var(--os-diagram-arrow, #779bab)" stroke-width="2"/>
+<g><rect x="40.0" y="837" width="1020.0" height="66" rx="12" fill="var(--os-diagram-cell, #fff)" stroke="var(--os-diagram-border, #d7e2e9)" stroke-width="1.5"/>
+<text x="550.0" y="859" dominant-baseline="central" font-size="22" font-weight="650" text-anchor="middle">平台与硬件</text>
+<text x="550.0" y="885" dominant-baseline="central" font-size="17" font-weight="400" text-anchor="middle">axplat-dyn · somehal · someboot · QEMU / 实体板卡</text>
+</g>
+</g></svg>

@@ -239,14 +239,14 @@ impl<I: Write + ?Sized> BufferedWriterSpec for BufWriter<I> {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 struct AxtestShortReader<'a> {
     remaining: &'a [u8],
     max_read: usize,
     largest_request: usize,
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 impl Read for AxtestShortReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         self.largest_request = self.largest_request.max(buf.len());
@@ -260,21 +260,21 @@ impl Read for AxtestShortReader<'_> {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 struct AxtestFixedWriter<'a> {
     output: &'a mut [u8],
     written: usize,
     largest_write: usize,
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 impl AxtestFixedWriter<'_> {
     fn filled(&self) -> &[u8] {
         &self.output[..self.written]
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 impl Write for AxtestFixedWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
         self.largest_write = self.largest_write.max(buf.len());
@@ -292,93 +292,89 @@ impl Write for AxtestFixedWriter<'_> {
     }
 }
 
-#[cfg(axtest)]
-/// Verifies the stack-buffer copy path with short reads and writer failure.
-pub fn copy_constants_hold_for_test() -> bool {
-    let source = *b"stack-buffer-copy";
-    let mut reader = AxtestShortReader {
-        remaining: &source,
-        max_read: 3,
-        largest_request: 0,
-    };
-    let mut output = [0; 17];
-    let mut writer = AxtestFixedWriter {
-        output: &mut output,
-        written: 0,
-        largest_write: 0,
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    assert_eq!(
-        stack_buffer_copy(&mut reader, &mut writer),
-        Ok(source.len() as u64)
-    );
-    assert_eq!(writer.filled(), source);
-    assert!(reader.remaining.is_empty());
-    assert_eq!(reader.largest_request, DEFAULT_BUF_SIZE);
+    #[test]
+    fn copy_constants_hold() {
+        let source = *b"stack-buffer-copy";
+        let mut reader = AxtestShortReader {
+            remaining: &source,
+            max_read: 3,
+            largest_request: 0,
+        };
+        let mut output = [0; 17];
+        let mut writer = AxtestFixedWriter {
+            output: &mut output,
+            written: 0,
+            largest_write: 0,
+        };
 
-    let mut reader = AxtestShortReader {
-        remaining: &source,
-        max_read: source.len(),
-        largest_request: 0,
-    };
-    let mut short_output = [0; 4];
-    let mut short_writer = AxtestFixedWriter {
-        output: &mut short_output,
-        written: 0,
-        largest_write: 0,
-    };
+        assert_eq!(
+            stack_buffer_copy(&mut reader, &mut writer),
+            Ok(source.len() as u64)
+        );
+        assert_eq!(writer.filled(), source);
+        assert!(reader.remaining.is_empty());
+        assert_eq!(reader.largest_request, DEFAULT_BUF_SIZE);
 
-    assert_eq!(
-        stack_buffer_copy(&mut reader, &mut short_writer),
-        Err(Error::WriteZero)
-    );
-
-    true
-}
-
-#[cfg(axtest)]
-/// Verifies copy dispatches through the buffered-reader specialization.
-pub fn copy_buffered_reader_spec_hold_for_test() -> bool {
-    let source = [0x5a; DEFAULT_BUF_SIZE * 2 + 11];
-    let mut reader = BufReader::with_capacity(
-        DEFAULT_BUF_SIZE * 2,
-        AxtestShortReader {
+        let mut reader = AxtestShortReader {
             remaining: &source,
             max_read: source.len(),
             largest_request: 0,
-        },
-    );
-    let mut output = [0; DEFAULT_BUF_SIZE * 2 + 11];
-    let mut writer = AxtestFixedWriter {
-        output: &mut output,
-        written: 0,
-        largest_write: 0,
-    };
+        };
+        let mut short_output = [0; 4];
+        let mut short_writer = AxtestFixedWriter {
+            output: &mut short_output,
+            written: 0,
+            largest_write: 0,
+        };
 
-    assert_eq!(copy(&mut reader, &mut writer), Ok(source.len() as u64));
-    assert_eq!(writer.filled(), source);
-    assert_eq!(writer.largest_write, DEFAULT_BUF_SIZE * 2);
-    assert!(reader.into_inner().remaining.is_empty());
+        assert_eq!(
+            stack_buffer_copy(&mut reader, &mut short_writer),
+            Err(Error::WriteZero)
+        );
+    }
 
-    true
-}
+    #[test]
+    fn copy_buffered_reader_spec_hold() {
+        let source = [0x5a; DEFAULT_BUF_SIZE * 2 + 11];
+        let mut reader = BufReader::with_capacity(
+            DEFAULT_BUF_SIZE * 2,
+            AxtestShortReader {
+                remaining: &source,
+                max_read: source.len(),
+                largest_request: 0,
+            },
+        );
+        let mut output = [0; DEFAULT_BUF_SIZE * 2 + 11];
+        let mut writer = AxtestFixedWriter {
+            output: &mut output,
+            written: 0,
+            largest_write: 0,
+        };
 
-#[cfg(axtest)]
-/// Verifies copy dispatches through the byte-slice specialization.
-pub fn copy_slice_specialization_hold_for_test() -> bool {
-    let source = [0x7b; DEFAULT_BUF_SIZE + 17];
-    let mut reader = source.as_slice();
-    let mut output = [0; DEFAULT_BUF_SIZE + 17];
-    let mut writer = AxtestFixedWriter {
-        output: &mut output,
-        written: 0,
-        largest_write: 0,
-    };
+        assert_eq!(copy(&mut reader, &mut writer), Ok(source.len() as u64));
+        assert_eq!(writer.filled(), source);
+        assert_eq!(writer.largest_write, DEFAULT_BUF_SIZE * 2);
+        assert!(reader.into_inner().remaining.is_empty());
+    }
 
-    assert_eq!(copy(&mut reader, &mut writer), Ok(source.len() as u64));
-    assert_eq!(writer.filled(), source);
-    assert_eq!(writer.largest_write, source.len());
-    assert!(reader.is_empty());
+    #[test]
+    fn copy_slice_specialization_hold() {
+        let source = [0x7b; DEFAULT_BUF_SIZE + 17];
+        let mut reader = source.as_slice();
+        let mut output = [0; DEFAULT_BUF_SIZE + 17];
+        let mut writer = AxtestFixedWriter {
+            output: &mut output,
+            written: 0,
+            largest_write: 0,
+        };
 
-    true
+        assert_eq!(copy(&mut reader, &mut writer), Ok(source.len() as u64));
+        assert_eq!(writer.filled(), source);
+        assert_eq!(writer.largest_write, source.len());
+        assert!(reader.is_empty());
+    }
 }

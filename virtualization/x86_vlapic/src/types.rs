@@ -22,7 +22,16 @@ use core::{
 pub type X86VlapicResult<T = ()> = Result<T, X86VlapicError>;
 
 /// Timer callback type accepted by the embedding host.
-pub type X86TimerCallback = Box<dyn FnOnce(u64) + Send + 'static>;
+pub type X86TimerCallback = Box<dyn FnMut(u64) -> X86TimerAction + Send + 'static>;
+
+/// Result returned after an x86 device timer fires.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum X86TimerAction {
+    /// Finish this host registration.
+    Complete,
+    /// Rearm the same registration at a new absolute deadline in nanoseconds.
+    Rearm(u64),
+}
 
 /// VM identifier used by x86 interrupt-controller emulation.
 pub type X86VmId = usize;
@@ -46,6 +55,8 @@ pub enum X86VlapicError {
     NoMemory,
     /// Device state is inconsistent with the requested transition.
     BadState,
+    /// The embedding host could not register or cancel a device timer.
+    TimerUnavailable,
 }
 
 macro_rules! define_addr_type {

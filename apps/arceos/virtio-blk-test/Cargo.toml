@@ -6,9 +6,10 @@ publish = false
 
 [features]
 default = ["arceos"]
-arceos = ["dep:ax-std", "ax-std/arceos"]
+arceos = ["dep:ax-hal", "dep:ax-std", "ax-std/arceos"]
 
 [dependencies]
 ax-driver = { workspace = true, features = ["virtio-core"] }
+ax-hal = { workspace = true, optional = true }
 ax-std = { workspace = true, optional = true, features = ["default"] }
 virtio-drivers.workspace = true

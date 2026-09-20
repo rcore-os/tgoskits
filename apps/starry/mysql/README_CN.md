@@ -41,22 +41,16 @@ QEMU 使用生成后的 rootfs：
 tmp/axbuild/rootfs/rootfs-x86_64-mysql.img
 ```
 
-## 交互模式
+## 指定测试配置
 
-如果需要进入 MySQL 客户端手动执行 SQL，可以使用交互配置：
+`qemu-x86_64-interactive.toml` 保留原文件名，现与默认入口一样执行完整 MySQL SQL 测例，不再自动进入手动交互客户端：
 
 ```bash
 cargo xtask starry app qemu -t mysql --arch x86_64 \
   --qemu-config qemu-x86_64-interactive.toml
 ```
 
-进入 guest 后会自动运行：
-
-```sh
-/usr/bin/mysql-interactive.sh
-```
-
-这个脚本会在 `/opt/mysql/data` 尚未初始化时执行初始化，随后后台启动 `mysqld`，等待 socket 可连接，最后进入 MySQL 交互客户端。退出 MySQL 客户端使用 `exit`，退出 QEMU 使用 `Ctrl-a x`。
+该配置通过 `shell_check_steps` 执行 `/usr/bin/mysql-test.sh`，匹配 `MYSQL_TEST_PASSED` 后退出；遇到 `MYSQL_TEST_FAILED` 或内核错误则失败，整体超时为 2400 秒。
 
 ## Guest 测试流程
 

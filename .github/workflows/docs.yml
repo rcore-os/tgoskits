@@ -6,6 +6,24 @@ on:
       - main
     paths:
       - "docs/**"
+      - "Cargo.toml"
+      - "components/**/Cargo.toml"
+      - "components/**/README*.md"
+      - "drivers/**/Cargo.toml"
+      - "drivers/**/README*.md"
+      - "memory/**/Cargo.toml"
+      - "memory/**/README*.md"
+      - "virtualization/**/Cargo.toml"
+      - "virtualization/**/README*.md"
+      - "fs/**/Cargo.toml"
+      - "fs/**/README*.md"
+      - "net/**/Cargo.toml"
+      - "net/**/README*.md"
+      - "platforms/**/Cargo.toml"
+      - "platforms/**/README*.md"
+      - "os/**/Cargo.toml"
+      - "os/**/README*.md"
+      - "apps/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -39,6 +57,10 @@ jobs:
       - name: Install dependencies
         working-directory: docs
         run: yarn install --frozen-lockfile
+
+      - name: Validate catalog discovery
+        working-directory: docs
+        run: yarn test
 
       - name: Build Docusaurus site
         working-directory: docs

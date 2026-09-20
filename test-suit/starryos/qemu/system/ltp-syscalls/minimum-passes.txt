@@ -1,0 +1,245 @@
+# LTP 20260529 source-derived minimum TPASS counts, not previous run totals.
+# execve03.c: tst_test.tcnt = ARRAY_SIZE(tcases), with six errno cases.
+# https://github.com/linux-test-project/ltp/blob/20260529/testcases/kernel/syscalls/execve/execve03.c
+execve03 6
+# sched_getaffinity01.c: one mask check and three errno checks.
+sched_getaffinity01 4
+# alarm02.c: three settings, each with arm and cancel assertions.
+alarm02 6
+# alarm05.c: arm, replace, and delivered signal count.
+alarm05 3
+# alarm06.c: remaining seconds and no signal after cancellation.
+alarm06 2
+# epoll_create01/02.c: two inputs in both raw and libc variants.
+epoll_create01 4
+epoll_create02 4
+# epoll_ctl02.c: nine errno cases; epoll_wait01.c: OUT, IN, and combined IO.
+epoll_ctl02 9
+epoll_wait01 3
+# epoll_wait03.c: five errno cases.
+epoll_wait03 5
+# epoll_wait06.c: nine pipe edge-trigger assertions.
+epoll_wait06 9
+# rmdir02.c: nine errno cases; rename03.c: eight replacement/inode assertions per filesystem.
+rmdir02 9
+rename03 8
+# faccessat201/202.c: seven success paths and six errno cases.
+faccessat201 7
+faccessat202 6
+# access04.c: six errno cases for root and nobody.
+access04 12
+# epoll_create1_02.c: both invalid-flag cases must complete before driver exit.
+epoll_create1_02 2
+# LTP 20260529 source-derived lock testcase completion counts.
+fcntl17 1
+# LTP 20260529 source-derived lock testcase completion counts.
+fcntl34 1
+fcntl36 7
+# LTP 20260529 source-derived lock testcase completion counts.
+fcntl15 12
+# LTP 20260529 source-derived lock testcase completion counts.
+flock02 4
+flock04 6
+flock06 4
+# LTP 20260529 source-derived lock testcase completion counts.
+flock07 2
+# LTP 20260529 source-derived lock testcase completion counts.
+futex_wait03 1
+# LTP 20260529 source-derived lock testcase completion counts.
+getcwd01 5
+getcwd02 3
+# linkat01.c: twenty-two basic path, descriptor, flag and error cases.
+linkat01 22
+
+# nanosleep02.c: EINTR and elapsed/remaining time after the signal handler.
+nanosleep02 2
+# clock_nanosleep04.c: MONOTONIC and REALTIME in raw and libc variants.
+clock_nanosleep04 4
+# LTP 20260529 testcases/kernel/syscalls/fchmodat2/fchmodat2_02.c: complete upstream assertions.
+fchmodat2_02 3
+# LTP 20260529 testcases/kernel/syscalls/mkdir/mkdir03.c: complete upstream assertions.
+mkdir03 11
+# LTP 20260529 testcases/kernel/syscalls/mknodat/mknodat01.c: complete upstream assertions.
+mknodat01 5
+# LTP 20260529 testcases/kernel/syscalls/mount/mount05.c: complete upstream assertions.
+mount05 2
+# LTP 20260529 testcases/kernel/syscalls/mprotect/mprotect02.c: complete upstream assertions.
+mprotect02 2
+# LTP 20260529 testcases/kernel/syscalls/open/open11.c: complete upstream assertions.
+open11 28
+# LTP 20260529 testcases/kernel/syscalls/open/open06.c: complete upstream assertions.
+open06 1
+# LTP 20260529 testcases/kernel/syscalls/open/open07.c: complete upstream assertions.
+open07 5
+# LTP 20260529 testcases/kernel/syscalls/openat/openat01.c: complete upstream assertions.
+openat01 5
+# LTP 20260529 testcases/kernel/syscalls/ppoll/ppoll01.c: complete upstream assertions.
+ppoll01 20
+# LTP 20260529 testcases/kernel/syscalls/pread/pread01.c: complete upstream assertions.
+pread01 1
+# LTP 20260529 testcases/kernel/syscalls/preadv2/preadv202.c: complete upstream assertions.
+preadv202 8
+# LTP 20260529 testcases/kernel/syscalls/preadv2/preadv201.c: complete upstream assertions.
+preadv201 6
+# LTP 20260529 testcases/kernel/syscalls/prctl/prctl05.c: complete upstream assertions.
+prctl05 8
+# LTP 20260529 testcases/kernel/syscalls/pwrite/pwrite01.c: complete upstream assertions.
+pwrite01 1
+# LTP 20260529 testcases/kernel/syscalls/pwritev2/pwritev201.c: complete upstream assertions.
+pwritev201 6
+# LTP 20260529 testcases/kernel/syscalls/rename/rename06.c: complete upstream assertions.
+rename06 1
+# LTP 20260529 testcases/kernel/syscalls/waitid/waitid01.c: complete upstream assertions.
+waitid01 5
+# LTP 20260529 testcases/kernel/syscalls/link/link02.c: complete upstream assertions.
+link02 2
+# LTP 20260529 testcases/kernel/syscalls/unlinkat/unlinkat01.c: complete upstream assertions.
+unlinkat01 7
+# LTP 20260529 testcases/kernel/syscalls/wait4/wait401.c: complete upstream assertions.
+wait401 3
+# LTP 20260529 testcases/kernel/syscalls/write/write03.c: complete upstream assertions.
+write03 1
+# LTP 20260529 testcases/kernel/syscalls/execveat/execveat01.c: complete upstream assertions.
+execveat01 4
+# LTP 20260529 testcases/kernel/syscalls/mincore/mincore02.c: complete upstream assertions.
+mincore02 2
+# LTP 20260529 testcases/kernel/syscalls/mount/mount01.c: complete upstream assertions.
+mount01 2
+# LTP 20260529 testcases/kernel/syscalls/signalfd/signalfd01.c: complete upstream assertions.
+signalfd01 7
+# LTP 20260529 testcases/kernel/syscalls/statx/statx12.c: complete upstream assertions.
+statx12 4
+# LTP 20260529 testcases/kernel/syscalls/timerfd/timerfd01.c: complete upstream assertions.
+timerfd01 12
+# LTP 20260529 testcases/kernel/syscalls/times/times03.c: complete upstream assertions.
+times03 12
+# LTP 20260529 testcases/kernel/syscalls/getsockopt/getsockopt02.c: complete upstream assertions.
+getsockopt02 1
+# LTP 20260529 testcases/kernel/syscalls/epoll_wait/epoll_wait05.c: complete upstream assertions.
+epoll_wait05 1
+# LTP 20260529 testcases/kernel/syscalls/getxattr/getxattr01.c: complete upstream assertions.
+getxattr01 4
+# LTP 20260529 testcases/kernel/syscalls/arch_prctl/arch_prctl01.c: complete upstream assertions.
+arch_prctl01 4
+# LTP 20260529 testcases/kernel/syscalls/capset/capset02.c: complete upstream assertions.
+capset02 6
+# LTP 20260529 testcases/kernel/syscalls/chmod/chmod01.c: complete upstream assertions.
+chmod01 32
+# LTP 20260529 testcases/kernel/syscalls/chown/chown05.c: complete upstream assertions.
+chown05 6
+# LTP 20260529 testcases/kernel/syscalls/clock_gettime/clock_gettime01.c: complete upstream assertions.
+clock_gettime01 16
+# LTP 20260529 testcases/kernel/syscalls/close/close01.c: complete upstream assertions.
+close01 3
+# LTP 20260529 testcases/kernel/syscalls/fork/fork01.c: complete upstream assertions.
+fork01 2
+# LTP 20260529 testcases/kernel/syscalls/copy_file_range/copy_file_range01.c: complete upstream assertions.
+copy_file_range01 4
+# LTP 20260529 testcases/kernel/syscalls/setresuid/setresuid01.c: complete upstream assertions.
+setresuid01 9
+# LTP 20260529 testcases/kernel/syscalls/bpf/bpf_map01.c: complete upstream assertions.
+bpf_map01 7
+# LTP 20260529 testcases/kernel/syscalls/epoll_pwait/epoll_pwait01.c: complete upstream assertions.
+epoll_pwait01 4
+# LTP 20260529 testcases/kernel/syscalls/eventfd2/eventfd2_03.c: complete upstream assertions.
+eventfd2_03 2
+# LTP 20260529 testcases/kernel/syscalls/faccessat/faccessat01.c: complete upstream assertions.
+faccessat01 3
+# LTP 20260529 testcases/kernel/syscalls/fadvise/posix_fadvise01.c: complete upstream assertions.
+posix_fadvise01 6
+# LTP 20260529 testcases/kernel/syscalls/fchmod/fchmod01.c: complete upstream assertions.
+fchmod01 8
+# LTP 20260529 testcases/kernel/syscalls/fchmodat/fchmodat01.c: complete upstream assertions.
+fchmodat01 6
+# LTP 20260529 testcases/kernel/syscalls/fchown/fchown05.c: complete upstream assertions.
+fchown05 6
+# LTP 20260529 testcases/kernel/syscalls/fchownat/fchownat01.c: complete upstream assertions.
+fchownat01 6
+# LTP 20260529 testcases/kernel/syscalls/fdatasync/fdatasync02.c: complete upstream assertions.
+fdatasync02 2
+# LTP 20260529 testcases/kernel/syscalls/madvise/madvise03.c: complete upstream assertions.
+madvise03 1
+# LTP 20260529 testcases/kernel/syscalls/ftruncate/ftruncate03.c: complete upstream assertions.
+ftruncate03 4
+# LTP 20260529 testcases/kernel/syscalls/futex/futex_wake02.c: complete upstream assertions.
+futex_wake02 11
+# LTP 20260529 testcases/kernel/syscalls/getcpu/getcpu01.c: complete upstream assertions.
+getcpu01 1
+# LTP 20260529 testcases/kernel/syscalls/getgroups/getgroups01.c: complete upstream assertions.
+getgroups01 4
+# LTP 20260529 testcases/kernel/syscalls/getrandom/getrandom03.c: complete upstream assertions.
+getrandom03 9
+# LTP 20260529 testcases/kernel/syscalls/getrusage/getrusage01.c: complete upstream assertions.
+getrusage01 2
+# LTP 20260529 testcases/kernel/syscalls/io_uring/io_uring03.c: complete upstream assertions.
+io_uring03 7
+# LTP 20260529 testcases/kernel/syscalls/tgkill/tgkill03.c: complete upstream assertions.
+tgkill03 6
+# LTP 20260529 testcases/kernel/syscalls/lseek/lseek01.c: complete upstream assertions.
+lseek01 4
+# LTP 20260529 testcases/kernel/syscalls/mlock2/mlock202.c: complete upstream assertions.
+mlock202 4
+# LTP 20260529 testcases/kernel/syscalls/membarrier/membarrier01.c: complete upstream assertions.
+membarrier01 12
+# LTP 20260529 testcases/kernel/syscalls/mmap/mmap06.c: complete upstream assertions.
+mmap06 8
+# LTP 20260529 testcases/kernel/syscalls/mmap/mmap01.c: complete upstream assertions.
+mmap01 1
+# LTP 20260529 testcases/kernel/syscalls/fdatasync/fdatasync01.c: complete upstream assertions.
+fdatasync01 1
+# LTP 20260529 testcases/kernel/syscalls/sendmmsg/sendmmsg01.c: complete upstream assertions.
+sendmmsg01 4
+# LTP 20260529 testcases/kernel/syscalls/ipc/msgget/msgget01.c: complete upstream assertions.
+msgget01 1
+# LTP 20260529 testcases/kernel/syscalls/ipc/msgrcv/msgrcv07.c: complete upstream assertions.
+msgrcv07 15
+# LTP 20260529 testcases/kernel/syscalls/ipc/msgsnd/msgsnd02.c: complete upstream assertions.
+msgsnd02 6
+# LTP 20260529 testcases/kernel/syscalls/recvmsg/recvmsg02.c: complete upstream assertions.
+recvmsg02 1
+# LTP 20260529 testcases/kernel/syscalls/mmap/mmap02.c: complete upstream assertions.
+mmap02 1
+# LTP 20260529 testcases/kernel/syscalls/pidfd_getfd/pidfd_getfd02.c: complete upstream assertions.
+pidfd_getfd02 5
+# LTP 20260529 testcases/kernel/syscalls/prctl/prctl03.c: complete upstream assertions.
+prctl03 6
+# LTP 20260529 testcases/kernel/syscalls/prctl/prctl01.c: complete upstream assertions.
+prctl01 2
+# LTP 20260529 testcases/kernel/syscalls/read/read04.c: complete upstream assertions.
+read04 1
+# LTP 20260529 testcases/kernel/syscalls/rt_sigprocmask/rt_sigprocmask01.c: complete upstream assertions.
+rt_sigprocmask01 1
+# LTP 20260529 testcases/kernel/syscalls/poll/poll01.c: complete upstream assertions.
+poll01 6
+# LTP 20260529 testcases/kernel/syscalls/socketpair/socketpair02.c: complete upstream assertions.
+socketpair02 4
+# LTP 20260529 testcases/kernel/syscalls/ipc/shmat/shmat01.c: complete upstream assertions.
+shmat01 4
+# LTP 20260529 testcases/kernel/syscalls/sigaltstack/sigaltstack01.c: complete upstream assertions.
+sigaltstack01 1
+# LTP 20260529 testcases/kernel/syscalls/sigsuspend/sigsuspend01.c: complete upstream assertions.
+sigsuspend01 1
+# LTP 20260529 testcases/kernel/syscalls/splice/splice01.c: complete upstream assertions.
+splice01 1
+# LTP 20260529 testcases/kernel/syscalls/fstat/fstat02.c: complete upstream assertions.
+fstat02 6
+# LTP 20260529 testcases/kernel/syscalls/rt_tgsigqueueinfo/rt_tgsigqueueinfo01.c: complete upstream assertions.
+rt_tgsigqueueinfo01 3
+# LTP 20260529 testcases/kernel/syscalls/tkill/tkill01.c: complete upstream assertions.
+tkill01 2
+# LTP 20260529 testcases/kernel/syscalls/truncate/truncate02.c: complete upstream assertions.
+truncate02 2
+# LTP 20260529 testcases/kernel/syscalls/setuid/setuid01.c: complete upstream assertions.
+setuid01 1
+# LTP 20260529 testcases/kernel/syscalls/getuid/getuid03.c: complete upstream assertions.
+getuid03 2
+# LTP 20260529 testcases/kernel/syscalls/setreuid/setreuid01.c: complete upstream assertions.
+setreuid01 7
+# LTP 20260529 testcases/kernel/syscalls/umask/umask01.c: complete upstream assertions.
+umask01 1
+# LTP 20260529 writev07.c: complete upstream assertions.
+writev07 8
+# LTP 20260529 testcases/kernel/syscalls/clone/clone05.c: complete upstream assertions.
+clone05 1
+# LTP 20260529 testcases/kernel/syscalls/write/write01.c: complete upstream assertions.
+write01 1

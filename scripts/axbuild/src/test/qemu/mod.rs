@@ -10,7 +10,10 @@ use serde::Deserialize;
 
 use crate::{
     context::validate_supported_target,
-    test::case::{HostHttpServerConfig, TestQemuCase, TestQemuSubcase, TestQemuSubcaseKind},
+    test::case::{
+        GroupedCommandSelection, HostHttpServerConfig, TestQemuCase, TestQemuSubcase,
+        TestQemuSubcaseKind,
+    },
 };
 
 const TIMEOUT_SCALE_ENV: &str = "AXBUILD_TEST_TIMEOUT_SCALE";
@@ -25,12 +28,12 @@ mod tree;
 mod types;
 
 pub(crate) use boot::{
-    apply_drive_snapshot_without_global_snapshot, apply_smp_qemu_arg, apply_timeout_scale,
-    qemu_timeout_summary, smp_from_qemu_arg,
+    apply_smp_qemu_arg, apply_timeout_scale, qemu_timeout_summary, smp_from_qemu_arg,
 };
 pub(crate) use config::{
-    load_qemu_case_extra_config, load_qemu_case_host_http_server, load_test_qemu_case_fields,
-    validate_grouped_qemu_commands,
+    load_qemu_case_fields_with_write_policy, load_qemu_case_host_http_server,
+    load_test_qemu_case_fields, validate_grouped_qemu_commands,
+    validate_test_qemu_rootfs_write_policy,
 };
 pub(crate) use discovery::{
     case_name_from_wrapper, discover_all_qemu_cases, discover_all_qemu_cases_with_archs,

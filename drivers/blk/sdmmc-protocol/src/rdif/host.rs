@@ -5,14 +5,14 @@ use rdif_block::{
     BlkError,
     dma_api::{CompletedDma, PreparedDma},
 };
-use sdio_host2::ProgressCause;
+use sdmmc_host::ProgressCause;
 
 use crate::{
     BlockProgress, BlockRequestId, DataCommandProgress, Error,
     rdif::config::{BLOCK_SIZE, map_dev_err_to_blk_err},
     sdio::{
-        host::SdioIrqHost,
-        host2::{ProtocolDataRequest, ProtocolHost},
+        host::SdMmcIrqHost,
+        transport::{ProtocolDataRequest, ProtocolHost},
     },
 };
 
@@ -41,7 +41,7 @@ pub(crate) struct ProtocolBlockSlot {
     completed_dma: Option<CompletedDma>,
 }
 
-pub(crate) struct ProtocolBlockRequest<H: SdioIrqHost + 'static> {
+pub(crate) struct ProtocolBlockRequest<H: SdMmcIrqHost + 'static> {
     id: BlockRequestId,
     inner: ProtocolDataRequest<'static, H>,
 }
@@ -54,7 +54,7 @@ pub(crate) fn submit_owned_read_request<H>(
     pending: &mut Option<ProtocolBlockRequest<H>>,
 ) -> Result<BlockRequestId, OwnedBlockSubmitError>
 where
-    H: SdioIrqHost + Send + 'static,
+    H: SdMmcIrqHost + Send + 'static,
     H::TransactionRequest<'static>: Send,
 {
     submit_owned_protocol_request(host, start_block, buffer, slot, pending, true)
@@ -68,7 +68,7 @@ pub(crate) fn submit_owned_write_request<H>(
     pending: &mut Option<ProtocolBlockRequest<H>>,
 ) -> Result<BlockRequestId, OwnedBlockSubmitError>
 where
-    H: SdioIrqHost + Send + 'static,
+    H: SdMmcIrqHost + Send + 'static,
     H::TransactionRequest<'static>: Send,
 {
     submit_owned_protocol_request(host, start_block, buffer, slot, pending, false)
@@ -82,7 +82,7 @@ pub(crate) fn advance_block_request<H>(
     cause: ProgressCause,
 ) -> Result<BlockProgress, Error>
 where
-    H: SdioIrqHost + Send + 'static,
+    H: SdMmcIrqHost + Send + 'static,
     H::TransactionRequest<'static>: Send,
 {
     let Some(active) = pending.as_mut() else {
@@ -119,7 +119,7 @@ pub(crate) fn abort_request<H>(
     slot: &mut ProtocolBlockSlot,
 ) -> Result<(), Error>
 where
-    H: SdioIrqHost + Send + 'static,
+    H: SdMmcIrqHost + Send + 'static,
     H::TransactionRequest<'static>: Send,
 {
     let result = if let Some(active) = pending.as_mut() {
@@ -147,7 +147,7 @@ fn submit_owned_protocol_request<H>(
     read: bool,
 ) -> Result<BlockRequestId, OwnedBlockSubmitError>
 where
-    H: SdioIrqHost + Send + 'static,
+    H: SdMmcIrqHost + Send + 'static,
     H::TransactionRequest<'static>: Send,
 {
     if pending.is_some() || slot.active_id.is_some() {
@@ -177,9 +177,9 @@ where
         crate::cmd::cmd25(start_block)
     };
     let direction = if read {
-        sdio_host2::DataDirection::Read
+        sdmmc_host::DataDirection::Read
     } else {
-        sdio_host2::DataDirection::Write
+        sdmmc_host::DataDirection::Write
     };
     let inner = match host.submit_dma_data(&command, direction, buffer, BLOCK_SIZE as u32, blocks) {
         Ok(inner) => inner,

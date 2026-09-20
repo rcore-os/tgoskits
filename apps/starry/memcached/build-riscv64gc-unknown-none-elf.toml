@@ -1,0 +1,3 @@
+features = ["ax-driver/nvme", "ax-driver/virtio-net"]
+log = "Warn"
+target = "riscv64gc-unknown-none-elf"

@@ -13,20 +13,20 @@ components.
   with the `sleep` feature and never aliases a spin lock.
 - `PreemptGuard`, `IrqSaveGuard`, and `PreemptIrqSaveGuard` provide explicit
   critical-section guards.
-- With `lockdep`, all lock types share lock-class, held-lock, ordering, and
-  diagnostic support.
+- Lock metadata is fixed-layout wrapper state. The provider owns the single
+  lock-class graph, held-lock stack, ordering checks, and diagnostics.
 
 The crate declares runtime capabilities through `ax-crate-interface`.
-ArceOS implements the production providers in `ax-runtime`; host tests use the
-`host-test` providers in this crate.
+ArceOS implements the provider in `ax-runtime`, which forwards every complete
+transaction to the algorithms owned by `ax-task::sync`. Host tests must link a
+test runtime provider through the same boundary; this crate contains no host
+lock engine or fallback implementation.
 
 ## Features
 
-- `smp`: enable atomic multi-CPU exclusion.
 - `sleep`: enable the sleepable mutex interface.
-- `lockdep`: enable held-lock and ordering diagnostics.
 - `lock-api`: enable the IRQ-save raw mutex adapter required by `lock_api`.
-- `host-test`: use the deterministic host-side engine on non-bare-metal targets.
+- `host-test`: mark a host test composition; provider selection remains external.
 - `axtest`: expose bare-metal coverage tests.
 
 ## License

@@ -126,33 +126,6 @@ int truncate(const char *path, off_t length)
 
 #endif // AX_CONFIG_FS
 
-#ifdef AX_CONFIG_PIPE
-
-int pipe2(int fd[2], int flag)
-{
-    if (!flag)
-        return pipe(fd);
-    if (flag & ~(O_CLOEXEC | O_NONBLOCK))
-        return -EINVAL;
-
-    int res = pipe(fd);
-    if (res != 0)
-        return res;
-
-    if (flag & O_CLOEXEC) {
-        fcntl(fd[0], F_SETFD, FD_CLOEXEC);
-        fcntl(fd[1], F_SETFD, FD_CLOEXEC);
-    }
-    if (flag & O_NONBLOCK) {
-        fcntl(fd[0], F_SETFL, O_NONBLOCK);
-        fcntl(fd[1], F_SETFL, O_NONBLOCK);
-    }
-
-    return 0;
-}
-
-#endif // AX_CONFIG_PIPE
-
 // TODO
 _Noreturn void _exit(int status)
 {

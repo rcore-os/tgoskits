@@ -156,6 +156,17 @@ stateDiagram-v2
   等待队列上的 vCPU（不注入 guest 中断）。因此掩中断的忙循环 guest（永不 VM-exit）对两者都
   不可见——`Paused`/`Stopping` 只是状态机翻转，vCPU 实际仍在跑；`Paused` 下 `stop()` 同样
   不能兜底这种 wedged vCPU（它依赖的也是 VM-exit）。
+- **观察性计数器（HTTP 控制面用，非暂停完成 API）**：`AxVM` 暴露两个 VM 级单调聚合计数器
+  `guest_entry_count` / `guest_park_count`（见 `src/vm/mod.rs`），由 VM 内**所有** vCPU task
+  共享同一对计数，不是 per-vCPU：
+  - `guest_entry_count`：仅在 `run_vcpu` **成功返回后**递增（首次进 guest 与每次从 suspend 唤醒都计），
+    因此失败的 entry（`bind`/`before_vcpu_run`/`vcpu.run()`/退出处理返回 `Err`、guest 从未真正运行）
+    **不会**推进该计数；控制面据此区分"真实重入"与"仅翻转状态"。
+  - `guest_park_count`：仅当某个 vCPU 真正在 suspend wait 中 park（等待队列持锁、入队前发布）时递增，
+    观察的是"有 vCPU park"，**不是全部 vCPU/设备/timer 已 quiesce**——它**不是暂停完成确认 API**。
+  - 两者都是 VM 级聚合：一个 vCPU 的进度即可满足阈值，**不能证明其他 vCPU 也已 park 或重入**；
+    reset 会丢弃并重建 runtime，计数归零。控制面应把它当作"至少一个 vCPU 有进展"的弱信号，
+    而非"全部执行面已静默"的强保证。
 - **`Stopped` 下 `start()` vs `reset()`**：两者都 `Stopped → Running`，且都会**重新初始化 vCPU/
   设备/中断架构**——`start()` 从 `Stopped` 会调 `prepare()`（内部 `reset_transient_resources`
   + 按配置重建 vCPU/设备/中断架构）；`reset()` 同样经 `prepare()` 重建，只是额外显式多一次

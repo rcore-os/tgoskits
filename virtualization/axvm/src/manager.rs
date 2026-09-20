@@ -7,7 +7,7 @@ use axvm_types::VMId;
 
 use crate::{
     AxVmError, AxVmResult,
-    arch::ArchVCpu,
+    arch::current::ArchVCpu,
     ax_err,
     host::{HostPlatform, default_host},
     vcpu::with_current_vcpu,
@@ -32,12 +32,15 @@ pub(crate) fn push_existing_vm(vm: AxVMRef) -> bool {
         warn!("VM[{vm_id}] already exists, push VM failed");
         return false;
     }
-    registry.insert(vm_id, vm);
+    registry.insert(vm_id, vm.clone());
+    drop(registry);
+    crate::arch::current::register_vm_platform_resources(&vm);
     true
 }
 
 /// Remove a VM from the process-wide AxVM runtime registry.
 pub(crate) fn remove_existing_vm(vm_id: VMId) -> Option<AxVMRef> {
+    crate::arch::current::unregister_vm_platform_resources(vm_id);
     crate::runtime::vcpus::cleanup_vm_vcpus(vm_id);
     VM_REGISTRY.lock().remove(&vm_id)
 }
@@ -53,6 +56,7 @@ pub fn get_vm_list() -> Vec<AxVMRef> {
 }
 
 /// Run an operation with a VM selected from the process-wide runtime registry.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn with_vm<F, R>(vm_id: VMId, f: F) -> Option<R>
 where
     F: FnOnce(&AxVMRef) -> R,
@@ -62,6 +66,7 @@ where
 }
 
 /// Return the active-vCPU mask for a VM.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn active_vcpu_mask(vm_id: VMId) -> Option<usize> {
     with_vm(vm_id, |vm| {
         let vcpu_num = vm.vcpu_num();
@@ -74,14 +79,14 @@ pub(crate) fn active_vcpu_mask(vm_id: VMId) -> Option<usize> {
 }
 
 /// Inject a virtual interrupt into a VM's vCPU.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxVmResult {
     crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
 }
 
-/// Wake and kick a target vCPU whose architecture backend already published
-/// pending interrupt state.
-pub fn notify_vm_vcpu(vm_id: VMId, vcpu_id: usize) -> AxVmResult {
-    crate::runtime::vcpus::notify_vcpu(vm_id, vcpu_id)
+/// Kick a target vCPU after the caller has published canonical architecture state.
+pub fn kick_vm_vcpu(vm_id: VMId, vcpu_id: usize) -> AxVmResult {
+    crate::runtime::vcpus::kick_vcpu_from_published_state(vm_id, vcpu_id)
 }
 
 /// Return the current VM ID from the vCPU currently executing on this CPU.
@@ -164,6 +169,11 @@ impl AxvmRuntime {
     /// Stop a VM selected from the runtime registry.
     pub fn stop_vm(vm_id: VMId) -> AxVmResult {
         crate::runtime::stop_vm(vm_id)
+    }
+
+    /// Pause a VM selected from the runtime registry.
+    pub fn pause_vm(vm_id: VMId) -> AxVmResult {
+        crate::runtime::pause_vm(vm_id)
     }
 
     /// Resume a VM selected from the runtime registry.

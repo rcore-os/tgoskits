@@ -2,7 +2,7 @@
 
 use std::vec::Vec;
 
-use super::linux::X86LinuxRange;
+use super::{acpi::X86PciIntxRoute, linux::X86LinuxRange};
 
 pub const MP_TABLE_GPA: usize = 0x9f800;
 pub const MP_TABLE_SIZE: usize = 0x800;
@@ -17,6 +17,11 @@ const IO_APIC_VERSION: u8 = 0x11;
 
 const BUS_ID_PCI: u8 = 0;
 const BUS_ID_ISA: u8 = 1;
+
+const MP_INTERRUPT: u8 = 0;
+const MP_NMI: u8 = 1;
+const MP_EXTINT: u8 = 3;
+const MP_APIC_ALL: u8 = 0xff;
 
 const MP_IRQ_FLAGS_CONFORMING: u16 = 0;
 const MP_IRQ_FLAGS_ACTIVE_LOW: u16 = 0x3;
@@ -33,9 +38,10 @@ pub fn build(
     apic_ids: &[u8],
     local_apic_address: u32,
     io_apic_address: u32,
+    pci_routes: &[X86PciIntxRoute],
 ) -> [u8; MP_TABLE_SIZE] {
     let mut image = [0u8; MP_TABLE_SIZE];
-    let config = build_config_table(apic_ids, local_apic_address, io_apic_address);
+    let config = build_config_table(apic_ids, local_apic_address, io_apic_address, pci_routes);
     image[..config.len()].copy_from_slice(&config);
 
     let floating = build_floating_pointer();
@@ -55,8 +61,13 @@ fn build_floating_pointer() -> [u8; 16] {
     data
 }
 
-fn build_config_table(apic_ids: &[u8], local_apic_address: u32, io_apic_address: u32) -> Vec<u8> {
-    let entries = config_entries(apic_ids, io_apic_address);
+fn build_config_table(
+    apic_ids: &[u8],
+    local_apic_address: u32,
+    io_apic_address: u32,
+    pci_routes: &[X86PciIntxRoute],
+) -> Vec<u8> {
+    let entries = config_entries(apic_ids, io_apic_address, pci_routes);
     let entries_len: usize = entries.iter().map(Vec::len).sum();
 
     let mut table = Vec::with_capacity(44 + entries_len);
@@ -83,7 +94,11 @@ fn build_config_table(apic_ids: &[u8], local_apic_address: u32, io_apic_address:
     table
 }
 
-fn config_entries(apic_ids: &[u8], io_apic_address: u32) -> Vec<Vec<u8>> {
+fn config_entries(
+    apic_ids: &[u8],
+    io_apic_address: u32,
+    pci_routes: &[X86PciIntxRoute],
+) -> Vec<Vec<u8>> {
     let mut entries = apic_ids
         .iter()
         .copied()
@@ -96,7 +111,8 @@ fn config_entries(apic_ids: &[u8], io_apic_address: u32) -> Vec<Vec<u8>> {
         io_apic_entry(io_apic_address),
     ]);
     push_isa_interrupt_entries(&mut entries);
-    push_pci_interrupt_entries(&mut entries);
+    push_pci_interrupt_entries(&mut entries, pci_routes);
+    push_local_interrupt_entries(&mut entries);
     entries
 }
 
@@ -131,11 +147,35 @@ fn io_apic_entry(io_apic_address: u32) -> Vec<u8> {
 }
 
 fn push_isa_interrupt_entries(entries: &mut Vec<Vec<u8>>) {
-    // Keep legacy ISA IRQs identity-routed to the IOAPIC. IRQ0 is timer and
-    // IRQ4 is COM1; both are useful during early Linux bring-up diagnostics.
-    for irq in 0u8..16 {
+    // Keep the legacy PIC in virtual-wire mode while routing the 8254 timer
+    // through the IOAPIC's conventional INTIN2. This is the topology Linux
+    // constructs for a mixed PIC/IOAPIC MPS machine (IRQ0 -> INTIN2 and the
+    // 8259A cascade -> INTIN0). IRQ2 is the PIC cascade and has no direct
+    // ISA interrupt entry.
+    entries.push(interrupt_entry(
+        MP_EXTINT,
+        MP_IRQ_FLAGS_CONFORMING,
+        BUS_ID_ISA,
+        0,
+        0,
+    ));
+    entries.push(interrupt_entry(
+        MP_INTERRUPT,
+        MP_IRQ_FLAGS_CONFORMING,
+        BUS_ID_ISA,
+        0,
+        2,
+    ));
+    entries.push(interrupt_entry(
+        MP_INTERRUPT,
+        MP_IRQ_FLAGS_CONFORMING,
+        BUS_ID_ISA,
+        1,
+        1,
+    ));
+    for irq in 3u8..16 {
         entries.push(interrupt_entry(
-            0,
+            MP_INTERRUPT,
             MP_IRQ_FLAGS_CONFORMING,
             BUS_ID_ISA,
             irq,
@@ -144,30 +184,35 @@ fn push_isa_interrupt_entries(entries: &mut Vec<Vec<u8>>) {
     }
 }
 
-fn push_pci_interrupt_entries(entries: &mut Vec<Vec<u8>>) {
-    // QEMU q35 exposes the host rootfs virtio-blk as 00:03.0 in the current
-    // smoke setup. Add enough INTx routing for Linux to build the PCI IRQ
-    // table before a fuller virtual PCI IRQ router exists.
-    for dev in 0u8..4 {
-        for pin in 0u8..4 {
-            let source_irq = (dev << 2) | pin;
-            let intin = pci_intx_gsi(dev, pin);
-            entries.push(interrupt_entry(
-                0,
-                PCI_INTX_IRQ_FLAGS,
-                BUS_ID_PCI,
-                source_irq,
-                intin,
-            ));
-        }
-    }
+fn push_local_interrupt_entries(entries: &mut Vec<Vec<u8>>) {
+    entries.push(local_interrupt_entry(
+        MP_EXTINT,
+        MP_IRQ_FLAGS_CONFORMING,
+        BUS_ID_ISA,
+        0,
+        MP_APIC_ALL,
+        0,
+    ));
+    entries.push(local_interrupt_entry(
+        MP_NMI,
+        MP_IRQ_FLAGS_CONFORMING,
+        BUS_ID_ISA,
+        0,
+        MP_APIC_ALL,
+        1,
+    ));
 }
 
-const fn pci_intx_gsi(dev: u8, pin: u8) -> u8 {
-    // Match q35 PCI INTx swizzling in the guest MP table. The host IRQ can be
-    // a different ACPI route; Axvisor registers that native host IRQ against
-    // this guest GSI explicitly.
-    16 + ((dev + pin) & 3)
+fn push_pci_interrupt_entries(entries: &mut Vec<Vec<u8>>, routes: &[X86PciIntxRoute]) {
+    for route in routes {
+        entries.push(interrupt_entry(
+            0,
+            PCI_INTX_IRQ_FLAGS,
+            BUS_ID_PCI,
+            route.mp_source_irq(),
+            route.gsi,
+        ));
+    }
 }
 
 fn interrupt_entry(
@@ -188,6 +233,25 @@ fn interrupt_entry(
     entry
 }
 
+fn local_interrupt_entry(
+    interrupt_type: u8,
+    flags: u16,
+    source_bus_id: u8,
+    source_bus_irq: u8,
+    dest_apic: u8,
+    dest_apic_lint: u8,
+) -> Vec<u8> {
+    let mut entry = Vec::with_capacity(8);
+    entry.push(4);
+    entry.push(interrupt_type);
+    entry.extend_from_slice(&flags.to_le_bytes());
+    entry.push(source_bus_id);
+    entry.push(source_bus_irq);
+    entry.push(dest_apic);
+    entry.push(dest_apic_lint);
+    entry
+}
+
 fn checksum(bytes: &[u8]) -> u8 {
     0u8.wrapping_sub(bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)))
 }
@@ -198,7 +262,7 @@ mod tests {
 
     #[test]
     fn builds_valid_mp_table_checksums() {
-        let image = build(&[0, 1], 0xfee0_0000, 0xfec0_0000);
+        let image = build(&[0, 1], 0xfee0_0000, 0xfec0_0000, &[]);
         let config_len = u16::from_le_bytes([image[4], image[5]]) as usize;
         assert_eq!(&image[..4], b"PCMP");
         assert_eq!(
@@ -219,25 +283,23 @@ mod tests {
 
     #[test]
     fn pci_intx_entries_are_low_active_level_triggered() {
-        let (device, _, pin, guest_gsi) = crate::boot::x86_qemu_passthrough_block_intx();
-        let source_irq = (device << 2) | (pin - 1);
-        let entry = interrupt_entry(
-            0,
-            PCI_INTX_IRQ_FLAGS,
-            BUS_ID_PCI,
-            source_irq,
-            guest_gsi as u8,
-        );
+        let route = X86PciIntxRoute {
+            device: 3,
+            pin: 0,
+            gsi: 19,
+        };
+        let source_irq = route.mp_source_irq();
+        let entry = interrupt_entry(0, PCI_INTX_IRQ_FLAGS, BUS_ID_PCI, source_irq, route.gsi);
 
         assert_eq!(u16::from_le_bytes([entry[2], entry[3]]), 0x0f);
         assert_eq!(entry[4], BUS_ID_PCI);
         assert_eq!(entry[5], source_irq);
-        assert_eq!(entry[7], guest_gsi as u8);
+        assert_eq!(entry[7], route.gsi);
     }
 
     #[test]
     fn com1_is_identity_routed_to_ioapic_gsi4() {
-        let entry = config_entries(&[0], 0xfec0_0000)
+        let entry = config_entries(&[0], 0xfec0_0000, &[])
             .into_iter()
             .find(|entry| {
                 entry.len() == 8 && entry[0] == 3 && entry[4] == BUS_ID_ISA && entry[5] == 4
@@ -253,14 +315,67 @@ mod tests {
     }
 
     #[test]
-    fn q35_dev3_inta_uses_swizzled_gsi19() {
-        assert_eq!(pci_intx_gsi(3, 0), 19);
+    fn resolved_q35_dev3_inta_is_published_as_gsi19() {
+        let route = X86PciIntxRoute {
+            device: 3,
+            pin: 0,
+            gsi: 19,
+        };
+        let entry = config_entries(&[0], 0xfec0_0000, &[route])
+            .into_iter()
+            .find(|entry| entry[0] == 3 && entry[4] == BUS_ID_PCI && entry[5] == 12)
+            .expect("resolved PCI INTx route must be published");
+        assert_eq!(entry[7], 19);
+    }
+
+    #[test]
+    fn mps_timer_keeps_pic_cascade_and_routes_irq0_to_intin2() {
+        let entries = config_entries(&[0], 0xfec0_0000, &[]);
+        let isa_irq0 = |interrupt_type| {
+            entries
+                .iter()
+                .find(|entry| {
+                    entry.len() == 8
+                        && entry[0] == 3
+                        && entry[1] == interrupt_type
+                        && entry[4] == BUS_ID_ISA
+                        && entry[5] == 0
+                })
+                .expect("MP table must describe ISA IRQ0")
+        };
+
+        assert_eq!(isa_irq0(MP_EXTINT)[7], 0);
+        assert_eq!(isa_irq0(MP_INTERRUPT)[7], 2);
+        assert!(!entries.iter().any(|entry| {
+            entry.len() == 8
+                && entry[0] == 3
+                && entry[1] == MP_INTERRUPT
+                && entry[4] == BUS_ID_ISA
+                && entry[5] == 2
+        }));
+    }
+
+    #[test]
+    fn mps_table_describes_local_extint_and_nmi_delivery() {
+        let entries = config_entries(&[0], 0xfec0_0000, &[]);
+        let lint_entries = entries
+            .iter()
+            .filter(|entry| entry[0] == 4)
+            .collect::<Vec<_>>();
+
+        assert_eq!(lint_entries.len(), 2);
+        assert_eq!(lint_entries[0][1], MP_EXTINT);
+        assert_eq!(lint_entries[0][6], MP_APIC_ALL);
+        assert_eq!(lint_entries[0][7], 0);
+        assert_eq!(lint_entries[1][1], MP_NMI);
+        assert_eq!(lint_entries[1][6], MP_APIC_ALL);
+        assert_eq!(lint_entries[1][7], 1);
     }
 
     #[test]
     fn io_apic_entry_uses_the_selected_machine_address() {
         let selected_address = 0xfed0_0000;
-        let image = build(&[0], 0xfee0_0000, selected_address);
+        let image = build(&[0], 0xfee0_0000, selected_address, &[]);
         let io_apic_offset = 44 + 20 + 8 + 8;
         let io_apic = &image[io_apic_offset..io_apic_offset + 8];
 

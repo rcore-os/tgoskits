@@ -14,7 +14,7 @@ pub enum UnmountCommitError {
     /// The mount topology changed after the plan was created and must be
     /// planned and admitted again.
     TopologyChanged,
-    /// A normal unmount target gained a child mount before commit.
+    /// A normal unmount target gained a child mount or active use before commit.
     ResourceBusy,
 }
 
@@ -48,6 +48,21 @@ impl UnmountPlan {
             .any(|target| !target.mountpoint.children.lock().is_empty())
     }
 
+    fn has_active_uses(&self) -> bool {
+        self.targets()
+            .any(|mount| mount.active_uses.lock().users != 0)
+    }
+
+    fn has_same_targets(&self, expected: &Self) -> bool {
+        self.targets.len() == expected.targets.len()
+            && self.targets.iter().all(|target| {
+                expected
+                    .targets
+                    .iter()
+                    .any(|other| Arc::ptr_eq(&target.mountpoint, &other.mountpoint))
+            })
+    }
+
     fn revalidate_locked(&self) -> Result<(), UnmountCommitError> {
         if MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire) != self.topology_version {
             return Err(UnmountCommitError::TopologyChanged);
@@ -71,26 +86,29 @@ impl UnmountPlan {
                 return Err(UnmountCommitError::TopologyChanged);
             }
         }
-        if self.kind == UnmountKind::Normal && self.has_children() {
+        if self.kind == UnmountKind::Normal && (self.has_children() || self.has_active_uses()) {
             return Err(UnmountCommitError::ResourceBusy);
         }
         Ok(())
     }
 
-    fn commit_locked(self) -> Result<(), UnmountCommitError> {
+    fn commit_locked(&self) -> Result<(), UnmountCommitError> {
         self.revalidate_locked()?;
         self.detach_targets_locked()
     }
 
-    fn commit_current_locked(self) -> Result<(), UnmountCommitError> {
+    fn commit_current_locked(&self) -> Result<(), UnmountCommitError> {
         self.revalidate_targets_locked()?;
         self.detach_targets_locked()
     }
 
-    fn detach_targets_locked(self) -> Result<(), UnmountCommitError> {
+    fn detach_targets_locked(&self) -> Result<(), UnmountCommitError> {
         for target in &self.targets {
             Mountpoint::detach_from_parent_locked(&target.mountpoint)
                 .map_err(|_| UnmountCommitError::TopologyChanged)?;
+            if self.kind == UnmountKind::Normal {
+                target.mountpoint.active_uses.lock().normally_unmounted = true;
+            }
         }
         for target in &self.targets {
             target.mountpoint.leave_propagation_relations_locked();
@@ -111,6 +129,29 @@ impl UnmountPlan {
 }
 
 impl Mountpoint {
+    /// Commits a normal unmount after filesystem callbacks have completed.
+    ///
+    /// Like Linux's locked checks in `do_umount`, admission is about the
+    /// affected mounts, not activity in an unrelated namespace. Validate the
+    /// original attachment points and propagation set under one topology
+    /// guard before detaching anything. Callbacks run before this guard.
+    pub(super) fn commit_normal_after_flush(self: &Arc<Self>, plan: UnmountPlan) -> VfsResult<()> {
+        if plan.kind != UnmountKind::Normal {
+            return Err(VfsError::InvalidInput);
+        }
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        plan.revalidate_targets_locked()?;
+        if MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire) != plan.topology_version {
+            let current_plan = self.plan_unmount_locked(UnmountKind::Normal)?;
+            // A changed propagation set has not passed the caller's busy
+            // checks and cannot join (or leave) this admitted transaction.
+            if !current_plan.has_same_targets(&plan) {
+                return Err(UnmountCommitError::TopologyChanged.into());
+            }
+        }
+        plan.detach_targets_locked().map_err(VfsError::from)
+    }
+
     pub fn plan_unmount(self: &Arc<Self>, kind: UnmountKind) -> VfsResult<UnmountPlan> {
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         self.plan_unmount_locked(kind)
@@ -149,7 +190,7 @@ impl Mountpoint {
             topology_version: MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire),
             targets,
         };
-        if kind == UnmountKind::Normal && plan.has_children() {
+        if kind == UnmountKind::Normal && (plan.has_children() || plan.has_active_uses()) {
             return Err(VfsError::ResourceBusy);
         }
         Ok(plan)
@@ -212,9 +253,14 @@ impl Mountpoint {
 
     /// Lazily detach this mountpoint and its complete propagation subtree.
     pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        self.plan_unmount_locked(UnmountKind::Detach)?
-            .commit_current_locked()?;
+        // Keep detached targets alive until after topology exclusion ends:
+        // their final filesystem lease can flush and destroy cached inodes.
+        let plan;
+        {
+            let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+            plan = self.plan_unmount_locked(UnmountKind::Detach)?;
+            plan.commit_current_locked()?;
+        }
         Ok(())
     }
 

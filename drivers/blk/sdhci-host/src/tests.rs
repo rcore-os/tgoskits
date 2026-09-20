@@ -1,30 +1,18 @@
 use core::num::{NonZeroU16, NonZeroU32};
 
-use sdio_host2::{ProgressCause, RequestProgress, ResponseType};
+use sdmmc_host::{ProgressCause, RequestProgress, ResponseType};
 
 use super::*;
 
-#[test]
-fn protocol_progress_contracts_are_closed_and_exhaustive() {
-    fn command_state(progress: sdmmc_protocol::CommandProgress) -> bool {
-        match progress {
-            sdmmc_protocol::CommandProgress::Pending => false,
-            sdmmc_protocol::CommandProgress::Complete => true,
-        }
-    }
+struct StaticTimer;
 
-    fn block_state(progress: sdmmc_protocol::BlockProgress) -> bool {
-        match progress {
-            sdmmc_protocol::BlockProgress::Pending => false,
-            sdmmc_protocol::BlockProgress::Complete => true,
-        }
+impl HostTimer for StaticTimer {
+    fn now_ms(&self) -> u64 {
+        0
     }
-
-    assert!(!command_state(sdmmc_protocol::CommandProgress::Pending));
-    assert!(command_state(sdmmc_protocol::CommandProgress::Complete));
-    assert!(!block_state(sdmmc_protocol::BlockProgress::Pending));
-    assert!(block_state(sdmmc_protocol::BlockProgress::Complete));
 }
+
+static STATIC_TIMER: StaticTimer = StaticTimer;
 
 #[test]
 fn irq_capability_trait_controls_hardware_signal_masks() {
@@ -35,22 +23,81 @@ fn irq_capability_trait_controls_hardware_signal_masks() {
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
 
-    assert!(!sdmmc_protocol::sdio::SdioIrqHost::completion_irq_enabled(
+    assert!(!sdmmc_protocol::sdio::SdMmcIrqHost::completion_irq_enabled(
         &host
     ));
-    sdmmc_protocol::sdio::SdioIrqHost::enable_completion_irq(&mut host).unwrap();
-    assert!(sdmmc_protocol::sdio::SdioIrqHost::completion_irq_enabled(
+    sdmmc_protocol::sdio::SdMmcIrqHost::enable_completion_irq(&mut host).unwrap();
+    assert!(sdmmc_protocol::sdio::SdMmcIrqHost::completion_irq_enabled(
         &host
     ));
+    assert_ne!(
+        host.read_u16(REG_NORMAL_INT_STATUS_ENABLE) & NORMAL_INT_CMD_COMPLETE,
+        0,
+        "command completion must be latched before its signal is enabled"
+    );
+    assert_ne!(
+        host.read_u16(REG_ERROR_INT_STATUS_ENABLE) & ERROR_INT_CMD_TIMEOUT,
+        0,
+        "command errors must be latched before their signal is enabled"
+    );
     assert_ne!(host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE), 0);
     assert_ne!(host.read_u16(REG_ERROR_INT_SIGNAL_ENABLE), 0);
 
-    sdmmc_protocol::sdio::SdioIrqHost::disable_completion_irq(&mut host).unwrap();
-    assert!(!sdmmc_protocol::sdio::SdioIrqHost::completion_irq_enabled(
+    // Completion re-enable must preserve the runtime-owned CARD_INT mask;
+    // otherwise a card drain that just closed a level source would be
+    // undone by the next command/data rearm.
+    host.write_u16(
+        REG_NORMAL_INT_STATUS_ENABLE,
+        NORMAL_INT_CMD_COMPLETE | NORMAL_INT_CARD_INTERRUPT,
+    );
+    host.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, NORMAL_INT_CARD_INTERRUPT);
+    host.enable_completion_irq();
+    assert_ne!(
+        host.read_u16(REG_NORMAL_INT_STATUS_ENABLE) & NORMAL_INT_CARD_INTERRUPT,
+        0
+    );
+    assert_ne!(
+        host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE) & NORMAL_INT_CARD_INTERRUPT,
+        0
+    );
+
+    let mut card_irq = host.card_irq_endpoint();
+    sdmmc_protocol::sdio::CardIrqControl::disable(&mut card_irq);
+    sdmmc_protocol::sdio::SdMmcIrqHost::disable_completion_irq(&mut host).unwrap();
+    assert!(!sdmmc_protocol::sdio::SdMmcIrqHost::completion_irq_enabled(
         &host
     ));
     assert_eq!(host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE), 0);
     assert_eq!(host.read_u16(REG_ERROR_INT_SIGNAL_ENABLE), 0);
+}
+
+#[test]
+fn completion_rearm_captures_status_latched_while_signal_is_masked() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.irq.state.begin_request();
+    host.write_u16(REG_NORMAL_INT_STATUS_ENABLE, NORMAL_INT_CMD_COMPLETE);
+    host.disable_completion_irq();
+
+    // The controller captures completion while external IRQ delivery is
+    // quiesced. An edge-triggered parent is not required to raise another edge
+    // when SIGNAL_ENABLE is restored.
+    host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
+    assert_eq!(
+        sdmmc_protocol::sdio::CompletionIrqRearmHost::rearm_completion_irq_and_check(&mut host)
+            .unwrap(),
+        sdmmc_protocol::sdio::CompletionIrqRearm::Pending
+    );
+
+    assert_eq!(
+        host.irq.state.pending_normal(),
+        NORMAL_INT_CMD_COMPLETE,
+        "rearm must synchronously publish an already-latched completion"
+    );
 }
 
 #[test]
@@ -103,6 +150,86 @@ fn merged_command_and_data_irq_reports_queue_ready() {
 }
 
 #[test]
+fn card_interrupt_and_transfer_completion_share_one_lossless_snapshot() {
+    use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind};
+
+    let event = event_from_status(NORMAL_INT_CARD_INTERRUPT | NORMAL_INT_XFER_COMPLETE, 0);
+
+    assert_eq!(event.kind(), HostEventKind::TransferComplete);
+    assert!(event.card_interrupt());
+    assert_eq!(event.queue_id(), Some(BlockRequestId::new(0)));
+}
+
+#[test]
+fn card_interrupt_and_error_share_one_lossless_snapshot() {
+    use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind};
+
+    let event = event_from_status(
+        NORMAL_INT_CARD_INTERRUPT | NORMAL_INT_ERROR,
+        ERROR_INT_DATA_TIMEOUT,
+    );
+
+    assert_eq!(event.kind(), HostEventKind::Error);
+    assert!(event.card_interrupt());
+}
+
+#[test]
+fn card_irq_top_half_masks_status_and_signal_without_acknowledging_level_status() {
+    use sdmmc_protocol::sdio::host::{HostEvent, SdMmcIrqHandle};
+
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.write_u16(REG_NORMAL_INT_STATUS_ENABLE, NORMAL_INT_CARD_INTERRUPT);
+    host.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, NORMAL_INT_CARD_INTERRUPT);
+    host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CARD_INTERRUPT);
+
+    let event = host.irq_endpoint().handle_irq();
+
+    assert_eq!(event, Event::CardInterrupt);
+    assert!(event.card_interrupt());
+    assert_eq!(
+        host.read_u16(REG_NORMAL_INT_STATUS),
+        NORMAL_INT_CARD_INTERRUPT
+    );
+    assert_eq!(
+        host.read_u16(REG_NORMAL_INT_STATUS_ENABLE) & NORMAL_INT_CARD_INTERRUPT,
+        0
+    );
+    assert_eq!(
+        host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE) & NORMAL_INT_CARD_INTERRUPT,
+        0
+    );
+}
+
+#[test]
+fn card_irq_rearm_closes_already_asserted_window() {
+    use sdmmc_protocol::sdio::CardIrqControl;
+
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CARD_INTERRUPT);
+    let mut card_irq = host.card_irq_endpoint();
+
+    assert!(card_irq.rearm_and_check());
+    assert_eq!(
+        host.read_u16(REG_NORMAL_INT_STATUS_ENABLE) & NORMAL_INT_CARD_INTERRUPT,
+        0
+    );
+    assert_eq!(
+        host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE) & NORMAL_INT_CARD_INTERRUPT,
+        0
+    );
+}
+
+#[test]
 fn data_transaction_rejects_missing_dma_capability() {
     #[repr(align(4))]
     struct FakeRegs([u8; 0x100]);
@@ -112,17 +239,17 @@ fn data_transaction_rejects_missing_dma_capability() {
     let mut host = unsafe { Sdhci::new(base) };
     let mut buffer = [0_u8; 512];
     let command = Command::new(17, 0, ResponseType::R1);
-    let data = sdio_host2::DataPhase::read(
+    let data = sdmmc_host::DataPhase::read(
         NonZeroU16::new(512).unwrap(),
         NonZeroU32::new(1).unwrap(),
         &mut buffer,
     )
     .unwrap();
-    let transaction = sdio_host2::Transaction::with_data(command, data);
+    let transaction = sdmmc_host::Transaction::with_data(command, data);
 
     assert!(matches!(
-        unsafe { <Sdhci as sdio_host2::SdioHost>::submit_transaction(&mut host, transaction) },
-        Err(sdio_host2::Error::Unsupported)
+        unsafe { <Sdhci as sdmmc_host::SdMmcHost>::submit_transaction(&mut host, transaction) },
+        Err(sdmmc_host::Error::Unsupported)
     ));
 }
 
@@ -135,20 +262,20 @@ fn host2_data_submit_reports_busy_without_replacing_the_active_command() {
         polls: 0,
     };
     let mut buf = [0u8; 512];
-    let data = sdio_host2::DataPhase::read(
+    let data = sdmmc_host::DataPhase::read(
         NonZeroU16::new(512).unwrap(),
         NonZeroU32::new(1).unwrap(),
         &mut buf,
     )
     .unwrap();
-    let tx = sdio_host2::Transaction::with_data(Command::new(17, 0, ResponseType::R1), data);
+    let tx = sdmmc_host::Transaction::with_data(Command::new(17, 0, ResponseType::R1), data);
 
-    let err = match unsafe { <Sdhci as sdio_host2::SdioHost>::submit_transaction(&mut host, tx) } {
+    let err = match unsafe { <Sdhci as sdmmc_host::SdMmcHost>::submit_transaction(&mut host, tx) } {
         Ok(_) => panic!("busy host accepted a second transaction"),
         Err(err) => err,
     };
 
-    assert_eq!(err, sdio_host2::Error::Busy);
+    assert_eq!(err, sdmmc_host::Error::Busy);
     assert!(matches!(
         host.command_state,
         command::CommandState::Issued { .. }
@@ -165,16 +292,16 @@ fn host2_r1b_busy_release_advances_on_register_retry() {
     let mut host = unsafe { Sdhci::new(base) };
     host.enable_interrupt_status_capture();
     host.enable_completion_irq();
-    let transaction = sdio_host2::Transaction::command(sdmmc_protocol::cmd::cmd7(1));
+    let transaction = sdmmc_host::Transaction::command(sdmmc_protocol::cmd::cmd7(1));
     let mut request =
-        unsafe { <Sdhci as sdio_host2::SdioHost>::submit_transaction(&mut host, transaction) }
+        unsafe { <Sdhci as sdmmc_host::SdMmcHost>::submit_transaction(&mut host, transaction) }
             .unwrap();
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
     let mut irq = host.irq_endpoint();
     assert_eq!(irq.handle_irq(), Event::CommandComplete);
 
     assert_eq!(
-        <Sdhci as sdio_host2::SdioHost>::advance_transaction(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_transaction(
             &mut host,
             &mut request,
             ProgressCause::AcknowledgedIrq,
@@ -184,7 +311,7 @@ fn host2_r1b_busy_release_advances_on_register_retry() {
         })
     );
     assert_eq!(
-        <Sdhci as sdio_host2::SdioHost>::advance_transaction(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_transaction(
             &mut host,
             &mut request,
             ProgressCause::RegisterRetry,
@@ -196,7 +323,7 @@ fn host2_r1b_busy_release_advances_on_register_retry() {
     host.write_u32(REG_PRESENT_STATE, PRESENT_DAT0_LINE_SIGNAL_LEVEL);
 
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::advance_transaction(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_transaction(
             &mut host,
             &mut request,
             ProgressCause::RegisterRetry,
@@ -214,12 +341,12 @@ fn host2_advance_after_complete_is_rejected() {
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
     let mut request = unsafe {
-        <Sdhci as sdio_host2::SdioHost>::submit_bus_op(&mut host, sdio_host2::BusOp::PowerOn)
+        <Sdhci as sdmmc_host::SdMmcHost>::submit_bus_op(&mut host, sdmmc_host::BusOp::PowerOn)
     }
     .unwrap();
 
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
             &mut host,
             &mut request,
             ProgressCause::Submitted,
@@ -227,12 +354,12 @@ fn host2_advance_after_complete_is_rejected() {
         Ok(RequestProgress::Complete(Ok(())))
     ));
     assert_eq!(
-        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
             &mut host,
             &mut request,
             ProgressCause::RegisterRetry,
         ),
-        Err(sdio_host2::AdvanceRequestError::AlreadyCompleted)
+        Err(sdmmc_host::AdvanceRequestError::AlreadyCompleted)
     );
 }
 
@@ -252,12 +379,12 @@ fn host2_reset_all_invalidates_stale_irq_state_before_restore() {
         .state
         .cache_if_current(generation, NORMAL_INT_CMD_COMPLETE, ERROR_INT_DATA_TIMEOUT);
     let mut request = unsafe {
-        <Sdhci as sdio_host2::SdioHost>::submit_bus_op(&mut host, sdio_host2::BusOp::ResetAll)
+        <Sdhci as sdmmc_host::SdMmcHost>::submit_bus_op(&mut host, sdmmc_host::BusOp::ResetAll)
     }
     .unwrap();
 
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
             &mut host,
             &mut request,
             ProgressCause::Submitted,
@@ -266,7 +393,7 @@ fn host2_reset_all_invalidates_stale_irq_state_before_restore() {
     ));
     host.write_u8(REG_SOFTWARE_RESET, 0);
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
             &mut host,
             &mut request,
             ProgressCause::RegisterRetry,
@@ -292,17 +419,17 @@ fn host2_bus_request_is_bound_to_originating_host() {
     let mut host_a = unsafe { Sdhci::new(base_a) };
     let mut host_b = unsafe { Sdhci::new(base_b) };
     let mut request = unsafe {
-        <Sdhci as sdio_host2::SdioHost>::submit_bus_op(&mut host_a, sdio_host2::BusOp::PowerOn)
+        <Sdhci as sdmmc_host::SdMmcHost>::submit_bus_op(&mut host_a, sdmmc_host::BusOp::PowerOn)
     }
     .unwrap();
 
     assert_eq!(
-        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
             &mut host_b,
             &mut request,
             ProgressCause::Submitted,
         ),
-        Err(sdio_host2::AdvanceRequestError::WrongOwner)
+        Err(sdmmc_host::AdvanceRequestError::WrongOwner)
     );
 }
 
@@ -313,12 +440,12 @@ fn host2_v180_requires_real_timer() {
 
     assert!(matches!(
         unsafe {
-            <Sdhci as sdio_host2::SdioHost>::submit_bus_op(
+            <Sdhci as sdmmc_host::SdMmcHost>::submit_bus_op(
                 &mut host,
-                sdio_host2::BusOp::SetSignalVoltage(sdio_host2::SignalVoltage::V180),
+                sdmmc_host::BusOp::SetSignalVoltage(sdmmc_host::SignalVoltage::V180),
             )
         },
-        Err(sdio_host2::Error::Unsupported)
+        Err(sdmmc_host::Error::Unsupported)
     ));
 }
 
@@ -327,32 +454,22 @@ fn host2_v180_rejects_partial_high_dat_lines_before_switch() {
     #[repr(align(4))]
     struct FakeRegs([u8; 0x100]);
 
-    struct StaticTimer;
-
-    impl HostTimer for StaticTimer {
-        fn now_ms(&self) -> u64 {
-            0
-        }
-    }
-
-    static TIMER: StaticTimer = StaticTimer;
-
     let mut regs = FakeRegs([0; 0x100]);
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
     host.enable_1v8_signaling();
-    host.set_timer(&TIMER);
+    host.set_timer(&STATIC_TIMER);
     host.write_u32(REG_PRESENT_STATE, 1 << 20);
     let mut request = unsafe {
-        <Sdhci as sdio_host2::SdioHost>::submit_bus_op(
+        <Sdhci as sdmmc_host::SdMmcHost>::submit_bus_op(
             &mut host,
-            sdio_host2::BusOp::SetSignalVoltage(sdio_host2::SignalVoltage::V180),
+            sdmmc_host::BusOp::SetSignalVoltage(sdmmc_host::SignalVoltage::V180),
         )
     }
     .unwrap();
 
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
             &mut host,
             &mut request,
             ProgressCause::Submitted,
@@ -360,13 +477,13 @@ fn host2_v180_rejects_partial_high_dat_lines_before_switch() {
         Ok(RequestProgress::RegisterPending { .. })
     ));
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
             &mut host,
             &mut request,
             ProgressCause::RegisterRetry,
         ),
         Ok(RequestProgress::Complete(Err(
-            sdio_host2::Error::Controller
+            sdmmc_host::Error::Controller
         )))
     ));
 }
@@ -378,6 +495,69 @@ fn clock_div_zero_quirk_uses_nonzero_divider_for_low_external_clock() {
     assert_eq!(
         sdhci_clock_divisor_with_quirk(50_000_000, 50_000_000, true),
         0
+    );
+}
+
+#[test]
+fn host2_clock_stable_timeout_uses_elapsed_wall_time() {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    struct TestTimer {
+        now_ns: AtomicU64,
+    }
+
+    impl HostTimer for TestTimer {
+        fn now_ms(&self) -> u64 {
+            self.now_ns() / 1_000_000
+        }
+
+        fn now_ns(&self) -> u64 {
+            self.now_ns.load(Ordering::Relaxed)
+        }
+    }
+
+    static TIMER: TestTimer = TestTimer {
+        now_ns: AtomicU64::new(0),
+    };
+
+    TIMER.now_ns.store(0, Ordering::Relaxed);
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.set_timer(&TIMER);
+    host.set_fixed_base_clock_hz(NonZeroU32::new(50_000_000).unwrap())
+        .unwrap();
+    let mut request = unsafe {
+        <Sdhci as sdmmc_host::SdMmcHost>::submit_bus_op(
+            &mut host,
+            sdmmc_host::BusOp::SetClock(ClockSpeed::Default),
+        )
+    }
+    .unwrap();
+
+    assert_eq!(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::Submitted,
+        ),
+        Ok(RequestProgress::RegisterPending {
+            retry_after: SDHCI_REGISTER_RETRY_DELAY,
+        })
+    );
+
+    TIMER.now_ns.store(150_000_001, Ordering::Relaxed);
+    assert_eq!(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        ),
+        Ok(RequestProgress::Complete(Err(sdmmc_host::Error::Timeout))),
+        "Linux bounds the internal-clock stable wait by 150 ms of monotonic time",
     );
 }
 
@@ -413,16 +593,17 @@ fn host2_external_clock_runs_host_stage_before_enable() {
         CLOCK_INTERNAL_ENABLE | CLOCK_INTERNAL_STABLE | CLOCK_SD_ENABLE,
     );
     host.set_external_clock(Clock);
+    host.set_timer(&STATIC_TIMER);
     let mut request = unsafe {
-        <Sdhci as sdio_host2::SdioHost>::submit_bus_op(
+        <Sdhci as sdmmc_host::SdMmcHost>::submit_bus_op(
             &mut host,
-            sdio_host2::BusOp::SetClock(ClockSpeed::Identification),
+            sdmmc_host::BusOp::SetClock(ClockSpeed::Identification),
         )
     }
     .unwrap();
 
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
             &mut host,
             &mut request,
             ProgressCause::Submitted,
@@ -430,7 +611,7 @@ fn host2_external_clock_runs_host_stage_before_enable() {
         Ok(RequestProgress::RegisterPending { .. })
     ));
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
             &mut host,
             &mut request,
             ProgressCause::RegisterRetry,
@@ -438,7 +619,7 @@ fn host2_external_clock_runs_host_stage_before_enable() {
         Ok(RequestProgress::RegisterPending { .. })
     ));
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
             &mut host,
             &mut request,
             ProgressCause::RegisterRetry,
@@ -446,7 +627,7 @@ fn host2_external_clock_runs_host_stage_before_enable() {
         Ok(RequestProgress::RegisterPending { .. })
     ));
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
             &mut host,
             &mut request,
             ProgressCause::RegisterRetry,
@@ -459,7 +640,7 @@ fn host2_external_clock_runs_host_stage_before_enable() {
         host.read_u16(REG_CLOCK_CONTROL) | CLOCK_INTERNAL_STABLE,
     );
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
             &mut host,
             &mut request,
             ProgressCause::RegisterRetry,
@@ -516,4 +697,33 @@ fn masked_irq_status_is_acked_without_publishing_an_event() {
 
     assert_eq!(handle.handle_irq(), Event::None);
     assert_eq!(host.irq.state.pending_normal(), 0);
+}
+
+#[test]
+fn status_enabled_completion_is_not_lost_when_only_card_signal_is_unmasked() {
+    use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind, SdMmcIrqHandle};
+
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.irq.state.begin_request();
+    host.enable_interrupt_status_capture();
+    host.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, NORMAL_INT_CARD_INTERRUPT);
+    host.write_u16(
+        REG_NORMAL_INT_STATUS,
+        NORMAL_INT_CARD_INTERRUPT | NORMAL_INT_CMD_COMPLETE,
+    );
+
+    let event = host.irq_endpoint().handle_irq();
+
+    assert_eq!(event.kind(), HostEventKind::CommandComplete);
+    assert!(event.card_interrupt());
+    assert_eq!(
+        host.irq.state.pending_normal(),
+        NORMAL_INT_CMD_COMPLETE,
+        "status-enable controls completion capture; signal-enable only gates the IRQ pin"
+    );
 }

@@ -1,4 +1,6 @@
 pub mod arm64;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod x86_64;
 
 #[allow(clippy::module_inception)]
 pub mod crc32c;

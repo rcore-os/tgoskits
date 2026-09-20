@@ -1,0 +1,109 @@
+name: AxVisor Nightly
+
+on:
+  schedule:
+    # 03:20 Beijing time, offset from the Starry Apps schedule.
+    - cron: "20 19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: axvisor-nightly
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan AxVisor Nightly
+    if: github.repository == 'rcore-os/tgoskits'
+    runs-on: ubuntu-latest
+    outputs:
+      revision: ${{ steps.revision.outputs.sha }}
+      prepare_matrix: ${{ steps.matrix.outputs.prepare_matrix }}
+      axvisor_matrix: ${{ steps.matrix.outputs.axvisor_matrix }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: dev
+      - name: Pin dev revision
+        id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Plan all registered AxVisor checks
+        id: matrix
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 scripts/test/ci_plan.py \
+            --mode axvisor-nightly \
+            --repository "$GITHUB_REPOSITORY" \
+            --repository-owner "$GITHUB_REPOSITORY_OWNER" \
+            --event-name "$EVENT_NAME" \
+            --output-file "$GITHUB_OUTPUT"
+
+  prepare:
+    name: Prepare
+    needs: plan
+    uses: ./.github/workflows/reusable-check-matrix.yml
+    with:
+      checkout_ref: ${{ needs.plan.outputs.revision }}
+      matrix_json: ${{ needs.plan.outputs.prepare_matrix }}
+      save_cache: ${{ github.event_name == 'schedule' }}
+
+  checks:
+    name: AxVisor
+    needs: [plan, prepare]
+    uses: ./.github/workflows/reusable-check-matrix.yml
+    with:
+      checkout_ref: ${{ needs.plan.outputs.revision }}
+      matrix_json: ${{ needs.plan.outputs.axvisor_matrix }}
+      fail_fast: false
+      save_cache: ${{ github.event_name == 'schedule' }}
+
+  result:
+    name: Nightly Result
+    if: always() && github.repository == 'rcore-os/tgoskits'
+    needs: [plan, prepare, checks]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download performance reports
+        if: always()
+        uses: actions/download-artifact@v8
+        with:
+          pattern: axvisor-nightly-performance-*
+          path: ${{ runner.temp }}/performance-reports
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Report result
+        env:
+          REVISION: ${{ needs.plan.outputs.revision }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          PERFORMANCE_REPORT_DIR: ${{ runner.temp }}/performance-reports
+        run: |
+          {
+            echo "## AxVisor Nightly"
+            echo ""
+            echo "dev revision: ${REVISION}"
+            echo ""
+            echo "| Stage | Result |"
+            echo "| --- | --- |"
+            echo "| Plan | ${PLAN_RESULT} |"
+            echo "| Prepare | ${PREPARE_RESULT} |"
+            echo "| Checks | ${CHECKS_RESULT} |"
+            if [ -d "${PERFORMANCE_REPORT_DIR}" ] && find "${PERFORMANCE_REPORT_DIR}" -name '*.md' -print -quit | grep -q .; then
+              echo ""
+              echo "## Performance Results"
+              echo ""
+              find "${PERFORMANCE_REPORT_DIR}" -name '*.md' -print | sort | while read -r report; do
+                cat "${report}"
+                echo ""
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$PLAN_RESULT" = success
+          test "$PREPARE_RESULT" = success
+          test "$CHECKS_RESULT" = success

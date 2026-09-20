@@ -1,5 +1,17 @@
 #![no_std]
 
+//! Device registry and exclusive, guard-owned device borrows.
+//!
+//! Process IDs are diagnostic labels, not authority to revoke a borrow. A
+//! guard may outlive its acquiring process after transfer to a kernel worker.
+//! File release and device-specific shutdown belong in OS adapters; neither
+//! may invalidate a live Rust reference by force-unlocking the registry.
+//!
+//! There is deliberately no safe PID-based revocation API:
+//! ```compile_fail
+//! rdrive::reclaim_all_held_by(42);
+//! ```
+
 #[macro_use]
 extern crate alloc;
 #[macro_use]
@@ -14,6 +26,10 @@ use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
 pub use fdt_edit::{Fdt, Phandle};
 use register::{DriverRegister, ProbeLevel, ProbePriority};
 
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod test_support;
+
 mod descriptor;
 pub mod driver;
 pub mod error;
@@ -21,9 +37,6 @@ mod id;
 mod lock;
 mod manager;
 mod osal;
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
 
 pub mod probe;
 pub mod register;
@@ -293,6 +306,17 @@ pub fn acpi_spcr_console_device_id() -> Option<DeviceId> {
 
 pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
     probe::fdt::try_system().map(|system| f(system.fdt()))
+}
+
+/// Borrow the live device tree for the lifetime of the program.
+///
+/// The FDT is parsed once at init and never mutated, so this hands out a
+/// `'static` reference with no lock and no copy. Prefer this over
+/// `with_fdt(Clone::clone)`, which deep-copies the entire blob on every call —
+/// a real cost when hot paths (e.g. concurrent device probes resolving phandles)
+/// call it repeatedly.
+pub fn fdt_ref() -> Option<&'static Fdt> {
+    probe::fdt::try_system().map(|system| system.fdt())
 }
 
 /// Macro for generating a driver module.

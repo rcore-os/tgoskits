@@ -1,10 +1,12 @@
 #include "test.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -29,6 +31,90 @@ static const char HTTP_REQUEST[] =
     "Host: axbuild.local\r\n"
     "Accept: */*\r\n"
     "\r\n";
+
+/* Keep the edge-triggered watcher from sampling the empty accept queue.
+ * A separate level-triggered watcher synchronizes each completed handshake. */
+static int test_accept_edge_after_drain(char *reason, size_t reason_len)
+{
+    int listener = -1, epfd = -1, probe = -1;
+    int clients[3] = {-1, -1, -1};
+    int accepted[3] = {-1, -1, -1};
+    int result = -1;
+    const char *stage = "create listener";
+    struct sockaddr_in addr = {0};
+    socklen_t addr_len = sizeof(addr);
+    struct epoll_event interest = {0}, ready = {0};
+
+    listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listener < 0)
+        goto out;
+    addr.sin_family = AF_INET;
+    if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1)
+        goto out;
+    stage = "bind/listen";
+    if (bind(listener, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+        listen(listener, 4) != 0 ||
+        getsockname(listener, (struct sockaddr *)&addr, &addr_len) != 0)
+        goto out;
+
+    epfd = epoll_create1(0);
+    probe = epoll_create1(0);
+    stage = "register accept watchers";
+    if (epfd < 0 || probe < 0)
+        goto out;
+    interest.events = EPOLLIN | EPOLLET;
+    interest.data.fd = listener;
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, listener, &interest) != 0)
+        goto out;
+    interest.events = EPOLLIN;
+    if (epoll_ctl(probe, EPOLL_CTL_ADD, listener, &interest) != 0)
+        goto out;
+
+    for (int round = 0; round < 3; round++) {
+        struct sockaddr_in peer = {0};
+        socklen_t peer_len = sizeof(peer);
+        stage = "connect next client";
+        clients[round] = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (clients[round] < 0 ||
+            connect(clients[round], (struct sockaddr *)&addr, sizeof(addr)) != 0)
+            goto out;
+        stage = "wait for completed handshake";
+        if (epoll_wait(probe, &ready, 1, 5000) != 1 ||
+            ready.data.fd != listener || !(ready.events & EPOLLIN))
+            goto out;
+
+        /* The preceding accept drained the queue, but epfd did not observe
+         * that interval. Each new connection must still produce an edge. */
+        if (epoll_wait(epfd, &ready, 1, 0) != 1 ||
+            ready.data.fd != listener || !(ready.events & EPOLLIN)) {
+            test_fail(reason, reason_len, "accept edge lost after drain: round=%d", round);
+            goto cleanup;
+        }
+        stage = "accept the only pending client";
+        accepted[round] = accept(listener, (struct sockaddr *)&peer, &peer_len);
+        if (accepted[round] < 0)
+            goto out;
+    }
+    result = 0;
+    puts("net_http: accept edges survive unsampled empty queue");
+    goto cleanup;
+out:
+    test_fail(reason, reason_len, "accept edge regression: %s errno=%d", stage, errno);
+cleanup:
+    for (int round = 0; round < 3; round++) {
+        if (accepted[round] >= 0)
+            close(accepted[round]);
+        if (clients[round] >= 0)
+            close(clients[round]);
+    }
+    if (probe >= 0)
+        close(probe);
+    if (epfd >= 0)
+        close(epfd);
+    if (listener >= 0)
+        close(listener);
+    return result;
+}
 
 int arceos_c_test_net_http(char *reason, size_t reason_len)
 {
@@ -97,6 +183,8 @@ int arceos_c_test_net_http(char *reason, size_t reason_len)
 
     freeaddrinfo(res);
     close(sock);
+    if (test_accept_edge_after_drain(reason, reason_len) != 0)
+        return -1;
     puts("net_http: host HTTP APIs OK");
     return 0;
 }

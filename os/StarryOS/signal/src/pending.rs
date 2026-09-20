@@ -1,7 +1,26 @@
-use alloc::{boxed::Box, collections::vec_deque::VecDeque};
+use alloc::{boxed::Box, collections::LinkedList};
 use core::array;
 
 use crate::{SI_USER, SYNCHRONOUS_MASK, SignalInfo, SignalSet};
+
+/// Owns the signal queue allocation before entering signal locks.
+/// A duplicate is returned to its caller for destruction after unlocking.
+pub(crate) enum PreparedSignalInfo {
+    Standard(Box<SignalInfo>),
+    Realtime(LinkedList<SignalInfo>),
+}
+
+impl PreparedSignalInfo {
+    pub(crate) fn new(signal: SignalInfo) -> Self {
+        if signal.signo().is_realtime() {
+            let mut entry = LinkedList::new();
+            entry.push_back(signal);
+            Self::Realtime(entry)
+        } else {
+            Self::Standard(Box::new(signal))
+        }
+    }
+}
 
 /// Structure to record pending signals.
 pub struct PendingSignals {
@@ -15,8 +34,9 @@ pub struct PendingSignals {
 
     /// Signal info of standard signals (1-31).
     info_std: [Option<Box<SignalInfo>>; 32],
-    /// Signal info queue for real-time signals.
-    info_rt: [VecDeque<SignalInfo>; 33],
+    /// Linux sigqueue-style FIFO: each node is prepared outside signal locks,
+    /// then spliced into the pending queue without allocation.
+    info_rt: [LinkedList<SignalInfo>; 33],
 }
 
 impl Default for PendingSignals {
@@ -24,7 +44,7 @@ impl Default for PendingSignals {
         Self {
             set: SignalSet::default(),
             info_std: Default::default(),
-            info_rt: array::from_fn(|_| VecDeque::new()),
+            info_rt: array::from_fn(|_| LinkedList::new()),
         }
     }
 }
@@ -35,19 +55,30 @@ impl PendingSignals {
     /// Returns `true` if the signal was added, `false` if the signal is
     /// standard and ignored (i.e. already pending).
     pub fn put_signal(&mut self, sig: SignalInfo) -> bool {
-        let signo = sig.signo();
-        let added = self.set.add(signo);
+        self.put_prepared(PreparedSignalInfo::new(sig)).is_none()
+    }
 
-        if signo.is_realtime() {
-            self.info_rt[signo as usize - 32].push_back(sig);
-        } else {
-            if !added {
-                // At most one standard signal can be pending.
-                return false;
+    pub(crate) fn put_prepared(
+        &mut self,
+        prepared: PreparedSignalInfo,
+    ) -> Option<PreparedSignalInfo> {
+        let signo = match &prepared {
+            PreparedSignalInfo::Standard(info) => info.signo(),
+            PreparedSignalInfo::Realtime(info) => {
+                info.front().expect("prepared realtime node").signo()
             }
-            self.info_std[signo as usize] = Some(Box::new(sig));
+        };
+        if !signo.is_realtime() && self.set.has(signo) {
+            return Some(prepared);
         }
-        true
+        self.set.add(signo);
+        match prepared {
+            PreparedSignalInfo::Standard(info) => self.info_std[signo as usize] = Some(info),
+            PreparedSignalInfo::Realtime(mut info) => {
+                self.info_rt[signo as usize - 32].append(&mut info)
+            }
+        }
+        None
     }
 
     /// Dequeues the next pending signal contained in `mask`, if any.

@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(perf-hw-sample-read C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(perf-hw-sample-read src/perf_hw_sample_read.c)
+target_compile_options(perf-hw-sample-read PRIVATE -Wall -Wextra -Werror -O2)
+install(TARGETS perf-hw-sample-read RUNTIME DESTINATION usr/bin/starry-test-suit)

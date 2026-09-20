@@ -1,4 +1,54 @@
-use std::{os::arceos::api::task::ax_set_current_priority, sync::Arc, thread, time, vec, vec::Vec};
+use std::{sync::Arc, thread, time, vec, vec::Vec};
+
+use ax_std::os::arceos::{
+    api::task::ax_set_current_priority,
+    task::{
+        sched::{FairMode, Nice, RtPriority, SchedulePolicy},
+        thread::current::current_thread_id,
+    },
+};
+
+#[derive(Clone, Copy)]
+enum SchedulerCase {
+    PriorityApi,
+    Fair,
+    RoundRobin,
+}
+
+impl SchedulerCase {
+    fn expected_policy(self, nice: isize) -> SchedulePolicy {
+        match self {
+            Self::PriorityApi | Self::Fair => SchedulePolicy::fair(
+                Nice::new(nice as i8).expect("test nice value must be valid"),
+                FairMode::Normal,
+            ),
+            Self::RoundRobin => SchedulePolicy::round_robin(
+                RtPriority::new(50).expect("test RT priority must be valid"),
+            ),
+        }
+    }
+
+    fn configure_current(self, nice: isize) {
+        let current = current_thread_id().expect("test thread must have a task identity");
+        let expected = self.expected_policy(nice);
+        match self {
+            Self::PriorityApi => {
+                ax_set_current_priority(nice).expect("failed to set test thread priority")
+            }
+            Self::Fair | Self::RoundRobin => {
+                ax_std::os::arceos::task::thread::ThreadHandle::lookup(current)
+                    .and_then(|thread| thread.set_policy(expected))
+                    .expect("failed to set test thread scheduling policy")
+            }
+        }
+        assert_eq!(
+            ax_std::os::arceos::task::thread::ThreadHandle::lookup(current)
+                .map(|thread| thread.base_policy()),
+            Ok(expected),
+            "test thread did not enter the selected scheduling policy"
+        );
+    }
+}
 
 struct TaskParam {
     data_len: usize,
@@ -42,8 +92,8 @@ fn load(n: &u64) -> u64 {
     sum
 }
 
-pub fn run() -> crate::TestResult {
-    ax_set_current_priority(-20).ok();
+fn run_workload(case: SchedulerCase) -> crate::TestResult {
+    case.configure_current(-20);
 
     let data = TASK_PARAMS
         .iter()
@@ -61,7 +111,7 @@ pub fn run() -> crate::TestResult {
         let data_len = param.data_len;
         let nice = param.nice;
         tasks.push(thread::spawn(move || {
-            ax_set_current_priority(nice).ok();
+            case.configure_current(nice);
             let partial_sum = data[..data_len].iter().map(load).sum::<u64>();
             let leave_time = start_time.elapsed().as_millis() as u64;
             (partial_sum, leave_time)
@@ -72,7 +122,9 @@ pub fn run() -> crate::TestResult {
         tasks.into_iter().map(|task| task.join().unwrap()).unzip();
     let actual = results.iter().sum::<u64>();
 
-    if cfg!(feature = "sched-cfs") && thread::available_parallelism().unwrap().get() == 1 {
+    if matches!(case, SchedulerCase::Fair)
+        && ax_std::os::arceos::task::sched::cpu_topology_len().unwrap() == 1
+    {
         assert!(
             leave_times[0] > leave_times[1]
                 && leave_times[1] > leave_times[2]
@@ -82,4 +134,16 @@ pub fn run() -> crate::TestResult {
 
     assert_eq!(expect, actual);
     Ok(())
+}
+
+pub fn run_priority() -> crate::TestResult {
+    run_workload(SchedulerCase::PriorityApi)
+}
+
+pub fn run_cfs() -> crate::TestResult {
+    run_workload(SchedulerCase::Fair)
+}
+
+pub fn run_rr() -> crate::TestResult {
+    run_workload(SchedulerCase::RoundRobin)
 }

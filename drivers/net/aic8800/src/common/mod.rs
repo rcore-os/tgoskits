@@ -1,13 +1,5 @@
-//! AIC8800 WiFi 芯片共享常量和类型
-//!
-//! 提供被固件加载层 (aic8800_fw) 和运行时驱动层 (aic8800_fdrv) 共同使用的：
-//! - SDIO 寄存器地址（V1/V3）
-//! - SDIO 帧类型标识
-//! - 芯片型号和版本类型
-//! - 任务 ID 和 LMAC 消息计算常量
-//! - 时钟和延时常量
-//!
-//! 此 crate 无外部依赖，可被任何 AIC8800 相关模块引用。
+//! Constants and device identities shared by the AIC firmware, protocol,
+//! device-state, and optional RDIF adapter modules.
 
 // ============================================================
 // SDIO Vendor / Device ID
@@ -82,7 +74,10 @@ pub const SDIOWIFI_V3_SLEEP_READY_BIT: u8 = 0x10;
 // ============================================================
 // SDIO 帧类型
 // ============================================================
-pub const SDIO_TYPE_DATA: u8 = 0x01;
+// RX aggregates use type 0. The vendor FULLMAC transmit path uses type 1 for
+// Ethernet payloads even though the vendor enum only names the RX value.
+pub const SDIO_TYPE_DATA: u8 = 0x00;
+pub const SDIO_TYPE_DATA_TX: u8 = 0x01;
 pub const SDIO_TYPE_CFG: u8 = 0x10;
 pub const SDIO_TYPE_CFG_CMD_RSP: u8 = 0x11;
 pub const SDIO_TYPE_CFG_DATA_CFM: u8 = 0x12;
@@ -136,10 +131,6 @@ impl ChipVariant {
             (VID_AIC8800D80X2, DID_AIC8800D80X2) => Self::Aic8800D80X2,
             _ => Self::Unknown,
         }
-    }
-
-    pub fn is_v3(&self) -> bool {
-        matches!(self, Self::Aic8800D80 | Self::Aic8800D80X2)
     }
 }
 

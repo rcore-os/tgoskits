@@ -100,8 +100,10 @@ pub(crate) fn host_timer_profile(fdt: &Fdt) -> AxVmResult<Option<GuestTimerProfi
     }
 
     let interrupt_specifiers = interrupt_cells
-        .chunks_exact(3)
-        .map(<[u32]>::to_vec)
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|specifier| specifier.to_vec())
         .collect::<Vec<_>>();
     let intids = interrupt_specifiers
         .iter()
