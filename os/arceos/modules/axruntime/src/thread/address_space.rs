@@ -439,6 +439,18 @@ fn install_mm_identity(
             ax_cpu::barrier::instruction_sync();
         }
     } else {
+        #[cfg(target_arch = "aarch64")]
+        if current_root != 0
+            && ax_cpu::mmu::El1::read_user_address_space().hardware_tag() == 0
+            && installed.hardware_tag() != 0
+        {
+            // A direct FullFlush-to-tagged switch leaves the old non-global
+            // ASID-zero entries behind: invalidating only the incoming tag
+            // would let a later lazy kernel thread reuse those translations
+            // with the reserved lower root. This mixed-mode transition is
+            // uncommon; invalidate before installing the tagged identity.
+            ax_cpu::mmu::flush_tlb(None);
+        }
         // SAFETY: the prepared/active lease owns the root, and the caller keeps IRQs
         // disabled from CPU-footprint publication through active-lease publication.
         unsafe { ax_cpu::mmu::install_user_address_space(installed.hardware()) };
