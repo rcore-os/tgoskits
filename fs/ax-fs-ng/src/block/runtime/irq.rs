@@ -318,8 +318,11 @@ impl IrqEventLatch {
     }
 
     pub(super) fn take(&self) -> LatchedIrqEvent {
+        let queue_ready = self.queue_ready.swap(false, Ordering::AcqRel);
+        #[cfg(test)]
+        tests::after_snapshot();
         LatchedIrqEvent {
-            queue_ready: self.queue_ready.swap(false, Ordering::AcqRel),
+            queue_ready,
             needs_rearm: self.needs_rearm.swap(false, Ordering::AcqRel),
             control: ControlEvent::new(self.source_id, self.control_bits.swap(0, Ordering::AcqRel)),
         }
@@ -337,6 +340,60 @@ mod tests {
     };
 
     use super::*;
+
+    // Inject an IRQ at the consumer snapshot boundary without timing or threads.
+    std::thread_local! {
+        static AFTER_SNAPSHOT: core::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+            core::cell::RefCell::new(None);
+    }
+
+    pub(super) fn after_snapshot() {
+        let callback = AFTER_SNAPSHOT.with(|slot| slot.borrow_mut().take());
+        if let Some(callback) = callback {
+            callback();
+        }
+    }
+
+    #[test]
+    fn irq_arriving_during_take_keeps_drain_and_rearm_together() {
+        let latch = Arc::new(IrqEventLatch::new(11));
+        let notification = Arc::new(TestNotification {
+            irq_notifications: AtomicUsize::new(0),
+        });
+        let mut action = BlockIrqAction::new(
+            Box::new(FixedHandler {
+                ack: IrqAck::masked_needs_rearm(
+                    IrqQueueMask::from_queue(2),
+                    ControlEvent::new(11, 0x80),
+                ),
+            }),
+            vec![IrqTarget::new(2, latch.clone(), notification)],
+        );
+        AFTER_SNAPSHOT.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                assert_eq!(action.run(), BlockIrqOutcome::Wake);
+            }));
+        });
+
+        // An IRQ after the snapshot belongs wholly to the next drain cycle.
+        assert_eq!(
+            latch.take(),
+            LatchedIrqEvent {
+                queue_ready: false,
+                needs_rearm: false,
+                control: ControlEvent::new(11, 0),
+            },
+        );
+        assert_eq!(
+            latch.take(),
+            LatchedIrqEvent {
+                queue_ready: true,
+                needs_rearm: true,
+                control: ControlEvent::new(11, 0x80),
+            },
+        );
+        assert!(!latch.take().queue_ready);
+    }
 
     struct TestNotification {
         irq_notifications: AtomicUsize,
