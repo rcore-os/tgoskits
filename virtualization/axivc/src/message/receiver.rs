@@ -2,7 +2,7 @@ use super::{
     IvcMessageError, IvcMessageMeta, IvcReceiveProgress,
     frame::{DecodedFrame, decode_frame},
 };
-use crate::{IVC_SLOT_SIZE, endpoint::IvcSlotConsumer};
+use crate::{IVC_RING_CAPACITY, IVC_SLOT_SIZE, endpoint::IvcSlotConsumer};
 
 /// Stateful nonblocking receiver for one direction of an IVC channel.
 ///
@@ -30,6 +30,44 @@ impl<'a> IvcMessageReceiver<'a> {
             consumer,
             state: ReceiveState::Idle,
         }
+    }
+
+    /// Returns whether a read can inspect a queued frame or report a retained
+    /// protocol error. An active message with no queued continuation is not
+    /// ready. This does not promise that a complete message is available.
+    pub fn can_receive(&self) -> bool {
+        matches!(self.state, ReceiveState::Failed(_)) || self.consumer.has_pending_slots()
+    }
+
+    /// Checks whether the current or next message can finish without waiting.
+    ///
+    /// Inspects at most one ring of frames without consuming slots or changing
+    /// receiver state. A valid ABORT counts as a terminal event. This supports
+    /// all-or-nothing nonblocking device reads; messages larger than the ring
+    /// must instead use streaming reads with backpressure.
+    ///
+    /// # Errors
+    ///
+    /// Reports invalid frames and retained protocol errors. Unlike a read,
+    /// this inspection alone does not poison the receiver.
+    pub fn complete_message_available(&self) -> Result<bool, IvcMessageError> {
+        let mut state = self.state;
+        if let ReceiveState::Failed(error) = state {
+            return Err(error);
+        }
+        let mut slot = [0; IVC_SLOT_SIZE];
+        for offset in 0..IVC_RING_CAPACITY {
+            if !self.consumer.try_peek_slot_at(offset, &mut slot) {
+                return Ok(false);
+            }
+            let frame = decode_frame(&slot)?;
+            let transition = validate_transition(state, &frame)?;
+            if transition.complete || transition.aborted {
+                return Ok(true);
+            }
+            state = transition.next_state;
+        }
+        Ok(false)
     }
 
     /// Returns metadata for the current or next message without consuming its

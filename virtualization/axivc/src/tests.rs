@@ -128,6 +128,7 @@ fn abort_terminates_a_partial_message_and_allows_the_next_message() {
     let partial = receiver.try_read(&mut output).unwrap();
     assert_eq!(partial.written(), 40);
     assert!(!partial.is_complete());
+    assert!(receiver.complete_message_available().unwrap());
     assert_eq!(
         receiver.try_read(&mut output),
         Err(IvcMessageError::TransferAborted)
@@ -155,8 +156,11 @@ fn malformed_frame_is_reported_and_not_silently_consumed() {
     raw_producer.try_push_slot(&slot).unwrap();
 
     let expected = IvcMessageError::UnsupportedVersion { version: 0 };
+    assert!(receiver.can_receive());
+    assert_eq!(receiver.complete_message_available(), Err(expected));
     assert_eq!(receiver.peek_message_meta(), Err(expected));
     assert_eq!(receiver.try_discard(), Err(expected));
+    assert!(receiver.can_receive());
 }
 
 #[test]
@@ -242,6 +246,9 @@ fn transfer_one_message(payload: &[u8]) -> std::vec::Vec<u8> {
     let region = initialized_region();
     let (mut sender, _publisher_receiver) = unsafe { region.publisher_endpoints() }.into_parts();
     let (_subscriber_sender, mut receiver) = unsafe { region.subscriber_endpoints() }.into_parts();
+    assert_eq!(sender.available_slots(), IVC_RING_CAPACITY);
+    assert!(!receiver.can_receive());
+    assert!(!receiver.complete_message_available().unwrap());
     sender.start_message(payload.len() as u64).unwrap();
 
     let mut sent = 0;
@@ -254,6 +261,11 @@ fn transfer_one_message(payload: &[u8]) -> std::vec::Vec<u8> {
             let progress = sender.try_write(&payload[sent..]).unwrap();
             sent += progress.consumed();
             send_complete = progress.is_complete();
+            assert!(receiver.can_receive());
+            assert_eq!(
+                receiver.complete_message_available().unwrap(),
+                send_complete
+            );
         }
         if !receive_complete {
             let progress = receiver.try_read(&mut output).unwrap();
@@ -262,6 +274,9 @@ fn transfer_one_message(payload: &[u8]) -> std::vec::Vec<u8> {
         }
     }
     assert_eq!(sent, payload.len());
+    assert_eq!(sender.available_slots(), IVC_RING_CAPACITY);
+    assert!(!receiver.can_receive());
+    assert!(!receiver.complete_message_available().unwrap());
     received
 }
 

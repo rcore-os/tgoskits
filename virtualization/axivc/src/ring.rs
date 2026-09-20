@@ -63,6 +63,16 @@ impl IvcRing {
             && self.slot_size.load(Ordering::Relaxed) == IVC_SLOT_SIZE as u32
     }
 
+    pub(crate) fn available_slots(&self) -> usize {
+        let tail = self.tail.load(Ordering::Relaxed);
+        let head = self.head.load(Ordering::Acquire);
+        IVC_RING_CAPACITY.saturating_sub(tail.wrapping_sub(head) as usize)
+    }
+
+    pub(crate) fn has_pending_slots(&self) -> bool {
+        self.head.load(Ordering::Relaxed) != self.tail.load(Ordering::Acquire)
+    }
+
     pub(crate) fn try_push_slot(&self, slot: &[u8; IVC_SLOT_SIZE]) -> Result<(), IvcSlotError> {
         let tail = self.tail.load(Ordering::Relaxed);
         let head = self.head.load(Ordering::Acquire);
@@ -77,13 +87,19 @@ impl IvcRing {
     }
 
     pub(crate) fn try_peek_slot(&self, output: &mut [u8; IVC_SLOT_SIZE]) -> bool {
+        self.try_peek_slot_at(0, output)
+    }
+
+    pub(crate) fn try_peek_slot_at(&self, offset: usize, output: &mut [u8; IVC_SLOT_SIZE]) -> bool {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
-        if head == tail {
+        if offset >= IVC_RING_CAPACITY || offset >= tail.wrapping_sub(head) as usize {
             return false;
         }
 
-        let slot_index = head as usize % IVC_RING_CAPACITY;
+        // The sole consumer does not release head while inspecting this
+        // window, so the producer cannot overwrite any acquired slot in it.
+        let slot_index = head.wrapping_add(offset as u32) as usize % IVC_RING_CAPACITY;
         self.slots[slot_index].read(output);
         true
     }

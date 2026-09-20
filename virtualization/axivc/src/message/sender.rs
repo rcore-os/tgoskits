@@ -43,6 +43,17 @@ impl<'a> IvcMessageSender<'a> {
         }
     }
 
+    /// Returns the number of slots currently available for publication.
+    ///
+    /// The sole producer owns these slots until it publishes them; a peer can
+    /// only release more capacity. This does not start a message or guarantee
+    /// that an identifier remains available. A new message of `len` bytes
+    /// needs `max(1, len.div_ceil(IVC_SLOT_FRAGMENT_CAPACITY))` slots when each
+    /// call supplies a full fragment except for the last one.
+    pub fn available_slots(&self) -> usize {
+        self.producer.available_slots()
+    }
+
     /// Starts one logical message and returns its transport identifier.
     ///
     /// This changes only local state. The first slot is published by

@@ -45,6 +45,10 @@ impl<'a> IvcSlotProducer<'a> {
         Self { ring }
     }
 
+    pub(crate) fn available_slots(&self) -> usize {
+        self.ring.available_slots()
+    }
+
     pub(crate) fn try_push_slot(&mut self, slot: &[u8; IVC_SLOT_SIZE]) -> Result<(), IvcSlotError> {
         self.ring.try_push_slot(slot)
     }
@@ -61,6 +65,14 @@ impl<'a> IvcSlotConsumer<'a> {
 
     pub(crate) fn try_peek_slot(&mut self, output: &mut [u8; IVC_SLOT_SIZE]) -> bool {
         self.ring.try_peek_slot(output)
+    }
+
+    pub(crate) fn has_pending_slots(&self) -> bool {
+        self.ring.has_pending_slots()
+    }
+
+    pub(crate) fn try_peek_slot_at(&self, offset: usize, output: &mut [u8; IVC_SLOT_SIZE]) -> bool {
+        self.ring.try_peek_slot_at(offset, output)
     }
 
     pub(crate) fn pop_slot(&mut self) {
