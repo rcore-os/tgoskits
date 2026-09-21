@@ -27,6 +27,10 @@
 - 不把 page-table-generic 扩成跨 CPU shootdown 或 OS 资源回收层；
 - v1 不采用 per-core replicated page table。
 
+本文开头的基线与 §9 保留的三次 CI 历史交付门禁服务于“PR #1775 之上的通用性重构”这一历史提交范围。§3 与 §9 中
+关于 AArch64 tagged lazy 与 ASID 0 卫生的段落记录的是叠加在该基线之上的用户态地址空间优化行为：它们
+沿用本文已有的架构结论，但不改写 §1 的基线和 §9 该历史交付门禁的原始条款。
+
 ## 2. 架构裁决：行为对象加单向 prepared token
 
 采用两类互补对象：
@@ -86,6 +90,85 @@ CPU footprint 的发布顺序是安全性的组成部分：进入 mm 时先发�
 
 exec、任务退出、normal schedule 和 CPU offline 使用同一 active-mm 状态机。CPU offline 先安装
 安全 kernel root，再撤 active handle 和 CPU bit；只有之后才允许发布 CPU offline。
+
+### 3.1 AArch64 lazy 进入与保留 ASID 恢复
+
+AArch64 在用户线程暂时切到内核线程时走 `enter_lazy_kernel_address_space()`（
+[address_space.rs:566-592](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L566-L592)）。
+当本 CPU 仍有 active mm 且当前安装的是非零 tag 时，它把整个 `TTBR0_EL1` 写成 0，也就是低半 root 归零并
+同时把 ASID 切换到预留 ASID 0，并且**不做 TLBI**；`write_user_page_table()`（
+[asm.rs:150-160](../../components/axcpu/src/arch/aarch64/asm.rs#L150-L160)）的文档也明确它不失效 TLB。
+这一状态同时保留 active-mm lease 和 active CPU bit，并要求调用者处于 IRQ 排除区间，三者共同构成它安全的
+前提。若当前已是 root 0、tag 0，函数直接返回；对于 FullFlush（tag 0）或没有 active mm 的 CPU，函数改走
+`install_hardware_root(0, DifferentAddressSpace)`，由
+[address_space.rs:546-562](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L546-L562)
+在非 x86 后端执行全量 `flush_tlb(None)`。
+
+下表对照 lazy 进入的两条路径，说明它们在硬件动作与失效范围上的差别，同 mm 恢复的省略前提见本节下段。
+
+| 场景 | 硬件动作 | 是否失效 |
+| --- | --- | --- |
+| user → kernel，持 lease 且 tag 非零 | 整个 `TTBR0_EL1` 写 0：root 归零、ASID 切到预留 ASID 0 | 不失效 |
+| user → kernel，tag 为 0 或无 active mm | 安装 replacement root 0 | 全量 `flush_tlb(None)` |
+
+同 mm 从保留根恢复由 `install_mm_identity()`（
+[address_space.rs:410-456](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L410-L456)）
+判定：仅当 `transition == SameAddressSpace`、`current_root == 0`、`installed.hardware_tag() != 0` 且该 tag
+小于 `address_space_tag_capacity()` 时才允许省略 TLBI（同文件 `:416-419`）。命中后顺序固定为
+`synchronize_page_table_writes()`（`dsb ishst`）→ `El1::write_user_address_space()`（写回 `TTBR0_EL1`）
+→ `instruction_sync()`（`isb`）（同文件 `:435-439`），不再发 TLBI。省略的书面前提是：保留的 activation
+属于同一逻辑 mm，lazy 进入时安装的是保留 ASID 0，所有用户叶子为非全局，此后本 CPU 未运行过其它用户 mm，
+且 active 目标位持续发布以接收同步 shootdown（同文件 `:428-434`）。lease 只固定逻辑 mm 身份，不预留数值
+ASID，因此“持有 lease”本身不能让跨 mm 安装跳过失效。
+
+### 3.2 跨 mm 失效、FullFlush 与混合模式 ASID 0 卫生
+
+安装新用户身份统一进入 `install_user_address_space()`（
+[asm.rs:48-63](../../components/axcpu/src/arch/aarch64/asm.rs#L48-L63)）：tag 非零且小于
+`address_space_tag_capacity()` 时先 `flush_tlb_asid(tag)`（`tlbi aside1is`）再写带 tag 的 `TTBR0_EL1`，
+否则写裸 root 后执行全量 `flush_tlb(None)`。在前句那条合法 tagged 安装（tag 非零且小于
+`address_space_tag_capacity()`）上，且为不同逻辑 mm 的切换时，安装前总是先失效 incoming ASID，因此不同
+逻辑 mm 即使复用同一个数值 tag 也会互相隔离——这正是
+[reuse.rs](../../test-suit/arceos/cpu/user-entry/src/aarch64/reuse.rs) 覆盖的场景（两个 mm 都用 tag 1）。
+
+`hardware_root_install_required()`（
+[address_space.rs:537-543](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L537-L543)）
+在 root 不同或 transition 为 `DifferentAddressSpace` 时要求安装，而 `same_logical_address_space()`（同文件
+`:647`）只比较共享 tracker 的对象身份；因此“不同 mm、root 数值相同”仍按不同身份安装并失效 incoming tag。
+tag 非零但达到或超过 ASID 容量时，`install_user_address_space()` 落入与 FullFlush 相同的全量失效分支，
+未 tagged 的安装同样全量失效，这两条回退不依赖调用点记忆。
+
+混合模式分支位于 `install_mm_identity()` 的 else 路径（
+[address_space.rs:442-453](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L442-L453)）：
+当 `current_root != 0`、当前读取到的 `TTBR0_EL1` tag 为 0、而将安装的 tag 非零时，在安装前补一次
+`flush_tlb(None)`。原因是一次直接的 FullFlush→tagged 切换会把旧的非全局 ASID 0 翻译留在本 CPU，只失效
+incoming tag 不足以清除它们；之后本 CPU 进入“保留 root + ASID 0”的 lazy 状态时，这些旧翻译会与保留
+ASID 0 共用同一缓存域。
+
+这里需要区分两件事。ASID 0 本身是真实 FullFlush mm 的合法 ASID，问题不在“把 ASID 0 分配给真实 mm”，
+而在于该 mm 离开本 CPU 时是否已被正确清理，使之后以保留 ASID 0 运行的根不再命中它的旧翻译；执行 AT/EL1
+探测本身也不破坏不变量，只有当保留根允许访问未清理的旧翻译，或无有效身份就进入用户态时才会出问题。
+AArch64 用户叶子在 `leaf_attr()`（
+[stage1.rs:148-166](../../components/axcpu/src/arch/aarch64/paging/stage1.rs#L148-L166)）中带 `NON_GLOBAL`，
+因此 tagged 翻译不会与保留 ASID 0 混用；跨 CPU 页表写入仍由 `synchronize_page_table_writes()`（`dsb ishst`，
+[asm.rs:162-170](../../components/axcpu/src/arch/aarch64/asm.rs#L162-L170)）先发布，再进入同步 shootdown，
+这条顺序不因省去本地 TLBI 而改变。
+
+上述省略 TLBI 的静态前提一旦被破坏，就不能再套用省 TLBI 的论证，必须重新验证映射生命周期、IRQ 排除和
+同步失效链。这里的 IRQ 排除只要求在地址空间切换事务内成立，即进入 lazy（
+`enter_lazy_kernel_address_space()`）与恢复用户 mm（`install_mm_identity()`/`install_hardware_root()`）
+写入 `TTBR0_EL1` 的这段时间保持 IRQ 关闭，使该事务不会被中断打断或重入；它**不要求内核线程整个 lazy 驻留期
+禁中断**，lazy 期间线程照常以开中断运行，只要其执行不破坏“保留根 + 保留 ASID 0”的既有前提。真正使省 TLBI
+证明失效的是另外两类改动：一类是删除或绕过 `restore_lazy` 的身份与范围约束——例如让 `SameAddressSpace`
+身份判定不再命中同一个逻辑 mm、或删除、放宽 `installed.hardware_tag()` 非零且小于
+`address_space_tag_capacity()` 的有效 tag 范围校验，使本不该走保留 ASID 0 恢复的切换也进入省略 TLBI 分支，
+这时恢复出的 tag 可能对应别的 mm 或越出有效范围，不再满足“保留 activation 属于同一逻辑 mm”；另一类是
+`synchronize_page_table_writes()` 之后同步 shootdown 的完成顺序不再成立。这两类改动都要求重新验证而不是默认
+沿用结论；丢失 active-mm lease、撤销 active bit 这类破坏更不能只靠补一次 TLBI 补救。注意 `SameAddressSpace`
+身份判定不命中或恢复 tag 越界时，当前实现本身就落入安全的 else 回退（走 `install_user_address_space()`，
+对越界 tag 会退到全量 `flush_tlb(None)`），并不构成漏洞。用户叶子改为 global、
+`enter_lazy_kernel_address_space()` 不再安装保留根或不再保留 active-mm lease 与 CPU bit、混合分支被删除或
+改序、保留根不再是低半空根或在保留状态下又发布新的用户翻译，同样使原论证不再成立。
 
 ## 4. 用户态入口边界
 
@@ -329,9 +412,59 @@ TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语�
   writable TLB 则不会 fault，测试确定性失败。随后再执行 unmap 并立即复用同一 VA，分别写入
   stale/replacement sentinel，确定性证明远端看到 replacement translation。低层单测独立证明
   shootdown 确认先于旧 frame reclaim。
+- AArch64 tagged lazy 与 ASID 0：[reuse.rs](../../test-suit/arceos/cpu/user-entry/src/aarch64/reuse.rs)
+  用两个同用 tag 1 的存活 mm 固定 tagged→tagged 的 incoming ASID 失效；
+  [aarch64.rs](../../test-suit/arceos/cpu/user-entry/src/aarch64.rs) 通过 tag 0/1 固定 tag 0 安装与恢复、
+  lazy 恢复和远端重映射。直接 FullFlush（tag 0）→ tagged 的混合模式防护没有 QEMU 红绿回归，按 9.1 登记。
 
 交付门禁不是“跑过一次”。每次 parent rebase 或 child SHA 变化都重置为 `0/3`。最终 child SHA
 必须以 `since_sha=23a075fe88b1bebac5fc345ef2a7fb4602b2c943` 连续完成三次独立 CI
 workflow_dispatch；每次 required static/workspace job 和
 ArceOS、StarryOS、Axvisor × x86_64、aarch64、riscv64、loongarch64 全部成功，且每个 QEMU
 子任务存在 success marker。cancelled、skipped、timeout、缺 marker 或仅 rerun failed job 均不计绿。
+
+### 9.1 FullFlush 到 tagged 混合模式的静态登记
+
+当前实现的 `install_mm_identity()` 在混合分支（
+[address_space.rs:442-453](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L442-L453)）
+安装非零 tag 前补一次 `flush_tlb(None)`，**该 ASID 0 防护仅有静态分析支撑**：现有 QEMU 套件没有能让
+“删除该行”确定性失败的用例。预期触发序列是：(1) 以 FullFlush 身份（tag 0）安装 mm A，并让 EL0 访问其
+`DATA`，在 ASID 0 下留下翻译；(2) 不经过中间清理，直接切到 tagged mm B；(3) 让 B 阻塞，使本 CPU 进入
+保留 root 的 lazy 状态；(4) 在 EL1 读取同一 VA（或读取 `PAR_EL1`）。有防护时应为 translation fault，
+缺防护时可能命中 A 的旧翻译。该序列历史探测使用的测试入口是
+`cargo xtask arceos test qemu --arch aarch64 --test-group cpu --test-case user-entry`；当前套件不含撤回的
+探测，只有 `aarch64.rs` 的 tag 0/1 安装/恢复/远端重映射与 `reuse.rs` 的同数值 tag 隔离，因此这条入口
+现在无法分辨防护是否存在。
+
+历史尝试的原始记录如下，用于说明为何采用静态登记，而不是红绿回归。
+
+| 记录 | 内容 |
+| --- | --- |
+| `resume594-status.json`、`resume594-asid0-safety.patch` | 历史 head `4d523844b1`（base `7898c42fc1`）上的 ASID 0 防护补丁与元数据 |
+| `resume594-red.log` | 旧实现上的混合模式 `PAR_EL1` 探测**也通过**，末尾打印 `CPU_USER_MIXED_MODE_LAZY_OK`，不是红灯 |
+| `resume594-after-rebase-user-entry.log` | 撤回探测后普通 `user-entry` 通过，不能当作同一测试的绿色 |
+| `experiment-ledger/attempts/resume594.md` | 决定“不称红绿”，并登记证据限制 |
+
+这些记录来自 `/home/zhourui/.codex/artifacts/issue2308-perf/` 下的归档，历史对应 head 为
+`4d523844b11daee3e47a2491ae9debc6ed5f70d8`、base 为 `7898c42fc186d6ec499eb13330f7ec78607b9966`，
+均非本次在该 head 上重新运行。早期夹具尝试的失败来自编译错误和等待调度超时，不是缺陷回归；探测源码未
+完整归档，只有日志与元数据，因此复现能力受限。
+
+该序列在已核验的归档模型上无法构造稳定红绿：归档的 QEMU v11.1.1 `target/arm/helper.c` 中
+`vmsa_ttbr_write()`（2812-2822 行）在 64 位 TTBR 写入使 16 位 ASID 字段变化时执行整 TLB `tlb_flush`，
+而混合序列的 0→1 和随后进入 lazy 的 1→0 都会触发，从而抹掉本应残留的 ASID 0 翻译。这里参考固定版本
+官方源码 [qemu v11.1.1 的 target/arm/helper.c](https://raw.githubusercontent.com/qemu/qemu/v11.1.1/target/arm/helper.c)，归档副本 sha256 为
+`5f20c7fc533d89e42277956c10d6951d90192049a9b6aef321b7a92f303427b6`；这不代表已核验当前安装的 QEMU
+二进制与该归档源码完全对应。结论仅限该归档模型和这一序列，不能推广为任意 QEMU 都无法回归，也不能把
+TLB 缓存留存当作架构保证，或假定 AT 必然读取真实缓存。
+
+未来要有缺陷敏感回归，需要一种能分辨“保留 ASID 0 下是否仍存在 mm A 旧翻译”的观测：真实硬件或模型
+提供的 per-ASID TLB 状态可观测性，或一个在 ASID 数值变化时不隐式全量失效的模型，或在撤掉该行后能确定
+性暴露 stale 翻译的插桩。在该类观测到位前，这条防护只按静态分析记录，不宣称红绿回归。
+
+### 9.2 交付门禁的适用范围
+
+§9 保留的三次 CI 交付门禁（每次 parent rebase 或 child SHA 变化都重置为 `0/3`，最终 child SHA 以
+`since_sha=23a075fe88b1bebac5fc345ef2a7fb4602b2c943` 连续完成三次独立 CI）描述的是 §1 所列
+“PR #1775 之上通用性重构”的原始交付范围。该条款保留不变，本节新增的 AArch64 lazy/ASID 登记不改写它，
+也不代表该历史范围之外的地址空间优化已经满足这条门禁。
