@@ -147,6 +147,10 @@ static int create_seeded_file(const char *path, mode_t mode)
     if (fd < 0) {
         return -1;
     }
+    if (fchmod(fd, mode) < 0) {
+        close(fd);
+        return -1;
+    }
     ssize_t written = write(fd, contents, sizeof(contents) - 1);
     close(fd);
     return written == (ssize_t)(sizeof(contents) - 1) ? 0 : -1;
