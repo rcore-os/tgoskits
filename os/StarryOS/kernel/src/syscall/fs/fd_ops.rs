@@ -5,7 +5,7 @@ use core::{
     ops::DerefMut,
 };
 
-use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenResult};
+use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenResult, ResolveConstraints};
 use ax_memory_addr::PAGE_SIZE_4K;
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference, VfsError};
 use bitflags::bitflags;
@@ -639,13 +639,6 @@ pub fn sys_openat2(
     if how_value.resolve & !OPENAT2_VALID_RESOLVE != 0 {
         return Err(StarryError::InvalidInput);
     }
-    const NIX_RESTORE_RESOLVE: u64 = (RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS) as u64;
-    // Known deviation from Linux (tracked in docs/design/docker-startup.md):
-    // only the RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS combination enforces its
-    // restriction. Other restricted combinations — runc's cgroupv2 reader
-    // uses RESOLVE_NO_XDEV — currently resolve like a plain openat(2)
-    // instead of returning ELOOP/EXDEV for the cases Linux would reject.
-    let enforced_resolve = how_value.resolve == 0 || how_value.resolve == NIX_RESTORE_RESOLVE;
 
     let flags: i32 = how_value
         .flags
@@ -664,76 +657,124 @@ pub fn sys_openat2(
         return Err(StarryError::InvalidInput);
     }
 
-    if !enforced_resolve {
+    // RESOLVE_CACHED is a dcache hint on Linux, not a restriction; it is
+    // accepted and ignored here exactly like the kernel's non-coherent-cache
+    // allowance.
+    let constraints = openat2_resolve_constraints(how_value.resolve);
+    let Some(constraints) = constraints else {
         return sys_openat(current, dirfd, path, flags, mode);
-    }
-    if how_value.resolve == 0 {
-        return sys_openat(current, dirfd, path, flags, mode);
-    }
+    };
 
     let path = vm_load_path_string(current, path)?;
     if path.is_empty() {
         return Err(StarryError::NotFound);
     }
-    if path.starts_with('/') {
-        return Err(StarryError::CrossesDevices);
+
+    // Magic links are intercepted by pathname before the VFS walker ever sees
+    // them, so the symlink-related restrictions must reject them from the raw
+    // pathname, like Linux's walker does (ELOOP for /proc/<pid>/exe,
+    // /proc/<pid>/fd/<n>, and /proc/<pid>/ns/<type>).
+    let magic_forbidden = constraints.is_no_symlinks() || constraints.is_no_magiclinks();
+    if magic_forbidden && is_magic_link_path(current, &path) {
+        return Err(StarryError::FilesystemLoop);
     }
 
-    let curr = current;
-    let thread = curr.as_thread();
+    let thread = current.as_thread();
     let mode = mode & !thread.proc_data.umask();
     let cred = thread.cred();
     let mutation_cred = mutation_credentials(&cred);
     let mut options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
-    let result = with_fs(dirfd, |fs| {
-        let path_ref = axfs_ng_vfs::path::Path::new(&path);
-        let must_be_dir = path_ref.has_trailing_slash();
-        let dot_only = path_ref
-            .components()
-            .all(|component| matches!(component, axfs_ng_vfs::path::Component::CurDir));
 
-        // A path made only of `.` components names the already-open dirfd.
-        // Resolving it directly avoids manufacturing a lookup through the
-        // dirfd's parent, which may be intentionally inaccessible. Preserve
-        // O_CREAT|O_EXCL's EEXIST precedence for this existing final entry.
-        if dot_only {
-            if uflags & (O_CREAT | O_EXCL) == (O_CREAT | O_EXCL) {
-                return Err(StarryError::AlreadyExists);
-            }
-            let (location, _) = fs.resolve_with_search_checked(axfs_ng_vfs::path::Path::new(&path), |directory| {
-                fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
-            })?;
+    // Magic-link jumps bypass the constrained walker; only take them when the
+    // constraints allow magic links to be followed at all.
+    let intercepted = (!magic_forbidden)
+        .then(|| {
+            try_reopen_self_pipe(&path, uflags)
+                .or_else(|| try_reopen_self_file(current, &path, uflags))
+        })
+        .flatten();
+    if let Some(result) = intercepted {
+        return result;
+    }
+    if !magic_forbidden {
+        if let Some(result) = try_open_proc_exe(current, &path, uflags) {
+            return result.map(|fd| fd as isize);
+        }
+        if let Some(result) = try_open_nsfd(current, &path, uflags) {
+            return result.map(|fd| fd as isize);
+        }
+    }
+
+    let result = with_fs(dirfd, |fs| {
+        // RESOLVE_IN_ROOT uses the dirfd as the resolution root; absolute
+        // components and `..` at the root clamp there.
+        let constraints = if how_value.resolve & RESOLVE_IN_ROOT as u64 != 0 {
+            constraints.in_root(fs.current_dir().clone())
+        } else {
+            constraints
+        };
+        if constraints.is_no_symlinks() {
+            // RESOLVE_NO_SYMLINKS subsumes O_NOFOLLOW: even the final
+            // component must not be a symlink.
             options.no_follow(true);
-            return Ok(options.open_loc_with_credentials(location, &mutation_cred)?);
         }
-        let (parent, name) = fs.resolve_parent_beneath_no_symlinks_checked(
-            path.as_ref(),
-            |directory| fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred),
-        )?;
-        match parent.lookup_no_follow(name.as_ref()) {
-            Ok(location) if location.node_type() == NodeType::Symlink => {
-                return Err(StarryError::FilesystemLoop);
-            }
-            Ok(location) => {
-                if must_be_dir && !location.is_dir() {
-                    return Err(StarryError::NotADirectory);
-                }
-            }
-            Err(VfsError::NotFound) => {
-                // A trailing slash requires a directory and must not create a
-                // regular file while preparing the final lookup.
-                if must_be_dir {
-                    options.create(false).create_new(false);
-                }
-            }
-            Err(error) => return Err(error.into()),
-        }
-        let fs = fs.with_current_dir(parent)?;
-        options.no_follow(true);
-        Ok(options.open_with_credentials(&fs, name.as_ref(), &mutation_cred)?)
+        options.resolve(constraints);
+        Ok(options.open_with_credentials(fs, path, &mutation_cred)?)
     })?;
     let mount_table_namespace = mount_table_namespace(current, &result);
     add_to_fd(current, result, flags as u32, mount_table_namespace).map(|fd| fd as isize)
+}
+
+/// Translates openat2 `RESOLVE_*` bits into typed path-walk constraints.
+///
+/// Returns `None` for `resolve == 0`, which keeps the plain `openat(2)` fast
+/// path untouched.
+fn openat2_resolve_constraints(resolve: u64) -> Option<ResolveConstraints> {
+    if resolve == 0 {
+        return None;
+    }
+    let mut constraints = ResolveConstraints::new();
+    if resolve & RESOLVE_BENEATH as u64 != 0 {
+        constraints = constraints.beneath();
+    }
+    if resolve & RESOLVE_IN_ROOT as u64 != 0 {
+        // IN_ROOT needs the dirfd location as its root, which only exists
+        // once the open path resolved it; `sys_openat2` attaches it there.
+        constraints = constraints.mark_in_root();
+    }
+    if resolve & RESOLVE_NO_XDEV as u64 != 0 {
+        constraints = constraints.no_xdev();
+    }
+    if resolve & RESOLVE_NO_SYMLINKS as u64 != 0 {
+        constraints = constraints.no_symlinks();
+    }
+    if resolve & RESOLVE_NO_MAGICLINKS as u64 != 0 {
+        constraints = constraints.no_magiclinks();
+    }
+    Some(constraints)
+}
+
+/// Returns whether `path` names a procfs-style magic link by its pathname
+/// spelling. These paths are normally intercepted before the VFS walker; when
+/// the openat2 constraints forbid magic links they must fail with ELOOP
+/// instead of being intercepted.
+fn is_magic_link_path(current: &crate::task::UserTaskRef, path: &str) -> bool {
+    if self_fd_number(path).is_some() {
+        return true;
+    }
+    if proc_exe_target(current, path).is_some() {
+        return true;
+    }
+    let Some(rest) = path.strip_prefix("/proc/") else {
+        return false;
+    };
+    let Some((pid_str, ns_type)) = rest.split_once('/') else {
+        return false;
+    };
+    let Some(ns_type) = ns_type.strip_prefix("ns/") else {
+        return false;
+    };
+    !pid_str.is_empty() && !ns_type.is_empty() && !ns_type.contains('/')
 }
 
 /// Open a file by `filename` and insert it into the file descriptor table.

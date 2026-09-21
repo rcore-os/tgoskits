@@ -20,7 +20,7 @@ use ax_std::os::arceos::task::{
     sched::{CpuId, CpuSet},
     thread::ThreadState,
 };
-use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, VfsError, VfsResult};
 use kernel_elf_parser::{AuxEntry, AuxType};
 use ksym::KallsymsMapped;
 use zerocopy::IntoBytes;
