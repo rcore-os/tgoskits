@@ -128,6 +128,7 @@ impl AxvmManager {
     ))]
     fn release_host_filesystem_for_guest_passthrough(&self) {
         if !crate::config::host_filesystem_release_required() {
+            info!("Host filesystems retained for runtime I/O");
             return;
         }
 

@@ -402,6 +402,30 @@ pub fn shutdown_host_filesystems() -> AxVmResult {
     Ok(())
 }
 
+#[cfg(feature = "host-fs")]
+pub(super) fn block_device_fdt_paths() -> Option<Vec<String>> {
+    use ax_driver::block::{PlatformBlockDevice, PlatformBlockGroup};
+
+    let devices = rdrive::get_list::<PlatformBlockDevice>()
+        .into_iter()
+        .map(|device| {
+            device
+                .descriptor()
+                .fdt_node()
+                .map(|node| String::from(node.path()))
+        });
+    let groups = rdrive::get_list::<PlatformBlockGroup>()
+        .into_iter()
+        .map(|device| {
+            device
+                .descriptor()
+                .fdt_node()
+                .map(|node| String::from(node.path()))
+        });
+    let paths: Option<Vec<_>> = devices.chain(groups).collect();
+    paths.filter(|paths| !paths.is_empty())
+}
+
 #[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
 pub(crate) fn register_qemu_block_passthrough_irq(vm: &crate::AxVMRef) -> AxVmResult {
     let (_, _, _, guest_gsi) = crate::boot::x86_qemu_passthrough_block_intx();

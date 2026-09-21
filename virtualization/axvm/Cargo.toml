@@ -54,6 +54,8 @@ ax-std = { workspace = true, default-features = false, features = [
 ] }
 irq-framework = { workspace = true }
 ax-api = { workspace = true, optional = true }
+ax-driver = { workspace = true, optional = true, features = ["block"] }
+rdrive.workspace = true
 rsext4 = { workspace = true, optional = true }
 # System dependent modules provided by ArceOS-Hypervisor.
 axaddrspace = { workspace = true }
@@ -101,7 +103,6 @@ arm-gic-driver = { workspace = true, features = ["rdif"] }
 axklib.workspace = true
 mmio-api.workspace = true
 rdif-intc.workspace = true
-rdrive.workspace = true
 rdif-clk.workspace = true
 
 [target.'cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))'.dependencies]

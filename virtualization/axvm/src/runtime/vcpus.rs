@@ -612,7 +612,15 @@ fn vcpu_run() {
                 VcpuRunAction {
                     waits_for_event: true,
                     ..
-                } => CurrentArch::wait_for_vcpu_event(&vm, &vcpu, &runtime),
+                } => {
+                    // MMIO notifications may have been queued inside this run
+                    // slice. Submit that work before WFI can park the vCPU;
+                    // otherwise no worker exists yet to wake it on completion.
+                    if vcpu_id == 0 {
+                        let _ = poll_primary_vcpu_devices_with(&runtime, || poll_vm_devices(&vm));
+                    }
+                    CurrentArch::wait_for_vcpu_event(&vm, &vcpu, &runtime);
+                }
                 VcpuRunAction { .. } => {}
             }
         }

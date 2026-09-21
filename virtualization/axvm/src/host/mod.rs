@@ -43,6 +43,16 @@ pub fn shutdown_filesystems() -> crate::AxVmResult {
     arceos::shutdown_host_filesystems()
 }
 
+/// Returns firmware paths for the host's registered block controllers.
+///
+/// `None` means at least one controller has no FDT identity, or discovery did
+/// not find any controllers. Callers must not infer exclusive ownership from
+/// incomplete firmware information. The returned snapshot owns no device lock.
+#[cfg(feature = "host-fs")]
+pub fn block_device_fdt_paths() -> Option<Vec<String>> {
+    arceos::block_device_fdt_paths()
+}
+
 /// Register any host interrupt route required by the selected block-passthrough profile.
 #[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
 pub fn register_block_passthrough_irq(vm: &crate::AxVMRef) -> crate::AxVmResult {

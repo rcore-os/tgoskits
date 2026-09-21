@@ -245,9 +245,35 @@ fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &GuestCon
     )
 ))]
 fn vm_config_needs_host_filesystem_release(config: &GuestConfig) -> bool {
-    config.kernel.image_location.as_deref() == Some("fs")
-        && (config.base.guest_type == GuestType::Passthrough
-            || !config.devices.passthrough.is_empty())
+    let default_passthrough =
+        config.base.guest_type == GuestType::Passthrough && config.devices.passthrough.is_empty();
+    if !default_passthrough && config.devices.passthrough.is_empty() {
+        return false;
+    }
+    let Some(block_paths) = axvm::host::block_device_fdt_paths() else {
+        // Preserve existing handoff for platforms whose storage has no FDT
+        // identity. In particular PCI storage needs its own ownership query.
+        return config.kernel.image_location.as_deref() == Some("fs");
+    };
+    let in_subtree = |path: &str, selected: &str| {
+        path == selected
+            || path
+                .strip_prefix(selected)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+    };
+    block_paths.iter().any(|path| {
+        !config
+            .devices
+            .disabled
+            .iter()
+            .any(|device| in_subtree(path, &device.path))
+            && (default_passthrough
+                || config
+                    .devices
+                    .passthrough
+                    .iter()
+                    .any(|device| in_subtree(path, &device.path)))
+    })
 }
 
 #[cfg(all(
