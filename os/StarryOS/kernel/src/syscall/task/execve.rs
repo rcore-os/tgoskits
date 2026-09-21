@@ -233,8 +233,8 @@ fn do_execve(
     // Collect metadata from the already-resolved location before touching
     // anything. An anonymous memfd has no filesystem path, so fall back to the
     // caller-supplied display name (e.g. `/memfd:<name> (deleted)`).
-    let new_name = loc.name().to_string();
-    let new_exe_path = loc
+    let mut new_name = loc.name().to_string();
+    let mut new_exe_path = loc
         .absolute_path()
         .map(|p| p.to_string())
         .unwrap_or_else(|_| path.clone());
@@ -248,7 +248,37 @@ fn do_execve(
     // pinned now, so the post-teardown commit phase doesn't re-resolve
     // the pathname (the FS could change while siblings are being reaped).
     let mut image_builder = new_user_image_builder()?;
-    let loaded_image = load_user_app(&mut image_builder, loc, &path, &args, &envs, &thr.cred())?;
+    let loaded_image =
+        match load_user_app(&mut image_builder, loc, &path, &args, &envs, &thr.cred()) {
+            Ok(image) => image,
+            Err(StarryError::InvalidExecutable) => {
+                // ENOEXEC fallback: retry the non-ELF executable via /bin/sh.
+                // Linux does this retry in user space (musl execvp, busybox), but
+                // the musl build used by these guests does not, so keep the
+                // kernel-side workaround that `busybox run-parts` depends on for
+                // scripts without a shebang.
+                let shell_path = "/bin/sh";
+                let shell_loc = current_fs_context().lock().resolve(shell_path)?;
+                new_name = shell_loc.name().to_string();
+                new_exe_path = shell_loc
+                    .absolute_path()
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|_| shell_path.to_string());
+                let mut shell_args = Vec::with_capacity(args.len() + 1);
+                shell_args.push(shell_path.to_string());
+                shell_args.extend(args.iter().cloned());
+                args = shell_args;
+                load_user_app(
+                    &mut image_builder,
+                    shell_loc,
+                    shell_path,
+                    &args,
+                    &envs,
+                    &thr.cred(),
+                )?
+            }
+            Err(error) => return Err(error),
+        };
     let prepared_image = image_builder.finish(loaded_image)?;
     let (new_aspace, entry_point, user_stack_base, auxv) = prepared_image.into_parts();
 

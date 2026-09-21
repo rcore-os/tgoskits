@@ -8,8 +8,8 @@ args = [
     "-device", "virtio-net-pci,netdev=net0",
     "-netdev", "user,id=net0",
 ]
-to_bin = false
-uefi = false
+to_bin = true
+uefi = true
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^FAIL=']
 timeout = 60
 
