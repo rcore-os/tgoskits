@@ -101,6 +101,10 @@ where
 pub struct SimpleFile {
     node: SimpleFsNode,
     ops: Arc<dyn SimpleFileOps>,
+    /// Marks procfs-style magic links (`NodeFlags::MAGIC_LINK`): symlinks
+    /// whose target is a kernel object handle displayed as a path rather than
+    /// a real pathname.
+    magic_link: bool,
 }
 
 impl SimpleFile {
@@ -110,12 +114,26 @@ impl SimpleFile {
         Arc::new(Self {
             node,
             ops: Arc::new(ops),
+            magic_link: false,
         })
     }
 
     /// Creates a simple file from given file operations.
     pub fn new_regular(fs: Arc<SimpleFs>, ops: impl SimpleFileOps) -> Arc<Self> {
         Self::new(fs, NodeType::RegularFile, ops)
+    }
+
+    /// Creates a symlink that is a procfs-style magic link (e.g.
+    /// `/proc/<pid>/exe`, `/proc/<pid>/fd/<n>`): its target names a kernel
+    /// object handle, so path walkers must treat it like Linux's
+    /// `nd_jump_link` links and honor `RESOLVE_NO_MAGICLINKS` on it.
+    pub fn new_magic_link(fs: Arc<SimpleFs>, ops: impl SimpleFileOps) -> Arc<Self> {
+        let node = SimpleFsNode::new(fs, NodeType::Symlink, NodePermission::default());
+        Arc::new(Self {
+            node,
+            ops: Arc::new(ops),
+            magic_link: true,
+        })
     }
 
     /// Overwrite the node's stored ownership, permission bits and timestamps.
@@ -175,7 +193,11 @@ impl NodeOps for SimpleFile {
     }
 
     fn flags(&self) -> NodeFlags {
-        NodeFlags::NON_CACHEABLE
+        if self.magic_link {
+            NodeFlags::NON_CACHEABLE | NodeFlags::MAGIC_LINK
+        } else {
+            NodeFlags::NON_CACHEABLE
+        }
     }
 }
 

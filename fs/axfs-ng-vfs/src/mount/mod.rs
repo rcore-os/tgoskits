@@ -1031,6 +1031,12 @@ impl Location {
             .contains_key(&self.entry.key())
     }
 
+    /// Returns whether this location is a procfs-style magic link; see
+    /// [`NodeFlags::MAGIC_LINK`].
+    pub fn is_magic_link(&self) -> bool {
+        self.flags().contains(NodeFlags::MAGIC_LINK)
+    }
+
     /// Follows mounts stacked directly over this location.
     pub fn resolve_mountpoint(self) -> Self {
         let Some(mountpoint) = self
