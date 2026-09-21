@@ -768,6 +768,10 @@ impl FsContext {
             constraints,
             Some(&check_search),
         )?;
+        // The final directory has no next component to trigger its search
+        // check; an unsearchable parent must fail the resolution here, before
+        // the caller's final lookup reports ENOENT.
+        Self::check_search(&dir, Some(&check_search))?;
         Ok((dir, Cow::Borrowed(entry_name), depth))
     }
 
