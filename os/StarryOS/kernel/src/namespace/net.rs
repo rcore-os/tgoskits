@@ -3,7 +3,10 @@ use core::sync::atomic::AtomicU64;
 
 use crate::sync::IrqMutex;
 
-static NEXT_NET_NS_ID: AtomicU64 = AtomicU64::new(0);
+// Namespace ids double as the st_ino of /proc/<pid>/ns/net NsFds, and inode 0
+// is never a valid identity on Linux, so the counter starts at 1 like the
+// other namespace id counters.
+static NEXT_NET_NS_ID: AtomicU64 = AtomicU64::new(1);
 
 /// The initial root network namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWNET)` or `clone(CLONE_NEWNET)`.

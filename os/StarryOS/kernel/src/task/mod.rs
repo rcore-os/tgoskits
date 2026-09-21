@@ -323,6 +323,7 @@ pub(crate) fn new_test_process_data(
         ProcessDataInit::new(
             ProcessImage::new(
                 Default::default(),
+                None,
                 Arc::default(),
                 Arc::default(),
                 Default::default(),

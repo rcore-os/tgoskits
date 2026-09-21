@@ -6,7 +6,11 @@ use core::{
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
 };
 
-use ax_runtime::hal::{cpu::user::UserContext, percpu::CpuPin, time::TimeValue};
+use ax_runtime::hal::{
+    cpu::user::UserContext,
+    percpu::CpuPin,
+    time::{TimeValue, monotonic_time_nanos},
+};
 use axpoll_set::PollSet;
 use scope_local::{ActiveScope, LocalItem, Scope};
 use starry_signal::{SignalSet, Signo, api::ThreadSignalManager};
@@ -128,6 +132,12 @@ impl ThreadScope {
 /// CPU accounting retained for the lifetime of the thread.
 struct ThreadAccounting {
     cpu_time: CpuTimeAccounting,
+    /// Monotonic nanoseconds since boot, captured when this thread was
+    /// created. Rendered as `/proc/[pid]/stat` field 22 (`starttime`, clock
+    /// ticks); runtimes such as runc persist it as `InitProcessStartTime` and
+    /// compare it to detect container-init replacement. Captured once and
+    /// never mutated, so it survives `execve` like on Linux.
+    start_time_ns: u64,
 }
 
 impl ThreadAccounting {
@@ -136,6 +146,7 @@ impl ThreadAccounting {
     ) -> crate::StarryResult<Self> {
         Ok(Self {
             cpu_time: CpuTimeAccounting::with_realtime_gate(gate)?,
+            start_time_ns: monotonic_time_nanos() as u64,
         })
     }
 }
@@ -859,6 +870,12 @@ impl Thread {
 
     pub(crate) fn signalfd_poll_source(&self) -> &PollSet {
         &self.signals.signalfd_waker
+    }
+
+    /// Monotonic nanoseconds since boot when this thread was created
+    /// (`/proc/[pid]/stat` `starttime` source).
+    pub fn start_time_ns(&self) -> u64 {
+        self.accounting.start_time_ns
     }
 
     /// Returns the OOM score adjustment value.

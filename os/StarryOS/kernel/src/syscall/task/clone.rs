@@ -407,6 +407,7 @@ impl CloneArgs {
 
             let process_image = ProcessImage::new(
                 old_proc_data.exe_path().as_ref().clone(),
+                old_proc_data.exe_location(),
                 old_proc_data.cmdline(),
                 old_proc_data.envp(),
                 old_proc_data.auxv().as_ref().clone(),
