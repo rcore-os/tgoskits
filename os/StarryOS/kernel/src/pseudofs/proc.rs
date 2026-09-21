@@ -1091,7 +1091,7 @@ impl SimpleDirOps for ThreadFdDir {
             .inner
             .path()
             .into_owned();
-        Ok(SimpleFile::new(fs, NodeType::Symlink, move || Ok(path.clone())).into())
+        Ok(SimpleFile::new_magic_link(fs, move || Ok(path.clone())).into())
     }
 
     fn is_cacheable(&self) -> bool {
@@ -1679,7 +1679,7 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            "exe" => SimpleFile::new(fs, NodeType::Symlink, move || {
+            "exe" => SimpleFile::new_magic_link(fs, move || {
                 Ok(task.as_thread().proc_data.exe_path().to_string())
             })
             .into(),
@@ -1693,11 +1693,11 @@ impl SimpleDirOps for ThreadDir {
                 Ok(buf)
             })
             .into(),
-            "root" => SimpleFile::new(fs, NodeType::Symlink, move || {
+            "root" => SimpleFile::new_magic_link(fs, move || {
                 Ok(task.as_thread().proc_data.root_path().to_string())
             })
             .into(),
-            "cwd" => SimpleFile::new(fs, NodeType::Symlink, move || {
+            "cwd" => SimpleFile::new_magic_link(fs, move || {
                 Ok(task.as_thread().proc_data.cwd_path().to_string())
             })
             .into(),
