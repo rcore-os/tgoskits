@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.8.3...axdevice-v0.8.4) - 2026-09-21
+
+### Other
+
+- updated the following local packages: ax-runtime
+
 ## [0.8.3](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.8.2...axdevice-v0.8.3) - 2026-09-18
 
 ### Added

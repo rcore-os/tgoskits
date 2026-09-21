@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.8.1...axbuild-v0.9.0) - 2026-09-21
+
+### Fixed
+
+- *(ci)* stabilize qemu and app test semantics ([#2461](https://github.com/rcore-os/tgoskits/pull/2461))
+
+### Other
+
+- *(axbuild)* move generated artifacts into Cargo target ([#2460](https://github.com/rcore-os/tgoskits/pull/2460))
+
 ## [0.8.1](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.8.0...axbuild-v0.8.1) - 2026-09-18
 
 ### Added

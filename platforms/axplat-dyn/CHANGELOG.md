@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.10.2...axplat-dyn-v0.10.3) - 2026-09-21
+
+### Other
+
+- updated the following local packages: ax-driver
+
 ## [0.10.2](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.10.1...axplat-dyn-v0.10.2) - 2026-09-18
 
 ### Other

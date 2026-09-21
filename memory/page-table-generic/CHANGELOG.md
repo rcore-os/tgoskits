@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/rcore-os/tgoskits/compare/page-table-generic-v0.9.0...page-table-generic-v0.9.1) - 2026-09-21
+
+### Fixed
+
+- *(starry-kernel)* defer page-table reclaim until TLB acknowledgement ([#2455](https://github.com/rcore-os/tgoskits/pull/2455))
+
 ## [0.9.0](https://github.com/rcore-os/tgoskits/compare/page-table-generic-v0.8.0...page-table-generic-v0.9.0) - 2026-09-09
 
 ### Added

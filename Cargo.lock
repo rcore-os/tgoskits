@@ -784,7 +784,7 @@ dependencies = [
 
 [[package]]
 name = "ax-api"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "ax-alloc",
  "ax-cpumask",
@@ -886,7 +886,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "ahci-driver",
  "aic8800",
@@ -966,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ng"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "atomic-waker",
  "ax-io",
@@ -995,7 +995,7 @@ dependencies = [
 
 [[package]]
 name = "ax-hal"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "ax-ipi"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "ax-hal",
  "ax-lazyinit",
@@ -1053,7 +1053,7 @@ version = "0.5.1"
 
 [[package]]
 name = "ax-libc"
-version = "0.5.39"
+version = "0.5.40"
 dependencies = [
  "ax-driver",
  "ax-hal",
@@ -1092,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "ax-mm"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -1108,7 +1108,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net"
-version = "0.13.4"
+version = "0.13.5"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -1186,7 +1186,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.6.6"
+version = "0.6.7"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1215,7 +1215,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.13.3"
+version = "0.13.4"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -1266,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1351,7 +1351,7 @@ dependencies = [
 
 [[package]]
 name = "axbuild"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "addr2line 0.26.1",
  "anyhow",
@@ -1399,7 +1399,7 @@ dependencies = [
 
 [[package]]
 name = "axdevice"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "ax-runtime",
  "ax-sync",
@@ -1409,7 +1409,7 @@ dependencies = [
  "divan",
  "log",
  "paste",
- "rand 0.10.2",
+ "rand 0.10.3",
  "riscv_vplic",
  "thiserror 2.0.20",
  "x86_vlapic",
@@ -1496,7 +1496,7 @@ version = "0.1.1"
 
 [[package]]
 name = "axplat-dyn"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "anyhow",
  "ax-cpu",
@@ -1608,7 +1608,7 @@ dependencies = [
 
 [[package]]
 name = "axvirtio-blk"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ax-memory-addr",
  "ax-runtime",
@@ -1622,7 +1622,7 @@ dependencies = [
 
 [[package]]
 name = "axvirtio-common"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "ax-memory-addr",
  "ax-runtime",
@@ -1649,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "ax-api",
@@ -1678,7 +1678,7 @@ dependencies = [
 
 [[package]]
 name = "axvm"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -1995,7 +1995,7 @@ dependencies = [
  "ax-sync",
  "divan",
  "log",
- "rand 0.10.2",
+ "rand 0.10.3",
 ]
 
 [[package]]
@@ -2115,9 +2115,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.4.6"
+version = "1.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3eb0f42d6c360dc3f8a821f6bf2fdea7f72bfd36b3076eb0e6d1e9e0752fff4"
+checksum = "54413ede23c2daf518f35156dfde027feb2374004d63bd497f983c8db9c0e313"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -3554,15 +3554,15 @@ dependencies = [
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.12"
+version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
+checksum = "ef25905e51abafe4dcea6c15fec58c57b601cdbd0ee53d22ea1d3016c587d39b"
 
 [[package]]
 name = "finl_unicode"
-version = "1.4.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9844ddc3a6e533d62bba727eb6c28b5d360921d5175e9ff0f1e621a5c590a4d5"
+checksum = "80bb028c8b4148c9ee0cca68fcd9add6044e81d3619f48577ddf13a263d047a2"
 
 [[package]]
 name = "fitimage"
@@ -4119,9 +4119,9 @@ dependencies = [
 
 [[package]]
 name = "hyper-rustls"
-version = "0.27.9"
+version = "0.27.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
+checksum = "dfa8e654703247911e29c23fbeaa261834bd9bb74efba2f9acddc37bfb127f53"
 dependencies = [
  "http",
  "hyper",
@@ -5705,7 +5705,7 @@ dependencies = [
 
 [[package]]
 name = "page-table-generic"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ax-memory-addr",
  "bitflags 2.13.2",
@@ -6212,7 +6212,7 @@ dependencies = [
  "bytes",
  "getrandom 0.4.3",
  "lru-slab",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rand_pcg",
  "ring",
  "rustc-hash 2.1.3",
@@ -6287,9 +6287,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.2"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
+checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
@@ -6995,7 +6995,7 @@ dependencies = [
 
 [[package]]
 name = "rockchip-soc"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "bitflags 2.13.2",
  "dma-api",
@@ -7009,7 +7009,7 @@ dependencies = [
 
 [[package]]
 name = "rsext4"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "bitflags 2.13.2",
  "thiserror 2.0.20",
@@ -7866,7 +7866,7 @@ dependencies = [
 
 [[package]]
 name = "starry-kernel"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "ax-alloc",
  "ax-cgroup",
@@ -7925,7 +7925,7 @@ dependencies = [
  "lwprintf-rs",
  "num_enum",
  "ouroboros",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rbpf",
  "rdif-block",
  "rdif-pinctrl",
@@ -7957,7 +7957,7 @@ dependencies = [
 
 [[package]]
 name = "starry-signal"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "ax-cpu",
  "ax-runtime",
@@ -7984,7 +7984,7 @@ dependencies = [
 
 [[package]]
 name = "starryos"
-version = "0.5.37"
+version = "0.5.38"
 dependencies = [
  "anyhow",
  "ax-driver",

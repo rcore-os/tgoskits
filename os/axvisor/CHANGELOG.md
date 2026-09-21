@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.8.0...axvisor-v0.8.1) - 2026-09-21
+
+### Fixed
+
+- *(axvisor)* validate guest kernels and complete shell editing ([#2462](https://github.com/rcore-os/tgoskits/pull/2462))
+- *(axvm)* unify targeted vCPU unblock and kick handling ([#1934](https://github.com/rcore-os/tgoskits/pull/1934))
+
+### Other
+
+- *(axbuild)* move generated artifacts into Cargo target ([#2460](https://github.com/rcore-os/tgoskits/pull/2460))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.7.5...axvisor-v0.8.0) - 2026-09-18
 
 ### Added

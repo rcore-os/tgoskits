@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4](https://github.com/rcore-os/tgoskits/compare/axvm-v0.8.3...axvm-v0.8.4) - 2026-09-21
+
+### Added
+
+- *(arceos)* add task switch overhead benchmark and validate inter-VM virtio-net ([#2428](https://github.com/rcore-os/tgoskits/pull/2428))
+
+### Fixed
+
+- *(axvisor)* validate guest kernels and complete shell editing ([#2462](https://github.com/rcore-os/tgoskits/pull/2462))
+- *(axvm)* unify targeted vCPU unblock and kick handling ([#1934](https://github.com/rcore-os/tgoskits/pull/1934))
+
 ## [0.8.3](https://github.com/rcore-os/tgoskits/compare/axvm-v0.8.2...axvm-v0.8.3) - 2026-09-18
 
 ### Added

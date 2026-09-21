@@ -153,10 +153,10 @@ ax-cgroup = { version = "0.3", path = "components/ax-cgroup" }
 ax-ctor-bare = { version = "0.4", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4", path = "components/ctor_bare/ctor_bare_macros" }
 ax-display = { version = "0.6", path = "os/arceos/modules/axdisplay" }
-ax-driver = { version = "0.17", path = "drivers/ax-driver" }
+ax-driver = { version = "0.18", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 ax-fs-ng = { version = "0.11", path = "fs/ax-fs-ng" }
-ax-hal = { version = "0.8.2", path = "os/arceos/modules/axhal" }
+ax-hal = { version = "0.8.3", path = "os/arceos/modules/axhal" }
 irq-framework = { version = "0.5", path = "components/irq-framework" }
 ax-input = { version = "0.6", path = "os/arceos/modules/axinput" }
 ax-io = { version = "0.7", path = "components/axio" }
@@ -175,10 +175,10 @@ ax-percpu = { version = "0.4", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4", path = "components/percpu/percpu_macros" }
 ax-plat = { version = "0.15", path = "platforms/ax-plat" }
 ax-plat-macros = { version = "0.3", path = "platforms/ax-plat-macros" }
-ax-posix-api = { version = "0.6.6", path = "os/arceos/api/arceos_posix_api" }
+ax-posix-api = { version = "0.6.7", path = "os/arceos/api/arceos_posix_api" }
 ax-riscv-plic = { version = "0.4", path = "drivers/intc/riscv_plic" }
-ax-runtime = { version = "0.13.3", path = "os/arceos/modules/axruntime" }
-ax-std = { version = "0.7.3", path = "os/arceos/ulib/axstd", default-features = false }
+ax-runtime = { version = "0.13.4", path = "os/arceos/modules/axruntime" }
+ax-std = { version = "0.7.4", path = "os/arceos/ulib/axstd", default-features = false }
 ax-sync = { version = "0.6", path = "os/arceos/modules/axsync" }
 ax-task = { version = "0.8", path = "components/ax-task" }
 ax-tracepoint = { version = "0.6", path = "components/ax-tracepoint" }
@@ -187,14 +187,14 @@ axtest-macros = { version = "0.5", path = "components/axtest/axtest_macros" }
 xcover = { version = "0.1.3", default-features = false, features = ["alloc"] }
 axaddrspace = { version = "0.6", path = "virtualization/axaddrspace" }
 axbacktrace = { version = "0.4", path = "components/axbacktrace" }
-axbuild = { version = "0.8.1", path = "scripts/axbuild" }
+axbuild = { version = "0.9.0", path = "scripts/axbuild" }
 axdevice = { version = "0.8", path = "virtualization/axdevice" }
 axdevice_base = { version = "0.7", path = "virtualization/axdevice_base" }
 axfs-ng-vfs = { version = "0.8", path = "fs/axfs-ng-vfs" }
 axhvc = { version = "0.5", path = "virtualization/axhvc" }
 axivc = { version = "0.1", path = "virtualization/axivc" }
 axklib = { version = "0.9", path = "components/axklib" }
-axplat-dyn = { version = "0.10.2", path = "platforms/axplat-dyn", default-features = false }
+axplat-dyn = { version = "0.10.3", path = "platforms/axplat-dyn", default-features = false }
 axpoll = { version = "0.7", path = "components/axpoll" }
 axvirtio-blk = { version = "0.4", path = "virtualization/axvirtio-blk" }
 axvirtio-common = { version = "0.2", path = "virtualization/axvirtio-common" }
@@ -262,7 +262,7 @@ sdhci-host = { version = "0.5", path = "drivers/blk/sdhci-host", default-feature
 sdmmc-protocol = { version = "0.5", path = "drivers/blk/sdmmc-protocol", default-features = false }
 starfive-jh7110-dwmmc = { version = "0.1", path = "drivers/blk/starfive-jh7110-dwmmc", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
-starry-kernel = { version = "0.11", path = "os/StarryOS/kernel" }
+starry-kernel = { version = "0.12", path = "os/StarryOS/kernel" }
 starry-signal = { version = "0.10", path = "os/StarryOS/signal" }
 starry-vm = { version = "0.6", path = "os/StarryOS/vm" }
 httpboot-protocol = { version = "0.2.0", default-features = false, features = ["alloc", "json"] }

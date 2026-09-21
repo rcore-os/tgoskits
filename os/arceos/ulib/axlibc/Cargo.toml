@@ -1,6 +1,6 @@
 [package]
 name = "ax-libc"
-version = "0.5.39"
+version = "0.5.40"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [

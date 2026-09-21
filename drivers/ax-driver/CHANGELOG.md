@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.17.0...ax-driver-v0.18.0) - 2026-09-21
+
+### Added
+
+- *(pwm)* unify BSP-backed drivers and Starry integration ([#2437](https://github.com/rcore-os/tgoskits/pull/2437))
+
 ## [0.17.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.16.0...ax-driver-v0.17.0) - 2026-09-18
 
 ### Fixed

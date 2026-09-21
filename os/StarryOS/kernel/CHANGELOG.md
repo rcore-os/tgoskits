@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.11.0...starry-kernel-v0.12.0) - 2026-09-21
+
+### Added
+
+- *(pwm)* unify BSP-backed drivers and Starry integration ([#2437](https://github.com/rcore-os/tgoskits/pull/2437))
+
+### Fixed
+
+- *(starry)* accept short rt sigpending sets ([#2046](https://github.com/rcore-os/tgoskits/pull/2046))
+- *(starry-kernel)* defer epoll waiter wakeups ([#2456](https://github.com/rcore-os/tgoskits/pull/2456))
+- *(starry)* match sched affinity length ABI ([#2045](https://github.com/rcore-os/tgoskits/pull/2045))
+- *(starry-kernel)* match seccomp validation semantics ([#2043](https://github.com/rcore-os/tgoskits/pull/2043))
+- *(starry-kernel)* defer page-table reclaim until TLB acknowledgement ([#2455](https://github.com/rcore-os/tgoskits/pull/2455))
+- *(starry-kernel)* use scheduler waits for USB worker notifications ([#2454](https://github.com/rcore-os/tgoskits/pull/2454))
+
+### Other
+
+- *(starry)* add block runtime async benchmark ([#2451](https://github.com/rcore-os/tgoskits/pull/2451))
+
 ## [0.11.0](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.10.2...starry-kernel-v0.11.0) - 2026-09-18
 
 ### Added

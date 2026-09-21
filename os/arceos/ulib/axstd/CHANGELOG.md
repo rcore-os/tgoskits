@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.7.3...ax-std-v0.7.4) - 2026-09-21
+
+### Fixed
+
+- *(axvisor)* validate guest kernels and complete shell editing ([#2462](https://github.com/rcore-os/tgoskits/pull/2462))
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.7.2...ax-std-v0.7.3) - 2026-09-18
 
 ### Other
