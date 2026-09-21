@@ -624,7 +624,7 @@ pub struct DrmModeGetBlob {
 // DRM_COMMAND_BASE + N and are dispatched through the same ioctl match
 // as core DRM commands.
 //
-// Reference: Linux v6.1 include/uapi/drm/virtgpu_drm.h
+// Reference: Linux v7.1 include/uapi/drm/virtgpu_drm.h
 // Mesa: src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
 
 // ---- virtgpu ioctl numbers ----
@@ -764,10 +764,10 @@ pub struct DrmVirtgpuMap {
 }
 
 /// Submits a virgl command buffer to the host.
-/// Linux: `struct drm_virtgpu_execbuffer` (v6.1: 40 bytes, v6.6+: 64 bytes)
+/// Linux: `struct drm_virtgpu_execbuffer` (v6.6+: 64 bytes)
 ///
-/// We use the v6.1 layout (40 bytes) for maximum compatibility. Mesa virgl
-/// does not use the syncobj fields added in v6.6+.
+/// We use the 64-byte layout with the syncobj tail added in v6.6, which is the
+/// layout current Mesa virgl expects (the ioctl number encodes this size).
 ///
 /// **Critical**: There is NO `ctx_id` field. The context is implicitly
 /// bound to the file descriptor via CONTEXT_INIT.
