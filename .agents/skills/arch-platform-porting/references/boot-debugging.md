@@ -256,6 +256,13 @@ IE 来自 `GCSR_CRMD`。不能在整个客户机运行区间屏蔽宿主 timer�
 `arch/loongarch/kvm/vcpu.c::kvm_handle_exit`：恢复宿主环境后打开中断，由正常 IRQ
 入口确认和服务仍 pending 的源，不重放旧的中断快照。
 
+`ECFG.LIE` 归宿主中断管理器所有：LVZ 退出与解绑只归还借用的 `ECFG.VS`
+（bits 18:16，屏蔽 `0x70000`），不得用绑定时的 `ECFG` 快照整体回写，否则会把
+宿主在绑定后自行屏蔽的 clockevent 线路重新打开。确定性断言按三个时刻检查：
+绑定前宿主 timer 已使能；绑定后宿主把该线路屏蔽；真实客户机退出与解绑后仍保持
+屏蔽，只有 `VS` 回到绑定值。断言只约束 `LIE` 的归属与还原时机，不表示整个
+客户机运行区间都应该屏蔽宿主 timer。
+
 跨架构所有权由 `VmArchVcpuOps::run` 约束：返回值只携带可在卸载后解释的 guest
 退出；已确认的宿主令牌必须在原 CPU、IRQ 仍屏蔽时处理或移交给控制器持有的路由。
 AArch64 的 `ArmRunExit::HostInterrupt` 只存在于后端内部，不能进入延后的 VM 工作；

@@ -159,7 +159,13 @@ pub struct GuestContext {
     pub host_asid: usize,
     /// Saved `host_eentry` register value.
     pub host_eentry: usize,
-    /// Saved `host_ecfg` register value.
+    /// Bind-time host `ECFG` snapshot.
+    ///
+    /// Only its `VS` field (bits 18:16, mask `0x70000`) is restored by LVZ exit
+    /// and unbind.
+    /// `LIE` is owned by the host interrupt manager and may change while the
+    /// guest is bound, so the other fields of this snapshot are never written
+    /// back.
     pub host_ecfg: usize,
     /// Saved `guest_tlbrentry` register value.
     pub guest_tlbrentry: usize,

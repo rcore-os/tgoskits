@@ -92,7 +92,7 @@ CPU 层定义需要外部提供的服务，最终系统通过 `trait-ffi` 绑定
 
 AArch64 的客户机向量和最终切换位于 `arch/aarch64/entry/guest.S`，整数寄存器片段与原生入口共用，FP 状态使用 `fp.rs`。返回 Rust 前恢复宿主 TLS、FP、SP_EL0 和完整计时器状态。GIC acknowledge 的入口时序保留；控制器发现、路由和中断处置由上层提供。原 `arm_vcpu` 软件包已删除，PSCI、SMCCC、虚拟 GIC 与计时策略位于 AxVM。
 
-LoongArch 的 `GuestContext` 使用同一 `registers::GeneralRegisters`，普通任务和客户机共用 `fp.rs` 中的 FP/LSX/LASX 状态与指令。`EntryAddresses` 接受宿主验证的可执行直映别名，CPU 不解释内存布局。`Vcpu::bind` 保存本核翻译、虚拟化控制和 scratch 状态；`run` 只执行机器窗口，`unbind` 恢复原状态。调用者须固定 CPU 并保持机器镜像、入口和页表存活，客户机不得访问宿主所有的内存。
+LoongArch 的 `GuestContext` 使用同一 `registers::GeneralRegisters`，普通任务和客户机共用 `fp.rs` 中的 FP/LSX/LASX 状态与指令。`EntryAddresses` 接受宿主验证的可执行直映别名，CPU 不解释内存布局。`Vcpu::bind` 保存本核翻译、虚拟化控制和 scratch 状态；`run` 只执行机器窗口，`unbind` 恢复原状态。一次绑定只借用 `ECFG.VS`：退出路径与 `unbind` 把宿主快照的 `VS` 字段写回，保留实时 `ECFG.LIE` 等宿主中断字段，因此客户机往返不会撤销宿主设置的 IRQ 屏蔽。调用者须固定 CPU 并保持机器镜像、入口和页表存活，客户机不得访问宿主所有的内存。
 
 `PerCpu` 在 LVZ 关闭时恢复原宿主与客户机向量，重复启用和未启用时关闭返回明确错误。ArceOS `guest-entry` 通过真实二阶段页表执行 HVCL，检查客户机重入、FP 隔离、宿主 FP/TLS/CPU anchor 恢复。原 `loongarch_vcpu` 软件包已删除；IOCSR、客户机软件定时器和退出策略位于 AxVM，解释退出时已解除机器绑定。CPU 只提供本核 GINTC 操作和 IOCSR 指令，平台继续拥有设备寄存器访问权限与副作用。
 

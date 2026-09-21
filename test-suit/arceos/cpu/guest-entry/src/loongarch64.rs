@@ -99,6 +99,11 @@ pub fn run() {
     // only its code page is mapped into the nested translation.
     unsafe {
         cpu.enable().unwrap();
+        // Pin the clockevent line enabled before binding so the host ECFG
+        // snapshot taken by bind() carries LIE[11]. Masking it afterwards then
+        // proves whether a full guest roundtrip respects a host mask applied
+        // after the binding was established.
+        interrupt::set_timer_irq_enabled(true);
         state.bind(EntryAddresses::new(entries).unwrap()).unwrap();
         // Root-mode interrupts are enabled while the guest runs. Mask the
         // host timer line until the test reaches the explicit IRQ phase so
@@ -128,6 +133,15 @@ pub fn run() {
             assert_eq!(registers::read_cpu_anchor(), anchor);
             assert_eq!(registers::read_tp(), tp);
             assert!(!interrupt::irqs_enabled());
+            // Entering and leaving the guest must not roll the host interrupt
+            // mask back to the bind-time snapshot: doing so re-arms a line the
+            // host deliberately masked after bind and lets the next clockevent
+            // preempt a synchronous check.
+            assert!(
+                !timer_irq_enabled(),
+                "guest exit must not restore a stale host ECFG that re-enables the masked \
+                 clockevent line"
+            );
             let mut restored = FpuState::default();
             restored.save();
             assert_eq!(restored.fp[0], 0xabc, "guest exit must restore host FP");
@@ -154,7 +168,7 @@ pub fn run() {
             state.context.sepc = load_pc;
             state.context.x[6] = data_address.as_usize();
             let exit = state.run(1, state_address).unwrap();
-            assert_eq!((exit.status >> 16) & 0x3f, 0x17);
+            assert_eq!((exit.status >> 16) & 0x3f, 0x17, "guest must exit by HVCL");
             assert_eq!(
                 state.context.get_a0(),
                 page.0[0] as usize,
@@ -193,7 +207,15 @@ pub fn run() {
         );
         assert_eq!((exit.status >> 16) & 0x3f, 0x17, "guest must exit by HVCL");
         assert!(!interrupt::irqs_enabled());
+        // The host owns ECFG.LIE. A mask changed after the last exit must
+        // survive unbind: the binding returns only the borrowed VS field, so
+        // releasing the guest cannot undo a host-applied clockevent mask.
+        interrupt::set_timer_irq_enabled(false);
         state.unbind().unwrap();
+        assert!(
+            !timer_irq_enabled(),
+            "unbind must not restore a stale host ECFG that re-enables the masked clockevent line"
+        );
         cpu.disable().unwrap();
     }
     interrupt::set_timer_irq_enabled(timer_irq);

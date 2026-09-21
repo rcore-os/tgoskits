@@ -15,6 +15,14 @@ unsafe extern "C" {
     static __ax_cpu_lvz_exception_vectors: u8;
 }
 
+/// `ECFG` `VS` field (bits 18:16, mask `0x70000`) selecting the exception-entry
+/// spacing.
+///
+/// An active binding borrows only this field; every other `ECFG` field,
+/// including `LIE`, stays under host interrupt management for the whole
+/// binding and must never be restored from the bind-time snapshot.
+const ECFG_VS_MASK: usize = 0x70000;
+
 /// Running addresses of the three LVZ entries.
 ///
 /// The owner translates each address into its executable direct-map alias
@@ -186,6 +194,8 @@ impl Vcpu {
             self.context.host_tlbrentry = read::<0x88>();
             self.context.host_asid = read::<0x18>();
             self.context.host_eentry = read::<0xc>();
+            // Only the VS field of this snapshot is authoritative; LIE and the
+            // remaining host interrupt fields stay live for the whole binding.
             self.context.host_ecfg = read::<4>();
         }
         self.context.guest_tlbrentry = entries.refill;
@@ -255,7 +265,12 @@ impl Vcpu {
         // SAFETY: this is the exclusive owner restoring its saved local bank.
         unsafe {
             write::<0xc>(self.context.host_eentry);
-            write::<4>(self.context.host_ecfg);
+            // Keep the live host interrupt fields and restore only the borrowed
+            // VS field, mirroring RESTORE_HOST_TRANSLATION in `entry/guest.S`.
+            // The bind-time snapshot must not re-enable a clockevent line the
+            // host masked after bind, or the next clock event would be consumed
+            // by a guest entry instead of the host IRQ handler.
+            write::<4>((read::<4>() & !ECFG_VS_MASK) | (self.context.host_ecfg & ECFG_VS_MASK));
             write::<0x19>(self.context.host_pgdl);
             write::<0x1a>(self.context.host_pgdh);
             write::<0x1c>(self.context.host_pwcl);

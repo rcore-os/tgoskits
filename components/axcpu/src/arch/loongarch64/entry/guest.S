@@ -70,8 +70,17 @@
 .macro RESTORE_HOST_TRANSLATION
     ld.d    $t0, $sp, {host_eentry}
     csrwr   $t0, CSR_EENTRY
-    ld.d    $t0, $sp, {host_ecfg}
-    csrwr   $t0, CSR_ECFG
+    // The host snapshot of ECFG is authoritative only for the borrowed VS
+    // field. LIE belongs to the host interrupt manager and may have changed
+    // while the guest was bound (for example masking the clockevent line), so
+    // exiting must keep every live field and write back only the VS value.
+    csrrd   $t1, CSR_ECFG
+    li.d    $t0, ECFG_VS_MASK
+    andn    $t1, $t1, $t0
+    ld.d    $t2, $sp, {host_ecfg}
+    and     $t2, $t2, $t0
+    or      $t1, $t1, $t2
+    csrwr   $t1, CSR_ECFG
     ld.d    $t0, $sp, {host_tlbrentry}
     csrwr   $t0, CSR_TLBRENTRY
     ld.d    $t0, $sp, {host_asid}

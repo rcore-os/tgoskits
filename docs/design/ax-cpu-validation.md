@@ -80,6 +80,8 @@ x86 启动 IDT 在低地址映射下创建后不能直接用于已经移除该�
 
 LoongArch `guest-entry` 增加相同 guest ID、相同根下的实际数据页替换，验证第二次进入读取新物理页。当前 LVZ 模拟器在原指令下也通过，因此本用例不能独立证明 INVTLB 的 guest-ID 选择域；该域按 Linux KVM 的 `INVTLB_ALLGID` 核对。实体 LVZ 仍是未验证环境。
 
+该用例还固定宿主 `ECFG` 的所有权：`bind` 前使能、`bind` 后屏蔽宿主 timer line，并在第一次真实同步退出与 `unbind` 之后都断言仍保持屏蔽。退出路径 `RESTORE_HOST_TRANSLATION` 与 `Vcpu::unbind` 只把宿主快照的 `ECFG.VS` 写回、保留实时 `LIE`，因此一次客户机往返不会撤销宿主设置的 IRQ 屏蔽；若整寄存器写回绑定期快照，屏蔽会被回滚，断言在旧实现上必然失败。
+
 ## 6. Starry 消费者授权回归
 
 `cargo xtask starry test qemu --arch aarch64 -c qemu/system/perf-hw-cycles` 在没有 `config1.rdpmc` 授权的普通事件上 mmap metadata。旧实现无条件发布能力位，真实用例报出 `perf published direct PMU access without event authorization` 并失败；修复后能力位、index、pmc_width 保持零，普通计数 read 继续通过。红绿日志为 `ax-cpu-perf-authorization-red.log` 与 `ax-cpu-perf-authorization-green.log`。该证据用于消费者 ABI，不替代 ArceOS CPU 验证。
