@@ -330,6 +330,54 @@ fn reopen_cached_file(backing: Arc<CacheTestFile>) -> CachedFile {
     CachedFile::get_or_create(Location::new(mountpoint, entry)).unwrap()
 }
 
+/// Fixture for the root shutdown-order regression: a disk-backed cached file
+/// with one dirty page whose mapping endpoint refuses writeback with `Busy`.
+///
+/// This is the state a parallel cache test can hold while the process-global
+/// page cache is flushed, which `shutdown_filesystems()` reports as
+/// `ResourceBusy` before closing the registered filesystems. The cache used
+/// here is the production one; only the mapping owner is a test endpoint.
+#[cfg(feature = "vfs")]
+pub(crate) struct BusyDirtyCachedFile {
+    cached: CachedFile,
+    endpoint: Option<Arc<dyn CacheMappingEndpoint>>,
+}
+
+#[cfg(feature = "vfs")]
+impl BusyDirtyCachedFile {
+    /// Creates the dirty file and installs the busy mapping endpoint.
+    ///
+    /// The caller must already hold the test page provider lock, because the
+    /// cache allocates its page from that provider.
+    pub(crate) fn new() -> Self {
+        let cached = reopen_cached_file(Arc::new(CacheTestFile::new(vec![0; PAGE_SIZE])));
+        cached.write_at(&b"dirty"[..], 0).unwrap();
+        let endpoint = install_shared_test_endpoint(&cached.shared, |event| {
+            if matches!(event, CacheMappingEvent::WritebackProtect(_)) {
+                CacheMappingResult::Busy
+            } else {
+                CacheMappingResult::Protected
+            }
+        });
+        Self {
+            cached,
+            endpoint: Some(endpoint),
+        }
+    }
+}
+
+#[cfg(feature = "vfs")]
+impl Drop for BusyDirtyCachedFile {
+    fn drop(&mut self) {
+        // Also runs while unwinding a failed assertion. The cache holds only a
+        // `Weak` endpoint, so dropping it releases the busy mapping.
+        let _ = self.endpoint.take();
+        // Flush the now-unprotected page instead of leaving it dirty in the
+        // process-global cache registry.
+        let _ = self.cached.sync(false);
+    }
+}
+
 #[test]
 fn tmpfs_and_ramfs_use_unbounded_page_cache() {
     assert!(filesystem_uses_unbounded_page_cache("tmpfs"));

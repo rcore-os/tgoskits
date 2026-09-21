@@ -1368,3 +1368,5 @@ impl Drop for CachedFile {
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, feature = "vfs"))]
+pub(crate) use tests::BusyDirtyCachedFile;

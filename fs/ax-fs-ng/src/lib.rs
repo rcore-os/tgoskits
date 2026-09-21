@@ -122,6 +122,11 @@ fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem, source: &str) -> Location
 pub fn shutdown_filesystems() -> axfs_ng_vfs::VfsResult {
     #[cfg(feature = "vfs")]
     highlevel::sync_all_cached_files(false)?;
+    shutdown_registered_filesystems()
+}
+
+/// Shuts down the registered filesystems in reverse mount order.
+fn shutdown_registered_filesystems() -> axfs_ng_vfs::VfsResult {
     let filesystems = core::mem::take(&mut *MOUNTED_FILESYSTEMS.lock());
     let mut first_error = None;
     for fs in filesystems.into_iter().rev() {

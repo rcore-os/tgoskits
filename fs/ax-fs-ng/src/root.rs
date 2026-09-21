@@ -820,7 +820,7 @@ mod tests {
     use rdif_block::DeviceInfo;
 
     use super::*;
-    use crate::{BlockError, BlockResult};
+    use crate::{BlockError, BlockResult, shutdown_registered_filesystems};
 
     struct FlakyMetadataDevice {
         remaining_failures: usize,
@@ -1317,27 +1317,53 @@ mod tests {
         );
     }
 
+    /// Clears the process-global mount registry when it goes out of scope.
+    ///
+    /// That registry is a singleton for the whole test binary, so a failed
+    /// assertion must not leave this test's filesystems registered for whichever
+    /// test runs next.
+    struct MountedRegistryGuard;
+
+    impl Drop for MountedRegistryGuard {
+        fn drop(&mut self) {
+            core::mem::take(&mut *crate::MOUNTED_FILESYSTEMS.lock());
+        }
+    }
+
     #[test]
     fn shutdown_closes_root_and_additional_mounts_in_reverse_order() {
-        let shutdown_log = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let root_fs = Filesystem::new(ReadonlyFs::new_with_shutdown_log(
-            "root",
-            shutdown_log.clone(),
-        ));
-        let additional_fs = Filesystem::new(ReadonlyFs::new_with_shutdown_log(
-            "additional",
-            shutdown_log.clone(),
-        ));
-        let root = crate::finish_filesystem_init(root_fs, "test-root");
-        let mountpoint = ensure_mountpoint_dir_result(&root, "/userdata").unwrap();
+        // The cache tests share the process-global page provider and cache
+        // registry, so hold that lock while the busy entry below is live.
+        crate::os::memory::test_support::with_test_page_provider(true, |_| {
+            // An unrelated, mapped, dirty cache entry that refuses writeback.
+            // The global cache flush in `shutdown_filesystems` reports it as
+            // `ResourceBusy`, which must not stop the registered filesystems
+            // from shutting down in reverse order.
+            #[cfg(feature = "vfs")]
+            let _unrelated_busy = crate::file::BusyDirtyCachedFile::new();
 
-        mount_additional_filesystem(&mountpoint, &additional_fs).unwrap();
-        crate::shutdown_filesystems().unwrap();
+            let shutdown_log = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let root_fs = Filesystem::new(ReadonlyFs::new_with_shutdown_log(
+                "root",
+                shutdown_log.clone(),
+            ));
+            let additional_fs = Filesystem::new(ReadonlyFs::new_with_shutdown_log(
+                "additional",
+                shutdown_log.clone(),
+            ));
 
-        assert_eq!(
-            shutdown_log.lock().unwrap().as_slice(),
-            ["additional", "root"]
-        );
+            let _registry_guard = MountedRegistryGuard;
+            let root = crate::finish_filesystem_init(root_fs, "test-root");
+            let mountpoint = ensure_mountpoint_dir_result(&root, "/userdata").unwrap();
+
+            mount_additional_filesystem(&mountpoint, &additional_fs).unwrap();
+            shutdown_registered_filesystems().unwrap();
+
+            assert_eq!(
+                shutdown_log.lock().unwrap().as_slice(),
+                ["additional", "root"]
+            );
+        });
     }
 
     #[test]
