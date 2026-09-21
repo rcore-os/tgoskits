@@ -346,15 +346,35 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
+          ACTOR: ${{ github.actor }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
           SINCE_REF: ${{ steps.since.outputs.since_ref }}
         run: |
           set -euo pipefail
+          self_hosted_eligible=true
+          if [ "$EVENT_NAME" = "pull_request" ] \
+            && [ "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]; then
+            self_hosted_eligible=false
+          fi
+          {
+            echo "## Runner trust"
+            echo ""
+            echo "- Event: \`${EVENT_NAME}\`"
+            echo "- Actor: \`${ACTOR}\`"
+            echo "- Head repository: \`${HEAD_REPOSITORY:-$GITHUB_REPOSITORY}\`"
+            echo "- Head revision: \`${HEAD_SHA}\`"
+            echo "- Self-hosted eligible: \`${self_hosted_eligible}\`"
+            echo "- Eligibility rule: non-PR event or PR head repository equals \`${GITHUB_REPOSITORY}\`"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
           python3 scripts/test/ci_plan.py \
             --mode main \
             --repository "$GITHUB_REPOSITORY" \
             --repository-owner "$REPOSITORY_OWNER" \
             --event-name "$EVENT_NAME" \
+            --head-repository "$HEAD_REPOSITORY" \
             --base-ref "$BASE_REF" \
             --since-ref "$SINCE_REF" \
             --summary-file "$GITHUB_STEP_SUMMARY" \

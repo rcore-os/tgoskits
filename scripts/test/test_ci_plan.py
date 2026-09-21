@@ -355,6 +355,7 @@ class CiPlanTests(unittest.TestCase):
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             base_ref="dev",
         )
 
@@ -387,6 +388,7 @@ class CiPlanTests(unittest.TestCase):
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             base_ref="dev",
             impact=ci_plan.CiImpact(
                 full=False,
@@ -421,6 +423,7 @@ class CiPlanTests(unittest.TestCase):
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             impact=ci_plan.CiImpact(
                 full=False,
                 reason="fixture",
@@ -442,6 +445,7 @@ class CiPlanTests(unittest.TestCase):
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             impact=ci_plan.CiImpact(
                 full=False,
                 reason="fixture",
@@ -452,6 +456,7 @@ class CiPlanTests(unittest.TestCase):
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             impact=ci_plan.CiImpact.full_selection("fixture"),
         )
 
@@ -472,6 +477,7 @@ class CiPlanTests(unittest.TestCase):
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             base_ref="dev",
             impact=ci_plan.CiImpact(
                 full=False,
@@ -524,6 +530,7 @@ class CiPlanTests(unittest.TestCase):
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             base_ref="dev",
             impact=ci_plan.CiImpact(
                 full=False,
@@ -560,6 +567,7 @@ class CiPlanTests(unittest.TestCase):
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             base_ref="dev",
             impact=ci_plan.CiImpact(
                 full=False,
@@ -589,6 +597,7 @@ class CiPlanTests(unittest.TestCase):
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             base_ref="dev",
             impact=ci_plan.CiImpact(
                 full=False,
@@ -614,6 +623,7 @@ class CiPlanTests(unittest.TestCase):
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             base_ref="dev",
             impact=ci_plan.CiImpact(
                 full=False,
@@ -637,6 +647,7 @@ class CiPlanTests(unittest.TestCase):
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             impact=ci_plan.CiImpact(
                 full=False,
                 reason="fixture",
@@ -690,6 +701,7 @@ command = "true"
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             impact=ci_plan.CiImpact(
                 full=False,
                 reason="fixture",
@@ -732,6 +744,7 @@ command = "true"
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             impact=ci_plan.CiImpact(
                 full=False,
                 reason="fixture",
@@ -760,6 +773,7 @@ command = "true"
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             impact=ci_plan.CiImpact(
                 full=False,
                 reason="fixture",
@@ -783,6 +797,7 @@ command = "true"
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             impact=ci_plan.CiImpact(
                 full=False,
                 reason="fixture",
@@ -810,6 +825,7 @@ command = "true"
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
             event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
             impact=ci_plan.CiImpact(
                 full=False,
                 reason="fixture",
@@ -866,6 +882,66 @@ command = "true"
         self.assertEqual(clippy["runs_on"], ["ubuntu-latest"])
         self.assertEqual(clippy["fetch_depth"], "100")
         self.assertTrue(clippy["download_xtask_bin_artifact"])
+
+    def test_fork_pull_request_never_allocates_self_hosted_runners(self) -> None:
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            head_repository="contributor/tgoskits",
+            base_ref="dev",
+        )
+
+        plan = ci_plan.build_main_plan(context)
+        rows = self.assert_unique_ids(
+            plan["static_matrix"]["include"] + main_test_rows(plan)
+        )
+
+        self.assertTrue(rows)
+        self.assertTrue(
+            all("self-hosted" not in row["runs_on"] for row in rows.values())
+        )
+        catalog = ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS)
+        self_hosted_only_ids = {
+            check["id"]
+            for check in catalog
+            if "self-hosted" in check["runs_on"]
+            and "fallback_environment" not in check
+        }
+        self.assertTrue(self_hosted_only_ids.isdisjoint(rows))
+        self.assertEqual(rows["check-formatting"]["runs_on"], ["ubuntu-latest"])
+        self.assertEqual(rows["run-clippy"]["runs_on"], ["ubuntu-latest"])
+
+        board_path = (
+            "test-suit/arceos/board-orangepi-5-plus/pmu/"
+            "board-orangepi-5-plus.toml"
+        )
+        board_only = ci_plan.replace(
+            context,
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=(board_path,),
+                test_suite_paths=(board_path,),
+                exclusive=True,
+            ),
+        )
+        board_plan = ci_plan.build_main_plan(board_only)
+        board_rows = board_plan["static_matrix"]["include"] + main_test_rows(
+            board_plan
+        )
+        self.assertTrue(board_rows)
+        self.assertTrue(
+            all("self-hosted" not in row["runs_on"] for row in board_rows)
+        )
+
+    def test_same_repository_pull_request_keeps_self_hosted_runners(self) -> None:
+        plan = ci_plan.build_main_plan(self.upstream)
+        rows = self.assert_unique_ids(
+            plan["static_matrix"]["include"] + main_test_rows(plan)
+        )
+
+        self.assertTrue(any("self-hosted" in row["runs_on"] for row in rows.values()))
 
     def test_event_and_boolean_input_select_checks_independently(self) -> None:
         check = {"events": ["schedule"], "enable_boolean_input": "run_optional"}

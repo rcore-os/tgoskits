@@ -52,7 +52,10 @@ jobs:
       fail-fast: ${{ inputs.fail_fast }}
       max-parallel: ${{ inputs.max_parallel }}
       matrix: ${{ fromJSON(inputs.matrix_json) }}
-    runs-on: ${{ matrix.runs_on }}
+    runs-on: >-
+      ${{ github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name != github.repository &&
+          'ubuntu-latest' || matrix.runs_on }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     container:
       image: ${{ matrix.container_image }}

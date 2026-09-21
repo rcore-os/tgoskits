@@ -107,6 +107,7 @@ class PlanContext:
     repository: str
     repository_owner: str
     event_name: str
+    head_repository: str = ""
     base_ref: str = ""
     enabled_boolean_inputs: frozenset[str] = frozenset()
     impact: CiImpact | None = None
@@ -567,6 +568,8 @@ def _plan_suite_rows(
         if template.get("nightly_only", False) and not context.include_nightly:
             continue
         if not _is_enabled(template, context):
+            if not _runner_is_available(template, context):
+                continue
             raise PlanError(
                 f"test suite path `{selection.source_path}` requires unavailable "
                 f"check '{selection.template_id}'"
@@ -597,6 +600,8 @@ def _normalize_suite_selection(
 def _is_enabled(check: dict[str, Any], context: PlanContext) -> bool:
     if check.get("nightly_only", False) and not context.include_nightly:
         return False
+    if not _runner_is_available(check, context):
+        return False
     required_owner = check.get("required_owner")
     if required_owner and context.repository_owner != required_owner:
         return False
@@ -616,6 +621,23 @@ def _is_enabled(check: dict[str, Any], context: PlanContext) -> bool:
             return False
 
     return True
+
+
+def _runner_is_available(check: dict[str, Any], context: PlanContext) -> bool:
+    if (
+        "self-hosted" not in check.get("runs_on", ())
+        or _allows_self_hosted(context)
+    ):
+        return True
+    return "fallback_environment" in check
+
+
+def _allows_self_hosted(context: PlanContext) -> bool:
+    if context.event_name != "pull_request":
+        return True
+    return bool(context.head_repository) and (
+        context.head_repository.casefold() == context.repository.casefold()
+    )
 
 
 def _matches_impact(check: dict[str, Any], context: PlanContext) -> bool:
@@ -664,7 +686,10 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
     environment = check["environment"]
     fallback = bool(
         check.get("self_hosted_owner")
-        and context.repository_owner != check["self_hosted_owner"]
+        and (
+            context.repository_owner != check["self_hosted_owner"]
+            or not _allows_self_hosted(context)
+        )
     )
     if fallback:
         runs_on = ["ubuntu-latest"]
@@ -740,6 +765,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--repository-owner", required=True)
     parser.add_argument("--event-name", required=True)
+    parser.add_argument("--head-repository", default="")
     parser.add_argument("--base-ref", default="")
     parser.add_argument("--since-ref", default="")
     parser.add_argument("--boolean-input", action="append", default=[])
@@ -771,6 +797,7 @@ def main() -> int:
         repository=args.repository,
         repository_owner=args.repository_owner,
         event_name=args.event_name,
+        head_repository=args.head_repository,
         base_ref=args.base_ref,
         enabled_boolean_inputs=frozenset(args.boolean_input),
         impact=impact,

@@ -79,6 +79,35 @@ def main() -> int:
     if "PR_HEAD_REPOSITORY_OWNER" in ci_workflow:
         errors.append("runner planning must not use the pull request source owner")
 
+    matrix_step = named_step_block(plan_ci, "Plan check matrices")
+    for fragment, message in (
+        (
+            "HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}",
+            "runner planning must receive the pull request head repository",
+        ),
+        (
+            '--head-repository "$HEAD_REPOSITORY"',
+            "runner planning must distinguish fork pull requests",
+        ),
+        (
+            "ACTOR: ${{ github.actor }}",
+            "runner trust evidence must record the workflow actor",
+        ),
+        (
+            "HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}",
+            "runner trust evidence must record the tested head revision",
+        ),
+        (
+            'if [ "$EVENT_NAME" = "pull_request" ]',
+            "runner trust evidence must evaluate pull requests explicitly",
+        ),
+        (
+            '[ "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]',
+            "runner trust evidence must reject cross-repository heads",
+        ),
+    ):
+        require_contains(errors, matrix_step, fragment, message)
+
     route_step = named_step_block(plan_ci, "Route duplicate events")
     if not route_step:
         errors.append("Plan CI must have a duplicate-event routing step")
@@ -407,6 +436,23 @@ def main() -> int:
         "max-parallel: ${{ inputs.max_parallel }}",
         "the reusable matrix must honor its parallelism limit",
     )
+    reusable_jobs = mapping_block(reusable_check_matrix, "jobs", 0)
+    reusable_run = mapping_block(reusable_jobs, "run", 2)
+    for fragment, message in (
+        (
+            "github.event_name == 'pull_request'",
+            "runner allocation must identify pull request events",
+        ),
+        (
+            "github.event.pull_request.head.repo.full_name != github.repository",
+            "runner allocation must identify cross-repository heads",
+        ),
+        (
+            "'ubuntu-latest' || matrix.runs_on",
+            "fork pull requests must allocate only a GitHub-hosted runner",
+        ),
+    ):
+        require_contains(errors, reusable_run, fragment, message)
 
     return report(errors)
 
