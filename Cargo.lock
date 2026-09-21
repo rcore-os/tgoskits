@@ -970,6 +970,7 @@ name = "ax-fs-ng"
 version = "0.11.2"
 dependencies = [
  "atomic-waker",
+ "ax-crate-interface",
  "ax-io",
  "ax-lazyinit",
  "ax-runtime",
