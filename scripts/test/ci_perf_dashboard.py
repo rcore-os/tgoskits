@@ -25,6 +25,29 @@ COLORS = (
 )
 CHART_JS = "https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"
 
+CHART_DESCRIPTIONS = {
+    "axvisor": {
+        "vcpu-perf": "AxVisor 中 ArceOS guest 的 vCPU 工作吞吐量。",
+        "ivc-bench/send": "AxVisor IVC 通道向 guest 发送数据的带宽。",
+        "ivc-bench/receive": "AxVisor IVC 通道从 guest 接收数据的带宽。",
+        "task-switch/avg_cycles": "AxVisor 任务切换的平均 CPU cycles。",
+    },
+    "starry": {
+        "sysbench": "StarryOS 的 CPU、线程同步和内存工作负载吞吐量。",
+        "block-io": "StarryOS 文件系统块设备的读写与 fsync 吞吐量。",
+        "block-rw": "StarryOS 不同 I/O 大小及多任务并发读写性能。",
+        "compile-sim": "模拟多进程编译依赖图，比较不同并行度下的构建耗时。",
+        "hackbench": "调度器、进程/线程和 pipe IPC 工作负载的耗时。",
+        "netstress": "StarryOS 回环 TCP/UDP 请求响应耗时。",
+        "wakeup": "futex、timer 和调度 yield 的唤醒延迟分布。",
+        "scheduler": "StarryOS 内核线程创建、唤醒和线程切换延迟。",
+        "iperf3": "OrangePi 上 StarryOS 真实网络链路的 TCP 吞吐量。",
+        "uvc": "StarryOS UVC 摄像头采集帧率和数据吞吐量。",
+        "uvc-rknn": "UVC 采集与 RKNN 推理流水线的帧率、吞吐量和延迟。",
+        "tennis-yolo": "StarryOS TPU/YOLO 固定图片推理的分阶段耗时。",
+    },
+}
+
 
 def load_metrics(path: Path) -> list[dict[str, object]]:
     metrics = json.loads(path.read_text(encoding="utf-8"))
@@ -41,16 +64,23 @@ def load_metrics(path: Path) -> list[dict[str, object]]:
     return metrics
 
 
-def load_history(path: Path) -> list[dict[str, object]]:
+def load_history(path: Path) -> dict[str, list[dict[str, object]]]:
     if not path.exists():
-        return []
+        return {}
     history = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(history, list):
-        raise ValueError(f"{path} must contain a JSON array")
+    if isinstance(history, list):
+        # The original dashboard stored only AxVisor history. Keep old
+        # perf-data branches readable when the first Starry update lands.
+        return {"axvisor": history}
+    if not isinstance(history, dict):
+        raise ValueError(f"{path} must contain a source history object")
+    for source, entries in history.items():
+        if not isinstance(source, str) or not isinstance(entries, list):
+            raise ValueError(f"invalid history source in {path}: {source!r}")
     return history
 
 
-def update_history(
+def _update_source_history(
     history: list[dict[str, object]],
     date: str,
     revision: str,
@@ -65,6 +95,33 @@ def update_history(
     ]
     updated.append(entry)
     updated.sort(key=lambda item: (str(item.get("date", "")), str(item.get("revision", ""))))
+    return updated
+
+
+def update_history(
+    history: list[dict[str, object]] | dict[str, list[dict[str, object]]],
+    date: str,
+    revision: str,
+    metrics: list[dict[str, object]],
+    source: str | None = None,
+) -> list[dict[str, object]] | dict[str, list[dict[str, object]]]:
+    """Update one source while retaining the other source's history.
+
+    ``source=None`` preserves the old list-in/list-out API used by callers
+    that render a single dashboard in isolation.
+    """
+    if source is None:
+        if not isinstance(history, list):
+            raise ValueError("source is required for multi-source history")
+        return _update_source_history(history, date, revision, metrics)
+    if not source:
+        raise ValueError("source must not be empty")
+    if isinstance(history, list):
+        history = {"axvisor": history}
+    updated = dict(history)
+    updated[source] = _update_source_history(
+        list(updated.get(source, [])), date, revision, metrics
+    )
     return updated
 
 
@@ -92,8 +149,17 @@ def collect_groups(
     return groups
 
 
+def chart_description(source: str, prefix: str) -> str:
+    descriptions = CHART_DESCRIPTIONS.get(source, {})
+    if prefix in descriptions:
+        return descriptions[prefix]
+    root = prefix.partition("/")[0]
+    return descriptions.get(root, "该图表展示此性能测例的 nightly 测量结果。")
+
+
 def render_chart_section(
     index: int,
+    source: str,
     prefix: str,
     unit: str,
     names: list[str],
@@ -128,6 +194,7 @@ def render_chart_section(
     payload = json.dumps(config).replace("</", "<\\/")
     return f"""<section>
 <h2>{prefix}</h2>
+<p class="chart-description">{chart_description(source, prefix)}</p>
 <div class="chart-wrap"><canvas id="chart-{index}"></canvas></div>
 <script>
 new Chart(document.getElementById('chart-{index}'), {payload});
@@ -135,22 +202,53 @@ new Chart(document.getElementById('chart-{index}'), {payload});
 </section>"""
 
 
+def _source_title(source: str) -> str:
+    return {"axvisor": "AxVisor", "starry": "Starry"}.get(source, source)
+
+
 def render_dashboard(
-    title: str, history: list[dict[str, object]], window: int = 7
+    title: str,
+    history: list[dict[str, object]] | dict[str, list[dict[str, object]]],
+    window: int = 10,
 ) -> str:
-    if not history:
+    histories = {"axvisor": history} if isinstance(history, list) else history
+    histories = {
+        source: entries for source, entries in histories.items() if entries
+    }
+    if not histories:
         raise ValueError("cannot render an empty history")
-    # The JSON keeps every nightly entry; charts show the most recent window.
-    visible = history[-window:] if window > 0 else history
-    sections = [
-        render_chart_section(index, prefix, unit, names, visible)
-        for index, ((prefix, unit), names) in enumerate(collect_groups(visible).items())
-    ]
-    latest = visible[-1]
-    window_note = (
-        f" · showing last {len(visible)} of {len(history)} nightly entries"
-        if len(visible) < len(history)
-        else ""
+    # The JSON keeps every nightly entry; each source's charts show its most
+    # recent window. A single page then switches sources without a reload.
+    source_sections = []
+    chart_index = 0
+    for source, source_history in histories.items():
+        visible = source_history[-window:] if window > 0 else source_history
+        sections = []
+        for (prefix, unit), names in collect_groups(visible).items():
+            sections.append(
+                render_chart_section(
+                    chart_index, source, prefix, unit, names, visible
+                )
+            )
+            chart_index += 1
+        latest = visible[-1]
+        window_note = (
+            f" · showing last {len(visible)} of {len(source_history)} nightly entries"
+            if len(visible) < len(source_history)
+            else ""
+        )
+        source_sections.append(
+            f'''<div class="dashboard-source" data-source="{source}">
+<p>Last nightly: {latest['date']} · revision <code>{latest['revision']}</code>{window_note}</p>
+{''.join(sections)}
+</div>'''
+        )
+    source_names = list(histories)
+    default_source = "axvisor" if "axvisor" in histories else source_names[0]
+    options = "".join(
+        f'<option value="{source}"{' selected' if source == default_source else ''}>'
+        f'{_source_title(source)}</option>'
+        for source in source_names
     )
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -163,15 +261,30 @@ def render_dashboard(
 body {{ font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; }}
 h1 {{ font-size: 1.5rem; }}
 h2 {{ font-size: 1.15rem; margin-bottom: 0.5rem; }}
+.chart-description {{ color: #475569; margin-top: 0; }}
 section {{ margin: 2.5rem 0; }}
 .chart-wrap {{ position: relative; height: 420px; }}
+.source-picker {{ margin: 1rem 0 2rem; }}
+.source-picker select {{ font: inherit; padding: 0.35rem 0.6rem; }}
 code {{ background: #f1f5f9; padding: 0.1rem 0.3rem; border-radius: 4px; }}
 </style>
 </head>
 <body>
 <h1>{title}</h1>
-<p>Last nightly: {latest['date']} · revision <code>{latest['revision']}</code>{window_note}</p>
-{''.join(sections)}
+<label class="source-picker" for="benchmark-source">Benchmark source: </label>
+<select id="benchmark-source" class="source-picker">{options}</select>
+{''.join(source_sections)}
+<script>
+const sourceSelect = document.getElementById('benchmark-source');
+const sourcePanels = [...document.querySelectorAll('.dashboard-source')];
+function showSource(source) {{
+  sourcePanels.forEach((panel) => {{
+    panel.hidden = panel.dataset.source !== source;
+  }});
+}}
+sourceSelect.addEventListener('change', () => showSource(sourceSelect.value));
+showSource(sourceSelect.value);
+</script>
 </body>
 </html>
 """
@@ -183,11 +296,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--history", type=Path, required=True)
     parser.add_argument("--date", required=True)
     parser.add_argument("--revision", required=True)
+    parser.add_argument(
+        "--source",
+        default="axvisor",
+        help="History source to update (for example: axvisor or starry)",
+    )
     parser.add_argument("--title", default="Performance Benchmarks")
     parser.add_argument(
         "--window",
         type=int,
-        default=7,
+        default=10,
         help="Number of most recent nightly entries to chart; 0 charts all",
     )
     parser.add_argument("--output", type=Path, required=True)
@@ -199,7 +317,7 @@ def main() -> int:
     try:
         metrics = load_metrics(args.metrics)
         history = update_history(
-            load_history(args.history), args.date, args.revision, metrics
+            load_history(args.history), args.date, args.revision, metrics, args.source
         )
         args.history.parent.mkdir(parents=True, exist_ok=True)
         args.history.write_text(

@@ -17,6 +17,46 @@ IVC_CASE_PATTERN = re.compile(
     r"testTime\s*=\s*(?P<test_time>\d+)\s*,\s*"
     r"datasize\s*=\s*(?P<datasize>\d+)"
 )
+STARRY_SYSBENCH_PATTERN = re.compile(
+    r"METRIC\s+(?P<case>\S+)\s+events_per_second\s+(?P<value>[-+]?\d+(?:\.\d+)?)"
+)
+STARRY_BLOCK_IO_PATTERN = re.compile(
+    r"BLOCK_BENCH_RESULT\s+op=(?P<case>\S+).*?mib_s=(?P<value>[-+]?\d+(?:\.\d+)?)"
+)
+STARRY_BLOCK_RW_PATTERN = re.compile(
+    r"block-rw-bench:\s+case=(?P<case>\S+)(?P<fields>.*)"
+)
+STARRY_COMPILE_PATTERN = re.compile(
+    r"COMPILE_SIM_RESULT\s+jobs=(?P<jobs>\d+).*?median_us=(?P<value>\d+)"
+)
+STARRY_COMPILE_SPEEDUP_PATTERN = re.compile(
+    r"COMPILE_SIM_SPEEDUP\s+.*?speedup_milli=(?P<value>\d+)"
+)
+STARRY_HACKBENCH_PATTERN = re.compile(
+    r"LTP_HACKBENCH_RESULT\s+mode=(?P<mode>\S+)\s+cpus=(?P<cpus>\d+).*?median_us=(?P<value>\d+)"
+)
+STARRY_HACKBENCH_SPEEDUP_PATTERN = re.compile(
+    r"LTP_HACKBENCH_SPEEDUP\s+mode=(?P<mode>\S+).*?speedup_milli=(?P<value>\d+)"
+)
+STARRY_NETSTRESS_PATTERN = re.compile(
+    r"LTP_NETSTRESS_RESULT\s+case=(?P<case>\S+)\s+median_ms=(?P<value>[-+]?\d+(?:\.\d+)?)"
+)
+STARRY_SCHEDULER_PATTERN = re.compile(
+    r"(?P<case>kernel_thread_[a-z0-9_]+)\s+p50_ns=(?P<value>\d+)"
+)
+STARRY_WAKEUP_PATTERN = re.compile(
+    r"WAKEUP_LATENCY_RESULT\s+(?P<payload>\{.*\})"
+)
+STARRY_UVC_PATTERN = re.compile(
+    r"UVC_RKNN_BENCH_RESULT\s+(?P<fields>.*)"
+)
+STARRY_TENNIS_PATTERN = re.compile(
+    r"AKARS_TENNIS_BENCH_RESULT\s+(?P<fields>.*)"
+)
+STARRY_IPERF_PATTERN = re.compile(
+    r"STARRY_IPERF3_BENCH_RESULT\s+case=(?P<case>\S+)\s+direction=(?P<direction>\S+)\s+median_mbps=(?P<value>[-+]?\d+(?:\.\d+)?)"
+)
+STARRY_UVC_FPS_PATTERN = re.compile(r"uvc-fps:\s+done\s+(?P<fields>.*)")
 FIELD_PATTERN = re.compile(r"(?P<key>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>\[[^\]]*\]|\S+)")
 
 LINE_PREFIXES = ("[VM 1] ", "[test_output] ")
@@ -96,6 +136,7 @@ def render_report(check_id: str, check_name: str, log_text: str) -> str:
     vcpu_samples, vcpu_results, ivc_cases, ivc_results, task_switch_groups = parse_log(
         log_text
     )
+    starry_metrics = render_starry_benchmarks(log_text)
 
     sections = [
         section
@@ -112,6 +153,13 @@ def render_report(check_id: str, check_name: str, log_text: str) -> str:
             ivc_case_table(ivc_cases) if ivc_cases else "",
             key_value_table("AXIVC benchmark result", ivc_results)
             if ivc_results
+            else "",
+            markdown_table(
+                "Starry benchmark metrics",
+                ["name", "unit", "value"],
+                [[str(item["name"]), str(item["unit"]), str(item["value"])] for item in starry_metrics],
+            )
+            if starry_metrics
             else "",
         )
         if section
@@ -202,7 +250,117 @@ def render_benchmarks(log_text: str) -> list[dict[str, object]]:
                 "value": float(group["avg_cycles"]),
             }
         )
+    benchmarks.extend(render_starry_benchmarks(log_text))
     return benchmarks
+
+
+def _append_metric(
+    metrics: list[dict[str, object]], name: str, unit: str, value: str | int | float
+) -> None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return
+    if not number == number or number in (float("inf"), float("-inf")):
+        return
+    metrics.append({"name": name, "unit": unit, "value": number})
+
+
+def render_starry_benchmarks(log_text: str) -> list[dict[str, object]]:
+    """Extract stable result lines emitted by Starry performance apps.
+
+    The app-specific result lines deliberately remain the source of truth; the
+    CI layer only maps their numeric fields into the common dashboard format.
+    """
+    metrics: list[dict[str, object]] = []
+    for raw_line in log_text.splitlines():
+        line = strip_line_prefixes(raw_line)
+
+        if match := STARRY_SYSBENCH_PATTERN.search(line):
+            _append_metric(metrics, f"sysbench/{match['case']}", "events/s", match["value"])
+
+        if match := STARRY_BLOCK_IO_PATTERN.search(line):
+            _append_metric(metrics, f"block-io/{match['case']}", "MiB/s", match["value"])
+
+        if match := STARRY_BLOCK_RW_PATTERN.search(line):
+            fields = parse_fields(match["fields"])
+            case = match["case"]
+            for field, unit in (("write_mib_s", "MiB/s"), ("read_mib_s", "MiB/s")):
+                if field in fields:
+                    _append_metric(metrics, f"block-rw/{case}/{field}", unit, fields[field])
+            if "elapsed_ms" in fields:
+                _append_metric(metrics, f"block-rw/{case}/elapsed", "ms", fields["elapsed_ms"])
+
+        if match := STARRY_COMPILE_PATTERN.search(line):
+            _append_metric(metrics, f"compile-sim/jobs-{match['jobs']}", "us", match["value"])
+        if match := STARRY_COMPILE_SPEEDUP_PATTERN.search(line):
+            _append_metric(metrics, "compile-sim/speedup", "x1000", match["value"])
+
+        if match := STARRY_HACKBENCH_PATTERN.search(line):
+            _append_metric(
+                metrics,
+                f"hackbench/{match['mode']}/cpus-{match['cpus']}",
+                "us",
+                match["value"],
+            )
+        if match := STARRY_HACKBENCH_SPEEDUP_PATTERN.search(line):
+            _append_metric(metrics, f"hackbench/{match['mode']}/speedup", "x1000", match["value"])
+
+        if match := STARRY_NETSTRESS_PATTERN.search(line):
+            _append_metric(metrics, f"netstress/{match['case']}", "ms", match["value"])
+
+        if match := STARRY_SCHEDULER_PATTERN.search(line):
+            _append_metric(metrics, f"scheduler/{match['case']}", "ns", match["value"])
+
+        if match := STARRY_WAKEUP_PATTERN.search(line):
+            try:
+                payload = json.loads(match["payload"])
+            except json.JSONDecodeError:
+                payload = {}
+            case = payload.get("case")
+            policy = payload.get("policy", "default")
+            if isinstance(case, str) and isinstance(policy, str):
+                for field in ("p50_ns", "p95_ns", "p99_ns", "p999_ns"):
+                    if field in payload:
+                        _append_metric(
+                            metrics,
+                            f"wakeup/{case}/{policy}/{field.removesuffix('_ns')}",
+                            "ns",
+                            payload[field],
+                        )
+
+        if match := STARRY_UVC_PATTERN.search(line):
+            fields = parse_fields(match["fields"])
+            for field, unit in (
+                ("capture_fps", "frames/s"),
+                ("infer_fps", "inferences/s"),
+                ("throughput_mib_s", "MiB/s"),
+                ("decode_ms_p50", "ms"),
+                ("infer_ms_p50", "ms"),
+            ):
+                if field in fields:
+                    _append_metric(metrics, f"uvc-rknn/{field}", unit, fields[field])
+
+        if match := STARRY_TENNIS_PATTERN.search(line):
+            fields = parse_fields(match["fields"])
+            for field in ("decode_us_p50", "resize_us_p50", "preprocess_us_p50", "forward_us_p50", "postprocess_us_p50", "total_us_p50"):
+                if field in fields:
+                    _append_metric(metrics, f"tennis-yolo/{field}", "us", fields[field])
+
+        if match := STARRY_IPERF_PATTERN.search(line):
+            _append_metric(
+                metrics,
+                f"iperf3/{match['case']}/{match['direction']}",
+                "Mbps",
+                match["value"],
+            )
+
+        if match := STARRY_UVC_FPS_PATTERN.search(line):
+            fields = parse_fields(match["fields"])
+            for field, unit in (("avg_fps", "frames/s"), ("avg_throughput_mib_s", "MiB/s")):
+                if field in fields:
+                    _append_metric(metrics, f"uvc/{field}", unit, fields[field])
+    return metrics
 
 
 def parse_args() -> argparse.Namespace:

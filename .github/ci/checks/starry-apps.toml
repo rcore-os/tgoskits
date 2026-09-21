@@ -71,3 +71,174 @@ docker run --rm \
       cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix
   '
 '''
+
+# These are explicit nightly measurements. They are kept out of `app qemu
+# --all` and run only after the normal Starry app matrix completes.
+[[check]]
+id = "starry-performance-block-io-x86-64"
+name = "Starry performance · block I/O"
+nightly_only = true
+performance_report = true
+performance_artifact_prefix = "starry-nightly-performance"
+runner = "ubuntu-base"
+timeout_minutes = 15
+container_preflight = "qemu-user"
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask starry app qemu -t block-io-bench --arch x86_64
+'''
+
+[[check]]
+id = "starry-performance-compile-sim"
+name = "Starry performance · compile simulation"
+nightly_only = true
+performance_report = true
+performance_artifact_prefix = "starry-nightly-performance"
+runner = "ubuntu-base"
+timeout_minutes = 35
+container_preflight = "qemu-user"
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask starry app qemu \
+  -t qemu/compile-sim-bench \
+  --arch x86_64 \
+  --qemu-config qemu-x86_64-benchmark.toml
+'''
+
+[[check]]
+id = "starry-performance-ltp-hackbench"
+name = "Starry performance · LTP hackbench"
+nightly_only = true
+performance_report = true
+performance_artifact_prefix = "starry-nightly-performance"
+runner = "ubuntu-base"
+timeout_minutes = 20
+container_preflight = "qemu-user"
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask starry app qemu \
+  -t qemu/ltp-hackbench \
+  --arch x86_64 \
+  --qemu-config qemu-x86_64-benchmark.toml
+'''
+
+[[check]]
+id = "starry-performance-ltp-netstress"
+name = "Starry performance · LTP netstress"
+nightly_only = true
+performance_report = true
+performance_artifact_prefix = "starry-nightly-performance"
+runner = "ubuntu-base"
+timeout_minutes = 20
+container_preflight = "qemu-user"
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask starry app qemu \
+  -t qemu/ltp-netstress \
+  --arch x86_64 \
+  --qemu-config qemu-x86_64-benchmark.toml
+'''
+
+[[check]]
+id = "starry-performance-wakeup-latency"
+name = "Starry performance · wakeup latency"
+nightly_only = true
+performance_report = true
+performance_artifact_prefix = "starry-nightly-performance"
+runner = "ubuntu-base"
+timeout_minutes = 15
+container_preflight = "qemu-user"
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask starry app qemu -t wakeup-latency-bench --arch x86_64
+'''
+
+[[check]]
+id = "starry-performance-sysbench"
+name = "Starry performance · sysbench matrix"
+nightly_only = true
+performance_report = true
+performance_artifact_prefix = "starry-nightly-performance"
+runner = "ubuntu-base"
+timeout_minutes = 25
+container_preflight = "qemu-user"
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask starry app qemu \
+  -t sysbench \
+  --arch aarch64 \
+  --qemu-config qemu-aarch64-matrix.toml
+'''
+
+[[check]]
+id = "starry-performance-block-rw-orangepi-5-plus"
+name = "Starry performance · OrangePi block I/O"
+nightly_only = true
+performance_report = true
+performance_artifact_prefix = "starry-nightly-performance"
+runner = "board"
+timeout_minutes = 45
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask starry app board \
+  -t block-rw-bench \
+  --board-config board-orangepi-5-plus.toml \
+  -b OrangePi-5-Plus
+'''
+
+[[check]]
+id = "starry-performance-iperf3-orangepi-5-plus"
+name = "Starry performance · OrangePi iperf3"
+nightly_only = true
+performance_report = true
+performance_artifact_prefix = "starry-nightly-performance"
+runner = "board"
+timeout_minutes = 60
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask starry app board -t iperf3 -b OrangePi-5-Plus
+'''
+
+[[check]]
+id = "starry-performance-uvc-orangepi-5-plus"
+name = "Starry performance · OrangePi UVC"
+nightly_only = true
+performance_report = true
+performance_artifact_prefix = "starry-nightly-performance"
+runner = "board"
+timeout_minutes = 30
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask starry app board -t orangepi-5-plus-uvc -b OrangePi-5-Plus
+'''
+
+[[check]]
+id = "starry-performance-uvc-rknn-orangepi-5-plus"
+name = "Starry performance · OrangePi UVC + RKNN"
+nightly_only = true
+performance_report = true
+performance_artifact_prefix = "starry-nightly-performance"
+runner = "board"
+timeout_minutes = 90
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask starry app board \
+  -t orangepi-5-plus-uvc-rknn \
+  --board-config configs/board-orangepi-5-plus-bench.toml \
+  -b OrangePi-5-Plus
+'''
+
+[[check]]
+id = "starry-performance-tennis-yolo-aka-00-sg2002"
+name = "Starry performance · AKA-00 tennis YOLO"
+nightly_only = true
+performance_report = true
+performance_artifact_prefix = "starry-nightly-performance"
+runner = "board"
+timeout_minutes = 90
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask starry app board \
+  -t aka00-tennis-yolo \
+  -b AKA-00-SG2002
+'''
