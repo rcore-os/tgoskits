@@ -28,10 +28,20 @@ jobs:
     name: Plan Starry Apps
     runs-on: ubuntu-latest
     outputs:
+      revision: ${{ steps.revision.outputs.sha }}
+      prepare_matrix: ${{ steps.matrix.outputs.prepare_matrix }}
       matrix: ${{ steps.matrix.outputs.starry_apps_matrix }}
+      performance_matrix: ${{ steps.matrix.outputs.starry_performance_matrix }}
+      board_performance_matrix: ${{ steps.matrix.outputs.starry_board_performance_matrix }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          ref: dev
+
+      - name: Pin dev revision
+        id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Plan check matrix
         id: matrix
@@ -52,11 +62,186 @@ jobs:
           fi
           python3 scripts/test/ci_plan.py "${args[@]}"
 
-  checks:
-    name: Starry Apps
+  prepare:
+    name: Prepare
     needs: plan
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
+      checkout_ref: ${{ needs.plan.outputs.revision }}
+      matrix_json: ${{ needs.plan.outputs.prepare_matrix }}
+      save_cache: ${{ github.event_name == 'schedule' }}
+
+  checks:
+    name: Starry Apps
+    needs: [plan, prepare]
+    uses: ./.github/workflows/reusable-check-matrix.yml
+    with:
+      checkout_ref: ${{ needs.plan.outputs.revision }}
       matrix_json: ${{ needs.plan.outputs.matrix }}
       fail_fast: false
       save_cache: ${{ github.event_name == 'schedule' }}
+
+  performance:
+    name: Starry Performance
+    needs: [plan, checks]
+    if: always() && needs.plan.result == 'success' && needs.checks.result == 'success'
+    uses: ./.github/workflows/reusable-check-matrix.yml
+    with:
+      checkout_ref: ${{ needs.plan.outputs.revision }}
+      matrix_json: ${{ needs.plan.outputs.performance_matrix }}
+      fail_fast: false
+      save_cache: ${{ github.event_name == 'schedule' }}
+    secrets:
+      CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
+      STARRY_WIFI_SSID: ${{ secrets.STARRY_WIFI_SSID }}
+      STARRY_WIFI_PASSWORD: ${{ secrets.STARRY_WIFI_PASSWORD }}
+
+  board_performance:
+    name: Starry Board Performance
+    needs: [plan, checks]
+    if: always() && needs.plan.result == 'success' && needs.checks.result == 'success'
+    uses: ./.github/workflows/reusable-check-matrix.yml
+    with:
+      checkout_ref: ${{ needs.plan.outputs.revision }}
+      matrix_json: ${{ needs.plan.outputs.board_performance_matrix }}
+      fail_fast: false
+      max_parallel: 1
+      save_cache: ${{ github.event_name == 'schedule' }}
+    secrets:
+      CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
+      STARRY_WIFI_SSID: ${{ secrets.STARRY_WIFI_SSID }}
+      STARRY_WIFI_PASSWORD: ${{ secrets.STARRY_WIFI_PASSWORD }}
+
+  result:
+    name: Nightly Result
+    if: always()
+    needs: [plan, prepare, checks, performance, board_performance]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download performance reports
+        if: always()
+        uses: actions/download-artifact@v8
+        with:
+          pattern: starry-nightly-performance-*
+          path: ${{ runner.temp }}/performance-reports
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Report result
+        env:
+          REVISION: ${{ needs.plan.outputs.revision }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          PERFORMANCE_RESULT: ${{ needs.performance.result }}
+          BOARD_PERFORMANCE_RESULT: ${{ needs.board_performance.result }}
+          PERFORMANCE_REPORT_DIR: ${{ runner.temp }}/performance-reports
+        run: |
+          {
+            echo "## Starry Apps Nightly"
+            echo ""
+            echo "dev revision: ${REVISION}"
+            echo ""
+            echo "| Stage | Result |"
+            echo "| --- | --- |"
+            echo "| Plan | ${PLAN_RESULT} |"
+            echo "| Prepare | ${PREPARE_RESULT} |"
+            echo "| Apps | ${CHECKS_RESULT} |"
+            echo "| Performance | ${PERFORMANCE_RESULT} |"
+            echo "| Board performance | ${BOARD_PERFORMANCE_RESULT} |"
+            if [ -d "${PERFORMANCE_REPORT_DIR}" ] && find "${PERFORMANCE_REPORT_DIR}" -name '*.md' -print -quit | grep -q .; then
+              echo ""
+              echo "## Performance Results"
+              echo ""
+              find "${PERFORMANCE_REPORT_DIR}" -name '*.md' -print | sort | while read -r report; do
+                cat "${report}"
+                echo ""
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  perf-history:
+    name: Performance History
+    if: >-
+      always() &&
+      needs.plan.result == 'success' &&
+      needs.checks.result == 'success' &&
+      needs.performance.result == 'success' &&
+      needs.board_performance.result == 'success'
+    needs: [plan, checks, performance, board_performance]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    concurrency:
+      group: perf-data-publish
+      cancel-in-progress: false
+    steps:
+      - name: Checkout tested revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.revision }}
+
+      - name: Download performance reports
+        uses: actions/download-artifact@v8
+        with:
+          pattern: starry-nightly-performance-*
+          path: ${{ runner.temp }}/performance-reports
+          merge-multiple: true
+
+      - name: Collect benchmark data
+        id: collect
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP" <<'EOF'
+          import json, pathlib, sys
+          reports = pathlib.Path(sys.argv[1]) / "performance-reports"
+          metrics = [
+              metric
+              for path in sorted(reports.glob("*.json"))
+              for metric in json.loads(path.read_text(encoding="utf-8"))
+          ]
+          output = pathlib.Path(sys.argv[1]) / "bench.json"
+          output.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+          print(f"collected {len(metrics)} metrics")
+          EOF
+          count=$(python3 -c \
+            "import json, os; print(len(json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'bench.json')))))")
+          echo "metrics=${count}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish dashboard branch
+        if: steps.collect.outputs.metrics != '0'
+        env:
+          NIGHTLY_REVISION: ${{ needs.plan.outputs.revision }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          dashboard="${RUNNER_TEMP}/dashboard"
+          mkdir -p "${dashboard}"
+          if git fetch --depth=1 origin perf-data 2>/dev/null; then
+            git show FETCH_HEAD:history.json > "${dashboard}/history.json"
+          fi
+          python3 scripts/test/ci_perf_dashboard.py \
+            --metrics "${RUNNER_TEMP}/bench.json" \
+            --history "${dashboard}/history.json" \
+            --source starry \
+            --date "$(date -u +%F)" \
+            --revision "${NIGHTLY_REVISION}" \
+            --title "Nightly Performance Benchmarks" \
+            --window 10 \
+            --output "${dashboard}/index.html"
+          html_blob=$(git hash-object -w "${dashboard}/index.html")
+          json_blob=$(git hash-object -w "${dashboard}/history.json")
+          tree=$(printf '100644 blob %s\tindex.html\n100644 blob %s\thistory.json\n' \
+            "${html_blob}" "${json_blob}" | git mktree)
+          commit=$(git commit-tree "${tree}" -m "chore: update Starry perf dashboard for $(date -u +%F)")
+          git push --force origin "${commit}:refs/heads/perf-data"
+
+      - name: Refresh docs pages
+        if: steps.collect.outputs.metrics != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run docs.yml --ref dev
