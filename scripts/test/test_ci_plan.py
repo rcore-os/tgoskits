@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import re
 import sys
 import tempfile
 import tomllib
@@ -855,6 +856,9 @@ command = "true"
         self.assertEqual(dualguest["timeout_minutes"], 30)
         self.assertEqual(
             dualguest["command"],
+            "cargo xtask starry build --config "
+            "test-suit/axvisor/normal/board-orangepi-5-plus/dual-starry-zephyr/"
+            "starry-guest-build.toml --smp 1\n"
             "cargo xtask axvisor test board "
             "--board orangepi-5-plus-dualguest-robot",
         )
@@ -876,10 +880,14 @@ command = "true"
                 self.assertEqual(
                     config["board_type"], "OrangePi-5-Plus-DualGuest-robot"
                 )
-                self.assertNotIn("DUAL_PICK_CI_PASS", config["shell_init_cmd"])
-                self.assertNotIn("DUAL_PICK_CI_FAIL", config["shell_init_cmd"])
-                self.assertIn("marker=DUAL_PICK_CI", config["shell_init_cmd"])
-                self.assertEqual(len(config["success_regex"]), 1)
+                step = config["shell_check_steps"][-1]
+                for pattern in step["success_regex"] + step["fail_regex"]:
+                    self.assertIsNone(re.search(pattern, step["shell_cmd"]))
+                guest = "linux-zephyr" if "dual-linux" in str(path) else "starry-zephyr"
+                self.assertTrue(any(re.search(pattern, f"DUAL_PICK_CI_PASS guest={guest}\n")
+                                    for pattern in step["success_regex"]))
+                self.assertTrue(any(re.search(pattern, f"DUAL_PICK_CI_FAIL guest={guest} status=1\n")
+                                    for pattern in step["fail_regex"]))
 
     def test_fork_repository_filters_owner_checks_and_falls_back_from_qcs(
         self,

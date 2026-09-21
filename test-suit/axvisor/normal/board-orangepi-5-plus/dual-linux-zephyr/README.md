@@ -144,14 +144,8 @@ Axvisor network ready:
 
 ### 4.1 机器人验收
 
-进入 Linux，并切换到已安装的机器人工作负载目录后运行一次有限验收。该脚本使用摄像头
-和 NPU，并通过 IVC 驱动 Zephyr 的测试状态机。
-
-```bash
-sudo ./run_dual_pick_ci_once.sh
-```
-
-Linux 应输出 `LINUX_AXIVC_READY`、`STARRY_ROBOT_CI_DONE perf=pass` 和 `STARRY_PERCEPTION_OK ... ivc_dropped=0`。其中 `STARRY_` 是感知程序沿用的日志前缀，不表示当前客户机是 StarryOS。Zephyr 应输出 `ZEPHYR_IVC_READY`、`ZEPHYR_PICK_CYCLE_PASS`、`ZEPHYR_ROBOT_CI_PASS` 和 `ZEPHYR_INPUT_WATCHDOG`。
+在 Linux 中进入已安装的机器人运行包，按照第 5 节执行有限验收。
+`STARRY_` 是感知程序沿用的日志前缀，不表示当前客户机是 StarryOS。
 
 ### 4.2 网络验收
 
@@ -174,17 +168,49 @@ Axvisor: exit
 
 ## 5. SD 双客户机 CI
 
-`board-orangepi-5-plus-dualguest-robot.toml` 面向
-`OrangePi-5-Plus-DualGuest-robot`。它在 Zephyr 进入稳定 IVC 等待后向
-Linux Shell 注入以下有限测试：
+这是 Linux + Zephyr 的实体板集成回归测试：检查内核或驱动更新后，是否出现
+“能够启动，但摄像头/NPU 变慢、两客户机失联或执行器没完成动作”的问题。
+这些真实设备与时序无法仅由主机单元测试证明。AxVisor 提供 IVC 和设备隔离，Linux
+负责感知，Zephyr 独占 UART6，负责决策、底盘及机械臂。
 
-```text
-sudo -n /home/orangepi/robot/aka-rk3588/run_dual_pick_ci_once.sh
+Linux 登录 Shell 出现 `orangepi@orangepi5plus:~` 提示符后，由本目录的 board 配置运行：
+
+```sh
+sudo -n /home/orangepi/robot/aka-rk3588/run_dual_pick_ci_once.sh --min-fps 28
 ```
 
-只有脚本返回0并完成 `sync` 后才会输出 `DUAL_PICK_CI_PASS guest=linux-zephyr`。
-成功标志在 Shell 中由变量组合，避免命令回显被误判为测试通过。Linux 根文件系统
-必须为该绝对路径配置限定的免密 `sudo`；不得在仓库中写入密码。
+消息和失败处理按以下顺序进行；IVC 通道 key 为 `0x49564301`：
+
+1. **配置。** Linux 读取本板标定与控制参数，发送带 session、配置 CRC 的 `BEGIN`、
+   9 条 `CHUNK`、`COMMIT`。Zephyr 逐条返回 `ACK`，校验并应用配置后返回 `APPLIED`。
+   回复错误、拒绝或超时均失败；BEGIN 最多等 90 秒。配置完成后才开始性能计时。
+2. **感知与动作。** Linux 每帧真实采集、解码、运行 NPU 和红桶检测，经 IVC 发送
+   48 字节 `PerceptionResultV2`：序号、时间戳及球/桶的可见性、位置、大小、置信度。
+   Zephyr 取最新有效结果决定底盘动作，以独立的 50 ms 周期推进机械臂；逐帧结果
+   **没有 ACK**。前两个约 10 秒窗口各须达到 28 FPS。约第 20 秒起仍真实推理，
+   但把发送给 Zephyr 的球/桶结果替换为预设场景，以驱动实际控制流程。
+3. **执行反馈。** Zephyr 检查机械臂受检终点，随后对三轮依次执行停止、正转、停止、
+   反转、停止。每阶段最多 2 秒，读取实际位置与速度；正反转需方向和位置变化正确，
+   停车需四组采样的位置稳定、速度在允许范围内。检查位 `checks=31` 仅在周期、终点、
+   停车命令、双向运动和最终停车反馈都完成后才成立。错误会锁定本次 CI 失败。
+4. **完成回复。** 感知程序至少运行 62 秒后发送 `CONTROL_FINISH`，等待最多 10 秒；
+   期间继续发送末尾场景，避免输入断流。Zephyr 返回 `CONTROL_RESULT`，状态为
+   `pending`、`failed` 或 `success`，附本次 session、配置 CRC、完成周期、检查位和错误码。
+   旧会话回复不能充当成功；失败回复、错误检查位或等不到成功回复都会使 CI 失败。
+5. **最终判定。** Linux 关闭摄像头、释放模型并关闭 IVC 后，才生成唯一的
+   `DUAL_PICK_APPLICATION_PASS`。脚本核对两个窗口、匹配的控制结果、至少 62 秒时长、
+   清理及零退出码；board 入口还须 `sync` 成功，才输出独占一行的
+   `DUAL_PICK_CI_PASS guest=linux-zephyr`。中间日志和 Zephyr 串口文字不能代替最终结果。
+
+NPU 调用错误、IVC 发送失败或丢帧、执行器读写/反馈错误都会失败；进入 CI 控制模式后，
+未完成时约 350 ms 输入断流也会停车并锁定失败。少量坏帧允许剔除并记录，连续采集/解码
+失败达到 10 次则退出，坏帧不计入有效 FPS。这项测试验证真实感知性能、双向通信和
+受控执行器反馈；预设场景允许模拟夹持成功，不能证明识别准确率、真实抓球入桶、
+地面行驶、长期稳定性或硬件急停。
+
+本 SD 场景使用板卡类型 `OrangePi-5-Plus-DualGuest-robot`，与 StarryOS + Zephyr 场景顺序
+共用同一块板。感知程序、Zephyr 镜像和 CI 脚本须配套更新。Linux 还需为上述
+固定命令配置限定的免密 sudo。board 入口以 `shell_check_steps` 逐步注入短命令。
 
 ## 6. 如需迁移到 eMMC
 
@@ -232,7 +258,7 @@ board_type = "OrangePi-5-Plus-DualGuest-robot-emmc"
 SD board 配置的 `uboot_cmd` 第一项显式设置了 SD 宿主 bootargs。eMMC 版应将该项
 删除，使用板卡已确认的 eMMC 默认 bootargs；如果板卡没有可用的默认值，则将
 它改为实测的 eMMC 宿主根分区。后续 UART6 时钟、管脚寄存器、
-`shell_prefix`、`shell_init_cmd`、`success_regex`、`fail_regex` 和 `timeout` 均保持不变。
+`shell_prefix`、`shell_check_steps[].shell_cmd`、`success_regex`、`fail_regex` 和 `timeout` 均保持不变。
 
 Linux VM 的 `[kernel].cmdline` 控制客户机根分区，board 配置中的 U-Boot
 bootargs 控制 AxVisor 宿主根分区，两者需分别确认，不能互相代替。

@@ -23,6 +23,8 @@ memory_regions = [
 [devices]
 passthrough = []
 disabled = [
+  # UART6 belongs exclusively to the Zephyr controller.
+  { path = "/serial@feb90000" },
   # Axvisor owns the PCIe fabric used by the RTL8125 management interface.
   # Keep every PCIe PHY outside Linux even though the PCIe bridges themselves
   # are already filtered from an implicit root passthrough guest.

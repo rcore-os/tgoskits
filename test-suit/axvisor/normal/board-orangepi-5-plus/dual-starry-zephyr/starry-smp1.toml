@@ -7,9 +7,9 @@ phys_cpu_ids = [0x00]
 
 [kernel]
 entry_point = 0x4008_0000
-image_location = "fs"
+image_location = "memory"
 kernel_load_addr = 0x4008_0000
-kernel_path = "/guest/starry/orangepi-5-plus"
+kernel_path = "${workspace}/target/aarch64-unknown-none-softfloat/release/starryos.bin"
 # DTB GPA is selected automatically from the prepared guest memory layout.
 
 memory_regions = [

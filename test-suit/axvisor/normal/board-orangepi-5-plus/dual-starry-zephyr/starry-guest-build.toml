@@ -1,0 +1,17 @@
+# Build the single-vCPU robot guest from the same checkout as AxVisor.
+target = "aarch64-unknown-none-softfloat"
+# Keep per-frame kernel informational logging out of the measured pipeline.
+features = [
+  "ax-driver/list-pci-devices",
+  "ax-driver/rk3588-pcie",
+  "ax-driver/realtek-rtl8125",
+  "ax-driver/rockchip-soc",
+  "ax-driver/rockchip-dwc-xhci",
+  "ax-driver/rockchip-ehci",
+  "ax-driver/rockchip-sdhci",
+  "ax-driver/rockchip-dwmmc",
+  "ax-driver/rk3588-cpufreq",
+  "rknpu",
+]
+log = "Warn"
+max_cpu_num = 1
