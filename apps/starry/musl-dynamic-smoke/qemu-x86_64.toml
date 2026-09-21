@@ -7,8 +7,8 @@ args = [
     "-device", "virtio-net-pci,netdev=net0",
     "-netdev", "user,id=net0",
 ]
-uefi = false
-to_bin = false
+uefi = true
+to_bin = true
 fail_regex = [
     "(?m)^DYNAMIC_MUSL_TEST_DONE\\s+RC=[^0]",
     "(?i)not found",
