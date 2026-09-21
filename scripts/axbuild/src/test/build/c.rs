@@ -40,6 +40,7 @@ fn cross_tool_ld(arch: &str) -> anyhow::Result<String> {
 /// rootfs. `None` means "extract the case rootfs".
 pub(crate) fn c_toolchain_rootfs(
     workspace_root: &Path,
+    target_dir: &Path,
     arch: &str,
     case_rootfs: &Path,
 ) -> anyhow::Result<Option<PathBuf>> {
@@ -47,7 +48,8 @@ pub(crate) fn c_toolchain_rootfs(
         return Ok(None);
     }
 
-    let Ok(toolchain_rootfs) = crate::image::storage::default_rootfs_path(workspace_root, arch)
+    let Ok(toolchain_rootfs) =
+        crate::image::storage::default_rootfs_path(workspace_root, target_dir, arch)
     else {
         return Ok(None);
     };
@@ -158,7 +160,8 @@ pub(crate) fn prepare_c_case_overlay_sync(
             ("phase", "extract-rootfs".to_string()),
         ],
     );
-    let toolchain_rootfs = c_toolchain_rootfs(&layout.workspace_root, arch, case_rootfs)?;
+    let toolchain_rootfs =
+        c_toolchain_rootfs(&layout.workspace_root, &layout.target_dir, arch, case_rootfs)?;
     let staging_sysroot = select_staging_sysroot(arch, case_rootfs, toolchain_rootfs.as_deref())?;
     crate::rootfs::inject::extract_rootfs(&staging_sysroot, &layout.staging_root)?;
     timing_stage.finish();

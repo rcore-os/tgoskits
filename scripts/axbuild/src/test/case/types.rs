@@ -202,6 +202,9 @@ impl CasePipeline {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CaseAssetLayout {
     pub(crate) workspace_root: PathBuf,
+    /// Raw Cargo target directory (`--target-dir`), used to resolve managed
+    /// image storage (extract dir) independently of the per-target layout.
+    pub(crate) target_dir: PathBuf,
     pub(crate) work_dir: PathBuf,
     pub(crate) run_dir: PathBuf,
     pub(crate) cache_dir: PathBuf,

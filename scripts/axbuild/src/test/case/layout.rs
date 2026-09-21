@@ -51,9 +51,11 @@ fn asset_layout(
     let work_dir = target_dir.join(work_root_name).join(case_name);
     let run_dir = work_dir.join(CASE_RUNS_DIR_NAME).join(next_case_run_id());
     let cache_dir = work_dir.join(CASE_CACHE_DIR_NAME);
+    let workspace_root = crate::context::workspace_root_path()?;
 
     Ok(CaseAssetLayout {
-        workspace_root: workspace_root.to_path_buf(),
+        workspace_root,
+        target_dir: cargo_target_dir.to_path_buf(),
         staging_root: run_dir.join(CASE_STAGING_DIR_NAME),
         build_dir: run_dir.join(CASE_BUILD_DIR_NAME),
         overlay_dir: run_dir.join(CASE_OVERLAY_DIR_NAME),
