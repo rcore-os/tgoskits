@@ -43,12 +43,13 @@ pub(crate) async fn prepare_case_assets(
     // A C case on a runtime-only rootfs (e.g. Debian) is cross-compiled
     // against the managed Alpine toolchain image. Make sure that image is
     // downloaded up front so the synchronous asset build stays file-only.
+    let workspace_root = crate::context::workspace_root_path()?;
     if resolve_case_pipeline(&case)? == CasePipeline::C
         && let Some(toolchain_rootfs) =
-            case_builder::c_toolchain_rootfs(&workspace_root, &arch, &rootfs_path)?
+            case_builder::c_toolchain_rootfs(&workspace_root, &target_dir, &arch, &rootfs_path)?
         && !toolchain_rootfs.is_file()
     {
-        crate::image::storage::ensure_rootfs_for_arch(&workspace_root, &arch).await?;
+        crate::image::storage::ensure_rootfs_for_arch(&workspace_root, &target_dir, &arch).await?;
     }
 
     let parts = tokio::task::spawn_blocking(move || {
