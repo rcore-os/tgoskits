@@ -113,4 +113,22 @@ mod tests {
         ax_assert_eq!(network_console::take_guest_output(2), b"zephyr log line\n");
         remove_guest_console(2);
     }
+
+    #[test]
+    fn blocked_physical_output_keeps_guest_bytes_out_of_network_delivery() {
+        use crate::{guest_console_harness, network_console};
+
+        network_console::reset();
+        network_console::set_guest_connected(1);
+        let backend = guest_console_harness::mux::serial_backend_factory(1).create();
+        guest_console_harness::mux::mark_running(1);
+
+        guest_console_harness::host::set_output_blocked(true);
+        let accepted = backend.try_write(b"retained by uart");
+        guest_console_harness::host::set_output_blocked(false);
+
+        ax_assert_eq!(accepted, 0);
+        ax_assert!(network_console::take_guest_output(1).is_empty());
+        remove_guest_console(1);
+    }
 }

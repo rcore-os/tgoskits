@@ -2,7 +2,7 @@ use super::*;
 
 #[cfg_attr(axtest, axtest::axtest)]
 #[cfg_attr(not(axtest), test)]
-fn deferred_output_rejects_a_replaced_backend_generation() {
+fn deferred_output_survives_stop_but_rejects_a_replaced_backend_generation() {
     let mux = GuestConsoleMux::new();
     let old = mux.core.create_serial_backend(1);
     let current = mux.core.create_serial_backend(1);
@@ -13,14 +13,14 @@ fn deferred_output_rejects_a_replaced_backend_generation() {
     );
     mux.mark_stopped(1);
     assert!(
-        !mux.core
+        mux.core
             .replay_guest_output(1, current.generation, b"stopped\n")
     );
 }
 
 #[cfg_attr(axtest, axtest::axtest)]
 #[cfg_attr(not(axtest), test)]
-fn lifecycle_reconciliation_accepts_stopping_and_rejects_stopped_output() {
+fn lifecycle_reconciliation_replays_output_accepted_before_stop() {
     let mux = GuestConsoleMux::new();
     let backend = mux.core.create_serial_backend(1);
     mux.set_running([1]);
@@ -34,8 +34,8 @@ fn lifecycle_reconciliation_accepts_stopping_and_rejects_stopped_output() {
     mux.set_running([]);
 
     assert!(
-        !mux.core
-            .replay_guest_output(1, backend.generation, b"stale\n")
+        mux.core
+            .replay_guest_output(1, backend.generation, b"accepted before stop\n")
     );
 }
 
@@ -47,9 +47,10 @@ fn terminal_reconciliation_invalidates_a_backend_that_never_ran() {
 
     mux.set_vm_states([], [], [(1, backend.generation)]);
 
-    assert!(
-        !mux.core
-            .replay_guest_output(1, backend.generation, b"stale\n")
+    assert_eq!(
+        mux.core
+            .format_guest_output(1, backend.generation, b"late output\n"),
+        None
     );
 }
 

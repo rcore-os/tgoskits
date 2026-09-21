@@ -18,6 +18,7 @@ pub use uart16550::Uart16550;
 #[cfg(test)]
 mod tests {
     use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
+    use core::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
 
     use axdevice_base::{
@@ -31,17 +32,30 @@ mod tests {
     struct TestBackend {
         input: Mutex<VecDeque<u8>>,
         output: Mutex<Vec<u8>>,
+        blocked: AtomicBool,
     }
 
     impl TestBackend {
         fn push_input(&self, bytes: &[u8]) {
             self.input.lock().unwrap().extend(bytes);
         }
+
+        fn set_blocked(&self, blocked: bool) {
+            self.blocked.store(blocked, Ordering::Release);
+        }
     }
 
     impl SerialBackend for TestBackend {
         fn write(&self, bytes: &[u8]) {
             self.output.lock().unwrap().extend_from_slice(bytes);
+        }
+
+        fn try_write(&self, bytes: &[u8]) -> usize {
+            if self.blocked.load(Ordering::Acquire) {
+                return 0;
+            }
+            self.write(bytes);
+            bytes.len()
         }
 
         fn read(&self, buffer: &mut [u8]) -> usize {
@@ -169,5 +183,31 @@ mod tests {
 
         uart.write(0x000, AccessWidth::Dword, b'P' as u64).unwrap();
         assert_eq!(backend.output.lock().unwrap().as_slice(), b"P");
+    }
+
+    #[test]
+    fn pl011_retains_tx_until_the_backend_accepts_it() {
+        const FR_BUSY: u64 = 1 << 3;
+        const FR_TXFE: u64 = 1 << 7;
+
+        let backend = Arc::new(TestBackend::default());
+        backend.set_blocked(true);
+        let uart = Pl011::new(
+            backend.clone(),
+            level_irq(Arc::new(TestIrqSink::default()), 33),
+        );
+
+        uart.write(0x000, AccessWidth::Dword, b'P' as u64).unwrap();
+        assert!(backend.output.lock().unwrap().is_empty());
+        let flags = uart.read(0x018, AccessWidth::Dword).unwrap();
+        assert_ne!(flags & FR_BUSY, 0);
+        assert_eq!(flags & FR_TXFE, 0);
+
+        backend.set_blocked(false);
+        uart.poll().unwrap();
+        assert_eq!(backend.output.lock().unwrap().as_slice(), b"P");
+        let flags = uart.read(0x018, AccessWidth::Dword).unwrap();
+        assert_eq!(flags & FR_BUSY, 0);
+        assert_ne!(flags & FR_TXFE, 0);
     }
 }

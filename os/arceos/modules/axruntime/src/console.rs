@@ -532,8 +532,9 @@ impl ConsoleLogSubscription {
     ///
     /// `tag` is opaque to the runtime and identifies the application stream and
     /// its generation. Adjacent writes with the same tag may coalesce. This
-    /// operation allocates nothing and never sleeps; a full queue rejects the
-    /// entire write with `WouldBlock` and accounts it in `dropped()`.
+    /// operation allocates nothing and never sleeps. A full queue rejects the
+    /// entire write with `WouldBlock`; the producer retains ownership and must
+    /// retry instead of reporting the bytes as dropped host logs.
     pub fn write_output(&self, tag: u128, bytes: &[u8]) -> RuntimeResult {
         self.inner.write_output(tag, bytes)
     }

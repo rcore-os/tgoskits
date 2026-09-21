@@ -24,7 +24,9 @@ const REGISTER_BLOCK_SIZE: usize = 0x1000;
 
 const FR_TXFE: u32 = 1 << 7;
 const FR_RXFF: u32 = 1 << 6;
+const FR_TXFF: u32 = 1 << 5;
 const FR_RXFE: u32 = 1 << 4;
+const FR_BUSY: u32 = 1 << 3;
 const FR_CTS: u32 = 1;
 
 const INT_RX: u32 = 1 << 4;
@@ -35,10 +37,13 @@ const CR_UART_ENABLE: u32 = 1;
 const CR_TX_ENABLE: u32 = 1 << 8;
 const CR_RX_ENABLE: u32 = 1 << 9;
 
-const FIFO_CAPACITY: usize = 256;
+const RX_FIFO_CAPACITY: usize = 256;
+const TX_FIFO_CAPACITY: usize = 16;
 
 struct Pl011State {
-    rx_fifo: ByteFifo<FIFO_CAPACITY>,
+    rx_fifo: ByteFifo<RX_FIFO_CAPACITY>,
+    tx_fifo: ByteFifo<TX_FIFO_CAPACITY>,
+    tx_drain_active: bool,
     integer_baud_rate: u32,
     fractional_baud_rate: u32,
     line_control: u32,
@@ -54,6 +59,8 @@ impl Pl011State {
     const fn new() -> Self {
         Self {
             rx_fifo: ByteFifo::new(),
+            tx_fifo: ByteFifo::new(),
+            tx_drain_active: false,
             integer_baud_rate: 1,
             fractional_baud_rate: 0,
             line_control: 0,
@@ -73,7 +80,15 @@ impl Pl011State {
     }
 
     fn flags(&self) -> u32 {
-        let mut flags = FR_TXFE | FR_CTS;
+        let mut flags = FR_CTS;
+        if self.tx_fifo.is_empty() && !self.tx_drain_active {
+            flags |= FR_TXFE;
+        } else {
+            flags |= FR_BUSY;
+        }
+        if self.tx_fifo.is_full() {
+            flags |= FR_TXFF;
+        }
         if self.rx_fifo.is_empty() {
             flags |= FR_RXFE;
         }
@@ -120,8 +135,37 @@ impl Pl011 {
         unsafe { self.state.lock_raw() }
     }
 
+    fn drain_tx(&self) -> DeviceResult {
+        let mut bytes = [0; TX_FIFO_CAPACITY];
+        let count = {
+            let mut state = self.state();
+            if state.tx_drain_active {
+                return self.endpoint.set_irq_level(state.irq_asserted());
+            }
+            let count = state.tx_fifo.copy_to(&mut bytes);
+            if count == 0 {
+                return self.endpoint.set_irq_level(state.irq_asserted());
+            }
+            state.tx_drain_active = true;
+            count
+        };
+
+        let accepted = self.endpoint.try_write(&bytes[..count]);
+        let asserted = {
+            let mut state = self.state();
+            state.tx_fifo.discard(accepted);
+            state.tx_drain_active = false;
+            if accepted != 0 {
+                state.tx_interrupt_pending = true;
+            }
+            state.irq_asserted()
+        };
+        self.endpoint.set_irq_level(asserted)
+    }
+
     /// Polls backend input into the receive FIFO and refreshes the level IRQ.
     pub fn poll(&self) -> DeviceResult {
+        self.drain_tx()?;
         self.endpoint.poll_rx(|bytes| {
             let mut state = self.state();
             for &byte in bytes {
@@ -134,6 +178,7 @@ impl Pl011 {
     /// Reads one PL011 register.
     pub fn read(&self, offset: usize, width: AccessWidth) -> DeviceResult<u64> {
         validate_width(width)?;
+        self.drain_tx()?;
         let (value, asserted) = {
             let mut state = self.state();
             let value = match offset {
@@ -167,16 +212,18 @@ impl Pl011 {
     pub fn write(&self, offset: usize, width: AccessWidth, value: u64) -> DeviceResult {
         validate_width(width)?;
         let value = value as u32;
-        let (output, asserted) = {
+        let (drain_tx, asserted) = {
             let mut state = self.state();
-            let mut output = None;
+            let mut drain_tx = false;
             match offset {
                 REG_DR => {
                     if state.control & (CR_UART_ENABLE | CR_TX_ENABLE)
                         == (CR_UART_ENABLE | CR_TX_ENABLE)
                     {
-                        output = Some(value as u8);
-                        state.tx_interrupt_pending = true;
+                        drain_tx = state.tx_fifo.push(value as u8);
+                        if drain_tx {
+                            state.tx_interrupt_pending = false;
+                        }
                     }
                 }
                 REG_RSR_ECR => state.receive_error = 0,
@@ -203,13 +250,14 @@ impl Pl011 {
                     });
                 }
             }
-            (output, state.irq_asserted())
+            (drain_tx, state.irq_asserted())
         };
 
-        if let Some(byte) = output {
-            self.endpoint.write(core::slice::from_ref(&byte));
+        self.endpoint.set_irq_level(asserted)?;
+        if drain_tx {
+            self.drain_tx()?;
         }
-        self.endpoint.set_irq_level(asserted)
+        Ok(())
     }
 }
 

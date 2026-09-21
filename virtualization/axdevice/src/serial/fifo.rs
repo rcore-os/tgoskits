@@ -23,6 +23,20 @@ impl<const N: usize> ByteFifo<N> {
         self.len == N
     }
 
+    pub(super) fn copy_to(&self, output: &mut [u8]) -> usize {
+        let count = output.len().min(self.len);
+        for (index, byte) in output[..count].iter_mut().enumerate() {
+            *byte = self.bytes[(self.head + index) % N];
+        }
+        count
+    }
+
+    pub(super) fn discard(&mut self, count: usize) {
+        let count = count.min(self.len);
+        self.head = (self.head + count) % N;
+        self.len -= count;
+    }
+
     pub(super) fn push(&mut self, byte: u8) -> bool {
         if self.is_full() {
             return false;

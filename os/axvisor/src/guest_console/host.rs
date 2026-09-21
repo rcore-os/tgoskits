@@ -102,15 +102,13 @@ pub(crate) fn read_host_log() -> Option<ConsoleLogRecord> {
     host_log_subscription()?.try_read()
 }
 
-/// Returns false only when this console has no ordered record subscription.
-pub(crate) fn queue_guest_output(tag: u128, bytes: &[u8]) -> bool {
+/// Returns `Ok(false)` only when this console has no ordered subscription.
+pub(crate) fn queue_guest_output(tag: u128, bytes: &[u8]) -> RuntimeResult<bool> {
     let Some(logs) = host_log_subscription() else {
-        return false;
+        return Ok(false);
     };
-    // Queue overflow is reported by the sole subscriber, never through guest
-    // UART bytes or recursive logging from an atomic callback.
-    let _ = logs.write_output(tag, bytes);
-    true
+    logs.write_output(tag, bytes)?;
+    Ok(true)
 }
 
 pub(crate) fn take_host_log_drops() -> ConsoleLogDropReport {

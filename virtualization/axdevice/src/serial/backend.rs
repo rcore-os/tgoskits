@@ -12,6 +12,16 @@ pub trait SerialBackend: Send + Sync + Debug {
     /// Writes bytes emitted by the guest.
     fn write(&self, bytes: &[u8]);
 
+    /// Attempts a non-blocking write and returns the accepted prefix length.
+    ///
+    /// Backends without flow control accept the complete buffer through
+    /// [`Self::write`]. Bounded backends override this method so UART models
+    /// can retain bytes and expose transmitter backpressure to the guest.
+    fn try_write(&self, bytes: &[u8]) -> usize {
+        self.write(bytes);
+        bytes.len()
+    }
+
     /// Reads host-provided bytes into `buffer` without blocking.
     fn read(&self, buffer: &mut [u8]) -> usize;
 }

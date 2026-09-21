@@ -38,6 +38,10 @@ impl SerialEndpoint {
         self.backend.write(bytes);
     }
 
+    pub(super) fn try_write(&self, bytes: &[u8]) -> usize {
+        self.backend.try_write(bytes).min(bytes.len())
+    }
+
     pub(super) fn set_irq_level(&self, asserted: bool) -> DeviceResult {
         let result = if asserted {
             self.irq.assert()

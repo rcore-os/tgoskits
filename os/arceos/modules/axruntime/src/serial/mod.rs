@@ -657,16 +657,13 @@ impl SerialLogSubscription {
 
     pub(crate) fn write_output(&self, tag: u128, bytes: &[u8]) -> RuntimeResult {
         self.shared.ensure_started()?;
-        let result = self
-            .shared
+        self.shared
             .log_subscription_gate
             .lock_irqsave()
-            .write(tag, bytes);
-        if let Err(bytes) = result {
-            self.shared.record_subscription_drop(bytes);
-        }
+            .write(tag, bytes)
+            .map_err(|_| RuntimeError::WouldBlock)?;
         self.shared.bridge.notify();
-        result.map_err(|_| RuntimeError::WouldBlock)
+        Ok(())
     }
 
     pub(crate) fn dropped(&self) -> (usize, usize) {

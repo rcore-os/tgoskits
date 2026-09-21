@@ -619,9 +619,14 @@ impl ConsoleCore {
         Some(state.output.format(vm_id, multiple_running, bytes))
     }
 
-    fn write_guest_output(&self, vm_id: VMId, generation: BackendGeneration, bytes: &[u8]) -> bool {
+    fn write_guest_output(
+        &self,
+        vm_id: VMId,
+        generation: BackendGeneration,
+        bytes: &[u8],
+    ) -> usize {
         if bytes.is_empty() {
-            return false;
+            return 0;
         }
         let guard = self.lock_output();
         if !self
@@ -630,14 +635,16 @@ impl ConsoleCore {
             .get(&vm_id)
             .is_some_and(|guest| guest.backend_generation == Some(generation))
         {
-            return false;
+            return 0;
         }
         let tag = ((vm_id as u128) << 64) | generation.0 as u128;
-        if super::host::queue_guest_output(tag, bytes) {
-            return true;
+        match super::host::queue_guest_output(tag, bytes) {
+            Ok(true) => return bytes.len(),
+            Err(_) => return 0,
+            Ok(false) => {}
         }
         drop(guard);
-        self.replay_guest_output(vm_id, generation, bytes)
+        usize::from(self.replay_guest_output(vm_id, generation, bytes)) * bytes.len()
     }
 
     fn replay_guest_output(
@@ -656,7 +663,11 @@ impl ConsoleCore {
             let Some(guest) = state.guests.get(&vm_id) else {
                 return false;
             };
-            if guest.backend_generation != Some(generation) {
+            // Admission is checked against the active generation before the
+            // tagged record enters the ordered host-console queue. Preserve
+            // that accepted record across a later stop transition, while the
+            // stable identity still rejects replaced or removed incarnations.
+            if guest.backend_identity != Some(generation) {
                 return false;
             }
             // Reconciliation may discard formatting state while a live
@@ -694,16 +705,18 @@ impl ConsoleCore {
 
 impl SerialBackend for GuestSerialBackend {
     fn write(&self, bytes: &[u8]) {
-        if !self
+        let _ = self.try_write(bytes);
+    }
+
+    fn try_write(&self, bytes: &[u8]) -> usize {
+        let accepted = self
             .core
-            .write_guest_output(self.vm_id, self.generation, bytes)
-        {
-            return;
-        }
+            .write_guest_output(self.vm_id, self.generation, bytes);
         #[cfg(any(feature = "browser-console", all(test, axtest)))]
-        if crate::network_console::guest_output_connected(self.vm_id) {
-            crate::network_console::submit_guest_output(self.vm_id, bytes);
+        if accepted != 0 && crate::network_console::guest_output_connected(self.vm_id) {
+            crate::network_console::submit_guest_output(self.vm_id, &bytes[..accepted]);
         }
+        accepted
     }
 
     fn read(&self, buffer: &mut [u8]) -> usize {
