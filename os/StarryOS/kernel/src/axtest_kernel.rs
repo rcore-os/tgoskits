@@ -15,6 +15,7 @@ fn init_kernel_test_services() {
     cgroup::init();
     stop_machine::init();
     trap::init_handlers();
+    file::epoll::start_epoll_notify_worker();
 }
 
 #[axtest::tests(setup = init_kernel_test_services)]

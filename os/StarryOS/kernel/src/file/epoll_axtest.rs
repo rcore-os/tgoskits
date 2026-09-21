@@ -1,16 +1,16 @@
 //! Deterministic concurrency hooks for epoll kernel tests.
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, task::Wake};
 #[cfg(all(test, not(axtest)))]
-use alloc::{borrow::Cow, boxed::Box, task::Wake, vec::Vec};
+use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-#[cfg(all(test, not(axtest)))]
 use core::task::Waker;
 
+use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar, Pollable};
 #[cfg(all(test, not(axtest)))]
 use axpoll::{
-    ExclusiveConsumer, ExclusiveRegistrationSink, IoEvents, PollRegistrar, PollRegistration,
-    PollSource, Pollable, RegistrationMode, SharedRegistrationSink,
+    ExclusiveRegistrationSink, PollRegistration, PollSource, RegistrationMode,
+    SharedRegistrationSink,
 };
 #[cfg(all(test, not(axtest)))]
 use axpoll_set::PollSet;
@@ -77,6 +77,42 @@ fn concurrent_reverse_add_is_serialized_for_test() -> bool {
         results.as_slice(),
         [None, Some(StarryError::FilesystemLoop)] | [Some(StarryError::FilesystemLoop), None]
     )
+}
+
+#[cfg(all(test, axtest))]
+struct DeferredWakeWaiter {
+    woken: AtomicBool,
+}
+
+#[cfg(all(test, axtest))]
+impl Wake for DeferredWakeWaiter {
+    fn wake(self: Arc<Self>) {
+        self.woken.store(true, Ordering::Release);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.woken.store(true, Ordering::Release);
+    }
+}
+
+#[cfg(all(test, axtest))]
+fn epoll_notify_worker_flushes_deferred_wake_for_test() -> bool {
+    let epoll = Epoll::new();
+    let waiter = Arc::new(DeferredWakeWaiter {
+        woken: AtomicBool::new(false),
+    });
+    let waker = Waker::from(Arc::clone(&waiter));
+    let mut registrar = PollRegistrar::<ExclusiveConsumer>::new(&waker);
+    unsafe { epoll.register_exclusive(&mut registrar, IoEvents::IN) };
+
+    epoll.defer_ready_waiters_for_test(1);
+    for _ in 0..1024 {
+        if waiter.woken.load(Ordering::Acquire) {
+            return true;
+        }
+        crate::task::yield_now();
+    }
+    false
 }
 
 #[cfg(all(test, not(axtest)))]
@@ -559,6 +595,12 @@ mod tests {
     #[axtest::axtest]
     fn concurrent_reverse_add_is_serialized() {
         assert!(super::concurrent_reverse_add_is_serialized_for_test());
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn epoll_notify_worker_flushes_deferred_wake() {
+        assert!(super::epoll_notify_worker_flushes_deferred_wake_for_test());
     }
 
     #[cfg(all(test, not(axtest)))]

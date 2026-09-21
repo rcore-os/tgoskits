@@ -15,7 +15,7 @@ use alloc::{
 use core::{
     hash::{Hash, Hasher},
     ptr,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering},
     task::Waker,
 };
 
@@ -370,11 +370,50 @@ impl InterestRegistration {
     }
 }
 
+const REGISTRATION_WAKE_REGISTERING: u8 = 0;
+const REGISTRATION_WAKE_PENDING: u8 = 1;
+const REGISTRATION_WAKE_REGISTERED: u8 = 2;
+
+struct RegistrationWakeState(AtomicU8);
+
+impl RegistrationWakeState {
+    fn new() -> Self {
+        Self(AtomicU8::new(REGISTRATION_WAKE_REGISTERING))
+    }
+
+    fn request_publish(&self) -> bool {
+        let mut state = self.0.load(Ordering::Acquire);
+        loop {
+            match state {
+                REGISTRATION_WAKE_REGISTERING => match self.0.compare_exchange(
+                    REGISTRATION_WAKE_REGISTERING,
+                    REGISTRATION_WAKE_PENDING,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => return false,
+                    Err(observed) => state = observed,
+                },
+                REGISTRATION_WAKE_PENDING => return false,
+                REGISTRATION_WAKE_REGISTERED => return true,
+                _ => unreachable!("invalid epoll registration wake state"),
+            }
+        }
+    }
+
+    fn finish_register(&self) -> bool {
+        let previous = self
+            .0
+            .swap(REGISTRATION_WAKE_REGISTERED, Ordering::AcqRel);
+        debug_assert_ne!(previous, REGISTRATION_WAKE_REGISTERED);
+        previous == REGISTRATION_WAKE_PENDING
+    }
+}
+
 struct InterestWaker {
     epoll: Weak<EpollInner>,
     interest: Weak<EpollInterest>,
-    defer_wake: AtomicBool,
-    deferred_wake: AtomicBool,
+    registration_wake: RegistrationWakeState,
 }
 
 impl Wake for InterestWaker {
@@ -383,18 +422,11 @@ impl Wake for InterestWaker {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        if self.defer_wake.load(Ordering::Acquire) {
-            self.deferred_wake.store(true, Ordering::Release);
-            // Close the race where registration completes after the first
-            // defer check but before this callback publishes its flag.
-            if self.defer_wake.load(Ordering::Acquire) {
-                return;
-            }
-            if !self.deferred_wake.swap(false, Ordering::AcqRel) {
-                return;
-            }
+        // The single state modification order hands each wake to exactly one
+        // publisher: registration completion or this callback.
+        if self.registration_wake.request_publish() {
+            self.publish();
         }
-        self.publish();
     }
 }
 
@@ -403,14 +435,12 @@ impl InterestWaker {
         Arc::new(Self {
             epoll: Arc::downgrade(epoll),
             interest: Arc::downgrade(interest),
-            defer_wake: AtomicBool::new(true),
-            deferred_wake: AtomicBool::new(false),
+            registration_wake: RegistrationWakeState::new(),
         })
     }
 
     fn finish_register(&self, ready: bool) {
-        self.defer_wake.store(false, Ordering::Release);
-        let had_deferred_wake = self.deferred_wake.swap(false, Ordering::AcqRel);
+        let had_deferred_wake = self.registration_wake.finish_register();
         if ready || had_deferred_wake {
             self.publish();
         }
@@ -898,6 +928,11 @@ impl Epoll {
         self.inner.flush_ready_waiters();
     }
 
+    #[cfg(all(test, axtest))]
+    pub(super) fn defer_ready_waiters_for_test(&self, published: usize) {
+        self.inner.defer_ready_waiters(published);
+    }
+
     pub fn modify(&self, fd: i32, event: EpollEvent, flags: EpollFlags) -> StarryResult<()> {
         let key = EntryKey::new(fd)?;
 
@@ -1125,6 +1160,18 @@ fn epoll_hup_does_not_synthesize_readable_for_test() -> bool {
 
 #[cfg(all(test, not(axtest)))]
 mod tests {
+    #[test]
+    fn registration_wake_state_preserves_both_handoff_orders() {
+        let wake_first = super::RegistrationWakeState::new();
+        assert!(!wake_first.request_publish());
+        assert!(wake_first.finish_register());
+        assert!(wake_first.request_publish());
+
+        let register_first = super::RegistrationWakeState::new();
+        assert!(!register_first.finish_register());
+        assert!(register_first.request_publish());
+    }
+
     #[cfg(all(test, not(axtest)))]
     #[test]
     fn epoll_event_matching_rules_hold() {
