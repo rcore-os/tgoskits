@@ -6,9 +6,23 @@
 )]
 
 use alloc::vec::Vec;
+use std::sync::LazyLock;
 
 use anyhow::Result;
+use ax_std::sync::Mutex;
 use axvm::{VMId, VmStatus};
+
+/// VM IDs the production mux asked the manager to wake, in call order.
+static NOTIFIED_VMS: LazyLock<Mutex<Vec<VMId>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Removes and returns every recorded `notify_vm` target.
+///
+/// The guest-console tests drain this to observe that consuming an ordered
+/// record published a device-poll request for exactly the blocked VM.
+pub(crate) fn take_notified_vms() -> Vec<VMId> {
+    let mut notified = NOTIFIED_VMS.lock();
+    core::mem::take(&mut notified)
+}
 
 pub(crate) struct TestVm {
     id: VMId,
@@ -28,7 +42,8 @@ impl TestVm {
 pub(crate) struct AxvmManager;
 
 impl AxvmManager {
-    pub(crate) fn notify_vm(_vm_id: VMId) -> Result<()> {
+    pub(crate) fn notify_vm(vm_id: VMId) -> Result<()> {
+        NOTIFIED_VMS.lock().push(vm_id);
         Ok(())
     }
 

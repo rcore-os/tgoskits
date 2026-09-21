@@ -210,6 +210,11 @@ pub fn console_init() {
 
         let dropped = crate::guest_console::take_host_log_drops();
         if let Some(record) = crate::guest_console::read_host_log() {
+            // Both branches route the consumed record back through the mux, which
+            // publishes a device-poll request for every backend whose ordered
+            // submission was rejected with `WouldBlock`. Keep them on the mux
+            // entry points so releasing one record's capacity always wakes the
+            // blocked VM, which is not necessarily the record's owner.
             if let Some(tag) = record.output_tag() {
                 if dropped.records != 0 {
                     route_pending_host_log(

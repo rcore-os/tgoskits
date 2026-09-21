@@ -131,4 +131,128 @@ mod tests {
         ax_assert!(network_console::take_guest_output(1).is_empty());
         remove_guest_console(1);
     }
+
+    #[test]
+    fn ordered_queue_pop_notifies_the_blocked_vm_through_the_mux() {
+        use crate::{
+            guest_console_harness::{host, mux},
+            manager, network_console,
+        };
+
+        network_console::reset();
+        host::reset_output();
+        manager::take_notified_vms();
+        host::set_ordered_output_available(true);
+
+        // VM[2]'s record owns the only ordered slot, so the pop that releases
+        // capacity belongs to a VM other than the one left with retained bytes.
+        let backend_2 = mux::serial_backend_factory(2).create();
+        mux::mark_running(2);
+        ax_assert_eq!(backend_2.try_write(b"vm2\n"), 4);
+
+        network_console::set_guest_connected(1);
+        let backend_1 = mux::serial_backend_factory(1).create();
+        mux::mark_running(1);
+        ax_assert_eq!(backend_1.try_write(b"retained by uart"), 0);
+        ax_assert!(network_console::take_guest_output(1).is_empty());
+        // Backpressure alone must not wake anything; the wake belongs to the pop.
+        ax_assert!(manager::take_notified_vms().is_empty());
+
+        let popped = host::pop_ordered_record().expect("queued record is retained");
+        ax_assert_eq!((popped >> 64) as usize, 2);
+
+        // Driving the production pop handler must wake the blocked VM even
+        // though the popped record belongs to another VM.
+        mux::replay_guest_output(popped, b"vm2\n");
+        ax_assert_eq!(manager::take_notified_vms(), alloc::vec![1]);
+
+        // The retry now fits the released slot and reaches the network console.
+        ax_assert_eq!(backend_1.try_write(b"retained by uart"), 16);
+        ax_assert_eq!(network_console::take_guest_output(1), b"retained by uart");
+
+        remove_guest_console(2);
+        remove_guest_console(1);
+        host::reset_output();
+    }
+
+    #[test]
+    fn host_log_pop_notifies_the_blocked_vm_through_the_mux() {
+        use crate::{
+            guest_console_harness::{host, mux},
+            manager,
+        };
+
+        host::reset_output();
+        manager::take_notified_vms();
+        host::set_ordered_output_available(true);
+
+        // An untagged host log record owns the only ordered slot, so the next
+        // guest submission is rejected with backpressure.
+        ax_assert!(host::queue_host_log_record(b"host log\n"));
+
+        let blocked = mux::serial_backend_factory(1).create();
+        mux::mark_running(1);
+        ax_assert_eq!(blocked.try_write(b"retained"), 0);
+        // Backpressure alone must not wake anything.
+        ax_assert!(manager::take_notified_vms().is_empty());
+
+        // Consuming the host record releases the slot; the queue stub itself
+        // must not be the thing that wakes the VM.
+        let record = host::pop_ordered_host_record().expect("queued host log is retained");
+        ax_assert!(manager::take_notified_vms().is_empty());
+
+        // Only routing the popped bytes through the production host-log handler
+        // publishes the device-poll request for the blocked VM.
+        let _output = mux::route_host_log(&record, 0, 0);
+        ax_assert_eq!(manager::take_notified_vms(), alloc::vec![1]);
+
+        remove_guest_console(1);
+        host::reset_output();
+    }
+
+    #[test]
+    fn pop_notifies_only_blocked_backends_that_are_still_current() {
+        use crate::{
+            guest_console_harness::{host, mux},
+            manager,
+        };
+
+        host::reset_output();
+        manager::take_notified_vms();
+        host::set_ordered_output_available(true);
+
+        // Occupy the only ordered slot so later submissions report backpressure.
+        let filler = mux::serial_backend_factory(7).create();
+        mux::mark_running(7);
+        ax_assert_eq!(filler.try_write(b"filler"), 6);
+
+        let stopped = mux::serial_backend_factory(3).create();
+        mux::mark_running(3);
+        ax_assert_eq!(stopped.try_write(b"stopped"), 0);
+        mux::mark_stopped(3);
+
+        let replaced = mux::serial_backend_factory(4).create();
+        mux::mark_running(4);
+        ax_assert_eq!(replaced.try_write(b"replaced"), 0);
+        let _replacement = mux::serial_backend_factory(4).create();
+        mux::mark_running(4);
+
+        let live = mux::serial_backend_factory(5).create();
+        mux::mark_running(5);
+        ax_assert_eq!(live.try_write(b"live"), 0);
+        ax_assert!(manager::take_notified_vms().is_empty());
+
+        let popped = host::pop_ordered_record().expect("queued record is retained");
+        mux::replay_guest_output(popped, b"filler");
+
+        // Only the still-live blocked VM may be woken; the stopped incarnation
+        // and the replaced generation must not leak into the pop notification.
+        ax_assert_eq!(manager::take_notified_vms(), alloc::vec![5]);
+
+        remove_guest_console(7);
+        remove_guest_console(3);
+        remove_guest_console(4);
+        remove_guest_console(5);
+        host::reset_output();
+    }
 }

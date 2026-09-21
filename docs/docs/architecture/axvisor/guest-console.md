@@ -23,7 +23,7 @@ Axvisor 只有一个物理宿主控制台，但管理 shell 和多台客户机�
 | `network_console` | 私有保存启动快照、四条固定容量通道、独占网页会话和 Axvisor 网页行编辑；不提供 raw TCP listener | `browser-console` 功能启用时 |
 | `shell/mod.rs` | 作为输入事件循环的唯一 owner，消费 `ConsoleInputEvent`，调用 `activate()`，每轮 reconcile VM 状态 | 管理 shell |
 | `shell/command/vm.rs` | `vm start --console`、`vm console` 以及 start/stop/reset/resume/delete 的 mux lifecycle 调用 | 管理命令 |
-| `AxvmManager` 接入 | 提供 VM registry/status，输入入队后唤醒 VM；实际设备 poll 由 vCPU0 执行 | VM lifecycle 与运行期 |
+| `AxvmManager` 接入 | 提供 VM registry/status；输入入队后、以及 ordered record 被消费释放容量后唤醒对应 VM；实际设备 poll 由 vCPU0 执行 | VM lifecycle 与运行期 |
 
 `GuestConsoleMux` 持有一个共享的 `ConsoleCore`。`ConsoleCore` 有两把不可睡眠的
 `NoPreemptMutex`：`state` 保护以上全部可变状态以及 `backend_generation`/`backend_identity`，
@@ -158,6 +158,9 @@ factory 返回的 `Arc<dyn SerialBackend>` 被 `SerialDeviceModel` 持有；mode
 
 `GuestSerialBackend::try_write()` 先检查 active generation，再把整段 bytes 作为一条带 `(VMId, BackendGeneration)` tag 的记录提交给 ordered `ConsoleLogSubscription` queue。队列满时 runtime 以 `WouldBlock` 拒绝整次提交，`try_write()` 返回 0，PL011 retained TX FIFO 保留字节等待下一次 poll；这不算作 host-log drop，只有 runtime 实际丢弃的记录才计入摘要。
 
+被拒绝的提交会在该 VM 的 `GuestState.retained_tx` 上记下本次提交的 active generation，把容量
+释放后的 device-poll 唤醒留给 pop 路径发布（见 6.1 节）。
+
 设备 runtime 的底层 stop、drop、reset 或 manager remove 不会自动调用这些应用接口。下一节列出了 Axvisor 应用层的实际调用路径。
 
 ## 5. VM 生命周期接入
@@ -207,9 +210,10 @@ flowchart LR
     Lock["output_lock"]
     Valid{"backend_generation current?"}
     Record["ordered ConsoleLogSubscription<br/>record queue + (VMId, generation) tag"]
-    Full["WouldBlock<br/>try_write 返回 0"]
-    Retry["PL011 retained TX FIFO<br/>后续 device poll 重试（所有 guest）"]
-    Shell["shell task<br/>read_host_log"]
+    Full["WouldBlock<br/>记 retained_tx 并返回 0"]
+    Retry["PL011 retained TX FIFO<br/>device poll 重试（被阻塞的 guest）"]
+    Shell["shell task<br/>read_host_log + replay/route"]
+    Drain["take_retained_tx_retry_vms<br/>output_lock → state，锁外 notify_vm"]
     Identity{"backend_identity valid?"}
     Mode{"GuestOutputMux mode"}
     Boot["显式 BootMultiplex<br/>完整行 + 可选 [VM n]"]
@@ -226,6 +230,9 @@ flowchart LR
     Valid -->|是| Record
     Record -->|queue 满| Full
     Full -->|保留未接受字节| Retry
+    Full -->|记当前 active generation| Drain
+    Shell -->|任何 record 被消费| Drain
+    Drain -->|generation 仍有效| Retry
     Record --> Shell --> Identity
     Identity -->|否| Drop
     Identity -->|是| Mode
@@ -236,19 +243,64 @@ flowchart LR
     Queue --> Worker --> Host
 ```
 
-### 6.1 缓存启动输出
+### 6.1 队列容量释放后的 retry 唤醒
+
+`WouldBlock` 只表示“这一次提交被容量拒绝”，被拒绝的字节仍由 PL011 retained TX FIFO 持有；恢复
+信号必须交给真正持有字节的那个 VM 去重新 poll 设备，而不是交给被消费记录的 owner。因此
+`ConsoleCore::write_guest_output()` 在 `output_lock` 下完成 active admission 与 ordered record
+提交，并且只有 host 返回**恰好** `RuntimeError::WouldBlock` 时，才在同一个 `output_lock`
+临界区内给该 VM 的 `GuestState.retained_tx` 记下本次提交的 active generation。这个标记是
+`GuestState` 上的一个 `Option<BackendGeneration>`：producer 只翻转已存在 entry 的字段，不分配、
+不睡眠，也不新建平行队列、计时器或事实源。提交成功（`Ok(true)`）或没有 ordered subscription
+（`Ok(false)`，直接 replay 到 host transport）时清掉旧标记。
+
+shell task 从 ordered queue 取出一条 record 后调用 `replay_guest_output()`（带 tag）或
+`route_host_log()`（宿主日志或合成空记录）；两个入口都会在锁外发布唤醒：
+`take_retained_tx_retry_vms()` 在 `output_lock` → `state` 下遍历各 `GuestState`，把
+`retained_tx` 仍是当前 active generation 的 VM 取出并清标记，返回后两个锁都已释放，才逐个调用
+`AxvmManager::notify_vm()`。被弹出的 record 可能是宿主日志（没有 tag），也可能属于另一台 VM，
+所以唤醒集合只来自被阻塞 backend 自己的 generation，绝不会来自 record 的 tag。没有 pending
+标记时不调用 `notify_vm()`，因此不会为未阻塞的 guest 产生多余唤醒。
+
+`output_lock` 同时串行化 producer 的“提交 + 记标记”和 consumer 的“drain”，因此
+pop/write 交错只剩三种可观察结果，“检测到队列满”和“记下等待 retry 的 backend”之间不会
+丢唤醒：
+
+| 交错 | 队列状态 | 结果 |
+| --- | --- | --- |
+| drain 早于 producer 的提交 | 容量已释放 | 提交返回 `Ok(true)`，不记标记，不需要唤醒 |
+| pop 落在提交与记标记之间 | 容量已释放，但 producer 已判定 `WouldBlock` | drain 被 `output_lock` 挡到 producer 记完标记之后，仍能看到该 VM 并发布 poll |
+| drain 晚于提交 | 对本次提交容量仍然满 | producer 记标记，之后一次 pop 的 drain 再发布 poll |
+
+唤醒只在 mux 锁全部释放后发布，因此不会把 `output_lock`/`state` 带进 manager 与 scheduler；`notify_vm`
+设置 Release 的 pending device-poll flag 并 kick vCPU0，即使请求早于 guest 进入 WFI 也会在
+park 前被看到，guest 随后的 device poll 会让 PL011 `drain_tx()` 重试 retained FIFO。
+
+drain 挂在 `replay_guest_output()`/`route_host_log()` 两个 pop 入口上：shell 每消费一条 record
+后调用其中之一，mux 不校验这次调用是否真的对应一次弹出。因此在容量并未真正释放时调用同一
+入口（例如宿主日志 drop 摘要的合成空记录路径）只会多发布一次幂等的 device-poll 请求，不会
+漏唤醒，也不会重复投递字节。
+
+生命周期上，标记只在仍有效时发布：`mark_stopped()`、reconcile 的 terminal 转换与
+`set_vm_states()` 的 inactive 转换都会走 `GuestState::invalidate_backend()` 清掉
+`retained_tx`；backend replacement 用新的 `GuestState` 覆盖旧状态；`remove_if_backend()`/
+`remove()` 删除整条 entry。因此 stop 或 replacement 之后不会再有针对旧 generation 的 retry
+唤醒，而 stop 前已经进入 ordered queue 的记录仍按 identity 正常 replay，与 4.3 的
+active admission/stable identity 语义一致。
+
+### 6.2 缓存启动输出
 
 `GuestOutputMux` 默认处于 `Interactive { foreground: None }`：无论当前有一台还是多台 running VM，客户机 TX 都只写入各自的 ring，不写宿主终端。Axvisor 的默认启动路径不自动附着客户机，也不进入 `BootMultiplex`。因此管理 shell 和宿主日志始终可见，而 Linux/ArceOS 等客户机的启动输出要到 `vm console <VM_ID>` 成功后才回放。
 
 `BootMultiplex` 仍是仲裁器可显式选择的完整行输出模式，但不属于 Axvisor 默认启动流程。它只在调用方明确要求时同时观察多个 VM：只有一个 running VM 时，pending 字节立即输出且不加前缀；多个 VM running 时，mux 等某个 VM 的 pending 中出现 `\n`，再一次取出一条完整逻辑行并加一个 `[VM n] ` 前缀；同一行被多次 backend write 分片时仍只加一次前缀。未结束片段留在该 VM 的 ring，不与另一 VM 的行拼接。
 
-### 6.2 `Interactive`
+### 6.3 `Interactive`
 
 `activate()` 或附着后的第一次普通输入会选择 foreground 并进入 Interactive。前台写先回放它在 ring 中的内容，再直接输出当前 bytes；后台 VM 只追加 ring，不写宿主。`Ctrl+X h`、前台 stop/delete/reconcile 会调用 `buffer_all()`，把 mode 设为 `Interactive { foreground: None }`，此后所有 guest 都只缓存。对 Stopped VM 执行 `vm console` 使用非交互 replay：drain 指定 ring、补齐物理行，并保持 `foreground: None`，因此 shell 可继续执行下一条命令。
 
 每 VM ring 上限是 16 KiB。它在 backend 注册的任务上下文中一次预分配；vCPU 热路径满后只执行 pop/push，不扩容。继续追加会从头淘汰最旧字节并累计丢失数，因此保留最新日志并限制内存。下次形成可输出的 boot 行或切到该 VM 时，mux 先输出 `[Axvisor VM n console dropped N buffered bytes]` 摘要，再回放保留内容。`select_foreground()` 在同一个 `output_lock` 临界区内 drain ring 后接入直写；并发 writer 必须等回放完成，不能插到回放中间。ring 保存原始客户机字节，`[VM n]` 只在 BootMultiplex 输出完整行时临时生成，不会回流到客户机输入。
 
-### 6.3 物理行完成
+### 6.4 物理行完成
 
 `physical_line_open` 和 `owner` 描述宿主终端当前未以换行结束的输出。以下转换会在 owner 不兼容时先补一个 `\n`：BootMultiplex 从一个 VM 的未结束片段切到另一 VM 的完整行、切换 interactive foreground、detach/stop/delete 返回 shell。这个补行是宿主显示边界，不写入任何 VM ring。
 
@@ -259,13 +311,13 @@ flowchart LR
 | 边界 | 当前保证 | 限制 |
 | --- | --- | --- |
 | 宿主 RX | shell loop 独占 `TaskConsoleInput`；runtime RX IRQ/worker 或 RawHal fallback 保持单 owner | capability 已被取得或 runtime 停止时，初始化/等待返回明确错误 |
-| 宿主日志 | 唯一 `ConsoleLogSubscription` 按完整 record 投递；guest raw output 以 `(VMId, generation)` tag 进入同一 ordered queue；编辑行清除后重画，guest 前台期间有界缓存 | guest 提交遇到满队列时返回 `WouldBlock`，由 PL011 retained TX FIFO 重试且不计 host-log drop；只有 runtime 实际丢弃的记录才报告摘要，panic/emergency 不保证重画 |
+| 宿主日志 | 唯一 `ConsoleLogSubscription` 按完整 record 投递；guest raw output 以 `(VMId, generation)` tag 进入同一 ordered queue；编辑行清除后重画，guest 前台期间有界缓存 | guest 提交遇到满队列时返回 `WouldBlock`，由 PL011 retained TX FIFO 重试且不计 host-log drop；释放容量后的 retry 唤醒只在 record 被消费时按 `retained_tx` 发布；只有 runtime 实际丢弃的记录才报告摘要，panic/emergency 不保证重画 |
 | mux 锁 | 双锁路径固定 `output_lock` → `state`；vCPU 回调使用 `NoPreemptMutex`，不进入可睡眠 API | hard IRQ 不进入 mux；新增路径必须保持同一锁顺序 |
-| VM notify | 入队后锁外 notify，不把 mux 锁带进 manager/scheduler | notify 失败只告警，字节等后续 poll |
+| VM notify | 输入入队后、以及任何 ordered record 被消费后按 `retained_tx`，都在锁外 notify，不把 mux 锁带进 manager/scheduler | notify 失败只告警，字节等后续 poll；唤醒只针对被阻塞且 generation 仍有效的 VM |
 | 虚拟设备 poll | 只有 vCPU0 调用 `poll_vm_devices()`，它是串口 backend 的唯一 poll owner | secondary vCPU 不消费串口输入 |
 | 单 vCPU guest | `notify_vm()` 设置 Release 发布的 pending device-poll flag 并唤醒；vCPU0 用 Acquire/AcqRel 消费 | flag 只表达“需要 poll”，不计数；队列才保存字节 |
 | SMP guest | 与单 vCPU guest 一样先发布 pending device-poll flag，再通过线程世代绑定的 capability 定向 kick vCPU0 | flag 只表达“需要 poll”，不计数；队列才保存字节 |
-| 输出并发 | `output_lock` 覆盖 active admission、record 入队与 ring replay；ordered record queue 保持 guest 写入顺序，固定 64 KiB transport 保持直接 replay 的事务边界，只有 output worker 等待 UART | guest record queue 满时 `try_write()` 返回 0 且不丢弃已排队记录，由 PL011 重试；直接 host transport 事务满时整事务回滚并报告摘要；per-guest ring 淘汰最旧字节；这些路径都不阻塞 vCPU writer |
+| 输出并发 | `output_lock` 覆盖 active admission、record 入队、`retained_tx` 记/清与 retry drain；ordered record queue 保持 guest 写入顺序，固定 64 KiB transport 保持直接 replay 的事务边界，只有 output worker 等待 UART | guest record queue 满时 `try_write()` 返回 0 且不丢弃已排队记录，由 PL011 重试，并由 pop 路径锁外 `notify_vm()` 唤醒；直接 host transport 事务满时整事务回滚并报告摘要；per-guest ring 淘汰最旧字节；这些路径都不阻塞 vCPU writer |
 | 网络输出 | 每端点独立 64 KiB 固定队列；有连接时 vCPU 只复制原始字节并通过 `IrqNotify` 唤醒对应网页输出任务 | 无连接时不保留历史也不获取网络队列锁；慢客户端只影响自身通道并最终触发该端点队列丢弃摘要 |
 
 `browser-console` 在默认 VM 初始化后只获取一次运行时 VM 列表并按 VM ID 排序。网页通过 `/api/consoles` 获取这个启动快照，
@@ -297,7 +349,7 @@ SMP 路径仍不能让任意 vCPU poll，那会破坏设备 poll 的 single-owne
 | 客户机不立即收到输入 | 输入队列是否满及 overflow warning；`notify_vm` warning；vCPU0 是否持续产生可处理的 VM-exit | 4096 字节尾部丢弃并按 drain 周期报告一次；kick 会定向唤醒或退出 vCPU0 |
 | reset 后控制台永久无输入输出 | reset 前是否调用过 `mark_stopped()`；是否误以为 reset 会创建 backend | reset clone 同一 backend Arc，不会发布新 generation；已失效 generation 不会自动复活 |
 | stop 后仍看到 guest output | 记录是 stop 前已进入 ordered record queue 的，还是 stop 后新的提交 | stop 清 active generation 并拒绝新的 input/output submission，但保留 identity，已排队记录仍可 replay；replacement/remove 才让旧 identity 失效，旧 backend 的新提交与 replay 都被拒绝 |
-| guest 输出停止或丢字 | PL011 retained TX FIFO 是否积压、`FR.TXFE/BUSY` 电平、ordered record queue 是否持续返回 `WouldBlock`、host transport 是否报告 drop 摘要 | record queue 满时 `try_write()` 返回 0，PL011 在下一次 poll 重试；只有 runtime 实际丢弃的记录或 direct host transport 溢出才报告摘要 |
+| guest 输出停止或丢字 | PL011 retained TX FIFO 是否积压、`FR.TXFE/BUSY` 电平、ordered record queue 是否持续返回 `WouldBlock`、`notify_vm` warning、host transport 是否报告 drop 摘要 | record queue 满时 `try_write()` 返回 0 并记 `retained_tx`，PL011 在下一次 poll 重试；容量被消费后 pop 路径锁外 `notify_vm()` 发布该 poll，被唤醒的是被阻塞 VM 而不是被消费记录的 owner；只有 runtime 实际丢弃的记录或 direct host transport 溢出才报告摘要 |
 | 多 VM 启动日志看似停住 | 对应 VM 是否只写了未结束片段 | BootMultiplex 在多 VM 时等完整 `\n` 行；切换 owner 才做物理补行 |
 | 切换前台后少了早期日志 | 该 VM ring 是否超过 16 KiB，是否出现 dropped 摘要，reconcile 是否 buffer 了未完成行 | ring 淘汰最旧字节并在回放前报告；stop 保留 output ring 与 identity，只有 backend replacement 或 remove 会删除该 VM 的 output state |
 | detach 后 shell prompt 接在 guest prompt 后 | 检查 `buffer_all()` 是否返回补行、调用方是否写出其结果 | `physical_line_open` 为真时必须先写 `\n` |
@@ -316,6 +368,31 @@ SMP 路径仍不能让任意 vCPU poll，那会破坏设备 poll 的 single-owne
 - VM 2 网络输入不改变物理 VM 1 foreground，并拒绝 stopped 或 stale backend；
 - 有连接的 VM 输出只进入对应网络通道，无连接时跳过网络输出路径；
 - 启动布局按 VM ID 排序、最多选择三个客户机并使用配置名称。
+
+`os/axvisor/tests/axtest.rs` 另有一组只在该 kernel harness 中运行的用例：它们编译真实的
+`guest_console/mux`，只把 host 侧 stub 成一个有界 ordered record queue，并让
+`os/axvisor/tests/manager.rs` 的 `AxvmManager::notify_vm()` 记录收到的 VM ID。因此这些用例
+覆盖的是 production 的 admission、`retained_tx` 记账、pop 发布与 generation 过滤，而不是测试
+自己实现的生产行为。
+
+- `ordered_queue_pop_notifies_the_blocked_vm_through_the_mux`：先用另一台 VM 的记录占满单槽
+  ordered queue，让目标 VM 的提交收到 `WouldBlock`；此时断言 manager 收到 **0 次** `notify_vm()`，
+  再弹出这条**属于另一台 VM** 的记录并调用 production 的 `replay_guest_output(tag, bytes)`，
+  断言 manager 恰好收到被阻塞 VM 一次；随后重试提交必须成功并进入网络输出。它同时排除“按记录
+  tag 唤醒”“唤醒所有 running VM”和“没有 pop 就提前消费通知”的实现。
+- `host_log_pop_notifies_the_blocked_vm_through_the_mux`：把一条 untagged 宿主日志记录放进同一
+  个单槽 ordered queue（host stub 现在同时保存 tagged guest 输出与 untagged 宿主日志），让目标
+  VM 的提交收到 `WouldBlock`；先断言失败提交本身不产生唤醒，再 pop 出这条宿主记录并把它交给
+  shell 使用的 `route_host_log()`，断言被阻塞 VM 恰好被通知一次，证明唤醒由宿主记录释放容量
+  驱动，而不是 stub 自己伪造。
+- `pop_notifies_only_blocked_backends_that_are_still_current`：被 stop 的 incarnation 与被
+  replacement 替换的 generation 在一次 pop 之后不得出现在 manager 的 `notify_vm()` 记录里，
+  而仍然存活的被阻塞 VM 必须出现。
+
+这些用例观察的是真实 pop 入口到 `AxvmManager::notify_vm()` 的连接（manager 由 stub 记录），
+证明 tagged/untagged 两条 pop 分支都会触发唤醒、且只唤醒当前 generation。它们不是端到端
+验证：没有在 QEMU 中真正让 guest 进入 WFI 再走 PL011 retry 的完整中断路径，也没有覆盖真实
+UART、SMP kick 与真实 manager/runtime 的 `notify_vm()` 组合。
 
 `mux/output.rs` 另有 16 个内部测试，直接覆盖完整行选择、分片只加一次前缀、pending/total 容量上界、超大单次 write、16 KiB 淘汰与回放、Interactive 前台分片、reset/reconcile 后物理分隔符。`console_mux/transport.rs` 的 4 个测试验证 FIFO、队列满、超大事务和分块溢出时的整事务回滚。顶层 mux 测试还覆盖宿主完整日志隔离、guest 前台缓存与返回 shell 后回放；`axvm::runtime` 与 vCPU runtime 测试单 vCPU poll flag 和 SMP 不发布 shared flag 的差异。
 
