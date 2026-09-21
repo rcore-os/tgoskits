@@ -910,6 +910,11 @@ pub fn sys_umount2(
     } else {
         fs_context.lock().resolve(target)?
     };
+    // Follow mounts stacked on the resolved dentry, like Linux path
+    // resolution: after `pivot_root(".", ".")` the caller detaches the stacked
+    // old root with `umount2(".", MNT_DETACH)`, which must target the old
+    // root mount rather than the new root itself.
+    let target = target.mount_top();
 
     if !current.as_thread().cred().has_cap_sys_admin() {
         return Err(crate::StarryError::OperationNotPermitted);

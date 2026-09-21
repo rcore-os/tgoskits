@@ -3,7 +3,6 @@
 #include <fcntl.h>
 #include <sched.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
@@ -143,6 +142,77 @@ static int child_body(void) {
     return 0;
 }
 
+/* The `pivot_root(".", ".")` idiom from man 2 pivot_root NOTES (used by
+ * runc/docker): self-bind the new root, chdir into it, pivot with
+ * put_old = ".", then detach the stacked old root with
+ * `umount2(".", MNT_DETACH)`. */
+static int child_body_dot_dot(void) {
+    if (unshare(CLONE_NEWNS) < 0) {
+        perror("dotdot: unshare(CLONE_NEWNS)");
+        return 1;
+    }
+
+    if (mkdir("/tmp/dotdot", 0755) < 0 && errno != EEXIST) {
+        perror("dotdot: mkdir /tmp/dotdot");
+        return 1;
+    }
+
+    FILE *marker = fopen("/tmp/dotdot/pivot_marker", "w");
+    if (!marker) {
+        perror("dotdot: create pivot_marker");
+        return 1;
+    }
+    fputs("PIVOT_ROOT_DOT_DOT_OK\n", marker);
+    fclose(marker);
+
+    if (mount("/tmp/dotdot", "/tmp/dotdot", NULL, MS_BIND, NULL) < 0) {
+        perror("dotdot: self-bind mount");
+        return 1;
+    }
+    if (chdir("/tmp/dotdot") < 0) {
+        perror("dotdot: chdir");
+        return 1;
+    }
+
+    if (pivot_root_call(".", ".") < 0) {
+        perror("dotdot: pivot_root");
+        fprintf(stderr, "dotdot: errno=%d\n", errno);
+        return 1;
+    }
+    if (umount2(".", MNT_DETACH) < 0) {
+        perror("dotdot: umount2 old root");
+        return 1;
+    }
+
+
+    FILE *verify = fopen("/pivot_marker", "r");
+    if (!verify) {
+        fprintf(stderr, "dotdot: FAIL /pivot_marker missing after pivot\n");
+        return 1;
+    }
+    char line[64];
+    if (!fgets(line, sizeof(line), verify) ||
+        strstr(line, "PIVOT_ROOT_DOT_DOT_OK") == NULL) {
+        fprintf(stderr, "dotdot: FAIL pivot_marker content mismatch\n");
+        fclose(verify);
+        return 1;
+    }
+    fclose(verify);
+
+    /* The old root must be fully detached: the old tree's /tmp/dotdot path
+     * (visible before the pivot) must no longer resolve. */
+    struct stat st;
+    if (stat("/tmp/dotdot", &st) == 0) {
+        fprintf(stderr, "dotdot: FAIL old root still reachable at /tmp/dotdot\n");
+        return 1;
+    }
+    if (errno != ENOENT && errno != ENOTDIR) {
+        fprintf(stderr, "dotdot: FAIL old-root probe errno=%d\n", errno);
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
     if (mkdir("/tmp", 0755) < 0 && errno != EEXIST) {
         perror("mkdir /tmp");
@@ -165,6 +235,23 @@ int main(void) {
     }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         fprintf(stderr, "FAIL: child status=%d\n", status);
+        return 1;
+    }
+
+    pid = fork();
+    if (pid < 0) {
+        perror("fork dotdot");
+        return 1;
+    }
+    if (pid == 0) {
+        _exit(child_body_dot_dot());
+    }
+    if (waitpid(pid, &status, 0) < 0) {
+        perror("waitpid dotdot");
+        return 1;
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "FAIL: dotdot child status=%d\n", status);
         return 1;
     }
     if (access("/bin/sh", X_OK) < 0) {
