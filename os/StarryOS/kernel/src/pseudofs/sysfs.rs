@@ -1216,14 +1216,20 @@ impl SimpleDirOps for PlatformDeviceDir {
             "uevent" => {
                 let driver = self.driver.to_owned();
                 SimpleFile::new_regular(fs, move || {
-                    // MODALIAS 必须有:libdrm `drmParseOFBusInfo`/`drmParseOFDeviceInfo`
-                    // (drmGetDevice2 的 platform 路径)在无 OF 数据(x86)时回退到
-                    // MODALIAS,读不到则 -ENOENT → EGL device 枚举失败 →
-                    // dri2_initialize_drm 用 fd=0 调 gbm_create_device → "failed to
-                    // create gbm device"。
-                    Ok(format!(
-                        "DRIVER={driver}\nMODALIAS=platform:{driver}\nSUBSYSTEM=platform\n"
-                    ))
+                    // Other platform devices keep their original uevent content.
+                    // Only virtio-gpu needs MODALIAS: libdrm
+                    // `drmParseOFBusInfo`/`drmParseOFDeviceInfo` (the platform
+                    // branch of drmGetDevice2) falls back to MODALIAS when no OF
+                    // data is present (x86); without it read fails with -ENOENT,
+                    // EGL device enumeration fails, and dri2_initialize_drm
+                    // calls gbm_create_device with fd=0 -> "failed to create
+                    // gbm device".
+                    let modalias = if driver == "virtio-gpu" {
+                        "MODALIAS=platform:virtio-gpu\n"
+                    } else {
+                        ""
+                    };
+                    Ok(format!("DRIVER={driver}\n{modalias}SUBSYSTEM=platform\n"))
                 })
                 .into()
             }
