@@ -2,7 +2,7 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 
 use irq_framework::IrqId;
 
-use crate::{CapsetInfo, DisplayInfo, TransferBox};
+use crate::{CapsetInfo, DisplayInfo, ResourceCreate3d, ResourceCreateBlob, Transfer3d};
 
 pub type DisplayResult<T = ()> = Result<T, DisplayError>;
 
@@ -115,6 +115,14 @@ pub trait DisplayDevice: Send {
         false
     }
 
+    /// Returns `true` if `VIRTIO_GPU_F_CONTEXT_INIT` was negotiated.
+    ///
+    /// Reported to userspace as `VIRTGPU_PARAM_CONTEXT_INIT`; the
+    /// context-init protocol is not implied by virgl 3D support.
+    fn has_context_init(&self) -> bool {
+        false
+    }
+
     fn ctx_create(&mut self, _ctx_id: u32, _name: &str, _context_init: u32) -> DisplayResult {
         Err(DisplayError::NotSupported)
     }
@@ -131,36 +139,11 @@ pub trait DisplayDevice: Send {
         Err(DisplayError::NotSupported)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn resource_create_3d(
-        &mut self,
-        _ctx_id: u32,
-        _resource_id: u32,
-        _target: u32,
-        _format: u32,
-        _bind: u32,
-        _width: u32,
-        _height: u32,
-        _depth: u32,
-        _array_size: u32,
-        _last_level: u32,
-        _nr_samples: u32,
-        _flags: u32,
-    ) -> DisplayResult {
+    fn resource_create_3d(&mut self, _params: ResourceCreate3d) -> DisplayResult {
         Err(DisplayError::NotSupported)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn resource_create_blob(
-        &mut self,
-        _ctx_id: u32,
-        _resource_id: u32,
-        _blob_mem: u32,
-        _blob_flags: u32,
-        _size: u64,
-        _blob_id: u64,
-        _cmd: &[u8],
-    ) -> DisplayResult {
+    fn resource_create_blob(&mut self, _params: ResourceCreateBlob<'_>) -> DisplayResult {
         Err(DisplayError::NotSupported)
     }
 
@@ -168,31 +151,11 @@ pub trait DisplayDevice: Send {
         Err(DisplayError::NotSupported)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn transfer_to_host_3d(
-        &mut self,
-        _ctx_id: u32,
-        _resource_id: u32,
-        _box_: TransferBox,
-        _offset: u64,
-        _level: u32,
-        _stride: u32,
-        _layer_stride: u32,
-    ) -> DisplayResult {
+    fn transfer_to_host_3d(&mut self, _params: Transfer3d) -> DisplayResult {
         Err(DisplayError::NotSupported)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn transfer_from_host_3d(
-        &mut self,
-        _ctx_id: u32,
-        _resource_id: u32,
-        _box_: TransferBox,
-        _offset: u64,
-        _level: u32,
-        _stride: u32,
-        _layer_stride: u32,
-    ) -> DisplayResult {
+    fn transfer_from_host_3d(&mut self, _params: Transfer3d) -> DisplayResult {
         Err(DisplayError::NotSupported)
     }
 
@@ -273,12 +236,7 @@ impl DisplayDevice for ErasedDisplayDevice {
         self.inner.set_scanout(scanout_id, resource_id, x, y, w, h)
     }
 
-    fn resource_create_2d(
-        &mut self,
-        resource_id: u32,
-        width: u32,
-        height: u32,
-    ) -> DisplayResult {
+    fn resource_create_2d(&mut self, resource_id: u32, width: u32, height: u32) -> DisplayResult {
         self.inner.resource_create_2d(resource_id, width, height)
     }
 
@@ -288,7 +246,8 @@ impl DisplayDevice for ErasedDisplayDevice {
         paddr: u64,
         length: u32,
     ) -> DisplayResult {
-        self.inner.resource_attach_backing(resource_id, paddr, length)
+        self.inner
+            .resource_attach_backing(resource_id, paddr, length)
     }
 
     fn transfer_to_host_2d(
@@ -321,6 +280,10 @@ impl DisplayDevice for ErasedDisplayDevice {
         self.inner.has_resource_blob()
     }
 
+    fn has_context_init(&self) -> bool {
+        self.inner.has_context_init()
+    }
+
     fn ctx_create(&mut self, ctx_id: u32, name: &str, context_init: u32) -> DisplayResult {
         self.inner.ctx_create(ctx_id, name, context_init)
     }
@@ -337,94 +300,24 @@ impl DisplayDevice for ErasedDisplayDevice {
         self.inner.ctx_detach_resource(ctx_id, resource_id)
     }
 
-    fn resource_create_3d(
-        &mut self,
-        ctx_id: u32,
-        resource_id: u32,
-        target: u32,
-        format: u32,
-        bind: u32,
-        width: u32,
-        height: u32,
-        depth: u32,
-        array_size: u32,
-        last_level: u32,
-        nr_samples: u32,
-        flags: u32,
-    ) -> DisplayResult {
-        self.inner.resource_create_3d(
-            ctx_id,
-            resource_id,
-            target,
-            format,
-            bind,
-            width,
-            height,
-            depth,
-            array_size,
-            last_level,
-            nr_samples,
-            flags,
-        )
+    fn resource_create_3d(&mut self, params: ResourceCreate3d) -> DisplayResult {
+        self.inner.resource_create_3d(params)
     }
 
     fn resource_unref(&mut self, resource_id: u32) -> DisplayResult {
         self.inner.resource_unref(resource_id)
     }
 
-    fn resource_create_blob(
-        &mut self,
-        ctx_id: u32,
-        resource_id: u32,
-        blob_mem: u32,
-        blob_flags: u32,
-        size: u64,
-        blob_id: u64,
-        cmd: &[u8],
-    ) -> DisplayResult {
-        self.inner.resource_create_blob(ctx_id, resource_id, blob_mem, blob_flags, size, blob_id, cmd)
+    fn resource_create_blob(&mut self, params: ResourceCreateBlob<'_>) -> DisplayResult {
+        self.inner.resource_create_blob(params)
     }
 
-    fn transfer_to_host_3d(
-        &mut self,
-        ctx_id: u32,
-        resource_id: u32,
-        box_: TransferBox,
-        offset: u64,
-        level: u32,
-        stride: u32,
-        layer_stride: u32,
-    ) -> DisplayResult {
-        self.inner.transfer_to_host_3d(
-            ctx_id,
-            resource_id,
-            box_,
-            offset,
-            level,
-            stride,
-            layer_stride,
-        )
+    fn transfer_to_host_3d(&mut self, params: Transfer3d) -> DisplayResult {
+        self.inner.transfer_to_host_3d(params)
     }
 
-    fn transfer_from_host_3d(
-        &mut self,
-        ctx_id: u32,
-        resource_id: u32,
-        box_: TransferBox,
-        offset: u64,
-        level: u32,
-        stride: u32,
-        layer_stride: u32,
-    ) -> DisplayResult {
-        self.inner.transfer_from_host_3d(
-            ctx_id,
-            resource_id,
-            box_,
-            offset,
-            level,
-            stride,
-            layer_stride,
-        )
+    fn transfer_from_host_3d(&mut self, params: Transfer3d) -> DisplayResult {
+        self.inner.transfer_from_host_3d(params)
     }
 
     fn submit_cmd(&mut self, ctx_id: u32, cmds: &[u8]) -> Result<u64, DisplayError> {

@@ -111,6 +111,17 @@ fn add_to_fd(
                     }
                     return add_file_like(wrapped, flags & O_CLOEXEC != 0);
                 }
+                if crate::pseudofs::dev::card0::is_card0_device(inner) {
+                    let wrapped = crate::pseudofs::dev::card0::open_card0_file(
+                        inner,
+                        file,
+                        flags,
+                    )?;
+                    if flags & O_NONBLOCK != 0 {
+                        wrapped.set_nonblocking(true)?;
+                    }
+                    return add_file_like(wrapped, flags & O_CLOEXEC != 0);
+                }
                 #[cfg(feature = "rknpu")]
                 if crate::pseudofs::dev::card1::is_card1_device(inner) {
                     let wrapped = crate::pseudofs::dev::card1::open_card1_file(file, flags)?;

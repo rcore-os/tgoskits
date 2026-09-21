@@ -1,0 +1,17 @@
+[package]
+name = "virtio-gpu"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+description = "Focused no_std VirtIO GPU protocol core (2D display and virgl 3D/blob)"
+license = "MIT"
+repository.workspace = true
+keywords = ["virtio", "gpu", "virgl", "no-std"]
+categories = ["hardware-support", "no-std"]
+
+[dependencies]
+bitflags.workspace = true
+log.workspace = true
+thiserror.workspace = true
+virtio-drivers = { workspace = true, features = ["alloc"] }
+zerocopy = { workspace = true, features = ["derive"] }

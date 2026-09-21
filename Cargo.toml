@@ -155,6 +155,7 @@ ax-ctor-bare-macros = { version = "0.4", path = "components/ctor_bare/ctor_bare_
 ax-display = { version = "0.6", path = "os/arceos/modules/axdisplay" }
 ax-driver = { version = "0.18", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
+virtio-gpu = { version = "0.1", path = "drivers/gpu/virtio-gpu" }
 ax-fs-ng = { version = "0.11", path = "fs/ax-fs-ng" }
 ax-hal = { version = "0.8.3", path = "os/arceos/modules/axhal" }
 irq-framework = { version = "0.5", path = "components/irq-framework" }

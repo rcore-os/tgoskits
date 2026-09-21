@@ -7,7 +7,8 @@ use rdif_display::{
 };
 
 use crate::{
-    CapsetInfo, DisplayDevice, DisplayError, DisplayInfo, Gpu3dErrorKind, PixelFormat, TransferBox,
+    BlobMemory, CapsetInfo, DisplayDevice, DisplayError, DisplayInfo, Gpu3dErrorKind, PixelFormat,
+    ResourceCreate3d, ResourceCreateBlob, Transfer3d, TransferBox,
 };
 
 pub struct RdifDisplayDevice {
@@ -165,6 +166,10 @@ impl DisplayDevice for RdifDisplayDevice {
         self.device.has_resource_blob()
     }
 
+    fn has_context_init(&self) -> bool {
+        self.device.has_context_init()
+    }
+
     fn ctx_create(&mut self, ctx_id: u32, name: &str, context_init: u32) -> crate::DisplayResult {
         self.device
             .ctx_create(ctx_id, name, context_init)
@@ -187,36 +192,9 @@ impl DisplayDevice for RdifDisplayDevice {
             .map_err(map_display_error)
     }
 
-    fn resource_create_3d(
-        &mut self,
-        ctx_id: u32,
-        resource_id: u32,
-        target: u32,
-        format: u32,
-        bind: u32,
-        width: u32,
-        height: u32,
-        depth: u32,
-        array_size: u32,
-        last_level: u32,
-        nr_samples: u32,
-        flags: u32,
-    ) -> crate::DisplayResult {
+    fn resource_create_3d(&mut self, params: ResourceCreate3d) -> crate::DisplayResult {
         self.device
-            .resource_create_3d(
-                ctx_id,
-                resource_id,
-                target,
-                format,
-                bind,
-                width,
-                height,
-                depth,
-                array_size,
-                last_level,
-                nr_samples,
-                flags,
-            )
+            .resource_create_3d(params.into())
             .map_err(map_display_error)
     }
 
@@ -226,64 +204,21 @@ impl DisplayDevice for RdifDisplayDevice {
             .map_err(map_display_error)
     }
 
-    fn resource_create_blob(
-        &mut self,
-        ctx_id: u32,
-        resource_id: u32,
-        blob_mem: u32,
-        blob_flags: u32,
-        size: u64,
-        blob_id: u64,
-        cmd: &[u8],
-    ) -> crate::DisplayResult {
+    fn resource_create_blob(&mut self, params: ResourceCreateBlob<'_>) -> crate::DisplayResult {
         self.device
-            .resource_create_blob(ctx_id, resource_id, blob_mem, blob_flags, size, blob_id, cmd)
+            .resource_create_blob(params.into())
             .map_err(map_display_error)
     }
 
-    fn transfer_to_host_3d(
-        &mut self,
-        ctx_id: u32,
-        resource_id: u32,
-        box_: TransferBox,
-        offset: u64,
-        level: u32,
-        stride: u32,
-        layer_stride: u32,
-    ) -> crate::DisplayResult {
+    fn transfer_to_host_3d(&mut self, params: Transfer3d) -> crate::DisplayResult {
         self.device
-            .transfer_to_host_3d(
-                ctx_id,
-                resource_id,
-                box_.into(),
-                offset,
-                level,
-                stride,
-                layer_stride,
-            )
+            .transfer_to_host_3d(params.into())
             .map_err(map_display_error)
     }
 
-    fn transfer_from_host_3d(
-        &mut self,
-        ctx_id: u32,
-        resource_id: u32,
-        box_: TransferBox,
-        offset: u64,
-        level: u32,
-        stride: u32,
-        layer_stride: u32,
-    ) -> crate::DisplayResult {
+    fn transfer_from_host_3d(&mut self, params: Transfer3d) -> crate::DisplayResult {
         self.device
-            .transfer_from_host_3d(
-                ctx_id,
-                resource_id,
-                box_.into(),
-                offset,
-                level,
-                stride,
-                layer_stride,
-            )
+            .transfer_from_host_3d(params.into())
             .map_err(map_display_error)
     }
 
@@ -351,6 +286,63 @@ impl From<TransferBox> for rdif_display::TransferBox {
             w: b.w,
             h: b.h,
             d: b.d,
+        }
+    }
+}
+
+impl From<BlobMemory> for rdif_display::BlobMemory {
+    fn from(memory: BlobMemory) -> Self {
+        Self {
+            paddr: memory.paddr,
+            length: memory.length,
+        }
+    }
+}
+
+impl From<ResourceCreate3d> for rdif_display::ResourceCreate3d {
+    fn from(value: ResourceCreate3d) -> Self {
+        Self {
+            ctx_id: value.ctx_id,
+            resource_id: value.resource_id,
+            target: value.target,
+            format: value.format,
+            bind: value.bind,
+            width: value.width,
+            height: value.height,
+            depth: value.depth,
+            array_size: value.array_size,
+            last_level: value.last_level,
+            nr_samples: value.nr_samples,
+            flags: value.flags,
+        }
+    }
+}
+
+impl<'a> From<ResourceCreateBlob<'a>> for rdif_display::ResourceCreateBlob<'a> {
+    fn from(value: ResourceCreateBlob<'a>) -> Self {
+        Self {
+            ctx_id: value.ctx_id,
+            resource_id: value.resource_id,
+            blob_mem: value.blob_mem,
+            blob_flags: value.blob_flags,
+            size: value.size,
+            blob_id: value.blob_id,
+            backing: value.backing.map(Into::into),
+            cmd: value.cmd,
+        }
+    }
+}
+
+impl From<Transfer3d> for rdif_display::Transfer3d {
+    fn from(value: Transfer3d) -> Self {
+        Self {
+            ctx_id: value.ctx_id,
+            resource_id: value.resource_id,
+            box_: value.box_.into(),
+            offset: value.offset,
+            level: value.level,
+            stride: value.stride,
+            layer_stride: value.layer_stride,
         }
     }
 }
