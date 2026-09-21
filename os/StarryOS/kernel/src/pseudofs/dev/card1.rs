@@ -294,16 +294,6 @@ impl Card1File {
         exported_gem_buffer(global_handle)
     }
 
-    fn find_dma_range(&self, address: u64, length: u64) -> bool {
-        let handles: Vec<u32> = self.handles.lock().values().copied().collect();
-        handles.into_iter().any(|global_handle| {
-            let Ok(info) = rknpu::buffer_info(global_handle) else {
-                return false;
-            };
-            range_contains(info.dma_addr, info.size, address, length)
-        })
-    }
-
     fn find_cpu_range(&self, address: u64, offset: u64, length: u64) -> bool {
         let handles: Vec<u32> = self.handles.lock().values().copied().collect();
         handles.into_iter().any(|global_handle| {
@@ -427,10 +417,21 @@ impl Card1File {
         tasks: &[RknpuTask],
         task_bytes: u64,
     ) -> VfsResult<()> {
+        // The per-open operation mutex pins this handle set throughout submit.
+        // Resolve its immutable DMA extents once; every command still receives
+        // the same checked containment test against buffers owned by this file.
+        let handles: Vec<u32> = self.handles.lock().values().copied().collect();
+        let buffers: Vec<_> = handles
+            .into_iter()
+            .filter_map(|handle| rknpu::buffer_info(handle).ok())
+            .collect();
+        let contains = |address, length| {
+            buffers.iter().any(|info| range_contains(info.dma_addr, info.size, address, length))
+        };
         if args.task_base_addr != 0
             && !task_base_addr_is_valid(
                 args.task_base_addr,
-                self.find_dma_range(args.task_base_addr, task_bytes),
+                contains(args.task_base_addr, task_bytes),
             )
         {
             return Err(VfsError::InvalidData);
@@ -441,7 +442,7 @@ impl Card1File {
                 .ok_or(VfsError::InvalidData)?;
             if command_bytes == 0
                 || task.regcmd_addr > u32::MAX as u64
-                || !self.find_dma_range(task.regcmd_addr, command_bytes)
+                || !contains(task.regcmd_addr, command_bytes)
             {
                 return Err(VfsError::InvalidData);
             }
