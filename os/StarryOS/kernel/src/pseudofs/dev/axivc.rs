@@ -1,4 +1,5 @@
 use alloc::{
+    boxed::Box,
     format,
     string::String,
     sync::{Arc, Weak},
@@ -171,8 +172,8 @@ impl AxivcRegistry {
     }
 
     fn publish(&self, arg: &mut IvcPublishArg) -> VfsResult<()> {
-        let shm_base_gpa = HyperCallOutputSlot::new(0);
-        let shm_size = HyperCallOutputSlot::new(arg.channel_size as usize);
+        let shm_base_gpa = HyperCallOutputSlot::new(0)?;
+        let shm_size = HyperCallOutputSlot::new(arg.channel_size as usize)?;
 
         ivc::publish_channel(
             arg.channel_key as usize,
@@ -276,8 +277,8 @@ impl AxivcRegistry {
     }
 
     fn subscribe(&self, arg: &mut IvcSubscribeArg) -> VfsResult<()> {
-        let shm_base_gpa = HyperCallOutputSlot::new(0);
-        let shm_size = HyperCallOutputSlot::new(0);
+        let shm_base_gpa = HyperCallOutputSlot::new(0)?;
+        let shm_size = HyperCallOutputSlot::new(0)?;
         ivc::subscribe_channel(
             arg.target_publisher_id as usize,
             arg.channel_key as usize,
@@ -966,14 +967,17 @@ impl Pollable for AxivcChannel {
 }
 
 struct HyperCallOutputSlot {
-    value: UnsafeCell<usize>,
+    // HVC writes through a guest physical pointer. Task stacks may use a
+    // guarded vmap alias, which is not covered by direct-map virt_to_phys.
+    // Keep this single-word bounce buffer in the physical heap until return.
+    value: Box<UnsafeCell<usize>>,
 }
 
 impl HyperCallOutputSlot {
-    const fn new(value: usize) -> Self {
-        Self {
-            value: UnsafeCell::new(value),
-        }
+    fn new(value: usize) -> VfsResult<Self> {
+        Ok(Self {
+            value: Box::try_new(UnsafeCell::new(value)).map_err(|_| VfsError::NoMemory)?,
+        })
     }
 
     fn guest_phys_addr(&self) -> IvcGuestPhysAddr {
@@ -982,6 +986,8 @@ impl HyperCallOutputSlot {
     }
 
     fn read(&self) -> usize {
+        // SAFETY: the aligned initialized word stays owned by this Box across
+        // the synchronous HVC; the host has finished writing before we read.
         unsafe { core::ptr::read_volatile(self.value.get()) }
     }
 }
