@@ -22,6 +22,71 @@ pub(crate) fn case_prebuild_script_path(case: &TestQemuCase) -> PathBuf {
     case_c_source_dir(case).join(CASE_PREBUILD_SCRIPT_NAME)
 }
 
+/// Absolute guest path of the musl cross `ld` in a toolchain-bearing rootfs.
+fn cross_tool_ld(arch: &str) -> anyhow::Result<String> {
+    let spec = super::toolchain::cross_compile_spec(arch)?;
+    Ok(format!("/{}/ld", spec.guest_tool_dir))
+}
+
+/// Resolves the build-sysroot image to extract for a C case, if it differs
+/// from the case rootfs.
+///
+/// C cases are cross-compiled against an Alpine musl sysroot. When the case
+/// rootfs itself carries that toolchain (the default Alpine managed image and
+/// any custom image prepared the same way) it stays the staging sysroot. A
+/// runtime-only rootfs -- e.g. a Debian glibc userland -- must not be
+/// compiled against, so the managed toolchain image is returned for
+/// extraction instead; built artifacts are still injected into the case
+/// rootfs. `None` means "extract the case rootfs".
+pub(crate) fn c_toolchain_rootfs(
+    workspace_root: &Path,
+    arch: &str,
+    case_rootfs: &Path,
+) -> anyhow::Result<Option<PathBuf>> {
+    if crate::rootfs::inject::ext4_image_contains_file(case_rootfs, &cross_tool_ld(arch)?)? {
+        return Ok(None);
+    }
+
+    let Ok(toolchain_rootfs) = crate::image::storage::default_rootfs_path(workspace_root, arch)
+    else {
+        return Ok(None);
+    };
+    if toolchain_rootfs == case_rootfs {
+        return Ok(None);
+    }
+    Ok(Some(toolchain_rootfs))
+}
+
+/// Selects the extracted staging sysroot for a C case (see
+/// [`c_toolchain_rootfs`]).
+fn select_staging_sysroot(
+    arch: &str,
+    case_rootfs: &Path,
+    toolchain_rootfs: Option<&Path>,
+) -> anyhow::Result<PathBuf> {
+    let case_has_toolchain =
+        crate::rootfs::inject::ext4_image_contains_file(case_rootfs, &cross_tool_ld(arch)?)?;
+    select_staging_sysroot_decided(case_rootfs, toolchain_rootfs, case_has_toolchain)
+}
+
+/// Pure decision core of [`select_staging_sysroot`], separated for tests.
+pub(super) fn select_staging_sysroot_decided(
+    case_rootfs: &Path,
+    toolchain_rootfs: Option<&Path>,
+    case_has_toolchain: bool,
+) -> anyhow::Result<PathBuf> {
+    if case_has_toolchain {
+        return Ok(case_rootfs.to_path_buf());
+    }
+    match toolchain_rootfs {
+        Some(toolchain_rootfs) => Ok(toolchain_rootfs.to_path_buf()),
+        // No toolchain candidate is available: keep the legacy behavior so
+        // the cross-build fails with the established missing-tool error
+        // instead of a new one.
+        None => Ok(case_rootfs.to_path_buf()),
+    }
+}
+
 pub(super) fn grouped_c_subcase_prebuild_script_path(subcase: &TestQemuSubcase) -> PathBuf {
     grouped_c_subcase_source_dir(subcase).join(CASE_PREBUILD_SCRIPT_NAME)
 }
@@ -93,7 +158,9 @@ pub(crate) fn prepare_c_case_overlay_sync(
             ("phase", "extract-rootfs".to_string()),
         ],
     );
-    crate::rootfs::inject::extract_rootfs(case_rootfs, &layout.staging_root)?;
+    let toolchain_rootfs = c_toolchain_rootfs(&layout.workspace_root, arch, case_rootfs)?;
+    let staging_sysroot = select_staging_sysroot(arch, case_rootfs, toolchain_rootfs.as_deref())?;
+    crate::rootfs::inject::extract_rootfs(&staging_sysroot, &layout.staging_root)?;
     timing_stage.finish();
     let timing_stage = timing::TimingStage::new(
         "qemu-asset-c",
