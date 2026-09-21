@@ -6,17 +6,11 @@ use core::mem;
 use kernel_elf_parser::AuxEntry;
 
 use super::ProcessData;
-use axfs_ng_vfs::Location;
 use crate::sync::Mutex;
 
 /// Metadata supplied when a process image is created.
 pub struct ProcessImage {
     exe_path: String,
-    /// Backing file of the executable image, when the image was created by
-    /// `execve`-style loading. `/proc/<pid>/exe` opens this file directly (a
-    /// magic link must not re-resolve the display path: a memfd-exec'd runc
-    /// reports `/memfd:... (deleted)`, which is not a resolvable path).
-    pub exe_location: Option<Location>,
     cmdline: Arc<Vec<String>>,
     envp: Arc<Vec<String>>,
     auxv: Vec<AuxEntry>,
@@ -25,10 +19,8 @@ pub struct ProcessImage {
 }
 
 impl ProcessImage {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         exe_path: String,
-        exe_location: Option<Location>,
         cmdline: Arc<Vec<String>>,
         envp: Arc<Vec<String>>,
         auxv: Vec<AuxEntry>,
@@ -37,7 +29,6 @@ impl ProcessImage {
     ) -> Self {
         Self {
             exe_path,
-            exe_location,
             cmdline,
             envp,
             auxv,
@@ -50,7 +41,6 @@ impl ProcessImage {
 /// Independently synchronized image metadata shared by a thread group.
 pub(super) struct ProcessImageState {
     exe_path: Mutex<Arc<String>>,
-    exe_location: Mutex<Option<Location>>,
     cmdline: Mutex<Arc<Vec<String>>>,
     envp: Mutex<Arc<Vec<String>>>,
     auxv: Mutex<Arc<Vec<AuxEntry>>>,
@@ -62,7 +52,6 @@ impl ProcessImageState {
     pub(super) fn new(image: ProcessImage) -> Self {
         Self {
             exe_path: Mutex::new(Arc::new(image.exe_path)),
-            exe_location: Mutex::new(image.exe_location),
             cmdline: Mutex::new(image.cmdline),
             envp: Mutex::new(image.envp),
             auxv: Mutex::new(Arc::new(image.auxv)),
@@ -92,16 +81,6 @@ impl ProcessData {
 
     pub fn set_exe_path(&self, path: String) {
         replace_snapshot(&self.image.exe_path, Arc::new(path));
-    }
-
-    /// Backing executable file of the current image; opened by
-    /// `/proc/<pid>/exe` (a magic link must not re-resolve the display path).
-    pub fn exe_location(&self) -> Option<Location> {
-        self.image.exe_location.lock().clone()
-    }
-
-    pub fn set_exe_location(&self, location: Option<Location>) {
-        *self.image.exe_location.lock() = location;
     }
 
     pub fn cmdline(&self) -> Arc<Vec<String>> {

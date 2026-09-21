@@ -8,13 +8,6 @@ use crate::{
     task::{UserTaskRef, task_cpu_time},
 };
 
-/// Converts a monotonic nanoseconds-since-boot timestamp into the
-/// `/proc/[pid]/stat` `starttime` unit: clock ticks at `USER_HZ = 100`
-/// (1 tick = 10 ms).
-pub fn starttime_ticks(start_time_ns: u64) -> u64 {
-    start_time_ns / 10_000_000
-}
-
 /// Represents the `/proc/[pid]/stat` file.
 ///
 /// See ['https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html'] for details.
@@ -115,7 +108,6 @@ impl TaskStat {
             ppid,
             pgrp: pgrp.get(),
             session: session.get(),
-            starttime: starttime_ticks(thread.start_time_ns()),
             utime,
             stime,
             cutime,
@@ -204,23 +196,5 @@ impl fmt::Display for TaskStat {
              {delayacct_blkio_ticks} {guest_time} {cguest_time} {start_data} {end_data} \
              {start_brk} {arg_start} {arg_end} {env_start} {env_end} {exit_code}",
         )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn starttime_ticks_uses_user_hz_100() {
-        // 1 tick = 10 ms = 10_000_000 ns at USER_HZ = 100.
-        assert_eq!(super::starttime_ticks(0), 0);
-        assert_eq!(super::starttime_ticks(9_999_999), 0);
-        assert_eq!(super::starttime_ticks(10_000_000), 1);
-        assert_eq!(super::starttime_ticks(123_456_789), 12);
-        // runc reads field 22 and compares it across reads of the same
-        // process; the conversion must be stable for a fixed input.
-        assert_eq!(
-            super::starttime_ticks(42_000_000_000),
-            super::starttime_ticks(42_000_000_000)
-        );
     }
 }

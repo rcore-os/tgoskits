@@ -53,7 +53,6 @@ fn asset_layout(
     let cache_dir = work_dir.join(CASE_CACHE_DIR_NAME);
 
     Ok(CaseAssetLayout {
-        workspace_root: workspace_root.to_path_buf(),
         staging_root: run_dir.join(CASE_STAGING_DIR_NAME),
         build_dir: run_dir.join(CASE_BUILD_DIR_NAME),
         overlay_dir: run_dir.join(CASE_OVERLAY_DIR_NAME),

@@ -73,39 +73,6 @@ pub(crate) fn read_binary_file(
     Ok(Some(output.stdout))
 }
 
-/// Returns whether an absolute guest path exists as a directory entry in a
-/// rootfs image.
-///
-/// `debugfs` exits successfully even when a lookup fails, so the parent
-/// directory listing is inspected instead of the exit status.
-pub(crate) fn ext4_image_contains_file(
-    rootfs_img: &Path,
-    guest_path: &str,
-) -> anyhow::Result<bool> {
-    ensure!(
-        guest_path.starts_with('/'),
-        "guest path must be absolute: `{guest_path}`"
-    );
-
-    let (parent, name) = match guest_path.rsplit_once('/') {
-        Some(("", name)) => ("/", name),
-        Some((parent, name)) => (parent, name),
-        None => bail!("invalid guest path `{guest_path}`"),
-    };
-
-    let output = Command::new("debugfs")
-        .arg("-R")
-        .arg(format!("ls -l {parent}"))
-        .arg(rootfs_img)
-        .output()
-        .with_context(|| format!("failed to spawn debugfs for {}", rootfs_img.display()))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    Ok(stdout
-        .lines()
-        .any(|line| line.split_whitespace().last() == Some(name)))
-}
-
 /// Replaces one regular file inside a rootfs image with a host file.
 pub(crate) fn replace_file(
     rootfs_img: &Path,

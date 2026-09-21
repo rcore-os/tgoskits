@@ -200,7 +200,6 @@ impl CasePipeline {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CaseAssetLayout {
-    pub(crate) workspace_root: PathBuf,
     pub(crate) work_dir: PathBuf,
     pub(crate) run_dir: PathBuf,
     pub(crate) cache_dir: PathBuf,

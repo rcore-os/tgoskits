@@ -232,10 +232,7 @@ fn do_execve(
 
     // Collect metadata from the already-resolved location before touching
     // anything. An anonymous memfd has no filesystem path, so fall back to the
-    // caller-supplied display name (e.g. `/memfd:<name> (deleted)`). Keep a
-    // handle as well: `/proc/<pid>/exe` must open the backing file itself
-    // instead of re-resolving that display path.
-    let exe_location = loc.clone();
+    // caller-supplied display name (e.g. `/memfd:<name> (deleted)`).
     let new_name = loc.name().to_string();
     let new_exe_path = loc
         .absolute_path()
@@ -380,7 +377,6 @@ fn do_execve(
 
     curr.set_name(&new_name);
     proc_data.set_exe_path(new_exe_path);
-    proc_data.set_exe_location(Some(exe_location));
     proc_data.set_cmdline(new_cmdline);
     proc_data.set_envp(new_envp);
     let auxv_len = auxv.len();

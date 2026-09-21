@@ -35,7 +35,6 @@ use crate::{
     task::{current_user_task, try_current_user_irq_view},
 };
 
-mod device_controller;
 pub(crate) mod error;
 pub mod map;
 pub mod prog;
@@ -255,11 +254,6 @@ pub fn sys_bpf(
         StarryError::InvalidInput
     })?;
     let attr = read_bpf_attr(current, uattr, size)?;
-    // Non-rootless runc programs the cgroup-v2 device controller
-    // unconditionally; intercept those commands before the real handlers.
-    if let Some(result) = device_controller::try_handle(current, cmd, &attr, uattr, size) {
-        return result;
-    }
     match cmd {
         bpf_cmd::BPF_MAP_CREATE => handle_map_create(&attr),
         bpf_cmd::BPF_PROG_LOAD => handle_prog_load(&attr),

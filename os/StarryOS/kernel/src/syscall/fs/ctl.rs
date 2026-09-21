@@ -24,8 +24,8 @@ use linux_raw_sys::{
 use crate::{
     Errno, StarryError, StarryResult,
     file::{
-        Directory, FileLike, ResolveAtResult, current_fd_table, fd_is_path, get_file_like,
-        resolve_at, resolve_at_with_boundary_checked, with_fs,
+        Directory, FileLike, current_fd_table, fd_is_path, get_file_like, resolve_at,
+        resolve_at_with_boundary_checked, with_fs,
     },
     mm::{VmMutPtr, VmPtr, vm_load_path_string, vm_load_string, vm_write_slice},
     task::UserTaskRef,
@@ -830,19 +830,10 @@ pub fn sys_fchownat(
         .nullable()
         .map(|path| vm_load_path_string(current, path))
         .transpose()?;
-    let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
-    // Linux chown_common() on an inode-less fd (pipe, socket, eventfd, ...)
-    // runs the usual permission checks against the inode metadata and then
-    // succeeds; runc fchowns its container stdio pipes. There is no backing
-    // inode to persist the update on, so the change is bookkeeping-only.
-    let (loc, meta, anon_owner) = match &resolved {
-        ResolveAtResult::File(loc) => (Some(loc.clone()), Some(loc.metadata()?), None),
-        ResolveAtResult::Other(file_like) => {
-            let stat = file_like.stat()?;
-            let path = file_like.path().into_owned();
-            (None, None, Some((stat.uid, stat.gid, path)))
-        }
-    };
+    let loc = resolve_at(dirfd, path.as_deref(), flags)?
+        .into_file()
+        .ok_or(StarryError::BadFileDescriptor)?;
+    let meta = loc.metadata()?;
 
     let cred = current.as_thread().cred();
 
@@ -851,15 +842,8 @@ pub fn sys_fchownat(
     // - Changing the file group (gid) without CAP_CHOWN is allowed only if
     //   the caller owns the file and the target group is one the caller
     //   belongs to.
-    let (owner_uid, owner_gid, anon_accepts) = match &anon_owner {
-        Some((uid, gid, path)) => (*uid, *gid, Some(path.as_str())),
-        None => {
-            let meta = meta.as_ref().expect("file resolutions carry metadata");
-            (meta.uid, meta.gid, None)
-        }
-    };
-    let changing_owner = uid != -1 && uid as u32 != owner_uid;
-    let changing_group = gid != -1 && gid as u32 != owner_gid;
+    let changing_owner = uid != -1 && uid as u32 != meta.uid;
+    let changing_group = gid != -1 && gid as u32 != meta.gid;
 
     if changing_owner && !cred.has_cap_chown() {
         return Err(StarryError::OperationNotPermitted);
@@ -867,7 +851,7 @@ pub fn sys_fchownat(
 
     if changing_group && !cred.has_cap_chown() {
         // Non-root: must own the file and target group must be in our groups.
-        if cred.fsuid != owner_uid {
+        if cred.fsuid != meta.uid {
             return Err(StarryError::OperationNotPermitted);
         }
         if !cred.in_group(gid as u32) {
@@ -875,44 +859,32 @@ pub fn sys_fchownat(
         }
     }
 
-    // Anonymous fds that do not model ownership (eventfd, epoll, timerfd,
-    // signalfd...) reject the change like Linux instead of silently
-    // succeeding; only pipe/socket style inodes accept it as a no-op.
-    // Only pipe/socket style anonymous inodes model ownership changes;
-    // other anon fds (eventfd, epoll, timerfd, signalfd...) reject the
-    // change like Linux instead of silently succeeding.
-    if let Some(path) = anon_accepts
-        && !path.starts_with("pipe:[")
-        && !path.starts_with("socket:[")
-    {
-        return Err(StarryError::OperationNotSupported);
+    let mut mode = meta.mode;
+    // Linux chown_common() semantics for clearing setuid/setgid on
+    // non-directory files:
+    //   - ATTR_KILL_SUID is set unconditionally for all non-dir chown,
+    //     regardless of whether uid/gid participates (i.e. even chown
+    //     with -1/-1 clears SUID).
+    //   - After SUID clearing adds ATTR_MODE to ia_valid, notify_change()
+    //     calls should_remove_sgid() which strips SGID on non-directory
+    //     files only when GROUP_EXEC (S_IXGRP) is set.
+    // Directories preserve SETGID (used for new-file group inheritance).
+    let is_dir = meta.node_type == NodeType::Directory;
+
+    if !is_dir {
+        mode.remove(NodePermission::SET_UID);
+        if mode.contains(NodePermission::GROUP_EXEC) {
+            mode.remove(NodePermission::SET_GID);
+        }
     }
 
-    let uid = if uid == -1 { owner_uid } else { uid as _ };
-    let gid = if gid == -1 { owner_gid } else { gid as _ };
-    if let (Some(loc), Some(meta)) = (&loc, &meta) {
-        let mut mode = meta.mode;
-        // Linux chown_common() semantics for clearing setuid/setgid on
-        // non-directory files:
-        //   - ATTR_KILL_SUID is set unconditionally for all non-dir chown,
-        //     regardless of whether uid/gid participates (i.e. even chown
-        //     with -1/-1 clears SUID).
-        //   - After SUID clearing adds ATTR_MODE to ia_valid, notify_change()
-        //     calls should_remove_sgid() which strips SGID on non-directory
-        //     files only when GROUP_EXEC (S_IXGRP) is set.
-        // Directories preserve SETGID (used for new-file group inheritance).
-        if meta.node_type != NodeType::Directory {
-            mode.remove(NodePermission::SET_UID);
-            if mode.contains(NodePermission::GROUP_EXEC) {
-                mode.remove(NodePermission::SET_GID);
-            }
-        }
-        loc.update_metadata(MetadataUpdate {
-            owner: Some((uid, gid)),
-            mode: Some(mode),
-            ..Default::default()
-        })?;
-    }
+    let uid = if uid == -1 { meta.uid } else { uid as _ };
+    let gid = if gid == -1 { meta.gid } else { gid as _ };
+    loc.update_metadata(MetadataUpdate {
+        owner: Some((uid, gid)),
+        mode: Some(mode),
+        ..Default::default()
+    })?;
     Ok(0)
 }
 
@@ -969,34 +941,23 @@ pub fn sys_fchmodat(
         return Err(StarryError::BadFileDescriptor); // (2) and (3)
     }
 
-    let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
-    // Anonymous fds (pipes, sockets, eventfd, ...) have no persisted mode:
-    // like Linux, the ownership check runs against the fd's metadata and the
-    // chmod itself succeeds as a no-op. O_PATH fds were already rejected
-    // above; this branch only covers live anonymous FileLike fds.
-    let (loc, anon_owner) = match &resolved {
-        ResolveAtResult::File(loc) => (Some(loc.clone()), None),
-        ResolveAtResult::Other(file_like) => (None, Some(file_like.stat()?.uid)),
-    };
+    let loc = resolve_at(dirfd, path.as_deref(), flags)?
+        .into_file()
+        .ok_or(StarryError::BadFileDescriptor)?;
 
     // Only the file owner or a process with CAP_FOWNER may change mode bits.
     let cred = current.as_thread().cred();
     if !cred.has_cap_fowner() {
-        let owner_uid = match &loc {
-            Some(loc) => loc.metadata()?.uid,
-            None => anon_owner.expect("resolved to anonymous fd above"),
-        };
-        if cred.fsuid != owner_uid {
+        let meta = loc.metadata()?;
+        if cred.fsuid != meta.uid {
             return Err(StarryError::OperationNotPermitted);
         }
     }
 
-    if let Some(loc) = &loc {
-        loc.update_metadata(MetadataUpdate {
-            mode: Some(NodePermission::from_bits_truncate(mode as u16)),
-            ..Default::default()
-        })?;
-    }
+    loc.update_metadata(MetadataUpdate {
+        mode: Some(NodePermission::from_bits_truncate(mode as u16)),
+        ..Default::default()
+    })?;
     Ok(0)
 }
 
