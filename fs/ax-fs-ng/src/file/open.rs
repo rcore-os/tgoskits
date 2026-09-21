@@ -525,3 +525,225 @@ impl Default for OpenOptions {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::{any::Any, time::Duration};
+
+    use axfs_ng_vfs::{
+        DeviceId, DirEntry, FileNode, FileNodeOps, Filesystem, FilesystemOps, Metadata,
+        MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError,
+    };
+    use axpoll::{IoEvents, Pollable};
+
+    use super::*;
+
+    #[derive(Clone, Copy)]
+    struct TestFilesystem;
+
+    struct TestFile {
+        metadata: Metadata,
+    }
+
+    static TEST_FILESYSTEM: TestFilesystem = TestFilesystem;
+
+    impl FilesystemOps for TestFilesystem {
+        fn name(&self) -> &str {
+            "open-permission-test"
+        }
+
+        fn root_dir(&self) -> DirEntry {
+            test_entry(metadata(0, 0, 0, NodePermission::default()))
+        }
+
+        fn stat(&self) -> VfsResult<StatFs> {
+            Err(VfsError::InvalidInput)
+        }
+    }
+
+    impl NodeOps for TestFile {
+        fn inode(&self) -> u64 {
+            self.metadata.inode
+        }
+
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Ok(self.metadata.clone())
+        }
+
+        fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            &TEST_FILESYSTEM
+        }
+
+        fn sync(&self, _data_only: bool) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+    }
+
+    impl Pollable for TestFile {
+        fn poll(&self) -> IoEvents {
+            IoEvents::IN | IoEvents::OUT
+        }
+
+        unsafe fn register_shared(
+            &self,
+            _sink: &mut dyn axpoll::SharedRegistrationSink,
+            _events: IoEvents,
+        ) {
+        }
+    }
+
+    impl FileNodeOps for TestFile {
+        fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+            Ok(0)
+        }
+
+        fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+            Ok(0)
+        }
+
+        fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
+            Ok((0, self.metadata.size))
+        }
+
+        fn set_len(&self, _len: u64) -> VfsResult<()> {
+            Ok(())
+        }
+    }
+
+    fn metadata(uid: u32, gid: u32, inode: u64, mode: NodePermission) -> Metadata {
+        Metadata {
+            device: 0,
+            inode,
+            nlink: 1,
+            mode,
+            node_type: NodeType::RegularFile,
+            uid,
+            gid,
+            size: 0,
+            block_size: 4096,
+            blocks: 0,
+            rdev: DeviceId::default(),
+            atime: Duration::ZERO,
+            mtime: Duration::ZERO,
+            ctime: Duration::ZERO,
+        }
+    }
+
+    fn test_entry(metadata: Metadata) -> DirEntry {
+        DirEntry::new_file(
+            FileNode::new(Arc::new(TestFile { metadata })),
+            NodeType::RegularFile,
+            Reference::root(),
+        )
+    }
+
+    fn test_location(metadata: Metadata) -> Location {
+        let filesystem = Filesystem::new(Arc::new(TestFilesystem));
+        Location::new(Mountpoint::new_root(&filesystem), test_entry(metadata))
+    }
+
+    fn credentials(fsuid: u32, fsgid: u32, supplementary_gids: &[u32]) -> MutationCredentials<'_> {
+        MutationCredentials {
+            fsuid,
+            fsgid,
+            supplementary_gids,
+            cap_dac_override: false,
+            cap_dac_read_search: false,
+            cap_fowner: false,
+        }
+    }
+
+    #[test]
+    fn final_access_uses_owner_group_and_other_mode_bits() {
+        let location = test_location(metadata(
+            1000,
+            2000,
+            1,
+            NodePermission::from_bits_truncate(0o642),
+        ));
+
+        assert!(
+            OpenOptions::new()
+                .write(true)
+                .check_open_access(&location, &FileFlags::WRITE, &credentials(1000, 3000, &[]))
+                .is_ok()
+        );
+        assert!(
+            OpenOptions::new()
+                .read(true)
+                .check_open_access(
+                    &location,
+                    &FileFlags::READ,
+                    &credentials(3000, 3001, &[2000])
+                )
+                .is_ok()
+        );
+        assert_eq!(
+            OpenOptions::new().write(true).check_open_access(
+                &location,
+                &FileFlags::WRITE,
+                &credentials(3000, 3001, &[2000])
+            ),
+            Err(VfsError::PermissionDenied)
+        );
+        assert!(
+            OpenOptions::new()
+                .write(true)
+                .check_open_access(&location, &FileFlags::WRITE, &credentials(3000, 3001, &[]))
+                .is_ok()
+        );
+        assert_eq!(
+            OpenOptions::new().read(true).check_open_access(
+                &location,
+                &FileFlags::READ,
+                &credentials(3000, 3001, &[])
+            ),
+            Err(VfsError::PermissionDenied)
+        );
+    }
+
+    #[test]
+    fn truncate_requires_write_and_path_skips_final_access() {
+        let location = test_location(metadata(0, 0, 1, NodePermission::from_bits_truncate(0o400)));
+        let mut truncate = OpenOptions::new();
+        truncate.read(true).truncate(true);
+        assert_eq!(
+            truncate.check_open_access(&location, &FileFlags::READ, &credentials(1000, 1000, &[]),),
+            Err(VfsError::PermissionDenied)
+        );
+
+        let mut path = OpenOptions::new();
+        path.read(true).write(true).path = true;
+        assert!(
+            path.check_open_access(
+                &location,
+                &(FileFlags::READ | FileFlags::WRITE),
+                &credentials(1000, 1000, &[]),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn newly_created_inode_skips_final_access_check() {
+        let location = test_location(metadata(0, 0, 1, NodePermission::from_bits_truncate(0)));
+        let credentials = credentials(1000, 1000, &[]);
+        let mut options = OpenOptions::new();
+        options.read(true).direct = true;
+
+        assert!(options._open(location.clone(), &credentials, true).is_ok());
+        assert!(matches!(
+            options._open(location, &credentials, false),
+            Err(VfsError::PermissionDenied)
+        ));
+    }
+}

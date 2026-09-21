@@ -15,6 +15,22 @@ mod stat;
 mod timerfd;
 mod xattr;
 
+use axfs_ng_vfs::MutationCredentials;
+
+use crate::task::Cred;
+
+/// Converts a StarryOS task credential into the VFS access snapshot.
+pub(crate) fn mutation_credentials(cred: &Cred) -> MutationCredentials<'_> {
+    MutationCredentials {
+        fsuid: cred.fsuid,
+        fsgid: cred.fsgid,
+        supplementary_gids: &cred.groups,
+        cap_dac_override: cred.has_cap_dac_override(),
+        cap_dac_read_search: cred.has_cap_dac_read_search(),
+        cap_fowner: cred.has_cap_fowner(),
+    }
+}
+
 pub use self::{
     aio::*,
     ctl::*,

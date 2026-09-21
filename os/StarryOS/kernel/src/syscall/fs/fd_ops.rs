@@ -7,9 +7,7 @@ use core::{
 
 use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenResult};
 use ax_memory_addr::PAGE_SIZE_4K;
-use axfs_ng_vfs::{
-    DirEntry, FileNode, Location, MutationCredentials, NodeType, Reference, VfsError,
-};
+use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference, VfsError};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
@@ -27,6 +25,8 @@ use crate::{
         get_user_task_by_number,
     },
 };
+
+use super::mutation_credentials;
 
 /// Convert open flags to [`OpenOptions`].
 fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32)) -> OpenOptions {
@@ -284,14 +284,7 @@ fn try_reopen_self_file(
     }
 
     let cred = current.as_thread().cred();
-    let mutation_cred = MutationCredentials {
-        fsuid: cred.fsuid,
-        fsgid: cred.fsgid,
-        supplementary_gids: &cred.groups,
-        cap_dac_override: cred.has_cap_dac_override(),
-        cap_dac_read_search: cred.has_cap_dac_read_search(),
-        cap_fowner: cred.has_cap_fowner(),
-    };
+    let mutation_cred = mutation_credentials(&cred);
     let options = flags_to_options(flags as i32, 0, (cred.fsuid, cred.fsgid));
     Some(
         options
@@ -528,14 +521,7 @@ pub fn sys_openat(
     }
 
     let cred = thread.cred();
-    let mutation_cred = MutationCredentials {
-        fsuid: cred.fsuid,
-        fsgid: cred.fsgid,
-        supplementary_gids: &cred.groups,
-        cap_dac_override: cred.has_cap_dac_override(),
-        cap_dac_read_search: cred.has_cap_dac_read_search(),
-        cap_fowner: cred.has_cap_fowner(),
-    };
+    let mutation_cred = mutation_credentials(&cred);
     let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     let should_notify_create = uflags & O_CREAT != 0
         && uflags & O_PATH == 0
@@ -631,14 +617,7 @@ pub fn sys_openat2(
     let thread = curr.as_thread();
     let mode = mode & !thread.proc_data.umask();
     let cred = thread.cred();
-    let mutation_cred = MutationCredentials {
-        fsuid: cred.fsuid,
-        fsgid: cred.fsgid,
-        supplementary_gids: &cred.groups,
-        cap_dac_override: cred.has_cap_dac_override(),
-        cap_dac_read_search: cred.has_cap_dac_read_search(),
-        cap_fowner: cred.has_cap_fowner(),
-    };
+    let mutation_cred = mutation_credentials(&cred);
     let mut options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     let result = with_fs(dirfd, |fs| {
         let path_ref = axfs_ng_vfs::path::Path::new(&path);

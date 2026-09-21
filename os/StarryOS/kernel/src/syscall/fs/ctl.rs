@@ -13,8 +13,8 @@ use core::{
 use ax_fs_ng::vfs::{FsContext, current_fs_context, sync_all_cached_files};
 use ax_runtime::hal::time::wall_time;
 use axfs_ng_vfs::{
-    DeviceId, DirectoryCursor, FileExtentTarget, MetadataUpdate, MutationCredentials,
-    NodePermission, NodeType, RenameOptions, VfsError, path::Path,
+    DeviceId, DirectoryCursor, FileExtentTarget, MetadataUpdate, NodePermission, NodeType,
+    RenameOptions, VfsError, path::Path,
 };
 use linux_raw_sys::{
     general::*,
@@ -31,18 +31,7 @@ use crate::{
     task::UserTaskRef,
     time::TimeValueLike,
 };
-
-/// Convert a Starry task credential into the VFS mutation snapshot.
-fn mutation_credentials(cred: &crate::task::Cred) -> MutationCredentials<'_> {
-    MutationCredentials {
-        fsuid: cred.fsuid,
-        fsgid: cred.fsgid,
-        supplementary_gids: &cred.groups,
-        cap_dac_override: cred.has_cap_dac_override(),
-        cap_dac_read_search: cred.has_cap_dac_read_search(),
-        cap_fowner: cred.has_cap_fowner(),
-    }
-}
+use super::mutation_credentials;
 
 /// `FIOCLEX` / `FIONCLEX`: set / clear the close-on-exec flag on a file descriptor
 /// via `ioctl` (the ioctl spelling of `fcntl(fd, F_SETFD, ...)`). libc/musl and CPython
