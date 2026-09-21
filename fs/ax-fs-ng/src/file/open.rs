@@ -521,17 +521,17 @@ impl OpenOptions {
         // Symlink rejection on the final component takes precedence over
         // creation flags (O_EXCL must not turn a forbidden symlink into
         // EEXIST), mirroring Linux's link_path_walk ordering.
-        if let Ok(probe) = parent.lookup_no_follow(&name) {
-            if probe.node_type() == NodeType::Symlink {
-                if must_be_dir && self.no_follow {
-                    return Err(VfsError::NotADirectory);
-                }
-                if constraints.is_no_symlinks()
-                    || (constraints.is_no_magiclinks() && probe.is_magic_link())
-                    || (self.no_follow && !self.path)
-                {
-                    return Err(VfsError::FilesystemLoop);
-                }
+        if let Ok(probe) = parent.lookup_no_follow(&name)
+            && probe.node_type() == NodeType::Symlink
+        {
+            if must_be_dir && self.no_follow {
+                return Err(VfsError::NotADirectory);
+            }
+            if constraints.is_no_symlinks()
+                || (constraints.is_no_magiclinks() && probe.is_magic_link())
+                || (self.no_follow && !self.path)
+            {
+                return Err(VfsError::FilesystemLoop);
             }
         }
 
