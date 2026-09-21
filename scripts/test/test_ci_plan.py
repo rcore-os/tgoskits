@@ -41,6 +41,44 @@ def main_test_rows(plan: dict) -> list[dict]:
 
 
 class CiPlanTests(unittest.TestCase):
+    def test_starry_apps_nightly_splits_performance_matrix(self):
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="workflow_dispatch",
+        )
+        plan = ci_plan.build_starry_apps_plan(context)
+        app_ids = {row["id"] for row in plan["starry_apps_matrix"]["include"]}
+        performance_ids = {
+            row["id"] for row in plan["starry_performance_matrix"]["include"]
+        }
+        self.assertTrue(app_ids)
+        self.assertEqual(
+            performance_ids,
+            {
+                "starry-performance-block-io-x86-64",
+                "starry-performance-compile-sim",
+                "starry-performance-ltp-hackbench",
+                "starry-performance-ltp-netstress",
+                "starry-performance-wakeup-latency",
+                "starry-performance-sysbench",
+            },
+        )
+        self.assertEqual(
+            {
+                row["id"]
+                for row in plan["starry_board_performance_matrix"]["include"]
+            },
+            {
+                "starry-performance-block-rw-orangepi-5-plus",
+                "starry-performance-iperf3-orangepi-5-plus",
+                "starry-performance-uvc-orangepi-5-plus",
+                "starry-performance-uvc-rknn-orangepi-5-plus",
+                "starry-performance-tennis-yolo-aka-00-sg2002",
+            },
+        )
+        self.assertTrue(all(row["download_xtask_bin_artifact"] for row in plan["starry_performance_matrix"]["include"]))
+
     def test_axvisor_nightly_runs_all_registered_checks_with_artifact_producer(self):
         catalog = ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS)
         expected = {check["id"] for check in catalog if check["group"] == "AxVisor"}
@@ -271,6 +309,10 @@ class CiPlanTests(unittest.TestCase):
 
         html = ci_perf_dashboard.render_dashboard("AxVisor Nightly Benchmarks", history)
         self.assertIn("<h2>vcpu-perf</h2>", html)
+        self.assertIn(
+            '<p class="chart-description">AxVisor 中 ArceOS guest 的 vCPU 工作吞吐量。</p>',
+            html,
+        )
         # Send and receive bandwidth get separate charts.
         self.assertIn("<h2>ivc-bench/send</h2>", html)
         self.assertIn("<h2>ivc-bench/receive</h2>", html)
@@ -289,21 +331,95 @@ class CiPlanTests(unittest.TestCase):
             {"name": "vcpu-perf/blocks_per_second", "unit": "blocks/s", "value": 1.0},
         ]
         history: list[dict[str, object]] = []
-        for day in range(1, 10):
+        for day in range(1, 13):
             history = ci_perf_dashboard.update_history(
-                history, f"2026-09-0{day}", f"rev{day}", metrics
+                history, f"2026-09-{day:02d}", f"rev{day}", metrics
             )
 
-        html = ci_perf_dashboard.render_dashboard("Benchmarks", history, window=7)
+        html = ci_perf_dashboard.render_dashboard("Benchmarks", history)
         self.assertNotIn('"2026-09-01"', html)
         self.assertNotIn('"2026-09-02"', html)
         self.assertIn('"2026-09-03"', html)
-        self.assertIn('"2026-09-09"', html)
-        self.assertIn("showing last 7 of 9 nightly entries", html)
+        self.assertIn('"2026-09-12"', html)
+        self.assertIn("showing last 10 of 12 nightly entries", html)
         # window=0 keeps the full history available for manual inspection.
         self.assertIn(
             '"2026-09-01"',
             ci_perf_dashboard.render_dashboard("Benchmarks", history, window=0),
+        )
+
+    def test_perf_dashboard_keeps_axvisor_and_starry_sources(self):
+        history = ci_perf_dashboard.update_history(
+            {},
+            "2026-09-20",
+            "ax-rev",
+            [{"name": "vcpu-perf/blocks", "unit": "blocks/s", "value": 1.0}],
+            "axvisor",
+        )
+        history = ci_perf_dashboard.update_history(
+            history,
+            "2026-09-20",
+            "starry-rev",
+            [{"name": "wakeup/p50", "unit": "ns", "value": 2.0}],
+            "starry",
+        )
+        html = ci_perf_dashboard.render_dashboard("Benchmarks", history)
+        self.assertIn(
+            '<option value="axvisor" selected>AxVisor</option>', html
+        )
+        self.assertIn('<option value="starry">Starry</option>', html)
+        self.assertIn('data-source="axvisor"', html)
+        self.assertIn('data-source="starry"', html)
+        self.assertIn(
+            '<p class="chart-description">StarryOS 回环 TCP/UDP 请求响应耗时。</p>',
+            ci_perf_dashboard.render_dashboard(
+                "Benchmarks",
+                {
+                    "starry": [
+                        {
+                            "date": "2026-09-20",
+                            "revision": "rev",
+                            "metrics": [
+                                {
+                                    "name": "netstress/tcp-rr",
+                                    "unit": "ms",
+                                    "value": 1.0,
+                                }
+                            ],
+                        }
+                    ]
+                },
+            ),
+        )
+
+    def test_performance_report_renders_starry_result_lines(self):
+        log_text = "\n".join(
+            [
+                "BLOCK_BENCH_RESULT op=read round=5 mib_s=123.4",
+                "LTP_NETSTRESS_RESULT case=tcp-rr median_ms=2",
+                'WAKEUP_LATENCY_RESULT {"case":"foo","policy":"other","p50_ns":9}',
+                "STARRY_IPERF3_BENCH_RESULT case=T01 direction=tx median_mbps=100.5",
+                "uvc-fps: done avg_fps=30 avg_throughput_mib_s=4.5",
+            ]
+        )
+        report = ci_perf_report.render_report(
+            "starry-performance",
+            "Starry performance",
+            log_text,
+        )
+        self.assertIn("#### Starry benchmark metrics", report)
+        self.assertIn("| block-io/read | MiB/s | 123.4 |", report)
+        metrics = ci_perf_report.render_benchmarks(log_text)
+        self.assertEqual(
+            metrics,
+            [
+                {"name": "block-io/read", "unit": "MiB/s", "value": 123.4},
+                {"name": "netstress/tcp-rr", "unit": "ms", "value": 2.0},
+                {"name": "wakeup/foo/other/p50", "unit": "ns", "value": 9.0},
+                {"name": "iperf3/T01/tx", "unit": "Mbps", "value": 100.5},
+                {"name": "uvc/avg_fps", "unit": "frames/s", "value": 30.0},
+                {"name": "uvc/avg_throughput_mib_s", "unit": "MiB/s", "value": 4.5},
+            ],
         )
 
     def test_axvisor_nightly_preserves_runner_owner_restrictions(self):

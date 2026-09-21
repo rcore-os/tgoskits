@@ -5,7 +5,7 @@
 <div align="center">
 
 [![Build & Test](https://github.com/rcore-os/tgoskits/actions/workflows/ci.yml/badge.svg)](https://github.com/rcore-os/tgoskits/actions/workflows/ci.yml)
-[![Nightly Benchmarks](https://img.shields.io/badge/nightly-benchmarks-blueviolet.svg)](https://rcore-os.cn/tgoskits/axvisor-perf/)
+[![Nightly Benchmarks](https://img.shields.io/badge/nightly-benchmarks-blueviolet.svg)](https://rcore-os.cn/tgoskits/benchmark/)
 [![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 

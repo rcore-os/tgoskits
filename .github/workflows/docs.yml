@@ -73,9 +73,9 @@ jobs:
         run: |
           set -euo pipefail
           if git fetch --depth=1 origin perf-data 2>/dev/null; then
-            mkdir -p docs/build/axvisor-perf
-            git show FETCH_HEAD:index.html > docs/build/axvisor-perf/index.html
-            git show FETCH_HEAD:history.json > docs/build/axvisor-perf/history.json
+            mkdir -p docs/build/benchmark
+            git show FETCH_HEAD:index.html > docs/build/benchmark/index.html
+            git show FETCH_HEAD:history.json > docs/build/benchmark/history.json
             echo "merged performance dashboard"
           else
             echo "perf-data branch is not available; publishing docs without it"
