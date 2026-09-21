@@ -1485,6 +1485,15 @@ impl SimpleDirOps for ThreadDir {
                     )),
                     SimpleFileOperation::Write(data) => {
                         if !data.is_empty() {
+                            // Linux oom_score_adj_write() uses
+                            // memdup_user_nul() + kstrtoint(): the first NUL
+                            // terminates the number. runc's nsexec writes its
+                            // bootstrap value verbatim as "0\0", so the write
+                            // must not treat the NUL as trailing garbage.
+                            let data = match data.iter().position(|&byte| byte == 0) {
+                                Some(end) => &data[..end],
+                                None => data,
+                            };
                             let value = str::from_utf8(data)
                                 .ok()
                                 .and_then(|it| it.trim_ascii_end().parse::<i32>().ok())
@@ -1953,11 +1962,22 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
     );
     // /proc/filesystems — list of registered filesystem types. Tools like
     // `mount`/`findmnt` and some container runtimes read it to decide what they
-    // can mount; absence (ENOENT) made those probes fail.
+    // can mount; absence (ENOENT) made those probes fail, and a stale list
+    // made `mount -t cgroup2` fail before the syscall even ran. The entries
+    // must stay in sync with the fs_type dispatch in
+    // `syscall/fs/mount.rs` (`sys_mount`/`sys_fsopen`); format follows Linux
+    // `fs/proc/filesystems.c`: `nodev\t<name>` for pseudo filesystems and
+    // `\t<name>` for device-backed ones.
     root.add(
         "filesystems",
         SimpleFile::new_regular(fs.clone(), || {
-            Ok("nodev\tsysfs\nnodev\tproc\nnodev\ttmpfs\nnodev\tdevtmpfs\n\text4\n")
+            Ok(
+                ["nodev\tsysfs", "nodev\tproc", "nodev\ttmpfs", "nodev\tramfs",
+                 "nodev\tdevtmpfs", "nodev\tdevpts", "nodev\tcgroup2",
+                 "nodev\toverlay", "\text4"]
+                    .map(|line| format!("{line}\n"))
+                    .concat(),
+            )
         }),
     );
     root.add("stat", SimpleFile::new_regular(fs.clone(), render_stat));

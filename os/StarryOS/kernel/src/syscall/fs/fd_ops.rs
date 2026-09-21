@@ -306,6 +306,52 @@ fn try_reopen_self_file(
     )
 }
 
+/// Resolves the [`ProcessData`] referenced by a `/proc/<pid>/exe` or
+/// `/proc/self/exe` path, or `None` when the path is not an exe magic link.
+fn proc_exe_target(
+    current: &crate::task::UserTaskRef,
+    path: &str,
+) -> Option<StarryResult<Arc<crate::task::ProcessData>>> {
+    if path == "/proc/self/exe" {
+        return Some(Ok(current.as_thread().proc_data.clone()));
+    }
+    let rest = path.strip_prefix("/proc/")?;
+    let (pid_str, suffix) = rest.split_once('/')?;
+    if suffix != "exe" || pid_str == "self" {
+        return None;
+    }
+    let tgid = TgidNumber::try_from(pid_str.parse::<u32>().ok()?).ok()?;
+    Some(get_user_process_data_by_number(tgid))
+}
+
+/// `/proc/<pid>/exe` is a magic link: opening it must yield the backing
+/// executable file itself, never a re-resolution of the displayed path. A
+/// memfd-exec'd runc displays `/memfd:... (deleted)`, which no path lookup
+/// can resolve. Fixes the runc nsexec "could not ensure we are a cloned
+/// binary" ENOENT.
+fn try_open_proc_exe(
+    current: &crate::task::UserTaskRef,
+    path: &str,
+    flags: u32,
+) -> Option<StarryResult<i32>> {
+    if flags & O_NOFOLLOW != 0 {
+        return None;
+    }
+    let proc_data = match proc_exe_target(current, path)? {
+        Ok(proc_data) => proc_data,
+        Err(err) => return Some(Err(err)),
+    };
+    let loc = proc_data.exe_location()?;
+    let cred = current.as_thread().cred();
+    let options = flags_to_options(flags as i32, 0, (cred.fsuid, cred.fsgid));
+    Some(
+        options
+            .open_loc(loc)
+            .map_err(StarryError::from)
+            .and_then(|result| add_to_fd(current, result, flags, None)),
+    )
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::AnyBitPattern)]
 pub struct OpenHow {
@@ -511,6 +557,9 @@ pub fn sys_openat(
     if let Some(result) = try_reopen_self_file(current, &path, uflags) {
         return result;
     }
+    if let Some(result) = try_open_proc_exe(current, &path, uflags) {
+        return result.map(|fd| fd as isize);
+    }
 
     // Absolute path: man "If pathname is absolute, then dirfd is ignored."
     // starry with_fs() unconditionally calls Directory::from_fd(dirfd),
@@ -591,9 +640,12 @@ pub fn sys_openat2(
         return Err(StarryError::InvalidInput);
     }
     const NIX_RESTORE_RESOLVE: u64 = (RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS) as u64;
-    if how_value.resolve != 0 && how_value.resolve != NIX_RESTORE_RESOLVE {
-        return Err(StarryError::OperationNotSupported);
-    }
+    // Known deviation from Linux (tracked in docs/design/docker-startup.md):
+    // only the RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS combination enforces its
+    // restriction. Other restricted combinations — runc's cgroupv2 reader
+    // uses RESOLVE_NO_XDEV — currently resolve like a plain openat(2)
+    // instead of returning ELOOP/EXDEV for the cases Linux would reject.
+    let enforced_resolve = how_value.resolve == 0 || how_value.resolve == NIX_RESTORE_RESOLVE;
 
     let flags: i32 = how_value
         .flags
@@ -612,6 +664,9 @@ pub fn sys_openat2(
         return Err(StarryError::InvalidInput);
     }
 
+    if !enforced_resolve {
+        return sys_openat(current, dirfd, path, flags, mode);
+    }
     if how_value.resolve == 0 {
         return sys_openat(current, dirfd, path, flags, mode);
     }

@@ -259,7 +259,11 @@ fn allocate_socket_staging(len: usize) -> StarryResult<Vec<u8>> {
 pub(super) fn in_root_net_ns() -> bool {
     let current = current_user_task();
     let namespace = current.as_thread().proc_data.namespace_snapshot();
-    namespace.net_ns.lock().ns_id == 0
+    // Identity by Arc pointer, mirroring Linux net_eq(): lock-free, and
+    // immune to the numeric ns id assignment order. A stale literal here
+    // would make every AF_PACKET socket creation fail with EACCES for
+    // processes in the root namespace.
+    Arc::ptr_eq(&namespace.net_ns, &*crate::namespace::ROOT_NET_NS)
 }
 
 pub(super) fn visible_interfaces() -> impl Iterator<Item = InterfaceInfo> {
