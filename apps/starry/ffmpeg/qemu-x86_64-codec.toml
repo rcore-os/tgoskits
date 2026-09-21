@@ -15,8 +15,8 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
-uefi = false
-to_bin = false
+uefi = true
+to_bin = true
 fail_regex = ['(?i)\\bpanic(?:ked)?\\b', "(?m)^FFMPEG_CODEC_TEST_FAILED\\s*$"]
 timeout = 900
 

@@ -13,8 +13,8 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
-uefi = false
-to_bin = false
+uefi = true
+to_bin = true
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^CPU_CONCURRENCY_FAILED\s*$']
 timeout = 600
 
