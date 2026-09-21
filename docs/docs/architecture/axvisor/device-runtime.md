@@ -7,7 +7,7 @@ sidebar_label: "设备运行时与中断"
 
 本文说明 AxVM Machine 怎样把已解析的设备图接入一台 VM：prepare 阶段怎样得到并封存 `DeviceRuntime`，vCPU 运行期怎样分派四种架构的退出，串口怎样连接宿主控制台，以及虚拟和物理中断怎样从设备状态走到 vCPU。设备 model、资源规划、`DeviceBuildContext`、`DeviceBundle`、索引和 grant API 的完整定义见[模拟设备框架第 4～6 章](./emulated-devices.md#4-运行时构建与注册)；本文只在 AxVM 接线需要时摘要这些机制。
 
-设备声明来自[客户机配置架构](./guest-configuration.md)，地址、中断和 machine 固定资源来自 [Machine 与资源规划架构](./machine-profile.md)，宿主串口复用和 backend generation 的所有权见[客户机控制台架构](./guest-console.md)。
+设备声明来自[客户机配置架构](./guest-configuration.md)，地址、中断和 machine 固定资源来自 [Machine 与资源规划架构](./machine-profile.md)，宿主串口复用和 backend generation/identity 的所有权见[客户机控制台架构](./guest-console.md)。
 
 ## 1. 代码边界与运行阶段
 
@@ -20,7 +20,7 @@ sidebar_label: "设备运行时与中断"
 | `virtualization/axvm/src/vm/prepare` | 消费 `AxVMResources` 中的 resolved graph，构建设备和 vCPU，并把 sealed runtime 放回 Machine resources | VM prepare |
 | `virtualization/axvm/src/runtime`、`architecture`、`arch/*` | DMA/定时器/唤醒/停止接线，vCPU 轮询，四架构 exit 解码，架构 service 消费和设备 activate/deactivate | VM start、run、pause/reset/stop |
 | `virtualization/arm_vgic` | AArch64 虚拟 GIC 的 distributor/redistributor/ITS 状态，以及物理 SPI backing 的规范状态 | build、vCPU attach、IRQ、EOI、teardown |
-| `os/axvisor/src/guest_console` | 唯一宿主控制台 reader、VM 选择、输入队列、输出仲裁，以及 backend generation 的创建和显式失效 | configured device 实例化、应用层 `mark_stopped()`/`remove()` |
+| `os/axvisor/src/guest_console` | 唯一宿主控制台 reader、VM 选择、输入队列、输出仲裁，以及 backend active generation/stable identity 的创建和显式失效 | configured device 实例化、应用层 `mark_stopped()`/`remove()` |
 
 依赖方向仍是 `axvm -> axdevice -> axdevice_base`。`arm_vgic` 实现通用中断控制器边界；`guest_console` 实现 `SerialBackendFactory`，但不进入 UART 寄存器状态机，也不拥有虚拟 IRQ。
 
@@ -168,8 +168,8 @@ LoongArch64 的 direct MMIO 也只使用通用 strict handler。PCH-PIC 构建�
 flowchart LR
     EXIT["MMIO / x86 PIO exit"]
     ADAPTER["16550 PIO/MMIO 或 PL011 MMIO adapter"]
-    CORE["UART 寄存器状态 + 256-byte RX FIFO"]
-    BACKEND["SerialBackend\n非阻塞 read / 同步 write"]
+    CORE["UART 寄存器状态\n256-byte RX FIFO\nPL011 16-byte retained TX FIFO"]
+    BACKEND["SerialBackend\n非阻塞 read / write 全接收\ntry_write 返回 accepted prefix"]
     ENDPOINT["SerialEndpoint"]
     LINE["IrqLine"]
     CTRL["虚拟中断控制器"]
@@ -194,11 +194,13 @@ THR 写先消费原有 TX-empty 状态，把字节同步写给 backend（或 loo
 
 `Pl011` 实现 DR、RSR/ECR、FR、IBRD、FBRD、LCRH、CR、IFLS、IMSC、RIS、MIS、ICR、DMACR 和 peripheral ID 区域，同样使用 256 字节 RX FIFO。`RIS` 来自 RX 非空、RX timeout 和 TX pending；`MIS = RIS & IMSC`，只有 masked pending 非零才拉高 IRQ。DR 读弹出一个 RX 字节，写 RSR/ECR 无条件清 `receive_error`。ICR 的 TX 位可直接清 `tx_interrupt_pending`；RX 和 RX-timeout 是由 FIFO 非空派生的 level，FIFO 仍非空时写 ICR 不会清掉它们，相关 ICR 位只在 FIFO 已空时清 `receive_error`。
 
-PL011 只通过固定 `0x1000` MMIO 寄存器块暴露，支持 Byte/Word/Dword，Qword 明确返回宽度错误。当前模型对 enable 位采用简化语义：写 DR 只有在 `UARTEN | TXE` 同时置位时才把字节送到 backend；backend poll 始终可以把输入压入 RX FIFO，读 DR 也始终可以弹出 FIFO 字节。`RXE` 只门控由 FIFO 非空派生的 RX/RX-timeout raw interrupt，`TXE` 门控 TX raw interrupt，而 `UARTEN` 不参与 `raw_interrupts()`。这些规则描述的是当前实现，不能外推为完整 PL011 硬件的收发 gating 语义。未知但落在寄存器块内的保留地址按寄存器语义读零或忽略写，块外访问报 `OutOfRange`。
+PL011 只通过固定 `0x1000` MMIO 寄存器块暴露，支持 Byte/Word/Dword，Qword 明确返回宽度错误。当前模型对 enable 位采用简化语义：写 DR 只有在 `UARTEN | TXE` 同时置位时才把字节压入 16 字节 retained TX FIFO；`UARTEN` 或 `TXE` 任一清零后模型保留 FIFO 内容，不向 backend 提交。禁用期间的 poll、DR/FR 等寄存器访问都不会排空该 FIFO，重新同时置位 `UARTEN | TXE` 时通过一次锁外 drain 立即继续提交 retained 字节。`FR` 的 `TXFE` 只在 TX FIFO 为空且没有进行中的提交（即 `tx_drain_active` 为假）时为 1；`BUSY` 在有进行中的提交或 TX FIFO 仍有 retained 字节时为 1；`TXFF` 仍只由 TX FIFO 满决定。因此禁用但 FIFO 非空时 `TXFE=0`、`BUSY=1`，表示 backend 提交已暂停但数据仍未排空；`UARTEN | TXE` 已置位且 FIFO 为空时是 `TXFE=1`、`BUSY=0`。backend poll 始终可以把输入压入 RX FIFO，读 DR 也始终可以弹出 FIFO 字节。`RXE` 只门控由 FIFO 非空派生的 RX/RX-timeout raw interrupt，`TXE` 门控 TX raw interrupt，而 `UARTEN` 不参与 `raw_interrupts()`。这些规则描述的是当前实现，不能外推为完整 PL011 硬件的收发 gating 语义。未知但落在寄存器块内的保留地址按寄存器语义读零或忽略写，块外访问报 `OutOfRange`。
 
 ### 5.3 backend、poll 与 endpoint
 
-`SerialBackend` 只定义非阻塞 `read()` 和同步 `write()`，不保存寄存器、FIFO 或 IRQ 状态。`NullSerialBackend` 丢弃输出并始终返回零输入。每次 vCPU0 poll 时，`SerialEndpoint` 最多读取 64 字节送入核心 FIFO，再根据新的 UART 状态更新 `IrqLine`；guest 写 TX 时则同步送给 backend。
+`SerialBackend` 只定义非阻塞 `read()`、`write()` 和带默认实现的 `try_write()`，不保存寄存器、FIFO 或 IRQ 状态。默认 `write()` 表示 backend 接收完整缓冲区；`try_write()` 返回本次接受的 accepted prefix 长度，受流控或队列容量限制的 backend 覆盖它，UART 模型据此保留未接受的字节。`NullSerialBackend` 丢弃输出并始终返回零输入。
+
+PL011 通过 `try_write()` 只丢弃 backend 接受的前缀，剩余字节留在 retained TX FIFO 中，由后续 poll 或寄存器访问重试。每次 vCPU0 poll 时，`SerialEndpoint` 先尝试排空 PL011 的 retained TX，再最多读取 64 字节 backend 输入送入核心 RX FIFO，随后按新的 UART 状态更新 `IrqLine`。16550 没有 retained TX FIFO，THR 写仍同步经 `write()` 送入 backend。
 
 `SerialEndpoint` 把 `IrqLine::assert/deassert` 的错误翻译成带操作名的 `DeviceError::Backend`。UART 只发布“当前中断条件是否成立”，不直接注入 vCPU，也不拥有控制器的 pending/active 状态。
 
@@ -213,7 +215,7 @@ PL011 只通过固定 `0x1000` MMIO 寄存器块暴露，支持 Byte/Word/Dword�
 
 factory 调用发生在 configured request 转成 `DeviceNodeSpec` 时。`SerialDeviceModel` 随即持有返回的同一个 `Arc<dyn SerialBackend>`，之后每次 `build()` 只是把这个 `Arc` clone 给新 UART。AxVM reset 会复用 `AxVMResources` 中已有的 device plan；runtime 虽然重建，但不会重新把 request 送进 factory，所以当前实现中 reset 前后的 UART backend 仍是同一 generation。若应用此前已经显式使该 generation 失效，单纯 rebuild runtime 也不会创建或发布一个新 generation。
 
-generation 数值的分配和当前 generation 的校验属于应用层 `GuestConsoleMux`。失效也不是任意 VM stop/remove 自动触发的设备层行为：只有 Axvisor 应用显式调用 mux 的 `mark_stopped()` 或 `remove()`，相应 guest state 才会清除或删除当前 generation，旧 backend 的输入输出随后被拒绝。设备层既不创建、解释 generation，也不决定何时调用这些应用接口。详见[客户机控制台架构](./guest-console.md)。
+generation 数值的分配、active admission 与 stable identity 的校验都属于应用层 `GuestConsoleMux`。每个 host-console backend 在创建时同时记录这两个角色：`backend_generation` 是接纳 guest 输入输出的 active generation，`backend_identity` 是该 backend incarnation 的稳定身份。`mark_stopped()` 只清 active generation 并清输入，保留 stable identity 与该 VM 的有界输出，因此 stop 后新的输入和输出提交被拒绝，但已经进入 ordered `ConsoleLogSubscription` record queue 的记录仍跨 stop 按 identity 回放；backend replacement 或 `remove()` 才删除 guest state 并让旧 identity 失效，旧 `GuestSerialBackend` 的读写随后被拒绝。失效也不是任意 VM stop/remove 自动触发的设备层行为：只有 Axvisor 应用显式调用这些 mux 接口才会发生。设备层既不创建、解释 generation，也不决定何时调用这些应用接口。详见[客户机控制台架构](./guest-console.md)。
 
 ## 6. 虚拟 IRQ 与物理 IRQ backing
 

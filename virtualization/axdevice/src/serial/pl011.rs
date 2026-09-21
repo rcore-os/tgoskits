@@ -73,6 +73,11 @@ impl Pl011State {
         }
     }
 
+    /// The transmitter is enabled only while both `UARTEN` and `TXE` are set.
+    fn transmit_enabled(&self) -> bool {
+        self.control & (CR_UART_ENABLE | CR_TX_ENABLE) == (CR_UART_ENABLE | CR_TX_ENABLE)
+    }
+
     fn push_rx(&mut self, byte: u8) {
         if !self.rx_fifo.push(byte) {
             self.receive_error |= 1 << 3;
@@ -84,6 +89,8 @@ impl Pl011State {
         if self.tx_fifo.is_empty() && !self.tx_drain_active {
             flags |= FR_TXFE;
         } else {
+            // Disabling transmission pauses backend submission; it does not
+            // make retained FIFO contents complete or empty.
             flags |= FR_BUSY;
         }
         if self.tx_fifo.is_full() {
@@ -140,6 +147,11 @@ impl Pl011 {
         let count = {
             let mut state = self.state();
             if state.tx_drain_active {
+                return self.endpoint.set_irq_level(state.irq_asserted());
+            }
+            // A disabled transmitter keeps its retained bytes in the FIFO and
+            // must not reach the backend until `UARTEN` and `TXE` are set again.
+            if !state.transmit_enabled() {
                 return self.endpoint.set_irq_level(state.irq_asserted());
             }
             let count = state.tx_fifo.copy_to(&mut bytes);
@@ -212,14 +224,13 @@ impl Pl011 {
     pub fn write(&self, offset: usize, width: AccessWidth, value: u64) -> DeviceResult {
         validate_width(width)?;
         let value = value as u32;
-        let (drain_tx, asserted) = {
+        let (drain_tx, tx_reenable, asserted) = {
             let mut state = self.state();
             let mut drain_tx = false;
+            let mut tx_reenable = false;
             match offset {
                 REG_DR => {
-                    if state.control & (CR_UART_ENABLE | CR_TX_ENABLE)
-                        == (CR_UART_ENABLE | CR_TX_ENABLE)
-                    {
+                    if state.transmit_enabled() {
                         drain_tx = state.tx_fifo.push(value as u8);
                         if drain_tx {
                             state.tx_interrupt_pending = false;
@@ -230,7 +241,14 @@ impl Pl011 {
                 REG_IBRD => state.integer_baud_rate = value & 0xffff,
                 REG_FBRD => state.fractional_baud_rate = value & 0x3f,
                 REG_LCRH => state.line_control = value,
-                REG_CR => state.control = value & 0xffff,
+                REG_CR => {
+                    let enabled = state.transmit_enabled();
+                    state.control = value & 0xffff;
+                    // A disable keeps the retained FIFO untouched. Restoring
+                    // both enable bits with a non-empty FIFO resumes the queue
+                    // through one locked-out drain.
+                    tx_reenable = !enabled && state.transmit_enabled() && !state.tx_fifo.is_empty();
+                }
                 REG_IFLS => state.interrupt_fifo_level = value & 0x3f,
                 REG_IMSC => state.interrupt_mask = value & 0x7ff,
                 REG_ICR => {
@@ -250,11 +268,13 @@ impl Pl011 {
                     });
                 }
             }
-            (drain_tx, state.irq_asserted())
+            (drain_tx, tx_reenable, state.irq_asserted())
         };
 
         self.endpoint.set_irq_level(asserted)?;
-        if drain_tx {
+        // A DR write and a disabled-to-enabled control write both resume the
+        // retained FIFO through the same locked-out drain.
+        if drain_tx || tx_reenable {
             self.drain_tx()?;
         }
         Ok(())
