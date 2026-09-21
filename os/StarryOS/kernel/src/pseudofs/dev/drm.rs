@@ -48,11 +48,11 @@ const fn io(ty: u8, nr: u8) -> u32 {
 
 /// Lowest driver-specific DRM command number (`DRM_COMMAND_BASE`). Core
 /// DRM commands live below this; modeset commands at or above 0xA0.
-#[allow(dead_code)]
+#[cfg(feature = "rknpu")]
 pub const DRM_COMMAND_BASE: u32 = 0x40;
 /// One past the highest driver-specific DRM command number
 /// (`DRM_COMMAND_END`).
-#[allow(dead_code)]
+#[cfg(feature = "rknpu")]
 pub const DRM_COMMAND_END: u32 = 0xA0;
 
 /// Extracts the command number (bits 7..0) from a packed ioctl request.
@@ -772,7 +772,7 @@ pub struct DrmVirtgpuMap {
 /// **Critical**: There is NO `ctx_id` field. The context is implicitly
 /// bound to the file descriptor via CONTEXT_INIT.
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmVirtgpuExecbuffer {
     /// VIRTGPU_EXECBUF_FENCE_FD_IN/OUT/RING_IDX flags.
     pub flags: u32,
@@ -821,7 +821,7 @@ pub struct DrmVirtgpuGetparam {
 /// virtio-gpu resource ID) are DIFFERENT concepts. Mesa uses them
 /// independently.
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmVirtgpuResourceCreate {
     /// Input: target type (GL_TEXTURE_2D, etc.).
     pub target: u32,
@@ -933,7 +933,7 @@ pub struct DrmVirtgpu3dWait {
 /// Retrieves capability set data.
 /// Linux: `struct drm_virtgpu_get_caps` (24 bytes)
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmVirtgpuGetCaps {
     /// Input: capset ID (VIRTGPU_DRM_CAPSET_VIRGL=1, VIRGL2=2).
     pub cap_set_id: u32,
@@ -952,7 +952,7 @@ pub struct DrmVirtgpuGetCaps {
 /// Mesa virgl calls this when `supports_coherent=true` (i.e. both
 /// RESOURCE_BLOB and HOST_VISIBLE are reported as supported).
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmVirtgpuResourceCreateBlob {
     /// VIRTGPU_BLOB_MEM_* (Mesa uses HOST3D).
     pub blob_mem: u32,

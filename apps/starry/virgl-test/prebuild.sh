@@ -117,8 +117,8 @@ REPO
             --no-progress \
             --no-scripts \
             add weston weston-backend-drm weston-shell-desktop weston-terminal \
-                mesa-dri-gallium mesa-egl mesa-gbm mesa-gles mesa-demos mesa-dev\
-                foot font-noto seatd dbus glmark2
+                mesa-dri-gallium mesa-egl mesa-gbm mesa-gles mesa-demos mesa-dev \
+                foot font-noto seatd dbus glmark2 strace
 
     # 全量升级到仓库最新(v3.23)。apk add 对已安装包不会升级,而基础镜像烘焙的是
     # 旧快照:mesa 25.1.9 缺 virgl 驱动(v3.23 的 25.2.7 才编译进 libgallium 单体)、
@@ -159,7 +159,7 @@ populate_overlay() {
         done)
     fi
 
-    # 注入测试脚本
+    # 注入人工验收脚本（guest 内 /usr/local/bin/virgl-runner.sh）
     install -Dm0755 "$app_dir/runner.sh" "$overlay_dir/usr/local/bin/virgl-runner.sh"
 
     # 注入 weston 配置
@@ -181,15 +181,88 @@ locking=false
 keymap_layout=us
 WEOF
 
-    # 注入设备初始化脚本（开机自动启动 seatd/dbus）
-    mkdir -p "$overlay_dir/etc/local.d"
-    cat > "$overlay_dir/etc/local.d/virgl-start.start" <<'LDEOF'
+    # 注入登录自启脚本到 /etc/profile.d/。
+    # guest 里没有 OpenRC / rc-service，/etc/local.d/*.start 不会被执行，因此改为
+    # 依赖 Alpine 的 /etc/profile：它在交互式登录时依次 source /etc/profile.d/*.sh。
+    # 关键点：
+    #   * 只在 root 交互式登录 shell 生效；非交互脚本（构建/CI）不触发；
+    #   * runner 后台执行，stdout/stderr 只写 /tmp/virgl-runner.log，不写 console；
+    #   * PID 存 /tmp/virgl-runner.pid；已运行只打印提示，不重复启动；
+    #   * 用 mkdir 原子锁避免重复 source 或多会话并发启动；
+    #   * 绝不阻塞、不夺走当前交互 shell（后台 + </dev/null）。
+    mkdir -p "$overlay_dir/etc/profile.d"
+    cat > "$overlay_dir/etc/profile.d/virgl-autostart.sh" <<'PROFILEOF'
 #!/bin/sh
-setup-devd udev 2>/dev/null || true
-rc-service seatd start 2>/dev/null || true
-rc-service dbus start 2>/dev/null || true
-LDEOF
-    chmod +x "$overlay_dir/etc/local.d/virgl-start.start"
+# StarryOS virgl-test 登录自启脚本（由 prebuild.sh 注入，不要手工编辑）。
+#
+# 目标：root 交互登录 shell 出现时，仅在后台启动一次 virgl 人工验收 runner。
+# 兼容 Alpine BusyBox /bin/sh（ash）。
+
+# 仅交互式 shell 触发（非交互脚本 / 构建 / CI 直接跳过）。
+case "$-" in
+    *i*) : ;;
+    *) return 0 ;;
+esac
+
+# 仅 root。
+[ "$(id -u 2>/dev/null)" = "0" ] || return 0
+
+VIRGL_RUNNER=/usr/local/bin/virgl-runner.sh
+VIRGL_RUNNER_LOG=/tmp/virgl-runner.log
+VIRGL_RUNNER_PID=/tmp/virgl-runner.pid
+VIRGL_AUTOSTART_LOCK=/tmp/virgl-autostart.lock
+
+[ -x "$VIRGL_RUNNER" ] || return 0
+
+# 已经有一个存活的 runner：只提示，不重复启动。
+if [ -f "$VIRGL_RUNNER_PID" ]; then
+    virgl_pid=$(cat "$VIRGL_RUNNER_PID" 2>/dev/null)
+    if [ -n "$virgl_pid" ] && kill -0 "$virgl_pid" 2>/dev/null; then
+        printf '[virgl-test] virgl runner 已在后台运行 (pid=%s)，日志: %s\n' \
+            "$virgl_pid" "$VIRGL_RUNNER_LOG"
+        unset virgl_pid
+        return 0
+    fi
+    # PID 文件已过期（进程退出或 stale），清掉后尝试重新启动。
+    rm -f "$VIRGL_RUNNER_PID"
+fi
+
+# 原子锁：mkdir 只在目录不存在时成功，用来保证只有一个会话负责启动。
+if ! mkdir "$VIRGL_AUTOSTART_LOCK" 2>/dev/null; then
+    printf '[virgl-test] virgl runner 正在启动中，日志: %s\n' "$VIRGL_RUNNER_LOG"
+    return 0
+fi
+
+# 拿到锁后二次确认：期间可能已有别的 shell 启动成功。
+if [ -f "$VIRGL_RUNNER_PID" ]; then
+    virgl_pid=$(cat "$VIRGL_RUNNER_PID" 2>/dev/null)
+    if [ -n "$virgl_pid" ] && kill -0 "$virgl_pid" 2>/dev/null; then
+        rmdir "$VIRGL_AUTOSTART_LOCK" 2>/dev/null
+        printf '[virgl-test] virgl runner 已在后台运行 (pid=%s)，日志: %s\n' \
+            "$virgl_pid" "$VIRGL_RUNNER_LOG"
+        unset virgl_pid
+        return 0
+    fi
+fi
+
+# 后台启动，stdout/stderr 只进日志；</dev/null 断开交互终端输入，不夺走 shell。
+# 有 nohup 时用它，避免登录 shell 退出时把 runner 一起 SIGHUP 掉。
+if command -v nohup >/dev/null 2>&1; then
+    nohup "$VIRGL_RUNNER" </dev/null >"$VIRGL_RUNNER_LOG" 2>&1 &
+else
+    "$VIRGL_RUNNER" </dev/null >"$VIRGL_RUNNER_LOG" 2>&1 &
+fi
+virgl_pid=$!
+echo "$virgl_pid" >"$VIRGL_RUNNER_PID"
+
+rmdir "$VIRGL_AUTOSTART_LOCK" 2>/dev/null
+
+printf '[virgl-test] virgl 人工验收已在后台启动 (pid=%s)\n' "$virgl_pid"
+printf '[virgl-test] 日志: %s ；关闭 VM 请用 QMP/界面，详见 README\n' \
+    "$VIRGL_RUNNER_LOG"
+unset virgl_pid
+PROFILEOF
+    chmod 0644 "$overlay_dir/etc/profile.d/virgl-autostart.sh"
 }
 
 require_env STARRY_ROOTFS "$base_rootfs"

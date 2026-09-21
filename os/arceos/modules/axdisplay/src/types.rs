@@ -58,3 +58,52 @@ pub struct CapsetInfo {
     pub max_version: u32,
     pub max_size: u32,
 }
+
+/// Guest-physical backing for a blob resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlobMemory {
+    pub paddr: u64,
+    pub length: u32,
+}
+
+/// Parameters for creating a virtio-gpu 3D resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceCreate3d {
+    pub ctx_id: u32,
+    pub resource_id: u32,
+    pub target: u32,
+    pub format: u32,
+    pub bind: u32,
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    pub array_size: u32,
+    pub last_level: u32,
+    pub nr_samples: u32,
+    pub flags: u32,
+}
+
+/// Parameters and initial command stream for creating a blob resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceCreateBlob<'a> {
+    pub ctx_id: u32,
+    pub resource_id: u32,
+    pub blob_mem: u32,
+    pub blob_flags: u32,
+    pub size: u64,
+    pub blob_id: u64,
+    pub backing: Option<BlobMemory>,
+    pub cmd: &'a [u8],
+}
+
+/// Parameters for a virtio-gpu 3D transfer operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Transfer3d {
+    pub ctx_id: u32,
+    pub resource_id: u32,
+    pub box_: TransferBox,
+    pub offset: u64,
+    pub level: u32,
+    pub stride: u32,
+    pub layer_stride: u32,
+}

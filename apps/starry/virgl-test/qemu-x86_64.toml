@@ -1,7 +1,29 @@
-# StarryOS VirGL 驱动开发 - QEMU 配置
-# 参照 qt-calc 架构
-# 连接图形: spicy --uri="spice+unix:///tmp/starry-virgl-test.sock"
-# timeout=900: VM 最长运行 900 秒后自动退出（超时保护），也可手动用 poweroff 提前关闭
+# StarryOS VirGL 人工验收 - QEMU 配置
+#
+# 这不是一个自动判定用例:guest 出现 root 交互登录 shell 后,由
+# /etc/profile.d/virgl-autostart.sh 幂等后台启动 /usr/local/bin/virgl-runner.sh
+# (guest 无 OpenRC,不再依赖 /etc/local.d),Weston 与 weston-terminal 窗口持续运行。
+# runner 的 stdout/stderr 只写 /tmp/virgl-runner.log,不向 /dev/console 重复输出,
+# 串口保持可交互。由操作者通过 Web/noVNC 或 SPICE 人工查看画面,检查完再自行关闭
+# QEMU。因此这里不配置任何会因串口输出或时间到期而自动结束 QEMU 的字段。
+#
+# 人工查看画面:
+#   普通 VNC 客户端 :  直连 127.0.0.1:5909(display 9)的 raw VNC/RFB,不是 HTTP。
+#   浏览器          :  QEMU 的 5909 端口不提供 HTTP,浏览器无法直接打开;需要先
+#                      用 noVNC/websockify 把本机 Web 端口(建议 6080)代理到
+#                      127.0.0.1:5909,例如已有 noVNC 安装时:
+#                        novnc_proxy --listen 127.0.0.1:6080 --vnc 127.0.0.1:5909
+#                      然后浏览器打开 http://127.0.0.1:6080/vnc.html?autoconnect=1
+#                      (不在仓库内下载 noVNC/websockify,请预装)
+#   SPICE           :  spicy --uri="spice+unix:///tmp/starry-virgl-test.sock"
+# 主动关闭 QEMU:
+#   QMP 客户端必须先读取 greeting,再发送 qmp_capabilities 完成协商,之后才能发
+#   quit。连续发送两条命令的 socat 简例:
+#     printf '{"execute":"qmp_capabilities"}\n{"execute":"quit"}\n' | \
+#         socat - UNIX-CONNECT:/tmp/starry-virgl-test.qmp
+#   (可直接使用,socat 会依次收 greeting、发两条命令;更完整的分步读写示例见
+#    README 的 python3 heredoc。)
+#   (或在宿主机直接 Ctrl-C 结束 cargo xtask 进程)
 
 args = [
     "-machine", "q35,accel=kvm",
@@ -9,13 +31,22 @@ args = [
     "-smp", "1",
     "-m", "2G",
 
-    # ---- 显示 (virgl 3D 加速) ----
+    # ---- 显示 (guest virgl 3D 加速) ----
     # 默认 blob=off: 对齐 alpine-virgl-vm,走经典路径(RESOURCE_CREATE_3D +
     # PRIME 导出 GEM)。Mesa 是否用 blob 取决于 GETPARAM 报告的 RESOURCE_BLOB
     # (card0 现在按真实协商返回,blob=off 时为 0 → Mesa 自动走经典路径)。
+    # egl-headless,gl=on 是 guest virgl 命令链路的渲染输出,人工验收时不改动它,
+    # 也不把它暴露给 Web。
     "-device", "virtio-vga-gl",
     "-display", "egl-headless,gl=on",
+    # SPICE: 保留现有 Unix socket 作为备选人工查看通道。
     "-spice", "gl=off,unix=on,addr=/tmp/starry-virgl-test.sock,disable-ticketing=on",
+    # VNC: 仅监听 localhost,固定 display 9(TCP 5909),是 raw VNC/RFB 协议,
+    # 不提供 HTTP。普通 VNC 客户端可直连;浏览器需先用 noVNC/websockify 把本机
+    # Web 端口(建议 6080)代理到 127.0.0.1:5909 再打开 vnc.html。
+    # 与 egl-headless 并存,显示同一个 guest framebuffer;它只是可视证据,VNC 的拷贝
+    # 路径与 virgl 命令链路无关,不能替代 GL_RENDERER=virgl。
+    "-vnc", "127.0.0.1:9",
     "-vga", "none",
 
     # ---- 控制台 ----
@@ -23,6 +54,10 @@ args = [
     # 刷到控制台,淹没正常输出。排查时再临时加回。
     "-serial", "mon:stdio",
     "-monitor", "none",
+    # QMP: 操作者可用 quit 主动关闭 QEMU。客户端必须先读取 greeting,再发送
+    # {"execute":"qmp_capabilities"} 完成协商,之后才能发送 {"execute":"quit"}。
+    # wait=off 让 QEMU 不会为了等客户端连接而阻塞启动。
+    "-qmp", "unix:/tmp/starry-virgl-test.qmp,server=on,wait=off",
 
     # ---- 磁盘 ----
     "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
@@ -43,8 +78,11 @@ args = [
 
 uefi = true
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/local/bin/virgl-runner.sh"
-success_regex = []
-fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
-timeout = 900
+
+# virgl-test 是人工验收应用:QEMU 生命周期只由 guest poweroff、QMP quit 或操作者
+# 中断决定,任何串口输出(包括 panic)都不会自动结束 QEMU。
+# ostool 的 QEMU 配置解析要求这两个键存在(fail_regex 无 serde default):
+#   * fail_regex = []  空列表,不做任何失败匹配;
+#   * timeout    = 0   显式关闭超时,timeout_duration(Some(0)) 为 None。
+fail_regex = []
+timeout = 0

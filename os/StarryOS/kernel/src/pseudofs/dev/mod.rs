@@ -1,7 +1,7 @@
 //! Special devices
 
 mod axivc;
-mod card0;
+pub(crate) mod card0;
 #[cfg(feature = "rknpu")]
 pub(crate) mod card1;
 // The real contiguous coherent dma-heap is shared by every accelerator that
@@ -30,6 +30,7 @@ pub(super) mod pwm;
 #[cfg(feature = "rga")]
 pub(crate) mod rga;
 mod rtc;
+mod sync_file;
 #[cfg(feature = "sg2002")]
 pub mod tpu;
 pub mod tty;

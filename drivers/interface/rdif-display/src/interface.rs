@@ -1,4 +1,7 @@
-use crate::{CapsetInfo, DisplayError, DisplayInfo, DriverGeneric, FrameBuffer, TransferBox};
+use crate::{
+    CapsetInfo, DisplayError, DisplayInfo, DriverGeneric, FrameBuffer, ResourceCreate3d,
+    ResourceCreateBlob, Transfer3d,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Event {
@@ -141,8 +144,24 @@ pub trait Interface: DriverGeneric {
         false
     }
 
+    /// Returns `true` if `VIRTIO_GPU_F_CONTEXT_INIT` was negotiated.
+    ///
+    /// Mesa decides whether to use the context-init protocol from the
+    /// `VIRTGPU_PARAM_CONTEXT_INIT` GETPARAM value, which the kernel must report
+    /// from this actual negotiation (Linux: `has_context_init`). It is
+    /// independent of [`has_virgl`](Interface::has_virgl): a legacy device can
+    /// offer VIRGL without the context-init protocol.
+    fn has_context_init(&self) -> bool {
+        false
+    }
+
     /// Create a 3D rendering context.
-    fn ctx_create(&mut self, _ctx_id: u32, _name: &str, _context_init: u32) -> Result<(), DisplayError> {
+    fn ctx_create(
+        &mut self,
+        _ctx_id: u32,
+        _name: &str,
+        _context_init: u32,
+    ) -> Result<(), DisplayError> {
         Err(DisplayError::NotSupported)
     }
 
@@ -173,23 +192,7 @@ pub trait Interface: DriverGeneric {
     ///
     /// The caller must explicitly call [`ctx_attach_resource`] after creation
     /// before using the resource in rendering commands.
-    fn resource_create_3d(
-        &mut self,
-        ctx_id: u32,
-        resource_id: u32,
-        target: u32,
-        format: u32,
-        bind: u32,
-        width: u32,
-        height: u32,
-        depth: u32,
-        array_size: u32,
-        last_level: u32,
-        nr_samples: u32,
-        flags: u32,
-    ) -> Result<(), DisplayError> {
-        let _ = (ctx_id, resource_id, target, format, bind, width, height, depth,
-                 array_size, last_level, nr_samples, flags);
+    fn resource_create_3d(&mut self, _params: ResourceCreate3d) -> Result<(), DisplayError> {
         Err(DisplayError::NotSupported)
     }
 
@@ -212,44 +215,18 @@ pub trait Interface: DriverGeneric {
     /// in size; for GUEST blobs it must be empty.
     fn resource_create_blob(
         &mut self,
-        _ctx_id: u32,
-        _resource_id: u32,
-        _blob_mem: u32,
-        _blob_flags: u32,
-        _size: u64,
-        _blob_id: u64,
-        _cmd: &[u8],
+        _params: ResourceCreateBlob<'_>,
     ) -> Result<(), DisplayError> {
         Err(DisplayError::NotSupported)
     }
 
     /// Transfer data from guest to host for a 3D resource.
-    fn transfer_to_host_3d(
-        &mut self,
-        ctx_id: u32,
-        resource_id: u32,
-        box_: TransferBox,
-        offset: u64,
-        level: u32,
-        stride: u32,
-        layer_stride: u32,
-    ) -> Result<(), DisplayError> {
-        let _ = (ctx_id, resource_id, box_, offset, level, stride, layer_stride);
+    fn transfer_to_host_3d(&mut self, _params: Transfer3d) -> Result<(), DisplayError> {
         Err(DisplayError::NotSupported)
     }
 
     /// Transfer data from host to guest for a 3D resource.
-    fn transfer_from_host_3d(
-        &mut self,
-        ctx_id: u32,
-        resource_id: u32,
-        box_: TransferBox,
-        offset: u64,
-        level: u32,
-        stride: u32,
-        layer_stride: u32,
-    ) -> Result<(), DisplayError> {
-        let _ = (ctx_id, resource_id, box_, offset, level, stride, layer_stride);
+    fn transfer_from_host_3d(&mut self, _params: Transfer3d) -> Result<(), DisplayError> {
         Err(DisplayError::NotSupported)
     }
 
@@ -264,7 +241,12 @@ pub trait Interface: DriverGeneric {
     }
 
     /// Retrieve capset data.
-    fn get_capset(&mut self, _id: u32, _ver: u32, _size: u32) -> Result<alloc::vec::Vec<u8>, DisplayError> {
+    fn get_capset(
+        &mut self,
+        _id: u32,
+        _ver: u32,
+        _size: u32,
+    ) -> Result<alloc::vec::Vec<u8>, DisplayError> {
         Err(DisplayError::NotSupported)
     }
 }
