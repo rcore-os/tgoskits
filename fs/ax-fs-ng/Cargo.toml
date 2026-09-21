@@ -48,10 +48,15 @@ optional = true
 features = ["alloc", "lfn", "log_level_trace", "unicode"]
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
+ax-crate-interface.workspace = true
 ax-sync = { workspace = true, features = ["host-test"] }
 # Runtime integration is tested from the workspace. A published version here
 # would form a release-order cycle with ax-runtime's filesystem dependency.
 ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
+
+[[test]]
+name = "resolve_constraints"
+required-features = ["host-test", "vfs"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

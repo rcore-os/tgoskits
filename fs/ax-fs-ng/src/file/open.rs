@@ -9,7 +9,7 @@ use super::{
     WriteAccess,
     handle::{File, FileBackend},
 };
-use crate::fs_core::FsContext;
+use crate::fs_core::{FsContext, ResolveConstraints};
 
 bitflags::bitflags! {
     /// Flags describing the access mode of an opened file.
@@ -83,6 +83,9 @@ pub struct OpenOptions {
     user: Option<(u32, u32)>,
     path: bool,
     node_type: NodeType,
+    /// Path-walk restrictions (openat2 `RESOLVE_*`); `None` means the plain
+    /// unconstrained walk.
+    resolve: Option<ResolveConstraints>,
     // system-specific
     mode: u32,
 }
@@ -104,6 +107,7 @@ impl OpenOptions {
             user: None,
             path: false,
             node_type: NodeType::RegularFile,
+            resolve: None,
             // system-specific
             mode: 0o666,
         }
@@ -186,6 +190,14 @@ impl OpenOptions {
     #[cfg(feature = "vfs")]
     pub fn node_type(&mut self, node_type: NodeType) -> &mut Self {
         self.node_type = node_type;
+        self
+    }
+
+    /// Sets the path-walk restrictions for the resolution (openat2's
+    /// `RESOLVE_*` semantics). See [`ResolveConstraints`].
+    #[cfg(feature = "vfs")]
+    pub fn resolve(&mut self, resolve: ResolveConstraints) -> &mut Self {
+        self.resolve = Some(resolve);
         self
     }
 
@@ -341,6 +353,16 @@ impl OpenOptions {
         // it. Fixes bug-open-trailing-slash.
         let must_be_dir = path.as_ref().has_trailing_slash();
 
+        if let Some(constraints) = self.resolve.clone() {
+            return self.open_constrained(
+                context,
+                path.as_ref(),
+                &constraints,
+                must_be_dir,
+                credentials,
+            );
+        }
+
         let (loc, newly_created) =
             match context.resolve_parent_with_search_checked(path.as_ref(), |directory| {
                 context.check_search_path(directory, context.permission_boundary(), credentials)
@@ -453,6 +475,123 @@ impl OpenOptions {
         // Trailing-slash post-check: if the original pathname ended with '/'
         // (other than the root itself), the resolved location MUST be a
         // directory; otherwise return NotADirectory.
+        if must_be_dir && !loc.is_dir() {
+            return Err(VfsError::NotADirectory);
+        }
+
+        self._open(loc, credentials, newly_created)
+    }
+
+    /// Opens `path` under openat2-style path-walk `constraints`.
+    ///
+    /// Mirrors [`Self::open_with_credentials`] but resolves through the
+    /// constraint-aware walker, so `RESOLVE_BENEATH`/`IN_ROOT`/`NO_XDEV`/
+    /// `NO_SYMLINKS`/`NO_MAGICLINKS` hold for the parent walk, the final
+    /// component, and every symlink target followed on the way.
+    fn open_constrained(
+        &self,
+        context: &FsContext,
+        path: &Path,
+        constraints: &ResolveConstraints,
+        must_be_dir: bool,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<OpenResult> {
+        let check_search = |directory: &Location| {
+            context.check_search_path(directory, context.permission_boundary(), credentials)
+        };
+
+        // Paths whose final component is `.`/`..` (or the empty/root path)
+        // have no creatable name: resolve in full; creation flags cannot
+        // apply. O_EXCL on an existing target fails with EEXIST, mirroring
+        // the unconstrained create-at-existing-entry behavior.
+        if path.file_name().is_none() {
+            let loc = context.resolve_with_constraints(path, constraints, true, check_search)?;
+            if self.create_new {
+                return Err(VfsError::AlreadyExists);
+            }
+            if must_be_dir && !loc.is_dir() {
+                return Err(VfsError::NotADirectory);
+            }
+            return self._open(loc, credentials, false);
+        }
+
+        let (parent, name, parent_depth) =
+            context.resolve_parent_with_constraints(path, constraints, check_search)?;
+
+        let existing = match parent.lookup_no_follow(&name) {
+            Ok(_) => true,
+            Err(VfsError::NotFound) => false,
+            Err(error) => return Err(error),
+        };
+        // A trailing slash prevents creation of a missing regular file, but an
+        // existing directory must still see the original O_CREAT flag so
+        // _open() returns EISDIR.
+        let effective_create = self.create && (!must_be_dir || existing);
+        let effective_create_new = self.create_new && (!must_be_dir || existing);
+        if (effective_create || effective_create_new) && !existing {
+            // The constrained walker already search-checked every directory
+            // it entered; only the parent's own mutation permission remains.
+            context.check_mutation_parent_with_search(&parent, &[], credentials)?;
+        }
+        let (mut loc, newly_created) = parent.open_file_with_status(
+            &name,
+            &axfs_ng_vfs::OpenOptions {
+                create: effective_create,
+                create_new: effective_create_new,
+                node_type: self.node_type,
+                permission: NodePermission::from_bits_truncate(self.mode as _),
+                user: self.user,
+            },
+        )?;
+        // `lookup_no_follow` (existing entry) and creation both happen on the
+        // already-validated parent; a mount change here means the final
+        // component itself is a mountpoint, which NO_XDEV rejects.
+        if constraints.is_no_xdev() && !Arc::ptr_eq(parent.mountpoint(), loc.mountpoint()) {
+            return Err(VfsError::CrossesDevices);
+        }
+
+        if !self.no_follow {
+            // Follow the final symlink under the same constraints, resuming
+            // the depth count at the parent's own depth so RESOLVE_BENEATH
+            // stays intact across the jump. A dangling target with O_CREAT is
+            // re-entered at the target path, exactly like the unconstrained
+            // path.
+            let was_symlink = loc.node_type() == NodeType::Symlink;
+            let symlink_target = if was_symlink && self.create {
+                loc.read_link().ok()
+            } else {
+                None
+            };
+            let mut depth = parent_depth;
+            match context.try_resolve_symlink_constrained_follow(
+                loc,
+                &parent,
+                &mut depth,
+                constraints,
+                check_search,
+            ) {
+                Ok(resolved) => loc = resolved,
+                Err(VfsError::NotFound) if self.create && symlink_target.is_some() => {
+                    let target = symlink_target.unwrap();
+                    return self.open_constrained(
+                        &context.with_current_dir(parent.clone())?,
+                        Path::new(&target),
+                        constraints,
+                        false,
+                        credentials,
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        } else if loc.node_type() == NodeType::Symlink && !self.path {
+            // O_NOFOLLOW + basename is a symlink + not O_PATH: ELOOP, unless a
+            // trailing slash makes ENOTDIR take priority (Linux behavior).
+            if must_be_dir {
+                return Err(VfsError::NotADirectory);
+            }
+            return Err(VfsError::FilesystemLoop);
+        }
+
         if must_be_dir && !loc.is_dir() {
             return Err(VfsError::NotADirectory);
         }
