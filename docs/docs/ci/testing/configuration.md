@@ -20,6 +20,7 @@ manifest 使用 `schema_version = 3`，声明 `phase`、`group` 和非空 `check
 | `id`、`name`、`command` | 必填且非空；`id` 在整个目录载入结果中唯一，`name` 用于显示 |
 | `default_runner`、`runner` | 文件默认 profile 和单项覆盖；省略时使用 `ubuntu-base` |
 | `impact_targets`、`impact_packages` | 声明平台或软件包影响；非 Workspace 的 OS 测试必须至少声明一类 |
+| `impact_inputs` | 声明该检查消费的精确输入标识；用于将 CI 自有应用路径直接路由到对应检查，不替代上述 OS 影响声明 |
 | `pull_request_command` | 非全量 PR 选择时替换普通命令，不影响 push 的命令 |
 | `fetch_depth` | 非负深度或 `full`；默认 `1` |
 | `timeout_minutes` | 整个 job 的正整数超时；默认 `360` |

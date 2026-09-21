@@ -312,6 +312,17 @@ cargo xtask axvisor test board --board orangepi-5-plus-dualguest-robot
 kind = "axvisor-board"
 board = "orangepi-5-plus-dualguest-robot"
 
+[[check]]
+id = "test-axvisor-self-hosted-board-triple-vm"
+impact_inputs = ["axvisor:app:triple-vm"]
+impact_targets = ["axvisor:aarch64"]
+name = "Board RK3588 eMMC · ArceOS + Zephyr + Linux"
+runner = "board"
+timeout_minutes = 90
+command = '''
+apps/axvisor/triple-vm-test/run.sh --ci --board-type OrangePi-5-Plus --server 127.0.0.1 --port 2999
+'''
+
 # Nightly-only checks.
 
 [[check]]

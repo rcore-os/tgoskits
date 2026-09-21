@@ -164,6 +164,8 @@ def validate_suite_catalog(
 
 
 def check_matches_input(check: dict[str, Any], selection: str) -> bool:
+    if selection in check.get("impact_inputs", ()):
+        return True
     os_name, separator, remainder = selection.partition(":")
     if not separator:
         return False

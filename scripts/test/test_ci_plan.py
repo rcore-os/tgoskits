@@ -793,6 +793,27 @@ command = "true"
         self.assertIn("test-starry-self-hosted-board-visionfive2", ids)
         self.assertNotIn("test-starry-riscv64-qemu", ids)
 
+    def test_precise_axvisor_app_selects_triple_vm_check(self) -> None:
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=("apps/axvisor/triple-vm-test/scripts/runner.py",),
+                input_selections=("axvisor:app:triple-vm",),
+            ),
+        )
+
+        ids = {
+            row["id"]
+            for row in ci_plan.build_main_plan(context)["axvisor_matrix"]["include"]
+        }
+
+        self.assertEqual(ids, {"test-axvisor-self-hosted-board-triple-vm"})
+
     def test_suite_plus_os_wide_crate_uses_the_broader_os_checks(self) -> None:
         path = "test-suit/starryos/qemu/system/qemu-aarch64.toml"
         context = ci_plan.PlanContext(

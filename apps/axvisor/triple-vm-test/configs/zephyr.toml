@@ -1,0 +1,20 @@
+[base]
+id = 3
+name = "zephyr-triple"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [0x300]
+
+[kernel]
+entry_point = 0x4000_100c
+image_location = "fs"
+kernel_load_addr = 0x4000_0000
+kernel_path = "/home/orangepi/axvisor-tests/triple-vm-test/zephyr.bin"
+dtb_path = "/home/orangepi/axvisor-tests/triple-vm-test/zephyr.dtb"
+memory_regions = [[0x4000_0000, 0x0800_0000, 0x7, 0]]
+
+[devices]
+# A nonempty selection keeps passthrough explicit while allowing the virtual
+# console to retain the board UART identity required by this Zephyr image.
+passthrough = [{ path = "/aliases" }]
+disabled = []

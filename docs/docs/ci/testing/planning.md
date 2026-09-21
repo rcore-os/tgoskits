@@ -61,11 +61,11 @@ push 和手动运行的 `_matches_impact()` 不缩小矩阵，但选中的 Clipp
 
 ### 2.3 配置与保守回退
 
-`_known_input_selections()` 识别具名 QEMU、board 配置。能精确定位的平台只选择对应检查；已知属于某个 OS、却没有匹配注册的输入由 `_resolve_input_fallbacks()` 扩大到该 OS 的覆盖范围。
+`_known_input_selections()` 识别具名 QEMU、board 配置和 CI 自有应用。能精确定位的平台只选择对应 suite 注册；应用输入通过检查的 `impact_inputs` 直接匹配。已知属于某个 OS、却没有匹配检查的输入由 `_resolve_input_fallbacks()` 扩大到该 OS 的覆盖范围。
 
 `Cargo.toml`、工具链、`.cargo`、CI 配置、planner、`xtask` 和 `scripts/axbuild` 等全局输入会触发完整矩阵。未知源码、依赖信息缺失或分析异常也回退完整矩阵，而不是默默缩小范围。
 
-`Cargo.lock` 是 `SOFT_GLOBAL_PATHS` 中的软全局输入：仅有锁文件等软全局输入时回退全量；它与可解释的源码或套件一起变化时，不会单独扩大已有选择。普通 `apps/**` 被忽略，但 `apps/arceos/virtio-blk-test/**` 是显式的 AxVisor AArch64 QEMU 输入。
+`Cargo.lock` 是 `SOFT_GLOBAL_PATHS` 中的软全局输入：仅有锁文件等软全局输入时回退全量；它与可解释的源码或套件一起变化时，不会单独扩大已有选择。普通 `apps/**` 被忽略；需要进入 CI 的应用必须在 `CI_OWNED_APP_INPUTS` 中声明精确输入，并由相应检查通过 suite 或 `impact_inputs` 消费。
 
 ## 3. 套件精确选择
 

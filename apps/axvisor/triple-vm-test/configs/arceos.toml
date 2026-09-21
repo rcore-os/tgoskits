@@ -1,0 +1,18 @@
+[base]
+id = 2
+name = "arceos-triple"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x200]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_load_addr = 0x8020_0000
+kernel_path = "/home/orangepi/axvisor-tests/triple-vm-test/arceos.bin"
+dtb_load_addr = 0x8000_0000
+memory_regions = [[0x8000_0000, 0x0800_0000, 0x7, 0]]
+
+[devices]
+passthrough = []
+disabled = []

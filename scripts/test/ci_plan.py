@@ -85,6 +85,7 @@ CHECK_FIELDS = {
     "enable_boolean_input",
     "impact_targets",
     "impact_packages",
+    "impact_inputs",
     "pull_request_command",
     "suite",
 }
@@ -394,6 +395,9 @@ def _validate_check(
             raise PlanError(
                 f"{location} has unsupported impact_packages: {sorted(unsupported_packages)}"
             )
+    impact_inputs = check.get("impact_inputs")
+    if impact_inputs is not None:
+        _validate_string_array(impact_inputs, "impact_inputs", location)
 
     pull_request_command = check.get("pull_request_command")
     if pull_request_command is not None and (
@@ -647,6 +651,7 @@ def _matches_impact(check: dict[str, Any], context: PlanContext) -> bool:
 
     impact_targets = set(check.get("impact_targets", ()))
     impact_packages = set(check.get("impact_packages", ()))
+    impact_inputs = set(check.get("impact_inputs", ()))
     if not impact_targets and not impact_packages:
         return True
 
@@ -654,7 +659,7 @@ def _matches_impact(check: dict[str, Any], context: PlanContext) -> bool:
         target.partition(":")[0] in impact.affected_oses for target in impact_targets
     ):
         return True
-    input_matches = any(
+    input_matches = bool(impact_inputs.intersection(impact.input_selections)) or any(
         check_matches_input(check, selection) for selection in impact.input_selections
     )
     if input_matches:
