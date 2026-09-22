@@ -39,6 +39,9 @@ pub(crate) struct ClippyArgs {
     /// Run clippy for workspace packages affected since the git ref
     #[arg(long, value_name = "REF")]
     pub(crate) since: Option<String>,
+    /// Number of independent Cargo workers (default: serial execution)
+    #[arg(long, default_value_t = 1)]
+    pub(crate) jobs: usize,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Eq)]

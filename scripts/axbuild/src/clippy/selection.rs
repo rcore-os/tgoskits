@@ -30,6 +30,9 @@ pub(super) fn clippy_metadata_needs_deps(args: &crate::ClippyArgs) -> bool {
 }
 
 pub(super) fn validate_clippy_args(args: &crate::ClippyArgs) -> anyhow::Result<()> {
+    if args.jobs == 0 {
+        bail!("`--jobs` must be greater than zero");
+    }
     if args.since.is_some() && !args.packages.is_empty() {
         bail!("`--since` cannot be combined with `--package`; choose one package selection mode");
     }

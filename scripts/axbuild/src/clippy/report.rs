@@ -101,9 +101,20 @@ pub(super) fn print_report_summary(report: &ClippyRunReport) {
         report.failed_packages().len()
     );
     println!(
-        "passed checks: {}, failed checks: {}",
+        "passed checks: {}, failed checks: {}, skipped checks: {}",
         report.passed_checks,
-        report.total_checks.saturating_sub(report.passed_checks)
+        report
+            .packages
+            .iter()
+            .map(|package| package.failed_checks.len())
+            .sum::<usize>(),
+        report.total_checks.saturating_sub(
+            report
+                .packages
+                .iter()
+                .map(|package| package.total_checks)
+                .sum::<usize>()
+        )
     );
 
     let failed_packages = report.failed_packages();

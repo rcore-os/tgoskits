@@ -5,7 +5,7 @@ sidebar_label: "Clippy 检查"
 
 # Clippy 检查
 
-`cargo xtask clippy` 是 axbuild 对整个 TGOSKits workspace 执行静态检查的统一入口。它不是简单地 `cargo clippy --workspace`：因为 workspace 中混合了 host 端 bin 工具、`#![no_std]` 内核 crate 和需要特定 target/feature 的 OS 包，直接全量 clippy 会大量误报。clippy 模块针对每个包按其声明的 feature 矩阵和 docs.rs `metadata.targets` 展开成多个 `ClippyCheck`，再以 `fail-fast` 方式逐一运行，把结果收敛成可读报告。
+`cargo xtask clippy` 是 axbuild 对整个 TGOSKits workspace 执行静态检查的统一入口。它不是简单地 `cargo clippy --workspace`：因为 workspace 中混合了 host 端 bin 工具、`#![no_std]` 内核 crate 和需要特定 target/feature 的 OS 包，直接全量 clippy 会大量误报。clippy 模块针对每个包按其声明的 feature 矩阵和 docs.rs `metadata.targets` 展开成多个 `ClippyCheck`。默认逐项执行；显式指定 `--jobs N` 时并行执行最多 N 项检查。
 
 ## 1. 执行架构
 
@@ -14,7 +14,7 @@ Clippy 先从 workspace metadata 选择 package，再将 package 的 target 与 
 ```mermaid
 flowchart TB
     subgraph CLI["CLI 入口"]
-        ARGS["ClippyArgs<br/>--all / --package / --since"]
+        ARGS["ClippyArgs<br/>--all / --package / --since / --jobs"]
     end
 
     subgraph Selection["selection.rs"]
@@ -33,6 +33,7 @@ flowchart TB
     subgraph Runner["runner.rs"]
         RUN["run_clippy_checks (fail-fast)"]
         PROC["ProcessCargoRunner<br/>run_cargo_status_with_env"]
+        PAR["run_parallel_clippy_checks<br/>独立 worker target 目录"]
     end
 
     subgraph Report["report.rs"]
@@ -43,6 +44,7 @@ flowchart TB
     ARGS --> VALID --> RESOLVE --> SKIP --> TARGETS
     TARGETS --> FEAT --> ENV --> CHECKS
     CHECKS --> RUN --> PROC --> SUM --> TIME
+    CHECKS --> PAR --> SUM
 ```
 
 ## 2. 模块职责
@@ -159,7 +161,7 @@ targets = ["aarch64-unknown-linux-gnu", "riscv64gc-unknown-none-elf"]
 
 ## 6. 报告处理
 
-`run_clippy_checks` 采用 **fail-fast**：任何一个 check 非零退出就 `bail!`，剩余 check 不再执行，并在错误信息中带出剩余数量。这样在 CI 上能尽快暴露首个问题，避免长输出被截断。
+`run_clippy_checks` 默认采用串行 **fail-fast**：任何一个 check 非零退出就 `bail!`，剩余 check 不再执行，并在错误信息中带出剩余数量。`run_parallel_clippy_checks` 在 `--jobs N` 大于 1 时启动最多 N 个 worker；一个检查失败后停止分发新检查，等待已领取的检查结束，再报告全部已完成的失败项。默认模式和 CI 的资源消耗保持不变。
 
 ### 6.1 执行顺序
 
@@ -169,6 +171,8 @@ targets = ["aarch64-unknown-linux-gnu", "riscv64gc-unknown-none-elf"]
 2. 调用 `support::process::run_cargo_status_with_env(workspace_root, &args, &check.env)` 执行 cargo clippy 子进程，注入环境变量
 
 每个 check 执行前打印计划行（`print_clippy_check_plan`），格式形如 `[N/M] <label>`，让用户知道当前进度和剩余数量。成功打印 `ok: <label>`，失败则 bail。
+
+并行模式的每个 worker 使用 `target/clippy-workers/worker-N` 下独立的 `CARGO_TARGET_DIR`，同一 worker 连续检查可复用缓存，互不争抢 Cargo 构建锁。进程输出按 check 缓冲，完成后按计划顺序打印，避免不同检查的日志交错；独立缓存会额外占用磁盘。AArch64 的 future-incompatibility 报告也在对应 worker 目录隔离。`--jobs` 必须为正整数，建议结合机器内存与磁盘空间选择，并行模式尚未启用于 CI。
 
 ### 6.2 结果汇总
 
@@ -187,7 +191,7 @@ struct ClippyPackageReport {
 }
 ```
 
-`print_report_summary` 遍历所有 package，对有失败的输出其 `failed_checks` 列表；`print_clippy_timing` 输出从开始到结束的总耗时。所有 check 通过时打印 `all clippy checks passed`。
+`print_report_summary` 遍历所有 package，对有失败的输出其 `failed_checks` 列表，并区分已通过、失败和因 fail-fast 未运行的检查；`print_clippy_timing` 输出从开始到结束的总耗时。所有 check 通过时打印 `all clippy checks passed`。
 
 ### 6.3 耗时统计
 
@@ -204,6 +208,7 @@ cargo xtask clippy --all
 
 # 只检查指定包
 cargo xtask clippy --package ax-cpu --package page-table-generic
+cargo xtask clippy --package starry-kernel --jobs 4
 
 # 增量：只检查自某个 git ref 以来变更及受影响的包
 cargo xtask clippy --since origin/main

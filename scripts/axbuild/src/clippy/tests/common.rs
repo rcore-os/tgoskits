@@ -185,6 +185,7 @@ pub(super) fn args(all: bool, packages: &[&str]) -> crate::ClippyArgs {
             .map(|package| (*package).to_string())
             .collect(),
         since: None,
+        jobs: 1,
     }
 }
 
