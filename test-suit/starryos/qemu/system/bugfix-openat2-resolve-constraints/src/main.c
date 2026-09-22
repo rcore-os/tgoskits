@@ -147,9 +147,9 @@ int main(void)
                  RESOLVE_IN_ROOT, O_RDONLY | O_DIRECTORY | O_CLOEXEC, ENOENT);
     expect_open("IN_ROOT clamps .. at the root", rootfd, "sub/../..",
                 RESOLVE_IN_ROOT, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    expect_open("BENEATH|IN_ROOT keeps .. at the base", rootfd, "..",
-                RESOLVE_BENEATH | RESOLVE_IN_ROOT,
-                O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    expect_errno("BENEATH and IN_ROOT are mutually exclusive", rootfd, "..",
+                 RESOLVE_BENEATH | RESOLVE_IN_ROOT,
+                 O_RDONLY | O_DIRECTORY | O_CLOEXEC, EINVAL);
 
     /* RESOLVE_NO_XDEV: mount boundary crossings fail with EXDEV. */
     expect_open("NO_XDEV allows same-mount resolution", rootfd, "rel",
@@ -182,22 +182,42 @@ int main(void)
                 "rel", RESOLVE_NO_MAGICLINKS,
                 O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 
-    /* RESOLVE_CACHED is an accepted hint, not a restriction. */
-    expect_open("CACHED creates like a plain open", rootfd, "cached.txt",
-                RESOLVE_CACHED, O_CREAT | O_RDWR | O_CLOEXEC);
+    /* RESOLVE_CACHED requires a dcache-only lookup this kernel cannot
+     * provide; Linux fails such opens with EAGAIN (retry without the flag).
+     * Creation with CACHED is rejected before any side effect. */
+    expect_errno("CACHED with O_CREAT -> EAGAIN without side effects", rootfd,
+                 "cached.txt", RESOLVE_CACHED,
+                 O_CREAT | O_RDWR | O_CLOEXEC, EAGAIN);
 
     /* Linux ignores dirfd for absolute pathnames; only RESOLVE_IN_ROOT keeps
      * using it (as the resolution root) and requires it to be valid. */
-    expect_open("absolute path ignores an invalid dirfd", -1, "/proc/self/stat",
-                RESOLVE_CACHED, O_RDONLY | O_CLOEXEC);
+    expect_open("absolute path ignores an invalid dirfd", -1, pid_stat,
+                RESOLVE_NO_MAGICLINKS, O_RDONLY | O_CLOEXEC);
     expect_errno("BENEATH absolute with an invalid dirfd -> EXDEV, not EBADF",
                  -1, "/proc/self/stat", RESOLVE_BENEATH,
                  O_RDONLY | O_CLOEXEC, EXDEV);
     expect_errno("an invalid dirfd still fails a relative path", -1, "tmp",
-                 RESOLVE_CACHED, O_RDONLY | O_DIRECTORY | O_CLOEXEC, EBADF);
+                 RESOLVE_NO_MAGICLINKS, O_RDONLY | O_DIRECTORY | O_CLOEXEC,
+                 EBADF);
     expect_errno("IN_ROOT keeps requiring a valid dirfd", -1,
                  "/proc/self/stat", RESOLVE_IN_ROOT, O_RDONLY | O_CLOEXEC,
                  EBADF);
+
+    /* Spatial constraints observe the whole walk, so magic-link paths are
+     * resolved as ordinary paths instead of jumping to the backing object. */
+    expect_errno("NO_XDEV rejects the procfs crossing on an exe path",
+                 fsrootfd, "/proc/self/exe", RESOLVE_NO_XDEV,
+                 O_RDONLY | O_CLOEXEC, EXDEV);
+    expect_errno("IN_ROOT contains magic-link paths inside the root", rootfd,
+                 "/proc/self/stat", RESOLVE_IN_ROOT,
+                 O_RDONLY | O_CLOEXEC, ENOENT);
+
+    /* O_PATH|O_NOFOLLOW on a final magic link yields a handle to the link
+     * itself, even under NO_MAGICLINKS/NO_SYMLINKS (man 2 openat2). */
+    expect_open("O_PATH|O_NOFOLLOW opens the final magic link itself",
+                fsrootfd, pid_exe,
+                RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+                O_PATH | O_NOFOLLOW | O_CLOEXEC);
 
     /* Restrictions combine. */
     uint64_t all = RESOLVE_BENEATH | RESOLVE_NO_XDEV | RESOLVE_NO_SYMLINKS;
@@ -216,7 +236,6 @@ int main(void)
     unlink(rel);
     unlink(abs);
     unlink("/tmp/o2c/beneath.txt");
-    unlink("/tmp/o2c/cached.txt");
     unlink("/tmp/o2c/combo.txt");
     rmdir(sub);
     rmdir(root);
