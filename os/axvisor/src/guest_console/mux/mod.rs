@@ -119,6 +119,8 @@ struct GuestState {
     /// its devices again. It is stored on the existing `GuestState` so the
     /// atomic producer callback only flips a flag and never allocates.
     retained_tx: Option<BackendGeneration>,
+    /// Accepted output bytes not yet replayed from the ordered queue.
+    queued_output_bytes: usize,
 }
 
 impl GuestState {
@@ -228,9 +230,17 @@ impl GuestConsoleMux {
             state.output.register_guest(vm_id);
         }
 
+        // A stopped guest may still own accepted records in the ordered queue.
+        // Keep its physical line until the shell replays the last such byte.
+        let draining_attached = state.attached.filter(|vm_id| {
+            state
+                .guests
+                .get(vm_id)
+                .is_some_and(|guest| guest.queued_output_bytes != 0)
+        });
         let detached = state
             .attached
-            .filter(|vm_id| !state.running.contains(vm_id));
+            .filter(|vm_id| !state.running.contains(vm_id) && draining_attached != Some(*vm_id));
         let host_output = if detached.is_some() {
             state.attached = None;
             state.shortcut_prefix_pending = false;
@@ -240,7 +250,10 @@ impl GuestConsoleMux {
         } else {
             Vec::new()
         };
-        let output_active = state.output_active.keys().copied().collect::<BTreeSet<_>>();
+        let mut output_active = state.output_active.keys().copied().collect::<BTreeSet<_>>();
+        if let Some(vm_id) = draining_attached {
+            output_active.insert(vm_id);
+        }
         state.output.reconcile_running(&output_active);
         drop(state);
         submit_host_bytes(&host_output);
@@ -660,7 +673,16 @@ impl ConsoleCore {
         let tag = ((vm_id as u128) << 64) | generation.0 as u128;
         match super::host::queue_guest_output(tag, bytes) {
             Ok(true) => {
-                self.set_retained_tx(vm_id, generation, false);
+                let mut state = self.lock_state();
+                let guest = state
+                    .guests
+                    .get_mut(&vm_id)
+                    .expect("the output lock protects admitted backend identity");
+                guest.retained_tx = None;
+                guest.queued_output_bytes = guest
+                    .queued_output_bytes
+                    .checked_add(bytes.len())
+                    .expect("bounded ordered output queue cannot overflow byte count");
                 return bytes.len();
             }
             Err(RuntimeError::WouldBlock) => {
@@ -720,6 +742,16 @@ impl ConsoleCore {
         generation: BackendGeneration,
         bytes: &[u8],
     ) -> bool {
+        self.replay_guest_output_with_origin(vm_id, generation, bytes, false)
+    }
+
+    fn replay_guest_output_with_origin(
+        &self,
+        vm_id: VMId,
+        generation: BackendGeneration,
+        bytes: &[u8],
+        from_ordered_queue: bool,
+    ) -> bool {
         if bytes.is_empty() {
             return false;
         }
@@ -727,7 +759,7 @@ impl ConsoleCore {
         let _output_guard = self.lock_output();
         {
             let mut state = self.lock_state();
-            let Some(guest) = state.guests.get(&vm_id) else {
+            let Some(guest) = state.guests.get_mut(&vm_id) else {
                 return false;
             };
             // Admission is checked against the active generation before the
@@ -736,6 +768,12 @@ impl ConsoleCore {
             // stable identity still rejects replaced or removed incarnations.
             if guest.backend_identity != Some(generation) {
                 return false;
+            }
+            if from_ordered_queue {
+                guest.queued_output_bytes = guest
+                    .queued_output_bytes
+                    .checked_sub(bytes.len())
+                    .expect("an ordered record cannot exceed the accepted output");
             }
             // Reconciliation may discard formatting state while a live
             // backend still has queued output. Register in task context before
@@ -797,7 +835,7 @@ pub(crate) fn replay_guest_output(tag: u128, bytes: &[u8]) {
     let generation = BackendGeneration(tag as u64);
     GUEST_CONSOLE_MUX
         .core
-        .replay_guest_output(vm_id, generation, bytes);
+        .replay_guest_output_with_origin(vm_id, generation, bytes, true);
     notify_retained_tx_retries();
 }
 

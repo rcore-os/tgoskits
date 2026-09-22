@@ -177,9 +177,9 @@ factory 返回的 `Arc<dyn SerialBackend>` 被 `SerialDeviceModel` 持有；mode
 | `vm reset` | reset 完成且新 runtime 已 Running 后 `mark_running(vm_id)` | device plan 复用原 backend；generation 不变。该命令没有先调用 `mark_stopped` |
 | `vm resume` | resume 成功后 `mark_running(vm_id)` | 加入 running，generation 与 foreground 不变 |
 | `vm delete` | 先取 `backend_identity(vm_id)`，manager registry 成功移除后 `remove_if_backend(identity)`，再调用 `vm.destroy()` | 删除所有 mux state 并让旧 identity 失效；若是前台则返回 shell。destroy 失败不会恢复已删状态 |
-| guest 自行退出、deferred reset、HTTP 等非 shell 状态变化 | 没有直接 mux lifecycle hook；shell 循环调用 `reconcile_vm_states()` | 以 registry 中实际 `Running` 集合修正 running 和 foreground；保留 generation、输入与输出 ring |
+| guest 自行退出、deferred reset、HTTP 等非 shell 状态变化 | 没有直接 mux lifecycle hook；shell 循环调用 `reconcile_vm_states()` | 以 registry 中实际 `Running` 集合修正 running 和 foreground；当前前台的已接纳记录尚未回放时延后解除前台，保留输出行；其他 VM 的状态不等待队列排空 |
 
-`reconcile_vm_states()` 每轮读取 manager registry，只把状态恰为 `Running` 的 ID 放入运行集合，并保留其他 VM 的 generation、输入与 output ring。若当前前台不再运行，`set_running()` 还会清 `attached` 和快捷键前缀，调用 `buffer_all()` 补齐可能未完成的宿主物理行；shell 随后打印“VM stopped; returning to the management shell”并重绘提示符。
+`reconcile_vm_states()` 每轮读取 manager registry，只把状态恰为 `Running` 的 ID 放入运行集合，并保留其他 VM 的 output ring。有序队列接纳 guest 写入时，`GuestState.queued_output_bytes` 记录尚未回放的字节数，`replay_guest_output()` 从队列取出同一代际记录时扣减。如果不再运行的 VM 仍是当前前台且有这些已接纳字节，`set_vm_states()` 暂缓解除前台，并在 `GuestOutputMux::reconcile_running()` 中保留该 VM 的物理行所有权；这些记录仍可按 `backend_identity` 校验回放。最后一条记录回放后，下一轮对账才清 `attached`、补齐物理行并重绘 shell 提示符。停机不等待物理 UART，队列持续不出队时也不会阻塞 vCPU；显式 `vm stop` 命令仍按其独立的立即失效语义处理。
 
 reconcile 不是 `mark_stopped()` 的别名：它只按 manager 的完整 Running 集合对账 foreground，不失效 generation 或输入，避免 Paused 等非 Running 状态丢失可恢复 backend。两条路径都保留 bounded ring；只有 backend replacement 或 `remove()` 会明确删除旧输出。
 

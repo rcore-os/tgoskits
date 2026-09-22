@@ -41,6 +41,7 @@ pub(crate) mod host {
     /// Retained ordered records in publication order.
     static ORDERED_RECORDS: LazyLock<Mutex<VecDeque<OrderedRecord>>> =
         LazyLock::new(|| Mutex::new(VecDeque::new()));
+    static HOST_BYTES: LazyLock<Mutex<Vec<u8>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
     pub(crate) fn set_output_blocked(blocked: bool) {
         OUTPUT_BLOCKED.store(blocked, Ordering::Release);
@@ -97,6 +98,11 @@ pub(crate) mod host {
     pub(crate) fn reset_output() {
         set_output_blocked(false);
         set_ordered_output_available(false);
+        HOST_BYTES.lock().clear();
+    }
+
+    pub(crate) fn take_host_bytes() -> Vec<u8> {
+        core::mem::take(&mut HOST_BYTES.lock())
     }
 
     pub(crate) fn queue_guest_output(tag: u128, _bytes: &[u8]) -> RuntimeResult<bool> {
@@ -114,10 +120,12 @@ pub(crate) mod host {
         Ok(true)
     }
 
-    pub(crate) fn submit_host_bytes(_bytes: &[u8]) {}
+    pub(crate) fn submit_host_bytes(bytes: &[u8]) {
+        HOST_BYTES.lock().extend_from_slice(bytes);
+    }
 
     pub(crate) fn submit_host_transaction(transaction: impl FnOnce(&mut dyn FnMut(&[u8]))) {
-        transaction(&mut |_bytes| {});
+        transaction(&mut |bytes| HOST_BYTES.lock().extend_from_slice(bytes));
     }
 }
 

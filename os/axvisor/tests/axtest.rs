@@ -211,6 +211,52 @@ mod tests {
     }
 
     #[test]
+    fn accepted_console_tail_is_displayed_before_stopping_guest_detaches() {
+        use crate::{
+            guest_console_harness::{host, mux},
+            manager,
+        };
+        use axvm::VmStatus;
+
+        host::reset_output();
+        host::set_ordered_output_available(true);
+        manager::set_vm_status(1, Some(VmStatus::Running));
+        manager::take_notified_vms();
+        let backend = mux::serial_backend_factory(1).create();
+        mux::mark_running(1);
+        ax_assert!(mux::attach(1).is_ok());
+        mux::activate(1);
+
+        let prefix = b"ivc ack seq=5 msg=ack from linux subscribe";
+        ax_assert!(host::queue_host_log_record(b""));
+        ax_assert_eq!(backend.try_write(prefix), 0);
+        let filler = host::pop_ordered_host_record().expect("filler must be queued");
+        let _ = mux::route_host_log(&filler, 0, 0);
+        ax_assert_eq!(manager::take_notified_vms(), alloc::vec![1]);
+        ax_assert_eq!(backend.try_write(prefix), prefix.len());
+        let tag = host::pop_ordered_record().expect("accepted prefix must be queued");
+        mux::replay_guest_output(tag, prefix);
+        ax_assert_eq!(backend.try_write(b"r\n"), 2);
+
+        manager::set_vm_status(1, Some(VmStatus::Stopping));
+        ax_assert_eq!(mux::reconcile_vm_states(), None);
+
+        let tag = host::pop_ordered_record().expect("accepted tail must be queued");
+        mux::replay_guest_output(tag, b"r\n");
+        ax_assert_eq!(
+            host::take_host_bytes(),
+            b"ivc ack seq=5 msg=ack from linux subscriber\n"
+        );
+
+        manager::set_vm_status(1, Some(VmStatus::Stopped));
+        ax_assert_eq!(mux::reconcile_vm_states(), Some(1));
+        manager::set_vm_status(1, None);
+        remove_guest_console(1);
+        manager::take_notified_vms();
+        host::reset_output();
+    }
+
+    #[test]
     fn pop_notifies_only_blocked_backends_that_are_still_current() {
         use crate::{
             guest_console_harness::{host, mux},
