@@ -342,19 +342,26 @@ fn try_open_proc_exe(
         Err(err) => return Some(Err(err)),
     };
     let cred = current.as_thread().cred();
-    // /proc/<pid>/exe of another process requires the ptrace-style read
-    // permission Linux applies to proc magic links; reuse the kernel's
-    // cross-process identity check until a full ptrace_may_access lands.
-    if !core::ptr::eq(
+    // /proc/<pid>/exe of another process requires ptrace-style read
+    // permission (PTRACE_MODE_READ_FSCREDS): same-thread-group callers pass,
+    // CAP_SYS_PTRACE bypasses, and otherwise the ids must match *and* the
+    // target must still be dumpable (a non-dumpable target hides its exe
+    // even from the same uid).
+    let same_process = core::ptr::eq(
         proc_data.as_ref() as *const _,
         Arc::as_ref(&current.as_thread().proc_data),
-    ) {
-        let permitted = crate::syscall::signal::check_kill_permission_identity(
-            current,
-            &proc_data.identity(),
-        );
-        if let Err(err) = permitted {
-            return Some(Err(err));
+    );
+    if !same_process {
+        if !cred.has_cap_sys_ptrace() {
+            let identity_ok = crate::syscall::signal::check_kill_permission_identity(
+                current,
+                &proc_data.identity(),
+            )
+            .is_ok();
+            let dumpable = proc_data.dumpable() == 1;
+            if !identity_ok || !dumpable {
+                return Some(Err(StarryError::PermissionDenied));
+            }
         }
     }
     let loc = proc_data.exe_location()?;
@@ -673,9 +680,21 @@ pub fn sys_openat2(
         return Err(StarryError::InvalidInput);
     }
 
-    // RESOLVE_CACHED is a dcache hint on Linux, not a restriction; it is
-    // accepted and ignored here exactly like the kernel's non-coherent-cache
-    // allowance.
+    // RESOLVE_CACHED cannot be honored: this kernel has no dcache-only
+    // lookup fast path, so any resolution may perform filesystem I/O. Linux
+    // fails such opens with EAGAIN and advises the caller to retry without
+    // the flag (fs/open.c build_open_flags).
+    if how_value.resolve & RESOLVE_CACHED as u64 != 0 {
+        return Err(StarryError::WouldBlock);
+    }
+
+    // Linux build_open_flags: "Scoping flags are mutually exclusive."
+    if how_value.resolve & RESOLVE_BENEATH as u64 != 0
+        && how_value.resolve & RESOLVE_IN_ROOT as u64 != 0
+    {
+        return Err(StarryError::InvalidInput);
+    }
+
     let constraints = openat2_resolve_constraints(how_value.resolve);
     let Some(constraints) = constraints else {
         return sys_openat(current, dirfd, path, flags, mode);
@@ -687,13 +706,20 @@ pub fn sys_openat2(
     }
 
     // Magic links are intercepted by pathname before the VFS walker ever sees
-    // them, so the symlink-related restrictions must reject them from the raw
-    // pathname, like Linux's walker does (ELOOP for /proc/<pid>/exe,
-    // /proc/<pid>/fd/<n>, and /proc/<pid>/ns/<type>).
+    // them. The symlink-related restrictions must reject them from the raw
+    // pathname like Linux's walker does (ELOOP), except for the
+    // O_PATH|O_NOFOLLOW final-component case, where Linux returns an O_PATH
+    // handle to the link itself. Spatial restrictions (BENEATH, IN_ROOT,
+    // NO_XDEV) must observe the walk, so the interception is skipped for them
+    // as well and the constrained walker decides.
     let magic_forbidden = constraints.is_no_symlinks() || constraints.is_no_magiclinks();
-    if magic_forbidden && is_magic_link_path(current, &path) {
+    let path_link_handle = uflags & O_PATH != 0 && uflags & O_NOFOLLOW != 0;
+    let spatially_scoped = constraints.is_beneath() || constraints.is_in_root()
+        || constraints.is_no_xdev();
+    if magic_forbidden && !path_link_handle && is_magic_link_path(current, &path) {
         return Err(StarryError::FilesystemLoop);
     }
+    let intercept_magic = !magic_forbidden && !spatially_scoped;
 
     let thread = current.as_thread();
     let mode = mode & !thread.proc_data.umask();
@@ -701,9 +727,9 @@ pub fn sys_openat2(
     let mutation_cred = mutation_credentials(&cred);
     let mut options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
 
-    // Magic-link jumps bypass the constrained walker; only take them when the
-    // constraints allow magic links to be followed at all.
-    let intercepted = (!magic_forbidden)
+    // Magic-link jumps bypass the constrained walker; only take them when no
+    // restriction has to observe the resolution.
+    let intercepted = intercept_magic
         .then(|| {
             try_reopen_self_pipe(&path, uflags)
                 .or_else(|| try_reopen_self_file(current, &path, uflags))
@@ -712,7 +738,7 @@ pub fn sys_openat2(
     if let Some(result) = intercepted {
         return result;
     }
-    if !magic_forbidden {
+    if intercept_magic {
         if let Some(result) = try_open_proc_exe(current, &path, uflags) {
             return result.map(|fd| fd as isize);
         }
