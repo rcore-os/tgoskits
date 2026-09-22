@@ -399,11 +399,25 @@ mod tests {
 
     #[test]
     fn runner_error_takes_precedence_over_missing_marker() {
-        let output = captured_output(&["PASS"], &[]);
-        let err = verify_qemu_success_contract(Err(anyhow::anyhow!("QEMU timeout")), Some(&output))
-            .unwrap_err();
+        let output = captured_output(
+            &[r"(?m)^STARRY_GROUPED_TESTS_PASSED\s*$"],
+            &[
+                b"STARRY_SYSTEM_TEST_BEGIN: /usr/bin/starry-test-suit/alpha\n",
+                b"STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/alpha elapsed_s=1.0\nSTARRY_SYSTEM_TEST_BEG",
+                b"IN: /usr/bin/starry-test-suit/beta\n",
+            ],
+        );
+        let err = verify_qemu_success_contract(
+            Err(anyhow::anyhow!("QEMU timed out after 1800s")),
+            Some(&output),
+        )
+        .unwrap_err();
 
-        assert_eq!(err.to_string(), "QEMU timeout");
+        let message = err.to_string();
+        assert!(message.contains("QEMU timed out after 1800s"), "{message}");
+        assert!(message.contains("passed=1"), "{message}");
+        assert!(message.contains("/usr/bin/starry-test-suit/beta"), "{message}");
+        assert!(!message.contains("STARRY_GROUPED_TESTS_PASSED"), "{message}");
     }
 
     #[test]
