@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Opt-in profile-use (PGO) image builder for issue #2308 on OrangePi-5-Plus.
 
+The archived five-feature profile is not certified for the current ten-feature
+board release. Until a new candidate passes the board tail-latency guardrail,
+the profile/feature gate deliberately rejects this entry before compilation.
+
 Public entry:
 
     python3 scripts/perf/wakeup-pgo/build.py --output-dir <out>
@@ -12,11 +16,10 @@ runs `cargo xtask starry build -c <config>`.  The ordinary release build is unto
 PGO only happens when this script is invoked, and the build uses its own
 `CARGO_TARGET_DIR` inside the output directory.
 
-The profile was trained at `PROFILE_TRAINING_COMMIT`, while the source gate pins the
-checkout to `BASELINE_COMMIT` (latest dev).  Reusing a profile across those two commits is
-allowed only because the rebuilt image reproduces the board-measured machine code and data
-(see `evidence/latest-dev-image-equivalence.json`); the identity gates below enforce that
-on every run, and any further dev drift has to be re-audited or retrained.
+The shipped profile was trained at `PROFILE_TRAINING_COMMIT`; the identity references
+below describe only that historical five-feature benchmark. The source and lock gates
+pin the latest reviewed checkout independently. Passing those gates does not certify
+an old profile for a changed release feature set.
 
 Every gate fails closed.  Source drift, toolchain drift, `Cargo.lock` drift, a profile
 archive or profile hash mismatch, a foreign profile path in the rustc wrapper log, a
@@ -43,15 +46,14 @@ from pathlib import Path
 PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parents[2]
 
-# Checkout baseline of the source gate: the latest reviewed dev commit this entry may build
-# from.  It is deliberately not the training commit, and every report records both.
-BASELINE_COMMIT = "29f3fef885b273628e1f2d1d249e950e1b9184a5"
+# Reviewed dev base. Cargo.lock is pinned separately because this PR upgrades it.
+BASELINE_COMMIT = "7fb26597a8ff77e6bff315705520695d8b57a3bc"
 # Commit the shipped profile was trained at.  The profile may be carried onto newer dev
 # only while the image identity gates below reproduce the board-measured candidate.
 PROFILE_TRAINING_COMMIT = "d051d572b76c9675b60b0c9442dd87c5fa1af8ba"
 # Frozen facts of the audited build: toolchain, lockfile and feature set are pinned to the
 # same values the profile and the board evidence were produced with.
-CARGO_LOCK_SHA256 = "651266bc61ebd16f64ad5d9537ab07c37eea730d3f39d4d00678c08bd21ef830"
+CARGO_LOCK_SHA256 = "d199b6e7acb7435157be1d7fd927d823d8c163783131542914fc41f4ab7c9f5b"
 RUST_CHANNEL = "nightly-2026-09-04"
 RUSTC_COMMIT_HASH = "a69a63265cfd9e006d43137f98301b8d274ad4c9"
 RUSTC_LLVM_VERSION = "23.1.1"
@@ -69,14 +71,26 @@ BUILD_LOG_NAME = "build.log"
 RESULT_NAME = "build-result.json"
 TARGET_DIR_NAME = "target"
 
-# Mirrors the audited `resume649-profile-use-build.toml`; only profile and wrapper paths
-# are dynamic.  `features`, `log` and `max_cpu_num` must stay byte-identical in spirit:
-# the A/B board comparison only differs by PGO.
+# The target, features, log and CPU count match the ordinary OrangePi board release.
 TARGET = "aarch64-unknown-none-softfloat"
 RUSTFLAGS_ENV = "CARGO_TARGET_AARCH64_UNKNOWN_NONE_SOFTFLOAT_RUSTFLAGS"
 LOG_LEVEL = "Info"
 MAX_CPU_NUM = 8
 FEATURES = (
+    "ax-driver/list-pci-devices",
+    "ax-driver/rk3588-pcie",
+    "ax-driver/realtek-rtl8125",
+    "ax-driver/rockchip-soc",
+    "ax-driver/rockchip-dwc-xhci",
+    "ax-driver/rockchip-ehci",
+    "ax-driver/rockchip-sdhci",
+    "ax-driver/rockchip-dwmmc",
+    "ax-driver/rk3588-cpufreq",
+    "rknpu",
+)
+# The archived profile and its image identity references cover only this older
+# benchmark configuration. Do not repin them to a failed full-board candidate.
+PROFILE_FEATURES = (
     "ax-driver/rk3588-pcie",
     "ax-driver/realtek-rtl8125",
     "ax-driver/rockchip-soc",
@@ -165,7 +179,8 @@ def is_git_ignored(relative: str) -> bool:
 
 
 def is_excluded(path: str) -> bool:
-    return path in ("docs", "scripts/perf/wakeup-pgo") or path.startswith(EXCLUDED_PREFIXES)
+    # The exact lockfile bytes are checked by cargo_lock_gate() below.
+    return path in ("docs", "scripts/perf/wakeup-pgo", "Cargo.lock") or path.startswith(EXCLUDED_PREFIXES)
 
 
 def resolve_output_dir(raw: str) -> Path:
@@ -186,7 +201,7 @@ def resolve_output_dir(raw: str) -> Path:
 
 
 def source_gate() -> dict:
-    """Reject any tracked/untracked change outside docs/ and this package."""
+    """Reject drift outside docs/, this package and the separately pinned lockfile."""
     if not git("rev-parse", "--verify", f"{BASELINE_COMMIT}^{{commit}}", allow_failure=True):
         raise GateError(
             f"baseline commit {BASELINE_COMMIT} is not a valid commit in this repository; "
@@ -209,7 +224,8 @@ def source_gate() -> dict:
         sample = ", ".join(drift[:10])
         raise GateError(
             f"source drift against the pinned dev baseline {BASELINE_COMMIT}: {len(drift)} "
-            f"path(s) differ outside docs/ and scripts/perf/wakeup-pgo ({sample}); the "
+            f"path(s) differ outside docs/, scripts/perf/wakeup-pgo and Cargo.lock "
+            f"({sample}); the "
             f"shipped profile was trained at {PROFILE_TRAINING_COMMIT} and is reusable only "
             "while this checkout rebuilds the board-measured image, so re-audit the new "
             "commit and retrain the profile if code or data changed"
@@ -272,6 +288,17 @@ def cargo_lock_gate() -> dict:
     return {"Cargo.lock_sha256": digest}
 
 
+def profile_feature_gate() -> dict:
+    if FEATURES != PROFILE_FEATURES:
+        raise GateError(
+            "the packaged profile was trained with five benchmark features, but the "
+            "ordinary OrangePi release has ten; the full-feature candidate measured "
+            "on the updated dev failed the FIFO absolute-timer p999 guardrail. "
+            "Retrain and remeasure before enabling a release profile"
+        )
+    return {"features_match_trained_profile": True}
+
+
 def unpack_profile(out: Path) -> Path:
     if not PROFILE_ARCHIVE.exists():
         raise GateError(f"packaged profile archive is missing: {PROFILE_ARCHIVE}")
@@ -315,8 +342,8 @@ def write_config(out: Path, profile: Path, wrapper: Path) -> Path:
     features = "\n".join(f'  "{feature}",' for feature in FEATURES)
     config = (
         "# Generated by scripts/perf/wakeup-pgo/build.py for issue #2308; do not edit.\n"
-        "# Same target/log/max_cpu_num/features as the audited resume649-profile-use build;\n"
-        "# only the profile and wrapper paths are dynamic absolute paths.\n"
+        "# Same target/log/max_cpu_num/features as the ordinary OrangePi release;\n"
+        "# the profile and wrapper paths are dynamic absolute paths.\n"
         f'target = "{TARGET}"\n'
         f'log = "{LOG_LEVEL}"\n'
         f"max_cpu_num = {MAX_CPU_NUM}\n"
@@ -727,6 +754,7 @@ def main(argv: list[str]) -> int:
         "pgo": {
             "target": TARGET,
             "features": list(FEATURES),
+            "packaged_profile_features": list(PROFILE_FEATURES),
             "log": LOG_LEVEL,
             "max_cpu_num": MAX_CPU_NUM,
             "llvm_args": list(PGO_LLVM_ARGS),
@@ -741,6 +769,7 @@ def main(argv: list[str]) -> int:
         report["source_gate"] = source_gate()
         report["toolchain_gate"] = toolchain_gate()
         report["cargo_lock_gate"] = cargo_lock_gate()
+        report["profile_feature_gate"] = profile_feature_gate()
         out.mkdir(parents=True, exist_ok=True)
         profile = unpack_profile(out)
         wrapper = install_wrapper(out)
