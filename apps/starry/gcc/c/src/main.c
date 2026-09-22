@@ -54,10 +54,18 @@ static int capture(const char *cmd, char *buf, int bufsz)
     if (!p)
         return -1;
     buf[0] = '\0';
-    if (!fgets(buf, bufsz, p)) {
-        pclose(p);
+    if (!fgets(buf, bufsz, p))
         buf[0] = '\0';
-        return -1;
+    /*
+     * Keep only the first line in buf, but drain the rest of the command's
+     * output before pclose(). Closing the read end while the child still has
+     * data to write delivers SIGPIPE/EPIPE, which makes pclose() report a
+     * signal termination instead of the child's real exit status.
+     */
+    {
+        char drain[256];
+        while (fread(drain, 1, sizeof(drain), p) > 0)
+            ;
     }
     int status = pclose(p);
     /* Strip trailing newlines */

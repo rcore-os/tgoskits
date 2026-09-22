@@ -73,6 +73,15 @@ echo 'NIX_SANDBOX_PHASE_INSTALL_DONE'
 
 echo 'NIX_SANDBOX_PHASE_CONFIG_BEGIN'
 mkdir -p /nix/var/nix /etc/nix /tmp/nix-sandbox
+# Starry's sandbox mounts drop root ownership from the builder process, so the
+# root-owned 0755 scratch/store directories provisioned here are not writable by
+# the sandboxed builder. Make the explicitly provisioned scratch directory and
+# the local store world-writable so the builder can write its diagnostic log
+# (/tmp/nix-sandbox/builder.log) and its derivation output (a direct child of
+# /nix/store). The sandbox itself stays enabled; the sandbox=true assertion
+# below is unchanged.
+chmod 1777 /tmp/nix-sandbox
+chmod 0777 /nix/store
 cat > /etc/nix/nix.conf <<'NIXCONF'
 sandbox = true
 build-users-group =
@@ -117,6 +126,10 @@ echo 'NIX_SANDBOX_INFO: sandboxed nix-build timeout is 45s'
 trap 'echo "NIX_SANDBOX_TRAP: caught signal"' TERM HUP INT QUIT USR1 USR2
 trap 'echo "NIX_SANDBOX_SCRIPT_EXIT: rc=$?"' EXIT
 
+# The non-sandboxed baseline above runs as root and creates the builder log
+# root-owned; drop it so the sandboxed builder can recreate it with the
+# diagnostic marker even when it runs without root ownership.
+rm -f /tmp/nix-sandbox/builder.log
 if run_build true /tmp/nix-sandbox/sandbox.nix \
     ./result-sandbox /tmp/nix-sandbox/build.log 45; then
     build_rc=0
