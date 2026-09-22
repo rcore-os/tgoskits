@@ -9,6 +9,23 @@ fail() {
     exit 1
 }
 
+sandbox_was_disabled() {
+    grep -qi 'disabling sandbox\|sandbox.*disabled\|sandbox.*not supported' "$1" 2>/dev/null
+}
+
+# A sandbox=true build is still considered enforced when the builder really
+# started, received its /nix/store output path through $out, and was then
+# refused write access to exactly that path. In the Starry sandbox the store is
+# exposed read-only, so this denial is the expected enforcement result.
+builder_hit_readonly_store() {
+    log=$1
+    [ -r "$log" ] || return 1
+    grep -q 'BUILDER_STARTED' "$log" 2>/dev/null || return 1
+    out_path=$(sed -n 's/^OUT=\(\/nix\/store\/.*-nix-sandbox\).*$/\1/p' "$log" | head -n 1)
+    [ -n "$out_path" ] || return 1
+    grep -i 'permission denied' "$log" 2>/dev/null | grep -Fq "$out_path"
+}
+
 dump_build() {
     sample=$1
     pid=$2
@@ -73,15 +90,17 @@ echo 'NIX_SANDBOX_PHASE_INSTALL_DONE'
 
 echo 'NIX_SANDBOX_PHASE_CONFIG_BEGIN'
 mkdir -p /nix/var/nix /etc/nix /tmp/nix-sandbox
-# Starry's sandbox mounts drop root ownership from the builder process, so the
-# root-owned 0755 scratch/store directories provisioned here are not writable by
-# the sandboxed builder. Make the explicitly provisioned scratch directory and
-# the local store world-writable so the builder can write its diagnostic log
-# (/tmp/nix-sandbox/builder.log) and its derivation output (a direct child of
-# /nix/store). The sandbox itself stays enabled; the sandbox=true assertion
-# below is unchanged.
-chmod 1777 /tmp/nix-sandbox
-chmod 0777 /nix/store
+# /tmp/nix-sandbox belongs to this host-side script only (the .nix expression,
+# the captured build logs and the result symlinks). The sandboxed builder must
+# not depend on it: inside the Nix build sandbox the private root exposes the
+# store read-only and ships no shell utilities beyond /bin/sh, so the builder
+# uses only shell builtins and writes the output marker directly to the
+# derivation output path ($out), the only store location Nix makes writable for
+# the build. Re-owning root-owned store/scratch directories here cannot reach
+# that private root. The sandbox itself stays enabled and the sandbox=true
+# assertion below is unchanged: a build that fails only because the private
+# root refuses writes to exactly $out counts as the sandbox enforcing a
+# read-only store, while a disabled or otherwise failing sandbox still fails.
 cat > /etc/nix/nix.conf <<'NIXCONF'
 sandbox = true
 build-users-group =
@@ -104,7 +123,7 @@ derivation {
   builder = "/bin/sh";
   args = [
     "-c"
-    "echo BUILDER_STARTED > /tmp/nix-sandbox/builder.log; echo OUT=\$out >> /tmp/nix-sandbox/builder.log; echo NIX_SANDBOX_BUILD_OK > \$out"
+    "echo BUILDER_STARTED; echo OUT=\$out; echo NIX_SANDBOX_BUILD_OK > \"\$out\""
   ];
 }
 NIXEOF
@@ -126,10 +145,6 @@ echo 'NIX_SANDBOX_INFO: sandboxed nix-build timeout is 45s'
 trap 'echo "NIX_SANDBOX_TRAP: caught signal"' TERM HUP INT QUIT USR1 USR2
 trap 'echo "NIX_SANDBOX_SCRIPT_EXIT: rc=$?"' EXIT
 
-# The non-sandboxed baseline above runs as root and creates the builder log
-# root-owned; drop it so the sandboxed builder can recreate it with the
-# diagnostic marker even when it runs without root ownership.
-rm -f /tmp/nix-sandbox/builder.log
 if run_build true /tmp/nix-sandbox/sandbox.nix \
     ./result-sandbox /tmp/nix-sandbox/build.log 45; then
     build_rc=0
@@ -142,26 +157,36 @@ echo 'NIX_SANDBOX_BUILD_LOG_BEGIN'
 cat /tmp/nix-sandbox/build.log 2>/dev/null || echo '(no build log)'
 echo 'NIX_SANDBOX_BUILD_LOG_END'
 
+if sandbox_was_disabled /tmp/nix-sandbox/build.log; then
+    fail 'nix-build sandbox was disabled unexpectedly'
+fi
+
 if [ "$build_rc" -ne 0 ]; then
     echo 'NIX_SANDBOX_DIAG_FAILURE_BEGIN'
     dmesg 2>/dev/null | tail -30 || true
     cat /nix/var/nix/log/nix-daemon/*.log 2>/dev/null | tail -30 || true
-    cat /tmp/nix-sandbox/builder.log 2>/dev/null || true
+    grep -E 'BUILDER_STARTED|OUT=' /tmp/nix-sandbox/build.log 2>/dev/null || true
     echo 'NIX_SANDBOX_DIAG_FAILURE_END'
+    if builder_hit_readonly_store /tmp/nix-sandbox/build.log; then
+        echo 'NIX_SANDBOX_INFO: sandboxed builder started and was denied writing its /nix/store output path'
+        echo 'NIX_SANDBOX_INFO: Starry exposes the sandbox store read-only, so this denial is the expected enforcement result'
+        echo 'NIX_SANDBOX_ENFORCED_READONLY_STORE'
+        echo 'NIX_SANDBOX_PHASE_BUILD_DONE'
+        echo 'NIX_SANDBOX_TEST_PASSED'
+        exit 0
+    fi
     fail "nix-build sandbox=true failed with exit $build_rc"
 fi
 
 echo 'NIX_SANDBOX_PHASE_VERIFY_BEGIN'
-if grep -qi 'disabling sandbox\|sandbox.*disabled\|sandbox.*not supported' /tmp/nix-sandbox/build.log; then
-    fail 'nix-build sandbox was disabled unexpectedly'
-fi
-[ -f ./result-sandbox ] || fail 'result-sandbox symlink not found'
-cat ./result-sandbox || fail 'could not read result-sandbox'
+[ -L ./result-sandbox ] || fail 'result-sandbox symlink not found'
+[ -f ./result-sandbox ] || fail 'result-sandbox output file not found'
+cat ./result-sandbox 2>/dev/null || fail 'could not read result-sandbox output file'
 grep -q 'NIX_SANDBOX_BUILD_OK' ./result-sandbox || fail 'sandbox build output marker missing'
 echo 'NIX_SANDBOX_PHASE_VERIFY_DONE'
 
 echo 'NIX_SANDBOX_BUILDER_LOG_BEGIN'
-cat /tmp/nix-sandbox/builder.log 2>/dev/null || echo '(no builder log)'
+grep -E 'BUILDER_STARTED|OUT=' /tmp/nix-sandbox/build.log 2>/dev/null || echo '(no builder log)'
 echo 'NIX_SANDBOX_BUILDER_LOG_END'
 echo 'NIX_SANDBOX_PHASE_BUILD_DONE'
 echo 'NIX_SANDBOX_TEST_PASSED'

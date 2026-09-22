@@ -1287,6 +1287,11 @@ impl Location {
     ///
     /// The original attachments and complete propagation set must still match
     /// admission. Unrelated namespace mutations do not invalidate the plan.
+    ///
+    /// A failed flush does not retain the mount. The unmount was already
+    /// admitted as not busy, so it is detached and its lifetime guard (a loop
+    /// mount holder, for example) is released, and the flush error is reported
+    /// to the caller afterwards. Only a rejected commit keeps the mount.
     pub fn commit_unmount(&self, plan: UnmountPlan) -> VfsResult<()> {
         if !self.is_root_of_mount()
             || !plan
@@ -1295,10 +1300,10 @@ impl Location {
         {
             return Err(VfsError::InvalidInput);
         }
-        self.filesystem().flush()?;
+        let flush = self.filesystem().flush();
         self.mountpoint.commit_normal_after_flush(plan)?;
         self.finish_unmount();
-        Ok(())
+        flush
     }
 
     fn finish_unmount(&self) {
