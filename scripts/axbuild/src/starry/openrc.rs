@@ -1,24 +1,29 @@
 //! Prepare the default Alpine boot environment before QEMU starts.
 
-use std::{collections::BTreeMap, fs, path::Path, process::Command};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::{Context, ensure};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
-use super::apk;
-use crate::{
-    rootfs::inject,
-    support::process::{ProcessExt, find_host_binary_candidates},
-    test::{build::qemu_user_binary_names, case::copy_file_fast},
-};
+use crate::{rootfs::inject, test::case::copy_file_fast};
 
 const MARKER: &str = "/etc/starry-openrc-assets";
-const DATABASE: &str = "lib/apk/db/installed";
+const REQUIRED_PACKAGES: &[(&str, &str)] = &[
+    ("busybox", "1.37.0-r30"),
+    ("openrc", "0.63-r1"),
+    ("openrc-user", "0.63-r1"),
+    ("bridge", "1.5-r5"),
+    ("ifupdown-ng", "0.12.1-r7"),
+    ("libcap2", "2.78-r0"),
+];
 
 /// The caller holds the managed image lock. Publish only a fully prepared copy.
-pub(super) fn prepare(workspace: &Path, arch: &str, image: &Path) -> anyhow::Result<()> {
+pub(super) fn prepare(workspace: &Path, image: &Path) -> anyhow::Result<()> {
     let assets = workspace.join("os/StarryOS/starryos/rootfs");
+    let installed = inject::read_text_file(image, "/lib/apk/db/installed")?
+        .context("prebuilt Alpine image has no installed package database")?;
+    check_preinstalled_packages(&installed)?;
     let mut digest = Sha256::new();
     digest.update(include_bytes!("openrc.rs"));
     for entry in WalkDir::new(&assets).sort_by_file_name() {
@@ -49,14 +54,13 @@ pub(super) fn prepare(workspace: &Path, arch: &str, image: &Path) -> anyhow::Res
     let temporary = tempfile::tempdir_in(parent)?;
     let overlay = temporary.path().join("overlay");
     fs::create_dir(&overlay)?;
-    let after = prepare_packages(image, temporary.path(), &overlay, arch)?;
     copy_tree(&assets, &overlay)?;
     fs::create_dir_all(overlay.join("run"))?;
     for level in ["boot", "shutdown"] {
         fs::create_dir_all(overlay.join("etc/runlevels").join(level))?;
     }
-    // Package post-install scripts are disabled on the host. Install the required
-    // BusyBox applet links explicitly without executing guest init scripts.
+    // The prebuilt image installs packages without guest scripts. Supply the
+    // BusyBox applet links needed by init and the power-control commands.
     for name in ["init", "reboot", "poweroff", "halt"] {
         let link = overlay.join("sbin").join(name);
         fs::create_dir_all(link.parent().context("applet has no parent")?)?;
@@ -65,7 +69,7 @@ pub(super) fn prepare(workspace: &Path, arch: &str, image: &Path) -> anyhow::Res
         }
         std::os::unix::fs::symlink("/bin/busybox", link)?;
     }
-    fs::write(overlay.join("etc/starry-openrc-packages"), &after)?;
+    fs::write(overlay.join("etc/starry-openrc-packages"), installed)?;
     fs::write(overlay.join(MARKER.trim_start_matches('/')), version)?;
     let candidate = temporary.path().join("rootfs.img");
     copy_file_fast(image, &candidate)?;
@@ -73,75 +77,17 @@ pub(super) fn prepare(workspace: &Path, arch: &str, image: &Path) -> anyhow::Res
     fs::rename(candidate, image).context("failed to publish OpenRC rootfs")
 }
 
-fn prepare_packages(
-    image: &Path,
-    temporary: &Path,
-    overlay: &Path,
-    arch: &str,
-) -> anyhow::Result<String> {
-    let installed = inject::read_text_file(image, "/lib/apk/db/installed")?
-        .context("Alpine image has no installed package database")?;
-    if package_records(&installed)
-        .get("openrc")
-        .is_some_and(|record| record.lines().any(|line| line == "V:0.63-r1"))
-    {
-        return Ok(installed);
+fn check_preinstalled_packages(database: &str) -> anyhow::Result<()> {
+    let installed = package_records(database);
+    for (name, version) in REQUIRED_PACKAGES {
+        ensure!(
+            installed
+                .get(name)
+                .is_some_and(|record| record.lines().any(|line| line == format!("V:{version}"))),
+            "prebuilt Alpine rootfs must contain {name}={version}; use tgosimages v0.0.14"
+        );
     }
-    let staging = temporary.join("staging");
-    fs::create_dir(&staging)?;
-    inject::extract_rootfs(image, &staging)?;
-    ensure!(
-        staging.join("etc/alpine-release").is_file(),
-        "OpenRC preparation requires Alpine"
-    );
-    super::resolver::write_host_resolver_config(&staging)?;
-    apk::rewrite_apk_repositories_for_region(&staging, apk::apk_region_from_env()?)?;
-    let before = fs::read_to_string(staging.join(DATABASE))?;
-    let runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
-    let cache = image
-        .parent()
-        .context("image has no parent")?
-        .join(format!("openrc-apk-{arch}"));
-    fs::create_dir_all(&cache)?;
-    Command::new(runner)
-        .arg("-L")
-        .arg(&staging)
-        .arg(staging.join("sbin/apk"))
-        .arg("--root")
-        .arg(&staging)
-        .arg("--repositories-file")
-        .arg(staging.join("etc/apk/repositories"))
-        .arg("--keys-dir")
-        .arg(staging.join("etc/apk/keys"))
-        .arg("--cache-dir")
-        .arg(&cache)
-        .args([
-            "--update-cache",
-            "--timeout",
-            "60",
-            "--no-interactive",
-            "--force-no-chroot",
-            "--scripts=no",
-            "add",
-            "openrc=0.63-r1",
-        ])
-        .env("QEMU_LD_PREFIX", &staging)
-        .env(
-            "LD_LIBRARY_PATH",
-            format!(
-                "{}:{}",
-                staging.join("lib").display(),
-                staging.join("usr/lib").display()
-            ),
-        )
-        .exec()
-        .context("failed to install OpenRC in staging rootfs")?;
-    let after = fs::read_to_string(staging.join(DATABASE))?;
-    copy_changed_packages(&staging, overlay, &before, &after)?;
-    for path in [DATABASE, "etc/apk/world", "etc/apk/repositories"] {
-        copy_entry(&staging, overlay, Path::new(path))?;
-    }
-    Ok(after)
+    Ok(())
 }
 
 fn package_records(database: &str) -> BTreeMap<&str, &str> {
@@ -152,30 +98,6 @@ fn package_records(database: &str) -> BTreeMap<&str, &str> {
             Some((name, record))
         })
         .collect()
-}
-
-fn copy_changed_packages(
-    staging: &Path,
-    overlay: &Path,
-    before: &str,
-    after: &str,
-) -> anyhow::Result<()> {
-    let previous = package_records(before);
-    for (name, record) in package_records(after) {
-        if previous.get(name).copied() == Some(record) {
-            continue;
-        }
-        let mut directory = Path::new("");
-        for line in record.lines() {
-            if let Some(path) = line.strip_prefix("F:") {
-                directory = Path::new(path);
-                copy_entry(staging, overlay, directory)?;
-            } else if let Some(file) = line.strip_prefix("R:") {
-                copy_entry(staging, overlay, &directory.join(file))?;
-            }
-        }
-    }
-    Ok(())
 }
 
 fn copy_tree(source: &Path, target: &Path) -> anyhow::Result<()> {
@@ -213,33 +135,4 @@ fn copy_entry(source: &Path, target: &Path, relative: &Path) -> anyhow::Result<(
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn package_delta_copies_changed_payload_without_unrelated_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let staging = tmp.path().join("staging");
-        let overlay = tmp.path().join("overlay");
-        fs::create_dir_all(staging.join("sbin")).unwrap();
-        fs::write(staging.join("sbin/openrc"), b"new executable").unwrap();
-        fs::write(staging.join("sbin/unrelated"), b"keep base version").unwrap();
-        std::os::unix::fs::symlink("openrc", staging.join("sbin/rc-status")).unwrap();
-        let before = "P:base\nV:1\nF:sbin\nR:unrelated\n\n";
-        let after = format!("{before}P:openrc\nV:1\nF:sbin\nR:openrc\nR:rc-status\n\n");
-        copy_changed_packages(&staging, &overlay, before, &after).unwrap();
-        assert_eq!(
-            fs::read(overlay.join("sbin/openrc")).unwrap(),
-            b"new executable"
-        );
-        assert_eq!(
-            fs::read_link(overlay.join("sbin/rc-status")).unwrap(),
-            Path::new("openrc")
-        );
-        assert!(!overlay.join("sbin/unrelated").exists());
-        assert!(copy_entry(&staging, &overlay, Path::new("../escape")).is_err());
-    }
 }

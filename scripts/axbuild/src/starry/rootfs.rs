@@ -165,12 +165,11 @@ pub(crate) async fn ensure_rootfs_in_tmp_dir(
         crate::image::storage::ensure_rootfs_for_arch(workspace_root, target_dir, arch).await?;
     let image_lock = crate::support::download::acquire_path_lock(&rootfs).await?;
     let workspace_root = workspace_root.to_path_buf();
-    let arch = arch.to_string();
     tokio::task::spawn_blocking(move || {
         // Retain the lock in the blocking task even if its async caller is cancelled.
         let _lock = image_lock;
-        ensure_apk_region_in_rootfs(&rootfs)?;
-        super::openrc::prepare(&workspace_root, &arch, &rootfs)?;
+        sync_qemu_slirp_resolver_in_rootfs(&rootfs)?;
+        super::openrc::prepare(&workspace_root, &rootfs)?;
         Ok(rootfs)
     })
     .await

@@ -38,15 +38,17 @@ sequenceDiagram
 
 ### 1.2 镜像事务
 
-`starry::openrc::prepare()` 复用 `rootfs::inject` 提取与注入机制。在临时目录运行目标架构 APK，禁用宿主侧 guest 安装脚本，复制新增或变化软件包的文件清单，再注入项目启动配置。准备失败时丢弃候选镜像，成功后在管理镜像锁内替换镜像；用户指定的外部镜像不自动修改。
+Starry 的默认根文件系统取自 [`tgosimages` 的 `feat/unified-build-framework` 分支](https://github.com/rcore-os/tgosimages/tree/feat/unified-build-framework)生成的 v0.0.14 Alpine ext4 镜像。`starry::rootfs::ensure_rootfs_in_tmp_dir()` 在使用默认镜像注册表时读取固定提交 `7a658bb133507ecba3455e1b130d6d5c3fcbb662` 的 `registry/v0.0.14.toml`，按仓库已有的 SHA-256 下载与解包流程取得四架构镜像；自定义注册表必须提供相同版本。源码配方与发布镜像分别固定，不能因为分支继续更新而静默换包。其他操作系统的镜像注册表不受此选择影响。
+
+`starry::openrc::prepare()` 先从镜像内 APK 数据库核对 BusyBox、OpenRC、openrc-user 及其依赖版本，缺失时明确失败，不在 Starry 镜像准备或客户机运行中执行 `apk add`。随后只通过 `rootfs::inject` 注入 Starry 专用的 `inittab`、`rc.conf`、服务、runlevel 链接、串口终端脚本和 BusyBox 电源命令链接。源镜像由 `tgosimages` 在构建阶段安装软件包；这与 Starry 的准备和启动不执行 APK 是两个不同的阶段。准备失败时丢弃候选镜像，成功后在管理镜像锁内替换镜像；用户指定的外部镜像不自动修改。
 
 已有 `apps/starry/openrc` 示例改为安装并执行同一份服务回归脚本，不再在客户机联网安装或手工伪造 `softlevel`。旧路径只覆盖非 PID 1 服务管理，不能替代默认启动与根进程生命周期验证。
 
-`/etc/starry-openrc-packages` 记录准备后的 APK 软件包数据库，`/etc/apk/repositories` 记录来源。缓存保留下载的软件包；`/etc/starry-openrc-assets` 标识项目配置版本。客户机启动不联网安装软件包。OpenRC 固定为 `0.63-r1`，其余依赖初次解析遵循对应 Alpine 镜像的仓库版本；复现时还需保存镜像与 APK 缓存，浮动仓库不能单独保证未来可重建相同二进制。
+`/etc/starry-openrc-packages` 记录预装镜像的 APK 软件包数据库，`/etc/apk/repositories` 记录构建来源；`/etc/starry-openrc-assets` 标识项目配置版本。客户机启动不联网安装软件包。复现默认启动依赖发布归档及注册表中的 SHA-256，不依赖将来 Alpine 仓库能否解析出相同的依赖版本。
 
 ### 1.3 软件包来源
 
-本轮准备镜像的 APK 数据库记录如下。四架构都使用 Alpine v3.23 的 `https://dl-cdn.alpinelinux.org/alpine/v3.23/main` 与 `community`，通过镜像内 APK 信任密钥校验；各架构的下载产物位于受管理镜像旁的 `openrc-apk-<arch>` 缓存。`STARRY_APK_REGION` 控制已有仓库镜像选择，运行时不依赖这些下载源。
+预装包来自 `tgosimages/scripts/rootfs/alpine.sh` 的 `ALPINE_DEFAULT_PACKAGES`，其中声明 `openrc`；其余列出的软件包由 Alpine v3.23 依赖解析或基础 minirootfs 提供。已逐一读取四架构 v0.0.14 发布镜像的实际 APK 数据库，以下版本一致，OpenRC 默认启动不缺软件包。构建镜像使用的仓库地址为 `https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.23/main` 和 `community`；Starry 准备过程不访问这些仓库，`STARRY_APK_REGION` 仅对其他需要 APK 的测试或应用准备路径有意义。
 
 | 架构 | BusyBox | OpenRC / openrc-user | 新增依赖 |
 | --- | --- | --- | --- |
@@ -56,6 +58,8 @@ sequenceDiagram
 | loongarch64 | 1.37.0-r30 | 0.63-r1 | bridge 1.5-r5；ifupdown-ng 0.12.1-r7；libcap2 2.78-r0 |
 
 安装 bridge 与 ifupdown-ng 是 APK 的依赖要求，不代表启用这些服务。镜像中的完整数据库还保留每个包的架构、校验值与文件清单；不把此简表当作二进制锁文件。
+
+原镜像提供了 `/sbin/openrc`、`/sbin/openrc-run`、`/sbin/rc-service`、`/sbin/rc-update`、`/sbin/init` 与 runlevel 目录，但其 Alpine 通用 `inittab` 没有 Starry 的串口控制终端、运行目录服务和测试 hook；LoongArch64 配方还设置了旧式 `rcS`。这些是需要 Starry 覆盖的配置，不是需要通过 APK 增装的软件包。
 
 ## 2. 进程契约
 
@@ -156,6 +160,12 @@ x86_64 的独立 QEMU 日志保留以下失败，正向用例和负向用例都�
 
 `starry_system_test_runner` 为每个子用例创建 PID 与挂载命名空间，并等待其 init 清理退出。`test-ptrace-tracer-exit-clone` 特意留下被跟踪停止的进程与线程，由 namespace init 退出路径清理；四架构均通过，补充证明根 init 致命退出检查没有误伤子命名空间生命周期。
 
-旧应用入口 `cargo xtask starry app qemu -t openrc --arch x86_64` 实际运行通过，日志为 `/tmp/starry-openrc-app-x86_64.log`。`cargo xtask test --since HEAD^` 实选 24 个白名单软件包并全部通过，包含 `starry-signal`、`starry-kernel` 与 `axbuild`，日志为 `/tmp/starry-openrc-std-tests.log`。选择 `HEAD^` 是因为项目增量选择器比较已提交的 `HEAD`，而本轮实现保留为未提交工作区改动；已核实该选择覆盖全部本次受影响的白名单软件包。
+旧应用入口 `cargo xtask starry app qemu -t openrc --arch x86_64` 实际运行通过，日志为 `/tmp/starry-openrc-app-x86_64.log`。原始 OpenRC 实现阶段的 `cargo xtask test --since HEAD^` 实选 24 个白名单软件包并全部通过，包含 `starry-signal`、`starry-kernel` 与 `axbuild`，日志为 `/tmp/starry-openrc-std-tests.log`。
 
-最终 `cargo xtask clippy --package starry-kernel --package starryos --package axbuild` 的 88/88 项检查通过，日志为 `/tmp/starry-openrc-clippy-final.log`；`starry-signal` 的同版实现已在前一轮四软件包 89/89 项检查中通过，日志为 `/tmp/starry-openrc-clippy-serial.log`。`cargo fmt`、Python 编译检查、启动脚本语法检查、20 份 QEMU 配置解析及最终 `git diff --check` 均通过。未执行实体板与完整图形渲染验证，未发布镜像或提交 PR；合入前的领域审查仍需独立完成。
+原始实现的 `cargo xtask clippy --package starry-kernel --package starryos --package axbuild` 的 88/88 项检查通过，日志为 `/tmp/starry-openrc-clippy-final.log`；`starry-signal` 的同版实现已在前一轮四软件包 89/89 项检查中通过，日志为 `/tmp/starry-openrc-clippy-serial.log`。`cargo fmt`、Python 编译检查、启动脚本语法检查、20 份 QEMU 配置解析及最终 `git diff --check` 均通过。未执行实体板与完整图形渲染验证，未发布镜像；PR #2446 合入前的领域审查仍需独立完成。
+
+### 5.3 预装镜像复核
+
+2026 年 9 月 22 日切换到 `tgosimages` v0.0.14 发布的四架构 Alpine 镜像后，`cargo xtask starry rootfs --arch <arch>` 均完成 SHA-256 校验、预装软件包核对和 Starry 配置注入。`cargo xtask starry test qemu --arch <arch> -c qemu/openrc` 四架构均为 `result: 1/1 case(s) passed`，客户机实际输出 `/sbin/init`、BusyBox PID 1、`default` runlevel、服务启动/停止/重启、失败传播、终端重启和关机服务停止记录。原始日志分别位于 `/tmp/starry-openrc-prebuilt-rootfs-<arch>.log` 和 `/tmp/starry-openrc-prebuilt-qemu-<arch>.log`。
+
+此前的完整 system 套件与自然电源脚本是在旧版受管理镜像上运行的，不能冒充 v0.0.14 的对应证据。镜像中 APK 数据库仅用于验证预装包；本轮的 `starry rootfs` 与 `qemu/openrc` 路径都没有调用目标架构 APK 安装。
