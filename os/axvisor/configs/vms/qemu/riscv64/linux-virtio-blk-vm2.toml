@@ -1,9 +1,9 @@
 [base]
-id = 1
-name = "linux-virtio-blk-mount-riscv64"
+id = 2
+name = "linux-virtio-blk-mount-riscv64-vm2"
 guest_type = "virtualized"
 cpu_num = 1
-phys_cpu_ids = [1]
+phys_cpu_ids = [2]
 
 [kernel]
 entry_point = 0x9020_0000
@@ -20,12 +20,10 @@ memory_regions = [
 
 [devices]
 passthrough = []
-# The host PCI bridge and NVMe rootfs remain owned by Axvisor. The guest uses
-# only the dedicated virtio-mmio block device declared below.
 disabled = [{ path = "/soc/pci@30000000" }]
 
 [[devices.virtual]]
 id = "virtblk0"
 model = "virtio-blk"
-path = "/guest/rootfs-riscv64-alpine-0.img"
+path = "/guest/rootfs-riscv64-alpine-1.img"
 filesystem = "ext4"

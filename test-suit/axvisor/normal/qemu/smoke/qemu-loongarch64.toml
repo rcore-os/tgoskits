@@ -4,9 +4,9 @@ args = [
   "-cpu",
   "la464",
   "-m",
-  "2G",
+  "4G",
   "-smp",
-  "2",
+  "3",
   "-nographic",
   "-serial",
   "mon:stdio",
@@ -60,10 +60,50 @@ timeout = 60
 
 [[shell_check_steps]]
 shell_cmd = "cat /mnt/v/etc/alpine-release"
-success_regex = ["(?m)^3\\.23\\.5\\s*$"]
+success_regex = ["(?m)^3\\.23\\.6\\s*$"]
 fail_regex = ["cat:"]
 timeout = 60
 
 [[shell_check_steps]]
 shell_cmd = "echo AXVISOR_VIRTIO_BLK_MOUNT_RO_PASSED"
 success_regex = ["(?m)^AXVISOR_VIRTIO_BLK_MOUNT_RO_PASSED\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018h"
+success_regex = ["detached VM\\[1\\] console"]
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 2"
+success_regex = ["Attached VM\\[2\\] console"]
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "mkdir -p /mnt/v"
+
+[[shell_check_steps]]
+shell_cmd = "dd if=/dev/vda of=/dev/null bs=4096 count=1; echo AXVISOR_VM2_BLOCK_READ_STATUS=$?"
+success_regex = ["(?m)^AXVISOR_VM2_BLOCK_READ_STATUS=0\\s*$"]
+fail_regex = ["(?m)^AXVISOR_VM2_BLOCK_READ_STATUS=[^0]\\s*$"]
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "mount -t ext4 -o ro /dev/vda /mnt/v; echo AXVISOR_VM2_MOUNT_STATUS=$?"
+success_regex = ["(?m)^AXVISOR_VM2_MOUNT_STATUS=0\\s*$"]
+fail_regex = ["(?m)^AXVISOR_VM2_MOUNT_STATUS=[^0]\\s*$", "mount:"]
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "grep -q ' /mnt/v ext4 ro' /proc/mounts; echo AXVISOR_VM2_RO_STATUS=$?"
+success_regex = ["(?m)^AXVISOR_VM2_RO_STATUS=0\\s*$"]
+fail_regex = ["(?m)^AXVISOR_VM2_RO_STATUS=[^0]\\s*$"]
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "cat /mnt/v/etc/alpine-release"
+success_regex = ["(?m)^3\\.23\\.6\\s*$"]
+fail_regex = ["cat:"]
+timeout = 60

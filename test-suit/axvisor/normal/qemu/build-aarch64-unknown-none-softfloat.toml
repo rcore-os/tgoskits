@@ -4,4 +4,7 @@ features = [
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
-vm_configs = ["os/axvisor/configs/vms/qemu/aarch64/linux-virtio-blk.toml"]
+vm_configs = [
+    "os/axvisor/configs/vms/qemu/aarch64/linux-virtio-blk.toml",
+    "os/axvisor/configs/vms/qemu/aarch64/linux-virtio-blk-vm2.toml",
+]

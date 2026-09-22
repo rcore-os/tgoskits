@@ -5,5 +5,8 @@ features = [
 ]
 log = "Info"
 target = "riscv64gc-unknown-none-elf"
-vm_configs = ["os/axvisor/configs/vms/qemu/riscv64/linux-virtio-blk.toml"]
+vm_configs = [
+    "os/axvisor/configs/vms/qemu/riscv64/linux-virtio-blk.toml",
+    "os/axvisor/configs/vms/qemu/riscv64/linux-virtio-blk-vm2.toml",
+]
 max_cpu_num = 4

@@ -11,7 +11,7 @@ args = [
   "-machine",
   "q35,smbus=off,usb=off,graphics=off",
   "-smp",
-  "2",
+  "3",
   "-accel",
   "kvm",
   "-device",
@@ -19,7 +19,7 @@ args = [
   "-drive",
   "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-x86_64-alpine.img",
   "-m",
-  "1G",
+  "3G",
   "-net",
   "none",
   "-vga",
@@ -64,6 +64,49 @@ timeout = 60
 
 [[shell_check_steps]]
 shell_cmd = "cat /mnt/v/etc/alpine-release"
-success_regex = ["(?m)^3\\.23\\.5\\s*$"]
+success_regex = ["(?m)^3\\.23\\.6\\s*$"]
 fail_regex = ["cat:"]
 timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "mount -o remount,rw /mnt/v; echo AXVISOR_VM1_REMOUNT_STATUS=$?"
+success_regex = ["(?m)^AXVISOR_VM1_REMOUNT_STATUS=0\\s*$"]
+fail_regex = ["(?m)^AXVISOR_VM1_REMOUNT_STATUS=[^0]\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = 'mkdir -p /mnt/v/tmp && printf VM1 > /mnt/v/tmp/axvisor-vm1-isolation && sync && test "$(cat /mnt/v/tmp/axvisor-vm1-isolation)" = VM1; echo AXVISOR_VM1_MARKER_STATUS=$?'
+success_regex = ["(?m)^AXVISOR_VM1_MARKER_STATUS=0\\s*$"]
+fail_regex = ["(?m)^AXVISOR_VM1_MARKER_STATUS=[^0]\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018h"
+success_regex = ["detached VM\\[1\\] console"]
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 2"
+success_regex = ["Attached VM\\[2\\] console"]
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "mkdir -p /mnt/v"
+
+[[shell_check_steps]]
+shell_cmd = "mount -t ext4 -o ro /dev/vda /mnt/v"
+success_regex = ["EXT4-fs \\(vda\\): mounted filesystem .* ro "]
+fail_regex = ["mount:"]
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "cat /mnt/v/etc/alpine-release"
+success_regex = ["(?m)^3\\.23\\.6\\s*$"]
+fail_regex = ["cat:"]
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "test ! -e /mnt/v/tmp/axvisor-vm1-isolation; echo AXVISOR_VM2_ISOLATED=$?"
+success_regex = ["(?m)^AXVISOR_VM2_ISOLATED=0\\s*$"]
+fail_regex = ["(?m)^AXVISOR_VM2_ISOLATED=[^0]\\s*$"]

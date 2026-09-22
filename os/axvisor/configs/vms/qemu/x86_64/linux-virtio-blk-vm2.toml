@@ -1,9 +1,9 @@
 [base]
-id = 1
-name = "linux-virtio-blk-mount-x86_64"
+id = 2
+name = "linux-virtio-blk-mount-x86_64-vm2"
 guest_type = "virtualized"
 cpu_num = 1
-phys_cpu_ids = [1]
+phys_cpu_ids = [2]
 
 [kernel]
 entry_point = 0x8000
@@ -27,5 +27,5 @@ disabled = []
 id = "virtblk0"
 model = "virtio-blk"
 transport = "pci"
-path = "/guest/rootfs-x86_64-alpine-0.img"
+path = "/guest/rootfs-x86_64-alpine-1.img"
 filesystem = "ext4"

@@ -1,9 +1,9 @@
 [base]
-id = 1
-name = "linux-virtio-blk-mount-aarch64"
+id = 2
+name = "linux-virtio-blk-mount-aarch64-vm2"
 guest_type = "virtualized"
 cpu_num = 1
-phys_cpu_ids = [1]
+phys_cpu_ids = [2]
 
 [kernel]
 entry_point = 0x8020_0000
@@ -25,5 +25,5 @@ disabled = []
 [[devices.virtual]]
 id = "virtblk0"
 model = "virtio-blk"
-path = "/guest/rootfs-aarch64-alpine-0.img"
+path = "/guest/rootfs-aarch64-alpine-1.img"
 filesystem = "ext4"

@@ -4,4 +4,7 @@ features = [
 ]
 log = "Info"
 target = "x86_64-unknown-none"
-vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-virtio-blk.toml"]
+vm_configs = [
+    "os/axvisor/configs/vms/qemu/x86_64/linux-virtio-blk.toml",
+    "os/axvisor/configs/vms/qemu/x86_64/linux-virtio-blk-vm2.toml",
+]

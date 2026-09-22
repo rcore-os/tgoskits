@@ -23,5 +23,5 @@ disabled = []
 [[devices.virtual]]
 id = "virtblk0"
 model = "virtio-blk"
-path = "/guest/rootfs-aarch64-alpine.img"
+path = "/guest/rootfs-aarch64-alpine-0.img"
 filesystem = "ext4"

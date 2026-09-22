@@ -1,9 +1,9 @@
 [base]
-id = 1
-name = "linux-virtio-blk-mount-loongarch64"
+id = 2
+name = "linux-virtio-blk-mount-loongarch64-vm2"
 guest_type = "virtualized"
 cpu_num = 1
-phys_cpu_ids = [1]
+phys_cpu_ids = [2]
 
 [kernel]
 image_location = "memory"
@@ -22,5 +22,5 @@ memory_regions = [
 id = "virtblk0"
 model = "virtio-blk"
 transport = "pci"
-path = "/guest/rootfs-loongarch64-alpine-0.img"
+path = "/guest/rootfs-loongarch64-alpine-1.img"
 filesystem = "ext4"

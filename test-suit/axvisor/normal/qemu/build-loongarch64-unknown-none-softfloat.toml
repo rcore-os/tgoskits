@@ -3,9 +3,12 @@ features = [
   "fs",
 ]
 log = "Info"
-max_cpu_num = 2
+max_cpu_num = 3
 target = "loongarch64-unknown-none-softfloat"
-vm_configs = ["os/axvisor/configs/vms/qemu/loongarch64/linux-virtio-blk.toml"]
+vm_configs = [
+    "os/axvisor/configs/vms/qemu/loongarch64/linux-virtio-blk.toml",
+    "os/axvisor/configs/vms/qemu/loongarch64/linux-virtio-blk-vm2.toml",
+]
 
 [env]
 KERNEL_BUILTIN_CMDLINE = "root=/dev/nvme0n1 earlycon=uart8250,mmio,0x1fe001e0,115200"
