@@ -46,8 +46,17 @@
 #endif
 
 /* enum bpf_cmd / bpf_attach_type values from Linux uapi/linux/bpf.h. */
+/* enum bpf_cmd values (uapi/linux/bpf.h). */
+#define DRR_BPF_PROG_LOAD 5
+#define DRR_BPF_PROG_ATTACH 8
 #define DRR_BPF_PROG_DETACH 9
-#define DRR_BPF_CGROUP_DEVICE 6
+#define DRR_BPF_PROG_GET_NEXT_ID 11
+#define DRR_BPF_PROG_GET_FD_BY_ID 13
+#define DRR_BPF_PROG_QUERY 16
+#define DRR_BPF_LINK_CREATE 28
+#define DRR_BPF_OBJ_GET_INFO_BY_FD 15
+#define DRR_BPF_ATTACH_CGROUP_DEVICE 6
+#define DRR_BPF_PROG_TYPE_CGROUP_DEVICE 15
 
 static int failures;
 
@@ -284,7 +293,7 @@ static void check_stageb_gate(void)
 
     unsigned long long attr[2] = {
         0xffffffffULL,  /* target_fd: deliberately invalid */
-        DRR_BPF_CGROUP_DEVICE,
+        DRR_BPF_ATTACH_CGROUP_DEVICE,
     };
     errno = 0;
     long rc = syscall(__NR_bpf, DRR_BPF_PROG_DETACH, attr, sizeof(attr));
@@ -429,10 +438,212 @@ static int run_epoll_spin(void)
     return 0;
 }
 
+/* Byte-addressed bpf_attr builder: the stub's attribute layouts place u32
+ * fields and aligned u64 pointers at fixed offsets, so tests fill an
+ * all-zero buffer field by field. */
+static unsigned char drr_attr[64];
+
+static void drr_set_u32(int offset, uint32_t value)
+{
+    memcpy(drr_attr + offset, &value, sizeof(value));
+}
+
+static uint32_t drr_get_u32(int offset)
+{
+    uint32_t value;
+    memcpy(&value, drr_attr + offset, sizeof(value));
+    return value;
+}
+
+static void drr_set_u64(int offset, uint64_t value)
+{
+    memcpy(drr_attr + offset, &value, sizeof(value));
+}
+
+static long drr_bpf(uint32_t cmd)
+{
+    return syscall(__NR_bpf, cmd, drr_attr, sizeof(drr_attr));
+}
+
+/* Device-controller stub lifecycle regression: load, query (count-only and
+ * with a buffer), attach, close-the-loader-fd, fetch by id (the attachment
+ * must keep the program alive), info-by-fd (short and zero buffers), detach,
+ * link-create refusal, and the passthrough baseline for ordinary IDs. */
+static int run_bpf_lifecycle(void)
+{
+    section("bpf-lifecycle");
+
+    /* Baseline: with no device program loaded, ID enumeration falls through
+     * to the real handlers (EINVAL), instead of being short-circuited. */
+    memset(drr_attr, 0, sizeof(drr_attr));
+    errno = 0;
+    if (drr_bpf(DRR_BPF_PROG_GET_NEXT_ID) != -1 || errno != EINVAL) {
+        fail("empty-table GET_NEXT_ID falls through with EINVAL");
+        return 1;
+    }
+
+    /* Load one cgroup-device program. */
+    memset(drr_attr, 0, sizeof(drr_attr));
+    drr_set_u32(0, DRR_BPF_PROG_TYPE_CGROUP_DEVICE);  /* prog_type */
+    errno = 0;
+    int prog_fd = (int)drr_bpf(DRR_BPF_PROG_LOAD);
+    if (prog_fd < 0) {
+        fail("PROG_LOAD cgroup-device program");
+        return 1;
+    }
+
+    /* OBJ_GET_INFO_BY_FD: full buffer reports type + id. */
+    uint32_t info[2] = { 0, 0 };
+    memset(drr_attr, 0, sizeof(drr_attr));
+    drr_set_u32(0, (uint32_t)prog_fd);
+    drr_set_u32(4, sizeof(info));
+    drr_set_u64(8, (uint64_t)(uintptr_t)info);
+    errno = 0;
+    if (drr_bpf(DRR_BPF_OBJ_GET_INFO_BY_FD) != 0 ||
+        info[0] != DRR_BPF_PROG_TYPE_CGROUP_DEVICE || info[1] == 0) {
+        fail("OBJ_GET_INFO reports cgroup-device type and id");
+        return 1;
+    }
+    uint32_t prog_id = info[1];
+
+    /* Short buffer: only the requested prefix is written, and info_len
+     * reports the copied size. */
+    uint32_t short_info[2] = { 0xAAAAAAAA, 0xAAAAAAAA };
+    memset(drr_attr, 0, sizeof(drr_attr));
+    drr_set_u32(0, (uint32_t)prog_fd);
+    drr_set_u32(4, 4);  /* only room for the type */
+    drr_set_u64(8, (uint64_t)(uintptr_t)short_info);
+    errno = 0;
+    int info_rc = (int)drr_bpf(DRR_BPF_OBJ_GET_INFO_BY_FD);
+    uint32_t reported_len = drr_get_u32(4);
+    if (info_rc != 0 || reported_len != 4 ||
+        short_info[0] != DRR_BPF_PROG_TYPE_CGROUP_DEVICE ||
+        short_info[1] != 0xAAAAAAAA) {
+        fail("OBJ_GET_INFO honors a short buffer");
+        return 1;
+    }
+
+    /* Zero-length buffer: success, nothing written. */
+    short_info[0] = 0xAAAAAAAA;
+    short_info[1] = 0xAAAAAAAA;
+    memset(drr_attr, 0, sizeof(drr_attr));
+    drr_set_u32(0, (uint32_t)prog_fd);
+    drr_set_u32(4, 0);
+    drr_set_u64(8, (uint64_t)(uintptr_t)short_info);
+    errno = 0;
+    info_rc = (int)drr_bpf(DRR_BPF_OBJ_GET_INFO_BY_FD);
+    if (info_rc != 0 || drr_get_u32(4) != 0 || short_info[0] != 0xAAAAAAAA) {
+        fail("OBJ_GET_INFO honors a zero-length buffer");
+        return 1;
+    }
+
+    /* Attach to a directory fd (the stub does not enforce cgroup-ness). */
+    int target_fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (target_fd < 0) {
+        fail("open attach target");
+        return 1;
+    }
+    memset(drr_attr, 0, sizeof(drr_attr));
+    drr_set_u32(0, (uint32_t)target_fd);
+    drr_set_u32(4, (uint32_t)prog_fd);
+    drr_set_u32(8, DRR_BPF_ATTACH_CGROUP_DEVICE);
+    errno = 0;
+    if (drr_bpf(DRR_BPF_PROG_ATTACH) != 0) {
+        fail("PROG_ATTACH records the attachment");
+        close(target_fd);
+        return 1;
+    }
+
+    /* Closing the loader fd must not kill the attached program. */
+    close(prog_fd);
+    memset(drr_attr, 0, sizeof(drr_attr));
+    drr_set_u32(0, prog_id);
+    errno = 0;
+    int fetch_fd = (int)drr_bpf(DRR_BPF_PROG_GET_FD_BY_ID);
+    if (fetch_fd < 0) {
+        fail("attachment keeps the program fetchable after loader close");
+        close(target_fd);
+        return 1;
+    }
+    close(fetch_fd);
+
+    /* Count-only query (prog_ids = NULL): reports the attach count. */
+    memset(drr_attr, 0, sizeof(drr_attr));
+    drr_set_u32(0, (uint32_t)target_fd);
+    drr_set_u32(4, DRR_BPF_ATTACH_CGROUP_DEVICE);
+    drr_set_u32(24, 0);
+    errno = 0;
+    if (drr_bpf(DRR_BPF_PROG_QUERY) != 0 || drr_get_u32(24) != 1) {
+        fail("count-only QUERY reports one attachment");
+        close(target_fd);
+        return 1;
+    }
+
+    /* Buffered query returns the synthetic id. */
+    uint32_t ids[4] = { 0, 0, 0, 0 };
+    memset(drr_attr, 0, sizeof(drr_attr));
+    drr_set_u32(0, (uint32_t)target_fd);
+    drr_set_u32(4, DRR_BPF_ATTACH_CGROUP_DEVICE);
+    drr_set_u64(16, (uint64_t)(uintptr_t)ids);
+    drr_set_u32(24, 4);
+    errno = 0;
+    if (drr_bpf(DRR_BPF_PROG_QUERY) != 0 || drr_get_u32(24) != 1 || ids[0] != prog_id) {
+        fail("buffered QUERY reports the attached program id");
+        close(target_fd);
+        return 1;
+    }
+
+    /* DETACH removes the record; afterwards the id is gone. */
+    memset(drr_attr, 0, sizeof(drr_attr));
+    drr_set_u32(0, (uint32_t)target_fd);
+    drr_set_u32(8, DRR_BPF_ATTACH_CGROUP_DEVICE);
+    errno = 0;
+    if (drr_bpf(DRR_BPF_PROG_DETACH) != 0) {
+        fail("PROG_DETACH removes the attachment");
+        close(target_fd);
+        return 1;
+    }
+    memset(drr_attr, 0, sizeof(drr_attr));
+    drr_set_u32(0, prog_id);
+    errno = 0;
+    int gone = drr_bpf(DRR_BPF_PROG_GET_FD_BY_ID) == -1 && errno == ENOENT;
+    if (!gone) {
+        fail("detached program id is no longer fetchable");
+        close(target_fd);
+        return 1;
+    }
+
+    /* LINK_CREATE is explicitly refused (EINVAL), not silently accepted. */
+    memset(drr_attr, 0, sizeof(drr_attr));
+    drr_set_u32(0, DRR_BPF_PROG_TYPE_CGROUP_DEVICE);  /* prog_type */
+    int new_prog_fd = (int)drr_bpf(DRR_BPF_PROG_LOAD);
+    if (new_prog_fd >= 0) {
+        memset(drr_attr, 0, sizeof(drr_attr));
+        drr_set_u32(0, (uint32_t)target_fd);
+        drr_set_u32(4, (uint32_t)new_prog_fd);
+        drr_set_u32(8, DRR_BPF_ATTACH_CGROUP_DEVICE);
+        errno = 0;
+        long rc = drr_bpf(DRR_BPF_LINK_CREATE);
+        if (rc != -1 || errno != EINVAL) {
+            fail("LINK_CREATE is refused with EINVAL");
+            close(new_prog_fd);
+            close(target_fd);
+            return 1;
+        }
+        close(new_prog_fd);
+    }
+
+    close(target_fd);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "fork-eagain") == 0) {
         return run_fork_eagain();
+    }
+    if (argc > 1 && strcmp(argv[1], "bpf-lifecycle") == 0) {
+        return run_bpf_lifecycle();
     }
     if (argc > 1 && strcmp(argv[1], "epoll-spin") == 0) {
         return run_epoll_spin();

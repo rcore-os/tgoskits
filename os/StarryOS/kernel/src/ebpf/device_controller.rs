@@ -91,6 +91,9 @@ static NEXT_DEVICE_PROG_ID: AtomicU32 = AtomicU32::new(1);
 struct AttachedDeviceProg {
     target: Arc<dyn file::FileLike>,
     attach_type: u32,
+    /// Strong reference to the attached placeholder program: the attachment
+    /// keeps the program (and its id) alive until DETACH, like Linux.
+    prog: Arc<dyn file::FileLike>,
     prog_id: u32,
 }
 
@@ -113,15 +116,47 @@ static DEVICE_PROGS: IrqMutex<Vec<DeviceProg>> = IrqMutex::new(Vec::new());
 /// Drops registry entries whose placeholder object is gone and returns
 /// whether `id` is still live.
 fn device_prog_live(id: u32) -> bool {
-    let mut progs = DEVICE_PROGS.lock();
-    progs.retain(|prog| prog.file.upgrade().is_some());
-    progs.iter().any(|prog| prog.id == id)
+    if DEVICE_PROGS
+        .lock()
+        .iter()
+        .any(|prog| prog.id == id && prog.file.upgrade().is_some())
+    {
+        return true;
+    }
+    // Attachments hold their program strongly, so an attached id stays live
+    // even after the loading fd is closed.
+    ATTACHED_DEVICE_PROGS
+        .lock()
+        .iter()
+        .any(|prog| prog.prog_id == id)
+}
+
+/// Returns whether `id` lies in the synthetic device-controller id space:
+/// the counter is monotonic and only this module mints ids, so any id below
+/// the counter that is no longer live is a *dead* device id (Linux answers
+/// such `GET_FD_BY_ID` with ENOENT), while ids above it were never ours and
+/// belong to the real handlers.
+fn is_device_id_space(id: u32) -> bool {
+    id != 0 && id < NEXT_DEVICE_PROG_ID.load(Ordering::Relaxed)
 }
 
 fn next_device_prog_id(after: u32) -> Option<u32> {
     let mut progs = DEVICE_PROGS.lock();
     progs.retain(|prog| prog.file.upgrade().is_some());
-    progs.iter().map(|prog| prog.id).filter(|id| *id > after).min()
+    let mut ids: Vec<u32> = progs
+        .iter()
+        .map(|prog| prog.id)
+        .chain(
+            ATTACHED_DEVICE_PROGS
+                .lock()
+                .iter()
+                .map(|prog| prog.prog_id),
+        )
+        .collect();
+    drop(progs);
+    ids.sort_unstable();
+    ids.dedup();
+    ids.into_iter().find(|id| *id > after)
 }
 
 /// The subset of `bpf(2)` commands this module takes over for the device
@@ -228,13 +263,30 @@ fn classify(
             if size < MIN_ID_ATTR_SIZE {
                 return Err(StarryError::InvalidInput);
             }
-            Ok(Some(DeviceCommand::GetNextId))
+            let start = read_attr_u32(current, uattr, 0)?;
+            if next_device_prog_id(start).is_some() {
+                Ok(Some(DeviceCommand::GetNextId))
+            } else if is_device_id_space(start) {
+                // Inside our id space but exhausted: Linux terminates the
+                // enumeration with ENOENT.
+                Ok(Some(DeviceCommand::GetNextId))
+            } else {
+                // Not a device-controller id: leave the command to the real
+                // handlers so other program kinds are unaffected.
+                Ok(None)
+            }
         }
         bpf_cmd::BPF_PROG_GET_FD_BY_ID => {
             if size < MIN_ID_ATTR_SIZE {
                 return Err(StarryError::InvalidInput);
             }
-            Ok(Some(DeviceCommand::GetFdById))
+            let id = read_attr_u32(current, uattr, 0)?;
+            if is_device_id_space(id) {
+                Ok(Some(DeviceCommand::GetFdById))
+            } else {
+                // Never one of ours: the real handlers own the error.
+                Ok(None)
+            }
         }
         bpf_cmd::BPF_OBJ_GET_INFO_BY_FD => {
             if size < MIN_GET_INFO_ATTR_SIZE {
@@ -306,22 +358,29 @@ fn handle(current: &crate::task::UserTaskRef, command: DeviceCommand, uattr: usi
             file::add_file_like(file, true).map(|fd| fd as isize)
         }
         DeviceCommand::LinkCreate => {
-            let file: Arc<dyn file::FileLike> = Arc::new(BpfCgroupDeviceFile {
-                id: NEXT_DEVICE_PROG_ID.fetch_add(1, Ordering::Relaxed),
-            });
-            // bpf fds are close-on-exec in Linux; matches the real handlers.
-            file::add_file_like(file, true).map(|fd| fd as isize)
+            // The device-controller link lifecycle (BPF_LINK_CREATE /
+            // BPF_LINK_DESTROY, link ids) is not modeled: pretend-failing
+            // creates would leave an object no query or destroy can reach.
+            // Callers on this kernel attach with BPF_PROG_ATTACH (runc
+            // 1.1.x does exactly that), so refuse the link form explicitly.
+            let _ = read_attr_u32(current, uattr, ATTR_LINK_ATTACH_TYPE_OFFSET)?;
+            Err(StarryError::InvalidInput)
         }
         DeviceCommand::GetFdById => {
             let id = read_attr_u32(current, uattr, 0)?;
-            if !device_prog_live(id) {
-                return Err(StarryError::NotFound);
-            }
-            let file = DEVICE_PROGS
+            let registry_file = DEVICE_PROGS
                 .lock()
                 .iter()
                 .find(|prog| prog.id == id)
                 .and_then(|prog| prog.file.upgrade());
+            let file = match registry_file {
+                Some(file) => Some(file),
+                None => ATTACHED_DEVICE_PROGS
+                    .lock()
+                    .iter()
+                    .find(|prog| prog.prog_id == id)
+                    .map(|prog| prog.prog.clone()),
+            };
             match file {
                 Some(file) => file::add_file_like(file, false).map(|fd| fd as isize),
                 None => Err(StarryError::NotFound),
@@ -351,9 +410,20 @@ fn handle(current: &crate::task::UserTaskRef, command: DeviceCommand, uattr: usi
                 bpf_prog_type::BPF_PROG_TYPE_CGROUP_DEVICE as u32,
                 id,
             ];
-            crate::mm::vm_write_slice(current, info_ptr as *mut u32, &info)
-                .map_err(|_| StarryError::BadAddress)?;
-            write_attr_u32(current, uattr, ATTR_GET_INFO_LEN_OFFSET, 8)?;
+            // Honor the caller's buffer length: copy at most info_len bytes
+            // and report that size back (the standard short-info contract).
+            let info_len = read_attr_u32(current, uattr, ATTR_GET_INFO_LEN_OFFSET)?;
+            let write_len = (info_len as usize).min(info.len() * 4);
+            if write_len > 0 {
+                let bytes: Vec<u8> = info
+                    .iter()
+                    .flat_map(|word| word.to_ne_bytes())
+                    .take(write_len)
+                    .collect();
+                crate::mm::vm_write_slice(current, info_ptr as *mut u8, &bytes)
+                    .map_err(|_| StarryError::BadAddress)?;
+            }
+            write_attr_u32(current, uattr, ATTR_GET_INFO_LEN_OFFSET, write_len as u32)?;
             Ok(0)
         }
         DeviceCommand::GetNextId => {
@@ -389,6 +459,7 @@ fn handle(current: &crate::task::UserTaskRef, command: DeviceCommand, uattr: usi
                 .map_err(|_| StarryError::BadFileDescriptor)?;
             ATTACHED_DEVICE_PROGS.lock().push(AttachedDeviceProg {
                 target,
+                prog: bpf_object,
                 attach_type,
                 prog_id,
             });
@@ -427,6 +498,9 @@ fn handle(current: &crate::task::UserTaskRef, command: DeviceCommand, uattr: usi
             }
             let attach_type = read_attr_u32(current, uattr, ATTR_QUERY_ATTACH_TYPE_OFFSET)?;
             let capacity = read_attr_u32(current, uattr, ATTR_QUERY_PROG_CNT_OFFSET)?;
+            let ids_ptr =
+                crate::mm::vm_load(current, (uattr + ATTR_QUERY_PROG_IDS_OFFSET) as *const u64, 1)
+                    .map_err(|_| StarryError::BadAddress)?[0];
             let target = file::get_file_like(target_fd as i32)
                 .map_err(|_| StarryError::BadFileDescriptor)?;
             let ids: Vec<u32> = ATTACHED_DEVICE_PROGS
@@ -438,16 +512,16 @@ fn handle(current: &crate::task::UserTaskRef, command: DeviceCommand, uattr: usi
                 })
                 .map(|prog| prog.prog_id)
                 .collect();
-            if ids.len() as u32 > capacity {
+            // `prog_ids == NULL` is a count-only query: report the number of
+            // attached programs without touching any buffer.
+            if ids_ptr != 0 && ids.len() as u32 > capacity {
                 // Linux reports the required size through prog_cnt and fails.
                 write_attr_u32(current, uattr, ATTR_QUERY_PROG_CNT_OFFSET, ids.len() as u32)?;
                 return Err(StarryError::StorageFull);
             }
-            // Write the ids through the caller's `prog_ids` pointer and the
-            // real count through `prog_cnt`, exactly like Linux.
-            let ids_ptr = crate::mm::vm_load(current, (uattr + ATTR_QUERY_PROG_IDS_OFFSET) as *const u64, 1)
-                .map_err(|_| StarryError::BadAddress)?[0];
-            if !ids.is_empty() {
+            if ids_ptr != 0 && !ids.is_empty() {
+                // Write the ids through the caller's `prog_ids` pointer and
+                // the real count through `prog_cnt`, exactly like Linux.
                 crate::mm::vm_write_slice(current, ids_ptr as *mut u32, &ids)
                     .map_err(|_| StarryError::BadAddress)?;
             }
