@@ -2,7 +2,7 @@
  * test-drm-version — /dev/dri/card0 smoke test
  *
  * 直接发 libdrm 的 drmOpen + drmGetVersion + drmGetCap 路径用到的 ioctl，
- * 不依赖 libdrm。验证内核把 card0 暴露为 simpledrm-class 节点：
+ * 不依赖 libdrm。验证内核把 card0 暴露为 virtio-gpu 节点：
  *   - DRM_IOCTL_VERSION 两遍调用（第一遍 probe size，第二遍读字符串）
  *   - DRM_IOCTL_GET_CAP（DUMB_BUFFER 必须为 1，未知 cap 返回 0 而不是错）
  *   - DRM_IOCTL_SET_CLIENT_CAP（UNIVERSAL_PLANES、ATOMIC 必须接受）
@@ -70,8 +70,8 @@ int main(void)
     CHECK_RET(ioctl(fd, DRM_IOCTL_VERSION, &v), 0, "VERSION fetch");
     printf("  driver name=%s date=%s desc=%s version=%d.%d.%d\n",
            name, date, desc, v.version_major, v.version_minor, v.version_patchlevel);
-    CHECK(strcmp(name, "starry-simpledrm") == 0, "driver name == starry-simpledrm");
-    CHECK(v.version_major == 1 && v.version_minor == 0, "driver version 1.0");
+    CHECK(strcmp(name, "virtio_gpu") == 0, "driver name == virtio_gpu");
+    CHECK(v.version_major == 0 && v.version_minor == 1, "driver version 0.1");
 
     /* DRM_IOCTL_GET_CAP — DUMB_BUFFER must report 1. */
     struct drm_get_cap cap = { .capability = DRM_CAP_DUMB_BUFFER };

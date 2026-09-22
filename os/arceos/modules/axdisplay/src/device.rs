@@ -35,6 +35,10 @@ pub trait DisplayDevice: Send {
 
     fn flush(&mut self) -> DisplayResult;
 
+    fn restore_framebuffer_scanout(&mut self) -> DisplayResult {
+        Ok(())
+    }
+
     fn irq_id(&self) -> Option<IrqId> {
         None
     }
@@ -202,6 +206,10 @@ impl DisplayDevice for ErasedDisplayDevice {
 
     fn flush(&mut self) -> DisplayResult {
         self.inner.flush()
+    }
+
+    fn restore_framebuffer_scanout(&mut self) -> DisplayResult {
+        self.inner.restore_framebuffer_scanout()
     }
 
     fn irq_id(&self) -> Option<IrqId> {

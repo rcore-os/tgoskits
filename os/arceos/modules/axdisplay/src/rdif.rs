@@ -72,6 +72,12 @@ impl DisplayDevice for RdifDisplayDevice {
         Ok(())
     }
 
+    fn restore_framebuffer_scanout(&mut self) -> Result<(), DisplayError> {
+        self.device
+            .restore_framebuffer_scanout()
+            .map_err(map_display_error)
+    }
+
     fn irq_id(&self) -> Option<IrqId> {
         self.irq
     }

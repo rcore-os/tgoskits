@@ -37,6 +37,11 @@ pub trait Interface: DriverGeneric {
         Ok(())
     }
 
+    /// Restore the driver's framebuffer as scanout after an external resource.
+    fn restore_framebuffer_scanout(&mut self) -> Result<(), DisplayError> {
+        Ok(())
+    }
+
     fn enable_irq(&mut self) {}
 
     fn disable_irq(&mut self) {}

@@ -593,6 +593,10 @@ impl FileLike for HostResourceDmaBuf {
         Err(StarryError::InvalidInput)
     }
 
+    fn seek(&self, pos: ax_io::SeekFrom) -> StarryResult<u64> {
+        dma_buf_seek(self.resource.size, pos)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         "anon_inode:dmabuf".into()
     }
@@ -1119,8 +1123,8 @@ impl Card0File {
             DRM_IOCTL_GEM_CLOSE => card.handle_gem_close(self, current, arg),
 
             DRM_IOCTL_MODE_GETPLANERESOURCES => handle_get_plane_resources(current, arg),
-            DRM_IOCTL_MODE_GETPLANE => self.handle_get_plane(current, arg),
-            DRM_IOCTL_MODE_OBJ_GETPROPERTIES => self.handle_obj_get_properties(current, arg),
+            DRM_IOCTL_MODE_GETPLANE => card.handle_get_plane(current, arg),
+            DRM_IOCTL_MODE_OBJ_GETPROPERTIES => card.handle_obj_get_properties(current, arg),
             DRM_IOCTL_MODE_GETPROPERTY => handle_get_property(current, arg),
             DRM_IOCTL_MODE_PAGE_FLIP => card.handle_page_flip(self, current, arg),
             DRM_IOCTL_WAIT_VBLANK => card.handle_wait_vblank(current, arg),
@@ -1291,28 +1295,22 @@ impl Drop for Card0File {
             let _ = ax_display::gpu3d_ctx_destroy(context.ctx_id);
         }
 
-        let removed_fb_ids: Vec<u32> = {
+        let mut state = self.card.state.lock();
+        {
             let mut framebuffers = self.card.fbs.lock();
             let ids = framebuffers
                 .iter()
                 .filter_map(|(&id, framebuffer)| (framebuffer.owner == self.file_id).then_some(id))
                 .collect::<Vec<_>>();
+            if ids.contains(&state.plane_fb_id) {
+                let _ = self.card.clear_scanout();
+                *state = ModesetState::default();
+            }
             for id in &ids {
                 framebuffers.remove(id);
             }
-            ids
-        };
-        if !removed_fb_ids.is_empty() {
-            let mut state = self.card.state.lock();
-            if removed_fb_ids.contains(&state.plane_fb_id) {
-                state.plane_fb_id = 0;
-                state.plane_crtc_id = 0;
-            }
-            let mut legacy = self.card.legacy_crtc.lock();
-            if removed_fb_ids.contains(&legacy.fb_id) {
-                *legacy = LegacyCrtcState::default();
-            }
         }
+        drop(state);
 
         let removed_dumbs = {
             let mut dumbs = self.card.dumbs.lock();
@@ -1351,6 +1349,16 @@ impl Drop for Card0File {
 }
 
 impl Card0 {
+    fn clear_scanout(&self) -> VfsResult<()> {
+        if !ax_display::has_display() {
+            return Ok(());
+        }
+        let mut scanout = self.scanout_resource.lock();
+        ax_display::gpu3d_set_scanout(0, 0, 0, 0, 0, 0).map_err(map_gpu3d_err)?;
+        *scanout = None;
+        Ok(())
+    }
+
     /// Look up the dumb buffer behind a given `fb_id` and copy its
     /// contents into the axdisplay scanout, then trigger
     /// `framebuffer_flush`. Used by `SETCRTC`, `PAGE_FLIP`, and atomic
@@ -1382,6 +1390,16 @@ impl Card0 {
                 if !ax_display::has_display() {
                     return;
                 };
+                let mut scanout = self.scanout_resource.lock();
+                if scanout.is_some()
+                    && ax_display::gpu3d_set_scanout(0, 0, 0, 0, 0, 0).is_err()
+                {
+                    return;
+                }
+                if ax_display::framebuffer_restore_scanout().is_err() {
+                    return;
+                }
+                *scanout = None;
                 let src = pages.start_vaddr().as_usize() as *const u8;
                 let info = ax_display::framebuffer_info();
                 let dst = info.fb_base_vaddr as *mut u8;
@@ -1431,10 +1449,10 @@ impl Card0 {
                         fb.height,
                     );
                 }
-                if ax_display::gpu3d_set_scanout(0, resource.res_handle, 0, 0, fb.width, fb.height)
-                    .is_ok()
+                let mut scanout = self.scanout_resource.lock();
+                if ax_display::gpu3d_set_scanout(0, resource.res_handle, 0, 0, fb.width, fb.height).is_ok()
                 {
-                    *self.scanout_resource.lock() = Some(resource.clone());
+                    *scanout = Some(resource.clone());
                 }
                 let _ = ax_display::gpu3d_resource_flush(
                     resource.res_handle,
@@ -2042,7 +2060,9 @@ impl Card0 {
             if c.count_connectors != 0 {
                 return Err(VfsError::InvalidInput);
             }
-            *self.state.lock() = ModesetState::default();
+            let mut state = self.state.lock();
+            self.clear_scanout()?;
+            *state = ModesetState::default();
             return Ok(0);
         }
 
@@ -2264,29 +2284,22 @@ impl Card0 {
     fn handle_rmfb(&self, file: &Card0File, current: &UserTaskRef, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *const u32;
         let fb_id: u32 = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
+        let mut state = self.state.lock();
         let removed = {
             let mut framebuffers = self.fbs.lock();
-            framebuffers
+            let owned = framebuffers
                 .get(&fb_id)
-                .is_some_and(|framebuffer| framebuffer.owner == file.file_id)
-                .then(|| framebuffers.remove(&fb_id))
-                .flatten()
+                .is_some_and(|framebuffer| framebuffer.owner == file.file_id);
+            if owned && state.plane_fb_id == fb_id {
+                self.clear_scanout()?;
+            }
+            owned.then(|| framebuffers.remove(&fb_id)).flatten()
         };
         if removed.is_none() {
             return Err(VfsError::InvalidInput);
         }
-        let mut state = self.state.lock();
         if state.plane_fb_id == fb_id {
             *state = ModesetState::default();
-        }
-        drop(state);
-        // If the removed fb was the one bound by legacy SETCRTC, clear
-        // the binding so GETCRTC stops reporting a stale fb_id.
-        {
-            let mut legacy = self.legacy_crtc.lock();
-            if legacy.fb_id == fb_id {
-                *legacy = LegacyCrtcState::default();
-            }
         }
         Ok(0)
     }
@@ -2768,6 +2781,9 @@ impl Card0 {
             return Ok(0);
         }
         let current_fb = proposed.plane_fb_id;
+        if (current_fb == 0 || proposed.crtc_active == 0) && state.plane_fb_id != 0 {
+            self.clear_scanout()?;
+        }
         *state = proposed;
         if current_fb != 0 && state.crtc_active != 0 {
             self.present_fb(current_fb);
@@ -3270,14 +3286,10 @@ impl Card0 {
         if size > DUMB_BUFFER_MAX_SIZE as u64 {
             return Err(VfsError::InvalidInput);
         }
-        let pages =
+        let mut pages =
             GlobalPage::alloc_contiguous((size as usize).div_ceil(PAGE_SIZE_4K), PAGE_SIZE_4K)
                 .map_err(|_| VfsError::NoMemory)?;
-
-        // Zero-initialize the buffer.
-        unsafe {
-            core::ptr::write_bytes(pages.start_vaddr().as_ptr() as *mut u8, 0, size as usize);
-        }
+        pages.zero();
         let bo_handle = self.next_dumb_handle.fetch_add(1, Ordering::Relaxed);
         let offset = self
             .next_offset

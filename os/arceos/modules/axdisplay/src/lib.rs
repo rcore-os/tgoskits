@@ -47,6 +47,11 @@ pub fn framebuffer_flush() -> bool {
     MAIN_DISPLAY.lock_irqsave().flush().is_ok()
 }
 
+/// Restore the driver's own framebuffer as the active scanout.
+pub fn framebuffer_restore_scanout() -> DisplayResult {
+    MAIN_DISPLAY.lock_irqsave().restore_framebuffer_scanout()
+}
+
 /// Returns the resolved main display IRQ, if the runtime provided one.
 pub fn framebuffer_irq_id() -> Option<irq_framework::IrqId> {
     MAIN_DISPLAY.lock_irqsave().irq_id()

@@ -118,6 +118,12 @@ impl<T: Transport + 'static> rdif_display::Interface for VirtIoDisplay<T> {
         self.raw.flush().map_err(map_display_err)
     }
 
+    fn restore_framebuffer_scanout(&mut self) -> Result<(), DisplayError> {
+        self.raw
+            .restore_framebuffer_scanout()
+            .map_err(map_display_err)
+    }
+
     fn enable_irq(&mut self) {
         self.irq_enabled = true;
     }

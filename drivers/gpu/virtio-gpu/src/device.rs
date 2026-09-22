@@ -290,6 +290,12 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         Ok(())
     }
 
+    /// Bind the driver's own 2D framebuffer after another scanout was in use.
+    pub fn restore_framebuffer_scanout(&mut self) -> Result<(), Error> {
+        let rect = self.rect.ok_or(Error::NotReady)?;
+        self.set_scanout(rect, SCANOUT_ID, FRAMEBUFFER_RESOURCE_ID)
+    }
+
     /// Transfers the framebuffer to the host and flushes it to the scanout.
     pub fn flush(&mut self) -> Result<(), Error> {
         let rect = self.rect.ok_or(Error::NotReady)?;
