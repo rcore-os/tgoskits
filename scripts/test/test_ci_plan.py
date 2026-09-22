@@ -802,7 +802,7 @@ command = "true"
             impact=ci_plan.CiImpact(
                 full=False,
                 reason="fixture",
-                changed_paths=("apps/axvisor/triple-vm-test/scripts/runner.py",),
+                changed_paths=("apps/axvisor/triple-vm-test/scripts/checks.toml",),
                 input_selections=("axvisor:app:triple-vm",),
             ),
         )
@@ -812,7 +812,7 @@ command = "true"
             for row in ci_plan.build_main_plan(context)["axvisor_matrix"]["include"]
         }
 
-        self.assertEqual(ids, {"test-axvisor-self-hosted-board-triple-vm"})
+        self.assertEqual(ids, {"test-axvisor-self-hosted-board-orangepi-5-plus-triple-vm"})
 
     def test_suite_plus_os_wide_crate_uses_the_broader_os_checks(self) -> None:
         path = "test-suit/starryos/qemu/system/qemu-aarch64.toml"

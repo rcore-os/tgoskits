@@ -226,7 +226,7 @@ class CiImpactTests(unittest.TestCase):
     def test_ci_owned_triple_vm_app_triggers_axvisor_aarch64(self) -> None:
         impact = ci_impact.analyze_changed_paths(
             self.workspace_root,
-            [Path("apps/axvisor/triple-vm-test/scripts/runner.py")],
+            [Path("apps/axvisor/triple-vm-test/scripts/checks.toml")],
             self.metadata_by_arch,
         )
 

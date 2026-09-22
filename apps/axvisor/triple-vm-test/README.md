@@ -8,7 +8,7 @@
 | ArceOS | 2 / `0x200` | 128 MiB | `help`、`uname` |
 | Zephyr | 3 / `0x300` | 128 MiB | 内核版本、线程列表、设备状态 |
 
-三个客户机均以 `image_location = "fs"` 加载启动文件。检查期间只切换控制台，不停止其他客户机。启动、配置、串口通信和判定程序都位于本测例目录，不依赖其他测例脚本。
+三个客户机均以 `image_location = "fs"` 加载启动文件。检查期间只切换控制台，不停止其他客户机。测例使用项目已有的 `cargo xtask axvisor board` 串口检查框架；检查步骤定义在本测例目录，不依赖其他测例脚本。
 
 Linux 和 Zephyr 使用受控的 `passthrough` 地址空间，以保留其启动文件要求的 RK3588 板级 UART 身份；实际物理设备仍由各自的显式 `devices.passthrough` 清单决定，不会因此取得全部宿主设备。ArceOS 使用架构虚拟设备。Linux 清单不包含 eMMC 控制器，AxVisor 因而持续持有宿主文件系统并为 `/dev/vda` 提供文件后端。
 
@@ -16,7 +16,7 @@ Linux 和 Zephyr 使用受控的 `passthrough` 地址空间，以保留其启动
 
 此处只说明必需输入和板上最终位置。文件的传送方式由部署环境决定。若目标目录已有文件，核对版本与内容即可，无需重新创建根镜像。
 
-测例面向能够提供所需 CPU、eMMC 和直通网卡的 AArch64 RK3588 平台。板上需要可启动的原生 `6.1.99-rockchip-rk3588` Linux，包括 `/boot/vmlinuz-6.1.99-rockchip-rk3588`、同版本模块、完整用户态、正常的 SSH/网络以及可用的 APT/dpkg 数据库。Linux 自动检查当前要求 `orangepi@orangepi5plus:~` 提示符及 `orangepi` sudo 密码；修改 `--linux-prompt` 只会改变提示符匹配，不会修改运行器使用的 sudo 密码。
+测例面向能够提供所需 CPU、eMMC 和直通网卡的 AArch64 RK3588 平台。板上需要可启动的原生 `6.1.99-rockchip-rk3588` Linux，包括 `/boot/vmlinuz-6.1.99-rockchip-rk3588`、同版本模块、完整用户态、正常的 SSH/网络以及可用的 APT/dpkg 数据库。Linux 自动检查当前要求 `orangepi@orangepi5plus:~$` 提示符及 `orangepi` sudo 密码；修改 `--linux-prompt` 只会改变提示符匹配，不会修改测例使用的 sudo 密码。
 
 准备以下六个文件，统一放在板上的 `/home/orangepi/axvisor-tests/triple-vm-test/`：
 
@@ -69,17 +69,17 @@ sudo ./prepare-rootfs.sh \
 
 如果板卡网络不能访问软件源，准备镜像时还必须确保 `hello` 的匹配版本安装包位于镜像的 `/var/cache/apt/archives/`。APT 会先使用缓存；缺包时它会尝试联网，离线环境下检查将失败。预置的 `.deb` 应与镜像中的 APT 索引所列版本和 SHA-256 一致。此测例验证包的安装、运行和原有状态恢复，不将在线下载作为通过条件。
 
-`run.sh` 是本测例入口：它调用 `cargo xtask axvisor board`，并由本目录的 `scripts/runner.py` 组织检查；`scripts/console.py` 负责串口通信，`scripts/shell_checks.py`、`scripts/linux_checks.py` 负责各客户机判定。`scripts/` 中的模块由入口调用，无需分别执行。具体调用方式和参数见下节。
+`run.sh` 是本测例入口：它将 `scripts/checks.toml` 中的检查步骤写入一次性板卡配置，然后调用 `cargo xtask axvisor board`。该文件包含三客户机的控制台切换、功能检查、成功与失败标记及超时设置；无需单独执行。具体调用方式和参数见下节。
 
 ## 运行
 
 板上六个文件与配置中的路径一致后，可在 TGOSKits 仓库根目录调用本测例入口：
 
 ```bash
-# 默认：启动三个客户机，依次执行全部自动检查。
+# 默认：启动三个客户机，依次执行全部自动检查并释放板卡。
 apps/axvisor/triple-vm-test/run.sh --board-type <board-type>
 
-# CI：完成相同检查后关闭客户机、退出 AxVisor 并释放板卡。
+# CI：与默认模式执行相同检查。
 apps/axvisor/triple-vm-test/run.sh --ci --board-type <board-type>
 
 # 只启动客户机，保留交互控制台，不执行自动检查。
@@ -89,7 +89,7 @@ apps/axvisor/triple-vm-test/run.sh --interactive --board-type <board-type>
 apps/axvisor/triple-vm-test/run.sh --help
 ```
 
-`run.sh` 使用本目录的 `configs/build.toml`。板型必须由命令行指定；运行器会为当前进程生成最小的临时板卡配置，结束后自动删除，不在测例目录保存部署环境信息。
+`run.sh` 使用本目录的 `configs/build.toml`。板型必须由命令行指定；入口会为当前进程生成临时板卡配置，结束后自动删除，不在测例目录保存部署环境信息。
 
 | 参数 | 作用 |
 | --- | --- |
@@ -98,19 +98,19 @@ apps/axvisor/triple-vm-test/run.sh --help
 | `--ping-target` | Linux 客户机可达的 IPv4 地址；省略时 ping 其默认网关 |
 | `--apt-proxy` | 仅为当次 Linux APT 命令指定 HTTP 代理，不影响 ping |
 | `--linux-prompt` | Linux Shell 提示符；默认 `orangepi@orangepi5plus:~`，不改变 sudo 密码 |
-| `--timeout` | Linux 单条命令的超时秒数；默认 600 |
-| `--ci` | 自动检查后关闭三个客户机并退出；释放板卡后才输出最终结果并返回 |
+| `--timeout` | Linux APT 检查的超时秒数；默认 600 |
+| `--ci` | 与默认自动检查模式相同，用于 CI 命令明确表达运行意图 |
 | `--interactive` | 只启动三个客户机，跳过自动检查，不输出测试通过标记 |
 | `--help` | 打印参数帮助并退出，不启动测例 |
 
 直接运行底层 `cargo xtask axvisor board` 只负责构建和启动，不会执行 `run.sh` 的自动检查。
 
-运行器先确认三个 VM 同时为 `running`，按 ArceOS、Zephyr、Linux 的顺序检查，再次确认三者仍在运行。期望 ArceOS 2/2、Zephyr 3/3、Linux 4/4，最后输出 `TRIPLE_VM_TEST_PASS`。Linux 检查包含五次 ping、文件写入和读回、安装与运行 `hello`；若 `hello` 原先未安装，检查后卸载，若已安装则重装原版本并保留。命令失败、超时或 VM 状态不符时输出 `TRIPLE_VM_TEST_FAIL` 并返回非零。默认模式检查结束后客户机继续运行，键盘恢复手工输入。
+检查步骤先确认三个 VM 同时为 `running`，按 ArceOS、Zephyr、Linux 的顺序检查，再次确认三者仍在运行。期望 ArceOS 2/2、Zephyr 3/3、Linux 4/4，全部成功才输出 `TRIPLE_VM_TEST_PASS`。Linux 检查包含五次 ping、文件写入和读回、安装与运行 `hello`；成功路径中，若 `hello` 原先未安装，检查后卸载，若已安装则重装原版本并保留。单项失败、超时或 VM 状态不符时立即终止检查，输出 `TRIPLE_VM_TEST_FAIL` 并返回非零。若 APT 检查中途失败，重新运行前须核对根镜像中的 `hello` 状态。
 
-CI 使用同一组功能检查，不增加额外的客户机测试。检查成功后，运行器先让 Linux 执行 `sync` 并正常关机，再停止 ArceOS 和 Zephyr；只有确认三个 VM 均为 `stopped`、AxVisor 正常退出且板卡会话已经释放，才输出最终的 `TRIPLE_VM_TEST_PASS` 并返回零。CI 运行前应按“首次准备”提供六个运行时文件；每次运行不会重新制作或覆盖根镜像。
+CI 使用同一组功能检查，不增加额外的客户机测试。最后一个步骤通过后，现有板卡测试框架结束串口会话并释放板卡，然后入口输出 `TRIPLE_VM_TEST_PASS`。遇到失败或超时，同样立即退出并释放板卡。CI 运行前应按“首次准备”提供六个运行时文件；每次运行不会重新制作或覆盖根镜像。
 
 SSH 文件读写由工作站单独核对：在 Linux 客户机中用 `ip -brief addr` 确认 IP，使用 SSH 登录，向家目录临时文件写入、读回比较、`sync` 并删除。该结果不包含在 `TRIPLE_VM_TEST_PASS` 中。
 
 ## 检查结束
 
-检查结束后三个客户机仍运行。Linux 持续写入根镜像；结束运行时先在 Linux 中执行 `sync` 并正常关机，确认磁盘 I/O 已结束，再停止其余客户机和宿主。板卡连接、上电及租约回收遵循项目通用流程。
+自动检查结束后串口会话退出；客户机是否继续运行由板卡后续上电和启动流程决定。`--interactive` 模式下三个客户机继续运行，手动结束时先让 Linux 执行 `sync` 并正常关机，再停止其余客户机和宿主。板卡连接、上电及租约回收遵循项目通用流程。
