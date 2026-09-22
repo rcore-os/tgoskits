@@ -21,7 +21,8 @@ enabled check in that catalog without changed-file filtering, including:
 - LoongArch QEMU using the existing LVZ runner environment.
 - Intel VMX and AMD SVM boot, ACPI and PCI tests.
 - Registered board checks, including OrangePi Linux/Starry guests and the
-  Zephyr-Starry IVC benchmark.
+  Zephyr-Starry IVC benchmark, single-guest vCPU throughput and inter-VM
+  virtio-net performance.
 
 This is full coverage of the registered CI checks, not a claim that every
 AxVisor feature or every test-suit directory has a corresponding nightly test.
@@ -31,8 +32,8 @@ do not duplicate their shell commands in the nightly workflow.
 ## Default CI Versus Nightly
 
 Default CI runs the functional checks. The GICv2/GICv3 timer stress and
-OrangePi Zephyr-Starry IVC benchmark, single ArceOS guest performance and
-Linux PCI network ping tests are separate checks marked
+OrangePi Zephyr-Starry IVC benchmark, single ArceOS guest performance,
+inter-VM virtio-net performance and Linux PCI network ping tests are separate checks marked
 `nightly_only = true` in `axvisor.toml`. Nightly includes both functional and
 nightly-only checks. Ordinary CI excludes nightly-only checks for PRs, pushes
 and manual runs, even if the change precisely selects their test-suit files.
@@ -54,26 +55,28 @@ results in the GitHub job summary, and fails if any required stage did not
 succeed. Detailed output remains in each matrix job's Actions log.
 
 Checks marked `performance_report = true` (currently the OrangePi vCPU
-throughput and AXIVC Zephyr-Starry benchmark board tests) additionally get
-their result lines extracted into the job summary and the workflow summary:
-the runner captures the command log, `scripts/test/ci_perf_report.py` renders
-`VCPU_PERF_RESULT` and `AXVISOR_IVC_BENCH_RESULT=` lines as a Markdown table,
-each matrix job appends its table to its own summary, and the final job
-merges the uploaded per-check report artifacts under a "Performance Results"
-section (retained 30 days). Reports render only when the check succeeds; a
-failed run still exposes its numbers through the matrix job log.
+throughput, AXIVC Zephyr-Starry benchmark, task switch and inter-VM
+virtio-net benchmark board tests) additionally get their result lines
+extracted into the job summary and the workflow summary: the runner captures
+the command log, `scripts/test/ci_perf_report.py` renders `VCPU_PERF_RESULT`,
+`AXVISOR_IVC_BENCH_RESULT=`, `AXVISOR_VIRTIO_NET_BENCH_SAMPLE` and
+`AXVISOR_VIRTIO_NET_BENCH_RESULT=` lines as a Markdown table, each matrix job
+appends its table to its own summary, and the final job merges the uploaded
+per-check report artifacts under a "Performance Results" section (retained 30
+days). Reports render only when the check succeeds; a failed run still
+exposes its numbers through the matrix job log.
 
 A final `Performance History` job also collects the per-check benchmark JSON,
 appends it to the `perf-data` branch, and renders a Chart.js dashboard
 (`scripts/test/ci_perf_dashboard.py`). Each test case gets its own chart (vCPU
-throughput, IVC send, IVC receive), the x-axis is the nightly date, lines are
-unfilled, and charts show the most recent 7 nightly entries while
-`history.json` keeps all of them. The job then dispatches `docs.yml`, which
-merges `perf-data` into `docs/build/axvisor-perf` before publishing Pages, so
-the dashboard appears next to the documentation at
-`<docs-site>/axvisor-perf/`. `docs.yml` also rebuilds nightly as a fallback.
-The job never touches the Pages deployment itself and writes history only in
-`rcore-os/tgoskits`.
+throughput, IVC send, IVC receive, virtio-net rx, virtio-net tx), the x-axis
+is the nightly date, lines are unfilled, and charts show the most recent 7
+nightly entries while `history.json` keeps all of them. The job then
+dispatches `docs.yml`, which merges `perf-data` into
+`docs/build/axvisor-perf` before publishing Pages, so the dashboard appears
+next to the documentation at `<docs-site>/axvisor-perf/`. `docs.yml` also
+rebuilds nightly as a fallback. The job never touches the Pages deployment
+itself and writes history only in `rcore-os/tgoskits`.
 
 Nightly runs do not cancel one another. Board availability, reservation and
 reset remain the responsibility of the existing board test service, shared
@@ -101,4 +104,5 @@ Existing commands remain available for local test execution, for example:
 ```sh
 cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
 cargo xtask axvisor test board --board orangepi-5-plus-ivc-benchmark
+cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer --test-case performance
 ```

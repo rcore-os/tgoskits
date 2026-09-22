@@ -139,6 +139,7 @@ class CiPlanTests(unittest.TestCase):
                 self.assertNotIn("timer-stress", commands)
                 self.assertNotIn("ivc-benchmark", commands)
                 self.assertNotIn("orangepi-5-plus-vcpu-perf", commands)
+                self.assertNotIn("orangepi-5-plus-virtio-net-peer", commands)
                 self.assertNotIn("--test-case ping", commands)
                 self.assertIn("--board orangepi-5-plus-linux --test-case smoke", commands)
                 self.assertNotIn("--board orangepi-5-plus-linux\n", commands)
@@ -151,6 +152,7 @@ class CiPlanTests(unittest.TestCase):
             "test-suit/axvisor/normal/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
             "test-suit/axvisor/normal/board-orangepi-5-plus/pci-network/ping/board-orangepi-5-plus-linux.toml",
             "test-suit/axvisor/normal/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
+            "test-suit/axvisor/normal/board-orangepi-5-plus/virtio-net-peer/performance-bench/performance/board-orangepi-5-plus-virtio-net-peer.toml",
         ):
             with self.subTest(path=path):
                 context = ci_plan.replace(
@@ -250,11 +252,60 @@ class CiPlanTests(unittest.TestCase):
             ],
         )
 
+    def test_performance_report_renders_virtio_net_benchmark_result(self):
+        log_text = "\n".join(
+            [
+                "[VM 1] AXVISOR_VIRTIO_NET_BENCH_SAMPLE direction=rx index=0 "
+                "bits=67.109Mb elapsed=100ms throughput=671.089Mbps",
+                "[VM 2] AXVISOR_VIRTIO_NET_BENCH_SAMPLE direction=tx index=0 "
+                "bits=67.109Mb elapsed=120ms throughput=559.241Mbps",
+                "[VM 1] AXVISOR_VIRTIO_NET_BENCH_RESULT=PASS direction=rx "
+                "avg=640Mbps samples=5 bits=67.109Mb rounds=5",
+                "[VM 2] AXVISOR_VIRTIO_NET_BENCH_RESULT=PASS direction=tx "
+                "avg=600Mbps samples=5 bits=67.109Mb rounds=5",
+            ]
+        )
+        report = ci_perf_report.render_report(
+            "test-axvisor-self-hosted-board-orangepi-5-plus-virtio-net-peer-performance",
+            "Board OrangePi 5 Plus · Inter-VM virtio-net performance",
+            log_text,
+        )
+
+        self.assertIn("#### VirtIO-net inter-VM samples", report)
+        self.assertIn(
+            "| direction | index | bits | elapsed | throughput |", report
+        )
+        self.assertIn("| rx | 0 | 67.109Mb | 100ms | 671.089Mbps |", report)
+        self.assertIn("| tx | 0 | 67.109Mb | 120ms | 559.241Mbps |", report)
+        self.assertIn("#### VirtIO-net inter-VM result", report)
+        self.assertIn(
+            "| status | direction | avg | samples | rounds | bits |", report
+        )
+        self.assertIn("| PASS | rx | 640Mbps | 5 | 5 | 67.109Mb |", report)
+        self.assertIn("| PASS | tx | 600Mbps | 5 | 5 | 67.109Mb |", report)
+        self.assertEqual(
+            ci_perf_report.render_benchmarks(log_text),
+            [
+                {
+                    "name": "virtio-net-peer/rx/throughput",
+                    "unit": "Mbps",
+                    "value": 640.0,
+                },
+                {
+                    "name": "virtio-net-peer/tx/throughput",
+                    "unit": "Mbps",
+                    "value": 600.0,
+                },
+            ],
+        )
+
     def test_perf_dashboard_groups_by_test_case_with_date_axis_lines(self):
         metrics = [
             {"name": "vcpu-perf/blocks_per_second", "unit": "blocks/s", "value": 368008.45},
             {"name": "ivc-bench/send/256KiB", "unit": "MB/s", "value": 2263.10},
             {"name": "ivc-bench/receive/256KiB", "unit": "MB/s", "value": 1505.03},
+            {"name": "virtio-net-peer/rx/throughput", "unit": "Mbps", "value": 640.0},
+            {"name": "virtio-net-peer/tx/throughput", "unit": "Mbps", "value": 600.0},
         ]
         history = ci_perf_dashboard.update_history([], "2026-09-17", "rev1", metrics)
         partial = [
@@ -273,12 +324,16 @@ class CiPlanTests(unittest.TestCase):
         self.assertIn("<h2>ivc-bench/send</h2>", html)
         self.assertIn("<h2>ivc-bench/receive</h2>", html)
         self.assertNotIn("<h2>ivc-bench</h2>", html)
+        self.assertIn("<h2>virtio-net-peer/rx</h2>", html)
+        self.assertIn("<h2>virtio-net-peer/tx</h2>", html)
         self.assertIn('"label": "256KiB"', html)
+        self.assertIn('"label": "throughput"', html)
         self.assertIn('"labels": ["2026-09-17", "2026-09-18"]', html)
         self.assertIn('"fill": false', html)
         self.assertNotIn('"fill": true', html)
         self.assertIn('"text": "blocks/s"', html)
         self.assertIn('"text": "MB/s"', html)
+        self.assertIn('"text": "Mbps"', html)
         # A metric missing on a later day renders as a gap, not a zero.
         self.assertIn('"data": [368008.45, null]', html)
 

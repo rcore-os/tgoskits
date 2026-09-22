@@ -305,12 +305,30 @@ nightly_only = true
 runner = "board"
 timeout_minutes = 90
 command = '''
-cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer
+cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer --test-case smoke
 '''
 
 [[check.suite]]
 kind = "axvisor-board"
 board = "orangepi-5-plus-virtio-net-peer"
+cases = ["smoke"]
+
+[[check]]
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-virtio-net-peer-performance"
+impact_targets = ["axvisor:aarch64"]
+name = "Board OrangePi 5 Plus · Inter-VM virtio-net performance"
+nightly_only = true
+performance_report = true
+runner = "board"
+timeout_minutes = 90
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer --test-case performance
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-virtio-net-peer"
+cases = ["performance"]
 
 [[check]]
 id = "test-axvisor-aarch64-qemu-timer-stress"

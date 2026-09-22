@@ -1,0 +1,30 @@
+board_type = "OrangePi-5-Plus"
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "Failed to initialize guest VM",
+  "VM\\[1\\] run VCpu\\[0\\] get error",
+  "VM\\[2\\] run VCpu\\[0\\] get error",
+  "AXVISOR_VIRTIO_NET_BENCH_FAIL",
+]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:$"
+shell_cmd = "vm console 1"
+success_regex = ["Attached VM\\[1\\] console"]
+
+[[shell_check_steps]]
+shell_prefix = "AXVISOR_VIRTIO_NET_BENCH_READY role=server"
+shell_cmd = "\u0018hvm console 2"
+success_regex = ["Attached VM\\[2\\] console"]
+
+[[shell_check_steps]]
+shell_prefix = "AXVISOR_VIRTIO_NET_BENCH_RESULT=PASS direction=tx"
+shell_cmd = "\u0018hvm console 1"
+success_regex = ["Attached VM\\[1\\] console"]
+
+[[shell_check_steps]]
+success_regex = [
+  "(?m)^(?:\\[VM 1\\] )?AXVISOR_VIRTIO_NET_BENCH_RESULT=PASS direction=rx .*$",
+]

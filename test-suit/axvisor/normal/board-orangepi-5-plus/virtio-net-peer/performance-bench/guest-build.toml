@@ -1,0 +1,7 @@
+package = "arceos-virtio-net-peer"
+env = { AXVIRTIO_ROLE = "auto", AXVIRTIO_BENCH = "1" }
+features = ["net", "ax-driver/virtio-net"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+max_cpu_num = 1
+to_bin = true

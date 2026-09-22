@@ -1,0 +1,7 @@
+features = ["ax-driver/rk3588-cpufreq"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "test-suit/axvisor/normal/board-orangepi-5-plus/virtio-net-peer/performance-bench/performance/virtio-net-bench-vm1.toml",
+  "test-suit/axvisor/normal/board-orangepi-5-plus/virtio-net-peer/performance-bench/performance/virtio-net-bench-vm2.toml",
+]

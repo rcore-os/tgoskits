@@ -11,6 +11,12 @@ VCPU_SAMPLE_PATTERN = re.compile(r"VCPU_PERF_SAMPLE\s+(?P<fields>.+)")
 VCPU_RESULT_PATTERN = re.compile(r"VCPU_PERF_RESULT\s+(?P<fields>.+)")
 TASK_SWITCH_PATTERN = re.compile(r"AXVISOR_TASK_SWITCH_GROUP_SUMMARY\s+(?P<fields>.+)")
 IVC_RESULT_PATTERN = re.compile(r"AXVISOR_IVC_BENCH_RESULT=(?P<status>\S+)\s*(?P<fields>.*)")
+VIRTIO_NET_SAMPLE_PATTERN = re.compile(
+    r"AXVISOR_VIRTIO_NET_BENCH_SAMPLE\s+(?P<fields>.+)"
+)
+VIRTIO_NET_RESULT_PATTERN = re.compile(
+    r"AXVISOR_VIRTIO_NET_BENCH_RESULT=(?P<status>\S+)\s*(?P<fields>.*)"
+)
 IVC_CASE_PATTERN = re.compile(
     r"average\s+sendBandwidth\s*=\s*(?P<send>[\d.]+)\s*MB/s\s*,\s*"
     r"average\s+receiveBandwidth\s*=\s*(?P<receive>[\d.]+)\s*MB/s\s*,\s*"
@@ -23,6 +29,7 @@ LINE_PREFIXES = ("[VM 1] ", "[test_output] ")
 
 COLUMN_ORDER = (
     "status",
+    "direction",
     "index",
     "samples_per_direction",
     "avg_cycles",
@@ -33,9 +40,12 @@ COLUMN_ORDER = (
     "timer_wakes",
     "checksum",
     "blocks_per_second",
+    "throughput_mbps",
+    "median_mbps",
     "baseline",
     "threshold",
     "samples",
+    "rounds",
     "cases",
     "testTime",
     "bytes",
@@ -78,6 +88,37 @@ def human_datasize(value: int) -> str:
     return str(value)
 
 
+def virtio_net_sample_table(samples: list[dict[str, str]]) -> str:
+    headers = ["direction", "index", "bits", "elapsed", "throughput"]
+    rows = [
+        [
+            sample["direction"],
+            sample["index"],
+            sample["bits"],
+            sample["elapsed"],
+            sample["throughput"],
+        ]
+        for sample in samples
+    ]
+    return markdown_table("VirtIO-net inter-VM samples", headers, rows)
+
+
+def virtio_net_result_table(results: list[dict[str, str]]) -> str:
+    headers = ["status", "direction", "avg", "samples", "rounds", "bits"]
+    rows = [
+        [
+            result["status"],
+            result["direction"],
+            result["avg"],
+            result.get("samples", ""),
+            result.get("rounds", ""),
+            result["bits"],
+        ]
+        for result in results
+    ]
+    return markdown_table("VirtIO-net inter-VM result", headers, rows)
+
+
 def ivc_case_table(cases: list[dict[str, str]]) -> str:
     headers = ["datasize", "sendBandwidth (MB/s)", "receiveBandwidth (MB/s)", "testTime"]
     rows = [
@@ -93,9 +134,15 @@ def ivc_case_table(cases: list[dict[str, str]]) -> str:
 
 
 def render_report(check_id: str, check_name: str, log_text: str) -> str:
-    vcpu_samples, vcpu_results, ivc_cases, ivc_results, task_switch_groups = parse_log(
-        log_text
-    )
+    (
+        vcpu_samples,
+        vcpu_results,
+        ivc_cases,
+        ivc_results,
+        task_switch_groups,
+        virtio_net_samples,
+        virtio_net_results,
+    ) = parse_log(log_text)
 
     sections = [
         section
@@ -112,6 +159,12 @@ def render_report(check_id: str, check_name: str, log_text: str) -> str:
             ivc_case_table(ivc_cases) if ivc_cases else "",
             key_value_table("AXIVC benchmark result", ivc_results)
             if ivc_results
+            else "",
+            virtio_net_sample_table(virtio_net_samples)
+            if virtio_net_samples
+            else "",
+            virtio_net_result_table(virtio_net_results)
+            if virtio_net_results
             else "",
         )
         if section
@@ -132,8 +185,12 @@ def render_report(check_id: str, check_name: str, log_text: str) -> str:
 
 
 def parse_log(log_text: str) -> tuple[
-    list[dict[str, str]], list[dict[str, str]],
-    list[dict[str, str]], list[dict[str, str]],
+    list[dict[str, str]],
+    list[dict[str, str]],
+    list[dict[str, str]],
+    list[dict[str, str]],
+    list[dict[str, str]],
+    list[dict[str, str]],
     list[dict[str, str]],
 ]:
     vcpu_samples: list[dict[str, str]] = []
@@ -141,6 +198,8 @@ def parse_log(log_text: str) -> tuple[
     ivc_cases: list[dict[str, str]] = []
     ivc_results: list[dict[str, str]] = []
     task_switch_groups: list[dict[str, str]] = []
+    virtio_net_samples: list[dict[str, str]] = []
+    virtio_net_results: list[dict[str, str]] = []
     for raw_line in log_text.splitlines():
         line = strip_line_prefixes(raw_line)
         if match := TASK_SWITCH_PATTERN.search(line):
@@ -162,16 +221,54 @@ def parse_log(log_text: str) -> tuple[
             fields = {"status": match.group("status")}
             fields.update(parse_fields(match.group("fields")))
             ivc_results.append(fields)
-    return vcpu_samples, vcpu_results, ivc_cases, ivc_results, task_switch_groups
+        if match := VIRTIO_NET_SAMPLE_PATTERN.search(line):
+            virtio_net_samples.append(parse_fields(match.group("fields")))
+        if match := VIRTIO_NET_RESULT_PATTERN.search(line):
+            fields = {"status": match.group("status")}
+            fields.update(parse_fields(match.group("fields")))
+            virtio_net_results.append(fields)
+    return (
+        vcpu_samples,
+        vcpu_results,
+        ivc_cases,
+        ivc_results,
+        task_switch_groups,
+        virtio_net_samples,
+        virtio_net_results,
+    )
 
 
 def metric_datasize(datasize: str) -> str:
     return human_datasize(int(datasize)).replace(" ", "")
 
 
+THROUGHPUT_UNIT_PATTERN = re.compile(r"(?P<value>[\d.]+)(?P<unit>Kbps|Mbps|Gbps)")
+
+
+def parse_throughput_mbps(text: str) -> float:
+    match = THROUGHPUT_UNIT_PATTERN.fullmatch(text)
+    if match is None:
+        raise ValueError(f"invalid throughput value {text!r}")
+    value = float(match.group("value"))
+    unit = match.group("unit")
+    if unit == "Gbps":
+        return value * 1000.0
+    if unit == "Mbps":
+        return value
+    return value / 1000.0
+
+
 def render_benchmarks(log_text: str) -> list[dict[str, object]]:
     """Metrics in github-action-benchmark's customBiggerIsBetter JSON format."""
-    _, vcpu_results, ivc_cases, _, task_switch_groups = parse_log(log_text)
+    (
+        _,
+        vcpu_results,
+        ivc_cases,
+        _,
+        task_switch_groups,
+        _,
+        virtio_net_results,
+    ) = parse_log(log_text)
     benchmarks: list[dict[str, object]] = []
     for result in vcpu_results:
         if "blocks_per_second" in result:
@@ -202,6 +299,19 @@ def render_benchmarks(log_text: str) -> list[dict[str, object]]:
                 "value": float(group["avg_cycles"]),
             }
         )
+    for result in virtio_net_results:
+        if (
+            result.get("status") == "PASS"
+            and "direction" in result
+            and "avg" in result
+        ):
+            benchmarks.append(
+                {
+                    "name": f"virtio-net-peer/{result['direction']}/throughput",
+                    "unit": "Mbps",
+                    "value": parse_throughput_mbps(result["avg"]),
+                }
+            )
     return benchmarks
 
 
