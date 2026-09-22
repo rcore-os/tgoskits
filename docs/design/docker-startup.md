@@ -40,7 +40,7 @@
 | `madvise` 提示字（NORMAL/RANDOM/SEQUENTIAL/WILLNEED） | ✅ 已接受（bbolt 依赖） | `syscall/mm/mmap.rs:997` |
 | `epoll_pwait` sigsetsize 条件校验 | ✅ 与 Linux 一致（仅 sigmask 非空时校验） | `syscall/io_mpx/epoll.rs` `do_epoll_wait` |
 | `/proc/<pid>/stat` starttime | ✅ 已填充（`ThreadAccounting::start_time_ns` 捕获，渲染为 ticks，单测覆盖） | `task/stat.rs`、`task/thread.rs` |
-| `openat2(2)` RESOLVE_* 约束（BENEATH/IN_ROOT/NO_XDEV/NO_SYMLINKS/NO_MAGICLINKS） | ✅ 已强制执行（`RESOLVE_CACHED` 按提示接受；错误优先级对齐 `link_path_walk`） | `fs/ax-fs-ng/src/fs_core/{constraints.rs,context.rs}`、`file/open.rs`、`syscall/fs/fd_ops.rs` |
+| `openat2(2)` RESOLVE_* 约束（BENEATH/IN_ROOT/NO_XDEV/NO_SYMLINKS/NO_MAGICLINKS） | ✅ 已强制执行（`RESOLVE_CACHED` 暂不支持 dcache-only 查找、统一返回 EAGAIN；错误优先级对齐 `link_path_walk`） | `fs/ax-fs-ng/src/fs_core/{constraints.rs,context.rs}`、`file/open.rs`、`syscall/fs/fd_ops.rs` |
 | `pivot_root(".", ".")` 惯用法（runc/docker 标准 pivot 流程） | ✅ 已支持（old root 堆叠于新根 `/`，`umount2(".", MNT_DETACH)` 收尾） | `fs/axfs-ng-vfs/src/mount/mod.rs` `pivot_mount`、`syscall/fs/mount.rs` |
 | `/proc/<pid>/exe` magic link 直连后备文件 | ✅ 已实现（memfd 执行显示 `/memfd: (deleted)` 也能打开） | `syscall/fs/fd_ops.rs` `try_open_proc_exe` + `task/process_image.rs` `exe_location` |
 | `prctl` PDEATHSIG / NO_NEW_PRIVS | ✅ 已实现 | `syscall/task/ctl.rs:407,578` |
