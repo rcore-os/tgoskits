@@ -1,0 +1,41 @@
+{
+  "source_head": "62f4031a90c0d53dd36b3fd03456f14109bba5d6",
+  "dev_base": "7fb26597a8ff77e6bff315705520695d8b57a3bc",
+  "status": "experimental_candidate_image_matched",
+  "ready": false,
+  "profile_sha256": "eaea4c2f8d0f9dda04e988b6c4f38a7013333871527bf2a6db0f268b9bd4e749",
+  "archive_sha256": "8a38588ca181f0b1e05d6cd0aae0d8cd5232cc53966d5f2a3ca0b63ed5023b6c",
+  "features": [
+    "ax-driver/list-pci-devices",
+    "ax-driver/rk3588-pcie",
+    "ax-driver/realtek-rtl8125",
+    "ax-driver/rockchip-soc",
+    "ax-driver/rockchip-dwc-xhci",
+    "ax-driver/rockchip-ehci",
+    "ax-driver/rockchip-sdhci",
+    "ax-driver/rockchip-dwmmc",
+    "ax-driver/rk3588-cpufreq",
+    "rknpu"
+  ],
+  "wrapper": {
+    "target_invocations": 230,
+    "root_profile_use_verified": true,
+    "ax_task_unprofiled_verified": true,
+    "ax_runtime_profiled_verified": true
+  },
+  "warnings": {
+    "cfg_mismatch_count": 0,
+    "missing_warnings": 4142,
+    "missing_unique": 4078,
+    "unexpected_count": 0
+  },
+  "image": {
+    "text_size": 6765184,
+    "text_sha256": "cfcc66199173f2c29087393d787858ce97d3d91c9b6ec57b8acb405372a56262",
+    "profile_sections_present": [],
+    "bin_size": 16678912,
+    "bin_sha256": "ad376a7a7a7915a27bf20d76218851bc5ce4ad0d4f0674d05aea684394cb08e8",
+    "bin_without_kallsyms_sha256": "1aabac9c7631cce2ca7800c80dcb71a8caef3d36d79de9003b99c103705f8eef",
+    "matches_board_candidate": true
+  }
+}

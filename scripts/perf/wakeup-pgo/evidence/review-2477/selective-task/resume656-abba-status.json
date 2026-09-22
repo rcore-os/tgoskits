@@ -1,0 +1,89 @@
+{
+  "experiment": "resume656-b-only",
+  "issue": 2308,
+  "source_head": "62f4031a90c0d53dd36b3fd03456f14109bba5d6",
+  "board_id": "OrangePi-5-Plus-1",
+  "sequence": [
+    "B1",
+    "B2"
+  ],
+  "images": {
+    "A": {
+      "build_mode": "release, no PGO, no qperf-metrics",
+      "source_head": "9d06d500c7ebbb960678d16d4a44aa2e036cf87e",
+      "name": "resume651-default.bin",
+      "sha256": "96fcde12dfda25c8d10ca076c85c1218ff43d4b51fe11649dd42f9cb945b7193",
+      "path": "/home/zhourui/.codex/artifacts/issue2308-perf/review2477-full-feature/resume651-default.bin",
+      "size": 17424384
+    },
+    "B": {
+      "build_mode": "release, profile-use PGO, no qperf-metrics",
+      "source_head": "62f4031a90c0d53dd36b3fd03456f14109bba5d6",
+      "name": "resume656-profile-use.bin",
+      "sha256": "adfe8fc86631c48adc8532087605fab9c7a0f10cbeb20bf1ff5b85f2a9bffc6f",
+      "path": "/home/zhourui/.codex/artifacts/issue2308-perf/resume656-target/aarch64-unknown-none-softfloat/release/starryos.bin",
+      "size": 16678912
+    }
+  },
+  "profile_sha256": "eaea4c2f8d0f9dda04e988b6c4f38a7013333871527bf2a6db0f268b9bd4e749",
+  "build_provenance": "/home/zhourui/.codex/artifacts/issue2308-perf/review2477-full-feature/resume651-status.json",
+  "bench": {
+    "path": "/tmp/pr1775-orangepi/bench",
+    "sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773"
+  },
+  "linux_baseline": "/home/zhourui/.codex/artifacts/pr1775-perf/linux-rt-orangepi-5-plus-1-baseline.json",
+  "runs": [
+    {
+      "tag": "B1",
+      "boot_index": 0,
+      "image_key": "profile-use",
+      "tftp_image_name": "resume656-profile-use.bin",
+      "tftp_image_sha256": "adfe8fc86631c48adc8532087605fab9c7a0f10cbeb20bf1ff5b85f2a9bffc6f",
+      "tftp_kernel_bytes": 16678912,
+      "pll_verified": true,
+      "dhcp_address": "192.168.1.8",
+      "clock_pair_min_ns": 291,
+      "sender_cpu": 0,
+      "receiver_cpu": 1,
+      "cases_verified": 20,
+      "samples": 380000,
+      "attempted": 380000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "terminal": "WAKEUP_LATENCY_PASSED",
+      "guest_log_name": "resume656-B1-full.log",
+      "guest_log_sha256": "e92de4964992d574fd937cce808b2d25d87fa9f3e7f9e955893b853cf3dbd134",
+      "sha256_file_name": "resume656-B1.sha256",
+      "sha256_file_sha256": "8cda2a97adc84eb6a1151558a917c6447c64466e8fcc20eef704a2810fffc996",
+      "valid": true
+    },
+    {
+      "tag": "B2",
+      "boot_index": 1,
+      "image_key": "profile-use",
+      "tftp_image_name": "resume656-profile-use.bin",
+      "tftp_image_sha256": "adfe8fc86631c48adc8532087605fab9c7a0f10cbeb20bf1ff5b85f2a9bffc6f",
+      "tftp_kernel_bytes": 16678912,
+      "pll_verified": true,
+      "dhcp_address": "192.168.1.8",
+      "clock_pair_min_ns": 291,
+      "sender_cpu": 0,
+      "receiver_cpu": 1,
+      "cases_verified": 20,
+      "samples": 380000,
+      "attempted": 380000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "terminal": "WAKEUP_LATENCY_PASSED",
+      "guest_log_name": "resume656-B2-full.log",
+      "guest_log_sha256": "f6f589c4604081cd597a54d0ee951ffdfd32efc4dd6331e22996218cf69edc01",
+      "sha256_file_name": "resume656-B2.sha256",
+      "sha256_file_sha256": "8cda2a97adc84eb6a1151558a917c6447c64466e8fcc20eef704a2810fffc996",
+      "valid": true
+    }
+  ],
+  "board_released": true,
+  "stage": "board_collection_complete",
+  "session_id": "69a3c50a-9db1-4f0a-8b52-ab8994f201b6",
+  "console_exit_code": 0
+}

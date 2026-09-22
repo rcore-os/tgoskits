@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Opt-in profile-use (PGO) image builder for issue #2308 on OrangePi-5-Plus.
+"""Fail-closed profile-use (PGO) image builder for issue #2308 on OrangePi-5-Plus.
 
-The archived five-feature profile is not certified for the current ten-feature
-board release. Until a new candidate passes the board tail-latency guardrail,
-the profile/feature gate deliberately rejects this entry before compilation.
+The ten-feature selective ax_task candidate is exploratory: its two board runs
+were compared to an older-source release baseline. The ordinary entry rejects
+it before compilation; explicit --experimental-selective-task only reproduces
+the measured candidate image and never reports production readiness.
 
 Public entry:
 
-    python3 scripts/perf/wakeup-pgo/build.py --output-dir <out>
+    python3 scripts/perf/wakeup-pgo/build.py --experimental-selective-task --output-dir <out>
 
-The script re-hosts the verified profile (`profile-use.profdata.zst`),
+The script re-hosts the verified ten-feature profile (`selective-task.profdata.zst`),
 writes a StarryOS build config that injects `-Cprofile-use=<absolute profile>` and a
 `RUSTC_WRAPPER` into the bare aarch64 target through axbuild's `[env]` table, and then
 runs `cargo xtask starry build -c <config>`.  The ordinary release build is untouched:
@@ -17,16 +18,15 @@ PGO only happens when this script is invoked, and the build uses its own
 `CARGO_TARGET_DIR` inside the output directory.
 
 The shipped profile was trained at `PROFILE_TRAINING_COMMIT`; the identity references
-below describe only that historical five-feature benchmark. The source and lock gates
-pin the latest reviewed checkout independently. Passing those gates does not certify
-an old profile for a changed release feature set.
+below describe the selective candidate measured on the reviewed dev checkout. Passing
+the image gates does not turn a cross-source comparison into an accepted A/B test.
 
 Every gate fails closed.  Source drift, toolchain drift, `Cargo.lock` drift, a profile
 archive or profile hash mismatch, a foreign profile path in the rustc wrapper log, a
 CFG/hash mismatch warning, an unexpected warning, an image that still carries LLVM
 profile counter sections, machine code that differs from the board-tested candidate, or a
 flashable `.bin` whose bytes outside `.kallsyms` differ from the board-tested image all
-stop the run.  A run that does not pass every gate never prints `WAKEUP_PGO_IMAGE_READY`.
+stop the run. This experimental entry never prints `WAKEUP_PGO_IMAGE_READY`.
 """
 
 from __future__ import annotations
@@ -50,17 +50,17 @@ REPO_ROOT = PACKAGE_DIR.parents[2]
 BASELINE_COMMIT = "7fb26597a8ff77e6bff315705520695d8b57a3bc"
 # Commit the shipped profile was trained at.  The profile may be carried onto newer dev
 # only while the image identity gates below reproduce the board-measured candidate.
-PROFILE_TRAINING_COMMIT = "d051d572b76c9675b60b0c9442dd87c5fa1af8ba"
+PROFILE_TRAINING_COMMIT = "9d06d500c7ebbb960678d16d4a44aa2e036cf87e"
 # Frozen facts of the audited build: toolchain, lockfile and feature set are pinned to the
 # same values the profile and the board evidence were produced with.
 CARGO_LOCK_SHA256 = "d199b6e7acb7435157be1d7fd927d823d8c163783131542914fc41f4ab7c9f5b"
 RUST_CHANNEL = "nightly-2026-09-04"
 RUSTC_COMMIT_HASH = "a69a63265cfd9e006d43137f98301b8d274ad4c9"
 RUSTC_LLVM_VERSION = "23.1.1"
-PROFILE_SHA256 = "f08464508b9dc02911e9660ccfa0216795cc4b89e07f6723b147d8de6ea8d49f"
-PROFILE_ARCHIVE = PACKAGE_DIR / "profile-use.profdata.zst"
+PROFILE_SHA256 = "eaea4c2f8d0f9dda04e988b6c4f38a7013333871527bf2a6db0f268b9bd4e749"
+PROFILE_ARCHIVE = PACKAGE_DIR / "selective-task.profdata.zst"
 # Pins the shipped archive bytes; regenerating the archive requires updating this value.
-PROFILE_ARCHIVE_SHA256 = "817ea24326ada0f29a3166c4d377c8b047e34a2f1c2875c6de45b7d2c0a6d3ae"
+PROFILE_ARCHIVE_SHA256 = "8a38588ca181f0b1e05d6cd0aae0d8cd5232cc53966d5f2a3ca0b63ed5023b6c"
 
 PROFILE_NAME = "profile-use.profdata"
 WRAPPER_TEMPLATE = PACKAGE_DIR / "stdlib-wrapper.py.in"
@@ -88,40 +88,39 @@ FEATURES = (
     "ax-driver/rk3588-cpufreq",
     "rknpu",
 )
-# The archived profile and its image identity references cover only this older
-# benchmark configuration. Do not repin them to a failed full-board candidate.
+# Keep the trained feature set independent of the release list so future release
+# changes cannot silently make the comparison tautological.
 PROFILE_FEATURES = (
+    "ax-driver/list-pci-devices",
     "ax-driver/rk3588-pcie",
     "ax-driver/realtek-rtl8125",
     "ax-driver/rockchip-soc",
+    "ax-driver/rockchip-dwc-xhci",
+    "ax-driver/rockchip-ehci",
     "ax-driver/rockchip-sdhci",
     "ax-driver/rockchip-dwmmc",
+    "ax-driver/rk3588-cpufreq",
+    "rknpu",
 )
 PGO_LLVM_ARGS = ("-Cllvm-args=-disable-vp", "-Cllvm-args=-pgo-warn-missing-function")
 ROOT_CRATE = "starryos"
 
-# Audit baseline of the board-measured profile-use build (`resume649`, trained at
-# PROFILE_TRAINING_COMMIT).  A rebuild reproduces the same code and data, so the untrained
-# function set must reproduce as well; a different count means this checkout no longer
-# rebuilds that image, so re-audit it or retrain the profile.
-REFERENCE_MISSING_WARNINGS = 6087
-REFERENCE_MISSING_UNIQUE = 5933
-REFERENCE_PROFILE_RECORDS = 27146
-# Kernel machine code of the board-tested candidate (`resume649-profile-use.elf`, whose
-# OrangePi A-B-B-A evidence is archived under `evidence/`).  Only `.kallsyms` is
-# regenerated by axbuild, so this pair is what a rebuild has to reproduce to stay covered
-# by that evidence.
-REFERENCE_TEXT_BYTES = 6799040
-REFERENCE_TEXT_SHA256 = "38c0dcdb4ce8a9f0c96aa5643c4932c009621f0779295e98406520341a279a59"
+# The two B-only runs of resume656 exercised this exact candidate on the board.
+# These are image identity checks, NOT same-source performance acceptance.
+REFERENCE_MISSING_WARNINGS = 4142
+REFERENCE_MISSING_UNIQUE = 4078
+REFERENCE_PROFILE_RECORDS = 29541
+REFERENCE_TEXT_BYTES = 6765184
+REFERENCE_TEXT_SHA256 = "cfcc66199173f2c29087393d787858ce97d3d91c9b6ec57b8acb405372a56262"
 # Whole-image identity of the same board-tested candidate: the flashable `.bin` length,
 # the `.kallsyms` placement inside it (image base 0xffffffff80000000) and the sha256 of
 # every other byte.  `.kallsyms` is regenerated per build, so it is the only slice excluded.
 REFERENCE_IMAGE_BASE = 0xFFFFFFFF80000000
-REFERENCE_KALLSYMS_ADDRESS = 0xFFFFFFFF80774000
+REFERENCE_KALLSYMS_ADDRESS = 0xFFFFFFFF8077B000
 REFERENCE_KALLSYMS_SIZE = 8388608
-REFERENCE_BIN_BYTES = 16609280
+REFERENCE_BIN_BYTES = 16678912
 REFERENCE_BIN_SHA256_EXCLUDING_KALLSYMS = (
-    "f81c220cafc659cf050873f37cf35135a1c3a2e938bc62a5115e88be99ba583c"
+    "1aabac9c7631cce2ca7800c80dcb71a8caef3d36d79de9003b99c103705f8eef"
 )
 
 EXCLUDED_PREFIXES = ("docs/", "scripts/perf/wakeup-pgo/")
@@ -155,7 +154,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def git(*args: str, allow_failure: bool = False) -> str:
+def git(*args: str, allow_failure: bool = False, preserve_leading: bool = False) -> str:
     proc = subprocess.run(
         ["git", *args], cwd=REPO_ROOT, text=True, capture_output=True
     )
@@ -165,7 +164,7 @@ def git(*args: str, allow_failure: bool = False) -> str:
         raise GateError(
             f"git {' '.join(args)} failed: {proc.stderr.strip() or proc.stdout.strip()}"
         )
-    return proc.stdout.strip()
+    return proc.stdout.rstrip("\n") if preserve_leading else proc.stdout.strip()
 
 
 def is_git_ignored(relative: str) -> bool:
@@ -215,7 +214,9 @@ def source_gate() -> dict:
         if path and not is_excluded(path)
     ]
     staged_or_untracked: list[str] = []
-    for line in git("status", "--porcelain", "--untracked-files=all").splitlines():
+    for line in git(
+        "status", "--porcelain", "--untracked-files=all", preserve_leading=True
+    ).splitlines():
         for path in (part.strip() for part in line[3:].split(" -> ")):
             if path and not is_excluded(path):
                 staged_or_untracked.append(path)
@@ -291,10 +292,7 @@ def cargo_lock_gate() -> dict:
 def profile_feature_gate() -> dict:
     if FEATURES != PROFILE_FEATURES:
         raise GateError(
-            "the packaged profile was trained with five benchmark features, but the "
-            "ordinary OrangePi release has ten; the full-feature candidate measured "
-            "on the updated dev failed the FIFO absolute-timer p999 guardrail. "
-            "Retrain and remeasure before enabling a release profile"
+            "the packaged profile features do not match the ordinary OrangePi release"
         )
     return {"features_match_trained_profile": True}
 
@@ -611,11 +609,24 @@ def check_wrapper_log(out: Path, profile: Path) -> dict:
             f"no {ROOT_CRATE} rustc invocation carried {expected}; the root crate did not "
             "receive the profile"
         )
+    unprofiled_task = [record for record in records if record.get("crate") == "ax_task"]
+    profiled_runtime = [record for record in records if record.get("crate") == "ax_runtime"]
+    if not unprofiled_task or any(
+        expected in record["args"] or any(arg in record["args"] for arg in PGO_LLVM_ARGS)
+        for record in unprofiled_task
+    ):
+        raise GateError("ax_task must be rebuilt without PGO flags in the selective candidate")
+    if not profiled_runtime or not all(
+        expected in record["args"] for record in profiled_runtime
+    ):
+        raise GateError("ax_runtime must be rebuilt with profile-use in the selective candidate")
     return {
         "target_invocations": len(records),
         "root_invocations": len(roots),
         "expected_profile_arg": expected,
         "root_profile_use_verified": True,
+        "ax_task_unprofiled_verified": True,
+        "ax_runtime_profiled_verified": True,
         "foreign_profile_use_args": foreign,
     }
 
@@ -711,8 +722,8 @@ def prepare_only_summary(config: Path, profile: Path, wrapper: Path, out: Path) 
     print(f"wakeup-pgo: wrapper  {wrapper}")
     print(f"wakeup-pgo: result   {out / RESULT_NAME}")
     print(
-        "wakeup-pgo: build with `cargo xtask starry build -c "
-        f"{config}` (build.py sets CARGO_TARGET_DIR={out / TARGET_DIR_NAME})"
+        "wakeup-pgo: audit and build with `python3 scripts/perf/wakeup-pgo/build.py "
+        f"--experimental-selective-task --output-dir {out}`"
     )
 
 
@@ -724,6 +735,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--output-dir",
         required=True,
         help="absolute or relative directory that receives the profile, config, logs and image",
+    )
+    parser.add_argument(
+        "--experimental-selective-task",
+        action="store_true",
+        help="rebuild the board-tested B image; does not certify its cross-source A/B result",
     )
     parser.add_argument(
         "--prepare-only",
@@ -750,6 +766,7 @@ def main(argv: list[str]) -> int:
         "repo_root": str(REPO_ROOT),
         "output_dir": str(out),
         "prepare_only": args.prepare_only,
+        "experimental_selective_task": args.experimental_selective_task,
         "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "pgo": {
             "target": TARGET,
@@ -766,6 +783,12 @@ def main(argv: list[str]) -> int:
         "ready": False,
     }
     try:
+        if not args.experimental_selective_task:
+            raise GateError(
+                "selective ax_task PGO has only a cross-source exploratory comparison; "
+                "use --experimental-selective-task to reproduce the candidate image, "
+                "not to certify release performance"
+            )
         report["source_gate"] = source_gate()
         report["toolchain_gate"] = toolchain_gate()
         report["cargo_lock_gate"] = cargo_lock_gate()
@@ -816,11 +839,10 @@ def main(argv: list[str]) -> int:
         report["image"]["bin_without_kallsyms"] = require_board_bin_identity(
             identity, Path(binary["path"]) if binary else None
         )
-        report["status"] = "profile_use_image_ready"
-        report["ready"] = True
+        report["status"] = "experimental_candidate_image_matched"
         write_result(out, report)
         image = report["image"]["elf"]
-        print("WAKEUP_PGO_IMAGE_READY")
+        print("WAKEUP_PGO_EXPERIMENT_IMAGE_MATCHED")
         print(f"wakeup-pgo: elf   {image['path']} sha256={image['sha256']}")
         print(
             f"wakeup-pgo: .text size={image['text_size']} sha256={image['text_sha256']} "
