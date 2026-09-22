@@ -12,6 +12,8 @@
  *   ns          namespace links, unshare + setns round-trips, child PID ns
  *   scm-rights  AF_UNIX SCM_RIGHTS fd passing across fork
  *   cgroup2     cgroup2 mount at /sys/fs/cgroup plus controllers
+ *   exe-acl     (subcommand) /proc/<pid>/exe opens obey the cross-process
+ *               permission check while the caller's own exe stays openable
  *
  * Superblock magics are the values this kernel reports (see
  * os/StarryOS/kernel/src/pseudofs), not generic Linux constants: devfs reports
@@ -689,8 +691,74 @@ static void check_cgroup2(void)
     }
 }
 
-int main(void)
+/* The caller's own /proc/self/exe must stay openable (runc's CVE-2019-5736
+ * self-reexec depends on it), while another user's /proc/<pid>/exe requires
+ * the kernel's cross-process permission check. */
+static int run_exe_acl(void)
 {
+    section("exe-acl");
+
+    int fd = open("/proc/self/exe", O_RDONLY);
+    if (fd >= 0) {
+        close(fd);
+        pass("own /proc/self/exe stays openable");
+    } else {
+        fail("own /proc/self/exe stays openable");
+    }
+
+    pid_t child = fork();
+    if (child < 0) {
+        fail("fork exe-acl child");
+        return 1;
+    }
+    if (child == 0) {
+        if (setuid(1000) != 0) {
+            _exit(3);
+        }
+        int own = open("/proc/self/exe", O_RDONLY);
+        if (own >= 0) {
+            close(own);
+        } else {
+            _exit(4);
+        }
+        errno = 0;
+        int root_exe = open("/proc/1/exe", O_RDONLY);
+        if (root_exe >= 0) {
+            close(root_exe);
+            _exit(5);
+        }
+        _exit(errno == EPERM || errno == EACCES ? 0 : 6);
+    }
+
+    int status = 0;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status)) {
+        fail("exe-acl child terminates normally");
+        return 1;
+    }
+    int code = WEXITSTATUS(status);
+    if (code == 0) {
+        pass("another user's /proc/1/exe is rejected with EPERM/EACCES");
+    } else if (code == 3) {
+        fail("exe-acl child setuid");
+    } else if (code == 4) {
+        fail("own /proc/self/exe stays openable after setuid");
+    } else if (code == 5) {
+        printf("  FAIL: another user's /proc/1/exe opened without permission\n");
+        failures++;
+    } else {
+        printf("  FAIL: another user's /proc/1/exe rejected with wrong errno=%d\n",
+               code);
+        failures++;
+    }
+    return failures != 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1 && strcmp(argv[1], "exe-acl") == 0) {
+        return run_exe_acl() != 0;
+    }
+
     check_pseudofs();
     check_devpts();
     check_pty();

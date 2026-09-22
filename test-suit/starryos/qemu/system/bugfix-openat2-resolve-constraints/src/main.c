@@ -186,6 +186,19 @@ int main(void)
     expect_open("CACHED creates like a plain open", rootfd, "cached.txt",
                 RESOLVE_CACHED, O_CREAT | O_RDWR | O_CLOEXEC);
 
+    /* Linux ignores dirfd for absolute pathnames; only RESOLVE_IN_ROOT keeps
+     * using it (as the resolution root) and requires it to be valid. */
+    expect_open("absolute path ignores an invalid dirfd", -1, "/proc/self/stat",
+                RESOLVE_CACHED, O_RDONLY | O_CLOEXEC);
+    expect_errno("BENEATH absolute with an invalid dirfd -> EXDEV, not EBADF",
+                 -1, "/proc/self/stat", RESOLVE_BENEATH,
+                 O_RDONLY | O_CLOEXEC, EXDEV);
+    expect_errno("an invalid dirfd still fails a relative path", -1, "tmp",
+                 RESOLVE_CACHED, O_RDONLY | O_DIRECTORY | O_CLOEXEC, EBADF);
+    expect_errno("IN_ROOT keeps requiring a valid dirfd", -1,
+                 "/proc/self/stat", RESOLVE_IN_ROOT, O_RDONLY | O_CLOEXEC,
+                 EBADF);
+
     /* Restrictions combine. */
     uint64_t all = RESOLVE_BENEATH | RESOLVE_NO_XDEV | RESOLVE_NO_SYMLINKS;
     expect_open("BENEATH|NO_XDEV|NO_SYMLINKS creates a relative file",
