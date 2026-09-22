@@ -705,20 +705,16 @@ pub fn sys_openat2(
         return Err(StarryError::NotFound);
     }
 
-    // Magic links are intercepted by pathname before the VFS walker ever sees
-    // them. The symlink-related restrictions must reject them from the raw
-    // pathname like Linux's walker does (ELOOP), except for the
-    // O_PATH|O_NOFOLLOW final-component case, where Linux returns an O_PATH
-    // handle to the link itself. Spatial restrictions (BENEATH, IN_ROOT,
-    // NO_XDEV) must observe the walk, so the interception is skipped for them
-    // as well and the constrained walker decides.
+    // Magic links are intercepted by pathname before the VFS walker ever
+    // sees them, so whenever a restriction has to observe the resolution —
+    // link restrictions (which reject them in the walker, with the walker's
+    // existence-first error precedence) or spatial restrictions (which scope
+    // where they may resolve) — the interception is skipped and the
+    // constrained walker decides. Unconstrained (link-allowed) opens keep
+    // the fast jump to the backing object.
     let magic_forbidden = constraints.is_no_symlinks() || constraints.is_no_magiclinks();
-    let path_link_handle = uflags & O_PATH != 0 && uflags & O_NOFOLLOW != 0;
-    let spatially_scoped = constraints.is_beneath() || constraints.is_in_root()
-        || constraints.is_no_xdev();
-    if magic_forbidden && !path_link_handle && is_magic_link_path(current, &path) {
-        return Err(StarryError::FilesystemLoop);
-    }
+    let spatially_scoped =
+        constraints.is_beneath() || constraints.is_in_root() || constraints.is_no_xdev();
     let intercept_magic = !magic_forbidden && !spatially_scoped;
 
     let thread = current.as_thread();
@@ -802,29 +798,6 @@ fn openat2_resolve_constraints(resolve: u64) -> Option<ResolveConstraints> {
         constraints = constraints.no_magiclinks();
     }
     Some(constraints)
-}
-
-/// Returns whether `path` names a procfs-style magic link by its pathname
-/// spelling. These paths are normally intercepted before the VFS walker; when
-/// the openat2 constraints forbid magic links they must fail with ELOOP
-/// instead of being intercepted.
-fn is_magic_link_path(current: &crate::task::UserTaskRef, path: &str) -> bool {
-    if self_fd_number(path).is_some() {
-        return true;
-    }
-    if proc_exe_target(current, path).is_some() {
-        return true;
-    }
-    let Some(rest) = path.strip_prefix("/proc/") else {
-        return false;
-    };
-    let Some((pid_str, ns_type)) = rest.split_once('/') else {
-        return false;
-    };
-    let Some(ns_type) = ns_type.strip_prefix("ns/") else {
-        return false;
-    };
-    !pid_str.is_empty() && !ns_type.is_empty() && !ns_type.contains('/')
 }
 
 /// Open a file by `filename` and insert it into the file descriptor table.

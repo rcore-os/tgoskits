@@ -30,7 +30,7 @@
 //! Everything else — including other program types — falls through to the
 //! real handlers so the in-kernel eBPF subsystem keeps its behavior.
 
-use alloc::{borrow::Cow, sync::Arc, vec::Vec};
+use alloc::{borrow::Cow, sync::Arc, vec::Vec, sync::Weak};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 
@@ -82,12 +82,14 @@ const ATTR_GET_INFO_PTR_OFFSET: usize = 8;
 /// mirroring the id space a real loader would observe through
 /// `BPF_PROG_QUERY` and `BPF_PROG_GET_FD_BY_ID`.
 static NEXT_DEVICE_PROG_ID: AtomicU32 = AtomicU32::new(1);
+
 /// One accepted cgroup-device attach: `BPF_PROG_ATTACH` records it,
 /// `BPF_PROG_DETACH` removes it, and `BPF_PROG_QUERY` reports the recorded
-/// count so the three commands stay consistent with each other.
-#[derive(Debug)]
+/// count so the three commands stay consistent with each other. The target
+/// is held by object identity (`Arc` pointer), never by the raw fd number,
+/// so closing the fd and reusing the number cannot alias an old attachment.
 struct AttachedDeviceProg {
-    target_fd: i32,
+    target: Arc<dyn file::FileLike>,
     attach_type: u32,
     prog_id: u32,
 }
@@ -98,32 +100,28 @@ static ATTACHED_DEVICE_PROGS: IrqMutex<Vec<AttachedDeviceProg>> = IrqMutex::new(
 /// no global eBPF program-id space (the real dispatcher rejects the ID
 /// commands), so these ids are the whole observable program-id space and
 /// `BPF_PROG_GET_FD_BY_ID`/`BPF_PROG_GET_NEXT_ID` can serve them without
-/// affecting any other program type.
+/// affecting any other program type. The placeholder object is held weakly:
+/// once every fd referring to it is closed, the id disappears like a real
+/// program whose reference count dropped to zero.
 struct DeviceProg {
     id: u32,
-    fd: i32,
-    file: Arc<dyn file::FileLike>,
-}
-
-impl DeviceProg {
-    fn clone_shallow(&self) -> DeviceProg {
-        Self {
-            id: self.id,
-            fd: self.fd,
-            file: self.file.clone(),
-        }
-    }
+    file: Weak<dyn file::FileLike>,
 }
 
 static DEVICE_PROGS: IrqMutex<Vec<DeviceProg>> = IrqMutex::new(Vec::new());
 
+/// Drops registry entries whose placeholder object is gone and returns
+/// whether `id` is still live.
+fn device_prog_live(id: u32) -> bool {
+    let mut progs = DEVICE_PROGS.lock();
+    progs.retain(|prog| prog.file.upgrade().is_some());
+    progs.iter().any(|prog| prog.id == id)
+}
+
 fn next_device_prog_id(after: u32) -> Option<u32> {
-    DEVICE_PROGS
-        .lock()
-        .iter()
-        .map(|prog| prog.id)
-        .filter(|id| *id > after)
-        .min()
+    let mut progs = DEVICE_PROGS.lock();
+    progs.retain(|prog| prog.file.upgrade().is_some());
+    progs.iter().map(|prog| prog.id).filter(|id| *id > after).min()
 }
 
 /// The subset of `bpf(2)` commands this module takes over for the device
@@ -299,50 +297,50 @@ pub(crate) fn try_handle(
 fn handle(current: &crate::task::UserTaskRef, command: DeviceCommand, uattr: usize) -> StarryResult<isize> {
     match command {
         DeviceCommand::ProgLoad => {
-            let file: Arc<dyn file::FileLike> = Arc::new(BpfCgroupDeviceFile);
             let id = NEXT_DEVICE_PROG_ID.fetch_add(1, Ordering::Relaxed);
+            let file: Arc<dyn file::FileLike> = Arc::new(BpfCgroupDeviceFile { id });
+            DEVICE_PROGS
+                .lock()
+                .push(DeviceProg { id, file: Arc::downgrade(&file) });
             // bpf fds are close-on-exec in Linux; matches the real handlers.
-            let fd = file::add_file_like(file.clone(), true)?;
-            DEVICE_PROGS.lock().push(DeviceProg { id, file, fd: fd as i32 });
-            Ok(fd as isize)
+            file::add_file_like(file, true).map(|fd| fd as isize)
         }
         DeviceCommand::LinkCreate => {
-            let file: Arc<dyn file::FileLike> = Arc::new(BpfCgroupDeviceFile);
+            let file: Arc<dyn file::FileLike> = Arc::new(BpfCgroupDeviceFile {
+                id: NEXT_DEVICE_PROG_ID.fetch_add(1, Ordering::Relaxed),
+            });
             // bpf fds are close-on-exec in Linux; matches the real handlers.
             file::add_file_like(file, true).map(|fd| fd as isize)
         }
         DeviceCommand::GetFdById => {
             let id = read_attr_u32(current, uattr, 0)?;
-            let found = DEVICE_PROGS
+            if !device_prog_live(id) {
+                return Err(StarryError::NotFound);
+            }
+            let file = DEVICE_PROGS
                 .lock()
                 .iter()
                 .find(|prog| prog.id == id)
-                .map(|prog| prog.clone_shallow());
-            match found {
-                Some(prog) => {
-                    let fd = file::add_file_like(prog.file.clone(), false)?;
-                    // Register the duplicated fd so OBJ_GET_INFO_BY_FD can
-                    // classify it like the original.
-                    DEVICE_PROGS.lock().push(DeviceProg {
-                        id: prog.id,
-                        fd: fd as i32,
-                        file: prog.file.clone(),
-                    });
-                    Ok(fd as isize)
-                }
+                .and_then(|prog| prog.file.upgrade());
+            match file {
+                Some(file) => file::add_file_like(file, false).map(|fd| fd as isize),
                 None => Err(StarryError::NotFound),
             }
         }
         DeviceCommand::GetInfoByFd => {
             let bpf_fd = read_attr_u32(current, uattr, ATTR_GET_INFO_FD_OFFSET)?;
-            let found = DEVICE_PROGS
-                .lock()
-                .iter()
-                .find(|prog| prog.fd == bpf_fd as i32)
-                .map(|prog| (prog.id, prog.fd));
-            let Some((id, _)) = found else {
+            // Identity check: the fd must still reference a live
+            // device-controller placeholder; a reused fd number pointing at
+            // any other object never matches.
+            let object = file::get_file_like(bpf_fd as i32)
+                .map_err(|_| StarryError::NotFound)?;
+            let id = object
+                .downcast_ref::<BpfCgroupDeviceFile>()
+                .map(|placeholder| placeholder.id)
+                .ok_or(StarryError::NotFound)?;
+            if !device_prog_live(id) {
                 return Err(StarryError::NotFound);
-            };
+            }
             // bpf_prog_info: `u32 type; u32 id; ...` — the caller's buffer
             // may be large, so report the two fields we model and shrink
             // `info_len` accordingly (the standard short-info contract).
@@ -378,15 +376,21 @@ fn handle(current: &crate::task::UserTaskRef, command: DeviceCommand, uattr: usi
             }
             let attach_type = read_attr_u32(current, uattr, ATTR_ATTACH_TYPE_OFFSET)?;
             let attach_bpf_fd = read_attr_u32(current, uattr, ATTR_ATTACH_BPF_FD_OFFSET)?;
-            let prog_id = DEVICE_PROGS
-                .lock()
-                .iter()
-                .find(|prog| prog.fd == attach_bpf_fd as i32)
-                .map(|prog| prog.id);
+            let bpf_object = file::get_file_like(attach_bpf_fd as i32)
+                .map_err(|_| StarryError::BadFileDescriptor)?;
+            let prog_id = bpf_object
+                .downcast_ref::<BpfCgroupDeviceFile>()
+                .map(|placeholder| placeholder.id)
+                .ok_or(StarryError::BadFileDescriptor)?;
+            if !device_prog_live(prog_id) {
+                return Err(StarryError::BadFileDescriptor);
+            }
+            let target = file::get_file_like(target_fd as i32)
+                .map_err(|_| StarryError::BadFileDescriptor)?;
             ATTACHED_DEVICE_PROGS.lock().push(AttachedDeviceProg {
-                target_fd: target_fd as i32,
+                target,
                 attach_type,
-                prog_id: prog_id.unwrap_or_default(),
+                prog_id,
             });
             Ok(0)
         }
@@ -396,11 +400,18 @@ fn handle(current: &crate::task::UserTaskRef, command: DeviceCommand, uattr: usi
                 return Err(StarryError::BadFileDescriptor);
             }
             let attach_type = read_attr_u32(current, uattr, ATTR_ATTACH_TYPE_OFFSET)?;
-            // Linux detaching an unknown attachment fails with ENOENT.
+            // Linux detaching an unknown attachment fails with ENOENT. The
+            // current fd's object must be the attached one; a reused fd
+            // number pointing elsewhere never matches.
+            let target = file::get_file_like(target_fd as i32)
+                .map_err(|_| StarryError::BadFileDescriptor)?;
             let mut attached = ATTACHED_DEVICE_PROGS.lock();
             match attached
                 .iter()
-                .position(|prog| prog.target_fd == target_fd as i32 && prog.attach_type == attach_type)
+                .position(|prog| {
+                    prog.attach_type == attach_type
+                        && Arc::ptr_eq(&prog.target, &target)
+                })
             {
                 Some(index) => {
                     attached.remove(index);
@@ -416,11 +427,14 @@ fn handle(current: &crate::task::UserTaskRef, command: DeviceCommand, uattr: usi
             }
             let attach_type = read_attr_u32(current, uattr, ATTR_QUERY_ATTACH_TYPE_OFFSET)?;
             let capacity = read_attr_u32(current, uattr, ATTR_QUERY_PROG_CNT_OFFSET)?;
+            let target = file::get_file_like(target_fd as i32)
+                .map_err(|_| StarryError::BadFileDescriptor)?;
             let ids: Vec<u32> = ATTACHED_DEVICE_PROGS
                 .lock()
                 .iter()
                 .filter(|prog| {
-                    prog.target_fd == target_fd as i32 && prog.attach_type == attach_type
+                    prog.attach_type == attach_type
+                        && Arc::ptr_eq(&prog.target, &target)
                 })
                 .map(|prog| prog.prog_id)
                 .collect();
@@ -444,8 +458,12 @@ fn handle(current: &crate::task::UserTaskRef, command: DeviceCommand, uattr: usi
 }
 
 /// Anonymous-inode placeholder handed out for device-controller program loads
-/// and link creations. No operations beyond lifetime management.
-struct BpfCgroupDeviceFile;
+/// and link creations. Carries the load's synthetic id so an fd can be
+/// identified by object (downcast) rather than by its raw fd number. No
+/// operations beyond lifetime management.
+struct BpfCgroupDeviceFile {
+    id: u32,
+}
 
 impl file::FileLike for BpfCgroupDeviceFile {
     fn validate_write_access(&self) -> StarryResult {

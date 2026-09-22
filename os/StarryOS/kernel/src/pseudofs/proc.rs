@@ -1095,8 +1095,8 @@ impl SimpleDirOps for ThreadFdInfoDir {
 
 /// The /proc/[pid]/ns directory — namespace entries.
 ///
-/// Each entry is a regular file displaying the namespace identifier.
-/// When opened, the kernel intercepts the open path and creates an
+/// Each entry is a magic link displaying the namespace identifier. When
+/// opened, the kernel intercepts the open path and creates an
 /// [`NsFd`](crate::file::NsFd) instead of a regular file descriptor.
 struct NsDir {
     fs: Arc<SimpleFs>,
@@ -1159,7 +1159,10 @@ impl SimpleDirOps for NsDir {
         };
 
         let content = content.into_bytes();
-        Ok(SimpleFile::new_regular(fs, move || Ok(content.clone())).into())
+        // Linux exposes ns entries as magic links (their displayed
+        // "uts:[id]" text is a kernel handle, not a pathname), so they carry
+        // the magic-link flag for openat2's link restrictions.
+        Ok(SimpleFile::new_magic_link(fs, move || Ok(content.clone())).into())
     }
 
     fn is_cacheable(&self) -> bool {
