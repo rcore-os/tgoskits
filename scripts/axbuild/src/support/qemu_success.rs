@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use anyhow::{Result, bail};
 use ostool::run::{ShellCheckStep, qemu::QemuConfig};
@@ -9,6 +12,7 @@ use regex_automata::{
 };
 
 const TRANSCRIPT_TAIL_BYTES: usize = 2048;
+const SYSTEM_MARKER_LINE_BYTES: usize = 512;
 
 #[derive(Clone)]
 pub(crate) struct QemuSuccessOutput {
@@ -21,6 +25,10 @@ impl QemuSuccessOutput {
             state: Arc::new(Mutex::new(QemuSuccessOutputState {
                 matcher: StreamingMatcher::new(success_regex),
                 tail: Vec::with_capacity(TRANSCRIPT_TAIL_BYTES),
+                system_progress: success_regex
+                    .iter()
+                    .any(|pattern| pattern.contains("STARRY_GROUPED_TESTS_PASSED"))
+                    .then(StarrySystemProgress::default),
             })),
         }
     }
@@ -42,6 +50,10 @@ impl QemuSuccessOutput {
             matched: state.matcher.as_ref().is_ok_and(StreamingMatcher::is_match),
             matcher_error: state.matcher.as_ref().err().cloned(),
             tail: state.tail.clone(),
+            system_progress: state
+                .system_progress
+                .as_ref()
+                .and_then(StarrySystemProgress::summary),
         }
     }
 }
@@ -49,6 +61,7 @@ impl QemuSuccessOutput {
 struct QemuSuccessOutputState {
     matcher: std::result::Result<StreamingMatcher, String>,
     tail: Vec<u8>,
+    system_progress: Option<StarrySystemProgress>,
 }
 
 impl QemuSuccessOutputState {
@@ -57,6 +70,113 @@ impl QemuSuccessOutputState {
             matcher.append(chunk);
         }
         append_bounded_tail(&mut self.tail, chunk);
+        if let Some(progress) = &mut self.system_progress {
+            progress.append(chunk);
+        }
+    }
+}
+
+#[derive(Default)]
+struct StarrySystemProgress {
+    line: Vec<u8>,
+    skip_long_line: bool,
+    started: usize,
+    passed: usize,
+    failed: usize,
+    current: Option<String>,
+    last_completed: Option<String>,
+    current_started: Option<Instant>,
+}
+
+enum SystemMarker {
+    Begin,
+    Passed,
+    Failed,
+}
+
+impl StarrySystemProgress {
+    fn append(&mut self, chunk: &[u8]) {
+        for &byte in chunk {
+            if byte == b'\n' {
+                if !self.skip_long_line {
+                    self.process_line();
+                }
+                self.line.clear();
+                self.skip_long_line = false;
+            } else if !self.skip_long_line {
+                if self.line.len() < SYSTEM_MARKER_LINE_BYTES {
+                    self.line.push(byte);
+                } else {
+                    self.line.clear();
+                    self.skip_long_line = true;
+                }
+            }
+        }
+    }
+
+    fn process_line(&mut self) {
+        let Ok(line) = std::str::from_utf8(&self.line) else {
+            return;
+        };
+        let line = line.trim_end_matches('\r');
+        let marker = [
+            ("STARRY_SYSTEM_TEST_BEGIN: ", SystemMarker::Begin),
+            ("STARRY_SYSTEM_TEST_PASSED: ", SystemMarker::Passed),
+            ("STARRY_SYSTEM_TEST_FAILED: ", SystemMarker::Failed),
+        ]
+        .into_iter()
+        .find_map(|(prefix, kind)| line.strip_prefix(prefix).map(|rest| (rest, kind)));
+        let Some((rest, kind)) = marker else {
+            return;
+        };
+        let Some(path) = rest.split_ascii_whitespace().next() else {
+            return;
+        };
+        if !path.starts_with("/usr/bin/starry-test-suit/")
+            || !path.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.')
+            })
+        {
+            return;
+        }
+        match kind {
+            SystemMarker::Begin => {
+                self.started += 1;
+                self.current = Some(path.to_string());
+                self.current_started = Some(Instant::now());
+            }
+            SystemMarker::Passed | SystemMarker::Failed => {
+                if self.current.as_deref() != Some(path) {
+                    return;
+                }
+                if matches!(kind, SystemMarker::Passed) {
+                    self.passed += 1;
+                } else {
+                    self.failed += 1;
+                }
+                self.current = None;
+                self.current_started = None;
+                self.last_completed = Some(path.to_string());
+            }
+        }
+    }
+
+    fn summary(&self) -> Option<String> {
+        if self.started == 0 {
+            return None;
+        }
+        let current = self.current.as_deref().unwrap_or("none");
+        let last_completed = self.last_completed.as_deref().unwrap_or("none");
+        let elapsed = self
+            .current_started
+            .map(|started| format!(" current_elapsed_s={}", started.elapsed().as_secs()))
+            .unwrap_or_default();
+        Some(format!(
+            "Starry system progress: started={} passed={} failed={} current={current} \
+             last_completed={last_completed}{elapsed}; outer QEMU wall timeout does not establish \
+             a per-case hang",
+            self.started, self.passed, self.failed
+        ))
     }
 }
 
@@ -158,6 +278,7 @@ struct QemuSuccessSnapshot {
     matched: bool,
     matcher_error: Option<String>,
     tail: Vec<u8>,
+    system_progress: Option<String>,
 }
 
 fn append_bounded_tail(tail: &mut Vec<u8>, chunk: &[u8]) {
@@ -254,6 +375,11 @@ pub(crate) fn verify_qemu_success_contract(
     };
 
     if let Some(err) = run_error {
+        if err.to_string().contains("QEMU timed out after ")
+            && let Some(progress) = success_output.snapshot().system_progress
+        {
+            bail!("{err}; {progress}");
+        }
         return Err(err);
     }
 
@@ -416,8 +542,32 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("QEMU timed out after 1800s"), "{message}");
         assert!(message.contains("passed=1"), "{message}");
-        assert!(message.contains("/usr/bin/starry-test-suit/beta"), "{message}");
-        assert!(!message.contains("STARRY_GROUPED_TESTS_PASSED"), "{message}");
+        assert!(
+            message.contains("/usr/bin/starry-test-suit/beta"),
+            "{message}"
+        );
+        assert!(
+            !message.contains("STARRY_GROUPED_TESTS_PASSED"),
+            "{message}"
+        );
+
+        output.append(b"STARRY_SYSTEM_TEST_FAILED: /usr/bin/starry-test-suit/beta status=1\n");
+        output.append(b"STARRY_SYSTEM_TEST_BEGIN: /usr/bin/starry-test-suit/gamma\n");
+        let err = verify_qemu_success_contract(
+            Err(anyhow::anyhow!("QEMU timed out after 1800s")),
+            Some(&output),
+        )
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("failed=1"), "{message}");
+        assert!(
+            message.contains("current=/usr/bin/starry-test-suit/gamma"),
+            "{message}"
+        );
+        assert!(
+            message.contains("last_completed=/usr/bin/starry-test-suit/beta"),
+            "{message}"
+        );
     }
 
     #[test]

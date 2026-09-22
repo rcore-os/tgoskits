@@ -165,7 +165,10 @@ jobs:
 
           command_file="${RUNNER_TEMP}/reusable-command.sh"
           printf '%s\n' "${command_text}" > "${command_file}"
-          if [ "${PERFORMANCE_REPORT}" = "true" ]; then
+          if [[ "${REUSABLE_COMMAND}" == *"starry test qemu"* ]]; then
+            command_log="${RUNNER_TEMP}/starry-qemu.log"
+            log_command=(tee "${command_log}")
+          elif [ "${PERFORMANCE_REPORT}" = "true" ]; then
             command_log="${RUNNER_TEMP}/reusable-command.log"
             log_command=(tee "${command_log}")
           else
@@ -182,6 +185,15 @@ jobs:
             sed 's/^/+ /' "${command_file}"
             exit "${status}"
           fi
+
+      - name: Upload Starry QEMU transcript
+        if: always() && contains(matrix.command, 'starry test qemu')
+        uses: actions/upload-artifact@v7
+        with:
+          name: starry-qemu-transcript-${{ matrix.id }}
+          path: ${{ runner.temp }}/starry-qemu.log
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Render performance report
         if: success() && matrix.performance_report

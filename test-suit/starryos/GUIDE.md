@@ -475,6 +475,13 @@ binary 的默认预算。TOML `timeout` 约束整个 QEMU case，不替代上述
 `STARRY_SYSTEM_TEST_CLEANUP_TIMEOUT` 并立即中止 suite，不能继续运行下一个 binary，也不能
 阻塞到外层 QEMU timeout。隔离回归会让持锁后代停在 raw pipe wait，确保 namespace SIGKILL
 路径确实强制唤醒并回收这类任务。
+
+外层 QEMU 总超时仍是独立的墙钟上限，不能据此判断某个 binary 卡死。
+`QemuSuccessOutput` 在读取串口时跟踪 `STARRY_SYSTEM_TEST_BEGIN/PASSED/FAILED`；总超时
+错误会报告已开始、通过和失败的数量、最后完成项、当前项及其已运行时间，不伪造套件
+汇总或成功标记。CI 同时保留完整命令输出作为
+`starry-qemu-transcript-<check-id>` artifact，供超时后核对原始标记与耗时。
+
 目前 grouped Rust subcase 还不支持。
 
 ## Shell 和 Python 用例
