@@ -207,9 +207,12 @@ static void test_openat2_min(void)
     expect_openat2_success("openat2 RESOLVE_IN_ROOT resolves",
                            dirfd, "resolve-in-root",
                            O_RDWR | O_CREAT, RESOLVE_IN_ROOT);
-    expect_openat2_success("openat2 RESOLVE_CACHED resolves",
-                           dirfd, "resolve-cached",
-                           O_RDWR | O_CREAT, RESOLVE_CACHED);
+    /* RESOLVE_CACHED needs a dcache-only lookup the kernel cannot provide;
+     * it fails with EAGAIN and carries no creation side effect. */
+    expect_openat2_errno("openat2 RESOLVE_CACHED -> EAGAIN",
+                         dirfd, "resolve-cached",
+                         (struct open_how){ O_RDWR | O_CREAT, 0600, RESOLVE_CACHED },
+                         sizeof(struct open_how), EAGAIN);
 
     close(dirfd);
     rmdir(dir);
