@@ -181,6 +181,17 @@ int main(void)
     expect_open("NO_MAGICLINKS still follows an ordinary symlink", rootfd,
                 "rel", RESOLVE_NO_MAGICLINKS,
                 O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    /* Existence is checked before the link restriction: missing proc
+     * entries fail with ENOENT, not ELOOP (Linux link_path_walk order). */
+    expect_errno("NO_MAGICLINKS ENOENT beats ELOOP for a missing exe",
+                 fsrootfd, "/proc/999999/exe", RESOLVE_NO_MAGICLINKS,
+                 O_RDONLY | O_CLOEXEC, ENOENT);
+    expect_errno("NO_MAGICLINKS ENOENT beats ELOOP for a missing fd entry",
+                 fsrootfd, "/proc/1/fd/999999", RESOLVE_NO_MAGICLINKS,
+                 O_RDONLY | O_CLOEXEC, ENOENT);
+    expect_errno("NO_SYMLINKS ENOENT beats ELOOP for an unknown ns entry",
+                 fsrootfd, "/proc/1/ns/unknown", RESOLVE_NO_SYMLINKS,
+                 O_RDONLY | O_CLOEXEC, ENOENT);
 
     /* RESOLVE_CACHED requires a dcache-only lookup this kernel cannot
      * provide; Linux fails such opens with EAGAIN (retry without the flag).
