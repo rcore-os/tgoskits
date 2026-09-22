@@ -341,12 +341,28 @@ fn try_open_proc_exe(
         Ok(proc_data) => proc_data,
         Err(err) => return Some(Err(err)),
     };
-    let loc = proc_data.exe_location()?;
     let cred = current.as_thread().cred();
+    // /proc/<pid>/exe of another process requires the ptrace-style read
+    // permission Linux applies to proc magic links; reuse the kernel's
+    // cross-process identity check until a full ptrace_may_access lands.
+    if !core::ptr::eq(
+        proc_data.as_ref() as *const _,
+        Arc::as_ref(&current.as_thread().proc_data),
+    ) {
+        let permitted = crate::syscall::signal::check_kill_permission_identity(
+            current,
+            &proc_data.identity(),
+        );
+        if let Err(err) = permitted {
+            return Some(Err(err));
+        }
+    }
+    let loc = proc_data.exe_location()?;
+    let mutation_cred = mutation_credentials(&cred);
     let options = flags_to_options(flags as i32, 0, (cred.fsuid, cred.fsgid));
     Some(
         options
-            .open_loc(loc)
+            .open_loc_with_credentials(loc, &mutation_cred)
             .map_err(StarryError::from)
             .and_then(|result| add_to_fd(current, result, flags, None)),
     )
@@ -704,6 +720,14 @@ pub fn sys_openat2(
             return result.map(|fd| fd as isize);
         }
     }
+
+    // Linux ignores dirfd for absolute pathnames: only RESOLVE_IN_ROOT
+    // keeps using it, as the resolution root, and requires it to be valid.
+    let dirfd = if path.starts_with('/') && how_value.resolve & RESOLVE_IN_ROOT as u64 == 0 {
+        AT_FDCWD as _
+    } else {
+        dirfd
+    };
 
     let result = with_fs(dirfd, |fs| {
         // RESOLVE_IN_ROOT uses the dirfd as the resolution root; absolute
