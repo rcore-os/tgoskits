@@ -1,3 +1,4 @@
+use alloc::sync::Weak;
 use core::{
     any::Any,
     mem::offset_of,
@@ -5,7 +6,7 @@ use core::{
 };
 
 use ax_fs_ng::vfs::FileBackend;
-use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
+use axfs_ng_vfs::{DeviceId, Mountpoint, NodeFlags, VfsError, VfsResult};
 use linux_raw_sys::{
     general::{O_ACCMODE, O_RDONLY},
     ioctl::{
@@ -55,6 +56,16 @@ struct LoopState {
     binding: Option<LoopBinding>,
     openers: usize,
     exclusive: bool,
+    /// Set while a filesystem mount owns the binding. The mount holder is
+    /// tracked separately from `openers`/`exclusive`: a mounted loop device
+    /// still accepts ordinary opens (ioctls such as BLKROSET, read-only
+    /// metadata), but a second mount of the same backing device is rejected
+    /// with EBUSY.
+    mounted: bool,
+    /// Mount published under the holder, kept weakly so flushing the mounted
+    /// filesystem from `BLKFLSBUF` never keeps the filesystem or the mount
+    /// alive past its own lifetime.
+    mount_flush_target: Option<Weak<Mountpoint>>,
 }
 
 impl LoopState {
@@ -70,6 +81,20 @@ impl LoopState {
             .as_mut()
             .filter(|binding| !binding.rundown)
             .ok_or(VfsError::NoSuchDeviceOrAddress)
+    }
+
+    /// Drops the binding when it was marked for autoclear and nothing still
+    /// references it: no ordinary opener and no active mount holder.
+    fn take_autocleared_binding(&mut self) -> Option<LoopBinding> {
+        let autoclear = self
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.flags & LO_FLAGS_AUTOCLEAR as u32 != 0);
+        if autoclear && self.openers == 0 && !self.mounted {
+            self.binding.take()
+        } else {
+            None
+        }
     }
 }
 
@@ -141,6 +166,76 @@ impl LoopDevice {
     pub fn clone_file(&self) -> VfsResult<FileBackend> {
         Ok(self.state.lock().binding()?.file.clone())
     }
+
+    /// Claims the mount holder for a filesystem mount.
+    ///
+    /// Returns EBUSY when another mount already holds this binding, matching
+    /// Linux: mounting the same loop backing device twice is rejected while an
+    /// ordinary open of the mounted device keeps working.
+    pub(crate) fn acquire_mount_holder(&self) -> VfsResult<()> {
+        let mut state = self.state.lock();
+        state.binding()?;
+        if state.mounted {
+            return Err(VfsError::ResourceBusy);
+        }
+        state.mounted = true;
+        Ok(())
+    }
+
+    /// Records the mount published under the holder so `BLKFLSBUF` can flush
+    /// that filesystem's dirty cache. Called after the mount succeeds.
+    pub(crate) fn set_mount_flush_target(&self, mount: Weak<Mountpoint>) {
+        let mut state = self.state.lock();
+        state.mount_flush_target = Some(mount);
+    }
+
+    /// Releases the mount holder and applies autoclear when nothing else keeps
+    /// the binding alive.
+    pub(crate) fn release_mount_holder(&self) {
+        let released = {
+            let mut state = self.state.lock();
+            state.mounted = false;
+            state.mount_flush_target = None;
+            state.take_autocleared_binding()
+        };
+        // Backing file destruction may enter another filesystem.
+        drop(released);
+    }
+
+    /// Flushes the filesystem mounted under the holder, if any.
+    ///
+    /// The mount point is upgraded outside the loop-state lock: filesystem
+    /// writeback re-enters this device, so holding the state lock across the
+    /// flush would deadlock.
+    fn flush_mounted_filesystem(&self) -> VfsResult<()> {
+        let target = {
+            let state = self.state.lock();
+            state.mount_flush_target.clone()
+        };
+        let Some(mount) = target.and_then(|mount| mount.upgrade()) else {
+            return Ok(());
+        };
+        let location = mount.root_location();
+        let filesystem = location.filesystem();
+        // Mirror the unmount path: write back cached file data first, then the
+        // filesystem's own dirty metadata blocks.
+        ax_fs_ng::file::sync_filesystem_cached_files(filesystem)?;
+        filesystem.flush()
+    }
+
+    /// True when an active filesystem mount holds this binding while the
+    /// device is write-protected.
+    ///
+    /// Driving the filesystem in that state cannot persist anything: the
+    /// writes are rejected, and the failed rollback of the rejected metadata
+    /// writes latches a filesystem abort that wedges every later sync. Callers
+    /// report the failure instead of flushing so the cached data survives
+    /// until the device is writable again.
+    fn mount_write_protected(&self) -> VfsResult<bool> {
+        let state = self.state.lock();
+        let binding = state.binding()?;
+        Ok(state.mounted && binding.flags & LO_FLAGS_READ_ONLY as u32 != 0)
+    }
 }
 
 impl DeviceOps for LoopDevice {
@@ -194,16 +289,7 @@ impl DeviceOps for LoopDevice {
             if exclusive {
                 state.exclusive = false;
             }
-            if state.openers == 0
-                && state
-                    .binding
-                    .as_ref()
-                    .is_some_and(|binding| binding.flags & LO_FLAGS_AUTOCLEAR as u32 != 0)
-            {
-                state.binding.take()
-            } else {
-                None
-            }
+            state.take_autocleared_binding()
         };
         // Backing file destruction may enter another filesystem.
         drop(released);
@@ -224,6 +310,13 @@ impl DeviceOps for LoopDevice {
             }
             LOOP_CLR_FD => {
                 let mut state = self.state.lock();
+                // A live mount holder counts as a user of the device, matching
+                // Linux's `lo_refcnt` check: clearing while a filesystem is
+                // mounted fails with EBUSY instead of reporting success while
+                // the backing store is still in use.
+                if state.mounted {
+                    return Err(VfsError::ResourceBusy);
+                }
                 let only_opener = state.openers == 1;
                 let binding = state.binding_mut()?;
                 binding.flags |= LO_FLAGS_AUTOCLEAR as u32;
@@ -361,6 +454,16 @@ impl DeviceOps for LoopDevice {
                 return Err(VfsError::NotATty);
             }
             BLKFLSBUF => {
+                // Flush the active mount before the backing file. A read-only
+                // loop device cannot persist that dirty cache, and letting the
+                // filesystem attempt the writeback would abort its in-memory
+                // rollback on the rejected writes. Report the EIO a failed
+                // writeback produces, keep the cached data, and retry on the
+                // next call once the write protection is cleared.
+                if self.mount_write_protected()? {
+                    return Err(VfsError::Io);
+                }
+                self.flush_mounted_filesystem()?;
                 self.clone_file()?.sync(true)?;
             }
             BLKIOMIN => {
