@@ -2,3 +2,4 @@
 arch_prctl01
 epoll_create01
 epoll_create02
+fcntl14

@@ -1,4 +1,6 @@
 use alloc::boxed::Box;
+#[cfg(feature = "paging")]
+use core::sync::atomic::{AtomicPtr, Ordering};
 use core::{
     alloc::Layout,
     ptr::{self, NonNull},
@@ -17,13 +19,124 @@ pub(super) struct RuntimeStack {
     pub(super) backing: StackBacking,
 }
 
+// SAFETY: each stack has one owner: its live scheduler handle, one cache slot,
+// or the caller that atomically removed it from the cache. The scheduler
+// releases a handle only after execution has switched off that stack.
+unsafe impl Send for RuntimeStack {}
+
 pub(super) enum StackBacking {
     Heap {
         pointer: NonNull<u8>,
         layout: Layout,
     },
     #[cfg(feature = "paging")]
-    VirtualPages(ax_mm::KernelVirtualAllocation),
+    VirtualPages {
+        allocation: ax_mm::KernelVirtualAllocation,
+        layout: VirtualStackLayout,
+    },
+}
+
+#[cfg(feature = "paging")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct VirtualStackLayout {
+    usable_size: usize,
+    alignment: usize,
+    guard_size: usize,
+}
+
+#[cfg(all(feature = "paging", feature = "smp"))]
+const CACHED_VIRTUAL_STACK_COUNT: usize = crate::CPU_CAPACITY * 2;
+#[cfg(all(feature = "paging", not(feature = "smp")))]
+const CACHED_VIRTUAL_STACK_COUNT: usize = 2;
+
+#[cfg(feature = "paging")]
+static CACHED_VIRTUAL_STACKS: [AtomicPtr<RuntimeStack>; CACHED_VIRTUAL_STACK_COUNT] =
+    [const { AtomicPtr::new(ptr::null_mut()) }; CACHED_VIRTUAL_STACK_COUNT];
+
+#[cfg(feature = "paging")]
+fn cached_virtual_stack_limit() -> usize {
+    ax_hal::cpu_num()
+        .max(1)
+        .saturating_mul(2)
+        .min(CACHED_VIRTUAL_STACK_COUNT)
+}
+
+#[cfg(feature = "paging")]
+fn cache_virtual_stack(stack: Box<RuntimeStack>) -> Result<(), Box<RuntimeStack>> {
+    let raw = Box::into_raw(stack);
+    for slot in CACHED_VIRTUAL_STACKS
+        .iter()
+        .take(cached_virtual_stack_limit())
+    {
+        if slot
+            .compare_exchange(ptr::null_mut(), raw, Ordering::Release, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    // SAFETY: no cache slot accepted this pointer, so we retain its Box.
+    Err(unsafe { Box::from_raw(raw) })
+}
+
+#[cfg(feature = "paging")]
+fn drain_cached_virtual_stacks() {
+    for slot in &CACHED_VIRTUAL_STACKS {
+        let raw = slot.swap(ptr::null_mut(), Ordering::AcqRel);
+        if !raw.is_null() {
+            // SAFETY: the swap transfers unique ownership from this slot.
+            release_runtime_stack(*unsafe { Box::from_raw(raw) });
+        }
+    }
+}
+
+#[cfg(feature = "paging")]
+fn take_cached_virtual_stack(layout: VirtualStackLayout) -> Option<Box<RuntimeStack>> {
+    let mut eviction = None;
+    for slot in CACHED_VIRTUAL_STACKS
+        .iter()
+        .take(cached_virtual_stack_limit())
+    {
+        let raw = slot.swap(ptr::null_mut(), Ordering::AcqRel);
+        if raw.is_null() {
+            continue;
+        }
+        // SAFETY: the swap transfers unique ownership out of the cache slot;
+        // Release/Acquire makes all previous writes visible before reuse.
+        let stack = unsafe { Box::from_raw(raw) };
+        let StackBacking::VirtualPages {
+            layout: cached_layout,
+            ..
+        } = &stack.backing
+        else {
+            unreachable!("only virtual task stacks enter this cache");
+        };
+        if *cached_layout != layout {
+            if eviction.is_none() {
+                eviction = Some(stack);
+            } else if let Err(stack) = cache_virtual_stack(stack) {
+                release_runtime_stack(*stack);
+            }
+            continue;
+        }
+
+        let usable_start = stack
+            .usable_top
+            .checked_sub(cached_layout.usable_size)
+            .expect("virtual stack usable range must not underflow");
+        // SAFETY: the scheduler finished executing on this stack before it
+        // entered the cache. Its live allocation covers the entire usable
+        // range, which is cleared before another context receives the handle.
+        unsafe { ptr::write_bytes(usable_start as *mut u8, 0, cached_layout.usable_size) };
+        if let Some(eviction) = eviction {
+            release_runtime_stack(*eviction);
+        }
+        return Some(stack);
+    }
+    if let Some(eviction) = eviction {
+        release_runtime_stack(*eviction);
+    }
+    None
 }
 
 #[cfg(kernel_tls)]
@@ -93,6 +206,15 @@ fn allocate_virtual_stack(request: StackRequest) -> Result<StackHandle, RuntimeS
         .guard_size
         .checked_next_multiple_of(alignment)
         .ok_or(RuntimeStatus::InvalidArgument)?;
+    let normalized_layout = VirtualStackLayout {
+        usable_size,
+        alignment,
+        guard_size,
+    };
+    if let Some(stack) = take_cached_virtual_stack(normalized_layout) {
+        // SAFETY: a cache hit transfers one uniquely owned stack allocation.
+        return Ok(unsafe { StackHandle::from_raw(Box::into_raw(stack).expose_provenance()) });
+    }
     let layout = ax_mm::KernelVirtualAllocationLayout::new(
         usable_size,
         ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE,
@@ -101,20 +223,34 @@ fn allocate_virtual_stack(request: StackRequest) -> Result<StackHandle, RuntimeS
     .and_then(|layout| layout.with_leading_guard_pages(guard_size / PAGE_SIZE))
     .and_then(|layout| layout.with_alignment(alignment))
     .map_err(|_| RuntimeStatus::InvalidArgument)?;
-    // This is an ordinary resource-preparation path. A previous failed
-    // shootdown may be retried here, before reserving another virtual range.
-    ax_mm::retry_kernel_virtual_quarantines(8);
-    let stack = super::allocation::try_box(core::mem::MaybeUninit::<RuntimeStack>::uninit())?;
-    let allocation =
-        ax_mm::KernelVirtualAllocation::allocate(layout).map_err(|error| match error {
-            ax_mm::MmError::NoMemory => RuntimeStatus::NoMemory,
-            _ => RuntimeStatus::Platform,
-        })?;
+    let stack = match super::allocation::try_box(core::mem::MaybeUninit::<RuntimeStack>::uninit()) {
+        Err(RuntimeStatus::NoMemory) if !cfg!(feature = "fault-injection") => {
+            drain_cached_virtual_stacks();
+            ax_mm::retry_kernel_virtual_quarantines(CACHED_VIRTUAL_STACK_COUNT);
+            super::allocation::try_box(core::mem::MaybeUninit::<RuntimeStack>::uninit())?
+        }
+        result => result?,
+    };
+    let allocation = match ax_mm::KernelVirtualAllocation::allocate(layout) {
+        Ok(allocation) => allocation,
+        Err(ax_mm::MmError::NoMemory) => {
+            drain_cached_virtual_stacks();
+            ax_mm::retry_kernel_virtual_quarantines(CACHED_VIRTUAL_STACK_COUNT);
+            ax_mm::KernelVirtualAllocation::allocate(layout).map_err(|error| match error {
+                ax_mm::MmError::NoMemory => RuntimeStatus::NoMemory,
+                _ => RuntimeStatus::Platform,
+            })?
+        }
+        Err(_) => return Err(RuntimeStatus::Platform),
+    };
     let stack = Box::write(
         stack,
         RuntimeStack {
             usable_top: allocation.usable_range().end.as_usize(),
-            backing: StackBacking::VirtualPages(allocation),
+            backing: StackBacking::VirtualPages {
+                allocation,
+                layout: normalized_layout,
+            },
         },
     );
     // SAFETY: the box uniquely owns the reservation and remains live until
@@ -133,12 +269,29 @@ pub(super) fn deallocate_runtime_stack(handle: StackHandle) -> RuntimeStatus {
             handle.into_raw(),
         ))
     };
+    #[cfg(feature = "fault-injection")]
+    super::creation_probe::record(super::creation_probe::CreationEvent::DropStack);
+    #[cfg(feature = "paging")]
+    let stack = if matches!(&stack.backing, StackBacking::VirtualPages { .. }) {
+        match cache_virtual_stack(stack) {
+            Ok(()) => return RuntimeStatus::Success,
+            Err(stack) => stack,
+        }
+    } else {
+        stack
+    };
+
+    release_runtime_stack(*stack);
+    RuntimeStatus::Success
+}
+
+fn release_runtime_stack(stack: RuntimeStack) {
     match stack.backing {
         StackBacking::Heap { pointer, layout } => {
             ax_alloc::global_allocator().dealloc(pointer, layout);
         }
         #[cfg(feature = "paging")]
-        StackBacking::VirtualPages(allocation) => {
+        StackBacking::VirtualPages { allocation, .. } => {
             if let Err(error) = allocation.release() {
                 // The MM metadata retains the frames and VA across failure.
                 // The consumed stack handle itself no longer owns resources.
@@ -146,9 +299,6 @@ pub(super) fn deallocate_runtime_stack(handle: StackHandle) -> RuntimeStatus {
             }
         }
     }
-    #[cfg(feature = "fault-injection")]
-    super::creation_probe::record(super::creation_probe::CreationEvent::DropStack);
-    RuntimeStatus::Success
 }
 
 pub(super) fn allocate_runtime_tls() -> RuntimeHandleResult {

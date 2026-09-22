@@ -5715,7 +5715,7 @@ impl AddrSpace {
     /// table cannot be installed on a CPU.  This is the shared apply step for
     /// unpublished-image abort and retired-MM reclaim; it deliberately does
     /// not publish an epoch or side-band event by itself.
-    fn clear_quiescent_contents(&mut self) -> StarryResult {
+    fn clear_quiescent_contents(&mut self, retired: bool) -> StarryResult {
         self.ensure_quiescent_for_content_clear()?;
         let range = self.layout.range();
         let operations = self.mapping_operation_fragments(range, false)?;
@@ -5726,7 +5726,14 @@ impl AddrSpace {
             return Err(StarryError::BadState);
         }
 
-        let leaf_count = self.occupied_pte_leaves_overlapping(&[range])?.len();
+        // A healthy retired MM has one published MappingSlot per occupied
+        // leaf. An unpublished loader/fork image can have mapped PTEs whose
+        // slots were never published, so its rollback still needs a PT walk.
+        let leaf_count = if retired && !self.mutation_gate.needs_repair() {
+            self.mapping_slots.len()
+        } else {
+            self.occupied_pte_leaves_overlapping(&[range])?.len()
+        };
         let mut page_table_reclaims =
             MappingMutationContext::for_published_mutation(leaf_count)?;
         // A retired MM has no users, pins, activations, pending receipts or
@@ -5775,7 +5782,7 @@ impl AddrSpace {
         let range = self.layout.range();
         let memfd_deltas =
             crate::syscall::memfd_prepare_aspace_unmap_deltas(self, range.start, range.size());
-        self.clear_quiescent_contents()?;
+        self.clear_quiescent_contents(false)?;
         self.resident_pages = ResidentPageCounts::default();
         self.heap = HeapState::new(USER_HEAP_BASE);
         self.executable_data = ExecutableDataLayout::default();
@@ -5815,7 +5822,7 @@ impl AddrSpace {
             ..MappingDelta::default()
         });
         mutation.set_resident_delta(self.resident_pages.checked_negated_delta()?);
-        self.clear_quiescent_contents()?;
+        self.clear_quiescent_contents(true)?;
         let result = self.commit_mutation(mutation);
         if self.vm_epoch() != base_epoch {
             crate::syscall::memfd_apply_shared_writable_deltas(&memfd_deltas);
