@@ -187,6 +187,15 @@ pub struct FsContext {
     permission_root: Option<Location>,
 }
 
+/// Bundled state for one constrained walk: the active constraints, the
+/// caller's search-permission callback, and whether the final component may
+/// be a plain file (symlink targets) instead of a directory.
+struct ConstrainedWalk<'a> {
+    constraints: &'a ResolveConstraints,
+    search: SearchCheck<'a>,
+    final_may_be_file: bool,
+}
+
 impl FsContext {
     /// Publishes a shared context to mount-busy and pivot-root tracking.
     ///
@@ -770,13 +779,17 @@ impl FsContext {
         let mut depth = 0;
         let mut components = path.components();
         components.next_back();
+        let walk = ConstrainedWalk {
+            constraints,
+            search: Some(&check_search),
+            final_may_be_file: false,
+        };
         let dir = self.walk_constrained(
             components,
             &self.current_dir.clone(),
             &mut depth,
             &mut follow_count,
-            constraints,
-            Some(&check_search),
+            &walk,
         )?;
         // The final directory has no next component to trigger its search
         // check; an unsearchable parent must fail the resolution here, before
@@ -798,13 +811,17 @@ impl FsContext {
             Some(name) => {
                 let mut components = path.components();
                 components.next_back();
+                let walk = ConstrainedWalk {
+                    constraints,
+                    search,
+                    final_may_be_file: false,
+                };
                 let dir = self.walk_constrained(
                     components,
                     &self.current_dir.clone(),
                     &mut depth,
                     &mut follow_count,
-                    constraints,
-                    search,
+                    &walk,
                 )?;
                 let resolved = self.lookup_constrained(
                     &dir,
@@ -820,13 +837,17 @@ impl FsContext {
             // The final component is `.` or `..` (or the path is empty): the
             // walk consumes everything and its result is the resolution.
             None => {
+                let walk = ConstrainedWalk {
+                    constraints,
+                    search,
+                    final_may_be_file: false,
+                };
                 let dir = self.walk_constrained(
                     path.components(),
                     &self.current_dir.clone(),
                     &mut depth,
                     &mut follow_count,
-                    constraints,
-                    search,
+                    &walk,
                 )?;
                 dir.check_is_dir()?;
                 Self::finish_checked_path(path, dir, search)
@@ -872,11 +893,16 @@ impl FsContext {
         start: &Location,
         depth: &mut usize,
         follow_count: &mut usize,
-        constraints: &ResolveConstraints,
-        search: SearchCheck<'_>,
+        walk: &ConstrainedWalk<'_>,
     ) -> VfsResult<Location> {
+        let constraints = walk.constraints;
+        let search = walk.search;
+        let final_may_be_file = walk.final_may_be_file;
         let mut dir = start.clone();
-        for component in components {
+        let components: Vec<_> = components.collect();
+        let last = components.len().saturating_sub(1);
+        for (index, component) in components.into_iter().enumerate() {
+            let is_final = index == last;
             match component {
                 Component::CurDir => {}
                 Component::RootDir => {
@@ -936,7 +962,12 @@ impl FsContext {
                             search,
                         )?;
                     } else {
-                        next.check_is_dir()?;
+                        // A symlink target's final component may be a plain
+                        // file; only an intermediate (or explicitly
+                        // directory-expecting) component must be a directory.
+                        if !is_final || !final_may_be_file {
+                            next.check_is_dir()?;
+                        }
                         dir = next;
                         if constraints.is_beneath() {
                             *depth += 1;
@@ -986,14 +1017,13 @@ impl FsContext {
         if target.as_str().starts_with('/') {
             if let Some(root) = constraints.root() {
                 // Absolute targets resolve inside the constraint root.
-                let resolved = self.walk_constrained(
-                    target.components(),
-                    root,
-                    depth,
-                    follow_count,
+                let walk = ConstrainedWalk {
                     constraints,
                     search,
-                )?;
+                    final_may_be_file: true,
+                };
+                let resolved =
+                    self.walk_constrained(target.components(), root, depth, follow_count, &walk)?;
                 *depth = 0;
                 return Self::finish_checked_path(&target, resolved, search);
             }
@@ -1002,14 +1032,13 @@ impl FsContext {
             }
             *depth = 0;
         }
-        let resolved = self.walk_constrained(
-            target.components(),
-            parent_dir,
-            depth,
-            follow_count,
+        let walk = ConstrainedWalk {
             constraints,
             search,
-        )?;
+            final_may_be_file: true,
+        };
+        let resolved =
+            self.walk_constrained(target.components(), parent_dir, depth, follow_count, &walk)?;
         Self::finish_checked_path(&target, resolved, search)
     }
 
