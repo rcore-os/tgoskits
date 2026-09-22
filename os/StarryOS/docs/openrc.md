@@ -169,3 +169,5 @@ x86_64 的独立 QEMU 日志保留以下失败，正向用例和负向用例都�
 2026 年 9 月 22 日切换到 `tgosimages` v0.0.14 发布的四架构 Alpine 镜像后，`cargo xtask starry rootfs --arch <arch>` 均完成 SHA-256 校验、预装软件包核对和 Starry 配置注入。`cargo xtask starry test qemu --arch <arch> -c qemu/openrc` 四架构均为 `result: 1/1 case(s) passed`，客户机实际输出 `/sbin/init`、BusyBox PID 1、`default` runlevel、服务启动/停止/重启、失败传播、终端重启和关机服务停止记录。原始日志分别位于 `/tmp/starry-openrc-prebuilt-rootfs-<arch>.log` 和 `/tmp/starry-openrc-prebuilt-qemu-<arch>.log`。
 
 此前的完整 system 套件与自然电源脚本是在旧版受管理镜像上运行的，不能冒充 v0.0.14 的对应证据。镜像中 APK 数据库仅用于验证预装包；本轮的 `starry rootfs` 与 `qemu/openrc` 路径都没有调用目标架构 APK 安装。
+
+合入 2026 年 9 月 22 日的 `origin/dev` 后，四架构再次运行 `cargo xtask starry test qemu --arch <arch> -c qemu/openrc`，各为 `result: 1/1 case(s) passed`，日志为 `/tmp/starry-openrc-prebuilt-after-merge-<arch>.log`。以合并提交 `e92954f967` 的第二父提交（当时的 `dev`）为基线运行 `cargo xtask test --since 'HEAD^2'`，受影响白名单测试通过，其中 `axbuild` 为 763/763；`cargo xtask clippy --package axbuild` 为 1/1，`cargo fmt` 通过。这些日志均是本地复核材料，未纳入仓库。
