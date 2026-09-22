@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.5](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.4...ax-runtime-v0.13.5) - 2026-09-22
+
+### Fixed
+
+- *(axvisor)* preserve guest console output under backpressure ([#2473](https://github.com/rcore-os/tgoskits/pull/2473))
+
+### Other
+
+- *(ax-runtime)* retain tagged TLB entries across lazy switches ([#2464](https://github.com/rcore-os/tgoskits/pull/2464))
+
 ## [0.13.4](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.3...ax-runtime-v0.13.4) - 2026-09-21
 
 ### Other

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.3](https://github.com/rcore-os/tgoskits/compare/somehal-v0.11.2...somehal-v0.11.3) - 2026-09-22
+
+### Other
+
+- *(ax-runtime)* retain tagged TLB entries across lazy switches ([#2464](https://github.com/rcore-os/tgoskits/pull/2464))
+
 ## [0.11.2](https://github.com/rcore-os/tgoskits/compare/somehal-v0.11.1...somehal-v0.11.2) - 2026-09-18
 
 ### Other

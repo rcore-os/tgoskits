@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-display-v0.6.11...ax-display-v0.7.0) - 2026-09-22
+
+### Added
+
+- *(virtio-gpu)* integrate virgl DRM on current dev ([#2483](https://github.com/rcore-os/tgoskits/pull/2483))
+
 ## [0.6.11](https://github.com/rcore-os/tgoskits/compare/ax-display-v0.6.10...ax-display-v0.6.11) - 2026-09-11
 
 ### Other

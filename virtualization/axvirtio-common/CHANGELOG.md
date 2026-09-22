@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7](https://github.com/rcore-os/tgoskits/compare/axvirtio-common-v0.2.6...axvirtio-common-v0.2.7) - 2026-09-22
+
+### Other
+
+- updated the following local packages: ax-runtime
+
 ## [0.2.6](https://github.com/rcore-os/tgoskits/compare/axvirtio-common-v0.2.5...axvirtio-common-v0.2.6) - 2026-09-21
 
 ### Other

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.9.0...axbuild-v0.9.1) - 2026-09-22
+
+### Added
+
+- *(axbuild)* add opt-in bounded parallel clippy checks ([#2482](https://github.com/rcore-os/tgoskits/pull/2482))
+
+### Other
+
+- Revert "fix(starry-kernel): close container userland gaps found by the Debian rootfs case" ([#2480](https://github.com/rcore-os/tgoskits/pull/2480))
+- Merge pull request #2466 from rcore-os/debin/container-guest-env-fixes
+
 ## [0.9.0](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.8.1...axbuild-v0.9.0) - 2026-09-21
 
 ### Fixed

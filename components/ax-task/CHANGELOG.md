@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.8.3...ax-task-v0.8.4) - 2026-09-22
+
+### Other
+
+- *(ax-runtime)* retain tagged TLB entries across lazy switches ([#2464](https://github.com/rcore-os/tgoskits/pull/2464))
+
 ## [0.8.3](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.8.2...ax-task-v0.8.3) - 2026-09-18
 
 ### Added

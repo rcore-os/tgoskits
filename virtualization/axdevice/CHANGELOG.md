@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.8.4...axdevice-v0.8.5) - 2026-09-22
+
+### Fixed
+
+- *(axvisor)* preserve guest console output under backpressure ([#2473](https://github.com/rcore-os/tgoskits/pull/2473))
+
 ## [0.8.4](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.8.3...axdevice-v0.8.4) - 2026-09-21
 
 ### Other

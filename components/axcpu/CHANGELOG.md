@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.3](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.10.2...ax-cpu-v0.10.3) - 2026-09-22
+
+### Other
+
+- *(ax-runtime)* retain tagged TLB entries across lazy switches ([#2464](https://github.com/rcore-os/tgoskits/pull/2464))
+
 ## [0.10.2](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.10.1...ax-cpu-v0.10.2) - 2026-09-18
 
 ### Fixed

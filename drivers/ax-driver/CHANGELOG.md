@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.18.0...ax-driver-v0.18.1) - 2026-09-22
+
+### Added
+
+- *(virtio-gpu)* integrate virgl DRM on current dev ([#2483](https://github.com/rcore-os/tgoskits/pull/2483))
+
 ## [0.18.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.17.0...ax-driver-v0.18.0) - 2026-09-21
 
 ### Added

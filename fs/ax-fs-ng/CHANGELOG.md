@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.11.1...ax-fs-ng-v0.11.2) - 2026-09-22
+
+### Added
+
+- *(vfs)* enhance file opening with mutation credentials and status … ([#2468](https://github.com/rcore-os/tgoskits/pull/2468))
+
+### Fixed
+
+- *(ax-fs-ng)* isolate shutdown-order test from global writeback ([#2476](https://github.com/rcore-os/tgoskits/pull/2476))
+
 ## [0.11.1](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.11.0...ax-fs-ng-v0.11.1) - 2026-09-21
 
 ### Fixed

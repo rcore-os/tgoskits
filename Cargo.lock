@@ -784,7 +784,7 @@ dependencies = [
 
 [[package]]
 name = "ax-api"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "ax-alloc",
  "ax-cpumask",
@@ -823,7 +823,7 @@ dependencies = [
 
 [[package]]
 name = "ax-cpu"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-lazyinit",
@@ -875,7 +875,7 @@ dependencies = [
 
 [[package]]
 name = "ax-display"
-version = "0.6.11"
+version = "0.7.0"
 dependencies = [
  "ax-lazyinit",
  "ax-task",
@@ -886,7 +886,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "ahci-driver",
  "aic8800",
@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ng"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "atomic-waker",
  "ax-io",
@@ -996,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "ax-hal"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -1020,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "ax-input"
-version = "0.6.11"
+version = "0.7.0"
 dependencies = [
  "ax-lazyinit",
  "ax-task",
@@ -1041,7 +1041,7 @@ dependencies = [
 
 [[package]]
 name = "ax-ipi"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "ax-hal",
  "ax-lazyinit",
@@ -1054,7 +1054,7 @@ version = "0.5.1"
 
 [[package]]
 name = "ax-libc"
-version = "0.5.40"
+version = "0.5.41"
 dependencies = [
  "ax-driver",
  "ax-hal",
@@ -1093,7 +1093,7 @@ dependencies = [
 
 [[package]]
 name = "ax-mm"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -1109,7 +1109,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net"
-version = "0.13.5"
+version = "0.13.6"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -1141,7 +1141,7 @@ dependencies = [
 
 [[package]]
 name = "ax-percpu"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "ax-lazyinit",
  "ax-percpu-macros",
@@ -1187,7 +1187,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.6.7"
+version = "0.6.8"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1216,7 +1216,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.13.4"
+version = "0.13.5"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1294,7 +1294,7 @@ dependencies = [
 
 [[package]]
 name = "ax-task"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "ax-sched",
  "axpanic",
@@ -1352,7 +1352,7 @@ dependencies = [
 
 [[package]]
 name = "axbuild"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "addr2line 0.26.1",
  "anyhow",
@@ -1400,7 +1400,7 @@ dependencies = [
 
 [[package]]
 name = "axdevice"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "ax-runtime",
  "ax-sync",
@@ -1439,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "axfs-ng-vfs"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "ax-sync",
  "axpoll",
@@ -1497,7 +1497,7 @@ version = "0.1.1"
 
 [[package]]
 name = "axplat-dyn"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "ax-cpu",
@@ -1609,7 +1609,7 @@ dependencies = [
 
 [[package]]
 name = "axvirtio-blk"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "ax-memory-addr",
  "ax-runtime",
@@ -1623,7 +1623,7 @@ dependencies = [
 
 [[package]]
 name = "axvirtio-common"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "ax-memory-addr",
  "ax-runtime",
@@ -1650,7 +1650,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "ax-api",
@@ -1679,7 +1679,7 @@ dependencies = [
 
 [[package]]
 name = "axvm"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -2425,7 +2425,7 @@ dependencies = [
 
 [[package]]
 name = "cpu-local"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "ax-cpu",
  "thiserror 2.0.20",
@@ -6556,7 +6556,7 @@ dependencies = [
 
 [[package]]
 name = "rdif-display"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "rdif-base",
  "thiserror 2.0.20",
@@ -7282,7 +7282,7 @@ dependencies = [
 
 [[package]]
 name = "scope-local"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "ax-lazyinit",
  "ax-percpu",
@@ -7753,7 +7753,7 @@ dependencies = [
 
 [[package]]
 name = "someboot"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "acpi",
@@ -7790,7 +7790,7 @@ dependencies = [
 
 [[package]]
 name = "somehal"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
@@ -7867,7 +7867,7 @@ dependencies = [
 
 [[package]]
 name = "starry-kernel"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "ax-alloc",
  "ax-cgroup",
@@ -7958,7 +7958,7 @@ dependencies = [
 
 [[package]]
 name = "starry-signal"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "ax-cpu",
  "ax-runtime",
@@ -7985,7 +7985,7 @@ dependencies = [
 
 [[package]]
 name = "starryos"
-version = "0.5.38"
+version = "0.5.39"
 dependencies = [
  "anyhow",
  "ax-driver",

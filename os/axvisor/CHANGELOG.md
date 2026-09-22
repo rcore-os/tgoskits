@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.8.1...axvisor-v0.8.2) - 2026-09-22
+
+### Fixed
+
+- *(axvisor)* drain accepted console output before detaching guest ([#2488](https://github.com/rcore-os/tgoskits/pull/2488))
+- *(axvisor)* preserve guest console output under backpressure ([#2473](https://github.com/rcore-os/tgoskits/pull/2473))
+
+### Other
+
+- *(axvisor)* verify dual guest ext4 mounts in QEMU ([#2485](https://github.com/rcore-os/tgoskits/pull/2485))
+
 ## [0.8.1](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.8.0...axvisor-v0.8.1) - 2026-09-21
 
 ### Fixed

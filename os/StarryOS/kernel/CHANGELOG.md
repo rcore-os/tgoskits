@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.12.0...starry-kernel-v0.12.1) - 2026-09-22
+
+### Added
+
+- *(virtio-gpu)* integrate virgl DRM on current dev ([#2483](https://github.com/rcore-os/tgoskits/pull/2483))
+- *(vfs)* enhance file opening with mutation credentials and status … ([#2468](https://github.com/rcore-os/tgoskits/pull/2468))
+
+### Fixed
+
+- *(starry-kernel)* align KMS queries and dma-buf seek with Linux ([#2284](https://github.com/rcore-os/tgoskits/pull/2284))
+
+### Other
+
+- *(axvisor)* add Orange Pi dual-guest robot tests ([#2314](https://github.com/rcore-os/tgoskits/pull/2314))
+- Revert "fix(starry-kernel): close container userland gaps found by the Debian rootfs case" ([#2480](https://github.com/rcore-os/tgoskits/pull/2480))
+- Merge pull request #2466 from rcore-os/debin/container-guest-env-fixes
+
 ## [0.12.0](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.11.0...starry-kernel-v0.12.0) - 2026-09-21
 
 ### Added

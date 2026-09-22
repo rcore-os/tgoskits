@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.8.0...axfs-ng-vfs-v0.8.1) - 2026-09-22
+
+### Added
+
+- *(vfs)* enhance file opening with mutation credentials and status … ([#2468](https://github.com/rcore-os/tgoskits/pull/2468))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.7.1...axfs-ng-vfs-v0.8.0) - 2026-09-18
 
 ### Added
