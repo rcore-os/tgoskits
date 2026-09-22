@@ -351,17 +351,17 @@ fn try_open_proc_exe(
         proc_data.as_ref() as *const _,
         Arc::as_ref(&current.as_thread().proc_data),
     );
-    if !same_process {
-        if !cred.has_cap_sys_ptrace() {
-            let identity_ok = crate::syscall::signal::check_kill_permission_identity(
-                current,
-                &proc_data.identity(),
-            )
-            .is_ok();
-            let dumpable = proc_data.dumpable() == 1;
-            if !identity_ok || !dumpable {
-                return Some(Err(StarryError::PermissionDenied));
-            }
+    if !same_process
+        && !cred.has_cap_sys_ptrace()
+    {
+        let identity_ok = crate::syscall::signal::check_kill_permission_identity(
+            current,
+            &proc_data.identity(),
+        )
+        .is_ok();
+        let dumpable = proc_data.dumpable() == 1;
+        if !identity_ok || !dumpable {
+            return Some(Err(StarryError::PermissionDenied));
         }
     }
     let loc = proc_data.exe_location()?;
