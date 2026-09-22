@@ -102,6 +102,8 @@ fn parallel_fail_fast_does_not_dispatch_remaining_checks() {
     .unwrap();
 
     assert_eq!(report.failed_packages(), vec!["package-0"]);
+    assert!(report.passed_packages().is_empty());
+    assert_eq!(report.skipped_packages(), vec!["package-1", "package-2"]);
     assert_eq!(
         report
             .packages
