@@ -37,7 +37,7 @@ use alloc::{
 };
 use core::{
     any::Any,
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 use ax_alloc::GlobalPage;
@@ -327,6 +327,12 @@ struct ModesetState {
 pub struct Card0 {
     /// Queue of pending DRM events waiting to be delivered via `read()`.
     events: Mutex<VecDeque<DrmEventVblank>>,
+    /// Live card0 file descriptors. DRM master semantics: when the count
+    /// reaches zero the KMS modeset state resets, mirroring Linux
+    /// `drm_release` → `drm_fb_release` where an exiting compositor's
+    /// framebuffers unbind and the CRTC goes inactive. Without this a
+    /// later client inherits the previous client's phantom active state.
+    open_count: AtomicUsize,
     /// Wakes up `poll`-waiters blocked on `read()` when a new event
     /// arrives.
     poll_rx: PollSet,
@@ -374,6 +380,7 @@ impl Card0 {
     pub fn new() -> Arc<Self> {
         let card = Arc::new(Self {
             events: Mutex::new(VecDeque::with_capacity(MAX_EVENTS)),
+            open_count: AtomicUsize::new(0),
             poll_rx: PollSet::new(),
             sequence: AtomicU32::new(0),
             state: Mutex::new(ModesetState::default()),
@@ -552,7 +559,38 @@ fn current_mode() -> DrmModeModeInfo {
     }
 }
 
+impl Card0 {
+    /// Resets every piece of KMS state a client could leave behind, used
+    /// when the last card0 fd closes (Linux drm_release -> drm_fb_release).
+    fn reset_kms_state(&self) {
+        *self.state.lock() = ModesetState::default();
+        *self.legacy_crtc.lock() = LegacyCrtcState::default();
+        self.fbs.lock().clear();
+        self.events.lock().clear();
+    }
+}
+
 impl DeviceOps for Card0 {
+    fn open(&self, _exclusive: bool) -> VfsResult<()> {
+        self.open_count.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    fn close(&self, _exclusive: bool) {
+        // Last card0 fd closed: the client is gone, so its KMS state goes
+        // with it (Linux drm_release → drm_fb_release). A later client must
+        // not inherit the previous client's stale modeset bindings.
+        if self
+            .open_count
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_sub(1)
+            })
+            .is_ok_and(|old| old == 1)
+        {
+            self.reset_kms_state();
+        }
+    }
+
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
         if buf.is_empty() {
             return Ok(0);
