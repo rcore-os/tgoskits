@@ -48,8 +48,11 @@ impl<'a> IvcMessageReceiver<'a> {
     ///
     /// # Errors
     ///
-    /// Reports invalid frames and retained protocol errors. Unlike a read,
-    /// this inspection alone does not poison the receiver.
+    /// Reports [`IvcMessageError::StreamingRequired`] if a full ring contains
+    /// no terminal frame, even when the declared length fits in one ring of
+    /// maximally sized fragments. `Ok(false)` means more frames can still arrive
+    /// without consuming slots. Also reports invalid frames and retained
+    /// protocol errors. This inspection alone does not poison the receiver.
     pub fn complete_message_available(&self) -> Result<bool, IvcMessageError> {
         let mut state = self.state;
         if let ReceiveState::Failed(error) = state {
@@ -67,7 +70,7 @@ impl<'a> IvcMessageReceiver<'a> {
             }
             state = transition.next_state;
         }
-        Ok(false)
+        Err(IvcMessageError::StreamingRequired)
     }
 
     /// Returns metadata for the current or next message without consuming its

@@ -94,6 +94,10 @@ pub enum IvcMessageError {
         /// Space currently available.
         provided: usize,
     },
+    /// A full ring has no terminal frame; waiting without consuming cannot finish.
+    /// This is an inspection limit, not a protocol error. Use streaming reads.
+    #[error("the IVC message requires streaming consumption of the full ring")]
+    StreamingRequired,
     /// The peer explicitly aborted the active message.
     #[error("the peer aborted the active IVC message")]
     TransferAborted,

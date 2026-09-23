@@ -263,8 +263,12 @@ fn transfer_one_message(payload: &[u8]) -> std::vec::Vec<u8> {
             send_complete = progress.is_complete();
             assert!(receiver.can_receive());
             assert_eq!(
-                receiver.complete_message_available().unwrap(),
-                send_complete
+                receiver.complete_message_available(),
+                if send_complete {
+                    Ok(true)
+                } else {
+                    Err(IvcMessageError::StreamingRequired)
+                }
             );
         }
         if !receive_complete {
