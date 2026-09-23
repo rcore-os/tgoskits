@@ -360,6 +360,7 @@ impl OpenOptions {
                 &constraints,
                 must_be_dir,
                 credentials,
+                0,
             );
         }
 
@@ -495,6 +496,7 @@ impl OpenOptions {
         constraints: &ResolveConstraints,
         must_be_dir: bool,
         credentials: &MutationCredentials<'_>,
+        depth0: usize,
     ) -> VfsResult<OpenResult> {
         let check_search = |directory: &Location| {
             context.check_search_path(directory, context.permission_boundary(), credentials)
@@ -505,7 +507,8 @@ impl OpenOptions {
         // apply. O_EXCL on an existing target fails with EEXIST, mirroring
         // the unconstrained create-at-existing-entry behavior.
         if path.file_name().is_none() {
-            let loc = context.resolve_with_constraints(path, constraints, true, check_search)?;
+            let loc =
+                context.resolve_with_constraints(path, constraints, true, check_search, depth0)?;
             if self.create_new {
                 return Err(VfsError::AlreadyExists);
             }
@@ -516,7 +519,7 @@ impl OpenOptions {
         }
 
         let (parent, name, parent_depth) =
-            context.resolve_parent_with_constraints(path, constraints, check_search)?;
+            context.resolve_parent_with_constraints(path, constraints, check_search, depth0)?;
 
         // Symlink rejection on the final component takes precedence over
         // creation flags (O_EXCL must not turn a forbidden symlink into
@@ -595,12 +598,16 @@ impl OpenOptions {
                 Ok(resolved) => loc = resolved,
                 Err(VfsError::NotFound) if self.create && symlink_target.is_some() => {
                     let target = symlink_target.unwrap();
+                    // Re-enter at the link's parent, resuming the BENEATH
+                    // depth count there: the link target resolves within the
+                    // same boundary, not from scratch.
                     return self.open_constrained(
                         &context.with_current_dir(parent.clone())?,
                         Path::new(&target),
                         constraints,
                         false,
                         credentials,
+                        depth0 + parent_depth,
                     );
                 }
                 Err(error) => return Err(error),
