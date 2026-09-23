@@ -246,6 +246,41 @@ int main(void)
                  "/proc/self/stat", RESOLVE_IN_ROOT,
                  O_RDONLY | O_CLOEXEC, ENOENT);
 
+    /* A magic link actually reached under a spatial constraint must not be
+     * re-resolved from its displayed target text (`pipe:[inode]`); Linux
+     * refuses the scoped object jump with EXDEV (nd_jump_link IS_SCOPED and
+     * NO_XDEV). Use a procfs dirfd so the walk reaches the entry without
+     * crossing the mount first. */
+    int scoped_procfd = open("/proc", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int pipe_fds[2] = {-1, -1};
+    if (scoped_procfd >= 0 && pipe(pipe_fds) == 0) {
+        char fd_link[64];
+        snprintf(fd_link, sizeof(fd_link), "self/fd/%d", pipe_fds[0]);
+        expect_errno("BENEATH rejects a reached proc fd magic link",
+                     scoped_procfd, fd_link, RESOLVE_BENEATH,
+                     O_RDONLY | O_CLOEXEC, EXDEV);
+        expect_errno("IN_ROOT rejects a reached proc fd magic link",
+                     scoped_procfd, fd_link, RESOLVE_IN_ROOT,
+                     O_RDONLY | O_CLOEXEC, EXDEV);
+        expect_errno("NO_XDEV rejects a reached proc fd magic link",
+                     scoped_procfd, fd_link, RESOLVE_NO_XDEV,
+                     O_RDONLY | O_CLOEXEC, EXDEV);
+        expect_errno("IN_ROOT rejects a reached exe magic link",
+                     scoped_procfd, "self/exe", RESOLVE_IN_ROOT,
+                     O_RDONLY | O_CLOEXEC, EXDEV);
+    } else {
+        CHECK(0, "prepare a procfs dirfd and pipe for scoped magic-link cases");
+    }
+    if (pipe_fds[0] >= 0) {
+        close(pipe_fds[0]);
+    }
+    if (pipe_fds[1] >= 0) {
+        close(pipe_fds[1]);
+    }
+    if (scoped_procfd >= 0) {
+        close(scoped_procfd);
+    }
+
     /* O_PATH|O_NOFOLLOW on a final magic link yields a handle to the link
      * itself, even under NO_MAGICLINKS/NO_SYMLINKS (man 2 openat2). */
     expect_open("O_PATH|O_NOFOLLOW opens the final magic link itself",
