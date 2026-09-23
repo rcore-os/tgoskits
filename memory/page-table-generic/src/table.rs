@@ -2152,8 +2152,8 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             start_vaddr,
             end_vaddr,
         };
-        PageTableWalker::new(self, config)
-            .filter(|p| !p.pte.unused() && (p.level == 1 || p.pte.huge(p.level > 1)))
+        PageTableWalker::new_occupied(self, config)
+            .filter(|p| p.level == 1 || p.pte.huge(p.level > 1))
     }
 
     /// Returns the mapping size represented by one page-table level.

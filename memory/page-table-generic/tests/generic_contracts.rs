@@ -1,7 +1,10 @@
 mod mocks;
 
 use core::fmt;
-use std::alloc::{self, Layout};
+use std::{
+    alloc::{self, Layout},
+    cell::Cell,
+};
 
 use mocks::{Fram4k, MappingFlags, PteImpl};
 use page_table_generic::{
@@ -11,6 +14,10 @@ use page_table_generic::{
 const PAGE_SIZE_16K: usize = 0x4000;
 const BLOCK_SIZE_32M: usize = PAGE_SIZE_16K << 11;
 const BLOCK_SIZE_2M: usize = OpaqueMeta::PAGE_SIZE << OpaqueMeta::LEVEL_BITS[0];
+
+std::thread_local! {
+    static UNUSED_PROBES: Cell<usize> = const { Cell::new(0) };
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct OpaqueConfig {
@@ -68,6 +75,7 @@ impl PageTableEntry for OpaquePte {
     }
 
     fn unused(&self) -> bool {
+        UNUSED_PROBES.with(|probes| probes.set(probes.get() + 1));
         self.0 == 0
     }
 
@@ -228,6 +236,76 @@ fn ranged_walk_descends_into_an_overlapping_parent_entry() {
         .collect::<Vec<_>>();
     assert_eq!(occupied.len(), 1);
     assert_eq!(occupied[0].vaddr, vaddr);
+}
+
+#[test]
+fn occupied_walk_stops_at_a_sparse_range_end() {
+    let mut page_table = PageTable::<OpaqueMeta, Fram4k>::new(Fram4k).unwrap();
+    let vaddr = VirtAddr::from_usize(0x20_4000);
+    page_table
+        .map_page(
+            vaddr,
+            PhysAddr::from_usize(0x80_0000),
+            OpaqueMeta::PAGE_SIZE,
+            OpaqueConfig {
+                domain: 0x2a,
+                present: false,
+            },
+        )
+        .unwrap();
+    let end = vaddr + OpaqueMeta::PAGE_SIZE;
+    UNUSED_PROBES.with(|probes| probes.set(0));
+    let occupied = page_table
+        .walk_occupied_range(vaddr, end)
+        .collect::<Vec<_>>();
+    let probes = UNUSED_PROBES.with(Cell::get);
+    assert_eq!(occupied.len(), 1);
+    assert_eq!(occupied[0].vaddr, vaddr);
+    assert!(probes < 20, "ranged walk inspected {probes} empty slots");
+}
+
+#[test]
+fn occupied_walk_matches_the_generic_walker_across_sparse_ranges() {
+    let mut page_table = PageTable::<OpaqueMeta, Fram4k>::new(Fram4k).unwrap();
+    let pages = [0x4000, 0x20_4000, 0x4000_1000, 0x70_0000_1000];
+    for (index, address) in pages.into_iter().enumerate() {
+        page_table
+            .map_page(
+                VirtAddr::from_usize(address),
+                PhysAddr::from_usize(0x80_0000 + index * 0x1000),
+                OpaqueMeta::PAGE_SIZE,
+                OpaqueConfig {
+                    domain: 0x2a,
+                    present: index != 1,
+                },
+            )
+            .unwrap();
+    }
+
+    for (start, end) in [
+        (0, usize::MAX),
+        (0x4001, 0x20_5000),
+        (0x20_4000, 0x4000_1000),
+        (0x4000_1000, 0x4000_2000),
+        (0x70_0000_1001, 0x70_0000_2000),
+    ] {
+        let config = WalkConfig {
+            start_vaddr: VirtAddr::from_usize(start),
+            end_vaddr: VirtAddr::from_usize(end),
+        };
+        let expected = page_table
+            .walk_all(config)
+            .filter(|entry| {
+                !entry.pte.unused() && (entry.level == 1 || entry.pte.huge(entry.level > 1))
+            })
+            .map(|entry| (entry.vaddr, entry.level))
+            .collect::<Vec<_>>();
+        let actual = page_table
+            .walk_occupied_range(config.start_vaddr, config.end_vaddr)
+            .map(|entry| (entry.vaddr, entry.level))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "range {start:#x}..{end:#x}");
+    }
 }
 
 #[test]
