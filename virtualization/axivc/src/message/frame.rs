@@ -1,8 +1,7 @@
 use super::{IvcMessageError, IvcMessageId};
-use crate::{IVC_SLOT_FRAGMENT_CAPACITY, IVC_SLOT_SIZE};
+use crate::{IVC_MESSAGE_HEADER_SIZE, IVC_SLOT_FRAGMENT_CAPACITY, IVC_SLOT_SIZE};
 
 const MESSAGE_VERSION_V1: u8 = 1;
-const V1_HEADER_LEN: usize = 24;
 const VERSION_OFFSET: usize = 0;
 const FLAGS_OFFSET: usize = 1;
 const HEADER_LEN_OFFSET: usize = 2;
@@ -44,13 +43,15 @@ pub(super) fn encode_frame(
     slot[VERSION_OFFSET] = MESSAGE_VERSION_V1;
     slot[FLAGS_OFFSET] = encode_flags(&spec);
     slot[HEADER_LEN_OFFSET..FRAGMENT_LEN_OFFSET]
-        .copy_from_slice(&(V1_HEADER_LEN as u16).to_le_bytes());
+        .copy_from_slice(&(IVC_MESSAGE_HEADER_SIZE as u16).to_le_bytes());
     slot[FRAGMENT_LEN_OFFSET..MESSAGE_ID_OFFSET]
         .copy_from_slice(&(fragment.len() as u32).to_le_bytes());
     slot[MESSAGE_ID_OFFSET..MESSAGE_LEN_OFFSET]
         .copy_from_slice(&spec.message_id.get().to_le_bytes());
-    slot[MESSAGE_LEN_OFFSET..V1_HEADER_LEN].copy_from_slice(&spec.message_len.to_le_bytes());
-    slot[V1_HEADER_LEN..V1_HEADER_LEN + fragment.len()].copy_from_slice(fragment);
+    slot[MESSAGE_LEN_OFFSET..IVC_MESSAGE_HEADER_SIZE]
+        .copy_from_slice(&spec.message_len.to_le_bytes());
+    slot[IVC_MESSAGE_HEADER_SIZE..IVC_MESSAGE_HEADER_SIZE + fragment.len()]
+        .copy_from_slice(fragment);
     Ok(())
 }
 
@@ -68,7 +69,7 @@ pub(super) fn decode_frame(
     }
 
     let header_len = read_u16(slot, HEADER_LEN_OFFSET) as usize;
-    if header_len != V1_HEADER_LEN {
+    if header_len != IVC_MESSAGE_HEADER_SIZE {
         return Err(IvcMessageError::MalformedHeader);
     }
 
