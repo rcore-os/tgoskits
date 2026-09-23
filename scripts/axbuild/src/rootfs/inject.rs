@@ -795,9 +795,10 @@ fn debugfs_argument(argument: &str) -> anyhow::Result<String> {
 
 /// Executes a generated `debugfs` script against a writable rootfs image.
 ///
-/// Stderr lines that only report that a directory already exists are suppressed
-/// because `mkdir /usr/bin` is harmless when the directory is already present.
-/// All other stderr output is forwarded so genuine errors remain visible.
+/// Stderr lines that only report harmless overlay replay conditions are
+/// suppressed: `mkdir` may find an existing directory, and the `rm` emitted
+/// before writing an overlay file may find no previous file to remove. All
+/// other stderr output is forwarded so genuine errors remain visible.
 fn run_debugfs_script(
     rootfs_img: &Path,
     commands: &[String],
@@ -809,6 +810,23 @@ fn run_debugfs_script(
         commands,
         context_message,
     )
+}
+
+fn is_ignorable_debugfs_stderr_line(line: &str) -> bool {
+    line.contains("File exists")
+        || line.contains("already exists")
+        || line.contains("File not found by ext2_lookup while trying to resolve filename")
+}
+
+fn forward_debugfs_stderr(reader: impl BufRead, mut output: impl Write) -> io::Result<()> {
+    for line in reader.lines() {
+        let line = line?;
+        if is_ignorable_debugfs_stderr_line(&line) {
+            continue;
+        }
+        writeln!(output, "{line}")?;
+    }
+    Ok(())
 }
 
 fn run_debugfs_script_with_command(
@@ -838,17 +856,7 @@ fn run_debugfs_script_with_command(
         .take()
         .context("failed to open debugfs stderr")?;
     let filter_handle = thread::spawn(move || {
-        let reader = BufReader::new(stderr_handle);
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => break,
-            };
-            if line.contains("File exists") || line.contains("already exists") {
-                continue;
-            }
-            eprintln!("{line}");
-        }
+        let _ = forward_debugfs_stderr(BufReader::new(stderr_handle), io::stderr());
     });
 
     {
@@ -1323,6 +1331,24 @@ mod tests {
         assert_eq!(
             fs::read_to_string(received_commands).unwrap(),
             "rm /usr/bin/app\nwrite app /usr/bin/app\nquit\n"
+        );
+    }
+
+    #[test]
+    fn debugfs_stderr_filter_suppresses_ignorable_errors_and_forwards_others() {
+        let stderr = concat!(
+            "mkdir: File exists while trying to resolve filename\n",
+            "mkdir: /usr/bin: already exists\n",
+            "rm: File not found by ext2_lookup while trying to resolve filename\n",
+            "write: Permission denied while trying to resolve filename\n",
+        );
+        let mut forwarded = Vec::new();
+
+        forward_debugfs_stderr(stderr.as_bytes(), &mut forwarded).unwrap();
+
+        assert_eq!(
+            String::from_utf8(forwarded).unwrap(),
+            "write: Permission denied while trying to resolve filename\n"
         );
     }
 
