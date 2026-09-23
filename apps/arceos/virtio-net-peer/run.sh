@@ -30,7 +30,7 @@ local_ip_of_vm() {
 build_guest() {
     local vm="$1"
     local tag="${vm^^}"
-    local config="apps/arceos/build-aarch64-virtio-net-peer-${vm}.toml"
+    local config="apps/arceos/build-aarch64-virtio-net-peer.toml"
     local output="target/aarch64-unknown-linux-musl/release/arceos-virtio-net-peer-${vm}.bin"
     local local_ip
     local_ip="$(local_ip_of_vm "$vm")"

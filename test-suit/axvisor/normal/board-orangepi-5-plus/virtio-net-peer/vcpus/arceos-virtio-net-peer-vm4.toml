@@ -1,0 +1,43 @@
+# AxVisor guest: ArceOS virtio-net peer VM4 (10.0.2.18).
+#
+# Every peer runs a server and a client; the client connects to its own address
+# plus one, so vm1..vm4 form the chain 10.0.2.15 -> 10.0.2.16 -> 10.0.2.17 ->
+# 10.0.2.18 -> 10.0.2.19. VM4 closes the chain: it answers VM3 and its own client
+# keeps logging connect retries towards 10.0.2.19, which has no listener.
+#
+# `image_location = "memory"` makes the AxVisor build embed the image with
+# `include_bytes!` (os/axvisor/build.rs), so the board needs no guest file of its
+# own. Prepare the images with `prepare-guests.sh` before building AxVisor.
+[base]
+id = 4
+name = "arceos-virtio-net-peer-vm4"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x300]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-virtio-net-peer-vm4.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+memory_regions = [
+  [0x8000_0000, 0x2000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+# Virtual platform devices (console/GIC/timer) are machine-owned; the PCIe
+# controllers stay out of the guest.
+disabled = [
+  { path = "/pcie@fe150000" },
+  { path = "/pcie@fe160000" },
+  { path = "/pcie@fe170000" },
+  { path = "/pcie@fe180000" },
+  { path = "/pcie@fe190000" },
+]
+
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x20, 0x01, 0x04]
