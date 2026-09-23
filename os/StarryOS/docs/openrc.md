@@ -38,7 +38,7 @@ sequenceDiagram
 
 ### 1.2 镜像事务
 
-Starry 的默认根文件系统取自 [`tgosimages` 的 `feat/unified-build-framework` 分支](https://github.com/rcore-os/tgosimages/tree/feat/unified-build-framework)生成的 v0.0.14 Alpine ext4 镜像。`starry::rootfs::ensure_rootfs_in_tmp_dir()` 在使用默认镜像注册表时读取固定提交 `7a658bb133507ecba3455e1b130d6d5c3fcbb662` 的 `registry/v0.0.14.toml`，按仓库已有的 SHA-256 下载与解包流程取得四架构镜像；自定义注册表必须提供相同版本。源码配方与发布镜像分别固定，不能因为分支继续更新而静默换包。其他操作系统的镜像注册表不受此选择影响。
+Starry 的默认根文件系统复用 `ImageConfig` 所选的 [`tgosimages` 默认注册表](https://github.com/rcore-os/tgosimages/blob/main/registry/default.toml)，目前默认引用 v0.0.14 的四架构 Alpine ext4 镜像。`starry::rootfs::ensure_rootfs_in_tmp_dir()` 通过现有 `ensure_rootfs_for_arch()` 下载、校验 SHA-256 并解包，不另设 Starry 专用注册表或版本常量。镜像内容由发布归档校验值约束，注册表未来升级时仍会检查实际预装包版本；用户自定义注册表也使用同一核对规则。
 
 `starry::openrc::prepare()` 先从镜像内 APK 数据库核对 BusyBox、OpenRC、openrc-user 及其依赖版本，缺失时明确失败，不在 Starry 镜像准备或客户机运行中执行 `apk add`。随后只通过 `rootfs::inject` 注入 Starry 专用的 `inittab`、`rc.conf`、服务、runlevel 链接、串口终端脚本和 BusyBox 电源命令链接。源镜像由 `tgosimages` 在构建阶段安装软件包；这与 Starry 的准备和启动不执行 APK 是两个不同的阶段。准备失败时丢弃候选镜像，成功后在管理镜像锁内替换镜像；用户指定的外部镜像不自动修改。
 
@@ -60,6 +60,10 @@ Starry 的默认根文件系统取自 [`tgosimages` 的 `feat/unified-build-fram
 安装 bridge 与 ifupdown-ng 是 APK 的依赖要求，不代表启用这些服务。镜像中的完整数据库还保留每个包的架构、校验值与文件清单；不把此简表当作二进制锁文件。
 
 原镜像提供了 `/sbin/openrc`、`/sbin/openrc-run`、`/sbin/rc-service`、`/sbin/rc-update`、`/sbin/init` 与 runlevel 目录，但其 Alpine 通用 `inittab` 没有 Starry 的串口控制终端、运行目录服务和测试 hook；LoongArch64 配方还设置了旧式 `rcS`。这些是需要 Starry 覆盖的配置，不是需要通过 APK 增装的软件包。
+
+### 1.4 板卡现有根文件系统
+
+QEMU 使用的受管理镜像由 `openrc::prepare()` 注入 Starry 启动资产；实体板卡及 AxVisor 的 Starry guest 使用既有持久根文件系统，不经过这条镜像注入路径。未迁移的板端镜像缺少 `/sbin/openrc` 等文件，直接启动默认 `/sbin/init` 会在 `default_command()` 的启动检查中报错。对应板卡构建配置因此显式启用 `starryos/legacy-board-init`，复用编入内核的旧 shell 启动脚本；该功能不改动板卡磁盘，也不放宽根 PID 1 的退出和信号规则。QEMU 构建配置不启用此功能，仍由 BusyBox init 和 OpenRC 启动。板端持久根文件系统完成 OpenRC 包与配置迁移并验证启动、终端和关机后，才能移除相应构建配置中的功能开关。
 
 ## 2. 进程契约
 
@@ -171,3 +175,9 @@ x86_64 的独立 QEMU 日志保留以下失败，正向用例和负向用例都�
 此前的完整 system 套件与自然电源脚本是在旧版受管理镜像上运行的，不能冒充 v0.0.14 的对应证据。镜像中 APK 数据库仅用于验证预装包；本轮的 `starry rootfs` 与 `qemu/openrc` 路径都没有调用目标架构 APK 安装。
 
 合入 2026 年 9 月 22 日的 `origin/dev` 后，四架构再次运行 `cargo xtask starry test qemu --arch <arch> -c qemu/openrc`，各为 `result: 1/1 case(s) passed`，日志为 `/tmp/starry-openrc-prebuilt-after-merge-<arch>.log`。以合并提交 `e92954f967` 的第二父提交（当时的 `dev`）为基线运行 `cargo xtask test --since 'HEAD^2'`，受影响白名单测试通过，其中 `axbuild` 为 763/763；`cargo xtask clippy --package axbuild` 为 1/1，`cargo fmt` 通过。这些日志均是本地复核材料，未纳入仓库。
+
+### 5.4 新主线变基与 CI 回归
+
+2026 年 9 月 23 日变基至 `dev` 的 `ee5a638e0e` 后，Starry 不再覆盖镜像注册表和版本，直接使用主线默认的 v0.0.14。旧 PR CI 的 QEMU aarch64/riscv64 用例在打开 `${workspace}/tmp/axbuild/rootfs/rootfs-<arch>-busybox.img` 时失败；主线现将镜像解压至 `target/axbuild/rootfs`，因此新增的 QEMU 配置全部与现有 system 配置对齐。以 `TGOS_IMAGE_EXTRACT_DIR="$PWD/target/axbuild/rootfs"` 强制使用新目录后，两架构 `qemu/openrc` 各通过 1/1，原始日志为 `/tmp/starry-openrc-rebase-<arch>-clean-rootfs.log`。
+
+旧 PR CI 的板卡测试使用既有持久镜像，日志显示缺少 `/sbin/openrc`；本次显式选择 `legacy-board-init`，保留这些镜像的原 shell 启动方式。OrangePi 5 Plus 构建通过；实际板卡启动与 AxVisor guest 结果以重新运行的自托管 CI 为准。该兼容开关只服务于尚未迁移的板卡构建，根 PID 1 异常退出仍按致命错误处理。变基后的三软件包 `cargo xtask clippy --package axbuild --package starryos --package starry-kernel` 为 84/84；`cargo xtask test --since origin/dev` 实选三软件包并全部通过，其中 `axbuild` 为 765/765。原始日志分别为 `/tmp/starry-openrc-rebase-clippy.log` 和 `/tmp/starry-openrc-rebase-std-tests.log`。

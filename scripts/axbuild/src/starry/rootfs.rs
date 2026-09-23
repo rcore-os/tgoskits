@@ -184,7 +184,8 @@ pub(crate) async fn ensure_qemu_rootfs_ready(
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
     if explicit_rootfs.is_none() {
-        ensure_rootfs_in_tmp_dir(workspace_root, target_dir, &request.arch, &request.target).await?;
+        ensure_rootfs_in_tmp_dir(workspace_root, target_dir, &request.arch, &request.target)
+            .await?;
         return Ok(());
     }
     let rootfs_path = qemu_rootfs_path(request, workspace_root, target_dir, explicit_rootfs)?;

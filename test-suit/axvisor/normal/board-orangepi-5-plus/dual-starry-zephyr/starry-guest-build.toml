@@ -2,6 +2,7 @@
 target = "aarch64-unknown-none-softfloat"
 # Keep per-frame kernel informational logging out of the measured pipeline.
 features = [
+  "legacy-board-init",
   "ax-driver/list-pci-devices",
   "ax-driver/rk3588-pcie",
   "ax-driver/realtek-rtl8125",

@@ -16,6 +16,8 @@ version = "0.5.39"
 [features]
 default = []
 nixos = []
+# Existing board and AxVisor guest images do not yet carry Starry's OpenRC assets.
+legacy-board-init = []
 # The profiling command selects this package-level preset; axbuild must not assemble the
 # individual driver feature list at runtime.
 qperf = ["ax-driver/nvme", "ax-driver/virtio-net", "ax-driver/virtio-socket"]

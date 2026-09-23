@@ -11,8 +11,11 @@ use ax_std as _;
 #[cfg(feature = "nixos")]
 pub const DEFAULT_CMDLINE: &[&str] = &["/init"];
 
-#[cfg(not(feature = "nixos"))]
+#[cfg(all(not(feature = "nixos"), not(feature = "legacy-board-init")))]
 pub const DEFAULT_CMDLINE: &[&str] = &["/sbin/init"];
+
+#[cfg(all(not(feature = "nixos"), feature = "legacy-board-init"))]
+pub const DEFAULT_CMDLINE: &[&str] = &["/bin/sh", "-c", include_str!("init.sh")];
 
 #[cfg(feature = "nixos")]
 const ENVIRON: &[&str] = &["container=starryos"];
@@ -57,7 +60,7 @@ fn init_command_from_bootargs() -> Vec<String> {
 }
 
 fn default_command() -> Vec<String> {
-    #[cfg(not(feature = "nixos"))]
+    #[cfg(all(not(feature = "nixos"), not(feature = "legacy-board-init")))]
     {
         for path in [
             "/sbin/init",
@@ -91,8 +94,14 @@ fn default_command() -> Vec<String> {
 #[cfg(feature = "nixos")]
 const _: () = assert!(command_eq(DEFAULT_CMDLINE, &["/init"]));
 
-#[cfg(not(feature = "nixos"))]
+#[cfg(all(not(feature = "nixos"), not(feature = "legacy-board-init")))]
 const _: () = assert!(command_eq(DEFAULT_CMDLINE, &["/sbin/init"]));
+
+#[cfg(all(not(feature = "nixos"), feature = "legacy-board-init"))]
+const _: () = assert!(command_eq(
+    DEFAULT_CMDLINE,
+    &["/bin/sh", "-c", include_str!("init.sh")]
+));
 
 const fn command_eq(left: &[&str], right: &[&str]) -> bool {
     if left.len() != right.len() {

@@ -1,6 +1,7 @@
 # Build-time config template for StarryOS on SG2002.
 target = "riscv64gc-unknown-none-elf"
 features = [
+  "legacy-board-init",
   "starry-kernel/sg2002-cvi-usb-camera",
   "axplat-dyn/thead-mae",
   "ax-driver/serial",
